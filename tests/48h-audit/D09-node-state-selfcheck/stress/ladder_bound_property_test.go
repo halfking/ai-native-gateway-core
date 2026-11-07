@@ -29,6 +29,9 @@ func TestStress_LadderBoundedAcrossAttempts(t *testing.T) {
 		5 * time.Minute:  true, // quota periodic 固定档
 		2 * time.Minute:  true, // quota balance/permanent 固定档
 		3 * time.Minute:  true, // rate-limit policy floor
+		// 2026-11-07 持续失败升级档：attempt ≥ sustained 阈值的稀疏复检
+		//（默认 1h；有界、非膨胀 —— 见 business B-01 两档契约）。
+		bg.SustainedFailureRecheck(): true,
 	}
 	kinds := []errorsx.ErrorKind{
 		errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindNetwork,

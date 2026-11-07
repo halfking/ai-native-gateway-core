@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -10,7 +11,17 @@ import (
 // probe or business success. It only touches rows that are currently
 // unavailable and never overrides manual / admin-pinned bindings, so the
 // per-request call from the executor is a 0-row no-op on a healthy node.
-func healthyBindingSQL() string {
+//
+// ★ 2026-11-07（探测浪费根修轮 · R4 竞态收口）：新增**新鲜度守卫** —— 只恢复
+// `unavailable_at <= 证据时刻` 的行。此前恢复是无条件的：探测直连轮在 T_c
+// 成功、业务失败在 (T_c, 记账) 窗口内拉黑（unavailable_at 晚于探测证据），
+// 无条件恢复会**覆盖更新的一条失败证据**；反过来记账（last_attempt_at）晚于
+// 恢复时，审计 R4 的时序判据又会把这类行误判为 write-through 缺口。守卫后：
+// 更新的失败证据存活（正确），配对的成功 mirror 把 last_attempt_at 写成证据
+// 时刻（probe_service.go mirrorNodeProbeState），R4 只在真缺口时亮。
+// evidenceAt 语义：证据的发生时刻（探测直连轮完成 / 业务成功返回），不是
+// SQL 执行时刻。
+func healthyBindingSQL(evidenceAt time.Time) string {
 	return `
 		UPDATE credential_model_bindings cmb
 		SET available = TRUE,
@@ -25,7 +36,8 @@ func healthyBindingSQL() string {
 		  AND pm.raw_model_name = $2
 		  AND COALESCE(cmb.available, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE`
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(cmb.unavailable_at, 'epoch') <= $3::timestamptz`
 }
 
 // healthyCredentialSQL flips the credential surfaces back to healthy/ready/ok.
@@ -84,10 +96,18 @@ func healthyCredentialSQL() string {
 }
 
 func syncHealthyNodeSurfaces(ctx context.Context, db *pgxpool.Pool, credentialID int, rawModel string) error {
+	// 业务成功的证据时刻＝现在（调用点在成功返回路径上）。
+	return syncHealthyNodeSurfacesAt(ctx, db, credentialID, rawModel, time.Now())
+}
+
+// syncHealthyNodeSurfacesAt is the evidence-timestamped core; the probe paths
+// hand their direct-round completion time so a concurrent newer blacklist is
+// never clobbered (see healthyBindingSQL).
+func syncHealthyNodeSurfacesAt(ctx context.Context, db *pgxpool.Pool, credentialID int, rawModel string, evidenceAt time.Time) error {
 	if db == nil {
 		return nil
 	}
-	if _, err := db.Exec(ctx, healthyBindingSQL(), credentialID, rawModel); err != nil {
+	if _, err := db.Exec(ctx, healthyBindingSQL(evidenceAt), credentialID, rawModel, evidenceAt); err != nil {
 		return err
 	}
 	_, err := db.Exec(ctx, healthyCredentialSQL(), credentialID)

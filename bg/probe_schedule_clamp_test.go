@@ -42,6 +42,12 @@ func TestClampRecoverableProbeSchedulesSQLShape(t *testing.T) {
 	if !strings.Contains(sql, "s.ctid = v.ctid") {
 		t.Fatal("clamp SQL must join the bounded batch by ctid (★ 该表无唯一键 ⇒ 业务列会放大行数)")
 	}
+	// ★ 2026-11-07（持续失败升级）：consecutive_failures ≥ 阈值的行被排除 ——
+	//   它们的远期排程是升级裁决（sustained_failure_recheck），clamp 不得把
+	//   升级拉回恢复 SLA。
+	if !strings.Contains(sql, "COALESCE(consecutive_failures, 0) < $3") {
+		t.Fatal("clamp SQL must exempt sustained-failure rows (cf < $3)")
+	}
 }
 
 func TestPumpDueStatesCallsClamp(t *testing.T) {

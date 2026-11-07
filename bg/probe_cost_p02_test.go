@@ -99,12 +99,25 @@ func TestNetworkChain_BackoffKnobRestoresP02Ladder(t *testing.T) {
 		}
 	}
 
-	// ② 旋钮收到 300（默认）⇒ 长尾恒为 5m（2026-11-05 口径）
+	// ② 旋钮收到 300（默认）⇒ 长尾封顶 5m（2026-11-05 口径）—— 但仅到持续失败
+	//   阈值为止（2026-11-07 探测浪费根修轮）：attempt ≥ sustained 档阈值时升到
+	//   probe.sustained_failure_recheck_seconds（默认 1h），否则持续失败对恒 5m
+	//   一探（211 实测单对 ~480 次/天）。
 	withP02Backoff(t, 300)
-	for _, attempt := range []int{5, 6, 7, 8, 9, 50} {
+	threshold := sustainedFailureAttemptThreshold()
+	for _, attempt := range []int{5, 6, 7, 8, 9, threshold - 1} {
+		if attempt < 5 {
+			continue
+		}
 		got := networkProbeBackoff(attempt)
 		if got != 5*time.Minute {
 			t.Fatalf("networkProbeBackoff(%d) = %v, want 5m (★ 旋钮 300 ⇒ 长尾封顶 5m)", attempt, got)
+		}
+	}
+	for _, attempt := range []int{threshold, threshold + 1, 50} {
+		got := networkProbeBackoff(attempt)
+		if got != sustainedFailureRecheck() {
+			t.Fatalf("networkProbeBackoff(%d) = %v, want sustained recheck %v (2026-11-07 持续失败升级)", attempt, got, sustainedFailureRecheck())
 		}
 	}
 }
@@ -128,7 +141,9 @@ func TestNetworkChain_LongTailSink(t *testing.T) {
 		{7, 5 * time.Minute},
 		{8, 5 * time.Minute},
 		{9, 5 * time.Minute},
-		{50, 5 * time.Minute},
+		// 2026-11-07 持续失败升级：attempt 50 ≥ 阈值 ⇒ sustained 档（默认 1h，
+		// 与 probe.recovery_max_backoff_seconds=300 无关；阈值以下的 5..9 仍恒 5m）。
+		{50, sustainedFailureRecheck()},
 	}
 	kinds := []errorsx.ErrorKind{
 		errorsx.KindNetwork, errorsx.KindTimeout, errorsx.KindTransient,
@@ -358,11 +373,21 @@ func TestProbeServiceAttemptPersistsAcrossGenerations(t *testing.T) {
 		assertRetryDelay(t, result.NextRunAt, before, 5*time.Minute)
 	})
 
-	t.Run("sustained failure holds at recovery SLA across generations", func(t *testing.T) {
+	t.Run("sustained failure escalates past the recovery SLA across generations", func(t *testing.T) {
 		before := time.Now()
 		result, outcome := run(3, 49, true)
 		if outcome.attempt != 50 {
 			t.Fatalf("attempt = %d, want 50", outcome.attempt)
+		}
+		// 2026-11-07 持续失败升级：cf=49 ≥ 阈值 ⇒ 复检间隔升到
+		// sustained_failure_recheck（默认 1h），不再恒 5m。
+		assertRetryDelay(t, result.NextRunAt, before, sustainedFailureRecheck())
+	})
+	t.Run("moderate failure still holds at the recovery SLA", func(t *testing.T) {
+		before := time.Now()
+		result, outcome := run(2, 9, true)
+		if outcome.attempt != 10 {
+			t.Fatalf("attempt = %d, want 10", outcome.attempt)
 		}
 		assertRetryDelay(t, result.NextRunAt, before, 5*time.Minute)
 	})

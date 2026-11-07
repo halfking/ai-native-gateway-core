@@ -254,8 +254,14 @@ type probeOutcome struct {
 	// attempt feeds the 404 model-not-served escalation (2nd confirmed 404
 	// → long re-check horizon) in applyOutcome; 0 means "unknown, keep the
 	// generic 5-minute cooldown".
-	attempt   int
-	recoverAt time.Time
+	attempt int
+	// evidenceAt is the direct-round completion time (2026-11-07 write-through
+	// freshness guard): the success restore must only clear blacklists that
+	// predate this instant. It doubles as the success mirror's
+	// last_attempt_at so the R4 audit's timing predicate measures against the
+	// evidence, not the bookkeeping.
+	evidenceAt time.Time
+	recoverAt  time.Time
 }
 
 // Run executes one queued probe task end-to-end and returns the queue result.
@@ -403,6 +409,11 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// immediately — the optional pinned gateway round only refines the
 	// evidence, it is not a gate.
 	direct := s.directRound(hbCtx, credID, model)
+	// 2026-11-07: direct-round completion is the success evidence timestamp —
+	// it feeds the write-through freshness guard and the success mirror's
+	// last_attempt_at (a blacklist landing after this instant is newer
+	// evidence and must survive; the R4 audit measures against it).
+	directDone := time.Now()
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
 			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "lease_lost_during_run"}, nil
@@ -506,6 +517,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		gateway:      gw,
 		success:      success,
 		attempt:      attempt,
+		evidenceAt:   directDone,
 	})
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
@@ -581,7 +593,14 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		}
 		return ProbeQueueResult{}, err
 	}
-	s.worker.mirrorNodeProbeState(hbCtx, credID, model, attempt, success, direct, gw, now, backoff)
+	// 2026-11-07（R4 竞态收口）：成功镜写的 last_attempt_at 用**证据时刻**
+	// （direct 轮完成）而不是记账时刻 —— 落在 (证据, 记账) 窗口内的业务拉黑
+	// 是更新的证据，须存活且不被 R4 审计误判；失败镜写沿用完成时刻 now。
+	mirrorNow := now
+	if success {
+		mirrorNow = directDone
+	}
+	s.worker.mirrorNodeProbeState(hbCtx, credID, model, attempt, success, direct, gw, mirrorNow, backoff)
 
 	if direct.ok {
 		s.worker.notifyAutoRouteRefresh(hbCtx, credID)
@@ -821,7 +840,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		return
 	}
 	if outcome.direct.ok {
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0, "")
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0, "", outcome.evidenceAt)
 		if s.worker.db != nil {
 			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
 		}
@@ -856,7 +875,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 			if outcome.direct.errCode != "" && outcome.direct.errCode != "none" {
 				directErrCode = outcome.direct.errCode
 			}
-			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt, outcome.direct.errDetail)
+			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt, outcome.direct.errDetail, time.Time{})
 			_, horizon := unavailableBindingHorizon(directErrCode, outcome.attempt)
 			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, directErrCode, time.Now().Add(horizon))
 		}
@@ -1054,7 +1073,13 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 				UPDATE node_probe_state SET
 					consecutive_failures = 0,
 					consecutive_successes = consecutive_successes + 1,
-					last_attempt_at = now(),
+					-- 2026-11-07（R4 竞态收口）：last_attempt_at = 证据时刻（探测
+					-- 直连轮完成 / 业务成功时刻），不是本记账语句的 now() ——
+					-- R4 审计的时序判据（unavailable_at <= last_attempt_at）必须
+					-- 度量「拉黑 vs 证据」，而不是「拉黑 vs 记账」，否则落在
+					-- (证据, 记账) 窗口内的合法业务拉黑会被误判为 write-through
+					-- 缺口。
+					last_attempt_at = $4,
 					next_retry_at = now() + interval '30 days',
 					next_retry_seconds = 2592000,
 					paused = FALSE,
@@ -1064,7 +1089,7 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 					last_err_detail = NULL,
 					in_flight_until = NULL,
 					updated_at = now()
-				WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok)
+				WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok, now)
 			return err
 		})
 		return

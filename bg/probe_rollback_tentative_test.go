@@ -78,7 +78,7 @@ func TestProbeSyncRestoreIsFinalWithoutTentativeStamp(t *testing.T) {
 	if strings.Contains(body, "MarkTentativeRestore(") {
 		t.Fatal("ProbeSync must NOT stamp a tentative restore: the park policy makes the confirming probe unreachable, so the stamp degrades into a guaranteed 15-min revert loop (154 2026-10-13 grok-4.6)")
 	}
-	availIdx := strings.Index(body, "updateBindingAvailability(bookCtx, j.credID, j.model, true, \"\", 0, \"\")")
+	availIdx := strings.Index(body, "updateBindingAvailability(bookCtx, j.credID, j.model, true, \"\", 0, \"\", directDone)")
 	if availIdx < 0 {
 		t.Fatal("ProbeSync success branch must restore availability (final restore — healthyBindingSQL clears probe_revert_at)")
 	}

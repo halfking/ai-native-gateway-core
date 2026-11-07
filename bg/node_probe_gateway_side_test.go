@@ -163,7 +163,7 @@ func TestRunOneGatewaySideSkipsSharedStateWrites(t *testing.T) {
 	if !strings.Contains(sync, "gateway-side direct probe error (sync)") {
 		t.Errorf("sync path must log the skipped availability update for gateway-side errors")
 	}
-	if !strings.Contains(sync, "w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)") ||
+	if !strings.Contains(sync, "w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail, time.Time{})") ||
 		!strings.Contains(sync, "w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode") {
 		t.Errorf("sync path must keep the genuine-upstream-error write branch")
 	}

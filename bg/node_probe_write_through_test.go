@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthyCredentialSQLClearsHardQuota(t *testing.T) {
@@ -38,12 +39,16 @@ func TestHealthyWriteThroughSQLIsNoOpWhenAlreadyHealthy(t *testing.T) {
 			t.Fatalf("healthy credential SQL must skip already-healthy rows, missing %q", guard)
 		}
 	}
-	binding := healthyBindingSQL()
+	binding := healthyBindingSQL(time.Now())
 	if !strings.Contains(binding, "COALESCE(cmb.available, FALSE) = FALSE") {
 		t.Fatal("healthy binding SQL must only touch unavailable bindings")
 	}
 	if !strings.Contains(binding, "NOT LIKE 'manual%'") {
 		t.Fatal("healthy binding SQL must leave manual bindings alone")
+	}
+	// 2026-11-07 新鲜度守卫：只恢复 unavailable_at <= 证据时刻的行。
+	if !strings.Contains(binding, "COALESCE(cmb.unavailable_at, 'epoch') <= $3::timestamptz") {
+		t.Fatal("healthy binding SQL must carry the evidence freshness guard")
 	}
 }
 

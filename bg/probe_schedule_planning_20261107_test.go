@@ -132,8 +132,11 @@ func TestQuotaResetPinDuration(t *testing.T) {
 	}
 }
 
-// F4 门控判据：非配额状态/非配额体不钉；配额体 + 未来 recover_at 钉；
-// DB 错误退回普通梯子（钉是优化，不是义务）。
+// F4 门控判据（2026-11-07 探测浪费根修轮后两臂形态）：
+//   臂 1（原判定）配额体 + 未来 recover_at 钉；
+//   臂 2（新）失败形态无关 —— 凭据行自身 quota_state ∈ 用尽族 + 未来 recover_at 即钉
+//   （用尽窗口内的 503/网络错不再每 5 分钟盲探）；
+//   非用尽凭据 + 非配额体不钉；DB 错误退回普通梯子（钉是优化，不是义务）。
 func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 	quotaBody := `{"error":{"code":"1310","message":"您已达到每周使用上限，将于2026-11-14 01:00重置"}}`
 	round := nodeProbeRoundResult{errCode: "http_429", httpStatus: 429, responseBody: quotaBody}
@@ -143,7 +146,7 @@ func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 			t.Fatal("nil db must fall through to the ordinary ladder")
 		}
 	})
-	t.Run("non-quota status falls through", func(t *testing.T) {
+	t.Run("healthy credential + non-quota status falls through", func(t *testing.T) {
 		r := round
 		r.httpStatus = 500
 		r.errCode = "http_500"
@@ -152,11 +155,14 @@ func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1")).
+			WithArgs(7).
+			WillReturnRows(pgxmock.NewRows([]string{"quota_state", "quota_recover_at"}).AddRow("ok", nil))
 		if _, ok := quotaResetAlignedBackoff(context.Background(), mock, 7, r); ok {
-			t.Fatal("http_500 must not consult the pin")
+			t.Fatal("healthy credential + http_500 must not pin")
 		}
 	})
-	t.Run("non-quota body falls through", func(t *testing.T) {
+	t.Run("healthy credential + non-quota body falls through", func(t *testing.T) {
 		r := round
 		r.responseBody = `{"error":{"message":"too many requests, slow down"}}`
 		mock, err := pgxmock.NewPool()
@@ -164,8 +170,11 @@ func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1")).
+			WithArgs(7).
+			WillReturnRows(pgxmock.NewRows([]string{"quota_state", "quota_recover_at"}).AddRow("ok", nil))
 		if _, ok := quotaResetAlignedBackoff(context.Background(), mock, 7, r); ok {
-			t.Fatal("plain rate-limit body must not pin")
+			t.Fatal("healthy credential + plain rate-limit body must not pin")
 		}
 	})
 	t.Run("quota body + future recover_at pins", func(t *testing.T) {
@@ -175,9 +184,9 @@ func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_recover_at FROM credentials WHERE id = $1")).
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1")).
 			WithArgs(7).
-			WillReturnRows(pgxmock.NewRows([]string{"quota_recover_at"}).AddRow(&reset))
+			WillReturnRows(pgxmock.NewRows([]string{"quota_state", "quota_recover_at"}).AddRow("periodic_exhausted", &reset))
 		d, ok := quotaResetAlignedBackoff(context.Background(), mock, 7, round)
 		if !ok {
 			t.Fatal("weekly quota reset must pin")
@@ -186,16 +195,38 @@ func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 			t.Errorf("pin = %v, want ~recover_at+60s", d)
 		}
 	})
-	t.Run("nil recover_at falls through", func(t *testing.T) {
+	// ★ 2026-11-07 臂 2：用尽窗口内**任意失败形态**（211 实测：凭据 35 以
+	// 503 Service Unavailable 形态失败于 periodic_exhausted 窗口）钉到重置点。
+	t.Run("exhausted credential pins regardless of failure shape", func(t *testing.T) {
+		reset := time.Now().Add(3 * time.Hour)
+		r := nodeProbeRoundResult{errCode: "network_error", httpStatus: 503, responseBody: "Service Unavailable"}
 		mock, err := pgxmock.NewPool()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer mock.Close()
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_recover_at FROM credentials WHERE id = $1")).
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1")).
+			WithArgs(35).
+			WillReturnRows(pgxmock.NewRows([]string{"quota_state", "quota_recover_at"}).AddRow("periodic_exhausted", &reset))
+		d, ok := quotaResetAlignedBackoff(context.Background(), mock, 35, r)
+		if !ok {
+			t.Fatal("exhaustion-window failure must pin regardless of shape")
+		}
+		if d <= 2*time.Hour || d > 3*time.Hour+2*time.Minute {
+			t.Errorf("pin = %v, want ~recover_at+60s", d)
+		}
+	})
+	t.Run("exhausted credential without recover_at falls through", func(t *testing.T) {
+		r := nodeProbeRoundResult{errCode: "http_503", httpStatus: 503}
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1")).
 			WithArgs(7).
-			WillReturnRows(pgxmock.NewRows([]string{"quota_recover_at"}).AddRow(nil))
-		if _, ok := quotaResetAlignedBackoff(context.Background(), mock, 7, round); ok {
+			WillReturnRows(pgxmock.NewRows([]string{"quota_state", "quota_recover_at"}).AddRow("balance_exhausted", nil))
+		if _, ok := quotaResetAlignedBackoff(context.Background(), mock, 7, r); ok {
 			t.Fatal("no recover_at ⇒ no pin (balance-type exhaustion keeps its periodic ladder)")
 		}
 	})
@@ -205,7 +236,7 @@ func TestQuotaResetAlignedBackoffGates(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
-		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_recover_at FROM credentials WHERE id = $1")).
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1")).
 			WillReturnError(errors.New("db down"))
 		if _, ok := quotaResetAlignedBackoff(context.Background(), mock, 7, round); ok {
 			t.Fatal("db error must fall through to the ordinary ladder")

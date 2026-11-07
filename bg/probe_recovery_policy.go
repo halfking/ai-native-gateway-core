@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -31,6 +32,74 @@ func probeRecoveryMaxBackoff() time.Duration {
 		return 5 * time.Minute
 	}
 	return time.Duration(sec) * time.Second
+}
+
+// ── 持续失败升级（2026-11-07 探测浪费根修轮）─────────────────────────────
+//
+// 背景（211 真库实测）：probe.recovery_max_backoff_seconds（默认 300s）把可
+// 恢复族的退避长尾削平 ⇒ 持续失败的对稳定在 ~5 分钟一探、单对 ~480 次/天，
+// consecutive_failures 累积到 ~1000 仍不停（spec 的 DescriptionLong 早已登记
+// 这笔 72× 成本，但直到本轮才补上「持续失败」这一档）。
+//
+// 修法：attempt（跨代持续 = consecutive_failures+1）≥ 阈值（默认 21 ≈ 三代
+// 完整梯零成功）且梯级本会被 SLA 削平时，复检间隔升到 sustained_failure_
+// recheck_seconds（默认 1h）。「新失败 5 分钟内复检」的恢复 SLA 对阈值以下
+// 的行逐字保留；恢复感知不降级 —— 配额/可用性恢复事件仍即时回拉
+// （RearmCredentialFailures，见 rearm 的配额窗口守卫）、业务成功仍立即停放。
+// 与 F4 配额钉同一哲学：盲探按证据定节奏，事件负责及时性。
+
+// sustainedFailureAttemptThreshold is the cross-generation attempt count at
+// which the recovery SLA stops compressing the ladder (2026-11-07). Default
+// 21 = three full queue-task generations (nodeProbeMaxAttempts=7) with zero
+// successes — well past "fresh failure", short of "nobody will ever look".
+func sustainedFailureAttemptThreshold() int {
+	n := settings.GetPlatformInt("probe.sustained_failure_attempt_threshold", 21)
+	if n < 1 {
+		return 21
+	}
+	return n
+}
+
+// sustainedFailureRecheck is the re-check interval applied to sustained-failure
+// rows instead of the recovery SLA cap. Floored at probeRecoveryMaxBackoff so
+// the sustained tier can never probe FASTER than the SLA tier.
+func sustainedFailureRecheck() time.Duration {
+	sec := settings.GetPlatformInt("probe.sustained_failure_recheck_seconds", 3600)
+	d := time.Duration(sec) * time.Second
+	if sec <= 0 {
+		d = time.Hour
+	}
+	if cap := probeRecoveryMaxBackoff(); d < cap {
+		return cap
+	}
+	return d
+}
+
+// capRecoverBackoffForAttempt applies the recovery-SLA cap with the
+// sustained-failure escalation: below the threshold the cap is the operator
+// SLA (unchanged behavior); at/above it the cap lifts to the sustained
+// re-check interval. Callers hand in the already-computed ladder delay.
+func capRecoverBackoffForAttempt(attempt int, d time.Duration) time.Duration {
+	cap := probeRecoveryMaxBackoff()
+	if attempt >= sustainedFailureAttemptThreshold() {
+		cap = sustainedFailureRecheck()
+	}
+	if d > cap {
+		return cap
+	}
+	return d
+}
+
+// SustainedFailureAttemptThreshold exposes the threshold for SQL-side guards
+// (clamp exemption, rearm exhaustion guard) and tests.
+func SustainedFailureAttemptThreshold() int {
+	return sustainedFailureAttemptThreshold()
+}
+
+// SustainedFailureRecheck exposes the sustained tier's re-check interval for
+// domain tests and operators' verification tooling.
+func SustainedFailureRecheck() time.Duration {
+	return sustainedFailureRecheck()
 }
 
 // ProbeBackoffForKind returns the next retry delay for an automatic probe.
@@ -65,11 +134,13 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 	// the recovery SLA so a cleared 429/并发窗可在约 5 分钟内被复检。
 	// Auth/unknown (empty kind) and KindNoAvailableChannel keep their longer
 	// horizons — those are not "supplier already healthy" discovery paths.
+	// 2026-11-07: the cap (both here and in networkProbeBackoff) routes
+	// through capRecoverBackoffForAttempt so sustained failures escalate to
+	// probe.sustained_failure_recheck_seconds instead of compressing to the
+	// SLA forever.
 	switch kind {
 	case errorsx.KindRateLimit, errorsx.KindConcurrent:
-		if cap := probeRecoveryMaxBackoff(); delay > cap {
-			delay = cap
-		}
+		delay = capRecoverBackoffForAttempt(attempt, delay)
 	}
 	return delay
 }
@@ -86,12 +157,13 @@ func networkProbeBackoff(attempt int) time.Duration {
 		//   ★ ⇒ 默认 300s ⇒ 长尾恒为 5m（★ 与 2026-11-05 口径逐字一致）；
 		//   ★ ⇒ 旋钮调到 21600（6h）⇒ ★ **长尾恢复成 2026-09-25 P0-2 的原梯**（5m→1h→2h→6h）
 		//   ★   ⇒ ⇒ ★ 旧口径【纯配置可回退】，不需要改代码、不需要回滚发布。
+		// ★★ 2026-11-07（持续失败升级）：削顶改走 capRecoverBackoffForAttempt ——
+		//   ★ attempt ≥ sustained_failure_attempt_threshold 的行不再被削到 5m，
+		//   ★ 而是升到 sustained_failure_recheck_seconds（默认 1h）。
+		//   ★ 阈值以下（新失败/中低失败）行为与 2026-11-05 口径逐字一致。
 		tail := NodeProbeBackoffChain[3:]
 		d := ChainBackoffIndex(attempt-len(NetworkProbeBackoffChain), tail)
-		if cap := probeRecoveryMaxBackoff(); d > cap {
-			d = cap
-		}
-		return d
+		return capRecoverBackoffForAttempt(attempt, d)
 	}
 	return ChainBackoffIndex(attempt, NetworkProbeBackoffChain)
 }
@@ -219,26 +291,53 @@ type probeQuotaPinDB interface {
 // ok=false and the caller keeps the ladder it already computed. Best-effort:
 // any DB error also returns ok=false (the ladder is the safe default; the
 // next failure retries the pin).
+//
+// ★ 2026-11-07（探测浪费根修轮）第二臂「凭据行判定」：原判定只认
+// 「配额类状态码 + 配额类错误体」。实测（211，凭据 35）存在用尽凭据在用尽
+// 窗口内返回 503 Service Unavailable 形态的失败 —— 不触发原臂 ⇒ 每 5 分钟
+// 盲探一次直到重置点。第二臂不再看失败形态，直接看凭据行自身：quota_state
+// ∈ 用尽族且 quota_recover_at 已知未来 ⇒ 钉 recover_at+60s（F4「用尽期 0
+// 探测」对非配额形态失败的补全）。提前恢复仍由凭据级探测发现并事件回拉。
 func quotaResetAlignedBackoff(ctx context.Context, db probeQuotaPinDB, credID int, round nodeProbeRoundResult) (time.Duration, bool) {
 	if db == nil || credID <= 0 {
 		return 0, false
 	}
-	if !quotaProbeHTTPStatuses[round.httpStatus] {
+	// 臂 2 让**每一次**失败都要查一眼凭据行 ⇒ 调用方传入的 nil *pgxpool.Pool
+	// 装进接口后 db==nil 拦不住（typed-nil），会在 QueryRow 上 SIGSEGV ——
+	// 这里按具体类型显式拦（原臂 1 的状态门曾在调用方把这种情形挡在查询之前）。
+	if p, ok := db.(*pgxpool.Pool); ok && p == nil {
 		return 0, false
 	}
-	kind := errorsx.ClassifyErrorWithBody(round.httpStatus, []byte(round.responseBody))
-	switch kind {
-	case errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent:
-	default:
-		return 0, false
+	bodyIsQuota := false
+	if quotaProbeHTTPStatuses[round.httpStatus] {
+		kind := errorsx.ClassifyErrorWithBody(round.httpStatus, []byte(round.responseBody))
+		switch kind {
+		case errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent:
+			bodyIsQuota = true
+		}
 	}
-	var recoverAt *time.Time
+	var (
+		quotaState string
+		recoverAt  *time.Time
+	)
 	err := db.QueryRow(ctx,
-		`SELECT quota_recover_at FROM credentials WHERE id = $1`, credID).Scan(&recoverAt)
+		`SELECT quota_state, quota_recover_at FROM credentials WHERE id = $1`, credID).Scan(&quotaState, &recoverAt)
 	if err != nil {
 		return 0, false
 	}
+	// 臂 1（原判定）：配额体 + 未来 recover_at。
+	if bodyIsQuota && recoverAt != nil {
+		return quotaResetPinDuration(*recoverAt, time.Now())
+	}
+	// 臂 2（新）：凭据行自身处于带未来重置点的用尽窗口 —— 失败形态无关。
+	switch quotaState {
+	case "periodic_exhausted", "balance_exhausted", "permanently_exhausted":
+	default:
+		return 0, false
+	}
 	if recoverAt == nil {
+		// balance/permanent 用尽不带重置点（恢复靠充值类事件）⇒ 无从钉，
+		// 维持梯子；恢复事件仍会回拉。
 		return 0, false
 	}
 	return quotaResetPinDuration(*recoverAt, time.Now())

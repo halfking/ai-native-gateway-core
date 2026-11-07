@@ -23,11 +23,19 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-// TestBusiness_ProbeRecoverySLA_NetworkClassCapped 钉「恢复发现 ≤ 恢复 SLA」：
-// 网络族任何 attempt 的下一跳都不得超过恢复 SLA（默认 300s）——这是
-// 「出错凭据恢复后 5 分钟内被复检」的机制保证。
+// TestBusiness_ProbeRecoverySLA_NetworkClassCapped 钉「恢复发现 ≤ 恢复 SLA」的
+// **两档契约**（2026-11-07 探测浪费根修轮修订）：
+//   档 1（新失败/中低失败，attempt < sustained 阈值）：网络族下一跳 ≤ 恢复 SLA
+//        （默认 300s）——「出错凭据恢复后 5 分钟内被复检」对该档逐字保留。
+//   档 2（持续失败，attempt ≥ 阈值）：≤ sustained_failure_recheck（默认 1h）。
+//        修订动因＝用户报「正常桶被反复探测浪费资金」：211 实测单相档 1 恒 5m
+//        ⇒ ~480 次/天、cf≈1000 仍不停。恢复及时性在档 2 由事件路径承担
+//        （quota/availability 翻转 → RearmCredentialFailures 即时回拉；
+//        业务成功 → 立即停放），盲探节奏放慢不是恢复感知降级。
 func TestBusiness_ProbeRecoverySLA_NetworkClassCapped(t *testing.T) {
 	const sla = 300 * time.Second // probe.recovery_max_backoff_seconds 默认值
+	threshold := bg.SustainedFailureAttemptThreshold()
+	sustained := bg.SustainedFailureRecheck()
 	kinds := []errorsx.ErrorKind{
 		errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindNetwork,
 		errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded, errorsx.KindEmptyResponse,
@@ -36,8 +44,11 @@ func TestBusiness_ProbeRecoverySLA_NetworkClassCapped(t *testing.T) {
 	for _, kind := range kinds {
 		for attempt := 1; attempt <= 40; attempt++ {
 			d := bg.ProbeBackoffForKind(kind, attempt)
-			if d > sla {
-				t.Errorf("kind=%s attempt=%d backoff=%v > SLA %v — 恢复发现会被拖过操作员 SLA", kind, attempt, d, sla)
+			if attempt < threshold && d > sla {
+				t.Errorf("kind=%s attempt=%d backoff=%v > SLA %v — 档 1（阈值以下）恢复发现会被拖过操作员 SLA", kind, attempt, d, sla)
+			}
+			if attempt >= threshold && d > sustained {
+				t.Errorf("kind=%s attempt=%d backoff=%v > sustained 档 %v — 梯子无界", kind, attempt, d, sustained)
 			}
 			if d <= 0 {
 				t.Errorf("kind=%s attempt=%d backoff=%v 必须为正", kind, attempt, d)

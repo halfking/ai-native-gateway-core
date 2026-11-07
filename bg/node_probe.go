@@ -1347,6 +1347,19 @@ func rearmCredentialFailuresSQL() string {
 		  AND paused = FALSE
 		  AND next_retry_at > now()
 		  AND last_direct_ok IS DISTINCT FROM TRUE
+		  -- ★ 2026-11-07（探测浪费根修轮）：凭据处于**带未来重置点的用尽窗口**
+		  --   时不做事件回拉 —— 那不是恢复信号，是每次可用性翻转都把全部失败
+		  --   行拉回 now() 的放大器（211 实测：用尽凭据的 availability 翻转
+		  --   ⇒ 每 2~4 分钟全量重探）。重置点由 quota_periodic_recover 翻 ok
+		  --   后（窗口结束、守卫放行）统一回拉；提前充值/重置由凭据级探测
+		  --   成功 → writeHealth 翻 ok → onQuotaRecovered 回拉（同样已出窗口）。
+		  AND NOT EXISTS (
+		      SELECT 1 FROM credentials c
+		      WHERE c.id = $1
+		        AND c.quota_state IN ('periodic_exhausted', 'balance_exhausted', 'permanently_exhausted')
+		        AND c.quota_recover_at IS NOT NULL
+		        AND c.quota_recover_at > now()
+		  )
 	`
 }
 
@@ -1698,6 +1711,7 @@ func clampRecoverableProbeSchedulesSQL() string {
 			WHERE paused = FALSE
 			  AND next_retry_at > now() + make_interval(secs => $1)
 			  AND ` + nodeProbeErrorEvidenceSQL("node_probe_state") + `
+			  AND COALESCE(consecutive_failures, 0) < $3
 			  AND COALESCE(last_err_code, '') <> ''
 			  AND lower(COALESCE(last_err_code, '')) NOT LIKE '%404%'
 			  AND lower(COALESCE(last_err_code, '')) NOT LIKE '%410%'
@@ -1733,7 +1747,10 @@ func (w *NodeProbeWorker) clampRecoverableProbeSchedules(ctx context.Context) {
 		sec = 300
 	}
 	// ★★ 一批上界（★ 防止这条 UPDATE 一次改掉整张表 ⇒ 行锁足迹与时长都可预测）。
-	tag, err := w.db.Exec(ctx, clampRecoverableProbeSchedulesSQL(), sec, nodeProbeClampBatch)
+	// ★★ 2026-11-07（持续失败升级）：$3 = 阈值 —— consecutive_failures ≥ 阈值的
+	//   ★ 行被排除（它们的远期排程是升级裁决，不是遗留漂移；clamp 不得把
+	//   ★ 升级拉回 5 分钟）。
+	tag, err := w.db.Exec(ctx, clampRecoverableProbeSchedulesSQL(), sec, nodeProbeClampBatch, sustainedFailureAttemptThreshold())
 	if err != nil {
 		slog.Debug("node_probe_worker: clamp recoverable schedules failed", "error", err)
 		return
@@ -2024,6 +2041,10 @@ func (w *NodeProbeWorker) ProbeSync(
 			defer w.finishProbe(j.key)
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
+			// 2026-11-07: direct-round completion is the success evidence
+			// timestamp for the write-through freshness guard (a blacklist
+			// landing after this instant is newer evidence and must survive).
+			directDone := time.Now()
 			if res.direct.observationOnly {
 				w.markProbeObservation(j.credID, j.model)
 				results <- res
@@ -2068,7 +2089,9 @@ func (w *NodeProbeWorker) ProbeSync(
 				// updateBindingAvailability's success branch clears
 				// probe_revert_at, so this restore is FINAL — see the
 				// 2026-10-13 note below for why it must stay that way.
-				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "")
+				// 2026-11-07: evidence timestamp = direct completion (the
+				// freshness guard must not clobber a newer blacklist).
+				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "", directDone)
 				w.updateCredentialHealth(bookCtx, j.credID)
 				w.updateObservedState(bookCtx, j.credID, j.model, true, "", time.Now())
 				// 2026-10-13: the 2026-08-24 smart-fallback tentative
@@ -2107,7 +2130,7 @@ func (w *NodeProbeWorker) ProbeSync(
 					// keeps the generic 5-minute cooldown for a first 404 —
 					// the tick/queue paths escalate to the model-not-served
 					// horizon once their attempt counts confirm it.
-					w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)
+					w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail, time.Time{})
 					recoverAt := time.Now().Add(5 * time.Minute)
 					w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 				}
@@ -2710,6 +2733,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 
 	// Round 1: direct upstream
 	direct := w.probeDirect(ctx, credID, model)
+	// 2026-11-07: direct-round completion is the success evidence timestamp
+	// for the write-through freshness guard (newer blacklists must survive).
+	directDone := time.Now()
 	if direct.observationOnly {
 		w.markProbeObservation(credID, model)
 		if err := w.recordProbeObservation(ctx, credID, model, true); err != nil {
@@ -2723,7 +2749,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	// sees the restored credential, not the stale cooling state from
 	// the original 5xx or transient failure.
 	if direct.ok {
-		w.updateBindingAvailability(ctx, credID, model, true, "", 0, "")
+		w.updateBindingAvailability(ctx, credID, model, true, "", 0, "", directDone)
 		w.updateCredentialHealth(ctx, credID)
 		w.updateObservedState(ctx, credID, model, true, "", time.Now())
 		if w.recordCircuitSuccess != nil {
@@ -2827,7 +2853,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 				"err_code", direct.errCode,
 				"err_detail", direct.errDetail)
 		} else {
-			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt, direct.errDetail)
+			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt, direct.errDetail, time.Time{})
 			_, horizon := unavailableBindingHorizon(direct.errCode, attempt)
 			recoverAt := time.Now().Add(horizon)
 			w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
@@ -2871,7 +2897,10 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 				UPDATE node_probe_state SET
 					consecutive_failures = 0,
 					consecutive_successes = consecutive_successes + 1,
-					last_attempt_at = now(),
+					-- 2026-11-07（R4 竞态收口）：证据时刻（direct 轮完成），同
+					-- mirrorNodeProbeState 的成功臂 —— R4 审计时序判据量「拉黑 vs
+					-- 证据」，不量「拉黑 vs 记账」。
+					last_attempt_at = $4,
 					next_retry_at = now() + interval '30 days',
 					next_retry_seconds = 2592000,
 					paused = FALSE,
@@ -2883,7 +2912,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2
-			`, credID, model, gw.ok); err != nil {
+			`, credID, model, gw.ok, directDone); err != nil {
 
 			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
 		}
@@ -3891,10 +3920,21 @@ func unavailableBindingHorizon(errCode string, attempt int) (reason string, hori
 	if isModelNotServedProbeError(errCode) && attempt >= 2 {
 		return "model_not_served_404", modelNotServedRecheckInterval
 	}
+	// 2026-11-07（持续失败升级）：绑定冷却与探针梯子同档 —— attempt（跨代
+	// 持续）达阈值时从恒 5 分钟升到 sustained_failure_recheck_seconds，让
+	// expiredCmbRecoverySQL 的「冷却到期即复检」与梯子同步放慢。阈值以下
+	// 行为不变（5 分钟）。
+	if attempt >= sustainedFailureAttemptThreshold() {
+		return errCode, sustainedFailureRecheck()
+	}
 	return errCode, 5 * time.Minute
 }
 
-func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int, errDetail string) {
+// updateBindingAvailability writes the probe verdict onto the shared binding
+// surface. evidenceAt is the SUCCESS evidence timestamp (direct-round
+// completion / business success time) used by healthyBindingSQL's freshness
+// guard; the failure branch ignores it (its own write stamps now()).
+func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int, errDetail string, evidenceAt time.Time) {
 	if w == nil || w.db == nil {
 		return
 	}
@@ -3921,7 +3961,10 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 		return
 	}
 	if available {
-		_, _ = w.db.Exec(ctx, healthyBindingSQL(), credID, model)
+		if evidenceAt.IsZero() {
+			evidenceAt = time.Now()
+		}
+		_, _ = w.db.Exec(ctx, healthyBindingSQL(evidenceAt), credID, model, evidenceAt)
 		return
 	}
 	reasonTag, horizon := unavailableBindingHorizon(reason, attempt)

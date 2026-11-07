@@ -81,17 +81,17 @@ func TestExpiredCmbRecoverySQLGuards(t *testing.T) {
 			t.Fatalf("expiredCmbRecoverySQL missing pattern %q in:\n%s", re.String(), sql)
 		}
 	}
-	// 2026-07-24 fix: removed next_retry_at > now() check entirely.
-	// Now we recover ALL expired cmb rows regardless of backoff state,
-	// except those manually paused. This prevents nodes from being stranded.
-	mustNotContain := []string{
-		"next_retry_at > now()",
-		"next_retry_at  > now()",
-	}
-	for _, want := range mustNotContain {
-		if strings.Contains(sql, want) {
-			t.Fatalf("expiredCmbRecoverySQL must NOT contain %q (removed in 2026-07-24 fix) in:\n%s", want, sql)
-		}
+	// ★★ 2026-11-07（探测浪费根修轮）：有意反转 2026-07-24 的「无视梯子」。
+	//   07-24 去掉 next_retry_at 门是因为当时的梯子会沉到 1h/2h/6h/24h ⇒
+	//   绑定冷却到期而梯子远未到期的行被搁浅。现在两个前提都变了：
+	//   ① 梯子对可恢复族有界（≤ sustained_failure_recheck，默认 1h；
+	//      sustained 档与绑定冷却同档成熟）；② 真恢复事件（quota/availability/
+	//      stale/circuit 翻转）会 RearmCredentialFailures 即时回拉——搁浅的
+	//   两条腿都没了。而「无视梯子」的代价已实测（211）：持续失败对 ~480 次/
+	//   天、cf≈1000 仍每 30s tick 重开一代队列任务从梯底重走。现在梯子
+	//   重新拥有唯一排程权（与 freshDegradedCmbSQL 同款守卫）。
+	if !strings.Contains(sql, "(nps.paused = TRUE OR nps.next_retry_at > now())") {
+		t.Fatalf("expiredCmbRecoverySQL must respect the node-probe ladder (2026-11-07 反转 07-24，见注释) in:\n%s", sql)
 	}
 }
 
