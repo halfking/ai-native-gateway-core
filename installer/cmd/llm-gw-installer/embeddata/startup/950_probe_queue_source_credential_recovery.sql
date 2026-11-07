@@ -29,11 +29,6 @@
 --   约束重建的锁窗毫秒级；探测任务写入方（ProbeQueueWorker）在锁窗内
 --   短暂阻塞，无死锁面（单语句）。
 
-BEGIN;
-
-SET LOCAL lock_timeout = '60s';
-SET LOCAL statement_timeout = '10min';
-
 DO $$
 DECLARE
     cur_def text;
@@ -62,7 +57,5 @@ BEGIN
     RAISE NOTICE '950: source_check rebuilt with credential_recovery (7 values)';
 END
 $$;
-
-COMMIT;
 
 \echo '=== 950 完成：credential_probe_queue.source 闭集 + credential_recovery ==='

@@ -208,11 +208,25 @@ func TestLockGuardDetectorCanFire(t *testing.T) {
 //
 // ★ 第 50 增量审计轮曾为 950 登记豁免（字节 checksum 冻结不能补 lock_timeout）；
 //
-//	随后 R189 轮（cf1e28be9，并行）选择改 950 字节补 BEGIN+SET LOCAL
-//	lock_timeout='60s'（canonical/embeddata 双份同步）⇒ 豁免撤回，门恢复全量。
-//	教训对：字节冻结 vs 门合规二选一时，两条路都通——改字节方必须同步
-//	content_sha256 台账链（211 序列通道的重放自愈见 db-changelog 950 条目）。
-var lockGuardAllowlist = map[int]string{}
+//	R189 轮（cf1e28be9，并行）曾选择改 950 字节补 BEGIN+SET LOCAL
+//	lock_timeout='60s'（canonical/embeddata 双份同步）⇒ 豁免一度撤回；
+//	但 950 已于 2026-11-07 02:18 应用到共享生产库（245/154/252 同库，
+//	部署 checksum 台账 recorded=4a258e16…），cf1e28be9 的字节改写令
+//	deploy-245 的切换前校验 fail-closed（checksum 不匹配，拒绝继续，
+//	符号链接未切、线上零影响）。按 929/930/936 条「已应用迁移字节冻结、
+//	改字节必触发 content replay break」的规约与 db-changelog 950 条
+//	第 54 轮注记（「须按 replay 语义复核处理，勿静默覆盖台账」），
+//	本轮（2026-11-07 部署轮）恢复已应用字节（canonical/embeddata 双份
+//	逐字节还原 95fecb3d4 形态）并重新登记豁免。
+//	锁风险再评估：950 不会在任何既有库重跑（幂等 DO 块 + 台账已记名），
+//	仅全新安装会执行原字节——fresh install 的 credential_probe_queue
+//	为空表，约束重建锁窗毫秒级（文件头注释实测口径），且 installer
+//	runner 单迁移短事务，等待面与 §44 的常驻大表形态不同量级。
+var lockGuardAllowlist = map[int]string{
+	950: "已应用字节冻结（2026-11-07 02:18 应用共享生产库，deploy checksum 台账 4a258e16…）；" +
+		"R189 的 lock_timeout 包裹改写被还原以免 content replay break。" +
+		"重跑面仅剩全新安装（空表、毫秒级锁窗）；951 起新迁移继续带 BEGIN+SET LOCAL 守卫。",
+}
 
 // TestStartupMigrationsAboveCutoffHaveLockGuard 是本门的正题。
 func TestStartupMigrationsAboveCutoffHaveLockGuard(t *testing.T) {
