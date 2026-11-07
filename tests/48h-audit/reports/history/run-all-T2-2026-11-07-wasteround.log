@@ -1,0 +1,25 @@
+[0;32m[ok][0m   business: PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/data	1.104s
+[0;32m[ok][0m   data: PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/stress	2.229s
+[0;32m[ok][0m   stress: PASS
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/safety	1.173s
+[0;32m[ok][0m   safety: PASS
+[0;34m[run-all][0m ── D15-observability-ux ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D16-flow-closure ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ── D17-code-hygiene ──
+[0;34m[run-all][0m   business: (no test dir)
+[0;34m[run-all][0m   data: (no test dir)
+[0;34m[run-all][0m   stress: (no test dir)
+[0;34m[run-all][0m   safety: (no test dir)
+[0;34m[run-all][0m ───────────────────────────────────────────
+[0;34m[run-all][0m domains: 17  pass: 17  fail: 0
+[0;32m[ok][0m ALL DOMAINS PASS
