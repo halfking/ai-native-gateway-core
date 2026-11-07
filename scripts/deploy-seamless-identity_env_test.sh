@@ -48,6 +48,10 @@ echo "=== 判据门：deploy-seamless-identity_env_test ==="
 # ── 场景①：哨兵成对 + 函数存在 ──────────────────────────────────────────
 echo "[1] 结构：哨兵成对、函数存在"
 ID_BLK="$(extract_block "$ENGINE" '# ── IDENTITY-ENV-BLOCK:BEGIN ──' '# ── IDENTITY-ENV-BLOCK:END ──')"
+# 第 50 增量 F-10/F-11：被测函数体内调用 `_dd_unq`（env 读点共用的 %q 定点解码），
+# 沙箱必须先把它定义进来 —— 否则 command substitution 返回空串，用例假红/假绿。
+_DD_UNQ_FN="$(sed -n '/^_dd_unq() {/,/^}/p' "$ENGINE")"
+if [[ -z "$_DD_UNQ_FN" ]]; then echo "✗ 引擎里提取不到 _dd_unq 函数"; exit 1; fi
 INJ_BLK="$(extract_block "$ENGINE" '# ── IDENTITY-ENV-INJECT:BEGIN ──' '# ── IDENTITY-ENV-INJECT:END ──')"
 if [[ -n "$ID_BLK" && "$ID_BLK" == *"dd_identity_env()"* ]]; then
   ok "IDENTITY-ENV-BLOCK 哨兵成对且含 dd_identity_env()"
@@ -84,6 +88,7 @@ run_identity_env() { # <env_file> <deployer_secret> <deployer_allowlist> <deploy
     IDENTITY_ISSUER_ALLOWLIST="$3"
     FREELLMAPI_PUBLIC_URL="$4"
     log() { :; }
+    eval "$_DD_UNQ_FN"
     eval "$ID_BLK"
     dd_identity_env "$ENV_FILE"
     printf '%s\n' "$IDENTITY_SHARED_SECRET"

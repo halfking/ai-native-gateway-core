@@ -12971,6 +12971,30 @@ outputcompliance / sql/migrations/startup / installer(dbinit) 全绿（新增 12
 >   ④ **元门（自测门）是「门有牙」的机器证明** ⇒ 别只在文档里写「变异验证变红了」，
 >      把它变成一条会自己跑的门。
 
+> **R189**（§602 追加）【252 SQL 审计轮：951 索引根修 armor_judgments trim 顺扫 + installer 942-951 embed 缺口收口 + maas 回填水位短路】——[2026-11-07 第 54 轮 24h 审计补标：cf1e28be9 走 origin 并行线合并时漏登 AGENTS 索引，正文如下；台账细节见 docs/db-changelog.md R189 段]
+> **2026-11-07 R189 252 SQL 审计轮**（迁移 951 预应用生产 252 + verified）：
+> ① **951_armor_judgments_created_at_idx.sql**：给 `armor_judgments` 补 `(created_at)` 单列前导
+>   索引，根修 `bg/audit_trimmer.go` 90d retention DELETE 批的「整条复合索引顺扫」——表上唯一含
+>   created_at 的索引以 tenant_id 为前导，trim 内层 SELECT（`WHERE created_at < NOW() - $1
+>   LIMIT 5000`）无边界可落 ⇒ 每批把 155MB/47 万行的索引从头顺扫到尾。缺陷实证（24h 日志窗
+>   11-06 06:41→11-07 05:46 + quiet EXPLAIN ANALYZE）：**A/B 3,689ms → 0.267ms（~13,800×）**、
+>   计划 read=3,219 buffers → hit=3 buffers；pss 累计 DELETE calls=65 mean 13-18s。写放大评估：
+>   INSERT mean ~18ms（pss 20 万+ calls），第 4 条二级索引代价可忽略。
+> ② **并行线通道缺口顺手收口**：942-949 的 installer go:embed+map 注册缺失（embeddata 物理文件
+>   在目录但未被 //go:embed 引用 ⇒ 不进二进制）、950 连 embeddata 副本都缺 + 缺 lock_timeout
+>   （878 款，startup_ddl_lock_guard_gate_test 当场抓红）；dbinit StartupFiles 补 950/951；
+>   apply-db-revision-sequence.sh 清单补 951 并根修门测试两处（sed 尾锚 + 引号外逗号 gate_fail：
+>   bash 数组里逗号不是分隔符会粘进元素让重定义守卫静默跳过该迁移）。**漏网机制 = installer 是
+>   独立 go.mod module，主 module `go test ./...` 不覆盖其门**。
+> ③ **契约门** `migration_951_armor_judgments_created_at_idx_test.go` 四件（形态/同名 down/
+>   cross-pin/字节一致），变异三连红/恢复绿；**maas 回填水位短路**（BackfillCreditConsumptionBuckets
+>   桶表覆盖完整时跳过 90 天全分区重算：252 实测每次 boot 20-28s 大扫描 × 24h 窗 11 次发射 =
+>   4 完成 + 3 超时 + 4 ctx 取消，bucketsCoverLookback 判定函数表驱动 + 变异红）。
+> ④ 台账：252 schema_migrations 951 + checksums bb97871c… 双行落库；154/245 共库立即受益；
+>   二进制侧（maas 水位短路）随下次部署生效。**另（第 54 轮补登）：950 应用后文件被本轮加
+>   lock_timeout 改字节，修订后 SHA=221dd43d… vs 各环境应用时点 4a258e16…，已按「字节冻结」
+>   规约在 db-changelog 补 checksum 修订注记。**
+
 
 # 追加：2026-11-03 第二批分档归档（自 AGENTS.md 第 1730–5014 行原样移出：2026-10-27 24h 窗口审计轮起，至「2026-10-11 晚间复测更正」止的历史轮次；R186/R188 为同轮补标。AGENTS.md 体积棘轮见 scripts/ursmcheck/agents_md_size_ratchet_test.go）
 

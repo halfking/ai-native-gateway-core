@@ -2584,6 +2584,7 @@ files=(
   #   启用的 source 被 489/538 的队列侧 CHECK 拒绝（23514）的根修。
   #   ★ 自带 DO 块幂等守卫（已含该值时跳过）⇒ 重复重放安全。
   "$ROOT_DIR/sql/migrations/startup/950_probe_queue_source_credential_recovery.sql"
+  "$ROOT_DIR/sql/migrations/startup/951_armor_judgments_created_at_idx.sql"
 )
 
 

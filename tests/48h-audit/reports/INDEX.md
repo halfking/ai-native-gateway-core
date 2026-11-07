@@ -1,9 +1,9 @@
 # 48h 审计 · 跨域报告聚合
 
-_聚合时间: 2026-11-07 02:04:34 CST_
+_聚合时间: 2026-11-07 07:33:43 CST_
 
-| 域 | 名称 | 状态 | 改动 commits | P0 | P1 | P2 | P3 | 遗留 | 链接 |
-|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| 域 | 名称 | 状态 | P0 | P1 | P2 | P3 | 遗留 | 链接 |
+|---|---|---|---:|---:|---:|---:|---:|---|
 |D01|ir-lifecycle|草稿|00|1|4|1|00|[latest](D01-ir-lifecycle/reports/latest.md)|
 |D02|protocol-adaptation|草稿|00|00|2|4|00|[latest](D02-protocol-adaptation/reports/latest.md)|
 |D03|three-tier-cache|草稿|00|00|00|00|00|[latest](D03-three-tier-cache/reports/latest.md)|

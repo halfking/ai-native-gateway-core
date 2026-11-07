@@ -18,14 +18,14 @@ echo "# 48h 审计 · 跨域报告聚合"
 echo
 echo "_聚合时间: $(date '+%Y-%m-%d %H:%M:%S %Z')_"
 echo
-echo "| 域 | 名称 | 状态 | 改动 commits | P0 | P1 | P2 | P3 | 遗留 | 链接 |"
-echo "|---|---|---|---:|---:|---:|---:|---:|---:|---|"
+echo "| 域 | 名称 | 状态 | P0 | P1 | P2 | P3 | 遗留 | 链接 |"
+echo "|---|---|---|---:|---:|---:|---:|---:|---|"
 
 for d in $(ls "$DIR" | grep -E '^D[0-9]+-' | sort); do
   d_short="$(echo $d | cut -d- -f1)"
   latest="$DIR/$d/reports/latest.md"
   if [[ ! -f "$latest" ]]; then
-    echo "|$d_short|$(echo $d | sed -E 's/^D[0-9]+-//')|未留档|—|—|—|—|—|—|[plan.md](../$d/plan.md)|"
+    echo "|$d_short|$(echo $d | sed -E 's/^D[0-9]+-//')|未留档|—|—|—|—|—|[plan.md](../$d/plan.md)|"
     continue
   fi
   p0=$(grep -cE '^\| *P0 *\|' "$latest" 2>/dev/null | tr -d '\n' || echo 0)

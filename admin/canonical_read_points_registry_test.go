@@ -794,6 +794,16 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "只在注释里引用过视图名；探针策略本身不读它",
 	},
+	// ★ 第 50 增量（2026-11-07）补登：视图名只在文件头注释里出现（说明
+	//   自动范围门的用量臂与 canonical 视图的真 24h 口径「用途不同不互相冒充」）
+	//   ⇒ 不是 canonical 读点 ⇒ 归 classNoRead（同 bg/probe_policy.go 形态）。
+	"bg/probe_model_scope.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "只在头注释里对比「自动范围门用量臂 vs canonical 视图真 24h 口径」；本文件是范围门纯判定逻辑，零 SQL 读面",
+	},
 	// ★ R170（2026-10-27）：`bg/shared_pick.go` 的条目**已删除** ——
 	//   它的 Priority 1 读点（探针选型「近 7 天最常用 client_model」）
 	//   改读会话族原生源（db.SessionFamilyMostUsedClientModelSourceSQL），

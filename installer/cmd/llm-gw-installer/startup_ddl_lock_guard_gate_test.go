@@ -205,6 +205,13 @@ func TestLockGuardDetectorCanFire(t *testing.T) {
 // lockGuardAllowlist 是显式豁免：迁移号 → 豁免理由。
 // ⚠️ 当前为空。往里加条目必须同时写清「为什么它不需要 lock_timeout」，
 // 且该迁移仍需自己用 CONCURRENTLY 或 REPEATABLE READ 等手段处理并发。
+//
+// ★ 第 50 增量审计轮曾为 950 登记豁免（字节 checksum 冻结不能补 lock_timeout）；
+//
+//	随后 R189 轮（cf1e28be9，并行）选择改 950 字节补 BEGIN+SET LOCAL
+//	lock_timeout='60s'（canonical/embeddata 双份同步）⇒ 豁免撤回，门恢复全量。
+//	教训对：字节冻结 vs 门合规二选一时，两条路都通——改字节方必须同步
+//	content_sha256 台账链（211 序列通道的重放自愈见 db-changelog 950 条目）。
 var lockGuardAllowlist = map[int]string{}
 
 // TestStartupMigrationsAboveCutoffHaveLockGuard 是本门的正题。

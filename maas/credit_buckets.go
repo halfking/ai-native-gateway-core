@@ -37,6 +37,26 @@ func (s *Service) BackfillCreditConsumptionBuckets(ctx context.Context, lookback
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// R189（2026-11-07 252 SQL 审计轮）水位短路：桶表已覆盖 lookback 窗时
+	// 跳过全量重算。缺陷实测：252 生产（154/245 共库）每次 boot 都重跑
+	// 90 天 × _request_logs 分区族的 GROUP BY 聚合，quiet 也要 20-28s；
+	// 蓝绿部署日多次 boot ⇒ 大扫描反复白烧，且 30s rolconfig / 60s ctx
+	// 双预算经常把尾段杀掉（24h 窗 11 次发射 = 4 完成 + 3 超时 + 4 ctx 取消）。
+	// 桶行是 ON CONFLICT 全量覆盖式收敛（本函数幂等），覆盖完整时重算
+	// 与跳过等价 ⇒ 水位短路是保守安全 optimization：任何怀疑（查询失败、
+	// 空表、两端不齐）都照跑。多实例共库时任一实例覆盖完整即可短路。
+	var oldest, newest *time.Time
+	wmErr := s.pool.QueryRow(ctx, `
+		SELECT MIN(bucket_start), MAX(bucket_start)
+		  FROM maas_credit_consumption_buckets
+	`).Scan(&oldest, &newest)
+	if wmErr == nil && bucketsCoverLookback(time.Now(), oldest, newest, lookbackDays) {
+		slog.Info("maas: BackfillCreditConsumptionBuckets skipped — bucket table already covers lookback window",
+			"lookback_days", lookbackDays, "oldest_bucket", oldest, "newest_bucket", newest)
+		return 0, nil
+	}
+	// 水位查询失败或两端不齐 ⇒ 照跑全量（fail-open），与既有行为一致。
+
 	logsTable, alias := requestLogsSource(lookbackDays)
 	res, err := s.pool.Exec(ctx, `
 		INSERT INTO maas_credit_consumption_buckets
@@ -70,6 +90,26 @@ func (s *Service) BackfillCreditConsumptionBuckets(ctx context.Context, lookback
 	slog.Info("maas: BackfillCreditConsumptionBuckets completed",
 		"lookback_days", lookbackDays, "rows_affected", rows)
 	return rows, nil
+}
+
+// bucketsCoverLookback 报告桶表水位是否已覆盖 lookback 窗的两端：
+//
+//   - 窗头：最老桶不晚于 (now - lookbackDays + 24h)。小时桶的窗头第一桶
+//     只要在窗起点后一个自然日内即视为齐 —— 更早的桶本来就在窗外，
+//     dashboard 的最长窗（90 天）读不到它们，缺它们不改变任何读数。
+//   - 窗尾：最新桶不早于 now - 2h。ChargeRequest 的实时 upsert 本来就在
+//     维护当下桶，回填的职责是「历史收敛」，尾部 2h 容差覆盖
+//     「实时写已在、回填无需重复」的正常稳态。
+//
+// oldest/newest 为 nil（空表，MIN/MAX 为 NULL）⇒ 不覆盖 ⇒ 照跑。
+func bucketsCoverLookback(now time.Time, oldest, newest *time.Time, lookbackDays int) bool {
+	if oldest == nil || newest == nil {
+		return false
+	}
+	windowStart := now.Add(-time.Duration(lookbackDays) * 24 * time.Hour)
+	headOK := !oldest.After(windowStart.Add(24 * time.Hour))
+	tailOK := !newest.Before(now.Add(-2 * time.Hour))
+	return headOK && tailOK
 }
 
 // QueryConsumedCreditsWindow sums the hourly bucket counter for a tenant

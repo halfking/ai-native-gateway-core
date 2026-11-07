@@ -10691,11 +10691,19 @@ node_probe_runs.trigger_kind 闭集），但队列侧镜像约束 `credential_pr
 本地 2946 实测：`llmgw_node_probe_queue_submission_total{source="credential_recovery",
 outcome="failed"}` 5 分钟 +151。950 以幂等 DO 块重建 CHECK（6 → 7 值），
 已有 `credential_recovery` 值时跳过；down 有意 fail-closed（在途恢复源任务存在时回退失败）。
+
 ## 2026-11-06T18:18:08Z — deploy 245 build_seq 2949 (95fecb3d)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 950 | `950_probe_queue_source_credential_recovery.sql` | `4a258e164a0c655d1af08ad958655407fba53a8b46d63aa480e34fc297f7e0fe` | applied+verified |
+
+★ **950 字节修订注记（2026-11-07 第 54 轮 24h 审计补登）**：cf1e28be9（R189）给 950 文件补
+`BEGIN; SET LOCAL lock_timeout…` 事务包裹后，工作树文件 SHA-256 =
+`221dd43da7d6b29e55ed3dcad1866343a2761a1b097a314d2ac782a0adf46986`；上表 `4a258e16…` 为
+local/245/154 各环境**应用时点**的登记值（211 重放同源）。按 929/930 条的「已应用迁移字节冻结」
+规约，改字节即触发 content replay 通道 ⇒ 下次部署若遇 checksum 不一致，须按 replay 语义复核处理，
+勿以「文件已被改」为由静默覆盖台账。
 
 
 ## 2026-11-07T+ — 211 部署轮补记：950 经 apply-db-revision-sequence 落库 acc-pg17
@@ -10708,3 +10716,35 @@ outcome="failed"}` 5 分钟 +151。950 以幂等 DO 块重建 CHECK（6 → 7 �
 systemd 引擎维护，211 侧本就只到 924 —— 两台账分工不同，非缺口，登记备考）。
 ★ 同时根修部署引擎 E2BIG（IDENTITY_ISSUER_ALLOWLIST %q 读-写不对称逐层累积 512KB）：
 `_dd_unq` 深度解码 + GW_ENV 100KB 单参守卫，211 实测 allowlist 512KB → 74 字节。
+
+## 2026-11-07T07:00:00Z+ — R189 252 SQL 审计轮：迁移 951 预应用生产 252 + verified
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 951 | `951_armor_judgments_created_at_idx.sql` | `bb97871ca2846c64c366ede1dbc55dad0d016e0d7280aa05bf6a4f2913e77742` | **applied 252（superuser 预应用）+ verified** |
+
+★ 951 给 `armor_judgments` 补 `(created_at)` 单列前导索引，根修 `bg/audit_trimmer.go`
+90d retention DELETE 批的「整条复合索引顺扫」：表上唯一含 created_at 的索引
+`idx_armor_judgments_tenant_time` 以 tenant_id 为前导，trim 内层 SELECT
+（`WHERE created_at < NOW() - $1 LIMIT 5000`）无边界可落 ⇒ 每批把 155MB/47 万行的
+索引从头顺扫到尾。缺陷实证（R189 24h 日志窗 11-06 06:41→11-07 05:46 + quiet
+EXPLAIN ANALYZE）：**A/B 3,689ms → 0.267ms（~13,800×）**、计划 `Index Scan
+idx_armor_judgments_tenant_time` read=3,219 buffers → `Index Scan
+idx_armor_judgments_created_at` hit=3 buffers；pss 累计 DELETE calls=65
+mean 13-18s（饱和窗加权）。写放大评估：写入方 security/armor/logger.go INSERT
+mean ~18ms（pss 20 万+ calls），第 4 条二级索引代价可忽略。
+★ 同轮顺手收口并行线通道缺口：942-949 的 installer go:embed+map 注册缺失
+（embeddata 物理文件在目录但未被 //go:embed 引用 ⇒ 不进二进制）、950 连
+embeddata 副本都缺 + 缺 lock_timeout（878 款，startup_ddl_lock_guard_gate_test
+当场抓红）；dbinit StartupFiles 补 950/951；apply-db-revision-sequence.sh 清单
+补 951 并根修门测试两处（sed 尾锚 + 引号外逗号 gate_fail：bash 数组里逗号不是
+分隔符会粘进元素让重定义守卫静默跳过该迁移）。漏网机制=installer 是独立
+go.mod module，主 module `go test ./...` 不覆盖其门。
+★ 契约门 `migration_951_armor_judgments_created_at_idx_test.go` 四件
+（形态/同名 down/cross-pin/字节一致），变异三连红/恢复绿；maas 回填水位短路
+（BackfillCreditConsumptionBuckets 桶表覆盖完整时跳过 90 天全分区重算，
+252 实测每次 boot 20-28s 大扫描 × 24h 窗 11 次发射 = 4 完成 + 3 超时 + 4 ctx
+取消，bucketsCoverLookback 判定函数表驱动 + 变异红）。
+★ 台账：252 schema_migrations 951 + checksums bb97871c… 双行落库（advisory
+lock 契约照抄 db-changelog.sh:518 形态）。154/245 共库立即受益；二进制侧
+（maas 水位短路）随下次部署生效。
