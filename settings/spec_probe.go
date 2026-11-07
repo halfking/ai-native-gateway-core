@@ -225,6 +225,35 @@ func ProbeSpecs() []*Spec {
 			DangerLevel: Safe,
 			HotReload:   true,
 		},
+		// ── Sustained-failure escalation (2026-11-07 探测浪费根修轮) ──────
+		{
+			Key:      "probe.sustained_failure_attempt_threshold",
+			Type:     TypeInt,
+			Scope:    ScopePlatform,
+			Category: CategoryProbe,
+			Min:      floatPtr(7),  // 一代队列任务的最深梯级（nodeProbeMaxAttempts）
+			Max:      floatPtr(1000),
+			Default:  21, // 3 代完整梯走完仍零成功 ⇒ 判持续失败
+			Description: "持续失败升级的尝试阈值",
+			DescriptionLong: "node-probe 失败的 attempt 是跨代持续的（=node_probe_state.consecutive_failures+1，2026-09-26 P0-2）。attempt ≥ 本阈值且梯级本会被 probe.recovery_max_backoff_seconds 削平时，复检间隔升级到 probe.sustained_failure_recheck_seconds（默认 1h）而不是恒 5 分钟——「新失败 5 分钟内复检」的恢复 SLA 保留，只在**持续失败**（默认 21 次 ≈ 一小时级零成功）时放慢盲探。恢复感知不降级：配额/可用性恢复事件仍即时回拉（RearmCredentialFailures），业务成功仍立即停放。7=最早生效（第一代任务末段）。",
+			Unit:        "次",
+			DangerLevel: Safe,
+			HotReload:   true,
+		},
+		{
+			Key:      "probe.sustained_failure_recheck_seconds",
+			Type:     TypeInt,
+			Scope:    ScopePlatform,
+			Category: CategoryProbe,
+			Min:      floatPtr(300), // 不得低于恢复 SLA 下限
+			Max:      floatPtr(86400),
+			Default:  3600,
+			Description: "持续失败对的复检间隔（秒）",
+			DescriptionLong: "attempt 达到 probe.sustained_failure_attempt_threshold 后，可恢复类失败的下次自动复检间隔（默认 3600=1h；绑定冷却 unavailableBindingHorizon 同步升级）。实测背景（2026-11-07，211）：SLA 封顶把持续故障对钉在 ~5 分钟一探 ⇒ 单对 ~480 次/天、consecutive_failures 累积至 ~1000 仍不停（spec 里 probe.recovery_max_backoff_seconds 已登记该 72× 成本）。调大=更省但恢复发现更慢；调到 300=回到恒 5 分钟口径（等效关闭升级）。",
+			Unit:        "秒",
+			DangerLevel: Safe,
+			HotReload:   true,
+		},
 		{
 			Key:             "probe.nonfeatured_watchdog_multiplier",
 			Type:            TypeInt,

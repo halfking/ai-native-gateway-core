@@ -409,6 +409,22 @@ func (r *CredentialRecovery) run(ctx context.Context) {
 	}
 }
 
+// rearmEligibleRecoveryKind reports whether a dispatchRecoveryHooks sqlKind is
+// a genuine recovery transition (state-machine flip ⇒ rearm the credential's
+// parked failure rows) or housekeeping (periodic cleanup ⇒ leave the ladder
+// alone). 2026-11-07 探测浪费根修轮：health_status_reset fires every ~2min
+// for any credential whose health probe keeps failing, and
+// consecutive_failures_clear is a 1h-idle sweeper — neither is evidence the
+// upstream came back, so neither may mass-wake failed probe rows.
+func rearmEligibleRecoveryKind(sqlKind string) bool {
+	switch sqlKind {
+	case "health_status_reset", "consecutive_failures_clear":
+		return false
+	default:
+		return true
+	}
+}
+
 func (r *CredentialRecovery) recover(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -503,7 +519,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 						met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_submit").Inc()
 					})
 				}
-				// ★ 2026-11-07（审计轮根修 A · F5 补全）：**每一条**恢复路径都要
+				// ★ 2026-11-07（审计轮根修 A · F5 补全）：**恢复类**事件都要
 				//   回拉该凭据的失败探针行。F5 此前只挂在 quota 恢复事件
 				//   （onQuotaRecovered ×4）上——availability_recover /
 				//   stale_periodic_exhausted_cleanup / circuit_close 等恢复不触发
@@ -511,7 +527,14 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 				//   凭据 ok/ready 而绑定持续 unavailable（245 基线审计 R5 实证：
 				//   sensenova/glm-5.3 系行停未来 5.3h）。rearm 幂等（只动
 				//   未来排程的失败行），泵 30s 内接管验证。
-				if r.rearmFn != nil {
+				// ★★ 2026-11-07（探测浪费根修轮 · 分级）：**家务类**翻转不回拉 ——
+				//   health_status_reset（健康探测失败后每 ~2min 的 unknown 重置）
+				//   与 consecutive_failures_clear 不是恢复证据，只是清理。实测
+				//   （211）：一个健康探测持续失败的凭据每 2~4 分钟触发一次
+				//   health_status_reset ⇒ 若无分级，其**全部**失败探针行被反复
+				//   拉回 now()，持续失败升级被整体绕过。真正的恢复感知由
+				//   quota/availability/stale/circuit 这些**状态机翻转**承担。
+				if r.rearmFn != nil && rearmEligibleRecoveryKind(sqlKind) {
 					fn := r.rearmFn
 					r.dispatchProbe(func() {
 						fn(credID)
@@ -1138,6 +1161,12 @@ func mnfCoolingRecoveryMirrorSQL() string {
 //     mid-cycle skip — recover_at and next_retry_at mature together for
 //     404-parked pairs, so none was needed. The old bullet claimed a
 //     predicate that does not exist.)
+//     ★ 2026-11-07（探测浪费根修轮）：那条「从不需要」的谓词现在需要了 ——
+//       unavailableBindingHorizon 已随持续失败升级（attempt ≥ 阈值 ⇒ 冷却
+//       1h），恢复族行的 recover_at 与 next_retry_at 不再同步成熟；没有本
+//       守卫时，冷却到期后本分支每 30s tick 重新 Submit 一次，全新队列任务
+//       从梯底重走，升级被整体绕过（211 实测：单对 ~480 次/天、cf≈1000）。
+//       与兄弟分支 freshDegradedCmbSQL 的同款守卫对齐（那里一直有）。
 //
 // The query is SELECT-only — the caller hands each row to
 // NodeProbeWorker.Submit, which writes cmb.available=TRUE via runOne's
@@ -1177,7 +1206,7 @@ func expiredCmbRecoverySQL() string {
 		      SELECT 1 FROM node_probe_state nps
 		      WHERE nps.credential_id  = cmb.credential_id
 		        AND nps.raw_model_name = pm.raw_model_name
-		        AND nps.paused         = TRUE
+		        AND (nps.paused = TRUE OR nps.next_retry_at > now())
 		  )
 		ORDER BY cmb.unavailable_recover_at ASC NULLS LAST
 		LIMIT 50

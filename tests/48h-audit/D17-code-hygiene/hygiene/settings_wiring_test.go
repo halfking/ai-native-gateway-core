@@ -270,6 +270,10 @@ var knownUnwiredSettings = map[string]string{
 	"log.request_retention_days":                 "未接线",
 	"log.trim_days":                              "未接线",
 	"probe.partition_cleanup_enabled":            "未接线",
+	// ── sales.*（2026-11-07 探测浪费根修轮的 Maestro 三门跑出的既有缺口收口）──
+	// spec_sales.go 自述「看板轮落地前该键仅登记占位」（W2 看板才消费）。
+	// 2026-11-05 落库后无人把它登记进本表 ⇒ D17 设置接线普查自那时起红。
+	"sales.quote.approval_rate_alert_pct":        "W2 看板轮前的登记占位（spec_sales.go DescriptionLong 自述）；看板落地接线后本条必须删除",
 	"probe.promote_batch_size":                   "未接线；promote 批大小实际由迁移里的 p_batch_size 参数决定",
 	"disguise.reclaim_idle_seconds":              "未接线",
 	"handoff.threshold":                          "未接线；活的是 goal.handoff_signal_threshold_tokens（不同 Key）",

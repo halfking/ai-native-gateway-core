@@ -28,6 +28,35 @@
 > （先合并 verdict 不合并存储）＋T4 会话桶历史环/C1 经济学转正＋T5 质量 rollup
 > （复用 supplier_error_stats 骨架不建新表）；W1–W4 分轮各带验收门；待裁决 4 条
 > （含「单次 429=3min」既有承诺变更、上游噪音可接受度）。**明确没做**：零代码零迁移零部署。
+> **2026-11-07 探测浪费与恢复及时性根修轮（goal 会话；方案档
+> `docs/audit/2026-11-07-探测浪费与恢复及时性根修轮.md`；T2 留档
+> `tests/48h-audit/reports/history/T2-2026-11-07-wasteround.md`）**：
+> ★ 用户目标＝「正常节点模型桶被反复探测浪费资金＋异常桶恢复感知不及时 → 修正 → 脚本部署 211 →
+> Maestro 全面测试验证 → 修正发现的问题 → 提交推送」。即小时审计轮登记的「245 R4 需开发轮根修」那一轮。
+> ★ 取证（211 真库）：多个对 24h 被探 460-480 次、cf 累积 947-1026 仍恒 ~5min 一探；凭据 35 族
+> ~70s 一探且 **node_probe_state 无行（cf=-1）**；2h 窗口 submit 18,667 次。
+> ★ 根因四叠加＝①`probe.recovery_max_backoff_seconds`(300s) 把恢复族长尾削平（对持续失败无出口）；
+> ②`expiredCmbRecoverySQL` 不看梯子（2026-07-24 有意移除）⇒ 绑定冷却一到每 30s tick 重开
+> attempt=1 新任务从梯底重走；③配额窗口内**非配额形态**失败（503 形态）不触发 F4 钉；
+> ④write-through 无新鲜度守卫＋成功 mirror 的 last_attempt_at=记账时刻 ⇒ R4 竞态复发。
+> ★ 交付（W1–W9）＝**W1** 持续失败升级（attempt=cf+1 ≥ `probe.sustained_failure_attempt_threshold`
+> 默认 21 ⇒ 复检升 `probe.sustained_failure_recheck_seconds` 默认 1h；阈值以下与 11-05 口径逐字一致；
+> 两处 cap 位点统一走 `capRecoverBackoffForAttempt`）；**W2** 绑定冷却同档升级；
+> **W3** expired 分支补梯子守卫（**有意反转 07-24**：搁浅两前提——梯子无界、无事件回拉——都已消除）；
+> **W4** clamp 豁免 cf≥阈值行（`< $3`）；**W5** 配额钉第二臂（凭据行用尽态+未来 recover_at 即钉，
+> 失败形态无关；typed-nil pool 显式拦）；**W6** 回拉分级（`rearmEligibleRecoveryKind`：health_status_reset/
+> consecutive_failures_clear 家务类不 rearm）＋ rearm 用尽窗口守卫；**W7** healthyBindingSQL 新鲜度守卫
+> （只恢复 `unavailable_at <= 证据时刻`，evidenceAt=直连轮完成，三路贯通）；**W8** 成功 mirror
+> last_attempt_at=证据时刻（R4 审计量「拉黑 vs 证据」）；**W9**（线上验证暴露）失败镜像改 **upsert**
+> ——队列模式无写点建 node_probe_state 行 ⇒ 无行业对 cf 永不累积、升级永不触发（gateway-side 保持不建行）。
+> ★ 验证＝211 两笔部署（2965 槽 b→2966 槽 a @8781，readyz/公网/登录冒烟绿）；线上稳态＝高频对
+> next_retry ~25-30min（featured 50%×1h）、绑定冷却 ~1h、**node_probe_runs 15min 窗 155→38**、
+> 凭据 35 族开始建行爬梯、probe-schedule-audit **R1-R5=0 M0=0**；Maestro＝三门合成绿
+> （race 全仓唯一红＝D17 既有缺口：sales 占位键未登记 → 本轮收口）、17 域 17/17、压测 18/19
+> （唯一红＝已披露 s17）、s18 5500/5500、s19 12000/12000 p95 78ms、goroutine Δ+16<20。
+> ★ 遗留登记：245/154 未部署本轮（用户只点名 211；R4 在 245 需下轮统一部署轮收敛）；
+> 探测失败 vs 业务成功的优先级裁决未做；`recoveringSweeper`（model_probe_state 面）未动；
+> 启动提示词 4.3 步（tests/stress 无 Go 测试文件）与现状不符（登记，未代改）。
 > **2026-11-07 第 50 增量：48 小时修订审计轮（goal 会话，`docs/全面审计v3/2026-11-07/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§641**）**：
 > ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。开工 ff-merge
 > `22f391ca7`→`442af665c`（12 提交零冲突）；窗口代码 5 笔＝/live 全屏＋折叠（0bf442dd3/d415e6a3d）、
