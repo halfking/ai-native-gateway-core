@@ -205,6 +205,14 @@ func TestQUsageScriptCoversThreeLogFamilies(t *testing.T) {
 //	⇒ 证明脚本已经**不再依赖 `zcat`**（更不依赖它的 GNU 专有 `-f` 语义）。
 //	变异验证：把 `read_logs` 改回 `zcat -f --` ⇒ 桩生效 ⇒ 自检红 ⇒ 本门变红。
 func TestQUsageScriptDoesNotDependOnGNUSpecificZcat(t *testing.T) {
+	// ★ 2026-11-09（12h 审计 F-2）：★ 在进程内读一次脚本 ★
+	//   ⇒ 让【★ 脚本内容 ★】进入 Go 的测试缓存键 ⇒ 脚本一改，本门**不会读旧缓存**。
+	//   ★ 为什么必须有这一行：★ 本门通过 `exec.Command` 跑脚本 ⇒ Go 的测试缓存
+	//     【★ 不追踪子进程读过的文件 ★】⇒ 脚本改了、缓存键不变 ⇒ 本门**返回旧的绿**。
+	//   ★ 实测（★ 已复现 ★）：脚本改回 `zcat -f --` 后，
+	//     不带 -count=1 ⇒ 报 `(cached)` 假绿；带 -count=1 ⇒ 精确变红。
+	//   ⇒ 【★ 一道门自己「测不出来自己被改坏」★】⇒ 门形同虚设。
+	readQUsageScript(t)
 	binDir := t.TempDir()
 	// 模拟 busybox zcat 遇到非 gzip 输入时的形态：整体失败、stdout 空、rc=1。
 	writeStubTool(t, binDir, "zcat", "echo 'zcat: no gzip/bzip2/xz magic' >&2\nexit 1\n")
@@ -229,6 +237,8 @@ func TestQUsageScriptDoesNotDependOnGNUSpecificZcat(t *testing.T) {
 //	⇒ 877 决策会被一次环境差异静默翻转。
 //	⇒ 新口径：**读失败 ≠ 「0 次」**，读失败时退出码非 0 且**不出现 verdict**。
 func TestQUsageScriptFailsClosedWhenLogReadFails(t *testing.T) {
+	// ★ 2026-11-09（12h 审计 F-2）：★ 在进程内读一次脚本（★ 缓存键，见上一门注释 ★）。
+	readQUsageScript(t)
 	work := t.TempDir()
 	logDir := filepath.Join(work, "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
