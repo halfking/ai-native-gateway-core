@@ -1,0 +1,61 @@
+# MCP 网关运营看板（llm-gateway-go 内置 MCP 服务网关）
+#
+# 跑法：bash tests/mcp-gateway-maestro/run.sh
+#   —— 该脚本会自起一个带示例上游的 MCP 网关（--demo）、跑 API 级场景，
+#      再用 Maestro 打开看板做浏览器断言。
+#
+# 页面是自包含 HTML（无前端构建链），令牌从 URL 的 ?token= 读取，
+# 只存在页面内存里（不落 localStorage）。
+#
+# ⚠ 实跑要点（Maestro 2.11.0）：web flow 的 visible 判定受**视口**约束 ⇒
+#   折叠线以下的内容必须先 scrollUntilVisible 再断言（第一版 flow 就栽在这里：
+#   “最近审计事件”明明在 DOM 里，却因为没滚到而判红）。
+url: ${BASE_URL}
+---
+- launchApp
+- launchApp:
+    clearState: true
+
+- openLink: "${BASE_URL}/mcp/admin?token=${MCP_ADMIN_TOKEN}"
+- extendedWaitUntil:
+    visible: "MCP 网关运营看板"
+    timeout: 20000
+
+# ── 看板骨架（首屏可见）────────────────────────────────────
+- assertVisible: "适配器总数"
+- assertVisible: "健康适配器"
+- assertVisible: "审计事件数"
+- assertVisible: "上游适配器"
+
+# ── 示例上游被纳管（--demo 预置 adapter=demo）─────────────
+- extendedWaitUntil:
+    visible: "demo"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "crm"
+    timeout: 20000
+
+# ── Top 工具（需滚动到折叠线以下）──────────────────────────
+- scrollUntilVisible:
+    element:
+      text: "Top 工具（按调用量）"
+    direction: DOWN
+    timeout: 20000
+- assertVisible: "Top 工具（按调用量）"
+
+# ── 最近审计事件（再往下滚）───────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: "最近审计事件"
+    direction: DOWN
+    timeout: 20000
+- assertVisible: "最近审计事件"
+
+# ── 管理令牌缺失时给出可见错误（不是静默空白）────────────
+- openLink: "${BASE_URL}/mcp/admin"
+- extendedWaitUntil:
+    visible: "MCP 网关运营看板"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "健康信息加载失败"
+    timeout: 20000
