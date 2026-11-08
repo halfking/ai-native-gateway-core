@@ -17,6 +17,17 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/model-rates/batch-fill-global", h.superAdmin(h.handleMaasModelRateBatchFillGlobal))
 	mux.HandleFunc("/api/admin/maas/model-rates", h.superAdmin(h.handleMaasModelRates))
 	mux.HandleFunc("/api/admin/maas/model-rates/", h.superAdmin(h.handleMaasModelRateByID))
+	mux.HandleFunc("/api/admin/maas/model-price-history", h.superAdmin(h.handleMaasModelPriceHistory))
+	mux.HandleFunc("/api/admin/maas/model-price-changes", h.superAdmin(h.handleMaasModelPriceChanges))
+	mux.HandleFunc("/api/admin/maas/model-price-mode", h.superAdmin(h.handleMaasModelPriceMode))
+	// 2026-11-09（运营审计轮项4）：营销管理面。
+	mux.HandleFunc("/api/admin/maas/plans-upsert", h.superAdmin(h.handleAdminMaasPlansUpsert))
+	mux.HandleFunc("/api/admin/maas/plans/", h.superAdmin(h.handleAdminMaasPlanByIDPatch))
+	mux.HandleFunc("/api/admin/maas/topup-packages-upsert", h.superAdmin(h.handleAdminMaasTopupUpsert))
+	mux.HandleFunc("/api/admin/maas/topup-packages/", h.superAdmin(h.handleAdminMaasTopupByIDPatch))
+	mux.HandleFunc("/api/admin/maas/coupons/", h.superAdmin(h.handleAdminMaasCouponByIDPatch))
+	mux.HandleFunc("/api/admin/maas/campaigns/", h.superAdmin(h.handleAdminMaasCampaignStatus))
+	mux.HandleFunc("/api/admin/maas/campaigns", h.superAdmin(h.handleAdminMaasCampaigns))
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
 	mux.HandleFunc("/api/admin/maas/topup-packages", h.superAdmin(h.handleMaasTopupPackages))
 	mux.HandleFunc("/api/admin/maas/tenants/", h.superAdmin(h.handleMaasTenantAdmin))
@@ -82,6 +93,87 @@ func (h *Handler) handleMaasSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleMaasModelPriceHistory GET /api/admin/maas/model-price-history
+// ?canonical_id=&billing_mode=&limit= —— 一个模型的价格期历史（新→旧）。
+// 2026-11-09（运营审计轮项2，迁移 952）。
+func (h *Handler) handleMaasModelPriceHistory(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	q := r.URL.Query()
+	id, err := strconv.Atoi(q.Get("canonical_id"))
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "canonical_id required")
+		return
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	items, err := svc.ListModelPriceVersions(r.Context(), id, q.Get("billing_mode"), limit)
+	if err != nil {
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleMaasModelPriceChanges GET /api/admin/maas/model-price-changes
+// ?days=&limit= —— 全局订价变化流（「订价变化模式」数据面）。
+func (h *Handler) handleMaasModelPriceChanges(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	q := r.URL.Query()
+	days, _ := strconv.Atoi(q.Get("days"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	items, err := svc.ListModelPriceChanges(r.Context(), days, limit)
+	if err != nil {
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleMaasModelPriceMode PUT /api/admin/maas/model-price-mode —— 为
+// token_plan / booster_pack 模式写入一个参考价期（「一个模型一种模式一个
+// 价格」；pay_as_you_go 期由 model-rates 写路径自动快照）。
+func (h *Handler) handleMaasModelPriceMode(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		CanonicalID int    `json:"canonical_id"`
+		BillingMode string `json:"billing_mode"`
+		Prices      maas.ModelRateUpsert
+		Note        string `json:"note"`
+	}
+	if err := readJSONRequired(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := svc.UpsertModelPriceVersionForMode(r.Context(), body.CanonicalID, body.BillingMode, body.Prices, body.Note); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) handleMaasModelRates(w http.ResponseWriter, r *http.Request) {
@@ -741,4 +833,220 @@ func (h *Handler) handleMaasLedger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// ---- 2026-11-09（运营审计轮项4）：营销管理面（套餐/加油包/券/活动） ----
+
+func (h *Handler) handleAdminMaasPlansUpsert(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body maas.PlanUpsert
+	if err := readJSONRequired(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := svc.UpsertPlan(r.Context(), body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleAdminMaasPlanByIDPatch(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	idStr := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/maas/plans/"), "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid plan id")
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSONRequired(r, &body); err != nil || body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled required")
+		return
+	}
+	if err := svc.SetPlanEnabled(r.Context(), id, *body.Enabled); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "plan not found")
+			return
+		}
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleAdminMaasTopupUpsert(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body maas.TopupUpsert
+	if err := readJSONRequired(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := svc.UpsertTopupPackage(r.Context(), body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleAdminMaasTopupByIDPatch(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	idStr := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/maas/topup-packages/"), "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid package id")
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSONRequired(r, &body); err != nil || body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled required")
+		return
+	}
+	if err := svc.SetTopupPackageEnabled(r.Context(), id, *body.Enabled); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "package not found")
+			return
+		}
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleAdminMaasCouponByIDPatch(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	idStr := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/maas/coupons/"), "/")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid coupon id")
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := readJSONRequired(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := svc.SetCouponStatus(r.Context(), id, body.Status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "coupon not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleAdminMaasCampaigns(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		items, err := svc.ListCampaignsAdmin(r.Context())
+		if err != nil {
+			writeInternalErr(w, "internal error (see server logs)", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		var body maas.CampaignUpsert
+		if err := readJSONRequired(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		c, err := svc.CreateCampaign(r.Context(), body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, c)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) handleAdminMaasCampaignStatus(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	prefix := "/api/admin/maas/campaigns/"
+	suffix := "/status"
+	path := strings.Trim(r.URL.Path, "/")
+	idStr := strings.TrimSuffix(strings.TrimPrefix(path, strings.Trim(prefix, "/")), suffix)
+	id64, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id64 <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid campaign id")
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := readJSONRequired(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := svc.SetCampaignStatus(r.Context(), id64, body.Status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "campaign not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

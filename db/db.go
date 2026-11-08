@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/kaixuan/llm-gateway-go/internal/omnifree" //nolint:depguard // 2026-11-09 运营审计轮项5：免费目录启动种子
 )
 
 type DB struct {
@@ -863,6 +865,15 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// and startup-safe.
 	if err := db.ensureOmniFreeSchema(migCtx); err != nil {
 		return err
+	}
+	// 2026-11-09（运营审计轮项5）：启动种子 —— 目录/组合模板/keyless 只补缺
+	// （DO NOTHING，绝不覆盖管理员修改）。此前种子只能手动跑 CLI ⇒ 生产
+	// free_resource_catalog 恒 0 行。LLM_GATEWAY_OMNIFREE_SEED=off 关闭。
+	if stdlib := db.Stdlib(); stdlib != nil {
+		if _, _, _, serr := omnifree.SeedIfMissing(migCtx, stdlib, "default"); serr != nil {
+			// 种子失败不阻断启动（目录空 = 旧行为），但必须可检索。
+			slog.Warn("omnifree startup seed failed", "error", serr)
+		}
 	}
 	if err := db.ensureCredentialKeysSchema(migCtx); err != nil {
 		return err

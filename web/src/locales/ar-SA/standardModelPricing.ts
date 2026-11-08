@@ -84,6 +84,21 @@ export default {
     video: 'Video',
   },
 
+  history: {
+    title: "سجل الأسعار",
+    changesTitle: "تغييرات الأسعار",
+    open: "السجل",
+    openChanges: "تغييرات الأسعار",
+    empty: "لا توجد فترات أسعار مسجلة لهذا النموذج بعد.",
+    current: "الحالي",
+    until: "حتى {time}",
+    mode: "نمط الفوترة",
+    source: "المصدر",
+    modePayAsYouGo: "حسب الاستخدام",
+    modeTokenPlan: "خطة الرموز",
+    modeBooster: "حزمة إضافية",
+  },
+
   // 扁平键（供 Vue 组件直接使用）
   defaultOnly: 'المعيار العام فقط',
   customOnly: 'يشمل التسعير اليدوي',

@@ -84,6 +84,21 @@ export default {
     video: "動画",
   },
 
+  history: {
+    title: "価格履歴",
+    changesTitle: "価格変更履歴",
+    open: "履歴",
+    openChanges: "価格変更履歴",
+    empty: "このモデルにはまだ価格期間の記録がありません",
+    current: "現行",
+    until: "〜 {time}",
+    mode: "課金モード",
+    source: "ソース",
+    modePayAsYouGo: "従量",
+    modeTokenPlan: "トークンプラン",
+    modeBooster: "追加パック",
+  },
+
   // 扁平键（供 Vue 组件直接使用）
   defaultOnly: "グローバル基準のみ",
   customOnly: "手動定价を含む",

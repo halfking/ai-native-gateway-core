@@ -84,6 +84,21 @@ export default {
     video: '影片',
   },
 
+  history: {
+    title: "價格歷史",
+    changesTitle: "定價變化",
+    open: "歷史",
+    openChanges: "定價變化",
+    empty: "此模型尚無價格期間紀錄",
+    current: "現行",
+    until: "至 {time}",
+    mode: "計費模式",
+    source: "來源",
+    modePayAsYouGo: "用量計費",
+    modeTokenPlan: "Token 方案",
+    modeBooster: "加值包",
+  },
+
   // 扁平键（供 Vue 组件直接使用）
   defaultOnly: '僅全域基準',
   customOnly: '含手工定價',

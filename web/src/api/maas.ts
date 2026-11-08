@@ -254,6 +254,177 @@ export function deleteAdminMaasModelRate(canonicalId: number) {
   return req<{ status: string }>('DELETE', `/api/admin/maas/model-rates/${canonicalId}`)
 }
 
+// 2026-11-09（运营审计轮项2）：价格期版本账（迁移 952）——额效期 + 自动闭前期 + 订价变化流。
+export interface ModelPriceVersion {
+  canonical_id: number
+  canonical_name: string
+  display_name: string
+  billing_mode: 'pay_as_you_go' | 'token_plan' | 'booster_pack'
+  effective_from: string
+  effective_to: string | null
+  credits_per_1m_in: number | null
+  credits_per_1m_out: number | null
+  credits_per_1m_cache_in: number | null
+  credits_per_1m_cache_out: number | null
+  credits_per_1m_image_tokens: number | null
+  credits_per_1m_audio_tokens: number | null
+  credits_per_1m_video_tokens: number | null
+  source: string
+  note: string
+}
+
+export function getAdminMaasModelPriceHistory(canonicalId: number, billingMode = '', limit = 100) {
+  const q = new URLSearchParams({ canonical_id: String(canonicalId), limit: String(limit) })
+  if (billingMode) q.set('billing_mode', billingMode)
+  return req<{ items: ModelPriceVersion[] }>('GET', `/api/admin/maas/model-price-history?${q}`)
+}
+
+export function getAdminMaasModelPriceChanges(days = 30, limit = 100) {
+  return req<{ items: ModelPriceVersion[] }>('GET', `/api/admin/maas/model-price-changes?days=${days}&limit=${limit}`)
+}
+
+// 2026-11-09（运营审计轮项4）：营销管理面（套餐/加油包/优惠码/活动）。
+export interface AdminMaasPlan {
+  id: number
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  monthly_credits: number
+  enabled: boolean
+  sort_order: number
+  billing_period?: string
+  quota_credits?: number | null
+  overage_price_cents?: number | null
+  overage_allowed?: boolean
+  effective_from?: string | null
+  effective_to?: string | null
+  auto_renew?: boolean
+  sla?: string
+}
+
+export interface AdminMaasTopup {
+  id: number
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  credits_amount: number
+  enabled: boolean
+  sort_order: number
+  bonus_credits?: number
+  effective_from?: string | null
+  effective_to?: string | null
+  first_time_only?: boolean
+}
+
+export interface AdminMaasCoupon {
+  id: number
+  code: string
+  credits_amount: number
+  max_redemptions: number
+  redemption_count: number
+  expires_at: string | null
+  status: string
+}
+
+export interface AdminMaasCampaign {
+  id: number
+  code: string
+  name: string
+  description: string
+  benefit_type: 'credits' | 'discount' | 'gift'
+  benefit_value: Record<string, number>
+  status: string
+  starts_at: string | null
+  ends_at: string | null
+  max_redemptions_per_tenant: number
+  total_budget_credits: number
+  granted_credits: number
+}
+
+export function getAdminMaasPlans() {
+  return req<{ items: AdminMaasPlan[] }>('GET', '/api/admin/maas/plans')
+}
+
+export function putAdminMaasPlan(body: {
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  monthly_credits: number
+  billing_period: string
+  enabled: boolean
+  sort_order: number
+}) {
+  return req<{ status: string }>('PUT', '/api/admin/maas/plans-upsert', body)
+}
+
+export function patchAdminMaasPlan(id: number, enabled: boolean) {
+  return req<{ status: string }>('PATCH', `/api/admin/maas/plans/${id}`, { enabled })
+}
+
+export function getAdminMaasTopupPackages() {
+  return req<{ items: AdminMaasTopup[] }>('GET', '/api/admin/maas/topup-packages')
+}
+
+export function putAdminMaasTopup(body: {
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  credits_amount: number
+  bonus_credits: number
+  first_time_only: boolean
+  enabled: boolean
+  sort_order: number
+}) {
+  return req<{ status: string }>('PUT', '/api/admin/maas/topup-packages-upsert', body)
+}
+
+export function patchAdminMaasTopup(id: number, enabled: boolean) {
+  return req<{ status: string }>('PATCH', `/api/admin/maas/topup-packages/${id}`, { enabled })
+}
+
+export function getAdminMaasCoupons(limit = 50) {
+  return req<{ items: AdminMaasCoupon[] }>('GET', `/api/admin/maas/coupons?limit=${limit}`)
+}
+
+export function patchAdminMaasCoupon(id: number, status: 'active' | 'disabled') {
+  return req<{ status: string }>('PATCH', `/api/admin/maas/coupons/${id}`, { status })
+}
+
+export function getAdminMaasCampaigns() {
+  return req<{ items: AdminMaasCampaign[] }>('GET', '/api/admin/maas/campaigns')
+}
+
+export function postAdminMaasCampaign(body: {
+  code: string
+  name: string
+  description?: string
+  benefit_type: 'credits' | 'discount' | 'gift'
+  benefit_value: Record<string, number>
+  starts_at?: string | null
+  ends_at?: string | null
+  max_redemptions_per_tenant?: number
+  total_budget_credits?: number
+}) {
+  return req<{ id: number }>('POST', '/api/admin/maas/campaigns', body)
+}
+
+export function patchAdminMaasCampaignStatus(id: number, status: 'draft' | 'active' | 'paused' | 'ended') {
+  return req<{ status: string }>('PATCH', `/api/admin/maas/campaigns/${id}/status`, { status })
+}
+
+export function putAdminMaasModelPriceMode(body: {
+  canonical_id: number
+  billing_mode: 'token_plan' | 'booster_pack'
+  prices: MaasModelRateUpsert
+  note?: string
+}) {
+  return req<{ status: string }>('PUT', '/api/admin/maas/model-price-mode', body)
+}
+
 export function getMaasModels() {
   return req<{ items: MaasModel[] }>('GET', '/api/maas/models')
 }

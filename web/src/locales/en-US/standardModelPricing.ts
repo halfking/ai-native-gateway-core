@@ -79,6 +79,21 @@ export default {
     msgFailed: 'The bulk operation could not be completed. Please retry.',
   },
 
+  history: {
+    title: "Price history",
+    changesTitle: "Pricing changes",
+    open: "History",
+    openChanges: "Pricing changes",
+    empty: "No price periods recorded for this model yet.",
+    current: "current",
+    until: "until {time}",
+    mode: "Billing mode",
+    source: "Source",
+    modePayAsYouGo: "Pay-as-you-go",
+    modeTokenPlan: "Token plan",
+    modeBooster: "Booster pack",
+  },
+
   // 扁平键（供 Vue 组件直接使用）
   defaultOnly: 'Global base only',
   customOnly: 'Has manual pricing',

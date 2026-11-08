@@ -61,6 +61,12 @@ type ScanScheduler struct {
 	// workerCtx with no deadline — 2026-09-14 audit D-P2-2).
 	cycleTimeout time.Duration
 
+	// autoImporter (2026-11-09 运营审计轮项5)：扫描成功后自动把 pending
+	// 结果导入 free_resource_catalog（conflict_policy=skip，绝不覆盖人工
+	// 录入）。此前 Run() 只产 pending 结果、import 只有 admin 手动 POST
+	// ⇒ 结果永久积压 ⇒ 目录空转。nil = 保持旧行为（手动导入）。
+	autoImporter func(taskID int64, tenantID string, triggeredBy string) error
+
 	// inFlight tracks template IDs whose scan is still running; prevents
 	// overlapping scans of the same template if one tick overlaps the next.
 	inFlight     map[int64]struct{}
@@ -273,6 +279,24 @@ func (s *ScanScheduler) LastSweepAt() time.Time {
 	return s.lastSweepAt
 }
 
+// SetAutoImporter wires the auto-import hook (2026-11-09 运营审计轮项5).
+// fn must be safe for concurrent calls; errors are logged, never fatal.
+func (s *ScanScheduler) SetAutoImporter(fn func(taskID int64, tenantID string, triggeredBy string) error) {
+	s.autoImporter = fn
+}
+
+// maybeAutoImport runs the wired importer for a successful task. Best-effort:
+// a failed import keeps results pending for the admin manual path.
+func (s *ScanScheduler) maybeAutoImport(taskID int64, tenantID string, triggeredBy string) {
+	if s.autoImporter == nil {
+		return
+	}
+	if err := s.autoImporter(taskID, tenantID, triggeredBy); err != nil {
+		slog.Warn("scan_scheduler auto-import failed (results stay pending for manual import)",
+			"task_id", taskID, "tenant_id", tenantID, "error", err)
+	}
+}
+
 // cycle queries all (tenant_id, template_id) pairs with enabled=true, then
 // triggers a scheduled scan for each. A per-template failure is logged and
 // skipped; the sweep continues.
@@ -389,6 +413,9 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 			// Success: reset failure counter
 			if task != nil && task.Status == freediscovery.TaskStatusSuccess {
 				s.recordScanSuccess(ctx, t.tenantID, t.templateID)
+				// 2026-11-09（运营审计轮项5）：扫描成功 ⇒ 自动导入 pending
+				// 结果（conflict_policy=skip）。手动导入通道保留不变。
+				s.maybeAutoImport(task.ID, t.tenantID, "scan_scheduler")
 			}
 		}()
 	}

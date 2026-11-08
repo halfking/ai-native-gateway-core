@@ -9953,6 +9953,78 @@ COMMENT ON COLUMN public.model_credit_rates.manual_video IS '视频维度是否�
 
 
 --
+-- Name: model_price_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.model_price_versions (
+    canonical_id bigint NOT NULL,
+    billing_mode character varying(32) DEFAULT 'pay_as_you_go'::character varying NOT NULL,
+    effective_from timestamp with time zone DEFAULT now() NOT NULL,
+    effective_to timestamp with time zone,
+    credits_per_1m_in bigint,
+    credits_per_1m_out bigint,
+    credits_per_1m_cache_in bigint,
+    credits_per_1m_cache_out bigint,
+    credits_per_1m_image_tokens bigint,
+    credits_per_1m_audio_tokens bigint,
+    credits_per_1m_video_tokens bigint,
+    source character varying(32) DEFAULT 'manual'::character varying NOT NULL,
+    note text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT model_price_versions_pkey PRIMARY KEY (canonical_id, billing_mode, effective_from),
+    CONSTRAINT model_price_versions_period_check CHECK (effective_to IS NULL OR effective_to > effective_from),
+    CONSTRAINT model_price_versions_billing_mode_check CHECK (billing_mode::text = ANY (ARRAY['pay_as_you_go'::character varying, 'token_plan'::character varying, 'booster_pack'::character varying]::text[])),
+    CONSTRAINT model_price_versions_source_check CHECK (source::text = ANY (ARRAY['manual'::character varying, 'batch'::character varying, 'global_fill'::character varying, 'reset'::character varying, 'seed'::character varying]::text[]))
+);
+
+
+--
+-- Name: model_price_versions_current_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_model_price_versions_current ON public.model_price_versions USING btree (canonical_id, billing_mode) WHERE effective_to IS NULL;
+
+
+--
+-- Name: model_price_versions_timeline_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_model_price_versions_timeline ON public.model_price_versions USING btree (canonical_id, billing_mode, effective_from DESC);
+
+
+--
+-- Name: model_price_versions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.model_price_versions IS
+    'Versioned retail credit price periods per (canonical model, billing mode), 952. effective_to NULL = current period; the partial unique index guarantees at most one current price per (model, mode). Writers (maas SyncModelPriceVersion) auto-close the previous period when a new price lands; unchanged prices never open a new period. Billing hot path keeps reading model_credit_rates - this table is the pricing ledger + display surface.';
+
+
+--
+-- Name: COLUMN model_price_versions.billing_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.model_price_versions.billing_mode IS
+    'pay_as_you_go (per-token, drives billing hot path) | token_plan (monthly plan reference price) | booster_pack (booster pack reference price).';
+
+
+--
+-- Name: COLUMN model_price_versions.effective_to; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.model_price_versions.effective_to IS
+    'NULL = current period (auto-closed by the next price for the same model+mode).';
+
+
+--
+-- Name: COLUMN model_price_versions.source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.model_price_versions.source IS
+    'manual | batch | global_fill | reset | seed - which admin write path produced this period.';
+
+
+--
 -- Name: model_discovery_runs; Type: TABLE; Schema: public; Owner: -
 --
 

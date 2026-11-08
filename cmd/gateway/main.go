@@ -52,11 +52,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis"     //nolint:depguard // M3 embedding shadow adapter
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/approval"     //nolint:depguard // D1: approval config management
-	"github.com/kaixuan/llm-gateway-go/domains/assets"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis"      //nolint:depguard // M3 embedding shadow adapter
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/approval"      //nolint:depguard // D1: approval config management
+	"github.com/kaixuan/llm-gateway-go/domains/assets"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/freediscovery" //nolint:depguard // 2026-11-09 运营审计轮项5：扫描成功自动导入
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                           //nolint:depguard // OmniFree virtual auto/* routing
@@ -3412,6 +3413,27 @@ func main() {
 				adminHandler.FreeDiscoveryEngine(),
 				adminHandler.FreeDiscoveryTemplates(),
 			)
+			// 2026-11-09（运营审计轮项5）：扫描成功 ⇒ 自动导入 pending 结果
+			// 到 free_resource_catalog（conflict_policy=skip）。此前 Import
+			// 只有 admin 手动 POST ⇒ discovery_results 永久积压、目录空转
+			// ——「无法引入免费模型」的第三段断链。
+			if stdlibDB := dbConn.Stdlib(); stdlibDB != nil {
+				importer := freediscovery.NewImportService(stdlibDB)
+				scanScheduler.SetAutoImporter(func(taskID int64, tenantID, triggeredBy string) error {
+					_, err := importer.Import(context.Background(), freediscovery.ImportRequest{
+						TaskID:         taskID,
+						TenantID:       tenantID,
+						ImportedBy:     triggeredBy,
+						ConflictPolicy: freediscovery.ConflictSkip,
+					})
+					if err == nil {
+						slog.Info("scan_scheduler auto-import committed",
+							"task_id", taskID, "tenant_id", tenantID)
+					}
+					return err
+				})
+				slog.Info("scan_scheduler auto-import wired (conflict_policy=skip)")
+			}
 			scanScheduler.Start(context.Background())
 			adminHandler.SetScanSchedulerStatus(scanScheduler)
 			// Start 内部按 disabled/未接线实际情况打点（"started" /
@@ -4552,6 +4574,16 @@ func main() {
 			if keyring != nil {
 				balanceFloorGuard.SetKeyring(keyring)
 			}
+			// 2026-11-09（minimax 套餐恢复感知轮 F-B）：扫描器发现「配额挂起
+			// 但厂商窗口有容量」⇒ 快速凭据级探测（OnQuotaRecharged →
+			// ProbeNowAsync；探针模型配额族失败时由 F-A 回退梯换套餐覆盖
+			// 模型重试）。探测成功走既有 writeHealth → onQuotaRecovered 链。
+			if balanceQuotaProbe != nil {
+				balanceFloorGuard.SetOnPlanCapacityAvailable(func(credID int64) {
+					balanceQuotaProbe.OnQuotaRecharged(int(credID), "plan_window_capacity_rearm")
+				})
+				slog.Info("balance_floor_guard: plan-capacity notification wired to balance quota probe fast re-check")
+			}
 			balanceFloorGuard.Start(context.Background())
 			slog.Info("CHECKPOINT: balanceFloorGuard started")
 
@@ -5190,6 +5222,16 @@ func main() {
 					nodeProbeWorker.RearmCredentialFailures(int(credID))
 				})
 				slog.Info("balance_floor_guard: recovery notification wired to node_probe rearm (authoritative v2)")
+			}
+			// 2026-11-09（minimax 套餐恢复感知轮 F-B）：authoritative 分支
+			// mirror —— plan-capacity 通知同样要接到快速凭据级探测，否则该
+			// 路径下「挂起但厂商有容量」的凭据无人唤醒（与上面 F-1 mirror
+			// 同族：两条装配路径都要接，漏一条就是又一次 stranded）。
+			if balanceFloorGuard != nil && balanceQuotaProbe != nil {
+				balanceFloorGuard.SetOnPlanCapacityAvailable(func(credID int64) {
+					balanceQuotaProbe.OnQuotaRecharged(int(credID), "plan_window_capacity_rearm")
+				})
+				slog.Info("balance_floor_guard: plan-capacity notification wired to balance quota probe fast re-check (authoritative v2)")
 			}
 			// capability_backfill: 同一张能力位表在 URSM v2 authoritative
 			// 路径下同样需要有人维护——与上面的 node_probe_worker 装配点

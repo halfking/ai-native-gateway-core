@@ -79,6 +79,21 @@ export default {
     msgFailed: '批量操作没能完成，请重试',
   },
 
+  history: {
+    title: "价格历史",
+    changesTitle: "订价变化",
+    open: "历史",
+    openChanges: "订价变化",
+    empty: "该模型还没有价格期记录",
+    current: "现行",
+    until: "至 {time}",
+    mode: "计费模式",
+    source: "来源",
+    modePayAsYouGo: "按量",
+    modeTokenPlan: "Token 套餐",
+    modeBooster: "加油包",
+  },
+
   // 扁平键（供 Vue 组件直接使用）
   defaultOnly: '仅全局基准',
   customOnly: '含手工定价',

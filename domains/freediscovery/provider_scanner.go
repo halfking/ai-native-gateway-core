@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -44,12 +45,39 @@ type HTTPScanner struct {
 // and prevents DNS rebinding).
 // Production deployments should pass nil to let it pick up the safe transport automatically;
 // only test scenarios may inject an httptest.NewServer client.
+//
+// 2026-11-09（运营审计轮项5）：LLM_GATEWAY_FD_PRIVATE_ALLOWLIST（逗号分隔，
+// safehttpclient 规则语法：host / CIDR / *.suffix）⇒ 允许扫描**显式信任的
+// 内网源**。用途：freellmapi（docker 内网 http://freellmapi:3001/v1）此前
+// 被 SSRF 守卫一票否决 —— 免费模型 discovery 链对自家免费模型供应商永久
+// 打不通（3 连败还会被单向门自动停用）。默认空 = 行为不变。
 func NewHTTPScanner(httpClient *http.Client) *HTTPScanner {
 	if httpClient != nil {
 		return &HTTPScanner{doer: httpClient.Do}
 	}
-	safe := safehttpclient.New(30 * time.Second)
+	safe := safehttpclient.NewWithAllowlist(30*time.Second, PrivateAllowlistRules())
 	return &HTTPScanner{doer: safe.Do}
+}
+
+// PrivateAllowlistRules reads the operator allowlist for trusted internal
+// scan targets. Rules are the safehttpclient grammar: exact host, CIDR, or
+// "*.suffix". Empty/unset = no bypass (strict SSRF guard, unchanged).
+func PrivateAllowlistRules() []string {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_FD_PRIVATE_ALLOWLIST"))
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // modelEntry is a single entry in the upstream /models response (OpenAI-compatible shape

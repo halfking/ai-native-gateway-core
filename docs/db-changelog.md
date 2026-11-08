@@ -10761,3 +10761,26 @@ go.mod module，主 module `go test ./...` 不覆盖其门。
 ★ 台账：252 schema_migrations 951 + checksums bb97871c… 双行落库（advisory
 lock 契约照抄 db-changelog.sh:518 形态）。154/245 共库立即受益；二进制侧
 （maas 水位短路）随下次部署生效。
+
+## 2026-11-09T03:00:00Z+ — 运营审计轮：迁移 952（model_price_versions 价格期版本账）已接线未应用
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 952 | `952_model_price_versions.sql` | `207db3275e9ca7e20985d64038ba03378b676592345e8093a7f9b5770681c1fb` | **registered（随 211 部署走 apply-db-revision-sequence 显式清单通道）** |
+
+★ 952 = `model_price_versions`：(canonical_id, billing_mode) 维度的零售价**价格期**追加账。
+需求（运营审计轮项2）：一个模型一种套餐模式一个价格、不出现重复价格、价格带额效期、
+下一期自动把上一期的 effective_to 修正闭合并可见「订价变化模式」。
+★ 形状：PK(canonical_id, billing_mode, effective_from)；`effective_to NULL = 现行期`
+（与 939/565 口径同构）；部分唯一索引 `uq_model_price_versions_current` (WHERE
+effective_to IS NULL) ⇒ **同一模型同一模式任意时刻至多一个现行价 = 库级强制**；
+billing_mode 闭集 `pay_as_you_go|token_plan|booster_pack`（按量/包月/加油包）。
+★ 写入侧 `maas.SyncPayAsYouGoPriceVersion`（best-effort，不回滚计价写入）挂在
+Upsert（manual/batch/global_fill 分源）/Reset/Delete 三个写点：价格未变不开新期
+（防重复期）、变化则原子「闭上一期+开新期」、行清空只闭期（空洞=全局默认价，如实）。
+★ 计费热路径零改动：chargeTokensWithMultiplier 继续读 model_credit_rates。
+★ 六面登记：01-schema.sql 三副本（canonical/embeddata/baseline）、installer
+go:embed+embeddedSQLFiles map（951 轮教训：942-949 漏 map）、dbinit StartupFiles、
+apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (352)。
+★ 契约门 `migration_952_model_price_versions_test.go` 四件（形态/down/cross-pin/
+字节一致）。

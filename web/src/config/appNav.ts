@@ -148,6 +148,8 @@ export const NAV_GROUPS: NavGroup[] = [
       // 内部运营面 requiresAuth，供给登记写权限是 super-only（应用层闸），
       // 需求/报价动作带 owner 语义 ⇒ 菜单项不设 super 门，由服务端按角色收）。
       { path: '/operations/sales', labelKey: 'nav.item.salesWorkbench', icon: '💼', hideForTenant: true },
+      // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动；superAdmin）。
+      { path: '/operations/marketing', labelKey: 'nav.item.operationsMarketing', icon: '🎯', super: true, hideForTenant: true },
     ],
   },
   {

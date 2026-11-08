@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-07T13:45:25.109Z",
+  "exported_at": "2026-11-08T20:23:39.268Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -117,6 +117,15 @@
           "path": "/operations/sales",
           "labelKey": "nav.item.salesWorkbench",
           "icon": "💼",
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/operations/marketing",
+          "labelKey": "nav.item.operationsMarketing",
+          "icon": "🎯",
+          "super": true,
           "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"

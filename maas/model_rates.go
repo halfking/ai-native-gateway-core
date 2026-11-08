@@ -156,8 +156,9 @@ func (s *Service) ListAdminModelRates(ctx context.Context) (AdminModelRatesRespo
 	return out, rows.Err()
 }
 
-// UpsertModelRate sets per-model manual credit rates.
-func (s *Service) UpsertModelRate(ctx context.Context, canonicalID int, req ModelRateUpsert) error {
+// upsertModelRateSource sets per-model manual credit rates and snapshots the
+// resulting row into the price version ledger (952) with the given source.
+func (s *Service) upsertModelRateSource(ctx context.Context, canonicalID int, req ModelRateUpsert, source, note string) error {
 	if !s.Enabled() {
 		return errors.New("maas service disabled")
 	}
@@ -257,7 +258,18 @@ func (s *Service) UpsertModelRate(ctx context.Context, canonicalID int, req Mode
 		imageVal, audioVal, videoVal,
 		req.ManualIn, req.ManualOut, req.ManualCacheIn, req.ManualCacheOut,
 		req.ManualImage, req.ManualAudio, req.ManualVideo)
+
+	// 2026-11-09（运营审计轮项2）：把写后的实际行值快照进价格版本账
+	// （迁移 952）。best-effort：版本账失败不回滚计价写入。
+	// ★ 注意必须**重读行值**而不是用 req —— ON CONFLICT 的合并语义下
+	//   最终行值可能不同于请求值。
+	s.SyncPayAsYouGoPriceVersion(ctx, canonicalID, source, note)
 	return err
+}
+
+// UpsertModelRate sets per-model manual credit rates (manual source).
+func (s *Service) UpsertModelRate(ctx context.Context, canonicalID int, req ModelRateUpsert) error {
+	return s.upsertModelRateSource(ctx, canonicalID, req, RateSourceManual, "")
 }
 
 // AnyManual reports whether the upsert has any manual field set.
@@ -292,7 +304,7 @@ func (s *Service) BatchUpsertModelRates(ctx context.Context, updates []ModelRate
 	}
 	updated := 0
 	for _, u := range updates {
-		if err := s.UpsertModelRate(ctx, u.CanonicalID, u.ModelRateUpsert); err != nil {
+		if err := s.upsertModelRateSource(ctx, u.CanonicalID, u.ModelRateUpsert, RateSourceBatch, ""); err != nil {
 			continue
 		}
 		updated++
@@ -385,7 +397,7 @@ func (s *Service) BatchFillGlobalModelRates(ctx context.Context, items []BatchFi
 			req.CreditsPer1MAudio = global.Audio
 			req.CreditsPer1MVideo = global.Video
 		}
-		if err := s.UpsertModelRate(ctx, it.CanonicalID, req); err == nil {
+		if err := s.upsertModelRateSource(ctx, it.CanonicalID, req, RateSourceGlobalFill, "global×discount frozen"); err == nil {
 			written++
 		}
 	}
@@ -426,6 +438,8 @@ func (s *Service) DeleteModelRate(ctx context.Context, canonicalID int) error {
 	if tag.RowsAffected() == 0 {
 		return pgx.ErrNoRows
 	}
+	// 2026-11-09（运营审计轮项2）：删除 = 手工价期结束（空洞=全局默认）。
+	s.SyncPayAsYouGoPriceVersion(ctx, canonicalID, RateSourceReset, "manual rate deleted")
 	return nil
 }
 
@@ -486,6 +500,9 @@ func (s *Service) ResetModelRateFields(ctx context.Context, canonicalID int, fie
 		  AND NOT manual_cache_in AND NOT manual_cache_out
 		  AND NOT manual_image AND NOT manual_audio AND NOT manual_video
 	`, canonicalID)
+	// 2026-11-09（运营审计轮项2）：reset 后行可能已变稀/被删 —— 把实际
+	// 行值快照进版本账（行空 ⇒ 只闭期不开新期，空洞=走全局默认价）。
+	s.SyncPayAsYouGoPriceVersion(ctx, canonicalID, RateSourceReset, "fields reset: "+joinClauses(setClauses))
 	return nil
 }
 

@@ -4,6 +4,51 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-09 运营审计轮（goal 会话，`docs/audit/2026-11-09-运营审计轮-请求统计与定价与营销与免费模型与探测感知.md`）**：
+> ★ 用户目标＝「运营功能审计＋修正＋完整优化：①请求统计与上下游对账 ②内部定价
+>   一个模型一模式一价＋额效期自动闭前期＋订价变化可见 ③MaaS 行情采集整合
+>   （codeup 有 salesdecorate，已拉取）④营销策略（套餐/加油包/折扣/赠送）
+>   ⑤freellmapi 免费模型引入 ⑥minimax 探测恢复感知（恢复~24h未感知＝最重）」。
+> ★★ **项6 根因双缺陷（211 真库+前代槽日志重建时间线）**：11-07 13:49→11-08 15:39
+>   cred 42 探针每小时吃 429-2056「Token Plan 用量上限」（cred 41 同族 402）；
+>   同期 plan sweep 每 5min success=6 restored=0——**厂商配额 API 有读数却无动作
+>   路径**（restore 只认 balance_floor）。修＝F-A 探针模型回退梯
+>   （credential_probe_v2 fail-fast 分支：配额族失败⇒≤3 个备选 chat 绑定模型各试
+>   一发，按 node_probe_state.last_direct_ok 优先）＋F-B 扫描器证据门控 re-arm
+>   （balance_floor_guard：用尽族挂起+MaxUsedPercent<100⇒SetOnPlanCapacityAvailable
+>   →OnQuotaRecharged 快速探测，main.go 两装配分支都接线）。
+> ★★ **项1 F1【P1】rollup 迟到行漏统**：24h 四腿对账 B 缺 **39%**（03:41 七行聚合 0）
+>   ＝流式终态行在游标越过其分钟之后才进视图，单遍水位线永久漏统。修＝
+>   stats_minute_rollup 近期闭分钟重扫臂（[now-2m-30m, now-2m] 整键替换幂等，
+>   LLM_GATEWAY_STATS_RESWEEP_LAG/_SPAN）；部署后门=scripts/audit/request-stats-
+>   reconcile.sh gap≤2%（基线 −1950/−39% 已钉档）。cost_usd 全 0＝绑定无单价
+>   （数据缺口非代码，接项3）。ledger_only 303＝api_key217 压测遗留（登记）。
+> ★ **项2＝迁移 952 model_price_versions**：(canonical_id,billing_mode,effective_from)
+>   PK＋effective_to NULL=现行＋**部分唯一索引 uq_model_price_versions_current**
+>   （库级强制同模型同模式至多一现行价）；billing_mode 闭集
+>   pay_as_you_go|token_plan|booster_pack；写侧 SyncPayAsYouGoPriceVersion 挂
+>   Upsert(分源)/Reset/Delete 三点（未变不开新期/变化原子闭期+开期/清空只闭期）；
+>   计费热路径零改动；API history/changes/mode 三端点；前端定价页「历史」+「订价变化」
+>   两弹窗；六面登记全＋契约门四件。
+> ★ **项4＝营销管理面**（零新迁移，全落 934/937 列）：plans/topup CRUD＋生效窗校验＋
+>   first_time_only＋ConfirmOrder 补发 bonus（独立 order_bonus ledger 行）＋campaigns
+>   discount/gift 兑现（discount=零积分 redemption，CreateOrder 单事务锁 redemption→
+>   折减→建单→回填 order_id，QR 按折后金额）＋coupon 停用；新页 /operations/marketing
+>   （四页签，operations 菜单 super-only）＋43 键×8 语种。
+> ★ **项5＝免费模型三段断链全修**：启动种子 internal/omnifree（embed configs/seed 三份，
+>   DO NOTHING 只补缺，LLM_GATEWAY_OMNIFREE_SEED=off 关）＋scanner 私网白名单
+>   （LLM_GATEWAY_FD_PRIVATE_ALLOWLIST，默认空=不变）＋scan_scheduler SetAutoImporter
+>   （扫描成功⇒自动 Import，conflict_policy=skip）。
+> ★ **项3＝行情活体实证＋对比落档**：salesdecorate 211 在役（price_observation 10,371 行/
+>   25 平台/max run_date=今天；price_change 290）＋scripts/audit/market-price-compare.py
+>   （归一交集 22；claude-opus-4-8 **2.00×**/fable-5 **1.50×** 漂移复核成立，CSV 落档）；
+>   完整同步链维持 11-03 档规划。
+> ★ Windows 工具链坑×3（本机 Python 3.13）：post-surface-ledger-refresh 三连（CRLF 写入/
+>   awk -v 吃 	 转义/GBK 解码）已修（newline=""+正斜杠+encoding=utf-8）；startup 两红＝
+>   Windows 假红族（q-usage exec-bit、914 门反斜杠路径撞白名单斜杠键——白名单其实已登记）。
+> ★ 遗留：订价变化前端图表（趋势线）未做；token_plan/booster 价期是参考价数据面不进
+>   计费热路径；asm-worker-1 crash loop（Restarting 137）登记待 owner 轮。
+
 > **2026-11-09 MCP 服务网关内置轮（goal 会话）**：
 > ★ 用户目标＝「学习微软及其它公司开源的 MCP 服务网关特性，结合附件方案（JFMCP PDF ＋
 >   marketing 侧 `docs/jfmcp-gateway/` 方案族），把智能体/技能/MCP 的网关功能做成可用的

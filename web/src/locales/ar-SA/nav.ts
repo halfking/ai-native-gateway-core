@@ -31,6 +31,7 @@ export default {
     providers: "المزودون",
     reconciliation: "تهوية الحسابات",
     salesWorkbench: 'منصة المبيعات',
+    operationsMarketing: "التسويق",
     settlementReport: "تقرير التسوية",
     usageTrends: "اتجاهات الاستخدام",
     pricing: "تكلفة التسعير",

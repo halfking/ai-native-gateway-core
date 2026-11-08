@@ -12,7 +12,10 @@ import {
   batchUpsertAdminMaasModelRates,
   batchResetAdminMaasModelRates,
   batchFillGlobalAdminMaasModelRates,
+  getAdminMaasModelPriceHistory,
+  getAdminMaasModelPriceChanges,
   type AdminMaasModelRate,
+  type ModelPriceVersion,
   type MaasAdminSettings,
   type MaasModelRateUpsert,
 } from '../api'
@@ -112,6 +115,63 @@ const batchMsg = ref('')
 const editRow = ref<AdminMaasModelRate | null>(null)
 const editForm = ref<MaasModelRateUpsert>(emptyEditForm())
 const savingRow = ref(false)
+
+// 2026-11-09（运营审计轮项2）：价格期版本账视图（迁移 952）。
+const showHistoryModal = ref(false)
+const historyRow = ref<AdminMaasModelRate | null>(null)
+const historyItems = ref<ModelPriceVersion[]>([])
+const historyLoading = ref(false)
+const showChangesModal = ref(false)
+const changeItems = ref<ModelPriceVersion[]>([])
+const changesLoading = ref(false)
+
+const modeLabelKey: Record<string, string> = {
+  pay_as_you_go: 'standardModelPricing.history.modePayAsYouGo',
+  token_plan: 'standardModelPricing.history.modeTokenPlan',
+  booster_pack: 'standardModelPricing.history.modeBooster',
+}
+
+async function openHistory(row: AdminMaasModelRate) {
+  historyRow.value = row
+  showHistoryModal.value = true
+  historyLoading.value = true
+  try {
+    const res = await getAdminMaasModelPriceHistory(row.canonical_id)
+    historyItems.value = res.items || []
+  } catch {
+    historyItems.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function openChanges() {
+  showChangesModal.value = true
+  changesLoading.value = true
+  try {
+    const res = await getAdminMaasModelPriceChanges(30, 200)
+    changeItems.value = res.items || []
+  } catch {
+    changeItems.value = []
+  } finally {
+    changesLoading.value = false
+  }
+}
+
+function fmtPeriod(v: ModelPriceVersion): string {
+  const to = v.effective_to
+  if (!to) return t('standardModelPricing.history.current')
+  return t('standardModelPricing.history.until', { time: new Date(to).toLocaleString(localeRef.value) })
+}
+
+function fmtPrice(v: ModelPriceVersion): string {
+  const parts: string[] = []
+  if (v.credits_per_1m_in != null) parts.push(`${t('standardModelPricing.input')} ${v.credits_per_1m_in}`)
+  if (v.credits_per_1m_out != null) parts.push(`${t('standardModelPricing.output')} ${v.credits_per_1m_out}`)
+  if (v.credits_per_1m_cache_in != null) parts.push(`${t('standardModelPricing.cacheRead')} ${v.credits_per_1m_cache_in}`)
+  if (v.credits_per_1m_cache_out != null) parts.push(`${t('standardModelPricing.cacheWrite')} ${v.credits_per_1m_cache_out}`)
+  return parts.length ? parts.join(' · ') : '—'
+}
 
 function emptyEditForm(): MaasModelRateUpsert {
   return {
@@ -592,6 +652,10 @@ onMounted(load)
       @clear="clearCatalogFilters"
     />
 
+    <div class="bulk-bar">
+      <button class="btn btn-ghost btn-sm" @click="openChanges">{{ t('standardModelPricing.history.openChanges') }}</button>
+    </div>
+
     <div class="card table-wrap">
       <table class="data-table pricing-table">
         <thead>
@@ -630,6 +694,7 @@ onMounted(load)
             <td class="actions">
               <button class="btn btn-ghost btn-sm" @click="openEdit(row)">{{ t('standardModelPricing.table.edit') }}</button>
               <button class="btn btn-ghost btn-sm" @click="copyRow(row)">复制</button>
+              <button class="btn btn-ghost btn-sm" @click="openHistory(row)">{{ t('standardModelPricing.history.open') }}</button>
               <button v-if="row.is_custom" class="btn btn-ghost btn-sm" @click="resetAll(row)">{{ t('standardModelPricing.table.reset') }}</button>
             </td>
           </tr>
@@ -679,6 +744,49 @@ onMounted(load)
             {{ savingBatch ? '保存中…' : '应用到所选' }}
           </button>
           <button class="btn btn-ghost btn-sm" @click="showBatchModal = false">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showHistoryModal && historyRow" class="modal-backdrop" @click.self="showHistoryModal = false">
+      <div class="modal card">
+        <h3 class="section-title">{{ t('standardModelPricing.history.title') }} · {{ historyRow.display_name }}</h3>
+        <code class="mono-sm modal-code">{{ historyRow.canonical_name }}</code>
+        <div v-if="historyLoading" class="modal-hint">…</div>
+        <p v-else-if="historyItems.length === 0" class="modal-hint">{{ t('standardModelPricing.history.empty') }}</p>
+        <ul v-else class="price-history-list">
+          <li v-for="v in historyItems" :key="v.billing_mode + v.effective_from" class="price-history-item">
+            <div class="ph-head">
+              <span class="badge badge-blue">{{ t(modeLabelKey[v.billing_mode] || 'standardModelPricing.history.modePayAsYouGo') }}</span>
+              <span class="ph-period">{{ fmtPeriod(v) }}</span>
+              <span class="ph-source">{{ t('standardModelPricing.history.source') }}: {{ v.source }}</span>
+            </div>
+            <div class="ph-prices">{{ fmtPrice(v) }}</div>
+          </li>
+        </ul>
+        <div class="modal-actions">
+          <button class="btn btn-ghost btn-sm" @click="showHistoryModal = false">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showChangesModal" class="modal-backdrop" @click.self="showChangesModal = false">
+      <div class="modal card">
+        <h3 class="section-title">{{ t('standardModelPricing.history.changesTitle') }}</h3>
+        <div v-if="changesLoading" class="modal-hint">…</div>
+        <p v-else-if="changeItems.length === 0" class="modal-hint">{{ t('standardModelPricing.history.empty') }}</p>
+        <ul v-else class="price-history-list">
+          <li v-for="v in changeItems" :key="v.canonical_id + v.billing_mode + v.effective_from" class="price-history-item">
+            <div class="ph-head">
+              <span class="ph-model">{{ v.display_name || v.canonical_name }}</span>
+              <span class="badge badge-blue">{{ t(modeLabelKey[v.billing_mode] || 'standardModelPricing.history.modePayAsYouGo') }}</span>
+              <span class="ph-period">{{ new Date(v.effective_from).toLocaleString(localeRef) }}</span>
+            </div>
+            <div class="ph-prices">{{ fmtPrice(v) }}</div>
+          </li>
+        </ul>
+        <div class="modal-actions">
+          <button class="btn btn-ghost btn-sm" @click="showChangesModal = false">OK</button>
         </div>
       </div>
     </div>
@@ -824,6 +932,14 @@ onMounted(load)
 .edit-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.price-history-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border, #eee); }
+.price-history-item:last-child { border-bottom: none; }
+.ph-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ph-model { font-weight: 600; }
+.ph-period { color: var(--kx-text-secondary, #666); font-size: 12px; }
+.ph-source { color: var(--kx-text-secondary, #666); font-size: 12px; }
+.ph-prices { margin-top: 4px; font-size: 13px; }
 .bulk-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; background: var(--bg-subtle); border-radius: 8px;

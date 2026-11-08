@@ -109,10 +109,13 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 		}
 		var name string
 		var enabled bool
+		var effFrom, effTo *time.Time
+		// 2026-11-09（运营审计轮项4）：934 生效窗校验——套餐在窗口外不可下单
+		// （此前 effective_from/to 列零消费，目录页等于永远可买）。
 		err := s.pool.QueryRow(ctx, `
-			SELECT name, price_cents, monthly_credits, enabled
+			SELECT name, price_cents, monthly_credits, enabled, effective_from, effective_to
 			FROM subscription_plans WHERE id = $1
-		`, *req.PlanID).Scan(&name, &amountCents, &credits, &enabled)
+		`, *req.PlanID).Scan(&name, &amountCents, &credits, &enabled, &effFrom, &effTo)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BillingOrder{}, errors.New("plan not found")
 		}
@@ -122,6 +125,9 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 		if !enabled {
 			return BillingOrder{}, errors.New("plan is not available")
 		}
+		if err := checkEffectiveWindow(effFrom, effTo, "plan"); err != nil {
+			return BillingOrder{}, err
+		}
 		planID = req.PlanID
 		planName = name
 	case OrderTopup:
@@ -130,10 +136,18 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 		}
 		var name string
 		var enabled bool
+		var bonusCredits int64
+		var effFrom, effTo *time.Time
+		var firstTimeOnly bool
+		// 2026-11-09（运营审计轮项4）：加油包 bonus_credits / 生效窗 /
+		// first_time_only 三列接线（此前零消费：bonus 永不发、窗口永不过期）。
 		err := s.pool.QueryRow(ctx, `
-			SELECT name, price_cents, credits_amount, enabled
+			SELECT name, price_cents, credits_amount, enabled,
+			       COALESCE(bonus_credits, 0), effective_from, effective_to,
+			       COALESCE(first_time_only, FALSE)
 			FROM topup_packages WHERE id = $1
-		`, *req.PackageID).Scan(&name, &amountCents, &credits, &enabled)
+		`, *req.PackageID).Scan(&name, &amountCents, &credits, &enabled,
+			&bonusCredits, &effFrom, &effTo, &firstTimeOnly)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return BillingOrder{}, errors.New("package not found")
 		}
@@ -142,6 +156,21 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 		}
 		if !enabled {
 			return BillingOrder{}, errors.New("package is not available")
+		}
+		if err := checkEffectiveWindow(effFrom, effTo, "package"); err != nil {
+			return BillingOrder{}, err
+		}
+		if firstTimeOnly {
+			var used int
+			if err := s.pool.QueryRow(ctx, `
+				SELECT count(*) FROM billing_orders
+				WHERE tenant_id = $1 AND package_id = $2 AND status = 'paid'
+			`, tenantID, *req.PackageID).Scan(&used); err != nil {
+				return BillingOrder{}, err
+			}
+			if used > 0 {
+				return BillingOrder{}, errors.New("package is limited to one purchase per tenant")
+			}
 		}
 		packageID = req.PackageID
 		packageName = name
@@ -152,6 +181,23 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 		return BillingOrder{}, err
 	}
 
+	// 2026-11-09（运营审计轮项4）：折扣活动在下单时消费——单事务里
+	// 「锁 redemption → 折减金额 → 建单 → 回填 order_id」，QR 按折后金额
+	// 生成（付多少钱扫多少钱码）。
+	tx, terr := s.pool.Begin(ctx)
+	if terr != nil {
+		return BillingOrder{}, terr
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // best-effort rollback
+	finalAmount := amountCents
+	discountNote := ""
+	var discountRedemptionID int64
+	finalAmount, discountNote, discountRedemptionID, derr := s.applyTenantOrderDiscount(ctx, tx, tenantID, amountCents)
+	if derr != nil {
+		return BillingOrder{}, derr
+	}
+	amountCents = finalAmount
+
 	ps, err := s.paymentSettings(ctx)
 	if err != nil {
 		return BillingOrder{}, err
@@ -161,7 +207,7 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 	expiresAt := time.Now().Add(30 * time.Minute)
 
 	var o BillingOrder
-	err = s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO billing_orders (
 			order_no, tenant_id, order_type, status, amount_cents, credits,
 			plan_id, package_id, payment_channel, qr_payload, qr_url, expires_at
@@ -178,6 +224,17 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 	)
 	if err != nil {
 		return BillingOrder{}, err
+	}
+	if discountRedemptionID > 0 {
+		if _, uerr := tx.Exec(ctx,
+			`UPDATE promotion_redemptions SET order_id = $2, updated_at = now() WHERE id = $1`,
+			discountRedemptionID, o.ID); uerr != nil {
+			return BillingOrder{}, uerr
+		}
+		o.Note = discountNote
+	}
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return BillingOrder{}, cerr
 	}
 	o.PlanID = planID
 	o.PackageID = packageID
@@ -372,6 +429,20 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderID int64, note string) 
 		if err := s.creditPurchased(ctx, tx, o.TenantID, o.Credits, "order", o.OrderNo, "topup"); err != nil {
 			return err
 		}
+		// 2026-11-09（运营审计轮项4）：加油包 bonus_credits 在确认时按**当前
+		// 包定义**补发（下单到确认之间包可被管理员改定义；以确认时点为准）。
+		// 单独一条 ledger（entry_type=topup, ref_type=order_bonus），金额
+		// 逐条可对账；包定义行 bonus=0 或包已删除 ⇒ 零 bonus，如实。
+		if o.PackageID != nil {
+			var bonus int64
+			if err := tx.QueryRow(ctx,
+				`SELECT COALESCE(bonus_credits, 0) FROM topup_packages WHERE id = $1`,
+				*o.PackageID).Scan(&bonus); err == nil && bonus > 0 {
+				if err := s.creditPurchased(ctx, tx, o.TenantID, bonus, "order_bonus", o.OrderNo, "topup"); err != nil {
+					return err
+				}
+			}
+		}
 	case OrderSubscribe:
 		if o.PlanID == nil {
 			return errors.New("subscribe order missing plan_id")
@@ -461,4 +532,17 @@ func (s *Service) GrantCredits(ctx context.Context, tenantID string, amount int6
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// checkEffectiveWindow rejects orders for packages/plans outside their 934
+// effective window (2026-11-09 运营审计轮项4：nil = 不限，与 937 活动窗口同口径).
+func checkEffectiveWindow(from, to *time.Time, kind string) error {
+	now := time.Now()
+	if from != nil && now.Before(*from) {
+		return fmt.Errorf("%s is not on sale yet", kind)
+	}
+	if to != nil && now.After(*to) {
+		return fmt.Errorf("%s sales have ended", kind)
+	}
+	return nil
 }

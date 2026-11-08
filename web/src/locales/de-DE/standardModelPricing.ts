@@ -84,6 +84,21 @@ export default {
     video: 'Video',
   },
 
+  history: {
+    title: "Preishistorie",
+    changesTitle: "Preisänderungen",
+    open: "Historie",
+    openChanges: "Preisänderungen",
+    empty: "Für dieses Modell wurden noch keine Preiszeiträume erfasst.",
+    current: "aktuell",
+    until: "bis {time}",
+    mode: "Abrechnungsmodus",
+    source: "Quelle",
+    modePayAsYouGo: "Nach Verbrauch",
+    modeTokenPlan: "Token-Tarif",
+    modeBooster: "Zusatzpaket",
+  },
+
   // 扁平键（供 Vue 组件直接使用）
   defaultOnly: 'Nur globale Basis',
   customOnly: 'Mit manueller Preisgestaltung',

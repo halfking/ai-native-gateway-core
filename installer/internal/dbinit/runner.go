@@ -1795,6 +1795,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 951（R189 252 SQL 审计轮，2026-11-07）：armor_judgments 补
 			// (created_at) 单列前导索引（trim 批顺扫根修，252 实测 ~13,800×）。
 			"951_armor_judgments_created_at_idx.sql",
+			// 952（2026-11-09 运营审计轮项2）：model_price_versions ——
+			// (模型, 套餐模式) 价格期版本账（额效期自动闭前期）。
+			"952_model_price_versions.sql",
 		},
 	}
 }

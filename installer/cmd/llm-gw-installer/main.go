@@ -1529,6 +1529,12 @@ var armorJudgmentsCreatedAtIdx951 []byte
 //go:embed embeddata/startup/951_armor_judgments_created_at_idx.down.sql
 var armorJudgmentsCreatedAtIdx951Down []byte
 
+//go:embed embeddata/startup/952_model_price_versions.sql
+var modelPriceVersions952 []byte
+
+//go:embed embeddata/startup/952_model_price_versions.down.sql
+var modelPriceVersions952Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -2014,6 +2020,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/927_routing_policy_singleton_unique.down.sql":        routingPolicySingletonUnique927Down,
 	"startup/951_armor_judgments_created_at_idx.sql":              armorJudgmentsCreatedAtIdx951,
 	"startup/951_armor_judgments_created_at_idx.down.sql":         armorJudgmentsCreatedAtIdx951Down,
+"startup/952_model_price_versions.sql":                        modelPriceVersions952,
+"startup/952_model_price_versions.down.sql":                   modelPriceVersions952Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,

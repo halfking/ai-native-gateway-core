@@ -33,6 +33,7 @@ import freeDiscovery from './freeDiscovery'
 import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
+import operationsMarketing from './operationsMarketing'
 import routing from './routing'
 import routingDefault from './routingDefault'
 import chat from './chat'
@@ -121,6 +122,7 @@ export default {
   models,
   pricingManagement,
   standardModelPricing,
+  operationsMarketing,
   routing,
   routingDefault,
   chat,

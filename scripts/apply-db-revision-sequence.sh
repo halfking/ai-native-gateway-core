@@ -2585,6 +2585,7 @@ files=(
   #   ★ 自带 DO 块幂等守卫（已含该值时跳过）⇒ 重复重放安全。
   "$ROOT_DIR/sql/migrations/startup/950_probe_queue_source_credential_recovery.sql"
   "$ROOT_DIR/sql/migrations/startup/951_armor_judgments_created_at_idx.sql"
+  "$ROOT_DIR/sql/migrations/startup/952_model_price_versions.sql"
 )
 
 

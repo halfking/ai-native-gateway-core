@@ -128,16 +128,39 @@ func (s *Service) RedeemCampaign(ctx context.Context, code, tenantID, ownerUser 
 		return out, err
 	}
 
-	credits := int64(0)
-	if benefitType == "credits" {
+	// 2026-11-09（运营审计轮项4）：benefit_type 三态实现 ——
+	//   credits/gift ⇒ 即时发积分（gift 仅文案/来源语义不同，台账 note 标注）；
+	//   discount    ⇒ 记一次「未使用折扣」，下一张订单结账时抵扣
+	//                 （promotion_redemptions.order_id 此前零消费，正是挂单位）。
+	var credits int64
+	var discountPercent int
+	var benefitKind string
+	switch benefitType {
+	case "credits":
+		benefitKind = "credits"
 		var vv map[string]float64
 		_ = json.Unmarshal(benefit, &vv)
 		credits = int64(vv["credits"])
+	case "gift":
+		benefitKind = "gift"
+		var vv map[string]float64
+		_ = json.Unmarshal(benefit, &vv)
+		credits = int64(vv["credits"])
+	case "discount":
+		benefitKind = "discount"
+		var vv map[string]float64
+		_ = json.Unmarshal(benefit, &vv)
+		discountPercent = int(vv["percent"])
+		if discountPercent <= 0 || discountPercent >= 100 {
+			return out, fmt.Errorf("campaign %s carries invalid discount percent", code)
+		}
+	default:
+		return out, fmt.Errorf("campaign %s carries unknown benefit type %s", code, benefitType)
 	}
-	if credits <= 0 {
+	if benefitKind != "discount" && credits <= 0 {
 		return out, fmt.Errorf("campaign %s carries no credit benefit", code)
 	}
-	if totalBudget > 0 && grantedCredits+credits > totalBudget {
+	if benefitKind == "credits" && totalBudget > 0 && grantedCredits+credits > totalBudget {
 		return out, fmt.Errorf("campaign %s budget exhausted", code)
 	}
 
@@ -150,6 +173,26 @@ func (s *Service) RedeemCampaign(ctx context.Context, code, tenantID, ownerUser 
 	}
 	if maxPerTenant > 0 && redeemed >= maxPerTenant {
 		return out, fmt.Errorf("campaign %s already redeemed for this tenant", code)
+	}
+
+	var redID int64
+	if benefitKind == "discount" {
+		// 折扣兑现：不发积分、不动钱包；只记 redemption（order_id 保持 NULL
+		// ⇒ 下一张订单结账时消费，见 consumeDiscountRedemption）。
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO promotion_redemptions (campaign_id, tenant_id, owner_user, benefit, credits_granted)
+			VALUES ($1, $2, $3, $4, 0)
+			RETURNING id
+		`, campID, tenantID, ownerUser, benefit).Scan(&redID); err != nil {
+			return out, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		return CampaignRedemption{
+			RedemptionID: redID, CampaignID: campID, CampaignCode: code,
+			TenantID: tenantID, OwnerUser: ownerUser, CreditsGranted: 0,
+		}, nil
 	}
 
 	if err := s.ensureWallet(ctx, tx, tenantID); err != nil {
@@ -172,20 +215,31 @@ func (s *Service) RedeemCampaign(ctx context.Context, code, tenantID, ownerUser 
 	if err != nil {
 		return out, err
 	}
+	if benefitKind == "gift" {
+		detail, err = json.Marshal(map[string]string{"campaign_code": code, "benefit": "gift"})
+		if err != nil {
+			return out, err
+		}
+	}
+	ledgerNote := fmt.Sprintf("campaign %s", campName)
+	if benefitKind == "gift" {
+		ledgerNote = fmt.Sprintf("campaign %s (gift)", campName)
+	}
 	if err := s.writeLedgerWithBalanceDetail(ctx, tx, tenantID, "adjust", credits, balance,
 		string(PoolGranted), "campaign", fmt.Sprintf("%d", campID),
-		fmt.Sprintf("campaign %s", campName), ownerUser, campID,
+		ledgerNote, ownerUser, campID,
 		detail); err != nil {
 		return out, err
 	}
-	var redID int64
+	var redID2 int64
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO promotion_redemptions (campaign_id, tenant_id, owner_user, benefit, credits_granted)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id
-	`, campID, tenantID, ownerUser, benefit, credits).Scan(&redID); err != nil {
+	`, campID, tenantID, ownerUser, benefit, credits).Scan(&redID2); err != nil {
 		return out, err
 	}
+	redID = redID2
 	if _, err := tx.Exec(ctx, `
 		UPDATE promotion_campaigns SET granted_credits = granted_credits + $2, updated_at = now() WHERE id = $1
 	`, campID, credits); err != nil {

@@ -94,6 +94,7 @@ def run_classifier(routes_abs: str) -> str:
         [sys.executable, os.path.join(REPO_ROOT, CLASSIFIER_REL), routes_abs],
         capture_output=True,
         text=True,
+        encoding="utf-8", errors="replace",  # 2026-11-09: 同上
     )
     if proc.returncode != 0:
         die("分级器失败（exit=%d）：\n%s" % (proc.returncode, proc.stderr))
@@ -106,22 +107,31 @@ def derive_new_rows(new_class_rows, header_hint_target: str):
         class_path = os.path.join(tmp, "class-mini.tsv")
         probe_path = os.path.join(tmp, "probe-mini.tsv")
 
-        with open(class_path, "w", encoding="utf-8") as fh:
+        # newline="" fix (2026-11-09): on Windows the default text mode writes CRLF;
+        # the bash generator then glues the CR onto the last column and drops rows.
+        with open(class_path, "w", encoding="utf-8", newline="") as fh:
             fh.write("#post-surface-classify\tversion\t2\n")
             for row in new_class_rows:
                 fh.write("\t".join(row) + "\n")
 
         # ★ 迷你 probe：**只有 #meta，没有任何数据行** ⇒ ⇒ 新路由的 bucket/code 必为空
         # ⇒ ⇒ 裁决只可能来自静态分级 ⇒ ⇒ **不伪造任何探测观测**。
-        with open(probe_path, "w", encoding="utf-8") as fh:
+        with open(probe_path, "w", encoding="utf-8", newline="") as fh:
             fh.write("#meta\tprobe_version\t1\n")
             fh.write("#meta\ttarget\t%s\n" % (header_hint_target or ""))
             fh.write("#meta\treconstructed_by\tpost-surface-ledger-refresh.py (★ 无探测观测)")
 
+        # 2026-11-09 运营审计轮（Windows 腿）：awk 的 -v 会【处理转义序列】，
+        # 临时路径里的 	（\Temp	mp...\mc.tsv）被吃成 TAB ⇒ 文件名匹配失败
+        # ⇒ 假「产出 0 行」。统一切成正斜杠后再交给 bash/awk。
+        probe_posix = probe_path.replace(os.sep, "/")
+        class_posix = class_path.replace(os.sep, "/")
         proc = subprocess.run(
-            ["bash", os.path.join(REPO_ROOT, GENERATOR_REL), "ledger", probe_path, class_path],
+            ["bash", os.path.join(REPO_ROOT, GENERATOR_REL).replace(os.sep, "/"),
+             "ledger", probe_posix, class_posix],
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",  # 2026-11-09: Windows GBK 默认编码吃 UTF-8 note 列
         )
         if proc.returncode != 0:
             die("生成器失败（exit=%d）：\n%s" % (proc.returncode, proc.stderr))

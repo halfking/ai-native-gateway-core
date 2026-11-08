@@ -33,6 +33,7 @@ export default {
     providers: "供應商",
     reconciliation: "供應商對帳",
     salesWorkbench: '報價工作台',
+    operationsMarketing: "行銷管理",
     settlementReport: "結算報表",
     usageTrends: "用量趨勢分析",
     pricing: "成本價格",

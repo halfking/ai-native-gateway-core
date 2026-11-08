@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +19,39 @@ const (
 	statsRetentionDays   = 90
 	statsBackfillDays    = 30
 	statsRollupBatchSize = 5000
+
+	// 2026-11-09（运营审计轮项1-F1）：近期闭分钟重扫参数。
+	// 真库实证（211，03:25–03:45 每分钟对拍）：request_stats_minute 每分钟
+	// 少 30–50%（03:41 七条业务行聚合 0）—— 根因 = 终态行**迟到**：
+	// 流式请求的会话轮终态在 ts 所在分钟被游标越过之后才落到
+	// request_logs_with_current_month 视图，单遍水位线推进把迟到行永久
+	// 漏统。修复 = 每 tick 对 [now-lag-span, now-lag] 闭区间整桶重聚
+	// （写入是整键替换 ⇒ 幂等收敛到真值；retire 臂继续清理不再产出的键）。
+	statsResweepDefaultLag  = 2 * time.Minute
+	statsResweepDefaultSpan = 30 * time.Minute
 )
+
+// statsResweepLag / statsResweepSpan read the resweep knobs. Lag = how long
+// after minute-close we consider terminal writes settled; span = how far
+// back each tick re-aggregates. Span 0 disables the arm (cursor-only, the
+// pre-2026-11-09 behavior).
+func statsResweepLag() time.Duration {
+	if v := os.Getenv("LLM_GATEWAY_STATS_RESWEEP_LAG"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return statsResweepDefaultLag
+}
+
+func statsResweepSpan() time.Duration {
+	if v := os.Getenv("LLM_GATEWAY_STATS_RESWEEP_SPAN"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return statsResweepDefaultSpan
+}
 
 // StatsMinuteRollup compensates the in-memory accumulator by scanning request_logs_with_current_month.
 type StatsMinuteRollup struct {
@@ -123,6 +156,13 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 	if err := w.rollupWindow(timeoutCtx, lastTS, now); err != nil {
 		slog.Warn("stats minute rollup failed", "error", err)
 		return
+	}
+	// 2026-11-09（运营审计轮项1-F1）：近期闭分钟重扫 —— 迟到终态行的补统
+	// 臂。整键替换幂等；失败只告警，下一 tick 重来。
+	if span := statsResweepSpan(); span > 0 {
+		if err := w.rollupWindow(timeoutCtx, now.Add(-span-statsResweepLag()), now.Add(-statsResweepLag())); err != nil {
+			slog.Warn("stats minute recent-closed resweep failed", "error", err)
+		}
 	}
 	// Advancing the cursor only after all projections succeed makes a retry
 	// converge instead of permanently skipping rows.

@@ -519,6 +519,41 @@ type BalanceFloorGuard struct {
 	// ★ nil-safe：未接线时静默跳过（与 SetRearmFunc 的 nil 判定同形态）。
 	onRecoveredMu sync.RWMutex
 	onRecovered   func(credID int64, reason string)
+
+	// 2026-11-09（minimax 套餐恢复感知轮 F-B）：扫描器发现「凭据被配额族
+	// 挂起、但厂商套餐窗口有容量」时的通知钩子。语义与 onRecovered 相反：
+	// 这是**恢复证据先于状态机**的形态 —— 厂商 API 说有容量，凭据级探针
+	// 还没拿到成功事实（探针模型可能不在套餐覆盖内），需要一次快速探测
+	// 去验证并翻转。nil-safe，未接线时只留 Warn 日志。
+	onPlanCapacityMu sync.RWMutex
+	onPlanCapacity   func(credID int64)
+}
+
+// SetOnPlanCapacityAvailable wires the capacity-evidence notification fired
+// when the plan sweep observes a quota-suspended credential whose vendor plan
+// windows still show capacity (2026-11-09 F-B). Wiring (main.go):
+// balanceQuotaProbe.OnQuotaRecharged(credID, "plan_window_capacity_rearm") —
+// the fast cred-level probe path (probe-v2 ProbeNowAsync). With the probe-
+// model fallback ladder (credential_probe_v2.go F-A) that probe can succeed
+// on plan-covered models even when default_probe_model is out of plan.
+func (g *BalanceFloorGuard) SetOnPlanCapacityAvailable(fn func(credID int64)) {
+	g.onPlanCapacityMu.Lock()
+	g.onPlanCapacity = fn
+	g.onPlanCapacityMu.Unlock()
+}
+
+// notifyPlanCapacityAvailable fires the capacity-evidence notification.
+// Async via bg.Go so the guard cycle is never blocked.
+func (g *BalanceFloorGuard) notifyPlanCapacityAvailable(credID int64) {
+	g.onPlanCapacityMu.RLock()
+	fn := g.onPlanCapacity
+	g.onPlanCapacityMu.RUnlock()
+	if fn == nil || credID <= 0 {
+		return
+	}
+	Go("balance_floor_guard.notifyPlanCapacityAvailable", func() {
+		fn(credID)
+	})
 }
 
 // SetOnCredentialRecovered wires the recovery notification fired when this
@@ -1349,6 +1384,31 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 	}
 
 	g.persistPlanState(ctx, c.ID, st)
+
+	// 2026-11-09（minimax 套餐恢复感知轮 F-B）：扫描器手里有**厂商侧最新
+	// 配额证据**（本仓库每 5min 一轮直读厂商套餐 API），而凭据可能被
+	// probe-v2 的配额失败挂起（quota_state ∈ 用尽族）。此前 restore 路径
+	// 只认 reason_code='balance_floor' ⇒ probe-v2 挂起的行**即使厂商窗口
+	// 已有容量也永远无人唤醒**。211 实证（2026-11-07~11-08）：minimax
+	// 套餐（Token Plan）恢复后 ~24h，扫描器每轮 success=6、pulled=0、
+	// restored=0，凭据级探针每小时吃 429-2056（探针模型不在套餐覆盖内，
+	// 见 credential_probe_v2.go F-A 回退梯），直到人工恢复。
+	// ⇒ 证据门控 re-arm：用尽族挂起 + 厂商窗口有容量（MaxUsedPercent<100）
+	//   ⇒ 触发恢复链（OnPlanCapacityAvailable → OnQuotaRecharged 快速
+	//   凭据级探测 [F-A 回退梯兜底] + RearmCredentialFailures 回拉节点行）。
+	//   warnGate（15min 窗）既节流日志也节流 re-arm 本身 —— 厂商 API 是
+	//   只读快照，重复触发只会重复探测，无状态风险，但没必要每 5min 打一次。
+	if (c.QuotaState == "balance_exhausted" || c.QuotaState == "permanently_exhausted" || c.QuotaState == "periodic_exhausted") &&
+		c.ReasonCode != "balance_floor" && st.MaxUsedPercent < 100 && g.warnGate.allow(c.ID, time.Now()) {
+		slog.Warn("balance_floor_guard: credential quota-suspended but vendor plan windows have capacity; dispatching recovery probe",
+			"credential_id", c.ID,
+			"catalog", c.Catalog,
+			"quota_state", c.QuotaState,
+			"reason_code", c.ReasonCode,
+			"max_used_percent", st.MaxUsedPercent,
+			"windows", st.summary(c.FloorTokens, c.FloorPercent))
+		g.notifyPlanCapacityAvailable(c.ID)
+	}
 
 	action := evaluatePlanFloor(c.FloorTokens, c.FloorPercent, st)
 	switch action {

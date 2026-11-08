@@ -32,6 +32,7 @@ export default {
     providers: "Proveedores",
     reconciliation: "Conciliación de proveedores",
     salesWorkbench: 'Taller comercial',
+    operationsMarketing: "Marketing",
     settlementReport: "Informe de liquidación",
     usageTrends: "Tendencias de uso",
     pricing: "Precios de coste",

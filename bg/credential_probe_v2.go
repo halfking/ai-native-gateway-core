@@ -64,6 +64,11 @@ type CredentialProbeV2 struct {
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
 
+	// chatFallbackModelsFn (2026-11-09 minimax 套餐恢复感知轮 F-A) is the
+	// test seam over loadChatFallbackProbeModels. nil → the production
+	// SQL read runs; unit tests stub it to avoid a PG dependency.
+	chatFallbackModelsFn func(ctx context.Context, credID int, exclude string, limit int) []string
+
 	// F04 (V3 持久化协议能力, 2026-09-30): fpslot 节点状态管理器引用。
 	// 探针是协议能力结论的权威来源：它观察到 provider 的
 	// "Responses API unsupported" 判定后，除了写 cooldown，还要把该结论
@@ -937,14 +942,17 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 	// parameter: 'messages'"（实测），凭据级健康判定从此被污染。responses
 	// 被上游判「不支持 Responses API」（聚合中转按模型族分级，实测 claude
 	// 400 / qwen 502）时降级一发 chat 探针——该凭据经 chat 仍可用。
-	runChat := func() (bool, string) {
+	// 2026-11-09（minimax 套餐恢复感知轮 F-A）：runChat 按模型参数化 ——
+	// 主探针模型失败后的回退梯（probeChatFallbackModels）需要对**备选绑定
+	// 模型**复用同一套协议感知的探测形态，不能只认 DefaultProbeModel。
+	runChatModel := func(model string) (bool, string) {
 		if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
 			msgURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
 			if blocked, reason := providercap.EgressBlocked(msgURL); blocked {
 				providercap.WarnBlocked("probe_v2.chat", msgURL, reason)
 				return false, "egress blocked: " + reason
 			}
-			return c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, providercap.ProbePingMaxTokens)
+			return c.miniAnthropic(ctx, httpClient, s.APIKey, model, msgURL, providercap.ProbePingMaxTokens)
 		}
 		probeURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
 		if blocked, reason := providercap.EgressBlocked(probeURL); blocked {
@@ -959,18 +967,18 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 		// ★ 只有 chat 端点的 provider 走这一支：messages / responses 协议
 		//   本身与模态无关（上游按协议分发），保持既有口径。
 		if desc.ChatProbeEndpoint == upstreamurl.EpChatCompletions {
-			modality := c.probeModelModality(ctx, s.ID, s.DefaultProbeModel)
-			if credentialProbeUsesEmbeddings(s.DefaultProbeModel, modality, s.ProviderProtocol) {
+			modality := c.probeModelModality(ctx, s.ID, model)
+			if credentialProbeUsesEmbeddings(model, modality, s.ProviderProtocol) {
 				embURL := upstreamurl.EmbeddingsURL(strings.TrimRight(s.BaseURL, "/"))
 				if blocked, reason := providercap.EgressBlocked(embURL); blocked {
 					providercap.WarnBlocked("probe_v2.embeddings", embURL, reason)
 					return false, "egress blocked: " + reason
 				}
-				return c.miniEmbedding(ctx, httpClient, s.APIKey, s.DefaultProbeModel, embURL)
+				return c.miniEmbedding(ctx, httpClient, s.APIKey, model, embURL)
 			}
 		}
 		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
-			ok, errMsg, respStatus, _ := c.miniResponses(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL)
+			ok, errMsg, respStatus, _ := c.miniResponses(ctx, httpClient, s.APIKey, model, probeURL)
 			if ok {
 				// F04 §3.4 reverse recovery: this probe's Responses attempt
 				// succeeded, so any prior "unsupported" verdict for this node
@@ -991,7 +999,7 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 					// 保留原 responses 失败上下文：降级被跳过只作附注，不覆盖归因。
 					return false, errMsg + "; chat fallback skipped (egress blocked: " + reason + ")"
 				}
-				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, providercap.ProbePingMaxTokens)
+				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, model, chatURL, providercap.ProbePingMaxTokens)
 				if chatOK {
 					return true, ""
 				}
@@ -1004,7 +1012,11 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 			}
 			return ok, errMsg
 		}
-		return c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL, providercap.ProbePingMaxTokens)
+		return c.miniChat(ctx, httpClient, s.APIKey, model, probeURL, providercap.ProbePingMaxTokens)
+	}
+
+	runChat := func() (bool, string) {
+		return runChatModel(s.DefaultProbeModel)
 	}
 
 	var (
@@ -1024,11 +1036,129 @@ func (c *CredentialProbeV2) probeCredentialWithCapability(ctx context.Context, s
 		// Network / 5xx / 408 / 425 / 429 → retry next loop.
 		// Anything else (400, 401, 402, 403, 404, 422) → fail fast.
 		if !shouldRetryChatErrMsg(errMsg) {
+			// 2026-11-09（minimax 套餐恢复感知轮 F-A）：探测模型专属失败 ⇒
+			// 回退梯。211 实证事故（2026-11-07~11-08）：cred 41/42 的
+			// default_probe_model=minimax-m3 **不在该账号 Token Plan 覆盖内**，
+			// 每次探测吃 429-2056「请升级 Token Plan 套餐或购买积分」（402
+			// 余额同理）⇒ 凭据每小时探测永远失败、凭据级挂起整天，而套餐
+			// 覆盖模型（MiniMax-M3.1-Flash 等）实测一直在承接真实流量。⇒
+			// 配额族失败时对**套餐覆盖的备选绑定模型**各试一发：任一成功 ⇒
+			// 走既有成功路径翻 ok/ready（完整恢复链自动接管）；全部失败 ⇒
+			// 保留主失败归因原文（回退失败只在日志里，不污染分类）。
+			if credentialProbeModelFallbackTrigger(errMsg) {
+				if ok := c.probeChatFallbackModels(ctx, s, runChatModel, errMsg); ok {
+					return true, ""
+				}
+			}
 			return false, errMsg
 		}
 	}
 	return false, fmt.Sprintf("chat unreachable (after %d attempts): %s",
 		len(probeutil.ProbeRetryDelays), lastErr)
+}
+
+// credentialProbeModelFallbackTrigger reports whether a failed credential-level
+// probe should try alternate bound models before concluding failure.
+//
+// Trigger set = 探测模型专属的配额族失败（isProbeQuotaFailure 覆盖 402 /
+// 429-配额 / 403-余额形态）。这些失败指向**这个探针模型**在**这个账号的
+// 计划覆盖/余额**出了问题，同凭据下的兄弟模型可能完全可用 —— 与 401/403
+// 鉴权失败（key 级，换模型没用）和 5xx（上游整体故障）形成对照。
+//
+// 2026-11-09（minimax 套餐恢复感知轮 F-A）。
+func credentialProbeModelFallbackTrigger(errMsg string) bool {
+	return isProbeQuotaFailure(errMsg)
+}
+
+// probeChatFallbackModels retries the credential-level probe against alternate
+// chat-capable bound models (probe-model fallback ladder). At most
+// probeFallbackModelLimit candidates, one attempt each — bounded cost for the
+// hourly BalanceQuotaProbe tick. Candidates prefer models with direct-probe
+// success evidence (node_probe_state.last_direct_ok) so a plan-covered working
+// model is tried before unverified ones.
+//
+// 2026-11-09（minimax 套餐恢复感知轮 F-A）。
+func (c *CredentialProbeV2) probeChatFallbackModels(
+	ctx context.Context,
+	s v2Snapshot,
+	runChatModel func(string) (bool, string),
+	primaryErr string,
+) bool {
+	if c == nil {
+		return false
+	}
+	loader := c.chatFallbackModelsFn
+	if loader == nil {
+		if c.db == nil {
+			return false
+		}
+		loader = c.loadChatFallbackProbeModels
+	}
+	candidates := loader(ctx, s.ID, s.DefaultProbeModel, probeFallbackModelLimit)
+	for _, model := range candidates {
+		ok, fbErr := runChatModel(model)
+		if ok {
+			slog.Info("credential probe v2: primary probe model quota-failed but fallback model recovered the probe",
+				"credential_id", s.ID,
+				"primary_model", s.DefaultProbeModel,
+				"fallback_model", model,
+				"primary_error", truncateBody([]byte(primaryErr)))
+			return true
+		}
+		slog.Info("credential probe v2: fallback probe model also failed",
+			"credential_id", s.ID,
+			"fallback_model", model,
+			"error", truncateBody([]byte(fbErr)))
+	}
+	return false
+}
+
+// loadChatFallbackProbeModels returns up to `limit` alternate chat-capable
+// bound models for a credential, excluding `exclude`. Stable order:
+// direct-probe-success models first, then alphabetical — repeated probes pick
+// the same candidates. Embedding/audio-modality models are excluded (their
+// probe shape differs and they cannot arbitrate a chat quota verdict).
+func (c *CredentialProbeV2) loadChatFallbackProbeModels(ctx context.Context, credID int, exclude string, limit int) []string {
+	if c == nil || c.db == nil || limit <= 0 {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	rows, err := c.db.Query(queryCtx, `
+		SELECT pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+		LEFT JOIN node_probe_state nps
+		  ON nps.credential_id = cmb.credential_id
+		 AND nps.raw_model_name = pm.raw_model_name
+		WHERE cmb.credential_id = $1
+		  AND COALESCE(cmb.available, TRUE) = TRUE
+		  AND COALESCE(pm.available, TRUE) = TRUE
+		  AND pm.raw_model_name <> ''
+		  AND pm.raw_model_name <> $2
+		  AND COALESCE(mc.modality, 'text') NOT IN ('embedding', 'audio')
+		ORDER BY COALESCE(nps.last_direct_ok, FALSE) DESC, pm.raw_model_name
+		LIMIT $3
+	`, credID, exclude, limit)
+	if err != nil {
+		slog.Warn("credential probe v2: loadChatFallbackProbeModels query failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	defer rows.Close()
+	models := make([]string, 0, limit)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil
+	}
+	return models
 }
 
 // shouldRetryChatErrMsg inspects the errMsg produced by miniChat / miniAnthropic
@@ -1350,6 +1480,12 @@ const authProbeBackoffBase = 15 * time.Minute
 // key is re-validated at most once per day at steady state — enough to
 // notice a vendor-side unblock within a day, far below any abuse threshold.
 const authProbeBackoffCap = 24 * time.Hour
+
+// probeFallbackModelLimit bounds the probe-model fallback ladder (2026-11-09
+// minimax 套餐恢复感知轮 F-A)：主探针模型配额族失败后最多再试这么多个备选
+// 绑定模型（每个一发）。小时级 BalanceQuotaProbe tick 下这是有界的出网成本
+// —— 只在配额族失败时触发，正常探测零额外请求。
+const probeFallbackModelLimit = 3
 
 // authProbeBackoffRecoverAt returns the availability_recover_at for the
 // n-th consecutive failed auth probe: 15m, 30m, 1h, 2h, 4h, 8h, 16h, then

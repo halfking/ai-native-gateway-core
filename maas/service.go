@@ -390,6 +390,15 @@ type Plan struct {
 	MonthlyCredits int64  `json:"monthly_credits"`
 	Enabled        bool   `json:"enabled"`
 	SortOrder      int    `json:"sort_order"`
+	// 2026-11-09（运营审计轮项4）：934 商业列 additive 暴露。
+	BillingPeriod     string     `json:"billing_period"`
+	QuotaCredits      *int64     `json:"quota_credits"`
+	OveragePriceCents *int       `json:"overage_price_cents"`
+	OverageAllowed    bool       `json:"overage_allowed"`
+	EffectiveFrom     *time.Time `json:"effective_from"`
+	EffectiveTo       *time.Time `json:"effective_to"`
+	AutoRenew         bool       `json:"auto_renew"`
+	SLA               string     `json:"sla"`
 }
 
 // TopupPackage is a one-time credit bundle.
@@ -402,10 +411,19 @@ type TopupPackage struct {
 	CreditsAmount int64  `json:"credits_amount"`
 	Enabled       bool   `json:"enabled"`
 	SortOrder     int    `json:"sort_order"`
+	// 2026-11-09（运营审计轮项4）：加油包三列 additive 暴露。
+	BonusCredits  int64      `json:"bonus_credits"`
+	EffectiveFrom *time.Time `json:"effective_from"`
+	EffectiveTo   *time.Time `json:"effective_to"`
+	FirstTimeOnly bool       `json:"first_time_only"`
 }
 
 func (s *Service) ListPlans(ctx context.Context, enabledOnly bool) ([]Plan, error) {
-	q := `SELECT id, code, tier, name, price_cents, monthly_credits, enabled, sort_order
+	// 2026-11-09（运营审计轮项4）：补 934 商业列（additive —— 既有消费方
+	// 只取旧字段，新字段供营销管理页展示）。
+	q := `SELECT id, code, tier, name, price_cents, monthly_credits, enabled, sort_order,
+	             COALESCE(billing_period, 'monthly'), quota_credits, overage_price_cents,
+	             overage_allowed, effective_from, effective_to, auto_renew, sla
 	      FROM subscription_plans`
 	if enabledOnly {
 		q += ` WHERE enabled = TRUE`
@@ -419,7 +437,9 @@ func (s *Service) ListPlans(ctx context.Context, enabledOnly bool) ([]Plan, erro
 	var out []Plan
 	for rows.Next() {
 		var p Plan
-		if err := rows.Scan(&p.ID, &p.Code, &p.Tier, &p.Name, &p.PriceCents, &p.MonthlyCredits, &p.Enabled, &p.SortOrder); err != nil {
+		if err := rows.Scan(&p.ID, &p.Code, &p.Tier, &p.Name, &p.PriceCents, &p.MonthlyCredits, &p.Enabled, &p.SortOrder,
+			&p.BillingPeriod, &p.QuotaCredits, &p.OveragePriceCents,
+			&p.OverageAllowed, &p.EffectiveFrom, &p.EffectiveTo, &p.AutoRenew, &p.SLA); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -428,7 +448,10 @@ func (s *Service) ListPlans(ctx context.Context, enabledOnly bool) ([]Plan, erro
 }
 
 func (s *Service) ListTopupPackages(ctx context.Context, enabledOnly bool) ([]TopupPackage, error) {
-	q := `SELECT id, code, tier, name, price_cents, credits_amount, enabled, sort_order
+	// 2026-11-09（运营审计轮项4）：补 bonus_credits/生效窗/first_time_only
+	// （additive；加油包三列此前零消费）。
+	q := `SELECT id, code, tier, name, price_cents, credits_amount, enabled, sort_order,
+	             COALESCE(bonus_credits, 0), effective_from, effective_to, COALESCE(first_time_only, FALSE)
 	      FROM topup_packages`
 	if enabledOnly {
 		q += ` WHERE enabled = TRUE`
@@ -442,7 +465,8 @@ func (s *Service) ListTopupPackages(ctx context.Context, enabledOnly bool) ([]To
 	var out []TopupPackage
 	for rows.Next() {
 		var p TopupPackage
-		if err := rows.Scan(&p.ID, &p.Code, &p.Tier, &p.Name, &p.PriceCents, &p.CreditsAmount, &p.Enabled, &p.SortOrder); err != nil {
+		if err := rows.Scan(&p.ID, &p.Code, &p.Tier, &p.Name, &p.PriceCents, &p.CreditsAmount, &p.Enabled, &p.SortOrder,
+			&p.BonusCredits, &p.EffectiveFrom, &p.EffectiveTo, &p.FirstTimeOnly); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
