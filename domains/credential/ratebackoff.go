@@ -33,6 +33,20 @@ package credential
 // 本器由 writer.go 的 WriteOnError 驱动，而 probe 写路径（SetCredentialUnavailable
 // / writeProtocolCredentialStateOnError 的 params.DispatchAttempt 分流）不经过它。
 //
+// # 节奏校准（2026-11-08，token 桶 W1 —— 本文件当前的生产行为）
+//
+// docs/audit/2026-11-07-token桶双层路由优化方案.md §三 T1：A2 梯对「节奏正常」
+// 的桶过重——3/min 免费桶的正常性 429 也被升到 30min 封顶 ⇒ 池饥饿（211 上
+// 2710 例 no_candidate 的同构形态；四策略仿真：亏空域 client_ok 62.8%→80.0%）。
+// 生产路径（rateLimitedCoolingDuration）现在默认走**节奏校准**：
+//
+//	冷却下限 = 窗口重灌估计（settings routing.rate.window_refill_seconds，
+//	默认 60s）；两次 429 间隔 ≥ 窗口 ⇒ 计数归零（节奏正常不罚）；
+//	快速连击 ≥ routing.rate.pace_violation_threshold（默认 3）才进升级梯。
+//
+// Retry-After 优先（信任上限 1h）与遗忘窗 30min 兜底均不变；refill=0 =
+// 逐字节回到本文件的遗留 A2 行为（Observe）。红线全部不动。
+//
 // # 载体（与 slowrest 同款的已知局限）
 //
 // 计数是**进程内**的（慢启动休息器 slowrest.go 同款）。多实例部署时第 2 次的
@@ -52,6 +66,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -134,7 +150,30 @@ func (t *RateBackoffTracker) SetClock(now func() time.Time) {
 // 与 slowrest 的差异：429 **第一次就罚**（现契约 = 3min 冷却，判据①），
 // 升级发生在「连续再犯」——这与慢启动的「第一次放过」是两类归责
 // （429 是上游明确说了"你被限流"的失败证据；首字节超时可能是自己 prompt 长）。
+//
+// ★ 2026-11-08：本方法 = **遗留 A2 路径**（无节奏校准，refill=0）。
+// 生产路径走 rateLimitedCoolingDuration → ObserveWithPace（settings 旋钮）。
+// 既有 A2 测试族（本文件）全部按遗留路径保持原断言 = 逃生口的门。
 func (t *RateBackoffTracker) Observe(key string) RateBackoffDecision {
+	return t.ObserveWithPace(key, 0, 0)
+}
+
+// ObserveWithPace 记录一次 429 并按「节奏校准」判定冷却时长（token 桶 W1）。
+//
+// refill > 0 时启用节奏校准（docs/audit/2026-11-07-token桶双层路由优化方案.md §三 T1）：
+//
+//   - **节奏正常**（距上次 429 ≥ refill：vendor 窗口有时间重灌）⇒ 计数归零，
+//     本次按窗口时长冷却（refill）——这是仿真 S3 的全部杠杆来源：A2 梯把
+//     3/min 免费桶的正常性 429 也升到 30min 封顶 ⇒ 池饥饿；节奏正常的 429
+//     不该被升级梯惩罚。
+//   - **节奏违规**（间隔 < refill 的快速连击）达到 threshold 次 ⇒ 才进
+//     3min<<min(n-thr,4) 梯（封顶 RateBackoffMax=30min 不变）。
+//   - Retry-After 仍由 rateLimitedCoolingDuration 的 RA 分支优先处理
+//     （vendor 明说了就信 vendor，判据④不变），本函数只管无 RA 路径。
+//
+// refill == 0 = 遗留 A2（无条件升级，与 Observe 逐字节同语义）。
+// threshold < 2 按 2 兜底（防 0/负值让梯子第一次就触发）。
+func (t *RateBackoffTracker) ObserveWithPace(key string, refill time.Duration, threshold int) RateBackoffDecision {
 	if t == nil {
 		return RateBackoffDecision{}
 	}
@@ -142,8 +181,14 @@ func (t *RateBackoffTracker) Observe(key string) RateBackoffDecision {
 	defer t.mu.Unlock()
 	now := t.now()
 	run := t.runs[key]
-	// 遗忘窗：距上次 429 超过 RateForget ⇒ 计数归零（判据③）。
+	// 遗忘窗（判据③）仍是兜底：refill 再大也不超过 RateForget 的重置语义。
 	if !run.at.IsZero() && now.Sub(run.at) >= RateForget {
+		run.n = 0
+	}
+	// 节奏校准：间隔 ≥ 窗口重灌估计 = 上游窗口已经重灌过 ⇒ 本次是新鲜的
+	// 窗口边界命中，不是持续锤击 ⇒ 计数归零（refill ≤ RateForget 时本条
+	// 恒先于遗忘窗触发；两条都留是防运维把 refill 配得比遗忘窗还大）。
+	if refill > 0 && !run.at.IsZero() && now.Sub(run.at) >= refill {
 		run.n = 0
 	}
 	run.n++
@@ -151,20 +196,42 @@ func (t *RateBackoffTracker) Observe(key string) RateBackoffDecision {
 	t.runs[key] = run
 	t.pruneLocked(now)
 
-	d := RateBackoffBase
-	escalated := false
-	if run.n > 1 {
-		shift := run.n - 1
-		if shift > rateBackoffMaxShift {
-			shift = rateBackoffMaxShift
+	if refill <= 0 {
+		// 遗留 A2：3min 基准 + 无条件累计升级（6/12/24/30 封顶）。
+		d := RateBackoffBase
+		escalated := false
+		if run.n > 1 {
+			shift := run.n - 1
+			if shift > rateBackoffMaxShift {
+				shift = rateBackoffMaxShift
+			}
+			d = RateBackoffBase << shift
+			if d > RateBackoffMax {
+				d = RateBackoffMax
+			}
+			escalated = true
 		}
-		d = RateBackoffBase << shift
-		if d > RateBackoffMax {
-			d = RateBackoffMax
-		}
-		escalated = true
+		return RateBackoffDecision{Duration: d, Count: run.n, Escalated: escalated}
 	}
-	return RateBackoffDecision{Duration: d, Count: run.n, Escalated: escalated}
+
+	thr := threshold
+	if thr < 2 {
+		thr = 2
+	}
+	if run.n < thr {
+		// 窗口冷却：让 vendor 的窗口重灌完再说（T1a）。
+		return RateBackoffDecision{Duration: refill, Count: run.n, Escalated: false}
+	}
+	// 节奏违规升级梯（T1b）：从第 thr 次快速连击起 3min→6min→12min→24min→30min。
+	shift := run.n - thr
+	if shift > rateBackoffMaxShift {
+		shift = rateBackoffMaxShift
+	}
+	d := RateBackoffBase << shift
+	if d > RateBackoffMax {
+		d = RateBackoffMax
+	}
+	return RateBackoffDecision{Duration: d, Count: run.n, Escalated: true}
 }
 
 // pruneLocked 清掉过期条目（遗忘窗之外的键）。
@@ -213,11 +280,14 @@ func RateBackoffKey(credentialID int, model string) string {
 
 // rateLimitedCoolingDuration 计算一次 429 的绑定冷却时长。
 //
-// 来源链（判据④ + coolingDuration 的既有语义）：
+// 来源链（判据④ + coolingDuration 的既有语义 + token 桶 W1 节奏校准）：
 //  1. Retry-After（vendor 明说了就信 vendor）——但 429 只信到 1h
 //     （MaxRateRetryAfter；超过的部分几乎总是 quota 类，由 quota 路径管）。
 //     这一条**独立于计数**：即使第 5 次连败，vendor 说等 20s 就等 20s。
-//  2. 无 Retry-After ⇒ 累计升级：3min→6min→12min→24min→30min 封顶。
+//  2. 无 Retry-After ⇒ 节奏校准（2026-11-08，settings
+//     routing.rate.window_refill_seconds 默认 60s）：窗口内冷却 refill，
+//     快速连击 ≥ threshold 才进升级梯；refill=0 = 遗留 A2 累计升级
+//     （3min→6min→12min→24min→30min 封顶）。
 //
 // coolingDuration 的 24h 全局帽对其它 kind 不变（函数不动）。
 func rateLimitedCoolingDuration(retryAfter time.Duration, t *RateBackoffTracker, key string) time.Duration {
@@ -227,8 +297,13 @@ func rateLimitedCoolingDuration(retryAfter time.Duration, t *RateBackoffTracker,
 		}
 		return retryAfter
 	}
+	refill := time.Duration(settings.RateWindowRefillSeconds()) * time.Second
 	if t == nil {
+		// 无计数器（未装配）：没有历史就没有升级，只保证窗口下限。
+		if refill > 0 {
+			return refill
+		}
 		return RateBackoffBase
 	}
-	return t.Observe(key).Duration
+	return t.ObserveWithPace(key, refill, settings.RatePaceViolationThreshold()).Duration
 }

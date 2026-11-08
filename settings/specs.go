@@ -82,6 +82,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-10-30 magpie 对比轮: 候选计划面热加载旋钮
 	//（routing.max_candidates / survival.attempt_budget）。
 	out = append(out, RoutingPlanSpecs()...)
+	// 2026-11-08 token 桶 W1: 429 节奏校准冷却
+	//（routing.rate.window_refill_seconds / routing.rate.pace_violation_threshold）。
+	out = append(out, RatePolicySpecs()...)
 	// 2026-10-21 R72f: URSM v2 平台级设置（键此前只存在于读方 ⇒ 写不进去）。
 	out = append(out, UrsmSpecs()...)
 	// 2026-11-02: P1-2③ memora 上下文预热注入灰度开关
