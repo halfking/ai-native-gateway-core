@@ -4,7 +4,7 @@
 # ┌──────────────────────────────────────────────────────────────────────────┐
 # │ 三层验证（对应仓内「Maestro」惯例：观测 → 假设 → 最小修复 → 再测）：    │
 # │   L1 Go 测试    —— go test ./mcp/... （治理链单测/集成测）               │
-# │   L2 API 场景   —— 本脚本的 S01~S19（真实进程 + 真实 HTTP）              │
+# │   L2 API 场景   —— 本脚本的 S01~S20（真实进程 + 真实 HTTP）              │
 # │   L3 浏览器 flow —— maestro/flows/10-mcp-gateway.yaml（运营看板逐页断言） │
 # └──────────────────────────────────────────────────────────────────────────┘
 #
@@ -135,7 +135,7 @@ rpc() { # rpc <base-url> <path> <key> <json-body> [extra-header]
 body_get() { cat "${OUT}/.body"; }
 jq_get() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 
-log "== L2: API 场景（S01~S19）"
+log "== L2: API 场景（S01~S20）"
 
 # S01 无凭证 → 401
 code="$(rpc "${BASE_URL}" /mcp '' '{"jsonrpc":"2.0","id":1,"method":"initialize"}')"
@@ -189,6 +189,7 @@ code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":4,"method":"to
 [ "${code}" = "200" ] && ok "S09 受限凭证调用允许的工具 → 200" || bad "S09 受限凭证调用 → ${code}（期望 200）"
 
 # S10 越权工具（适配器白名单外）→ 403/404
+#   ★ S08 的凭证只允许 demo 适配器 ⇒ 调 crm 工具被「适配器白名单」闸挡下。
 code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
 case "${code}" in
   403|404) ok "S10 越权访问被拒 → ${code}" ;;
@@ -196,7 +197,14 @@ case "${code}" in
 esac
 
 # S11 高敏工具缺审批凭据 → 403
-code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
+#   ★ 用一把**允许访问 crm 适配器**的凭证 ⇒ 这样被拒的才是「审批闸」，
+#     而不是被上一道「适配器白名单」闸提前挡下（两者都返回 403，
+#     但测的是不同的闸，分开才能定位问题）。
+APPROVAL_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"default","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
+  | jq_get 'd.get("secret","")')"
+code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
 [ "${code}" = "403" ] && ok "S11 高敏工具缺审批凭据 → 403" || bad "S11 高敏工具 → ${code}（期望 403）"
 
 # S12 审批通过后放行
@@ -206,7 +214,7 @@ APR="$(curl -s -X POST "${BASE_URL}/mcp/control/approvals" -H "X-Admin-Token: ${
 curl -s -o /dev/null -X POST "${BASE_URL}/mcp/control/approvals/${APR}" \
   -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
   -d '{"decision":"approved","decided_by":"maestro"}'
-code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}' "X-MCP-Approval: ${APR}")"
+code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}' "X-MCP-Approval: ${APR}")"
 case "${code}" in
   200|502|503) ok "S12 带审批凭据后放行（${code}：上游未就绪也算治理链通过）" ;;
   403) bad "S12 带审批凭据仍被拒 → ${code}" ;;
@@ -304,6 +312,36 @@ else
   bad "S17~S19 引导面实例未就绪"
 fi
 
+# S20 工具级强制力运行时探针（三档结论）
+#
+# ★ 移植既有 tools/mcp-gateway 的 scripts/probe-tool-allow-enforcement.js：
+#   这道门测的是**结果**（对真实路径真打一次不该被允许的调用），**不测拓扑**。
+#   三档：deny 工具 403 且 allow 工具 200 ⇒ 执法在生效（exit 0）；
+#         deny 工具放行 ⇒ 执法没生效（exit 1）；其余 ⇒ 未验证（exit 2）。
+log "== S20 工具级强制力探针"
+PROBE_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"default","name":"maestro-probe","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo"],"allowed_tools":["demo__search_memory"]}' \
+  | jq_get 'd.get("secret","")')"
+if [ -z "${PROBE_KEY}" ]; then
+  bad "S20 未能签发探针凭证"
+else
+  if MCP_API_KEY="${PROBE_KEY}" bash "${ROOT}/tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh" \
+      --base "${BASE_URL}" --path /mcp \
+      --allow-tool demo__search_memory --allow-args '{"q":"probe"}' \
+      --deny-tool demo__add_memory --deny-args '{"text":"probe"}' \
+      >"${OUT}/probe-tool-allow.log" 2>&1; then
+    prc=0
+  else
+    prc=$?
+  fi
+  case "${prc}" in
+    0) ok "S20 工具级强制力探针 → 执法在生效（exit 0）" ;;
+    1) bad "S20 工具级强制力探针 → 执法没生效（exit 1，见 probe-tool-allow.log）" ;;
+    *) bad "S20 工具级强制力探针 → 未验证（exit ${prc}，见 probe-tool-allow.log）" ;;
+  esac
+fi
+
 # ── 4. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
 if [ "${SKIP_MAESTRO:-0}" != "1" ]; then
   log "== L3: Maestro 浏览器 flow（运营看板）"
@@ -359,7 +397,7 @@ fi
   echo
   echo "- 时间：$(date '+%Y-%m-%d %H:%M:%S')"
   echo "- 目标：llm-gateway-go 内置 MCP 服务网关（mcp/ 包 + cmd/mcp-gateway）"
-  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S19）+ L3 Maestro 浏览器 flow"
+  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S20）+ L3 Maestro 浏览器 flow"
   echo
   echo "## 结论"
   echo

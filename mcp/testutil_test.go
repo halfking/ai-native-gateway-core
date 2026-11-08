@@ -121,6 +121,15 @@ func newTestGateway(t *testing.T, upstream *fakeUpstream, opts ...func(*Config))
 // rpcCall 发一次 JSON-RPC 请求并返回 (status, body)。
 func rpcCall(t *testing.T, srv *httptest.Server, path, token string, payload map[string]any) (int, map[string]any) {
 	t.Helper()
+	status, _, body := rpcCallFull(t, srv, path, token, payload)
+	return status, body
+}
+
+// rpcCallFull 发一次 JSON-RPC 请求并返回 (status, headers, body)。
+//
+// 需要断言响应头（如 429 的 Retry-After）时用它。
+func rpcCallFull(t *testing.T, srv *httptest.Server, path, token string, payload map[string]any) (int, http.Header, map[string]any) {
+	t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -145,7 +154,7 @@ func rpcCall(t *testing.T, srv *httptest.Server, path, token string, payload map
 			t.Fatalf("decode %q: %v", string(body), err)
 		}
 	}
-	return resp.StatusCode, out
+	return resp.StatusCode, resp.Header.Clone(), out
 }
 
 // rpcErrorCode 从 JSON-RPC 错误体里取错误码。

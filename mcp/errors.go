@@ -18,20 +18,39 @@ const (
 	CodeInvalidParams  = -32602
 	CodeInternalError  = -32603
 
+	// CodeUpstreamError 上游返回错误。
+	//
+	// 取值 **-32000**：与既有 tools/mcp-gateway 的上游代理错误（gateway.js 的
+	// "Gateway proxy error" / "Memora MCP upstream unavailable"、tool-proxy.js 的
+	// "Tool proxy error"）逐字一致 —— 既有客户端按错误码判分支，不能改号。
+	CodeUpstreamError = -32000
 	// CodeToolNotFound 工具不存在或未对调用方可见。
+	//
+	// ★ 本码是**新增**的（既有实现没有"工具不存在"这一分支：它的工具集由
+	//   上游直接决定，找不到就由上游报错）。新增码占用 -32001。
 	CodeToolNotFound = -32001
 	// CodeToolNotAllowed 工具不在允许集（key×tool 执法 / 可见性 / RBAC）。
+	//
+	// 取值 **-32003**：与既有 tools/mcp-gateway 的 tool-allow / bindings 执法
+	// 逐字一致。
 	CodeToolNotAllowed = -32003
 	// CodeApprovalRequired 敏感工具缺少有效审批凭据。
+	//
+	// ★ 本码是**新增**的（既有实现没有审批这一层）。新增码占用 -32004。
 	CodeApprovalRequired = -32004
-	// CodeUpstreamError 上游返回错误。
-	CodeUpstreamError = -32005
 	// CodeCircuitOpen 熔断器打开，暂不转发。
+	//
+	// ★ 本码是**新增**的（既有实现无熔断）。新增码占用 -32006。
 	CodeCircuitOpen = -32006
 	// CodeUpstreamTimeout 上游超时。
+	//
+	// ★ 本码是**新增**的（既有实现未区分超时与其它上游错误）。新增码占用 -32007。
 	CodeUpstreamTimeout = -32007
 	// CodeRateLimited 触发限流。
-	CodeRateLimited = -32008
+	//
+	// 取值 **-32002**：与既有 tools/mcp-gateway 的限流错误（gateway.js 与
+	// tool-proxy.js 两处）逐字一致。
+	CodeRateLimited = -32002
 )
 
 // RPCError 是 JSON-RPC 错误体。

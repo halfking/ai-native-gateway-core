@@ -71,10 +71,28 @@ var capabilityToTools = map[string][]string{
 	},
 }
 
+// capabilityOrder 是能力域的**稳定顺序**。
+//
+// ★ 为什么必须显式保序：既有 tools/mcp-gateway 的非法能力域报错文案是
+// `Unknown capability: X. Valid: ${Array.from(VALID_CAPABILITIES).join(', ')}`
+// 而 VALID_CAPABILITIES = new Set(Object.keys(CAPABILITY_TOOLS))
+// ⇒ 文案顺序 = CAPABILITY_TOOLS 的**键插入顺序**。Go 的 map 迭代顺序随机，
+// 照抄 map 会让同一错误的文案每次都变 ⇒ 这里显式列出与既有实现同序的清单。
+var capabilityOrder = []string{
+	"code", "memory", "agent", "wiki", "apikey", "federation", "reasoning",
+}
+
 // ValidCapability 报告是否为已知能力域。
 func ValidCapability(cap string) bool {
 	_, ok := capabilityToTools[cap]
 	return ok
+}
+
+// ValidCapabilities 返回全部合法能力域（按稳定顺序，拷贝）。
+func ValidCapabilities() []string {
+	out := make([]string, len(capabilityOrder))
+	copy(out, capabilityOrder)
+	return out
 }
 
 // CapabilityTools 返回能力域对应的工具名列表（拷贝）。

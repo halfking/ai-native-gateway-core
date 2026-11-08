@@ -47,6 +47,45 @@
 > ★ 明确没做（登记在 `docs/mcp-gateway/02-capability-matrix.md` §3）：上游 stdio/SSE 归一化、
 >   REST→MCP 虚拟化、RFC 8707/7591/8414 规范族、出向 3LO/OBO、OTel trace、prompt-injection
 >   检测、适配器并发上限执行、工具结果缓存、OAuth 出向代理。
+>
+> **2026-11-09 MCP 网关「既有实现逐字对齐」修补轮（goal 会话）**：
+> ★ 背景：上一轮交付后宿主下发的验收反馈指认 **5 处证据缺口**（不是新功能，是「既有实现的
+>   契约有没有被逐字继承」没拿出证据）⇒ 本轮**只补这 5 处**，不扩功能面。
+> ★ 缺口① 错误码：既有 tools/mcp-gateway 已占用 -32002（限流）、-32000（上游错误）、-32003
+>   （tool-allow / bindings 拒绝）；本轮把限流码 -32008→**-32002**、上游错误码 -32005→
+>   **-32000**，并在 `mcp/errors.go` 逐条注释出处；新增码（-32001 工具不存在、-32004 审批缺失、
+>   -32006 熔断、-32007 超时）只占**既有实现未使用**的取值。
+> ★ 缺口② 能力头格式：既有实现 `x-mcp-capability-tools = JSON.stringify([...])` ⇒ 本轮把
+>   `X-MCP-Capability-Tools` 由逗号分隔改为 **JSON 数组字符串**（上游按 `JSON.parse` 解析，
+>   逗号分隔会解析失败）；头名大小写由 Go 规范化（HTTP 头名大小写不敏感，RFC 9110 §5.1）。
+> ★ 缺口③ 请求级 capability 路由：既有 `?capability=X` 会校验合法性（非法 ⇒ 400 + -32602 +
+>   `Unknown capability: X. Valid: ...`）、**只对合法能力域计数**、把能力头注入上游并
+>   **覆盖**适配器默认 ⇒ 本轮补齐这三件事；合法清单用 `capabilityOrder` 显式保序（Go map
+>   迭代顺序随机，否则同一错误的文案每次都变 ⇒ 既有客户端无法做稳定断言）。
+> ★ 缺口④ 429 契约：既有 429 是「`Retry-After` 头(秒, ceil) + -32002 + `data.retry_after_ms`
+>   (毫秒)」**三件套同源** ⇒ 本轮由**同一个等待时长**同时推导头与 data（`errorHeaders` /
+>   `retryAfterSeconds` / `retryAfterMillis`），保证两者永不失配。
+> ★ 缺口⑤ 既有「执法在路径」两道门的登记：`scripts/audit-enforcement-in-path.js`（拓扑门）
+>   的前提（nginx 主/备 + 执法点是独立上游）在本实现**已不成立** ⇒ **登记不移植**并写明
+>   前提为何消失（执法收敛到网关单点，适配器由控制面注册 ⇒ 网关必然在调用路径上）；
+>   `scripts/probe-tool-allow-enforcement.js`（运行时三档探针）⇒ **移植**为
+>   `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，作为 **S20** 纳入三层
+>   harness（deny 403 且 allow 200 ⇒ exit 0；deny 放行 ⇒ exit 1；其余 ⇒ exit 2）。
+> ★ 顺带收口两个**实打实的缺陷**（跑出来的，不是读代码想出来的）：
+>   ①`KeySpec` 没有 JSON 标签 ⇒ 控制面按仓内其它接口的惯例传 `allowed_tools` / `scopes` /
+>     `allowed_adapters` 会被**静默丢弃**（`scopes` 为空还落回默认档，看起来「能用」其实
+>     没生效）⇒ 补齐 snake_case 标签，与 `Key` 出参字段名一致。
+>   ②`allowed_adapters` 适配器白名单此前只在 tools/list 生效，**直呼工具名可绕过** ⇒ 补到
+>     调用路径上（治理链第 6 闸改为「backend 可达性」＝适配器白名单 + 单边禁用绑定）。
+> ★ 验证：新增 `mcp/capability_routing_test.go`（非法能力域 400/-32602/文案保序、请求级覆盖
+>   适配器默认、JSON 数组头、非法能力域不计数、429 三件套、上游错误 -32000、工具拒绝 -32003）；
+>   `go test ./mcp/...` 与 `go test ./middleware/...` 全绿；`go build ./...` rc=0；
+>   `go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0；`gofmt -l` 零输出；
+>   三层 harness（L1 + L2 S01~S20 + L3 Maestro）读数见 `docs/mcp-gateway/05-verification-report.md`。
+>   ★ 诚实登记：`go test ./cmd/gateway/` **全包**在本轮仍是红的，失败项全部是
+>     `storage_mode_init_test.go` 的 **lite 存储模式需 CGO**（本机以 `CGO_ENABLED=0` 构建）
+>     ⇒ 与本轮改动无关的**既存**环境性失败；本轮相关用例用定向
+>     `go test ./cmd/gateway/ -run TestRegisterMCPGateway` 验证（主网关接线）通过。
 > **2026-11-08 211 探测空转根修 + token 桶 W1 节奏校准落地轮（goal 会话，通用式见 `LESSONS.md` **§643**）**：
 > ★ 用户目标＝「继续下一步（W1 实施轮）＋同步检查 211 探测为何状态不对」。
 > ★★★ **检查结论＝T-P1【P1】活缺陷**：F2 恢复复检豁免（periodic/credential_recovery 绕过
