@@ -69,7 +69,7 @@
 | 2 | 能力头格式 | `x-mcp-capability-tools = JSON.stringify([...])` | 由逗号分隔改为 **JSON 数组字符串** | `TestRequestCapabilityOverridesAdapter` 断言该头可被 `json.Unmarshal` 成数组且内容逐项相等 |
 | 3 | 请求级能力路由 | `?capability=X`：先判合法 → 计数 → 注入头并**覆盖**适配器默认；非法 ⇒ 400 + -32602 + `Unknown capability: X. Valid: ...` | 三件事全部补齐；合法清单用 `capabilityOrder` **显式保序** | `TestUnknownCapabilityRejected`（400/-32602/文案逐字）、`TestValidCapabilitiesOrderIsStable`、`TestRequestCapabilityOverridesAdapter`、`TestAdapterCapabilityUsedWithoutOverride`、`TestInvalidCapabilityNotCounted`、`TestValidCapabilityCounted` |
 | 4 | 429 契约 | `Retry-After`(秒,ceil) + -32002 + `data.retry_after_ms`(毫秒) **三者同源** | 由**同一个等待时长**同时推导头与 data | `TestRateLimitCarriesRetryAfter` 断言三者同时存在且秒数与毫秒同源（ceil） |
-| 5 | 既有「执法在路径」两道门的登记 | 拓扑门 `audit-enforcement-in-path.js`（答「谁在前面」）＋ 运行时门 `probe-tool-allow-enforcement.js`（答「有没有真拒」） | 拓扑门**前提已变** ⇒ 登记不移植并写明前提为何消失；运行时门**移植**为 `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh` ⇒ 纳入 S20 | `docs/mcp-gateway/03-legacy-merge-map.md` §7；S20 读数 exit 0 |
+| 5 | 既有「执法在路径」资产未登记 | 共 8 项：拓扑门脚本 + 其测试、运行时探针脚本 + 其测试、事实台账、台账基线，以及既有契约自测 `test/gateway.test.js`（429 -32002 / 能力头 / Unknown capability）与 `test/tool-allow.test.js`（-32003） | **逐个登记**（§7.0）：判定标准＝「该资产回答的问题在本实现里是否还存在」。运行时探针**移植**为 `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh` ⇒ 纳入 S20；既有契约自测**由 Go 侧逐条承接**（§7.3 对照表）；拓扑门脚本/测试 + 台账 + 基线＝**旧 nginx 主备拓扑的生产诊断资产**，前提已消失 ⇒ **登记不移植**并写明理由 | `03-legacy-merge-map.md` §7.0–§7.3；S20 读数 exit 0；探针三档自检 0/1/2 |
 
 ### 5.1 探针的三档判别力（自检，不是只跑通一档）
 

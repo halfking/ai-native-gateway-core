@@ -151,17 +151,41 @@ HTTP 头名本身大小写不敏感（RFC 9110 §5.1）⇒ 语义与既有实现
 | **拓扑门** | `scripts/audit-enforcement-in-path.js` | 「带工具级执法的服务，在**生产 MCP 流量的路径**上吗？」（读 nginx upstream 的主/备次序） | **前提已变 ⇒ 本仓不适用**（登记，不移植） |
 | **运行时门** | `scripts/probe-tool-allow-enforcement.js` | 「对这条路径真打一次不该被允许的调用，它**真的被拒**了吗？」 | **已移植** ⇒ `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，并作为 **S20** 纳入三层 harness |
 
-### 7.1 拓扑门为什么在本仓不适用
+### 7.0 资产清单（逐个登记，含台账、基线与测试）
 
-该门成立的前提是「执法点（mcp-gateway）与业务上游是 nginx 的主/备两个
+★ 这一节回答「它们是不是**网关功能**、要不要跟着搬过来」。判定标准只有一条：
+  **该资产回答的问题，在本实现里是否还存在**。
+
+| # | 资产 | 既有位置 | 它回答的问题 | 本仓是否还存在这个问题 | 处置 |
+|---|---|---|---|---|---|
+| 1 | 拓扑门脚本 | `scripts/audit-enforcement-in-path.js` | 「谁在前面」（nginx upstream 主/备次序） | **不存在**（执法收敛到网关单点） | **登记不移植**（§7.1） |
+| 2 | 拓扑门测试 | `test/audit-enforcement-in-path.test.js` | 同上（含台账漂移/未验证判定） | 同上 | **登记不移植** |
+| 3 | 运行时探针脚本 | `scripts/probe-tool-allow-enforcement.js` | 「有没有真的拒」（三档结论 + allow 正控） | **存在**（这是网关**功能**的自证） | **已移植** ⇒ `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`（S20） |
+| 4 | 运行时探针测试 | `test/probe-tool-allow-enforcement.test.js` | 探针自身的三档判别力 | 同上 | **以等价方式承接**：不移植 Node 测试文件，而是**分别实跑三档**（0/1/2）验证判别力（§7.2） |
+| 5 | 事实台账 | `docs/enforcement-path-ledger.md` | 「我们以为在收口的那道门，真的拦得住生产流量吗？」（事实登记，每次拓扑变更都要改） | **前提已变**（台账记的是「执法点在 nginx 里是 backup ⇒ 生产事实上没有工具级强制力」这一已知暴露） | **登记不移植**：该暴露描述的是**旧拓扑**下的事实；本实现里执法必然在路径上 ⇒ 台账记的暴露不再成立 |
+| 6 | 台账基线 | `enforcement-path.baseline.json` | 「已知暴露」的可进 CI 基线（`expect: standby_only`） | 同上（基线值指向旧主备拓扑） | **登记不移植**：连同其 `gates`（拓扑门/运行时门）映射一并登记在此，避免台账失联 |
+| 7 | 网关契约自测 | `test/gateway.test.js` | 429 的 `-32002`、能力头 `x-mcp-capability-tools`、非法能力域的 `Unknown capability`（3 处契约断言） | 存在 | **由 Go 侧承接** ⇒ `mcp/capability_routing_test.go` 逐条对应（§7.3） |
+| 8 | 执法契约自测 | `test/tool-allow.test.js` | 工具拒绝码 `-32003`（4 处断言，含批量语义） | 存在 | **由 Go 侧承接** ⇒ `mcp/capability_routing_test.go`（§7.3） |
+
+★ 结论：8 项资产中 **2 项移植**（运行时探针脚本 + 其判别力验证）、**2 项由 Go 侧
+契约测试承接**（既有 Node 契约自测）、**4 项登记不移植**（拓扑门脚本/测试 + 台账 +
+基线 —— 它们是**针对旧 nginx 主备拓扑的生产诊断资产**，不是网关功能面，且其
+前提在本实现里已消失）。
+
+### 7.1 拓扑门 / 台账 / 基线为什么在本仓不适用
+
+这三项成立的前提是「执法点（mcp-gateway）与业务上游是 nginx 的主/备两个
 upstream，主健康时执法那台不接流量」。本实现的拓扑前提已经变了：
 
-- 工具级执法收敛到网关**单点**（数据面 8 闸的第 4 闸「key × 工具 允许表」），
+- 工具级执法收敛到网关**单点**（数据面 8 闸的第 5 闸「key × 工具 允许表」），
   不再存在「执法点 vs 业务上游」的主备之争；
-- 上游适配器由控制面注册（`/mcp/control/adapters`），网关**必然**在调用路径上。
+- 上游适配器由控制面注册（`/mcp/control/adapters`），网关**必然**在调用路径上；
+- 台账/基线记录的那条「已知暴露」（`expect: standby_only` ⇒ 生产事实上没有
+  工具级强制力）在本实现里**不再成立** —— 执法点就是网关本身。
 
-⇒ 「谁在前面」这个问题不再成立，该门失去判别力 ⇒ **不移植**，但在此登记
-（含其前提为何消失），避免后来者以为漏掉了。
+⇒ 「谁在前面」这个问题不再成立，拓扑门失去判别力；台账与基线记的是**旧拓扑
+下的事实**，把它们搬过来反而会让后来者误判当前状态 ⇒ **一律登记不移植**，
+但在此逐条写明前提为何消失，避免后来者以为漏掉了。
 
 ### 7.2 运行时门：移植后的口径
 
@@ -178,7 +202,21 @@ upstream，主健康时执法那台不接流量」。本实现的拓扑前提已
 全被禁」或「这条路径不认这把 key」，**不是**执法在生效 ⇒ 只看 deny 会把
 两种情况混成一种。
 
+★ 既有 `test/probe-tool-allow-enforcement.test.js` 断言的是「探针本身会不会
+误判」。本轮**不以移植测试文件的方式承接**，而是**分别实跑三档**（deny 拒 +
+allow 通 ⇒ 0；deny 放行 ⇒ 1；两侧皆拒 ⇒ 2），确认判别力未因移植而失真 ——
+读数见 `05-verification-report.md` §5.1。
+
 ★ 与既有 Node 探针的**唯一差异**：新增 `--allow-args` / `--deny-args`
 （默认 `{}`）。原因是本实现会按上游工具的 `inputSchema` 校验参数，而既有
 网关不做 Schema 校验 ⇒ 「允许集内的工具」必须给合法入参，否则它会被参数
 校验拒掉（403），把「执法在生效」误判成「两边都被拒」。
+
+### 7.3 既有 Node 契约自测 → 本轮 Go 侧承接对照
+
+| 既有断言（位置） | 本轮对应（位置） |
+|---|---|
+| 限流错误码 `-32002`（`test/gateway.test.js:180`） | `TestRateLimitCarriesRetryAfter`（`mcp/capability_routing_test.go`） |
+| 能力头含 `code_generate`（`test/gateway.test.js:195`） | `TestRequestCapabilityOverridesAdapter`（逐项比对 JSON 数组内容） |
+| 非法能力域文案含 `Unknown capability`（`test/gateway.test.js:204`） | `TestUnknownCapabilityRejected`（逐字比对 `Unknown capability: X. Valid: ...`） |
+| 工具拒绝码 `-32003`（`test/tool-allow.test.js:321/336/347/348`） | `TestToolNotAllowedCodeMatchesLegacy` |

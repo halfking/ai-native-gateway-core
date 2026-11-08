@@ -65,12 +65,24 @@
 > ★ 缺口④ 429 契约：既有 429 是「`Retry-After` 头(秒, ceil) + -32002 + `data.retry_after_ms`
 >   (毫秒)」**三件套同源** ⇒ 本轮由**同一个等待时长**同时推导头与 data（`errorHeaders` /
 >   `retryAfterSeconds` / `retryAfterMillis`），保证两者永不失配。
-> ★ 缺口⑤ 既有「执法在路径」两道门的登记：`scripts/audit-enforcement-in-path.js`（拓扑门）
->   的前提（nginx 主/备 + 执法点是独立上游）在本实现**已不成立** ⇒ **登记不移植**并写明
->   前提为何消失（执法收敛到网关单点，适配器由控制面注册 ⇒ 网关必然在调用路径上）；
->   `scripts/probe-tool-allow-enforcement.js`（运行时三档探针）⇒ **移植**为
->   `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，作为 **S20** 纳入三层
->   harness（deny 403 且 allow 200 ⇒ exit 0；deny 放行 ⇒ exit 1；其余 ⇒ exit 2）。
+> ★ 缺口⑤ 既有「执法在路径」资产的**逐个登记**（`03-legacy-merge-map.md` §7.0）：
+>   既有仓共 8 项相关资产 —— 拓扑门脚本 `scripts/audit-enforcement-in-path.js`
+>   ＋其测试 `test/audit-enforcement-in-path.test.js`、运行时探针脚本
+>   `scripts/probe-tool-allow-enforcement.js` ＋其测试
+>   `test/probe-tool-allow-enforcement.test.js`、事实台账
+>   `docs/enforcement-path-ledger.md`、台账基线 `enforcement-path.baseline.json`，
+>   以及承载契约断言的 `test/gateway.test.js`（429 -32002 / 能力头 /
+>   Unknown capability 三处）与 `test/tool-allow.test.js`（-32003 四处）。
+>   判定标准＝**该资产回答的问题在本实现里是否还存在**：
+>   · 运行时探针（脚本 + 判别力验证）＝ 网关功能的自证 ⇒ **已移植**为
+>     `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，作为 **S20** 纳入
+>     三层 harness；既有 Node 探针测试**不以移植测试文件的方式承接**，而是**分别实跑
+>     三档**（0 执法生效 / 1 没生效 / 2 未验证）确认判别力未因移植而失真。
+>   · 拓扑门脚本/测试 + 台账 + 基线 ＝ **针对旧 nginx 主备拓扑的生产诊断资产**，
+>     不是网关功能面；且其前提已消失（执法收敛到网关单点 ⇒ 「谁在前面」不再成立，
+>     台账记的 `standby_only` 已知暴露也不再成立）⇒ **登记不移植**，并写明前提。
+>   · 既有契约自测（gateway/tool-allow 的 4 处断言）⇒ **由 Go 侧逐条承接**
+>     （`mcp/capability_routing_test.go`，对照表见 §7.3）。
 > ★ 顺带收口两个**实打实的缺陷**（跑出来的，不是读代码想出来的）：
 >   ①`KeySpec` 没有 JSON 标签 ⇒ 控制面按仓内其它接口的惯例传 `allowed_tools` / `scopes` /
 >     `allowed_adapters` 会被**静默丢弃**（`scopes` 为空还落回默认档，看起来「能用」其实
