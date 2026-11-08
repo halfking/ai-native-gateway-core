@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -208,6 +209,21 @@ func (l *RemoteLedger) fetch(ctx context.Context, apiKey string) (*KeyRecord, er
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		// ★ 404 有**两种**含义，既有实现为此分了两个计数器（语义不能混）：
+		//   · 远端**没有这条路由**（版本没部署）⇒ 整个执法面是坏的
+		//     ⇒ tool_allow_acc_route_missing_total；
+		//   · 404 的**形状不认得** ⇒ 我们其实没弄清楚这把 key 在不在账本
+		//     ⇒ 不能当成「查过了，没问题」⇒ tool_allow_acc_404_unrecognized_total。
+		//   两者都 fail-open（转发面不因审计面坏掉而中断），但必须喊出来。
+		if resp.StatusCode == http.StatusNotFound {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+			if isLedgerRouteMissing(body) {
+				toolAllowAccRouteMissingTotal.Inc()
+				return nil, fmt.Errorf("mcp: remote ledger route missing (enforcement plane not deployed): %s", truncate(string(body), 200))
+			}
+			toolAllowAcc404UnrecognizedTotal.Inc()
+			return nil, fmt.Errorf("mcp: remote ledger returned unrecognized 404: %s", truncate(string(body), 200))
+		}
 		return nil, fmt.Errorf("mcp: remote ledger status %d", resp.StatusCode)
 	}
 	var payload struct {
@@ -243,6 +259,25 @@ func (l *RemoteLedger) fetch(ctx context.Context, apiKey string) (*KeyRecord, er
 		AllowedAdapters: payload.AllowedAdapters,
 		Enforce:         payload.ToolAllowEnforce,
 	}, nil
+}
+
+// isLedgerRouteMissing 判断 404 响应体是否是「远端没有这条路由」的形状。
+//
+// ★ 判据取既有 tool-allow.js 的同款启发式：响应体里出现路由缺失类标记
+//
+//	（no route / route not found / handler not found …）⇒ 认定是**路由缺失**
+//	（执法面未部署）；否则一律算「形状不认得」⇒ 单独计数、单独审计。
+func isLedgerRouteMissing(body []byte) bool {
+	s := strings.ToLower(string(body))
+	for _, marker := range []string{
+		"no route", "route not found", "not found: route", "handler not found",
+		"no handler", "not_found_route", "route_missing",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrLedgerUnavailable 表示外部账本不可达（调用方据此记审计，不阻断转发）。

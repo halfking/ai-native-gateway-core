@@ -4,7 +4,7 @@
 # ┌──────────────────────────────────────────────────────────────────────────┐
 # │ 三层验证（对应仓内「Maestro」惯例：观测 → 假设 → 最小修复 → 再测）：    │
 # │   L1 Go 测试    —— go test ./mcp/... （治理链单测/集成测）               │
-# │   L2 API 场景   —— 本脚本的 S01~S22（真实进程 + 真实 HTTP）              │
+# │   L2 API 场景   —— 本脚本的 S01~S24（真实进程 + 真实 HTTP）              │
 # │   L3 浏览器 flow —— maestro/flows/10-mcp-gateway.yaml（运营看板逐页断言） │
 # └──────────────────────────────────────────────────────────────────────────┘
 #
@@ -63,6 +63,7 @@ pick_port() {
 PORT="${MCP_TEST_PORT:-$(pick_port)}"
 LIMIT_PORT="${MCP_TEST_LIMIT_PORT:-$(pick_port)}"
 BOOT_PORT="${MCP_TEST_BOOT_PORT:-$(pick_port)}"
+BODY_PORT="${MCP_TEST_BODY_PORT:-$(pick_port)}"
 BASE_URL="http://127.0.0.1:${PORT}"
 BIN="${ROOT}/.build-local/mcp-gateway-maestro-${STAMP}"
 mkdir -p "${ROOT}/.build-local"
@@ -76,21 +77,23 @@ else
   "${BUILD_CMD[@]}" build -o "${BIN}" ./cmd/mcp-gateway || { log "!! 构建失败"; exit 2; }
 fi
 
-GATEWAY_PID=""; LIMIT_PID=""; BOOT_PID=""
+GATEWAY_PID=""; LIMIT_PID=""; BOOT_PID=""; BODY_PID=""
 cleanup() {
   [ -n "${GATEWAY_PID}" ] && kill "${GATEWAY_PID}" 2>/dev/null
   [ -n "${LIMIT_PID}" ]  && kill "${LIMIT_PID}" 2>/dev/null
   [ -n "${BOOT_PID}" ]   && kill "${BOOT_PID}" 2>/dev/null
+  [ -n "${BODY_PID}" ]   && kill "${BODY_PID}" 2>/dev/null
   rm -f "${BIN}"
   return 0
 }
 trap cleanup EXIT
 
-start_gateway() { # start_gateway <port> <read_limit> <bootstrap_enabled> <logfile>
+start_gateway() { # start_gateway <port> <read_limit> <bootstrap_enabled> <logfile> [max_body_bytes]
   MCP_GATEWAY_ADMIN_TOKEN="${ADMIN_TOKEN}" \
   MCP_GATEWAY_READ_RATE_LIMIT="$2" \
   MCP_GATEWAY_BOOTSTRAP_ENABLED="$3" \
   MCP_GATEWAY_BOOTSTRAP_AUTO_APPROVE=true \
+  MCP_GATEWAY_MAX_BODY_BYTES="${5:-1048576}" \
     "${BIN}" --listen "127.0.0.1:$1" --demo --admin-token "${ADMIN_TOKEN}" \
     >"$4" 2>&1 &
   echo $!
@@ -150,7 +153,7 @@ hdr_get() { # hdr_get <头名> —— 从 .hdr 取响应头值
 body_get() { cat "${OUT}/.body"; }
 jq_get() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 
-log "== L2: API 场景（S01~S22）"
+log "== L2: API 场景（S01~S24）"
 
 # S01 无凭证 → 401
 code="$(rpc "${BASE_URL}" /mcp '' '{"jsonrpc":"2.0","id":1,"method":"initialize"}')"
@@ -224,7 +227,12 @@ APPROVAL_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token
   -d '{"tenant_id":"default","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
   | jq_get 'd.get("secret","")')"
 code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
-[ "${code}" = "403" ] && ok "S11 高敏工具缺审批凭据 → 403" || bad "S11 高敏工具 → ${code}（期望 403）"
+apr_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
+if [ "${code}" = "403" ] && [ "${apr_code}" = "-32007" ]; then
+  ok "S11 高敏工具缺审批凭据 → 403（JSON-RPC 码 -32007，审批专属码）"
+else
+  bad "S11 高敏工具 → ${code} 码=${apr_code}（期望 403 / -32007）"
+fi
 
 # S12 审批通过后放行
 APR="$(curl -s -X POST "${BASE_URL}/mcp/control/approvals" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
@@ -245,7 +253,12 @@ KEYID="$(curl -s "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN
   | jq_get 'next((k["id"] for k in d["keys"] if k.get("name")=="maestro-agent"),"")')"
 curl -s -o /dev/null -X POST "${BASE_URL}/mcp/control/keys/${KEYID}/revoke" -H "X-Admin-Token: ${ADMIN_TOKEN}"
 code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":8,"method":"tools/list"}')"
-[ "${code}" = "401" ] && ok "S13 吊销后立即 401" || bad "S13 吊销后 → ${code}（期望 401）"
+rev_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
+if [ "${code}" = "401" ] && [ "${rev_code}" = "-32001" ]; then
+  ok "S13 吊销后立即 401（JSON-RPC 码 -32001，与既有 bindings 一致）"
+else
+  bad "S13 吊销后 → ${code} 码=${rev_code}（期望 401 / -32001）"
+fi
 
 # S14 审计与导出
 AUDIT="$(curl -s "${BASE_URL}/mcp/control/audit?limit=200" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
@@ -412,6 +425,42 @@ else
   esac
 fi
 
+# S23 请求体超限 → 413 + -32004（既有 gateway.js:295 的字面契约）
+#   ★ 用独立实例把上限调到 64 字节 ⇒ 不必真的发 1MB。
+log "== S23 请求体超限"
+BODY_PID="$(start_gateway "${BODY_PORT}" 120 false "${OUT}/gateway-body.log" 64)"
+if wait_ready "http://127.0.0.1:${BODY_PORT}"; then
+  BODY_KEY="$(grep -m1 '^DEMO_API_KEY=' "${OUT}/gateway-body.log" | cut -d= -f2-)"
+  code="$(rpc "http://127.0.0.1:${BODY_PORT}" /mcp "${BODY_KEY}" '{"jsonrpc":"2.0","id":30,"method":"tools/list","params":{"padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}')"
+  big_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
+  if [ "${code}" = "413" ] && [ "${big_code}" = "-32004" ]; then
+    ok "S23 请求体超限 → 413（JSON-RPC 码 -32004，与既有一致）"
+  else
+    bad "S23 请求体超限 → ${code} 码=${big_code}（期望 413 / -32004）"
+  fi
+else
+  bad "S23 请求体上限实例未就绪"
+fi
+
+# S24 遗留旧名指标族可见（运维按旧名判断「收口生不生效」）
+METRICS="$(curl -s --max-time 5 "${BASE_URL}/metrics" || true)"
+missing=""
+for m in tool_allow_checks_total tool_allow_not_enforced_total tool_allow_denied_total \
+         tool_allow_lookup_errors_total tool_allow_lookup_misses_total \
+         bindings_checks_total bindings_denied_total bindings_inactive_total \
+         bindings_lookup_errors_total bindings_lookup_misses_total \
+         keys_apply_total keys_claim_total keys_status_total; do
+  case "${METRICS}" in
+    *"${m}"*) : ;;
+    *) missing="${missing} ${m}" ;;
+  esac
+done
+if [ -z "${missing}" ]; then
+  ok "S24 遗留旧名指标族全部出现在 /metrics（13 族）"
+else
+  bad "S24 /metrics 缺指标族：${missing}"
+fi
+
 # ── 4. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
 if [ "${SKIP_MAESTRO:-0}" != "1" ]; then
   log "== L3: Maestro 浏览器 flow（运营看板）"
@@ -467,7 +516,7 @@ fi
   echo
   echo "- 时间：$(date '+%Y-%m-%d %H:%M:%S')"
   echo "- 目标：llm-gateway-go 内置 MCP 服务网关（mcp/ 包 + cmd/mcp-gateway）"
-  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S22）+ L3 Maestro 浏览器 flow"
+  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S24）+ L3 Maestro 浏览器 flow"
   echo
   echo "## 结论"
   echo

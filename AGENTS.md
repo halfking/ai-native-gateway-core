@@ -113,12 +113,39 @@
 >     可被 `JSON.parse` 成数组（首项 `code_generate`）⇒ 与既有
 >     `JSON.stringify([...])` 逐字一致。★ 头是网关**写给上游**的，网关自证不足；
 >     必须让上游把**实际收到的原串**吐出来，才证明「上游 JSON.parse 不会失败」。
-> ★ 三层 harness 读数随之为 **30/30 全绿**（L1 + L2 S01~S22 + L3 Maestro flow）。
+> ★ 三层 harness 读数随之为 **30/30 全绿**（L1 + L2 S01~S22 + L3 Maestro flow；
+>   第三轮补 S23/S24 后为 **32/32 全绿**）。
+> ★ **第三轮：错误码错位 + 遗留指标族（逐字核对既有仓【全仓】后发现，比前两轮更硬）**：
+>   ★★ 教训：前两轮只核对了 `gateway.js` 与 `tool-proxy.js` 的**错误码**，没核对
+>     `bindings.js` 与 `tool-allow.js` ⇒ 漏掉既有**已占用**的两个码：
+>     **既有 -32001 是 bindings 拒绝（401/403）、既有 -32004 是请求体超限(413)**，
+>     而本实现把这两个码当成了「新增码」分给「工具不存在」「审批缺失」；
+>     且 **-32005/-32007 常量声明后从未使用**（审批实际返回 -32003、超时实际
+>     返回 -32000）⇒ 营销侧已对外发布的口径，客户端按该码分支**永不命中**。
+>     ⇒ **契约核对必须覆盖既有仓每个模块，不是抽查几个文件。**
+>   ★ 改正：既有码**归位**（-32001 bindings 拒绝、-32004 体超限）、新增码落到
+>     既有**未使用**的取值（-32005 工具不存在、-32007 审批缺失、-32006 熔断）；
+>     上游超时**不拆码**（仍 -32000，用 `data.timeout=true` 区分 ⇒ 不打断既有
+>     客户端的 -32000 分支）；请求体超限由**静默截断**改为显式 **413 + -32004**；
+>     凭证失效/吊销改为 **401 + -32001**（与 `bindings.js:144` 逐字一致）。
+>   ★ 指标：既有指标分散在 **4 个模块共 26 个族**（gateway 7 / tool-allow 8 /
+>     bindings 5 / keys 6），后三个模块用**裸名**族名 ⇒ 本实现按**旧名**建族
+>     （`tool_allow_*` / `bindings_*` / `keys_*`），`keys_*` 去掉 `mcp_gateway_`
+>     前缀改回旧名 ⇒ 既有告警规则**按旧名即可平移**（否则是「一直没数据」，
+>     不是变红）。其中 `tool_allow_not_enforced_total`（空允许表⇒执法跳过）与
+>     `tool_allow_lookup_errors_total`（查询失败⇒fail-open）是判断「收口到底生不
+>     生效」的两个关键数；远端账本 404 区分「路由缺失」与「形状不认得」两个既有族。
+>     3 项**不适用**的（scope_deviation / keys_upstream_errors / 死计数
+>     requests_by_path）逐项写明理由，不静默省略。逐族登记见 §6.6。
+>   ★ 新增守护：`mcp/legacy_contract_test.go`（既有码逐字 + 旧名计数器自增）、
+>     harness **S11/S13 补错误码断言**（此前只断言 HTTP 状态，抓不到口径漂移）、
+>     **S23**（413/-32004）、**S24**（13 个旧名族在 `/metrics` 必须可见）。
+>   ★ 读数：三层 harness **32/32 全绿**（L1 + L2 S01~S24 + L3 Maestro flow）。
 > ★ 验证：新增 `mcp/capability_routing_test.go`（非法能力域 400/-32602/文案保序、请求级覆盖
 >   适配器默认、JSON 数组头、非法能力域不计数、429 三件套、上游错误 -32000、工具拒绝 -32003）；
 >   `go test ./mcp/...` 与 `go test ./middleware/...` 全绿；`go build ./...` rc=0；
 >   `go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0；`gofmt -l` 零输出；
->   三层 harness（L1 + L2 S01~S22 + L3 Maestro）读数见 `docs/mcp-gateway/05-verification-report.md`。
+>   三层 harness（L1 + L2 S01~S24 + L3 Maestro）读数见 `docs/mcp-gateway/05-verification-report.md`。
 >   ★ 诚实登记：`go test ./cmd/gateway/` **全包**在本轮仍是红的，失败项全部是
 >     `storage_mode_init_test.go` 的 **lite 存储模式需 CGO**（本机以 `CGO_ENABLED=0` 构建）
 >     ⇒ 与本轮改动无关的**既存**环境性失败；本轮相关用例用定向

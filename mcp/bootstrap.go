@@ -15,23 +15,23 @@ import (
 // 密钥引导面（D2/D3）的 Prometheus 指标（指标名与既有 tools/mcp-gateway 对齐）。
 var (
 	keysApplyTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "mcp_gateway_keys_apply_total",
+		Name: "keys_apply_total",
 		Help: "MCP key bootstrap apply requests.",
 	})
 	keysApplyReplayTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "mcp_gateway_keys_apply_replay_total",
+		Name: "keys_apply_replay_total",
 		Help: "MCP key bootstrap apply requests served from the idempotency cache.",
 	})
 	keysApplyRateLimitedTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "mcp_gateway_keys_apply_rate_limited_total",
+		Name: "keys_apply_rate_limited_total",
 		Help: "MCP key bootstrap requests rejected by rate limiting.",
 	})
 	keysClaimTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "mcp_gateway_keys_claim_total",
+		Name: "keys_claim_total",
 		Help: "MCP key bootstrap claim requests.",
 	})
 	keysStatusTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "mcp_gateway_keys_status_total",
+		Name: "keys_status_total",
 		Help: "MCP key bootstrap status requests.",
 	})
 )

@@ -3,11 +3,14 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -205,9 +208,20 @@ func (g *Gateway) HandleMCP(w http.ResponseWriter, r *http.Request) {
 		requestsByMethod.WithLabelValues(method).Inc()
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, g.cfg.MaxBodyBytes))
+	// 请求体上限：**显式拒绝**（413 + -32004，与既有 gateway.js:295 逐字一致）。
+	//
+	// ★ 此前用 LimitReader 静默截断 ⇒ 超限表现为「JSON 解析失败(-32700)」，
+	//   把真因（体太大）掩盖成了客户端格式错误 ⇒ 既有客户端按 -32004 分支
+	//   处理体超限，永远命中不到。
+	body, err := io.ReadAll(io.LimitReader(r.Body, g.cfg.MaxBodyBytes+1))
 	if err != nil {
 		writeRPCError(w, http.StatusBadRequest, nil, Errorf(CodeParseError, "read body: %s", err.Error()))
+		return
+	}
+	if int64(len(body)) > g.cfg.MaxBodyBytes {
+		writeRPCError(w, http.StatusRequestEntityTooLarge, nil, Errorf(CodePayloadTooLarge,
+			"Request body exceeds the inspection limit (%d bytes)", g.cfg.MaxBodyBytes).
+			WithData(map[string]any{"limit_bytes": g.cfg.MaxBodyBytes}))
 		return
 	}
 
@@ -232,6 +246,14 @@ func (g *Gateway) HandleMCP(w http.ResponseWriter, r *http.Request) {
 			Method:  req.Method,
 			Reason:  "unauthorized",
 		})
+		// ★ 凭证「失效/吊销」⇒ 401 + **-32001**（既有 bindings.js 逐字一致）；
+		//   凭证「不存在/未知」⇒ 401 + -32600（既有对此不产生 JSON-RPC 错误，
+		//   交由上游 401 ⇒ 本实现沿用标准段，不去占用既有自定义码）。
+		if errors.Is(err, ErrCredentialInactive) {
+			writeRPCError(w, http.StatusUnauthorized, req.ID,
+				Errorf(CodeBindingDenied, "API key is inactive or revoked"))
+			return
+		}
 		writeRPCError(w, http.StatusUnauthorized, req.ID, Errorf(CodeInvalidRequest, "unauthorized"))
 		return
 	}
@@ -435,32 +457,45 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 			g.auditToolDenied(id, meta.Name, "visibility")
 			return nil, Errorf(CodeToolNotAllowed, "tool is not visible to this principal"), http.StatusForbidden
 		}
+		// ★ 遗留旧名计数器：既有 tool-allow.js 每次判定都记 checks_total，
+		//   拒绝记 denied_total，**空允许表（执法跳过）记 not_enforced_total**
+		//   ⇒ 运维靠第三个数就能判断「收口根本没生效」。
+		toolAllowChecksTotal.Inc()
+		if k := g.keyOf(id); k != nil && len(k.AllowedTools) == 0 && len(k.DeniedTools) == 0 {
+			toolAllowNotEnforcedTotal.Inc()
+		}
 		if !keyAllowsTool(g.keyOf(id), meta.Name) {
 			authzDeniedTotal.WithLabelValues("tool_allow").Inc()
-			toolAllowChecksTotal.WithLabelValues("denied").Inc()
+			toolAllowResultTotal.WithLabelValues("denied").Inc()
+			toolAllowDeniedTotal.Inc() // 遗留旧名计数器
 			g.auditToolDenied(id, meta.Name, "tool_allow")
 			return nil, Errorf(CodeToolNotAllowed, "tool is not in the allowed list"), http.StatusForbidden
 		}
 	}
+	bindingsChecksTotal.Inc() // 遗留旧名计数器（既有 bindings.js 同名）
 	if !keyAllowsAdapter(g.keyOf(id), adapter.Name) {
 		authzDeniedTotal.WithLabelValues("adapter_allow").Inc()
 		g.auditToolDenied(id, toolNameOf(tool, params.Name), "adapter_allow")
 		return nil, Errorf(CodeToolNotAllowed, "backend %q is not in the allowed list for this credential", adapter.Name), http.StatusForbidden
 	}
 	if !bindingEnabled(g.keyOf(id), adapter.Name) {
-		bindingsChecksTotal.WithLabelValues("denied").Inc()
+		bindingsResultTotal.WithLabelValues("denied").Inc()
+		bindingsDeniedTotal.Inc() // 遗留旧名计数器
 		g.auditToolDenied(id, toolNameOf(tool, params.Name), "binding_disabled")
-		return nil, Errorf(CodeToolNotAllowed, "backend %q is disabled for this credential", adapter.Name), http.StatusForbidden
+		return nil, Errorf(CodeBindingDenied, "backend %q is disabled for this credential", adapter.Name), http.StatusForbidden
 	}
-	bindingsChecksTotal.WithLabelValues("allowed").Inc()
-	toolAllowChecksTotal.WithLabelValues("allowed").Inc()
+	bindingsResultTotal.WithLabelValues("allowed").Inc()
+	toolAllowResultTotal.WithLabelValues("allowed").Inc()
 
 	// ── 敏感度审批 ──
 	if tool != nil && (tool.RequireApproval || tool.Sensitivity == SensitivityHigh) {
 		if err := g.checkApproval(r, id, tool); err != nil {
 			approvalsRequiredTotal.Inc()
 			g.auditToolDenied(id, params.Name, "approval_required")
-			return nil, RPCErrorOf(err), http.StatusForbidden
+			// ★ 审批缺失有专属码（-32007，新增、既有未使用）⇒ 不再借用
+			//   -32003（既有语义是 tool-allow 拒绝）：审批闸与允许表闸是
+			//   两件事，客户端要能分开分支。
+			return nil, Errorf(CodeApprovalRequired, "%s", err.Error()), http.StatusForbidden
 		}
 	}
 
@@ -560,6 +595,12 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 			Reason:   "upstream_error",
 			Detail:   map[string]any{"error": err.Error()},
 		})
+		// ★ 超时**不单列错误码**：既有的上游错误（含超时）统一是 -32000 ⇒
+		//   拆码会打断既有客户端的 -32000 分支。超时用 data.timeout 区分。
+		if isTimeout(err) {
+			return nil, Errorf(CodeUpstreamError, "upstream call timed out: %s", err.Error()).
+				WithData(map[string]any{"timeout": true}), http.StatusBadGateway
+		}
 		var rpcErr *RPCError
 		if uerr, ok := err.(*UpstreamHTTPError); ok && uerr.Fatal {
 			rpcErr = Errorf(CodeUpstreamError, "upstream error: %s", uerr.Error())
@@ -843,6 +884,25 @@ func (g *Gateway) checkApproval(r *http.Request, id *Identity, tool *Tool) error
 		return fmt.Errorf("%w: approval %q belongs to another principal", ErrForbidden, grantID)
 	}
 	return nil
+}
+
+// isTimeout 判断上游错误是否为超时（context 截止 / 网络超时）。
+//
+// ★ 只用于**区分**（写进 data.timeout 与审计），**不改错误码** —— 既有的
+//
+//	上游错误（含超时）统一是 -32000。
+func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 // toolNameOf 取工具名（工具未登记时退回调用方给的名字）。

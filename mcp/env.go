@@ -24,6 +24,7 @@ const (
 	EnvWriteLimit      = "MCP_GATEWAY_WRITE_RATE_LIMIT"
 	EnvLLMLimit        = "MCP_GATEWAY_LLM_RATE_LIMIT"
 	EnvToolTimeoutMS   = "MCP_GATEWAY_TOOL_TIMEOUT_MS"
+	EnvMaxBodyBytes    = "MCP_GATEWAY_MAX_BODY_BYTES"
 	EnvAutoRegister    = "MCP_GATEWAY_AUTO_REGISTER"
 	EnvMaskPII         = "MCP_GATEWAY_MASK_PII"
 	EnvLedgerURL       = "MCP_GATEWAY_LEDGER_URL"
@@ -60,6 +61,8 @@ type EnvConfig struct {
 	CircuitFailures int
 	CircuitOpen     time.Duration
 	Bootstrap       BootstrapConfig
+	// MaxBodyBytes 请求体上限（字节）；超限 ⇒ HTTP 413 + -32004。
+	MaxBodyBytes int
 }
 
 // LoadEnvConfig 解析环境变量。
@@ -75,6 +78,7 @@ func LoadEnvConfig() (EnvConfig, error) {
 		WriteLimit:      envInt(EnvWriteLimit, 30),
 		LLMLimit:        envInt(EnvLLMLimit, 10),
 		ToolTimeout:     time.Duration(envInt(EnvToolTimeoutMS, 30000)) * time.Millisecond,
+		MaxBodyBytes:    envInt(EnvMaxBodyBytes, 1<<20),
 		AutoRegister:    envBool(EnvAutoRegister, true),
 		MaskPII:         envBool(EnvMaskPII, true),
 		LedgerURL:       strings.TrimSpace(os.Getenv(EnvLedgerURL)),
@@ -136,6 +140,7 @@ func (e EnvConfig) Build() (*Gateway, error) {
 			ClassLLM:   e.LLMLimit,
 		},
 		ToolTimeout:       e.ToolTimeout,
+		MaxBodyBytes:      int64(e.MaxBodyBytes),
 		AutoRegisterTools: e.AutoRegister,
 		Redactor:          NewRedactor(e.MaskPII),
 		Breaker:           NewCircuitBreaker(e.CircuitFailures, e.CircuitOpen),

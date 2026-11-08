@@ -104,6 +104,11 @@ func (g *Gateway) authenticate(ctx context.Context, r *http.Request) (*Identity,
 	if err != nil {
 		// 远端账本不可达 ⇒ fail-open（放行），但要留下审计痕迹。
 		keyChecksTotal.WithLabelValues("ledger_unavailable").Inc()
+		// ★ 遗留旧名计数器：既有 tool-allow 与 bindings **各自**查一次账本，
+		//   查不到就各自记一次 lookup_error ⇒ 本实现共用一次查询，故两个族
+		//   在同一点位各自自增（量级与既有一致）。
+		toolAllowLookupErrorsTotal.Inc()
+		bindingsLookupErrorsTotal.Inc()
 		g.audit.Record(AuditEvent{
 			Kind:    AuditKindKey,
 			Outcome: OutcomeError,
@@ -114,11 +119,21 @@ func (g *Gateway) authenticate(ctx context.Context, r *http.Request) (*Identity,
 	}
 	if rec == nil || !rec.Found {
 		keyChecksTotal.WithLabelValues("unknown").Inc()
+		// ★ 遗留旧名计数器：**远端**账本明确回答「不在账本」⇒ 既有记
+		//   lookup_miss（并放行交由后端校验）。本地账本的「不存在」是正常
+		//   401，不是账本 miss ⇒ 只在远端模式下计数。
+		if g.ledger.Remote() {
+			toolAllowLookupMissesTotal.Inc()
+			bindingsLookupMissesTotal.Inc()
+		}
 		return nil, ErrUnauthorized
 	}
 	if !rec.Active {
 		keyChecksTotal.WithLabelValues("inactive").Inc()
-		return nil, ErrUnauthorized
+		bindingsInactiveTotal.Inc() // 遗留旧名计数器（既有 bindings.js 同名）
+		// ★ 既有 bindings.js 对 inactive/revoked 返回 401 + **-32001**
+		//   ⇒ 用专属哨兵把「失效」与「不存在」分开。
+		return nil, ErrCredentialInactive
 	}
 	keyChecksTotal.WithLabelValues("ok").Inc()
 
