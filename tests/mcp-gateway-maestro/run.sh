@@ -466,6 +466,22 @@ if [ -z "${missing}" ]; then
 else
   bad "S24 /metrics 缺指标族：${missing}"
 fi
+# ★ 光「族名在」不够（计数为 0 也照样出现）⇒ 断言关键几个**确实动过**：
+#   tool_allow_checks_total      —— 允许表判定发生过
+#   tool_allow_not_enforced_total —— 存在「无允许表 ⇒ 执法跳过」的 key（= 收口没生效的信号）
+#   bindings_checks_total        —— 绑定闸判定发生过
+METRICS_VAL="$(curl -s --max-time 5 "${BASE_URL}/metrics" || true)"
+mv_get() { printf '%s' "${METRICS_VAL}" | awk -v m="$1" '$1==m {print $2; exit}'; }
+tc="$(mv_get tool_allow_checks_total)"
+tn="$(mv_get tool_allow_not_enforced_total)"
+bc="$(mv_get bindings_checks_total)"
+if [ -n "${tc}" ] && [ "${tc%%.*}" -gt 0 ] 2>/dev/null && \
+   [ -n "${tn}" ] && [ "${tn%%.*}" -gt 0 ] 2>/dev/null && \
+   [ -n "${bc}" ] && [ "${bc%%.*}" -gt 0 ] 2>/dev/null; then
+  ok "S24b 旧名计数器确实在自增（checks=${tc} not_enforced=${tn} bindings=${bc}）"
+else
+  bad "S24b 旧名计数器未自增（checks='${tc}' not_enforced='${tn}' bindings='${bc}'）"
+fi
 
 # ── 4. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
 if [ "${SKIP_MAESTRO:-0}" != "1" ]; then

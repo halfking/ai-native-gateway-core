@@ -140,7 +140,9 @@
 >   ★ 新增守护：`mcp/legacy_contract_test.go`（既有码逐字 + 旧名计数器自增）、
 >     harness **S11/S13 补错误码断言**（此前只断言 HTTP 状态，抓不到口径漂移）、
 >     **S23**（413/-32004）、**S24**（13 个旧名族在 `/metrics` 必须可见）。
->   ★ 读数：三层 harness **32/32 全绿**（L1 + L2 S01~S24 + L3 Maestro flow）。
+>   ★ 读数：三层 harness **33/33 全绿**（L1 + L2 S01~S24 + L3 Maestro flow；
+>     S24b 实测 `tool_allow_checks_total=8` / `not_enforced=6` / `bindings_checks=7`
+>     ⇒ 旧名计数器**确实在自增**，不只是族名登记）。
 > ★ 验证：新增 `mcp/capability_routing_test.go`（非法能力域 400/-32602/文案保序、请求级覆盖
 >   适配器默认、JSON 数组头、非法能力域不计数、429 三件套、上游错误 -32000、工具拒绝 -32003）；
 >   `go test ./mcp/...` 与 `go test ./middleware/...` 全绿；`go build ./...` rc=0；

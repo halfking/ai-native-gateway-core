@@ -8,7 +8,7 @@
 
 ## 1. 结论
 
-**通过 32 / 失败 0**（L1 Go 测试 1 例 + L2 API 场景 30 例 + L3 Maestro 浏览器 flow 1 例）。
+**通过 33 / 失败 0**（L1 Go 测试 1 例 + L2 API 场景 31 例 + L3 Maestro 浏览器 flow 1 例）。
 
 > 首轮读数：24/24 全绿（当时 L2 为 S01–S19）。
 > 契约对齐轮：新增 S20（工具级强制力运行时探针）后为 **25/25 全绿**。
@@ -25,7 +25,7 @@
 | 层 | 内容 | 手段 | 读数 |
 |---|---|---|---|
 | L1 | 治理链单测/集成测 | `go test ./mcp/...` | 全绿 |
-| L2 | 真实进程 + 真实 HTTP | 脚本内 S01–S24 | 30/30 通过 |
+| L2 | 真实进程 + 真实 HTTP | 脚本内 S01–S24 | 31/31 通过 |
 | L3 | 浏览器逐页断言 | `maestro/flows/10-mcp-gateway.yaml` | rc=0，FAILED=0 |
 
 另：`go build ./...` rc=0；`go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0；
@@ -67,6 +67,7 @@
 | S22b | 能力工具头格式 | **JSON 数组字符串**（上游可 `JSON.parse`） | 可 `JSON.parse`，首项 `code_generate` ✅ |
 | S23 | 请求体超限 | 413 + 码 **-32004** | 413 / -32004 ✅（既有 `gateway.js:295` 逐字一致；此前是静默截断） |
 | S24 | 遗留**旧名**指标族 | 13 族在 `/metrics` 全部可见 | 13/13 ✅ |
+| S24b | 旧名计数器**确实自增** | 三个关键计数 > 0 | `tool_allow_checks_total=8`、`tool_allow_not_enforced_total=6`、`bindings_checks_total=7` ✅ |
 
 ## 4. L3 Maestro flow（运营看板）
 
