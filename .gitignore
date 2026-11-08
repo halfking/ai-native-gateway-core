@@ -348,6 +348,10 @@ scripts/capacity-baseline/reports/
 # NAS 同步残片文件
 .!*
 data/
+# internal/omnifree/data/ 是被 go:embed 进二进制的免费资源种子 SSOT
+# （internal/omnifree/seed.go，2026-11-09 运营审计轮项5）——同 bg/data/ 的
+# 显式例外：漏掉它会让别人的 clone 直接编译失败（embed 找不到文件）。
+!internal/omnifree/data/
 # bg/data/ 是被 go:embed 进二进制的模型基准价 SSOT（bg/pricing_baseline_sync.go），
 # 不是缓存/残片目录。漏掉它会让别人的 clone 直接编译失败（embed 找不到文件），
 # 而本机因为文件在磁盘上察觉不到。modeliqdata/data/standard_iq.json 同理，
