@@ -14,6 +14,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 6 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 604 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 610 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 8 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 611 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 619 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -273,6 +274,7 @@
 /api/admin/routing/overrides	ANY	admin/auto_route.go:111	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/routing/overrides/	ANY	admin/auto_route.go:112	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/sales/approvals	ANY	admin/sales_handlers.go:44	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/sales/dashboard	ANY	admin/sales_handlers.go:54	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/sales/demand	ANY	admin/sales_handlers.go:38	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/sales/demand/	ANY	admin/sales_handlers.go:39	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/sales/quotes	ANY	admin/sales_handlers.go:41	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

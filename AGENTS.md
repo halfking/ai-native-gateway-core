@@ -28,6 +28,37 @@
 > （先合并 verdict 不合并存储）＋T4 会话桶历史环/C1 经济学转正＋T5 质量 rollup
 > （复用 supplier_error_stats 骨架不建新表）；W1–W4 分轮各带验收门；待裁决 4 条
 > （含「单次 429=3min」既有承诺变更、上游噪音可接受度）。**明确没做**：零代码零迁移零部署。
+> **2026-11-08 报价系统 MVP 风暴档审计与终版实施轮（goal 会话，审计档
+> `docs/audit/2026-11-08-报价系统MVP-风暴档审计与终版实施轮.md`；通用式见 `LESSONS.md` **§643**）**：
+> ★ 用户目标＝「根据《2026-11-04-报价系统MVP-头脑风暴与运营思路》进行分析与审计，修正发现的问题，
+> 完成最终版本，然后进行执行实施」。开工树 `bb38b3223` 干净；审计 = 2 并行只读代理（后端 90
+> tool-uses / 前端 29）+ 211 活体（sales_* 8 表全 0 行＝「链路通了没人走」字面应验；视图 trusted
+> 27 行未漂移；salesdecorate price_observation 9242 行最新 11-08）。
+> ★★★★ **P1＝前端建单链必 23514**：payload 无 confidence ⇒ 版本置信空串违反 945 CHECK
+> （真库测试全显式传 trusted ⇒ 全绿掩盖唯一真实用户路径）⇒ 根修＝**服务端派生**（deriveQuoteItems：
+> 按 canonical 回查供给视图覆盖成本三轴+置信，客户端声明永不采信；P5 五价快照恒空/P6 C3 门可伪造
+> 同源关掉）；本轮自己的 realdb 腿当场抓出 **margin_pct 22003 溢出**（收入趋零 ⇒ -721300% 击穿
+> numeric(8,4)）⇒ marginPctOf 钳 ±9999.9999 + 收入≤0⇒NULL。
+> ★ 4P2 收口＝公开面真限速（ipWindowLimiter per-IP 固定窗，`sales.public.rate_limit_per_min`=30，
+> IP 走 ContextClientIP 可信解析）/owner 语义落实（salesOwnerScope + EnsureQuoteOwner 非本人 404 +
+> ListQuotes SQL 收窄）/**RevokeShare 接线**（此前无任何 API 面＝「可撤销」只有服务半边）/
+> 联系人最小化（revealContacts 仅 super）+ 8P3（RowsAffected 守卫/负数拒绝/quoted 联动激活/
+> 过期探测不污染埋点/审计行实状态/死代码）。
+> ★ 交付（执行实施）＝**W2-T2**：`GET /api/admin/sales/dashboard`（super，全现算零新表：漏斗含
+> expired 派生态现算 + DealHub 突破率走 status_log 面 + jsonb 逐维聚合 + 毛利分桶；**占位键
+> approval_rate_alert_pct 自此有消费方**）+ 成本漂移（attachCostDrift 与派生**同源选行**，提醒不自动撤）
+> + 三档系数 settings 化（tier_coef_*=1.3/1.6/2.0 仅前端快填，服务端不校验——两把尺反模式不进服务端）
+> + **客户版页面** `/public/quote/:token`（public 路由 + PublicQuoteView + 裸 fetch 绕 401 会话裁决 +
+> 打印兜底 PDF + 水印 + 过期/撤销统一不可用态；响应体断言随 sale_total_usd/subtotal_usd 收紧——
+> 合计是报价要素非敏感轴）+ 前端建单弹窗化/模型选择器/三档快填/prompt→dialog/分享撤销。
+> ★ 验收＝go build/vet 全仓 rc=0；sales realdb **13 腿全绿**（+7 新）；admin 110s/settings 绿；
+> vitest **296 文件/3027 passed**（+6 判据）；vue-tsc rc=0、vite build ✓；i18n 四门全绿（20+19 新键×8
+> 语种，死键 4 删，es/fr 两处同值棘轮当场改译）；navCoverage 反向断言抓回我自己的白名单登记
+> （工作台复制链接＝真实入口 ⇒ 撤登记）；admin-routes 619→620 + post-surface 补 1（class=read）。
+> ★ 登记：940 同步器显式不落地（跨仓读 salesdecorate 需 owner 授权+跨库凭据两件前置＝新裁决）；
+> 两维红线分层维持退化（「模型档」无数据源＝假维度）；服务端 PDF 不做（打印兜底已给）；
+> err.Error() 直透与 944 status_log 注释矛盾登记遗留。**明确没做**：零迁移（本轮无新迁移）、
+> 零部署（245/154/211 留给部署轮，公开面行为变化应带冒烟）。
 > **2026-11-07 探测浪费与恢复及时性根修轮（goal 会话；方案档
 > `docs/audit/2026-11-07-探测浪费与恢复及时性根修轮.md`；T2 留档
 > `tests/48h-audit/reports/history/T2-2026-11-07-wasteround.md`）**：

@@ -85,6 +85,7 @@ import usageTrend from './usageTrend'
 import hyper from './hyper'
 import routeIncidentDrawer from './routeIncidentDrawer'
 import sales from './sales'
+import publicQuote from './publicQuote'
 
 export default {
   sanitizeRules,
@@ -171,4 +172,5 @@ export default {
   routeIncidentDrawer,
   liveTopology,
   sales,
+  publicQuote,
 }

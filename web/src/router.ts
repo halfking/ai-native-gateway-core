@@ -88,6 +88,7 @@ const ReconciliationReportView = () => import('./views/admin/ReconciliationRepor
 // 后端 sales 包 942–949 + admin/sales_handlers.go；内部运营面 ⇒ requiresAuth，
 // 数据权限由应用层角色闸承载）
 const SalesWorkbenchView = () => import('./views/operations/SalesWorkbenchView.vue')
+const PublicQuoteView = () => import('./views/PublicQuoteView.vue') // 客户版报价落地页（2026-11-08 W2）
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
@@ -351,6 +352,9 @@ export const router = createRouter({
 
     // Local first-boot bootstrap (public; works offline)
     { path: '/bootstrap', component: BootstrapWizardView, meta: { public: true } },
+    // 客户版报价落地页（2026-11-08 W2 客户版轮）：分享 token 外链直开，无登录
+    // （风暴档 §8-3 裁决；后端 hash 库存/TTL/撤销/访问审计兜底）。
+    { path: '/public/quote/:token', component: PublicQuoteView, meta: { public: true } },
 
     // Customer lifecycle — merged update & activate (public for guest homepage flow)
     { path: '/customer/update-activate', component: CustomerUpdateActivateView, meta: { public: true } },

@@ -35,6 +35,8 @@ vi.mock('../../api/sales', () => ({
   listQuoteApprovals: vi.fn().mockResolvedValue({ items: [] }),
   listQuoteShares: vi.fn().mockResolvedValue({ items: [] }),
   createQuoteShare: vi.fn(),
+  revokeQuoteShare: vi.fn(),
+  getSalesDashboard: vi.fn(),
   upsertSupplyAnnotation: vi.fn(),
 }))
 
@@ -230,8 +232,9 @@ describe('SalesWorkbenchView', () => {
     await flushPromises()
 
     // 真实输入路径填联系人（el-input stub 有 v-model 契约）；
-    // 报价页签下三个 dialog 依次为 approvals/versions/shares ⇒ 取第 3 个弹层内首 input
-    const shareDialog = w.findAll('.el-dialog-stub')[2]
+    // 2026-11-08 起报价页签下 5 个 dialog 依次为 建单/收口/approvals/versions/shares
+    // ⇒ shares 取第 5 个弹层内首 input
+    const shareDialog = w.findAll('.el-dialog-stub')[4]
     expect(shareDialog.exists()).toBe(true)
     const contactInput = shareDialog.find('.el-input-stub')
     await contactInput.setValue('张三')
@@ -264,5 +267,46 @@ describe('SalesWorkbenchView', () => {
     await w.find('.tab-quotes').trigger('click')
     await flushPromises()
     expect(listQuotes).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── 2026-11-08 风暴档审计轮新增判据 ────────────────────────────────────────
+
+describe('SalesWorkbenchView W2（2026-11-08 审计轮）', () => {
+  it('成本漂移徽标：cost_drifted=true 的活单行内呈现「建议重报」，无漂移行不呈现', async () => {
+    mockedSellable.mockResolvedValue(SELLABLE)
+    vi.mocked(listQuotes).mockResolvedValue({
+      items: [
+        {
+          id: 7, customer_name: '客户甲', title: '漂移单', status: 'approved',
+          locked: false, created_by: 'op', created_at: '2026-11-08T00:00:00Z',
+          updated_at: '2026-11-08T00:00:00Z',
+          cost_drift_pct: 32.5, cost_drifted: true,
+        },
+        {
+          id: 8, customer_name: '客户乙', title: '无漂移单', status: 'draft',
+          locked: false, created_by: 'op', created_at: '2026-11-08T00:00:00Z',
+          updated_at: '2026-11-08T00:00:00Z',
+          cost_drift_pct: 0.4, cost_drifted: false,
+        },
+      ],
+    })
+    const w = mount(SalesWorkbenchView, { global: { plugins: [testI18n], stubs } })
+    await flushPromises()
+    await w.find('.tab-quotes').trigger('click')
+    await flushPromises()
+    const text = w.find('.el-table-stub').text()
+    // 漂移徽标只随 drifted 行出现（提醒不自动撤：无状态迁移按钮语义）
+    expect(text).toContain('建议重报')
+    const tags = w.findAll('.el-tag-stub').map((t) => t.text())
+    expect(tags.filter((x) => x.includes('建议重报')).length).toBe(1)
+  })
+
+  it('非 super：看板页签不渲染（dashboard 端点是 super-only，前端不造必 403 的入口）', async () => {
+    mockedSellable.mockResolvedValue(SELLABLE)
+    const w = mount(SalesWorkbenchView, { global: { plugins: [testI18n], stubs } })
+    await flushPromises()
+    expect(w.findAll('.el-tab-pane-stub').length).toBe(3)
+    expect(w.text()).not.toContain('丢单原因')
   })
 })
