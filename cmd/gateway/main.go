@@ -6794,6 +6794,10 @@ func main() {
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
 	registerStorageMetricsHandler(mux, storageRt, cfg.AdminAPIKey) // Task 5.3: 存储分层指标端点，鉴权与 /metrics 一致
 
+	// MCP 服务网关（数据面 /mcp + 控制面 /mcp/control + 看板 /mcp/admin）。
+	// 装配失败只记日志不阻断启动：MCP 网关是附加能力。
+	registerMCPGateway(mux, slog.Default())
+
 	// Mock Probe 端点（2026-09-24 v2 设计；2026-09-26 生产入口接入，审计
 	// docs/audit/2026-09-27-mock-probe-production-entry-audit.md §修复）。仅 MockProbeEnabled=true
 	// 时注册（关闭时 /mock/* 落 mux 404，语义与未部署该子系统一致——需求

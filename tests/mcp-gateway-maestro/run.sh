@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+# tests/mcp-gateway-maestro/run.sh —— MCP 网关的 Maestro 方式全面验证
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ 三层验证（对应仓内「Maestro」惯例：观测 → 假设 → 最小修复 → 再测）：    │
+# │   L1 Go 测试    —— go test ./mcp/... （治理链单测/集成测）               │
+# │   L2 API 场景   —— 本脚本的 S01~S19（真实进程 + 真实 HTTP）              │
+# │   L3 浏览器 flow —— maestro/flows/10-mcp-gateway.yaml（运营看板逐页断言） │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# 用法：
+#   bash tests/mcp-gateway-maestro/run.sh                # 三层全跑
+#   SKIP_GO=1 bash tests/mcp-gateway-maestro/run.sh      # 跳过 L1
+#   SKIP_MAESTRO=1 bash tests/mcp-gateway-maestro/run.sh  # 跳过 L3
+#
+# 产物：tests/mcp-gateway-maestro/reports/<时间戳>/{summary.md,go-test.log,maestro.log}
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${ROOT}"
+
+REPORT_DIR="${ROOT}/tests/mcp-gateway-maestro/reports"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+OUT="${REPORT_DIR}/${STAMP}"
+mkdir -p "${OUT}"
+
+ADMIN_TOKEN="maestro-admin-token"
+pass=0; fail=0
+declare -a FAILED_CASES=()
+
+log()  { printf '%s\n' "$*"; }
+ok()   { pass=$((pass+1)); printf '  ✅ %s\n' "$*"; }
+bad()  { fail=$((fail+1)); FAILED_CASES+=("$*"); printf '  ❌ %s\n' "$*"; }
+
+# ── 0. 工具链探测 ───────────────────────────────────────────────────────────
+# 构建与测试用两套命令：
+#   · 构建要产出**宿主可执行**的二进制 ⇒ 容器内必须交叉编译（GOOS/GOARCH=宿主）。
+#   · 测试在容器内**原生**跑 ⇒ 绝不能带 GOOS/GOARCH（否则测试二进制无法执行）。
+BUILD_CMD=(); TEST_CMD=()
+if command -v go >/dev/null 2>&1; then
+  BUILD_CMD=(go); TEST_CMD=(go)
+elif command -v docker >/dev/null 2>&1; then
+  HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  HOST_ARCH="$(uname -m)"
+  case "${HOST_ARCH}" in
+    arm64|aarch64) HOST_ARCH=arm64 ;;
+    x86_64|amd64)  HOST_ARCH=amd64 ;;
+  esac
+  BUILD_CMD=(docker run --rm -v "${ROOT}:/src" -w /src -e GOFLAGS=-mod=vendor -e CGO_ENABLED=0
+             -e "GOOS=${HOST_OS}" -e "GOARCH=${HOST_ARCH}" golang:1.27.2-alpine go)
+  TEST_CMD=(docker run --rm -v "${ROOT}:/src" -w /src -e GOFLAGS=-mod=vendor -e CGO_ENABLED=0
+            golang:1.27.2-alpine go)
+else
+  log "!! 既没有 go 也没有 docker，无法构建 MCP 网关二进制"; exit 2
+fi
+
+# 选空闲端口：机器上常驻着别的本地服务（如 :8799 被占用）⇒ 固定端口会静默串台。
+pick_port() {
+  python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'
+}
+
+PORT="${MCP_TEST_PORT:-$(pick_port)}"
+LIMIT_PORT="${MCP_TEST_LIMIT_PORT:-$(pick_port)}"
+BOOT_PORT="${MCP_TEST_BOOT_PORT:-$(pick_port)}"
+BASE_URL="http://127.0.0.1:${PORT}"
+BIN="${ROOT}/.build-local/mcp-gateway-maestro-${STAMP}"
+mkdir -p "${ROOT}/.build-local"
+
+# ── 1. 构建与启动 ───────────────────────────────────────────────────────────
+log "== 构建 cmd/mcp-gateway"
+if [ ${#BUILD_CMD[@]} -gt 1 ]; then
+  "${BUILD_CMD[@]}" build -o "/src/.build-local/mcp-gateway-maestro-${STAMP}" ./cmd/mcp-gateway \
+    || { log "!! 构建失败"; exit 2; }
+else
+  "${BUILD_CMD[@]}" build -o "${BIN}" ./cmd/mcp-gateway || { log "!! 构建失败"; exit 2; }
+fi
+
+GATEWAY_PID=""; LIMIT_PID=""; BOOT_PID=""
+cleanup() {
+  [ -n "${GATEWAY_PID}" ] && kill "${GATEWAY_PID}" 2>/dev/null
+  [ -n "${LIMIT_PID}" ]  && kill "${LIMIT_PID}" 2>/dev/null
+  [ -n "${BOOT_PID}" ]   && kill "${BOOT_PID}" 2>/dev/null
+  rm -f "${BIN}"
+  return 0
+}
+trap cleanup EXIT
+
+start_gateway() { # start_gateway <port> <read_limit> <bootstrap_enabled> <logfile>
+  MCP_GATEWAY_ADMIN_TOKEN="${ADMIN_TOKEN}" \
+  MCP_GATEWAY_READ_RATE_LIMIT="$2" \
+  MCP_GATEWAY_BOOTSTRAP_ENABLED="$3" \
+  MCP_GATEWAY_BOOTSTRAP_AUTO_APPROVE=true \
+    "${BIN}" --listen "127.0.0.1:$1" --demo --admin-token "${ADMIN_TOKEN}" \
+    >"$4" 2>&1 &
+  echo $!
+}
+
+# 探针端点：/healthz 是公开自检（/health 需要管理令牌，探针不可用）。
+wait_ready() { # wait_ready <base-url>
+  for _ in $(seq 1 40); do
+    curl -s --max-time 2 "$1/mcp/control/healthz" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+log "== 启动 MCP 网关（${BASE_URL}）"
+GATEWAY_PID="$(start_gateway "${PORT}" 120 false "${OUT}/gateway-${PORT}.log")"
+if ! wait_ready "${BASE_URL}"; then
+  log "!! 网关未就绪（看 ${OUT}/gateway-${PORT}.log）"; exit 2
+fi
+DEMO_KEY="$(grep -m1 '^DEMO_API_KEY=' "${OUT}/gateway-${PORT}.log" | cut -d= -f2-)"
+if [ -z "${DEMO_KEY}" ]; then
+  log "!! 未取到演示凭证（看 ${OUT}/gateway-${PORT}.log）"; exit 2
+fi
+log "   演示凭证：${DEMO_KEY:0:14}…"
+
+# ── 2. L1：Go 测试 ───────────────────────────────────────────────────────────
+if [ "${SKIP_GO:-0}" != "1" ]; then
+  log "== L1: go test ./mcp/..."
+  "${TEST_CMD[@]}" test ./mcp/... >"${OUT}/go-test.log" 2>&1
+  if [ $? -eq 0 ]; then ok "L1 go test ./mcp/... 全绿"; else bad "L1 go test ./mcp/... 失败（见 go-test.log）"; fi
+fi
+
+# ── 3. L2：API 级场景 ───────────────────────────────────────────────────────
+rpc() { # rpc <base-url> <path> <key> <json-body> [extra-header]
+  local base="$1" path="$2" key="$3" body="$4" extra="${5:-}"
+  local args=(-s -o "${OUT}/.body" -w '%{http_code}' -X POST "${base}${path}"
+              -H 'Content-Type: application/json')
+  [ -n "${key}" ] && args+=(-H "Authorization: Bearer ${key}")
+  [ -n "${extra}" ] && args+=(-H "${extra}")
+  args+=(-d "${body}")
+  curl "${args[@]}"
+}
+body_get() { cat "${OUT}/.body"; }
+jq_get() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
+
+log "== L2: API 场景（S01~S19）"
+
+# S01 无凭证 → 401
+code="$(rpc "${BASE_URL}" /mcp '' '{"jsonrpc":"2.0","id":1,"method":"initialize"}')"
+[ "${code}" = "401" ] && ok "S01 无凭证访问数据面 → 401" || bad "S01 无凭证 → ${code}（期望 401）"
+
+# S02 initialize → 协议版本
+code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":1,"method":"initialize"}')"
+ver="$(body_get | jq_get 'd.get("result",{}).get("protocolVersion","")')"
+[ "${code}" = "200" ] && [ -n "${ver}" ] && ok "S02 initialize → 协议版本 ${ver}" || bad "S02 initialize → code=${code} ver=${ver}"
+
+# S03 tools/list → 命名空间化
+code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
+tools="$(body_get | jq_get '" ".join(t["name"] for t in d["result"]["tools"])')"
+case "${tools}" in
+  *demo__search_memory*) ok "S03 tools/list 聚合上游工具 → ${tools}" ;;
+  *) bad "S03 tools/list 未见 demo__search_memory（${tools}）" ;;
+esac
+
+# S04 tools/call → 成功
+code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"hello"}}}')"
+case "$(body_get)" in
+  *demo\ upstream\ handled*) ok "S04 tools/call 成功转发到上游" ;;
+  *) bad "S04 tools/call 结果异常 code=${code}: $(body_get)" ;;
+esac
+
+# S05 控制面无令牌 → 401
+code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' "${BASE_URL}/mcp/control/tools")"
+[ "${code}" = "401" ] && ok "S05 控制面无管理令牌 → 401" || bad "S05 控制面无令牌 → ${code}（期望 401）"
+
+# S06 控制面注册适配器 → 201
+code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/adapters" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"name":"crm","endpoint":"http://127.0.0.1:8420","capability":"code","enabled":true,"sensitivity":"write"}')"
+[ "${code}" = "201" ] && ok "S06 注册适配器 → 201" || bad "S06 注册适配器 → ${code}（期望 201）"
+
+# S07 注册高敏工具 → 201
+code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/tools" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"name":"crm__delete_customer","adapter":"crm","sensitivity":"high","require_approval":true,"visibility":"public","group":"crm-admin"}')"
+[ "${code}" = "201" ] && ok "S07 注册高敏工具（需审批 + 团队可见）→ 201" || bad "S07 注册工具 → ${code}（期望 201）"
+
+# S08 签发受限凭证 → 201，明文一次性
+code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/keys" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"default","name":"maestro-agent","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo"]}')"
+SECRET="$(body_get | jq_get 'd.get("secret","")')"
+[ "${code}" = "201" ] && [ -n "${SECRET}" ] && ok "S08 签发凭证 → 201（明文 sk-mcp-*）" || bad "S08 签发凭证 → code=${code} secret=${SECRET}"
+
+# S09 受限凭证可调用 demo 工具
+code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"x"}}}')"
+[ "${code}" = "200" ] && ok "S09 受限凭证调用允许的工具 → 200" || bad "S09 受限凭证调用 → ${code}（期望 200）"
+
+# S10 越权工具（适配器白名单外）→ 403/404
+code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
+case "${code}" in
+  403|404) ok "S10 越权访问被拒 → ${code}" ;;
+  *) bad "S10 越权访问 → ${code}（期望 403/404）" ;;
+esac
+
+# S11 高敏工具缺审批凭据 → 403
+code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
+[ "${code}" = "403" ] && ok "S11 高敏工具缺审批凭据 → 403" || bad "S11 高敏工具 → ${code}（期望 403）"
+
+# S12 审批通过后放行
+APR="$(curl -s -X POST "${BASE_URL}/mcp/control/approvals" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' -d '{"tool":"crm__delete_customer","requester":"demo-user"}' \
+  | jq_get 'd.get("id","")')"
+curl -s -o /dev/null -X POST "${BASE_URL}/mcp/control/approvals/${APR}" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"decision":"approved","decided_by":"maestro"}'
+code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}' "X-MCP-Approval: ${APR}")"
+case "${code}" in
+  200|502|503) ok "S12 带审批凭据后放行（${code}：上游未就绪也算治理链通过）" ;;
+  403) bad "S12 带审批凭据仍被拒 → ${code}" ;;
+  *) bad "S12 带审批凭据 → ${code}" ;;
+esac
+
+# S13 吊销凭证 → 立即 401
+KEYID="$(curl -s "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  | jq_get 'next((k["id"] for k in d["keys"] if k.get("name")=="maestro-agent"),"")')"
+curl -s -o /dev/null -X POST "${BASE_URL}/mcp/control/keys/${KEYID}/revoke" -H "X-Admin-Token: ${ADMIN_TOKEN}"
+code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":8,"method":"tools/list"}')"
+[ "${code}" = "401" ] && ok "S13 吊销后立即 401" || bad "S13 吊销后 → ${code}（期望 401）"
+
+# S14 审计与导出
+AUDIT="$(curl -s "${BASE_URL}/mcp/control/audit?limit=200" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  | jq_get 'len(d.get("events",[]))')"
+[ "${AUDIT}" -gt 0 ] 2>/dev/null && ok "S14 审计事件 ${AUDIT} 条" || bad "S14 审计为空（${AUDIT}）"
+
+EXPORT_OK="$(curl -s "${BASE_URL}/mcp/control/audit/export" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  | python3 -c '
+import json,sys
+n=0
+for line in sys.stdin:
+    line=line.strip()
+    if line:
+        json.loads(line); n+=1
+print(n)' 2>/dev/null)"
+[ "${EXPORT_OK}" -gt 0 ] 2>/dev/null && ok "S14b 审计导出 JSONL 可解析（${EXPORT_OK} 行）" || bad "S14b 审计导出异常（${EXPORT_OK}）"
+
+# S15 RFC 9728 受保护资源元数据
+RES="$(curl -s "${BASE_URL}/.well-known/oauth-protected-resource" | jq_get 'd.get("resource","")')"
+[ -n "${RES}" ] && ok "S15 RFC 9728 受保护资源元数据 → ${RES}" || bad "S15 元数据缺失"
+
+# S16 限流 → 429（独立实例，读类限额 1/分钟）
+log "== S16 限流场景（独立实例，读类限额=1/分钟）"
+LIMIT_PID="$(start_gateway "${LIMIT_PORT}" 1 false "${OUT}/gateway-limit.log")"
+if wait_ready "http://127.0.0.1:${LIMIT_PORT}"; then
+  LIMIT_KEY="$(grep -m1 '^DEMO_API_KEY=' "${OUT}/gateway-limit.log" | cut -d= -f2-)"
+  c1="$(rpc "http://127.0.0.1:${LIMIT_PORT}" /mcp "${LIMIT_KEY}" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"a"}}}')"
+  c2="$(rpc "http://127.0.0.1:${LIMIT_PORT}" /mcp "${LIMIT_KEY}" '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"b"}}}')"
+  if [ "${c1}" = "200" ] && [ "${c2}" = "429" ]; then
+    ok "S16 限流：第 1 次 200，第 2 次 429"
+  else
+    bad "S16 限流：c1=${c1} c2=${c2}（期望 200/429）"
+  fi
+else
+  bad "S16 限流实例未就绪"
+fi
+
+# S17~S19 密钥引导面（免认证 D2/D3）
+log "== S17~S19 密钥引导面（apply/status/claim）"
+BOOT_PID="$(start_gateway "${BOOT_PORT}" 120 true "${OUT}/gateway-boot.log")"
+if wait_ready "http://127.0.0.1:${BOOT_PORT}"; then
+  BOOT="http://127.0.0.1:${BOOT_PORT}"
+  APPLY="$(curl -s -X POST "${BOOT}/mcp/control/keys/apply" -H 'Content-Type: application/json' \
+    -d '{"idempotencyKey":"maestro-idem-1","deviceName":"maestro-device","name":"bootstrap-agent"}')"
+  REQ_ID="$(printf '%s' "${APPLY}" | jq_get 'd.get("requestId","")')"
+  CLAIM_TOKEN="$(printf '%s' "${APPLY}" | jq_get 'd.get("claimToken","")')"
+  STATUS="$(printf '%s' "${APPLY}" | jq_get 'd.get("status","")')"
+  if [ -n "${REQ_ID}" ] && [ "${STATUS}" = "approved" ]; then
+    ok "S17 引导申请 → approved（requestId=${REQ_ID}）"
+  else
+    bad "S17 引导申请异常：${APPLY}"
+  fi
+
+  # 幂等重放：同一 idempotencyKey 返回同一 requestId
+  APPLY2="$(curl -s -X POST "${BOOT}/mcp/control/keys/apply" -H 'Content-Type: application/json' \
+    -d '{"idempotencyKey":"maestro-idem-1","deviceName":"maestro-device","name":"bootstrap-agent"}')"
+  REQ_ID2="$(printf '%s' "${APPLY2}" | jq_get 'd.get("requestId","")')"
+  [ "${REQ_ID2}" = "${REQ_ID}" ] && ok "S17b 幂等重放返回同一申请" || bad "S17b 幂等重放 requestId 漂移（${REQ_ID} → ${REQ_ID2}）"
+
+  # status 不含明文
+  ST="$(curl -s "${BOOT}/mcp/control/keys/status/${REQ_ID}")"
+  case "${ST}" in
+    *sk-mcp-*) bad "S18 status 泄露明文：${ST}" ;;
+    *'"ok":true'*) ok "S18 status 安全（无明文）" ;;
+    *) bad "S18 status 异常：${ST}" ;;
+  esac
+
+  # claim 一次性
+  CL="$(curl -s -X POST "${BOOT}/mcp/control/keys/claim" -H 'Content-Type: application/json' \
+    -d "{\"requestId\":\"${REQ_ID}\",\"claimToken\":\"${CLAIM_TOKEN}\"}")"
+  BOOT_KEY="$(printf '%s' "${CL}" | jq_get 'd.get("apiKey","")')"
+  case "${BOOT_KEY}" in
+    sk-mcp-*) ok "S19 claim 一次性领取明文凭证" ;;
+    *) bad "S19 claim 异常：${CL}" ;;
+  esac
+  CL2="$(curl -s -X POST "${BOOT}/mcp/control/keys/claim" -H 'Content-Type: application/json' \
+    -d "{\"requestId\":\"${REQ_ID}\",\"claimToken\":\"${CLAIM_TOKEN}\"}")"
+  case "${CL2}" in
+    *already_claimed*) ok "S19b claim 不可重放（already_claimed）" ;;
+    *) bad "S19b claim 可重放：${CL2}" ;;
+  esac
+else
+  bad "S17~S19 引导面实例未就绪"
+fi
+
+# ── 4. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
+if [ "${SKIP_MAESTRO:-0}" != "1" ]; then
+  log "== L3: Maestro 浏览器 flow（运营看板）"
+  if ! command -v maestro >/dev/null 2>&1; then
+    bad "L3 PATH 里没有 maestro（curl -Ls https://get.maestro.mobile.dev | bash）"
+  else
+    DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9222}"
+    CHROME_PROFILE="${MAESTRO_CHROME_PROFILE:-/tmp/maestro-local-chrome-profile}"
+    find_chrome() {
+      if [ -n "${MAESTRO_CHROME_BIN:-}" ]; then printf '%s' "${MAESTRO_CHROME_BIN}"; return; fi
+      if command -v chromium >/dev/null 2>&1; then command -v chromium; return; fi
+      if command -v google-chrome >/dev/null 2>&1; then command -v google-chrome; return; fi
+      for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+               "/Applications/Chromium.app/Contents/MacOS/Chromium"; do
+        [ -x "${c}" ] && { printf '%s' "${c}"; return; }
+      done
+      printf ''
+    }
+    CHROME_BIN="$(find_chrome)"
+    if [ -z "${CHROME_BIN}" ]; then
+      bad "L3 找不到 Chrome（MAESTRO_CHROME_BIN 可指定）"
+    else
+      if ! curl -s --max-time 3 "http://127.0.0.1:${DRIVER_PORT}/json/version" >/dev/null 2>&1; then
+        mkdir -p "${CHROME_PROFILE}"
+        nohup "${CHROME_BIN}" --headless=new --remote-debugging-port="${DRIVER_PORT}" \
+          --user-data-dir="${CHROME_PROFILE}" --no-first-run --no-default-browser-check \
+          --disable-gpu about:blank >"${OUT}/chrome.log" 2>&1 &
+        for _ in $(seq 1 30); do
+          curl -s --max-time 2 "http://127.0.0.1:${DRIVER_PORT}/json/version" >/dev/null 2>&1 && break
+          sleep 1
+        done
+      fi
+      set +e
+      maestro test --driver-host-port "${DRIVER_PORT}" --headless --no-ansi \
+        --test-output-dir "${OUT}/maestro" \
+        -e "BASE_URL=${BASE_URL}" -e "MCP_ADMIN_TOKEN=${ADMIN_TOKEN}" \
+        "${ROOT}/maestro/flows/10-mcp-gateway.yaml" >"${OUT}/maestro.log" 2>&1
+      rc=$?
+      set -e
+      failed="$(grep -c 'FAILED' "${OUT}/maestro.log" || true)"
+      if [ "${rc}" -eq 0 ] && [ "${failed}" -eq 0 ]; then
+        ok "L3 Maestro flow 全绿（rc=0，FAILED=0）"
+      else
+        bad "L3 Maestro flow 失败 rc=${rc} FAILED=${failed}（见 maestro.log）"
+      fi
+    fi
+  fi
+fi
+
+# ── 5. 汇总 ─────────────────────────────────────────────────────────────────
+{
+  echo "# MCP 网关 Maestro 验证报告"
+  echo
+  echo "- 时间：$(date '+%Y-%m-%d %H:%M:%S')"
+  echo "- 目标：llm-gateway-go 内置 MCP 服务网关（mcp/ 包 + cmd/mcp-gateway）"
+  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S19）+ L3 Maestro 浏览器 flow"
+  echo
+  echo "## 结论"
+  echo
+  echo "- 通过：${pass}"
+  echo "- 失败：${fail}"
+  echo
+  if [ "${fail}" -gt 0 ]; then
+    echo "## 失败用例"
+    echo
+    for c in "${FAILED_CASES[@]}"; do echo "- ${c}"; done
+    echo
+  fi
+  echo "## 产物"
+  echo
+  echo "- go-test.log：L1 Go 测试输出"
+  echo "- gateway-*.log：网关进程日志"
+  echo "- maestro.log：L3 Maestro CLI 输出"
+} >"${OUT}/summary.md"
+
+log ""
+log "================ 汇总 ================"
+log "通过 ${pass} / 失败 ${fail}"
+log "报告：${OUT}/summary.md"
+[ "${fail}" -eq 0 ] || exit 1
