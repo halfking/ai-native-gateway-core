@@ -4882,6 +4882,20 @@ func main() {
 				nodeProbeWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 
+				// ★★ 2026-11-08（第 51 增量审计 F-1）：balance-floor guard 的
+				//   四处翻 ok（清下限释放/逃生门/货币恢复/套餐恢复）此前**不发任何
+				//   恢复事件** ⇒ 该凭据被 W5 配额钉或长梯停在未来的失败探针行
+				//   无人唤醒（211 实测：用尽凭据 24h 内仍被探测 297 次、258 次）。
+				//   ★ 与 credRecovery.SetRearmFunc 同族（真恢复事件 ⇒ 回拉失败行），
+				//   ★ 但**不挂在 credRecovery != nil 条件下** —— 那条分支可被
+				//   config.IsCredRecoveryDisabled() 关掉，而 guard 仍在跑。
+				if balanceFloorGuard != nil && nodeProbeWorker != nil {
+					balanceFloorGuard.SetOnCredentialRecovered(func(credID int64, reason string) {
+						nodeProbeWorker.RearmCredentialFailures(int(credID))
+					})
+					slog.Info("balance_floor_guard: recovery notification wired to node_probe rearm")
+				}
+
 				// capability_backfill (2026-10-02, 遗留 #1): credential_model_
 				// capabilities 一直没有任何代码写入（全树唯一引用是
 				// provider/client.go 的那条 SELECT），所以
@@ -5168,6 +5182,15 @@ func main() {
 			}
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
+			// ★★ 2026-11-08（F-1）：mirror of branch-1 —— balance-floor guard 的
+			//   恢复通知接到本分支的 nodeProbeWorker（否则 authoritative 路径下
+			//   用尽凭据的失败探针行同样无人唤醒）。
+			if balanceFloorGuard != nil && nodeProbeWorker != nil {
+				balanceFloorGuard.SetOnCredentialRecovered(func(credID int64, reason string) {
+					nodeProbeWorker.RearmCredentialFailures(int(credID))
+				})
+				slog.Info("balance_floor_guard: recovery notification wired to node_probe rearm (authoritative v2)")
+			}
 			// capability_backfill: 同一张能力位表在 URSM v2 authoritative
 			// 路径下同样需要有人维护——与上面的 node_probe_worker 装配点
 			// 互斥，两条路径各起一份。蓝绿单跑选举同上（R33 审计 #1）。

@@ -249,7 +249,7 @@ func ProbeSpecs() []*Spec {
 			Max:      floatPtr(86400),
 			Default:  3600,
 			Description: "持续失败对的复检间隔（秒）",
-			DescriptionLong: "attempt 达到 probe.sustained_failure_attempt_threshold 后，可恢复类失败的下次自动复检间隔（默认 3600=1h；绑定冷却 unavailableBindingHorizon 同步升级）。实测背景（2026-11-07，211）：SLA 封顶把持续故障对钉在 ~5 分钟一探 ⇒ 单对 ~480 次/天、consecutive_failures 累积至 ~1000 仍不停（spec 里 probe.recovery_max_backoff_seconds 已登记该 72× 成本）。调大=更省但恢复发现更慢；调到 300=回到恒 5 分钟口径（等效关闭升级）。",
+			DescriptionLong: "attempt 达到 probe.sustained_failure_attempt_threshold 后，可恢复类失败的下次自动复检间隔（默认 3600=1h；绑定冷却 unavailableBindingHorizon 同步升级）。实测背景（2026-11-07，211）：SLA 封顶把持续故障对钉在 ~5 分钟一探 ⇒ 单对 ~480 次/天、consecutive_failures 累积至 ~1000 仍不停（spec 里 probe.recovery_max_backoff_seconds 已登记该 72× 成本）。调大=更省但恢复发现更慢；调到 300=回到恒 5 分钟口径（等效关闭升级）——★ 注意该等价只在 probe.recovery_max_backoff_seconds=300（默认）时成立：若把恢复 SLA 调大，本键的有效值会被 SLA 下限托起（bg/probe_recovery_policy.go 的 sustainedFailureRecheck 以 SLA 为下限）⇒ 「300=关闭升级」的说法不适用。",
 			Unit:        "秒",
 			DangerLevel: Safe,
 			HotReload:   true,

@@ -148,6 +148,80 @@ func TestSuccessPathsCarryEvidenceTimestamp(t *testing.T) {
 	}
 }
 
+// ★★ 2026-11-08（第 51 增量审计 F-3）：S5 只钉了 SQL **文本**含 $3，
+//
+//	★ 但没钉**实参端**——把 Exec 的 $3 实参从 evidenceAt 换回 now()
+//	★ （bg/node_probe.go / bg/node_probe_write_through.go 两处），
+//	★ **没有任何断言变红**——而那正是 W7 要防的竞态方向：
+//	★ 证据时刻退化为记账时刻 ⇒ (证据, 记账) 窗口内的合法业务拉黑
+//	★ 会被无条件恢复覆盖 ⇒ write-through 竞态复发。
+//	★ 本判据钉住两个调用点的实参形态。
+func TestHealthyBindingExecBindsEvidenceTimestampNotNow(t *testing.T) {
+	// ① legacy/worker 侧：updateBindingAvailability 成功分支。
+	npSrc, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	npBody := string(npSrc)
+	if !strings.Contains(npBody, "w.db.Exec(ctx, healthyBindingSQL(evidenceAt), credID, model, evidenceAt)") {
+		t.Fatal("node_probe.go must execute healthyBindingSQL with the evidence timestamp as the $3 argument (★ now() here re-opens the W7 write-through race)")
+	}
+	// ② write-through 侧：syncHealthyNodeSurfacesAt。
+	wtSrc, err := os.ReadFile("node_probe_write_through.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wtBody := string(wtSrc)
+	if !strings.Contains(wtBody, "db.Exec(ctx, healthyBindingSQL(evidenceAt), credentialID, rawModel, evidenceAt)") {
+		t.Fatal("node_probe_write_through.go must execute healthyBindingSQL with the evidence timestamp as the $3 argument")
+	}
+	// ★ 反向断言：健康写路径里不得出现「healthyBindingSQL(now())」形态。
+	for _, pair := range []struct {
+		body string
+		name string
+	}{
+		{npBody, "node_probe.go"},
+		{wtBody, "node_probe_write_through.go"},
+	} {
+		if strings.Contains(pair.body, "healthyBindingSQL(now())") {
+			t.Errorf("%s must not bind healthyBindingSQL to now() (★ the guard exists to compare against the evidence timestamp)", pair.name)
+		}
+	}
+}
+
+// ★★ 2026-11-08（第 51 增量审计 F-4）：legacy 路径的 W8 接线**无任何测试钉**。
+//
+//	★ S6 只读 probe_service.go（队列路径）；bg/node_probe.go 的两处 legacy
+//	★ 接线（成功镜像 `last_attempt_at = $4` 与 updateBindingAvailability 传
+//	★ directDone）改回 now() 会静默通过 —— 即 legacy 路径上的 R4 误报
+//	★ 与 write-through 竞态同时失去防护。
+func TestLegacyPathCarriesEvidenceTimestamp(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+
+	// ① 成功镜像：last_attempt_at 必须取证据时刻实参（$4），不是记账 now()。
+	if !strings.Contains(body, "last_attempt_at = $4") {
+		t.Fatal("node_probe.go legacy success mirror must write last_attempt_at from the evidence timestamp argument")
+	}
+	// ② 成功分支的证据时刻来源：直连轮完成时刻 directDone。
+	if !strings.Contains(body, "directDone") {
+		t.Fatal("node_probe.go legacy path must derive the evidence timestamp from the direct round completion (directDone)")
+	}
+	// ③ 成功分支必须把 directDone 传给 updateBindingAvailability。
+	if !strings.Contains(body, "updateBindingAvailability(") {
+		t.Fatal("node_probe.go must call updateBindingAvailability")
+	}
+	// ★ 反向断言（限定在**成功镜像**这一段）：失败路径写 now() 是正确的
+	//   （失败证据时刻＝记账时刻），不得连坐 ⇒ 判据必须看上下文而非全文。
+	successMirror := body[strings.Index(body, "last_attempt_at = $4")-2000:]
+	if end := strings.Index(successMirror, "last_attempt_at = now()"); end >= 0 && end < 2000 {
+		t.Error("node_probe.go legacy success mirror must not fall back to last_attempt_at = now() (★ W8: the mirror must carry the evidence timestamp)")
+	}
+}
+
 // S7（W9）：失败镜像必须是 upsert（非 gateway-side 失败）——否则队列模式下
 // 从未被业务触达的对永远没有 node_probe_state 行，cf 不累积、升级永不触发
 // （211 实测：凭据 35 族 cf=-1、每次恢复翻转从梯底重开一代）。
