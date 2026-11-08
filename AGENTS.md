@@ -100,11 +100,25 @@
 >     **只被导出、请求路径并未调用** ⇒ 本实现提供同能力 API
 >     `mcp.FilterToolsByCapability`，但**请求路径保持与既有逐字一致**（不据此过滤
 >     tools/list）⇒ 不把「既有导出」误写成「既有已生效」（见 §6.5）。
+> ★ 证据的**可观测级别**再升一级：被点名的 4 项契约（错误码 / 429 三件套 /
+>   请求级能力路由 / 能力头格式）原先只有 **Go 单测 + 文档行号**两级证据 ⇒ 本轮
+>   把它们做成 **L2 真实进程场景**，证据直接出现在 harness 输出里：
+>   · **S10b** 真实进程调越权工具后读 JSON-RPC 错误码 ⇒ `-32003`；
+>   · **S16b** 真实进程触发限流后读**响应头 + 错误体** ⇒ `Retry-After=60s` +
+>     `-32002` + `retry_after_ms=59988` + `limit=1`；
+>   · **S21** 带 `?capability=bogus` ⇒ `400` + `-32602` + 含合法清单的逐字文案；
+>   · **S22/S22b** ★ 观测点选「**上游回显它实际收到的头**」（内置示例上游把
+>     `X-MCP-Capability` / `X-MCP-Capability-Tools` 原串回吐在结果里）⇒ 上游收到
+>     `X-MCP-Capability=code`（适配器默认是 `memory` ⇒ 请求级覆盖生效），且头
+>     可被 `JSON.parse` 成数组（首项 `code_generate`）⇒ 与既有
+>     `JSON.stringify([...])` 逐字一致。★ 头是网关**写给上游**的，网关自证不足；
+>     必须让上游把**实际收到的原串**吐出来，才证明「上游 JSON.parse 不会失败」。
+> ★ 三层 harness 读数随之为 **30/30 全绿**（L1 + L2 S01~S22 + L3 Maestro flow）。
 > ★ 验证：新增 `mcp/capability_routing_test.go`（非法能力域 400/-32602/文案保序、请求级覆盖
 >   适配器默认、JSON 数组头、非法能力域不计数、429 三件套、上游错误 -32000、工具拒绝 -32003）；
 >   `go test ./mcp/...` 与 `go test ./middleware/...` 全绿；`go build ./...` rc=0；
 >   `go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0；`gofmt -l` 零输出；
->   三层 harness（L1 + L2 S01~S20 + L3 Maestro）读数见 `docs/mcp-gateway/05-verification-report.md`。
+>   三层 harness（L1 + L2 S01~S22 + L3 Maestro）读数见 `docs/mcp-gateway/05-verification-report.md`。
 >   ★ 诚实登记：`go test ./cmd/gateway/` **全包**在本轮仍是红的，失败项全部是
 >     `storage_mode_init_test.go` 的 **lite 存储模式需 CGO**（本机以 `CGO_ENABLED=0` 构建）
 >     ⇒ 与本轮改动无关的**既存**环境性失败；本轮相关用例用定向
