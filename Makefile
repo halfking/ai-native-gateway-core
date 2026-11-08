@@ -297,6 +297,7 @@ guards-gate-scripts: ## 门脚本接线门（19 条快门 + 登记册门，防�
 	@bash tests/deploy_local_contract_test.sh
 	@bash tests/shared_lib_resolution_contract_test.sh
 	@bash tests/scan_secrets_enumeration_contract_test.sh
+	@bash tests/scan_secrets_whitelist_regex_portability_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
