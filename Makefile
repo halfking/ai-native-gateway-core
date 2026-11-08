@@ -277,8 +277,27 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #   ★ 修法在共享 SSOT（deploy-lib/db-changelog.sh）：退役判据收口为【★ 单点真源 ★】
 #     helper（**标记词必须是注释行的第一个词** ⇒ 区分「标记」与「提及」）
 #     ＋ 跳过**可见**（打日志）＋ 本仓配一道行为门（用**共享库的真实现**做判据 ⇒ 有牙齿）。
+#
+# ★ 2026-11-09（第十三轮 · 扫描器正则口径确定性轮）：★ 再接进 **1 条**快门
+#   （tests/scan_secrets_regex_determinism_test.sh）⇒ 该 target 的快门数 19 → **20**。
+#   ★ 起因：★ 同一棵扫描器在【★ 不同平台 ＋ 不同 locale ★】下给出不同读数 ★
+#     ⇒ ★ 实测（★ 树态 `2f26e91eb` ★、★ 扫描面 **18211 个文件** ★、★ find 枚举 ★）：
+#     ★ macOS(C.UTF-8) **180** 条 ／ macOS(C) **185** 条 ／
+#     ★ glibc(C.UTF-8) **1325** 条 ／ glibc(POSIX) **1332** 条
+#     ⇒ ★ 平台差 **1145 条、★ 100% 落在 INTERNAL_IP 一族 ★】⇒ ★ 根因是【★ libc 正则引擎 ★】
+#     ★ 而 locale 差只有 **5～7 条** ★。
+#   ★ 本门钉三条不变量：
+#     ① 规则里【★ 不得出现不可移植的词边界 ★】（★ `\b` 在 BSD libc 的 regcomp 里
+#       【不是词边界】⇒ ★ 那让 INTERNAL_IP 三条规则在 macOS 上【★ 整族失效 ★】★）
+#     ｜② 发现阶段（★ `grep -niE` ★）与归因阶段（★ `[[ =~ ]]` ★）必须【★ 同口径 ★】
+#       ⇒ ★ 否则大写形态的凭据【★ 候选命中却被静默丢弃 ★】⇒ ★ BLOCK 级假阴性 ★
+#     ｜③ 词边界语义不得被"过度修法"抹掉（★ 粘连形态必须不命中 ★）。
+#   ★ 变异臂已实测：★ 旧实现 **11 红** ／ 撤掉大小写折叠 **2 红** ／ 删掉词边界 **2 红** ★
+#     ⇒ ★ 每条不变量都有牙 ★。
+#   ★ 实测耗时 ≈2s、★ **bash 3.2 可跑**（★ 门内自己找 bash ≥ 4 去调扫描器 ★）、
+#     ★ 零外部依赖、★ 全部在 mktemp 里 ⇒ 可进 CI 快门 ★。
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（19 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（20 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -298,6 +317,7 @@ guards-gate-scripts: ## 门脚本接线门（19 条快门 + 登记册门，防�
 	@bash tests/shared_lib_resolution_contract_test.sh
 	@bash tests/scan_secrets_enumeration_contract_test.sh
 	@bash tests/scan_secrets_whitelist_regex_portability_test.sh
+	@bash tests/scan_secrets_regex_determinism_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
