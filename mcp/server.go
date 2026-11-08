@@ -492,14 +492,17 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 			Detail:   map[string]any{"limit_per_min": limit, "retry_after_sec": int(math.Ceil(wait.Seconds()))},
 		})
 		return nil, Errorf(CodeRateLimited, "Rate limit exceeded").
-			WithData(map[string]any{"retry_after_ms": retryMS}), http.StatusTooManyRequests
+			WithData(map[string]any{"retry_after_ms": retryMS, "limit": limit}), http.StatusTooManyRequests
 	}
 	if adapter.RateLimitPerMin > 0 {
 		if ok, wait := g.limiter.Allow("adapter:"+adapter.Name, adapter.RateLimitPerMin); !ok {
 			rateLimitedTotal.Inc()
 			return nil, Errorf(CodeRateLimited, "Rate limit exceeded").
-					WithData(map[string]any{"retry_after_ms": retryAfterMillis(wait), "adapter": adapter.Name}),
-				http.StatusTooManyRequests
+				WithData(map[string]any{
+					"retry_after_ms": retryAfterMillis(wait),
+					"limit":          adapter.RateLimitPerMin,
+					"adapter":        adapter.Name,
+				}), http.StatusTooManyRequests
 		}
 	}
 

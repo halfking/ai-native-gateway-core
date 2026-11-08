@@ -89,6 +89,17 @@
 >     没生效）⇒ 补齐 snake_case 标签，与 `Key` 出参字段名一致。
 >   ②`allowed_adapters` 适配器白名单此前只在 tools/list 生效，**直呼工具名可绕过** ⇒ 补到
 >     调用路径上（治理链第 6 闸改为「backend 可达性」＝适配器白名单 + 单边禁用绑定）。
+> ★ 逐字比对时**新发现**两处未对齐（本轮一并补齐）：
+>   ①既有 `tool-proxy.js:245` 的 429 `data` 是 `{ retry_after_ms, limit }`（`gateway.js:502`
+>     只有 `retry_after_ms`）⇒ 本实现原只给 `retry_after_ms` ⇒ 现取**并集**（另带 `limit`）。
+>     同时核对出既有两条路径的 429 **message 本来就不同**（`gateway.js` 是
+>     `Rate limit exceeded`；`tool-proxy.js` 是 `Rate limit exceeded for tool X (cls)`）
+>     ⇒ 稳定契约是**错误码 -32002 + `Retry-After` 头 + `data.retry_after_ms`**，
+>     message 不是跨路径判据（已在 `03-legacy-merge-map.md` §6.2 披露）。
+>   ②既有 `gateway.js:142` 的 `getCapabilityFromToolsList`（按能力域过滤工具清单）
+>     **只被导出、请求路径并未调用** ⇒ 本实现提供同能力 API
+>     `mcp.FilterToolsByCapability`，但**请求路径保持与既有逐字一致**（不据此过滤
+>     tools/list）⇒ 不把「既有导出」误写成「既有已生效」（见 §6.5）。
 > ★ 验证：新增 `mcp/capability_routing_test.go`（非法能力域 400/-32602/文案保序、请求级覆盖
 >   适配器默认、JSON 数组头、非法能力域不计数、429 三件套、上游错误 -32000、工具拒绝 -32003）；
 >   `go test ./mcp/...` 与 `go test ./middleware/...` 全绿；`go build ./...` rc=0；

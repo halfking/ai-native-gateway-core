@@ -68,7 +68,7 @@
 | 1 | 错误码 | -32002 限流、-32000 上游错误、-32003 tool-allow/bindings | 限流码 -32008→**-32002**、上游错误码 -32005→**-32000**；新增码只占未使用取值 | `mcp/errors.go` 逐条注释；`mcp/capability_routing_test.go` 断言 -32000 / -32003 |
 | 2 | 能力头格式 | `x-mcp-capability-tools = JSON.stringify([...])` | 由逗号分隔改为 **JSON 数组字符串** | `TestRequestCapabilityOverridesAdapter` 断言该头可被 `json.Unmarshal` 成数组且内容逐项相等 |
 | 3 | 请求级能力路由 | `?capability=X`：先判合法 → 计数 → 注入头并**覆盖**适配器默认；非法 ⇒ 400 + -32602 + `Unknown capability: X. Valid: ...` | 三件事全部补齐；合法清单用 `capabilityOrder` **显式保序** | `TestUnknownCapabilityRejected`（400/-32602/文案逐字）、`TestValidCapabilitiesOrderIsStable`、`TestRequestCapabilityOverridesAdapter`、`TestAdapterCapabilityUsedWithoutOverride`、`TestInvalidCapabilityNotCounted`、`TestValidCapabilityCounted` |
-| 4 | 429 契约 | `Retry-After`(秒,ceil) + -32002 + `data.retry_after_ms`(毫秒) **三者同源** | 由**同一个等待时长**同时推导头与 data | `TestRateLimitCarriesRetryAfter` 断言三者同时存在且秒数与毫秒同源（ceil） |
+| 4 | 429 契约 | `Retry-After`(秒,ceil) + -32002 + `data.retry_after_ms`(毫秒) **三者同源**；`tool-proxy.js:245` 的 `data` 还带 `limit` | 由**同一个等待时长**同时推导头与 data；`data` 取既有两处来源的**并集**（`retry_after_ms` + `limit`） | `TestRateLimitCarriesRetryAfter` 断言三者同时存在、秒数与毫秒同源（ceil）、且 `data.limit` 存在 |
 | 5 | 既有「执法在路径」资产未登记 | 共 8 项：拓扑门脚本 + 其测试、运行时探针脚本 + 其测试、事实台账、台账基线，以及既有契约自测 `test/gateway.test.js`（429 -32002 / 能力头 / Unknown capability）与 `test/tool-allow.test.js`（-32003） | **逐个登记**（§7.0）：判定标准＝「该资产回答的问题在本实现里是否还存在」。运行时探针**移植**为 `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh` ⇒ 纳入 S20；既有契约自测**由 Go 侧逐条承接**（§7.3 对照表）；拓扑门脚本/测试 + 台账 + 基线＝**旧 nginx 主备拓扑的生产诊断资产**，前提已消失 ⇒ **登记不移植**并写明理由 | `03-legacy-merge-map.md` §7.0–§7.3；S20 读数 exit 0；探针三档自检 0/1/2 |
 
 ### 5.1 探针的三档判别力（自检，不是只跑通一档）
@@ -93,6 +93,8 @@
 | 8 | `gofmt -l` 报 `middleware/auth_mw.go` | 首轮插入 `/mcp` 放行项时把 `PathPrefixes` 整块缩进弄乱了 ⇒ **首轮报告里「gofmt 零输出」的结论不成立** | `gofmt -w` 修复（纯缩进，语义不变）；本轮 `gofmt -l` 复检零输出 |
 | 9 | 控制面签发凭证时 `allowed_tools` / `scopes` / `allowed_adapters` **不生效** | `KeySpec` 没有 JSON 标签 ⇒ `encoding/json` 只能按 Go 字段名做大小写不敏感匹配 ⇒ `"allowed_tools"` 这种 snake_case 被**静默丢弃**（`scopes` 为空还落回默认档，看起来「能用」其实没生效） | 给 `KeySpec` 补齐与 `Key` 出参一致的 snake_case 标签；S20 探针的「允许集」由此才真正生效 |
 | 10 | `allowed_adapters` 白名单可被绕过 | 白名单此前只在 `tools/list` 生效 ⇒ 直呼工具名即可调用别的适配器的工具 | 补到**调用路径**（治理链第 6 闸改为「backend 可达性」＝适配器白名单 + 单边禁用绑定）；S10/S11/S12 改为用**能访问 crm 适配器**的凭证，确保各测各的闸 |
+| 11 | 429 的 `data` 少了 `limit` | 逐字比对既有 `tool-proxy.js:245` 时发现：其 `data` 为 `{ retry_after_ms, limit }`（`gateway.js:502` 只有 `retry_after_ms`）⇒ 本实现原先只给 `retry_after_ms` | `data` 取两处来源的**并集**（`retry_after_ms` + `limit`，适配器档另带 `adapter`）；测试断言 `data.limit` 存在 |
+| 12 | 既有按能力域过滤工具清单的能力未登记 | 既有 `gateway.js:142` 的 `getCapabilityFromToolsList` **只被导出、请求路径并未调用** | 提供同能力 API `FilterToolsByCapability`（并**保持请求路径与既有一致**：不据此过滤 tools/list）；§6.5 专门登记「导出 ≠ 生效」的边界 |
 
 ## 7. 本轮同时收口的安全项
 

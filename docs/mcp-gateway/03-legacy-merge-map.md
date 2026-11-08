@@ -15,12 +15,13 @@
 | 1 | 多上游路径分流（`/acc/` `/memora/` `/trendradar/` `/crm/` `/brandmind/`） | `conf.d/default.conf` + Nginx | `mcp.Adapter`（具名适配器 + 工具命名空间） | 替代 | 路径前缀 → 具名注册项；工具名 `<adapter>__<tool>` 消歧；不再依赖 Nginx 前缀约定 |
 | 2 | 智能路由层入口 :8088（health / metrics / routes） | `src/gateway.js` | `mcp/http.go` + `mcp/control.go`（`/health` `/healthz` `/mcp/control/routes` `/metrics`） | 等价 | 端口不再独立，随主网关或独立进程 |
 | 3 | Capability 路由（`?capability=` → `X-MCP-Capability` / `X-MCP-Capability-Tools`） | `src/gateway.js` `CAPABILITY_TOOLS` | `mcp/capability.go`（映射表 + 保序清单）+ `mcp/proxy.go`（同头注入） | 等价 | 头名与语义逐字一致；`X-MCP-Capability-Tools` 为 **JSON 数组字符串**；请求级 `?capability=` **覆盖**适配器默认；非法值 ⇒ 400 + -32602（详见 §6.3/§6.4） |
+| 3b | 按能力域过滤工具清单（`getCapabilityFromToolsList`） | `src/gateway.js:142`（★**只被导出、请求路径并未调用**） | `mcp/capability.go` `FilterToolsByCapability` | 等价 | 提供同能力 API；**请求路径保持与既有一致**（既有 `?capability=` 不据此过滤 tools/list 响应）⇒ 不把「既有导出」误写成「既有已生效」 |
 | 4 | 能力目录（64 条 STATIC_TOOLS：分层 L0–L6、组、cost、p99、限流、关键词） | `src/capability-router.js` | `mcp/capability_catalog.json`（**脚本从 Node 源原样导出**）+ `mcp/capability.go` | 等价 | 数据零改写；仅打分增加 CJK bigram 切分（召回增强） |
 | 5 | 工具执行策略表（read/write/llm/unknown：缓存 TTL、限流、超时、重试） | `TOOL_POLICIES` | `mcp/capability.go` `ToolPolicy` + `mcp/server.go` `rateLimitFor`/`retriesFor` | 等价 | 限流从固定窗口改为令牌桶（允许突发、长期速率严格） |
 | 6 | 工具检索推荐（`recommendTools` + 打分 + 分层统计） | `src/capability-router.js` | `mcp/capability.go` + `/mcp/control/recommend` `/mcp/control/capabilities` | 增强 | 增加 HTTP 入口；CJK bigram 提升中文召回 |
 | 7 | API key 限流 60/min + 429 + `Retry-After` | `src/gateway.js` `rateLimits` | `mcp/ratelimit.go`（令牌桶）+ `mcp/server.go` | 增强 | 分 key×类别（read/write/llm）三档 + 适配器全局档；429 的**三件套**（`Retry-After` 头 / `-32002` / `data.retry_after_ms`）同源给出（详见 §6.2） |
 | 8 | 上游健康检查 + `/health` 展示上游状态 | `src/gateway.js` `checkUpstreamHealth` | `mcp/circuit.go`（熔断器）+ `/mcp/control/health` | 增强 | 由「健康布尔」升级为「熔断三态」（closed/open/half-open） |
-| 9 | Prometheus 指标（`mcp_gateway_requests_total` 等 6 个） | `src/gateway.js` `metrics` | `mcp/metrics.go` | 等价 | 指标名逐字保留；另加 8 个治理类指标 |
+| 9 | Prometheus 指标（`mcp_gateway_requests_total` 等 6 个） | `src/gateway.js` `metrics` | `mcp/metrics.go` | 等价 | 既有 `/metrics` 实际导出 **7** 个族（`requests_total` `rate_limited_total` `upstream_errors_total` `health_check_failures_total` `uptime_seconds` `upstream_healthy` `requests_by_capability`）⇒ 本实现**同名逐字保留**；另加 8 个治理类指标 + `requests_by_method`。★ 既有 `requests_by_path` 是**维护但未导出**的死计数器（既有 `/metrics` 里没有它）⇒ 本实现不移植该死计数，改导出更有区分度的 `requests_by_method` |
 | 10 | 工具代理分档限流 + 缓存 TTL + 超时 + 重试 | `src/tool-proxy.js` | `mcp/proxy.go`（超时/重试/SSE 解析）+ `mcp/server.go`（分档限流） | 等价 | 工具结果缓存未做（登记为后续增强，见 §5） |
 | 11 | 上游 SSE 响应解析 | `src/tool-proxy.js` | `mcp/proxy.go` `extractSSEData` | 等价 | — |
 | 12 | 请求体上限（`MCP_ALLOW_BODY_LIMIT`） | `src/gateway.js` | `mcp/server.go` `MaxBodyBytes`（默认 1MB） | 等价 | — |
@@ -117,6 +118,17 @@ Retry-After: 1                       ← 秒，向上取整（ceil(ms/1000)）�
 本实现在 `mcp/server.go`（`errorHeaders` / `retryAfterSeconds` / `retryAfterMillis`）
 里由**同一个等待时长**同时推导头与 data，保证两者永不失配。
 
+★ `data` 还带 **`limit`**（适用的每分钟限额）—— 与既有 `tool-proxy.js:245` 的
+`data: { retry_after_ms, limit }` 一致（既有 `gateway.js:502` 只带
+`retry_after_ms`）⇒ 本实现取**两者的并集**，既有客户端按任一来源读都拿得到。
+
+★ **message 的既有差异（已核对，非本实现引入）**：既有两条路径的文案本来就
+不一样 —— `gateway.js` 是 `Rate limit exceeded`；`tool-proxy.js` 是
+`Rate limit exceeded for tool ${tool.name} (${cls})`。⇒ **message 不是跨路径
+稳定契约**，稳定契约是**错误码 -32002 + `Retry-After` 头 + `data.retry_after_ms`**
+三者。本实现统一取 `gateway.js` 的那句，工具名与类别放在 `data`（`limit`）
+与审计事件里，避免把「文案」当成可依赖的判据。
+
 ### 6.3 非法 `?capability=` 的文案
 
 ```
@@ -141,6 +153,20 @@ HTTP 头名本身大小写不敏感（RFC 9110 §5.1）⇒ 语义与既有实现
 
 ★ `mcp_gateway_requests_by_capability` 只对**通过合法性校验**的能力域计数
 （既有实现也是先判合法再计数）。
+
+### 6.5 capability 面的完整边界（避免「导出 ≠ 生效」的误判）
+
+既有 `src/gateway.js` 的 capability 相关面共有**三处**，逐条对齐：
+
+| 既有位置 | 既有是否在请求路径生效 | 本实现 |
+|---|---|---|
+| `gateway.js:510-528`（`?capability=` 校验 / 计数 / 注入请求头） | **生效** | 逐字一致（§6.3/§6.4） |
+| `gateway.js:142` `getCapabilityFromToolsList`（按能力域过滤工具清单） | ★**只被导出、请求路径并未调用** | 提供同能力 API `FilterToolsByCapability`；**请求路径不据此过滤**（保持逐字一致） |
+| `capability-router.js` 的 64 条 `STATIC_TOOLS` + 打分 + 分层统计 | 生效 | `capability_catalog.json`（脚本从 Node 源原样导出）+ `mcp/capability.go` |
+
+★ 为什么要专门登记这一行：把「既有导出了但没接上」的能力写成「既有已生效」，
+会让后来者以为本网关少了一块功能；反过来把它当没这回事，又会漏移植。⇒
+**能力已移植（API 在），但生效范围与既有一致（请求路径不过滤）。**
 
 ## 7. 既有「执法在路径」两道门的登记
 

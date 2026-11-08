@@ -190,6 +190,10 @@ func TestRateLimitCarriesRetryAfter(t *testing.T) {
 	if !ok || msVal <= 0 {
 		t.Fatalf("data.retry_after_ms = %v, want positive integer", data["retry_after_ms"])
 	}
+	// 既有 tool-proxy.js:245 的 data 还带 limit（适用的限额）⇒ 本实现同样给出。
+	if lim, ok := data["limit"].(float64); !ok || lim != 1 {
+		t.Fatalf("data.limit = %v, want 1 (limit carried in error data)", data["limit"])
+	}
 	ms := int64(msVal)
 	// Retry-After 的秒数必须与 retry_after_ms 同源且向上取整。
 	wantSec := ms / 1000
@@ -242,6 +246,35 @@ func TestToolNotAllowedCodeMatchesLegacy(t *testing.T) {
 	}
 	if code := rpcErrorCode(body); code != CodeToolNotAllowed {
 		t.Fatalf("error code = %d, want %d (-32003)", code, CodeToolNotAllowed)
+	}
+}
+
+// TestFilterToolsByCapability 校验按能力域过滤工具清单的能力。
+//
+// 移植自既有 tools/mcp-gateway/src/gateway.js 的 getCapabilityFromToolsList：
+// 既有实现里该函数**只被导出、请求路径并未调用** ⇒ 本实现提供同能力 API，
+// 但 tools/list 的请求路径**不**据此过滤（保持与既有逐字一致）。
+func TestFilterToolsByCapability(t *testing.T) {
+	// 能力域清单取自真实目录：memory 能力含 search_memory / save_memory，
+	// code 能力含 code_review ⇒ 用它们验证「按能力域取子集」。
+	views := []ToolView{
+		{Name: "memora__search_memory", Meta: map[string]any{"raw_name": "search_memory"}},
+		{Name: "memora__save_memory", Meta: map[string]any{"raw_name": "save_memory"}},
+		{Name: "crm__code_review", Meta: map[string]any{"raw_name": "code_review"}},
+	}
+	got := FilterToolsByCapability(views, "memory")
+	if len(got) != 2 {
+		t.Fatalf("filtered len = %d, want 2 (%v)", len(got), got)
+	}
+	for _, v := range got {
+		if v.Name != "memora__search_memory" && v.Name != "memora__save_memory" {
+			t.Fatalf("unexpected tool in filtered list: %s", v.Name)
+		}
+	}
+	// 未知能力域 ⇒ 与既有实现一致，原样返回（不静默清空）。
+	all := FilterToolsByCapability(views, "no-such-capability")
+	if len(all) != len(views) {
+		t.Fatalf("unknown capability should pass through, got %d want %d", len(all), len(views))
 	}
 }
 
