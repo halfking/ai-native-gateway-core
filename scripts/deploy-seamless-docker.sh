@@ -205,7 +205,11 @@ DD_TARGET_LOCK_PATH="${DD_REMOTE_LOCK_PATH:-/var/lib/llm-gateway-go/deploy.lock}
 # 1 = 这把锁当前被本进程持有（或被继承）；0 = 没锁
 DD_TARGET_LOCK_HELD="${DD_TARGET_LOCK_HELD:-0}"
 # 1 = 目标机侧锁**整个关掉**（测试缝 / 显式逃生舱）⇒ 父子都不拿
-DD_TARGET_LOCK_SKIP="${DD_TARGET_LOCK_SKIP:-0}"
+# ★ 2026-11-05（12h 审计轮 · D-7）：★ 同一个「跳过目标机锁」开关此前有两个名字
+#   （★ 父进程读 DD_SKIP_TARGET_LOCK、★ 引擎读 DD_TARGET_LOCK_SKIP、★ 父进程转发的是后者）
+#   ⇒ ⇒ 任一侧改名，另一侧静默变成「不跳过」或「恒跳过」⇒ ⇒ 现在统一成一个名字，
+#   ★ 旧名保留为**兼容别名**（老运维脚本仍可用，但只在此处翻译一次）。
+DD_TARGET_LOCK_SKIP="${DD_TARGET_LOCK_SKIP:-${DD_SKIP_TARGET_LOCK:-0}}"
 # 1 = 这把锁是**本进程自己**拿的 ⇒ 释放责任在本进程（继承来的不释放）
 DD_TARGET_LOCK_OWNED=0
 dd_release_target_lock() {
@@ -615,18 +619,19 @@ if [[ -n "$VIA" ]]; then
     # ── 目标机侧部署锁（跨机器互斥；见上方「目标机侧部署锁」注释块）──────
     #   ★ 必须在**同步仓库之前**拿：同步那步会**清空目标机上的工作树**再解包
     #   ⇒ ⇒ 它落在**目标机的那份工作树**上 ⇒ ⇒ 两次并发部署会在同一棵树上互踩。
-    if [[ "${DD_SKIP_TARGET_LOCK:-0}" != "1" ]]; then
+    if [[ "${DD_TARGET_LOCK_SKIP:-0}" != "1" ]]; then
       if [[ "${FORCE_LOCK_RECOVER:-0}" == "1" ]]; then
         log "--force：尝试恢复 ${DD_TARGET} 目标机上的陈旧部署锁…"
         lock_recover_remote _dd_target_ssh "$DD_TARGET" "$DD_TARGET_LOCK_PATH" 1 \
-          || die "--force：恢复目标机部署锁失败（活的持有者一律不硬抢；请等它跑完，或确认无存活部署进程后手工处理）"
+          || die "--force：恢复目标机部署锁失败（活着的持有者一律不硬抢；跨机器来源的锁**无法在本机判活**⇒ 必须先到持有者那台机器上确认它已结束，再重跑或设 DD_FORCE_FOREIGN_LOCK=1）"
       fi
       if ! lock_acquire_remote _dd_target_ssh "$DD_TARGET" "$DD_TARGET_LOCK_PATH"; then
         die "另一个部署正在对 ${DD_TARGET} 执行远端阶段（目标机锁 ${DD_TARGET_LOCK_PATH}）—— 拒绝并发部署。
       ★ 蓝绿是「两个固定槽位 + 一条 upstream」⇒ 两次部署同时跑会**互相切流、互相停对方的槽**
         （其中一个甚至会被对方的「起候选槽」那步 docker rm -f 直接删掉）⇒ ⇒ 502。
       ⇒ 等对方跑完再重试；若确认对方已死（锁里的 pid 是**部署机侧**的 pid），
-        可用 --force 重跑（本脚本只回收「持有者已死」的锁，活的一律不硬抢）。"
+        可用 --force 重跑（本脚本只回收【本机来源且持有者已死】的锁；活的一律不硬抢；
+        ★ 跨机器来源的锁因**无法在本机判活**⇒ 一律拒绝自动回收 ⇒ 需人工确认持有者已死后设 DD_FORCE_FOREIGN_LOCK=1）。"
       fi
       DD_TARGET_LOCK_HELD=1
       DD_TARGET_LOCK_OWNED=1
@@ -634,7 +639,7 @@ if [[ -n "$VIA" ]]; then
       _dd_fwd+=" DD_TARGET_LOCK_HELD=1"
       log "已取得目标机侧部署锁: ${DD_TARGET_LOCK_PATH}（@ ${DD_TARGET}）"
     else
-      warn "DD_SKIP_TARGET_LOCK=1 ⇒ 本次部署**没有**目标机侧互斥保护（并发部署会互抢槽位）"
+      warn "DD_TARGET_LOCK_SKIP=1 ⇒ 本次部署**没有**目标机侧互斥保护（并发部署会互抢槽位）"
       # 父进程不拿 ⇒ 子进程**也不能自己拿**（否则子进程会在目标机上建锁失败，
       # 或者在真机上把「没保护」这件事悄悄变成「有保护」——两个都不对）。
       _dd_fwd+=" DD_TARGET_LOCK_SKIP=1"
@@ -788,8 +793,8 @@ if [[ -n "$VIA" ]]; then
   # 同步清单是一次性的：用完即删（它在 /tmp 里，但清单里全是仓库路径，留着没意义）
   rm -f "$_dd_sync_list"
   # 双保险：目标机上再扫一遍，真有残留就当场删掉，别留给下一次构建
-  ssh "$VIA" "find '$DD_REMOTE_ROOT' -maxdepth 2 -name '.env*' -type f -delete; \
-             echo '[${DD_TARGET}] 目标树残留 .env*: '\$(find '$DD_REMOTE_ROOT' -name '.env*' -type f | wc -l) \
+  ssh "$VIA" "find '$DD_REMOTE_ROOT' -maxdepth 2 \( -name '.env*' -o -name '*.env' \) -type f -delete; \
+             echo '[${DD_TARGET}] 目标树残留 .env*/ *.env: '\$(find '$DD_REMOTE_ROOT' \( -name '.env*' -o -name '*.env' \) -type f | wc -l) \
              ' ._*: '\$(find '$DD_REMOTE_ROOT' -name '._*' -type f | wc -l)"
   # 半截同步硬门：缺入口脚本就别往下跑（否则 bash 报 No such file → RC=127）
   ssh "$VIA" "test -f '$DD_REMOTE_ROOT/scripts/deploy-seamless-docker.sh'" \
@@ -849,7 +854,15 @@ if [[ "$MODE" == "deploy" && "${DD_TARGET_LOCK_HELD:-0}" != "1" && "${DD_TARGET_
     source "${AIAN_DEPLOY_LIB}/lock.sh"
     LOCK_LOCAL_TARGET="$DD_TARGET"
     LOCK_LOCAL_DIR="$DD_TARGET_LOCK_PATH"
-    lock_acquire_local \
+    # ★★ 形态必须与【远端形态】一致（2026-11-05 · 12h 审计轮 · D-2）：
+    #   ★ 远端（--via 路径）在这把锁上落的是**目录**（lock_acquire_remote ⇒ 远端 mkdir）。
+    #   ★ 而 lock_acquire_local 会按【路径当前形态】挑实现 ⇒ 路径不存在 + 有 flock ⇒ 落**普通文件**；
+    #   ★ 而 flock 形态的释放**刻意不删文件**（unlink-after-unlock 是竞态）⇒
+    #   ★ ⇒ 一次目标机直跑 ⇒ 锁路径上永久留下一个**普通文件**
+    #   ★ ⇒ 此后**每一次** --via 部署的远端 mkdir 都失败（rc=75）⇒ ⇒ 目标机部署路径被**永久堵死**，
+    #   ★   而且报错文案说的是「另一个部署正在进行」⇒ ⇒ 把运维引向错误方向。
+    #   ⇒ ⇒ 这里显式用【目录形态】（与远端同形）⇒ ⇒ 两侧互认，释放即消失。
+    lock_acquire_local_dir \
       || die "另一个部署正在本机（目标机 ${DD_TARGET}）执行部署（锁 ${DD_TARGET_LOCK_PATH}）—— 拒绝并发部署。
       ★ 蓝绿两个槽位不能被两次部署同时操作（会互切流、互停对方的槽 ⇒ 502）。
       ⇒ 等对方跑完再重试；若确认对方已死，可带 --force 重跑。"
@@ -3308,34 +3321,51 @@ dd_switch_and_verify || dd_fail "切流失败（nginx upstream 未切到候选�
 dd_verify_public_entry || dd_fail "公网入口验收失败（${DD_DOMAIN} 非 200）"
 
 # ── 登录冒烟：/api/auth/token（不是 /api/admin/login）────────────────
-# 凭据优先环境变量，其次 DD_ADMIN_*，默认 admin / Veritrans&9527（与
-# 目标库 users.admin 对齐）。失败不阻断部署收尾，但标红方便运维看见。
+# ★ 凭据**只**从环境变量取（DD_ADMIN_PASSWORD → LLM_GATEWAY_ADMIN_PASSWORD）：
+#   ★ 2026-11-05（12h 审计轮 · D-4）：★ 原实现带着【硬编码默认口令】
+#   ★   ⇒ ① 仓内留了明文凭据（既存泄漏面 ⇒ 新代码不得再复制一份）
+#   ★   ⇒ ② 口令经 `python3 -c ... "$pass"` 与 `curl -d "$body"` 走 **argv** ⇒
+#   ★      部署机上任何本地用户都能在 `ps` 里读到明文口令。
+#   ★ ⇒ 修法：① 去掉默认值（env-only）② 口令与请求体一律走 **stdin/管道**，不进 argv。
+# ★ 失败不阻断部署收尾，但标红方便运维看见。
 dd_smoke_admin_login() {
   local user="${DD_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
-  local pass="${DD_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-Veritrans&9527}}"
+  local pass="${DD_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-}}"
   local url="http://127.0.0.1:${DD_CANDIDATE_PORT}/api/auth/token"
-  local body code
-  body="$(python3 -c 'import json,sys; print(json.dumps({"username":sys.argv[1],"password":sys.argv[2]}))' "$user" "$pass")"
-  code="$(curl -sS -o /tmp/dd-login.json -w '%{http_code}' -X POST "$url" \
-    -H 'Content-Type: application/json' -d "$body" || echo 000)"
+  local body code resp
+  if [[ -z "$pass" ]]; then
+    # ★ 没有口令 ⇒ **明说这次没验**（★ 绝不能让「没跑」被读成「跑过了」）。
+    warn "登录冒烟未执行：未提供管理员口令（DD_ADMIN_PASSWORD / LLM_GATEWAY_ADMIN_PASSWORD）⇒ 本次发布**未验证**登录路径"
+    return 0
+  fi
+  # ★ 响应体落在【私有】临时文件（★ /tmp 下的固定名文件是全局可读的 ⇒ 里面装着 access_token）。
+  resp="$(mktemp "${TMPDIR:-/tmp}/dd-login.XXXXXX.json")"
+  # ★ 请求体走 stdin：★ 口令既不进 python 的 argv，也不进 curl 的 argv。
+  body="$(printf '%s\n%s' "$user" "$pass" | python3 -c 'import json,sys; u,p=sys.stdin.read().split("\n",1); print(json.dumps({"username":u,"password":p}))')"
+  code="$(printf '%s' "$body" | curl -sS -o "$resp" -w '%{http_code}' -X POST "$url" \
+    -H 'Content-Type: application/json' --data-binary @- || echo 000)"
   if [[ "$code" != "200" ]]; then
-    warn "登录冒烟失败 HTTP ${code} body=$(head -c 160 /tmp/dd-login.json 2>/dev/null)"
+    warn "登录冒烟失败 HTTP ${code} body=$(head -c 160 "$resp" 2>/dev/null)"
+    rm -f "$resp"
     return 1
   fi
-  if ! python3 -c 'import json,sys; d=json.load(open("/tmp/dd-login.json")); assert d.get("access_token") and d.get("user",{}).get("username")==sys.argv[1]' "$user" 2>/dev/null; then
+  if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("access_token") and d.get("user",{}).get("username")==sys.argv[2]' "$resp" "$user" 2>/dev/null; then
     warn "登录冒烟响应缺 access_token/user"
+    rm -f "$resp"
     return 1
   fi
   # 连登 6 次必须仍 200（回归 JWT 成功路径 Reset 限流桶）
   local i c
   for i in 1 2 3 4 5 6; do
-    c="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url" \
-      -H 'Content-Type: application/json' -d "$body" || echo 000)"
+    c="$(printf '%s' "$body" | curl -sS -o /dev/null -w '%{http_code}' -X POST "$url" \
+      -H 'Content-Type: application/json' --data-binary @- || echo 000)"
     if [[ "$c" != "200" ]]; then
       warn "登录限流回归失败：第 ${i} 次 HTTP ${c}（期望成功登录 Reset 后可连登）"
+      rm -f "$resp"
       return 1
     fi
   done
+  rm -f "$resp"
   log "登录冒烟 OK（user=${user}，连登 6 次无 429）"
   return 0
 }

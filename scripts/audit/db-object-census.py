@@ -1119,6 +1119,18 @@ def cmd_reachability(args):
     envs = sorted(census.keys(), key=_env_sort_key)
     fresh = args.fresh_env
     prod_envs = [e for e in envs if e in ("252", "211")]
+    # ★★ R165：★ 把【本台账读的那份 census 底账的指纹】写进台账头 ⇒ ★ 台账与它的输入【互为凭证】。
+    # ★★ 起因（本轮实测）：★ 2026-11-05 的 sales 提交里 ★ 台账是在【安装器清单追加 8 条 sales 迁移【之前】】生成的
+    # ★★ （★ 台账头 manifest=342、而清单当时已是 350）⇒ ★ 提交后门直接判 13 条 sales 索引
+    # ★★ 「creator_reachable=no、而清单∩分发包重算=yes」⇒ ★★ 红。
+    # ★★ 而根因是【台账生成之后输入又变了】⇒ ⇒ 所以台账头必须【钉住输入】：
+    # ★★   ① manifest=/package_up=/rows= ⇒ 清单与分发包的【规模】（生成器侧记录，Go 门侧重算）
+    # ★★   ② census_env_sha256=      ⇒ 那份 census 底账的【每环境指纹】（生成器侧记录，Go 门侧重算）
+    # ★★ ⇒ ⇒ 任一输入在生成之后被改动 ⇒ 门必红 ⇒ ⇒ 「陈旧台账」再也不能【静默通过】。
+    census_meta, census_env_meta = parse_census_header(args.census)
+    census_fp = ",".join(
+        "%s:%s" % (e, census_env_meta.get(e, {}).get("sha256", "?")) for e in envs
+    )
 
     rows = []
     counts = {}
@@ -1176,6 +1188,7 @@ def cmd_reachability(args):
         "# ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug\n"
         "# ★ generated_at=%s\n"
         "# ★ envs=%s fresh_env=%s manifest=%d package_up=%d rows=%d\n"
+        "# ★ ★★ census_bundled_at=%s census_env_sha256=%s\n"
         "# ★ counts=%s\n"
     ) % (
         datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1184,6 +1197,8 @@ def cmd_reachability(args):
         len(manifest),
         len(package),
         len(rows),
+        census_meta.get("bundled_at", "?"),
+        census_fp,
         json.dumps(counts, ensure_ascii=False, sort_keys=True),
     )
     out = header + "\n".join(rows) + ("\n" if rows else "")

@@ -50,7 +50,9 @@ set -u
 GW_HOST="${GW_HOST:-root@192.168.31.211}"
 GW_BASE="${GW_BASE:-https://llm.itestu.cn}"
 GW_ADMIN_USER="${GW_ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-admin}}"
-GW_ADMIN_PASSWORD="${GW_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-Veritrans&9527}}"
+# ★ 2026-11-05（12h 审计轮 · D-4）：★ 去掉【硬编码默认口令】⇒ 仓内不再留明文凭据副本。
+#   ★ 口令**只**从环境变量 / --password 标志来 ⇒ 缺失时明确失败（而不是拿一个猜的值去登录）。
+GW_ADMIN_PASSWORD="${GW_ADMIN_PASSWORD:-${LLM_GATEWAY_ADMIN_PASSWORD:-}}"
 GW_TOKEN="${GW_TOKEN:-}"
 GW_PG_CONTAINER="${GW_PG_CONTAINER:-acc-pg17}"
 GW_PG_USER="${GW_PG_USER:-acc_super}"
@@ -165,11 +167,17 @@ self_test() {
 
 # ── Step 0: 登录 ───────────────────────────────────────────────────────────
 if [ -z "$GW_TOKEN" ]; then
+  if [ -z "$GW_ADMIN_PASSWORD" ]; then
+    fail "未提供管理员口令（GW_ADMIN_PASSWORD / LLM_GATEWAY_ADMIN_PASSWORD）⇒ 登录无从进行；\n  ★ 仓库不再内置默认口令（2026-11-05 · D-4）⇒ 请显式提供，或改用 --token 传入已有 token。"
+  fi
   say "── Step 0: 登录 ${GW_BASE}（/api/auth/token, user=${GW_ADMIN_USER}）"
-  login_code=$(curl -sS -o "$TMPDIR_RECOVER/login.json" -w '%{http_code}' --max-time 20 \
-    -X POST "$GW_BASE/api/auth/token" -H 'Content-Type: application/json' \
-    -d "$(python3 -c 'import json,sys; print(json.dumps({"username":sys.argv[1],"password":sys.argv[2]}))' "$GW_ADMIN_USER" "$GW_ADMIN_PASSWORD")" \
+  # ★ 请求体走 stdin：★ 口令既不进 python 的 argv，也不进 curl 的 argv
+  #   （★ argv 在部署机上任何本地用户的 ps 里都可见）。
+  _login_body="$(printf '%s\n%s' "$GW_ADMIN_USER" "$GW_ADMIN_PASSWORD" | python3 -c 'import json,sys; u,p=sys.stdin.read().split("\n",1); print(json.dumps({"username":u,"password":p}))')"
+  login_code=$(printf '%s' "$_login_body" | curl -sS -o "$TMPDIR_RECOVER/login.json" -w '%{http_code}' --max-time 20 \
+    -X POST "$GW_BASE/api/auth/token" -H 'Content-Type: application/json' --data-binary @- \
     || echo 000)
+  unset _login_body
   [ "$login_code" = "200" ] || fail "登录失败 HTTP $login_code: $(head -c 200 "$TMPDIR_RECOVER/login.json" 2>/dev/null)"
   GW_TOKEN=$(python3 -c 'import json,sys
 print(json.load(open(sys.argv[1]))["access_token"])' "$TMPDIR_RECOVER/login.json" 2>/dev/null) \

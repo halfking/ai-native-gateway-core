@@ -5,10 +5,10 @@
 # a .env.local style file (DSNs, encryption keys, PEM blocks) before
 # docker-compose starts the container. The previous `set -a; source $file`
 # approach silently mangled any unquoted value containing shell
-# metacharacters: a deploy with `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527`
+# metacharacters: a deploy with an unquoted `LLM_GATEWAY_ADMIN_PASSWORD=Demo&Passw0rd`
 # (unquoted) saw bash split at `&` (control operator), so the env got
-# `Veritrans` while `9527` ran in the background, then
-# sync_admin_password_from_env bcrypt-hashed the truncated `Veritrans`
+# only the part before the `&` while the rest ran in the background, then
+# sync_admin_password_from_env bcrypt-hashed the truncated value
 # into users.password_hash and admin/auth.go never falls back to env once
 # a row exists (incident 2026-09-05, re-observed in regression audit
 # 2026-09-22 R54-F1a).
@@ -46,8 +46,8 @@ env_file="$tmpdir/project.env"
 # the file value (deploy() relies on caller-wins for secrets-manager
 # injection to bypass the file).
 cat > "$env_file" <<'EOF'
-# 1. Veritrans&9527: unquoted & must NOT split the value at the metachar.
-DLT_ADMIN_PASSWORD=Veritrans&9527
+# 1. Demo&Passw0rd: unquoted & must NOT split the value at the metachar.
+DLT_ADMIN_PASSWORD=Demo&Passw0rd
 # 2. ${VAR} interpolation referencing env vars the caller must export.
 DLT_DATABASE_URL=postgres://${DLT_DB_USER}@${DLT_DB_HOST}/crm
 # 3a. Double-quoted value with inner ampersand + interpolation preserved.
@@ -60,7 +60,7 @@ DLT_SQ='dollar ${DLT_NOT_EXPANDED} literal'
 DLT_PEM_KEY="-----BEGIN [REDACTED-KEY]-----\nMIIE...\n-----END [REDACTED-KEY]-----\n"
 EOF
 
-# ── Test 1: Veritrans&9527 ─────────────────────────────────────────────
+# ── Test 1: Demo&Passw0rd ─────────────────────────────────────────────
 # Reproduces the 2026-09-05 regression: unquoted `&` must NOT split the
 # value, must NOT background a process, must NOT be missing.
 out="$(bash -c '
@@ -70,9 +70,9 @@ out="$(bash -c '
   dl_load_project_env "'"$env_file"'"
   printf "%s\n" "$DLT_ADMIN_PASSWORD"
 ')"
-expected='Veritrans&9527'
+expected='Demo&Passw0rd'
 if [[ "$out" != "$expected" ]]; then
-  printf 'test1 (Veritrans&9527 unquoted metachar) mismatch:\n  got:      %q\n  expected: %q\n' "$out" "$expected" >&2
+  printf 'test1 (Demo&Passw0rd unquoted metachar) mismatch:\n  got:      %q\n  expected: %q\n' "$out" "$expected" >&2
   exit 1
 fi
 

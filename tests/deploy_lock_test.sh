@@ -43,6 +43,13 @@
 #   AC-L13 Forced recovery clears stale target/build locks before reacquire.
 #   AC-L14 Force recovery rejects live/cross-target lock owners and remote
 #          read failures.
+#   AC-L15 Force recovery refuses a lock whose holder lives on ANOTHER host
+#          (the recorded PID belongs to that host's namespace) unless the
+#          operator explicitly overrides; same-host dead holders stay
+#          recoverable (positive control).
+#   AC-L16 The target-machine lock path has exactly ONE form: the direct-run
+#          path must use the directory form (same as the remote side), and a
+#          released directory-form lock leaves no residue.
 # =====================================================================
 set -uo pipefail
 
@@ -657,6 +664,148 @@ test_force_recovery_safety() {
   return 0
 }
 
+# --- AC-L15: cross-host force recovery must fail closed --------------
+# ★ 2026-11-05（12h 审计轮 · D-1）：★ 锁元数据里的 `pid` 是【部署机侧】的 PID
+#   （lock_acquire_remote 在**本地**生成 metadata、再 base64 送到目标机 ⇒ `pid=$$` 是本机 shell 的 PID）
+#   ⇒ ⇒ **跨机器**时这个 PID 在本机的 PID 命名空间里【毫无意义】：
+#     · 本机恰有同号进程 ⇒ 误判「活着」⇒ 拒绝恢复（假死锁）
+#     · 本机没有同号进程 ⇒ 误判「死了」⇒ ★★ **抢走另一台机器上活着的部署锁**
+#   ⇒ ⇒ 2026-11-05 实测：部署机 B 用 --force 抢走了部署机 A **正在跑**的锁
+#   ⇒ ⇒ 后果正是那次提交要防的形态（两次部署同时切流、互停对方的槽 ⇒ 502）。
+#   ⇒ ★★ 修法：跨机来源的锁【一律不许自动回收】（fail-closed）⇒ 人工确认后才可显式接管。
+test_force_recovery_cross_host() {
+  echo "── AC-L15: cross-host force recovery ──"
+  local tmp; tmp=$(mktemp -d -t kx-cross-host.XXXXXX)
+  local lock_path="$tmp/deploy.lock"
+  local rc=0 out=""
+  local local_host; local_host=$(hostname 2>/dev/null || echo unknown)
+
+  # ★ 一个**确实已死**的 PID（⇒ 阳性对照里「同机 + 已死 ⇒ 可以回收」必须成立）
+  sleep 0 & local dead_pid=$!; wait "$dead_pid" 2>/dev/null || true
+
+  # 远端桩：lock_recover_remote 只有两种调用形态 —— ① 读元数据 ② rm -rf 锁路径
+  remote_cmd() {
+    case "$1" in
+      *"rm -rf"*) rm -rf "$lock_path" >/dev/null 2>&1; return 0 ;;
+      *)
+        if [[ -d "$lock_path" ]]; then
+          cat "$lock_path/metadata" 2>/dev/null
+        else
+          printf '__LOCK_MISSING__'
+        fi
+        return 0
+        ;;
+    esac
+  }
+
+  # ① 跨机来源 ⇒ 必须拒绝（rc=75），且锁必须**还在**
+  mkdir -p "$lock_path"
+  printf 'target=245\npid=%s\nsource_host=other-deployer\nsource_hostname=other-machine\nstarted_at=2026-11-05T00:00:00Z\n' "$dead_pid" >"$lock_path/metadata"
+  rc=0; out=$(lock_recover_remote remote_cmd 245 "$lock_path" 1 2>&1) || rc=$?
+  if [[ "$rc" -eq 75 && -d "$lock_path" ]]; then
+    log_pass "cross-host lock is NOT auto-recovered (fail closed) and the lock survives"
+  else
+    log_fail "cross-host lock was auto-recovered (rc=$rc, lock_still_there=$([ -d "$lock_path" ] && echo yes || echo no))"
+  fi
+  if [[ "$out" == *"DD_FORCE_FOREIGN_LOCK"* ]]; then
+    log_pass "cross-host refusal names the override (DD_FORCE_FOREIGN_LOCK) and the reason"
+  else
+    log_fail "cross-host refusal message is missing or misleading: $out"
+  fi
+
+  # ② 显式接管（人工已确认持有者已死）⇒ 才允许移除，且必须打 WARNING
+  export DD_FORCE_FOREIGN_LOCK=1
+  rc=0; out=$(lock_recover_remote remote_cmd 245 "$lock_path" 1 2>&1) || rc=$?
+  unset DD_FORCE_FOREIGN_LOCK
+  if [[ "$rc" -eq 0 && ! -e "$lock_path" ]]; then
+    log_pass "explicit DD_FORCE_FOREIGN_LOCK=1 takes over a foreign-host lock"
+  else
+    log_fail "explicit foreign-host takeover failed (rc=$rc, lock_exists=$([ -e "$lock_path" ] && echo yes || echo no))"
+  fi
+  if [[ "$out" == *"NOT verified"* || "$out" == *"WARNING"* ]]; then
+    log_pass "forced foreign-host takeover warns that liveness was NOT verified"
+  else
+    log_fail "forced foreign-host takeover did not warn about unverified liveness: $out"
+  fi
+
+  # ③ 阳性对照：同机来源 + 持有者已死 ⇒ 仍可回收（⇒ 这道门不是恒红）
+  mkdir -p "$lock_path"
+  printf 'target=245\npid=%s\nsource_host=%s\nsource_hostname=%s\nstarted_at=2026-11-05T00:00:00Z\n' \
+    "$dead_pid" "$local_host" "$local_host" >"$lock_path/metadata"
+  rc=0; out=$(lock_recover_remote remote_cmd 245 "$lock_path" 1 2>&1) || rc=$?
+  if [[ "$rc" -eq 0 && ! -e "$lock_path" ]]; then
+    log_pass "same-host dead-holder lock is still recoverable (positive control)"
+  else
+    log_fail "same-host dead-holder lock was NOT recovered (rc=$rc): $out"
+  fi
+
+  rm -rf "$tmp"
+}
+
+# --- AC-L16: the target lock must have exactly ONE form --------------
+# ★ 2026-11-05（12h 审计轮 · D-2）：★ 目标机侧那把锁的路径只有**一个**，但两条获取路径
+#   落了**两种不兼容形态**：
+#     · --via 路径（lock_acquire_remote）⇒ 远端 `mkdir` ⇒ **目录**
+#     · 目标机直跑路径（lock_acquire_local）⇒ 有 flock ⇒ **普通文件**（且释放时**刻意不删**）
+#   ⇒ ⇒ 一次目标机直跑就在锁路径上留下**永久空壳文件**
+#   ⇒ ⇒ 此后**每一次** --via 部署的远端 mkdir 都失败（rc=75）
+#   ⇒ ⇒ 目标机部署路径被**永久堵死**，而报错说的是「另一个部署正在进行」⇒ 把运维引向错方向。
+#   ⇒ ★★ 修法：直跑路径显式用【目录形态】⇒ 两侧同形 ⇒ 释放即消失。
+test_target_lock_single_form() {
+  echo "── AC-L16: target lock form unification ──"
+  local tmp; tmp=$(mktemp -d -t kx-lock-form.XXXXXX)
+  local lock_path="$tmp/deploy.lock"
+
+  # ① 行为：目录形态取锁 ⇒ 路径必须是【目录】；释放后【不留任何残骸】
+  export LOCK_FLOCK_BIN=""      # ★ 即便 flock 可用，目录形态也必须落目录
+  export LOCK_LOCAL_DIR="$lock_path"
+  export LOCK_LOCAL_TARGET=245
+  unset LOCK_LOCAL_FD
+  lock_acquire_local_dir
+  if [[ -d "$lock_path" ]]; then
+    log_pass "directory-form local lock creates a DIRECTORY at the lock path"
+  else
+    log_fail "directory-form local lock did not create a directory (shape=$([ -f "$lock_path" ] && echo file || echo other))"
+  fi
+  lock_release_local
+  if [[ ! -e "$lock_path" ]]; then
+    log_pass "directory-form release leaves NO residue (no empty shell file)"
+  else
+    log_fail "directory-form release left residue at the lock path"
+  fi
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_TARGET
+
+  # ② 接线：引擎的目标锁获取点必须用【目录形态】（与远端 mkdir 同形）
+  local engine="$REPO_ROOT/scripts/deploy-seamless-docker.sh"
+  if [[ ! -f "$engine" ]]; then
+    log_fail "engine not found: $engine"
+  else
+    local site
+    site=$(python3 - "$engine" <<'PY'
+import re, sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+# ★ 只认【行首的调用】（★ 注释里提到 lock_acquire_local 不算调用）
+anchor = 'LOCK_LOCAL_DIR="$DD_TARGET_LOCK_PATH"'
+start = next((i for i, l in enumerate(lines) if anchor in l and not l.strip().startswith("#")), None)
+if start is None:
+    print("NOT_FOUND"); raise SystemExit(0)
+for l in lines[start + 1: start + 80]:
+    m = re.match(r'\s*(lock_acquire_local\w*)', l)
+    if m:
+        print(m.group(1)); raise SystemExit(0)
+print("NOT_FOUND")
+PY
+)
+    if [[ "$site" == "lock_acquire_local_dir" ]]; then
+      log_pass "engine acquires the TARGET lock in directory form (same form as the remote side)"
+    else
+      log_fail "engine target-lock site uses '$site' instead of lock_acquire_local_dir (★ flock-form leftovers block every --via deploy)"
+    fi
+  fi
+
+  rm -rf "$tmp"
+}
+
 # --- AC-L14: flock recovery path safety ----------------------------
 # Uses a stub `flock` binary to simulate the held/available states
 # without requiring real util-linux flock on macOS CI. The stub reads
@@ -802,7 +951,9 @@ test_eperm_liveness_protection() {
   # closed without removing the remote lock.
   local remote_dir="$tmp/remote"
   mkdir -p "$remote_dir/deploy.lock"
-  printf 'target=245\npid=1\n' >"$remote_dir/deploy.lock/metadata"
+  # ★ 必须带上【本机】的机器身份 ⇒ 否则会被 AC-L15 的跨机规则先挡下
+  #   ⇒ ⇒ 这条用例就测不到「同机 + 活着的 PID ⇒ 拒绝回收」这个原判据了（★ 判据被掩盖）。
+  printf 'target=245\npid=1\nsource_hostname=%s\n' "$(hostname 2>/dev/null || echo unknown)" >"$remote_dir/deploy.lock/metadata"
   local ssh_cmd
   ssh_cmd() { cat "$remote_dir/deploy.lock/metadata"; }
   rc=0
@@ -838,6 +989,8 @@ run_all() {
   test_force_recovery_stale_locks
   test_force_recovery_safety
   test_force_recovery_flock_path
+  test_force_recovery_cross_host
+  test_target_lock_single_form
   test_machine_level_default_path
   test_eperm_liveness_protection
 
@@ -866,6 +1019,8 @@ if [[ $# -gt 0 ]]; then
     force-recovery)    test_force_recovery_stale_locks ;;
     force-safety)      test_force_recovery_safety ;;
     flock-path)        test_force_recovery_flock_path ;;
+    cross-host)        test_force_recovery_cross_host ;;
+    target-form)       test_target_lock_single_form ;;
     machine-path)      test_machine_level_default_path ;;
     eperm-liveness)    test_eperm_liveness_protection ;;
     all|*)             run_all ;;

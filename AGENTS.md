@@ -504,6 +504,26 @@
 > A/B=0）；i18n parity/shared-dead/间距尺全绿；config 门 60/60；Go 侧零改动（build rc=0、
 > sales 6 真库腿 ok 1.132s 复核零扰动）。★ 遗留不变：W0 真单（人工）、W2 同步器/看板/PDF、
 > 公开面客户版页面。
+> **2026-11-05 第 49 增量：同步轮（cron：拉最新 → 挖问题 → 修 → 编译测试 → 推双仓）——「上游带进来的东西，本仓从未绿过」是一整类缺陷**
+> （cron 会话 `mvs_9f5989b868cb42e5b80bb62d77a98e3c`；审计档 `docs/全面审计v3/2026-11-05/` 增补 F1–F5；
+> 通用式见 `LESSONS.md` **§635**）：
+> ⇒ ★ 用户目标＝「拉取最新代码合并到本地，修正发现的问题，完成编译测试，提交并同步到 codeup 与 github，保证两仓 main 一致」。
+> ⇒ ★ 开工读数：codeup `origin/main` 与 github `github/main` 同为 `78f07316d`（第 48 增量）⇒ ff-merge 零冲突；
+> ★ **`ls-remote` 双仓对拍＝本地 HEAD 三者同 SHA**（★ 记忆纪律：fetch 成功≠读远端通道可用 ⇒ 以 ls-remote 成功为准）。
+> ⇒ ★★★ **本轮最重发现＝F1【P1】**：迁移 942–949 漏「五点同步」的第 2、3 点（`go:embed` 变量 + `embeddedSQLFiles` 清单）
+> ⇒ **`setupSQLDir()` 物化不出这些文件 ⇒ 全新安装在 942 处 file not found**（⇒ 文件在、StartupFiles 在、看着全绿，
+> **唯独 installer 跨模块门 `TestStartupFilesAreAllEmbedded` 整包红**）。⇒ ★ 修法＝补 16 个 `go:embed` 变量 + 16 条清单登记。
+> ⇒ ★★ **其余三项（全部 A/B 证明在 HEAD 既有 ⇒ 非本轮引入、但本轮必须修）**：
+> **F2** 派生台账 `installer-reachability.tsv` 的 `creator_reachable` 停在旧读数 ⇒ 13 格与独立重算不符（⇒ **派生台账是放大器**）；
+> **F3** sales 真库腿读事实源共享名 `TEST_DATABASE_URL`（指向产品库）⇒ scratch 守卫必然 Fatal ⇒ **事实源档下恒红**（假红）
+> ⇒ 按 modelcredibility 腿先例拆专用名 `SALES_REALDB_TEST_DATABASE_URL` ＋ 三处登记；**F4** pipefail 台账漏 2 个候选点
+> ⇒ 按 SSOT 增量重生成（★ 复核沿用 378 条人工裁决 / 零行丢失）。
+> ⇒ ★★★ **F5【跨仓在途态 · 不是本仓缺陷】**：`tests/deploy_switch_lock_parity_test.sh` 元数据字段集对拍红 ＝
+> 共享 SSOT `ai-native-tools/deploy/deploy-lib/lock.sh` 有**未提交的并发 WIP**（D-1 跨机锁恢复，加 `source_hostname`）。
+> ⇒ ★★ **A/B 实证**：把 SSOT 换成**已提交版本**再跑 ⇒ `AIAN_DEPLOY_LIB=<committed>` 下 **ALL PASS** ⇒ **本仓 HEAD 与已提交 SSOT 完全一致**
+> ⇒ ⇒ ★ **本轮不动**（★ 且**不能预改本仓侧**去追那个未提交 WIP —— 那是**对着已提交 SSOT 造出新的字段集漂移**，换一个红）
+> ⇒ ⇒ 归属：并发会话的 D-1 轮；待其落地后由该轮同步本仓侧并更新 `tests/deploy_lock_parity_baseline.json`。
+> ⇒ ★ gofmt 纪律：改动 4 个 Go 文件 **零新增漂移**（逐文件把「本轮 gofmt diff」与「HEAD 的 gofmt diff」逐字对拍）。
 > **2026-11-05 第 48 增量：48 小时修订审计轮（五组并行只读取证 ＋ 报价系统 MVP 调和落地 ＋ 14 项修复 ＋ 真库腿首次跑绿）**
 > （goal 会话，`docs/全面审计v3/2026-11-05/{01-审计方案,02-审计发现与缺陷台账,03-修复与验证记录}.md`；通用式见 `LESSONS.md` **§634**）：
 > ★ 用户目标＝「对 48 小时内的修正进行审计……制定详细执行方案后审计执行」。

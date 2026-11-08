@@ -38,6 +38,7 @@ package ursm_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -229,6 +230,157 @@ func TestInstallerReachabilityLedgerIsRecomputable(t *testing.T) {
 	if len(seen) != len(goExpected) {
 		t.Errorf("reachability ledger covers %d indexes, expected set has %d", len(seen), len(goExpected))
 	}
+}
+
+// ─────────────────────── G9b：★ 台账必须【钉住它的输入】 ───────────────────────
+//
+// ★★ 这道门守的是 2026-11-05 真实踩到的那次事故：
+//
+//	① 2026-11-05 的 sales 提交里，★ 可达性台账是在【安装器清单追加 8 条 sales 迁移【之前】】生成的
+//	   （★ 台账头写着 manifest=342、而清单当时已经是 350）⇒ ⇒ 提交后 G9 判 13 条 sales 索引
+//	   「creator_reachable=no、而【清单∩分发包】重算=yes」⇒ ⇒ **门在主干上直接红**。
+//	② 而 R163 审计档其实早就写明了：★ 可达性台账「★ **必须最后跑**」（★ 因为它读 startup 清单）。
+//	   ⇒ ⇒ 那条规则写在文档里、却没有【机器强制】⇒ ⇒ 靠人记 ⇒ ⇒ 这次就漏了。
+//	③ 更深一层：★ 台账的另半个输入是【census 底账】⇒ ★ 它是【10-29 的快照】
+//	   ⇒ ⇒ 而 sales 迁移是 11-05 才建的 ⇒ ⇒ 「表不在 census 里」被判成 `retired`
+//	   ⇒ ⇒ 台账于是对一批【刚上线的对象】写下「合法退役」这个【假陈述】。
+//	   ⇒ ⇒ 本门把 census 的【采集时点 + 每环境指纹】一并写进台账头 ⇒ ⇒ **陈旧这件事从此【看得见】**。
+//
+// ★★ 于是本门把那条规则【变成机器断言】：
+//
+//	★ 台账头必须声明 manifest=/package_up=/rows= ⇒ 且【等于】当前清单/分发包/行数；
+//	★ 台账头必须声明 census_bundled_at= 与 census_env_sha256= ⇒ 且【等于】当前 census 底账的头；
+//	★ 台账头必须声明 counts= ⇒ 且【等于】按当前行重算出来的 verdict 分布。
+//
+// ⇒ ⇒ 任一输入在【生成之后】被改动 ⇒ 门必红 ⇒ ⇒ 「陈旧台账」再也不能【静默通过】。
+
+// dbObjReachLedgerMeta 读可达性台账的头 ⇒ 台账自己声明的输入指纹。
+func dbObjReachLedgerMeta(t *testing.T) (manifestN, packageN, rowsN int, censusAt string, censusFP map[string]string, counts map[string]int) {
+	t.Helper()
+	header := strings.Join(dbObjHeaderLines(t, dbObjRepoPath(t, dbObjReachRel)), "\n")
+
+	m := regexp.MustCompile(`manifest=(\d+) package_up=(\d+) rows=(\d+)`).FindStringSubmatch(header)
+	if m == nil {
+		t.Fatal("reachability ledger header does not declare manifest=/package_up=/rows= (★ 生成器版本过旧 ⇒ 请用仓库内生成器重生成)")
+	}
+	manifestN, _ = strconv.Atoi(m[1])
+	packageN, _ = strconv.Atoi(m[2])
+	rowsN, _ = strconv.Atoi(m[3])
+
+	m = regexp.MustCompile(`census_bundled_at=(\S+) census_env_sha256=(\S+)`).FindStringSubmatch(header)
+	if m == nil {
+		t.Fatal("reachability ledger header does not declare census_bundled_at=/census_env_sha256= (★ 生成器版本过旧 ⇒ 请用仓库内生成器重生成)")
+	}
+	censusAt = m[1]
+	censusFP = map[string]string{}
+	for _, kv := range strings.Split(m[2], ",") {
+		if i := strings.Index(kv, ":"); i > 0 {
+			censusFP[kv[:i]] = kv[i+1:]
+		}
+	}
+	if len(censusFP) == 0 {
+		t.Fatal("reachability ledger header census_env_sha256 is empty")
+	}
+
+	m = regexp.MustCompile(`counts=(\{[^}]*\})`).FindStringSubmatch(header)
+	if m == nil {
+		t.Fatal("reachability ledger header does not declare counts=")
+	}
+	counts = map[string]int{}
+	for _, kv := range strings.Split(strings.Trim(m[1], "{}"), ",") {
+		kv = strings.TrimSpace(kv)
+		i := strings.Index(kv, ":")
+		if i <= 0 {
+			continue
+		}
+		v, err := strconv.Atoi(strings.TrimSpace(kv[i+1:]))
+		if err != nil {
+			t.Fatalf("reachability ledger header counts= is not JSON-ish: %q", kv)
+		}
+		counts[strings.Trim(strings.TrimSpace(kv[:i]), `"`)] = v
+	}
+	return manifestN, packageN, rowsN, censusAt, censusFP, counts
+}
+
+// dbObjReachCensusHeader 读 census 底账的头 ⇒ {环境: sha256} + bundled_at。
+func dbObjReachCensusHeader(t *testing.T) (map[string]string, string) {
+	t.Helper()
+	header := strings.Join(dbObjHeaderLines(t, dbObjRepoPath(t, dbObjCensusRel)), "\n")
+	envs := map[string]string{}
+	for _, m := range regexp.MustCompile(`env=(\S+) rows=(\d+) sha256=([0-9a-f]+)`).FindAllStringSubmatch(header, -1) {
+		envs[m[1]] = m[3]
+	}
+	if len(envs) == 0 {
+		t.Fatal("census header declares no env sha256")
+	}
+	at := ""
+	if m := regexp.MustCompile(`bundled_at=(\S+)`).FindStringSubmatch(header); m != nil {
+		at = m[1]
+	}
+	return envs, at
+}
+
+func TestInstallerReachabilityLedgerPinsItsInputs(t *testing.T) {
+	manifestN, packageN, rowsN, censusAt, censusFP, counts := dbObjReachLedgerMeta(t)
+
+	manifest := dbObjReadManifest(t, dbObjManifestRel)
+	pkg := dbObjReadPackageUp(t, dbObjPackageRel)
+	rows := dbObjDataLines(t, dbObjRepoPath(t, dbObjReachRel))
+
+	if manifestN != len(manifest) {
+		t.Errorf("★ reachability ledger was generated against a manifest of %d files, the installer manifest now has %d "+
+			"(★ 台账【比安装器清单旧】⇒ 必须用仓库内生成器重生成：db-object-census.py reachability)",
+			manifestN, len(manifest))
+	}
+	if packageN != len(pkg) {
+		t.Errorf("★ reachability ledger was generated against a distribution package of %d migrations, the package now has %d "+
+			"(★ 台账【比分发包旧】⇒ 必须重生成)", packageN, len(pkg))
+	}
+	if rowsN != len(rows) {
+		t.Errorf("★ reachability ledger header says rows=%d but the file has %d data rows", rowsN, len(rows))
+	}
+
+	// ★★ census 指纹：★ 台账必须声明它读的是【哪一份】底账 ⇒ 且那份底账必须还是现在这份。
+	censusEnvFP, censusBundledAt := dbObjReachCensusHeader(t)
+	if censusAt != censusBundledAt {
+		t.Errorf("★ reachability ledger was generated against census bundled_at=%s, the census on disk is bundled_at=%s "+
+			"(★ 台账【比 census 底账旧】⇒ 环境读数已陈旧 ⇒ 必须重生成)", censusAt, censusBundledAt)
+	}
+	for env, sha := range censusEnvFP {
+		got, ok := censusFP[env]
+		if !ok {
+			t.Errorf("★ reachability ledger does not pin census env %q (★ 台账漏了环境指纹 ⇒ 不能证明它读的是当前底账)", env)
+			continue
+		}
+		if got != sha {
+			t.Errorf("★ reachability ledger pins census env %q sha256=%s, the census on disk is %s "+
+				"(★ 底账被重新采集过 ⇒ 台账的环境读数已陈旧 ⇒ 必须重生成)", env, got, sha)
+		}
+	}
+	for env := range censusFP {
+		if _, ok := censusEnvFP[env]; !ok {
+			t.Errorf("★ reachability ledger pins census env %q which the census on disk no longer declares", env)
+		}
+	}
+
+	// ★★ counts= 必须与按当前行重算的 verdict 分布一致（★ 台账头不许自己骗自己）。
+	recomputed := map[string]int{}
+	for _, r := range rows {
+		recomputed[r[7]]++
+	}
+	for verdict, n := range recomputed {
+		if counts[verdict] != n {
+			t.Errorf("★ reachability ledger header counts %q=%d but the rows say %d", verdict, counts[verdict], n)
+		}
+	}
+	for verdict, n := range counts {
+		if recomputed[verdict] != n {
+			t.Errorf("★ reachability ledger header counts %q=%d but the rows say %d", verdict, n, recomputed[verdict])
+		}
+	}
+
+	t.Logf("reachability ledger pinned inputs: manifest=%d package_up=%d rows=%d census_bundled_at=%s",
+		manifestN, packageN, rowsN, censusAt)
 }
 
 // ─────────────────────── G10：与缺口台账逐条一致（★ 两张台账不许各说各话） ───────────────────────

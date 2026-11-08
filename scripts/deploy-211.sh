@@ -165,6 +165,10 @@ if [[ $FORCE_UNLOCK -eq 1 ]]; then
   ARGS+=(--force)
   echo "[deploy-211] --force：已转交引擎（恢复陈旧的 211 本地部署锁；活的持有者一律不硬抢）" >&2
   echo "[deploy-211]   （\${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-deploy-211.lock）" >&2
+  # ★ 2026-11-05（12h 审计轮 · D-1）：--force 还会尝试恢复**目标机**上的锁。
+  #   ★ 那把锁里的 pid 是**部署机侧**的 pid ⇒ 跨机器时本机判活【无效】
+  #   ⇒ ⇒ 跨机来源的锁现在**一律拒绝自动回收**（fail-closed）⇒ 需人工确认后设 DD_FORCE_FOREIGN_LOCK=1。
+  echo "[deploy-211]   ★ 目标机侧锁：跨机器来源的锁无法在本机判活 ⇒ 不自动回收；确认持有者已死后可设 DD_FORCE_FOREIGN_LOCK=1。" >&2
 fi
 
 # 透传健康探针超时：与 deploy-154/245 同一族标准（PROBE_TIMEOUT_SECS）。
