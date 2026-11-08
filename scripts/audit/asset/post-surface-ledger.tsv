@@ -15,16 +15,30 @@
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 610 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 8 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 611 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 619 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 52 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 620 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/.well-known/oauth-protected-resource/mcp	GET	mcp/http.go:47	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/.well-known/oauth-protected-resource/mcp	GET	mcp/http.go:47	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /_gateway/plugin/v1/analytics/{type}	GET	cmd/gateway/plugin_canon_init.go:204	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /_gateway/plugin/v1/sessions	GET	cmd/gateway/plugin_canon_init.go:201	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /_gateway/plugin/v1/sessions/{gw_session_id}	GET	cmd/gateway/plugin_canon_init.go:202	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /_gateway/plugin/v1/sessions/{gw_session_id}/{sub}	GET	cmd/gateway/plugin_canon_init.go:203	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/adapters	POST	mcp/control.go:117	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/adapters	POST	mcp/control.go:117	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/adapters/{name}	PUT	mcp/control.go:119	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/adapters/{name}	PUT	mcp/control.go:119	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/adapters/{name}	PUT	mcp/control.go:119	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /admin/api/v1/health-checks	GET	admin/health_check_handlers.go:207	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /admin/api/v1/health-checks/dismiss	POST	admin/health_check_handlers.go:208	write				not-probed-writes	★ 静态分级：写库
 /admin/api/v1/health-checks/fix	POST	admin/health_check_handlers.go:209	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /admin/config/reload	ANY	cmd/gateway/main.go:7186	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/agents	POST	mcp/control.go:129	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/agents	POST	mcp/control.go:129	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/agents/{id}	DELETE	mcp/control.go:130	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/	ANY	cmd/gateway/main.go:7499	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/admin/annotations	ANY	admin/handler.go:1524	write	r.Body			not-probed-writes	★ 静态分级：写库
 /api/admin/annotations/	ANY	admin/handler.go:1523	write	400-guard			not-probed-writes	★ 静态分级：写库
@@ -574,17 +588,46 @@
 /api/webhooks/dingtalk/approval-callback	POST	api/dingtalk_callback.go:307	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/feishu/callback	ANY	cmd/gateway/feishubot_init.go:106	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/quota/recharged	POST	cmd/gateway/main.go:6590	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/approvals	POST	mcp/control.go:147	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/approvals	POST	mcp/control.go:147	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/approvals/{id}	POST	mcp/control.go:148	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/audit	GET	mcp/control.go:150	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/audit/export	GET	mcp/control.go:151	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/capabilities	GET	mcp/control.go:113	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:19	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/	ANY	cmd/gateway/pprof_server.go:25	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/cmdline	ANY	cmd/gateway/pprof_server.go:20	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/profile	ANY	cmd/gateway/pprof_server.go:21	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /debug/pprof/symbol	ANY	cmd/gateway/pprof_server.go:22	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/trace	ANY	cmd/gateway/pprof_server.go:23	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/health	GET	mcp/control.go:108	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /healthz	ANY	cmd/gateway/main.go:6602	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/healthz	GET	mcp/control.go:109	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /healthz/full	ANY	cmd/gateway/main.go:6603	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /internal/telemetry/fallback-buffer/	ANY	cmd/gateway/main.go:6668	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /internal/v1-write-liveness	ANY	cmd/gateway/main.go:6677	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/keys	POST	mcp/control.go:142	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys	POST	mcp/control.go:142	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys/apply	POST	mcp/control.go:138	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys/claim	POST	mcp/control.go:140	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys/requests/{id}/approve	POST	mcp/control.go:141	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys/status/{id}	GET	mcp/control.go:139	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys/{id}/revoke	POST	mcp/control.go:143	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/keys/{id}/rotate	POST	mcp/control.go:144	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/mcp	ANY	mcp/http.go:35	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp	ANY	mcp/http.go:35	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp	ANY	mcp/http.go:35	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp	ANY	mcp/http.go:35	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp/	ANY	mcp/http.go:36	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp/	ANY	mcp/http.go:36	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp/	ANY	mcp/http.go:36	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp/admin	GET	mcp/http.go:42	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/mcp/admin	GET	mcp/http.go:42	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/mcp/admin/	GET	mcp/http.go:43	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/mcp/control/	ANY	mcp/http.go:39	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/mcp/control/	ANY	mcp/http.go:39	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /metrics	ANY	cmd/gateway/main.go:6638	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/metrics	ANY	cmd/mcp-gateway/main.go:72	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /metrics/storage	GET	cmd/gateway/storage_metrics_endpoint.go:45	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /mock/v1/chat/completions/fast	ANY	cmd/gateway/main.go:6651	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /mock/v1/chat/completions/slow	ANY	cmd/gateway/main.go:6652	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
@@ -592,6 +635,16 @@
 /mock/v1/messages/slow	ANY	cmd/gateway/main.go:6654	read		401	validated	post-verified-no-side-effect	★ 可证明零副作用
 /plugins/{pluginId}/{rest...}	GET	cmd/gateway/plugin_proxy_init.go:12	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /readyz	ANY	cmd/gateway/main.go:6608	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/recommend	GET	mcp/control.go:114	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/routes	GET	mcp/control.go:112	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/skills/{id}	DELETE	mcp/control.go:134	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/tools	POST	mcp/control.go:123	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/tools	POST	mcp/control.go:123	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/tools/{name}	PUT	mcp/control.go:125	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/tools/{name}	PUT	mcp/control.go:125	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/tools/{name}	PUT	mcp/control.go:125	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /v1/approvals/	ANY	admin/handler.go:1322	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /v1/audio/analyze	ANY	cmd/gateway/main.go:6975	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/audio/refine	ANY	cmd/gateway/main.go:6974	unknown				not-probed-unresolved	★ 静态分级：解析不出

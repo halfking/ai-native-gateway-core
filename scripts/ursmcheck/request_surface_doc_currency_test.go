@@ -175,8 +175,8 @@ type docEvidence struct {
 //	（★ 会话 hash TTL 的**唯一真值**：`sessionTTL` 只算一次、两个写点共用）
 //	在 `cmd/gateway/main.go` **顶部**插了 **+10 行** ⇒ ★ 链整体再漂 **+11**
 //	（★ 顶部 +10 / 中段搬走 `sessionTTL := ...` −1 / `NewWiring` 装配点 +2）。
-//	⇒ Recovery **8095** / Logging 注释 **8097-8104** / maintain 注释 **8086-8091** /
-//	Auth **8110** / SecurityHeaders **8113**（链本体 **8095-8113**）。
+//	⇒（第十一次重钉，2026-11-09：MCP 网关轮 be33b0202 带的漂移）Recovery **8204** / Logging 注释 **8206-8213** /
+//	maintain 注释 **8195-8201** / Auth **8219** / SecurityHeaders **8222**（链本体 **8192-8224**）。
 //
 // ⇒ ★★★ **这次漂移是「自己引入」的**（★ 前九次里有几次是并行会话带的，
 //　★ 这一次不是 ⇒ ⇒ **本门红 ⇒ 就是自己动过 main.go**）⇒ ⇒ 归因更直接：
@@ -197,18 +197,18 @@ type docEvidence struct {
 //　抓出来 ⇒ ⇒ ★ 这不是门的缺陷，是门**在干活** ⇒ ⇒ 修法只有一个：**重钉**。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8095, to: 8113,
+		file: "cmd/gateway/main.go", from: 8192, to: 8224,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8097, to: 8104,
+		file: "cmd/gateway/main.go", from: 8206, to: 8213,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8086, to: 8091,
+		file: "cmd/gateway/main.go", from: 8195, to: 8201,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

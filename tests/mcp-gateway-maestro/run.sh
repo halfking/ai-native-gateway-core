@@ -39,6 +39,12 @@ bad()  { fail=$((fail+1)); FAILED_CASES+=("$*"); ALL_CASES+=("❌ $*"); printf '
 #   · 测试在容器内**原生**跑 ⇒ 绝不能带 GOOS/GOARCH（否则测试二进制无法执行）。
 BUILD_CMD=(); TEST_CMD=()
 if command -v go >/dev/null 2>&1; then
+  # ★ 专用构建缓存（r1048 门：在作用域内的编译型脚本必须指向仓内缓存，
+  #   不写用户全局 GOCACHE —— 2026-11-09 台账 165→166 收口）。
+  if [ -z "${GOCACHE:-}" ]; then
+    __gw_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$__gw_root" ] && export GOCACHE="$("${__gw_root}/scripts/lib/gocache.sh" test 2>/dev/null || true)"
+  fi
   BUILD_CMD=(go); TEST_CMD=(go)
 elif command -v docker >/dev/null 2>&1; then
   HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
