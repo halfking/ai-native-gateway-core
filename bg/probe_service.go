@@ -193,6 +193,13 @@ type ProbeService struct {
 	directRoundFn  func(context.Context, int, string) nodeProbeRoundResult
 	gatewayRoundFn func(context.Context, int, string) gatewayProbeResult
 	applyOutcomeFn func(context.Context, probeOutcome)
+	// modelScopeFn (2026-11-08 T-P1) overrides the automatic-probe model-scope
+	// check (featured ∪ recent-usage, automaticProbeModelInScope). Tests stub
+	// it to drive the gate deterministically without building a *ProbeQueue on
+	// a live pgxpool; production leaves it nil and goes through the queue
+	// method. The source bypass (automaticProbeSourceBypassesModelScope) is
+	// applied OUTSIDE this seam so stubs see post-bypass semantics.
+	modelScopeFn func(ctx context.Context, model string) (bool, error)
 	// heartbeatFn defaults to ProbeQueue.ExtendLease but can be overridden in
 	// tests to assert the lease-extension cadence without touching the DB.
 	heartbeatFn func(context.Context, ProbeQueueTask, time.Duration) error
@@ -308,8 +315,24 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_ineligible"},
 				fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
 		}
-		if s.queue != nil {
-			inScope, scopeErr := s.queue.automaticProbeModelInScope(ctx, model)
+		// ★ 2026-11-07 恢复复检豁免（与提交侧 probe_queue.go enqueue 成对）：
+		// periodic（泵——只挑错误证据行）与 credential_recovery（恢复事件
+		// 验证探针——目标本就不可用）绕过模型范围门。见 probe_model_scope.go
+		// 文件头。
+		//
+		// ★★ 2026-11-08（T-P1 探测空转根修）：豁免必须**两端成对** —— 只豁免
+		// 提交侧会造出两端闸不对称：泵按 periodic 入队成功 → 这里仍按范围
+		// 拒收 → settle success + 泵 45s holdoff ⇒ 每对每 45s 一条
+		// 「success 但零探测」的队列任务无限循环（211 实测 2026-11-08：24h
+		// 159,313 条任务、150,298 条 success、~400 对 last_attempt 冻结 3 天，
+		// reason_code=automatic_probe_model_out_of_scope 占 12,778/2h）。
+		// 豁免成对后，periodic 行的真实探测结果（梯子）接管调度，空转收敛。
+		inScopeFn := s.modelScopeFn
+		if inScopeFn == nil && s.queue != nil {
+			inScopeFn = s.queue.automaticProbeModelInScope
+		}
+		if inScopeFn != nil && !automaticProbeSourceBypassesModelScope(task.Source) {
+			inScope, scopeErr := inScopeFn(ctx, model)
 			if scopeErr != nil {
 				// ★ 2026-11-05 审计修：失败开放（见 probe_model_scope.go）。
 				// 读失败时 automaticProbeModelInScope 已返回 inScope=true；
@@ -318,6 +341,12 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 					"credential_id", task.CredentialID, "model", model, "error", scopeErr)
 			}
 			if !inScope {
+				// 确定性范围拒收：状态行推到 15min 后重评（与提交侧
+				// deferScopeSkippedRow 同 pacing）——防御未来两端闸再漂移时
+				// 退化成 45s 空转而非永动。
+				if s.worker != nil {
+					s.worker.deferScopeSkippedRow(ctx, credID, model)
+				}
 				return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_model_out_of_scope"},
 					fmt.Errorf("%w: model=%q", ErrProbeModelOutOfAutomaticScope, model)
 			}
