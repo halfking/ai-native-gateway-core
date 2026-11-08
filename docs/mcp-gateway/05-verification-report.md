@@ -3,6 +3,8 @@
 > 日期：2026-11-09（首轮）＋ 2026-11-09 契约对齐轮（本文档已含两轮读数）
 > 执行入口：`bash tests/mcp-gateway-maestro/run.sh`
 > 报告产物：`tests/mcp-gateway-maestro/reports/<时间戳>/summary.md`（不入库，`.gitignore` 已登记）
+> ★ 产物自带证据：`summary.md` 除计数外还写入**逐条用例读数**（每条 ok/bad 的实际
+>   观测值）⇒ 复核者只读该文件即可取到证据，不必重跑或翻控制台。
 
 ## 1. 结论
 

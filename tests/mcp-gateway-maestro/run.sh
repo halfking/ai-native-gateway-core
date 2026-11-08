@@ -27,10 +27,11 @@ mkdir -p "${OUT}"
 ADMIN_TOKEN="maestro-admin-token"
 pass=0; fail=0
 declare -a FAILED_CASES=()
+declare -a ALL_CASES=()   # 全部用例读数（写进 summary.md ⇒ 报告产物自带证据）
 
 log()  { printf '%s\n' "$*"; }
-ok()   { pass=$((pass+1)); printf '  ✅ %s\n' "$*"; }
-bad()  { fail=$((fail+1)); FAILED_CASES+=("$*"); printf '  ❌ %s\n' "$*"; }
+ok()   { pass=$((pass+1)); ALL_CASES+=("✅ $*"); printf '  ✅ %s\n' "$*"; }
+bad()  { fail=$((fail+1)); FAILED_CASES+=("$*"); ALL_CASES+=("❌ $*"); printf '  ❌ %s\n' "$*"; }
 
 # ── 0. 工具链探测 ───────────────────────────────────────────────────────────
 # 构建与测试用两套命令：
@@ -479,6 +480,10 @@ fi
     for c in "${FAILED_CASES[@]}"; do echo "- ${c}"; done
     echo
   fi
+  echo "## 用例明细（含读数）"
+    echo
+  for c in "${ALL_CASES[@]}"; do echo "- ${c}"; done
+  echo
   echo "## 产物"
   echo
   echo "- go-test.log：L1 Go 测试输出"
