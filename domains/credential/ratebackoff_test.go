@@ -21,10 +21,12 @@ package credential
 // 由 writer_wiring 门断言（见文件尾）。
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // errorsxKindRateLimitForTest 让默认路径对拍测试不用再 import 两次同包常量。
@@ -43,6 +45,51 @@ func newTestRateBackoff(t *testing.T) (*RateBackoffTracker, *time.Time) {
 	defaultRateBackoff = tracker
 	t.Cleanup(func() { defaultRateBackoff = prev })
 	return tracker, &clock
+}
+
+// fakeRatePolicyBackend 镜像 settings 的 fakeBackend（registry_test.go，
+// 未导出）供跨包消费测试用。jsonRawMessage = []byte（type alias），
+// []byte 值满足接口。
+type fakeRatePolicyBackend struct {
+	store map[string][]byte
+}
+
+func (f *fakeRatePolicyBackend) Get(_ settings.Scope, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeRatePolicyBackend) Set(_ settings.Scope, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeRatePolicyBackend) GetTenant(_, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeRatePolicyBackend) SetTenant(_, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+
+// setRatePolicySettingsForTest 把 settings.Global 换成只装 RatePolicy 两键的
+// 测试注册表。refillSeconds < 0 表示不写键（读 spec Default=60）；0 是显式
+// 「遗留 A2」哨兵（写 "0"）。生产路径 rateLimitedCoolingDuration 直接读
+// settings.Global ⇒ 本 helper 是节奏/遗留两态的统一开关。
+func setRatePolicySettingsForTest(t *testing.T, refillSeconds, threshold int) {
+	t.Helper()
+	registry := settings.NewRegistry()
+	store := map[string][]byte{}
+	if refillSeconds >= 0 {
+		store[settings.KeyRateWindowRefillSeconds] = []byte(strconv.Itoa(refillSeconds))
+	}
+	if threshold > 0 {
+		store[settings.KeyRatePaceViolationThreshold] = []byte(strconv.Itoa(threshold))
+	}
+	registry.RegisterBackend(settings.ScopePlatform, &fakeRatePolicyBackend{store: store})
+	for _, sp := range settings.RatePolicySpecs() {
+		if err := registry.RegisterSpec(sp); err != nil {
+			t.Fatalf("register spec %s: %v", sp.Key, err)
+		}
+	}
+	prev := settings.Global
+	settings.Global = registry
+	t.Cleanup(func() { settings.Global = prev })
 }
 
 // 判据①：单次 429 冷却 = 3min（不变）。
@@ -111,7 +158,12 @@ func TestRateBackoffForgetWindowResets(t *testing.T) {
 }
 
 // 判据④：Retry-After ≤1h 照用且不消耗计数；>1h 压到 1h。
+//
+// ★ 2026-11-08：本测试在**遗留 A2 模式**（refill=0，settings 逃生口）下跑，
+// 升级算术（3/6/12/24/30）与 R186 判据逐字不变；节奏模式下的 RA 优先性
+// 由 ratebackoff_pace_test.go 单独钉。
 func TestRateLimitedCoolingHonorsRetryAfterWithCap(t *testing.T) {
+	setRatePolicySettingsForTest(t, 0, 3)
 	tracker, _ := newTestRateBackoff(t)
 	key := RateBackoffKey(13, "m")
 
@@ -168,6 +220,7 @@ func TestRateBackoffIsBindingScoped(t *testing.T) {
 
 // nil 接收者安全（与 slowrest 同款防御）。
 func TestRateBackoffNilReceiverIsSafe(t *testing.T) {
+	setRatePolicySettingsForTest(t, 0, 3)
 	var tracker *RateBackoffTracker
 	if got := tracker.Observe("k"); got.Duration != 0 {
 		t.Fatalf("nil Observe = %s want 0", got.Duration)
@@ -181,13 +234,14 @@ func TestRateBackoffNilReceiverIsSafe(t *testing.T) {
 }
 
 // coolingDuration 对 KindRateLimit 的语义不变（其它 kind 的既有门继续成立）；
-// writer.go 的 KindRateLimit 分支已改走 rateLimitedCoolingDuration，
-// 该函数在无计数器注入时（DefaultRateBackoff 全新进程态）首罚 = 3min。
-// 这里补一条「无 Retry-After 且计数器未推进」的进程级默认路径断言，
-// 保证默认路径与旧 coolingDuration(KindRateLimit, 0) = 3min 逐字节同值。
+// writer.go 的 KindRateLimit 分支已改走 rateLimitedCoolingDuration。
+// ★ 2026-11-08：默认路径现在是节奏校准（refill=60，见 ratebackoff_pace_test.go）；
+// 本测试钉的是**遗留逃生口**（settings refill=0）与旧 coolingDuration 的
+// 逐字节同值契约——关掉节奏校准必须精确回到 A2。
 func TestRateLimitedCoolingDefaultPathMatchesLegacy(t *testing.T) {
+	setRatePolicySettingsForTest(t, 0, 3)
 	tracker, _ := newTestRateBackoff(t)
 	if got := rateLimitedCoolingDuration(0, tracker, RateBackoffKey(999, "fresh")); got != coolingDuration(errorsxKindRateLimitForTest(), 0) {
-		t.Fatalf("default path = %s want legacy coolingDuration = %s", got, coolingDuration(errorsxKindRateLimitForTest(), 0))
+		t.Fatalf("legacy escape path = %s want legacy coolingDuration = %s", got, coolingDuration(errorsxKindRateLimitForTest(), 0))
 	}
 }

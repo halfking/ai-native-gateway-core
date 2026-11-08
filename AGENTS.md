@@ -4,6 +4,29 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-08 211 探测空转根修 + token 桶 W1 节奏校准落地轮（goal 会话，通用式见 `LESSONS.md` **§643**）**：
+> ★ 用户目标＝「继续下一步（W1 实施轮）＋同步检查 211 探测为何状态不对」。
+> ★★★ **检查结论＝T-P1【P1】活缺陷**：F2 恢复复检豁免（periodic/credential_recovery 绕过
+> 模型范围门）**只加在提交侧**，消费侧 ProbeService.Run 照旧拒收 ⇒ 泵入队成功 → Run 拒收
+> settle success → 泵 45s holdoff ⇒ **每对每 45s 一条「success 但零探测」任务永动**——
+> 211 实测：24h 159,313 条任务、150,298 条 success（94%）、~397 对 last_attempt 冻结 3 天+、
+> reason_code=automatic_probe_model_out_of_scope 占 12,778/2h；probe-schedule-audit R1-R4=0
+> 全盲（45s holdoff 让行永不过期 15min）。取证三方对拍（状态行 45s 被推×运行史零新行×
+> 队列史每 30s 一条 success）＋蓝绿翻转后容器名失效坑（-a 已死、在役 -b）。
+> ★ **修复**（`fix(bg/probe)` 8ad9bd8d865d）：Run 的模型范围检查套用同一豁免（恢复复检
+> Catch-22 在最后一跳打通，periodic 行真实探测结果接管调度、空转收敛）＋范围拒收路径补
+> deferScopeSkippedRow 15min（两端闸再漂移退化为 pacing 而非永动）＋ modelScopeFn seam；
+> 门 B1-B4 ＋ 变异臂 M3/M4 全检出。
+> ★ **W1 落地**（`feat(credential)` 0b4ce4715576）：`ObserveWithPace` 把 A2 无条件累计升级
+> 改为节奏校准（间隔 ≥ 窗口重灌估计＝节奏正常 ⇒ 归零按窗口冷却；快速连击 ≥ threshold 才进
+> 3min<<n 梯）；settings 两键 `routing.rate.window_refill_seconds`（默认 60，**0=逐字节回退
+> A2**）+ `routing.rate.pace_violation_threshold`（默认 3）热加载；**既有 A2 测试族按 refill=0
+> 注入一行断言不改全绿**（逃生口＝遗留路径的门）；RA 优先/遗忘窗/绑定级作用域/429 不进断路器
+> 四红线不动；变异臂 M1/M2 全检出。四臂还原全部 md5 逐字一致。
+> ★ 验收：settings/credential 两包 ok（-skip TestRedisRPM）、bg 全包 ok 39.3s；
+> `TestRedisRPM*`＝无本地 Redis 环境红（干净 worktree 基线实证非本轮引入）；
+> 合并并行会话 5 提交零冲突（c289656d1bdd）。**明确没做**：未部署 211（修复已推送，
+> 部署待指令——部署后预期队列 churn 归零、~400 对冻结行随真实探测爬梯自愈）。
 > **2026-11-07 Token 桶双层路由优化方案轮（规划·零代码，goal 会话，`docs/audit/2026-11-07-token桶双层路由优化方案.md`；通用式见 `LESSONS.md` **§642**）**：
 > ★ 用户目标＝「429/超限族不判死节点＋保在途＋隔时回量爬坡；结合 magpie 对比；模型+凭据=
 > token 桶定型定参进路由模型（序列逐个尝试）；auto 两层路由双模块+高速缓存计数；会话桶历史

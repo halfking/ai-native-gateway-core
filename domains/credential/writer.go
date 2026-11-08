@@ -389,11 +389,16 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// 2026-10-31 A2（magpie 四域对比刷新轮 §五 A2）: KindRateLimit 从
 		// 固定 3min 改为「Retry-After 优先（信任上限 1h）→ 累计升级
 		// （3min→6min→12min→24min→30min 封顶，遗忘窗 30min）」。
-		// 红线不动：429 仍不进断路器（breaker.go Wave 1 A4 裁决），升级
-		// 只作用于绑定级冷却时长；计数在 ratebackoff.go（进程内，与
-		// slowrest 同款已知局限：多实例下退避起点偏保守）。Concurrency/
-		// StreamTimeout/NoAvailableChannel 三个同臂 kind 走原 coolingDuration
-		// 路径，零行为变化。
+		// 2026-11-08 W1（token 桶节奏校准，docs/audit/2026-11-07-token桶双层
+		// 路由优化方案.md §三 T1）: 无 Retry-After 路径改为**节奏校准**——
+		// 冷却下限 = 窗口重灌估计（settings routing.rate.window_refill_seconds，
+		// 默认 60s），两次 429 间隔 ≥ 窗口 = 节奏正常（计数归零不升级），
+		// 快速连击 ≥ routing.rate.pace_violation_threshold（默认 3）才进
+		// 3min<<n 升级梯；refill=0 精确回退 A2。红线不动：429 仍不进断路器
+		//（breaker.go Wave 1 A4 裁决），升级只作用于绑定级冷却时长；计数在
+		// ratebackoff.go（进程内，与 slowrest 同款已知局限：多实例下退避起点
+		// 偏保守）。Concurrency/StreamTimeout/NoAvailableChannel 三个同臂
+		// kind 走原 coolingDuration 路径，零行为变化。
 		if failure.Kind == errorsx.KindRateLimit {
 			recoverAt := time.Now().UTC().Add(rateLimitedCoolingDuration(failure.RetryAfter, DefaultRateBackoff(), RateBackoffKey(credentialID, rawModel)))
 			reason := "auto_rate_limit"
