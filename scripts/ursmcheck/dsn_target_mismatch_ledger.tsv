@@ -18,3 +18,4 @@
 #     `cfg.ConnConfig.Database = x`（**改指**到自建库）是**好形态**，不算守卫。
 #   · 「自建库」（CREATE DATABASE）⇒ 这条腿自带隔离 ⇒ 事实源的 DSN 只是引导连接 ⇒ 不是错配。
 TEST_PG_URL	sql/migrations/startup/migration_877_write_amplification_test.go	判词：该腿 os.Getenv("TEST_PG_URL") 后连库，随后 current_database() + waDisposableDBName() 判定；一次性库判据只认 bench/test/tmp/scratch/pg_ 子串 ⇒ 通用 DSN（库名 llm_gateway）**必被拒绝** ⇒ 事实源档下必假红。★ 官方 runner 档不红（runner 给的是自建门禁库 itgate_*，含 test 子串）。★ 正解有两条且**都改判据语义**（共享名不能只为这一条腿服务 / 继承来的 DSN 该走 Skip 而不是 Fatal）⇒ 属主/下轮拍板，本轮只登记不擅改。
+TEST_DATABASE_URL	sales/service_realdb_test.go	判词：该腿 os.Getenv("TEST_DATABASE_URL") 后连库，A4 fail-closed 守卫读 current_database() 判库名只认 test/scratch/realdb 子串 ⇒ 事实源统一下发的值（指向产品库 llm_gateway）必被守卫拒绝（fail-closed 是**好形态**：拒绝而非数据事故）⇒ 档下必假红。★ 2026-11-08 报价审计轮登记：正解＝runner 侧给专用名（同 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL 先例）或事实源不下发该腿，属主/下轮拍板，本轮只登记不擅改。
