@@ -253,6 +253,12 @@ bash tests/shared_lib_resolution_contract_test.sh
 #   ⇒ ★ 而这条枚举分支正是两道公开仓闸门（pre-push ＋ sync-to-github）用的那一条 ★
 bash tests/scan_secrets_enumeration_contract_test.sh
 
+# ★ 白名单正则可移植性门（★ 钉「★ 白名单 alternation 在各平台都能编译 ★」★）。
+#   这道门是因为 scan-secrets.sh:94 那条未转义花括号的白名单模式
+#   （★ glibc 判整条 alternation 编译失败 ⇒ ★ CI 侧白名单整体失效 ★）而立。
+#   ⇒ 详见 docs/12小时内修订审计-20261104-0329.md §8.20
+bash tests/scan_secrets_whitelist_regex_portability_test.sh
+
 # ★ 切流状态机门（慢门，实测 270s ⇒ 不进 CI 快门，只在官方门与 make guards 上跑）。
 #   经 scripts/run-bash4-gate.sh：找得到 bash ≥ 4 ⇒ 真跑；找不到 ⇒ 显式 SKIP
 #   （rc=0，**不伪装成通过**）。
