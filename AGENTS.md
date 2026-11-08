@@ -47,7 +47,7 @@
 > ★ 明确没做（登记在 `docs/mcp-gateway/02-capability-matrix.md` §3）：上游 stdio/SSE 归一化、
 >   REST→MCP 虚拟化、RFC 8707/7591/8414 规范族、出向 3LO/OBO、OTel trace、prompt-injection
 >   检测、适配器并发上限执行、工具结果缓存、OAuth 出向代理。
-> **2026-11-09 211 蓝绿部署轮（T-P1+W1 上线 + 专项验证，goal 会话，通用式见 `LESSONS.md` **§644**）**：
+> **2026-11-09 211 蓝绿部署轮（T-P1+W1 上线 + 专项验证，goal 会话，通用式见 `LESSONS.md` **§645**；原取 §644 与并行会话撞号，按后到者让号先例改 §645）**：
 > ★ 用户目标＝「拉取合并 → 部署 211（蓝绿、健康才切流、前后端都正常）→ 专项测试验证」。
 > ★ **部署闸门两缺陷修复（Windows 部署机）**：① 测试闸门卡 go1.27.1（本机 go 实体 1.27.1、
 > 平时 auto 在线用缓存 1.27.2/1.27.3，闸门硬编码 GOTOOLCHAIN=local；Docker 兜底在 Windows
