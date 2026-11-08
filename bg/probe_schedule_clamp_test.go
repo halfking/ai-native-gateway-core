@@ -31,8 +31,15 @@ func TestClampRecoverableProbeSchedulesSQLShape(t *testing.T) {
 	}
 	// ★★ 2026-11-05（P-11）：★ 这条 UPDATE 必须【有上界】。
 	//   ★ 形态：★ CTE 取一批（ctid）⇒ ★ UPDATE 只改那一批 ⇒ ★ 行锁足迹与时长可预测。
-	//   ★ ★★ 为什么判 ctid 而不是业务列：★ node_probe_state **没有唯一键**
-	//   ★   ⇒ 用 (credential_id, raw_model_name) 定位**可能放大**行数 ⇒ 上界失效。
+	//   ★ ★★ 为什么判 ctid 而不是业务列：★ ctid 是**单语句内的物理行标识**
+	//   ★   ⇒ ★ 即便该表将来被改成无唯一键形态，ctid 仍给出严格上界
+	//   ★   （业务列在无唯一键时会放大行数 ⇒ 上界失效）。
+	//   ★ ★★ 2026-11-08（第 51 增量审计 F-2）事实订正：★ 原注释断言
+	//   ★   「node_probe_state **没有唯一键**」——**该断言与事实相反**：
+	//   ★   node_probe_state_pkey = (credential_id, raw_model_name) 一直存在
+	//   ★   （建表迁移 341/402 即带 PRIMARY KEY；211 生产库实测确认）。
+	//   ★   ⇒ 实现的 ctid 方案本身安全（且对无唯一键形态更稳），本轮**只订正事实**、
+	//   ★   不改实现 —— 判据建立在假事实上会误导后续维护者。
 	if !strings.Contains(sql, "WITH victims AS") {
 		t.Fatal("clamp SQL must bound itself with a CTE batch")
 	}
@@ -40,7 +47,7 @@ func TestClampRecoverableProbeSchedulesSQLShape(t *testing.T) {
 		t.Fatal("clamp SQL must bound itself with LIMIT $2 (★ 一次夹无限行 ⇒ 锁足迹不可预测)")
 	}
 	if !strings.Contains(sql, "s.ctid = v.ctid") {
-		t.Fatal("clamp SQL must join the bounded batch by ctid (★ 该表无唯一键 ⇒ 业务列会放大行数)")
+		t.Fatal("clamp SQL must join the bounded batch by ctid (★ 单语句物理标识 ⇒ 无唯一键形态下仍严格上界)")
 	}
 	// ★ 2026-11-07（持续失败升级）：consecutive_failures ≥ 阈值的行被排除 ——
 	//   它们的远期排程是升级裁决（sustained_failure_recheck），clamp 不得把

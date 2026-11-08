@@ -471,26 +471,37 @@ func TestRecoverOrdering_AvailabilityBeforeQuota(t *testing.T) {
 	}
 }
 
-// TestRecoverExpiredBindingsIgnoresBackoffState verifies that expired cmb rows
-// are eligible for recovery regardless of their node_probe_state.next_retry_at,
-// preventing indefinite strandings after transient failures.
+// TestRecoverExpiredBindingsRespectsLadderGuard verifies that expired cmb rows
+// are still recovered when their node_probe_state ladder is NOT armed — while
+// pairs whose ladder is armed (paused, or next_retry_at in the future) are
+// skipped by the SQL guard.
 //
 // Background: 2026-07-24 incident where pulian glm-5.2 was stranded for 24h
 // because consecutive_failures=7 triggered the 24h backoff tier, and the
 // original expiredCmbRecoverySQL skipped ALL nodes with next_retry_at > now().
-// The fix removes the next_retry_at check entirely: if cmb.unavailable_recover_at
-// has elapsed, we force-retry immediately regardless of backoff state (unless
-// manually paused).
-func TestRecoverExpiredBindingsIgnoresBackoffState(t *testing.T) {
+//
+// ★★ 2026-11-07（W3）**有意反转**了该取舍：守卫从「完全无视梯子」改为
+//   「与兄弟分支 freshDegradedCmbSQL 同款守卫」——(nps.paused=TRUE OR
+//   nps.next_retry_at > now()) NOT EXISTS ⇒ 梯子已排期/已停放的对不再
+//   每 30s tick 重开一代队列任务（那是「探测浪费」的成因之一）。
+//   ★ 反转的两条前提当时已消除：梯子**已有界**（W1 持续失败升级 1h 档），
+//   且**已有事件回拉**（W5/W6：配额/可用性/stale/circuit 翻转 ⇒ 回拉失败行）。
+//   ★ 原 2026-07-24 的搁浅风险因此不再成立。
+//
+// ★★ 2026-11-08（F-5）：★ 本测试原先叫 "IgnoresBackoffState"、注释写
+//   「we now ignore next_retry_at entirely」——与 W3 的反转**直接矛盾**。
+//   ★ 该测试用 mock、不校验 SQL 形态 ⇒ 改名后仍绿 ⇒ 矛盾一直静默存在。
+//   ★ 本轮改名并订正注释（判据与实现的语义必须同源，否则误导后续维护者）。
+func TestRecoverExpiredBindingsRespectsLadderGuard(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
 
-	// Simulate a node stuck in 6h backoff (next_retry_at 5h from now)
-	// with cmb.available=FALSE and unavailable_recover_at already elapsed.
-	// The SQL should SELECT this row because we now ignore next_retry_at entirely.
+	// A pair whose ladder is not armed (no node_probe_state row ⇒ the
+	// NOT EXISTS guard passes) must still be recovered: the SQL should
+	// SELECT this row.
 	mock.ExpectQuery(`SELECT cmb\.credential_id, pm\.raw_model_name`).
 		WillReturnRows(
 			pgxmock.NewRows([]string{"credential_id", "raw_model_name"}).

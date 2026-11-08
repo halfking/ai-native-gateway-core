@@ -86,6 +86,27 @@
 >     `storage_mode_init_test.go` 的 **lite 存储模式需 CGO**（本机以 `CGO_ENABLED=0` 构建）
 >     ⇒ 与本轮改动无关的**既存**环境性失败；本轮相关用例用定向
 >     `go test ./cmd/gateway/ -run TestRegisterMCPGateway` 验证（主网关接线）通过。
+>
+> **2026-11-09 211 蓝绿部署轮（T-P1+W1 上线 + 专项验证，goal 会话，通用式见 `LESSONS.md` **§645**；原取 §644 与并行会话撞号，按后到者让号先例改 §645）**：
+> ★ 用户目标＝「拉取合并 → 部署 211（蓝绿、健康才切流、前后端都正常）→ 专项测试验证」。
+> ★ **部署闸门两缺陷修复（Windows 部署机）**：① 测试闸门卡 go1.27.1（本机 go 实体 1.27.1、
+> 平时 auto 在线用缓存 1.27.2/1.27.3，闸门硬编码 GOTOOLCHAIN=local；Docker 兜底在 Windows
+> 无 daemon）⇒ 不跳闸门，`DD_TEST_GO_BIN` 钉模块缓存工具链二进制（真 1.27.3，离线，闸门
+> 零改动）；② `--force` 撞 `invalid lock target: 211`＝§623 修复从未进本机父仓副本 ⇒
+> `ai-native-tools/deploy-lib/lock.sh` 白名单补 211（241 行 + 217 行命令名判据同步）。
+> ★ **蓝绿切换全绿**：测试闸门 PASS（sanitizerules 2 红＝基线既有，门自动判「没有新红」）→
+> 前端 web+web-mobile 双构建 → 同步 211 → 候选槽 a@8781 起 → **readyz OK(db+redis) 后才切**
+> → upstream 8783→8781 → 公网 llm.itestu.cn 200；版本戳 **2968-6e62d2e0**；whoami 401×3
+> 无 429；旧槽 b Exited(137) 保留可 docker start 回滚；本地 menu-config.json 构建副作用
+> （exported_at）已还原。
+> ★ **专项验证（本任务需求）全过**：① **T-P1 探测空转＝0**——scope-skip 队列任务从
+> 106/min（前 30min 1040 条）→ 切流后前 2 分钟 154 条（积压排水，同窗真实探测 418 次）
+> → **稳态 5min+ 归零**；~400 对冻结对醒来（cred 18 last_attempt 11-05→01:30，诚实
+> http_410）；cred 57 的 403(INSUFFICIENT_BALANCE) 行由真实任务接管调度（02:59 重试爬梯，
+> 不再是提交失败假死）。② **W1 生产行为实证**——切流后首笔有机 429 的 auto_rate_limit
+> 绑定冷却＝**精确 60s**（窗口下限，非旧 3min）；admin settings API 暴露
+> `routing.rate.window_refill_seconds`(默认 60) + `routing.rate.pace_violation_threshold`
+> (默认 3)，均 HotReload（铸 super_admin JWT 走 /api/admin/settings，453 specs 在册）。
 > **2026-11-08 211 探测空转根修 + token 桶 W1 节奏校准落地轮（goal 会话，通用式见 `LESSONS.md` **§643**）**：
 > ★ 用户目标＝「继续下一步（W1 实施轮）＋同步检查 211 探测为何状态不对」。
 > ★★★ **检查结论＝T-P1【P1】活缺陷**：F2 恢复复检豁免（periodic/credential_recovery 绕过

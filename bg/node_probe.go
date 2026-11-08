@@ -1699,11 +1699,18 @@ func clampRecoverableProbeSchedulesSQL() string {
 	// ★★ 2026-11-05（12h 审计轮 · P-11）：★ 这条 UPDATE 原来**没有上界** ⇒
 	//   ★ 它要改的行数取决于表有多大 ⇒ ★ 行锁足迹与执行时长都不可预测。
 	//   ★ ⇒ 改成【CTE + LIMIT】的一批（★ 先按 next_retry_at 取最「该被拉回」的那批）。
-	//   ★ ★★ 为什么用 ctid 而不是业务列：★ node_probe_state **没有唯一键**
-	//   ★   （★ 建表迁移 402 与各 ALTER 里都没有 PK/UNIQUE ⇒ 业务列不唯一）
-	//   ★   ⇒ 用 (credential_id, raw_model_name) 做 CTE 键**可能放大**行数 ⇒ 上界失效。
-	//   ★   ⇒ ctid 是同一语句内的物理行标识 ⇒ ★ 单语句内有效 ⇒ 上界严格。
+	//   ★ ★★ 为什么用 ctid 而不是业务列：★ node_probe_state **有**唯一键
+	//   ★   （node_probe_state_pkey = (credential_id, raw_model_name)；建表迁移
+	//   ★   341/402 即带 PRIMARY KEY，规范 schema 见 sql/schema/01-schema.sql，
+	//   ★   ★ 211 生产库 2026-11-08 实测确认存在）⇒ 用业务列定位**本可以**工作。
+	//   ★   ⇒ 但 ctid 仍有独立价值：**单语句内的物理行标识** ⇒ ★ 即便将来该表
+	//   ★   被改造成无唯一键形态，ctid 仍给出严格上界（业务列在无唯一键时会
+	//   ★   放大行数 ⇒ 上界失效）。
 	//   ★   （★ 若并发事务刚改过该行，ctid 变了 ⇒ 该行这一轮被跳过 ⇒ 无害。）
+	// ★★ 2026-11-08（第 51 增量审计 F-2）：★ 原注释断言「node_probe_state
+	//   **没有唯一键**」——**该断言与事实相反**（PK 一直存在；341/402 建表即带）。
+	//   ★ 实现的 ctid 方案本身安全（且在无唯一键形态下更稳），本轮**只订正事实**、
+	//   ★ 不改实现 —— 判据与注释若都建立在一条假事实上，会误导后续维护者。
 	return `
 		WITH victims AS (
 			SELECT ctid

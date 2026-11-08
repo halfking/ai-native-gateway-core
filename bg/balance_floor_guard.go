@@ -497,6 +497,67 @@ type BalanceFloorGuard struct {
 	lifecycleMu sync.Mutex
 	started     bool
 	workerDone  chan struct{}
+
+	// ★★ 2026-11-08（第 51 增量审计 F-1）：恢复通知钩子。
+	//
+	// ★ 本 guard 有**四处**把凭据从 balance_exhausted 翻回 ok
+	//   （releaseClearedFloorCredentials / releaseStaleProbeFloorCredentials /
+	//   restorePulledCurrency / persistPlanState 的 floorRestore 分支），
+	//   ★ 而**四处都不发任何恢复事件** ⇒ 该凭据被 W5 配额钉/长梯停在未来的
+	//   失败探针行**无人唤醒** ⇒ 恢复感知只剩 1h 梯子兜底。
+	//
+	// ★ 实测（211，2026-11-08）：29 个用尽凭据里 **23 个 quota_recover_at IS NULL**
+	//   （balance/permanent 族设计上即无重置点 ⇒ W5 臂 2 按设计不钉）⇒
+	//   近 24h 用尽凭据仍被探测 **297 次（凭据 35）/ 258 次（凭据 4）**，
+	//   ★ 正是 2026-11-07 方案档声称要消除的「用尽期盲探」。
+	//
+	// ★ 修法（与 dispatchRecoveryHooks / SetRearmFunc 同族）：翻 ok 后调用
+	//   onCredentialRecovered(credID, reason) ⇒ main.go 接到
+	//   nodeProbeWorker.RearmCredentialFailures ⇒ 泵 30s 内接管。
+	//   ★ 与 W6 分级一致：这是**真恢复**（状态机翻转），不是家务翻转。
+	//
+	// ★ nil-safe：未接线时静默跳过（与 SetRearmFunc 的 nil 判定同形态）。
+	onRecoveredMu sync.RWMutex
+	onRecovered   func(credID int64, reason string)
+}
+
+// SetOnCredentialRecovered wires the recovery notification fired when this
+// guard flips a credential back to a routable state (quota_state='ok').
+//
+// The callback runs asynchronously (bg.Go) so the 5-minute guard cycle is
+// never blocked by a rearm round-trip. It is nil-safe: a nil callback means
+// "no listener" and the flip still happens.
+//
+// Wiring (main.go): nodeProbeWorker.RearmCredentialFailures. Note the guard
+// is constructed BEFORE nodeProbeWorker in main.go, so the wiring must happen
+// after the worker exists — SetOnCredentialRecovered may be called late.
+func (g *BalanceFloorGuard) SetOnCredentialRecovered(fn func(credID int64, reason string)) {
+	g.onRecoveredMu.Lock()
+	g.onRecovered = fn
+	g.onRecoveredMu.Unlock()
+}
+
+// notifyRecovered fires the recovery notification for one credential.
+// Reason strings are stable identifiers for the flip site (used in logs and
+// in the rearm metric label).
+func (g *BalanceFloorGuard) notifyRecovered(credID int64, reason string) {
+	g.onRecoveredMu.RLock()
+	fn := g.onRecovered
+	g.onRecoveredMu.RUnlock()
+	if fn == nil || credID <= 0 {
+		return
+	}
+	Go("balance_floor_guard.notifyRecovered", func() {
+		fn(credID, reason)
+	})
+}
+
+// notifyRecoveredBatch fires the recovery notification for every id in the
+// batch produced by a multi-row UPDATE ... RETURNING id.
+func (g *BalanceFloorGuard) notifyRecoveredBatch(ids []int64, reason string) {
+	for _, id := range ids {
+		g.notifyRecovered(id, reason)
+	}
 }
 
 func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
@@ -712,7 +773,9 @@ func (g *BalanceFloorGuard) cycle(ctx context.Context) error {
 func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	tag, err := g.db.Exec(cctx, `
+	// ★★ 2026-11-08（F-1）：改用 RETURNING id —— 翻 ok 的凭据必须逐个发恢复
+	//   通知，否则其失败探针行停在未来（配额钉/长梯）无人唤醒。
+	rows, err := g.db.Query(cctx, `
 		UPDATE credentials
 		SET quota_state = 'ok',
 		    quota_recover_at = NULL,
@@ -741,13 +804,27 @@ func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) 
 		        AND p.enabled = TRUE
 		        AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  )
-	`)
+		RETURNING id`)
 	if err != nil {
 		return err
 	}
-	if n := tag.RowsAffected(); n > 0 {
+	defer rows.Close()
+	ids := make([]int64, 0, 8)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			slog.Warn("balance_floor_guard: released credential id scan failed", "error", err)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) > 0 {
 		slog.Info("balance_floor_guard: released floor-pulled credentials (floors cleared)",
-			"count", n)
+			"count", len(ids))
+		g.notifyRecoveredBatch(ids, "balance_floor_cleared")
 	}
 	return nil
 }
@@ -777,7 +854,9 @@ func (g *BalanceFloorGuard) releaseStaleProbeFloorCredentials(ctx context.Contex
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	tag, err := g.db.Exec(cctx, `
+	// ★★ 2026-11-08（F-1）：RETURNING id ⇒ 逐个发恢复通知（见
+	//   releaseClearedFloorCredentials 的同族说明）。
+	rows, err := g.db.Query(cctx, `
 		UPDATE credentials
 		SET quota_state = 'ok',
 		    quota_recover_at = NULL,
@@ -811,13 +890,27 @@ func (g *BalanceFloorGuard) releaseStaleProbeFloorCredentials(ctx context.Contex
 		        AND p.enabled = TRUE
 		        AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  )
-	`, g.escapeStale)
+		RETURNING id`, g.escapeStale)
 	if err != nil {
 		return err
 	}
-	if n := tag.RowsAffected(); n > 0 {
+	defer rows.Close()
+	ids := make([]int64, 0, 8)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			slog.Warn("balance_floor_guard: escape-released credential id scan failed", "error", err)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) > 0 {
 		slog.Info("balance_floor_guard: escape hatch released floor-pulled credentials (plan probe stale)",
-			"count", n, "stale_after", g.escapeStale.String())
+			"count", len(ids), "stale_after", g.escapeStale.String())
+		g.notifyRecoveredBatch(ids, "balance_floor_escape")
 	}
 	return nil
 }
@@ -1068,6 +1161,9 @@ func (g *BalanceFloorGuard) restorePulledCurrency(ctx context.Context, id int64,
 	if tag.RowsAffected() > 0 {
 		slog.Info("balance_floor_guard: credential restored above currency floor",
 			"credential_id", id)
+		// ★★ 2026-11-08（F-1）：翻 ok ⇒ 发恢复通知 ⇒ 回拉该凭据停在未来的
+		//   失败探针行（否则余额恢复了但探针行还停在长梯上，恢复感知延迟）。
+		g.notifyRecovered(id, "balance_floor_currency_restored")
 	}
 }
 
@@ -1322,6 +1418,9 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 			}
 			slog.Info("balance_floor_guard: credential restored above plan floor",
 				"credential_id", c.ID, "detail", detail)
+			// ★★ 2026-11-08（F-1）：翻 ok ⇒ 发恢复通知（见
+			//   restorePulledCurrency 的同族说明）。
+			g.notifyRecovered(c.ID, "balance_floor_plan_restored")
 		}
 	}
 }
