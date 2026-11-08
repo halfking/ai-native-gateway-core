@@ -48,8 +48,18 @@ func readQUsageScript(t *testing.T) string {
 // runQUsageScript 在指定目录下跑一次脚本，返回 combined output 与退出码。
 func runQUsageScript(t *testing.T, dir, scriptPath string, args ...string) (string, int) {
 	t.Helper()
+	return runQUsageScriptWithPath(t, dir, scriptPath, "", args...)
+}
+
+// runQUsageScriptWithPath 在指定目录、指定 PATH 前缀下跑一次脚本。
+// ★ PATH 前缀用于**注入坏掉的同名工具**（下面两条 2026-11-08 新增门要用）。
+func runQUsageScriptWithPath(t *testing.T, dir, scriptPath, pathPrefix string, args ...string) (string, int) {
+	t.Helper()
 	cmd := exec.Command("bash", append([]string{scriptPath}, args...)...)
 	cmd.Dir = dir
+	if pathPrefix != "" {
+		cmd.Env = append(os.Environ(), "PATH="+pathPrefix+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if err != nil {
@@ -60,6 +70,15 @@ func runQUsageScript(t *testing.T, dir, scriptPath string, args ...string) (stri
 		}
 	}
 	return string(out), code
+}
+
+// writeStubTool 在 dir 下写一个「永远失败」的可执行桩，模拟同名工具的坏掉形态。
+func writeStubTool(t *testing.T, dir, name, body string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("写桩 %s 失败: %v", path, err)
+	}
 }
 
 // TestQUsageScriptSelfTestPasses —— 脚本自带的离线自检必须通过。
@@ -154,7 +173,7 @@ func TestQUsageScriptCoversThreeLogFamilies(t *testing.T) {
 	src := readQUsageScript(t)
 	for _, want := range []string{
 		"delaycompress", // 未压缩轮转文件这一族
-		"zcat -f",       // awk 读不了 .gz，必须先解压
+		"gzip -cd",      // awk 读不了 .gz，必须先解压（★ 2026-11-08：由 `zcat -f` 改为 POSIX 的 gzip -cd）
 		"?q=",           // token 精确的匹配口径
 		"&q=",
 		"轮转", // 轮转未命中时必须告警
@@ -163,10 +182,91 @@ func TestQUsageScriptCoversThreeLogFamilies(t *testing.T) {
 			t.Errorf("%s 里找不到 %q —— 脚本要么退化，要么注释没跟上", qUsageScript, want)
 		}
 	}
+	// ★★ 2026-11-08（12h 审计 F-1）：**不许再用 `zcat -f --` 这个 GNU 专有调用**。
+	//   `zcat -f`（force：非 gzip 直通）是 GNU gzip 扩展；busybox/Alpine 的 zcat
+	//   没有这个语义 ⇒ 三族混读时**整体失败**（rc=1、stdout 空）⇒ 计数器恒为 0，
+	//   而「计数器恒为 0」正是脚本自己声明的**最危险失效模式**。
+	//   ⇒ 注释里可以提这段历史（"曾用 zcat -f"），但**不许**再作为调用出现。
+	if strings.Contains(src, "zcat -f --") {
+		t.Errorf("%s 仍在调用 `zcat -f --`：那是 GNU gzip 专有扩展，"+
+			"busybox/Alpine 上混读三族会整体失败 ⇒ 计数器恒为 0（脚本自己声明的最危险失效模式）", qUsageScript)
+	}
 	// 裸 `q=` 匹配是本仓踩过的坑（会匹配 seq=/req=/limit=），不许出现。
 	if strings.Contains(src, `index($0, "q=")`) {
 		t.Errorf("%s 出现了裸 `q=` 匹配：裸 q= 会把 seq=/req=/limit=/mode= 全匹配进来",
 			qUsageScript)
+	}
+}
+
+// TestQUsageScriptDoesNotDependOnGNUSpecificZcat —— ★ 2026-11-08（12h 审计 F-1）新增行为门。
+//
+// ★ 判据：**PATH 里放一个「永远失败」的 `zcat` 桩，自检必须照样通过**。
+//
+//	⇒ 证明脚本已经**不再依赖 `zcat`**（更不依赖它的 GNU 专有 `-f` 语义）。
+//	变异验证：把 `read_logs` 改回 `zcat -f --` ⇒ 桩生效 ⇒ 自检红 ⇒ 本门变红。
+func TestQUsageScriptDoesNotDependOnGNUSpecificZcat(t *testing.T) {
+	binDir := t.TempDir()
+	// 模拟 busybox zcat 遇到非 gzip 输入时的形态：整体失败、stdout 空、rc=1。
+	writeStubTool(t, binDir, "zcat", "echo 'zcat: no gzip/bzip2/xz magic' >&2\nexit 1\n")
+
+	out, code := runQUsageScriptWithPath(t, ".", qUsageScript, binDir, "--self-test")
+	if code != 0 {
+		t.Fatalf("★ PATH 里有坏 zcat 时自检失败 ⇒ 脚本仍然依赖 `zcat`（及其 GNU 专有 `-f` 语义）⇒ "+
+			"在 busybox/Alpine 上会「计数器恒为 0」。输出：\n%s", out)
+	}
+	if !strings.Contains(out, "self-test: ALL PASS") {
+		t.Errorf("坏 zcat 桩下自检输出缺少收尾标记，输出：\n%s", out)
+	}
+}
+
+// TestQUsageScriptFailsClosedWhenLogReadFails —— ★ 2026-11-08（12h 审计 F-1）新增行为门。
+//
+// ★ 判据：**日志读不出来 ⇒ 必须拒绝打印判定**。
+//
+//	旧实现：读失败只打一条 WARN，然后照样打印
+//	「verdict: 窗口内 0 次带 q= ⇒ 未触发「保留 877」的触发条件」
+//	⇒ 一次**读失败**被渲染成一条**看起来很确定的负面基础设施结论**
+//	⇒ 877 决策会被一次环境差异静默翻转。
+//	⇒ 新口径：**读失败 ≠ 「0 次」**，读失败时退出码非 0 且**不出现 verdict**。
+func TestQUsageScriptFailsClosedWhenLogReadFails(t *testing.T) {
+	work := t.TempDir()
+	logDir := filepath.Join(work, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("建日志目录失败: %v", err)
+	}
+	// 一个普通（未压缩）日志文件 + 一个 .gz 文件 ⇒ 触发 read_logs 的两条分派路径。
+	if err := os.WriteFile(filepath.Join(logDir, "access.log"),
+		[]byte("1.1.1.1 - - [19/Oct/2026:10:00:00 +0800] \"GET /api/logs?q=hello HTTP/1.1\" 200 1 \"-\" \"ua\"\n"), 0o644); err != nil {
+		t.Fatalf("写日志失败: %v", err)
+	}
+	gzBody := "1.1.1.1 - - [19/Oct/2026:10:00:01 +0800] \"GET /api/logs?q=rotated HTTP/1.1\" 200 1 \"-\" \"ua\"\n"
+	if err := os.WriteFile(filepath.Join(work, "gzsrc"), []byte(gzBody), 0o644); err != nil {
+		t.Fatalf("写 gz 源失败: %v", err)
+	}
+	// 用系统 gzip 生成真正的 .gz（必须在注入坏 gzip 之前完成）。
+	gzCmd := exec.Command("gzip", "-c", filepath.Join(work, "gzsrc"))
+	gzOut, err := gzCmd.Output()
+	if err != nil {
+		t.Skipf("本机没有可用的 gzip，跳过本门: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "access.log-20261018.gz"), gzOut, 0o644); err != nil {
+		t.Fatalf("写 .gz 失败: %v", err)
+	}
+
+	binDir := t.TempDir()
+	// 让 gzip -cd 失败（模拟 .gz 损坏 / gzip 不可用）⇒ read_logs 返回非 0。
+	writeStubTool(t, binDir, "gzip", "echo 'gzip: broken stub' >&2\nexit 1\n")
+
+	out, code := runQUsageScriptWithPath(t, ".", qUsageScript, binDir, "--log-dir", logDir)
+	if code == 0 {
+		t.Fatalf("★ 日志读取失败时脚本仍然退出 0 ⇒ 「读不出来」被当成「0 次」。输出：\n%s", out)
+	}
+	if strings.Contains(out, "verdict:") {
+		t.Errorf("★ 日志读取失败时仍然打印了 verdict ⇒ 一次读失败被渲染成了确定的负面结论"+
+			"（877 决策会被静默翻转）。输出：\n%s", out)
+	}
+	if !strings.Contains(out, "ERROR") {
+		t.Errorf("读取失败时没有明确的 ERROR 说明，输出：\n%s", out)
 	}
 }
 
