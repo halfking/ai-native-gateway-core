@@ -71,10 +71,68 @@ var capabilityToTools = map[string][]string{
 	},
 }
 
+// capabilityOrder 是能力域的**稳定顺序**。
+//
+// ★ 为什么必须显式保序：既有 tools/mcp-gateway 的非法能力域报错文案是
+// `Unknown capability: X. Valid: ${Array.from(VALID_CAPABILITIES).join(', ')}`
+// 而 VALID_CAPABILITIES = new Set(Object.keys(CAPABILITY_TOOLS))
+// ⇒ 文案顺序 = CAPABILITY_TOOLS 的**键插入顺序**。Go 的 map 迭代顺序随机，
+// 照抄 map 会让同一错误的文案每次都变 ⇒ 这里显式列出与既有实现同序的清单。
+var capabilityOrder = []string{
+	"code", "memory", "agent", "wiki", "apikey", "federation", "reasoning",
+}
+
 // ValidCapability 报告是否为已知能力域。
 func ValidCapability(cap string) bool {
 	_, ok := capabilityToTools[cap]
 	return ok
+}
+
+// ValidCapabilities 返回全部合法能力域（按稳定顺序，拷贝）。
+func ValidCapabilities() []string {
+	out := make([]string, len(capabilityOrder))
+	copy(out, capabilityOrder)
+	return out
+}
+
+// FilterToolsByCapability 按能力域过滤工具清单。
+//
+// ★ 移植自既有 tools/mcp-gateway/src/gateway.js 的 `getCapabilityFromToolsList`
+// （既有实现里该函数**只被导出、请求路径并未调用**：既有 `?capability=` 只做
+// 校验 + 计数 + 注入请求头，**不**据此过滤 tools/list 响应）。
+// ⇒ 本实现保持请求路径与既有**逐字一致**（不过滤），只提供同能力 API，
+// 供调用方按能力域取子集；不把「既有导出」误写成「既有已生效」。
+//
+// 匹配口径：既有的 `CAPABILITY_TOOLS` 里是**上游原始工具名**，而本网关对外
+// 暴露的是命名空间化名 `<adapter>__<tool>` ⇒ 两者都匹配（原始名取自
+// `_meta.raw_name`）。
+func FilterToolsByCapability(views []ToolView, cap string) []ToolView {
+	allowed := CapabilityTools(cap)
+	if len(allowed) == 0 {
+		// 未知能力域 ⇒ 与既有实现一致，原样返回（不静默清空）。
+		return views
+	}
+	set := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		set[name] = true
+	}
+	out := make([]ToolView, 0, len(views))
+	for _, v := range views {
+		if set[v.Name] || set[ToolRawName(v)] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// ToolRawName 取工具视图的上游原始名（`_meta.raw_name`），取不到时回退到视图名。
+func ToolRawName(v ToolView) string {
+	if v.Meta != nil {
+		if raw, ok := v.Meta["raw_name"].(string); ok && raw != "" {
+			return raw
+		}
+	}
+	return v.Name
 }
 
 // CapabilityTools 返回能力域对应的工具名列表（拷贝）。

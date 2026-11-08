@@ -87,3 +87,4 @@ VAPEUR_API_KEY	component	外部服务 key（provider 线上探测）
 WA877_ALLOW_ANY_DSN	dangerous	允许任意 DSN（迁移 877 门）；打开即取消「只连门禁库」的约束
 XIAOMI_API_KEY	component	外部服务 API key（发现逻辑）
 XIAOMI_BASE_URL	component	外部服务 base URL（发现逻辑）
+LLM_GATEWAY_REALDB_ALLOW_ANY_DSN	dangerous	授权开关：=1 才允许 sales realdb 腿连任意 DSN（一次性容器）；缺省时库名守卫 fail-closed 只认 test/scratch/realdb（2026-11-08 报价审计轮 W1 腿登记）

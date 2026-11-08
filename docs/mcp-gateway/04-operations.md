@@ -18,6 +18,7 @@
 | `MCP_GATEWAY_WRITE_RATE_LIMIT` | `30` | 写类工具每分钟上限 |
 | `MCP_GATEWAY_LLM_RATE_LIMIT` | `10` | LLM 类工具每分钟上限 |
 | `MCP_GATEWAY_TOOL_TIMEOUT_MS` | `30000` | 上游调用默认超时（适配器可覆盖） |
+| `MCP_GATEWAY_MAX_BODY_BYTES` | `1048576` | 请求体上限（字节）。超限 ⇒ HTTP **413** + JSON-RPC **-32004**（沿用既有 mcp-gateway 契约；此前是静默截断 ⇒ 表现为 JSON 解析失败，把真因掩盖了） |
 | `MCP_GATEWAY_AUTO_REGISTER` | `true` | tools/list 时自动登记发现的工具 |
 | `MCP_GATEWAY_MASK_PII` | `true` | 出参 PII 掩码（凭据掩码始终开启） |
 | `MCP_GATEWAY_LEDGER_URL` | 空 | 外部账本地址（如 ACC）。设置后凭证校验走远端（fail-open） |
@@ -96,3 +97,24 @@ export MCP_GATEWAY_ADMIN_TOKEN="***"
 | 工具 403 | 逐条查：scope → 可见性 → 允许表 → backend 绑定 → 审批凭据（审计 `reason` 会指明是哪一道） |
 | 上游 502/503 | 看 `/mcp/control/health` 的适配器状态与熔断态；熔断打开时返回 503 |
 | 429 | 令牌桶按 key×类别限流；调 `MCP_GATEWAY_*_RATE_LIMIT` 或等窗口重置 |
+
+## 5. 指标与告警口径（既有规则按旧名平移）
+
+`/metrics` 同时暴露**两套**族名 ⇒ 既有告警规则**不用改**：
+
+| 族 | 说明 |
+|---|---|
+| `mcp_gateway_*` | 网关原生族（含 7 个与既有同名的：请求数、限流数、上游错误数、健康检查失败数、运行时长、上游健康、按能力域请求数） |
+| `tool_allow_*` | **既有旧名**：判定次数 / 拒绝 / ★**空允许表（执法跳过）** / 查询失败（fail-open）/ 不在账本 / 远端路由缺失 / 404 形状不认得 |
+| `bindings_*` | **既有旧名**：检查 / 拒绝 / 凭证失效 / 查询失败 / 不在账本 |
+| `keys_*` | **既有旧名**：apply / 幂等重放 / 限流 / claim / status |
+
+★ 运维判断「收口到底生不生效」看这两个数：
+
+| 指标 | 读数含义 |
+|---|---|
+| `tool_allow_not_enforced_total` 持续增长 | 很多 key **没有非空允许表** ⇒ 允许表闸根本没在收口（既有同名指标，语义一致） |
+| `tool_allow_lookup_errors_total` 持续增长 | 允许表**查询失败** ⇒ 走的是 fail-open 放行 ⇒ 看着没报错，实际没收口 |
+
+★ 逐族登记（含 3 项「不适用」的理由）见 `03-legacy-merge-map.md` §6.6；
+  守护用例见 `mcp/legacy_contract_test.go` 与 harness 的 S24。

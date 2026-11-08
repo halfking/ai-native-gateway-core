@@ -3,11 +3,16 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
+	"net"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -179,18 +184,44 @@ func (g *Gateway) HandleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestsTotal.Inc()
+	// ── 请求级能力域（?capability=X）──
+	//
+	// 契约与既有 tools/mcp-gateway 的 gateway.js 逐字对齐：
+	//   · 合法 ⇒ 计入 requests_by_capability，并把 X-MCP-Capability /
+	//     X-MCP-Capability-Tools 注入上游（**覆盖**适配器默认能力域）；
+	//   · 非法 ⇒ HTTP 400 + JSON-RPC -32602 + "Unknown capability: X. Valid: ..."。
+	//
+	// ★ 校验必须在计数**之前**：非法能力域不该污染 requests_by_capability
+	//   （既有实现也是先判合法再计数）。
 	capability := r.URL.Query().Get("capability")
 	if capability != "" {
+		if !ValidCapability(capability) {
+			writeRPCError(w, http.StatusBadRequest, nil, Errorf(CodeInvalidParams,
+				"Unknown capability: %s. Valid: %s", capability, strings.Join(ValidCapabilities(), ", ")))
+			return
+		}
 		requestsByCapability.WithLabelValues(capability).Inc()
 	}
+	ctx := withCapability(r.Context(), capability)
 	method := r.Header.Get("Mcp-Method")
 	if method != "" {
 		requestsByMethod.WithLabelValues(method).Inc()
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, g.cfg.MaxBodyBytes))
+	// 请求体上限：**显式拒绝**（413 + -32004，与既有 gateway.js:295 逐字一致）。
+	//
+	// ★ 此前用 LimitReader 静默截断 ⇒ 超限表现为「JSON 解析失败(-32700)」，
+	//   把真因（体太大）掩盖成了客户端格式错误 ⇒ 既有客户端按 -32004 分支
+	//   处理体超限，永远命中不到。
+	body, err := io.ReadAll(io.LimitReader(r.Body, g.cfg.MaxBodyBytes+1))
 	if err != nil {
 		writeRPCError(w, http.StatusBadRequest, nil, Errorf(CodeParseError, "read body: %s", err.Error()))
+		return
+	}
+	if int64(len(body)) > g.cfg.MaxBodyBytes {
+		writeRPCError(w, http.StatusRequestEntityTooLarge, nil, Errorf(CodePayloadTooLarge,
+			"Request body exceeds the inspection limit (%d bytes)", g.cfg.MaxBodyBytes).
+			WithData(map[string]any{"limit_bytes": g.cfg.MaxBodyBytes}))
 		return
 	}
 
@@ -207,7 +238,7 @@ func (g *Gateway) HandleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := g.authenticate(r.Context(), r)
+	id, err := g.authenticate(ctx, r)
 	if err != nil {
 		g.audit.Record(AuditEvent{
 			Kind:    AuditKindAuthz,
@@ -215,12 +246,20 @@ func (g *Gateway) HandleMCP(w http.ResponseWriter, r *http.Request) {
 			Method:  req.Method,
 			Reason:  "unauthorized",
 		})
+		// ★ 凭证「失效/吊销」⇒ 401 + **-32001**（既有 bindings.js 逐字一致）；
+		//   凭证「不存在/未知」⇒ 401 + -32600（既有对此不产生 JSON-RPC 错误，
+		//   交由上游 401 ⇒ 本实现沿用标准段，不去占用既有自定义码）。
+		if errors.Is(err, ErrCredentialInactive) {
+			writeRPCError(w, http.StatusUnauthorized, req.ID,
+				Errorf(CodeBindingDenied, "API key is inactive or revoked"))
+			return
+		}
 		writeRPCError(w, http.StatusUnauthorized, req.ID, Errorf(CodeInvalidRequest, "unauthorized"))
 		return
 	}
-	g.touchKey(r.Context(), id)
+	g.touchKey(ctx, id)
 
-	result, rpcErr, status := g.dispatch(r.Context(), id, r, req)
+	result, rpcErr, status := g.dispatch(ctx, id, r, req)
 	if rpcErr != nil {
 		g.audit.Record(AuditEvent{
 			Kind:     AuditKindCall,
@@ -234,7 +273,7 @@ func (g *Gateway) HandleMCP(w http.ResponseWriter, r *http.Request) {
 			Reason:   rpcErr.Message,
 			Status:   status,
 		})
-		writeRPCError(w, status, req.ID, rpcErr)
+		writeRPCErrorWithHeaders(w, status, req.ID, rpcErr, errorHeaders(rpcErr))
 		return
 	}
 	writeRPCResult(w, http.StatusOK, req.ID, result)
@@ -418,27 +457,45 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 			g.auditToolDenied(id, meta.Name, "visibility")
 			return nil, Errorf(CodeToolNotAllowed, "tool is not visible to this principal"), http.StatusForbidden
 		}
+		// ★ 遗留旧名计数器：既有 tool-allow.js 每次判定都记 checks_total，
+		//   拒绝记 denied_total，**空允许表（执法跳过）记 not_enforced_total**
+		//   ⇒ 运维靠第三个数就能判断「收口根本没生效」。
+		toolAllowChecksTotal.Inc()
+		if k := g.keyOf(id); k != nil && len(k.AllowedTools) == 0 && len(k.DeniedTools) == 0 {
+			toolAllowNotEnforcedTotal.Inc()
+		}
 		if !keyAllowsTool(g.keyOf(id), meta.Name) {
 			authzDeniedTotal.WithLabelValues("tool_allow").Inc()
-			toolAllowChecksTotal.WithLabelValues("denied").Inc()
+			toolAllowResultTotal.WithLabelValues("denied").Inc()
+			toolAllowDeniedTotal.Inc() // 遗留旧名计数器
 			g.auditToolDenied(id, meta.Name, "tool_allow")
 			return nil, Errorf(CodeToolNotAllowed, "tool is not in the allowed list"), http.StatusForbidden
 		}
 	}
-	if !bindingEnabled(g.keyOf(id), adapter.Name) {
-		bindingsChecksTotal.WithLabelValues("denied").Inc()
-		g.auditToolDenied(id, params.Name, "binding_disabled")
-		return nil, Errorf(CodeToolNotAllowed, "backend %q is disabled for this credential", adapter.Name), http.StatusForbidden
+	bindingsChecksTotal.Inc() // 遗留旧名计数器（既有 bindings.js 同名）
+	if !keyAllowsAdapter(g.keyOf(id), adapter.Name) {
+		authzDeniedTotal.WithLabelValues("adapter_allow").Inc()
+		g.auditToolDenied(id, toolNameOf(tool, params.Name), "adapter_allow")
+		return nil, Errorf(CodeToolNotAllowed, "backend %q is not in the allowed list for this credential", adapter.Name), http.StatusForbidden
 	}
-	bindingsChecksTotal.WithLabelValues("allowed").Inc()
-	toolAllowChecksTotal.WithLabelValues("allowed").Inc()
+	if !bindingEnabled(g.keyOf(id), adapter.Name) {
+		bindingsResultTotal.WithLabelValues("denied").Inc()
+		bindingsDeniedTotal.Inc() // 遗留旧名计数器
+		g.auditToolDenied(id, toolNameOf(tool, params.Name), "binding_disabled")
+		return nil, Errorf(CodeBindingDenied, "backend %q is disabled for this credential", adapter.Name), http.StatusForbidden
+	}
+	bindingsResultTotal.WithLabelValues("allowed").Inc()
+	toolAllowResultTotal.WithLabelValues("allowed").Inc()
 
 	// ── 敏感度审批 ──
 	if tool != nil && (tool.RequireApproval || tool.Sensitivity == SensitivityHigh) {
 		if err := g.checkApproval(r, id, tool); err != nil {
 			approvalsRequiredTotal.Inc()
 			g.auditToolDenied(id, params.Name, "approval_required")
-			return nil, RPCErrorOf(err), http.StatusForbidden
+			// ★ 审批缺失有专属码（-32007，新增、既有未使用）⇒ 不再借用
+			//   -32003（既有语义是 tool-allow 拒绝）：审批闸与允许表闸是
+			//   两件事，客户端要能分开分支。
+			return nil, Errorf(CodeApprovalRequired, "%s", err.Error()), http.StatusForbidden
 		}
 	}
 
@@ -455,6 +512,7 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 	limit := g.rateLimitFor(tool)
 	if ok, wait := g.limiter.Allow("key:"+id.KeyID+":class:"+string(classOf(tool)), limit); !ok {
 		rateLimitedTotal.Inc()
+		retryMS := retryAfterMillis(wait)
 		g.audit.Record(AuditEvent{
 			Kind:     AuditKindRate,
 			Outcome:  OutcomeDenied,
@@ -466,14 +524,20 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 			Tool:     params.Name,
 			Adapter:  adapter.Name,
 			Reason:   "rate_limited",
-			Detail:   map[string]any{"limit_per_min": limit, "retry_after_sec": int(wait.Seconds())},
+			Detail:   map[string]any{"limit_per_min": limit, "retry_after_sec": int(math.Ceil(wait.Seconds()))},
 		})
-		return nil, Errorf(CodeRateLimited, "rate limit exceeded"), http.StatusTooManyRequests
+		return nil, Errorf(CodeRateLimited, "Rate limit exceeded").
+			WithData(map[string]any{"retry_after_ms": retryMS, "limit": limit}), http.StatusTooManyRequests
 	}
 	if adapter.RateLimitPerMin > 0 {
-		if ok, _ := g.limiter.Allow("adapter:"+adapter.Name, adapter.RateLimitPerMin); !ok {
+		if ok, wait := g.limiter.Allow("adapter:"+adapter.Name, adapter.RateLimitPerMin); !ok {
 			rateLimitedTotal.Inc()
-			return nil, Errorf(CodeRateLimited, "adapter %q rate limit exceeded", adapter.Name), http.StatusTooManyRequests
+			return nil, Errorf(CodeRateLimited, "Rate limit exceeded").
+				WithData(map[string]any{
+					"retry_after_ms": retryAfterMillis(wait),
+					"limit":          adapter.RateLimitPerMin,
+					"adapter":        adapter.Name,
+				}), http.StatusTooManyRequests
 		}
 	}
 
@@ -510,7 +574,7 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 		Method:          "tools/call",
 		Params:          upParams,
 		ToolName:        rawName,
-		Capability:      adapter.Capability,
+		Capability:      effectiveCapability(ctx, adapter.Capability),
 		ProtocolVersion: ProtocolVersion,
 		Timeout:         time.Duration(timeout) * time.Millisecond,
 		Retries:         g.retriesFor(tool),
@@ -531,6 +595,12 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 			Reason:   "upstream_error",
 			Detail:   map[string]any{"error": err.Error()},
 		})
+		// ★ 超时**不单列错误码**：既有的上游错误（含超时）统一是 -32000 ⇒
+		//   拆码会打断既有客户端的 -32000 分支。超时用 data.timeout 区分。
+		if isTimeout(err) {
+			return nil, Errorf(CodeUpstreamError, "upstream call timed out: %s", err.Error()).
+				WithData(map[string]any{"timeout": true}), http.StatusBadGateway
+		}
 		var rpcErr *RPCError
 		if uerr, ok := err.(*UpstreamHTTPError); ok && uerr.Fatal {
 			rpcErr = Errorf(CodeUpstreamError, "upstream error: %s", uerr.Error())
@@ -621,7 +691,7 @@ func (g *Gateway) adapterTools(ctx context.Context, a Adapter) []ToolView {
 	res, err := g.upstream.Call(ctx, CallContext{
 		Adapter:         a,
 		Method:          "tools/list",
-		Capability:      a.Capability,
+		Capability:      effectiveCapability(ctx, a.Capability),
 		ProtocolVersion: ProtocolVersion,
 		Timeout:         g.cfg.ToolTimeout,
 	})
@@ -725,7 +795,7 @@ func (g *Gateway) handleForward(ctx context.Context, id *Identity, req jsonrpcRe
 			Adapter:         a,
 			Method:          req.Method,
 			Params:          req.Params,
-			Capability:      a.Capability,
+			Capability:      effectiveCapability(ctx, a.Capability),
 			ProtocolVersion: ProtocolVersion,
 			Timeout:         g.cfg.ToolTimeout,
 		})
@@ -816,6 +886,33 @@ func (g *Gateway) checkApproval(r *http.Request, id *Identity, tool *Tool) error
 	return nil
 }
 
+// isTimeout 判断上游错误是否为超时（context 截止 / 网络超时）。
+//
+// ★ 只用于**区分**（写进 data.timeout 与审计），**不改错误码** —— 既有的
+//
+//	上游错误（含超时）统一是 -32000。
+func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+// toolNameOf 取工具名（工具未登记时退回调用方给的名字）。
+func toolNameOf(tool *Tool, fallback string) string {
+	if tool != nil && tool.Name != "" {
+		return tool.Name
+	}
+	return fallback
+}
+
 // auditToolDenied 记录一次授权拒绝。
 func (g *Gateway) auditToolDenied(id *Identity, tool, reason string) {
 	g.audit.Record(AuditEvent{
@@ -829,6 +926,40 @@ func (g *Gateway) auditToolDenied(id *Identity, tool, reason string) {
 		Tool:     tool,
 		Reason:   reason,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// 请求级能力域
+// ---------------------------------------------------------------------------
+
+// ctxKeyCapability 是请求级能力域在 context 里的键。
+type ctxKeyCapability struct{}
+
+// withCapability 把**已通过合法性校验**的请求级能力域写进上下文。
+func withCapability(ctx context.Context, cap string) context.Context {
+	if cap == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyCapability{}, cap)
+}
+
+// capabilityFromContext 取请求级能力域（空 = 本次请求未指定）。
+func capabilityFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyCapability{}).(string)
+	return v
+}
+
+// effectiveCapability 返回本次上游调用生效的能力域：
+// **请求级 ?capability= 覆盖优先于适配器默认能力域**。
+//
+// 与既有 tools/mcp-gateway 的语义一致：既有实现把 x-mcp-capability 直接写在
+// 入站请求头上再往下游透传 ⇒ 谁在最后改写头谁说了算；这里等价地让请求级
+// 覆盖适配器默认。
+func effectiveCapability(ctx context.Context, adapterCap string) string {
+	if req := capabilityFromContext(ctx); req != "" {
+		return req
+	}
+	return adapterCap
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +977,14 @@ func writeRPCResult(w http.ResponseWriter, status int, id json.RawMessage, resul
 }
 
 func writeRPCError(w http.ResponseWriter, status int, id json.RawMessage, rpcErr *RPCError) {
+	writeRPCErrorWithHeaders(w, status, id, rpcErr, nil)
+}
+
+// writeRPCErrorWithHeaders 写 JSON-RPC 错误响应，并附带附加 HTTP 头。
+func writeRPCErrorWithHeaders(w http.ResponseWriter, status int, id json.RawMessage, rpcErr *RPCError, headers map[string]string) {
+	for k, v := range headers {
+		w.Header().Set(k, v)
+	}
 	payload := map[string]any{"jsonrpc": "2.0", "error": rpcErr}
 	if len(id) > 0 {
 		payload["id"] = id
@@ -853,4 +992,42 @@ func writeRPCError(w http.ResponseWriter, status int, id json.RawMessage, rpcErr
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// errorHeaders 由错误体推导需要附带的 HTTP 头。
+//
+// ★ 目前只有限流需要：既有 tools/mcp-gateway 的 429 契约是
+// 「HTTP 头 Retry-After（秒）+ JSON-RPC 错误码 -32002 + data.retry_after_ms
+// （毫秒）」三者同源。既有客户端按头决定退避、按 data 做精细提示，
+// 缺任何一个都会被判成异常响应 ⇒ 这里统一由错误体推导，不允许只给一半。
+func errorHeaders(rpcErr *RPCError) map[string]string {
+	if sec, ok := retryAfterSeconds(rpcErr); ok {
+		return map[string]string{"Retry-After": sec}
+	}
+	return nil
+}
+
+// retryAfterMillis 把等待时长转成毫秒（至少 1ms），用于 retry_after_ms。
+func retryAfterMillis(wait time.Duration) int {
+	ms := int(wait.Milliseconds())
+	if ms < 1 {
+		ms = 1
+	}
+	return ms
+}
+
+// retryAfterSeconds 从限流错误体推出 Retry-After 的秒数（向上取整，最小 1）。
+func retryAfterSeconds(rpcErr *RPCError) (string, bool) {
+	if rpcErr == nil || rpcErr.Code != CodeRateLimited || rpcErr.Data == nil {
+		return "", false
+	}
+	ms, ok := rpcErr.Data["retry_after_ms"].(int)
+	if !ok || ms <= 0 {
+		return "", false
+	}
+	sec := int(math.Ceil(float64(ms) / 1000))
+	if sec < 1 {
+		sec = 1
+	}
+	return strconv.Itoa(sec), true
 }

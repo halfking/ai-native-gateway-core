@@ -45,5 +45,5 @@ open http://127.0.0.1:8089/mcp/admin?token=demo-token
 
 ```bash
 go test ./mcp/...                      # L1 治理链单测/集成测
-bash tests/mcp-gateway-maestro/run.sh # L1 + L2 API 场景(S01~S19) + L3 Maestro 看板 flow
+bash tests/mcp-gateway-maestro/run.sh # L1 + L2 API 场景(S01~S24) + L3 Maestro 看板 flow
 ```

@@ -21,8 +21,13 @@
 # ⚠ 三个坑（2026-10-20 在 154 实测踩过，**每一个都会让结果静默少报**）：
 #   1) 轮转文件命名是 `<name>.log-<YYYYMMDD>.gz`（中间有日期），
 #      glob 必须写 `*access*.log*.gz`；写成 `*access*.log.gz` 匹配不到任何文件。
-#   2) awk **不能直接读 .gz**。用 `zcat -f`：它对 gzip 文件解压、对非 gzip 文件直通，
-#      于是「当前文件 + 轮转文件」可以混在一起喂给 awk。
+#   2) awk **不能直接读 .gz**。曾用 `zcat -f`（对 gzip 解压、对非 gzip 直通）把
+#      「当前文件 + 轮转文件」混在一起喂给 awk ——
+#      ★★ 2026-11-08（12h 审计 F-1）**撤掉**：`zcat -f` 是 **GNU gzip 扩展**，
+#      busybox/Alpine 的 zcat 没有这个语义，混读时**整体失败**（rc=1、stdout 空）
+#      ⇒ 计数器恒为 0 ⇒ 长得和「真的没人用 q=」一模一样。
+#      ⇒ 现改为**逐文件分派**（`read_logs`：.gz ⇒ `gzip -cd`，其余 ⇒ `cat`），
+#        两者都是 POSIX 工具，GNU/busybox/macOS 行为一致。
 #   3) ★ logrotate 开了 `delaycompress` ⇒ **最近一次轮转的文件是不压缩的**
 #      （`llm-kxpms-cn-access.log-20261019`，没有 .gz）。
 #      只 glob `*.log` + `*.log*.gz` 会**漏掉它** —— 而它装的恰恰是**当天**的流量。
@@ -116,6 +121,32 @@ $(find "$LOG_DIR" -maxdepth 1 -type f \
 EOF
 }
 
+# ---- 逐文件读取（2026-11-08 12h 审计 F-1 修）：**不再用 `zcat -f`** ----
+#
+# ★ 为什么换掉 `zcat -f`：
+#   `zcat -f`（"force"：非 gzip 输入也直通）是 **GNU gzip 扩展**。
+#   busybox/Alpine 的 zcat **没有这个语义**：遇到非 gzip 输入会整体失败
+#   （实测 `zcat: no gzip/bzip2/xz magic`，rc=1）。
+#   本脚本要混读三族（当前文件 + 未压缩轮转 + 压缩轮转）⇒ 只要有**一个**非 .gz
+#   文件在列，那条 `zcat -f` 调用就**一个字节都读不出来**（rc=1、stdout 空）。
+#   ★★ 而「计数器恒为 0」正是本脚本文件头自己声明的**最危险失效模式**
+#   （"最危险的失效模式是计数器恒为 0"）—— 读失败长得和「真的没人用 q=」一模一样。
+#   ★ 更糟的是：主流程虽然会打一条 WARN，但**照样打印 verdict**
+#   （"窗口内 0 次带 q= ⇒ 未触发「保留 877」的触发条件"）
+#   ⇒ 一次**读失败**被渲染成了一条**看起来很确定的负面基础设施结论**。
+#   ⇒ 修法：**逐文件分派**（.gz ⇒ `gzip -cd`，其余 ⇒ `cat`；两者都是 POSIX 工具，
+#     GNU/busybox/macOS 行为一致），并且**读取失败 ⇒ 拒绝打印判定**（见主流程）。
+read_logs() {
+  local f rc=0
+  for f in "$@"; do
+    case "$f" in
+      *.gz) gzip -cd -- "$f" || rc=1 ;;
+      *)    cat -- "$f" || rc=1 ;;
+    esac
+  done
+  return $rc
+}
+
 # ---- 自检：同一套计数逻辑 + 一份**含真命中**的离线夹具 ----
 run_self_test() {
   tmp=$(mktemp -d) || { echo "self-test: mktemp failed" >&2; return 1; }
@@ -157,7 +188,7 @@ EOF
   #   （`?seq=123&req=abc` **不得**被裸 q= 误配进来）
   collect_files
   all=( "${plain[@]}" "${gz[@]}" )
-  zcat -f -- "${all[@]}" > "$tmp/out" 2>/dev/null
+  read_logs "${all[@]}" > "$tmp/out" 2>/dev/null
   check 5 3 6 "计数能数出非 0（否则「0 次」不可信）"
 
   # 三族文件都要被枚举到
@@ -172,7 +203,7 @@ EOF
   # 窗口排除 20261018 ⇒ 压缩轮转那行不计入 total/withq
   # （lines 是**读到的行数**，不随窗口变化）
   FROM=20261019 TO=20261019
-  zcat -f -- "${all[@]}" > "$tmp/out" 2>/dev/null
+  read_logs "${all[@]}" > "$tmp/out" 2>/dev/null
   check 4 2 6 "窗口过滤生效（total/withq 随窗口变，lines 是读到的行数）"
 
   # 轮转文件**一个都没命中**时必须告警（glob 写错的典型形态）：
@@ -222,13 +253,24 @@ if [ ${#gz_in_dir[@]} -gt ${#gz[@]} ]; then
   echo "WARN: $LOG_DIR 下有 ${#gz_in_dir[@]} 个 .gz，只命中 ${#gz[@]} 个（prefix='$PREFIX' 可能过窄）" >&2
 fi
 
-# 计数（zcat 的 stderr 不丢：解压失败会让「0」变得不可解释）
+# 计数（读取器的 stderr 不丢：解压失败会让「0」变得不可解释）
 ERR=$(mktemp)
 trap 'rm -f "$ERR"' EXIT
-zcat -f -- "${all[@]}" 2>"$ERR" | count_q > "$ERR.count"
+read_logs "${all[@]}" 2>"$ERR" | count_q > "$ERR.count"
 rc=${PIPESTATUS[0]}
-if [ "$rc" -ne 0 ] || [ -s "$ERR" ]; then
-  echo "WARN: 解压/读取有告警（zcat exit=${rc}），计数结果可能偏低：" >&2
+# ★ 2026-11-08（12h 审计 F-1 修）：**读取失败 ⇒ 拒绝打印判定**。
+#   旧实现只 WARN 然后照常打印 verdict ⇒ 一次读失败被渲染成
+#   「窗口内 0 次带 q= ⇒ 未触发「保留 877」的触发条件」这条**看起来很确定的负面结论**。
+#   而「读不出来」和「真的 0 次」必须**可区分**——否则 877 决策会被一次环境差异静默翻转。
+if [ "$rc" -ne 0 ]; then
+  echo "ERROR: 日志读取失败（读取器 exit=${rc}）⇒ 读数不可解释" >&2
+  echo "       ⇒ **这不等于「0 次带 q=」** ⇒ 拒绝打印判定（请修好读取环境后重跑）" >&2
+  head -3 "$ERR" >&2
+  rm -f "$ERR.count"
+  exit 1
+fi
+if [ -s "$ERR" ]; then
+  echo "WARN: 解压/读取有告警（读取器 exit=0），计数结果可能偏低：" >&2
   head -3 "$ERR" >&2
 fi
 read -r TOTAL WITHQ LINES < "$ERR.count" || {

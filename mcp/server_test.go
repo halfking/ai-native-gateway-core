@@ -298,8 +298,10 @@ func TestHighSensitivityRequiresApproval(t *testing.T) {
 	if status != http.StatusForbidden {
 		t.Fatalf("status=%d, want 403 without approval (body=%v)", status, body)
 	}
-	if code := rpcErrorCode(body); code != CodeToolNotAllowed {
-		t.Fatalf("error code=%d, want %d", code, CodeToolNotAllowed)
+	// ★ 审批缺失有**专属码** -32007（新增、既有未使用）⇒ 不再借用 -32003
+	//   （既有语义是 tool-allow 拒绝）：审批闸与允许表闸必须能分开分支。
+	if code := rpcErrorCode(body); code != CodeApprovalRequired {
+		t.Fatalf("error code=%d, want %d (-32007 approval required)", code, CodeApprovalRequired)
 	}
 
 	// 审批通过后放行。

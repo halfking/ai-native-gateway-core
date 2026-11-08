@@ -20,6 +20,37 @@ if [[ -z "${BASH_VERSINFO[0]:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
   exit 64
 fi
 
+# ★ ★ ★ 口径确定化：★ 显式钉死 locale（★ 2026-11-09 第十三轮 ★）★★★
+#   ★ 为什么必须钉：★ 本脚本的匹配语义【★ 完全依赖 locale ★】——
+#     · `[[ "$content" =~ $pat ]]` 走【★ 本机 libc 的 regcomp ★】，
+#       而 regcomp 的字符语义【★ 由 locale 决定 ★】：
+#       ★ `C`/`POSIX` 下非 ASCII 按【★ 字节 ★】计数、`C.UTF-8` 下按【★ 字符 ★】计数
+#         ⇒ 形如 `{4,}` / `{8,}` 的阈值判定【★ 随 locale 变 ★】；
+#       ★ 词边界（`\b`）的"词字符"定义【★ 也随 locale 变 ★】
+#         （★ `C.UTF-8` 下非 ASCII 字母算词字符 ⇒ 边界判定更严 ★）。
+#     · 而本脚本【★ 从不设置 locale ★】⇒ ★ 读数随宿主机环境而变 ★
+#       ⇒ ★ 同一棵树、★ 同一扫描面、★ 不同机器给出不同读数 ★
+#       ⇒ ★ 而它【★ 不报错、★ 不计数、★ 不让任何门变红 ★】。
+#   ★ ★ 实测（★ 树态 `2f26e91eb` ★、★ 扫描面 18211 个文件 ★）：
+#     ★ macOS(C.UTF-8) **180** 条 ／ macOS(C) **185** 条 ／
+#     ★ glibc(C.UTF-8) **1325** 条 ／ glibc(POSIX) **1332** 条
+#     ⇒ ★ 平台差 1145 条（★ 100% 是 INTERNAL_IP 一族 ★）／ locale 差 5～7 条 ★。
+#   ★ ★ 为什么钉 `C` 而不是 `C.UTF-8`：
+#     ① ★ `C` 是【★ 唯一在任何精简镜像里都存在 ★】的 locale（★ `C.UTF-8` 需要镜像额外提供 ★）
+#       ⇒ ★ 钉 `C.UTF-8` 在精简镜像上会【★ 静默退化回 POSIX/C ★】⇒ ★ 又变成"看机器" ★；
+#     ② ★ 这是【★ 仓内既有成文规矩 ★】：★ scripts/guards/check-shell-fullwidth-var.sh:41
+#       ★ 写着「★ 不要依赖宿主 locale，★ 要么显式 `LC_ALL=C` ★」★
+#       ⇒ ★ 仓内 20+ 个脚本都显式 `LC_ALL=C` ⇒ ★ 本脚本只是【★ 没遵守 ★】★
+#       ⇒ ★ 这里是【★ 回归合规 ★】而不是【★ 新立规矩 ★】。
+#   ★ ★ 与「★ 机制 A 的修法 ★」是【★ 配套 ★】的、★ 不是各自独立的：
+#     ★ 规则里的 `\b` 换成可移植形态后，★ 其语义是【★ ASCII 词边界 ★】——
+#     ★ 而 glibc 在 `C.UTF-8` 下的 `\b` 是【★ Unicode 词边界 ★】★
+#     ⇒ ★ 只换形态、不钉 locale ⇒ ★ CI 侧读数会跳 **+551** 条
+#       （★ 中文文档里【★ 非 ASCII 紧邻着四段 IPv4 ★】这类形态 ★）
+#     ⇒ ★ 钉了 `LC_ALL=C` ⇒ ★ 两侧语义【★ 完全一致 ★】⇒ ★ CI 侧读数只动几条 ★。
+export LC_ALL=C
+export LANG=C
+
 MODE="normal"
 PATHS=(".")
 FORMAT="text"
@@ -546,6 +577,26 @@ scan_working_tree() {
     fi
   done
 
+  # ★ ★ 归因阶段的大小写折叠（★ 2026-11-09 第十三轮 ★）：
+  #   Step 7 的【发现】阶段用的是 `grep -niE`（★ **不区分大小写** ★），
+  #   而 Step 8 的【归因】阶段用的是 `[[ "$content" =~ $pat ]]`（★ **区分大小写** ★）
+  #   ⇒ 同一个候选行在两个阶段的判定口径不一致
+  #   ⇒ ★ 大写形态的凭据【★ 候选命中、却在归因阶段一条规则都匹配不上 ★】
+  #   ⇒ ★ ⇒ 【★ 被静默丢弃 ★】⇒ ★ 扫描器对 BLOCK 级规则存在【★ 系统性假阴性 ★】。
+  #   ★ 实测（★ 受控复现 ★）：`PASSWORD=` / `API_KEY=` / `SECRET=` 三种大写写法
+  #   ★ 全部 0 命中，而它们的小写形态各命中 1 条；`SK-` 形态的 API key 同样 0 命中。
+  #   ★ ★ 修法（★ 不改 `requires-bash` 契约 ★）：★★ 把【行内容】与【规则模式】
+  #   ★ 同时小写化再匹配 ★★ ⇒ 等价于大小写不敏感、且【★ 只在 bash 4.0 起就有 ★】
+  #   ★ （★ `${v,,}` ★）⇒ 不需要 nocasematch（★ 那是 bash 4.1 起才有 ★）。
+  #   ★ ★ 只对【★ 内容规则 ★】做折叠：★ 文件名规则的发现阶段用的是【★ 大小写敏感 ★】
+  #   ★ 的 `grep -nE` ⇒ 文件名侧保持敏感，★ 才与发现阶段口径一致 ★。
+  #   ★ ★ 白名单【★ 保持大小写敏感 ★】：白名单是【★ 抑制 ★】方向、
+  #   ★ 放宽它 = 少报 = 往【★ 不保守 ★】的方向走 ⇒ 不动。
+  local -a content_regexes_ci=()
+  for re in "${content_regexes[@]}"; do
+    content_regexes_ci+=("${re,,}")
+  done
+
   # Build combined whitelist regex for single-check filtering
   local wl_combined=""
   for wl in "${WHITELIST_PATTERNS[@]}"; do
@@ -572,10 +623,13 @@ scan_working_tree() {
     local rel="${file_part#$REPO_ROOT/}"
 
     # Attribute to first matching rule (bash regex, no fork)
-    for idx in "${!content_regexes[@]}"; do
+    # ★ 归因用【★ 小写化后的内容 ★】×【★ 小写化后的模式 ★】⇒ 大小写不敏感
+    # ★ （★ 与 Step 7 的 `grep -niE` 发现口径一致 ★ —— 两侧必须同口径 ★）。
+    local content_lc="${content,,}"
+    for idx in "${!content_regexes_ci[@]}"; do
       local rule_idx="${content_indices[$idx]}"
-      local pat="${content_regexes[$idx]}"
-      if [[ "$content" =~ $pat ]]; then
+      local pat="${content_regexes_ci[$idx]}"
+      if [[ "$content_lc" =~ $pat ]]; then
         local key="$rel:$ln_part:${RULES_CATEGORY[$rule_idx]}"
         is_baselined "$key" && break
         if [[ "${RULES_CATEGORY[$rule_idx]}" == "INTERNAL_DOMAIN" ]] && is_public_domain "$content"; then break; fi
@@ -592,6 +646,15 @@ echo "   Paths:   ${PATHS[*]}"
 echo "   Format:  $FORMAT"
 echo "   Tracked: $([[ $TRACKED_ONLY -eq 1 ]] && echo "yes" || echo "no")"
 echo "   Rules:   ${#RULES_PATTERN[@]} patterns"
+# ★ ★ 读数口径标签（★ 2026-11-09 第十三轮 ★）：★ **零行为变化** ★
+#   ★ 为什么加它：★ 同一条脚本在【★ 不同平台 ＋ 不同 locale ★】下会给出不同读数 ★
+#   （★ 实测：★ 同一棵树、同一扫描面 18211 个文件 ⇒ macOS 180 条 / glibc 1325 条 ★
+#   ★   ⇒ 差 1145 条、★ 100% 落在 INTERNAL_IP 一族 ★）★
+#   ⇒ ★ 而【★ 光看读数、不知道它是在什么 locale 下跑出来的 ★】⇒ ★ 读数不可比 ★
+#   ⇒ ★ 所以把【★ locale ＋ 引擎 ★】直接印在摘要里 ⇒ ★ 每一次读数自带口径 ★
+#   ★ ★ 口径纪律：★ 引用任何读数时必须带上（★ 平台 × 引擎 × locale ★）★ 三限定 ★。
+echo "   Locale:  LC_ALL=${LC_ALL:-<unset>} LANG=${LANG:-<unset>}"
+echo "   Engine:  bash ${BASH_VERSION}"
 echo ""
 scan_working_tree
 

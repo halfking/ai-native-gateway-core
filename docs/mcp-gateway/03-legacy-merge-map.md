@@ -14,13 +14,14 @@
 |---|---|---|---|---|---|
 | 1 | 多上游路径分流（`/acc/` `/memora/` `/trendradar/` `/crm/` `/brandmind/`） | `conf.d/default.conf` + Nginx | `mcp.Adapter`（具名适配器 + 工具命名空间） | 替代 | 路径前缀 → 具名注册项；工具名 `<adapter>__<tool>` 消歧；不再依赖 Nginx 前缀约定 |
 | 2 | 智能路由层入口 :8088（health / metrics / routes） | `src/gateway.js` | `mcp/http.go` + `mcp/control.go`（`/health` `/healthz` `/mcp/control/routes` `/metrics`） | 等价 | 端口不再独立，随主网关或独立进程 |
-| 3 | Capability 路由（`?capability=` → `X-MCP-Capability` / `X-MCP-Capability-Tools`） | `src/gateway.js` `CAPABILITY_TOOLS` | `mcp/capability.go`（映射表）+ `mcp/proxy.go`（同头注入） | 等价 | 头名与语义逐字一致 |
+| 3 | Capability 路由（`?capability=` → `X-MCP-Capability` / `X-MCP-Capability-Tools`） | `src/gateway.js` `CAPABILITY_TOOLS` | `mcp/capability.go`（映射表 + 保序清单）+ `mcp/proxy.go`（同头注入） | 等价 | 头名与语义逐字一致；`X-MCP-Capability-Tools` 为 **JSON 数组字符串**；请求级 `?capability=` **覆盖**适配器默认；非法值 ⇒ 400 + -32602（详见 §6.3/§6.4） |
+| 3b | 按能力域过滤工具清单（`getCapabilityFromToolsList`） | `src/gateway.js:142`（★**只被导出、请求路径并未调用**） | `mcp/capability.go` `FilterToolsByCapability` | 等价 | 提供同能力 API；**请求路径保持与既有一致**（既有 `?capability=` 不据此过滤 tools/list 响应）⇒ 不把「既有导出」误写成「既有已生效」 |
 | 4 | 能力目录（64 条 STATIC_TOOLS：分层 L0–L6、组、cost、p99、限流、关键词） | `src/capability-router.js` | `mcp/capability_catalog.json`（**脚本从 Node 源原样导出**）+ `mcp/capability.go` | 等价 | 数据零改写；仅打分增加 CJK bigram 切分（召回增强） |
 | 5 | 工具执行策略表（read/write/llm/unknown：缓存 TTL、限流、超时、重试） | `TOOL_POLICIES` | `mcp/capability.go` `ToolPolicy` + `mcp/server.go` `rateLimitFor`/`retriesFor` | 等价 | 限流从固定窗口改为令牌桶（允许突发、长期速率严格） |
 | 6 | 工具检索推荐（`recommendTools` + 打分 + 分层统计） | `src/capability-router.js` | `mcp/capability.go` + `/mcp/control/recommend` `/mcp/control/capabilities` | 增强 | 增加 HTTP 入口；CJK bigram 提升中文召回 |
-| 7 | API key 限流 60/min + 429 + `Retry-After` | `src/gateway.js` `rateLimits` | `mcp/ratelimit.go`（令牌桶）+ `mcp/server.go` | 增强 | 分 key×类别（read/write/llm）三档 + 适配器全局档 |
+| 7 | API key 限流 60/min + 429 + `Retry-After` | `src/gateway.js` `rateLimits` | `mcp/ratelimit.go`（令牌桶）+ `mcp/server.go` | 增强 | 分 key×类别（read/write/llm）三档 + 适配器全局档；429 的**三件套**（`Retry-After` 头 / `-32002` / `data.retry_after_ms`）同源给出（详见 §6.2） |
 | 8 | 上游健康检查 + `/health` 展示上游状态 | `src/gateway.js` `checkUpstreamHealth` | `mcp/circuit.go`（熔断器）+ `/mcp/control/health` | 增强 | 由「健康布尔」升级为「熔断三态」（closed/open/half-open） |
-| 9 | Prometheus 指标（`mcp_gateway_requests_total` 等 6 个） | `src/gateway.js` `metrics` | `mcp/metrics.go` | 等价 | 指标名逐字保留；另加 8 个治理类指标 |
+| 9 | Prometheus 指标（**26 个族**，分布于 4 个模块） | `src/gateway.js`(7) `src/tool-allow.js`(8) `src/bindings.js`(5) `src/keys.js`(6) | `mcp/metrics.go` | 等价 | **逐族登记见 §6.6**：既有 `mcp_gateway_*` 7 族同名保留；其余 19 族按**旧名**（裸名 `tool_allow_*` / `bindings_*` / `keys_*`）建族 ⇒ 既有告警规则与看板**按旧名即可平移**；另加治理类指标与 `requests_by_method` |
 | 10 | 工具代理分档限流 + 缓存 TTL + 超时 + 重试 | `src/tool-proxy.js` | `mcp/proxy.go`（超时/重试/SSE 解析）+ `mcp/server.go`（分档限流） | 等价 | 工具结果缓存未做（登记为后续增强，见 §5） |
 | 11 | 上游 SSE 响应解析 | `src/tool-proxy.js` | `mcp/proxy.go` `extractSSEData` | 等价 | — |
 | 12 | 请求体上限（`MCP_ALLOW_BODY_LIMIT`） | `src/gateway.js` | `mcp/server.go` `MaxBodyBytes`（默认 1MB） | 等价 | — |
@@ -31,7 +32,7 @@
 |---|---|---|---|---|---|
 | 13 | 「key × 工具」允许表执法（不在允许集 → 403，JSON-RPC `-32003`） | `src/tool-allow.js` | `mcp/policy.go` `keyAllowsTool` + `mcp/server.go` | 等价 | 错误码 `-32003` 保持不变；deny-wins；空允许表＝不收口 |
 | 14 | 允许表执法审计（环形缓冲 + `X-Gateway-Admin` 门） | `/admin/tool-allow-audit` | `/mcp/control/audit`（统一审计面）+ `tool_allow_checks_total` 指标 | 增强 | 审计并入统一可查询/可导出体系 |
-| 15 | 一 key 多后端单边禁用（`bindings[backend]=false` → 403；inactive → 401） | `src/bindings.js` | `mcp/policy.go` `bindingEnabled` + `mcp/server.go` | 等价 | 同语义：未登记后端＝放行；禁用＝403 |
+| 15 | 一 key 多后端单边禁用（`bindings[backend]=false` → 403；inactive → 401） | `src/bindings.js` | `mcp/policy.go` `bindingEnabled` + `mcp/server.go` | 等价 | 同语义：未登记后端＝放行；禁用＝403。**另补齐**：`allowed_adapters` 白名单此前只在 tools/list 生效，直呼工具名可绕过 ⇒ 现已在调用路径上执行（治理链第 6 闸，见 `01-design.md`） |
 | 16 | 绑定执法审计（环形缓冲 + 管理端点） | `/admin/bindings-audit` | `/mcp/control/audit` + `bindings_checks_total` | 增强 | 同上 |
 | 17 | 远端账本不可达 ⇒ fail-open（放行 + 审计） | `src/bindings.js` / `src/tool-allow.js` | `mcp/ledger.go` `RemoteLedger` | 等价 | fail-open 口径逐字保留（含「key 不在账本 ⇒ 放行」） |
 | 18 | 凭证引导 apply（免认证 + 幂等 + IP/设备双维限流 + 策略自动批准） | `src/keys.js` | `mcp/bootstrap.go` `Apply` | 等价 | 限流维度、幂等 TTL（15min）、先限流后幂等的顺序全部保留；默认**关闭**，需显式开启 |
@@ -78,3 +79,238 @@
 | 上游 stdio 传输 | 本轮只接 Streamable HTTP 形态上游 | 需要本地进程型 MCP 时接入 |
 | 出向 OAuth 2.1 代理（3LO/OBO/RFC 8693） | 需要密钥库与 IdP 侧配合 | 与企业 IdP 接入轮次一起做 |
 | CEL 策略引擎 | 先用「可见性 + 允许表 + 审批」三层覆盖常见场景 | 需要条件化授权时引入 |
+
+## 6. 协议契约逐字对齐（错误码 / 头格式）
+
+既有实现的客户端、监控与告警规则都按**具体错误码**和**具体响应头**判分支，
+所以「语义一致」不等于「契约一致」。本节逐条登记本实现采用的字面值及其来源。
+
+### 6.1 JSON-RPC 错误码（逐字核对既有全仓后重排）
+
+★ 分配原则：**既有实现已占用的码必须逐字沿用**（既有客户端按码判分支，改号＝破坏
+  契约）；只有**既有未使用**的取值才允许分给新增能力。
+
+| 场景 | HTTP | JSON-RPC code | 既有出处 / 是否新增 |
+|---|---|---|---|
+| 上游错误（含超时） | 502 | **-32000** | `gateway.js:228/547/559`、`tool-proxy.js:299/402` —— 逐字沿用 |
+| 后端绑定被拒（凭证失效/吊销） | 401 | **-32001** | `bindings.js:144` —— 逐字沿用 |
+| 后端绑定被拒（管理员单边禁用） | 403 | **-32001** | `bindings.js:150` —— 逐字沿用 |
+| 触发限流 | 429 | **-32002** | `gateway.js:500`、`tool-proxy.js:243` —— 逐字沿用 |
+| 工具不在允许集 / 不可见 / 缺 scope | 403 | **-32003** | `tool-allow.js`、`gateway.js:312`、`tool-proxy.js:219` —— 逐字沿用 |
+| 请求体超限 | 413 | **-32004** | `gateway.js:295` —— 逐字沿用 |
+| 工具不存在（归属适配器不存在） | 404 | **-32005** | ★新增（既有无此分支）；**既有未使用**的取值 |
+| 熔断器打开 | 503 | **-32006** | ★新增；既有未使用 |
+| 敏感工具缺审批凭据 | 403 | **-32007** | ★新增（既有无审批层）；既有未使用 |
+| 非法 `?capability=` | 400 | **-32602** | `gateway.js:522` —— 逐字沿用 |
+
+#### 本轮改正的三处错误码错位（此前对外口径与实现不符）
+
+★ 这三处是「文档/营销口径说一套、实现做另一套」，客户端按已发布口径分支
+  **永不命中** ⇒ 本轮全部改正（改正后的口径见上表）：
+
+| # | 此前（本实现/已发布口径） | 实际行为 | 既有实现里的真相 | 本轮处置 |
+|---|---|---|---|---|
+| 1 | `-32001` 当成**新增码**给「工具不存在」 | 工具不存在确实返回 -32001 | **既有 -32001 是 bindings 拒绝**（401/403） | ① 工具不存在改用 **-32005**（既有未使用）；② bindings 拒绝改回 **-32001**；③ 凭证失效/吊销也用 -32001 + 401（与 `bindings.js:144` 逐字一致） |
+| 2 | `-32004` 当成**新增码**给「审批缺失」 | 审批缺失实际返回 **-32003** | **既有 -32004 是请求体超限**（413） | ① 审批缺失改用 **-32007**；② 请求体超限改用 **-32004** + HTTP 413（此前是**静默截断** ⇒ 表现为 JSON 解析失败 -32700，把真因掩盖了） |
+| 3 | `-32007`（上游超时）已对外发布 | 常量声明但**从未使用**（实际 -32000） | 既有上游错误（含超时）统一 -32000 | **不启用**该码：拆码会打断既有客户端的 -32000 分支 ⇒ 超时仍用 -32000，用 `data.timeout=true` 与审计事件区分；对外口径同步撤回 |
+
+### 6.2 429 的完整契约
+
+既有实现的 429 是「三件套同源」，缺任何一件都会被既有客户端判成异常响应：
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1                       ← 秒，向上取整（ceil(ms/1000)），最小 1
+{"jsonrpc":"2.0","error":{
+   "code":-32002,
+   "message":"Rate limit exceeded",
+   "data":{"retry_after_ms":1234}}}  ← 毫秒，与 Retry-After 同源
+```
+
+本实现在 `mcp/server.go`（`errorHeaders` / `retryAfterSeconds` / `retryAfterMillis`）
+里由**同一个等待时长**同时推导头与 data，保证两者永不失配。
+
+★ `data` 还带 **`limit`**（适用的每分钟限额）—— 与既有 `tool-proxy.js:245` 的
+`data: { retry_after_ms, limit }` 一致（既有 `gateway.js:502` 只带
+`retry_after_ms`）⇒ 本实现取**两者的并集**，既有客户端按任一来源读都拿得到。
+
+★ **message 的既有差异（已核对，非本实现引入）**：既有两条路径的文案本来就
+不一样 —— `gateway.js` 是 `Rate limit exceeded`；`tool-proxy.js` 是
+`Rate limit exceeded for tool ${tool.name} (${cls})`。⇒ **message 不是跨路径
+稳定契约**，稳定契约是**错误码 -32002 + `Retry-After` 头 + `data.retry_after_ms`**
+三者。本实现统一取 `gateway.js` 的那句，工具名与类别放在 `data`（`limit`）
+与审计事件里，避免把「文案」当成可依赖的判据。
+
+### 6.3 非法 `?capability=` 的文案
+
+```
+HTTP/1.1 400 Bad Request
+{"jsonrpc":"2.0","error":{"code":-32602,
+ "message":"Unknown capability: bogus. Valid: code, memory, agent, wiki, apikey, federation, reasoning"}}
+```
+
+★ 合法能力域清单的**顺序**与既有实现一致（= 既有 `CAPABILITY_TOOLS` 的键插入
+顺序）。Go 的 map 迭代顺序随机 ⇒ 本实现在 `mcp/capability.go` 里用
+`capabilityOrder` 显式保序，避免同一错误的文案每次都变。
+
+### 6.4 能力路由头
+
+| 头 | 值 | 说明 |
+|---|---|---|
+| `X-MCP-Capability` | 能力域名 | **请求级 `?capability=` 覆盖适配器默认**（既有实现是把头写在入站请求上再透传，等价于请求级优先） |
+| `X-MCP-Capability-Tools` | **JSON 数组字符串**，如 `["code_generate","code_review",…]` | 既有实现是 `JSON.stringify([...])` ⇒ 上游按 `JSON.parse` 解析 ⇒ 逗号分隔会让上游解析失败 |
+
+★ 头名大小写由 Go 规范化为 `X-Mcp-Capability` / `X-Mcp-Capability-Tools`；
+HTTP 头名本身大小写不敏感（RFC 9110 §5.1）⇒ 语义与既有实现一致。
+
+★ `mcp_gateway_requests_by_capability` 只对**通过合法性校验**的能力域计数
+（既有实现也是先判合法再计数）。
+
+### 6.5 capability 面的完整边界（避免「导出 ≠ 生效」的误判）
+
+既有 `src/gateway.js` 的 capability 相关面共有**三处**，逐条对齐：
+
+| 既有位置 | 既有是否在请求路径生效 | 本实现 |
+|---|---|---|
+| `gateway.js:510-528`（`?capability=` 校验 / 计数 / 注入请求头） | **生效** | 逐字一致（§6.3/§6.4） |
+| `gateway.js:142` `getCapabilityFromToolsList`（按能力域过滤工具清单） | ★**只被导出、请求路径并未调用** | 提供同能力 API `FilterToolsByCapability`；**请求路径不据此过滤**（保持逐字一致） |
+| `capability-router.js` 的 64 条 `STATIC_TOOLS` + 打分 + 分层统计 | 生效 | `capability_catalog.json`（脚本从 Node 源原样导出）+ `mcp/capability.go` |
+
+★ 为什么要专门登记这一行：把「既有导出了但没接上」的能力写成「既有已生效」，
+会让后来者以为本网关少了一块功能；反过来把它当没这回事，又会漏移植。⇒
+**能力已移植（API 在），但生效范围与既有一致（请求路径不过滤）。**
+
+### 6.6 既有 Prometheus 指标族逐个登记（26 族）
+
+★ 为什么要逐族登记：既有实现的指标**分散在 4 个模块**，每个模块各有自己的
+  `/metrics` 出口与**裸名**族名（`tool_allow_*` / `bindings_*` / `keys_*`）。
+  若只登记 gateway.js 那 7 个带前缀的族，运维按旧名写的告警规则会**静默失效**
+  —— 指标没了，不是变红，是「一直没数据」。
+
+| # | 既有族名 | 既有模块 | 语义 | 本实现对应 |
+|---|---|---|---|---|
+| 1 | `mcp_gateway_requests_total` | gateway.js | 总请求数 | 同名保留 |
+| 2 | `mcp_gateway_rate_limited_total` | gateway.js | 被限流请求数 | 同名保留 |
+| 3 | `mcp_gateway_upstream_errors_total` | gateway.js | 上游错误数 | 同名保留 |
+| 4 | `mcp_gateway_health_check_failures_total` | gateway.js | 健康检查失败数 | 同名保留 |
+| 5 | `mcp_gateway_uptime_seconds` | gateway.js | 运行时长 | 同名保留 |
+| 6 | `mcp_gateway_upstream_healthy` | gateway.js | 上游健康（按 upstream） | 同名保留（标签维度由 nginx/mcp_server 改为**适配器名**） |
+| 7 | `mcp_gateway_requests_by_capability` | gateway.js | 按能力域的请求数 | 同名保留 |
+| 8 | `tool_allow_checks_total` | tool-allow.js | 允许表判定次数 | **旧名建族**（`mcp/tool_allow_checks_total`） |
+| 9 | `tool_allow_denied_total` | tool-allow.js | 判定为拒绝 | **旧名建族** |
+| 10 | `tool_allow_not_enforced_total` | tool-allow.js | ★**允许表为空 ⇒ 执法跳过**（收口没生效） | **旧名建族**（本实现：允许表与拒绝表皆空 ⇒ 计数） |
+| 11 | `tool_allow_lookup_errors_total` | tool-allow.js | 允许表查询出错 ⇒ **fail-open** | **旧名建族**（本实现：账本查询失败 ⇒ 与既有同为 fail-open） |
+| 12 | `tool_allow_lookup_misses_total` | tool-allow.js | key 不在远端账本 | **旧名建族**（本实现：仅**远端**账本的 miss 计数；本地账本的「不存在」是正常 401，不计） |
+| 13 | `tool_allow_acc_route_missing_total` | tool-allow.js | 远端**没有该路由**（版本没部署） | **旧名建族**（本实现：远端账本 404 且响应体是路由缺失形状 ⇒ 计数） |
+| 14 | `tool_allow_acc_404_unrecognized_total` | tool-allow.js | 远端 404 **形状不认得** | **旧名建族**（本实现：远端账本 404 且形状不认得 ⇒ 计数） |
+| 15 | `tool_allow_scope_deviation_total` | tool-allow.js | 执法粒度与 agent 白名单不一致（设备级并集） | **不适用**：本实现**没有**「设备级并集 vs agent 白名单」这层模型 ⇒ 无对应计数器；说明见下 |
+| 16 | `bindings_checks_total` | bindings.js | 绑定检查次数 | **旧名建族** |
+| 17 | `bindings_denied_total` | bindings.js | 绑定被单边禁用而拒绝 | **旧名建族** |
+| 18 | `bindings_inactive_total` | bindings.js | 凭证失效/吊销而拒绝 | **旧名建族** |
+| 19 | `bindings_lookup_errors_total` | bindings.js | 绑定查询出错 ⇒ fail-open | **旧名建族** |
+| 20 | `bindings_lookup_misses_total` | bindings.js | key 不在远端账本 | **旧名建族** |
+| 21 | `keys_apply_total` | keys.js | 引导面 apply | **旧名建族**（本实现原先叫 `mcp_gateway_keys_apply_total` ⇒ 已改回旧名） |
+| 22 | `keys_apply_replay_total` | keys.js | 幂等重放 | **旧名建族**（同上改名） |
+| 23 | `keys_apply_rate_limited_total` | keys.js | 引导面被限流 | **旧名建族**（同上改名） |
+| 24 | `keys_claim_total` | keys.js | 引导面 claim | **旧名建族**（同上改名） |
+| 25 | `keys_status_total` | keys.js | 引导面 status | **旧名建族**（同上改名） |
+| 26 | `keys_upstream_errors_total` | keys.js | 引导面调远端 ACC 出错 | **不适用**：本实现的引导面是**本地签发**（不经远端 ACC）⇒ 无对应事件；已登记，不静默消失 |
+
+★ 三项**不适用**的登记说明（不静默省略，也不硬造一个永不触发的计数器）：
+- `tool_allow_scope_deviation_total`：依赖「设备级并集」模型，本实现无此模型。
+- `keys_upstream_errors_total`：依赖引导面向远端 ACC 签发，本实现为本地签发。
+- 既有 `requests_by_path`：既有**维护但未导出**的死计数器（既有 `/metrics` 里没有
+  它）⇒ 不移植，改导出更有区分度的 `mcp_gateway_requests_by_method`。
+
+★ 计数**粒度**差异（诚实登记）：既有的 tool-allow 与 bindings 各查一次账本，
+  各自记自己的 lookup_* ⇒ 本实现**共用一次**账本查询，故两个族在同一点位各自
+  自增 ⇒ 每个族的量级与既有**一致**，但同一次请求会在两个族各计一次（与既有相同）。
+
+★ 守护用例与场景：`mcp/legacy_contract_test.go`（错误码与旧名计数器的自增）＋
+  harness 的 **S24**（真实进程 `/metrics` 里 13 个旧名族必须全部可见）＋
+  **S24b**（`tool_allow_checks_total` / `tool_allow_not_enforced_total` /
+  `bindings_checks_total` 三个关键计数**确实动过** ⇒ 光「族名在」不算数，
+  计数为 0 的族同样会出现在 exposition 里）。
+
+★ 影响面（已核实）：仓内 `deploy/grafana/` 的 7 个 dashboard **均未引用**这些旧名
+  ⇒ 不存在仓内即时的线上断链；但**外部**监控/告警可能仍按旧名查询 ⇒ 补旧名族
+  是为了让这些规则平移后**有数据**，而不是让它们「一直没数据」也不报错。
+
+## 7. 既有「执法在路径」两道门的登记
+
+既有仓有**两道**门各管一件事，**互不替代**：
+
+| 门 | 既有位置 | 回答的问题 | 本轮处理 |
+|---|---|---|---|
+| **拓扑门** | `scripts/audit-enforcement-in-path.js` | 「带工具级执法的服务，在**生产 MCP 流量的路径**上吗？」（读 nginx upstream 的主/备次序） | **前提已变 ⇒ 本仓不适用**（登记，不移植） |
+| **运行时门** | `scripts/probe-tool-allow-enforcement.js` | 「对这条路径真打一次不该被允许的调用，它**真的被拒**了吗？」 | **已移植** ⇒ `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，并作为 **S20** 纳入三层 harness |
+
+### 7.0 资产清单（逐个登记，含台账、基线与测试）
+
+★ 这一节回答「它们是不是**网关功能**、要不要跟着搬过来」。判定标准只有一条：
+  **该资产回答的问题，在本实现里是否还存在**。
+
+| # | 资产 | 既有位置 | 它回答的问题 | 本仓是否还存在这个问题 | 处置 |
+|---|---|---|---|---|---|
+| 1 | 拓扑门脚本 | `scripts/audit-enforcement-in-path.js` | 「谁在前面」（nginx upstream 主/备次序） | **不存在**（执法收敛到网关单点） | **登记不移植**（§7.1） |
+| 2 | 拓扑门测试 | `test/audit-enforcement-in-path.test.js` | 同上（含台账漂移/未验证判定） | 同上 | **登记不移植** |
+| 3 | 运行时探针脚本 | `scripts/probe-tool-allow-enforcement.js` | 「有没有真的拒」（三档结论 + allow 正控） | **存在**（这是网关**功能**的自证） | **已移植** ⇒ `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`（S20） |
+| 4 | 运行时探针测试 | `test/probe-tool-allow-enforcement.test.js` | 探针自身的三档判别力 | 同上 | **以等价方式承接**：不移植 Node 测试文件，而是**分别实跑三档**（0/1/2）验证判别力（§7.2） |
+| 5 | 事实台账 | `docs/enforcement-path-ledger.md` | 「我们以为在收口的那道门，真的拦得住生产流量吗？」（事实登记，每次拓扑变更都要改） | **前提已变**（台账记的是「执法点在 nginx 里是 backup ⇒ 生产事实上没有工具级强制力」这一已知暴露） | **登记不移植**：该暴露描述的是**旧拓扑**下的事实；本实现里执法必然在路径上 ⇒ 台账记的暴露不再成立 |
+| 6 | 台账基线 | `enforcement-path.baseline.json` | 「已知暴露」的可进 CI 基线（`expect: standby_only`） | 同上（基线值指向旧主备拓扑） | **登记不移植**：连同其 `gates`（拓扑门/运行时门）映射一并登记在此，避免台账失联 |
+| 7 | 网关契约自测 | `test/gateway.test.js` | 429 的 `-32002`、能力头 `x-mcp-capability-tools`、非法能力域的 `Unknown capability`（3 处契约断言） | 存在 | **由 Go 侧承接** ⇒ `mcp/capability_routing_test.go` 逐条对应（§7.3） |
+| 8 | 执法契约自测 | `test/tool-allow.test.js` | 工具拒绝码 `-32003`（4 处断言，含批量语义） | 存在 | **由 Go 侧承接** ⇒ `mcp/capability_routing_test.go`（§7.3） |
+
+★ 结论：8 项资产中 **2 项移植**（运行时探针脚本 + 其判别力验证）、**2 项由 Go 侧
+契约测试承接**（既有 Node 契约自测）、**4 项登记不移植**（拓扑门脚本/测试 + 台账 +
+基线 —— 它们是**针对旧 nginx 主备拓扑的生产诊断资产**，不是网关功能面，且其
+前提在本实现里已消失）。
+
+### 7.1 拓扑门 / 台账 / 基线为什么在本仓不适用
+
+这三项成立的前提是「执法点（mcp-gateway）与业务上游是 nginx 的主/备两个
+upstream，主健康时执法那台不接流量」。本实现的拓扑前提已经变了：
+
+- 工具级执法收敛到网关**单点**（数据面 8 闸的第 5 闸「key × 工具 允许表」），
+  不再存在「执法点 vs 业务上游」的主备之争；
+- 上游适配器由控制面注册（`/mcp/control/adapters`），网关**必然**在调用路径上；
+- 台账/基线记录的那条「已知暴露」（`expect: standby_only` ⇒ 生产事实上没有
+  工具级强制力）在本实现里**不再成立** —— 执法点就是网关本身。
+
+⇒ 「谁在前面」这个问题不再成立，拓扑门失去判别力；台账与基线记的是**旧拓扑
+下的事实**，把它们搬过来反而会让后来者误判当前状态 ⇒ **一律登记不移植**，
+但在此逐条写明前提为何消失，避免后来者以为漏掉了。
+
+### 7.2 运行时门：移植后的口径
+
+移植到 `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，保持
+**三档结论**与既有实现逐字一致：
+
+| 观察 | 结论 | 退出码 |
+|---|---|---|
+| 不在允许集的工具 ⇒ **403**，且允许集内的工具 ⇒ **200** | 执法在生效 | **0** |
+| 不在允许集的工具被放行 | 执法没生效 | **1** |
+| 其余（连不上 / 没给 key / **两个工具都被拒**） | **未验证**（「查不了」≠「查过了没问题」） | **2** |
+
+★ 保留「allow 工具这一档」的原因：若两个工具**都**被拒，说明的是「这把 key
+全被禁」或「这条路径不认这把 key」，**不是**执法在生效 ⇒ 只看 deny 会把
+两种情况混成一种。
+
+★ 既有 `test/probe-tool-allow-enforcement.test.js` 断言的是「探针本身会不会
+误判」。本轮**不以移植测试文件的方式承接**，而是**分别实跑三档**（deny 拒 +
+allow 通 ⇒ 0；deny 放行 ⇒ 1；两侧皆拒 ⇒ 2），确认判别力未因移植而失真 ——
+读数见 `05-verification-report.md` §5.1。
+
+★ 与既有 Node 探针的**唯一差异**：新增 `--allow-args` / `--deny-args`
+（默认 `{}`）。原因是本实现会按上游工具的 `inputSchema` 校验参数，而既有
+网关不做 Schema 校验 ⇒ 「允许集内的工具」必须给合法入参，否则它会被参数
+校验拒掉（403），把「执法在生效」误判成「两边都被拒」。
+
+### 7.3 既有 Node 契约自测 → 本轮 Go 侧承接对照
+
+| 既有断言（位置） | 本轮对应（位置） |
+|---|---|
+| 限流错误码 `-32002`（`test/gateway.test.js:180`） | `TestRateLimitCarriesRetryAfter`（`mcp/capability_routing_test.go`） |
+| 能力头含 `code_generate`（`test/gateway.test.js:195`） | `TestRequestCapabilityOverridesAdapter`（逐项比对 JSON 数组内容） |
+| 非法能力域文案含 `Unknown capability`（`test/gateway.test.js:204`） | `TestUnknownCapabilityRejected`（逐字比对 `Unknown capability: X. Valid: ...`） |
+| 工具拒绝码 `-32003`（`test/tool-allow.test.js:321/336/347/348`） | `TestToolNotAllowedCodeMatchesLegacy` |

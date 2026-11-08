@@ -259,6 +259,15 @@ bash tests/scan_secrets_enumeration_contract_test.sh
 #   ⇒ 详见 docs/12小时内修订审计-20261104-0329.md §8.20
 bash tests/scan_secrets_whitelist_regex_portability_test.sh
 
+# ★ 扫描器正则口径确定性门（★ 钉「★ 词边界可移植 ＋ 发现/归因同口径 ★」★）。
+#   ★ 起因：★ 同一棵树、同一扫描面（18211 文件），macOS 读 180 条、glibc 读 1325 条
+#   ⇒ ★ 差 1145 条、★ 100% 落在 INTERNAL_IP 一族（★ `\b` 在 BSD libc 的 regcomp 里
+#   ★ 不是词边界 ⇒ ★ 那三条规则在 macOS 上整族失效 ★）★
+#   ★ 另一条是【★ BLOCK 级假阴性 ★】：★ 发现阶段大小写不敏感、★ 归因阶段敏感
+#   ⇒ ★ 大写形态的凭据被静默丢弃 ★。
+#   ⇒ 详见 docs/12小时内修订审计-20261104-0329.md §8.21
+bash tests/scan_secrets_regex_determinism_test.sh
+
 # ★ 切流状态机门（慢门，实测 270s ⇒ 不进 CI 快门，只在官方门与 make guards 上跑）。
 #   经 scripts/run-bash4-gate.sh：找得到 bash ≥ 4 ⇒ 真跑；找不到 ⇒ 显式 SKIP
 #   （rc=0，**不伪装成通过**）。

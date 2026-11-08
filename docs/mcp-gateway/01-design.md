@@ -90,7 +90,7 @@ flowchart TB
 | 3 | scope（mcp.execute） | 403 / -32003 | 角色位 |
 | 4 | 可见性（private/team/public） | 403 / -32003 | ContextForge 两层授权的 L1 |
 | 5 | key×tool 允许表 | 403 / -32003 | 移植既有 tool-allow（deny-wins） |
-| 6 | backend binding（一 key 多后端单边禁用） | 403 / -32003 | 移植既有 bindings 执法 |
+| 6 | backend 可达性（适配器白名单 + 一 key 多后端单边禁用） | 403 / -32003 | 移植既有 bindings 执法；并补齐「适配器白名单」在**调用路径**上的执行（此前只在 tools/list 生效 ⇒ 直呼工具名可绕过） |
 | 7 | 敏感度审批（write/high） | 403 / -32004 | 分级审批（`X-MCP-Approval`） |
 | 8 | 参数白名单 + JSON Schema | 403 | 参数校验与注入面收口 |
 
