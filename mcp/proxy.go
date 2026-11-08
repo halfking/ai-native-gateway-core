@@ -139,7 +139,15 @@ func (c *UpstreamClient) do(ctx context.Context, cc CallContext, body []byte, pr
 	if cc.Capability != "" {
 		req.Header.Set("X-MCP-Capability", cc.Capability)
 		if tools := CapabilityTools(cc.Capability); len(tools) > 0 {
-			req.Header.Set("X-MCP-Capability-Tools", strings.Join(tools, ","))
+			// ★ 值必须是 **JSON 数组字符串**（既有实现是 JSON.stringify([...])）：
+			//   上游按 JSON.parse 解析这个头，逗号分隔会让解析失败。
+			//   头名大小写由 Go 规范化（X-Mcp-Capability），HTTP 头名本身大小写不敏感
+			//   （RFC 9110 §5.1），语义与既有实现一致。
+			raw, err := json.Marshal(tools)
+			if err != nil {
+				raw = []byte("[]")
+			}
+			req.Header.Set("X-MCP-Capability-Tools", string(raw))
 		}
 	}
 	for k, v := range cc.Adapter.Headers {

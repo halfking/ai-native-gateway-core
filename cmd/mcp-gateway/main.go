@@ -216,6 +216,14 @@ func (d *demoUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		resp["result"] = map[string]any{
 			"content": []any{map[string]any{"type": "text", "text": "demo upstream handled " + name}},
 			"isError": false,
+			// ★ 回显本上游**实际收到**的能力路由头：让「头格式是否逐字一致」
+			//   成为**运行时可观测**的证据，而不只靠读代码断言。
+			//   - capability：请求级 ?capability= 是否覆盖了适配器默认能力域；
+			//   - capabilityTools：X-MCP-Capability-Tools 的**原样字符串**
+			//     （既有实现是 JSON.stringify([...]) ⇒ 必须是 JSON 数组字符串）。
+			"capability":      r.Header.Get("X-MCP-Capability"),
+			"capabilityTools": r.Header.Get("X-MCP-Capability-Tools"),
+			"protocolVersion": r.Header.Get("MCP-Protocol-Version"),
 		}
 	default:
 		resp["result"] = map[string]any{}

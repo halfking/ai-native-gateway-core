@@ -4,7 +4,7 @@
 # ┌──────────────────────────────────────────────────────────────────────────┐
 # │ 三层验证（对应仓内「Maestro」惯例：观测 → 假设 → 最小修复 → 再测）：    │
 # │   L1 Go 测试    —— go test ./mcp/... （治理链单测/集成测）               │
-# │   L2 API 场景   —— 本脚本的 S01~S19（真实进程 + 真实 HTTP）              │
+# │   L2 API 场景   —— 本脚本的 S01~S22（真实进程 + 真实 HTTP）              │
 # │   L3 浏览器 flow —— maestro/flows/10-mcp-gateway.yaml（运营看板逐页断言） │
 # └──────────────────────────────────────────────────────────────────────────┘
 #
@@ -27,10 +27,11 @@ mkdir -p "${OUT}"
 ADMIN_TOKEN="maestro-admin-token"
 pass=0; fail=0
 declare -a FAILED_CASES=()
+declare -a ALL_CASES=()   # 全部用例读数（写进 summary.md ⇒ 报告产物自带证据）
 
 log()  { printf '%s\n' "$*"; }
-ok()   { pass=$((pass+1)); printf '  ✅ %s\n' "$*"; }
-bad()  { fail=$((fail+1)); FAILED_CASES+=("$*"); printf '  ❌ %s\n' "$*"; }
+ok()   { pass=$((pass+1)); ALL_CASES+=("✅ $*"); printf '  ✅ %s\n' "$*"; }
+bad()  { fail=$((fail+1)); FAILED_CASES+=("$*"); ALL_CASES+=("❌ $*"); printf '  ❌ %s\n' "$*"; }
 
 # ── 0. 工具链探测 ───────────────────────────────────────────────────────────
 # 构建与测试用两套命令：
@@ -138,10 +139,24 @@ rpc() { # rpc <base-url> <path> <key> <json-body> [extra-header]
   args+=(-d "${body}")
   curl "${args[@]}"
 }
+# rpc_h 同 rpc，但**额外把响应头**落到 ${OUT}/.hdr（验 Retry-After 等头用）。
+rpc_h() { # rpc_h <base-url> <path> <key> <json-body> [extra-header]
+  local base="$1" path="$2" key="$3" body="$4" extra="${5:-}"
+  local args=(-s -D "${OUT}/.hdr" -o "${OUT}/.body" -w '%{http_code}' -X POST "${base}${path}"
+              -H 'Content-Type: application/json')
+  [ -n "${key}" ] && args+=(-H "Authorization: Bearer ${key}")
+  [ -n "${extra}" ] && args+=(-H "${extra}")
+  args+=(-d "${body}")
+  curl "${args[@]}"
+}
+hdr_get() { # hdr_get <头名> —— 从 .hdr 取响应头值
+  tr -d '\r' < "${OUT}/.hdr" | awk -v h="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" '
+    BEGIN{FS=": "} {k=tolower($1); if(k==h){sub(/^[^:]*: /,""); print; exit}}'
+}
 body_get() { cat "${OUT}/.body"; }
 jq_get() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 
-log "== L2: API 场景（S01~S19）"
+log "== L2: API 场景（S01~S22）"
 
 # S01 无凭证 → 401
 code="$(rpc "${BASE_URL}" /mcp '' '{"jsonrpc":"2.0","id":1,"method":"initialize"}')"
@@ -195,14 +210,26 @@ code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":4,"method":"to
 [ "${code}" = "200" ] && ok "S09 受限凭证调用允许的工具 → 200" || bad "S09 受限凭证调用 → ${code}（期望 200）"
 
 # S10 越权工具（适配器白名单外）→ 403/404
+#   ★ S08 的凭证只允许 demo 适配器 ⇒ 调 crm 工具被「适配器白名单」闸挡下。
 code="$(rpc "${BASE_URL}" /mcp "${SECRET}" '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
+code32003="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
 case "${code}" in
-  403|404) ok "S10 越权访问被拒 → ${code}" ;;
+  403|404) ok "S10 越权访问被拒 → ${code}（JSON-RPC 码 ${code32003}）" ;;
   *) bad "S10 越权访问 → ${code}（期望 403/404）" ;;
 esac
+# 既有 tool-allow 的拒绝码必须逐字沿用（-32003）
+[ "${code32003}" = "-32003" ] && ok "S10b 工具拒绝码 → -32003（与既有 tool-allow 一致）" \
+  || bad "S10b 工具拒绝码 → ${code32003}（期望 -32003）"
 
 # S11 高敏工具缺审批凭据 → 403
-code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
+#   ★ 用一把**允许访问 crm 适配器**的凭证 ⇒ 这样被拒的才是「审批闸」，
+#     而不是被上一道「适配器白名单」闸提前挡下（两者都返回 403，
+#     但测的是不同的闸，分开才能定位问题）。
+APPROVAL_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"default","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
+  | jq_get 'd.get("secret","")')"
+code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
 [ "${code}" = "403" ] && ok "S11 高敏工具缺审批凭据 → 403" || bad "S11 高敏工具 → ${code}（期望 403）"
 
 # S12 审批通过后放行
@@ -212,7 +239,7 @@ APR="$(curl -s -X POST "${BASE_URL}/mcp/control/approvals" -H "X-Admin-Token: ${
 curl -s -o /dev/null -X POST "${BASE_URL}/mcp/control/approvals/${APR}" \
   -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
   -d '{"decision":"approved","decided_by":"maestro"}'
-code="$(rpc "${BASE_URL}" /mcp "${DEMO_KEY}" '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}' "X-MCP-Approval: ${APR}")"
+code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}' "X-MCP-Approval: ${APR}")"
 case "${code}" in
   200|502|503) ok "S12 带审批凭据后放行（${code}：上游未就绪也算治理链通过）" ;;
   403) bad "S12 带审批凭据仍被拒 → ${code}" ;;
@@ -252,11 +279,22 @@ LIMIT_PID="$(start_gateway "${LIMIT_PORT}" 1 false "${OUT}/gateway-limit.log")"
 if wait_ready "http://127.0.0.1:${LIMIT_PORT}"; then
   LIMIT_KEY="$(grep -m1 '^DEMO_API_KEY=' "${OUT}/gateway-limit.log" | cut -d= -f2-)"
   c1="$(rpc "http://127.0.0.1:${LIMIT_PORT}" /mcp "${LIMIT_KEY}" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"a"}}}')"
-  c2="$(rpc "http://127.0.0.1:${LIMIT_PORT}" /mcp "${LIMIT_KEY}" '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"b"}}}')"
+  c2="$(rpc_h "http://127.0.0.1:${LIMIT_PORT}" /mcp "${LIMIT_KEY}" '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"b"}}}')"
   if [ "${c1}" = "200" ] && [ "${c2}" = "429" ]; then
     ok "S16 限流：第 1 次 200，第 2 次 429"
   else
     bad "S16 限流：c1=${c1} c2=${c2}（期望 200/429）"
+  fi
+  # ★ 既有 429 契约是「三件套同源」：Retry-After 头(秒,ceil) + -32002 +
+  #   data.retry_after_ms(毫秒) + data.limit ⇒ 逐项断言，避免只看状态码就判绿。
+  retry_hdr="$(hdr_get Retry-After)"
+  rl_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
+  rl_ms="$(body_get | jq_get 'd.get("error",{}).get("data",{}).get("retry_after_ms",0)')"
+  rl_limit="$(body_get | jq_get 'd.get("error",{}).get("data",{}).get("limit",0)')"
+  if [ -n "${retry_hdr}" ] && [ "${rl_code}" = "-32002" ] && [ "${rl_ms}" != "0" ] && [ "${rl_limit}" = "1" ]; then
+    ok "S16b 429 三件套：Retry-After=${retry_hdr}s，码 ${rl_code}，retry_after_ms=${rl_ms}，limit=${rl_limit}"
+  else
+    bad "S16b 429 三件套缺失：Retry-After='${retry_hdr}' 码=${rl_code} retry_after_ms=${rl_ms} limit=${rl_limit}"
   fi
 else
   bad "S16 限流实例未就绪"
@@ -308,6 +346,76 @@ if wait_ready "http://127.0.0.1:${BOOT_PORT}"; then
   esac
 else
   bad "S17~S19 引导面实例未就绪"
+fi
+
+# S21 非法请求级能力域 → 400 + JSON-RPC -32602 + 带合法清单的文案
+#   ★ 契约来源：既有 gateway.js:519-527（逐字文案）⇒ 在**真实进程**上验，
+#     而不只靠 Go 单测。
+log "== S21~S22 请求级能力域契约"
+code="$(rpc "${BASE_URL}" '/mcp?capability=bogus' "${DEMO_KEY}" '{"jsonrpc":"2.0","id":20,"method":"tools/list"}')"
+bad_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
+bad_msg="$(body_get | jq_get 'd.get("error",{}).get("message","")')"
+if [ "${code}" = "400" ] && [ "${bad_code}" = "-32602" ] && case "${bad_msg}" in
+     *"Unknown capability: bogus. Valid: code, memory, agent, wiki, apikey, federation, reasoning"*) true ;;
+     *) false ;;
+   esac; then
+  ok "S21 非法能力域 → 400 + -32602 + 文案含合法清单"
+else
+  bad "S21 非法能力域 → code=${code} 码=${bad_code} msg='${bad_msg}'"
+fi
+
+# S22 合法请求级能力域 → 覆盖适配器默认，且注入头是 **JSON 数组字符串**
+#   ★ 观察点是**上游实际收到的头**（内置示例上游把它回显在结果里）⇒
+#     证明「请求级覆盖生效」+「头格式与既有 JSON.stringify([...]) 逐字一致」。
+code="$(rpc "${BASE_URL}" '/mcp?capability=code' "${DEMO_KEY}" '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"demo__search_memory","arguments":{"q":"probe"}}}')"
+up_cap="$(body_get | jq_get 'd.get("result",{}).get("capability","")')"
+up_tools="$(body_get | jq_get 'd.get("result",{}).get("capabilityTools","")')"
+# 头必须是可被 JSON.parse 的**数组字符串**（既有实现是 JSON.stringify([...])）
+tools_parsed="$(printf '%s' "${up_tools}" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit(0)
+print(",".join(d) if isinstance(d,list) else "")' 2>/dev/null)"
+if [ "${code}" = "200" ] && [ "${up_cap}" = "code" ]; then
+  ok "S22 请求级能力域覆盖适配器默认（上游收到 X-MCP-Capability=${up_cap}）"
+else
+  bad "S22 请求级能力域 → code=${code} 上游收到 '${up_cap}'（期望 code）"
+fi
+case "${tools_parsed}" in
+  code_generate,*) ok "S22b 能力工具头是 JSON 数组字符串（可 JSON.parse，首项 code_generate）" ;;
+  *) bad "S22b 能力工具头格式不符：'${up_tools}'" ;;
+esac
+
+# S20 工具级强制力运行时探针（三档结论）
+#
+# ★ 移植既有 tools/mcp-gateway 的 scripts/probe-tool-allow-enforcement.js：
+#   这道门测的是**结果**（对真实路径真打一次不该被允许的调用），**不测拓扑**。
+#   三档：deny 工具 403 且 allow 工具 200 ⇒ 执法在生效（exit 0）；
+#         deny 工具放行 ⇒ 执法没生效（exit 1）；其余 ⇒ 未验证（exit 2）。
+log "== S20 工具级强制力探针"
+PROBE_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"default","name":"maestro-probe","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo"],"allowed_tools":["demo__search_memory"]}' \
+  | jq_get 'd.get("secret","")')"
+if [ -z "${PROBE_KEY}" ]; then
+  bad "S20 未能签发探针凭证"
+else
+  if MCP_API_KEY="${PROBE_KEY}" bash "${ROOT}/tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh" \
+      --base "${BASE_URL}" --path /mcp \
+      --allow-tool demo__search_memory --allow-args '{"q":"probe"}' \
+      --deny-tool demo__add_memory --deny-args '{"text":"probe"}' \
+      >"${OUT}/probe-tool-allow.log" 2>&1; then
+    prc=0
+  else
+    prc=$?
+  fi
+  case "${prc}" in
+    0) ok "S20 工具级强制力探针 → 执法在生效（exit 0）" ;;
+    1) bad "S20 工具级强制力探针 → 执法没生效（exit 1，见 probe-tool-allow.log）" ;;
+    *) bad "S20 工具级强制力探针 → 未验证（exit ${prc}，见 probe-tool-allow.log）" ;;
+  esac
 fi
 
 # ── 4. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
@@ -365,7 +473,7 @@ fi
   echo
   echo "- 时间：$(date '+%Y-%m-%d %H:%M:%S')"
   echo "- 目标：llm-gateway-go 内置 MCP 服务网关（mcp/ 包 + cmd/mcp-gateway）"
-  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S19）+ L3 Maestro 浏览器 flow"
+  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S22）+ L3 Maestro 浏览器 flow"
   echo
   echo "## 结论"
   echo
@@ -378,6 +486,10 @@ fi
     for c in "${FAILED_CASES[@]}"; do echo "- ${c}"; done
     echo
   fi
+  echo "## 用例明细（含读数）"
+    echo
+  for c in "${ALL_CASES[@]}"; do echo "- ${c}"; done
+  echo
   echo "## 产物"
   echo
   echo "- go-test.log：L1 Go 测试输出"

@@ -104,5 +104,5 @@
 | 层 | 内容 | 入口 |
 |---|---|---|
 | L1 | Go 单测/集成测（治理链、存储、策略、账本、控制面、看板） | `go test ./mcp/...` |
-| L2 | 真实进程 + 真实 HTTP 的 API 场景（S01–S19） | `bash tests/mcp-gateway-maestro/run.sh` |
+| L2 | 真实进程 + 真实 HTTP 的 API 场景（S01–S22） | `bash tests/mcp-gateway-maestro/run.sh` |
 | L3 | 浏览器逐页断言（运营看板） | `maestro/flows/10-mcp-gateway.yaml` |

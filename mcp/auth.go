@@ -199,20 +199,26 @@ func (g *Gateway) IssueKey(ctx context.Context, spec KeySpec) (*Key, string, err
 	return &key, secret, nil
 }
 
-// KeySpec 是凭证签发参数。
+// KeySpec 是签发凭证的入参。
+//
+// ★ JSON 标签必须与 Key 的出参字段名一致（snake_case）：控制面直接把它
+// 当作请求体解码（见 control.go 的 handleCreateKey）。没有标签时
+// encoding/json 只能按 Go 字段名做**大小写不敏感**匹配 ⇒ 客户端按
+// 仓内其它接口的惯例传 "allowed_tools" / "scopes" 会被**静默丢弃**
+// （曾经如此：scopes 为空 ⇒ 落回默认档，看起来"能用"其实没生效）。
 type KeySpec struct {
-	TenantID         string
-	OrgID            string
-	UserID           string
-	AgentID          string
-	Name             string
-	Scopes           []string
-	AllowedTools     []string
-	DeniedTools      []string
-	AllowedAdapters  []string
-	Bindings         map[string]bool
-	ToolAllowEnforce bool
-	ExpiresAt        *time.Time
+	TenantID         string          `json:"tenant_id,omitempty"`
+	OrgID            string          `json:"org_id,omitempty"`
+	UserID           string          `json:"user_id,omitempty"`
+	AgentID          string          `json:"agent_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Scopes           []string        `json:"scopes,omitempty"`
+	AllowedTools     []string        `json:"allowed_tools,omitempty"`
+	DeniedTools      []string        `json:"denied_tools,omitempty"`
+	AllowedAdapters  []string        `json:"allowed_adapters,omitempty"`
+	Bindings         map[string]bool `json:"bindings,omitempty"`
+	ToolAllowEnforce bool            `json:"tool_allow_enforce,omitempty"`
+	ExpiresAt        *time.Time      `json:"expires_at,omitempty"`
 }
 
 // RevokeKey 吊销凭证（离职回收的落点）。

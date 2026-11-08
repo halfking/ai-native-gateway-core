@@ -47,6 +47,83 @@
 > ★ 明确没做（登记在 `docs/mcp-gateway/02-capability-matrix.md` §3）：上游 stdio/SSE 归一化、
 >   REST→MCP 虚拟化、RFC 8707/7591/8414 规范族、出向 3LO/OBO、OTel trace、prompt-injection
 >   检测、适配器并发上限执行、工具结果缓存、OAuth 出向代理。
+>
+> **2026-11-09 MCP 网关「既有实现逐字对齐」修补轮（goal 会话）**：
+> ★ 背景：上一轮交付后宿主下发的验收反馈指认 **5 处证据缺口**（不是新功能，是「既有实现的
+>   契约有没有被逐字继承」没拿出证据）⇒ 本轮**只补这 5 处**，不扩功能面。
+> ★ 缺口① 错误码：既有 tools/mcp-gateway 已占用 -32002（限流）、-32000（上游错误）、-32003
+>   （tool-allow / bindings 拒绝）；本轮把限流码 -32008→**-32002**、上游错误码 -32005→
+>   **-32000**，并在 `mcp/errors.go` 逐条注释出处；新增码（-32001 工具不存在、-32004 审批缺失、
+>   -32006 熔断、-32007 超时）只占**既有实现未使用**的取值。
+> ★ 缺口② 能力头格式：既有实现 `x-mcp-capability-tools = JSON.stringify([...])` ⇒ 本轮把
+>   `X-MCP-Capability-Tools` 由逗号分隔改为 **JSON 数组字符串**（上游按 `JSON.parse` 解析，
+>   逗号分隔会解析失败）；头名大小写由 Go 规范化（HTTP 头名大小写不敏感，RFC 9110 §5.1）。
+> ★ 缺口③ 请求级 capability 路由：既有 `?capability=X` 会校验合法性（非法 ⇒ 400 + -32602 +
+>   `Unknown capability: X. Valid: ...`）、**只对合法能力域计数**、把能力头注入上游并
+>   **覆盖**适配器默认 ⇒ 本轮补齐这三件事；合法清单用 `capabilityOrder` 显式保序（Go map
+>   迭代顺序随机，否则同一错误的文案每次都变 ⇒ 既有客户端无法做稳定断言）。
+> ★ 缺口④ 429 契约：既有 429 是「`Retry-After` 头(秒, ceil) + -32002 + `data.retry_after_ms`
+>   (毫秒)」**三件套同源** ⇒ 本轮由**同一个等待时长**同时推导头与 data（`errorHeaders` /
+>   `retryAfterSeconds` / `retryAfterMillis`），保证两者永不失配。
+> ★ 缺口⑤ 既有「执法在路径」资产的**逐个登记**（`03-legacy-merge-map.md` §7.0）：
+>   既有仓共 8 项相关资产 —— 拓扑门脚本 `scripts/audit-enforcement-in-path.js`
+>   ＋其测试 `test/audit-enforcement-in-path.test.js`、运行时探针脚本
+>   `scripts/probe-tool-allow-enforcement.js` ＋其测试
+>   `test/probe-tool-allow-enforcement.test.js`、事实台账
+>   `docs/enforcement-path-ledger.md`、台账基线 `enforcement-path.baseline.json`，
+>   以及承载契约断言的 `test/gateway.test.js`（429 -32002 / 能力头 /
+>   Unknown capability 三处）与 `test/tool-allow.test.js`（-32003 四处）。
+>   判定标准＝**该资产回答的问题在本实现里是否还存在**：
+>   · 运行时探针（脚本 + 判别力验证）＝ 网关功能的自证 ⇒ **已移植**为
+>     `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh`，作为 **S20** 纳入
+>     三层 harness；既有 Node 探针测试**不以移植测试文件的方式承接**，而是**分别实跑
+>     三档**（0 执法生效 / 1 没生效 / 2 未验证）确认判别力未因移植而失真。
+>   · 拓扑门脚本/测试 + 台账 + 基线 ＝ **针对旧 nginx 主备拓扑的生产诊断资产**，
+>     不是网关功能面；且其前提已消失（执法收敛到网关单点 ⇒ 「谁在前面」不再成立，
+>     台账记的 `standby_only` 已知暴露也不再成立）⇒ **登记不移植**，并写明前提。
+>   · 既有契约自测（gateway/tool-allow 的 4 处断言）⇒ **由 Go 侧逐条承接**
+>     （`mcp/capability_routing_test.go`，对照表见 §7.3）。
+> ★ 顺带收口两个**实打实的缺陷**（跑出来的，不是读代码想出来的）：
+>   ①`KeySpec` 没有 JSON 标签 ⇒ 控制面按仓内其它接口的惯例传 `allowed_tools` / `scopes` /
+>     `allowed_adapters` 会被**静默丢弃**（`scopes` 为空还落回默认档，看起来「能用」其实
+>     没生效）⇒ 补齐 snake_case 标签，与 `Key` 出参字段名一致。
+>   ②`allowed_adapters` 适配器白名单此前只在 tools/list 生效，**直呼工具名可绕过** ⇒ 补到
+>     调用路径上（治理链第 6 闸改为「backend 可达性」＝适配器白名单 + 单边禁用绑定）。
+> ★ 逐字比对时**新发现**两处未对齐（本轮一并补齐）：
+>   ①既有 `tool-proxy.js:245` 的 429 `data` 是 `{ retry_after_ms, limit }`（`gateway.js:502`
+>     只有 `retry_after_ms`）⇒ 本实现原只给 `retry_after_ms` ⇒ 现取**并集**（另带 `limit`）。
+>     同时核对出既有两条路径的 429 **message 本来就不同**（`gateway.js` 是
+>     `Rate limit exceeded`；`tool-proxy.js` 是 `Rate limit exceeded for tool X (cls)`）
+>     ⇒ 稳定契约是**错误码 -32002 + `Retry-After` 头 + `data.retry_after_ms`**，
+>     message 不是跨路径判据（已在 `03-legacy-merge-map.md` §6.2 披露）。
+>   ②既有 `gateway.js:142` 的 `getCapabilityFromToolsList`（按能力域过滤工具清单）
+>     **只被导出、请求路径并未调用** ⇒ 本实现提供同能力 API
+>     `mcp.FilterToolsByCapability`，但**请求路径保持与既有逐字一致**（不据此过滤
+>     tools/list）⇒ 不把「既有导出」误写成「既有已生效」（见 §6.5）。
+> ★ 证据的**可观测级别**再升一级：被点名的 4 项契约（错误码 / 429 三件套 /
+>   请求级能力路由 / 能力头格式）原先只有 **Go 单测 + 文档行号**两级证据 ⇒ 本轮
+>   把它们做成 **L2 真实进程场景**，证据直接出现在 harness 输出里：
+>   · **S10b** 真实进程调越权工具后读 JSON-RPC 错误码 ⇒ `-32003`；
+>   · **S16b** 真实进程触发限流后读**响应头 + 错误体** ⇒ `Retry-After=60s` +
+>     `-32002` + `retry_after_ms=59988` + `limit=1`；
+>   · **S21** 带 `?capability=bogus` ⇒ `400` + `-32602` + 含合法清单的逐字文案；
+>   · **S22/S22b** ★ 观测点选「**上游回显它实际收到的头**」（内置示例上游把
+>     `X-MCP-Capability` / `X-MCP-Capability-Tools` 原串回吐在结果里）⇒ 上游收到
+>     `X-MCP-Capability=code`（适配器默认是 `memory` ⇒ 请求级覆盖生效），且头
+>     可被 `JSON.parse` 成数组（首项 `code_generate`）⇒ 与既有
+>     `JSON.stringify([...])` 逐字一致。★ 头是网关**写给上游**的，网关自证不足；
+>     必须让上游把**实际收到的原串**吐出来，才证明「上游 JSON.parse 不会失败」。
+> ★ 三层 harness 读数随之为 **30/30 全绿**（L1 + L2 S01~S22 + L3 Maestro flow）。
+> ★ 验证：新增 `mcp/capability_routing_test.go`（非法能力域 400/-32602/文案保序、请求级覆盖
+>   适配器默认、JSON 数组头、非法能力域不计数、429 三件套、上游错误 -32000、工具拒绝 -32003）；
+>   `go test ./mcp/...` 与 `go test ./middleware/...` 全绿；`go build ./...` rc=0；
+>   `go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0；`gofmt -l` 零输出；
+>   三层 harness（L1 + L2 S01~S22 + L3 Maestro）读数见 `docs/mcp-gateway/05-verification-report.md`。
+>   ★ 诚实登记：`go test ./cmd/gateway/` **全包**在本轮仍是红的，失败项全部是
+>     `storage_mode_init_test.go` 的 **lite 存储模式需 CGO**（本机以 `CGO_ENABLED=0` 构建）
+>     ⇒ 与本轮改动无关的**既存**环境性失败；本轮相关用例用定向
+>     `go test ./cmd/gateway/ -run TestRegisterMCPGateway` 验证（主网关接线）通过。
+>
 > **2026-11-09 211 蓝绿部署轮（T-P1+W1 上线 + 专项验证，goal 会话，通用式见 `LESSONS.md` **§645**；原取 §644 与并行会话撞号，按后到者让号先例改 §645）**：
 > ★ 用户目标＝「拉取合并 → 部署 211（蓝绿、健康才切流、前后端都正常）→ 专项测试验证」。
 > ★ **部署闸门两缺陷修复（Windows 部署机）**：① 测试闸门卡 go1.27.1（本机 go 实体 1.27.1、
