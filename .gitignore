@@ -466,3 +466,6 @@ docs/audit/**/ctr_snapshot_*.log
 
 # ★ R179 轮：★ cmd/tools/query_plan_form 的【构建产物】（★ go build 从仓根执行时产物落在仓根 ⇒ ⇒ 子目录里的 .gitignore 管不到）
 /query_plan_form
+
+# MCP 网关 Maestro 验证产物（每次实跑生成，不入库）。
+tests/mcp-gateway-maestro/reports/

@@ -54,6 +54,7 @@ Built with **Go + PostgreSQL + Redis**, running today in production on k3s (dual
 | Layer | What you get |
 |-------|--------------|
 | **Protocol** | OpenAI / Anthropic / Gemini / Responses compatible + SSE streaming relay with integrity checks |
+| **Tools (MCP)** | Built-in MCP service gateway: stateless JSON-RPC data plane (`POST /mcp`) + control plane (adapters / tools / agents / skills / credentials / approvals) + per-tool ACL, schema validation, sensitivity approvals, rate limits, circuit breaker, output redaction, audit & SIEM export — see [docs/mcp-gateway/](docs/mcp-gateway/) |
 | **Routing** | Two-layer routing (model → credential) + sticky sessions + auto-routing with cost/quality policies |
 | **Multi-Tenancy** | Identity tunneling (virtual IP/MAC/ClientID) + credential pools + RLS on 90+ tables |
 | **Traffic Governance** | Token rate limiting (TPM/RPM) + semantic cache + prompt compression + sliding-window algorithms |

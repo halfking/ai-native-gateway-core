@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -137,6 +138,12 @@ type Quote struct {
 	CreatedAt        time.Time     `json:"created_at"`
 	UpdatedAt        time.Time     `json:"updated_at"`
 	Version          *QuoteVersion `json:"version,omitempty"`
+	// W2-T2 成本漂移（风暴档 §3.4）：仅活单（draft/pending_approval/approved/
+	// sent）计算——版本行快照成本 vs 供给视图当前价的行级最大相对漂移（%）。
+	// 超过 sales.quote.cost_drift_alert_pct ⇒ drifted=true。提醒不自动撤：
+	// 是否重报由销售/审批决定（「成本已漂移，建议重报」是标注，不是状态迁移）。
+	CostDriftPct *float64 `json:"cost_drift_pct,omitempty"`
+	CostDrifted  bool     `json:"cost_drifted"`
 }
 
 // centsPerCredit reads the billing anchor from maas_settings (row may be
@@ -202,10 +209,7 @@ func precomputeLines(items []QuoteItemInput, fx, centsPerCredit float64) ([]Quot
 			o.Confidence = in.Confidence
 		}
 		o.MarginUSD = o.RevenueUSD - o.CostUSD
-		if o.RevenueUSD > 0 {
-			p := o.MarginUSD / o.RevenueUSD * 100
-			o.MarginPct = &p
-		}
+		o.MarginPct = marginPctOf(o.MarginUSD, o.RevenueUSD)
 		out = append(out, o)
 
 		// 版本级置信档 = 行级最差档（门不是分：一行不可信整单降档）。
@@ -257,6 +261,26 @@ func discounted(base float64, discountPct float64) float64 {
 	return math.Ceil(base * (1 - discountPct/100))
 }
 
+// marginPctOf bounds the margin ratio to the 945/946 column range
+// (numeric(8,4)). A near-zero revenue makes the naive ratio explode
+// (revenue $0.02 vs cost $140 ⇒ -721300% ⇒ SQLSTATE 22003 hard-fails the
+// version INSERT — caught by this round's own realdb leg, 2026-11-08):
+// clamp instead of exploding; the deeply-negative sign (fail-closed red
+// line) survives. Revenue <= 0 ⇒ NULL（无收入无毛利，NULL≠0 红线）。
+func marginPctOf(margin, revenue float64) *float64 {
+	if revenue <= 0 {
+		return nil
+	}
+	p := margin / revenue * 100
+	switch {
+	case p > 9999.9999:
+		p = 9999.9999
+	case p < -9999.9999:
+		p = -9999.9999
+	}
+	return &p
+}
+
 func derefF(f *float64) float64 {
 	if f == nil {
 		return 0
@@ -264,10 +288,243 @@ func derefF(f *float64) float64 {
 	return *f
 }
 
+// ── 服务端派生（2026-11-08 审计 P1/P5/P6 修复）────────────────────────────
+//
+// 行成本 / 币种 / 置信档一律服务端从供给视图（941/949）派生，客户端声明
+// 不再采信：
+//   - P6：C3 门从「客户端断言」变成「服务端事实」——视图四档口径是唯一
+//     裁决点，客户端声明 trusted + 任意成本无法再绕过 C3 与毛利三维；
+//   - P1：前端此前不传 confidence/cost_currency ⇒ 版本置信 '' 违反 945
+//     CHECK ⇒ CreateQuote 必 23514（前端全链路不可用）——派生后该链路闭合；
+//   - P5：版本 price_axes（五价坐标系快照）从同一解析行装配，不再恒 '{}'。
+//
+// 解析规则与 ListSellable 同族：视图按名解析（**任意置信档**——草稿可持
+// 不可信行，Submit 的 C3 门拦正式单，风暴档 §4-3 判据）；同名多价整组
+// withhold 与 suspended 登记排除；同名多行取 credential_id 最小（确定性，
+// 非 withheld 组内同价重复行取哪个都一样）。
+
+// fetchSupplyViewRows reads view rows for the given canonical names (any
+// confidence tier) plus the annotation status for the withhold/suspended
+// exclusions. Ordered canonical → credential_id → provider_model_id so the
+// first row per canonical is the deterministic pick.
+func (s *Service) fetchSupplyViewRows(ctx context.Context, names []string) ([]SellableRow, map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT v.credential_id,
+       v.provider_model_id,
+       v.raw_model_name,
+       v.canonical_name,
+       v.provider_name,
+       v.supplier_currency,
+       v.billing_mode,
+       v.supplier_in_per_1m::text,
+       v.supplier_out_per_1m::text,
+       v.baseline_currency,
+       v.baseline_in_per_1m::text,
+       v.baseline_out_per_1m::text,
+       v.currency_comparable,
+       v.has_baseline,
+       v.market_ref_currency,
+       v.market_ref_in_per_1m::text,
+       v.market_ref_out_per_1m::text,
+       v.market_ref_platform_id,
+       v.market_ref_platform_count,
+       v.market_position::text,
+       v.price_confidence,
+       sa.status
+  FROM public.v_supplier_price_vs_baseline v
+  LEFT JOIN public.sales_supply_annotations sa
+         ON sa.credential_id = v.credential_id
+        AND sa.provider_model_id = v.provider_model_id
+ WHERE lower(v.canonical_name) = ANY($1)
+ ORDER BY v.canonical_name, v.credential_id, v.provider_model_id`, names)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sales: query supply view: %w", err)
+	}
+	defer rows.Close()
+	out := make([]SellableRow, 0, len(names))
+	annStatus := map[string]string{} // "credID:pmID" → status
+	for rows.Next() {
+		var r SellableRow
+		var st *string
+		if err := rows.Scan(&r.CredentialID, &r.ProviderModelID, &r.RawModelName,
+			&r.CanonicalName, &r.ProviderName, &r.SupplierCurrency, &r.BillingMode,
+			&r.SupplierInPer1M, &r.SupplierOutPer1M,
+			&r.BaselineCurrency, &r.BaselineInPer1M, &r.BaselineOutPer1M,
+			&r.CurrencyComparable, &r.HasBaseline,
+			&r.MarketRefCurrency, &r.MarketRefInPer1M, &r.MarketRefOutPer1M,
+			&r.MarketRefPlatform, &r.MarketRefPlatforms, &r.MarketPosition,
+			&r.PriceConfidence, &st); err != nil {
+			return nil, nil, fmt.Errorf("sales: scan supply view: %w", err)
+		}
+		annStatus[fmt.Sprintf("%d:%d", r.CredentialID, r.ProviderModelID)] = deref(st)
+		out = append(out, r)
+	}
+	return out, annStatus, rows.Err()
+}
+
+// withholdNames computes the same-name multi-price groups (整组 withhold 红线)
+// over the given rows — the exact variant logic of ListSellable, factored out
+// so derivation and the sellable list can never drift apart.
+func withholdNames(rows []SellableRow) map[string]bool {
+	groups := map[string][]SellableRow{}
+	order := make([]string, 0, 16)
+	for _, r := range rows {
+		if r.CanonicalName == "" {
+			continue
+		}
+		if _, seen := groups[r.CanonicalName]; !seen {
+			order = append(order, r.CanonicalName)
+		}
+		groups[r.CanonicalName] = append(groups[r.CanonicalName], r)
+	}
+	out := map[string]bool{}
+	for _, canon := range order {
+		g := groups[canon]
+		if len(g) < 2 {
+			continue
+		}
+		var seenPrices [][2]float64
+		for _, row := range g {
+			inF := parseNum(row.SupplierInPer1M)
+			outF := parseNum(row.SupplierOutPer1M)
+			dup := false
+			for _, p := range seenPrices {
+				if p[0] == inF && p[1] == outF {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				seenPrices = append(seenPrices, [2]float64{inF, outF})
+			}
+		}
+		if len(seenPrices) >= 2 {
+			out[canon] = true
+		}
+	}
+	return out
+}
+
+// deriveQuoteItems overwrites each item's cost/currency/confidence from the
+// supply view and assembles the five-price-axes snapshot (P1 baseline /
+// P2 market / P3 supplier / P4 baseline-copy note / P5 retail). Items are
+// mutated in place; input cost fields are ignored (server is the only
+// authority). Returns an error for items that cannot be priced honestly.
+func (s *Service) deriveQuoteItems(ctx context.Context, items []QuoteItemInput, tier string) (map[string]any, error) {
+	names := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for i := range items {
+		n := strings.ToLower(strings.TrimSpace(items[i].CanonicalName))
+		if n == "" {
+			return nil, errors.New("sales: item canonical_name is required")
+		}
+		if items[i].EstTokensIn < 0 || items[i].EstTokensOut < 0 {
+			return nil, fmt.Errorf("sales: est_tokens must be non-negative (%s)", n)
+		}
+		if (items[i].RateIn != nil && *items[i].RateIn < 0) ||
+			(items[i].RateOut != nil && *items[i].RateOut < 0) {
+			return nil, fmt.Errorf("sales: rate must be non-negative (%s)", n)
+		}
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return nil, errors.New("sales: at least one item is required")
+	}
+	rows, annStatus, err := s.fetchSupplyViewRows(ctx, names)
+	if err != nil {
+		return nil, err
+	}
+	withheld := withholdNames(rows)
+	pick := map[string]SellableRow{}
+	for _, r := range rows { // ordered ⇒ first per canonical is the pick
+		if _, ok := pick[r.CanonicalName]; !ok {
+			pick[r.CanonicalName] = r
+		}
+	}
+	axesItems := map[string]any{}
+	for i := range items {
+		n := strings.ToLower(strings.TrimSpace(items[i].CanonicalName))
+		row, ok := pick[n]
+		if !ok {
+			return nil, fmt.Errorf("sales: %q is not in the supply view — no cost basis (register a priced binding first)", items[i].CanonicalName)
+		}
+		if withheld[row.CanonicalName] {
+			return nil, fmt.Errorf("sales: %q is withheld (same-name multi-price) and cannot be quoted", items[i].CanonicalName)
+		}
+		if annStatus[fmt.Sprintf("%d:%d", row.CredentialID, row.ProviderModelID)] == "suspended" {
+			return nil, fmt.Errorf("sales: %q binding annotation is suspended", items[i].CanonicalName)
+		}
+		items[i].CanonicalName = row.CanonicalName
+		items[i].CostInPer1M = textPtrToF(row.SupplierInPer1M)
+		items[i].CostOutPer1M = textPtrToF(row.SupplierOutPer1M)
+		items[i].CostCurrency = normalizeCostCurrency(row.SupplierCurrency)
+		items[i].Confidence = row.PriceConfidence
+		axesItems[row.CanonicalName] = map[string]any{
+			"p1_baseline": map[string]any{
+				"in":       textPtrToAny(row.BaselineInPer1M),
+				"out":      textPtrToAny(row.BaselineOutPer1M),
+				"currency": textPtrToAny(row.BaselineCurrency),
+				"has":      row.HasBaseline,
+			},
+			"p2_market": map[string]any{
+				"in":       textPtrToAny(row.MarketRefInPer1M),
+				"out":      textPtrToAny(row.MarketRefOutPer1M),
+				"currency": textPtrToAny(row.MarketRefCurrency),
+				"platform": textPtrToAny(row.MarketRefPlatform),
+				"count":    row.MarketRefPlatforms, // nil = 无市场信号（NULL≠0）
+				"position": textPtrToAny(row.MarketPosition),
+			},
+			"p3_supplier": map[string]any{
+				"in":               textPtrToAny(row.SupplierInPer1M),
+				"out":              textPtrToAny(row.SupplierOutPer1M),
+				"currency":         normalizeCostCurrency(row.SupplierCurrency),
+				"credential_id":    row.CredentialID,
+				"provider_model_id": row.ProviderModelID,
+				"provider":         row.ProviderName,
+			},
+			"p5_retail": map[string]any{
+				"in":           items[i].RateIn,
+				"out":          items[i].RateOut,
+				"discount_pct": clampDiscount(items[i].DiscountPct),
+			},
+		}
+	}
+	// P4 不是第四个数据源：826 明写 baseline_price_vendor 是「基准价所引用的
+	// 厂商」，P4 = P1 的网关侧副本（第 42 增量五价坐标系结论），快照里以
+	// 说明位登记而不是重复列。
+	return map[string]any{
+		"items": axesItems,
+		"tier":  normalizeTier(tier),
+		"fx":    settings.CNYToUSDFX,
+		"note":  "P4 baseline == P1 vendor list copy (826 single source); snapshot at version creation",
+	}, nil
+}
+
+func textPtrToF(s *string) *float64 {
+	if s == nil {
+		return nil
+	}
+	f := parseNum(s)
+	return &f
+}
+
+// textPtrToAny keeps NULL as absent (nil) and re-emits exact numeric text as
+// a number for the jsonb axes snapshot.
+func textPtrToAny(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return parseNum(s)
+}
+
 // QuoteVersionInput carries the materialized lines + totals into the INSERT.
 type quoteVersionWrite struct {
 	items      []QuoteItemOutput
 	confidence string
+	axes       map[string]any // 五价坐标系快照（决议 A）；nil 落 '{}'
 	costTotal  float64
 	saleTotal  float64
 	marginUSD  float64
@@ -276,10 +533,16 @@ type quoteVersionWrite struct {
 }
 
 // insertQuoteVersion writes the immutable version row + items + status log,
-// moving the head pointer inside one transaction.
-func (s *Service) insertQuoteVersion(ctx context.Context, tx pgx.Tx, quoteID int64, versionNo int, in QuoteInput, w quoteVersionWrite, actor string) (int64, error) {
+// moving the head pointer inside one transaction. statusNow is the head
+// status at materialization time (the audit row records it as both from and
+// to — a version materialization is not a state transition; the previous
+// '' / '' rows diluted the transition-table semantics, 2026-11-08 audit).
+func (s *Service) insertQuoteVersion(ctx context.Context, tx pgx.Tx, quoteID int64, versionNo int, in QuoteInput, w quoteVersionWrite, actor, statusNow string) (int64, error) {
 	fx := settings.CNYToUSDFX
-	axes := map[string]any{}
+	axes := w.axes
+	if axes == nil {
+		axes = map[string]any{}
+	}
 	var versionID int64
 	var marginPct any
 	if w.marginPct != nil {
@@ -329,8 +592,8 @@ UPDATE public.sales_quotes
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO public.sales_quote_status_log (quote_id, actor, from_status, to_status, reason)
-VALUES ($1, $2, '', '', $3)`, quoteID, actor,
-		fmt.Sprintf("version %d materialized (v%d)", versionNo, versionNo)); err != nil {
+VALUES ($1, $2, $3, $4, $5)`, quoteID, actor, statusNow, statusNow,
+		fmt.Sprintf("version v%d materialized", versionNo)); err != nil {
 		return 0, fmt.Errorf("sales: log version materialization: %w", err)
 	}
 	return versionID, nil
@@ -354,13 +617,19 @@ func validUntilText(t *time.Time) string {
 
 // CreateQuote starts a quote: head (draft) + version 1 with the submitted
 // lines. 不可信成本不出正式单：版本置信档非 trusted 时仍可创建（草稿），
-// 但 Submit 会拒绝（C3 门是提交准入，不是创建准入）。
+// 但 Submit 会拒绝（C3 门是提交准入，不是创建准入）。行成本/置信档由服务端
+// 从供给视图派生（deriveQuoteItems，2026-11-08 审计 P1/P6 修复）——客户端
+// 只提供商业轴（量/零售价/折扣）。
 func (s *Service) CreateQuote(ctx context.Context, in QuoteInput, actor string) (*Quote, error) {
 	if strings.TrimSpace(in.CustomerName) == "" {
 		return nil, errors.New("sales: customer_name is required")
 	}
 	if len(in.Items) == 0 {
 		return nil, errors.New("sales: at least one item is required")
+	}
+	axes, err := s.deriveQuoteItems(ctx, in.Items, in.Tier)
+	if err != nil {
+		return nil, err
 	}
 	cents := s.centsPerCredit(ctx)
 	lines, confidence := precomputeLines(in.Items, settings.CNYToUSDFX, cents)
@@ -370,11 +639,7 @@ func (s *Service) CreateQuote(ctx context.Context, in QuoteInput, actor string) 
 		saleTotal += lines[i].RevenueUSD
 	}
 	marginUSD := saleTotal - costTotal
-	var marginPct *float64
-	if saleTotal > 0 {
-		p := marginUSD / saleTotal * 100
-		marginPct = &p
-	}
+	marginPct := marginPctOf(marginUSD, saleTotal)
 	validUntil := in.ValidUntil
 	if validUntil == nil {
 		days := settings.GetPlatformInt("sales.quote.default_valid_days", 14)
@@ -397,11 +662,21 @@ RETURNING id`,
 		return nil, fmt.Errorf("sales: insert quote head: %w", err)
 	}
 	if _, err := s.insertQuoteVersion(ctx, tx, quoteID, 1, in, quoteVersionWrite{
-		items: lines, confidence: confidence,
+		items: lines, confidence: confidence, axes: axes,
 		costTotal: costTotal, saleTotal: saleTotal,
 		marginUSD: marginUSD, marginPct: marginPct, validUntil: validUntil,
-	}, actor); err != nil {
+	}, actor, StatusDraft); err != nil {
 		return nil, err
+	}
+	// 需求→报价联动（2026-11-08 审计 P3-13：943 'quoted' 此前是死值）：
+	// 指定需求卡的建单把卡从 open/claimed 推进 quoted（guarded——已是
+	// quoted/won/lost 的卡不动，一张卡可以多版本报价但状态只推进一次）。
+	if id := derefI(in.DemandCardID); id > 0 {
+		if _, err := tx.Exec(ctx, `
+UPDATE public.sales_demand_cards SET status = 'quoted', updated_at = now()
+ WHERE id = $1 AND status IN ('open','claimed')`, id); err != nil {
+			return nil, fmt.Errorf("sales: mark demand card quoted: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("sales: commit create quote: %w", err)
@@ -432,6 +707,10 @@ func (s *Service) ReviseQuote(ctx context.Context, quoteID int64, in QuoteInput,
 	if len(in.Items) == 0 {
 		return nil, errors.New("sales: at least one item is required")
 	}
+	axes, err := s.deriveQuoteItems(ctx, in.Items, in.Tier)
+	if err != nil {
+		return nil, err
+	}
 	cents := s.centsPerCredit(ctx)
 	lines, confidence := precomputeLines(in.Items, settings.CNYToUSDFX, cents)
 	costTotal, saleTotal := 0.0, 0.0
@@ -440,11 +719,7 @@ func (s *Service) ReviseQuote(ctx context.Context, quoteID int64, in QuoteInput,
 		saleTotal += lines[i].RevenueUSD
 	}
 	marginUSD := saleTotal - costTotal
-	var marginPct *float64
-	if saleTotal > 0 {
-		p := marginUSD / saleTotal * 100
-		marginPct = &p
-	}
+	marginPct := marginPctOf(marginUSD, saleTotal)
 	validUntil := in.ValidUntil
 	if validUntil == nil && head.Version != nil {
 		validUntil = head.Version.ValidUntil // 修订继承现行有效期
@@ -463,10 +738,10 @@ SELECT COALESCE(MAX(version_no), 0) + 1 FROM public.sales_quote_versions WHERE q
 		return nil, fmt.Errorf("sales: next version no: %w", err)
 	}
 	newVersionID, err := s.insertQuoteVersion(ctx, tx, quoteID, nextNo, in, quoteVersionWrite{
-		items: lines, confidence: confidence,
+		items: lines, confidence: confidence, axes: axes,
 		costTotal: costTotal, saleTotal: saleTotal,
 		marginUSD: marginUSD, marginPct: marginPct, validUntil: validUntil,
-	}, actor)
+	}, actor, head.Status)
 	if err != nil {
 		return nil, err
 	}
@@ -504,10 +779,16 @@ VALUES ($1, $2, $3, $4, $5)`,
 			}
 		}
 	}
-	if _, err := tx.Exec(ctx, `
+	res, err := tx.Exec(ctx, `
 UPDATE public.sales_quotes SET status = $2, locked = $3, updated_at = now() WHERE id = $1`,
-		quoteID, nextStatus, locked); err != nil {
+		quoteID, nextStatus, locked)
+	if err != nil {
 		return nil, fmt.Errorf("sales: settle head on revise: %w", err)
+	}
+	// 并发守卫（2026-11-08 审计 P3-7）：settle 必须命中恰好一行——0 行说明
+	// 头状态在 GetQuote 之后被并发迁移，整单回滚而不是静默落地。
+	if res.RowsAffected() == 0 {
+		return nil, errors.New("sales: quote head moved concurrently — revise aborted")
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("sales: commit revise: %w", err)
@@ -617,10 +898,17 @@ func (s *Service) SubmitQuote(ctx context.Context, quoteID int64, actor string) 
 		return nil, fmt.Errorf("sales: begin tx: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	if _, err := tx.Exec(ctx, `
+	res, err := tx.Exec(ctx, `
 UPDATE public.sales_quotes SET status = $2, locked = true, updated_at = now()
- WHERE id = $1 AND status = $3`, quoteID, StatusPendingApproval, StatusDraft); err != nil {
+ WHERE id = $1 AND status = $3`, quoteID, StatusPendingApproval, StatusDraft)
+	if err != nil {
 		return nil, fmt.Errorf("sales: mark pending_approval: %w", err)
+	}
+	// 并发守卫（2026-11-08 审计 P3-7）：此前不查 RowsAffected ⇒ 双提交可产生
+	// 重复审批行 + 重复 draft→pending_approval 审计行（DecideApproval 会一并
+	// UPDATE 所有 pending 行）。0 行 = 有人抢先，整单回滚。
+	if res.RowsAffected() == 0 {
+		return nil, errors.New("sales: quote is no longer draft (concurrent submit)")
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO public.sales_quote_approvals (quote_id, version_id, trigger_reasons, requested_by)
@@ -768,10 +1056,38 @@ VALUES ($1, $2, $3, $4, $5)`, quoteID, actor, from, to, reason); err != nil {
 	return tx.Commit(ctx)
 }
 
+// ── owner 语义（A-11 先例；2026-11-08 审计 P2-3 修复）─────────────────────
+//
+// 报价单是销售本人的商业数据（客户、价格、毛利）：读与动作收窄到
+// created_by 本人；super_admin 全量；legacy admin_key（无 username 服务
+// 账号）不收窄（有意，myOwnerScope 同款）。非本人一律 ErrNotFound——
+// 不泄露存在性（IDOR 防御口径），而不是 403。
+
+// EnsureQuoteOwner verifies the actor may touch this quote.
+func (s *Service) EnsureQuoteOwner(ctx context.Context, quoteID int64, actor string, unrestricted bool) error {
+	if unrestricted {
+		return nil
+	}
+	var createdBy string
+	err := s.pool.QueryRow(ctx, `
+SELECT created_by FROM public.sales_quotes WHERE id = $1`, quoteID).Scan(&createdBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("sales: quote owner check: %w", err)
+	}
+	if createdBy != actor {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ── 读面 ────────────────────────────────────────────────────────────────
 
-// ListQuotes lists heads with their current version summary.
-func (s *Service) ListQuotes(ctx context.Context, status string) ([]Quote, error) {
+// ListQuotes lists heads with their current version summary. unrestricted
+// = false 时只看本人创建的单（owner 语义；super / legacy admin_key 全量）。
+func (s *Service) ListQuotes(ctx context.Context, status, actor string, unrestricted bool) ([]Quote, error) {
 	q := `
 SELECT q.id, q.demand_card_id, q.customer_name, q.title, q.status,
        q.current_version_id, q.locked, q.created_by, q.created_at, q.updated_at,
@@ -782,9 +1098,15 @@ SELECT q.id, q.demand_card_id, q.customer_name, q.title, q.status,
   FROM public.sales_quotes q
   LEFT JOIN public.sales_quote_versions v ON v.id = q.current_version_id`
 	args := []any{}
+	conj := " WHERE"
 	if status != "" {
-		q += ` WHERE q.status = $1`
+		q += conj + ` q.status = $1`
 		args = append(args, status)
+		conj = " AND"
+	}
+	if !unrestricted {
+		q += conj + ` q.created_by = $` + strconv.Itoa(len(args)+1)
+		args = append(args, actor)
 	}
 	q += ` ORDER BY q.updated_at DESC LIMIT 200`
 	rows, err := s.pool.Query(ctx, q, args...)
@@ -829,7 +1151,127 @@ SELECT q.id, q.demand_card_id, q.customer_name, q.title, q.status,
 		}
 		out = append(out, head)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sales: iterate quotes: %w", err)
+	}
+	s.attachCostDrift(ctx, out)
+	return out, nil
+}
+
+// attachCostDrift marks active quotes whose version-snapshot line costs have
+// drifted from the current supply-view prices（风暴档 §3.4「成本漂移提醒」，
+// W2-T2：提醒不自动撤）。
+//
+// 口径：与派生同一确定性选行（非 withheld、非 suspended、credential_id 最小）；
+// 行级漂移 = max(|Δin/in|, |Δout/out|)（旧价为 0/NULL 而新价出现 ⇒ 100%，
+// 反向同理；币种不同的行跳过——不跨币种假装可比，NULL≠0 红线）；单取行级
+// 最大值进版本，任一行超阈值 ⇒ drifted=true。won/lost/superseded 不漂
+// （已收口的单回看历史快照，漂移提醒没有收件人）。
+func (s *Service) attachCostDrift(ctx context.Context, quotes []Quote) {
+	active := map[int64]*Quote{} // versionID → quote（漂移按版本快照对价）
+	canonSet := map[string]bool{}
+	canonNames := make([]string, 0, 8)
+	versionIDs := make([]int64, 0, len(quotes))
+	for i := range quotes {
+		q := &quotes[i]
+		switch q.Status {
+		case StatusDraft, StatusPendingApproval, StatusApproved, StatusSent:
+		default:
+			continue
+		}
+		if q.Version == nil {
+			continue
+		}
+		active[q.Version.ID] = q
+		versionIDs = append(versionIDs, q.Version.ID)
+	}
+	if len(versionIDs) == 0 {
+		return
+	}
+	type snapCost struct {
+		in, out  *float64
+		currency string
+	}
+	snaps := map[int64]map[string]snapCost{} // versionID → canonical → snapshot
+	itemRows, err := s.pool.Query(ctx, `
+SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::float8, cost_currency
+  FROM public.sales_quote_items WHERE version_id = ANY($1)`, versionIDs)
+	if err != nil {
+		return // 漂移是增强信息，读失败不阻断清单（内部错误照常落日志）
+	}
+	defer itemRows.Close()
+	for itemRows.Next() {
+		var vid int64
+		var canon string
+		var inC, outC *float64
+		var cur string
+		if itemRows.Scan(&vid, &canon, &inC, &outC, &cur) != nil {
+			return
+		}
+		if snaps[vid] == nil {
+			snaps[vid] = map[string]snapCost{}
+		}
+		snaps[vid][canon] = snapCost{in: inC, out: outC, currency: cur}
+		lc := strings.ToLower(canon)
+		if !canonSet[lc] {
+			canonSet[lc] = true
+			canonNames = append(canonNames, lc)
+		}
+	}
+	if itemRows.Err() != nil || len(canonNames) == 0 {
+		return
+	}
+	viewRows, annStatus, err := s.fetchSupplyViewRows(ctx, canonNames)
+	if err != nil {
+		return
+	}
+	withheld := withholdNames(viewRows)
+	current := map[string]SellableRow{}
+	for _, r := range viewRows { // ordered ⇒ first per canonical = same pick as derivation
+		if _, ok := current[r.CanonicalName]; !ok {
+			current[r.CanonicalName] = r
+		}
+	}
+	driftThreshold := float64(settings.GetPlatformInt("sales.quote.cost_drift_alert_pct", 10))
+	for vid, perCanon := range snaps {
+		q := active[vid]
+		if q == nil {
+			continue
+		}
+		maxDrift := 0.0
+		for canon, snap := range perCanon {
+			row, ok := current[canon]
+			if !ok || withheld[canon] ||
+				annStatus[fmt.Sprintf("%d:%d", row.CredentialID, row.ProviderModelID)] == "suspended" {
+				continue // 供给行消失/被扣下/停用：无可比价，不假报漂移
+			}
+			if normalizeCostCurrency(row.SupplierCurrency) != snap.currency {
+				continue // 币种变了不可比（拒绝默认换算，红线）
+			}
+			newIn, newOut := parseNum(row.SupplierInPer1M), parseNum(row.SupplierOutPer1M)
+			oldIn, oldOut := derefF(snap.in), derefF(snap.out)
+			for _, pair := range [][2]float64{{oldIn, newIn}, {oldOut, newOut}} {
+				old, now := pair[0], pair[1]
+				var d float64
+				switch {
+				case old > 0:
+					d = math.Abs(now-old) / old * 100
+				case old == 0 && now > 0, old > 0 && now == 0:
+					d = 100 // 成本从无到有 / 从有到无
+				default:
+					d = 0
+				}
+				if d > maxDrift {
+					maxDrift = d
+				}
+			}
+		}
+		if maxDrift > 0 {
+			p := maxDrift
+			q.CostDriftPct = &p
+			q.CostDrifted = maxDrift >= driftThreshold
+		}
+	}
 }
 
 func derefI2(i *int) int {
@@ -850,7 +1292,6 @@ func derefS(s *string) string {
 func (s *Service) GetQuote(ctx context.Context, quoteID int64) (*Quote, error) {
 	var head Quote
 	var demandCard *int64
-	var versionID *int64
 	err := s.pool.QueryRow(ctx, `
 SELECT id, demand_card_id, customer_name, title, status, current_version_id,
        locked, created_by, created_at, updated_at
@@ -865,14 +1306,13 @@ SELECT id, demand_card_id, customer_name, title, status, current_version_id,
 		return nil, fmt.Errorf("sales: get quote: %w", err)
 	}
 	head.DemandCardID = demandCard
-	if versionID != nil || head.CurrentVersionID != nil {
-		if head.CurrentVersionID != nil {
-			v, err := s.getQuoteVersion(ctx, *head.CurrentVersionID, true)
-			if err == nil {
-				head.Version = v
-			} else if !errors.Is(err, ErrNotFound) {
-				return nil, err
-			}
+	// （2026-11-08 审计 P3-16：此前的 versionID 死变量与恒假分支已删。）
+	if head.CurrentVersionID != nil {
+		v, err := s.getQuoteVersion(ctx, *head.CurrentVersionID, true)
+		if err == nil {
+			head.Version = v
+		} else if !errors.Is(err, ErrNotFound) {
+			return nil, err
 		}
 	}
 	return &head, nil
@@ -1056,11 +1496,18 @@ SELECT id, quote_id, version_id, contact_name, contact_email, expires_at,
 	return out, rows.Err()
 }
 
-// RevokeShare marks one share revoked (idempotent).
-func (s *Service) RevokeShare(ctx context.Context, shareID int64) error {
+// RevokeShare marks one share revoked (idempotent). Owner semantics apply:
+// only the quote creator (or super/unrestricted) may revoke（2026-11-08 审计
+// P2-3 修复——此前只认 shareID，任何 admin 角色可撤销他人客户的链接）。
+func (s *Service) RevokeShare(ctx context.Context, shareID int64, actor string, unrestricted bool) error {
 	tag, err := s.pool.Exec(ctx, `
-UPDATE public.sales_quote_shares SET revoked_at = now()
- WHERE id = $1 AND revoked_at IS NULL`, shareID)
+UPDATE public.sales_quote_shares sh
+   SET revoked_at = now()
+ WHERE sh.id = $1 AND sh.revoked_at IS NULL
+   AND ($3 OR EXISTS (
+        SELECT 1 FROM public.sales_quotes q
+         WHERE q.id = sh.quote_id AND q.created_by = $2))`,
+		shareID, actor, unrestricted)
 	if err != nil {
 		return fmt.Errorf("sales: revoke share: %w", err)
 	}
@@ -1072,13 +1519,16 @@ UPDATE public.sales_quote_shares SET revoked_at = now()
 
 // PublicQuote is the customer-safe projection: sale prices and volumes only —
 // cost, margin, supplier identity and credentials never enter this struct
-// (the response-body assertion test pins the JSON fields).
+// (the response-body assertion test pins the JSON fields). The offer totals
+// (subtotal/sale_total，W2 客户版页面的合计位) are the customer's own price —
+// 2026-11-08 audit: still no cost/margin axis anywhere in the struct.
 type PublicQuote struct {
 	CustomerName string            `json:"customer_name"`
 	Title        string            `json:"title"`
 	ValidUntil   *time.Time        `json:"valid_until"`
 	Expired      bool              `json:"expired"`
 	Tier         string            `json:"tier"`
+	SaleTotalUSD float64           `json:"sale_total_usd"`
 	Items        []PublicQuoteItem `json:"items"`
 }
 
@@ -1093,6 +1543,7 @@ type PublicQuoteItem struct {
 	RateIn        *float64 `json:"rate_in"`
 	RateOut       *float64 `json:"rate_out"`
 	DiscountPct   float64  `json:"discount_pct"`
+	SubtotalUSD   float64  `json:"subtotal_usd"`
 }
 
 // GetPublicQuote resolves a share token to the customer-safe projection and
@@ -1123,11 +1574,14 @@ SELECT quote_id, version_id, expires_at, revoked_at
 	// A6（2026-11-05 审计）：detail.access 截断保留**最近 20 条**——匿名可达
 	// 的行级写入必须有界（此前无限追加 = 无界增长）。取 ord 最大（最新）的
 	// 20 条，再按 ord 升序回排（保持「最新在尾」的既有约定）。
+	// 2026-11-08 审计 P3-12：viewed_at/opened_at/view_count 只在有效访问
+	// （outcome=ok）时推进——过期/撤销后的探测流量仍逐条落审计，但不再污染
+	// 三时点埋点与漏斗口径。
 	if _, err := s.pool.Exec(ctx, `
 UPDATE public.sales_quote_shares
-   SET viewed_at = COALESCE(viewed_at, now()),
+   SET viewed_at = CASE WHEN $2 = 'ok' THEN COALESCE(viewed_at, now()) ELSE viewed_at END,
        opened_at = CASE WHEN $2 = 'ok' THEN now() ELSE opened_at END,
-       view_count = view_count + 1,
+       view_count = view_count + CASE WHEN $2 = 'ok' THEN 1 ELSE 0 END,
        detail = jsonb_set(
             COALESCE(detail, '{}'::jsonb),
             '{access}',
@@ -1174,6 +1628,7 @@ UPDATE public.sales_quote_shares
 			RateIn:        it.RateIn,
 			RateOut:       it.RateOut,
 			DiscountPct:   it.DiscountPct,
+			SubtotalUSD:   it.RevenueUSD, // 报价单预计算列（客户的应付小计，非敏感轴）
 		})
 	}
 	return &PublicQuote{
@@ -1182,6 +1637,7 @@ UPDATE public.sales_quote_shares
 		ValidUntil:   v.ValidUntil,
 		Expired:      v.Expired,
 		Tier:         v.Tier,
+		SaleTotalUSD: v.SaleTotalUSD,
 		Items:        items,
 	}, nil
 }

@@ -28,6 +28,7 @@ package sales
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -267,7 +268,7 @@ func TestRealDBSellableList(t *testing.T) {
 	seedSellable(t, ctx, pool)
 
 	svc := NewService(pool)
-	list, err := svc.ListSellable(ctx)
+	list, err := svc.ListSellable(ctx, true)
 	if err != nil {
 		t.Fatalf("ListSellable: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestRealDBSellableList(t *testing.T) {
 		(credential_id, provider_model_id, sla_tier, status, maintainer) VALUES (10, 100, 'gold', 'active', 'ops1')`); err != nil {
 		t.Fatalf("insert annotation: %v", err)
 	}
-	list2, err := svc.ListSellable(ctx)
+	list2, err := svc.ListSellable(ctx, true)
 	if err != nil {
 		t.Fatalf("ListSellable(2): %v", err)
 	}
@@ -332,7 +333,7 @@ func TestRealDBSellableList(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE public.sales_supply_annotations SET status='suspended' WHERE credential_id=10 AND provider_model_id=100`); err != nil {
 		t.Fatalf("suspend annotation: %v", err)
 	}
-	list3, err := svc.ListSellable(ctx)
+	list3, err := svc.ListSellable(ctx, true)
 	if err != nil {
 		t.Fatalf("ListSellable(3): %v", err)
 	}
@@ -760,9 +761,16 @@ func TestRealDBSharePublicProjection(t *testing.T) {
 			t.Errorf("public body leaks %q: %s", forbidden, bs)
 		}
 	}
-	// 卖价在场（折扣轴随基础价一起展示，决议 C）。
+	// 卖价在场（折扣轴随基础价一起展示，决议 C）；合计位（W2 客户版页面）
+	// = 客户自己的应付金额，不是敏感轴 —— 但成本/毛利轴必须仍缺席。
 	if !strings.Contains(bs, "rate_in") || !strings.Contains(bs, "discount_pct") {
 		t.Errorf("public body should carry the offer (rate_in/discount_pct): %s", bs)
+	}
+	if !strings.Contains(bs, "sale_total_usd") || !strings.Contains(bs, "subtotal_usd") {
+		t.Errorf("public body should carry offer totals: %s", bs)
+	}
+	if pq.SaleTotalUSD <= 0 {
+		t.Errorf("sale_total_usd must carry the precomputed offer total, got %v", pq.SaleTotalUSD)
 	}
 	// 三时点埋点 + view_count。
 	var viewCount int
@@ -806,7 +814,7 @@ SELECT jsonb_array_length(detail->'access'),
 	}
 
 	// 撤销 ⇒ 不可读。
-	if err := svc.RevokeShare(ctx, link.ID); err != nil {
+	if err := svc.RevokeShare(ctx, link.ID, "tester", true); err != nil {
 		t.Fatalf("RevokeShare: %v", err)
 	}
 	if _, err := svc.GetPublicQuote(ctx, link.Token, "1.2.3.4", "ua"); err == nil {
@@ -824,6 +832,373 @@ SELECT jsonb_array_length(detail->'access'),
 	if _, err := svc.GetPublicQuote(ctx, link2.Token, "1.2.3.4", "ua"); err == nil {
 		t.Errorf("expired token must not resolve")
 	}
+	// P3-12（2026-11-08 审计）：过期/撤销后的探测流量不得污染三时点埋点——
+	// view_count 仍为 1、viewed/opened 不变（审计 detail 仍逐条落）。
+	var vcAfter int
+	var openedAfter *time.Time
+	if err := pool.QueryRow(ctx, `SELECT view_count, opened_at FROM public.sales_quote_shares WHERE id = $1`, link2.ID).Scan(&vcAfter, &openedAfter); err != nil {
+		t.Fatalf("read tracking after expired probe: %v", err)
+	}
+	if vcAfter != 0 || openedAfter != nil {
+		t.Errorf("expired probe must not bump view_count/opened_at, got count=%d opened=%v", vcAfter, openedAfter)
+	}
+	var detailAfter string
+	if err := pool.QueryRow(ctx, `SELECT detail::text FROM public.sales_quote_shares WHERE id = $1`, link2.ID).Scan(&detailAfter); err != nil {
+		t.Fatalf("read detail after expired probe: %v", err)
+	}
+	if !strings.Contains(detailAfter, "expired") { // pg jsonb 序列化带空格，只断言词元
+		t.Errorf("expired probe must still land in the access audit, detail: %s", detailAfter)
+	}
 }
 
 func ptrF(f float64) *float64 { return &f }
+
+// ── 2026-11-08 风暴档审计轮新增腿 ──────────────────────────────────────────
+//
+//   ⑤ 服务端派生：建单不带 confidence/cost_currency/cost 也成功（P1 钉：
+//      此前版本置信 '' 违反 945 CHECK ⇒ 前端建单必 23514）+ 客户端声明
+//      成本不采信（P6）+ price_axes 五价快照非空（P5）；
+//   ⑥ 需求→报价联动（P3-13：'quoted' 死值激活）；
+//   ⑦ 成本漂移（W2-T2：改绑定价 ⇒ 活单 drifted，won 单不漂）；
+//   ⑧ 看板读模型（W2-T2：漏斗/触发率/丢单原因/毛利桶）；
+//   ⑨ owner 语义（P2-3：清单收窄/非本人 404/撤销越权拒绝）；
+//   ⑩ 联系人最小化（P2-4：reveal=false ⇒ vendor_contact 不下发）。
+
+// TestRealDBCreateQuoteServerDerivedCost —— ⑤。
+func TestRealDBCreateQuoteServerDerivedCost(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
+		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
+		t.Fatalf("seed cents: %v", err)
+	}
+	svc := NewService(pool)
+
+	// 前端真实形状（2026-11-08 审计 P1 的 payload）：无 confidence、无
+	// cost_currency、无 cost_*；甚至故意带上一个错误成本（服务端必须不采信）。
+	wrongCost := 99.0
+	in := QuoteInput{
+		CustomerName: "客户乙",
+		Title:        "服务端派生钉",
+		Tier:         "standard",
+		Items: []QuoteItemInput{{
+			CanonicalName: "model-a",
+			DisplayName:   "Model A",
+			EstTokensIn:   100_000_000,
+			EstTokensOut:  20_000_000,
+			CostInPer1M:   &wrongCost, // 客户端断言：必须被 binding 价覆盖
+			RateIn:        ptrF(100),
+			RateOut:       ptrF(200),
+		}},
+	}
+	q, err := svc.CreateQuote(ctx, in, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote without client cost/confidence: %v（P1 修复前的 23514 链）", err)
+	}
+	if q.Version == nil || q.Version.PriceConfidence != "trusted" {
+		t.Fatalf("derived version confidence = %v, want trusted", q.Version)
+	}
+	var it QuoteItemOutput
+	for _, v := range q.Version.Items {
+		if v.CanonicalName == "model-a" {
+			it = v
+		}
+	}
+	if it.CostInPer1M == nil || *it.CostInPer1M != 1.0 || it.CostOutPer1M == nil || *it.CostOutPer1M != 2.0 {
+		t.Errorf("derived cost = %v/%v, want binding price 1.0/2.0 (客户端断言 99 必须被覆盖)", it.CostInPer1M, it.CostOutPer1M)
+	}
+	if it.CostCurrency != "USD" {
+		t.Errorf("derived currency = %q, want USD", it.CostCurrency)
+	}
+	if it.Confidence != "trusted" {
+		t.Errorf("derived item confidence = %q, want trusted", it.Confidence)
+	}
+	// P5：price_axes 五价快照非空（此前恒 '{}'）。
+	if q.Version.PriceAxes == nil || len(q.Version.PriceAxes) == 0 {
+		t.Errorf("price_axes must be materialized, got %v", q.Version.PriceAxes)
+	}
+	if axesItems, ok := q.Version.PriceAxes["items"].(map[string]any); !ok || axesItems["model-a"] == nil {
+		t.Errorf("price_axes.items[model-a] missing: %v", q.Version.PriceAxes)
+	}
+	// 提交门仍然工作：trusted ⇒ submit 通（链路全绿语义）。
+	if _, err := svc.SubmitQuote(ctx, q.ID, "sales01"); err != nil {
+		t.Errorf("SubmitQuote after derivation: %v", err)
+	}
+	// 视图外模型拒绝（无成本依据不进报价）。
+	bad := in
+	bad.Items = []QuoteItemInput{{CanonicalName: "not-in-view", EstTokensIn: 1, RateIn: ptrF(1)}}
+	if _, err := svc.CreateQuote(ctx, bad, "sales01"); err == nil {
+		t.Errorf("canonical outside supply view must be rejected")
+	}
+	// 负数输入拒绝（P3-9）。
+	neg := in
+	neg.Items = []QuoteItemInput{{CanonicalName: "model-a", EstTokensIn: -1, RateIn: ptrF(1)}}
+	if _, err := svc.CreateQuote(ctx, neg, "sales01"); err == nil {
+		t.Errorf("negative est_tokens must be rejected")
+	}
+}
+
+// TestRealDBDemandQuotedLinkage —— ⑥。
+func TestRealDBDemandQuotedLinkage(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	svc := NewService(pool)
+
+	card, err := svc.CreateDemandCard(ctx, DemandCard{CustomerName: "客户丙"}, "sales01")
+	if err != nil {
+		t.Fatalf("CreateDemandCard: %v", err)
+	}
+	in := trustedQuoteInput(&card.ID)
+	if _, err := svc.CreateQuote(ctx, in, "sales01"); err != nil {
+		t.Fatalf("CreateQuote: %v", err)
+	}
+	got, err := svc.GetDemandCard(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("GetDemandCard: %v", err)
+	}
+	if got.Status != "quoted" {
+		t.Errorf("demand card status = %q, want quoted（P3-13 死值激活）", got.Status)
+	}
+}
+
+// TestRealDBCostDrift —— ⑦。
+func TestRealDBCostDrift(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
+		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
+		t.Fatalf("seed cents: %v", err)
+	}
+	svc := NewService(pool)
+
+	qIn := trustedQuoteInput(nil)
+	qIn.Items[0].RateIn = ptrF(100)
+	qIn.Items[0].RateOut = ptrF(200)
+	q, err := svc.CreateQuote(ctx, qIn, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote: %v", err)
+	}
+	qOld, err := svc.CreateQuote(ctx, qIn, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote(2): %v", err)
+	}
+	if _, err := svc.SubmitQuote(ctx, qOld.ID, "sales01"); err != nil {
+		t.Fatalf("SubmitQuote(2): %v", err)
+	}
+	if _, err := svc.SendQuote(ctx, qOld.ID, "sales01"); err != nil {
+		t.Fatalf("SendQuote(2): %v", err)
+	}
+	if _, err := svc.CloseQuote(ctx, qOld.ID, StatusWon, "签了", "sales01"); err != nil {
+		t.Fatalf("CloseQuote(2): %v", err)
+	}
+	// 改绑定价 +30% ⇒ 活单漂移 ≥10%（默认阈值）⇒ drifted；won 单不漂。
+	if _, err := pool.Exec(ctx, `UPDATE public.credential_model_bindings
+	     SET unit_price_in_per_1m = 1.3, unit_price_out_per_1m = 2.6
+	   WHERE credential_id = 10 AND provider_model_id = 100`); err != nil {
+		t.Fatalf("drift binding price: %v", err)
+	}
+	quotes, err := svc.ListQuotes(ctx, "", "sales01", true)
+	if err != nil {
+		t.Fatalf("ListQuotes: %v", err)
+	}
+	byID := map[int64]Quote{}
+	for _, qq := range quotes {
+		byID[qq.ID] = qq
+	}
+	drifted, ok := byID[q.ID]
+	if !ok {
+		t.Fatalf("active quote %d missing from list", q.ID)
+	}
+	if !drifted.CostDrifted || drifted.CostDriftPct == nil || *drifted.CostDriftPct < 10 {
+		t.Errorf("active quote drift = %v/%v, want drifted ≥10%%（成本 1.0→1.3）", drifted.CostDrifted, drifted.CostDriftPct)
+	}
+	won := byID[qOld.ID]
+	if won.CostDriftPct != nil || won.CostDrifted {
+		t.Errorf("won quote must not carry drift markers（已收口单无收件人）")
+	}
+}
+
+// TestRealDBDashboard —— ⑧。
+func TestRealDBDashboard(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
+		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
+		t.Fatalf("seed cents: %v", err)
+	}
+	svc := NewService(pool)
+
+	in := trustedQuoteInput(nil)
+	in.Items[0].RateIn = ptrF(100)
+	in.Items[0].RateOut = ptrF(200)
+	q, err := svc.CreateQuote(ctx, in, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote: %v", err)
+	}
+	// 深折扣触发人审 ⇒ status_log pending_approval（触发率分子/分母）。
+	inTrig := trustedQuoteInput(nil)
+	inTrig.Items[0].RateIn = ptrF(100)
+	inTrig.Items[0].RateOut = ptrF(200)
+	inTrig.Items[0].DiscountPct = 50
+	qTrig, err := svc.CreateQuote(ctx, inTrig, "sales02")
+	if err != nil {
+		t.Fatalf("CreateQuote(trigger): %v", err)
+	}
+	if _, err := svc.SubmitQuote(ctx, qTrig.ID, "sales02"); err != nil {
+		t.Fatalf("SubmitQuote(trigger): %v", err)
+	}
+	if _, err := svc.SubmitQuote(ctx, q.ID, "sales01"); err != nil {
+		t.Fatalf("SubmitQuote: %v", err)
+	}
+	if _, err := svc.SendQuote(ctx, q.ID, "sales01"); err != nil {
+		t.Fatalf("SendQuote: %v", err)
+	}
+	if _, err := svc.CloseQuote(ctx, q.ID, StatusLost, "价格太高", "sales01"); err != nil {
+		t.Fatalf("CloseQuote: %v", err)
+	}
+	dash, err := svc.FunnelDashboard(ctx)
+	if err != nil {
+		t.Fatalf("FunnelDashboard: %v", err)
+	}
+	if dash.Funnel["lost"] != 1 || dash.Funnel["pending_approval"] != 1 {
+		t.Errorf("funnel = %v, want lost=1 pending_approval=1", dash.Funnel)
+	}
+	if dash.SubmittedQuotes != 2 || dash.TriggeredQuotes != 1 {
+		t.Errorf("trigger rate base = %d/%d, want 1/2", dash.TriggeredQuotes, dash.SubmittedQuotes)
+	}
+	if dash.TriggerRatePct != 50 {
+		t.Errorf("trigger rate = %v, want 50", dash.TriggerRatePct)
+	}
+	if !dash.TriggerRateAlert {
+		t.Errorf("50%% rate must exceed the 40%% alert line ⇒ TriggerRateAlert=true")
+	}
+	if len(dash.LostReasons) == 0 || dash.LostReasons[0].Reason != "价格太高" {
+		t.Errorf("lost reasons = %v, want [价格太高]", dash.LostReasons)
+	}
+}
+
+// TestRealDBOwnerSemantics —— ⑨。
+func TestRealDBOwnerSemantics(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.maas_settings (id, cents_per_credit) VALUES (1, 20)
+		ON CONFLICT (id) DO UPDATE SET cents_per_credit = EXCLUDED.cents_per_credit`); err != nil {
+		t.Fatalf("seed cents: %v", err)
+	}
+	svc := NewService(pool)
+
+	in := trustedQuoteInput(nil)
+	in.Items[0].RateIn = ptrF(100)
+	in.Items[0].RateOut = ptrF(200)
+	q, err := svc.CreateQuote(ctx, in, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote: %v", err)
+	}
+	if err := svc.EnsureQuoteOwner(ctx, q.ID, "sales01", false); err != nil {
+		t.Errorf("owner must pass: %v", err)
+	}
+	if err := svc.EnsureQuoteOwner(ctx, q.ID, "sales02", false); !errorsIsNotFound(err) {
+		t.Errorf("non-owner must get ErrNotFound (不泄露存在性), got %v", err)
+	}
+	if err := svc.EnsureQuoteOwner(ctx, q.ID, "sales02", true); err != nil {
+		t.Errorf("unrestricted must pass: %v", err)
+	}
+	// 清单收窄：sales02 只看自己。
+	if _, err := svc.CreateQuote(ctx, in, "sales02"); err != nil {
+		t.Fatalf("CreateQuote(sales02): %v", err)
+	}
+	mine, err := svc.ListQuotes(ctx, "", "sales02", false)
+	if err != nil {
+		t.Fatalf("ListQuotes(sales02): %v", err)
+	}
+	if len(mine) != 1 || mine[0].CreatedBy != "sales02" {
+		t.Errorf("owner-scoped list = %d rows, want 1 own row", len(mine))
+	}
+	// 撤销越权拒绝（RevokeShare owner 语义）。分享要求 sent/approved ⇒ 先推进。
+	if _, err := svc.SubmitQuote(ctx, q.ID, "sales01"); err != nil {
+		t.Fatalf("SubmitQuote: %v", err)
+	}
+	link, err := svc.CreateShare(ctx, q.ID, "李四", "li@example.com", time.Hour, "sales01")
+	if err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	if err := svc.RevokeShare(ctx, link.ID, "sales02", false); !errorsIsNotFound(err) {
+		t.Errorf("non-owner revoke must be ErrNotFound, got %v", err)
+	}
+	if err := svc.RevokeShare(ctx, link.ID, "sales02", true); err != nil {
+		t.Errorf("unrestricted revoke must pass: %v", err)
+	}
+}
+
+func errorsIsNotFound(err error) bool { return err != nil && errors.Is(err, ErrNotFound) }
+
+// TestRealDBContactMinimization —— ⑩。
+func TestRealDBContactMinimization(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.sales_supply_annotations
+	    (credential_id, provider_model_id, vendor_contact, status)
+	  VALUES (10, 100, '王厂商 13800000000', 'active')
+	  ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET vendor_contact = EXCLUDED.vendor_contact`); err != nil {
+		t.Fatalf("seed annotation: %v", err)
+	}
+	svc := NewService(pool)
+	hidden, err := svc.ListSellable(ctx, false)
+	if err != nil {
+		t.Fatalf("ListSellable(hidden): %v", err)
+	}
+	for _, row := range hidden.Items {
+		if row.Annotation != nil && row.Annotation.VendorContact != "" {
+			t.Errorf("non-super view must strip vendor_contact, got %q", row.Annotation.VendorContact)
+		}
+	}
+	shown, err := svc.ListSellable(ctx, true)
+	if err != nil {
+		t.Fatalf("ListSellable(shown): %v", err)
+	}
+	found := false
+	for _, row := range shown.Items {
+		if row.Annotation != nil && row.Annotation.VendorContact == "王厂商 13800000000" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("super view must carry vendor_contact")
+	}
+}

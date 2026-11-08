@@ -4,6 +4,49 @@
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-09 MCP 服务网关内置轮（goal 会话）**：
+> ★ 用户目标＝「学习微软及其它公司开源的 MCP 服务网关特性，结合附件方案（JFMCP PDF ＋
+>   marketing 侧 `docs/jfmcp-gateway/` 方案族），把智能体/技能/MCP 的网关功能做成可用的
+>   完整功能；MCP 网关可以放到 llm-gateway-go 中一并提供；**合并前先检查 ~/workspace 下的
+>   既有 mcp 网关项目，不遗漏已完成的功能**；完成后用 Maestro 方式全面测试验证 → 修正 →
+>   提交推送」。
+> ★ 取证与口径变更：附件方案在 `ai-platform/marketing/docs/jfmcp-gateway/`（PDF 为 10 页
+>   扫描件、无文本层，已由 00 号文档逐页还原）。该方案 §4 明确写「不在 llm-gateway-go 内
+>   实现通用 MCP 工具网关」——**本轮按用户指令改口径**：工具面强制入口做进 llm-gateway-go，
+>   marketing 侧保留广场/申请/审批外壳。既有实现＝`ai-native-tools/tools/mcp-gateway`
+>   （Node.js，独立进程 :8088，nginx 路径分流 + 能力路由 + key 限流 + bindings/tool-allow
+>   执法 + keys 引导面 + Prometheus）。
+> ★ 交付（新包 `mcp/`，根包，与 `registry`/`apihub` 同级）：数据面**无状态** JSON-RPC over
+>   HTTP（`POST /mcp`，协议元数据随请求携带，不依赖 session 亲和，对齐 microsoft/mcp-gateway）；
+>   控制面 `/mcp/control/*`（适配器/工具/智能体/技能/凭证/审批/审计）；治理链 8 闸（身份 →
+>   scope → 可见性(private/team/public) → key×tool 允许表(deny-wins) → backend 绑定 →
+>   敏感度审批凭据 → 参数白名单+JSON Schema → 令牌桶限流/熔断）；凭证签发·轮换·吊销（明文
+>   只返回一次、只存 SHA-256）；零凭据引导面 apply/status/claim（移植既有 D2/D3 语义：幂等 +
+>   IP/设备双维限流 + 自动/人工批准 + 一次性领取）；审计环形缓冲 + JSONL 落盘 + NDJSON 导出；
+>   出参脱敏（复用仓内 `domains/secretmask` + PII 掩码）；运营看板 `/mcp/admin`（自包含 HTML，
+>   无前端构建链）；RFC 9728 受保护资源元数据。指标沿用既有 `mcp_gateway_*` 指标名（告警规则
+>   可平移），另加 8 个治理指标。独立进程形态 `cmd/mcp-gateway`（含 `--demo` 演示模式）。
+> ★ 合并映射：既有仓 25 项已完成功能**逐条落位**（等价/增强/替代），未移植 6 项显式登记
+>   （WS relay、工具结果缓存、nginx 侧限流、stdio 上游、出向 OAuth 2.1、CEL）——见
+>   `docs/mcp-gateway/03-legacy-merge-map.md`（对应「不遗漏已完成功能」的硬要求）。
+> ★ 验证（三层，脚本 `tests/mcp-gateway-maestro/run.sh`）：L1 `go test ./mcp/...` 全绿；
+>   L2 真实进程 API 场景 S01–S19 全绿（401 身份 / 命名空间化聚合 / 转发 / 控制面鉴权 /
+>   注册 / 签发 / allow-list 越权 403 / 高敏缺审批 403 / 带审批放行 / 吊销即 401 / 审计与
+>   导出 / RFC 9728 / 限流 429 / 引导面幂等·安全状态·一次性领取）；L3 Maestro flow
+>   `maestro/flows/10-mcp-gateway.yaml` 全绿（运营看板逐段断言 + 无令牌时报错可见）。
+>   另：`go build ./...` rc=0、`go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0、
+>   `gofmt -l` 零输出、`go test ./middleware/...` 全绿（鉴权放行表改动无回归）。
+> ★ 实跑修掉的 5 个问题（都是「先跑再判」发现的，不是读代码想出来的）：①固定端口 :8799 被
+>   本机常驻的 DeployConfigConsole 占用 ⇒ 请求静默串台、断言全红且与被测物无关 ⇒ 改随机空闲
+>   端口；②容器交叉编译出的测试二进制 exec format error ⇒ 构建带 GOOS/GOARCH、测试不带；
+>   ③Maestro web flow 的 visible 判定受**视口**约束 ⇒ 折叠线以下内容必须 scrollUntilVisible
+>   再断言（"最近审计事件"明明在 DOM 里却判红）；④看板错误文案与 HTTP 详情拼成整串导致文本
+>   匹配失败 ⇒ 拆成稳定文案 + 详情两段；⑤claim 语义：领取后二次领取应报 already_claimed，
+>   原实现按状态判会误报 not_approved。另修一处安全收口：`/mcp/control/health` 含上游端点与
+>   熔断态 ⇒ 改需管理令牌，探针改用公开的 `/mcp/control/healthz`。
+> ★ 明确没做（登记在 `docs/mcp-gateway/02-capability-matrix.md` §3）：上游 stdio/SSE 归一化、
+>   REST→MCP 虚拟化、RFC 8707/7591/8414 规范族、出向 3LO/OBO、OTel trace、prompt-injection
+>   检测、适配器并发上限执行、工具结果缓存、OAuth 出向代理。
 > **2026-11-09 211 蓝绿部署轮（T-P1+W1 上线 + 专项验证，goal 会话，通用式见 `LESSONS.md` **§644**）**：
 > ★ 用户目标＝「拉取合并 → 部署 211（蓝绿、健康才切流、前后端都正常）→ 专项测试验证」。
 > ★ **部署闸门两缺陷修复（Windows 部署机）**：① 测试闸门卡 go1.27.1（本机 go 实体 1.27.1、
@@ -71,6 +114,37 @@
 > （先合并 verdict 不合并存储）＋T4 会话桶历史环/C1 经济学转正＋T5 质量 rollup
 > （复用 supplier_error_stats 骨架不建新表）；W1–W4 分轮各带验收门；待裁决 4 条
 > （含「单次 429=3min」既有承诺变更、上游噪音可接受度）。**明确没做**：零代码零迁移零部署。
+> **2026-11-08 报价系统 MVP 风暴档审计与终版实施轮（goal 会话，审计档
+> `docs/audit/2026-11-08-报价系统MVP-风暴档审计与终版实施轮.md`；通用式见 `LESSONS.md` **§644**（合并时实测并行会话已用 §643，改号））**：
+> ★ 用户目标＝「根据《2026-11-04-报价系统MVP-头脑风暴与运营思路》进行分析与审计，修正发现的问题，
+> 完成最终版本，然后进行执行实施」。开工树 `bb38b3223` 干净；审计 = 2 并行只读代理（后端 90
+> tool-uses / 前端 29）+ 211 活体（sales_* 8 表全 0 行＝「链路通了没人走」字面应验；视图 trusted
+> 27 行未漂移；salesdecorate price_observation 9242 行最新 11-08）。
+> ★★★★ **P1＝前端建单链必 23514**：payload 无 confidence ⇒ 版本置信空串违反 945 CHECK
+> （真库测试全显式传 trusted ⇒ 全绿掩盖唯一真实用户路径）⇒ 根修＝**服务端派生**（deriveQuoteItems：
+> 按 canonical 回查供给视图覆盖成本三轴+置信，客户端声明永不采信；P5 五价快照恒空/P6 C3 门可伪造
+> 同源关掉）；本轮自己的 realdb 腿当场抓出 **margin_pct 22003 溢出**（收入趋零 ⇒ -721300% 击穿
+> numeric(8,4)）⇒ marginPctOf 钳 ±9999.9999 + 收入≤0⇒NULL。
+> ★ 4P2 收口＝公开面真限速（ipWindowLimiter per-IP 固定窗，`sales.public.rate_limit_per_min`=30，
+> IP 走 ContextClientIP 可信解析）/owner 语义落实（salesOwnerScope + EnsureQuoteOwner 非本人 404 +
+> ListQuotes SQL 收窄）/**RevokeShare 接线**（此前无任何 API 面＝「可撤销」只有服务半边）/
+> 联系人最小化（revealContacts 仅 super）+ 8P3（RowsAffected 守卫/负数拒绝/quoted 联动激活/
+> 过期探测不污染埋点/审计行实状态/死代码）。
+> ★ 交付（执行实施）＝**W2-T2**：`GET /api/admin/sales/dashboard`（super，全现算零新表：漏斗含
+> expired 派生态现算 + DealHub 突破率走 status_log 面 + jsonb 逐维聚合 + 毛利分桶；**占位键
+> approval_rate_alert_pct 自此有消费方**）+ 成本漂移（attachCostDrift 与派生**同源选行**，提醒不自动撤）
+> + 三档系数 settings 化（tier_coef_*=1.3/1.6/2.0 仅前端快填，服务端不校验——两把尺反模式不进服务端）
+> + **客户版页面** `/public/quote/:token`（public 路由 + PublicQuoteView + 裸 fetch 绕 401 会话裁决 +
+> 打印兜底 PDF + 水印 + 过期/撤销统一不可用态；响应体断言随 sale_total_usd/subtotal_usd 收紧——
+> 合计是报价要素非敏感轴）+ 前端建单弹窗化/模型选择器/三档快填/prompt→dialog/分享撤销。
+> ★ 验收＝go build/vet 全仓 rc=0；sales realdb **13 腿全绿**（+7 新）；admin 110s/settings 绿；
+> vitest **296 文件/3027 passed**（+6 判据）；vue-tsc rc=0、vite build ✓；i18n 四门全绿（20+19 新键×8
+> 语种，死键 4 删，es/fr 两处同值棘轮当场改译）；navCoverage 反向断言抓回我自己的白名单登记
+> （工作台复制链接＝真实入口 ⇒ 撤登记）；admin-routes 619→620 + post-surface 补 1（class=read）。
+> ★ 登记：940 同步器显式不落地（跨仓读 salesdecorate 需 owner 授权+跨库凭据两件前置＝新裁决）；
+> 两维红线分层维持退化（「模型档」无数据源＝假维度）；服务端 PDF 不做（打印兜底已给）；
+> err.Error() 直透与 944 status_log 注释矛盾登记遗留。**明确没做**：零迁移（本轮无新迁移）、
+> 零部署（245/154/211 留给部署轮，公开面行为变化应带冒烟）。
 > **2026-11-07 探测浪费与恢复及时性根修轮（goal 会话；方案档
 > `docs/audit/2026-11-07-探测浪费与恢复及时性根修轮.md`；T2 留档
 > `tests/48h-audit/reports/history/T2-2026-11-07-wasteround.md`）**：

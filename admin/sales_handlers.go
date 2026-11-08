@@ -7,14 +7,21 @@ package admin
 //
 // 角色闸（规划 §4：自营内部运营表 ⇒ 角色闸在应用层，无 RLS）：
 //   - sellable 清单 / 供给登记读：h.admin（tenant_admin + admin_key + super）；
+//     供应商联系人仅 super 下发（数据最小化，P2-4）；
 //   - 供给登记写：h.superAdmin（ops 面，照 /api/admin/maas/* 目录面先例）；
-//   - 需求池 / 报价工作台动作：h.admin + owner 语义（JWT 用户 = 本人动作，
-//     super 可显式 ?actor= 越权，A-11 先例 myOwnerScope）。
+//   - 需求池：h.admin（池语义：open 卡全团队可见可领取；close 收窄领取人）；
+//   - 报价工作台：owner 语义**已实现**（2026-11-08 审计 P2-3 修复——此前面
+//     板头虚标）：读与动作收窄 created_by 本人（salesOwnerScope），super 全
+//     量，legacy admin_key 服务账号不收窄（A-11 myOwnerScope 同款）；非本人
+//     404 不泄露存在性；
+//   - 审批 / 看板：h.superAdmin（看板 = 全团队聚合毛利，管理层面）。
 //
-// 公开面（/api/public/quote/{token}）单独一个文件（无登录、限速面，
-// 安全审查：token 128bit、hash 库存、TTL、可撤销、访问审计）。
+// 公开面（/api/public/quote/{token}）单独一个文件（无登录、真限速面——
+// 2026-11-08 P2-2 修复前注释声称限速但实现为零；安全审查：token 128bit、
+// hash 库存、TTL、可撤销、访问审计）。
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,7 +37,7 @@ func (h *Handler) salesSvc() *sales.Service {
 	return sales.NewService(h.db)
 }
 
-// registerSalesRoutes wires the quotation-MVP admin surface (W1).
+// registerSalesRoutes wires the quotation-MVP admin surface (W1 + W2-T2).
 func (h *Handler) registerSalesRoutes(mux *http.ServeMux) {
 	// 供给池（W1-T1）
 	mux.HandleFunc("/api/admin/sales/sellable", h.admin(h.handleSalesSellable))
@@ -42,6 +49,9 @@ func (h *Handler) registerSalesRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/sales/quotes/", h.admin(h.handleSalesQuoteAction))
 	// 审批（super / 运营负责人，MVP 单级审批）
 	mux.HandleFunc("/api/admin/sales/approvals", h.superAdmin(h.handleSalesApprovals))
+	// 管理层漏斗看板（W2-T2，风暴档 §3.2「管理层的一天」）：全团队聚合数据
+	// ⇒ super-only（与审批同角色面；销售工作台不展示他人毛利）。
+	mux.HandleFunc("/api/admin/sales/dashboard", h.superAdmin(h.handleSalesDashboard))
 }
 
 // ── 供给池 ──────────────────────────────────────────────────────────────
@@ -56,7 +66,7 @@ func (h *Handler) handleSalesSellable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	list, err := svc.ListSellable(r.Context())
+	list, err := svc.ListSellable(r.Context(), salesAuthRole(r) == "super_admin")
 	if err != nil {
 		writeInternalErr(w, "internal error (see server logs)", err)
 		return
@@ -86,7 +96,7 @@ func (h *Handler) handleSalesSupplyList(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	items, err := svc.ListSupplyAnnotations(r.Context())
+	items, err := svc.ListSupplyAnnotations(r.Context(), salesAuthRole(r) == "super_admin")
 	if err != nil {
 		writeInternalErr(w, "internal error (see server logs)", err)
 		return
@@ -252,7 +262,8 @@ func (h *Handler) handleSalesQuotes(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		quotes, err := svc.ListQuotes(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")))
+		actor, unrestricted := salesOwnerScope(r)
+		quotes, err := svc.ListQuotes(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), actor, unrestricted)
 		if err != nil {
 			writeInternalErr(w, "internal error (see server logs)", err)
 			return
@@ -289,10 +300,43 @@ func (h *Handler) handleSalesQuoteAction(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid quote id")
 		return
 	}
-	actor := salesAuthUsername(r)
+	actor, unrestricted := salesOwnerScope(r)
+	// owner 语义（P2-3）：报价单 = 销售本人商业数据；单级动作前先判
+	// created_by（super / legacy admin_key 放行）。非本人 404——不泄露存在性。
+	if err := svc.EnsureQuoteOwner(r.Context(), id, actor, unrestricted); err != nil {
+		if errors.Is(err, sales.ErrNotFound) {
+			writeLookupErr(w, "quote not found", err)
+			return
+		}
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
 	action := ""
 	if len(parts) == 2 {
 		action = parts[1]
+	}
+	// 分享撤销（2026-11-08 审计缺口收口：RevokeShare 此前没有任何 API 面，
+	// 风暴档 §3.5「可撤销」只有服务半边）：POST .../quotes/{id}/shares/{sid}/revoke
+	if len(parts) == 4 && parts[1] == "shares" && parts[3] == "revoke" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		shareID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil || shareID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid share id")
+			return
+		}
+		if err := svc.RevokeShare(r.Context(), shareID, actor, unrestricted); err != nil {
+			if errors.Is(err, sales.ErrNotFound) {
+				writeLookupErr(w, "share not found", err)
+				return
+			}
+			writeInternalErr(w, "internal error (see server logs)", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
 	}
 
 	if r.Method == http.MethodGet && action == "" {
@@ -465,6 +509,26 @@ func (h *Handler) handleSalesApprovals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": approvals})
 }
 
+// ── 管理层漏斗看板（W2-T2，super） ───────────────────────────────────────
+
+func (h *Handler) handleSalesDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	svc := h.salesSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	dash, err := svc.FunnelDashboard(r.Context())
+	if err != nil {
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dash)
+}
+
 // ── auth 小助手 ─────────────────────────────────────────────────────────
 
 func salesAuthUsername(r *http.Request) string {
@@ -479,4 +543,22 @@ func salesAuthRole(r *http.Request) string {
 		return auth.Role
 	}
 	return ""
+}
+
+// salesOwnerScope decides the owner narrowing for quote-scope data (A-11
+// myOwnerScope 同款口径，2026-11-08 审计 P2-3 修复)：
+//   - legacy admin_key（无 username 的服务账号）不收窄——**有意**（系统
+//     集成面，myOwnerScope 先例逐字一致）；
+//   - super_admin 全量（unrestricted）；
+//   - 其余 JWT 用户：收窄到本人（unrestricted=false，动作与读面都判
+//     created_by）。
+func salesOwnerScope(r *http.Request) (actor string, unrestricted bool) {
+	auth := GetAuthContext(r)
+	if auth == nil {
+		return "", false
+	}
+	if !auth.IsJWT || strings.TrimSpace(auth.Username) == "" {
+		return "", true // legacy admin_key 服务账号不收窄（有意）
+	}
+	return auth.Username, auth.Role == "super_admin"
 }

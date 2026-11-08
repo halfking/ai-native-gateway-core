@@ -1,0 +1,1295 @@
+{
+ "tools": [
+  {
+   "name": "search_memory",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "search",
+    "recall",
+    "read"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "从 KxMemory 中按自然语言检索记忆",
+   "keywords": [
+    "search",
+    "recall",
+    "memory",
+    "搜索",
+    "回忆",
+    "记忆",
+    "查询",
+    "历史"
+   ]
+  },
+  {
+   "name": "add_message",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "write",
+    "create"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 120,
+   "description": "将当前对话或一条摘要写入 KxMemory",
+   "keywords": [
+    "add",
+    "message",
+    "write",
+    "添加",
+    "消息",
+    "对话",
+    "保存"
+   ]
+  },
+  {
+   "name": "get_project_facts",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "read",
+    "project"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "获取项目事实",
+   "keywords": [
+    "project",
+    "facts",
+    "项目",
+    "事实"
+   ]
+  },
+  {
+   "name": "search_project_kb",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "search",
+    "read",
+    "kb"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "搜索项目知识库",
+   "keywords": [
+    "search",
+    "kb",
+    "project",
+    "知识库",
+    "项目"
+   ]
+  },
+  {
+   "name": "ask_kb",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "ask",
+    "qa",
+    "llm"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 2000,
+   "rate_limit_per_min": 30,
+   "description": "向知识库提问 (调 LLM)",
+   "keywords": [
+    "ask",
+    "kb",
+    "question",
+    "回答",
+    "知识库",
+    "提问"
+   ]
+  },
+  {
+   "name": "get_project_context",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "read",
+    "context",
+    "project"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "获取项目上下文",
+   "keywords": [
+    "context",
+    "project",
+    "上下文",
+    "项目"
+   ]
+  },
+  {
+   "name": "get_project_kb_status",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "read",
+    "status",
+    "project"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 50,
+   "rate_limit_per_min": 60,
+   "description": "项目 KB 状态",
+   "keywords": [
+    "status",
+    "kb",
+    "状态",
+    "知识库"
+   ]
+  },
+  {
+   "name": "submit_openclaw_feedback",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "write",
+    "feedback",
+    "openclaw"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "提交 OpenClaw 反馈",
+   "keywords": [
+    "feedback",
+    "openclaw",
+    "反馈",
+    "OpenClaw"
+   ]
+  },
+  {
+   "name": "get_session_context",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "read",
+    "session"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "获取会话上下文",
+   "keywords": [
+    "session",
+    "context",
+    "会话",
+    "上下文"
+   ]
+  },
+  {
+   "name": "get_layer_governance",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "read",
+    "governance"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "获取分层治理",
+   "keywords": [
+    "layer",
+    "governance",
+    "分层",
+    "治理"
+   ]
+  },
+  {
+   "name": "delete_memory",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "delete",
+    "write"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "删除记忆",
+   "keywords": [
+    "delete",
+    "memory",
+    "删除",
+    "记忆"
+   ]
+  },
+  {
+   "name": "update_memory_tags",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "update",
+    "write"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "更新记忆标签",
+   "keywords": [
+    "update",
+    "tags",
+    "更新",
+    "标签"
+   ]
+  },
+  {
+   "name": "list_memories",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "list",
+    "read"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "列出记忆",
+   "keywords": [
+    "list",
+    "memories",
+    "列出",
+    "记忆"
+   ]
+  },
+  {
+   "name": "add_memory",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "create",
+    "write"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "添加记忆",
+   "keywords": [
+    "add",
+    "memory",
+    "添加",
+    "记忆"
+   ]
+  },
+  {
+   "name": "get_all_memories",
+   "group": "L0_core_memory",
+   "layer": "L0",
+   "capabilities": [
+    "read",
+    "list"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 30,
+   "description": "获取全部记忆",
+   "keywords": [
+    "all",
+    "memories",
+    "全部",
+    "记忆"
+   ]
+  },
+  {
+   "name": "capture_agent_interaction",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "write",
+    "capture"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 120,
+   "description": "捕获 agent 交互",
+   "keywords": [
+    "capture",
+    "interaction",
+    "agent",
+    "捕获",
+    "交互"
+   ]
+  },
+  {
+   "name": "batch_capture_interactions",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "write",
+    "capture",
+    "batch"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 500,
+   "rate_limit_per_min": 30,
+   "description": "批量捕获 agent 交互",
+   "keywords": [
+    "batch",
+    "capture",
+    "interactions",
+    "批量",
+    "捕获"
+   ]
+  },
+  {
+   "name": "get_agent_interactions",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "read",
+    "list"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "获取 agent 交互列表",
+   "keywords": [
+    "interactions",
+    "agent",
+    "交互",
+    "列表"
+   ]
+  },
+  {
+   "name": "get_session_interactions",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "read",
+    "list",
+    "session"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "获取会话交互",
+   "keywords": [
+    "session",
+    "interactions",
+    "会话",
+    "交互"
+   ]
+  },
+  {
+   "name": "summarize_interaction",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "llm",
+    "summarize"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 2000,
+   "rate_limit_per_min": 30,
+   "description": "总结交互 (调 LLM)",
+   "keywords": [
+    "summarize",
+    "summary",
+    "总结",
+    "摘要"
+   ]
+  },
+  {
+   "name": "extract_knowledge",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "llm",
+    "extract"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 3000,
+   "rate_limit_per_min": 30,
+   "description": "从交互中提取知识 (调 LLM)",
+   "keywords": [
+    "extract",
+    "knowledge",
+    "提取",
+    "知识"
+   ]
+  },
+  {
+   "name": "distill_knowledge",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "llm",
+    "distill"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 3000,
+   "rate_limit_per_min": 30,
+   "description": "蒸馏知识 (调 LLM)",
+   "keywords": [
+    "distill",
+    "knowledge",
+    "蒸馏",
+    "知识"
+   ]
+  },
+  {
+   "name": "extract_experience",
+   "group": "L1_interaction",
+   "layer": "L1",
+   "capabilities": [
+    "llm",
+    "extract",
+    "experience"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 3000,
+   "rate_limit_per_min": 30,
+   "description": "提取经验 (调 LLM)",
+   "keywords": [
+    "extract",
+    "experience",
+    "提取",
+    "经验"
+   ]
+  },
+  {
+   "name": "get_knowledge_graph",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "read",
+    "graph"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "获取知识图谱",
+   "keywords": [
+    "graph",
+    "knowledge",
+    "图谱",
+    "知识"
+   ]
+  },
+  {
+   "name": "generate_playbook",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "llm",
+    "create",
+    "playbook"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 3000,
+   "rate_limit_per_min": 20,
+   "description": "生成 playbook (调 LLM)",
+   "keywords": [
+    "playbook",
+    "generate",
+    "生成",
+    "剧本"
+   ]
+  },
+  {
+   "name": "register_agent",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "write",
+    "agent"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "注册 agent",
+   "keywords": [
+    "register",
+    "agent",
+    "注册"
+   ]
+  },
+  {
+   "name": "list_agents",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "read",
+    "list",
+    "agent"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "列出 agents",
+   "keywords": [
+    "list",
+    "agents",
+    "列出",
+    "智能体"
+   ]
+  },
+  {
+   "name": "get_agent_memory_scope",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "read",
+    "agent"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "获取 agent 记忆作用域",
+   "keywords": [
+    "agent",
+    "memory",
+    "scope",
+    "作用域"
+   ]
+  },
+  {
+   "name": "deactivate_agent",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "write",
+    "agent",
+    "update"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "停用 agent",
+   "keywords": [
+    "deactivate",
+    "agent",
+    "停用"
+   ]
+  },
+  {
+   "name": "agent_heartbeat",
+   "group": "L1_kg_playbook",
+   "layer": "L1",
+   "capabilities": [
+    "write",
+    "agent"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 50,
+   "rate_limit_per_min": 120,
+   "description": "agent 心跳",
+   "keywords": [
+    "heartbeat",
+    "agent",
+    "心跳"
+   ]
+  },
+  {
+   "name": "l4_add_pattern",
+   "group": "L2_pattern",
+   "layer": "L2",
+   "capabilities": [
+    "write",
+    "pattern"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "L2/L4 添加经验模式",
+   "keywords": [
+    "pattern",
+    "add",
+    "模式",
+    "添加",
+    "l4"
+   ]
+  },
+  {
+   "name": "l4_search_patterns",
+   "group": "L2_pattern",
+   "layer": "L2",
+   "capabilities": [
+    "search",
+    "read",
+    "pattern"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "L2/L4 搜索经验模式",
+   "keywords": [
+    "pattern",
+    "search",
+    "模式",
+    "搜索",
+    "l4"
+   ]
+  },
+  {
+   "name": "l4_extract_from_interactions",
+   "group": "L2_pattern",
+   "layer": "L2",
+   "capabilities": [
+    "llm",
+    "extract",
+    "pattern"
+   ],
+   "cost": 2,
+   "latency_p99_ms": 3000,
+   "rate_limit_per_min": 20,
+   "description": "从交互提取 L2/L4 模式 (调 LLM)",
+   "keywords": [
+    "extract",
+    "pattern",
+    "interactions",
+    "提取",
+    "l4"
+   ]
+  },
+  {
+   "name": "l4_link_patterns",
+   "group": "L2_pattern",
+   "layer": "L2",
+   "capabilities": [
+    "write",
+    "pattern"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "链接 L2/L4 模式",
+   "keywords": [
+    "link",
+    "pattern",
+    "链接",
+    "l4"
+   ]
+  },
+  {
+   "name": "l4_get_pattern_stats",
+   "group": "L2_pattern",
+   "layer": "L2",
+   "capabilities": [
+    "read",
+    "stats",
+    "pattern"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "L2/L4 模式统计",
+   "keywords": [
+    "stats",
+    "pattern",
+    "统计",
+    "l4"
+   ]
+  },
+  {
+   "name": "l4_add_episode",
+   "group": "L3_episode",
+   "layer": "L3",
+   "capabilities": [
+    "write",
+    "episode"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "L3 剧集 (episode) 添加",
+   "keywords": [
+    "episode",
+    "add",
+    "剧集",
+    "l4"
+   ]
+  },
+  {
+   "name": "l5_get_entity",
+   "group": "L3_entity",
+   "layer": "L3",
+   "capabilities": [
+    "read",
+    "entity"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "L3 实体获取",
+   "keywords": [
+    "entity",
+    "get",
+    "实体",
+    "l5"
+   ]
+  },
+  {
+   "name": "l5_list_entities",
+   "group": "L3_entity",
+   "layer": "L3",
+   "capabilities": [
+    "read",
+    "list",
+    "entity"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "L3 实体列表",
+   "keywords": [
+    "list",
+    "entities",
+    "列表",
+    "实体",
+    "l5"
+   ]
+  },
+  {
+   "name": "l6_search_facts",
+   "group": "L3_fact",
+   "layer": "L3",
+   "capabilities": [
+    "search",
+    "read",
+    "fact"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "L3 事实搜索",
+   "keywords": [
+    "facts",
+    "search",
+    "事实",
+    "搜索",
+    "l6"
+   ]
+  },
+  {
+   "name": "l6_invalidate_fact",
+   "group": "L3_fact",
+   "layer": "L3",
+   "capabilities": [
+    "write",
+    "update",
+    "fact"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "L3 事实失效",
+   "keywords": [
+    "invalidate",
+    "fact",
+    "失效",
+    "l6"
+   ]
+  },
+  {
+   "name": "l6_timeline",
+   "group": "L3_fact",
+   "layer": "L3",
+   "capabilities": [
+    "read",
+    "timeline",
+    "fact"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 30,
+   "description": "L3 事实时间线",
+   "keywords": [
+    "timeline",
+    "fact",
+    "时间线",
+    "l6"
+   ]
+  },
+  {
+   "name": "l5_create_playbook",
+   "group": "L3_playbook",
+   "layer": "L3",
+   "capabilities": [
+    "write",
+    "create",
+    "playbook"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 30,
+   "description": "L3 创建 playbook",
+   "keywords": [
+    "create",
+    "playbook",
+    "创建",
+    "l5"
+   ]
+  },
+  {
+   "name": "l5_search_playbooks",
+   "group": "L3_playbook",
+   "layer": "L3",
+   "capabilities": [
+    "search",
+    "read",
+    "playbook"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 60,
+   "description": "L3 搜索 playbook",
+   "keywords": [
+    "search",
+    "playbook",
+    "搜索",
+    "l5"
+   ]
+  },
+  {
+   "name": "l5_get_playbook",
+   "group": "L3_playbook",
+   "layer": "L3",
+   "capabilities": [
+    "read",
+    "playbook"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "L3 获取 playbook",
+   "keywords": [
+    "get",
+    "playbook",
+    "获取",
+    "l5"
+   ]
+  },
+  {
+   "name": "l5_execute_playbook",
+   "group": "L3_playbook",
+   "layer": "L3",
+   "capabilities": [
+    "execute",
+    "playbook"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 500,
+   "rate_limit_per_min": 20,
+   "description": "L3 执行 playbook",
+   "keywords": [
+    "execute",
+    "playbook",
+    "执行",
+    "l5"
+   ]
+  },
+  {
+   "name": "l6_add_entity",
+   "group": "L3_relation",
+   "layer": "L3",
+   "capabilities": [
+    "write",
+    "create",
+    "entity"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "L3 关系图谱添加实体",
+   "keywords": [
+    "add",
+    "entity",
+    "添加",
+    "实体",
+    "l6"
+   ]
+  },
+  {
+   "name": "l6_link_entities",
+   "group": "L3_relation",
+   "layer": "L3",
+   "capabilities": [
+    "write",
+    "relation"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "L3 关系图谱链接实体",
+   "keywords": [
+    "link",
+    "entities",
+    "链接",
+    "l6"
+   ]
+  },
+  {
+   "name": "l6_search_graph",
+   "group": "L3_relation",
+   "layer": "L3",
+   "capabilities": [
+    "search",
+    "graph"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "L3 关系图谱搜索",
+   "keywords": [
+    "search",
+    "graph",
+    "搜索",
+    "图",
+    "l6"
+   ]
+  },
+  {
+   "name": "l6_get_entity_relations",
+   "group": "L3_relation",
+   "layer": "L3",
+   "capabilities": [
+    "read",
+    "relation"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 60,
+   "description": "L3 实体关系获取",
+   "keywords": [
+    "entity",
+    "relations",
+    "关系",
+    "l6"
+   ]
+  },
+  {
+   "name": "l6_query_lineage",
+   "group": "L3_relation",
+   "layer": "L3",
+   "capabilities": [
+    "read",
+    "lineage"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 30,
+   "description": "L3 实体谱系查询",
+   "keywords": [
+    "lineage",
+    "query",
+    "谱系",
+    "查询",
+    "l6"
+   ]
+  },
+  {
+   "name": "code_ingest_repo",
+   "group": "L4_code",
+   "layer": "L4",
+   "capabilities": [
+    "write",
+    "code",
+    "index"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 5000,
+   "rate_limit_per_min": 5,
+   "description": "L4 索引代码仓库",
+   "keywords": [
+    "code",
+    "ingest",
+    "repo",
+    "代码",
+    "仓库",
+    "索引"
+   ]
+  },
+  {
+   "name": "code_repomap",
+   "group": "L4_code",
+   "layer": "L4",
+   "capabilities": [
+    "read",
+    "code",
+    "map"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 1000,
+   "rate_limit_per_min": 30,
+   "description": "L4 仓库地图",
+   "keywords": [
+    "code",
+    "repomap",
+    "地图"
+   ]
+  },
+  {
+   "name": "code_search_symbol",
+   "group": "L4_code",
+   "layer": "L4",
+   "capabilities": [
+    "search",
+    "code",
+    "symbol"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 300,
+   "rate_limit_per_min": 60,
+   "description": "L4 搜索代码符号",
+   "keywords": [
+    "code",
+    "search",
+    "symbol",
+    "符号",
+    "搜索"
+   ]
+  },
+  {
+   "name": "code_get_symbol",
+   "group": "L4_code",
+   "layer": "L4",
+   "capabilities": [
+    "read",
+    "code",
+    "symbol"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "L4 获取代码符号",
+   "keywords": [
+    "code",
+    "symbol",
+    "获取"
+   ]
+  },
+  {
+   "name": "code_neighbors",
+   "group": "L4_code",
+   "layer": "L4",
+   "capabilities": [
+    "read",
+    "code",
+    "graph"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "L4 符号邻居",
+   "keywords": [
+    "code",
+    "neighbors",
+    "邻居"
+   ]
+  },
+  {
+   "name": "wiki_read_page",
+   "group": "L5_wiki",
+   "layer": "L5",
+   "capabilities": [
+    "read",
+    "wiki"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "L5 读取 wiki 页面",
+   "keywords": [
+    "wiki",
+    "read",
+    "page",
+    "读取",
+    "页面"
+   ]
+  },
+  {
+   "name": "wiki_search",
+   "group": "L5_wiki",
+   "layer": "L5",
+   "capabilities": [
+    "search",
+    "wiki"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 60,
+   "description": "L5 搜索 wiki",
+   "keywords": [
+    "wiki",
+    "search",
+    "搜索"
+   ]
+  },
+  {
+   "name": "wiki_propose_edit",
+   "group": "L5_wiki",
+   "layer": "L5",
+   "capabilities": [
+    "write",
+    "wiki",
+    "edit"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 200,
+   "rate_limit_per_min": 20,
+   "description": "L5 提议 wiki 编辑",
+   "keywords": [
+    "wiki",
+    "propose",
+    "edit",
+    "编辑",
+    "提议"
+   ]
+  },
+  {
+   "name": "apikey_apply",
+   "group": "L6_apikey",
+   "layer": "L6",
+   "capabilities": [
+    "write",
+    "apikey",
+    "create"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 150,
+   "rate_limit_per_min": 30,
+   "description": "L6 申请 API key",
+   "keywords": [
+    "apikey",
+    "apply",
+    "申请",
+    "密钥"
+   ]
+  },
+  {
+   "name": "apikey_check_status",
+   "group": "L6_apikey",
+   "layer": "L6",
+   "capabilities": [
+    "read",
+    "apikey",
+    "status"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 80,
+   "rate_limit_per_min": 60,
+   "description": "L6 API key 状态查询",
+   "keywords": [
+    "apikey",
+    "status",
+    "状态"
+   ]
+  },
+  {
+   "name": "apikey_list_requests",
+   "group": "L6_apikey",
+   "layer": "L6",
+   "capabilities": [
+    "read",
+    "apikey",
+    "list"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "L6 API key 申请列表",
+   "keywords": [
+    "apikey",
+    "requests",
+    "list",
+    "列表"
+   ]
+  },
+  {
+   "name": "apikey_approve_request",
+   "group": "L6_apikey",
+   "layer": "L6",
+   "capabilities": [
+    "write",
+    "apikey",
+    "approve"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "L6 批准 API key 申请",
+   "keywords": [
+    "apikey",
+    "approve",
+    "批准"
+   ]
+  },
+  {
+   "name": "apikey_reject_request",
+   "group": "L6_apikey",
+   "layer": "L6",
+   "capabilities": [
+    "write",
+    "apikey",
+    "reject"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 30,
+   "description": "L6 拒绝 API key 申请",
+   "keywords": [
+    "apikey",
+    "reject",
+    "拒绝"
+   ]
+  },
+  {
+   "name": "apikey_revoke_request",
+   "group": "L6_apikey",
+   "layer": "L6",
+   "capabilities": [
+    "write",
+    "apikey",
+    "revoke"
+   ],
+   "cost": 1,
+   "latency_p99_ms": 100,
+   "rate_limit_per_min": 20,
+   "description": "L6 撤销 API key 申请",
+   "keywords": [
+    "apikey",
+    "revoke",
+    "撤销"
+   ]
+  }
+ ],
+ "policies": {
+  "read": {
+   "cacheTTL": 60000,
+   "rateLimit": 120,
+   "timeout": 5000,
+   "retries": 3
+  },
+  "write": {
+   "cacheTTL": 0,
+   "rateLimit": 30,
+   "timeout": 30000,
+   "retries": 1
+  },
+  "llm": {
+   "cacheTTL": 300000,
+   "rateLimit": 10,
+   "timeout": 60000,
+   "retries": 0
+  },
+  "unknown": {
+   "cacheTTL": 0,
+   "rateLimit": 60,
+   "timeout": 15000,
+   "retries": 1
+  }
+ },
+ "_source": "tools/mcp-gateway/src/capability-router.js (STATIC_TOOLS + TOOL_POLICIES) —— 原样导出，勿手改"
+}

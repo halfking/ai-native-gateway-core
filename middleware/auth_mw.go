@@ -103,7 +103,14 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 				"/theme-init.js", "/entry-switch.js", "/donation-qr.png",
 				"/user-agreement.html",
 			},
-			PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/maintain-api/", "/plugins/", "/mock/", "/m/", "/m-assets/"},
+			// /mcp（MCP 服务网关，2026-11-09）：MCP 客户端（Codex / VS Code /
+			// opencode 等）持有的是**网关注发或外部账本签发的 MCP 凭证**
+			// （sk-mcp-*），不是网关主 API key。若不放行，MCP 调用会在到达
+			// MCP 网关自己的鉴权前就被本门拦成 401 missing_key ⇒ 网关形同虚设。
+			// 安全性由端点自守卫保证：数据面校验 MCP 凭证（未注册/已吊销 ⇒ 401），
+			// 控制面 /mcp/control/* 校验管理令牌，未配置管理令牌时整个控制面
+			// 返回 503（不暴露任何管理入口）。
+			PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/maintain-api/", "/plugins/", "/mock/", "/m/", "/m-assets/", "/mcp"},
 			},
 		},
 		expectedKey: apiKey,
@@ -248,7 +255,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 // GeminiHandler 转发的 /v1beta|/v1/models/{m}:generateContent）」。
 // 未来把任何无自守卫的新 handler 挂到顶层路径（或把现有自守卫 handler
 // 挪出这些前缀）时，必须同步加进本清单，否则 text/html 请求将匿名直达。
-var spaProtectedPrefixes = []string{"/v1", "/mock", "/plugins"}
+var spaProtectedPrefixes = []string{"/v1", "/mock", "/plugins", "/mcp"}
 
 // isSPANavigation reports whether r looks like a browser page navigation
 // (Accept includes text/html) to a path outside the protected prefixes.

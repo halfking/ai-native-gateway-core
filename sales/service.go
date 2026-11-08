@@ -36,6 +36,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ErrNotFound is returned by point lookups that hit no row.
@@ -105,13 +107,21 @@ type SellableList struct {
 	Withheld      []WithheldGroup `json:"withheld"`
 	TotalTrusted  int             `json:"total_trusted"`
 	WithheldCount int             `json:"withheld_count"`
+	// 三档一键报价系数（风暴档 §8-5，settings 热改即生效；仅前端快填用，
+	// 服务端不校验零售价与系数的关系——红线在审批）。
+	TierCoefficients map[string]float64 `json:"tier_coefficients"`
 }
 
 // ListSellable reads v_supplier_price_vs_baseline WHERE
 // price_confidence='trusted', joins supply annotations (949 exposes the
 // binding identity), excludes suspended annotations, and withholds
 // same-canonical multi-price groups.
-func (s *Service) ListSellable(ctx context.Context) (*SellableList, error) {
+//
+// revealContacts=false（非 super）时供应商联系人不下发（风暴档 §3.5/§8-4：
+// 「仅资源团队 + super 可见」——MVP 角色模型没有独立资源团队角色，供给登记
+// 写面本就是 super-only，故联系人读面同样收窄到 super，2026-11-08 审计
+// P2-4 修复）。
+func (s *Service) ListSellable(ctx context.Context, revealContacts bool) (*SellableList, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT v.credential_id,
        v.provider_model_id,
@@ -173,6 +183,10 @@ SELECT v.credential_id,
 			return nil, fmt.Errorf("sales: scan sellable: %w", err)
 		}
 		if annID != nil {
+			contactVal := deref(contact)
+			if !revealContacts {
+				contactVal = "" // 供应商联系人仅 super（数据最小化，P2-4）
+			}
 			r.Annotation = &SupplyAnnotation{
 				ID:              *annID,
 				CredentialID:    r.CredentialID,
@@ -180,7 +194,7 @@ SELECT v.credential_id,
 				Status:          deref(annStatus),
 				SLATier:         deref(slaTier),
 				CapacityNotes:   deref(capacity),
-				VendorContact:   deref(contact),
+				VendorContact:   contactVal,
 				ValidFrom:       deref(validFrom),
 				ValidUntil:      deref(validUntil),
 				Maintainer:      deref(maintainer),
@@ -258,6 +272,11 @@ SELECT v.credential_id,
 		Items:        items,
 		Withheld:     withheld,
 		TotalTrusted: len(all),
+		TierCoefficients: map[string]float64{
+			"aggressive":   tierCoefficient("aggressive", 1.3),
+			"standard":     tierCoefficient("standard", 1.6),
+			"conservative": tierCoefficient("conservative", 2.0),
+		},
 	}
 	for i := range out.Withheld {
 		out.Withheld[i].Rows = nil
@@ -275,6 +294,18 @@ func parseNum(s *string) float64 {
 		return 0
 	}
 	return f
+}
+
+// tierCoefficient reads one of the three quick-fill coefficients from
+// settings_kv, falling back to the registered default (R72f: fallback ==
+// spec default, so behavior is identical with or without a kv row).
+func tierCoefficient(tier string, fallback float64) float64 {
+	key := "sales.quote.tier_coef_" + tier
+	v := settings.GetPlatformFloat(key, fallback)
+	if v < 1.01 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return fallback // Min 边界兜底（0.99× 的「折扣档」不是报价档）
+	}
+	return v
 }
 
 func deref(s *string) string {
@@ -351,7 +382,8 @@ RETURNING id, credential_id, provider_model_id, capacity_notes, sla_tier,
 }
 
 // ListSupplyAnnotations lists annotations joined with model/credential names.
-func (s *Service) ListSupplyAnnotations(ctx context.Context) ([]map[string]any, error) {
+// revealContacts=false（非 super）时供应商联系人不下发（P2-4，同 ListSellable）。
+func (s *Service) ListSupplyAnnotations(ctx context.Context, revealContacts bool) ([]map[string]any, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT sa.id, sa.credential_id, sa.provider_model_id,
        pm.raw_model_name,
@@ -375,6 +407,9 @@ SELECT sa.id, sa.credential_id, sa.provider_model_id,
 			&capacity, &sla, &validFrom, &validUntil, &contact, &status,
 			&maintainer, &notes, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("sales: scan supply annotations: %w", err)
+		}
+		if !revealContacts {
+			contact = "" // 供应商联系人仅 super（数据最小化，P2-4）
 		}
 		out = append(out, map[string]any{
 			"id":                id,

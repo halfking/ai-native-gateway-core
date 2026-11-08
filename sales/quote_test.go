@@ -134,3 +134,40 @@ func TestRedLineVerdictDimensions(t *testing.T) {
 	// 范围（阈值读数面由 spec_sales.go 的默认值与 fallback 一致性保障：
 	// R72f 先例——quote.go 的 fallback 与 spec 默认值逐字对齐）。
 }
+
+// TestMarginPctOfClamp —— 2026-11-08 审计轮 realdb 腿抓出的 22003 根修钉：
+// 收入趋零时毛利比值爆炸（$0.02 收入 vs $140 成本 ⇒ -721300%）必须被钳在
+// 945/946 numeric(8,4) 列界内，而不是让版本 INSERT 硬失败。
+func TestMarginPctOfClamp(t *testing.T) {
+	if p := marginPctOf(-139.98, 0.0194); p == nil || *p > -9999.9999 {
+		t.Errorf("explode-negative must clamp to column bound, got %v", p)
+	}
+	if p := marginPctOf(0, 0); p != nil {
+		t.Errorf("zero revenue ⇒ NULL (no revenue no margin), got %v", *p)
+	}
+	if p := marginPctOf(50, 100); p == nil || *p != 50 {
+		t.Errorf("normal path unchanged, got %v", p)
+	}
+	if p := marginPctOf(-101, 38.9); p == nil || *p > -259 {
+		t.Errorf("ordinary negative margin passes through, got %v", p)
+	}
+}
+
+// TestWithholdNamesFactored —— ListSellable 与派生共用的整组 withhold 判据
+// （抽出后两处永不漂移的同源钉）。
+func TestWithholdNamesFactored(t *testing.T) {
+	p1, p2 := "1.0", "2.0"
+	rows := []SellableRow{
+		{CanonicalName: "a", SupplierInPer1M: &p1, SupplierOutPer1M: &p2},
+		{CanonicalName: "a", SupplierInPer1M: &p2, SupplierOutPer1M: &p1},
+		{CanonicalName: "b", SupplierInPer1M: &p1, SupplierOutPer1M: &p2},
+		{CanonicalName: "b", SupplierInPer1M: &p1, SupplierOutPer1M: &p2}, // 同价重复
+	}
+	got := withholdNames(rows)
+	if !got["a"] {
+		t.Errorf("multi-price group must withhold")
+	}
+	if got["b"] {
+		t.Errorf("same-price duplicates must not withhold")
+	}
+}

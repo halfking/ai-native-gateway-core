@@ -58,6 +58,8 @@ export interface SellableList {
   withheld: WithheldGroup[]
   total_trusted: number
   withheld_count: number
+  // 三档一键报价系数（settings 热改即生效；仅前端快填用，服务端不校验）。
+  tier_coefficients?: Record<string, number>
 }
 
 export interface SupplyAnnotationUpsert {
@@ -140,13 +142,11 @@ export interface QuoteItemInput {
   est_tokens_in?: number
   est_tokens_out?: number
   volume_note?: string
-  cost_in_per_1m?: number | null
-  cost_out_per_1m?: number | null
-  cost_currency?: string
+  // 2026-11-08 审计 P1/P6：行成本/币种/置信档一律服务端从供给视图派生，
+  // 客户端声明不再采信 —— 输入类型不再携带这三类字段（传了也会被覆盖）。
   rate_in?: number | null
   rate_out?: number | null
   discount_pct?: number
-  confidence?: string
 }
 
 export interface QuoteItemOutput {
@@ -201,6 +201,9 @@ export interface Quote {
   created_at: string
   updated_at: string
   version?: QuoteVersion
+  // W2-T2 成本漂移（提醒不自动撤）：活单行成本快照 vs 供给视图当前价。
+  cost_drift_pct?: number | null
+  cost_drifted?: boolean
 }
 
 export interface ShareLink {
@@ -303,6 +306,33 @@ export function createQuoteShare(id: number, body: {
   ttl_hours?: number
 }) {
   return req<ShareLink>('POST', `/api/admin/sales/quotes/${id}/shares`, body)
+}
+
+// 撤销分享（2026-11-08 审计缺口收口：RevokeShare 此前没有任何 API 面）。
+export function revokeQuoteShare(quoteId: number, shareId: number) {
+  return req<{ ok: boolean }>('POST', `/api/admin/sales/quotes/${quoteId}/shares/${shareId}/revoke`)
+}
+
+// ── 管理层漏斗看板（W2-T2，super-only） ──────────────────────────────────
+
+// SalesDashboard ↔ sales/dashboard.go FunnelDashboard 的读模型（全部现算，
+// 无新表）。实收毛利不在此面：default 租户按设计跳过计费（credit_ledger 恒
+// 0），「实收毛利」一栏由视图层显式标「待租户计费激活」（风暴档 §3.6）。
+export interface SalesDashboard {
+  funnel: Record<string, number>
+  approvals: Record<string, number>
+  submitted_quotes: number
+  triggered_quotes: number
+  trigger_rate_pct: number
+  trigger_alert_pct: number
+  trigger_rate_alert: boolean
+  triggers_by_dimension: Record<string, number>
+  lost_reasons: Array<{ reason: string; count: number }>
+  margin_buckets: Record<string, number>
+}
+
+export function getSalesDashboard() {
+  return req<SalesDashboard>('GET', '/api/admin/sales/dashboard')
 }
 
 // 红线判定在 submit 动作内由服务端执行（决议 B「只审例外」）：触发结果
