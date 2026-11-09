@@ -155,6 +155,36 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		return
 	}
 
+	// 2026-11-09: Add models_canonical.featured models to static set.
+	// This supplements routing_policy.featured_models with a column-based
+	// mechanism for marking free/entry-tier models that should be prioritized
+	// for probing to ensure timely recovery detection.
+	if rows, err := m.db.Query(ctx, `
+		SELECT canonical_name 
+		FROM models_canonical 
+		WHERE featured = TRUE AND status = 'active'`); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var model string
+			if err := rows.Scan(&model); err != nil {
+				if dbrows.SkipOrFail("bg.ModelTier.refresh/canonicalFeatured", err) {
+					continue
+				}
+			} else if model = normalizeModelKey(model); model != "" {
+				fs.static[model] = struct{}{}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("model_tier: canonical featured row iteration aborted; keeping previous featured set",
+				"error", err)
+			return
+		}
+	} else {
+		slog.Warn("model_tier: load canonical featured failed; keeping previous featured set",
+			"error", err)
+		return
+	}
+
 	// Usage Top-N. Audit fix: _request_logs_hot has no `model` column; the real
 	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
 	// dedupes across alias variants (audit issue #11).
