@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -198,6 +199,9 @@ func (b *BootstrapService) Apply(ctx context.Context, req ApplyRequest, ip strin
 
 	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
 	if idempotencyKey != "" {
+		idempotencyKey = storeKey(ip, req.DeviceName) + "\x00" + idempotencyKey
+	}
+	if idempotencyKey != "" {
 		b.mu.Lock()
 		entry, ok := b.idempotency[idempotencyKey]
 		b.mu.Unlock()
@@ -212,19 +216,27 @@ func (b *BootstrapService) Apply(ctx context.Context, req ApplyRequest, ip strin
 		}
 	}
 
-	requestID := "req_" + HashSecret(idempotencyKey + req.DeviceName + time.Now().Format(time.RFC3339Nano))[:16]
-	claimToken := "clm_" + HashSecret(requestID + time.Now().Format(time.RFC3339Nano))[:24]
+	random, err := GenerateSecret()
+	if err != nil {
+		return ApplyResult{OK: false, Error: "token_generation_failed"}, http.StatusInternalServerError
+	}
+	claimToken := "clm_" + strings.TrimPrefix(random, KeyPrefix)
+	requestID := "req_" + HashSecret(claimToken)[:16]
+	spec := KeySpec{TenantID: b.cfg.TenantID, Name: req.Name, AgentID: req.AgentID,
+		Scopes: []string{ScopeRead, ScopeExecute}, AllowedTools: req.AllowedTools}
 
 	record := BootstrapRecord{
-		Kind:      "apply",
-		Token:     requestID,
-		KeyID:     "",
-		Status:    "pending",
-		TenantID:  b.cfg.TenantID,
-		Device:    req.DeviceName,
-		IP:        ip,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Kind:           "apply",
+		Token:          requestID,
+		KeyID:          "",
+		Status:         "pending",
+		TenantID:       b.cfg.TenantID,
+		Device:         req.DeviceName,
+		IP:             ip,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		ClaimTokenHash: HashSecret(claimToken),
+		KeySpec:        &spec,
 	}
 
 	autoApprove := b.cfg.AutoApprove
@@ -240,13 +252,7 @@ func (b *BootstrapService) Apply(ctx context.Context, req ApplyRequest, ip strin
 
 	result := ApplyResult{OK: true, RequestID: requestID, ClaimToken: claimToken, Status: "pending"}
 	if autoApprove {
-		key, secret, err := b.gateway.IssueKey(ctx, KeySpec{
-			TenantID:     b.cfg.TenantID,
-			Name:         req.Name,
-			AgentID:      req.AgentID,
-			Scopes:       []string{ScopeRead, ScopeExecute},
-			AllowedTools: req.AllowedTools,
-		})
+		key, secret, err := b.gateway.IssueKey(ctx, spec)
 		if err != nil {
 			return ApplyResult{OK: false, Error: "key_issue_failed"}, http.StatusInternalServerError
 		}
@@ -309,31 +315,18 @@ func (b *BootstrapService) Claim(ctx context.Context, requestID, claimToken, ip 
 	if requestID == "" || claimToken == "" {
 		return map[string]any{"ok": false, "error": "requestId and claimToken are required"}, http.StatusBadRequest
 	}
-	record, err := b.gateway.Store().GetBootstrap(ctx, "apply", requestID)
+	record, err := b.gateway.Store().ClaimBootstrap(ctx, requestID, HashSecret(claimToken), time.Now())
 	if err != nil {
-		return map[string]any{"ok": false, "error": "storage_failed"}, http.StatusInternalServerError
-	}
-	if record == nil {
-		return map[string]any{"ok": false, "error": "not_found"}, http.StatusNotFound
-	}
-	// 顺序与语义：
-	//   · 已领取（status=claimed，或已批准但明文已被取走）⇒ already_claimed；
-	//   · 还没批准（pending）⇒ not_approved。
-	// 先判「已领取」再判「未批准」，否则领取后状态转为 claimed 时，
-	// 第二次领取会被误报成 not_approved。
-	if record.Status == "claimed" || (record.Status == "approved" && record.Plaintext == "") {
-		return map[string]any{"ok": false, "error": "already_claimed"}, http.StatusConflict
-	}
-	if record.Status != "approved" {
-		return map[string]any{"ok": false, "error": "not_approved", "status": record.Status}, http.StatusForbidden
-	}
-
-	plaintext := record.Plaintext
-	record.Plaintext = ""
-	record.Status = "claimed"
-	record.UpdatedAt = time.Now()
-	if err := b.gateway.Store().PutBootstrap(ctx, *record); err != nil {
-		return map[string]any{"ok": false, "error": "storage_failed"}, http.StatusInternalServerError
+		switch {
+		case errors.Is(err, ErrNotFound):
+			return map[string]any{"ok": false, "error": "not_found"}, http.StatusNotFound
+		case errors.Is(err, errClaimed):
+			return map[string]any{"ok": false, "error": "already_claimed"}, http.StatusConflict
+		case errors.Is(err, errClaimToken), errors.Is(err, errNotApproved):
+			return map[string]any{"ok": false, "error": err.Error()}, http.StatusForbidden
+		default:
+			return map[string]any{"ok": false, "error": "storage_failed"}, http.StatusInternalServerError
+		}
 	}
 
 	// 后端绑定：网关是统一入口，所有适配器都经同一数据面地址可达。
@@ -349,7 +342,7 @@ func (b *BootstrapService) Claim(ctx context.Context, requestID, claimToken, ip 
 	}
 	return map[string]any{
 		"ok":       true,
-		"apiKey":   plaintext,
+		"apiKey":   record.Plaintext,
 		"keyId":    record.KeyID,
 		"bindings": bindings,
 	}, http.StatusOK
@@ -357,6 +350,12 @@ func (b *BootstrapService) Claim(ctx context.Context, requestID, claimToken, ip 
 
 // ApproveApplication 人工批准一笔申请（管理员动作）。
 func (b *BootstrapService) ApproveApplication(ctx context.Context, requestID, name string) (map[string]any, int) {
+	return b.approveApplicationFor(ctx, requestID, name, nil)
+}
+
+func (b *BootstrapService) approveApplicationFor(ctx context.Context, requestID, name string, issuer *Identity) (map[string]any, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	record, err := b.gateway.Store().GetBootstrap(ctx, "apply", requestID)
 	if err != nil {
 		return map[string]any{"ok": false, "error": "storage_failed"}, http.StatusInternalServerError
@@ -367,11 +366,21 @@ func (b *BootstrapService) ApproveApplication(ctx context.Context, requestID, na
 	if record.Status != "pending" {
 		return map[string]any{"ok": false, "error": "not_pending", "status": record.Status}, http.StatusConflict
 	}
-	key, secret, err := b.gateway.IssueKey(ctx, KeySpec{
-		TenantID: record.TenantID,
-		Name:     name,
-		Scopes:   []string{ScopeRead, ScopeExecute},
-	})
+	spec := KeySpec{TenantID: record.TenantID, Scopes: []string{ScopeRead, ScopeExecute}}
+	if record.KeySpec != nil {
+		spec = *record.KeySpec
+		spec.TenantID = record.TenantID
+	}
+	if name != "" {
+		spec.Name = name
+	}
+	if issuer != nil && !issuer.Admin {
+		_, scopeErr := delegateScopesOK(issuer, spec.Scopes)
+		if scopeErr != nil || !delegationWithinIssuer(issuer, spec) {
+			return map[string]any{"ok": false, "error": "delegation_escalation"}, http.StatusForbidden
+		}
+	}
+	key, secret, err := b.gateway.IssueKey(ctx, spec)
 	if err != nil {
 		return map[string]any{"ok": false, "error": "key_issue_failed"}, http.StatusInternalServerError
 	}

@@ -41,6 +41,15 @@ var (
 		Help: "MCP gateway upstream health check failures.",
 	})
 	// uptimeSeconds 网关运行时长。
+	//
+	// ★ 记录点见 server.go（NewGateway 落初值）与 control.go（两个健康端点刷新）。
+	// ★ 实测口径（prometheus 客户端 v1.23.2）：**普通 Gauge 在 promauto 注册的
+	//   那一刻就已经在 /metrics 上，值为 0** —— 只有 GaugeVec/CounterVec 在
+	//   「没实例化过任何标签组合」时才是 ABSENT。
+	//   ⇒ 所以「只声明不 Set」对普通 Gauge 的真实后果是**「恒为 0」**
+	//     （面板上是一条永远平的线），**不是「ABSENT」**。
+	//   ⇒ 接线它是为了让面板上的时长**真的会走**，并满足 internal/metricguard 门
+	//     （该门要求：声明了的指标必须要么有记录调用，要么在 knownUnwired 写明原因）。
 	uptimeSeconds = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "mcp_gateway_uptime_seconds",
 		Help: "MCP gateway uptime in seconds.",
