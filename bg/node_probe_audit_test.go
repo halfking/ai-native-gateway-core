@@ -3,10 +3,17 @@ package bg
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/schemaobj"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -55,6 +62,73 @@ func TestProbeHeadersJSONReturnsJSONText(t *testing.T) {
 	got := probeHeadersJSON(map[string]string{"X-Test": "allowed"})
 	if got != `{"X-Test":"allowed"}` {
 		t.Fatalf("probeHeadersJSON() = %q", got)
+	}
+}
+
+// Exercise the actual legacy caller: endpoint construction fails before any
+// headers exist, but the failed round still needs a durable audit row.
+func TestRunOneEmptyHeadersAuditPG17(t *testing.T) {
+	dsn := os.Getenv("NODE_PROBE_AUDIT_TEST_DSN")
+	if dsn == "" {
+		t.Skip("NODE_PROBE_AUDIT_TEST_DSN unset: legacy runOne JSONB persistence not verified")
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (cfg.ConnConfig.Host != "127.0.0.1" && cfg.ConnConfig.Host != "localhost") || !strings.HasSuffix(cfg.ConnConfig.Database, "_test") {
+		t.Fatal("requires a dedicated loopback *_test database")
+	}
+	for _, fallback := range cfg.ConnConfig.Fallbacks {
+		if fallback.Host != "127.0.0.1" && fallback.Host != "localhost" {
+			t.Fatal("requires loopback-only fallback hosts")
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	schema := fmt.Sprintf("probe_audit_%d", time.Now().UnixNano())
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if _, err := pool.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.WithoutCancel(ctx), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
+			t.Errorf("cleanup: %v", err)
+		}
+	})
+	ddl := schemaobj.Table(t, "../sql/objects/tables/node_probe_state.sql") +
+		schemaobj.Table(t, "../sql/objects/tables/node_probe_runs.sql", "../sql/objects/sequences/node_probe_runs_id_seq.sql")
+	if _, err := pool.Exec(ctx, strings.ReplaceAll(ddl, "public.", schema+".")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO node_probe_state(credential_id,raw_model_name) VALUES(82,'audit-model')`); err != nil {
+		t.Fatal(err)
+	}
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	t.Cleanup(gateway.Close)
+	w := NewNodeProbeWorker(pool, nil, nil, "test-key", gateway.URL, nil, 1000)
+	w.resolveDirectTargetFn = func(context.Context, int, string) (string, string, string, string, int, string, error) {
+		return "", "", "", "", 0, "", errors.New("configured endpoint is unavailable")
+	}
+	w.loadStateFn = func(context.Context, int, string) (nodeProbeStateRow, error) {
+		return nodeProbeStateRow{}, nil
+	}
+	if err := w.runOne(ctx, 82, "audit-model", "request_failure", nodeProbeTrigger{tenantID: "default"}); err != nil {
+		t.Fatalf("headerless legacy probe failed to persist audit: %v", err)
+	}
+	var headers, directError string
+	if err := pool.QueryRow(ctx, `SELECT request_headers::text, direct_err_code FROM node_probe_runs WHERE credential_id=82`).Scan(&headers, &directError); err != nil {
+		t.Fatal(err)
+	}
+	if headers != "{}" || directError != "endpoint_build" {
+		t.Fatalf("persisted headers=%q direct_error=%q, want {}/endpoint_build", headers, directError)
 	}
 }
 
