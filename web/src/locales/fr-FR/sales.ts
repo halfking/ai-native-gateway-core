@@ -1,4 +1,4 @@
-// sales.ts — 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
+// sales.ts. 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 export default {
   active: 'Actif',
   annotate: 'Annoter',
@@ -47,7 +47,7 @@ export default {
   searchPlaceholder: 'Rechercher par nom de modèle',
   send: 'Envoyer',
   shareTokenCopied: 'Copié',
-  shareTokenOnce: 'Lien copié dans le presse-papiers. Le jeton n\'apparaît qu\'une fois (jamais stocké) — envoyez-le au client maintenant.',
+  shareTokenOnce: 'Lien copié dans le presse-papiers. Le jeton n\'apparaît qu\'une fois (jamais stocké). envoyez-le au client maintenant.',
   shareTokenShown: 'Copiez le jeton ci-dessous manuellement',
   shares: 'Partages',
   sharesTitle: 'Liens de partage du devis #{id}',
@@ -78,18 +78,18 @@ export default {
 
   // ── 2026-11-08 风暴档审计轮（W2 看板/漂移/撤销/弹窗化）──
   tabDashboard: 'Tableau de bord',
-  costDrifted: 'Coût dérivé — nouveau devis recommandé',
+  costDrifted: 'Coût dérivé. nouveau devis recommandé',
   tierQuickFill: 'Remplissage rapide par palier',
   pickModel: 'Choisir un modèle dans la liste vendable',
   itemExists: 'Modèle déjà dans la liste',
   quoteCloseTitle: 'Clore le devis #{id}',
   revoke: 'Révoquer',
-  dashboardTriggerAlert: 'Taux de déclenchement {rate}% au-dessus du seuil {line}% — signal d’auto-calibration DealHub : seuils possiblement mal calés',
+  dashboardTriggerAlert: 'Taux de déclenchement {rate}% au-dessus du seuil {line}%. signal d’auto-calibration DealHub : seuils possiblement mal calés',
   dashboardTriggerRate: 'Taux de déclenchement',
   dashboardTriggerDetail: '{triggered} devis sur {submitted} en revue humaine',
   dashboardLostReasons: 'Raisons des affaires perdues',
   dashboardMarginBuckets: 'Distribution des marges des devis',
-  dashboardRealizedPending: 'Marge réalisée : en attente d’activation de la facturation locataire — la marge affichée est arithmétique',
+  dashboardRealizedPending: 'Marge réalisée : en attente d’activation de la facturation locataire. la marge affichée est arithmétique',
   funnel_draft: 'Brouillon',
   funnel_pending_approval: 'En approbation',
   funnel_approved: 'Approuvé',
