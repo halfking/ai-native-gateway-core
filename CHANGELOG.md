@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **rule 71 统一日志标准接入（2026-11-09，补记）**：本仓接入 `vibe-coding` rule 71
+  （结构化 JSONL + 9 个必填字段 + handler 层脱敏 + 小写 `level` 别名）。
+  ⚠ 该次接入**当时漏记**了本文件与 `docs/changelogs/` 归档（违反 rule 36），
+  本轮一并补上。
+  - 新增 `internal/logging/standard.go`（规范字段注入 + 脱敏层）、
+    `internal/logging/service_meta.go`（服务名/版本/环境解析）。
+  - 归档：`docs/changelogs/2026-11-09-rule-71-log-standard.md`。
 - **多模态标准接口轮：本地音频（ASR/TTS）+ 文本三件套（2026-10-26/27）**：网关接入本地模型，补齐嵌入/标题总结/内容总结/ASR/语音发音标准接口。
   - `POST /v1/summarize`（短单发 / 长 map→reduce→render 会议纪要管线）、`POST /v1/summarize/title`（规则硬校验+实体择优）、`POST /v1/classify`（受控词表）——环回 chat 面架构（`domains/streaming/summarize.go`）。
   - whisper.cpp `/inference` 传输变体（按 catalog_code 钉方言）；迁移 911（原取 910，被上游 routing_analytics 占号后按让位纪律重取）：`whisper-cpp` / `whisper-cpp-large` / `macos-say` 三条本地音频 catalog 条目（登记点齐备，契约门验证）。
@@ -17,6 +24,41 @@
   - 设计：`docs/design/2026-10-08-multimedia-unified-gateway-credential-scope.md`。
 
 ### Fixed
+- **rule 71 规范层的三处缺口 + 保留名冲突（2026-11-09）**：用**容器真实环境变量**
+  跑新二进制做端到端验证时，发现首版接入留下三处运行态隐患——照首版实现，
+  服务仍会产生不合规或**有歧义**的日志。
+  - **保留名被业务侧占用 ⇒ 同一行 JSON 出现重复键**：规范层注入 `env`
+    （部署环境名）后，业务侧又传 `env`（实际是环境变量名，如
+    `LLM_GATEWAY_HARD_BLOCK_RULES`），同一行出现**两个 `env` 键**。
+    JSON 重复键的取值行为**取决于解析器**（Python `json` / `jq` 取最后一个，
+    另一些取第一个或直接报 parse error）⇒ AI 侧解析歧义。
+    修法：规范层**剥离**业务侧占用保留名的属性（含 `slog.Group` 内的、
+    含 `With()` 传的），冲突键名记入 **`reserved_name_conflicts`** 诊断字段
+    （可见，不静默丢弃）；业务侧改用无歧义键名——环境变量名 → `env_var`，
+    另一个实体的实例 ID（OPS agent / 被管控节点）→ `agent_instance_id`（12 处）。
+  - **规范层装得太晚、覆盖面不全 ⇒ 同一进程两种格式**：① 配置加载过程本身
+    就打日志（`loadHardBlockPolicy()` 会打 `hard block allowlist loaded`），
+    规范层此前等配置加载完才装 ⇒ 早期几行是旧格式；② 没有配置落盘文件时
+    `Init` 直接 no-op ⇒ slog 留在默认 `TextHandler` ⇒ 打的是
+    `2026/11/09 12:00:00 INFO msg k=v` 这种纯文本，缺全部必填字段；
+    ③ 字段改名（`time`→`timestamp`）与脱敏靠 `ReplaceAttr`，而 `ReplaceAttr`
+    属于**内层 handler**——此前只有落盘管线带它，于是早装窗口与不落盘模式
+    打出的仍是 `time` 字段 + **本地时区**。
+    修法：新增 `logging.InstallEarly()`（启动最顶部调用）；不落盘时也把规范层
+    装到 stderr 的 JSON handler；所有构造内层 handler 的路径统一走
+    `newJSONHandler`。
+  - **持久化日志绕过规范层**：`critical/error/panic/shutdown/audit` 五个文件
+    此前走裸 `slog.JSONHandler`——字段名是 `time`、本地时区、无必填字段。
+    事故复盘时读这些文件的正是人和 AI，形态必须与主日志一致。
+    修法：`pkg/logger` 新增 `HandlerFactory` 注入点，由 `cmd/gateway` 构造
+    规范层 handler 传入（`pkg/logger` 不能直接 import `internal/logging`
+    ——`internal/logging` → `metrics` → `pkg/logger`，反向 import 会成环）；
+    `slog.Group("instance", …)` 拍平成平铺字段；去掉冗余的 `timestamp` 传参。
+  - **`instance_id` 不是进程级常量**：规范层在一个进程里会被装多次
+    （早装 → 全装 → 热加载），每次重生成 ⇒ 同一进程不同日志行带不同
+    `instance_id` ⇒「按 instance_id 聚合一个实例的全部日志」不可靠。
+    改为进程级缓存，`cmd/gateway` 复用同一份。
+  - 归档：`docs/changelogs/2026-11-09-rule-71-reserved-names-and-early-install.md`。
 - **网关套网关时，下游签发的占位符被上游实例销毁（2026-10-08）**：本系统的脱敏实例把敏感值替换为 `{SENSITIVE:type:index}` 后再发给上游；当上游**也是本系统**时，上游实例看到的是一批自己没有签发的标记。还原阶段的既定规则是"还原不了的标记一律遮蔽"（这正是拦住模型伪造 `{SENSITIVE:secret:1}` 去套取本会话真密钥的那条规则），于是它把这批标记打成 `[REDACTED]`，下游持有的映射随之作废，客户端丢值。实测（mimo-v2.5-pro / glm-5.3）：kaixuan 侧直接回 `sshpass -p '[REDACTED]' ssh root@[REDACTED]`。
   - 新增 `security/sanitize/hop.go`。本实例**实际产出过标记**时，在出向上游请求上盖 `X-Kx-Sanitize-Hop`；上游侧同时要求两个条件才认这个跳——peer 的声明，**且**请求里确实带着标记。
   - 透传按**入站观察到的标记逐个**授权，而不是"本实例还原不了就放行"。伪造的标记没入站过，照常遮蔽、照常 fail-closed；因此这条豁免拿不到任何精确匹配规则本会拒绝的东西。

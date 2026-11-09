@@ -60,11 +60,11 @@ func (h *HeartbeatHandler) HandleHeartbeat(c echo.Context) error {
 
 	// Record heartbeat (writes to instance_heartbeats + updates gateway_instances.last_heartbeat)
 	if err := h.store.RecordHeartbeat(c.Request().Context(), instanceID, &payload); err != nil {
-		slog.Error("failed to record heartbeat", "error", err, "instance_id", instanceID)
+		slog.Error("failed to record heartbeat", "error", err, "agent_instance_id", instanceID)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to record heartbeat")
 	}
 
-	slog.Debug("heartbeat recorded", "instance_id", instanceID, "uptime_secs", payload.UptimeSecs)
+	slog.Debug("heartbeat recorded", "agent_instance_id", instanceID, "uptime_secs", payload.UptimeSecs)
 
 	// Return acknowledgment
 	return c.JSON(http.StatusOK, map[string]interface{}{

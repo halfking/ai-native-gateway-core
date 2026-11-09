@@ -62,7 +62,7 @@ func maybeStartDirectDB(ctx context.Context, cfg StartupConfig) {
 		DeploymentID: region,
 	}
 	if err := store.RegisterInstance(ctx, instance); err != nil {
-		slog.Error("center agent register failed", "error", err, "instance_id", instanceID)
+		slog.Error("center agent register failed", "error", err, "agent_instance_id", instanceID)
 		return
 	}
 	interval := cfg.Interval
@@ -71,7 +71,7 @@ func maybeStartDirectDB(ctx context.Context, cfg StartupConfig) {
 	}
 	agent := &Agent{store: store, instanceID: instanceID, startedAt: startedAt, interval: interval}
 	go agent.run(ctx)
-	slog.Info("center agent direct-db started", "instance_id", instanceID, "region", region)
+	slog.Info("center agent direct-db started", "agent_instance_id", instanceID, "region", region)
 }
 
 // Agent emits local DB heartbeats for legacy OPS_COLLECT_DIRECT_DB mode.
@@ -111,7 +111,7 @@ func (a *Agent) beat(ctx context.Context) {
 	beatCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := a.store.RecordHeartbeat(beatCtx, a.instanceID, payload); err != nil {
-		slog.Warn("center agent heartbeat failed", "error", err, "instance_id", a.instanceID)
+		slog.Warn("center agent heartbeat failed", "error", err, "agent_instance_id", a.instanceID)
 	}
 }
 

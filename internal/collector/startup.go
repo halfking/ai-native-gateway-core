@@ -99,7 +99,7 @@ func MaybeStart(ctx context.Context, cfg StartupConfig) {
 
 	go c.Run(ctx)
 	slog.Info("runtime collector started",
-		"instance_id", instanceID,
+		"agent_instance_id", instanceID,
 		"interval", interval,
 		"report_url", authorityURL+"/api/v1/collect/runtime",
 	)

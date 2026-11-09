@@ -39,7 +39,9 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -179,7 +181,7 @@ func NewResource(opts StandardOptions) (Resource, error) {
 	}
 	instanceID := opts.InstanceID
 	if instanceID == "" {
-		instanceID = buildInstanceID()
+		instanceID = InstanceID()
 	}
 	return Resource{
 		Service:    opts.Service,
@@ -195,6 +197,112 @@ func buildInstanceID() string {
 	return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().Unix())
 }
 
+// processInstanceID 缓存进程级实例 ID。
+//
+// 为什么必须缓存：规范层在一个进程里会被装**多次**
+// （InstallEarly 早装 → Init 全装 → Reconfigure 热加载），
+// 若每次装都重新生成 instance_id，同一进程的不同日志行会带不同的
+// instance_id ⇒「按 instance_id 聚合一个实例的全部日志」这条查询不可靠。
+//
+// 规则 §4.1 也明确 instance_id 是进程级常量（能升为 Loki 标签的前提）。
+var (
+	processInstanceIDOnce sync.Once
+	processInstanceID     string
+)
+
+// InstanceID 返回进程级实例 ID（进程内恒定）。
+//
+// 调用方（cmd/gateway）应使用本函数，而不是自己再算一份——
+// 否则主日志与持久化日志的 instance_id 会不一致。
+func InstanceID() string {
+	processInstanceIDOnce.Do(func() {
+		processInstanceID = buildInstanceID()
+	})
+	return processInstanceID
+}
+
+// reservedNames 是规范层的**保留名**集合——由规范层独占写入，业务字段不得占用。
+//
+// 为什么必须强制：业务侧若传了同名 attr，同一行 JSON 里就会出现**两个同名字段**。
+// 而 JSON 重复键的取值行为取决于解析器——Python json / jq 取最后一个，
+// 某些工具取第一个或直接报 parse error ⇒ AI 侧解析结果不确定，
+// 同一份日志在不同解析器里「服务版本」可能变成业务版本。
+//
+// 特别说明为什么 "time"/"msg"/"message" 也在内：
+// 内层 handler 的 ReplaceAttr 会把 slog 内建的 time/msg **改名**为
+// timestamp/msg。业务侧若另传同名 attr，改名后就会撞上规范层产出的字段。
+//
+// 冲突不静默丢弃：被剥离的键名会记入 reserved_name_conflicts 字段，
+// AI 侧可直接据此定位「哪个调用点占了保留名」。
+var reservedNames = map[string]bool{
+	"time": true, "timestamp": true,
+	"msg": true, "message": true,
+	"level": true, "severity_text": true, "severity_number": true,
+	"service": true, "version": true, "env": true, "instance_id": true,
+	// 诊断字段自身也是保留名，否则业务侧可以把它顶掉，冲突就查不出来了。
+	"reserved_name_conflicts": true,
+}
+
+// ReservedNames 返回保留名集合（测试与文档用）。
+func ReservedNames() []string {
+	out := make([]string, 0, len(reservedNames))
+	for k := range reservedNames {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// filterReserved 过滤单个属性：命中保留名则丢弃并记冲突键。
+//
+// group 属性会被**递归展开**（规范要求扁平单层），
+// 否则 group 内的保留名会在展开后撞上规范层产出的字段。
+func filterReserved(a slog.Attr, conflicts *[]string) []slog.Attr {
+	if a.Value.Kind() == slog.KindGroup {
+		var out []slog.Attr
+		for _, sub := range a.Value.Group() {
+			out = append(out, filterReserved(sub, conflicts)...)
+		}
+		return out
+	}
+	if reservedNames[a.Key] {
+		*conflicts = append(*conflicts, a.Key)
+		return nil
+	}
+	return []slog.Attr{a}
+}
+
+// stripReserved 剥离 record 中与保留名同名的业务属性。
+//
+// 返回 (冲突键名去重排序, 剥离后的 record)。
+func stripReserved(r slog.Record) ([]string, slog.Record) {
+	var conflicts []string
+	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		out.AddAttrs(filterReserved(a, &conflicts)...)
+		return true
+	})
+	return dedupSorted(conflicts), out
+}
+
+// dedupSorted 去重并排序，保证诊断字段稳定可测。
+func dedupSorted(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // standardHandler 在 JSON handler 之上注入规范字段并做脱敏。
 //
 // 为什么不用 slog.HandlerOptions.ReplaceAttr 注入多个字段？
@@ -206,6 +314,13 @@ type standardHandler struct {
 	inner  slog.Handler
 	res    Resource
 	redact bool
+
+	// conflicts 累积 WithAttrs 阶段发现的保留名冲突。
+	//
+	// 为什么 With 阶段也要管：With 传的 attr 会落到**内层** handler 的
+	// 预格式化区，Handle 阶段看不到它们 ⇒ 不在这里剥离的话，
+	// 它们会绕过规范层直接写进 JSON，与规范字段重复。
+	conflicts []string
 }
 
 // Enabled 透传内层 handler 的级别判断。
@@ -216,6 +331,12 @@ func (h *standardHandler) Enabled(ctx context.Context, l slog.Level) bool {
 // Handle 注入规范字段后交给内层 handler。
 func (h *standardHandler) Handle(ctx context.Context, r slog.Record) error {
 	text := severityText(r.Level)
+
+	// 剥离业务侧占用的保留名（见 reservedNames 注释）。
+	// 必须在注入规范字段**之前**做，否则会出现重复键。
+	conflicts, r := stripReserved(r)
+	conflicts = dedupSorted(append(h.conflicts, conflicts...))
+
 	r.AddAttrs(
 		slog.String("severity_text", text),
 		// level 是**小写**别名（ECS log.level 惯例），与 severity_text 大小写
@@ -236,6 +357,14 @@ func (h *standardHandler) Handle(ctx context.Context, r slog.Record) error {
 	r.AddAttrs(slog.String("env", h.res.Env))
 	r.AddAttrs(slog.String("instance_id", h.res.InstanceID))
 
+	// 冲突可见化：剥离掉的保留名记在这里。
+	//
+	// 不是「静默丢弃」——AI 侧可以按 reserved_name_conflicts 非空
+	// 直接定位到违规调用点，再推动业务侧改用无歧义键名。
+	if len(conflicts) > 0 {
+		r.AddAttrs(slog.Any("reserved_name_conflicts", conflicts))
+	}
+
 	if h.redact {
 		r = redactRecord(r)
 	}
@@ -243,11 +372,20 @@ func (h *standardHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 // WithAttrs 透传并保持资源字段注入能力。
+//
+// 同时在此处剥离保留名：With 传的 attr 会落进内层 handler 的预格式化区，
+// Handle 阶段已经看不到，不在这里剥离就会绕过规范层直接写进 JSON。
 func (h *standardHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	var conflicts []string
+	kept := make([]slog.Attr, 0, len(attrs))
+	for _, a := range attrs {
+		kept = append(kept, filterReserved(a, &conflicts)...)
+	}
 	return &standardHandler{
-		inner:  h.inner.WithAttrs(attrs),
-		res:    h.res,
-		redact: h.redact,
+		inner:     h.inner.WithAttrs(kept),
+		res:       h.res,
+		redact:    h.redact,
+		conflicts: dedupSorted(append(h.conflicts, conflicts...)),
 	}
 }
 

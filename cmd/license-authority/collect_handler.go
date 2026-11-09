@@ -51,7 +51,7 @@ func (h *CollectHandler) HandleRuntimeMetrics(c echo.Context) error {
 
 	hardwareHash, err := h.store.GetInstanceHardwareHash(c.Request().Context(), instanceID)
 	if err != nil {
-		slog.Error("collect hardware hash lookup failed", "error", err, "instance_id", instanceID)
+		slog.Error("collect hardware hash lookup failed", "error", err, "agent_instance_id", instanceID)
 		return echo.NewHTTPError(http.StatusInternalServerError, "instance lookup failed")
 	}
 	if hardwareHash == "" {
@@ -61,7 +61,7 @@ func (h *CollectHandler) HandleRuntimeMetrics(c echo.Context) error {
 
 	licenseID, enabled, found, err := h.store.LookupTelemetryPreference(c.Request().Context(), hardwareHash)
 	if err != nil {
-		slog.Error("collect telemetry preference lookup failed", "error", err, "instance_id", instanceID)
+		slog.Error("collect telemetry preference lookup failed", "error", err, "agent_instance_id", instanceID)
 		return echo.NewHTTPError(http.StatusInternalServerError, "telemetry preference lookup failed")
 	}
 	if !found || !enabled {
@@ -74,11 +74,11 @@ func (h *CollectHandler) HandleRuntimeMetrics(c echo.Context) error {
 		licenseIDPtr = &licenseID
 	}
 	if err := h.store.InsertRuntimeMetrics(c.Request().Context(), instanceID, licenseIDPtr, metrics); err != nil {
-		slog.Error("collect insert metrics failed", "error", err, "instance_id", instanceID)
+		slog.Error("collect insert metrics failed", "error", err, "agent_instance_id", instanceID)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to store metrics")
 	}
 	if err := h.store.ProcessRuntimeAlerts(c.Request().Context(), metrics); err != nil {
-		slog.Error("collect alert evaluation failed", "error", err, "instance_id", instanceID)
+		slog.Error("collect alert evaluation failed", "error", err, "agent_instance_id", instanceID)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to evaluate alerts")
 	}
 
