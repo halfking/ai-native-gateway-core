@@ -1173,6 +1173,14 @@ func (e *Executor) executeOpenAI(
 	// iteration should NOT increment attempt, allowing the compressed body to
 	// be retried immediately without consuming the retry budget.
 	ctxLenRecoveryRetry := false
+	// 2026-11-10（用户规则：合理处理，不能直接报错）：reasoning 模型把
+	// 客户端的 max_tokens 全部烧在思考上（finish_reason=length、
+	// completion==reasoning、零可见输出）⇒ 一次免费的同候选重试，出站体
+	// max_tokens 加倍（≥2048，cap 32768）。生产实证：MiniMax-M3.1 会话
+	// 压缩后 1273 prompt tokens，max_tokens=300 全被 reasoning 吃光 ⇒
+	// empty_response ⇒ 全候选 503。只放开一次（reasoningBudgetBumped），
+	// 二次仍烧完则按既有 empty 语义 failover。
+	reasoningBudgetBumped := false
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus || probeRetry; attempt++ {
 		// Candidate-attempt boundary is intentionally logged once per attempt,
 		// rather than once per streamed frame, so a retry/failover can be
@@ -2573,6 +2581,30 @@ func (e *Executor) executeOpenAI(
 				// 不改任何客户端可见面**（分类口径仍由 internal/emptyoutcome
 				// 那张唯一真值表决定）。
 				emptyReason, emptyUsage := emptyoutcome.InspectEmptyBody(respBody)
+				// 2026-11-10：reasoning 烧光输出预算（finish_reason=length 且
+				// reasoning≈completion、零可见输出）不是「上游坏了」——是客户端
+				// 给的输出余量装不下这个 reasoning 模型的思考。加倍 max_tokens
+				// 同候选免费重试一次；二次仍烧完才走既有 empty failover。
+				if emptyReason == emptyoutcome.EmptyReasonBudgetExhausted &&
+					emptyUsage.FinishReason == "length" && !reasoningBudgetBumped {
+					if bumpedBody, bumped := bumpReasoningBudget(bodyBytes); bumped {
+						reasoningBudgetBumped = true
+						bodyBytes = bumpedBody
+						slog.Warn("executor: reasoning exhausted the completion budget; retrying same candidate with doubled max_tokens",
+							"request_id", params.RequestID,
+							"credential_id", cand.CredentialID,
+							"provider_id", cand.ProviderID,
+							"raw_model", cand.RawModel,
+							"completion_tokens", emptyUsage.CompletionTokens,
+							"reasoning_tokens", emptyUsage.ReasoningTokens,
+							"prompt_tokens", emptyUsage.PromptTokens,
+						)
+						return nil, &retryableError{err: &upstreampkg.Error{
+							Kind:    errorsx.KindTransient,
+							Message: "reasoning exhausted completion budget; retrying with doubled max_tokens",
+						}}
+					}
+				}
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
 					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,
