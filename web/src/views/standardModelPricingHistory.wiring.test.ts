@@ -54,6 +54,38 @@ describe('StandardModelPricingView 价格历史接线', () => {
     }
   })
 
+  it('行情对比弹窗接线（2026-11-10 行情整合轮）', () => {
+    // 工具栏「行情对比」入口 + openMarket 真调 API + 表格列头齐全
+    expect(template).toContain('@click="openMarket"')
+    expect(view).toContain('getAdminMaasMarketPriceOverview(marketQuery.value, marketOnlyResolved.value, 300)')
+    expect(view).toContain('interface MarketPriceOverviewRow {')
+    for (const col of ['colModel', 'colMarketMin', 'colMarketMinOut', 'colVendor', 'colRetail', 'colPlatforms', 'colDrift']) {
+      expect(template, `market col header ${col}`).toContain(`standardModelPricing.market.${col}`)
+    }
+    // 同步台账行（可对账面）
+    expect(view).toContain('marketSync.value = (res.sync && res.sync[0]) || null')
+  })
+
+  it('行情 i18n：8 语种 market 键组齐全（缺键渲染字面键名）', () => {
+    const locales = ['zh-CN', 'zh-TW', 'en-US', 'ja-JP', 'de-DE', 'fr-FR', 'es-ES', 'ar-SA']
+    for (const loc of locales) {
+      const src = readView(`locales/${loc}/standardModelPricing.ts`)
+      for (const key of ['open', 'title', 'syncAsOf', 'resolved', 'empty', 'colModel', 'colMarketMin', 'colMarketMinOut', 'colVendor', 'colRetail', 'colPlatforms', 'colDrift', 'unresolved']) {
+        expect(src, `${loc} missing market.${key}`).toContain(`${key}: `)
+      }
+    }
+  })
+
+  it('行情 zh-TW 不得与 zh-CN 同值（same-as-source 棘轮）', () => {
+    const tw = readView('locales/zh-TW/standardModelPricing.ts')
+    const cn = readView('locales/zh-CN/standardModelPricing.ts')
+    const grab = (src: string, key: string) =>
+      src.match(new RegExp(`${key}: (?:'([^']*)'|"([^"]*)")`))?.slice(1).find(Boolean)
+    for (const key of ['open', 'title', 'empty', 'colDrift']) {
+      expect(grab(tw, key), `zh-TW market.${key} must differ from zh-CN`).not.toBe(grab(cn, key))
+    }
+  })
+
   it('zh-TW 不得与 zh-CN 同值（same-as-source 棘轮）', () => {
     const tw = readView('locales/zh-TW/standardModelPricing.ts')
     const cn = readView('locales/zh-CN/standardModelPricing.ts')

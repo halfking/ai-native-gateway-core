@@ -84,6 +84,25 @@ export default {
     video: 'Video',
   },
 
+  market: {
+    open: "Marktpreise",
+    title: "Marktpreisvergleich (salesdecorate-Feed)",
+    syncAsOf: "Stand {date} · {rows} Zeilen übernommen",
+    resolved: "{n} zu diesem Gateway aufgelöst",
+    searchPlaceholder: "Modellname suchen…",
+    onlyResolved: "Nur aufgelöste",
+    search: "Suchen",
+    empty: "Marktdaten leer - scripts/market-price-sync.py auf 211 ausführen oder auf den täglichen Crawl warten",
+    colModel: "Modell",
+    colMarketMin: "Marktminimum in/out (CNY/1M)",
+    colMarketMinOut: "Marktminimum Output (CNY/1M)",
+    colVendor: "Herstelleranker in/out (CNY/1M)",
+    colRetail: "Unser Einzelpreis in/out (CNY/1M)",
+    colPlatforms: "Plattformen",
+    colDrift: "Einzelpreis / Markt",
+    unresolved: "Unaufgelöst",
+  },
+
   history: {
     title: "Preishistorie",
     changesTitle: "Preisänderungen",

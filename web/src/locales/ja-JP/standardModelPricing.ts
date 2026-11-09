@@ -84,6 +84,25 @@ export default {
     video: "動画",
   },
 
+  market: {
+    open: "相場比較",
+    title: "市場相場比較（salesdecorate 行情面）",
+    syncAsOf: "相場日 {date} · {rows} 件登録",
+    resolved: "本ゲートウェイに解決 {n} 件",
+    searchPlaceholder: "モデル名を検索…",
+    onlyResolved: "解決済みのみ",
+    search: "検索",
+    empty: "相場データが空です——211 で scripts/market-price-sync.py を実行するか毎日収集までお待ちください",
+    colModel: "モデル",
+    colMarketMin: "市場最安入/出（CNY/1M）",
+    colMarketMinOut: "市場最安出力（CNY/1M）",
+    colVendor: "ベンダー錨入/出（CNY/1M）",
+    colRetail: "自社小売入/出（CNY/1M）",
+    colPlatforms: "プラットフォーム数",
+    colDrift: "小売/市場",
+    unresolved: "未解決",
+  },
+
   history: {
     title: "価格履歴",
     changesTitle: "価格変更履歴",

@@ -84,6 +84,25 @@ export default {
     video: '影片',
   },
 
+  market: {
+    open: "行情比較",
+    title: "市場行情比較（salesdecorate 行情面）",
+    syncAsOf: "行情日期 {date} · 已入庫 {rows} 筆",
+    resolved: "已解析到本網關 {n} 個",
+    searchPlaceholder: "搜尋模型名…",
+    onlyResolved: "僅看已解析",
+    search: "查詢",
+    empty: "行情資料為空——先在 211 上跑 scripts/market-price-sync.py 或等每日採集",
+    colModel: "模型",
+    colMarketMin: "市場最低入/出（CNY/1M）",
+    colMarketMinOut: "市場最低出價（CNY/1M）",
+    colVendor: "原廠錨入/出（CNY/1M）",
+    colRetail: "我方零售入/出（CNY/1M）",
+    colPlatforms: "平台數",
+    colDrift: "我方零售/市場",
+    unresolved: "未解析",
+  },
+
   history: {
     title: "價格歷史",
     changesTitle: "定價變化",

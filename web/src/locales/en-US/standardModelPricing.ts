@@ -79,6 +79,25 @@ export default {
     msgFailed: 'The bulk operation could not be completed. Please retry.',
   },
 
+  market: {
+    open: "Market prices",
+    title: "Market price comparison (salesdecorate feed)",
+    syncAsOf: "As of {date} · {rows} rows landed",
+    resolved: "{n} resolved to this gateway",
+    searchPlaceholder: "Search model name…",
+    onlyResolved: "Resolved only",
+    search: "Search",
+    empty: "Market data is empty - run scripts/market-price-sync.py on 211 or wait for the daily crawl",
+    colModel: "Model",
+    colMarketMin: "Market min in/out (CNY/1M)",
+    colMarketMinOut: "Market min output (CNY/1M)",
+    colVendor: "Vendor anchor in/out (CNY/1M)",
+    colRetail: "Our retail in/out (CNY/1M)",
+    colPlatforms: "Platforms",
+    colDrift: "Retail / market",
+    unresolved: "Unresolved",
+  },
+
   history: {
     title: "Price history",
     changesTitle: "Pricing changes",
