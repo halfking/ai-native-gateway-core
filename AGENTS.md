@@ -104,6 +104,33 @@
 > ★ 遗留：订价变化前端图表（趋势线）未做；token_plan/booster 价期是参考价数据面不进
 >   计费热路径；asm-worker-1 crash loop（Restarting 137）登记待 owner 轮。
 
+> **2026-11-10 opus-5-5 请求格式核查（对照 Anthropic 原厂规范）与预算门修正轮（goal 会话，审计档
+> `docs/audit/2026-11-10-opus-5-5请求格式核查与预算门修正.md`）**：
+> ★ 用户指令＝「按原厂资料检查 claude 请求格式 → 修正 → 211 日志分析验证」。
+> ★★ **缺陷一＝OpenAI Responses 的 `reasoning` item 被逐字透传 anthropic-messages wire**：
+>   ZCode/AI-SDK 在 input[] 回放前轮 reasoning item（无 role + encrypted_content/summary
+>   信封）⇒ parse_responses 无特判落 unknown-item fallback ⇒ assistant+raw 块 ⇒
+>   serialize_anthropic default 分支原样回注 `{"type":"reasoning",...}`——不在 Anthropic
+>   合法内容块闭集 ⇒ apiclaude 全凭据 400（Malformed conversation content）。完美解释
+>   证据形态：带思考历史的真实会话必 400、无 reasoning 合成测试全过、直连成功。
+>   修＝parse 特判丢弃+anomaly ＋ serialize 纵深防御（`anthropicLegalBlockType` 闭集
+>   外降级 text 包裹）＋守护测试 ×2＋Gemini raw 回注钉测按其纪律显式改判（该钉测早已
+>   登记「raw 回注＝同族 400 风险」，本轮生产引爆）。
+> ★★ **缺陷二＝预算门 × 数据缺口（422 `context_budget_exceeded`）**：修复一部署后验证
+>   暴露——`EnforceContextBudget=true` 常开 × 生产 ~90% 模型 context_window=NULL ⇒
+>   `Resolve` 对未知窗口 fail-closed ⇒ NULL 窗口模型全量 pre-dispatch 422（82ms 内
+>   4 次 failover、零 upstream 尝试）——与 2979 灾难同根，回滚只买时间。修＝未知窗口
+>   回落包级全局保守上限（500k token / 8MB，「绝不当无限」保持），已知窗口精确执法
+>   与 media/uncountable 检查不变；钉测改判 ×5 均留事故注，核心不变量（本地拒绝
+>   不耗物理尝试/映射保真/legacy 兼容）保留。
+> ★ **端到端验证（211=a0dd9c7d/2981 槽 b）**：带 reasoning item 的 ZCode 形状请求
+>   修复前必 400/422 ⇒ 修复后 http=200、4.1s、response.completed、真实输出；
+>   日志 upstream_status=200 + success=true stream_chunks=4。四包（contextbudget/
+>   executors/compression/ir）全绿、build rc=0、gofmt 零漂移、双仓推送 382e60d6d。
+> ★ 遗留：~90% canonical context_window=NULL 待补（归 W2/BudgetRegistry owner，
+>   补齐后预算门走精确执法）；apiclaude >1MB 载荷 400/413 与候选池单供应商仍待
+>   owner 裁决（evol/速云，见 11-09 审计档 §3）。
+
 > **2026-11-09 claude-opus-5-5 访问错误根因分析与诊断面修复轮（goal 会话，审计档
 > `docs/audit/2026-11-09-claude-opus-5-5访问错误根因分析与诊断面修复.md`）**：
 > ★ 用户目标＝「llm.itestu.cn 访问 claude-opus-5-5 总是错误 → 查 211 log → 判断
