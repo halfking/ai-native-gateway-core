@@ -28633,6 +28633,14 @@ origin 某祖先提交的树时必然成立）。
 　`sql/schema` 的 `destructiveGuardedDB` 非注入车道（★ 登记还必须带**守卫牙齿断言**：
 　删掉守卫 ⇒ 门必须红）。★ 旁证：**「允许任意 DSN」的开关**照 `WA877_ALLOW_ANY_DSN` 先例
 登记 class=dangerous + 事实源字面量豁免。
+　⇒ ★★ **2026-11-09 订正（F-11 裁决后补记，第 58 轮 24h 审计）**：本通式的 sales 腿实例方案
+　（拆专用名 `SALES_REALDB_TEST_DATABASE_URL`）已被同日 F-11 判定**作废、回归上游**——
+　上游 `b8aa8fe4c`（2026-11-08）以**另一方案**落地同一族治理：保留 `TEST_DATABASE_URL` ＋
+　新增 `LLM_GATEWAY_REALDB_ALLOW_ANY_DSN` 豁免（现行登记见
+　`scripts/ursmcheck/pg_test_env_registry.tsv:90` / `scripts/audit/dsn_exclusive_registry.tsv:24`；
+　`SALES_REALDB_TEST_DATABASE_URL` 全仓 **0 命中**）。⇒ **通式的「专用名」修法方向与「登记必须带
+　守卫牙齿」纪律仍成立**（TEST_MODELCREDIBILITY 先例未变），但**sales 腿的实例不再是仓内现状**，
+　读者不可据本通式去「补登记」一个已作废的名字。
 
 ★★★ **通式四（★ 本轮最值钱）：并发在途的跨仓 WIP 会让本仓门红，而它【不是本仓缺陷】**
 　⇒ 形态：共享 SSOT 仓有**未提交**的 WIP（本例 D-1 跨机锁恢复，加 `source_hostname` 字段）
