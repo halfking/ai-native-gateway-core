@@ -725,6 +725,12 @@ test-pg-contracts: ## 隔离 PostgreSQL 合约门禁（需要两个专用、低�
 	#   守卫必然 Fatal ⇒ 必须指向一次性 *_test 库。
 	@test -n "$${TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL}" || (echo "TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL is required (dedicated *_test database)" && exit 1)
 	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./domains/modelcredibility -run '^Test(RollupProviderModelRealPG|ConsensusStreakSurvivesPersistence)$$' -count=1 -v -timeout=90s
+	# ★ 2026-11-09（模型指纹验证增强轮）：modelcredibility 的被动指纹基线腿
+	#   （迁移 955 passive_model_fingerprints 的 Upsert/Load 往返 + 幂等覆盖 +
+	#   Collector→Flush 端到端 —— jsonb 绑定与 ON CONFLICT 语义纯单测拼不出）。
+	#   ★ 专用变量同款（已登记 scripts/audit/dsn_exclusive_registry.tsv）。
+	@test -n "$${TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL}" || (echo "TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL is required (dedicated *_test database)" && exit 1)
+	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./domains/modelcredibility -run '^TestPassiveBaselineRealPG$$' -count=1 -v -timeout=90s
 
 # 真库判据（bg/*_realdb_test.go 一族）的显式运行入口，与 test-rls 同族。
 #

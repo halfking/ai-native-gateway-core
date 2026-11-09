@@ -2594,6 +2594,9 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/952_model_price_versions.sql"
   "$ROOT_DIR/sql/migrations/startup/953_models_canonical_featured.sql"
   "$ROOT_DIR/sql/migrations/startup/954_probe_lane_trace_events.sql"
+  # ★ 955（2026-11-09 模型指纹验证增强轮）：passive_model_fingerprints ——
+  #   被动式模型指纹基线表（真实流量聚合的 TTFT/ITT/吞吐/Token 签名）。
+  "$ROOT_DIR/sql/migrations/startup/955_passive_model_fingerprints.sql"
 )
 
 
@@ -3155,6 +3158,9 @@ ledger_artifact_probe "933_task_events.sql" \
   "to_regclass('public.task_events') IS NOT NULL"
 ledger_artifact_probe "954_probe_lane_trace_events.sql" \
   "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.session_turns_probe_hot'::regclass AND attname = 'trace_events' AND NOT attisdropped)"
+# ★ 955（2026-11-09 模型指纹验证增强轮）：产物 = 被动指纹基线表确实在库里。
+ledger_artifact_probe "955_passive_model_fingerprints.sql" \
+  "to_regclass('public.passive_model_fingerprints') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

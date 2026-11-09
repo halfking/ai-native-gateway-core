@@ -10804,6 +10804,19 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 211 采样：363 个请求全部仅存在于 `session_turns_probe_hot`，业务 hot/cold 均为 0；每个请求四轮 trace 刷盘均找不到业务父行，形成 1452 条父行缺失和 1452 条重试告警。根因是 928 探针物理车道已分叉，trace 仍只写业务两腿。954 为探针表追加 nullable、无默认值的 `trace_events jsonb`，不改 928 已应用字节、不扫描回填。trace 写入与读取新增独立探针腿；完整 envelope 和规范化阶段事件持久化成功后才清理 Redis，开关关闭不阻断历史读取，缺失 schema 显式报错。
 
 登记面：canonical up/down、installer 字节副本/embed/map/StartupFiles、部署显式清单及产物探针、派生 installed manifest、objects 快照；无业务计费写入。隔离 PG17.11 验证真实 928→954、重复重放、原行保持 NULL、relfilenode 不变及 down；`go test -race ./internal/trace` 全包通过（含真实表、缺父行/阶段写失败保留 Redis、重试和关车道读取）。回滚须先回滚 trace 代码再执行 954 down；删除列会丢弃已保存的探针 trace，正常回滚优先保留兼容性新增列。
+
+## 2026-11-09 — 模型指纹验证增强：955 被动式模型指纹基线表
+
+| version | file | sha256 | status |
+|---|---|---|---|
+| 955 | `955_passive_model_fingerprints.sql` | `82fc6df0424f5db7150e9fcd9387aa67c261fe55d0dc10df66557cc0dc3c9408` | registered（2026-11-09 模型指纹验证增强轮；**待部署**：211/154/245 列车） |
+| 955 | `955_passive_model_fingerprints.down.sql` | `084eb71dad1e111499eba7a61d77775483861120b3e2f38dc0708b1da5c73583` | registered |
+
+缺口本体：922 的可信度判定是**主动**探针（直连上游发标定请求），有三个结构性弱点——成本（行为指纹全量采集要 240 请求/节点）、可规避（上游可识别探测特征针对性放行）、覆盖稀疏（周期扫描之间是盲区）。955 建 `passive_model_fingerprints`：从**真实用户流量**聚合的 (租户, 凭据, 模型) 行为基线（credential_id=0 保留给模型级跨凭据聚合），承载三族特征——时序（TTFT/ITT 分布/吞吐，权重 0.6，最强信号）、Token 签名（prompt_token_signature/output_density，权重 0.25）、内容（vocab_freq/format_flags 位标，权重 0.15）。学术支撑：加密流量元数据分析对服务模型的识别准确率 97.7%（arXiv:2609.31877）、Inter-Token Timing 加密流量下实时可用（arXiv:2502.20589）。
+
+口径纪律：ITT 分布以 **10ms 桶宽**落 jsonb（桶标签 `"0"/"10"/.../"90"/"100+"`），与 `domains/modelcredibility.bucketizeITTs` 的桶划分**逐字一致**（JSD 对比直接可用，改桶宽必须两侧同步——契约门 `TestMigration955ITTBucketWidthCrossPin` 双向钉死）；时序列一律毫秒 real（Go 侧 time.Duration 边界换算，表里不存 Duration 字符串）；sample_count 保留样本量信息，消费方按 `confidence = min(1, sample_count/100)` 降权（样本不足是「低置信」不是「无异常」）。
+
+登记面：canonical up/down、installer embeddata 双副本（SHA 现场一致）、`go:embed` 变量 + `embeddedSQLFiles` 映射、`dbinit` StartupFiles、部署显式清单（`apply-db-revision-sequence.sh` files + `ledger_artifact_probe` to_regclass 探针）、`installed_startup_migrations.tsv` 第 **355** 位、契约门 `migration_955_passive_model_fingerprints_test.go` 五件（形态/down/桶宽 cross-pin/字节一致/登记面覆盖）。幂等（CREATE TABLE IF NOT EXISTS），`BEGIN/COMMIT` + `SET LOCAL lock_timeout='5s'` / `statement_timeout='10min'`（SET LOCAL 落在事务块内）。**字节修订一次（prepared 未应用 ⇒ 合法，936/946 先例）**：首版 statement_timeout 拍 60s，heavy-DDL 预算门 `TestHeavyDDLModernMigrationsDeclareMeasuredBudget` 当场红（两条非 CONCURRENTLY CREATE INDEX ⇒ 761 先例要求 ≥10min 预算声明），抬 10min 后门绿——SHA 以上表为准。隔离 PG17.11 真库验证（timeout 抬升前的字节）：up/重放幂等/down/再应用四态全过 + 契约腿 TestPassiveBaselineRealPG 四小节全绿（timeout 抬升不改 schema 语义）。回滚顺序：先停 bg 侧基线聚合 worker（停止写入），再执行 955 down（drop 表会丢弃已积累的基线，正常回滚优先保留表只停写方）。
 ## 2026-11-09T06:46:14Z — deploy 245 build_seq 2956 (998269fb)
 
 | Migration | File | SHA-256 | Status |
