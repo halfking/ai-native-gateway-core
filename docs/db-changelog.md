@@ -10824,3 +10824,9 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 | 952 | `952_model_price_versions.sql` | `207db3275e9ca7e20985d64038ba03378b676592345e8093a7f9b5770681c1fb` | applied+verified |
 | 953 | `953_models_canonical_featured.sql` | `d3f5225fd0749f13b9ac9abff62caf87c4a4e4f1daa76bf9a5ea85eefcf7af17` | applied+verified |
 | 954 | `954_probe_lane_trace_events.sql` | `db9f8b807a19f3fd291852c9c8efa1069ff9e3bbf793b0d3d2f2f3081943d063` | applied+verified |
+## 2026-11-09T16:50:18Z — deploy 245 build_seq 2956 (9692f5aa)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 955 | `955_passive_model_fingerprints.sql` | `82fc6df0424f5db7150e9fcd9387aa67c261fe55d0dc10df66557cc0dc3c9408` | applied+verified |
+
