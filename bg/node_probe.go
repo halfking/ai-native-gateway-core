@@ -3131,11 +3131,12 @@ type nodeProbeRoundResult struct {
 	latencyMs       int
 	timedOut        bool // true if context deadline or client timeout triggered
 	// 2026-07-16: 新增详细字段用于完整记录probe过程
-	requestURL     string
-	requestHeaders map[string]string // 已脱敏（不含Authorization/x-api-key）
-	requestBody    string
-	responseBody   string // sanitized preview, at most 512 bytes
-	viaProxy       bool   // probeDirect是否通过代理
+	requestURL       string
+	requestHeaders   map[string]string // 已脱敏（不含Authorization/x-api-key）
+	requestBody      string
+	responseBody     string // sanitized preview, at most 512 bytes
+	responseJSONBody string
+	viaProxy         bool // probeDirect是否通过代理
 	// rootCause（2026-09-25）是本轮失败的根因归类（node/protocol/gateway，
 	// 见 probe_root_cause.go）。ok=true 时为空。它回答"是协议问题还是节点的
 	// 问题"：protocol 形失败重试梯永远治不好，只能按 6h 长回看停放等配置
@@ -3311,6 +3312,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		r.ok, r.observationOnly = fallback.OK, fallback.Inconclusive
 		r.httpStatus = fallback.HTTPStatus
 		r.responseBody = truncateBodyPreview(fallback.Body)
+		r.responseJSONBody = fallback.ResponseJSON
 		r.errDetail = responsesUnsupportedDetail(resp.StatusCode, fallback.HTTPStatus, fallback.Body, fallback.LatencyMs, fallback.OK)
 		switch {
 		case fallback.OK:
@@ -3361,7 +3363,7 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 		LatencyMs:       result.latencyMs,
 		RootCause:       string(result.rootCause),
 		RespPreview:     result.responseBody,
-		ResponseBody:    result.responseBody,
+		ResponseBody:    result.responseJSONBody,
 		RequestURL:      result.requestURL,
 		RequestBody:     result.requestBody,
 		ViaProxy:        result.viaProxy,
@@ -4215,6 +4217,7 @@ func nodeProbeWireFormat(protocol string) string {
 
 func setNodeProbeResponse(r *nodeProbeRoundResult, protocol string, response []byte, readErr error) {
 	r.responseBody = truncateBodyPreview(string(response))
+	r.responseJSONBody = completeProbeJSONBody(response, readErr)
 	if r.httpStatus >= 200 && r.httpStatus < 300 {
 		if readErr == nil && probeResponseHasOutput(protocol, response) {
 			r.ok = true
