@@ -757,6 +757,7 @@ onMounted(load)
         <ul v-else class="price-history-list">
           <li v-for="v in historyItems" :key="v.billing_mode + v.effective_from" class="price-history-item">
             <div class="ph-head">
+              <span class="ph-mode-label">{{ t('standardModelPricing.history.mode') }}:</span>
               <span class="badge badge-blue">{{ t(modeLabelKey[v.billing_mode] || 'standardModelPricing.history.modePayAsYouGo') }}</span>
               <span class="ph-period">{{ fmtPeriod(v) }}</span>
               <span class="ph-source">{{ t('standardModelPricing.history.source') }}: {{ v.source }}</span>
@@ -779,6 +780,7 @@ onMounted(load)
           <li v-for="v in changeItems" :key="v.canonical_id + v.billing_mode + v.effective_from" class="price-history-item">
             <div class="ph-head">
               <span class="ph-model">{{ v.display_name || v.canonical_name }}</span>
+              <span class="ph-mode-label">{{ t('standardModelPricing.history.mode') }}:</span>
               <span class="badge badge-blue">{{ t(modeLabelKey[v.billing_mode] || 'standardModelPricing.history.modePayAsYouGo') }}</span>
               <span class="ph-period">{{ new Date(v.effective_from).toLocaleString(localeRef) }}</span>
             </div>
@@ -933,12 +935,12 @@ onMounted(load)
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .price-history-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
-.price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border, #eee); }
+.price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border); }
 .price-history-item:last-child { border-bottom: none; }
 .ph-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ph-model { font-weight: 600; }
-.ph-period { color: var(--kx-text-secondary, #666); font-size: 12px; }
-.ph-source { color: var(--kx-text-secondary, #666); font-size: 12px; }
+.ph-period { color: var(--kx-text-secondary); font-size: 12px; }
+.ph-source { color: var(--kx-text-secondary); font-size: 12px; }
 .ph-prices { margin-top: 4px; font-size: 13px; }
 .bulk-bar {
   display: flex; align-items: center; gap: 8px;

@@ -261,19 +261,29 @@ var knownUnwiredSettings = map[string]string{
 	"sessions_v2.read_timeout_ms":     "同上",
 
 	// ── session.* / log.* / probe.* / 其余 ────────────────────────────────
-	"session.cred_history_max":                   "未接线；与 lifecycle.credential_model_call_history_ttl_days 指向同一份数据，但两者都无消费方",
-	"session.db_batch_size":                      "未接线",
-	"session.db_flush_interval_sec":              "未接线",
-	"session.stopped_ttl_minutes":                "未接线",
-	"session.ttl_hours":                          "未接线；与 lifecycle 家族同型的 TTL 声明",
-	"log.cleanup_enabled":                        "未接线；日志清理实际由 bg/partition_manager.go 的归档 spec 驱动，不由本键控制",
-	"log.request_retention_days":                 "未接线",
-	"log.trim_days":                              "未接线",
-	"probe.partition_cleanup_enabled":            "未接线",
-	// ── sales.*（2026-11-07 探测浪费根修轮的 Maestro 三门跑出的既有缺口收口）──
-	// spec_sales.go 自述「看板轮落地前该键仅登记占位」（W2 看板才消费）。
-	// 2026-11-05 落库后无人把它登记进本表 ⇒ D17 设置接线普查自那时起红。
-	"sales.quote.approval_rate_alert_pct":        "W2 看板轮前的登记占位（spec_sales.go DescriptionLong 自述）；看板落地接线后本条必须删除",
+	"session.cred_history_max":        "未接线；与 lifecycle.credential_model_call_history_ttl_days 指向同一份数据，但两者都无消费方",
+	"session.db_batch_size":           "未接线",
+	"session.db_flush_interval_sec":   "未接线",
+	"session.stopped_ttl_minutes":     "未接线",
+	"session.ttl_hours":               "未接线；与 lifecycle 家族同型的 TTL 声明",
+	"log.cleanup_enabled":             "未接线；日志清理实际由 bg/partition_manager.go 的归档 spec 驱动，不由本键控制",
+	"log.request_retention_days":      "未接线",
+	"log.trim_days":                   "未接线",
+	"probe.partition_cleanup_enabled": "未接线",
+	// ── sales.* ──────────────────────────────────────────────────────────
+	// ★ 2026-11-09（cron 同步轮）订正：原先登记的
+	//   `sales.quote.approval_rate_alert_pct` **已失效**——W2 看板轮（2026-11-08）
+	//   把它接线到 GET /api/admin/sales/dashboard（消费方 = sales/dashboard.go），
+	//   而那条登记自己就写着「看板落地接线后本条必须删除」⇒ 本轮按其自述删除。
+	//
+	// ★ 同批补登 3 个 tier_coef_* 键：它们是**故意不接线的**——
+	//   spec_sales.go 的 DescriptionLong 逐字写明「仅前端快填用，服务端不校验
+	//   零售价与系数的关系（销售可改价，红线在审批）」⇒ **服务端侧**没有消费方
+	//   是设计口径，不是「忘了接」。
+	//   ⚠ 反面：若哪天服务端开始按该键定价，这条登记必须删（门会自己红）。
+	"sales.quote.tier_coef_aggressive":           "有意不接线：仅前端快填用的三档系数（spec_sales.go DescriptionLong 自述「服务端不校验零售价与系数的关系」）；服务端定价红线在审批，不在系数",
+	"sales.quote.tier_coef_standard":             "同上（标准档 1.6）",
+	"sales.quote.tier_coef_conservative":         "同上（保守档 2.0）",
 	"probe.promote_batch_size":                   "未接线；promote 批大小实际由迁移里的 p_batch_size 参数决定",
 	"disguise.reclaim_idle_seconds":              "未接线",
 	"handoff.threshold":                          "未接线；活的是 goal.handoff_signal_threshold_tokens（不同 Key）",

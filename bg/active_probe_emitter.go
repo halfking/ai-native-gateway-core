@@ -325,9 +325,12 @@ func buildProbeRequestLogEntry(
 		actor = "active-probe-worker"
 	}
 
-	var requestBody, responseBody *string
+	var requestBody, responsePreview, responseBody *string
 	if result.RequestBody != "" {
 		requestBody = strPtrTelemetry(result.RequestBody)
+	}
+	if result.RespPreview != "" {
+		responsePreview = strPtrTelemetry(result.RespPreview)
 	}
 	if result.ResponseBody != "" {
 		responseBody = strPtrTelemetry(result.ResponseBody)
@@ -373,8 +376,9 @@ func buildProbeRequestLogEntry(
 		TaskTypeChosen: strPtrTelemetry("probe_" + origin),
 		QualityFlags:   buildProbeQualityFlags(result, attempt, origin),
 		// 2026-07-19: Probe request/response bodies for diagnostics
-		RequestBody:  requestBody,
-		ResponseBody: responseBody,
+		RequestBody:     requestBody,
+		ResponsePreview: responsePreview,
+		ResponseBody:    responseBody,
 	}
 }
 

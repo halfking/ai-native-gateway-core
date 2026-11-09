@@ -1,5 +1,14 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-09 48h修正审计与三环境发布轮（已验收）**：报告
+> `docs/audit/2026-11-09-48h-remediation-report.md`，交接
+> `HANDOFF-48h-remediation-20261109.md`。65提交/271文件与11项WIP已审；历史未合并分支0。
+> 修MCP隔离/委派/领取/吊销、统计闭分钟、MaaS预算/首购/价期、953投递、954探针trace、legacy空头JSONB。
+> 应用sha998269fb：211#2978、245#2956、154#2957；三台管理员真实登录/页面验收。
+> 211迁移宿主DNS误连252→显式容器通道；154旧nginx worker仍用8781导致混合502→确认PID后优雅QUIT。
+> 恢复后local20/public30为200；新增20次独立连接四字段身份门在真机通过（有限采样非永久保证）。
+> 注意：部署非零中断；旧trace不可补、preview截断JSON、外系统scheduled_tasks、Toolkit跨仓失败仍登记。
+
 > 适用：未来任何 cold-start 切到本仓库的助手会话（不区分会话身份）。
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，

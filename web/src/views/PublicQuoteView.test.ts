@@ -25,6 +25,11 @@ vi.mock('../api/publicQuote', () => ({
 }))
 
 const mockedFetch = vi.mocked(fetchPublicQuote)
+const viewMode = vi.hoisted(() => ({ value: 'table' }))
+vi.mock('../composables/useDataViewMode', async () => {
+  const { computed } = await import('vue')
+  return { useDataViewMode: () => ({ effective: computed(() => viewMode.value), canSwitch: computed(() => false), setMode: vi.fn() }) }
+})
 
 const QUOTE = {
   customer_name: '客户甲',
@@ -50,6 +55,7 @@ const QUOTE = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  viewMode.value = 'table'
 })
 
 afterEach(() => {
@@ -69,6 +75,20 @@ async function mountAt(token: string) {
 }
 
 describe('PublicQuoteView', () => {
+  it('compact cards retain every quote field, total, watermark and print action', async () => {
+    viewMode.value = 'cards'
+    mockedFetch.mockResolvedValueOnce({ ...QUOTE, items: [{ ...QUOTE.items[0], volume_note: 'Annual usage', discount_pct: 10 }] })
+    const w = await mountAt('tok-compact')
+    await flushPromises()
+    expect(w.find('table').exists()).toBe(false)
+    expect(w.find('[data-testid="card-list"]').exists()).toBe(true)
+    for (const value of ['Model A', 'Annual usage', '100M', '20M', '100', '200', '10%', '$388.90']) {
+      expect(w.text()).toContain(value)
+    }
+    expect(w.find('.pq-total-row').text()).toContain('$388.90')
+    expect(w.find('.pq-watermark').text()).toContain('客户甲')
+    expect(w.find('.pq-print-btn').exists()).toBe(true)
+  })
   it('正常态：要素表 + 合计 + 水印在场；类型层钉死无成本/毛利/供应商轴', async () => {
     mockedFetch.mockResolvedValueOnce(QUOTE)
     const w = await mountAt('tok-abc')

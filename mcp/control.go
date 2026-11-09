@@ -241,7 +241,7 @@ func (c *ControlPlane) handleKeyApprove(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	body, status := c.bootstrap.ApproveApplication(r.Context(), r.PathValue("id"), "")
+	body, status := c.bootstrap.approveApplicationFor(r.Context(), r.PathValue("id"), "", controlIdentity(r))
 	_ = httpx.WriteJSON(w, status, "application/json", body)
 }
 
@@ -272,17 +272,24 @@ func (c *ControlPlane) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"capability": a.Capability,
 		})
 	}
+	uptime := c.gateway.UptimeSeconds()
+	// ★ 刷新运行时长指标（口径见 mcp/metrics.go 的注释）：只声明不 Set ⇒
+	//   它在 /metrics 上恒为 0 ⇒ 面板上是一条平的线。
+	uptimeSeconds.Set(float64(uptime))
 	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
 		"status":           "ok",
 		"version":          Version,
-		"uptime_seconds":   c.gateway.UptimeSeconds(),
-		"adapters":         items,
+		"uptime_seconds":   uptime,		"adapters":         items,
 		"adapters_total":   len(adapters),
 		"adapters_healthy": healthy,
 	})
 }
 
 func (c *ControlPlane) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	// ★ 探针端点也刷新运行时长指标：部署里被周期性打的是 /healthz（而不是
+	//   需要管理令牌的 /health）⇒ 不在这里 Set 的话，指标值会停在最后一次
+	//   /health 调用的时刻（甚至一直是构造时的初值 0）。
+	uptimeSeconds.Set(float64(c.gateway.UptimeSeconds()))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
@@ -302,13 +309,16 @@ func (c *ControlPlane) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	routes := make([]map[string]any, 0, len(adapters))
 	for _, a := range adapters {
-		routes = append(routes, map[string]any{
+		route := map[string]any{
 			"path":       "/mcp/adapters/" + a.Name + "/mcp",
 			"adapter":    a.Name,
-			"endpoint":   a.Endpoint,
 			"enabled":    a.Enabled,
 			"capability": a.Capability,
-		})
+		}
+		if id := controlIdentity(r); id != nil && id.HasScope(ScopeTopology) {
+			route["endpoint"] = a.Endpoint
+		}
+		routes = append(routes, route)
 	}
 	toolList := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
@@ -390,6 +400,16 @@ func isMCPMetricFamily(name string) bool {
 //	域，不在业务 key 的 scope 体系内）；这里是**给业务 key 用的**统计出口
 //	⇒ 需要 mcp.analyze，且只返回 MCP 网关自己的指标族。
 func (c *ControlPlane) handleStats(w http.ResponseWriter, r *http.Request) {
+	if id := controlIdentity(r); id != nil && !id.Admin {
+		// The legacy Prometheus families have no tenant labels; exporting them
+		// through a tenant key would expose other tenants' tools and traffic.
+		_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
+			"families": []any{}, "family_count": 0, "scope": "tenant_audit_only",
+			"uptime_seconds": c.gateway.UptimeSeconds(),
+			"audit":          c.gateway.audit.FilteredStats(AuditFilter{TenantID: id.TenantID}),
+		})
+		return
+	}
 	// ★ 抓取时刻求值的指标（mcp_gateway_uptime_seconds）先刷新再收集：
 	//   否则快照里那份是上一次的读数（甚至压根没有该族）。
 	c.gateway.RefreshUptimeMetric()
@@ -426,7 +446,7 @@ func (c *ControlPlane) handleStats(w http.ResponseWriter, r *http.Request) {
 		"families":       out,
 		"family_count":   len(out),
 		"uptime_seconds": int(c.gateway.UptimeSeconds()),
-		"audit":          c.gateway.audit.Stats(),
+		"audit":          c.gateway.audit.FilteredStats(AuditFilter{TenantID: c.auditTenant(r)}),
 	})
 }
 
@@ -474,8 +494,18 @@ func (c *ControlPlane) handleCreateAdapter(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
+	}
+	c.gateway.registrationMu.Lock()
+	defer c.gateway.registrationMu.Unlock()
+	existing, err := c.gateway.store.GetAdapter(r.Context(), in.TenantID, in.Name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.canReplaceRegistration(w, r, existing.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.CreatedAt = now
@@ -524,6 +554,9 @@ func (c *ControlPlane) handleUpdateAdapter(w http.ResponseWriter, r *http.Reques
 		_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "adapter not found"})
 		return
 	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	var in Adapter
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": err.Error()})
@@ -547,6 +580,17 @@ func (c *ControlPlane) handleUpdateAdapter(w http.ResponseWriter, r *http.Reques
 func (c *ControlPlane) handleDeleteAdapter(w http.ResponseWriter, r *http.Request) {
 	tenant := c.tenantOf(r)
 	name := r.PathValue("name")
+	existing, err := c.gateway.store.GetAdapter(r.Context(), tenant, name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
+	if existing != nil {
+		tenant = existing.TenantID
+	}
 	if err := c.gateway.store.DeleteAdapter(r.Context(), tenant, name); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -588,8 +632,18 @@ func (c *ControlPlane) handleCreateTool(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
+	}
+	c.gateway.registrationMu.Lock()
+	defer c.gateway.registrationMu.Unlock()
+	existing, err := c.gateway.store.GetTool(r.Context(), in.TenantID, in.Name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.canReplaceRegistration(w, r, existing.TenantID) {
+		return
 	}
 	if in.Visibility == "" {
 		in.Visibility = VisibilityPublic
@@ -646,6 +700,9 @@ func (c *ControlPlane) handleUpdateTool(w http.ResponseWriter, r *http.Request) 
 		_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "tool not found"})
 		return
 	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	var in Tool
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": err.Error()})
@@ -667,6 +724,17 @@ func (c *ControlPlane) handleUpdateTool(w http.ResponseWriter, r *http.Request) 
 func (c *ControlPlane) handleDeleteTool(w http.ResponseWriter, r *http.Request) {
 	tenant := c.tenantOf(r)
 	name := r.PathValue("name")
+	existing, err := c.gateway.store.GetTool(r.Context(), tenant, name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
+	if existing != nil {
+		tenant = existing.TenantID
+	}
 	if err := c.gateway.store.DeleteTool(r.Context(), tenant, name); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -700,8 +768,8 @@ func (c *ControlPlane) handleCreateAgent(w http.ResponseWriter, r *http.Request)
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": "name is required"})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.ID = fmt.Sprintf("agent_%d", now.UnixNano())
@@ -715,6 +783,18 @@ func (c *ControlPlane) handleCreateAgent(w http.ResponseWriter, r *http.Request)
 }
 
 func (c *ControlPlane) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	existing, err := c.gateway.store.GetAgent(r.Context(), c.tenantOf(r), r.PathValue("id"))
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	if err := c.gateway.store.DeleteAgent(r.Context(), c.tenantOf(r), r.PathValue("id")); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -741,8 +821,8 @@ func (c *ControlPlane) handleCreateSkill(w http.ResponseWriter, r *http.Request)
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": "name is required"})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.ID = fmt.Sprintf("skill_%d", now.UnixNano())
@@ -756,6 +836,18 @@ func (c *ControlPlane) handleCreateSkill(w http.ResponseWriter, r *http.Request)
 }
 
 func (c *ControlPlane) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+	existing, err := c.gateway.store.GetSkill(r.Context(), c.tenantOf(r), r.PathValue("id"))
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	if err := c.gateway.store.DeleteSkill(r.Context(), c.tenantOf(r), r.PathValue("id")); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -814,6 +906,10 @@ func (c *ControlPlane) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if !delegationWithinIssuer(issuer, spec) {
+			c.writeForbidden(w, ScopeManage, issuer.Scopes, "delegation_escalation")
+			return
+		}
 	}
 	key, secret, err := c.gateway.IssueKey(r.Context(), spec)
 	if err != nil {
@@ -850,7 +946,7 @@ func (c *ControlPlane) handleRotateKey(w http.ResponseWriter, r *http.Request) {
 			_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "key not found"})
 			return
 		}
-		if !keyScopesWithinIssuer(issuer, target) {
+		if !keyScopesWithinIssuer(issuer, target) || !delegationWithinIssuer(issuer, keySpecOf(target)) {
 			_ = httpx.WriteJSON(w, http.StatusForbidden, "application/json", map[string]any{
 				"error":          "forbidden",
 				"reason":         "scope_escalation",
@@ -904,8 +1000,8 @@ func (c *ControlPlane) handleCreateApproval(w http.ResponseWriter, r *http.Reque
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": "tool is required"})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.ID = fmt.Sprintf("apr_%d", now.UnixNano())
@@ -927,6 +1023,9 @@ func (c *ControlPlane) handleDecideApproval(w http.ResponseWriter, r *http.Reque
 	}
 	if approval == nil {
 		_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "approval not found"})
+		return
+	}
+	if !c.controlOwnerOK(w, r, approval.TenantID) {
 		return
 	}
 	var in struct {
@@ -965,13 +1064,14 @@ func (c *ControlPlane) handleDecideApproval(w http.ResponseWriter, r *http.Reque
 func (c *ControlPlane) handleAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := AuditFilter{
-		UserID:  q.Get("user_id"),
-		KeyID:   q.Get("key_id"),
-		Tool:    q.Get("tool"),
-		Adapter: q.Get("adapter"),
-		Kind:    q.Get("kind"),
-		Outcome: q.Get("outcome"),
-		Limit:   100,
+		TenantID: c.auditTenant(r),
+		UserID:   q.Get("user_id"),
+		KeyID:    q.Get("key_id"),
+		Tool:     q.Get("tool"),
+		Adapter:  q.Get("adapter"),
+		Kind:     q.Get("kind"),
+		Outcome:  q.Get("outcome"),
+		Limit:    100,
 	}
 	if v := q.Get("limit"); v != "" {
 		if n, err := parseInt(v); err == nil && n > 0 && n <= 1000 {
@@ -981,7 +1081,7 @@ func (c *ControlPlane) handleAudit(w http.ResponseWriter, r *http.Request) {
 	events := c.gateway.audit.Query(filter)
 	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
 		"events": events,
-		"stats":  c.gateway.audit.Stats(),
+		"stats":  c.gateway.audit.FilteredStats(filter),
 	})
 }
 
@@ -990,7 +1090,7 @@ func (c *ControlPlane) handleAuditExport(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 	bw := bufio.NewWriter(w)
 	defer func() { _ = bw.Flush() }()
-	if _, err := c.gateway.audit.ExportJSONL(bw); err != nil {
+	if _, err := c.gateway.audit.ExportFilteredJSONL(bw, AuditFilter{TenantID: c.auditTenant(r)}); err != nil {
 		c.gateway.logger.Warn("mcp: audit export failed", "error", err)
 	}
 }
@@ -1011,7 +1111,11 @@ func parseInt(s string) (int, error) {
 func (g *Gateway) invalidateToolCache(adapter string) {
 	g.toolCacheMu.Lock()
 	defer g.toolCacheMu.Unlock()
-	delete(g.toolCache, adapter)
+	for key := range g.toolCache {
+		if key.adapter == adapter {
+			delete(g.toolCache, key)
+		}
+	}
 }
 
 // registerCatalogTool 把工具登记进内存目录（授权时读取）。

@@ -1,4 +1,4 @@
-// sales.ts — 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
+// sales.ts. 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 export default {
   active: 'Aktiv',
   annotate: 'Eintragen',
@@ -47,7 +47,7 @@ export default {
   searchPlaceholder: 'Nach Modellname suchen',
   send: 'Senden',
   shareTokenCopied: 'Kopiert',
-  shareTokenOnce: 'Link in die Zwischenablage kopiert. Das Token erscheint nur einmal (nie gespeichert) — jetzt an den Kunden senden.',
+  shareTokenOnce: 'Link in die Zwischenablage kopiert. Das Token erscheint nur einmal (nie gespeichert). jetzt an den Kunden senden.',
   shareTokenShown: 'Token unten bitte manuell kopieren',
   shares: 'Freigaben',
   sharesTitle: 'Freigabelinks des Angebots #{id}',
@@ -78,18 +78,18 @@ export default {
 
   // ── 2026-11-08 风暴档审计轮（W2 看板/漂移/撤销/弹窗化）──
   tabDashboard: 'Kennzahlen',
-  costDrifted: 'Kosten abgewichen — neues Angebot empfohlen',
+  costDrifted: 'Kosten abgewichen. neues Angebot empfohlen',
   tierQuickFill: 'Schnellbefüllung nach Stufe',
   pickModel: 'Modell aus der verkaufbaren Liste wählen',
   itemExists: 'Modell bereits in der Liste',
   quoteCloseTitle: 'Angebot #{id} abschließen',
   revoke: 'Widerrufen',
-  dashboardTriggerAlert: 'Freigabe-Auslöserquote {rate}% über der Alarmgrenze {line}% — DealHub-Selbstkalibrierung: Grenzwerte eventuell falsch gesetzt',
+  dashboardTriggerAlert: 'Freigabe-Auslöserquote {rate}% über der Alarmgrenze {line}%. DealHub-Selbstkalibrierung: Grenzwerte eventuell falsch gesetzt',
   dashboardTriggerRate: 'Auslöserquote',
   dashboardTriggerDetail: '{triggered} von {submitted} Angeboten in manueller Prüfung',
   dashboardLostReasons: 'Gründe für verlorene Abschlüsse',
   dashboardMarginBuckets: 'Marge-Verteilung der Angebote',
-  dashboardRealizedPending: 'Realisierte Marge: ausstehend (Mandanten-Abrechnung nicht aktiviert) — die angezeigte Marge ist die Angebotsarithmetik',
+  dashboardRealizedPending: 'Realisierte Marge: ausstehend (Mandanten-Abrechnung nicht aktiviert). die angezeigte Marge ist die Angebotsarithmetik',
   funnel_draft: 'Entwurf',
   funnel_pending_approval: 'Zur Freigabe',
   funnel_approved: 'Freigegeben',

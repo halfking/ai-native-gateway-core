@@ -1,5 +1,7 @@
 // operationsMarketing.ts — 运营营销管理页（2026-11-09 运营审计轮项4）。
 export default {
+  colRedemptions: "Utilisés / plafond",
+  priceMinorUnit: "Prix (0,01 CNY)",
   title: "Marketing",
   subtitle: "Forfaits, packs supplémentaires, bons et campagnes de remise/cadeau",
   tabPlans: "Forfaits",

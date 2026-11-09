@@ -1,5 +1,7 @@
 // operationsMarketing.ts — 运营营销管理页（2026-11-09 运营审计轮项4）。
 export default {
+  colRedemptions: "已领取 / 上限",
+  priceMinorUnit: "价格（人民币分）",
   title: "营销管理",
   subtitle: "套餐、加油包、优惠码与折扣/赠送活动",
   tabPlans: "套餐",

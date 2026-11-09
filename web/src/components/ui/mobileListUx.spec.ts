@@ -116,6 +116,7 @@ function scan(): Site[] {
 
 /** 本仓确实没有详情目的地的调用点（登记即「已确认合格」）。 */
 const NON_NAVIGABLE: Array<[string, number, string]> = [
+  ['src/views/PublicQuoteView.vue', 109, '客户只读报价快照，卡片已展示全部报价字段；公开面不提供内部模型详情目的地，打印为整单操作'],
   ['src/views/CorrelationsView.vue', 307, '按模型聚合的相关性（rows=resp.by_model，title-key=label）：一行是「模型」的统计，不是某次调用，无详情页'],
   ['src/views/CorrelationsView.vue', 351, '按策略聚合（resp.by_strategy，title-key=label）：策略是下拉筛选维度，不是可导航实体'],
   ['src/views/CorrelationsView.vue', 391, '按任务类型聚合（resp.by_task_type，title-key=label）：任务类型同为筛选维度，无落地页'],

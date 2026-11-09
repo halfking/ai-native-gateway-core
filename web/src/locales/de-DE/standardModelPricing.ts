@@ -38,11 +38,11 @@ export default {
     manualTagTitle: 'Manuelle Preisgestaltung',
     manualTag: 'M',
 
-    colModality: 'Modality',
+    colModality: "Modalität",
 
     modalityText: 'Text',
 
-    modalityVision: 'Vision',
+    modalityVision: "Bilderkennung",
 
     modalityAudio: 'Audio',
 
@@ -52,9 +52,9 @@ export default {
 
     modalityEmbedding: 'Embedding',
 
-    modalityOther: 'Other',
+    modalityOther: "Sonstige",
 
-    hasMultimodal: 'Has manual multimodal pricing',
+    hasMultimodal: "Mit manuellen Preisen für mehrere Modalitäten",
   },
   editModal: {
     title: 'Manuelle Preisgestaltung: {name}',
@@ -64,11 +64,11 @@ export default {
     globalApprox: 'Global ≈ {value}',
     save: 'Speichern',
     saving: 'Wird gespeichert…',
-    fillGlobal: 'Aktuellen Globalwert übernehmen',
+    fillGlobal: "Aktuelle globale Werte übernehmen",
     cancel: 'Abbrechen',
     resetConfirm: 'Alle Dimensionen von {name} auf die globale Basis zurücksetzen?',
 
-    sectionText: 'Text-token dimensions',
+    sectionText: "Dimensionen für Text-Token",
 
     sectionMultimodal: 'Multimodale Token-Dimensionen (Vision / Audio / Video)',
 
@@ -126,6 +126,6 @@ export default {
     msgFilled: '{n} Modelle beschrieben',
     msgFailed: 'Sammelaktion konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
 
-    fillGlobal: 'Fill current global',
+    fillGlobal: "Aktuelle globale Werte übernehmen",
   },
 }

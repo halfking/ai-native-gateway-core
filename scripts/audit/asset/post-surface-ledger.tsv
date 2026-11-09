@@ -17,6 +17,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 619 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 52 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 620 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 10 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 672 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 682 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -651,6 +652,7 @@
 /skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /skills/{id}	DELETE	mcp/control.go:134	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/stats	GET	mcp/control.go:123	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /tools	POST	mcp/control.go:123	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /tools	POST	mcp/control.go:123	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /tools/{name}	PUT	mcp/control.go:125	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

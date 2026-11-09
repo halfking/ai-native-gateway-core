@@ -10784,3 +10784,30 @@ go:embed+embeddedSQLFiles map（951 轮教训：942-949 漏 map）、dbinit Star
 apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (352)。
 ★ 契约门 `migration_952_model_price_versions_test.go` 四件（形态/down/cross-pin/
 字节一致）。
+
+
+## 2026-11-09 — 48h 审计：953 迁移可执行性与部署通道修正
+
+| version | file | sha256 | status |
+|---|---|---|---|
+| 953 | `953_models_canonical_featured.sql` | `d3f5225fd0749f13b9ac9abff62caf87c4a4e4f1daa76bf9a5ea85eefcf7af17` | registered; isolated PG17 replay verified twice |
+
+原文件 COMMENT 使用 PostgreSQL 不接受的 `IS literal || literal`，真库编译报 42601；同时遗漏部署 files 清单和 db-changelog。211 的 featured 列和 schema_migrations=953 为人工应用结果（2026-11-09 10:54），`llm_gateway_migration_checksums` 中 953 为 **0 行**，不能用 schema_migrations 证明仓库 SQL 执行成功。本次修正文法、事务/超时及自记账，保留幂等，并同步 installer bytes、objects、部署清单。未改写任何已登记的校验和；后续部署以新 SHA 首次登记。隔离库验证：首次建列/索引并标记种子，第二次无重复版本行，非种子模型不误标。
+
+
+## 2026-11-09 — 48h 审计：954 探针车道 trace 持久化补齐
+
+| version | file | sha256 | status |
+|---|---|---|---|
+| 954 | `954_probe_lane_trace_events.sql` | `db9f8b807a19f3fd291852c9c8efa1069ff9e3bbf793b0d3d2f2f3081943d063` | registered; isolated PG17 up/replay/down verified |
+
+211 采样：363 个请求全部仅存在于 `session_turns_probe_hot`，业务 hot/cold 均为 0；每个请求四轮 trace 刷盘均找不到业务父行，形成 1452 条父行缺失和 1452 条重试告警。根因是 928 探针物理车道已分叉，trace 仍只写业务两腿。954 为探针表追加 nullable、无默认值的 `trace_events jsonb`，不改 928 已应用字节、不扫描回填。trace 写入与读取新增独立探针腿；完整 envelope 和规范化阶段事件持久化成功后才清理 Redis，开关关闭不阻断历史读取，缺失 schema 显式报错。
+
+登记面：canonical up/down、installer 字节副本/embed/map/StartupFiles、部署显式清单及产物探针、派生 installed manifest、objects 快照；无业务计费写入。隔离 PG17.11 验证真实 928→954、重复重放、原行保持 NULL、relfilenode 不变及 down；`go test -race ./internal/trace` 全包通过（含真实表、缺父行/阶段写失败保留 Redis、重试和关车道读取）。回滚须先回滚 trace 代码再执行 954 down；删除列会丢弃已保存的探针 trace，正常回滚优先保留兼容性新增列。
+## 2026-11-09T06:46:14Z — deploy 245 build_seq 2956 (998269fb)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 952 | `952_model_price_versions.sql` | `207db3275e9ca7e20985d64038ba03378b676592345e8093a7f9b5770681c1fb` | applied+verified |
+| 953 | `953_models_canonical_featured.sql` | `d3f5225fd0749f13b9ac9abff62caf87c4a4e4f1daa76bf9a5ea85eefcf7af17` | applied+verified |
+| 954 | `954_probe_lane_trace_events.sql` | `db9f8b807a19f3fd291852c9c8efa1069ff9e3bbf793b0d3d2f2f3081943d063` | applied+verified |
