@@ -1802,6 +1802,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 标记需要优先探测的模型（免费/入门级），以减少「上游已恢复但系统 ~24h 未感知」问题。
 			"953_models_canonical_featured.sql",
 			"954_probe_lane_trace_events.sql",
+			// 955（2026-11-09 模型指纹验证增强轮）：passive_model_fingerprints ——
+			// 被动式模型指纹基线（真实流量聚合的 TTFT/ITT/吞吐/Token 签名），
+			// 供零成本渗水检测对比。漏登的后果＝全新安装没有基线表 ⇒
+			// 被动判定维度恒缺（EvaluatePassive 无处落盘/读基线）。
+			"955_passive_model_fingerprints.sql",
 		},
 	}
 }

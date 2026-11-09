@@ -141,6 +141,14 @@ type Input struct {
 	// 是同一维度的两条证据通道，融合规则见 Evaluate 内注释。
 	Passive *PassiveSignals
 
+	// PassiveResult 是被动**时序指纹**判定（EvaluatePassive 的输出：
+	// 真实流量 ITT/TTFT/吞吐 vs 迁移 955 基线）。nil = 没有可用基线
+	// 或本节点本窗口没有被动样本（早期常态，不算异常）。
+	//
+	// ★ 与上面的 Passive（mismatch 事件）是两条不同的通道：Passive 进
+	// 身份/一致性维取 min 融合；PassiveResult 是独立的第五维 DimPassive。
+	PassiveResult *PassiveVerdict
+
 	// PassiveReadFailed=true 表示被动信号**读取失败**（权限/表缺失等降级），
 	// 与「读了但无信号」是两件事 —— evidence 里分别留痕，不让降级伪装成干净。
 	PassiveReadFailed bool
@@ -293,6 +301,13 @@ func Evaluate(in Input, cfg Config) Result {
 		res.Scores.Measured = res.Scores.Measured.Mark(DimReference)
 	}
 
+	// ── 维度 5：被动时序指纹（migration 955 基线）─────────────────────
+	passive, passiveMeasured := scorePassive(in, addAnomaly)
+	if passiveMeasured {
+		res.Scores.Passive = passive
+		res.Scores.Measured = res.Scores.Measured.Mark(DimPassive)
+	}
+
 	res.Overall = ComputeOverall(res.Scores)
 	res.Verdict = decideVerdict(res.Scores, res.Overall, cfg)
 
@@ -347,12 +362,29 @@ func Evaluate(in Input, cfg Config) Result {
 		"capability":  res.Scores.Capability,
 		"consistency": res.Scores.Consistency,
 		"reference":   res.Scores.Reference,
+		"passive":     res.Scores.Passive,
 	}
 	// 被动通道的读取状态：false=读了（有无信号都已看），true=降级没读到。
 	res.Evidence["passive_read_failed"] = in.PassiveReadFailed
 	if in.Passive != nil {
 		res.Evidence["passive_mismatch"] = in.Passive.HasMismatch
 		res.Evidence["passive_fingerprint_drift"] = in.Passive.HasFingerprintDrift
+	}
+	// 被动时序指纹维度（955 基线）的判定证据。
+	// ★ passive_score 是「分数」；passive_measured 是「这一维进没进综合分」
+	// —— nil / 低置信时分数为 0 但 measured=false，两者必须一起读，
+	// 否则「没测过」会被读成「测了且极差」（缺失维度不计 0 的口径纪律）。
+	if in.PassiveResult != nil {
+		res.Evidence["passive_timing_score"] = in.PassiveResult.TimingScore
+		res.Evidence["passive_token_score"] = in.PassiveResult.TokenScore
+		res.Evidence["passive_content_score"] = in.PassiveResult.ContentScore
+		res.Evidence["passive_confidence"] = in.PassiveResult.Confidence
+		res.Evidence["passive_measured"] = res.Scores.Measured.Has(DimPassive)
+		if in.PassiveResult.Evidence != nil {
+			if jsd, ok := in.PassiveResult.Evidence["itt_jsd"]; ok {
+				res.Evidence["passive_itt_jsd"] = jsd
+			}
+		}
 	}
 	return res
 }
@@ -500,6 +532,39 @@ func scoreConsistency(in Input, cfg Config, addAnomaly func(string)) (float64, b
 	return weighted / totalWeight, true
 }
 
+// PassiveMinConfidence 是被动时序指纹维度**计维**所需的最低置信度。
+//
+// 置信度 = min(1, 基线样本数/100)（EvaluatePassive 的口径）⇒ 0.30 对应
+// 基线 ≥30 个样本。低于该门 ⇒ 基线还没立起来，分数是噪音
+// ⇒ **不计维**（缺失维度不计 0 的口径纪律）——但不产生异常项，
+// 因为「基线没立起来」是冷启动常态，不是节点的错。
+const PassiveMinConfidence = 0.30
+
+// scorePassive 判定被动时序指纹维度（维度 5）。
+//
+// 判定本身在 EvaluatePassive（passive.go）；这里只做装配：
+//   - nil ⇒ 不计维（本窗口没有被动样本 / 没有基线，早期常态）；
+//   - Confidence < PassiveMinConfidence ⇒ 不计维（基线样本不足）；
+//   - 否则分数 = PassiveVerdict.OverallScore，异常项逐条透传
+//     （passive_itt_mismatch / passive_ttft_anomaly / passive_throughput_anomaly）。
+//
+// ★ 为什么分数不乘 Confidence：置信度低已由上面的计维门挡住（不计维），
+// 过了门之后分数就是分数——再乘会把「分数低」和「证据弱」两种性质不同
+// 的信息搅在一起，verdict 的既有闸门（suspected/diluted 分档）没法解释。
+func scorePassive(in Input, addAnomaly func(string)) (float64, bool) {
+	if in.PassiveResult == nil {
+		return 0, false
+	}
+	pv := in.PassiveResult
+	if pv.Confidence < PassiveMinConfidence {
+		return 0, false
+	}
+	for _, a := range pv.Anomalies {
+		addAnomaly(a)
+	}
+	return pv.OverallScore, true
+}
+
 // scoreReference 判定参考基线维度。
 func scoreReference(in Input, cfg Config, addAnomaly func(string)) (float64, bool) {
 	if !in.HasAccuracy || in.Accuracy <= 0 {
@@ -528,7 +593,7 @@ func scoreReference(in Input, cfg Config, addAnomaly func(string)) (float64, boo
 // 列表按分数排序时把「没测」排到「极差」前面。
 func ComputeOverall(s SubScores) float64 {
 	var weighted, totalWeight float64
-	for _, d := range []Dimension{DimIdentity, DimCapability, DimConsistency, DimReference} {
+	for _, d := range []Dimension{DimIdentity, DimCapability, DimConsistency, DimReference, DimPassive} {
 		if !s.Measured.Has(d) {
 			continue
 		}

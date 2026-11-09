@@ -8028,6 +8028,18 @@ func main() {
 				routingExec.IntegrityDetector = integrityAdapter
 				chatHandler.SetIntegrityDetector(integrityAdapter)
 
+				// 被动时序指纹基线（2026-11-09 模型指纹验证增强轮，迁移 955）：
+				// worker 一体承担 handler 两端（factory/sink）+ 周期 Flush。
+				// 环境开关默认开（LLM_GATEWAY_PASSIVE_BASELINE=off 关闭——
+				// 关闭 ⇒ SetPassiveTiming 不接线 ⇒ 零热路径开销）。
+				if os.Getenv("LLM_GATEWAY_PASSIVE_BASELINE") != "off" {
+					passiveWorker := bg.NewPassiveBaselineWorker(
+						modelcredibility.NewStore(dbConn.Pool()), 0)
+					chatHandler.SetPassiveTiming(passiveWorker, passiveWorker)
+					passiveWorker.Start(context.Background())
+					defer passiveWorker.Stop()
+				}
+
 				// Fingerprint drift: 1h tick, 7-day window, 20+
 				// samples, 80% dominant ratio (env overrides).
 				// 2026-07-28 rewrite: baseline vs current comparison

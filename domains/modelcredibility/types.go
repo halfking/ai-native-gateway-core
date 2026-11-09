@@ -108,6 +108,16 @@ const (
 	DimConsistency
 	// DimReference 参考基线：与 standard_iq 拟合出的期望准确率的差距。
 	DimReference
+	// DimPassive 被动时序指纹：真实流量的 ITT 分布/TTFT/吞吐与基线
+	// （migration 955 passive_model_fingerprints）的差距。
+	//
+	// ★ 为什么它是第五维度而 PassiveSignals（model_integrity_events 的
+	// model_mismatch）不是：mismatch 与身份自洽测的是**同一件事**
+	// （上游给的是不是声称的模型），分开计维会重复计罪 ⇒ 那条通道取
+	// min 融合进身份维。而 ITT/TTFT/吞吐是**行为侧**的正交证据
+	// （上游骗得过自报的 model 字段，骗不过自己后端的生成速度），
+	// 不与任何既有维重复 ⇒ 独立计维。
+	DimPassive
 )
 
 // MeasuredMask 是维度位掩码（哪些维度本次真的有数据）。
@@ -122,7 +132,7 @@ func (m MeasuredMask) Mark(d Dimension) MeasuredMask { return m | MeasuredMask(u
 // DimensionCount 返回有数据的维度数。
 func (m MeasuredMask) DimensionCount() int {
 	n := 0
-	for _, d := range []Dimension{DimIdentity, DimCapability, DimConsistency, DimReference} {
+	for _, d := range []Dimension{DimIdentity, DimCapability, DimConsistency, DimReference, DimPassive} {
 		if m.Has(d) {
 			n++
 		}
@@ -130,12 +140,13 @@ func (m MeasuredMask) DimensionCount() int {
 	return n
 }
 
-// SubScores 是四个维度的得分（0-100）与哪些维度有数据。
+// SubScores 是五个维度的得分（0-100）与哪些维度有数据。
 type SubScores struct {
 	Identity    float64
 	Capability  float64
 	Consistency float64
 	Reference   float64
+	Passive     float64
 
 	Measured MeasuredMask
 }
@@ -151,20 +162,32 @@ func (s SubScores) ScoreOf(d Dimension) float64 {
 		return s.Consistency
 	case DimReference:
 		return s.Reference
+	case DimPassive:
+		return s.Passive
 	default:
 		return 0
 	}
 }
 
-// SubScoreWeights 是四个维度在综合可信度里的权重（总和 = 1.0）。
+// SubScoreWeights 是五个维度在综合可信度里的权重（总和 = 1.0）。
 //
 // ★ 权重之和必须为 1：综合分是「按有数据的维度重新归一化」的加权平均，
 // 缺哪一维就在剩下几维之间按比例放大（见 ComputeOverall）。
+//
+// ★ 2026-11-09 配比调整的依据（模型指纹验证增强轮）：
+//   - Capability 0.40→0.15：MMLU 题库过简单导致该维失效（211 真库 30 天
+//     窗口 18 个高级模型全部恒 100 分、stddev=0，同族降级抓不到）；
+//     题库升级前压低其话语权。
+//   - Identity 0.35→0.30、Consistency 0.15→0.20：仍有效的维度相对抬升。
+//   - Passive 0.30：新增第五维（被动时序指纹）。给高权重因为它**零成本、
+//     不可规避、全量覆盖**（每个真实请求都是数据点），且上游无法针对性
+//     放行——但受 Confidence 门约束（基线样本 <30 不计维，见 scorePassive）。
 var SubScoreWeights = map[Dimension]float64{
-	DimIdentity:    0.35,
-	DimCapability:  0.40,
-	DimConsistency: 0.15,
-	DimReference:   0.10,
+	DimIdentity:    0.30,
+	DimCapability:  0.15,
+	DimConsistency: 0.20,
+	DimReference:   0.05,
+	DimPassive:     0.30,
 }
 
 // Result 是一个节点一次判定的完整结果。

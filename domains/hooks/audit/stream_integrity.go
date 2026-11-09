@@ -58,6 +58,21 @@ func (sc *StreamCapture) SetTextObserver(o StreamTextObserver) {
 	sc.textObserver = o
 }
 
+// TextObserver returns the currently attached observer (or nil).
+//
+// Read-only accessor so a completion path can retrieve a per-request
+// tracker it stashed behind a composed observer, without the audit
+// package knowing any concrete observer type（依赖方向保持
+// observer 实现 → audit，绝不反向）.
+func (sc *StreamCapture) TextObserver() StreamTextObserver {
+	if sc == nil {
+		return nil
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.textObserver
+}
+
 // IntegrityBreached reports whether the attached observer flagged an
 // integrity breach during this stream. Transformers poll it right after
 // ObserveChunk / ObservePayload to decide whether to cut the stream.

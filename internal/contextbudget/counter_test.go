@@ -62,8 +62,10 @@ func TestSafeByteTargetAndUnknownState(t *testing.T) {
 	if _, err := Check(body, spec); err != nil {
 		t.Fatalf("safe target was not admitted: %v", err)
 	}
-	if SafeBodyBytes(Spec{}) != 0 {
-		t.Fatal("unknown context produced a safe byte target")
+	// 2026-11-10 改判：未知窗口回落全局保守上限，SafeBodyBytes 不再为 0
+	// （旧断言钉 fail-closed；数据缺口不该变成平台级拒绝）。
+	if sb := SafeBodyBytes(Spec{}); sb <= 0 || sb > MaxInputTokens/(16+1) {
+		t.Fatalf("unknown context must yield a globally-capped safe byte target, got %d", sb)
 	}
 	if _, err := UpperBound([]byte(`{"input":"x","previous_response_id":"r"}`)); err == nil {
 		t.Fatal("UpperBound claimed to count opaque history")
