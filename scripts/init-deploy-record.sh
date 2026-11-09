@@ -65,7 +65,7 @@ mkdir -p "$RECORD_DIR/sql" "$RECORD_DIR/verify" "$RECORD_DIR/artifacts"
 # ── 检测 SQL 变更（git diff HEAD~1 vs HEAD） ──
 detect_sql_changes() {
   local sql_changes
-  sql_changes=$(git -C "$ROOT_DIR" diff --name-only HEAD~1 HEAD 2>/dev/null | grep -E '^sql/|^db/' || true)
+  sql_changes=$(git -C "$ROOT_DIR" diff --name-only -z HEAD~1 HEAD 2>/dev/null | tr '\0' '\n' | grep -E '^sql/|^db/' || true)
   if [[ -n "$sql_changes" ]]; then
     echo "$sql_changes" | while read f; do
       local basename_f
@@ -96,7 +96,7 @@ detect_sql_changes() {
 # ── 检测前端变更 ──
 detect_frontend_changes() {
   local fe_changes
-  fe_changes=$(git -C "$ROOT_DIR" diff --name-only HEAD~1 HEAD 2>/dev/null | grep -E '^web/|^web-vue/' || true)
+  fe_changes=$(git -C "$ROOT_DIR" diff --name-only -z HEAD~1 HEAD 2>/dev/null | tr '\0' '\n' | grep -E '^web/|^web-vue/' || true)
   if [[ -n "$fe_changes" ]]; then
     echo "$fe_changes" | head -30 > "$RECORD_DIR/verify/frontend-changes.txt"
   fi

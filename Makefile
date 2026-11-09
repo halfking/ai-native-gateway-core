@@ -322,8 +322,20 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #       ⇒ ★ ★ ⇒ ★ ★ 而【★ 它守的是【★ 读数失真 ★】而不是【★ 凭据泄露 ★】★★ ★
 #     ⇒ ★ ★ 而【★ 这三条对【★ 将来新增的任何白名单条目 ★】都有效 ★】★★ ★
 #   ★ 实测耗时 ≈38s、★ **bash 3.2 可跑**、★ 零外部依赖 ⇒ 可进 CI 快门 ★。
+# ★ ★ ★ 2026-11-09（第五十轮续记之五 · 枚举面契约）：★ 再接进 **1 条**快门
+#   （tests/git_enumeration_quote_path_contract_test.sh）⇒ 该 target 的快门数 21 → **22**。
+#   ★ 起因：★ F-18 修的是【★ 扫描器自己 ★】那一处枚举点、★ 而【★ 别的消费点 ★】至今【★ 零覆盖 ★】
+#     ⇒ ★ ★ 而【★ `git ls-files` 默认 `core.quotePath=true` ★】⇒ ★ 非 ASCII 路径被转义成八进制
+#       ＋ 外层双引号 ⇒ ★ 而【★ 下游的 `^前缀` 锚点【★ 会落空 ★】★★ ★
+#     ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 这一类问题【★ 不报错、★ 不计数、★ 不让任何门变红 ★】★★ ★**
+#   ★ 本门钉的是【★ 全仓枚举面消费点 ★】：
+#     ｜① 消费点【★ 必须被清点出来 ★】（★ 剔注释与字符串常量 ★）
+#     ｜② 不带 `-z` 的消费点【★ 必须逐条登记在豁免清单里 ★】（★ 双向棘轮 ★）
+#     ｜③ 每条豁免【★ 必须用差分探针证明「★ 转义不改变它的判定 ★】★★ ★
+#     ｜④ 门自己有牙（★ 非 ASCII 探针 ＋ 前缀锚点探针 ★）
+#   ★ 实测：★ 清点 35 处（★ 带 -z 27 ／ 不带 -z 8 ★）｜★ 豁免 8 条【★ 逐条差分成立 ★】｜★ **PASS=14 FAIL=0** ★
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（21 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（22 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -346,6 +358,7 @@ guards-gate-scripts: ## 门脚本接线门（21 条快门 + 登记册门，防�
 	@bash tests/scan_secrets_whitelist_regex_portability_test.sh
 	@bash tests/scan_secrets_regex_determinism_test.sh
 	@bash tests/scan_secrets_placeholder_privilege_test.sh
+	@bash tests/git_enumeration_quote_path_contract_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
