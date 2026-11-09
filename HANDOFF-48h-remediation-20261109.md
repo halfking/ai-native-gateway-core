@@ -1,58 +1,49 @@
-# 2026-11-09 48h 审计与三环境发布 handoff
+# 2026-11-09 48h审计与三环境发布 handoff
 
-## 任务与授权
+## 结论与范围
 
-用户要求审计最近48小时修正、同步主干、处置近一周且超过一小时未活动的未合并分支、逐项总结审查提交/WIP、分析系统与DB日志并实施优化、小步提交合并推送，按211→245→154部署并真实登录验证，更新报告与下一轮提示词。完整目标仍保持，不得缩为“代码修好即完成”。
-
-## 基线与范围
-
+本轮审计、修正、三环境发布及登录/界面验收完成；不等于全部存量风险消失。完整报告：`docs/audit/2026-11-09-48h-remediation-report.md`；来源清单：`docs/audit/evidence/2026-11-09-48h-commit-file-inventory.md`。
 工作区 `/Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-cursor`。
-初始main `bde2baa598`，10 tracked WIP+1 untracked文档；已保存原始patch、status及逐文件备份。ff到 `1fa2ea592`，未覆盖原WIP。固定窗口11-07 12:56→11-09 12:56，65非merge提交/271文件。origin与github远端heads仅main，本地无历史子分支需处置。两笔旧stash与detached `/private/tmp/lgw-probe/cursor`未动。
+初始main bde2baa598→ff1fa2ea592，保留并审查10tracked+1untracked WIP；固定11-07 12:56→11-09 12:56，65非merge提交/271文件。初始本地/两远端没有历史未合并子分支。原两笔10月stash与`/private/tmp/lgw-probe/cursor`未动。
 
-当前工作分支 `codex/audit-48h-20261109`；执行中尚未完成发布，不应引用本记录声称已部署。
+## 改动与根因
 
-## 已修复
+- 统计：重扫整键覆盖含秒上界造成2→1截断；改为完整闭分钟、PG微秒截止。
+- MaaS：gift预算、并发首购确认、expires_at漏读、参考价错误上抛、源价失败不闭期、模型×模式锁与连续价期。
+- MCP：租户/owner/委派包络/缓存隔离、停用执法、touch不复活吊销key、bootstrap token和原子一次性领取。
+- 953：非法COMMENT拼接、漏投递、事务/预算/账本；211旧checksum=0，未改已登记字节。
+- 954/trace：363失败请求均在probe_hot，原只写业务两腿，每条四次无效重试；新增探针trace列与独立读写腿，持久化阶段事件后才删Redis。
+- legacy probe：空headers写空字符串JSONB→无条件正规化为{}；真实runOne回归。
+- 前端：真实compact卡片保留字段/动作/合计/打印，七类规范、i18n与死键接线；未抬baseline。
+- 部署：source_hostname保持宿主真值；211迁移显式走容器TCP，避免宿主DNS误连252。
+- 154：旧nginx worker在reload出现IPC异常后仍接受旧8781流量，产生混合502；核对PID/parent/comm后SIGQUIT，保留新worker。新增20次独立连接四字段精确身份门，失败reload后完整重验，仍失败回滚；不自动杀worker。
 
-- 统计：整键重扫只包含完整闭分钟，PG微秒边界；真实2→1截断已复现并修复。
-- MaaS：gift预算、首购确认并发/幂等、expires_at漏读、参考价失败传播、源价读失败不闭期、价格期连续与空账本并发锁。
-- MCP：控制面tenant/owner/create-vs-manage、完整委派包络、审计/统计隔离、停用执法、租户cache、原子touch不复活吊销key、bootstrap token及一次性领取/审批最终身份核验。
-- 953：COMMENT非法拼接、部署清单漏投递、事务/预算、自记账、installer/objects/台账。211原有schema记录是人工操作，checksum953=0，未改已登记字节。
-- 954：探针trace第三读写腿；nullable JSONB，不恢复legacy。211363失败ID全部在probe_hot，业务hot/cold=0；原每条4次重试。
-- legacy probe：空headers不再`''::jsonb`，真实runOne回归通过。新DSN所有host/fallback限定loopback和_test库。
-- 前端：新页面真实compact卡片/动作/合计/打印；颜色、图标、字号、文案、未使用键接线及两键×8语种。未抬baseline。
-- 部署锁：source_hostname与共享SSOT一致，不受逻辑SOURCE_HOST覆盖。
-- 派生台账：admin683、post683、db expect/gap/reachability889、manifest355、文档三面行号与pipefail100候选。
+## 发布真值与验证
 
-## 已取得证据
+| 目标 | 应用sha / seq / 活跃端口 | 验收 |
+|---|---|---|
+| 211 | 998269fb / 2978 / 8781 | readyz DB+Redis；管理员重新登录；营销四页签卡片、定价、无效公开报价 |
+| 245 | 998269fb / 2956 / 8781，traffic-only | 同上；脚本登录200、17凭据解密0失败 |
+| 154 | 998269fb / 2957 / 8782，active | 同上；故障恢复后local20/public30全200；新增身份门live20通过 |
 
-根模块build/vet rc0；361包排除单独慢门全过；MCP三层47/47含Maestro；真实PG race营销/价格/统计/trace/legacy probe过；bg全包35.411s；web完整298文件/3034测试过（既有1文件/2测试skip）、build/typecheck过；锁parity与contract过。
+0cadc4f0a之后只有部署脚本/回归与文档，应用代码仍为998269fb，未伪报三台二进制等于最后文档提交。
+211新窗口trace16条/阶段事件101；Redis清理后管理接口source=postgres/events=6；闭分钟对账63/63与61/61。未执行历史全天重建或生产付费推理压测，未制造生产订单/临时key。
+154不是零中断：handoff17.501s，抓到持续502后才定位并恢复；底层IPC成因未确定。登录后data-horizon首次读取警告可重试清除，已登录接口正常。
+本地：build/vet过，核心361包过，ursmcheck不重叠两组354.496s+309.171s过；PG race统计/MaaS/trace/legacy过；MCP47/47含Maestro；web298文件3034测试过（原1文件2测试skip），build/typecheck及七门过；secret scan rc0/BLOCK0。后增迁移transport9通过1opt-in未执行；nginx2测试含3负控、identity-env20/20、pipefail7.176s通过，独立review无阻塞。
 
-首次完整ursmcheck 754.196s正常结束，发现前端七类读方/部署锁/post台账失败，均已逐项修正；当前最终两组hollowout在串行运行，结果见 `/tmp/lgw-48h-audit/hollowout-final.log`，不能提前报绿。首次600s超时留下的变异backup已按HEAD逐字恢复，无残留。
+## 遗留与下一轮
 
-## 待完成
+P1：preview截断响应不是完整JSON，新窗口仍7条response_body丢弃；定义preview/body契约后修复，不伪造完整响应。P1：查nginx IPC异常，20次采样不是永久一致证明。252 scheduled_tasks参数integer/bigint冲突SQL不在本仓，先找owner。
+旧trace超过RedisTTL不可恢复；MaaS附属价期best-effort；MCP FileStore单写者和AuthSecret持久化限制；旧bootstrap需重申；旧census“缺列即退役”误判须以DROP证据改造。
+部署门SSOT本地实库账号28P01，候选/基线同红，门判无新增失败，不称这些用例通过。Toolkit全局跨项目envs-coverage未全绿。
+回滚：245/154 `bash scripts/deploy-seamless.sh rollback <target>`；211旧b容器/镜像保留，start并ready后回切upstream8783。兼容性新增列默认保留，不随应用回滚删trace。
 
-1. 最终hollowout结果；补任何新鲜失败；必要的非变异Go门与派生快照复核。
-2. 审查staged/unstaged/deleted/untracked全量面，刷新Task Stop Summary；按逻辑切片提交、merge --no-ff main并push。
-3. canonical `scripts/deploy-211.sh` 发布，readyz/版本/新探针trace/新日志及browser-use验证；成功后245，再154。
-4. 回填报告/本handoff/AGENTS；收口版本构建副作用，确认远端真值与干净工作树；完成session归档及下一轮提示词。
+## 资产与记录
 
-## 决策与风险
+原始日志仓外`/tmp/lgw-48h-audit/`，不提交密码/DSN/业务payload。环境SSOT现位于`deploy/envs/loader.sh`；旧injector路径与211映射缺口已记录，继续用同SSOT，不复制凭据。
+受管integration checkout位于`~/.codex/worktrees/gateway-audit-integration/llm-gateway-go-cursor`；app拒绝归档“primary checkout”，保持干净detached并同步最终main，不手工删除。
+session `sess_efcc348a-898a-472d-a5a3-f64115a3f431`已append/pin并archive到memora，memory_id=69b022a7-7128-4df5-a20f-e7fa1d9832c4，degraded=false/vector_ready。秘密只通过仓外修正profile访问。
 
-- 所有部署已被用户授权，不再请求重复许可；遵循健康后切流，保留一行回滚。
-- 正确域名：211 `https://llm.itestu.cn`，245 `https://llmgo.kxpms.cn`，154 `https://llm.kxpms.cn`。旧test-llmgo域证书不匹配。三台部署前均已browser-use真实登录，211状态检查200/null；登录密码不得入仓。
-- envs实体是 `deploy/envs`；旧env-injector默认死路径，需设置ENV_INJECTOR_ENVS_ROOT。211别名旧injector无映射，已直接用同SSOT loader指定192.168.31.211；不复制凭据。
-- 252是Podman兼容docker；`docker logs`全量/尾读会137，改从inspect.HostConfig.LogConfig.Path有界tail 2MiB，不重启PG。样本04:42→13:30，包含旧恢复期告警，不能当最后2小时全部新错。
-- 252 scheduled_tasks参数4 integer/bigint冲突在本仓无对应SQL，待归属；65次JSON错误明确对应本仓legacy probe。
-- Toolkit全局verify因工作区其它项目envs登记等仍失败，不能把本仓绿替代跨仓绿。
-- gap工具旧census缺featured会把新索引误判retired，发布以真库证据为准。
-- 旧trace过TTL不可补回；按量价期附属快照仍best-effort；FileStore不是跨进程强一致存储；旧bootstrap需重申；AuthSecret持久化限制仍登记。
+## 下一轮提示词
 
-## 证据与会话
-
-报告 `docs/audit/2026-11-09-48h-remediation-report.md`；清单 `docs/audit/evidence/2026-11-09-48h-commit-file-inventory.md`；原始命令/日志都在仓外 `/tmp/lgw-48h-audit/`，不提交秘密和业务payload。
-
-sessionstore的旧profile credential路径随目录重组失效；已用仓外profile指向同凭据迁移后的真实位置，不改全局配置。中央项目platform-integration下会话 `sess_efcc348a-898a-472d-a5a3-f64115a3f431`，append/pin已成功；archive留到真实完成。
-
-## 下一步提示词
-
-继续本goal，先读取本handoff与报告，核对实际Git状态及hollowout-final.log。保持已授权完整范围，完成最终门禁后分批合并推送，按211→245→154发布并登录验证；用上线后新请求证明trace及统计修复，随后更新文档和归档。不要恢复旧WIP或用旧文档替代新鲜运行证据。
+读取本handoff及完整报告，先核对main和三台/version、readyz及新日志。优先处理preview/body契约、nginx IPC异常与退役量具误判；scheduled_tasks先确认owner。保持先复现、最小修正、真PG/浏览器验证、小步合并推送，不把旧绿数或静态证据当生产验收，不修改已应用迁移字节。
