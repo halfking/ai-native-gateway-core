@@ -1008,7 +1008,11 @@ func parseInt(s string) (int, error) {
 func (g *Gateway) invalidateToolCache(adapter string) {
 	g.toolCacheMu.Lock()
 	defer g.toolCacheMu.Unlock()
-	delete(g.toolCache, adapter)
+	for key := range g.toolCache {
+		if key.adapter == adapter {
+			delete(g.toolCache, key)
+		}
+	}
 }
 
 // registerCatalogTool 把工具登记进内存目录（授权时读取）。
