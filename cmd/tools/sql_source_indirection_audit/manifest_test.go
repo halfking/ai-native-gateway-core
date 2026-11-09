@@ -30,7 +30,13 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 157 处（v1 0 文件/0 处、canonical 63/131、unresolved 14/26、v1arm 0/0）
+//	全仓拼接点 159 处（v1 0 文件/0 处、canonical 65/133、unresolved 14/26、v1arm 0/0）
+//
+//	（2026-11-09 T-P1 探测空转根修轮刷新：canonical 63 → 65 文件 / 131 → 133 处。
+//	  头两跳（157→159）是 2026-10-30 与 2026-11-04 两轮加的（见下），本轮只把
+//	  **文件数** 64 → 65 并补上 bg/probe_model_scope.go 的判定登记 ——
+//	  那 1 处拼接点本来就被量到了（总处数 159 里已含它），漏的是**清单登记**。
+//	  ⇒ 无桶变小 ⇒ 不是「扫描范围被改小 / 解析失败被吞」。）
 //
 //	（2026-10-30 24h 审计第 8 轮刷新：156 → 157。★ 不是只改数字 ——
 //	  ff029a7fc（输出合规审计轮）新增 admin/sanitize_rules_review_context.go 1 处
@@ -884,6 +890,19 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"★ 890 之后从 v1 热表换成会话族热腿。",
 		Consequence: "与 v1 无关。",
 	},
+	"bg/probe_model_scope.go": {
+		Verdict: verdictCanonicalOnly,
+		Via: "1 处（131）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` rl`——" +
+			"自动探测的**模型级**范围判定（automaticProbeRecentUsageExistsSQL：该模型近窗内" +
+			"是否有过真实业务流量）。★ 读的是会话族热腿（session_turns_hot + session_turn_details_hot），" +
+			"不是 v1。",
+		Consequence: "与 v1 无关。⚠ 口径：实际可见窗口 = 会话族**热腿保留期**（默认 8h），" +
+			"不是名义上的 24h（文件头已注明）⇒ 模型在热腿窗口内无真实业务流量时会被判为" +
+			"**不在自动探测范围**。⚠ 该 SQL 曾因用裸 `rl.model`（会话族投影里没有这一列，" +
+			"它被 AS 成 outbound_model）而在真库报 42703 ⇒ 现按投影里确实存在的四个模型名列" +
+			"（raw_model_name / outbound_model / client_model / canonical_model）比对。" +
+			"新增间接读点时不要把它误当成 v1 读方。",
+	},
 	"bg/today_success_probe.go": {
 		Verdict: verdictCanonicalOnly,
 		Via: "1 处（145）`FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` t`——" +
@@ -1595,6 +1614,18 @@ var documentedSnapshot = bucketSnapshot{
 	//   「我的请求」totals + rows 两查询）⇒ 方向 = 变大 =「把看不见变成看得见」
 	//   ＋ 新增读方文件，已逐站点登记 indirectSiteAssessments（Via 机制 +
 	//   退役后果）⇒ 无桶变小 ⇒ 按本文件自己的规则改数字。
+	// ★ 2026-11-09（T-P1 探测空转根修轮）：canonical 64 → 65 文件
+	//   （总处数 159、canonical 处数 133、unresolved 14/26、两个 v1 桶**逐字未动**）。
+	//   成因：97c9c1b21（收紧自动探测范围）新增 bg/probe_model_scope.go 的 1 处
+	//   `FROM ` + db.SessionFamilyTurnsHotSourceSQL() + ` rl`（模型级范围判定）
+	//   ⇒ 该拼接点**本来就被量到了**（总处数 159 里已含它），但**清单漏登记**该
+	//   文件 ⇒ 触发 TestIndirectSiteManifestCoversEveryReportedFile（清单 78 条
+	//   vs 实测 79 个文件）。
+	//   ⇒ 本轮只补**判定登记**（逐行读过 bg/probe_model_scope.go:126-141：
+	//   读的是会话族热腿 session_turns_hot + session_turn_details_hot，不是 v1）
+	//   ＋ 把 CanonFiles 由 64 改成 65。
+	//   ⚠ 方向 = **canonical 桶变大** =「把看不见变成看得见」⇒ 按门规改数字即可；
+	//   ⚠ 无任何桶变小 ⇒ 不是「扫描范围被改小 / 解析失败被吞」。
 	TotalSites: 159,
 	V1Files:    0,
 	V1Sites:    0,
@@ -1613,7 +1644,7 @@ var documentedSnapshot = bucketSnapshot{
 	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 64,
+	CanonFiles: 65,
 	CanonSites: 133,
 	UnresFiles: 14,
 	UnresSites: 26,
