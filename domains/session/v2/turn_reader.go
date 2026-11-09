@@ -42,6 +42,9 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
+	if strictColdRead(ctx) {
+		return r.loadLatestOutboundBounded(ctx, tenantID, sessionID)
+	}
 	var raw []byte
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body
@@ -88,12 +91,18 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 //   - lastN == 0：返回该 session 的所有轮（与 outbound_builder.go 注释一致）。
 //   - lastN  > 0：返回最后 N 轮。
 //   - lastN  < 0：视为非法输入，返回错误（避免静默退化为"全部"或"默认 10"）。
+//
+// Context-budget requests use a separate bounded path: at most 10 recent
+// turns (including lastN==0), and at most 1 MiB combined deltas.
 func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, lastN int) ([]Message, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
 	if lastN < 0 {
 		return nil, fmt.Errorf("turn_reader.LoadChain: lastN must be >= 0, got %d", lastN)
+	}
+	if strictColdRead(ctx) {
+		return r.loadChainBounded(ctx, tenantID, sessionID, lastN)
 	}
 	query := `
         SELECT b.turn_no, b.request_delta, b.response_delta

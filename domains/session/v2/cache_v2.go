@@ -204,7 +204,11 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		return nil, nil
 	}
 	if c.l1 != nil {
-		if state := c.l1.Get(tenantID, sessionID); state != nil {
+		state, err := c.l1.GetContext(ctx, tenantID, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if state != nil {
 			monitoring.Default().RecordL1Hit()
 			slog.DebugContext(ctx, "cache v2 l1 hit", "session_id", sessionID)
 			return state, nil
@@ -228,7 +232,7 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		}
 		g := c.guardFor(tenantID, sessionID)
 		g.Lock()
-		s, err := c.l1_5.Get(tenantID, sessionID)
+		s, err := c.l1_5.GetContext(ctx, tenantID, sessionID)
 		if err == nil && s != nil {
 			l15State = s
 			if c.l1 != nil {
@@ -236,6 +240,9 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 			}
 		}
 		g.Unlock()
+		if errors.Is(err, errColdCacheCapacity) {
+			return nil, err
+		}
 		if l15State != nil {
 			monitoring.Default().RecordL15HitForMode(l15Mode)
 			slog.DebugContext(ctx, "cache v2 l1.5 hit", "session_id", sessionID)
@@ -258,6 +265,9 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 			monitoring.Default().RecordL2Miss()
 		}
 		if err != nil {
+			if strictColdRead(ctx) {
+				return nil, err
+			}
 			slog.WarnContext(ctx, "cache v2 l2 miss", "session_id", sessionID, "error", err)
 		}
 	}
@@ -744,13 +754,21 @@ func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID 
 	var promptTokens, completionTokens int
 	var strategy string
 
-	err := r.db.QueryRow(ctx, query, tenantID, sessionID).Scan(
+	args := []any{tenantID, sessionID}
+	var oversized bool
+	dest := []any{
 		&state.LastTurnNo, &state.UpdatedAt,
 		&strategy, &compressionMetaJSON,
 		&promptTokens, &completionTokens,
 		&state.GovernanceMeta.LastInjectionVerdict,
 		&state.GovernanceMeta.LastOutputVerdict,
-	)
+	}
+	if strictColdRead(ctx) {
+		query = boundedStateSQL(query)
+		args = append(args, strictColdMetaBytes)
+		dest = append(dest, &oversized)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(dest...)
 
 	// A genuinely new session has no rows yet. This is not an error: HasState
 	// relies on LoadState returning (nil, nil) here so the caller classifies it
@@ -762,6 +780,9 @@ func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID 
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load session state: %w", err)
+	}
+	if strictColdRead(ctx) && (oversized || len(compressionMetaJSON) > strictColdMetaBytes) {
+		return nil, errColdCacheCapacity
 	}
 
 	state.SessionID = sessionID
