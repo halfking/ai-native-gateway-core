@@ -8038,6 +8038,11 @@ func main() {
 					chatHandler.SetPassiveTiming(passiveWorker, passiveWorker)
 					passiveWorker.Start(context.Background())
 					defer passiveWorker.Stop()
+				} else {
+					// 关闭态也要留正面证据：否则「零基线行」既可能是
+					// 没流量，也可能是有人显式关掉了采集。
+					slog.Info("passive baseline worker disabled",
+						"env", "LLM_GATEWAY_PASSIVE_BASELINE=off")
 				}
 
 				// Fingerprint drift: 1h tick, 7-day window, 20+
