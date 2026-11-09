@@ -39,6 +39,7 @@ const responsesFallbackChatMaxTokens = providercap.ProbePingMaxTokens
 type responsesChatFallbackResult struct {
 	HTTPStatus   int
 	Body         string // complete bounded, sanitized response for classification
+	ResponseJSON string // complete bounded JSON for telemetry; never a preview
 	LatencyMs    int
 	OK           bool
 	Inconclusive bool
@@ -79,6 +80,7 @@ func responsesChatFallbackRound(ctx context.Context, client *http.Client, apiKey
 	r.HTTPStatus = resp.StatusCode
 	response, readErr := readCredentialProbeBody(resp.Body)
 	r.Body = string(errorsx.SanitizeErrorText(response, credentialProbeBodyLimit))
+	r.ResponseJSON = completeProbeJSONBody(response, readErr)
 	if readErr != nil {
 		r.Body = credentialProbeReadFailure("chat", resp.StatusCode, readErr)
 	}

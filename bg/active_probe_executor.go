@@ -134,7 +134,8 @@ type ProbeResult struct {
 	RequestURL string // full upstream URL the probe posted to
 	// RequestBody is the marshalled probe body (small, ~80 bytes).
 	RequestBody string
-	// ResponseBody is the truncated upstream response (<=512 chars).
+	// ResponseBody is the complete, bounded upstream JSON body. Diagnostic
+	// excerpts belong in RespPreview and must never be persisted as JSONB.
 	ResponseBody string
 	// ViaProxy is true when the probe honoured HTTP_PROXY. A mismatch
 	// between probe and real-traffic egress paths was the root cause of the
@@ -347,7 +348,11 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		return res
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, e.httpClient.Timeout)
+	timeout := e.httpClient.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, strings.NewReader(body))
@@ -399,7 +404,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	res.HTTPStatus = resp.StatusCode
 	bodyBytes, readErr := readCredentialProbeBody(resp.Body)
 	res.RespPreview = truncatePreview(string(bodyBytes), 500)
-	res.ResponseBody = res.RespPreview
+	res.ResponseBody = completeProbeJSONBody(bodyBytes, readErr)
 	res.TotalTokens = responseTokenCount(bodyBytes)
 	parsed := classifyProbeHTTPResponse(resp.StatusCode, bodyBytes, readErr, res.LatencyMs, probeResponseProtocol(desc))
 	if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 && desc.ChatProbeEndpoint == upstreamurl.EpResponses && responsesProbeProtocolEvidence(bodyBytes) {
@@ -474,7 +479,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 			res.TotalTokens = responseTokenCount([]byte(fbBody))
 			res.LatencyMs += fbLatency
 			res.RespPreview = truncatePreview(fbBody, 500)
-			res.ResponseBody = res.RespPreview
+			res.ResponseBody = fallback.ResponseJSON
 		} else if fallback.Inconclusive {
 			res.Status, res.ObservationOnly = ProbeStatusSkipped, true
 			res.ErrCode = "probe_response_inconclusive"
@@ -483,7 +488,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 			res.ErrMsg = responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, false)
 			res.HTTPStatus, res.LatencyMs = fbStatus, res.LatencyMs+fbLatency
 			res.RespPreview = truncatePreview(fbBody, 500)
-			res.ResponseBody = res.RespPreview
+			res.ResponseBody = fallback.ResponseJSON
 			res.ErrCode = http.StatusText(fbStatus)
 			switch {
 			case fbStatus == 0:
@@ -632,7 +637,7 @@ func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarge
 		ErrMsg:          parsed.errMsg,
 		LatencyMs:       latency,
 		RespPreview:     truncatePreview(respBody, 500),
-		ResponseBody:    truncatePreview(respBody, 500),
+		ResponseBody:    completeProbeJSONBody(respBuf, readErr),
 		StartedAt:       start,
 		CompletedAt:     time.Now(),
 		Target:          derefTarget(target),
@@ -685,7 +690,7 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 		ObservationOnly: parsed.category == probeCategorySkipped,
 		Status:          status, HTTPStatus: resp.StatusCode, ErrCode: parsed.errCode,
 		ErrMsg: parsed.errMsg, RespPreview: truncatePreview(string(body), 500),
-		ResponseBody: truncatePreview(string(body), 500), RequestURL: endpoint,
+		ResponseBody: completeProbeJSONBody(body, readErr), RequestURL: endpoint,
 		LatencyMs: parsed.latencyMs, StartedAt: start, CompletedAt: time.Now(), Target: *target,
 	}
 }
