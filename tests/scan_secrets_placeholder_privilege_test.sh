@@ -137,7 +137,16 @@ scanner_exclude_dirs() {
     }' "${SCAN}"
 }
 
-tracked_files() { git ls-files 2>/dev/null; }
+# ★ ★ 枚举面：★ 必须与扫描器【★ 同一条枚举路径 ★】—— ★ `git ls-files -z` ＋
+# ★ 每进程覆盖 `core.quotePath=false`（★ 与 `scripts/scan-secrets.sh:394` 同 ★）★★ ★
+# ★ ★ 而【★ 不这么做、★ 会怎样 ★】—— ★ 本轮实测：★ `git ls-files` 默认把非 ASCII 路径
+# ★   转义成八进制 ⇒ ★ 本门会把【★ 1256 个不存在的路径 ★】算进「生产代码文件数」★★ ★
+# ★   ⇒ ★ 而【★ 那 1256 个路径【★ 扫不到 ★】⇒ ★ 阴性读数【★ 看着成立、★ 而实际少扫了 ★】★★ ★
+# ★   ⇒ ★ ★ 而这【★ 正是 F-18 那个洞的同一形状 ★】—— ★ 扫描器已经修好、★ 而门没有 ⇒ ★ 门比扫描器更宽 ★★ ★
+tracked_files() {
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.quotePath GIT_CONFIG_VALUE_0=false \
+    git ls-files -z 2>/dev/null | tr '\0' '\n'
+}
 
 EXCLUDE_DIR_LIST="$(scanner_exclude_dirs)"
 EXCLUDE_REGEX="$(printf '%s\n' "${EXCLUDE_DIR_LIST}" | grep -v '^$' | paste -sd'|' -)"
@@ -367,6 +376,195 @@ if [[ "${SELF_HITS}" -eq 0 ]]; then
 else
   bad "本门自身命中了 ${SELF_HITS} 条（★ DB_CONNSTRING ／ CRED_ASSIGN ★）⇒ ★ 整理掉拼装写法就会变成一条命中 ★"
   printf '%s' "${SELF_DETAIL}" >&2
+fi
+
+# ═══ 断言 ⑦⑧：★ 白名单在生产代码路径上的【★ 凭据族豁免面 ★】★★★★══════
+# ★ ★ 起因（★ 本轮实测 ★）：★ 白名单不是「★ 将来的风险 ★」、★ 它【★ 今天就在吞真实凭据 ★】
+# ★   ⇒ ★ `cmd/calc_quality/main.go` 那处硬编码 DSN（★ 口令是运维者名字拼音 ★）的
+# ★     主机词落在白名单条目 `localhost` 上 ⇒ ★ 【★ 整行被豁免 ★】
+# ★     ⇒ ★ 而【★ 它对扫描器【★ 完全不可见 ★】★★ ★
+# ★   ⇒ ★ 而【★ 断言③（35 个占位符值）抓不到它 ★】—— ★ 它的口令【★ 不在那 35 个值里 ★】
+# ★ ⇒ ★ 所以【★ 这里量的是【★ 豁免面本身 ★】、★ 而【★ 不是【★ 某几个已知值 ★】★★ ★
+# ★   ⇒ ★ ★ 而【★ 这两条断言对【★ 将来新增的任何白名单条目 ★】同样有效 ★】★★ ★
+#
+# ★ 口径（★ 与扫描器【★ 快速路径 ★】逐条对齐 ★）：
+#   · 发现阶段：★ `grep -niE`（★ 不区分大小写 ★）—— 与扫描器 Step 7 同
+#   · 豁免判定：★ `[[ =~ ]]`（★ 区分大小写 ★）—— 与扫描器 Step 8 同
+#   · 规则族：★ 只算【★ 凭据族 ★】（★ `DB_CONNSTRING` ／ `DB_URL_CREDENTIAL` ／
+#     ★ `CRED_ASSIGN` ／ `SSH_PASSWORD` ★）—— ★ 地址族（★ `INTERNAL_IP` 等 ★）另算
+#   · 键：★ 【★ 文件 ＋ 凭据位值 ＋ 形态 ＋ 白名单条目 ★】—— ★ 而【★ 不用行号 ★】
+#     ⇒ ★ 无关的一行改动不会把清单顶红、★ 而【★ 豁免面本身变了 ★】一定红
+
+# ★ 白名单条目：★ 从扫描器里【★ 原样读 ★】（★ eval 那段数组 ⇒ ★ 零漂移 ★）
+WHITELIST_PATTERNS=()
+WL_BLOCK="$(awk '/^WHITELIST_PATTERNS=\(/,/^\)$/' "${SCAN}")"
+if [[ "${WL_BLOCK}" == "WHITELIST_PATTERNS=("*")" ]]; then
+  eval "${WL_BLOCK}"
+fi
+WL_N="${#WHITELIST_PATTERNS[@]}"
+WL_COMBINED=""
+for wl in ${WHITELIST_PATTERNS[@]+"${WHITELIST_PATTERNS[@]}"}; do
+  if [[ -n "${WL_COMBINED}" ]]; then WL_COMBINED="${WL_COMBINED}|${wl}"; else WL_COMBINED="${wl}"; fi
+done
+if [[ "${WL_N}" -ge 20 ]]; then
+  ok "白名单条目从扫描器原样读出（★ ${WL_N} 条 ★）⇒ ★ 豁免面的判据面【★ 与扫描器同一个 ★】"
+else
+  bad "白名单只读到 ${WL_N} 条（★ 期望 ≥ 20 ★）⇒ ★ 抽取器坏了 ⇒ ★ 下面的豁免面【★ 不可信 ★】"
+fi
+
+# ★ 凭据族规则（★ 每个模式都要带 -e ★】—— ★ 否则 grep 把第 2 个起的模式【★ 当文件名 ★】
+# ★   ⇒ ★ 报「No such file」、★ 而 stderr 被吞 ⇒ ★ 【★ 零输出、★ 而门照样绿 ★】★★ ★
+# ★   ⇒ ★ ★ 这正是本轮【★ 量具自校准 ★】抓到的一条真坑 ★★ ★
+CRED_FAM_RULES=()
+for fam in DB_CONNSTRING DB_URL_CREDENTIAL CRED_ASSIGN SSH_PASSWORD; do
+  while IFS= read -r r; do [[ -n "${r}" ]] && CRED_FAM_RULES+=("${r}"); done \
+    < <(grep -E "^${fam}\\|" "${CONFIG}" | cut -d'|' -f4-)
+done
+CRED_GREP_ARGS=()
+for r in ${CRED_FAM_RULES[@]+"${CRED_FAM_RULES[@]}"}; do CRED_GREP_ARGS+=(-e "${r}"); done
+
+# ★ 凭据位取值的两条正则（★ 形态全部由变量拼出来 ⇒ ★ 本门自身【★ 不出现任何连接串形态 ★】★★ ★
+DSN_VAL_RE="${SL}${SL}[^:/@\"[:space:]]+:([^@/\"[:space:]]+)@"
+CRED_KW_RE="(password|passwd|pwd|secret|api_key|apikey|auth_token|access_token|bearer_token)"
+CRED_VAL_RE="${CRED_KW_RE}[[:space:]]*[:=][[:space:]]*[\"']([^\"'[:space:]]+)[\"']"
+
+# ★ 占位词典（★ 逐条对过本轮的豁免清单 ★）★★ ★
+# ★ ★ 而【★ 它的【★ 词表漏收风险 ★】★ 是这道门的**已知局限**：★ 一条新的字面量豁免
+# ★   【★ 若它的值恰好长得像占位词 ★】、★ 断言⑧就抓不到它 ⇒ ★ ★ 而断言⑦【★ 仍会红 ★】
+# ★   ⇒ ★ ★ 所以【★ 断言⑦才是主判据、★ 断言⑧是加严 ★】★★ ★
+PLACEHOLDER_WORDS=" user username usr pass password passwd pwd secret example placeholder your yours my test testing dummy sample demo temp tmp foo bar xxx xxxxxx host hostname dbname db database gateway default none null empty redacted masked changeme change_me postgres kxpass nopass gw audit maint maintain tester env fake invalid nobody switch audit_admin_pw_local_only example-db-password example-redis-password example-test-password example-tenant-password llm_gateway_db_pass_2026_secure local_password probepass GENERATED_PASSWORD omnifree_test_pwd your_password yourpassword postgres123 sentinel_probe_target KAIXUAN_PW "
+
+# ★ ★ 形态正则【★ 全部走变量 ★】—— ★ 因为 `[[ v =~ ^<…>$ ]]` 里【★ `<` 会被词法器
+# ★   当成重定向 ★】⇒ ★ 直接内联会【★ 语法错 ★】★★ ★（★ 本轮实测 ★）
+RE_VAR='^\$\{[A-Za-z_][A-Za-z0-9_]*(:.*)?\}$'
+RE_ANGLE='^<[^>]+>$'
+RE_IDENT='^[A-Za-z_][A-Za-z0-9_]*$'
+RE_DOTID='^[a-z0-9_]+(\.[a-z0-9_]+)+$'
+
+value_shape() { # 值 → 形态
+  local v="$1" lv
+  [[ -z "${v}" ]] && { printf '空'; return 0; }
+  lv="$(printf '%s' "${v}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${v}" =~ ${RE_VAR} ]]; then printf '变量形态'; return 0; fi
+  if [[ "${v}" =~ ${RE_ANGLE} ]]; then printf '尖括号形态'; return 0; fi
+  if [[ "${v}" == *"*"* || "${v}" == *"…"* ]]; then printf '掩码形态'; return 0; fi
+  case " ${PLACEHOLDER_WORDS} " in *" ${lv} "*) printf '词典占位形态'; return 0;; esac
+  if [[ "${v}" =~ ${RE_IDENT} ]]; then printf '标识符形态'; return 0; fi
+  if [[ "${v}" =~ ${RE_DOTID} ]]; then printf '点号标识符形态'; return 0; fi
+  printf '字面量'
+}
+
+# ★ ★ 判定：★ 【★ 凭据位上的值是不是【★ 字面量 ★】★★ ★
+# ★   · DSN 形态：★ 标识符形态【★ 就是字面量 ★】—— ★ 它【★ 不是变量引用 ★】★★ ★
+# ★     （★ 而这正是本轮抓到的那一条：★ `kaixuan` ★）★★ ★
+# ★   · 赋值形态：★ 标识符／点号标识符【★ 是 i18n key ／ 事件名 ★】⇒ ★ 占位符 ★★ ★
+is_literal_credential() { # 形态 值 位置 → 0=字面量
+  local shape="$1" v="$2" where="$3"
+  case "${shape}" in
+    变量形态|尖括号形态|掩码形态|词典占位形态) return 1 ;;
+    标识符形态|点号标识符形态)
+      if [[ "${where}" == "DSN" ]]; then return 0; fi
+      return 1 ;;
+  esac
+  return 0
+}
+
+# ★ 豁免面：★ 【★ 文件 ＋ 凭据位值 ＋ 形态 ＋ 白名单条目 ★】★★ ★
+compute_exempt_cred() {
+  local files="$1" ml f rest ln content shape val wlpat
+  [[ -z "${files}" ]] && return 0
+  while IFS= read -r ml; do
+    f="${ml%%:*}"; rest="${ml#*:}"; ln="${rest%%:*}"; content="${rest#*:}"
+    [[ -z "${WL_COMBINED}" ]] && continue
+    [[ "${content}" =~ ${WL_COMBINED} ]] || continue
+    shape=""; val=""
+    if [[ "${content}" =~ ${DSN_VAL_RE} ]]; then
+      shape="DSN"; val="${BASH_REMATCH[1]}"
+    else
+      # ★ ★ 【★ 取值必须【★ 不区分大小写 ★】★★ ★ —— ★ 因为扫描器的【★ 发现阶段 ★】
+      # ★   是 `grep -niE`（★ 不敏感 ★）⇒ ★ 而 `PGPASSWORD=` 这类【★ 大写形态 ★】
+      # ★   【★ 会被发现 ★】⇒ ★ ★ 而本门用 `=~`（★ 敏感 ★）⇒ ★ 【★ 取不到值 ★】★★ ★
+      # ★   ⇒ ★ 而那条行【★ 就被整条漏掉 ★】⇒ ★ ★ 所以【★ 这里临时开 nocasematch ★】★★ ★
+      # ★ ★ 而【★ 白名单判定【★ 必须保持敏感 ★】★★ ★ —— ★ 因为扫描器 Step 8 的
+      # ★   `=~` 【★ 就是敏感的 ★】⇒ ★ ⇒ ★ 所以【★ 开关只在取值这一小段里开 ★】★★ ★
+      shopt -s nocasematch
+      if [[ "${content}" =~ ${CRED_VAL_RE} ]]; then
+        # ★ ★ 【★ 组号是 2、★ 不是 1 ★】—— ★ 因为这条正则有【★ 两个捕获组 ★】★★ ★
+        # ★   ① 关键词组 ② 值组 ⇒ ★ 而 bash 的 `=~` 【★ 只认第 N 个括号 ★】★★ ★
+        # ★   ⇒ ★ 取 `[1]` 会拿到【★ 关键词本身 ★】⇒ ★ 而值永远是 "password" ★★ ★
+        # ★   ⇒ ★ ★ 这条错【★ 不会报错、★ 只会静默取错值 ★】⇒ ★ ★ 而它【★ 是靠
+        # ★   【★ 两条独立读数对不上 ★】才被抓到的（★ python 量具给的是另一个值 ★）★★ ★
+        shape="ASSIGN"; val="${BASH_REMATCH[2]}"
+      fi
+      shopt -u nocasematch
+    fi
+    [[ -z "${val}" ]] && continue
+    wlpat=""
+    for wl in ${WHITELIST_PATTERNS[@]+"${WHITELIST_PATTERNS[@]}"}; do
+      if [[ "${content}" =~ ${wl} ]]; then wlpat="${wl}"; break; fi
+    done
+    printf '%s\t%s\t%s\t%s\n' "${f}" "${val}" "${shape}" "${wlpat}"
+  done < <(printf '%s\n' "${files}" | tr '\n' '\0' \
+      | xargs -0 grep -nHEi "${CRED_GREP_ARGS[@]}" 2>/dev/null)
+}
+
+EXEMPT_CRED="$(compute_exempt_cred "${PROD_FILES}" | sort -u)"
+EXEMPT_CRED_N="$(printf '%s' "${EXEMPT_CRED}" | grep -c . || true)"
+
+# ★ 已知豁免面（★ 棘轮：★ 集合必须与现实完全一致 ★）★★ ★
+KNOWN_EXEMPT_CRED=(
+  'cmd/calc_quality/main.go	kaixuan	DSN	localhost'
+  'cmd/llm-gw-annotator/quickstart.sh	pass	DSN	user:pass@host'
+  'cmd/sessionmeta-bench/testdata/sessions_100.jsonl	password	DSN	example\.com'
+  'cmd/tools/backfill-modality/main.go	pass	DSN	user:pass@host'
+  'cmd/tools/migration-456-test/main.go	pass	DSN	user:pass@host'
+  'cmd/tools/validate_sessions_v2/main.go	pass	DSN	user:pass@host'
+  'config.example.yaml	password	DSN	127\.0\.0\.1'
+  'domains/credential/rpm_redis.go	pass	DSN	:pass@'
+  'installer/cmd/llm-gw-installer/embeddata/compose.yml	${POSTGRES_PASSWORD}	DSN	\$\{[A-Z_][A-Z0-9_]*\}'
+  'installer/templates/compose.yml	${POSTGRES_PASSWORD}	DSN	\$\{[A-Z_][A-Z0-9_]*\}'
+  'pkg/identity-migrate/identity-migrate.go	pass	DSN	user:pass@host'
+  'proxy/parser.go	pass	DSN	user:pass@host'
+  'proxy/parser.go	password	DSN	:password@'
+  'sql/scripts/dump-standard-models.sh	${PGPASSWORD:-}	ASSIGN	127\.0\.0\.1'
+  'storage/factory/factory.go	pass	DSN	:pass@'
+  'tools/benchreport/main.go	pass	DSN	127\.0\.0\.1'
+  'web/src/App.vue	openChangePassword	ASSIGN	@[a-z-]+="'
+  'web/src/views/OutputComplianceView.vue	output_compliance.redact_password	ASSIGN	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'web/src/views/UsersView.vue	onDrawerResetPassword	ASSIGN	@[a-z-]+="'
+)
+
+KNOWN_SORTED="$(printf '%s\n' "${KNOWN_EXEMPT_CRED[@]}" | grep -v '^__FILL__$' | sort -u)"
+if [[ "${EXEMPT_CRED}" == "${KNOWN_SORTED}" ]]; then
+  ok "白名单在生产代码路径上的【★ 凭据族豁免面 ★】与已知清单完全一致（★ ${EXEMPT_CRED_N} 条 ★）"
+else
+  bad "白名单在生产代码路径上的凭据族豁免面与已知清单不一致（★ 实测 ${EXEMPT_CRED_N} 条 ★）⇒ ★ 白名单一改、★ 豁免面就【★ 静默地 ★】变掉"
+  printf '     · 实测清单（文件→凭据位值→形态→白名单条目）：\n' >&2
+  printf '%s\n' "${EXEMPT_CRED}" | sed 's/^/       /' >&2
+  printf '     · 已知清单：\n' >&2
+  printf '%s\n' "${KNOWN_SORTED}" | sed 's/^/       /' >&2
+fi
+
+# ═══ 断言 ⑧：★ 字面量豁免【★ 只许那已知的一条 ★】★★ ★
+# ★ ★ 而【★ 这一条【★ 正是那处生产代码硬编码 DSN ★】—— ★ 它【★ 今天对扫描器不可见 ★】
+# ★   ⇒ ★ 而【★ 它怎么处置（★ 改环境变量 ★】 还是 【★ 先轮换口令 ★】★ ⇒ ★ ★ 不代裁 ★★★ ★
+LITERAL_LIST=""
+while IFS=$'\t' read -r ef ev esh ewl; do
+  [[ -z "${ef}" ]] && continue
+  eshape="$(value_shape "${ev}")"
+  if is_literal_credential "${eshape}" "${ev}" "${esh}"; then
+    LITERAL_LIST="${LITERAL_LIST}${ef}|${ev}"$'\n'
+  fi
+done <<< "${EXEMPT_CRED}"
+LITERAL_SORTED="$(printf '%s' "${LITERAL_LIST}" | grep -v '^$' | sort -u)"
+KNOWN_LITERAL_CRED="cmd/calc_quality/main.go|kaixuan"
+
+if [[ "${LITERAL_SORTED}" == "${KNOWN_LITERAL_CRED}" || -z "${LITERAL_SORTED}" ]]; then
+  ok "豁免面里【★ 凭据位上是字面量 ★】的只有已知那一条（★ ${KNOWN_LITERAL_CRED} ★）⇒ ★ 其余豁免全是占位符／变量形态"
+  [[ -n "${LITERAL_SORTED}" ]] && printf '     · ★ 该条【★ 对扫描器完全不可见 ★】、★ 处置方式【★ 不代裁 ★】★\n' >&2
+else
+  bad "豁免面里出现【★ 新的字面量凭据 ★】（★ 实测 ${LITERAL_SORTED//$'\n'/ ／ }★）⇒ ★ 白名单正在吞真凭据"
+  printf '%s\n' "${LITERAL_SORTED}" | sed 's/^/       · /' >&2
 fi
 
 printf 'PASS=%s FAIL=%s\n' "${PASS}" "${FAIL}"
