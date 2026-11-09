@@ -1,0 +1,41 @@
+  constitution           : rc=0 errors=0 warnings=0
+  credentials            : rc=2 errors=0 warnings=1
+  deploy-dry-run         : rc=0 errors=0 warnings=0
+  partitioned-tables     : rc=2 errors=0 warnings=1
+  scripts                : rc=2 errors=0 warnings=1（门内自报 43 条）
+  branches               : rc=0 errors=0 warnings=0
+  sensitive-info         : rc=0 errors=0 warnings=0（门内自报 1128 条）
+  envs (rule 47)         : rc=1 errors=1 warnings=0
+  envs-coverage (rule 47): rc=1 errors=1 warnings=0
+  deploy-records         : rc=0 errors=0 warnings=0
+  design-granularity     : rc=0 errors=0 warnings=0
+  product-design (rule 60): rc=0 errors=0 warnings=0
+  test-campaign (rule 61): rc=0 errors=0 warnings=0
+  build-deploy-pipeline  : rc=0 errors=0 warnings=1
+  schema-sync (rule 48)  : rc=0 errors=0 warnings=1
+  schema-truth (rule 49) : rc=0 errors=0 warnings=1
+  source-baseline (rule 52): rc=1 errors=1 warnings=0
+  session-governance (rule 50): rc=0 errors=0 warnings=0
+  module-registry (rule 51): rc=0 errors=0 warnings=1
+  rules-consistency       : rc=0 errors=0 warnings=0
+  over-approval (rule 27 §2.5): rc=0 errors=0 warnings=0
+  outside-in (rule 59)   : rc=2 errors=0 warnings=1
+  legacy                 : rc=0 errors=0 warnings=0
+  matt-skills-config     : rc=2 errors=0 warnings=1
+  ai-code-review (rule 67): rc=0 errors=0 warnings=0
+  deploy-local (rule 68): rc=2 errors=0 warnings=1
+  ports (端口一致性)     : rc=0 errors=0 warnings=0
+  app-icon (rule 69)     : rc=0 errors=0 warnings=0
+  skill-sync             : rc=1 errors=1 warnings=0
+  harness-surface        : rc=2 errors=0 warnings=1
+  skill-local-assets     : rc=0 errors=0 warnings=0
+  skill-contract         : rc=0 errors=0 warnings=0
+  deploy-skill-target    : rc=0 errors=0 warnings=0
+  matt-expected          : rc=0 errors=0 warnings=0
+  matt-expected-set      : rc=0 errors=0 warnings=0
+  dist-overwrite         : rc=2 errors=0 warnings=1
+  skill-copies            : rc=2 errors=0 warnings=1
+
+  TOTAL ERRORS=4  WARNINGS=13
+
+[0;34m  💡 skill-evidence 检查请显式：verify.sh skill-evidence <skill-name>[0m

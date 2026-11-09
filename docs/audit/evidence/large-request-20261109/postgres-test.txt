@@ -1,0 +1,6 @@
+=== RUN   TestLargeRequestPostgresEvidence
+    large_pg_evidence_test.go:15: 100MB latest rejected without older-row fallback; Go cumulative allocation=5832
+    large_pg_evidence_test.go:26: PostgreSQL17 actual SQL: latest100MB blocked, cumulative1MiB blocked, latest10 in chronological order, metadata4MB projected NULL with oversize flag
+--- PASS: TestLargeRequestPostgresEvidence (2.02s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/v2	2.585s

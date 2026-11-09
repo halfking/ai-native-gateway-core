@@ -1,0 +1,44 @@
+largebody module evidence — 2026-11-09
+Workspace: <worktree>
+Ownership: internal/largebody only. No commit or runtime wiring.
+
+TDD RED:
+- go test ./internal/largebody initially failed on undefined Store/Identity/Span APIs.
+- Index tests initially failed on undefined Index/IndexObject APIs.
+- TestIndexPreservesSourceErrors failed for truncated source prefixes, losing io.ErrUnexpectedEOF. Fixed by preserving non-EOF source errors in scanner.
+- TestCaptureExact100MBAndRejectExtraByte failed because caller could materialize9MiB despite intent. Fixed with exported MaxRangeBytes=8MiB hard guard.
+
+GREEN:
+- go test ./internal/largebody -count=1 => PASS after both features/fixes.
+- go vet ./internal/largebody => PASS.
+- go test -race ./internal/largebody -count=1 => PASS, 4.902s (before final stateless range guard only).
+- go test ./internal/largebody -run '^$' -fuzz FuzzIndexAgreesOnAcceptedJSON -fuzztime=10s -parallel=2 => PASS, 853895 executions,102 accumulated interesting inputs.
+- go test ./internal/largebody -run '^$' -bench BenchmarkIndexGeneratedBody -benchtime=1x -benchmem => PASS.
+  1MB: 2.880459ms,347.17MB/s,66680 B/op,22 allocs/op.
+  10MB:28.596667ms,349.69MB/s,66664 B/op,21 allocs/op.
+  100MB:298.033292ms,335.53MB/s,66664 B/op,21 allocs/op.
+  Synthetic source is io.MultiReader plus fixed-fill reader, no complete input []byte allocation.
+- TestIndexGiantStringWithoutMaterializingIt asserts TotalAlloc<2MiB for generated20MB huge string.
+- Actual100000000-byte disk capture/hash verify succeeds;100000001-byte input rejected and no partial files retained.
+- Roundtrip/restart Lookup/Recover, collision immutability, read limits, malicious path/symlink, cancellation/input IO failure, corrupted RAW hash and missing ref record covered.
+
+API:
+NewStore(root),Store.Capture(ctx,Identity,io.Reader),Ref{Identity,Size,SHA256},Store.Open(ctx,ref),Store.Verify(ctx,ref),Store.Lookup/Recover(ctx,Identity),Store.ReadRange(ctx,ref,Span,maxBytes),Ref.RelativePath(),Store.Close().
+Index(ctx,Reader) and IndexObject(ctx,Reader) return Document{Fields map[string]Span,Arrays map[string][]Span,Model,Stream}; coordinates relative to supplied reader start. IndexObject does not require/validate envelope model/stream types. Arrays indexed only at current object top level for messages/input/contents/content/parts.
+
+Limits:
+LimitBytes=100000000;MaxRangeBytes=8MiB;64KiB IO/scanner buffers;MaxDepth64;MaxObjectFields1024;MaxArrayItems100000;decoded keys/model<=512 bytes;2M JSON values.
+
+Limitations:
+RAW files are uncompressed,0600 with new0700 directories. Streamed gzip/zstd frames and encryption not implemented here. Cross-host recovery/GC/quotas owned by integration, not this package. Atomic no-replace via os.Root.Link; file+directory fsync, Windows directory sync unavailable. Existing root permissions not widened or tightened. Store.Open checks identity/path/size only; Lookup/Recover or Verify must be used for persisted-reference hash validation.
+
+Rebind follow-up:
+Only new internal/largebody/rebind.go and rebind_test.go changed.
+- TDD initial go test -run TestRebind failed because Rebind method did not exist.
+- Added destination-tamper retry test then observed failure (source NotExist incorrectly hid destination integrity error); fixed to surface target integrity/cancellation/storage errors.
+- go test ./internal/largebody -count=1 => PASS after Rebind and fixes.
+- go test -race ./internal/largebody -run TestRebind -count=1 => PASS.
+- go vet ./internal/largebody => PASS.
+Covered successful same-tenant move preserving server request ID/hash/size; source deletion only after destination commit; idempotent retry after source removal; same-session no-op; conflicting destination immutability; forged/tampered source; invalid session path; cancellation; destination directory obstruction/symlink; ref.json commit collision rollback; matching duplicate cleanup;32 concurrent retries across two Store handles; corrupted destination on retry.
+Fixed64 cancellable stripes serialize same root/tenant/request ID within one process without unbounded lock map. Cross-process simultaneous rebinds are protected from overwrite by no-replace links but may report an explicit collision requiring retry; no filesystem lease/fencing service was added.
+Post-commit source cleanup is best-effort with warnings: destinationRef is returned successfully after durable commit; a source cleanup failure must not turn that successful move into an apparent pre-commit failure. Request IDs must remain server-generated and globally unique, as required by the ingress contract.
