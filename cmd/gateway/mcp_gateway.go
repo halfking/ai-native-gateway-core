@@ -29,24 +29,30 @@ import (
 //
 // 失败时只记日志、不阻断主进程启动：MCP 网关是附加能力，不能因为它的
 // 装配问题把模型网关拖下线。
-func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger) {
+//
+// ★ 返回装配好的网关实例（未装配时返回 nil）：主网关的 /metrics 端点
+//
+//	需要它来挂「抓取前刷新抓取时刻求值指标」的包装
+//	（mcp_gateway_uptime_seconds 只有抓取时刻才有意义）。
+//	★ 而它必须在 /metrics 注册**之前**被调用，否则拿不到实例。★★
+func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger) *mcp.Gateway {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	envCfg, err := mcp.LoadEnvConfig()
 	if err != nil {
 		logger.Error("mcp gateway: config invalid, gateway not mounted", "error", err)
-		return
+		return nil
 	}
 	if !envCfg.Enabled {
 		logger.Info("mcp gateway: disabled by MCP_GATEWAY_ENABLED=false")
-		return
+		return nil
 	}
 
 	gateway, err := envCfg.Build()
 	if err != nil {
 		logger.Error("mcp gateway: init failed, gateway not mounted", "error", err)
-		return
+		return nil
 	}
 
 	mount := mcp.NewMount(gateway)
@@ -66,4 +72,5 @@ func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger) {
 		"audit_file", envCfg.AuditFile,
 		"external_ledger", envCfg.LedgerURL != "",
 	)
+	return gateway
 }

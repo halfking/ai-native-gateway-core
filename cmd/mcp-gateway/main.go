@@ -69,7 +69,11 @@ func main() {
 		mux2 := mcp.NewMount(gateway)
 		mux2.Handler().ServeHTTP(w, r)
 	})
-	mux.Handle("/metrics", promhttp.Handler())
+	// ★ 抓取前先刷新「抓取时刻求值」的指标（mcp_gateway_uptime_seconds）：
+	//   Prometheus 的抓取是外部触发的，刷新必须挂在抓取路径上；
+	//   不挂 ⇒ 该指标在 /metrics 上恒为 ABSENT（不是 0），面板无数据、
+	//   rate() 告警永不触发。
+	mux.Handle("/metrics", gateway.ScrapeHandler(promhttp.Handler()))
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		mcp.NewMount(gateway).Handler().ServeHTTP(w, r)
 	})
