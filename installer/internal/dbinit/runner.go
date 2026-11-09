@@ -1801,6 +1801,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 953（2026-11-09 恢复检测及时性优化 P0-3）：models_canonical.featured ——
 			// 标记需要优先探测的模型（免费/入门级），以减少「上游已恢复但系统 ~24h 未感知」问题。
 			"953_models_canonical_featured.sql",
+			"954_probe_lane_trace_events.sql",
 		},
 	}
 }

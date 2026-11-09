@@ -1,6 +1,9 @@
 -- 953_models_canonical_featured.down.sql
 -- Rollback: Remove featured column from models_canonical
 
+BEGIN;
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '30s';
 DO $$ 
 BEGIN
     -- Drop index if exists
@@ -25,3 +28,5 @@ BEGIN
         RAISE NOTICE 'Dropped models_canonical.featured column';
     END IF;
 END $$;
+DELETE FROM public.schema_migrations WHERE version = '953';
+COMMIT;
