@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"log/slog"
 	"os"
 	"strconv"
@@ -18,7 +19,9 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// rule 71：结构化 JSONL + 规范字段（此前为 Text handler）。
+	// 该工具要打印凭据相关信息——handler 层的脱敏是最后一道防线。
+	logger := logging.NewServiceStderrLogger(slog.LevelInfo)
 	slog.SetDefault(logger)
 
 	explicit := os.Getenv("LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY")

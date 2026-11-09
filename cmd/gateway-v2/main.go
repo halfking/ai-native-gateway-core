@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1104,7 +1105,8 @@ func renderLabels(labels map[string]string) string {
 }
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// rule 71：结构化 JSONL + 规范字段（此前为 Text handler）。
+	logger := logging.NewServiceLogger(slog.LevelInfo)
 	cfg := loadConfig()
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
