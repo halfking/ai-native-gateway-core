@@ -32,11 +32,15 @@ func TestSummaryContextBudgetUsesCurrentCandidateOnFailover(t *testing.T) {
 	}
 }
 
-func TestSummaryContextBudgetUnknownStrictAndLegacy(t *testing.T) {
+func TestSummaryContextBudgetUnknownFallsBackToGlobalCaps(t *testing.T) {
+	// 2026-11-10 改判（opus-5-5 422 事故）：未知窗口回落包级全局保守上限
+	// （MaxInputTokens / DefaultMaxJSONBytes），不再硬拒——旧 strict 断言把
+	// 生产 ~90% NULL context_window 的数据缺口放大成摘要压缩链路整体不可用。
+	// 「legacy 零值集成不变量」保留。
 	cand := &ProviderCandidate{BaseURL: "https://supplier.invalid", RawModel: "model"}
 	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	if _, err := buildCompactionRequest(contextbudget.WithSpec(context.Background(), contextbudget.Spec{}), cand, body, false); err == nil {
-		t.Fatal("strict summary accepted unknown context")
+	if _, err := buildCompactionRequest(contextbudget.WithSpec(context.Background(), contextbudget.Spec{}), cand, body, false); err != nil {
+		t.Fatalf("unknown-window summary must pass under global caps: %v", err)
 	}
 	if _, err := buildCompactionRequest(context.Background(), cand, body, false); err != nil {
 		t.Fatalf("legacy isolated integration changed: %v", err)

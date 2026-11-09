@@ -27,9 +27,11 @@ func TestGuardCancellationAndReadFailures(t *testing.T) {
 	if _, err := CheckRequest(req); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled attempt = %v", err)
 	}
+	// 2026-11-10 改判：空 spec（未知窗口）回落全局保守上限，受卫请求被放行
+	// （仍受 MaxInputTokens/DefaultMaxJSONBytes 封顶；不再因数据缺口硬拒）。
 	req, _ = http.NewRequestWithContext(WithSpec(context.Background(), Spec{}), "POST", "https://example.invalid", strings.NewReader(`{}`))
-	if _, err := CheckRequest(req); err == nil {
-		t.Fatal("unresolved guarded bucket was accepted")
+	if _, err := CheckRequest(req); err != nil {
+		t.Fatalf("unknown-window guarded request must pass under global caps: %v", err)
 	}
 	req, _ = http.NewRequestWithContext(WithSpec(context.Background(), Spec{ContextWindow: 128000}), "POST", "https://example.invalid", strings.NewReader(`{}`))
 	req.Body = nil

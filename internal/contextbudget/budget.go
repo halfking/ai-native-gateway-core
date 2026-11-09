@@ -52,10 +52,19 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s (actual=%d limit=%d)", e.Kind, e.Detail, e.Actual, e.Limit)
 }
 
-// Resolve never treats a missing/invalid context window as unlimited.
+// Resolve derives the per-attempt budget from trusted bucket capabilities.
+// A missing/invalid context window is never treated as unlimited: it resolves
+// to the package-global conservative caps (MaxInputTokens / DefaultMaxJSONBytes)
+// instead of failing. 2026-11-10: the previous behavior failed closed with
+// UnknownContext for any candidate whose window was unknown, and production
+// data carries ~90% NULL models_canonical.context_window — every candidate of
+// such a model was rejected pre-dispatch (claude-opus-5-5 422 outage, ZCode
+// empty_model_response round 3). Unknown now means "cannot verify the exact
+// window", not "over budget": enforcement falls back to the global caps, and
+// buckets with KNOWN windows keep the exact arithmetic below unchanged.
 func Resolve(spec Spec) (Budget, error) {
 	if spec.ContextWindow <= 0 {
-		return Budget{}, &Error{Kind: UnknownContext, Detail: "bucket context window is unknown"}
+		return Budget{InputTokens: MaxInputTokens, JSONBytes: DefaultMaxJSONBytes}, nil
 	}
 	if spec.OutputReserve < 0 || spec.SafetyMargin < 0 || spec.MaxInputTokens < 0 || spec.MaxJSONBytes < 0 || spec.ExternalInputTokens < 0 {
 		return Budget{}, &Error{Kind: InvalidSpec, Detail: "negative bucket capacity"}
