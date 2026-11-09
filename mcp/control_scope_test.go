@@ -198,8 +198,12 @@ func TestControlScopeStatsEndpoint(t *testing.T) {
 		t.Fatalf("stats status=%d, want 200 (body=%s)", status, raw)
 	}
 	families, ok := body["families"].([]any)
-	if !ok || len(families) == 0 {
-		t.Fatalf("stats families empty: %s", raw)
+	if !ok || len(families) != 0 || body["scope"] != "tenant_audit_only" {
+		t.Fatalf("tenant key received unscoped process metrics: %s", raw)
+	}
+	status, body, _ = adminReq(t, srv.URL, http.MethodGet, "/mcp/control/stats", "")
+	if families, ok := body["families"].([]any); status != http.StatusOK || !ok || len(families) == 0 {
+		t.Fatalf("management token lost process metrics: status=%d", status)
 	}
 
 	// 无 analyze 权限 ⇒ 统计面拒绝。
