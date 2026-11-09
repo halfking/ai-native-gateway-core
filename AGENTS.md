@@ -79,6 +79,39 @@
 > ★ 遗留：订价变化前端图表（趋势线）未做；token_plan/booster 价期是参考价数据面不进
 >   计费热路径；asm-worker-1 crash loop（Restarting 137）登记待 owner 轮。
 
+> **2026-11-09 claude-opus-5-5 访问错误根因分析与诊断面修复轮（goal 会话，审计档
+> `docs/audit/2026-11-09-claude-opus-5-5访问错误根因分析与诊断面修复.md`）**：
+> ★ 用户目标＝「llm.itestu.cn 访问 claude-opus-5-5 总是错误 → 查 211 log → 判断
+>   转换错误或 token 桶错误 → 修复 → 部署 211 验证 → 提交推送」。
+> ★★ **最终根因（真库+活体实验）＝不是转换/桶/路由问题**：① 路由通（apiclaude
+>   3 健康节点 cred 31/59/99036，小/90KB/302KB 重复内容全 200）；② **apiclaude.cc
+>   中继对「~150KB+ 高熵（不可缓存）」载荷失败**——用户会话 171,803B 秒拒 400，
+>   唯一随机 ASCII 171-273KB 全部 200 后流中断（anthropic_empty_response），
+>   同网关发 minimax 893KB 正常；③ 其余节点全部被正当门控（evol provider
+>   manual_disabled=2026-07-26 / 速云 claude keys auth_failed / vapeur·magpie
+>   配额耗尽 / freellm 绑的是别的 canonical）⇒ **候选池只剩 apiclaude 一家无处
+>   failover**。恢复大上下文会话需 owner 裁决：恢复 evol、换速云 key、或向
+>   apiclaude 反馈/接官方直连（provider 2 无凭据）。
+> ★★ **本轮真修复＝诊断面缺口**：`upstream 400: <nil>` 吞掉拒绝原因（Body 存在
+>   无人读 + Message 裸状态码 + Err 恒 nil → `: <nil>` 后缀）⇒ upstreampkg.Error
+>   对 nil Err 不再追加后缀 + 5 处 executor（anthropic×2/chat retryable/gemini/
+>   ollama）Message 统一带 body 前 200B（复用 truncateForLog）+ 守护测试（含
+>   上界断言）。**现场验证**：非法图片块触发上游 400，日志完整带出
+>   `Malformed conversation content…` —— 且证实 apiclaude 400 响应体本就是可解析
+>   JSON，`<nil>` 纯属我方渲染缺陷。
+> ★ **混乱期清理**：删迁移 954/955（基于错库认知编写，生产仅 953 applied 实证）
+>   + manifest 重生成 353 项；生产库删投机绑定 4 条（cred 51-54，model-iq 实测
+>   4/4 不能服务）；开发库 198.18.0.197 恢复 credential 3 原态+featured_models
+>   还原；吊销调试 key 233。
+> ★★ **本会话教训（审计档 §5 全文）**：① 连错数据库（198.18.0.197 是别的环境，
+>   生产是 211 容器 env 里的 acc-pg17——动手前必须从在役容器 env 取 DATABASE_URL）；
+>   ② invalid_key 发生在模型解析之前，当「路由成功」证据是错的；③ mock/未验证
+>   key 绑进生产候选池不是修复；④ 部署后要核对生产 schema_migrations 而非假设
+>   迁移已应用。
+> ★ 验证：build/vet rc=0；executors+upstream+installer dbinit 全绿；gofmt 零新增
+>   （ollama 67 行 HEAD 既有对拍）；rate_limit 一红=并行负载计时假红（复跑绿）；
+>   211=1179dbee/2977 槽 b，readyz+公网 200，部署后小/90KB 回归成功；双仓已推。
+
 > **2026-11-09 探针限流窗口对齐+上游桶加权均衡轮（goal 会话；方案档
 > `docs/audit/2026-11-09-探针限流窗口对齐与上游桶加权均衡轮.md`）**：
 > ★ 复查结论：11-07 盲探族已收敛（audit R1-R5=0），**新族群＝429 闪断**（kimi-k3/glm-5.x
