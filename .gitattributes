@@ -12,3 +12,7 @@ vendor/** -text
 
 # Windows 快捷方式等二进制杂物按二进制处理
 *.lnk binary
+
+# Generated audit TSVs preserve empty final columns; the last TAB is data.
+# SQL previews can also end with a space. Keep all other whitespace checks.
+scripts/audit/asset/*.tsv whitespace=-blank-at-eol
