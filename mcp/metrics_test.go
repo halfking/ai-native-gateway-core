@@ -85,8 +85,9 @@ func TestRefreshUptimeMetricRecordsRuntimeLength(t *testing.T) {
 // TestScrapeHandlerRefreshesUptimeMetricBeforeScrape 断言**抓取路径上**确实刷新。
 //
 // ★ 哨兵值法：先把 gauge 写成一个别的值（-1），再发一次抓取。
-//   ⇒ 若抓取路径没接上，响应里就是哨兵 -1 而不是 42 ⇒ 这条断言**有牙**；
-//   ⇒ 而若只断言「body 里有这个指标名」，一个残留的旧值就能骗过它。
+//
+//	⇒ 若抓取路径没接上，响应里就是哨兵 -1 而不是 42 ⇒ 这条断言**有牙**；
+//	⇒ 而若只断言「body 里有这个指标名」，一个残留的旧值就能骗过它。
 func TestScrapeHandlerRefreshesUptimeMetricBeforeScrape(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)}
 	g := newClockedGateway(t, clock)
