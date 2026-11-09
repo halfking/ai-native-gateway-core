@@ -95,6 +95,9 @@ func (l *AuditLog) Query(filter AuditFilter) []AuditEvent {
 	out := make([]AuditEvent, 0, len(l.ring))
 	for i := len(l.ring) - 1; i >= 0; i-- {
 		ev := l.ring[i]
+		if filter.TenantID != "" && ev.TenantID != filter.TenantID {
+			continue
+		}
 		if filter.UserID != "" && ev.UserID != filter.UserID {
 			continue
 		}
@@ -126,21 +129,27 @@ func (l *AuditLog) Query(filter AuditFilter) []AuditEvent {
 
 // AuditFilter 是审计查询条件。
 type AuditFilter struct {
-	UserID  string
-	KeyID   string
-	Tool    string
-	Adapter string
-	Kind    string
-	Outcome string
-	Since   time.Time
-	Limit   int
+	TenantID string
+	UserID   string
+	KeyID    string
+	Tool     string
+	Adapter  string
+	Kind     string
+	Outcome  string
+	Since    time.Time
+	Limit    int
 }
 
 // ExportJSONL 导出审计为 JSONL（SIEM 兼容），返回导出条数与字节数。
 //
 // 导出内容只含审计字段本身，不含任何凭据明文。
 func (l *AuditLog) ExportJSONL(w *bufio.Writer) (int, error) {
-	events := l.Query(AuditFilter{})
+	return l.ExportFilteredJSONL(w, AuditFilter{})
+}
+
+// ExportFilteredJSONL exports only the authorized slice of the audit log.
+func (l *AuditLog) ExportFilteredJSONL(w *bufio.Writer, filter AuditFilter) (int, error) {
+	events := l.Query(filter)
 	count := 0
 	for _, ev := range events {
 		raw, err := json.Marshal(ev)
@@ -160,12 +169,17 @@ func (l *AuditLog) ExportJSONL(w *bufio.Writer) (int, error) {
 
 // Stats 返回审计概览（按结果与类别计数）。
 func (l *AuditLog) Stats() map[string]any {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
+	return l.FilteredStats(AuditFilter{})
+}
+
+// FilteredStats keeps aggregate counts within the same boundary as event rows.
+func (l *AuditLog) FilteredStats(filter AuditFilter) map[string]any {
+	filter.Limit = 0
+	events := l.Query(filter)
 	byOutcome := map[string]int{}
 	byKind := map[string]int{}
 	tools := map[string]int{}
-	for _, ev := range l.ring {
+	for _, ev := range events {
 		byOutcome[ev.Outcome]++
 		byKind[ev.Kind]++
 		if ev.Tool != "" {
@@ -173,7 +187,7 @@ func (l *AuditLog) Stats() map[string]any {
 		}
 	}
 	return map[string]any{
-		"total":      len(l.ring),
+		"total":      len(events),
 		"by_outcome": byOutcome,
 		"by_kind":    byKind,
 		"by_tool":    tools,
