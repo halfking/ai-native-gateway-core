@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/protocolformat"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -475,6 +476,20 @@ func defaultAnthropicPassthrough(ctx context.Context, w http.ResponseWriter, res
 // trim here so proxy clients (OpenCode/Cursor/RooCode) behave like direct API
 // users.
 func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	// 2026-11-10（用户规则）：同协议直传 + 格式门。客户端协议与出口协议
+	// 一致（含 ClientProtocol 为空的内部直发腿）时请求体直传、不改参数/
+	// 内容格式——但格式无错误才放行（最小官方规范形状校验，fail-closed）。
+	// 校验失败是客户端侧错误（KindClientBug：不进凭据熔断、换候选无意义）。
+	if cand.Protocol == providercatalog.ProtocolAnthropicMessages &&
+		(params.ClientProtocol == "" || params.ClientProtocol == providercatalog.ProtocolAnthropicMessages) {
+		if err := protocolformat.ValidateAnthropicRequest(sourceBody); err != nil {
+			return nil, &upstreampkg.Error{
+				Kind:    errorsx.KindClientBug,
+				Message: fmt.Sprintf("request failed anthropic-messages format validation: %v", err),
+				Err:     err,
+			}
+		}
+	}
 	// RISK-6（2026-10-29）：Claude Code↔Claude 原厂对在本腿的直通闸门。
 	// 生效点按「谁做序列化」盘点（与 65d24d0df 同纪律）：
 	//   S1 IR 序列化站点（Q3 转换 ParseOpenAI→SerializeAnthropic）—— 盖

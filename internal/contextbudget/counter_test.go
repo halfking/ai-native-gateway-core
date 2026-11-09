@@ -34,8 +34,11 @@ func TestByteFallbackReferenceCalibration(t *testing.T) {
 
 func TestCounterCanAdmitAnExactCountWithoutChangingHardCaps(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("long repeated text ", 10000) + `"}]}`)
+	// 2026-11-10：已知窗口（此处 catalog window=10000）保持执法，但计数器
+	// 换成校准估计器——不得因高估而误拒，也不得低估。190KB 重复文本的
+	// 估计值 ≈ chars/3.5 ≈ 54k ≫ limit 5000 ⇒ 拒绝仍是正确行为。
 	if _, err := Check(body, Spec{ContextWindow: 10000}); err == nil {
-		t.Fatal("fallback should not pretend that compressible bytes are few tokens")
+		t.Fatal("fallback must not pretend that compressible bytes are few tokens")
 	}
 	got, err := CheckWithCounter(body, Spec{ContextWindow: 10000}, CounterFunc(func([]byte) (int, error) { return 1000, nil }))
 	if err != nil || got.Tokens != 1000 || got.Counter != "bucket_counter" {
