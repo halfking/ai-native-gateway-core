@@ -1801,12 +1801,6 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 953（2026-11-09 恢复检测及时性优化 P0-3）：models_canonical.featured ——
 			// 标记需要优先探测的模型（免费/入门级），以减少「上游已恢复但系统 ~24h 未感知」问题。
 			"953_models_canonical_featured.sql",
-			// 954（2026-11-09 claude-opus-5-5 访问错误修复）：确保 claude-opus-5-5
-			// 模型正确配置（canonical 记录、别名映射、featured 标记、路由策略）。
-			"954_claude_opus_5_5_fix.sql",
-			// 955（2026-11-09 claude-opus-5-5 多provider绑定）：为 claude-opus-5-5
-			// 添加所有可用 audit-local-provider 的绑定，实现冗余路由。
-			"955_claude_opus_5_5_multi_provider_bindings.sql",
 		},
 	}
 }
