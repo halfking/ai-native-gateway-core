@@ -327,6 +327,24 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 //   - top_k / cache_control / documents / mcp_servers / context_management
 //     / container / thinking / thinking.signature / redacted_thinking
 //
+// anthropicLegalBlockType reports whether t is a content-block type the
+// Anthropic Messages API accepts on the request wire (docs.anthropic.com
+// Messages API reference): text, image, document, tool_use, tool_result,
+// thinking, redacted_thinking, server_tool_use, web_search_tool_result,
+// search_result (legacy), container_upload, citations. Anything else
+// (OpenAI Responses item types like reasoning, Gemini parts like
+// executableCode) must never be replayed verbatim.
+func anthropicLegalBlockType(t string) bool {
+	switch t {
+	case "text", "image", "document", "tool_use", "tool_result",
+		"thinking", "redacted_thinking", "server_tool_use",
+		"web_search_tool_result", "search_result", "container_upload",
+		"citations":
+		return true
+	}
+	return false
+}
+
 // The OpenAI-only fields list (frequency_penalty / presence_penalty / ...)
 // is only emitted when the source is non-Anthropic. An empty SourceProtocol
 // is treated as cross-protocol default to preserve historical fixtures.
@@ -896,6 +914,24 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			if err := json.Unmarshal([]byte(raw), &original); err == nil {
 				if _, exists := original["type"]; !exists {
 					original["type"] = block.Type
+				}
+				// 2026-11-09 (claude-opus-5-5 empty_model_response incident):
+				// raw replay used to forward the decoded object VERBATIM, so a
+				// foreign content-block type (e.g. an OpenAI Responses
+				// {"type":"reasoning"} item, or Gemini's executableCode noted in
+				// the R72 pin test) landed on the Anthropic Messages wire, which
+				// rejects unknown block types with 400. Wrap anything outside
+				// the legal Anthropic block-type closure into a text block
+				// instead: schema-legal on every anthropic-messages upstream,
+				// and the payload text stays inspectable instead of silently
+				// vanishing. Blocks whose decoded type IS in the closure keep
+				// the verbatim replay (they are legal Anthropic shapes).
+				if t, _ := original["type"].(string); !anthropicLegalBlockType(t) {
+					out = map[string]any{
+						"type": "text",
+						"text": "[non-anthropic content block dropped: type=" + t + "] " + raw,
+					}
+					return out
 				}
 				out = original
 			}
