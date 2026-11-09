@@ -29,6 +29,8 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,15 +38,20 @@ import (
 
 // AllowedMode is the mode whitelist for /admin/state.
 var allowedMode = map[string]bool{
-	"healthy":        true,
-	"slow":           true,
-	"server_error":   true,
-	"no_available":   true,
-	"rate_limited":   true,
-	"quota_exceeded": true,
-	"timeout":        true,
-	"broken_stream":  true,
-	"flaky":          true,
+	"healthy":                 true,
+	"slow":                    true,
+	"server_error":            true,
+	"no_available":            true,
+	"rate_limited":            true,
+	"quota_exceeded":          true,
+	"timeout":                 true,
+	"broken_stream":           true,
+	"flaky":                   true,
+	"auth_error":              true,
+	"empty_response":          true,
+	"invalid_request":         true,
+	"context_length_exceeded": true,
+	"rate_limit_burst":        true,
 }
 
 // MockProvider is one upstream mock.
@@ -77,12 +84,31 @@ type MockProvider struct {
 }
 
 func main() {
-	name := flag.String("name", "mock-alpha", "provider name (NON-REAL; use mock-* prefix)")
-	port := flag.String("port", "18101", "listen port")
+	name := flag.String("name", os.Getenv("MOCK_NAME"), "provider name (NON-REAL; use mock-* prefix)")
+	port := flag.String("port", os.Getenv("MOCK_PORT"), "listen port")
+	if *name == "" {
+		*name = "mock-alpha"
+	}
+	if *port == "" {
+		*port = "18101"
+	}
 	token := flag.String("token", "test-token", "bearer token (any token accepted)")
 	defaultLatMin := flag.Duration("latency-min", 50*time.Millisecond, "healthy-mode min latency")
 	defaultLatMax := flag.Duration("latency-max", 200*time.Millisecond, "healthy-mode max latency")
 	flag.Parse()
+
+	// Env overrides (compose wires MOCK_LATENCY_*_MS so the same image
+	// serves both the fast stress pool and slower per-scenario profiles).
+	if v := os.Getenv("MOCK_LATENCY_MIN_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			*defaultLatMin = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("MOCK_LATENCY_MAX_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			*defaultLatMax = time.Duration(n) * time.Millisecond
+		}
+	}
 
 	p := &MockProvider{name: *name, port: *port, token: *token}
 	p.mode = "healthy"
@@ -91,6 +117,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", p.handleChat)
+	mux.HandleFunc("/v1/models", p.handleModels)
 	mux.HandleFunc("/healthz", p.handleHealthz)
 	mux.HandleFunc("/admin/state", p.handleAdminState)
 	mux.HandleFunc("/admin/stats", p.handleAdminStats)
@@ -103,6 +130,22 @@ func main() {
 }
 
 // ─────────────────────────── HTTP handlers ───────────────────────────
+
+func (p *MockProvider) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"object": "list",
+		"data": []map[string]any{
+			{"id": "mock-model-fast", "object": "model", "owned_by": p.name},
+			{"id": "mock-model-long", "object": "model", "owned_by": p.name},
+			{"id": "mock-model-stream", "object": "model", "owned_by": p.name},
+		},
+	})
+}
 
 func (p *MockProvider) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	p.mu.RLock()
@@ -259,6 +302,56 @@ func (p *MockProvider) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	// Mode decision tree.
 	switch mode {
+	case "auth_error":
+		p.counters.clientErr.Add(1)
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"error": map[string]any{
+				"message": "mock credential rejected",
+				"type":    "invalid_api_key",
+				"code":    "mock_auth_error",
+			},
+		})
+		return
+
+	case "invalid_request":
+		p.counters.clientErr.Add(1)
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]any{
+				"message": "mock invalid request",
+				"type":    "invalid_request_error",
+				"code":    "mock_invalid_request",
+			},
+		})
+		return
+
+	case "context_length_exceeded":
+		p.counters.clientErr.Add(1)
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"error": map[string]any{
+				"message": "mock context length exceeded",
+				"type":    "invalid_request_error",
+				"code":    "context_length_exceeded",
+			},
+		})
+		return
+
+	case "empty_response":
+		p.counters.clientErr.Add(1)
+		w.WriteHeader(http.StatusOK)
+		return
+
+	case "rate_limit_burst":
+		p.counters.rateLimited.Add(1)
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": map[string]any{
+				"message": "mock burst rate limit",
+				"type":    "rate_limit_exceeded",
+				"code":    "mock_rate_limit_burst",
+			},
+		})
+		return
+
 	case "server_error":
 		p.counters.serverErr.Add(1)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -393,10 +486,11 @@ func (p *MockProvider) replyOK(w http.ResponseWriter, model string, stream bool,
 	usage["total_tokens"] = usage["prompt_tokens"].(int) + usage["completion_tokens"].(int)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":      fmt.Sprintf("chatcmpl-%s-%d", p.name, time.Now().UnixNano()),
-		"object":  "chat.completion",
-		"created": time.Now().Unix(),
-		"model":   model,
+		"_mock_identity": p.name,
+		"id":             fmt.Sprintf("chatcmpl-%s-%d", p.name, time.Now().UnixNano()),
+		"object":         "chat.completion",
+		"created":        time.Now().Unix(),
+		"model":          model,
 		"choices": []any{map[string]any{
 			"index":         0,
 			"message":       map[string]any{"role": "assistant", "content": content},

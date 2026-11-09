@@ -8273,8 +8273,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer rawStore.Close()
-	publicSurface = streaming.NewLargeIngress(chatHandler, rawStore, streaming.LargeIngressConfig{}).Wrap(publicSurface)
-	slog.Info("bounded session ingress enabled", "max_input_bytes", largebody.LimitBytes, "archive_root", rawDirectory)
+	// 2026-11-10 (mock-only stress round): the zero-value LargeIngressConfig
+	// caps the WHOLE generation surface at 4 concurrent requests (the slot
+	// is held for the request's full duration), which silently 429s every
+	// burst beyond 4 in flight — s19's 200-concurrent gate is unreachable
+	// with the default. Expose an explicit knob; default stays 4 so existing
+	// deployments keep byte-identical behavior until an owner sizes it.
+	ingressMaxConcurrent := 0
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INGRESS_MAX_CONCURRENT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ingressMaxConcurrent = n
+		} else {
+			slog.Warn("LLM_GATEWAY_INGRESS_MAX_CONCURRENT invalid, keeping default 4", "value", v)
+		}
+	}
+	publicSurface = streaming.NewLargeIngress(chatHandler, rawStore, streaming.LargeIngressConfig{MaxConcurrent: ingressMaxConcurrent}).Wrap(publicSurface)
+	slog.Info("bounded session ingress enabled", "max_input_bytes", largebody.LimitBytes, "archive_root", rawDirectory, "max_concurrent", ingressMaxConcurrent)
 
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).

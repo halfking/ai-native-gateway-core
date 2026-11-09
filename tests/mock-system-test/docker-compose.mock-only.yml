@@ -1,0 +1,207 @@
+# =====================================================================
+# Isolated mock-only gateway stress stack (local Docker + 211).
+# =====================================================================
+# Guarantees, by construction:
+#   * Own PG + Redis containers, own Docker network, own compose project
+#     (lgw-mock-only). The production gateway slots, nginx, acc-pg17 and
+#     nbjl-redis on 211 are never referenced.
+#   * The only upstreams in the DB are mock-vendor-* pointing at mock
+#     containers; mock-only-seed.sql disables every other provider row.
+#   * Probe/legacy/self-check worker groups are disabled via env so even
+#     the gateway's own background traffic stays inside the mock net.
+#   * Teardown (`down -v`) removes the volumes — zero residue.
+#
+# Host-specific base images come from env (set by run-mock-only.sh or an
+# env file): MOCK_GO_IMAGE / MOCK_RUNTIME_IMAGE / MOCK_PG_IMAGE /
+# MOCK_REDIS_IMAGE / MOCK_CLIENTS_IMAGE / MOCK_GATEWAY_PORT.
+# =====================================================================
+
+services:
+  pg:
+    image: ${MOCK_PG_IMAGE:-pgvector/pgvector:pg17}
+    container_name: lgw-mock-only-pg
+    environment:
+      POSTGRES_USER: mocktest
+      POSTGRES_PASSWORD: mocktest-only-password
+      POSTGRES_DB: llm_gateway_mock
+    volumes:
+      - lgw_mock_only_pg:/var/lib/postgresql/data
+      - ../../sql:/sql:ro
+      - ./mock-only-init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+      - ./mock-only-seed.sql:/seed/mock-only-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mocktest -d llm_gateway_mock"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    networks: [lgw_mock_only]
+
+  redis:
+    image: ${MOCK_REDIS_IMAGE:-redis:7-alpine}
+    container_name: lgw-mock-only-redis
+    command: ["redis-server", "--requirepass", "mocktest-only-redis-password"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a mocktest-only-redis-password ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [lgw_mock_only]
+
+  mock-alpha:
+    build:
+      context: ../../tests/stress/mocks
+      args:
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
+    image: lgw-mock-only-upstream:local
+    container_name: lgw-mock-only-alpha
+    environment: {MOCK_NAME: mock-vendor-alpha, MOCK_PORT: "18101", MOCK_LATENCY_MIN_MS: "20", MOCK_LATENCY_MAX_MS: "80"}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18101/healthz | grep -q ."]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks: [lgw_mock_only]
+
+  mock-beta:
+    build:
+      context: ../../tests/stress/mocks
+      args:
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
+    image: lgw-mock-only-upstream:local
+    container_name: lgw-mock-only-beta
+    environment: {MOCK_NAME: mock-vendor-beta, MOCK_PORT: "18101", MOCK_LATENCY_MIN_MS: "20", MOCK_LATENCY_MAX_MS: "80"}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18101/healthz | grep -q ."]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    depends_on: [mock-alpha]
+    networks: [lgw_mock_only]
+
+  mock-gamma:
+    build:
+      context: ../../tests/stress/mocks
+      args:
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
+    image: lgw-mock-only-upstream:local
+    container_name: lgw-mock-only-gamma
+    environment: {MOCK_NAME: mock-vendor-gamma, MOCK_PORT: "18101", MOCK_LATENCY_MIN_MS: "20", MOCK_LATENCY_MAX_MS: "80"}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18101/healthz | grep -q ."]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    depends_on: [mock-alpha]
+    networks: [lgw_mock_only]
+
+  mock-delta:
+    build:
+      context: ../../tests/stress/mocks
+      args:
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
+    image: lgw-mock-only-upstream:local
+    container_name: lgw-mock-only-delta
+    environment: {MOCK_NAME: mock-vendor-delta, MOCK_PORT: "18101", MOCK_LATENCY_MIN_MS: "20", MOCK_LATENCY_MAX_MS: "80"}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18101/healthz | grep -q ."]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    depends_on: [mock-alpha]
+    networks: [lgw_mock_only]
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
+    image: lgw-mock-only-gateway:local
+    container_name: lgw-mock-only-gateway
+    depends_on:
+      pg: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      mock-alpha: {condition: service_healthy}
+      mock-beta: {condition: service_healthy}
+      mock-gamma: {condition: service_healthy}
+      mock-delta: {condition: service_healthy}
+    environment:
+      LLM_GATEWAY_LISTEN: ":8781"
+      LLM_GATEWAY_ENV: "local"
+      LLM_GATEWAY_LOG_LEVEL: "info"
+      DATABASE_URL: "postgres://mocktest:mocktest-only-password@pg:5432/llm_gateway_mock?sslmode=disable"
+      LLM_GATEWAY_REDIS_ADDR: "redis:6379"
+      LLM_GATEWAY_REDIS_PASSWORD: "mocktest-only-redis-password"
+      LLM_GATEWAY_REDIS_DB: "0"
+      LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"
+      LLM_GATEWAY_JWT_SECRET: "mock-only-jwt-secret-not-used-in-production"
+      LLM_GATEWAY_API_KEY: "mock-only-gateway-key"
+      LLM_GATEWAY_ADMIN_API_KEY: "ops_mock_only_admin_key"
+      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "mock-only-admin-password"
+      LLM_GATEWAY_CORS_ORIGINS: "*"
+      LLM_GATEWAY_STATIC_DIR: "/app/web/dist"
+      LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
+      LLM_GATEWAY_BACKUP_DIR: "/tmp/backups"
+      LLM_GATEWAY_RAW_LOG_DIR: "/tmp/raw-logs"
+      # PG 模式唯一合法的请求事实写面（890 之后 v1 宽表已退役）：
+      # 会话族 V2 落库 + shadow write（cmd/gateway/session_write_safety.go）
+      LLM_GATEWAY_SESSIONS_V2_ENABLED: "true"
+      LLM_GATEWAY_SESSIONS_V2_SHADOW_WRITE: "true"
+      # URSM v2 authoritative 需要 systemmonitor 作为自动闸门
+      LLM_GATEWAY_SYSTEM_MONITOR_ENABLED: "true"
+      # bounded-ingress 旋钮（默认 4 会把整个生成面钳到并发 4，见
+      # cmd/gateway/main.go 的 2026-11-10 注释）；压测面显式调高。
+      LLM_GATEWAY_INGRESS_MAX_CONCURRENT: "256"
+      # ── keep every background traffic source inside the mock net ──
+      LLM_GATEWAY_USE_NEW_PROBE_MODE: "false"
+      LLM_GATEWAY_PROBE_QUEUE_ENABLED: "false"
+      LLM_GATEWAY_MOCK_PROBE_ENABLED: "false"
+      LLM_GATEWAY_AUTO_TITLE_ENABLED: "false"
+      LLM_GATEWAY_AUTO_SUMMARY_ENABLED: "false"
+    ports: ["${MOCK_GATEWAY_PORT:-18781}:8781"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8781/healthz | grep -q ."]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    networks: [lgw_mock_only]
+
+  clients:
+    image: ${MOCK_CLIENTS_IMAGE:-python:3.12-alpine}
+    container_name: lgw-mock-only-clients
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+    environment:
+      GATEWAY_URL: http://gateway:8781
+      GATEWAY_API_KEY: mock-only-gateway-key
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: mock-only-admin-password
+      MOCK_ALPHA_URL: http://mock-alpha:18101
+      MOCK_BETA_URL: http://mock-beta:18101
+      MOCK_GAMMA_URL: http://mock-gamma:18101
+      MOCK_DELTA_URL: http://mock-delta:18101
+    volumes:
+      - ./:/workspace:ro
+      - ./reports:/workspace/reports:rw
+    depends_on:
+      gateway: {condition: service_healthy}
+    networks: [lgw_mock_only]
+
+volumes:
+  lgw_mock_only_pg:
+    name: lgw_mock_only_pg
+
+networks:
+  lgw_mock_only:
+    name: lgw_mock_only
