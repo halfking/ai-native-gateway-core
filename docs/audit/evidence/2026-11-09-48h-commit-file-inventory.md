@@ -172,3 +172,178 @@
 | `installer/cmd/llm-gw-installer/embeddata/startup/952_model_price_versions.sql` | 53d4e2abd |
 | `installer/cmd/llm-gw-installer/embeddata/startup/953_models_canonical_featured.down.sql` | ab871558c |
 | `installer/cmd/llm-gw-installer/embeddata/startup/953_models_canonical_featured.sql` | 0344565ce, ab871558c |
+| `installer/cmd/llm-gw-installer/embeddata/startup/954_claude_opus_5_5_fix.down.sql` | e3ceee172, 52759157a |
+| `installer/cmd/llm-gw-installer/embeddata/startup/954_claude_opus_5_5_fix.sql` | e3ceee172, 52759157a |
+| `installer/cmd/llm-gw-installer/embeddata/startup/955_claude_opus_5_5_multi_provider_bindings.down.sql` | e3ceee172, fa81c1e37 |
+| `installer/cmd/llm-gw-installer/embeddata/startup/955_claude_opus_5_5_multi_provider_bindings.sql` | e3ceee172, fa81c1e37 |
+| `installer/cmd/llm-gw-installer/main.go` | 1179dbee4, fa81c1e37, 52759157a, ab871558c, 53d4e2abd |
+| `installer/cmd/llm-gw-installer/startup_ddl_lock_guard_gate_test.go` | 2f5677e3f |
+| `installer/internal/dbinit/runner.go` | 1179dbee4, fa81c1e37, 35f010479, 0344565ce, 53d4e2abd |
+| `internal/omnifree/data/auto_combo_templates.json` | f367dce5f |
+| `internal/omnifree/data/free_resource_catalog.json` | f367dce5f |
+| `internal/omnifree/data/keyless_providers.json` | f367dce5f |
+| `internal/omnifree/seed.go` | 53d4e2abd |
+| `maas/campaigns.go` | 53d4e2abd |
+| `maas/marketing_admin.go` | 53d4e2abd |
+| `maas/marketing_admin_test.go` | 53d4e2abd |
+| `maas/model_price_versions.go` | 53d4e2abd |
+| `maas/model_rates.go` | 53d4e2abd |
+| `maas/orders.go` | 53d4e2abd |
+| `maas/service.go` | 53d4e2abd |
+| `maestro/flows/10-mcp-gateway.yaml` | be33b0202 |
+| `mcp/audit.go` | be33b0202 |
+| `mcp/auth.go` | 6bc93a71d, 7225b3e69, be33b0202 |
+| `mcp/bootstrap.go` | 6bc93a71d, be33b0202 |
+| `mcp/bootstrap_test.go` | be33b0202 |
+| `mcp/capability.go` | 23995ef11, 7225b3e69, be33b0202 |
+| `mcp/capability_catalog.json` | be33b0202 |
+| `mcp/capability_routing_test.go` | 23995ef11, 7225b3e69 |
+| `mcp/circuit.go` | be33b0202 |
+| `mcp/control.go` | bde2baa59, be33b0202 |
+| `mcp/control_scope.go` | bde2baa59 |
+| `mcp/control_scope_test.go` | bde2baa59 |
+| `mcp/control_test.go` | be33b0202 |
+| `mcp/dashboard.go` | bde2baa59, be33b0202 |
+| `mcp/doc.go` | be33b0202 |
+| `mcp/env.go` | bde2baa59, 6bc93a71d, be33b0202 |
+| `mcp/errors.go` | 6bc93a71d, 7225b3e69, be33b0202 |
+| `mcp/http.go` | bde2baa59, be33b0202 |
+| `mcp/ledger.go` | 6bc93a71d, be33b0202 |
+| `mcp/legacy_contract_test.go` | 6bc93a71d |
+| `mcp/metrics.go` | 6bc93a71d, be33b0202 |
+| `mcp/policy.go` | be33b0202 |
+| `mcp/policy_test.go` | be33b0202 |
+| `mcp/proxy.go` | 7225b3e69, be33b0202 |
+| `mcp/ratelimit.go` | be33b0202 |
+| `mcp/redact.go` | be33b0202 |
+| `mcp/server.go` | bde2baa59, 6bc93a71d, 23995ef11, 7225b3e69, be33b0202 |
+| `mcp/server_test.go` | 6bc93a71d, be33b0202 |
+| `mcp/store.go` | be33b0202 |
+| `mcp/store_test.go` | be33b0202 |
+| `mcp/testutil_test.go` | 7225b3e69, be33b0202 |
+| `mcp/types.go` | bde2baa59, be33b0202 |
+| `mcp/version.go` | be33b0202 |
+| `middleware/auth_mw.go` | 7225b3e69, be33b0202 |
+| `sales/dashboard.go` | b79bf2ff5 |
+| `sales/quote.go` | b79bf2ff5 |
+| `sales/quote_audit_guard_test.go` | 9801786a6 |
+| `sales/quote_test.go` | b79bf2ff5 |
+| `sales/service.go` | b79bf2ff5 |
+| `sales/service_realdb_test.go` | b79bf2ff5 |
+| `scripts/apply-db-revision-sequence.sh` | 53d4e2abd |
+| `scripts/audit/asset/admin-routes.txt` | 53d4e2abd, 4cf786109, b79bf2ff5 |
+| `scripts/audit/asset/db-object-census.tsv` | 574957cad |
+| `scripts/audit/asset/db-object-columns.tsv` | 574957cad |
+| `scripts/audit/asset/db-object-expect.tsv` | 574957cad, 9f9a96312 |
+| `scripts/audit/asset/db-object-gap-ledger.tsv` | 574957cad |
+| `scripts/audit/asset/installer-reachability.tsv` | 574957cad |
+| `scripts/audit/asset/post-surface-ledger.tsv` | 53d4e2abd, 4cf786109, b79bf2ff5 |
+| `scripts/audit/db-object-census.py` | 574957cad |
+| `scripts/audit/dsn_exclusive_registry.tsv` | b8aa8fe4c |
+| `scripts/audit/list-whitelist-exempted-prod.sh` | b60305e6f |
+| `scripts/audit/market-price-compare.py` | 53d4e2abd |
+| `scripts/audit/post-surface-ledger-refresh.py` | 53d4e2abd |
+| `scripts/audit/q-usage.sh` | cc03409b1 |
+| `scripts/audit/request-stats-reconcile.sh` | 53d4e2abd |
+| `scripts/credential-health-recover.sh` | 574957cad |
+| `scripts/deploy-211.sh` | 574957cad |
+| `scripts/deploy-local-lib-project_env_test.sh` | 574957cad |
+| `scripts/deploy-seamless-docker.sh` | 574957cad |
+| `scripts/scan-secrets.config` | 139a552a4 |
+| `scripts/scan-secrets.sh` | 139a552a4, d3b1286e7 |
+| `scripts/ursmcheck/dsn_target_mismatch_ledger.tsv` | b8aa8fe4c |
+| `scripts/ursmcheck/gocache_script_family_exclusions.json` | 4cf786109 |
+| `scripts/ursmcheck/installer_reachability_gate_test.go` | 574957cad |
+| `scripts/ursmcheck/pg_test_env_registry.tsv` | 4cf786109 |
+| `scripts/ursmcheck/pipefail_race_ledger.tsv` | 574957cad, 4cf786109 |
+| `scripts/ursmcheck/request_surface_doc_currency_test.go` | 4cf786109 |
+| `settings/spec_probe.go` | 329b02ea6 |
+| `settings/spec_rate_policy.go` | 0b4ce4715 |
+| `settings/spec_rate_policy_test.go` | 0b4ce4715 |
+| `settings/spec_sales.go` | b79bf2ff5 |
+| `settings/specs.go` | 0b4ce4715 |
+| `sql/migrations/startup/950_probe_queue_source_credential_recovery.sql` | 2f5677e3f |
+| `sql/migrations/startup/952_model_price_versions.down.sql` | 53d4e2abd |
+| `sql/migrations/startup/952_model_price_versions.sql` | 53d4e2abd |
+| `sql/migrations/startup/953_models_canonical_featured.down.sql` | ab871558c |
+| `sql/migrations/startup/953_models_canonical_featured.sql` | 0344565ce, ab871558c |
+| `sql/migrations/startup/954_claude_opus_5_5_fix.down.sql` | e3ceee172, 52759157a |
+| `sql/migrations/startup/954_claude_opus_5_5_fix.sql` | e3ceee172, 52759157a |
+| `sql/migrations/startup/955_claude_opus_5_5_multi_provider_bindings.down.sql` | e3ceee172, fa81c1e37 |
+| `sql/migrations/startup/955_claude_opus_5_5_multi_provider_bindings.sql` | e3ceee172, fa81c1e37 |
+| `sql/migrations/startup/migration_952_model_price_versions_test.go` | 53d4e2abd |
+| `sql/migrations/startup/q_usage_script_contract_test.go` | ef5cc58fe, cc03409b1 |
+| `sql/schema/01-schema.sql` | 53d4e2abd |
+| `sql/schema/installed_startup_migrations.tsv` | e3ceee172, 3150a0f06, 53d4e2abd |
+| `tests/deploy_lock_test.sh` | 574957cad |
+| `tests/deploy_sync_prune_contract_test.sh` | 574957cad |
+| `tests/mcp-gateway-maestro/probe-tool-allow-enforcement.sh` | 7225b3e69 |
+| `tests/mcp-gateway-maestro/run.sh` | bde2baa59, ac262e36c, 6bc93a71d, 4cf786109, 97eadd6b0, 7e283e03c, 7225b3e69, be33b0202 |
+| `tests/scan_secrets_placeholder_privilege_test.sh` | 426bb9a94, 2aad04f37 |
+| `tests/scan_secrets_regex_determinism_test.sh` | 139a552a4 |
+| `tests/scan_secrets_whitelist_regex_portability_test.sh` | d3b1286e7 |
+| `upstream/client.go` | e3ceee172 |
+| `verify.sh` | 139a552a4, d3b1286e7 |
+| `version.json` | b58254654 |
+| `web/public/menu-config.json` | fa81c1e37, 53d4e2abd, b58254654 |
+| `web/public/version.json` | b58254654 |
+| `web/src/api/maas.ts` | 53d4e2abd |
+| `web/src/api/publicQuote.ts` | b79bf2ff5 |
+| `web/src/api/sales.ts` | b79bf2ff5 |
+| `web/src/config/appNav.ts` | 53d4e2abd |
+| `web/src/locales/ar-SA/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/ar-SA/nav.ts` | 53d4e2abd |
+| `web/src/locales/ar-SA/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/ar-SA/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/ar-SA/sales.ts` | b79bf2ff5 |
+| `web/src/locales/ar-SA/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/de-DE/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/de-DE/nav.ts` | 53d4e2abd |
+| `web/src/locales/de-DE/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/de-DE/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/de-DE/sales.ts` | b79bf2ff5 |
+| `web/src/locales/de-DE/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/en-US/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/en-US/nav.ts` | 53d4e2abd |
+| `web/src/locales/en-US/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/en-US/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/en-US/sales.ts` | b79bf2ff5 |
+| `web/src/locales/en-US/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/es-ES/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/es-ES/nav.ts` | 53d4e2abd |
+| `web/src/locales/es-ES/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/es-ES/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/es-ES/sales.ts` | b79bf2ff5 |
+| `web/src/locales/es-ES/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/fr-FR/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/fr-FR/nav.ts` | 53d4e2abd |
+| `web/src/locales/fr-FR/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/fr-FR/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/fr-FR/sales.ts` | b79bf2ff5 |
+| `web/src/locales/fr-FR/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/ja-JP/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/ja-JP/nav.ts` | 53d4e2abd |
+| `web/src/locales/ja-JP/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/ja-JP/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/ja-JP/sales.ts` | b79bf2ff5 |
+| `web/src/locales/ja-JP/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/zh-CN/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/zh-CN/nav.ts` | 53d4e2abd |
+| `web/src/locales/zh-CN/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/zh-CN/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/zh-CN/sales.ts` | b79bf2ff5 |
+| `web/src/locales/zh-CN/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/locales/zh-TW/index.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/locales/zh-TW/nav.ts` | 53d4e2abd |
+| `web/src/locales/zh-TW/operationsMarketing.ts` | 53d4e2abd |
+| `web/src/locales/zh-TW/publicQuote.ts` | b79bf2ff5 |
+| `web/src/locales/zh-TW/sales.ts` | b79bf2ff5 |
+| `web/src/locales/zh-TW/standardModelPricing.ts` | 53d4e2abd |
+| `web/src/router.ts` | 53d4e2abd, b79bf2ff5 |
+| `web/src/views/PublicQuoteView.test.ts` | b79bf2ff5 |
+| `web/src/views/PublicQuoteView.vue` | b79bf2ff5 |
+| `web/src/views/StandardModelPricingView.vue` | 53d4e2abd |
+| `web/src/views/operations/OperationsMarketingView.vue` | 53d4e2abd |
+| `web/src/views/operations/SalesWorkbenchView.test.ts` | b79bf2ff5 |
+| `web/src/views/operations/SalesWorkbenchView.vue` | b79bf2ff5 |
+| `web/src/views/standardModelPricingHistory.wiring.test.ts` | 53d4e2abd |
