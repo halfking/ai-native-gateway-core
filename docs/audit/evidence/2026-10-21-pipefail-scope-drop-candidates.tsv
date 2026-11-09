@@ -88,7 +88,7 @@ scripts/252-monitor/ursm-snapshot-health.sh	321	sql_failed	var-write	bare	unknow
 scripts/252-monitor/ursm-snapshot-slot-refresh.sh	157	sql_failed	var-write	bare	unknown	needs-human-read	grep-q	discarded	sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
 scripts/audit-all-tables.sh	268	audit_request_wal	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "completed"; then
 scripts/audit-all-tables.sh	87	audit_usage_ledger	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "0.999"; then
-scripts/audit/q-usage.sh	184	run_self_test	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s' "$out" | grep -q "轮转"; then
+scripts/audit/q-usage.sh	215	run_self_test	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s' "$out" | grep -q "轮转"; then
 scripts/audit/verify-g1-route-contract.sh	144	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
 scripts/audit/verify-l11b-cost-view-rowset.sh	331	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
 scripts/audit/verify-nonplain-migration-delivery.sh	548	expect_red_go	var-write	bare	unknown	needs-human-read	head	discarded	echo "$output" | head -12
@@ -101,14 +101,14 @@ scripts/checks/install-entrypoints-test.sh	33	absent	var-write	judgment	unknown	
 scripts/configure-journald.sh	316	do_verify	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then
 scripts/deploy-local-lib.sh	1220	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
 scripts/deploy-local-lib.sh	1223	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
-scripts/deploy-seamless-docker.sh	3061	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
-scripts/deploy-seamless-docker.sh	3062	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
+scripts/deploy-seamless-docker.sh	3075	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
+scripts/deploy-seamless-docker.sh	3076	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
 scripts/deploy-seamless-goacos_test.sh	335	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s\n' "$forwarded" | grep -qx "$v" \
 scripts/deploy-seamless-goacos_test.sh	343	gate_body	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$forwarded" | grep -qx "$v"; then
 scripts/deploy-seamless-goacos_test.sh	346	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s' "$register_block" | grep -q "${v}:-" \
 scripts/deploy-seamless.sh	262	remote_probe	var-write	value	unknown	needs-human-read	grep-q	consumed	body=$(remote_ssh "deadline=\$((\$(date +%s)+${timeout})); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do out=\$(curl -sS --max-time 2 -w '\n%{http_code}' '${url}' 2>&1); code=\$(printf '%s' \"\$out\" | tail -n1); body=\$(printf '%s' \"\$out\" | sed '\$d'); if printf '%s' \"\$code\" | grep -qE '^[0-9]+\$' && [ \"\$code\" -ge 200 ] && [ \"\$code\" -lt 400 ]; then printf '%s\n__CURL_OK__' \"\$body\"; exit 0; fi; sleep 1; done; printf 'probe timeout after ${timeout}s, last attempt: %s\n__CURL_FAIL__' \"\$out\"; exit 1" 2>&1) || {
-scripts/deploy-seamless.sh	333	detect_active_side	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$line" | grep -q ":${contract_active}[[:space:]]"; then
-scripts/deploy-seamless.sh	701	prune_releases_safe	var-write	judgment	unknown	needs-human-read	grep-q	consumed	[ -n \"\$slot_targets\" ] && printf '%s\n' \"\$slot_targets\" | grep -qxF \"\$v\" && continue
+scripts/deploy-seamless.sh	345	detect_active_side	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$line" | grep -q ":${contract_active}[[:space:]]"; then
+scripts/deploy-seamless.sh	713	prune_releases_safe	var-write	judgment	unknown	needs-human-read	grep-q	consumed	[ -n \"\$slot_targets\" ] && printf '%s\n' \"\$slot_targets\" | grep -qxF \"\$v\" && continue
 scripts/health-check-154.sh	138	check_api_health	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if [[ -n "$health_response" ]] && echo "$health_response" | grep -q "healthy"; then
 scripts/init-deploy-record.sh	101	detect_frontend_changes	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$fe_changes" | head -30 > "$RECORD_DIR/verify/frontend-changes.txt"
 scripts/local-deploy-test.sh	655	verify_l1_health	var-write	bare	scalar	safe-single-line	head	discarded	echo "    body: $(echo "$body" | head -c 200)"
@@ -135,14 +135,14 @@ scripts/sanitize-e2e-154.sh	78	run_scenario	var-write	bare	unknown	needs-human-r
 scripts/sanitize-e2e-154.sh	87	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q 'SENSITIVE:'; then
 scripts/sanitize-e2e-154.sh	89	run_scenario	var-write	bare	unknown	needs-human-read	head	discarded	note "$(printf '%s' "$c2" | head -c 200)"
 scripts/sanitize-e2e-154.sh	93	run_scenario	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$c2" | grep -q "$a_phone"; then
-scripts/scan-secrets.sh	212	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
-scripts/scan-secrets.sh	236	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
-scripts/scan-secrets.sh	270	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
-scripts/scan-secrets.sh	278	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
-scripts/scan-secrets.sh	315	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
-scripts/scan-secrets.sh	316	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
-scripts/scan-secrets.sh	317	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
-scripts/scan-secrets.sh	318	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
+scripts/scan-secrets.sh	243	record_finding	var-write	judgment	scalar	safe-single-line	head	discarded	[[ "$ln" != "0" ]] && echo "    $(echo "$content" | head -c 200)"
+scripts/scan-secrets.sh	267	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$base" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	301	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "$wl" 2>/dev/null; then whitelisted=1; break; fi
+scripts/scan-secrets.sh	309	scan_file	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
+scripts/scan-secrets.sh	346	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(data|sops)":' || return 1
+scripts/scan-secrets.sh	347	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '\bENC\[' || return 1
+scripts/scan-secrets.sh	348	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(mac|lastmodified|version)":' || return 1
+scripts/scan-secrets.sh	349	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
 scripts/test-e2e-bodies.sh	104	test_e2e_001	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$API_RESPONSE" | grep -q "request_id"; then
 scripts/test-e2e-bodies.sh	192	test_perf_001	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$EXPLAIN_OUTPUT" | grep -qi "Index Scan"; then
 scripts/test-runtime-tc.sh	90	tc6	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$used_cred" | grep -q "^$test_cred_id|"; then

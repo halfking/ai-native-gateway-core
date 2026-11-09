@@ -1524,6 +1524,8 @@ dl_switch_lock_write_metadata() {
   printf 'target=local-switch\n'
   printf 'source_user=%s\n' "${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}"
   printf 'source_host=%s\n' "${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}"
+  # The logical label can be shared by hosts; preserve the actual machine too.
+  printf 'source_hostname=%s\n' "$(hostname 2>/dev/null || echo unknown)"
   printf 'pid=%s\n' "$$"
   printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'commit=%s\n' "${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"

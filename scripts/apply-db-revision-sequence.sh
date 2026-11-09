@@ -25,9 +25,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #   ② command -v psql（★ ★ 原语义 ⇒ ★ 仓内测试夹具的 psql double 仍被选中）
 #   ③ ~/kaixuan/pg18/bin/psql（★ 无 PATH 客户端时的兜底）
 #   ④ 容器通道（docker exec + **显式 TCP** + DATABASE_URL 里的真口令）
-#   ★ ⇒ ★★ 宿主通道若失败 ⇒ ★ **自动降级到 ④**（★ 而不是把误导性报错抛出去）。
+#   Docker 部署显式选择 container 通道，避免宿主 DNS 将容器名解析到其它服务器。
 dl_psql_bin() {
   local p
+  # Docker deployments must resolve the database inside its container, not
+  # through host DNS (which may map the container name to another server).
+  if [[ "${LLM_GATEWAY_PSQL_TRANSPORT:-}" == container ]]; then
+    dl_psql_container_available || { echo 'error: requested PostgreSQL container is unavailable' >&2; return 1; }
+    return 0
+  fi
   for p in "${LLM_GATEWAY_PSQL:-}" "${GUARD_PSQL:-}"; do
     [[ -n "$p" && -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
   done
@@ -2586,6 +2592,8 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/950_probe_queue_source_credential_recovery.sql"
   "$ROOT_DIR/sql/migrations/startup/951_armor_judgments_created_at_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/952_model_price_versions.sql"
+  "$ROOT_DIR/sql/migrations/startup/953_models_canonical_featured.sql"
+  "$ROOT_DIR/sql/migrations/startup/954_probe_lane_trace_events.sql"
 )
 
 
@@ -3145,6 +3153,8 @@ ledger_artifact_probe "932_outbox_events_fresh_install.sql" \
 #     public.X / 'X' 字面量必须真实出现在迁移文件里）。
 ledger_artifact_probe "933_task_events.sql" \
   "to_regclass('public.task_events') IS NOT NULL"
+ledger_artifact_probe "954_probe_lane_trace_events.sql" \
+  "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.session_turns_probe_hot'::regclass AND attname = 'trace_events' AND NOT attisdropped)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

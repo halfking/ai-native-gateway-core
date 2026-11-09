@@ -1535,6 +1535,23 @@ var modelPriceVersions952 []byte
 //go:embed embeddata/startup/952_model_price_versions.down.sql
 var modelPriceVersions952Down []byte
 
+// ★ 953（2026-11-09 恢复检测及时性优化）：models_canonical.featured 列。
+//
+//	增加 featured 布尔列用于标记需要优先探测的模型（免费/入门级模型），
+//	以减少「上游已恢复但系统 ~24h 未感知」问题。featured 模型会被更频繁地探测。
+//
+//go:embed embeddata/startup/953_models_canonical_featured.sql
+var modelsCanonicalFeatured953 []byte
+
+//go:embed embeddata/startup/953_models_canonical_featured.down.sql
+var modelsCanonicalFeatured953Down []byte
+
+//go:embed embeddata/startup/954_probe_lane_trace_events.sql
+var probeLaneTraceEvents954 []byte
+
+//go:embed embeddata/startup/954_probe_lane_trace_events.down.sql
+var probeLaneTraceEvents954Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -2020,8 +2037,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/927_routing_policy_singleton_unique.down.sql":        routingPolicySingletonUnique927Down,
 	"startup/951_armor_judgments_created_at_idx.sql":              armorJudgmentsCreatedAtIdx951,
 	"startup/951_armor_judgments_created_at_idx.down.sql":         armorJudgmentsCreatedAtIdx951Down,
-"startup/952_model_price_versions.sql":                        modelPriceVersions952,
-"startup/952_model_price_versions.down.sql":                   modelPriceVersions952Down,
+	"startup/952_model_price_versions.sql":                        modelPriceVersions952,
+	"startup/952_model_price_versions.down.sql":                   modelPriceVersions952Down,
+	"startup/953_models_canonical_featured.sql":                   modelsCanonicalFeatured953,
+	"startup/953_models_canonical_featured.down.sql":              modelsCanonicalFeatured953Down,
+	"startup/954_probe_lane_trace_events.sql":                     probeLaneTraceEvents954,
+	"startup/954_probe_lane_trace_events.down.sql":                probeLaneTraceEvents954Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,

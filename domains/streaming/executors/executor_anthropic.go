@@ -1346,7 +1346,7 @@ func (e *Executor) executeAnthropicOnce(
 			// KindTransient in _request_logs.error_kind.
 			upstreamErr := &upstreampkg.Error{
 				Kind:       errKind,
-				Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+				Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(body, 200)),
 				Body:       append([]byte(nil), body...),
 				StatusCode: resp.StatusCode,
 				RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
@@ -1400,7 +1400,7 @@ func (e *Executor) executeAnthropicOnce(
 		// a transient-shaped fmt.Errorf.
 		return nil, &retryableError{err: &upstreampkg.Error{
 			Kind:       errKind,
-			Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+			Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(body, 200)),
 			Body:       append([]byte(nil), body...),
 			StatusCode: resp.StatusCode,
 			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),

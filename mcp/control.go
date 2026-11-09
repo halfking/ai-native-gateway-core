@@ -12,12 +12,17 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // ControlPlane 实现 MCP 网关的管理面（控制面）。
 //
-// 鉴权：管理令牌（Authorization: Bearer <AdminToken> 或 X-Admin-Token）。
-// AdminToken 未配置时控制面整体不可用（503），避免无鉴权的管理入口暴露。
+// 鉴权：管理令牌（Authorization: Bearer <AdminToken> 或 X-Admin-Token）
+// **或** 持有对应 scope 的业务 key（详见 mcp/control_scope.go）。
+// AdminToken 未配置时：管理令牌不可用，但带 scope 的 key 仍可按权限访问；
+// 若连 key 都无法判定（无凭据/凭据无效/账本不可达）⇒ 控制面不可用（503），
+// 避免无鉴权的管理入口暴露。
 //
 // 例外：密钥引导面（keys/apply · keys/status · keys/claim）在
 // Bootstrap.Enabled=true 时**免管理令牌**可达 —— 这是既有 tools/mcp-gateway 的
@@ -32,28 +37,17 @@ func NewControlPlane(g *Gateway) *ControlPlane {
 	return &ControlPlane{gateway: g, bootstrap: g.bootstrap}
 }
 
-// requireAdmin 校验管理令牌。
-func (c *ControlPlane) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	token := c.gateway.cfg.AdminToken
-	if token == "" {
-		_ = httpx.WriteJSON(w, http.StatusServiceUnavailable, "application/json", map[string]any{
-			"error": "control plane disabled: admin token not configured",
-		})
-		return false
-	}
-	got := extractCredential(r)
-	if got == "" {
-		got = strings.TrimSpace(r.Header.Get("X-Admin-Token"))
-	}
-	if got != token {
-		_ = httpx.WriteJSON(w, http.StatusUnauthorized, "application/json", map[string]any{"error": "unauthorized"})
-		return false
-	}
-	return true
-}
-
 // tenantOf 取请求的租户（缺省默认租户）。
+//
+// ★ 租户收口：业务 key（控制面身份非管理令牌）**只能操作自己所属租户** ⇒
+//
+//	这里直接返回该租户，忽略请求头里的 X-Tenant-Id（跨租户请求在鉴权阶段
+//	就被 403 拒绝，见 control_scope.go 的 authorize）。管理令牌保持既有语义
+//	（可带 X-Tenant-Id 指定租户）。
 func (c *ControlPlane) tenantOf(r *http.Request) string {
+	if id := controlIdentity(r); id != nil && !id.Admin {
+		return id.TenantID
+	}
 	tenant := strings.TrimSpace(r.Header.Get("X-Tenant-Id"))
 	if tenant == "" {
 		tenant = strings.TrimSpace(r.URL.Query().Get("tenant"))
@@ -66,114 +60,120 @@ func (c *ControlPlane) tenantOf(r *http.Request) string {
 
 // Handler 返回控制面路由处理器。
 //
+// ★ 鉴权（2026-11-09 起扩展）：每个路由标注**所需能力位**，
+//
+//	管理令牌（Authorization: Bearer / X-Admin-Token）⇒ 全权（超集）；
+//	业务 key（Authorization: Bearer / X-Api-Key）⇒ 持有该路由所需 scope 才放行。
+//
+// 能力位与路由的对应（详见 mcp/control_scope.go 与 docs/mcp-gateway/03 §6.7）：
+//
+//	mcp.register  注册面：适配器/工具/智能体/技能的创建与查看
+//	mcp.manage    管理面：注册项的变更与删除、凭证签发/吊销/轮换、审批裁决
+//	mcp.analyze   统计分析面：审计查询与导出、路由清单、能力目录、指标快照
+//	mcp.topology  内部拓扑面：/health 的上游端点与熔断态（加严子位）
+//
 // 路由（相对挂载点）：
 //
-//	GET    /health            健康与上游状态
-//	GET    /healthz           简易自检
-//	GET    /routes            路由清单（适配器 + 工具）
-//	GET    /capabilities      能力目录与分层统计
-//	GET    /recommend         工具检索推荐
-//	GET    /adapters          列出适配器
-//	POST   /adapters          注册适配器
-//	GET    /adapters/{name}   适配器详情
-//	PUT    /adapters/{name}   更新适配器
-//	DELETE /adapters/{name}   删除适配器
-//	GET    /tools             列出工具
-//	POST   /tools             注册工具
-//	GET    /tools/{name}      工具详情
-//	PUT    /tools/{name}      更新工具
-//	DELETE /tools/{name}      删除工具
-//	GET    /agents            列出智能体
-//	POST   /agents            注册智能体
-//	DELETE /agents/{id}       删除智能体
-//	GET    /skills            列出技能
-//	POST   /skills            注册技能
-//	DELETE /skills/{id}       删除技能
-//	GET    /keys              列出凭证
-//	POST   /keys              签发凭证
-//	POST   /keys/{id}/revoke  吊销凭证
-//	POST   /keys/{id}/rotate  轮换凭证
-//	GET    /approvals         列出审批
-//	POST   /approvals         创建审批
-//	POST   /approvals/{id}    裁决审批（approve/reject）
-//	GET    /audit             审计查询
-//	GET    /audit/export      审计导出（JSONL）
+//	GET    /health            健康与上游状态（需 mcp.topology）
+//	GET    /healthz           简易自检（公开）
+//	GET    /routes            路由清单（适配器 + 工具）（需 mcp.analyze）
+//	GET    /capabilities      能力目录与分层统计（需 mcp.analyze）
+//	GET    /recommend         工具检索推荐（需 mcp.analyze）
+//	GET    /stats             MCP 网关指标快照（需 mcp.analyze）
+//	GET    /adapters          列出适配器（需 mcp.register）
+//	POST   /adapters          注册适配器（需 mcp.register）
+//	GET    /adapters/{name}   适配器详情（需 mcp.register）
+//	PUT    /adapters/{name}   更新适配器（需 mcp.manage）
+//	DELETE /adapters/{name}   删除适配器（需 mcp.manage）
+//	GET    /tools             列出工具（需 mcp.register）
+//	POST   /tools             注册工具（需 mcp.register）
+//	GET    /tools/{name}      工具详情（需 mcp.register）
+//	PUT    /tools/{name}      更新工具（需 mcp.manage）
+//	DELETE /tools/{name}      删除工具（需 mcp.manage）
+//	GET    /agents            列出智能体（需 mcp.register）
+//	POST   /agents            注册智能体（需 mcp.register）
+//	DELETE /agents/{id}       删除智能体（需 mcp.manage）
+//	GET    /skills            列出技能（需 mcp.register）
+//	POST   /skills            注册技能（需 mcp.register）
+//	DELETE /skills/{id}       删除技能（需 mcp.manage）
+//	GET    /keys              列出凭证（需 mcp.manage）
+//	POST   /keys              签发凭证（需 mcp.manage；不可签出超出自身的权限）
+//	POST   /keys/{id}/revoke  吊销凭证（需 mcp.manage）
+//	POST   /keys/{id}/rotate  轮换凭证（需 mcp.manage；不可轮换更高权限的凭证）
+//	GET    /approvals         列出审批（需 mcp.manage）
+//	POST   /approvals         创建审批（需 mcp.manage）
+//	POST   /approvals/{id}    裁决审批（approve/reject）（需 mcp.manage）
+//	GET    /audit             审计查询（需 mcp.analyze）
+//	GET    /audit/export      审计导出（JSONL）（需 mcp.analyze）
 func (c *ControlPlane) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// 健康与只读视图。
 	//
-	// /health 含上游端点、熔断态等内部拓扑 ⇒ 需要管理令牌；
-	// /healthz 是给探针用的公开自检（只回 "ok"，不泄露任何拓扑信息）。
-	mux.HandleFunc("GET /health", c.admin(c.handleHealth))
+	// /health 含上游端点、熔断态等内部拓扑 ⇒ 需要 mcp.topology（比
+	// mcp.analyze 更严的一位）；/healthz 是给探针用的公开自检（只回 "ok"，
+	// 不泄露任何拓扑信息）。
+	mux.HandleFunc("GET /health", c.scoped(ScopeTopology, c.handleHealth))
 	mux.HandleFunc("GET /healthz", c.handleHealthz)
 
-	// 管理面（需要令牌）。
-	mux.HandleFunc("GET /routes", c.admin(c.handleRoutes))
-	mux.HandleFunc("GET /capabilities", c.admin(c.handleCapabilities))
-	mux.HandleFunc("GET /recommend", c.admin(c.handleRecommend))
+	// 统计与只读视图（需 mcp.analyze）。
+	mux.HandleFunc("GET /routes", c.scoped(ScopeAnalyze, c.handleRoutes))
+	mux.HandleFunc("GET /capabilities", c.scoped(ScopeAnalyze, c.handleCapabilities))
+	mux.HandleFunc("GET /recommend", c.scoped(ScopeAnalyze, c.handleRecommend))
+	mux.HandleFunc("GET /stats", c.scoped(ScopeAnalyze, c.handleStats))
 
-	mux.HandleFunc("GET /adapters", c.admin(c.handleListAdapters))
-	mux.HandleFunc("POST /adapters", c.admin(c.handleCreateAdapter))
-	mux.HandleFunc("GET /adapters/{name}", c.admin(c.handleGetAdapter))
-	mux.HandleFunc("PUT /adapters/{name}", c.admin(c.handleUpdateAdapter))
-	mux.HandleFunc("DELETE /adapters/{name}", c.admin(c.handleDeleteAdapter))
+	// 注册面（需 mcp.register）：创建 + 查看。
+	mux.HandleFunc("GET /adapters", c.scoped(ScopeRegister, c.handleListAdapters))
+	mux.HandleFunc("POST /adapters", c.scoped(ScopeRegister, c.handleCreateAdapter))
+	mux.HandleFunc("GET /adapters/{name}", c.scoped(ScopeRegister, c.handleGetAdapter))
+	// 管理面（需 mcp.manage）：变更 + 删除。
+	mux.HandleFunc("PUT /adapters/{name}", c.scoped(ScopeManage, c.handleUpdateAdapter))
+	mux.HandleFunc("DELETE /adapters/{name}", c.scoped(ScopeManage, c.handleDeleteAdapter))
 
-	mux.HandleFunc("GET /tools", c.admin(c.handleListTools))
-	mux.HandleFunc("POST /tools", c.admin(c.handleCreateTool))
-	mux.HandleFunc("GET /tools/{name}", c.admin(c.handleGetTool))
-	mux.HandleFunc("PUT /tools/{name}", c.admin(c.handleUpdateTool))
-	mux.HandleFunc("DELETE /tools/{name}", c.admin(c.handleDeleteTool))
+	mux.HandleFunc("GET /tools", c.scoped(ScopeRegister, c.handleListTools))
+	mux.HandleFunc("POST /tools", c.scoped(ScopeRegister, c.handleCreateTool))
+	mux.HandleFunc("GET /tools/{name}", c.scoped(ScopeRegister, c.handleGetTool))
+	mux.HandleFunc("PUT /tools/{name}", c.scoped(ScopeManage, c.handleUpdateTool))
+	mux.HandleFunc("DELETE /tools/{name}", c.scoped(ScopeManage, c.handleDeleteTool))
 
-	mux.HandleFunc("GET /agents", c.admin(c.handleListAgents))
-	mux.HandleFunc("POST /agents", c.admin(c.handleCreateAgent))
-	mux.HandleFunc("DELETE /agents/{id}", c.admin(c.handleDeleteAgent))
+	mux.HandleFunc("GET /agents", c.scoped(ScopeRegister, c.handleListAgents))
+	mux.HandleFunc("POST /agents", c.scoped(ScopeRegister, c.handleCreateAgent))
+	mux.HandleFunc("DELETE /agents/{id}", c.scoped(ScopeManage, c.handleDeleteAgent))
 
-	mux.HandleFunc("GET /skills", c.admin(c.handleListSkills))
-	mux.HandleFunc("POST /skills", c.admin(c.handleCreateSkill))
-	mux.HandleFunc("DELETE /skills/{id}", c.admin(c.handleDeleteSkill))
+	mux.HandleFunc("GET /skills", c.scoped(ScopeRegister, c.handleListSkills))
+	mux.HandleFunc("POST /skills", c.scoped(ScopeRegister, c.handleCreateSkill))
+	mux.HandleFunc("DELETE /skills/{id}", c.scoped(ScopeManage, c.handleDeleteSkill))
 
-	mux.HandleFunc("GET /keys", c.admin(c.handleListKeys))
+	// 凭证与审批（需 mcp.manage）。
+	mux.HandleFunc("GET /keys", c.scoped(ScopeManage, c.handleListKeys))
 	// 密钥引导面（D2/D3）：免认证面（受 IP/设备限流与幂等保护）或管理令牌面。
 	mux.HandleFunc("POST /keys/apply", c.bootstrapOrAdmin(c.handleKeyApply))
 	mux.HandleFunc("GET /keys/status/{id}", c.bootstrapOrAdmin(c.handleKeyStatus))
 	mux.HandleFunc("POST /keys/claim", c.bootstrapOrAdmin(c.handleKeyClaim))
-	mux.HandleFunc("POST /keys/requests/{id}/approve", c.admin(c.handleKeyApprove))
-	mux.HandleFunc("POST /keys", c.admin(c.handleCreateKey))
-	mux.HandleFunc("POST /keys/{id}/revoke", c.admin(c.handleRevokeKey))
-	mux.HandleFunc("POST /keys/{id}/rotate", c.admin(c.handleRotateKey))
+	mux.HandleFunc("POST /keys/requests/{id}/approve", c.scoped(ScopeManage, c.handleKeyApprove))
+	mux.HandleFunc("POST /keys", c.scoped(ScopeManage, c.handleCreateKey))
+	mux.HandleFunc("POST /keys/{id}/revoke", c.scoped(ScopeManage, c.handleRevokeKey))
+	mux.HandleFunc("POST /keys/{id}/rotate", c.scoped(ScopeManage, c.handleRotateKey))
 
-	mux.HandleFunc("GET /approvals", c.admin(c.handleListApprovals))
-	mux.HandleFunc("POST /approvals", c.admin(c.handleCreateApproval))
-	mux.HandleFunc("POST /approvals/{id}", c.admin(c.handleDecideApproval))
+	mux.HandleFunc("GET /approvals", c.scoped(ScopeManage, c.handleListApprovals))
+	mux.HandleFunc("POST /approvals", c.scoped(ScopeManage, c.handleCreateApproval))
+	mux.HandleFunc("POST /approvals/{id}", c.scoped(ScopeManage, c.handleDecideApproval))
 
-	mux.HandleFunc("GET /audit", c.admin(c.handleAudit))
-	mux.HandleFunc("GET /audit/export", c.admin(c.handleAuditExport))
+	// 审计与统计（需 mcp.analyze）。
+	mux.HandleFunc("GET /audit", c.scoped(ScopeAnalyze, c.handleAudit))
+	mux.HandleFunc("GET /audit/export", c.scoped(ScopeAnalyze, c.handleAuditExport))
 
 	return mux
 }
 
-// admin 给 handler 套上管理令牌校验。
-func (c *ControlPlane) admin(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !c.requireAdmin(w, r) {
-			return
-		}
-		h(w, r)
-	}
-}
-
-// bootstrapOrAdmin：引导面开启时免令牌，否则走管理令牌。
+// bootstrapOrAdmin：引导面开启时免令牌，否则走管理令牌（或 mcp.admin 权限位）。
 func (c *ControlPlane) bootstrapOrAdmin(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if c.bootstrap != nil && c.bootstrap.cfg.Enabled {
 			h(w, r)
 			return
 		}
-		if !c.requireAdmin(w, r) {
-			return
-		}
-		h(w, r)
+		c.scoped(ScopeAdmin, h)(w, r)
 	}
 }
 
@@ -241,7 +241,7 @@ func (c *ControlPlane) handleKeyApprove(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	body, status := c.bootstrap.ApproveApplication(r.Context(), r.PathValue("id"), "")
+	body, status := c.bootstrap.approveApplicationFor(r.Context(), r.PathValue("id"), "", controlIdentity(r))
 	_ = httpx.WriteJSON(w, status, "application/json", body)
 }
 
@@ -272,10 +272,14 @@ func (c *ControlPlane) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"capability": a.Capability,
 		})
 	}
+	uptime := c.gateway.UptimeSeconds()
+	// ★ 刷新运行时长指标（口径见 mcp/metrics.go 的注释）：只声明不 Set ⇒
+	//   它在 /metrics 上恒为 0 ⇒ 面板上是一条平的线。
+	uptimeSeconds.Set(float64(uptime))
 	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
 		"status":           "ok",
 		"version":          Version,
-		"uptime_seconds":   int(time.Since(c.gateway.startedAt).Seconds()),
+		"uptime_seconds":   uptime,
 		"adapters":         items,
 		"adapters_total":   len(adapters),
 		"adapters_healthy": healthy,
@@ -283,6 +287,10 @@ func (c *ControlPlane) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *ControlPlane) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	// ★ 探针端点也刷新运行时长指标：部署里被周期性打的是 /healthz（而不是
+	//   需要管理令牌的 /health）⇒ 不在这里 Set 的话，指标值会停在最后一次
+	//   /health 调用的时刻（甚至一直是构造时的初值 0）。
+	uptimeSeconds.Set(float64(c.gateway.UptimeSeconds()))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
@@ -302,13 +310,16 @@ func (c *ControlPlane) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	routes := make([]map[string]any, 0, len(adapters))
 	for _, a := range adapters {
-		routes = append(routes, map[string]any{
+		route := map[string]any{
 			"path":       "/mcp/adapters/" + a.Name + "/mcp",
 			"adapter":    a.Name,
-			"endpoint":   a.Endpoint,
 			"enabled":    a.Enabled,
 			"capability": a.Capability,
-		})
+		}
+		if id := controlIdentity(r); id != nil && id.HasScope(ScopeTopology) {
+			route["endpoint"] = a.Endpoint
+		}
+		routes = append(routes, route)
 	}
 	toolList := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
@@ -347,6 +358,115 @@ func (c *ControlPlane) handleRecommend(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// 指标快照（统计分析出口）
+// ---------------------------------------------------------------------------
+
+// mcpMetricPrefixes 是 MCP 网关指标族的命名前缀。
+//
+// ★ 只收前缀白名单：主网关的 /metrics 里还有大量其它子系统的族，不该混进
+//
+//	「MCP 网关的统计出口」里造成误读。
+var mcpMetricPrefixes = []string{"mcp_gateway_", "tool_allow_", "bindings_"}
+
+// mcpMetricExact 是「前缀会误伤」而单独点名的族。
+//
+// ★ `keys_*` 在主网关注册表里可能与其它子系统重名 ⇒ 只认 MCP 网关自己注册
+//
+//	的这五个（其余同前缀族不收）。
+var mcpMetricExact = map[string]bool{
+	"keys_apply_total":              true,
+	"keys_apply_replay_total":       true,
+	"keys_apply_rate_limited_total": true,
+	"keys_claim_total":              true,
+	"keys_status_total":             true,
+}
+
+// isMCPMetricFamily 报告指标族是否属于 MCP 网关。
+func isMCPMetricFamily(name string) bool {
+	if mcpMetricExact[name] {
+		return true
+	}
+	for _, p := range mcpMetricPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// handleStats 输出 MCP 网关自身的指标快照（JSON）。
+//
+// ★ 为什么不是 /metrics：全局 /metrics 是 Prometheus 抓取面（属于运维网络
+//
+//	域，不在业务 key 的 scope 体系内）；这里是**给业务 key 用的**统计出口
+//	⇒ 需要 mcp.analyze，且只返回 MCP 网关自己的指标族。
+func (c *ControlPlane) handleStats(w http.ResponseWriter, r *http.Request) {
+	if id := controlIdentity(r); id != nil && !id.Admin {
+		// The legacy Prometheus families have no tenant labels; exporting them
+		// through a tenant key would expose other tenants' tools and traffic.
+		_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
+			"families": []any{}, "family_count": 0, "scope": "tenant_audit_only",
+			"uptime_seconds": c.gateway.UptimeSeconds(),
+			"audit":          c.gateway.audit.FilteredStats(AuditFilter{TenantID: id.TenantID}),
+		})
+		return
+	}
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
+		return
+	}
+	out := make([]map[string]any, 0, len(families))
+	for _, mf := range families {
+		name := mf.GetName()
+		if !isMCPMetricFamily(name) {
+			continue
+		}
+		items := make([]map[string]any, 0, len(mf.GetMetric()))
+		for _, m := range mf.GetMetric() {
+			labels := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				labels[lp.GetName()] = lp.GetValue()
+			}
+			items = append(items, map[string]any{
+				"labels": labels,
+				"value":  metricSampleValue(m, mf.GetType()),
+			})
+		}
+		out = append(out, map[string]any{
+			"name":    name,
+			"type":    mf.GetType().String(),
+			"help":    mf.GetHelp(),
+			"metrics": items,
+		})
+	}
+	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
+		"families":       out,
+		"family_count":   len(out),
+		"uptime_seconds": int(c.gateway.UptimeSeconds()),
+		"audit":          c.gateway.audit.FilteredStats(AuditFilter{TenantID: c.auditTenant(r)}),
+	})
+}
+
+// metricSampleValue 取指标样本的标量值（直方图/摘要取样本数）。
+//
+// ★ 指标**类型**取自族（family），不是样本本身（dto.Metric 没有类型字段）。
+func metricSampleValue(m *dto.Metric, kind dto.MetricType) float64 {
+	switch kind {
+	case dto.MetricType_COUNTER:
+		return m.GetCounter().GetValue()
+	case dto.MetricType_GAUGE:
+		return m.GetGauge().GetValue()
+	case dto.MetricType_HISTOGRAM:
+		return float64(m.GetHistogram().GetSampleCount())
+	case dto.MetricType_SUMMARY:
+		return float64(m.GetSummary().GetSampleCount())
+	default:
+		return 0
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 适配器
 // ---------------------------------------------------------------------------
 
@@ -372,8 +492,18 @@ func (c *ControlPlane) handleCreateAdapter(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
+	}
+	c.gateway.registrationMu.Lock()
+	defer c.gateway.registrationMu.Unlock()
+	existing, err := c.gateway.store.GetAdapter(r.Context(), in.TenantID, in.Name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.canReplaceRegistration(w, r, existing.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.CreatedAt = now
@@ -422,6 +552,9 @@ func (c *ControlPlane) handleUpdateAdapter(w http.ResponseWriter, r *http.Reques
 		_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "adapter not found"})
 		return
 	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	var in Adapter
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": err.Error()})
@@ -445,6 +578,17 @@ func (c *ControlPlane) handleUpdateAdapter(w http.ResponseWriter, r *http.Reques
 func (c *ControlPlane) handleDeleteAdapter(w http.ResponseWriter, r *http.Request) {
 	tenant := c.tenantOf(r)
 	name := r.PathValue("name")
+	existing, err := c.gateway.store.GetAdapter(r.Context(), tenant, name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
+	if existing != nil {
+		tenant = existing.TenantID
+	}
 	if err := c.gateway.store.DeleteAdapter(r.Context(), tenant, name); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -486,8 +630,18 @@ func (c *ControlPlane) handleCreateTool(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
+	}
+	c.gateway.registrationMu.Lock()
+	defer c.gateway.registrationMu.Unlock()
+	existing, err := c.gateway.store.GetTool(r.Context(), in.TenantID, in.Name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.canReplaceRegistration(w, r, existing.TenantID) {
+		return
 	}
 	if in.Visibility == "" {
 		in.Visibility = VisibilityPublic
@@ -544,6 +698,9 @@ func (c *ControlPlane) handleUpdateTool(w http.ResponseWriter, r *http.Request) 
 		_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "tool not found"})
 		return
 	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	var in Tool
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": err.Error()})
@@ -565,6 +722,17 @@ func (c *ControlPlane) handleUpdateTool(w http.ResponseWriter, r *http.Request) 
 func (c *ControlPlane) handleDeleteTool(w http.ResponseWriter, r *http.Request) {
 	tenant := c.tenantOf(r)
 	name := r.PathValue("name")
+	existing, err := c.gateway.store.GetTool(r.Context(), tenant, name)
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing != nil && !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
+	if existing != nil {
+		tenant = existing.TenantID
+	}
 	if err := c.gateway.store.DeleteTool(r.Context(), tenant, name); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -598,8 +766,8 @@ func (c *ControlPlane) handleCreateAgent(w http.ResponseWriter, r *http.Request)
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": "name is required"})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.ID = fmt.Sprintf("agent_%d", now.UnixNano())
@@ -613,6 +781,18 @@ func (c *ControlPlane) handleCreateAgent(w http.ResponseWriter, r *http.Request)
 }
 
 func (c *ControlPlane) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	existing, err := c.gateway.store.GetAgent(r.Context(), c.tenantOf(r), r.PathValue("id"))
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	if err := c.gateway.store.DeleteAgent(r.Context(), c.tenantOf(r), r.PathValue("id")); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -639,8 +819,8 @@ func (c *ControlPlane) handleCreateSkill(w http.ResponseWriter, r *http.Request)
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": "name is required"})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.ID = fmt.Sprintf("skill_%d", now.UnixNano())
@@ -654,6 +834,18 @@ func (c *ControlPlane) handleCreateSkill(w http.ResponseWriter, r *http.Request)
 }
 
 func (c *ControlPlane) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+	existing, err := c.gateway.store.GetSkill(r.Context(), c.tenantOf(r), r.PathValue("id"))
+	if err != nil {
+		writeControlStoreError(w, err)
+		return
+	}
+	if existing == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !c.controlOwnerOK(w, r, existing.TenantID) {
+		return
+	}
 	if err := c.gateway.store.DeleteSkill(r.Context(), c.tenantOf(r), r.PathValue("id")); err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
 		return
@@ -687,6 +879,36 @@ func (c *ControlPlane) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	if spec.TenantID == "" {
 		spec.TenantID = c.tenantOf(r)
 	}
+	// ★ 权限放大防护：业务 key 签发的凭证**不得超出签发者自身权限**。
+	//   管理令牌不受限（超集）；业务 key 逐个 scope 校验（含省略 scopes 时
+	//   的既有默认档 [mcp.read, mcp.execute]）。
+	if issuer := controlIdentity(r); issuer != nil && !issuer.Admin {
+		if spec.TenantID != issuer.TenantID {
+			c.writeTenantMismatch(w, issuer.TenantID)
+			return
+		}
+		if exceeded, err := delegateScopesOK(issuer, spec.Scopes); err != nil {
+			_ = httpx.WriteJSON(w, http.StatusForbidden, "application/json", map[string]any{
+				"error":          "forbidden",
+				"reason":         "scope_escalation",
+				"exceeded_scope": exceeded,
+				"granted_scopes": issuer.Scopes,
+			})
+			c.gateway.audit.Record(AuditEvent{
+				Kind:     AuditKindAuthz,
+				Outcome:  OutcomeDenied,
+				TenantID: issuer.TenantID,
+				KeyID:    issuer.KeyID,
+				Reason:   "scope_escalation",
+				Detail:   map[string]any{"exceeded_scope": exceeded, "granted_scopes": issuer.Scopes},
+			})
+			return
+		}
+		if !delegationWithinIssuer(issuer, spec) {
+			c.writeForbidden(w, ScopeManage, issuer.Scopes, "delegation_escalation")
+			return
+		}
+	}
 	key, secret, err := c.gateway.IssueKey(r.Context(), spec)
 	if err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
@@ -709,6 +931,37 @@ func (c *ControlPlane) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *ControlPlane) handleRotateKey(w http.ResponseWriter, r *http.Request) {
+	// ★ 轮换会返回**新 key 的明文** ⇒ 若目标 key 的权限高于轮换者，轮换者
+	//   等于拿到了一把更 powerful 的凭证 ⇒ 业务 key 只能轮换「不超出自身
+	//   权限」的凭证（权限放大防护）。
+	if issuer := controlIdentity(r); issuer != nil && !issuer.Admin {
+		target, err := c.gateway.store.GetKey(r.Context(), c.tenantOf(r), r.PathValue("id"))
+		if err != nil {
+			_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})
+			return
+		}
+		if target == nil {
+			_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "key not found"})
+			return
+		}
+		if !keyScopesWithinIssuer(issuer, target) || !delegationWithinIssuer(issuer, keySpecOf(target)) {
+			_ = httpx.WriteJSON(w, http.StatusForbidden, "application/json", map[string]any{
+				"error":          "forbidden",
+				"reason":         "scope_escalation",
+				"granted_scopes": issuer.Scopes,
+				"target_scopes":  target.Scopes,
+			})
+			c.gateway.audit.Record(AuditEvent{
+				Kind:     AuditKindAuthz,
+				Outcome:  OutcomeDenied,
+				TenantID: issuer.TenantID,
+				KeyID:    issuer.KeyID,
+				Reason:   "scope_escalation",
+				Detail:   map[string]any{"target_key_id": target.ID, "target_scopes": target.Scopes},
+			})
+			return
+		}
+	}
 	key, secret, err := c.gateway.RotateKey(r.Context(), c.tenantOf(r), r.PathValue("id"))
 	if err != nil {
 		status := StatusError(err)
@@ -745,8 +998,8 @@ func (c *ControlPlane) handleCreateApproval(w http.ResponseWriter, r *http.Reque
 		_ = httpx.WriteJSON(w, http.StatusBadRequest, "application/json", map[string]any{"error": "tool is required"})
 		return
 	}
-	if in.TenantID == "" {
-		in.TenantID = c.tenantOf(r)
+	if !c.bindControlTenant(w, r, &in.TenantID) {
+		return
 	}
 	now := c.gateway.now()
 	in.ID = fmt.Sprintf("apr_%d", now.UnixNano())
@@ -768,6 +1021,9 @@ func (c *ControlPlane) handleDecideApproval(w http.ResponseWriter, r *http.Reque
 	}
 	if approval == nil {
 		_ = httpx.WriteJSON(w, http.StatusNotFound, "application/json", map[string]any{"error": "approval not found"})
+		return
+	}
+	if !c.controlOwnerOK(w, r, approval.TenantID) {
 		return
 	}
 	var in struct {
@@ -806,13 +1062,14 @@ func (c *ControlPlane) handleDecideApproval(w http.ResponseWriter, r *http.Reque
 func (c *ControlPlane) handleAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := AuditFilter{
-		UserID:  q.Get("user_id"),
-		KeyID:   q.Get("key_id"),
-		Tool:    q.Get("tool"),
-		Adapter: q.Get("adapter"),
-		Kind:    q.Get("kind"),
-		Outcome: q.Get("outcome"),
-		Limit:   100,
+		TenantID: c.auditTenant(r),
+		UserID:   q.Get("user_id"),
+		KeyID:    q.Get("key_id"),
+		Tool:     q.Get("tool"),
+		Adapter:  q.Get("adapter"),
+		Kind:     q.Get("kind"),
+		Outcome:  q.Get("outcome"),
+		Limit:    100,
 	}
 	if v := q.Get("limit"); v != "" {
 		if n, err := parseInt(v); err == nil && n > 0 && n <= 1000 {
@@ -822,7 +1079,7 @@ func (c *ControlPlane) handleAudit(w http.ResponseWriter, r *http.Request) {
 	events := c.gateway.audit.Query(filter)
 	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
 		"events": events,
-		"stats":  c.gateway.audit.Stats(),
+		"stats":  c.gateway.audit.FilteredStats(filter),
 	})
 }
 
@@ -831,7 +1088,7 @@ func (c *ControlPlane) handleAuditExport(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 	bw := bufio.NewWriter(w)
 	defer func() { _ = bw.Flush() }()
-	if _, err := c.gateway.audit.ExportJSONL(bw); err != nil {
+	if _, err := c.gateway.audit.ExportFilteredJSONL(bw, AuditFilter{TenantID: c.auditTenant(r)}); err != nil {
 		c.gateway.logger.Warn("mcp: audit export failed", "error", err)
 	}
 }
@@ -852,7 +1109,11 @@ func parseInt(s string) (int, error) {
 func (g *Gateway) invalidateToolCache(adapter string) {
 	g.toolCacheMu.Lock()
 	defer g.toolCacheMu.Unlock()
-	delete(g.toolCache, adapter)
+	for key := range g.toolCache {
+		if key.adapter == adapter {
+			delete(g.toolCache, key)
+		}
+	}
 }
 
 // registerCatalogTool 把工具登记进内存目录（授权时读取）。

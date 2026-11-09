@@ -72,7 +72,15 @@ func (e *Error) Error() string {
 	if e == nil {
 		return "<nil upstream.Error>"
 	}
-	return fmt.Sprintf("[%s] %s: %v", e.Kind, e.Message, e.Err)
+	// 2026-11-09: omit the Err suffix when it is unset. With a bare
+	// Message ("upstream 400") and nil Err this used to render
+	// "[request_rejected] upstream 400: <nil>" in every log line, hiding
+	// the upstream rejection reason (Body is carried separately and most
+	// log sites never read it — the 211 claude-opus-5-5 400 incident).
+	if e.Err != nil {
+		return fmt.Sprintf("[%s] %s: %v", e.Kind, e.Message, e.Err)
+	}
+	return fmt.Sprintf("[%s] %s", e.Kind, e.Message)
 }
 
 func (e *Error) Unwrap() error {

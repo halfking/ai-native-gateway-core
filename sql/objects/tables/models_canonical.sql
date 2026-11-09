@@ -28,6 +28,7 @@ CREATE TABLE public.models_canonical (
     version_rank integer,
     complexity_ceiling text,
     min_complexity text,
+    featured boolean DEFAULT false NOT NULL,
     CONSTRAINT models_canonical_complexity_ceiling_check CHECK (((complexity_ceiling IS NULL) OR (complexity_ceiling = ANY (ARRAY['easy'::text, 'medium'::text, 'hard'::text, 'frontier'::text])))),
     CONSTRAINT models_canonical_cost_tier_check CHECK ((cost_tier = ANY (ARRAY['free'::text, 'low'::text, 'medium'::text, 'high'::text, 'premium'::text, 'unknown'::text]))),
     CONSTRAINT models_canonical_min_complexity_check CHECK (((min_complexity IS NULL) OR (min_complexity = ANY (ARRAY['easy'::text, 'medium'::text, 'hard'::text, 'frontier'::text])))),

@@ -1,4 +1,4 @@
-// sales.ts — 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
+// sales.ts. 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 export default {
   active: 'Active',
   annotate: 'Annotate',
@@ -47,7 +47,7 @@ export default {
   searchPlaceholder: 'Search by model name',
   send: 'Send',
   shareTokenCopied: 'Copied',
-  shareTokenOnce: 'Share link copied to clipboard. The token appears only once (never stored) — send it to the customer now.',
+  shareTokenOnce: 'Share link copied to clipboard. The token appears only once (never stored). send it to the customer now.',
   shareTokenShown: 'Please copy the token below manually',
   shares: 'Shares',
   sharesTitle: 'Quote #{id} share links',
@@ -78,18 +78,18 @@ export default {
 
   // ── 2026-11-08 风暴档审计轮（W2 看板/漂移/撤销/弹窗化）──
   tabDashboard: 'Dashboard',
-  costDrifted: 'Cost drifted — requote suggested',
+  costDrifted: 'Cost drifted. requote suggested',
   tierQuickFill: 'Quick fill by tier',
   pickModel: 'Pick a model from the sellable list',
   itemExists: 'Model already in the list',
   quoteCloseTitle: 'Close quote #{id}',
   revoke: 'Revoke',
-  dashboardTriggerAlert: 'Approval trigger rate {rate}% exceeds the alert line {line}% — DealHub self-calibration signal: red-line thresholds may be miscalibrated',
+  dashboardTriggerAlert: 'Approval trigger rate {rate}% exceeds the alert line {line}%. DealHub self-calibration signal: red-line thresholds may be miscalibrated',
   dashboardTriggerRate: 'Approval trigger rate',
   dashboardTriggerDetail: '{triggered} of {submitted} quotes went to human review',
   dashboardLostReasons: 'Lost-deal reasons',
   dashboardMarginBuckets: 'Quote margin distribution',
-  dashboardRealizedPending: 'Realized margin: pending tenant billing activation (default tenant skips billing by design) — the margin shown is the quote arithmetic figure',
+  dashboardRealizedPending: 'Realized margin: pending tenant billing activation (default tenant skips billing by design). the margin shown is the quote arithmetic figure',
   funnel_draft: 'Draft',
   funnel_pending_approval: 'Pending approval',
   funnel_approved: 'Approved',

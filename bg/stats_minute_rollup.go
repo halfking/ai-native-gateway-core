@@ -25,7 +25,7 @@ const (
 	// 少 30–50%（03:41 七条业务行聚合 0）—— 根因 = 终态行**迟到**：
 	// 流式请求的会话轮终态在 ts 所在分钟被游标越过之后才落到
 	// request_logs_with_current_month 视图，单遍水位线推进把迟到行永久
-	// 漏统。修复 = 每 tick 对 [now-lag-span, now-lag] 闭区间整桶重聚
+	// 漏统。修复 = 每 tick 对截至 now-lag 前完整闭分钟的 span 窗整桶重聚
 	// （写入是整键替换 ⇒ 幂等收敛到真值；retire 臂继续清理不再产出的键）。
 	statsResweepDefaultLag  = 2 * time.Minute
 	statsResweepDefaultSpan = 30 * time.Minute
@@ -160,7 +160,8 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 	// 2026-11-09（运营审计轮项1-F1）：近期闭分钟重扫 —— 迟到终态行的补统
 	// 臂。整键替换幂等；失败只告警，下一 tick 重来。
 	if span := statsResweepSpan(); span > 0 {
-		if err := w.rollupWindow(timeoutCtx, now.Add(-span-statsResweepLag()), now.Add(-statsResweepLag())); err != nil {
+		since, until := statsResweepWindow(now, statsResweepLag(), span)
+		if err := w.rollupWindow(timeoutCtx, since, until); err != nil {
 			slog.Warn("stats minute recent-closed resweep failed", "error", err)
 		}
 	}
@@ -171,6 +172,16 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 		   SET last_ts = $1, updated_at = now()
 		 WHERE id = 1
 	`, now)
+}
+
+// statsResweepWindow covers whole settled minutes. The aggregation statements
+// replace entire keys and use ts <= until, so an unaligned upper bound would
+// overwrite the trailing minute with a partial count. PostgreSQL timestamps
+// have microsecond precision; stop just before the next minute, even at an
+// exact minute boundary, without changing the forward cursor's scan semantics.
+func statsResweepWindow(now time.Time, lag, span time.Duration) (time.Time, time.Time) {
+	end := now.UTC().Add(-lag).Truncate(time.Minute)
+	return rollupScanSince(end.Add(-span)), end.Add(-time.Microsecond)
 }
 
 // rollupScanSince 把扫描下界拉回该分钟的起点。

@@ -1041,7 +1041,7 @@
     {
       "shape_id": "stats_minute_rollup-edadeb821d",
       "file": "bg/stats_minute_rollup.go",
-      "line": 283,
+      "line": 334,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
@@ -1067,7 +1067,7 @@
     {
       "shape_id": "stats_minute_rollup-f35858c498",
       "file": "bg/stats_minute_rollup.go",
-      "line": 332,
+      "line": 383,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
@@ -1093,7 +1093,7 @@
     {
       "shape_id": "stats_minute_rollup-cb02789a9e",
       "file": "bg/stats_minute_rollup.go",
-      "line": 352,
+      "line": 403,
       "occurrence_count": 1,
       "file_count": 1,
       "dynamic": false,
@@ -1699,19 +1699,19 @@
     },
     {
       "file": "bg/stats_minute_rollup.go",
-      "line": 283,
+      "line": 334,
       "shape_id": "stats_minute_rollup-edadeb821d",
       "sql_digest": "), 0)::bigint, COALESCE(SUM(r.cost_usd), 0), COALESCE(SUM(r.latency_ms), 0)::bigint FROM request_logs_with_current_month r WHERE r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts <= $2 AND"
     },
     {
       "file": "bg/stats_minute_rollup.go",
-      "line": 332,
+      "line": 383,
       "shape_id": "stats_minute_rollup-f35858c498",
       "sql_digest": "), 0)::bigint, COALESCE(SUM(r.cost_usd), 0) FROM request_logs_with_current_month r WHERE r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts <= $2 AND ($3 <> 'error_kind' OR r.request_status = 'failure') AND"
     },
     {
       "file": "bg/stats_minute_rollup.go",
-      "line": 352,
+      "line": 403,
       "shape_id": "stats_minute_rollup-cb02789a9e",
       "sql_digest": "INSERT INTO request_stats_error_drill_minute ( bucket, tenant_id, error_kind, model_name, provider_id, client_profile, requests ) SELECT date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', COALESCE(NULLIF(r.tenant_id, ''), 'default'), COALESCE(NULLIF(r.error_kind, ''), '__unknown__'), COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), ''), COALESCE(r.provider_id, 0), "
     },

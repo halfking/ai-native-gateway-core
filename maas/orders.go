@@ -395,13 +395,13 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderID int64, note string) 
 	var planID, packageID *int
 	err = tx.QueryRow(ctx, `
 		SELECT id, order_no, tenant_id, order_type, status, amount_cents, credits,
-		       plan_id, package_id, payment_channel
+		       plan_id, package_id, payment_channel, expires_at
 		FROM billing_orders
 		WHERE id = $1
 		FOR UPDATE
 	`, orderID).Scan(
 		&o.ID, &o.OrderNo, &o.TenantID, &o.OrderType, &o.Status, &o.AmountCents, &o.Credits,
-		&planID, &packageID, &o.PaymentChannel,
+		&planID, &packageID, &o.PaymentChannel, &o.ExpiresAt,
 	)
 	if err != nil {
 		return err
@@ -426,6 +426,9 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderID int64, note string) 
 
 	switch o.OrderType {
 	case OrderTopup:
+		if err := s.checkFirstTopupConfirmation(ctx, tx, o.TenantID, o.PackageID); err != nil {
+			return err
+		}
 		if err := s.creditPurchased(ctx, tx, o.TenantID, o.Credits, "order", o.OrderNo, "topup"); err != nil {
 			return err
 		}
@@ -466,6 +469,34 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderID int64, note string) 
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// First-purchase eligibility must be checked at payment time: more than one
+// pending order can exist before the first payment. Locking the wallet makes
+// confirmations for the same tenant serialize before checking paid orders.
+func (s *Service) checkFirstTopupConfirmation(ctx context.Context, tx pgx.Tx, tenantID string, packageID *int) error {
+	if packageID == nil {
+		return errors.New("topup order missing package_id")
+	}
+	var lockedTenant string
+	if err := tx.QueryRow(ctx, `SELECT tenant_id FROM tenant_credit_wallets WHERE tenant_id = $1 FOR UPDATE`, tenantID).Scan(&lockedTenant); err != nil {
+		return fmt.Errorf("lock topup wallet: %w", err)
+	}
+	var firstOnly bool
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(first_time_only, FALSE) FROM topup_packages WHERE id = $1`, *packageID).Scan(&firstOnly); err != nil {
+		return fmt.Errorf("read topup eligibility: %w", err)
+	}
+	if !firstOnly {
+		return nil
+	}
+	var used bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM billing_orders WHERE tenant_id = $1 AND package_id = $2 AND status = 'paid')`, tenantID, *packageID).Scan(&used); err != nil {
+		return fmt.Errorf("read first topup purchase: %w", err)
+	}
+	if used {
+		return errors.New("package is limited to one purchase per tenant")
+	}
+	return nil
 }
 
 func (s *Service) activateSubscription(ctx context.Context, tx pgx.Tx, tenantID string, planID int, monthlyCredits int64) error {

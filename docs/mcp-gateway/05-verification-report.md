@@ -1,6 +1,7 @@
 # MCP 网关验证报告（Maestro 方式）
 
-> 日期：2026-11-09（首轮）＋ 2026-11-09 契约对齐轮（本文档已含两轮读数）
+> 日期：2026-11-09（首轮）＋ 2026-11-09 契约对齐轮 ＋ 2026-11-09 控制面能力位轮
+>   （本文档已含三轮读数）
 > 执行入口：`bash tests/mcp-gateway-maestro/run.sh`
 > 报告产物：`tests/mcp-gateway-maestro/reports/<时间戳>/summary.md`（不入库，`.gitignore` 已登记）
 > ★ 产物自带证据：`summary.md` 除计数外还写入**逐条用例读数**（每条 ok/bad 的实际
@@ -8,7 +9,7 @@
 
 ## 1. 结论
 
-**通过 33 / 失败 0**（L1 Go 测试 1 例 + L2 API 场景 31 例 + L3 Maestro 浏览器 flow 1 例）。
+**通过 46 / 失败 0**（L1 Go 测试 1 例 + L2 API 场景 44 例 + L3 Maestro 浏览器 flow 1 例）。
 
 > 首轮读数：24/24 全绿（当时 L2 为 S01–S19）。
 > 契约对齐轮：新增 S20（工具级强制力运行时探针）后为 **25/25 全绿**。
@@ -19,13 +20,15 @@
 > （-32001/-32004 归位、-32005/-32007 落位），补齐既有 **26 个**指标族中的
 > 19 个**旧名**族，并新增 S23（413/-32004）与 S24（13 个旧名族在 `/metrics`
 > 可见）⇒ **32/32 全绿**。
+> 控制面能力位轮：新增 **S25~S31**（业务 key 按 scope 走通注册/管理/统计，
+> 越权与权限放大被拒，拓扑单独口径）⇒ **46/46 全绿**。
 
 ## 2. 三层验证口径
 
 | 层 | 内容 | 手段 | 读数 |
 |---|---|---|---|
 | L1 | 治理链单测/集成测 | `go test ./mcp/...` | 全绿 |
-| L2 | 真实进程 + 真实 HTTP | 脚本内 S01–S24 | 31/31 通过 |
+| L2 | 真实进程 + 真实 HTTP | 脚本内 S01–S31 | 44/44 通过 |
 | L3 | 浏览器逐页断言 | `maestro/flows/10-mcp-gateway.yaml` | rc=0，FAILED=0 |
 
 另：`go build ./...` rc=0；`go vet ./mcp/... ./cmd/mcp-gateway/... ./middleware/...` rc=0；
@@ -68,6 +71,19 @@
 | S23 | 请求体超限 | 413 + 码 **-32004** | 413 / -32004 ✅（既有 `gateway.js:295` 逐字一致；此前是静默截断） |
 | S24 | 遗留**旧名**指标族 | 13 族在 `/metrics` 全部可见 | 13/13 ✅ |
 | S24b | 旧名计数器**确实自增** | 三个关键计数 > 0 | `tool_allow_checks_total=8`、`tool_allow_not_enforced_total=6`、`bindings_checks_total=7` ✅ |
+| S25 | `mcp.register` 的 key 注册适配器 | 201 | 201 ✅ |
+| S25b | `mcp.register` 的 key 查看注册面 | 200 | 200 ✅ |
+| S25c | `mcp.register` 的 key 改删注册项 | 403 + `required_scope=mcp.manage` | 403 / `mcp.manage` ✅ |
+| S26 | `mcp.manage` 的 key 删除适配器 | 204 | 204 ✅ |
+| S27 | `mcp.analyze` 的 key 查审计 | 200 + 非空 | 200 / 27 条事件 ✅ |
+| S27b | `mcp.analyze` 的 key 取指标快照 | 200 + 指标族非空 | 200 / 33 个指标族 ✅ |
+| S27c | `/health` 的**单独口径** | 403 + `required_scope=mcp.topology` | 403 / `mcp.topology` ✅ |
+| S28 | 带 `mcp.topology` 的 key 读 `/health` | 200 | 200 ✅ |
+| S29 | 权限放大（manage 签 analyze 的 key） | 403 + `reason=scope_escalation` | 403 / `scope_escalation` ✅ |
+| S29b | 签出不超出自身的 key | 201 | 201 ✅ |
+| S29c | `mcp.register` 的 key 签发凭证 | 403 + `required_scope=mcp.manage` | 403 / `mcp.manage` ✅ |
+| S30 | 无控制面 scope 的 key | 403 + `reason=scope_denied`（**与 401 区分**） | 403 / `scope_denied` ✅ |
+| S31 | 跨租户访问 | 403 + `reason=tenant_mismatch` | 403 / `tenant_mismatch` ✅ |
 
 ## 4. L3 Maestro flow（运营看板）
 
@@ -170,3 +186,46 @@
 - 多副本部署下的注册面一致性（当前注册面为单进程内存/文件存储，外部账本模式可覆盖）。
 - 既有拓扑门 `audit-enforcement-in-path.js` 未移植（前提已变，理由见
   `03-legacy-merge-map.md` §7.1）。
+
+## 9. 控制面能力位轮（2026-11-09 第三轮）
+
+### 9.1 这一轮改了什么
+
+用户诉求：**「在网关中有新的 key 来对 mcp 进行注册、管理与统计分析等能力」**。
+
+改造前的缺口（已核实）：控制面**只认管理令牌**；`mcp/control.go` 的全部路由都
+挂 `c.admin(...)`，而 `c.admin` 只校验管理令牌 ⇒ 网关签发的业务 key（哪怕带
+`mcp.admin` scope）对控制面**毫无作用**；key 的 scope 与控制面完全脱节。
+
+本轮落地（逐项均有读数，见 §3 的 S25~S31 与 `mcp/control_scope_test.go`）：
+
+| # | 落点 | 读数 |
+|---|---|---|
+| 1 | 新增四个控制面能力位（`mcp.register` / `mcp.manage` / `mcp.analyze` / `mcp.topology`），既有三位逐字不动 | S25~S28 ✅ |
+| 2 | 控制面鉴权扩成「管理令牌 **OR** 持有对应 scope 的 key」 | S25/S26/S27 ✅ |
+| 3 | 审计/统计出口按 scope 分级 + 新增 `/mcp/control/stats` 统计出口 | S27/S27b ✅ |
+| 4 | `/health` 含内部拓扑 ⇒ **单独口径**（`mcp.topology`） | S27c/S28 ✅ |
+| 5 | 权限放大防护（签发/轮换的 scope 收口 + 租户收口） | S29/S29b/S29c/S31 ✅ |
+| 6 | 失败口径分层（401 无效 / 403 权限不足 / 503 判不出身份） | S30 ✅ |
+
+### 9.2 三个设计决定（写明理由，避免后来者重新猜）
+
+1. **不新增任何 JSON-RPC 错误码**：控制面是普通 HTTP 管理 API（响应体形如
+   `{"error":"..."}`），不是 JSON-RPC 面 ⇒ 既有 `-32000~-32007` 与既有响应体
+   **一个都没动**，既有码的取值范围不受影响。既有码归位的纪律在本轮继续遵守。
+2. **`mcp.admin` 是超集，其余四位互不派生**：`mcp.admin` 隐含全部（既有
+   `HasScope` 语义天然成立，逐字不动）；`analyze` **不**含 `topology`、
+   `register` **不**含 `manage` ⇒ 少一位就是少一项权限，运营侧可精确授权。
+3. **控制面 fail-closed，数据面 fail-open**：账本不可达时，数据面保持既有的
+   fail-open（放行、交由上游校验）；控制面一律 503（身份判不出来就不动管理
+   面）⇒「谁有权改网关」不能由网络位置来回答。
+
+### 9.3 本轮仍未覆盖（诚实登记）
+
+- **外部账本（ACC）模式**下，控制面 key 访问要求远端账本在 bindings 响应里
+  返回 `scopes`；远端不返回 ⇒ 该 key 在控制面无权限（403）。这是**远端契约
+  的事**，本仓只保证「按账本给出的 scopes 判定」。
+- 全局 `/metrics` 仍是 Prometheus 抓取面（运维网络域），**不在 key 的 scope
+  体系内**；给业务 key 的统计出口是 `/mcp/control/stats`。
+- 多副本部署下控制面鉴权读到的是**各副本自己的账本视图**（注册面为单进程
+  存储的既有限制，未变）。

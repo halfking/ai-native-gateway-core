@@ -1,5 +1,7 @@
 // operationsMarketing.ts — 运营营销管理页（2026-11-09 运营审计轮项4）。
 export default {
+  colRedemptions: "عدد مرات الاسترداد / الحد الأقصى",
+  priceMinorUnit: "السعر (0.01 يوان صيني)",
   title: "إدارة التسويق",
   subtitle: "الخطط وحزم الشحن وأكواد الخصم وحملات الخصم/الهدايا",
   tabPlans: "الخطط",

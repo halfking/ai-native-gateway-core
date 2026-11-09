@@ -39,6 +39,13 @@ const (
 	EnvBootstrapApplyIPLimit   = "MCP_GATEWAY_BOOTSTRAP_APPLY_IP_LIMIT"
 	EnvBootstrapApplyDevLimit  = "MCP_GATEWAY_BOOTSTRAP_APPLY_DEVICE_LIMIT"
 	EnvBootstrapReadIPLimit    = "MCP_GATEWAY_BOOTSTRAP_READ_IP_LIMIT"
+
+	// EnvControlScope 控制面 scope 鉴权开关（on/off，默认 on）。
+	//
+	// ★ off ⇒ 控制面**只认管理令牌**（回退到「业务 key 无控制面权限」的既有
+	//   口径）；on ⇒ 业务 key 可按 mcp.register / mcp.manage / mcp.analyze /
+	//   mcp.topology 访问控制面。
+	EnvControlScope = "MCP_GATEWAY_CONTROL_SCOPE"
 )
 
 // EnvConfig 是从环境变量解析出的网关配置。
@@ -63,6 +70,8 @@ type EnvConfig struct {
 	Bootstrap       BootstrapConfig
 	// MaxBodyBytes 请求体上限（字节）；超限 ⇒ HTTP 413 + -32004。
 	MaxBodyBytes int
+	// ControlScopeDisabled 控制面 scope 鉴权被关闭（只认管理令牌）。
+	ControlScopeDisabled bool
 }
 
 // LoadEnvConfig 解析环境变量。
@@ -96,6 +105,7 @@ func LoadEnvConfig() (EnvConfig, error) {
 			AutoApproveDevices: splitList(os.Getenv(EnvBootstrapAutoApproveDev)),
 			TenantID:           strings.TrimSpace(os.Getenv(EnvDefaultTenant)),
 		},
+		ControlScopeDisabled: !envBool(EnvControlScope, true),
 	}
 	if cfg.DefaultTenantID == "" {
 		cfg.DefaultTenantID = "default"
@@ -139,12 +149,13 @@ func (e EnvConfig) Build() (*Gateway, error) {
 			ClassWrite: e.WriteLimit,
 			ClassLLM:   e.LLMLimit,
 		},
-		ToolTimeout:       e.ToolTimeout,
-		MaxBodyBytes:      int64(e.MaxBodyBytes),
-		AutoRegisterTools: e.AutoRegister,
-		Redactor:          NewRedactor(e.MaskPII),
-		Breaker:           NewCircuitBreaker(e.CircuitFailures, e.CircuitOpen),
-		Bootstrap:         e.Bootstrap,
+		ToolTimeout:          e.ToolTimeout,
+		MaxBodyBytes:         int64(e.MaxBodyBytes),
+		AutoRegisterTools:    e.AutoRegister,
+		Redactor:             NewRedactor(e.MaskPII),
+		Breaker:              NewCircuitBreaker(e.CircuitFailures, e.CircuitOpen),
+		Bootstrap:            e.Bootstrap,
+		ControlScopeDisabled: e.ControlScopeDisabled,
 	}
 	g, err := NewGateway(cfg)
 	if err != nil {

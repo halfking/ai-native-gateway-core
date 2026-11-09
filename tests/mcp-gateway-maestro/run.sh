@@ -4,7 +4,7 @@
 # ┌──────────────────────────────────────────────────────────────────────────┐
 # │ 三层验证（对应仓内「Maestro」惯例：观测 → 假设 → 最小修复 → 再测）：    │
 # │   L1 Go 测试    —— go test ./mcp/... （治理链单测/集成测）               │
-# │   L2 API 场景   —— 本脚本的 S01~S24（真实进程 + 真实 HTTP）              │
+# │   L2 API 场景   —— 本脚本的 S01~S31（真实进程 + 真实 HTTP）              │
 # │   L3 浏览器 flow —— maestro/flows/10-mcp-gateway.yaml（运营看板逐页断言） │
 # └──────────────────────────────────────────────────────────────────────────┘
 #
@@ -159,7 +159,7 @@ hdr_get() { # hdr_get <头名> —— 从 .hdr 取响应头值
 body_get() { cat "${OUT}/.body"; }
 jq_get() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 
-log "== L2: API 场景（S01~S24）"
+log "== L2: API 场景（S01~S31）"
 
 # S01 无凭证 → 401
 code="$(rpc "${BASE_URL}" /mcp '' '{"jsonrpc":"2.0","id":1,"method":"initialize"}')"
@@ -198,8 +198,8 @@ code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/con
 # S07 注册高敏工具 → 201
 code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/tools" \
   -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
-  -d '{"name":"crm__delete_customer","adapter":"crm","sensitivity":"high","require_approval":true,"visibility":"public","group":"crm-admin"}')"
-[ "${code}" = "201" ] && ok "S07 注册高敏工具（需审批 + 团队可见）→ 201" || bad "S07 注册工具 → ${code}（期望 201）"
+  -d '{"name":"crm__delete_customer","adapter":"crm","sensitivity":"high","require_approval":true,"visibility":"public","group":"crm-admin","enabled":true}')"
+[ "${code}" = "201" ] && ok "S07 注册已启用高敏工具（需审批）→ 201" || bad "S07 注册工具 → ${code}（期望 201）"
 
 # S08 签发受限凭证 → 201，明文一次性
 code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/keys" \
@@ -230,7 +230,7 @@ esac
 #     但测的是不同的闸，分开才能定位问题）。
 APPROVAL_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"default","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
+  -d '{"tenant_id":"default","user_id":"demo-user","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
   | jq_get 'd.get("secret","")')"
 code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
 apr_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
@@ -483,7 +483,179 @@ else
   bad "S24b 旧名计数器未自增（checks='${tc}' not_enforced='${tn}' bindings='${bc}'）"
 fi
 
-# ── 4. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
+# ── 4. S25~S31：业务 key 按 scope 访问控制面 ─────────────────────────────────
+#
+# ★ 目标（用户原话）：「在网关中有新的 key 来对 mcp 进行注册、管理与统计
+#   分析等能力」—— 控制面不再只认管理令牌，带 scope 的业务 key 也能按
+#   能力位进控制面。
+#
+#   能力位：mcp.register（注册面）/ mcp.manage（管理面）/ mcp.analyze（统计
+#   分析面）/ mcp.topology（内部拓扑面，/health 单独口径）。
+#
+# ★ 失败口径：凭据无效 ⇒ 401；身份有效但 scope 不足 ⇒ 403（体里带
+#   required_scope）；未配置管理令牌且无从判定身份 ⇒ 503。
+ctl() { # ctl <base-url> <method> <path> <key> [extra-header]
+  local base="$1" method="$2" path="$3" key="$4" extra="${5:-}"
+  local args=(-s -o "${OUT}/.body" -w '%{http_code}' -X "${method}" "${base}${path}"
+              -H 'Content-Type: application/json')
+  [ -n "${key}" ] && args+=(-H "Authorization: Bearer ${key}")
+  [ -n "${extra}" ] && args+=(-H "${extra}")
+  curl "${args[@]}"
+}
+ctl_b() { # ctl_b <base-url> <method> <path> <key> <body> [extra-header]
+  local base="$1" method="$2" path="$3" key="$4" body="$5" extra="${6:-}"
+  local args=(-s -o "${OUT}/.body" -w '%{http_code}' -X "${method}" "${base}${path}"
+              -H 'Content-Type: application/json')
+  [ -n "${key}" ] && args+=(-H "Authorization: Bearer ${key}")
+  [ -n "${extra}" ] && args+=(-H "${extra}")
+  args+=(-d "${body}")
+  curl "${args[@]}"
+}
+issue_key() { # issue_key <base-url> <name> <scopes-json-array>
+  curl -s -X POST "${1}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"tenant_id\":\"default\",\"name\":\"${2}\",\"scopes\":${3}}" \
+    | jq_get 'd.get("secret","")'
+}
+
+log "== S25~S31 业务 key 按 scope 访问控制面"
+
+# S25 注册面：mcp.register 的 key 能注册/查看，不能改删（改删属管理面）
+REGISTER_KEY="$(issue_key "${BASE_URL}" "maestro-register" '["mcp.register"]')"
+if [ -z "${REGISTER_KEY}" ]; then
+  bad "S25 未能签发 mcp.register 权限的凭证"
+else
+  code="$(ctl_b "${BASE_URL}" POST /mcp/control/adapters "${REGISTER_KEY}" \
+    '{"name":"scope-reg","endpoint":"http://127.0.0.1:8431","capability":"code","enabled":true}')"
+  [ "${code}" = "201" ] && ok "S25 mcp.register 的 key 注册适配器 → 201" \
+    || bad "S25 mcp.register 注册适配器 → ${code}（期望 201）"
+  code="$(ctl "${BASE_URL}" GET /mcp/control/adapters "${REGISTER_KEY}")"
+  [ "${code}" = "200" ] && ok "S25b mcp.register 的 key 查看注册面 → 200" \
+    || bad "S25b mcp.register 查看注册面 → ${code}（期望 200）"
+  code="$(ctl "${BASE_URL}" DELETE /mcp/control/adapters/scope-reg "${REGISTER_KEY}")"
+  req_scope="$(body_get | jq_get 'd.get("required_scope","")')"
+  if [ "${code}" = "403" ] && [ "${req_scope}" = "mcp.manage" ]; then
+    ok "S25c mcp.register 的 key 改删被拒 → 403（required_scope=mcp.manage）"
+  else
+    bad "S25c mcp.register 改删 → ${code} required_scope='${req_scope}'（期望 403 / mcp.manage）"
+  fi
+fi
+
+# S26 管理面：mcp.manage 的 key 能改删注册项、能签发/吊销凭证
+MANAGE_KEY="$(issue_key "${BASE_URL}" "maestro-manage" '["mcp.manage","mcp.read","mcp.execute"]')"
+if [ -z "${MANAGE_KEY}" ]; then
+  bad "S26 未能签发 mcp.manage 权限的凭证"
+else
+  curl -s -o /dev/null -X POST "${BASE_URL}/mcp/control/adapters" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"scope-mgd","endpoint":"http://127.0.0.1:8432","enabled":true}'
+  code="$(ctl "${BASE_URL}" DELETE /mcp/control/adapters/scope-mgd "${MANAGE_KEY}")"
+  [ "${code}" = "204" ] && ok "S26 mcp.manage 的 key 删除适配器 → 204" \
+    || bad "S26 mcp.manage 删除适配器 → ${code}（期望 204）"
+fi
+
+# S27 统计分析面：业务 key 的租户审计与管理令牌的进程指标分开验收
+ANALYZE_KEY="$(issue_key "${BASE_URL}" "maestro-analyze" '["mcp.analyze"]')"
+if [ -z "${ANALYZE_KEY}" ]; then
+  bad "S27 未能签发 mcp.analyze 权限的凭证"
+else
+  code="$(ctl "${BASE_URL}" GET "/mcp/control/audit?limit=50" "${ANALYZE_KEY}")"
+  events="$(body_get | jq_get 'len(d.get("events",[]))')"
+  if [ "${code}" = "200" ]; then
+    ok "S27 mcp.analyze 的 key 查审计 → 200（${events} 条事件）"
+  else
+    bad "S27 mcp.analyze 查审计 → ${code}（期望 200）"
+  fi
+  code="$(ctl "${BASE_URL}" GET /mcp/control/stats "${ANALYZE_KEY}")"
+  fams="$(body_get | jq_get 'len(d.get("families",[]))')"
+  scope="$(body_get | jq_get 'd.get("scope","")')"
+  audit_ok="$(body_get | jq_get 'd.get("audit",{}).get("total",0)>0 and isinstance(d.get("audit",{}).get("by_tool"),dict)')"
+  if [ "${code}" = "200" ] && [ "${fams}" = "0" ] && [ "${scope}" = "tenant_audit_only" ] && [ "${audit_ok}" = "True" ]; then
+    ok "S27b mcp.analyze 的 key → 200（tenant_audit_only、进程指标隔离、租户审计可用）"
+  else
+    bad "S27b 租户统计 → ${code} families='${fams}' scope='${scope}' audit_ok='${audit_ok}'"
+  fi
+  code="$(ctl "${BASE_URL}" GET /mcp/control/stats "${ADMIN_TOKEN}")"
+  fams="$(body_get | jq_get 'len(d.get("families",[]))')"
+  if [ "${code}" = "200" ] && [ "${fams%%.*}" -gt 0 ] 2>/dev/null; then
+    ok "S27b-admin 管理令牌保留完整进程指标 → 200（${fams} 个指标族）"
+  else
+    bad "S27b-admin 进程指标 → ${code} families='${fams}'（期望200且非空）"
+  fi
+  # /health 含内部拓扑 ⇒ 需要单独的 mcp.topology
+  code="$(ctl "${BASE_URL}" GET /mcp/control/health "${ANALYZE_KEY}")"
+  req_scope="$(body_get | jq_get 'd.get("required_scope","")')"
+  if [ "${code}" = "403" ] && [ "${req_scope}" = "mcp.topology" ]; then
+    ok "S27c /health 单独口径：仅有 mcp.analyze ⇒ 403（required_scope=mcp.topology）"
+  else
+    bad "S27c /health 口径 → ${code} required_scope='${req_scope}'（期望 403 / mcp.topology）"
+  fi
+fi
+
+# S28 拓扑面：带 mcp.topology 的 key 能看 /health
+TOPO_KEY="$(issue_key "${BASE_URL}" "maestro-topology" '["mcp.analyze","mcp.topology"]')"
+if [ -z "${TOPO_KEY}" ]; then
+  bad "S28 未能签发 mcp.topology 权限的凭证"
+else
+  code="$(ctl "${BASE_URL}" GET /mcp/control/health "${TOPO_KEY}")"
+  [ "${code}" = "200" ] && ok "S28 带 mcp.topology 的 key 读 /health → 200" \
+    || bad "S28 带 mcp.topology 读 /health → ${code}（期望 200）"
+fi
+
+# S29 权限放大防护：签不出比自己权限更大的 key
+if [ -n "${MANAGE_KEY}" ]; then
+  code="$(ctl_b "${BASE_URL}" POST /mcp/control/keys "${MANAGE_KEY}" \
+    '{"tenant_id":"default","name":"escalate","scopes":["mcp.analyze"]}')"
+  reason="$(body_get | jq_get 'd.get("reason","")')"
+  if [ "${code}" = "403" ] && [ "${reason}" = "scope_escalation" ]; then
+    ok "S29 权限放大被挡：mcp.manage 签 mcp.analyze 的 key → 403（scope_escalation）"
+  else
+    bad "S29 权限放大 → ${code} reason='${reason}'（期望 403 / scope_escalation）"
+  fi
+  code="$(ctl_b "${BASE_URL}" POST /mcp/control/keys "${MANAGE_KEY}" \
+    '{"tenant_id":"default","name":"delegate","scopes":["mcp.manage"]}')"
+  [ "${code}" = "201" ] && ok "S29b 签出不超出自身的 key → 201（委派可用）" \
+    || bad "S29b 签出不超出自身的 key → ${code}（期望 201）"
+fi
+if [ -n "${REGISTER_KEY}" ]; then
+  code="$(ctl_b "${BASE_URL}" POST /mcp/control/keys "${REGISTER_KEY}" \
+    '{"tenant_id":"default","name":"reg-sign","scopes":["mcp.register"]}')"
+  req_scope="$(body_get | jq_get 'd.get("required_scope","")')"
+  if [ "${code}" = "403" ] && [ "${req_scope}" = "mcp.manage" ]; then
+    ok "S29c mcp.register 的 key 无权签发凭证 → 403（required_scope=mcp.manage）"
+  else
+    bad "S29c mcp.register 签发凭证 → ${code} required_scope='${req_scope}'（期望 403 / mcp.manage）"
+  fi
+fi
+
+# S30 无控制面 scope 的 key 一律被拒（且与 401 区分开：身份有效 ⇒ 403）
+PLAIN_KEY="$(issue_key "${BASE_URL}" "maestro-plain" '["mcp.read","mcp.execute"]')"
+if [ -n "${PLAIN_KEY}" ]; then
+  code="$(ctl "${BASE_URL}" GET /mcp/control/tools "${PLAIN_KEY}")"
+  reason="$(body_get | jq_get 'd.get("reason","")')"
+  if [ "${code}" = "403" ] && [ "${reason}" = "scope_denied" ]; then
+    ok "S30 无控制面 scope 的 key → 403（scope_denied，与 401 区分）"
+  else
+    bad "S30 无 scope 的 key → ${code} reason='${reason}'（期望 403 / scope_denied）"
+  fi
+fi
+
+# S31 租户收口：业务 key 不能跨租户操作
+TENANT_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"tenant-a","name":"maestro-tenant","scopes":["mcp.register"]}' \
+  | jq_get 'd.get("secret","")')"
+if [ -n "${TENANT_KEY}" ]; then
+  code="$(ctl "${BASE_URL}" GET /mcp/control/adapters "${TENANT_KEY}" "X-Tenant-Id: tenant-b")"
+  reason="$(body_get | jq_get 'd.get("reason","")')"
+  if [ "${code}" = "403" ] && [ "${reason}" = "tenant_mismatch" ]; then
+    ok "S31 跨租户访问被拒 → 403（tenant_mismatch）"
+  else
+    bad "S31 跨租户访问 → ${code} reason='${reason}'（期望 403 / tenant_mismatch）"
+  fi
+fi
+
+# ── 5. L3：Maestro 浏览器 flow ──────────────────────────────────────────────
 if [ "${SKIP_MAESTRO:-0}" != "1" ]; then
   log "== L3: Maestro 浏览器 flow（运营看板）"
   if ! command -v maestro >/dev/null 2>&1; then
@@ -532,13 +704,13 @@ if [ "${SKIP_MAESTRO:-0}" != "1" ]; then
   fi
 fi
 
-# ── 5. 汇总 ─────────────────────────────────────────────────────────────────
+# ── 6. 汇总 ─────────────────────────────────────────────────────────────────
 {
   echo "# MCP 网关 Maestro 验证报告"
   echo
   echo "- 时间：$(date '+%Y-%m-%d %H:%M:%S')"
   echo "- 目标：llm-gateway-go 内置 MCP 服务网关（mcp/ 包 + cmd/mcp-gateway）"
-  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S24）+ L3 Maestro 浏览器 flow"
+  echo "- 用例：L1 Go 测试 + L2 API 场景（S01~S31）+ L3 Maestro 浏览器 flow"
   echo
   echo "## 结论"
   echo

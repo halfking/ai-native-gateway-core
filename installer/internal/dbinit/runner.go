@@ -1798,6 +1798,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 952（2026-11-09 运营审计轮项2）：model_price_versions ——
 			// (模型, 套餐模式) 价格期版本账（额效期自动闭前期）。
 			"952_model_price_versions.sql",
+			// 953（2026-11-09 恢复检测及时性优化 P0-3）：models_canonical.featured ——
+			// 标记需要优先探测的模型（免费/入门级），以减少「上游已恢复但系统 ~24h 未感知」问题。
+			"953_models_canonical_featured.sql",
+			"954_probe_lane_trace_events.sql",
 		},
 	}
 }

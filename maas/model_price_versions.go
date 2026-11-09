@@ -19,6 +19,7 @@ package maas
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -76,37 +77,54 @@ func int64PtrEq(a, b *int64) bool {
 //   - otherwise ⇒ atomically close the open period at the new period's start
 //     and insert the new one.
 //
-// Best-effort: a failed sync must never break the billing write that
-// triggered it — log and continue.
-func (s *Service) syncModelPriceVersion(ctx context.Context, canonicalID int, billingMode, source, note string, vals priceVersionValues) {
+// Callers decide whether this is an auxiliary billing snapshot (best-effort)
+// or the primary reference-price write (errors must reach the caller).
+func (s *Service) syncModelPriceVersion(ctx context.Context, canonicalID int, billingMode, source, note string, vals priceVersionValues) error {
 	if s == nil || s.pool == nil || canonicalID <= 0 {
-		return
+		return errors.New("price version service unavailable or invalid canonical_id")
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	tx, err := s.pool.Begin(syncCtx)
 	if err != nil {
-		slog.Warn("model_price_versions: begin failed", "canonical_id", canonicalID, "error", err)
-		return
+		return fmt.Errorf("begin price version: %w", err)
 	}
 	defer func() { _ = tx.Rollback(syncCtx) }()
 
+	// FOR UPDATE cannot serialize the first write when no open row exists.
+	// Serialize all writers of this model/mode, including an empty ledger.
+	lockKey := fmt.Sprintf("model-price/%d/%s", canonicalID, billingMode)
+	if _, err := tx.Exec(syncCtx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return fmt.Errorf("lock price version: %w", err)
+	}
 	var open priceVersionValues
+	var openFrom time.Time
 	err = tx.QueryRow(syncCtx, `
-		SELECT credits_per_1m_in, credits_per_1m_out,
+		SELECT effective_from, credits_per_1m_in, credits_per_1m_out,
 		       credits_per_1m_cache_in, credits_per_1m_cache_out,
 		       credits_per_1m_image_tokens, credits_per_1m_audio_tokens, credits_per_1m_video_tokens
 		FROM model_price_versions
 		WHERE canonical_id = $1 AND billing_mode = $2 AND effective_to IS NULL
 		FOR UPDATE
 	`, canonicalID, billingMode).Scan(
-		&open.In, &open.Out, &open.CacheIn, &open.CacheOut,
+		&openFrom, &open.In, &open.Out, &open.CacheIn, &open.CacheOut,
 		&open.Image, &open.Audio, &open.Video)
 	hasOpen := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("model_price_versions: read open period failed", "canonical_id", canonicalID, "error", err)
-		return
+		return fmt.Errorf("read open price period: %w", err)
+	}
+	if hasOpen && vals.anyManual() && open.sameAs(vals) {
+		// Unchanged prices never open duplicate periods.
+		return nil
+	}
+	var effectiveAt time.Time
+	if err := tx.QueryRow(syncCtx, `SELECT clock_timestamp()`).Scan(&effectiveAt); err != nil {
+		return fmt.Errorf("read price transition time: %w", err)
+	}
+	// Keep periods nonempty even if the server clock moves backwards.
+	if hasOpen && !effectiveAt.After(openFrom) {
+		effectiveAt = openFrom.Add(time.Microsecond)
 	}
 
 	if !vals.anyManual() {
@@ -114,33 +132,25 @@ func (s *Service) syncModelPriceVersion(ctx context.Context, canonicalID int, bi
 		if hasOpen {
 			if _, uerr := tx.Exec(syncCtx, `
 				UPDATE model_price_versions
-				SET effective_to = statement_timestamp()
+					SET effective_to = $3
 				WHERE canonical_id = $1 AND billing_mode = $2 AND effective_to IS NULL
-			`, canonicalID, billingMode); uerr != nil {
-				slog.Warn("model_price_versions: close period failed", "canonical_id", canonicalID, "error", uerr)
-				return
+			`, canonicalID, billingMode, effectiveAt); uerr != nil {
+				return fmt.Errorf("close price period: %w", uerr)
 			}
 		}
 		if cerr := tx.Commit(syncCtx); cerr != nil {
-			slog.Warn("model_price_versions: commit failed", "canonical_id", canonicalID, "error", cerr)
+			return fmt.Errorf("commit closed price period: %w", cerr)
 		}
-		return
-	}
-
-	if hasOpen && open.sameAs(vals) {
-		// 价格未变化 ⇒ 不开新期（防重复）。
-		_ = tx.Rollback(syncCtx)
-		return
+		return nil
 	}
 
 	if hasOpen {
 		if _, uerr := tx.Exec(syncCtx, `
 			UPDATE model_price_versions
-			SET effective_to = statement_timestamp()
+			SET effective_to = $3
 			WHERE canonical_id = $1 AND billing_mode = $2 AND effective_to IS NULL
-		`, canonicalID, billingMode); uerr != nil {
-			slog.Warn("model_price_versions: close previous period failed", "canonical_id", canonicalID, "error", uerr)
-			return
+		`, canonicalID, billingMode, effectiveAt); uerr != nil {
+			return fmt.Errorf("close previous price period: %w", uerr)
 		}
 	}
 	if _, ierr := tx.Exec(syncCtx, `
@@ -150,7 +160,7 @@ func (s *Service) syncModelPriceVersion(ctx context.Context, canonicalID int, bi
 			credits_per_1m_cache_in, credits_per_1m_cache_out,
 			credits_per_1m_image_tokens, credits_per_1m_audio_tokens, credits_per_1m_video_tokens,
 			source, note
-		) VALUES ($1, $2, statement_timestamp(), $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $12, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (canonical_id, billing_mode, effective_from) DO UPDATE SET
 			credits_per_1m_in = EXCLUDED.credits_per_1m_in,
 			credits_per_1m_out = EXCLUDED.credits_per_1m_out,
@@ -163,22 +173,21 @@ func (s *Service) syncModelPriceVersion(ctx context.Context, canonicalID int, bi
 			note = EXCLUDED.note
 	`, canonicalID, billingMode,
 		vals.In, vals.Out, vals.CacheIn, vals.CacheOut, vals.Image, vals.Audio, vals.Video,
-		source, note); ierr != nil {
-		slog.Warn("model_price_versions: insert period failed", "canonical_id", canonicalID, "error", ierr)
-		return
+		source, note, effectiveAt); ierr != nil {
+		return fmt.Errorf("insert price period: %w", ierr)
 	}
 	if cerr := tx.Commit(syncCtx); cerr != nil {
-		slog.Warn("model_price_versions: commit failed", "canonical_id", canonicalID, "error", cerr)
-		return
+		return fmt.Errorf("commit price version: %w", cerr)
 	}
 	slog.Info("model_price_versions: price period recorded",
 		"canonical_id", canonicalID, "billing_mode", billingMode, "source", source,
 		"had_open", hasOpen)
+	return nil
 }
 
 // readModelCreditRatesValues loads the current model_credit_rates row values
 // (nullable — absent row = all nils).
-func (s *Service) readModelCreditRatesValues(ctx context.Context, canonicalID int) priceVersionValues {
+func (s *Service) readModelCreditRatesValues(ctx context.Context, canonicalID int) (priceVersionValues, error) {
 	var vals priceVersionValues
 	err := s.pool.QueryRow(ctx, `
 		SELECT credits_per_1m_in, credits_per_1m_out,
@@ -188,10 +197,10 @@ func (s *Service) readModelCreditRatesValues(ctx context.Context, canonicalID in
 	`, canonicalID).Scan(
 		&vals.In, &vals.Out, &vals.CacheIn, &vals.CacheOut,
 		&vals.Image, &vals.Audio, &vals.Video)
-	if err != nil {
-		return priceVersionValues{}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return priceVersionValues{}, nil
 	}
-	return vals
+	return vals, err
 }
 
 // SyncPayAsYouGoPriceVersion snapshots the current model_credit_rates row
@@ -201,8 +210,14 @@ func (s *Service) SyncPayAsYouGoPriceVersion(ctx context.Context, canonicalID in
 	if s == nil || !s.Enabled() {
 		return
 	}
-	vals := s.readModelCreditRatesValues(ctx, canonicalID)
-	s.syncModelPriceVersion(ctx, canonicalID, BillingModePayAsYouGo, source, note, vals)
+	vals, err := s.readModelCreditRatesValues(ctx, canonicalID)
+	if err != nil {
+		slog.Warn("model_price_versions: read rates failed; preserving open period", "canonical_id", canonicalID, "error", err)
+		return
+	}
+	if err := s.syncModelPriceVersion(ctx, canonicalID, BillingModePayAsYouGo, source, note, vals); err != nil {
+		slog.Warn("model_price_versions: billing snapshot failed", "canonical_id", canonicalID, "error", err)
+	}
 }
 
 // UpsertModelPriceVersionForMode writes a reference price period for a
@@ -237,8 +252,7 @@ func (s *Service) UpsertModelPriceVersionForMode(ctx context.Context, canonicalI
 	if !vals.anyManual() {
 		return errors.New("no manual price dimensions set")
 	}
-	s.syncModelPriceVersion(ctx, canonicalID, billingMode, RateSourceManual, note, vals)
-	return nil
+	return s.syncModelPriceVersion(ctx, canonicalID, billingMode, RateSourceManual, note, vals)
 }
 
 // ModelPriceVersionRow is one recorded price period.

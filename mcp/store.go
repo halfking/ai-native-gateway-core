@@ -21,6 +21,9 @@ type BootstrapRecord struct {
 	KeyID string `json:"key_id,omitempty"`
 	// Plaintext 一次性明文（仅 claim 之前保存，领取后清空）。
 	Plaintext string `json:"plaintext,omitempty"`
+	// ClaimTokenHash binds the one-time claim to the token returned by Apply.
+	ClaimTokenHash string   `json:"claim_token_hash,omitempty"`
+	KeySpec        *KeySpec `json:"key_spec,omitempty"`
 	// Status 状态：pending / approved / claimed / rejected。
 	Status string `json:"status"`
 	// TenantID / Device / IP 归属信息。
@@ -67,6 +70,8 @@ type Store interface {
 	ListKeys(ctx context.Context, tenantID string) ([]Key, error)
 	// PutKey 新增或更新凭证。
 	PutKey(ctx context.Context, k Key) error
+	// TouchKey updates usage without overwriting concurrent credential changes.
+	TouchKey(ctx context.Context, tenantID, id string, at time.Time) error
 
 	// ListAgents 列出智能体。
 	ListAgents(ctx context.Context, tenantID string) ([]Agent, error)
@@ -97,6 +102,8 @@ type Store interface {
 	PutBootstrap(ctx context.Context, rec BootstrapRecord) error
 	// GetBootstrap 读取引导状态。
 	GetBootstrap(ctx context.Context, kind, token string) (*BootstrapRecord, error)
+	// ClaimBootstrap validates the claim token and consumes plaintext atomically.
+	ClaimBootstrap(ctx context.Context, requestID, tokenHash string, at time.Time) (*BootstrapRecord, error)
 	// DeleteBootstrap 删除引导状态。
 	DeleteBootstrap(ctx context.Context, kind, token string) error
 }
@@ -186,7 +193,6 @@ func (s *memoryStore) DeleteAdapter(_ context.Context, tenantID, name string) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.adapters, storeKey(tenantID, name))
-	delete(s.adapters, storeKey("", name))
 	return nil
 }
 
@@ -241,7 +247,6 @@ func (s *memoryStore) DeleteTool(_ context.Context, tenantID, name string) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.tools, storeKey(tenantID, name))
-	delete(s.tools, storeKey("", name))
 	return nil
 }
 
@@ -591,7 +596,6 @@ func (s *fileStore) DeleteAdapter(_ context.Context, tenantID, name string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data.Adapters, storeKey(tenantID, name))
-	delete(s.data.Adapters, storeKey("", name))
 	return s.persistLocked()
 }
 
@@ -646,7 +650,6 @@ func (s *fileStore) DeleteTool(_ context.Context, tenantID, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data.Tools, storeKey(tenantID, name))
-	delete(s.data.Tools, storeKey("", name))
 	return s.persistLocked()
 }
 

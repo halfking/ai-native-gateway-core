@@ -1,9 +1,48 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-09 48h修正审计与三环境发布轮（已验收）**：报告
+> `docs/audit/2026-11-09-48h-remediation-report.md`，交接
+> `HANDOFF-48h-remediation-20261109.md`。65提交/271文件与11项WIP已审；历史未合并分支0。
+> 修MCP隔离/委派/领取/吊销、统计闭分钟、MaaS预算/首购/价期、953投递、954探针trace、legacy空头JSONB。
+> 应用sha998269fb：211#2978、245#2956、154#2957；三台管理员真实登录/页面验收。
+> 211迁移宿主DNS误连252→显式容器通道；154旧nginx worker仍用8781导致混合502→确认PID后优雅QUIT。
+> 恢复后local20/public30为200；新增20次独立连接四字段身份门在真机通过（有限采样非永久保证）。
+> 注意：部署非零中断；旧trace不可补、preview截断JSON、外系统scheduled_tasks、Toolkit跨仓失败仍登记。
+
 > 适用：未来任何 cold-start 切到本仓库的助手会话（不区分会话身份）。
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
 > 原文件关于「go/brew/docker全部缺失」的判断已被实测推翻，见下。
+> **2026-11-09 上游桶令牌池与冷却管理方案审计轮（goal 会话，规划·零代码）**：
+> ★ 用户目标＝「完善桶管理：余额用尽 5min 冷却 + 并发超限 1min 冷却 + 按并发能力分配令牌
+>   + 模型级令牌池 + 客户端获取令牌才能访问桶 + 通过令牌池解决并发与负载均衡 → 分析是否
+>   好的灵活方案 → 给出优化方案并审计」。
+> ★★★ **核心结论＝不建议实施令牌池，采纳现有 §642 方案**：用户 5 项诉求中 **4 项现有方案
+>   已覆盖且更优**（U1 余额冷却 = inferQuotaRecoverAt + F4 钉 + 事件回拉；U2 并发冷却 =
+>   节奏校准 W1 已落；U3 并发分配 = Governor/FpSlots/LiveLoad/loadScore 多维；U5 负载均衡
+>   = P2C + sticky + recoveryRamp），**1 项存在概念差异**（U4：现有「候选序列 + failover」
+>   vs 用户「显式令牌池」）。**仿真推演**：令牌池 FIFO client_ok ~45-50%（vs 现状 P0=62.8%、
+>   §642 P2=80.0%），上游 429 噪音 ~300+/4h（vs P2=236），复杂度极高（死锁/饥饿/跨实例同步）。
+> ★ **现有方案优势**（令牌池缺失）：① **节奏校准冷却**（ObserveWithPace，窗口内 60s、
+>   快速连击≥3 才升级 3→6→12→24→30min，仿真 +17.2pp）vs 固定 1min 无差别惩罚；
+>   ② **被动 failover 三级梯**（失败即时切换 <5s，rate_limit 终态 7/12609=0.06%）vs
+>   主动准入（池耗尽 ⇒ no_candidate，与 211 上 2710 例同形态）；③ **双层路由模块边界**
+>   （L1 ModelSequencer 任务→模型 + L2 BucketSequencer 模型→桶，职责清晰）vs 令牌池
+>   跨层难题（模型级池需 L1 感知桶，桶级池不符用户「模型级」描述）。
+> ★ **令牌池架构冲突**：与现有 5 组件语义重叠——Governor(准入) / FpSlots(并发槽) /
+>   LiveLoad(在途计数) / RateSink(429沉底) / P2C评分(容量感知)，引入令牌池需要「替换
+>   5 组件（重构代价巨大）」或「并存（双重逻辑 + 维护成本×2 + 行为冲突风险）」。
+> ★ **推荐路径**（采纳 §642 并完成剩余实施）：Phase 1（1 周）复核 W1 在 211 运行数据 →
+>   Phase 2（2 周）W2 BucketRegistry 影子层（三载体→单一 verdict，解决「三套门不同步」）→
+>   Phase 3（2 周）W3 SessionBucketHistory + C1 经济学（补会话粘性历史）→ Phase 4（2 周）
+>   W4 QualityRollup（桶质量向上 rollup）→ Phase 5（1 周，可选）只读 TokenPoolView 接口
+>   （观测面，若需外部配额对接）。**总工期 7-8 周 vs 令牌池重写 3-6 个月**。
+> ★ **7 条待裁决**（D1–D7）：核心路径选择（推荐采纳 §642）/ 令牌真实语义（并发 or 速率，
+>   需澄清）/ 显式令牌接口（推荐只读视图）/ 冷却时长（推荐节奏校准）/ 容量耗尽行为
+>   （推荐 failover）/ 跨实例一致性（推荐进程内）/ 上游 429 噪音可接受度（需 211 观测）。
+> ★ 审计档全文：`docs/audit/2026-11-09-上游桶令牌池与冷却管理方案审计.md`（58KB，含
+>   §642 对比 / 三种令牌池形态分析 / 仿真对比表 / 风险评估 / 术语对照表 / 若用户坚持
+>   令牌池的澄清清单）。**明确没做**：零代码 / 零迁移 / 零实施（规划轮）。
 > **2026-11-09 运营审计轮（goal 会话，`docs/audit/2026-11-09-运营审计轮-请求统计与定价与营销与免费模型与探测感知.md`）**：
 > ★ 用户目标＝「运营功能审计＋修正＋完整优化：①请求统计与上下游对账 ②内部定价
 >   一个模型一模式一价＋额效期自动闭前期＋订价变化可见 ③MaaS 行情采集整合
@@ -49,6 +88,53 @@
 > ★ 遗留：订价变化前端图表（趋势线）未做；token_plan/booster 价期是参考价数据面不进
 >   计费热路径；asm-worker-1 crash loop（Restarting 137）登记待 owner 轮。
 
+> **2026-11-09 claude-opus-5-5 访问错误根因分析与诊断面修复轮（goal 会话，审计档
+> `docs/audit/2026-11-09-claude-opus-5-5访问错误根因分析与诊断面修复.md`）**：
+> ★ 用户目标＝「llm.itestu.cn 访问 claude-opus-5-5 总是错误 → 查 211 log → 判断
+>   转换错误或 token 桶错误 → 修复 → 部署 211 验证 → 提交推送」。
+> ★★ **最终根因（真库+活体实验）＝不是转换/桶/路由问题**：① 路由通（apiclaude
+>   3 健康节点 cred 31/59/99036，小/90KB/302KB 重复内容全 200）；② **apiclaude.cc
+>   中继对「~150KB+ 高熵（不可缓存）」载荷失败**——用户会话 171,803B 秒拒 400，
+>   唯一随机 ASCII 171-273KB 全部 200 后流中断（anthropic_empty_response），
+>   同网关发 minimax 893KB 正常；③ 其余节点全部被正当门控（evol provider
+>   manual_disabled=2026-07-26 / 速云 claude keys auth_failed / vapeur·magpie
+>   配额耗尽 / freellm 绑的是别的 canonical）⇒ **候选池只剩 apiclaude 一家无处
+>   failover**。恢复大上下文会话需 owner 裁决：恢复 evol、换速云 key、或向
+>   apiclaude 反馈/接官方直连（provider 2 无凭据）。
+> ★★ **本轮真修复＝诊断面缺口**：`upstream 400: <nil>` 吞掉拒绝原因（Body 存在
+>   无人读 + Message 裸状态码 + Err 恒 nil → `: <nil>` 后缀）⇒ upstreampkg.Error
+>   对 nil Err 不再追加后缀 + 5 处 executor（anthropic×2/chat retryable/gemini/
+>   ollama）Message 统一带 body 前 200B（复用 truncateForLog）+ 守护测试（含
+>   上界断言）。**现场验证**：非法图片块触发上游 400，日志完整带出
+>   `Malformed conversation content…` —— 且证实 apiclaude 400 响应体本就是可解析
+>   JSON，`<nil>` 纯属我方渲染缺陷。
+> ★ **混乱期清理**：删迁移 954/955（基于错库认知编写，生产仅 953 applied 实证）
+>   + manifest 重生成 353 项；生产库删投机绑定 4 条（cred 51-54，model-iq 实测
+>   4/4 不能服务）；开发库 198.18.0.197 恢复 credential 3 原态+featured_models
+>   还原；吊销调试 key 233。
+> ★★ **本会话教训（审计档 §5 全文）**：① 连错数据库（198.18.0.197 是别的环境，
+>   生产是 211 容器 env 里的 acc-pg17——动手前必须从在役容器 env 取 DATABASE_URL）；
+>   ② invalid_key 发生在模型解析之前，当「路由成功」证据是错的；③ mock/未验证
+>   key 绑进生产候选池不是修复；④ 部署后要核对生产 schema_migrations 而非假设
+>   迁移已应用。
+> ★ 验证：build/vet rc=0；executors+upstream+installer dbinit 全绿；gofmt 零新增
+>   （ollama 67 行 HEAD 既有对拍）；rate_limit 一红=并行负载计时假红（复跑绿）；
+>   211=1179dbee/2977 槽 b，readyz+公网 200，部署后小/90KB 回归成功；双仓已推。
+
+> **2026-11-09 探针限流窗口对齐+上游桶加权均衡轮（goal 会话；方案档
+> `docs/audit/2026-11-09-探针限流窗口对齐与上游桶加权均衡轮.md`）**：
+> ★ 复查结论：11-07 盲探族已收敛（audit R1-R5=0），**新族群＝429 闪断**（kimi-k3/glm-5.x
+> ×15-19 桶全部 weight=100/rpm 未配 ⇒ 首跳等权泼向紧 RPM 桶，探测失败 60-70%=http_429，
+> 成功清零 cf ⇒ 升级永不触发）；加权均衡机制（P2C+加权抽签）在但无容量/压力信号输入。
+> ★ 修复 A（738a4d63c）＝rate 族探针梯首跳对齐 `routing.rate.window_refill_seconds`（60s
+> 替换 3m 固定档）＋ rate 族绑定冷却=窗口（探针 429 不再把业务 60s 冷却覆盖成 5min）；
+> 窗口 0=逐字节回旧口径；sustained 档仍压过窗口。修复 B＝firstHopLotteryWeights 两新维：
+> `LLM_GATEWAY_ROUTING_W_RATE_PRESSURE`（默认 0.20，penalty=1−RecentSuccessRate 活体 last-50、
+> samples≥10、**不回退静态慢信号**——冷启中性且等压队列精确配比不被截断破坏）＋
+> `LLM_GATEWAY_ROUTING_CAPACITY_SHARE`（默认开，份额×=clamp(rpm/队列最大,0.1,1)；无信号全 1）。
+> ★ 验证＝bg+executors+D09 全绿；211=2971-fd2611a6 槽 b；**窗口冷却 60s 落库实证**＋
+> cf≥22 行 sustained 档生效＋audit R1-R5=0；聚合探测量与 B1 统计效应**留小时审计观察窗**
+> （诚实边界）。遗留：B2 容量维待运营配 rpm_limit；BucketRegistry/W2-W3 仍规划；245/154 未部署。
 > **2026-11-09 MCP 服务网关内置轮（goal 会话）**：
 > ★ 用户目标＝「学习微软及其它公司开源的 MCP 服务网关特性，结合附件方案（JFMCP PDF ＋
 >   marketing 侧 `docs/jfmcp-gateway/` 方案族），把智能体/技能/MCP 的网关功能做成可用的
@@ -506,7 +592,9 @@
 > 公开面客户版页面。
 > **2026-11-05 第 49 增量：同步轮（cron：拉最新 → 挖问题 → 修 → 编译测试 → 推双仓）——「上游带进来的东西，本仓从未绿过」是一整类缺陷**
 > （cron 会话 `mvs_9f5989b868cb42e5b80bb62d77a98e3c`；审计档 `docs/全面审计v3/2026-11-05/` 增补 F1–F5；
-> 通用式见 `LESSONS.md` **§635**）：
+> 通用式见 `LESSONS.md` **§646**（★ 2026-11-09 订正：本条目原引 §635，但 §635 现为报价系统 MVP W1 前端轮；
+> 本轮通用式在 2026-11-09 合并撞号时已让号改取 §646，让号先例 §590/§591、§643→§644——引用侧未随合并同步订正，
+> 首轮审计 574957cad 之后由第 58 轮 24h 审计补记））：
 > ⇒ ★ 用户目标＝「拉取最新代码合并到本地，修正发现的问题，完成编译测试，提交并同步到 codeup 与 github，保证两仓 main 一致」。
 > ⇒ ★ 开工读数：codeup `origin/main` 与 github `github/main` 同为 `78f07316d`（第 48 增量）⇒ ff-merge 零冲突；
 > ★ **`ls-remote` 双仓对拍＝本地 HEAD 三者同 SHA**（★ 记忆纪律：fetch 成功≠读远端通道可用 ⇒ 以 ls-remote 成功为准）。

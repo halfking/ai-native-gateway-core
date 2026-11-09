@@ -32,6 +32,7 @@
 | `MCP_GATEWAY_BOOTSTRAP_APPLY_IP_LIMIT` | `10` | 每 IP 每 10 分钟申请上限 |
 | `MCP_GATEWAY_BOOTSTRAP_APPLY_DEVICE_LIMIT` | `3` | 每设备每 10 分钟申请上限 |
 | `MCP_GATEWAY_BOOTSTRAP_READ_IP_LIMIT` | `30` | status/claim 每 IP 每分钟上限 |
+| `MCP_GATEWAY_CONTROL_SCOPE` | `on` | 控制面 scope 鉴权开关。`off` ⇒ 控制面**只认管理令牌**（回退到「业务 key 无控制面权限」）；`on` ⇒ 业务 key 可按 `mcp.register`/`mcp.manage`/`mcp.analyze`/`mcp.topology` 访问控制面 |
 | `MCP_GATEWAY_LISTEN` | `:8089` | 独立进程的监听地址（`cmd/mcp-gateway` 用） |
 
 ## 2. 部署形态
@@ -52,11 +53,41 @@ export MCP_GATEWAY_ADMIN_TOKEN="$(cat /run/secrets/mcp_admin_token)"
 |---|---|---|
 | `POST /mcp` | MCP 数据面 | MCP 凭证 |
 | `GET /mcp/admin` | 运营看板 | 页面内输入管理令牌 |
-| `/mcp/control/*` | 控制面 | 管理令牌 |
+| `/mcp/control/*` | 控制面 | 管理令牌 **或** 带对应 scope 的业务 key |
 | `GET /.well-known/oauth-protected-resource` | 受保护资源元数据 | 公开 |
 
 > 全局 API key 门（`middleware/auth_mw.go`）把 `/mcp` 列入 bypass：MCP 客户端持有
 > 的是 MCP 凭证，不是网关主 key；数据面与控制面各自自守卫。
+
+### 2.1.1 控制面能力位与授权口径
+
+业务 key 也能进控制面，按**能力位**判定（`mcp.admin` 是超集，其余各位互不派生）：
+
+| 能力位 | 能做什么 |
+|---|---|
+| `mcp.register` | 注册面：创建/查看适配器、工具、智能体、技能 |
+| `mcp.manage` | 管理面：变更/删除注册项、签发/吊销/轮换凭证、审批裁决 |
+| `mcp.analyze` | 统计分析面：审计查询与导出、路由清单、能力目录、`/mcp/control/stats` 指标快照 |
+| `mcp.topology` | 内部拓扑面：`/mcp/control/health`（含上游端点与熔断态） |
+| `mcp.admin` | **超集**：以上全部 |
+
+签发一把「能注册 MCP 的 key」：
+
+```bash
+# ① 用管理令牌签一把只带注册权限的 key
+curl -s -X POST http://127.0.0.1:8089/mcp/control/keys \
+  -H "X-Admin-Token: $MCP_GATEWAY_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"default","name":"registrar","scopes":["mcp.register"]}'
+
+# ② 用这把 key 注册适配器（凭据放 Authorization: Bearer 或 X-Api-Key）
+curl -s -X POST http://127.0.0.1:8089/mcp/control/adapters \
+  -H "Authorization: Bearer sk-mcp-..." -H 'Content-Type: application/json' \
+  -d '{"name":"memora","endpoint":"http://memora:8080","capability":"memory","enabled":true}'
+```
+
+★ **权限放大防护**：业务 key 签发/轮换出来的凭证**不得超出它自己的权限**
+（`mcp.manage` 的 key 签不出 `mcp.analyze` 的 key），且**不能跨租户**操作。
+逐条口径见 `03-legacy-merge-map.md` §6.7。
 
 ### 2.2 独立进程（边缘 / 工具面专用）
 
@@ -85,17 +116,24 @@ export MCP_GATEWAY_ADMIN_TOKEN="***"
    导出为 NDJSON，便于 SIEM 接入。
 7. **fail-open 只用于外部账本**：本地账本不存在「查不到就放行」；远端账本不可达时
    放行是为了不因账本故障打断数据面（与既有实现一致，且**每次都记审计**）。
+8. **控制面 fail-closed**：控制面与管理动作在**身份无法判定**时一律不放行
+   （账本不可达 ⇒ 503）；只有**数据面**保留既有的 fail-open。
+9. **控制面权限放大防护**：业务 key 只能签出/轮换出不超出自身 scope 的凭证，
+   且只能操作自己所属租户 ⇒「拿到凭证即可提权」的口被堵住。
 
 ## 4. 排障
 
 | 症状 | 排查 |
 |---|---|
 | 数据面全 401 | 凭证未登记/已吊销/外部账本不可达；看审计 `reason=unauthorized` 与 `ledger_unavailable` |
-| 控制面 503 | 未配置 `MCP_GATEWAY_ADMIN_TOKEN` |
-| 控制面 401 | 管理令牌不对（或用了 `X-Admin-Token` 头，值需等于管理令牌） |
+| 控制面 503 | 未配置 `MCP_GATEWAY_ADMIN_TOKEN`（且请求方不是带 scope 的有效 key） |
+| 控制面 401 | 管理令牌不对（或用了 `X-Admin-Token` 头，值需等于管理令牌）；业务 key 不在账本/已吊销 |
+| 控制面 403 | 身份有效但**权限不足**：响应体的 `required_scope` 就是这条路由要的能力位；`reason=scope_escalation` 表示试图签出超出自身权限的凭证；`reason=tenant_mismatch` 表示跨租户 |
+| 控制面 503（账本不可达） | 外部账本不可达 ⇒ 控制面 fail-closed（数据面仍 fail-open） |
+| 控制面 404 | 路径写错（控制面挂在 `/mcp/control` 前缀下） |
 | 工具 404 | 工具未注册；控制面 `POST /mcp/control/tools` 注册，或开 `MCP_GATEWAY_AUTO_REGISTER` |
 | 工具 403 | 逐条查：scope → 可见性 → 允许表 → backend 绑定 → 审批凭据（审计 `reason` 会指明是哪一道） |
-| 上游 502/503 | 看 `/mcp/control/health` 的适配器状态与熔断态；熔断打开时返回 503 |
+| 上游 502/503 | 看 `/mcp/control/health` 的适配器状态与熔断态（该面需 `mcp.topology`）；熔断打开时返回 503 |
 | 429 | 令牌桶按 key×类别限流；调 `MCP_GATEWAY_*_RATE_LIMIT` 或等窗口重置 |
 
 ## 5. 指标与告警口径（既有规则按旧名平移）
@@ -118,3 +156,7 @@ export MCP_GATEWAY_ADMIN_TOKEN="***"
 
 ★ 逐族登记（含 3 项「不适用」的理由）见 `03-legacy-merge-map.md` §6.6；
   守护用例见 `mcp/legacy_contract_test.go` 与 harness 的 S24。
+
+★ 给**业务 key**用的统计出口是 `GET /mcp/control/stats`（需 `mcp.analyze`），
+  返回 MCP 网关自己的指标族快照（JSON）；全局 `/metrics` 仍是 Prometheus 抓取面
+  （运维网络域，不在 key 的 scope 体系内）。

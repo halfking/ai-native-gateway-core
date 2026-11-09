@@ -368,3 +368,5 @@
 350	950_probe_queue_source_credential_recovery.sql
 351	951_armor_judgments_created_at_idx.sql
 352	952_model_price_versions.sql
+353	953_models_canonical_featured.sql
+354	954_probe_lane_trace_events.sql

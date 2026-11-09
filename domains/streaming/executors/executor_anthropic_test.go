@@ -986,3 +986,95 @@ func strconvItoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// TestAnthropicExecutor_UpstreamErrorCarriesBodyPreview guards the 2026-11-09
+// fix: upstream non-2xx errors must carry a bounded preview of the upstream
+// response body in their message. Before the fix, *upstreampkg.Error carried
+// the body only in the (often unread) Body field while Message was bare
+// "upstream 400" with a nil Err — Error() rendered "[request_rejected]
+// upstream 400: <nil>" in every log line (executor failed / goal_retry_exhausted
+// / ExecuteError chains), which is exactly what hid apiclaude's 400 rejection
+// reason for claude-opus-5-5 large-payload failures on 211 and turned the
+// incident diagnosis into guesswork.
+func TestAnthropicExecutor_UpstreamErrorCarriesBodyPreview(t *testing.T) {
+	cm := newCircuitManagerForTest()
+	lim := newLimiterForTest()
+	e := &Executor{
+		Circuit:         cm,
+		Limiter:         lim,
+		UpstreamTimeout: 5 * time.Second,
+		StreamTimeout:   10 * time.Second,
+	}
+
+	// Generic 400 body with no known error signature → classified by status
+	// as request_rejected, the same kind as the 211 incident.
+	upstreamBody := `{"error":{"message":"prompt payload rejected by relay: entropy guard","type":"invalid_request_error"}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errcheck // HTTP write error non-recoverable
+		w.Write([]byte(upstreamBody))
+	}))
+	defer srv.Close()
+
+	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(""))
+	r.Header.Set("X-Request-Id", "test-preview-1")
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W:             rec,
+		R:             r,
+		BodyBytes:     []byte(`{"model":"claude-opus-5-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`),
+		IsStream:      false,
+		ClientModel:   "claude-opus-5-5",
+		OutboundModel: "claude-opus-5-5",
+	}
+	cand := provider.Candidate{
+		ProviderID:   587,
+		CredentialID: 31,
+		BaseURL:      srv.URL,
+		Protocol:     "anthropic-messages",
+		APIKey:       "sk-test",
+	}
+
+	_, err := e.executeAnthropic(params, cand, 2, time.Now(), nil)
+	if err == nil {
+		t.Fatal("expected non-nil error from 400 upstream")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "<nil>") {
+		t.Fatalf("error message still renders <nil> — upstream body preview missing: %q", msg)
+	}
+	if !strings.Contains(msg, "upstream 400") {
+		t.Fatalf("error message missing status: %q", msg)
+	}
+	if !strings.Contains(msg, "entropy guard") {
+		t.Fatalf("error message missing upstream body preview: %q", msg)
+	}
+	// The preview must be bounded: a >200-byte upstream body contributes at
+	// most its first 200 bytes to the message.
+	bigBody := `{"error":{"message":"` + strings.Repeat("y", 600) + `"}}`
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errcheck // HTTP write error non-recoverable
+		w.Write([]byte(bigBody))
+	}))
+	defer srv2.Close()
+	params2 := &ExecParams{
+		W:             httptest.NewRecorder(),
+		R:             httptest.NewRequest("POST", "/v1/messages", strings.NewReader("")),
+		BodyBytes:     params.BodyBytes,
+		IsStream:      false,
+		ClientModel:   "claude-opus-5-5",
+		OutboundModel: "claude-opus-5-5",
+	}
+	cand2 := cand
+	cand2.BaseURL = srv2.URL
+	_, err2 := e.executeAnthropic(params2, cand2, 2, time.Now(), nil)
+	if err2 == nil {
+		t.Fatal("expected non-nil error from 400 upstream (bounded case)")
+	}
+	if n := strings.Count(err2.Error(), "y"); n > 200 {
+		t.Fatalf("preview not bounded to 200 bytes: counted %d 'y' in %d-char message", n, len(err2.Error()))
+	}
+}
