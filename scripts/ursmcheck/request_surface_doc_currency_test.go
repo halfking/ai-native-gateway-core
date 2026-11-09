@@ -170,6 +170,7 @@ type docEvidence struct {
 //	干净树**里对不上 ⇒ **提交后门会红** ⇒ ⇒ ★★ **行号类产物必须按「将要提交的
 //	那棵树」生成，不能按共享工作树生成**（路由快照同理）⇒ 判据：**共享仓里「派生产物」
 //	的一致性基准是提交树，不是工作树**。
+//
 // ★★ **第十次重钉（2026-11-04 12h 审计轮）**：★ 本轮 12h 审计的 **B-2** 修复
 //
 //	（★ 会话 hash TTL 的**唯一真值**：`sessionTTL` 只算一次、两个写点共用）
@@ -179,8 +180,8 @@ type docEvidence struct {
 //	maintain 注释 **8195-8201** / Auth **8219** / SecurityHeaders **8222**（链本体 **8192-8224**）。
 //
 // ⇒ ★★★ **这次漂移是「自己引入」的**（★ 前九次里有几次是并行会话带的，
-//　★ 这一次不是 ⇒ ⇒ **本门红 ⇒ 就是自己动过 main.go**）⇒ ⇒ 归因更直接：
-//　★ 不用再去找并行会话，**直接按「将要提交的那棵树」重钉三面**即可。
+// 　★ 这一次不是 ⇒ ⇒ **本门红 ⇒ 就是自己动过 main.go**）⇒ ⇒ 归因更直接：
+// 　★ 不用再去找并行会话，**直接按「将要提交的那棵树」重钉三面**即可。
 //
 // ⇒ ★★ **归因的实测命令**（留给下一轮直接抄）：
 //
@@ -194,21 +195,23 @@ type docEvidence struct {
 //	③ 认证表 A1（审计档 §3.18.3）。
 //
 // ⇒ ⇒ ★ **本门的有牙之处正在于此**：★ 它**当场**把「自己改了 main.go 却没重钉」
-//　抓出来 ⇒ ⇒ ★ 这不是门的缺陷，是门**在干活** ⇒ ⇒ 修法只有一个：**重钉**。
+// 　抓出来 ⇒ ⇒ ★ 这不是门的缺陷，是门**在干活** ⇒ ⇒ 修法只有一个：**重钉**。
+// 2026-11-09 48h 审计：运营接线与 featured 分层在 main.go 链前新增 42 行；
+// 三处证据区间整体 +42，语义锚与判据均不变，设计页/认证表 A1 同步。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8192, to: 8224,
+		file: "cmd/gateway/main.go", from: 8234, to: 8266,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8206, to: 8213,
+		file: "cmd/gateway/main.go", from: 8248, to: 8255,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8195, to: 8201,
+		file: "cmd/gateway/main.go", from: 8237, to: 8243,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
