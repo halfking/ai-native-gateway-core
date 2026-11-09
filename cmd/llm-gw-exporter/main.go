@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"log/slog"
 	"os"
 	"strings"
@@ -438,7 +439,8 @@ func resolveConfigID(ctx context.Context, db *pgxpool.Pool, name string) (int, e
 
 func init() {
 	// Setup logging
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
+	//
+	// rule 71：结构化 JSONL + 规范字段（此前为 Text handler）。
+	// 与同仓其他入口保持同一格式，AI 消费同服务只需一套解析分支。
+	slog.SetDefault(logging.NewServiceStderrLogger(slog.LevelInfo))
 }

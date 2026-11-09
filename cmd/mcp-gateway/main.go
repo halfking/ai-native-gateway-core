@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -36,7 +37,10 @@ func main() {
 	)
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// rule 71：结构化 JSONL + 规范字段。此前用 Text handler，
+	// 与同仓其他入口（cmd/gateway 用 JSON）格式不一致，
+	// AI 消费同一服务需要两套解析分支。
+	logger := logging.NewServiceLogger(slog.LevelInfo)
 
 	envCfg, err := mcp.LoadEnvConfig()
 	if err != nil {
@@ -87,7 +91,8 @@ func main() {
 	go func() {
 		logger.Info("mcp gateway listening",
 			"addr", *listen,
-			"version", mcp.Version,
+			// rule 71：version 是保留名（服务版本），mcp 协议版本改用 mcp_version。
+			"mcp_version", mcp.Version,
 			"demo", *demo,
 			"admin_token_configured", envCfg.AdminToken != "",
 			"store_file", envCfg.StoreFile,

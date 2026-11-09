@@ -193,8 +193,11 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 	activeConfig = cfg
 	loggerMu.Unlock()
 
+	// rule 71：ReplaceAttr 负责字段改名（time→timestamp）与值脱敏；
+	// 级别与资源字段由 standardHandler 在 Handle 层注入（需要产出多个顶层字段）。
 	jsonHandler := slog.NewJSONHandler(mw, &slog.HandlerOptions{
-		Level: level,
+		Level:       level,
+		ReplaceAttr: replaceAttr,
 	})
 
 	// 2026-08-26 Phase A: optionally wrap the JSON handler with a
@@ -207,7 +210,11 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 			top = NewBleveFanoutHandler(jsonHandler, idx)
 		}
 	}
-	slog.SetDefault(slog.New(top))
+
+	// rule 71：叠加规范字段注入 + 脱敏层。
+	// Bleve fanout 在最内层（它索引的是原始 JSON 记录），
+	// 规范层包在它外面，保证落盘与索引的内容一致。
+	installStandard(top, level)
 
 	slog.Info("logging: file rotation enabled",
 		"file", cfg.File,
@@ -217,6 +224,31 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 		"compress", cfg.Compress,
 	)
 	return lj, nil
+}
+
+// installStandard 把 handler 装到 slog 默认 logger，并叠加 rule 71 的
+// 规范字段与脱敏层。
+//
+// **所有**安装 handler 的路径都必须走这里——此前 Init / ReInit / Reconfigure
+// 各自直接 slog.SetDefault，导致运行期切换日志配置后格式会退回旧版
+// （缺 service/version/env/instance_id，字段名也不对）。
+//
+// 内层 handler 必须是 JSON handler（rule 71 要求 JSONL）。
+func installStandard(inner slog.Handler, level slog.Level) {
+	stdHandler, err := WrapStandardHandler(inner, StandardOptions{
+		Service: ServiceName(),
+		Version: ServiceVersion(),
+		Env:     ServiceEnv(),
+		Level:   level,
+	})
+	if err != nil {
+		// 规范层初始化失败不能拖垮服务——退回裸 JSON handler，
+		// 但要把问题显式说出来（rule 00 §5：不允许静默失败）。
+		fmt.Fprintf(os.Stderr, "logging: standard layer init failed: %v\n", err)
+		slog.SetDefault(slog.New(inner))
+		return
+	}
+	slog.SetDefault(slog.New(stdHandler))
 }
 
 // Shutdown flushes any buffered records and closes the rotated log
@@ -362,14 +394,20 @@ func ReInit(cfg Config) error {
 
 	// 2) cfg.File == ""：停用
 	if cfg.File == "" {
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		installStandard(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level:       level,
+			ReplaceAttr: replaceAttr,
+		}), level)
 		slog.Info("logging: file rotation disabled (via ReInit)")
 		return nil
 	}
 
 	// 3) 创建新 logger
 	if err := os.MkdirAll(filepath.Dir(cfg.File), 0o755); err != nil {
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		installStandard(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level:       level,
+			ReplaceAttr: replaceAttr,
+		}), level)
 		return fmt.Errorf("logging: create log dir: %w", err)
 	}
 	lj := &lumberjack.Logger{
@@ -384,7 +422,10 @@ func ReInit(cfg Config) error {
 	effectiveLogWriter = lj
 	activeLogger = lj
 	activeConfig = cfg
-	slog.SetDefault(slog.New(slog.NewJSONHandler(mw, &slog.HandlerOptions{Level: level})))
+	installStandard(slog.NewJSONHandler(mw, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: replaceAttr,
+	}), level)
 	slog.Info("logging: file rotation (re)enabled via ReInit",
 		"file", cfg.File,
 		"max_size_mb", cfg.MaxSizeMB,

@@ -53,7 +53,8 @@ func (h *ManifestHandler) HandleManifest(c echo.Context) error {
 	// Query release by version
 	release, err := h.store.GetRelease(c.Request().Context(), version)
 	if err != nil {
-		slog.Warn("release not found", "version", version, "error", err)
+		// rule 71：version 是保留名（服务版本），业务语义改用 release_version。
+		slog.Warn("release not found", "release_version", version, "error", err)
 		return echo.NewHTTPError(http.StatusNotFound, fmt.Sprintf("version %s not found", version))
 	}
 
