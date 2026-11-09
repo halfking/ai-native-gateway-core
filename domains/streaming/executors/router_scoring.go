@@ -889,6 +889,15 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 	wRecency := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
 	wBalance := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
 	wPlanQuota := envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)
+	// ★ 2026-11-09（上游桶加权均衡轮）：限流压力惩罚权重。背景＝211 实测
+	//   kimi-k3/glm-5.2/5.3 各有 15-19 个上游桶且全部 weight=100、rpm 未配
+	//   ⇒ 首跳抽签等权，紧 RPM 桶拿到与无限桶相同的首跳份额，429 闪断成
+	//   主形状（RecentSuccessRate 0.5-0.9）；既有 loadScore 惩罚只影响
+	//   failover 顺序，救不了首跳。惩罚 = 1 − 质量信号（RecentSuccessRate
+	//   last-50 优先，冷启回退 SuccessRate），进 p 折算 ⇒ 闪断桶份额缩、
+	//   健康兄弟桶份额相对放大——「先倾斜、后冷却」（硬隔离仍由冷却/熔断
+	//   负责）。置 0 ⇒ 与加前逐字节一致（OffIsByteIdentical 族）。
+	wRate := envFloat("LLM_GATEWAY_ROUTING_W_RATE_PRESSURE", 0.20)
 	// P0-A：recovery 在 lottery 侧不进 p 折算——它有自己的独立机制
 	//（recoveryRampFactor 直接乘份额，见下）。读 wRecovery 只用于
 	// 「整体关闭」判定：W_RECOVERY=0 或 RAMP_SECONDS=0 任一置 0，
@@ -896,17 +905,25 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 	wRecovery := envFloat("LLM_GATEWAY_ROUTING_W_RECOVERY", 0.10)
 	// R46 F8④: 负权重按 0 处理——负值会缩小 sum、放大他人相对份额甚至
 	// 产生负折算权重（份额 > 原 Weight 的反向倾斜）。
-	wSticky, wRecency, wBalance, wPlanQuota, wRecovery =
-		clampEnvWeight(wSticky), clampEnvWeight(wRecency), clampEnvWeight(wBalance), clampEnvWeight(wPlanQuota), clampEnvWeight(wRecovery)
+	wSticky, wRecency, wBalance, wPlanQuota, wRate, wRecovery =
+		clampEnvWeight(wSticky), clampEnvWeight(wRecency), clampEnvWeight(wBalance), clampEnvWeight(wPlanQuota), clampEnvWeight(wRate), clampEnvWeight(wRecovery)
 	recoveryOff := wRecovery <= 0 || recoveryRampWindowSeconds() <= 0
 	stickyWired := r != nil && r.StickyLoad != nil
-	sum := wBalance + wPlanQuota
+	sum := wBalance + wPlanQuota + wRate
 	if stickyWired {
 		sum += wSticky + wRecency
 	}
 	if sum <= 0 && recoveryOff {
 		return nil
 	}
+
+	// ★ 2026-11-09：容量份额因子（config 输入）。rpm_limit 已是受强制的
+	//   准入限流（migration 407，limiter 消费）；这里让「配置容量」同时
+	//   供数首跳份额：份额 ×= clamp(rpm / 队列最大 rpm, floor 0.1, 1)。
+	//   队列无任何 rpm 信号 ⇒ 全 1（逐字节不变）；有信号 ⇒ 30rpm 桶相对
+	//   300rpm 桶拿 ~1:10 首跳份额（floor 防饿死，硬隔离仍归冷却）。
+	//   LLM_GATEWAY_ROUTING_CAPACITY_SHARE=0 关闭（全 1）。
+	capacity := capacityShareFactors(cands)
 
 	adjusted := make([]int, len(cands))
 	changed := false
@@ -925,7 +942,8 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 				recentRequestPenalty(c, r, nil)*wRecency
 		}
 		weighted += balancePenaltyForCandidate(c)*wBalance +
-			planQuotaPenaltyForCandidate(c)*wPlanQuota
+			planQuotaPenaltyForCandidate(c)*wPlanQuota +
+			ratePressurePenaltyForCandidate(c)*wRate
 		// sum<=0（四折算权重全关但 recovery 开着）：p=0 不折算，
 		// 份额只由 ramp 因子决定——置零权重的语义是「不折算」，不是
 		//「最大折算」。
@@ -943,7 +961,9 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 		if !recoveryOff {
 			rampFactor = recoveryRampFactor(c, r)
 		}
-		w := int(float64(c.Weight) * (1.0 - 0.9*p) * rampFactor)
+		// ★ 2026-11-09：容量份额因子同在份额层直接乘（与 ramp 同层）——
+		//   它是「该桶能接多少」的容量事实，不是健康惩罚。
+		w := int(float64(c.Weight) * (1.0 - 0.9*p) * rampFactor * capacity[i])
 		if w < 1 {
 			w = 1
 		}
@@ -956,4 +976,63 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 		return nil
 	}
 	return adjusted
+}
+
+// ratePressurePenaltyForCandidate 把候选的**活体**质量信号折成 0..1 限流压力
+// 惩罚（2026-11-09 上游桶加权均衡轮）。只认 RecentSuccessRate
+// （recent_success_rate() 的 last-50 业务行活体率，samples≥10 才可信）；
+// **不回退**静态 SuccessRate——索引窗口统计是慢信号，会让无活体数据的
+// 冷启候选也被倾斜（且把等压队列的精确配比截断破坏，见
+// TestPlanCandidatesHonorsConfiguredWeights）。无活体信号 ⇒ 0（中性，
+// fail-open）。惩罚 = 1 − 率：429 闪断桶（0.5-0.9）得 0.1-0.5 惩罚。
+// NaN/越界防御与 balance/planQuota 同款。
+func ratePressurePenaltyForCandidate(c provider.Candidate) float64 {
+	if c.RecentSuccessRate == nil || c.RecentSamples < 10 {
+		return 0
+	}
+	quality := *c.RecentSuccessRate
+	if math.IsNaN(quality) || quality < 0 || quality > 1 {
+		return 0
+	}
+	return 1.0 - quality
+}
+
+// capacityShareFactors 返回每个候选的首跳容量份额因子（0.1..1，2026-11-09
+// 上游桶加权均衡轮）。因子 = clamp(rpm_limit / 队列最大 rpm_limit, 0.1, 1)；
+// 无 rpm 信号的候选因子 1（不因未配置而受罚），队列内无任何 rpm 信号 ⇒ 全 1
+// （与加前逐字节一致）。LLM_GATEWAY_ROUTING_CAPACITY_SHARE=0 ⇒ 关闭。
+// 语义与 dispatch limiter 的 rpm 令牌桶互补：那边管「这一分钟放不放行」，
+// 这里管「多桶共存时首跳份额按容量分摊」——等权（weight=100）+差异 RPM
+// 的现实形状（211 实测 15-19 桶全等权）此前会平均泼向紧桶。
+func capacityShareFactors(cands []provider.Candidate) []float64 {
+	factors := make([]float64, len(cands))
+	for i := range factors {
+		factors[i] = 1.0
+	}
+	if envFloat("LLM_GATEWAY_ROUTING_CAPACITY_SHARE", 1) <= 0 {
+		return factors
+	}
+	maxRPM := 0
+	for _, c := range cands {
+		if c.RPMLimit != nil && *c.RPMLimit > maxRPM {
+			maxRPM = *c.RPMLimit
+		}
+	}
+	if maxRPM <= 0 {
+		return factors
+	}
+	for i, c := range cands {
+		if c.RPMLimit == nil || *c.RPMLimit <= 0 {
+			continue // 未配置容量的桶不折减（中性），硬上限仍由 limiter 管
+		}
+		f := float64(*c.RPMLimit) / float64(maxRPM)
+		if f < 0.1 {
+			f = 0.1
+		}
+		if f > 1 {
+			f = 1
+		}
+		factors[i] = f
+	}
+	return factors
 }

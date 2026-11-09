@@ -54,15 +54,23 @@ func TestProbeBackoffForErrCodeClassifiesTransport(t *testing.T) {
 // Rate-limit / concurrency kinds carry a scheduling interval in the policy
 // (3m / 5m). Re-probing a 429 after 5s just burns the limit again, so the
 // policy interval must act as a floor under the generic ladder.
+// ★ 2026-11-09（探针对齐限流窗口）：rate 族首跳＝窗口重灌估计（默认 60s，
+// 替换 3m 固定档）；窗口关闭 ⇒ 逐字节回 3m 旧口径。高位梯级（5m 封顶）不动。
 func TestProbeBackoffForKindRateLimitHonoursPolicyFloor(t *testing.T) {
-	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 1); got != 3*time.Minute {
-		t.Fatalf("rate_limit attempt 1 = %v, want 3m floor", got)
+	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 1); got != 60*time.Second {
+		t.Fatalf("rate_limit attempt 1 = %v, want window 60s (2026-11-09 口径)", got)
 	}
 	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 7); got != 5*time.Minute {
 		t.Fatalf("rate_limit attempt 7 = %v, want recovery cap 5m", got)
 	}
-	if got := ProbeBackoffForErrCode("http_429", 2); got != 3*time.Minute {
-		t.Fatalf("http_429 attempt 2 = %v, want 3m floor", got)
+	if got := ProbeBackoffForErrCode("http_429", 2); got != 60*time.Second {
+		t.Fatalf("http_429 attempt 2 = %v, want window 60s", got)
+	}
+	prev := rateWindowRefillSecondsFn
+	rateWindowRefillSecondsFn = func() int { return 0 }
+	defer func() { rateWindowRefillSecondsFn = prev }()
+	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 1); got != 3*time.Minute {
+		t.Fatalf("rate_limit attempt 1 (window off) = %v, want legacy 3m floor", got)
 	}
 }
 
