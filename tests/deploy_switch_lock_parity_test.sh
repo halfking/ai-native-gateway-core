@@ -221,6 +221,13 @@ if [[ "$repo_fields" != "$ssot_fields" ]]; then
   exit 1
 fi
 printf 'PASS metadata field set matches the shared SSOT: %s\n' "$repo_fields"
+SOURCE_HOST=logical-deploy-label dl_switch_lock_write_metadata > "$repo_meta"
+repo_machine="$(awk -F= '$1 == "source_hostname" {print $2}' "$repo_meta")"
+[[ "$repo_machine" == "$(hostname)" ]] || {
+  printf 'FAIL source_hostname must identify the machine, not SOURCE_HOST\n' >&2
+  exit 1
+}
+printf 'PASS machine identity survives logical SOURCE_HOST override\n'
 
 # ═════════════════════════════════════════════════════════════════════════
 # P4：跨仓漂移账（★ 只降不升的棘轮）
