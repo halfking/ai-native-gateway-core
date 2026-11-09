@@ -71,7 +71,7 @@ type MarketPriceSyncRun struct {
 
 const marketPriceOverviewSQL = `
 	SELECT m.canonical_name, m.canonical_id, COALESCE(mc.display_name, ''),
-	       m.market_min_in_cny_per_1m, m.market_min_out_cny_per_1m,
+	       m.market_min_cny_in_per_1m, m.market_min_cny_out_per_1m,
 	       m.market_min_platform_count, m.market_min_platform_id,
 	       m.vendor_list_in_per_1m, m.vendor_list_out_per_1m, m.vendor_vendor,
 	       s.s_in, s.s_out, s.s_cur,
@@ -197,7 +197,7 @@ func (s *Service) MarketPriceSyncRuns(ctx context.Context, limit int) ([]MarketP
 		limit = 10
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, run_date::text, source_platforms, source_rows,
+		SELECT id, run_date::text, source_platforms, source_rows,
 		       landed_rows, rejected_rows, conflicts, detail, created_at::text
 		FROM market_price_reference_sync
 		ORDER BY id DESC
