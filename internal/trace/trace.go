@@ -4,7 +4,7 @@
 //   - 请求进入 → 中间件 → handler → executor → upstream → 流响应 全链路事件
 //   - 每个事件包含: 序号 / 阶段 / 模块 / 耗时 / 状态 / 详情 / 错误
 //   - 请求进行中: Redis 暂存 (key=request:trace:{request_id}, TTL 600s)
-//   - 请求完成: 一次性 UPDATE 到 session_turns_hot/冷表 trace_events (JSONB)
+//   - 请求完成: UPDATE 到业务 hot/冷表或探针 hot 表 trace_events (JSONB)
 //   - 失败时: 保存上下文快照(路由状态/节点状态/并发槽位/凭据缓存等)
 //
 // 优雅降级:
@@ -159,7 +159,7 @@ type Recorder interface {
 	// Load 读取完整 trace。优先从 Redis 读,自动 fallback 到 PG。
 	Load(ctx context.Context, requestID string) (*RequestTrace, bool, error)
 
-	// FlushToPG 把 Redis 中的 trace 写入 session trace_events，门开启时可回退 legacy。
+	// FlushToPG 把 Redis trace 写入业务或探针父行，再持久化规范化阶段事件。
 	// 一般在请求结束的 defer 中调用。失败仅日志,不抛错。
 	FlushToPG(ctx context.Context, db *pgxpool.Pool, requestID string) error
 
@@ -456,8 +456,8 @@ func (r *RedisRecorder) Load(ctx context.Context, requestID string) (*RequestTra
 
 // FlushToPG implements Recorder.
 //
-// 把 Redis trace 写入 session 热表，已归档时回退冷表；仅停写门开启时
-// 才允许回退 legacy 热表。只有父行和规范化事件持久化成功才清理 Redis。
+// 把 Redis trace 写入业务热表，已归档时回退冷表，隔离探针回写探针热表。
+// 只有父行和规范化事件持久化成功才清理 Redis，不写已退役的 legacy 表。
 // 沿用调用方 ctx（后台调用方自行脱离请求取消），不延长其 deadline。
 func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, requestID string) error {
 	if requestID == "" || r == nil || r.rdb == nil || db == nil {
@@ -483,7 +483,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 	// ★ 2026-10-20（迁移 890，v1 族退役）：原先在写门开着时还会追加一条
 	// 「回退 legacy 热表」的 UPDATE。v1 族被整体 DROP 后那条语句必然 42P01
 	// ⇒ 删除。写门在本函数里**不再**决定写哪一族：trace_events 的唯一归宿
-	// 是会话族（session_turns_hot / session_turns 两面都试）。
+	// 是业务会话族及物理隔离的探针族（954 补 trace_events 列）。
 	//
 	// ⚠ 口径损失（如实登记）：v1 侧曾有 691,883 行带真实 trace_events，而
 	// 镜像**从不**写会话族的 trace_events 列 ⇒ 历史请求的 trace 在 PG 侧
@@ -493,6 +493,7 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 	updates := []string{
 		`UPDATE session_turns_hot SET trace_events = $1::jsonb WHERE request_id = $2`,
 		`UPDATE session_turns SET trace_events = $1::jsonb WHERE request_id = $2`,
+		`UPDATE session_turns_probe_hot SET trace_events = $1::jsonb WHERE request_id = $2`,
 	}
 	var rowsAffected int64
 	for _, query := range updates {
@@ -542,7 +543,7 @@ func shouldDeleteTraceAfterFlush(rowsAffected int64) bool {
 	return rowsAffected > 0
 }
 
-// ErrTraceParentNotFound 表示 trace 对应的 session/允许写入的 legacy 父行尚未落库或已不存在。
+// ErrTraceParentNotFound 表示 trace 对应的业务/探针父行尚未落库或已不存在。
 var ErrTraceParentNotFound = errors.New("trace: request log row not found")
 
 // ErrEmptyRequestID 当 requestID 为空时返回。
@@ -598,8 +599,8 @@ func unmarshalTrace(raw, fallbackID string) (*RequestTrace, error) {
 // 不应该作为 HTTP 500 报给前端。原实现会让前端展示 "no rows in result set" 红色错误,
 // 实际只是该行尚无 trace_events JSONB;此处把 ErrNoRows 当成"未找到"返回。
 //
-// session hot/cold 优先；仅没有 session 父行时回退 legacy 历史。
-// session 行存在但 trace 为空不能被旧宽表的残留事件掩盖。
+// 业务 session hot/cold 优先；没有业务父行时查独立探针族。
+// 业务父行存在但 trace 为空时，不用其它存储面的残留事件掩盖。
 func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*RequestTrace, error) {
 	if requestID == "" {
 		return nil, ErrEmptyRequestID
@@ -609,13 +610,15 @@ func LoadFromPG(ctx context.Context, db *pgxpool.Pool, requestID string) (*Reque
 	}
 	// ★ 2026-10-20（迁移 890，v1 族退役）：原先的第二条查询（v1 热表 ∪ v1 母表）
 	// **整条删除**——v1 族被整体 DROP 后它必然 42P01，而同一条语句里的
-	// 会话族腿已经覆盖了两个存储面（hot ∪ 父表）。
+	// 会话族腿覆盖业务 hot/cold；954 补齐独立探针存储面。新写入开关不能
+	// 阻断已经持久化的历史探针 trace 的读取。
 	queries := []string{
 		`SELECT trace_events FROM (
 			SELECT trace_events, ts, 0 AS priority FROM session_turns_hot WHERE request_id = $1
 			UNION ALL
 			SELECT trace_events, ts, 1 AS priority FROM session_turns WHERE request_id = $1
 		) t ORDER BY priority, ts DESC NULLS LAST LIMIT 1`,
+		`SELECT trace_events FROM session_turns_probe_hot WHERE request_id = $1`,
 	}
 	for _, query := range queries {
 		var raw []byte

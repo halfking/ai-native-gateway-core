@@ -11,6 +11,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/schemaobj"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -55,6 +56,20 @@ func retirementPG(t *testing.T) *pgxpool.Pool {
 	for _, table := range []string{"session_turns_hot", "session_turns", "_request_logs_hot", "_request_logs"} {
 		if _, err := pool.Exec(ctx, "CREATE TABLE "+table+" (request_id text, ts timestamptz DEFAULT now(), request_status text, trace_events jsonb)"); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, strings.ReplaceAll(schemaobj.Table(t,
+		"../../sql/objects/tables/schema_migrations.sql",
+		"../../sql/objects/constraints/schema_migrations_schema_migrations_pkey.sql"), "public.", schema+".")); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range []string{"928_probe_traffic_physical_lane.sql", "954_probe_lane_trace_events.sql"} {
+		body, err := os.ReadFile("../../sql/migrations/startup/" + migration)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, strings.ReplaceAll(string(body), "public.", schema+".")); err != nil {
+			t.Fatalf("apply %s: %v", migration, err)
 		}
 	}
 	_, err = pool.Exec(ctx, `CREATE TABLE request_stage_events (
@@ -106,7 +121,7 @@ func TestTraceRetirementFlushPG17(t *testing.T) {
 		gate        bool
 	}{
 		{"hot", "session_turns_hot", false}, {"cold", "session_turns", false},
-		{"enabled_session_priority", "session_turns_hot", true}, {"legacy_compatibility", "_request_logs_hot", true},
+		{"enabled_session_priority", "session_turns_hot", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			retirementGate(t, tc.gate)
@@ -206,7 +221,7 @@ func TestTraceRetirementFlushPG17(t *testing.T) {
 func TestTraceRetirementLoadPG17(t *testing.T) {
 	pool := retirementPG(t)
 	ctx := context.Background()
-	for i, table := range []string{"session_turns_hot", "session_turns", "_request_logs_hot", "_request_logs"} {
+	for i, table := range []string{"session_turns_hot", "session_turns", "session_turns_probe_hot"} {
 		id := fmt.Sprintf("read_%d", i)
 		_, err := pool.Exec(ctx, "INSERT INTO "+table+"(request_id,trace_events) VALUES($1,$2::jsonb)", id, `{"events":[],"final_status":"`+table+`"}`)
 		if err != nil {
@@ -215,6 +230,15 @@ func TestTraceRetirementLoadPG17(t *testing.T) {
 		got, err := LoadFromPG(ctx, pool, id)
 		if err != nil || got == nil || string(got.FinalStatus) != table {
 			t.Fatalf("%s read=%+v err=%v", table, got, err)
+		}
+	}
+	// v1 was retired by 890; old traces must not mask missing current parents.
+	for _, table := range []string{"_request_logs_hot", "_request_logs"} {
+		if _, err := pool.Exec(ctx, "INSERT INTO "+table+"(request_id,trace_events) VALUES($1,'{\"final_status\":\"retired\"}')", table); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := LoadFromPG(ctx, pool, table); err != nil || got != nil {
+			t.Fatalf("retired v1 table %s was read: trace=%+v err=%v", table, got, err)
 		}
 	}
 	for _, table := range []string{"session_turns_hot", "session_turns"} {
