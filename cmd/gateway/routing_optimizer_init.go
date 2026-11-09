@@ -153,7 +153,8 @@ func initTaskProfile() {
 			slog.Warn("taskprofile: overlay load failed, embedded defaults stay active",
 				"file", overlay, "err", err)
 		} else {
-			slog.Info("taskprofile: profile overlay loaded", "version", v, "file", overlay)
+			// rule 71：version 是保留名（服务版本），业务语义改用 overlay_version。
+			slog.Info("taskprofile: profile overlay loaded", "overlay_version", v, "file", overlay)
 		}
 	}
 }
