@@ -4,7 +4,13 @@
 -- 以减少「上游已恢复但系统 ~24h 未感知」问题
 
 -- §44 lock_timeout 守卫：ALTER TABLE 可能等锁，超时中止避免堵住全库
+BEGIN;
 SET LOCAL lock_timeout = '2s';
+-- Full-table index DDL uses the repository's conservative 10-minute budget;
+-- lock acquisition remains bounded to 2s.
+-- 实测：211 PG17，models_canonical 1,769 行的 featured 临时投影建索引
+-- 1.166ms（2026-11-09 13:16，ROLLBACK）；隔离 PG17 整文件重放两遍通过。
+SET LOCAL statement_timeout = '10min';
 
 DO $$ 
 BEGIN
@@ -37,8 +43,8 @@ BEGIN
     
     -- Add column comment
     COMMENT ON COLUMN models_canonical.featured IS 
-        'Whether this model should be prioritized for probing and monitoring. ' ||
-        'Typically includes free-tier models and commonly-used entry models. ' ||
+        'Whether this model should be prioritized for probing and monitoring. '
+        'Typically includes free-tier models and commonly-used entry models. '
         'Featured models are probed more frequently to ensure timely recovery detection.';
     
     -- Mark initial featured models (free/entry tier models)
@@ -88,3 +94,8 @@ BEGIN
         (SELECT COUNT(*) FROM models_canonical WHERE featured = TRUE);
         
 END $$;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('953', 'models_canonical.featured: priority probing for free and entry models')
+ON CONFLICT (version) DO NOTHING;
+COMMIT;

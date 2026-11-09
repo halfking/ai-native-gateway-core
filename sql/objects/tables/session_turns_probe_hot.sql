@@ -41,7 +41,8 @@ CREATE TABLE public.session_turns_probe_hot (
     gw_session_id      text,
     agent_name         text,
     quality_flags      text[],
-    created_at         timestamptz NOT NULL DEFAULT now()
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    trace_events       jsonb
 );
 
 

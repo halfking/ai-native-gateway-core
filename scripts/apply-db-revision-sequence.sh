@@ -2586,6 +2586,8 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/950_probe_queue_source_credential_recovery.sql"
   "$ROOT_DIR/sql/migrations/startup/951_armor_judgments_created_at_idx.sql"
   "$ROOT_DIR/sql/migrations/startup/952_model_price_versions.sql"
+  "$ROOT_DIR/sql/migrations/startup/953_models_canonical_featured.sql"
+  "$ROOT_DIR/sql/migrations/startup/954_probe_lane_trace_events.sql"
 )
 
 
@@ -3145,6 +3147,8 @@ ledger_artifact_probe "932_outbox_events_fresh_install.sql" \
 #     public.X / 'X' 字面量必须真实出现在迁移文件里）。
 ledger_artifact_probe "933_task_events.sql" \
   "to_regclass('public.task_events') IS NOT NULL"
+ledger_artifact_probe "954_probe_lane_trace_events.sql" \
+  "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.session_turns_probe_hot'::regclass AND attname = 'trace_events' AND NOT attisdropped)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
