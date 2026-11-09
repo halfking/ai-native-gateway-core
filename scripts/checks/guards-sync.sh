@@ -45,18 +45,25 @@ registered="$(printf '%s\n' "$registered_all" | grep '^\./internal/' || true)"
 missing_slow=0
 registered_slow="$(sed -n 's/^GUARD_PACKAGES_SLOW[[:space:]]*:*=//p' Makefile \
   | tr -d '\\' | tr ' ' '\n' | sed 's|^\\$||' | grep '^\./' || true)"
+# ★★ 2026-10-30 r1050 轮：**实时数出**门文件数，不再写死。
+#   ★ 起因：★ 这行原本硬编码「94 个门文件」⇒ ★★ 而实际已是 165 个
+#   （★ 2026-10-22 那轮确实是 94 ⇒ ★ **写死的数字不会自己过期**）
+#   ⇒ ★★ 它是**运行期面向人的输出**（不是注释）⇒ ★★ **活的假话比注释假话更贵**：
+#   ★★ 人会照着它判断「这个包有多重」。
+#   ⇒ ⇒ 改成 `find` 实时数 ⇒ ★ **数字从此不可能过期**（★ 删一个门文件它就少一个）。
+# ★★ 2026-11-09 r1050 轮复核补记：★★ 上面那句实时数**只在「登记缺失」分支里打**
+#   ⇒ ⇒ ★★ **正常路径下用户看不到它** ⇒ ★★ 而 `Makefile` 的 `make help` 文本已指向
+#   ⇒ ★★ 「见 guards-sync.sh 的实时输出」⇒ ⇒ ★★ 指向了一个平时不显示的地方
+#   ⇒ ⇒ ★★ **把实时数提到正常路径也打**（★ 每次跑都能看到当前真值 ⇒ ★★ 这才是
+#   ⇒ ★★ 「让数字不可能过期」的完整形态：★ 不只是「不写死」，★★ 还要「随时可见」）。
+slow_guard_count="$(find "${repo_root}/scripts/ursmcheck" -maxdepth 1 -name '*_test.go' -type f 2>/dev/null | wc -l | tr -d ' ')"
 if ! printf '%s\n' "$registered_slow" | grep -qx './scripts/ursmcheck'; then
-  # ★★ 2026-10-30 r1050 轮：**实时数出**门文件数，不再写死。
-  #   ★ 起因：★ 这行原本硬编码「94 个门文件」⇒ ★★ 而实际已是 165 个
-  #   （★ 2026-10-22 那轮确实是 94 ⇒ ★ **写死的数字不会自己过期**）
-  #   ⇒ ★★ 它是**运行期面向人的输出**（不是注释）⇒ ★★ **活的假话比注释假话更贵**：
-  #   ★★ 人会照着它判断「这个包有多重」。
-  #   ⇒ ⇒ 改成 `find` 实时数 ⇒ ★ **数字从此不可能过期**（★ 删一个门文件它就少一个）。
-  slow_guard_count="$(find "${repo_root}/scripts/ursmcheck" -maxdepth 1 -name '*_test.go' -type f 2>/dev/null | wc -l | tr -d ' ')"
   echo "❌ ./scripts/ursmcheck 未登记进 Makefile 的 GUARD_PACKAGES_SLOW" >&2
   echo "   ⇒ 它有 ${slow_guard_count} 个门文件（含 CJK 变量名棘轮、R75 巡检快路门、投递门…）" >&2
   echo "   ⇒ 不登记 ⇒ 它们在 CI 上一次都不会跑 ⇒ 门只是文档，不是门。" >&2
   missing_slow=1
+else
+  echo "✅ ./scripts/ursmcheck 已登记进 GUARD_PACKAGES_SLOW（当前 ${slow_guard_count} 个门文件，★ 实时数出）"
 fi
 # 反向：慢速清单里的每一项都必须真实存在于磁盘上。
 while IFS= read -r entry; do

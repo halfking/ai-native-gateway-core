@@ -35,11 +35,40 @@ CORE_GO_PACKAGES := ./internal/ir ./domains/dispatch ./domains/streaming/...
 
 .PHONY: test
 test: ## 全量单元测试（CI 默认入口）
-	$(GO) test ./... -count=1 -timeout=300s
+	$(GO) test ./... -count=1 -timeout=1800s
+# ★★ 2026-11-09 r1050 轮复核：本 target 的每包预算 **300s → 1800s**。
+#   ★ 起因（★ 实测 + 推理）：★ 本 target 跑的是 `go test ./...` ⇒ ★★ **它包含
+#   ★★ `./scripts/ursmcheck`**（★ 慢门那 180 个门文件所在包）⇒ ★★★ 而该包实测
+#   ★★★ **1122.817s**（★ r1050 轮 run2，★ HEAD 5a4150440，★ 低负载档）⇒ ★★★
+#   ★★★ **⇒ 300s 的预算对它必然腰斩** ⇒ ★★★ **本 target 一直是红的**（★ 红在
+#   ★★★ `panic: test timed out`，★ 不是判据红）。
+#   ★★★ 而**官方门 `verify.sh` 的全量腿早就是 `-timeout=1800s`**（★ r1044 轮
+#   ★★★ 把它从 900s 提到 1800s）⇒ ★★★★ **⇒ 同一批包在两个入口上预算不同
+#   ★★★★ ⇒ 正是本轮新立通用式「同一道门在不同通道上有不同预算」⇒ ⇒ ★★ 必须同档**。
+#   ⚠ 提高的仍只是**每包**预算，不是总时长（★ 各包并行 ⇒ 墙钟由最慢的包决定）。
 
 .PHONY: test-short
 test-short: ## 短模式，跳过 -short=false 的测试（scripts/ursmcheck 静态门包已超出本通道预算，走 guards-ursmcheck / verify.sh）
-	$(GO) test $$( $(GO) list ./... | grep -v '^github.com/kaixuan/llm-gateway-go/scripts/ursmcheck$$' ) -count=1 -short -timeout=120s
+	$(GO) test $$( $(GO) list ./... | grep -v '^github.com/kaixuan/llm-gateway-go/scripts/ursmcheck$$' ) -count=1 -short -timeout=1800s
+# ★★ 2026-11-09 r1050 轮复核：**本 target 的每包预算 120s → 1800s**（★ 与 `test` /
+#   ★ `guards` / `guards-fast` / `.githooks/pre-push` **五处同档** ⇒ ★★ 见 `guards`
+#   ★★ target 上方那段预算依据）。
+#   ★ 起因（★ 实测）：★ 本轮跑 `make test-short` ⇒ ★★★ **`admin` FAIL 120.552s**，
+#   ★★★ 日志是 `panic: test timed out after 2m0s` ⇒ ★★★★ **又是腰斩、不是判据红**
+#   ★★★ ⇒ ★★★ **⇒ 这是同一个预算失配的载体之一** ⇒ ⇒ ★★ 必须一起改。
+#   ★★ **它不是「短模式所以一定快」**：★ `-short` 只跳过显式声明 `testing.Short()` 的用例；
+#   ★★ 而 `internal/sqlguard` **一个 `testing.Short()` 都没有**（★ 实测 grep 零命中）
+#   ★★ ⇒ ★★ **它在 `-short` 通道里照样要跑满 ~269s** ⇒ ⇒ ★★ **「短」是作者的意图，
+#   ★★ 不是包的实际代价** ⇒ ★★ **预算必须按实际代价定**。
+#   ★★ **为什么定 1800s 而不是 600s**：★ 本通道虽排除了 `scripts/ursmcheck`，★ 但
+#   ★★ **它含 `admin`**（★ 481 个测试文件）⇒ ★★ 而 `admin` 在**慢门**里就是按
+#   ★★ **1800s** 预算的 ⇒ ★★★★ **同一个包在两条通道上必须是同一个预算** ⇒ ★★★
+#   ★★★ （★ 本轮 600s 那一次在**极端负载**（load 371）下仍被腰斩于 601.588s，
+#   ★★★ ★ 腰斩点定位到单个重测试 `TestEveryV1ReaderIsAnalyzedByExtractor`（已跑 2m50s）
+#   ★★★ ★ ⇒ ★★★ **⇒ 600s 在争用机器上并不够 ⇒ 直接对齐慢门的 1800s**）。
+#   ★★ 另有既存登记（★ `LESSONS.md` §611 记「admin ~104s vs 120s 只剩 16s 余量」）
+#   ★★ ⇒ ★★★ **该登记已过期**：★ 本轮实测 admin 在慢门里需 **162.700s**、在本通道
+#   ★★★ 里被腰斩于 120.552s ⇒ ★★★ **⇒ 「余量 16s」的说法必须作废**。
 
 # ── 审计守卫（R69）────────────────────────────────────────────────────
 #
@@ -72,9 +101,21 @@ test-short: ## 短模式，跳过 -short=false 的测试（scripts/ursmcheck 静
 #   ./domains/hooks/response（响应拦截链 —— 台账的接线证明在那儿）、
 #   与 ./middleware（主链记账 —— 口径门在那儿）。
 #   ⇒ 实测（干净环境）：0.4s / 0.9s / 0.9s，绿。
-#   ⚠ ★ **admin 包故意不登记**：它的测试套件实测 **65.8s**，逼近本快门的
-#   `-timeout=120s` ⇒ 拖进来会把 CI 拖到超时 ⇒ 它的门**故意不带**
-#   `AUDIT-GUARD` 标记（主要判据放在 internal/extpointledger 与 scripts/ursmcheck）。
+#   ⚠ ★ **admin 包故意不进本快门**：★ 它的测试套件有 **481 个测试文件**且大量
+#   ★ 触碰 DB/集成路径（★ 实测 `admin/*_test.go` 里命中 redis/sql.Open/
+#   ★ testcontainers/integration 的有数十个）⇒ ⇒ **CI 的 Linux 4 核容器里直接跑
+#   ★ 它有外部依赖风险** ⇒ ⇒ 它的门**故意不带** `AUDIT-GUARD` 标记（主要判据放在
+#   ★ internal/extpointledger 与 scripts/ursmcheck）。
+#   ⚠ ★ **2026-11-09 r1050 轮复核更正**：★ 这条登记原先的理由是「实测 65.8s 逼近
+#   ★ `-timeout=120s`」⇒ ★★★ **而快门预算本轮已提到 600s** ⇒ ★★★ **原理由已失效**
+#   ★★★ （★ 600s 下 65.8s 有 ~9x 余量 ⇒ **根本不是超时问题了**）⇒ ★★★ **但结论
+#   ★★★ 不变、理由换了**：★ **换成「有外部依赖」这条更强、与预算无关的理由** ⇒
+#   ★★★ **登记不放进「因预算而排除」那一类**（★ 那类会随预算变化而失效 ⇒ ★★★
+#   ★★★ **写下来的理由会过期，而结论被继承** ⇒ ★★★ 这正是「数字/理由不可能过期」
+#   ★★★ 的同款问题）。
+#   ★ ★ 注：admin 并**不是**没人跑 ⇒ ★ 它登记在 `GUARD_PACKAGES_SLOW`（★ 1800s
+#   ★ 预算）⇒ ★ `make guards` 的 `guards-ursmcheck` 会跑它（★ 本轮慢门实测
+#   ★ admin **162.700s**）⇒ ★★ **排除的只是「进 CI 快门」，不是「执行」**。
 #
 # 为什么要补：这个包里的门（208 号 storage_reclaim_guard_test.go、209/210 号
 # handrun_sql_inventory_test.go、objects_registry_test.go）在**任何 CI job 里都不会跑** ——
@@ -147,8 +188,11 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 #   ⇒ 登记进 GUARD_PACKAGES_SLOW ⇒ scripts/checks/guards-sync.sh 的双向检查
 #     同样覆盖它（漏登记/登记错了会红）。
 # ★★ 2026-10-30 r1050 轮：**「94 个」是 2026-10-22 那轮的历史读数**（★ 当时确实
-#   是 94 个）⇒ ★★ **它早已不是当前值**：★ 实测当前 `scripts/ursmcheck/*.go`
-#   = **165** 个（★ 磁盘与 `git ls-files` 逐项一致 ⇒ 口径确定）。
+#   是 94 个）⇒ ★★ **它早已不是当前值**：★ 当时实测 `scripts/ursmcheck/*.go`
+#   = 165 个（★ 磁盘与 `git ls-files` 逐项一致 ⇒ 口径确定）⇒ ★★ **2026-11-09 再量
+#   ★★ 已是 180 个** ⇒ ★★★ **⇒ 这条注释就是「写死的读数会漂」的活样本** ⇒
+#   ★★★ **★ 故本文件里不再复述当前值**（★ 当前值由 `scripts/checks/guards-sync.sh`
+#   ★★★ 的 `find` **实时数**给出 ⇒ ★★★ **不可能过期** ⇒ ★★ 每次要数就跑它）。
 #   ⇒ ★★ **同一个 165 与 r1049 轮的「165」是不同集合**：★ 那 165 指
 #   ★ 「调用编译型 go 子命令的 `.sh`/`.py` 脚本数」，★ 这 165 指「门文件数」
 #   ⇒ ★★ **撞号不是同一件事** ⇒ ★★ 引用时必须写清口径，否则会互串。
@@ -173,7 +217,47 @@ GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
 guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门）
-	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
+
+# ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
+#   ★ `guards-fast` **两个 target 同档** ⇒ ★★ CI 跑的那条也一起提）。
+#   ★ 起因（★ 实测，非推断）：★ 复核跑 `make guards-fast` ⇒ `internal/sqlguard`
+#   ★★ **FAIL 120.029s**，日志里是 `panic: test timed out after 2m0s` ⇒ ★★ **是腰斩、
+#   ★★ 不是判据红**（★ 隔离重跑 `-timeout=600s` ⇒ **ok 170.156s** ⇒ ★★ 绿但慢）。
+#   ★★★ **而 170.156s > 120s ⇒ ★★★ 它本来就跑不完自己的预算** ⇒ ★★★ **任何稍慢的机器
+#   ★★★ 上 CI 主门都会腰斩** ⇒ ⇒ ★★ **这不是「并发噪声」，是预算失配**。
+#   ★★ 而腰斩**不是「一个红包」**（★ r1044 轮 §5.2.2 同款机理）：★ `testing` 的超时是
+#   ★★ **alarm goroutine 里的 panic** ⇒ ★★ 其它 goroutine 的 `defer` 不执行 ⇒ ★★ 而
+#   ★★ `internal/sqlguard/sql_literal_guard_selftest_test.go` **确实有写仓内文件的操作**
+#   ★★ ⇒ ⇒ ★★ **被跟踪的台账可能静默留空** ⇒ ⇒ ★★ 预算必须给足。
+#
+#   ⇒ ★★★★ **★★ 预算必须按「在门里跑」的读数定，不是按「隔离跑」的读数定 ★★**
+#   ★★ 这是本轮最贵的一条教训（★ 三次读数给出三个不同的数）：
+#   ★★   ① 隔离跑（低负载）：**170.156s**
+#   ★★   ② 隔离跑（有负载档，★ 用 `/usr/bin/time -l` 取 CPU）：**189.16s**
+#   ★★      ⇒ 而 **CPU 仅 44.15s**（11.34 user + 32.81 sys）⇒ ★★★★ **慢在 I/O 与
+#   ★★★      调度争用，不在 CPU** ⇒ ★★★ **墙钟读数受负载支配，CPU 读数不受**
+#   ★★   ③ **在门里跑**（★ 29 个包并行，★ `go test` 默认 GOMAXPROCS 并行度，
+#   ★★      ★ 同一台机器、同一外部负载档）：**268.823s** ← ★★★★ **门内的真实成本**
+#   ★★★ ⇒ ★★ ① 与 ③ 差 **1.58x** ⇒ ★★★★ **⇒ 按隔离读数定预算 ⇒ 门里必腰斩**
+#   ★★★★ ⇒ ★★ 取 **600s**（★ 对 268.823s 留 **~2.23x** 余量；★ 对门内次慢的
+#   ★★★ `sql/migrations/startup` 237.521s 留 ~2.5x）。
+#   ★★★★ **为什么不能只按「本机实测 + 小余量」定**：★ CI 是 **4 核 Linux 容器**
+#   ★★★★ （★ 本机 10 核 + 外部负载 250~345）⇒ ★★★ **CI 的单核速度、磁盘与并行度
+#   ★★★★ 都可能更慢** ⇒ ★★ **在没有 CI 复测读数之前，预算必须按上界定**。
+#   ★★ 慢用例是**分散**的（★ sqlguard 本轮 per-test 实测：64.40s + 32.35s +
+#   ★★ 30.27s + 27.05s + 21.89s + 8.41s，其余 < 3s）⇒ ★★ **拆用例不如提预算**
+#   ★★ （★ 拆了还要逐个重估，风险更高；★ 且这些是**读仓内文件**的门，拆了也快不了）。
+#   ★★ 门内其余各包实测：★ partguard 160.477s · sql/schema 139.837s ·
+#   ★★ billguard 113.030s · rowsguard 94.549s · domains/credential 77.618s ⇒ ★★ 600s
+#   ★★ 对它们都有 **≥2.2x** 余量。
+#   ⚠ 提高的仍只是**每包**预算，不是总时长：各包并行执行，★ 总墙钟由最慢的包决定
+#   ⚠ ⇒ ★★ **不会**让 CI 墙钟翻倍（★ 实测：改预算前后 CI 侧墙钟由「脚本门主导」
+#   ⚠ 决定，★ Go 段本来就由最慢的 sqlguard 决定）。
+#   ⚠ 这**不是**「把阈值调大以让检测变松」：★ 超时是 harness 的**杀开关**，★ ★ 调大它
+#   ★ ★ 不会让任何一道门从红变绿 ⇒ ★★ 它只会让一个**健康但慢**的包不被腰斩。
+#   ⚠ 反过来**也不能小**：★ 腰斩会把「绿」变成「红」，★ 且**破坏被跟踪台账的落盘**
+#   ⚠ ⇒ ★★ 一个**假红**比一个**慢门**贵得多。
 
 # ── 切流锁契约门 + 跨仓对拍门 ───────────────────────────────────────────────
 #
@@ -402,8 +486,12 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #     ④ ⇒ 本仓**真正在跑的**流水线载体是 codeup Flow（`.workflow/main-verify.yml`）。
 #
 #   本 target 的定位：**只跑 CI 预算内的部分**。
-#     · 快门（GUARD_PACKAGES）—— 4 核 Linux 实测 116s 墙钟，最慢单包 14.3s
-#       ⇒ 远低于 120s/包上限 ⇒ 可以进 CI。
+#     · 快门（GUARD_PACKAGES）—— ★ **2026-10 月的 4 核 Linux 读数**：116s 墙钟、
+#       最慢单包 14.3s（★ 该读数**已过期**：★ 期间上游新增了大量门文件与重测试 ⇒
+#       ★ ★ 本轮 2026-11-09 本机**门内**实测最慢单包已是 **268.823s**（★ 隔离跑只有
+#       ★ ★ 170~189s ⇒ ★★ **门内才是要用的那一档**）⇒ ★★★ ★ ★ **预算同步由 120s 提到
+#       ★ ★ 600s**，★ 理由与数据见 `guards` target 上方那段注释）
+#       ⇒ ★★★ **预算上限只放宽「不腰斩」，不放宽任何判据**。
 #     · ★ **慢门（scripts/ursmcheck）不进 CI**：4 核 Linux 实测 **767s（13 分钟）**
 #       ⇒ codeup Flow 的常规 job 预算装不下；且它依赖 `python3` 与 bash 工具链
 #       （alpine 实测因缺 python3 而红——那是**环境缺件**，不是代码缺陷）。
@@ -413,7 +501,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
 guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门；不含 ursmcheck 慢门）
-	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
+	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
 #
@@ -446,7 +534,12 @@ guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scrip
 guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
-# scripts/ursmcheck 的 166 个门文件（比主门慢一个量级 ⇒ 独立 timeout）
+# scripts/ursmcheck 的门文件（比主门慢一个量级 ⇒ 独立 timeout）
+# ★★ 2026-10-31 r1050 轮补记：★ 本行原本写死「165 个门文件」⇒ ★★ 上游 2026-11-09
+#   ★★ 把它手改成「166 个」⇒ ★★★ **而当时的真值是 180** ⇒ ★★★ **写死的数字必漂**
+#   ★★★ （★ 手改的那个数**当场就是错的** ⇒ ★★ 比不改更坏：★ 它看起来是「核对过的」）
+#   ⇒ ⇒ ★★ 改为**不写死**：★ 门文件数由 `scripts/checks/guards-sync.sh` 的
+#   ★★ `find` **实时数**给出（★ `make guards-sync` 可见）⇒ ★★ **数字从此不可能过期**。
 # ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
 #   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
 #   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
@@ -465,7 +558,7 @@ guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描�
 #   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
 #   （⇒ 预算不必再提；★ 但余量已非「宽松」，下一轮若继续变重需重新评估）。
 .PHONY: guards-ursmcheck
-guards-ursmcheck: ## scripts/ursmcheck 全量门（166 个门文件；CI 上此前从未执行过）
+guards-ursmcheck: ## scripts/ursmcheck 全量门（门文件数见 scripts/guards-sync.sh 的实时输出；CI 上此前从未执行过）
 	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录

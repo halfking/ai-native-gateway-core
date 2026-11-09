@@ -1,0 +1,33 @@
+test_154_pins_public_host_and_sni (__main__.WebSurface) ... ok
+test_fail_closed_call_sites (__main__.WebSurface) ... ok
+test_private_umask_and_public_only_permissions (__main__.WebSurface) ... ok
+test_real_http_gate_checks_html_and_javascript (__main__.WebSurface) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 3.089s
+
+OK
+ERROR: refusing to force-remove /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-force-safety.XXXXXX.gQ4fLg6EeF/kx-llm-gateway-deploy-245.lock: metadata target=154 (requested 245)
+ERROR: refusing to kill live non-deploy PID 73256 for /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-force-safety.XXXXXX.gQ4fLg6EeF/kx-llm-gateway-deploy-245.lock
+ERROR: cannot read remote lock on 245; refusing force recovery
+ERROR: refusing to remove live flock lock /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-flock-path.XXXXXX.tuHtjflB62/kx-llm-gateway-deploy-245.lock
+ERROR: shared build lock is still held by flock; refusing force removal
+ERROR: cannot verify flock lock state for /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-flock-path.XXXXXX.tuHtjflB62/kx-llm-gateway-deploy-245.lock
+ERROR: refusing to kill live non-deploy PID 1 for /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-eperm.XXXXXX.dzIs4p9fHK/kx-llm-gateway-deploy-245.lock
+ERROR: shared build lock is still held by live PID 1; refusing force removal
+ERROR: remote lock belongs to live source PID 1; refusing force recovery
+[deploy-local] warning: 对外端口 8782 当前无人监听，而另一侧 8781 有残留网关 —— 仍按文件链部署到 8782（对外契约端口不可漂移），8781 将在本次部署中被清理
+[deploy-local] warning: 对外端口 8781 当前无人监听，而另一侧 8782 有残留网关 —— 仍按文件链部署到 8781（对外契约端口不可漂移），8782 将在本次部署中被清理
+[deploy-local] warning: 对外端口 8782 当前无人监听（全新安装或网关已停止）—— 部署仍落 8782
+[deploy-local] redis-discover: named → nbjl-redis
+[deploy-local] redis-discover: scan → valid-redis-cache
+[deploy-local] redis-discover: scan → redis-custom
+[deploy-local] redis-discover: system → 127.0.0.1:16379
+[deploy-local] warning: release /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-local-contract.XXXXXX.piUPZ3MUVg/residue-install/bin/2.5.4.9999 is empty (residue from a previous failed deploy); auto-cleaning and retrying staging
+[deploy-local] warning: release /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-local-contract.XXXXXX.piUPZ3MUVg/residue-install/bin/2.5.4.10003 is the active deployment; moving it aside to 2.5.4.10003.prev-1794220627 before restaging
+[deploy-local] warning: release /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-local-contract.XXXXXX.piUPZ3MUVg/residue-install/bin/2.5.4.10004 already exists (intact, not active); moving it aside to 2.5.4.10004.prev-1794220627 to allow same-version redeploy
+     · ★ 该条【★ 对扫描器完全不可见 ★】、★ 处置方式【★ 不代裁 ★】★
+
+real	13m48.911s
+user	2m45.389s
+sys	2m31.545s

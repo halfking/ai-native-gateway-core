@@ -1,0 +1,541 @@
+cd installer && go test ./... -count=1 -timeout=300s
+?   	github.com/kaixuan/llm-gateway-go/installer/cmd/e2e-bootstrap	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/cmd/llm-gw-installer	12.322s
+?   	github.com/kaixuan/llm-gateway-go/installer/cmd/llm-launcher	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/activation	0.724s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/dbinit	1.557s
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/enrollment	0.780s
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/envdetect	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/imgsrc	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/instancemeta	0.460s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/api	0.242s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/backend	14.030s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/checker	1.030s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/e2e	2.779s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/orchestrator	0.639s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/proxy	0.406s
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/launcher/store	0.123s
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/prompt	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/report	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/installer/internal/secrets	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/installer/internal/upgrader	0.366s
+✓ 无「$变量紧跟非 ASCII 字节」隐患（探针与反向对照均已通过）
+PASS=161 FAIL=0
+PASS wrapper rejects missing injected key contract
+PASS wrapper routes key-authenticated target through configured hop
+PASS audit uses wrapper-aware SSH path
+PASS audit streams journal locally without remote staging
+PASS audit checks key-based wrapper contract with password compatibility
+summary: 5 passed, 0 failed
+═══════════════════════════════════════════════════════════════
+ credential_script_contract_test.sh
+═══════════════════════════════════════════════════════════════
+── monitor_245_contract ──
+  [0;32mPASS[0m monitor enables fail-closed shell flags
+  [0;32mPASS[0m monitor requires dedicated DB password
+  [0;32mPASS[0m monitor sends password and query through stdin
+  [0;32mPASS[0m monitor reads password remotely
+  [0;32mPASS[0m monitor uses ON_ERROR_STOP
+  [0;32mPASS[0m monitor has no sshpass
+── migration_154_contract ──
+  [0;32mPASS[0m migration enables fail-closed shell flags
+  [0;32mPASS[0m migration requires explicit confirmation
+  [0;32mPASS[0m migration supports dry-run
+  [0;32mPASS[0m migration uses batch SSH
+  [0;32mPASS[0m migration passes DB password by stdin
+  [0;32mPASS[0m migration has no sshpass
+  [0;32mPASS[0m migration dry-run needs no remote credential or connection
+  [0;32mPASS[0m migration refuses apply without DB password
+── local_deploy_test_contract ──
+  [0;32mPASS[0m local test requires explicit insecure-default opt-in
+  [0;32mPASS[0m local test validates before full execution
+  [0;32mPASS[0m local test validates configuration
+  [0;32mPASS[0m Docker path uses a temporary Compose file
+  [0;32mPASS[0m Docker env file is owner-readable only
+  [0;32mPASS[0m Docker path exports validated PostgreSQL values
+  [0;32mPASS[0m Docker temporary files are removed on exit
+  [0;32mPASS[0m local test does not print password-bearing PG command
+── request_detail_contract ──
+  [0;32mPASS[0m detail test defaults to localhost
+  [0;32mPASS[0m detail test requires remote opt-in
+  [0;32mPASS[0m detail test accepts existing token
+  [0;32mPASS[0m detail test builds login JSON with jq
+  [0;32mPASS[0m detail test uses curl timeouts
+  [0;32mPASS[0m detail test has no hard-coded production URL
+  [0;32mPASS[0m detail test has no default password
+  [0;32mPASS[0m detail test does not print token prefix
+
+summary: 30 passed, 0 failed
+== stage_mobile_surface 三路判定 ==
+  ok    dist 存在：拷贝进 bundle（rc=0）
+  ok    dist 存在：index.html 落到 bundle/web-mobile/
+  ok    dist 存在：嵌套 assets/ 一并平铺
+  ok    dist 存在：不发 warn
+  ok    缺失 + --no-frontend：rc=0（沿用线上是既定语义）（rc=0）
+  ok    缺失 + --no-frontend：显式 warn，不静默
+  ok    缺失 + --no-frontend：不误判为硬失败
+  ok    缺失 + 构建跑过：rc=1（缺陷形态必须拦住）（rc=1）
+  ok    缺失 + 构建跑过：err 说明为什么拒发
+  ok    调用点检查了返回值（|| exit 1）
+
+PASS=10 FAIL=0
+PASS self-check diagnostics schema and NULL-safety contract passed
+PASS 并行双 checkout 同起点并发 bump 得到不同 seq (a=2251 b=2250)
+PASS 并发消费连续无重复 (2250/2251 各一次)
+PASS floor 持久：--seq 3000 后下一个默认 bump = 3001
+PASS floor 不可用退回旧行为：2249 -> 2250
+PASS 全新机器连续性：current=500 且 floor 缺失 -> 501
+
+5 passed, 0 failed
+PASS deploy-lib symlink resolves
+PASS runtime role is declared
+PASS traffic-only implies data-plane-only bg mode
+PASS data-plane mode gates background writer block
+PASS version exposes runtime role
+PASS 154 has candidate port
+PASS 245 has candidate unit
+PASS nginx includes dynamic fragment
+PASS seamless starts candidate before stop
+PASS seamless stops old service after gates
+PASS blue-green fallback uses canary at active port
+PASS blue-green fallback derives canary unit from port
+PASS legacy SERVICE_NAME fallback is gated behind the no-canary elif branch
+PASS seamless stages slot before candidate start
+PASS seamless probes candidate version before promotion
+PASS seamless promotes current after candidate probes
+PASS 154 canary pins immutable slot binary
+PASS 154 canary pins immutable slot version
+PASS 245 canary pins immutable slot binary
+PASS 245 canary pins immutable slot version
+PASS canary unit restarts on failure
+PASS version probe uses immutable staged identity
+PASS installer backs up legacy unit
+PASS seamless surfaces per-probe failure
+PASS seamless forward probe default 600s (aligned with 245)
+PASS seamless host_rollback probe fallback stays 120s (prewarmed candidate)
+PASS seamless second probe window bounded at 60s
+PASS seamless probes actual listening port before rotation
+PASS seamless port arbitration via nginx upstream
+PASS local direct fallback is explicit
+PASS install does not start traffic
+PASS prune removes dangling slot symlinks
+PASS prune spares active and candidate slots
+PASS env file permissions converge to 0600
+PASS rollback starts rollback_service, not the deprecated $SERVICE_NAME unit
+PASS rollback derives rollback_service from candidate_unit and canonical port
+PASS rollback starts the derived rollback_service
+PASS rollback records rollback_service in run/active-service
+PASS rollback stops prior unit only when it differs from rollback_service
+PASS rollback removes prior slot only when port differs from canonical
+== 目标机侧部署锁（并发互斥）==
+  ✓ ① 接线层：--via 路径真的去目标机建锁了（远端建锁命令已发生）
+  ✓ ④ 不自踩层：父进程把 DD_TARGET_LOCK_HELD=1 随行给子进程
+  ✓ ② 结论层：锁被占用时退出码非 0（fail-closed，rc=1）
+  ✓ ② 结论层：拒绝文案落地（运维看得懂为什么被挡）
+  ✓ ③ 顺序层：拒绝发生在部署 ssh 之前（生产未被触碰）
+mutated
+  ✓ ⑤ 变异臂：整套锁机制被摘掉后，建锁命令不再发生 ⇒ ① 抓得住（门有牙）
+  ✓ ⑤ 变异臂：整套锁机制被摘掉后，不再被锁挡住 ⇒ ② 抓得住（fail-closed 那一层有牙）
+  ✓ ⑤ 变异臂：整套锁机制被摘掉后，部署照样发生 ⇒ ③ 抓得住（顺序层有牙）
+  ✓ ⑥ 隔离成立：仓内引擎文件未被本 harness 改动
+==========================================
+通过 9 / 失败 0
+== 部署同步清单剪枝规则 ==
+  ✓ ② 陷阱层：引擎的可执行部分没有 `--exclude=gateway`
+  ✓ ② 陷阱层：引擎的可执行部分没有 `--exclude=./gateway`
+  ✓ ② 陷阱层：引擎的可执行部分没有 `--exclude=logs`
+  ✓ ② 陷阱层：引擎的可执行部分没有 `--exclude=bin`
+  ✓ ② 陷阱层：引擎的可执行部分没有 `--exclude=run`
+  ✓ ② 陷阱层：引擎的可执行部分没有 `--exclude=llm-gateway`
+  ✓ ① 已从引擎里提取到真实剪枝代码块
+  ✓ ① 完整性层：剪枝后的同步清单**不缺任何一个旧口径会带走的跟踪文件**（含 cmd/gateway 主包源码）
+  ✓ ③ 自洽层：`logs` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`run` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`bin` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`gateway` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`llm-gateway` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`gateway-v2` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`quality-monitor` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`.codegraph` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ③ 自洽层：`.audit-validation` 是 0 跟踪文件的本地残留（可剪）
+  ✓ ④ 已提取引擎真实 tar 命令行：_tar_create+=( -cf - -n -T "$_dd_sync_list" )
+  ✓ ④ 产物层：真 tar 打出 27001 个条目
+  ✓ ④a 产物层：tar 里没有任何 .env* 文件
+  ✓ ④b 产物层：tar 里没有 .log / ._* / .DS_Store
+  ✓ ④c 产物层：被剪的残留目录确实不在 tar 里
+  ✓ ④d 产物层：旧口径会带走的跟踪文件，产物里一个不缺（含 cmd/gateway 主包源码）
+  ✓ ⑤ 变异臂：--exclude=gateway 确实会命中 cmd/gateway/main.go ⇒ ② 这条规则有牙（本机复现）
+==========================================
+通过 24 / 失败 0
+═══════════════════════════════════════════════════════════════
+ deploy_lock_test.sh — v2 concurrent deploy lock + stale-detection
+═══════════════════════════════════════════════════════════════
+── AC-L1: same-process contention ──
+  [0;32mPASS[0m first lock_acquire_local succeeds
+  [0;32mPASS[0m second lock_acquire_local fails with EX_TEMPFAIL (75)
+  [0;32mPASS[0m after release, re-acquire succeeds (AC-L2)
+── AC-L3: parallel-process racing ──
+  [0;32mPASS[0m exactly one racer won (1 wins / 4 losses)
+  [0;32mPASS[0m all other racers lost (4 losses) — contention detected
+── AC-L4: stale-lock detection ──
+  [0;32mPASS[0m stale lock remains on disk (auto-eviction forbidden)
+  [0;32mPASS[0m lock_acquire_local refuses stale lock (rc=75)
+  [0;32mPASS[0m after operator cleanup, acquire succeeds
+── AC-L5: trap release on crash ──
+  [0;32mPASS[0m trap released local lock after crash exit
+── AC-L6: force-unlock ──
+  [0;32mPASS[0m remote lock present before force-unlock
+WARN: removing remote lock at /var/lib/llm-gateway-go/deploy.lock on operator request
+  [0;32mPASS[0m force-unlock removed remote lock
+── AC-L7: remote metadata failure cleanup ──
+  [0;32mPASS[0m metadata failure returns EX_TEMPFAIL
+  [0;32mPASS[0m partial remote lock removed after metadata failure
+── AC-L8: remote lock owner compare-and-delete ──
+  [0;32mPASS[0m old remote owner cannot delete replacement lock
+  [0;32mPASS[0m current remote owner releases its lock
+  [0;32mPASS[0m lock release leaves no staging dir
+  [0;32mPASS[0m release on metadata-less lock is a no-op (rc=0)
+── AC-L8: lock metadata contains no secrets ──
+  [0;32mPASS[0m lock metadata has no password/secret/token/key patterns
+  [0;32mPASS[0m lock metadata has field: target
+  [0;32mPASS[0m lock metadata has field: pid
+  [0;32mPASS[0m lock metadata has field: started_at
+── AC-L8: target lock isolation ──
+  [0;32mPASS[0m 154 lock acquired
+  [0;32mPASS[0m 245 lock acquired while 154 lock is held
+  [0;32mPASS[0m 154 metadata identifies target 154
+  [0;32mPASS[0m 245 metadata identifies target 245
+── AC-L9: shared build lock ──
+  [0;32mPASS[0m first shared build lock acquired
+  [0;32mPASS[0m second build lock is rejected with EX_TEMPFAIL
+  [0;32mPASS[0m build lock remains held after contention
+  [0;32mPASS[0m build lock releases cleanly
+── AC-L10: shared build lock flock ──
+  [0;34mINFO[0m flock unavailable; mkdir path covered by AC-L9
+── AC-L10: unlock target precedence ──
+  [0;32mPASS[0m explicit target inspects target lock despite stale override
+  [0;32mPASS[0m target lock metadata was selected
+  [0;32mPASS[0m stale override lock was not removed
+── AC-L11: force flag parser ──
+  [0;32mPASS[0m --force is recognized
+  [0;32mPASS[0m --force is stripped while deployment args are preserved
+  [0;32mPASS[0m --force-unlock remains a compatible alias
+── AC-L12: stale lock recovery ──
+[force] rebuilt target lock path: /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-force-recovery.XXXXXX.YmOTVLwQa5/kx-llm-gateway-deploy-245.lock
+[force] rebuilt shared build lock path: /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-force-recovery.XXXXXX.YmOTVLwQa5/kx-llm-gateway-build.lock
+  [0;32mPASS[0m force removes stale target and build locks
+  [0;32mPASS[0m normal acquisition rebuilds both lock metadata files
+── AC-L13: force recovery safety guards ──
+  [0;32mPASS[0m cross-target local lock is preserved
+  [0;32mPASS[0m live non-deploy local PID is protected
+  [0;32mPASS[0m remote lock read failure fails closed
+── AC-L14: force recovery flock path ──
+  [0;32mPASS[0m flock-held target lock refuses removal (rc=75)
+  [0;32mPASS[0m flock-held build lock refuses removal (rc=75)
+[force] rebuilt target lock path: /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-flock-path.XXXXXX.tuHtjflB62/kx-llm-gateway-deploy-245.lock
+  [0;32mPASS[0m flock-available target lock is removed
+[force] rebuilt shared build lock path: /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/kx-flock-path.XXXXXX.tuHtjflB62/kx-llm-gateway-build.lock
+  [0;32mPASS[0m flock-available build lock is removed
+  [0;32mPASS[0m missing flock bin refuses removal (rc=75)
+── AC-L15: cross-host force recovery ──
+  [0;32mPASS[0m cross-host lock is NOT auto-recovered (fail closed) and the lock survives
+  [0;32mPASS[0m cross-host refusal names the override (DD_FORCE_FOREIGN_LOCK) and the reason
+  [0;32mPASS[0m explicit DD_FORCE_FOREIGN_LOCK=1 takes over a foreign-host lock
+  [0;32mPASS[0m forced foreign-host takeover warns that liveness was NOT verified
+  [0;32mPASS[0m same-host dead-holder lock is still recoverable (positive control)
+── AC-L16: target lock form unification ──
+  [0;32mPASS[0m directory-form local lock creates a DIRECTORY at the lock path
+  [0;32mPASS[0m directory-form release leaves NO residue (no empty shell file)
+  [0;32mPASS[0m engine acquires the TARGET lock in directory form (same form as the remote side)
+── AC-L15: machine-level default lock path ──
+  [0;32mPASS[0m default path ignores TMPDIR (machine-level /tmp)
+  [0;32mPASS[0m targetless default path also machine-level
+  [0;32mPASS[0m LOCK_TMP_ROOT test seam overrides the root
+── AC-L16: EPERM-safe liveness ──
+  [0;32mPASS[0m local force recovery refuses lock held by live foreign PID 1
+  [0;32mPASS[0m build force recovery refuses lock held by live foreign PID 1
+  [0;32mPASS[0m remote force recovery refuses lock held by live source PID 1
+
+───────────────────────────────────────────────────────────────
+ summary: 59 passed, 0 failed
+PASS bump-version: seq 严格前进 (cur=2955 new=2956, +1 为 floor 设计内跳变)
+PASS bump-version: 同代码保序(SAME_CODE)逻辑已移除
+PASS detect: 仅 8781 监听 → active=8781, unit 取 ps 归属
+PASS detect: 仅 8782 监听 → active=8782（上一轮蓝绿后正常态）
+PASS detect: 双监听 → nginx upstream 仲裁 active=8782, stale=8781 待清理
+PASS detect: 双监听且 upstream 无法仲裁 → fail-closed (rc=1)
+PASS detect: 无监听 → fresh 主机, active 取契约 8781
+PASS resolve: 文件 8782 + 残留 8781 → 仍部署 8782（对外端口不可漂移，2026-09-20 主修复）
+PASS resolve: 文件 8781 + 残留 8782 → 仍部署 8781（对称场景）
+PASS resolve: 文件与实测一致 8781
+PASS resolve: 无监听 → 保留链式结果
+PASS resolve: 双监听 → 保留链式结果(另一侧由 start_instance 清理)
+PASS resolve: 自定义端口 8790 → 透传不复核
+PASS resolve: 漂移场景输出诊断告警（残留将被清理、端口不漂移）
+PASS resolve: 无监听场景不误报残留
+
+ summary: 15 passed, 0 failed
+═══════════════════════════════════════════════════════════════
+ deploy_promotion_test.sh — v2 245→154 promotion gate
+═══════════════════════════════════════════════════════════════
+── AC-P1: promotion gate artifacts ──
+  [0;32mPASS[0m build_seq bumped 0 → 1
+  [0;32mPASS[0m version.json build_seq matches (1)
+  [0;32mPASS[0m version.json version string: v2.4.3-1
+── AC-P2: --seq pinning is idempotent ──
+  [0;32mPASS[0m pinned --seq=42 applied (no double-bump)
+  [0;32mPASS[0m second --seq=42 does not double-bump
+── AC-P3: sequential bumps add 1 each ──
+  [0;32mPASS[0m 5 bumps → build_seq 0 → 5 (delta=5)
+── AC-P4: pinned seq reuses the same image tag ──
+  [0;32mPASS[0m promoted tag reused: v2.4.3-1
+── AC-P5: gate refuses to promote when 245 verify fails ──
+  [0;32mPASS[0m 245 failure blocks promotion, gate exits 3
+  [0;32mPASS[0m gate explicitly refuses 154 promotion
+
+───────────────────────────────────────────────────────────────
+ summary: 9 passed, 0 failed
+PASS Kubernetes liveness remains healthz
+PASS Kubernetes readiness uses readyz
+PASS Kubernetes readiness path follows liveness and is strict
+PASS Kubernetes release image is immutable
+PASS Kubernetes manifest does not use latest
+PASS Kubernetes honors gateway drain budget
+PASS Host library exposes strict readyz gate
+PASS Host metadata uses temporary file before rename
+PASS Host metadata atomically replaces final file
+PASS Seamless deployment calls candidate readyz gate
+PASS Readiness gate precedes verified metadata
+PASS 154 rollback contract matches versioned implementation
+PASS 154 uses versioned rollback contract
+PASS Local deploy records prior active bundle
+PASS Local deploy restores prior bundle after start failure
+PASS Local deploy requires readyz before verification
+PASS 154 canary systemd budget covers 600s probe window
+PASS 245 canary systemd budget covers 600s probe window
+═══════════════════════════════════════════════════════════════
+ deploy_sops_test.sh — Slice 6 SOPS / scanner tests
+═══════════════════════════════════════════════════════════════
+── sops_yaml_regex ──
+  [0;32mPASS[0m regex captures .env.71.enc
+  [0;32mPASS[0m regex captures .env.184.enc
+  [0;32mPASS[0m regex captures .env.252.enc
+  [0;32mPASS[0m regex captures .env.kaixuan-1.enc
+  [0;32mPASS[0m regex allows .enc suffix
+  [0;32mPASS[0m single recipient line
+── gitignore_plaintext ──
+  [0;32mPASS[0m plaintext .env.252 is ignored
+  [0;32mPASS[0m plaintext .env.kaixuan-1 is ignored
+  [0;32mPASS[0m plaintext .env.71 is ignored
+  [0;32mPASS[0m plaintext .env.184 is ignored
+  [0;32mPASS[0m blanket *.enc ignore rule present
+  [0;32mPASS[0m .env.252.enc is gitignored (untracked-by-policy)
+  [0;32mPASS[0m .env.kaixuan-1.enc is gitignored (untracked-by-policy)
+── sops_envelope_detection ──
+  [0;32mPASS[0m no .env.*.enc tracked in repo (post-53971b270 policy)
+  [0;33mSKIP[0m local enc artifacts absent — envelope structure check skipped
+── scan_secrets_skips_enc ──
+  [0;33mSKIP[0m no local .enc artifacts to scan — envelope-bypass check not exercised
+── baseline ──
+  [0;32mPASS[0m baseline contains 169 entries (Phase 3B-4 legacy allowlist)
+  [0;32mPASS[0m baseline does NOT allow-list any .env.*.enc files
+  [0;32mPASS[0m baseline entries below 215 (healthy)
+── scan_secrets_does_not_exempt_non_sops ──
+  [0;32mPASS[0m filename .env.<target>.enc without SOPS preamble produces BLOCK finding
+── private_replacements_guard ──
+  [0;32mPASS[0m private replacement table is ignored
+  [0;32mPASS[0m private replacement table is not tracked
+  [0;32mPASS[0m private replacement table is protected by .gitignore
+── sync_refuses_history_bypass ──
+  [0;32mPASS[0m sync script rejects --skip-history-rewrite
+
+───────────────────────────────────────────────────────────────
+ summary: 22 passed, 0 failed
+OK   ⑪a implementation exposes a single candidate source
+OK   ⑪b candidate chain has >= 2 entries (3)
+OK   ① explicit valid wins
+OK   ①b success path exports ENVS_ROOT
+OK   ② explicit missing dir -> rc 64
+OK   ②b explicit missing dir -> actionable hint
+OK   ②c explicit missing dir -> fix hint
+OK   ②d explicit missing dir -> no downstream ENOENT
+OK   ②e explicit missing dir -> caller did not continue
+OK   ③ explicit non-SSOT dir -> rc 64
+OK   ③b explicit non-SSOT dir -> names the offending path
+OK   ③c explicit non-SSOT dir -> no downstream ENOENT
+OK   ③d explicit non-SSOT dir -> caller did not continue
+OK   ④ candidate #1 resolved when it is the only one
+OK   ④ candidate #2 resolved when it is the only one
+OK   ④ candidate #3 resolved when it is the only one
+OK   ⑤ all candidates present -> first one wins
+OK   ⑥ only the later candidate present -> it resolves (fallback)
+OK   ⑦ no SSOT anywhere -> rc 64
+OK   ⑦b no SSOT anywhere -> actionable hint
+OK   ⑦c no SSOT anywhere -> caller did not continue
+OK   ⑧ sourced without set -e -> rc 64
+OK   ⑧b sourced without set -e -> caller did not continue
+OK   ⑨ executed directly -> rc 64
+OK   ⑩ error text layouts == candidate chain (no drift)
+OK   ⑪ deploy-prereqs.sh ENVS_ROOT fallback is chain-based (P-15)
+envs_resolution selftest: 26 passed, 0 failed
+OK   ① judge = shared SSOT helper (/Users/niuer/workspace/ai-native-tools/deploy-lib/db-changelog.sh)
+OK   ① no startup migration (>=412, 460 checked) is silently dropped by the retirement judge
+OK   ②a explicit marker line => retired
+OK   ②b identifier superseded_by => not retired
+OK   ②c prose mention of superseded => not retired
+OK   ②d DDL line containing superseded_by => not retired
+OK   ②e explicit DEPRECATED marker => retired
+OK   ③ the shared SSOT has no substring-matching retirement judge left
+migration_retired_marker selftest: 8 passed, 0 failed, 0 skipped
+dl_load_project_env: all checks passed
+PASS default root is isolated under the project subdirectory
+PASS required layout is created without optional dependency directories
+PASS optional shared service directories are conditional
+PASS Redis three-level discovery finds named, scan, no-cli, and host listeners
+PASS release bundle, checksum, atomic pointer, and verification metadata
+PASS local deploy automatically bumps build_seq and rejects the bumped collision before side effects
+PASS empty residue dirs self-heal; non-empty/intact/active dirs handled correctly
+PASS dl_verify_release surfaces explicit errors for missing SHA256SUMS and checksum mismatches
+PASS all unified deployment scripts pass bash syntax
+PASS legacy Downloads path and credential bypass are not used by new entry points
+PASS remote wrappers clear stale SSHPASS and preserve key-only dry-run behavior
+PASS remote wrappers accept injected SSH keys for dry-run preflight
+PASS canonical remote deployment path contains no sshpass implementation
+PASS PostgreSQL migration uses shared service directories and --cleanup-downloads
+PASS shared-directory decision resolves symlinks instead of comparing raw path strings
+PASS legacy root is ignored and existing Redis symlink is idempotent
+PASS bundle logs are pinned under the installation root and services declared via KAIXUAN_ROOT
+PASS shared service directories and Redis link are idempotent
+PASS --cleanup-downloads is opt-in and archives the legacy tree
+PASS active port 8782 is default and INSTALL_ROOT guard refuses legacy paths
+PASS independent project roots do not share deployment state
+PASS local migration failures preserve structured diagnostics and fail closed
+PASS blue-green vs controlled restart branch ordering locked down by grep contract
+PASS stop_instance port-wait guard + verify_instance diagnostics locked down
+PASS dl_ensure_release_available 4-branch contract (active / intact / empty self-heal / fail-closed) locked down
+PASS CGO fallback atomic concurrent-safe contract ($$ suffix + install-not-mv + missing-binary diagnosis) locked down
+PASS log() stderr contract locked: $binary=$() capture must not absorb log output as path
+PASS dl_shared_root recursive/non-absolute guard contract locked (S8-F1)
+PASS PG publish spec preserves the original container host port (no hardcoded 5432)
+PASS LLM_GATEWAY_PG_DATA_DIR override is honored by dl_shared_pg_dir
+OK   ⑪a implementation exposes a single candidate source
+OK   ⑪b candidate chain has >= 2 entries (3)
+OK   ① explicit valid wins
+OK   ①b success path exports AIAN_DEPLOY_LIB
+OK   ② explicit missing dir -> rc 64
+OK   ②b explicit missing dir -> actionable hint
+OK   ②c explicit missing dir -> fix hint
+OK   ②d explicit missing dir -> no downstream ENOENT
+OK   ②e explicit missing dir -> caller did not continue
+OK   ③ explicit non-SSOT dir -> rc 64
+OK   ③b explicit non-SSOT dir -> names the offending path
+OK   ③c explicit non-SSOT dir -> no downstream ENOENT
+OK   ③d explicit non-SSOT dir -> caller did not continue
+OK   ④ candidate #1 resolved when it is the only one
+OK   ④ candidate #2 resolved when it is the only one
+OK   ④ candidate #3 resolved when it is the only one
+OK   ⑤ all candidates present -> first one wins
+OK   ⑥ only the later candidate present -> it resolves (fallback)
+OK   ⑦ no SSOT anywhere -> rc 64
+OK   ⑦b no SSOT anywhere -> actionable hint
+OK   ⑦c no SSOT anywhere -> caller did not continue
+OK   ⑧ sourced without set -e -> rc 64
+OK   ⑧b sourced without set -e -> caller did not continue
+OK   ⑨ executed directly -> rc 64
+OK   ⑩ error text layouts == candidate chain (no drift)
+shared_lib_resolution selftest: 25 passed, 0 failed
+--- scanner rc=1  Files scanned=3 ---
+    🔍 SI-LLM-Gateway Secret Scanner
+       Mode:    strict
+       Paths:   /var/folders/v7/6cy6p_m546db_9ffcfmsjp_c0000gn/T/tmp.s9UDNQSLRf/repo
+       Format:  text
+       Tracked: yes
+       Rules:   50 patterns
+       Locale:  LC_ALL=C LANG=C
+       Engine:  bash 5.2.0(1)-release
+    
+    [BLOCK] ascii-fixture.txt:1  LLM_APIKEY — OpenAI API key
+        token=sk-0123456789abcdef0123456789abcdef
+    [BLOCK] space name fixture.txt:1  LLM_APIKEY — OpenAI API key
+        token=sk-0123456789abcdef0123456789abcdef
+    [BLOCK] 中文夹具-密钥.txt:1  LLM_APIKEY — OpenAI API key
+        token=sk-0123456789abcdef0123456789abcdef
+    
+    ─ Scan Summary ─
+      Files scanned: 3
+      Total findings: 3
+    
+      By category:
+        LLM_APIKEY             3
+    
+      By severity:
+        BLOCK                  3
+    
+    ❌ PUSH BLOCKED
+OK   ① ASCII 文件名的夹具被报出来
+OK   ② 非 ASCII 文件名的夹具被报出来（★ F-18 ★）
+OK   ③ 含空格文件名的夹具被报出来
+OK   ④ Files scanned == 3
+OK   ⑤ 输出里没有八进制转义路径
+OK   ⑥ 三个夹具全部被报出来（★ 非零断言 ★）
+OK   ⑦ 空扫描 fail-closed（★ F-23：rc=3 ≠ 0 ★）
+OK   ⑦ 空扫描没有打印 ✅ CLEAN
+PASS=8 FAIL=0
+OK   白名单 30 词、★ 无未转义花括号（★ 跨平台静态断言 ✔ ★）
+OK   白名单 alternation 在本平台编译成功（★ rc=1、★ 与 libc 版本一致时结论有效 ★）
+OK   含 ${VAR} 形态的行【★ 仍被白名单命中 ★】（★ 豁免行为未失效 ★）
+PASS=3 FAIL=0
+OK   规则 50 条、★ 无不可移植词边界（★ 跨平台静态断言 ✔ ★）
+OK   INTERNAL_IP 3 条规则【★ 全部使用可移植词边界形态 ★】
+OK   可移植词边界语义表 8 行【★ 全部符合 glibc 的 \b 语义 ★】
+OK   ★ 大写形态的凭据赋值【★ 被报出来 ★】（★ 归因阶段大小写不敏感 ✔ ★）
+OK   小写形态的凭据赋值仍被报出来（★ 未把判定放宽成全不匹配 ★）
+OK   ★ 大写形态的 API key【★ 被报出来 ★】（★ BLOCK 级假阴性已修 ✔ ★）
+OK   正常形态的内网 IP【★ 被报出来 ★】（★ 词边界修法在当前平台生效 ✔ ★）
+OK   粘连形态的内网 IP 未被报出来（★ 词边界语义保住了 ✔ ★）
+OK   ★ 扫描摘要【★ 印出了 locale 口径 ★】（★ 读数自带标签 ✔ ★）
+OK   ★ 扫描摘要【★ 印出了引擎版本 ★】
+OK   夹具命中 4/4（★ 门有区分力 ✔ ★）
+PASS=11 FAIL=0
+OK   值表未退化（★ 35 = 19 + 11 + 2 + 3 ★）
+OK   生产代码路径清单非空（★ 8439 个文件 ★）⇒ ★ 量具确实在扫 ★
+OK   生产代码路径上【★ 35 个占位符值 ★】零凭据形态命中
+OK   运维脚本侧的命中集合与已知清单完全一致（★ 14 条 ★）
+OK   判别力成立（★ 合成夹具被抓到 1 条 ★）
+OK   本门自身【★ 不是处置面的一条命中 ★】
+OK   白名单条目从扫描器原样读出（★ 30 条 ★）⇒ ★ 豁免面的判据面【★ 与扫描器同一个 ★】
+OK   白名单在生产代码路径上的【★ 凭据族豁免面 ★】与已知清单完全一致（★ 19 条 ★）
+OK   豁免面里【★ 凭据位上是字面量 ★】的只有已知那一条（★ cmd/calc_quality/main.go|kaixuan ★）⇒ ★ 其余豁免全是占位符／变量形态
+PASS=9 FAIL=0
+PASS=172 FAIL=0
+go test ./internal/sessionid ./internal/rowsguard ./internal/errdiscard ./internal/dbrows ./internal/jsoncol ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard ./internal/metricguard ./internal/partguard ./internal/routeguard ./internal/ingressguard ./internal/healthstateguard ./internal/billguard ./internal/jsonbguard ./internal/clockguard ./internal/stopguard ./internal/testguard ./sql/schema ./sql/migrations/startup ./internal/rewrite ./internal/routeorder ./internal/requestobserver ./domains/credential ./domains/authentication ./internal/extpointledger ./domains/hooks/response ./middleware -count=1 -timeout=300s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessionid	0.108s
+ok  	github.com/kaixuan/llm-gateway-go/internal/rowsguard	94.549s
+ok  	github.com/kaixuan/llm-gateway-go/internal/errdiscard	36.512s
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbrows	0.098s
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsoncol	0.126s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramguard	0.171s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	268.823s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlreadguard	12.338s
+ok  	github.com/kaixuan/llm-gateway-go/internal/metricguard	63.409s
+ok  	github.com/kaixuan/llm-gateway-go/internal/partguard	160.477s
+ok  	github.com/kaixuan/llm-gateway-go/internal/routeguard	2.310s
+ok  	github.com/kaixuan/llm-gateway-go/internal/ingressguard	0.167s
+ok  	github.com/kaixuan/llm-gateway-go/internal/healthstateguard	1.271s
+ok  	github.com/kaixuan/llm-gateway-go/internal/billguard	113.030s
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsonbguard	3.420s
+ok  	github.com/kaixuan/llm-gateway-go/internal/clockguard	73.930s
+ok  	github.com/kaixuan/llm-gateway-go/internal/stopguard	28.021s
+ok  	github.com/kaixuan/llm-gateway-go/internal/testguard	0.031s
+ok  	github.com/kaixuan/llm-gateway-go/sql/schema	139.837s
+ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	237.521s
+ok  	github.com/kaixuan/llm-gateway-go/internal/rewrite	0.078s
+ok  	github.com/kaixuan/llm-gateway-go/internal/routeorder	0.580s
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestobserver	0.281s
+ok  	github.com/kaixuan/llm-gateway-go/domains/credential	77.618s
+ok  	github.com/kaixuan/llm-gateway-go/domains/authentication	5.266s
+ok  	github.com/kaixuan/llm-gateway-go/internal/extpointledger	0.070s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/response	0.168s
+ok  	github.com/kaixuan/llm-gateway-go/middleware	0.336s
+EXIT=0

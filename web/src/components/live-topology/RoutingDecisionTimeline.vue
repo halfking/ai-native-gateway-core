@@ -248,4 +248,16 @@ function actionLabel(action?: string): string {
   font-size: var(--kx-font-sm, 12px);
   color: var(--kx-muted);
 }
+
+/* 2026-11-09（r1050 轮复核上游 9 天内的提交时被抓到）：M4 空间移动缺 reduced-motion 中和。
+   `.decisions__caret` 过渡 `transform`（旋转 0deg → 90deg）⇒ 属「空间移动」
+   ⇒ 按 animate.md:77「Every web animation needs a prefers-reduced-motion path」，
+   ⇒ 且★ 光有块不够 —— 块里必须**真的关掉这条空间过渡**（颜色/透明度反馈才保留）。
+   ★ 本文件此前**整个没有 prefers-reduced-motion 块** ⇒ 门报 M4 0 → 1 是真缺陷（非误报）。
+   ⇒ 写法与同族一致（见 StatsPanel.vue 的 .stats__share/.stats__caret）。 */
+@media (prefers-reduced-motion: reduce) {
+  .decisions__caret {
+    transition: none;
+  }
+}
 </style>
