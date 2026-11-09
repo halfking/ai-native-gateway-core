@@ -130,6 +130,33 @@
 > ★ 遗留：~90% canonical context_window=NULL 待补（归 W2/BudgetRegistry owner，
 >   补齐后预算门走精确执法）；apiclaude >1MB 载荷 400/413 与候选池单供应商仍待
 >   owner 裁决（evol/速云，见 11-09 审计档 §3）。
+>
+> **2026-11-10 第三轮（同日追加）：minimax「不行」三层归因与修复（审计档同档 §附录三）**：
+> ★ 用户反馈＝「glm-5.3-flash 可行、minimax 不行；大输入要合理压缩不能直接报错；
+>   minimaxcode 仍见 context_budget_exceeded (upstream)」。
+> ★ **层1＝fit 字节目标单位混淆**（cd3f2a6a）：fitCandidateContextBudget 目标
+>   min(JSONBytes, InputTokens/2) 把 token 预算当字节——minimax 512k 窗被压成
+>   128KB 字节目标 ⇒ ZCode 受保护区（指令+工具链 60-100KB+）放不下 ⇒
+>   ErrProtectedContext ⇒ 压缩机制名存实亡（"cannot contain the protected task"
+>   生产实证）。修＝InputTokens×3（校准估计器下 bytes≈tokens×3，Check 必过）。
+> ★★ **层2＝Redis 环境漂移（部署引擎缺陷）**（1f66b4bdb）：并行会话的测试 redis
+>   （lgw-mock-only-redis）排 docker ps 前列，find_redis_container 按扫描顺序选中
+>   ⇒ gateway.env 被改写为凭据不匹配的空 mock ⇒ 网关 auth 失败 ⇒ session store
+>   503、large-ingress 大请求全断。修＝与 pg_persisted_host 同纪律：
+>   redis_persisted_container sticky-first（gateway.env 的 REDIS_ADDR = 上次绑定
+>   的唯一权威记录，探活复核后复用）⇒ mock 抢不走绑定（2988 起部署实证稳定）。
+> ★★ **层3＝reasoning 烧光输出预算**（c3cca311）：session 修复后归因转向——压缩链
+>   全部正常（459KB → 1273 prompt tokens 上行），但 MiniMax-M3.1 把 max_tokens
+>   全烧在思考（finish=length、reasoning≈completion、零可见输出）⇒ empty_response
+>   ⇒ 全候选 503；glm 系无此行为＝「glm 可行 minimax 不行」的根因。修＝empty
+>   检测处（budget_exhausted_by_reasoning + finish=length）加倍 max_tokens
+>   （≥2048 cap 32768）同候选免费重试一次（reasoningBudgetBumped 旗标仿
+>   ctxLenRecoveryRetry）；二次仍烧完走既有 empty failover。守护测试 ×3。
+> ★ **验证（211=2989/c3cca311 槽 b）**：459KB minimax 会话 200/19.9s/真实内容，
+>   reasoning 加倍重试日志命中 1 次；Redis sticky 后部署稳定复用 wm-acc-chain-redis。
+> ★ 遗留：nvidia minimaxai 镜像腿当天大面积挂起（小体量也 60s+ canceled）＝上游
+>   健康，网关已正确 failover，探针对大体量挂起不敏感待 owner 裁决；anthropic 腿
+>   同款 reasoning-burn 重试未实现（本轮只覆盖 chat 腿）。
 
 > **2026-11-09 claude-opus-5-5 访问错误根因分析与诊断面修复轮（goal 会话，审计档
 > `docs/audit/2026-11-09-claude-opus-5-5访问错误根因分析与诊断面修复.md`）**：
