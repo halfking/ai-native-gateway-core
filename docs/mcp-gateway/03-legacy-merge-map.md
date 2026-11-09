@@ -68,6 +68,10 @@
 | 38 | 审计导出（NDJSON，SIEM 友好） | `/mcp/control/audit/export` | PRD FR-11 |
 | 39 | 熔断器（按适配器三态） | `mcp/circuit.go` | ContextForge circuit_breaker |
 | 40 | 独立进程形态（边缘部署） | `cmd/mcp-gateway` | — |
+| 41 | 控制面细粒度能力位（注册/管理/统计分析/拓扑） | `mcp/types.go` + `mcp/control_scope.go` | 既有无（既有控制面只认管理令牌） |
+| 42 | 业务 key 按 scope 访问控制面（管理令牌 OR 带 scope 的 key） | `mcp/control_scope.go` | 同上（详见 §6.7） |
+| 43 | 权限放大防护（签发/轮换的 scope 与租户收口） | `mcp/control_scope.go` | 同上（详见 §6.7.5） |
+| 44 | 控制面统计出口 `/mcp/control/stats`（MCP 指标快照 JSON） | `mcp/control.go` | 同上（全局 `/metrics` 仍是运维面） |
 
 ## 5. 明确未移植（登记为后续增强，不隐瞒）
 
@@ -235,6 +239,113 @@ HTTP 头名本身大小写不敏感（RFC 9110 §5.1）⇒ 语义与既有实现
 ★ 影响面（已核实）：仓内 `deploy/grafana/` 的 7 个 dashboard **均未引用**这些旧名
   ⇒ 不存在仓内即时的线上断链；但**外部**监控/告警可能仍按旧名查询 ⇒ 补旧名族
   是为了让这些规则平移后**有数据**，而不是让它们「一直没数据」也不报错。
+
+### 6.7 控制面 scope 鉴权（本轮新增能力；不占用任何 JSON-RPC 错误码）
+
+#### 6.7.1 为什么是「新增」而不是「对齐」
+
+既有 `tools/mcp-gateway` 的控制面（`/admin/*`）**只认管理令牌**；业务 key 的
+scope 在既有实现里**只影响数据面的工具可见性**，与控制面完全无关。
+
+本轮按用户诉求（**「在网关中有新的 key 来对 mcp 进行注册、管理与统计分析等
+能力」**）把控制面鉴权从「仅管理令牌」扩成「管理令牌 **OR** 带对应 scope 的
+key」。
+
+★ **契约纪律**：控制面是**普通 HTTP 管理 API**（响应体形如 `{"error": "..."}`），
+**不是** JSON-RPC 面 ⇒ 本机制**不新增、不占用任何 JSON-RPC 错误码**；既有
+`-32000 ~ -32007` 与既有响应体逐字不动，既有码的取值范围不受影响。
+
+#### 6.7.2 能力位（scope）语义
+
+既有三位**逐字不动**（既有客户端/外部账本按字面值判分支）：
+
+| scope | 语义 | 本轮是否新增 |
+|---|---|---|
+| `mcp.read` | 只读元数据（`tools/list` 等，数据面） | 既有，不动 |
+| `mcp.execute` | 执行工具（数据面） | 既有，不动 |
+| `mcp.admin` | 控制面管理（**超集**：隐含全部 scope） | 既有，不动 |
+| `mcp.register` | **注册面**：适配器/工具/智能体/技能的创建与查看 | ★新增 |
+| `mcp.manage` | **管理面**：注册项的变更与删除、凭证签发/吊销/轮换、审批裁决 | ★新增 |
+| `mcp.analyze` | **统计分析面**：审计查询与导出、路由清单、能力目录、指标快照 | ★新增 |
+| `mcp.topology` | **内部拓扑面**：`/health` 的上游端点与熔断态（加严子位） | ★新增 |
+
+★ **派生规则**：`mcp.admin` 是超集（隐含以上全部）；其余四位**互相不派生**
+（`analyze` 不含 `topology`，`register` 不含 `manage`）⇒ 运营侧可精确授权，
+且「少一位就是少一项权限」。
+
+#### 6.7.3 路由 → 所需能力位（逐条）
+
+| 路由 | 所需 scope | 说明 |
+|---|---|---|
+| `GET /healthz` | — | 公开自检（不含任何拓扑信息） |
+| `GET /health` | `mcp.topology` | ★ 含上游端点与熔断态 ⇒ **单独口径**，比 `analyze` 更严 |
+| `GET /routes` | `mcp.analyze` | 路由清单（适配器 + 工具） |
+| `GET /capabilities` | `mcp.analyze` | 能力目录与分层统计 |
+| `GET /recommend` | `mcp.analyze` | 工具检索推荐 |
+| `GET /stats` | `mcp.analyze` | ★ **本轮新增**的统计出口（MCP 指标快照，JSON） |
+| `GET /adapters` `/adapters/{name}` | `mcp.register` | 注册面只读视图（没有它就无法知道注册了什么） |
+| `POST /adapters` `/tools` `/agents` `/skills` | `mcp.register` | 注册（创建） |
+| `PUT`/`DELETE /adapters/{name}` `/tools/{name}` `/agents/{id}` `/skills/{id}` | `mcp.manage` | 管理（变更/下线） |
+| `GET /keys` | `mcp.manage` | 凭证清单（含 scope 视图，属管理面） |
+| `POST /keys` | `mcp.manage` | 签发凭证（另受 §6.7.5 权限放大收口） |
+| `POST /keys/{id}/revoke` | `mcp.manage` | 吊销 |
+| `POST /keys/{id}/rotate` | `mcp.manage` | 轮换（另受 §6.7.5 收口） |
+| `GET`/`POST /approvals`、`POST /approvals/{id}` | `mcp.manage` | 审批工作流 |
+| `POST /keys/requests/{id}/approve` | `mcp.manage` | 引导面审批 |
+| `GET /audit`、`GET /audit/export` | `mcp.analyze` | 审计查询与导出 |
+| `POST /keys/apply` `/keys/status/{id}` `/keys/claim` | —（引导面开启时免认证） | 既有 D2/D3 语义；引导面关闭时回落管理令牌 |
+
+★ **`/metrics` 为什么不在本表里**：全局 `/metrics` 是 Prometheus 抓取面（属于
+运维网络域，**不在业务 key 的 scope 体系内**）。给业务 key 的统计出口是本轮
+新增的 `GET /mcp/control/stats`（只返回 MCP 网关自己的指标族）。
+
+#### 6.7.4 失败口径（逐条可断言）
+
+| 情形 | HTTP | 响应体 |
+|---|---|---|
+| 无凭据，且管理令牌**已配置** | **401** | `{"error":"unauthorized"}` |
+| 凭据无效（既非管理令牌也非有效 key），管理令牌已配置 | **401** | `{"error":"unauthorized"}` |
+| 无凭据/凭据无效，且管理令牌**未配置** | **503** | `{"error":"control plane disabled: admin token not configured"}` |
+| 凭据有效但 scope 不足 | **403** | `{"error":"forbidden","reason":"scope_denied","required_scope":"…","granted_scopes":[…]}` |
+| 试图签出超出自身权限的 key | **403** | `{"error":"forbidden","reason":"scope_escalation","exceeded_scope":"…"}` |
+| 跨租户访问 | **403** | `{"error":"forbidden","reason":"tenant_mismatch","tenant_id":"…"}` |
+| 账本不可达（判不出 key 是否有效） | **503** | `{"error":"control plane unavailable: credential ledger unreachable"}` |
+
+★ **401 与 403 的分工**：401 = 「你是谁我不知道/你无效」；403 = 「我知道你是谁，
+但你这条不够格」（体里给出 `required_scope`，便于客户端自适应提示）。
+
+★ **与数据面的刻意差异**：数据面对账本故障保持既有的 **fail-open**（放行、交由
+上游校验）；控制面必须 **fail-closed** —— 管理动作在身份无法判定时放行，等于把
+「谁有权改网关」交给网络位置来回答。
+
+★ **管理令牌口径不变**：管理令牌恒为超集（全部路由可访问）；未配置管理令牌时，
+既有 503 口径**逐字保留**（`control plane disabled: admin token not configured`）。
+
+#### 6.7.5 权限放大防护（委派边界）
+
+场景：一把 key 能调 `POST /keys`（签发凭证）。若不设防，它就能签出一把权限
+比自己更大的 key ⇒「拿到凭证即可提权」。⇒ 三道收口：
+
+| 收口 | 规则 | 失败口径 |
+|---|---|---|
+| 签发的 scope 不得超出签发者 | 被签发的**每个** scope 都必须是签发者**自己持有**的 scope（`mcp.admin` 为超集，可全权签发） | 403 `scope_escalation` |
+| 省略 scopes 同样过收口 | 省略时沿用既有默认档 `[mcp.read, mcp.execute]`（`IssueKey` 的既有默认行为逐字不变）⇒ 默认档也要签发者持有 | 403 `scope_escalation` |
+| 轮换不得产出更高权限的 key | 轮换会返回**新 key 的明文** ⇒ 只允许轮换「scope 不超出自身」的凭证 | 403 `scope_escalation` |
+
+★ **租户收口**：业务 key 只能操作自己所属租户；请求里显式带 `X-Tenant-Id` /
+`?tenant=` 且与 key 租户不一致 ⇒ 403 `tenant_mismatch`。管理令牌保持既有语义
+（可指定租户）。
+
+#### 6.7.6 开关与守护
+
+- 开关：`MCP_GATEWAY_CONTROL_SCOPE=off` ⇒ 控制面**只认管理令牌**（回退到本轮
+  改造前的口径）；默认 `on`（零值即开启，不需要额外配置）。
+- Go 守护用例：`mcp/control_scope_test.go`（注册/管理/统计三类能力各一、权限
+  不足被拒、拓扑单独口径、权限放大三道收口、租户收口、既有 401/503 口径、
+  scope 常量与超集语义）。
+- harness 场景：**S25~S31**（真实进程 + 真实 HTTP）：注册面可注册不可改删、
+  管理面可改删、统计分析面可查审计与指标快照、`/health` 需单独的
+  `mcp.topology`、权限放大被挡、无 scope 的 key 被拒、跨租户被拒。
 
 ## 7. 既有「执法在路径」两道门的登记
 

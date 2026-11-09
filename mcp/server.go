@@ -56,6 +56,12 @@ type Config struct {
 	ToolCacheTTL time.Duration
 	// Bootstrap 密钥引导面（D2/D3）配置。
 	Bootstrap BootstrapConfig
+	// ControlScopeDisabled 关闭「业务 key 按 scope 访问控制面」。
+	//
+	// ★ 零值 = false ⇒ **能力默认开启**（新能力不需要额外配置即可用）。
+	//   需要回退到「控制面只认管理令牌」的既有口径时，用环境变量
+	//   MCP_GATEWAY_CONTROL_SCOPE=off（或构造 Config 时置 true）。
+	ControlScopeDisabled bool
 	// Now 时钟（测试可注入）。
 	Now func() time.Time
 }

@@ -68,7 +68,7 @@ func (m *Mount) handleProtectedResourceMetadata(w http.ResponseWriter, r *http.R
 		"resource":                 origin + "/mcp",
 		"authorization_servers":    []string{},
 		"bearer_methods_supported": []string{"header"},
-		"scopes_supported":         []string{ScopeRead, ScopeExecute, ScopeAdmin},
+		"scopes_supported":         ControlScopes(),
 		"resource_name":            "llm-gateway-go MCP Gateway",
 		"resource_documentation":   "https://github.com/kaixuan/llm-gateway-go",
 	}

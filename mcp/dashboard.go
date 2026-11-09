@@ -5,8 +5,9 @@ package mcp
 // 设计取舍：刻意不引入前端构建链 —— 看板要能随网关二进制直接分发，在
 // 内网/边缘环境里「打开就能看」，不依赖 npm registry 与 CDN。
 //
-// 认证：页面从 URL 查询参数 `token` 读取管理令牌（也支持页内输入后刷新）；
-// 令牌只保存在内存（不落 localStorage，避免在共享机器上留痕）。
+// 认证：页面从 URL 查询参数 `token` 读取凭据（管理令牌，**或**带对应 scope 的
+// 业务 key —— 控制面现在两者都认）；令牌只保存在内存（不落 localStorage，
+// 避免在共享机器上留痕）。
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -49,8 +50,8 @@ const dashboardHTML = `<!DOCTYPE html>
 </div>
 
 <section>
-  <h2>管理令牌</h2>
-  <input id="token" type="password" placeholder="X-Admin-Token / Bearer">
+  <h2>管理令牌 / 业务 key</h2>
+  <input id="token" type="password" placeholder="X-Admin-Token / Bearer（业务 key 亦可）">
   <button id="refresh">刷新</button>
   <span class="err" id="err"></span>
   <span class="err" id="err-detail"></span>

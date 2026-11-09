@@ -235,6 +235,8 @@ func (k *Key) Active(now time.Time) bool {
 }
 
 // HasScope 报告是否具备指定 scope。
+//
+// ★ `mcp.admin` 是超集：持有它的 key 具备全部 scope（既有语义，逐字不变）。
 func (k *Key) HasScope(scope string) bool {
 	if k == nil {
 		return false
@@ -255,14 +257,52 @@ const (
 )
 
 // Scope 角色位常量。
+//
+// ★ 契约纪律：**既有三位逐字不动**（mcp.read / mcp.execute / mcp.admin）——
+//
+//	既有客户端/外部账本按 scope 字面值判分支，改名即破坏契约。
+//
+// ★ 新增的四位是**控制面**能力位（业务 key 按细粒度权限访问控制面）：
+//
+//	mcp.register  注册面：创建/查看适配器、工具、智能体、技能
+//	mcp.manage    管理面：变更/删除注册项、签发/吊销/轮换凭证、审批裁决
+//	mcp.analyze   统计分析面：审计查询/导出、路由清单、能力目录、指标快照
+//	mcp.topology  内部拓扑面：/health 的上游端点与熔断态（**加严子位**）
+//
+// ★ 派生规则（HasScope 天然实现）：
+//   - `mcp.admin` 是**超集**：隐含以上全部能力位（既有逻辑不变）。
+//   - 其余各位**互相不派生**（正交）：analyze 不含 topology；register 不含
+//     manage。少一项就是少一项权限 ⇒ 运营侧可以精确授权。
 const (
 	// ScopeRead 只读元数据（tools/list 等）。
 	ScopeRead = "mcp.read"
 	// ScopeExecute 执行工具。
 	ScopeExecute = "mcp.execute"
-	// ScopeAdmin 控制面管理。
+	// ScopeAdmin 控制面管理（超集：隐含全部其它 scope）。
 	ScopeAdmin = "mcp.admin"
+
+	// ScopeRegister 注册面能力位。
+	ScopeRegister = "mcp.register"
+	// ScopeManage 管理面能力位。
+	ScopeManage = "mcp.manage"
+	// ScopeAnalyze 统计分析能力位。
+	ScopeAnalyze = "mcp.analyze"
+	// ScopeTopology 内部拓扑能力位（/health 这类暴露拓扑的面）。
+	ScopeTopology = "mcp.topology"
 )
+
+// ControlScopes 返回网关支持的全部 scope（RFC 9728 元数据与文档口径用）。
+func ControlScopes() []string {
+	return []string{
+		ScopeRead, ScopeExecute, ScopeAdmin,
+		ScopeRegister, ScopeManage, ScopeAnalyze, ScopeTopology,
+	}
+}
+
+// adminScopes 返回管理令牌对应的 scope 集（超集）。
+func adminScopes() []string {
+	return ControlScopes()
+}
 
 // Approval 是敏感工具的审批凭据（对应 PRD 的分级审批）。
 type Approval struct {
