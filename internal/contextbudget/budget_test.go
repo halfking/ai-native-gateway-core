@@ -28,7 +28,19 @@ func TestResolveBucketBudget(t *testing.T) {
 			t.Fatalf("Resolve(%+v) = %+v, %v; want %d tokens", tc.spec, got, err, tc.want)
 		}
 	}
-	for _, spec := range []Spec{{}, {ContextWindow: -1}, {ContextWindow: 8192, OutputReserve: 8192}, {ContextWindow: 8192, SafetyMargin: -1}} {
+	// 2026-11-10 改判（opus-5-5 422 事故）：未知窗口不再硬拒（旧断言：
+	// Resolve({}) 必须报 UnknownContext），而是回落包级保守上限
+	// （MaxInputTokens / DefaultMaxJSONBytes）——生产 ~90% 模型
+	// context_window=NULL，旧的 fail-closed 把数据缺口放大成全平台
+	// pre-dispatch 拒绝（ZCode empty_model_response）。「绝不当无限」
+	// 的设计意图保持：全局上限仍然封顶，已知窗口的精确算术不变。
+	for _, spec := range []Spec{{}, {ContextWindow: -1}} {
+		got, err := Resolve(spec)
+		if err != nil || got.InputTokens != MaxInputTokens || got.JSONBytes != DefaultMaxJSONBytes {
+			t.Fatalf("unknown-window spec %+v must resolve to global caps, got %+v, %v", spec, got, err)
+		}
+	}
+	for _, spec := range []Spec{{ContextWindow: 8192, OutputReserve: 8192}, {ContextWindow: 8192, SafetyMargin: -1}} {
 		if _, err := Resolve(spec); err == nil {
 			t.Fatalf("accepted invalid or exhausted spec %+v", spec)
 		}
