@@ -130,6 +130,25 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 	if policy.Enabled && policy.Interval > delay {
 		delay = policy.Interval
 	}
+	// ★★ 2026-11-09（429 闪断族 · 探针对齐限流窗口）：rate 族探针的下一跳
+	//   ★ 不再钉 3 分钟固定档（AutomaticProbePolicyFor 的 Interval），而是
+	//   ★ 对齐业务侧 W1 节奏校准的窗口重灌估计（routing.rate.window_refill_
+	//   ★ seconds，默认 60s）——「窗口耗尽=窗口重灌即恢复」。211 实测动因：
+	//   ★ 紧 RPM 桶（kimi-k3/glm-5.x 族）业务 429 冷却 60s 后，复检探针要等
+	//   ★ 3 分钟梯底才跑 ⇒ 绑定被钉在 unavailable 多 2 分钟（no_candidate
+	//   ★ 放大）；且探针自身也消耗该桶的 RPM（§631「含失败次数」形态）。
+	//   ★ 节奏校准关闭（window=0）⇒ 逐字节回 3m 固定档（A2 口径）。
+	if kind == errorsx.KindRateLimit {
+		if w := rateWindowRefill(); w > 0 {
+			if delay < w {
+				delay = w
+			} else if delay == policy.Interval && policy.Interval > w {
+				// 3m 固定档命中 ⇒ 用窗口档替换（更早复检；更高梯级不动——
+				// 连击升级后的长梯仍由 attempt 推进，窗口只定「最早有用时刻」）。
+				delay = w
+			}
+		}
+	}
 	// Rate-limit / concurrent are recoverable supplier-side pressures: cap at
 	// the recovery SLA so a cleared 429/并发窗可在约 5 分钟内被复检。
 	// Auth/unknown (empty kind) and KindNoAvailableChannel keep their longer
@@ -143,6 +162,21 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 		delay = capRecoverBackoffForAttempt(attempt, delay)
 	}
 	return delay
+}
+
+// rateWindowRefill mirrors domains/credential's W1 pace-calibration window
+// estimate (settings.RateWindowRefillSeconds, default 60s; 0 = calibration
+// off). bg reads it through settings so probe and business pacing share one
+// operator knob. rateWindowRefillSecondsFn is the test seam over the settings
+// getter (var, not const — same pattern as nodeProbeMirrorWriteRetryDelay).
+var rateWindowRefillSecondsFn = settings.RateWindowRefillSeconds
+
+func rateWindowRefill() time.Duration {
+	sec := rateWindowRefillSecondsFn()
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // networkProbeBackoff paces the network/transient class. Long tail on:

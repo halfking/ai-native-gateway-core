@@ -3934,6 +3934,17 @@ func unavailableBindingHorizon(errCode string, attempt int) (reason string, hori
 	if attempt >= sustainedFailureAttemptThreshold() {
 		return errCode, sustainedFailureRecheck()
 	}
+	// ★ 2026-11-09（429 闪断族 · 探针对齐限流窗口）：rate 族探针失败写给
+	//   绑定的冷却 = 窗口重灌估计（routing.rate.window_refill_seconds，默认
+	//   60s）而非 5 分钟——与业务侧 A2/W1 节奏校准**同一窗口口径**。此前
+	//   探针 429 会把业务侧 60s 的窗口冷却覆盖拉长成 5min（探针写晚到 ⇒
+	//   recover_at 被覆写），紧 RPM 桶被多关 ~4 分钟。窗口口径关闭（0）⇒
+	//   逐字节回 5 分钟。
+	if classifyProbeErrCode(errCode) == errorsx.KindRateLimit {
+		if w := rateWindowRefill(); w > 0 {
+			return errCode, w
+		}
+	}
 	return errCode, 5 * time.Minute
 }
 

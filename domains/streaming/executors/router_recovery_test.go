@@ -155,6 +155,7 @@ func TestFirstHopLotteryWeights_RecoveryRamp(t *testing.T) {
 	// ⇒ int(9.999…×0.2) = int(1.999…) = 1。9 → 1 证明是乘法叠加
 	//（若 recovery 被错误地放进 p 折算，两者会是同一个数）。
 	t.Setenv("LLM_GATEWAY_ROUTING_W_BALANCE", "0.05") // sum=0.05，weighted=1×0.05 → p=1
+	t.Setenv("LLM_GATEWAY_ROUTING_W_RATE_PRESSURE", "0") // 2026-11-09 新维度隔离（p 数学不受稀释）
 	lowBal := 0.0
 	lowBalNoRecovery := provider.Candidate{ProviderID: 1, CredentialID: 3, Weight: 100, BillingMode: "per_token"}
 	lowBalNoRecovery.BalanceUSD = &lowBal

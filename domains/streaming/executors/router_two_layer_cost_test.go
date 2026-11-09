@@ -252,6 +252,7 @@ func TestFirstHopLotteryWeights_PlanQuotaWithoutStickyLoad(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_ROUTING_W_RECENCY", "0")
 	t.Setenv("LLM_GATEWAY_ROUTING_W_BALANCE", "0")
 	t.Setenv("LLM_GATEWAY_ROUTING_W_PLANQUOTA", "0")
+	t.Setenv("LLM_GATEWAY_ROUTING_W_RATE_PRESSURE", "0")
 	if got := firstHopLotteryWeights(cands, r); got != nil {
 		t.Errorf("all penalty weights off must return nil, got %v", got)
 	}
@@ -263,6 +264,7 @@ func TestFirstHopLotteryWeights_QuotaFoldMath(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_ROUTING_W_STICKY", "0")
 	t.Setenv("LLM_GATEWAY_ROUTING_W_RECENCY", "0")
 	t.Setenv("LLM_GATEWAY_ROUTING_W_BALANCE", "0")
+	t.Setenv("LLM_GATEWAY_ROUTING_W_RATE_PRESSURE", "0")
 	r := NewRouter(nil, nil)
 	used50 := 50.0
 	cands := []provider.Candidate{
