@@ -86,8 +86,13 @@ func TestStandardSeverityAlias(t *testing.T) {
 	if obj["severity_text"] != "INFO" {
 		t.Errorf("severity_text=%v，期望 INFO", obj["severity_text"])
 	}
-	if obj["level"] != obj["severity_text"] {
-		t.Errorf("level=%v 与 severity_text=%v 不一致", obj["level"], obj["severity_text"])
+	// level 是小写别名（ECS log.level 惯例），与 severity_text 大小写不同。
+	level, ok := obj["level"].(string)
+	if !ok {
+		t.Fatalf("level 别名缺失")
+	}
+	if level != strings.ToLower(obj["severity_text"].(string)) {
+		t.Errorf("level=%v，期望 severity_text 的小写形态", level)
 	}
 }
 

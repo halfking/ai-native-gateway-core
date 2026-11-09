@@ -218,7 +218,10 @@ func (h *standardHandler) Handle(ctx context.Context, r slog.Record) error {
 	text := severityText(r.Level)
 	r.AddAttrs(
 		slog.String("severity_text", text),
-		slog.String("level", text),
+		// level 是**小写**别名（ECS log.level 惯例），与 severity_text 大小写
+		// 不同是刻意的：两者各取所长，避免下游 LogQL（level=~"error|fatal"）
+		// 因大小写不匹配漏掉所有错误日志。
+		slog.String("level", strings.ToLower(text)),
 		slog.Int("severity_number", severityNumber(r.Level)),
 	)
 
