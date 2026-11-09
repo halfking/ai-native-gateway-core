@@ -1,5 +1,13 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-09 48h 修正审计与三环境发布轮（执行中）**：入口
+> `HANDOFF-48h-remediation-20261109.md` 与
+> `docs/audit/2026-11-09-48h-remediation-report.md`。窗口65非merge提交/271文件；
+> 已修MCP租户/委派/领取/吊销边界、统计完整分钟重扫、MaaS预算/首购/价期、
+> 953投递可执行性、954探针trace与legacy probe空headers JSONB。
+> **不要将执行中条目误读为已部署**；以报告最终三环境版本和新请求证据为准。
+
+
 > 适用：未来任何 cold-start 切到本仓库的助手会话（不区分会话身份）。
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话
 > `mvs_d10f8ded3e7c4d73b8221fe670ddd9dc` 重写「工具链」与「已落地结论」两节**，
