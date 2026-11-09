@@ -2175,7 +2175,7 @@ func (e *Executor) executeOpenAI(
 				// the right value if it ever unwraps to a *upstreampkg.Error.
 				return nil, &retryableError{err: &upstreampkg.Error{
 					Kind:       errKind,
-					Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+					Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(body[:n], 200)),
 					Body:       append([]byte(nil), body[:n]...),
 					StatusCode: resp.StatusCode,
 					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),

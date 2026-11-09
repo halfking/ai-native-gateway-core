@@ -1199,7 +1199,7 @@ func (e *Executor) executeOllama(
 		}
 		upstreamErr := &upstreampkg.Error{
 			Kind:       errKind,
-			Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+			Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(captured, 200)),
 			Body:       append([]byte(nil), captured...),
 			StatusCode: resp.StatusCode,
 			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
