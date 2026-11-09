@@ -217,12 +217,16 @@ func (s *chatStreamContinuation) invoke(prefixText string) (io.ReadCloser, error
 	// calls — the continuation leg is no exception. Consume BEFORE the wire
 	// call: an exhausted budget must not reach the network at all, and a
 	// failed continuation must not refund its slot (the call really happened).
-	if _, err := consumeUpstreamAttempt(s.params); err != nil {
-		return nil, err
-	}
 	contBody, err := appendAssistantPrefillMessage(s.body, prefixText, s.mode)
 	if err != nil {
 		return nil, fmt.Errorf("stream continuation: %w", err)
+	}
+	contBody, err = s.e.fitCandidateContextBudget(s.params, s.cand, "openai-completions", contBody)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := consumeUpstreamAttempt(s.params); err != nil {
+		return nil, err
 	}
 	// Clone reuses the full header set of the original request (auth,
 	// egress meta, disguise, session, virtual client ids, transform
@@ -1239,6 +1243,10 @@ func (e *Executor) executeOpenAI(
 			}
 			var historyErr error
 			bodyBytes, historyErr = repairOutboundToolHistory(params, cand, bodyBytes, wireProtocol)
+			if historyErr != nil {
+				return nil, historyErr
+			}
+			bodyBytes, historyErr = e.fitCandidateContextBudget(params, cand, wireProtocol, bodyBytes)
 			if historyErr != nil {
 				return nil, historyErr
 			}

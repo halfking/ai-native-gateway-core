@@ -26,6 +26,7 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 	if a == nil || a.deps == nil || a.deps.Provider == nil || !a.deps.Provider.Enabled() {
 		return "", errors.New("summary client unavailable")
 	}
+	ctx = compactionBudgetContext(ctx, a.deps)
 
 	cfg := summarymodel.CompletionConfig{MaxTokens: 512, Temperature: 0.2}
 	for _, opt := range opts {

@@ -239,3 +239,6 @@ func (rw *loggingResponseWriter) FlushError() error {
 	}
 	return nil
 }
+
+// Unwrap lets ResponseController reach socket read/write deadlines.
+func (w *loggingResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

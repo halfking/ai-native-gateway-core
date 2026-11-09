@@ -198,20 +198,22 @@ type docEvidence struct {
 // 　抓出来 ⇒ ⇒ ★ 这不是门的缺陷，是门**在干活** ⇒ ⇒ 修法只有一个：**重钉**。
 // 2026-11-09 48h 审计：运营接线与 featured 分层在 main.go 链前新增 42 行；
 // 三处证据区间整体 +42，语义锚与判据均不变，设计页/认证表 A1 同步。
+// 2026-11-09 大请求实施：RAW 入口装配插入链前；重钉实际 builder 与独立注释，
+// 不扩大证据范围。main_pipeline.go 同步重钉日志及 request-id 合成/写回本体。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8234, to: 8266,
+		file: "cmd/gateway/main.go", from: 8267, to: 8286,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8248, to: 8255,
+		file: "cmd/gateway/main.go", from: 8270, to: 8277,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8237, to: 8243,
+		file: "cmd/gateway/main.go", from: 8241, to: 8246,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -257,12 +259,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "v2 开关的读取（默认关、启动时读一次）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 1123, to: 1123,
+		file: "cmd/gateway/main_pipeline.go", from: 1124, to: 1124,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 755, to: 768,
+		file: "cmd/gateway/main_pipeline.go", from: 761, to: 771,
 		mustContain: "v2pipe-", kind: evidenceCode,
 		why: "D09 的 v2 request-id 合成与写回（★ 存在 ⇒ 那条差异不是「没实现」）",
 	},

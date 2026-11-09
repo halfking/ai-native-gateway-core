@@ -112,6 +112,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
+	"github.com/kaixuan/llm-gateway-go/internal/largebody"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
@@ -126,6 +127,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
+	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
 	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
@@ -1862,6 +1864,8 @@ func main() {
 			},
 			auditSink,
 		)
+		routingExec.EnforceContextBudget = true
+		routingExec.FitContext = sessioncontext.Fit
 		routingExec.RequestProbe = reqProbeCoord
 		// P0-D：probeOne 跨实例单飞（同 model SET NX）。无 Redis 时 executor
 		// 回落进程内 memory（多实例最多各探一次，规划可接受）。
@@ -8252,8 +8256,26 @@ func main() {
 	// 不进日志/追踪/Recovery——而这两个都是带登录态的运维面。AuthMiddleware
 	// 的 bypass 名单（auth_mw.go）为 /m、/m-assets/、/maintain/ 放行全局
 	// API key，端点级鉴权仍由各挂载与 /api/* wrapAdmin 自守卫。
-	publicSurface := newMobileGatewayHandler(
+	var publicSurface http.Handler = newMobileGatewayHandler(
 		newMaintainGatewayHandler(mux, maintainStatic), mobileStatic)
+	// The archive must precede V2 dispatch and streamretry snapshots. Its root
+	// lives outside the evictable hot-zone tree and must be a persistent volume.
+	rawDirectory := os.Getenv("LLM_GATEWAY_SESSION_RAW_DIR")
+	if rawDirectory == "" {
+		rawDirectory = filepath.Join("data", "session-archive")
+		if cfg.LogFile != "" {
+			rawDirectory = filepath.Join(filepath.Dir(cfg.LogFile), "session-archive")
+		}
+	}
+	rawStore, rawErr := largebody.NewStore(rawDirectory)
+	if rawErr != nil {
+		slog.Error("session archive initialization failed", "error", rawErr)
+		os.Exit(1)
+	}
+	defer rawStore.Close()
+	publicSurface = streaming.NewLargeIngress(chatHandler, rawStore, streaming.LargeIngressConfig{}).Wrap(publicSurface)
+	slog.Info("bounded session ingress enabled", "max_input_bytes", largebody.LimitBytes, "archive_root", rawDirectory)
+
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
