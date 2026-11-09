@@ -97,14 +97,15 @@ func (e *Executor) fitCandidateContextBudget(params *ExecParams, cand provider.C
 	if resolveErr != nil {
 		return nil, wrapContextBudget(cand, resolveErr)
 	}
-	// Keep space for protocol framing and conservative counter overhead. This
-	// is an adapter target, not a substitution of bytes for tokens: Check is
-	// always the final authority on the actual serialized body.
-	limit := min(budget.JSONBytes, budget.InputTokens/2)
-	var exceeded *contextbudget.Error
-	if errors.As(err, &exceeded) && exceeded.Kind == contextbudget.TokensExceeded && exceeded.Limit > 0 {
-		limit = min(limit, exceeded.Limit/2)
-	}
+	// 2026-11-10（用户规则：大输入要压缩，不能直接报错）：Fit 按字节裁剪，
+	// 校准估计器下 bytes ≈ tokens×3（CJK ~3B/token、代码 ~3.5B/token，blob
+	// 5B/token）⇒ 字节目标取 InputTokens×3，紧缩后估计 ≈ 0.86×limit，Check
+	// 必然通过。旧目标 InputTokens/2 把 256k-token 预算（minimax 512k 窗）
+	// 压成 128KB 字节——ZCode 受保护区（系统指令+工具链+最近轮）本身就有
+	// 60-100KB+，Fit 必然 ErrProtectedContext ⇒ 全候选 422，压缩机制名存
+	// 实亡（生产日志 16:44 "cannot contain the protected task…" 实证）。
+	// Check 仍是最终权威：fit 结果必须过校准估计器。
+	limit := min(budget.JSONBytes, budget.InputTokens*3)
 	for i := 0; i < 3 && limit > 0; i++ {
 		out, fitErr := e.FitContext(append([]byte(nil), body...), limit)
 		if fitErr != nil {
