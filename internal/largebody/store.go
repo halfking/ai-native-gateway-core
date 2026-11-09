@@ -358,8 +358,10 @@ func validIdentity(id Identity) error {
 
 func randomID() (string, error) {
 	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
+	if n, err := rand.Read(id[:]); err != nil {
 		return "", err
+	} else if n != len(id) {
+		return "", io.ErrUnexpectedEOF
 	}
 	return hex.EncodeToString(id[:]), nil
 }

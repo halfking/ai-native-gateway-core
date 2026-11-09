@@ -13,11 +13,12 @@ import (
 )
 
 type Report struct {
-	SourceBytes int64  `json:"source_bytes"`
-	OutputBytes int    `json:"output_bytes"`
-	Messages    int    `json:"messages"`
-	Reduced     bool   `json:"reduced"`
-	SourceHash  string `json:"source_hash"`
+	SourceBytes             int64  `json:"source_bytes"`
+	OutputBytes             int    `json:"output_bytes"`
+	Messages                int    `json:"messages"`
+	Reduced                 bool   `json:"reduced"`
+	SourceHash              string `json:"source_hash"`
+	SensitiveHistoryOmitted int    `json:"sensitive_history_omitted,omitempty"`
 }
 
 const materializeItem = 64 << 10
@@ -131,6 +132,16 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 	best := make([]excerpt, 0, 16)
 	for i, span := range spans {
 		if keep(i) {
+			continue
+		}
+		safe, e := checkHistoryGuard(ctx, func() io.Reader {
+			return io.NewSectionReader(f, span.Offset, span.Length)
+		})
+		if e != nil {
+			return nil, report, e
+		}
+		if !safe {
+			report.SensitiveHistoryOmitted++
 			continue
 		}
 		var text string
