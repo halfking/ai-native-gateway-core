@@ -1,5 +1,7 @@
 // operationsMarketing.ts — 运营营销管理页（2026-11-09 运营审计轮项4）。
 export default {
+  colRedemptions: "Redeemed / limit",
+  priceMinorUnit: "Price (0.01 CNY)",
   title: "Marketing",
   subtitle: "Plans, booster packs, coupons and discount/gift campaigns",
   tabPlans: "Plans",

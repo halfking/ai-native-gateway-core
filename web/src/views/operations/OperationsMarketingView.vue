@@ -20,6 +20,8 @@ import {
   type AdminMaasCoupon,
   type AdminMaasCampaign,
 } from '../../api'
+import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
 
 const { t } = useI18n()
@@ -208,6 +210,7 @@ function statusKey(s: string): string {
     case 'active': return 'operationsMarketing.statusActive'
     case 'paused': return 'operationsMarketing.statusPaused'
     case 'ended': return 'operationsMarketing.statusEnded'
+    case 'disabled': return 'common.status.disabled'
     default: return 'operationsMarketing.statusDraft'
   }
 }
@@ -228,10 +231,51 @@ function fmtWindow(from?: string | null, to?: string | null): string {
   return parts.join(' ')
 }
 
-function fmtBenefitValue(c: AdminMaasCampaign): string {
+function fmtBenefitValue(c: { benefit_type: string; benefit_value?: Record<string, number> }): string {
   if (c.benefit_type === 'discount') return `-${c.benefit_value?.percent ?? 0}%`
   return `${c.benefit_value?.credits ?? 0}`
 }
+const priceField = computed<CardField>(() => ({
+  key: 'price_cents', label: t('operationsMarketing.colPrice'), type: 'metric',
+  format: value => `¥${(Number(value) / 100).toFixed(2)}`,
+}))
+const windowField = computed<CardField>(() => ({
+  key: 'effective_from', label: t('operationsMarketing.colWindow'),
+  format: (_, row) => fmtWindow(row.effective_from as string | null, row.effective_to as string | null),
+}))
+const enabledField = computed<CardField>(() => ({
+  key: 'enabled', label: t('operationsMarketing.colEnabled'), type: 'badge',
+  tone: row => row.enabled ? 'good' : 'neutral',
+  format: value => t(value ? 'operationsMarketing.enabled' : 'operationsMarketing.disabled'),
+}))
+const planFields = computed<CardField[]>(() => [
+  { key: 'code', label: t('operationsMarketing.colCode') },
+  { key: 'monthly_credits', label: t('operationsMarketing.colCredits'), format: value => Number(value).toLocaleString() },
+  windowField.value, enabledField.value,
+])
+const topupFields = computed<CardField[]>(() => [
+  { key: 'code', label: t('operationsMarketing.colCode') },
+  { key: 'credits_amount', label: t('operationsMarketing.colCredits'), format: value => Number(value).toLocaleString() },
+  { key: 'bonus_credits', label: t('operationsMarketing.colBonus'), format: value => `+${Number(value || 0).toLocaleString()}` },
+  { key: 'first_time_only', label: t('operationsMarketing.colFirstOnly'), format: value => value ? t('operationsMarketing.colFirstOnly') : '—' },
+  windowField.value, enabledField.value,
+])
+const statusField = computed<CardField>(() => ({
+  key: 'status', label: t('operationsMarketing.colStatus'), type: 'badge',
+  tone: row => row.status === 'active' ? 'good' : 'neutral', format: value => t(statusKey(String(value))),
+}))
+const couponFields = computed<CardField[]>(() => [
+  { key: 'credits_amount', label: t('operationsMarketing.colCredits'), format: value => Number(value).toLocaleString() },
+  { key: 'redemption_count', label: t('operationsMarketing.colRedemptions'), format: (value, row) => `${value} / ${row.max_redemptions}` },
+  statusField.value,
+])
+const campaignFields = computed<CardField[]>(() => [
+  { key: 'code', label: t('operationsMarketing.colCode') },
+  { key: 'benefit_type', label: t('operationsMarketing.colBenefit'), format: (value, row) => `${t(benefitKey(String(value)))} ${fmtBenefitValue({ benefit_type: String(value), benefit_value: row.benefit_value as Record<string, number> })}` },
+  { key: 'granted_credits', label: t('operationsMarketing.colBudget'), format: (value, row) => `${Number(value).toLocaleString()} / ${Number(row.total_budget_credits) > 0 ? Number(row.total_budget_credits).toLocaleString() : '∞'}` },
+  statusField.value,
+])
+
 </script>
 
 <template>
@@ -252,6 +296,8 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
         <h3 class="section-title">{{ t('operationsMarketing.tabPlans') }}</h3>
         <button class="btn btn-primary btn-sm" @click="openPlanModal">{{ t('operationsMarketing.add') }}</button>
       </div>
+      <ResponsiveDataView :rows="plans" title-key="id" :title-format="row => String(row.name || row.code)" :fields="planFields" :primary-field="priceField" :loading="loading" :empty="!plans.length">
+        <template #table>
       <table class="data-table">
         <thead>
           <tr>
@@ -276,6 +322,11 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
           </tr>
         </tbody>
       </table>
+        </template>
+        <template #actions="{ row }">
+          <button class="btn btn-ghost marketing-card-action" @click="togglePlan(row)">{{ row.enabled ? t('operationsMarketing.disable') : t('operationsMarketing.enable') }}</button>
+        </template>
+      </ResponsiveDataView>
     </div>
 
     <!-- 加油包 -->
@@ -284,6 +335,8 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
         <h3 class="section-title">{{ t('operationsMarketing.tabTopups') }}</h3>
         <button class="btn btn-primary btn-sm" @click="openTopupModal">{{ t('operationsMarketing.add') }}</button>
       </div>
+      <ResponsiveDataView :rows="topups" title-key="id" :title-format="row => String(row.name || row.code)" :fields="topupFields" :primary-field="priceField" :loading="loading" :empty="!topups.length">
+        <template #table>
       <table class="data-table">
         <thead>
           <tr>
@@ -310,6 +363,11 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
           </tr>
         </tbody>
       </table>
+        </template>
+        <template #actions="{ row }">
+          <button class="btn btn-ghost marketing-card-action" @click="toggleTopup(row)">{{ row.enabled ? t('operationsMarketing.disable') : t('operationsMarketing.enable') }}</button>
+        </template>
+      </ResponsiveDataView>
     </div>
 
     <!-- 优惠码 -->
@@ -317,12 +375,14 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
       <div class="table-head-row">
         <h3 class="section-title">{{ t('operationsMarketing.tabCoupons') }}</h3>
       </div>
+      <ResponsiveDataView :rows="coupons" title-key="id" :title-format="row => String(row.code)" :fields="couponFields"  :loading="loading" :empty="!coupons.length">
+        <template #table>
       <table class="data-table">
         <thead>
           <tr>
             <th>{{ t('operationsMarketing.colCode') }}</th>
             <th>{{ t('operationsMarketing.colCredits') }}</th>
-            <th>已领/上限</th>
+            <th>{{ t('operationsMarketing.colRedemptions') }}</th>
             <th>{{ t('operationsMarketing.colStatus') }}</th>
             <th>{{ t('operationsMarketing.colActions') }}</th>
           </tr>
@@ -341,6 +401,11 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
           </tr>
         </tbody>
       </table>
+        </template>
+        <template #actions="{ row }">
+          <button v-if="row.status === 'active' || row.status === 'disabled'" class="btn btn-ghost marketing-card-action" @click="toggleCoupon(row)">{{ row.status === 'active' ? t('operationsMarketing.couponDisable') : t('operationsMarketing.couponEnable') }}</button>
+        </template>
+      </ResponsiveDataView>
     </div>
 
     <!-- 活动 -->
@@ -349,6 +414,8 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
         <h3 class="section-title">{{ t('operationsMarketing.tabCampaigns') }}</h3>
         <button class="btn btn-primary btn-sm" @click="openCampaignModal">{{ t('operationsMarketing.add') }}</button>
       </div>
+      <ResponsiveDataView :rows="campaigns" title-key="id" :title-format="row => String(row.name || row.code)" :fields="campaignFields"  :loading="loading" :empty="!campaigns.length">
+        <template #table>
       <table class="data-table">
         <thead>
           <tr>
@@ -378,6 +445,13 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
           </tr>
         </tbody>
       </table>
+        </template>
+        <template #actions="{ row }">
+          <select class="input marketing-card-action" :aria-label="t('operationsMarketing.colStatus')" :value="row.status" @change="setCampaignStatus(row, ($event.target as HTMLSelectElement).value as 'draft'|'active'|'paused'|'ended')">
+              <option v-for="status in campaignStatuses" :key="status" :value="status">{{ t(statusKey(status)) }}</option>
+            </select>
+        </template>
+      </ResponsiveDataView>
     </div>
 
     <p v-if="actionMsg" class="action-msg">{{ actionMsg }}</p>
@@ -389,7 +463,7 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
         <div class="edit-grid">
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colCode') }}</span><input v-model="planForm.code" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colName') }}</span><input v-model="planForm.name" class="input compact" /></label>
-          <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colPrice') }} (分)</span><input v-model.number="planForm.price_cents" type="number" min="0" class="input compact" /></label>
+          <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.priceMinorUnit') }}</span><input v-model.number="planForm.price_cents" type="number" min="0" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colCredits') }}</span><input v-model.number="planForm.monthly_credits" type="number" min="1" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colEnabled') }}</span><input v-model="planForm.enabled" type="checkbox" /></label>
         </div>
@@ -407,7 +481,7 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
         <div class="edit-grid">
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colCode') }}</span><input v-model="topupForm.code" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colName') }}</span><input v-model="topupForm.name" class="input compact" /></label>
-          <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colPrice') }} (分)</span><input v-model.number="topupForm.price_cents" type="number" min="0" class="input compact" /></label>
+          <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.priceMinorUnit') }}</span><input v-model.number="topupForm.price_cents" type="number" min="0" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colCredits') }}</span><input v-model.number="topupForm.credits_amount" type="number" min="1" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colBonus') }}</span><input v-model.number="topupForm.bonus_credits" type="number" min="0" class="input compact" /></label>
           <label class="edit-field"><span class="edit-head">{{ t('operationsMarketing.colFirstOnly') }}</span><input v-model="topupForm.first_time_only" type="checkbox" /></label>
@@ -451,8 +525,9 @@ function fmtBenefitValue(c: AdminMaasCampaign): string {
 </template>
 
 <style scoped>
-.tab-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.marketing-card-action { min-height: 48px; }
+.tab-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .table-head-row { display: flex; justify-content: space-between; align-items: center; }
-.page-sub { color: var(--kx-text-secondary, #666); font-size: 13px; margin-top: -6px; }
-.action-msg { color: var(--kx-text-secondary, #666); font-size: 13px; }
+.page-sub { color: var(--kx-text-secondary); font-size: 13px; margin-top: -6px; }
+.action-msg { color: var(--kx-text-secondary); font-size: 13px; }
 </style>
