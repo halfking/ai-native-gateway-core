@@ -21,13 +21,23 @@
 #   C8 两趟解析：精确小写 + 归一化（normalize）都存在
 #   C9 --dry-run 与 --dump-sql 存在
 #   C10 变异臂：把 C2 白名单中的 upsert 目标表名改成 model_credit_rates ⇒ 门必须红
+#
+# ★★ 2026-11-10 审计 P2-C 轮修（本门此前有**两个真缺陷**）：
+#   ① 本门用 `python` 调解释器 ⇒ **本机/多数环境只有 python3** ⇒ C1b 恒红
+#      （本机实测：C1b ❌「python 语法解析失败」⇒ 假红）。
+#   ② C10 变异臂**假绿**：变异用的也是 `python` ⇒ 变异脚本**根本没执行**
+#      （本机实测 rc=127）⇒ 变异后的文件与原文逐字相同 ⇒
+#      门读到的是**未变异的**内容 ⇒ 「白名单检出」是自欺。
+#      ⇒ 现在两处都用 python3，且 C10 额外断言「变异确实改动了文件」
+#      （改前改后必须不同 ⇒ 否则变异臂自己报红，不许自己绿）。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${ROOT}/scripts/market-price-sync.py"
 pass=0; fail=0
-ok()  { pass=$((pass+1)); printf '  ✅ %s\n' "$*"; }
-bad() { fail=$((fail+1)); printf '  ❌ %s\n' "$*"; }
+ok()   { pass=$((pass+1)); printf '  ✅ %s\n' "$*"; }
+bad()  { fail=$((fail+1)); printf '  ❌ %s\n' "$*"; }
+skip() { printf '  ⚠️ %s\n' "$*"; }
 
 BODY="$(cat "${SCRIPT}" 2>/dev/null || true)"
 
@@ -37,7 +47,11 @@ if [ -f "${SCRIPT}" ]; then
 else
   bad "C1a 脚本不存在: ${SCRIPT}"
 fi
-if python -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "${SCRIPT}" >/dev/null 2>&1; then
+# ★ 缺 python3 时**跳过并显式说明**，不让整门因缺解释器而红
+#   （仓内惯例：tests/deploy_211_contract_test.sh 同形态）。
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "C1b/C10 跳过：本机无 python3（★ 缺解释器不算代码缺陷）"
+elif python3 -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "${SCRIPT}" >/dev/null 2>&1; then
   ok "C1b python 语法可解析"
 else
   bad "C1b python 语法解析失败"
@@ -116,30 +130,54 @@ else
 fi
 
 # C10 变异臂：upsert 目标改成 model_credit_rates ⇒ 白名单门必须红
-TMP="$(mktemp "${TMPDIR:-/tmp}/mps-mutant-XXXXXX.py")"
+# ★ mktemp 模板必须以 X 结尾（macOS 与 GNU 都如此）⇒ "XXXXXX.py" 会失败
+#   （实测：mkstemp failed ... File exists）⇒ 这里用 mktemp -d + 目录内文件。
+MUT_DIR="$(mktemp -d)"
+TMP="${MUT_DIR}/mps-mutant.py"
 cp "${SCRIPT}" "${TMP}"
-python - "$TMP" <<'PYEOF'
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "C10a/C10b 跳过：本机无 python3（★ 缺解释器不算代码缺陷）"
+  rm -f "${TMP}"; rm -rf "${MUT_DIR}"
+else
+python3 - "$TMP" <<'PYEOF'
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
-s = s.replace("INSERT INTO public.market_price_reference (canonical_name, dimension, currency, canonical_id,",
-              "INSERT INTO public.model_credit_rates (canonical_name, dimension, currency, canonical_id,", 1)
+old = "INSERT INTO public.market_price_reference (canonical_name, dimension, currency, canonical_id,"
+new = "INSERT INTO public.model_credit_rates (canonical_name, dimension, currency, canonical_id,"
+if old not in s:
+    # 锚点不在 => 变异没施加 => 变异臂不得自绿（下面会查文件是否真的变了）
+    sys.exit(3)
+s = s.replace(old, new, 1)
 open(p, 'w', encoding='utf-8', newline='').write(s)
 PYEOF
-MUT_BODY="$(cat "${TMP}")"
-MUT_DIRTY=0
-while IFS= read -r t; do
-  [ -z "${t}" ] && continue
-  if ! printf '%s' "${t}" | grep -qE "^(${WHITE})$"; then
-    MUT_DIRTY=1
-  fi
-done <<< "${MUT_BODY}"
-rm -f "${TMP}"
-if [ "${MUT_DIRTY}" = "1" ]; then
-  ok "C10 变异臂：upsert 目标改写为 model_credit_rates ⇒ 白名单门当场红（有牙）"
+MUT_RC=$?
+# ★★ 前置断言：变异**必须真的改了文件**。
+#   否则「检出」是自欺（读到的还是原文）—— 本门旧实现就栽在这里：
+#   变异用 `python`（本机不存在）=> rc=127 => 文件逐字未变 => 门却报绿。
+if [ "${MUT_RC}" != "0" ]; then
+  bad "C10a 变异臂自身失效：变异脚本 rc=${MUT_RC}（解释器缺失或锚点失配）=> 变异未施加"
+elif cmp -s "${SCRIPT}" "${TMP}"; then
+  bad "C10a 变异臂自身失效：变异后文件与原文逐字相同 => 变异未生效"
 else
-  bad "C10 变异臂未检出（门无牙）"
+  ok "C10a 变异确实施加（变异后文件与原文不同）"
+  MUT_BODY="$(cat "${TMP}")"
+  MUT_DIRTY=0
+  while IFS= read -r t; do
+    [ -z "$t" ] && continue
+    if ! printf '%s' "$t" | grep -qE "^(${WHITE})$"; then
+      MUT_DIRTY=1
+    fi
+  done <<< "${MUT_BODY}"
+  if [ "${MUT_DIRTY}" = "1" ]; then
+    ok "C10b 变异臂：upsert 目标改写为 model_credit_rates ⇒ 白名单门当场红（有牙）"
+  else
+    bad "C10b 变异臂未检出（门无牙）"
+  fi
 fi
+fi
+rm -f "${TMP}"
+rm -rf "${MUT_DIR}"
 
 printf '\n================ 汇总 ================\n'
 printf '通过 %d / 失败 %d\n' "${pass}" "${fail}"

@@ -498,6 +498,12 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/git_enumeration_quote_path_contract_test.sh
 	@bash tests/mcp_metrics_scrape_wiring_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
+	@bash tests/market_price_sync_contract_test.sh
+	@if command -v python3 >/dev/null 2>&1; then \
+		python3 tests/market_price_sync_accounting_test.py; \
+	else \
+		echo "⚠️ 跳过 market_price_sync_accounting_test.py：本机无 python3（★ 不因缺解释器让整门红）"; \
+	fi
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
 #

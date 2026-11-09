@@ -23,6 +23,15 @@
   · P2 市场最低 = is_vendor=false 平台的 min(CNY)；P1 原厂锚 = is_vendor=true
     平台的 min(CNY)；fx 取源库 fx_rate 最新 USD→CNY；
   · dimension = price_scope 归一（默认 standard=「标准按量」；条件价不压平）。
+
+台账口径（2026-11-10 审计 P2-C 修）：
+  · **源侧候选**（含「源侧有行但无市场价」的缺价行）全部进 src_rows
+    ⇒ source_rows = len(src_rows)；
+  · 缺价 / 无名 / 无出价日期 ⇒ **拒绝**（不进 940 目标表）⇒ rejected_rows；
+  · 其余 ⇒ **落地**（写 market_price_reference）⇒ landed_rows；
+  · ⇒ **恒等式：source_rows = landed_rows + rejected_rows**（构造上闭合）。
+    ★ 旧实现在**源 SQL 的 WHERE** 里就把缺价行滤掉了 ⇒ rejected_rows 恒 0
+      ⇒ 「源=落地+拒绝」是空恒等式 ⇒ 台账没有任何信号。
 """
 
 import argparse
@@ -39,9 +48,33 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+# NULL 哨兵（2026-11-10 审计 P2-C）。
+#
+# ★ 缺陷形态：psql 的 `\pset null` 默认是**空串**，`-tA`（unaligned）输出下
+# SQL NULL 列就印成空串 ⇒ 原实现里 `c.strip().upper() != "NULL"` 这个分支
+# **永不触发**（psql 不会打印字面 "NULL"）⇒ DB NULL 到达 Python 时是 ""，
+# 不是 None。
+# ⇒ 后果链：① `if min_in is None and min_out is None: rejected += 1` 是死代码
+#   ⇒ `rejected_rows` **恒为 0**，「源 = 落地 + 拒绝」是空恒等式，台账没有信号；
+#   ② 无法区分「上游没给价（NULL）」与「上游给了空字符串」——
+#   而 `num()` 把两者都折成 "NULL"、`qstr()` 把 "" 写成 `''` ⇒
+#   「vendor_platform_id 恒为空串」这条 P2-2 的根因也在这里。
+#
+# ⇒ 修法：显式给 psql 一个**不可能出现在数据里**的 NULL 渲染串，再把该串
+# 还原成 None。哨兵用可打印 ASCII（不用控制字符：控制字符在 argv / 编码
+# 边界上更脆），且带本仓专属前缀 ⇒ 与平台名 / vendor 名 / canonical_key
+# 撞车的概率可忽略。
+NULL_SENTINEL = "__LLMGW_NULL__"
+
+
 def psql_tsv(container, user, db, sql):
-    """Run psql inside a container, return list of rows (lists of stripped strings)."""
+    """Run psql inside a container, return list of rows (lists of stripped strings).
+
+    ★ NULL 与空串**必须**可区分：psql 默认把 NULL 渲染成空串 ⇒ 这里用
+    `-P null=<哨兵>` 显式改写渲染，再在解析时还原成 None（见 NULL_SENTINEL）。
+    """
     cmd = ["docker", "exec", container, "psql", "-U", user, "-d", db, "-tA",
+           "-P", "null=" + NULL_SENTINEL,
            "-v", "ON_ERROR_STOP=1", "-c", sql]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -50,7 +83,12 @@ def psql_tsv(container, user, db, sql):
     for line in proc.stdout.splitlines():
         if line == "":
             continue
-        rows.append([c.strip() if c.strip().upper() != "NULL" else None for c in line.split("|")])
+        cells = []
+        for c in line.split("|"):
+            c = c.strip()
+            # 哨兵 ⇒ None（真 NULL）；空串 ⇒ ""（真空字符串，保留原义）。
+            cells.append(None if c == NULL_SENTINEL else c)
+        rows.append(cells)
     return rows
 
 
@@ -80,6 +118,20 @@ def qstr(v):
     return "'" + str(v).replace("'", "''") + "'"
 
 
+def qstr_notnull(v):
+    """Escape a text value into a **NOT NULL** column.
+
+    ★ 940 的 vendor_vendor / market_min_platform_id / vendor_platform_id /
+      canonical_name / source_url 都是 `NOT NULL DEFAULT ''` ⇒ 源侧 NULL
+      必须落成 ''（**不是** SQL NULL）⇒ 否则整笔事务 NOT NULL 违例 abort。
+      ⇒ psql 侧一旦开始区分 NULL 与空串（见 NULL_SENTINEL），这一层就是必需的：
+        哨兵把 NULL 还原成 None ⇒ qstr(None) 会写 SQL NULL ⇒ 必须走本函数。
+    """
+    if v is None:
+        return "''"
+    return "'" + str(v).replace("'", "''") + "'"
+
+
 def normalize(name):
     """模型名归一（与 scripts/audit/market-price-compare.py 同源）：小写、去 _-. 空白。"""
     out = []
@@ -87,6 +139,102 @@ def normalize(name):
         if ch not in "_-. ":
             out.append(ch)
     return "".join(out)
+
+
+def plan_rows(src_rows, resolve, existing_owner):
+    """把源侧候选行分成【可落地】与【拒绝】两族（**纯函数**：零 IO ⇒ 可被单测直调）。
+
+    返回 (landable, rejects)：
+      landable = [(key, min_in, min_out, plat_cnt, min_platform, vendor_in,
+                   vendor_out, vendor_name, max_run_date, cid, family, final_cid)]
+      rejects  = {"no_price": n, "no_canonical_name": n, "no_source_run_date": n}
+
+    ★ 拒绝族只收「**写不出合法行**」的候选：
+        · no_price          —— 源侧有该模型，但市场最低价 in/out **都是** NULL
+                               （未知 ≠ 免费 ⇒ 绝不能折 0，也绝不能写空行）；
+        · no_canonical_name —— 没有 canonical_key（写不出主键）；
+        · no_source_run_date—— 没有出价日期（source_run_date 是 NOT NULL）。
+      ⇒ 拒绝判定**先于** canonical 解析：被拒的行不该占用 canonical 声明。
+
+    ★ canonical 解析不出来（unresolved/ambiguous）的行**仍然落地**
+      （canonical_id=NULL，如实保留 NULL），只在 conflicts 里计数
+      ⇒ landed_rows == 实际写入条数 ⇒ 「源=落地+拒绝」是**可对账**的等式。
+    """
+    rejects = {"no_price": 0, "no_canonical_name": 0, "no_source_run_date": 0}
+    claims = {}   # canonical_id -> set(lower canonical_key)（批内声明）
+    staged = []
+    for row in src_rows:
+        (key, min_in, min_out, plat_cnt, min_platform,
+         vendor_in, vendor_out, vendor_name, max_run_date) = row[:9]
+        # ── 拒绝族判定（先于解析）────────────────────────────────────────
+        if key is None or str(key).strip() == "":
+            rejects["no_canonical_name"] += 1
+            continue
+        if min_in is None and min_out is None:
+            rejects["no_price"] += 1
+            continue
+        if max_run_date is None:
+            rejects["no_source_run_date"] += 1
+            continue
+        cid, family = resolve(key)
+        if cid is not None:
+            claims.setdefault(cid, set()).add(key.lower())
+        staged.append((key, min_in, min_out, plat_cnt, min_platform,
+                       vendor_in, vendor_out, vendor_name, max_run_date, cid, family))
+
+    landable = []
+    for (key, min_in, min_out, plat_cnt, min_platform, vendor_in,
+         vendor_out, vendor_name, max_run_date, cid, family) in staged:
+        final_cid = cid
+        if cid is not None:
+            if len(claims.get(cid, ())) > 1:
+                # 批内两个源 key 解析到同一网关 canonical（别名）⇒ 全部回退 NULL，
+                # 否则撞 uq_mpr_canonical_id（首跑实证：canonical 352 双声明）。
+                final_cid = None
+                family = "ambiguous"
+            elif existing_owner.get(cid) not in (None, key.lower()):
+                # 目标已有别的 canonical_name 占有该 id（跨日属主漂移）⇒ 回退。
+                final_cid = None
+                family = "ambiguous"
+        landable.append((key, min_in, min_out, plat_cnt, min_platform, vendor_in,
+                         vendor_out, vendor_name, max_run_date, cid, family, final_cid))
+    return landable, rejects
+
+
+def build_upsert_sql(row, dimension, fx):
+    """生成一条 market_price_reference 的 upsert（940 列序，见 940 迁移 DDL）。
+
+    ★ NOT NULL 文本列一律走 qstr_notnull（源侧 NULL ⇒ ''）⇒ 绝不触发
+      NOT NULL 违例把整笔事务 abort 掉。
+    """
+    (key, min_in, min_out, plat_cnt, min_platform, vendor_in,
+     vendor_out, vendor_name, max_run_date, cid, family, final_cid) = row
+    return (
+        "INSERT INTO public.market_price_reference (canonical_name, dimension, currency, canonical_id,"
+        " vendor_list_in_per_1m, vendor_list_out_per_1m, vendor_platform_id, vendor_vendor,"
+        " market_min_in_per_1m, market_min_out_per_1m, market_min_platform_id, market_min_platform_count,"
+        " market_min_cny_in_per_1m, market_min_cny_out_per_1m, fx_rate, source_run_date, source_confidence,"
+        " source_url, updated_at)"
+        " VALUES (%s, %s, 'CNY', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::date, 'A', '', now())"
+        " ON CONFLICT (canonical_name, dimension) DO UPDATE SET"
+        " currency = EXCLUDED.currency, canonical_id = EXCLUDED.canonical_id,"
+        " vendor_list_in_per_1m = EXCLUDED.vendor_list_in_per_1m,"
+        " vendor_list_out_per_1m = EXCLUDED.vendor_list_out_per_1m,"
+        " vendor_platform_id = EXCLUDED.vendor_platform_id, vendor_vendor = EXCLUDED.vendor_vendor,"
+        " market_min_in_per_1m = EXCLUDED.market_min_in_per_1m,"
+        " market_min_out_per_1m = EXCLUDED.market_min_out_per_1m,"
+        " market_min_platform_id = EXCLUDED.market_min_platform_id,"
+        " market_min_platform_count = EXCLUDED.market_min_platform_count,"
+        " market_min_cny_in_per_1m = EXCLUDED.market_min_cny_in_per_1m,"
+        " market_min_cny_out_per_1m = EXCLUDED.market_min_cny_out_per_1m,"
+        " fx_rate = EXCLUDED.fx_rate, source_run_date = EXCLUDED.source_run_date,"
+        " updated_at = now();" % (
+            qstr(key), qstr(dimension),
+            (final_cid if final_cid else "NULL"),
+            num(vendor_in), num(vendor_out), qstr_notnull(""), qstr_notnull(vendor_name),
+            num(min_in), num(min_out), qstr_notnull(min_platform),
+            (plat_cnt if plat_cnt else "0"),
+            num(min_in), num(min_out), num(fx), qstr(max_run_date)))
 
 
 def main():
@@ -150,7 +298,15 @@ agg AS (
 SELECT canonical_key, min_in, min_out, plat_cnt, min_platform,
        vendor_in, vendor_out, vendor_name, max_run_date
 FROM agg
-WHERE min_in IS NOT NULL OR min_out IS NOT NULL
+-- ★★ 2026-11-10 审计 P2-C：**这里原本有一句**
+--      `WHERE min_in IS NOT NULL OR min_out IS NOT NULL`
+--    ⇒ 「源侧有该模型、但市场价全缺」的候选在**源侧就被丢掉**
+--    ⇒ Python 永远看不到它们 ⇒ rejected_rows 恒为 0
+--    ⇒ 「源条数 = 落地 + 拒绝」是**空恒等式**（两边都少了同一批行）
+--    ⇒ 台账没有任何信号：既看不出丢了多少，也看不出为什么丢。
+--    ⇒ 现在**不在源侧过滤**，改由 plan_rows() 在 Python 侧做拒绝判定
+--      （拒绝族：no_price / no_canonical_name / no_source_run_date）
+--      ⇒ 源侧候选全集进 src_rows ⇒ 恒等式真正闭合。
 ORDER BY canonical_key
 """.format(scope_q=qstr(args.scope), unit_q=qstr(args.unit),
            asof=asof_cond, exclude=exclude_cond)
@@ -194,19 +350,6 @@ ORDER BY canonical_key
             return None, "ambiguous"
         return None, "unresolved"
 
-    resolved_rows = []  # (row_fields..., canonical_id|None, family)
-    claims = {}         # canonical_id -> set(lower canonical_key)（批内声明）
-    for row in src_rows:
-        (key, min_in, min_out, plat_cnt, min_platform,
-         vendor_in, vendor_out, vendor_name, max_run_date) = row[:9]
-        if min_in is None and min_out is None:
-            continue
-        cid, family = resolve(key)
-        if cid is not None:
-            claims.setdefault(cid, set()).add(key.lower())
-        resolved_rows.append((key, min_in, min_out, plat_cnt, min_platform,
-                              vendor_in, vendor_out, vendor_name, max_run_date, cid, family))
-
     # 目标既有属主：canonical_id 已被别的 canonical_name 占有的 ⇒ 批内回退 NULL。
     existing_owner = {}
     own_rows = psql_tsv(args.target_container, args.target_user, args.target_db,
@@ -215,57 +358,25 @@ ORDER BY canonical_key
     for cid, name in own_rows:
         existing_owner.setdefault(cid, name)
 
-    upserts, landed, rejected = [], 0, 0
+    # ★ 分类在纯函数里（plan_rows）：拒绝判定 + canonical 解析 + 批内/跨日属主回退。
+    landable, rejects = plan_rows(src_rows, resolve, existing_owner)
+    upserts, landed = [], 0
     fam_count = {"resolved": 0, "unresolved": 0, "ambiguous": 0}
-    for row in resolved_rows:
-        (key, min_in, min_out, plat_cnt, min_platform,
-         vendor_in, vendor_out, vendor_name, max_run_date, cid, family) = row
-        if min_in is None and min_out is None:
-            rejected += 1
-            continue
-        final_cid = cid
-        if cid is not None:
-            if len(claims.get(cid, ())) > 1:
-                # 批内两个源 key 解析到同一网关 canonical（别名）⇒ 全部回退 NULL，
-                # 否则撞 uq_mpr_canonical_id（首跑实证：canonical 352 双声明）。
-                final_cid = None
-                family = "ambiguous"
-            elif existing_owner.get(cid) not in (None, key.lower()):
-                # 目标已有别的 canonical_name 占有该 id（跨日属主漂移）⇒ 回退。
-                final_cid = None
-                family = "ambiguous"
+    for row in landable:
+        (key, min_in, min_out, plat_cnt, min_platform, vendor_in,
+         vendor_out, vendor_name, max_run_date, cid, family, final_cid) = row
         fam_count[family] += 1
         landed += 1
-        # 940 列序：canonical_name, dimension, currency, canonical_id,
-        #   vendor_list_in/out, vendor_platform_id, vendor_vendor,
-        #   market_min_in/out, market_min_platform_id, market_min_platform_count,
-        #   market_min_cny_in/out, fx_rate, source_run_date, source_confidence, source_url
-        upserts.append(
-            "INSERT INTO public.market_price_reference (canonical_name, dimension, currency, canonical_id,"
-            " vendor_list_in_per_1m, vendor_list_out_per_1m, vendor_platform_id, vendor_vendor,"
-            " market_min_in_per_1m, market_min_out_per_1m, market_min_platform_id, market_min_platform_count,"
-            " market_min_cny_in_per_1m, market_min_cny_out_per_1m, fx_rate, source_run_date, source_confidence,"
-            " source_url, updated_at)"
-            " VALUES (%s, %s, 'CNY', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::date, 'A', '', now())"
-            " ON CONFLICT (canonical_name, dimension) DO UPDATE SET"
-            " currency = EXCLUDED.currency, canonical_id = EXCLUDED.canonical_id,"
-            " vendor_list_in_per_1m = EXCLUDED.vendor_list_in_per_1m,"
-            " vendor_list_out_per_1m = EXCLUDED.vendor_list_out_per_1m,"
-            " vendor_platform_id = EXCLUDED.vendor_platform_id, vendor_vendor = EXCLUDED.vendor_vendor,"
-            " market_min_in_per_1m = EXCLUDED.market_min_in_per_1m,"
-            " market_min_out_per_1m = EXCLUDED.market_min_out_per_1m,"
-            " market_min_platform_id = EXCLUDED.market_min_platform_id,"
-            " market_min_platform_count = EXCLUDED.market_min_platform_count,"
-            " market_min_cny_in_per_1m = EXCLUDED.market_min_cny_in_per_1m,"
-            " market_min_cny_out_per_1m = EXCLUDED.market_min_cny_out_per_1m,"
-            " fx_rate = EXCLUDED.fx_rate, source_run_date = EXCLUDED.source_run_date,"
-            " updated_at = now();" % (
-                qstr(key), qstr(args.dimension),
-                (final_cid if final_cid else "NULL"),
-                num(vendor_in), num(vendor_out), qstr(""), qstr(vendor_name),
-                num(min_in), num(min_out), qstr(min_platform),
-                (plat_cnt if plat_cnt else "0"),
-                num(min_in), num(min_out), num(fx), qstr(max_run_date)))
+        upserts.append(build_upsert_sql(row, args.dimension, fx))
+
+    # ★ 台账口径（2026-11-10 审计 P2-C）：
+    #   source_rows  = 源侧候选全集（len(src_rows)）
+    #   landed_rows  = 实际写入 market_price_reference 的行数
+    #   rejected_rows= 拒绝族计数之和（no_price / no_canonical_name / no_source_run_date）
+    #   ⇒ 恒等式 source_rows = landed_rows + rejected_rows **构造上闭合**
+    #     （每个源侧候选要么落地、要么被拒，且只归入其中一侧）。
+    #   ⇒ 旧实现里源侧 SQL 预过滤掉了「无价」候选 ⇒ rejected 恒 0 ⇒ 空恒等式。
+    rejected = sum(rejects.values())
 
     # 歧义守卫由目标事务内的 SQL NULL-out 完成：同一 (canonical_id, dimension)
     # 出现两行（两个源 key 解析到同一网关 canonical）时，全部回退 NULL——
@@ -294,7 +405,10 @@ ORDER BY canonical_key
                       "scope": args.scope, "dimension": args.dimension, "unit": args.unit,
                       "as_of": args.as_of or today, "fx_usd_cny": fx,
                       "exclude_platforms": args.exclude_platform,
-                      "source_container": args.source_container}))))
+                      "source_container": args.source_container,
+                      # ★ 拒绝族明细（2026-11-10 审计 P2-C）：拒绝**为什么**拒绝，
+                      #   要能被台账读到，不能只有一个总数。
+                      "rejected_by_reason": rejects}))))
 
     anchor = "" if args.dry_run else "SELECT count(*) FROM public.model_credit_rates;"
     anchor_after = "" if args.dry_run else "SELECT count(*) FROM public.model_credit_rates;"
@@ -319,7 +433,8 @@ ORDER BY canonical_key
         "COMMIT;",
     ])
 
-    print("landed=%d rejected=%d conflicts=%s" % (landed, rejected, conflicts))
+    print("landed=%d rejected=%d conflicts=%s rejects=%s"
+          % (landed, rejected, conflicts, rejects))
     if args.dry_run:
         print("DRY-RUN: %d upserts generated (not written)" % len(upserts))
         for stmt in upserts[:3]:
