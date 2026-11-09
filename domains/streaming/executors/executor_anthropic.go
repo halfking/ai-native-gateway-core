@@ -487,6 +487,10 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				Kind:    errorsx.KindClientBug,
 				Message: fmt.Sprintf("request failed anthropic-messages format validation: %v", err),
 				Err:     err,
+				// 2026-11-10 审计 P1-B：与 chat 腿同款——请求侧错误必须回
+				// 4xx。未设时 StatusCode=0 ⇒ 落到 messages.go 的通用兜底 ⇒
+				// 客户端拿到 503「All providers unavailable」⇒ 误导为上游过载。
+				StatusCode: http.StatusBadRequest,
 			}
 		}
 	}

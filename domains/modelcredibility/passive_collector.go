@@ -199,7 +199,13 @@ func (c *PassiveCollector) Flush(ctx context.Context, sink PassiveBaselineSink) 
 	flushed := 0
 	var lastErr error
 	for key, w := range windows {
-		baseline := c.buildMergedBaseline(ctx, sink, key, w)
+		baseline, err := c.buildMergedBaseline(ctx, sink, key, w)
+		if err != nil {
+			// 读既有基线失败 ⇒ 本节点本窗口**不落库**（既有基线保持完好）
+			// ⇒ 下一窗口重试合并。与 upsert 失败同语义。
+			lastErr = err
+			continue
+		}
 		if err := sink.UpsertPassiveBaseline(ctx, baseline); err != nil {
 			lastErr = err
 			continue
@@ -218,7 +224,7 @@ func (c *PassiveCollector) Flush(ctx context.Context, sink PassiveBaselineSink) 
 //   - 格式位标：OR 并集；
 //   - 样本数：真实求和后截断到 cap；
 //   - 陈旧基线（collected_to 早于 StaleAfter）或样本为 0 的基线：丢弃重建。
-func (c *PassiveCollector) buildMergedBaseline(ctx context.Context, sink PassiveBaselineSink, key passiveKey, w *passiveWindow) *PassiveFingerprint {
+func (c *PassiveCollector) buildMergedBaseline(ctx context.Context, sink PassiveBaselineSink, key passiveKey, w *passiveWindow) (*PassiveFingerprint, error) {
 	nowFn := c.nowFn
 	if nowFn == nil {
 		nowFn = time.Now
@@ -252,8 +258,21 @@ func (c *PassiveCollector) buildMergedBaseline(ctx context.Context, sink Passive
 	}
 
 	// ── 读取既有基线 ──
-	existing, err := sink.LoadPassiveBaseline(ctx, key.credential, key.model)
-	if err == nil && existing != nil &&
+	//
+	// ★ 2026-11-10 审计 P1-C：tenant 进了读路径（原来读路径写死
+	// 'default'，写路径用真实租户 ⇒ 非 default 租户混进别人的统计，
+	// 且自己的历史被 upsert 覆盖丢弃）。
+	existing, err := sink.LoadPassiveBaseline(ctx, key.tenant, key.credential, key.model)
+	if err != nil {
+		// ★ 读失败**不是**「没有基线」：原实现 `if err == nil && …` 把
+		// 读错误与「无行/陈旧」混成一条路 ⇒ 一次瞬时读错误就让 upsert
+		// 覆盖掉积累多天的基线（静默数据摧毁，且无日志）。
+		// ⇒ 现在读错误直接上抛：本窗口不落库 ⇒ 既有基线完好 ⇒
+		// 下一窗口重试合并（与 bg worker 注释「下一窗口重试合并」一致）。
+		return nil, fmt.Errorf("passive baseline: load existing for %s/%d/%s: %w",
+			key.tenant, key.credential, key.model, err)
+	}
+	if existing != nil &&
 		existing.SampleCount > 0 &&
 		!existing.CollectedTo.IsZero() &&
 		now.Sub(existing.CollectedTo) < PassiveBaselineStaleAfter {
@@ -298,7 +317,7 @@ func (c *PassiveCollector) buildMergedBaseline(ctx context.Context, sink Passive
 		out.ITTP50 = msOf(PercentileFromDistribution(out.ITTDistribution, 0.50))
 		out.ITTP95 = msOf(PercentileFromDistribution(out.ITTDistribution, 0.95))
 	}
-	return out
+	return out, nil
 }
 
 // windowStats 是窗口聚合的中间形状（毫秒世界）。

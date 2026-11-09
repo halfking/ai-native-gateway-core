@@ -101,7 +101,7 @@ func TestPassiveBaselineRealPG(t *testing.T) {
 		if err := store.UpsertPassiveBaseline(ctx, in); err != nil {
 			t.Fatalf("upsert: %v", err)
 		}
-		out, err := store.LoadPassiveBaseline(ctx, 424242, model)
+		out, err := store.LoadPassiveBaseline(ctx, "default", 424242, model)
 		if err != nil || out == nil {
 			t.Fatalf("load: %v, %+v", err, out)
 		}
@@ -161,7 +161,7 @@ func TestPassiveBaselineRealPG(t *testing.T) {
 		if err := store.UpsertPassiveBaseline(ctx, second); err != nil {
 			t.Fatalf("second upsert: %v", err)
 		}
-		out, err := store.LoadPassiveBaseline(ctx, 424242, model)
+		out, err := store.LoadPassiveBaseline(ctx, "default", 424242, model)
 		if err != nil || out == nil {
 			t.Fatalf("reload: %v, %+v", err, out)
 		}
@@ -178,7 +178,7 @@ func TestPassiveBaselineRealPG(t *testing.T) {
 	})
 
 	t.Run("load_missing_returns_nil_nil", func(t *testing.T) {
-		out, err := store.LoadPassiveBaseline(ctx, 999999999, "no-such-model")
+		out, err := store.LoadPassiveBaseline(ctx, "default", 999999999, "no-such-model")
 		if err != nil {
 			t.Fatalf("load missing: %v", err)
 		}
@@ -200,7 +200,7 @@ func TestPassiveBaselineRealPG(t *testing.T) {
 		if flushed != 1 {
 			t.Fatalf("flushed = %d, want 1", flushed)
 		}
-		out, err := store.LoadPassiveBaseline(ctx, 424243, model)
+		out, err := store.LoadPassiveBaseline(ctx, "default", 424243, model)
 		if err != nil || out == nil {
 			t.Fatalf("load after flush: %v, %+v", err, out)
 		}

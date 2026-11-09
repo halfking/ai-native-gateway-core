@@ -745,13 +745,26 @@ func (e *Executor) executeOpenAI(
 	// 校验失败是客户端侧错误（KindClientBug：不进凭据熔断、换候选无意义）。
 	// 跨协议路径（anthropic/responses/gemini 客户端 → chat 上游）不走本门：
 	// 转换器的 IR parse 本身就是更严的格式检查。
+	// 2026-11-10 审计 P1-A：ClientProtocol 必须先归一，否则本门在生产上
+	// **恒不触发**。生产唯一来源是 handler.go:4594-4598 的
+	// ir.DetectProtocol(bodyBytes)，它对 chat 体返回 "openai-chat"
+	// （internal/ir/types.go:33），而 catalog 枚举是 "openai-completions"
+	// （provider/catalog/protocol.go:22）⇒ 两个字符串永远不相等。
+	// ⇒ IR 开启（生产默认，cmd/gateway/main.go:1950-1952）时本门形同不存在。
+	// ⇒ 复用仓内既有的 canonicalInboundWire（executor_gemini.go:214，
+	// ollama 腿同款），不再在新位置另写一份比较。
 	if cand.Protocol == providercatalog.ProtocolOpenAICompletions &&
-		(params.ClientProtocol == "" || params.ClientProtocol == providercatalog.ProtocolOpenAICompletions) {
+		(params.ClientProtocol == "" || canonicalInboundWire(params.ClientProtocol) == providercatalog.ProtocolOpenAICompletions) {
 		if err := protocolformat.ValidateOpenAIChatRequest(params.BodyBytes); err != nil {
 			return nil, &upstreampkg.Error{
 				Kind:    errorsx.KindClientBug,
 				Message: fmt.Sprintf("request failed openai-completions format validation: %v", err),
 				Err:     err,
+				// 2026-11-10 审计 P1-B：请求侧错误必须回 4xx。未设时
+				// StatusCode=0 ⇒ dispatchHTTPStatus 原样返回 0 ⇒ 落到通用
+				// 兜底 ⇒ 客户端拿到 502/503「上游过载」⇒ SDK 按 5xx 退避
+				// 重试一个永久畸形的请求，且真实原因（格式不合法）被埋掉。
+				StatusCode: http.StatusBadRequest,
 			}
 		}
 	}
@@ -1181,7 +1194,22 @@ func (e *Executor) executeOpenAI(
 	// empty_response ⇒ 全候选 503。只放开一次（reasoningBudgetBumped），
 	// 二次仍烧完则按既有 empty 语义 failover。
 	reasoningBudgetBumped := false
-	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus || probeRetry; attempt++ {
+	// 2026-11-10 审计 P0-A：reasoningBudgetBonus 与 mnfBonus 同机制——
+	// **改循环上界**，让这一次「同候选加倍重发」拿到独立的一次迭代。
+	//
+	// ★ 为什么必须有它（这正是原实现的缺陷）：dispatch_v2 是唯一执行路径
+	// （executor.go:2803-2814），且它给协议内循环传的 retryPerCred=0
+	// （executor_dispatch.go:445-448「Dispatch mover owns same-node retry.
+	// Protocol-local loops must perform exactly one HTTP call」）
+	// ⇒ effectiveOpenAIRetryBudget(0, DispatchAttempt=true) = 0
+	// ⇒ 原循环 `attempt <= effectiveMaxRetries+mnfBonus` 一次都不多给。
+	// ⇒ 加倍后的 bodyBytes 还没发出去，循环就退出了 ⇒ 「免费重试」
+	// 在生产上**从未发生**（实测：只发 1 次上游调用，max_tokens 停在 300）。
+	// ⇒ 仓内三个「免费重试」里，mnfBonus 改上界、ctxLenRecoveryRetry 与
+	// probeRetry 用 attempt-- 抵消自增 —— 本机制必须至少占一席，否则
+	// 「重试」只是一条日志。
+	reasoningBudgetBonus := 0
+	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus+reasoningBudgetBonus || probeRetry; attempt++ {
 		// Candidate-attempt boundary is intentionally logged once per attempt,
 		// rather than once per streamed frame, so a retry/failover can be
 		// reconstructed without logging request content or secrets.
@@ -2589,6 +2617,10 @@ func (e *Executor) executeOpenAI(
 					emptyUsage.FinishReason == "length" && !reasoningBudgetBumped {
 					if bumpedBody, bumped := bumpReasoningBudget(bodyBytes); bumped {
 						reasoningBudgetBumped = true
+						// 2026-11-10 审计 P0-A：必须同时抬上界，否则这次重发
+						// 在 dispatch_v2（retryPerCred=0）下拿不到迭代 ⇒
+						// 「重试」只存在于日志里，bodyBytes 永不上线。
+						reasoningBudgetBonus = 1
 						bodyBytes = bumpedBody
 						slog.Warn("executor: reasoning exhausted the completion budget; retrying same candidate with doubled max_tokens",
 							"request_id", params.RequestID,
