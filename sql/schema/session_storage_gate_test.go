@@ -52,6 +52,24 @@ type destructiveFixture struct {
 }
 
 var destructiveGuardedDB = map[string]destructiveFixture{
+	"NODE_PROBE_AUDIT_TEST_DSN": {
+		path: "bg/node_probe_audit_test.go",
+		guard: func(body string) []string {
+			for _, token := range []string{
+				`cfg.ConnConfig.Host != "127.0.0.1" && cfg.ConnConfig.Host != "localhost"`,
+				`!strings.HasSuffix(cfg.ConnConfig.Database, "_test")`,
+				`t.Fatal("requires a dedicated loopback *_test database")`,
+				`range cfg.ConnConfig.Fallbacks`,
+				`fallback.Host != "127.0.0.1" && fallback.Host != "localhost"`,
+				`t.Fatal("requires loopback-only fallback hosts")`,
+			} {
+				if !strings.Contains(body, token) {
+					return []string{"node-probe audit disposable database guard missing: " + token}
+				}
+			}
+			return nil
+		},
+	},
 	"REPORT_E2E_TEST_DATABASE_URL": {
 		path:  "domains/reportrollup/realdb_e2e_test.go",
 		guard: reportRollupGuardProblems,

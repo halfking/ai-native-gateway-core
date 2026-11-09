@@ -3026,10 +3026,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	nextSec := int(ChainBackoffIndex(attempt, NodeProbeBackoffChain).Seconds())
 
 	// 准备新字段数据
-	var requestHeadersJSON string
-	if len(direct.requestHeaders) > 0 {
-		requestHeadersJSON = probeHeadersJSON(direct.requestHeaders)
-	}
+	requestHeadersJSON := probeHeadersJSON(direct.requestHeaders)
 
 	timeoutAtMs := 0
 	if direct.errCode == "network_error" && direct.latencyMs >= 14900 {
