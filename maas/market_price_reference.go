@@ -82,7 +82,7 @@ const marketPriceOverviewSQL = `
 	LEFT JOIN LATERAL (
 	    SELECT min(b.unit_price_in_per_1m)  AS s_in,
 	           min(b.unit_price_out_per_1m) AS s_out,
-	           min(b.currency)              AS s_cur
+	           COALESCE(min(b.currency), '') AS s_cur
 	    FROM credential_model_bindings b
 	    JOIN provider_models pm ON pm.id = b.provider_model_id
 	    WHERE pm.canonical_id = m.canonical_id
