@@ -157,13 +157,7 @@ func (g *Gateway) touchKey(ctx context.Context, id *Identity) {
 	if id == nil || id.KeyID == "" || g.store == nil {
 		return
 	}
-	key, err := g.store.GetKey(ctx, id.TenantID, id.KeyID)
-	if err != nil || key == nil {
-		return
-	}
-	now := g.now()
-	key.LastUsedAt = &now
-	_ = g.store.PutKey(ctx, *key)
+	_ = g.store.TouchKey(ctx, id.TenantID, id.KeyID, g.now())
 }
 
 // IssueKey 签发一条凭证，返回明文（只在签发/轮换时可见一次）。
