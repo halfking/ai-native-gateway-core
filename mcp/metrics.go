@@ -177,3 +177,25 @@ var (
 		Help: "Backend binding lookups for keys absent from the remote ledger (legacy name).",
 	})
 )
+
+// RefreshUptimeMetric 在**抓取时刻**把网关运行时长写进 uptimeSeconds。
+//
+// ★ 为什么是「抓取时刻求值」而不是「定时器刷新」：uptime 没有事件点，
+//
+//	定时器刷新会让值滞后整整一个刷新周期；抓取时刻求值则每次抓取
+//	拿到的都是当下值（Prometheus 的 Gauge 语义本就是「当前值」）。
+//
+// ★ 为什么记录调用必须留在本包内：uptimeSeconds 是包级私有标识符，
+//
+//	外部包根本拿不到它。而 internal/metricguard 那道门按
+//	「标识符.记录方法」的令牌形态判定「生产代码是否记录过」——
+//	记录调用一旦挪到别的包，那道门就再也看不见它，指标会重新变成
+//	「已声明但生产代码从不记录」而门仍然是绿的。
+//
+// ★ 为什么用 g.now() 而不是 time.Since：g.now 是本包统一的时间源
+//
+//	（测试可注入 ⇒ 运行时长可确定性断言）；生产下 cfg.Now 默认就是
+//	time.Now，与 time.Since 等价（两者都吃单调时钟读数）。
+func (g *Gateway) RefreshUptimeMetric() {
+	uptimeSeconds.Set(float64(g.UptimeSeconds()))
+}

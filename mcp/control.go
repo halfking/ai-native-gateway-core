@@ -275,7 +275,7 @@ func (c *ControlPlane) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
 		"status":           "ok",
 		"version":          Version,
-		"uptime_seconds":   int(time.Since(c.gateway.startedAt).Seconds()),
+		"uptime_seconds":   c.gateway.UptimeSeconds(),
 		"adapters":         items,
 		"adapters_total":   len(adapters),
 		"adapters_healthy": healthy,
@@ -390,6 +390,9 @@ func isMCPMetricFamily(name string) bool {
 //	域，不在业务 key 的 scope 体系内）；这里是**给业务 key 用的**统计出口
 //	⇒ 需要 mcp.analyze，且只返回 MCP 网关自己的指标族。
 func (c *ControlPlane) handleStats(w http.ResponseWriter, r *http.Request) {
+	// ★ 抓取时刻求值的指标（mcp_gateway_uptime_seconds）先刷新再收集：
+	//   否则快照里那份是上一次的读数（甚至压根没有该族）。
+	c.gateway.RefreshUptimeMetric()
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})

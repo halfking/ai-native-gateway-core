@@ -334,8 +334,26 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #     ｜③ 每条豁免【★ 必须用差分探针证明「★ 转义不改变它的判定 ★】★★ ★
 #     ｜④ 门自己有牙（★ 非 ASCII 探针 ＋ 前缀锚点探针 ★）
 #   ★ 实测：★ 清点 35 处（★ 带 -z 27 ／ 不带 -z 8 ★）｜★ 豁免 8 条【★ 逐条差分成立 ★】｜★ **PASS=14 FAIL=0** ★
+# ★ ★ ★ 2026-11-09（第五十轮续记之六 · metricguard 既有红修复）：★ 再接进 **1 条**快门
+#   （tests/mcp_metrics_scrape_wiring_test.sh）⇒ 该 target 的快门数 22 → **23**。
+#   ★ 起因：★ internal/metricguard 那道门判的是「生产代码里有没有记录调用」（令牌级
+#     「标识符.记录方法」形态）⇒ ★ 它【★ 看不见「记录调用挂在哪个抓取面上」★★ ★
+#     ⇒ ★ 而 mcp_gateway_uptime_seconds【★ 只有抓取时刻才有意义 ★】★★ ★
+#     ⇒ ★ 记录调用挂在包里、而 /metrics 抓取面没接 ⇒ 指标恒为 ABSENT ★★
+#   ★ ⇒ ★ ★ 而【★ 这两件事之间那道缝、★ 没有任何既有门覆盖 ★】★★★ ★
+#   ★ 本门钉的是【★ 暴露 mcp_gateway_* 指标族的 /metrics 抓取面 ★】：
+#     ｜① 「服务 mcp 指标」的二进制集合【★ 必须被清点出来 ★】★（★ 双向棘轮 ★）
+#     ｜② 每个这样的二进制【★ 必须有 ≥1 个 /metrics 抓取面 ★】、
+#       【★ 且抓取面数 ≤ ScrapeHandler 包装调用数 ★】★★ ★
+#     ｜③ 反向不变量：★ ScrapeHandler 只许出现在 ① 的集合里 ★
+#     ｜④ 门自己有牙（★ 合成树差分探针：★ 已接线臂判绿、未接线臂判红 ★）★★ ★
+#   ★ ★ ★ 而【★ 这道门【★ 自己的差分探针 ★】在第一版就抓出了【★ 它自己抽取器的一个 bug ★】★★ ★
+#     ★ ⇒ ★ BSD grep（macOS 自带）与 GNU grep 在【★ ERE 的转义括号 ★】上不一致
+#       ⇒ ★ 而抽取面【★ 看着有、★ 其实一条都抽不到 ★】★★ ★
+#     ⇒ ★ ⇒ ★ 路径判定改成【★ 先抽路由字面量、★ 再精确比对 ★】★★ ★
+#   ★ 实测：★ **PASS=5 FAIL=0** ★｜★ 零外部依赖 ⇒ 可进 CI 快门 ★。
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（22 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（23 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -359,6 +377,7 @@ guards-gate-scripts: ## 门脚本接线门（22 条快门 + 登记册门，防�
 	@bash tests/scan_secrets_regex_determinism_test.sh
 	@bash tests/scan_secrets_placeholder_privilege_test.sh
 	@bash tests/git_enumeration_quote_path_contract_test.sh
+	@bash tests/mcp_metrics_scrape_wiring_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
