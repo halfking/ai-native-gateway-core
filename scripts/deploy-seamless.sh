@@ -298,6 +298,18 @@ if mismatches:
 '
 }
 
+# A single successful request can hit the new worker while another worker
+# still accepts traffic with the old upstream. Require independent connections
+# before retiring the previous gateway; never signal unrelated nginx workers.
+verify_nginx_identity_samples() {
+  local url=$1 probe_args=$2 expected_version=$3 expected_seq=$4 expected_sha=$5 expected_date=$6
+  local sample body
+  for ((sample=1; sample<=20; sample++)); do
+    body=$("$SSH_CMD" "curl -kfSs ${probe_args} -H 'Connection: close' --max-time 5 '$url'" 2>/dev/null) || return 1
+    version_identity_matches "$body" "$expected_version" "$expected_seq" "$expected_sha" "$expected_date" || return 1
+  done
+}
+
 # detect_active_side — 部署前在目标机实测 8781/8782 哪个端口真正有网关在监听。
 #
 # 2026-09-19（部署工单）：旧逻辑直接信任 run/active-port 文件，但失败部署
@@ -1686,23 +1698,27 @@ do_deploy() {
   # 8781) — 否则凡候选落在 8782, 仲裁读到的永远是旧端口版本, 假「半切换态」
   # 触发假回滚 (2026-10-03 00:52 seq 2401 实证); 探测参数由 target 合同
   # internal_https_probe_args 下发 (--resolve 回环, 请求不出目标机)。
-  local _nginx_hc_url _nginx_probe_args _nginx_seen
+  local _nginx_hc_url _nginx_probe_args _nginx_converged
   _nginx_hc_url=$(target_field "$TARGET" internal_https_health_url)
   _nginx_probe_args=$(target_field "$TARGET" internal_https_probe_args)
   if [[ -n "$_nginx_hc_url" ]]; then
     log "[9.6/9] 仲裁 nginx 实际路由身份 (期望 seq=$seq_val sha=${version#*-})"
-    _nginx_seen=$("$SSH_CMD" "curl -ksS ${_nginx_probe_args} --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
-    if [[ "$_nginx_seen" != *"$seq_val"* || "$_nginx_seen" != *"${version#*-}"* ]]; then
-      warn "nginx 实际路由版本与本次发布不符 — 疑似半切换态, 补 reload 后重验"
+    _nginx_converged=0
+    if verify_nginx_identity_samples "$_nginx_hc_url" "$_nginx_probe_args" "$expected_release_version" "$expected_release_seq" "$expected_release_sha" "$expected_release_date"; then
+      _nginx_converged=1
+    else
+      warn "nginx 路由未连续收敛 — 补 reload 后重新验证20次独立连接"
       "$SSH_CMD" "systemctl reload nginx" >/dev/null 2>&1 || true
       sleep 2
-      _nginx_seen=$("$SSH_CMD" "curl -ksS ${_nginx_probe_args} --max-time 5 '$_nginx_hc_url' 2>/dev/null" 2>/dev/null || true)
+      if verify_nginx_identity_samples "$_nginx_hc_url" "$_nginx_probe_args" "$expected_release_version" "$expected_release_seq" "$expected_release_sha" "$expected_release_date"; then
+        _nginx_converged=1
+      fi
     fi
-    if [[ "$_nginx_seen" != *"$seq_val"* || "$_nginx_seen" != *"${version#*-}"* ]]; then
+    if (( !_nginx_converged )); then
       _bluegreen_abort "nginx 实际路由版本与本次发布不符 (文件已切、流量未切 = 半切换态)" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
       exit 1
     fi
-    ok "nginx 路由身份仲裁通过"
+    ok "nginx 路由身份仲裁通过（20次独立连接）"
   fi
 
   # API readiness bypasses nginx's static root: also exercise HTML and its
