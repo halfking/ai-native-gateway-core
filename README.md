@@ -21,6 +21,7 @@ AI Native Gateway is an **open-source, self-hosted, AI-native LLM gateway** buil
 - **Session Governance**: sticky sessions, full-content session replay, automatic prompt compression, and 4-tier data lifecycle — the conversation, not just the request, is a first-class managed object
 - **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation on 90+ tables, with per-tenant quotas, metering, and MaaS billing
 - **Credential Management**: multi-credential pools with fingerprint disguise, adaptive probing, and automatic circuit-breaking
+- **Model Credibility (anti-dilution)**: passive timing fingerprints from real traffic (TTFT / inter-token distribution / throughput vs per-credential baselines) + active probes + peer-parity scoring detect upstream model swaps and same-family downgrades — zero extra requests, impossible to evade
 - **Observability**: real-time request streams, routing analytics (heatmap + Sankey), cost tracking, OTel + Prometheus
 - **Privacy**: 100% private deployment — all data stays inside your infrastructure
 
