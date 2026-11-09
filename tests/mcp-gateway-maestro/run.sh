@@ -198,8 +198,8 @@ code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/con
 # S07 注册高敏工具 → 201
 code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/tools" \
   -H "X-Admin-Token: ${ADMIN_TOKEN}" -H 'Content-Type: application/json' \
-  -d '{"name":"crm__delete_customer","adapter":"crm","sensitivity":"high","require_approval":true,"visibility":"public","group":"crm-admin"}')"
-[ "${code}" = "201" ] && ok "S07 注册高敏工具（需审批 + 团队可见）→ 201" || bad "S07 注册工具 → ${code}（期望 201）"
+  -d '{"name":"crm__delete_customer","adapter":"crm","sensitivity":"high","require_approval":true,"visibility":"public","group":"crm-admin","enabled":true}')"
+[ "${code}" = "201" ] && ok "S07 注册已启用高敏工具（需审批）→ 201" || bad "S07 注册工具 → ${code}（期望 201）"
 
 # S08 签发受限凭证 → 201，明文一次性
 code="$(curl -s -o "${OUT}/.body" -w '%{http_code}' -X POST "${BASE_URL}/mcp/control/keys" \
@@ -230,7 +230,7 @@ esac
 #     但测的是不同的闸，分开才能定位问题）。
 APPROVAL_KEY="$(curl -s -X POST "${BASE_URL}/mcp/control/keys" -H "X-Admin-Token: ${ADMIN_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"default","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
+  -d '{"tenant_id":"default","user_id":"demo-user","name":"maestro-approver","scopes":["mcp.read","mcp.execute"],"allowed_adapters":["demo","crm"]}' \
   | jq_get 'd.get("secret","")')"
 code="$(rpc "${BASE_URL}" /mcp "${APPROVAL_KEY:-${DEMO_KEY}}" '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"crm__delete_customer","arguments":{}}}')"
 apr_code="$(body_get | jq_get 'd.get("error",{}).get("code",0)')"
@@ -554,7 +554,7 @@ else
     || bad "S26 mcp.manage 删除适配器 → ${code}（期望 204）"
 fi
 
-# S27 统计分析面：mcp.analyze 的 key 能查审计与指标快照
+# S27 统计分析面：业务 key 的租户审计与管理令牌的进程指标分开验收
 ANALYZE_KEY="$(issue_key "${BASE_URL}" "maestro-analyze" '["mcp.analyze"]')"
 if [ -z "${ANALYZE_KEY}" ]; then
   bad "S27 未能签发 mcp.analyze 权限的凭证"
@@ -568,10 +568,19 @@ else
   fi
   code="$(ctl "${BASE_URL}" GET /mcp/control/stats "${ANALYZE_KEY}")"
   fams="$(body_get | jq_get 'len(d.get("families",[]))')"
-  if [ "${code}" = "200" ] && [ "${fams%%.*}" -gt 0 ] 2>/dev/null; then
-    ok "S27b mcp.analyze 的 key 取指标快照 → 200（${fams} 个指标族）"
+  scope="$(body_get | jq_get 'd.get("scope","")')"
+  audit_ok="$(body_get | jq_get 'd.get("audit",{}).get("total",0)>0 and isinstance(d.get("audit",{}).get("by_tool"),dict)')"
+  if [ "${code}" = "200" ] && [ "${fams}" = "0" ] && [ "${scope}" = "tenant_audit_only" ] && [ "${audit_ok}" = "True" ]; then
+    ok "S27b mcp.analyze 的 key → 200（tenant_audit_only、进程指标隔离、租户审计可用）"
   else
-    bad "S27b mcp.analyze 取指标快照 → ${code} families='${fams}'（期望 200 且非空）"
+    bad "S27b 租户统计 → ${code} families='${fams}' scope='${scope}' audit_ok='${audit_ok}'"
+  fi
+  code="$(ctl "${BASE_URL}" GET /mcp/control/stats "${ADMIN_TOKEN}")"
+  fams="$(body_get | jq_get 'len(d.get("families",[]))')"
+  if [ "${code}" = "200" ] && [ "${fams%%.*}" -gt 0 ] 2>/dev/null; then
+    ok "S27b-admin 管理令牌保留完整进程指标 → 200（${fams} 个指标族）"
+  else
+    bad "S27b-admin 进程指标 → ${code} families='${fams}'（期望200且非空）"
   fi
   # /health 含内部拓扑 ⇒ 需要单独的 mcp.topology
   code="$(ctl "${BASE_URL}" GET /mcp/control/health "${ANALYZE_KEY}")"
