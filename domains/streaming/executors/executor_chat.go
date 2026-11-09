@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/protocolformat"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
@@ -736,6 +737,23 @@ func (e *Executor) executeOpenAI(
 		defer func() {
 			execHooks.OnCompressed(err)
 		}()
+	}
+
+	// 2026-11-10（用户规则）：同协议直传 + 格式门。客户端协议与出口协议
+	// 一致（含 ClientProtocol 为空的内部直发腿）时请求体直传、不改参数/
+	// 内容格式——但格式无错误才放行（最小官方规范形状校验，fail-closed）。
+	// 校验失败是客户端侧错误（KindClientBug：不进凭据熔断、换候选无意义）。
+	// 跨协议路径（anthropic/responses/gemini 客户端 → chat 上游）不走本门：
+	// 转换器的 IR parse 本身就是更严的格式检查。
+	if cand.Protocol == providercatalog.ProtocolOpenAICompletions &&
+		(params.ClientProtocol == "" || params.ClientProtocol == providercatalog.ProtocolOpenAICompletions) {
+		if err := protocolformat.ValidateOpenAIChatRequest(params.BodyBytes); err != nil {
+			return nil, &upstreampkg.Error{
+				Kind:    errorsx.KindClientBug,
+				Message: fmt.Sprintf("request failed openai-completions format validation: %v", err),
+				Err:     err,
+			}
+		}
 	}
 
 	// Fix-2026-09-25: native Responses is only used when a Responses-format

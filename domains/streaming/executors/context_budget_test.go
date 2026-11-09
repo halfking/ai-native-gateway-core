@@ -22,7 +22,7 @@ func contextBudgetBody(content string) []byte {
 func TestContextBudgetRejectsBeforePhysicalAttempt(t *testing.T) {
 	e := &Executor{EnforceContextBudget: true}
 	params := &ExecParams{R: httptest.NewRequest("POST", "/v1/chat/completions", nil), UpstreamAttempts: NewUpstreamAttemptBudget(3)}
-	err := e.beginUpstreamAttempt(params, contextBudgetCandidate(128000), "openai-completions", contextBudgetBody(strings.Repeat("x", 70000)))
+	err := e.beginUpstreamAttempt(params, contextBudgetCandidate(128000), "openai-completions", contextBudgetBody(strings.Repeat("x", 330000)))
 	if !IsContextBudgetError(err) || params.UpstreamAttempts.Used() != 0 {
 		t.Fatalf("got err=%v physical attempts=%d", err, params.UpstreamAttempts.Used())
 	}
@@ -32,7 +32,7 @@ func TestContextBudgetRejectsBeforePhysicalAttempt(t *testing.T) {
 }
 
 func TestContextBudgetFitStartsFromEachImmutableCandidateSource(t *testing.T) {
-	source := contextBudgetBody(strings.Repeat("x", 120000))
+	source := contextBudgetBody(strings.Repeat("x", 340000))
 	before := append([]byte(nil), source...)
 	var limits []int
 	e := &Executor{EnforceContextBudget: true, FitContext: func(body []byte, limit int) ([]byte, error) {
@@ -87,8 +87,8 @@ func TestContextBudgetUnknownWindowFallsBackToGlobalCaps(t *testing.T) {
 func TestContextBudgetToolsCountAnd500KCeiling(t *testing.T) {
 	e := &Executor{EnforceContextBudget: true}
 	for _, body := range [][]byte{
-		[]byte(`{"model":"test","messages":[],"tools":[{"type":"function","function":{"name":"f","description":"` + strings.Repeat("x", 70000) + `"}}]}`),
-		contextBudgetBody(strings.Repeat("x", 510000)),
+		[]byte(`{"model":"test","messages":[],"tools":[{"type":"function","function":{"name":"f","description":"` + strings.Repeat("x", 330000) + `"}}]}`),
+		contextBudgetBody(strings.Repeat("x", 2600000)),
 	} {
 		window := 128000
 		if len(body) > 500000 {
