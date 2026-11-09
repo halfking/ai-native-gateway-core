@@ -36,7 +36,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 | **安全** | AI Guardrails · DLP · Inline Interception · Vibe Coding 治理 · SIEM/SOAR 集成 |
 | **稳定** | 多云编排 · 自动恢复熔断 · 99.9% SLA 目标 |
 | **低成本** | 语义缓存 · 自动路由（cost/quality 策略）· Token 计量 · 提示词压缩 |
-| **企业集成** | MCP 工具网关（路线图）· API Hub 资产中心（路线图）· 全链路审计 · SIEM/SOAR |
+| **企业集成** | MCP 工具网关（已上线）· API Hub 资产中心（路线图）· 全链路审计 · SIEM/SOAR |
 
 ## 🏗️ 三大产品支柱
 
@@ -111,11 +111,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | 后台 worker —— 探测、生命周期清理、统计聚合、分区维护 |
 | `storage/` | 双模式存储工厂（`full`：PG+Redis / `lite`：SQLite+文件+进程内 KV） |
 | `internal/` | 横切基础设施 —— IR、vendor 字段剥离、会话镜像、outbox、遥测… |
-| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 927） |
+| `sql/migrations/` + `db/migrations/` | 幂等迁移（startup 系列当前到 955） |
 | `installer/` | 独立跨平台安装器 / 升级器模块 |
 | `scripts/`、`deploy/` | 构建、部署、镜像与校验工具 |
 
-规模快照（2026-10-31 代码扫描 @495a1c758）：`cmd/` 下共 **~6,138 Go files · 3,661 test files · 1,180 migration SQLs · 69 domain packages · 49 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
+规模快照（2026-10-31 代码扫描 @495a1c758）：`cmd/` 下共 **~6,468 Go files · 3,870 test files · 1,236 migration SQLs · 69 domain packages · 51 binaries**（文件数不含 `vendor/` 与 `installer/`；迁移 SQL 为 `sql/migrations/` 全量；二进制按 `go list` 的 main 包计）。
 
 **延伸阅读**
 
@@ -421,7 +421,7 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 | **上游模型** | 少数主要厂商 | 广泛模型覆盖 + 国产模型 + 本地模型 |
 | **凭据指纹池** | 基础 | 42 个 User-Agent · 35 Accept-Language |
 | **会话治理** | 请求级日志 | 粘性会话 + 全量内容回放 + 压缩 + 4 档生命周期 |
-| **MCP 工具网关** | 部分 | 2026 Q3 全量交付 |
+| **MCP 工具网关** | 已上线 | 数据面 + 控制面 + 治理指标族 |
 | **中文友好** | 有限 | 全中文 UI + 国产模型 + 支付宝 |
 | **多租户审计** | 标准 | 90+ 表 RLS · 租户审计 L1 = 0 |
 

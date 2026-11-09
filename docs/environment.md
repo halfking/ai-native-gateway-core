@@ -47,8 +47,8 @@ postgres://llm_gateway:***REDACTED***@<env:HOST_252_INTERNAL_IP>:5432/llm_gatewa
 ```
 
 ### 关键表
-- `request_logs_hot` - 请求日志元数据
-- `request_logs_bodies_hot` - 请求/响应完整体
+- `request_logs_with_current_month`（canonical 视图）- 请求日志元数据
+- `session_bodies_unified` - 请求/响应完整体
 - `tool_call_events` - 工具调用事件
 - `tool_usage_stats_hot` - 工具使用统计
 
@@ -99,7 +99,7 @@ SELECT
     COUNT(*) FILTER (WHERE success = true) AS success_count,
     COUNT(*) FILTER (WHERE success = false) AS failed_count,
     ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / COUNT(*), 2) AS success_rate
-FROM request_logs_hot
+FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '24 hours';
 ```
 
@@ -109,7 +109,7 @@ SELECT
     error_kind,
     COUNT(*) AS count,
     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS percentage
-FROM request_logs_hot
+FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '24 hours'
   AND success = false
 GROUP BY error_kind
@@ -123,7 +123,7 @@ SELECT
     COUNT(*) AS request_count,
     COUNT(*) FILTER (WHERE success = true) AS success_count,
     ROUND(100.0 * COUNT(*) FILTER (WHERE success = true) / COUNT(*), 2) AS success_rate
-FROM request_logs_hot
+FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '24 hours'
 GROUP BY COALESCE(outbound_model, client_model)
 ORDER BY request_count DESC
@@ -137,7 +137,7 @@ SELECT
     COUNT(*) AS request_count,
     COUNT(*) FILTER (WHERE success = true) AS success_count,
     COUNT(*) FILTER (WHERE error_kind LIKE '%malformed%' OR error_kind LIKE '%json%') AS malformed_errors
-FROM request_logs_hot
+FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '24 hours'
   AND (outbound_model LIKE '%minimax%' OR outbound_model LIKE '%glm%' 
        OR client_model LIKE '%minimax%' OR client_model LIKE '%glm%')
@@ -150,14 +150,14 @@ ORDER BY request_count DESC;
 WITH tool_use_requests AS (
     SELECT 
         b.request_id,
-        b.response_body,
+        b.outbound_body,
         h.success,
         h.error_kind
-    FROM request_logs_bodies_hot b
-    JOIN request_logs_hot h ON b.request_id = h.request_id
+    FROM session_bodies_unified b
+    JOIN request_logs_with_current_month h ON b.request_id = h.request_id
     WHERE b.ts >= NOW() - INTERVAL '24 hours'
-      AND b.response_body IS NOT NULL
-      AND b.response_body::text LIKE '%tool_use%'
+      AND b.outbound_body IS NOT NULL
+      AND b.outbound_body::text LIKE '%tool_use%'
     LIMIT 1000
 )
 SELECT 
