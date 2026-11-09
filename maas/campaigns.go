@@ -160,7 +160,10 @@ func (s *Service) RedeemCampaign(ctx context.Context, code, tenantID, ownerUser 
 	if benefitKind != "discount" && credits <= 0 {
 		return out, fmt.Errorf("campaign %s carries no credit benefit", code)
 	}
-	if benefitKind == "credits" && totalBudget > 0 && grantedCredits+credits > totalBudget {
+	if benefitKind != "discount" && (totalBudget < 0 || grantedCredits < 0) {
+		return out, fmt.Errorf("campaign %s carries invalid budget accounting", code)
+	}
+	if benefitKind != "discount" && totalBudget > 0 && credits > totalBudget-grantedCredits {
 		return out, fmt.Errorf("campaign %s budget exhausted", code)
 	}
 
