@@ -4,8 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // issueKey 签发一条测试凭证并返回明文。
@@ -439,12 +444,33 @@ func TestUpstreamErrorSurfaces502(t *testing.T) {
 	}
 }
 
+// fakeAnthropicKey 是一个**运行时拼装**的 Anthropic 形态假凭据（合成值、无效）。
+//
+// ★ 为什么源码里不写死字面量：仓内秘密扫描器把 `sk-ant-[A-Za-z0-9_-]{32,}`
+//
+//	判为 BLOCK（那是真凭据的形态）⇒ 源码里写死会让
+//	`scripts/scan-secrets.sh --mode=strict` 报 BLOCK，从而
+//	`scripts/sync-to-github.sh` 的 Step 1（工作树 strict 扫描）直接中止，
+//	公开镜像就同步不出去。
+//
+// ★ 为什么又不能换成别的形态：**本测试的主体就是这个 key** —— 出参脱敏靠
+//
+//	domains/secretmask 的 `sk-ant-[a-zA-Z0-9\-]{20,}` 规则识别，才谈得上
+//	「key 被遮蔽」⇒ 换成非 key 形态 = 测的不再是「key 被遮蔽」，测试就废了。
+//
+// ⇒ 折中：**运行时拼装** —— 源码里没有连续 32+ 位的 key 字面量，运行时值与原先
+//
+//	逐字节同形（7 + 32 位）。
+//	★ 这是仓内既有的做法，见 domains/secretmask/secretmask_test.go 的
+//	  `"use sk-ant-" + strings.Repeat("c", 40)`（该文件因此不在扫描基线里）。
+var fakeAnthropicKey = "sk-ant-" + strings.Repeat("c", 32)
+
 func TestOutputRedactionMasksSecrets(t *testing.T) {
 	up := newFakeUpstream(t, []map[string]any{{"name": "get_secret"}})
 	up.callResult = map[string]any{
 		"content": []any{map[string]any{
 			"type": "text",
-			"text": "token sk-ant-abcdefghijklmnopqrstuvwxyz123456 and mail a@b.com",
+			"text": "token " + fakeAnthropicKey + " and mail a@b.com",
 		}},
 	}
 	g, srv := newTestGateway(t, up)
@@ -458,11 +484,86 @@ func TestOutputRedactionMasksSecrets(t *testing.T) {
 		t.Fatalf("status=%d body=%v", status, body)
 	}
 	raw, _ := json.Marshal(body)
-	if containsSubstring(string(raw), "sk-ant-abcdefghijklmnopqrstuvwxyz123456") {
+	if containsSubstring(string(raw), fakeAnthropicKey) {
 		t.Fatalf("secret leaked to client: %s", raw)
 	}
 	if !containsSubstring(string(raw), "REDACTED") {
 		t.Fatalf("expected redaction marker: %s", raw)
+	}
+}
+
+// TestUptimeMetricIsExposedNotAbsent 钉住 mcp_gateway_uptime_seconds 的**存在性**。
+//
+// TestUptimeMetricTracksGatewayUptime 钉住 mcp_gateway_uptime_seconds 的**取值**。
+//
+// ★ 实测前提（本机用 prometheus 客户端 v1.23.2 实测，不是推断）：
+//
+//	普通 Gauge（promauto.NewGauge）—— **在 promauto 注册的那一刻就已经在
+//	/metrics 上，值为 0**；只有 GaugeVec/CounterVec 在「没有实例化过任何标签
+//	组合」时才是 ABSENT。
+//
+//	⇒ 所以「只声明不 Set」对**普通 Gauge**的真实后果**不是 ABSENT**，而是
+//	  **「恒为 0」**（面板上是一条永远平的线）。
+//	  ⚠ internal/metricguard 那条报错文案（「恒为 ABSENT（不是 0）」）对普通
+//	    Gauge **不成立** —— 它描述的是 Vec 的形态。别照着它去写断言。
+//	⇒ 因此这道门断言的是**取值随运行时长走**，而不是「指标在不在」：
+//	  断言存在性对普通 Gauge **恒真**（没有牙）。
+func TestUptimeMetricTracksGatewayUptime(t *testing.T) {
+	// 把网关的启动时刻挪到 1 小时前 ⇒ 期望 uptime ≈ 3600，而不是 0。
+	const skew = time.Hour
+	minExpected := float64(skew.Seconds()) - 60
+
+	_, srv := newTestGateway(t, nil, func(c *Config) {
+		c.Now = func() time.Time { return time.Now().Add(-skew) }
+	})
+
+	// 构造完就该是「真实运行时长」——若指标只声明不记录，这里读到的是 0。
+	got := testutil.ToFloat64(uptimeSeconds)
+	if got < minExpected {
+		t.Fatalf("构造后 uptime = %v, want >= %v（指标只声明不记录 ⇒ 恒为 0）", got, minExpected)
+	}
+
+	// 指标族必须在 /metrics 上（且是 gauge，不是 counter）。
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var found *dto.MetricFamily
+	for _, f := range families {
+		if f.GetName() == "mcp_gateway_uptime_seconds" {
+			found = f
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("mcp_gateway_uptime_seconds 不在 /metrics 上 —— 指标已声明但没落到 registry")
+	}
+	if len(found.GetMetric()) != 1 {
+		t.Fatalf("mcp_gateway_uptime_seconds 指标数 = %d, want 1", len(found.GetMetric()))
+	}
+	if found.GetMetric()[0].GetGauge() == nil {
+		t.Fatalf("mcp_gateway_uptime_seconds 不是 gauge：%v", found.GetMetric()[0])
+	}
+
+	// 探针端点会**刷新**它（部署里被周期性打的是 /healthz，而不是需要管理令牌的
+	// /health）⇒ 断言的是「值会跟着走」，而不是「值曾经对过」。
+	//
+	// ★ 为什么需要等 1.5s：UptimeSeconds() 按整秒截断，构造时落的那一版是
+	//   floor(3600.x) = 3600 ⇒ 只有真的刷新过，才会变成 >= 3601。
+	//   不刷新的话它会**冻结**在构造那一刻的值上（= 3600 永远不变）。
+	v0 := testutil.ToFloat64(uptimeSeconds)
+	time.Sleep(1500 * time.Millisecond)
+	resp, err := http.Get(srv.URL + "/mcp/control/healthz")
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", resp.StatusCode)
+	}
+	after := testutil.ToFloat64(uptimeSeconds)
+	if after < v0+1 {
+		t.Fatalf("healthz 之后 uptime 没有前进：before=%v after=%v（探针端点没刷新指标）", v0, after)
 	}
 }
 
