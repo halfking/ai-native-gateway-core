@@ -191,6 +191,24 @@ class RuntimeFixture(unittest.TestCase):
                     self.run_fixture(root, env)
                     self.assertEqual(s, json.loads(state.read_text()))
 
+    def test_explicit_container_ignores_host_client_and_fails_closed(self):
+        root, state, env, _ = self.fixture('docker', 'renamed')
+        docker = root / 'bin/docker'
+        launcher = docker.read_text()
+        docker.write_text('#!/bin/bash\nif [[ "$1" == ps ]]; then echo fixture-container; exit 0; fi\n' + launcher.split('\n', 1)[1])
+        host = root / 'bin/psql'
+        host.write_text('#!/bin/bash\necho wrong-host >&2; exit 91\n')
+        host.chmod(0o755)
+        env['LLM_GATEWAY_PSQL_TRANSPORT'] = 'container'
+        env['LLM_GATEWAY_PSQL'] = str(host)
+        self.run_fixture(root, env)
+        self.assertEqual(len(json.loads(state.read_text())['executed']), 3)
+        before = state.read_bytes()
+        docker.write_text('#!/bin/bash\nexit 1\n')
+        result = self.run_fixture(root, env, expected=1)
+        self.assertIn('requested PostgreSQL container is unavailable', result.stderr)
+        self.assertEqual(state.read_bytes(), before)
+
     def test_failed_delivery_has_no_marker(self):
         for transport in ['psql', 'docker']:
             root, state, env, names = self.fixture(transport, 'renamed')
