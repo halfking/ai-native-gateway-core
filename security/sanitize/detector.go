@@ -109,10 +109,12 @@ type patternEntry struct {
 
 // PatternDetector 基于正则模式匹配的检测器
 type PatternDetector struct {
-	mu         sync.RWMutex
-	patterns   []patternEntry
-	configPath string
-	rules      *sanitizerules.Manager
+	historyMu       sync.Mutex
+	historyPolicies map[[32]byte]historyPolicy
+	mu              sync.RWMutex
+	patterns        []patternEntry
+	configPath      string
+	rules           *sanitizerules.Manager
 }
 
 // NewPatternDetector 创建包含默认 PII 模式的检测器
