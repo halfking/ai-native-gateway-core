@@ -296,8 +296,23 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #     ⇒ ★ 每条不变量都有牙 ★。
 #   ★ 实测耗时 ≈2s、★ **bash 3.2 可跑**（★ 门内自己找 bash ≥ 4 去调扫描器 ★）、
 #     ★ 零外部依赖、★ 全部在 mktemp 里 ⇒ 可进 CI 快门 ★。
+# ★ 2026-11-09（第五十轮续记之三 · 白名单豁免面）：★ 再接进 **1 条**快门
+#   （tests/scan_secrets_placeholder_privilege_test.sh）⇒ 该 target 的快门数 20 → **21**。
+#   ★ 起因：★ 扫描器的白名单是【★ 按值豁免 ★】的 ⇒ ★ 一旦某批占位符形态的口令值
+#     进了白名单、★ 【★ 同一个值哪天出现在生产代码里、★ 也一样会被豁免 ★】
+#     ⇒ ⇒ ★ 那一类问题会【★ 永久变成不可见 ★】★★ ★
+#   ★ 而【★ 白名单本身还没有落地 ★】⇒ ★ 那批值【★ 现在就已经在生产代码路径上 ★】零命中
+#     ⇒ ★ 一旦落地、★ 这条「★ 当时是零 ★」的读数【★ 就不再被任何人守着 ★】
+#   ★ 所以本门【★ 不依赖扫描器的白名单 ★】、★ 而是【★ 自己独立扫一遍 ★】
+#     ⇒ ★ 白名单落地之后、★ 它【★ 依然有牙 ★】★★ ★
+#   ★ 门的判据面【★ 直接取自扫描器的规则表 ★】（DB_CONNSTRING ／ CRED_ASSIGN）
+#     ⇒ ★ 零漂移 ⇒ ★ 【★ 门不会比扫描器更宽 ★】★★ ★
+#   ★ 三条量具自校准：★ ① 【★ 生产代码路径文件数下限 ★】（★ 防「清单空了」假绿 ★）
+#     ｜② 【★ 判别力夹具走【★ 同一条管线 ★】 ★】（★ 走另一条管线则门坏掉而门照样绿 ★）
+#     ｜③ 【★ 门自身不得成为处置面的一条命中 ★】（★ 形态一律运行时拼出 ★）
+#   ★ 实测耗时 ≈19s、★ **bash 3.2 可跑**、★ 零外部依赖 ⇒ 可进 CI 快门 ★。
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（20 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（21 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -319,6 +334,7 @@ guards-gate-scripts: ## 门脚本接线门（20 条快门 + 登记册门，防�
 	@bash tests/scan_secrets_enumeration_contract_test.sh
 	@bash tests/scan_secrets_whitelist_regex_portability_test.sh
 	@bash tests/scan_secrets_regex_determinism_test.sh
+	@bash tests/scan_secrets_placeholder_privilege_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 
 # ── 切流状态机门（★ 慢门：实测 ≈270s ⇒ 不进 CI 快门）─────────────────────
