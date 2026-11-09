@@ -1,0 +1,430 @@
+ok  	github.com/kaixuan/llm-gateway-go/adapter/unified	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/admin	111.733s
+ok  	github.com/kaixuan/llm-gateway-go/admin/dashboardapi	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/admin/dashboarddegrade	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/admin/distlock	(cached)
+?   	github.com/kaixuan/llm-gateway-go/admin/logsearch	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/annotation	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/api	2.271s
+ok  	github.com/kaixuan/llm-gateway-go/api/webhooks	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/apihub	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/autoroute	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/autoroute/internal/legacyflags	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/autoupdate	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/bg	38.304s
+ok  	github.com/kaixuan/llm-gateway-go/bg/freequotacleanup	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/bg/freequotareset	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/bg/systemmonitor	4.243s
+ok  	github.com/kaixuan/llm-gateway-go/cache/prefix	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/catalog	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/center	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/auto-testbench	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/autoclass-bench	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/autoroute-e2e-audit	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/bleve-backfill	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/calc_quality	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/cfg_dump	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/check-credentials	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/compression-bench	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/compression-benchmark	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/env-injector	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/fetch-standard-iq	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway	13.828s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway/webhooks	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway-v2	10.239s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/k2-migrate-ursm	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/license-authority	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/license-authority/middleware	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/llm-gw-annotator	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/llm-gw-exporter	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/mcp-gateway	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/migrate-ursm-v2	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/probe-cred	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/quality-monitor	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/quality-service	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/regen-credentials	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/routing-test-client	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/scenario_driver	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/seed-free-resources	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/sessionforensics	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/sessionmeta-bench	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/test_quality_api	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/test_sql	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/address_family_decision_audit	19.981s
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/aggregate-profile	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill-modality	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill-session-opened	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill_session_bodies	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/backfill_sessions_v2_v2	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/dbdegradation-salvage	7.451s
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/extract-product-referenced-relations	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/fix-selfcheck-keyhash	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/migration-456-test	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/outbox-dlq-replay	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/cmd/tools/partition_bound_probe	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/propose-baseline-prices	27.796s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/propose-supplier-prices	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/query_plan_form	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/sql_source_indirection_audit	18.981s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/tools/validate_sessions_v2	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/cmd/traffic-replay	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/tuning-backtest	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/cmd/ursm-k2-preflight	(cached)
+?   	github.com/kaixuan/llm-gateway-go/cmd/verify-model-fetch	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/config	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/control/routing	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/credentialfpslot	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/credentialhealth	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/db	11.948s
+ok  	github.com/kaixuan/llm-gateway-go/db/dbxmanifest	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/deploy/grafana	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/deploy/prometheus/rules	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/deploy/sql/verify	8.518s
+ok  	github.com/kaixuan/llm-gateway-go/discovery	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/disguise	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domain	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domain/analysis	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domain/governance	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/bus	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/projectattr	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/sessionpush	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/analysis/workers	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/approval	9.987s
+ok  	github.com/kaixuan/llm-gateway-go/domains/assets	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/attachments	12.001s
+ok  	github.com/kaixuan/llm-gateway-go/domains/authentication	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/autocombo	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/cachemetrics	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/clientprofile	11.083s
+ok  	github.com/kaixuan/llm-gateway-go/domains/credential	27.932s
+ok  	github.com/kaixuan/llm-gateway-go/domains/credentialquota	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/credentialstate	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/dbdegradation	13.947s
+ok  	github.com/kaixuan/llm-gateway-go/domains/dispatch	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/events	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/feishubot	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/freediscovery	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/freeresource	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/goal	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/goalintegration	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/goalrun	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/health	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks	19.737s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/audit	9.729s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/cache	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression	12.992s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/strategy	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/threetier	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/compression/toolfocused	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/goal	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/handoff	6.870s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/intentanalysis	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/memoraauto	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/observability	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry	7.620s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/promptoptimization	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/response	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/security	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector	(cached)
+?   	github.com/kaixuan/llm-gateway-go/domains/hooks/sessionanalysis	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/toolexecution	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/tools	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/hostedtask	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/identity	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/integration	7.414s
+ok  	github.com/kaixuan/llm-gateway-go/domains/intentconfig	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/interception	(cached)
+?   	github.com/kaixuan/llm-gateway-go/domains/memory	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/memory/client	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/modelcredibility	6.924s
+ok  	github.com/kaixuan/llm-gateway-go/domains/modelmapping	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/modelquality	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/moduleexec	(cached)
+?   	github.com/kaixuan/llm-gateway-go/domains/moduleregistry	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/domains/nodehealth	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/nodestatecache	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/notification	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/orchestration/observ	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/outputcompliance	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/pipeline	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/promptinjection	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/promptinjection/enhanced	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/provider	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/providerprofile	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/quotafetcher	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/remotecontrol	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/reportrollup	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/requestdetail	7.621s
+ok  	github.com/kaixuan/llm-gateway-go/domains/requestjourney	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/routeincident	13.028s
+ok  	github.com/kaixuan/llm-gateway-go/domains/routing	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/routingstate	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/sanitizerules	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/secretmask	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/security	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/security/plugins	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/session	5.940s
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/preprocess	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/session/v2	8.732s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionarchive	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionaudit	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessiondigest	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionforensics	4.137s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionstate	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/sessionsummary	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/stats	4.277s
+ok  	github.com/kaixuan/llm-gateway-go/domains/stats/boardcache	4.986s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	113.462s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/executors	31.643s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/executors/webcookie	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/integrity	7.331s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/state	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/summary	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/tenant	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/tokenest	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/toolexecution	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/transformation	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/bootstrap	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/index	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/integration	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/migration	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/recovery	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/resource	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/rollout	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/domains/ursm/v2/sync	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/durable	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/envinjector	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/errorsx	6.951s
+ok  	github.com/kaixuan/llm-gateway-go/eventbus	(cached)
+?   	github.com/kaixuan/llm-gateway-go/examples/intent_analysis_demo	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/exporter	(cached)
+?   	github.com/kaixuan/llm-gateway-go/fault	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/hotconfig	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/i18n	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/agent/wsclient	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/atomicrename	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/attachmentmirror	6.489s
+ok  	github.com/kaixuan/llm-gateway-go/internal/auth	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/billguard	15.416s
+ok  	github.com/kaixuan/llm-gateway-go/internal/capabilityscore	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/centeragent	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/clienttype	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/clockguard	11.797s
+ok  	github.com/kaixuan/llm-gateway-go/internal/collector	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/contextbudget	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/credentialtext	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/ctxpool	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbrows	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/dbx	8.922s
+ok  	github.com/kaixuan/llm-gateway-go/internal/emptyoutcome	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/endpointselect	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/errdiscard	10.958s
+ok  	github.com/kaixuan/llm-gateway-go/internal/extpointledger	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/extpoints	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/fsstore	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/gocache	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/handlers	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/healthstateguard	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/hostedcallback	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/httpx	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/ingressguard	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/instanceid	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/internaltraffic	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/ir	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/irconv	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsonbguard	6.724s
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsonbody	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/jsoncol	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/largebody	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/liveactions	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/logging	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/loopback	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/markerbound	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/memoraprewarm	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/metricguard	8.898s
+ok  	github.com/kaixuan/llm-gateway-go/internal/mockprobe	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/modelpolicy	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/modelresponse	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/nativepair	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/observability	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/omnifree	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/opsreporter	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/orchestration	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/outbox	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramguard	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramledger	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramrefusal	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramreg	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/partguard	13.330s
+?   	github.com/kaixuan/llm-gateway-go/internal/phasepolicy	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/internal/pipelinev2	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/internal/probe	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/probekind	5.280s
+ok  	github.com/kaixuan/llm-gateway-go/internal/probelane	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/probemode	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/probeutil	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/providercap	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/providers/mock	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/quality	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/reasoncap	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/reasonnorm	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/redis	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/registration	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/relrefs	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/reqprobe	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestarchive	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestfact	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestflow	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/requestobserver	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/retryowner	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/rewrite	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/routeguard	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/routemount	6.059s
+ok  	github.com/kaixuan/llm-gateway-go/internal/routeorder	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/routingtest	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/rowsguard	11.419s
+?   	github.com/kaixuan/llm-gateway-go/internal/runctx	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/safehttpclient	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/schemaobj	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessioncontext	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/sessionfamily	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessionid	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror	4.283s
+ok  	github.com/kaixuan/llm-gateway-go/internal/shutdown	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/smartretry	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlguard	19.391s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sqlreadguard	4.765s
+ok  	github.com/kaixuan/llm-gateway-go/internal/sse	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/stopguard	4.456s
+ok  	github.com/kaixuan/llm-gateway-go/internal/streamretry	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/summarystore	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/taskbus	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/testdb	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/testguard	(cached)
+?   	github.com/kaixuan/llm-gateway-go/internal/testschema	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/internal/textsplit	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/titlestore	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/toolhistory	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/tooloffer	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/trace	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/upstreamurl	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/userscriptcapture	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/vendorprice	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/internal/vendorstrip	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/licensing	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/maas	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/mcp	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/metatools	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/metrics	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/middleware	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/modelbinding	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/modelcatalog	(cached)
+?   	github.com/kaixuan/llm-gateway-go/modeliqdata	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/modelname	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/monitoring	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pending	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pkg/georesolve	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pkg/httputil	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pkg/identity	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pkg/identity/shadow	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pkg/identity/token	(cached)
+?   	github.com/kaixuan/llm-gateway-go/pkg/identity-migrate	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/pkg/logger	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pkg/monitor	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/plugin-runtime	6.550s
+?   	github.com/kaixuan/llm-gateway-go/plugins/all	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/plugins/hello	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/pool	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/pool/scheduler	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/provider	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/provider/catalog	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/proxy	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/query/routing	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/ratelimit	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/recentmodels	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/registry	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/resolve	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/routingopt	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/sales	(cached)
+?   	github.com/kaixuan/llm-gateway-go/scripts/audit-ir-e2e	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/scripts/gen-env-ref	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/scripts/govern-junk-canonical	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/scripts/ursmcheck	627.573s
+ok  	github.com/kaixuan/llm-gateway-go/secret	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/security/armor	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/security/guardian	(cached)
+?   	github.com/kaixuan/llm-gateway-go/security/ipblocklist	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	13.606s
+ok  	github.com/kaixuan/llm-gateway-go/security/sensitive	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/settings	1.713s
+ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/domain	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/sql/migrations/startup	28.181s
+ok  	github.com/kaixuan/llm-gateway-go/sql/schema	44.994s
+ok  	github.com/kaixuan/llm-gateway-go/storage	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/storage/factory	1.321s
+ok  	github.com/kaixuan/llm-gateway-go/storage/file	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/storage/lite	1.622s
+ok  	github.com/kaixuan/llm-gateway-go/storage/sqlite	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/taskprofile	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/telemetry	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tenantops	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/test/events/contract	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/test/mock/asm	(cached)
+?   	github.com/kaixuan/llm-gateway-go/tests	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/business	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/data	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/safety	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D01-ir-lifecycle/stress	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D02-protocol-adaptation/business	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D02-protocol-adaptation/safety	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D07-hot-columnar/data	5.108s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D07-hot-columnar/stress	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D09-node-state-selfcheck/business	1.446s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D09-node-state-selfcheck/data	1.976s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D09-node-state-selfcheck/safety	2.580s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D09-node-state-selfcheck/stress	4.122s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/business	4.662s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/data	4.857s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/safety	4.791s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D14-security/stress	5.580s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/D17-code-hygiene/hygiene	14.721s
+ok  	github.com/kaixuan/llm-gateway-go/tests/48h-audit/gates	4.267s
+ok  	github.com/kaixuan/llm-gateway-go/tests/contract	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/e2e	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/integration	6.630s
+?   	github.com/kaixuan/llm-gateway-go/tests/local/gateway	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/local/mocks	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tests/regression	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/tests/security_engine	(cached)
+?   	github.com/kaixuan/llm-gateway-go/tests/session_audit	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tests/session_identity_contract	6.232s
+ok  	github.com/kaixuan/llm-gateway-go/tests/session_replay	(cached)
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/client	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/gateway	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/mocks	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/scripts	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/stress/scripts/memprofile	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tests/testutil	[no test files]
+?   	github.com/kaixuan/llm-gateway-go/tools/benchreport	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tools/specboost	(cached)
+?   	github.com/kaixuan/llm-gateway-go/tools/specboost/cmd/poc_benchmark	[no test files]
+ok  	github.com/kaixuan/llm-gateway-go/tools/specboost/source	(cached)
+ok  	github.com/kaixuan/llm-gateway-go/upstream	(cached)
+?   	github.com/kaixuan/llm-gateway-go/vibecoding	[no test files]

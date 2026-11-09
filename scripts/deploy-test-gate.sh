@@ -180,10 +180,10 @@ fi
 
 # ── 选包：改动触及的目录（只留有 _test.go 的） ──────────────────────────
 changed_files="$({
-  git diff --name-only HEAD 2>/dev/null || true
-  git diff --name-only --cached 2>/dev/null || true
-  git diff --name-only HEAD~1 HEAD 2>/dev/null || true
-} | sort -u)"
+  git diff --name-only -z HEAD 2>/dev/null || true
+  git diff --name-only -z --cached 2>/dev/null || true
+  git diff --name-only -z HEAD~1 HEAD 2>/dev/null || true
+} | tr '\0' '\n' | sort -u)"
 
 packages=()
 if [[ -n "$changed_files" ]]; then

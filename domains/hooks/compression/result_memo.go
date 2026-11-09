@@ -151,10 +151,18 @@ func (m *ResultMemo) Get(ctx context.Context, p MemoKeyParts, bodyIntoCompressio
 	if err != nil || !found {
 		return nil, err
 	}
+	if cacheBudgetStrict(ctx) && len(raw) > strictMemoWireBytes {
+		return nil, fmt.Errorf("memo envelope exceeds bounded recovery capacity")
+	}
 
 	var val MemoValue
 	if err := json.Unmarshal(raw, &val); err != nil {
 		return nil, err
+	}
+	if cacheBudgetStrict(ctx) {
+		if err := checkBoundedMemo(&val); err != nil {
+			return nil, err
+		}
 	}
 	if len(val.CompressedBody) == 0 || val.Strategy == "" || !cachedBodyPassesGuard(ctx, val.CompressedBody) {
 		// Malformed / partially written entry — treat as a miss.
@@ -172,11 +180,19 @@ func (m *ResultMemo) Set(ctx context.Context, p MemoKeyParts, bodyIntoCompressio
 	if len(val.CompressedBody) == 0 || val.Strategy == "" {
 		return nil
 	}
+	if cacheBudgetStrict(ctx) {
+		if err := checkBoundedMemo(val); err != nil {
+			return err
+		}
+	}
 
 	val.CachedAt = time.Now()
 	raw, err := json.Marshal(val)
 	if err != nil {
 		return err
+	}
+	if cacheBudgetStrict(ctx) && len(raw) > strictMemoWireBytes {
+		return fmt.Errorf("memo envelope exceeds bounded recovery capacity")
 	}
 	return m.store.set(ctx, memoKey(p, bodyIntoCompression), raw, m.ttl)
 }
@@ -196,6 +212,16 @@ type redisMemoStore struct {
 }
 
 func (s redisMemoStore) get(ctx context.Context, key string) ([]byte, bool, error) {
+	if cacheBudgetStrict(ctx) {
+		value, err := s.rdb.Eval(ctx, strictMemoReadScript, []string{key}, strictMemoWireBytes).Text()
+		if err == redis.Nil {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		return []byte(value), true, nil
+	}
 	raw, err := s.rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, false, nil

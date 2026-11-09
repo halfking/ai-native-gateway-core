@@ -1,0 +1,27 @@
+package v2
+import("context";"strings";"testing";"runtime";"time";"github.com/jackc/pgx/v5/pgxpool";"github.com/kaixuan/llm-gateway-go/internal/contextbudget")
+func TestLargeRequestPostgresEvidence(t *testing.T){
+ ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second);defer cancel()
+ p,err:=pgxpool.New(ctx,"postgres://postgres:local-synthetic-check@127.0.0.1:54118/lgw_large_request_check?sslmode=disable");if err!=nil{t.Fatal(err)};defer p.Close()
+ must:=func(q string){if _,err:=p.Exec(ctx,q);err!=nil{t.Fatal(err)}}
+ must(`DROP TABLE IF EXISTS public.session_bodies_unified`)
+ must(`CREATE TABLE public.session_bodies_unified(tenant_id text,session_id text,turn_no int,ts timestamptz,kind text,outbound_body jsonb,request_delta jsonb,response_delta jsonb)`)
+ must(`CREATE INDEX bounded_latest ON public.session_bodies_unified(tenant_id,session_id,turn_no DESC,ts DESC)`)
+ must(`INSERT INTO public.session_bodies_unified VALUES('t','latest',1,now()-interval '1 day','final_full','[{"role":"user","content":"older"}]',NULL,NULL),('t','latest',2,now(),'final_full',jsonb_build_array(jsonb_build_object('role','user','content',repeat('x',100000000))),NULL,NULL)`)
+ strict:=contextbudget.WithSpec(ctx,contextbudget.Spec{ContextWindow:1000000})
+ runtime.GC();var before,after runtime.MemStats;runtime.ReadMemStats(&before)
+ got,err:=NewTurnReader(p).LoadLatestOutbound(strict,"t","latest");runtime.ReadMemStats(&after)
+ if err==nil||got!=nil||!strings.Contains(err.Error(),"bounded recovery"){t.Fatalf("oversized latest recovered old value: %v %v",got,err)}
+ if delta:=after.TotalAlloc-before.TotalAlloc;delta>8<<20{t.Fatalf("100MB row transferred to Go: allocation=%d",delta)}else{t.Logf("100MB latest rejected without older-row fallback; Go cumulative allocation=%d",delta)}
+ var raw []byte;var tooBig bool
+ if err=p.QueryRow(ctx,boundedLatestOutboundSQL(true),"t","latest",1<<20).Scan(&raw,&tooBig);err!=nil||len(raw)!=0||!tooBig{t.Fatalf("wire projection: bytes=%d oversized=%v err=%v",len(raw),tooBig,err)}
+ must(`INSERT INTO public.session_bodies_unified SELECT 't','chain',n,now()+n*interval '1 second','turn',NULL,jsonb_build_array(jsonb_build_object('role','user','content',repeat('x',600000))),NULL FROM generate_series(1,2) n`)
+ if got,err:=NewTurnReader(p).LoadChain(strict,"t","chain",10);err==nil||got!=nil{t.Fatal("cumulative body cap bypass",got,err)}
+ must(`INSERT INTO public.session_bodies_unified SELECT 't','small',n,now()+n*interval '1 second','turn',NULL,jsonb_build_array(jsonb_build_object('role','user','content',n::text)),NULL FROM generate_series(1,1000) n`)
+ got,err=NewTurnReader(p).LoadChain(strict,"t","small",0)
+ if err!=nil||len(got)!=10||got[0].Content!="991"||got[9].Content!="1000"{t.Fatalf("latest ten/order invalid: %v %v",got,err)}
+ q:=boundedStateSQL(`SELECT 7,now(),'test',jsonb_build_object('history',repeat('x',4000000)),1,2,'ok','ok' WHERE $1::text=$2::text`)
+ var turn,inTok,outTok int;var stamp time.Time;var strategy,iv,ov string
+ if err=p.QueryRow(ctx,q,"unused","unused",256<<10).Scan(&turn,&stamp,&strategy,&raw,&inTok,&outTok,&iv,&ov,&tooBig);err!=nil||len(raw)!=0||!tooBig{t.Fatalf("metadata projection: bytes=%d oversized=%v err=%v",len(raw),tooBig,err)}
+ t.Log("PostgreSQL17 actual SQL: latest100MB blocked, cumulative1MiB blocked, latest10 in chronological order, metadata4MB projected NULL with oversize flag")
+}

@@ -247,6 +247,10 @@ func (fc *FileCache) TTL() time.Duration {
 // 索引优先（H1）：命中索引时可跳过 Stat（仍校验内容可解析）；索引与磁盘
 // 漂移时（"索引说有、磁盘说无"）按 miss 处理并摘除索引。
 func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
+	return fc.get(tenantID, sessionID, 0)
+}
+
+func (fc *FileCache) get(tenantID, sessionID string, readLimit int) (*SessionStateV2, error) {
 	if fc == nil || !validCacheID(tenantID) || !validCacheID(sessionID) {
 		return nil, fmt.Errorf("file cache: get %s/%s: %w", tenantID, sessionID, errCacheMiss)
 	}
@@ -287,8 +291,11 @@ func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 		fc.mu.Unlock()
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readCacheFile(path, readLimit)
 	if err != nil {
+		if errors.Is(err, errColdCacheCapacity) {
+			return nil, err
+		}
 		// 读窗口内被并发 Delete/过期清理删除 → 视为未命中（同时摘除残留索引）
 		fc.mu.Lock()
 		delete(fc.index, key)

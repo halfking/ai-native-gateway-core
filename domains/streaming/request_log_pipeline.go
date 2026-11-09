@@ -1792,6 +1792,7 @@ func (c *RequestLogContext) SetOriginStage(stage string) {
 //	owner 规范映射）补写到条目上；owner 来自 api_keys.is_system 行而非
 //	客户端输入，业务 key 不会命中信任清单，无伪造面。
 func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, ctx context.Context) {
+	applyLargeArchiveMetadata(entry, ctx)
 	if entry == nil {
 		return
 	}

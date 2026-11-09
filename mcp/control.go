@@ -411,6 +411,9 @@ func (c *ControlPlane) handleStats(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// ★ 抓取时刻求值的指标（mcp_gateway_uptime_seconds）先刷新再收集：
+	//   否则快照里那份是上一次的读数（甚至压根没有该族）。
+	c.gateway.RefreshUptimeMetric()
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		_ = httpx.WriteJSON(w, http.StatusInternalServerError, "application/json", map[string]any{"error": err.Error()})

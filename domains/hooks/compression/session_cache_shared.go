@@ -160,7 +160,7 @@ func (c *SessionCache) invalidateShared(ctx context.Context, tenantID, sessionID
 }
 
 func (c *SessionCache) readShared(ctx context.Context, tenantID, sessionID string) (*SessionState, []byte, string, error) {
-	fields, err := c.redis.HGetAll(ctx, redisKey(tenantID, sessionID))
+	fields, err := c.readCacheFields(ctx, redisKey(tenantID, sessionID), false)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("read session cache: %w", err)
 	}
@@ -180,6 +180,9 @@ func (c *SessionCache) readShared(ctx context.Context, tenantID, sessionID strin
 	if err != nil {
 		return nil, nil, "", err
 	}
+	if cacheBudgetStrict(ctx) {
+		stateLimit = min(stateLimit, strictCacheMetaBytes)
+	}
 	stateJSON := fields["state"]
 	if len(stateJSON) > stateLimit {
 		return fail("state exceeds limit")
@@ -197,6 +200,9 @@ func (c *SessionCache) readShared(ctx context.Context, tenantID, sessionID strin
 	bodyLimit, err := sharedLimit("LLM_GATEWAY_SESSION_CACHE_MAX_BODY_BYTES", sharedBodyLimit)
 	if err != nil {
 		return nil, nil, "", err
+	}
+	if cacheBudgetStrict(ctx) {
+		bodyLimit = min(bodyLimit, strictCacheBodyBytes)
 	}
 	size, err := strconv.ParseInt(fields["body_size"], 10, 64)
 	if err != nil || size < 0 || size > int64(bodyLimit) {
@@ -238,6 +244,11 @@ func (c *SessionCache) readShared(ctx context.Context, tenantID, sessionID strin
 func (c *SessionCache) commitShared(ctx context.Context, tenantID, sessionID, token string, state *SessionState, body []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if cacheBudgetStrict(ctx) {
+		if err := boundedCachePair(state, body); err != nil {
+			return err
+		}
 	}
 	bodyLimit, err := sharedLimit("LLM_GATEWAY_SESSION_CACHE_MAX_BODY_BYTES", sharedBodyLimit)
 	if err != nil {
@@ -319,7 +330,7 @@ func (c *SessionCache) loadSharedLocked(ctx context.Context, tenantID, sessionID
 		c.setL1Revision(l1Key(tenantID, sessionID), st, body, rev)
 		return st, body, nil
 	}
-	legacy, err := c.redis.HGetAll(ctx, legacyRedisKey(tenantID, sessionID))
+	legacy, err := c.readCacheFields(ctx, legacyRedisKey(tenantID, sessionID), true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read legacy session cache: %w", err)
 	}
@@ -335,7 +346,11 @@ func (c *SessionCache) loadSharedLocked(ctx context.Context, tenantID, sessionID
 				// Only the exact original envelope proves association. Equal message
 				// counts or a rewrapped V2 message array cannot establish provenance.
 				if c.db != nil {
-					_, body, err = c.loadFromLegacyDB(ctx, tenantID, sessionID)
+					if cacheBudgetStrict(ctx) {
+						_, body, err = c.loadStrictLegacyBody(ctx, tenantID, sessionID)
+					} else {
+						_, body, err = c.loadFromLegacyDB(ctx, tenantID, sessionID)
+					}
 					if err != nil {
 						return nil, nil, err
 					}

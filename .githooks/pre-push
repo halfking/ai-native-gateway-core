@@ -106,13 +106,22 @@ fi
 # ── 1b. 审计守卫门（R69）──────────────────────────────────────────────
 #
 # 为什么它**不受 SKIP_TESTS / RUN_GO_TESTS 开关约束**：这些守卫是纯静态分析
-# 门，无 DB、无网络，实测七个包合计约 13s。Go 单元测试之所以默认 opt-in，
-# 原因是成本与外部依赖，而不是守卫的运行代价。
+# 门，无 DB、无网络。★ 代价读数见下（★ 「约 13s」是 **2026-08 的旧读数**，
+# ★★ **早已失效**：★ `internal/sqlguard` 一个包在**门内**实测就要 **268.823s**）。
 #
 # R69 的发现：internal/ 下的 7 个审计守卫（rowsguard / errdiscard / sqlguard
 # / sqlreadguard / paramguard + dbrows / jsoncol）此前**没有任何强制路径执行**
 # ——本钩子的 Go 测试是 opt-in 且只跑 licensing + envinjector，CI 各 workflow
 # 也没覆盖。一门没人跑的守卫是文档，不是门。
+#
+# ★★★ 2026-11-09（r1050 轮复核）：★ 本段的 `-timeout=120s` **是同一个预算失配**
+# ★★★ 的**载体之一**（★ 共四处：`Makefile` 的 `guards` / `guards-fast` / `test-short`
+# ★★★ + **本钩子**）⇒ ★★★ 门内实测 `internal/sqlguard` = **268.823s**
+# ★★★ ⇒ **本钩子在 120s 处必然腰斩**（★ 腰斩日志 = `panic: test timed out`，
+# ★★★ **不是判据红**，★ 且 `defer` 不执行 ⇒ 门文件写的仓内台账可能静默留空）
+# ★★★ ⇒ ⇒ 同步提到 **600s**（★ 与 `Makefile` 的 `guards` / `guards-fast` /
+# ★★★ `test-short` **四处同档** ⇒ ★★ 否则「同一道门在不同通道上寿命不同」）。
+# ★★★ ★ 与 `Makefile` 那处**同款推理**（★ 门内读数 ⇒ 2.2x 余量）★ ★★★
 #
 # 本段同时做两件事：跑守卫，以及校验「没有新守卫被漏登记」（guards-sync）。
 if command -v go >/dev/null 2>&1; then
@@ -122,7 +131,7 @@ if command -v go >/dev/null 2>&1; then
         ./internal/rowsguard ./internal/errdiscard \
         ./internal/dbrows ./internal/jsoncol \
         ./internal/paramguard ./internal/sqlguard ./internal/sqlreadguard \
-        -count=1 -timeout=120s) > "$_guard_log" 2>&1; then
+        -count=1 -timeout=600s) > "$_guard_log" 2>&1; then
     echo "❌ 审计守卫失败（守卫已拦住回归）。" >&2
     tail -30 "$_guard_log" | sed 's/^/    /' >&2
     rm -f "$_guard_log"

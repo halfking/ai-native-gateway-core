@@ -1,0 +1,22 @@
+=== meta-end ===
+exit-code:   0
+stdout:         33963 bytes /      541 lines (完整，未截断)
+stderr:          3116 bytes
+wall:        13m48.911s (real)  |  user 2m45.389s  |  sys 2m31.545s
+load-end:    261.00 257.91 244.51
+FAIL count:  0
+ok count:    41
+
+=== 门内各包耗时（降序，前 12）===
+268.823	internal/sqlguard
+237.521	sql/migrations/startup
+160.477	internal/partguard
+139.837	sql/schema
+113.030	internal/billguard
+94.549	internal/rowsguard
+77.618	domains/credential
+73.930	internal/clockguard
+63.409	internal/metricguard
+36.512	internal/errdiscard
+28.021	internal/stopguard
+12.338	internal/sqlreadguard

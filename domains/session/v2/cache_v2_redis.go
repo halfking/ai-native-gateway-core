@@ -109,7 +109,13 @@ func (r *RedisGovernanceCache) Get(ctx context.Context, tenantID, sessionID stri
 	// a TYPE guard before HGETALL and surfaces a TypedError on type mismatch.
 	// Both ErrKeyNotFound (key absent) and empty map (key present but empty)
 	// are valid cache-miss signals — preserved from the original code path.
-	data, err := redissafe.SafeHGetAll(ctx, r.client, key)
+	var data map[string]string
+	var err error
+	if strictColdRead(ctx) {
+		data, err = r.getBounded(ctx, key)
+	} else {
+		data, err = redissafe.SafeHGetAll(ctx, r.client, key)
+	}
 	if err != nil {
 		if errors.Is(err, redissafe.ErrKeyNotFound) {
 			return nil, nil // Cache miss (not an error)

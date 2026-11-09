@@ -1018,6 +1018,10 @@ func (e *Executor) executeOllama(
 		IR:             e.IR,
 	}
 
+	bodyBytes, err = e.fitCandidateContextBudget(params, cand, "ollama-native", bodyBytes)
+	if err != nil {
+		return nil, err
+	}
 	req, err := oe.BuildRequest(cand, bodyBytes, params.IsStream)
 	if err != nil {
 		return nil, err

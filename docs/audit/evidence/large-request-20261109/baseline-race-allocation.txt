@@ -1,0 +1,14 @@
+Whitespace normalized for repository storage; numeric test results unchanged.
+Clean main baseline: 2e169c07dac3304d2fcfaeb808fee29ad2e0b3a9
+Command: go test -race ./security/sanitize -run ^TestR1039InnerRescanScannerAllocationsAreBounded$ -count=1
+
+--- FAIL: TestR1039InnerRescanScannerAllocationsAreBounded (2.65s)
+    r1039_inner_rescan_probe_test.go:331: json 16KB (18880 bytes): 3352.0 allocs/op
+    r1039_inner_rescan_probe_test.go:332:
+            Error Trace:    /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/security/sanitize/r1039_inner_rescan_probe_test.go:332
+            Error:          "3352" is not less than or equal to "1024"
+            Test:           TestR1039InnerRescanScannerAllocationsAreBounded
+            Messages:       扫描器在 16KB JSON 上的分配次数必须有界（内层重扫不得再乘一层）
+FAIL
+FAIL    github.com/kaixuan/llm-gateway-go/security/sanitize 3.276s
+FAIL

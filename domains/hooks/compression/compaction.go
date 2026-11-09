@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/contextbudget"
 	"github.com/kaixuan/llm-gateway-go/internal/markerbound"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -135,6 +136,9 @@ type ProviderCandidate struct {
 type Dependencies struct {
 	Memora   MemoraClient
 	Provider ProviderClient
+	// Production enables budget checks for every summary candidate. An
+	// inherited trusted context spec also enables checks for individual calls.
+	EnforceContextBudget bool
 }
 
 // upstreamHTTPDoer is the small HTTP shim compaction uses to talk to the
@@ -721,6 +725,7 @@ func invokeCompactionSummarize(ctx context.Context, deps *Dependencies, cand *Pr
 // with the compaction system prompt + conversation as the user message.
 // Returns the assistant's first-message content (the summary).
 func invokeOpenAISummarize(ctx context.Context, deps *Dependencies, cand *ProviderCandidate, conversation string) (string, error) {
+	ctx = compactionBudgetContext(ctx, deps)
 	userContent := "Summarize the following conversation history:\n\n" + conversation
 	payload, _ := json.Marshal(map[string]any{
 		"model":       cand.RawModel,
@@ -767,6 +772,7 @@ func invokeOpenAISummarize(ctx context.Context, deps *Dependencies, cand *Provid
 // invokeAnthropicSummarize calls the candidate as an Anthropic Messages
 // endpoint with the compaction system prompt in the system field.
 func invokeAnthropicSummarize(ctx context.Context, deps *Dependencies, cand *ProviderCandidate, conversation string) (string, error) {
+	ctx = compactionBudgetContext(ctx, deps)
 	userContent := "Summarize the following conversation history:\n\n" + conversation
 	payload, _ := json.Marshal(map[string]any{
 		"model":      cand.RawModel,
@@ -822,6 +828,15 @@ func invokeAnthropicSummarize(ctx context.Context, deps *Dependencies, cand *Pro
 // yielding e.g. https://api.minimaxi.com/v1/v1/chat/completions → 404.
 // See internal/upstreamurl/upstreamurl.go (SSoT) for the cleanup rules.
 func buildCompactionRequest(ctx context.Context, cand *ProviderCandidate, payload []byte, anthropic bool) (*http.Request, error) {
+	if spec, enabled := contextbudget.SpecFromContext(ctx); enabled {
+		spec.ContextWindow = 0
+		if cand.ContextWindow != nil {
+			spec.ContextWindow = *cand.ContextWindow
+		}
+		if _, err := contextbudget.Check(payload, spec); err != nil {
+			return nil, err
+		}
+	}
 	var url string
 	if anthropic {
 		url = upstreamurl.Build(cand.BaseURL, upstreamurl.EpMessages)
@@ -840,6 +855,16 @@ func buildCompactionRequest(ctx context.Context, cand *ProviderCandidate, payloa
 		req.Header.Set("Authorization", "Bearer "+cand.APIKey)
 	}
 	return req, nil
+}
+
+func compactionBudgetContext(ctx context.Context, deps *Dependencies) context.Context {
+	if deps == nil || !deps.EnforceContextBudget {
+		return ctx
+	}
+	if _, exists := contextbudget.SpecFromContext(ctx); exists {
+		return ctx
+	}
+	return contextbudget.WithSpec(ctx, contextbudget.Spec{})
 }
 
 const maxCompactionBody = 4 << 20 // 4 MiB; the summary is bounded by max_tokens

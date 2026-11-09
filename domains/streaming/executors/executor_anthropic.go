@@ -1038,6 +1038,11 @@ func (e *Executor) executeAnthropicOnce(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
+	var budgetErr error
+	bodyBytes, budgetErr = e.fitCandidateContextBudget(params, cand, "anthropic-messages", bodyBytes)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
 	req, err := ae.BuildRequest(cand, bodyBytes, params.IsStream)
 	if err != nil {
 		return nil, err
@@ -1262,6 +1267,15 @@ func (e *Executor) executeAnthropicOnce(
 		}
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), body)
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body)
+
+		// 2026-11-09: streaming 路径 400+ 错误专用日志，与 non-streaming 对齐
+		slog.Warn("anthropic streaming upstream error",
+			"request_id", params.RequestID,
+			"credential_id", cand.CredentialID,
+			"provider_id", cand.ProviderID,
+			"status", resp.StatusCode,
+			"kind", errKind,
+			"body_preview", truncateForLog(body, 200))
 
 		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 			// Step 4 (2026-06-18): removed the 10-second slow-upstream

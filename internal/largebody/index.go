@@ -135,7 +135,7 @@ func (s *jsonScanner) space() error {
 		if c != ' ' && c != '\t' && c != '\r' && c != '\n' {
 			return nil
 		}
-		if _, err = s.next(); err != nil {
+		if err = s.want(c); err != nil {
 			return err
 		}
 	}
@@ -343,13 +343,13 @@ func (s *jsonScanner) literal(text string) error {
 func (s *jsonScanner) number() error {
 	c, _ := s.peek()
 	if c == '-' {
-		if _, err := s.next(); err != nil {
+		if err := s.want(c); err != nil {
 			return err
 		}
 		c, _ = s.peek()
 	}
 	if c == '0' {
-		if _, err := s.next(); err != nil {
+		if err := s.want(c); err != nil {
 			return err
 		}
 		if c, _ = s.peek(); isDigit(c) {
@@ -364,7 +364,7 @@ func (s *jsonScanner) number() error {
 		}
 	}
 	if c, _ = s.peek(); c == '.' {
-		if _, err := s.next(); err != nil {
+		if err := s.want(c); err != nil {
 			return err
 		}
 		if c, _ = s.peek(); !isDigit(c) {
@@ -375,12 +375,12 @@ func (s *jsonScanner) number() error {
 		}
 	}
 	if c, _ = s.peek(); c == 'e' || c == 'E' {
-		if _, err := s.next(); err != nil {
+		if err := s.want(c); err != nil {
 			return err
 		}
 		c, _ = s.peek()
 		if c == '+' || c == '-' {
-			if _, err := s.next(); err != nil {
+			if err := s.want(c); err != nil {
 				return err
 			}
 		}
@@ -401,7 +401,7 @@ func (s *jsonScanner) digits() error {
 		if err != nil || !isDigit(c) {
 			return nil
 		}
-		if _, err = s.next(); err != nil {
+		if err = s.want(c); err != nil {
 			return err
 		}
 	}

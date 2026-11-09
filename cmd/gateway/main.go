@@ -112,6 +112,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
+	"github.com/kaixuan/llm-gateway-go/internal/largebody"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
@@ -126,6 +127,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
+	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
 	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
@@ -1862,6 +1864,8 @@ func main() {
 			},
 			auditSink,
 		)
+		routingExec.EnforceContextBudget = true
+		routingExec.FitContext = sessioncontext.Fit
 		routingExec.RequestProbe = reqProbeCoord
 		// P0-D：probeOne 跨实例单飞（同 model SET NX）。无 Redis 时 executor
 		// 回落进程内 memory（多实例最多各探一次，规划可接受）。
@@ -6830,15 +6834,27 @@ func main() {
 	// 可读：不含 provider/credential 等敏感数据，供跨服务能力发现使用。
 	mux.Handle("/api/v2/capabilities", NewCapabilitiesHandler(Version(), cfg.Listen))
 
+	// MCP 服务网关（数据面 /mcp + 控制面 /mcp/control + 看板 /mcp/admin）。
+	// 装配失败只记日志不阻断启动：MCP 网关是附加能力。
+	//
+	// ★ 必须排在 /metrics 注册**之前**：下面的 /metrics 端点要在这个网关上
+	//   挂「抓取前刷新抓取时刻求值指标」的包装（mcp_gateway_uptime_seconds
+	//   只有抓取时刻才有意义），拿不到网关实例就没法挂。
+	mcpGateway := registerMCPGateway(mux, slog.Default())
+
 	// NET-008 fix: /metrics 必须 admin 鉴权（暴露所有 prometheus 注册
 	// 指标含 provider / credential 等敏感标签）。使用
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
-	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
+	//
+	// ★ MCP 网关装配成功时，抓取前先刷新它的抓取时刻求值指标：否则
+	//   mcp_gateway_uptime_seconds 在 /metrics 上恒为 ABSENT（不是 0），
+	//   面板无数据、rate() 告警永不触发。
+	metricsHandler := middleware.MetricsHandler()
+	if mcpGateway != nil {
+		metricsHandler = mcpGateway.ScrapeHandler(metricsHandler)
+	}
+	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(metricsHandler))
 	registerStorageMetricsHandler(mux, storageRt, cfg.AdminAPIKey) // Task 5.3: 存储分层指标端点，鉴权与 /metrics 一致
-
-	// MCP 服务网关（数据面 /mcp + 控制面 /mcp/control + 看板 /mcp/admin）。
-	// 装配失败只记日志不阻断启动：MCP 网关是附加能力。
-	registerMCPGateway(mux, slog.Default())
 
 	// Mock Probe 端点（2026-09-24 v2 设计；2026-09-26 生产入口接入，审计
 	// docs/audit/2026-09-27-mock-probe-production-entry-audit.md §修复）。仅 MockProbeEnabled=true
@@ -8240,8 +8256,26 @@ func main() {
 	// 不进日志/追踪/Recovery——而这两个都是带登录态的运维面。AuthMiddleware
 	// 的 bypass 名单（auth_mw.go）为 /m、/m-assets/、/maintain/ 放行全局
 	// API key，端点级鉴权仍由各挂载与 /api/* wrapAdmin 自守卫。
-	publicSurface := newMobileGatewayHandler(
+	var publicSurface http.Handler = newMobileGatewayHandler(
 		newMaintainGatewayHandler(mux, maintainStatic), mobileStatic)
+	// The archive must precede V2 dispatch and streamretry snapshots. Its root
+	// lives outside the evictable hot-zone tree and must be a persistent volume.
+	rawDirectory := os.Getenv("LLM_GATEWAY_SESSION_RAW_DIR")
+	if rawDirectory == "" {
+		rawDirectory = filepath.Join("data", "session-archive")
+		if cfg.LogFile != "" {
+			rawDirectory = filepath.Join(filepath.Dir(cfg.LogFile), "session-archive")
+		}
+	}
+	rawStore, rawErr := largebody.NewStore(rawDirectory)
+	if rawErr != nil {
+		slog.Error("session archive initialization failed", "error", rawErr)
+		os.Exit(1)
+	}
+	defer rawStore.Close()
+	publicSurface = streaming.NewLargeIngress(chatHandler, rawStore, streaming.LargeIngressConfig{}).Wrap(publicSurface)
+	slog.Info("bounded session ingress enabled", "max_input_bytes", largebody.LimitBytes, "archive_root", rawDirectory)
+
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).

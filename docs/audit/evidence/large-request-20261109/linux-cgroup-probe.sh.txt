@@ -1,0 +1,10 @@
+#!/bin/sh
+/test -test.run='^TestLargeIngressMemoryChild$' -test.count=1 -test.v=true
+lgw_cgroup_rc=$?
+printf 'CGROUP_MEMORY_PEAK_BYTES='
+cat /sys/fs/cgroup/memory.peak
+printf 'CGROUP_MEMORY_EVENTS\n'
+cat /sys/fs/cgroup/memory.events
+printf 'CGROUP_MEMORY_STAT\n'
+cat /sys/fs/cgroup/memory.stat
+exit "$lgw_cgroup_rc"

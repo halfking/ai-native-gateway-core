@@ -171,10 +171,12 @@ check_migration_unique() {
   # startup set so collisions with both existing and newly staged files fail.
   local new_files f base ver matches staged_files
   local -a conflicts=()
-  new_files=$(git diff --cached --no-renames --name-only --diff-filter=A -- "$mig_dir" \
+  new_files=$(git diff --cached --no-renames --name-only -z --diff-filter=A -- "$mig_dir" \
+              | tr '\0' '\n' \
               | grep -E "^${mig_dir}/[0-9]{3}_.*\.sql$" \
               | grep -v -E '\.(down|disabled|fix)\.sql$' || true)
-  staged_files=$(git ls-files --cached -- "$mig_dir" \
+  staged_files=$(git ls-files --cached -z -- "$mig_dir" \
+                 | tr '\0' '\n' \
                  | grep -E "^${mig_dir}/[0-9]{3}_.*\.sql$" \
                  | grep -v -E '\.(down|disabled|fix)\.sql$' || true)
   while IFS= read -r f; do
@@ -280,7 +282,7 @@ check_vue_tsc() {
 }
 
 has_staged_web_changes() {
-  git diff --cached --name-only -- 'web/**' | grep -q .
+  git diff --cached --name-only -z -- 'web/**' | tr '\0' '\n' | grep -q .
 }
 
 # ── 5. Web token compliance: forbid P0 purple-family + var() fallbacks ───
