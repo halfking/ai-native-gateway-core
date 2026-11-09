@@ -383,6 +383,11 @@ func (c *SessionCache) Update(ctx context.Context, tenantID, gwSessionID string,
 		return err
 	}
 	if state != nil {
+		if cacheBudgetStrict(ctx) {
+			if err := boundedCachePair(state, body); err != nil {
+				return err
+			}
+		}
 		runThreeTierCheck(ctx, tenantID, gwSessionID, state)
 		c.setL1(l1Key(tenantID, gwSessionID), state, body)
 	}
@@ -411,6 +416,12 @@ func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID strin
 	key := l1Key(tenantID, gwSessionID)
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
+		if cacheBudgetStrict(ctx) {
+			if err := boundedCachePair(e.state, e.body); err != nil {
+				c.mu.Unlock()
+				return nil, nil, err
+			}
+		}
 		c.ll.MoveToFront(e.elem)
 		st, body := cloneSessionState(e.state), append([]byte(nil), e.body...)
 		c.mu.Unlock()
@@ -440,6 +451,11 @@ func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, st
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if cacheBudgetStrict(ctx) {
+		if err := boundedCachePair(state, outboundBody); err != nil {
+			return err
+		}
 	}
 	if c.redis != nil {
 		return c.withSharedLease(ctx, tenantID, gwSessionID, func(token string) error {
@@ -553,6 +569,7 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 
 		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
+		c.evictL1Locked()
 		return
 	}
 
@@ -561,7 +578,10 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
 	c.curBytes += entryBytes
+	c.evictL1Locked()
+}
 
+func (c *SessionCache) evictL1Locked() {
 	maxCount := sessionCacheL1Capacity()
 	maxBytes := sessionCacheL1MaxBytes()
 	// Evict least-recently-used entries while EITHER limit is exceeded.
@@ -588,6 +608,9 @@ func (c *SessionCache) loadFromRedis(ctx context.Context, tenantID, sessionID st
 }
 
 func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	if cacheBudgetStrict(ctx) {
+		return c.loadStrictFromDB(ctx, tenantID, gwSessionID)
+	}
 	// ★ §143.86（落法 ⓪）★ G-1 守卫：★ 本次请求由网关【自动新建】了会话
 	// ⇒ ⇒ 该会话 ID 刚被创建 ⇒ ⇒ 库里【必然】没有它的历史 outbound body
 	// ⇒ ⇒ ⇒ 腿①②③ 整条读链【必然落空】⇒ ⇒ 直接短路。
