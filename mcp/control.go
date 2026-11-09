@@ -279,7 +279,8 @@ func (c *ControlPlane) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_ = httpx.WriteJSON(w, http.StatusOK, "application/json", map[string]any{
 		"status":           "ok",
 		"version":          Version,
-		"uptime_seconds":   uptime,		"adapters":         items,
+		"uptime_seconds":   uptime,
+		"adapters":         items,
 		"adapters_total":   len(adapters),
 		"adapters_healthy": healthy,
 	})
