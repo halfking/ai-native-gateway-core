@@ -169,3 +169,30 @@ func TestLotteryCapacityAndPressureCompose(t *testing.T) {
 		t.Fatalf("tight flapping bucket must have the smaller share, got %v", got)
 	}
 }
+
+// 边界：零权重候选不参与抽签（原语义保留），capacity[i] 在 continue 分支不被访问。
+func TestLotteryZeroWeightBoundary(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_ROUTING_W_STICKY", "0")
+	t.Setenv("LLM_GATEWAY_ROUTING_W_RECENCY", "0")
+	t.Setenv("LLM_GATEWAY_ROUTING_W_BALANCE", "0")
+	t.Setenv("LLM_GATEWAY_ROUTING_W_PLANQUOTA", "0")
+	t.Setenv("LLM_GATEWAY_ROUTING_W_RECOVERY", "0")
+	r := NewRouter(nil, nil)
+	rpm := 300
+	zero := healthyCand(1)
+	zero.Weight = 0
+	zero.RPMLimit = &rpm
+	flap := flappingCand(2, 0.5)
+	flap.RPMLimit = &rpm
+	got := firstHopLotteryWeights([]provider.Candidate{zero, flap}, r)
+	// 零权重保持 0（continue 分支）；有压力候选触发 changed。
+	if got == nil {
+		t.Fatal("flapping candidate should trigger changed")
+	}
+	if got[0] != 0 {
+		t.Fatalf("zero-weight candidate must stay 0, got %d", got[0])
+	}
+	if got[1] >= 100 {
+		t.Fatalf("flapping candidate should be penalized, got %d", got[1])
+	}
+}
