@@ -1,0 +1,10 @@
+=== meta-start (guards-fast, 300s 预算那一轮) ===
+HEAD:        7e3c9ea5cc72d8ff8361785ca9dfca88a7234d48
+HEAD short:  7e3c9ea5c
+origin/main: 7e3c9ea5cc72d8ff8361785ca9dfca88a7234d48
+time-start:  2026-11-09 18:26 (local, Asia/Shanghai)
+load-start:  265.29 229.44 168.50  (uptime @ 18:24, 10 cores)
+go:          go version go1.27.2 darwin/arm64
+command:     make guards-fast   (Makefile 里 guards/guards-fast 的 -timeout 在本轮为 300s)
+note:        ★ 本轮结束时已把两个 target 的预算改为 600s；★ 本文件是 300s 那一轮的完整落盘读数。
+note:        ★ 机器上另有别的仓在跑 go test -timeout 40m ./... ⇒ 外部负载 250~345 ⇒ 墙钟读数偏高。

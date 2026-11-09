@@ -625,7 +625,7 @@ onMounted(reload)
             <el-button v-if="row.status === 'draft'" size="small" type="warning" @click="act(row as unknown as Quote, 'submit')">{{ t('sales.submit') }}</el-button>
             <el-button v-if="canDecide && row.status === 'pending_approval'" size="small" type="success" @click="decide(row as unknown as Quote, 'approved')">{{ t('sales.approve') }}</el-button>
             <el-button v-if="canDecide && row.status === 'pending_approval'" size="small" type="danger" @click="decide(row as unknown as Quote, 'rejected')">{{ t('sales.reject') }}</el-button>
-            <el-button v-if="row.status === 'approved'" size="small" type="primary" @click="act(row as unknown as Quote, 'send')">{{ t('sales.send') }}</el-button>
+            <el-button v-if="row.status === 'approved'" size="small" type="primary" link @click="act(row as unknown as Quote, 'send')">{{ t('sales.send') }}</el-button>
             <el-button v-if="row.status === 'sent'" size="small" type="success" @click="act(row as unknown as Quote, 'won')">{{ t('sales.markWon') }}</el-button>
             <el-button v-if="row.status === 'sent'" size="small" type="info" @click="act(row as unknown as Quote, 'lost')">{{ t('sales.markLost') }}</el-button>
             <el-button size="small" @click="showApprovals(row as unknown as Quote)">{{ t('sales.approvals') }}</el-button>
