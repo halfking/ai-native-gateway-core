@@ -18,6 +18,30 @@ GO ?= go
 GOFLAGS ?= -trimpath
 BIN_DIR := bin
 
+# ─────────────────────────────────────────────────────────────────────────
+# ★ 2026-11-09：**门文件数实时取，绝不写死**。
+#
+#   ★ 起因：本文件此前把「166 个门文件」写死在**两处**（一行注释 + 一行
+#     `##` 帮助文本）⇒ ⇒ 实测当日已是 **180** ⇒ ★★ 写死的数字**不会自己过期**。
+#   ★★ 而本仓**自己**已经判过这个死（r1050 轮，2026-10-30，§7.3 与 lesson #8）：
+#     「**注释里的读数漂移**在结构上无法被自动发现 ⇒ 最好的修法不是「定期回填」
+#      而是「**让数字不可能过期**」⇒ ★ 把 `guards-sync.sh` 那句 `echo "它有 94
+#      个门文件"` 改成 `find` **实时数** ⇒ ★ **数字从此不可能过期**」。
+#   ⇒ ★★ r1050 轮**只**修了 `scripts/checks/guards-sync.sh`（运行期 echo），
+#     **漏了**本文件这两处 ⇒ ⇒ 本轮补齐，且用**同一套办法**（实时数）而不是
+#     「把 166 改成 180」（★ 回填一次就会再过期一次）。
+#
+#   ★ `##` 帮助文本是**面向人的输出**（`make help` 可见）⇒ ★★ r1050 lesson #9：
+#     「注释假话与运行期假话，价钱不同 ⇒ **活的假话比注释假话更贵**」
+#     ⇒ ⇒ 所以下面用 `@URSMCK_GATE_COUNT@` 占位符 + `make help` 里的 `sed`
+#     **实时替换** ⇒ ⇒ `make help` 打印的门文件数**永远是真的**。
+#
+#   ★ 口径：门文件 = `scripts/ursmcheck/` 下的 `*_test.go`（与
+#     `scripts/checks/guards-sync.sh:55` 的实时数**同一口径** ⇒ 两处数字同源）。
+#     ★ 实测该目录下**无**非测试 `.go` 文件 ⇒ 两种口径当前都等于 180。
+# ─────────────────────────────────────────────────────────────────────────
+URSMCHECK_GATE_COUNT := $(shell find scripts/ursmcheck -maxdepth 1 -name '*_test.go' -type f 2>/dev/null | wc -l | tr -d ' ')
+
 # 把 /tmp/session_export/sessions 设进 ABS_SESSIONS_DIR 以便真实数据回放
 ABS_SESSIONS_DIR ?= $(CURDIR)/tests/session_replay/sessions
 
@@ -27,6 +51,7 @@ ABS_SESSIONS_DIR ?= $(CURDIR)/tests/session_replay/sessions
 .PHONY: help
 help: ## 显示帮助
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	  sed 's|@URSMCK_GATE_COUNT@|$(URSMCHECK_GATE_COUNT)|g' | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 
 # ── 测试 ──────────────────────────────────────────────────────────────────
@@ -138,7 +163,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 
 # ★★★ 2026-10-22 12h 审计轮：./scripts/ursmcheck 此前**不在任何强制执行路径**上。
 #
-#   它有 94 个门文件（CJK 变量名棘轮、R75 巡检基线快路门、pipefail 台账门、
+#   它有一批门文件（CJK 变量名棘轮、R75 巡检基线快路门、pipefail 台账门、
 #   cron 注册门、投递门、变更点门…）⇒ 这些门在 CI 上**一次都没跑过**。
 #   ⇒ 一门没人跑的守卫是文档，不是门（这正是本文件上方 R69 的判词）。
 #   ⇒ 单独一个 target：它比主门慢一个量级（实测 ~5~6 分钟 vs 主门 120s 上限），
@@ -147,8 +172,11 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 #   ⇒ 登记进 GUARD_PACKAGES_SLOW ⇒ scripts/checks/guards-sync.sh 的双向检查
 #     同样覆盖它（漏登记/登记错了会红）。
 # ★★ 2026-10-30 r1050 轮：**「94 个」是 2026-10-22 那轮的历史读数**（★ 当时确实
-#   是 94 个）⇒ ★★ **它早已不是当前值**：★ 实测当前 `scripts/ursmcheck/*.go`
-#   = **165** 个（★ 磁盘与 `git ls-files` 逐项一致 ⇒ 口径确定）。
+#   是 94 个）⇒ ★★ **它早已不是当前值**（★ 当前值见文件头的 URSMCHECK_GATE_COUNT
+#   ⇒ ★ **实时数**，不是写死的）。
+#   ⇒ ★★★ 2026-11-09 补：★ r1050 轮当时把当前值写成「165 个」⇒ ★★ **那行今天
+#   也过期了**（★ 实测当日 180）⇒ ⇒ 这正是 r1050 lesson #8 说的
+#   「**回填一次就会再过期一次**」⇒ ⇒ 本轮不再写死任何当前值。
 #   ⇒ ★★ **同一个 165 与 r1049 轮的「165」是不同集合**：★ 那 165 指
 #   ★ 「调用编译型 go 子命令的 `.sh`/`.py` 脚本数」，★ 这 165 指「门文件数」
 #   ⇒ ★★ **撞号不是同一件事** ⇒ ★★ 引用时必须写清口径，否则会互串。
@@ -172,7 +200,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # ── 切流锁契约门 + 跨仓对拍门 ───────────────────────────────────────────────
@@ -386,6 +414,30 @@ guards-deploy-state-machine: ## 切流状态机门（慢门，实测 ≈270s ⇒
 guards-audit-ledger: ## 跨文档登记册一致性门（两份审计档的登记项状态必须一致）
 	@bash tests/audit_ledger_consistency_test.sh
 
+# ── 基线副本一致性门 ───────────────────────────────────────────────────────
+#
+# ★ 2026-11-09（第 0 批零风险清理 · 项2）：基线 SQL（00-prereqs / 01-schema /
+#   02-seed）在仓内各有**三处**副本：
+#     sql/schema/（SSOT 正典）/ installer/.../embeddata/（新装库 //go:embed）/
+#     deploy/sql/schemas/baseline/（随包分发基线）
+#   ⇒ 9 个实体必须**逐字节相同**，否则新装库与存量库的形状分叉。
+#
+# ★ 为什么**又**有一道 shell 门（Go 门已在 ./sql/schema 里，见
+#   sql/schema/baseline_copies_identity_test.go）：
+#   ① Go 门**只报红不修** ⇒ ★ 人需要一条**能修**的命令 ⇒ 本脚本的 --apply
+#      就是那条命令（从 SSOT 同步两份副本）⇒ ⇒ 「手改三处」这个动作消失了；
+#   ② Go 门住在 GUARD_PACKAGES（快门），本门**额外**把同一不变量落成
+#      「一条可执行的、任何人可跑的」检查（★ 排查时不用先会 go test）。
+#
+# ★ 实测：9 次 cmp（合计 ~1.2MB）⇒ **毫秒级**、零外部依赖、bash 3.2 可跑
+#   ⇒ ⇒ **进 guards-fast**（codeup Flow 的唯一守卫入口 ⇒ 真正在 CI 上跑）。
+#
+# ★ **有调用方**（make guards / make guards-fast）⇒ 按本仓纪律
+#   「门没有调用方 = 声明不是门」，它**是门**，不是文件。
+.PHONY: guards-baseline-copies
+guards-baseline-copies: ## 基线副本一致性门（三份基线 × 三处副本，逐字节；漂移即红，--apply 可修）
+	@bash scripts/checks/sync-baseline-copies.sh --check
+
 .PHONY: guards-win-baseline
 guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/check-win-test-baseline.sh <日志>；无参=自跑全量，约 10 分钟）
 	@bash scripts/guards/check-win-test-baseline.sh $(WIN_TEST_LOG)
@@ -412,7 +464,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=120s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
@@ -446,7 +498,8 @@ guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scrip
 guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 
-# scripts/ursmcheck 的 166 个门文件（比主门慢一个量级 ⇒ 独立 timeout）
+# scripts/ursmcheck 的门文件（**数量实时取**，见文件头 URSMCHECK_GATE_COUNT；
+# 比主门慢一个量级 ⇒ 独立 timeout）
 # ★★ 2026-10-28 r1044 轮：慢门预算由 900s 提到 **1800s**（★ 与 verify.sh 的
 #   ★ 全量测试腿**同一档** ⇒ ★★ 两处必须同步改）。
 #   依据：★ 仓内自记该包实测 **840.111s / timeout 900s**（⇒ 当时余量只剩 ~60s，
@@ -465,7 +518,7 @@ guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描�
 #   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
 #   （⇒ 预算不必再提；★ 但余量已非「宽松」，下一轮若继续变重需重新评估）。
 .PHONY: guards-ursmcheck
-guards-ursmcheck: ## scripts/ursmcheck 全量门（166 个门文件；CI 上此前从未执行过）
+guards-ursmcheck: ## scripts/ursmcheck 全量门（@URSMCK_GATE_COUNT@ 个门文件；CI 上此前从未执行过）
 	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=1800s
 
 # R48-B1 后续（R48 报告 §五-3）：installer 是独立 go.mod，根目录

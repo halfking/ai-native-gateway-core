@@ -36,17 +36,38 @@ LLM Gateway Go 是一个**企业级大语言模型网关系统**，为企业提�
 
 ---
 
-### 1.4 代码统计（基于真实代码扫描，2026-10-16，均不含 vendor/ 与 installer/；旧版数字含 vendor 依赖不可比）
+### 1.4 代码统计（真实代码扫描，快照 2026-11-09 @ `ade60cae97`；均不含 `vendor/` 与 `installer/`）
 
-| 指标 | 数值 | 说明 |
-|------|------|------|
-| Go源文件总数 | 6,138 个 | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
-| Admin API文件 | 790 个 | `find ./admin -name "*.go" -type f \| wc -l` |
-| 后台Worker文件 | 434 个 | `find ./bg -name "*.go" -type f \| wc -l` |
-| 领域模块数量 | 69 个 | `ls ./domains/ \| wc -l` (一级目录) |
-| 数据库迁移 | 1,180 个 SQL | `sql/migrations/` 全量；startup 数字序列活跃至 **927**（work_type 路由来源为 831） |
-| 单元测试文件 | 3,661 个 | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
-| 可执行程序 | 34 个 | `ls ./cmd/ \| wc -l` |
+> ★ **为什么加「快照日期 + 生成命令」两列**（2026-11-09 第 0 批零风险清理 · 项4）：
+> 本表上一版停留在 **2026-10-16**（快照 `@495a1c758`），与实际差出 hundreds 个文件
+> ⇒ ⇒ **顶层导航文档给出口径偏差**，读者据此判断「项目有多大」会得到过期结论。
+>
+> ★★ **但「回填一次」不是修法** —— 本仓判词（`docs/audit/2026-10-30-r1050-…md`
+>   lesson #8）：「**注释里的读数漂移**在结构上无法被自动发现 ⇒ 最好的修法不是
+>   「定期回填」而是「**让数字不可能过期**」。
+> ⇒ ⇒ 所以本表的每一行都给出**生成命令**：任何人随时可重跑、逐行对拍 ⇒
+>   ⇒ 数字**自带自证能力**，不必依赖「谁记得回填」。
+> ⇒ ⇒ 同时钉住**快照 commit**（同一工作树在不同提交上数字不同 ⇒ 必须钉提交点）。
+>
+> ★ 口径注记（避免再次串号）：
+>   · 本表用 **`find`**（磁盘口径，含未跟踪文件）；
+>   · `git ls-files "*.go"` 的全量是 **11,472**，但它**含 `vendor/` 的 5,857 个**
+>     ⇒ **不可与本表混用**；排除 vendor 后为 **6,475**（含 `installer/` 的 92 个）。
+>   · `go list ./...`（根 module，不含 installer 子模块）= **427 个包**。
+
+| 指标 | 数值 | 快照日期 | 快照 commit | 生成命令 |
+|------|------|---------|------------|----------|
+| Go 源文件总数 | 6,384 | 2026-11-09 | `ade60cae97` | `find . -name "*.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| Admin API文件 | 821 | 2026-11-09 | `ade60cae97` | `find ./admin -name "*.go" -type f \| wc -l` |
+| 后台Worker文件 | 461 | 2026-11-09 | `ade60cae97` | `find ./bg -name "*.go" -type f \| wc -l` |
+| 领域模块数量 | 69 | 2026-11-09 | `ade60cae97` | `ls -d domains/*/ \| wc -l` |
+| 数据库迁移 | 1,234 | 2026-11-09 | `ade60cae97` | `find sql/migrations -name "*.sql" -type f \| wc -l`（startup 纯数字前缀 **1,077** 个，活跃编号至 **954**） |
+| 单元测试文件 | 3,826 | 2026-11-09 | `ade60cae97` | `find . -name "*_test.go" -not -path "./vendor/*" -not -path "./installer/*" \| wc -l` |
+| 可执行程序 | 35 | 2026-11-09 | `ade60cae97` | `ls -d cmd/*/ \| wc -l` |
+| Go 包数 | 427 | 2026-11-09 | `ade60cae97` | `go list ./... \| wc -l`（根 module；`installer/` 是独立 go.mod，不在内） |
+
+> ★ 上一版（2026-10-16 @ `495a1c758`）记的是 6,138 / 790 / 434 / 69 / 1,180 / 3,661 / 34
+> ⇒ ⇒ 一个月内的净增长已在最后一列逐项可查（**+246 / +31 / +27 / 0 / +54 / +165 / +1**）。
 
 ---
 
@@ -406,14 +427,18 @@ Client Request
 
 ## 5. 代码统计
 
+> ★ 与 §1.4 **同一快照**（2026-11-09 @ `ade60cae97`）⇒ **两处口径必须一致**
+> ⇒ ★ 生成命令见 §1.4 的「生成命令」列（★ 本块不重复抄一遍，避免两处抄成两个数）。
+
 ```
-Go源文件总数:     6,138 个 (不含 vendor/installer；快照 @495a1c758)
-Admin API文件:      790 个
-后台Worker文件:     434 个
+Go源文件总数:     6,384 个 (不含 vendor/installer；快照 @ade60cae97)
+Admin API文件:      821 个
+后台Worker文件:     461 个
 领域模块:            69 个 (domains/ 一级目录)
-数据库迁移:         1,180 个 SQL (sql/migrations/; startup 活跃序列最新 927)
-测试文件:         3,661 个 (*_test.go, 不含 vendor/installer)
-可执行程序:           34 个 (cmd/)
+数据库迁移:       1,234 个 SQL (sql/migrations/; startup 纯数字前缀 1,077，活跃编号至 954)
+测试文件:         3,826 个 (*_test.go, 不含 vendor/installer)
+可执行程序:           35 个 (cmd/)
+Go 包数:            427 个 (go list ./...; 根 module)
 ```
 
 > 新旧并行实现（autoroute 三代、Session V1/V2、探测新旧 worker 族、入口 v1/v2 等 10 组 + 7 处死代码）的重点标注与收敛方案见 [03-design/01-architecture/parallel-implementations-comparison.md](./03-design/01-architecture/parallel-implementations-comparison.md)。

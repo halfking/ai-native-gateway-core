@@ -1,5 +1,21 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-09 第0批「零风险清理」执行轮（已验收）**：报告
+> `docs/audit/2026-11-09-第0批零风险清理执行报告.md`。据
+> `docs/2026-11-09-项目现状分析与整理.md` §5 第0批 4 项，**逐项取证后发现计划前提有问题，
+> 4 项均未照原样做**。① 两个 Mach-O 二进制出库（27MB）⇒ 连带发现棘轮门会被自身规则
+> **永久卡死**（「基线非空」代理护栏）⇒ 换**端到端正控**取代；另修**扫描源漏检**：
+> 内容原取 `HEAD:` ⇒ 未提交的二进制被静默跳过 ⇒ 改取索引 `:path` ⇒ 提交前即拦。
+> ② 基线三处副本 ⇒ SSOT约定**早已是现状**；真缺口是门只覆盖1/3文件、其余靠**无调用方**的
+> `verify-migration.sh` ⇒ 补**完整3×3字节门**（`sql/schema`，已在GUARD_PACKAGES）+ **SSOT同步脚本**
+> `scripts/checks/sync-baseline-copies.sh`（`--apply`可修，`make guards-baseline-copies`已接线）。
+> ③ 门数注释**不按计划回填166→180**（本仓r1050 lesson#8：回填即过期）⇒ 改**实时统计**
+> （`make help` 180→181→180 实测可证）；`deploy/deploy.sh`+`rollback.sh` **只订正过期文件头**
+> （仍exit 64 fail-closed；「指向deploy-seamless-docker.sh」已被同类壳2026-10-14否决过）。
+> ④ `PROJECT_OVERVIEW.md` §1.4/§5 统计**8条命令逐条复算相等** + 补「快照日期+生成命令」两列。
+> ★ 未做：`.git`历史瘦身（需filter-repo改写SHA，须约窗口）／dump内容一字未动／两壳未删未改行为／
+> 全量`go test ./...`未跑（cmd/gateway既有CGO红）／前端未构建。
+
 > **2026-11-09 48h修正审计与三环境发布轮（已验收）**：报告
 > `docs/audit/2026-11-09-48h-remediation-report.md`，交接
 > `HANDOFF-48h-remediation-20261109.md`。65提交/271文件与11项WIP已审；历史未合并分支0。

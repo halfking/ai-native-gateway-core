@@ -56,6 +56,24 @@ coverage/
 /build_seq
 # 2026-09-22: 子目录构建产物（installer/cmd/.../go build 输出）不计入仓库
 /installer/cmd/llm-gw-installer/llm-gw-installer
+# 2026-11-09：历史遗留的**编译产物入库**清理（详见
+#   docs/audit/2026-11-09-第0批零风险清理执行报告.md §1）。
+#
+#   ★★ **根因订正**（本条注释的初版写错了，已改）：初版称「原 .gitignore 只写了
+#     `/installer/cmd/llm-gw-installer/…`（嵌套路径），实际入库的是模块根 ⇒ 规则
+#     不匹配 ⇒ 漏网」⇒ ★ **不准确**：实测 `installer/.gitignore:2` **早就有**
+#     `/llm-gw-installer`（模块根锚定）⇒ **规则本来就匹配**。
+#     ⇒ ★★ 真正的根因是：**`.gitignore` 对「已被 git 跟踪」的文件完全无效** ——
+#       `installer/llm-gw-installer` 是在忽略规则存在**之前**入库的
+#       （`c9a08bb58`）⇒ 后来加规则不会让它自动脱管 ⇒ ★ 必须显式
+#       `git rm --cached` ⇒ ★★ 这正是本轮做的事。
+#     ⇒ ⇒ 顺带得出一条通用判据：**「加了一条 .gitignore」不等于「它不再入库」**
+#       ⇒ ★ 真正的安全网是 `scripts/ursmcheck/tracked_binary_artifact_gate_test.go`
+#         （本轮已把它的扫描源从 HEAD 改为索引 ⇒ 未提交的二进制也拦得住）。
+#
+#   ★ `cmd/llm-gw-annotator/llm-gw-annotator` 是**真的**没有忽略规则
+#     （实测无 `cmd/llm-gw-annotator/.gitignore`，根级也无匹配项）⇒ 下面这条是新增。
+/cmd/llm-gw-annotator/llm-gw-annotator
 Dockerfile.local
 # ─────────────────────────────────────────────────────────────
 # 自动补充的标准忽略规则 (2026-06-11 .gitignore 审计)
