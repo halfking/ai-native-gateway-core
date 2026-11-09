@@ -480,6 +480,14 @@ func (e *Executor) doCompactionUpstream(
 	payload []byte,
 	anthropic bool,
 ) (*http.Response, error) {
+	budgetParams := &ExecParams{}
+	if params != nil {
+		*budgetParams = *params
+	}
+	budgetParams.R = (&http.Request{}).WithContext(ctx)
+	if err := e.checkCandidateContextBudget(budgetParams, cand, "summary", payload); err != nil {
+		return nil, err
+	}
 	if e.Circuit != nil && !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
 		return nil, fmt.Errorf("compaction: circuit open for credential %d", cand.CredentialID)
 	}
@@ -1042,6 +1050,11 @@ func (e *Executor) handleContextLengthRecovery(
 	// The fallback value is still used in memory as the compression target
 	// (compress below the observed rejection size), just never written back.
 	primaryLimit, primaryHit := errorsx.ParseContextLimitPrimaryFromError(string(errorBody))
+	if primaryHit && primaryLimit > 0 {
+		// Persist to this request before heuristic compression. Even a <5%
+		// mismatch tightens the hard half-window gate on the ensuing retry.
+		recordDiscoveredContextLimit(params, targetCand, primaryLimit)
+	}
 	if limit, ok := errorsx.ParseContextLimitFromError(string(errorBody)); ok && limit > 0 {
 		configured := 0
 		if targetCand.ContextWindow != nil {

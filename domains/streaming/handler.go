@@ -70,7 +70,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
+const maxBodySize = 100_000_000 // Decoded input bytes; large ingress archives before buffering.
 
 // A response interceptor currently needs a complete SSE event to inspect its
 // JSON payload. Bound per-stream buffering so a malformed provider response
@@ -1390,6 +1390,7 @@ type ChatHandler struct {
 	// the executor. The reverse mapping is persisted to Redis and consumed
 	// by SanitizeRestoreInterceptor on the response path. nil = disabled.
 	pinRuleContext          func(context.Context) context.Context
+	historyGuardFactory     historyGuardFactory
 	sanitizeInputMiddleware func(http.Handler) http.Handler
 
 	// handoffHook may return an explicit resume packet before provider dispatch;
@@ -5579,6 +5580,16 @@ goalRetryLoopDone:
 			return
 		}
 
+		if executors.IsContextBudgetError(execErr) {
+			logCtx.failAndMark("context_budget_exceeded", execErr.Error(), providerID, credentialID, clientStatusForPrewarmed(preStreamPrepared, http.StatusUnprocessableEntity))
+			markLogged()
+			if preStreamPrepared {
+				writePrewarmedStreamError(w, "input cannot fit the selected bucket budget", "invalid_request_error", "context_budget_exceeded")
+				return
+			}
+			writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusUnprocessableEntity, requestID, "input cannot fit the selected bucket budget", "invalid_request_error", "context_budget_exceeded", "context_budget_exceeded", map[string]any{"stage": "execution", "retryable": false})
+			return
+		}
 		errCode := "provider_error"
 		// 2026-07-27 (E-1): shape the error envelope to the client's protocol.
 		// Anthropic SDKs type-check the error body against {"type":"error",...};

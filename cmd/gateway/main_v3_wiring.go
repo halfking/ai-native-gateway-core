@@ -683,8 +683,7 @@ func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID,
 	if pool == nil {
 		return nil, fmt.Errorf("db pool is nil")
 	}
-	sessionRow := pool.QueryRow(ctx, lastOutboundSessionSQL, gwSessionID, tenantID)
-	return scanLastOutboundRow(sessionRow)
+	return readLastOutboundSession(ctx, pool, tenantID, gwSessionID)
 }
 
 func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compression.LastOutboundRow, error) {
@@ -751,7 +750,7 @@ func NewDependenciesFromExecutor(exec *executors.Executor) *compression.Dependen
 	if exec == nil {
 		return nil
 	}
-	deps := &compression.Dependencies{}
+	deps := &compression.Dependencies{EnforceContextBudget: exec.EnforceContextBudget}
 	if exec.Memora != nil {
 		deps.Memora = memoraClientAdapter{c: exec.Memora}
 	}

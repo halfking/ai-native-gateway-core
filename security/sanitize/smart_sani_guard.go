@@ -42,7 +42,7 @@ const RestoreInterceptorName = "sanitize_restore"
 
 // Keep the sanitizer's pre-handler read cap aligned with streaming.maxBodySize.
 // The sanitizer runs first and must not allocate an unbounded request body.
-const maxSanitizeBodySize = 128 << 20
+const maxSanitizeBodySize = 100_000_000
 const defaultOffsetLeaseTTL = 15 * time.Second
 
 // Per-session offset lock waiting (2026-10-20, audit).
@@ -2120,7 +2120,7 @@ func SanitizeMapFromContext(ctx context.Context) (SanitizeMap, bool) {
 
 type sanitizeMapCtxKey struct{}
 
-// readBody reads at most the streaming handler's 128 MiB cap plus one byte.
+// readBody reads at most the streaming handler's 100 MB cap plus one byte.
 // It restores accepted bytes for the downstream handler. Read failures and
 // oversized bodies are rejected by the middleware, never dispatched.
 func readBody(r *http.Request) ([]byte, error) {

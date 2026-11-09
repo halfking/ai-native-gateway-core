@@ -548,6 +548,11 @@ type DispatchModelRecommender interface {
 }
 
 type Executor struct {
+	// Production enables the per-physical-call 500K / half-window policy.
+	// The zero value remains usable by isolated legacy executor integrations.
+	EnforceContextBudget bool
+	FitContext           func([]byte, int) ([]byte, error)
+
 	Router     *Router
 	Circuit    *credential.Manager
 	Limiter    *credential.Limiter
@@ -1120,6 +1125,9 @@ func clientTokenForMetrics(params *ExecParams) string {
 }
 
 func (e *Executor) beginUpstreamAttempt(params *ExecParams, cand provider.Candidate, protocol string, body []byte) error {
+	if err := e.checkCandidateContextBudget(params, cand, protocol, body); err != nil {
+		return err
+	}
 	attempt, err := consumeUpstreamAttempt(params)
 	if err != nil {
 		return err
@@ -1297,6 +1305,8 @@ func (c *FailoverNoticeCollector) HeaderValue() string {
 type ExecParams struct {
 	W http.ResponseWriter
 	R *http.Request
+	// Initialized before dispatch copies these parameters into worker attempts.
+	contextBudgetWindows *contextBudgetWindows
 	// BodyBytes is the protocol-rendered body used by legacy Chat/Anthropic
 	// upstreams. ResponsesBodyBytes preserves the post-auto-route native
 	// Responses envelope for an explicitly enabled native candidate.
@@ -2176,6 +2186,7 @@ func ensureFpReleaseWorker() {
 func init() { ensureFpReleaseWorker() }
 
 func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error) {
+	initContextBudgetWindows(params)
 	defer func() {
 		if result != nil && len(params.CompressionRunnerMeta) > 0 {
 			result.CompressionRunnerMeta = append([]byte(nil), params.CompressionRunnerMeta...)
@@ -3759,6 +3770,9 @@ func (e *contextLengthExhaustedError) Unwrap() error {
 func classifyExecError(err error) errorsx.ErrorKind {
 	if err == nil {
 		return ""
+	}
+	if IsContextBudgetError(err) {
+		return errorsx.KindRequestRejected
 	}
 	var interrupted *streamInterruptedError
 	if errors.As(err, &interrupted) && interrupted != nil && interrupted.kind != "" {
