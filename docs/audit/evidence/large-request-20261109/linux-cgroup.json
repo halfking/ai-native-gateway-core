@@ -1,0 +1,44 @@
+[
+  {
+    "bytes": 100000000,
+    "concurrency": 1,
+    "accepted": 1,
+    "rejected": 0,
+    "heap_delta": 13689392,
+    "rss_bytes": 62070784,
+    "total_alloc": 102335304,
+    "milliseconds": 9716,
+    "cgroup_memory_peak_bytes": 174632960,
+    "memory_limit_bytes": 268435456,
+    "cpus": 4,
+    "swap_enabled": false
+  },
+  {
+    "bytes": 100000000,
+    "concurrency": 4,
+    "accepted": 4,
+    "rejected": 0,
+    "heap_delta": 17494320,
+    "rss_bytes": 51212288,
+    "total_alloc": 406880624,
+    "milliseconds": 9697,
+    "cgroup_memory_peak_bytes": 268447744,
+    "memory_limit_bytes": 268435456,
+    "cpus": 4,
+    "swap_enabled": false
+  },
+  {
+    "bytes": 100000000,
+    "concurrency": 16,
+    "accepted": 4,
+    "rejected": 12,
+    "heap_delta": 15996944,
+    "rss_bytes": 56340480,
+    "total_alloc": 407189688,
+    "milliseconds": 10263,
+    "cgroup_memory_peak_bytes": 268451840,
+    "memory_limit_bytes": 268435456,
+    "cpus": 4,
+    "swap_enabled": false
+  }
+]

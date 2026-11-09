@@ -1,0 +1,92 @@
+[
+  {
+    "bytes": 1000000,
+    "concurrency": 1,
+    "accepted": 1,
+    "rejected": 0,
+    "heap_delta": 8217392,
+    "rss_bytes": 53624832,
+    "total_alloc": 8305936,
+    "milliseconds": 425
+  },
+  {
+    "bytes": 1000000,
+    "concurrency": 4,
+    "accepted": 4,
+    "rejected": 0,
+    "heap_delta": 24416960,
+    "rss_bytes": 70811648,
+    "total_alloc": 30728064,
+    "milliseconds": 848
+  },
+  {
+    "bytes": 1000000,
+    "concurrency": 16,
+    "accepted": 4,
+    "rejected": 12,
+    "heap_delta": 15870072,
+    "rss_bytes": 62504960,
+    "total_alloc": 31000192,
+    "milliseconds": 2385
+  },
+  {
+    "bytes": 10000000,
+    "concurrency": 1,
+    "accepted": 1,
+    "rejected": 0,
+    "heap_delta": 8411184,
+    "rss_bytes": 54083584,
+    "total_alloc": 12268976,
+    "milliseconds": 1853
+  },
+  {
+    "bytes": 10000000,
+    "concurrency": 4,
+    "accepted": 4,
+    "rejected": 0,
+    "heap_delta": 20253352,
+    "rss_bytes": 66797568,
+    "total_alloc": 46552368,
+    "milliseconds": 1865
+  },
+  {
+    "bytes": 10000000,
+    "concurrency": 16,
+    "accepted": 4,
+    "rejected": 12,
+    "heap_delta": 19663624,
+    "rss_bytes": 68304896,
+    "total_alloc": 46990200,
+    "milliseconds": 1467
+  },
+  {
+    "bytes": 100000000,
+    "concurrency": 1,
+    "accepted": 1,
+    "rejected": 0,
+    "heap_delta": 12384448,
+    "rss_bytes": 60604416,
+    "total_alloc": 102359416,
+    "milliseconds": 4608
+  },
+  {
+    "bytes": 100000000,
+    "concurrency": 4,
+    "accepted": 4,
+    "rejected": 0,
+    "heap_delta": 15017736,
+    "rss_bytes": 65077248,
+    "total_alloc": 406975472,
+    "milliseconds": 5913
+  },
+  {
+    "bytes": 100000000,
+    "concurrency": 16,
+    "accepted": 4,
+    "rejected": 12,
+    "heap_delta": 22342200,
+    "rss_bytes": 71516160,
+    "total_alloc": 407434784,
+    "milliseconds": 5414
+  }
+]
