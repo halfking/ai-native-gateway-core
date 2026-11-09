@@ -36,11 +36,11 @@ export default {
     manualTagTitle: 'Precio manual',
     manualTag: 'M',
 
-    colModality: 'Modality',
+    colModality: "Modalidad",
 
     modalityText: 'Text',
 
-    modalityVision: 'Vision',
+    modalityVision: "Imágenes",
 
     modalityAudio: 'Audio',
 
@@ -50,9 +50,9 @@ export default {
 
     modalityEmbedding: 'Embedding',
 
-    modalityOther: 'Other',
+    modalityOther: "Otras",
 
-    hasMultimodal: 'Has manual multimodal pricing',
+    hasMultimodal: "Incluye precios multimodales manuales",
   },
   editModal: {
     title: 'Precio manual: {name}',
@@ -62,11 +62,11 @@ export default {
     globalApprox: 'Global ≈ {value}',
     save: 'Guardar',
     saving: 'Guardando…',
-    fillGlobal: 'Rellenar con el global actual',
+    fillGlobal: "Aplicar los valores globales actuales",
     cancel: 'Cancelar',
     resetConfirm: '¿Restablecer todas las dimensiones de {name} a la base global?',
 
-    sectionText: 'Text-token dimensions',
+    sectionText: "Dimensiones de tokens de texto",
 
     sectionMultimodal: 'Dimensiones de tokens multimodales (visión / audio / vídeo)',
 
@@ -124,6 +124,6 @@ export default {
     msgFilled: '{n} modelos escritos',
     msgFailed: 'No se pudo completar la operación por lotes. Vuelva a intentarlo.',
 
-    fillGlobal: 'Fill current global',
+    fillGlobal: "Aplicar los valores globales actuales",
   },
 }

@@ -1,4 +1,4 @@
-// publicQuote.ts — 客户版报价落地页（PublicQuoteView，2026-11-08 W2 客户版轮）文案。
+// publicQuote.ts. 客户版报价落地页（PublicQuoteView，2026-11-08 W2 客户版轮）文案。
 // 命名空间：publicQuote.*（无登录公开面；8 语种全键 parity 硬闸）。
 export default {
   loading: 'Loading quote…',
@@ -8,7 +8,7 @@ export default {
   forCustomer: 'Prepared for: {name}',
   tierLabel: 'Tier: {tier}',
   validUntil: 'Valid until {date}',
-  expiredBanner: 'This quote has passed its validity date — prices are for reference only; please confirm the latest quote with your sales contact.',
+  expiredBanner: 'This quote has passed its validity date. prices are for reference only; please confirm the latest quote with your sales contact.',
   colModel: 'Model',
   colTokensIn: 'Est. input',
   colTokensOut: 'Est. output',

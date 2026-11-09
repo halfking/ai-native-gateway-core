@@ -91,7 +91,7 @@ export default {
     openChanges: "定價變化",
     empty: "此模型尚無價格期間紀錄",
     current: "現行",
-    until: "至 {time}",
+    until: "截至 {time}",
     mode: "計費模式",
     source: "來源",
     modePayAsYouGo: "用量計費",

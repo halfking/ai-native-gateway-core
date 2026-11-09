@@ -38,11 +38,11 @@ export default {
     manualTagTitle: 'Tarification manuelle',
     manualTag: 'M',
 
-    colModality: 'Modality',
+    colModality: "Modalité",
 
     modalityText: 'Text',
 
-    modalityVision: 'Vision',
+    modalityVision: "Images",
 
     modalityAudio: 'Audio',
 
@@ -52,9 +52,9 @@ export default {
 
     modalityEmbedding: 'Embedding',
 
-    modalityOther: 'Other',
+    modalityOther: "Autres",
 
-    hasMultimodal: 'Has manual multimodal pricing',
+    hasMultimodal: "Avec tarification multimodale manuelle",
   },
   editModal: {
     title: 'Tarification manuelle: {name}',
@@ -64,11 +64,11 @@ export default {
     globalApprox: 'Global ≈ {value}',
     save: 'Enregistrer',
     saving: 'Enregistrement…',
-    fillGlobal: 'Remplir avec la valeur globale actuelle',
+    fillGlobal: "Appliquer les valeurs globales actuelles",
     cancel: 'Annuler',
     resetConfirm: 'Réinitialiser toutes les dimensions de {name} à la base globale ?',
 
-    sectionText: 'Text-token dimensions',
+    sectionText: "Dimensions des jetons de texte",
 
     sectionMultimodal: 'Dimensions de jetons multimodaux (vision / audio / vidéo)',
 
@@ -126,6 +126,6 @@ export default {
     msgFilled: '{n} modèles renseignés',
     msgFailed: 'L\'opération par lot n\'a pas pu aboutir. Veuillez réessayer.',
 
-    fillGlobal: 'Fill current global',
+    fillGlobal: "Appliquer les valeurs globales actuelles",
   },
 }

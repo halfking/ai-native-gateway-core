@@ -874,7 +874,7 @@ onMounted(reload)
   display: block;
   margin-top: var(--kx-space-2, 8px);
   padding: var(--kx-space-2, 8px);
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light);
   border-radius: 4px;
   word-break: break-all;
   font-size: 12px;
@@ -894,7 +894,7 @@ onMounted(reload)
   margin: 8px 0;
 }
 .tier-quick-label {
-  color: var(--el-text-color-secondary, #909399);
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 /* 看板（W2-T2）：四数漏斗 + 三卡。间距走 4/8/12/16 阶。 */
@@ -906,7 +906,7 @@ onMounted(reload)
 .dash-stat {
   min-width: 96px;
   padding: 12px 16px;
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   text-align: center;
 }
@@ -915,7 +915,7 @@ onMounted(reload)
   font-weight: 600;
 }
 .dash-stat-label {
-  color: var(--el-text-color-secondary, #909399);
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 4px;
 }
@@ -925,7 +925,7 @@ onMounted(reload)
   gap: 12px;
 }
 .dash-card {
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   padding: 12px 16px;
 }
@@ -935,12 +935,12 @@ onMounted(reload)
   font-weight: 600;
 }
 .dash-big {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 600;
   margin: 0 0 4px;
 }
 .dash-sub {
-  color: var(--el-text-color-secondary, #909399);
+  color: var(--el-text-color-secondary);
   font-size: 12px;
   margin: 0 0 8px;
 }

@@ -735,7 +735,7 @@ function onSelectModel(model: string) {
 .live-topology:fullscreen {
   height: 100%;
   overflow: auto;
-  background: var(--bg, var(--kx-surface, #fff));
+  background: var(--bg, var(--kx-surface));
 }
 
 .live-topology.is-fullscreen {

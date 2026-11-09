@@ -15,6 +15,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../components/ui/CardList.vue'
 import { fetchPublicQuote, PublicQuoteUnavailableError, type PublicQuote } from '../api/publicQuote'
 
 const { t } = useI18n()
@@ -23,6 +25,17 @@ const route = useRoute()
 const quote = ref<PublicQuote | null>(null)
 const unavailable = ref(false)
 const loading = ref(true)
+
+const quoteItemFields = computed<CardField[]>(() => [
+  { key: 'est_tokens_in', label: t('publicQuote.colTokensIn'), format: value => fmtTokens(Number(value)) },
+  { key: 'est_tokens_out', label: t('publicQuote.colTokensOut'), format: value => fmtTokens(Number(value)) },
+  { key: 'rate_in', label: t('publicQuote.colRateIn') },
+  { key: 'rate_out', label: t('publicQuote.colRateOut') },
+  { key: 'discount_pct', label: t('publicQuote.colDiscount'), format: value => value ? `${value}%` : '—' },
+])
+const subtotalField = computed<CardField>(() => ({
+  key: 'subtotal_usd', label: t('publicQuote.colSubtotal'), type: 'metric', format: value => fmtUsd(Number(value)),
+}))
 
 const token = computed(() => String(route.params.token || ''))
 
@@ -69,7 +82,10 @@ function printQuote() {
     <div v-if="loading" class="pq-state">{{ t('publicQuote.loading') }}</div>
 
     <div v-else-if="unavailable" class="pq-state pq-unavailable">
-      <div class="pq-unavailable-icon">⚠</div>
+      <svg class="pq-unavailable-icon" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M12 3 2 21h20L12 3Z" stroke-linejoin="round" />
+        <path d="M12 9v5m0 3v.1" stroke-linecap="round" />
+      </svg>
       <p class="pq-unavailable-title">{{ t('publicQuote.unavailableTitle') }}</p>
       <p class="pq-unavailable-hint">{{ t('publicQuote.unavailableHint') }}</p>
     </div>
@@ -90,6 +106,16 @@ function printQuote() {
         {{ t('publicQuote.expiredBanner') }}
       </div>
 
+      <ResponsiveDataView
+        :rows="quote.items"
+        title-key="canonical_name"
+        :title-format="row => String(row.display_name || row.canonical_name)"
+        :subtitle-keys="['volume_note']"
+        :fields="quoteItemFields"
+        :primary-field="subtotalField"
+        table-min-width="720px"
+      >
+        <template #table>
       <table class="pq-table">
         <thead>
           <tr>
@@ -116,13 +142,13 @@ function printQuote() {
             <td class="pq-col-sub">{{ fmtUsd(it.subtotal_usd) }}</td>
           </tr>
         </tbody>
-        <tfoot>
-          <tr>
-            <td colspan="6" class="pq-total-label">{{ t('publicQuote.total') }}</td>
-            <td class="pq-col-sub pq-total">{{ fmtUsd(quote.sale_total_usd) }}</td>
-          </tr>
-        </tfoot>
       </table>
+        </template>
+      </ResponsiveDataView>
+      <div class="pq-total-row">
+        <span class="pq-total-label">{{ t('publicQuote.total') }}</span>
+        <span class="pq-total">{{ fmtUsd(quote.sale_total_usd) }}</span>
+      </div>
 
       <p class="pq-note">{{ t('publicQuote.pricingNote') }}</p>
 
@@ -149,18 +175,18 @@ function printQuote() {
 }
 .pq-state {
   margin-top: 48px;
-  color: var(--el-text-color-secondary, #909399);
+  color: var(--el-text-color-secondary);
   text-align: center;
 }
-.pq-unavailable-icon { font-size: 32px; }
+.pq-unavailable-icon { display: block; margin: 0 auto; }
 .pq-unavailable-title { font-size: 16px; margin: 12px 0 4px; }
 .pq-unavailable-hint { font-size: 13px; }
 .pq-card {
   position: relative;
   width: 100%;
   max-width: 880px;
-  background: var(--el-bg-color, #fff);
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   padding: 24px;
   overflow: hidden;
@@ -170,17 +196,17 @@ function printQuote() {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-bottom: 1px solid var(--el-border-color-lighter);
   padding-bottom: 16px;
 }
 .pq-title { font-size: 20px; margin: 0 0 4px; }
-.pq-sub { color: var(--el-text-color-secondary, #909399); margin: 0; }
-.pq-meta { text-align: right; color: var(--el-text-color-secondary, #909399); font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.pq-sub { color: var(--el-text-color-secondary); margin: 0; }
+.pq-meta { text-align: right; color: var(--el-text-color-secondary); font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
 .pq-expired { margin-top: 16px; }
 .pq-expired-banner {
-  border: 1px solid var(--el-color-warning-light-7, #f3d19e);
-  background: var(--el-color-warning-light-9, #fdf6ec);
-  color: var(--el-color-warning, #e6a23c);
+  border: 1px solid var(--warning-bd);
+  background: var(--warning-bg);
+  color: var(--warning);
   border-radius: 4px;
   padding: 8px 12px;
   font-size: 13px;
@@ -192,27 +218,28 @@ function printQuote() {
   font-size: 14px;
 }
 .pq-table th, .pq-table td {
-  border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-bottom: 1px solid var(--el-border-color-lighter);
   padding: 8px 8px;
   text-align: left;
 }
-.pq-table th { color: var(--el-text-color-secondary, #909399); font-weight: 500; }
+.pq-table th { color: var(--el-text-color-secondary); font-weight: 500; }
 .pq-col-tokens, .pq-col-rate, .pq-col-disc, .pq-col-sub { text-align: right; white-space: nowrap; }
 .pq-model-name { font-weight: 500; }
-.pq-volume-note { color: var(--el-text-color-secondary, #909399); font-size: 12px; }
+.pq-volume-note { color: var(--el-text-color-secondary); font-size: 12px; }
+.pq-total-row { display: flex; justify-content: flex-end; gap: 16px; padding-top: 12px; }
 .pq-total-label { text-align: right; font-weight: 600; }
 .pq-total { font-weight: 600; }
-.pq-note { color: var(--el-text-color-secondary, #909399); font-size: 12px; margin-top: 12px; }
+.pq-note { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 12px; }
 .pq-actions { margin-top: 16px; display: flex; justify-content: flex-end; }
 .pq-print-btn {
-  border: 1px solid var(--el-border-color, #dcdfe6);
-  background: var(--el-bg-color, #fff);
+  border: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
   border-radius: 4px;
   padding: 8px 16px;
   cursor: pointer;
   font-size: 14px;
 }
-.pq-print-btn:hover { border-color: var(--el-color-primary, #409eff); color: var(--el-color-primary, #409eff); }
+.pq-print-btn:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 .pq-watermark {
   position: absolute;
   inset: 0;
@@ -223,15 +250,16 @@ function printQuote() {
   pointer-events: none;
   font-size: 40px;
   font-weight: 700;
-  color: rgba(0, 0, 0, 0.04);
+  color: color-mix(in srgb, var(--kx-text) 4%, transparent);
   transform: rotate(-18deg);
   user-select: none;
 }
 /* 打印样式兜底 PDF：按钮隐藏、水印加重、容器去壳 */
 @media print {
+  :deep(.responsive-data-view__switch) { display: none !important; }
   .pq-no-print { display: none !important; }
   .pq-page { padding: 0; }
   .pq-card { border: none; max-width: none; }
-  .pq-watermark { color: rgba(0, 0, 0, 0.08); }
+  .pq-watermark { color: color-mix(in srgb, var(--kx-text) 8%, transparent); }
 }
 </style>
