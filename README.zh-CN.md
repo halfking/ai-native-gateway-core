@@ -55,11 +55,13 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 | 层级 | 你能获得 |
 |-------|--------------|
 | **协议** | OpenAI / Anthropic / Gemini / Responses 兼容 + SSE 流式中继（增量完整性校验） |
+| **工具（MCP）** | 内置 MCP 服务网关：无状态 JSON-RPC 数据面（`POST /mcp`）+ 控制面（适配器/工具/智能体/技能/凭证/审批）+ 工具级 ACL、Schema 校验、敏感度审批、限流熔断、出参脱敏、审计与 SIEM 导出 —— 见 [docs/mcp-gateway/](docs/mcp-gateway/) |
 | **路由** | 双层路由（模型 → 凭据）+ 粘性会话 + 自动路由（cost/quality 策略） |
 | **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 90+ 表 RLS |
 | **流量治理** | Token 限流（TPM/RPM）+ 语义缓存 + 提示词压缩 + 滑窗算法 |
 | **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
 | **凭据** | 多凭据 + 指纹池 + 自适应探测 + 手动禁用 |
+| **运营与定价** | 模型定价版本化（一模型 × 一套餐模式一价，额效期自动闭前期，订价变化可见）· 营销：套餐 / 加油包 / 优惠码 / 折扣与赠送活动 · 市场行情管线（定时采集 → 单向参考同步 → 零售 vs 市场对比，禁止回流路由）· 统计对账门（迟到行重扫）—— 见 [docs/运营体系方案总结.md](docs/运营体系方案总结.md) |
 | **部署** | 双实例（Docker + k3s NodePort），共享同一 PostgreSQL schema |
 
 详见下方[架构一览](#-架构一览)小节，或完整的[架构图集](docs/architecture-diagrams.md)。

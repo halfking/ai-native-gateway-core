@@ -61,6 +61,7 @@ Built with **Go + PostgreSQL + Redis**, running today in production on k3s (dual
 | **Traffic Governance** | Token rate limiting (TPM/RPM) + semantic cache + prompt compression + sliding-window algorithms |
 | **Audit** | Full-chain audit + DLQ + disk fallback + OTel + Prometheus |
 | **Credentials** | Multi-credential + fingerprint pool + adaptive probing + manual disable |
+| **Operations & Pricing** | Versioned per-model pricing (one price per model × billing mode, validity windows auto-close the previous period, price-change history) · Marketing: plans / booster packs / coupons / discount & gift campaigns · Market-price intel pipeline (scheduled crawl → one-way reference sync → retail-vs-market comparison, never routed back) · Stats reconciliation gate (late-row resweep) — see [docs/运营体系方案总结.md](docs/运营体系方案总结.md) |
 | **Deployment** | Dual instances (Docker + k3s NodePort) sharing a single PostgreSQL schema |
 
 See the [Architecture at a Glance](#-architecture-at-a-glance) section below, or the full [Architecture Diagram Collection](docs/architecture-diagrams.md) for details.
