@@ -24,7 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
