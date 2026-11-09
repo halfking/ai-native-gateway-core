@@ -86,13 +86,18 @@ type Gateway struct {
 	catalog   map[string]*Tool
 
 	toolCacheMu sync.Mutex
-	toolCache   map[string]toolCacheEntry
+	toolCache   map[toolCacheKey]toolCacheEntry
+	// Serialize registration existence checks with their writes so concurrent
+	// register-only requests cannot turn a create into an unauthorized replacement.
+	registrationMu sync.Mutex
 }
 
 type toolCacheEntry struct {
 	tools   []ToolView
 	expires time.Time
 }
+
+type toolCacheKey struct{ tenant, adapter, capability string }
 
 // NewGateway 构造网关。
 func NewGateway(cfg Config) (*Gateway, error) {
@@ -164,9 +169,15 @@ func NewGateway(cfg Config) (*Gateway, error) {
 		now:        cfg.Now,
 		startedAt:  cfg.Now(),
 		catalog:    map[string]*Tool{},
-		toolCache:  map[string]toolCacheEntry{},
+		toolCache:  map[toolCacheKey]toolCacheEntry{},
 	}
 	g.bootstrap = NewBootstrapService(g, cfg.Bootstrap)
+	// ★ 运行时长指标落一个初值：只声明不 Set ⇒ 它在 /metrics 上**恒为 0**
+	//   （普通 Gauge 注册即存在、但永远不动 ⇒ 面板上是一条平的线；实测口径见
+	//   mcp/metrics.go 的注释）⇒ internal/metricguard 门也会红。
+	//   在这里落初值 ⇒ 进程一起来它就带上真实起点；之后由 control.go 的两个
+	//   健康端点刷新（/healthz 是探针端点，部署里被周期性打 ⇒ 值不会长期陈旧）。
+	uptimeSeconds.Set(float64(g.UptimeSeconds()))
 	return g, nil
 }
 
@@ -451,6 +462,9 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 	if err != nil {
 		return nil, RPCErrorOf(err), http.StatusNotFound
 	}
+	if !adapter.Enabled || tool != nil && !tool.Enabled {
+		return nil, Errorf(CodeToolNotAllowed, "tool or backend is disabled"), http.StatusForbidden
+	}
 
 	// ── 授权链（顺序固定，便于验收与审计）──
 	if !id.HasScope(ScopeExecute) {
@@ -687,8 +701,9 @@ func (g *Gateway) resolveTool(ctx context.Context, tenantID, name string) (*Tool
 
 // adapterTools 取某个适配器的工具清单（带短缓存）。
 func (g *Gateway) adapterTools(ctx context.Context, a Adapter) []ToolView {
+	key := toolCacheKey{tenant: a.TenantID, adapter: a.Name, capability: effectiveCapability(ctx, a.Capability)}
 	g.toolCacheMu.Lock()
-	if entry, ok := g.toolCache[a.Name]; ok && g.now().Before(entry.expires) {
+	if entry, ok := g.toolCache[key]; ok && g.now().Before(entry.expires) {
 		g.toolCacheMu.Unlock()
 		return entry.tools
 	}
@@ -741,7 +756,7 @@ func (g *Gateway) adapterTools(ctx context.Context, a Adapter) []ToolView {
 	}
 
 	g.toolCacheMu.Lock()
-	g.toolCache[a.Name] = toolCacheEntry{tools: views, expires: g.now().Add(g.cfg.ToolCacheTTL)}
+	g.toolCache[key] = toolCacheEntry{tools: views, expires: g.now().Add(g.cfg.ToolCacheTTL)}
 	g.toolCacheMu.Unlock()
 	return views
 }
@@ -877,6 +892,9 @@ func (g *Gateway) checkApproval(r *http.Request, id *Identity, tool *Tool) error
 	if approval == nil {
 		return fmt.Errorf("%w: approval %q not found", ErrForbidden, grantID)
 	}
+	if approval.TenantID != id.TenantID {
+		return fmt.Errorf("%w: approval belongs to another tenant", ErrForbidden)
+	}
 	if approval.Status != ApprovalApproved {
 		return fmt.Errorf("%w: approval %q is %s", ErrForbidden, grantID, approval.Status)
 	}
@@ -886,7 +904,7 @@ func (g *Gateway) checkApproval(r *http.Request, id *Identity, tool *Tool) error
 	if approval.ExpiresAt != nil && g.now().After(*approval.ExpiresAt) {
 		return fmt.Errorf("%w: approval %q expired", ErrForbidden, grantID)
 	}
-	if approval.Requester != "" && id.UserID != "" && approval.Requester != id.UserID {
+	if approval.Requester != "" && approval.Requester != id.UserID {
 		return fmt.Errorf("%w: approval %q belongs to another principal", ErrForbidden, grantID)
 	}
 	return nil
