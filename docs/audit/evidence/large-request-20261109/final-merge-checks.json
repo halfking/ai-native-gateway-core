@@ -1,0 +1,28 @@
+{
+  "upstream_base": "1dcb52406",
+  "working_merge": "ce3efba86",
+  "build_exit": 0,
+  "vet_exit": 0,
+  "source_line_gate": {
+    "command": "go test ./scripts/ursmcheck -run '^(TestAdminRoutes|TestRequestSurfaceDoc|TestCertRowRangeExtractorHasTeeth)' -count=1",
+    "exit": 0,
+    "seconds": 9.777
+  },
+  "shell_contracts": [
+    {
+      "script": "tests/git_enumeration_quote_path_contract_test.sh",
+      "exit": 0,
+      "result": "PASS=14 FAIL=0"
+    },
+    {
+      "script": "tests/mcp_metrics_scrape_wiring_test.sh",
+      "exit": 0,
+      "result": "PASS=6 FAIL=0"
+    },
+    {
+      "script": "tests/scan_secrets_placeholder_privilege_test.sh",
+      "exit": 0,
+      "result": "PASS=10 FAIL=0"
+    }
+  ]
+}
