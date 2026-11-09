@@ -61,7 +61,10 @@ const (
 	//     ＋ R75 `dea4eda4d`（1 处 ursm-snapshot-slot-refresh.sh）⇒ **口径的差值不变、树变了**。
 	//   ★★ **基线不得【从清单抄】**（= 自证）⇒ 真正的牙是 §19.20.75 门的判据⑤
 	//     （清单 ↔ 生成器**逐字一致**）⇒ 本门只负责「行数」这一层。
-	sc1972ListRowsBaseline = 98
+	sc1972ListRowsBaseline = 100
+	// 2026-11-09 48h 审计：4cf786109 已重生清单新增 deploy-seamless.sh 的
+	// detect_active_side / prune_releases_safe 两站点（98→100），却漏同步此计数。
+	// 现独立重跑生成器仍为 100；逐字内容对拍判据保持不变。
 	// ★★ 段十九（2026-11-03 同步轮 · 合并轮）：95 ⇒ 98（+3 行）
 	//   ★ 本轮把上游提交 `6152cc5de` 对 `scripts/deploy-seamless-goacos_test.sh`
 	//     的重写（★ +104/-31：桩改 ThreadingHTTPServer + 看门狗）并进 main ⇒
