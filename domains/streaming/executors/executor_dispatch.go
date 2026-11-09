@@ -588,6 +588,8 @@ func dispatchNoticeDropReason(params *ExecParams) string {
 // with an errorsx kind that drives the handler's HTTP status + goal-retry.
 func dispatchErrToExecuteError(err error) *ExecuteError {
 	switch {
+	case IsContextBudgetError(err):
+		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindContextLength}
 	case errors.Is(err, errorsx.ErrOutputPolicyBlocked):
 		return &ExecuteError{LastErr: err, Exhausted: false, LastKind: errorsx.KindContentFilter}
 	case errors.Is(err, context.Canceled):
@@ -731,6 +733,16 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if recovered := recover(); recovered != nil {
 			out = dispatch.ForwardOutcome{Err: fmt.Errorf("dispatch forward panic: %v", recovered)}
 		}
+		if IsContextBudgetError(out.Err) {
+			// No provider call occurred: capacity mismatch must not become a
+			// health sample, circuit failure, credential cooldown or error log.
+			out.ErrorKind = string(errorsx.KindRequestRejected)
+			out.HTTPStatus = http.StatusUnprocessableEntity
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
+			return
+		}
 		if errors.Is(out.Err, errorsx.ErrOutputPolicyBlocked) {
 			// A local policy rejection is not evidence against this node. Skip
 			// candidate failure logs, health trackers and the outcome reducer.
@@ -788,6 +800,10 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 		}
 	}()
+
+	if err := e.checkCandidateContextSpec(params, cand); err != nil {
+		return dispatch.ForwardOutcome{Err: err, ErrorKind: string(errorsx.KindRequestRejected), HTTPStatus: http.StatusUnprocessableEntity}
+	}
 
 	// ── FP slot (best-effort). A slot can become saturated after the
 	// prefilter but before this queued request reaches Forward. Degrade at the
@@ -1049,6 +1065,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 
 	if errors.Is(execErr, errorsx.ErrOutputPolicyBlocked) {
 		return dispatch.ForwardOutcome{Err: execErr, ErrorKind: string(errorsx.KindContentFilter), HTTPStatus: http.StatusForbidden}
+	}
+	if IsContextBudgetError(execErr) {
+		return dispatch.ForwardOutcome{Err: execErr, ErrorKind: string(errorsx.KindRequestRejected), HTTPStatus: http.StatusUnprocessableEntity}
 	}
 	if execErr == nil {
 		e.recordDispatchSuccess(params, cand, result, dctx)

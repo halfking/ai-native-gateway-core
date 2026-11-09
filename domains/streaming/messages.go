@@ -1009,6 +1009,17 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		if !errors.Is(r.Context().Err(), context.Canceled) {
 			rt.Emit(state.EventFailed)
 		}
+		if executors.IsContextBudgetError(execErr) {
+			message := "input cannot fit the selected bucket budget"
+			logCtx.failAndMark("context_budget_exceeded", message, attemptProviderID, attemptCredentialID, clientStatusForPrewarmed(preStreamPrepared, http.StatusUnprocessableEntity))
+			*attemptLogged = true
+			if preStreamPrepared {
+				writeAnthropicStreamError(w, "invalid_request_error", message)
+			} else {
+				writeAnthropicError(w, http.StatusUnprocessableEntity, "invalid_request_error", message, map[string]any{"code": "context_budget_exceeded"})
+			}
+			return
+		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
 		// R59 audit (S7-1): survival terminal decisions must keep their

@@ -22,6 +22,8 @@ K2_PREFLIGHT_SHORT_APPLY_HELPER	component	同上：preflight 短路径 helper �
 KEEP_SLOG	component	保留 slog 调试文件（布尔），不选库
 LAUNCHER_E2E_GATEWAY_IMAGE	component	镜像名（E2E 用的 gateway 镜像），不是库
 LAUNCHER_TEST_MOCK_IMAGE	component	镜像名（mock backend），不是库
+LGW_MEMORY_BYTES	component	大请求内存验收子进程的 RAW 字节数（整数夹具参数）；不选择 PG 目标，也不取消连库保护
+LGW_MEMORY_CONCURRENCY	component	大请求内存验收子进程的并发数（整数夹具参数）；不选择 PG 目标，也不取消连库保护
 LLM_GATEWAY_API_KEY	component	外部服务 API key，与真库腿无关
 LLM_GATEWAY_COOKIE_DOMAIN	component	会话 cookie 的 Domain 覆盖（auth_cookie_domain_test.go 读它做往返断言），与「连哪个库」无关
 LLM_GATEWAY_ENABLE_LEGACY_SELFCHECK	component	特性开关：打开旧版自检
