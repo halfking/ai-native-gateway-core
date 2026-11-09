@@ -1,12 +1,13 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
-> **2026-11-09 48h 修正审计与三环境发布轮（执行中）**：入口
-> `HANDOFF-48h-remediation-20261109.md` 与
-> `docs/audit/2026-11-09-48h-remediation-report.md`。窗口65非merge提交/271文件；
-> 已修MCP租户/委派/领取/吊销边界、统计完整分钟重扫、MaaS预算/首购/价期、
-> 953投递可执行性、954探针trace与legacy probe空headers JSONB。
-> **不要将执行中条目误读为已部署**；以报告最终三环境版本和新请求证据为准。
-
+> **2026-11-09 48h修正审计与三环境发布轮（已验收）**：报告
+> `docs/audit/2026-11-09-48h-remediation-report.md`，交接
+> `HANDOFF-48h-remediation-20261109.md`。65提交/271文件与11项WIP已审；历史未合并分支0。
+> 修MCP隔离/委派/领取/吊销、统计闭分钟、MaaS预算/首购/价期、953投递、954探针trace、legacy空头JSONB。
+> 应用sha998269fb：211#2978、245#2956、154#2957；三台管理员真实登录/页面验收。
+> 211迁移宿主DNS误连252→显式容器通道；154旧nginx worker仍用8781导致混合502→确认PID后优雅QUIT。
+> 恢复后local20/public30为200；新增20次独立连接四字段身份门在真机通过（有限采样非永久保证）。
+> 注意：部署非零中断；旧trace不可补、preview截断JSON、外系统scheduled_tasks、Toolkit跨仓失败仍登记。
 
 > 适用：未来任何 cold-start 切到本仓库的助手会话（不区分会话身份）。
 > 写入时机：2026-10-09 首次生成；**2026-10-11 由 root 会话

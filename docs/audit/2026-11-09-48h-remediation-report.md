@@ -1,6 +1,6 @@
 # 48 小时修正审计与三环境发布报告
 
-状态：执行中；本文件不构成全量验收通过声明。发布结果待实测回填。
+状态：本轮审计修正与三环境发布验收完成。验收不等于全部存量风险消失，未解决边界见末节。
 
 ## 范围与来源
 
@@ -65,7 +65,45 @@
 | `pnpm test` / `pnpm typecheck` / `pnpm build`（web） | 298 文件 / 3034 测试通过；1 文件 / 2 测试既有跳过；类型和构建 rc=0 |
 | 前端七类底层质量门、锁 parity/contract、diff --check | 通过；新 compact 卡片完整字段与动作，基线未抬高 |
 
-最终 hollowout 回归、发布版本与部署后浏览器结果仍待回填，不据局部门声称整体完成。
+最终审计门按互不重叠两组执行：hollowout 354.496s、其余 ursmcheck 309.171s，均 rc=0；覆盖完整测试集合。发布版本与部署后浏览器结果见后续发布记录。
+
+## 发布中发现并修复的迁移连接缺陷
+
+211 首次发布在迁移门失败，未切流，旧槽 readyz 的 DB/Redis 仍正常。宿主安装了原生 psql，但 `acc-pg17` 被 DNS 解析至 252 公网地址而非本机容器，连接超时。Docker 引擎现显式选择容器通道，继续使用既有 docker exec -i、TCP 127.0.0.1 与 DSN 凭据；容器不可用立即失败，不回退其它数据库。新增运行时回归覆盖坏宿主客户端及不可用容器，9 项通过、1 项 opt-in livePG 未执行；完整 revision 契约门、shell 语法及独立只读审查通过。修复已合并 `998269fb0` 并推送两个 main。
+
+## 三环境发布与运行验收
+
+应用代码统一为 `998269fb`；此后的 `0cadc4f0a` 只增加部署验收脚本/测试及派生台账，不改变服务二进制。该新增验收函数已针对154在役版本实跑通过，不要求为部署机脚本重复发布应用。
+
+| 环境 | 发布后身份 / 活跃端口 | 结果 |
+|---|---|---|
+| 211 | 2978 / 998269fb / 8781 | canonical deploy-211 rc0；DB+Redis ready；浏览器退出后使用指定管理员重新登录成功 |
+| 245 | 2956 / 998269fb / 8781，traffic-only | canonical deploy-245 rc0；DB+Redis ready；脚本登录200、17凭据解密0失败；浏览器重新登录成功 |
+| 154 | 2957 / 998269fb / 8782，active | canonical deploy-154 rc0；脚本登录200、17凭据解密0失败；浏览器退出后重新登录成功 |
+
+三台均真实操作营销四页签与表格/卡片切换，检查定价页面及无效公开报价提示。未创建生产订单/优惠码/临时API key，也未声称执行了生产付费推理三协议压测。登录后数据状态初次读取竞态会出现警告，重新检查后消失；已登录接口可用，不能误判为数据丢失。
+
+211 真库：953/954校验和与源码一致，featured索引及trace列存在；5分钟样本81探针中16条持久化trace（并非所有直连探针都会产生网关trace），规范化阶段事件101条。选取其中一条Redis已清理请求，管理API 200、source=postgres、events=6，证明读回路径有效。两次排除探针的完整闭分钟对账分别63/63、61/61。历史全天统计未重建，不宣称全部历史缺口已补齐。
+
+### 154实际事故：单次身份仲裁漏检混合worker
+
+上线后公网readyz10次中6次502；直连新槽10/10为200，目标机nginx路径也有502，排除公网DNS/客户端代理。错误日志逐条指向旧worker10780→旧端口8781；master日志在reload时有 `recvmsg() returned invalid ancillary data`，旧worker仍接受请求而新worker使用8782。事实足以定位混合代际；IPC异常的底层成因尚未确定，不推断为网关Go缺陷。
+
+处置：核对旧worker的PID/parent/comm后发送SIGQUIT优雅退出，不重启整个nginx、不终止新worker。恢复后目标机20/20、公网30/30均200；管理员和页面正常。不是零中断发布：handoff实测17.501s，期间存在真实502。
+
+防回归：`verify_nginx_identity_samples`要求20次独立Connection:close连接、HTTP成功、version/build_seq/git_sha/build_date四字段精确一致；reload后须重做完整20次，否则既有回滚路径执行，旧网关在验收前保留。两个fixture含HTTP失败/旧版本/坏JSON三子场景通过，identity env20/20、pipefail门7.176s通过，独立review无阻塞；新函数在154真机20次验证rc0。20次是有限采样，不等于所有worker永久一致。
+
+回滚：245/154可执行 `bash scripts/deploy-seamless.sh rollback <target>`；211旧槽b容器与镜像保留，回切前先start并检查readyz，再将ns_llm_gateway_upstream回指8783。953/954为兼容性新增字段，应用回滚默认保留列，执行down会丢弃trace，不作为首选。
+
+## 分目标达成与优化优先级
+
+| 子目标 | 达成情况 | 后续优化 |
+|---|---|---|
+| 主干/WIP/历史分支 | 完成；65提交271文件、11项WIP逐项登记，历史未合并分支0 | 保持每轮固定窗口与来源清单 |
+| 业务/授权/统计/迁移修正 | 完成已复现问题与本轮回归 | 价期事务outbox、MCP生产持久化单独设计 |
+| 日志/SQL优化 | trace错误车道及legacy22P02根修并验证；未盲加索引 | P1明确preview/body契约；scheduled_tasks先确定owner |
+| 三环境发布 | 完成；两处发布实故障已取证修复 | P1调查nginx IPC异常；补跨worker可观测性 |
+| 文档/交接/小步推送 | 本报告、AGENTS、handoff和部署账本同步 | 后续从新运行窗口复核，不复制旧绿数 |
 
 ## 遗留与后续优化
 
@@ -75,8 +113,15 @@
 4. MCP FileStore 仅支持单进程写者；上游 AuthSecret 不会被新增明文持久化，现有 JSON store 重启丢失配置的限制仍需专门密钥存储方案。
 5. 超过 Redis TTL 的旧 trace 已不可恢复；954 只保证上线后的探针 trace，不能声称补齐旧数据。
 6. 新 featured 索引在旧 column census 缺列时被 gap 工具误判为 retired-by-column-drop；这是量具风险，不是生产完成证据。发布验收以实际列/索引/新 trace/校验账为准，后续应要求 DROP 事件证据才能判退役。
-7. Toolkit 全局 verify 覆盖工作区其它项目，已发现 envs 路径迁移及外项目登记缺口；这些检查不能用本仓 Go 测试替代，也不应把跨仓问题混进网关发布代码。
+7. 新窗口仍有7条 `response_body` JSON丢弃（截断预览）及候选池空/上游失败告警，未宣称日志零错；252的scheduled_tasks参数integer/bigint冲突SQL不在本仓，归属未确定。部署门使用SSOT本地实库账号时出现28P01，候选和基线相同，门判无新增失败；不能把这些实库用例描述为通过。
+8. Toolkit 全局 verify 覆盖工作区其它项目，已发现 envs 路径迁移及外项目登记缺口；这些检查不能用本仓 Go 测试替代，也不应把跨仓问题混进网关发布代码。
 
 ## 下一轮提示词
 
 从本报告和本轮 handoff 恢复，先核对远端 HEAD、工作树、211/245/154 版本与新日志。优先验证新探针 trace 在 probe_hot 持久化且不再四次重试、统计闭分钟对账，再处理 preview/body 契约和 gap 工具“缺列即退役”误判。遵守先失败复现、最小修正、真实数据库/浏览器验证、小步合并推送；保留已应用迁移字节，不把文档/静态绿当生产证据。
+
+## 归档与提交记录
+
+session append/pin及memora归档成功，memory_id=`69b022a7-7128-4df5-a20f-e7fa1d9832c4`，3条消息/1个pin，degraded=false、vector_ready。原始秘密和日志未入库。应用发布后新增的nginx门仅影响部署脚本，已独立实测。受管integration checkout因app的primary-checkout限制无法archive，保留干净detached并同步最终main；原用户checkout/stash不清理。
+
+本轮共32个非merge提交（含最终文档），每个改动少于200行，最大184行；每步no-ff合入main并推送origin/github。历史分支盘点与本轮任务分支清理分开记录；最终文档之后无应用代码改动。
