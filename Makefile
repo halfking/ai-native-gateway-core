@@ -470,7 +470,7 @@ guards-deploy: ## 切流锁契约门 + 跨仓对拍门（缺件时明确 SKIP，
 #     ⇒ ★ ⇒ ★ 路径判定改成【★ 先抽路由字面量、★ 再精确比对 ★】★★ ★
 #   ★ 实测：★ **PASS=5 FAIL=0** ★｜★ 零外部依赖 ⇒ 可进 CI 快门 ★。
 .PHONY: guards-gate-scripts
-guards-gate-scripts: ## 门脚本接线门（23 条快门 + 登记册门，防新增隐形门）
+guards-gate-scripts: ## 门脚本接线门（24 条快门 + 登记册门，防新增隐形门）
 	@bash tests/audit_154_wrapper_test.sh
 	@bash tests/credential_script_contract_test.sh
 	@bash tests/deploy_seamless_mobile_surface_test.sh
@@ -489,6 +489,7 @@ guards-gate-scripts: ## 门脚本接线门（23 条快门 + 登记册门，防�
 	@bash scripts/deploy-local-lib-project_env_test.sh
 	@bash tests/deploy_local_contract_test.sh
 	@bash tests/shared_lib_resolution_contract_test.sh
+	@bash tests/deploy_lib_candidate_chain_single_source_test.sh
 	@bash tests/scan_secrets_enumeration_contract_test.sh
 	@bash tests/scan_secrets_whitelist_regex_portability_test.sh
 	@bash tests/scan_secrets_regex_determinism_test.sh

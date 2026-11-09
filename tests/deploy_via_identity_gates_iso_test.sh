@@ -100,6 +100,8 @@ make_tree() { # make_tree <目录>
   mkdir -p "$t/scripts" "$t/web/dist" "$t/web-mobile/dist"
   cp "$ENGINE_SRC" "$t/scripts/deploy-seamless-docker.sh"
   cp "$RESOLVE_SRC" "$t/scripts/deploy-lib-resolve.sh"
+  # ★ 2026-11-09（F51）：★ 解析器的候选链在共享的唯一真相文件里 ⇒ ★ 夹具连它一起复制 ★
+  cp "$REPO_ROOT/scripts/deploy-lib-candidates.sh" "$t/scripts/deploy-lib-candidates.sh"
   printf '<html><body>iso web dist</body></html>\n' > "$t/web/dist/index.html"
   printf '<html><body>iso mobile dist</body></html>\n' > "$t/web-mobile/dist/index.html"
 }

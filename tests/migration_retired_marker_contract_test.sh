@@ -42,17 +42,14 @@ _specified_marker_re() {
   grep -qiE '^[[:space:]]*--[[:space:]]*[-*>[:space:]]*\**(SUPERSEDED|SUPERCEDED|DEPRECATED)([^[:alnum:]_]|$)'
 }
 
-# ── 共享库定位（可执行调用方：AIAN_DEPLOY_LIB → 默认布局 → 仓内软链）────────
+# ── 共享库定位（★ 2026-11-09 F51：★ 改用共享的唯一真相候选链 ★）──────────
+# ★ 本段此前**自带**一条候选链 ⇒ ★ 与两个兄弟解析器各写各的 ⇒ ★ 现在共用
+#   scripts/deploy-lib-candidates.sh ⇒ ★ 链只有一条、★ 各门不会「测另一条链」★
+# shellcheck source=deploy-lib-candidates.sh
+source "$REPO_ROOT/scripts/deploy-lib-candidates.sh"
 SSOT=""
-for cand in \
-  "${AIAN_DEPLOY_LIB:-}" \
-  "$HOME/workspace/ai-native-tools/deploy-lib" \
-  "$HOME/workspace/ai-native-tools/deploy/deploy-lib" \
-  "$REPO_ROOT/scripts/deploy-lib"; do
-  if [[ -n "$cand" && -f "$cand/db-changelog.sh" ]]; then SSOT="$cand"; break; fi
-done
-if [[ -n "$SSOT" ]]; then
-  SSOT="$SSOT/db-changelog.sh"
+if _ssot_cand="$(deploy_lib_find db-changelog.sh)"; then
+  SSOT="$_ssot_cand/db-changelog.sh"
 fi
 
 # ── 判据实现：优先用共享库的【真实现】（有牙齿），否则用规定口径 ────────────

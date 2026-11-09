@@ -162,6 +162,10 @@ cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-li
 # sibling to the workspace checkout, not inside the parent of $ROOT, so the
 # path must never be derived from checkout depth.
 cp "$ROOT/scripts/_shared-lib.sh" "$version_project/scripts/_shared-lib.sh"
+# ★ 2026-11-09（F51）：★ _shared-lib.sh 的候选链搬到了共享的唯一真相文件
+#   scripts/deploy-lib-candidates.sh ⇒ ★ 夹具必须**连它一起**复制 ⇒
+#   ★ 否则夹具里的入口会在 source 那一行就断掉（★ 而断点与本门要测的语义无关 ★）
+cp "$ROOT/scripts/deploy-lib-candidates.sh" "$version_project/scripts/deploy-lib-candidates.sh"
 AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/scripts/deploy-lib" && pwd -P)"
 cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
 # dadf1e66f 起 deploy-local.sh 顶层校验 PROJECT_ROOT/sql/migrations 存在
