@@ -1804,6 +1804,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 954（2026-11-09 claude-opus-5-5 访问错误修复）：确保 claude-opus-5-5
 			// 模型正确配置（canonical 记录、别名映射、featured 标记、路由策略）。
 			"954_claude_opus_5_5_fix.sql",
+			// 955（2026-11-09 claude-opus-5-5 多provider绑定）：为 claude-opus-5-5
+			// 添加所有可用 audit-local-provider 的绑定，实现冗余路由。
+			"955_claude_opus_5_5_multi_provider_bindings.sql",
 		},
 	}
 }

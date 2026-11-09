@@ -1554,6 +1554,15 @@ var claudeOpus55Fix954 []byte
 //go:embed embeddata/startup/954_claude_opus_5_5_fix.down.sql
 var claudeOpus55Fix954Down []byte
 
+// ★ 955（2026-11-09 claude-opus-5-5 多provider绑定）：为 claude-opus-5-5
+//   添加所有可用 audit-local-provider 的绑定，实现冗余路由，避免单点故障。
+//
+//go:embed embeddata/startup/955_claude_opus_5_5_multi_provider_bindings.sql
+var claudeOpus55MultiProviderBindings955 []byte
+
+//go:embed embeddata/startup/955_claude_opus_5_5_multi_provider_bindings.down.sql
+var claudeOpus55MultiProviderBindings955Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -2045,6 +2054,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/953_models_canonical_featured.down.sql":              modelsCanonicalFeatured953Down,
 	"startup/954_claude_opus_5_5_fix.sql":                         claudeOpus55Fix954,
 	"startup/954_claude_opus_5_5_fix.down.sql":                    claudeOpus55Fix954Down,
+	"startup/955_claude_opus_5_5_multi_provider_bindings.sql":     claudeOpus55MultiProviderBindings955,
+	"startup/955_claude_opus_5_5_multi_provider_bindings.down.sql": claudeOpus55MultiProviderBindings955Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,
