@@ -167,6 +167,16 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 		return nil, err
 	}
 	if cfg.File == "" {
+		// rule 71：没有落盘文件**不代表**不需要规范层。
+		//
+		// 此前这里是 no-op（直接 return），于是 slog 留在默认的
+		// **TextHandler** 上 ⇒ 打出来的行是 `2026/11/09 12:00:00 INFO msg k=v`
+		// 这种纯文本，既没有 service/version/env/instance_id，
+		// 也没有 severity_text/severity_number ⇒ AI 侧判为不合规。
+		//
+		// 现在即使不落盘，也把规范层装到 stderr 的 JSON handler 上，
+		// 保证「无论是否配置 LLM_GATEWAY_LOG_FILE，输出形态都一样」。
+		installStandard(newJSONHandler(os.Stderr, level), level)
 		return nil, nil
 	}
 
@@ -195,10 +205,7 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 
 	// rule 71：ReplaceAttr 负责字段改名（time→timestamp）与值脱敏；
 	// 级别与资源字段由 standardHandler 在 Handle 层注入（需要产出多个顶层字段）。
-	jsonHandler := slog.NewJSONHandler(mw, &slog.HandlerOptions{
-		Level:       level,
-		ReplaceAttr: replaceAttr,
-	})
+	jsonHandler := newJSONHandler(mw, level)
 
 	// 2026-08-26 Phase A: optionally wrap the JSON handler with a
 	// Bleve fan-out so /admin/logs/search can serve full-text
@@ -224,6 +231,45 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 		"compress", cfg.Compress,
 	)
 	return lj, nil
+}
+
+// newJSONHandler 构造内层 JSON handler。
+//
+// ★ 所有构造内层 handler 的路径都必须走这里。
+//
+// 为什么：规范字段的**改名**（time→timestamp、msg 重命名）与脱敏是靠
+// ReplaceAttr 做的，而 ReplaceAttr 属于**内层 handler**。
+// 此前只有「落盘管线」这条路径带了 ReplaceAttr，于是
+//   - 早装窗口（InstallEarly）
+//   - 不落盘模式（LLM_GATEWAY_LOG_FILE 为空）
+//
+// 这两条路径打出来的行仍是 `time` 字段 + **本地时区**，
+// 既不满足字段契约（缺 timestamp），也跨时区无法排序。
+//
+// 规范层（standardHandler）负责**追加**级别三件套与资源字段，
+// 改名与脱敏则由本函数统一注入——两者合起来才是完整契约。
+func newJSONHandler(w io.Writer, level slog.Level) slog.Handler {
+	return slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: replaceAttr,
+	})
+}
+
+// InstallEarly 在**配置加载之前**装上规范层（输出到 stderr）。
+//
+// 为什么需要：配置加载过程本身就会打日志——例如 cmd/gateway 的
+// loadHardBlockPolicy() 会打 "hard block allowlist loaded"。
+// 若等 logging.Init（它在 config.Load() 之后）才装规范层，
+// 那几行就是旧格式（纯文本、缺必填字段）⇒ 同一进程两种格式，
+// AI 侧要么写两套解析分支，要么把早期行判为不合规。
+//
+// 后续 logging.Init 会用文件管线（落盘 + Bleve fanout + 规范层）整体替换它，
+// 因此这里不需要处理文件句柄，也不会泄漏。
+//
+// ⚠ 本函数**只**装规范层，不开落盘与 Bleve——那两件事必须等配置加载完
+// （落盘路径、轮转参数都来自配置）。
+func InstallEarly(level slog.Level) {
+	installStandard(newJSONHandler(os.Stderr, level), level)
 }
 
 // installStandard 把 handler 装到 slog 默认 logger，并叠加 rule 71 的

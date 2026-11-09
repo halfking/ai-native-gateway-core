@@ -110,7 +110,7 @@ func MaybeStart(ctx context.Context, cfg Config) {
 	}
 
 	go r.run(ctx)
-	slog.Info("ops reporter started", "collect_url", r.baseURL, "region", region, "instance_id", instanceID)
+	slog.Info("ops reporter started", "collect_url", r.baseURL, "region", region, "agent_instance_id", instanceID)
 }
 
 // Reporter sends register + heartbeat to central API.

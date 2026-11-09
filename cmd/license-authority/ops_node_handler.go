@@ -99,12 +99,12 @@ func (h *OpsNodeHandler) HandleRegister(c echo.Context) error {
 		StartedAt:      now,
 	}
 	if err := h.centerStore.RegisterInstance(c.Request().Context(), instance); err != nil {
-		slog.Error("ops node register failed", "error", err, "instance_id", req.InstanceID)
+		slog.Error("ops node register failed", "error", err, "agent_instance_id", req.InstanceID)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "register failed"})
 	}
 
 	if err := h.upsertOpsRegistration(c, req, license.ID, now); err != nil {
-		slog.Error("ops node registration record failed", "error", err, "instance_id", req.InstanceID)
+		slog.Error("ops node registration record failed", "error", err, "agent_instance_id", req.InstanceID)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "registration record failed"})
 	}
 

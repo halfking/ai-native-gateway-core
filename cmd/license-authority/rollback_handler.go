@@ -47,7 +47,7 @@ func (h *RollbackHandler) HandleRollback(c echo.Context) error {
 	if err != nil {
 		slog.Error("failed to create rollback log",
 			"error", err,
-			"instance_id", req.InstanceID,
+			"agent_instance_id", req.InstanceID,
 			"from_version", req.FromVersion,
 			"to_version", req.ToVersion)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to record rollback")
@@ -58,7 +58,7 @@ func (h *RollbackHandler) HandleRollback(c echo.Context) error {
 		slog.Error("failed to update rollback log",
 			"error", err,
 			"log_id", logID,
-			"instance_id", req.InstanceID)
+			"agent_instance_id", req.InstanceID)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to update rollback log")
 	}
 
@@ -76,13 +76,13 @@ func (h *RollbackHandler) HandleRollback(c echo.Context) error {
 	if err := h.updateStore.UpdateInstanceStatus(c.Request().Context(), releaseStatus); err != nil {
 		slog.Error("failed to update instance status",
 			"error", err,
-			"instance_id", req.InstanceID,
+			"agent_instance_id", req.InstanceID,
 			"status", autoupdate.StatusRollback)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to update instance status")
 	}
 
 	slog.Info("rollback recorded",
-		"instance_id", req.InstanceID,
+		"agent_instance_id", req.InstanceID,
 		"from_version", req.FromVersion,
 		"to_version", req.ToVersion,
 		"reason", req.Reason)

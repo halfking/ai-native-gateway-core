@@ -73,7 +73,7 @@ func (h *UpdateReportHandler) HandleReport(c echo.Context) error {
 	}); err != nil {
 		slog.Error("failed to record update report",
 			"error", err,
-			"instance_id", report.InstanceID,
+			"agent_instance_id", report.InstanceID,
 			"from_version", report.FromVersion,
 			"to_version", report.ToVersion,
 			"status", report.Status)
@@ -81,7 +81,7 @@ func (h *UpdateReportHandler) HandleReport(c echo.Context) error {
 	}
 
 	slog.Info("update report recorded",
-		"instance_id", report.InstanceID,
+		"agent_instance_id", report.InstanceID,
 		"from_version", report.FromVersion,
 		"to_version", report.ToVersion,
 		"status", report.Status,
