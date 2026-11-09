@@ -3,6 +3,9 @@
 -- 背景：2026-11-09 恢复检测及时性优化 —— 免费/入门级模型需要更高的探测优先级
 -- 以减少「上游已恢复但系统 ~24h 未感知」问题
 
+-- §44 lock_timeout 守卫：ALTER TABLE 可能等锁，超时中止避免堵住全库
+SET LOCAL lock_timeout = '2s';
+
 DO $$ 
 BEGIN
     -- Add featured column if not exists
