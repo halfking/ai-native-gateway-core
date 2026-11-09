@@ -77,8 +77,8 @@ function hide() {
 </script>
 
 <template>
-  <span class="credential-key-field">
-    <code>{{ display }}</code>
+  <span class="credential-key-field" :class="{ 'is-revealed': !!revealed }">
+    <code :title="revealed ? display : undefined">{{ display }}</code>
     <template v-if="revealed">
       <button v-if="copyLabel" type="button" @click="copy">{{ copyLabel }}</button>
       <button v-if="hideLabel" type="button" @click="hide">{{ hideLabel }}</button>
@@ -93,6 +93,17 @@ function hide() {
 <style scoped>
 .credential-key-field { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .credential-key-field code { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
+.credential-key-field.is-revealed { display: flex; }
+/* 2026-11-09: 明文态独占新行——遮罩态共用一行截断没问题，但 revealed key 与遮罩
+   同宽同截断会把「显示完整」截回 22rem。换行 + break-all 让任意长度 key 完整可读。 */
+.credential-key-field.is-revealed code {
+  flex: 1 1 100%;
+  max-width: none;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+  user-select: all;
+}
 .credential-key-field button { font-size: .75rem; }
 .error { color: var(--danger); font-size: .75rem; }
 </style>

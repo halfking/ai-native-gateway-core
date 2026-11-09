@@ -567,5 +567,76 @@ else
   printf '%s\n' "${LITERAL_SORTED}" | sed 's/^/       · /' >&2
 fi
 
+# ═══ 断言 ⑨：★ 白名单在生产代码路径上的【★ 地址族豁免面 ★】棘轮 ★══════
+# ★ ★ 为什么地址族【★ 也要棘轮 ★】—— ★ 它是【★ 读数失真 ★】的载体 ★★★ ★
+# ★   ⇒ ★ 白名单里那条为「i18n key ／ 事件名」而设的形态 ★ 【★ 连带豁免了内网地址 ★】
+# ★   ⇒ ★ 而【★ 那些地址【★ 在公开镜像上【★ 依然可见 ★】★★ ★ ⇒ ★ ⇒ ★
+# ★   **⇒ 【★ 而【★ 审计档里引用的一切「★ `INTERNAL_IP` 计数 ★」【★ 都少算了它们 ★】★★ ★**
+# ★ ★ 而【★ 键用「★ 文件 × 白名单条目 ★」、★ 【★ 不用地址值 ★】★★ ★
+# ★   ⇒ ★ 否则【★ 内网地址一改、★ 门就红 ★】⇒ ★ ★ 而【★ 地址变更【★ 是日常运维动作 ★】★★ ★
+# ★   ⇒ ★ ★ ⇒ ★ 而【★ 「★ 哪个文件被哪条白名单豁免了 ★」★ 【★ 才是要守住的那件事 ★】★★ ★
+
+ADDR_FAM_RULES=()
+for fam in INTERNAL_IP INTERNAL_DOMAIN; do
+  while IFS= read -r r; do [[ -n "${r}" ]] && ADDR_FAM_RULES+=("${r}"); done \
+    < <(grep -E "^${fam}\\|" "${CONFIG}" | cut -d'|' -f4-)
+done
+ADDR_GREP_ARGS=()
+for r in ${ADDR_FAM_RULES[@]+"${ADDR_FAM_RULES[@]}"}; do ADDR_GREP_ARGS+=(-e "${r}"); done
+
+compute_exempt_addr() {
+  local files="$1" ml f rest ln content wlpat
+  [[ -z "${files}" ]] && return 0
+  while IFS= read -r ml; do
+    f="${ml%%:*}"; rest="${ml#*:}"; ln="${rest%%:*}"; content="${rest#*:}"
+    [[ -z "${WL_COMBINED}" ]] && continue
+    [[ "${content}" =~ ${WL_COMBINED} ]] || continue
+    wlpat=""
+    for wl in ${WHITELIST_PATTERNS[@]+"${WHITELIST_PATTERNS[@]}"}; do
+      if [[ "${content}" =~ ${wl} ]]; then wlpat="${wl}"; break; fi
+    done
+    printf '%s\t%s\n' "${f}" "${wlpat}"
+  done < <(printf '%s\n' "${files}" | tr '\n' '\0' \
+      | xargs -0 grep -nHEi "${ADDR_GREP_ARGS[@]}" 2>/dev/null)
+}
+
+EXEMPT_ADDR="$(compute_exempt_addr "${PROD_FILES}" | sort -u)"
+EXEMPT_ADDR_N="$(printf '%s' "${EXEMPT_ADDR}" | grep -c . || true)"
+
+# ★ 已知地址族豁免面（★ 棘轮 ★）★★ ★
+KNOWN_EXEMPT_ADDR=(
+  'admin/auth.go	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'admin/free_pool_extra.go	0\.0\.0\.0'
+  'admin/local_provider.go	0\.0\.0\.0'
+  'cmd/license-authority/jwt_eddsa.go	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'cmd/sessionmeta-bench/testdata/sessions_100.jsonl	example\.com'
+  'configs/env-kaixuan1.sh	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'configs/sensitive_patterns.yaml	127\.0\.0\.1'
+  'domains/modelquality/mmlu_data.go	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'domains/notification/dingtalk.go	127\.0\.0\.1'
+  'domains/notification/webhook.go	0\.0\.0\.0'
+  'installer/internal/imgsrc/auth.go	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'installer/internal/imgsrc/internal_registry.go	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'internal/hostedcallback/hostedcallback.go	0\.0\.0\.0'
+  'internal/safehttpclient/allowlist.go	0\.0\.0\.0'
+  'internal/safehttpclient/safe_http_client.go	0\.0\.0\.0'
+  'pkg/georesolve/geo.go	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+  'security/sanitize/testdata/r1034_minimax_sed_arguments.json	REDACTED'
+  'sql/migrations/startup/363_security_detector_config.sql	example\.com'
+  'web-mobile/scripts/serve-current-build.mjs	127\.0\.0\.1'
+  'web-mobile/src/api/gatewaySites.ts	["'\''][a-z0-9_]+(\.[a-z0-9_]+)+["'\'']'
+)
+
+KNOWN_ADDR_SORTED="$(printf '%s\n' "${KNOWN_EXEMPT_ADDR[@]}" | grep -v '^__FILL__$' | sort -u)"
+if [[ "${EXEMPT_ADDR}" == "${KNOWN_ADDR_SORTED}" ]]; then
+  ok "白名单在生产代码路径上的【★ 地址族豁免面 ★】与已知清单完全一致（★ ${EXEMPT_ADDR_N} 条 ★）⇒ ★ 读数失真面【★ 不许悄悄变大 ★】"
+else
+  bad "白名单在生产代码路径上的地址族豁免面与已知清单不一致（★ 实测 ${EXEMPT_ADDR_N} 条 ★）⇒ ★ 白名单一改、★ 【★ 读数失真 ★】就【★ 静默地 ★】变掉"
+  printf '     · 实测清单（文件→白名单条目）：\n' >&2
+  printf '%s\n' "${EXEMPT_ADDR}" | sed 's/^/       /' >&2
+  printf '     · 已知清单：\n' >&2
+  printf '%s\n' "${KNOWN_ADDR_SORTED}" | sed 's/^/       /' >&2
+fi
+
 printf 'PASS=%s FAIL=%s\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]] || exit 1

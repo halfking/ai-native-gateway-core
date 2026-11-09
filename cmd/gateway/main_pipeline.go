@@ -677,11 +677,12 @@ func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.Chat
 }
 
 // MaxDispatchBodyBytes bounds the dispatch path's request body sniff
-// at 32 MiB. Before this cap was enforced as a silent io.LimitReader
+// at 100 MB. The outer ingress archives RAW before this bounded sniff.
+// Previously this cap was enforced as a silent io.LimitReader
 // (which truncated without erroring), an oversized body would reach
 // chatHandler as a corrupted 32 MiB slice. Now http.MaxBytesReader
 // returns *http.MaxBytesError so we can surface 413 to the client.
-const MaxDispatchBodyBytes = 32 << 20
+const MaxDispatchBodyBytes = 100_000_000
 
 // dispatchRequestBody parses the JSON body of an OpenAI / Anthropic
 // request just enough to extract the model name and stream flag for

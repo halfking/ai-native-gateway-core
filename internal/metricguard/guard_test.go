@@ -15,8 +15,9 @@ package metricguard
 // 变异验证（本次已做，见 48 号报告）：把任意一个记录调用删掉 ⇒ 本门转红。
 
 import (
+	"os"
 	"path/filepath"
-	"sort"
+	"strings"
 	"testing"
 )
 
@@ -82,38 +83,84 @@ func TestNoPrometheusMetricIsDeclaredButNeverRecorded(t *testing.T) {
 	}
 	root := repoRootFrom(wd)
 
-	decls, err := CollectDecls(root)
+	// ★★★ 读数的归属（★ 第五十轮续记之七 ★）：★★ ★
+	//
+	//	★ 这道门扫的是【★ 工作树 ★】⇒ ★ 而【★ 同一条命令在两棵树上会给出两个答案 ★】
+	//	★ ⇒ ★ ⇒ ★ **⇒ 【★ 所以【★ 这道门【★ 必须能回答「★ 它扫的是哪棵树 ★】★★ ★】
+	//	★ ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 【★ 【★ 红的读数 ★】★★ ★ —— ★ ★ 【★ 违规消息本身 ★】
+	//	★ 【★ 无条件带根 ★】（★ 见 FormatViolation ★）★★ ★ ⇒ ★ ⇒ ★
+	//	★ **⇒ 【★ 而【★ 【★ 绿的读数 ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 【★ 它【★ 不需要归属 ★】★★ ★
+	//	★ ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 归属说明【★ 每次运行也 t.Logf 一次 ★】★★ ★ —— ★ ★
+	//	★ 【★ 那在 -v 模式下可见 ★】（★ Go 1.24+ 在非 -v 下【★ 丢弃通过的测试日志 ★】★★ ★】★★ ★**
+	t.Logf("%s", ScanRootNote(root))
+
+	res, err := CollectViolations(root, knownUnwired)
 	if err != nil {
-		t.Fatalf("collect declarations: %v", err)
+		t.Fatalf("collect violations: %v", err)
 	}
 
 	// 扫描器自身必须不腐化：一个「恒返回空」的守卫等于没有守卫。
 	// 这一条取自 sql/schema/integration_gate_test.go 的同类教训——那份守卫
 	// 第一版用硬编码清单，仓内变化后它悄悄什么都不匹配了。
-	if len(decls) < 100 {
+	if res.DeclCount < 100 {
 		t.Fatalf("只扫到 %d 个 prometheus 指标声明（< 100）：扫描规则可能已失效，"+
-			"请检查 prometheusName 是否还能命中真实构造形态", len(decls))
+			"请检查 prometheusName 是否还能命中真实构造形态", res.DeclCount)
 	}
-	t.Logf("扫描到 %d 个指标声明", len(decls))
+	t.Logf("扫描到 %d 个指标声明", res.DeclCount)
 
-	never, err := NeverRecorded(root, decls)
+	for _, v := range res.Violations {
+		t.Errorf("指标已声明但生产代码从不记录：%s", v)
+	}
+}
+
+// TestMetricGuardViolationMessageCarriesScanRoot 是本轮（★ 第五十轮续记之七 ★）
+// 新增的护栏：★ **违规消息【★ 必须带扫描根 ★】**。
+//
+// ★ ★★ 为什么【★ 必须有这道护栏 ★】★★ ★：
+//
+//	★ 消息里带根【★ 是【★ 读数归属 ★】的唯一载体 ★】⇒ ★ ⇒ ★
+//	★ **⇒ 【★ 而【★ 将来有人【★ 只改【★ 调用点 ★】、★ 不改【★ 消息构造函数 ★】★★ ★
+//	★ ⇒ ★ ⇒ ★ **⇒ 【★ 那条消息【★ 就不带根了 ★】★★ ★ ⇒ ★ ⇒ ★
+//	★ **⇒ 【★ 而【★ 那【★ 是个【★ 静默的降级 ★】★★ ★ ⇒ ★ ⇒ ★
+//	★ **⇒ 【★ 所以【★ 这里【★ 必须【★ 有牙 ★】★★ ★】★★ ★**
+//
+// ★ ★★ 而【★ 判别力怎么保证 ★】★★ ★：★ 用【★ 合成树 ★】⇒ ★ 造一个【★ 声明了指标、
+// ★ 而生产代码从不记录它 ★】的包 ⇒ ★ ⇒ ★ **⇒ 【★ 判据【★ 必须【★ 在【★ 同一条管线 ★】
+// ★ 上判出它 ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 判出来的消息【★ 必须含 root ★】★★ ★**】★★ ★
+func TestMetricGuardViolationMessageCarriesScanRoot(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "pkg")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// ★ 合成夹具：★ 声明一个 gauge、★ 而全仓【★ 从不记录它 ★】★★ ★
+	src := `package fake
+
+import "github.com/prometheus/client_golang/prometheus"
+
+var sleeping = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "fake_sleeping_gauge",
+	Help: "A gauge that nobody ever records.",
+})
+`
+	if err := os.WriteFile(filepath.Join(pkg, "metrics.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	res, err := CollectViolations(dir, nil)
 	if err != nil {
-		t.Fatalf("scan recording calls: %v", err)
+		t.Fatalf("collect violations: %v", err)
 	}
-
-	var violations []string
-	for _, d := range never {
-		if reason, ok := knownUnwired[d.Ident]; ok {
-			_ = reason // 白名单条目，见下方「白名单不得无理由」子测试
-			continue
+	if len(res.Violations) == 0 {
+		t.Fatalf("★ 合成树上没有判出违规 ⇒ ★ 判据面空了 ⇒ ★ 这道门恒绿 ★")
+	}
+	for _, v := range res.Violations {
+		if !strings.Contains(v, dir) {
+			t.Fatalf("★ 违规消息里【★ 没有扫描根 ★】%q：\n%s", dir, v)
 		}
-		violations = append(violations, d.Ident+"  ("+d.Metric+")  声明于 "+d.File)
-	}
-	sort.Strings(violations)
-	for _, v := range violations {
-		t.Errorf("指标已声明但生产代码从不记录：%s\n"+
-			"  它会出现在 /metrics 上却恒为 ABSENT（不是 0），面板无数据、rate() 告警永不触发。\n"+
-			"  要么接线一个记录调用，要么在 knownUnwired 里写明不接线的原因。", v)
+		if !strings.Contains(v, ScanRootNote(dir)) {
+			t.Fatalf("★ 违规消息里【★ 没有完整的扫描根说明 ★】：\n%s", v)
+		}
 	}
 }
 

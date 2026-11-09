@@ -957,6 +957,11 @@ func (e *Executor) executeGemini(
 		OpenAIToResponsesStream: e.OpenAIToResponsesStream,
 	}
 
+	var budgetErr error
+	bodyBytes, budgetErr = e.fitCandidateContextBudget(params, cand, "gemini-native", bodyBytes)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
 	req, err := ge.BuildRequest(cand, bodyBytes, params.IsStream)
 	if err != nil {
 		return nil, err

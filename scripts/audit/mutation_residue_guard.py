@@ -53,8 +53,8 @@ def git(*args: str) -> str:
 
 
 def mutate_scripts() -> list[str]:
-    out = git('ls-files', 'scripts/*mutate*.py', 'scripts/audit/*mutate*.py')
-    return [p for p in out.splitlines() if p]
+    out = git('ls-files', '-z', 'scripts/*mutate*.py', 'scripts/audit/*mutate*.py')
+    return [p for p in out.split('\0') if p]
 
 
 def candidate_paths() -> set[str]:
@@ -118,7 +118,7 @@ def main() -> int:
     candidates = candidate_paths()
 
     # Restrict to files that actually exist in the repo.
-    tracked = set(git('ls-files').splitlines())
+    tracked = set(git('ls-files', '-z').split('\0'))
     candidates = {c for c in candidates if c in tracked}
 
     dirty = [l for l in git('status', '--porcelain').splitlines() if l.strip()]

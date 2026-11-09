@@ -97,3 +97,6 @@ func normalizeMetricsPath(path string) string {
 		return path
 	}
 }
+
+// Unwrap lets ResponseController reach socket read/write deadlines.
+func (w *prometheusResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

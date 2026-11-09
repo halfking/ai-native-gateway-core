@@ -508,22 +508,36 @@ func TestOutputRedactionMasksSecrets(t *testing.T) {
 //	    Gauge **不成立** —— 它描述的是 Vec 的形态。别照着它去写断言。
 //	⇒ 因此这道门断言的是**取值随运行时长走**，而不是「指标在不在」：
 //	  断言存在性对普通 Gauge **恒真**（没有牙）。
+//
+// ★★ 2026-11-09 合并订正（两侧语义撞车，逐层实测钉死）★★：
+//
+//	本测试原以「把 Now 整体拨到 1 小时前」构造「启动于 1 小时前」，这只在
+//	UptimeSeconds = time.Since(startedAt)（真实流逝时间）语义下成立。
+//	本包 3fb04ebb4 之后 UptimeSeconds = g.now() − startedAt（**单一可注入
+//	时钟的钟差**）——两支探针钉死的事实：
+//	① 拨钟探针：startedAt 与 g.now() 都取自同一被拨的钟 ⇒ 相减恒为 0；
+//	② 构造探针：startedAt 在 NewGateway 内取 cfg.Now()，**构造瞬间钟差
+//	  数学上恒为 0**，无论拨钟手法怎么变。
+//	⇒ 原断言「构造完 gauge 就该 ≥3600」在单钟差语义下**不可构造**，
+//	断言形态必须跟着语义走；**断言意图保持不变**：gauge 存在、是 gauge、
+//	值随运行时长前进、探针端点真的在刷新。手法与 3fb04ebb4 自带的
+//	metrics_test.go（fakeClock + advance + 哨兵值）对齐。
 func TestUptimeMetricTracksGatewayUptime(t *testing.T) {
-	// 把网关的启动时刻挪到 1 小时前 ⇒ 期望 uptime ≈ 3600，而不是 0。
-	const skew = time.Hour
-	minExpected := float64(skew.Seconds()) - 60
+	clock := &fakeClock{t: time.Now()}
 
-	_, srv := newTestGateway(t, nil, func(c *Config) {
-		c.Now = func() time.Time { return time.Now().Add(-skew) }
+	g, srv := newTestGateway(t, nil, func(c *Config) {
+		c.Now = clock.now
 	})
 
-	// 构造完就该是「真实运行时长」——若指标只声明不记录，这里读到的是 0。
-	got := testutil.ToFloat64(uptimeSeconds)
-	if got < minExpected {
-		t.Fatalf("构造后 uptime = %v, want >= %v（指标只声明不记录 ⇒ 恒为 0）", got, minExpected)
+	// ① 构造瞬间的起点：单钟差语义下恒为 0（见上 ②）——但**必须真的落进
+	//    gauge**（server.go 构造尾部的那次 Set）；若只声明不记录，这里读到的
+	//    gauge 与 UptimeSeconds() 脱钩（比如残留上一个用例的 90）。
+	if got := testutil.ToFloat64(uptimeSeconds); got != float64(g.UptimeSeconds()) {
+		t.Fatalf("构造后 gauge = %v, want = UptimeSeconds() = %d（gauge 与运行时长相脱钩 ⇒ 构造时没落初值）",
+			got, g.UptimeSeconds())
 	}
 
-	// 指标族必须在 /metrics 上（且是 gauge，不是 counter）。
+	// ② 指标族必须在 /metrics 上（且是 gauge，不是 counter）。
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)
@@ -545,14 +559,14 @@ func TestUptimeMetricTracksGatewayUptime(t *testing.T) {
 		t.Fatalf("mcp_gateway_uptime_seconds 不是 gauge：%v", found.GetMetric()[0])
 	}
 
-	// 探针端点会**刷新**它（部署里被周期性打的是 /healthz，而不是需要管理令牌的
-	// /health）⇒ 断言的是「值会跟着走」，而不是「值曾经对过」。
+	// ③ 探针端点会**刷新**它（部署里被周期性打的是 /healthz，而不是需要管理令牌的
+	//    /health）⇒ 断言的是「值会跟着走」，而不是「值曾经对过」。
 	//
-	// ★ 为什么需要等 1.5s：UptimeSeconds() 按整秒截断，构造时落的那一版是
-	//   floor(3600.x) = 3600 ⇒ 只有真的刷新过，才会变成 >= 3601。
-	//   不刷新的话它会**冻结**在构造那一刻的值上（= 3600 永远不变）。
-	v0 := testutil.ToFloat64(uptimeSeconds)
-	time.Sleep(1500 * time.Millisecond)
+	// ★ 哨兵值法（与 metrics_test.go 同手法）：把 gauge 改写成 -1，再推进
+	//   时钟 30s、打一次 healthz ⇒ 若探针端点真的刷新，读数 = 30 而不是
+	//   哨兵 -1（刷新没接上）；时钟没推进则读不到 30 ⇒ 两件事都被钉住。
+	uptimeSeconds.Set(-1)
+	clock.advance(30 * time.Second)
 	resp, err := http.Get(srv.URL + "/mcp/control/healthz")
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
@@ -562,8 +576,8 @@ func TestUptimeMetricTracksGatewayUptime(t *testing.T) {
 		t.Fatalf("healthz status = %d, want 200", resp.StatusCode)
 	}
 	after := testutil.ToFloat64(uptimeSeconds)
-	if after < v0+1 {
-		t.Fatalf("healthz 之后 uptime 没有前进：before=%v after=%v（探针端点没刷新指标）", v0, after)
+	if after < 30 {
+		t.Fatalf("healthz 之后 uptime = %v, want >= 30（探针端点没刷新指标，或读的是哨兵旧值 -1）", after)
 	}
 }
 

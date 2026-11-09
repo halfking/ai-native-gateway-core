@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Mount 是网关的 HTTP 装配面：把数据面、控制面与运维视图挂到同一个
@@ -90,6 +89,29 @@ func (m *Mount) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 // UptimeSeconds 返回网关运行时长（秒）。
+//
+// ★ 用网关自己的时钟（g.now）而不是 time.Since：g.now 是本包统一的时间源
+//
+//	（测试可注入 ⇒ 运行时长可确定性断言）；生产下 cfg.Now 默认就是
+//	time.Now，与 time.Since 等价（两者都吃单调时钟读数）。
 func (g *Gateway) UptimeSeconds() int {
-	return int(time.Since(g.startedAt).Seconds())
+	return int(g.now().Sub(g.startedAt).Seconds())
+}
+
+// ScrapeHandler 把 next 包成「每次抓取前先刷新抓取时刻求值指标」的 handler。
+//
+// ★ 存在的理由：mcp_gateway_uptime_seconds 这类指标只有「抓取时刻」才有意义，
+//
+//	而 Prometheus 的抓取是**外部触发**的 ⇒ 刷新必须挂在抓取路径上；
+//	挂在别处（定时器、事件点）都会让值滞后或直接缺失。
+//
+// ★ 凡是**暴露 mcp_gateway_* 指标族的 /metrics 端点**都必须经过它，
+//
+//	否则该族里「抓取时刻求值」的成员会在 /metrics 上恒为 ABSENT
+//	（不是 0）⇒ 面板无数据、rate() 告警永不触发。
+func (g *Gateway) ScrapeHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.RefreshUptimeMetric()
+		next.ServeHTTP(w, r)
+	})
 }

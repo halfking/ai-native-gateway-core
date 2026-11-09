@@ -15,6 +15,7 @@
 package metricguard
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/scanner"
@@ -204,6 +205,91 @@ func recordRecordingCalls(src []byte, rel string, recorded map[string]bool) {
 			afterPeriod = false
 		}
 	}
+}
+
+// ── 读数的归属：★ 扫描根 ★──────────────────────────────────────────────
+//
+// ★★★ 为什么需要它（★ 实测、★ 第五十轮续记之七 ★）：★★ ★
+//
+//	★ 这道门扫的是【★ 工作树目录 ★】⇒ ★ 而【★ 同一条命令在两棵工作树上
+//	★ 会给出两个答案 ★】⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 谁在错、★ 谁在错 ★】都无从判定 ★】★★ ★
+//	★ ⇒ ★ ⇒ ★ **⇒ 【★ 所以【★ 任何一次读数【★ 都必须能回答「★ 它扫的是哪棵树 ★」★★ ★】★★ ★
+//
+// ★ ★★ 而【★ 它【★ 不只是一句说明 ★】—— ★ ★ 它【★ 就挂在【★ 失败消息 ★】上 ★】★★ ★
+// ★ ⇒ ★ ⇒ ★ **⇒ 【★ 因为【★ 门红的时候、★ 那正是【★ 最需要知道它扫的是谁 ★】的时刻 ★】★★ ★
+const scanRootNotePrefix = "★ 扫描根："
+
+// ScanRootNote 返回【★ 读数归属说明 ★】——★ 含扫描根本身。
+//
+// ★ 它被用在两处：★ ① 【★ 每一条违规消息里 ★】—— ★ ★ **无条件** ★（★ CI 上可见 ★）｜
+// ★ ② 【★ 每次运行都 t.Logf 一次 ★】—— ★ ★ 而【★ Go 1.24+ 在【★ 非 -v 】下【★ 丢弃
+// ★ 【★ 通过的 ★】测试日志 ★】⇒ ★ ⇒ ★ **⇒ 【★ 所以【★ 「★ 每次都打印 ★」★ 这条
+// ★ 【★ 只在 -v 模式下成立 ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 唯一【★ 无条件可见 ★】的
+// ★ 归属载体【★ 就是【★ 违规消息 ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 所以【★ 文档里引用任何
+// ★ 读数时【★ 仍必须【★ 连树态 ＋ 平台 ＋ locale 一起引用 ★】★★ ★**】★★ ★
+//
+// ★ ★★ 两处【★ 共用【★ 同一条字符串 ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 护栏【★ 断言
+// ★ 「★ 消息里含这条 note 的全文 ★」★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 就【★ 顺带证明了 note
+// ★ 【★ 本身【★ 是【★ 可被机器读到的 ★】★★ ★】★★ ★**】★★ ★
+func ScanRootNote(root string) string {
+	return scanRootNotePrefix + root + " ★（★ 这道门扫的是【★ 工作树 ★】⇒ ★ 同一条命令在两棵树上会给出不同读数 ★ ⇒ ★ 所以【★ 引用这条读数时【★ 必须连这棵工作树一起引用 ★】★★ ★）"
+}
+
+// FormatViolation 把一条违规渲染成【★ 带扫描根 ★】的消息。
+//
+// ★ ★★ 口径（★ 与改之前逐字一致、★ 只多了【★ 扫描根那一行 ★】★★ ★）：
+// ★ 门红的时候【★ 读的人第一眼就该看到它扫的是哪棵树 ★】⇒ ★ ⇒ ★
+// ★ **⇒ 【★ 而【★ 把它挂在【★ 消息构造函数 ★】上【★ 而不是【★ 散落在调用点 ★】★★ ★
+// ★ ⇒ ★ ⇒ ★ **⇒ 【★ 这样【★ 将来有人【★ 只改调用点、不改这里 ★】★★ ★ ⇒ ★ ⇒ ★
+// ★ **⇒ 【★ 那条消息【★ 就不带根了 ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 本轮新增的护栏
+// ★ 【★ 断言的正是【★ 消息里【★ 必须含 root ★】★★ ★】★★ ★ ⇒ ★ ⇒ ★ **⇒ 【★ 于是
+// ★ 【★ 这个洞【★ 机器看得见 ★】★★ ★**】★★ ★**
+func FormatViolation(root string, d Decl) string {
+	return d.Ident + "  (" + d.Metric + ")  声明于 " + d.File + "\n" +
+		"  " + ScanRootNote(root) + "\n" +
+		"  它会出现在 /metrics 上却恒为 ABSENT（不是 0），面板无数据、rate() 告警永不触发。\n" +
+		"  要么接线一个记录调用，要么在 knownUnwired 里写明不接线的原因。"
+}
+
+// ViolationResult 是主判据的一次运行结果。
+type ViolationResult struct {
+	// Root 是本次扫描的根目录（★ 读数归属 ★）。
+	Root string
+	// DeclCount 是扫到的指标声明数（★ 量具自校准的读数 ★）。
+	DeclCount int
+	// Violations 是违规消息（★ 每条都含扫描根 ★）。
+	Violations []string
+}
+
+// CollectViolations 是这道门的主判据（★ 可被合成夹具【★ 同管线 ★】调用 ★）。
+//
+// ★ ★★ 为什么要抽成【★ 非测试代码里的函数 ★】★★ ★：
+//
+//	★ ① 【★ 护栏【★ 要能【★ 在【★ 合成树 】上跑【★ 同一条判据 ★】★★ ★】
+//	  ⇒ ★ ⇒ ★ **⇒ 【★ 而【★ 合成树【★ 不在测试包目录里 ★】⇒ ★ ⇒ ★ **⇒ 【★ 判据
+//	  【★ 必须在【★ 非 _test.go 的文件里 ★】★★ ★**】★★ ★
+//	★ ② 【★ 以后【★ 再有人【★ 要给这道门做变异探针 ★】★★ ★ ⇒ ★ ⇒ ★
+//	  **⇒ 【★ 不必【★ 再开一个 worktree ★】★★ ★**
+func CollectViolations(root string, exempt map[string]string) (ViolationResult, error) {
+	res := ViolationResult{Root: root}
+	decls, err := CollectDecls(root)
+	if err != nil {
+		return res, fmt.Errorf("collect declarations: %w", err)
+	}
+	res.DeclCount = len(decls)
+
+	never, err := NeverRecorded(root, decls)
+	if err != nil {
+		return res, fmt.Errorf("scan recording calls: %w", err)
+	}
+	for _, d := range never {
+		if _, ok := exempt[d.Ident]; ok {
+			continue
+		}
+		res.Violations = append(res.Violations, FormatViolation(root, d))
+	}
+	sort.Strings(res.Violations)
+	return res, nil
 }
 
 // WalkSources 便于测试侧复用同一套目录跳过规则。

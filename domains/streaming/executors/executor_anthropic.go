@@ -1038,6 +1038,11 @@ func (e *Executor) executeAnthropicOnce(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
+	var budgetErr error
+	bodyBytes, budgetErr = e.fitCandidateContextBudget(params, cand, "anthropic-messages", bodyBytes)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
 	req, err := ae.BuildRequest(cand, bodyBytes, params.IsStream)
 	if err != nil {
 		return nil, err
