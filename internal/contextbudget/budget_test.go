@@ -28,7 +28,19 @@ func TestResolveBucketBudget(t *testing.T) {
 			t.Fatalf("Resolve(%+v) = %+v, %v; want %d tokens", tc.spec, got, err, tc.want)
 		}
 	}
-	for _, spec := range []Spec{{}, {ContextWindow: -1}, {ContextWindow: 8192, OutputReserve: 8192}, {ContextWindow: 8192, SafetyMargin: -1}} {
+	// 2026-11-10 改判（opus-5-5 422 事故）：未知窗口不再硬拒（旧断言：
+	// Resolve({}) 必须报 UnknownContext），而是回落包级保守上限
+	// （MaxInputTokens / DefaultMaxJSONBytes）——生产 ~90% 模型
+	// context_window=NULL，旧的 fail-closed 把数据缺口放大成全平台
+	// pre-dispatch 拒绝（ZCode empty_model_response）。「绝不当无限」
+	// 的设计意图保持：全局上限仍然封顶，已知窗口的精确算术不变。
+	for _, spec := range []Spec{{}, {ContextWindow: -1}} {
+		got, err := Resolve(spec)
+		if err != nil || got.InputTokens != MaxInputTokens || got.JSONBytes != DefaultMaxJSONBytes {
+			t.Fatalf("unknown-window spec %+v must resolve to global caps, got %+v, %v", spec, got, err)
+		}
+	}
+	for _, spec := range []Spec{{ContextWindow: 8192, OutputReserve: 8192}, {ContextWindow: 8192, SafetyMargin: -1}} {
 		if _, err := Resolve(spec); err == nil {
 			t.Fatalf("accepted invalid or exhausted spec %+v", spec)
 		}
@@ -46,14 +58,21 @@ func TestCheckFinalBodyAndOutputReserve(t *testing.T) {
 	if !errors.As(err, &budgetErr) || budgetErr.Kind != BytesExceeded {
 		t.Fatalf("want typed bytes error, got %v", err)
 	}
+	// 2026-11-10 改判（容量裁决归上游）：nil 计数器的字节上界只做 advisory，
+	// 不再触发全局 token 上限拒绝（旧断言 want global token cap）。字节
+	// 资源上限与格式/外部引用 fail-closed 不变；小窗口桶同理放行，超窗由
+	// 上游 context_length 错误经网关既有恢复链处理。
 	large := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("x", 500001) + `"}]}`)
-	_, err = Check(large, Spec{ContextWindow: 2000000})
-	if !errors.As(err, &budgetErr) || budgetErr.Kind != TokensExceeded {
-		t.Fatalf("want global token cap, got %v", err)
+	gotLarge, err := Check(large, Spec{ContextWindow: 2000000})
+	// 无空白 blob 按字节/5 计：500001/5 ≈ 100k（而非字节直计的 500k）。
+	if err != nil || gotLarge.Tokens < 90000 || gotLarge.Tokens > 110000 {
+		t.Fatalf("blob estimate out of calibrated band: %+v, %v", gotLarge, err)
 	}
-	_, err = Check(body, Spec{ContextWindow: 128})
-	if err == nil {
-		t.Fatal("small failover bucket accepted the larger-bucket body")
+	// 已知小窗口保持执法：128-token 桶装不下 ~173-token 估计的请求体
+	// （校准估计器计数），拒绝是正确行为——tiering 只对「窗口未知」advisory。
+	smallBody := []byte(`{"model":"model","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := Check(smallBody, Spec{ContextWindow: 128}); err == nil {
+		t.Fatal("known tiny bucket must still reject a body its window cannot fit")
 	}
 }
 
@@ -66,6 +85,24 @@ func TestThinkingIsIncludedInOutputLimit(t *testing.T) {
 }
 
 func TestTextProtocolsAreCountedConservatively(t *testing.T) {
+	// 2026-11-10：默认计数器换成校准估计器（chars/3.5，blob bytes/5）。
+	// 旧断言 Tokens >= len(body) 钉的是「字节=token」上界——对 CJK 高估
+	// ~3x，正是 422 事故的执法误差来源。现断言估计值落在标定区间：
+	// 不低于 runes/7（防低估），不超过字节总数（防高估失控）。
+	cjk := `{"messages":[{"role":"user","content":"` + strings.Repeat("你好", 3000) + `"}]}`
+	ascii := `{"messages":[{"role":"user","content":"` + strings.Repeat("x", 9000) + `"}]}`
+	for _, tc := range []struct {
+		body   string
+		lo, hi int
+	}{
+		{cjk, 3000, len(cjk)},
+		{ascii, 1200, len(ascii)},
+	} {
+		got, err := Check([]byte(tc.body), Spec{ContextWindow: 128000})
+		if err != nil || got.Tokens < tc.lo || got.Tokens > tc.hi {
+			t.Fatalf("estimate out of calibrated band: got=%d band=[%d,%d] err=%v", got.Tokens, tc.lo, tc.hi, err)
+		}
+	}
 	for _, body := range []string{
 		`{"messages":[{"role":"system","content":"never erase"},{"role":"user","content":"你好👋"}],"tools":[{"type":"function","function":{"name":"file","parameters":{"properties":{"image_url":{"type":"string"}}}}}]}`,
 		`{"system":"system","messages":[{"role":"user","content":[{"type":"text","text":"你好"}]}]}`,
@@ -74,8 +111,8 @@ func TestTextProtocolsAreCountedConservatively(t *testing.T) {
 		`{"prompt":"hello","images":[]}`,
 	} {
 		got, err := Check([]byte(body), Spec{ContextWindow: 128000})
-		if err != nil || got.Tokens < len(body) {
-			t.Fatalf("under-counted visible text/schema: %+v, %v", got, err)
+		if err != nil || got.Tokens <= 0 {
+			t.Fatalf("protocol scaffolding under-counted: %+v, %v", got, err)
 		}
 	}
 }
@@ -104,8 +141,8 @@ func TestUncountedExternalContextFailsClosed(t *testing.T) {
 	}
 	body := []byte(`{"input":"hi","previous_response_id":"resp_1"}`)
 	got, err := Check(body, Spec{ContextWindow: 128000, ExternalInputKnown: true, ExternalInputTokens: 1000})
-	if err != nil || got.Tokens < 1000+len(body) {
-		t.Fatalf("trusted external count missing: %+v, %v", got, err)
+	if err != nil || got.Tokens < 1000+len(body) || got.Counter != "calibrated_json_estimator" {
+		t.Fatalf("trusted external count must stay in the advisory receipt: %+v, %v", got, err)
 	}
 }
 

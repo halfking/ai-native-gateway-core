@@ -394,6 +394,57 @@ export function patchAdminMaasCoupon(id: number, status: 'active' | 'disabled') 
   return req<{ status: string }>('PATCH', `/api/admin/maas/coupons/${id}`, { status })
 }
 
+// 2026-11-10（行情整合轮）：940 行情面只读消费——市场参考价 vs 我方价格对比。
+export interface MarketPriceOverviewRow {
+  canonical_name: string
+  canonical_id: number | null
+  display_name: string
+  market_min_in_cny_per_1m: number | null
+  market_min_out_cny_per_1m: number | null
+  market_min_platform_count: number
+  market_min_platform_id: string
+  vendor_list_in_cny_per_1m: number | null
+  vendor_list_out_cny_per_1m: number | null
+  vendor_vendor: string
+  supplier_in_per_1m: number | null
+  supplier_out_per_1m: number | null
+  supplier_currency: string
+  retail_credits_in_per_1m: number | null
+  retail_credits_out_per_1m: number | null
+  retail_cny_in_per_1m: number | null
+  retail_cny_out_per_1m: number | null
+  cents_per_credit: number
+  currency_display: string
+  market_position: number | null
+  retail_vs_market: number | null
+  source_run_date: string
+  resolved: boolean
+}
+
+export interface MarketPriceSyncRun {
+  id: number
+  run_date: string
+  source_platforms: number
+  source_rows: number
+  landed_rows: number
+  rejected_rows: number
+  conflicts: Record<string, number>
+  detail: Record<string, unknown>
+  created_at: string
+}
+
+export function getAdminMaasMarketPriceOverview(q = '', onlyResolved = false, limit = 200) {
+  const params = new URLSearchParams({ q, limit: String(limit) })
+  if (onlyResolved) params.set('resolved', 'true')
+  return req<{ items: MarketPriceOverviewRow[]; sync: MarketPriceSyncRun[] }>(
+    'GET', `/api/admin/maas/market-price-overview?${params}`)
+}
+
+export function getAdminMaasMarketPriceSyncStatus(limit = 10) {
+  return req<{ items: MarketPriceSyncRun[] }>(
+    'GET', `/api/admin/maas/market-price-sync-status?limit=${limit}`)
+}
+
 export function getAdminMaasCampaigns() {
   return req<{ items: AdminMaasCampaign[] }>('GET', '/api/admin/maas/campaigns')
 }

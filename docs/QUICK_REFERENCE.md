@@ -1,6 +1,6 @@
 # LLM Gateway Go — 快速参考手册
 
-> **版本**: 2.5.8-5e14ede2-20261020-2794
+> **版本**: 2.5.9-2f5677e3-20261107-2955
   
 > **最后更新**: 2026-09-06  
 > **适用场景**: 快速查询、问题排查、日常开发  
@@ -40,15 +40,15 @@ git remote add origin https://codeup.aliyun.com/kaixuan/official-deploy/llm-gate
 git remote add github git@github.com:halfking/ai-native-gateway-core.git
 ```
 
-### 代码统计（基于真实扫描，2026-10-31 @495a1c758）
+### 代码统计（基于真实扫描，2026-11-10 @5ec2bf485）
 ```
-Go源文件:       11,225 个    (find . -name "*.go" -type f | wc -l；全树含 vendor+installer)
-Admin API:       790 个    (find ./admin -name "*.go" -type f | wc -l)
-后台Worker:      434 个    (find ./bg -name "*.go" -type f | wc -l)
+Go源文件:       11,557 个    (find . -name "*.go" -type f | wc -l；全树含 vendor+installer)
+Admin API:       821 个    (find ./admin -name "*.go" -type f | wc -l)
+后台Worker:      462 个    (find ./bg -name "*.go" -type f | wc -l)
 领域模块:        69 个    (ls ./domains/ | wc -l)
-数据库迁移:     1,180 个    (find ./sql/migrations -name "*.sql" | wc -l；2026-10-19 订正，877/878 迁移入库后)
-单元测试:     3,703 个    (find . -name "*_test.go" | wc -l；全树含 vendor+installer)
-可执行程序:      49 个    (go list ./cmd/... main 包口径；顶层 cmd/ 目录 34 个，go list 全量 51 含 2 个非 main 辅助包——R48-B4 订正)
+数据库迁移:     1,236 个    (find ./sql/migrations -name "*.sql" | wc -l；2026-10-19 订正，877/878 迁移入库后)
+单元测试:     3,913 个    (find . -name "*_test.go" | wc -l；全树含 vendor+installer)
+可执行程序:      51 个    (go list ./cmd/... main 包口径；顶层 cmd/ 目录 34 个，go list 全量 53 含 2 个非 main 辅助包——R48-B4 订正)
 ```
 
 ---
@@ -400,7 +400,7 @@ SELECT * FROM tenants WHERE id = 'xxx';
 SELECT * FROM credentials WHERE tenant_id = 'xxx' AND status = 'active';
 
 -- 请求日志
-SELECT * FROM request_logs 
+SELECT * FROM request_logs_with_current_month 
 WHERE tenant_id = 'xxx' 
   AND ts >= NOW() - INTERVAL '1 day'
 ORDER BY ts DESC 
@@ -410,9 +410,9 @@ LIMIT 100;
 SELECT * FROM sessions WHERE id = 'sess_xxx';
 
 -- 路由尝试
--- 注：独立 routing_attempts 表已不存在，请求级路由轨迹内联在 request_logs.routing_attempts（jsonb）
+-- 注：独立 routing_attempts 表已不存在，请求级路由轨迹内联在 request_logs_with_current_month.routing_attempts（jsonb）
 SELECT request_id, routing_attempts
-FROM request_logs
+FROM request_logs_with_current_month
 WHERE request_id = 'req_xxx';
 
 -- 凭据健康
@@ -447,7 +447,7 @@ SELECT
   r.upstream_status_code,
   r.latency_ms,
   r.ts
-FROM request_logs r
+FROM request_logs_with_current_month r
 WHERE r.ts >= NOW() - INTERVAL '5 minutes'
 ORDER BY r.ts DESC;
 ```
@@ -460,7 +460,7 @@ SELECT
   COUNT(*) as total,
   SUM(CASE WHEN success THEN 1 ELSE 0 END) as success,
   ROUND(100.0 * SUM(CASE WHEN success THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate
-FROM request_logs
+FROM request_logs_with_current_month
 WHERE ts >= NOW() - INTERVAL '1 day'
 GROUP BY provider_id, outbound_model
 ORDER BY total DESC;
@@ -475,7 +475,7 @@ SELECT
   SUM(r.prompt_tokens + r.completion_tokens) as total_tokens,
   SUM(r.cost_usd) as total_cost
 FROM tenants t
-JOIN request_logs r ON t.id = r.tenant_id
+JOIN request_logs_with_current_month r ON t.id = r.tenant_id
 WHERE r.ts >= NOW() - INTERVAL '7 days'
 GROUP BY t.id, t.name
 ORDER BY total_cost DESC
@@ -508,10 +508,10 @@ VALUES ('xxx', 'openai', 'OpenAI Key 1', 'sk-xxx', 'active');
 curl http://localhost:8781/api/admin/connection-registry/req_xxx \
   -H "Authorization: Bearer xxx"
 
-# 通过SQL（请求轨迹落在 request_logs；路由尝试内联在 request_logs.routing_attempts（jsonb），
+# 通过SQL（请求轨迹落在 request_logs_with_current_month；路由尝试内联在 request_logs_with_current_month.routing_attempts（jsonb），
 # 没有独立的 requests / routing_attempts 表）
-SELECT * FROM request_logs WHERE request_id = 'req_xxx';
-SELECT routing_attempts FROM request_logs WHERE request_id = 'req_xxx';
+SELECT * FROM request_logs_with_current_month WHERE request_id = 'req_xxx';
+SELECT routing_attempts FROM request_logs_with_current_month WHERE request_id = 'req_xxx';
 ```
 
 ### Q3: 如何重启Gateway？
@@ -584,9 +584,9 @@ tail -f /var/log/llm-gateway/gateway.log
 
 **排查步骤**:
 ```sql
--- 1. 查看错误类型分布（request_logs 用 success 布尔列 + error_kind 维度）
+-- 1. 查看错误类型分布（request_logs_with_current_month 用 success 布尔列 + error_kind 维度）
 SELECT error_kind, COUNT(*) 
-FROM request_logs 
+FROM request_logs_with_current_month 
 WHERE success = false 
   AND ts >= NOW() - INTERVAL '1 hour'
 GROUP BY error_kind
@@ -597,10 +597,10 @@ SELECT provider, status, COUNT(*)
 FROM credentials
 GROUP BY provider, status;
 
--- 3. 查看路由失败原因（routing_attempts 是 request_logs 上的 jsonb 数组列，
+-- 3. 查看路由失败原因（routing_attempts 是 request_logs_with_current_month 上的 jsonb 数组列，
 --    每项含 result / error_kind / stage / provider_id 等字段）
 SELECT a->>'error_kind' AS error_kind, COUNT(*)
-FROM request_logs, LATERAL jsonb_array_elements(routing_attempts) AS a
+FROM request_logs_with_current_month, LATERAL jsonb_array_elements(routing_attempts) AS a
 WHERE a->>'result' <> 'success'
   AND ts >= NOW() - INTERVAL '1 hour'
 GROUP BY 1
@@ -623,7 +623,7 @@ tail -f /var/log/llm-gateway/workers.log | grep "active_probe"
 ```sql
 -- 1. 查看慢请求
 SELECT request_id, outbound_model, provider_id, latency_ms, ts
-FROM request_logs
+FROM request_logs_with_current_month
 WHERE latency_ms > 5000
   AND ts >= NOW() - INTERVAL '1 hour'
 ORDER BY latency_ms DESC

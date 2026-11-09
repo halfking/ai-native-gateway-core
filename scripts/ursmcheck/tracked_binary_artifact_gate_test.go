@@ -40,10 +40,33 @@ package ursm_test
 //	命中的文件集合必须**恰好等于**基线集合。
 //
 //	★ 基线（棘轮，**只许降不许升**）：
-//	  cmd/llm-gw-annotator/llm-gw-annotator   （历史遗留，先例，非豁免）
-//	  installer/llm-gw-installer                （历史遗留，先例，非豁免）
+//	  2026-11-09 起**为空** —— 最后两条历史遗留（`cmd/llm-gw-annotator/
+//	  llm-gw-annotator` 14.3MB + `installer/llm-gw-installer` 12.7MB，两个
+//	  darwin/arm64 Mach-O）已 `git rm --cached` + 补 `.gitignore` ⇒ 仓内
+//	  编译产物集合归零 ⇒ 基线随之**下调为空**（★ 棘轮只许降不许升；★ 基线
+//	  里的文件被从仓里删掉 ⇒ 门红，强制把基线同步下调，不留「空占位」）。
 //	⇒ 新增一个 ⇒ 门红（★ 这就是防 A14 复发的那只手）。
-//	⇒ 基线里的文件被从仓里删掉 ⇒ 门红（★ 强制把基线同步下调，不留「空占位」）。
+//
+// # ★ 2026-11-09 两处判据修正（本轮清理带出的活缺陷）
+//
+//	① **扫描源从 HEAD 改为索引**（`:path` 语义）。
+//	   原实现用 `git ls-files` 取**文件名**（索引），却用 `HEAD:%s` 取**内容**
+//	   （HEAD 树）⇒ ⇒ 两棵树不一致 ⇒ 一个 `git add` 进来、尚未提交的二进制
+//	   在 `HEAD:` 下查不到 ⇒ cat-file 回 `missing` ⇒ **被静默跳过** ⇒ ⇒
+//	   ⇒ 门在**最该拦的那一刻**（提交之前）放行了它；等提交完再跑才红，而
+//	   那时二进制**已经进了历史**。
+//	   ⇒ 现改为内容也取索引（`:path`）⇒ 文件名与内容同源 ⇒ ⇒ 新增二进制在
+//	   `git add` 之后、提交之前即被抓住。
+//	   ⇒ CI 上索引 == HEAD ⇒ 行为不变（等价）。
+//
+//	② **「基线非空」这条恒绿护栏被「正控测试」取代**。
+//	   原护栏是「一个编译产物都没扫到 ⇒ 判红（扫描器坏了）」，它靠**基线非空**
+//	   来区分「仓真的干净」与「扫描器坏了」—— ⇒ 一旦仓里真的一个编译产物都
+//	   没有（**本轮清理后的新常态**），这条护栏就**必然误报**，把「干净」判成
+//	   「坏了」。
+//	   ⇒ 现改为**端到端正控**：在临时仓里造一个已知 magic 的文件，用**同一个**
+//	   扫描器扫它 ⇒ 必须命中 ⇒ ⇒ 「扫不到」只有在扫描器真的坏了时才成立。
+//	   ⇒ 这比「基线非空」**更强**：它证明的是提取能力本身，而不是「恰好非空」。
 //
 // ★ **不误伤合法二进制资源**：`docs/**/*.png|jpg` 等**图片资产**也是二进制，
 //   但它们的 magic 是 PNG/JPEG，**不在**本门的判据集合里 ⇒ ⇒ 不会被误判。
@@ -67,14 +90,25 @@ import (
 
 // trackedBinaryBaseline 已登记在册的**编译产物**（★ 只许降不许升的棘轮基线）。
 //
-// ★ 两条都是**历史遗留**（先例，不是豁免）—— 它们在 2026-11-03 之前就在仓里。
-// ★ 2026-11-03 12h 审计 A14 新增的 `installer/e2e-bootstrap` **不在**本表内
+// ★ 2026-11-09：基线**下调为空** —— 两条历史遗留被清出仓库：
 //
-//	⇒ ⇒ 它被本门当场抓住 ⇒ ⇒ 并已从索引移除 + 补 `.gitignore`。
-var trackedBinaryBaseline = map[string]string{
-	"cmd/llm-gw-annotator/llm-gw-annotator": "历史遗留（先例，非豁免）：独立注解工具的编译产物，未清理",
-	"installer/llm-gw-installer":            "历史遗留（先例，非豁免）：安装器编译产物，未清理",
-}
+//	cmd/llm-gw-annotator/llm-gw-annotator   （14.3MB darwin/arm64 Mach-O）
+//	installer/llm-gw-installer                （12.7MB darwin/arm64 Mach-O）
+//
+//	两者都曾被 2026-11-03 的 A14 轮判为「历史遗留，先例，非豁免」⇒ 本轮按
+//	「第 0 批零风险清理」把它们 `git rm --cached` + 补 `.gitignore`
+//	（★ 原 `.gitignore` 只写了 `/installer/cmd/llm-gw-installer/…`
+//	（**嵌套路径**），而实际入库的是 `installer/llm-gw-installer`（**模块根**）
+//	⇒ 规则不匹配 ⇒ 漏网；★ 根级 `/llm-gw-*` 同样只匹配仓库根目录）。
+//
+//	⇒ 棘轮**下调**是本门自己要求的动作（基线里的文件被删 ⇒ 门红 ⇒ 强制同步
+//	下调）⇒ 不是把护栏拆掉，是把护栏按它自己的口径走完。
+//
+// ★ 基线现在是**空的**：这不代表门形同虚设 —— 「恒绿护栏」已由**端到端正控**
+//   （TestTrackedBinaryScannerPositiveControl）承担，见文件头 §②。
+//
+// ★ 未来若真有一个独立可执行工具需要入库，必须**显式**登记进下表并写清理由。
+var trackedBinaryBaseline = map[string]string{}
 
 // trackedBinaryMagics 可执行文件的 magic 前缀。
 var trackedBinaryMagics = [][]byte{
@@ -107,14 +141,19 @@ func trackedBinaryLooksExecutable(head []byte) bool {
 	return false
 }
 
-// trackedBinaryScan 扫全仓被跟踪的文件，返回「编译产物文件 → 其 magic」的集合。
+// trackedBinaryScan 扫**索引**里被跟踪的文件，返回「编译产物文件 → 其 magic」。
 //
-// ★ 实现要点：逐个 blob 只读**前 4 字节**，其余用 io.CopyN 丢弃 ⇒
+// ★ 实现要点：
+//  1. 逐个 blob 只读**前 4 字节**，其余用 io.CopyN 丢弃 ⇒ 不把 300MB+ 的
+//     仓内容全读进内存 ⇒ ⇒ 扫描是流式的。
+//  2. **内容取自索引**（`:path` 语义）而不是 `HEAD:path` ⇒ ⇒ 文件名清单
+//     （`git ls-files`，索引）与内容来源**同源** ⇒ ⇒ 一个刚 `git add` 进来、
+//     尚未提交的二进制**也会被扫到**（★ 原实现用 HEAD ⇒ 它在提交前被静默
+//     跳过 ⇒ 门在最该拦的那一刻放行；详见文件头 §①）。
 //
-//	⇒ 不把 300MB+ 的仓内容全读进内存 ⇒ ⇒ 扫描是流式的。
-func trackedBinaryScan(t *testing.T) map[string]string {
+// ★ root 形参存在，是为了让**正控测试**能把同一个扫描器指向一个临时仓。
+func trackedBinaryScan(t *testing.T, root string) map[string]string {
 	t.Helper()
-	root := trackedBinaryRepoRoot(t)
 
 	ls := exec.Command("git", "-C", root, "ls-files", "-z")
 	out, err := ls.Output()
@@ -147,7 +186,9 @@ func trackedBinaryScan(t *testing.T) map[string]string {
 	}
 	go func() {
 		for _, n := range names {
-			fmt.Fprintf(stdin, "HEAD:%s\n", n)
+			// ★ `:path` = 索引里 stage 0 的 blob（`git cat-file --batch` 支持
+			//   这一 extended SHA-1 表达式；实测对不存在的路径回 `missing`）。
+			fmt.Fprintf(stdin, ":%s\n", n)
 		}
 		stdin.Close()
 	}()
@@ -197,12 +238,19 @@ func trackedBinaryScan(t *testing.T) map[string]string {
 
 // TestNoNewTrackedBinaryArtifacts 是门本体。
 func TestNoNewTrackedBinaryArtifacts(t *testing.T) {
-	hits := trackedBinaryScan(t)
+	hits := trackedBinaryScan(t, trackedBinaryRepoRoot(t))
 
-	// ★★ 恒绿护栏：扫描结果为空 ⇒ 提取器坏了 ⇒ 门必须红
-	//   （★ 否则「一个编译产物都没扫到」会假装成「仓很干净」）。
+	// ★ 2026-11-09：原「恒绿护栏」（`len(hits)==0 ⇒ 扫描器坏了 ⇒ 判红`）已**删除**。
+	//   它靠「基线非空」区分「仓真的干净」与「扫描器坏了」⇒ ⇒ 而本轮清理后
+	//   仓里**真的**一个编译产物都没有了 ⇒ ⇒ 该护栏会**必然误报**，把「干净」
+	//   判成「坏了」⇒ ⇒ 门恒红。
+	//   ⇒ 恒绿护栏改由**端到端正控**承担：TestTrackedBinaryScannerPositiveControl
+	//   在临时仓里造一个已知 magic 的文件，用**同一个**扫描器扫它 ⇒ 必须命中
+	//   ⇒ ⇒ 「扫不到」只有在扫描器真的坏了时才成立（★ 比「基线非空」更强：
+	//   它证明的是**提取能力本身**，而不是「恰好非空」）。
 	if len(hits) == 0 {
-		t.Fatalf("★ 全仓一个编译产物都没扫到 ⇒ 扫描器坏了 ⇒ 门判红（★ 基线非空 ⇒ 扫不到就是异常）")
+		t.Logf("★ 索引里没有编译产物二进制（★ 这正是本轮清理后的目标状态；" +
+			"★ 「扫描器是否有效」由 TestTrackedBinaryScannerPositiveControl 证明）")
 	}
 
 	var unexpected []string
@@ -234,15 +282,86 @@ func TestNoNewTrackedBinaryArtifacts(t *testing.T) {
 	}
 }
 
-// TestTrackedBinaryBaselineIsNotEmpty 是基线自身的形状判据。
-func TestTrackedBinaryBaselineIsNotEmpty(t *testing.T) {
-	if len(trackedBinaryBaseline) == 0 {
-		t.Fatalf("★ 编译产物基线是空的 ⇒ 「没有编译产物」这条结论将永远为真 ⇒ 门形同虚设")
+// TestTrackedBinaryScannerPositiveControl 是**端到端正控**：证明扫描器本身有效。
+//
+// ★ 为什么必须有它（2026-11-09）：
+//
+//	本门断言「仓内没有编译产物二进制」。当这个结论为真时，**门无法从自己的
+//	结论里区分**「仓真的干净」与「扫描器坏了、什么都没扫到」⇒ ⇒ 门需要
+//	一个**独立于仓内容**的证据来说明「扫描器确实能抓到东西」。
+//
+//	⇒ 做法：在**临时仓**里造一个**已知 magic** 的文件（+ 一个普通文本文件），
+//	  用**同一个** trackedBinaryScan 扫它 ⇒
+//	    · 必须命中那个二进制文件（证明提取器没坏）；
+//	    · 必须**不**命中那个文本文件（证明判据没变成「什么都是二进制」）。
+//	⇒ 这两条合起来 = 「提取能力有效」+「判据仍然精确」。
+//
+// ★ 这比旧护栏「基线非空」**更强**：基线非空只说明「期望集合非空」，
+//
+//	而正控证明的是「扫描器在已知阳性样本上必然阳性、已知阴性样本上必然阴性」。
+func TestTrackedBinaryScannerPositiveControl(t *testing.T) {
+	root := t.TempDir()
+
+	// ★ Mach-O 64-bit little-endian magic（`file` 认得它 ⇒ 是真格式头）。
+	//   刻意用**真格式**而非随手 4 字节 ⇒ 万一将来判据改成「调 file(1)」，
+	//   正控依然成立。
+	macho := []byte{0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(root, "planted.bin"), macho, 0o644); err != nil {
+		t.Fatalf("写阳性样本失败：%v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("plain text, not a binary\n"), 0o644); err != nil {
+		t.Fatalf("写阴性样本失败：%v", err)
+	}
+
+	trackedBinaryRunGit(t, root, "init", "-q")
+	trackedBinaryRunGit(t, root, "add", "-A")
+
+	hits := trackedBinaryScan(t, root)
+
+	if _, ok := hits["planted.bin"]; !ok {
+		t.Fatalf("★ 正控失败：扫描器在**已知阳性样本**（Mach-O magic）上没命中 ⇒ " +
+			"★ 提取器坏了 ⇒ ⇒ 「仓内没有编译产物」这条结论将永远为真而门形同虚设")
+	}
+	if _, ok := hits["notes.txt"]; ok {
+		t.Fatalf("★ 负控失败：扫描器把**普通文本**也判成编译产物 ⇒ 判据过宽")
+	}
+	if len(hits) != 1 {
+		t.Errorf("★ 正控只应命中 1 个文件，实测命中 %d 个：%v", len(hits), hits)
+	}
+}
+
+// trackedBinaryRunGit 在指定仓里跑一条 git 命令（正控用）。
+func trackedBinaryRunGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	cmd.Env = append(os.Environ(),
+		// ★ 隔离用户全局配置 ⇒ 免得本机的 commit.gpgsign / core.hooksPath
+		//   之类设置让 `git add` 在 CI 上行为不同。
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v 失败：%v\n%s", args, err, out)
+	}
+}
+
+// TestTrackedBinaryBaselineIsJustified 是基线自身的形状判据。
+//
+// ★ 2026-11-09：原名 TestTrackedBinaryBaselineIsNotEmpty，断言「基线非空」，
+//
+//	理由是「基线为空 ⇒『没有编译产物』永远为真 ⇒ 门形同虚设」。
+//	⇒ 本轮清理把基线下调为空后，这条断言**必然**红 ⇒ ⇒ 它必须被替换。
+//	⇒ 替换物不是「删掉这道护栏」，而是**更强的**正控（见上）。
+//	⇒ 保留的形状判据是「基线里的每一条都必须写明理由」+「基线条目必须真在仓里」
+//	  （后者由门本体的 stale 检查承担）。
+func TestTrackedBinaryBaselineIsJustified(t *testing.T) {
 	// ★ 基线里的每一条都必须写明理由（★ 免得后来者不知道为什么它被放行）。
 	for name, why := range trackedBinaryBaseline {
 		if strings.TrimSpace(why) == "" {
 			t.Errorf("★ 基线条目 %s 没有写理由 ⇒ 必登记理由", name)
 		}
 	}
+	t.Logf("编译产物基线当前 %d 条（★ 2026-11-09 清理后为空；★ 门是否有效由 "+
+		"TestTrackedBinaryScannerPositiveControl 证明，而不是靠「基线非空」）", len(trackedBinaryBaseline))
 }

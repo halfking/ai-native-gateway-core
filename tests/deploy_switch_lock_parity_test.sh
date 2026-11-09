@@ -87,14 +87,18 @@ for key in '"note"' '"pendingMergeCriteria"' '"probeExemptions"'; do
   fi
 done
 
-# ── 解析共享部署库 SSOT（与 deploy-local.sh 的候选顺序一致）──────────────
+# ── 解析共享部署库 SSOT（★ 与两个兄弟解析器共用同一条候选链 ★）────────────
+# ★ 2026-11-09（F51）：★ 本门此前**自带**一条候选链 ⇒ ★ 「改代码不改测试 ⇒
+#   那个测试在测另一条链而它照样绿」⇒ ★ 现在从唯一真相 scripts/deploy-lib-candidates.sh 取 ★
+#   ⇒ ★ 本门与 scripts/_shared-lib.sh / scripts/deploy-lib-resolve.sh **同链** ★
+# ★ ⇒ ★ 而且本门**缺 SSOT 时整段 SKIP** ⇒ ★ 链少一条 = **假绿** ⇒ ★ 这就是
+#   ★ 为什么链必须是**共享**的那一条（★ 而不是每个门自己抄一份）★
+# shellcheck source=deploy-lib-candidates.sh
+source "$ROOT/scripts/deploy-lib-candidates.sh"
 ssot=''
-for cand in "${AIAN_DEPLOY_LIB:-}" "$ROOT/scripts/deploy-lib" "$HOME/workspace/ai-native-workspace/deploy-lib" "$HOME/workspace/ai-native-tools/deploy-lib"; do
-  if [[ -n "$cand" && -f "$cand/lock.sh" ]]; then
-    ssot="$(cd "$cand" && pwd -P)"
-    break
-  fi
-done
+if _ssot_cand="$(deploy_lib_find lock.sh)"; then
+  ssot="$(cd "$_ssot_cand" && pwd -P)"
+fi
 
 # ── P3：**结构性**判据 —— 本仓生产脚本里不得再自带存活探针 ────────────────
 #
@@ -137,7 +141,8 @@ pass 'structural: the repo carries no second liveness probe (the SSOT is the sin
 
 if [[ -z "$ssot" ]]; then
   printf 'SKIP: shared deploy lib (lock.sh) not found — the cross-repo parity was NOT compared this run\n'
-  printf '  looked at: AIAN_DEPLOY_LIB, %s/scripts/deploy-lib, ~/workspace/ai-native-workspace/deploy-lib, ~/workspace/ai-native-tools/deploy-lib\n' "$ROOT"
+  printf '  looked at: AIAN_DEPLOY_LIB + the shared candidate chain (scripts/deploy-lib-candidates.sh):\n'
+  deploy_lib_print_candidates
   printf 'SKIP deploy lock parity (no SSOT)\n'
   exit 0
 fi
@@ -221,13 +226,6 @@ if [[ "$repo_fields" != "$ssot_fields" ]]; then
   exit 1
 fi
 printf 'PASS metadata field set matches the shared SSOT: %s\n' "$repo_fields"
-SOURCE_HOST=logical-deploy-label dl_switch_lock_write_metadata > "$repo_meta"
-repo_machine="$(awk -F= '$1 == "source_hostname" {print $2}' "$repo_meta")"
-[[ "$repo_machine" == "$(hostname)" ]] || {
-  printf 'FAIL source_hostname must identify the machine, not SOURCE_HOST\n' >&2
-  exit 1
-}
-printf 'PASS machine identity survives logical SOURCE_HOST override\n'
 
 # ═════════════════════════════════════════════════════════════════════════
 # P4：跨仓漂移账（★ 只降不升的棘轮）

@@ -73,6 +73,10 @@ TREE="$ISO/tree"
 mkdir -p "$TREE/scripts" "$TREE/web/dist" "$TREE/web-mobile/dist"
 cp "$ENGINE_SRC" "$TREE/scripts/deploy-seamless-docker.sh"
 cp "$REPO_ROOT/scripts/deploy-lib-resolve.sh" "$TREE/scripts/deploy-lib-resolve.sh"
+# ★ 2026-11-09（F51）：★ deploy-lib-resolve.sh 的候选链搬到了共享的唯一真相文件
+#   scripts/deploy-lib-candidates.sh ⇒ ★ 夹具必须**连它一起**复制 ⇒ ★ 否则
+#   ★ 解析器在 source 那一行就断掉（★ 而断点与本门要测的并发互斥无关 ★）
+cp "$REPO_ROOT/scripts/deploy-lib-candidates.sh" "$TREE/scripts/deploy-lib-candidates.sh"
 printf '<html>iso</html>\n' > "$TREE/web/dist/index.html"
 printf '<html>iso</html>\n' > "$TREE/web-mobile/dist/index.html"
 git -C "$TREE" init -q -b main

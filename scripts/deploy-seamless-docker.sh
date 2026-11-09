@@ -1021,6 +1021,17 @@ pg_persisted_host() {
   sed -nE 's#^export LLM_GATEWAY_DATABASE_URL=postgres://[^@]*@([^:/]+).*#\1#p' "$ENV_FILE" | tail -1
 }
 
+# 上一次部署绑定的 Redis 实例名（写在 gateway.env 的 REDIS_ADDR 里）。与
+# pg_persisted_host 同纪律：「上次用的是什么」比任何探测都强——仍要过
+# redis_probe_usable 复核才敢直接复用。2026-11-10 事故：并行会话的测试
+# 实例（lgw-mock-only-redis）出现在 docker ps 前列，find_redis_container
+# 按扫描顺序选中它 ⇒ 网关连上一个凭据不匹配的空 mock ⇒ session store
+# 503、大请求（large-ingress 必走 session 归档）全断。
+redis_persisted_container() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  sed -nE 's#^export LLM_GATEWAY_REDIS_ADDR=([^:/]+).*#\1#p' "$ENV_FILE" | tail -1
+}
+
 # 纯打分（无 IO，可离线驱动）：候选 → 分值，-1 = 不可复用。
 # 六个入参：explicit persisted has_db has_objs managed n_qualified
 # 判据纪律：唯一允许「什么都探测不到也敢复用」的情形是**全场只有一个**候选
@@ -1330,6 +1341,21 @@ redis_cluster_enabled() {
 
 find_redis_container() {
   local name img ln li
+  # sticky-first：上次部署绑定的实例优先（仍须探活复核）。没有它，
+  # docker ps 顺序里任何一个新 redis（测试 mock、其它服务实例）都会
+  # 抢走绑定——见 redis_persisted_container 的 2026-11-10 事故注。
+  local sticky_probe sticky_name sticky_pw
+  sticky_name="$(redis_persisted_container 2>/dev/null || true)"
+  if [[ -n "$sticky_name" ]] && sticky_probe="$(redis_probe_usable "$sticky_name")"; then
+    sticky_pw="${sticky_probe#*$'\x1f'}"
+    if [[ -n "$sticky_pw" ]]; then
+      printf '%s\n%s\n' "$sticky_name" "$sticky_pw"
+    else
+      printf '%s\n' "$sticky_name"
+    fi
+    return 0
+  fi
+  [[ -n "$sticky_name" ]] && log "  上次绑定的 Redis $sticky_name 不可用（未运行/PING 失败），回退扫描"
   while IFS='|' read -r name img; do
     [[ -z "$name" ]] && continue
     [[ "$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)" == "running" ]] || continue

@@ -28,7 +28,7 @@ func loadHardBlockPolicy() {
 	allows, err := sanitizerules.LoadHardBlockAllowsFromEnv()
 	if err != nil {
 		slog.Error("hard block allowlist invalid; keeping default (no egress/output hard block)",
-			"error", err, "env", sanitizerules.HardBlockAllowEnv)
+			"error", err, "env_var", sanitizerules.HardBlockAllowEnv)
 		return
 	}
 	items := make([]string, 0, len(allows))
@@ -36,7 +36,7 @@ func loadHardBlockPolicy() {
 		items = append(items, a.Scope+":"+a.Rule)
 	}
 	slog.Info("hard block allowlist loaded",
-		"env", sanitizerules.HardBlockAllowEnv,
+		"env_var", sanitizerules.HardBlockAllowEnv,
 		"allows", items,
 		"count", len(items),
 	)

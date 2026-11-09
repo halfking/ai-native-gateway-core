@@ -41,14 +41,31 @@ var exemptions = map[string]string{
 	"cmd/gateway/main_helpers.go:369":                                 "one-shot/main package wiring, out of R66 scope",
 	"cmd/gateway/main_v32_wiring.go:119":                              "one-shot/main package wiring, out of R66 scope",
 	"cmd/fetch-standard-iq/main.go:103":                               "one-shot/main package, out of R66 scope",
-	"cmd/llm-gw-exporter/main.go:401":                                 "one-shot/main package, out of R66 scope",
-	"cmd/regen-credentials/main.go:63":                                "one-shot/main package, out of R66 scope",
-	"cmd/sessionmeta-bench/sampler.go:192":                            "benchmark main package, out of R66 scope",
-	"cmd/tuning-backtest/main.go:205":                                 "one-shot/main package, out of R66 scope",
-	"cmd/tuning-backtest/main.go:289":                                 "one-shot/main package, out of R66 scope",
-	"tests/session_audit/cmd/audit-test/main.go:240":                  "test harness main package, out of R66 scope。R53（2026-10-20 v1 族退役轮）改键 210→240：按本文件纪律先回原提交再改键——① `git show HEAD:tests/session_audit/cmd/audit-test/main.go` 第 210 行当时**正是** `for rows.Next() {`，其上 209 是 `processCount := 0`、其下是 `var row RequestLogRow` 的 Scan 块，与今天 240 起的循环**逐字相同**；② 本轮 diff（`git diff -- tests/session_audit/cmd/audit-test/main.go`）里**没有任何** `for rows.Next()` / `rows.Err()` 行被增删，只有 `@@ -175,25 +175,55 @@` 一处纯**新增** hunk ⇒ 是**同一处漂移**，不是「另找一处顶上」；③ 该循环仍**没有**终检（这正是本条豁免存在的理由），守卫在键修正后重新把它认作已登记的例外",
-	"tests/test_popularity_tracker.go:150":                            "test helper (non _test.go), out of R66 scope。R53（2026-10-20 v1 族退役轮）改键 121→150：按本文件纪律先回原提交再改键——① `git show HEAD:tests/test_popularity_tracker.go` 第 121 行当时**正是** `for rows.Next() {`，其上 120 是 `var stats []modelStat`、其下是 `var ms modelStat` + `rows.Scan(&ms.model, &ms.count)` 的 Scan 块，与今天 150 起的循环**逐字相同**；② 本轮 diff 里**没有任何** `for rows.Next()` / `rows.Err()` 行被增删，只有若干纯新增 hunk ⇒ **同一处漂移**；③ 该循环仍无终检，本条豁免继续成立",
-	"scripts/injection-test/test-prompt-injection-detection.go:393":   "scripts/ manual injection probe, out of R66 scope",
+	// ★ R106（2026-11-09 r1050 复核轮 · 上游 rule 71 日志标准轮）：★ 这两条从**纯行号键**
+	// ★ 改成**内容锚点键**（★ `file:line~ANCHOR`）⇒ ★★ **不再因行号漂移而失效**。
+	// ★ 起因：★ 上游 `8ea204efc`（★ rule 71 统一日志标准）只改了 logger 装配，★
+	// ★ 没碰 rows 循环 ⇒ ★★ 两条循环分别整体下移 **401→402** 与 **63→66** ⇒ ★★★
+	// ★ 守卫报 stale（★ 「该行已没有 for X.Next() 循环，这条豁免正在假装有效」）。
+	// ★ 按本文件纪律改键前先回原提交核对（★ `git show 8a6142263:…`，★ 登记那天的版本）：
+	//   ① `cmd/llm-gw-exporter/main.go` 第 401 行当时**正是** `for rows.Next() {`；
+	//      漂移来源：`8ea204efc` 在其上方插入 logger 装配（★ net +1 行）⇒ 401→402；
+	//   ② `cmd/regen-credentials/main.go` 第 63 行当时**正是** `for rows.Next() {`；
+	//      漂移来源：同一提交在 logger 处置上加了 3 行（★ net +3 行）⇒ 63→66。
+	// ★ ⇒ **两处都是「同一处漂移」，不是「另找一处顶上」** ⇒ 豁免范围不变（★ 仍然
+	// ★ 各只有那一个无终检的一次性 CLI 循环）。
+	// ★★ **为什么这次不再只改行号**：★ 本文件自己的注释已写明「行号锚点在这条上本质
+	// ★★ 脆弱：任何在其上方的新增都会推移它，于是每一轮都要回原提交核对一遍」⇒ ★★★
+	// ★★ **⇒ 改用内容锚点**：★ 该文件里 `for rows.Next()` **恰好只有这一处** ⇒ ★★★
+	// ★★ 锚点唯一命中 ⇒ ★★ **以后上游再在它上方加行，也不用再改键**（★ 锚点解析失败
+	// ★★ 时门仍会报，不会静默放过 ⇒ 方向安全）。
+	"cmd/llm-gw-exporter/main.go:402~for rows.Next() {":             "one-shot/main package, out of R66 scope。R106（2026-11-09）由纯行号键 401 改为**内容锚点键**：上游 8ea204efc（rule 71 日志标准）只在循环上方加 logger 装配（net +1 行）使该循环 401→402；`git show 8a6142263:cmd/llm-gw-exporter/main.go` 核对第 401 行当时逐字是 `for rows.Next() {` ⇒ 同一处漂移，豁免范围不变",
+	"cmd/regen-credentials/main.go:66~for rows.Next() {":            "one-shot/main package, out of R66 scope。R106（2026-11-09）由纯行号键 63 改为**内容锚点键**：上游 8ea204efc 在该文件 logger 处置上加了 3 行使该循环 63→66；`git show 8a6142263:cmd/regen-credentials/main.go` 核对第 63 行当时逐字是 `for rows.Next() {` ⇒ 同一处漂移，豁免范围不变",
+	"cmd/sessionmeta-bench/sampler.go:192":                          "benchmark main package, out of R66 scope",
+	"cmd/tuning-backtest/main.go:205":                               "one-shot/main package, out of R66 scope",
+	"cmd/tuning-backtest/main.go:289":                               "one-shot/main package, out of R66 scope",
+	"tests/session_audit/cmd/audit-test/main.go:240":                "test harness main package, out of R66 scope。R53（2026-10-20 v1 族退役轮）改键 210→240：按本文件纪律先回原提交再改键——① `git show HEAD:tests/session_audit/cmd/audit-test/main.go` 第 210 行当时**正是** `for rows.Next() {`，其上 209 是 `processCount := 0`、其下是 `var row RequestLogRow` 的 Scan 块，与今天 240 起的循环**逐字相同**；② 本轮 diff（`git diff -- tests/session_audit/cmd/audit-test/main.go`）里**没有任何** `for rows.Next()` / `rows.Err()` 行被增删，只有 `@@ -175,25 +175,55 @@` 一处纯**新增** hunk ⇒ 是**同一处漂移**，不是「另找一处顶上」；③ 该循环仍**没有**终检（这正是本条豁免存在的理由），守卫在键修正后重新把它认作已登记的例外",
+	"tests/test_popularity_tracker.go:150":                          "test helper (non _test.go), out of R66 scope。R53（2026-10-20 v1 族退役轮）改键 121→150：按本文件纪律先回原提交再改键——① `git show HEAD:tests/test_popularity_tracker.go` 第 121 行当时**正是** `for rows.Next() {`，其上 120 是 `var stats []modelStat`、其下是 `var ms modelStat` + `rows.Scan(&ms.model, &ms.count)` 的 Scan 块，与今天 150 起的循环**逐字相同**；② 本轮 diff 里**没有任何** `for rows.Next()` / `rows.Err()` 行被增删，只有若干纯新增 hunk ⇒ **同一处漂移**；③ 该循环仍无终检，本条豁免继续成立",
+	"scripts/injection-test/test-prompt-injection-detection.go:393": "scripts/ manual injection probe, out of R66 scope",
 	// ★ R53（2026-10-20 v1 族退役轮）：**删除** `cmd/tools/validate_sessions_v2/loader.go:205`
 	// 这条豁免 —— 删它不是「让守卫变绿」的放松，而是它**已经失效**：
 	// ① 豁免登记时（8a6142263）loader.go:167 逐字是 `var turns []V1Turn` + `for rows.Next() {`

@@ -1,26 +1,46 @@
 #!/usr/bin/env bash
 # =====================================================================
-# deploy/deploy.sh — DEPRECATION WRAPPER (Slice 8)
+# deploy/deploy.sh — DEPRECATION WRAPPER（Slice 8 遗留壳，**当前恒 fail-closed**）
 #
 # Per spec cf8aad1a9 §"Compatibility disposition":
 #   deploy/deploy.sh → Make fail-closed deprecation wrappers
 #                       pointing to ./scripts/deploy.sh
 #
-# This script used to ship its own docker / kubectl / systemctl flow
-# independent from scripts/deploy.sh. As of 2026-07-13 that flow is
-# superseded by the canonical CLI:
+# ─────────────────────────────────────────────────────────────────────
+# ★ 2026-11-09：本文件头**已订正为现状**（此前它是一句**过期承诺**）。
 #
-#   ./scripts/deploy.sh plan <target>
-#   ./scripts/deploy.sh deploy <target>
-#   ./scripts/deploy.sh verify <target>
-#   ./scripts/deploy.sh rollback <target> [--to <version>]
+#   旧头写的是「As of 2026-07-13 that flow is superseded by the canonical
+#   CLI: ./scripts/deploy.sh plan|deploy|verify|rollback <target>」＋
+#   「Calling this old entrypoint forwards arguments to the canonical
+#   CLI」＋「Exit codes match the underlying canonical CLI」。
 #
-# Calling this old entrypoint forwards arguments to the canonical CLI.
-# A deprecation warning is printed once per invocation (not per call)
-# so CI consumers see the migration path without scripts breaking.
+#   ★★ 那三句**全是假的**，而且是**最贵的那种假**（不是注释里的历史读数，
+#     而是**读的人会照着敲的命令**）：
+#     · `scripts/deploy.sh` 已由 ecbebfa55（"清理无用 deploy 脚本 ——
+#       保留四主脚本依赖闭包，删 32 个死入口"，2026-07-13 后）**删除**
+#       ⇒ 本包装器转发的目标**恒不存在** ⇒ 它**必然** exit 64；
+#     · ⇒ 「Exit codes match the underlying canonical CLI」= **没有 underlying
+#       CLI 可谈** ⇒ 恒为 64，与 canonical 的退出码表无关；
+#     · ⇒ 而 `./scripts/deploy.sh plan 245` 这条**示例命令**照抄会直接
+#       「No such file or directory」⇒ ⇒ 读者被文件头**主动引向一个不存在的
+#       入口** ⇒ ★ 这正是仓内判词「**注释里的读数不会自己失效** ⇒ 它会变成
+#       一句**指向相反结论的可信假话**」的活标本。
 #
-# Exit codes match the underlying canonical CLI (0, 4=no_rollback,
-# 64=usage error, etc.). The deprecation marker does NOT change them.
+#   ★ 本轮处置：**保留 fail-closed 壳**（它有真实价值：把「为什么失败、现在
+#     该敲哪个」讲清楚，避免运维在事故现场只看到一句无信息量的报错），
+#     ★★ **但把文件头改成现状陈述** —— 不再承诺任何转发，不再给已删入口的示例。
+#     ★ 错误提示正文（下方 `if` 块）**未改**：它列出的 8 个现役脚本已逐一
+#       实测存在且可执行（2026-11-09）。
+#
+#   ★★ **刻意不把它转发到 scripts/deploy-{154,245,252-gateway,seamless}.sh
+#     中的任意一个**（★ 规划文档 §5 第 0 批第 3 项曾建议「指向
+#     scripts/deploy-seamless-docker.sh 或直接删除该 wrapper」）—— ★★ **该建议
+#     已被同类壳 deploy/rollback.sh 在 2026-10-14（C-P2-2）否决过一次**，理由
+#     同样适用于本文件：★ 各目标的部署/回滚契约**各不相同**（245 走
+#     releases/VERSION/current 符号链；154 只给 runbook 指引；252 deferred、
+#     186 retired 都拒绝；211 走 docker 蓝绿）⇒ ★★ **猜一个转发等于在事故现场
+#     静默换掉语义** —— ★ 比明确失败危险得多。
+#     ⇒ ⇒ 故本文件维持 fail-closed，与 deploy/rollback.sh 保持同一形状。
 # =====================================================================
 set -euo pipefail
 

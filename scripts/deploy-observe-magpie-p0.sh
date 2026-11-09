@@ -31,15 +31,16 @@ fi
 
 export PATH="${HOME}/sdk/bash5/bin:${HOME}/sdk/go/bin:${PATH}"
 # deploy-lib 软链常断（指向不存在的 ai-native-workspace）；钉在场的 SSOT。
+# ★ 2026-11-09（F51）：★ 候选链【★ 不再由本脚本自带 ★】—— 改用共享的唯一真相
+#   scripts/deploy-lib-candidates.sh ⇒ ★ 本脚本曾经硬编码的
+#   ~/workspace/ai-native-tools/deploy-lib（★ 机器本地的兼容软链、★ 不在任何仓里 ★）
+#   在「只有新布局」的机器上会**整个落空** ⇒ 现在它按链找 ⇒ ★ 新布局也能命中 ★
+# shellcheck source=deploy-lib-candidates.sh
+source "$ROOT/scripts/deploy-lib-candidates.sh"
 if [[ -z "${AIAN_DEPLOY_LIB:-}" ]]; then
-  for cand in \
-    "${HOME}/workspace/ai-native-tools/deploy-lib" \
-    "${HOME}/workspace/ai-native-workspace/deploy-lib"; do
-    if [[ -d "$cand" ]]; then
-      export AIAN_DEPLOY_LIB="$cand"
-      break
-    fi
-  done
+  if magpie_ssot="$(deploy_lib_find deploy-prereqs.sh)"; then
+    export AIAN_DEPLOY_LIB="$magpie_ssot"
+  fi
 fi
 if [[ -n "${AIAN_DEPLOY_LIB:-}" ]]; then
   echo "AIAN_DEPLOY_LIB=$AIAN_DEPLOY_LIB"

@@ -1,12 +1,36 @@
 // Round 43: guards for the three hand-maintained baseline copies.
 //
 // Background. The three 00-prereqs.sql / 01-schema.sql copies are emitted by
-// sql/scripts/dump-schema.sh, which sources scripts/_lib/db-init-lib.sh. That
-// library does not exist in this repository and never has (git log --all --
-// '*db-init-lib.sh' is empty); the script's ../../../../ path escapes the repo
-// and lands on a sibling workspace tree. So dump-schema.sh has been
-// unrunnable since commit 28d4d8612 (2026-07-05), and the three copies are
-// hand-maintained orphans that drift independently.
+// sql/scripts/dump-schema.sh, which sources scripts/_lib/db-init-lib.sh.
+//
+// ── ★ 2026-11-09：本段背景**已订正**（此前是一句**过期陈述**）────────────
+//
+// The original text of this block said: the library "does not exist in this
+// repository and never has (git log --all -- '*db-init-lib.sh' is empty)";
+// the script's ../../../../ path escaped the repo; therefore dump-schema.sh
+// had been unrunnable since 28d4d8612 (2026-07-05) and the three copies were
+// hand-maintained orphans.
+//
+// ★★ **That is no longer true, and it stopped being true before this file
+// was written**: commit 65d8821c4 ("fix(installer): 迁入并修复基线生成器")
+// moved the library back into the repo at scripts/_lib/db-init-lib.sh
+// (53,753 B) and sql/scripts/dump-schema.sh now sources the repo-relative
+// path. TestBaselineGeneratorLibraryResolves (below) therefore passes, and
+// the header of dump-schema.sh says so.
+//
+// ★★ **But one half of the original claim still holds, and it is the half
+// that matters**: the generator emits **exactly one** output into a scratch
+// directory (DB_INIT_OUT_DIR is mandatory — "Generate to a scratch dir and
+// diff, do not overwrite it in place"), so **nothing in this repository
+// materializes the three in-tree copies**. ⇒ The copies are still
+// hand-maintained, and they can still drift independently.
+//
+// ★⇒ That gap is now closed by two new pieces (2026-11-09, 第 0 批 · 项2):
+//
+//	· sql/schema/baseline_copies_identity_test.go — the full 3 files × 3
+//	  locations byte-identity gate (wired via GUARD_PACKAGES);
+//	· scripts/checks/sync-baseline-copies.sh — the SSOT→copies sync command
+//	  (--apply) and its shell twin (--check), wired via `make guards-fast`.
 //
 // ── A FALSE INVARIANT, RECORDED SO IT IS NOT RE-INVENTED ────────────────
 // The first version of this file asserted that all three copies create the

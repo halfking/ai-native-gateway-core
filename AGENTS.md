@@ -1,5 +1,21 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-09 第0批「零风险清理」执行轮（已验收）**：报告
+> `docs/audit/2026-11-09-第0批零风险清理执行报告.md`。据
+> `docs/2026-11-09-项目现状分析与整理.md` §5 第0批 4 项，**逐项取证后发现计划前提有问题，
+> 4 项均未照原样做**。① 两个 Mach-O 二进制出库（27MB）⇒ 连带发现棘轮门会被自身规则
+> **永久卡死**（「基线非空」代理护栏）⇒ 换**端到端正控**取代；另修**扫描源漏检**：
+> 内容原取 `HEAD:` ⇒ 未提交的二进制被静默跳过 ⇒ 改取索引 `:path` ⇒ 提交前即拦。
+> ② 基线三处副本 ⇒ SSOT约定**早已是现状**；真缺口是门只覆盖1/3文件、其余靠**无调用方**的
+> `verify-migration.sh` ⇒ 补**完整3×3字节门**（`sql/schema`，已在GUARD_PACKAGES）+ **SSOT同步脚本**
+> `scripts/checks/sync-baseline-copies.sh`（`--apply`可修，`make guards-baseline-copies`已接线）。
+> ③ 门数注释**不按计划回填166→180**（本仓r1050 lesson#8：回填即过期）⇒ 改**实时统计**
+> （`make help` 180→181→180 实测可证）；`deploy/deploy.sh`+`rollback.sh` **只订正过期文件头**
+> （仍exit 64 fail-closed；「指向deploy-seamless-docker.sh」已被同类壳2026-10-14否决过）。
+> ④ `PROJECT_OVERVIEW.md` §1.4/§5 统计**8条命令逐条复算相等** + 补「快照日期+生成命令」两列。
+> ★ 未做：`.git`历史瘦身（需filter-repo改写SHA，须约窗口）／dump内容一字未动／两壳未删未改行为／
+> 全量`go test ./...`未跑（cmd/gateway既有CGO红）／前端未构建。
+
 > **2026-11-09 48h修正审计与三环境发布轮（已验收）**：报告
 > `docs/audit/2026-11-09-48h-remediation-report.md`，交接
 > `HANDOFF-48h-remediation-20261109.md`。65提交/271文件与11项WIP已审；历史未合并分支0。
@@ -87,6 +103,60 @@
 >   Windows 假红族（q-usage exec-bit、914 门反斜杠路径撞白名单斜杠键——白名单其实已登记）。
 > ★ 遗留：订价变化前端图表（趋势线）未做；token_plan/booster 价期是参考价数据面不进
 >   计费热路径；asm-worker-1 crash loop（Restarting 137）登记待 owner 轮。
+
+> **2026-11-10 opus-5-5 请求格式核查（对照 Anthropic 原厂规范）与预算门修正轮（goal 会话，审计档
+> `docs/audit/2026-11-10-opus-5-5请求格式核查与预算门修正.md`）**：
+> ★ 用户指令＝「按原厂资料检查 claude 请求格式 → 修正 → 211 日志分析验证」。
+> ★★ **缺陷一＝OpenAI Responses 的 `reasoning` item 被逐字透传 anthropic-messages wire**：
+>   ZCode/AI-SDK 在 input[] 回放前轮 reasoning item（无 role + encrypted_content/summary
+>   信封）⇒ parse_responses 无特判落 unknown-item fallback ⇒ assistant+raw 块 ⇒
+>   serialize_anthropic default 分支原样回注 `{"type":"reasoning",...}`——不在 Anthropic
+>   合法内容块闭集 ⇒ apiclaude 全凭据 400（Malformed conversation content）。完美解释
+>   证据形态：带思考历史的真实会话必 400、无 reasoning 合成测试全过、直连成功。
+>   修＝parse 特判丢弃+anomaly ＋ serialize 纵深防御（`anthropicLegalBlockType` 闭集
+>   外降级 text 包裹）＋守护测试 ×2＋Gemini raw 回注钉测按其纪律显式改判（该钉测早已
+>   登记「raw 回注＝同族 400 风险」，本轮生产引爆）。
+> ★★ **缺陷二＝预算门 × 数据缺口（422 `context_budget_exceeded`）**：修复一部署后验证
+>   暴露——`EnforceContextBudget=true` 常开 × 生产 ~90% 模型 context_window=NULL ⇒
+>   `Resolve` 对未知窗口 fail-closed ⇒ NULL 窗口模型全量 pre-dispatch 422（82ms 内
+>   4 次 failover、零 upstream 尝试）——与 2979 灾难同根，回滚只买时间。修＝未知窗口
+>   回落包级全局保守上限（500k token / 8MB，「绝不当无限」保持），已知窗口精确执法
+>   与 media/uncountable 检查不变；钉测改判 ×5 均留事故注，核心不变量（本地拒绝
+>   不耗物理尝试/映射保真/legacy 兼容）保留。
+> ★ **端到端验证（211=a0dd9c7d/2981 槽 b）**：带 reasoning item 的 ZCode 形状请求
+>   修复前必 400/422 ⇒ 修复后 http=200、4.1s、response.completed、真实输出；
+>   日志 upstream_status=200 + success=true stream_chunks=4。四包（contextbudget/
+>   executors/compression/ir）全绿、build rc=0、gofmt 零漂移、双仓推送 382e60d6d。
+> ★ 遗留：~90% canonical context_window=NULL 待补（归 W2/BudgetRegistry owner，
+>   补齐后预算门走精确执法）；apiclaude >1MB 载荷 400/413 与候选池单供应商仍待
+>   owner 裁决（evol/速云，见 11-09 审计档 §3）。
+>
+> **2026-11-10 第三轮（同日追加）：minimax「不行」三层归因与修复（审计档同档 §附录三）**：
+> ★ 用户反馈＝「glm-5.3-flash 可行、minimax 不行；大输入要合理压缩不能直接报错；
+>   minimaxcode 仍见 context_budget_exceeded (upstream)」。
+> ★ **层1＝fit 字节目标单位混淆**（cd3f2a6a）：fitCandidateContextBudget 目标
+>   min(JSONBytes, InputTokens/2) 把 token 预算当字节——minimax 512k 窗被压成
+>   128KB 字节目标 ⇒ ZCode 受保护区（指令+工具链 60-100KB+）放不下 ⇒
+>   ErrProtectedContext ⇒ 压缩机制名存实亡（"cannot contain the protected task"
+>   生产实证）。修＝InputTokens×3（校准估计器下 bytes≈tokens×3，Check 必过）。
+> ★★ **层2＝Redis 环境漂移（部署引擎缺陷）**（1f66b4bdb）：并行会话的测试 redis
+>   （lgw-mock-only-redis）排 docker ps 前列，find_redis_container 按扫描顺序选中
+>   ⇒ gateway.env 被改写为凭据不匹配的空 mock ⇒ 网关 auth 失败 ⇒ session store
+>   503、large-ingress 大请求全断。修＝与 pg_persisted_host 同纪律：
+>   redis_persisted_container sticky-first（gateway.env 的 REDIS_ADDR = 上次绑定
+>   的唯一权威记录，探活复核后复用）⇒ mock 抢不走绑定（2988 起部署实证稳定）。
+> ★★ **层3＝reasoning 烧光输出预算**（c3cca311）：session 修复后归因转向——压缩链
+>   全部正常（459KB → 1273 prompt tokens 上行），但 MiniMax-M3.1 把 max_tokens
+>   全烧在思考（finish=length、reasoning≈completion、零可见输出）⇒ empty_response
+>   ⇒ 全候选 503；glm 系无此行为＝「glm 可行 minimax 不行」的根因。修＝empty
+>   检测处（budget_exhausted_by_reasoning + finish=length）加倍 max_tokens
+>   （≥2048 cap 32768）同候选免费重试一次（reasoningBudgetBumped 旗标仿
+>   ctxLenRecoveryRetry）；二次仍烧完走既有 empty failover。守护测试 ×3。
+> ★ **验证（211=2989/c3cca311 槽 b）**：459KB minimax 会话 200/19.9s/真实内容，
+>   reasoning 加倍重试日志命中 1 次；Redis sticky 后部署稳定复用 wm-acc-chain-redis。
+> ★ 遗留：nvidia minimaxai 镜像腿当天大面积挂起（小体量也 60s+ canceled）＝上游
+>   健康，网关已正确 failover，探针对大体量挂起不敏感待 owner 裁决；anthropic 腿
+>   同款 reasoning-burn 重试未实现（本轮只覆盖 chat 腿）。
 
 > **2026-11-09 claude-opus-5-5 访问错误根因分析与诊断面修复轮（goal 会话，审计档
 > `docs/audit/2026-11-09-claude-opus-5-5访问错误根因分析与诊断面修复.md`）**：
@@ -2623,10 +2693,47 @@
 > ⇒ ★★★ `TestMinuteBucketAdmissionCapsCurrentAndWaitingCapacity` 在整仓跑里报断言红
 > ⇒ ★★★ （★ 隔离复跑 PASS ×3）⇒ ★★★★ **负载型时序脆弱点**（★ `a.window = 1s` +
 > ⇒ ★★★★ 两次 `Sleep(1ms)`）⇒ ⇒ ★★ **登记、不擅自改源码**（★ 真修法要注入可控时钟 ⇒ 待裁决）。
-> ⇒ 通用式见 `LESSONS.md` **§648**（§587 已补**十一条**：**「让数字不可能过期」= 不写死 + 随时可见** /
+> ⇒ ★★★★ **★ 合入上游 7 个提交后，守卫门自己变红了 ★★**：★ 合并**零冲突**（★ 文件级核对过）
+> ⇒ ★★★★ ⇒ ★★★ **「合得上」不等于「门还绿」** ⇒ ★★★★ `internal/errdiscard`（★ **守卫包**）
+> ⇒ ★★★★ **FAIL** ⇒ ★★★ 判词指向**上游新包 `internal/largebody/`** 的 8 处「丢弃错误调用点」
+> ⇒ ★★★★ ⇒ ★★★ **逐处读源码核对 ⇒ 全部是假阳性**（★ `_` 是另一个返回值、★ `err` 有被检查并
+> ⇒ ★★★★ 原样上抛）⇒ ⇒ ★★★ **⇒ 与 allowlist 里 `bg/lite_retention_worker.go` 同族** ⇒ ⇒ ★★
+> ⇒ ★★★★ **处置＝按门自己的指引「带理由登记」，不改上游那段本来正确的错误处理**
+> ⇒ ⇒ ★★ 复跑 ⇒ **PASS**（★ 门自证 `scanned 2615 Go files, 13 findings`）⇒ ★★ **守卫门恢复绿**。
+> ⇒ ★★★★ **★ 而第二轮合并（上游又推进 30 个提交）又给了两个新读数 ★★**：★ 按我刚立的
+> ⇒ ★★★★ 通用式「合并后必须重跑守卫包全量」复跑 ⇒ ⇒ ★★★★ **⇒ 又抓出两处红**：★★ ①
+> ⇒ ★★★★ `internal/errdiscard` **反向红**（★ `registered candidate … no longer reported` ⇒
+> ⇒ ★★★★ **上游把那 8 处改好了** ⇒ **我的登记已过期** ⇒ ⇒ ★★★ **按门给的指引移除登记**
+> ⇒ ⇒ ★★ 复跑 **PASS**（★ 门自证发现数 **13 → 5**）⇒ ★★★ **⇒ 门的双向检查把我的过期登记抓了出来**；
+> ⇒ ⇒ ★★ ② `domains/credential` 的 `TestRedisRPMLimiterConcurrent`（★ `allowed=32, want exactly 20`）
+> ⇒ ⇒ ★★★ 日志显示 Redis 路径 `context deadline exceeded` ⇒ **降级到本地进程限流**；★ 该用例用
+> ⇒ ⇒ ★★★ **内嵌 `miniredis`**（★ 不需外部 Redis）⇒ **隔离复跑 PASS ×3（0.06~0.10s）**
+> ⇒ ⇒ ★★★★ **负载型时序脆弱点 ⇒ 登记，不擅自改源码**。
+> ⇒ ★★★★ **★ 第三轮合并（上游又推进 8 提交 · rule 71 日志标准轮）又带来第三处守卫红 ★★**：★
+> ⇒ ★★★★ `internal/rowsguard` FAIL ⇒ ★★★ 两条**纯行号豁免键**因上游在循环上方加了 1~3 行而 stale
+> ⇒ ★★★★ （★ 401→402、★ 63→66）⇒ ★★★ 按门自己的指引回原提交核对（★ `git show 8a6142263:…` ⇒ 当时
+> ⇒ ★★★★ 那两行逐字就是 `for rows.Next() {`；★ 漂移来源 `8ea204efc` **只改了 logger 装配**）⇒ ⇒ ★★★★
+> ⇒ ★★★★ **同一处漂移，豁免范围不变** ⇒ ⇒ ★★★★ **★ 但这次不只追键：两条都改成「内容锚点键」**
+> ⇒ ★★★★ （★ `file:line~for rows.Next() {`，★ 该门早就支持 `exemptionAnchorSep`）⇒ ★★★ **⇒ 以后上游再在它
+> ⇒ ★★★★ 上方加行也不用改键**（★ 锚点解析失败时门仍会报 ⇒ 方向安全）⇒ ⇒ ★★★ **⇒ 与「让数字不可能过期」同一条律**。
+> ⇒ ★★★★ **★ 第四轮合并（上游又推进 7 提交）没带新红 —— 但上游又手改坏一个写死的计数 ★★**：★
+> ⇒ ★★★★ 合并无冲突（★ **只与我的 `Makefile` 文件级重叠**，★ 逐行核过 ⇒ ★ **我的 600s/1800s
+> ⇒ ★★★★ 预算完好**）⇒ ★★★ 复跑守卫包全量 ⇒ ⇒ ★★★★ **EXIT=0 / FAIL=0 / ok=28** ⇒ ★★
+> ⇒ ★★★★ **⇒ 这一轮没带红 ⇒ 记录这个事实本身**：★ 前三轮每轮都带红 ⇒ ★★★ **⇒ 「合并必带红」
+> ⇒ ★★★★ 是过度归纳** ⇒ ★★ **⇒ 合并后仍必须复跑，但结果既可能是红也可能是绿**。
+> ⇒ ★★★★ **★ 而上游把 `Makefile` 的 `guards-gate-scripts` 帮助文本里的写死计数手改错了 ★★**：★
+> ⇒ ★★★★ 文本写「24 条快门 + 登记册门」★ ⇒ ★★★ 实测配方里 **26 条 `@bash` 行**（★ 25+1）⇒
+> ⇒ ★★★★ **当场就是错的** ⇒ ★★ 逐提交回溯 ⇒ 起点 `2aad04f37` ⇒ ★★★ **根因＝「每加一道门就手改
+> ⇒ ★★★★ 一次计数」⇒ 迟早漏一次** ⇒ ★★ **⇒ 与其追数字，不如让数字不写死** ⇒ ★★★★ **处置＝与本轮
+> ⇒ ★★★★ 其它三处同一手法（不写死 + 随时可见）**：★ 帮助文本删计数 + ★ target 运行时打印实时数 ⇒
+> ⇒ ★★★ **★ 第一版踩了自指坑**（★ `grep -c '@bash'` 把 echo 行自己也数进去 ⇒ 27）⇒ ★★★ **修正为锚定
+> ⇒ ★★★★ 行首的 `grep -cE '^[[:space:]]*@bash'` ⇒ ★★ **⇒ 26 才是真值**（★ 独立 awk 口径复核：★
+> ⇒ ★★★★ **那套也自指** ⇒ ★★ **⇒ 「自己数自己」的口径必须排除计数行本身**）。
+> ⇒ 通用式见 `LESSONS.md` **§648**（§587 已补**十六条**：**「让数字不可能过期」= 不写死 + 随时可见** /
 > ⇒ **门接入强制路径后第一次跑就可能抓到上游真缺陷** / **「跑一次看它绿不绿」在跨天场景下会过期**
 > ⇒ **收尾结论必须绑定 HEAD 与日期** / **超时是杀开关不是 SLA，腰斩要修预算** /
 > ⇒ **腰斩代价（假红 + 台账静默留空）远大于慢门** / **墙钟读数受负载支配、CPU 读数不受** /
 > ⇒ **排除理由必须与预算无关** / **预算要按「在门里跑」的读数定** /
 > ⇒ **同一道门在不同通道上有不同预算 ⇒ 必须一次改齐** / **同一个根因要在两侧各自修** /
-> ⇒ **「全局兜底」管不住「工作量随仓增长」这一族用例**）。
+> ⇒ **「全局兜底」管不住「工作量随仓增长」这一族用例** / **合并上游会带着新的守卫红进来** /
+> ⇒ **门报出的是「候选」不是「判决」** / **登记项也会过期 ⇒ 门的双向检查在保护你** / **豁免键能改成「按内容」就别按「按行号」** / **「实时数」的第一版可能自指**）。

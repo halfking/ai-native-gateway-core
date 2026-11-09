@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -251,6 +252,17 @@ func main() {
 	// repeated calls (e.g. main reload) are safe.
 	metrics.SetGlobal(metrics.NewPrometheusRecorder())
 
+	// rule 71：规范层必须装在**任何日志产生之前**。
+	//
+	// 配置加载过程本身就会打日志——下一步的 loadHardBlockPolicy() 就打
+	// "hard block allowlist loaded"。若等 logging.Init（在 config.Load() 之后）
+	// 才装规范层，那几行会是旧格式（纯文本、缺 service/version/env/instance_id），
+	// 同一进程出现两种格式 ⇒ AI 侧要么写两套解析分支，要么把早期行判为不合规。
+	//
+	// 这里只装规范层（输出到 stderr）；后面的 logging.Init 会用文件管线
+	// （落盘 + Bleve fanout + 规范层）整体替换它。
+	logging.InstallEarly(gatewayEarlyLogLevel())
+
 	// r1037（2026-10-20，211）：装载「硬阻断清单」。默认清单里 egress/output 一律
 	// 不终止回合（形状匹配只记录/遮蔽），要拦的规则由环境变量显式开。
 	// 必须在任何请求进来之前装载，否则前几秒的请求会走默认值。
@@ -396,8 +408,13 @@ func main() {
 	if persistentLogDir == "" {
 		persistentLogDir = "./logs"
 	}
-	hostname, _ := os.Hostname()
-	instanceID := fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().Unix())
+	// rule 71：instance_id 必须是**进程级常量**（能升为 Loki 标签的前提）。
+	//
+	// 取自 internal/logging 的进程级缓存，而不是自己再算一份——
+	// 规范层（早装/全装/热加载）写入的 instance_id 与这里必须是同一个值，
+	// 否则主日志与持久化日志的 instance_id 对不上，
+	// 「按 instance_id 聚合一个实例的全部日志」就失效了。
+	instanceID := logging.InstanceID()
 
 	persistentLoggerCfg := logger.PersistentLoggerConfig{
 		LogDir:     persistentLogDir,
@@ -406,6 +423,28 @@ func main() {
 		MaxAge:     30, // 30 days
 		Compress:   true,
 		InstanceID: instanceID,
+		// rule 71：持久化日志（critical/error/panic/shutdown/audit）
+		// 与主日志同一套规范字段——事故复盘时读这些文件的正是人和 AI。
+		//
+		// 工厂在**这里**构造而不是 pkg/logger 直接 import internal/logging：
+		// internal/logging → metrics → pkg/logger ⇒ 反向 import 会成环。
+		HandlerFactory: func(w io.Writer, level slog.Level) slog.Handler {
+			h, err := logging.NewStandardHandler(w, logging.StandardOptions{
+				Service: logging.ServiceName(),
+				Version: logging.ServiceVersion(),
+				Env:     logging.ServiceEnv(),
+				Level:   level,
+				// 与主日志同一个 instance_id：保留名优先，
+				// 规范层注入的值会覆盖业务侧传的同名属性。
+				InstanceID: instanceID,
+			})
+			if err != nil {
+				// 规范层起不来不能拖垮持久化日志——退回裸 JSON handler。
+				fmt.Fprintf(os.Stderr, "logging: standard layer init failed for persistent log: %v\n", err)
+				return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
+			}
+			return h
+		},
 	}
 
 	var err error
@@ -414,7 +453,7 @@ func main() {
 		slog.Error("failed to initialize persistent logger", "error", err)
 		// Non-fatal: continue without persistent logging
 	} else {
-		slog.Info("persistent logger initialized", "log_dir", persistentLogDir, "instance_id", instanceID)
+		slog.Info("persistent logger initialized", "log_dir", persistentLogDir)
 	}
 	// Panic 兜底必须无条件安装：后续的 cfg.ValidateRuntimeRole / auth
 	// fail-closed panic 都发生在 dbConn defer 之前，若只在初始化成功分支
@@ -3714,7 +3753,7 @@ func main() {
 				"approval_timeout", approvalTimeout.String())
 		} else {
 			slog.Info("session audit chat-time hook disabled by env",
-				"env", "LLM_GATEWAY_ENABLE_SESSION_AUDIT="+enableSessionAudit)
+				"env_var", "LLM_GATEWAY_ENABLE_SESSION_AUDIT="+enableSessionAudit)
 		}
 
 		// 2026-07-03: approval resume handler wiring.
@@ -7989,6 +8028,18 @@ func main() {
 				routingExec.IntegrityDetector = integrityAdapter
 				chatHandler.SetIntegrityDetector(integrityAdapter)
 
+				// 被动时序指纹基线（2026-11-09 模型指纹验证增强轮，迁移 955）：
+				// worker 一体承担 handler 两端（factory/sink）+ 周期 Flush。
+				// 环境开关默认开（LLM_GATEWAY_PASSIVE_BASELINE=off 关闭——
+				// 关闭 ⇒ SetPassiveTiming 不接线 ⇒ 零热路径开销）。
+				if os.Getenv("LLM_GATEWAY_PASSIVE_BASELINE") != "off" {
+					passiveWorker := bg.NewPassiveBaselineWorker(
+						modelcredibility.NewStore(dbConn.Pool()), 0)
+					chatHandler.SetPassiveTiming(passiveWorker, passiveWorker)
+					passiveWorker.Start(context.Background())
+					defer passiveWorker.Stop()
+				}
+
 				// Fingerprint drift: 1h tick, 7-day window, 20+
 				// samples, 80% dominant ratio (env overrides).
 				// 2026-07-28 rewrite: baseline vs current comparison
@@ -9061,3 +9112,21 @@ func main() {
 // adminLiveRequestFromEntry, liveStreamEventTime, and incidentUpdateFromResult
 // were moved to main_livestream.go as part of the P0 main.go split refactor.
 // See docs/refactor-plans/main-go-split.md.
+
+// gatewayEarlyLogLevel 从环境变量取早期日志级别。
+//
+// 早期窗口（配置加载过程）只有几行日志，级别取不准无所谓——
+// 但**默认值必须是 info**：用 debug 会让早期窗口静默，
+// 用 trace 则会先装一个比最终级别更宽的 handler。
+func gatewayEarlyLogLevel() slog.Level {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_LOG_LEVEL"))) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}

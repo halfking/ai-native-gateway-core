@@ -28,6 +28,11 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/coupons/", h.superAdmin(h.handleAdminMaasCouponByIDPatch))
 	mux.HandleFunc("/api/admin/maas/campaigns/", h.superAdmin(h.handleAdminMaasCampaignStatus))
 	mux.HandleFunc("/api/admin/maas/campaigns", h.superAdmin(h.handleAdminMaasCampaigns))
+	// 2026-11-10（行情整合轮）：940 行情面【只读】消费——同步器
+	// scripts/market-price-sync.py（宿主侧）单向落库，这里只读展示与对账，
+	// 行情价禁止回流路由/计费表（红线）。
+	mux.HandleFunc("/api/admin/maas/market-price-overview", h.superAdmin(h.handleMaasMarketPriceOverview))
+	mux.HandleFunc("/api/admin/maas/market-price-sync-status", h.superAdmin(h.handleMaasMarketPriceSyncStatus))
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
 	mux.HandleFunc("/api/admin/maas/topup-packages", h.superAdmin(h.handleMaasTopupPackages))
 	mux.HandleFunc("/api/admin/maas/tenants/", h.superAdmin(h.handleMaasTenantAdmin))
@@ -981,6 +986,53 @@ func (h *Handler) handleAdminMaasCouponByIDPatch(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleMaasMarketPriceOverview GET /api/admin/maas/market-price-overview
+// ?q=&resolved=&limit= —— 市场参考价 vs 我方零售/实付 对比（940 只读面）。
+func (h *Handler) handleMaasMarketPriceOverview(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	items, err := svc.MarketPriceOverview(r.Context(), q.Get("q"), q.Get("resolved") == "true", limit)
+	if err != nil {
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	syncRuns, err := svc.MarketPriceSyncRuns(r.Context(), 3)
+	if err != nil {
+		syncRuns = nil
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "sync": syncRuns})
+}
+
+// handleMaasMarketPriceSyncStatus GET /api/admin/maas/market-price-sync-status
+// ?limit= —— 同步台账（源条数 = 落地 + 拒绝，可对账）。
+func (h *Handler) handleMaasMarketPriceSyncStatus(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := svc.MarketPriceSyncRuns(r.Context(), limit)
+	if err != nil {
+		writeInternalErr(w, "internal error (see server logs)", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) handleAdminMaasCampaigns(w http.ResponseWriter, r *http.Request) {

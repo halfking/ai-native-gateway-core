@@ -52,10 +52,19 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s (actual=%d limit=%d)", e.Kind, e.Detail, e.Actual, e.Limit)
 }
 
-// Resolve never treats a missing/invalid context window as unlimited.
+// Resolve derives the per-attempt budget from trusted bucket capabilities.
+// A missing/invalid context window is never treated as unlimited: it resolves
+// to the package-global conservative caps (MaxInputTokens / DefaultMaxJSONBytes)
+// instead of failing. 2026-11-10: the previous behavior failed closed with
+// UnknownContext for any candidate whose window was unknown, and production
+// data carries ~90% NULL models_canonical.context_window — every candidate of
+// such a model was rejected pre-dispatch (claude-opus-5-5 422 outage, ZCode
+// empty_model_response round 3). Unknown now means "cannot verify the exact
+// window", not "over budget": enforcement falls back to the global caps, and
+// buckets with KNOWN windows keep the exact arithmetic below unchanged.
 func Resolve(spec Spec) (Budget, error) {
 	if spec.ContextWindow <= 0 {
-		return Budget{}, &Error{Kind: UnknownContext, Detail: "bucket context window is unknown"}
+		return Budget{InputTokens: MaxInputTokens, JSONBytes: DefaultMaxJSONBytes}, nil
 	}
 	if spec.OutputReserve < 0 || spec.SafetyMargin < 0 || spec.MaxInputTokens < 0 || spec.MaxJSONBytes < 0 || spec.ExternalInputTokens < 0 {
 		return Budget{}, &Error{Kind: InvalidSpec, Detail: "negative bucket capacity"}
@@ -111,9 +120,23 @@ func Check(body []byte, spec Spec) (Receipt, error) {
 	return CheckWithCounter(body, spec, nil)
 }
 
-// CheckWithCounter validates the final body. A nil counter uses the UTF-8-byte
-// upper bound plus framing overhead; it will reject some requests that a
-// model-specific exact tokenizer could safely admit.
+// CheckWithCounter validates the final body. Security invariants are
+// unconditional: malformed/ambiguous JSON is rejected, unaccounted external
+// references (remote state the gateway cannot see) fail closed, and the byte
+// resource cap always applies.
+//
+// Capacity enforcement is tiered by window provenance (2026-11-10, user rule:
+// capacity is the upstream's authority — its context_length errors are handled
+// by the gateway's existing recovery chain):
+//   - unknown window (global caps): the calibrated estimator is ADVISORY only.
+//     The raw byte-as-token bound overestimated CJK/code payloads 2-3x and
+//     rejected legitimate large sessions pre-dispatch, cascading into lossy
+//     fit/protected-context failures (platform 422 outage).
+//   - known window (catalog or upstream-discovered evidence): enforced with
+//     the calibrated estimator (text chars/3.5, opaque blobs bytes/5, framing
+//     overhead), not raw bytes. Upstream-evidenced discovered limits keep
+//     governing recovery retries.
+//   - buckets that configure an exact Counter keep full token enforcement.
 func CheckWithCounter(body []byte, spec Spec, counter Counter) (Receipt, error) {
 	budget, err := Resolve(spec)
 	if err != nil {
@@ -121,9 +144,6 @@ func CheckWithCounter(body []byte, spec Spec, counter Counter) (Receipt, error) 
 	}
 	if len(body) > budget.JSONBytes {
 		return Receipt{}, &Error{Kind: BytesExceeded, Limit: budget.JSONBytes, Actual: len(body), Detail: "final JSON exceeds byte limit"}
-	}
-	if counter == nil && len(body) > budget.InputTokens {
-		return Receipt{}, &Error{Kind: TokensExceeded, Limit: budget.InputTokens, Actual: len(body), Detail: "final JSON exceeds conservative input bound"}
 	}
 	info, err := inspect(body)
 	if err != nil {
@@ -134,26 +154,42 @@ func CheckWithCounter(body []byte, spec Spec, counter Counter) (Receipt, error) 
 	if err != nil {
 		return Receipt{}, err
 	}
-	count, method := 0, "utf8_bytes_with_framing_upper_bound"
-	if counter != nil {
-		count, err = counter.Count(body)
-		method = "bucket_counter"
-	} else if info.external && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
-		err = &Error{Kind: Uncountable, Detail: "media or remote context requires a trusted token bound"}
-	} else {
-		count = len(body) + requestOverhead + nodeOverhead*info.nodes + spec.ExternalInputTokens
+	digest := sha256.Sum256(body)
+	if counter == nil {
+		if info.external && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
+			return Receipt{}, &Error{Kind: Uncountable, Detail: "media or remote context requires a trusted token bound"}
+		}
+		count := int(estimateJSONStringTokens(body)) + requestOverhead + nodeOverhead*info.nodes + spec.ExternalInputTokens
+		if spec.ContextWindow > 0 && count > budget.InputTokens {
+			return Receipt{}, &Error{Kind: TokensExceeded, Limit: budget.InputTokens, Actual: count, Detail: "final model input exceeds bucket budget"}
+		}
+		method := "calibrated_json_estimator"
+		if spec.ContextWindow <= 0 {
+			method = "calibrated_json_estimator_advisory"
+		}
+		return Receipt{
+			Tokens:     count,
+			JSONBytes:  len(body),
+			Budget:     budget,
+			BodySHA256: hex.EncodeToString(digest[:]),
+			Counter:    method,
+		}, nil
 	}
+	count, err := counter.Count(body)
 	if err != nil {
 		return Receipt{}, err
 	}
 	if count < 0 {
 		return Receipt{}, &Error{Kind: Uncountable, Detail: "counter returned a negative count"}
 	}
+	if info.external && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
+		return Receipt{}, &Error{Kind: Uncountable, Detail: "media or remote context requires a trusted token bound"}
+	}
+	count += spec.ExternalInputTokens
 	if count > budget.InputTokens {
 		return Receipt{}, &Error{Kind: TokensExceeded, Limit: budget.InputTokens, Actual: count, Detail: "final model input exceeds bucket budget"}
 	}
-	digest := sha256.Sum256(body)
-	return Receipt{Tokens: count, JSONBytes: len(body), Budget: budget, BodySHA256: hex.EncodeToString(digest[:]), Counter: method}, nil
+	return Receipt{Tokens: count, JSONBytes: len(body), Budget: budget, BodySHA256: hex.EncodeToString(digest[:]), Counter: "bucket_counter"}, nil
 }
 
 // UpperBound supports text JSON only. Use Check with a trusted external bound

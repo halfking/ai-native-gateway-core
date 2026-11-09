@@ -1552,6 +1552,17 @@ var probeLaneTraceEvents954 []byte
 //go:embed embeddata/startup/954_probe_lane_trace_events.down.sql
 var probeLaneTraceEvents954Down []byte
 
+// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
+//   从真实用户流量聚合的 (凭据×模型) 行为基线（TTFT/ITT 分布/吞吐 +
+//   Token 签名 + 内容特征），供 domains/modelcredibility.EvaluatePassive
+//   做零成本、难规避的持续渗水检测（被动为主、主动探针为辅）。
+//
+//go:embed embeddata/startup/955_passive_model_fingerprints.sql
+var passiveModelFingerprints955 []byte
+
+//go:embed embeddata/startup/955_passive_model_fingerprints.down.sql
+var passiveModelFingerprints955Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -2043,6 +2054,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/953_models_canonical_featured.down.sql":              modelsCanonicalFeatured953Down,
 	"startup/954_probe_lane_trace_events.sql":                     probeLaneTraceEvents954,
 	"startup/954_probe_lane_trace_events.down.sql":                probeLaneTraceEvents954Down,
+	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
+	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
+	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,

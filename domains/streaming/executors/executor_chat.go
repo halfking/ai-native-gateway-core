@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/protocolformat"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
@@ -738,6 +739,23 @@ func (e *Executor) executeOpenAI(
 		}()
 	}
 
+	// 2026-11-10（用户规则）：同协议直传 + 格式门。客户端协议与出口协议
+	// 一致（含 ClientProtocol 为空的内部直发腿）时请求体直传、不改参数/
+	// 内容格式——但格式无错误才放行（最小官方规范形状校验，fail-closed）。
+	// 校验失败是客户端侧错误（KindClientBug：不进凭据熔断、换候选无意义）。
+	// 跨协议路径（anthropic/responses/gemini 客户端 → chat 上游）不走本门：
+	// 转换器的 IR parse 本身就是更严的格式检查。
+	if cand.Protocol == providercatalog.ProtocolOpenAICompletions &&
+		(params.ClientProtocol == "" || params.ClientProtocol == providercatalog.ProtocolOpenAICompletions) {
+		if err := protocolformat.ValidateOpenAIChatRequest(params.BodyBytes); err != nil {
+			return nil, &upstreampkg.Error{
+				Kind:    errorsx.KindClientBug,
+				Message: fmt.Sprintf("request failed openai-completions format validation: %v", err),
+				Err:     err,
+			}
+		}
+	}
+
 	// Fix-2026-09-25: native Responses is only used when a Responses-format
 	// request body is actually available (ResponsesBodyBytes non-empty). When
 	// the client sends a Chat Completions request to an openai-responses
@@ -1155,6 +1173,14 @@ func (e *Executor) executeOpenAI(
 	// iteration should NOT increment attempt, allowing the compressed body to
 	// be retried immediately without consuming the retry budget.
 	ctxLenRecoveryRetry := false
+	// 2026-11-10（用户规则：合理处理，不能直接报错）：reasoning 模型把
+	// 客户端的 max_tokens 全部烧在思考上（finish_reason=length、
+	// completion==reasoning、零可见输出）⇒ 一次免费的同候选重试，出站体
+	// max_tokens 加倍（≥2048，cap 32768）。生产实证：MiniMax-M3.1 会话
+	// 压缩后 1273 prompt tokens，max_tokens=300 全被 reasoning 吃光 ⇒
+	// empty_response ⇒ 全候选 503。只放开一次（reasoningBudgetBumped），
+	// 二次仍烧完则按既有 empty 语义 failover。
+	reasoningBudgetBumped := false
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus || probeRetry; attempt++ {
 		// Candidate-attempt boundary is intentionally logged once per attempt,
 		// rather than once per streamed frame, so a retry/failover can be
@@ -2555,6 +2581,30 @@ func (e *Executor) executeOpenAI(
 				// 不改任何客户端可见面**（分类口径仍由 internal/emptyoutcome
 				// 那张唯一真值表决定）。
 				emptyReason, emptyUsage := emptyoutcome.InspectEmptyBody(respBody)
+				// 2026-11-10：reasoning 烧光输出预算（finish_reason=length 且
+				// reasoning≈completion、零可见输出）不是「上游坏了」——是客户端
+				// 给的输出余量装不下这个 reasoning 模型的思考。加倍 max_tokens
+				// 同候选免费重试一次；二次仍烧完才走既有 empty failover。
+				if emptyReason == emptyoutcome.EmptyReasonBudgetExhausted &&
+					emptyUsage.FinishReason == "length" && !reasoningBudgetBumped {
+					if bumpedBody, bumped := bumpReasoningBudget(bodyBytes); bumped {
+						reasoningBudgetBumped = true
+						bodyBytes = bumpedBody
+						slog.Warn("executor: reasoning exhausted the completion budget; retrying same candidate with doubled max_tokens",
+							"request_id", params.RequestID,
+							"credential_id", cand.CredentialID,
+							"provider_id", cand.ProviderID,
+							"raw_model", cand.RawModel,
+							"completion_tokens", emptyUsage.CompletionTokens,
+							"reasoning_tokens", emptyUsage.ReasoningTokens,
+							"prompt_tokens", emptyUsage.PromptTokens,
+						)
+						return nil, &retryableError{err: &upstreampkg.Error{
+							Kind:    errorsx.KindTransient,
+							Message: "reasoning exhausted completion budget; retrying with doubled max_tokens",
+						}}
+					}
+				}
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
 					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,

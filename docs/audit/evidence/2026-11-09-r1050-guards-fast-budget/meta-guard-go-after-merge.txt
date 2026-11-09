@@ -1,0 +1,12 @@
+=== meta: 合入上游 7 提交后的守卫包全量复跑 ===
+HEAD:        d4b0787cec4db2be85cd1834b9f06ec43a8ac882
+origin/main: d4b0787cec4db2be85cd1834b9f06ec43a8ac882
+命令:        go test <GUARD_PACKAGES 全部 28 个包> -count=1 -timeout=600s
+exit-code:   0     FAIL=0     ok=28
+最慢 5 包:    internal/sqlguard 142.324s / sql/migrations/startup 136.522s /
+             internal/partguard 99.985s / internal/billguard 94.961s / sql/schema 81.569s
+load-end:    290.09 197.07 101.00
+note:        ★ 这一轮跑在**合并上游 7 个提交之后** ⇒ ★ 证明两件事：
+             ① 新预算 600s 下不再腰斩；
+             ② internal/errdiscard 在登记上游新包 internal/largebody 的 8 处
+                **假阳性**后恢复绿（★ 合并后它一度让 origin/main 的快门变红）。

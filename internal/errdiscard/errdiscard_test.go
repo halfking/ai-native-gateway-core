@@ -26,6 +26,18 @@ var knownCandidates = []string{
 	// 并 warn 记录。本门只认「LHS 上出现 `_`」，分不清「丢的是 err」与
 	// 「丢的是另一个返回值」。
 	"bg/lite_retention_worker.go",
+
+	// ★★ 2026-11-09（r1050 轮复核）**曾**登记过 `internal/largebody/index.go` 与
+	// ★★ `internal/largebody/store.go`（★ 上游 2026-11-09 的 largebody 轮新增包带进来的
+	// ★★ 8 处**同款假阳性**：★ `_` 是字符/字节返回值、★ `err` 有被检查并原样上抛）⇒
+	// ★★ **⇒ 按门的指引「带理由登记」登记**（★ 而不是改上游那段本来正确的错误处理）。
+	// ★★ **但上游随后把这两处都改掉了**（★ `s.next()` 的返回值改成具名变量、
+	// ★★ `rand.Read` 的字节数改成具名 `n`）⇒ ★★ **⇒ 本门随即报「registered candidate
+	// ★★ no longer reported」**（★ 门的**双向**检查起作用了 ⇒ ★ 它不仅抓新增，
+	// ★★ 也抓「登记已过期」）⇒ ⇒ ★★★ **⇒ 按门给的指引移除这两条登记**
+	// ★★★ （★ 「either it was fixed (remove it from knownCandidates)」）。
+	// ★★ 留这段注释是为了：**登记项会过期** ⇒ ★★ 与「注释里的读数会过期」同族
+	// ★★ ⇒ ★★ **移除登记时要留下「为什么曾登记、为什么能移除」的痕迹**。
 }
 
 // TestErrDiscard_NoNewDiscardingCallSites 是本门的主断言。

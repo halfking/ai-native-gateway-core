@@ -34,8 +34,11 @@ func TestByteFallbackReferenceCalibration(t *testing.T) {
 
 func TestCounterCanAdmitAnExactCountWithoutChangingHardCaps(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("long repeated text ", 10000) + `"}]}`)
+	// 2026-11-10：已知窗口（此处 catalog window=10000）保持执法，但计数器
+	// 换成校准估计器——不得因高估而误拒，也不得低估。190KB 重复文本的
+	// 估计值 ≈ chars/3.5 ≈ 54k ≫ limit 5000 ⇒ 拒绝仍是正确行为。
 	if _, err := Check(body, Spec{ContextWindow: 10000}); err == nil {
-		t.Fatal("fallback should not pretend that compressible bytes are few tokens")
+		t.Fatal("fallback must not pretend that compressible bytes are few tokens")
 	}
 	got, err := CheckWithCounter(body, Spec{ContextWindow: 10000}, CounterFunc(func([]byte) (int, error) { return 1000, nil }))
 	if err != nil || got.Tokens != 1000 || got.Counter != "bucket_counter" {
@@ -62,8 +65,10 @@ func TestSafeByteTargetAndUnknownState(t *testing.T) {
 	if _, err := Check(body, spec); err != nil {
 		t.Fatalf("safe target was not admitted: %v", err)
 	}
-	if SafeBodyBytes(Spec{}) != 0 {
-		t.Fatal("unknown context produced a safe byte target")
+	// 2026-11-10 改判：未知窗口回落全局保守上限，SafeBodyBytes 不再为 0
+	// （旧断言钉 fail-closed；数据缺口不该变成平台级拒绝）。
+	if sb := SafeBodyBytes(Spec{}); sb <= 0 || sb > MaxInputTokens/(16+1) {
+		t.Fatalf("unknown context must yield a globally-capped safe byte target, got %d", sb)
 	}
 	if _, err := UpperBound([]byte(`{"input":"x","previous_response_id":"r"}`)); err == nil {
 		t.Fatal("UpperBound claimed to count opaque history")

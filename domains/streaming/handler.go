@@ -39,6 +39,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility"                    // passive timing fingerprint features (2026-11-09)
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1291,6 +1292,16 @@ type ChatHandler struct {
 	// also once per OpenAI non-stream success path in the executor.
 	// nil disables (legacy behavior).
 	integrityDetector executors.IntegrityDetector
+
+	// passiveTimingFactory / passiveSink（2026-11-09 模型指纹验证增强轮）：
+	// 被动时序指纹的逐请求采样器工厂与完成点出口。工厂每请求产出独立
+	// PassiveTimingTracker，与 integrity 观察者组合挂进 StreamCapture
+	//（中断裁决权归 integrity，见 composedTextObserver）；emitTelemetry
+	// 在 usage 就绪后经 ExtractPassiveFromTracker 取样并交给 sink
+	//（生产实现 = modelcredibility.PassiveCollector.Add 的适配器）。
+	// 两者任一为 nil ⇒ 完全旁路（零热路径开销，legacy 行为不变）。
+	passiveTimingFactory PassiveTimingFactory
+	passiveSink          PassiveFeaturesSink
 	// (list_categories, load_tools) locally without forwarding to upstream.
 	// nil disables Phase 2 meta-tools.
 	metaToolInterceptor *MetaToolInterceptor
@@ -1861,7 +1872,29 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 			capture.SetTextObserver(obs)
 		}
 	}
+	// 被动时序指纹（2026-11-09）：与 integrity 观察者组合进单一槽位。
+	// 工厂或 sink 未接线 ⇒ 什么都不做（零开销旁路）。
+	if h.passiveTimingFactory != nil && h.passiveSink != nil {
+		if tr := h.passiveTimingFactory.NewPassiveTimingTracker(); tr != nil {
+			switch existing := capture.TextObserver(); {
+			case existing == nil:
+				capture.SetTextObserver(tr)
+			default:
+				capture.SetTextObserver(&composedTextObserver{primary: existing, extra: []audit.StreamTextObserver{tr}})
+			}
+		}
+	}
 	return capture
+}
+
+// SetPassiveTiming 一次接好被动时序指纹的两端（工厂 + 完成点出口）。
+// 传 nil 等价于关闭（旁路）。
+func (h *ChatHandler) SetPassiveTiming(factory PassiveTimingFactory, sink PassiveFeaturesSink) {
+	if h == nil {
+		return
+	}
+	h.passiveTimingFactory = factory
+	h.passiveSink = sink
 }
 
 // SetProvisionalMetadataExtractor wires the deterministic session-arrival
@@ -6979,6 +7012,32 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			}
 			if lv > 0 {
 				slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "long", "tokens", lv)
+			}
+		}
+		// 被动时序指纹采样点（2026-11-09 模型指纹验证增强轮）：
+		// usage（LLM 回报优先，估算兜底）就绪后取一次样本交给 sink。
+		// factory/sink 任一未接线 ⇒ PassiveTrackerFromCapture 返回 nil
+		// ⇒ 零开销旁路（legacy 行为不变）。
+		if h.passiveSink != nil {
+			if tr := PassiveTrackerFromCapture(capture); tr != nil {
+				comp := 0
+				if reqLog.CompletionTokens != nil {
+					comp = *reqLog.CompletionTokens
+				} else if ct > 0 {
+					comp = ct
+				}
+				tenant := ""
+				if keyInfo != nil {
+					tenant = keyInfo.TenantID
+				}
+				if feat := ExtractPassiveFromTracker(tr, comp, modelcredibility.Metadata{
+					TenantID:     tenant,
+					ModelName:    evt.CanonicalName,
+					CredentialID: int64(result.Candidate.CredentialID),
+					RequestID:    evt.RequestID,
+				}); feat != nil {
+					h.passiveSink.Submit(feat)
+				}
 			}
 		}
 		if pt > 0 || ct > 0 {

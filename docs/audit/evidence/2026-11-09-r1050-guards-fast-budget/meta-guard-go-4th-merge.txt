@@ -1,0 +1,8 @@
+=== meta: 第四轮上游合并（+7 提交）后的守卫包全量复跑 ===
+HEAD:        7dabda830861d890a9902f408753997df50d761e
+上游合并范围: e3a122cb0 → 7dabda830（★ rule 71 规范层补强 / F51 候选链收口 / anthropic wire reasoning 根修）
+命令:        go test <GUARD_PACKAGES 全部 28 个包> -count=1 -timeout=600s
+exit-code:   0     FAIL=0     ok=28
+★ 这一轮**没有**带红（★ 前三轮各带一处）⇒ ⇒ 「合并必带红」是过度归纳；
+  ⇒ 合并后仍必须复跑，但结果既可能是红也可能是绿。
+load-end:    53.55 60.76 49.45

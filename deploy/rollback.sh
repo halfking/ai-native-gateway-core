@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
 # =====================================================================
-# deploy/rollback.sh — DEPRECATION WRAPPER (Slice 8)
+# deploy/rollback.sh — DEPRECATION WRAPPER（Slice 8 遗留壳，**当前恒 fail-closed**）
 #
 # Per spec cf8aad1a9 §"Compatibility disposition":
 #   deploy/rollback.sh → Make fail-closed deprecation wrappers
 #                         pointing to ./scripts/deploy.sh
 #
-# The old deploy/rollback.sh used to consume /var/lib/deploy-tracker
-# tags and run its own docker / kubectl flow. The canonical CLI now
-# owns the rollback contract:
+# ─────────────────────────────────────────────────────────────────────
+# ★ 2026-11-09：本文件头**已订正为现状**（此前它是一句**过期承诺**）。
 #
-#   ./scripts/deploy.sh rollback 245 [--to <version>]
-#   ./scripts/deploy.sh rollback 154                  # runbook guidance
-#   ./scripts/deploy.sh rollback 252                  # deferred (refused)
-#   ./scripts/deploy.sh rollback 186                  # retired (refused)
+#   旧头写的是「The canonical CLI now owns the rollback contract:
+#   ./scripts/deploy.sh rollback 245 [--to <version>] / 154 / 252 / 186」，
+#   ★★ 但 `scripts/deploy.sh` 已由 ecbebfa55（2026-07-13 后，"删 32 个死入口"）
+#   **删除** ⇒ 那 4 条示例命令**照抄即错**（⇒ 读者被文件头**主动引向一个不存在的
+#   入口**）⇒ ★ 与 deploy/deploy.sh 是**同一个过期承诺**（同一 Slice 8 产物）。
 #
-# For 245 the canonical CLI does versioned rollback via the
-# releases/${VERSION}/`current/` symlink chain. For 154 it points
-# operator at the existing runbook. For 186/252/kaixuan-* it refuses.
-# All callers must migrate.
+#   ★ 本轮处置：**保留 fail-closed 壳**（下方错误提示正文**未改**：它列出的
+#     现役脚本与各自的 rollback 契约已逐一实测），★★ **只把文件头改成现状陈述**
+#     —— 不再承诺任何转发，不再给已删入口的示例。
+#   ★ 与 deploy/deploy.sh 保持**同一形状**（两个壳一起被订正，避免只修一半）。
+#
+#   ★★ 刻意**不**转发到 scripts/deploy-{154,245,252-gateway,seamless}.sh
+#     中的任意一个（理由见下方 2026-10-14 的说明块）：★ 各目标的 rollback
+#     契约不同 ⇒ ★★ **猜一个转发等于在事故现场静默换掉回滚语义** ——
+#     ★ 比明确失败危险得多。
 # =====================================================================
 set -euo pipefail
 

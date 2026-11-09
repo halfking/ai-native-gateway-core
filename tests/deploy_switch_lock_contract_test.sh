@@ -81,12 +81,15 @@ mkdir -p "$LOCK_TMP_ROOT"
 ORACLE_ORIGIN=''
 ORACLE_BOOTSTRAP="$TMP/oracle-bootstrap.sh"
 ssot=''
-for cand in "${AIAN_DEPLOY_LIB:-}" "$ROOT/scripts/deploy-lib" "$HOME/workspace/ai-native-workspace/deploy-lib" "$HOME/workspace/ai-native-tools/deploy-lib"; do
-  if [[ -n "$cand" && -f "$cand/lock.sh" ]]; then
-    ssot="$(cd "$cand" && pwd -P)"
-    break
-  fi
-done
+# ★ 2026-11-09（F51）：★ SSOT 的定位【★ 不再由本门自带一条候选链 ★】——
+#   改用共享的唯一真相 scripts/deploy-lib-candidates.sh ⇒ ★ 本门与两个兄弟
+#   解析器（scripts/_shared-lib.sh / scripts/deploy-lib-resolve.sh）**测的是同一条链** ★
+#   ⇒ ★ 改链不必改本门、★ 而本门也不会「测另一条链却照样绿」★
+# shellcheck source=deploy-lib-candidates.sh
+source "$ROOT/scripts/deploy-lib-candidates.sh"
+if _ssot_cand="$(deploy_lib_find lock.sh)"; then
+  ssot="$(cd "$_ssot_cand" && pwd -P)"
+fi
 if [[ -n "$ssot" ]]; then
   # shellcheck source=/dev/null
   source "$ssot/lock.sh"

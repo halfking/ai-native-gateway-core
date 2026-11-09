@@ -21,6 +21,7 @@ AI Native Gateway is an **open-source, self-hosted, AI-native LLM gateway** buil
 - **Session Governance**: sticky sessions, full-content session replay, automatic prompt compression, and 4-tier data lifecycle — the conversation, not just the request, is a first-class managed object
 - **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation on 90+ tables, with per-tenant quotas, metering, and MaaS billing
 - **Credential Management**: multi-credential pools with fingerprint disguise, adaptive probing, and automatic circuit-breaking
+- **Model Credibility (anti-dilution)**: passive timing fingerprints from real traffic (TTFT / inter-token distribution / throughput vs per-credential baselines) + active probes + peer-parity scoring detect upstream model swaps and same-family downgrades — zero extra requests, impossible to evade
 - **Observability**: real-time request streams, routing analytics (heatmap + Sankey), cost tracking, OTel + Prometheus
 - **Privacy**: 100% private deployment — all data stays inside your infrastructure
 
@@ -35,7 +36,7 @@ Built with **Go + PostgreSQL + Redis**, running today in production on k3s (dual
 | **Secure** | AI Guardrails · DLP · Inline Interception · Vibe Coding governance · SIEM/SOAR integration |
 | **Stable** | Multi-cloud orchestration · Circuit breaker with automatic recovery · 99.9% SLA target |
 | **Low Cost** | Semantic cache · Auto-routing (cost/quality policies) · Token metering · Prompt compression |
-| **Enterprise Integration** | MCP tool gateway (roadmap) · API Hub asset center (roadmap) · Full-chain audit · SIEM/SOAR |
+| **Enterprise Integration** | MCP tool gateway (shipped) · API Hub asset center (roadmap) · Full-chain audit · SIEM/SOAR |
 
 ## 🏗️ Three Product Pillars
 
@@ -111,11 +112,11 @@ HTTP/SSE → middleware chain → protocol/IR normalization → session assignme
 | `bg/` | Background workers — probing, lifecycle cleanup, stats aggregation, partition maintenance |
 | `storage/` | Dual-mode storage factory (`full`: PG+Redis / `lite`: SQLite+files+in-proc KV) |
 | `internal/` | Cross-cutting infra — IR, vendor strip, session mirror, outbox, telemetry… |
-| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 927) |
+| `sql/migrations/` + `db/migrations/` | Idempotent migrations (startup series currently at 955) |
 | `installer/` | Standalone cross-platform installer / upgrader module |
 | `scripts/`, `deploy/` | Build, deploy, mirror, and verification tooling |
 
-Scale snapshot (2026-10-31 code scan @495a1c758): **~6,138 Go files · 3,661 test files · 1,180 migration SQLs · 69 domain packages · 49 binaries** under `cmd/` (file counts exclude `vendor/` and `installer/`; migration SQLs = full `sql/migrations/` tree; binaries = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 51 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
+Scale snapshot (2026-10-31 code scan @495a1c758): **~6,468 Go files · 3,870 test files · 1,236 migration SQLs · 69 domain packages · 51 binaries** under `cmd/` (file counts exclude `vendor/` and `installer/`; migration SQLs = full `sql/migrations/` tree; binaries = main packages per `go list`; the stale "34" was R48-B4, and `go list ./cmd/...`'s 51 includes 2 non-`main` helper packages — define the criterion before comparing numbers).
 
 **Deeper reading**
 
@@ -488,7 +489,7 @@ For the installer's full design, see [installer/README.md](installer/README.md).
 | **Upstream models** | A few major vendors | Broad model coverage + Chinese domestic models + local models |
 | **Credential fingerprint pool** | Basic | 42 User-Agents · 35 Accept-Language |
 | **Session governance** | Request-level logs | Sticky sessions + full-content replay + compression + 4-tier lifecycle |
-| **MCP tool gateway** | Partial | Full delivery targeted Q3 2026 |
+| **MCP tool gateway** | Shipped | Data plane + control plane + governance metrics |
 | **Chinese-friendly** | Limited | Full Chinese UI + domestic models + Alipay |
 | **Multi-tenant audit** | Standard | RLS on 90+ tables · tenant audits at L1 = 0 |
 

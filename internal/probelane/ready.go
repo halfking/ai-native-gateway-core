@@ -50,7 +50,7 @@ func AssertLaneTablesReady(ctx context.Context, db DB) error {
 		}
 	}
 	slog.Info("probelane: physical lane ready",
-		"env", EnvPhysical,
+		"env_var", EnvPhysical,
 		"tables", "session_turns_probe_hot,request_stats_probe_minute")
 	return nil
 }

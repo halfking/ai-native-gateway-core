@@ -38,7 +38,7 @@
 ### 2.2 认证与授权
 
 - [x] 入站 API key（`Authorization: Bearer` / `X-Api-Key`）
-- [x] 入站 scope 动作位（`mcp.read` / `mcp.execute` / `mcp.admin`）
+- [x] 入站 scope 动作位（`mcp.read` / `mcp.execute` / `mcp.admin` / `mcp.register` / `mcp.manage` / `mcp.analyze` / `mcp.topology`）
 - [x] RFC 9728 受保护资源元数据（`/.well-known/oauth-protected-resource`）
 - [x] 两层工具授权：可见性（private/team/public）+ 动作位（read/execute）
 - [x] 「key × 工具」允许表（deny-wins，空表＝不收口）
@@ -75,7 +75,7 @@
 
 ### 2.5 可观测性
 
-- [x] Prometheus（沿用既有 `mcp_gateway_*` 指标名 + 8 个治理指标）
+- [x] Prometheus（沿用既有 `mcp_gateway_*` 指标名 + 17 个治理指标）
 - [x] 结构化审计日志
 - [x] 独立健康检查（`/health` 含上游适配器与熔断状态）
 - [x] 运营看板（`/mcp/admin`，自包含 HTML）
@@ -104,5 +104,5 @@
 | 层 | 内容 | 入口 |
 |---|---|---|
 | L1 | Go 单测/集成测（治理链、存储、策略、账本、控制面、看板） | `go test ./mcp/...` |
-| L2 | 真实进程 + 真实 HTTP 的 API 场景（S01–S24） | `bash tests/mcp-gateway-maestro/run.sh` |
+| L2 | 真实进程 + 真实 HTTP 的 API 场景（S01–S31） | `bash tests/mcp-gateway-maestro/run.sh` |
 | L3 | 浏览器逐页断言（运营看板） | `maestro/flows/10-mcp-gateway.yaml` |

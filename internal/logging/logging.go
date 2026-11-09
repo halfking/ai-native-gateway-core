@@ -167,6 +167,16 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 		return nil, err
 	}
 	if cfg.File == "" {
+		// rule 71：没有落盘文件**不代表**不需要规范层。
+		//
+		// 此前这里是 no-op（直接 return），于是 slog 留在默认的
+		// **TextHandler** 上 ⇒ 打出来的行是 `2026/11/09 12:00:00 INFO msg k=v`
+		// 这种纯文本，既没有 service/version/env/instance_id，
+		// 也没有 severity_text/severity_number ⇒ AI 侧判为不合规。
+		//
+		// 现在即使不落盘，也把规范层装到 stderr 的 JSON handler 上，
+		// 保证「无论是否配置 LLM_GATEWAY_LOG_FILE，输出形态都一样」。
+		installStandard(newJSONHandler(os.Stderr, level), level)
 		return nil, nil
 	}
 
@@ -193,9 +203,9 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 	activeConfig = cfg
 	loggerMu.Unlock()
 
-	jsonHandler := slog.NewJSONHandler(mw, &slog.HandlerOptions{
-		Level: level,
-	})
+	// rule 71：ReplaceAttr 负责字段改名（time→timestamp）与值脱敏；
+	// 级别与资源字段由 standardHandler 在 Handle 层注入（需要产出多个顶层字段）。
+	jsonHandler := newJSONHandler(mw, level)
 
 	// 2026-08-26 Phase A: optionally wrap the JSON handler with a
 	// Bleve fan-out so /admin/logs/search can serve full-text
@@ -207,7 +217,11 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 			top = NewBleveFanoutHandler(jsonHandler, idx)
 		}
 	}
-	slog.SetDefault(slog.New(top))
+
+	// rule 71：叠加规范字段注入 + 脱敏层。
+	// Bleve fanout 在最内层（它索引的是原始 JSON 记录），
+	// 规范层包在它外面，保证落盘与索引的内容一致。
+	installStandard(top, level)
 
 	slog.Info("logging: file rotation enabled",
 		"file", cfg.File,
@@ -217,6 +231,70 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 		"compress", cfg.Compress,
 	)
 	return lj, nil
+}
+
+// newJSONHandler 构造内层 JSON handler。
+//
+// ★ 所有构造内层 handler 的路径都必须走这里。
+//
+// 为什么：规范字段的**改名**（time→timestamp、msg 重命名）与脱敏是靠
+// ReplaceAttr 做的，而 ReplaceAttr 属于**内层 handler**。
+// 此前只有「落盘管线」这条路径带了 ReplaceAttr，于是
+//   - 早装窗口（InstallEarly）
+//   - 不落盘模式（LLM_GATEWAY_LOG_FILE 为空）
+//
+// 这两条路径打出来的行仍是 `time` 字段 + **本地时区**，
+// 既不满足字段契约（缺 timestamp），也跨时区无法排序。
+//
+// 规范层（standardHandler）负责**追加**级别三件套与资源字段，
+// 改名与脱敏则由本函数统一注入——两者合起来才是完整契约。
+func newJSONHandler(w io.Writer, level slog.Level) slog.Handler {
+	return slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: replaceAttr,
+	})
+}
+
+// InstallEarly 在**配置加载之前**装上规范层（输出到 stderr）。
+//
+// 为什么需要：配置加载过程本身就会打日志——例如 cmd/gateway 的
+// loadHardBlockPolicy() 会打 "hard block allowlist loaded"。
+// 若等 logging.Init（它在 config.Load() 之后）才装规范层，
+// 那几行就是旧格式（纯文本、缺必填字段）⇒ 同一进程两种格式，
+// AI 侧要么写两套解析分支，要么把早期行判为不合规。
+//
+// 后续 logging.Init 会用文件管线（落盘 + Bleve fanout + 规范层）整体替换它，
+// 因此这里不需要处理文件句柄，也不会泄漏。
+//
+// ⚠ 本函数**只**装规范层，不开落盘与 Bleve——那两件事必须等配置加载完
+// （落盘路径、轮转参数都来自配置）。
+func InstallEarly(level slog.Level) {
+	installStandard(newJSONHandler(os.Stderr, level), level)
+}
+
+// installStandard 把 handler 装到 slog 默认 logger，并叠加 rule 71 的
+// 规范字段与脱敏层。
+//
+// **所有**安装 handler 的路径都必须走这里——此前 Init / ReInit / Reconfigure
+// 各自直接 slog.SetDefault，导致运行期切换日志配置后格式会退回旧版
+// （缺 service/version/env/instance_id，字段名也不对）。
+//
+// 内层 handler 必须是 JSON handler（rule 71 要求 JSONL）。
+func installStandard(inner slog.Handler, level slog.Level) {
+	stdHandler, err := WrapStandardHandler(inner, StandardOptions{
+		Service: ServiceName(),
+		Version: ServiceVersion(),
+		Env:     ServiceEnv(),
+		Level:   level,
+	})
+	if err != nil {
+		// 规范层初始化失败不能拖垮服务——退回裸 JSON handler，
+		// 但要把问题显式说出来（rule 00 §5：不允许静默失败）。
+		fmt.Fprintf(os.Stderr, "logging: standard layer init failed: %v\n", err)
+		slog.SetDefault(slog.New(inner))
+		return
+	}
+	slog.SetDefault(slog.New(stdHandler))
 }
 
 // Shutdown flushes any buffered records and closes the rotated log
@@ -362,14 +440,20 @@ func ReInit(cfg Config) error {
 
 	// 2) cfg.File == ""：停用
 	if cfg.File == "" {
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		installStandard(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level:       level,
+			ReplaceAttr: replaceAttr,
+		}), level)
 		slog.Info("logging: file rotation disabled (via ReInit)")
 		return nil
 	}
 
 	// 3) 创建新 logger
 	if err := os.MkdirAll(filepath.Dir(cfg.File), 0o755); err != nil {
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		installStandard(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level:       level,
+			ReplaceAttr: replaceAttr,
+		}), level)
 		return fmt.Errorf("logging: create log dir: %w", err)
 	}
 	lj := &lumberjack.Logger{
@@ -384,7 +468,10 @@ func ReInit(cfg Config) error {
 	effectiveLogWriter = lj
 	activeLogger = lj
 	activeConfig = cfg
-	slog.SetDefault(slog.New(slog.NewJSONHandler(mw, &slog.HandlerOptions{Level: level})))
+	installStandard(slog.NewJSONHandler(mw, &slog.HandlerOptions{
+		Level:       level,
+		ReplaceAttr: replaceAttr,
+	}), level)
 	slog.Info("logging: file rotation (re)enabled via ReInit",
 		"file", cfg.File,
 		"max_size_mb", cfg.MaxSizeMB,

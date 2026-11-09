@@ -14,6 +14,7 @@ import {
   batchFillGlobalAdminMaasModelRates,
   getAdminMaasModelPriceHistory,
   getAdminMaasModelPriceChanges,
+  getAdminMaasMarketPriceOverview,
   type AdminMaasModelRate,
   type ModelPriceVersion,
   type MaasAdminSettings,
@@ -27,6 +28,48 @@ import { useActionMessage } from '../composables/useActionMessage'
 import ActionOverflowMenu from '../components/ui/ActionOverflowMenu.vue'
 
 const { t } = useI18n()
+
+// 2026-11-10（行情整合轮）：行情行结构。真身 = ../api/maas 的
+// MarketPriceOverviewRow/MarketPriceSyncRun；此处本地 interface 声明
+// （结构逐字同源）——本 SFC 内跨模块 type 导入在 vue-tsc 3.3.7+TS5.9.3
+// 组合下被吞（TS2304 幽灵，本地 interface 实测可见），字段漂移由
+// wiring 测试钉住。
+interface MarketPriceOverviewRow {
+  canonical_name: string
+  canonical_id: number | null
+  display_name: string
+  market_min_in_cny_per_1m: number | null
+  market_min_out_cny_per_1m: number | null
+  market_min_platform_count: number
+  market_min_platform_id: string
+  vendor_list_in_cny_per_1m: number | null
+  vendor_list_out_cny_per_1m: number | null
+  vendor_vendor: string
+  supplier_in_per_1m: number | null
+  supplier_out_per_1m: number | null
+  supplier_currency: string
+  retail_credits_in_per_1m: number | null
+  retail_credits_out_per_1m: number | null
+  retail_cny_in_per_1m: number | null
+  retail_cny_out_per_1m: number | null
+  cents_per_credit: number
+  currency_display: string
+  market_position: number | null
+  retail_vs_market: number | null
+  source_run_date: string
+  resolved: boolean
+}
+interface MarketPriceSyncRun {
+  id: number
+  run_date: string
+  source_platforms: number
+  source_rows: number
+  landed_rows: number
+  rejected_rows: number
+  conflicts: Record<string, number>
+  detail: Record<string, unknown>
+  created_at: string
+}
 
 
 type RateField = 'in' | 'out' | 'cache_in' | 'cache_out' | 'image' | 'audio' | 'video'
@@ -124,6 +167,73 @@ const historyLoading = ref(false)
 const showChangesModal = ref(false)
 const changeItems = ref<ModelPriceVersion[]>([])
 const changesLoading = ref(false)
+
+// 2026-11-10（行情整合轮）：市场参考价对比（940 只读面）。
+const showMarketModal = ref(false)
+const marketItems = ref<MarketPriceOverviewRow[]>([])
+const resolvedCount = computed(() => marketItems.value.filter((v) => v.resolved).length)
+const marketSync = ref<MarketPriceSyncRun | null>(null)
+const marketLoading = ref(false)
+const marketQuery = ref('')
+const marketOnlyResolved = ref(false)
+
+async function openMarket() {
+  showMarketModal.value = true
+  marketLoading.value = true
+  try {
+    const res = await getAdminMaasMarketPriceOverview(marketQuery.value, marketOnlyResolved.value, 300)
+    marketItems.value = res.items || []
+    marketSync.value = (res.sync && res.sync[0]) || null
+  } catch {
+    marketItems.value = []
+    marketSync.value = null
+  } finally {
+    marketLoading.value = false
+  }
+}
+
+async function searchMarket() {
+  await openMarket()
+}
+
+function fmtMarketCNY(v: MarketPriceOverviewRow): string {
+  const parts: string[] = []
+  if (v.market_min_in_cny_per_1m != null) parts.push(`¥${fmtNum(v.market_min_in_cny_per_1m)}`)
+  if (v.market_min_out_cny_per_1m != null) parts.push(`¥${fmtNum(v.market_min_out_cny_per_1m)}`)
+  return parts.length ? parts.join(' / ') : '—'
+}
+
+function fmtVendorCNY(v: MarketPriceOverviewRow): string {
+  const parts: string[] = []
+  if (v.vendor_list_in_cny_per_1m != null) parts.push(`¥${fmtNum(v.vendor_list_in_cny_per_1m)}`)
+  if (v.vendor_list_out_cny_per_1m != null) parts.push(`¥${fmtNum(v.vendor_list_out_cny_per_1m)}`)
+  return parts.length ? parts.join(' / ') : '—'
+}
+
+function fmtRetailCNY(v: MarketPriceOverviewRow): string {
+  const parts: string[] = []
+  if (v.retail_cny_in_per_1m != null) parts.push(`¥${fmtNum(v.retail_cny_in_per_1m)}`)
+  if (v.retail_cny_out_per_1m != null) parts.push(`¥${fmtNum(v.retail_cny_out_per_1m)}`)
+  return parts.length ? parts.join(' / ') : '—'
+}
+
+function fmtNum(n: number): string {
+  if (n >= 100) return n.toFixed(0)
+  if (n >= 1) return n.toFixed(2)
+  return n.toFixed(4)
+}
+
+function fmtRatio(v: number | null): string {
+  if (v == null) return '—'
+  return `${v.toFixed(2)}×`
+}
+
+function marketDriftClass(v: MarketPriceOverviewRow): string {
+  if (v.retail_vs_market == null) return ''
+  if (v.retail_vs_market > 1.5) return 'badge-red'
+  if (v.retail_vs_market > 1.0) return 'badge-yellow'
+  return 'badge-blue'
+}
 
 const modeLabelKey: Record<string, string> = {
   pay_as_you_go: 'standardModelPricing.history.modePayAsYouGo',
@@ -654,6 +764,7 @@ onMounted(load)
 
     <div class="bulk-bar">
       <button class="btn btn-ghost btn-sm" @click="openChanges">{{ t('standardModelPricing.history.openChanges') }}</button>
+      <button class="btn btn-ghost btn-sm" @click="openMarket">{{ t('standardModelPricing.market.open') }}</button>
     </div>
 
     <div class="card table-wrap">
@@ -789,6 +900,59 @@ onMounted(load)
         </ul>
         <div class="modal-actions">
           <button class="btn btn-ghost btn-sm" @click="showChangesModal = false">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showMarketModal" class="modal-backdrop" @click.self="showMarketModal = false">
+      <div class="modal modal-wide card">
+        <h3 class="section-title">{{ t('standardModelPricing.market.title') }}</h3>
+        <div v-if="marketSync" class="market-sync-line">
+          {{ t('standardModelPricing.market.syncAsOf', { date: marketSync.run_date, rows: marketSync.landed_rows }) }}
+          · {{ t('standardModelPricing.market.resolved', { n: resolvedCount }) }}
+        </div>
+        <div class="market-filter-row">
+          <input v-model="marketQuery" class="input compact" :placeholder="t('standardModelPricing.market.searchPlaceholder')" @keyup.enter="searchMarket" />
+          <label class="market-resolved-toggle">
+            <input v-model="marketOnlyResolved" type="checkbox" @change="searchMarket" />
+            <span>{{ t('standardModelPricing.market.onlyResolved') }}</span>
+          </label>
+          <button class="btn btn-ghost btn-sm" @click="searchMarket">{{ t('standardModelPricing.market.search') }}</button>
+        </div>
+        <div v-if="marketLoading" class="modal-hint">…</div>
+        <p v-else-if="marketItems.length === 0" class="modal-hint">{{ t('standardModelPricing.market.empty') }}</p>
+        <div v-else class="market-table-wrap">
+          <table class="data-table market-table">
+            <thead>
+              <tr>
+                <th>{{ t('standardModelPricing.market.colModel') }}</th>
+                <th>{{ t('standardModelPricing.market.colMarketMin') }}</th>
+                <th>{{ t('standardModelPricing.market.colVendor') }}</th>
+                <th>{{ t('standardModelPricing.market.colRetail') }}</th>
+                <th>{{ t('standardModelPricing.market.colMarketMinOut') }}</th>
+                <th>{{ t('standardModelPricing.market.colPlatforms') }}</th>
+                <th>{{ t('standardModelPricing.market.colDrift') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="v in marketItems" :key="v.canonical_name">
+                <td>
+                  <div class="model-name">{{ v.display_name || v.canonical_name }}</div>
+                  <code class="mono-sm">{{ v.canonical_name }}</code>
+                  <span v-if="!v.resolved" class="badge badge-gray">{{ t('standardModelPricing.market.unresolved') }}</span>
+                </td>
+                <td class="num">{{ fmtMarketCNY(v) }}</td>
+                <td class="num">{{ fmtVendorCNY(v) }}</td>
+                <td class="num">{{ fmtRetailCNY(v) }}</td>
+                <td class="num">{{ fmtNum(v.market_min_out_cny_per_1m ?? 0) }}</td>
+                <td class="num">{{ v.market_min_platform_count }}</td>
+                <td><span class="badge" :class="marketDriftClass(v)">{{ fmtRatio(v.retail_vs_market) }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost btn-sm" @click="showMarketModal = false">OK</button>
         </div>
       </div>
     </div>
@@ -934,6 +1098,13 @@ onMounted(load)
 .edit-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.modal-wide { width: min(1100px, 92vw); }
+.market-sync-line { color: var(--kx-text-secondary, #666); font-size: 12px; margin-bottom: 8px; }
+.market-filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.market-resolved-toggle { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+.market-table-wrap { max-height: 480px; overflow-y: auto; }
+.market-table th, .market-table td { padding: 6px 8px; font-size: 12px; }
+.badge-red { background: #d9302514; color: #d93025; }
 .price-history-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
 .price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border); }
 .price-history-item:last-child { border-bottom: none; }

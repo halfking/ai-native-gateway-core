@@ -1,0 +1,21 @@
+=== meta: 最终守卫包全量复跑（两轮合并之后 · 过期登记已移除）===
+HEAD:        e3b1e73b720da254826a7c6119f1a18c7f1894ba
+origin/main: da500284a8b5b9023b2df84c8814e853d7398457
+命令:        go test <GUARD_PACKAGES 全部 28 个包> -count=1 -timeout=600s
+exit-code:   0     FAIL=0     ok=28
+最慢 4 包:    internal/sqlguard 75.263s / sql/migrations/startup 71.526s /
+             internal/partguard 53.936s / internal/billguard 49.836s
+load-end:    210.29 271.07 209.79
+note:        ★ 跑在**两轮上游合并之后**（★ 7 + 30 提交）⇒ ★ 证明三件事：
+             ① 新预算 600s 下不再腰斩（★ 最慢单包 75.263s）；
+             ② internal/errdiscard 在**移除已过期的登记项**后恢复绿；
+             ③ domains/credential 本轮**绿**（★ 上一轮它是负载型假红：
+                隔离 PASS×3，★ 整仓跑时 Redis 路径超时 ⇒ 降级 ⇒ allowed=32）。
+
+三轮守卫包复跑的演进（同一台机器，负载档不同）：
+  run1（在 300s 预算下）: EXIT=0 / FAIL=0  ⇒ 腰斩已消失，★ 但 sqlguard 用掉 268.823s
+  run2（合并 7 提交后）: EXIT=1 / FAIL=2  ⇒ ★ errdiscard（★ 上游新包的 8 处假阳性）
+                                           ★ + domains/credential（★ 负载型假红）
+  run3（合并 30 提交后）: EXIT=1 / FAIL=2  ⇒ ★ errdiscard **反向红**（★ 登记已过期）
+                                           ★ + domains/credential（★ 同款负载型假红）
+  run4（移除过期登记后）: EXIT=0 / FAIL=0  ⇒ ★★ 全绿（★ 本文件）

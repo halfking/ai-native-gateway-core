@@ -321,6 +321,23 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	role, _ := item["role"].(string)
 	itemType, _ := item["type"].(string)
 
+	// 2026-11-09 (claude-opus-5-5 empty_model_response incident on 211):
+	// Responses clients (AI-SDK / ZCode) replay reasoning items from previous
+	// turns inside input[]: {"type":"reasoning","id":"rs_...","summary":[...],
+	// "encrypted_content":...}. These carry no role and used to fall into the
+	// unknown-item fallback below, becoming an assistant message with a raw
+	// content block; the Anthropic serializer's default branch then forwarded
+	// the item VERBATIM onto the Messages wire, where {"type":"reasoning"} is
+	// not a legal content-block type → upstream 400 on every turn whose
+	// history contained reasoning (apiclaude "Malformed conversation content").
+	// Drop the item here with an anomaly record: Anthropic reasoning has its
+	// own thinking mechanism (signature-gated), and replaying foreign reasoning
+	// envelopes is never wire-legal on any anthropic-messages upstream.
+	if itemType == "reasoning" {
+		ReportParseUnknownField("unknown", ProtocolOpenAIResponses, "input[].type=reasoning (dropped before IR; not wire-legal on anthropic-messages)", item)
+		return nil, "", nil
+	}
+
 	// Responses tool-call history items do not carry a message role. Handle
 	// them before the generic type-item fallback so tool semantics survive the
 	// conversion into the shared IR.

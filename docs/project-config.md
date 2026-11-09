@@ -39,10 +39,10 @@
 
 ```bash
 # 本地开发路径
-工作目录: /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+工作目录: ~/workspace/ai-native-tools/llm-gateway/llm-gateway-go
 
 # Go环境要求
-Go版本: 1.21+
+Go版本: 1.27.2+
 包管理: go mod
 
 # 前端环境要求
@@ -90,29 +90,20 @@ Node版本: 16+
 
 ```
 llm-gateway-go/
-├── cmd/                      # 应用程序入口
-│   └── server/              # 主服务入口
-├── domains/                  # 领域模型（DDD架构）
-│   ├── credentials/         # 凭证管理域
-│   ├── models/              # 模型管理域
-│   ├── requests/            # 请求处理域
-│   └── remotecontrol/       # 远程控制域（新增）
-├── handlers/                 # HTTP处理器
-│   ├── v1/                  # 用户API v1
-│   └── admin/               # 管理员API
-├── infrastructure/           # 基础设施层
-│   ├── database/            # 数据库连接
-│   ├── config/              # 配置管理
-│   └── middleware/          # 中间件
-├── migrations/               # 数据库迁移文件
-├── web-admin/               # 前端管理界面
-│   ├── src/
-│   │   ├── components/     # Vue组件
-│   │   ├── views/          # 页面视图
-│   │   ├── locales/        # 国际化文件（8种语言）
-│   │   └── router/         # 路由配置
-│   └── dist/               # 构建产物
-└── docs/                    # 项目文档
+├── cmd/                      # 应用程序入口（cmd/gateway=主服务，cmd/mcp-gateway 等）
+├── admin/                    # 管理面 API（Go）
+├── web/                      # 管理台前端（Vue/Vite）
+├── web-mobile/               # 移动端前端
+├── internal/                 # 内部基础能力（auth / centeragent / …）
+├── domains/                  # 领域模型（DDD 架构，69 个域包）
+├── domain/                   # 领域基础类型
+├── middleware/               # HTTP 中间件（主链装配见 cmd/gateway/main.go）
+├── mcp/                      # MCP 网关（scope / 指标 / 控制面）
+├── sql/migrations/startup/   # 数据库迁移 SQL（按编号命名）
+├── db/migrations/            # 历史迁移 SQL
+├── config/                   # 配置
+├── scripts/                  # 脚本与门禁
+└── docs/                     # 项目文档
 ```
 
 ## 开发规范快速参考
@@ -144,12 +135,10 @@ log.Printf("[ERROR] ...")  // 错误
 ### 数据库迁移规范
 
 ```bash
-# 创建迁移文件
-migrate create -ext sql -dir migrations -seq descriptive_name
-
-# 文件命名格式
-000001_descriptive_name.up.sql    # 升级脚本
-000001_descriptive_name.down.sql  # 回滚脚本
+# 迁移文件直接放在 sql/migrations/startup/（按编号命名，无需生成器）
+#   startup/<编号>_<名称>.sql          # 升级脚本
+#   startup/<编号>_<名称>.down.sql     # 回滚脚本（可选）
+# 运行时由 installer/embeddata 同步，勿手改已入库的编号
 
 # 列命名规范
 使用 snake_case：user_id, created_at, request_mode
@@ -180,24 +169,23 @@ feat(admin): add attachment display in request log drawer
 
 ```bash
 # 启动开发服务器
-go run cmd/server/main.go
+go run cmd/gateway/main.go
 
 # 运行测试
 go test ./...
 
 # 构建二进制
-go build -o llm-gateway-go cmd/server/main.go
+go build -o llm-gateway-go cmd/gateway/main.go
 
-# 数据库迁移
-migrate -path migrations -database "postgres://..." up
-migrate -path migrations -database "postgres://..." down
+# 数据库迁移（由 installer 按 sql/migrations/startup/ 顺序执行）
+#   见 docs/DEPLOYMENT-SECURITY-CHECKLIST.md 与 installer/ 文档
 ```
 
 ### 前端开发
 
 ```bash
-# 进入前端目录
-cd web-admin
+# 进入前端目录（web=管理台，web-mobile=移动端）
+cd web
 
 # 安装依赖
 npm install

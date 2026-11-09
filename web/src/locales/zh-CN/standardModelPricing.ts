@@ -79,6 +79,25 @@ export default {
     msgFailed: '批量操作没能完成，请重试',
   },
 
+  market: {
+    open: "行情对比",
+    title: "市场行情对比（salesdecorate 行情面）",
+    syncAsOf: "行情日期 {date} · 已落库 {rows} 条",
+    resolved: "已解析到本网关 {n} 个",
+    searchPlaceholder: "搜索模型名…",
+    onlyResolved: "仅看已解析",
+    search: "查询",
+    empty: "行情数据为空——先在 211 上跑 scripts/market-price-sync.py 或等每日采集",
+    colModel: "模型",
+    colMarketMin: "市场最低入/出（CNY/1M）",
+    colMarketMinOut: "市场最低出价（CNY/1M）",
+    colVendor: "原厂锚入/出（CNY/1M）",
+    colRetail: "我方零售入/出（CNY/1M）",
+    colPlatforms: "平台数",
+    colDrift: "我方零售/市场",
+    unresolved: "未解析",
+  },
+
   history: {
     title: "价格历史",
     changesTitle: "订价变化",

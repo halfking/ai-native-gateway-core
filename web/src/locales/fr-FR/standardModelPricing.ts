@@ -84,6 +84,25 @@ export default {
     video: 'Video',
   },
 
+  market: {
+    open: "Prix du marché",
+    title: "Comparaison des prix du marché (flux salesdecorate)",
+    syncAsOf: "Au {date} · {rows} lignes intégrées",
+    resolved: "{n} résolus vers ce gateway",
+    searchPlaceholder: "Rechercher un modèle…",
+    onlyResolved: "Résolus uniquement",
+    search: "Rechercher",
+    empty: "Données de marché vides - lancez scripts/market-price-sync.py sur 211 ou attendez la collecte quotidienne",
+    colModel: "Modèle",
+    colMarketMin: "Minimum marché entrée/sortie (CNY/1M)",
+    colMarketMinOut: "Minimum marché sortie (CNY/1M)",
+    colVendor: "Ancre constructeur entrée/sortie (CNY/1M)",
+    colRetail: "Notre prix entrée/sortie (CNY/1M)",
+    colPlatforms: "Plateformes",
+    colDrift: "Retail / marché",
+    unresolved: "Non résolu",
+  },
+
   history: {
     title: "Historique des prix",
     changesTitle: "Changements de tarifs",
