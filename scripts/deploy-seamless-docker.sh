@@ -2671,6 +2671,7 @@ REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
 if [[ -f "$REVISION_SEQ" ]]; then
   log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${DD_PG_DB}"
   DATABASE_URL="$DB_URL" \
+  LLM_GATEWAY_PSQL_TRANSPORT=container \
   LLM_GATEWAY_PG_CONTAINER="$PG_CONTAINER" \
   LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-$PG_USER}" \
   LLM_GATEWAY_PG_PASSWORD="$PG_PASS" \

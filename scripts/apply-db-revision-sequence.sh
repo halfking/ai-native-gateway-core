@@ -25,9 +25,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #   ② command -v psql（★ ★ 原语义 ⇒ ★ 仓内测试夹具的 psql double 仍被选中）
 #   ③ ~/kaixuan/pg18/bin/psql（★ 无 PATH 客户端时的兜底）
 #   ④ 容器通道（docker exec + **显式 TCP** + DATABASE_URL 里的真口令）
-#   ★ ⇒ ★★ 宿主通道若失败 ⇒ ★ **自动降级到 ④**（★ 而不是把误导性报错抛出去）。
+#   Docker 部署显式选择 container 通道，避免宿主 DNS 将容器名解析到其它服务器。
 dl_psql_bin() {
   local p
+  # Docker deployments must resolve the database inside its container, not
+  # through host DNS (which may map the container name to another server).
+  if [[ "${LLM_GATEWAY_PSQL_TRANSPORT:-}" == container ]]; then
+    dl_psql_container_available || { echo 'error: requested PostgreSQL container is unavailable' >&2; return 1; }
+    return 0
+  fi
   for p in "${LLM_GATEWAY_PSQL:-}" "${GUARD_PSQL:-}"; do
     [[ -n "$p" && -x "$p" ]] && { printf '%s\n' "$p"; return 0; }
   done
