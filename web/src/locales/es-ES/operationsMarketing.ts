@@ -1,5 +1,7 @@
 // operationsMarketing.ts — 运营营销管理页（2026-11-09 运营审计轮项4）。
 export default {
+  colRedemptions: "Canjeados / límite",
+  priceMinorUnit: "Precio (0,01 CNY)",
   title: "Marketing",
   subtitle: "Planes, paquetes extra, cupones y campañas de descuento/regalo",
   tabPlans: "Planes",

@@ -1,5 +1,7 @@
 // operationsMarketing.ts — 运营营销管理页（2026-11-09 运营审计轮项4）。
 export default {
+  colRedemptions: "引換済み / 上限",
+  priceMinorUnit: "価格（0.01人民元）",
   title: "マーケティング管理",
   subtitle: "プラン・追加パック・クーポン・割引/ギフトキャンペーン",
   tabPlans: "プラン",
@@ -7,7 +9,7 @@ export default {
   tabCoupons: "クーポン",
   tabCampaigns: "キャンペーン",
   colCode: "コード",
-  colName: "名称",
+  colName: "表示名",
   colPrice: "価格",
   colCredits: "クレジット",
   colBonus: "ボーナス",
@@ -17,9 +19,9 @@ export default {
   colStatus: "状態",
   colBenefit: "特典",
   colBudget: "予算（付与/上限）",
-  colActions: "操作",
+  colActions: "アクション",
   add: "追加",
-  save: "保存",
+  save: "変更を保存",
   cancel: "キャンセル",
   enable: "販売開始",
   disable: "販売停止",
