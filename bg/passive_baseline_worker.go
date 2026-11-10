@@ -28,6 +28,15 @@ const PassiveBaselineFlushInterval = 5 * time.Minute
 // 6 ticks × 5min = 30min。
 const PassiveBaselineHeartbeatTicks = 6
 
+// passiveBaselineFlushTimeout 是**退出路径**上最后一次刷库的时间上界。
+//
+// ★ 2026-11-11 审计 P2-M：★ 原实现退出时用 `context.Background()`（★ 无 deadline）
+// ⇒ ★★ DB 挂起 / 网络不可达 ⇒ ★★ flushOnce 无限阻塞 ⇒ ★★ 进程**永不退出**
+// ⇒ ★★ 且这发生在**退出路径**上 ⇒ ★★ 越是在故障时越容易卡死（★ 故障与退出叠加）。
+// ⇒ ★★ 修法：★ 退出路径改用**有界** ctx（★ 30s）⇒ ★★ 刷库要么在 30s 内完成、
+// ★★ 要么放弃这一轮（★ 下一轮 worker 起来会重新累积 ⇒ ★ 不丢数据，只延后落库）。
+const passiveBaselineFlushTimeout = 30 * time.Second
+
 // PassiveBaselineWorker 周期把累积的被动特征合并进 955 基线表。
 //
 // 同时实现 streaming.PassiveFeaturesSink（Submit）与
@@ -42,6 +51,13 @@ type PassiveBaselineWorker struct {
 	started bool
 	stop    chan struct{}
 	done    chan struct{}
+	// stopOnce 保证 w.stop 只被 close 一次。
+	// ★ 2026-11-11 审计 P2-L：★ 原实现用 `select { case <-w.stop: default: close(w.stop) }`
+	// ⇒ ★★ select+default **不是原子** ⇒ ★★ 两个 goroutine 并发 Stop() 时可双双走到 default
+	// ⇒ ★★ 第二个 close(w.stop) ⇒ ★★ panic: close of closed channel（★ 且 panic 发生在
+	// ★★ shutdown 路径上 ⇒ ★★ 进程退出被 panic 打断 ⇒ ★★ 残余窗口没刷净）。
+	// ⇒ ★★ 修法：★ 用 sync.Once 把「关通道」变成**恰好一次**（★ Stop 本身仍幂等）。
+	stopOnce sync.Once
 
 	// ticks统计自 Start 以来的 Flush 次数（心跳节拍）；flushes 是
 	// 自上次心跳以来累计落库节点数（每次心跳发出后归零，见 beat）。
@@ -106,10 +122,14 @@ func (w *PassiveBaselineWorker) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				w.flushOnce(context.Background(), "shutdown")
+				fctx, cancel := boundedFlushCtx()
+				w.flushOnce(fctx, "shutdown")
+				cancel()
 				return
 			case <-w.stop:
-				w.flushOnce(context.Background(), "stop")
+				fctx, cancel := boundedFlushCtx()
+				w.flushOnce(fctx, "stop")
+				cancel()
 				return
 			case <-ticker.C:
 				w.flushOnce(ctx, "tick")
@@ -129,12 +149,17 @@ func (w *PassiveBaselineWorker) Stop() {
 		return
 	}
 	w.mu.Unlock()
-	select {
-	case <-w.stop:
-	default:
-		close(w.stop)
-	}
+	// ★ 2026-11-11 审计 P2-L：★ close 只做**恰好一次**（★ sync.Once）⇒ ★★ 并发 Stop() 不再 panic
+	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
+}
+
+// boundedFlushCtx 造一个**有界**的退出期刷库 ctx（★ 见 passiveBaselineFlushTimeout）。
+//
+// ★ 注意：★ 不能复用 Start 的那个 ctx（★ 它在 ctx.Done() 分支里**已经取消**了
+// ★ ⇒ ★ 用它刷库会**立即失败** ⇒ ★ 等于「退出时不刷」）。
+func boundedFlushCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), passiveBaselineFlushTimeout)
 }
 
 // flushOnce 执行一次 Flush 并记日志（失败不 panic——基线是观测面，
