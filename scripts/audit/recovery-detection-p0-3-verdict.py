@@ -320,6 +320,12 @@ def field(text: str, *names: str) -> float | None:
     return None
 
 
+def field_str(text: str, name: str) -> str | None:
+    """★ 取**非数值**字段（★ 如 `unexplained_values=-` / `30630,30658`）"""
+    m = re.search(rf"\b{re.escape(name)}=([^|]*)", text or "")
+    return m.group(1).strip() if m else None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 裁决措辞
 # ─────────────────────────────────────────────────────────────────────
@@ -847,6 +853,8 @@ def judge(data: dict[str, str], stage: int = 1,
         c_slow = field(comp, "clean_slow") if comp else None
         contam = field(comp, "contam_pct") if comp else None
         mul_ev = field(comp, "mul_evidence") if comp else None
+        unexpl = field(comp, "unexplained_n") if comp else None
+        unexpl_v = field_str(comp, "unexplained_values") if comp else None
         if c_n and c_slow is not None and c_n > 0:
             pre_slow_eff = round(100.0 * c_slow / c_n, 1)
             pre_slow_src = "★ **干净 pre**（★ 已剔除乘数证据样本 ⇒ 与 post 段**同量纲**）"
@@ -857,6 +865,10 @@ def judge(data: dict[str, str], stage: int = 1,
         if contam is not None and mul_ev:
             contam_txt = (f" ★ ⚠️ **pre 基线含 {mul_ev:.0f} 条「乘数已生效」样本**"
                           f"（★ pre 期已 featured、却被算进 newly ⇒ 污染 **{contam:.1f}%**）")
+        if unexpl is not None and unexpl > 0:
+            # ★★ **证据集不完备 ⇒ 干净 pre 仍可能被污染 ⇒ 阈值仍偏严** ⇒ ★ fail-closed 提示
+            contam_txt += (f" ★ ⚠️ **阶梯证据集不完备**（★ 有 **{unexpl:.0f}** 条样本的阶梯值**无法解释**"
+                           f"（值 `{unexpl_v or '?'}`）⇒ ★ 干净 pre 可能**仍偏严** ⇒ ★ 判负前先复核")
         if n is None or n < 10:
             rows.append((label, base_txt, obs,
                          verdict(None, f"★ post n={n} < 10 ⇒ **样本不足以判定**（★ 方向可读，★ 不许外推）")))
@@ -1111,19 +1123,24 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         # ★★ era 纯度存活者偏差自检（★ 真库实测 pre24/pre7d 均为 0 ⇒ 无存活者偏差）
         "M20_era_dropped_pre24": "0 events dropped_by_era_purity",
         "M20_era_dropped_pre7d": "0 events dropped_by_era_purity",
-        # ★★★★ M20 的**阶梯构成**（★ 本轮第 14 处口径修正）：★ pre 基线里混着
+        # ★★★★ M20 的**阶梯构成**（★ 本轮第 14 处口径修正 + ★ 第 16 处修正）：★ pre 基线里混着
         #   「pre 期已 featured（乘数已生效）」的样本 ⇒ ★ 「newly」≠「pre 期未 featured」
         #   ⇒ ★ 「post ≤ pre/2」阈值**偏严** ⇒ ★ 阈值必须按「**干净 pre**」推导
-        #   ★★ 乘数证据集 = {150,450,1800,10800}（★ 三条链的未减半并集里没有这 4 个值）
-        #   ★★ 真库实测：★ normal pre7d 污染 41/154 = **26.6%**；★ pre24 与两个 exempt 层 = 0
-        "M20_normal_pre24_composition": ("21 events | n=21 | mul_evidence=0 | clean_n=21"
-                                          " | clean_slow=3 | slow=3 | contam_pct=0.0"),
-        "M20_normal_pre7d_composition": ("77 events | n=154 | mul_evidence=41 | clean_n=113"
-                                          " | clean_slow=19 | slow=19 | contam_pct=26.6"),
-        "M20_exempt_pre24_composition": ("57 events | n=57 | mul_evidence=0 | clean_n=57"
-                                         " | clean_slow=50 | slow=50 | contam_pct=0.0"),
-        "M20_exempt_pre7d_composition": ("537 events | n=537 | mul_evidence=0 | clean_n=537"
-                                         " | clean_slow=173 | slow=173 | contam_pct=0.0"),
+        #   ★★ 证据集 = {7,90,150,450,1800,10800}（★ 「未减半阶梯空间」取半后的独占值）
+        #   ★★ 真库实测：★ normal pre7d 污染 **47/154 = 30.5%**；★ clean 19/107 = **17.8%**
+        #   ★★ ★★ 本行的**格式必须与真实采集输出逐字同形**（★ 否则自测验的是虚构 ⇒ §662 的教训）
+        "M20_normal_pre24_composition": ("n=21 | mul_evidence=0 | clean_n=21 | clean_slow=3"
+                                          " | slow=3 | contam_pct=0.0 | null_ladder_n=0"
+                                          " | unexplained_n=0 | unexplained_values=-"),
+        "M20_normal_pre7d_composition": ("n=154 | mul_evidence=47 | clean_n=107 | clean_slow=19"
+                                          " | slow=19 | contam_pct=30.5 | null_ladder_n=0"
+                                          " | unexplained_n=0 | unexplained_values=-"),
+        "M20_exempt_pre24_composition": ("n=57 | mul_evidence=0 | clean_n=57 | clean_slow=50"
+                                         " | slow=50 | contam_pct=0.0 | null_ladder_n=0"
+                                         " | unexplained_n=0 | unexplained_values=-"),
+        "M20_exempt_pre7d_composition": ("n=537 | mul_evidence=2 | clean_n=535 | clean_slow=173"
+                                         " | slow=173 | contam_pct=0.4 | null_ladder_n=0"
+                                         " | unexplained_n=0 | unexplained_values=-"),
     }
     # ★★ M15x 的 **12 个键**（★ 本轮第 13 处口径修正）：
     #   ★ pre 键的**事件数必须与冻结基线逐字一致**（★ 否则 M18 守卫会报漂移 ⇒ 整表作废
@@ -1507,20 +1524,21 @@ def selftest() -> int:
     if not bad:
         failures.append("[⑰ M15x 逐对穷尽性] 逐对分层不穷尽时守卫未判失败")
 
-    # ⑱ ★★★★ **阈值必须由「干净 pre」推导**（★ 本轮第 14 处口径修正）
-    #   ★★ 场景：pre 基线含 26.6% 的「乘数已生效」样本 ⇒ ★ 「pre/2」偏严
+    # ⑱ ★★★★ **阈值必须由「干净 pre」推导**（★ 本轮第 14/16 处口径修正）
+    #   ★★ 场景：pre 基线含 30.5% 的「乘数已生效」样本 ⇒ ★ 「pre/2」偏严
     #   ★★ ⇒ ★ 阈值 = clean_slow/clean_n/2（★ 与 post 段**同量纲**）⇒ ★ 行内必须披露污染率
     rows, _, _ = judge(_synthetic(True), stage=2)
     v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
     # ★ 合成数据里 clean_slow=19 / clean_n=113 ⇒ 16.8% ⇒ 阈值 8.4%（★ 而非原始 12.3%/2=6.15%）
-    if "≤8.4%" not in v:
-        failures.append(f"[⑱ 干净 pre 阈值] Stage 2 的 slow 阈值应按干净 pre 推导（8.4%）⇒ {v}")
-    if "26.6" not in v or "乘数已生效" not in v:
+    if "≤8.9%" not in v:
+        failures.append(f"[⑱ 干净 pre 阈值] Stage 2 的 slow 阈值应按干净 pre 推导（8.9%）⇒ {v}")
+    if "30.5" not in v or "乘数已生效" not in v:
         failures.append(f"[⑱ 污染披露] 行内必须披露 pre 基线的污染率 ⇒ {v}")
     # ★ 把 composition 改掉（clean_n 改成 154 ⇒ clean slow% = 12.3 ⇒ 阈值 6.15）⇒ ★ 阈值必须跟着变
     d = _synthetic(True)
-    d["M20_normal_pre7d_composition"] = ("77 events | n=154 | mul_evidence=41 | clean_n=154"
-                                          " | clean_slow=19 | slow=19 | contam_pct=26.6")
+    d["M20_normal_pre7d_composition"] = ("n=154 | mul_evidence=47 | clean_n=154 | clean_slow=19"
+                                          " | slow=19 | contam_pct=30.5 | null_ladder_n=0"
+                                          " | unexplained_n=0 | unexplained_values=-")
     rows, _, _ = judge(d, stage=2)
     v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
     if "≤6.2%" not in v:
@@ -1546,13 +1564,52 @@ def selftest() -> int:
         print_honest_boundaries()
     _printed = _buf.getvalue()
     for _need, _why in (
-        ("26.6", "⑳ 必须披露 pre 基线的污染率"),
+        ("30.5", "⑳ 必须披露 pre 基线的污染率"),
         ("干净 pre", "⑳ 必须说明 slow 阈值改由「干净 pre」推导"),
         ("未被证伪", "㉑ 必须披露 M15x 逐对判据**未被负控证伪**"),
         ("短窗口快照", "㉒ 必须披露 deepseek 的 pre 基线是短窗口快照"),
     ):
         if _need not in _printed:
             failures.append(f"[⑳ 诚实边界披露] {_why}（打印文本里缺 {_need!r}）")
+
+    # ㉓ ★★★ **合成自测数据必须与「真捕获夹具」逐字同形**（★ 本轮真踩到）
+    #   ★★ 形态：★ 合成数据里的 composition 曾写成 `"77 events | n=154 | ..."`
+    #   ★★ ⇒ ★★ 那个前缀**真实 SQL 永远不产出**（且 77 本身是错的数）⇒ ★★ 自测验的是**虚构格式**
+    #   ★★ ⇒ ★★ 「自测全绿」≠「解析器认得真数据」⇒ ★★ ⇒ 必须拿**真捕获**逐字对拍
+    try:
+        fx_path = Path(__file__).resolve().parent / "fixtures" / "p0-3-m20-composition-pre.txt"
+        fx = {}
+        for line in fx_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "|" not in line:
+                continue
+            k, v = line.split("|", 1)
+            fx[k.strip()] = v.strip()
+    except Exception as _e:  # ★ 夹具缺失 ⇒ 门失去意义 ⇒ 直接判失败
+        fx = {}
+        failures.append(f"[㉓ 夹具] 真捕获夹具读取失败（★ 自测失去意义）⇒ {_e}")
+    syn = _synthetic(True)
+    for _k in ("M20_normal_pre24_composition", "M20_normal_pre7d_composition",
+               "M20_exempt_pre24_composition", "M20_exempt_pre7d_composition"):
+        if _k not in fx:
+            failures.append(f"[㉓ 夹具] 夹具缺少 {_k} ⇒ 无法对拍")
+        elif syn.get(_k) != fx[_k]:
+            failures.append(f"[㉓ 夹具] 合成数据与**真捕获**不同形 ⇒ {_k}\n"
+                            f"      合成: {syn.get(_k)}\n      真库: {fx[_k]}")
+
+    # ㉔ ★★★★ **阶梯证据集不完备 ⇒ 必须 fail-closed 提示**（★ 本轮第 16 处口径修正）
+    #   ★★ 场景：composition 报 `unexplained_n > 0` ⇒ ★ 说明有样本的阶梯值**无法解释**
+    #   ★★ ⇒ ★ 干净 pre 可能**仍偏严** ⇒ ★ 判负前必须复核 ⇒ ★ 行内不得静默
+    d = _synthetic(True)
+    d["M20_normal_pre7d_composition"] = ("n=154 | mul_evidence=47 | clean_n=107 | clean_slow=19"
+                                          " | slow=19 | contam_pct=30.5 | null_ladder_n=0"
+                                          " | unexplained_n=4 | unexplained_values=8888,9999")
+    rows, _, _ = judge(d, stage=2)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if "证据集不完备" not in v:
+        failures.append(f"[㉔ 证据集不完备] unexplained_n>0 ⇒ 必须提示「阈值可能仍偏严」⇒ {v}")
+    if "8888" not in v:
+        failures.append(f"[㉔ 证据集不完备] 必须列出**无法解释的阶梯值** ⇒ {v}")
 
     print("== 判定器合成数据自测 ==")
     if failures:
@@ -1579,7 +1636,9 @@ def selftest() -> int:
     print("   ✔ ⑰ M15x 逐对分层穷尽性（exempt+normal == total）⇒ 不穷尽即报警")
     print("   ✔ ⑱ ★★ 阈值必须由「干净 pre」推导（★ 剔除「乘数已生效」样本 ⇒ 与 post 同量纲）+ 污染率披露")
     print("   ✔ ⑲ composition 缺失 ⇒ 回退原阈值 + **显式提示「可能偏严」**（★ 不得静默偏严）")
-    print("   ✔ ⑳ ★★ 诚实边界的**限定条件不许被静默删掉**（★ 污染率 26.6% / M15x 未被负控证伪 / pre 基线是短窗口快照）")
+    print("   ✔ ⑳ ★★ 诚实边界的**限定条件不许被静默删掉**（★ 污染率 30.5% / M15x 未被负控证伪 / pre 基线是短窗口快照）")
+    print("   ✔ ㉓ ★★★ 合成自测数据与**真捕获夹具**逐字同形（★ 不得手写采集输出）")
+    print("   ✔ ㉔ ★★ 阶梯证据集不完备（unexplained_n>0）⇒ **fail-closed 提示「阈值可能仍偏严」**")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -1606,18 +1665,25 @@ def honest_boundary_lines() -> list[str]:
           "（★ deepseek 的 normal 阶梯 pre = **3600s（60min）** ⇒ 期望 post ≤ **1800s（30min）**，"
           "★ 而**不是**笼统的「≤180min」⇒ ★★ 180min 对 60min 的事件**毫无鉴别力**）；"
           "★ 且 ★ **pre 期计数为 0 的档位 ⇒ post 侧恒真 ⇒ 必须标注「不作判据」**（★ 否则就是**恒真判据**＝门没牙）。")
-    lines.append("   ⑳ ★★★★ **「newly」≠「pre 期未 featured」**（★ 本轮第 14 处口径修正，★★ 同量纲的第 2 维）："
+    lines.append("   ⑳ ★★★★ **「newly」≠「pre 期未 featured」**（★ 本轮第 14/16 处口径修正，★★ 同量纲的第 2 维）："
           "★ 「newly」的定义 = `st_new \\ st_old`，而 `st_old` 的 raw 变体**只覆盖 `models_canonical.featured=TRUE` 且 active**"
-          "⇒ ★★ **`routing_policy.featured_models` 成员的 raw 变体不在 st_old 里** ⇒ ★★ 而 featured 乘数**恰恰对它们生效**"
-          "⇒ ★★ 它们**pre 期就已 featured（阶梯已减半）**却落在 newly 组 ⇒ ★★ 「pre/post 同一批对」**只在未 featured 这一维成立**"
-          "⇒ ★★ pre 基线里混着**短阶梯样本** ⇒ ★★ 拉低 pre 的 slow ⇒ ★★ 「post ≤ pre/2」**偏严**。"
-          "⇒ ★ 实测污染：★ M20 normal pre7d **41/154 = 26.6%**（★ 来源几乎全是 `zcode/GLM-5.3-Flash-Trial` 一只："
-          "ladder 150×33 + 1800×8，出现在 11-05/07/09）；★ pre24 normal = **0/21**；★ exempt 两窗口 = **0**。"
+          "⇒ ★★ **`routing_policy.featured_models` 成员的 raw 变体不在 st_old 里**"
+          "⇒ ★★ ★★ **但「rp 成员 pre 期就已 featured」是错的** ✘（★ 实测 rp 的 **34 条全是裸 canonical 名、0 条 namespaced**，"
+          "★ 且修复前只拿 raw 名比 ⇒ **一律命不中**）⇒ ★★ 真正让 namespaced raw 在 pre 期拿到 featured 的是"
+          "**用量 top-N tier**（★ `GROUP BY rl.raw_model_name ORDER BY calls DESC LIMIT $2` ⇒ tier 里存的就是 namespaced raw 名）"
+          "⇒ ★★★ ★★ **该 tier 每 10 分钟刷新 + 24h 滚动窗 ⇒ 「pre 期是否 featured」是逐时刻变动的属性**"
+          "⇒ ★★ ⇒ 同一只模型在同一 pre 窗口里**既有减半样本也有未减半样本**（实测 `zcode/GLM-5.3-Flash-Trial`）"
+          "⇒ ★★★ ⇒ **「人群状态」这一维不可能用成员资格重建**（DB 里没有 tier 的历史）⇒ ★★★ **只能用「阶梯值痕迹」反推**。"
+          "⇒ ★★ 实测污染：★ M20 normal pre7d **47/154 = 30.5%**（★ 来源几乎全是 `zcode/GLM-5.3-Flash-Trial` 一只："
+          "ladder 150×33 + 1800×8 + **90×6**，出现在 11-05/07/09）；★ pre24 normal = **0/21**；★ exempt pre7d = **2/537**。"
           "⇒ ★★ 修法（★ **不改 st_old 口径、不重冻基线**，★ 关窗前重冻风险太高）：① 把污染率固化成 "
-          "`M20_<层>_<窗>_composition` 读数键（n/mul_evidence/clean_n/clean_slow/slow/contam_pct）⇒ ★★ 行内**披露污染率**；"
+          "`M20_<层>_<窗>_composition` 读数键（n/mul_evidence/clean_n/clean_slow/slow/contam_pct/null_ladder_n/"
+          "unexplained_n/unexplained_values）⇒ ★★ 行内**披露污染率**；"
           "② slow 阈值改由「**干净 pre**」推导（★ 干净 pre 与 post 段**同量纲**：post 全是 featured 后）"
-          "⇒ ★★ normal pre7d 干净 slow = 19/113 = **16.8%** ⇒ 阈值 **8.4%**（★ 原 12.3%/2 = 6.15% ⇒ ★★ **偏严 37%**）；"
-          "③ composition 缺失 ⇒ **回退原阈值 + 显式提示「可能偏严」**（★ 不得静默偏严）。"
+          "⇒ ★★ normal pre7d 干净 slow = 19/107 = **17.8%** ⇒ 阈值 **8.9%**（★ 未修正的 12.3%/2 = 6.15% ⇒ ★★ **偏严 45%**）；"
+          "③ composition 缺失 ⇒ **回退原阈值 + 显式提示「可能偏严」**（★ 不得静默偏严）；"
+          "④ ★★ **证据集完备性自检**：★ 每个观测阶梯值必须**可解释**（∈ 未减半空间 ∪ 证据集）"
+          "⇒ ★★ 否则 `unexplained_n > 0` ⇒ ★★ 判定器**显式提示「阈值可能仍偏严」**（★ fail-closed，★ 不整表作废）。"
           "⇒ ★★ 纪律：**「同量纲」不只指窗口长度，也指**人群状态**（★ pre 的这批样本在 post 段会「变样」⇒ 阈值必须同状态）。")
     lines.append("   ㉑ ★★ **M15x 逐对判据未被负控证伪**（★ 只能作为「未被证伪的判据」披露）："
           "★ 负控把 era 切点前移 N 天 ⇒ ★ 负控 era 里 **deepseek 的 normal = 0 条** ⇒ ★★ 它被**自动降级为观察面**"

@@ -1096,6 +1096,30 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
  st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
  newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
+ -- ★★★★ 「乘数已生效」的**证据集**（★ 本轮第 16 处口径修正，★★ 根因翻案后的重算）
+ --   ★★ **机制真相（★ 实测 + 源码双证，★ 推翻本轮早先的解释）**：
+ --   ★★ ① 修复前的 featured 静态集 = rp 各项的 **raw + standardized** 双别名
+ --   ★★    ⇒ rp 的 **34 条全部是裸 canonical 名**（实测 0 条 namespaced）⇒ 对 namespaced raw **一律命不中**
+ --   ★★    ⇒ ⇒ **「rp 成员的 raw 变体 pre 期就已 featured」是错的** ✘
+ --   ★★ ② 真正让 namespaced raw 在 pre 期拿到 featured 的是**用量 top-N**：
+ --   ★★    `SELECT rl.raw_model_name … GROUP BY rl.raw_model_name ORDER BY calls DESC LIMIT $2`
+ --   ★★    ⇒ ★★ tier 里存的就是 **namespaced raw 名** ⇒ **命不中静态集也能 featured**
+ --   ★★ ③ 该 tier **每 10 分钟刷新 + 24h 滚动窗** ⇒ ⇒ ★★ **「pre 期是否 featured」是逐时刻变动的属性**
+ --   ★★    ⇒ ⇒ 同一只模型在同一 pre 窗口里**既有减半样本也有未减半样本**（实测 `zcode/GLM-5.3-Flash-Trial`）
+ --   ★★    ⇒ ⇒ ★★★ **「人群状态」这一维不可能用成员资格重建**（DB 里没有 tier 的历史）
+ --   ★★    ⇒ ⇒ ★★★ **只能用「阶梯值痕迹」反推** ⇒ ★★ 这就是「干净 pre」必须用阶梯值证据集的原因
+ --   ★★ **证据集 = 「未减半阶梯空间」取半后的「独占值」**：
+ --   ★★   未减半空间 = 三条链 ∪ 第四条链 Network[5,15,30,60] ∪ 固定 300/3600
+ --   ★★           = {0,5,10,15,30,60,120,300,900,3600,7200,21600}
+ --   ★★   取半 = {0,2.5,5,7.5,15,30,60,150,450,1800,3600,10800}（★ 5s 下限 ⇒ 2.5→5）
+ --   ★★   **独占（减半后不再属于未减半空间）= {7,150,450,1800,10800}**
+ --   ★★   ★★ 另有**配额对齐**路径产生任意值（实测 30630/30658/180…）⇒ 其减半值也无法枚举
+ --   ★★   ⇒ ⇒ ★★ 实测 normal/pre7d 谱里还有 **90**（=180×0.5，★ 配额对齐值被减半）⇒ **必须一并纳入**
+ --   ★★   ⇒ ⇒ ★★ **最终证据集 = {7,90,150,450,1800,10800}**
+ --   ★★   ⚠️ 早先的 {150,450,1800,10800} **漏了 90** ⇒ 干净 pre 少剔 6 条 ⇒ 阈值偏严 0.5pp
+ ev_set AS (SELECT v FROM (VALUES (7),(90),(150),(450),(1800),(10800)) t(v)),
+ -- ★★ 「未减半阶梯空间」= 链值 ∪ 固定退避（★ 用来判定**有没有漏掉的减半痕迹**）
+ unhalved_set AS (SELECT v FROM (VALUES (0),(5),(10),(15),(30),(60),(120),(300),(900),(3600),(7200),(21600)) t(v)),
  fr AS (
    -- ★★ 与 M14x 的 'all' 口径**逐条对齐**（★ 分层必须穷尽 M14x newly ⇒ 可对拍）
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, n.next_retry_seconds,
@@ -1157,31 +1181,38 @@ WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - inter
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY exemption, win
 UNION ALL
--- ★★★★ M20 的**阶梯构成**读数键（★ 本轮第 14 处口径修正，★★ 判据阈值的「同量纲」问题）
+-- ★★★★ M20 的**阶梯构成**读数键（★ 本轮第 14 处口径修正 + ★ 第 16 处修正，★★ 判据阈值的「同量纲」问题）
 --   ★★ **问题（★ 实测）**：★ 「newly_covered」的定义 = `st_new \ st_old`，而 `st_old` 的
 --   ★★ `rawv_old` **只覆盖「models_canonical.featured=TRUE 且 status='active'」的 raw 变体**
---   ★★ ⇒ ★★ **「routing_policy.featured_models 里某个 canonical 的 raw 变体」不在 st_old 里**
---   ★★ ⇒ ★★ 而 featured 乘数（`globalIsFeaturedModel`）**恰恰对这些 raw 变体生效**
---   ★★ ⇒ ★★ 于是它们**pre 期就已 featured（阶梯已减半）**，却落在「newly」组里
---   ★★ ⇒ ★★ ⇒ 「newly」≠「pre 期未 featured」⇒ ★★ 「pre/post 同一批对」只在**未 featured**
---   ★★   这一维上成立 ⇒ ★★ 「pre/2」阈值被污染 ⇒ ★★ **偏严**（污染样本阶梯短 ⇒ 拉低 pre 的 slow）
---   ★★ **实测**：★ M20 normal pre7d **41/154 = 26.6%** 是这类样本（★ 来源：`zcode/GLM-5.3-Flash-Trial`
---   ★★   一只：ladder 150×33 + 1800×8，出现在 11-05/07/09）；★ pre24 normal **0/21**；
---   ★★   exempt 两窗口 **0** ⇒ ★★ **只有 normal 的 pre7d 被污染** ⇒ ★★ Stage 2 的 slow 阈值
---   ★★   应按「**干净 pre**」推导（16.8%/2 = 8.4%，而原 12.3%/2 = 6.15% ⇒ ★★ **偏严 37%**）
---   ★★ **乘数证据集（★ 无歧义）**：★ 三条链的**未减半并集** =
---   ★★   {0,5,10,15,30,60,120,300,900,3600,7200,21600}
---   ★★   （Node [5,30,60,300,3600,7200,21600] · Active [5,30,120,300,900] · HTTP [0,10,15,30]）
---   ★★ ⇒ ⇒ **只有 {150,450,1800,10800} 是「乘数已生效」的无歧义证据**
---   ★★   （★ 15 在 HTTP 链未减半就有、30 在 Node 链未减半就有 ⇒ ★★ **不可**当证据）
---   ★★ ⇒ 「干净 pre」= 剔除这些样本后的集合 ⇒ ★★ 阈值与 post 段**同量纲**（post 全是 featured 后）
+--   ★★ ⇒ ★★ 「routing_policy.featured_models 里某个 canonical 的 raw 变体」不在 st_old 里
+--   ★★ ⇒ ★★ 而这些 raw 变体在 **pre 期** 是否 featured，★ **取决于逐时刻变动的「用量 top-N」**
+--   ★★   （★ 不是取决于 rp 静态集！★ rp 的 34 条全是裸 canonical 名 ⇒ 命不中 namespaced raw）
+--   ★★ ⇒ ★★ ⇒ 「pre/post 同一批对」只在**「pre 期未 featured」这一维**上成立
+--   ★★ ⇒ ★★ 「pre/2」阈值被污染 ⇒ ★★ **偏严**（污染样本阶梯短 ⇒ 拉低 pre 的 slow）
+--   ★★ **实测（★ 扩展证据集后）**：★ M20 normal pre7d **47/154 = 30.5%** 是这类样本
+--   ★★   （★ 来源几乎全是 `zcode/GLM-5.3-Flash-Trial` 一只：ladder 150×33 + 1800×8 + 90×6，
+--   ★★   出现在 11-05/07/09）；★ pre24 normal **0/21**；★ exempt pre7d **2/537**（ladder 7×2）
+--   ★★ ⇒ ★★ **污染只落在 normal 的 pre7d** ⇒ ★★ Stage 2 的 slow 阈值
+--   ★★   应按「**干净 pre**」推导（17.8%/2 = 8.9%，而**未修正**的 12.3%/2 = 6.15% ⇒ ★★ **偏严 45%**）
+--   ★★ **「干净 pre」= 剔除「乘数已生效」样本后的集合**（★ 证据集见上面的 ev_set）
+--   ★★ **完备性自检（★ 本轮第 16 处修正的核心）**：★ 每个观测到的阶梯值必须**可解释**
+--   ★★   （∈ 未减半空间 ∪ 证据集）⇒ 否则 `unexplained_n > 0` ⇒ ★★ **阈值可能偏严 ⇒ 判定器必须提示复核**
+--   ★★   ⇒ ★★ 这让「证据集不完备」从**一份手写清单**变成**一个可自动检查的字段**（★ 不整表作废，只 fail-closed 提示）
 SELECT 'M20_'||exemption||'_'||win||'_composition' k,
   'n='||COUNT(*)::text
-  ||' | mul_evidence='||(COUNT(*) FILTER (WHERE next_retry_seconds IN (150,450,1800,10800)))::text
-  ||' | clean_n='||(COUNT(*) FILTER (WHERE next_retry_seconds NOT IN (150,450,1800,10800)))::text
-  ||' | clean_slow='||(COUNT(*) FILTER (WHERE recheck_min>300 AND next_retry_seconds NOT IN (150,450,1800,10800)))::text
+  ||' | mul_evidence='||(COUNT(*) FILTER (WHERE next_retry_seconds IN (SELECT v FROM ev_set)))::text
+  ||' | clean_n='||(COUNT(*) FILTER (WHERE next_retry_seconds IS NULL OR next_retry_seconds NOT IN (SELECT v FROM ev_set)))::text
+  ||' | clean_slow='||(COUNT(*) FILTER (WHERE recheck_min>300 AND (next_retry_seconds IS NULL OR next_retry_seconds NOT IN (SELECT v FROM ev_set))))::text
   ||' | slow='||(COUNT(*) FILTER (WHERE recheck_min>300))::text
-  ||' | contam_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_retry_seconds IN (150,450,1800,10800))/COUNT(*),1)::text v
+  ||' | contam_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_retry_seconds IN (SELECT v FROM ev_set))/COUNT(*),1)::text
+  ||' | null_ladder_n='||(COUNT(*) FILTER (WHERE next_retry_seconds IS NULL))::text
+  ||' | unexplained_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds IS NOT NULL
+        AND next_retry_seconds NOT IN (SELECT v FROM ev_set)
+        AND next_retry_seconds NOT IN (SELECT v FROM unhalved_set)))::text
+  ||' | unexplained_values='||COALESCE(string_agg(DISTINCT next_retry_seconds::text, ',' ORDER BY next_retry_seconds::text)
+        FILTER (WHERE exemption='normal' AND next_retry_seconds IS NOT NULL
+          AND next_retry_seconds NOT IN (SELECT v FROM ev_set)
+          AND next_retry_seconds NOT IN (SELECT v FROM unhalved_set)), '-') v
 FROM exp
 WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
