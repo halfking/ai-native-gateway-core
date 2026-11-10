@@ -252,6 +252,51 @@ GEOMETRY_QUOTES = [
 ]
 
 
+# ★★★ 第 34 处（★ 2026-11-11 04:4x +08）：★ **归档片段必须包含关窗当天要归档的「全部要素」**
+#   ★★ 形态：★ 片段原本只有「步骤链 / 几何与守卫 / 裁决表 / ❌ 明细 / 诚实边界」五节
+#   ★★ ⇒ ★★ **量具守卫全量（26 项）**、**M15/M15x 逐对明细**、**H5 逐模型读数**、**指标条数** 都**不在**片段里
+#   ★★ ⇒ ★★ 关窗作者要归档它们 ⇒ ★★ 只能回日志**手抄** ⇒ ★★ 手抄 = 漂移 = 漏限定条件
+#   ⇒ ★★ 修法：★ 片段**逐字**带上这四块 + ★★ 一道「片段完整性」守卫（★ 缺任一块 ⇒ **rc≠0**）
+JUDGE_BLOCK_SPECS = [
+    ("指标条数", "   指标条数：", ("== ",)),
+    ("量具守卫", "== 量具守卫", ("== ",)),
+    ("逐对明细", "== M15 逐对明细", ("== ",)),
+    ("H5 逐模型", "   H5 featured 真实高频模型", ("★ 诚实边界", "== ")),
+]
+
+
+def extract_judge_blocks(text: str) -> dict[str, list[str]]:
+    """★ 从**判定器输出**里**逐字**摘出关窗要归档的块（★ 缺块 ⇒ 返回里就没有 ⇒ 守卫会红）"""
+    out: dict[str, list[str]] = {}
+    for label, start, stops in JUDGE_BLOCK_SPECS:
+        got: list[str] = []
+        on = False
+        for ln in text.splitlines():
+            if not on:
+                if start in ln:
+                    on = True
+                    got.append(ln)
+                continue
+            if any(ln.startswith(p) for p in stops):
+                break
+            got.append(ln)
+        out[label] = got
+    return out
+
+
+def find_verdict_output(step_log) -> str:
+    """★ 从步骤链里找出**真实判定**那一步的输出（★ ★ 不是自测那步）。
+
+    ★ ★ 为什么要专门找：★ 归档片段里的「量具守卫 / 逐对明细 / H5 / 指标条数」都出自它
+    ★ ★ ⇒ ★★ 认错了步骤 ⇒ ★★ 摘到**自测**的输出 ⇒ ★★ 片段里全是无关内容 ⇒ ★★ 归档不可信
+    """
+    for s, _rc, out in step_log:
+        cmd = getattr(s, "cmd", [])
+        if any(str(c).endswith("recovery-detection-p0-3-verdict.py") for c in cmd) and "--stage" in cmd:
+            return out
+    return ""
+
+
 def build_report_markdown(stage: int, dnow, close_ts, rows, boundaries,
                           step_log, failures) -> str:
     """★ 生成**可归档**的 markdown 裁决片段。
@@ -289,6 +334,16 @@ def build_report_markdown(stage: int, dnow, close_ts, rows, boundaries,
             if ln:
                 L.append(f"- **{label}**：{ln}")
     L.append("")
+    # ★★★ 第 34 处：★ 把**关窗要归档的其余要素**也**逐字**带上（★ 否则关窗当天只能手抄）
+    _blocks = extract_judge_blocks(find_verdict_output(step_log))
+    L.append("#### ②b 判定器读数摘录（★ 从**真实判定**那一步**逐字摘录** ⇒ ★ 关窗当天**不必手抄**）")
+    L.append("")
+    for label, _start, _stops in JUDGE_BLOCK_SPECS:
+        L.append(f"**★ {label}**")
+        L.append("")
+        for ln in _blocks.get(label, []):
+            L.append(ln)
+        L.append("")
     L.append(f"#### ③ 裁决表（★ 符号**保持原样** ⇒ 门不钝化）")
     L.append("")
     L.append("| 判据 | 符号 | 裁决 |")
@@ -474,6 +529,22 @@ def main() -> int:
                             f"⇒ ★ 缺 {len(_miss)} 条 / 多 {len(_extra)} 条 ⇒ ★ **归档片段不可信**")
         else:
             print(f"★★ ✔ 裁决片段自校验：★ {len(_src)} 条诚实边界**逐字一致**")
+        # ★★★ **第 34 处**：★ **片段完整性守卫**（★ 缺要素 ⇒ 关窗当天只能手抄 ⇒ ★★ 片段不可信 ⇒ **rc≠0**）
+        _txt = rp.read_text(encoding="utf-8")
+        _miss = [lb for lb, st, _sp in JUDGE_BLOCK_SPECS if st.strip() not in _txt]
+        if _miss:
+            failures.append(f"[裁决片段] **缺要素** {_miss}（★ 关窗当天只能回日志**手抄** ⇒ ★★ "
+                            f"归档片段不可信 ⇒ ★ **不得用它出结论**）")
+        else:
+            # ★★ H5 必须**逐模型多行**（★ 第 32 处：★ 若只有 1 行 ⇒ ★★ 采集侧又出现一对多键 ⇒ ★★ 读数不可信 ⇒ 停）
+            _h5n = sum(1 for ln in _txt.splitlines()
+                       if ln.startswith("      - ") and "probes_24h=" in ln)
+            if _h5n < 2:
+                failures.append(f"[裁决片段] H5 只有 {_h5n} 行（★ 必须是**逐模型**多行 ⇒ ★ 若只有 1 行 ⇒ "
+                                f"★★ 采集侧又出现一对多键 ⇒ ★★ 读数不可信 ⇒ **停**）")
+            else:
+                print(f"★★ ✔ 裁决片段完整性：★ 四个要素齐（★ 指标条数 / 量具守卫 / 逐对明细 / H5）"
+                      f"＋ ★ H5 逐模型 **{_h5n}** 行")
         print(f"★★ 裁决片段（★ 可直接归档）：{rp}")
 
     if failures:
