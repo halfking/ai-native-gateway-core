@@ -455,6 +455,50 @@ def percentile_fragility_disclosure(n_post, n_pre, pct_label: str) -> str:
             f"⇒ ★★ 且 {pct_label} 的**真实差**须配合 ㉭ 的 raw 读数一起读")
 
 
+def cross_window_disclosure(mature_n, fp_n_all, window_n=None, tail_n=None) -> str:
+    """★★★ 第 13 处纪律的**最后一个候选点**：★★ **同一行里并列出现的两个 n 可能来自不同窗口**
+
+    ★★ **形态（★ 211 真库实测，★ 2026-11-11 05:2x）**：★ M20 的 post 段有**两个视图**：
+    ★ · **成熟视图**（★ `M20_<层>_post`）：★ 带两道只对「已结算段」成立的过滤
+    ★   （★ ① `fail_at < now() - 6h`（成熟度）★ ② `next_at IS NOT NULL`（LEAD 必须找到下一次探测））
+    ★   ⇒ ★★ 它覆盖到「读数时刻 − 6h」
+    ★ · **指纹视图**（★ `M20_<层>_post_fp`）：★ 无成熟度过滤、无 next_at 要求 ⇒ ★★ 覆盖到「读数时刻」
+    ★ ⇒ ★★ 两个视图的 **n 本来就不同**（★ 成熟视图 = fp 视图 − 尾部 6h − 无 next_at 的那部分）
+    ★ ⇒ ★★ ⇒ ★★ **把两个 n 并列写在一行、却不标明各自窗口** ⇒ ★★ 读者会自然地拿它们相比
+    ★   ⇒ ★★ **读成「fp 比成熟视图多出 X 条 ⇒ 尾部有回归」** ⇒ ★★ **这是误读**
+    ★   （★ 那 X 条**本来就该在 fp 里** ⇒ ★★ 指纹分量的设计就是要看见它们）
+    ★ ⇒ ★★ ⇒ **行内必须显式给出两个 n 各自的窗口**（★ 这也是第 26 处「跨窗比分位数必须同时报两边的 n」的同款）
+
+    ★ ★★ **处置**：★ **只披露，不改裁决符号**（★ ❌ 仍是 ❌ ⇒ 门不钝化）
+    ★ ★★ **不制造噪声**：★ 两个 n 相等 ⇒ 无混淆风险 ⇒ 不披露。
+    """
+    if mature_n is None or fp_n_all is None:
+        return ""
+    try:
+        mature_n = float(mature_n)
+        fp_n_all = float(fp_n_all)
+    except (TypeError, ValueError):
+        return ""
+    if fp_n_all == mature_n:
+        return ""      # ★ 两视图同数 ⇒ 不披露（★ 不得制造噪声）
+    tail_txt = ""
+    if window_n is not None and tail_n is not None:
+        try:
+            tail_txt = (f"（★ 切分：成熟段 {float(window_n):.0f} 条 + 尾部 6h {float(tail_n):.0f} 条"
+                        f" = fp {fp_n_all:.0f} 条）")
+        except (TypeError, ValueError):
+            tail_txt = ""
+    diff_txt = ""
+    if fp_n_all > mature_n:
+        diff_txt = (f"（★ fp 多出的 {fp_n_all - mature_n:.0f} 条**本来就该在 fp 里**"
+                    f" ⇒ ★ **不是「尾部有回归」）")
+    return (f" ★ ⚠️ **两个 n 不同窗口（第 13 处纪律）**：★ 成熟视图 n={mature_n:.0f}"
+            f"（★ 覆盖到「读数时刻 − 6h」⇒ ★ **慢事件需结算**）"
+            f" vs fp 视图 n_all={fp_n_all:.0f}"
+            f"（★ 覆盖到「读数时刻」⇒ ★ **指纹无需结算**）{tail_txt}"
+            f" ⇒ ★★ **两个 n 不可直接相减/相比**{diff_txt}")
+
+
 def control_phase_disclosure(data: dict[str, str], scope: str, pre_med: float) -> str:
     """★★★ 第 21 处口径修正：★ 「对照组」的**相位/构成**披露（★ 只披露，★ **不改裁决语义**）
 
@@ -1277,12 +1321,18 @@ def judge(data: dict[str, str], stage: int = 1,
             obs_txt = (f"【指纹·fp】{fobs or '—（键未产出）'}"
                        f" || 【slow·成熟】{obs or '—（未结算）'}"
                        f" || 【摇摆】{sw or '—（键未产出）'}")
+            # ★★★★ 第 13 处纪律的最后一处候选点：★ **同一行里两个 n 来自不同窗口** ⇒ 必须显式标明
+            _split_e = data.get(f"M20_{lay}_post_split")
+            xwin_txt = cross_window_disclosure(n, field(fobs, "n_all"),
+                                                field(_split_e, "window_n"),
+                                                field(_split_e, "tail_n"))
             rows.append((label, base_txt, obs_txt,
                          verdict(ok, f"★ 【指纹·fp 视图（★ 无成熟度过滤 ⇒ 尾部不被截断）】{fp_txt}"
                                    f" / ★ 【slow·成熟视图（★ 需 6h 结算）】{slow_txt}{p90_txt}"
                                    f" / ★ 【摇摆（★ featured 状态稳定性）】{swing_txt}"
                                    f"（★ ★ 两分量**跨度不同**：★ 指纹覆盖到「读数时刻」，"
                                    f"★ slow 覆盖到「读数时刻 − 6h」⇒ ★ 行内数字不可直接相加）"
+                                   f"{xwin_txt}"
                                    f"{bias_txt}{contam_txt}")))
         else:
             if n is None or n < 10:
@@ -1310,11 +1360,16 @@ def judge(data: dict[str, str], stage: int = 1,
                 if _ftop is not None:
                     fctl = (f" ★（★ 对照：豁免类在 fp 口径的未减半 6h 顶格 {_ftop:.0f} 条"
                             f"（★ 设计上钉 6h ⇒ **期望 >0** ⇒ 若为 0 ⇒ 说明分层或机制变了））")
+            # ★★★★ 第 13 处纪律的最后一处候选点：★ **本行同时引用了两个视图** ⇒ 两个 n 必须标明窗口
+            _split_x = data.get(f"M20_{lay}_post_split")
+            xwin_txt = cross_window_disclosure(n, field(fobs, "n_all"),
+                                                field(_split_x, "window_n"),
+                                                field(_split_x, "tail_n"))
             rows.append((label, base_txt, obs,
                          verdict(ok, f"★ 豁免类（★ 协议形态：设计上钉 6h、乘数豁免）post p90_gap={p90:.0f}"
                                    f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                                    f" ⇒ {'未变慢（不回归成立）' if ok else '★ 豁免类被拖慢'}"
-                                   f"（★ n={n}）{fctl}{contam_txt}{rnd_txt}")))
+                                   f"（★ n={n}）{fctl}{xwin_txt}{contam_txt}{rnd_txt}")))
 
     # ── M11：episode 层症状 ──────────────────────────────────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
@@ -2534,6 +2589,34 @@ def selftest() -> int:
         failures.append(f"[㉱ 小样本披露] post n 与 pre n 相当（200 vs 226）时**不得**出现「小样本分位数不稳」"
                         f"（★ 守卫必须是结构判据，不是关键词匹配）⇒ {_v26e}")
 
+    # ㉴ ★★★★ **第 13 处纪律的最后一个候选点**：★ 「同一行里两个 n 来自不同窗口」的披露必须出现
+    #   ★★ 形态：★ M20 的**豁免行**也引用了 fp 视图（★ 对照读数：未减半 6h 顶格）⇒ ★★ 一行里出现两个 n
+    #   ★★   ⇒ ★★ 读者会自然地拿它们相比 ⇒ ★★ 读成「fp 多出的 X 条 ⇒ 尾部有回归」⇒ ★★ **误读**
+    #   ★★ ⇒ ★★ 行内必须显式标明两个 n 各自的窗口
+    #   ★★ ⇒ ★★ 断言必须是**行为级**（★ 真的构造两个视图 n 不同的数据再跑 judge）
+    if "㉔" not in hb or "两个 n" not in hb:
+        failures.append("[㉴ 诚实边界] 缺少「同一行里出现两个 n 时必须标明各自窗口」这条边界（★ 第 13 处纪律）")
+    if "豁免" not in hb or "fp 视图" not in hb:
+        failures.append("[㉴ 诚实边界] 缺少「豁免行同样引用 fp 视图 ⇒ 两个 n 同源不同窗」这个关键事实")
+    # ★★ **行为守卫**：★ 合成数据里成熟视图 n=57、fp 视图 n_all=4 ⇒ ★ 必须行内披露
+    _d27 = _synthetic(True)
+    _rows27, _, _ = judge(_d27, stage=1)
+    _v27 = rows_by_label(_rows27).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "两个 n 不同窗口" not in _v27:
+        failures.append(f"[㉴ 跨窗口披露] M20 豁免行同时引用两个视图时必须行内披露"
+                        f"「两个 n 不同窗口」（★ 第 13 处纪律）⇒ {_v27}")
+    if "n=57" not in _v27 or "n_all=4" not in _v27:
+        failures.append(f"[㉴ 跨窗口披露] 披露里必须**同时给出两个 n 的数字**（★ 成熟 57 / fp 4）⇒ {_v27}")
+    # ★★ **反向守卫**：★ 两个 n 相等 ⇒ **不得**出现该披露（★ 不得制造噪声）
+    _d27b = _synthetic(True)
+    _d27b["M20_exempt_post_fp"] = ("n_all=57 | top21600_n=4 | top10800_n=0 | mul_evidence_n=0"
+                                   " | ladder_p50=360 | ladder_max_s=21600")
+    _rows27b, _, _ = judge(_d27b, stage=1)
+    _v27b = rows_by_label(_rows27b).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "两个 n 不同窗口" in _v27b:
+        failures.append(f"[㉴ 跨窗口披露] 两个视图的 n 相等（57 vs 57）时**不得**出现「两个 n 不同窗口」"
+                        f"（★ 守卫必须是结构判据，不是关键词匹配）⇒ {_v27b}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2592,6 +2675,9 @@ def selftest() -> int:
     print("   ✔ ㉱ ★★★ 诚实边界必须含「分位数是秩统计量 ⇒ 样本量小的时候极不稳定」"
           "＋ ★ **行为守卫**：★ post n ≪ pre n 时 M14x 旧 featured 判 ❌ 必须行内披露「小样本分位数不稳」"
           "＋ ★ 样本量相当时**不得**出现该披露（★ 假阳性也要治）")
+    print("   ✔ ㉴ ★★★★ **第 13 处纪律的最后一个候选点**：★ 「同一行里两个 n 来自不同窗口」必须行内披露"
+          "（★ M20 **豁免行也引用 fp 视图** ⇒ 成熟 n vs fp n_all 不同窗 ⇒ 不可相减 ⇒ 不得读成「尾部有回归」）"
+          "＋ ★ 披露须**同时给出两个 n 的数字** ＋ ★ 两个 n 相等时**不得**出现该披露（★ 假阳性也要治）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2671,8 +2757,16 @@ def honest_boundary_lines() -> list[str]:
           "{7,90,150,450,1800,10800} ∉ 未减半空间 ⇒ ★ 只能是乘数产生的；★ 且 **量具正控**：★ pre 侧同口径"
           "必须能读到未减半顶格 ⇒ 否则「**量具无鉴别力 ⇒ post 的 0 不可解释**」⇒ fail-closed）；"
           "② **slow** 仍读成熟段（★ 固有 6h 结算延迟 ⇒ 行内披露「两分量跨度不同」）。"
+          "⇒ ★★★★ **★ 补（第 13 处纪律的最后一个候选点，★ 2026-11-11 05:2x 实测）**："
+          "★ **不只有 normal 行有两个视图** ⇒ ★ **豁免行同样引用了 fp 视图**（★ 对照读数：未减半 6h 顶格）"
+          "⇒ ★★ ⇒ ★★ **一行里并列出现的两个 n 可能来自不同窗口** ⇒ ★★ 读者会自然地拿它们相比"
+          "⇒ ★★ **读成「fp 比成熟视图多出 X 条 ⇒ 尾部有回归」** ⇒ ★★ **这是误读**"
+          "（★ ★ 那 X 条**本来就该在 fp 里** ⇒ ★ 指纹分量的设计就是要看见它们）"
+          "⇒ ★★ ⇒ **行内必须显式给出两个 n 各自的窗口**（★ `cross_window_disclosure()`）"
+          "⇒ ★★ 且 **两个 n 相等时不披露**（★ 不得制造噪声）。"
           "⇒ ★★ **纪律：★ 凡判据有多个分量，先逐分量问一句「这个量需要等结算吗」；"
-          "★ 需要与不需要的，必须分视图读，否则尾部会静默失明。**")
+          "★ 需要与不需要的，必须分视图读，否则尾部会静默失明；"
+          "★ ★★ 且**同一行里出现两个 n 时，必须标明各自窗口**（★ 否则读者会误读成「尾部有回归」）。**")
     lines.append("   ㉕ ★★★★ **观测窗口中途的部署 ⇒ 必须显式核查「机制连续性」，不能假设**（★ 2026-11-10 19:01 实测）："
           "★ era2（★ build_seq 2995 / sha 8028459d）在 **2026-11-10 19:01:04 +08** 被 SIGKILL(137) 停掉，"
           "★ 由 **build_seq 2996 / sha b92313da**（★ P0-B streaming 修复）接管 ⇒ ★★ **post 窗口跨越两个构建**。"
