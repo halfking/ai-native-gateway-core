@@ -312,6 +312,41 @@ def judge(data: dict[str, str], stage: int = 1,
     else:
         g18 = f"✔ {m18_seen} 个 pre 基线键与冻结值一致"
     guards.append(("M18 pre 基线冻结一致性", g18))
+    # ★★★ M19 守卫（★ 本轮新增）：★★ **口径的结构性不变量**（★ 不需要知道冻结值就能查）
+    #   · ★★ **all 口径的样本空间是 free 的超集** ⇒ all 事件数必须 ≥ free 事件数
+    #     （★ 一旦 all < free ⇒ 两套口径自相矛盾 ⇒ 判据读数不可信）
+    #   · ★★ **桶间加法**：pre7d = pre6d + pre24（★ 标签与边界不符 ⇒ 必破）
+    #   ★★ 这两条是**结构性质**⇒ ★★ 换 era 切点、换数据量都应成立 ⇒ ★★ 比 M18 的冻结值更通用
+    #   ★★ 教训（本轮真踩到）：★ 终端回显把长行吞了字符 ⇒ 一度看成「all 比 free 还少」的幻影
+    #   ★★ ⇒ ★ **断言必须基于落盘原字节**（od/grep），★ 不基于终端回显
+    m19_bad: list[str] = []
+    m19_seen = 0
+    for win in ("pre6d", "pre24", "pre7d", "post"):
+        for grp in ("newly_covered", "old_feat", "other"):
+            nf = head_count(data.get(f"M14_{win}_{grp}", "") or "")
+            na = head_count(data.get(f"M14x_{win}_{grp}", "") or "")
+            if nf is None or na is None:
+                continue
+            m19_seen += 1
+            if na < nf:
+                m19_bad.append(f"{win}/{grp}: all={na} < free={nf}")
+    for scope in ("M14", "M14x"):
+        for grp in ("newly_covered", "old_feat", "other"):
+            n6 = head_count(data.get(f"{scope}_pre6d_{grp}", "") or "")
+            n24 = head_count(data.get(f"{scope}_pre24_{grp}", "") or "")
+            n7 = head_count(data.get(f"{scope}_pre7d_{grp}", "") or "")
+            if n6 is None or n24 is None or n7 is None:
+                continue
+            m19_seen += 1
+            if n7 != n6 + n24:
+                m19_bad.append(f"{scope}/{grp}: pre7d={n7} ≠ pre6d+pre24={n6 + n24}")
+    if m19_bad:
+        g19 = "★★ **口径自相矛盾**：" + "; ".join(m19_bad)
+    elif m19_seen == 0:
+        g19 = "（未产出可对拍的窗口键 ⇒ 本次未对拍）"
+    else:
+        g19 = f"✔ {m19_seen} 组结构性不变量成立（all≥free、pre7d=pre6d+pre24）"
+    guards.append(("M19 口径结构不变量", g19))
     # ★★ 守卫**缺失**（指标没产出 / SQL 出错）⇒ 同样判失败
     #    （★ 旧写法只看有没有 '★★' ⇒ 守卫空值会被当成「通过」⇒ 整表被信任）
     bad = [name for name, val in guards if "★★" in val or not val.strip()]
@@ -792,6 +827,38 @@ def selftest() -> int:
     if "M14x 新覆盖人群（★ 效应）" not in by:
         failures.append("[⑨ 双口径] 全计费口径的效应行缺失")
 
+    # ⑩ ★★★ **M19 守卫**：★ 口径的结构性不变量（★ **不需要知道冻结值**就能查）
+    #   ★★ all ≥ free（样本空间包含关系）+ pre7d = pre6d + pre24（桶间加法）
+    #   ★★ 换 era 切点、换数据量都应成立 ⇒ ★★ 比 M18 的冻结值更通用
+    WINDOW_KEYS = {
+        "M14_pre6d_newly_covered": 447, "M14_pre24_newly_covered": 14,
+        "M14_pre7d_newly_covered": 461, "M14x_pre6d_newly_covered": 613,
+        "M14x_pre24_newly_covered": 78, "M14x_pre7d_newly_covered": 691,
+    }
+
+    def _with_window_keys(dd, overrides=None):
+        dd = dict(dd)
+        for k, n in WINDOW_KEYS.items():
+            dd[k] = f"{n} events | med_min=2 | p90_min=360 | p99_min=1390 | max_min=5523 | slow_gt300_pct=10.3"
+        if overrides:
+            dd.update(overrides)
+        return dd
+
+    rows, bad, guards = judge(_with_window_keys(_synthetic(True)))
+    g19 = dict(guards).get("M19 口径结构不变量", "")
+    if not g19.startswith("✔"):
+        failures.append(f"[⑩ M19 守卫] 自洽的窗口键应通过守卫 ⇒ {g19}")
+    if bad:
+        failures.append(f"[⑩ M19 守卫] 自洽的窗口键不应触发守卫失败 ⇒ {bad}")
+
+    rows, bad, guards = judge(_with_window_keys(
+        _synthetic(True), {"M14x_pre7d_newly_covered": "10 events | med_min=2 | p90_min=360"}))
+    g19 = dict(guards).get("M19 口径结构不变量", "")
+    if "★★" not in g19:
+        failures.append(f"[⑩ M19 守卫] all<free 时应报警 ⇒ {g19}")
+    if not bad:
+        failures.append("[⑩ M19 守卫] all<free 时守卫未判失败")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -804,8 +871,9 @@ def selftest() -> int:
     print("   ✔ ④ 守卫失败/缺失 ⇒ 整表作废")
     print("   ✔ ⑤ Stage 1 / Stage 2 各用**同量纲**基线（pre24 vs pre7d）")
     print("   ✔ ⑥⑦ 每个判据分量（p90 / p99 / slow）都能被单独变异抓住")
-    print("   ✔ ⑧ M18 守卫：★ pre 基线与冻结值不一致 ⇒ 报警并整表作废")
+    print("   ✔ ⑧ M18 守卫：★ pre 基线与冻结值不一致 ⇒ 报警并整表作废（★ 且 ⑧b 断言它**真的比对过**）")
     print("   ✔ ⑨ 两个计费口径都出行；★ 某口径样本不足时**点名另一口径**")
+    print("   ✔ ⑩ M19 守卫：★ 口径结构不变量（all≥free、pre7d=pre6d+pre24）⇒ 自洽通过 / 矛盾报警")
     print("\n== 合成数据自测通过 ==")
     return 0
 
