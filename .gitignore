@@ -36,6 +36,7 @@
 /gateway
 /gateway-v2
 /compression-bench
+/context-layering-bench
 bin/
 dist/
 build/

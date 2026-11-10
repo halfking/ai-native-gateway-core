@@ -64,6 +64,13 @@ type Config struct {
 	ControlScopeDisabled bool
 	// Now 时钟（测试可注入）。
 	Now func() time.Time
+	// LocalTools 是网关本地工具注册表（由网关自己执行，不经上游适配器）。
+	//
+	// ★ 零值 / nil ⇒ 没有任何本地工具 ⇒ 行为与引入本字段前完全一致。
+	//   用途：把「网关自有的记忆能力」（按步取回明细 / 语义召回长期记忆）
+	//   以 MCP 工具的形式暴露给 MCP 客户端 —— 现状 mcp 包的 tools/call
+	//   只支持上游适配器，网关自有能力无法被列出、更无法被调用。
+	LocalTools *LocalToolRegistry
 }
 
 // Gateway 是 MCP 网关。
@@ -341,6 +348,8 @@ func (g *Gateway) handleToolsList(ctx context.Context, id *Identity, r *http.Req
 		return nil, Errorf(CodeInternalError, "list adapters: %s", err.Error()), http.StatusInternalServerError
 	}
 	views := make([]ToolView, 0, 32)
+	// ★ 网关本地工具也要出现在清单里 —— 否则客户端根本不知道有这条路可走。
+	views = append(views, g.localToolViews(id)...)
 	for _, a := range adapters {
 		if !a.Enabled {
 			continue
@@ -456,6 +465,13 @@ func (g *Gateway) handleToolsCall(ctx context.Context, id *Identity, r *http.Req
 	args, err := decodeArgs(params.Arguments)
 	if err != nil {
 		return nil, RPCErrorOf(err), http.StatusOK
+	}
+
+	// ── 网关本地工具（由网关自己执行，不经上游适配器）──
+	// ★ 必须放在 resolveTool **之前**：本地工具没有 Adapter 记录，
+	//   resolveTool 对没有适配器的工具直接 ErrNotFound。
+	if lt, ok := g.localTool(params.Name); ok {
+		return g.handleLocalToolCall(ctx, id, r, lt, args)
 	}
 
 	tool, adapter, err := g.resolveTool(ctx, id.TenantID, params.Name)

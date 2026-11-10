@@ -751,6 +751,17 @@ def judge(data: dict[str, str], stage: int = 1,
                         f"先分辨「设计内恢复探测」与「调度失控」再定责）")
                 # ★★★ 第 22 处口径修正：★ 把「基线口径问题」摆进行内（★ 只披露，不改符号）
                 note += m5_baseline_disclosure(data, n, lim)
+                # ★★★ 2026-11-11 关窗预演补（与第 22 处互补）：★ **增量归因**分解
+                #   ★（第 22 处回答「阈值是否成立」；本键回答「增量从哪来」）
+                #   ★ 预演实测：credential_recovery 持平 / periodic +3.7%（era2 新覆盖变体
+                #   入调度，设计内）/ sync_request +131%（恢复链再探测，设计内＝本轮
+                #   修复的目的行为）⇒ ❌ 的增量可完全归因 ⇒ 只披露，不改符号。
+                bk = (data.get("M5_probe_runs_24h_by_kind") or "").strip()
+                if bk:
+                    note += f" ‖ ★ 增量归因（by_kind）: {bk}"
+                else:
+                    note += (" ‖ ★ 增量归因不可见（键 M5_probe_runs_24h_by_kind 未产出"
+                             " ⇒ 无法分辨「设计内恢复探测」与「调度失控」）")
             else:
                 note = "指标缺失（脚本未产出该键）"
             rows.append((label, base_cell(key), obs, verdict(ok, note)))
@@ -1393,6 +1404,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
                                  " | max=9905 | total=48502"),
         "M5_post_runs_by_day": ("days=11-10:4218,11-11:115 | n_days=2 | min=115"
                                 " | max=4218 | total=4333"),
+        # ★ 2026-11-11 关窗预演补：★ M5 的 **by_kind 分解**（★ 真捕获 2026-11-11 00:5x / 211；
+        #   ★★ now()-锚定滚动 24h 窗（与 M5 主键同窗）⇒ **不进** CLOCK_INDEP_KEYS
+        #   ★（★ 关窗时刻 now=切点+24h ⇒ 读数恰好 = 纯 post 段））
+        "M5_probe_runs_24h_by_kind": ("credential_recovery=6082 | periodic=3282 | sync_request=450"
+                                      " | admin=0 | external_async=0 | integrity_probe_planner=0"
+                                      " | manual=0 | other=0 | request_failure=0 | selfcheck=0"),
         "M3b_backoff_ns_featured_err_http_429": f"5 rows | median_retry_s={m3b_f429}",
         "M3b_backoff_ns_not_err_http_429": f"9 rows | median_retry_s={m3b_n429}",
         "M3b_backoff_ns_featured_err_http_503": f"4 rows | median_retry_s={m3b_f503}",
@@ -2163,14 +2180,14 @@ def selftest() -> int:
     if "M5" not in hb or "基线口径" not in hb:
         failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
 
-    # ㉡ ★★★★ **诚实边界必须包含「负控几何」这条**（★ 第 23 处口径修正）
+    # ㉣ ★★★★ **诚实边界必须包含「负控几何」这条**（★ 第 23 处口径修正）
     hb = "\n".join(honest_boundary_lines())
     if "负控" not in hb or "几何" not in hb:
-        failures.append("[㉡ 诚实边界] 缺少「负控的窗口几何必须与被验收窗口一致」边界")
+        failures.append("[㉣ 诚实边界] 缺少「负控的窗口几何必须与被验收窗口一致」边界")
     if "假红" not in hb:
-        failures.append("[㉡ 诚实边界] 缺少「原负控里旧 featured 判 ❌ 是几何错配造成的假红」提醒")
+        failures.append("[㉣ 诚实边界] 缺少「原负控里旧 featured 判 ❌ 是几何错配造成的假红」提醒")
 
-    # ㉢ ★★★★ **跨脚本守卫：★ 负控脚本必须真的做几何对齐**（★ 第 23 处口径修正）
+    # ㉤ ★★★★ **跨脚本守卫：★ 负控脚本必须真的做几何对齐**（★ 第 23 处口径修正）
     #   ★★ 负控脚本若被回退（★ 只平移切点、不平移 now()）⇒ ★★ 负控仍是「~35h 窗口」
     #   ⇒ ★★ **与验收几何不一致** ⇒ ★★ 负控的绿不能代表验收窗口 ⇒ ★★ 门没牙
     #   ⇒ ★★ ⇒ 断言它**真的**含「now() 随切点平移」的实现（★ 跨文件断言 ⇒ 守得住）
@@ -2178,14 +2195,33 @@ def selftest() -> int:
         negsrc = Path(__file__).with_name("recovery-detection-p0-3-negcontrol.py").read_text(encoding="utf-8")
     except Exception as e:  # ★ 读不到 ⇒ 必须判失败（★ 不得静默跳过）
         negsrc = ""
-        failures.append(f"[㉢ 负控几何守卫] 读不到负控脚本 ⇒ {e}")
+        failures.append(f"[㉤ 负控几何守卫] 读不到负控脚本 ⇒ {e}")
     if negsrc:
         if "build_shifted_sql" not in negsrc:
-            failures.append("[㉢ 负控几何守卫] 负控脚本里没有 `build_shifted_sql`（★ 几何对齐的实现）")
+            failures.append("[㉤ 负控几何守卫] 负控脚本里没有 `build_shifted_sql`（★ 几何对齐的实现）")
         if 'replace("now()"' not in negsrc:
-            failures.append("[㉢ 负控几何守卫] 负控脚本没有把 `now()` 平移（★ 负控仍是错几何 ⇒ 门没牙）")
+            failures.append("[㉤ 负控几何守卫] 负控脚本没有把 `now()` 平移（★ 负控仍是错几何 ⇒ 门没牙）")
         if "asof" not in negsrc:
-            failures.append("[㉢ 负控几何守卫] 负控脚本没有 as-of 概念（★ post 窗口长度未对齐验收窗口）")
+            failures.append("[㉤ 负控几何守卫] 负控脚本没有 as-of 概念（★ post 窗口长度未对齐验收窗口）")
+    # ㉡ ★★★★ **M5 判 ❌ 时必须给出「增量归因（by_kind）」分解**（★ 2026-11-11 关窗预演补；
+    #   ★★ 与第 22 处「基线口径」互补：★ 那边回答「阈值是否成立」；这边回答「增量从哪来」）
+    rows, _, _ = judge(_synthetic(False), stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "增量归因（by_kind）" not in v:
+        failures.append(f"[㉡ M5 增量归因] M5 判 ❌ 时行内必须给出「增量归因（by_kind）」分解 ⇒ {v}")
+    if "sync_request=" not in v:
+        failures.append(f"[㉡ M5 增量归因] 分解里必须能看到逐 kind 计数（如 sync_request=）⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉡ M5 增量归因] 裁决符号**不得**被软化（★ ❌ 仍是 ❌）⇒ {v}")
+    # ★★ by_kind 键**缺失** ⇒ 必须显式说「增量归因不可见」（★ 不得静默只留基线口径披露）
+    d = _synthetic(False)
+    d.pop("M5_probe_runs_24h_by_kind", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "增量归因不可见" not in v:
+        failures.append(f"[㉡ M5 增量归因] by_kind 键缺失时必须写明「增量归因不可见」⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉡ M5 增量归因] 键缺失时裁决符号**不得**被软化 ⇒ {v}")
 
     print("== 判定器合成数据自测 ==")
     if failures:
@@ -2227,8 +2263,10 @@ def selftest() -> int:
     print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
     print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
     print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
-    print("   ✔ ㉡ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
-    print("   ✔ ㉢ ★★★ **跨脚本守卫**：★ 负控脚本必须真的把 `now()` 随 era 切点平移（★ 否则门没牙）")
+    print("   ✔ ㉡ ★★★ M5 判 ❌ 时必须给出「增量归因（by_kind）」分解（★ 回答「增量从哪来」）"
+          "（★ 与 ㉟ 的「基线口径」互补：★ 那边答「阈值是否成立」、★ 这边答「增量从哪来」）")
+    print("   ✔ ㉣ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
+    print("   ✔ ㉤ ★★★ **跨脚本守卫**：★ 负控脚本必须真的把 `now()` 随 era 切点平移（★ 否则门没牙）")
     print("\n== 合成数据自测通过 ==")
     return 0
 

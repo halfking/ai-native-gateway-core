@@ -1,0 +1,217 @@
+{
+  "window": 200000,
+  "local_window": 32768,
+  "tail_msgs": 4,
+  "locales": [
+    {
+      "locale": "en",
+      "steps": 120,
+      "turns": 285,
+      "messages": 570,
+      "full_tokens": 293510,
+      "trim_tokens": 8856,
+      "llm_summary_tokens": 44055,
+      "index_tokens": 5353,
+      "tail_tokens": 3508,
+      "reload_tokens": 0,
+      "layered_tokens": 8861,
+      "layered_base_tokens": 8861,
+      "budgets": [
+        {
+          "window": 200000,
+          "role": "session",
+          "checks": [
+            {
+              "name": "完整历史",
+              "tokens": 293510,
+              "fits": false,
+              "headroom": -93510
+            },
+            {
+              "name": "现状LLM摘要",
+              "tokens": 44055,
+              "fits": true,
+              "headroom": 155945
+            },
+            {
+              "name": "机械裁剪(drop-oldest)",
+              "tokens": 8856,
+              "fits": true,
+              "headroom": 191144
+            },
+            {
+              "name": "分层基座(索引+尾部)",
+              "tokens": 8861,
+              "fits": true,
+              "headroom": 191139
+            },
+            {
+              "name": "分层+按需一步",
+              "tokens": 10651,
+              "fits": true,
+              "headroom": 189349
+            }
+          ]
+        },
+        {
+          "window": 32768,
+          "role": "local_processing",
+          "checks": [
+            {
+              "name": "完整历史",
+              "tokens": 293510,
+              "fits": false,
+              "headroom": -260742
+            },
+            {
+              "name": "现状LLM摘要",
+              "tokens": 44055,
+              "fits": false,
+              "headroom": -11287
+            },
+            {
+              "name": "机械裁剪(drop-oldest)",
+              "tokens": 8856,
+              "fits": true,
+              "headroom": 23912
+            },
+            {
+              "name": "分层基座(索引+尾部)",
+              "tokens": 8861,
+              "fits": true,
+              "headroom": 23907
+            },
+            {
+              "name": "分层+按需一步",
+              "tokens": 10651,
+              "fits": true,
+              "headroom": 22117
+            }
+          ]
+        }
+      ],
+      "reloadable_steps_local": 9,
+      "index_key_recall": 0.625,
+      "boundary_align": 0.9917355371900827,
+      "boundary_coverage": 1,
+      "boundary_found": 121,
+      "boundary_ground_truth": 120,
+      "detail_recoverable": true,
+      "reloadable_steps": 78,
+      "reload_step_index": 61,
+      "reload_one_step_tokens": 1790,
+      "layered_with_reload_tokens": 10651,
+      "full_detail_steps_within_window": 78,
+      "ideal_delta_bytes": 1002025,
+      "prod_actual_bytes": 146528689,
+      "storage_amplification_x": 146.23256804969935,
+      "history_bytes": 1027288,
+      "prod_total_vs_final_history_x": 142.63642620180514
+    },
+    {
+      "locale": "zh",
+      "steps": 120,
+      "turns": 285,
+      "messages": 570,
+      "full_tokens": 292092,
+      "trim_tokens": 7080,
+      "llm_summary_tokens": 43842,
+      "index_tokens": 4676,
+      "tail_tokens": 3502,
+      "reload_tokens": 0,
+      "layered_tokens": 8178,
+      "layered_base_tokens": 8178,
+      "budgets": [
+        {
+          "window": 200000,
+          "role": "session",
+          "checks": [
+            {
+              "name": "完整历史",
+              "tokens": 292092,
+              "fits": false,
+              "headroom": -92092
+            },
+            {
+              "name": "现状LLM摘要",
+              "tokens": 43842,
+              "fits": true,
+              "headroom": 156158
+            },
+            {
+              "name": "机械裁剪(drop-oldest)",
+              "tokens": 7080,
+              "fits": true,
+              "headroom": 192920
+            },
+            {
+              "name": "分层基座(索引+尾部)",
+              "tokens": 8178,
+              "fits": true,
+              "headroom": 191822
+            },
+            {
+              "name": "分层+按需一步",
+              "tokens": 9950,
+              "fits": true,
+              "headroom": 190050
+            }
+          ]
+        },
+        {
+          "window": 32768,
+          "role": "local_processing",
+          "checks": [
+            {
+              "name": "完整历史",
+              "tokens": 292092,
+              "fits": false,
+              "headroom": -259324
+            },
+            {
+              "name": "现状LLM摘要",
+              "tokens": 43842,
+              "fits": false,
+              "headroom": -11074
+            },
+            {
+              "name": "机械裁剪(drop-oldest)",
+              "tokens": 7080,
+              "fits": true,
+              "headroom": 25688
+            },
+            {
+              "name": "分层基座(索引+尾部)",
+              "tokens": 8178,
+              "fits": true,
+              "headroom": 24590
+            },
+            {
+              "name": "分层+按需一步",
+              "tokens": 9950,
+              "fits": true,
+              "headroom": 22818
+            }
+          ]
+        }
+      ],
+      "reloadable_steps_local": 9,
+      "index_key_recall": 0.625,
+      "boundary_align": 0,
+      "boundary_coverage": 0,
+      "boundary_found": 0,
+      "boundary_ground_truth": 120,
+      "detail_recoverable": true,
+      "reloadable_steps": 79,
+      "reload_step_index": 61,
+      "reload_one_step_tokens": 1772,
+      "layered_with_reload_tokens": 9950,
+      "full_detail_steps_within_window": 79,
+      "ideal_delta_bytes": 1000167,
+      "prod_actual_bytes": 145818651,
+      "storage_amplification_x": 145.79430335134032,
+      "history_bytes": 1022322,
+      "prod_total_vs_final_history_x": 142.6347579334104
+    }
+  ]
+}

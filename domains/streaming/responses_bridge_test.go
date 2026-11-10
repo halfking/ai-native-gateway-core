@@ -299,8 +299,12 @@ func TestStreamAnthropicSSEToResponses_ToolUse_MultipleArgChunks(t *testing.T) {
 			_ = i // silence unused
 		}
 	}
-	require.GreaterOrEqual(t, len(argDeltas), 3,
-		"expected at least 3 args delta events, got %d", len(argDeltas))
+	// 2026-11-11 占位符修正前这里有 3 个 delta（含 content_block_start 的
+	// `{}` 占位符伪 delta）；占位符不再进入参数流后是 2 个真实片段
+	//（第 3 个 chunk 的 partial_json 为空串，本就不发 delta）。
+	// 本用例的判据是「多片段 + item_id 关联」，不是具体条数。
+	require.GreaterOrEqual(t, len(argDeltas), 2,
+		"expected at least 2 args delta events, got %d", len(argDeltas))
 
 	// Every delta must carry the same item_id — that's the regression
 	// test for the toolCallIDs bridge state.
@@ -1161,4 +1165,108 @@ func TestStreamOpenAIToResponsesSSE_EmptyStreamIsResumableFailover(t *testing.T)
 	// No terminal envelope may be fabricated for an empty stream.
 	assert.NotContains(t, body, "event: response.completed")
 	assert.NotContains(t, body, "event: response.output_text.delta")
+}
+
+// TestStreamAnthropicSSEToResponses_ToolUse_EmptyInputPlaceholderNotArgs
+// 复现 2026-11-11 211 生产事件（builtin.guard.tool_json_invalid）：
+// 标准 Anthropic 流里 content_block_start.tool_use.input 恒为 `{}` 占位符，
+// 真实参数经 input_json_delta 增量到达。此前 IR 解析器把 `{}` 原样放进
+// ToolCalls[0].Arguments，responses 桥把它当首个参数片段发出并累计，
+// 终态 function_call_arguments.done / output_item.done 的 arguments 变成
+// `{}{"city":"Tokyo"}` —— 不是合法 JSON ⇒ 输出合规守卫 fail-closed 整流拦断
+// （211 实测 label=__tool_json@<tool>，field_bytes=2+真实参数长度）。
+// anthropic→chat 桥（anthropic_bridge.go，`!= "{}"` 守卫）从不犯这个错；
+// 本用例把同一守卫钉进 responses 桥。
+func TestStreamAnthropicSSEToResponses_ToolUse_EmptyInputPlaceholderNotArgs(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_ph","usage":{"input_tokens":5,"output_tokens":0}}}` + "\n",
+		"\n",
+		// 标准 Anthropic 形状：input 为 `{}` 占位符，参数走 input_json_delta。
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_ph","name":"read","input":{}}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":"}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"/tmp/a.go\"}"}}` + "\n",
+		"\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}` + "\n",
+		"\n",
+		"event: message_stop\n",
+		`data: {"type":"message_stop"}` + "\n",
+		"\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-sonnet-5", "claude-sonnet-5", "req-placeholder", nil, nil)
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+
+	// 提取 function_call_arguments.done 的 arguments。
+	var doneArgs, itemArgs string
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			continue
+		}
+		switch parsed["type"] {
+		case "response.function_call_arguments.done":
+			doneArgs, _ = parsed["arguments"].(string)
+		case "response.output_item.done":
+			item, _ := parsed["item"].(map[string]any)
+			if item != nil && item["type"] == "function_call" {
+				itemArgs, _ = item["arguments"].(string)
+			}
+		}
+	}
+	wantArgs := `{"file_path":"/tmp/a.go"}`
+
+	// ★ 门 1：done 帧的 arguments 必须恰好是 input_json_delta 片段的拼接
+	//（不得带 `{}` 前缀）。此前实际值是 `{}{"file_path":"/tmp/a.go"}`。
+	assert.Equal(t, wantArgs, doneArgs,
+		"function_call_arguments.done.arguments 必须只含 input_json_delta 拼接值（占位符 {} 不得进入参数流）")
+	// ★ 门 2：必须是合法 JSON —— 这是输出合规守卫（builtin.guard.tool_json_invalid）
+	// 的判定输入；非法即整流被拦断。
+	assert.True(t, json.Valid([]byte(doneArgs)),
+		"done.arguments 不是合法 JSON ⇒ 会被 builtin.guard.tool_json_invalid 拦断: %q", doneArgs)
+	// ★ 门 3：终态 output_item.done 的 function_call.arguments 同一累计器，同判。
+	assert.Equal(t, wantArgs, itemArgs)
+	assert.True(t, json.Valid([]byte(itemArgs)))
+
+	// ★ 门 4：占位符不得作为参数增量发出去（客户端会把 delta 拼进同一文档）。
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			continue
+		}
+		if parsed["type"] == "response.function_call_arguments.delta" {
+			delta, _ := parsed["delta"].(string)
+			assert.NotEqual(t, "{}", delta,
+				"占位符 {} 不得作为参数 delta 发出（会被客户端拼进参数文档造成同样的非法 JSON）")
+		}
+	}
 }

@@ -576,6 +576,20 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		}
 
 		if evt.ContentBlock.Type == "tool_use" {
+			arguments := string(evt.ContentBlock.Input)
+			// 标准 Anthropic 流里 content_block_start.tool_use.input 恒为
+			// `{}` 占位符，真实参数经 input_json_delta 增量到达。占位符若被
+			// 当作「首个参数片段」下发/累计，终态参数会拼成 `{}{...}` —— 不是
+			// 合法 JSON，输出合规守卫 fail-closed 整流拦断（211 生产实证
+			// 2026-11-11：/v1/responses 客户端 × anthropic 上游，rule=
+			// builtin.guard.tool_json_invalid，field_bytes=2+真实参数长度）。
+			// anthropic→chat 桥（anthropic_bridge.go content_block_start 分支的
+			// `!= "{}"` 守卫）历来排除它；这里把同一条 wire 语义推进解析器，
+			// 所有消费方一致。非标准中继把真实半截参数放进 input 的形状不受
+			// 影响（保留、由后续增量续拼）。
+			if arguments == "{}" {
+				arguments = ""
+			}
 			chunk.Type = ChunkTypeDelta
 			chunk.Delta = &StreamDelta{
 				ToolCalls: []StreamToolCallDelta{{
@@ -583,7 +597,7 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 					ID:        evt.ContentBlock.ID,
 					Type:      "function",
 					Name:      evt.ContentBlock.Name,
-					Arguments: string(evt.ContentBlock.Input),
+					Arguments: arguments,
 				}},
 			}
 			return chunk, nil
