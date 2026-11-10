@@ -266,14 +266,16 @@ func TestParseAnthropicStreamEvent_ThinkingBlockFullSequence(t *testing.T) {
 	if toolID != "toolu_tokyo" {
 		t.Errorf("tool id = %q, want toolu_tokyo", toolID)
 	}
-	if got := toolArgs.String(); got != `{}{"city":"Tokyo"}` {
-		// Note: ParseAnthropicStreamEvent emits the tool_use block's
-		// initial `input:{}` as a first Arguments chunk (it's the
-		// content_block_start payload verbatim), then the
-		// input_json_delta chunks append to it. The "{}" prefix is
-		// therefore expected — downstream consumers (relay layer)
-		// filter it out before writing the wire tool_calls delta.
-		t.Errorf("tool args = %q, want %q", got, `{}{"city":"Tokyo"}`)
+	if got := toolArgs.String(); got != `{"city":"Tokyo"}` {
+		// 2026-11-11（211 生产 builtin.guard.tool_json_invalid 事件）：
+		// 旧解析器把 content_block_start.tool_use.input 的 `{}` 占位符当
+		// 首个 Arguments 片段下发——并假设「下游 relay 层会滤掉它」。这个
+		// 假设对 anthropic→responses 桥不成立：占位符被原样累计，终态参数
+		// 拼成 `{}{...}`（非法 JSON）⇒ 输出合规守卫 fail-closed 整流拦断。
+		// 现解析器在 wire 语义层排除占位符（与 anthropic→chat 桥
+		// anthropic_bridge.go 的 `!= "{}"` 守卫一致），拼接结果就是纯
+		// input_json_delta 片段。
+		t.Errorf("tool args = %q, want %q (input:{} 占位符不得进入参数流)", got, `{"city":"Tokyo"}`)
 	}
 }
 

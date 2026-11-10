@@ -146,16 +146,11 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	// ★ 口径一致性：本展开只影响**探针分层**，不进入路由与发现口径
 	//   ⇒ 不改路由行为。
 	staticTenant := settings.GetPlatformString("probe.featured_tenant", "default")
+	// ★ 2026-11-11（断链⑦）：feat_names CTE 抽到 featured_sources.go，
+	// 与 selfcheck/model_probe watchdog 共用同一出处（本查询的 SQL 体
+	// 逐字未变——只是单一事实源化）。
 	if rows, err := m.db.Query(ctx, `
-		WITH feat_names AS (
-		    SELECT DISTINCT lower(btrim(f)) AS name
-		    FROM routing_policy, unnest(featured_models) AS f
-		    WHERE tenant_id = $1 AND btrim(f) <> ''
-		    UNION
-		    SELECT DISTINCT lower(btrim(canonical_name)) AS name
-		    FROM models_canonical
-		    WHERE featured = TRUE AND status = 'active'
-		)
+		WITH feat_names AS (`+FeaturedNamesCTESQL()+`)
 		SELECT fn.name, COALESCE(pm.raw_model_name, '')
 		FROM feat_names fn
 		LEFT JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.name

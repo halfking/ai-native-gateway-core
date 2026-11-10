@@ -62,9 +62,15 @@ func TestCounterErrorsAndTextDocuments(t *testing.T) {
 	if _, err := UpperBound([]byte(`{`)); err == nil {
 		t.Fatal("invalid JSON got a token upper bound")
 	}
-	_, err = Check([]byte(`{"input":"hi","max_tokens":120000}`), Spec{ContextWindow: 128000, SafetyMargin: 10000})
+	// 2026-11-11 改判：body 的 max_tokens 按半窗封顶（128k 窗 ⇒ ≤64k），
+	// 单靠 body 预留不再可能「耗尽窗口」（封顶即保证输入半窗）。耗尽检测
+	// 改由**桶侧配置**的 OutputReserve 触发（120k 配置 + 10k margin ⇒
+	// margin ≥ window−reserve ⇒ TokensExceeded），body 值仍在（max() 合并）
+	// 但不是触发源。body-only 路径的放行形状见
+	// budget_test.go TestBodyOutputCeilingCappedAtHalfWindow。
+	_, err = Check([]byte(`{"input":"hi","max_tokens":120000}`), Spec{ContextWindow: 128000, OutputReserve: 120000, SafetyMargin: 10000})
 	var budgetErr *Error
 	if !errors.As(err, &budgetErr) || !strings.Contains(err.Error(), TokensExceeded) {
-		t.Fatalf("request reserve did not exhaust bucket context: %v", err)
+		t.Fatalf("configured reserve did not exhaust bucket context: %v", err)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -28,7 +29,12 @@ func (e *Executor) nodeOutcomeAuthority() (*nodehealth.OutcomeReducer, nodehealt
 	e.nodeHealthMu.Lock()
 	defer e.nodeHealthMu.Unlock()
 	if e.NodeOutcomeReducer == nil {
-		e.NodeOutcomeReducer = nodehealth.NewOutcomeReducer()
+		// 2026-11-11（节点状态链断链①）：空响应连击阈值走 settings 热更
+		// （nodehealth.empty_response_streak_threshold，默认 5）。reducer
+		// 保持零依赖纯函数形态，阈值经注入读取。
+		e.NodeOutcomeReducer = nodehealth.NewOutcomeReducerWithConfig(nodehealth.ReducerConfig{
+			EmptyResponseStreakThreshold: settings.EmptyResponseStreakThreshold,
+		})
 	}
 	adapter := e.NodeHealthAdapter
 	if adapter == nil {
@@ -360,6 +366,17 @@ func (e *Executor) applyNodeHealthDegradeEffect(ctx context.Context, decision no
 			failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
 			if err := state.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
 				*errs = append(*errs, err)
+			}
+			// 2026-11-11（断链①）：空响应连击的降级必须对运维可见——此前
+			// 该族在断路器/绑定/探针三处零痕迹（48 起/6h 只剩 URSM 软信号）。
+			if kind == errorsx.KindEmptyResponse {
+				slog.Warn("binding demoted after empty-response streak",
+					"credential_id", decision.Node.CredentialID,
+					"provider_id", decision.Node.ProviderID,
+					"raw_model", decision.Node.Model,
+					"streak", decision.EmptyResponseStreak,
+					"reason", "auto_empty_response_streak",
+				)
 			}
 		}
 	case nodehealth.EffectSetCredentialUnavailable:

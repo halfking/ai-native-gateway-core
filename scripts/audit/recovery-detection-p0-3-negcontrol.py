@@ -10,9 +10,22 @@
 ★ **不动仓库脚本、不重划真实 era 切点**）⇒ ★★ 「post」段就落在**修复之前**的窗口
 ⇒ ★★ 于是同一把尺子必须判 **❌ 未达成**（★ 期望的答案已知）。
 
+★★★ **第 23 处口径修正（2026-11-11 00:4x）：★★ `now()` 必须随 era 切点「一起」平移**
+★★ ⇒ ★★ 否则负控的 post 窗口长度 ≠ 被验收窗口的长度 ⇒ ★★ **负控与验收几何不一致**
+★★   ⇒ ★★ 实测（本轮真抓到）：★ 原负控只平移了**切点**、没平移 `now()`
+★★     ⇒ ★★ 负控的 post 窗口 = **[切点-N天, 真实now]** = **~35h**（★ Stage 1 验收窗口是 **24h**）
+★★     ⇒ ★★ 实测**两行裁决符号在两种几何下翻转**（★ M14 / M14x 旧 featured 人群（无回归）：
+★★        35h ⇒ **❌ 未达成**、24h ⇒ **✅ 达成**）⇒ ★★ **负控的绿不能代表验收窗口**
+★★     ⇒ ★★ 修法：★ `now()` 一并平移到「**新切点 + stage 窗口**」（★ Stage 1 = 24h、Stage 2 = 7d）
+★★        ⇒ ★★ 负控成为验收窗口的**忠实复刻**（★ 窗口长度、成熟度尾部（now-6h）都对齐）
+★★     ⇒ ★★ **门不钝**（★ 实测两种几何下效应行 M20 都判 ❌ ⇒ 负控仍有牙）
+★   ⇒ ★★ 另：★ 原负控里「M14/M14x 旧 featured 判 ❌」是**几何错配造成的假红**
+★     （★ 35h post 比 24h pre ⇒ 不同量纲）⇒ ★★ **不得**读成「负控里旧 featured 也退化了」。
+
 ★ 用法（本地）：
     python3 scripts/audit/recovery-detection-p0-3-negcontrol.py --shift-days 7 --stage 2
     python3 scripts/audit/recovery-detection-p0-3-negcontrol.py --shift-days 1 --stage 1
+    python3 scripts/audit/recovery-detection-p0-3-negcontrol.py --selftest     # ★ 离线自检（不连库）
 
 ★ 判定：★ 效应判据行必须是 **❌ 未达成**（或 free 切片的「⚠️ 样本不足」）
 ⇒ ★★ 若它判 ✅ ⇒ ★★ **判据恒真 ⇒ 门没牙 ⇒ 禁止用这份判据下结论**。
@@ -81,18 +94,110 @@ def parse(raw: str) -> dict[str, str]:
     return d
 
 
-def run_shifted_sql(shift_days: int, ssh_host: str) -> str:
-    """★ 把 era 切点整体前移 shift_days 天并跑真库（★ 只用临时副本）"""
-    sql = SQL_PATH.read_text(encoding="utf-8")
+def build_shifted_sql(sql: str, shift_days: int, stage: int) -> tuple[str, dict]:
+    """★★★ **第 23 处口径修正**：★ era 切点 **与 `now()` 一起**平移 ⇒ ★★ 负控几何 == 验收几何
+
+    ★★ **为什么必须连 `now()` 一起平移**（★ 本轮实测抓到的真缺陷）：
+    ★ · 只平移切点 ⇒ ★「post」段 = **[新切点, 真实now]** ⇒ ★ 窗口长度 = **~35h**（★ Stage 1）
+    ★ · 而被验收的 Stage 1 窗口是 **24h** ⇒ ★★ **两者几何不一致**
+    ★ · ⇒ ★★ 实测**两行裁决符号在两种几何下翻转**（★ M14 / M14x 旧 featured：35h ⇒ ❌、24h ⇒ ✅）
+    ★ · ⇒ ★★ **负控的绿不能代表验收窗口** ⇒ ★★ 负控必须成为验收窗口的**忠实复刻**
+
+    ★★ **做法**：★ `now()` → **新切点 + stage 窗口**（★ Stage 1 = 24h、Stage 2 = 168h）
+    ★   ⇒ ★★ 窗口长度、成熟度尾部（now-6h）、事件总量**全部对齐**
+    ★ ★★ **防静默失效**：★ 若 SQL 里没有 `now()` ⇒ ★ 平移不会发生 ⇒ ★ 负控仍是「35h 窗口」
+    ★   ⇒ ★★ 直接 `assert` 失败（★ 绝不让它「静默地跑错几何」）
+    """
+    from datetime import datetime, timedelta
     m = re.search(r"TIMESTAMPTZ '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\+08'", sql)
     assert m, "★ 采集 SQL 里找不到 era 切点字面量"
-    from datetime import datetime, timedelta
     cut = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
     new_cut = cut - timedelta(days=shift_days)
     new_lit = f"TIMESTAMPTZ '{new_cut:%Y-%m-%d %H:%M:%S}+08'"
-    n = sql.count(m.group(0))
+    n_cut = sql.count(m.group(0))
     variant = sql.replace(m.group(0), new_lit)
-    print(f"== 负控：era 切点 {m.group(1)} → {new_cut:%Y-%m-%d %H:%M:%S}（{n} 处）==")
+
+    win_hours = 24 if stage == 1 else 7 * 24
+    asof = new_cut + timedelta(hours=win_hours)
+    asof_lit = f"TIMESTAMPTZ '{asof:%Y-%m-%d %H:%M:%S}+08'"
+    n_now = sql.count("now()") + sql.count("NOW()")
+    # ★★★ **assert 而不是警告**：★ 没有 now() ⇒ 平移不发生 ⇒ ★ 负控仍是错几何 ⇒ ★ 静默失效
+    assert n_now > 0, ("★ 采集 SQL 里没有 now() ⇒ ★ now() 平移不会发生 ⇒ "
+                        "★ 负控的 post 窗口会退回「~35h」⇒ ★ 与验收几何不一致 ⇒ ★ 静默失效")
+    variant = variant.replace("now()", asof_lit).replace("NOW()", asof_lit)
+    geo = {"cut": cut, "new_cut": new_cut, "asof": asof, "win_hours": win_hours,
+           "n_cut": n_cut, "n_now": n_now, "asof_lit": asof_lit}
+    return variant, geo
+
+
+def selftest() -> int:
+    """★ 离线自检（★ 不连库）：★ 证明「切点与 now() 一起平移」这件事本身是对的"""
+    from datetime import datetime
+    fails = []
+    fake = ("SELECT 'x' WHERE created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' "
+            "- interval '7 days' AND created_at > now() - interval '24 hours' "
+            "AND x > NOW()")
+    # ① Stage 1：切点前移 1 天、now() 随动 ⇒ post 窗口 = 24h
+    v, g = build_shifted_sql(fake, 1, 1)
+    if g["new_cut"] != datetime(2026, 11, 9, 13, 42, 30):
+        fails.append(f"[① 切点平移] 期望 2026-11-09 13:42:30 实得 {g['new_cut']}")
+    if g["asof"] != datetime(2026, 11, 10, 13, 42, 30):
+        fails.append(f"[① as-of] 期望 2026-11-10 13:42:30 实得 {g['asof']}")
+    if g["win_hours"] != 24:
+        fails.append(f"[① 窗口] Stage 1 期望 24h 实得 {g['win_hours']}h")
+    if (g["asof"] - g["new_cut"]).total_seconds() != 24 * 3600:
+        fails.append("[① 窗口] as-of 与新切点之差必须 = 24h")
+    if "now()" in v.lower():
+        fails.append("[① 平移] 变体里仍残留 now() ⇒ 平移未生效")
+    if v.count(g["asof_lit"]) != 2:
+        fails.append(f"[① 平移] as-of 替换次数应为 2（now()/NOW()）实得 {v.count(g['asof_lit'])}")
+    # ② Stage 2：切点前移 7 天、now() 随动 ⇒ post 窗口 = 168h
+    v2, g2 = build_shifted_sql(fake, 7, 2)
+    if g2["win_hours"] != 168:
+        fails.append(f"[② 窗口] Stage 2 期望 168h 实得 {g2['win_hours']}h")
+    if (g2["asof"] - g2["new_cut"]).total_seconds() != 7 * 24 * 3600:
+        fails.append("[② 窗口] as-of 与新切点之差必须 = 168h")
+    if g2["new_cut"] != datetime(2026, 11, 3, 13, 42, 30):
+        fails.append(f"[② 切点平移] 期望 2026-11-03 13:42:30 实得 {g2['new_cut']}")
+    # ③ ★★ **没有 now() ⇒ 必须报错**（★ 防「静默地跑错几何」）
+    try:
+        build_shifted_sql("SELECT 'x' WHERE created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08'", 1, 1)
+        fails.append("[③ 防静默失效] SQL 里没有 now() 时应当报错（★ 否则负控会退回错几何）")
+    except AssertionError:
+        pass
+    # ④ ★★ 变体里出现的 era 切点字面量**必须只有两个**：「新切点」与「as-of」
+    #   （★ 注意：★ Stage 1 + shift 1 天时 as-of **恰好等于原切点文本** ⇒ ★ 不能用
+    #   ★   「是否残留原切点文本」来判定 ⇒ ★★ 必须按**字面量集合**判定）
+    lits = set(re.findall(r"TIMESTAMPTZ '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\+08'", v))
+    allowed = {f"TIMESTAMPTZ '{g['new_cut']:%Y-%m-%d %H:%M:%S}+08'", g["asof_lit"]}
+    extra = lits - allowed
+    if extra:
+        fails.append(f"[④ 切点替换] 变体里出现了预期外的时间戳字面量 ⇒ {sorted(extra)}")
+    if f"TIMESTAMPTZ '{g['new_cut']:%Y-%m-%d %H:%M:%S}+08'" not in lits:
+        fails.append("[④ 切点替换] 变体里缺少「新切点」字面量")
+
+    print("== 负控几何自检（★ 不连库）==")
+    if fails:
+        for f in fails:
+            print("   ❌ " + f)
+        print(f"\n★★ 自检未通过：{len(fails)} 项")
+        return 1
+    print("   ✔ ① Stage 1：切点前移 1 天 + now() 随动 ⇒ post 窗口 = 24h")
+    print("   ✔ ② Stage 2：切点前移 7 天 + now() 随动 ⇒ post 窗口 = 168h")
+    print("   ✔ ③ ★★ SQL 里没有 now() ⇒ 必须报错（★ 防「静默地跑错几何」）")
+    print("   ✔ ④ 变体里不残留原始切点字面量")
+    print("\n== 负控几何自检通过 ==")
+    return 0
+
+
+def run_shifted_sql(shift_days: int, ssh_host: str, stage: int) -> str:
+    """★ 把 era 切点 **与 `now()` 一起** 前移（★ 第 23 处口径修正）并跑真库（★ 只用临时副本）"""
+    sql = SQL_PATH.read_text(encoding="utf-8")
+    variant, geo = build_shifted_sql(sql, shift_days, stage)
+    print(f"== 负控：era 切点 {geo['cut']:%Y-%m-%d %H:%M:%S} → {geo['new_cut']:%Y-%m-%d %H:%M:%S}"
+          f"（{geo['n_cut']} 处）==")
+    print(f"== ★ 几何对齐：now() → {geo['asof']:%Y-%m-%d %H:%M:%S}（{geo['n_now']} 处）"
+          f" ⇒ ★ post 窗口 = **{geo['win_hours']}h**（★ == 被验收窗口长度）==")
     local = pathlib.Path(f"/tmp/negctl_{shift_days}d.sql")
     local.write_text(variant, encoding="utf-8")
     subprocess.run(["scp", "-q", str(local), f"{ssh_host}:{local}"], check=True)
@@ -185,9 +290,15 @@ def main() -> int:
                     help="★ era 切点整体前移几天（★ 负控窗口长度）")
     ap.add_argument("--stage", type=int, default=2, choices=(1, 2))
     ap.add_argument("--ssh-host", default="211")
+    ap.add_argument("--selftest", action="store_true",
+                    help="★ 离线自检（★ 不连库）：★ 验「切点与 now() 一起平移」这件事本身")
     args = ap.parse_args()
 
-    raw = run_shifted_sql(args.shift_days, args.ssh_host)
+    # ★★ 离线自检（★ 第 23 处口径修正：★ 负控脚本自己也要有牙齿）
+    if args.selftest:
+        return selftest()
+
+    raw = run_shifted_sql(args.shift_days, args.ssh_host, args.stage)
     data = parse(raw)
     mod = load_patched_judge(data, f"{args.shift_days}d")
 

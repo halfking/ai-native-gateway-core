@@ -751,6 +751,17 @@ def judge(data: dict[str, str], stage: int = 1,
                         f"先分辨「设计内恢复探测」与「调度失控」再定责）")
                 # ★★★ 第 22 处口径修正：★ 把「基线口径问题」摆进行内（★ 只披露，不改符号）
                 note += m5_baseline_disclosure(data, n, lim)
+                # ★★★ 2026-11-11 关窗预演补（与第 22 处互补）：★ **增量归因**分解
+                #   ★（第 22 处回答「阈值是否成立」；本键回答「增量从哪来」）
+                #   ★ 预演实测：credential_recovery 持平 / periodic +3.7%（era2 新覆盖变体
+                #   入调度，设计内）/ sync_request +131%（恢复链再探测，设计内＝本轮
+                #   修复的目的行为）⇒ ❌ 的增量可完全归因 ⇒ 只披露，不改符号。
+                bk = (data.get("M5_probe_runs_24h_by_kind") or "").strip()
+                if bk:
+                    note += f" ‖ ★ 增量归因（by_kind）: {bk}"
+                else:
+                    note += (" ‖ ★ 增量归因不可见（键 M5_probe_runs_24h_by_kind 未产出"
+                             " ⇒ 无法分辨「设计内恢复探测」与「调度失控」）")
             else:
                 note = "指标缺失（脚本未产出该键）"
             rows.append((label, base_cell(key), obs, verdict(ok, note)))
@@ -1393,6 +1404,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
                                  " | max=9905 | total=48502"),
         "M5_post_runs_by_day": ("days=11-10:4218,11-11:115 | n_days=2 | min=115"
                                 " | max=4218 | total=4333"),
+        # ★ 2026-11-11 关窗预演补：★ M5 的 **by_kind 分解**（★ 真捕获 2026-11-11 00:5x / 211；
+        #   ★★ now()-锚定滚动 24h 窗（与 M5 主键同窗）⇒ **不进** CLOCK_INDEP_KEYS
+        #   ★（★ 关窗时刻 now=切点+24h ⇒ 读数恰好 = 纯 post 段））
+        "M5_probe_runs_24h_by_kind": ("credential_recovery=6082 | periodic=3282 | sync_request=450"
+                                      " | admin=0 | external_async=0 | integrity_probe_planner=0"
+                                      " | manual=0 | other=0 | request_failure=0 | selfcheck=0"),
         "M3b_backoff_ns_featured_err_http_429": f"5 rows | median_retry_s={m3b_f429}",
         "M3b_backoff_ns_not_err_http_429": f"9 rows | median_retry_s={m3b_n429}",
         "M3b_backoff_ns_featured_err_http_503": f"4 rows | median_retry_s={m3b_f503}",
@@ -2163,6 +2180,58 @@ def selftest() -> int:
     if "M5" not in hb or "基线口径" not in hb:
         failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
 
+    # ㉣ ★★★★ **诚实边界必须包含「负控几何」这条**（★ 第 23 处口径修正）
+    hb = "\n".join(honest_boundary_lines())
+    if "负控" not in hb or "几何" not in hb:
+        failures.append("[㉣ 诚实边界] 缺少「负控的窗口几何必须与被验收窗口一致」边界")
+    if "假红" not in hb:
+        failures.append("[㉣ 诚实边界] 缺少「原负控里旧 featured 判 ❌ 是几何错配造成的假红」提醒")
+
+    # ㉤ ★★★★ **跨脚本守卫：★ 负控脚本必须真的做几何对齐**（★ 第 23 处口径修正）
+    #   ★★ 负控脚本若被回退（★ 只平移切点、不平移 now()）⇒ ★★ 负控仍是「~35h 窗口」
+    #   ⇒ ★★ **与验收几何不一致** ⇒ ★★ 负控的绿不能代表验收窗口 ⇒ ★★ 门没牙
+    #   ⇒ ★★ ⇒ 断言它**真的**含「now() 随切点平移」的实现（★ 跨文件断言 ⇒ 守得住）
+    try:
+        negsrc = Path(__file__).with_name("recovery-detection-p0-3-negcontrol.py").read_text(encoding="utf-8")
+    except Exception as e:  # ★ 读不到 ⇒ 必须判失败（★ 不得静默跳过）
+        negsrc = ""
+        failures.append(f"[㉤ 负控几何守卫] 读不到负控脚本 ⇒ {e}")
+    if negsrc:
+        if "build_shifted_sql" not in negsrc:
+            failures.append("[㉤ 负控几何守卫] 负控脚本里没有 `build_shifted_sql`（★ 几何对齐的实现）")
+        if 'replace("now()"' not in negsrc:
+            failures.append("[㉤ 负控几何守卫] 负控脚本没有把 `now()` 平移（★ 负控仍是错几何 ⇒ 门没牙）")
+        if "asof" not in negsrc:
+            failures.append("[㉤ 负控几何守卫] 负控脚本没有 as-of 概念（★ post 窗口长度未对齐验收窗口）")
+
+    # ㉥ ★★★★ **诚实边界必须包含「M11 的基线不同量纲」这条**（★ 第 23 处口径修正的伴生边界）
+    #   ★★ 为什么必须进边界：★ M11 是「最直接回答及时性」的头号判据（★ 锚点档 T1 列在 Stage 1 判据集里）
+    #   ★★ 而它的基线是 7 天的 ⇒ ★★ 若不披露 ⇒ ★★ Stage 1 报告会把它读成独立判据 ⇒ ★★ 符号两个方向都可能错
+    hb = "\n".join(honest_boundary_lines())
+    if "M11" not in hb or "量纲" not in hb:
+        failures.append("[㉥ 诚实边界] 缺少「M11 的基线取自 7 天 pre、Stage 1 的 post 是 24h ⇒ 不同量纲」边界")
+    if "两个方向都可能错" not in hb:
+        failures.append("[㉥ 诚实边界] 缺少「M11 符号两个方向都可能错」的提醒")
+    # ㉡ ★★★★ **M5 判 ❌ 时必须给出「增量归因（by_kind）」分解**（★ 2026-11-11 关窗预演补；
+    #   ★★ 与第 22 处「基线口径」互补：★ 那边回答「阈值是否成立」；这边回答「增量从哪来」）
+    rows, _, _ = judge(_synthetic(False), stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "增量归因（by_kind）" not in v:
+        failures.append(f"[㉡ M5 增量归因] M5 判 ❌ 时行内必须给出「增量归因（by_kind）」分解 ⇒ {v}")
+    if "sync_request=" not in v:
+        failures.append(f"[㉡ M5 增量归因] 分解里必须能看到逐 kind 计数（如 sync_request=）⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉡ M5 增量归因] 裁决符号**不得**被软化（★ ❌ 仍是 ❌）⇒ {v}")
+    # ★★ by_kind 键**缺失** ⇒ 必须显式说「增量归因不可见」（★ 不得静默只留基线口径披露）
+    d = _synthetic(False)
+    d.pop("M5_probe_runs_24h_by_kind", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "增量归因不可见" not in v:
+        failures.append(f"[㉡ M5 增量归因] by_kind 键缺失时必须写明「增量归因不可见」⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉡ M5 增量归因] 键缺失时裁决符号**不得**被软化 ⇒ {v}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2203,6 +2272,11 @@ def selftest() -> int:
     print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
     print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
     print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
+    print("   ✔ ㉡ ★★★ M5 判 ❌ 时必须给出「增量归因（by_kind）」分解（★ 回答「增量从哪来」）"
+          "（★ 与 ㉟ 的「基线口径」互补：★ 那边答「阈值是否成立」、★ 这边答「增量从哪来」）")
+    print("   ✔ ㉣ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
+    print("   ✔ ㉤ ★★★ **跨脚本守卫**：★ 负控脚本必须真的把 `now()` 随 era 切点平移（★ 否则门没牙）")
+    print("   ✔ ㉥ ★★★ 诚实边界必须含「M11 的基线不同量纲（★ Stage 1 的 M11 符号两个方向都可能错）」")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2375,6 +2449,25 @@ def honest_boundary_lines() -> list[str]:
           "（★ **裁决符号保持 ❌** ⇒ ★ 门不钝化；★ 且逐日分布键缺失时必须显式写「基线口径不可见」）"
           "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，而不是单日快照）"
           "**登记为 Stage 2 之后的基线口径改进项**（★ 关窗前**不重冻**已验证基线）。")
+    lines.append("   ㉙ ★★★★ **负控的窗口几何必须与被验收窗口一致（★ `now()` 必须随 era 切点一起平移）**"
+          "（★ 本轮第 23 处口径修正）：★ 原负控只平移了**切点**、没平移 `now()`"
+          "⇒ ★★ 负控的 post 窗口 = **[切点-N天, 真实now]** = **~35h**（★ 而被验收的 Stage 1 窗口是 **24h**）"
+          "⇒ ★★ **两者几何不一致** ⇒ ★★ 实测**两行裁决符号在两种几何下翻转**"
+          "（★ M14 / M14x 旧 featured 人群（无回归）：35h ⇒ **❌ 未达成**、24h ⇒ **✅ 达成**）"
+          "⇒ ★★ ⇒ **负控的绿不能代表验收窗口** ⇒ ★★ 修法：★ `now()` 一并平移到「**新切点 + stage 窗口**」"
+          "⇒ ★★ 负控成为验收窗口的**忠实复刻**（★ 窗口长度、成熟度尾部（now-6h）、事件总量全对齐）"
+          "⇒ ★★ **门不钝**（★ 实测两种几何下效应行 M20 **都判 ❌** ⇒ 负控仍有牙）。"
+          "⇒ ★★★ **★ 另**：★ 原负控里「M14 / M14x 旧 featured 判 ❌」是**几何错配造成的假红**"
+          "（★ 35h post 比 24h pre ⇒ 不同量纲）⇒ ★★ **不得**读成「负控里旧 featured 人群也退化了」。")
+    lines.append("   ㉚ ★★★★ **M11 的基线取自「7 天」pre，而 Stage 1 的 post 是 24h ⇒ ★ 不同量纲 ⇒ ★ 两个分量的偏差方向相反**"
+          "（★ 本轮第 23 处口径修正的伴生边界）：★ 实测（M11 namespaced）："
+          "★ pre **7d**（★ 当前判据用的基线）= 41 episodes / med **3** / p90 360 / max **1791**；"
+          "★ pre **24h**（★ Stage 1 的同量纲窗口）= 9 episodes / med **30** / p90 360 / max **360**"
+          "⇒ ★★ **两个分量的偏差方向相反**：★ `med` 项 ⇒ 7d 基线**偏严 10×**（⇒ 假红风险）；"
+          "★ `max` 项 ⇒ 7d 基线**偏松 5×**（⇒ 假绿风险）⇒ ★★ ⇒ **Stage 1 的 M11 符号两个方向都可能错**"
+          "⇒ ★★ **但不能**改成 pre24 基线（★ 换基线后的「牙」来自**窗口错配** ⇒ 另一重错；★ 且它要动 M18 冻结面 ⇒ **关窗前不动**）"
+          "⇒ ★★★ 处置 = **披露 + 改进项**：★ 真修法（★ 按 stage 切换 pre24/pre7d 基线 ＋ 把 M11 基线纳入 M18 冻结）"
+          "**登记为 Stage 2 之后** ⇒ ★★ ⇒ ★★ **Stage 1 报告读到 M11 行时，必须把它当「描述性读数」而不是独立判据**。")
     return lines
 
 

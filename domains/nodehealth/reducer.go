@@ -53,8 +53,13 @@ const (
 	// evidence (211, 2026-10-13, credential 63 / claude-haiku-5-5).
 	ErrorKindNoAvailableChannel ErrorKind = "no_available_channel"
 	// ErrorKindEmptyResponse is a binding-scoped quality signal. It is recorded
-	// in URSM for routing penalties but cannot escalate a credential-wide circuit
-	// or availability state.
+	// in URSM for routing penalties and cannot escalate a credential-wide circuit
+	// or availability state. A SUSTAINED streak (>= the configured threshold,
+	// DefaultEmptyResponseStreakThreshold) additionally demotes the exact
+	// (credential, model) binding — never siblings, never the credential —
+	// closing node-state chain gap #1 (2026-11-11): 48 consecutive NIM empty
+	// streams in 6h previously left zero persistent trace while every turn
+	// burned a full failover walk.
 	ErrorKindEmptyResponse ErrorKind = "empty_response"
 	// ErrorKindRequest is a terminal attempt failure caused by request shape,
 	// context, or content policy. It is observable but not node-health evidence.
@@ -117,6 +122,10 @@ type Decision struct {
 	PreviousStatus      requestjourney.NodeHealthStatus
 	Status              requestjourney.NodeHealthStatus
 	ConsecutiveFailures int
+	// EmptyResponseStreak is the node's current consecutive ErrorKindEmptyResponse
+	// count (0 on success or any non-empty failure kind). At the configured
+	// threshold the decision carries the binding-scoped demotion effects.
+	EmptyResponseStreak int
 	ErrorKind           ErrorKind
 	HTTPStatus          int
 	RequestID           string
@@ -144,6 +153,14 @@ const DefaultSeenCapacity = 100000
 // idle history without waiting for capacity pressure.
 const DefaultSeenTTL = 15 * time.Minute
 
+// DefaultEmptyResponseStreakThreshold is the consecutive empty-response count
+// that escalates to a binding-scoped cooldown (node-state chain gap #1,
+// 2026-11-11). Below it a burst stays URSM-only — the pre-existing soft
+// semantics keep short aggregates blips (a one-off relay hiccup) from removing
+// usable capacity. The executor wires the settings-backed value over this
+// default; the constant pins the ladder for tests and zero-value configs.
+const DefaultEmptyResponseStreakThreshold = 5
+
 // OutcomeReducer is safe for concurrent Reduce calls.
 type OutcomeReducer struct {
 	mu       sync.Mutex
@@ -154,11 +171,16 @@ type OutcomeReducer struct {
 	maxSeen  int
 	seenTTL  time.Duration
 	now      func() time.Time
+	// emptyStreakThreshold reports the consecutive-empty escalation count.
+	// Nil selects DefaultEmptyResponseStreakThreshold; the executor injects
+	// the hot-reloadable settings getter.
+	emptyStreakThreshold func() int
 }
 
 type nodeState struct {
 	status              requestjourney.NodeHealthStatus
 	consecutiveFailures int
+	emptyStreak         int
 }
 
 type eventKey struct {
@@ -180,6 +202,10 @@ type ReducerConfig struct {
 	SeenCapacity int
 	SeenTTL      time.Duration
 	Now          func() time.Time
+	// EmptyResponseStreakThreshold reports the consecutive empty-response
+	// count that escalates a binding-scoped cooldown. Nil selects
+	// DefaultEmptyResponseStreakThreshold.
+	EmptyResponseStreakThreshold func() int
 }
 
 func NewOutcomeReducer() *OutcomeReducer {
@@ -205,11 +231,12 @@ func NewOutcomeReducerWithConfig(cfg ReducerConfig) *OutcomeReducer {
 		cfg.Now = time.Now
 	}
 	return &OutcomeReducer{
-		nodes:   make(map[NodeKey]*nodeState),
-		seen:    make(map[eventKey]Decision),
-		maxSeen: cfg.SeenCapacity,
-		seenTTL: cfg.SeenTTL,
-		now:     cfg.Now,
+		nodes:                make(map[NodeKey]*nodeState),
+		seen:                 make(map[eventKey]Decision),
+		maxSeen:              cfg.SeenCapacity,
+		seenTTL:              cfg.SeenTTL,
+		now:                  cfg.Now,
+		emptyStreakThreshold: cfg.EmptyResponseStreakThreshold,
 	}
 }
 
@@ -260,6 +287,9 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 
 	switch observation.Outcome {
 	case requestjourney.OutcomeSuccess:
+		// Any success on the node — request or probe — is direct evidence the
+		// upstream produces content again, so an empty-response streak ends.
+		state.emptyStreak = 0
 		if observation.Phase == PhaseDirectProbe {
 			state.status = requestjourney.NodeHealthRecovering
 			break
@@ -271,9 +301,18 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		state.consecutiveFailures = 0
 		state.status = requestjourney.NodeHealthHealthy
 	case requestjourney.OutcomeFailure:
-		if observation.ErrorKind == ErrorKindRequest || observation.ErrorKind == ErrorKindEmptyResponse {
+		if observation.ErrorKind == ErrorKindEmptyResponse {
+			// Empty responses carry no node-health signal (a long deliberation
+			// is not an outage), so consecutiveFailures stays untouched. The
+			// per-node streak feeds the binding-scoped escalation below; any
+			// other outcome kind breaks the "consecutive" property.
+			state.emptyStreak++
 			break
 		}
+		if observation.ErrorKind == ErrorKindRequest {
+			break
+		}
+		state.emptyStreak = 0
 		state.consecutiveFailures++
 		if isPermanent(observation.ErrorKind) {
 			state.status = requestjourney.NodeHealthQuarantined
@@ -299,7 +338,8 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 	}
 	decision.Status = state.status
 	decision.ConsecutiveFailures = state.consecutiveFailures
-	decision.Effects = effectsFor(observation, decision)
+	decision.EmptyResponseStreak = state.emptyStreak
+	decision.Effects = r.effectsFor(observation, decision)
 	r.rememberLocked(key, decision, now)
 	return decision, nil
 }
@@ -322,6 +362,19 @@ func (r *OutcomeReducer) defaultsLocked() {
 	if r.now == nil {
 		r.now = time.Now
 	}
+	if r.emptyStreakThreshold == nil {
+		threshold := DefaultEmptyResponseStreakThreshold
+		r.emptyStreakThreshold = func() int { return threshold }
+	}
+}
+
+// emptyStreakThresholdOr returns the configured escalation count, defended
+// against non-positive injectables.
+func (r *OutcomeReducer) emptyStreakThresholdOr() int {
+	if n := r.emptyStreakThreshold(); n > 0 {
+		return n
+	}
+	return DefaultEmptyResponseStreakThreshold
 }
 
 func (r *OutcomeReducer) rememberLocked(key eventKey, decision Decision, now time.Time) {
@@ -415,14 +468,28 @@ func (r *OutcomeReducer) directProbeSucceeded(observation Observation) bool {
 	return ok && direct.Outcome == requestjourney.OutcomeSuccess
 }
 
-func effectsFor(observation Observation, decision Decision) []Effect {
+func (r *OutcomeReducer) effectsFor(observation Observation, decision Decision) []Effect {
 	if observation.Outcome == requestjourney.OutcomeCanceled || observation.ErrorKind == ErrorKindRequest {
 		return nil
 	}
 	if observation.Outcome == requestjourney.OutcomeFailure && observation.ErrorKind == ErrorKindEmptyResponse {
-		// Empty responses are already failover-eligible at the executor. Keep
-		// their only durable routing effect on the exact tenant/credential/model
-		// node in URSM; do not let a short burst poison sibling models.
+		// Empty responses are already failover-eligible at the executor, so a
+		// short burst keeps its only durable routing effect on the exact
+		// tenant/credential/model node in URSM — one-off relay hiccups must
+		// not remove usable capacity. A SUSTAINED streak (node-state chain
+		// gap #1, 2026-11-11: 48 consecutive NIM empty streams in 6h with
+		// zero persistent trace) additionally demotes the binding itself so
+		// the executor stops re-walking a deterministically empty upstream.
+		// Scope stays binding-level by construction: no circuit failure, no
+		// credential-wide unavailability — sibling models on the same
+		// credential are unaffected, mirroring ErrorKindModelUnavailable.
+		if decision.EmptyResponseStreak >= r.emptyStreakThresholdOr() {
+			return []Effect{
+				{Kind: EffectUpdateURSM},
+				{Kind: EffectSetBindingUnavailable},
+				{Kind: EffectInvalidateCandidateCache},
+			}
+		}
 		return []Effect{{Kind: EffectUpdateURSM}}
 	}
 	effects := []Effect{{Kind: EffectPersistNodeStatus}}

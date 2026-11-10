@@ -474,6 +474,16 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// availability_state (see writeModelLevelFailureOnly rationale).
 		recoverAt := time.Now().UTC().Add(time.Duration(settings.ModelDeprecatedCooldownSeconds()) * time.Second)
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_deprecated", recoverAt, detail)
+	case errorsx.KindEmptyResponse:
+		// 2026-11-11（节点状态链断链①）：调用侧只在「同一 (凭据,模型) 连续
+		// N 次空响应」（reducer streak 阈值，默认 5）时才把 empty_response
+		// 送进本分支 —— 单次/短促空响应在 WriteOnError 之外（reducer 只发
+		// EffectUpdateURSM）。这里给**持续性**空流（生产实例：glm-5.3-flash
+		// 经 NIM 中继 48 起/6h）一个绑定级冷却，使候选遍历不再反复走进
+		// 确定性空上游。绑定位作用域 —— 不碰 credentials（同 writeModelServedTiered
+		// 的理由）；冷却档（10min/30min）远小于 MNF（30min/7d）：空响应是
+		// 质量问题而非「模型不存在」，任何成功即自动复位。
+		return w.writeEmptyResponseTiered(ctx, credentialID, rawModel, detail)
 	case errorsx.KindContextLength, errorsx.KindUnsupportedFeature,
 		errorsx.KindToolCallIdMismatch, errorsx.KindClientBug,
 		errorsx.KindContentFilter, errorsx.KindCanceled,
@@ -671,6 +681,41 @@ func (w *Writer) writeModelServedTiered(
 	now := time.Now().UTC()
 	initialRecoverAt := now.Add(time.Duration(settings.ModelNotFoundInitialCooldownSeconds()) * time.Second)
 	sustainedRecoverAt := now.Add(time.Duration(settings.ModelNotFoundSustainedCooldownSeconds()) * time.Second)
+	return w.writeBindingCooldownTiered(ctx, credentialID, rawModel, reason, initialRecoverAt, sustainedRecoverAt)
+}
+
+// writeEmptyResponseTiered applies the same binding-scoped tier ladder to a
+// sustained empty-response streak (node-state chain gap #1, 2026-11-11). The
+// reducer fires the calling effect only at its streak threshold (default 5
+// consecutive empty responses on the exact credential/model node), so the
+// short-burst semantics (URSM-only) are preserved upstream of this write.
+// Tiers are deliberately far below the MNF ladder: an empty response is a
+// quality problem, not "the model is gone", and any success restores the
+// binding immediately (RestoreOnSuccess resets auto_* cooling).
+func (w *Writer) writeEmptyResponseTiered(
+	ctx context.Context,
+	credentialID int,
+	rawModel string,
+	detail *string,
+) error {
+	now := time.Now().UTC()
+	initialRecoverAt := now.Add(time.Duration(settings.EmptyResponseCooldownSeconds()) * time.Second)
+	sustainedRecoverAt := now.Add(time.Duration(settings.EmptyResponseSustainedCooldownSeconds()) * time.Second)
+	return w.writeBindingCooldownTiered(ctx, credentialID, rawModel, "auto_empty_response_streak", initialRecoverAt, sustainedRecoverAt)
+}
+
+// writeBindingCooldownTiered writes the per-binding cooldown shared by the
+// model-served and empty-response ladders. CASE arms: available=TRUE (fresh)
+// → initialRecoverAt; already cooling with the SAME reason → sustained tier.
+// manual%/admin_protected rows are never touched, and a cooling window whose
+// reason differs is neither extended nor overwritten (reason-scoped arm).
+func (w *Writer) writeBindingCooldownTiered(
+	ctx context.Context,
+	credentialID int,
+	rawModel string,
+	reason string,
+	initialRecoverAt, sustainedRecoverAt time.Time,
+) error {
 
 	// 1. Per-binding state on cmb (the production router's source of truth).
 	//    CASE arms: available=FALSE (already MNF-cooled) → sustained tier;

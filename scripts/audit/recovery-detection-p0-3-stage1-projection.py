@@ -133,6 +133,22 @@ def main() -> int:
     else:
         print("   ✔ 全部逐字节一致（★ pre 基线不受关窗时钟影响 ⇒ ★ 当天 M18 守卫会过）")
 
+    # ★★★ 第 22/23 处口径修正：★ 「披露用」的 pre 侧键**也要**逐字节比对
+    #   ★★ 它不进 M18 冻结面（★ 不扩冻结面 ⇒ 不触发重冻）⇒ ★★ 但它**是 pre 侧读数**
+    #   ⇒ ★★ 若它随时钟变 ⇒ ★★ 同一窗口的「基线口径披露」会前后不一致 ⇒ ★★ 报告不可复核
+    ci_keys = sorted(k for k in cc.CLOCK_INDEP_KEYS if k in real or k in asof)
+    ci_missing = [k for k in ci_keys if k not in asof]
+    ci_diff = [(k, real[k], asof[k]) for k in ci_keys if k in asof and real[k] != asof[k]]
+    print(f"\n== 披露用 pre 侧键的时钟无关性（★ {len(ci_keys)} 个）==")
+    if ci_missing:
+        print(f"   ★★ as-of **缺键** {len(ci_missing)} 个：{ci_missing}")
+    if ci_diff:
+        print(f"   ★★ **漂移 {len(ci_diff)} 个**（★ ⇒ 该键随时钟变 ⇒ ★ 同一窗口的披露会前后不一致）：")
+        for k, a, b in ci_diff:
+            print(f"      - {k}\n          真实: {a}\n          as-of: {b}")
+    else:
+        print("   ✔ 全部逐字节一致（★ 披露用 pre 侧键时钟无关 ⇒ ★ 披露可复核）")
+
     # ── 完整判定链（★ Stage 路径）──
     mod = cc.load_verdict()
     rows, bad, guards = mod.judge(asof, stage=args.stage)
@@ -175,10 +191,10 @@ def main() -> int:
     #   ★ 「只投影时钟」：★ 投影能可靠暴露时钟/成熟度类缺陷，但对构成类判据只能提示、不能定论
     vmod = cc.load_verdict()
     for ln in vmod.honest_boundary_lines():
-        if "㉖" in ln or "㉗" in ln:
+        if "㉖" in ln or "㉗" in ln or "㉚" in ln:
             print("   " + ln.strip())
 
-    if missing or diff or bad:
+    if missing or diff or ci_missing or ci_diff or bad:
         print("\n★★ **关窗预演未通过 ⇒ ★ 关窗当天会作废 ⇒ 必须先修口径**")
         return 1
     print("\n   ✔ 关窗预演通过：★ pre 侧零漂移 + 守卫全绿 + 判定链走通")
