@@ -364,6 +364,18 @@ func EmptyResponseStreakThreshold() int {
 	return clampThresholdInt(GetPlatformInt(KeyEmptyResponseStreakThreshold, DefaultEmptyResponseStreakThreshold), 2, 50)
 }
 
+// EmptyResponseStreakThresholdCached 是 EmptyResponseStreakThreshold 的**缓存**版。
+//
+// ★ 2026-11-11 审计 F-B2：★ 该阈值在 nodehealth 归约路径上**逐次**读取
+// ★ ★⇒ ★★ uncached 族每次都打一次 DB（★ settings_kv 一条 SELECT、★ 5s 超时）
+// ★ ★⇒ ★★ 而 uncached 版曾被放在**进程级全局锁**内调用（★ 详见 reducer.go 的修复说明）
+// ★ ★⇒ ★★ DB 抖动 ⇒ ★★ 全网关的 nodehealth 归约串行化阻塞。
+// ⇒ ★★ 修法：★ 走 **CachedPlatformInt**（★ 5s TTL）★ ★ 热更语义只损失 ≤5s
+// ★ ★（★ ★ 该缓存族自己的注释就写着「短 TTL 保留运维热更语义」★ ★ ⇒ ★★ 属既有口径）。
+func EmptyResponseStreakThresholdCached() int {
+	return clampThresholdInt(CachedPlatformInt(KeyEmptyResponseStreakThreshold, DefaultEmptyResponseStreakThreshold), 2, 50)
+}
+
 // EmptyResponseCooldownSeconds returns the initial binding cooldown for an
 // empty-response streak demotion.
 func EmptyResponseCooldownSeconds() int {
