@@ -194,3 +194,44 @@ SELECT 'M8_ns_'||f||'_'||win k,
   COUNT(*)::text||' pairs | runs='||SUM(cnt)::text
   ||' | median_per_pair='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY cnt))::int::text,'?') v
 FROM agg GROUP BY f, win ORDER BY 1;
+
+-- ═══ M9 ★ 展开覆盖完整性（★ 防止后续数据变更让覆盖退化）═══
+-- 判据：featured canonical 的**每一个** raw 变体都必须已进 static 集合。
+-- ★ T0 实测 = 0（完整覆盖）；若这里 > 0 ⇒ 展开逻辑与数据已脱节。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
+          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
+          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv)
+SELECT 'M9_missing_raw_variant' k,
+  COUNT(*)::text||' 个 featured canonical 的 raw 变体未进 static（★ 期望 0）' v
+FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
+WHERE mc.featured=TRUE AND mc.status='active'
+  AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''
+  AND lower(btrim(pm.raw_model_name)) NOT IN (SELECT m FROM st);
+
+-- ═══ M10 ★ 数据质量：standardized_name vs canonical_name 的差异面 ═══
+-- ★ 差异会让 selfcheck 侧的别名匹配失准（selfcheck 用 raw+standardized 两个别名）。
+-- T0 实测：2857 行里 19 行不等；★ 这 19 行的 free_pairs 与 node_probe_state 行数
+-- 都极小 ⇒ 当前无实质影响，但差异量本身要持续可观测。
+SELECT 'M10_std_vs_canon_diff' k,
+  COUNT(*)::text||' / '||COUNT(*)::text||' 行不等 | 其中 featured 的='||
+  COUNT(*) FILTER (WHERE mc.featured)::text v
+FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
+WHERE pm.standardized_name IS NOT NULL AND pm.standardized_name<>''
+  AND lower(pm.standardized_name) <> lower(mc.canonical_name);
+
+WITH diff AS (
+  SELECT pm.raw_model_name, pm.standardized_name, mc.canonical_name, mc.featured
+  FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
+  WHERE pm.standardized_name IS NOT NULL AND pm.standardized_name<>''
+    AND lower(pm.standardized_name) <> lower(mc.canonical_name)
+)
+SELECT 'M10_diff_'||raw_model_name k,
+  'canon_featured='||featured::text
+  ||' | free_pairs='||COALESCE((SELECT COUNT(*) FROM credential_model_bindings b
+       JOIN provider_models pm2 ON pm2.id=b.provider_model_id
+       WHERE b.billing_mode='free' AND pm2.raw_model_name=diff.raw_model_name),0)::text
+  ||' | nps_rows='||COALESCE((SELECT COUNT(*) FROM node_probe_state n WHERE n.raw_model_name=diff.raw_model_name),0)::text v
+FROM diff ORDER BY raw_model_name;
