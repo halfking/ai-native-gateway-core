@@ -1092,6 +1092,10 @@ func (e *Executor) executeOpenAI(
 	probe := reqProbeRuntime{}
 	probeRetry := false
 	probeNoDelay := false
+	// 2026-11-10 审计 A4：reasoning 预算加倍的「免费重试」同样跳过退避——
+	// 上一次响应已 200 收讫，这次是确定性参数修正不是瞬时故障，5s 指数
+	// 退避只会白等（与 probeNoDelay 同语义）。
+	reasoningBumpNoDelay := false
 	// P0-1 paramrefusal：每请求剔除重试预算 1 次（不分字段——第二次指名
 	// 说明还有别的问题，连续剥参交给 reqprobe 的有界多轮，本机制只兜
 	// 第一跳）。
@@ -1236,7 +1240,7 @@ func (e *Executor) executeOpenAI(
 			attempt--           // reqprobe 重试同样免费
 			probeNoDelay = true // 且立即重发，不退避（参数探测是确定性修正）
 		}
-		if attempt > 0 && !probeNoDelay {
+		if attempt > 0 && !probeNoDelay && !reasoningBumpNoDelay {
 			delay := time.Duration(5*(1<<(attempt-1))) * time.Second
 			if isUpstreamOverloaded(lastErr) {
 				delay = errorsx.DefaultOverloadRetryDelay
@@ -1264,6 +1268,7 @@ func (e *Executor) executeOpenAI(
 			}
 		}
 		probeNoDelay = false
+		reasoningBumpNoDelay = false
 
 		// BUG-2 fix (2026-06-19): create the upstream context at loop scope
 		// (not inside the closure with defer cancel()). For the session path,
@@ -2237,7 +2242,7 @@ func (e *Executor) executeOpenAI(
 				// the right value if it ever unwraps to a *upstreampkg.Error.
 				return nil, &retryableError{err: &upstreampkg.Error{
 					Kind:       errKind,
-					Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(body[:n], 200)),
+					Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLogMasked(body[:n], 200)),
 					Body:       append([]byte(nil), body[:n]...),
 					StatusCode: resp.StatusCode,
 					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
@@ -2617,6 +2622,7 @@ func (e *Executor) executeOpenAI(
 					emptyUsage.FinishReason == "length" && !reasoningBudgetBumped {
 					if bumpedBody, bumped := bumpReasoningBudget(bodyBytes); bumped {
 						reasoningBudgetBumped = true
+						reasoningBumpNoDelay = true // 审计 A4：确定性修正免退避
 						// 2026-11-10 审计 P0-A：必须同时抬上界，否则这次重发
 						// 在 dispatch_v2（retryPerCred=0）下拿不到迭代 ⇒
 						// 「重试」只存在于日志里，bodyBytes 永不上线。

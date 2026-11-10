@@ -1167,7 +1167,7 @@ func (e *Executor) executeGemini(
 		}
 		upstreamErr := &upstreampkg.Error{
 			Kind:       errKind,
-			Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(captured, 200)),
+			Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLogMasked(captured, 200)),
 			Body:       append([]byte(nil), captured...),
 			StatusCode: resp.StatusCode,
 			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),

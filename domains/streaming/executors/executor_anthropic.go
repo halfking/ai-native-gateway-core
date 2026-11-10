@@ -1294,7 +1294,7 @@ func (e *Executor) executeAnthropicOnce(
 			"provider_id", cand.ProviderID,
 			"status", resp.StatusCode,
 			"kind", errKind,
-			"body_preview", truncateForLog(body, 200))
+			"body_preview", truncateForLogMasked(body, 200))
 
 		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 			// Step 4 (2026-06-18): removed the 10-second slow-upstream
@@ -1379,7 +1379,7 @@ func (e *Executor) executeAnthropicOnce(
 			// KindTransient in _request_logs.error_kind.
 			upstreamErr := &upstreampkg.Error{
 				Kind:       errKind,
-				Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(body, 200)),
+				Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLogMasked(body, 200)),
 				Body:       append([]byte(nil), body...),
 				StatusCode: resp.StatusCode,
 				RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
@@ -1433,7 +1433,7 @@ func (e *Executor) executeAnthropicOnce(
 		// a transient-shaped fmt.Errorf.
 		return nil, &retryableError{err: &upstreampkg.Error{
 			Kind:       errKind,
-			Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLog(body, 200)),
+			Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncateForLogMasked(body, 200)),
 			Body:       append([]byte(nil), body...),
 			StatusCode: resp.StatusCode,
 			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),

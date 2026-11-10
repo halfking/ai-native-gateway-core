@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/db"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/labstack/echo/v4"
 	"github.com/redis/go-redis/v9"
 )
@@ -45,7 +46,9 @@ func main() {
 	case "error":
 		level = slog.LevelError
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	// 2026-11-10 审计 C8：换 rule 71 规范层（必填字段 + 脱敏）。此前裸
+	// JSONHandler ⇒ 行缺 service/version/env/severity_* 必填字段且不过脱敏。
+	slog.SetDefault(logging.NewServiceLogger(level))
 	slog.Info("license-authority starting", "listen", *listen, "log_level", *logLevel)
 
 	// ── Database ──────────────────────────────────────────────────────────
