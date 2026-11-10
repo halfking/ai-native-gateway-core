@@ -1,5 +1,26 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-10 被动时序特征三红根修轮（goal 会话，通用式见 `LESSONS.md` **§652**）**：
+> ★ 用户目标＝「提交代码并推送」；起因＝拉取最新 origin/main 时并行会话引入的
+> `domains/streaming/passive_timing_tracker_test.go` **在 main 上三条必红**
+> （TestPassiveTimingTrackerSamples / TestComposedTextObserver /
+> TestExtractPassiveFromTracker）⇒ 本轮把这三条从「新红」修到绿。
+> ★★★ **真缺陷（生产侧采样盲区）**：`ExtractPassiveFromTracker` 用「ttft==0 且
+> 无 ITT」代理「没有文本增量」—— **首 token 与追踪器创建同刻时 TTFT 合法地为 0**
+> （粗粒度时钟上更是常见）⇒「有文本的单块流」被误判为空流、被动特征被静默丢弃
+> （不是红而是「没有数据」的盲区）⇒ 改用显式的 `ObservedText()` 信号判空。
+> ★ **可测性**：追踪器加 `now` 接缝 + `SetClock`（本仓 RateBackoffTracker.SetClock
+> 惯例）——此前 ObserveText 直调 time.Now()，测试只能靠 sleep 赌时钟粒度；注入后
+> TTFT/ITT/吞吐三项断言到确定值（TTFT=30ms、ITT=[10ms,20ms]）。
+> ★ 测试改写为确定性断言＋补两条回归门（单块流零 TTFT 仍产特征 / 真空流仍 nil）；
+> ★ **未改**：组合器转发语义、观察者「永不中断流」契约、生产默认时钟来源。
+> ★ 验收：`domains/streaming` 全包 ok 85.2s、vet 干净；`bg` 36.8s、`sanitizerules`
+> 1.8s 全绿；**`sql/migrations/startup` 的 q-usage exec-bit 红＝Windows 假红族**
+> （git 索引 100755、工作区 -rwxr-xr-x，但 Go 在 Windows 对普通文件恒报 0666；
+> 干净 origin/main worktree 同红 ⇒ 基线环境红，部署机 Linux 不受影响）。
+> ★ 合并：origin/main 期间前进 4 提交（恢复检测及时性 P0-3 / 迁移 956 等）⇒
+> 零冲突合并（166aa59f90fb）后推送。
+
 > **2026-11-10 网关 22 条错误族复审 + 211 实证轮（goal 会话，通用式见 `LESSONS.md` **§651**）**：
 > ★ 用户目标＝「网关调用模型时经常发生下列 22 条错误 → 再次对代码审计 → 分析 211 log → 确认是否都已修正」。
 > ★★ **22 条裁决＝12 已修正 / 3 部分修正 / 2 已修正但**保护机制默认关闭** / 4 客户端文案（网关不产生）/ 1 本轮发现并修复**（明细见 `docs/audit/2026-11-10-网关22条错误族复审与211实证.md`）。
