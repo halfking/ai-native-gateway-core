@@ -1226,7 +1226,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
 --     ② 同量纲对照（★ Stage 1 用 pre24_fp、Stage 2 用 pre7d_fp）
 --   ★★ ⇒ ★★ 本视图**不含 now()** ⇒ ★★ 时钟无关 ⇒ ★★ pre 键在三时钟下逐字节一致（★ 三时钟门守着）
 fpr AS (
-  SELECT created_at AS fail_at, next_retry_seconds, exemption, era
+  SELECT created_at AS fail_at, raw_model_name, next_retry_seconds, exemption, era
   FROM seg WHERE NOT success
     AND raw_model_name LIKE '%/%' AND lower(btrim(raw_model_name)) IN (SELECT m FROM newly)
 ), fpexp AS (
@@ -1235,6 +1235,14 @@ fpr AS (
   SELECT r.*, 'pre7d' FROM fpr r WHERE r.era='pre'
   UNION ALL
   SELECT r.*, 'post' FROM fpr r WHERE r.era='post'
+), fpm AS (
+  -- ★★ 逐模型聚合（★ post 窗口）⇒ ★★ 「摇摆」分量与**逐模型复核**的输入
+  SELECT raw_model_name, exemption,
+         COUNT(*)::text n,
+         COUNT(*) FILTER (WHERE next_retry_seconds IN (SELECT v FROM ev_set))::text mul_evid,
+         COUNT(*) FILTER (WHERE next_retry_seconds = 21600)::text top21600,
+         COALESCE(string_agg(DISTINCT next_retry_seconds::text, ',' ORDER BY next_retry_seconds::text),'-') ladder
+  FROM fpexp WHERE win='post' GROUP BY raw_model_name, exemption
 )
 SELECT 'M20_'||exemption||'_'||win k,
   COUNT(*)::text||' events | med_gap='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
@@ -1340,6 +1348,36 @@ SELECT 'M20_'||w.lay||'_post_split' k,
        AND s.created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
        AND s.created_at >= now() - interval '6 hours') v
 FROM (VALUES ('normal'),('exempt')) AS w(lay)
+UNION ALL
+-- ★★★★ M20 的**逐模型 fp 阶梯谱**（★ post 窗口）⇒ ★★ 「摇摆」分量的原料 + **逐模型复核**工具
+--   ★★ 键名：`M20_<层>_post_fp_model__<raw_model_name>`
+--   ★★ 字段：n / mul_evid（★ 落在减半独占值证据集里的条数 ⇒ ★ 该模型**当时是 featured** 的证据）
+--   ★★       top21600（★ **未减半**的 6h 顶格条数）/ ladder（★ 阶梯谱）
+--   ★★ ★ 用途：★ Stage 1 若指纹判负 ⇒ ★ 能立刻指出「**哪只模型**、谱是什么」⇒ ★ 人工复核
+SELECT 'M20_'||exemption||'_post_fp_model__'||raw_model_name k,
+  'n='||n||' | mul_evid='||mul_evid||' | top21600='||top21600||' | ladder='||ladder v
+FROM fpm
+UNION ALL
+-- ★★★★ M20 的**「摇摆」**读数键（★ 第 20 处口径修正，★★ 修复前后的判别信号）
+--   ★★ 定义：★ post 段 normal 层里，★ **同一模型同时**出现
+--   ★★   ① 减半独占值（mul_evid > 0 ⇒ ★ 该模型**当时 featured** ⇒ ★ 阶梯被减半）
+--   ★★   ② 未减半 6h 顶格（top21600 > 0 ⇒ ★ 该模型**当时不 featured** ⇒ ★ 阶梯未减半）
+--   ★★ ⇒ ★★ **「摇摆」= 该模型的 featured 状态在窗口内不稳定**
+--   ★★ ★★ **为什么它是强信号（★ 机制推演 + 真库实测双向确认）**：
+--   ★★   · **修复前**：★ newly 覆盖的 namespaced raw 模型**不在 static 集里**（★ static 只有 45）
+--   ★★     ⇒ ★★ 只能靠 **usage top-N tier** featured ⇒ ★★ tier 变动 ⇒ ★★ **摇摆普遍**
+--   ★★     ⇒ ★★ 实测（★ 负控 era 逐模型谱）：★ `anthropic/claude-opus-4.8` **同时**有 10800 + 21600 ✔
+--   ★★   · **修复后**：★ static 展开到 **210**（★ 含 200 个 raw 变体 ⇒ ★ newly 模型**永久 featured**）
+--   ★★     ⇒ ★★ **tier churn 不再影响它们** ⇒ ★★ **不应摇摆** ⇒ ★★ 实测：★ 当前 post 该模型**只有 10800** ✔
+--   ★★ ⇒ ★★ **⇒ 「摇摆 0 只」= 修复已真正落地（★ 而不只是「碰巧 featured」）**
+--   ★★ ⇒ ★★ **⇒ 且它天然免疫「usage tier churn ⇒ 假红」**（★ 因为摇摆的成因已被 static 展开消除）
+--   ★★ ⇒ ★★ 判据：★ swing_n == 0 ⇒ ✅；★ > 0 ⇒ ❌（★ 修复前特征 ⇒ featured 状态仍不稳）
+SELECT 'M20_normal_post_fp_swing' k,
+  'swing_n='||COUNT(*) FILTER (WHERE mul_evid::int > 0 AND top21600::int > 0)::text
+  ||' | swing_models='||COALESCE(string_agg(raw_model_name, ',' ORDER BY raw_model_name)
+        FILTER (WHERE mul_evid::int > 0 AND top21600::int > 0),'-')
+  ||' | models_n='||COUNT(*)::text v
+FROM fpm WHERE exemption='normal'
 UNION ALL
 -- ★★★ **era 纯度的存活者偏差自检**（★ 本轮新增，★ 见主档 §5.9.21.13.8）
 --   ★★ pre 侧成熟度过滤要求 `next_at < 切点` ⇒ ★★ **凡是被这条规则丢掉的事件，

@@ -991,10 +991,39 @@ def judge(data: dict[str, str], stage: int = 1,
                 ok_slow = slow <= lim_slow
                 slow_txt = (f"慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                             f" ⇒ {'冷簇已收缩' if ok_slow else '★ 冷簇未收缩'}")
-            # ★★ 总体裁决：★ 两个分量**都**成立才算达成；★ 任一 ❌ ⇒ ❌；★ 有不可判 ⇒ 不可判
-            if ok_fp is False or ok_slow is False:
+            # ★★★★ 分量③：**「摇摆」**（★ 第 20 处口径修正 ⇒ ★ 修复前后的判别信号）
+            #   ★★ 同一模型**同时**出现「减半独占值」（⇒ 当时 featured ⇒ 阶梯被减半）
+            #   ★★ 与「未减半 6h 顶格」（⇒ 当时不 featured ⇒ 阶梯未减半）
+            #   ★★ ⇒ ★★ 该模型的 **featured 状态在窗口内不稳定**
+            #   ★★ ★★ 机制推演（★ 真库双向实测确认）：
+            #   ★★   · **修复前**：★ newly 的 namespaced raw 不在 static 集里（★ static 只有 45）
+            #   ★★     ⇒ ★★ 只能靠 usage top-N tier featured ⇒ ★★ tier 变动 ⇒ ★★ **摇摆普遍**
+            #   ★★     ⇒ ★★ 实测（★ 负控 era）：★ `anthropic/claude-opus-4.8` **同时**有 10800 + 21600 ✔
+            #   ★★   · **修复后**：★ static 展开到 **210**（★ 含 200 raw 变体 ⇒ newly **永久 featured**）
+            #   ★★     ⇒ ★★ **tier churn 不再影响它们** ⇒ ★★ 不应摇摆 ⇒ ★★ 实测：★ 当前 **swing_n=0** ✔
+            #   ★★ ⇒ ★★ **⇒ 摇摆 0 只 = 修复已真正落地（★ 而不只是「碰巧 featured」）**
+            #   ★★ ⇒ ★★ **⇒ 且它天然免疫「usage tier churn ⇒ 假红」**（★ 摇摆的成因已被 static 展开消除）
+            sw = data.get("M20_normal_post_fp_swing")
+            if sw is None:
+                ok_swing = None
+                swing_txt = ("★ 摇摆键**未产出**（★ 先查采集侧是否漏了逐模型聚合 ⇒ ★ 不是「量具缺数」）")
+            else:
+                s_n = field(sw, "swing_n")
+                s_models = field_str(sw, "swing_models")
+                if s_n is None:
+                    ok_swing = None
+                    swing_txt = "★ 摇摆键算不出 swing_n ⇒ 不可判"
+                elif s_n > 0:
+                    ok_swing = False
+                    swing_txt = (f"★ 摇摆模型 **{s_n:.0f}** 只（★ 同一模型同时出现减半独占值与未减半 6h 顶格"
+                                 f" ⇒ ★ featured 状态不稳 ⇒ ★ **修复前特征**）★ 名单: {s_models or '?'}")
+                else:
+                    ok_swing = True
+                    swing_txt = "★ 摇摆模型 0 只（★ 新覆盖模型 featured 状态稳定 ⇒ ★ 修复已真正落地）"
+            # ★★ 总体裁决：★ 三个分量**都**成立才算达成；★ 任一 ❌ ⇒ ❌；★ 有不可判 ⇒ 不可判
+            if ok_fp is False or ok_slow is False or ok_swing is False:
                 ok = False
-            elif ok_fp is None or ok_slow is None:
+            elif ok_fp is None or ok_slow is None or ok_swing is None:
                 ok = None
             else:
                 ok = True
@@ -1012,10 +1041,12 @@ def judge(data: dict[str, str], stage: int = 1,
             else:
                 bias_txt = " ★（★ pre 侧 era 纯度未丢事件 ⇒ 无存活者偏差）"
             obs_txt = (f"【指纹·fp】{fobs or '—（键未产出）'}"
-                       f" || 【slow·成熟】{obs or '—（未结算）'}")
+                       f" || 【slow·成熟】{obs or '—（未结算）'}"
+                       f" || 【摇摆】{sw or '—（键未产出）'}")
             rows.append((label, base_txt, obs_txt,
                          verdict(ok, f"★ 【指纹·fp 视图（★ 无成熟度过滤 ⇒ 尾部不被截断）】{fp_txt}"
                                    f" / ★ 【slow·成熟视图（★ 需 6h 结算）】{slow_txt}{p90_txt}"
+                                   f" / ★ 【摇摆（★ featured 状态稳定性）】{swing_txt}"
                                    f"（★ ★ 两分量**跨度不同**：★ 指纹覆盖到「读数时刻」，"
                                    f"★ slow 覆盖到「读数时刻 − 6h」⇒ ★ 行内数字不可直接相加）"
                                    f"{bias_txt}{contam_txt}")))
@@ -1288,6 +1319,13 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         #   ★ ★ 不变量：★ `fp_n_all ≥ window_n + tail_n` ⇒ ★ fp 视图被改回带成熟度过滤 ⇒ 必破
         "M20_normal_post_split": "window_n=0 | tail_n=10",
         "M20_exempt_post_split": "window_n=0 | tail_n=4",
+        # ★★ M20 的**「摇摆」**键（★ 第 20 处口径修正 ⇒ ★ 修复前后的判别信号）
+        #   ★★ swing_n = post 段 normal 层里「同一模型同时出现减半独占值与未减半 6h 顶格」的模型数
+        #   ★★ 实测（★ 真捕获 2026-11-10 19:2x）：★ swing_n=**0**（★ 2 只 normal 模型 ⇒ 都稳定 featured）
+        "M20_normal_post_fp_swing": "swing_n=0 | swing_models=- | models_n=2",
+        # ★★ **逐模型 fp 阶梯谱**（★ 真捕获 ⇒ ★ Stage 1 逐模型复核用）
+        "M20_normal_post_fp_model__anthropic/claude-opus-4.8": "n=1 | mul_evid=1 | top21600=0 | ladder=10800",
+        "M20_normal_post_fp_model__deepseek-ai/deepseek-v4-pro-0813": "n=10 | mul_evid=10 | top21600=0 | ladder=1800",
         # ★★ era 纯度存活者偏差自检（★ 真库实测 pre24/pre7d 均为 0 ⇒ 无存活者偏差）
         "M20_era_dropped_pre24": "0 events dropped_by_era_purity",
         "M20_era_dropped_pre7d": "0 events dropped_by_era_purity",
@@ -1883,6 +1921,35 @@ def selftest() -> int:
     if "组尾部可见性不变量" not in _g20:
         failures.append(f"[㉙ 尾部可见性守卫] 守卫未真正比对过（★ 接上真数据后必须看到它比对）⇒ {_g20}")
 
+    # ㉚ ★★★★ **「摇摆」分量要能单独被抓住**（★ 第 20 处口径修正 ⇒ 修复前后的判别信号）
+    #   ★★ 场景：同一模型同时出现减半独占值与未减半 6h 顶格 ⇒ ★ featured 状态不稳
+    #   ★★ ⇒ ★ 指纹读 0 也**必须**判未达成（★ 否则「修复只是碰巧 featured」会被读成达成）
+    d = _synthetic(True)
+    d["M20_normal_post_fp_swing"] = ("swing_n=1 | swing_models=anthropic/claude-opus-4.8"
+                                     " | models_n=2")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[㉚ 摇摆分量] 摇摆模型 >0 时应判未达成 ⇒ {v}")
+    if "摇摆" not in v:
+        failures.append(f"[㉚ 摇摆分量] 行内必须写明「摇摆」分量 ⇒ {v}")
+
+    # ㉛ ★★★★ **摇摆键未产出 ⇒ fail-closed**（★ 不得静默判绿）
+    d = _synthetic(True)
+    d.pop("M20_normal_post_fp_swing", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if v.startswith("✅"):
+        failures.append(f"[㉛ 摇摆键未产出] 键缺失时**不得**判绿 ⇒ {v}")
+    if "未产出" not in v:
+        failures.append(f"[㉛ 摇摆键未产出] 必须写明「键未产出」⇒ {v}")
+
+    # ㉜ ★★★★ **摇摆 0 ⇒ 行内必须给出正向结论**（★ 「featured 状态稳定」是本轮最想说的话）
+    rows, _, _ = judge(_synthetic(True), stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if "featured 状态稳定" not in v:
+        failures.append(f"[㉜ 摇摆正向披露] 摇摆 0 时必须写明「featured 状态稳定 ⇒ 修复已真正落地」⇒ {v}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -1916,6 +1983,9 @@ def selftest() -> int:
     print("   ✔ ㉗ ★★ 「0 条未减半顶格」但**无正向证据** ⇒ 不可判（★ 不得读成「已生效」）")
     print("   ✔ ㉘ ★★ 量具正控：★ pre 侧同口径读不到未减半顶格 ⇒ 「量具无鉴别力」⇒ 不得判绿")
     print("   ✔ ㉙ ★★★ 「fp 视图尾部可见性」守卫：★ fp 视图被改窄 ⇒ **报警 + 整表作废**（★ 且断言它真的比对过）")
+    print("   ✔ ㉚ ★★★ 「摇摆」分量（★ featured 状态稳定性）能单独被变异抓住（★ 修复前后的判别信号）")
+    print("   ✔ ㉛ ★★ 摇摆键未产出 ⇒ **fail-closed**（★ 不得静默判绿）")
+    print("   ✔ ㉜ ★★ 摇摆 0 ⇒ 行内必须给出「featured 状态稳定 ⇒ 修复已真正落地」的正向结论")
     print("\n== 合成数据自测通过 ==")
     return 0
 
