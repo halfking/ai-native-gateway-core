@@ -326,6 +326,111 @@ def field_str(text: str, name: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def m5_baseline_disclosure(data: dict[str, str], n, lim) -> str:
+    """★★★ 第 22 处口径修正：★ M5 的「**基线口径**」披露（★ 只披露，★ **不改 base/limit**）
+
+    ★★ **问题（★ 实测）**：★ M5 的 base = **pre24 的单日快照**（9242）⇒ ★ 而探测量**按天剧烈波动**
+    ★   （★ 实测 pre7d 逐日：min=**1292** / max=**9905** ⇒ **8× 差**；★ 且 **pre 期实测 11-09 = 9683 > limit 9334**）
+    ★   ⇒ ★★ ⇒ **该阈值在 pre 期就不成立** ⇒ ★★ ⇒ M5 判 ❌ 时**不能**读成「修复引起爆炸半径」
+    ★ ★★ **处置（★ 本轮纪律）**：★ **不改 base/limit**（★ 关窗前**不重冻**已验证基线）
+    ★   ⇒ ★★ 只在行内把「**基线口径问题**」摆出来 ⇒ ★★ **裁决符号保持不变**（★ ❌ 仍是 ❌ ⇒ 门不钝化）
+    ★   ⇒ ★★ 真正的改进项（用 ≥7 天的均值/中位/分位做基线）登记为 **Stage 2 之后的基线口径改进项**
+    """
+    pre_raw = data.get("M5_pre7d_runs_by_day") or ""
+    post_raw = data.get("M5_post_runs_by_day") or ""
+    # ★★ **键缺失 ⇒ 显式说「不可见」**（★ 不得默认「阈值成立」⇒ ★ 那就是静默判绿）
+    if not pre_raw.strip():
+        return ("★ 基线口径：★★ **逐日分布键未产出** ⇒ ★★ **基线口径不可见**"
+                "（★ ⇒ 本行 ❌ 只能读成「超预算」这一事实，★ **不得**据此断言「修复引起爆炸半径」，"
+                "★ 也**不得**默认「阈值在 pre 期成立」）")
+    days_txt = field_str(pre_raw, "days") or "-"
+    dmin = field_str(pre_raw, "min") or "?"
+    dmax = field_str(pre_raw, "max") or "?"
+    nd = field_str(pre_raw, "n_days") or "?"
+    # ★★ 逐日超预算天数（★ 由判定器自己的 limit 计算 ⇒ 阈值只有一个来源）
+    over = 0
+    total_days = 0
+    for part in days_txt.split(","):
+        if ":" not in part:
+            continue
+        total_days += 1
+        try:
+            if int(part.rsplit(":", 1)[1]) > int(lim):
+                over += 1
+        except (TypeError, ValueError):
+            pass
+    # ★★ 波动倍数（★ 读数异常时不得炸掉披露 ⇒ 兜底写「?」）
+    try:
+        ratio = f"{float(dmax) / float(dmin):.1f}×"
+    except (TypeError, ValueError, ZeroDivisionError):
+        ratio = "?"
+    post_days = field_str(post_raw, "days") or "-"
+    txt = (f"★ 基线口径：★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而探测量**按天波动**"
+           f"（★ pre7d 逐日（★ 按**日历日**切 ⇒ 7 天窗口跨 8 个日历日）min={dmin} / max={dmax}"
+           f" ⇒ **{ratio} 差距**；★ n_days={nd}）"
+           f"⇒ ★★ **pre 期已有 {over}/{total_days} 个日历日超预算 {lim}** ⇒ ★★ 该阈值**在 pre 期就不成立**"
+           f"⇒ ★★ 故本行 ❌ **不可归因于修复**（★ post 逐日：{post_days}）")
+    return txt
+
+
+def control_phase_disclosure(data: dict[str, str], scope: str, pre_med: float) -> str:
+    """★★★ 第 21 处口径修正：★ 「对照组」的**相位/构成**披露（★ 只披露，★ **不改裁决语义**）
+
+    ★★ **机理（★ 关窗预演抓到的真缺陷，★ 已用真数据证实）**：
+    ★ · 对照组里 **~80 只**协议形态模型（★ http 404/410 ⇒ 协议形态 ⇒ 设计上钉 **6h = 21600s** 阶梯）
+    ★   以 **6h 节奏**被探（★ 实测 11-09/11-10：13:30 → 19:30 → 01:30 → 07:30 → 13:30）
+    ★ · era 切点 = 11-10 **13:42:30** ⇒ ★★ **切点落在两次 6h 批次之间**
+    ★   ⇒ ★★ post 窗口的**前 5.6h 里一个 6h 批次都没有**（★ 下一次是 19:30）
+    ★   ⇒ ★★ 对照组 post 段只剩 **11 只**（★ timeout/429/500 形态 ⇒ 阶梯 3600）⇒ med=60
+    ★   ⇒ ★★ 而 pre24 含 **4 个** 6h 批次（★ ≈960 条 360min）⇒ med=360
+    ★ ⇒ ★★ **两窗口的「失败形态构成」不同构** ⇒ ★★ 中位数不可直接比 ⇒ ★★ 是**相位假红**
+    ★ ⇒ ★★ 已实测证实：★ 11-10 **19:28–19:31** 那批 6h 周期**如期落地**（★ 阶梯仍是 21600）
+    ★   ⇒ ★★ 相位解释成立 ⇒ ★★ **Stage 1 的 24h post 窗口含 ≥1 个完整 6h 周期 ⇒ 构成可比**
+
+    ★★ **为什么只披露、不改裁决**：★ 门**不许**因为「看起来像假红」就软化 ⇒ ★★ 裁决符号保持原样
+    ★   （★ ❌ 仍是 ❌）⇒ ★★ 门不钝化；★ 本函数只负责把**构成**摆到行内 ⇒ ★★ 让读者能自行判读。
+    ★★ 判定条件（★ **客观可测**，★ 不靠措辞）：★ post 窗口内 **6h 顶格事件数 == 0** 且 **pre med ≥ 300**
+    """
+    key = ("M14x_" if scope == "x" else "M14_") + "post_other_composition"
+    raw = data.get(key)
+    if not raw:
+        # ★★ 键缺失 ⇒ **必须显式说「看不见」**（★ 否则「相位」问题会被静默吞掉）
+        return ("★ ★★ **相位/构成不可见**（★ 键 `%s` 未产出 ⇒ ★ 无法判断 post 与 pre 的"
+                "失败形态是否同构 ⇒ ★★ 该行结论**不可归因**）" % key)
+    top6h = field(raw, "top21600_n")
+    n = field(raw, "n")
+    models = field(raw, "models_n")
+    slow = field(raw, "slow_gt300_pct")
+    spec = field_str(raw, "ladder_spectrum")
+
+    def _i(v):
+        try:
+            return str(int(float(v)))
+        except (TypeError, ValueError):
+            return str(v)
+
+    txt = (f"★ 相位/构成：post n={_i(n)} / models={_i(models)} / 6h 顶格事件={_i(top6h)}"
+           f" / 慢事件占比={_i(slow)}% / 阶梯谱={spec}")
+    try:
+        n_int = int(n) if n is not None else None
+        t6 = int(top6h) if top6h is not None else None
+        # ★★ 触发条件（★ **客观可测**，★ 不靠措辞）：★ pre 是 6h 单一形态（med ≥ 300）
+        #   且 **post 的 6h 顶格事件占比 < 20%** ⇒ ★★ post 的**主导失败形态已换人**
+        #   ⇒ ★★ 两窗口**不同构** ⇒ ★★ 中位数不可直接比 ⇒ ★★ 该 ❌ **不可归因**
+        #   ⇒ ★★ Stage 1 的 24h post 含 ≥1 个完整 6h 周期 ⇒ 占比 ≈85% ⇒ **不触发** ✔
+        if (n_int is not None and n_int > 0 and t6 is not None
+                and float(pre_med) >= 300 and (t6 / n_int) < 0.2):
+            txt += ("★★ ★★ **post 窗口内 6h 顶格事件仅 %s/%s（%.1f%%）**，★ 而 pre med=%s "
+                    "由 6h 顶格主导（★ 对照组里 ~80 只协议形态模型以 6h 节奏被探）"
+                    "⇒ ★★ 两窗口**形态不同构**（★ post 的主导失败形态已换人）"
+                    "⇒ ★★ 该 ❌ **不可归因于修复**（★ 极可能是**相位/窗口覆盖**：★ post 窗口"
+                    "不足一个完整 6h 阶梯周期 ⇒ ★ 须补齐 ≥1 个完整周期后复判）"
+                    % (top6h, n, 100.0 * t6 / n_int, pre_med))
+    except (TypeError, ValueError):
+        pass
+    return txt
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 裁决措辞
 # ─────────────────────────────────────────────────────────────────────
@@ -644,6 +749,8 @@ def judge(data: dict[str, str], stage: int = 1,
                 note = (f"★ 探测量超预算（{n} > {lim}）⇒ 复核探针调度增量来源"
                         f"（era2 纳入 106 新覆盖变体 + 恢复链 re-arm/回退探测均会推高读数 ⇒ "
                         f"先分辨「设计内恢复探测」与「调度失控」再定责）")
+                # ★★★ 第 22 处口径修正：★ 把「基线口径问题」摆进行内（★ 只披露，不改符号）
+                note += m5_baseline_disclosure(data, n, lim)
             else:
                 note = "指标缺失（脚本未产出该键）"
             rows.append((label, base_cell(key), obs, verdict(ok, note)))
@@ -908,9 +1015,13 @@ def judge(data: dict[str, str], stage: int = 1,
                                  verdict_missing("★ post 的中位算不出")))
                     continue
                 ok = abs(med - pre[0]) <= max(30, int(pre[0] * 0.2))
+                # ★★★ 第 21 处口径修正：★ 把「相位/构成」摆进对照组行内
+                #   ★★ **只披露，不改裁决符号**（★ ❌ 仍是 ❌ ⇒ ★ 门不钝化）
+                phase_txt = control_phase_disclosure(data, scope, pre[0])
                 rows.append((label, base_txt, obs,
                              verdict(ok, f"★ 对照：post med={med}（pre {pre[0]}，容差 ±20%）"
-                                       f"⇒ {'未受影响的 ns 对节奏未变' if ok else '★ 对照也变了 ⇒ 有其它因素'}")))
+                                       f"⇒ {'未受影响的 ns 对节奏未变' if ok else '★ 对照也变了 ⇒ 有其它因素'}"
+                                       + phase_txt)))
     # ── M20：★★★★ **分层效应指标**（★ 本轮第 11 处口径修正）──
     #   ★★ 为什么要它：★ M14x 的混合口径里 **78% 是豁免类**（协议形态 ⇒ 钉 6h ⇒ 乘数豁免）
     #     ⇒ ★★ post 的混合 p90 必然仍 ≈360 ⇒ ★★ M14x 的「post p90 ≤180」**结构性不可达**
@@ -1210,6 +1321,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         m14x_old = "226 events | med_min=4 | p90_min=20 | p99_min=300 | max_min=300 | slow_gt300_pct=4.0"
         m14x_new = "78 events | med_min=30 | p90_min=120 | p99_min=600 | max_min=600 | slow_gt300_pct=20.0"
         m14x_oth = "972 events | med_min=360 | p90_min=360 | p99_min=360 | max_min=360 | slow_gt300_pct=74.0"
+        # ★★ 第 21 处口径修正：★ 「对照组」的**相位/构成**键（★ post 侧）
+        #   ★ 「达成」场景：★ post 侧**含 6h 顶格事件**（★ 与 pre 同构 ⇒ 可比）
+        m14_oth_comp = ("n=300 | models_n=85 | top21600_n=240 | slow_gt300_pct=85.0"
+                        " | ladder_spectrum=21600,3600")
+        m14x_oth_comp = ("n=972 | models_n=85 | top21600_n=840 | slow_gt300_pct=74.0"
+                         " | ladder_spectrum=21600,3600")
         m3b_f429, m3b_n429, m3b_f503, m3b_n503 = 300, 3600, 1800, 3600
         m2, m6, m9, m5 = "34 rp + 15 canon + 200 raw_variant = 210", \
             "80 featured / 1060 total_free_eligible", \
@@ -1249,6 +1366,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         m14x_old = "226 events | med_min=4 | p90_min=200 | p99_min=300 | max_min=300 | slow_gt300_pct=4.0"
         m14x_new = "78 events | med_min=30 | p90_min=600 | p99_min=1400 | max_min=1400 | slow_gt300_pct=20.0"
         m14x_oth = "972 events | med_min=120 | p90_min=360 | p99_min=360 | max_min=360 | slow_gt300_pct=74.0"
+        # ★★ 第 21 处口径修正：★ 「未达成」场景下的构成 = ★ **post 侧零 6h 顶格事件**
+        #   ⇒ ★★ 两窗口**形态不同构** ⇒ ★★ 必须触发「相位/构成」披露（★ 但裁决符号仍是 ❌）
+        m14_oth_comp = ("n=300 | models_n=11 | top21600_n=0 | slow_gt300_pct=0.0"
+                        " | ladder_spectrum=3600")
+        m14x_oth_comp = ("n=972 | models_n=11 | top21600_n=0 | slow_gt300_pct=0.0"
+                         " | ladder_spectrum=3600")
         m3b_f429, m3b_n429, m3b_f503, m3b_n503 = 3600, 1800, 3600, 1800  # 两类错误码都失配 ⇒ ❌
         m2, m6, m9, m5 = "34 rp + 15 canon + 160 raw_variant = 190", \
             "70 featured / 1060 total_free_eligible", \
@@ -1262,6 +1385,14 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M6_free_featured_pairs": m6,
         "M9_missing_raw_variant": m9,
         "M5_probe_runs_24h": m5,
+        # ★★★ 第 22 处口径修正：★ M5 的**逐日探测量分布**（★ 真捕获 2026-11-11 00:3x / 211）
+        #   ★★ pre 侧那个键是 **pre 侧读数** ⇒ ★★ 它若混进 now() 依赖 ⇒ ★ 随时钟漂移
+        #   ★★ ⇒ ★ 由 **clockcheck 的 CLOCK_INDEP_KEYS** 单独查（★ **不进 M18 冻结对拍** ⇒ 不重冻）
+        "M5_pre7d_runs_by_day": ("days=11-03:1292,11-04:2764,11-05:7794,11-06:9905,11-07:8973"
+                                 ",11-08:2500,11-09:9685,11-10:5589 | n_days=8 | min=1292"
+                                 " | max=9905 | total=48502"),
+        "M5_post_runs_by_day": ("days=11-10:4218,11-11:115 | n_days=2 | min=115"
+                                " | max=4218 | total=4333"),
         "M3b_backoff_ns_featured_err_http_429": f"5 rows | median_retry_s={m3b_f429}",
         "M3b_backoff_ns_not_err_http_429": f"9 rows | median_retry_s={m3b_n429}",
         "M3b_backoff_ns_featured_err_http_503": f"4 rows | median_retry_s={m3b_f503}",
@@ -1273,9 +1404,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M14_post_old_feat": m14_old,
         "M14_post_newly_covered": m14_new,
         "M14_post_other": m14_oth,
+        # ★★ 第 21 处口径修正：★ 「对照组」的相位/构成键（★ post 侧 ⇒ 不进 M18 冻结对拍）
+        "M14_post_other_composition": m14_oth_comp,
         "M14x_post_old_feat": m14x_old,
         "M14x_post_newly_covered": m14x_new,
         "M14x_post_other": m14x_oth,
+        "M14x_post_other_composition": m14x_oth_comp,
         "M12p_pending_post_ns_not": m12p,
         "M12p_pending_pre24_ns_not": "325 failures_aged6h | pending=0 | pending_pct=0.0",
         # ★★ M14/M14x 的 **pre 键**（★ 真库实测值，2026-11-10 211）
@@ -1970,6 +2104,65 @@ def selftest() -> int:
     if "featured 状态稳定" not in v:
         failures.append(f"[㉜ 摇摆正向披露] 摇摆 0 时必须写明「featured 状态稳定 ⇒ 修复已真正落地」⇒ {v}")
 
+    # ㉝ ★★★★ **「对照组」的相位/构成必须披露**（★ 第 21 处口径修正）
+    #   ★ 「未达成」场景里 post 对照组的构成是 **零 6h 顶格事件**（★ 与 pre 不同构）
+    #   ⇒ ★★ 行内必须写明「形态不同构 ⇒ 不可归因」
+    #   ⇒ ★★ **但裁决符号仍是 ❌**（★ 只披露、不软化 ⇒ 门不钝化）
+    rows, _, _ = judge(_synthetic(False), stage=1)
+    by = rows_by_label(rows)
+    for k in ("M14 对照组（两个集合都没有）", "M14x 对照组（两个集合都没有）"):
+        v = by.get(k, "<缺行>")
+        if "相位/构成" not in v:
+            failures.append(f"[㉝ 相位披露] {k} 行内必须给出「相位/构成」⇒ {v}")
+        if "不可归因" not in v:
+            failures.append(f"[㉝ 相位披露] {k} 零 6h 顶格时必须写明「不可归因」⇒ {v}")
+        if not v.startswith("❌"):
+            failures.append(f"[㉝ 相位披露] {k} 的裁决符号**不得**被软化（★ ❌ 仍是 ❌）⇒ {v}")
+    # ★★ 构成键**缺失** ⇒ 必须显式说「不可见」（★ 不得静默吞掉相位问题）
+    d = _synthetic(False)
+    d.pop("M14x_post_other_composition", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M14x 对照组（两个集合都没有）", "<缺行>")
+    if "相位/构成不可见" not in v:
+        failures.append(f"[㉝ 相位披露] 构成键缺失时必须写明「相位/构成不可见」⇒ {v}")
+
+    # ㉞ ★★★★ **诚实边界必须包含「相位」与「投影只投影时钟」两条**（★ 第 21 处口径修正）
+    hb = "\n".join(honest_boundary_lines())
+    if "相位" not in hb:
+        failures.append("[㉞ 诚实边界] 缺少「相位效应」边界（★ 跨窗比中位数前先看形态是否同构）")
+    if "只投影" not in hb:
+        failures.append("[㉞ 诚实边界] 缺少「关窗预演只投影时钟、不投影数据积累」边界")
+
+    # ㉟ ★★★★ **M5 判 ❌ 时必须给出「基线口径」披露**（★ 第 22 处口径修正）
+    #   ★★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而探测量**按天剧烈波动**
+    #   ★★ ⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ 该阈值**在 pre 期就不成立**
+    #   ★★ ⇒ ★★ M5 判 ❌ 时**不得**被读成「修复引起爆炸半径」⇒ ★★ 行内必须自曝基线口径
+    #   ★★ **但裁决符号不得被软化**（★ ❌ 仍是 ❌ ⇒ ★ 门不钝化）
+    rows, _, _ = judge(_synthetic(False), stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "基线口径" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] M5 判 ❌ 时行内必须给出「基线口径」⇒ {v}")
+    if "不可归因" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] 必须写明「不可归因」⇒ {v}")
+    if "超预算" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] 必须写明「超预算」⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉟ M5 基线口径披露] 裁决符号**不得**被软化（★ ❌ 仍是 ❌）⇒ {v}")
+    # ★★ 逐日分布键**缺失** ⇒ 必须显式说「基线口径不可见」（★ 不得静默默认阈值成立）
+    d = _synthetic(False)
+    d.pop("M5_pre7d_runs_by_day", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "基线口径不可见" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] 逐日分布键缺失时必须写明「基线口径不可见」⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉟ M5 基线口径披露] 键缺失时裁决符号**不得**被软化 ⇒ {v}")
+
+    # ㉠ ★★★★ **诚实边界必须包含「M5 的 ❌ 不可归因于修复」这条**（★ 第 22 处口径修正）
+    hb = "\n".join(honest_boundary_lines())
+    if "M5" not in hb or "基线口径" not in hb:
+        failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2006,6 +2199,10 @@ def selftest() -> int:
     print("   ✔ ㉚ ★★★ 「摇摆」分量（★ featured 状态稳定性）能单独被变异抓住（★ 修复前后的判别信号）")
     print("   ✔ ㉛ ★★ 摇摆键未产出 ⇒ **fail-closed**（★ 不得静默判绿）")
     print("   ✔ ㉜ ★★ 摇摆 0 ⇒ 行内必须给出「featured 状态稳定 ⇒ 修复已真正落地」的正向结论")
+    print("   ✔ ㉝ ★★★ 「对照组」的**相位/构成**必须披露（★ 零 6h 顶格 ⇒ 不可归因；★ 裁决符号不得软化）")
+    print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
+    print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
+    print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2153,6 +2350,31 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ 真正可探的只有 **60 个**（且这 60 个恰好都在 `node_probe_state` 调度表里）"
           "⇒ ★★ 7 天内真正发出过探测的只有 **≈21 个模型名** ⇒ ★★ 头条口径「106 个」"
           "**高估了效应面约 5×** ⇒ ★★ 结论必须写成「**可观测子集**上的效应」，不能写成「106 个全部」。")
+    lines.append("   ㉖ ★★★★ **「对照组」这类跨窗比较，先问「两窗口的失败形态是否同构」"
+          "⇒ ★★ 中位数对「突发批次的相位」极其敏感（★ 本轮第 21 处口径修正）："
+          "★ 对照组里 **~80 只**协议形态模型（★ http 404/410 ⇒ 设计上钉 **6h = 21600s** 阶梯）"
+          "以 **6h 节奏**被探（★ 实测 13:30 → 19:30 → 01:30 → 07:30 → 13:30）"
+          "⇒ ★★ era 切点（11-10 **13:42:30**）**落在两次批次之间** ⇒ ★★ post 窗口的**前 5.6h "
+          "里一个批次都没有** ⇒ ★★ 对照组 post 只剩 11 只（★ 阶梯 3600）⇒ med **60** "
+          "⇒ ★★ 而 pre24 含 **4 个**批次（★ ≈960 条 360min）⇒ med **360** "
+          "⇒ ★★ ⇒ **「对照组也变了」判 ❌** ⇒ ★★ **纯相位假红**（★ 机制没变、读数变了）"
+          "⇒ ★★ 已实测证实：★ 11-10 **19:28–19:31** 那批 6h 周期**如期落地**（★ 阶梯仍 21600）。"
+          "⇒ ★★ 纪律：★ **跨窗比中位数前，先看两窗口的阶梯谱是否同构**；★ ★★ **窗口长度必须 ≥ "
+          "被观测的最长阶梯周期**（★ 24h ≥ 6h ✔ / 7d ✔），★ **中途读数（预演/诊断）不具备可比性**。")
+    lines.append("   ㉗ ★★★★ **「关窗预演（as-of）」只投影「时钟语义」，不投影「数据积累」**"
+          "（★ 本轮第 21 处口径修正的伴生边界）：★ 投影 = 把 `now()` 换成未来时刻后复采"
+          "⇒ ★★ 它能可靠暴露**与时钟/成熟度相关**的缺陷（★ slow 未结算、★ M18 基线漂移、★ 键缺失）"
+          "⇒ ★★ 但 post 窗口在投影里**仍是「当前已积累的那一段」** ⇒ ★★ 任何按「窗口内事件构成」"
+          "计算的判据（★ 尤其是**对照组的中位数**）在投影里可能**相位失真** ⇒ ★★ 投影对这类判据"
+          "只能**提示**，**不能定论** ⇒ ★★ 一切结论以**关窗当天真读**为准。")
+    lines.append("   ㉘ ★★★★ **M5 的 ❌ 不可归因于修复（★ 阈值取自 pre24 的「单日快照」）**："
+          "★ M5 的 base = **9242** = **pre24 单日快照**（★ 实测 pre_24h_count = 9243）"
+          "⇒ ★ 而探测量**按天剧烈波动**（★ 实测 pre7d 逐日 min=**1292** / max=**9905** ⇒ **7.7×**）"
+          "⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立**"
+          "⇒ ★★ ⇒ M5 判 ❌ 时**不得**被读成「修复引起爆炸半径」⇒ ★★ 本轮只做**行内披露**"
+          "（★ **裁决符号保持 ❌** ⇒ ★ 门不钝化；★ 且逐日分布键缺失时必须显式写「基线口径不可见」）"
+          "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，而不是单日快照）"
+          "**登记为 Stage 2 之后的基线口径改进项**（★ 关窗前**不重冻**已验证基线）。")
     return lines
 
 

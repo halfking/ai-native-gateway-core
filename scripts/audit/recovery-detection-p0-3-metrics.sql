@@ -203,6 +203,45 @@ SELECT 'M5_probe_runs_24h' k, COUNT(*)::text||' total | free='||
       AND pm.raw_model_name=node_probe_runs.raw_model_name))::text v
 FROM node_probe_runs WHERE created_at > now() - interval '24 hours';
 
+-- ═══ ★★★ 第 22 处口径修正（2026-11-11 00:2x）：★ M5 的「逐日探测量分布」═══
+--
+-- ★★ **为什么需要它（★ 实测抓到的真缺陷）**：★ M5 的 base = **pre24 的单日快照**（9242）
+-- ★   ⇒ ★ 而探测量**按天剧烈波动**（★ 实测 pre7d 逐日：11-03 **1292** / 11-04 2764 / 11-05 7794
+-- ★   / 11-06 **9905** / 11-07 8973 / 11-08 **2500** / 11-09 **9683** ⇒ **8× 差**）
+-- ★   ⇒ ★★ **pre 期实测 11-09 = 9683 > limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立**
+-- ★   ⇒ ★★ ⇒ M5 判 ❌ 时**不能**被读成「修复引起爆炸半径」⇒ ★★ 必须把「基线口径问题」摆到行内
+-- ★ ★★ **只出读数键、不改 base/limit**（★ 关窗前**不重冻**已验证基线）⇒ ★★ 判定器行内披露
+-- ★★ **pre7d 桶锚定切点 ⇒ 不含 now() ⇒ 时钟无关**；★ 键名不匹配 `PRE_KEY_RE` ⇒ **不进冻结对拍**
+--   ⇒ ★★ 既不动既有 pre 键的取值，也不触发重冻 ⇒ ★★ 合规且零漂移风险
+WITH d AS (
+  SELECT to_char(date_trunc('day', created_at),'MM-DD') dy, COUNT(*) c
+  FROM node_probe_runs
+  WHERE created_at >  TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+    AND created_at <= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+  GROUP BY date_trunc('day', created_at)
+)
+SELECT 'M5_pre7d_runs_by_day' k,
+  'days='||COALESCE(string_agg(dy||':'||c::text, ',' ORDER BY dy),'-')
+  ||' | n_days='||COUNT(*)::text
+  ||' | min='||COALESCE(min(c)::text,'0')
+  ||' | max='||COALESCE(max(c)::text,'0')
+  ||' | total='||COALESCE(sum(c)::text,'0')
+  v FROM d;
+
+WITH d AS (
+  SELECT to_char(date_trunc('day', created_at),'MM-DD') dy, COUNT(*) c
+  FROM node_probe_runs
+  WHERE created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+  GROUP BY date_trunc('day', created_at)
+)
+SELECT 'M5_post_runs_by_day' k,
+  'days='||COALESCE(string_agg(dy||':'||c::text, ',' ORDER BY dy),'-')
+  ||' | n_days='||COUNT(*)::text
+  ||' | min='||COALESCE(min(c)::text,'0')
+  ||' | max='||COALESCE(max(c)::text,'0')
+  ||' | total='||COALESCE(sum(c)::text,'0')
+  v FROM d;
+
 -- ═══ M6 ★ 收益面：免费在服对里命中 featured 的对数（修复前 15 → 部署后 34）═══
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
@@ -746,7 +785,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  -- ★ 新覆盖集合 = 在 st_new 的 namespaced 条目里、但不在 st_old 的
  newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
  fr AS (
-   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, n.next_retry_seconds,
           (n.raw_model_name LIKE '%/%') is_ns,
           -- ★★★ **计费口径维度**（★ 本轮第 9 处口径修正）：
           --   ★★ 原来 `fr` 直接限定 `b.billing_mode='free'` ⇒ ★★ **同一个模型名通常同时挂在
@@ -772,11 +811,12 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
-   SELECT credential_id, raw_model_name, is_ns, created_at, success, has_free,
+   SELECT credential_id, raw_model_name, is_ns, created_at, success, has_free, next_retry_seconds,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
    FROM fr
  ), rec AS (
-   SELECT is_ns, has_free, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+   SELECT is_ns, has_free, raw_model_name, created_at AS fail_at, next_at, next_retry_seconds,
+          EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
           CASE WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM newly) THEN 'newly_covered'
                WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM st_old) THEN 'old_feat'
@@ -825,7 +865,56 @@ WHERE next_at IS NOT NULL
   AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
-GROUP BY scope, win, grp_new ORDER BY 1;
+GROUP BY scope, win, grp_new
+UNION ALL
+
+-- ═══ ★★★ 第 21 处口径修正（2026-11-10 19:3x）：★ 「对照组」的**相位/构成**披露键 ═══
+--
+-- ★★ **为什么需要它（★ 关窗预演抓到的真缺陷）**：
+-- ★ 关窗预演（as-of = 切点+24h）里「M14x 对照组」判 **❌ 未达成**（★ post med=60 vs pre med=360）
+-- ★ ⇒ ★★ 追查后确认：★ 这是**纯相位效应**，不是行为变化 ⇒ ★★ 机理：
+-- ★   · 对照组里 **~80 只**协议形态模型（★ http 404/410 ⇒ 设计上钉 **6h = 21600s** 阶梯）
+-- ★     以 **6h 节奏**被探（实测 11-09/11-10：13:30 → 19:30 → 01:30 → 07:30 → 13:30）
+-- ★   · era 切点 = 11-10 **13:42:30** ⇒ ★★ 切点**落在两次 6h 批次之间**
+-- ★     ⇒ ★★ post 窗口的**前 5.6h 里一个 6h 批次都没有**（★ 下一次是 19:30）
+-- ★   · ⇒ ★★ 对照组的 post 段只剩 **11 只**（timeout/429/500 形态 ⇒ 阶梯 3600）⇒ med=60
+-- ★   · ⇒ ★★ 而 pre24 含 **4 个** 6h 批次（≈960 条 360min）⇒ med=360
+-- ★ ⇒ ★★ **两窗口的「失败形态构成」不同构** ⇒ ★★ 中位数不可直接比 ⇒ ★★ 是**相位假红**
+-- ★ ⇒ ★★ 已在 11-10 **19:28–19:30** 实测证实：★ 那 80 只**回来了**（★ 阶梯仍是 21600）⇒ ★★ 相位解释成立
+--
+-- ★★ **本键的职责（★ 只披露，不改裁决）**：
+-- ★   ① 让判定器在对照组行内**说清 post 段的形态构成**（★ 6h 顶格事件数 / 慢事件占比 / 阶梯谱 / 模型数）
+-- ★   ② 让读者能判断「post med 变了」是**行为变化**还是**相位/窗口覆盖**
+-- ★   ③ ★★ **pre 是 6h 单一形态（med ≥ 300）且 post 的 6h 顶格事件占比 < 20%** ⇒ ★★ 两窗口**不同构** ⇒ ★★ 该 ❌ **不可归因**
+-- ★
+-- ★★ **为什么只出 post 侧、不出 pre 侧**：★ pre 键进 **M18 冻结对拍**（44 个）
+-- ★   ⇒ ★★ 出新的 pre 键就要**重冻基线** ⇒ ★★ **关窗前重冻风险太高**（★ 本轮纪律）
+-- ★   ⇒ ★★ ⇒ **只加 post 侧键**；★ pre 侧的形态由**既有冻结键**提供
+-- ★   （★ `M14x_pre24_other` = med=360 / p90=360 / max=360 / slow_gt300_pct=74.0 ⇒ 已足够）
+-- WARNING: keep this SELECT inside the SAME WITH clause as the main query above.
+--   SQL "WITH" only applies to the single statement that follows it; a separate
+--   statement cannot see the CTEs (exp, ...) -> psql: relation "exp" does not exist.
+--   And WITHOUT -v ON_ERROR_STOP=1 psql swallows that error and still exits 0
+--   -> silently fewer keys. So it must be UNION ALL'd into the same WITH.
+SELECT CASE WHEN w.scope = 'all' THEN 'M14x_' ELSE 'M14_' END || 'post_other_composition' k,
+  'n='||COUNT(e.*)::text
+  ||' | models_n='||COUNT(DISTINCT e.raw_model_name)::text
+  -- ★★ 「6h 顶格事件数」= ★ 对照组的主导形态（★ 协议形态 404/410 ⇒ 钉 6h）
+  ||' | top21600_n='||(COUNT(e.*) FILTER (WHERE e.next_retry_seconds >= 21600))::text
+  ||' | slow_gt300_pct='||CASE WHEN COUNT(e.*) = 0 THEN '0.0'
+       ELSE ROUND(100.0*COUNT(e.*) FILTER (WHERE e.recheck_min > 300)/COUNT(e.*),1)::text END
+  ||' | ladder_spectrum='||COALESCE(string_agg(DISTINCT e.next_retry_seconds::text, ',' ORDER BY e.next_retry_seconds::text),'-')
+  v
+-- ★★ **必须 VALUES + LEFT JOIN**（★ 本轮第 21 处口径修正的第二个坑）：
+-- ★   `GROUP BY scope` 在 post 对照组**空集**时**不产生行** ⇒ ★ 键会缺失
+-- ★   ⇒ ★★ 判定器只能显示「相位/构成不可见」⇒ ★★ **恰好在最需要它的时候没有它** ⇒ ★★ 静默失效
+-- ★   ⇒ ★★ 用 VALUES 枚举两个计费口径 + LEFT JOIN ⇒ ★ **恒出行**（★ 计数为 0 也出行）
+FROM (VALUES ('free'),('all')) w(scope)
+LEFT JOIN exp e ON e.scope = w.scope AND e.win = 'post' AND e.grp_new = 'other'
+     AND e.next_at IS NOT NULL
+     AND e.era = 'post' AND e.fail_at < now() - interval '6 hours'
+GROUP BY w.scope
+ORDER BY 1;
 
 -- ═══ M15 ★★★ 逐对金丝雀：★「新覆盖人群里那些冷但仍在被探」的对，pre vs post ═══
 --

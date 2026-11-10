@@ -1,0 +1,73 @@
+# scripts/migration-low-version-delivery.list
+# ★ 两条通道的【对象收敛面】：★ 低版本投递清单（★ 审计 F48 · 2026-11-10 ★）
+#
+# ★ 这张表是什么
+#
+# 仓里有**两条**建库通道：
+#   ① **全新安装链**（installer/internal/dbinit/runner.go 的 `StartupFiles`
+#      ⇒ ★ 它跑的是 embeddata/startup 里的文件、★ 共 357 条 ★）
+#   ② **存量升级通道**（deploy-lib/db-changelog.sh 的
+#      `_deploy_pending_startup_migrations` ⇒ ★ 它扫的是 sql/migrations/startup/ ★）
+#
+# ⇒ 过去**两条通道的边界卡死在 412**（`DB_LEDGER_RECONCILE_FROM:-412`
+#   同时决定了「投递面」与「checksum 对账面」⇒ ⇒ 两个地板被**绑死** ★）
+#
+# ★ ★★ 这个地板的**实测代价**（★ 台账快照 scripts/audit/asset/
+#   db-changelog-ledger-snapshot.tsv、★ 采集于 2026-10-25 ★）：
+#   · 211 / local：**12** 条 <412 的迁移**已应用** ★
+#     （032 / 044 / 351 / 357 / 358 / 361 / 375 / 376 / 387 / 392 / 394 / 407 ★）
+#   · 252：**0** 条 ⇒ ★ ★ **同一条迁移在两台机器上终态不同** ★
+#   ⇒ ⇒ 而 358 建的 `session_owners` / `session_owner_stats` 正是
+#     admin/user_profile.go:327-329 记的「★ 生产共享库缺 session_owners ★」
+#     ⇒ ★ **这就是「两条通道边界不一致」在生产上的具体对象终态差异** ★
+#
+# ★ 本表 = 「★ 存量库也必须拿到的那几条 ★」的**唯一真相**：
+#   ★ 表里登记的文件 ⇒ ★ 即使版本号低于对账地板、★ 只要账本里没有记录，
+#     部署通道**也会投递它** ★ ⇒ ⇒ 两条通道的对象集合**收敛** ★
+#
+# ★ 为什么**不整体下调** `DB_LEDGER_RECONCILE_FROM`：★ 412 以下是**有意
+#   豁免**的历史区（★ 账本里 45 条 <412 的行**没有 checksum** ⇒ ★ 降地板
+#     ⇒ checksum 闸门**硬拒**、★ 整条部署中止 ★）⇒ ★ 那是**另一件事** ★
+#   ⇒ ⇒ 所以改成「**投递面**与**对账面**解耦、★ 低版本区**精确投递** ★」
+#
+# ★ 本表的每一行都有**机械来源**（★ 门会逐条对账、★ 漂移即红 ★）：
+#   · 台账快照里「★ 某台机台已应用、★ 而版本号 <412 ★」的那一批 ★
+#   · ＋ 安装器链 `StartupFiles` 里「★ 版本号 <412 ★」的那一批 ★
+#   ⇒ ★ 两批的并集、★ 减去「★ 仓里已无 canonical 文件 ★」的那几条 ★
+#
+# ★ ★★ **逐条投递是安全的**（★ 2026-11-10 逐条核过 ★）：★ 这 12 条里的
+#   DDL **全部是加法形态**（★ `CREATE TABLE/VIEW/INDEX ... IF NOT EXISTS`、
+#   ★ `ADD COLUMN IF NOT EXISTS`、★ `DROP CONSTRAINT IF EXISTS` ＋
+#   ★ `ADD CONSTRAINT`、★ `ENABLE ROW LEVEL SECURITY` ★）⇒ ⇒ **重放幂等** ★
+#   ⇒ ⇒ 而部署通道对「already exists」的失败**有专门的幂等出口**（★ 见
+#     db-changelog.sh 的 apply 路径 ★）⇒ ⇒ 目标环境已有这些对象时**不会**中止 ★
+#
+# ── 清单（★ 每行一个文件名；★ 注释行与空行忽略；★ 逐行整串匹配 ★）──────
+#
+044_health_source_probe_now.sql
+351_session_analytics_tables.sql
+357_session_analytics_aggregation_views.sql
+358_session_ownership.sql
+361b_provider_models_source_prelude.sql
+375_offline_requests_status.sql
+376_offline_activation_code.sql
+387_session_analysis_inference.sql
+388_billing_cancellation_audit.sql
+392_candidate_failure_logs_monthly_partition.sql
+394_request_stats_minute.sql
+407_request_context_attrs.sql
+#
+# ★ ★★ **刻意不在本表里的**（★ 也要说清、★ 否则读者会以为漏了 ★）：
+#
+#   ① `032_session_tenant_binding.sql`
+#      ★ 它在 211 / local 上**确实被应用过**（★ 台账快照有 ★）⇒ ★ 252 缺它 ★
+#      ★ ★ **但仓里已经没有它的 canonical 文件**（★ `sql/migrations/startup/`
+#      下只剩 `032_request_wal.sql` ★）⇒ ⇒ **无源可投** ⇒ ★ 不可投递 ★
+#      ⇒ ⇒ 它**留在登记里**（★ 这条缺口**没有**被本清单收敛 ★）
+#
+#   ② `session_turns_hot_bootstrap.sql`（★ 安装器链里唯一**无版本号**的文件 ★）
+#      ⇒ ★ 它**自带**声明：「★ It is not an upgrade migration and must not be
+#        applied to an existing deployment. ★」⇒ ⇒ 它是**安装器专用**的
+#        bootstrap（★ 把 526 + 636 的终态投到 01-schema 基线上 ★）
+#      ⇒ ⇒ 它**不在**存量升级通道的投递面里、★ 而这是**设计意图**、★ 不是缺口 ★
+#      ⇒ ⇒ 机器门会逐字检查它**自己**的这句话还在（★ 免得哪天被当成缺口 ★）
