@@ -646,8 +646,9 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
           --   ⇒ 实测锚定 7 天 pre 的 pending_pct = **5.8%**，而 Stage 1 的 post 段只有 24h
           --   ⇒ ★★ **7 天 pre 与 24h post 直接比是不同量纲** ⇒ 另输出「切点前 24h」段，
           --   与 post(24h) 同量纲 ⇒ ★ 护栏才成立。
-          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours' THEN 'pre24'
-               WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre'
+          -- ★★ 标签与边界一致（★ 同 M14：★ CASE 顺序写反 ⇒ 标签反了）
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours' THEN 'pre7d'
+               WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre24'
                ELSE 'post' END win24,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
                THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
@@ -704,12 +705,24 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  ), rec AS (
    SELECT is_ns, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
+          -- ★★ **同量纲对照组**（★ 本轮第 8 处口径补充）：★ post 段是「切点→now」的 24h，
+          --   且只含**已结算**的事件（失败的下一次探测必须已被观测）⇒ ★★ **样本量不能按 pre 的
+          --   7 天率线性外推**（实测 post era 1.8h 只出 4 条 ns 事件，而 pre 率 ≈42/小时
+          --   ⇒ 根因＝慢阶梯的失败要等 6h 才被复检 ⇒ 右删失过滤）。
+          --   ⇒ ★★ 另输出「切点前 24h」（pre24）：**长度与成熟度都与 post 段同量纲**
+          --   ⇒ ★★ 它是 Stage 1 效应判据的**天然对照组**
+          --      （pre24 的 newly 组 = 修复前**还不是** featured 的那批对 ⇒ 同一批对、同一长度）。
+          -- ★★ 标签与边界必须一致（★ 本轮踩过：★ CASE 顺序写反 ⇒ 「pre24」标签实际命中
+          --   「更早的 5 天」⇒ ★★ 读数与标签**完全相反** ⇒ 差点用错基线判 Stage 1）
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours' THEN 'pre7d'
+               WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre24'
+               ELSE 'post' END win24,
           CASE WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM newly) THEN 'newly_covered'
                WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM st_old) THEN 'old_feat'
                ELSE 'other' END grp_new
    FROM seg WHERE success = FALSE AND is_ns
  )
-SELECT 'M14_'||era||'_'||grp_new k,
+SELECT 'M14_'||win24||'_'||grp_new k,
   COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
@@ -727,7 +740,7 @@ WHERE next_at IS NOT NULL
   AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
-GROUP BY era, grp_new ORDER BY 1;
+GROUP BY win24, grp_new ORDER BY 1;
 
 -- ═══ M15 ★★★ 逐对金丝雀：★「新覆盖人群里那些冷但仍在被探」的对，pre vs post ═══
 --

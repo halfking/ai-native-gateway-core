@@ -71,14 +71,26 @@ BASELINES: dict[str, dict] = {
                                    "min_n": 30, "suffix": "%",
                                    "note": "ns 非 featured 待复检率 pre24h（★ 与 post 同量纲）"},
     # ★★ M14 三个组（★ population-stable：st_old ⊆ st_new ⇒ pre/post 是同一批对）
-    "M14_old_feat_pre": {"base": (3, 60, 1791), "expect": "<=", "units": "med/p90/p99",
-                          "slow": 8.1, "note": "旧 featured 人群（★ 无回归判据）"},
-    "M14_newly_pre": {"base": (2, 360, 1390), "expect": "<=", "units": "med/p90/p99",
-                      "slow": 13.0, "post_p90_max": 180,
-                      "note": "新覆盖人群（★ **效应判据**：pre p90=360 → post 期望 ≤180）"},
-    "M14_other_pre": {"base": (360, 368, 5524), "expect": "-", "units": "med/p90/p99",
-                      "slow": 85.6, "tag": "★ 对照项：节奏不该变",
-                      "note": "对照组：两个集合都没有的 ns 对"},
+    #    ★★ **每个窗口各有一套基线**（★ 同量纲）：★ post 段的长度随 stage 变
+    #      （Stage 1 = 24h、Stage 2 = 7 天）⇒ ★ 基线必须用**同样长度**的 pre 段
+    #      ⇒ 实测两窗口的分布**截然不同**（newly 组：pre24 slow=100%（14 条）
+    #      vs pre7d slow=10.3%（447 条））⇒ ★★ 借用另一窗口的基线 = 判错
+    "M14_old_feat_pre24": {"base": (3, 31, 360), "expect": "<=", "units": "med/p90/p99",
+                            "slow": 6.4, "note": "旧 featured 人群（★ Stage 1 无回归基线，24h）"},
+    "M14_old_feat_pre7d": {"base": (3, 120, 1791), "expect": "<=", "units": "med/p90/p99",
+                            "slow": 8.7, "note": "旧 featured 人群（★ Stage 2 无回归基线，7 天）"},
+    "M14_newly_covered_pre24": {"base": (360, 360, 360), "expect": "<=", "units": "med/p90/p99",
+                         "slow": 100.0, "post_p90_max": 180,
+                         "note": "新覆盖人群（★ Stage 1 效应基线，24h；★ **样本仅 14 条 ⇒ 不足** ⇒ 幅度留 Stage 2）"},
+    "M14_newly_covered_pre7d": {"base": (2, 360, 1390), "expect": "<=", "units": "med/p90/p99",
+                         "slow": 10.3, "post_p90_max": 180,
+                         "note": "新覆盖人群（★ **效应判据**：pre p90=360 → post 期望 ≤180）"},
+    "M14_other_pre24": {"base": (360, 360, 360), "expect": "-", "units": "med/p90/p99",
+                         "slow": 77.2, "tag": "★ 对照项：节奏不该变",
+                         "note": "对照组（★ Stage 1 基线，24h）"},
+    "M14_other_pre7d": {"base": (360, 369, 5524), "expect": "-", "units": "med/p90/p99",
+                         "slow": 88.4, "tag": "★ 对照项：节奏不该变",
+                         "note": "对照组（★ Stage 2 基线，7 天）"},
 }
 
 # ★ 三个「冷金丝雀」：目标人群（106 个新覆盖变体）里仍被探测到的冷对
@@ -344,11 +356,15 @@ def judge(data: dict[str, str], stage: int = 1,
     #   ★★ **样本量**：old_feat ≈56/日、newly ≈66/日 ⇒ Stage 1（24h）可判群体层
     #   ★★ **分位数脆**：newly 组是双峰（热对 med≈3 / 冷对 med≈360）⇒ p90 处于边界
     #     ⇒ ★ 另用**速率型**指标 slow_gt300_pct（稳）⇒ 判据用 p90 + 慢事件占比
-    for grp, label, bkey, mode in (
-        ("old_feat", "M14 旧 featured 人群（无回归）", "M14_old_feat_pre", "noregress"),
-        ("newly_covered", "M14 新覆盖人群（★ 效应）", "M14_newly_pre", "effect"),
-        ("other", "M14 对照组（两个集合都没有）", "M14_other_pre", "control"),
+    # ★★ 基线按 **stage** 选同量纲的那一套（★ Stage 1 的 post 是 24h ⇒ 用 pre24；
+    #    ★ Stage 2 的 post 是 7 天 ⇒ 用 pre7d）★ 借用另一窗口 = 判错
+    win = "pre24" if stage == 1 else "pre7d"
+    for grp, label, mode in (
+        ("old_feat", "M14 旧 featured 人群（无回归）", "noregress"),
+        ("newly_covered", "M14 新覆盖人群（★ 效应）", "effect"),
+        ("other", "M14 对照组（两个集合都没有）", "control"),
     ):
+        bkey = f"M14_{grp}_{win}"
         b = BASELINES[bkey]
         pre = b["base"]
         base_txt = base_cell(bkey)
@@ -491,8 +507,9 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         s11b = "5 episodes | med=3 | p90=120 | max=300"            # 3≤3 ✔ 120≤180 ✔ 300≤360 ✔
         m15_post_med = 120                                          # ≤180 ✔
         m12p = "240 failures_aged6h | pending=1 | pending_pct=0.4"  # 0.4≤1.0 ✔ n≥30 ✔
-        m14_old = "56 events | med_min=3 | p90_min=50 | p99_min=1700 | max_min=5400 | slow_gt300_pct=7.0"
-        m14_new = "66 events | med_min=30 | p90_min=120 | p99_min=600 | max_min=600 | slow_gt300_pct=2.0"
+        # ★★ 按 **Stage 1 的 pre24 基线**（old_feat p90≤31/p99≤360）取值
+        m14_old = "56 events | med_min=3 | p90_min=20 | p99_min=300 | max_min=300 | slow_gt300_pct=3.0"
+        m14_new = "66 events | med_min=30 | p90_min=120 | p99_min=600 | max_min=600 | slow_gt300_pct=20.0"
         m14_oth = "300 events | med_min=360 | p90_min=368 | p99_min=5524 | max_min=5659 | slow_gt300_pct=85.0"
         m3b_f429, m3b_n429, m3b_f503, m3b_n503 = 300, 3600, 1800, 3600
         m2, m6, m9, m5 = "34 rp + 15 canon + 200 raw_variant = 210", \
@@ -507,8 +524,8 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         s11b = "5 episodes | med=10 | p90=120 | max=300"            # 只坏 med（10>3）⇒ ❌
         m15_post_med = 300                                          # >180 ⇒ ❌
         m12p = "240 failures_aged6h | pending=40 | pending_pct=16.7"  # >1.0 ⇒ ❌
-        m14_old = "56 events | med_min=3 | p90_min=200 | p99_min=1700 | max_min=5400 | slow_gt300_pct=7.0"
-        m14_new = "66 events | med_min=30 | p90_min=600 | p99_min=1400 | max_min=1400 | slow_gt300_pct=2.0"
+        m14_old = "56 events | med_min=3 | p90_min=200 | p99_min=300 | max_min=300 | slow_gt300_pct=3.0"
+        m14_new = "66 events | med_min=30 | p90_min=600 | p99_min=1400 | max_min=1400 | slow_gt300_pct=20.0"
         m14_oth = "300 events | med_min=120 | p90_min=368 | p99_min=5524 | max_min=5659 | slow_gt300_pct=85.0"
         m3b_f429, m3b_n429, m3b_f503, m3b_n503 = 3600, 1800, 3600, 1800  # 两类错误码都失配 ⇒ ❌
         m2, m6, m9, m5 = "34 rp + 15 canon + 160 raw_variant = 190", \
@@ -610,6 +627,37 @@ def selftest() -> int:
     if not bad:
         failures.append("[④ 守卫缺失] 守卫指标缺失时未判失败（★ 会把没跑出来的量具当成通过）")
 
+    # ⑤ ★★ stage-aware 基线：★ 同一份 post 读数，在 Stage 1（pre24 基线）与 Stage 2（pre7d 基线）
+    #    下裁决**必须不同**（★ old_feat 的 pre24 p90=31 vs pre7d p90=120 ⇒ 阈值差 4×）
+    d = _synthetic(True)
+    d["M14_post_old_feat"] = "56 events | med_min=3 | p90_min=60 | p99_min=300 | max_min=300 | slow_gt300_pct=3.0"
+    r1, _, _ = judge(d, stage=1)
+    r2, _, _ = judge(d, stage=2)
+    v1 = rows_by_label(r1).get("M14 旧 featured 人群（无回归）", "<缺行>")
+    v2 = rows_by_label(r2).get("M14 旧 featured 人群（无回归）", "<缺行>")
+    if not v1.startswith("❌"):
+        failures.append(f"[⑤ stage 基线] Stage 1 应判未达成（pre24 p90=31，观测 60）⇒ {v1}")
+    if not v2.startswith("✅"):
+        failures.append(f"[⑤ stage 基线] Stage 2 应判达成（pre7d p90=120，观测 60）⇒ {v2}")
+
+    # ⑥ ★★ **每个判据分量都要能被单独变异抓住**（★ 本轮实测：p99 的基线被改（360→999）
+    #    而自测仍全绿 ⇒ ★ 因为失败用例只坏了 p90 ⇒ ★⇒ 补「只坏 p99」的场景）
+    d = _synthetic(True)
+    d["M14_post_old_feat"] = "56 events | med_min=3 | p90_min=20 | p99_min=900 | max_min=900 | slow_gt300_pct=3.0"
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M14 旧 featured 人群（无回归）", "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[⑥ p99 单项] 只坏 p99 时应判未达成 ⇒ {v}")
+
+    # ⑦ ★★ 同理：慢事件占比（速率型读数）也要能单独被抓住
+    d = _synthetic(True)
+    d["M14_post_newly_covered"] = ("66 events | med_min=30 | p90_min=120 | p99_min=600"
+                                   " | max_min=600 | slow_gt300_pct=80.0")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M14 新覆盖人群（★ 效应）", "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[⑦ slow 单项] 只坏 slow 时应判未达成 ⇒ {v}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -620,6 +668,8 @@ def selftest() -> int:
     print("   ✔ ② 全未达成 ⇒ 全 ❌")
     print("   ✔ ③ 量具缺数 ⇒ 「不可判」（不是 ❌）")
     print("   ✔ ④ 守卫失败/缺失 ⇒ 整表作废")
+    print("   ✔ ⑤ Stage 1 / Stage 2 各用**同量纲**基线（pre24 vs pre7d）")
+    print("   ✔ ⑥⑦ 每个判据分量（p90 / p99 / slow）都能被单独变异抓住")
     print("\n== 合成数据自测通过 ==")
     return 0
 
