@@ -95,6 +95,33 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "domains/modelcredibility/store_rollup_integration_test.go",
 		guard: modelCredibilityRollupGuardProblems,
 	},
+	// 2026-11-09（模型指纹验证增强轮 / 迁移 955）：modelcredibility 被动指纹
+	// 基线真库契约腿（domains/modelcredibility/store_passive_realdb_test.go）。
+	// ★ 与 rollup 腿同款处置，但**只登记了共享台账、漏了本门的「非注入车道」**
+	//   ⇒ 共享台账对账门（TestDestructiveDBsRegisteredInSharedDsnExclusiveTSV
+	//   的 (b) 方向）报红：台账里 DB-DSN 形状的名字必须落在本门两条非注入
+	//   车道之一，否则主门会反向要求 $GATE_URL 注入 ——
+	//   而这条腿的守卫要求库名以 _test 结尾，注入产品库必被 Fatal 拒绝
+	//   （假红），且一旦被注入就有破坏性风险 ⇒ 台账记错边，R86 形态复发。
+	"TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL": {
+		path:  "domains/modelcredibility/store_passive_realdb_test.go",
+		guard: modelCredibilityPassiveGuardProblems,
+	},
+}
+
+// modelCredibilityPassiveGuardProblems 断言 modelcredibility 被动指纹基线真库腿的
+// 自守卫仍然有牙（形态同 modelCredibilityRollupGuardProblems，但 Fatal 文案不同
+// ⇒ 各用各的尺，不共用一把 —— 共用尺会让其中一条腿的文案改动误伤另一条）。
+func modelCredibilityPassiveGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
+	require(strings.Contains(body, `t.Fatalf("refusing to run against non-test database`), "guard fails loudly instead of skipping")
+	return problems
 }
 
 // modelCredibilityRollupGuardProblems 断言 modelcredibility rollup 真库腿的
