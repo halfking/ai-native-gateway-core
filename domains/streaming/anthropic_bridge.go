@@ -1268,8 +1268,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						currentToolCallID = evt.ContentBlock.ID
 						// 2026-08-29: Register tool_use with validator
 						toolCallValidator.OnToolUse(evt.ContentBlock.ID, evt.ContentBlock.Name, evt.Index)
-						if len(evt.ContentBlock.InputRaw) > 0 && string(evt.ContentBlock.InputRaw) != "{}" {
-							args := string(evt.ContentBlock.InputRaw)
+						// `{}` 占位符语义由 tooldialect 单点拥有（此前内联
+						// `!= "{}"` 守卫与 IR 解析器各一份、responses 桥缺失
+						// 一份——2026-11-11 211 事故的根源形状）。
+						if args := toolArgsDialect.StartArguments(evt.ContentBlock.InputRaw); args != "" {
 							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, &args, true))
 							toolCallIndex++
 							initialArgsSent = true
@@ -1410,23 +1412,20 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				case "content_block_stop":
 					flushBufferedText()
 					if initialArgsSent && bufferedToolArgs.Len() > 0 {
-						// audit R8 P2: content_block_start.input arrives as a
-						// complete JSON value (json.RawMessage extraction), so
-						// start+continuation is only valid when the deltas
-						// genuinely extend the document; junk deltas after a
-						// complete start (relay shape) must NOT invalidate the
-						// already-streamed fragment. Validate the whole doc:
-						// valid → append the continuation; invalid → discard
-						// the tail and keep the initial fragment (pre-fix wire
-						// shape), flagging the anomaly.
-						args := sentInitialToolArgs + bufferedToolArgs.String()
-						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
-						if vErr != nil {
+						// audit R8 P2（语义已单点化到 tooldialect）：
+						// content_block_start.input 是完整 JSON 值，start+continuation
+						// 只有在增量确实扩展文档时才成立；完整 start 之后的垃圾增量
+						//（中继形状）不得使已下发片段失效。整文档校验：合法 → 追加
+						// 续拼；非法 → 丢弃尾部、保留初始片段（pre-fix wire 形状）
+						// 并留痕。校验/修复策略由方言注入
+						//（anthropictransform.ValidateStreamingToolArgs）。
+						merged, ok := toolArgsDialect.MergeContinuation(sentInitialToolArgs, bufferedToolArgs.String())
+						if !ok {
 							if capture != nil {
 								capture.AddQualityFlag("tool_args_continuation_discarded")
 							}
-						} else if len(validated) > len(sentInitialToolArgs) {
-							continuation := validated[len(sentInitialToolArgs):]
+						} else if len(merged) > len(sentInitialToolArgs) {
+							continuation := merged[len(sentInitialToolArgs):]
 							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &continuation, true))
 						}
 						bufferedToolArgs.Reset()
