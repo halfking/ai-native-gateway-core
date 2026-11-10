@@ -197,11 +197,26 @@ SELECT 'M4b_free_gap_gt24h' k, COUNT(*)::text||' rows | med_gap_min='||
 FROM nps WHERE gap > interval '24h';
 
 -- ═══ M5 探测量总量（★ 爆炸半径复核：基线 24h 9233 次；修复后增量应 < 1%）═══
-SELECT 'M5_probe_runs_24h' k, COUNT(*)::text||' total | free='||
-  COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id=b.provider_model_id
-    WHERE b.billing_mode='free' AND b.credential_id=node_probe_runs.credential_id
-      AND pm.raw_model_name=node_probe_runs.raw_model_name))::text v
-FROM node_probe_runs WHERE created_at > now() - interval '24 hours';
+--
+-- ★★ 2026-11-11 改写采纳（docs/26 §3.2，r60 双修的脚本侧落地）：原版
+--   ★ `COUNT(*) FILTER (WHERE EXISTS (...))` 对 node_probe_runs 每行触发一次
+--   ★ credential_model_bindings JOIN provider_models 的 Seq Scan（9460 loops ×
+--   ★ 2680 removed）+ JIT ~136ms ⇒ 1090.6ms。改写 = 先物化 24h 集合（走
+--   ★ idx_node_probe_runs_created）+ 先聚 free 面一次，再 JOIN ⇒ 42.4ms（-96%）。
+-- ★★ 输出契约不变：键 `M5_probe_runs_24h`，值 `total | free=`（r60 实测两口径
+--   ★ 逐字节一致：9463|1924 / 复跑 9465|1923）。
+WITH p24 AS (
+  SELECT credential_id, raw_model_name FROM node_probe_runs
+  WHERE created_at > now() - interval '24 hours'
+), fr AS (
+  SELECT DISTINCT b.credential_id, pm.raw_model_name
+  FROM credential_model_bindings b
+  JOIN provider_models pm ON pm.id = b.provider_model_id
+  WHERE b.billing_mode = 'free'
+)
+SELECT 'M5_probe_runs_24h' k,
+  (SELECT COUNT(*) FROM p24)::text || ' total | free=' ||
+  (SELECT COUNT(*) FROM p24 JOIN fr USING (credential_id, raw_model_name))::text v;
 
 -- ═══ M5b 探测量分解（★ 2026-11-11 关窗预演补：★ M5 超预算时的**归因证据**）═══
 --
