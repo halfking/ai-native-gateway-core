@@ -57,8 +57,17 @@ type Record struct {
 	// Rounds 记录每一轮「请求体 → 响应体」的中间态。
 	Rounds []Round `json:"rounds"`
 
+	// AssembledBody 是网关装配后的出站体（**未提交上游**时也有值）。
+	//
+	// ★ 客户端驱动形态（只装配）下，Rounds 为空但这个字段有值 ⇒
+	//	仍能回答「网关把请求改成什么样了」。
+	AssembledBody []byte `json:"assembled_body,omitempty"`
+
 	// ServedToolCalls 记录网关自己执行过的记忆工具调用。
 	ServedToolCalls []ServedCall `json:"served_tool_calls"`
+
+	// Notes 记录**没有阻止请求但影响读数解释**的事项。
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Round 是一轮上游交互的记录。

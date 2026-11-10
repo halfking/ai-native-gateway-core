@@ -255,19 +255,16 @@ func buildMemoraQuery(body []byte, protocol string) string {
 	return text
 }
 
-// stableHashKey returns a stable non-negative int hash of the given
-// string. Used as a fallback api_key_id when Resolution.APIKeyID is
-// unavailable. FNV-1a 32-bit; collisions across distinct strings are
-// acceptable (they only widen the user_id namespace).
-func stableHashKey(s string) int {
-	h := uint32(2166136261)
-	for i := 0; i < len(s); i++ {
-		h ^= uint32(s[i])
-		h *= 16777619
-	}
-	return int(h & 0x7fffffff)
-}
-
+// ★ 2026-11-11（上下文智能体审计轮）：api_key_id 的哈希实现**迁到
+//
+//	domains/memory**（memory.StableHashKey / memory.APIKeyIDFromToken）。
+//	原因是写侧（写记忆）与读侧（上下文智能体召回长期记忆）必须落到
+//	同一个 api_key_id 上，而这个哈希原本是本包的**私有**函数
+//	⇒ 读侧够不着 ⇒ 两侧命名空间永不相等 ⇒ 召回恒空。
+//	⇒ 单一真源放 domains/memory，写侧与读侧都调它。
+//
+//	哈希口径不变：FNV-1a 32 位；不同字符串撞车只会**放宽**命名空间，
+//	不会造成隔离失效（写侧原注释即如此口径）。
 func (e *Executor) tryLLMContextCompaction(
 	ctx context.Context,
 	params *ExecParams,
@@ -1465,11 +1462,11 @@ func classifyContextLengthFromStatus(status int, body []byte) bool { //nolint:un
 func extractAPIKeyID(r *http.Request, ci identity.ClientIdentity) int {
 	if r != nil {
 		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-			return stableHashKey(auth[7:])
+			return memory.APIKeyIDFromToken(auth[7:])
 		}
 	}
 	if ci.IdentityHash != "" {
-		return stableHashKey(ci.IdentityHash)
+		return memory.APIKeyIDFromToken(ci.IdentityHash)
 	}
 	return 0
 }

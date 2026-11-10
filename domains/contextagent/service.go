@@ -102,6 +102,11 @@ func (s *LoopbackSubmitter) ForRequest(identity Identity, authHeader string) Sub
 	if identity.Project != "" {
 		headers[HeaderProjectID] = identity.Project
 	}
+	// ★ 记忆任务头：让回灌轮次写进 Memora 时落到**同一**任务分区
+	//	（能复现的才造；复现不了的不造，见 Identity.MemoryTaskHeaders）。
+	for k, v := range identity.MemoryTaskHeaders() {
+		headers[k] = v
+	}
 	c.Headers = headers
 	return &c
 }
@@ -120,7 +125,33 @@ type Service struct {
 	Agent *Agent
 	// Submitter 是「装配后提交上游」的能力（可为 nil ⇒ /resolve 只装配不提交）。
 	Submitter Submitter
+	// ModelCredential 是**运维配置**的模型面凭据（sk-* 明文，不含 "Bearer "）。
+	//
+	// ★ 为什么必须有它：/resolve 挂在管理令牌中间件后面 ⇒ 请求里的
+	//
+	//	Authorization 恒为**管理令牌**（ops_ 形态），而数据面只认 sk-*
+	//	（domains/authentication/verifier.go）⇒ 用它回灌必然 401；
+	//	而且管理令牌的哈希与写记忆时用的 sk-* 凭据哈希不同
+	//	⇒ 记忆命名空间也永远对不上 ⇒ 长期记忆召回恒空。
+	//	⇒ 回灌凭据与命名空间都必须用**模型面凭据**。
+	//
+	// ★ 优先级：请求头 X-Model-Key（仅当 AllowRequestCredential 为真）
+	//	> 本字段。
+	ModelCredential string
+	// AllowRequestCredential 是否允许调用方用请求头 X-Model-Key 覆盖。
+	//
+	// ★ 默认 false：不让客户端自选凭据（凭据决定命名空间 ⇒ 等于放大
+	//	同租户内的记忆读取面）。默认只有运维配置的那一把生效。
+	AllowRequestCredential bool
 }
+
+// 头名常量。
+const (
+	// HeaderModelKey 是「模型面凭据」的入参头名（sk-* 明文）。
+	HeaderModelKey = "X-Model-Key"
+	// HeaderTenantID 是租户声明头（/resolve 的租户隔离条件）。
+	HeaderTenantID = "X-Gw-Tenant-Id"
+)
 
 // MaxRequestBytes 是服务接受的请求体上限。
 const MaxRequestBytes = 8 << 20
@@ -145,16 +176,25 @@ type ResolveResponse struct {
 	Identity  Identity       `json:"identity"`
 	Plan      Plan           `json:"plan"`
 	Layers    []LayerContent `json:"layers"`
-	// Body 是装配后的出站体（Submit=false 时返回；Submit=true 时返回最终响应体）。
-	Body []byte `json:"body,omitempty"`
-	// ResponseBody 是最终响应体（仅 Submit=true 时有值）。
-	ResponseBody []byte `json:"response_body,omitempty"`
-	// Rounds 是上游交互轮数。
+	// BodyBase64 是**装配后的出站体**（base64）。
+	//
+	// ★ 只在 submit=false 时有值（客户端驱动形态：客户端拿它去提交）。
+	//
+	// ★ 为什么显式 base64：encoding/json 会把 []byte 编成 base64 字符串，
+	//	但字段名里不写出来 ⇒ 客户端按字面 JSON 解析会拿到一串 base64
+	//	却以为它是请求体 ⇒ 直接转发就会提交非法体。
+	//	⇒ 字段名带 _b64，与 RecordResponse 的 *_b64 同一约定。
+	BodyBase64 string `json:"body_b64,omitempty"`
+	// ResponseBodyBase64 是最终响应体（base64；仅 submit=true 时有值）。
+	ResponseBodyBase64 string `json:"response_body_b64,omitempty"`
+	// Rounds 是上游交互轮数（submit=false 时恒为 0：没有提交上游）。
 	Rounds int `json:"rounds"`
 	// ServedToolCalls 是网关自己执行过的记忆工具调用。
 	ServedToolCalls []ServedCall `json:"served_tool_calls,omitempty"`
 	// RecordID 是可还原记录的 id（用 GET /record/{id} 取回）。
 	RecordID string `json:"record_id,omitempty"`
+	// Notes 是影响读数解释的说明（例如「长期记忆召回已跳过：没有可用命名空间」）。
+	Notes []string `json:"notes,omitempty"`
 	// Error 是非致命错误说明（记忆加载失败等）。
 	Error string `json:"error,omitempty"`
 }
@@ -201,6 +241,36 @@ type RecordResponse struct {
 	ServedToolCalls []ServedCall `json:"served_tool_calls,omitempty"`
 }
 
+// modelCredential 解析本次请求使用的模型面凭据。
+//
+// ★ 优先级：请求头 X-Model-Key（仅当 AllowRequestCredential 为真）> 运维配置。
+//
+// ★ 「Bearer 」前缀会被剥掉：写侧的哈希口径是**凭据明文**
+//
+//	（extractAPIKeyID 对 `Authorization` 做 `auth[7:]` 之后哈希），
+//	⇒ 带前缀会让哈希对不上 ⇒ 命名空间错位 ⇒ 召回恒空。
+func (s *Service) modelCredential(r *http.Request) string {
+	if s == nil {
+		return ""
+	}
+	cred := strings.TrimSpace(s.ModelCredential)
+	if s.AllowRequestCredential && r != nil {
+		if v := strings.TrimSpace(r.Header.Get(HeaderModelKey)); v != "" {
+			cred = v
+		}
+	}
+	return normalizeCredential(cred)
+}
+
+// normalizeCredential 剥掉凭据的 "Bearer " 前缀（大小写不敏感）。
+func normalizeCredential(cred string) string {
+	cred = strings.TrimSpace(cred)
+	if len(cred) >= 7 && strings.EqualFold(cred[:7], "Bearer ") {
+		return strings.TrimSpace(cred[7:])
+	}
+	return cred
+}
+
 // HandleResolve 处理 /resolve。
 func (s *Service) HandleResolve(ctx context.Context, r *http.Request) (*ResolveResponse, int, error) {
 	if s == nil || s.Agent == nil {
@@ -219,14 +289,25 @@ func (s *Service) HandleResolve(ctx context.Context, r *http.Request) (*ResolveR
 	}
 	clientBody := []byte(req.Body)
 
+	// 模型面凭据（回灌 + 记忆命名空间都要用）。
+	credential := s.modelCredential(r)
+	if req.Submit && credential == "" {
+		// ★ 早失败、说人话：否则回灌会拿管理令牌打数据面 ⇒ 401 ⇒ 500，
+		//	读起来像「服务端坏了」，实际是「没给模型面凭据」。
+		return nil, http.StatusBadRequest, fmt.Errorf(
+			"contextagent: submit=true 需要模型面凭据：请配置 %s 或启用请求头 %s（数据面只认 sk-* 形态的凭据，管理令牌无法回灌）",
+			"LLM_GATEWAY_CONTEXT_AGENT_MODEL_KEY", HeaderModelKey)
+	}
+
 	id := Identity{}
 	if req.Identity != nil {
 		id = *req.Identity
 	} else {
 		id = Recognize(r, clientBody, IdentityFacts{
-			TenantID:       r.Header.Get("X-Gw-Tenant-Id"),
-			RequestID:      r.Header.Get("X-Request-Id"),
-			ClientProtocol: req.Protocol,
+			TenantID:        r.Header.Get(HeaderTenantID),
+			RequestID:       r.Header.Get("X-Request-Id"),
+			ClientProtocol:  req.Protocol,
+			ModelCredential: credential,
 		})
 	}
 	if req.Protocol != "" {
@@ -235,69 +316,68 @@ func (s *Service) HandleResolve(ctx context.Context, r *http.Request) (*ResolveR
 	if id.RequestID == "" {
 		id.RequestID = "ctx-" + time.Now().UTC().Format("20060102T150405.000000000")
 	}
+	// 显式给了 identity 的路径：命名空间可能还是空的 ⇒ 补齐。
+	id.ApplyMemoryNamespace(id.TenantID, credential, r, clientBody)
 
-	// ① 只装配（不提交）。
+	// ── 提交器（只有 submit=true 才需要）────────────────────────────────
+	submitter := s.Submitter
+	if submitter == nil {
+		submitter = s.Agent.Submitter
+	}
 	agent := *s.Agent // 拷贝，避免污染共享实例的开关
-	agent.InjectTools = false
+	if req.Submit {
+		if submitter == nil {
+			return nil, http.StatusServiceUnavailable, fmt.Errorf("contextagent: no submitter configured")
+		}
+		// ★ 回灌必须带**模型面凭据**：否则回灌请求以网关内部身份过
+		//   鉴权与计费，归属错乱（凭据归属 / 计费 / 审计全部挂错主体）。
+		if d, ok := submitter.(RequestSubmitterDeriver); ok {
+			submitter = d.ForRequest(id, "Bearer "+credential)
+		}
+		agent.Submitter = submitter
+		agent.InjectTools = true
+	} else {
+		agent.InjectTools = false
+	}
+
+	// ★ **只跑一次** Process。
+	//
+	//	旧实现跑两次：第一次（未判 submit）就已经把请求打到了上游 ⇒
+	//	submit=false 也产生一次非预期上游调用 + 计费，
+	//	submit=true 更是**双倍**成本与上游副作用。
+	//	⇒ 现在按 submit 二选一：只装配（AssembleOnly）/ 完整跑。
 	out, err := agent.Process(ctx, Request{
 		RequestID:       id.RequestID,
 		Identity:        id,
 		Body:            clientBody,
 		Protocol:        id.Protocol,
 		ContextWindow:   req.ContextWindow,
-		DisableToolLoop: true,
+		AssembleOnly:    !req.Submit,
+		DisableToolLoop: !req.Submit,
+		ForceNonStream:  req.Submit,
 	})
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
+
 	resp := &ResolveResponse{
 		RequestID: id.RequestID,
 		Identity:  id,
 		Plan:      out.Record.Plan,
 		Layers:    out.Layers,
-		Rounds:    out.Rounds,
 		RecordID:  id.RequestID,
+		Notes:     out.Notes,
 	}
-
 	if !req.Submit {
 		// 只装配：把装配后的出站体交给调用方（客户端驱动形态）。
-		assembled := out.Record.Rounds[0].RequestBody
-		resp.Body = assembled
+		resp.BodyBase64 = encodeBase64(out.AssembledBody)
 		return resp, http.StatusOK, nil
 	}
 
-	// ② 装配 + 提交 + 记忆工具回环（网关驱动形态）。
-	submitter := s.Submitter
-	if submitter == nil {
-		submitter = s.Agent.Submitter
-	}
-	if submitter == nil {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("contextagent: no submitter configured")
-	}
-	// ★ 回灌必须带**调用方自己的凭据**：否则回灌请求以网关内部身份过
-	//   鉴权与计费，归属错乱（凭据归属 / 计费 / 审计全部挂错主体）。
-	if d, ok := submitter.(RequestSubmitterDeriver); ok {
-		submitter = d.ForRequest(id, r.Header.Get("Authorization"))
-	}
-	full := *s.Agent
-	full.Submitter = submitter
-	full.InjectTools = true
-	fullOut, err := full.Process(ctx, Request{
-		RequestID:     id.RequestID,
-		Identity:      id,
-		Body:          clientBody,
-		Protocol:      id.Protocol,
-		ContextWindow: req.ContextWindow,
-	})
-	if err != nil {
-		return nil, http.StatusInternalServerError, err
-	}
-	resp.Body = nil
-	resp.ResponseBody = fullOut.ResponseBody
-	resp.Rounds = fullOut.Rounds
-	resp.ServedToolCalls = fullOut.ServedToolCalls
-	resp.Layers = fullOut.Layers
-	resp.Plan = fullOut.Record.Plan
+	// 网关驱动形态：装配 + 提交 + 记忆工具回环。
+	resp.ResponseBodyBase64 = encodeBase64(out.ResponseBody)
+	resp.Rounds = out.Rounds
+	resp.ServedToolCalls = out.ServedToolCalls
 	return resp, http.StatusOK, nil
 }
 
@@ -323,10 +403,12 @@ func (s *Service) HandleTool(ctx context.Context, r *http.Request) (*ToolRespons
 		id = *req.Identity
 	} else {
 		id = Recognize(r, nil, IdentityFacts{
-			TenantID:  r.Header.Get("X-Gw-Tenant-Id"),
-			RequestID: r.Header.Get("X-Request-Id"),
+			TenantID:        r.Header.Get(HeaderTenantID),
+			RequestID:       r.Header.Get("X-Request-Id"),
+			ModelCredential: s.modelCredential(r),
 		})
 	}
+	id.ApplyMemoryNamespace(id.TenantID, s.modelCredential(r), r, nil)
 
 	args := req.Arguments
 	if args == nil {

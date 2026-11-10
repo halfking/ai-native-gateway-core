@@ -56,6 +56,25 @@ type Request struct {
 	DisableAssembly bool
 	// DisableToolLoop 跳过「记忆工具回环」，只保留「主动分层装配」。
 	DisableToolLoop bool
+	// AssembleOnly 表示「**只装配，不提交上游**」。
+	//
+	// ★ 契约依据：客户端驱动形态要的是「装配后的出站体」，
+	//
+	//	客户端自己拿去提交。旧实现没有这个出口 ⇒ Process 第 [5] 步
+	//	**无条件** Submit ⇒ submit=false 也打了一次上游
+	//	（非预期调用 + 计费 + 记录里混入一次真实交互），
+	//	而 submit=true 时更是**打两次**（先一次无工具声明的裸提交，
+	//	再一次正式提交 + 回灌）⇒ 双倍成本与上游副作用。
+	//	⇒ 有这个出口后，/resolve 只跑**一次** Process，按 submit 二选一。
+	AssembleOnly bool
+	// ForceNonStream 强制出站体走**非流式**（把顶层 "stream" 改写为 false）。
+	//
+	// ★ 为什么需要：记忆工具回环要从上游响应里识别工具调用，
+	//
+	//	而 SSE（stream:true）响应不是单个 JSON ⇒ 识别恒失败
+	//	⇒ 回环静默失效（审计轮实测：SSE 形态识别数恒为 0）。
+	//	⇒ 「网关驱动形态」（服务端跑完整循环）必须出站非流式。
+	ForceNonStream bool
 }
 
 // Outcome 是一次请求的处理结果。
@@ -74,6 +93,17 @@ type Outcome struct {
 	Layers []LayerContent
 	// Assembled 标记出站体是否被装配改写过。
 	Assembled bool
+	// AssembledBody 是**实际出站**的请求体（装配 + 工具声明注入之后）。
+	//
+	// ★ AssembleOnly 时它就是「交给客户端去提交的那份」；
+	//	非 AssembleOnly 时它等于第 [5] 步提交出去的那份。
+	AssembledBody []byte
+	// Notes 记录**没有阻止请求但影响读数解释**的事项
+	//（例如「无模型面凭据 ⇒ 跳过长期记忆召回」）。
+	//
+	// ★ 存在的理由：这些情形如果只体现在「结果为空」上，
+	//	读数会被误读成「记忆里没有」，而真相是「压根没去查」。
+	Notes []string
 }
 
 // Agent 是网关侧上下文智能体。
@@ -137,6 +167,16 @@ func (a *Agent) Process(ctx context.Context, req Request) (Outcome, error) {
 	})
 	rec.Plan = plan
 
+	// ★ 诚实披露：命名空间缺失 ⇒ 长期记忆召回被**跳过**（不是「召回为空」）。
+	//
+	//	这两种情况在读数上长得一样，但含义完全不同：前者是「没去查」，
+	//	后者是「查了没有」。不披露 ⇒ 运维会把「没去查」读成「记忆是空的」。
+	if a.LongTerm != nil && plan.SearchQuery != "" && req.Identity.Namespace() == "" {
+		note := "长期记忆召回已跳过：本次请求没有可用的记忆命名空间（缺模型面凭据，或缺任务标识）。"
+		out.Notes = append(out.Notes, note)
+		rec.Notes = append(rec.Notes, note)
+	}
+
 	// ── [3] 加载各层 ───────────────────────────────────────────────────
 	layers, err := a.loadLayers(ctx, req, plan)
 	if err != nil {
@@ -165,11 +205,39 @@ func (a *Agent) Process(ctx context.Context, req Request) (Outcome, error) {
 		}
 	}
 
+	// 强制非流式（网关驱动形态必须能识别工具调用）。
+	if req.ForceNonStream {
+		if forced, ok := forceNonStream(body); ok {
+			body = forced
+			out.Notes = append(out.Notes, "出站体已强制为非流式（stream=false）：记忆工具回环需要结构化响应才能识别工具调用。")
+		}
+	}
+
 	// ── [5] 首次提交 ───────────────────────────────────────────────────
+	//
+	// ★ AssembleOnly：**到这里就结束**，不碰上游。
+	//
+	//	装配结果交还调用方（客户端驱动形态），由客户端自己去提交。
+	//	旧实现在这里无条件 Submit ⇒ submit=false 也打了一次上游。
+	if req.AssembleOnly {
+		out.AssembledBody = body
+		out.ResponseBody = nil
+		rec.AssembledBody = append([]byte(nil), body...)
+		rec.FinalResponseBody = nil
+		if a.Recorder != nil {
+			if err := a.Recorder.Save(ctx, rec); err != nil {
+				slog.Warn("contextagent: save record failed", "request_id", req.RequestID, "error", err)
+			}
+		}
+		out.Record = rec
+		return out, nil
+	}
+
 	respBody, err := a.Submitter.Submit(ctx, body)
 	if err != nil {
 		return out, fmt.Errorf("contextagent: submit: %w", err)
 	}
+	out.AssembledBody = append([]byte(nil), body...)
 	out.Rounds = 1
 	out.OriginalResponseBody = append([]byte(nil), respBody...)
 	rec.OriginalResponseBody = append([]byte(nil), respBody...)
@@ -201,6 +269,7 @@ func (a *Agent) Process(ctx context.Context, req Request) (Outcome, error) {
 			if err != nil {
 				return out, fmt.Errorf("contextagent: resubmit after memory tool: %w", err)
 			}
+			out.AssembledBody = append([]byte(nil), body...)
 			out.Rounds++
 			rec.Rounds = append(rec.Rounds, Round{
 				Index:        out.Rounds,
@@ -281,6 +350,19 @@ func (a *Agent) loadLayers(ctx context.Context, req Request, plan Plan) ([]Layer
 	}
 
 	// L1 步骤明细层（按需加载，精确寻址）。
+	//
+	// ★ 契约（2026-11-11 审计轮登记）：L1 **不进装配**，走记忆工具按需取。
+	//
+	//	这不是「实现没来得及」，而是**自动装载会放大一个已知缺陷**：
+	//	生产上 request_delta 常常是「客户端完整历史」而不是本轮增量
+	//	（仓内 FIXME-14372/14373）⇒ 一步的正文可能是整份历史的重复；
+	//	自动装 N 步 ⇒ 同一份历史被注入 N 次 ⇒ 上下文预算直接爆，
+	//	而且是在**已经付了 IO 代价之后**才发现装不下。
+	//	⇒ 计划里的 Plan.LoadSteps / PlanInput.AvailableSteps 保留为
+	//	「按需装载」的预算算式（MakePlan 是纯函数、可完整单测），
+	//	但生产路径**不填**它 ⇒ L1 在装配里恒为空。
+	//	⇒ 这**不是**静默失效：L0 索引给出**权威**步号（见 PGIndexLoader 的
+	//	join 口径），模型据此调 load_step_detail 精确取回那一步。
 	if a.StepLoader != nil && len(plan.LoadSteps) > 0 {
 		details, err := a.StepLoader.LoadSteps(ctx, req.Identity, plan.LoadSteps)
 		if err != nil {
@@ -572,12 +654,20 @@ func spliceOrInsertTopLevelArray(original, key, newArray []byte) ([]byte, bool) 
 		return spliceTopLevelArray(original, key, newArray)
 	}
 	// 找顶层对象的 '{'。
+	//
+	// ★ 必须确认**首个非空白字节就是 '{'**（审计轮修复）：
+	//
+	//	原实现取「第一个出现的 '{'」⇒ 对数组体 `[{"a":1}]` 会插到
+	//	**嵌套对象**里去 ⇒ 顶层并没有这个键，注入等于无效。
 	brace := -1
 	for i := 0; i < len(original); i++ {
+		if isSpaceByte(original[i]) {
+			continue
+		}
 		if original[i] == '{' {
 			brace = i
-			break
 		}
+		break
 	}
 	if brace < 0 {
 		return original, false
@@ -589,10 +679,17 @@ func spliceOrInsertTopLevelArray(original, key, newArray []byte) ([]byte, bool) 
 	out := make([]byte, 0, len(original)+len(entry)+1)
 	out = append(out, original[:brace+1]...)
 	out = append(out, entry...)
-	if brace+1 < len(original) {
+	// ★ 空对象 `{}` 不加逗号：加了就是 `{"tools":[...],}` ⇒ 非法 JSON
+	//	（审计轮发现的潜伏缺陷：注入工具声明到空体上会产出坏体）。
+	rest := original[brace+1:]
+	j := 0
+	for j < len(rest) && isSpaceByte(rest[j]) {
+		j++
+	}
+	if !(j < len(rest) && rest[j] == '}') {
 		out = append(out, ',')
 	}
-	out = append(out, original[brace+1:]...)
+	out = append(out, rest...)
 	return out, true
 }
 

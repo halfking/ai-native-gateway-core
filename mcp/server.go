@@ -349,7 +349,8 @@ func (g *Gateway) handleToolsList(ctx context.Context, id *Identity, r *http.Req
 	}
 	views := make([]ToolView, 0, 32)
 	// ★ 网关本地工具也要出现在清单里 —— 否则客户端根本不知道有这条路可走。
-	views = append(views, g.localToolViews(id)...)
+	//	group 过滤与上游分支同一口径（审计轮修复：本地分支原本无条件全列）。
+	views = append(views, g.localToolViews(id, group)...)
 	for _, a := range adapters {
 		if !a.Enabled {
 			continue
