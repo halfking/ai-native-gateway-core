@@ -230,6 +230,100 @@ def flags_for(verdict: str) -> list[str]:
     return [txt for key, txt in DISCLOSURE_FLAGS if key in verdict]
 
 
+def find_line(text: str, needle: str) -> str:
+    """★ 取**第一行**含 needle 的行（★ 去掉首尾空白）⇒ 找不到返回空串。"""
+    for ln in (text or "").splitlines():
+        if needle in ln:
+            return ln.strip()
+    return ""
+
+
+# ★★ 报告里要**逐字摘录**的几条几何/守卫证据（★ 各自来自对应步骤的输出）
+GEOMETRY_QUOTES = [
+    ("① 预演 as-of（★ = 关窗时钟）", 0, "as-of      = "),
+    ("① 预演 as-of 自检", 0, "as-of 自检"),
+    ("① pre 键逐字节", 0, "全部逐字节一致"),
+    ("② 覆盖率守卫（★ 审计器自己瞎了吗）", 1, "覆盖率守卫"),
+    ("② post 段上界", 1, "全部 post 段"),
+    ("⑤ M18 pre 基线冻结一致性", 4, "M18 pre 基线冻结一致性"),
+    ("⑤ M20 fp 尾部可见性", 4, "M20 fp 视图尾部可见性"),
+    ("⑥ M20 fp 尾部可见性", 5, "M20 fp 视图尾部可见性"),
+    ("⑦ 负控（★ 门有牙）", 6, "负控通过"),
+]
+
+
+def build_report_markdown(stage: int, dnow, close_ts, rows, boundaries,
+                          step_log, failures) -> str:
+    """★ 生成**可归档**的 markdown 裁决片段。
+
+    ★★ **为什么要有它**（★ 关窗当天时间紧 ⇒ 手抄数字 = 手抄风险）：
+    ★★ ① ★ **诚实边界清单不得手写**（★ 唯一来源 = `honest_boundary_lines()`）⇒ ★★ 这里**逐字复制**
+    ★★ ② ★ ★ **披露必须带数字**（★ 第 26/28 处纪律）⇒ ★★ 裁决文案**整段照抄**，★ 不摘要
+    ★★ ③ ★ **裁决符号不得软化** ⇒ ★★ 符号列**原样搬运**
+    """
+    L: list[str] = []
+    L.append(f"### ★ Stage {stage} 关窗裁决卡（★ 由 `scripts/audit/recovery-detection-p0-3-close-runner.py` 生成）")
+    L.append("")
+    L.append(f"> ★ 生成时刻（★ **数据库的 `now()`**）= {dnow:%Y-%m-%d %H:%M:%S} +08")
+    L.append(f"> ★ era 切点 = {EPOCH} ｜ ★ 关窗 = {close_ts:%Y-%m-%d %H:%M:%S} +08")
+    L.append("> ★ ★★ **本片段的每个数字、每条裁决文案、每条诚实边界都来自本次运行的输出**")
+    L.append("> ★ ★★ ⇒ ★★ **请勿手改**（★ 手工重写就会漏掉限定条件 ⇒ ★ 就会出现「无覆盖的谎」）")
+    L.append("")
+    L.append(f"#### ① 步骤链（★ 七步 + 期望值校验）")
+    L.append("")
+    L.append("| # | 步骤 | rc | 结论 |")
+    L.append("|---|---|---|---|")
+    for i, (s, rc, _out) in enumerate(step_log, 1):
+        L.append(f"| {i} | {s.name} | {rc} | {'✔ 通过' if rc == 0 else '✘ 失败'} |")
+    L.append("")
+    if failures:
+        L.append("★★ **本次跑批有违例（★ rc≠0 ⇒ 不得据此出结论）**：")
+        for f in failures:
+            L.append(f"- {f}")
+        L.append("")
+    L.append("#### ② 几何与守卫（★ 从各步输出里**逐字摘录**）")
+    L.append("")
+    for label, idx, needle in GEOMETRY_QUOTES:
+        if idx < len(step_log):
+            ln = find_line(step_log[idx][2], needle)
+            if ln:
+                L.append(f"- **{label}**：{ln}")
+    L.append("")
+    L.append(f"#### ③ 裁决表（★ 符号**保持原样** ⇒ 门不钝化）")
+    L.append("")
+    L.append("| 判据 | 符号 | 裁决 |")
+    L.append("|---|---|---|")
+    for label, sym, verdict in rows:
+        one = verdict.replace("\n", " ").replace("|", "\\|")
+        L.append(f"| {label} | {sym} | {one} |")
+    L.append("")
+    n_bad = sum(1 for _, s, _ in rows if s == "❌")
+    n_unk = sum(1 for _, s, _ in rows if s == "⚠️")
+    n_ok = sum(1 for _, s, _ in rows if s == "✅")
+    L.append(f"★★ 符号统计：✅ **{n_ok}** ｜ ❌ **{n_bad}** ｜ ⚠️ **{n_unk}**（★ 共 {len(rows)} 行）")
+    L.append("")
+    if n_bad:
+        L.append("#### ④ ❌ 明细（★ **符号保持原样** ⇒ ★ 披露只解释、**不软化**）")
+        L.append("")
+        for label, sym, verdict in rows:
+            if sym != "❌":
+                continue
+            L.append(f"- **{label}**")
+            L.append(f"  - {verdict}")
+            for fl in flags_for(verdict):
+                L.append(f"  - {fl}")
+        L.append("")
+    if n_unk:
+        L.append(f"★★ ⚠️ {n_unk} 行「样本不足/不可判」⇒ ★ **不得**外推成 ✅ 或 ❌")
+        L.append("")
+    L.append("#### ⑤ 诚实边界清单（★ 唯一来源 = `honest_boundary_lines()` ⇒ ★ **逐字复制，★ 不得手写**）")
+    L.append("")
+    for b in boundaries:
+        L.append(f"- {b}")
+    L.append("")
+    return "\n".join(L)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 主流程
 # ─────────────────────────────────────────────────────────────────────
@@ -239,6 +333,8 @@ def main() -> int:
     ap.add_argument("--host", default="211")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--log-dir", default="")
+    ap.add_argument("--emit-report", default="",
+                    help="★ 把本次运行的裁决写成 markdown 片段（★ 数字/边界全部来自本次输出 ⇒ 不手抄）")
     ap.add_argument("--force-unmatured-window", action="store_true",
                     help="★ 关窗前**链路自检**用：★ 跳过「窗口已满」这道门（★ 关窗裁决**禁用**）")
     args = ap.parse_args()
@@ -300,6 +396,7 @@ def main() -> int:
 
     failures: list[str] = []
     verdict_text = ""
+    step_log: list[tuple[Step, int, str]] = []
     for i, s in enumerate(steps, 1):
         print(f"\n───── [{i}/{len(steps)}] {s.name}")
         print(f"      $ {' '.join(s.cmd)}")
@@ -327,6 +424,7 @@ def main() -> int:
             print(f"      ★ 完整输出见 {logf}")
         else:
             print(f"      ✔ {s.name}（★ {s.note}）")
+        step_log.append((s, proc.returncode, out))
         if s.cmd[1].endswith("recovery-detection-p0-3-verdict.py") and "--stage" in s.cmd:
             verdict_text = out
 
@@ -355,6 +453,28 @@ def main() -> int:
     print(f"★★ 诚实边界清单（★ 从判定器输出**摘** ⇒ 不得手写）：{len(boundaries)} 条")
     print("   " + " ".join(b[0] if b else "?" for b in boundaries))
     print(f"★★ 完整日志：{log_dir}")
+
+    # ── 可归档的 markdown 裁决片段（★ 数字与边界全部来自本次运行 ⇒ 杜绝关窗当天手抄）──
+    if args.emit_report:
+        rp = Path(args.emit_report)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        rp.write_text(
+            build_report_markdown(stage, dnow, close_ts, rows, boundaries, step_log, failures),
+            encoding="utf-8")
+        # ★★★ **自校验**：★ 「逐字复制」这句话必须**可验证**，★ 不能只是一句声明
+        #   ⇒ ★★ 把写出的文件**重新解析**一遍，★ 与源列表**逐条比对**
+        #   ⇒ ★★ 任一条不一致 ⇒ ★ **rc≠0**（★ 归档片段不可信 ⇒ 不得用它出结论）
+        _back = [ln[2:].strip() for ln in rp.read_text(encoding="utf-8").splitlines()
+                 if ln.startswith("- ") and len(ln) > 2 and ln[2] in CIRCLED]
+        _src = [b.strip() for b in boundaries]
+        if _back != _src:
+            _miss = [b for b in _src if b not in _back]
+            _extra = [b for b in _back if b not in _src]
+            failures.append(f"[裁决片段] 诚实边界**不是逐字复制**（★ 源 {len(_src)} 条 / 解析回 {len(_back)} 条）"
+                            f"⇒ ★ 缺 {len(_miss)} 条 / 多 {len(_extra)} 条 ⇒ ★ **归档片段不可信**")
+        else:
+            print(f"★★ ✔ 裁决片段自校验：★ {len(_src)} 条诚实边界**逐字一致**")
+        print(f"★★ 裁决片段（★ 可直接归档）：{rp}")
 
     if failures:
         print("\n" + "=" * 96)
