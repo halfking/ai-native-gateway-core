@@ -760,3 +760,59 @@ SELECT 'M17_event_definition_check' k,
   ||' | '||CASE WHEN COUNT(*) FILTER (WHERE gap_min = 0) = 0 THEN '✔ 无重复行污染'
                 ELSE '★★ **存在零间隔 ⇒ 可能有重复行 ⇒ 事件定义需复查**' END v
 FROM rec;
+
+-- ═══ H1–H5 ★★ handoff「意图口径」的修正版（★ 原样 SQL 不可执行 ⇒ 这里按它的**意图**重写）═══
+--
+-- ★★ 为什么有这一节：handoff 的 Phase 2 任务 2.1 要求「**重新执行任务 0.2 的 SQL**」，
+--   而任务 0.2 的 4 条基线 SQL 在真库上 **4 条里只有 1 条能跑通**（实测证据：
+--   scripts/audit/hand-off-verbatim.sql）：
+--     ① `credentials.billing_mode` 不存在（psql HINT：cmb.billing_mode）
+--     ② `credentials.provider` 不存在（psql HINT：credentials.provider_id）
+--     ③ `node_probe_state.last_probe_at` 不存在（真列名是 `last_attempt_at`）
+--     ④ `node_probe_runs.raw_model` 不存在（真列名是 `raw_model_name`）
+--   ⇒ ★★ **handoff 的验收流程在当前 schema 上不可执行** ⇒ 本节按它的**指标意图**
+--   （unavailable 数 / 免费可用率 / **探测间隔 P95** / **探测覆盖率** / featured 探测频率）
+--   用真列名重写 ⇒ ★ 让 Stage 1 报告能**用 handoff 自己的语言**回答它的问题
+--   （★ 但它的**成功标准**本身已被判据审计档判为不可用 ⇒ 这节是「参考读数」，不是判据）。
+SELECT 'H1_unavailable_count' k,
+  (SELECT COUNT(*)::text FROM credential_model_bindings WHERE available = FALSE) v;
+
+SELECT 'H2_free_available_pct' k,
+  COUNT(*)::text||' total, avail='||COUNT(*) FILTER (WHERE available)::text
+  ||' | pct='||ROUND(100.0*COUNT(*) FILTER (WHERE available)/COUNT(*),1)::text v
+FROM credential_model_bindings WHERE billing_mode = 'free';
+
+-- H3：探测间隔分布（★ handoff 指标 3 的修正版：last_probe_at ⇒ last_attempt_at）
+SELECT 'H3_probe_interval' k,
+  COUNT(*)::text||' rows | p50_min='||COALESCE((percentile_cont(0.50) WITHIN GROUP (
+      ORDER BY EXTRACT(EPOCH FROM (NOW() - last_attempt_at))/60))::int::text,'?')
+  ||' | p95_min='||COALESCE((percentile_cont(0.95) WITHIN GROUP (
+      ORDER BY EXTRACT(EPOCH FROM (NOW() - last_attempt_at))/60))::int::text,'?')
+  ||' | p99_min='||COALESCE((percentile_cont(0.99) WITHIN GROUP (
+      ORDER BY EXTRACT(EPOCH FROM (NOW() - last_attempt_at))/60))::int::text,'?') v
+FROM node_probe_state WHERE last_attempt_at IS NOT NULL;
+
+-- H4：探测覆盖率（★ handoff 指标 4 的修正版）
+SELECT 'H4_probe_coverage_24h' k,
+  COUNT(*)::text||' total | probed_24h='||COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours')::text
+  ||' | coverage_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours')/NULLIF(COUNT(*),0),1)::text v
+FROM node_probe_state;
+
+-- H5：featured 模型的探测频率（★ handoff 任务 2.2-3 的修正版）
+--   ★ handoff 用的是**幻觉模型名**（gpt-4o-mini / claude-haiku-3.5 / gemini-flash-2.0）
+--   ⇒ 原样必然 0 行 ⇒ 这里改用**真实存在且在 featured 集合内**的 raw 名（Top 10）
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>'')
+SELECT 'H5_featured_probe_freq' k, raw_model_name||' | probes_24h='||c::text v
+FROM (
+  SELECT n.raw_model_name, COUNT(*) c
+  FROM node_probe_runs n
+  WHERE n.created_at > NOW() - INTERVAL '24 hours'
+    AND lower(btrim(n.raw_model_name)) IN (SELECT m FROM rawv_new)
+  GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+) t;

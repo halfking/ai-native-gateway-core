@@ -314,6 +314,27 @@ def main() -> int:
             cells[3] = "★★ **量具守卫未通过 ⇒ 本行裁决作废**"
         print(" | ".join(cells[i].ljust(w[i]) for i in range(len(cells))))
 
+    # ── ★★ handoff 原样/修正版读数（★ 用 handoff 自己的语言回答它的问题）──
+    print("\n== handoff 口径读数（★ 原样 SQL 不可执行 ⇒ 这里用修正版；★ 参考读数，不是判据）==")
+    handoff_rows = [
+        ("H1 unavailable_count（handoff 指标 1）", data.get("H1_unavailable_count", "—"),
+         "★ 瞬时量 + 归因不可分 ⇒ 不可作判据（handoff 目标「下降 ≥20%」不可用）"),
+        ("H2 免费可用率（handoff 指标 2）", data.get("H2_free_available_pct", "—"),
+         "★ 恒真（修复前即 72.4% ≫ 40%）⇒ 不可作判据"),
+        ("H3 探测间隔 p50/p95/p99（handoff 指标 3）", data.get("H3_probe_interval", "—"),
+         "★ p95 被 30 天 healthy-parked 行主导 ⇒ 不可作判据（handoff 目标「<60min」差 300×）"),
+        ("H4 探测覆盖率 24h（handoff 指标 4）", data.get("H4_probe_coverage_24h", "—"),
+         "★ 恒真（修复前即 >70%）⇒ 不可作判据"),
+    ]
+    for label, obs, note in handoff_rows:
+        print(f"   {label}: {obs}")
+        print(f"      ⇒ {note}")
+    h5 = sorted((k, v) for k, v in data.items() if k.startswith("H5_featured_probe_freq"))
+    if h5:
+        print("   H5 featured 真实高频模型（handoff 任务 2.2-3 的修正版；★ 原样用幻觉模型名 ⇒ 必然 0 行）:")
+        for k, v in h5[:5]:
+            print(f"      - {v}")
+
     print("\n★ 诚实边界（必须一起写进结论）：")
     print("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
           "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
