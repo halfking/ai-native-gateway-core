@@ -137,4 +137,28 @@ func TestRecordModelNotFoundStateUpsertEscalationRealDB(t *testing.T) {
 			t.Fatalf("fresh-failure row must re-arm at ~5min, got %v", remaining)
 		}
 	})
+
+	t.Run("transient suppression never shortens ladder", func(t *testing.T) {
+		const m = "mnf-gate-transient-greatest"
+		seed(t, m, 3, 6*time.Hour) // 阶梯未来排程 now()+6h（cf 低于阈值，纯 GREATEST 守卫）
+		if _, err := pool.Exec(ctx, recordTransientDispatchFailureStateUpsertSQL(),
+			synthCred, m, (5 * time.Minute).String(), "upstream_down"); err != nil {
+			t.Fatalf("transient upsert: %v", err)
+		}
+		nextRetry, cf := readRow(t, m)
+		if remaining := time.Until(nextRetry); remaining < 5*time.Hour {
+			t.Fatalf("transient suppression shortened the probe ladder schedule: %v remaining, want ≥ 5h (cf now %d)", remaining, cf)
+		}
+		// 瞬时路径刻意**不**做 cf 升级（可恢复族快复检是恢复 SLA 的承重墙）：
+		// cf 高但排程已过期的行仍按 5min 抑制窗口重武装。
+		seed(t, m, 500, -1*time.Minute)
+		if _, err := pool.Exec(ctx, recordTransientDispatchFailureStateUpsertSQL(),
+			synthCred, m, (5 * time.Minute).String(), "upstream_down"); err != nil {
+			t.Fatalf("transient upsert 2: %v", err)
+		}
+		nextRetry, _ = readRow(t, m)
+		if remaining := time.Until(nextRetry); remaining > 6*time.Minute {
+			t.Fatalf("transient suppression must keep the fast 5min arm for recoverable errors (recovery SLA), got %v", remaining)
+		}
+	})
 }

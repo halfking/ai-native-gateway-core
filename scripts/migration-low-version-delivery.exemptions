@@ -1,0 +1,15 @@
+# scripts/migration-low-version-delivery.exemptions
+# ★ 低版本投递面的【豁免表】（★ 审计 F48 · 2026-11-10 ★）
+#
+# ★ 格式：★ 文件名 <TAB> 理由 ★（★ 逐行整串匹配 ★；★ 理由不许为空 ★）
+#
+# ★ 这张表是什么：★ 「★ 派生面上、★ 但**不能**进低版本投递清单 ★」的那几条
+#   —— ★ **每一条都必须写清为什么不能投** ★ ⇒ ★ 机器门会逐条对账：
+#   ★ 派生面 = 台账快照里低于地板的 + 安装器链里低于地板的 ★
+#   ★ 派生面 == 清单 ∪ 豁免 ★（★ 不多不少 ★）
+#
+# ★ 为什么豁免要**自证**：★ 「★ 不能投 ★」这句话很容易过期（★ 文件被补回来、
+#   ★ 或文件的声明被改掉 ★）⇒ ⇒ 所以豁免各带一条**机器可判**的自证 ★
+#
+032_session_tenant_binding.sql	★ 211 / local 上**确实被应用过**（台账快照有）⇒ 252 缺它 ★ ★ 但仓里**已经没有**它的 canonical 文件（sql/migrations/startup/ 下只剩 032_request_wal.sql）⇒ **无源可投** ⇒ 这条缺口**留在登记里**、本轮不闭合
+session_turns_hot_bootstrap.sql	★ 安装器**专用**（★ 它是安装器链里唯一**无版本号**的文件 ★）⇒ 文件**自带**声明「It is not an upgrade migration and must not be applied to an existing deployment.」⇒ ★ 设计上**不在**存量升级通道的投递面里、★ 不是缺口 ★

@@ -27,10 +27,13 @@
 #   「★ **主档号 `Fxx`** ★」指针（★ 例：`**F-20**（★ **主档号 `F54`** ★））
 #   ⇒ ⇒ 该行**已消歧** ⇒ ⇒ 门不再判它 ⇒ ⇒ 基线对应那一行可以删掉。
 #
-# ── 基线（★ 2026-11-10 实测 7 条 · 树态 b92313da2 · 活跃窗口档 20261104-0329）──
+# ── 基线（★ 2026-11-10 实测 6 条 · 树态 b92313da2 · 活跃窗口档 20261104-0329）──
 #
-# F7	297	主档＝Anthropic 腿 reasoning trace ／ 兄弟档＝预热 HSET+EXPIRE 合事务
-F7	297	主档＝Anthropic 腿 reasoning trace ／ 兄弟档＝预热 HSET+EXPIRE 合事务
+# ★ ★ ★ **本轮收敛了一条**（★ 第五十二轮 ★）：★ `F7` ⇒ ★ 主档 §28.23 的
+#   `F7` 已由「★ ⏳ 仍开 ★」改成「★ ✅ 已闭合 ★」（★ 第五十二轮恢复了 Anthropic
+#   腿的 reasoning trace 转发 ★）⇒ ★ 而兄弟档那一行本来就是 closed ⇒ ★ ⇒
+#   **两边不再分歧** ⇒ ⇒ 按棘轮**只许减**的纪律、★ `F7` 从基线里**删掉** ★
+#
 F10	305	主档＝refreshedCandidatesAfterProbe 模态过滤 ／ 兄弟档＝canonical schema 补 subscription_plans_pkey
 F11	302	主档＝request_modality_propagation AST 门 ／ 兄弟档＝myOwnerScope 去死返回值
 F13	307	主档＝bg/modality_verification 只探 vision ／ 兄弟档＝github 镜像仓公开

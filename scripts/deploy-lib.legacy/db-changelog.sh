@@ -219,6 +219,43 @@ _psql -tAc \"SELECT COALESCE(max(version::int), 0) FROM schema_migrations WHERE 
   echo "$max"
 }
 
+# ── ★ 2026-11-10（审计 F48）：★ 低版本投递区 ★ ────────────────────────────
+#
+# ★ 这道机制为什么存在（★ 一句话）：★ **对账地板**（DB_LEDGER_RECONCILE_FROM，
+#   默认 412）与**投递地板**过去是**同一个常量** ⇒ ⇒ 「★ 哪些已记账的行要做
+#   checksum 对账 ★」与「★ 哪些未记账的迁移会被投递 ★」被**绑死** ⇒ ⇒
+#   两条通道（全新安装链 ／ 存量升级通道）的边界**卡死在 412** ⇒ ⇒ 新装链
+#   登记的 <412 迁移（★ 351 / 388 / 392 ★）**永远到不了存量库** ⇒ ⇒
+#   同一套对象在两条通道上**终态不同**（★ 已在生产上表现为
+#   `session_owners` 那一族的对象终态差异 ★）。
+#
+# ★ 为什么**不整体下调** DB_LEDGER_RECONCILE_FROM：★ 412 以下是**有意
+#   豁免**的历史区（★ 账本里有 45 条 <412 的行**没有 checksum** ⇒ ★ 降地板
+#   ⇒ checksum 闸门**硬拒** ⇒ ★ 整条部署中止 ★）⇒ ★ 那是**另一件事**、
+#   ★ 不能和「投递面」混在一起 ★ ⇒ ⇒ 所以**两个地板必须解耦** ★。
+#
+# ★ 本机制的口径：★ 低于对账地板的迁移，★ **只有被仓内清单显式登记过的**
+#   才进入投递面（★ 清单：scripts/migration-low-version-delivery.list ★）
+#   ⇒ ★ 投递面**精确**、★ 不会把 60+ 条历史迁移一次性推给存量库 ★
+#   ⇒ ★ 清单与安装器链的对应关系由**仓内机器门**机械比对（★ 漂移即红 ★）。
+#
+# ★ 缺省行为不变：★ 清单不存在 ⇒ 低版本区**一条都不投递**（★ 与本机制
+#   引入前逐字一致 ★）⇒ ⇒ 对**不用这个清单的仓**零行为变化 ★。
+#
+# ★ 与共享库的新版 db-changelog.sh **逐字一致**（★ 两条部署路径不许漂移 ★）。
+_deploy_low_version_delivery_allowed() {
+  local base="$1"
+  local list_file="${DB_MIGRATION_LOW_VERSION_DELIVERY_LIST:-}"
+  if [[ -z "$list_file" ]]; then
+    local repo_root
+    repo_root=$(_db_changelog_repo_root 2>/dev/null || true)
+    [[ -n "$repo_root" ]] || return 1
+    list_file="$repo_root/scripts/migration-low-version-delivery.list"
+  fi
+  [[ -f "$list_file" ]] || return 1
+  grep -qxF "$base" "$list_file"
+}
+
 _deploy_pending_startup_migrations() {
   local ssh_cmd=$1 env_file=$2
   local repo_root f base ver line
@@ -246,11 +283,26 @@ _deploy_pending_startup_migrations() {
     [[ "$base" == *.bak.skip ]] && continue
     ver=$(echo "$base" | grep -oE '^[0-9]+' || true)
     [[ -n "$ver" ]] || continue
-    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
+    # ★ 2026-11-10（审计 F48）：★ 低版本投递清单登记的文件（★ 含 `361b_` 这种
+    #   ★ 版本号带**字母后缀**的 ★）⇒ ★ 不受 `^[0-9]{3}_` 命名过滤器的限制
+    #   ★（★ 而它们由清单**显式**登记 ⇒ ★ 投递面是**精确**的、★ 不是全放开 ★）
+    if [[ ! "$base" =~ ^[0-9]{3}_ ]] && ! _deploy_low_version_delivery_allowed "$base"; then
+      continue
+    fi
     if head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED'; then
       continue
     fi
-    if (( 10#$ver >= ledger_reconcile_from )) && [[ -z "${applied[$((10#$ver))]+x}" ]]; then
+    # ★ 2026-11-10（审计 F48）：★ 投递面与对账地板**解耦** ★
+    #   · ≥ 对账地板 ⇒ 行为与本机制引入前**逐字一致** ★
+    #   · < 对账地板 ⇒ 只在「★ 低版本投递清单登记过 ★」且「★ 账本无记录 ★」
+    #     时才投递（★ ⇒ 存量库也能拿到新装链登记的那几条 ★）
+    if (( 10#$ver >= ledger_reconcile_from )); then
+      if [[ -z "${applied[$((10#$ver))]+x}" ]]; then
+        printf '%s\n' "$f"
+      fi
+      continue
+    fi
+    if _deploy_low_version_delivery_allowed "$base" && [[ -z "${applied[$((10#$ver))]+x}" ]]; then
       printf '%s\n' "$f"
     fi
   done

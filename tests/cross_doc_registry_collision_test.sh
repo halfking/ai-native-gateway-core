@@ -293,7 +293,7 @@ FP_DOC="${AUDIT_SIB_CONTROL:-$REPO_ROOT/docs/12小时内修订审计-2026-11-02-
 if [[ ! -f "$FP_DOC" ]]; then
   bad "对照档缺失：${FP_DOC}（★ 无法测假阳性）"
 else
-  fp=0; fp_cmp=0
+  fp=0; fp_cmp=0; fp_excluded=0
   FP_REG="$MAIN_REG"
   while IFS=$'\t' read -r nid nst nln; do
     [[ -n "$nid" ]] || continue
@@ -302,9 +302,21 @@ else
     mcls=$(state_class "$mst")
     scls=$(state_class "$nst")
     [[ "$scls" == '?' ]] && continue
+    # ★ ★★ 排除「★ 主档已闭合 ★」的那些行（★ 2026-11-10 实测踩到 ★）：
+    #   ★ 对照档是**旧快照**（★ 它记的是主档**当时**的状态 ★）⇒ ★ 主档把某一项
+    #   ★ 闭合之后、★ 对照档那一行还写着「仍开」⇒ ⇒ 判据会判它「分歧」⇒
+    #   ★ ★ **而那不是「同号异义」、★ 是「状态漂移」★★ ⇒ ⇒ 把它排除、
+    #   ★ 且**把排除条数打印出来**（★ 不许悄悄排除 ★）
+    if [[ "$mcls" == "closed" ]]; then
+      fp_excluded=$((fp_excluded + 1))
+      continue
+    fi
     fp_cmp=$((fp_cmp + 1))
     [[ "$mcls" != "$scls" ]] && fp=$((fp + 1))
   done < <(sibling_bare_rows "$FP_DOC")
+  if [[ "$fp_excluded" -gt 0 ]]; then
+    echo "ℹ️ 假阳性对照：★ 排除 $fp_excluded 行（★ 主档已闭合、★ 而对照档是旧快照 ⇒ 那是状态漂移、★ 不是同号异义 ★）"
+  fi
   if [[ "$fp_cmp" -eq 0 ]]; then
     bad "假阳性对照档（${FP_DOC##*/}）可比行数 = 0（★ 判据面缩水 ⇒ 这个断言是空的 ⇒ 绿着漏）"
   elif [[ "$fp" -eq 0 ]]; then
