@@ -189,9 +189,13 @@ def main() -> int:
     #   ★ 「相位效应」：★ 投影的 post 窗口在**数据分布上**仍是当前已积累的那一段
     #   ★   ⇒ ★★ 任何按「窗口内事件构成」计算的判据（★ 尤其是对照组的中位数）在投影里可能相位失真
     #   ★ 「只投影时钟」：★ 投影能可靠暴露时钟/成熟度类缺陷，但对构成类判据只能提示、不能定论
+    # ★★ 第 24 处口径修正（★ 2026-11-11）：★ 把「post 段必须被当前时刻界定」这条边界也引进来
+    #   ★ 理由：★ 投影**就是**靠替换 `now()` 生效的 ⇒ ★ 若某个判据的 post 段**无界**
+    #   ★   ⇒ ★★ 投影对它**无效** ⇒ ★★ 它在负控/预演里恒真 ⇒ ★★ 没有牙
+    #   ★   ⇒ ★★ 投影输出必须显式带上这条 ⇒ ★★ 读者才知道哪些判据的投影值是「有牙的」
     vmod = cc.load_verdict()
     for ln in vmod.honest_boundary_lines():
-        if "㉖" in ln or "㉗" in ln or "㉚" in ln:
+        if "㉖" in ln or "㉗" in ln or "㉚" in ln or "㉦" in ln:
             print("   " + ln.strip())
 
     if missing or diff or ci_missing or ci_diff or bad:

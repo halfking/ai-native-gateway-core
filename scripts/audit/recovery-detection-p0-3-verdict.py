@@ -1232,8 +1232,12 @@ def judge(data: dict[str, str], stage: int = 1,
                          verdict_missing("★ post 的 med/p90/max 算不出（样本不足）")))
         else:
             ok = med <= base[0] and p90 <= base[1] and mx <= base[2]
+            # ★★★★ 第 24 处口径修正：★ 行内点明「post 段已被 now() 界定」⇒ ★ 与 stage 窗口同量纲
+            #   ★★ 同时把「pre 基线是 7 天」的量纲提醒带上（★ 诚实边界 ㉚）⇒ ★ 报告读者不会误读
             rows.append((label, base_txt, f"n={n} med={med} p90={p90} max={mx}",
-                         verdict(ok, "★ 逐项不劣于 pre 即达成")))
+                         verdict(ok, "★ 逐项不劣于 pre 即达成"
+                                   "（★ post 段**已被 now() 界定** ⇒ ★ 与 stage 窗口同量纲；"
+                                   "★ ★★ 但 pre 基线取自 **7 天** ⇒ ★ Stage 1 量纲不同 ⇒ ★ 只能当描述性读数）")))
 
     # ── M12p：待复检护栏（★ 「复检不能反而变慢」）──────────────────────────
     # ★★ 口径（★ 本轮第 5 处修正）：★ pending = 「失败之后没有任何后续探测」
@@ -2212,6 +2216,44 @@ def selftest() -> int:
         failures.append("[㉥ 诚实边界] 缺少「M11 的基线取自 7 天 pre、Stage 1 的 post 是 24h ⇒ 不同量纲」边界")
     if "两个方向都可能错" not in hb:
         failures.append("[㉥ 诚实边界] 缺少「M11 符号两个方向都可能错」的提醒")
+
+    # ㉧ ★★★★ **诚实边界必须包含「post 段必须被当前时刻界定」这条**（★ 第 24 处口径修正）
+    #   ★★ 为什么必须进边界：★ M11 是**头号判据**（★ 锚点档 T1 列进 Stage 1 判据集）
+    #   ★★ 而它的 post 段曾**无界** ⇒ ★★ 负控里它**恒判 ✅** ⇒ ★★ 它在负控里**没有牙**
+    #   ★★ ⇒ 不披露 ⇒ ★★ 报告会把它读成「已证伪的判据」⇒ ★★ 符号的含义被高估
+    #   ★★ ⇒ 断言基于**打印文本**（★ 唯一来源 = honest_boundary_lines()）
+    if "无界" not in hb:
+        failures.append("[㉧ 诚实边界] 缺少「M11 的 post 段曾**无界** ⇒ as-of 替换对它无效」这条边界")
+    if "恒真" not in hb:
+        failures.append("[㉧ 诚实边界] 缺少「M11 在负控里**恒真** ⇒ 没有牙」这条边界")
+    if "post 段必须被" not in hb:
+        failures.append("[㉧ 诚实边界] 缺少「post 段必须被当前时刻界定」的通用纪律")
+
+    # ㉨ ★★★★ **跨脚本**行为**守卫：★ 负控必须真的要求「M11 namespaced 判负」（★ 第 24 处口径修正）
+    #   ★★ 形态：★ 若负控脚本里这条要求被回退（★ 或被改成两个 stage 共用）
+    #   ⇒ ★★ Stage 1 的 M11 又变成「恒真 ⇒ 没有牙」的判据 ⇒ ★★ 门没牙 ⇒ ★★ 且**静默**
+    #   ★★ ⇒ ★★ 断言必须是**行为级**（★ 真的 import 负控脚本并调用它的 stage 门禁）
+    #   ★★   ⇒ 而不是「源码里有没有某个字符串」（★ 字符串断言守不住「字符串在但没接上」）
+    try:
+        import importlib.util as _ilu
+        _negp = Path(__file__).with_name("recovery-detection-p0-3-negcontrol.py")
+        _spec = _ilu.spec_from_file_location("negctl_guard_m24", _negp)
+        _nc = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_nc)
+        _l1 = tuple(_nc.must_fail_labels_for_stage(1))
+        _l2 = tuple(_nc.must_fail_labels_for_stage(2))
+    except Exception as e:  # ★ 读不到 ⇒ 必须判失败（★ 不得静默跳过）
+        _l1, _l2 = (), ()
+        failures.append(f"[㉨ 负控 Stage 门禁守卫] 读不到/跑不动负控脚本 ⇒ {e}")
+    # ★★ 注意：★ 这里**不能**写 `if _l1 and ...`（★ 本轮变异真踩到）
+    #   ★★ 若清单被清空（★ 要求整个被删掉）⇒ ★★ `_l1` 为空 ⇒ ★★ `if _l1` 为假 ⇒ ★★ **守卫不报警**
+    #   ★★ ⇒ ★★ **空清单本身就是「要求被删掉」的证据** ⇒ ★★ 必须判失败
+    if not _l1 or not any("M11 namespaced" in x for x in _l1):
+        failures.append(f"[㉨ 负控 Stage 门禁守卫] Stage 1 的必须判负清单**必须非空且含「M11 namespaced 恢复感知时延」**"
+                        f"（★ 空清单 = 要求被删掉了 ⇒ M11 又变成恒真判据）⇒ {_l1}")
+    if _l2:
+        failures.append(f"[㉨ 负控 Stage 门禁守卫] Stage 2 **不得**要求判负（★ 168h 窗口不含那段退化"
+                        f" ⇒ 实测 med=3 ⇒ ✅ 达成 ⇒ 否则是**假红**）⇒ {_l2}")
     # ㉡ ★★★★ **M5 判 ❌ 时必须给出「增量归因（by_kind）」分解**（★ 2026-11-11 关窗预演补；
     #   ★★ 与第 22 处「基线口径」互补：★ 那边回答「阈值是否成立」；这边回答「增量从哪来」）
     rows, _, _ = judge(_synthetic(False), stage=1)
@@ -2277,6 +2319,9 @@ def selftest() -> int:
     print("   ✔ ㉣ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
     print("   ✔ ㉤ ★★★ **跨脚本守卫**：★ 负控脚本必须真的把 `now()` 随 era 切点平移（★ 否则门没牙）")
     print("   ✔ ㉥ ★★★ 诚实边界必须含「M11 的基线不同量纲（★ Stage 1 的 M11 符号两个方向都可能错）」")
+    print("   ✔ ㉧ ★★★ 诚实边界必须含「post 段必须被当前时刻界定（★ M11 的 post 段曾**无界** ⇒ 负控里恒真 ⇒ 没有牙）」")
+    print("   ✔ ㉨ ★★★ **跨脚本行为守卫**：★ 负控必须真的要求 Stage 1 的 M11 namespaced 判负"
+          "（★ 且 Stage 2 不得要求 ⇒ 否则是假红）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2468,6 +2513,22 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ **但不能**改成 pre24 基线（★ 换基线后的「牙」来自**窗口错配** ⇒ 另一重错；★ 且它要动 M18 冻结面 ⇒ **关窗前不动**）"
           "⇒ ★★★ 处置 = **披露 + 改进项**：★ 真修法（★ 按 stage 切换 pre24/pre7d 基线 ＋ 把 M11 基线纳入 M18 冻结）"
           "**登记为 Stage 2 之后** ⇒ ★★ ⇒ ★★ **Stage 1 报告读到 M11 行时，必须把它当「描述性读数」而不是独立判据**。")
+    lines.append("   ㉦ ★★★★ **post 段必须被「当前时刻」界定（★ 否则 as-of 替换对它无效 ⇒ 负控/预演里的窗口不是 stage 窗口）**"
+          "（★ 本轮第 24 处口径修正）：★ M11 的两个 fr CTE（M11_latency @fr#1、M11b @fr#2）**完全没有 `now()`**"
+          "⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界** ⇒ ★★ **as-of 替换对它无效**"
+          "⇒ ★★ ⇒ 第 23 处的几何对齐（★ `now()` 随 era 切点平移）**对 M11 不生效**"
+          "⇒ ★★ ⇒ 负控/预演里的 M11 窗口**仍不是 stage 窗口** ⇒ ★★ ⇒ **负控证伪不了 M11**。"
+          "⇒ ★★★ 实测（负控 era + as-of = 新切点+24h）：★ **无上界** ⇒ 13 ep / med **3** ⇒ **判 ✅**"
+          "⇒ ★★ ⇒ **M11 在负控里是「恒真」的 ⇒ 它没有牙** ⇒ ★★ ⇒ Stage 1 的 M11 读数"
+          "**区分不了「修复生效」与「修复没生效」**；★ ★ **有上界** ⇒ 9 ep / med **30** ⇒ **判 ❌**（★ 长出牙了）。"
+          "⇒ ★★★ 修法：★ 采集侧两个 fr CTE 各加 `AND n.created_at <= now()`"
+          "⇒ ★★ **真实读数逐字节不变**（★ now 时刻 = 「观测到的全部」）⇒ ★★ **pre 侧逐字节不变**（★ pre 全在切点前）"
+          "⇒ ★★ ⇒ **M18 冻结面不受影响**（★ 不重冻）⇒ ★★ 并**点名要求**：★ 负控的 **Stage 1 专属**"
+          "「必须判负」清单含 M11 namespaced ⇒ ★★ ⇒ ★★★ **纪律：★★ 凡是要做「时间轴平移重跑」的判据，"
+          "其 post 段必须被「当前时刻」界定；★ 无界 ⇒ ★★ 平移对它无效 ⇒ ★★ 负控/预演对它**没有牙齿**。"
+          "★★ 另注：★ 「必须判负」**只能是 Stage 1 专属**（★ Stage 2 的 168h 窗口**不含**那段退化"
+          "⇒ 实测 M11 ns = 50 ep / med **3** ⇒ ✅ 达成 ⇒ ★★ 对 Stage 2 也要求就是**假红**；"
+          "★ 且 **bare 行不作要求**（★ 该 24h pre-fix 窗口 bare 人群未退化）。")
     return lines
 
 

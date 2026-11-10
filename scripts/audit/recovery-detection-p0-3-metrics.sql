@@ -423,6 +423,19 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★★★ 2026-11-11 第 24 处口径修正：★ **post 段的 `now()` 上界**（★ M11 两块原本**完全没有** now()）
+     --   ★★ 形态：★ M14/M14x/M15x/M20 族的 post 段都有 `fail_at < now()-6h` ⇒ ★ **post 段被 now() 界定**
+     --     ⇒ ★★ as-of 替换（★ 负控/预演）能把它界定成「恰好 stage 窗口」⇒ ★★ 第 23 处的几何对齐对它们生效
+     --   ★★ 而 **M11 的两个 fr CTE 没有任何 now()** ⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界**
+     --     ⇒ ★★ ⇒ as-of 替换**对它无效** ⇒ ★★ 负控/预演里的 M11 窗口**仍不是 stage 窗口**
+     --   ★★ 实测（本轮，负控 era + as-of = 切点+24h）：★ 无上界 ⇒ M11b_post_fix_namespaced = **13 ep / med 3**
+     --     ⇒ ★★ 有上界 ⇒ **9 ep / med 30** ⇒ ★★ **med 差 10×** ⇒ ★★ **M11 的裁决符号会翻转**
+     --     ⇒ ★★ 更要命：★ **无上界时负控里 M11 判 ✅** ⇒ ★★ **M11 在负控里是「恒真」的 ⇒ 它没有牙**
+     --     ⇒ ★★ ⇒ Stage 1 的 M11 读数**无法区分「修复生效」与「修复没生效」**
+     --   ★★★ **修法**：★ 加 `created_at <= now()`（★ 现在时刻 = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --     ⇒ ★★ 但 as-of 读数**被正确界定** ⇒ ★★ 负控/预演里的 M11 窗口 == stage 窗口）
+     --   ★ ★★ **pre 侧不受影响**（★ pre = [切点-7d, 切点) ⇒ ★ 全部 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -484,6 +497,19 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★★★ 2026-11-11 第 24 处口径修正：★ **post 段的 `now()` 上界**（★ M11 两块原本**完全没有** now()）
+     --   ★★ 形态：★ M14/M14x/M15x/M20 族的 post 段都有 `fail_at < now()-6h` ⇒ ★ **post 段被 now() 界定**
+     --     ⇒ ★★ as-of 替换（★ 负控/预演）能把它界定成「恰好 stage 窗口」⇒ ★★ 第 23 处的几何对齐对它们生效
+     --   ★★ 而 **M11 的两个 fr CTE 没有任何 now()** ⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界**
+     --     ⇒ ★★ ⇒ as-of 替换**对它无效** ⇒ ★★ 负控/预演里的 M11 窗口**仍不是 stage 窗口**
+     --   ★★ 实测（本轮，负控 era + as-of = 切点+24h）：★ 无上界 ⇒ M11b_post_fix_namespaced = **13 ep / med 3**
+     --     ⇒ ★★ 有上界 ⇒ **9 ep / med 30** ⇒ ★★ **med 差 10×** ⇒ ★★ **M11 的裁决符号会翻转**
+     --     ⇒ ★★ 更要命：★ **无上界时负控里 M11 判 ✅** ⇒ ★★ **M11 在负控里是「恒真」的 ⇒ 它没有牙**
+     --     ⇒ ★★ ⇒ Stage 1 的 M11 读数**无法区分「修复生效」与「修复没生效」**
+     --   ★★★ **修法**：★ 加 `created_at <= now()`（★ 现在时刻 = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --     ⇒ ★★ 但 as-of 读数**被正确界定** ⇒ ★★ 负控/预演里的 M11 窗口 == stage 窗口）
+     --   ★ ★★ **pre 侧不受影响**（★ pre = [切点-7d, 切点) ⇒ ★ 全部 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）

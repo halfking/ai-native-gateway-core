@@ -22,6 +22,16 @@
 ★   ⇒ ★★ 另：★ 原负控里「M14/M14x 旧 featured 判 ❌」是**几何错配造成的假红**
 ★     （★ 35h post 比 24h pre ⇒ 不同量纲）⇒ ★★ **不得**读成「负控里旧 featured 也退化了」。
 
+★★★ **第 24 处口径修正（2026-11-11 01:2x）：★★ 「post 段」必须被 `now()` 界定，否则负控/预演对它无效**
+★★ ★★ 形态：★ M11 的两个 fr CTE（M11_latency @fr#1、M11b @fr#2）**完全没有 `now()`**
+★★   ⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界** ⇒ ★★ **as-of 替换对它无效**
+★★   ⇒ ★★ 第 23 处的几何对齐（★ `now()` 随 era 切点平移）**对 M11 不生效**
+★★   ⇒ ★★ ⇒ 负控/预演里的 M11 窗口**仍不是 stage 窗口** ⇒ ★★ ⇒ **负控证伪不了 M11**
+★★ ★★★ 实测（负控 era + as-of = 新切点+24h）：★ 无上界 ⇒ 13 ep / med **3** ⇒ **判 ✅**（★ **恒真 ⇒ 没有牙**）
+★★   ⇒ ★★ 有上界（★ 采集侧加 `AND n.created_at <= now()`）⇒ 9 ep / med **30** ⇒ **判 ❌**（★ **长出牙了**）
+★★ ⇒ ★★ 负控必须**点名要求** M11 namespaced 判负（★ **Stage 1 专属**：★ Stage 2 的 168h 窗口
+★★   **不含**那段退化 ⇒ 实测 med **3** ⇒ ✅ 达成 ⇒ ★★ 对 Stage 2 也要求就是**假红**）
+
 ★ 用法（本地）：
     python3 scripts/audit/recovery-detection-p0-3-negcontrol.py --shift-days 7 --stage 2
     python3 scripts/audit/recovery-detection-p0-3-negcontrol.py --shift-days 1 --stage 1
@@ -29,6 +39,7 @@
 
 ★ 判定：★ 效应判据行必须是 **❌ 未达成**（或 free 切片的「⚠️ 样本不足」）
 ⇒ ★★ 若它判 ✅ ⇒ ★★ **判据恒真 ⇒ 门没牙 ⇒ 禁止用这份判据下结论**。
+⇒ ★★ 此外 ★ **Stage 1 专属**的 M11 namespaced 行**也必须判 ❌**（★ 否则 M11 在负控里恒真）。
 """
 from __future__ import annotations
 
@@ -77,6 +88,35 @@ BASELINE_KEYS = {
 EFFECT_LABELS = ("M20 新覆盖组·非豁免",)
 # ★ 观察面行（★ 负控里它必须是 ⚠️ ⇒ 若变 ✅ ⇒ 说明「混合口径」被误当成判据）
 OBSERVE_LABELS = ("M14x 新覆盖人群（★ 混合口径·观察面）",)
+
+# ★★★★ 第 24 处口径修正（2026-11-11 01:2x）：★ Stage 1 专属的「必须判负」清单
+#   ★★ **形态**：★ M11 的两个 fr CTE（M11_latency @fr#1、M11b @fr#2）**完全没有 `now()`**
+#     ⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界**
+#     ⇒ ★★ ⇒ **as-of 替换对它无效** ⇒ ★★ 第 23 处的几何对齐（★ `now()` 随 era 切点平移）**对 M11 不生效**
+#     ⇒ ★★ ⇒ 负控/预演里的 M11 窗口**仍不是 stage 窗口** ⇒ ★★ ⇒ **负控证伪不了 M11**
+#   ★★★ **实测（负控 era + as-of = 新切点+24h）**：
+#     · **无上界** ⇒ `M11b_post_fix_namespaced` = 13 ep / med **3** ⇒ ★★ **判 ✅**
+#       ⇒ ★★ ⇒ **M11 在负控里是「恒真」的 ⇒ 它没有牙**
+#       ⇒ ★★ ⇒ Stage 1 的 M11 读数**无法区分「修复生效」与「修复没生效」**
+#     · **有上界**（★ 采集侧加 `AND n.created_at <= now()`）⇒ 9 ep / med **30** ⇒ ★★ **判 ❌** ⇒ ★★ **长出牙了**
+#   ★★ ⇒ 负控必须**点名要求** M11 namespaced 判负（★ 否则这一轮负控对它**什么也没证伪**）
+#   ★★★ **为什么只限 Stage 1**：★ Stage 2 的窗口是 **168h**（★ as-of = 新切点 + 7d）
+#     ⇒ ★★ 实测 M11 ns = 50 ep / med **3** ⇒ ✅ **达成**（★ 7 天的 pre-fix 窗口**不含**那段退化）
+#     ⇒ ★★ ⇒ 「必须判负」**只能是 Stage 1 专属** ⇒ ★★ 否则 Stage 2 的负控会被**错误地**判失败 ⇒ ★★ **假红**
+#   ★★ **bare 行也不作要求**：★ 实测 Stage 1 负控里 bare = 8 ep / med **2** ⇒ ✅
+#     （★ 该 24h pre-fix 窗口里 bare 人群未退化 ⇒ 要求它判负才是假红）
+STAGE1_MUST_FAIL_LABELS = ("M11 namespaced 恢复感知时延",)
+
+
+def must_fail_labels_for_stage(stage: int) -> tuple[str, ...]:
+    """★ Stage 专属的「必须判负」清单（★ 第 24 处口径修正）
+
+    ★★ **只有 Stage 1 有要求**：★ Stage 2 的 168h 窗口**不含**那段退化
+    ⇒ ★★ 实测 M11 ns = 50 ep / med **3** ⇒ ✅ **达成**
+    ⇒ ★★ 若对 Stage 2 也要求判负 ⇒ ★★ 负控会被**错误地**判失败 ⇒ ★★ **那就是假红**
+    ⇒ ★★★ ⇒ **stage 门禁必须是行为级的**（★ 不写成「两个 stage 共用一张表」⇒ 迟早被误用）
+    """
+    return STAGE1_MUST_FAIL_LABELS if stage == 1 else ()
 
 
 def head_count(text: str) -> int | None:
@@ -175,6 +215,18 @@ def selftest() -> int:
         fails.append(f"[④ 切点替换] 变体里出现了预期外的时间戳字面量 ⇒ {sorted(extra)}")
     if f"TIMESTAMPTZ '{g['new_cut']:%Y-%m-%d %H:%M:%S}+08'" not in lits:
         fails.append("[④ 切点替换] 变体里缺少「新切点」字面量")
+    # ⑤ ★★★ **Stage 专属「必须判负」清单**（★ 第 24 处口径修正）
+    #   ★★ 形态：★ M11 的 post 段曾**无界**（★ 采集侧两个 fr CTE 都没有 now()）
+    #   ⇒ ★★ 负控里它**恒判 ✅** ⇒ ★★ 它在负控里**没有牙**
+    #   ⇒ ★★ ⇒ Stage 1 必须**点名要求**它判负 ⇒ ★★ 否则 M11 读数区分不了「修复生效/没生效」
+    l1 = must_fail_labels_for_stage(1)
+    l2 = must_fail_labels_for_stage(2)
+    if not any("M11 namespaced" in x for x in l1):
+        fails.append("[⑤ Stage 1 必须判负] 清单里必须有「M11 namespaced 恢复感知时延」"
+                     "（★ 否则 M11 在负控里恒真 ⇒ 没有牙）")
+    if l2:
+        fails.append("[⑤ Stage 2 必须判负] Stage 2 **不得**要求判负（★ 168h 窗口**不含**那段退化"
+                     " ⇒ 实测 M11 ns = 50 ep / med 3 ⇒ ✅ 达成 ⇒ 否则是**假红**）")
 
     print("== 负控几何自检（★ 不连库）==")
     if fails:
@@ -186,6 +238,8 @@ def selftest() -> int:
     print("   ✔ ② Stage 2：切点前移 7 天 + now() 随动 ⇒ post 窗口 = 168h")
     print("   ✔ ③ ★★ SQL 里没有 now() ⇒ 必须报错（★ 防「静默地跑错几何」）")
     print("   ✔ ④ 变体里不残留原始切点字面量")
+    print("   ✔ ⑤ ★★ Stage 1 必须判负清单含 M11 namespaced（★ M11 post 段无界时会恒判 ✅）"
+          "；★ Stage 2 不要求（★ 否则假红）")
     print("\n== 负控几何自检通过 ==")
     return 0
 
@@ -318,9 +372,15 @@ def main() -> int:
     print("\n== 负控裁决（★ 期望：效应判据**未达成**）==")
     seen_effect = 0
     seen_observe = 0
+    seen_must_fail = 0
+    # ★★★★ 第 24 处口径修正：★ Stage 专属的「必须判负」清单（★ Stage 1 才含 M11 namespaced）
+    must_fail_labels = must_fail_labels_for_stage(args.stage)
+    if must_fail_labels:
+        print(f"   ★ Stage {args.stage} 专属必须判负：{list(must_fail_labels)}")
     for r in rows:
         label, base, obs, verdict_txt = r
         is_effect = any(e in label for e in EFFECT_LABELS)
+        is_must_fail = label in must_fail_labels
         if is_effect:
             seen_effect += 1
             print(f"   | {label}\n       基线: {base}\n       观测: {obs}\n       裁决: {verdict_txt}")
@@ -330,6 +390,17 @@ def main() -> int:
             if not verdict_txt.startswith("❌"):
                 failures.append(f"[负控] 效应判据**未判负**（★ 必须 ❌）⇒ ★★ 这一轮负控什么也证伪不了"
                                 f" ⇒ 门没牙 ⇒ {label}: {verdict_txt}")
+        elif is_must_fail:
+            # ★★★★ 第 24 处口径修正：★ Stage 专属判据**必须判负**
+            #   ★★ 形态：★ M11 的 post 段曾**无界**（★ 没有 now()）⇒ ★★ 负控里它恒判 ✅
+            #   ⇒ ★★ 它在负控里**没有牙** ⇒ ★★ Stage 1 的 M11 读数区分不了「修复生效/没生效」
+            #   ⇒ ★★ ⇒ 必须**点名要求**它判负 ⇒ ★★ 若它判 ✅ ⇒ **门没牙** ⇒ rc=1
+            seen_must_fail += 1
+            print(f"   | {label}\n       基线: {base}\n       观测: {obs}\n       裁决: {verdict_txt}")
+            if not verdict_txt.startswith("❌"):
+                failures.append(f"[负控] Stage {args.stage} 专属判据**未判负**（★ 必须 ❌）"
+                                f" ⇒ ★★ 这一轮负控对它**什么也没证伪**（★ 该判据在负控里恒真 ⇒ 没有牙）"
+                                f" ⇒ {label}: {verdict_txt}")
         elif any(o in label for o in OBSERVE_LABELS):
             seen_observe += 1
             print(f"   | {label}\n       观测: {obs}\n       裁决: {verdict_txt}")
@@ -341,6 +412,8 @@ def main() -> int:
         failures.append("[负控] 没找到效应判据行 ⇒ 判据集结构变了")
     if seen_observe == 0:
         failures.append("[负控] 没找到观察面行（M14x 混合口径）⇒ 判据集结构变了")
+    if must_fail_labels and seen_must_fail == 0:
+        failures.append(f"[负控] 没找到 Stage {args.stage} 专属必须判负行（{list(must_fail_labels)}）⇒ 判据集结构变了")
 
     print()
     if failures:
@@ -348,7 +421,10 @@ def main() -> int:
             print("   ❌ " + f)
         print("\n★★ 负控未通过")
         return 1
-    print(f"   ✔ 负控通过：★ {seen_effect} 条效应判据（M20 分层）在**修复前**的窗口全部判「未达成」")
+    print(f"   ✔ 负控通过：★ {seen_effect} 条效应判据在**修复前**的窗口全部判「未达成」")
+    if seen_must_fail:
+        print(f"     ★ 另：{seen_must_fail} 条 Stage {args.stage} 专属判据也判「未达成」"
+              f"（★ M11 的 post 段**无界**时会恒判 ✅ ⇒ 必须由这一条兜住）")
     print(f"     ★ 另：{seen_observe} 条混合口径行落「观察面（⚠️）」⇒ ★ 不会被误读成判据")
     print("     ⇒ ★★ 判据**不是恒真** ⇒ 明天关窗读出的「达成/未达成」可信")
     return 0
