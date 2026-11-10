@@ -116,23 +116,64 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	// cross-tenant unioning would mis-classify tenant-specific models. Override
 	// tenant via probe.featured_tenant setting if needed for multi-tenant
 	// deployments).
+	//
+	// ★ 2026-11-10 恢复检测及时性轮：★ **两个数据源共用一套展开逻辑**。
+	//
+	// 取证事实（211 / acc-pg17）：featured 的两个来源都存**裸 canonical 名** ——
+	//   ① routing_policy.featured_models（36 条，运维策展的主力清单）
+	//   ② models_canonical.featured（2026-11-09 迁移 953 加的列机制）
+	// 而探针侧三个门（probe_model_scope.go 的 scope 门、probe_service.go 的
+	// backoff 乘数、model_tier.go 的队列优先级）都用
+	// globalIsFeaturedModel(raw, "") —— **只比 raw 名**；但
+	// provider_models.raw_model_name 多数带**供应商命名空间前缀**
+	// （z-ai/glm-5.3-flash、codex/gpt-6-sol、minimaxai/minimax-m3）。
+	// ⇒ 只装载裸名 ⇒ 命名空间形态**两个来源都**拿不到 featured 待遇
+	//   ⇒ 恢复检测仍迟到（免费面实测 p90 511 分钟 / max 1791 分钟）。
+	//
+	// ⇒ 故此处对**两个来源**一律展开：每个 featured canonical 的**全部**
+	//   provider_models.raw_model_name 变体一并进 static 集合。
+	//   裸名 + 命名空间形态都进 ⇒ 三门同时生效（它们都读这一份集合）。
+	//
+	// ★ 爆炸半径（211 真库实测，2026-11-10）：
+	//   仅展开 ②（canonical 侧）：static 45 → 89（+44 条 raw 变体）
+	//   再展开 ①（routing_policy 侧）：static 89 → **210**（+121 条）
+	//   新增获得 featured 待遇的绑定 = free 46 对（可用 20）+ per_token 51 对
+	//   （可用 37）+ token_plan 10 对（可用 10）= 107 对；
+	//   ★ 其中 58 对**从未进入探测调度**（无错误证据 ⇒ 泵不挑），
+	//     仅 9 对处于失败态（410/429/502）会因 backoff 减半多几次重试
+	//   ⇒ **日探测量增量 < 0.3%**（基线 24h 9233 次探测）。
+	//
+	// ★ 口径一致性：本展开只影响**探针分层**，不进入路由与发现口径
+	//   ⇒ 不改路由行为。
 	staticTenant := settings.GetPlatformString("probe.featured_tenant", "default")
 	if rows, err := m.db.Query(ctx, `
-		SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
-		FROM routing_policy WHERE tenant_id = $1 LIMIT 1`, staticTenant); err == nil {
+		WITH feat_names AS (
+		    SELECT DISTINCT lower(btrim(f)) AS name
+		    FROM routing_policy, unnest(featured_models) AS f
+		    WHERE tenant_id = $1 AND btrim(f) <> ''
+		    UNION
+		    SELECT DISTINCT lower(btrim(canonical_name)) AS name
+		    FROM models_canonical
+		    WHERE featured = TRUE AND status = 'active'
+		)
+		SELECT fn.name, COALESCE(pm.raw_model_name, '')
+		FROM feat_names fn
+		LEFT JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.name
+		LEFT JOIN provider_models pm ON pm.canonical_id = mc.id`, staticTenant); err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var arr []string
-			if err := rows.Scan(&arr); err != nil {
-				if dbrows.SkipOrFail("bg.ModelTier.refresh/staticFeatured", err) {
-					continue
-				}
-			} else {
-				for _, mm := range arr {
-					if mm = normalizeModelKey(mm); mm != "" {
-						fs.static[mm] = struct{}{}
-					}
-				}
+			var name, raw string
+			if err := rows.Scan(&name, &raw); err != nil {
+				dbrows.SkipOrFail("bg.ModelTier.refresh/staticFeatured", err)
+				continue
+			}
+			if name = normalizeModelKey(name); name != "" {
+				fs.static[name] = struct{}{}
+			}
+			// ★ raw 变体：裸名之外的命名空间形态也进集合。
+			//   LEFT JOIN ⇒ 没有 provider_models 行的名字只得到裸名（正常）。
+			if raw = normalizeModelKey(raw); raw != "" {
+				fs.static[raw] = struct{}{}
 			}
 		}
 		// R67-B 修正：这里原先只 warn 就继续，随后把**整个**截断集合写进
@@ -152,36 +193,6 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		// 任一段失败都必须保旧集，等下一个 tick 重试。
 		slog.Warn("model_tier: load static featured failed; keeping previous featured set",
 			"tenant", staticTenant, "error", err)
-		return
-	}
-
-	// 2026-11-09: Add models_canonical.featured models to static set.
-	// This supplements routing_policy.featured_models with a column-based
-	// mechanism for marking free/entry-tier models that should be prioritized
-	// for probing to ensure timely recovery detection.
-	if rows, err := m.db.Query(ctx, `
-		SELECT canonical_name 
-		FROM models_canonical 
-		WHERE featured = TRUE AND status = 'active'`); err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var model string
-			if err := rows.Scan(&model); err != nil {
-				if dbrows.SkipOrFail("bg.ModelTier.refresh/canonicalFeatured", err) {
-					continue
-				}
-			} else if model = normalizeModelKey(model); model != "" {
-				fs.static[model] = struct{}{}
-			}
-		}
-		if err := rows.Err(); err != nil {
-			slog.Warn("model_tier: canonical featured row iteration aborted; keeping previous featured set",
-				"error", err)
-			return
-		}
-	} else {
-		slog.Warn("model_tier: load canonical featured failed; keeping previous featured set",
-			"error", err)
 		return
 	}
 

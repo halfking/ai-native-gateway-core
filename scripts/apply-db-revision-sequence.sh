@@ -2597,6 +2597,12 @@ files=(
   # ★ 955（2026-11-09 模型指纹验证增强轮）：passive_model_fingerprints ——
   #   被动式模型指纹基线表（真实流量聚合的 TTFT/ITT/吞吐/Token 签名）。
   "$ROOT_DIR/sql/migrations/startup/955_passive_model_fingerprints.sql"
+  # ★ 956（2026-11-10 上游恢复检测及时性轮）：把 minimax-m3.1-flash 标 featured。
+  #   判据 = 实测有 24h 真实业务流量（110 次）的免费模型 —— 免费面 24h 有流量的
+  #   canonical 只有 glm-5.3-flash（585 次，953 已标）与本项两个。
+  #   配套的代码改动在 bg/model_tier.go：装载 featured canonical 时展开
+  #   provider_models.raw_model_name 变体（否则只比裸名 ⇒ namespaced 免费对零效果）。
+  "$ROOT_DIR/sql/migrations/startup/956_minimax_m31_flash_featured.sql"
 )
 
 
@@ -3161,6 +3167,11 @@ ledger_artifact_probe "954_probe_lane_trace_events.sql" \
 # ★ 955（2026-11-09 模型指纹验证增强轮）：产物 = 被动指纹基线表确实在库里。
 ledger_artifact_probe "955_passive_model_fingerprints.sql" \
   "to_regclass('public.passive_model_fingerprints') IS NOT NULL"
+# ★ 956（2026-11-10 上游恢复检测及时性轮）：产物 = 目标 canonical 处于
+#   featured=TRUE 终态（迁移体内自带存在性前置守卫 + 终态断言，
+#   重复重放安全 ⇒ 幂等）。
+ledger_artifact_probe "956_minimax_m31_flash_featured.sql" \
+  "EXISTS (SELECT 1 FROM public.models_canonical WHERE canonical_name = 'minimax-m3.1-flash' AND featured = TRUE)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

@@ -57,6 +57,12 @@ type PassiveTimingTracker struct {
 	// usage 提供，字节数只做兜底估算）。
 	textBytes int
 
+	// now 是取时钟的接缝（测试注入用；生产为 time.Now）。
+	// ★ 2026-11-10：此前 ObserveText 直接调 time.Now() ⇒ 测试只能用
+	// sleep 猜时钟粒度，而「首个增量与创建同刻」时 TTFT 恰好为 0，
+	// 断言 ttft>0 变成时钟粒度赌注（Windows 粗粒度时钟上必红）。
+	now func() time.Time
+
 	// formatFlags 是格式位标（### / **bold** / list / code block）。
 	// ★ 增量可能把标记切开（"#" 到了、"##" 还没到）⇒ 只在**流结束**
 	// 由消费方对完整文本判 —— 但追踪器不存全文（内存纪律）。
@@ -68,7 +74,45 @@ func NewPassiveTimingTracker(now time.Time) *PassiveTimingTracker {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	return &PassiveTimingTracker{createdAt: now}
+	return &PassiveTimingTracker{createdAt: now, now: time.Now}
+}
+
+// SetClock 注入时钟（仅测试用；nil 回落 time.Now）。
+//
+// 生产路径不需要它，但**可测性**需要：不注入时「首个文本增量与创建同刻」
+// ⇒ TTFT=0，断言只能写成 ttft>=0（等于放弃 TTFT 断言）或靠 sleep 赌时钟
+// 粒度（Windows 上 red）。注入后 TTFT/ITT/吞吐三项都能断言到确定值。
+func (t *PassiveTimingTracker) SetClock(now func() time.Time) {
+	if t == nil || now == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.now = now
+}
+
+// clockNow 取当前时刻（接缝优先；零值追踪器安全）。
+func (t *PassiveTimingTracker) clockNow() time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.now == nil {
+		return time.Now()
+	}
+	return t.now()
+}
+
+// ObservedText 报告是否观察到过文本增量（**不**用 TTFT==0 当代理——
+// 首 token 与创建同刻时 TTFT 合法地为 0，见 ExtractPassiveFromTracker）。
+func (t *PassiveTimingTracker) ObservedText() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.firstAt.IsZero()
 }
 
 // ObserveText 实现 audit.StreamTextObserver（采样；永不中断）。
@@ -76,9 +120,12 @@ func (t *PassiveTimingTracker) ObserveText(s string) bool {
 	if t == nil || s == "" {
 		return false
 	}
-	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := time.Now()
+	if t.now != nil {
+		now = t.now()
+	}
 	if t.firstAt.IsZero() {
 		t.firstAt = now
 	} else if !t.lastAt.IsZero() {
@@ -226,7 +273,11 @@ func ExtractPassiveFromTracker(tracker *PassiveTimingTracker, usageCompletionTok
 		return nil
 	}
 	ttft, itts, throughput := tracker.Snapshot(usageCompletionTokens)
-	if ttft == 0 && len(itts) == 0 {
+	// ★ 2026-11-10 修正「空流」代理判据：原先用 `ttft == 0 && len(itts) == 0`
+	// 代理「没有文本增量」—— 但**首 token 与追踪器创建同刻**时 TTFT 合法地
+	// 为 0（粗粒度时钟上更是常见），于是「有文本的单块流」被误判为空流 ⇒
+	// 特征被静默丢弃（采样面盲区）。改用显式的「观察过文本」信号。
+	if !tracker.ObservedText() {
 		// 没有任何文本增量（空流/纯工具调用）⇒ 没有可学的东西。
 		return nil
 	}

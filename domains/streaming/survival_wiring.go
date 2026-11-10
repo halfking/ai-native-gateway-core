@@ -388,20 +388,36 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 	actionJSON, _ := json.Marshal(code)
 	retryJSON, _ := json.Marshal(retryable)
 	reasonCodeJSON, _ := json.Marshal(decision.Reason)
+	// 2026-11-10（形状对齐，与 stream.go:1462 的 eof_without_done 同源）:
+	// code/reason/retryable 必须同时出现在 **帧根**。活证据（stream.go 的
+	// df60575b / build 2235）已钉死客户端的读法：它读 error.code（拿到的
+	// provider_code 正确），但 reason / retryable **只从帧根读**——所以嵌套
+	// 形态下客户端报 reason=unknown、retryable=false，整轮硬失败。
+	//
+	// 本函数此前是唯一的漏网之鱼：stream.go 的四条错误信封（eof_without_done /
+	// stream_timeout / upstream_error / openai_empty_response）2026-09-23 全部
+	// 补了根级副本，只有 survival 终态（gateway_survival_resume_blocked /
+	// gateway request survival ended: committed_output）没补 ⇒ 用户报的第
+	// 0/2/3/4/8/9/10 条症状原样复现。
+	//
+	// 冗余根字段被严格 OpenAI/Anthropic 解析器忽略，两种读法都能拿到完整信号。
 	var frames string
 	switch protocol {
 	case ProtocolAnthropic:
 		frames = fmt.Sprintf(
-			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s,\"reason\":%s,\"retryable\":%s,\"code\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}}\n\n",
-			reasonJSON, reasonCodeJSON, retryJSON, actionJSON, retryAfterSec, attempts)
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s,\"reason\":%s,\"retryable\":%s,\"code\":%s,\"retry_after_seconds\":%d,\"attempts\":%d},\"code\":%s,\"reason\":%s,\"retryable\":%s}\n\n",
+			reasonJSON, reasonCodeJSON, retryJSON, actionJSON, retryAfterSec, attempts,
+			actionJSON, reasonCodeJSON, retryJSON)
 	case ProtocolOpenAIResponses:
 		frames = fmt.Sprintf(
-			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s,\"reason\":%s,\"retryable\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}}}\n\n",
-			actionJSON, reasonJSON, reasonCodeJSON, retryJSON, retryAfterSec, attempts)
+			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s,\"reason\":%s,\"retryable\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}},\"code\":%s,\"reason\":%s,\"retryable\":%s}\n\n",
+			actionJSON, reasonJSON, reasonCodeJSON, retryJSON, retryAfterSec, attempts,
+			actionJSON, reasonCodeJSON, retryJSON)
 	default: // OpenAI Chat
 		frames = fmt.Sprintf(
-			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s,\"reason\":%s,\"retryable\":%s,\"retry_after_seconds\":%d,\"attempts\":%d}}\n\ndata: [DONE]\n\n",
-			reasonJSON, actionJSON, reasonCodeJSON, retryJSON, retryAfterSec, attempts)
+			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s,\"reason\":%s,\"retryable\":%s,\"retry_after_seconds\":%d,\"attempts\":%d},\"code\":%s,\"reason\":%s,\"retryable\":%s}\n\ndata: [DONE]\n\n",
+			reasonJSON, actionJSON, reasonCodeJSON, retryJSON, retryAfterSec, attempts,
+			actionJSON, reasonCodeJSON, retryJSON)
 	}
 	if _, err := sw.Write([]byte(frames)); err == nil {
 		sw.Flush()

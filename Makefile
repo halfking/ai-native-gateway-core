@@ -487,6 +487,7 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/deploy_sops_test.sh
 	@bash tests/envs_resolution_contract_test.sh
 	@bash tests/migration_retired_marker_contract_test.sh
+	@bash tests/migration_version_prefix_unique_test.sh
 	@bash scripts/deploy-local-lib-project_env_test.sh
 	@bash tests/deploy_local_contract_test.sh
 	@bash tests/shared_lib_resolution_contract_test.sh

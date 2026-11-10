@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/memory"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/memory"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -409,7 +410,7 @@ func (e *Executor) invokeOpenAISummarize(ctx context.Context, params *ExecParams
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("openai summarize upstream %d: %s", resp.StatusCode, truncateForLog(body, 200))
+		return "", fmt.Errorf("openai summarize upstream %d: %s", resp.StatusCode, truncateForLogMasked(body, 200))
 	}
 
 	var parsed struct {
@@ -449,7 +450,7 @@ func (e *Executor) invokeAnthropicSummarize(ctx context.Context, params *ExecPar
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("anthropic summarize upstream %d: %s", resp.StatusCode, truncateForLog(body, 200))
+		return "", fmt.Errorf("anthropic summarize upstream %d: %s", resp.StatusCode, truncateForLogMasked(body, 200))
 	}
 
 	var parsed struct {
@@ -1000,6 +1001,17 @@ func truncateForLog(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n])
+}
+
+// truncateForLogMasked 是错误消息/日志预览专用形态（2026-11-10 审计 A6/B6）：
+// 截断后过 secretmask——上游错误体（中继可能回显请求头/请求片段）里的
+// 密钥形状不再直进 executor 日志与 _request_logs。
+// ★ 刻意不并入 truncateForLog 本体：context_summarize.go:725/749/755 用它
+//
+//	拼「送 LLM 压缩的会话文本」，在那里脱敏会破坏压缩保真（还原链失配）。
+//	两用途分离，调用方按用途自选。
+func truncateForLogMasked(b []byte, n int) string {
+	return secretmask.MaskSecrets(truncateForLog(b, n))
 }
 
 type contextLengthRecoveryState struct {

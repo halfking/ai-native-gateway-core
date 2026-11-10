@@ -6,6 +6,39 @@
 
 ---
 
+> ## ⚠️ 完成状态横幅（2026-11-11 审计轮补，先读这段再读本文件正文）
+>
+> **本文件是 2026-11-09 的规划稿。P0 已按一条与本规划不同的路径完成并部署生产，
+> 正文中的伪代码/验收命令/根因描述已过时，不要照正文执行。** 实际情况：
+>
+> | 规划项 | 实际状态 | 证据 |
+> |---|---|---|
+> | P0-1（F-B balance_floor_guard） | ✅ 已实施已部署 | `bg/balance_floor_guard.go:1403-1413`（证据门控 re-arm）；211 48h 日志命中 **17** 次（grep `quota-suspended but vendor plan windows have capacity`） |
+> | P0-2（F-A 探测模型回退梯） | ✅ 已实施已部署 | `bg/credential_probe_v2.go:1074-1110`；211 48h 日志命中 **2** 次（grep `fallback model recovered the probe`） |
+> | P0-3（免费模型 featured） | ✅ 演化为更深根因修复并部署 | 实际根因＝featured 匹配键与 namespaced raw 名不一致（非本规划的「手工标 featured」）；代码＝`bg/model_tier.go` 统一展开（static 210）+ 迁移 956；era2 部署 build_seq 2995（`8028459d6`）。详见 `docs/audit/2026-11-10-上游恢复检测及时性-取证与P0实施.md` 与 AGENTS.md §653–§654 |
+> | P0-4（部署） | ✅ 完成 | `--message` 参数**不被部署引擎支持**（§653 实证），正确用法＝裸 `bash scripts/deploy-211.sh` |
+> | P1-1/P1-2/P1-3、P2-1/P2-2 | ⏸ 按规划门控未实施 | 前置条件＝「P0 验收成功」；P0 验收＝Stage 1 判定 |
+>
+> **当前阶段：观测窗口已满，Stage 1 判定就绪。**
+> - era2 切点＝2026-11-10 13:42:30 +08；**Stage 1 关窗＝2026-11-11 13:42:30 +08；Stage 2＝2026-11-17 13:42:30 +08**
+> - **关窗后判定不要手写 SQL**，用已建好的量具（12 轮体检后的最终形态）：
+>   ```bash
+>   # 关窗前必跑（期望 rc=0，32 场景）：
+>   python3 scripts/audit/recovery-detection-p0-3-verdict.py --selftest
+>   # 三时钟门（pre 键时钟无关，期望 rc=0，44 键）：
+>   python3 scripts/audit/recovery-detection-p0-3-clockcheck.py
+>   # 负控（判据不是恒真，期望 rc=0）：
+>   python3 scripts/audit/recovery-detection-p0-3-negcontrol.py
+>   # Stage 1 正式判定（关窗后）：
+>   python3 scripts/audit/recovery-detection-p0-3-verdict.py --stage 1
+>   ```
+> - **正文第 294/298 行的验收命令已废**（grep 的是不存在的日志文案，48h 实测 0 命中——
+>   而真实文案 17/2 命中），照抄会误判「修复未生效」。正确文案见上表。
+> - 判据口径的 20+ 处修正与诚实边界见 `docs/audit/` 下 `recovery-detection` 族审计档
+>   （M11–M20 判据族），AGENTS.md 顶部条目有逐轮索引。
+
+---
+
 ## 问题定义
 
 **核心症状**：
@@ -260,9 +293,9 @@ ref: docs/audit/2026-11-09-上游恢复检测及时性问题分析与优化方�
 git push origin main
 git push github main
 
-# 5. 部署 211（按现有流程）
-cd ~/workspace/ai-native-tools/deploy
-./deploy-211.sh --message "P0 恢复检测修复"
+# 5. 部署 211（★ 2026-11-11 修正：--message 不被部署引擎支持——引擎报 unknown argument，
+#    §653 实证；且脚本在仓内 scripts/ 而非 deploy 目录）
+bash scripts/deploy-211.sh
 
 # 6. 验证部署
 curl https://llm.itestu.cn/api/system/version
@@ -286,43 +319,36 @@ curl https://llm.itestu.cn/api/system/version
 # - 探测覆盖率: 应上升至 >70%
 ```
 
-#### 任务 2.2：验证日志行为
+#### 任务 2.2：验证日志行为（★ 2026-11-11 修正：文案对齐真实实现）
 
 ```bash
-# 1. 验证 balance_floor_guard 触发
+# 1. 验证 balance_floor_guard 证据门控 re-arm 触发
+# ★ 真实文案来自 bg/balance_floor_guard.go:1406（规划稿原文案在生产代码中不存在，48h 实测 0 命中）
 ssh 211
-docker logs llm-gateway-211-<槽> --since 24h | grep "plan capacity partially recovered" | wc -l
-# 预期：>0（若代码改动已部署）
+docker logs llm-gateway-211-<槽> --since 48h 2>&1 | grep -c "quota-suspended but vendor plan windows have capacity"
+# 2026-11-11 实测：17（已生效）
 
-# 2. 验证探测模型回退
-docker logs llm-gateway-211-<槽> --since 24h | grep "probe succeeded with fallback model" | wc -l
-# 预期：>0（若代码改动已部署）
+# 2. 验证探测模型回退梯（F-A）
+# ★ 真实文案来自 bg/credential_probe_v2.go:1101
+docker logs llm-gateway-211-<槽> --since 48h 2>&1 | grep -c "fallback model recovered the probe"
+# 2026-11-11 实测：2（已生效；另有失败侧文案 "fallback probe model also failed"）
 
-# 3. 验证 featured 模型探测频率
-# 查 node_probe_runs 表
-psql acc-pg17/llm_gateway -c "
-SELECT raw_model, COUNT(*) as probe_count
-FROM node_probe_runs
-WHERE created_at > NOW() - INTERVAL '24 hours'
-  AND raw_model IN ('gpt-4o-mini', 'claude-haiku-3.5', 'gemini-flash-2.0')
-GROUP BY raw_model
-ORDER BY probe_count DESC;
-"
-# 预期：每个模型 >20 次（vs P0 前可能 <5 次）
+# 3. 验证 featured 统一展开生效（P0-3 实际形态，替代本文件原「手工标 featured」方案）
+docker logs llm-gateway-211-<槽> 2>&1 | grep "featured set refreshed" | tail -1
+# 预期：static=210（era1=92，修复前=45）⇒ 统一展开在役
+
+# 4. 免费面可用率（原基线 66.4%，见 §653 取证档；正式判据走 M20，不用这个数）
+docker exec acc-pg17 psql -U acc_super -d llm_gateway -tA -c "
+SELECT COUNT(*) FILTER (WHERE available) * 100.0 / COUNT(*)
+FROM v_routable_credential_models;"
 ```
 
-#### 任务 2.3：判定 P0 成败
+#### 任务 2.3：判定 P0 成败（★ 已由 Stage 1/2 判定流程取代）
 
-**成功标准（至少满足 3/4）**：
-- ✅ unavailable_count 下降 ≥20%
-- ✅ 免费凭据可用率上升至 ≥40%
-- ✅ `plan capacity partially recovered` 日志 >0
-- ✅ `probe succeeded with fallback model` 日志 >0
-
-**若失败**：
-1. 回滚代码（若有改动）
-2. 分析日志，找出未触发原因
-3. 修正后重新部署
+**本节的 4 条简单标准已被 `recovery-detection-p0-3-verdict.py --stage 1` 的完整判据族
+取代（M14/M14x/M15x/M16–M20 + 诚实边界），不要用本节判定成败。**
+生产证据（2026-11-11 实测）：F-B 17 次 / F-A 2 次命中 ⇒ 两修复均已生效；
+正式成败裁决见 Stage 1 判定输出。
 
 ---
 
@@ -384,12 +410,13 @@ ORDER BY probe_count DESC;
 
 **若 P0 部署后出现异常**：
 
-1. **回滚命令**（假设蓝绿部署）：
+1. **回滚命令**（★ 2026-11-11 修正：部署引擎**没有** `--rollback` 参数——参数面实测只有
+   `--help`/`--force` 族；蓝绿回滚＝手工起旧槽。历轮实际操作形态：）
    ```bash
    ssh 211
-   docker start llm-gateway-211-<旧槽>  # 启动旧版本
-   # 修改 nginx upstream 指向旧槽端口
-   # 或使用 deploy-211.sh --rollback（若支持）
+   docker ps -a --format '{{.Names}} {{.Status}}' | grep llm-gateway  # 先核对在役/旧槽名
+   docker start llm-gateway-211-<旧槽>       # 旧槽容器在切换后保留（Exited 137）可回滚
+   # 再把 nginx upstream 切回旧槽端口并 reload（在役槽 a=8781 / b=8783）
    ```
 
 2. **异常判定标准**：
@@ -398,7 +425,9 @@ ORDER BY probe_count DESC;
    - 探测调用量 >2×（vs 基线）
 
 3. **应急措施**：
-   - 关闭 featured 标记（SQL `UPDATE models_canonical SET featured = FALSE WHERE ...`）
+   - ★ 注意：P0-3 的实际形态是**代码统一展开**（`bg/model_tier.go`）+ 迁移 956 数据标记，
+     「关闭 featured 标记」只回退数据面不回退代码面——真正的开关是 `static=210` 的展开逻辑，
+     应急应整槽回滚到 era1 镜像，而非只改 SQL。
    - 或整体回滚代码
 
 ---
@@ -406,6 +435,10 @@ ORDER BY probe_count DESC;
 ## 参考文档
 
 1. **详细分析**：`docs/audit/2026-11-09-上游恢复检测及时性问题分析与优化方案.md`
+2. **实际实施与判据族**（2026-11-10 起的 12+ 轮，优先读这些）：
+   - `docs/audit/2026-11-10-上游恢复检测及时性-取证与P0实施.md`（§653：根因与 P0-3 实施取证）
+   - AGENTS.md 顶部 §653–§663 条目（判据口径 20+ 处修正的逐轮索引）
+   - `scripts/audit/recovery-detection-p0-3-{metrics.sql,verdict.py,clockcheck.py,negcontrol.py}`（量具本体）
 2. **AGENTS.md**：2026-11-09 运营审计轮 - 项6
 3. **§640**：2026-11-07 凭据探测时间点规划轮
 4. **§642**：2026-11-07 Token 桶双层路由优化方案

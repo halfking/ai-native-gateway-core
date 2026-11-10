@@ -40,6 +40,17 @@ func TestResolveBucketBudget(t *testing.T) {
 			t.Fatalf("unknown-window spec %+v must resolve to global caps, got %+v, %v", spec, got, err)
 		}
 	}
+	// 2026-11-10 审计 A8：回落分支同样尊重显式 per-bucket 上限——
+	// 配了更紧桶限但窗口未知的桶不得拿到 500k 全局值；未设置（0/负）
+	// 仍回落全局上限。
+	if got, err := Resolve(Spec{MaxInputTokens: 32000, MaxJSONBytes: 1 << 20}); err != nil ||
+		got.InputTokens != 32000 || got.JSONBytes != 1<<20 {
+		t.Fatalf("unknown window must honor explicit bucket caps, got %+v, %v", got, err)
+	}
+	if got, err := Resolve(Spec{MaxInputTokens: -5, MaxJSONBytes: -1}); err != nil ||
+		got.InputTokens != MaxInputTokens || got.JSONBytes != DefaultMaxJSONBytes {
+		t.Fatalf("unknown window with negative caps must fall back to global caps, got %+v, %v", got, err)
+	}
 	for _, spec := range []Spec{{ContextWindow: 8192, OutputReserve: 8192}, {ContextWindow: 8192, SafetyMargin: -1}} {
 		if _, err := Resolve(spec); err == nil {
 			t.Fatalf("accepted invalid or exhausted spec %+v", spec)

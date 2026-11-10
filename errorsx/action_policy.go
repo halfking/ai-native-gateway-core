@@ -369,6 +369,31 @@ func DecideNextAction(ctx DecisionContext) ActionDecision {
 			base.Action = ActionFailTerminal
 			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
 		}
+	case KindRateLimitObserved:
+		// ★ 2026-11-10（审计 F50）：上游用**请求侧状态码**回了一个**限流
+		//   形态**的正文（`{"error":{"message":"rate limit exceeded"}}`）。
+		//
+		// 本分支的三个「不」与一个「要」——与 KindRequestRejected 完全同族：
+		//   · 不盲重试同一节点——同一 body 必然再败（IsRetryable 也不含本 kind，
+		//     executor 根本不会构造 retryableError）；
+		//   · 不写任何共享节点健康状态——RecordProviderFailure /
+		//     RecordCredentialFailure / RecordCredentialState 全部保持 false
+		//     ⇒ 凭据不冷却、熔断不计数、绑定不翻红、探针不扇出、**连败不累计**
+		//     （归责见 errorsx.PenaltyOf → PenaltyNone）。
+		//   · **不**继承 KindRateLimit 的等待型恢复（ActionWaitRecovery +
+		//     RecordProviderFailure）——那会把「上游说了一句限流」变成
+		//     「这个节点限流了」⇒ 过度冷却 ⇒ 事故的放大器。
+		//   · 要**换一个兄弟候选**：这一把钥匙的配额/档位可能正好撞上上游
+		//     的速率限制，兄弟凭据可能没有（生产实测：943 个在册模型里 366 个
+		//     由 ≥2 个凭据服务、198 个由 ≥4 个服务）⇒ 跨凭据故障转移有实质价值。
+		//     没有兄弟候选时（HasAlternateNode=false）由下面的收尾逻辑降级为
+		//     fail-terminal，语义仍是「这次请求失败」。
+		base.Action = ActionSwitchNode
+		base.ReasonCode = "upstream_rate_limit_observed"
+		if ctx.RemainingAttempts <= 0 {
+			base.Action = ActionFailTerminal
+			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
+		}
 	case KindModelUnavailable:
 		// 上游确定性地不提供这一对 (凭据,模型)（裸 404：账号里没有这个模型，
 		// 或这个凭据的端点路径配错）。证据指向**这一对**，不指向账号。

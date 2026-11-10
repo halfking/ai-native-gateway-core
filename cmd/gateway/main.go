@@ -395,9 +395,10 @@ func main() {
 		// Fall back to stderr so the service still starts and the
 		// operator sees the misconfiguration in the log.
 		fmt.Fprintf(os.Stderr, "logging: file rotation disabled: %v\n", err)
-		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-			Level: level,
-		})))
+		// 2026-11-10 审计 C1：降级路径同样过 rule 71 规范层（必填字段 +
+		// 脱敏）。此前裸 JSONHandler 会把早装规范层顶掉 ⇒ 降级窗口的行
+		// 既缺 service/version/env 必填字段也不过脱敏。
+		slog.SetDefault(logging.NewServiceStderrLogger(level))
 	}
 
 	// ── Initialize Persistent Logger ──────────────────────────────────────

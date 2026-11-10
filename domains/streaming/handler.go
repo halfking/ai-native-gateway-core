@@ -1896,6 +1896,60 @@ func (h *ChatHandler) SetPassiveTiming(factory PassiveTimingFactory, sink Passiv
 	h.passiveSink = sink
 }
 
+// samplePassiveTiming 在完成点取一次被动时序样本并交给 sink（2026-11-10 审计 P0-B）。
+//
+// ★ 位置纪律：这个采样点**必须**在 emitTelemetry 的顶层执行，**不能**放进
+// `if len(result.ResponseBody) > 0 {` 分支 —— 流式 lane 的 ExecuteResult
+// **不带 ResponseBody**（响应体直接写给客户端，见 executors/executor_chat.go
+// 流式成功分支 return &ExecuteResult{...} 不含 ResponseBody 字段）⇒
+// 放进那个分支 ⇒ **流式请求永远不采样** ⇒ 955 基线表永远是空的
+// （211 实测：184 次/10min 的流式请求、worker 在跑、基线 0 行 ⇒ 断链）。
+//
+// ★ 键口径：用 result.Candidate.BindingRawModel()（model_offers.raw_model_name
+// 身份，见 provider.Candidate.BindingRawModel 注释：按 RawModel 键会把多个
+// 绑定的独立健康遥测混在一起）⇒ 与仓内既有「按绑定键状态」纪律一致。
+// 未来对接扫描器时，扫描器的节点列表用 provider_models.raw_model_name
+// （"workbuddy/minimax-m3" 名字空间），需要通过 credential_model_bindings
+// 连接两个名字空间（model_offers vs provider_models）。
+func (h *ChatHandler) samplePassiveTiming(capture *audit.StreamCapture, evt audit.Event, result *executors.ExecuteResult, keyInfo *authentication.KeyInfo) {
+	if h == nil || h.passiveSink == nil || capture == nil || result == nil {
+		return
+	}
+	tr := PassiveTrackerFromCapture(capture)
+	if tr == nil {
+		return
+	}
+	// 键 = 绑定身份（model_offers.raw_model_name，如 "MiniMax-M3"）。
+	modelKey := result.Candidate.BindingRawModel()
+	if modelKey == "" {
+		modelKey = evt.CanonicalName
+	}
+	if modelKey == "" {
+		return
+	}
+	// 完成 token 数取自 capture（流式路径的 SSE usage 块已累积进去）。
+	comp := 0
+	if m := capture.SummaryAsMap(); m != nil {
+		if v, ok := m["completion_tokens"].(int); ok {
+			comp = v
+		}
+	}
+	tenant := ""
+	if keyInfo != nil {
+		tenant = keyInfo.TenantID
+	}
+	feat := ExtractPassiveFromTracker(tr, comp, modelcredibility.Metadata{
+		TenantID:     tenant,
+		ModelName:    modelKey,
+		CredentialID: int64(result.Candidate.CredentialID),
+		RequestID:    evt.RequestID,
+	})
+	if feat == nil {
+		return
+	}
+	h.passiveSink.Submit(feat)
+}
+
 // SetProvisionalMetadataExtractor wires the deterministic session-arrival
 // metadata extractor. Passing nil disables the optional projection.
 func (h *ChatHandler) SetProvisionalMetadataExtractor(extractor interface {
@@ -6409,51 +6463,12 @@ func failureAttribution(execErr error, candidates []provider.Candidate) (*int, *
 }
 
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
-	// 2026-11-10 审计 P0-B：被动时序指纹采样点。
-	//
-	// ★ 原位置（`if len(result.ResponseBody) > 0` 之内）**在生产上不可达**：
-	// 流式成功路径的 ExecuteResult 不含 ResponseBody
-	// （executor_chat.go:2489-2506 / executor_anthropic.go:1441-1465），
-	// 而 passive tracker 只挂在流式 lane（capture 仅在 isStream 时创建，
-	// handler.go:3592-3595）⇒ 两个 lane 互斥 ⇒ 全仓唯一的
-	// `passiveSink.Submit(...)` 从不执行 ⇒ 955 表恒空、该特性整体空转。
-	//
-	// ★ 为什么放在**函数最前面**（而不是 usage 解析之后）：这里有两个
-	// 独立的耦合要拆掉——
-	//   ① `result.ResponseBody` 耦合：流式 lane 恒为空 ⇒ 采样点永不进入；
-	//   ② `h.telemetryClient.Enabled()` 耦合：原位置在遥测客户端的早退
-	//      之后（handler.go:6413）⇒ 遥测关掉 ⇒ 指纹采集也跟着关掉
-	//      （两个本不相干的功能被绑在一起）。
-	// ⇒ 现在它只依赖自己的接线（factory + sink），且在流式 lane 上
-	// capture 已在手 ⇒ 采样点真正可达。
-	//
-	// factory/sink 任一未接线 ⇒ PassiveTrackerFromCapture 返回 nil
-	// ⇒ 零开销旁路（legacy 行为不变）。
-	if h != nil && h.passiveSink != nil && result != nil {
-		if tr := PassiveTrackerFromCapture(capture); tr != nil {
-			// completion tokens：流式 lane 的 usage 在 capture 摘要里
-			// （非流式 lane 才有 result.ResponseBody）⇒ 这里直接读摘要，
-			// 避免依赖下面那段「遥测开启后才会解析」的 reqLog。
-			comp := 0
-			if capture != nil {
-				if v, ok := capture.SummaryAsMap()["completion_tokens"].(int); ok && v > 0 {
-					comp = v
-				}
-			}
-			tenant := ""
-			if keyInfo != nil {
-				tenant = keyInfo.TenantID
-			}
-			if feat := ExtractPassiveFromTracker(tr, comp, modelcredibility.Metadata{
-				TenantID:     tenant,
-				ModelName:    evt.CanonicalName,
-				CredentialID: int64(result.Candidate.CredentialID),
-				RequestID:    evt.RequestID,
-			}); feat != nil {
-				h.passiveSink.Submit(feat)
-			}
-		}
-	}
+	// ── 被动时序指纹采样（2026-11-10 审计 P0-B 断链修复）────────────────
+	// ★ 必须在 telemetryClient 检查**之前**执行 —— 被动指纹采样与遥测客户端
+	// 是两个独立的功能，不应该被 telemetryClient.Enabled() 绑在一起。
+	// 原位置在 telemetryClient 守卫之后 ⇒ telemetryClient 未设置或关闭时
+	// ⇒ 采样永不执行 ⇒ 测试红（TestEmitTelemetry_SubmitsPassiveFeaturesOnStreamingLane）。
+	h.samplePassiveTiming(capture, evt, result, keyInfo)
 
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
@@ -7095,11 +7110,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "long", "tokens", lv)
 			}
 		}
-		// 被动时序指纹采样点（2026-11-09 模型指纹验证增强轮）**已移出本块**
-		// ⇒ 见下方「2026-11-10 审计 P0-B」处：原位置在
-		// `if len(result.ResponseBody) > 0` 之内，而流式成功路径根本不填
-		// ResponseBody（executor_chat.go:2489-2506）⇒ passiveSink.Submit()
-		// 在生产上永远不执行 ⇒ 955 表恒空、该特性整体失效。
 		if pt > 0 || ct > 0 {
 			// A receipt-time estimate is provisional. Replace it whenever the
 			// upstream response provides the real prompt token count.

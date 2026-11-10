@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
@@ -134,10 +135,28 @@ func main() {
 // （此前是 Go log 的纯文本 `2026/10/17 10:46:23 INFO ...` 形态，与本仓
 // 其余二进制（cmd/gateway 用 JSONHandler）不一致，无法直接用 jq 查）。
 func configureLogging(levelStr string) {
-	opts := &slog.HandlerOptions{Level: parseLogLevel(levelStr)}
+	level := parseLogLevel(levelStr)
+	opts := &slog.HandlerOptions{Level: level}
+	// 2026-11-10 审计 C8：两臂换 rule 71 规范层（必填字段 + 脱敏），
+	// 保留 levelSplitHandler 的 stdout/stderr 分流语义（journald 路由
+	// 依赖它，见上方注释）。构造失败回退裸 JSONHandler（同 NewServiceLogger
+	// 的降级口径：绝不让服务因为日志初始化失败而起不来）。
+	branch := func(w *os.File) slog.Handler {
+		h, err := logging.NewStandardHandler(w, logging.StandardOptions{
+			Service: logging.ServiceName(),
+			Version: logging.ServiceVersion(),
+			Env:     logging.ServiceEnv(),
+			Level:   level,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "logging: standard handler init failed: %v\n", err)
+			return slog.NewJSONHandler(w, opts)
+		}
+		return h
+	}
 	slog.SetDefault(slog.New(&levelSplitHandler{
-		info:  slog.NewJSONHandler(os.Stdout, opts),
-		error: slog.NewJSONHandler(os.Stderr, opts),
+		info:  branch(os.Stdout),
+		error: branch(os.Stderr),
 	}))
 }
 

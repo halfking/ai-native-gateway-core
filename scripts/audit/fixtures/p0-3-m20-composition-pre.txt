@@ -1,0 +1,15 @@
+# ★ 真库捕获夹具（★ 2026-11-10 17:5x +08，★ 211 生产库 acc-pg17/llm_gateway）
+# ★ 来源命令（★ 复采时必须逐字比对本文件 ⇒ 若不一致 ⇒ 采集口径变了 ⇒ 需重新评估并**显式**更新本文件）：
+#   scp -q scripts/audit/recovery-detection-p0-3-metrics.sql 211:/tmp/m.sql
+#   ssh 211 'docker cp /tmp/m.sql acc-pg17:/tmp/m.sql && GW=$(docker ps --filter name=llm-gateway-211 --format '{{.Names}}' | grep -v aux | head -1); DSN=$(docker exec "$GW" env | grep LLM_GATEWAY_DATABASE_URL | cut -d= -f2-) && docker exec -e PGPASSWORD="$(echo "$DSN" | sed -E "s#^postgres(ql)?://([^:]+):([^@]*)@.*#\3#")" acc-pg17 psql -U acc_super -d llm_gateway -tA -F"|" -v ON_ERROR_STOP=1 -f /tmp/m.sql' \
+#     | grep -a '^M20_.*_composition'
+#
+# ★★ **为什么要有这个文件（★ 本轮真踩到）**：
+# ★★ 判定器的合成自测数据里，composition 的值曾被写成 `"77 events | n=154 | ..."`
+# ★★ ⇒ ★★ 那个 `"77 events | "` **真实 SQL 永远不产出**（且 77 本身是错的数，真实 n=154）
+# ★★ ⇒ ★★ 自测因此验的是一个**虚构的格式** ⇒ ★★ 「自测全绿」不代表「解析器认得真数据」
+# ★★ ⇒ ★★★ **纪律：★ 自测里出现的采集输出，必须来自真捕获（夹具），不得手写。**
+M20_normal_pre24_composition|n=21 | mul_evidence=0 | clean_n=21 | clean_slow=3 | slow=3 | contam_pct=0.0 | null_ladder_n=0 | unexplained_n=0 | unexplained_values=-
+M20_normal_pre7d_composition|n=154 | mul_evidence=47 | clean_n=107 | clean_slow=19 | slow=19 | contam_pct=30.5 | null_ladder_n=0 | unexplained_n=0 | unexplained_values=-
+M20_exempt_pre24_composition|n=57 | mul_evidence=0 | clean_n=57 | clean_slow=50 | slow=50 | contam_pct=0.0 | null_ladder_n=0 | unexplained_n=0 | unexplained_values=-
+M20_exempt_pre7d_composition|n=537 | mul_evidence=2 | clean_n=535 | clean_slow=173 | slow=173 | contam_pct=0.4 | null_ladder_n=0 | unexplained_n=0 | unexplained_values=-

@@ -44,7 +44,7 @@ type PassiveBaselineWorker struct {
 	done    chan struct{}
 
 	// ticks统计自 Start 以来的 Flush 次数（心跳节拍）；flushes 是
-	// 自上次心跳以来累计落库节点数。
+	// 自上次心跳以来累计落库节点数（每次心跳发出后归零，见 beat）。
 	ticks   int
 	flushes int
 }
@@ -154,6 +154,12 @@ func (w *PassiveBaselineWorker) flushOnce(ctx context.Context, why string) {
 
 // beat 记心跳：每 PassiveBaselineHeartbeatTicks 次 Flush 打一条 Info，
 // 即使一个节点都没落库也打（这正是「活着但空闲」的正面证据）。
+//
+// ★ 口径（2026-11-10 修正）：日志键 `nodes_written_since_last_beat` 承诺的
+// 口径是「**自上次心跳以来**」⇒ 发出心跳后必须把窗口计数归零。此前实现只累加
+// 不归零 ⇒ 该键实际报的是「自 Start 以来累计」⇒ **字段名与实际值不符** ⇒
+// 运维会把「历史累计很大」误读成「本窗口有写入」（而心跳的用途恰恰是
+// 判断**本窗口**是否活跃）⇒ 归零，使名与值一致。
 func (w *PassiveBaselineWorker) beat(why string, flushed int) {
 	if w == nil {
 		return
@@ -162,9 +168,14 @@ func (w *PassiveBaselineWorker) beat(why string, flushed int) {
 	w.ticks++
 	w.flushes += flushed
 	ticks, flushes := w.ticks, w.flushes
+	emit := ticks%PassiveBaselineHeartbeatTicks == 0
+	if emit {
+		// 窗口计数归零：下一个心跳只报「自本次心跳以来」。
+		w.flushes = 0
+	}
 	w.mu.Unlock()
 
-	if ticks%PassiveBaselineHeartbeatTicks != 0 {
+	if !emit {
 		return
 	}
 	slog.Info("passive baseline worker alive",

@@ -17,7 +17,39 @@ const (
 	KindTimeout      ErrorKind = "timeout"
 	KindNetwork      ErrorKind = "network"
 	KindRateLimit    ErrorKind = "rate_limit"
-	KindAuth         ErrorKind = "auth"
+	// KindRateLimitObserved（2026-11-10，审计 F50）覆盖「上游用**请求侧
+	// 状态码**回了一个**限流形态**的正文」——即
+	//
+	//	HTTP 400 + {"error":{"message":"rate limit exceeded"}}
+	//
+	// ★ 为什么**不复用** KindRateLimit：KindRateLimit 驱动**节点健康阶梯**
+	//   （http_429 ⇒ 把 (凭据,模型) 按 5 分钟拉黑；并参与**连败累计** ⇒
+	//   3 连败即整凭据 cooling）⇒ 那正是 2026-11-02 事故的放大器本体
+	//   （过度冷却上游 ⇒ 全租户 503）。「上游**说了**限流」与「这个**节点**
+	//   限流了」是**两件事**：前者是**归因**，后者是**对节点的裁决**。
+	//   本 kind 只做前者。
+	//
+	// ★ 口径：**状态码是上游对「这次请求」的裁决**（见 isRequestRejectionStatus
+	//   的注释）。400/404/413/414/422 ⇒ 上游拒收了这次请求 ⇒ 按事故教训
+	//   （上游 4xx 不得进入「节点不健康」阶梯）**不得罚节点**。429 才是限流
+	//   的**规范**信号，仍然是 KindRateLimit（不得被本 kind 抢走）。
+	//
+	// ★ 处置（与 KindRequestRejected 同族，详见各闸门）：
+	//   · 不拉黑 (凭据,模型)（PenaltyOf ⇒ PenaltyNone）；
+	//   · 不参与连败累计（IsRequestSideError ⇒ true ⇒ nodehealth 落
+	//     ErrorKindRequest ⇒ effectsFor 返回 nil）；
+	//   · 不扇出探针（AutomaticProbePolicyFor ⇒ none）；
+	//   · 换一个兄弟候选（DecideNextAction ⇒ ActionSwitchNode）。
+	//   —— 但**归因**变了：error_kind 从 request_rejected 变成
+	//   rate_limit_observed ⇒ 运维能看见「上游确实在说限流」，
+	//   而节点不会因此被惩罚（这正是本 kind 存在的意义）。
+	//
+	// ★ 线可见性（wire-visible）：error_kind 字符串 **"rate_limit_observed"**
+	//   是**新增**的线可见取值 ⇒ 任何按 kind 字符串分档的客户端 / 看板 /
+	//   SQL CHECK 闭集都要认识它（未知取值一律落到「既不重试也不惩罚」的
+	//   兜底，绝不落到 transient 那条放大器链上）。
+	KindRateLimitObserved ErrorKind = "rate_limit_observed"
+	KindAuth              ErrorKind = "auth"
 	KindQuota        ErrorKind = "quota"
 	KindUpstreamDown ErrorKind = "upstream_down"
 	KindCanceled     ErrorKind = "canceled"
@@ -784,6 +816,45 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 // or provider, so this is a transient upstream failure, not a client 400.
 var degradedFunctionRe = regexp.MustCompile(`(?i)degraded function cannot be invoked`)
 
+// rateLimitBodyRe matches upstream error bodies that **say** the request was
+// rate-limited, **without** the upstream having used HTTP 429.
+//
+// ── 它与 concurrentOverloadRe / concurrentOverloadCJKRe 的分工 ─────────
+//
+// 那两个是**容量**信号（429/503 上的并发 / 过载）；本条是**归因**信号：
+// 上游用**请求侧状态码**（400/404/413/414/422）回了一个「限流形态」的正文。
+//
+// ★ 为什么**不直接复用** concurrentOverloadRe：并发/过载族里混着
+//   "slow down|try again later|backoff" 与 "稍后重试" 这类**泛化**措辞
+//   ⇒ 一个 400 + "internal error, please try again later" 也会被它命中
+//   ⇒ 归因会从「请求被拒」漂移成「限流」⇒ **误报**。
+//   本条只认**限流语义本体**的措辞 ⇒ 误报率压到最低。
+//
+// ── 为什么**不用** `\b` ────────────────────────────────────────────────
+//
+// ★ 本仓已被 BSD libc 的 regcomp 咬过一次：`\b` 在 BSD libc 里**不是**
+//   词边界 ⇒ 白名单里凡是用 `\b` 的模式在 macOS 上语义漂移
+//   （scripts/scan-secrets.config:63-65 的做法：`(^|[^A-Za-z0-9_])…`
+//   `([^A-Za-z0-9_]|$)`）。
+// ⇒ 本条一律用**显式边界**：左边界要求「行首或非单词字符」，右边界要求
+//   「非单词字符或行尾」⇒ 在 glibc / BSD libc 上语义一致。
+//
+// ★ 其余写法也刻意保持**两个引擎都认**：不用 `(?:…)`（POSIX ERE 没有
+//   非捕获组）、不用 `\s`（用显式字符类）、字符类里的 `-` 一律放**首位**
+//   （`[- _]` 而不是 `[ _-]`：后者在 POSIX ERE 里会被读成**区间**）。
+var rateLimitBodyRe = regexp.MustCompile(
+	`(?i)(^|[^A-Za-z0-9_])(` +
+		// ① 限流语义本体（OpenAI / Anthropic / 各类中转的常见措辞）
+		`rate[- _]?limit([ -_]?(exceeded|exceed|ed|hit|reached))?|` +
+		`too many requests|` +
+		`throttl(e|ed|ing)|` +
+		`requests? per (second|minute|hour)[^A-Za-z0-9_]{0,12}(limit|exceed|reach|over)|` +
+		`(rpm|tpm)[^A-Za-z0-9_]{0,12}(limit|exceed|reach|over)|` +
+		// ② 中文措辞
+		`限流|请求过于频繁|请求太频繁|频率超限` +
+		`)([^A-Za-z0-9_]|$)`,
+)
+
 // isRequestRejectionStatus reports whether the status code means "the upstream
 // rejected this request" — the status family that must never enter the
 // "node is unhealthy" ladder.
@@ -1097,6 +1168,13 @@ func HTTPStatusForKind(kind ErrorKind) int {
 		// KindNetwork covers connection-refused/DNS as much as slow links;
 		// 502 (bad gateway) is the honest generic, 504 stays timeout-only.
 		return http.StatusBadGateway
+	case KindRateLimitObserved:
+		// 2026-11-10（F50）：请求侧拒绝（上游用 4xx 回了一个限流形态的正文）。
+		// ★ 客户端可见状态沿用**请求侧族**的既有口径（KindRequestRejected
+		//   同样落 default ⇒ 502）：本 kind **不是** 429 —— 回 429 会让客户端
+		//   以为「限流中、稍后重试」⇒ 与「上游拒收了这次请求」的事实不符，
+		//   且会把一个**节点健康无关**的失败渲染成**容量**信号。
+		return http.StatusBadGateway
 	default:
 		return http.StatusBadGateway
 	}
@@ -1406,6 +1484,33 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		}
 		if (status == 400 || status == 403) && operationNotAllowedRe.Match(body) {
 			return KindUnsupportedFeature
+		}
+		// ★ 2026-11-10（审计 F50）：**限流形态正文 + 请求侧状态族**
+		//   ⇒ KindRateLimitObserved（归因到「不惩罚节点」的独立 kind）。
+		//
+		// ★ 口径依据（与 2026-11-02 事故教训同源）：**状态码是上游对
+		//   「这次请求」的裁决**。400/404/413/414/422 ⇒ 上游拒收了这次请求
+		//   ⇒ 按 §三 ① 不得进入「节点不健康」阶梯。
+		//   而正文里**明说**了限流 ⇒ 归因不该停在「无法再归因」的
+		//   request_rejected ⇒ 给它一个**专属**的 kind，让运维看得见
+		//   「上游确实在说限流」，**同时不罚节点**。
+		//
+		// ★ 为什么**不能**映射到既有的 KindRateLimit：KindRateLimit 驱动
+		//   节点健康阶梯（http_429 ⇒ 拉黑 (凭据,模型) 5 分钟 + 连败累计
+		//   ⇒ 3 连败整凭据 cooling ⇒ 全租户 503）⇒ 那正是本轮要关掉的
+		//   放大器。**归因精确 ≠ 罚则更重**：本 kind 只精确归因，不继承罚则。
+		//
+		// ★ 放在**所有**正文规则**之后**：任何更具体的裁决（模型级 / 凭据级 /
+		//   配额级 / 上下文级 / 审核级 / 能力级）都优先 ⇒ 本条只接管
+		//   「否则就会落 request_rejected」的那一格 ⇒ 零误伤。
+		//
+		// ★ 门 = isRequestRejectionStatus(status)：
+		//   · 429 **不在**门内 ⇒ 429 仍是 KindRateLimit（规范信号）；
+		//   · 401/403/402 **不在**门内 ⇒ 它们是凭据级裁决，各有自己的
+		//     正文规则（budgetExceededRe 等），本条不得抢；
+		//   · 5xx **不在**门内 ⇒ 5xx 是节点级故障，规则照旧。
+		if isRequestRejectionStatus(status) && rateLimitBodyRe.Match(body) {
+			return KindRateLimitObserved
 		}
 		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
 		// the budgetExhaustion check has been moved ABOVE the concurrentOverload
@@ -1837,6 +1942,19 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
 		}
+		// ★ 2026-11-10（审计 F50）：与 ClassifyErrorWithBody **逐字同门**、
+		//   **逐字同判**（限流形态正文 + 请求侧状态族 ⇒ KindRateLimitObserved）。
+		//
+		// ★ 为什么必须在这里也放一份：仓内纪律是「两个分类器**不得**在同一
+		//   (status, body) 上**分叉**」（V20 / R30）。本条是**请求侧**归因，
+		//   落在哪一侧都不罚节点 ⇒ 门 1（罚则单调性）不因此变红；但若只有
+		//   ClassifyErrorWithBody 有这条，两个分类器对同一个 (400, 限流正文)
+		//   会给出**不同的 kind**（一个说 rate_limit_observed、一个说「没命中」
+		//   ⇒ "")⇒ 任何新调用点接上就是一个分叉源。
+		//   ⇒ 放在**所有**正文规则之后，与 ClassifyErrorWithBody 同序。
+		if isRequestRejectionStatus(status) && rateLimitBodyRe.Match(body) {
+			return KindRateLimitObserved
+		}
 		// 2026-08-20 P0 fix: the budgetExhaustion check has been moved to the
 		// top of this function (right after degradedFunctionRe, before
 		// concurrentOverloadRe) so it runs first against SSE error-chunk
@@ -1946,7 +2064,19 @@ func IsClientBug(kind ErrorKind) bool {
 //     executor_gemini.go 的回写分支）——透传与否是**客户端体验**问题，
 //     是否惩罚节点是**归因**问题，两者必须分开。
 func IsRequestSideError(kind ErrorKind) bool {
-	return IsClientBug(kind) || kind == KindRequestRejected
+	// ★ 2026-11-10（审计 F50）：KindRateLimitObserved **必须**登记在这里 ——
+	//   本函数是「共享节点健康状态写入」的**唯一判据入口**（凭据冷却 /
+	//   熔断计数 / 绑定翻红 / URSM 失败记录 / 探针扇出 / **连败累计**
+	//   这几处闸门都必须问它）。
+	//   不登记 ⇒ nodehealth 的 nodeHealthErrorKind 会把它落成**凭据级**
+	//   ⇒ reducer 累计 consecutive_failures ⇒ 3 连败 ⇒ 整凭据 cooling
+	//   ⇒ 全租户 503 ⇒ 正是本轮要关掉的那条放大器。
+	//   登记 ⇒ 落 nodehealth.ErrorKindRequest ⇒ effectsFor 返回 nil
+	//   ⇒ 不写绑定、不写凭据不可用、不记熔断、不累计连败、不排探针。
+	//
+	// ★ 与 IsClientBug 的分工：它**不是**客户端的 bug ⇒ **不**进
+	//   IsClientBug（那会改变「上游正文是否原样透传给客户端」的语义）。
+	return IsClientBug(kind) || kind == KindRequestRejected || kind == KindRateLimitObserved
 }
 
 func isBrokenPipeMessage(msg string) bool {

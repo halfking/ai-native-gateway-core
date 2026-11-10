@@ -192,6 +192,12 @@ func TestModelUnavailableWithoutAlternateNodeFailsTerminal(t *testing.T) {
 //
 //	第三轮的裁决（§三 ①：上游 4xx 不得进入「节点不健康」阶梯）不得罚节点。
 //	429 / 5xx 才是容量/节点级信号，规则照旧。
+//
+// ★ 2026-11-10（审计 F50）的口径更新：**限流形态**正文（rate limit /
+//	too many requests）在请求侧状态族上不再落「无法再归因」的
+//	request_rejected，而是落**专属**的 KindRateLimitObserved ——
+//	**归因更精确，罚则不变**（仍然不罚节点、不累计连败、不拉黑）。
+//	★ 本用例的**原意**（「4xx + 并发/限流形态正文不得落节点侧罚则」）**不变**。
 func TestRequestRejectionStatusIgnoresOverloadBody(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -199,16 +205,22 @@ func TestRequestRejectionStatusIgnoresOverloadBody(t *testing.T) {
 		body   string
 		want   ErrorKind
 	}{
-		// 请求侧族：4xx + 并发/限流形态正文 ⇒ 请求侧（不罚节点）
-		{"400-too-many-requests", 400, `{"error":{"message":"too many requests"}}`, KindRequestRejected},
-		{"400-rate-limit-exceeded", 400, `{"error":{"message":"rate limit exceeded"}}`, KindRequestRejected},
+		// 请求侧族：4xx + **限流形态**正文 ⇒ 专属的「不惩罚节点」kind（F50）
+		{"400-too-many-requests", 400, `{"error":{"message":"too many requests"}}`, KindRateLimitObserved},
+		{"400-rate-limit-exceeded", 400, `{"error":{"message":"rate limit exceeded"}}`, KindRateLimitObserved},
+		{"413-too-many-requests", 413, `{"error":{"message":"too many requests"}}`, KindRateLimitObserved},
+		{"414-too-many-requests", 414, `{"error":{"message":"too many requests"}}`, KindRateLimitObserved},
+		{"422-too-many-requests", 422, `{"error":{"message":"too many requests"}}`, KindRateLimitObserved},
+		// ★ 404 + 限流形态正文 ⇒ 也是「不惩罚节点」的 kind（F50）：上游说的是
+		//   「限流」而不是「这个 (凭据,模型) 不存在」⇒ 不该写绑定级冷却
+		//   （写了就等于把一对**还服务得好好的**凭据-模型摘掉）。
+		{"404-too-many-requests", 404, `{"error":{"message":"too many requests"}}`, KindRateLimitObserved},
+		// 请求侧族：4xx + **非限流**的并发/过载措辞 ⇒ 仍然「无法再归因」
+		//   ⇒ request_rejected（**不是** rate_limit_observed ⇒ 本规则的
+		//   词表是窄的，不会把泛化措辞也吸进来）。
 		{"400-slow-down", 400, `{"error":{"message":"slow down"}}`, KindRequestRejected},
 		{"400-concurrent-limit", 400, `{"error":{"message":"concurrent limit exceeded for this account"}}`, KindRequestRejected},
-		{"413-too-many-requests", 413, `{"error":{"message":"too many requests"}}`, KindRequestRejected},
-		{"414-too-many-requests", 414, `{"error":{"message":"too many requests"}}`, KindRequestRejected},
-		{"422-too-many-requests", 422, `{"error":{"message":"too many requests"}}`, KindRequestRejected},
 		// 绑定级族：404 + 同款正文 ⇒ 绑定级（仍不罚节点）
-		{"404-too-many-requests", 404, `{"error":{"message":"too many requests"}}`, KindModelUnavailable},
 		{"404-cjk-overload", 404, `{"error":{"message":"并发过大，达到上限"}}`, KindModelUnavailable},
 		{"400-cjk-overload", 400, `{"error":{"message":"并发过大，达到上限"}}`, KindRequestRejected},
 	}
@@ -222,6 +234,13 @@ func TestRequestRejectionStatusIgnoresOverloadBody(t *testing.T) {
 			if got == KindConcurrent || got == KindRateLimit {
 				t.Fatalf("4xx %d + 并发/限流形态正文落成了 %q ⇒ 节点侧罚则被打开（"+
 					"3 连败 ⇒ 整凭据 cooling ⇒ 全租户 503）", tc.status, got)
+			}
+			// ★ 本用例**原意**的加强版：凡落在请求侧族的 kind，都必须
+			//   IsRequestSideError = true ⇒ 一个字节的共享节点健康状态都不写。
+			//   （绑定级的 model_unavailable 不在此断言内 —— 它写的是**这一对**。）
+			if tc.want != KindModelUnavailable && !IsRequestSideError(got) {
+				t.Fatalf("4xx %d + %q 落成 %q，但 IsRequestSideError = false ⇒ "+
+					"它会进入「节点不健康」阶梯", tc.status, tc.body, got)
 			}
 		})
 	}

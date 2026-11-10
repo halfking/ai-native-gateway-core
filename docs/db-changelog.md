@@ -10809,7 +10809,7 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 
 | version | file | sha256 | status |
 |---|---|---|---|
-| 955 | `955_passive_model_fingerprints.sql` | `82fc6df0424f5db7150e9fcd9387aa67c261fe55d0dc10df66557cc0dc3c9408` | registered（2026-11-09 模型指纹验证增强轮；**待部署**：211/154/245 列车） |
+| 955 | `955_passive_model_fingerprints.sql` | `82fc6df0424f5db7150e9fcd9387aa67c261fe55d0dc10df66557cc0dc3c9408` | applied+verified（2026-11-10 第 52 增量回填：211 acc-pg17 @ 2026-11-10 00:03:47 +08 只读实测；E 组审计轮） |
 | 955 | `955_passive_model_fingerprints.down.sql` | `084eb71dad1e111499eba7a61d77775483861120b3e2f38dc0708b1da5c73583` | registered |
 
 缺口本体：922 的可信度判定是**主动**探针（直连上游发标定请求），有三个结构性弱点——成本（行为指纹全量采集要 240 请求/节点）、可规避（上游可识别探测特征针对性放行）、覆盖稀疏（周期扫描之间是盲区）。955 建 `passive_model_fingerprints`：从**真实用户流量**聚合的 (租户, 凭据, 模型) 行为基线（credential_id=0 保留给模型级跨凭据聚合），承载三族特征——时序（TTFT/ITT 分布/吞吐，权重 0.6，最强信号）、Token 签名（prompt_token_signature/output_density，权重 0.25）、内容（vocab_freq/format_flags 位标，权重 0.15）。学术支撑：加密流量元数据分析对服务模型的识别准确率 97.7%（arXiv:2609.31877）、Inter-Token Timing 加密流量下实时可用（arXiv:2502.20589）。
@@ -10817,6 +10817,15 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 口径纪律：ITT 分布以 **10ms 桶宽**落 jsonb（桶标签 `"0"/"10"/.../"90"/"100+"`），与 `domains/modelcredibility.bucketizeITTs` 的桶划分**逐字一致**（JSD 对比直接可用，改桶宽必须两侧同步——契约门 `TestMigration955ITTBucketWidthCrossPin` 双向钉死）；时序列一律毫秒 real（Go 侧 time.Duration 边界换算，表里不存 Duration 字符串）；sample_count 保留样本量信息，消费方按 `confidence = min(1, sample_count/100)` 降权（样本不足是「低置信」不是「无异常」）。
 
 登记面：canonical up/down、installer embeddata 双副本（SHA 现场一致）、`go:embed` 变量 + `embeddedSQLFiles` 映射、`dbinit` StartupFiles、部署显式清单（`apply-db-revision-sequence.sh` files + `ledger_artifact_probe` to_regclass 探针）、`installed_startup_migrations.tsv` 第 **355** 位、契约门 `migration_955_passive_model_fingerprints_test.go` 五件（形态/down/桶宽 cross-pin/字节一致/登记面覆盖）。幂等（CREATE TABLE IF NOT EXISTS），`BEGIN/COMMIT` + `SET LOCAL lock_timeout='5s'` / `statement_timeout='10min'`（SET LOCAL 落在事务块内）。**字节修订一次（prepared 未应用 ⇒ 合法，936/946 先例）**：首版 statement_timeout 拍 60s，heavy-DDL 预算门 `TestHeavyDDLModernMigrationsDeclareMeasuredBudget` 当场红（两条非 CONCURRENTLY CREATE INDEX ⇒ 761 先例要求 ≥10min 预算声明），抬 10min 后门绿——SHA 以上表为准。隔离 PG17.11 真库验证（timeout 抬升前的字节）：up/重放幂等/down/再应用四态全过 + 契约腿 TestPassiveBaselineRealPG 四小节全绿（timeout 抬升不改 schema 语义）。回滚顺序：先停 bg 侧基线聚合 worker（停止写入），再执行 955 down（drop 表会丢弃已积累的基线，正常回滚优先保留表只停写方）。
+## 2026-11-10 — 第 52 增量审计：954/955 撞号 saga 终态钉死（零应用实证）＋ 版本键机制登记
+
+| version | file | status |
+|---|---|---|
+| 954(旧) | `954_claude_opus_5_5_fix.sql`（已删除，存活窗 52759157a→e3ceee172） | **从未应用**（211 acc-pg17 与共享库 172.16.2.210 只读实测：无该号 10:36–11:55 窗口的应用记录；245 部署树 998269fb 已不含该文件） |
+| 955(旧) | `955_claude_opus_5_5_multi_provider_bindings.sql`（同上） | **从未应用**（同上） |
+
+撞号实录：11-09 10:36/11:14 先到者加 954/955（claude-opus-5-5 系）；40 分钟内另一会话以同号落地 954_probe_lane_trace_events / 955_passive_model_fingerprints；11:55 e3ceee172 删除先到者收场（提交信息只字未提删迁移——登记纪律缺口）。机制风险（已实证的版本键语义）：迁移版本键 = 文件名数字前缀（deploy/deploy-lib/db-changelog.sh `ver=${base%%_*}` + 迁移自注册 `ON CONFLICT (version)`），**无 checksum 通道对 95x 生效** ⇒ 同号两文件时「号已应用 ⇒ pending 扫描按号跳过 ⇒ 新内容在该主机永不落地」。本次未命中纯属删除先于部署。守卫：`tests/migration_version_prefix_unique_test.sh`（≥500 号段禁撞号 + <500 历史 14 个撞号棘轮基线 + 同族序篇记法 680b/478p2 豁免 + 变异臂×5）；遗留：部署通道「ledger 同号但文件名与登记不符 ⇒ 硬红」的运行时校验未做（见 02 台账 E1）。
+
 ## 2026-11-09T06:46:14Z — deploy 245 build_seq 2956 (998269fb)
 
 | Migration | File | SHA-256 | Status |
@@ -10829,4 +10838,23 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 955 | `955_passive_model_fingerprints.sql` | `82fc6df0424f5db7150e9fcd9387aa67c261fe55d0dc10df66557cc0dc3c9408` | applied+verified |
+
+## 2026-11-10 — 上游恢复检测及时性：956 标记 minimax-m3.1-flash featured
+
+| version | file | sha256 | status |
+|---|---|---|---|
+| 956 | `956_minimax_m31_flash_featured.sql` | `9df04687e07867091abd82e07ac51e35ad08a6442dc0756920510ea2a9de3ef2` | registered（2026-11-10 恢复检测及时性轮；**待部署**：211 列车） |
+| 956 | `956_minimax_m31_flash_featured.down.sql` | `166743f9b6fbf337791bf402ae687d94aadd6eca0bd6b74a0be757e69c610396` | registered |
+
+缺口本体：953 建立了 `models_canonical.featured` 机制，但**只标了裸 canonical 名**，而探针侧的三个门（`bg/probe_model_scope.go` 的 scope 门、`bg/probe_service.go` 的 backoff 乘数、`bg/model_tier.go` 的队列优先级）都用 `globalIsFeaturedModel(raw, "")` —— **只比 raw 名**；而 `provider_models.raw_model_name` 多数带供应商命名空间前缀（`z-ai/glm-5.3-flash`、`minimaxai/minimax-m3.1-flash`）。⇒ 命名空间形态的免费模型永远匹配不上 featured ⇒ 免费对拿不到 scope 放行 / backoff 减半 / 队列优先 ⇒「上游已恢复但系统 ~24h 未感知」照旧。受控对照（同凭据内配对）：裸名 featured 中位 48 次/24h vs 裸名非 featured 24 次/24h（≈2×），而 namespaced 的 featured 与非 featured **同为 4 次/24h（无差异）**。
+
+★ 953 名单的实测缺陷（取证核对）：953 用一份**手写名单**标注 featured，26 项里有 **11 项在 `models_canonical` 里根本不存在**（`baichuan2-turbo` / `deepseek-v3-flash` / `gemini-2-flash` / `glm-5-flash` / `glm-5.1-flash` / `minimax-abab7-flash` / `minimax-abab7-lite` / `qwen-plus-flash` / `qwen-turbo-flash` / `yi-lightning` / `yi-spark`）⇒ 953 实际只命中 15 个。名单「看起来生效」是因为 UPDATE 不报错、命中数不校验 ⇒ 缺的那 11 项是**静默失效**的。956 因此只写经真库核对存在的 `canonical_name`，并在迁移体内自带**存在性前置守卫 + 终态断言**（目标必须 featured=TRUE，否则 RAISE EXCEPTION 中止），杜绝再写幻觉名。
+
+★ 入选判据（实测，非「看起来常用」）：免费凭据在 24h 窗口内**有真实业务流量**的 canonical 只有两个 —— `glm-5.3-flash` 585 次（raw 名 `z-ai/glm-5.3-flash`，953 已标）与 `minimax-m3.1-flash` 110 次（raw 名 `minimaxai/minimax-m3.1-flash`，**未标**）。956 只补后一个。判据取「有流量」的理由：featured 的作用面是**探针分层**（scope 门 / backoff 乘数 / 队列优先），只影响探测量、不改路由；给零流量的冷门模型加 featured 只会白抬探测量 —— 实测 free 面 999 个候选 canonical 里 788 个只有 1 个绑定对且 24h 流量为 0。
+
+登记面：canonical up/down、installer embeddata 双副本（SHA 现场一致）、`go:embed` 变量 + `embeddedSQLFiles` 映射、`dbinit` StartupFiles、部署显式清单（`apply-db-revision-sequence.sh` files + `ledger_artifact_probe` 终态探针）、`installed_startup_migrations.tsv` 第 **356** 位（由 `StartupFiles` 经 `go test ./internal/dbinit -run TestStartupManifest -update` 重新生成，非手改）、契约门 `migration_956_featured_test.go` 三件（形态/存在性守卫/down 可逆）。幂等（`featured=FALSE` 守卫 + `ON CONFLICT DO NOTHING`），`BEGIN/COMMIT` + `SET LOCAL lock_timeout='2s'` / `statement_timeout='10min'`。
+
+★ 与代码改动的分工：956 只负责「标 canonical」这一半；另一半在 `bg/model_tier.go`（装载 featured canonical 时同步展开 `provider_models.raw_model_name` 变体进 static 集合）。**两者叠加才闭环** —— 只标裸名对 namespaced 免费对零效果。爆炸半径（211 实测）：static 45 → 89（+44 条 raw 变体）；新增获得 featured 待遇的绑定 = free 89 对（可用 47）+ per_token 29 对 + token_plan 13 对；其中 24h 有真实流量的仅 4 对 ⇒ 探测量增量 < 1%（基线 24h 9233 次探测）。★ 该展开只影响**探针分层**，不进入路由与发现口径 ⇒ 不改路由行为。
+
+回滚：执行 956 down（置回 featured=FALSE）+ 回滚 `bg/model_tier.go` 的展开改动。注意 down 只还原 canonical 侧标记；代码侧的 raw 变体展开不由迁移回滚（回滚后仍在 featured 集合里，这与回滚前的 static 集合口径一致，非本迁移引入）。
 

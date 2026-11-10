@@ -49,6 +49,17 @@ var recoveryProjectionExcludedKinds = []recoveryProjectionExclusion{
 		reason: "请求侧语义错误：重发同一请求必然再败 ⇒ 客户端重试无用",
 	},
 	{
+		// 2026-11-10（审计 F50）：限流形态正文落在**请求侧状态族**
+		// （400/404/413/414/422）上 ⇒ 与 request_rejected 同族。
+		// 上游已经拒收了这次请求（状态码是它对本次请求的裁决）⇒ 重发
+		// 同一个请求必然再败 ⇒ 客户端重试无用。
+		//
+		// ★ 排除资格：它是**请求侧**语义错误（IsRequestSideError = true）
+		//   ⇒ 符合 recoveryProjectionExclusionEligible ⇒ 可以被排除。
+		kind:   KindRateLimitObserved,
+		reason: "请求侧拒绝（上游用 4xx 回了限流形态正文）：重发同一请求必然再败 ⇒ 客户端重试无用",
+	},
+	{
 		// 凭据级不可用（401/403）：网关换的是**凭据**不是请求；重试只会把
 		// 无效的 key 再打一遍 ⇒ 客户端重试无用（该修的是凭据）。
 		kind:   KindAuth,

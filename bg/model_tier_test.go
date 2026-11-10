@@ -192,6 +192,55 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 		"featured priority must default to 80 (>= integrity 70)")
 }
 
+// TestModelTier_CanonicalFeaturedExpandsRawVariants 钉住 2026-11-10 恢复检测
+// 及时性轮的核心不变量：models_canonical.featured 存的是**裸 canonical 名**，
+// 而 provider_models.raw_model_name 多数带供应商命名空间前缀
+// （z-ai/glm-5.3-flash、codex/gpt-6-sol）。
+//
+// 探针侧的 scope 门 / backoff 乘数 / 队列优先级都用
+// globalIsFeaturedModel(raw, "") —— **只比 raw 名**。⇒ 若装载时不展开 raw
+// 变体，命名空间形态的免费模型永远匹配不上 featured ⇒ 恢复检测仍迟到 24h。
+//
+// 本测试断言：装载 SQL 必须同时取 canonical_name **与** raw_model_name，
+// 且 raw 变体必须与裸名一起进 static 集合（否则上条不变量回归）。
+func TestModelTier_CanonicalFeaturedExpandsRawVariants(t *testing.T) {
+	src := sourceFromFile(t, "model_tier.go")
+
+	// 1) 装载 SQL 必须同时取裸名与 raw 变体（两个 featured 来源共用一套展开）。
+	assert.True(t, strings.Contains(src, "SELECT fn.name, COALESCE(pm.raw_model_name, '')"),
+		"model_tier.go must select both the bare name and the raw variant")
+	assert.True(t, strings.Contains(src, "LEFT JOIN provider_models pm ON pm.canonical_id = mc.id"),
+		"model_tier.go must join provider_models to expand raw variants")
+
+	// 2) raw 变体必须进 static 集合（不只是裸名进集合）。
+	assert.True(t, strings.Contains(src, "fs.static[raw] = struct{}{}"),
+		"model_tier.go must insert the raw variant into the static featured set")
+
+	// 3) 负向断言：不得退化成只比裸名而漏掉 raw 变体 —— 装载处
+	//    必须同时出现两个入集合动作。
+	assert.True(t, strings.Contains(src, "fs.static[name] = struct{}{}"),
+		"model_tier.go must insert the bare canonical name into the static featured set")
+}
+
+// TestFeaturedQueuePriority_NamespacedRawGetsFeaturedPriority 钉住配套行为：
+// 命名空间形态的 raw 名一旦进了 featured 集合，队列优先级必须走 featured 档
+// （80），而不是 fallback —— 否则「展开」在队列侧零效果。
+func TestFeaturedQueuePriority_NamespacedRawGetsFeaturedPriority(t *testing.T) {
+	prevTier := globalModelTier.Load()
+	t.Cleanup(func() { globalModelTier.Store(prevTier) })
+
+	// 模拟装载后的集合：裸 canonical 名 + 其 raw 变体
+	SetGlobalModelTier(newTierWithSet(
+		[]string{"glm-5.3-flash", "z-ai/glm-5.3-flash"}, nil))
+
+	assert.Equal(t, int16(80), FeaturedQueuePriority("z-ai/glm-5.3-flash", 60),
+		"namespaced raw variant of a featured canonical must get featured queue priority")
+	assert.Equal(t, int16(80), FeaturedQueuePriority("glm-5.3-flash", 60),
+		"bare canonical name must get featured queue priority")
+	assert.Equal(t, int16(60), FeaturedQueuePriority("some-unrelated/model", 60),
+		"non-featured model must keep the fallback priority")
+}
+
 // sourceFromFile reads the file (relative to this package's source root) and
 // returns its content. Kept tiny to avoid pulling in go/ast for a single
 // string guard.
