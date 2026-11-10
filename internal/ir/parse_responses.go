@@ -314,6 +314,29 @@ func parseResponsesInput(raw json.RawMessage) (messages []Message, systemText st
 	return messages, systemText, nil
 }
 
+// redactReasoningItem 去掉 reasoning 信封里**不可外泄**的内容，只留描述性字段。
+//
+// ★ 为什么这样切（★ 2026-11-11 审计 P2-I）：★ 诊断只需要知道「这是一个 reasoning item」
+// ★ ★（★ type / id / 有无 summary / 有无 encrypted_content）★ ★ ⇒ ★★ 而
+// ★★ `summary` 是**模型的思考文本**、★ ★ `encrypted_content` 是**不透明加密推理块**
+// ★★ ⇒ ★★ 两者都**不得**进日志/落库面 ⇒ ★★ 逐字保留即等于外泄。
+// ★★ 保留「有没有」而不保留「是什么」⇒ ★★ 诊断信息不丢、★ ★ 敏感内容不外泄。
+func redactReasoningItem(item map[string]any) map[string]any {
+	out := map[string]any{"type": item["type"]}
+	if id, ok := item["id"]; ok {
+		if s, ok := id.(string); ok {
+			out["id"] = s
+		}
+	}
+	if _, ok := item["summary"]; ok {
+		out["has_summary"] = true
+	}
+	if _, ok := item["encrypted_content"]; ok {
+		out["has_encrypted_content"] = true
+	}
+	return out
+}
+
 // parseResponsesInputItem converts a single input[] item into an IR Message.
 // Returns (msg, inlineSystem, err): inlineSystem is set for system/developer
 // roles so the caller can hoist them into req.System; msg is nil for those.
@@ -334,7 +357,15 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	// own thinking mechanism (signature-gated), and replaying foreign reasoning
 	// envelopes is never wire-legal on any anthropic-messages upstream.
 	if itemType == "reasoning" {
-		ReportParseUnknownField("unknown", ProtocolOpenAIResponses, "input[].type=reasoning (dropped before IR; not wire-legal on anthropic-messages)", item)
+		// ★ 2026-11-11 审计 P2-I：★ **不要把整个 reasoning 信封塞进 metadata**
+		// ★★ 原实现传 `item` 整体 ⇒ ★★ `summary`（★ 模型的思考文本）与
+		// ★★ `encrypted_content`（★ 不透明加密推理块）会**逐字**进 anomaly 事件
+		// ★★ ⇒ ★★ 随 slog.Warn("ir.anomaly") 落进**可全文检索**的日志面
+		// ★★ ⇒ ★★ 也随 format-anomaly 采集落库（★ domains/streaming/anomaly_harvester.go）
+		// ★★ ⇒ ★★ 这是**思考内容外泄**面，且对「这是不是一个 reasoning item」这个诊断**零增益**。
+		// ⇒ ★★ 修法：★ 只留**不可逆推内容**的描述性字段（★ type / id / 有无 summary / 有无 encrypted_content）。
+		// ★★ 去重键不含 metadata（★ anomaly_reporter.go dedupKey）⇒ ★★ 脱敏**不改变**去重行为。
+		ReportParseUnknownField("unknown", ProtocolOpenAIResponses, "input[].type=reasoning (dropped before IR; not wire-legal on anthropic-messages)", redactReasoningItem(item))
 		return nil, "", nil
 	}
 
