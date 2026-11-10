@@ -208,11 +208,19 @@ check_migration_has_down() {
     if [[ ! -d "$mig_dir" ]]; then
       continue
     fi
-    # 只检查新增的migration（git status 中显示为新增的）
+    # ★ ★★ 2026-11-10（审计 F53 再普查）：★ **这一处是【★ 真洞 ★】★★ ★
+    #   ★ 原来用的是**行式** `git status --porcelain` ⇒ ★ 而 git 默认
+    #   ★ `core.quotePath=true` ⇒ ⇒ **非 ASCII 路径被转义成八进制 + 外层双引号**
+    #   ★ ⇒ ⇒ 下面那条 `grep "^${mig_dir}/"` 的**前缀锚点落空**（★ 转义形态是
+    #   ★ `"sql/...` —— ★ 引号在最前面 ★）⇒ ⇒ ★ **中文名的新迁移文件会被整条漏掉**
+    #   ★ ⇒ ⇒ 而漏掉的正是【★ down 文件配对检查 ★】⇒ ⇒ **静默失效** ★
+    #   ⇒ ⇒ 改成 `-z`（★ 原始 UTF-8 字节、★ NUL 分隔 ★）★
+    #   ⇒ ⇒ 并用 `sed` 取代 `awk '{print $2}'`（★ 后者遇到**带空格的路径**也会错位 ★）
     local new_files
-    new_files=$(git status --porcelain 2>/dev/null \
-                | grep -E '^\?\?.*\.sql$' \
-                | awk '{print $2}' \
+    new_files=$(git status --porcelain -z 2>/dev/null \
+                | tr '\0' '\n' \
+                | grep -E '^\?\? .*\.sql$' \
+                | sed 's/^?? //' \
                 | grep "^${mig_dir}/" \
                 | grep -v '\.down\.sql$' || true)
     for f in $new_files; do
