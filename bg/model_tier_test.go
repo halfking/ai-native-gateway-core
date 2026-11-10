@@ -206,19 +206,19 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 func TestModelTier_CanonicalFeaturedExpandsRawVariants(t *testing.T) {
 	src := sourceFromFile(t, "model_tier.go")
 
-	// 1) 装载 SQL 必须同时 SELECT 裸名与 raw 变体。
-	assert.True(t, strings.Contains(src, "SELECT mc.canonical_name, COALESCE(pm.raw_model_name, '')"),
-		"model_tier.go must select both canonical_name and raw_model_name for featured canonicals")
+	// 1) 装载 SQL 必须同时取裸名与 raw 变体（两个 featured 来源共用一套展开）。
+	assert.True(t, strings.Contains(src, "SELECT fn.name, COALESCE(pm.raw_model_name, '')"),
+		"model_tier.go must select both the bare name and the raw variant")
 	assert.True(t, strings.Contains(src, "LEFT JOIN provider_models pm ON pm.canonical_id = mc.id"),
 		"model_tier.go must join provider_models to expand raw variants")
 
-	// 2) raw 变体必须进 static 集合（不只是 canonical_name 进集合）。
+	// 2) raw 变体必须进 static 集合（不只是裸名进集合）。
 	assert.True(t, strings.Contains(src, "fs.static[raw] = struct{}{}"),
 		"model_tier.go must insert the raw variant into the static featured set")
 
-	// 3) 负向断言：不得退化成只比 canonical 名而漏掉 raw 变体 —— 装载处
+	// 3) 负向断言：不得退化成只比裸名而漏掉 raw 变体 —— 装载处
 	//    必须同时出现两个入集合动作。
-	assert.True(t, strings.Contains(src, "fs.static[canonical] = struct{}{}"),
+	assert.True(t, strings.Contains(src, "fs.static[name] = struct{}{}"),
 		"model_tier.go must insert the bare canonical name into the static featured set")
 }
 
