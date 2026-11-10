@@ -147,7 +147,7 @@ fx_dupes="$(dupes_of "$fixture")"
 if [[ "$fx_dupes" == "900 900_alpha 900_beta" ]]; then
   ok "变异臂：同号 900_alpha/900_beta 被检出且 down.sql 不误报"
 else
-  bad "变异臂失效：got「$fx_dupes」want「900 900_alpha 900_beta」"
+  bad "变异臂失效：got「${fx_dupes}」want「900 900_alpha 900_beta」"
 fi
 fx_down="$(scan_dir "$fixture" | awk -F'\t' '$2 ~ /alpha\.down/ {print "leak"}')"
 if [[ -z "$fx_down" ]]; then

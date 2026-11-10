@@ -162,14 +162,19 @@ resolve_active_sib() {
     return 0
   fi
   local best="" best_ts=0 cand ts
-  while IFS= read -r cand; do
+  # ★ 用 -z（NUL 分隔）枚举：★ 非 ASCII 文件名在不带 -z 时会被 git 按
+  #   core.quotepath 转义成 "346\226\207..." ⇒ 下面的 -f / grep / git log
+  #   拿到的是转义串、不是真名 ⇒ 这道门会误判「找不到活跃窗口档」。
+  #   （★ 门脚本接线门 tests/git_enumeration_quote_path_contract_test.sh
+  #     对「不带 -z 的枚举面调用点」要求逐条登记豁免 ⇒ 这里直接用 -z 形态。）
+  while IFS= read -r -d '' cand; do
     [[ -f "$cand" ]] || continue
     # ★ 必须是「带状态列」的窗口档 ⇒ 用「序/编号/动作/本轮是否落地」表头判定
     grep -qE '^\|[[:space:]]*序[[:space:]]*\|[[:space:]]*编号[[:space:]]*\|[[:space:]]*动作' "$cand" || continue
     ts=$(git log -1 --format=%ct -- "$cand" 2>/dev/null || echo 0)
     if [[ "$ts" -gt "$best_ts" ]]; then best_ts=$ts; best="$cand"; fi
-  done < <(git -c core.quotepath=false ls-tree -r HEAD --name-only \
-           | grep -E '^docs/12小时内修订审计.*\.md$' || true)
+  done < <(git ls-tree -r HEAD --name-only -z \
+           | grep -zE '^docs/12小时内修订审计.*\.md$' || true)
   [[ -n "$best" ]] && printf '%s\n' "$best"
 }
 
@@ -225,7 +230,7 @@ echo
 #     （★ 棘轮双向：★ 收敛必须体现在基线缩小上、⇒ 不许悄悄遗忘）
 BASELINE="tests/cross_doc_registry_collision_baseline.tsv"
 if [[ ! -f "$BASELINE" ]]; then
-  bad "基线文件缺失：$BASELINE（★ 棘轮面必须存在）"
+  bad "基线文件缺失：${BASELINE}（★ 棘轮面必须存在）"
 else
   # 基线条目：编号 \t 行号（★ 行号只用于核对、★ 判定按编号）
   # ★ 编号归一：★ 基线里写 `F10`、门判出来的是 `10` ⇒ ★ 两侧都去掉 `F` 前缀再比。
