@@ -193,9 +193,11 @@ def main() -> int:
     #   ★ 理由：★ 投影**就是**靠替换 `now()` 生效的 ⇒ ★ 若某个判据的 post 段**无界**
     #   ★   ⇒ ★★ 投影对它**无效** ⇒ ★★ 它在负控/预演里恒真 ⇒ ★★ 没有牙
     #   ★   ⇒ ★★ 投影输出必须显式带上这条 ⇒ ★★ 读者才知道哪些判据的投影值是「有牙的」
+    # ★★ §671（★ 2026-11-11 观察层事件）：★ 投影输出还要带上「第二次部署 + 三核查 + 代码解耦 + 等长窗口实测」
+    #   ★ 理由：★ 投影是**关窗当天第 0 步** ⇒ ★★ 若窗口内又换了构建 ⇒ ★★ 预演必须自带这条边界
     vmod = cc.load_verdict()
     for ln in vmod.honest_boundary_lines():
-        if "㉖" in ln or "㉗" in ln or "㉚" in ln or "㉦" in ln:
+        if "㉖" in ln or "㉗" in ln or "㉚" in ln or "㉦" in ln or "㉩" in ln:
             print("   " + ln.strip())
 
     if missing or diff or ci_missing or ci_diff or bad:
