@@ -87,10 +87,16 @@ def main() -> int:
     cut = era_cut(src)
 
     # ★★ 纪律①：**确定性替换**（★ 同一份 SQL ⇒ 口径不可能分叉）
+    # ★★★ ★★ **stage → 关窗时刻的映射必须按「窗口小时数」算，★ 不能按「天数 = stage」**
+    #   （★ 本轮真踩到：★ 原写法 `cut + timedelta(days=args.stage)` ⇒ ★ Stage 2 得 **cut+2 天**
+    #    ⇒ ★★ 而 Stage 2 的窗口是 **168h = cut+7 天**（★ negcontrol 断言 `win_hours == 168`
+    #    ★★ / ★ clockcheck 的 Stage 2 默认 future = 2026-11-17 13:45）⇒ ★★ **Stage 2 的预演会验错几何**
+    #    ⇒ ★★ Stage 1 恰好相等（cut+1天 == cut+24h）⇒ ★★ **所以这个错在 Stage 1 上完全看不出来**）
+    STAGE_HOURS = {1: 24, 2: 168}
     if args.asof:
         asof_txt = args.asof.strip()
     else:
-        asof_txt = f"{(cut + timedelta(days=args.stage)).strftime('%Y-%m-%d %H:%M:%S')}"
+        asof_txt = f"{(cut + timedelta(hours=STAGE_HOURS[args.stage])).strftime('%Y-%m-%d %H:%M:%S')}"
     fut = f"TIMESTAMPTZ '{asof_txt}+08'"
     n_now = src.count("now()") + src.count("NOW()")
     variant = src.replace("now()", fut).replace("NOW()", fut)
@@ -103,6 +109,15 @@ def main() -> int:
     print(f"   era 切点   = {cut:%Y-%m-%d %H:%M:%S} +08")
     print(f"   as-of      = {asof_txt} +08（★ 替换 now()/NOW() 共 {n_now} 处）")
     print(f"   判定阶段   = Stage {args.stage}")
+    # ★★★ **自检**：★ as-of 必须 = 切点 + **本 stage 的窗口长度**（★ 防止 stage↔窗口映射再错）
+    #   ⇒ ★★ 这条与 negcontrol 的 `win_hours == 168` 断言、★ clockcheck 的 Stage 2 默认 future **同一语义**
+    if not args.asof:
+        _expect = cut + timedelta(hours=STAGE_HOURS[args.stage])
+        if _expect.strftime("%Y-%m-%d %H:%M:%S") != asof_txt:
+            print(f"★★ as-of 算错：★ 期望 {_expect:%Y-%m-%d %H:%M:%S}（★ cut + "
+                  f"{STAGE_HOURS[args.stage]}h）但得到 {asof_txt} ⇒ 投影无效", file=sys.stderr)
+            return 1
+        print(f"   ✔ as-of 自检：★ cut + {STAGE_HOURS[args.stage]}h = {asof_txt}（★ 与 Stage 窗口同长度）")
 
     real_raw = cc.run_sql(src, "real_proj", args.ssh_host)
     asof_raw = cc.run_sql(variant, "asof_proj", args.ssh_host)

@@ -122,10 +122,16 @@ def build_steps(stage: int) -> list[Step]:
     n = "recovery-detection-p0-3-negcontrol.py"
     c = "recovery-detection-p0-3-clockcheck.py"
     p = "recovery-detection-p0-3-stage1-projection.py"
+    # ★★ **as-of 期望值**：★ 必须是「切点 + 本 stage 的窗口长度」（★ 24h / 168h）
+    #   ⇒ ★★ 这一条把「stage ↔ 窗口长度」的映射**钉在跑批器上** ⇒ ★★ 映射再错 ⇒ **rc=1**
+    #   ⇒ ★★ （★ 本轮真踩到：★ 预演脚本原按 `timedelta(days=stage)` ⇒ ★ Stage 2 得 cut+2 天 ⇒ 验错几何）
+    want_asof = (EPOCH_TS + datetime.timedelta(hours=STAGE_HOURS[stage])).strftime("%Y-%m-%d %H:%M:%S")
     steps = [
         Step("① 关窗预演（as-of = 关窗时钟）",
              [py, str(AUD / p), "--stage", str(stage)],
-             must=["关窗预演通过"],
+             must=["关窗预演通过",
+                   f"as-of      = {want_asof} +08",
+                   "as-of 自检"],
              note="★ 预演只投影**时钟**，★ 不投影数据积累 ⇒ ★ 一切以关窗真读为准"),
         Step("② 穷举审计 v2（post 段必须有 now() 上界）",
              [py, str(AUD / a)],
