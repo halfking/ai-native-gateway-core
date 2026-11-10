@@ -326,6 +326,53 @@ def field_str(text: str, name: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def m5_baseline_disclosure(data: dict[str, str], n, lim) -> str:
+    """★★★ 第 22 处口径修正：★ M5 的「**基线口径**」披露（★ 只披露，★ **不改 base/limit**）
+
+    ★★ **问题（★ 实测）**：★ M5 的 base = **pre24 的单日快照**（9242）⇒ ★ 而探测量**按天剧烈波动**
+    ★   （★ 实测 pre7d 逐日：min=**1292** / max=**9905** ⇒ **8× 差**；★ 且 **pre 期实测 11-09 = 9683 > limit 9334**）
+    ★   ⇒ ★★ ⇒ **该阈值在 pre 期就不成立** ⇒ ★★ ⇒ M5 判 ❌ 时**不能**读成「修复引起爆炸半径」
+    ★ ★★ **处置（★ 本轮纪律）**：★ **不改 base/limit**（★ 关窗前**不重冻**已验证基线）
+    ★   ⇒ ★★ 只在行内把「**基线口径问题**」摆出来 ⇒ ★★ **裁决符号保持不变**（★ ❌ 仍是 ❌ ⇒ 门不钝化）
+    ★   ⇒ ★★ 真正的改进项（用 ≥7 天的均值/中位/分位做基线）登记为 **Stage 2 之后的基线口径改进项**
+    """
+    pre_raw = data.get("M5_pre7d_runs_by_day") or ""
+    post_raw = data.get("M5_post_runs_by_day") or ""
+    # ★★ **键缺失 ⇒ 显式说「不可见」**（★ 不得默认「阈值成立」⇒ ★ 那就是静默判绿）
+    if not pre_raw.strip():
+        return ("★ 基线口径：★★ **逐日分布键未产出** ⇒ ★★ **基线口径不可见**"
+                "（★ ⇒ 本行 ❌ 只能读成「超预算」这一事实，★ **不得**据此断言「修复引起爆炸半径」，"
+                "★ 也**不得**默认「阈值在 pre 期成立」）")
+    days_txt = field_str(pre_raw, "days") or "-"
+    dmin = field_str(pre_raw, "min") or "?"
+    dmax = field_str(pre_raw, "max") or "?"
+    nd = field_str(pre_raw, "n_days") or "?"
+    # ★★ 逐日超预算天数（★ 由判定器自己的 limit 计算 ⇒ 阈值只有一个来源）
+    over = 0
+    total_days = 0
+    for part in days_txt.split(","):
+        if ":" not in part:
+            continue
+        total_days += 1
+        try:
+            if int(part.rsplit(":", 1)[1]) > int(lim):
+                over += 1
+        except (TypeError, ValueError):
+            pass
+    # ★★ 波动倍数（★ 读数异常时不得炸掉披露 ⇒ 兜底写「?」）
+    try:
+        ratio = f"{float(dmax) / float(dmin):.1f}×"
+    except (TypeError, ValueError, ZeroDivisionError):
+        ratio = "?"
+    post_days = field_str(post_raw, "days") or "-"
+    txt = (f"★ 基线口径：★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而探测量**按天波动**"
+           f"（★ pre7d 逐日（★ 按**日历日**切 ⇒ 7 天窗口跨 8 个日历日）min={dmin} / max={dmax}"
+           f" ⇒ **{ratio} 差距**；★ n_days={nd}）"
+           f"⇒ ★★ **pre 期已有 {over}/{total_days} 个日历日超预算 {lim}** ⇒ ★★ 该阈值**在 pre 期就不成立**"
+           f"⇒ ★★ 故本行 ❌ **不可归因于修复**（★ post 逐日：{post_days}）")
+    return txt
+
+
 def control_phase_disclosure(data: dict[str, str], scope: str, pre_med: float) -> str:
     """★★★ 第 21 处口径修正：★ 「对照组」的**相位/构成**披露（★ 只披露，★ **不改裁决语义**）
 
@@ -702,6 +749,8 @@ def judge(data: dict[str, str], stage: int = 1,
                 note = (f"★ 探测量超预算（{n} > {lim}）⇒ 复核探针调度增量来源"
                         f"（era2 纳入 106 新覆盖变体 + 恢复链 re-arm/回退探测均会推高读数 ⇒ "
                         f"先分辨「设计内恢复探测」与「调度失控」再定责）")
+                # ★★★ 第 22 处口径修正：★ 把「基线口径问题」摆进行内（★ 只披露，不改符号）
+                note += m5_baseline_disclosure(data, n, lim)
             else:
                 note = "指标缺失（脚本未产出该键）"
             rows.append((label, base_cell(key), obs, verdict(ok, note)))
@@ -1336,6 +1385,14 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M6_free_featured_pairs": m6,
         "M9_missing_raw_variant": m9,
         "M5_probe_runs_24h": m5,
+        # ★★★ 第 22 处口径修正：★ M5 的**逐日探测量分布**（★ 真捕获 2026-11-11 00:3x / 211）
+        #   ★★ pre 侧那个键是 **pre 侧读数** ⇒ ★★ 它若混进 now() 依赖 ⇒ ★ 随时钟漂移
+        #   ★★ ⇒ ★ 由 **clockcheck 的 CLOCK_INDEP_KEYS** 单独查（★ **不进 M18 冻结对拍** ⇒ 不重冻）
+        "M5_pre7d_runs_by_day": ("days=11-03:1292,11-04:2764,11-05:7794,11-06:9905,11-07:8973"
+                                 ",11-08:2500,11-09:9685,11-10:5589 | n_days=8 | min=1292"
+                                 " | max=9905 | total=48502"),
+        "M5_post_runs_by_day": ("days=11-10:4218,11-11:115 | n_days=2 | min=115"
+                                " | max=4218 | total=4333"),
         "M3b_backoff_ns_featured_err_http_429": f"5 rows | median_retry_s={m3b_f429}",
         "M3b_backoff_ns_not_err_http_429": f"9 rows | median_retry_s={m3b_n429}",
         "M3b_backoff_ns_featured_err_http_503": f"4 rows | median_retry_s={m3b_f503}",
@@ -2076,6 +2133,36 @@ def selftest() -> int:
     if "只投影" not in hb:
         failures.append("[㉞ 诚实边界] 缺少「关窗预演只投影时钟、不投影数据积累」边界")
 
+    # ㉟ ★★★★ **M5 判 ❌ 时必须给出「基线口径」披露**（★ 第 22 处口径修正）
+    #   ★★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而探测量**按天剧烈波动**
+    #   ★★ ⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ 该阈值**在 pre 期就不成立**
+    #   ★★ ⇒ ★★ M5 判 ❌ 时**不得**被读成「修复引起爆炸半径」⇒ ★★ 行内必须自曝基线口径
+    #   ★★ **但裁决符号不得被软化**（★ ❌ 仍是 ❌ ⇒ ★ 门不钝化）
+    rows, _, _ = judge(_synthetic(False), stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "基线口径" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] M5 判 ❌ 时行内必须给出「基线口径」⇒ {v}")
+    if "不可归因" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] 必须写明「不可归因」⇒ {v}")
+    if "超预算" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] 必须写明「超预算」⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉟ M5 基线口径披露] 裁决符号**不得**被软化（★ ❌ 仍是 ❌）⇒ {v}")
+    # ★★ 逐日分布键**缺失** ⇒ 必须显式说「基线口径不可见」（★ 不得静默默认阈值成立）
+    d = _synthetic(False)
+    d.pop("M5_pre7d_runs_by_day", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M5 24h 探测量", "<缺行>")
+    if "基线口径不可见" not in v:
+        failures.append(f"[㉟ M5 基线口径披露] 逐日分布键缺失时必须写明「基线口径不可见」⇒ {v}")
+    if not v.startswith("❌"):
+        failures.append(f"[㉟ M5 基线口径披露] 键缺失时裁决符号**不得**被软化 ⇒ {v}")
+
+    # ㉠ ★★★★ **诚实边界必须包含「M5 的 ❌ 不可归因于修复」这条**（★ 第 22 处口径修正）
+    hb = "\n".join(honest_boundary_lines())
+    if "M5" not in hb or "基线口径" not in hb:
+        failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2114,6 +2201,8 @@ def selftest() -> int:
     print("   ✔ ㉜ ★★ 摇摆 0 ⇒ 行内必须给出「featured 状态稳定 ⇒ 修复已真正落地」的正向结论")
     print("   ✔ ㉝ ★★★ 「对照组」的**相位/构成**必须披露（★ 零 6h 顶格 ⇒ 不可归因；★ 裁决符号不得软化）")
     print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
+    print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
+    print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2278,6 +2367,14 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ 但 post 窗口在投影里**仍是「当前已积累的那一段」** ⇒ ★★ 任何按「窗口内事件构成」"
           "计算的判据（★ 尤其是**对照组的中位数**）在投影里可能**相位失真** ⇒ ★★ 投影对这类判据"
           "只能**提示**，**不能定论** ⇒ ★★ 一切结论以**关窗当天真读**为准。")
+    lines.append("   ㉘ ★★★★ **M5 的 ❌ 不可归因于修复（★ 阈值取自 pre24 的「单日快照」）**："
+          "★ M5 的 base = **9242** = **pre24 单日快照**（★ 实测 pre_24h_count = 9243）"
+          "⇒ ★ 而探测量**按天剧烈波动**（★ 实测 pre7d 逐日 min=**1292** / max=**9905** ⇒ **7.7×**）"
+          "⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立**"
+          "⇒ ★★ ⇒ M5 判 ❌ 时**不得**被读成「修复引起爆炸半径」⇒ ★★ 本轮只做**行内披露**"
+          "（★ **裁决符号保持 ❌** ⇒ ★ 门不钝化；★ 且逐日分布键缺失时必须显式写「基线口径不可见」）"
+          "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，而不是单日快照）"
+          "**登记为 Stage 2 之后的基线口径改进项**（★ 关窗前**不重冻**已验证基线）。")
     return lines
 
 

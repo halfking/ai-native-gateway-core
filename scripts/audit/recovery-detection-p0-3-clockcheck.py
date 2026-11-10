@@ -51,6 +51,11 @@ PRE_KEY_RE = re.compile(
     r"^M20_(normal|exempt)_(pre24|pre7d)_fp$)"
 )
 
+# ★★★ 第 22 处口径修正：★ 「**披露用**」的 pre 侧键（★ **不进 M18 冻结对拍** ⇒ ★ 不重冻基线）
+#   ★★ 但它仍是 **pre 侧读数** ⇒ ★★ 若混进 `now()` 依赖 ⇒ ★ 随时钟漂移
+#   ★★ ⇒ ★★ 必须在各时钟下逐字节一致 ⇒ ★★ **单独查**（★ 不扩冻结面 ⇒ ★ 不触发重冻）
+CLOCK_INDEP_KEYS = ("M5_pre7d_runs_by_day",)
+
 
 def run_sql(sql_text: str, tag: str, ssh_host: str) -> str:
     local = pathlib.Path(f"/tmp/clockcheck_{tag}.sql")
@@ -127,6 +132,20 @@ def main() -> int:
     else:
         print("   ✔ 全部逐字节一致（★ pre 基线时钟无关）")
 
+    # ★★★ 第 22 处口径修正：★ 「披露用 pre 侧键」的**时钟无关性**（★ 单独查 ⇒ 不扩 M18 冻结面）
+    ci_missing = [k for k in CLOCK_INDEP_KEYS if k not in real or k not in future]
+    ci_diff = [(k, real.get(k, ""), future.get(k, ""))
+               for k in CLOCK_INDEP_KEYS if k in real and k in future and real[k] != future[k]]
+    print(f"\n== 披露用 pre 侧键的时钟无关性（★ {len(CLOCK_INDEP_KEYS)} 个）==")
+    if ci_missing:
+        print(f"   ★★ 未来时钟**缺键** {len(ci_missing)} 个：{ci_missing}")
+    if ci_diff:
+        print(f"   ★★ **漂移 {len(ci_diff)} 个**（★ ⇒ 该键随时钟变 ⇒ ★ 同一窗口的披露会前后不一致）：")
+        for k, a, b in ci_diff:
+            print(f"      - {k}\n          真实: {a}\n          未来: {b}")
+    else:
+        print("   ✔ 全部逐字节一致（★ 披露用 pre 侧键时钟无关）")
+
     # ★★ 顺带：未来时钟下跑一遍 Stage 2 判定链 ⇒ 验「Stage 2 路径能走通」
     print("\n== Stage 2 判定路径（★ 用未来时钟的复采输出）==")
     mod = load_verdict()
@@ -148,6 +167,10 @@ def main() -> int:
     print()
     if missing or diff:
         print("★★ **三时钟检查未通过 ⇒ ★ Stage 2 跑之前必须先修口径**")
+        return 1
+    # ★★★ 第 22 处口径修正：★ 披露用 pre 侧键漂移 ⇒ **同样**不许过（★ 否则披露会前后不一致）
+    if ci_missing or ci_diff:
+        print("★★ **三时钟检查未通过 ⇒ ★ 披露用 pre 侧键随时钟漂移 ⇒ ★ 必须先修口径**")
         return 1
     print("   ✔ 三时钟检查通过：★ pre 基线时钟无关 ⇒ ★ Stage 2 可直接跑")
     return 0

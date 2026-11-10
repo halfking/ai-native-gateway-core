@@ -203,6 +203,45 @@ SELECT 'M5_probe_runs_24h' k, COUNT(*)::text||' total | free='||
       AND pm.raw_model_name=node_probe_runs.raw_model_name))::text v
 FROM node_probe_runs WHERE created_at > now() - interval '24 hours';
 
+-- ═══ ★★★ 第 22 处口径修正（2026-11-11 00:2x）：★ M5 的「逐日探测量分布」═══
+--
+-- ★★ **为什么需要它（★ 实测抓到的真缺陷）**：★ M5 的 base = **pre24 的单日快照**（9242）
+-- ★   ⇒ ★ 而探测量**按天剧烈波动**（★ 实测 pre7d 逐日：11-03 **1292** / 11-04 2764 / 11-05 7794
+-- ★   / 11-06 **9905** / 11-07 8973 / 11-08 **2500** / 11-09 **9683** ⇒ **8× 差**）
+-- ★   ⇒ ★★ **pre 期实测 11-09 = 9683 > limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立**
+-- ★   ⇒ ★★ ⇒ M5 判 ❌ 时**不能**被读成「修复引起爆炸半径」⇒ ★★ 必须把「基线口径问题」摆到行内
+-- ★ ★★ **只出读数键、不改 base/limit**（★ 关窗前**不重冻**已验证基线）⇒ ★★ 判定器行内披露
+-- ★★ **pre7d 桶锚定切点 ⇒ 不含 now() ⇒ 时钟无关**；★ 键名不匹配 `PRE_KEY_RE` ⇒ **不进冻结对拍**
+--   ⇒ ★★ 既不动既有 pre 键的取值，也不触发重冻 ⇒ ★★ 合规且零漂移风险
+WITH d AS (
+  SELECT to_char(date_trunc('day', created_at),'MM-DD') dy, COUNT(*) c
+  FROM node_probe_runs
+  WHERE created_at >  TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+    AND created_at <= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+  GROUP BY date_trunc('day', created_at)
+)
+SELECT 'M5_pre7d_runs_by_day' k,
+  'days='||COALESCE(string_agg(dy||':'||c::text, ',' ORDER BY dy),'-')
+  ||' | n_days='||COUNT(*)::text
+  ||' | min='||COALESCE(min(c)::text,'0')
+  ||' | max='||COALESCE(max(c)::text,'0')
+  ||' | total='||COALESCE(sum(c)::text,'0')
+  v FROM d;
+
+WITH d AS (
+  SELECT to_char(date_trunc('day', created_at),'MM-DD') dy, COUNT(*) c
+  FROM node_probe_runs
+  WHERE created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+  GROUP BY date_trunc('day', created_at)
+)
+SELECT 'M5_post_runs_by_day' k,
+  'days='||COALESCE(string_agg(dy||':'||c::text, ',' ORDER BY dy),'-')
+  ||' | n_days='||COUNT(*)::text
+  ||' | min='||COALESCE(min(c)::text,'0')
+  ||' | max='||COALESCE(max(c)::text,'0')
+  ||' | total='||COALESCE(sum(c)::text,'0')
+  v FROM d;
+
 -- ═══ M6 ★ 收益面：免费在服对里命中 featured 的对数（修复前 15 → 部署后 34）═══
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
