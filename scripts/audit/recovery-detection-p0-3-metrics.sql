@@ -205,9 +205,13 @@ FROM nps WHERE gap > interval '24h';
 --   ★ idx_node_probe_runs_created）+ 先聚 free 面一次，再 JOIN ⇒ 42.4ms（-96%）。
 -- ★★ 输出契约不变：键 `M5_probe_runs_24h`，值 `total | free=`（r60 实测两口径
 --   ★ 逐字节一致：9463|1924 / 复跑 9465|1923）。
+-- ★★ 合并第 25 处口径修正（origin/main 同日）：★ p24 窗口必须**双界** —— 加
+--   ★ `created_at <= now()`。否则 as-of 负控里窗口变 [asof-24h, 真实now] ≈ 35h，
+--   ★ 与 24h 基线不同量纲 ⇒ 假红。now 时刻 = 「观测到的全部」⇒ 真实读数逐字节不变。
 WITH p24 AS (
   SELECT credential_id, raw_model_name FROM node_probe_runs
   WHERE created_at > now() - interval '24 hours'
+    AND created_at <= now()
 ), fr AS (
   SELECT DISTINCT b.credential_id, pm.raw_model_name
   FROM credential_model_bindings b
@@ -247,6 +251,10 @@ LEFT JOIN (
          COUNT(*) AS n
   FROM node_probe_runs
   WHERE created_at > now() - interval '24 hours'
+    -- ★★ 2026-11-11 第 25 处：★ **与 M5_probe_runs_24h 同窗口** ⇒ ★★ 必须**一起**有上界
+    --   ★★ 否则 ⇒ ★★ M5 的裁决窗口与它的「增量归因（by_kind）」分解**窗口不同**
+    --   ★★ ⇒ ★★ 归因读数不可复核（★ 同一行里的两个数字来自不同长度的窗口）
+    AND created_at <= now()
   GROUP BY 1
 ) c ON c.kind = w.kind;
 
@@ -279,6 +287,11 @@ WITH d AS (
   SELECT to_char(date_trunc('day', created_at),'MM-DD') dy, COUNT(*) c
   FROM node_probe_runs
   WHERE created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+    -- ★★ 2026-11-11 第 25 处：★ post 段**必须被 now() 界定**（★ 本键是 M5 判 ❌ 时的「post 逐日」披露）
+    --   ★★ 否则 ⇒ ★★ 窗口 = [切点, ∞) ⇒ ★★ as-of 替换**无效** ⇒ ★★ 负控/预演里它是 [切点, 真实now]
+    --   ★★ ⇒ ★★ ⇒ 披露用的 post 逐日**与 M5 的裁决窗口不同量纲** ⇒ ★★ 披露不可复核
+    --   ★★ 修法：★ 加 `created_at <= now()` ⇒ ★★ 真实读数逐字节不变（★ now = 观测到的全部）
+    AND created_at <= now()
   GROUP BY date_trunc('day', created_at)
 )
 SELECT 'M5_post_runs_by_day' k,
@@ -604,6 +617,12 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ **post 段必须被 now() 界定**
+     --   ★★ 形态：★ 本块的 era 判定只有**下界**（★ 切点字面量）⇒ ★★ post 段 = **[切点, ∞)**
+     --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口 = [切点, 真实now] ⇒ ★★ **不是 stage 窗口**
+     --   ★★★ 修法：★ 加 `created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --   ★★ ⇒ ★★ pre 侧不受影响（★ pre 全在切点前 ⇒ 全 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
@@ -640,6 +659,12 @@ WITH fr AS (
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '14 days'
+     -- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ **post 段必须被 now() 界定**
+     --   ★★ 形态：★ 本块的 era 判定只有**下界**（★ 切点字面量）⇒ ★★ post 段 = **[切点, ∞)**
+     --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口 = [切点, 真实now] ⇒ ★★ **不是 stage 窗口**
+     --   ★★★ 修法：★ 加 `created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --   ★★ ⇒ ★★ pre 侧不受影响（★ pre 全在切点前 ⇒ 全 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -683,6 +708,12 @@ WITH fr AS (
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '14 days'
+     -- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ **post 段必须被 now() 界定**
+     --   ★★ 形态：★ 本块的 era 判定只有**下界**（★ 切点字面量）⇒ ★★ post 段 = **[切点, ∞)**
+     --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口 = [切点, 真实now] ⇒ ★★ **不是 stage 窗口**
+     --   ★★★ 修法：★ 加 `created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --   ★★ ⇒ ★★ pre 侧不受影响（★ pre 全在切点前 ⇒ 全 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -927,7 +958,26 @@ SELECT CASE WHEN scope = 'all' THEN 'M14x_' ELSE 'M14_' END || win || '_' || grp
   -- ★★ 冷簇**速率**（★ 比分位数稳）：★ newly_covered 是双峰群体（热对 med≈3 / 冷对 med≈360）
   --   ⇒ p90 处于**边界**（实测 461 事件里约 16 个冷事件就能把 p90 从 47 顶到 360）
   --   ⇒ ★★ 分位数脆 ⇒ 另报「>300min 的慢事件占比」⇒ 群体层判据用这个
-  ||' | slow_gt300_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE recheck_min > 300)/COUNT(*),1)::text v
+  ||' | slow_gt300_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE recheck_min > 300)/COUNT(*),1)::text
+  -- ★★★★ 第 26 处口径修正（★ 2026-11-11 02:0x）：★ 「**::int 取整边界**」伪影 ⇒ post 行追加**亚分钟精度** raw
+  --   ★★ **形态（★ 真库实测）**：★ `recheck_min` 是**浮点分钟**（秒级精度）⇒ `::int` 把它截到分钟
+  --   ★★ 而判据把**取整后的整数**与「**另一个取整样本**」做**精确比较**（★ 如 `p90 ≤ pre_p90`）
+  --   ★★ ⇒ ★★ 真实差只要落在 **[−0.5, +0.5) 分钟** 的取整跨界带里 ⇒ 裁决符号就会翻转
+  --   ★★ ⇒ ★★ **实测（M20 豁免组，211 真库）**：★ post raw p90 = **360.5069** min ⇒ `::int` = **361**
+  --   ★★   而基线取整值 = **360** ⇒ 基线真值 ∈ [359.5, 360.5) ⇒ ⇒ **真实差 ∈ (0.01, 1.01] 分钟 ⇒ 上界 ≈ 60 秒（★ = 判据的整个分辨率）**
+  --   ★★ ⇒ ★★ 「判 ❌」与「差 ≤60 秒」⇒ ★★ **判据分辨率（1 分钟）比被测抖动（秒级）粗 ~60 倍**
+  --   ★★ ⇒ ★★ ⇒ **判 ❌ 不可读成「行为回归」**（★ 与第 23 处「M14 p99 361 vs 360」同族、同一形态）
+  --   ★★ ★★ **只给 post 行追加**（★ `CASE WHEN win='post'`）⇒ ★★ **pre 键逐字节不变**
+  --   ★★   ⇒ ★★ **M18 冻结面不变**（★ **不重冻**）⇒ ★★ 时钟门的 **pre 键逐字节对拍**也不变 ✔
+  --   ★★   ⇒ ★★ 字段名后缀固定用 `_raw`（★ 判定器的 `field()` 正则是 `\b名(?:_min)?=` ⇒ `_raw` 后面不是 `=`
+  --   ★★     ⇒ ★★ **不会误匹配既有字段**（★ 实测：`\bp90_min=` 不匹配 `p90_min_raw=`））
+  || CASE WHEN win='post' THEN
+        ' | med_min_raw='||COALESCE(round((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | p90_min_raw='||COALESCE(round((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | p99_min_raw='||COALESCE(round((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | max_min_raw='||COALESCE(round((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | gt360p5_n='||(COUNT(*) FILTER (WHERE recheck_min > 360.5))::text
+     ELSE '' END v
 FROM exp
 WHERE next_at IS NOT NULL
   -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
@@ -1125,7 +1175,16 @@ SELECT 'M15x_'||win||'__'||raw_model_name k,
   ||' | normal_top3600_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds=3600))::text
   ||' | normal_top7200_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds=7200))::text
   ||' | normal_top21600_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds=21600))::text
-  ||' | normal_ladder_max_s='||COALESCE((max(next_retry_seconds) FILTER (WHERE exemption='normal'))::text,'?') v
+  ||' | normal_ladder_max_s='||COALESCE((max(next_retry_seconds) FILTER (WHERE exemption='normal'))::text,'?')
+  -- ★★★★ 第 26 处口径修正（★ 2026-11-11 02:0x）：★ 「**::int 取整边界**」伪影 ⇒ post 行追加**亚分钟精度** raw
+  --   ★★ **为什么 M15x 也要**：★ normal 层的判据是 `post normal med ≤ 30`（★ 减半后的 30 分钟）
+  --   ★★   而实测 post normal med = **30**（★ **正好压在阈值上**）⇒ ★★ 真实值只要 > 30.5 ⇒ `::int` = 31 ⇒ **判 ❌**
+  --   ★★   ⇒ ★★ 这是**硬币另一面**（★ 与 M20 exempt 同源）：★ 阈值 30 是**硬数** ⇒ 真实差 = raw − 30（★ 精确可算）
+  --   ★★ ★★ **只给 post 行追加** ⇒ ★★ pre 键逐字节不变 ⇒ **M18 不重冻** ✔
+  || CASE WHEN win='post' THEN
+        ' | normal_med_min_raw='||COALESCE(round((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min) FILTER (WHERE exemption='normal'))::numeric,4)::text,'?')
+     || ' | normal_p90_min_raw='||COALESCE(round((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min) FILTER (WHERE exemption='normal'))::numeric,4)::text,'?')
+     ELSE '' END v
 FROM exp
 WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
@@ -1232,8 +1291,11 @@ FROM node_probe_state WHERE last_attempt_at IS NOT NULL;
 
 -- H4：探测覆盖率（★ handoff 指标 4 的修正版）
 SELECT 'H4_probe_coverage_24h' k,
-  COUNT(*)::text||' total | probed_24h='||COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours')::text
-  ||' | coverage_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours')/NULLIF(COUNT(*),0),1)::text v
+  COUNT(*)::text||' total | probed_24h='||COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours' AND last_attempt_at <= now())::text
+  ||' | coverage_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours' AND last_attempt_at <= now())/NULLIF(COUNT(*),0),1)::text v
+-- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ 「最近 24h 被探过」这个窗口**原来只有下界**
+--   ★★ ⇒ ★★ 窗口 = [now-24h, ∞) ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控里窗口 = ~35h ⇒ ★★ 与 24h 口径不同量纲
+--   ★★ 修法：★ 加 `last_attempt_at <= now()`（★ 快照表 ⇒ 该列不可能是未来 ⇒ ★ **真实读数逐字节不变**）
 FROM node_probe_state;
 
 -- H5：featured 模型的探测频率（★ handoff 任务 2.2-3 的修正版）
@@ -1251,6 +1313,10 @@ FROM (
   SELECT n.raw_model_name, COUNT(*) c
   FROM node_probe_runs n
   WHERE n.created_at > NOW() - INTERVAL '24 hours'
+    -- ★★ 2026-11-11 第 25 处（★ 穷举审计）：★ 「最近 24h 探了几次」**原来只有下界**
+    --   ★★ ⇒ ★★ as-of 替换只改得动下界 ⇒ ★★ 负控里窗口 = ~35h ⇒ ★★ 与 24h 口径不同量纲
+    --   ★★ 修法：★ 加 `created_at <= now()` ⇒ ★★ 真实读数逐字节不变（★ now = 观测到的全部）
+    AND n.created_at <= now()
     AND lower(btrim(n.raw_model_name)) IN (SELECT m FROM rawv_new)
   GROUP BY 1 ORDER BY 2 DESC LIMIT 10
 ) t;
@@ -1412,7 +1478,21 @@ SELECT 'M20_'||exemption||'_'||win k,
   ||' | slow_gt300_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE recheck_min > 300)/COUNT(*),1)::text
   ||' | ladder_p50='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY next_retry_seconds/60.0))::int::text,'?')
   ||' | top21600_n='||COUNT(*) FILTER (WHERE next_retry_seconds = 21600)::text
-  ||' | ladder_max_s='||COALESCE(max(next_retry_seconds)::text,'?') v
+  ||' | ladder_max_s='||COALESCE(max(next_retry_seconds)::text,'?')
+  -- ★★★★ 第 26 处口径修正（★ 2026-11-11 02:0x）：★ 「**::int 取整边界**」伪影 ⇒ post 行追加**亚分钟精度** raw
+  --   ★★ **为什么 M20 是首要受害者**：★ M20 exempt 的判据是 `p90_gap ≤ pre_p90`（★ **两个取整样本相比**）
+  --   ★★   而豁免组的阶梯**设计上钉 6h = 360 min** ⇒ ★★ 它的间隔分布**众数正好压在 360 附近**
+  --   ★★   ⇒ ★★ **取整边界 0.5 恰好落在分布最密处** ⇒ ★★ 最容易跨界
+  --   ★★ 实测（211 真库，★ 本轮）：post raw p90 = **360.5069** ⇒ `::int` = **361**；基线取整值 360
+  --   ★★   ⇒ 基线真值 ∈ [359.5, 360.5) ⇒ ⇒ **真实差 ∈ (0.01, 1.01] 分钟 ⇒ 上界 ≈ 60 秒** ⇒ ⇒ **假红**
+  --   ★★ ★★ 同款「1 分钟之差」在第 23 处已于 M14/M14x 的 `p99 361 vs 360` 上出现 ⇒ ★★ **同一形态**
+  --   ★★ ★★ **只给 post 行追加** ⇒ ★★ pre 键逐字节不变 ⇒ **M18 不重冻** ✔
+  || CASE WHEN win='post' THEN
+        ' | med_gap_raw='||COALESCE(round((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | p90_gap_raw='||COALESCE(round((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | max_gap_raw='||COALESCE(round((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::numeric,4)::text,'?')
+     || ' | gt360p5_n='||(COUNT(*) FILTER (WHERE recheck_min > 360.5))::text
+     ELSE '' END v
 FROM exp
 WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
