@@ -6463,6 +6463,13 @@ func failureAttribution(execErr error, candidates []provider.Candidate) (*int, *
 }
 
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
+	// ── 被动时序指纹采样（2026-11-10 审计 P0-B 断链修复）────────────────
+	// ★ 必须在 telemetryClient 检查**之前**执行 —— 被动指纹采样与遥测客户端
+	// 是两个独立的功能，不应该被 telemetryClient.Enabled() 绑在一起。
+	// 原位置在 telemetryClient 守卫之后 ⇒ telemetryClient 未设置或关闭时
+	// ⇒ 采样永不执行 ⇒ 测试红（TestEmitTelemetry_SubmitsPassiveFeaturesOnStreamingLane）。
+	h.samplePassiveTiming(capture, evt, result, keyInfo)
+
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
@@ -7086,14 +7093,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	if result.QualityScore != nil {
 		reqLog.QualityScore = result.QualityScore
 	}
-
-	// ── 被动时序指纹采样（2026-11-10 审计 P0-B 断链修复）────────────────
-	// ★ 必须在 emitTelemetry 顶层执行，**不能**嵌套在
-	// `if len(result.ResponseBody) > 0 {` 里 ⇒ 流式成功路径不填 ResponseBody
-	// （executor_chat.go:2489-2506 的 return &ExecuteResult{...} 没有该字段）
-	// ⇒ 那个分支永不执行 ⇒ 955 表永远空 ⇒ 整个被动指纹子系统失效。
-	// 211 实测：worker 跑、184 流式请求/10min、0 基线行 ⇒ 断链证实。
-	h.samplePassiveTiming(capture, evt, result, keyInfo)
 
 	// 2026-06-30: Extract tokens from response body for BOTH streaming and non-streaming.
 	// Previously this was inside the `if capture != nil` block, which meant non-streaming
