@@ -379,3 +379,118 @@ SELECT 'M11b_'||era||'_'||CASE WHEN is_ns THEN 'namespaced' ELSE 'bare' END k,
   c::text||' episodes | med='||COALESCE(med::int::text,'?')||' | p90='||COALESCE(p90::int::text,'?')
   ||' | max='||COALESCE(mx::int::text,'?') v
 FROM agg ORDER BY era, is_ns;
+
+-- ═══ M12 ★★★ 「失败→下次复检间隔」（★ 高样本量的及时性判据；★ 因果口径）═══
+--
+-- ★★ 为什么需要它（★ 本轮在窗口关闭前做的预判，2026-11-10）：
+--   M11（恢复感知时延）的事件是「失败段 → 下一次成功」，免费面 **24h 只有 1 个**
+--   namespaced episode（逐日 2–3 个）⇒ ★★ **24h 窗口内样本严重不足 ⇒ 判不了**。
+--   ⇒ 故增加 M12：事件口径放宽为「一次失败 → 该对的下一次探测（不论成败）」，
+--     **7 天样本 = 3,842 条（免费面）≈ 550 条/日** ⇒ 24h 窗口即可判定。
+--
+-- ★★ 因果口径（★ 关键）：featured 标签**按事件发生时点适用的集合**打，
+--   而不是「用今天的集合回溯标注历史」（★ 回溯标注会造出假象）：
+--     era1（< 2026-11-10 13:42:30 +08）用 st_old（92 条：rp ∪ cf ∪ **canonical 侧**展开）
+--     era2（≥ 切点）用 st_new（210 条：rp ∪ cf ∪ **两个来源**统一展开）
+--   ⇒ st_old 的 namespaced 条目 = 38；st_new = 144（★ +106 = 此前实测的未覆盖变体数）。
+--
+-- ★ 实测基线（pre 段，7 天）：ns|featured med=**3 min** vs ns|非featured med=**360 min**
+--   ⇒ ★★ **20× 差距** ⇒ 这就是「免费供应商迟迟不感知恢复」的机制形态。
+--   ★★ 可检验命题：era2 新纳入的 106 个变体此前落在 ns|非featured（med 360 min）
+--     ⇒ 修复后该组复检间隔应显著下移 ⇒ **24h 窗口用 n≈500 的样本判定**。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
+          FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_ns, created_at AS fail_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
+               THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
+               ELSE (lower(btrim(raw_model_name)) IN (SELECT m FROM st_new)) END feat_at_t
+   FROM seg WHERE success = FALSE AND next_at IS NOT NULL
+ )
+SELECT 'M12_recheck_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
+  COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
+FROM rec GROUP BY era, is_ns, feat_at_t ORDER BY 1;
+
+-- ═══ M12b ★ 样本量预判（★ 窗口关闭前先算「够不够判定」，别等关窗才发现样本不足）═══
+-- ① M11 episode 逐日数量（★ 近 7 天才是当前常态：10-27/28 的批量故障已滑出 7 天窗口）
+--    ★ 若 post_fix 段的 episode 数 < 5 ⇒ **明写「样本不足以判定」**，★ 不许外推。
+-- ② M12 事件量（★ 约 550/日 ⇒ 24h 窗口足够判定）
+WITH fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '14 days'
+     AND n.created_at < now() - interval '2 hours'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
+          LEAD(created_at)  OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+), rec AS (
+   SELECT is_ns, created_at AS fail_at,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era
+   FROM seg WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
+)
+SELECT 'M12b_episodes_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END k, COUNT(*)::text v
+FROM rec GROUP BY era, is_ns ORDER BY 1;
+
+-- ★ M11 基线的窗口敏感性（★ 为什么 M11 固定用 7 天而不是 14/30 天）：
+--   近 14 天 namespaced episode = 251，但 **10-27/28 两天就占 223（89%）**
+--   ⇒ 那是一次批量故障的尾巴 ⇒ ★ **加宽窗口会污染基线**，不是让基线更可信。
+
+-- ═══ M12c ★ M11 episode 的逐日分布（★ 证明「7 天窗口」是当前常态、14 天会被污染）═══
+-- ★ 实测：10-27 = 32、**10-28 = 191**（一次批量故障的尾巴）⇒ 14 天窗口的 251 个
+--   namespaced episode 里 **223（89%）** 来自那两天 ⇒ ★ 加宽窗口 = 污染基线。
+WITH fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '14 days'
+     AND n.created_at < now() - interval '2 hours'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
+          LEAD(created_at)  OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+), rec AS (
+   SELECT is_ns, created_at AS fail_at
+   FROM seg WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
+)
+SELECT 'M12c_episodes_'||to_char(date_trunc('day', fail_at),'MM-DD')||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END k,
+       COUNT(*)::text v
+FROM rec GROUP BY 1 ORDER BY 1;
