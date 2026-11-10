@@ -167,10 +167,18 @@ func (s *MemoryStore) RecordEvents(ctx context.Context, events []Event, limit in
 		}
 	}
 	for len(s.events) > retentionLimit(limit) {
+		// 2026-11-10：LastSeen 同刻并列（同一批/同毫秒写入）时的平局裁决改为
+		// **活跃度优先**（Count ASC，再 ID ASC）——纯创建序（ID ASC）会把本批
+		// 刚被重复聚合、Count 最高的条目（恰是最活跃的指纹）当"最老"删掉
+		//（TestEventRetentionKeepsRecentlyAggregatedEntry 自 2026-10-16 起红）。
+		// LastSeen 不同刻时行为与原先逐字节一致。
 		var oldest string
 		var candidate Event
 		for k, e := range s.events {
-			if oldest == "" || e.LastSeen.Before(candidate.LastSeen) || (e.LastSeen.Equal(candidate.LastSeen) && e.ID < candidate.ID) {
+			if oldest == "" ||
+				e.LastSeen.Before(candidate.LastSeen) ||
+				(e.LastSeen.Equal(candidate.LastSeen) && (e.Count < candidate.Count ||
+					(e.Count == candidate.Count && e.ID < candidate.ID))) {
 				oldest = k
 				candidate = e
 			}
@@ -191,7 +199,15 @@ func (s *MemoryStore) ListEvents(ctx context.Context, f EventFilter) ([]Event, e
 			out = append(out, cloneEvent(e))
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+	// 2026-11-10：补 ID DESC 平局裁决——LastSeen 同刻并列时非稳定排序会随机
+	// 翻转 rows[0]（TestReviewedEventsAreLinkedInPublicationTransaction 的
+	// flaky 根源：sort.Slice 对相等键无顺序保证）。
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].LastSeen.Equal(out[j].LastSeen) {
+			return out[i].LastSeen.After(out[j].LastSeen)
+		}
+		return out[i].ID > out[j].ID
+	})
 	if len(out) > boundedLimit(f.Limit) {
 		out = out[:boundedLimit(f.Limit)]
 	}
