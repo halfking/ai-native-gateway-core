@@ -151,6 +151,9 @@ func TestClampRecoverableProbeSchedulesBoundRealDB(t *testing.T) {
 		t.Fatalf("建临时表失败：%v", err)
 	}
 	// 5 行可恢复类（超期 ⇒ 应被拉回）+ 1 行永久类（404 ⇒ 不得动）+ 1 行未超期（⇒ 不得动）
+	// + 1 行「持续失败类」（consecutive_failures ≥ 阈值 ⇒ 远期排程是**升级裁决**，
+	//   不是遗留漂移 ⇒ clamp 不得把它拉回 5 分钟 ⇒ 见 $3 谓词）
+	threshold := sustainedFailureAttemptThreshold()
 	if _, err := p.Exec(ctx, `
 		INSERT INTO node_probe_state
 			(credential_id, raw_model_name, next_retry_at, next_retry_seconds, last_err_code, consecutive_failures, last_direct_ok)
@@ -161,6 +164,13 @@ func TestClampRecoverableProbeSchedulesBoundRealDB(t *testing.T) {
 		VALUES (99,'perm', now()+interval '3 hours', 10800, 'probe_http_404', 2, false),
 		       (98,'fresh', now()+interval '10 seconds', 10, 'timeout', 1, false)`); err != nil {
 		t.Fatalf("造数失败：%v", err)
+	}
+	// ★ 持续失败行单独一条（带参数 ⇒ pgx 走扩展协议 ⇒ 不能与其它语句同批）。
+	if _, err := p.Exec(ctx, `
+		INSERT INTO node_probe_state
+			(credential_id, raw_model_name, next_retry_at, next_retry_seconds, last_err_code, consecutive_failures, last_direct_ok)
+		VALUES (97,'sustained', now()+interval '3 hours', 10800, 'http_503', $1, false)`, threshold); err != nil {
+		t.Fatalf("造数失败（持续失败行）：%v", err)
 	}
 
 	countClamped := func(tag string) int {
@@ -173,7 +183,16 @@ func TestClampRecoverableProbeSchedulesBoundRealDB(t *testing.T) {
 	}
 
 	// ① 一批上界：LIMIT=2 ⇒ 精确只改 2 行
-	if _, err := p.Exec(ctx, clampRecoverableProbeSchedulesSQL(), 300, nodeProbeClampBatch/100); err != nil {
+	//
+	// ★★ 2026-11-10 修正（过期断言修复）：生产调用点
+	//   （bg/node_probe.go 的 clamp 调用）在 2026-11-07 的提交 60c7de29f 里
+	//   给 clamp SQL 增加了第三个占位符 $3（持续失败阈值），
+	//   **但本测试仍只传 2 个参数** ⇒ 在真库环境下必然报
+	//   “mismatched param and argument count”。
+	//   ★ 该用例平时被 skip 掩盖（无 TEST_DATABASE_URL ⇒ 不跑）⇒ 真库门才暴露。
+	//   ⇒ 这里按生产调用点的形态传第三个参数，**并保留原有意图**
+	//     （一批只改 N 行 / 永久类与未超期行不得动）。
+	if _, err := p.Exec(ctx, clampRecoverableProbeSchedulesSQL(), 300, nodeProbeClampBatch/100, threshold); err != nil {
 		t.Fatalf("clamp 执行失败：%v", err)
 	}
 	if got := countClamped("LIMIT=2"); got != 2 {
@@ -181,7 +200,7 @@ func TestClampRecoverableProbeSchedulesBoundRealDB(t *testing.T) {
 	}
 
 	// ② 永久类与未超期行【不得】被动
-	var perm, fresh int
+	var perm, fresh, sustained int
 	if err := p.QueryRow(ctx,
 		`SELECT count(*) FROM node_probe_state WHERE raw_model_name='perm' AND next_retry_seconds=10800`).Scan(&perm); err != nil {
 		t.Fatalf("统计 perm 失败：%v", err)
@@ -190,15 +209,30 @@ func TestClampRecoverableProbeSchedulesBoundRealDB(t *testing.T) {
 		`SELECT count(*) FROM node_probe_state WHERE raw_model_name='fresh' AND next_retry_seconds=10`).Scan(&fresh); err != nil {
 		t.Fatalf("统计 fresh 失败：%v", err)
 	}
-	if perm != 1 || fresh != 1 {
-		t.Fatalf("clamp 误伤了不该动的行：perm=%d fresh=%d（★ 期望各 1）", perm, fresh)
+	// ★★ 新契约判别面（$3）：consecutive_failures ≥ 阈值的行，其远期排程是
+	//   「持续失败升级」的裁决结果 ⇒ clamp **不得**把它拉回 5 分钟。
+	//   （这一条是 2026-11-07 引入 $3 时**漏写**的断言，本轮补上。）
+	if err := p.QueryRow(ctx,
+		`SELECT count(*) FROM node_probe_state WHERE raw_model_name='sustained' AND next_retry_seconds=10800`).Scan(&sustained); err != nil {
+		t.Fatalf("统计 sustained 失败：%v", err)
+	}
+	if perm != 1 || fresh != 1 || sustained != 1 {
+		t.Fatalf("clamp 误伤了不该动的行：perm=%d fresh=%d sustained=%d（★ 期望各 1）",
+			perm, fresh, sustained)
 	}
 
-	// ③ 大批量 ⇒ 剩下的可恢复行全部被拉回
-	if _, err := p.Exec(ctx, clampRecoverableProbeSchedulesSQL(), 300, nodeProbeClampBatch); err != nil {
+	// ③ 大批量 ⇒ 剩下的可恢复行全部被拉回（持续失败行仍不得动）
+	if _, err := p.Exec(ctx, clampRecoverableProbeSchedulesSQL(), 300, nodeProbeClampBatch, threshold); err != nil {
 		t.Fatalf("clamp 第二批执行失败：%v", err)
 	}
 	if got := countClamped("LIMIT=full"); got != 5 {
 		t.Fatalf("clamp 未覆盖全部可恢复行：改了 %d 行（★ 期望 5）", got)
+	}
+	if err := p.QueryRow(ctx,
+		`SELECT count(*) FROM node_probe_state WHERE raw_model_name='sustained' AND next_retry_seconds=10800`).Scan(&sustained); err != nil {
+		t.Fatalf("统计 sustained 失败：%v", err)
+	}
+	if sustained != 1 {
+		t.Fatalf("持续失败行被 clamp 拉回了（sustained 仍为 10800 的行数=%d，★ 期望 1）", sustained)
 	}
 }
