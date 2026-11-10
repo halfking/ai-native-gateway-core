@@ -494,3 +494,90 @@ WITH fr AS (
 SELECT 'M12c_episodes_'||to_char(date_trunc('day', fail_at),'MM-DD')||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END k,
        COUNT(*)::text v
 FROM rec GROUP BY 1 ORDER BY 1;
+
+-- ═══ M12s ★★ M12 的「已结算」版本（★ 消除右删失偏差）═══
+--
+-- ★★ 右删失（censoring）实测（2026-11-10 14:0x，era2 部署后 1 小时）：
+--   era2 切点以来免费面 14 次失败（13 bare + 1 ns）⇒ **0 次已复检**（全部待复检）；
+--   而部署前 24h：bare 588 次失败 → 564 已复检(96%)、ns 400 → 320 已复检(80%)。
+--   ⇒ ★★ **M12 的 post 段会系统性漏掉「复检慢」的对** ⇒ **偏差方向对我们有利**
+--      （post 会显得比实际更快）⇒ ⇒ ★ **必须披露并用结算过滤修正**。
+--
+-- ★ M12s：只取「失败已发生 ≥6h」的事件（复检阶梯上限就是 6h ⇒ 绝大多数已结算）
+--   ⇒ 与 M12 同口径、但剔除了最年轻、最容易被删失的那批。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m JOIN provider_models pm ON pm.canonical_id = mc.id WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_ns, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
+               THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
+               ELSE (lower(btrim(raw_model_name)) IN (SELECT m FROM st_new)) END feat_at_t
+   FROM seg WHERE success = FALSE
+ )
+SELECT 'M12s_settled_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
+  COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
+FROM rec
+WHERE fail_at < now() - interval '6 hours'      -- ★ 结算过滤：失败已发生 ≥6h
+  AND next_at IS NOT NULL
+GROUP BY era, is_ns, feat_at_t ORDER BY 1;
+
+-- ═══ M12p ★ 待复检计数（★ 被删失掉的那些事件 —— ★ 不是一个判据，是一个护栏）═══
+-- ★ 用途：M12/M12s 的分布**看不到**「还没被复检」的失败 ⇒ 必须单独报这个数，
+--   否则分布会被系统性美化。★ 实测 pre 段（部署前 48h、6h 结算）：
+--   bare 935 次失败 → **0** 待复检；ns 581 → **1** 待复检
+--   ⇒ ★★ **「失败后没人再去探」这个假设已被证伪**（pending ≈ 0）
+--   ⇒ ★ 真正的机制不是「没人去探」，而是「**去探了，但阶梯让 ta 等 ~6 小时**」
+--      （M12: ns 非 featured 的复检间隔中位 = 360 min vs ns featured = 3 min）。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m JOIN provider_models pm ON pm.canonical_id = mc.id WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_ns, created_at AS fail_at, next_at,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
+               THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
+               ELSE (lower(btrim(raw_model_name)) IN (SELECT m FROM st_new)) END feat_at_t
+   FROM seg WHERE success = FALSE
+ )
+SELECT 'M12p_pending_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
+  COUNT(*)::text||' failures_aged6h | pending='||COUNT(*) FILTER (WHERE next_at IS NULL)::text
+  ||' | pending_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_at IS NULL)/COUNT(*),1)::text v
+FROM rec WHERE fail_at < now() - interval '6 hours'
+GROUP BY era, is_ns, feat_at_t ORDER BY 1;
