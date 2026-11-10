@@ -114,13 +114,10 @@ func TestNonfeaturedWatchdogIntegration(t *testing.T) {
 	}
 
 	// Execute watchdog update with eligibility filters
+	// ★ 2026-11-11（断链⑦）：static CTE 用生产同一出处（bg.StaticFeaturedCTESQL）
+	// —— 不再手抄旧单源形态，防「自测副本与生产 SQL 漂移」。
 	tag, err := pool.Exec(ctx, `
-		WITH static AS (
-		    SELECT lower(unnest(COALESCE(
-		        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
-		        ARRAY[]::TEXT[]
-		    ))) AS model
-		), usage AS (
+		WITH `+StaticFeaturedCTESQL()+`, usage AS (
 		    SELECT lower(raw_model) AS raw_model FROM (
 		        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
 		               count(*) AS calls

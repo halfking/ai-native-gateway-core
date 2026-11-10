@@ -37,8 +37,9 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "standardized_name"}))
 	mock.ExpectQuery("COALESCE\\(cmb.available, FALSE\\) = \\$2").WithArgs(credID, false).
 		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "standardized_name"}))
-	mock.ExpectQuery("FROM routing_policy").WithArgs("default").
-		WillReturnRows(pgxmock.NewRows([]string{"featured_models"}).AddRow([]string{}))
+	// ★ 2026-11-11（断链⑦）：selfcheckFeatured 走统一双源装载（逐行字符串）。
+	mock.ExpectQuery("SELECT model FROM static").WithArgs("default").
+		WillReturnRows(pgxmock.NewRows([]string{"model"}))
 	// ★ 2026-10-20（迁移 890，v1 族退役）：recentUsageModels 的读源从
 	// `_request_logs_hot` 换成**会话族热腿**（v1 热表已 DROP）。
 	// 这条期望同时是「读面确实落在会话族」的证据：pgxmock 按正则匹配，

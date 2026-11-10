@@ -61,6 +61,21 @@ const (
 	// （30 天，原 writer.go 值不变）。
 	DefaultModelDeprecatedCooldownSeconds = 30 * 24 * 3600
 
+	// DefaultEmptyResponseStreakThreshold 空响应连击降级阈值（2026-11-11
+	// 节点状态链断链①收口）。同一 (tenant,provider,credential,model) 节点
+	// 连续 N 次 KindEmptyResponse ⇒ 绑定级冷却（auto_empty_response_streak）。
+	// 生产依据：glm-5.3-flash 经 NIM 中继空流 48 起/6h 全失败而节点状态零痕迹
+	// ——「短促突发仍只走 URSM 软信号」（既有语义，3 次以内不罚）与
+	// 「持续性空响应必须有持久降级器」的分界线取 5。
+	DefaultEmptyResponseStreakThreshold = 5
+	// DefaultEmptyResponseCooldownSeconds 空响应连击首次冷却（10min 档）：
+	// 覆盖上游思考预算失控/中继半故障的常见恢复尺度；冷却期内连击再触发
+	// 升级为 3×（30min）。远小于 MNF 档（30min/7d）——空响应是质量问题而非
+	// 模型不存在，探测/请求成功即自动复位。
+	DefaultEmptyResponseCooldownSeconds = 600
+	// DefaultEmptyResponseSustainedCooldownSeconds 冷却期内二次连击升级档。
+	DefaultEmptyResponseSustainedCooldownSeconds = 1800
+
 	// DefaultProbeStateAgingHours 健康证据老化窗默认 2 小时（设计 §6.3
 	// "2h 无证据节点转可疑"；watchdog 30min tick 读取，改值下一 tick 生效）。
 	DefaultProbeStateAgingHours = 2
@@ -71,6 +86,11 @@ const (
 	KeyModelNotFoundInitialCooldownSeconds   = "credential.model_not_found_initial_cooldown_seconds"
 	KeyModelNotFoundSustainedCooldownSeconds = "credential.model_not_found_sustained_cooldown_seconds"
 	KeyModelDeprecatedCooldownSeconds        = "credential.model_deprecated_cooldown_seconds"
+
+	// 2026-11-11 节点状态链断链①（KindEmptyResponse 持久降级）新增键。
+	KeyEmptyResponseStreakThreshold          = "nodehealth.empty_response_streak_threshold"
+	KeyEmptyResponseCooldownSeconds          = "credential.empty_response_cooldown_seconds"
+	KeyEmptyResponseSustainedCooldownSeconds = "credential.empty_response_sustained_cooldown_seconds"
 )
 
 // ThresholdSpecs returns the centralized routing/probe/fp-slot threshold specs.
@@ -212,6 +232,51 @@ func ThresholdSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			Key:             KeyEmptyResponseStreakThreshold,
+			EnvName:         "LLM_GATEWAY_NODEHEALTH_EMPTY_RESPONSE_STREAK_THRESHOLD",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryCircuitBreaker,
+			Min:             floatPtr(2),
+			Max:             floatPtr(50),
+			Default:         DefaultEmptyResponseStreakThreshold,
+			Description:     "空响应连击降级阈值（次）",
+			DescriptionLong: "同一 (凭据,模型) 绑定连续 N 次 empty_response（上游 200 但零内容，如 NIM 中继空流/思考型模型烧光预算）时写绑定级冷却（auto_empty_response_streak），从候选池摘除一段时间。阈值以下仍只记 URSM 软信号，不影响绑定可用性。2026-11-11 节点状态链断链①：此前空响应在断路器/绑定/探针三处均无痕迹，48 起/6h 全失败仅剩窗口分软信号。",
+			Unit:            "次",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             KeyEmptyResponseCooldownSeconds,
+			EnvName:         "LLM_GATEWAY_CREDENTIAL_EMPTY_RESPONSE_COOLDOWN_SECONDS",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryCircuitBreaker,
+			Min:             floatPtr(60),
+			Max:             floatPtr(86400),
+			Default:         DefaultEmptyResponseCooldownSeconds,
+			Description:     "空响应连击首次冷却（秒）",
+			DescriptionLong: "空响应连击达到阈值后绑定级冷却的首次时长（默认 10 分钟）。探测/请求成功即自动复位。",
+			Unit:            "秒",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             KeyEmptyResponseSustainedCooldownSeconds,
+			EnvName:         "LLM_GATEWAY_CREDENTIAL_EMPTY_RESPONSE_SUSTAINED_COOLDOWN_SECONDS",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryCircuitBreaker,
+			Min:             floatPtr(180),
+			Max:             floatPtr(604800),
+			Default:         DefaultEmptyResponseSustainedCooldownSeconds,
+			Description:     "空响应连击升级冷却（秒）",
+			DescriptionLong: "绑定已在空响应冷却期内连击再次触发时的升级时长（默认 30 分钟）。空响应是质量问题而非模型不存在，故整体远小于 MNF 档（30min/7d）。",
+			Unit:            "秒",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
 			Key:             KeyProbeStateAgingHours,
 			EnvName:         EnvNameAuto(KeyProbeStateAgingHours),
 			Type:            TypeInt,
@@ -291,6 +356,24 @@ func ModelNotFoundSustainedCooldownSeconds() int {
 // binding cooldown.
 func ModelDeprecatedCooldownSeconds() int {
 	return clampThresholdInt(GetPlatformInt(KeyModelDeprecatedCooldownSeconds, DefaultModelDeprecatedCooldownSeconds), 86400, 31536000)
+}
+
+// EmptyResponseStreakThreshold returns the consecutive empty-response count
+// that escalates a binding-scoped cooldown (node-state chain gap #1, 2026-11-11).
+func EmptyResponseStreakThreshold() int {
+	return clampThresholdInt(GetPlatformInt(KeyEmptyResponseStreakThreshold, DefaultEmptyResponseStreakThreshold), 2, 50)
+}
+
+// EmptyResponseCooldownSeconds returns the initial binding cooldown for an
+// empty-response streak demotion.
+func EmptyResponseCooldownSeconds() int {
+	return clampThresholdInt(GetPlatformInt(KeyEmptyResponseCooldownSeconds, DefaultEmptyResponseCooldownSeconds), 60, 86400)
+}
+
+// EmptyResponseSustainedCooldownSeconds returns the escalated cooldown when a
+// streak fires again while the binding is already auto_empty_response_streak-cooled.
+func EmptyResponseSustainedCooldownSeconds() int {
+	return clampThresholdInt(GetPlatformInt(KeyEmptyResponseSustainedCooldownSeconds, DefaultEmptyResponseSustainedCooldownSeconds), 180, 604800)
 }
 
 // clampThresholdInt defends against out-of-range values arriving through

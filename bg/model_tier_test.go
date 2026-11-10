@@ -158,9 +158,13 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 		"GROUP BY rl.raw_model_name", // dedup (audit #11)
 	}
 	src := sourceFromFile(t, "model_tier.go")
+	// ★ 2026-11-11（断链⑦）：feat_names CTE 移到 featured_sources.go（与
+	// selfcheck/model_probe watchdog 共用同一出处）⇒ 模式守卫改为读合并源，
+	// 牙齿不减：featured 装载 SQL 无论落在哪个文件，列名守卫都覆盖。
+	src += sourceFromFile(t, "featured_sources.go")
 	for _, fragment := range mustContain {
 		assert.True(t, strings.Contains(src, fragment),
-			"model_tier.go must contain %q (audit guard)", fragment)
+			"model_tier.go+featured_sources.go must contain %q (audit guard)", fragment)
 	}
 	// 源必须是会话族热腿。
 	// ⚠ 用正则而不是子串：`+` 两侧的空格是排版细节（`FROM `+db.X()+` rl` 与
@@ -172,6 +176,8 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// ⚠ 正向对照：上面那条会话族源断言 —— 只删 v1 不加会话族会被抓住。
 	// ⚠ 边界：文件里的历史注释提到过 "_request_logs_hot"（无 FROM），
 	// 所以 needle 必须带 "FROM " 才不会踩到注释。
+	// ⚠ 范围：负向守卫只看 model_tier.go —— featured_sources.go 的
+	// `SELECT model FROM static` 是 CTE 别名列（非会话族物理列），不在本守卫语义内。
 	assert.False(t, strings.Contains(src, "FROM _request_logs_hot"),
 		"model_tier.go must not read the retired v1 family (migration 890 dropped it)")
 	// Guard: must NOT reference the bare `model` column from request_logs_hot.
@@ -180,7 +186,7 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// or `outbound_model`). `\bmodel\b` matches a bare token `model` only when
 	// it's not preceded by `raw_` or any column prefix.
 	notAllowed := regexp.MustCompile(`(?im)(?:select|where|group\s+by|order\s+by)\s+(?:\w+\.)?model\b`)
-	assert.False(t, notAllowed.MatchString(src),
+	assert.False(t, notAllowed.MatchString(sourceFromFile(t, "model_tier.go")),
 		"the session family has no bare `model` column; use rl.raw_model_name")
 
 	// Tier-aware priority must return the featured default when the global
