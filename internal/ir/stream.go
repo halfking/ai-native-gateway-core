@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/tooldialect"
 )
 
 // StreamChunk is the unified intermediate representation for streaming chunks.
@@ -576,20 +578,13 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		}
 
 		if evt.ContentBlock.Type == "tool_use" {
-			arguments := string(evt.ContentBlock.Input)
-			// 标准 Anthropic 流里 content_block_start.tool_use.input 恒为
-			// `{}` 占位符，真实参数经 input_json_delta 增量到达。占位符若被
-			// 当作「首个参数片段」下发/累计，终态参数会拼成 `{}{...}` —— 不是
-			// 合法 JSON，输出合规守卫 fail-closed 整流拦断（211 生产实证
-			// 2026-11-11：/v1/responses 客户端 × anthropic 上游，rule=
-			// builtin.guard.tool_json_invalid，field_bytes=2+真实参数长度）。
-			// anthropic→chat 桥（anthropic_bridge.go content_block_start 分支的
-			// `!= "{}"` 守卫）历来排除它；这里把同一条 wire 语义推进解析器，
-			// 所有消费方一致。非标准中继把真实半截参数放进 input 的形状不受
-			// 影响（保留、由后续增量续拼）。
-			if arguments == "{}" {
-				arguments = ""
-			}
+			// 「content_block_start 的 `{}` 是占位符、不得进入参数流」这条
+			// anthropic wire 语义由 tooldialect 单点拥有（SRP）；此前它内联在
+			// 这里、又内联在 anthropic→chat 桥、且在 anthropic→responses 桥
+			// 缺失——2026-11-11 211 的 builtin.guard.tool_json_invalid 事故
+			// 正是缺失那一处（终态参数拼成 `{}{...}`）。新厂商/协议接入 =
+			// 在 tooldialect 注册新方言，解析器与桥零改动（OCP）。
+			arguments := tooldialect.ForProtocol(ProtocolAnthropicMessages).StartArguments(evt.ContentBlock.Input)
 			chunk.Type = ChunkTypeDelta
 			chunk.Delta = &StreamDelta{
 				ToolCalls: []StreamToolCallDelta{{
