@@ -35,7 +35,12 @@ import (
 //	需要它来挂「抓取前刷新抓取时刻求值指标」的包装
 //	（mcp_gateway_uptime_seconds 只有抓取时刻才有意义）。
 //	★ 而它必须在 /metrics 注册**之前**被调用，否则拿不到实例。★★
-func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger) *mcp.Gateway {
+//
+// ★ localTools 是网关**本地**工具注册表（可为 nil）：把「按步取回明细」
+//
+//	「语义召回长期记忆」暴露成 MCP 数据面可列出、可调用的工具。
+//	nil ⇒ 没有任何本地工具 ⇒ 行为与引入该参数前完全一致。
+func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger, localTools *mcp.LocalToolRegistry) *mcp.Gateway {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -48,6 +53,7 @@ func registerMCPGateway(mux *http.ServeMux, logger *slog.Logger) *mcp.Gateway {
 		logger.Info("mcp gateway: disabled by MCP_GATEWAY_ENABLED=false")
 		return nil
 	}
+	envCfg.LocalTools = localTools
 
 	gateway, err := envCfg.Build()
 	if err != nil {

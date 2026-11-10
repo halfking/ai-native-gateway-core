@@ -17,7 +17,7 @@ func newMCPTestMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	registerMCPGateway(mux, logger)
+	registerMCPGateway(mux, logger, nil)
 	return mux
 }
 
@@ -71,7 +71,7 @@ func TestRegisterMCPGatewayMountsRoutes(t *testing.T) {
 func TestRegisterMCPGatewayDisabledByEnv(t *testing.T) {
 	t.Setenv("MCP_GATEWAY_ENABLED", "false")
 	mux := http.NewServeMux()
-	registerMCPGateway(mux, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	registerMCPGateway(mux, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 
 	// 关闭 ⇒ 路径不挂载 ⇒ 404（语义＝未部署该子系统）。
 	rec := httptest.NewRecorder()
@@ -84,7 +84,7 @@ func TestRegisterMCPGatewayDisabledByEnv(t *testing.T) {
 func TestRegisterMCPGatewayControlPlaneRejectsWrongToken(t *testing.T) {
 	t.Setenv("MCP_GATEWAY_ADMIN_TOKEN", "right-token")
 	mux := http.NewServeMux()
-	registerMCPGateway(mux, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	registerMCPGateway(mux, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 
 	// 令牌不对 ⇒ 401。
 	req := httptest.NewRequest(http.MethodGet, "/mcp/control/tools", nil)

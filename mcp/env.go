@@ -72,6 +72,12 @@ type EnvConfig struct {
 	MaxBodyBytes int
 	// ControlScopeDisabled 控制面 scope 鉴权被关闭（只认管理令牌）。
 	ControlScopeDisabled bool
+	// LocalTools 是网关本地工具注册表（由网关自己执行，不经上游适配器）。
+	//
+	// ★ 零值 / nil ⇒ 没有任何本地工具 ⇒ 行为与引入本字段前完全一致。
+	//   装载方（cmd/gateway）负责填，因为工具的执行依赖网关自己的
+	//   装配件（会话库 / 记忆库），mcp 包不该知道它们。
+	LocalTools *LocalToolRegistry
 }
 
 // LoadEnvConfig 解析环境变量。
@@ -156,6 +162,7 @@ func (e EnvConfig) Build() (*Gateway, error) {
 		Breaker:              NewCircuitBreaker(e.CircuitFailures, e.CircuitOpen),
 		Bootstrap:            e.Bootstrap,
 		ControlScopeDisabled: e.ControlScopeDisabled,
+		LocalTools:           e.LocalTools,
 	}
 	g, err := NewGateway(cfg)
 	if err != nil {

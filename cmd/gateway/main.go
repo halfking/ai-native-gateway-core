@@ -137,6 +137,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/userscriptcapture" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
+	"github.com/kaixuan/llm-gateway-go/mcp"
 	"github.com/kaixuan/llm-gateway-go/metatools"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/middleware"
@@ -6873,13 +6874,38 @@ func main() {
 	// 可读：不含 provider/credential 等敏感数据，供跨服务能力发现使用。
 	mux.Handle("/api/v2/capabilities", NewCapabilitiesHandler(Version(), cfg.Listen))
 
+	// 上下文智能体（网关侧上下文识别 + 记忆分层加载 + 动态压缩）。
+	//
+	// ★ 默认关（LLM_GATEWAY_CONTEXT_AGENT_ENABLED=1 才开）：这是**新增能力面**
+	//   （新的 HTTP 端点 + 新的 MCP 本地工具），默认开启等于改变现网行为面。
+	//
+	// ★ 必须排在 registerMCPGateway **之前**：它产出的本地工具注册表要注入
+	//   MCP 网关（否则记忆工具在 MCP 数据面里既列不出也调不了）。
+	//
+	// ★ 依赖是软依赖：没有 PG 就少 L0/L1 层，没有 Memora 就少 L2 层，
+	//   缺层不阻断请求（记忆是增强，不是前置条件）。
+	var ctxAgentLocalTools *mcp.LocalToolRegistry
+	var ctxAgentPool *pgxpool.Pool
+	if dbConn != nil && dbConn.Enabled() {
+		ctxAgentPool = dbConn.Pool()
+	}
+	ctxAgent := registerContextAgent(mux, slog.Default(), contextAgentDeps{
+		Pool:        ctxAgentPool,
+		Memory:      memorySvc.Reader(),
+		Listen:      cfg.Listen,
+		AdminAPIKey: cfg.AdminAPIKey,
+	})
+	if ctxAgent != nil {
+		ctxAgentLocalTools = ctxAgent.LocalTools
+	}
+
 	// MCP 服务网关（数据面 /mcp + 控制面 /mcp/control + 看板 /mcp/admin）。
 	// 装配失败只记日志不阻断启动：MCP 网关是附加能力。
 	//
 	// ★ 必须排在 /metrics 注册**之前**：下面的 /metrics 端点要在这个网关上
 	//   挂「抓取前刷新抓取时刻求值指标」的包装（mcp_gateway_uptime_seconds
 	//   只有抓取时刻才有意义），拿不到网关实例就没法挂。
-	mcpGateway := registerMCPGateway(mux, slog.Default())
+	mcpGateway := registerMCPGateway(mux, slog.Default(), ctxAgentLocalTools)
 
 	// NET-008 fix: /metrics 必须 admin 鉴权（暴露所有 prometheus 注册
 	// 指标含 provider / credential 等敏感标签）。使用
