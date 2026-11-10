@@ -124,14 +124,22 @@ def head_count(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def load_verdict():
+    """★ 加载**未打补丁**的判定器模块（★ 本文件只取它的**解析实现** ⇒ ★ 单一真源）。"""
+    spec = importlib.util.spec_from_file_location("negctl_verdict_plain", VERDICT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def parse(raw: str) -> dict[str, str]:
-    d = {}
-    for line in raw.splitlines():
-        if "|" not in line:
-            continue
-        k, v = line.split("|", 1)
-        d[k.strip()] = v.strip()
-    return d
+    """★ 第 32 处：★ 走**严格解析**（★ 重复键 ⇒ **fail-closed** ⇒ rc≠0）。
+
+    ★★ 原形态：本文件自带一份 `d[k.strip()] = v.strip()` ⇒ ★ **留末行**
+      ⇒ ★★ 与判定器（`setdefault` ⇒ ★ **留首行**）**语义不同** ⇒ ★★ 同一份原始输出
+      ⇒ ★★ **两个解析器给出两个不同的数** ⇒ ★★ 静默丢行 ⇒ ★★ 负控可能在错的读数上判
+    """
+    return load_verdict().parse_strict(raw, where="negcontrol")
 
 
 def build_shifted_sql(sql: str, shift_days: int, stage: int) -> tuple[str, dict]:

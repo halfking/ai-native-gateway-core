@@ -454,7 +454,13 @@ WHERE pm.standardized_name IS NOT NULL AND pm.standardized_name<>''
   AND lower(pm.standardized_name) <> lower(mc.canonical_name);
 
 WITH diff AS (
-  SELECT pm.raw_model_name, pm.standardized_name, mc.canonical_name, mc.featured
+  -- ★★★ 2026-11-11 第 32 处：★ **DISTINCT**（★ 同一 raw 名可挂在**多个 provider_id** 下
+  --   ⇒ ★ 真库实测：`glm-4-7-251222` 与 `glm-5-2-260617` 各有 **2 行**（★ provider 34 / 35）
+  --   ⇒ ★★ 原形态发**同键同值**多行 ⇒ ★★ 解析器照样折叠 ⇒ ★★ **键数 < 行数**
+  --   ⇒ ★★ ⇒ ★★ 「键数一致」这类对拍是**缺覆盖的全绿**（★ 第 27 处覆盖率缺陷的同族）
+  --   ⇒ ★★ 修法：★ 采集侧去重（★ 值只依赖 raw 名 ⇒ ★★ 去重后**值逐字节不变**）
+  --   ⇒ ★★ 解析侧另加「重复键守卫」（★ 同值重复也失败 ⇒ 防止再出现同款折叠）
+  SELECT DISTINCT pm.raw_model_name, pm.standardized_name, mc.canonical_name, mc.featured
   FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
   WHERE pm.standardized_name IS NOT NULL AND pm.standardized_name<>''
     AND lower(pm.standardized_name) <> lower(mc.canonical_name)
@@ -1365,9 +1371,20 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
           JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
           JOIN provider_models pm ON pm.canonical_id = mc.id
           WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>'')
-SELECT 'H5_featured_probe_freq' k, raw_model_name||' | probes_24h='||c::text v
+-- ★★★ 2026-11-11 第 32 处（★ 一对多键 ⇒ 解析器**静默折叠** ⇒ 静默丢读数）：
+--   ★★ 本块是**逐模型**读数（★ 每行一个 featured 模型、★ 值各不相同）
+--   ⇒ ★★ 原形态用**常量键** `H5_featured_probe_freq` 发 **10 行**
+--   ⇒ ★★ 而下游解析器是 `partition("|") → dict` ⇒ ★★ **同键后到者覆盖先到者**
+--   ⇒ ★★ ⇒ ★★ **9/10 行被静默丢弃**（★ 真库实测：260 行 ⇒ 249 个唯一键）
+--   ⇒ ★★ 且**三个解析器三种语义**：★ verdict `setdefault` 留**首**行、★ clockcheck/negcontrol `d[k]=v`
+--   ⇒ ★★ 留**末**行 ⇒ ★★ 同一份原始输出 ⇒ ★★ **给出三个不同的数** ⇒ ★★ 逐模型读数在 H5 上被违反
+--   ⇒ ★★ 修法（★ **键的粒度必须 == 值的粒度**）：★ **一模型一键** ⇒ `H5_featured_probe_freq_<model>`
+--   ⇒ ★★ 解析侧另加「重复键守卫」（★ 任何重复键 ⇒ **rc≠0** ⇒ 防再出现同款折叠）
+SELECT 'H5_featured_probe_freq_'||t.m k,
+       'probes_24h='||t.c::text v
 FROM (
-  SELECT n.raw_model_name, COUNT(*) c
+  -- ★ 大小写归一（★ 否则 `Foo` 与 `foo` 两个 raw 名会**折成同一个键** ⇒ 又是重复键）
+  SELECT lower(btrim(n.raw_model_name)) m, COUNT(*) c
   FROM node_probe_runs n
   WHERE n.created_at > NOW() - INTERVAL '24 hours'
     -- ★★ 2026-11-11 第 25 处（★ 穷举审计）：★ 「最近 24h 探了几次」**原来只有下界**

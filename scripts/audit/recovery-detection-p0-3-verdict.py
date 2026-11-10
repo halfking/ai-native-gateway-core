@@ -31,6 +31,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import importlib.util
+import io
 import re
 import subprocess
 import sys
@@ -38,6 +41,13 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("recovery-detection-p0-3-metrics.sql")
+
+# ★★★ 第 32 处：★ H5 的键形态（★ **一模型一键** ⇒ ★ 键的粒度 == 值的粒度）
+#   ★★ 原形态是常量键 `H5_featured_probe_freq` + 10 行 ⇒ ★★ 解析器**静默折叠** ⇒ ★★ 丢 9 行
+H5_KEY_PREFIX = "H5_featured_probe_freq_"
+# ★ 第 32 处：★ 「重复键」失败的**期望串**登记在**独立夹具**里（★ LESSONS §680/§682：
+#   ★ 期望值与期望串都**不得**与被守卫内容同源 ⇒ ★★ 否则同源变异会把守卫一起改掉）
+KEY_GRAIN_FIXTURE = Path(__file__).with_name("fixtures") / "p0-3-key-grain.txt"
 
 # ★★ 基线（全部来自 T1 锚点，2026-11-10 13:45~14:05 +08 实测；★ 写「方法+观测值」）
 #    —— ★ 样本量规则同样预先写死：post episode < 5 ⇒ 「样本不足以判定」，不许外推。
@@ -258,7 +268,27 @@ def run_metrics(host: str) -> str:
         return out.stdout
 
 
+def h5_readout_lines(data: dict[str, str]) -> list[str]:
+    """★ H5 的**逐模型读数渲染**（★ 第 32 处：★ 一模型一键 ⇒ ★ 打印时也必须带**键**）
+
+    ★★ 为什么不能只打印值：★ 原形态的值里带模型名、键是常量 ⇒ ★ 折叠后只剩**一行**
+      ⇒ ★★ 读者看到的是「一个数」而不是「逐模型分布」⇒ ★★ 「不得只报总数」的纪律被违反
+    ★★ 现在键里带模型名 ⇒ ★ 逐行打印「模型名: 探测量」⇒ ★★ 每个模型都可见
+    """
+    out: list[str] = []
+    for k, v in sorted(data.items()):
+        if not k.startswith(H5_KEY_PREFIX):
+            continue
+        out.append(f"{k[len(H5_KEY_PREFIX):]}: {v}")
+    return out
+
+
 def parse(output: str) -> dict[str, str]:
+    """★ **宽松**解析：★ 同键**后者不覆盖前者**（★ `setdefault` ⇒ 留**首**行）。
+
+    ★★ ⚠️ 这个函数**会静默折叠重复键** ⇒ ★★ 只在「已确认无重复键」时用
+      ⇒ ★★ 正式路径一律走 `parse_strict()`（★ 第 32 处）。
+    """
     data: dict[str, str] = {}
     for line in output.splitlines():
         if "|" not in line:
@@ -266,6 +296,54 @@ def parse(output: str) -> dict[str, str]:
         k, _, v = line.partition("|")
         data.setdefault(k.strip(), v.strip())
     return data
+
+
+# ★★★ 第 32 处（★ 2026-11-11 04:2x +08）：★ **重复键守卫**（★ 一对多采集 ⇒ 解析器**静默折叠**）
+#
+# ★★ 形态（★ 真库实测）：★ 采集侧 `H5_featured_probe_freq` 用**常量键**发了 **10 行**
+#   （★ 每行一个 featured 模型、★ 值各不相同）⇒ ★★ 而 `parse()` 是 `partition("|") → dict`
+#   ⇒ ★★ **同键折叠** ⇒ ★★ **9/10 行被静默丢弃**（★ 真库：260 行 ⇒ 249 个唯一键）
+#   ⇒ ★★ 且**三个解析器三种语义**：★ verdict `setdefault` 留**首**行、★ clockcheck `d[k]=v` 留**末**行、
+#   ★★ negcontrol `d[k]=v` 留**末**行 ⇒ ★★ 同一份原始输出 ⇒ ★★ **给出三个不同的数**
+#
+# ★★ 纪律：★★ **键的粒度必须 == 值的粒度**（★ 一对多的对象 ⇒ 必须写进键）
+#   ⇒ ★★ 采集侧改「一对象一键」+ ★★ 解析侧加守卫（★ 任何重复键 ⇒ **rc≠0** ⇒ fail-closed）
+def scan_duplicate_keys(output: str) -> list[tuple[str, list[str]]]:
+    """★ 扫描**重复键**：★ 返回 `[(键, 该键的**不同值**列表)]`（★ 按键名排序）。
+
+    ★★ 与 `parse()` 的关系：★ `parse()` 把重复键**折叠**（★ 静默丢行）
+      ⇒ ★★ 本函数是**折叠前**的真相 ⇒ ★★ 任何「键数 == 行数」的结论都必须先过它。
+    """
+    seen: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        if "|" not in line:
+            continue
+        k, _, v = line.partition("|")
+        seen.setdefault(k.strip(), []).append(v.strip())
+    return [(k, sorted(set(v))) for k, v in sorted(seen.items()) if len(v) > 1]
+
+
+def parse_strict(output: str, *, where: str = "metrics") -> dict[str, str]:
+    """★ **严格解析**：★ 出现**任何**重复键 ⇒ **fail-closed**（★ rc≠0）。
+
+    ★★ 为什么「同值重复」也要失败：★ 重复键本身就是**粒度错配**的信号
+      （★ 一对多的采集没把对象写进键）⇒ ★★ 被折叠掉的那几行是**静默丢失的读数**
+      ⇒ ★★ 这次两个值碰巧相同 ≠ 下次也相同 ⇒ ★★ 必须当场红 ⇒ ★★ 不可等到「读出怪数」才发现。
+    """
+    dups = scan_duplicate_keys(output)
+    if dups:
+        print(f"★★ **重复键守卫失败**（★ {where}）：★ {len(dups)} 个键出现多次 ⇒ "
+              f"★ **键的粒度 ≠ 值的粒度** ⇒ ★ 解析器会**静默折叠** ⇒ ★ 读数会**静默丢失**",
+              file=sys.stderr)
+        for k, vs in dups[:20]:
+            kind = "★ 异值（冲突）" if len(vs) > 1 else "同值"
+            print(f"   - {k}：{len(vs)} 个不同值（{kind}）", file=sys.stderr)
+            for v in vs[:4]:
+                print(f"       {v[:200]}", file=sys.stderr)
+        if len(dups) > 20:
+            print(f"   ★ … 其余 {len(dups) - 20} 个重复键略", file=sys.stderr)
+        raise SystemExit("★★ 重复键守卫失败 ⇒ 本次采集作废（★ **不可判**，★ 不是「没发现问题」）")
+    return parse(output)
 
 
 def num(text: str) -> float | None:
@@ -2821,6 +2899,151 @@ def selftest() -> int:
     if "by_kind 对拍不可见" in _v31:
         failures.append(f"[㉶ 行内披露] by_kind 两侧都在却写「by_kind 对拍不可见」⇒ ★★ 兜底分支误触发 ⇒ {_v31}")
 
+    # ★★★ 第 32 处（★ 2026-11-11 04:2x +08）：★ **重复键守卫**（★ 一对多采集 ⇒ 解析器**静默折叠**）
+    #   ★★ 期望值**与期望串**都登记在**独立夹具** ⇒ ★★ 判据侧与被守卫内容**不同源**（★ LESSONS §680/§682）
+    try:
+        _kg = _load_expected_facts("p0-3-key-grain.txt")
+    except Exception as exc:
+        _kg = {}
+        failures.append(f"[㉷ 期望值登记表] 读不到 `fixtures/p0-3-key-grain.txt`（★ {exc}）⇒ ★★ **不可判**"
+                        f"（★ 不得静默跳过 ⇒ ★ 「读不到判据」≠「没发现问题」）")
+    for _k in ("raw_rows_before", "unique_keys_before", "folded_rows_before",
+               "h5_rows", "h5_old_key", "h5_key_prefix", "m10_diff_key_prefix",
+               "guard_marker_dup_guard", "guard_marker_grain_hint",
+               "guard_marker_conflict", "guard_marker_same_value"):
+        if _k not in _kg:
+            failures.append(f"[㉷ 期望值登记表] 缺事实 {_k} ⇒ ★★ **不可判**")
+
+    # ② ★★ 异值重复 ⇒ 必须被抓（★ 断言落到**结构**：★ 键名 + 不同值个数 + 不同值列表）
+    _conf = "k|1\nk|2\n"
+    _dups = scan_duplicate_keys(_conf)
+    if len(_dups) != 1 or _dups[0][0] != "k" or _dups[0][1] != ["1", "2"]:
+        failures.append(f"[㉷ 重复键扫描] 异值重复未被抓或抓错：★ {_dups}")
+    # ③ 同值重复 ⇒ **也要**被抓（★ 同值也是**粒度错配**的信号 ⇒ ★ 这次同值 ≠ 下次同值）
+    _same = "k|1\nk|1\n"
+    _dups2 = scan_duplicate_keys(_same)
+    if len(_dups2) != 1 or _dups2[0][0] != "k" or _dups2[0][1] != ["1"]:
+        failures.append(f"[㉷ 重复键扫描] 同值重复未被抓或抓错：★ {_dups2}")
+    # ④ ★★ `parse_strict` 必须 **fail-closed**（★ 抛 SystemExit ⇒ 脚本 rc≠0 ⇒ 门有牙）
+    for _nm, _raw in (("异值", _conf), ("同值", _same)):
+        try:
+            parse_strict(_raw, where="selftest")
+            failures.append(f"[㉷ fail-closed] {_nm}重复 ⇒ `parse_strict` **没有**抛错 ⇒ ★★ 守卫没牙")
+        except SystemExit:
+            pass
+    # ⑤ 干净输入 ⇒ 不抛错、且 **键数 == 行数**（★ 折叠数必须为 0）
+    try:
+        _d = parse_strict("a|1\nb|2\n", where="selftest")
+        if len(_d) != 2:
+            failures.append(f"[㉷ 干净输入] 键数应为 2，实际 {len(_d)}")
+    except SystemExit:
+        failures.append("[㉷ 干净输入] `parse_strict` 对干净输入抛错 ⇒ ★★ 守卫过严")
+
+    # ⑥ ★★★ **历史缺陷形态必须被抓**（★ 真库实测的旧 H5 形态：★ 同键 10 行、★ 10 个不同值）
+    _h5_rows = int(_kg.get("h5_rows", "0") or 0)
+    _old_key = _kg.get("h5_old_key", "")
+    if _old_key and _h5_rows >= 2:
+        _hist = "".join(f"{_old_key}|m{i} | probes_24h={i}\n" for i in range(_h5_rows))
+        _dh = scan_duplicate_keys(_hist)
+        if len(_dh) != 1 or len(_dh[0][1]) != _h5_rows:
+            failures.append(f"[㉷ 历史形态] 旧 H5 形态（同键 {_h5_rows} 行异值）未被如实抓到：★ {_dh}")
+        if len(parse(_hist)) != 1:
+            failures.append("[㉷ 历史形态] 宽松解析对旧 H5 形态**没有**折叠成 1 键 ⇒ ★★ 场景不真实")
+        try:
+            parse_strict(_hist, where="selftest")
+            failures.append("[㉷ 历史形态] `parse_strict` 对旧 H5 形态**没有**抛错 ⇒ ★★ 守卫没牙")
+        except SystemExit:
+            pass
+
+    # ⑦ ★★★ **修复后形态**：★ 一模型一键 ⇒ ★ 键数 == 行数 ⇒ ★ **逐模型读数全部可见**
+    _pre = _kg.get("h5_key_prefix", "")
+    if _pre and _h5_rows >= 2:
+        _new = "".join(f"{_pre}m{i}|probes_24h={i}\n" for i in range(_h5_rows))
+        try:
+            _dn = parse_strict(_new, where="selftest")
+        except SystemExit:
+            _dn = {}
+            failures.append("[㉷ 修复后形态] 一模型一键**反而**被抓 ⇒ ★★ 守卫过严")
+        if len(_dn) != _h5_rows:
+            failures.append(f"[㉷ 修复后形态] 键数应为 {_h5_rows}（★ 逐模型各一键），实际 {len(_dn)}")
+        if _dn.get(f"{_pre}m0") != "probes_24h=0":
+            failures.append(f"[㉷ 修复后形态] 逐模型读数不可见：★ {_dn.get(f'{_pre}m0')!r}")
+        # ★★ 反向守卫：★ 旧的**常量键**形态不得再出现（★ 用**整行完全相等**判 ⇒ 不被前缀误命中）
+        if any(k == _old_key for k in _dn):
+            failures.append("[㉷ 修复后形态] 仍出现旧的常量键形态 ⇒ ★★ 采集侧没改干净")
+
+    # ⑧ ★★★ 守卫的**期望串**必须真的出现在守卫输出里（★ 从夹具取 ⇒ ★★ 同源变异打不中判据）
+    _buf = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(_buf):
+            parse_strict(_conf, where="selftest")
+    except SystemExit:
+        pass
+    _msg = _buf.getvalue()
+    for _mk in ("guard_marker_dup_guard", "guard_marker_grain_hint",
+                "guard_marker_conflict", "guard_marker_same_value"):
+        _v = _kg.get(_mk, "")
+        if not _v:
+            failures.append(f"[㉷ 期望串] 夹具缺 {_mk} ⇒ ★★ 不可判")
+        elif _v not in _msg:
+            failures.append(f"[㉷ 期望串] 守卫输出里**没有**登记的期望串 {_mk}={_v!r} ⇒ ★★ 守卫输出与判据脱钩")
+
+    # ⑨ ★★★ **跨脚本行为守卫**：★ clockcheck / negcontrol 的 parse 也必须**严格**
+    #   ★★ 否则「同一份原始输出」在三个脚本里**折叠语义不同** ⇒ ★★ 给出三个数（★ 第 32 处实测）
+    for _peer in ("recovery-detection-p0-3-clockcheck.py",
+                  "recovery-detection-p0-3-negcontrol.py"):
+        _p = Path(__file__).with_name(_peer)
+        if not _p.exists():
+            failures.append(f"[㉷ 跨脚本] 找不到 {_peer} ⇒ ★★ 不可判")
+            continue
+        try:
+            _spec = importlib.util.spec_from_file_location(f"peer_{_p.stem}", _p)
+            _m = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_m)
+        except Exception as exc:
+            failures.append(f"[㉷ 跨脚本] 载入 {_peer} 失败（★ {exc}）⇒ ★★ 不可判")
+            continue
+        try:
+            _m.parse(_conf)
+            failures.append(f"[㉷ 跨脚本] {_peer} 的 parse 对**异值重复**没有抛错 ⇒ ★★ 守卫没牙")
+        except SystemExit:
+            pass
+        except Exception as exc:
+            failures.append(f"[㉷ 跨脚本] {_peer} 的 parse 抛了非预期异常（★ {exc}）⇒ ★★ 不可判")
+
+    # ⑩ ★★★ **渲染守卫**：★ 逐模型读数必须**每模型一行**（★ 不得只剩一行）
+    #   ★★ 断言落到**行数与内容**（★ 结构），不是落到「打印了某个词」
+    if _pre and _h5_rows >= 2:
+        _dl = h5_readout_lines({f"{_pre}m{i}": f"probes_24h={i}" for i in range(_h5_rows)})
+        if len(_dl) != _h5_rows:
+            failures.append(f"[㉷ 渲染] 逐模型读数应为 {_h5_rows} 行，实际 {len(_dl)} ⇒ ★★ 仍有折叠")
+        if _dl and not _dl[0].startswith("m0: probes_24h=0"):
+            failures.append(f"[㉷ 渲染] 首行必须是「模型名: 探测量」⇒ ★★ {_dl[0]!r}")
+        # ★★ 反向：★ 旧的常量键形态 ⇒ 渲染**必须为空**（★ 旧形态已被采集侧根除）
+        if h5_readout_lines({_old_key: "m0 | probes_24h=0"}):
+            failures.append("[㉷ 渲染] 旧的常量键形态仍被渲染 ⇒ ★★ 采集侧没改干净")
+
+    # ⑪ ★★★ **真实调用点守卫**（★ ★★ 变异验证当场漏掉的正是这一处）：
+    #   ★★ 只测 `parse_strict` **本身** ⇒ ★★ **测不出 `main()` 走的是哪条路**
+    #   ⇒ ★★ 变异「main 退回宽松 parse」⇒ ★★ 自测照样绿 ⇒ ★★ **守卫没牙**
+    #   ⇒ ★★ 修法：★ **真的跑一次 `main()`**（★ `--from-file` ⇒ 不连库）⇒ ★★ 断言它 **rc≠0**
+    #   ⇒ ★★ 且要断言「**是重复键守卫红的**」（★ 不然别的失败也能凑出 rc≠0）
+    with tempfile.TemporaryDirectory() as _td:
+        _f = Path(_td) / "dup_metrics.txt"
+        _f.write_text("H5_featured_probe_freq|m0 | probes_24h=1\n"
+                      "H5_featured_probe_freq|m1 | probes_24h=2\n", encoding="utf-8")
+        _pr = subprocess.run([sys.executable, str(Path(__file__)), "--from-file", str(_f)],
+                             capture_output=True, text=True, timeout=600)
+        if _pr.returncode == 0:
+            failures.append("[㉷ 真实调用点] `main()` 对**重复键**竟然 rc=0 ⇒ ★★ 守卫没牙"
+                            "（★ 只测 `parse_strict` 测不到 `main()` 走哪条路）")
+        else:
+            _out = (_pr.stdout or "") + (_pr.stderr or "")
+            _mk = _kg.get("guard_marker_dup_guard", "")
+            if _mk and _mk not in _out:
+                failures.append("[㉷ 真实调用点] `main()` 虽红了但**不是**重复键守卫红的 ⇒ ★★ "
+                                f"{_out[-300:]}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2895,6 +3118,12 @@ def selftest() -> int:
           "（★ 证据①等长 24h 口径：★ n=145、★ p50=7871 / p75=9755 / p90=10417 ⇒ ★ 阈值 9334 落在 62.1% 分位"
           "＋ ★ 证据②日历日桶是 partial day ⇒ 不得当 24h 基线 ＋ ★ 证据③pre24 by_kind 5766/3257/222 ⇒ ★ periodic 反降）"
           "＋ ★ 期望值走**独立夹具** ⇒ ★★ 同源变异打不中它 ＋ ★ 反向守卫（★ 旧错误断言句不得残留）")
+    print("   ✔ ㉷ ★★★★★ **第 32 处：★ 「采集侧一对多键 ⇒ 解析器静默折叠」**"
+          "（★ 真库实测：★ 260 行 ⇒ 只有 **249** 个唯一键 ⇒ ★ **11 行被静默丢弃**）"
+          "＋ ★ 采集侧改「**一对象一键**」（★ H5 ⇒ `H5_featured_probe_freq_<model>`；★ M10_diff ⇒ DISTINCT）"
+          "＋ ★ 解析侧「**重复键守卫**」（★ 异值/同值**都** ⇒ **rc≠0** ⇒ fail-closed）"
+          "＋ ★ 三个解析器**统一收敛到同一实现**（★ 原先 verdict 留首行、clockcheck/negcontrol 留末行 ⇒ 同一份输出三个数）"
+          "＋ ★ 期望值**与期望串**都走**独立夹具** ⇒ ★★ 同源变异打不中它")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -3287,7 +3516,7 @@ def main() -> int:
     else:
         print(f"== 复采（ssh {args.ssh_host} → acc-pg17）==", flush=True)
         raw = run_metrics(args.ssh_host)
-    data = parse(raw)
+    data = parse_strict(raw, where="verdict")
     print(f"   指标条数：{len(data)}")
 
     rows, bad, guards = judge(data, stage=args.stage,
@@ -3388,11 +3617,14 @@ def main() -> int:
     for label, obs, note in handoff_rows:
         print(f"   {label}: {obs}")
         print(f"      ⇒ {note}")
-    h5 = sorted((k, v) for k, v in data.items() if k.startswith("H5_featured_probe_freq"))
+    h5 = h5_readout_lines(data)
     if h5:
-        print("   H5 featured 真实高频模型（handoff 任务 2.2-3 的修正版；★ 原样用幻觉模型名 ⇒ 必然 0 行）:")
-        for k, v in h5[:5]:
-            print(f"      - {v}")
+        print(f"   H5 featured 真实高频模型（handoff 任务 2.2-3 的修正版；★ 原样用幻觉模型名 ⇒ 必然 0 行）："
+              f"★ 共 {len(h5)} 行（★ 一模型一键 ⇒ ★ 解析器不会折叠 ⇒ ★ **逐模型读数可见**）")
+        for _line in h5:
+            print(f"      - {_line}")
+        print(f"      ★★ **两条限定**（★ 第 32 处补）：★ ① 本块是 **Top 10**（★ `LIMIT 10`）⇒ ★★ **不得**读成「全部 featured 模型的分布」"
+              f"；★ ② 窗口 = **[now-24h, now]** ⇒ ★★ **随时钟变** ⇒ ★★ **不在 M18 冻结面** ⇒ ★ 不作判据、只作参考项")
 
     print_honest_boundaries()
     # ★★★ **守卫不过 ⇒ 退出码必须非 0**（★ 本轮第 19 处修正，★★ 又一个「静默失效」）

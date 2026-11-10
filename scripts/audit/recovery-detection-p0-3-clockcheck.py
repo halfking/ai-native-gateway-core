@@ -75,13 +75,14 @@ def run_sql(sql_text: str, tag: str, ssh_host: str) -> str:
 
 
 def parse(raw: str) -> dict[str, str]:
-    d: dict[str, str] = {}
-    for line in raw.splitlines():
-        if "|" not in line:
-            continue
-        k, _, v = line.partition("|")
-        d[k.strip()] = v.strip()
-    return d
+    """★ 第 32 处：★ 走**严格解析**（★ 重复键 ⇒ **fail-closed** ⇒ rc≠0）。
+
+    ★★ 原形态：本文件自带一份 `d[k.strip()] = v.strip()` ⇒ ★ **留末行**
+      ⇒ ★★ 而判定器的 `parse()` 用 `setdefault` ⇒ ★★ **留首行**
+      ⇒ ★★ 同一份原始输出 ⇒ ★★ **两个解析器给出两个不同的数** ⇒ ★★ 静默丢行
+      ⇒ ★★ 现在**统一收敛到判定器的那一份实现**（★ 单一真源 ⇒ 不再漂移）。
+    """
+    return load_verdict().parse_strict(raw, where="clockcheck")
 
 
 def load_verdict():

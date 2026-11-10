@@ -129,6 +129,19 @@ def main() -> int:
               f" ⇒ ★ 这是采集失败（★ 不是口径漂移）⇒ ★ 先看 psql 报错")
         return 1
     print(f"   键数       = 真实 {len(real)} / as-of {len(asof)}")
+    # ★★★ 第 32 处：★ **键数相同 ≠ 键集相同** ⇒ ★★ 只比数量是**缺覆盖的全绿**
+    #   ★★ 采集侧若出现「一对多键」（★ 同键多行）⇒ ★★ 解析器会**静默折叠** ⇒ ★★ 行数 > 键数
+    #   ⇒ ★★ 这里必须比**键集**（★ 缺键 / 多键），★ 而不只是比数量
+    _real_only = sorted(set(real) - set(asof))
+    _asof_only = sorted(set(asof) - set(real))
+    if _real_only or _asof_only:
+        print(f"   ★★ **键集不一致**（★ ⇒ as-of 缺 {len(_real_only)} 键 / 多 {len(_asof_only)} 键）")
+        for _k in _real_only[:10]:
+            print(f"      - as-of 缺: {_k}")
+        for _k in _asof_only[:10]:
+            print(f"      - as-of 多: {_k}")
+    else:
+        print(f"   ✔ 键集完全一致（★ {len(real)} 个键 ⇒ ★ 真实与 as-of 的**键集**相同）")
 
     if args.save_out:
         pathlib.Path(args.save_out).write_text(asof_raw, encoding="utf-8")
