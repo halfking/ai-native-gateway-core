@@ -647,18 +647,34 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
           --   ⇒ ★★ **7 天 pre 与 24h post 直接比是不同量纲** ⇒ 另输出「切点前 24h」段，
           --   与 post(24h) 同量纲 ⇒ ★ 护栏才成立。
           -- ★★ 标签与边界一致（★ 同 M14：★ CASE 顺序写反 ⇒ 标签反了）
-          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours' THEN 'pre7d'
-               WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre24'
-               ELSE 'post' END win24,
+          -- ★★★ **窗口维度改成四桶**（★ 本轮第 10 处口径修正，★ 详见下方 exp CTE）：
+          --   ★★ 原来三桶（'pre7d' 实际只覆盖 [切点-7d, 切点-24h) ⇒ **只有 6 天**）
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
                THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
                ELSE (lower(btrim(raw_model_name)) IN (SELECT m FROM st_new)) END feat_at_t
    FROM seg WHERE success = FALSE
+ ), exp AS (
+   -- ★★★ **窗口维度四桶**（★ 本轮第 10 处口径修正）：
+   --   ★★ 原来只有三桶：'pre24'（= 切点前 24h ✔）+ 'pre7d'（= [切点-7d, 切点-24h)
+   --   ⇒ **实际只有 6 天**，却叫 'pre7d'）★ ⇒ Stage 2 拿「6 天 pre」去比「7 天 post」
+   --   ⇒ ★★ **不同量纲**（★ 本轮纪律的核心：判据基线必须与观测同量纲）
+   --   ⇒ ★★ 现在四桶：**pre6d**（6 天）/ **pre24**（24h）/ **pre7d**（**整 7 天**）/ **post**
+   --   ★★ pre6d 与 pre24 **正好拼成 pre7d** ⇒ 事件数必须满足 **pre7d = pre6d + pre24**
+   --      （★ 回归门：可对拍，且能立刻发现标签与边界不符）
+   --   ★★ 成熟度过滤是**逐行**的（fail_at < 切点-6h）⇒ 对四桶同时生效 ⇒ 上面的加法恒成立
+   SELECT r.*, 'pre6d' win FROM rec r WHERE r.fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+   UNION ALL
+   SELECT r.*, 'pre24' win FROM rec r WHERE r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+                                          AND r.fail_at <  TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'pre7d' win FROM rec r WHERE r.fail_at <  TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'post'  win FROM rec r WHERE r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
  )
-SELECT 'M12p_pending_'||win24||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
+SELECT 'M12p_pending_'||win||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
   COUNT(*)::text||' failures_aged6h | pending='||COUNT(*) FILTER (WHERE next_at IS NULL)::text
   ||' | pending_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_at IS NULL)/COUNT(*),1)::text v
-FROM rec
+FROM exp
 WHERE next_at IS NOT NULL
   -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
   --   pre 侧：成熟度 + era 纯度都以**切点**为参照 ⇒ ★★ pre 样本**冻结**
@@ -667,7 +683,7 @@ WHERE next_at IS NOT NULL
   AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
-GROUP BY win24, is_ns, feat_at_t ORDER BY 1;
+GROUP BY win, is_ns, feat_at_t ORDER BY 1;
 
 -- ═══ M14 ★★★ 直指目标人群：★「那 106 个新覆盖变体」的复检节奏，前 vs 后 ═══
 --
@@ -691,38 +707,66 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
  fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
-          (n.raw_model_name LIKE '%/%') is_ns
+          (n.raw_model_name LIKE '%/%') is_ns,
+          -- ★★★ **计费口径维度**（★ 本轮第 9 处口径修正）：
+          --   ★★ 原来 `fr` 直接限定 `b.billing_mode='free'` ⇒ ★★ **同一个模型名通常同时挂在
+          --   free / per_token / token_plan 三种凭据上**（实测：minimaxai/minimax-m2.7 有
+          --   free(cred19) + per_token(cred8/18) + token_plan(cred23)）⇒ ★★ 只取 free
+          --   ⇒ **静默丢掉另外两类凭据上的探测** ⇒ ★★ 样本量被系统性压缩（★ 与「一对多
+          --   取代表行」同类的**不报错、只少报**缺陷）⇒ ★★ 新覆盖人群尤其严重
+          --   （★★ post era 实测 5 次新覆盖探测**全部**在 per_token 上 ⇒ free 口径下 post = 0
+          --   ⇒ 效应判据在 free 口径下**永远空**，会被误读成「修复没生效」）。
+          --   ⇒ ★★ 改为：**全量入池 + 打 has_free 标记** ⇒ 同时产出两个口径：
+          --      · scope='free' = 该对**有** free 绑定（★ **症状切片**，与原口径逐字节一致）
+          --      · scope='all'  = 该对**已绑定**（★ **模型级全量**，效应判据用它拿样本量）
+          --   ★★ **不丢样本的关键**：LEAD 的分区键是 (credential_id, raw_model_name) ⇒
+          --   ★★ 换凭据就是**不同分区** ⇒ ★★ 把 free 过滤从「入池前」移到「打标后」，
+          --   ★★ **free 切片的 next_at 与原口径逐字节相同**（★ 有回归门可验）
+          EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name) has_free
    FROM node_probe_runs n
    WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id
-                   AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
-   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+   SELECT credential_id, raw_model_name, is_ns, created_at, success, has_free,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
    FROM fr
  ), rec AS (
-   SELECT is_ns, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+   SELECT is_ns, has_free, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
-          -- ★★ **同量纲对照组**（★ 本轮第 8 处口径补充）：★ post 段是「切点→now」的 24h，
-          --   且只含**已结算**的事件（失败的下一次探测必须已被观测）⇒ ★★ **样本量不能按 pre 的
-          --   7 天率线性外推**（实测 post era 1.8h 只出 4 条 ns 事件，而 pre 率 ≈42/小时
-          --   ⇒ 根因＝慢阶梯的失败要等 6h 才被复检 ⇒ 右删失过滤）。
-          --   ⇒ ★★ 另输出「切点前 24h」（pre24）：**长度与成熟度都与 post 段同量纲**
-          --   ⇒ ★★ 它是 Stage 1 效应判据的**天然对照组**
-          --      （pre24 的 newly 组 = 修复前**还不是** featured 的那批对 ⇒ 同一批对、同一长度）。
-          -- ★★ 标签与边界必须一致（★ 本轮踩过：★ CASE 顺序写反 ⇒ 「pre24」标签实际命中
-          --   「更早的 5 天」⇒ ★★ 读数与标签**完全相反** ⇒ 差点用错基线判 Stage 1）
-          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours' THEN 'pre7d'
-               WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre24'
-               ELSE 'post' END win24,
           CASE WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM newly) THEN 'newly_covered'
                WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM st_old) THEN 'old_feat'
                ELSE 'other' END grp_new
    FROM seg WHERE success = FALSE AND is_ns
+ ), exp AS (
+   -- ★★★ **窗口四桶 × 计费两口径**（★ 本轮第 9/10 处口径修正）
+   --   ★★ 窗口四桶：pre6d（6 天）/ pre24（24h）/ **pre7d（整 7 天）**/ post
+   --      （★ 原来 'pre7d' 实际只覆盖 [切点-7d, 切点-24h) ⇒ **只有 6 天**）
+   --      ⇒ ★★ pre6d + pre24 **正好拼成 pre7d** ⇒ 事件数必须满足 **pre7d = pre6d + pre24**（★ 可对拍）
+   --   ★★ 计费两口径：'free'（有 free 绑定 ⇒ 症状切片）/ 'all'（已绑定 ⇒ 模型级全量）
+   SELECT r.*, 'free' scope, 'pre6d' win FROM rec r WHERE r.has_free AND r.fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+   UNION ALL
+   SELECT r.*, 'free', 'pre24' FROM rec r WHERE r.has_free AND r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+                                          AND r.fail_at <  TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'free', 'pre7d' FROM rec r WHERE r.has_free AND r.fail_at <  TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'free', 'post'  FROM rec r WHERE r.has_free AND r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'all', 'pre6d' FROM rec r WHERE r.fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+   UNION ALL
+   SELECT r.*, 'all', 'pre24' FROM rec r WHERE r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+                                          AND r.fail_at <  TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'all', 'pre7d' FROM rec r WHERE r.fail_at <  TIMESTAMPTZ '2026-11-10 13:42:30+08'
+   UNION ALL
+   SELECT r.*, 'all', 'post'  FROM rec r WHERE r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
  )
-SELECT 'M14_'||win24||'_'||grp_new k,
+SELECT CASE WHEN scope = 'all' THEN 'M14x_' ELSE 'M14_' END || win || '_' || grp_new k,
   COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
@@ -731,16 +775,17 @@ SELECT 'M14_'||win24||'_'||grp_new k,
   --   ⇒ p90 处于**边界**（实测 461 事件里约 16 个冷事件就能把 p90 从 47 顶到 360）
   --   ⇒ ★★ 分位数脆 ⇒ 另报「>300min 的慢事件占比」⇒ 群体层判据用这个
   ||' | slow_gt300_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE recheck_min > 300)/COUNT(*),1)::text v
-FROM rec
+FROM exp
 WHERE next_at IS NOT NULL
   -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
   --   pre 侧：成熟度 + era 纯度都以**切点**为参照 ⇒ ★★ pre 样本**冻结**
   --     （否则 pre 随查询时刻漂移：实测同一锚点下 pre 事件数 1833 → 332）
   --   post 侧：成熟度相对 now（post 事件要 6h 才结算）⇒ 随时间单调增长（这是有意的）
+  --   ★★ 成熟度是**逐行**的 ⇒ 对四桶同时生效 ⇒ **pre7d = pre6d + pre24** 恒成立（★ 回归门）
   AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
-GROUP BY win24, grp_new ORDER BY 1;
+GROUP BY scope, win, grp_new ORDER BY 1;
 
 -- ═══ M15 ★★★ 逐对金丝雀：★「新覆盖人群里那些冷但仍在被探」的对，pre vs post ═══
 --
