@@ -93,6 +93,37 @@ if info.outputReserve > 0 && spec.ContextWindow > 0 {
   ./domains/streaming/ ./domains/hooks/compression/ -count=1` 全绿
   （streaming 108.8s）；`go build ./...` rc=0；vet/gofmt 干净。
 
+### 5.1 211 生产实测（部署 199c20a00，槽 a，build_seq 3002，公网版本指纹对拍 OK）
+
+- 铸临时验证 key（DB 直插 + HMAC-SHA256(SECRET_KEY, raw) 现算，验后已
+  revoked：api_keys id=240，owner=verify-script）。
+- **形状 A（算术判别，4200B 文本 × max_tokens=199000）**：旧算术 limit=
+  200000−199000=1000 ⇒ ~1.2k 估计必被本地 422；实测 **HTTP 200，模型正常
+  流式返回** ⇒ 预算门放行 ✔。
+- **形状 B（事故复现，290KB 文本 × max_tokens=128000 = ZCode 事故形状）**：
+  旧算术 limit=72000（生产实证 actual=76792 limit=72000 被拒）；实测
+  **HTTP 200，模型正常流式返回** ⇒ 预算门放行、上游也接受该请求（证实它
+  从来就是合法的——上游裁决如期成为权威）✔。
+- 对照：小请求（6 tokens）两种 stream 形态均 200；真实流量 3 分钟 199×200
+  无回归。
+
+### 5.2 事故请求 d3a5aeb02aa650a8f523055f280859dd 专项复测（用户追查项）
+
+- 该请求即 §1 时间线里的 16:50:19（+08 00:50:19）那条：`actual=76792
+  limit=72000`，发生在修复部署（约 +08 01:07）**之前 17 分钟**——ZCode 报错
+  面上的 `(upstream)` 是客户端对 provider_code 非空的渲染，实际是本地预算门
+  拒绝（executor failed 日志原文，未耗任何上游尝试）。
+- **按事故精确数字复测**（268,800B 文本 ⇒ 校准估计 ≈76.8k tokens ×
+  max_tokens=128000，流式）：**HTTP 200，`finish_reason=stop`，模型正常回答**；
+  上游真实 tokenizer 计 `prompt_tokens=39129`（重复英文文本被真实分词器高度
+  压缩；网关估计器 76.8k 属设计内的保守上界），零 context 类错误。
+- 部署后（199c20a0，槽 a）全量核查：容器内 `context_budget_exceeded` **0 条**；
+  claude-sonnet-5 完成请求全部 success；ZCode 大请求（163–170KB）正常 200。
+- 登记观察项（与本修无关、部署前已存在）：大载荷（>256KB）入站归档路径
+  （large_ingress）在 session 存储（Redis）瞬态故障窗口会快速 503
+  `session_unavailable`（17:17–17:19 +08 窗口实测，含 redis context canceled
+  噪声；恢复后同请求即 200）。该路径本修未触碰。
+
 ## 6. 边界与登记（本轮明确没做）
 
 - **Resolve 算术一行未动**：桶侧配置语义、未知窗口回落全局上限、8MB 字节闸、

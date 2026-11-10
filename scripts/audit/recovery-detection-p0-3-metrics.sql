@@ -201,7 +201,18 @@ SELECT 'M5_probe_runs_24h' k, COUNT(*)::text||' total | free='||
   COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id=b.provider_model_id
     WHERE b.billing_mode='free' AND b.credential_id=node_probe_runs.credential_id
       AND pm.raw_model_name=node_probe_runs.raw_model_name))::text v
-FROM node_probe_runs WHERE created_at > now() - interval '24 hours';
+FROM node_probe_runs
+WHERE created_at > now() - interval '24 hours'
+-- ★★★★ 2026-11-11 第 25 处口径修正（★ 穷举审计抓到的**同类第二处**）：★ **post 段窗口的 `now()` 上界**
+--   ★★ 形态：★ M5 的 24h 窗口**只有下界**（★ `created_at > now() - 24h`）⇒ ★★ 窗口 = **[now-24h, ∞)**
+--     ⇒ ★★ **as-of 替换只改得动下界** ⇒ ★★ 负控里（★ as-of 在过去、真实 now 在现在）窗口变成
+--     ★★ **[asof-24h, 真实now]** = **~35h** ⇒ ★★ ⇒ **M5 的负控读数会测错窗口**（★ 与 24h 基线不同量纲 ⇒ 假红）
+--   ★★ 为什么必须修：★ M5 是「**爆炸半径**」判据（★ base = pre24 单日快照、limit = base×1.01）
+--     ⇒ ★★ 一旦它进负控的「必须判负」清单 ⇒ ★★ 负控拿 ~35h 的量去比 24h 的基线 ⇒ ★★ **必然假红**
+--   ★★★ **修法**：★ 加 `created_at <= now()`（★ now 时刻 = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+--     ⇒ ★★ pre 侧不受影响（★ M5 无 pre 侧读数键）⇒ ★★ **M18 冻结面不受影响 ⇒ 不重冻**
+--   ★★ ⇒ ★★ 负控/预演里 M5 的窗口 == 恰好 stage 窗口（★ 24h / 168h）⇒ ★★ **与 M14 族同款**
+AND created_at <= now();
 
 -- ═══ M5b 探测量分解（★ 2026-11-11 关窗预演补：★ M5 超预算时的**归因证据**）═══
 --
@@ -232,6 +243,10 @@ LEFT JOIN (
          COUNT(*) AS n
   FROM node_probe_runs
   WHERE created_at > now() - interval '24 hours'
+    -- ★★ 2026-11-11 第 25 处：★ **与 M5_probe_runs_24h 同窗口** ⇒ ★★ 必须**一起**有上界
+    --   ★★ 否则 ⇒ ★★ M5 的裁决窗口与它的「增量归因（by_kind）」分解**窗口不同**
+    --   ★★ ⇒ ★★ 归因读数不可复核（★ 同一行里的两个数字来自不同长度的窗口）
+    AND created_at <= now()
   GROUP BY 1
 ) c ON c.kind = w.kind;
 
@@ -264,6 +279,11 @@ WITH d AS (
   SELECT to_char(date_trunc('day', created_at),'MM-DD') dy, COUNT(*) c
   FROM node_probe_runs
   WHERE created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+    -- ★★ 2026-11-11 第 25 处：★ post 段**必须被 now() 界定**（★ 本键是 M5 判 ❌ 时的「post 逐日」披露）
+    --   ★★ 否则 ⇒ ★★ 窗口 = [切点, ∞) ⇒ ★★ as-of 替换**无效** ⇒ ★★ 负控/预演里它是 [切点, 真实now]
+    --   ★★ ⇒ ★★ ⇒ 披露用的 post 逐日**与 M5 的裁决窗口不同量纲** ⇒ ★★ 披露不可复核
+    --   ★★ 修法：★ 加 `created_at <= now()` ⇒ ★★ 真实读数逐字节不变（★ now = 观测到的全部）
+    AND created_at <= now()
   GROUP BY date_trunc('day', created_at)
 )
 SELECT 'M5_post_runs_by_day' k,
@@ -423,6 +443,19 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★★★ 2026-11-11 第 24 处口径修正：★ **post 段的 `now()` 上界**（★ M11 两块原本**完全没有** now()）
+     --   ★★ 形态：★ M14/M14x/M15x/M20 族的 post 段都有 `fail_at < now()-6h` ⇒ ★ **post 段被 now() 界定**
+     --     ⇒ ★★ as-of 替换（★ 负控/预演）能把它界定成「恰好 stage 窗口」⇒ ★★ 第 23 处的几何对齐对它们生效
+     --   ★★ 而 **M11 的两个 fr CTE 没有任何 now()** ⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界**
+     --     ⇒ ★★ ⇒ as-of 替换**对它无效** ⇒ ★★ 负控/预演里的 M11 窗口**仍不是 stage 窗口**
+     --   ★★ 实测（本轮，负控 era + as-of = 切点+24h）：★ 无上界 ⇒ M11b_post_fix_namespaced = **13 ep / med 3**
+     --     ⇒ ★★ 有上界 ⇒ **9 ep / med 30** ⇒ ★★ **med 差 10×** ⇒ ★★ **M11 的裁决符号会翻转**
+     --     ⇒ ★★ 更要命：★ **无上界时负控里 M11 判 ✅** ⇒ ★★ **M11 在负控里是「恒真」的 ⇒ 它没有牙**
+     --     ⇒ ★★ ⇒ Stage 1 的 M11 读数**无法区分「修复生效」与「修复没生效」**
+     --   ★★★ **修法**：★ 加 `created_at <= now()`（★ 现在时刻 = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --     ⇒ ★★ 但 as-of 读数**被正确界定** ⇒ ★★ 负控/预演里的 M11 窗口 == stage 窗口）
+     --   ★ ★★ **pre 侧不受影响**（★ pre = [切点-7d, 切点) ⇒ ★ 全部 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -484,6 +517,19 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★★★ 2026-11-11 第 24 处口径修正：★ **post 段的 `now()` 上界**（★ M11 两块原本**完全没有** now()）
+     --   ★★ 形态：★ M14/M14x/M15x/M20 族的 post 段都有 `fail_at < now()-6h` ⇒ ★ **post 段被 now() 界定**
+     --     ⇒ ★★ as-of 替换（★ 负控/预演）能把它界定成「恰好 stage 窗口」⇒ ★★ 第 23 处的几何对齐对它们生效
+     --   ★★ 而 **M11 的两个 fr CTE 没有任何 now()** ⇒ ★★ post 段 = **[切点, ∞)** ⇒ ★★ **无界**
+     --     ⇒ ★★ ⇒ as-of 替换**对它无效** ⇒ ★★ 负控/预演里的 M11 窗口**仍不是 stage 窗口**
+     --   ★★ 实测（本轮，负控 era + as-of = 切点+24h）：★ 无上界 ⇒ M11b_post_fix_namespaced = **13 ep / med 3**
+     --     ⇒ ★★ 有上界 ⇒ **9 ep / med 30** ⇒ ★★ **med 差 10×** ⇒ ★★ **M11 的裁决符号会翻转**
+     --     ⇒ ★★ 更要命：★ **无上界时负控里 M11 判 ✅** ⇒ ★★ **M11 在负控里是「恒真」的 ⇒ 它没有牙**
+     --     ⇒ ★★ ⇒ Stage 1 的 M11 读数**无法区分「修复生效」与「修复没生效」**
+     --   ★★★ **修法**：★ 加 `created_at <= now()`（★ 现在时刻 = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --     ⇒ ★★ 但 as-of 读数**被正确界定** ⇒ ★★ 负控/预演里的 M11 窗口 == stage 窗口）
+     --   ★ ★★ **pre 侧不受影响**（★ pre = [切点-7d, 切点) ⇒ ★ 全部 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -563,6 +609,12 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ **post 段必须被 now() 界定**
+     --   ★★ 形态：★ 本块的 era 判定只有**下界**（★ 切点字面量）⇒ ★★ post 段 = **[切点, ∞)**
+     --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口 = [切点, 真实now] ⇒ ★★ **不是 stage 窗口**
+     --   ★★★ 修法：★ 加 `created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --   ★★ ⇒ ★★ pre 侧不受影响（★ pre 全在切点前 ⇒ 全 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
@@ -599,6 +651,12 @@ WITH fr AS (
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '14 days'
+     -- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ **post 段必须被 now() 界定**
+     --   ★★ 形态：★ 本块的 era 判定只有**下界**（★ 切点字面量）⇒ ★★ post 段 = **[切点, ∞)**
+     --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口 = [切点, 真实now] ⇒ ★★ **不是 stage 窗口**
+     --   ★★★ 修法：★ 加 `created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --   ★★ ⇒ ★★ pre 侧不受影响（★ pre 全在切点前 ⇒ 全 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -642,6 +700,12 @@ WITH fr AS (
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '14 days'
+     -- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ **post 段必须被 now() 界定**
+     --   ★★ 形态：★ 本块的 era 判定只有**下界**（★ 切点字面量）⇒ ★★ post 段 = **[切点, ∞)**
+     --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口 = [切点, 真实now] ⇒ ★★ **不是 stage 窗口**
+     --   ★★★ 修法：★ 加 `created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+     --   ★★ ⇒ ★★ pre 侧不受影响（★ pre 全在切点前 ⇒ 全 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+     AND n.created_at <= now()
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
@@ -1191,8 +1255,11 @@ FROM node_probe_state WHERE last_attempt_at IS NOT NULL;
 
 -- H4：探测覆盖率（★ handoff 指标 4 的修正版）
 SELECT 'H4_probe_coverage_24h' k,
-  COUNT(*)::text||' total | probed_24h='||COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours')::text
-  ||' | coverage_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours')/NULLIF(COUNT(*),0),1)::text v
+  COUNT(*)::text||' total | probed_24h='||COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours' AND last_attempt_at <= now())::text
+  ||' | coverage_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE last_attempt_at > NOW() - INTERVAL '24 hours' AND last_attempt_at <= now())/NULLIF(COUNT(*),0),1)::text v
+-- ★★ 2026-11-11 第 25 处口径修正（★ 穷举审计）：★ 「最近 24h 被探过」这个窗口**原来只有下界**
+--   ★★ ⇒ ★★ 窗口 = [now-24h, ∞) ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控里窗口 = ~35h ⇒ ★★ 与 24h 口径不同量纲
+--   ★★ 修法：★ 加 `last_attempt_at <= now()`（★ 快照表 ⇒ 该列不可能是未来 ⇒ ★ **真实读数逐字节不变**）
 FROM node_probe_state;
 
 -- H5：featured 模型的探测频率（★ handoff 任务 2.2-3 的修正版）
@@ -1210,6 +1277,10 @@ FROM (
   SELECT n.raw_model_name, COUNT(*) c
   FROM node_probe_runs n
   WHERE n.created_at > NOW() - INTERVAL '24 hours'
+    -- ★★ 2026-11-11 第 25 处（★ 穷举审计）：★ 「最近 24h 探了几次」**原来只有下界**
+    --   ★★ ⇒ ★★ as-of 替换只改得动下界 ⇒ ★★ 负控里窗口 = ~35h ⇒ ★★ 与 24h 口径不同量纲
+    --   ★★ 修法：★ 加 `created_at <= now()` ⇒ ★★ 真实读数逐字节不变（★ now = 观测到的全部）
+    AND n.created_at <= now()
     AND lower(btrim(n.raw_model_name)) IN (SELECT m FROM rawv_new)
   GROUP BY 1 ORDER BY 2 DESC LIMIT 10
 ) t;
