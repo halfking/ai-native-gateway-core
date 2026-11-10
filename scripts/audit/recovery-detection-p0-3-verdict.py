@@ -118,6 +118,41 @@ BASELINES: dict[str, dict] = {
     "M14x_other_pre7d": {"n": 3792, "base": (360, 368, 5524), "expect": "-", "units": "med/p90/p99",
                          "slow": 84.4, "tag": "★ 对照项：节奏不该变",
                          "note": "全计费口径·对照组（★ Stage 2 基线）"},
+    # ── ★★★★ M20：**分层效应指标**（★ 本轮第 11 处口径修正，★★ 差点造成结构性假阴性）
+    #   ★★ 为什么必须分层（★ 实测，211 真库 pre7d 全计费口径新覆盖组 691 条失败事件）：
+    #     · **exempt（豁免类）537 条 = 78%** ⇒ 协议形态（404/405/410/415、400/422 非配额体
+    #       ⇒ classifyProbeRootCause ⇒ ProbeRootCauseProtocol）+ 配额钉住
+    #     · ★★ 豁免类**设计上就钉在 6h**（modelNotServedRecheckInterval）且**豁免 featured 乘数**
+    #       （bg/probe_service.go:582 的两个例外）⇒ ★★ post 的混合 p90 必然仍 ≈360
+    #       ⇒ ★★ M14x 的「post p90 ≤180 / slow ≤pre/2」**结构性不可达 ⇒ 假阴性**
+    #   ★★ ⇒ 效应判据改到 **normal 子集**（★ 乘数应当生效的那一类）；exempt 子集作**不回归守卫**
+    #   ★★ **机制级正控（已实测）**：pre 期同刻同形态，old_feat 阶梯全是减半值（150/1800/10800），
+    #      newly 全是未减半值（300/3600/7200/21600）⇒ 乘数是唯一解释；post 期 newly 出现 10800/1800
+    #   ★★ **调度余量实测**：观察间隔 − 阶梯值 ⇒ 中位 0 分钟、p90 1 分钟 ⇒ 零余量不来自调度
+    "M20_normal_pre6d": {"n": 133, "base": (3, 360, 12.0, 17), "expect": "-",
+                          "units": "med_gap/p90_gap/slow_pct/top21600_n",
+                          "tag": "★ 分层：乘数应当生效的那一类",
+                          "note": "新覆盖组·非豁免（★ 桶间加法用）"},
+    "M20_normal_pre24": {"n": 21, "base": (60, 360, 14.3, 3), "expect": "post:未减半顶格=0 且 慢事件≤pre/2",
+                          "units": "med_gap/p90_gap/slow_pct/top21600_n",
+                          "tag": "★ **效应判据**（Stage 1 同量纲，24h）",
+                          "note": "新覆盖组·非豁免（★ Stage 1 效应基线）"},
+    "M20_normal_pre7d": {"n": 154, "base": (3, 360, 12.3, 20), "expect": "post:未减半顶格=0 且 慢事件≤pre/2",
+                          "units": "med_gap/p90_gap/slow_pct/top21600_n",
+                          "tag": "★ **效应判据**（Stage 2 同量纲，★ 整 7 天）",
+                          "note": "新覆盖组·非豁免（★ Stage 2 效应基线）"},
+    "M20_exempt_pre6d": {"n": 480, "base": (2, 360, 25.6, 124), "expect": "-",
+                          "units": "med_gap/p90_gap/slow_pct/top21600_n",
+                          "tag": "★ 分层：设计上不该被减半（6h 停放）",
+                          "note": "新覆盖组·豁免（★ 桶间加法用）"},
+    "M20_exempt_pre24": {"n": 57, "base": (360, 360, 87.7, 54), "expect": "post:慢事件≤pre×1.25 且 p90≤pre",
+                          "units": "med_gap/p90_gap/slow_pct/top21600_n",
+                          "tag": "★ 不回归守卫（Stage 1 同量纲，24h）",
+                          "note": "新覆盖组·豁免（★ Stage 1 不回归基线）"},
+    "M20_exempt_pre7d": {"n": 537, "base": (3, 360, 32.2, 178), "expect": "post:慢事件≤pre×1.25 且 p90≤pre",
+                          "units": "med_gap/p90_gap/slow_pct/top21600_n",
+                          "tag": "★ 不回归守卫（Stage 2 同量纲，★ 整 7 天）",
+                          "note": "新覆盖组·豁免（★ Stage 2 不回归基线）"},
 }
 
 # ★ 三个「冷金丝雀」：目标人群（106 个新覆盖变体）里仍被探测到的冷对
@@ -340,6 +375,27 @@ def judge(data: dict[str, str], stage: int = 1,
             m19_seen += 1
             if n7 != n6 + n24:
                 m19_bad.append(f"{scope}/{grp}: pre7d={n7} ≠ pre6d+pre24={n6 + n24}")
+    # ★★★★ M20 的**分层**不变量（★ 本轮新增，★★ 分层判据必须自带结构性守卫）
+    #   ① 桶间加法：M20_<层>_pre7d = pre6d + pre24（★ 同 M14 ⇒ 标签与边界不符必破）
+    #   ② ★★★ **分层穷尽性**：M20_normal_pre<窗> + M20_exempt_pre<窗> == M14x_pre<窗>_newly_covered
+    #      （★ ★ 这条最锐：★ 分层必须**穷尽**原集合 ⇒ 若豁免分类写错（漏了第三类 / 重复计入）
+    #        ⇒ 两层之和 ≠ 原集合 ⇒ 立刻破 ⇒ ★ 守卫有牙）
+    for lay in ("normal", "exempt"):
+        n6 = head_count(data.get(f"M20_{lay}_pre6d", "") or "")
+        n24 = head_count(data.get(f"M20_{lay}_pre24", "") or "")
+        n7 = head_count(data.get(f"M20_{lay}_pre7d", "") or "")
+        if n6 is not None and n24 is not None and n7 is not None:
+            m19_seen += 1
+            if n7 != n6 + n24:
+                m19_bad.append(f"M20/{lay}: pre7d={n7} ≠ pre6d+pre24={n6 + n24}")
+    for win in ("pre6d", "pre24", "pre7d"):
+        nt = head_count(data.get(f"M20_normal_{win}", "") or "")
+        et = head_count(data.get(f"M20_exempt_{win}", "") or "")
+        ref = head_count(data.get(f"M14x_{win}_newly_covered", "") or "")
+        if nt is not None and et is not None and ref is not None:
+            m19_seen += 1
+            if nt + et != ref:
+                m19_bad.append(f"M20/{win}: normal+exempt={nt + et} ≠ M14x newly={ref}（★ 分层不穷尽）")
     if m19_bad:
         g19 = "★★ **口径自相矛盾**：" + "; ".join(m19_bad)
     elif m19_seen == 0:
@@ -473,7 +529,7 @@ def judge(data: dict[str, str], stage: int = 1,
         other_tag = "M14x " if scope == "" else "M14 "
         for grp, label, mode in (
             ("old_feat", "旧 featured 人群（无回归）", "noregress"),
-            ("newly_covered", "新覆盖人群（★ 效应）", "effect"),
+            ("newly_covered", "新覆盖人群（★ 混合口径·观察面）", "observe"),
             ("other", "对照组（两个集合都没有）", "control"),
         ):
             label = prefix + label
@@ -492,6 +548,17 @@ def judge(data: dict[str, str], stage: int = 1,
             p90 = field(obs, "p90_min", "p90")
             p99 = field(obs, "p99_min", "p99")
             slow = field(obs, "slow_gt300_pct")
+            if mode == "observe":
+                # ★★★ 观察面分支**先于**样本量判定（★ 本轮自测抓到：
+                #   ★ 样本不足时若先落 n<30 的措辞，★ 这行就**说不出「观察面」**
+                #   ★ ⇒ 读者会把「不参与判据」误读成「样本不足所以没结论」）
+                rows.append((label, base_txt, obs,
+                             verdict(None, "★ **观察面（不作判据）**：★ 混合口径里 78% 是豁免类"
+                                           "（协议形态 6h 停放 + 乘数豁免）⇒ ★ post 的 p90/slow"
+                                           "**结构性不可达** ⇒ ★ 效应判据改用 **M20 分层**"
+                                           "（★ M20 新覆盖组·非豁免）"
+                                           + (f"（★ 本行 n={n}）" if n is not None else ""))))
+                continue
             if n is None or n < 30:
                 rows.append((label, base_txt, obs,
                              verdict(None, f"★ post n={n} < 30 ⇒ 读数不稳（方向可读）"
@@ -532,6 +599,66 @@ def judge(data: dict[str, str], stage: int = 1,
                 rows.append((label, base_txt, obs,
                              verdict(ok, f"★ 对照：post med={med}（pre {pre[0]}，容差 ±20%）"
                                        f"⇒ {'未受影响的 ns 对节奏未变' if ok else '★ 对照也变了 ⇒ 有其它因素'}")))
+    # ── M20：★★★★ **分层效应指标**（★ 本轮第 11 处口径修正）──
+    #   ★★ 为什么要它：★ M14x 的混合口径里 **78% 是豁免类**（协议形态 ⇒ 钉 6h ⇒ 乘数豁免）
+    #     ⇒ ★★ post 的混合 p90 必然仍 ≈360 ⇒ ★★ M14x 的「post p90 ≤180」**结构性不可达**
+    #     ⇒ ★★ 若不换判据，★ 关窗必得一个**假阴性**，且会被读成「修复没生效」
+    #   ★★ M20 = 同一批新覆盖变体，按「该被减半(normal) / 不该被减半(exempt)」分层
+    #   ★★ 判据阈值**全部从 pre 实测推导**（★ 不拍脑袋）：
+    #     · normal（★ 效应主判据）：① **未减半 6h 顶格清零**（top21600_n == 0）
+    #         —— ★ 机制指纹：21600 = 6h 未减半；乘数（50%）生效则变 10800 = 3h
+    #         —— ★★ 计数型、**零余量**、无调度噪声
+    #       ② **慢事件折半**（slow_gt300_pct ≤ pre/2）★ 沿用「机制预期 = pre 的一半」语义
+    #     · exempt（★ 不回归守卫）：p90_gap ≤ pre 且 slow ≤ pre×1.25
+    for lay, label, mode in (
+        ("normal", "M20 新覆盖组·非豁免（★ 效应主判据）", "effect"),
+        ("exempt", "M20 新覆盖组·豁免（★ 不回归守卫）", "noregress"),
+    ):
+        bkey = f"M20_{lay}_{win}"
+        b = BASELINES[bkey]
+        base_txt = base_cell(bkey)
+        obs = data.get(f"M20_{lay}_post")
+        if obs is None:
+            rows.append((label, base_txt, "—",
+                         verdict(None, "★ post 段无事件（★ post 事件需 6h 才结算 ⇒ 窗口未满）")))
+            continue
+        n = head_count(obs)
+        pre_med, pre_p90, pre_slow, pre_top = b["base"]
+        p90 = field(obs, "p90_gap")
+        slow = field(obs, "slow_gt300_pct")
+        top = field(obs, "top21600_n")
+        if n is None or n < 10:
+            rows.append((label, base_txt, obs,
+                         verdict(None, f"★ post n={n} < 10 ⇒ **样本不足以判定**（★ 方向可读，★ 不许外推）")))
+            continue
+        if mode == "effect":
+            if top is None or slow is None:
+                rows.append((label, base_txt, obs,
+                             verdict_missing("★ post 的 top21600_n / slow_gt300_pct 算不出")))
+                continue
+            lim_slow = round(pre_slow / 2, 1)
+            ok_top = top == 0
+            ok_slow = slow <= lim_slow
+            ok = ok_top and ok_slow
+            p90_txt = f" / p90_gap {p90:.0f}（★ 参考：期望 ≤{pre_p90 // 2}）" if p90 is not None else ""
+            rows.append((label, base_txt, obs,
+                         verdict(ok, f"★ 未减半 6h 顶格 {top:.0f} 条（期望 0；pre {pre_top:.0f}）"
+                                   f" ⇒ {'★ 阶梯已减半（乘数生效）' if ok_top else '★ 仍有未减半顶格'}"
+                                   f" / 慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；pre {pre_slow}%）"
+                                   f" ⇒ {'冷簇已收缩' if ok_slow else '★ 冷簇未收缩'}"
+                                   f"{p90_txt}（★ n={n}）")))
+        else:
+            if p90 is None or slow is None:
+                rows.append((label, base_txt, obs, verdict_missing("★ post 的 p90_gap / slow 算不出")))
+                continue
+            lim_slow = round(pre_slow * 1.25, 1)
+            ok = p90 <= pre_p90 and slow <= lim_slow
+            rows.append((label, base_txt, obs,
+                         verdict(ok, f"★ 豁免类（★ 协议形态：设计上钉 6h、乘数豁免）post p90_gap={p90:.0f}"
+                                   f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；pre {pre_slow}%）"
+                                   f" ⇒ {'未变慢（不回归成立）' if ok else '★ 豁免类被拖慢'}"
+                                   f"（★ n={n}）")))
+
     # ── M11：episode 层症状 ──────────────────────────────────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
                              ("bare", "M11 bare 恢复感知时延", "M11_bare_pre")):
@@ -616,6 +743,13 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
       · M12p = post pending_pct ≤1.0% 且 failures ≥30
     """
     if pass_case:
+        # ★★ M20 post（★ 本轮新增）：★ 阈值对齐 **Stage 1 的 pre24 基线**
+        #   normal 判据：top21600_n == 0（★ 机制指纹）且 slow ≤ 14.3/2 = 7.15
+        m20_normal_post = ("21 events | med_gap=60 | p90_gap=180 | slow_gt300_pct=5.0"
+                           " | ladder_p50=30 | top21600_n=0 | ladder_max_s=10800")
+        #   exempt 判据：p90_gap ≤ 360 且 slow ≤ 87.7×1.25 = 109.6
+        m20_exempt_post = ("57 events | med_gap=360 | p90_gap=360 | slow_gt300_pct=87.7"
+                           " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600")
         s12s = "394 events | med_min=30 | p90=60 | p99=1200"      # ★ 参考项（人群会变）
         s12n = "1703 events | med_min=360 | p90=361 | p99=5524"    # ★ 参考项
         s11n = "7 episodes | med=3 | p90=60 | max=1200"            # 3≤3 ✔ 60≤360 ✔ 1200≤1791 ✔
@@ -639,6 +773,13 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
             "0 个 featured canonical 的 raw 变体未进 static（★ 期望 0）", \
             "9228 total | free=1234"
     else:
+        # ★★ M20 post 的失败用例（★ 每行**只坏一个分量**）
+        #   normal：只坏 top21600_n（0 → 3）⇒ ❌（★ slow / p90 都好）
+        m20_normal_post = ("21 events | med_gap=60 | p90_gap=180 | slow_gt300_pct=5.0"
+                           " | ladder_p50=180 | top21600_n=3 | ladder_max_s=21600")
+        #   exempt：只坏 p90_gap（360 → 720）⇒ ❌（★ slow 仍好）
+        m20_exempt_post = ("57 events | med_gap=360 | p90_gap=720 | slow_gt300_pct=87.7"
+                           " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600")
         s12s = "394 events | med_min=600 | p90=900 | p99=2400"      # ★ 仍是参考项
         s12n = "1703 events | med_min=600 | p90=700 | p99=6000"    # ★ 仍是参考项
         # ★★ 失败用例：**每行只坏一个东西** ⇒ ★ 任何单点阈值变异都会被抓到
@@ -682,6 +823,36 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M14x_post_other": m14x_oth,
         "M12p_pending_post_ns_not": m12p,
         "M12p_pending_pre24_ns_not": "325 failures_aged6h | pending=0 | pending_pct=0.0",
+        # ★★ M14/M14x 的 **pre 键**（★ 真库实测值，2026-11-10 211）
+        #   ★ 加进来的目的：★ 让 **M18 冻结对拍**与 **M19 结构性不变量**在**自测里也被走到**
+        #   ★★ 否则自测只覆盖 post 侧 ⇒ 守卫的另一半从未被验证过
+        "M14_pre6d_newly_covered": "447 events | med_min=2 | p90_min=360 | p99_min=1390 | max_min=5523 | slow_gt300_pct=10.3",
+        "M14_pre24_newly_covered": "14 events | med_min=360 | p90_min=360 | p99_min=360 | max_min=360 | slow_gt300_pct=100.0",
+        "M14_pre7d_newly_covered": "461 events | med_min=2 | p90_min=360 | p99_min=1390 | max_min=5523 | slow_gt300_pct=13.0",
+        "M14_pre6d_old_feat": "300 events | med_min=3 | p90_min=120 | p99_min=1791 | max_min=5522 | slow_gt300_pct=8.7",
+        "M14_pre24_old_feat": "94 events | med_min=3 | p90_min=31 | p99_min=360 | max_min=360 | slow_gt300_pct=6.4",
+        "M14_pre7d_old_feat": "394 events | med_min=3 | p90_min=60 | p99_min=1791 | max_min=5522 | slow_gt300_pct=8.1",
+        "M14_pre6d_other": "930 events | med_min=360 | p90_min=369 | p99_min=5524 | max_min=5659 | slow_gt300_pct=88.4",
+        "M14_pre24_other": "311 events | med_min=360 | p90_min=360 | p99_min=360 | max_min=360 | slow_gt300_pct=77.2",
+        "M14_pre7d_other": "1241 events | med_min=360 | p90_min=368 | p99_min=5524 | max_min=5659 | slow_gt300_pct=85.6",
+        "M14x_pre6d_newly_covered": "613 events | med_min=3 | p90_min=360 | p99_min=5517 | max_min=5551 | slow_gt300_pct=22.7",
+        "M14x_pre24_newly_covered": "78 events | med_min=360 | p90_min=360 | p99_min=361 | max_min=361 | slow_gt300_pct=67.9",
+        "M14x_pre7d_newly_covered": "691 events | med_min=3 | p90_min=360 | p99_min=5517 | max_min=5551 | slow_gt300_pct=27.8",
+        "M14x_pre6d_old_feat": "1652 events | med_min=3 | p90_min=30 | p99_min=361 | max_min=5522 | slow_gt300_pct=4.4",
+        "M14x_pre24_old_feat": "226 events | med_min=4 | p90_min=31 | p99_min=360 | max_min=360 | slow_gt300_pct=8.0",
+        "M14x_pre7d_old_feat": "1878 events | med_min=3 | p90_min=31 | p99_min=361 | max_min=5522 | slow_gt300_pct=4.8",
+        "M14x_pre6d_other": "2820 events | med_min=360 | p90_min=369 | p99_min=5524 | max_min=5669 | slow_gt300_pct=87.9",
+        "M14x_pre24_other": "972 events | med_min=360 | p90_min=360 | p99_min=360 | max_min=360 | slow_gt300_pct=74.0",
+        "M14x_pre7d_other": "3792 events | med_min=360 | p90_min=368 | p99_min=5524 | max_min=5669 | slow_gt300_pct=84.4",
+        # ★★ M20 的 **8 个键**（★ pre 6 个 = 真库实测冻结值；post 2 个按场景给）
+        "M20_normal_pre6d": "133 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=12.0 | ladder_p50=3 | top21600_n=17 | ladder_max_s=21600",
+        "M20_normal_pre24": "21 events | med_gap=60 | p90_gap=360 | slow_gt300_pct=14.3 | ladder_p50=60 | top21600_n=3 | ladder_max_s=21600",
+        "M20_normal_pre7d": "154 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=12.3 | ladder_p50=3 | top21600_n=20 | ladder_max_s=21600",
+        "M20_exempt_pre6d": "480 events | med_gap=2 | p90_gap=360 | slow_gt300_pct=25.6 | ladder_p50=0 | top21600_n=124 | ladder_max_s=30658",
+        "M20_exempt_pre24": "57 events | med_gap=360 | p90_gap=360 | slow_gt300_pct=87.7 | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600",
+        "M20_exempt_pre7d": "537 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=32.2 | ladder_p50=0 | top21600_n=178 | ladder_max_s=30658",
+        "M20_normal_post": m20_normal_post,
+        "M20_exempt_post": m20_exempt_post,
     }
     for pair in CANARIES:
         d[f"M15_pre__{pair}"] = "13 events | med_min=360 | p90_min=360 | p99_min=1791 | max_min=1791"
@@ -701,7 +872,11 @@ def selftest() -> int:
     rows, bad, _ = judge(_synthetic(True))
     by = rows_by_label(rows)
     REFERENCE = ("M12s ns featured 复检间隔（med/p90/p99）",
-                 "M12s ns 非featured 复检间隔（med/p90/p99）")
+                 "M12s ns 非featured 复检间隔（med/p90/p99）",
+                 # ★★ M14/M14x 的新覆盖人群行现在是**观察面**（★ 混合口径含 78% 豁免类
+                 #   ⇒ post 的 p90/slow 结构性不可达 ⇒ 效应判据改用 M20 分层）
+                 "M14 新覆盖人群（★ 混合口径·观察面）",
+                 "M14x 新覆盖人群（★ 混合口径·观察面）")
     for k in by:
         if k in REFERENCE:
             if not by[k].startswith("⚠️"):
@@ -717,15 +892,20 @@ def selftest() -> int:
     for k in ("M2 featured static 规模", "M6 免费面 featured 命中", "M9 展开覆盖缺口",
               "M5 24h 探测量", "M3b namespaced backoff 档位",
               "M14 旧 featured 人群（无回归）",
-              "M14 新覆盖人群（★ 效应）",
               "M14 对照组（两个集合都没有）",
               "M14x 旧 featured 人群（无回归）",
-              "M14x 新覆盖人群（★ 效应）",
               "M14x 对照组（两个集合都没有）",
+              "M20 新覆盖组·非豁免（★ 效应主判据）",
+              "M20 新覆盖组·豁免（★ 不回归守卫）",
               "M11 namespaced 恢复感知时延",
               "M12p ns 非featured 待复检率", f"M15 金丝雀 {CANARIES[0]}"):
         if not by.get(k, "").startswith("❌"):
             failures.append(f"[② 全未达成] {k} ⇒ {by.get(k, '<缺行>')}")
+    # ★★ 观察面行**不得**被误判成 ❌（★ 否则「混合口径不可达」会被读成「修复没生效」）
+    for k in ("M14 新覆盖人群（★ 混合口径·观察面）",
+              "M14x 新覆盖人群（★ 混合口径·观察面）"):
+        if by.get(k, "").startswith("❌"):
+            failures.append(f"[② 全未达成] {k} 是观察面，不该判 ❌ ⇒ {by[k]}")
 
     # ③ 量具缺数（分位是 '?'）⇒ 必须「不可判」，**不能**是「未达成」
     d = _synthetic(True)
@@ -733,12 +913,14 @@ def selftest() -> int:
     d["M11b_post_fix_namespaced"] = "7 episodes | med=? | p90=? | max=?"
     d["M3b_backoff_ns_featured_err_http_429"] = "5 rows | median_retry_s=?"
     d["M14_post_newly_covered"] = "66 events | med_min=30 | p90_min=? | p99_min=600 | max_min=600 | slow_gt300_pct=2.0"
+    d["M20_normal_post"] = ("21 events | med_gap=60 | p90_gap=? | slow_gt300_pct=?"
+                            " | ladder_p50=? | top21600_n=? | ladder_max_s=?")
     rows, bad, _ = judge(d)
     by = rows_by_label(rows)
     for k in ("M12s ns featured 复检间隔（med/p90/p99）",
               "M11 namespaced 恢复感知时延",
               "M3b namespaced backoff 档位",
-              "M14 新覆盖人群（★ 效应）"):
+              "M20 新覆盖组·非豁免（★ 效应主判据）"):
         v = by.get(k, "<缺行>")
         if v.startswith("❌"):
             failures.append(f"[③ 量具缺数] {k} 被误判为未达成 ⇒ {v}")
@@ -782,11 +964,12 @@ def selftest() -> int:
         failures.append(f"[⑥ p99 单项] 只坏 p99 时应判未达成 ⇒ {v}")
 
     # ⑦ ★★ 同理：慢事件占比（速率型读数）也要能单独被抓住
+    #   ★★ 本轮改指 **M20 normal**（★ 效应判据已从 M14x 混合口径迁到 M20 分层）
     d = _synthetic(True)
-    d["M14_post_newly_covered"] = ("66 events | med_min=30 | p90_min=120 | p99_min=600"
-                                   " | max_min=600 | slow_gt300_pct=80.0")
+    d["M20_normal_post"] = ("21 events | med_gap=60 | p90_gap=180 | slow_gt300_pct=80.0"
+                            " | ladder_p50=30 | top21600_n=0 | ladder_max_s=10800")
     rows, _, _ = judge(d, stage=1)
-    v = rows_by_label(rows).get("M14 新覆盖人群（★ 效应）", "<缺行>")
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
     if not v.startswith("❌"):
         failures.append(f"[⑦ slow 单项] 只坏 slow 时应判未达成 ⇒ {v}")
 
@@ -811,8 +994,15 @@ def selftest() -> int:
                                      " | max_min=5523 | slow_gt300_pct=13.0")
     rows, bad, guards = judge(d)
     g18 = dict(guards).get("M18 pre 基线冻结一致性", "")
-    if "1 个 pre 基线键" not in g18:
+    # ★★ 本轮把 M14/M14x/M20 的 pre 键都放进合成数据 ⇒ ★ 比对过的键数应 ≥ 18
+    #   ★ 断言口径从「恰好 1 个」改成「**≥18 且无未比对标记**」⇒ ★ 键序映射写错会立刻掉到 0
+    if "未产出 pre 基线键" in g18 or "个 pre 基线键" not in g18:
         failures.append(f"[⑧b M18 守卫] 守卫未真正比对过（键序映射可能错了）⇒ {g18}")
+    else:
+        import re as _re
+        _m = _re.search(r"(\d+) 个 pre 基线键", g18)
+        if not _m or int(_m.group(1)) < 18:
+            failures.append(f"[⑧b M18 守卫] 比对过的 pre 基线键过少（应 ≥18）⇒ {g18}")
 
     # ⑨ ★★★ **两个计费口径都要出行**，且某口径样本不足时**必须点名另一口径**
     #   （★ 否则「样本不足」会被读成「修复无效」——★ 本轮反复强调的纪律）
@@ -821,11 +1011,13 @@ def selftest() -> int:
                                     " | max_min=360 | slow_gt300_pct=100.0")
     rows, _, _ = judge(d, stage=1)
     by = rows_by_label(rows)
-    v = by.get("M14 新覆盖人群（★ 效应）", "<缺行>")
-    if "M14x" not in v:
-        failures.append(f"[⑨ 双口径] free 口径样本不足时未点名 M14x ⇒ {v}")
-    if "M14x 新覆盖人群（★ 效应）" not in by:
-        failures.append("[⑨ 双口径] 全计费口径的效应行缺失")
+    v = by.get("M14 新覆盖人群（★ 混合口径·观察面）", "<缺行>")
+    if "M20" not in v:
+        failures.append(f"[⑨ 双口径] free 口径样本不足时未点名效应判据（M20）⇒ {v}")
+    if "M14x 新覆盖人群（★ 混合口径·观察面）" not in by:
+        failures.append("[⑨ 双口径] 全计费口径的行缺失")
+    if "M20 新覆盖组·非豁免（★ 效应主判据）" not in by:
+        failures.append("[⑨ 双口径] ★ M20 效应判据行缺失（★ 混合口径不可达 ⇒ 效应判据只能靠它）")
 
     # ⑩ ★★★ **M19 守卫**：★ 口径的结构性不变量（★ **不需要知道冻结值**就能查）
     #   ★★ all ≥ free（样本空间包含关系）+ pre7d = pre6d + pre24（桶间加法）
@@ -859,6 +1051,45 @@ def selftest() -> int:
     if not bad:
         failures.append("[⑩ M19 守卫] all<free 时守卫未判失败")
 
+    # ⑪ ★★★ **M20 的机制指纹分量要能单独被抓住**（★ 纪律：每个判据分量都有独立场景）
+    d = _synthetic(True)
+    d["M20_normal_post"] = ("21 events | med_gap=60 | p90_gap=180 | slow_gt300_pct=5.0"
+                            " | ladder_p50=180 | top21600_n=3 | ladder_max_s=21600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[⑪ top21600 单项] 只坏「未减半顶格」时应判未达成 ⇒ {v}")
+
+    # ⑫ ★★★★ **混合口径未变 ≠ 修复没生效**（★★ 本轮第 11 处口径修正的**核心断言**）
+    #   ★★ 场景：M14x 混合口径仍 p90=360（★ 豁免类占 78% ⇒ 结构性如此），
+    #      而 M20 分层显示阶梯已减半 ⇒ ★★ 判定器**不得**出现任何 ❌
+    #      （★ 否则「假阴性」会被读成「修复没生效」⇒ ★ 这正是本轮差点发生的事）
+    d = _synthetic(True)
+    d["M14x_post_newly_covered"] = ("78 events | med_min=360 | p90_min=360 | p99_min=360"
+                                    " | max_min=360 | slow_gt300_pct=27.8")
+    rows, _, _ = judge(d, stage=1)
+    by = rows_by_label(rows)
+    for lbl, val in by.items():
+        if val.startswith("❌"):
+            failures.append(f"[⑫ 混合口径假阴性] {lbl} 被判 ❌（★ 混合口径结构性不可达 ⇒ 不该判红）⇒ {val}")
+    if not by.get("M20 新覆盖组·非豁免（★ 效应主判据）", "").startswith("✅"):
+        failures.append("[⑫ 混合口径假阴性] M20 效应判据行未判达成 ⇒ "
+                        + by.get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>"))
+    if not by.get("M14x 新覆盖人群（★ 混合口径·观察面）", "").startswith("⚠️"):
+        failures.append("[⑫ 混合口径假阴性] M14x 新覆盖行应落「观察面（⚠️）」⇒ "
+                        + by.get("M14x 新覆盖人群（★ 混合口径·观察面）", "<缺行>"))
+
+    # ⑬ ★★★ **M19 的「分层穷尽性」不变量**（★ normal + exempt == M14x newly）
+    d = _synthetic(True)
+    d["M20_exempt_pre7d"] = ("538 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=32.2"
+                              " | ladder_p50=0 | top21600_n=178 | ladder_max_s=30658")
+    rows, bad, guards = judge(d)
+    g19 = dict(guards).get("M19 口径结构不变量", "")
+    if "分层不穷尽" not in g19:
+        failures.append(f"[⑬ M19 分层穷尽性] 分层之和 ≠ 原集合时应报警 ⇒ {g19}")
+    if not bad:
+        failures.append("[⑬ M19 分层穷尽性] 分层不穷尽时守卫未判失败")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -874,6 +1105,9 @@ def selftest() -> int:
     print("   ✔ ⑧ M18 守卫：★ pre 基线与冻结值不一致 ⇒ 报警并整表作废（★ 且 ⑧b 断言它**真的比对过**）")
     print("   ✔ ⑨ 两个计费口径都出行；★ 某口径样本不足时**点名另一口径**")
     print("   ✔ ⑩ M19 守卫：★ 口径结构不变量（all≥free、pre7d=pre6d+pre24）⇒ 自洽通过 / 矛盾报警")
+    print("   ✔ ⑪ M20 机制指纹分量（未减半顶格）能单独被变异抓住")
+    print("   ✔ ⑫ ★★ 混合口径仍 360 ⇒ **不得**出现 ❌（★ 避免结构性假阴性被读成「修复没生效」）")
+    print("   ✔ ⑬ M19 分层穷尽性（normal+exempt == M14x newly）⇒ 不穷尽即报警")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -927,22 +1161,27 @@ def main() -> int:
 
     if args.stage == 2:
         print("★ Stage 2（7 天窗口）：M11 episode 层与 M15 金丝雀为**主判据**"
-              "（★ Stage 1 的「样本不足」项在此应全部可判）。")
+              "（★ Stage 1 的「样本不足」项在此应全部可判）；"
+              "★★ **M20 normal（★ 效应主判据）**在此窗口样本充足（pre7d n=154 ⇒ post7d ≈154）"
+              "⇒ ★★ 这才是**正式判定**（★ Stage 1 的 24h 窗口只有 ≈21 条 ⇒ 只能给方向）。")
     else:
         print("★ Stage 1（24h 窗口）判据集：★ 机制面（M3b）+ 资格/覆盖面（M2/M6/M9）"
-              "+ 成本面（M5）+ ★★ **M14 三组**（population-stable：无回归 / 效应 / 对照）"
-              "+ M12p 护栏（待复检率）；"
+              "+ 成本面（M5）+ ★★ **M14 三组**（population-stable：无回归 / 对照）"
+              "+ ★★ **M20 分层**（★ 效应主判据 + 不回归守卫）+ M12p 护栏（待复检率）；"
               "★ M11 若 post episode ≥5 即可判（≈7/日）；"
               "★★ M15 逐对幅度**留 Stage 2**（≈2/对/日 ⇒ 24h 不足）；"
               "★ M12s 两行是**参考**（post 人群会变 ⇒ 不可归因）。")
         print("★★★ ★★ **Stage 1 的预期边界（★ 别把「样本不足」写成「修复无效」）**："
-              "★ 效应判据（M14 新覆盖人群）现在有**两个计费口径**（★ 本轮新增）："
-              "· **free 切片**（免费凭据上的对，★ 症状切片）：24h 实测只有 **14 条**"
-              "（< min_n=30）⇒ ★★ **预期就是「样本不足以判定」**；"
-              "· **全计费口径**（★ 模型级全量，★ **效应判据用这一份**）：24h 实测 **78 条**"
-              "⇒ ★★ **Stage 1 可判效应**（p90 ≤180 且 slow ≤ pre 的一半）；"
+              "★★ **效应判据已从「M14x 混合口径」迁到「M20 分层」**（★ 本轮第 11 处口径修正）："
+              "· ★★ **混合口径（M14/M14x 的新覆盖行）已降为「观察面」**：★ 实测该人群 **78%** 的失败是"
+              "**豁免类**（协议形态 ⇒ 设计上钉 6h ⇒ **豁免 featured 乘数**）⇒ ★ post 的 p90/slow"
+              "**结构性不可达** ⇒ ★★ 拿它判效应 ⇒ **必然假阴性**（且会被读成「修复没生效」）；"
+              "· ★ **M20 normal（★ 效应主判据）**：★ 「未减半 6h 顶格」清零（top21600_n == 0）"
+              "★ 且 慢事件占比 ≤ pre 的一半 ⇒ ★ 24h 实测样本 ≈21 条（**薄**）⇒ ★ Stage 1 只给**方向**，"
+              "★ 正式判定留 Stage 2（pre7d n=154）；"
+              "· ★ **M20 exempt（★ 不回归守卫）**：★ 豁免类**设计上钉 6h** ⇒ 只防「变慢」，不防「变快」；"
               "⇒ ★★ Stage 1 能给的结论是：**机制已生效 + 资格/成本达标 + 旧 featured 人群无回归"
-              "+ 对照组未变 + 新覆盖人群复检节奏（全计费口径）**；"
+              "+ 对照组未变 + 新覆盖人群「该减半的那部分」阶梯已减半（M20 normal）**；"
               "★ **仍不得写成「修复已生效」**（★ 免费面可用率不可作判据 ⇒ 全局症状未闭环），"
               "★ **逐对幅度留 Stage 2**（★ pre7d 461 vs post7d ≈450，★ 同量纲且样本充足）。")
     print(f"\n== 裁决表（Stage {args.stage}；era 切点 {EPOCH}）==")
@@ -975,6 +1214,12 @@ def main() -> int:
             print(f"      - {v}")
 
     print("\n★ 诚实边界（必须一起写进结论）：")
+    print("   ⑮ ★★★★ **判据的「可达性」必须先审计**（★★ 本轮第 11 处口径修正，★★ 差点造成结构性假阴性）："
+          "★ 实测新覆盖人群 **78%** 的失败是**豁免类**（协议形态 ⇒ 设计上钉 6h ⇒ **豁免 featured 乘数**）"
+          "⇒ ★★ 混合口径的「post p90 ≤180」**结构性不可达** ⇒ ★★ 若不先审可达性就关窗 ⇒ "
+          "**必然假阴性**且会被读成「修复没生效」⇒ ★★ 纪律：**阈值先问「机制能不能做到」，"
+          "再问「读数长什么样」**；★ 效应判据必须**分层**（该减半的 / 设计上不变的），"
+          "且 ★ **分层穷尽性要有守卫**（normal + exempt == 原集合）。")
     print("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
           "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
     print("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"

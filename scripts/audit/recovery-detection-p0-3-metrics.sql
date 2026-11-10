@@ -963,3 +963,96 @@ FROM (
     AND lower(btrim(n.raw_model_name)) IN (SELECT m FROM rawv_new)
   GROUP BY 1 ORDER BY 2 DESC LIMIT 10
 ) t;
+
+-- ═══ M20 ★★★★ **分层效应指标**：★「该快的更快、不该快的不变」═══
+--
+-- ★★ 为什么必须有它（★★ 本轮第 11 处口径修正，★★ 差点造成**结构性假阴性**）：
+--   ★ M14/M14x 把新覆盖人群的失败**混在一起**取分位数 ⇒ ★★ 实测（211 真库，pre7d 全计费口径
+--     新覆盖组 691 条失败事件）其中 **537 条 = 78% 是「豁免类」**：
+--     · 协议形态（http 404/405/410/415、400/422 非配额体）
+--       ⇒ bg/probe_root_cause.go:113 classifyProbeRootCause ⇒ ProbeRootCauseProtocol
+--     · 配额钉住（quota_state ∈ {periodic_exhausted, balance_exhausted, permanently_exhausted}
+--       且 quota_recover_at 在未来）⇒ bg/probe_recovery_policy.go:335 quotaResetAlignedBackoff
+--   ★★ 而豁免类**在设计上就不该被减半**：
+--     · 协议形态 ⇒ probeBackoffForDirectOutcome 把它钉在 modelNotServedRecheckInterval = 6h
+--       （bg/node_probe.go:3908）
+--     · 且 featured backoff 乘数**显式豁免**它们：bg/probe_service.go:582 的两个例外
+--       （isModelNotServedProbeError / rootCause == ProbeRootCauseProtocol）
+--   ⇒ ⇒ ★★ **post 的混合 p90 必然仍 ≈360、slow 占比必然仍 ≈25~32%**
+--      ⇒ ★★ M14x 的「post p90 ≤180 / slow ≤ pre/2」**结构性不可达** ⇒ ★★ 假阴性
+--      （★ 且会被读成「修复没生效」⇒ ★ 真因是**判据不可达**，不是机制没生效）
+--   ★★ ⇒ 效应判据必须**按豁免/非豁免分层**：
+--       · normal（★ 乘数应当生效的那一类）⇒ **效应判据**
+--       · exempt（★ 设计上不变）           ⇒ **不回归守卫**
+--
+-- ★★ **机制级正控（★ 本轮实测，已进判据审计档）**：
+--   · pre 期**同一时刻**、同一形态、同一路径：old_feat 的阶梯值全是**减半值**
+--     （150/1800/10800/3600），newly 全是**未减半值**（300/3600/7200/21600）
+--     ⇒ ★ 乘数是唯一解释（无 era 混淆、无调度混淆）
+--   · post 期 newly 出现 **10800 / 1800**（= 21600 / 3600 的 50%）⇒ ★ 乘数确已作用
+--   · 实测调度余量（观察间隔 − 阶梯值）：**中位 0 分钟、p90 1 分钟** ⇒ ★ 观察间隔≈阶梯值
+--     ⇒ ★★ 阈值零余量的来源是「阶梯值本身就是 21600」，**不是**调度延迟
+--
+-- ★ 读数（每个键）：
+--   n                事件数
+--   med_gap/p90_gap  观察到的复检间隔（分钟）
+--   slow_gt300_pct   >300min 的事件占比（★ 速率型，比分位数稳）
+--   ladder_p50       阶梯值 next_retry_seconds 的中位（分钟）★ 机制原生读数（无调度噪声）
+--   top21600_n       next_retry_seconds = 21600（**未减半**的 6h 顶格）事件数 ★★ 机制指纹
+--   ladder_max_s     阶梯值最大值（秒）
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m JOIN provider_models pm ON pm.canonical_id = mc.id WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
+ fr AS (
+   -- ★★ 与 M14x 的 'all' 口径**逐条对齐**（★ 分层必须穷尽 M14x newly ⇒ 可对拍）
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, n.next_retry_seconds,
+          n.direct_http_status, n.direct_err_code, n.response_body,
+          c.quota_state, c.quota_recover_at
+   FROM node_probe_runs n LEFT JOIN credentials c ON c.id = n.credential_id
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id=b.provider_model_id
+                 WHERE b.credential_id=n.credential_id AND pm.raw_model_name=n.raw_model_name)
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+), seg AS (
+   SELECT credential_id, raw_model_name, created_at, success, next_retry_seconds,
+          -- ★★ 豁免判定（★ 与生产 classifyProbeRootCause + 两个乘数例外同款）
+          CASE WHEN direct_http_status IN (404,405,410,415)
+                 OR (direct_http_status IN (400,422)
+                     AND NOT (lower(coalesce(response_body,'')) ~ 'insufficient_quota|insufficient balance|quota exceeded|exceeded your current quota|billing|arrears|unpaid|balance is not enough|not enough balance|余额不足|欠费|额度不足|余额已不足|账户余额'))
+                 OR direct_err_code IN ('http_404','probe_http_404')
+                 OR (quota_state IN ('periodic_exhausted','balance_exhausted','permanently_exhausted')
+                     AND quota_recover_at > now())
+               THEN 'exempt' ELSE 'normal' END AS exemption,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) AS next_at,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END AS era
+   FROM fr
+), rec AS (
+   SELECT created_at AS fail_at, next_at, next_retry_seconds, exemption, era,
+          EXTRACT(EPOCH FROM (next_at-created_at))/60 AS recheck_min
+   FROM seg WHERE NOT success AND next_at IS NOT NULL
+     AND raw_model_name LIKE '%/%' AND lower(btrim(raw_model_name)) IN (SELECT m FROM newly)
+), exp AS (
+   -- ★ 窗口四桶（★ 与 M14 同款 ⇒ pre7d = pre6d + pre24 ⇒ 可对拍）
+   SELECT r.*, 'pre6d' win FROM rec r WHERE r.era='pre' AND r.fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+   UNION ALL
+   SELECT r.*, 'pre24' FROM rec r WHERE r.era='pre' AND r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+   UNION ALL
+   SELECT r.*, 'pre7d' FROM rec r WHERE r.era='pre'
+   UNION ALL
+   SELECT r.*, 'post' FROM rec r WHERE r.era='post'
+)
+SELECT 'M20_'||exemption||'_'||win k,
+  COUNT(*)::text||' events | med_gap='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p90_gap='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | slow_gt300_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE recheck_min > 300)/COUNT(*),1)::text
+  ||' | ladder_p50='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY next_retry_seconds/60.0))::int::text,'?')
+  ||' | top21600_n='||COUNT(*) FILTER (WHERE next_retry_seconds = 21600)::text
+  ||' | ladder_max_s='||COALESCE(max(next_retry_seconds)::text,'?') v
+FROM exp
+WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
+GROUP BY exemption, win ORDER BY 1;

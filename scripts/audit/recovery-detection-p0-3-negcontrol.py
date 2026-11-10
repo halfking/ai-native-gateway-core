@@ -40,8 +40,18 @@ BASELINE_KEYS = {
     "M14x_newly_covered_pre24": "M14x_pre24_newly_covered",
     "M14x_newly_covered_pre7d": "M14x_pre7d_newly_covered",
     "M14x_other_pre24": "M14x_pre24_other", "M14x_other_pre7d": "M14x_pre7d_other",
+    # ★★ M20 的 pre 键（★ 本轮第 11 处口径修正后新增的**分层**基线）
+    #   ★ 采集侧键名与基线键名**同序**（M20_<层>_<窗>）⇒ 无需映射
+    "M20_normal_pre6d": "M20_normal_pre6d", "M20_normal_pre24": "M20_normal_pre24",
+    "M20_normal_pre7d": "M20_normal_pre7d", "M20_exempt_pre6d": "M20_exempt_pre6d",
+    "M20_exempt_pre24": "M20_exempt_pre24", "M20_exempt_pre7d": "M20_exempt_pre7d",
 }
-EFFECT_LABELS = ("新覆盖人群（★ 效应）",)
+# ★★ 效应判据行（★ 本轮迁移）：★ M14x 的新覆盖行已降为**观察面**（★ 混合口径含 78% 豁免类
+#   ⇒ post 的 p90/slow 结构性不可达 ⇒ 若拿它做负控，★ 负控**必然**通过 ⇒ 什么也证伪不了）
+#   ⇒ ★ 负控必须指向 **M20 normal 分层**（★ 机制原生：未减半 6h 顶格必须出现）
+EFFECT_LABELS = ("M20 新覆盖组·非豁免",)
+# ★ 观察面行（★ 负控里它必须是 ⚠️ ⇒ 若变 ✅ ⇒ 说明「混合口径」被误当成判据）
+OBSERVE_LABELS = ("M14x 新覆盖人群（★ 混合口径·观察面）",)
 
 
 def head_count(text: str) -> int | None:
@@ -100,6 +110,24 @@ def load_patched_judge(data: dict[str, str], tag: str):
         pat = re.compile(r'("%s": \{"n": )\d+' % re.escape(bkey))
         src, c = pat.subn(lambda mm: f"{mm.group(1)}{n}", src)
         assert c == 1, (bkey, c)
+    # ★★ M20 的**阈值元组**也要按该 era 的实测值对齐（★ med_gap/p90_gap/slow/top21600_n）
+    #   ★ 理由：M20 的判据阈值是「**pre 的一半**」⇒ ★ pre 必须是**该 era 自己的** pre
+    for bkey in ("M20_normal_pre24", "M20_normal_pre7d", "M20_exempt_pre24", "M20_exempt_pre7d"):
+        raw = data.get(bkey, "")
+        if not raw:
+            continue
+        vals = []
+        for nm in ("med_gap", "p90_gap", "slow_gt300_pct", "top21600_n"):
+            m = re.search(rf"\b{nm}=(-?\d+(?:\.\d+)?)", raw)
+            if not m:
+                vals = []
+                break
+            vals.append(m.group(1))
+        if len(vals) != 4:
+            continue
+        pat = re.compile(r'("%s": \{"n": \d+, "base": )\([^)]*\)' % re.escape(bkey))
+        src, c = pat.subn(lambda mm: f"{mm.group(1)}({', '.join(vals)})", src)
+        assert c == 1, (bkey, c)
     mod_path = pathlib.Path(f"/tmp/negctl_verdict_{tag}.py")
     mod_path.write_text(src, encoding="utf-8")
     spec = importlib.util.spec_from_file_location(f"negctl_{tag}", mod_path)
@@ -131,6 +159,7 @@ def main() -> int:
     print("\n== 负控裁决（★ 期望：效应判据**未达成**）==")
     failures = []
     seen_effect = 0
+    seen_observe = 0
     for r in rows:
         label, base, obs, verdict_txt = r
         is_effect = any(e in label for e in EFFECT_LABELS)
@@ -141,10 +170,17 @@ def main() -> int:
                 failures.append(f"[负控] 效应判据被判达成 ⇒ ★★ 判据**恒真** ⇒ 门没牙 ⇒ {label}")
             elif not (verdict_txt.startswith("❌") or verdict_txt.startswith("⚠️")):
                 failures.append(f"[负控] 效应判据的裁决形态异常 ⇒ {label}: {verdict_txt}")
+        elif any(o in label for o in OBSERVE_LABELS):
+            seen_observe += 1
+            print(f"   | {label}\n       观测: {obs}\n       裁决: {verdict_txt}")
+            if verdict_txt.startswith("✅"):
+                failures.append(f"[负控] 观察面行被判达成 ⇒ ★★ 混合口径被误当成判据 ⇒ {label}")
         elif "对照组" in label or "无回归" in label:
             print(f"   | {label}\n       观测: {obs}\n       裁决: {verdict_txt}")
     if seen_effect == 0:
         failures.append("[负控] 没找到效应判据行 ⇒ 判据集结构变了")
+    if seen_observe == 0:
+        failures.append("[负控] 没找到观察面行（M14x 混合口径）⇒ 判据集结构变了")
 
     print()
     if failures:
@@ -152,7 +188,8 @@ def main() -> int:
             print("   ❌ " + f)
         print("\n★★ 负控未通过")
         return 1
-    print(f"   ✔ 负控通过：★ {seen_effect} 条效应判据在**修复前**的窗口全部判「未达成」")
+    print(f"   ✔ 负控通过：★ {seen_effect} 条效应判据（M20 分层）在**修复前**的窗口全部判「未达成」")
+    print(f"     ★ 另：{seen_observe} 条混合口径行落「观察面（⚠️）」⇒ ★ 不会被误读成判据")
     print("     ⇒ ★★ 判据**不是恒真** ⇒ 明天关窗读出的「达成/未达成」可信")
     return 0
 
