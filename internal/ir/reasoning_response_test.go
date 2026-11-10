@@ -67,7 +67,21 @@ func TestSerializeAnthropicResponse_PreservesSignedThinking(t *testing.T) {
 	assert.Equal(t, "answer", payload.Content[1].Text)
 }
 
-func TestSerializeAnthropicResponse_DoesNotForgeThinkingForVendorReasoning(t *testing.T) {
+// TestSerializeAnthropicResponse_ForwardsVendorReasoningWithoutSignature
+// pins the F7 owner decision (2026-11-10 ·「恢复 Anthropic 腿的 reasoning
+// trace 转发」).
+//
+// Before that decision the Anthropic leg dropped the trace of OpenAI-family
+// upstreams: their `reasoning_content` never became a "thinking" content
+// block, and the Anthropic response serializer only walked ir.Content ⇒ the
+// thinking chain never reached the Anthropic client (F7 in the 2026-11-02
+// audit ledger).
+//
+// The forwarded wire shape is a `thinking` content block. The `signature`
+// field is OMITTED here — the IR keeps the signature on the content block,
+// not on ReasoningContent, so a vendor trace has none to forward, and an
+// empty signature would be rejected by the Anthropic API.
+func TestSerializeAnthropicResponse_ForwardsVendorReasoningWithoutSignature(t *testing.T) {
 	response := &InternalResponse{
 		ID:               "vendor-response",
 		Model:            "qwen-reasoning",
@@ -81,12 +95,17 @@ func TestSerializeAnthropicResponse_DoesNotForgeThinkingForVendorReasoning(t *te
 
 	var payload struct {
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type      string `json:"type"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+			Text      string `json:"text"`
 		} `json:"content"`
 	}
 	require.NoError(t, json.Unmarshal(serialized, &payload))
-	require.Len(t, payload.Content, 1)
-	assert.Equal(t, "text", payload.Content[0].Type)
-	assert.Equal(t, "answer", payload.Content[0].Text)
+	require.Len(t, payload.Content, 2)
+	assert.Equal(t, "thinking", payload.Content[0].Type)
+	assert.Equal(t, "vendor reasoning without Anthropic signature", payload.Content[0].Thinking)
+	assert.Empty(t, payload.Content[0].Signature, "no signature in the IR ⇒ the field must be omitted, not emitted empty")
+	assert.Equal(t, "text", payload.Content[1].Type)
+	assert.Equal(t, "answer", payload.Content[1].Text)
 }

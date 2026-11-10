@@ -693,8 +693,18 @@ def judge(data: dict[str, str], stage: int = 1,
         elif key == "M5_probe_runs_24h":
             lim = BASELINES[key]["limit"]
             ok = None if n is None else n <= lim
-            rows.append((label, base_cell(key), obs,
-                         verdict(ok, f"★ 爆炸半径未爆（{n} ≤ {lim}）")))
+            # ★ 2026-11-11 修正：文案必须与裁决符号一致（原版恒写「未爆（n ≤ lim）」，
+            #   ★ Stage 1 干跑实测 9816 > 9334 判 ❌ 时文案仍自称「未爆（9816 ≤ 9334）」
+            #   ★ ——数字对比是假的 ⇒ 读者无法分辨「爆了还是没爆」）。
+            if ok is True:
+                note = f"★ 爆炸半径未爆（{n} ≤ {lim}）"
+            elif ok is False:
+                note = (f"★ 探测量超预算（{n} > {lim}）⇒ 复核探针调度增量来源"
+                        f"（era2 纳入 106 新覆盖变体 + 恢复链 re-arm/回退探测均会推高读数 ⇒ "
+                        f"先分辨「设计内恢复探测」与「调度失控」再定责）")
+            else:
+                note = "指标缺失（脚本未产出该键）"
+            rows.append((label, base_cell(key), obs, verdict(ok, note)))
 
     scalar("M2_featured_static", "M2 featured static 规模")
     scalar("M6_free_featured_pairs", "M6 免费面 featured 命中")
@@ -1532,6 +1542,16 @@ def selftest() -> int:
               "M14x 新覆盖人群（★ 混合口径·观察面）") + tuple(CANARY_OBS_LABELS):
         if by.get(k, "").startswith("❌"):
             failures.append(f"[② 全未达成] {k} 是观察面，不该判 ❌ ⇒ {by[k]}")
+
+    # ★ ②-b（2026-11-11 补）：★ **文案必须与裁决符号一致**（★ 真 bug 钉门）：
+    #   ★ Stage 1 干跑实测：M5 超 9334 预算判 ❌ 时，文案恒写「爆炸半径未爆（9816 ≤ 9334）」
+    #   ★ ⇒ 数字对比是假的 ⇒ 读者无法分辨「爆了还是没爆」。
+    m5_bad = by.get("M5 24h 探测量", "")
+    if m5_bad.startswith("❌"):
+        if "未爆" in m5_bad:
+            failures.append(f"[② 文案一致] M5 判 ❌ 但文案自称「未爆」⇒ {m5_bad}")
+        if "超预算" not in m5_bad:
+            failures.append(f"[② 文案一致] M5 判 ❌ 但文案未说明「超预算」⇒ {m5_bad}")
 
     # ③ 量具缺数（分位是 '?'）⇒ 必须「不可判」，**不能**是「未达成」
     d = _synthetic(True)

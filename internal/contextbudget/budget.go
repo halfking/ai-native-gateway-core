@@ -64,7 +64,18 @@ func (e *Error) Error() string {
 // buckets with KNOWN windows keep the exact arithmetic below unchanged.
 func Resolve(spec Spec) (Budget, error) {
 	if spec.ContextWindow <= 0 {
-		return Budget{InputTokens: MaxInputTokens, JSONBytes: DefaultMaxJSONBytes}, nil
+		// 2026-11-10 审计 A8：回落分支同样尊重显式 per-bucket 上限
+		// （spec.MaxInputTokens / spec.MaxJSONBytes）。此前直接 return 全局
+		// 上限 ⇒ 配了更紧桶限但窗口未知的桶拿到 500k 全局值。零/负值仍按
+		// 「未设置」处理（与已知窗口臂的 `> 0` 守卫同口径）。
+		input, jsonBytes := MaxInputTokens, DefaultMaxJSONBytes
+		if spec.MaxInputTokens > 0 {
+			input = min(input, spec.MaxInputTokens)
+		}
+		if spec.MaxJSONBytes > 0 {
+			jsonBytes = min(jsonBytes, spec.MaxJSONBytes)
+		}
+		return Budget{InputTokens: input, JSONBytes: jsonBytes}, nil
 	}
 	if spec.OutputReserve < 0 || spec.SafetyMargin < 0 || spec.MaxInputTokens < 0 || spec.MaxJSONBytes < 0 || spec.ExternalInputTokens < 0 {
 		return Budget{}, &Error{Kind: InvalidSpec, Detail: "negative bucket capacity"}

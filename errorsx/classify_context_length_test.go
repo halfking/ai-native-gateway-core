@@ -25,8 +25,10 @@ func TestClassifyErrorWithBody_ContextLength(t *testing.T) {
 		// "rate limit exceeded"。它一直走的是**状态兜底**。
 		// 2026-11-02：状态兜底从 KindTransient 改为 KindRequestRejected
 		// （上游 4xx 且无任何模型级/凭据级裁决 ⇒ 请求侧错误，不惩罚节点）。
+		// 2026-11-10（审计 F50）：新增**限流正文规则** ⇒ 限流形态正文在请求侧
+		// 状态族上落**专属**的 KindRateLimitObserved（仍然不惩罚节点）。
 		// 本用例的真实意图是「**不是** context_length」，该意图不变。
-		{"400-not-context", 400, `{"error":{"message":"rate limit exceeded"}}`, KindRequestRejected},
+		{"400-not-context", 400, `{"error":{"message":"rate limit exceeded"}}`, KindRateLimitObserved},
 		{"401", 401, `{"error":"unauthorized"}`, KindAuth},
 		// 5xx status codes always map to KindUpstreamDown, regardless of
 		// the body. 413 with a non-context body falls through to the

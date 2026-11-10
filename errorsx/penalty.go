@@ -56,6 +56,11 @@ func AllErrorKinds() []ErrorKind {
 		// 归责落在 (凭据,模型)，**不**落账号（见 KindModelUnavailable 的
 		// kind 声明与 PenaltyOf 的分支）。
 		KindModelUnavailable,
+		// 2026-11-10（审计 F50）：限流形态正文 + 请求侧状态族（400/404/
+		// 413/414/422）⇒ 归因到「不惩罚节点」的独立 kind。
+		// 归责落在 PenaltyNone（见 PenaltyOf 的分支）——与 KindRateLimit
+		// （PenaltyBinding ⇒ 拉黑 + 连败累计）**明确不同**。
+		KindRateLimitObserved,
 		KindConcurrent,
 		KindAuthRevoked,
 		KindQuotaPeriodic,
@@ -109,6 +114,28 @@ func PenaltyOf(kind ErrorKind) Penalty {
 	//   注意：这只改**归责**，不改「什么算失败」——请求仍然失败，
 	//   且仍允许换一个兄弟候选（action_policy 的 request_rejected 分支）。
 	case KindRequestRejected:
+		return Penalty{Target: PenaltyNone}
+
+	// —— 不罚：限流形态正文落在请求侧状态族上（2026-11-10 · F50）——
+	//
+	// ★ 这是本轮（F50）新增的**独立** kind：上游用 400/404/413/414/422
+	//   回了一个「限流形态」的正文（`{"error":{"message":"rate limit
+	//   exceeded"}}`）。
+	//
+	// ★ 为什么**不能**并进 KindRateLimit：KindRateLimit 落在**绑定级**
+	//   （下面那条 case）⇒ 把 (凭据,模型) 按 http_429 拉黑 5 分钟 **且**
+	//   参与**连败累计** ⇒ 3 连败即整凭据 cooling ⇒ 全租户 503
+	//   ⇒ 2026-11-02 事故的放大器本体。
+	//
+	// ★ 口径：「上游**说了**限流」是**归因**；「这个**节点**限流了」是
+	//   **对节点的裁决**。本 kind 只做前者 ⇒ 归责 = PenaltyNone：
+	//   不拉黑绑定、不改凭据状态、不记熔断、不累计连败、不扇出探针。
+	//   （IsRequestSideError 也把它登记在内 ⇒ nodehealth 落
+	//   ErrorKindRequest ⇒ effectsFor 返回 nil ⇒ 账号一个字节都不写。）
+	//
+	// ★ 与 KindRequestRejected 的区别只在**归因的精度**（error_kind 的
+	//   取值不同 ⇒ 运维看得见「上游确实在说限流」），处置完全同族。
+	case KindRateLimitObserved:
 		return Penalty{Target: PenaltyNone}
 
 	// —— 绑定级：上游确定性地不提供这一对 (凭据,模型) ——

@@ -215,6 +215,19 @@ var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 	// 模型里 366 个由 ≥2 个凭据服务）。而「不惩罚节点」由 errorsx 的归责
 	// 矩阵（PenaltyNone）与 IsRequestSideError 各闸门负责，与本表无关。
 	errorsx.KindRequestRejected: TaskActionRetryNow,
+	// 2026-11-10（审计 F50）：限流形态正文落在请求侧状态族（400/404/413/
+	// 414/422）上 ⇒ 与 KindRequestRejected 同族。
+	//
+	// ★ 登记为 RetryNow 而不是 FailTerminal，是为了**保留跨凭据故障转移**：
+	//   这一把钥匙可能正好撞上上游的速率限制，兄弟凭据可能没有
+	//   （生产实测：943 个在册模型里 366 个由 ≥2 个凭据服务、198 个由 ≥4 个
+	//   服务）。而「不惩罚节点」由 errorsx 的归责矩阵（PenaltyNone）、
+	//   IsRequestSideError 与本表**无关**。
+	//
+	// ★ 不登记的话，未登记的 kind 会落到 centralActionForTask 的
+	//   `unmapped_kind:` ⇒ TaskActionFailClosed ⇒ **放弃**跨凭据故障转移
+	//   ⇒ 本 kind 就退化成了「整个请求直接失败」。
+	errorsx.KindRateLimitObserved: TaskActionRetryNow,
 	// 2026-11-02（4xx 归因族收口轮）：裸 404 = 「上游不提供这一对」。
 	// 与 KindRequestRejected 同样登记为 RetryNow 而不是 FailTerminal，
 	// 因为**跨凭据故障转移必须保留**（404 可能是这一把钥匙的权限/档位问题，

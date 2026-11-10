@@ -76,18 +76,31 @@ const marketPriceOverviewSQL = `
 	       m.vendor_list_in_per_1m, m.vendor_list_out_per_1m, m.vendor_vendor,
 	       s.s_in, s.s_out, s.s_cur,
 	       r.credits_per_1m_in, r.credits_per_1m_out,
+	       COALESCE(r.manual_in, FALSE), COALESCE(r.manual_out, FALSE),
 	       m.source_run_date::text
 	FROM market_price_reference m
 	LEFT JOIN models_canonical mc ON mc.id = m.canonical_id
 	LEFT JOIN LATERAL (
-	    SELECT min(b.unit_price_in_per_1m)  AS s_in,
-	           min(b.unit_price_out_per_1m) AS s_out,
-	           COALESCE(min(b.currency), '') AS s_cur
-	    FROM credential_model_bindings b
-	    JOIN provider_models pm ON pm.id = b.provider_model_id
-	    WHERE pm.canonical_id = m.canonical_id
-	      AND COALESCE(b.unit_price_in_per_1m, 0) > 0
-	      AND COALESCE(b.unit_price_out_per_1m, 0) > 0
+	    -- 2026-11-10 审计 D6：按币种分组取最小，优先 CNY 组（与 retail 的
+	    -- CurrencyDisplay=CNY 同尺）。原实现 min() 跨全部币种 + min(currency)
+	    -- 字典序 ⇒ 同 canonical 同有 USD 与 CNY 绑定时把 USD 数值当 CNY 呈现
+	    -- （CNY<USD 字典序恒选 CNY 标签）⇒ 市场位势差 ~7.2×。无 CNY 组时
+	    -- 回退任意组（cur='' 保持可判）。
+	    SELECT b.s_in, b.s_out, b.s_cur
+	    FROM (
+	        SELECT min(bb.unit_price_in_per_1m)  AS s_in,
+	               min(bb.unit_price_out_per_1m) AS s_out,
+	               bb.currency                    AS s_cur,
+	               (bb.currency = 'CNY')          AS is_cny
+	        FROM credential_model_bindings bb
+	        JOIN provider_models pm2 ON pm2.id = bb.provider_model_id
+	        WHERE pm2.canonical_id = m.canonical_id
+	          AND COALESCE(bb.unit_price_in_per_1m, 0) > 0
+	          AND COALESCE(bb.unit_price_out_per_1m, 0) > 0
+	        GROUP BY bb.currency
+	    ) b
+	    ORDER BY b.is_cny DESC, b.s_cur
+	    LIMIT 1
 	) s ON m.canonical_id IS NOT NULL
 	LEFT JOIN model_credit_rates r ON r.canonical_id = m.canonical_id
 	WHERE ($1 = '' OR m.canonical_name ILIKE '%' || $1 || '%'
@@ -121,6 +134,7 @@ func (s *Service) MarketPriceOverview(ctx context.Context, q string, onlyResolve
 	out := make([]MarketPriceOverviewRow, 0, limit)
 	for rows.Next() {
 		var r MarketPriceOverviewRow
+		var manualInFlag, manualOutFlag bool
 		var manualIn, manualOut *int64
 		if err := rows.Scan(
 			&r.CanonicalName, &r.CanonicalID, &r.DisplayName,
@@ -128,17 +142,19 @@ func (s *Service) MarketPriceOverview(ctx context.Context, q string, onlyResolve
 			&r.MarketPlatforms, &r.MarketPlatformID,
 			&r.VendorListInCNY, &r.VendorListOutCNY, &r.VendorVendor,
 			&r.SupplierIn, &r.SupplierOut, &r.SupplierCur,
-			&manualIn, &manualOut,
+			&manualInFlag, &manualOutFlag, &manualIn, &manualOut,
 			&r.SourceRunDate,
 		); err != nil {
 			return nil, err
 		}
 		r.Resolved = r.CanonicalID != nil
 
-		// P5 我方零售：语义与 effectiveModelRates 逐字同源（manual>0 优先，
-		// 否则全局有效价 = ceil(base × discount)，out 回退 in）。
-		retailIn := pickCreditRate(manualIn, global.In)
-		retailOut := pickCreditRate(manualOut, global.Out)
+		// P5 我方零售：语义与 effectiveModelRates 逐字同源（manual 旗标 && 值>0
+		// 优先，否则全局有效价 = ceil(base × discount)，out 回退 in）。
+		// 2026-11-10 审计 D7：此前未读 manual_in/out 旗标 ⇒ 「存储率≠全局但
+		// manual=false」的行被当成手工价 ⇒ 弹窗零售价与实际计费不符（漂移误报）。
+		retailIn := pickCreditRateFlagged(manualInFlag, manualIn, global.In)
+		retailOut := pickCreditRateFlagged(manualOutFlag, manualOut, global.Out)
 		r.RetailCreditsIn = retailIn
 		r.RetailCreditsOut = retailOut
 
@@ -175,8 +191,22 @@ func (s *Service) MarketPriceOverview(ctx context.Context, q string, onlyResolve
 	return out, rows.Err()
 }
 
+// pickCreditRateFlagged 是 pickCreditRate 的旗标精确形态（maas/rates.go:102
+// `pick := func(manual bool, val *int64, fallback int64)` 逐字同源）：
+// manual 旗标为真且值>0 才取手工价，否则全局有效价；两态皆无 ⇒ NULL。
+func pickCreditRateFlagged(manual bool, val *int64, global int64) *int64 {
+	if manual && val != nil && *val > 0 {
+		return val
+	}
+	return pickCreditRate(val, global)
+}
+
 // pickCreditRate mirrors maas/rates.go effectiveModelRates.pick：
 // 手工价（>0）优先，否则全局有效价；两态皆无 ⇒ NULL（未知价 ≠ 免费）。
+// ★ 2026-11-10 审计 D7：本形态把「值>0」当 manual 语义用，与真账的
+//
+//	manual 旗标口径不同（存储率≠全局但 manual=false 的行会被误当手工价）
+//	⇒ 生产路径已改走 pickCreditRateFlagged；此函数仅保留给旧测试。
 func pickCreditRate(manual *int64, global int64) *int64 {
 	if manual != nil && *manual > 0 {
 		return manual
