@@ -641,12 +641,24 @@ def judge(data: dict[str, str], stage: int = 1,
             ok_slow = slow <= lim_slow
             ok = ok_top and ok_slow
             p90_txt = f" / p90_gap {p90:.0f}（★ 参考：期望 ≤{pre_p90 // 2}）" if p90 is not None else ""
+            # ★★★ **era 纯度的存活者偏差自检**（★ 本轮新增，★ 主档 §5.9.21.13.8）
+            #   ★★ pre 侧成熟度过滤要求 `next_at < 切点` ⇒ ★★ 被丢掉的事件间隔必然跨越切点
+            #   ★★ （≥6h）⇒ ★★ 必然是「慢事件」⇒ ⇒ ★★ 若丢弃量 > 0 ⇒ ★★ pre 的慢事件占比
+            #   ★★ 被**系统性低估** ⇒ ★★ 阈值「post ≤ pre/2」**偏严** ⇒ ★★ 可能假阴性
+            _drop = num(data.get(f"M20_era_dropped_{win}", "") or "")
+            if _drop is None:
+                bias_txt = ""
+            elif _drop > 0:
+                bias_txt = (f" ★⚠️ **pre 基线有 {_drop:.0f} 条被 era 纯度丢弃**"
+                            f"（★ 存活者偏差 ⇒ 慢事件占比被低估 ⇒ ★ 阈值偏严 ⇒ ★ 判负前先复核）")
+            else:
+                bias_txt = " ★（★ pre 侧 era 纯度未丢事件 ⇒ 无存活者偏差）"
             rows.append((label, base_txt, obs,
                          verdict(ok, f"★ 未减半 6h 顶格 {top:.0f} 条（期望 0；pre {pre_top:.0f}）"
                                    f" ⇒ {'★ 阶梯已减半（乘数生效）' if ok_top else '★ 仍有未减半顶格'}"
                                    f" / 慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；pre {pre_slow}%）"
                                    f" ⇒ {'冷簇已收缩' if ok_slow else '★ 冷簇未收缩'}"
-                                   f"{p90_txt}（★ n={n}）")))
+                                   f"{p90_txt}（★ n={n}）{bias_txt}")))
         else:
             if p90 is None or slow is None:
                 rows.append((label, base_txt, obs, verdict_missing("★ post 的 p90_gap / slow 算不出")))
@@ -853,6 +865,9 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M20_exempt_pre7d": "537 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=32.2 | ladder_p50=0 | top21600_n=178 | ladder_max_s=30658",
         "M20_normal_post": m20_normal_post,
         "M20_exempt_post": m20_exempt_post,
+        # ★★ era 纯度存活者偏差自检（★ 真库实测 pre24/pre7d 均为 0 ⇒ 无存活者偏差）
+        "M20_era_dropped_pre24": "0 events dropped_by_era_purity",
+        "M20_era_dropped_pre7d": "0 events dropped_by_era_purity",
     }
     for pair in CANARIES:
         d[f"M15_pre__{pair}"] = "13 events | med_min=360 | p90_min=360 | p99_min=1791 | max_min=1791"
@@ -1079,6 +1094,17 @@ def selftest() -> int:
         failures.append("[⑫ 混合口径假阴性] M14x 新覆盖行应落「观察面（⚠️）」⇒ "
                         + by.get("M14x 新覆盖人群（★ 混合口径·观察面）", "<缺行>"))
 
+    # ⑬b ★★★ **era 纯度的存活者偏差必须被显式提示**（★ 主档 §5.9.21.13.8）
+    #   ★★ pre 侧 `next_at < 切点` 会丢掉「间隔跨越切点」的事件 ⇒ ★★ 它们**必然**是慢事件
+    #   ★★ ⇒ 若丢弃量 > 0 ⇒ ★★ pre 的慢事件占比被低估 ⇒ ★★ 阈值「post ≤ pre/2」偏严
+    #   ★★ ⇒ ★★ 判负之前必须看到这条提示（★ 否则会误判成「修复没生效」）
+    d = _synthetic(True)
+    d["M20_era_dropped_pre24"] = "5 events dropped_by_era_purity"
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if "存活者偏差" not in v:
+        failures.append(f"[⑬b 存活者偏差] pre 基线被 era 纯度丢弃时应显式提示 ⇒ {v}")
+
     # ⑬ ★★★ **M19 的「分层穷尽性」不变量**（★ normal + exempt == M14x newly）
     d = _synthetic(True)
     d["M20_exempt_pre7d"] = ("538 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=32.2"
@@ -1108,6 +1134,7 @@ def selftest() -> int:
     print("   ✔ ⑪ M20 机制指纹分量（未减半顶格）能单独被变异抓住")
     print("   ✔ ⑫ ★★ 混合口径仍 360 ⇒ **不得**出现 ❌（★ 避免结构性假阴性被读成「修复没生效」）")
     print("   ✔ ⑬ M19 分层穷尽性（normal+exempt == M14x newly）⇒ 不穷尽即报警")
+    print("   ✔ ⑬b era 纯度存活者偏差：★ pre 基线被丢弃事件 > 0 ⇒ 行内必须显式提示")
     print("\n== 合成数据自测通过 ==")
     return 0
 

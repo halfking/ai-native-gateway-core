@@ -1059,4 +1059,21 @@ FROM exp
 WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
-GROUP BY exemption, win ORDER BY 1;
+GROUP BY exemption, win
+UNION ALL
+-- ★★★ **era 纯度的存活者偏差自检**（★ 本轮新增，★ 见主档 §5.9.21.13.8）
+--   ★★ pre 侧成熟度过滤要求 `next_at < 切点` ⇒ ★★ **凡是被这条规则丢掉的事件，
+--   ★★ 其间隔必然跨越切点（≥6h）⇒ ★★ 它们**必然**是「慢事件」⇒ ⇒ ★★ 若丢弃量 > 0，
+--   ★★ 则 pre 基线的「慢事件占比」被**系统性低估** ⇒ ★★ 阈值「post ≤ pre/2」**偏严**
+--   ⇒ ⇒ ★★ 可能造成**假阴性**（★ 与本轮 §5.9.21.13 那条同族：★ 判据的偏斜必须可观测）
+--   ★★ 实测（2026-11-10 211 真库，pre24 窗口）：**丢弃 0 条** ⇒ ★ 无存活者偏差
+--   ★★ ⇒ ★ 这两个键是**读数**（★ 不进 M18 冻结对拍：★ 值变化是「数据形态变化」，
+--   ★★ 不是「口径漂移」⇒ ★ 不该让整表作废），★ 但 >0 时判定器必须显式提示。
+--   ★★ 用 VALUES + LEFT JOIN（★ GROUP BY 空集**不产生行** ⇒ 必须显式造出 0 值行）
+SELECT 'M20_era_dropped_'||w.win k, COUNT(e.*)::text||' events dropped_by_era_purity' v
+FROM (VALUES ('pre24'),('pre7d')) AS w(win)
+LEFT JOIN exp e
+       ON e.era = 'pre' AND e.win = w.win
+      AND e.next_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+      AND e.fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+GROUP BY w.win ORDER BY 1;
