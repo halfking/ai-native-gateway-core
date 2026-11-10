@@ -1,5 +1,24 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-10 211 蓝绿部署轮（sanitizerules 两处确定性缺陷修正 + 本批修复在役专项验证，goal 会话，通用式见 `LESSONS.md` **§649**）**：
+> ★ 用户目标＝「拉取合并 → 修正问题 → 部署 211（蓝绿、健康才切流、前后端正常）→ 专项测试验证」。
+> 开工 ff-merge `42db9fba`（9 提交：reasoning 预算重试/Redis sticky-first/mock 压测栈等）；
+> 期间 origin/main 三次前进（42db9fba→f88befab→f22e0d38→**1b9dfcbb** 合并收口）。
+> ★★ **闸门拒绝→真值测定→两处修正**（`fix(sanitizerules)` ce1543935f85）：闸门判「新红」拒上
+> 线 ⇒ 多遍×多树测定（我树 3 遍 + 干净 origin/main worktree 2 遍）分层——`EventRetention`＝
+> 2026-10-16 起的老红（保留裁剪纯创建序平局删掉最活跃指纹）；`ReviewedEvents`＝flaky
+> （sort.Slice 无平局裁决 ⇒ rows[0] 随机翻转）⇒ ① 裁剪平局改 Count ASC→ID ASC、② 排序补
+> ID DESC ⇒ 两条老红转绿，闸门恢复「没有新红」通过。
+> ★ **蓝绿全绿**：候选槽 b@8783 起 → **readyz OK(db+redis) 后才切** → upstream 8781→8783 →
+> 公网 200（新前端 bundle `index-8yi85PH6.js`）；版本戳 **2991-1b9dfcbb**；token 401×3 无 429；
+> 旧槽 a Exited(137) 保留可回滚；menu-config 构建副作用已还原。
+> ★ **专项验证**：① **Redis sticky-first（c3ac5577）部署期现场生效**——「复用已有实例
+> wm-acc-chain-redis + 复用库号 db5 + URSM db0 持久化防漂移」三行实证，切流后 0 真实
+> redis/session 错误；② **T-P1 回归不变量**——scope-skip churn 0/10min、真实探测 59/10min；
+> ③ **W1 不变量**——两键在 458 specs、**有机 429 冷却精确 60s ×2**（cred 4/49）；④
+> reasoning 预算重试（b2a836b）代码在役（marker=0＝暂无有机触发，正常）。
+> ★ 明确没做：`TestRedisRPM*` 仍为无本地 Redis 环境红（基线实证）；memory store 保留语义
+> 与 PG 孪生（last_seen DESC,id DESC）在「非并列」场景逐字节一致，并列场景按测试意图收敛。
 > **2026-11-09 第0批「零风险清理」执行轮（已验收）**：报告
 > `docs/audit/2026-11-09-第0批零风险清理执行报告.md`。据
 > `docs/2026-11-09-项目现状分析与整理.md` §5 第0批 4 项，**逐项取证后发现计划前提有问题，
