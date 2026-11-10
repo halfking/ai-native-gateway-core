@@ -98,7 +98,13 @@ def run_shifted_sql(shift_days: int, ssh_host: str) -> str:
     subprocess.run(["scp", "-q", str(local), f"{ssh_host}:{local}"], check=True)
     remote = (
         f"docker cp {local} acc-pg17:{local} && "
-        f'DSN=$(docker exec llm-gateway-211-b env | grep LLM_GATEWAY_DATABASE_URL | cut -d= -f2-) && '
+        # ★★★ **网关容器名不许写死**（★ 2026-11-10 19:0x 实测踩到：★ 写死 `llm-gateway-211-b`
+        #   ★★ 而 19:01 有别的会话把槽位从 b 换到 a ⇒ ★★ `-b` 变成 Exited ⇒ ★★ `docker exec` 报
+        #   ★★ 「container is not running」⇒ ★★ 负控**采不到数据** ⇒ ★★ 而 rc 仍是 0 ⇒ ★★ 静默失效）
+        #   ⇒ ★★ ⇒ 改为**自动发现运行中的容器**（★ 槽位会轮换 ⇒ 写死必然过期）
+        "GW=$(docker ps --filter name=llm-gateway-211 --format '{{.Names}}' | grep -v aux | head -1); "
+        'test -n "$GW" || { echo "★ 找不到运行中的 llm-gateway-211-* 容器 ⇒ 采集失败"; exit 3; }; '
+        'DSN=$(docker exec "$GW" env | grep LLM_GATEWAY_DATABASE_URL | cut -d= -f2-) && '
         f'docker exec -e PGPASSWORD="$(echo "$DSN" | '
         """sed -E "s#^postgres(ql)?://([^:]+):([^@]*)@.*#\\3#")" """
         f"acc-pg17 psql -U acc_super -d llm_gateway -tA -F\"|\" -v ON_ERROR_STOP=1 -f {local}"

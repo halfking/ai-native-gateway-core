@@ -1,7 +1,7 @@
 # ★ 真库捕获夹具（★ 2026-11-10 18:56 +08，★ 211 生产库 acc-pg17/llm_gateway）
 # ★ 来源命令（★ 复采时必须逐字比对本文件 ⇒ 若不一致 ⇒ 采集口径变了 ⇒ 需重新评估并**显式**更新本文件）：
 #   scp -q scripts/audit/recovery-detection-p0-3-metrics.sql 211:/tmp/m.sql
-#   ssh 211 'docker cp /tmp/m.sql acc-pg17:/tmp/m.sql && DSN=$(docker exec llm-gateway-211-b env | grep LLM_GATEWAY_DATABASE_URL | cut -d= -f2-) && docker exec -e PGPASSWORD="$(echo "$DSN" | sed -E "s#^postgres(ql)?://([^:]+):([^@]*)@.*#\3#")" acc-pg17 psql -U acc_super -d llm_gateway -tA -F"|" -v ON_ERROR_STOP=1 -f /tmp/m.sql' \
+#   ssh 211 'docker cp /tmp/m.sql acc-pg17:/tmp/m.sql && GW=$(docker ps --filter name=llm-gateway-211 --format '{{.Names}}' | grep -v aux | head -1); DSN=$(docker exec "$GW" env | grep LLM_GATEWAY_DATABASE_URL | cut -d= -f2-) && docker exec -e PGPASSWORD="$(echo "$DSN" | sed -E "s#^postgres(ql)?://([^:]+):([^@]*)@.*#\3#")" acc-pg17 psql -U acc_super -d llm_gateway -tA -F"|" -v ON_ERROR_STOP=1 -f /tmp/m.sql' \
 #     | grep -a '^M20_.*_fp|'
 #
 # ★★ **这是什么（★ 第 18 处口径修正）**：
