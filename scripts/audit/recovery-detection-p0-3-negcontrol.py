@@ -45,6 +45,18 @@ BASELINE_KEYS = {
     "M20_normal_pre6d": "M20_normal_pre6d", "M20_normal_pre24": "M20_normal_pre24",
     "M20_normal_pre7d": "M20_normal_pre7d", "M20_exempt_pre6d": "M20_exempt_pre6d",
     "M20_exempt_pre24": "M20_exempt_pre24", "M20_exempt_pre7d": "M20_exempt_pre7d",
+    # ★★ M15x 的 pre 键（★ 本轮第 13 处口径修正新增，★ 逐对金丝雀的分层基线）
+    #   ★ 采集侧键名与基线键名**同序**（M15x_<窗>__<金丝雀>）⇒ 无需映射
+    #   ★★ 必须进负控的冻结对齐表 ⇒ ★★ 否则 M18 会拿**真实 era** 的事件数去对拍
+    #   ★★ **负控 era** 的实测值 ⇒ ★★ 守卫会报「pre 基线漂移」⇒ 整表作废 ⇒ ★★ 负控读不出裁决
+    "M15x_pre24__deepseek-ai/deepseek-v4-pro-0813": "M15x_pre24__deepseek-ai/deepseek-v4-pro-0813",
+    "M15x_pre24__minimaxai/minimax-m2.7": "M15x_pre24__minimaxai/minimax-m2.7",
+    "M15x_pre24__minimaxai/minimax-m3": "M15x_pre24__minimaxai/minimax-m3",
+    "M15x_pre24__z-ai/glm-5.3": "M15x_pre24__z-ai/glm-5.3",
+    "M15x_pre7d__deepseek-ai/deepseek-v4-pro-0813": "M15x_pre7d__deepseek-ai/deepseek-v4-pro-0813",
+    "M15x_pre7d__minimaxai/minimax-m2.7": "M15x_pre7d__minimaxai/minimax-m2.7",
+    "M15x_pre7d__minimaxai/minimax-m3": "M15x_pre7d__minimaxai/minimax-m3",
+    "M15x_pre7d__z-ai/glm-5.3": "M15x_pre7d__z-ai/glm-5.3",
 }
 # ★★ 效应判据行（★ 本轮迁移）：★ M14x 的新覆盖行已降为**观察面**（★ 混合口径含 78% 豁免类
 #   ⇒ post 的 p90/slow 结构性不可达 ⇒ 若拿它做负控，★ 负控**必然**通过 ⇒ 什么也证伪不了）
@@ -107,7 +119,9 @@ def load_patched_judge(data: dict[str, str], tag: str):
         n = head_count(data.get(sqlkey, ""))
         if n is None:
             continue
-        pat = re.compile(r'("%s": \{"n": )\d+' % re.escape(bkey))
+        # ★★ 正则必须**容忍空白/换行**（★ 本轮自踩：★ M15x 的 BASELINES 条目是多行排版
+        #   ★★ ⇒ 旧的 `": \{"n": ` 形态匹配 0 次 ⇒ ★★ assert 直接炸 ⇒ ★★ 负控跑不动）
+        pat = re.compile(r'("%s":\s*\{\s*"n":\s*)\d+' % re.escape(bkey))
         src, c = pat.subn(lambda mm: f"{mm.group(1)}{n}", src)
         assert c == 1, (bkey, c)
     # ★★ M20 的**阈值元组**也要按该 era 的实测值对齐（★ med_gap/p90_gap/slow/top21600_n）
@@ -125,7 +139,30 @@ def load_patched_judge(data: dict[str, str], tag: str):
             vals.append(m.group(1))
         if len(vals) != 4:
             continue
-        pat = re.compile(r'("%s": \{"n": \d+, "base": )\([^)]*\)' % re.escape(bkey))
+        # ★★ 捕获**不含**外层括号的元组内容（★ 本轮自踩：★ 捕获含括号时替换会多出一层括号 ⇒ 语法错）
+        pat = re.compile(r'("%s":\s*\{\s*"n":\s*\d+,\s*"base":\s*)\(([^)]*)\)' % re.escape(bkey))
+        src, c = pat.subn(lambda mm: f"{mm.group(1)}({', '.join(vals)})", src)
+        assert c == 1, (bkey, c)
+    # ★★ M15x 的**逐对阈值元组**同样要按该 era 对齐（★ 本轮第 13 处口径修正新增）
+    #   ★ 理由同 M20：★ 逐对判据的阈值是「该只自己 pre 的一半」⇒ ★ 必须是**该 era 的 pre**
+    #   ★★ 五项：(normal_med_min, normal_ladder_p50_s, top3600_n, top7200_n, top21600_n)
+    #   ★★ 「?」的条目（三只 normal 为空的观察面）解析不出来 ⇒ 跳过（★ 不影响判定：它们是观察面）
+    for bkey in sorted(k for k in BASELINE_KEYS if k.startswith("M15x_pre")):
+        raw = data.get(bkey, "")
+        if not raw:
+            continue
+        vals = []
+        for nm in ("normal_med_min", "normal_ladder_p50_s",
+                   "normal_top3600_n", "normal_top7200_n", "normal_top21600_n"):
+            m = re.search(rf"\b{nm}=(-?\d+(?:\.\d+)?)", raw)
+            if not m:
+                vals = []
+                break
+            vals.append(m.group(1))
+        if len(vals) != 5:
+            continue
+        # ★★ 捕获**不含**外层括号的元组内容（★ 本轮自踩：★ 捕获含括号时替换会多出一层括号 ⇒ 语法错）
+        pat = re.compile(r'("%s":\s*\{\s*"n":\s*\d+,\s*"base":\s*)\(([^)]*)\)' % re.escape(bkey))
         src, c = pat.subn(lambda mm: f"{mm.group(1)}({', '.join(vals)})", src)
         assert c == 1, (bkey, c)
     mod_path = pathlib.Path(f"/tmp/negctl_verdict_{tag}.py")

@@ -40,9 +40,11 @@ SQL_PATH = ROOT / "scripts/audit/recovery-detection-p0-3-metrics.sql"
 VERDICT_PATH = ROOT / "scripts/audit/recovery-detection-p0-3-verdict.py"
 
 # ★ pre 侧键（★ 判定器用来算阈值/冻结对拍的那些）⇒ 必须在各时钟下逐字节一致
+#   ★★ M15x_pre<窗>__<金丝雀>（★ 本轮第 13 处口径修正新增）★ 也必须进来
+#     ⇒ ★★ 否则「M15x 的 pre 键是否时钟无关」**没人查** ⇒ ★ 漂移只会在 Stage 2 暴露
 PRE_KEY_RE = re.compile(
     r"^(M14_(pre24|pre7d|pre6d)_|M14x_(pre24|pre7d|pre6d)_|M20_(normal|exempt)_(pre24|pre7d|pre6d)$|"
-    r"^M20_era_dropped_(pre24|pre7d)$)"
+    r"^M20_era_dropped_(pre24|pre7d)$|M15x_(pre24|pre7d)__)"
 )
 
 

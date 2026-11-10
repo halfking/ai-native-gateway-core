@@ -841,6 +841,95 @@ WHERE next_at IS NOT NULL
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY era, raw_model_name ORDER BY 1;
 
+-- ═══ M15x ★★★★ **逐对金丝雀·分层口径**（★ 本轮第 13 处口径修正）═══
+--
+-- ★★ 为什么必须有它（★ 本轮真踩到，★★ **两个口径混用 ⇒ 结论相反**）：
+--   ★ M15 的旧键（`M15_pre__*` / `M15_post__*`）用的是 **free 切片**
+--     ⇒ 实测（211 真库，pre7d）：★ **四只金丝雀完全同形** —— 各 13 条事件，
+--        其中 **12 条是豁免类**（http_410 等 protocol 形态）⇒ ★ 剔豁免后**只剩 1 条**
+--        ⇒ ★★ 「post med ≤180」**结构性不可达**（协议形态设计上钉 6h、且**豁免 featured 乘数**）
+--        ⇒ ★★ 且剔豁免后**样本不足** ⇒ ★★ free 切片下**四只全部只能是观察面**
+--   ★★ 而**全计费口径**下（★ 与 M14x / M20 同口径）：
+--        deepseek-ai/deepseek-v4-pro-0813  normal **41** 条（pre7d）/ **18** 条（pre24）
+--          ⇒ ★★ 它是**唯一**一只 normal 样本足够的金丝雀 ⇒ 逐对判据只能落在它身上
+--        其余三只 normal 仅 1 / 2 / 1 条 ⇒ 仍是观察面
+--   ⇒ ★★ **同一只模型在两个口径下结论相反** ⇒ ★★ 「deepseek normal 47 条」（全计费口径）
+--     与「deepseek normal 1 条」（free 切片）是**两个口径** ⇒ ★★ 必须**分行报告**，不得混说
+--     （★ 这正是本轮差点写进结论的一个错误）
+--
+-- ★★ 判据（★ **数据驱动**，★ 不硬编码模型名 ⇒ 换一批金丝雀也成立）：
+--   每只金丝雀按**它自己**的 pre 实测决定是「判据」还是「观察面」：
+--     · normal 样本 < 10 ⇒ ⚠️ 观察面（★ 剔豁免后样本不足）
+--     · 否则 ⇒ 判据行，三个分量（★ 阈值**全部由 pre 实测推导**，★ 不拍脑袋）：
+--         ① post normal 复检间隔中位 ≤ pre 的一半（★ 观察层）
+--         ② post normal **阶梯中位** ≤ pre 的一半（★ **机制原生**、零余量、无调度噪声）
+--         ③ **未减半档位清零**：★ 只对「pre 期该只 normal 实际出现过」的档位（3600/7200/21600）
+--            要求 post 计数为 0；★ pre 期计数为 0 的档位 ⇒ 该分量**恒真** ⇒ 判定器必须标注
+--            「★ 该档位 pre 计数=0 ⇒ 恒真 ⇒ 不作判据」（★ 否则就是**恒真判据**＝门没牙）
+--
+-- ★★ **口径一致性要求（★ 关键）**：★ 本块的豁免分类 **必须与 M20 块逐字同款**
+--   （★ 两处分类若漂移 ⇒ M15x 的 normal 子集与 M20 的 normal 层会不一致 ⇒ 读数自相矛盾）
+--   ⇒ ★★ 改动时**两处必须同步**（★ 本块下方已注明）。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m JOIN provider_models pm ON pm.canonical_id = mc.id WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
+ fr AS (
+   -- ★★ **全计费口径**（★ 与 M14x / M20 同口径 ⇒ 样本量 5.6×）
+   --   ★★ 注意：M15 旧块是 free 切片 ⇒ ★★ 两个口径**分行报告**，不得混说（★ 本轮第 13 处修正）
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, n.next_retry_seconds,
+          n.direct_http_status, n.direct_err_code, n.response_body,
+          c.quota_state, c.quota_recover_at
+   FROM node_probe_runs n LEFT JOIN credentials c ON c.id = n.credential_id
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id=b.provider_model_id
+                 WHERE b.credential_id=n.credential_id AND pm.raw_model_name=n.raw_model_name)
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★ 金丝雀白名单（★ 与判定器 CANARIES 一一对应；★ 改动必须**两边同步**）
+     AND n.raw_model_name IN ('minimaxai/minimax-m2.7','minimaxai/minimax-m3',
+                               'z-ai/glm-5.3','deepseek-ai/deepseek-v4-pro-0813')
+), seg AS (
+   SELECT credential_id, raw_model_name, created_at, success, next_retry_seconds,
+          -- ★★ 豁免分类：**必须与 M20 块逐字同款**（★ 两处漂移 ⇒ 读数自相矛盾）
+          CASE WHEN direct_http_status IN (404,405,410,415)
+                 OR (direct_http_status IN (400,422)
+                     AND NOT (lower(coalesce(response_body,'')) ~ 'insufficient_quota|insufficient balance|quota exceeded|exceeded your current quota|billing|arrears|unpaid|balance is not enough|not enough balance|余额不足|欠费|额度不足|余额已不足|账户余额'))
+                 OR direct_err_code IN ('http_404','probe_http_404')
+                 OR (quota_state IN ('periodic_exhausted','balance_exhausted','permanently_exhausted')
+                     AND quota_recover_at > created_at)
+               THEN 'exempt' ELSE 'normal' END AS exemption,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) AS next_at,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END AS era
+   FROM fr
+), rec AS (
+   SELECT raw_model_name, created_at AS fail_at, next_at, next_retry_seconds, exemption, era,
+          EXTRACT(EPOCH FROM (next_at-created_at))/60 AS recheck_min
+   FROM seg WHERE NOT success AND next_at IS NOT NULL
+     AND lower(btrim(raw_model_name)) IN (SELECT m FROM newly)
+), exp AS (
+   SELECT r.*, 'pre24' win FROM rec r WHERE r.era='pre' AND r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+   UNION ALL
+   SELECT r.*, 'pre7d' FROM rec r WHERE r.era='pre'
+   UNION ALL
+   SELECT r.*, 'post' FROM rec r WHERE r.era='post'
+)
+SELECT 'M15x_'||win||'__'||raw_model_name k,
+  COUNT(*)::text||' events | exempt='||(COUNT(*) FILTER (WHERE exemption='exempt'))::text
+  ||' | normal='||(COUNT(*) FILTER (WHERE exemption='normal'))::text
+  ||' | normal_med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min) FILTER (WHERE exemption='normal'))::int::text,'?')
+  ||' | normal_ladder_p50_s='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY next_retry_seconds) FILTER (WHERE exemption='normal'))::int::text,'?')
+  ||' | normal_top3600_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds=3600))::text
+  ||' | normal_top7200_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds=7200))::text
+  ||' | normal_top21600_n='||(COUNT(*) FILTER (WHERE exemption='normal' AND next_retry_seconds=21600))::text
+  ||' | normal_ladder_max_s='||COALESCE((max(next_retry_seconds) FILTER (WHERE exemption='normal'))::text,'?') v
+FROM exp
+WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
+GROUP BY win, raw_model_name ORDER BY 1;
+
 -- ═══ M16 ★★ 口径自检（★ 常驻体检：防止绑定 join 再次静默漂移）═══
 -- ★ 背景：2026-11-10 自查抓到 —— 绑定过滤若写成
 --   `provider_model_id = (SELECT pm.id … WHERE raw_model_name = … LIMIT 1)`，

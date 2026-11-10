@@ -153,6 +153,58 @@ BASELINES: dict[str, dict] = {
                           "units": "med_gap/p90_gap/slow_pct/top21600_n",
                           "tag": "★ 不回归守卫（Stage 2 同量纲，★ 整 7 天）",
                           "note": "新覆盖组·豁免（★ Stage 2 不回归基线）"},
+    # ── ★★★★ M15x：**逐对金丝雀·分层口径**（★ 本轮第 13 处口径修正）──
+    #   ★★ 为什么新增：★ M15 旧键是 **free 切片** ⇒ 实测**四只同形**（pre7d 各 12 豁免 + 1 normal）
+    #     ⇒ 剔豁免后**只剩 1 条** ⇒ ★★ 逐对判据在 free 口径**既不可达又样本不足**
+    #     ⇒ ★ 而**全计费口径**下 deepseek 的 normal 有 **41 条（pre7d）/ 18 条（pre24）**
+    #     ⇒ ★★ 它是**唯一**一只可判的金丝雀 ⇒ 逐对判据只能落在它身上
+    #   ★★ base 元组 = (normal 复检中位分钟, normal 阶梯中位秒, 未减半档 3600 计数, 未减半档 21600 计数)
+    #     ★★ 阈值**全部由 pre 实测推导**（post ≤ pre/2）⇒ 不拍脑袋
+    #   ★★ **有牙性**：★ 只有「pre 期该档位计数 > 0」的档位才参与「未减半档位清零」判定
+    #     ⇒ ★ pre 计数 = 0 的档位在 post 侧**恒真** ⇒ 判定器必须标注「★ 恒真 ⇒ 不作判据」
+    #     （★ 否则就是**恒真判据**＝门没牙 ⇒ ★ 本轮纪律的第三次应用）
+    "M15x_pre24__deepseek-ai/deepseek-v4-pro-0813": {
+        "n": 27, "base": (60, 3600, 18, 0, 0),
+        "expect": "post:normal med≤pre/2 且 阶梯p50≤pre/2 且 未减半档位清零",
+        "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ **逐对判据**（唯一 normal 样本足够的金丝雀）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 1 同量纲，24h）"},
+    "M15x_pre24__minimaxai/minimax-m2.7": {
+        "n": 11, "base": (0, 0, 0, 0, 0),
+        "expect": "-", "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ 观察面（★ normal 层为空 ⇒ 样本不足）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 1）"},
+    "M15x_pre24__minimaxai/minimax-m3": {
+        "n": 9, "base": (0, 0, 0, 0, 0),
+        "expect": "-", "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ 观察面（★ normal 层为空 ⇒ 样本不足）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 1）"},
+    "M15x_pre24__z-ai/glm-5.3": {
+        "n": 9, "base": (0, 0, 0, 0, 0),
+        "expect": "-", "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ 观察面（★ normal 层为空 ⇒ 样本不足）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 1）"},
+    "M15x_pre7d__deepseek-ai/deepseek-v4-pro-0813": {
+        "n": 77, "base": (60, 3600, 31, 0, 10),
+        "expect": "post:normal med≤pre/2 且 阶梯p50≤pre/2 且 未减半档位清零",
+        "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ **逐对判据**（唯一 normal 样本足够的金丝雀）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 2 同量纲，★ 整 7 天）"},
+    "M15x_pre7d__minimaxai/minimax-m2.7": {
+        "n": 48, "base": (360, 21600, 0, 0, 1),
+        "expect": "-", "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ 观察面（★ normal 仅 1 条 ⇒ 样本不足）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 2）"},
+    "M15x_pre7d__minimaxai/minimax-m3": {
+        "n": 43, "base": (360, 21600, 0, 0, 2),
+        "expect": "-", "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ 观察面（★ normal 仅 2 条 ⇒ 样本不足）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 2）"},
+    "M15x_pre7d__z-ai/glm-5.3": {
+        "n": 71, "base": (361, 21600, 0, 0, 1),
+        "expect": "-", "units": "med_min/ladder_p50_s/top3600_n/top7200_n/top21600_n",
+        "tag": "★ 观察面（★ normal 仅 1 条 ⇒ 样本不足）",
+        "note": "★ 全计费口径·非豁免层（★ Stage 2）"},
 }
 
 # ★ 三个「冷金丝雀」：目标人群（106 个新覆盖变体）里仍被探测到的冷对
@@ -164,6 +216,18 @@ CANARIES = [
 ]
 CANARY_PRE_MED = 360          # ★ pre 段实测中位（各 13 次/7 天）
 CANARY_POST_MAX_MED = 180     # ★ 期望：featured backoff 减半 ⇒ ≤180 分钟
+# ★★ M15x 逐对判据的**数据驱动分派**参数（★ 本轮第 13 处口径修正）
+#   ★ CANARY_MIN_NORMAL：★ normal（非豁免）层的最小样本量 ⇒ 低于此 ⇒ 该只**降为观察面**
+#     （★ 实测：★ free 切片下四只剔豁免后各只剩 0~1 条 ⇒ 不可判；★ 全计费口径下
+#       ★ 只有 deepseek 达标（pre7d 41 条 / pre24 18 条））
+#   ★ CANARY_LADDER_STEPS：★ 阶梯链里 ≥60s 的**未减半档位**
+#     （★ 链 = 5s,30s,60s,5m,1h,2h,6h ⇒ ★ 秒 = 300/3600/7200/21600 ⇒ 减半值 = 150/1800/3600/10800）
+CANARY_MIN_NORMAL = 10
+CANARY_LADDER_STEPS = (3600, 7200, 21600)
+# ★★ 合成数据里**唯一** normal 样本足够的金丝雀（★ 真库实测：★ pre7d normal 41 条 / pre24 18 条）
+#   ★★ 其余三只的 normal 只有 0~2 条 ⇒ 判定器**数据驱动**地判它们为观察面
+#   ★★ 本常量只用于**自测**（★ 合成数据是固定的 ⇒ 可硬编码；★ 真实判定不依赖它）
+CANARY_JUDGEABLE = "deepseek-ai/deepseek-v4-pro-0813"
 
 EPOCH = "2026-11-10 13:42:30+08"
 
@@ -179,12 +243,18 @@ def run_metrics(host: str) -> str:
         subprocess.run(["scp", "-q", str(local), f"{host}:/tmp/m.sql"], check=True)
         cmd = (
             "docker cp /tmp/m.sql acc-pg17:/tmp/m.sql && "
-            "docker exec acc-pg17 psql -U acc_super -d llm_gateway -tA -F'|' -f /tmp/m.sql"
+            # ★★ psql 必须 **-v ON_ERROR_STOP=1**（★ 本轮自踩的**真缺陷**：★ 主判定路径**原先没有**这条
+            #   ★★ ⇒ 运行期 SQL 错误（如时间戳非法 / 语法错）会被 psql **吞掉**、returncode 仍 0
+            #   ★★ ⇒ 输出少了若干行 ⇒ ★★ 看起来像「该键没产出」⇒ ★★ **静默失效**
+            #   ★★ 且这类失效会被读成「量具缺数 / 样本不足」⇒ ★★ **假阴性**
+            #   ★★ 同族脚本 clockcheck.py / negcontrol.py 里本来就有这一条 ⇒ ★ 要抄，不要重新发明）
+            "docker exec acc-pg17 psql -U acc_super -d llm_gateway -tA -F'|' -v ON_ERROR_STOP=1 -f /tmp/m.sql"
         )
         out = subprocess.run(["ssh", host, cmd], capture_output=True, text=True)
         if out.returncode != 0:
             sys.stderr.write(out.stderr)
-            raise SystemExit("验收脚本执行失败")
+            raise SystemExit("验收脚本执行失败（★ psql ON_ERROR_STOP=1 ⇒ 运行期错误 ⇒ "
+                             "**采集失败**，★ 不是「缺键」⇒ ★ 先修采集口径）")
         return out.stdout
 
 
@@ -311,6 +381,11 @@ def judge(data: dict[str, str], stage: int = 1,
           inject_guard_fail: bool = False) -> tuple[list[tuple[str, str, str, str]],
                                                     list[str], list[tuple[str, str]]]:
     # ── ★★ 先看量具守卫：守卫不过 ⇒ **整张裁决表作废** ──────────────
+    # ★★ 判据基线的**同量纲窗口**（★ 本轮第 5 处口径修正的纪律）
+    #   ★ Stage 1 的 post 是 24h ⇒ 用 **pre24**；★ Stage 2 的 post 是 7 天 ⇒ 用 **pre7d**
+    #   ★ 借用另一窗口的基线 = 判错（★ 实测 pre24 与 pre7d 的分布差 4×）
+    #   ★★ 定义放在**最前面**（★ M15x 逐对段也要用它 ⇒ 晚定义会 NameError）
+    win = "pre24" if stage == 1 else "pre7d"
     guards = []
     g16 = data.get("M16_join_caliber_check", "")
     g17 = data.get("M17_event_definition_check", "")
@@ -356,15 +431,21 @@ def judge(data: dict[str, str], stage: int = 1,
     #   ★★ ⇒ ★ **断言必须基于落盘原字节**（od/grep），★ 不基于终端回显
     m19_bad: list[str] = []
     m19_seen = 0
-    for win in ("pre6d", "pre24", "pre7d", "post"):
+    # ★★★ ★★ **守卫里的循环变量不许叫 `win`**（★ 本轮真踩到，★★ 差点造成**判据基线错窗口**）
+    #   ★★ `win` 是判据的**同量纲窗口**（★ Stage 1=pre24 / Stage 2=pre7d）⇒ ★★ 一旦被
+    #   ★★ 守卫里的 `for win in (...)` 覆盖 ⇒ ★★ 循环结束后 `win` 恒为最后一个值（"pre7d"）
+    #   ★★ ⇒ ★★ **Stage 1 也会用 pre7d 基线** ⇒ ★★ stage-aware 机制**静默失效**
+    #   ★★ ⇒ ★★ 自测场景 ⑤/⑥（stage 基线）当场抓红 ⇒ ★ 门有牙 ★（本次即靠它抓到）
+    #   ★★ ⇒ 纪律：★ 守卫/循环的临时变量**不要与判据语义变量同名**
+    for w in ("pre6d", "pre24", "pre7d", "post"):
         for grp in ("newly_covered", "old_feat", "other"):
-            nf = head_count(data.get(f"M14_{win}_{grp}", "") or "")
-            na = head_count(data.get(f"M14x_{win}_{grp}", "") or "")
+            nf = head_count(data.get(f"M14_{w}_{grp}", "") or "")
+            na = head_count(data.get(f"M14x_{w}_{grp}", "") or "")
             if nf is None or na is None:
                 continue
             m19_seen += 1
             if na < nf:
-                m19_bad.append(f"{win}/{grp}: all={na} < free={nf}")
+                m19_bad.append(f"{w}/{grp}: all={na} < free={nf}")
     for scope in ("M14", "M14x"):
         for grp in ("newly_covered", "old_feat", "other"):
             n6 = head_count(data.get(f"{scope}_pre6d_{grp}", "") or "")
@@ -388,14 +469,32 @@ def judge(data: dict[str, str], stage: int = 1,
             m19_seen += 1
             if n7 != n6 + n24:
                 m19_bad.append(f"M20/{lay}: pre7d={n7} ≠ pre6d+pre24={n6 + n24}")
-    for win in ("pre6d", "pre24", "pre7d"):
-        nt = head_count(data.get(f"M20_normal_{win}", "") or "")
-        et = head_count(data.get(f"M20_exempt_{win}", "") or "")
-        ref = head_count(data.get(f"M14x_{win}_newly_covered", "") or "")
+    for w in ("pre6d", "pre24", "pre7d"):
+        nt = head_count(data.get(f"M20_normal_{w}", "") or "")
+        et = head_count(data.get(f"M20_exempt_{w}", "") or "")
+        ref = head_count(data.get(f"M14x_{w}_newly_covered", "") or "")
         if nt is not None and et is not None and ref is not None:
             m19_seen += 1
             if nt + et != ref:
-                m19_bad.append(f"M20/{win}: normal+exempt={nt + et} ≠ M14x newly={ref}（★ 分层不穷尽）")
+                m19_bad.append(f"M20/{w}: normal+exempt={nt + et} ≠ M14x newly={ref}（★ 分层不穷尽）")
+    # ★★★★★ M15x 的**逐对分层穷尽性**（★ 本轮第 13 处口径修正新增）
+    #   ★★ 每只金丝雀的每个 pre 窗口：exempt + normal 必须 == total
+    #     ⇒ ★ 分类写错（漏一类 / 重复计入）**立刻破** ⇒ ★ 守卫有牙
+    #   ★★ 与 M20 的穷尽性同款，但粒度是**逐对** ⇒ ★ 两处分类若漂移也会被这条抓住
+    for bkey in BASELINES:
+        if not bkey.startswith("M15x_pre"):
+            continue
+        raw = data.get(bkey)
+        if raw is None:
+            continue
+        tot = head_count(raw)
+        ex = field(raw, "exempt")
+        no = field(raw, "normal")
+        if tot is None or ex is None or no is None:
+            continue
+        m19_seen += 1
+        if ex + no != tot:
+            m19_bad.append(f"{bkey}: exempt+normal={ex + no:.0f} ≠ total={tot}（★ 逐对分层不穷尽）")
     if m19_bad:
         g19 = "★★ **口径自相矛盾**：" + "; ".join(m19_bad)
     elif m19_seen == 0:
@@ -490,24 +589,117 @@ def judge(data: dict[str, str], stage: int = 1,
                                        "⇒ ★★ **不可作判据**：post 人群含 era2 新纳入的 106 个冷对"
                                        "⇒ 尾部变化**不可归因**（★ 判据见 M14 三组）")))
 
-    # ── M15：三个冷金丝雀逐对 ────────────────────────────────────────
+    # ── M15 / M15x：逐对金丝雀（★ 本轮第 13 处口径修正）────────────────
+    #   ★★ **两个口径的结论相反**（★ 本轮真踩到，★★ 差点写错进结论）：
+    #     · M15  = **free 切片**（旧键）⇒ 实测**四只完全同形**（pre7d 各 12 豁免 + 1 normal）
+    #              ⇒ ★ 「post med ≤180」**结构性不可达**（协议形态设计上钉 6h、且**豁免 featured 乘数**）
+    #              ⇒ ★ 且剔豁免后只剩 0~1 条 ⇒ ★★ **只能作观察面**（★ 否则必然假阴性）
+    #     · M15x = **全计费口径**（新键）⇒ deepseek normal **41 条**（pre7d）/ **18 条**（pre24）
+    #              ⇒ ★★ **唯一**可判的逐对判据 ⇒ 阈值**全部由 pre 冻结基线推导**（★ 不拍脑袋）
+    #   ★★ **分派是数据驱动的**（★ 不硬编码模型名）：★ 每只按**它自己**的 normal 样本量决定
+    #     判据 / 观察面 ⇒ ★ 换一批金丝雀也成立。
     for pair in CANARIES:
-        pre = data.get(f"M15_pre__{pair}")
-        post = data.get(f"M15_post__{pair}")
-        pre_med = field(pre, "med_min", "med") if pre else None
-        post_n = head_count(post) if post else None
-        post_med = field(post, "med_min", "med") if post else None
-        if post_med is None:
-            verdict_txt = verdict(None, "★ post 尚无已结算事件")
-        elif post_n is not None and post_n < 5:
-            verdict_txt = verdict(None, f"★ post n={post_n} < 5 ⇒ 幅度不足（方向可读）")
-        else:
-            ok = post_med <= CANARY_POST_MAX_MED
-            verdict_txt = verdict(ok, f"post med={post_med}（期望 ≤{CANARY_POST_MAX_MED}）")
-        rows.append((f"M15 金丝雀 {pair}",
-                     f"pre med={CANARY_PRE_MED} / 期望 post ≤{CANARY_POST_MAX_MED}",
-                     f"pre_med={pre_med} post_med={post_med} post_n={post_n}",
-                     verdict_txt))
+        # ① 旧口径（free 切片）⇒ ★ 观察面（★ 结构性不可达 + 样本不足）
+        pre_f = data.get(f"M15_pre__{pair}")
+        post_f = data.get(f"M15_post__{pair}")
+        pre_med_f = field(pre_f, "med_min", "med") if pre_f else None
+        post_n_f = head_count(post_f) if post_f else None
+        post_med_f = field(post_f, "med_min", "med") if post_f else None
+        rows.append((f"M15 金丝雀 {pair}（★ 免费面·观察面）",
+                     f"pre med={CANARY_PRE_MED}（★ 实测口径）",
+                     f"pre_med={pre_med_f} post_med={post_med_f} post_n={post_n_f}",
+                     verdict(None,
+                             "★ free 切片下本只的失败**绝大多数是豁免类**（协议形态 ⇒ 设计上钉 6h "
+                             "⇒ **豁免 featured 乘数**）⇒ ★ 混合口径的「post med ≤180」"
+                             "**结构性不可达** ⇒ ★★ **不作判据**（★ 否则必然假阴性）"
+                             "⇒ ★ 逐对判据看 **M15x（全计费口径·分层）**")))
+
+        # ② 新口径（全计费·分层）⇒ ★ 数据驱动分派
+        bkey = f"M15x_{win}__{pair}"
+        pre_x = data.get(bkey)
+        post_x = data.get(f"M15x_post__{pair}")
+        label_x = f"M15x 金丝雀 {pair}（★ 全计费·分层）"
+        if pre_x is None:
+            rows.append((label_x, "—", "—",
+                         verdict(None, "★ pre 分层读数缺失（★ 该只在本窗口无新覆盖失败事件）")))
+            continue
+        b = BASELINES.get(bkey)
+        if b is None:
+            rows.append((label_x, "—", "—", verdict(None, "★ 该窗口没有冻结基线 ⇒ 不可判")))
+            continue
+        base_txt = (f"pre normal_med={b['base'][0]}min ladder_p50={b['base'][1]}s"
+                    f" | top3600={b['base'][2]} top7200={b['base'][3]} top21600={b['base'][4]}")
+        n_tot = head_count(pre_x)
+        n_ex = field(pre_x, "exempt")
+        n_no = field(pre_x, "normal")
+        ex_pct = (100.0 * n_ex / n_tot) if (n_ex is not None and n_tot) else None
+        if n_no is None:
+            rows.append((label_x, base_txt, "—",
+                         verdict(None, "★ pre 分层读数缺 normal 计数 ⇒ 不可判")))
+            continue
+        if n_no < CANARY_MIN_NORMAL:
+            pct_txt = f"{ex_pct:.0f}%" if ex_pct is not None else "?"
+            rows.append((label_x, base_txt,
+                         f"total={n_tot} exempt={n_ex:.0f} normal={n_no:.0f}（豁免 {pct_txt}）",
+                         verdict(None,
+                                 f"★ 豁免占 {pct_txt}（★ 协议形态 ⇒ 设计上钉 6h ⇒ **豁免 featured 乘数**）"
+                                 f"⇒ ★ 混合口径「post med ≤{CANARY_POST_MAX_MED}」**结构性不可达**"
+                                 f"；★ 且剔豁免后 normal 仅 {n_no:.0f} 条 < {CANARY_MIN_NORMAL}"
+                                 f" ⇒ ★★ **样本不足** ⇒ 本只为**观察面**（★ 不作判据）")))
+            continue
+        # ---- 可判：三个分量（★ 阈值与「有牙档位」全部取自**冻结基线**）----
+        if post_x is None:
+            rows.append((label_x, base_txt, "—",
+                         verdict(None, "★ post 段无事件（★ post 失败需 6h 才结算 ⇒ 窗口未满）")))
+            continue
+        p_nno = field(post_x, "normal")
+        if p_nno is None:
+            rows.append((label_x, base_txt, post_x, verdict_missing("★ post 分层读数缺 normal 计数")))
+            continue
+        if p_nno < CANARY_MIN_NORMAL:
+            rows.append((label_x, base_txt, post_x,
+                         verdict(None, f"★ post normal 仅 {p_nno:.0f} 条 < {CANARY_MIN_NORMAL}"
+                                       f" ⇒ ★ 样本不足 ⇒ 不可判（★ 不许外推）")))
+            continue
+        p_med = field(post_x, "normal_med_min")
+        p_lad = field(post_x, "normal_ladder_p50_s")
+        pre_med_b, pre_lad_b = b["base"][0], b["base"][1]
+        if p_med is None or p_lad is None or not pre_med_b or not pre_lad_b:
+            rows.append((label_x, base_txt, post_x,
+                         verdict_missing("★ post 的 normal med / 阶梯中位算不出（★ 或 pre 基线为空）")))
+            continue
+        lim_med = pre_med_b / 2.0
+        lim_lad = pre_lad_b / 2.0
+        ok1 = p_med <= lim_med
+        ok2 = p_lad <= lim_lad
+        # ★③ 未减半档位清零：★ **只对 pre 期出现过的档位**（★ pre 计数=0 ⇒ post 侧**恒真**
+        #   ⇒ 恒真判据 = 门没牙 ⇒ 必须标注「★ 恒真 ⇒ 不作判据」）
+        ok3 = True
+        teeth_txt: list[str] = []
+        vac_txt: list[str] = []
+        for idx, d in ((2, 3600), (3, 7200), (4, 21600)):
+            pn = b["base"][idx]
+            qn = field(post_x, f"normal_top{d}_n")
+            if qn is None:
+                continue
+            if pn > 0:
+                ok3 = ok3 and (qn == 0)
+                teeth_txt.append(f"{d}s 档 pre {pn:.0f} 条 ⇒ post {qn:.0f} 条"
+                                 f"（{'✔ 已清零' if qn == 0 else '★ 仍有未减半档'}）")
+            else:
+                vac_txt.append(f"{d}s 档")
+        ok = ok1 and ok2 and ok3
+        note = (f"★ 观察间隔：post normal med={p_med:.0f}min（期望 ≤{lim_med:.0f}；pre {pre_med_b:.0f}）"
+                f" ⇒ {'✔ 已折半' if ok1 else '★ 未折半'}"
+                f" / ★ 阶梯（★ 机制原生·零余量）：post ladder_p50={p_lad:.0f}s"
+                f"（期望 ≤{lim_lad:.0f}；pre {pre_lad_b:.0f}）⇒ {'✔ 已折半' if ok2 else '★ 未折半'}")
+        note += (" / ★ 未减半档位清零：" + "；".join(teeth_txt) if teeth_txt
+                 else " / ★ 未减半档位清零：★ pre 期**无任何未减半档位** ⇒ 该分量**恒真** ⇒ 不作判据")
+        if vac_txt:
+            note += (f"（★ 恒真档位（pre 计数=0）：{'、'.join(vac_txt)}"
+                     f" ⇒ 本窗口**恒真** ⇒ 不作判据）")
+        note += f"（★ post normal n={p_nno:.0f}）"
+        rows.append((label_x, base_txt, post_x, verdict(ok, note)))
 
     # ── M14：★★ 三个 population-stable 组 × ★★ 两个计费口径（★ 本轮判据体系的主体）──
     #   ★ 为什么是它：★ st_old ⊆ st_new ⇒ 三个组在 pre/post **是同一批对**
@@ -524,7 +716,6 @@ def judge(data: dict[str, str], stage: int = 1,
     #     （★ free 口径把 per_token / token_plan 凭据上的探测**静默丢掉**了）
     #   ★★ 两档各有**自己**的基线与阈值 ⇒ ★★ 阈值**不可跨口径混用**（slow 基线差 2×）
     #   ★★ 某档 n 不足时，**另一档**可能够 ⇒ ★★ 行内互相点名 ⇒ 读者不会误读成「修复无效」
-    win = "pre24" if stage == 1 else "pre7d"
     for scope, prefix in (("", "M14 "), ("x", "M14x ")):
         other_tag = "M14x " if scope == "" else "M14 "
         for grp, label, mode in (
@@ -534,7 +725,15 @@ def judge(data: dict[str, str], stage: int = 1,
         ):
             label = prefix + label
             bkey = f"M14{scope}_{grp}_{win}"
-            b = BASELINES[bkey]
+            b = BASELINES.get(bkey)
+            if b is None:
+                # ★★ **不许直接索引**（★ 本轮加固）：★ 若同量纲窗口变量被别处污染
+                #   ⇒ ★ 直接索引会 KeyError 崩掉（★ fail-loud 是对的，但读者看不到「为什么」）
+                #   ⇒ ★★ 这里改成**可读的一行**：「窗口变量被污染」本身要**看得见**
+                rows.append((label, "—", "—",
+                             verdict(None, f"★ 冻结基线缺失（{bkey}）⇒ ★★ **窗口变量异常**"
+                                           f"（★ 当前 win={win!r}）⇒ 不可判")))
+                continue
             pre = b["base"]
             base_txt = base_cell(bkey)
             key = f"M14{scope}_post_{grp}"
@@ -615,7 +814,13 @@ def judge(data: dict[str, str], stage: int = 1,
         ("exempt", "M20 新覆盖组·豁免（★ 不回归守卫）", "noregress"),
     ):
         bkey = f"M20_{lay}_{win}"
-        b = BASELINES[bkey]
+        b = BASELINES.get(bkey)
+        if b is None:
+            # ★★ 同上（★ 本轮加固）：★ 窗口变量被污染时不许崩 ⇒ ★ 改成可读的一行
+            rows.append((label, "—", "—",
+                         verdict(None, f"★ 冻结基线缺失（{bkey}）⇒ ★★ **窗口变量异常**"
+                                       f"（★ 当前 win={win!r}）⇒ 不可判")))
+            continue
         base_txt = base_cell(bkey)
         obs = data.get(f"M20_{lay}_post")
         if obs is None:
@@ -767,6 +972,13 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         s11n = "7 episodes | med=3 | p90=60 | max=1200"            # 3≤3 ✔ 60≤360 ✔ 1200≤1791 ✔
         s11b = "5 episodes | med=3 | p90=120 | max=300"            # 3≤3 ✔ 120≤180 ✔ 300≤360 ✔
         m15_post_med = 120                                          # ≤180 ✔
+        # ★★ M15x post（★ 本轮第 13 处口径修正）：★ deepseek 的「全达成」读数
+        #   ★ normal med 30 ≤ pre 60/2=30 ✔；★ 阶梯 p50 1800 ≤ pre 3600/2=1800 ✔
+        #   ★ 未减半档 3600（★ pre 侧 18 条）⇒ post 必须清零 ✔；★ 21600 档 pre24=0 ⇒ 恒真
+        m15x_post = ("27 events | exempt=9 | normal=18 | normal_med_min=30"
+                     " | normal_ladder_p50_s=1800 | normal_top3600_n=0"
+                     " | normal_top7200_n=0 | normal_top21600_n=0"
+                     " | normal_ladder_max_s=1800")
         m12p = "240 failures_aged6h | pending=1 | pending_pct=0.4"  # 0.4≤1.0 ✔ n≥30 ✔
         # ★★ 按 **Stage 1 的 pre24 基线**（old_feat p90≤31/p99≤360）取值
         m14_old = "56 events | med_min=3 | p90_min=20 | p99_min=300 | max_min=300 | slow_gt300_pct=3.0"
@@ -798,6 +1010,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         s11n = "7 episodes | med=10 | p90=60 | max=1200"            # 只坏 med（10>3）⇒ ❌
         s11b = "5 episodes | med=10 | p90=120 | max=300"            # 只坏 med（10>3）⇒ ❌
         m15_post_med = 300                                          # >180 ⇒ ❌
+        # ★★ M15x post 的失败用例（★ **只坏一个分量**：★ 阶梯中位 1800 → 3600 ⇒ ❌
+        #   ★ 观察间隔（30 ≤ 30）与未减半档清零（3600 档 post=0）都仍然好）
+        m15x_post = ("27 events | exempt=9 | normal=18 | normal_med_min=30"
+                     " | normal_ladder_p50_s=3600 | normal_top3600_n=0"
+                     " | normal_top7200_n=0 | normal_top21600_n=0"
+                     " | normal_ladder_max_s=3600")
         m12p = "240 failures_aged6h | pending=40 | pending_pct=16.7"  # >1.0 ⇒ ❌
         m14_old = "56 events | med_min=3 | p90_min=200 | p99_min=300 | max_min=300 | slow_gt300_pct=3.0"
         m14_new = "66 events | med_min=30 | p90_min=600 | p99_min=1400 | max_min=1400 | slow_gt300_pct=20.0"
@@ -869,10 +1087,55 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M20_era_dropped_pre24": "0 events dropped_by_era_purity",
         "M20_era_dropped_pre7d": "0 events dropped_by_era_purity",
     }
+    # ★★ M15x 的 **12 个键**（★ 本轮第 13 处口径修正）：
+    #   ★ pre 键的**事件数必须与冻结基线逐字一致**（★ 否则 M18 守卫会报漂移 ⇒ 整表作废
+    #   ★ ⇒ 自测自己就过不了 ⇒ ★ 这正是「冻结对拍」该有的约束力）
+    #   ★★ 三只「观察面」金丝雀**各用自己**的冻结值（★ 不能共用一套 ⇒ 否则 M18 必报漂移）
+    #   ★ post 键：★ 「全达成」场景给**好值**（★ deepseek：med 30 ≤ 30、ladder 1800 ≤ 1800、
+    #   ★   未减半档 3600/21600 都清零）；★「全未达成」场景**只坏一个分量**（★ 阶梯中位）
+    m15x_obs_pre = {
+        "minimaxai/minimax-m2.7": (
+            "11 events | exempt=11 | normal=0 | normal_med_min=? | normal_ladder_p50_s=?"
+            " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=0"
+            " | normal_ladder_max_s=?",
+            "48 events | exempt=47 | normal=1 | normal_med_min=360 | normal_ladder_p50_s=21600"
+            " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=1"
+            " | normal_ladder_max_s=21600"),
+        "minimaxai/minimax-m3": (
+            "9 events | exempt=9 | normal=0 | normal_med_min=? | normal_ladder_p50_s=?"
+            " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=0"
+            " | normal_ladder_max_s=?",
+            "43 events | exempt=41 | normal=2 | normal_med_min=360 | normal_ladder_p50_s=21600"
+            " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=2"
+            " | normal_ladder_max_s=21600"),
+        "z-ai/glm-5.3": (
+            "9 events | exempt=9 | normal=0 | normal_med_min=? | normal_ladder_p50_s=?"
+            " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=0"
+            " | normal_ladder_max_s=?",
+            "71 events | exempt=70 | normal=1 | normal_med_min=361 | normal_ladder_p50_s=21600"
+            " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=1"
+            " | normal_ladder_max_s=21600"),
+    }
     for pair in CANARIES:
         d[f"M15_pre__{pair}"] = "13 events | med_min=360 | p90_min=360 | p99_min=1791 | max_min=1791"
         d[f"M15_post__{pair}"] = (f"9 events | med_min={m15_post_med} | p90_min=240"
                                   f" | p99_min=600 | max_min=600")
+        if pair == CANARY_JUDGEABLE:
+            d[f"M15x_pre24__{pair}"] = (
+                "27 events | exempt=9 | normal=18 | normal_med_min=60 | normal_ladder_p50_s=3600"
+                " | normal_top3600_n=18 | normal_top7200_n=0 | normal_top21600_n=0"
+                " | normal_ladder_max_s=3600")
+            d[f"M15x_pre7d__{pair}"] = (
+                "77 events | exempt=36 | normal=41 | normal_med_min=60 | normal_ladder_p50_s=3600"
+                " | normal_top3600_n=31 | normal_top7200_n=0 | normal_top21600_n=10"
+                " | normal_ladder_max_s=21600")
+            d[f"M15x_post__{pair}"] = m15x_post
+        else:
+            d[f"M15x_pre24__{pair}"], d[f"M15x_pre7d__{pair}"] = m15x_obs_pre[pair]
+            d[f"M15x_post__{pair}"] = (
+                "6 events | exempt=5 | normal=1 | normal_med_min=360 | normal_ladder_p50_s=21600"
+                " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=1"
+                " | normal_ladder_max_s=21600")
     return d
 
 
@@ -883,6 +1146,14 @@ def selftest() -> int:
     def rows_by_label(rows):
         return {r[0]: r[3] for r in rows}
 
+    # ★★ M15/M15x 的行标签（★ 本轮第 13 处口径修正后）：
+    #   ★ free 切片的 M15 行**全部**是观察面（★ 实测四只豁免主导 ⇒ 结构性不可达）
+    #   ★ M15x 行按 normal 样本量**数据驱动**分派 ⇒ ★ 合成数据里只有 deepseek 是判据行
+    CANARY_OBS_LABELS = ([f"M15 金丝雀 {p}（★ 免费面·观察面）" for p in CANARIES]
+                          + [f"M15x 金丝雀 {p}（★ 全计费·分层）" for p in CANARIES
+                             if p != CANARY_JUDGEABLE])
+    CANARY_JUDGE_LABEL = f"M15x 金丝雀 {CANARY_JUDGEABLE}（★ 全计费·分层）"
+
     # ① 全达成（★ M12s 两行是**参考项** ⇒ 期望 ⚠️，其余可判行期望 ✅）
     rows, bad, _ = judge(_synthetic(True))
     by = rows_by_label(rows)
@@ -891,7 +1162,9 @@ def selftest() -> int:
                  # ★★ M14/M14x 的新覆盖人群行现在是**观察面**（★ 混合口径含 78% 豁免类
                  #   ⇒ post 的 p90/slow 结构性不可达 ⇒ 效应判据改用 M20 分层）
                  "M14 新覆盖人群（★ 混合口径·观察面）",
-                 "M14x 新覆盖人群（★ 混合口径·观察面）")
+                 "M14x 新覆盖人群（★ 混合口径·观察面）",
+                 # ★★ M15/M15x 的观察面行（★ 本轮第 13 处口径修正）
+                 ) + tuple(CANARY_OBS_LABELS)
     for k in by:
         if k in REFERENCE:
             if not by[k].startswith("⚠️"):
@@ -913,12 +1186,12 @@ def selftest() -> int:
               "M20 新覆盖组·非豁免（★ 效应主判据）",
               "M20 新覆盖组·豁免（★ 不回归守卫）",
               "M11 namespaced 恢复感知时延",
-              "M12p ns 非featured 待复检率", f"M15 金丝雀 {CANARIES[0]}"):
+              "M12p ns 非featured 待复检率", CANARY_JUDGE_LABEL):
         if not by.get(k, "").startswith("❌"):
             failures.append(f"[② 全未达成] {k} ⇒ {by.get(k, '<缺行>')}")
     # ★★ 观察面行**不得**被误判成 ❌（★ 否则「混合口径不可达」会被读成「修复没生效」）
     for k in ("M14 新覆盖人群（★ 混合口径·观察面）",
-              "M14x 新覆盖人群（★ 混合口径·观察面）"):
+              "M14x 新覆盖人群（★ 混合口径·观察面）") + tuple(CANARY_OBS_LABELS):
         if by.get(k, "").startswith("❌"):
             failures.append(f"[② 全未达成] {k} 是观察面，不该判 ❌ ⇒ {by[k]}")
 
@@ -1009,15 +1282,15 @@ def selftest() -> int:
                                      " | max_min=5523 | slow_gt300_pct=13.0")
     rows, bad, guards = judge(d)
     g18 = dict(guards).get("M18 pre 基线冻结一致性", "")
-    # ★★ 本轮把 M14/M14x/M20 的 pre 键都放进合成数据 ⇒ ★ 比对过的键数应 ≥ 18
-    #   ★ 断言口径从「恰好 1 个」改成「**≥18 且无未比对标记**」⇒ ★ 键序映射写错会立刻掉到 0
+    # ★★ 本轮把 M14/M14x/M20/**M15x** 的 pre 键都放进合成数据 ⇒ ★ 比对过的键数应 ≥ 26
+    #   ★ 断言口径从「恰好 1 个」改成「**≥26 且无未比对标记**」⇒ ★ 键序映射写错会立刻掉到 0
     if "未产出 pre 基线键" in g18 or "个 pre 基线键" not in g18:
         failures.append(f"[⑧b M18 守卫] 守卫未真正比对过（键序映射可能错了）⇒ {g18}")
     else:
         import re as _re
         _m = _re.search(r"(\d+) 个 pre 基线键", g18)
-        if not _m or int(_m.group(1)) < 18:
-            failures.append(f"[⑧b M18 守卫] 比对过的 pre 基线键过少（应 ≥18）⇒ {g18}")
+        if not _m or int(_m.group(1)) < 26:
+            failures.append(f"[⑧b M18 守卫] 比对过的 pre 基线键过少（应 ≥26）⇒ {g18}")
 
     # ⑨ ★★★ **两个计费口径都要出行**，且某口径样本不足时**必须点名另一口径**
     #   （★ 否则「样本不足」会被读成「修复无效」——★ 本轮反复强调的纪律）
@@ -1116,6 +1389,86 @@ def selftest() -> int:
     if not bad:
         failures.append("[⑬ M19 分层穷尽性] 分层不穷尽时守卫未判失败")
 
+    # ⑭ ★★★★ **逐对金丝雀的「豁免主导 ⇒ 观察面」分派**（★ 本轮第 13 处口径修正）
+    #   ★★ 场景：某只金丝雀的 pre 期 normal 样本不足 ⇒ ★★ 必须落「观察面（⚠️）」
+    #      ⇒ ★ 绝不能判 ❌（★ 否则「结构性不可达」会被读成「修复没生效」）
+    d = _synthetic(True)
+    d["M15x_pre24__minimaxai/minimax-m3"] = (
+        "9 events | exempt=9 | normal=0 | normal_med_min=? | normal_ladder_p50_s=?"
+        " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=0"
+        " | normal_ladder_max_s=?")
+    d["M15x_post__minimaxai/minimax-m3"] = (
+        "6 events | exempt=5 | normal=1 | normal_med_min=360 | normal_ladder_p50_s=21600"
+        " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=1"
+        " | normal_ladder_max_s=21600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M15x 金丝雀 minimaxai/minimax-m3（★ 全计费·分层）", "<缺行>")
+    if v.startswith("❌"):
+        failures.append(f"[⑭ 金丝雀分派] normal 样本不足时不该判 ❌ ⇒ {v}")
+    elif not v.startswith("⚠️"):
+        failures.append(f"[⑭ 金丝雀分派] normal 样本不足时应落「观察面（⚠️）」⇒ {v}")
+    elif "结构性不可达" not in v or "样本不足" not in v:
+        failures.append(f"[⑭ 金丝雀分派] 观察面行必须写明「结构性不可达 + 样本不足」⇒ {v}")
+
+    # ⑮ ★★★★ **逐对判据的三个分量要能各自被单独变异抓住**（★ 纪律：每个分量都有独立场景）
+    #   ★ 分量①：观察间隔中位（post med ≤ pre/2）
+    d = _synthetic(True)
+    d["M15x_post__" + CANARY_JUDGEABLE] = (
+        "27 events | exempt=9 | normal=18 | normal_med_min=60"
+        " | normal_ladder_p50_s=1800 | normal_top3600_n=0"
+        " | normal_top7200_n=0 | normal_top21600_n=0 | normal_ladder_max_s=1800")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get(CANARY_JUDGE_LABEL, "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[⑮a 金丝雀 med 分量] 只坏 med 时应判未达成 ⇒ {v}")
+    #   ★ 分量②：阶梯中位（★ 机制原生）
+    d = _synthetic(True)
+    d["M15x_post__" + CANARY_JUDGEABLE] = (
+        "27 events | exempt=9 | normal=18 | normal_med_min=30"
+        " | normal_ladder_p50_s=3600 | normal_top3600_n=0"
+        " | normal_top7200_n=0 | normal_top21600_n=0 | normal_ladder_max_s=3600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get(CANARY_JUDGE_LABEL, "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[⑮b 金丝雀阶梯分量] 只坏阶梯中位时应判未达成 ⇒ {v}")
+    #   ★ 分量③：未减半档位清零（★ pre 期出现过的档位）
+    d = _synthetic(True)
+    d["M15x_post__" + CANARY_JUDGEABLE] = (
+        "27 events | exempt=9 | normal=18 | normal_med_min=30"
+        " | normal_ladder_p50_s=1800 | normal_top3600_n=2"
+        " | normal_top7200_n=0 | normal_top21600_n=0 | normal_ladder_max_s=3600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get(CANARY_JUDGE_LABEL, "<缺行>")
+    if not v.startswith("❌"):
+        failures.append(f"[⑮c 金丝雀未减半档位] 只坏 3600 档清零时应判未达成 ⇒ {v}")
+
+    # ⑯ ★★★★ **「恒真分量」必须被显式标注**（★ 恒真判据 = 门没牙）
+    #   ★ Stage 1 的 deepseek pre24 基线里 **21600 档计数 = 0** ⇒ 该分量在 post 侧**恒真**
+    #   ★ ⇒ 行内必须写明「★ 恒真 ⇒ 不作判据」（★ 否则读者会以为它在把关）
+    d = _synthetic(True)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get(CANARY_JUDGE_LABEL, "<缺行>")
+    if "恒真" not in v:
+        failures.append(f"[⑯ 恒真分量标注] pre 计数=0 的档位必须标注「恒真 ⇒ 不作判据」⇒ {v}")
+    # ★ Stage 2（pre7d 基线）里 21600 档计数 = 10 ⇒ 该分量**有牙** ⇒ 不得再标恒真
+    rows2, _, _ = judge(_synthetic(True), stage=2)
+    v2 = rows_by_label(rows2).get(CANARY_JUDGE_LABEL, "<缺行>")
+    if "21600s 档 pre 10 条" not in v2:
+        failures.append(f"[⑯ 恒真分量标注] Stage 2 的 21600 档有牙 ⇒ 必须出现在「未减半档位清零」里 ⇒ {v2}")
+
+    # ⑰ ★★★★ **M15x 的逐对分层穷尽性**（★ exempt + normal == total）
+    d = _synthetic(True)
+    d["M15x_pre7d__" + CANARY_JUDGEABLE] = (
+        "77 events | exempt=36 | normal=40 | normal_med_min=60 | normal_ladder_p50_s=3600"
+        " | normal_top3600_n=31 | normal_top7200_n=0 | normal_top21600_n=10"
+        " | normal_ladder_max_s=21600")
+    rows, bad, guards = judge(d)
+    g19 = dict(guards).get("M19 口径结构不变量", "")
+    if "逐对分层不穷尽" not in g19:
+        failures.append(f"[⑰ M15x 逐对穷尽性] exempt+normal ≠ total 时应报警 ⇒ {g19}")
+    if not bad:
+        failures.append("[⑰ M15x 逐对穷尽性] 逐对分层不穷尽时守卫未判失败")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -1135,6 +1488,10 @@ def selftest() -> int:
     print("   ✔ ⑫ ★★ 混合口径仍 360 ⇒ **不得**出现 ❌（★ 避免结构性假阴性被读成「修复没生效」）")
     print("   ✔ ⑬ M19 分层穷尽性（normal+exempt == M14x newly）⇒ 不穷尽即报警")
     print("   ✔ ⑬b era 纯度存活者偏差：★ pre 基线被丢弃事件 > 0 ⇒ 行内必须显式提示")
+    print("   ✔ ⑭ ★★ 逐对金丝雀**豁免主导 ⇒ 观察面**（★ 不判 ❌，★ 且写明结构性不可达 + 样本不足）")
+    print("   ✔ ⑮ ★★ 逐对判据三个分量（med / 阶梯中位 / 未减半档位清零）各自可被单独变异抓住")
+    print("   ✔ ⑯ ★★ **恒真分量必须被标注**（★ pre 计数=0 的档位 ⇒ 恒真 ⇒ 不作判据）")
+    print("   ✔ ⑰ M15x 逐对分层穷尽性（exempt+normal == total）⇒ 不穷尽即报警")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -1176,15 +1533,40 @@ def main() -> int:
         print("\n★★ **量具守卫未通过 ⇒ 全部读数不可信 ⇒ 立即修口径，勿采信下面的裁决表**")
 
     # M15 逐对明细（★ 便于人工逐只看幅度）
+    # ★★ 同量纲窗口（★ 与 judge() 里的 `win` 同义，★ 这里是 main() 的作用域）
+    win = "pre24" if args.stage == 1 else "pre7d"
     print("\n== M15 逐对明细 ==")
+    print("   ★ M15 = **免费面切片**（★ 旧口径）｜★ M15x = **全计费口径·豁免/非豁免分层**（★ 本轮第 13 处口径修正）")
+    print("   ★★ **两个口径结论相反**（★ 实测）：★ free 切片下四只**同形**（pre7d 各 12 豁免 + 1 normal）"
+          "⇒ ★ 剔豁免后样本不足 ⇒ **观察面**；★ 全计费口径下只有 deepseek 的 normal 够样（41/18 条）⇒ **判据**")
     for pair in CANARIES:
         pre = data.get(f"M15_pre__{pair}")
         post = data.get(f"M15_post__{pair}")
         pre_med = field(pre, "med_min", "med") if pre else None
         post_n = head_count(post) if post else None
         post_med = field(post, "med_min", "med") if post else None
-        print(f"   {pair}: pre med={pre_med} (n={head_count(pre) if pre else '?'})"
+        print(f"   [免费面·观察面] {pair}: pre med={pre_med} (n={head_count(pre) if pre else '?'})"
               f" → post med={post_med} (n={post_n})")
+        px = data.get(f"M15x_{win}__{pair}")
+        qx = data.get(f"M15x_post__{pair}")
+        if not px:
+            continue
+        ex_n = field(px, "exempt") or 0
+        no_n = field(px, "normal") or 0
+        p_med = field(px, "normal_med_min")
+        p_lad = field(px, "normal_ladder_p50_s")
+        p_med_s = f"{p_med:.0f}" if p_med is not None else "?"
+        p_lad_s = f"{p_lad:.0f}" if p_lad is not None else "?"
+        if qx:
+            q_no = field(qx, "normal") or 0
+            print(f"   [全计费·分层 ] {pair}: pre total={head_count(px)} exempt={ex_n:.0f} normal={no_n:.0f}"
+                  f" normal_med={p_med_s}min ladder_p50={p_lad_s}s"
+                  f" → post total={head_count(qx)} normal={q_no:.0f}"
+                  f" normal_med={field(qx, 'normal_med_min')}min"
+                  f" ladder_p50={field(qx, 'normal_ladder_p50_s')}s")
+        else:
+            print(f"   [全计费·分层 ] {pair}: pre total={head_count(px)} exempt={ex_n:.0f} normal={no_n:.0f}"
+                  f" normal_med={p_med_s}min ladder_p50={p_lad_s}s → post 段无事件")
 
     if args.stage == 2:
         print("★ Stage 2（7 天窗口）：M11 episode 层与 M15 金丝雀为**主判据**"
@@ -1196,7 +1578,9 @@ def main() -> int:
               "+ 成本面（M5）+ ★★ **M14 三组**（population-stable：无回归 / 对照）"
               "+ ★★ **M20 分层**（★ 效应主判据 + 不回归守卫）+ M12p 护栏（待复检率）；"
               "★ M11 若 post episode ≥5 即可判（≈7/日）；"
-              "★★ M15 逐对幅度**留 Stage 2**（≈2/对/日 ⇒ 24h 不足）；"
+              "★★ **M15x 逐对**（★ 全计费口径·分层）：★ free 切片下四只**同形**（豁免主导 ⇒ 剔豁免后仅 0~1 条）"
+              "⇒ ★★ **四只全是观察面**；★ 全计费口径下**只有 deepseek 的 normal 够样**"
+              "（pre24 18 条 / pre7d 41 条）⇒ ★★ 逐对判据**只落在它一只**；"
               "★ M12s 两行是**参考**（post 人群会变 ⇒ 不可归因）。")
         print("★★★ ★★ **Stage 1 的预期边界（★ 别把「样本不足」写成「修复无效」）**："
               "★★ **效应判据已从「M14x 混合口径」迁到「M20 分层」**（★ 本轮第 11 处口径修正）："
@@ -1247,6 +1631,18 @@ def main() -> int:
           "**必然假阴性**且会被读成「修复没生效」⇒ ★★ 纪律：**阈值先问「机制能不能做到」，"
           "再问「读数长什么样」**；★ 效应判据必须**分层**（该减半的 / 设计上不变的），"
           "且 ★ **分层穷尽性要有守卫**（normal + exempt == 原集合）。")
+    print("   ⑱ ★★★★ **同一个模型在不同口径下结论可以相反**（★ 本轮第 13 处口径修正，★★ 差点写错进结论）："
+          "★ M15 旧键是 **free 切片** ⇒ 实测四只金丝雀**完全同形**（pre7d 各 13 条 = **12 豁免 + 1 normal**，"
+          "★ 豁免占比 **92%**）⇒ ★ 「post med ≤180」**结构性不可达** + 剔豁免后**只剩 1 条** ⇒ ★★ **四只全是观察面**；"
+          "★ 而**全计费口径**下 **deepseek-v4-pro-0813 的 normal 有 41 条（pre7d）/ 18 条（pre24）**"
+          "⇒ ★★ **它是唯一**可做逐对判据的金丝雀 ⇒ ★★ 逐对判据**只落在它一只**。"
+          "⇒ ★★ 纪律：**同一段论证里出现两个口径的数字，必须标口径**（★ 「deepseek normal 47 条」是全计费口径，"
+          "★ 「normal 1 条」是 free 切片 ⇒ ★ 混着说就会得出相反结论）。")
+    print("   ⑲ ★★★★ **逐对判据必须「逐只」自证可达性**（★ 本轮第 13 处口径修正）：★ 每只金丝雀按**它自己**的"
+          "normal 样本量（阈值 10）决定判据 / 观察面（★ **数据驱动**，★ 不硬编码模型名）；★ 阈值**全部由该只 pre 实测推导**"
+          "（★ deepseek 的 normal 阶梯 pre = **3600s（60min）** ⇒ 期望 post ≤ **1800s（30min）**，"
+          "★ 而**不是**笼统的「≤180min」⇒ ★★ 180min 对 60min 的事件**毫无鉴别力**）；"
+          "★ 且 ★ **pre 期计数为 0 的档位 ⇒ post 侧恒真 ⇒ 必须标注「不作判据」**（★ 否则就是**恒真判据**＝门没牙）。")
     print("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
           "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
     print("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"
