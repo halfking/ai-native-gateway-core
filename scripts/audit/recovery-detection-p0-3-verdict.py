@@ -579,7 +579,8 @@ def judge(data: dict[str, str], stage: int = 1,
         obs = data.get(key)
         if obs is None:
             rows.append((label, base_txt, "—",
-                         verdict(None, "★ post 段无事件（尚未结算）")))
+                         verdict(None, "★ post 段无事件（★ ★ **键未产出**：★ 尚未结算 / 或采集侧"
+                                       "把 post 段的**成功行**也过滤了 ⇒ ★ 不是「量具缺数」）")))
             continue
         n = head_count(obs)
         med = field(obs, "med_min", "med")
@@ -921,7 +922,12 @@ def judge(data: dict[str, str], stage: int = 1,
         key = f"M11b_post_fix_{tag}"
         obs = data.get(key)
         if obs is None:
-            rows.append((label, base_txt, "—", verdict(None, "★ post 段无 episode")))
+            # ★★ **「键不存在」≠「没有 episode」**（★ 本轮真踩到）：★ 采集侧若把 post 段的
+            #   「成功行」也过滤掉 ⇒ ⇒ **该键根本不产出** ⇒ ⇒ 这里会显示「post 段无 episode」
+            #   ⇒ ⇒ ★★ **读起来像「样本不足」，实际是「采集口径把判据行静默掉了」** ⇒ ⇒ 假阴性
+            rows.append((label, base_txt, "—",
+                         verdict(None, "★ post 段无 episode（★ ★ **键未产出**：★ 若窗口已满 ⇒ "
+                                       "先查采集侧是否把 post 段的**成功行**也过滤了 ⇒ ★ 不是「量具缺数」")))
             continue
         n = head_count(obs)
         med = field(obs, "med_min", "med")
@@ -1568,9 +1574,20 @@ def selftest() -> int:
         ("干净 pre", "⑳ 必须说明 slow 阈值改由「干净 pre」推导"),
         ("未被证伪", "㉑ 必须披露 M15x 逐对判据**未被负控证伪**"),
         ("短窗口快照", "㉒ 必须披露 deepseek 的 pre 基线是短窗口快照"),
+        ("偏向判绿", "㉓ 必须披露「过滤诱导的尾部截断」的假阴性风险"),
     ):
         if _need not in _printed:
             failures.append(f"[⑳ 诚实边界披露] {_why}（打印文本里缺 {_need!r}）")
+
+    # ★★ **「键未产出」必须与「没数据」区分开**（★ 本轮第 17 处口径修正带出的连带缺陷）
+    #   ★★ 形态：★ 采集侧若把 post 段的**成功行**也滤掉 ⇒ ⇒ **该键根本不产出**
+    #   ⇒ ⇒ 判定器只能显示「post 段无 episode」⇒ ⇒ ★★ **读起来像「样本不足」，实际是「采集口径把判据行静默掉了」**
+    d = _synthetic(True)
+    d.pop("M11b_post_fix_namespaced", None)
+    rows, _, _ = judge(d, stage=2)
+    v = rows_by_label(rows).get("M11 namespaced 恢复感知时延", "<缺行>")
+    if "键未产出" not in v:
+        failures.append(f"[⑳ 键未产出] M11 的「post 段无 episode」必须区分「键未产出」与「没数据」⇒ {v}")
 
     # ㉓ ★★★ **合成自测数据必须与「真捕获夹具」逐字同形**（★ 本轮真踩到）
     #   ★★ 形态：★ 合成数据里的 composition 曾写成 `"77 events | n=154 | ..."`
@@ -1696,14 +1713,26 @@ def honest_boundary_lines() -> list[str]:
           "11-06~11-08 三天一条都没有）⇒ ★★ 它的 pre 基线是「**短窗口快照**」而非 7 天稳态。"
           "⇒ ★★ 推论：★ **Stage 1 的 pre24/post24 是紧邻两个 24h 窗口 ⇒ 构成漂移最小** ⇒ ★★ 反而比 Stage 2 的 "
           "pre7d/post7d 更稳（★ 成本是样本量更小 ⇒ ★ Stage 1 只给方向）。")
+    lines.append("   ㉓ ★★★★ **「排除进行中的段」的过滤若作用在窗口函数（LEAD）之前 ⇒ 会把「成功行」也滤掉**"
+          "（★ 本轮第 17 处口径修正，★★ 又一个**「偏向判绿」的假阴性来源**）：★ 判据层的「排除最近 2h」"
+          "写在 **fr**（LEAD 的输入）上 ⇒ ★★ **post 段的成功行也被滤掉** ⇒ ★★ 恢复发生在最近 2h 内的 episode"
+          "⇒ 它的成功行没了 ⇒ `next_success` 不再是 TRUE ⇒ ★★ **该 episode 被整体漏掉**"
+          "⇒ ★★ ⇒ **post 的 max / p90 / p99 被系统性拉低** ⇒ ★★ ⇒ 「post ≤ pre」的判据**天然偏向判绿**。"
+          "⇒ ★★ 而它宣称的用途（「排除进行中的段」）**本来就已经由 `next_success = TRUE` 满足** ⇒ ★★ 纯属副作用。"
+          "⇒ ★★ 修法＝**删掉该过滤**（★ pre 侧逐字节不变 ⇒ ★ 基线不漂；★ post 样本随观测时长增长 ⇒ ★ 尾部不再被截断）。"
+          "⇒ ★★★ **纪律：★ 「过滤掉尾部」的谓词要问一句：★ 它作用在窗口函数之前还是之后？★ 之前 ⇒ 会连「完成信号」一起滤掉。**")
     lines.append("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
           "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
     lines.append("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"
           "目标人群（106 个新覆盖变体）修正 join 后 7 天有 **461 事件（free 口径）"
           "/ 691 事件（全计费口径）**，但其中四个「冷金丝雀」各仅 13 次（≈1.9/日）"
           "⇒ ★★ 群体层可判（M14），★ 逐对幅度仍需 Stage 2。")
-    lines.append("   ③ M12 post 段存在**右删失**（漏掉复检慢的对 ⇒ 偏差方向对我们有利）"
-          "⇒ 已用 M12s（结算版）+ M12p（护栏）对冲，但**必须在报告里披露**。")
+    lines.append("   ③ ★★ M11/M12/M12s/M12c 的 post 段**右删失**（★ **偏差方向对我们有利** ⇒ 必须在报告里披露）："
+          "★ **固有的那部分**（★ 恢复尚未被观测到的「进行中」段 ⇒ 本就不该计入）★ 仍然存在；"
+          "⇒ ★★ **而「过滤诱导」的那部分已在 §5.9.21.13.13 修掉**（★ 原先 post 侧额外滤掉了"
+          "**最近 2h 的成功行** ⇒ ⇒ **post 的 max/p90/p99 被系统性截断** ⇒ ⇒ **偏差方向恰好是「偏向判绿」**"
+          "⇒ ★★ 实测：★ 改后 post 侧**多出 3 个键**（★ `M11b_post_fix_namespaced` 从「不存在」变为存在）"
+          "⇒ ★★ **而 pre 侧逐字节不变**（★ 37/50 episodes 全部一致 ⇒ ★ 基线不漂 ⇒ ★ M18/三时钟门仍全绿）。")
     lines.append("   ④ M6 是**资格面**，不是「行为已改善」的证据。")
     lines.append("   ⑤ ★★ 基线口径已在 2026-11-10 14:2x 修正：原先的绑定过滤用 "
           "`provider_model_id = (… LIMIT 1)`，而 raw_model_name 是**一对多**"

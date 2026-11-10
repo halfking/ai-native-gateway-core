@@ -355,7 +355,17 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
-     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')   -- ★ 排除进行中的段
+     -- ★★★ 2026-11-10 第 17 处口径修正（★ 本轮实测抓到的**尾部截断偏差**）：
+     --   ★★ 原过滤：`(created_at < 切点 OR created_at < now()-2h)`
+     --   ★★ ⇒ 它作用在 **fr**（LEAD 窗口函数的输入）⇒ ★★ **post 段的「成功行」也被滤掉**
+     --   ★★ ⇒ 恢复发生在**最近 2h 内**的 episode ⇒ 它的成功行没了 ⇒ `next_success` 不再是 TRUE
+     --   ★★ ⇒ ⇒ 该 episode 被**整体漏掉** ⇒ ⇒ ★★ **post 的 max / p90 / p99 被系统性拉低**
+     --   ★★ ⇒ ⇒ ★★★ **判据「post ≤ pre」的偏差方向恰好是「偏向判绿」⇒ 假绿**
+     --   ★★ ⇒ ★★ 而它宣称的用途（「排除进行中的段」）**本来就已经由 `next_success = TRUE` 满足**
+     --   ★★   （★ 一个失败段若还没恢复 ⇒ 它的下一次运行不是 success ⇒ 该 episode 本就不会被计入）
+     --   ★★ ⇒ ⇒ **本过滤纯属副作用 ⇒ 直接删除**（★ pre 侧逐字节不变：★ 实测 37/50 episodes 全部一致）
+     --   ★★ ⇒ ★★ 删除后：★ post 段 = 「恢复已被观测到的 episode」⇒ ★★ 尾部不再被截断
+     --   ★★ ⇒ ★★ **post 样本随观测时长增长**（★ 这才是诚实的读数）⇒ ★★ M11 的 n≥5 门会自然放行更多样本   -- ★ 排除进行中的段
  ), seg AS (
    SELECT credential_id, raw_model_name, is_feat_now, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
@@ -406,7 +416,17 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
-     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')
+     -- ★★★ 2026-11-10 第 17 处口径修正（★ 本轮实测抓到的**尾部截断偏差**）：
+     --   ★★ 原过滤：`(created_at < 切点 OR created_at < now()-2h)`
+     --   ★★ ⇒ 它作用在 **fr**（LEAD 窗口函数的输入）⇒ ★★ **post 段的「成功行」也被滤掉**
+     --   ★★ ⇒ 恢复发生在**最近 2h 内**的 episode ⇒ 它的成功行没了 ⇒ `next_success` 不再是 TRUE
+     --   ★★ ⇒ ⇒ 该 episode 被**整体漏掉** ⇒ ⇒ ★★ **post 的 max / p90 / p99 被系统性拉低**
+     --   ★★ ⇒ ⇒ ★★★ **判据「post ≤ pre」的偏差方向恰好是「偏向判绿」⇒ 假绿**
+     --   ★★ ⇒ ★★ 而它宣称的用途（「排除进行中的段」）**本来就已经由 `next_success = TRUE` 满足**
+     --   ★★   （★ 一个失败段若还没恢复 ⇒ 它的下一次运行不是 success ⇒ 该 episode 本就不会被计入）
+     --   ★★ ⇒ ⇒ **本过滤纯属副作用 ⇒ 直接删除**（★ pre 侧逐字节不变：★ 实测 37/50 episodes 全部一致）
+     --   ★★ ⇒ ★★ 删除后：★ post 段 = 「恢复已被观测到的 episode」⇒ ★★ 尾部不再被截断
+     --   ★★ ⇒ ★★ **post 样本随观测时长增长**（★ 这才是诚实的读数）⇒ ★★ M11 的 n≥5 门会自然放行更多样本
  ), seg AS (
    SELECT credential_id, raw_model_name, is_feat_now, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
@@ -511,7 +531,17 @@ WITH fr AS (
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
-     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')
+     -- ★★★ 2026-11-10 第 17 处口径修正（★ 本轮实测抓到的**尾部截断偏差**）：
+     --   ★★ 原过滤：`(created_at < 切点 OR created_at < now()-2h)`
+     --   ★★ ⇒ 它作用在 **fr**（LEAD 窗口函数的输入）⇒ ★★ **post 段的「成功行」也被滤掉**
+     --   ★★ ⇒ 恢复发生在**最近 2h 内**的 episode ⇒ 它的成功行没了 ⇒ `next_success` 不再是 TRUE
+     --   ★★ ⇒ ⇒ 该 episode 被**整体漏掉** ⇒ ⇒ ★★ **post 的 max / p90 / p99 被系统性拉低**
+     --   ★★ ⇒ ⇒ ★★★ **判据「post ≤ pre」的偏差方向恰好是「偏向判绿」⇒ 假绿**
+     --   ★★ ⇒ ★★ 而它宣称的用途（「排除进行中的段」）**本来就已经由 `next_success = TRUE` 满足**
+     --   ★★   （★ 一个失败段若还没恢复 ⇒ 它的下一次运行不是 success ⇒ 该 episode 本就不会被计入）
+     --   ★★ ⇒ ⇒ **本过滤纯属副作用 ⇒ 直接删除**（★ pre 侧逐字节不变：★ 实测 37/50 episodes 全部一致）
+     --   ★★ ⇒ ★★ 删除后：★ post 段 = 「恢复已被观测到的 episode」⇒ ★★ 尾部不再被截断
+     --   ★★ ⇒ ★★ **post 样本随观测时长增长**（★ 这才是诚实的读数）⇒ ★★ M11 的 n≥5 门会自然放行更多样本
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
@@ -544,7 +574,17 @@ WITH fr AS (
      -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
      --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
      --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
-     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')
+     -- ★★★ 2026-11-10 第 17 处口径修正（★ 本轮实测抓到的**尾部截断偏差**）：
+     --   ★★ 原过滤：`(created_at < 切点 OR created_at < now()-2h)`
+     --   ★★ ⇒ 它作用在 **fr**（LEAD 窗口函数的输入）⇒ ★★ **post 段的「成功行」也被滤掉**
+     --   ★★ ⇒ 恢复发生在**最近 2h 内**的 episode ⇒ 它的成功行没了 ⇒ `next_success` 不再是 TRUE
+     --   ★★ ⇒ ⇒ 该 episode 被**整体漏掉** ⇒ ⇒ ★★ **post 的 max / p90 / p99 被系统性拉低**
+     --   ★★ ⇒ ⇒ ★★★ **判据「post ≤ pre」的偏差方向恰好是「偏向判绿」⇒ 假绿**
+     --   ★★ ⇒ ★★ 而它宣称的用途（「排除进行中的段」）**本来就已经由 `next_success = TRUE` 满足**
+     --   ★★   （★ 一个失败段若还没恢复 ⇒ 它的下一次运行不是 success ⇒ 该 episode 本就不会被计入）
+     --   ★★ ⇒ ⇒ **本过滤纯属副作用 ⇒ 直接删除**（★ pre 侧逐字节不变：★ 实测 37/50 episodes 全部一致）
+     --   ★★ ⇒ ★★ 删除后：★ post 段 = 「恢复已被观测到的 episode」⇒ ★★ 尾部不再被截断
+     --   ★★ ⇒ ★★ **post 样本随观测时长增长**（★ 这才是诚实的读数）⇒ ★★ M11 的 n≥5 门会自然放行更多样本
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
