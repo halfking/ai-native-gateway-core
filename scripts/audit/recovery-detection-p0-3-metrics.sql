@@ -581,3 +581,98 @@ SELECT 'M12p_pending_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'
   ||' | pending_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_at IS NULL)/COUNT(*),1)::text v
 FROM rec WHERE fail_at < now() - interval '6 hours'
 GROUP BY era, is_ns, feat_at_t ORDER BY 1;
+
+-- ═══ M14 ★★★ 直指目标人群：★「那 106 个新覆盖变体」的复检节奏，前 vs 后 ═══
+--
+-- ★★ 为什么需要它：M12 的 post 段 ns|feat 分组会**同时**包含
+--   ① era1 就已是 featured 的（复检快，med≈3 min）
+--   ② ★ era2 新纳入的 106 个（此前是 ns|非featured，med≈360 min）
+--   ⇒ ★★ **混合后中位会被新纳入的那批「抬高」** ⇒ ★ **「post 中位下降」并不是正确的
+--   期望形态**（甚至可能反向）⇒ ⇒ ★★ 必须**把新纳入的那批单独切出来**比。
+--
+-- ★ 判读形态（★ 已在窗口关闭前写死）：
+--   newly_covered 组：pre 段它们属于「ns 非 featured」（med≈360 min）
+--                     post 段它们属于「ns featured」⇒ ★★ **期望 med 明显下移（≈180 或更低）**
+--   old_feat 组：     两段都应是快节奏（med≈3 min）⇒ 作为对照（★ 不应变慢）
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m JOIN provider_models pm ON pm.canonical_id = mc.id WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ -- ★ 新覆盖集合 = 在 st_new 的 namespaced 条目里、但不在 st_old 的
+ newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_ns, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
+          CASE WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM newly) THEN 'newly_covered'
+               WHEN lower(btrim(raw_model_name)) IN (SELECT m FROM st_old) THEN 'old_feat'
+               ELSE 'other' END grp_new
+   FROM seg WHERE success = FALSE AND is_ns
+ )
+SELECT 'M14_'||era||'_'||grp_new k,
+  COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
+FROM rec WHERE fail_at < now() - interval '6 hours' AND next_at IS NOT NULL
+GROUP BY era, grp_new ORDER BY 1;
+
+-- ═══ M15 ★★★ 逐对金丝雀：★「新覆盖人群里那些冷但仍在被探」的对，pre vs post ═══
+--
+-- ★★ 目标人群（106 个新覆盖变体）的真实活跃度（211 真库，7 天）：**只有 7 个对被探到**、
+--   共 96 次事件（≈13.7/日）⇒ ★★ **Stage 1（24h）该人群样本 ≈14 条 ⇒ p90/p99 无意义**。
+--   ★★ 且目标人群内部**两极**：`vapeur/gpt-5.5`（热，med 3 min）vs
+--   `minimaxai/minimax-m2.7` / `minimaxai/minimax-m3` /
+--   `deepseek-ai/deepseek-v4-pro-0813`（冷但在被探，各 14 次、**pre med=360 min**）。
+--   ⇒ ★★ **「这批人的 post 中位会整体下移」不是成立的整体命题** ⇒ 必须**逐对**看。
+--
+-- ★ 判读形态（★ 窗口关闭前写死）：
+--   ★ 冷对（pre med ≈ 360 min）在 post 段应**明显下移**（backoff 减半 ⇒ ≈180 min 或更低）
+--     —— ★ 这就是对「匹配键修复」在**目标人群**上的直接、可观测检验（金丝雀）。
+--   ★ 热对（pre med ≈ 3 min）应保持不变（对照项，不应变慢）。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv_old AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM models_canonical mc JOIN provider_models pm ON pm.canonical_id = mc.id WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ rawv_new AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m JOIN provider_models pm ON pm.canonical_id = mc.id WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st_old AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_old),
+ st_new AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv_new),
+ newly AS (SELECT m FROM st_new WHERE m LIKE '%/%' AND m NOT IN (SELECT m FROM st_old)),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT raw_model_name, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era
+   FROM seg WHERE success = FALSE AND is_ns
+     AND lower(btrim(raw_model_name)) IN (SELECT m FROM newly)
+ )
+SELECT 'M15_'||era||'__'||raw_model_name k,
+  COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
+FROM rec WHERE fail_at < now() - interval '6 hours' AND next_at IS NOT NULL
+GROUP BY era, raw_model_name ORDER BY 1;
