@@ -1019,6 +1019,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
 ), seg AS (
    SELECT credential_id, raw_model_name, created_at, success, next_retry_seconds,
           -- ★★ 豁免判定（★ 与生产 classifyProbeRootCause + 两个乘数例外同款）
+          -- ★★ **已知近似（★ 必须披露）**：★ 配额钉住一项用的是凭据行**当前**的
+          --   quota_state / quota_recover_at ⇒ ★ 对**pre 期历史行**是近似
+          --   （★ 当时是否钉住无法从现表还原）⇒ ★ 分层边界可能有个位数行的偏差
+          --   ⇒ ★ 但它**不影响**判据的主判据（★ top21600_n = 未减半 6h 顶格 ⇒ 与分层无关）
           CASE WHEN direct_http_status IN (404,405,410,415)
                  OR (direct_http_status IN (400,422)
                      AND NOT (lower(coalesce(response_body,'')) ~ 'insufficient_quota|insufficient balance|quota exceeded|exceeded your current quota|billing|arrears|unpaid|balance is not enough|not enough balance|余额不足|欠费|额度不足|余额已不足|账户余额'))
