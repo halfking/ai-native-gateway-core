@@ -1,0 +1,21 @@
+# ★ 真库捕获夹具（★ 2026-11-10 18:56 +08，★ 211 生产库 acc-pg17/llm_gateway）
+# ★ 来源命令（★ 复采时必须逐字比对本文件 ⇒ 若不一致 ⇒ 采集口径变了 ⇒ 需重新评估并**显式**更新本文件）：
+#   scp -q scripts/audit/recovery-detection-p0-3-metrics.sql 211:/tmp/m.sql
+#   ssh 211 'docker cp /tmp/m.sql acc-pg17:/tmp/m.sql && DSN=$(docker exec llm-gateway-211-b env | grep LLM_GATEWAY_DATABASE_URL | cut -d= -f2-) && docker exec -e PGPASSWORD="$(echo "$DSN" | sed -E "s#^postgres(ql)?://([^:]+):([^@]*)@.*#\3#")" acc-pg17 psql -U acc_super -d llm_gateway -tA -F"|" -v ON_ERROR_STOP=1 -f /tmp/m.sql' \
+#     | grep -a '^M20_.*_fp|'
+#
+# ★★ **这是什么（★ 第 18 处口径修正）**：
+# ★★ M20 的**「指纹视图」（fp）**读数键 ⇒ ★ **无成熟度过滤、无 next_at 要求** ⇒ ★ 尾部 6h 不再失明
+# ★★ 字段：n_all（样本量）· top21600_n（**未减半 6h 顶格**⇒ 机制指纹）· top10800_n（**减半后的 3h 顶格**）
+# ★★       mul_evidence_n（落在「减半独占值证据集」{7,90,150,450,1800,10800}里的事件数 ⇒ **正向证据**）
+# ★★       ladder_p50（分钟）· ladder_max_s（秒）
+# ★★ ★ **pre 侧的这 4 个键是「量具正控」**：★ pre 侧若连「未减半顶格」都读不到（top21600_n=0）
+# ★★   ⇒ ★ 量具**无鉴别力** ⇒ ★ post 侧的 0 不可解释 ⇒ ★★ 判定器 fail-closed（判不可判，不判绿）
+# ★★ ★ 实测（本次捕获）：★ normal pre24 top21600_n=**4**、pre7d=**21** ⇒ 量具有鉴别力 ✔
+# ★★ ★ 实测：★ normal pre7d mul_evidence_n=**47**（★ 与 §662 的 47/165 污染一致 ✔）
+# ★★ ★ 实测：★ exempt pre24 top21600_n=**71**/pre7d=**196** ⇒ ★ 豁免类**设计上钉 6h** ⇒ 未减半顶格**仍在** ✔
+# ★★ ★★ **纪律：★ 自测里出现的采集输出，必须来自真捕获（夹具），不得手写**（★ §662 的教训）
+M20_normal_pre24_fp|n_all=29 | top21600_n=4 | top10800_n=0 | mul_evidence_n=0 | ladder_p50=60 | ladder_max_s=21600
+M20_normal_pre7d_fp|n_all=165 | top21600_n=21 | top10800_n=0 | mul_evidence_n=47 | ladder_p50=3 | ladder_max_s=21600
+M20_exempt_pre24_fp|n_all=80 | top21600_n=71 | top10800_n=0 | mul_evidence_n=0 | ladder_p50=360 | ladder_max_s=21600
+M20_exempt_pre7d_fp|n_all=564 | top21600_n=196 | top10800_n=0 | mul_evidence_n=2 | ladder_p50=0 | ladder_max_s=423256

@@ -1207,6 +1207,34 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT r.*, 'pre7d' FROM rec r WHERE r.era='pre'
    UNION ALL
    SELECT r.*, 'post' FROM rec r WHERE r.era='post'
+),
+-- ★★★★ **「指纹视图」（fp）**（★ 本轮第 18 处口径修正，★★ 差点造成**尾部失明 ⇒ 假绿**）
+--   ★★ **问题（★ 实测）**：★ M20 的 post 段读数带**两道**只对「已结算段」成立的过滤：
+--     ① 成熟度过滤 `fail_at < now() - 6 hours` ⇒ ★★ 关窗读数时 post 窗口的**最后 6h 完全不可见**
+--     ② `next_at IS NOT NULL`（LEAD 必须找到「下一次探测」）⇒ ★★ 下一次探测还没发生的段被整体漏掉
+--   ★★ ⇒ ★★ **尾部 6h 内若发生回归（修复失效），指纹仍会读出 0** ⇒ ★★ **假绿**
+--   ★★ ⇒ ★★ 与「第 17 处修正」同族：★ **过滤掉尾部 ⇒ 偏差偏向判绿**
+--   ★★ **关键洞察（★ 本轮最可复用的）**：★ M20 的**两个分量对「成熟度」的需求不同**：
+--     · **机制指纹**（阶梯值 top21600_n / 阶梯谱）⇒ 只需要**失败那一行**上的 `next_retry_seconds`
+--       ⇒ ★ `bg/node_probe.go:3043` 把 `next_retry_seconds` 随失败 run 一起 INSERT
+--       ⇒ ★★ **阶梯值在失败时即落库** ⇒ ★★ **不需要等下一次探测** ⇒ ⇒ **可从未成熟段读**
+--       ⇒ ⇒ ★★ **尾部 6h 不再失明**
+--     · **slow 分量**（失败 → 下一次探测的**间隔**）⇒ **必须等下一次探测发生** ⇒ ★★ 只能读成熟段
+--   ★★ ⇒ ★★ 正确修法 = **分视图读取**：★ 指纹读 fp（无过滤）· slow 读成熟视图（保留过滤）
+--   ★★ ⇒ ★★ **pre 侧也出 fp 键**，作用有二：
+--     ① **量具正控**：★ pre 侧若连「未减半顶格」都读不到 ⇒ ★ 量具**无鉴别力** ⇒ ★ post 的 0 不可解释
+--     ② 同量纲对照（★ Stage 1 用 pre24_fp、Stage 2 用 pre7d_fp）
+--   ★★ ⇒ ★★ 本视图**不含 now()** ⇒ ★★ 时钟无关 ⇒ ★★ pre 键在三时钟下逐字节一致（★ 三时钟门守着）
+fpr AS (
+  SELECT created_at AS fail_at, next_retry_seconds, exemption, era
+  FROM seg WHERE NOT success
+    AND raw_model_name LIKE '%/%' AND lower(btrim(raw_model_name)) IN (SELECT m FROM newly)
+), fpexp AS (
+  SELECT r.*, 'pre24' win FROM fpr r WHERE r.era='pre' AND r.fail_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+  UNION ALL
+  SELECT r.*, 'pre7d' FROM fpr r WHERE r.era='pre'
+  UNION ALL
+  SELECT r.*, 'post' FROM fpr r WHERE r.era='post'
 )
 SELECT 'M20_'||exemption||'_'||win k,
   COUNT(*)::text||' events | med_gap='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
@@ -1258,6 +1286,60 @@ WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - inter
                      AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY exemption, win
+UNION ALL
+-- ★★★★ M20 的**指纹视图**读数键（★ 本轮第 18 处口径修正，★★ 详见主档 §5.9.21.13.14）
+--   ★★ **两个分量的成熟度需求不同 ⇒ 必须分视图读取**（★ 本轮最可复用的洞察）：
+--   ★★ · **指纹**（阶梯值）⇒ **不需要结算** ⇒ 读本键（★ 无成熟度过滤、无 next_at 要求）
+--   ★★   ⇒ ★★ **post 窗口的尾部 6h 不再失明**（★ 否则尾部若回归 ⇒ 指纹仍读 0 ⇒ ★★ 假绿）
+--   ★★ · **slow**（失败→下一次探测的间隔）⇒ **需要结算** ⇒ 读 `M20_<层>_<窗>`（★ 保留 6h 成熟度过滤）
+--   ★★ 字段：
+--   ★★   n_all         样本量（★ ★ 「0 条未减半顶格」在 n_all=0 时是**平凡真** ⇒ 必须看 n_all）
+--   ★★   top21600_n    **未减半 6h 顶格** ⇒ 机制指纹（★ 期望 0）
+--   ★★   top10800_n    **减半后的 3h 顶格** ⇒ **正向证据**（★ 10800 ∉ 未减半空间 ⇒ 只能是乘数产生的）
+--   ★★   mul_evidence_n 落在「减半独占值证据集」{7,90,150,450,1800,10800}里的事件数 ⇒ **正向证据**
+--   ★★   ladder_p50 / ladder_max_s  阶梯谱
+--   ★★ **必须用 VALUES + LEFT JOIN**（★ `GROUP BY` 空集**不产生行** ⇒ 键会缺失
+--   ★★   ⇒ ★★ 判定器会把「键未产出」读成「没数据」⇒ ★★ 同 §5.9.21.13.13 的教训）
+SELECT 'M20_'||w.lay||'_'||w.win||'_fp' k,
+  'n_all='||COUNT(e.*)::text
+  ||' | top21600_n='||(COUNT(e.*) FILTER (WHERE e.next_retry_seconds = 21600))::text
+  ||' | top10800_n='||(COUNT(e.*) FILTER (WHERE e.next_retry_seconds = 10800))::text
+  ||' | mul_evidence_n='||(COUNT(e.*) FILTER (WHERE e.next_retry_seconds IN (SELECT v FROM ev_set)))::text
+  ||' | ladder_p50='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY e.next_retry_seconds/60.0))::int::text,'?')
+  ||' | ladder_max_s='||COALESCE(max(e.next_retry_seconds)::text,'?') v
+FROM (VALUES ('normal','pre24'),('normal','pre7d'),('normal','post'),
+                ('exempt','pre24'),('exempt','pre7d'),('exempt','post')) AS w(lay, win)
+LEFT JOIN fpexp e ON e.exemption = w.lay AND e.win = w.win
+GROUP BY w.lay, w.win
+UNION ALL
+-- ★★ M20 的**「post 段切分」**读数键（★ 第 18 处口径修正 ⇒ ★ 用来证明「fp 视图真的更宽」）
+--   ★★ window_n = post 段里 **now()-6h 之前**的失败数（★ 成熟视图能看见的那一段）
+--   ★★ tail_n   = post 段里 **最后 6h** 的失败数（★ ★ 成熟视图**完全不可见**的那一段）
+--   ★★ ⇒ ★ 判定器的不变量（★ 当守卫守）：★ `fp_n_all ≥ window_n + tail_n`
+--   ★★   （★ 两个集合**互不相交**（一个 fail_at < now()-6h、一个 ≥）★ 且都 ⊆ fp 视图）
+--   ★★ ⇒ ★ 若该不变量破 ⇒ ★ **fp 视图被改回带成熟度过滤** ⇒ ★★ post 窗口的尾部 6h 再次失明
+--   ★★   ⇒ ★★ 尾部若发生回归 ⇒ 指纹仍读 0 ⇒ ★★ **假绿** ⇒ ⇒ 整表作废
+--   ★★ ⇒ ★ 这就是「分视图读取」这条修正的**牙齿**（★ 否则改回旧口径没有任何门会发现）
+--   ★★ ★★ **必须走独立路径**（★ 本轮变异验证抓到的真缺口）：★ 若切分键也从 `fpexp` 取
+--   ★★    ⇒ ★★ fp 视图被改窄时切分键**也跟着变窄** ⇒ ★★ tail_n 同步变 0 ⇒ ★★ 守卫抓不到
+--   ★★    ⇒ ★★ ⇒ ★★ 切分键必须**直接读 `seg`**（★ 原始段集）⇒ ★ 与 fp 视图链**互不依赖**
+--   ★★ ★★ **必须用两个独立标量子查询**（★ 本轮负控抓到的真缺陷：★ 写成两个 LEFT JOIN seg
+--   ★★    ⇒ ★★ **行相乘**（|e_win| × |e_tail|）⇒ ★★ 两个计数**恒相等** ⇒ ★★ 负控 era 里
+--   ★★    实测 window_n = tail_n = 308（★ 乘法特征）⇒ ★★ 不变量恒真 ⇒ ★★ **守卫形同虚设**）
+SELECT 'M20_'||w.lay||'_post_split' k,
+  'window_n='||(
+     SELECT COUNT(*)::text FROM seg s
+     WHERE s.exemption = w.lay AND NOT s.success
+       AND s.raw_model_name LIKE '%/%' AND lower(btrim(s.raw_model_name)) IN (SELECT m FROM newly)
+       AND s.created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+       AND s.created_at < now() - interval '6 hours')
+  ||' | tail_n='||(
+     SELECT COUNT(*)::text FROM seg s
+     WHERE s.exemption = w.lay AND NOT s.success
+       AND s.raw_model_name LIKE '%/%' AND lower(btrim(s.raw_model_name)) IN (SELECT m FROM newly)
+       AND s.created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
+       AND s.created_at >= now() - interval '6 hours') v
+FROM (VALUES ('normal'),('exempt')) AS w(lay)
 UNION ALL
 -- ★★★ **era 纯度的存活者偏差自检**（★ 本轮新增，★ 见主档 §5.9.21.13.8）
 --   ★★ pre 侧成熟度过滤要求 `next_at < 切点` ⇒ ★★ **凡是被这条规则丢掉的事件，

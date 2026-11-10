@@ -186,15 +186,19 @@ def main() -> int:
     mod = load_patched_judge(data, f"{args.shift_days}d")
 
     rows, bad, guards = mod.judge(data, stage=args.stage)
+    failures = []
     print("\n== 负控守卫 ==")
     for name, val in guards:
         mark = "★★" if ("★★" in val or not val.strip()) else "✔"
         print(f"   {mark} {name}: {val}")
     if bad:
         print(f"\n★★ 负控自身有守卫失败：{bad} ⇒ 先查口径，勿读裁决")
+        # ★★★ **守卫失败 ⇒ 负控必须判失败**（★ 本轮第 19 处修正的同族）
+        #   ★★ 形态：★ 守卫不过 ⇒ ★ 裁决表作废 ⇒ ★★ 负控**什么也没证伪** ⇒ ★★ 却 rc=0 ⇒ 假绿
+        #   ★★ ⇒ ★★ 负控的守卫失败必须进 failures ⇒ ★ rc=1
+        failures.append(f"[负控] 负控自身有守卫失败（★ 裁决表作废 ⇒ 本轮什么也没证伪）⇒ {bad}")
 
     print("\n== 负控裁决（★ 期望：效应判据**未达成**）==")
-    failures = []
     seen_effect = 0
     seen_observe = 0
     for r in rows:
@@ -203,10 +207,12 @@ def main() -> int:
         if is_effect:
             seen_effect += 1
             print(f"   | {label}\n       基线: {base}\n       观测: {obs}\n       裁决: {verdict_txt}")
-            if verdict_txt.startswith("✅"):
-                failures.append(f"[负控] 效应判据被判达成 ⇒ ★★ 判据**恒真** ⇒ 门没牙 ⇒ {label}")
-            elif not (verdict_txt.startswith("❌") or verdict_txt.startswith("⚠️")):
-                failures.append(f"[负控] 效应判据的裁决形态异常 ⇒ {label}: {verdict_txt}")
+            # ★★★ 负控必须**判负**（★ 本轮收紧：★ 原来 ⚠️ 也算「通过」⇒ ★★ 负控什么也证伪不了）
+            #   ★★ 效应判据在「修复前」的窗口里**必须**读到「未达成」
+            #   ★★ 若落 ⚠️（不可判/样本不足）⇒ ★★ 说明这一轮负控**没有证伪任何东西** ⇒ 门没牙
+            if not verdict_txt.startswith("❌"):
+                failures.append(f"[负控] 效应判据**未判负**（★ 必须 ❌）⇒ ★★ 这一轮负控什么也证伪不了"
+                                f" ⇒ 门没牙 ⇒ {label}: {verdict_txt}")
         elif any(o in label for o in OBSERVE_LABELS):
             seen_observe += 1
             print(f"   | {label}\n       观测: {obs}\n       裁决: {verdict_txt}")

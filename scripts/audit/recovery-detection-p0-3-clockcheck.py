@@ -45,7 +45,10 @@ VERDICT_PATH = ROOT / "scripts/audit/recovery-detection-p0-3-verdict.py"
 PRE_KEY_RE = re.compile(
     r"^(M14_(pre24|pre7d|pre6d)_|M14x_(pre24|pre7d|pre6d)_|M20_(normal|exempt)_(pre24|pre7d|pre6d)$|"
     r"^M20_era_dropped_(pre24|pre7d)$|M15x_(pre24|pre7d)__|"
-    r"^M20_(normal|exempt)_(pre24|pre7d|pre6d)_composition$)"
+    r"^M20_(normal|exempt)_(pre24|pre7d|pre6d)_composition$|"
+    # ★★ 第 18 处口径修正：★ 「指纹视图」的 pre 键（★ 无成熟度过滤 ⇒ **必须**时钟无关
+    #   ★★ ⇒ ★ 若它随时钟变 ⇒ ★ 说明 fp 视图里混进了 now() 依赖 ⇒ ★ Stage 2 会跑挂）
+    r"^M20_(normal|exempt)_(pre24|pre7d)_fp$)"
 )
 
 

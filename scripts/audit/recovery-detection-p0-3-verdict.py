@@ -381,6 +381,72 @@ def _sql_key(bkey: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# ★★ M20 的**机制指纹**分量（★ 本轮第 18 处口径修正，★★ 见主档 §5.9.21.13.14）
+# ─────────────────────────────────────────────────────────────────────
+def fingerprint_component(fobs: str | None, pobs: str | None,
+                          min_n: int = 10) -> tuple[bool | None, str]:
+    """★★ 机制指纹：★「未减半 6h 顶格是否清零」+ ★「有没有观察到减半独占值」
+
+    ★★ **为什么读 fp 视图**（★ 第 18 处口径修正）：
+    ★★ 阶梯值 `next_retry_seconds` 随**失败 run 即落库**（`bg/node_probe.go:3043`）
+    ★★ ⇒ ★★ 指纹**不需要等下一次探测** ⇒ 可从**未成熟段**读
+    ★★ ⇒ ★★ post 窗口的**尾部 6h 不再失明**（★ 否则尾部若发生回归 ⇒ 指纹仍读 0 ⇒ ★★ **假绿**）
+    ★★ ⇒ ★★ 与第 17 处修正同族：★ **过滤掉尾部 ⇒ 偏差偏向判绿**
+
+    ★★ **三态判定**（★ 关键：★「0」既可能是「生效」也可能是「没样本」）：
+    ★★ ① `top21600_n > 0`                  ⇒ ❌ 仍有**未减半**的 6h 顶格 ⇒ 乘数未完全作用
+    ★★ ② `top21600_n == 0` 且有**正向证据** ⇒ ✅ 观察到**减半独占值**（★ ∉ 未减半空间 ⇒ 只能是乘数产生的）
+    ★★ ③ `top21600_n == 0` 且**无正向证据** ⇒ ⚠️ **不可判**（★ **不得**读成「已生效」）
+
+    ★★ **量具正控**（★ pre 侧同口径）：★ pre 侧若连「未减半顶格」都读不到 ⇒ ★ 量具**无鉴别力**
+    ★★   ⇒ ★★ post 侧的 0 **不可解释** ⇒ ★★ fail-closed（判不可判，★ **不判绿**）
+    """
+    if fobs is None:
+        return None, ("★ 指纹键**未产出**（★ 先查采集侧是否还带着 6h 成熟度过滤 / next_at 要求"
+                      " ⇒ ★ **不是「量具缺数」**）")
+    n_all = field(fobs, "n_all")
+    f_top = field(fobs, "top21600_n")
+    f_10800 = field(fobs, "top10800_n")
+    f_ev = field(fobs, "mul_evidence_n")
+    if f_top is None:
+        return None, "★ 指纹键算不出 top21600_n ⇒ 不可判"
+    # ★★ 量具正控：★ pre 侧同口径必须能读到「未减半顶格」⇒ ★ 否则量具无鉴别力
+    ctl_ok = True
+    if pobs is None:
+        ctl_ok = False
+        ctl_txt = " ★⚠️ **pre 侧指纹键未产出** ⇒ ★ 无法做量具正控"
+    else:
+        p_top = field(pobs, "top21600_n")
+        if p_top is None:
+            ctl_ok = False
+            ctl_txt = " ★⚠️ **pre 侧指纹键算不出 top21600_n** ⇒ ★ 无法做量具正控"
+        elif p_top <= 0:
+            ctl_ok = False
+            ctl_txt = (" ★⚠️ **量具无鉴别力**（★ pre 侧同口径的未减半顶格也是 0"
+                       " ⇒ ★ post 的 0 **不可解释**）")
+        else:
+            ctl_txt = (f" ★（★ 量具正控：pre 侧同口径读到未减半顶格 {p_top:.0f} 条"
+                       f" ⇒ 量具有鉴别力）")
+    n_txt = f"（★ 指纹样本 n_all={n_all:.0f}）" if n_all is not None else ""
+    if f_top > 0:
+        return False, (f"★ 未减半 6h 顶格 {f_top:.0f} 条（期望 0）⇒ ★ 仍有未减半顶格"
+                       f"（乘数未完全作用）{n_txt}{ctl_txt}")
+    if (f_ev or 0) > 0:
+        txt = (f"★ 未减半 6h 顶格 0 条（期望 0）⇒ ★ 阶梯已减半（乘数生效）"
+               f"（★ **正向证据**：观察到减半独占值 {f_ev:.0f} 条，★ 其中减半后的 3h 顶格 "
+               f"{f_10800 or 0:.0f} 条 ⇒ ★ 该值 ∉ 未减半空间 ⇒ ★ 只能是乘数作用产生的）"
+               f"{n_txt}{ctl_txt}")
+        if not ctl_ok:
+            return None, txt + " ★★ ⇒ ★ 但量具正控未过 ⇒ ★ 不可判（★ 不判绿）"
+        if n_all is not None and n_all < min_n:
+            return None, txt + f" ★★ ⇒ ★ 样本 n_all<{min_n} ⇒ ★ 只给方向（★ 不许外推）"
+        return True, txt
+    return None, ("★ 未减半 6h 顶格 0 条，★ 但**未观察到任何减半独占值**"
+                  "（★ 既不能证实也不能证伪 ⇒ ★ 不可判，★ **不得**读成「已生效」）"
+                  f"{n_txt}{ctl_txt}")
+
+
+# ─────────────────────────────────────────────────────────────────────
 # 判定主体（★ 纯函数：输入 = 复采结果字典，输出 = 裁决行 + 守卫状态）
 # ─────────────────────────────────────────────────────────────────────
 def judge(data: dict[str, str], stage: int = 1,
@@ -508,6 +574,36 @@ def judge(data: dict[str, str], stage: int = 1,
     else:
         g19 = f"✔ {m19_seen} 组结构性不变量成立（all≥free、pre7d=pre6d+pre24）"
     guards.append(("M19 口径结构不变量", g19))
+    # ★★★★ M20 的**「fp 视图尾部可见性」守卫**（★ 第 18 处口径修正的核心守卫）
+    #   ★★ 不变量：★ `fp_n_all ≥ window_n + tail_n`
+    #   ★★   （★ window_n = post 段里 now()-6h **之前**的失败数（成熟视图能看见的）
+    #   ★★     tail_n   = post 段里 **最后 6h** 的失败数（★ 成熟视图**完全不可见**的）
+    #   ★★    ⇒ ★ 两集合**互不相交**，且都 ⊆ fp 视图（★ fp 无成熟度过滤、无 next_at 要求））
+    #   ★★ ⇒ ★ 若破 ⇒ ★ **fp 视图被改回带成熟度过滤** ⇒ ★★ post 窗口的尾部 6h 再次失明
+    #   ★★   ⇒ ★★ 尾部若发生回归 ⇒ 指纹仍读 0 ⇒ ★★ **假绿** ⇒ ⇒ **整表作废**
+    #   ★★ ⇒ ★ 这条守卫是「分视图读取」这条修正的**牙齿**（★ 否则改回旧口径没人会发现）
+    m20fp_bad: list[str] = []
+    m20fp_seen = 0
+    for lay in ("normal", "exempt"):
+        fp_n = field(data.get(f"M20_{lay}_post_fp", "") or "", "n_all")
+        split = data.get(f"M20_{lay}_post_split")
+        if fp_n is None or split is None:
+            continue
+        w_n = field(split, "window_n")
+        t_n = field(split, "tail_n")
+        if w_n is None or t_n is None:
+            continue
+        m20fp_seen += 1
+        if fp_n < w_n + t_n:
+            m20fp_bad.append(f"M20/{lay}: fp n_all={fp_n:.0f} < 窗口 {w_n:.0f} + 尾部 {t_n:.0f}"
+                             f"（★ fp 视图疑似仍带成熟度过滤 ⇒ ★ **尾部仍失明** ⇒ 假绿）")
+    if m20fp_bad:
+        g20fp = "★★ **fp 视图尾部失明**：" + "; ".join(m20fp_bad)
+    elif m20fp_seen == 0:
+        g20fp = "（未产出 fp/切分键 ⇒ 本次未对拍）"
+    else:
+        g20fp = f"✔ {m20fp_seen} 组尾部可见性不变量成立（fp ≥ 窗口 + 尾部）"
+    guards.append(("M20 fp 视图尾部可见性", g20fp))
     # ★★ 守卫**缺失**（指标没产出 / SQL 出错）⇒ 同样判失败
     #    （★ 旧写法只看有没有 '★★' ⇒ 守卫空值会被当成「通过」⇒ 整表被信任）
     bad = [name for name, val in guards if "★★" in val or not val.strip()]
@@ -829,16 +925,22 @@ def judge(data: dict[str, str], stage: int = 1,
                                        f"（★ 当前 win={win!r}）⇒ 不可判")))
             continue
         base_txt = base_cell(bkey)
-        obs = data.get(f"M20_{lay}_post")
-        if obs is None:
+        obs = data.get(f"M20_{lay}_post")             # ★ 成熟视图（★ 测「间隔」⇒ 必须结算）
+        fobs = data.get(f"M20_{lay}_post_fp")        # ★ 指纹视图（★ 测「阶梯值」⇒ **无需结算**）
+        pobs = data.get(f"M20_{lay}_{win}_fp")       # ★ pre 侧同口径（★ 量具正控 + 同量纲对照）
+        # ★★★★ 第 18 处口径修正（★★ 详见主档 §5.9.21.13.14）：★★ **两个分量的成熟度需求不同**
+        #   ★ 指纹（阶梯值）⇒ **不需要结算** ⇒ 读 **fp 视图**（★ 无成熟度过滤 ⇒ ★ 尾部 6h 不再失明）
+        #   ★ slow（失败 → 下一次探测的间隔）⇒ **需要结算** ⇒ 读**成熟视图**（★ 固有 6h 延迟 ⇒ 行内披露）
+        #   ★★ ⇒ ★★ 若两个分量都读成熟视图 ⇒ ★★ post 窗口的**最后 6h 完全不可见**
+        #   ★★ ⇒ ★★ 尾部若发生回归（修复失效）⇒ ★★ 指纹仍读 0 ⇒ ★★ **假绿**（★ 同第 17 处修正同族）
+        if mode == "noregress" and obs is None:
             rows.append((label, base_txt, "—",
                          verdict(None, "★ post 段无事件（★ post 事件需 6h 才结算 ⇒ 窗口未满）")))
             continue
-        n = head_count(obs)
         pre_med, pre_p90, pre_slow, pre_top = b["base"]
         p90 = field(obs, "p90_gap")
         slow = field(obs, "slow_gt300_pct")
-        top = field(obs, "top21600_n")
+        n = head_count(obs)
         # ★★★★ **pre 基线的「阶梯构成」**（★ 本轮第 14 处口径修正，★★ 阈值同量纲）
         #   ★★ 「newly」的定义 = `st_new \ st_old`，而 `st_old` 的 `rawv_old` **只覆盖
         #   ★★ 「models_canonical.featured=TRUE 且 active」的 raw 变体** ⇒ ★★ **rp 成员的 raw 变体**
@@ -870,19 +972,32 @@ def judge(data: dict[str, str], stage: int = 1,
             # ★★ **证据集不完备 ⇒ 干净 pre 仍可能被污染 ⇒ 阈值仍偏严** ⇒ ★ fail-closed 提示
             contam_txt += (f" ★ ⚠️ **阶梯证据集不完备**（★ 有 **{unexpl:.0f}** 条样本的阶梯值**无法解释**"
                            f"（值 `{unexpl_v or '?'}`）⇒ ★ 干净 pre 可能**仍偏严** ⇒ ★ 判负前先复核")
-        if n is None or n < 10:
-            rows.append((label, base_txt, obs,
-                         verdict(None, f"★ post n={n} < 10 ⇒ **样本不足以判定**（★ 方向可读，★ 不许外推）")))
-            continue
         if mode == "effect":
-            if top is None or slow is None:
-                rows.append((label, base_txt, obs,
-                             verdict_missing("★ post 的 top21600_n / slow_gt300_pct 算不出")))
-                continue
+            # ★★★★ 分量①：**机制指纹**（★ 第 18 处口径修正 ⇒ 读 **fp 视图**）
+            ok_fp, fp_txt = fingerprint_component(fobs, pobs)
+            # ★★★★ 分量②：**slow**（★ 仍读成熟视图 ⇒ 需 6h 结算 ⇒ ★ 固有延迟）
             lim_slow = round(pre_slow_eff / 2, 1)
-            ok_top = top == 0
-            ok_slow = slow <= lim_slow
-            ok = ok_top and ok_slow
+            if obs is None:
+                ok_slow = None
+                slow_txt = ("★ slow 分量**未结算**（★ 它测「失败 → 下一次探测」的间隔 ⇒ "
+                            "必须等下一次探测发生 ⇒ ★ 需 6h；★ 与「量具缺数」不是一回事）")
+            elif slow is None:
+                ok_slow = None
+                slow_txt = "★ slow 分量算不出 slow_gt300_pct ⇒ 不可判"
+            elif n is None or n < 10:
+                ok_slow = None
+                slow_txt = (f"★ slow 分量样本不足（n={n} < 10 ⇒ **方向可读，★ 不许外推**）")
+            else:
+                ok_slow = slow <= lim_slow
+                slow_txt = (f"慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
+                            f" ⇒ {'冷簇已收缩' if ok_slow else '★ 冷簇未收缩'}")
+            # ★★ 总体裁决：★ 两个分量**都**成立才算达成；★ 任一 ❌ ⇒ ❌；★ 有不可判 ⇒ 不可判
+            if ok_fp is False or ok_slow is False:
+                ok = False
+            elif ok_fp is None or ok_slow is None:
+                ok = None
+            else:
+                ok = True
             p90_txt = f" / p90_gap {p90:.0f}（★ 参考：期望 ≤{pre_p90 // 2}）" if p90 is not None else ""
             # ★★★ **era 纯度的存活者偏差自检**（★ 本轮新增，★ 主档 §5.9.21.13.8）
             #   ★★ pre 侧成熟度过滤要求 `next_at < 切点` ⇒ ★★ 被丢掉的事件间隔必然跨越切点
@@ -896,23 +1011,36 @@ def judge(data: dict[str, str], stage: int = 1,
                             f"（★ 存活者偏差 ⇒ 慢事件占比被低估 ⇒ ★ 阈值偏严 ⇒ ★ 判负前先复核）")
             else:
                 bias_txt = " ★（★ pre 侧 era 纯度未丢事件 ⇒ 无存活者偏差）"
-            rows.append((label, base_txt, obs,
-                         verdict(ok, f"★ 未减半 6h 顶格 {top:.0f} 条（期望 0；pre {pre_top:.0f}）"
-                                   f" ⇒ {'★ 阶梯已减半（乘数生效）' if ok_top else '★ 仍有未减半顶格'}"
-                                   f" / 慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
-                                   f" ⇒ {'冷簇已收缩' if ok_slow else '★ 冷簇未收缩'}"
-                                   f"{p90_txt}（★ n={n}）{bias_txt}{contam_txt}")))
+            obs_txt = (f"【指纹·fp】{fobs or '—（键未产出）'}"
+                       f" || 【slow·成熟】{obs or '—（未结算）'}")
+            rows.append((label, base_txt, obs_txt,
+                         verdict(ok, f"★ 【指纹·fp 视图（★ 无成熟度过滤 ⇒ 尾部不被截断）】{fp_txt}"
+                                   f" / ★ 【slow·成熟视图（★ 需 6h 结算）】{slow_txt}{p90_txt}"
+                                   f"（★ ★ 两分量**跨度不同**：★ 指纹覆盖到「读数时刻」，"
+                                   f"★ slow 覆盖到「读数时刻 − 6h」⇒ ★ 行内数字不可直接相加）"
+                                   f"{bias_txt}{contam_txt}")))
         else:
+            if n is None or n < 10:
+                rows.append((label, base_txt, obs,
+                             verdict(None, f"★ post n={n} < 10 ⇒ **样本不足以判定**（★ 方向可读，★ 不许外推）")))
+                continue
             if p90 is None or slow is None:
                 rows.append((label, base_txt, obs, verdict_missing("★ post 的 p90_gap / slow 算不出")))
                 continue
             lim_slow = round(pre_slow_eff * 1.25, 1)
             ok = p90 <= pre_p90 and slow <= lim_slow
+            # ★★ 附「fp 口径」的对照读数（★ 豁免类**设计上钉 6h** ⇒ 未减半顶格应当**仍在**）
+            fctl = ""
+            if fobs is not None:
+                _ftop = field(fobs, "top21600_n")
+                if _ftop is not None:
+                    fctl = (f" ★（★ 对照：豁免类在 fp 口径的未减半 6h 顶格 {_ftop:.0f} 条"
+                            f"（★ 设计上钉 6h ⇒ **期望 >0** ⇒ 若为 0 ⇒ 说明分层或机制变了））")
             rows.append((label, base_txt, obs,
                          verdict(ok, f"★ 豁免类（★ 协议形态：设计上钉 6h、乘数豁免）post p90_gap={p90:.0f}"
                                    f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                                    f" ⇒ {'未变慢（不回归成立）' if ok else '★ 豁免类被拖慢'}"
-                                   f"（★ n={n}）{contam_txt}")))
+                                   f"（★ n={n}）{fctl}{contam_txt}")))
 
     # ── M11：episode 层症状 ──────────────────────────────────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
@@ -1010,6 +1138,13 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         #   exempt 判据：p90_gap ≤ 360 且 slow ≤ 87.7×1.25 = 109.6
         m20_exempt_post = ("57 events | med_gap=360 | p90_gap=360 | slow_gt300_pct=87.7"
                            " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600")
+        # ★★ M20 的**指纹视图**（★ 第 18 处口径修正）★ post 两个键 = ★ **真捕获**（★ 211 真库）
+        #   normal：★ 未减半 6h 顶格 **0** 条（★ 乘数生效）★ 且有**正向证据**（★ 减半独占值 10 条）
+        #   exempt：★ 未减半 6h 顶格 **4** 条（★ 设计上钉 6h ⇒ 未减半顶格**仍在** ⇒ 对照组成立）
+        m20_normal_post_fp = ("n_all=10 | top21600_n=0 | top10800_n=1 | mul_evidence_n=10"
+                              " | ladder_p50=30 | ladder_max_s=10800")
+        m20_exempt_post_fp = ("n_all=4 | top21600_n=4 | top10800_n=0 | mul_evidence_n=0"
+                              " | ladder_p50=360 | ladder_max_s=21600")
         s12s = "394 events | med_min=30 | p90=60 | p99=1200"      # ★ 参考项（人群会变）
         s12n = "1703 events | med_min=360 | p90=361 | p99=5524"    # ★ 参考项
         s11n = "7 episodes | med=3 | p90=60 | max=1200"            # 3≤3 ✔ 60≤360 ✔ 1200≤1791 ✔
@@ -1047,6 +1182,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         #   exempt：只坏 p90_gap（360 → 720）⇒ ❌（★ slow 仍好）
         m20_exempt_post = ("57 events | med_gap=360 | p90_gap=720 | slow_gt300_pct=87.7"
                            " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600")
+        # ★★ 指纹视图的失败用例（★ 第 18 处口径修正）：★ 指纹分量读的是 **fp 键**
+        #   ⇒ ★ 失败用例必须把 **fp 键**的未减半顶格弄坏（★ top21600_n 0 → 3）⇒ ❌
+        m20_normal_post_fp = ("n_all=21 | top21600_n=3 | top10800_n=1 | mul_evidence_n=10"
+                              " | ladder_p50=180 | ladder_max_s=21600")
+        m20_exempt_post_fp = ("n_all=4 | top21600_n=4 | top10800_n=0 | mul_evidence_n=0"
+                              " | ladder_p50=360 | ladder_max_s=21600")
         s12s = "394 events | med_min=600 | p90=900 | p99=2400"      # ★ 仍是参考项
         s12n = "1703 events | med_min=600 | p90=700 | p99=6000"    # ★ 仍是参考项
         # ★★ 失败用例：**每行只坏一个东西** ⇒ ★ 任何单点阈值变异都会被抓到
@@ -1126,6 +1267,27 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         "M20_exempt_pre7d": "537 events | med_gap=3 | p90_gap=360 | slow_gt300_pct=32.2 | ladder_p50=0 | top21600_n=178 | ladder_max_s=30658",
         "M20_normal_post": m20_normal_post,
         "M20_exempt_post": m20_exempt_post,
+        # ★★★★ M20 的**指纹视图**（★ 第 18 处口径修正，★★ 详见主档 §5.9.21.13.14）
+        #   ★★ **pre 的 4 个键 = 真库实测值**（★ 与 fixtures/p0-3-m20-fp-pre.txt 逐字同形）
+        #   ★★ ★ pre 侧这 4 个键是**量具正控**：★ 若 pre 侧 top21600_n=0 ⇒ 量具无鉴别力
+        #   ★★   ⇒ ★ post 的 0 不可解释 ⇒ ★★ 判定器 fail-closed（判不可判，★ 不判绿）
+        "M20_normal_pre24_fp": ("n_all=29 | top21600_n=4 | top10800_n=0 | mul_evidence_n=0"
+                                " | ladder_p50=60 | ladder_max_s=21600"),
+        "M20_normal_pre7d_fp": ("n_all=165 | top21600_n=21 | top10800_n=0 | mul_evidence_n=47"
+                                " | ladder_p50=3 | ladder_max_s=21600"),
+        "M20_exempt_pre24_fp": ("n_all=80 | top21600_n=71 | top10800_n=0 | mul_evidence_n=0"
+                                " | ladder_p50=360 | ladder_max_s=21600"),
+        "M20_exempt_pre7d_fp": ("n_all=564 | top21600_n=196 | top10800_n=0 | mul_evidence_n=2"
+                                " | ladder_p50=0 | ladder_max_s=423256"),
+        # ★★ post 的 2 个键按场景给（★ 真捕获为基准）
+        "M20_normal_post_fp": m20_normal_post_fp,
+        "M20_exempt_post_fp": m20_exempt_post_fp,
+        # ★★ M20 的 **post 段切分**（★ 第 18 处口径修正 ⇒ ★ 尾部可见性守卫的输入）
+        #   ★ window_n = post 段里 now()-6h **之前**的失败数（★ 成熟视图能看见的）
+        #   ★ tail_n   = post 段里 **最后 6h** 的失败数（★ ★ 成熟视图**完全不可见**的那一段）
+        #   ★ ★ 不变量：★ `fp_n_all ≥ window_n + tail_n` ⇒ ★ fp 视图被改回带成熟度过滤 ⇒ 必破
+        "M20_normal_post_split": "window_n=0 | tail_n=10",
+        "M20_exempt_post_split": "window_n=0 | tail_n=4",
         # ★★ era 纯度存活者偏差自检（★ 真库实测 pre24/pre7d 均为 0 ⇒ 无存活者偏差）
         "M20_era_dropped_pre24": "0 events dropped_by_era_purity",
         "M20_era_dropped_pre7d": "0 events dropped_by_era_purity",
@@ -1401,9 +1563,10 @@ def selftest() -> int:
         failures.append("[⑩ M19 守卫] all<free 时守卫未判失败")
 
     # ⑪ ★★★ **M20 的机制指纹分量要能单独被抓住**（★ 纪律：每个判据分量都有独立场景）
+    #   ★★ 第 18 处口径修正后：★ 指纹分量读的是 **fp 键**（★ 成熟键的 top21600 **不再**参与指纹判定）
     d = _synthetic(True)
-    d["M20_normal_post"] = ("21 events | med_gap=60 | p90_gap=180 | slow_gt300_pct=5.0"
-                            " | ladder_p50=180 | top21600_n=3 | ladder_max_s=21600")
+    d["M20_normal_post_fp"] = ("n_all=21 | top21600_n=3 | top10800_n=1 | mul_evidence_n=10"
+                               " | ladder_p50=180 | ladder_max_s=21600")
     rows, _, _ = judge(d, stage=1)
     v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
     if not v.startswith("❌"):
@@ -1575,6 +1738,7 @@ def selftest() -> int:
         ("未被证伪", "㉑ 必须披露 M15x 逐对判据**未被负控证伪**"),
         ("短窗口快照", "㉒ 必须披露 deepseek 的 pre 基线是短窗口快照"),
         ("偏向判绿", "㉓ 必须披露「过滤诱导的尾部截断」的假阴性风险"),
+        ("分视图", "㉔ 必须披露「不同分量的成熟度需求不同 ⇒ 分视图读取」"),
     ):
         if _need not in _printed:
             failures.append(f"[⑳ 诚实边界披露] {_why}（打印文本里缺 {_need!r}）")
@@ -1593,18 +1757,28 @@ def selftest() -> int:
     #   ★★ 形态：★ 合成数据里的 composition 曾写成 `"77 events | n=154 | ..."`
     #   ★★ ⇒ ★★ 那个前缀**真实 SQL 永远不产出**（且 77 本身是错的数）⇒ ★★ 自测验的是**虚构格式**
     #   ★★ ⇒ ★★ 「自测全绿」≠「解析器认得真数据」⇒ ★★ ⇒ 必须拿**真捕获**逐字对拍
-    try:
-        fx_path = Path(__file__).resolve().parent / "fixtures" / "p0-3-m20-composition-pre.txt"
-        fx = {}
-        for line in fx_path.read_text(encoding="utf-8").splitlines():
+    def _load_fixture(name: str) -> dict[str, str]:
+        """★ 读真捕获夹具（★ 「k|v」逐行）"""
+        out: dict[str, str] = {}
+        p = Path(__file__).resolve().parent / "fixtures" / name
+        for line in p.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "|" not in line:
                 continue
             k, v = line.split("|", 1)
-            fx[k.strip()] = v.strip()
+            out[k.strip()] = v.strip()
+        return out
+
+    try:
+        fx = _load_fixture("p0-3-m20-composition-pre.txt")
     except Exception as _e:  # ★ 夹具缺失 ⇒ 门失去意义 ⇒ 直接判失败
         fx = {}
         failures.append(f"[㉓ 夹具] 真捕获夹具读取失败（★ 自测失去意义）⇒ {_e}")
+    try:
+        fx_fp = _load_fixture("p0-3-m20-fp-pre.txt")
+    except Exception as _e:  # ★ 同上（★ 第 18 处口径修正新增的指纹夹具）
+        fx_fp = {}
+        failures.append(f"[㉓ 夹具] **指纹**真捕获夹具读取失败（★ 自测失去意义）⇒ {_e}")
     syn = _synthetic(True)
     for _k in ("M20_normal_pre24_composition", "M20_normal_pre7d_composition",
                "M20_exempt_pre24_composition", "M20_exempt_pre7d_composition"):
@@ -1613,6 +1787,14 @@ def selftest() -> int:
         elif syn.get(_k) != fx[_k]:
             failures.append(f"[㉓ 夹具] 合成数据与**真捕获**不同形 ⇒ {_k}\n"
                             f"      合成: {syn.get(_k)}\n      真库: {fx[_k]}")
+    # ★★ 第 18 处口径修正：★ 指纹键的合成值也必须与**真捕获**逐字同形（★ 不得手写）
+    for _k in ("M20_normal_pre24_fp", "M20_normal_pre7d_fp",
+               "M20_exempt_pre24_fp", "M20_exempt_pre7d_fp"):
+        if _k not in fx_fp:
+            failures.append(f"[㉓ 夹具] 指纹夹具缺少 {_k} ⇒ 无法对拍")
+        elif syn.get(_k) != fx_fp[_k]:
+            failures.append(f"[㉓ 夹具] 合成数据与**真捕获**不同形 ⇒ {_k}\n"
+                            f"      合成: {syn.get(_k)}\n      真库: {fx_fp[_k]}")
 
     # ㉔ ★★★★ **阶梯证据集不完备 ⇒ 必须 fail-closed 提示**（★ 本轮第 16 处口径修正）
     #   ★★ 场景：composition 报 `unexplained_n > 0` ⇒ ★ 说明有样本的阶梯值**无法解释**
@@ -1627,6 +1809,78 @@ def selftest() -> int:
         failures.append(f"[㉔ 证据集不完备] unexplained_n>0 ⇒ 必须提示「阈值可能仍偏严」⇒ {v}")
     if "8888" not in v:
         failures.append(f"[㉔ 证据集不完备] 必须列出**无法解释的阶梯值** ⇒ {v}")
+
+    # ㉕ ★★★★ **指纹分量必须读 fp 键**（★ 第 18 处口径修正的**核心断言**）
+    #   ★★ 形态：★ 若判定器仍从**成熟键**读 top21600 ⇒ ★★ post 窗口的**尾部 6h 依旧失明**
+    #   ★★ ⇒ ★★ 尾部若发生回归 ⇒ 指纹仍读 0 ⇒ ★★ **假绿**（★ 同第 17 处修正同族）
+    #   ★★ ⇒ ★ 断言：★ 只坏**成熟键**的 top21600（fp 键仍好）⇒ ★ **不得**判 ❌
+    d = _synthetic(True)
+    d["M20_normal_post"] = ("21 events | med_gap=60 | p90_gap=180 | slow_gt300_pct=5.0"
+                            " | ladder_p50=180 | top21600_n=3 | ladder_max_s=21600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if v.startswith("❌"):
+        failures.append(f"[㉕ 指纹读 fp 键] 成熟键的 top21600 变坏**不该**影响指纹分量 ⇒ {v}")
+    if "fp" not in v:
+        failures.append(f"[㉕ 指纹读 fp 键] 行内必须写明读的是 **fp 视图** ⇒ {v}")
+
+    # ㉖ ★★★★ **fp 键未产出 ⇒ fail-closed**（★ 不得静默判绿）
+    d = _synthetic(True)
+    d.pop("M20_normal_post_fp", None)
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if v.startswith("✅"):
+        failures.append(f"[㉖ fp 键未产出] fp 键缺失时**不得**判绿 ⇒ {v}")
+    if "未产出" not in v:
+        failures.append(f"[㉖ fp 键未产出] 必须写明「键未产出」（★ 与「没数据」区分）⇒ {v}")
+
+    # ㉗ ★★★★ **「0 条未减半顶格」在无正向证据时 ⇒ 不可判**（★ 不得读成「已生效」）
+    #   ★★ 形态：★ n_all=12、top21600_n=0、mul_evidence_n=0 ⇒ ★ 既没看到未减半、也没看到减半独占值
+    #   ★★ ⇒ ★ 样本里可能根本没有 6h 顶格类事件 ⇒ ★ **不可判**（★ 不判绿、不判红）
+    d = _synthetic(True)
+    d["M20_normal_post_fp"] = ("n_all=12 | top21600_n=0 | top10800_n=0 | mul_evidence_n=0"
+                               " | ladder_p50=60 | ladder_max_s=3600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if v.startswith("✅"):
+        failures.append(f"[㉗ 无正向证据] mul_evidence_n=0 ⇒ 不得判绿 ⇒ {v}")
+    if "不得" not in v:
+        failures.append(f"[㉗ 无正向证据] 必须写明「不得读成已生效」⇒ {v}")
+
+    # ㉘ ★★★★ **量具正控**：★ pre 侧同口径读不到未减半顶格 ⇒ ★ 量具无鉴别力 ⇒ ★ 不得判绿
+    #   ★★ 形态：★ post 的 top21600_n=0 在「量具坏掉」时也是 0 ⇒ ★ ⇒ 必须靠 pre 侧正控区分
+    d = _synthetic(True)
+    d["M20_normal_pre24_fp"] = ("n_all=29 | top21600_n=0 | top10800_n=0 | mul_evidence_n=0"
+                                " | ladder_p50=60 | ladder_max_s=3600")
+    rows, _, _ = judge(d, stage=1)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if v.startswith("✅"):
+        failures.append(f"[㉘ 量具正控] pre 侧无鉴别力时不得判绿 ⇒ {v}")
+    if "量具无鉴别力" not in v:
+        failures.append(f"[㉘ 量具正控] 必须提示「量具无鉴别力」⇒ {v}")
+
+    # ㉙ ★★★★ **「fp 视图尾部可见性」守卫必须有牙**（★ 第 18 处口径修正的**核心守卫**）
+    #   ★★ 场景：★ 把 fp 键的 n_all 改小到 < window_n + tail_n
+    #   ★★ ⇒ ★ 等价于「fp 视图被改回带 6h 成熟度过滤」⇒ ★★ post 窗口的尾部 6h 再次失明
+    #   ★★ ⇒ ★ 守卫必须报警 + **整表作废**（★ 否则尾部失明 ⇒ 假绿 ⇒ 没人会发现）
+    d = _synthetic(True)
+    d["M20_normal_post_fp"] = ("n_all=3 | top21600_n=0 | top10800_n=0 | mul_evidence_n=3"
+                               " | ladder_p50=30 | ladder_max_s=10800")
+    rows, bad, guards = judge(d, stage=1)
+    g20 = dict(guards).get("M20 fp 视图尾部可见性", "")
+    if "★★" not in g20:
+        failures.append(f"[㉙ 尾部可见性守卫] fp 视图变窄时守卫未报警 ⇒ {g20}")
+    if not bad:
+        failures.append("[㉙ 尾部可见性守卫] fp 视图变窄时守卫未判失败")
+    for r in rows:
+        if "作废" not in r[3]:
+            failures.append(f"[㉙ 尾部可见性守卫] fp 视图变窄时未把裁决表作废 ⇒ {r[0]} {r[3]}")
+            break
+    # ★★ **守卫必须真的比对过一次**（★ 纪律：★ 接上真数据后必须看到它真的比对了）
+    _rows, _bad, _guards = judge(_synthetic(True))
+    _g20 = dict(_guards).get("M20 fp 视图尾部可见性", "")
+    if "组尾部可见性不变量" not in _g20:
+        failures.append(f"[㉙ 尾部可见性守卫] 守卫未真正比对过（★ 接上真数据后必须看到它比对）⇒ {_g20}")
 
     print("== 判定器合成数据自测 ==")
     if failures:
@@ -1656,6 +1910,11 @@ def selftest() -> int:
     print("   ✔ ⑳ ★★ 诚实边界的**限定条件不许被静默删掉**（★ 污染率 30.5% / M15x 未被负控证伪 / pre 基线是短窗口快照）")
     print("   ✔ ㉓ ★★★ 合成自测数据与**真捕获夹具**逐字同形（★ 不得手写采集输出）")
     print("   ✔ ㉔ ★★ 阶梯证据集不完备（unexplained_n>0）⇒ **fail-closed 提示「阈值可能仍偏严」**")
+    print("   ✔ ㉕ ★★★ 指纹分量**读 fp 键**（★ 成熟键的 top21600 变坏**不该**影响它 ⇒ 尾部不失明）")
+    print("   ✔ ㉖ ★★ fp 键未产出 ⇒ **fail-closed**（★ 不得静默判绿）")
+    print("   ✔ ㉗ ★★ 「0 条未减半顶格」但**无正向证据** ⇒ 不可判（★ 不得读成「已生效」）")
+    print("   ✔ ㉘ ★★ 量具正控：★ pre 侧同口径读不到未减半顶格 ⇒ 「量具无鉴别力」⇒ 不得判绿")
+    print("   ✔ ㉙ ★★★ 「fp 视图尾部可见性」守卫：★ fp 视图被改窄 ⇒ **报警 + 整表作废**（★ 且断言它真的比对过）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -1721,6 +1980,22 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ 而它宣称的用途（「排除进行中的段」）**本来就已经由 `next_success = TRUE` 满足** ⇒ ★★ 纯属副作用。"
           "⇒ ★★ 修法＝**删掉该过滤**（★ pre 侧逐字节不变 ⇒ ★ 基线不漂；★ post 样本随观测时长增长 ⇒ ★ 尾部不再被截断）。"
           "⇒ ★★★ **纪律：★ 「过滤掉尾部」的谓词要问一句：★ 它作用在窗口函数之前还是之后？★ 之前 ⇒ 会连「完成信号」一起滤掉。**")
+    lines.append("   ㉔ ★★★★ **同一判据的不同分量，成熟度需求可能不同 ⇒ 必须分视图读取**"
+          "（★ 本轮第 18 处口径修正，★★ 又一个**「偏向判绿」的假阴性来源**）：★ M20 的 post 段带着"
+          "**两道**只对「已结算段」成立的过滤（★ ① `fail_at < now() - 6h`（成熟度）"
+          "★ ② `next_at IS NOT NULL`（LEAD 必须找到下一次探测））⇒ ★★ 关窗读数时 post 窗口的"
+          "**最后 6h 完全不可见** ⇒ ★★ **尾部若发生回归（修复失效），指纹仍会读出 0** ⇒ ★★ **假绿**"
+          "（★ 与第 17 处修正同族：★ **过滤掉尾部 ⇒ 偏差偏向判绿**）。"
+          "⇒ ★★ **关键洞察（★ 本轮最可复用的）**：★ 阶梯值 `next_retry_seconds` 随**失败 run 即落库**"
+          "（`bg/node_probe.go:3043`）⇒ ★★ **指纹不需要结算** ⇒ 可从**未成熟段**读；"
+          "★ 而 slow 分量测的是「失败 → 下一次探测」的**间隔** ⇒ ★★ **必须结算** ⇒ 只能读成熟段。"
+          "⇒ ★★ 修法 = **分视图读取**（★ 新增 `M20_<层>_<窗>_fp` 键：★ 无成熟度过滤、无 next_at 要求）"
+          "⇒ ★★ 判定器的 M20 normal 变成**两个分量**：① **指纹**读 fp（★ 需**正向证据**：★ 减半独占值 "
+          "{7,90,150,450,1800,10800} ∉ 未减半空间 ⇒ ★ 只能是乘数产生的；★ 且 **量具正控**：★ pre 侧同口径"
+          "必须能读到未减半顶格 ⇒ 否则「**量具无鉴别力 ⇒ post 的 0 不可解释**」⇒ fail-closed）；"
+          "② **slow** 仍读成熟段（★ 固有 6h 结算延迟 ⇒ 行内披露「两分量跨度不同」）。"
+          "⇒ ★★ **纪律：★ 凡判据有多个分量，先逐分量问一句「这个量需要等结算吗」；"
+          "★ 需要与不需要的，必须分视图读，否则尾部会静默失明。**")
     lines.append("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
           "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
     lines.append("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"
@@ -1912,6 +2187,13 @@ def main() -> int:
             print(f"      - {v}")
 
     print_honest_boundaries()
+    # ★★★ **守卫不过 ⇒ 退出码必须非 0**（★ 本轮第 19 处修正，★★ 又一个「静默失效」）
+    #   ★★ 形态：★ 守卫失败时脚本只**打印**「★★ 量具守卫未通过」⇒ ★ 但 `return 0`
+    #   ★★ ⇒ ★★ 自动化/流水线只看 rc ⇒ ★★ 守卫红着也当「通过」⇒ ★★ **假绿**
+    #   ★★ ⇒ ★★ 纪律：★ **守卫是判据的牙齿** ⇒ ★ 牙掉了，rc 必须跟着红。
+    if bad:
+        print(f"\n★★ **退出码 1**：★ 量具守卫未通过（{len(bad)} 项）⇒ ★ 本次裁决表**作废**")
+        return 1
     return 0
 
 
