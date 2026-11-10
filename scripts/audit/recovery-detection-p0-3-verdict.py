@@ -373,6 +373,86 @@ def m5_baseline_disclosure(data: dict[str, str], n, lim) -> str:
     return txt
 
 
+def rounding_disclosure(raw_text, threshold, *, slack: float = 0.5, what: str = "") -> str:
+    """★★★ 第 26 处口径修正（★ 2026-11-11 02:0x）：★ 「**::int 取整边界**」伪影的行内披露
+
+    ★★ **形态（★ 211 真库实测，★ 不是推演）**：
+    ★ · 分钟型量（`recheck_min` / `lat`）是**浮点分钟**（★ 实测精度到**秒**）
+    ★   ⇒ 采集侧 `percentile_disc(...)::int` 把它**截到分钟**
+    ★ · 判据再拿这个**取整值**与阈值做**精确比较**（★ 如 `p90 ≤ pre_p90`）
+    ★ ⇒ ★★ 真实差只要落在 **[−0.5, +0.5) 分钟** 的取整跨界带里 ⇒ 裁决符号就会翻转
+    ★ ⇒ ★★ **实测（M20 豁免组）**：post raw p90 = **360.5069** min ⇒ `::int` = **361**
+    ★   而基线取整值 = **360** ⇒ 基线真值 ∈ [359.5, 360.5)
+    ★   ⇒ ⇒ **真实差 ∈ (0.01, 1.01] 分钟 ⇒ 上界 ≈ 60 秒（= 判据的整个分辨率）** ⇒ ⇒ **判 ❌** ⇒ ★★ **假红**
+    ★ ⇒ ★★ **同款形态在第 23 处已于 M14/M14x 的 `p99 361 vs 360` 上出现** ⇒ ★★ **同一类缺陷**
+
+    ★★★★ **纪律（★ 本轮处置）**：
+    ★ · ★ **只披露，不软化裁决符号**（★ ❌ 仍是 ❌ ⇒ ★ 门不钝化）⇒ ★★ 与第 22 处 `m5_baseline_disclosure` 同款体例
+    ★ · ★ **关窗前不改判据阈值、不改 pre 基线、不重冻**（★ 真修法见下）
+    ★ · ★★ 真修法 = **亚分钟精度比较 + 容差**；★ 且对「**设计上钉住**」的组（如豁免组钉 6h）
+    ★   ⇒ 正确形态是**带宽判据**（★ 如 355–365 分钟）⇒ ★★ **登记为 Stage 2 之后**
+    """
+    if raw_text is None:
+        # ★★ raw 读数缺失 ⇒ **显式说「不可见」**（★ 不得静默默认「这就是真差」）
+        return (" ★ ⚠️ **取整边界不可见**（★ ★ **raw 读数未产出** ⇒ ★ 无法判定本 ❌ 是否由取整造成"
+                " ⇒ ★ 本 ❌ **按面值读**）")
+    try:
+        raw = float(raw_text)
+        thr = float(threshold)
+    except (TypeError, ValueError):
+        return ""
+    diff = raw - thr
+    # ★★ **只认「恰好差 1 个取整单位」**的形态（★ obs_int = thr_int + 1 ⇒ raw ∈ [thr+0.5, thr+1.5)）
+    if not (0.0 < diff < 1.0):
+        return ""
+    lo, hi = diff - slack, diff + slack
+    what_txt = (f"★（★ 比较量：{what}）" if what else "")
+    return (f" ★ ⚠️ **取整边界伪影（第 26 处）**{what_txt}：★ 本行的分钟量是**浮点值**（★ 实测精度到秒）"
+            f"，★ 采集侧 `::int` 把它**截到分钟**后再与阈值做**精确比较**"
+            f" ⇒ ★★ 观测 raw = **{raw:.4f} 分钟**，取整值 = {round(raw):d}"
+            f"，阈值 = {thr:.0f} ⇒ ★★ **表观差 = {diff:.4f} 分钟**"
+            f" ⇒ ★★ **真实差 ∈ ({lo:.2f}, {hi:.2f}] 分钟**（★ 上界 ≈ {hi * 60:.0f} 秒）"
+            f" ⇒ ★★★ ⇒ **判据的分辨率（1 分钟）比被测抖动（秒级）粗 ~60 倍**"
+            f" ⇒ ★★★ ⇒ ★ **本 ❌ 不可读成「行为回归」**（★ 裁决符号**保持 ❌** ⇒ 门不钝化）"
+            f" ⇒ ★★ 真修法（亚分钟精度比较 + 容差；★ 对「设计上钉住」的组改用**带宽**判据）"
+            f"**登记为 Stage 2 之后**")
+
+
+def percentile_fragility_disclosure(n_post, n_pre, pct_label: str) -> str:
+    """★★★ 第 26 处**附带发现**：★ 「**小样本 + 秩统计量**」⇒ 分位数在窗口未满时极不稳定
+
+    ★★ **形态（★ 211 真库实测，★ 2026-11-11 02:2x）**：★ M14x 旧 featured 行在 **02:00 与 02:20 两次真读里**
+    ★★   都判 **❌**（★ post n=34 / p90=360 vs pre p90=31），而**同一时刻的预演（as-of = 关窗时钟）判 ✅**
+    ★★   ⇒ ★★ 差别**不在数据**（同一批数据）⇒ ★★ **在成熟度窗口的大小** ⇒ ★★ post 的成熟段只有 ~6.6h
+    ★★   ⇒ ★★ 而 6h 批次（★ 协议形态模型 ⇒ 设计上钉 6h）在 post 段占 **17.6%**、在 pre24 只占 **~2.6%**
+    ★★   ⇒ ★★ ⇒ **同一批 6h 事件，在小样本里把 p90 顶到 360，在大样本里进不了前 10%**
+    ★★ ⇒ ★★ **⇒ 根因是「秩统计量 + 样本量」**：★ p90 = 第 ⌈0.9n⌉ 小的那个值 ⇒ ★ n 小 ⇒ 秩边界一动就跳档
+    ★★   （★ 实测：★ n=34 ⇒ p90 秩 = 第 32 位；★ 只差 1 条新事件就可能从 31 跳到 360）
+    ★★ ⇒ ★★ ⇒ **窗口未满时的读数 ≠ 关窗读数** ⇒ ★★ 一切以关窗当天真读为准（★ 诚实边界 ㉗）
+
+    ★ ★★ **处置**：★ **只披露，不改裁决符号**（★ ❌ 仍是 ❌ ⇒ 门不钝化）
+    ★   ⇒ ★★ 披露里给「post n vs pre n 的样本量倍数」⇒ ★★ 读者可自行判断这条 ❌ 有多脆
+    """
+    if n_post is None or n_pre is None:
+        return ""
+    try:
+        n_post = float(n_post)
+        n_pre = float(n_pre)
+    except (TypeError, ValueError):
+        return ""
+    if n_pre <= 0:
+        return ""
+    ratio = n_post / n_pre
+    if ratio >= 0.5:
+        return ""      # ★ 样本量相当 ⇒ 不披露（★ 不得制造噪声）
+    return (f" ★ ⚠️ **小样本分位数不稳（第 26 处附带发现）**：★ post n={n_post:.0f} vs pre n={n_pre:.0f}"
+            f"（★ **样本量差 {1.0 / ratio:.1f}×**）⇒ ★★ 分位数是**秩统计量**（★ p90 = 第 ⌈0.9n⌉ 小的那个值）"
+            f"⇒ ★★ **n 小 ⇒ 秩边界一动就跳档**（★ 实测：★ post n=34 ⇒ p90 秩 = 第 32 位；"
+            f"★ 只差 1 条新事件就可能从 31 跳到 360）"
+            f"⇒ ★★ ⇒ ★ **本 ❌ 必须与「关窗当天真读」比**（★ 窗口越满 ⇒ n 越大 ⇒ 越稳）"
+            f"⇒ ★★ 且 {pct_label} 的**真实差**须配合 ㉭ 的 raw 读数一起读")
+
+
 def control_phase_disclosure(data: dict[str, str], scope: str, pre_med: float) -> str:
     """★★★ 第 21 处口径修正：★ 「对照组」的**相位/构成**披露（★ 只披露，★ **不改裁决语义**）
 
@@ -920,6 +1000,14 @@ def judge(data: dict[str, str], stage: int = 1,
             else:
                 vac_txt.append(f"{d}s 档")
         ok = ok1 and ok2 and ok3
+        # ★★★★ 第 26 处口径修正：★ 「::int 取整边界」伪影 ⇒ ★ normal med **恰好压在阈值上**时披露
+        #   ★★ 阈值 lim_med = pre_med_b / 2，★ 而 pre_med_b 本身是**取整样本** ⇒ 阈值真值 ∈ [lim−0.25, lim+0.25)
+        #   ★★ ⇒ slack = 0.25（★ 不是 0.5：★ 除以 2 把不确定带也减半）
+        rnd_txt = ""
+        if not ok1:
+            rnd_txt = rounding_disclosure(field(post_x, "normal_med_min_raw"), lim_med,
+                                          slack=0.25, what="post normal med")
+            rnd_txt += percentile_fragility_disclosure(p_nno, b.get("n"), "normal med")
         note = (f"★ 观察间隔：post normal med={p_med:.0f}min（期望 ≤{lim_med:.0f}；pre {pre_med_b:.0f}）"
                 f" ⇒ {'✔ 已折半' if ok1 else '★ 未折半'}"
                 f" / ★ 阶梯（★ 机制原生·零余量）：post ladder_p50={p_lad:.0f}s"
@@ -930,7 +1018,7 @@ def judge(data: dict[str, str], stage: int = 1,
             note += (f"（★ 恒真档位（pre 计数=0）：{'、'.join(vac_txt)}"
                      f" ⇒ 本窗口**恒真** ⇒ 不作判据）")
         note += f"（★ post normal n={p_nno:.0f}）"
-        rows.append((label_x, base_txt, post_x, verdict(ok, note)))
+        rows.append((label_x, base_txt, post_x, verdict(ok, note + rnd_txt)))
 
     # ── M14：★★ 三个 population-stable 组 × ★★ 两个计费口径（★ 本轮判据体系的主体）──
     #   ★ 为什么是它：★ st_old ⊆ st_new ⇒ 三个组在 pre/post **是同一批对**
@@ -1000,9 +1088,21 @@ def judge(data: dict[str, str], stage: int = 1,
                                  verdict_missing("★ post 的 p90/p99 算不出")))
                     continue
                 ok = p90 <= pre[1] and p99 <= pre[2]
+                # ★★★★ 第 26 处口径修正：★ 「::int 取整边界」伪影 ⇒ 分量级披露（★ 逐个分量定位）
+                #   ★★ pre[1]/pre[2] 是**取整样本** ⇒ 阈值真值 ∈ [thr−0.5, thr+0.5) ⇒ slack = 0.5
+                rnd_txt = ""
+                if not ok:
+                    if p90 > pre[1]:
+                        rnd_txt = rounding_disclosure(field(obs, "p90_min_raw"), pre[1],
+                                                      slack=0.5, what="post p90")
+                    elif p99 > pre[2]:
+                        rnd_txt = rounding_disclosure(field(obs, "p99_min_raw"), pre[2],
+                                                      slack=0.5, what="post p99")
+                    rnd_txt += percentile_fragility_disclosure(n, b.get("n"), "p90/p99")
                 rows.append((label, base_txt, obs,
                              verdict(ok, f"★ post p90={p90} / p99={p99}（pre {pre[1]}/{pre[2]}）"
-                                       f"⇒ 旧 featured 人群{'尾部未变差' if ok else '★ 尾部变差（无回归失败）'}")))
+                                       f"⇒ 旧 featured 人群{'尾部未变差' if ok else '★ 尾部变差（无回归失败）'}"
+                                       + rnd_txt)))
             elif mode == "effect":
                 if p90 is None:
                     rows.append((label, base_txt, obs,
@@ -1192,6 +1292,15 @@ def judge(data: dict[str, str], stage: int = 1,
                 continue
             lim_slow = round(pre_slow_eff * 1.25, 1)
             ok = p90 <= pre_p90 and slow <= lim_slow
+            # ★★★★ 第 26 处口径修正：★ 「::int 取整边界」伪影 ⇒ **只对 p90 分量**披露
+            #   ★★ pre_p90 是**取整样本** ⇒ 阈值真值 ∈ [pre_p90−0.5, pre_p90+0.5) ⇒ slack = 0.5
+            #   ★★ ★ slow 分量是**百分比**（不是分钟分位数）⇒ **不受本类缺陷影响** ⇒ 不混披露
+            rnd_txt = ""
+            if not ok and p90 > pre_p90:
+                rnd_txt = rounding_disclosure(field(obs, "p90_gap_raw"), pre_p90,
+                                              slack=0.5, what="post p90_gap")
+            if not ok:
+                rnd_txt += percentile_fragility_disclosure(n, b.get("n"), "p90_gap")
             # ★★ 附「fp 口径」的对照读数（★ 豁免类**设计上钉 6h** ⇒ 未减半顶格应当**仍在**）
             fctl = ""
             if fobs is not None:
@@ -1203,7 +1312,7 @@ def judge(data: dict[str, str], stage: int = 1,
                          verdict(ok, f"★ 豁免类（★ 协议形态：设计上钉 6h、乘数豁免）post p90_gap={p90:.0f}"
                                    f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                                    f" ⇒ {'未变慢（不回归成立）' if ok else '★ 豁免类被拖慢'}"
-                                   f"（★ n={n}）{fctl}{contam_txt}")))
+                                   f"（★ n={n}）{fctl}{contam_txt}{rnd_txt}")))
 
     # ── M11：episode 层症状 ──────────────────────────────────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
@@ -2309,6 +2418,87 @@ def selftest() -> int:
     if not v.startswith("❌"):
         failures.append(f"[㉡ M5 增量归因] 键缺失时裁决符号**不得**被软化 ⇒ {v}")
 
+    # ㉮ ★★★★ **诚实边界 ㉭ 必须存在**（★ 第 26 处口径修正：★ 「::int 取整边界」伪影）
+    #   ★★ 为什么必须进边界：★ 这是**判据分辨率**层面的缺陷（★ 分辨率 1 分钟 vs 抖动秒级）
+    #   ★★ ⇒ ★★ 关窗报告若不写它 ⇒ ★★ 一个由「≤60 秒」真实差决定的 ❌ 会被读成「修复失败」
+    if "取整" not in hb or "360.5069" not in hb:
+        failures.append("[㉮ 诚实边界] 缺少「分钟型量被 ::int 截到分钟后与阈值做精确比较 ⇒ 亚分钟差被放大成 1 单位假红」"
+                        "边界（含 ★ 实测 raw p90 = 360.5069）")
+    if "分辨率" not in hb:
+        failures.append("[㉮ 诚实边界] 缺少「判据的分辨率必须 ≥ 被测机制的抖动幅度」这条纪律")
+
+    # ㉯ ★★★★ **行为守卫**：★ 「取整边界伪影」的行内披露必须真的出现，且**不得软化裁决符号**（★ 第 26 处）
+    #   ★★ 形态：★ 若披露被回退 ⇒ ★★ 判 ❌ 的行里只剩「豁免类被拖慢」⇒ ★★ 读者必然误读成行为回归
+    #   ★★ ⇒ ★★ 断言必须是**行为级**（★ 真的构造一个「取整跨界」的数据再跑 judge）
+    _d26 = _synthetic(True)
+    _d26["M20_exempt_post"] = ("57 events | med_gap=360 | p90_gap=361 | slow_gt300_pct=87.7"
+                                " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600"
+                                " | med_gap_raw=360.0753 | p90_gap_raw=360.5069 | max_gap_raw=360.5274")
+    _rows26, _, _ = judge(_d26, stage=1)
+    _v26 = rows_by_label(_rows26).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "取整边界伪影" not in _v26:
+        failures.append(f"[㉯ 取整边界披露] M20 豁免行判 ❌（p90_gap 361 > 360）时必须行内披露"
+                        f"「取整边界伪影」⇒ {_v26}")
+    if "360.5069" not in _v26:
+        failures.append(f"[㉯ 取整边界披露] 披露里必须给出**实测 raw 值**（★ 360.5069）⇒ {_v26}")
+    if not _v26.startswith("❌"):
+        failures.append(f"[㉯ 取整边界披露] 裁决符号**不得**被软化（★ ❌ 仍是 ❌ ⇒ 门不钝化）⇒ {_v26}")
+    # ★★ raw 键缺失 ⇒ 必须显式说「不可见」（★ 不得静默按面值读）
+    _d26b = _synthetic(True)
+    _d26b["M20_exempt_post"] = ("57 events | med_gap=360 | p90_gap=361 | slow_gt300_pct=87.7"
+                                " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600")
+    _rows26b, _, _ = judge(_d26b, stage=1)
+    _v26b = rows_by_label(_rows26b).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "取整边界不可见" not in _v26b:
+        failures.append(f"[㉯ 取整边界披露] raw 读数缺失时必须显式写「取整边界不可见」⇒ {_v26b}")
+    if not _v26b.startswith("❌"):
+        failures.append(f"[㉯ 取整边界披露] raw 缺失时裁决符号**不得**被软化 ⇒ {_v26b}")
+    # ★★ ★★★ **反向守卫**：★ 真的差很多（p90_gap=720）⇒ **不得**出现「取整边界伪影」
+    #   ★★   ⇒ ★★ 这是第 25 处纪律的「假阳性也要治」同款（★ 守卫的判据必须是结构，不是关键词）
+    _d26c = _synthetic(True)
+    _d26c["M20_exempt_post"] = ("57 events | med_gap=360 | p90_gap=720 | slow_gt300_pct=87.7"
+                                " | ladder_p50=360 | top21600_n=54 | ladder_max_s=21600"
+                                " | p90_gap_raw=720.0")
+    _rows26c, _, _ = judge(_d26c, stage=1)
+    _v26c = rows_by_label(_rows26c).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "取整边界伪影" in _v26c:
+        failures.append(f"[㉯ 取整边界披露] 真实差很大（p90_gap 720）时**不得**出现「取整边界伪影」"
+                        f"（★ 守卫必须是结构判据，不是关键词匹配）⇒ {_v26c}")
+
+    # ㉱ ★★★★ **诚实边界 ㉰ 必须存在 ＋ ★★ 「小样本分位数不稳」的披露必须真的出现**（★ 第 26 处附带发现）
+    #   ★★ 形态：★ M14x 旧 featured 行在窗口未满时判 ❌（★ post n=34 vs pre n=226）⇒ ★★ 极脆
+    #   ★★ ⇒ ★★ 若披露缺失 ⇒ ★★ 读者会把「秩统计量跳档」读成「旧 featured 人群真的退化了」
+    if "㉰" not in hb or "秩统计量" not in hb:
+        failures.append("[㉱ 诚实边界] 缺少「分位数是秩统计量 ⇒ 样本量小的时候极不稳定」这条边界")
+    if "关窗读数" not in hb:
+        failures.append("[㉱ 诚实边界] 缺少「窗口未满时的读数 ≠ 关窗读数」这条纪律")
+    # ★★ **行为守卫**：★ 真的构造一个「post n 远小于 pre n」的 M14x 旧 featured ⇒ 行内必须披露
+    _d26d = _synthetic(True)
+    # ★★ n 必须 **≥30**（★ 低于 30 走的是「样本不足」分支 ⇒ 根本到不了不回归判定 ★ 本轮自测真踩到）
+    # ★★ 且必须**同时**改 free 口径那侧（★ M19 不变量「all ≥ free」⇒ ★ 只改 all 会触发守卫 ⇒ 整表作废）
+    _d26d["M14_post_old_feat"] = ("20 events | med_min=30 | p90_min=360 | p99_min=360 | max_min=360"
+                                  " | slow_gt300_pct=20.0 | p90_min_raw=360.0352 | p99_min_raw=360.1988")
+    _d26d["M14x_post_old_feat"] = ("34 events | med_min=30 | p90_min=360 | p99_min=360 | max_min=360"
+                                    " | slow_gt300_pct=17.6 | p90_min_raw=360.0352 | p99_min_raw=360.1988")
+    _rows26d, _, _ = judge(_d26d, stage=1)
+    _v26d = rows_by_label(_rows26d).get("M14x 旧 featured 人群（无回归）", "<缺行>")
+    if "小样本分位数不稳" not in _v26d:
+        failures.append(f"[㉱ 小样本披露] post n 远小于 pre n 时，M14x 旧 featured 判 ❌ 必须行内披露"
+                        f"「小样本分位数不稳」⇒ {_v26d}")
+    if not _v26d.startswith("❌"):
+        failures.append(f"[㉱ 小样本披露] 裁决符号**不得**被软化（★ ❌ 仍是 ❌）⇒ {_v26d}")
+    # ★★ **反向守卫**：★ post n 接近 pre n ⇒ **不得**出现该披露（★ 假阳性也要治）
+    _d26e = _synthetic(True)
+    _d26e["M14_post_old_feat"] = ("180 events | med_min=30 | p90_min=360 | p99_min=360 | max_min=360"
+                                  " | slow_gt300_pct=22.2 | p90_min_raw=360.0352 | p99_min_raw=360.1988")
+    _d26e["M14x_post_old_feat"] = ("200 events | med_min=30 | p90_min=360 | p99_min=360 | max_min=360"
+                                    " | slow_gt300_pct=22.2 | p90_min_raw=360.0352 | p99_min_raw=360.1988")
+    _rows26e, _, _ = judge(_d26e, stage=1)
+    _v26e = rows_by_label(_rows26e).get("M14x 旧 featured 人群（无回归）", "<缺行>")
+    if "小样本分位数不稳" in _v26e:
+        failures.append(f"[㉱ 小样本披露] post n 与 pre n 相当（200 vs 226）时**不得**出现「小样本分位数不稳」"
+                        f"（★ 守卫必须是结构判据，不是关键词匹配）⇒ {_v26e}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2359,6 +2549,13 @@ def selftest() -> int:
           "（★ 且 Stage 2 不得要求 ⇒ 否则是假红）")
     print("   ✔ ㉪ ★★★ 诚实边界必须含「第二次部署（11-11 01:07:37）★ diff 碰了 featured 路径 ⇒ ★ 代码解耦 + 等长窗口实测 ⇒ era 切点仍有效」")
     print("   ✔ ㉬ ★★★ 诚实边界必须含「同类缺陷必须穷举」＋ ★★ **跨脚本行为守卫**：★ 穷举审计器必须真的跑通且零违例")
+    print("   ✔ ㉮ ★★★ 诚实边界必须含「分钟型量被 ::int 截到分钟 ⇒ 与阈值做精确比较 ⇒ 亚分钟差被放大成 1 单位假红」"
+          "（★ 含实测 raw p90 = 360.5069）+「判据分辨率必须 ≥ 被测抖动幅度」")
+    print("   ✔ ㉯ ★★★ **行为守卫**：★ 「取整边界伪影」披露必须在 M20 豁免行真的出现（含 raw 值）"
+          "＋ ★ 裁决符号**不得**软化 ＋ ★ raw 缺失须写「不可见」＋ ★ 真实差很大时**不得**出现该披露（★ 假阳性也要治）")
+    print("   ✔ ㉱ ★★★ 诚实边界必须含「分位数是秩统计量 ⇒ 样本量小的时候极不稳定」"
+          "＋ ★ **行为守卫**：★ post n ≪ pre n 时 M14x 旧 featured 判 ❌ 必须行内披露「小样本分位数不稳」"
+          "＋ ★ 样本量相当时**不得**出现该披露（★ 假阳性也要治）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2617,6 +2814,54 @@ def honest_boundary_lines() -> list[str]:
           "★ ④ ★ **假阳性也要治**：★ 本轮首版审计器把 `M4b_free_gap_gt24h` 误报成违例"
           "（★ 它的「24h」是**时延阈值**不是窗口长度、★ 读的是快照表）⇒ ★★ ⇒ 「窗口型读数」的判定必须基于"
           "**事件时间列白名单 ＋ now() 锚定的下界**，★ 而不能靠键名里的「24h」。")
+    lines.append("   ㉭ ★★★★ **分钟型量被 `::int` 截到分钟后又与阈值做「精确比较」⇒ ★★ 亚分钟差被放大成「1 单位假红」**（★ 第 26 处口径修正，★ 真库实测）"
+          "：★ **形态**：★ `recheck_min` / `lat` 是**浮点分钟**（★ 实测精度到**秒**）"
+          "⇒ ★★ 采集侧 `percentile_disc(...)::int` 把它**截到分钟** ⇒ ★★ 而判据拿这个**取整值**与阈值做**精确比较**"
+          "⇒ ★★ ⇒ 真实差只要落在 **[−0.5, +0.5) 分钟** 的取整跨界带里 ⇒ ★★ **裁决符号就会翻转**。"
+          "⇒ ★★★★ **实测（★ 211 真库，★ M20 豁免组）**：★ post raw p90 = **360.5069** min ⇒ `::int` = **361**"
+          "⇒ ★★ 而基线取整值 = **360** ⇒ 基线真值 ∈ [359.5, 360.5) ⇒ ★★ ⇒ **真实差 ∈ (0.01, 1.01] 分钟 ⇒ 上界 ≈ 60 秒（★ = 判据的整个分辨率）**"
+          "⇒ ★★ ⇒ 该行判 **❌** ⇒ ★★ **纯假红**（★ 慢事件分量 100% ≤ 109.6% **是通过的** ⇒ ❌ 只由 p90 一项造成）。"
+          "⇒ ★★ **同款形态第 23 处已在 M14/M14x 的 `p99 361 vs 360` 上出现** ⇒ ★★ **同一类缺陷、同一机制**。"
+          "⇒ ★★★★ **穷举结论（★ 按第 25 处纪律，不抽查）**：★ 判据族里**只有「分钟型分位数」这一族**受影响 ⇒ "
+          "★ ① M14 / M14x 旧 featured（★ p90 / p99 vs pre）② M15x normal（★ med ≤ 30）③ M20 normal / exempt（★ p90_gap）；"
+          "⇒ ★★ ★ **阶梯类不适用**（★ `next_retry_seconds` 是**整秒** ⇒ `::int` 无损）"
+          "⇒ ★★ ★ **计数/百分比类不适用**（★ M5 total、H4 coverage、M12p pending_pct ⇒ 本来就是整数或一位小数）"
+          "⇒ ★★ ★ **M11 是描述性读数**（★ 诚实边界 ㉚ 已声明其量纲问题）⇒ ★★ 本轮**不**给 M11 追加 raw。"
+          "⇒ ★★★★ **处置（★ 只披露、不软化）**：★ ① **采集侧只给 post 行**追加 `*_raw` 字段"
+          "（★ `CASE WHEN win='post'` ⇒ ★★ **pre 键逐字节不变** ⇒ ★★ **M18 不受影响 ⇒ 不重冻** ⇒ ★★ 时钟门的 pre 键逐字节对拍也不变 ✔）"
+          "⇒ ★★ ② **判定器行内披露**（★ `rounding_disclosure()` ⇒ ★★ 给出**真实差的区间上界**）"
+          "⇒ ★★ ③ ★ **裁决符号保持 ❌**（★ 门不钝化）⇒ ★★ ④ 真修法（★ **亚分钟精度比较 + 容差**；★ 且对"
+          "「**设计上钉住**」的组（★ 豁免组钉 6h）⇒ 正确形态是**带宽判据**）**登记为 Stage 2 之后**。"
+          "⇒ ★★★★ **★★ 关窗风险实测**：★ M15x 金丝雀 `deepseek-ai/deepseek-v4-pro-0813` 的 normal med raw = **30.0636**"
+          "（★ 阈值 = 30 ⇒ 现在判 ✅）⇒ ★★ **只差 3.8 秒** ⇒ ★★ 关窗时 post 样本增加 ⇒ med 可能在 30.0–30.5 之间摆"
+          "⇒ ★★ ⇒ **可能从 ✅ 翻成 ❌** ⇒ ★★ ⇒ **行内披露是关窗报告的必需品，不是装饰**。"
+          "⇒ ★★★ **纪律**：★★ ① **判据的分辨率必须 ≥ 被测机制的抖动幅度**（★ 本例：分辨率 1 分钟 vs 抖动秒级 ⇒ 粗 ~60 倍）"
+          "★ ② ★ **凡是比较「连续量」，必须先问「取整后还剩多少分辨率」**（★ 取整前先量分布，取整后再看判据）")
+    lines.append("   ㉰ ★★★★ **分位数是「秩统计量」⇒ ★★ 样本量小的时候极不稳定 ⇒ ★★ 窗口未满时的读数 ≠ 关窗读数**（★ 第 26 处附带发现，★ 真库实测）"
+          "：★ **实测形态**：★ M14x 旧 featured 行在 **2026-11-11 02:00 与 02:20 两次真读里都判 ❌**"
+          "（★ post n=**34** / p90=**360** vs pre p90=**31**）⇒ ★★ 而**同一时刻的预演（as-of = 关窗时钟）判 ✅**"
+          "⇒ ★★ ⇒ ★★ 差别**不在数据**（★ 同一批数据）⇒ ★★ **在成熟度窗口的大小**"
+          "⇒ ★★ post 的成熟段此时只有 ~6.6h（★ 真 now 时 post 只结算到 now−6h）"
+          "⇒ ★★ ⇒ ★★ 根因 = **秩统计量 + 样本量**：★ p90 = 第 ⌈0.9n⌉ 小的那个值 ⇒ ★ n 小 ⇒ 秩边界一动就跳档"
+          "（★ 实测：★ n=34 ⇒ p90 秩 = 第 **32** 位；★ 只差 **1** 条新事件就可能从 31 跳到 360）"
+          "⇒ ★★★★ **★★ 机理（★ 本轮逐层实测，★ 数字可复核）**：★ M14x 旧 featured 组的间隔分布实测为"
+          "★ ① **pre24**（★ 成熟段 18h）= n **226** ＝ 短事件 **208** ＋ **6h 事件 18**（★ 占 **8.0%**）⇒ p90 = **31**"
+          "★ ② **post @真实 now**（★ 成熟段仅 ~6.8h）= n **35** ＝ 短事件 **29** ＋ **6h 事件 6**（★ 占 **17.1%**）⇒ p90 = **360** ❌"
+          "★ ③ **post @as-of 13:42:30**（★ 成熟段 ~12.8h）= n **103** ＝ 短事件 **97** ＋ **6h 事件 6**（★ 占 **5.8%**）⇒ p90 = **31** ✅"
+          "⇒ ★★★ ⇒ ★★★ **★ 关键机理**：★ **6h 事件数是「每批次固定」的**（★ 两个窗口都是 6 条 ⇒ 它**不随窗口长度增长**）"
+          "⇒ ★★ 而**短事件随窗口线性增长**（★ 35 → 103 ⇒ 短事件 29 → 97）"
+          "⇒ ★★ ⇒ ★★ ⇒ **6h 占比 = 固定数 /（固定数 + 线性增长）⇒ ★★ 窗口越短 ⇒ 占比越高 ⇒ ★★ 必然把 p90 顶到 360**"
+          "⇒ ★★ ⇒ ★★ ⇒ **窗口未满时的读数不能代表关窗读数**（★ 与 ㉗ 同源：★ 预演只投影时钟、不投影数据积累）"
+          "⇒ ★★★★ **★★ 关窗预期（★ 可证伪的预测，★ 依据上面 ①②③）**：★ Stage 1 关窗 = 13:42:30"
+          "⇒ ★★ ⇒ 成熟段 **~18h** ⇒ ★★ ⇒ post n 将 **> 103**、6h 占比将 **< 5.8%** ⇒ ★★ ⇒ **p90 应回到 31 ⇒ ✅ 达成**"
+          "⇒ ★★ ★ **★ 若关窗当天它仍判 ❌ ⇒ 必须按「真实回归」严肃对待**（★ 不得再用本边界解释掉）"
+          "⇒ ★★ ★★ **★ 推论（★ 关窗纪律）**：★ **预演（as-of = 关窗时钟）比「真实 now」更接近关窗读数**"
+          "⇒ ★★ ⇒ ★★ ⇒ 「T1 关窗判读清单」里的**预演那一步不是形式**（★ 它是关窗读数的**几何+成熟度**预演）"
+          "⇒ ★★★★ **处置**：★ **只披露，不改裁决符号**（★ ❌ 仍是 ❌ ⇒ 门不钝化）"
+          "⇒ ★★ 判定器行内给出「post n vs pre n 的样本量倍数」⇒ ★★ 读者自行判断这条 ❌ 有多脆"
+          "⇒ ★★★ **纪律**：★★ ① **跨窗比分位数时，必须同时报两边的 n**（★ 只报分位数不报 n ⇒ 读者无法判断脆不脆）"
+          "★ ② ★ **窗口未满时的裁决符号会摇摆**（★ 本轮实测：★ 同一批数据，真实 now ❌ / 预演 ✅）"
+          "★ ⇒ ★★ **一切以关窗当天真读为准**（★ 窗口越满 ⇒ n 越大 ⇒ 越稳）")
     return lines
 
 

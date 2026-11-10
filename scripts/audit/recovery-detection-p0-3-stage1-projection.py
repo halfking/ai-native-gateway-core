@@ -197,7 +197,7 @@ def main() -> int:
     #   ★ 理由：★ 投影是**关窗当天第 0 步** ⇒ ★★ 若窗口内又换了构建 ⇒ ★★ 预演必须自带这条边界
     vmod = cc.load_verdict()
     for ln in vmod.honest_boundary_lines():
-        if "㉖" in ln or "㉗" in ln or "㉚" in ln or "㉦" in ln or "㉩" in ln:
+        if "㉖" in ln or "㉗" in ln or "㉚" in ln or "㉦" in ln or "㉩" in ln or "㉭" in ln or "㉰" in ln:
             print("   " + ln.strip())
 
     if missing or diff or ci_missing or ci_diff or bad:
