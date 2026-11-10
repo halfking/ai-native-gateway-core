@@ -27,6 +27,22 @@
 --     ★ era2 取「容器启动 13:42:26.9 + 静态集合刷新 13:42:28」之后 2 秒 ⇒ post 段
 --       严格是新二进制产出的数据（不含旧槽尾巴）。
 --
+-- ⚠⚠⚠ ★★★ 窗口**必须锚定到 era 切点**（2026-11-10 15:2x 修正，★ 本轮第 4 处量具缺陷）：
+--   原先所有 pre/post 对比块的取数窗口写成 `created_at > now() - interval '7 days'`
+--   ★★ 这是**滚动窗口** ⇒ ★★ **pre 段的样本随「查询时刻」漂移**，实测两处硬证据：
+--     ① Stage 2 模拟（now = 2026-11-17 13:45）：窗口起点 = 2026-11-10 13:45
+--        **晚于** era 切点 13:42:30 ⇒ ★★ **pre 段整段为空** ⇒ 实测 `M11b_pre_*` /
+--        `M12s_settled_pre_*` / `M14_pre_*` / `M15_pre__*` / `M12p_pending_pre_*`
+--        **全部消失** ⇒ Stage 2 的 pre-vs-post 对照会失去 pre 侧。
+--     ② Stage 1 模拟（now = 2026-11-11 13:45）：pre 段只剩 **6 天**
+--        ⇒ `M14_pre_newly_covered` 的 p90 从锚点值 **360 掉到 47**
+--        ⇒ ★★ 复采的 pre 与基线**不同源**（差一个整天的样本量）。
+--   ⇒ 改为 `created_at > TIMESTAMPTZ '<切点>' - interval '7 days'`
+--     ⇒ ★ pre 恒为「切点前 7 天」、post 恒为「切点 → now」
+--     ⇒ ★★ **Stage 1 / Stage 2 / T1 锚点共用同一个 pre 样本** ⇒ 前后可比、基线可复现。
+--   ★ 保留滚动的两类（★ 它们是**绝对量**，与 era 无关）：
+--     `now() - interval '24 hours'`（M3/M5 探测量）、`now() - interval '6 hours'`（结算成熟度）。
+--
 -- ⚠ psql 语法坑（已踩 3 次）：★ `GROUP BY 2` 里若 2 是**聚合表达式**会报
 --   "aggregate functions are not allowed in GROUP BY" ⇒ 必须「子查询包一层 + 外层聚合」。
 --
@@ -108,7 +124,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  runs AS (
    SELECT n.credential_id, n.raw_model_name, count(*) cnt
-   FROM node_probe_runs n WHERE n.created_at > now() - interval '24 hours'
+   FROM node_probe_runs n
+   -- ★★ 锚定（★ 本轮第 7 处口径修正）：pre 段固定为「切点前 24h」，post 段为「切点→now」
+   --   ⇒ 否则这两个 era 对比块的 pre 侧只在关窗后 24h 内存在（Stage 2 时整段消失）
+   WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
    GROUP BY n.credential_id, n.raw_model_name
  ), joined AS (
    SELECT r.cnt, (lower(btrim(r.raw_model_name)) IN (SELECT m FROM st)) is_feat,
@@ -235,7 +254,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT n.credential_id, n.raw_model_name, n.created_at,
           (lower(btrim(n.raw_model_name)) IN (SELECT m FROM st)) is_feat,
           (n.raw_model_name LIKE '%/%') is_ns
-   FROM node_probe_runs n WHERE n.created_at > now() - interval '24 hours'
+   FROM node_probe_runs n
+   -- ★★ 锚定（★ 本轮第 7 处口径修正）：pre 段固定为「切点前 24h」，post 段为「切点→now」
+   --   ⇒ 否则这两个 era 对比块的 pre 侧只在关窗后 24h 内存在（Stage 2 时整段消失）
+   WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
  ), tagged AS (
    SELECT CASE WHEN is_feat THEN 'featured' ELSE 'not' END f,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END win,
@@ -329,19 +351,27 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
-     AND n.created_at < now() - interval '2 hours'   -- ★ 排除进行中的段
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
+     --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
+     --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
+     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')   -- ★ 排除进行中的段
  ), seg AS (
    SELECT credential_id, raw_model_name, is_feat_now, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
           LEAD(created_at)  OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
    FROM fr
- ), rec AS (
-   SELECT is_feat_now, is_ns, created_at AS fail_at,
+ ), rec0 AS (
+   SELECT is_feat_now, is_ns, created_at AS fail_at, next_at,
           EXTRACT(EPOCH FROM (next_at - created_at))/60 AS lat,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre_fix' ELSE 'post_fix' END era
    FROM seg
    WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
+ ), rec AS (
+   -- ★★ era 纯度（★ 本轮第 6 处口径修正）：pre 段的 episode 必须**整段发生在切点之前**
+   --   （下一次成功也要在切点前）⇒ 否则「修复前的恢复感知时延」里混进**修复后**的恢复
+   --   （实测 max 可差 1791 分钟）⇒ ★ pre 侧条件钉在**切点**上 ⇒ pre 样本永远冻结
+   SELECT * FROM rec0 WHERE era = 'post_fix' OR next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
  )
 SELECT 'M11_latency_'||era||'_'||CASE WHEN is_ns THEN 'namespaced' ELSE 'bare' END||'_featnow_'||CASE WHEN is_feat_now THEN 'Y' ELSE 'N' END k,
   COUNT(*)::text||' episodes | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY lat))::int::text,'?')
@@ -372,19 +402,25 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
-     AND n.created_at < now() - interval '2 hours'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
+     --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
+     --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
+     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')
  ), seg AS (
    SELECT credential_id, raw_model_name, is_feat_now, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
           LEAD(created_at)  OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
    FROM fr
- ), rec AS (
-   SELECT is_feat_now, is_ns,
+ ), rec0 AS (
+   SELECT is_feat_now, is_ns, next_at,
           EXTRACT(EPOCH FROM (next_at - created_at))/60 AS lat,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre_fix' ELSE 'post_fix' END era
    FROM seg
    WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
+ ), rec AS (
+   -- ★★ era 纯度（见 M11 块同款说明）：pre episode 的「恢复」必须在切点前被观测
+   SELECT * FROM rec0 WHERE era = 'post_fix' OR next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
  ), agg AS (
    SELECT era, is_ns, COUNT(*) c,
           percentile_disc(0.5) WITHIN GROUP (ORDER BY lat) med,
@@ -435,18 +471,22 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
    FROM fr
- ), rec AS (
-   SELECT is_ns, created_at AS fail_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
+ ), rec0 AS (
+   SELECT is_ns, created_at AS fail_at, next_at, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS recheck_min,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
                THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
                ELSE (lower(btrim(raw_model_name)) IN (SELECT m FROM st_new)) END feat_at_t
    FROM seg WHERE success = FALSE AND next_at IS NOT NULL
+ ), rec AS (
+   -- ★★ era 纯度（★ 与 M12s/M14/M15 同款）：pre 侧的下一次探测必须在切点前
+   --   ⇒ pre 样本冻结、pre/post 可比（M12 是**未结算**版本 ⇒ post 有右删失，仅作参考）
+   SELECT * FROM rec0 WHERE era = 'post' OR next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
  )
 SELECT 'M12_recheck_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
   COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
@@ -467,8 +507,11 @@ WITH fr AS (
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '14 days'
-     AND n.created_at < now() - interval '2 hours'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '14 days'
+     -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
+     --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
+     --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
+     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
@@ -497,8 +540,11 @@ WITH fr AS (
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '14 days'
-     AND n.created_at < now() - interval '2 hours'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '14 days'
+     -- ★★ era-aware（★ 本轮第 7 处口径修正）：★ 只对 **post** 侧排除「进行中的段」
+     --   ⇒ pre 侧全留 ⇒ ★ pre 的「下一次探测」不会被 now 相对过滤吃掉
+     --   （否则 pre 样本随查询时刻漂移：实测 M11b_pre 49 ↔ 50）
+     AND (n.created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' OR n.created_at < now() - interval '2 hours')
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
@@ -536,7 +582,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
@@ -555,8 +601,14 @@ SELECT 'M12s_settled_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'
   ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
 FROM rec
-WHERE fail_at < now() - interval '6 hours'      -- ★ 结算过滤：失败已发生 ≥6h
-  AND next_at IS NOT NULL
+WHERE next_at IS NOT NULL
+  -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
+  --   pre 侧：成熟度 + era 纯度都以**切点**为参照 ⇒ ★★ pre 样本**冻结**
+  --     （否则 pre 随查询时刻漂移：实测同一锚点下 pre 事件数 1833 → 332）
+  --   post 侧：成熟度相对 now（post 事件要 6h 才结算）⇒ 随时间单调增长（这是有意的）
+  AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY era, is_ns, feat_at_t ORDER BY 1;
 
 -- ═══ M12p ★ 待复检计数（★ 被删失掉的那些事件 —— ★ 不是一个判据，是一个护栏）═══
@@ -580,7 +632,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
@@ -588,16 +640,33 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  ), rec AS (
    SELECT is_ns, created_at AS fail_at, next_at,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END era,
+          -- ★★ **同量纲对照段**（★ 本轮第 5 处口径修正）：
+          --   pending 的定义是「该次失败之后**再没有任何探测**」⇒ ★ **窗口越长，
+          --   越容易把「之后一直没被探」的对（停放/长退避）算成 pending**
+          --   ⇒ 实测锚定 7 天 pre 的 pending_pct = **5.8%**，而 Stage 1 的 post 段只有 24h
+          --   ⇒ ★★ **7 天 pre 与 24h post 直接比是不同量纲** ⇒ 另输出「切点前 24h」段，
+          --   与 post(24h) 同量纲 ⇒ ★ 护栏才成立。
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours' THEN 'pre24'
+               WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre'
+               ELSE 'post' END win24,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08'
                THEN (lower(btrim(raw_model_name)) IN (SELECT m FROM st_old))
                ELSE (lower(btrim(raw_model_name)) IN (SELECT m FROM st_new)) END feat_at_t
    FROM seg WHERE success = FALSE
  )
-SELECT 'M12p_pending_'||era||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
+SELECT 'M12p_pending_'||win24||'_'||CASE WHEN is_ns THEN 'ns' ELSE 'bare' END||'_'||CASE WHEN feat_at_t THEN 'feat' ELSE 'not' END k,
   COUNT(*)::text||' failures_aged6h | pending='||COUNT(*) FILTER (WHERE next_at IS NULL)::text
   ||' | pending_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_at IS NULL)/COUNT(*),1)::text v
-FROM rec WHERE fail_at < now() - interval '6 hours'
-GROUP BY era, is_ns, feat_at_t ORDER BY 1;
+FROM rec
+WHERE next_at IS NOT NULL
+  -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
+  --   pre 侧：成熟度 + era 纯度都以**切点**为参照 ⇒ ★★ pre 样本**冻结**
+  --     （否则 pre 随查询时刻漂移：实测同一锚点下 pre 事件数 1833 → 332）
+  --   post 侧：成熟度相对 now（post 事件要 6h 才结算）⇒ 随时间单调增长（这是有意的）
+  AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
+GROUP BY win24, is_ns, feat_at_t ORDER BY 1;
 
 -- ═══ M14 ★★★ 直指目标人群：★「那 106 个新覆盖变体」的复检节奏，前 vs 后 ═══
 --
@@ -627,7 +696,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
@@ -644,8 +713,20 @@ SELECT 'M14_'||era||'_'||grp_new k,
   COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p99_min='||COALESCE((percentile_disc(0.99) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
-  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
-FROM rec WHERE fail_at < now() - interval '6 hours' AND next_at IS NOT NULL
+  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
+  -- ★★ 冷簇**速率**（★ 比分位数稳）：★ newly_covered 是双峰群体（热对 med≈3 / 冷对 med≈360）
+  --   ⇒ p90 处于**边界**（实测 461 事件里约 16 个冷事件就能把 p90 从 47 顶到 360）
+  --   ⇒ ★★ 分位数脆 ⇒ 另报「>300min 的慢事件占比」⇒ 群体层判据用这个
+  ||' | slow_gt300_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE recheck_min > 300)/COUNT(*),1)::text v
+FROM rec
+WHERE next_at IS NOT NULL
+  -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
+  --   pre 侧：成熟度 + era 纯度都以**切点**为参照 ⇒ ★★ pre 样本**冻结**
+  --     （否则 pre 随查询时刻漂移：实测同一锚点下 pre 事件数 1833 → 332）
+  --   post 侧：成熟度相对 now（post 事件要 6h 才结算）⇒ 随时间单调增长（这是有意的）
+  AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY era, grp_new ORDER BY 1;
 
 -- ═══ M15 ★★★ 逐对金丝雀：★「新覆盖人群里那些冷但仍在被探」的对，pre vs post ═══
@@ -676,7 +757,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  WHERE b.credential_id = n.credential_id
                    AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
-     AND n.created_at > now() - interval '7 days'
+     AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
@@ -691,7 +772,15 @@ SELECT 'M15_'||era||'__'||raw_model_name k,
   COUNT(*)::text||' events | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?')
   ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
-FROM rec WHERE fail_at < now() - interval '6 hours' AND next_at IS NOT NULL
+FROM rec
+WHERE next_at IS NOT NULL
+  -- ★★ 成熟度**分 era 钉住**（★ 本轮第 6 处口径修正）：
+  --   pre 侧：成熟度 + era 纯度都以**切点**为参照 ⇒ ★★ pre 样本**冻结**
+  --     （否则 pre 随查询时刻漂移：实测同一锚点下 pre 事件数 1833 → 332）
+  --   post 侧：成熟度相对 now（post 事件要 6h 才结算）⇒ 随时间单调增长（这是有意的）
+  AND ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY era, raw_model_name ORDER BY 1;
 
 -- ═══ M16 ★★ 口径自检（★ 常驻体检：防止绑定 join 再次静默漂移）═══
@@ -708,7 +797,7 @@ GROUP BY era, raw_model_name ORDER BY 1;
 WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
    SELECT n.id
    FROM node_probe_runs n
-   WHERE n.created_at > now() - interval '7 days'
+   WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
      AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
@@ -717,14 +806,14 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
    FROM node_probe_runs n
    JOIN credential_model_bindings b ON b.credential_id = n.credential_id AND b.billing_mode = 'free'
    JOIN provider_models pm ON pm.id = b.provider_model_id AND pm.raw_model_name = n.raw_model_name
-   WHERE n.created_at > now() - interval '7 days'
+   WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 ), fr_legacy AS (  -- ★ 旧写法（★ 仅作背景对照：★ 已知会丢 70% ⇒ 不参与判定）
    SELECT n.id
    FROM node_probe_runs n
    JOIN credential_model_bindings b
      ON b.credential_id = n.credential_id
     AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free' AND n.created_at > now() - interval '7 days'
+   WHERE b.billing_mode = 'free' AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
 )
 SELECT 'M16_join_caliber_check' k,
   'used='||(SELECT COUNT(*) FROM fr_used)::text
@@ -742,7 +831,7 @@ SELECT 'M16_join_caliber_check' k,
 WITH fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   WHERE n.created_at > now() - interval '7 days'
+   WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
      AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
