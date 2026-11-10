@@ -1,6 +1,6 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
-> **2026-11-10 上游恢复检测及时性轮（免费供应商 ~24h 未感知恢复，goal 会话，通用式见 `LESSONS.md` **§652**）**：
+> **2026-11-10 上游恢复检测及时性轮（免费供应商 ~24h 未感知恢复，goal 会话，通用式见 `LESSONS.md` **§653**）**：
 > ★ 用户目标＝「修复上游恢复检测及时性问题（免费供应商 ~24h 未感知恢复）」，按 `HANDOFF-recovery-detection.md` 六步执行（Phase 0 取证 → P0-3 → 部署 211 → 24h 观测 → 验收 → 归档）。审计档 `docs/audit/2026-11-10-上游恢复检测及时性-取证与P0实施.md`。
 > ★★ **根因不是「featured 标得不够多」，而是「featured 的匹配键与免费供应商的模型名形态不一致」**：`models_canonical.featured` / `routing_policy.featured_models` 存的是**裸 canonical 名**（`glm-5.3-flash`），而探针侧三门（`bg/probe_model_scope.go:91` scope 门、`bg/probe_service.go:582` backoff 乘数、`bg/model_tier.go:333` 队列优先级）都用 `globalIsFeaturedModel(raw, "")` —— **只比 raw 名**；但 `provider_models.raw_model_name` 多数带**供应商命名空间前缀**（`z-ai/glm-5.3-flash`、`minimaxai/minimax-m3.1-flash`、`codex/gpt-6-sol`）⇒ **裸名 ∩ raw 名 = ∅** ⇒ 免费对拿不到 scope 放行 / backoff 减半 / 队列优先。
 > ★★★ **受控对照实验（配对，同凭据内）是本轮决定性证据**：裸名 featured 中位 **48** 次/24h vs 裸名非 featured **24** 次/24h（≈2×）；namespaced 的 featured 与非 featured **同为 4 次/24h（无差异）** ⇒ ★★ **只标裸 canonical 名对 namespaced 免费对零效果** ⇒ ⇒ P0-3 的主体必须是**代码修复**，不是数据标记（handoff 原写法单做数据标记达不到目的）。
@@ -13,6 +13,27 @@
 > ★ **爆炸半径（211 真库实测）**：static **45 → 89**（+44 条 raw 变体）；新增 featured 待遇 = free **89** 对（可用 47）+ per_token 29 + token_plan 13；其中 24h 有真实流量的仅 **4** 对 ⇒ 日探测量增量 **< 1%**（基线 24h 9233 次）。★ `models_canonical.featured` **仅被 `bg/model_tier.go` 读取** ⇒ 爆炸半径限于**探针分层**，不进入路由/发现口径 ⇒ **不改路由行为**。
 > ★ **验证**：`go build ./...` rc=0；`go vet ./bg/ ./sql/migrations/startup/` rc=0；gofmt 本轮改动零漂移（`installer/cmd/llm-gw-installer/main.go` 的漂移**在 HEAD 即存在**，非本轮引入）；`go test ./bg/...` / `./sql/migrations/startup/` / `./installer/internal/dbinit/` 全绿；956 契约门 2/2。★ **变异验证**：删掉 `fs.static[raw] = struct{}{}` ⇒ 门**当场变红**、恢复转绿 ⇒ **门有牙**。★ **真库演练**：211 `acc-pg17` 事务内标记成功（rows updated=1）、ROLLBACK 后复原；展开后 static 真库复算 45 → 89。
 > ★★ **211 上线与验证（本轮已完成）**：推送 `800ec6075`（origin/main `ls-remote` 对拍一致，推送前 fetch + 确认 FF）；部署 `bash scripts/deploy-211.sh` ⇒ 测试闸门通过 ⇒ 蓝绿切流 **b(8783)→a(8781)**、旧槽 b 已停（容器保留可回滚）、公网 `llm.itestu.cn→200`、版本 `2.5.9-800ec607-20261110-211` / build_seq **2994**。★ **迁移 956 已落库**（`schema_migrations` 含 956，`minimax-m3.1-flash featured=true`，featured canonical 15→**16**）。★ **运行时实证**（决定性）：容器日志 `model_tier: featured set refreshed static=92 usage=9` ⇒ **代码展开 + 数据标记都在生产生效**（修复前 static=45）。★ **收益面真库复算**：免费在服对 featured 命中 **34 对**（修复前 15）⇒ 含 `minimaxai/minimax-m3.1-flash`（956 数据标记的效果）与 `z-ai/glm-5.3-flash`（583 次/24h 流量，代码展开的效果）。★ **明确没做**：**登录冒烟未执行**（未提供 `DD_ADMIN_PASSWORD`）⇒ 本次发布**未验证登录路径**；**24h 观测窗口未满** ⇒ 探测量与恢复时延的实际变化待续篇判定；**`--message` 参数不被部署引擎支持**（handoff 用法已过时，引擎报 `unknown argument: --message` ⇒ 改用裸 `bash scripts/deploy-211.sh`）；953 历史名单未改字节（已生效迁移不可重写 SHA）；watchdog/selfcheck 只读 `routing_policy.featured_models` 不读 `models_canonical.featured` ⇒ **本轮展开未覆盖这两处**（前者作用于真库仅 6 行的 `model_probe_state`、后者选点，当前影响极小，口径不一致已登记）。
+
+> **2026-11-10 被动时序特征三红根修轮（goal 会话，通用式见 `LESSONS.md` **§652**）**：
+> ★ 用户目标＝「提交代码并推送」；起因＝拉取最新 origin/main 时并行会话引入的
+> `domains/streaming/passive_timing_tracker_test.go` **在 main 上三条必红**
+> （TestPassiveTimingTrackerSamples / TestComposedTextObserver /
+> TestExtractPassiveFromTracker）⇒ 本轮把这三条从「新红」修到绿。
+> ★★★ **真缺陷（生产侧采样盲区）**：`ExtractPassiveFromTracker` 用「ttft==0 且
+> 无 ITT」代理「没有文本增量」—— **首 token 与追踪器创建同刻时 TTFT 合法地为 0**
+> （粗粒度时钟上更是常见）⇒「有文本的单块流」被误判为空流、被动特征被静默丢弃
+> （不是红而是「没有数据」的盲区）⇒ 改用显式的 `ObservedText()` 信号判空。
+> ★ **可测性**：追踪器加 `now` 接缝 + `SetClock`（本仓 RateBackoffTracker.SetClock
+> 惯例）——此前 ObserveText 直调 time.Now()，测试只能靠 sleep 赌时钟粒度；注入后
+> TTFT/ITT/吞吐三项断言到确定值（TTFT=30ms、ITT=[10ms,20ms]）。
+> ★ 测试改写为确定性断言＋补两条回归门（单块流零 TTFT 仍产特征 / 真空流仍 nil）；
+> ★ **未改**：组合器转发语义、观察者「永不中断流」契约、生产默认时钟来源。
+> ★ 验收：`domains/streaming` 全包 ok 85.2s、vet 干净；`bg` 36.8s、`sanitizerules`
+> 1.8s 全绿；**`sql/migrations/startup` 的 q-usage exec-bit 红＝Windows 假红族**
+> （git 索引 100755、工作区 -rwxr-xr-x，但 Go 在 Windows 对普通文件恒报 0666；
+> 干净 origin/main worktree 同红 ⇒ 基线环境红，部署机 Linux 不受影响）。
+> ★ 合并：origin/main 期间前进 4 提交（恢复检测及时性 P0-3 / 迁移 956 等）⇒
+> 零冲突合并（166aa59f90fb）后推送。
 
 > **2026-11-10 网关 22 条错误族复审 + 211 实证轮（goal 会话，通用式见 `LESSONS.md` **§651**）**：
 > ★ 用户目标＝「网关调用模型时经常发生下列 22 条错误 → 再次对代码审计 → 分析 211 log → 确认是否都已修正」。

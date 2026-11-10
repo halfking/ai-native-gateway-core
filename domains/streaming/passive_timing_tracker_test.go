@@ -13,30 +13,38 @@ import (
 
 // ① 追踪器：ObserveText 采样 ITT/TTFT；no-op 契约（永不中断）。
 func TestPassiveTimingTrackerSamples(t *testing.T) {
-	tr := NewPassiveTimingTracker(time.Now())
-	// 首个增量（ObserveText 内部取 time.Now，间隔≥0）。
+	// ★ 2026-11-10：注入时钟（原实现直调 time.Now() ⇒ 断言只能靠 sleep 赌
+	// 时钟粒度；粗粒度时钟上「首个增量与创建同刻」⇒ TTFT=0 ⇒ 本条必红）。
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	clock := base
+	tr := NewPassiveTimingTracker(base)
+	tr.SetClock(func() time.Time { return clock })
+
+	// 首个增量在 +30ms 到达 ⇒ TTFT=30ms（确定性，不再是粒度赌注）。
+	clock = clock.Add(30 * time.Millisecond)
 	if tr.ObserveText("hello") {
 		t.Fatal("tracker must never abort")
 	}
-	time.Sleep(2 * time.Millisecond)
+	clock = clock.Add(10 * time.Millisecond)
 	tr.ObserveText(" world")
-	time.Sleep(2 * time.Millisecond)
+	clock = clock.Add(20 * time.Millisecond)
 	tr.ObserveText("!")
 
 	ttft, itts, tp := tr.Snapshot(10)
-	if ttft <= 0 {
-		t.Errorf("ttft = %v, want >0", ttft)
+	if ttft != 30*time.Millisecond {
+		t.Errorf("ttft = %v, want 30ms", ttft)
 	}
 	if len(itts) != 2 {
 		t.Errorf("itts = %d, want 2", len(itts))
 	}
+	wantItts := []time.Duration{10 * time.Millisecond, 20 * time.Millisecond}
 	for i, d := range itts {
-		if d < 2*time.Millisecond {
-			t.Errorf("itts[%d] = %v, want ≥2ms", i, d)
+		if d != wantItts[i] {
+			t.Errorf("itts[%d] = %v, want %v", i, d, wantItts[i])
 		}
 	}
 	if tp <= 0 {
-		t.Errorf("throughput = %v, want >0（10 tokens over ≥4ms）", tp)
+		t.Errorf("throughput = %v, want >0（10 tokens over 30ms）", tp)
 	}
 
 	// nil 接收者与空串安全。
@@ -62,18 +70,23 @@ func TestPassiveTimingTrackerSamples(t *testing.T) {
 
 // ② 组合器：两个观察者都收到文本；中断裁决权归 primary。
 func TestComposedTextObserver(t *testing.T) {
-	primary := NewPassiveTimingTracker(time.Now())
-	passive := NewPassiveTimingTracker(time.Now())
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	clock := base
+	primary := NewPassiveTimingTracker(base)
+	primary.SetClock(func() time.Time { return clock })
+	passive := NewPassiveTimingTracker(base)
+	passive.SetClock(func() time.Time { return clock })
 	comp := &composedTextObserver{primary: primary, extra: []audit.StreamTextObserver{passive}}
 
+	clock = clock.Add(25 * time.Millisecond)
 	comp.ObserveText("abc")
-	// 两边都采样到了。
-	if _, itts, _ := passive.Snapshot(0); len(itts) != 0 {
-		// 单次调用无 ITT，但 firstAt 已记录 ⇒ Snapshot 的 ttft>0。
-	}
+	// 两边都采样到了：extra 的 TTFT 有值 ⇒ 组合器确实转发了文本。
 	ttft2, _, _ := passive.Snapshot(0)
-	if ttft2 <= 0 {
-		t.Error("extra observer did not receive text")
+	if ttft2 != 25*time.Millisecond {
+		t.Errorf("extra observer ttft = %v, want 25ms（extra 未收到文本）", ttft2)
+	}
+	if !passive.ObservedText() {
+		t.Error("extra observer must report observed text")
 	}
 
 	// 组合器转发 primary 的 breach 面。
@@ -93,7 +106,11 @@ func TestComposedTextObserver(t *testing.T) {
 
 // ③ 完成点合成：usage=0 ⇒ 吞吐缺省；空流 ⇒ nil（缺失不计 0）。
 func TestExtractPassiveFromTracker(t *testing.T) {
-	tr := NewPassiveTimingTracker(time.Now())
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	clock := base
+	tr := NewPassiveTimingTracker(base)
+	tr.SetClock(func() time.Time { return clock })
+	clock = clock.Add(30 * time.Millisecond)
 	tr.ObserveText("hello")
 
 	meta := modelcredibility.Metadata{
@@ -115,7 +132,7 @@ func TestExtractPassiveFromTracker(t *testing.T) {
 		t.Errorf("single-chunk throughput = %+v, want 0 (no duration)", featSingle)
 	}
 
-	time.Sleep(2 * time.Millisecond)
+	clock = clock.Add(12 * time.Millisecond)
 	tr.ObserveText(" more")
 	feat = ExtractPassiveFromTracker(tr, 5, meta)
 	if feat == nil {
@@ -174,5 +191,46 @@ func TestPassiveTrackerFromCapture(t *testing.T) {
 	}
 	if PassiveTrackerFromCapture(nil) != nil {
 		t.Error("nil capture must yield nil")
+	}
+}
+
+// ★ 2026-11-10 回归门（真实缺陷）：首 token 与追踪器创建**同刻**时 TTFT 合法
+// 为 0（粗粒度时钟上更是常见）——旧实现用 `ttft==0 && len(itts)==0` 代理
+// 「空流」⇒ 有文本的单块流被误判为空流、特征被静默丢弃（采样面盲区）。
+func TestExtractPassiveKeepsSingleChunkStreamWithZeroTTFT(t *testing.T) {
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	clock := base
+	tr := NewPassiveTimingTracker(base)
+	tr.SetClock(func() time.Time { return clock })
+	// 首个增量与创建同刻 ⇒ TTFT=0（不是「没观察到文本」）。
+	tr.ObserveText("hello")
+
+	meta := modelcredibility.Metadata{
+		TenantID: "default", ModelName: "claude-opus-5-5",
+		CredentialID: 31, RequestID: "req-zero-ttft",
+	}
+	feat := ExtractPassiveFromTracker(tr, 5, meta)
+	if feat == nil {
+		t.Fatal("single-chunk stream must still yield features（观察过文本 ≠ TTFT>0）")
+	}
+	if feat.TTFT != 0 {
+		t.Errorf("ttft = %v, want 0（同刻到达）", feat.TTFT)
+	}
+	if feat.Throughput != 0 {
+		t.Errorf("throughput = %v, want 0（单增量无时长）", feat.Throughput)
+	}
+}
+
+// 对照：真的没有文本增量 ⇒ 不产出特征（空流语义不变）。
+func TestExtractPassiveNilForEmptyStream(t *testing.T) {
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tr := NewPassiveTimingTracker(base)
+	tr.SetClock(func() time.Time { return base })
+	meta := modelcredibility.Metadata{
+		TenantID: "default", ModelName: "claude-opus-5-5",
+		CredentialID: 31, RequestID: "req-empty",
+	}
+	if feat := ExtractPassiveFromTracker(tr, 5, meta); feat != nil {
+		t.Fatalf("empty stream must yield nil, got %+v", feat)
 	}
 }
