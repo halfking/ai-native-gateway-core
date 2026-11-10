@@ -159,19 +159,53 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	// This supplements routing_policy.featured_models with a column-based
 	// mechanism for marking free/entry-tier models that should be prioritized
 	// for probing to ensure timely recovery detection.
+	//
+	// ★ 2026-11-10 恢复检测及时性轮（211 真库取证）：装载**同时展开 raw 变体**。
+	//
+	// 取证事实（211 / acc-pg17）：
+	//   - models_canonical.featured 存的是**裸 canonical 名**（如 glm-5.3-flash）；
+	//   - 但 provider_models.raw_model_name 多数带**供应商命名空间前缀**
+	//     （z-ai/glm-5.3-flash、codex/gpt-6-sol、minimaxai/minimax-m3）；
+	//   - 探针侧三个门（probe_model_scope.go 的 scope 门、probe_service.go 的
+	//     backoff 乘数、model_tier.go 的队列优先级）都用
+	//     globalIsFeaturedModel(raw, "") —— **只比 raw 名**。
+	// ⇒ 只装载裸 canonical 名 ⇒ 命名空间前缀的免费模型**永远匹配不上**
+	//   ⇒ 免费对拿不到 featured 的 scope 放行 / backoff 减半 / 队列优先，
+	//   恢复检测仍然迟到（24h 量级）。
+	//
+	// 对照实验（同凭据内配对）：裸名 featured 中位 48 次/24h vs 裸名非 featured
+	// 24 次/24h（≈2×）；而 namespaced 的 featured 与非 featured **都是 4 次/24h
+	// （无差异）** ⇒ 证实「只标裸名」对 namespaced 免费对零效果。
+	//
+	// ⇒ 故此处把每个 featured canonical 的**全部 provider_models.raw_model_name
+	//   变体**一并装载进 static 集合。爆炸半径（211 实测）：static 45 → 89
+	//   （+44 条 raw 变体，来自 10 个 featured canonical 的 56 个 raw 变体）；
+	//   新增获得 featured 待遇的绑定 = free 89 对（其中可用 47）+
+	//   per_token 29 对 + token_plan 13 对 + code_plan 0 对；
+	//   其中 24h 内有真实业务流量的仅 4 对 ⇒ 探测量增量极小
+	//   （基线 24h 9233 次探测，增量 < 1%）。
+	//
+	// ★ 口径一致性：本展开只影响**探针分层**（scope/backoff/优先级），
+	//   不进入路由与发现口径 ⇒ 不改路由行为。
 	if rows, err := m.db.Query(ctx, `
-		SELECT canonical_name 
-		FROM models_canonical 
-		WHERE featured = TRUE AND status = 'active'`); err == nil {
+		SELECT mc.canonical_name, COALESCE(pm.raw_model_name, '')
+		FROM models_canonical mc
+		LEFT JOIN provider_models pm ON pm.canonical_id = mc.id
+		WHERE mc.featured = TRUE AND mc.status = 'active'`); err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var model string
-			if err := rows.Scan(&model); err != nil {
-				if dbrows.SkipOrFail("bg.ModelTier.refresh/canonicalFeatured", err) {
-					continue
-				}
-			} else if model = normalizeModelKey(model); model != "" {
-				fs.static[model] = struct{}{}
+			var canonical, raw string
+			if err := rows.Scan(&canonical, &raw); err != nil {
+				dbrows.SkipOrFail("bg.ModelTier.refresh/canonicalFeatured", err)
+				continue
+			}
+			if canonical = normalizeModelKey(canonical); canonical != "" {
+				fs.static[canonical] = struct{}{}
+			}
+			// ★ raw 变体：裸名之外的命名空间形态也进集合。
+			//   LEFT JOIN ⇒ 无 provider_models 行的 canonical 只得到裸名（正常）。
+			if raw = normalizeModelKey(raw); raw != "" {
+				fs.static[raw] = struct{}{}
 			}
 		}
 		if err := rows.Err(); err != nil {

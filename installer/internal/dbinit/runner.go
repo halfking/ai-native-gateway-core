@@ -1807,6 +1807,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 供零成本渗水检测对比。漏登的后果＝全新安装没有基线表 ⇒
 			// 被动判定维度恒缺（EvaluatePassive 无处落盘/读基线）。
 			"955_passive_model_fingerprints.sql",
+			// 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured ——
+			// 判据 = 实测有 24h 真实业务流量（110 次）的免费模型。免费面 24h 有流量的
+			// canonical 只有 glm-5.3-flash（585 次，953 已标）与本项两个。
+			// 配套代码改动：bg/model_tier.go 装载 featured canonical 时展开
+			// provider_models.raw_model_name 变体 —— 探针侧三门都只比裸名，
+			// 而免费供应商 raw 名多带命名空间前缀（z-ai/…、minimaxai/…）
+			// ⇒ 只标裸 canonical 名对 namespaced 免费对零效果。
+			"956_minimax_m31_flash_featured.sql",
 		},
 	}
 }

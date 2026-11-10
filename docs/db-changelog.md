@@ -10830,3 +10830,22 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 |-----------|------|---------|--------|
 | 955 | `955_passive_model_fingerprints.sql` | `82fc6df0424f5db7150e9fcd9387aa67c261fe55d0dc10df66557cc0dc3c9408` | applied+verified |
 
+## 2026-11-10 — 上游恢复检测及时性：956 标记 minimax-m3.1-flash featured
+
+| version | file | sha256 | status |
+|---|---|---|---|
+| 956 | `956_minimax_m31_flash_featured.sql` | `9df04687e07867091abd82e07ac51e35ad08a6442dc0756920510ea2a9de3ef2` | registered（2026-11-10 恢复检测及时性轮；**待部署**：211 列车） |
+| 956 | `956_minimax_m31_flash_featured.down.sql` | `166743f9b6fbf337791bf402ae687d94aadd6eca0bd6b74a0be757e69c610396` | registered |
+
+缺口本体：953 建立了 `models_canonical.featured` 机制，但**只标了裸 canonical 名**，而探针侧的三个门（`bg/probe_model_scope.go` 的 scope 门、`bg/probe_service.go` 的 backoff 乘数、`bg/model_tier.go` 的队列优先级）都用 `globalIsFeaturedModel(raw, "")` —— **只比 raw 名**；而 `provider_models.raw_model_name` 多数带供应商命名空间前缀（`z-ai/glm-5.3-flash`、`minimaxai/minimax-m3.1-flash`）。⇒ 命名空间形态的免费模型永远匹配不上 featured ⇒ 免费对拿不到 scope 放行 / backoff 减半 / 队列优先 ⇒「上游已恢复但系统 ~24h 未感知」照旧。受控对照（同凭据内配对）：裸名 featured 中位 48 次/24h vs 裸名非 featured 24 次/24h（≈2×），而 namespaced 的 featured 与非 featured **同为 4 次/24h（无差异）**。
+
+★ 953 名单的实测缺陷（取证核对）：953 用一份**手写名单**标注 featured，26 项里有 **11 项在 `models_canonical` 里根本不存在**（`baichuan2-turbo` / `deepseek-v3-flash` / `gemini-2-flash` / `glm-5-flash` / `glm-5.1-flash` / `minimax-abab7-flash` / `minimax-abab7-lite` / `qwen-plus-flash` / `qwen-turbo-flash` / `yi-lightning` / `yi-spark`）⇒ 953 实际只命中 15 个。名单「看起来生效」是因为 UPDATE 不报错、命中数不校验 ⇒ 缺的那 11 项是**静默失效**的。956 因此只写经真库核对存在的 `canonical_name`，并在迁移体内自带**存在性前置守卫 + 终态断言**（目标必须 featured=TRUE，否则 RAISE EXCEPTION 中止），杜绝再写幻觉名。
+
+★ 入选判据（实测，非「看起来常用」）：免费凭据在 24h 窗口内**有真实业务流量**的 canonical 只有两个 —— `glm-5.3-flash` 585 次（raw 名 `z-ai/glm-5.3-flash`，953 已标）与 `minimax-m3.1-flash` 110 次（raw 名 `minimaxai/minimax-m3.1-flash`，**未标**）。956 只补后一个。判据取「有流量」的理由：featured 的作用面是**探针分层**（scope 门 / backoff 乘数 / 队列优先），只影响探测量、不改路由；给零流量的冷门模型加 featured 只会白抬探测量 —— 实测 free 面 999 个候选 canonical 里 788 个只有 1 个绑定对且 24h 流量为 0。
+
+登记面：canonical up/down、installer embeddata 双副本（SHA 现场一致）、`go:embed` 变量 + `embeddedSQLFiles` 映射、`dbinit` StartupFiles、部署显式清单（`apply-db-revision-sequence.sh` files + `ledger_artifact_probe` 终态探针）、`installed_startup_migrations.tsv` 第 **356** 位（由 `StartupFiles` 经 `go test ./internal/dbinit -run TestStartupManifest -update` 重新生成，非手改）、契约门 `migration_956_featured_test.go` 三件（形态/存在性守卫/down 可逆）。幂等（`featured=FALSE` 守卫 + `ON CONFLICT DO NOTHING`），`BEGIN/COMMIT` + `SET LOCAL lock_timeout='2s'` / `statement_timeout='10min'`。
+
+★ 与代码改动的分工：956 只负责「标 canonical」这一半；另一半在 `bg/model_tier.go`（装载 featured canonical 时同步展开 `provider_models.raw_model_name` 变体进 static 集合）。**两者叠加才闭环** —— 只标裸名对 namespaced 免费对零效果。爆炸半径（211 实测）：static 45 → 89（+44 条 raw 变体）；新增获得 featured 待遇的绑定 = free 89 对（可用 47）+ per_token 29 对 + token_plan 13 对；其中 24h 有真实流量的仅 4 对 ⇒ 探测量增量 < 1%（基线 24h 9233 次探测）。★ 该展开只影响**探针分层**，不进入路由与发现口径 ⇒ 不改路由行为。
+
+回滚：执行 956 down（置回 featured=FALSE）+ 回滚 `bg/model_tier.go` 的展开改动。注意 down 只还原 canonical 侧标记；代码侧的 raw 变体展开不由迁移回滚（回滚后仍在 featured 集合里，这与回滚前的 static 集合口径一致，非本迁移引入）。
+

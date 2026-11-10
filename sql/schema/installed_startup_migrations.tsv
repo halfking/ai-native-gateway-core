@@ -371,3 +371,4 @@
 353	953_models_canonical_featured.sql
 354	954_probe_lane_trace_events.sql
 355	955_passive_model_fingerprints.sql
+356	956_minimax_m31_flash_featured.sql
