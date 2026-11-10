@@ -5,9 +5,6 @@ event: content_block_start
 data: {"content_block":{"id":"toolu_01","input":{},"name":"get_weather","type":"tool_use"},"index":0,"type":"content_block_start"}
 
 event: content_block_delta
-data: {"delta":{"partial_json":"{}","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
-
-event: content_block_delta
 data: {"delta":{"partial_json":"{\"loc","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
 
 event: content_block_delta

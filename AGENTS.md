@@ -1,5 +1,6 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+<<<<<<< Updated upstream
 > **2026-11-11 上游恢复检测及时性轮 · ★★★★★ 第 22 处口径修正：★ M5 的 base 取自「pre24 单日快照」⇒ ★ 阈值在 pre 期就不成立 ⇒ ★❌ 不可归因于修复；★ 本轮只做「行内披露」，★ 不改 base/limit（★ 窗口关闭前 ~13h，goal 会话，通用式见 `LESSONS.md` **§668**）**：
 > ★ 承接 §667 —— ★ 收尾 sanity check 读真实判定输出 ⇒ ★★ 看到 **M5 24h 探测量 = 9818 > 9334 ⇒ 判 ❌** ⇒ ★★ 而 M5 是「**爆炸半径**」判据 ⇒ ★★ 直接落在 Stage 1 的预期结论里 ⇒ ★★ 必须查「这个 ❌ 是不是修复引起的」。
 > ★★★★ **发现 ①：★★★ M5 的 base = 「pre24 单日快照」（9242），★ 而探测量按天剧烈波动**：★ 实测 pre7d 逐日 = 11-03 **1292** / 11-04 2764 / 11-05 7794 / 11-06 **9905** / 11-07 8973 / 11-08 **2500** / 11-09 **9685** / 11-10 5589（★ 7 天窗口跨 **8 个日历日**）⇒ ★ **min/max = 1292/9905 ⇒ 7.7× 差** ⇒ ★★ ⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立** ⇒ ★★ ⇒ **这条 ❌ 不能被读成「修复引起爆炸半径」**。
@@ -9,6 +10,36 @@
 > ★★★★ **验证全绿**：★ 自测 **36 场景** rc=0；★ ★ **变异验证**（删掉基线口径披露 ⇒ **rc=1** ✔ 门有牙，3 项 ㉟ 失败可读）；★ 三时钟门 rc=0（★ pre 键 **44** 逐字节一致 + ★ **披露用 pre 侧键 1 个**时钟无关）；★ 关窗预演 rc=0（★ pre 零漂移 + 守卫全绿 + 判定链走通）；★ 真实判定 rc=0（★ M5 行**带基线口径披露**：★ pre 期 **2/8 个日历日**超预算 ⇒ ❌ 不可归因，★ 符号保持 ❌）；★ 负控两形状 rc=0（★ 效应行判 ❌ ⇒ ★ **由摇摆分量独立判负**：Stage1 摇摆 1 只 / Stage2 摇摆 2 只）。
 > ★ **本轮明确没做**：★ **不动任何生产代码**（`bg/` 一行未改 ⇒ era 切点不变）；★ ★ **不改 M5 的 base/limit**（★ **关窗前不重冻**已验证基线）⇒ ★ 裁决语义不变；★ ★ **不改任何 pre 基线**（★ M18 26 键 / 时钟门 44 键均不受影响）；★ ★ **不把 M5 的 ❌ 软化成 ⚠️**（★ 门不钝化）；★ ★ **不把「基线口径改进项」（★ ≥7 天的均值/中位/分位做基线）提前实施**（★ 登记为 **Stage 2 之后**）；★ ★ **不重划 era 切点**、**不改 watchdog 裸名口径**；★ ★ **不用预演替代关窗裁决**。
 > ★ 主档 §5.9.21.13.18 / 判据审计档 §3.10（第十六条纪律）/ LESSONS §668。
+=======
+> **2026-11-11 builtin.guard.tool_json_invalid 大量拦断根修轮（goal 会话，审计档 `docs/audit/2026-11-11-tool-json-invalid占位符拼接根修.md`）**：
+> ★ 用户报障＝「211 大量 builtin.guard.tool_json_invalid」⇒ 取证（容器日志 12 条/24h 簇，
+> label=`__tool_json@read/@todowrite/@bash`，**field_bytes 全部=2+合法参数长度**；路由
+> /v1/responses、客户端 MiniMaxCode、上游 claude-sonnet-5=anthropic 协议；拦断点在终态
+> done 帧、且发生在 commit 之后 ⇒「terminal already rendered」）。
+> ★★★★ **根因＝网关自己制造非法 JSON**：标准 Anthropic 流的
+> `content_block_start.tool_use.input` 恒为 `{}` **占位符**（真实参数走 input_json_delta），
+> IR 解析器把它原样放进 `ToolCalls[0].Arguments` ⇒ anthropic→responses 桥把 `"{}"` 当
+> 首个参数片段**发出并累计** ⇒ 终态 `function_call_arguments.done`/`output_item.done` 的
+> arguments=`{}{...}` ⇒ 守卫按设计 fail-closed 整流拦断。**守卫行为是对的，错在参数是网关拼的**。
+> ★★ 对照：anthropic→**chat** 桥（`anthropic_bridge.go:1271`）历来用 `!= "{}"` 排除占位符
+> ⇒ 同一 wire 语义在 responses 桥缺失＝「同一缺陷只修一半」的跨协议形态。
+> ★ **修正**：`internal/ir/stream.go` ParseAnthropicStreamEvent——`arguments=="{}"` 置空
+> （选解析器层：占位符 vs 参数是 wire 级语义，修在源头全部消费方一致；非标准中继往 input
+> 塞真实半截参数的形状保留续拼语义不变）。
+> ★ **门**：新回归用例四道断言（done 参数=纯 delta 拼接 / json.Valid / output_item.done 同判 /
+> `{}` 不得作 delta 发出）；**变异验证**（禁用排除 ⇒ 四道全红）⇒ 门有牙。同步三处把旧行为
+> 钉死的断言（thinking_signature_test 旧注释「下游 relay 会滤掉它」被 211 证伪 ⇒ 改钉正确
+> 语义；golden 再生成恰好删一条**上游从未发过**的伪 `partial_json:"{}"` 事件——往返更忠实；
+> MultipleArgChunks 计数 3→2=去掉伪 delta）。
+> ★ 验证：`go test ./internal/ir/ ./domains/streaming/ ./domains/streaming/executors/
+> ./domains/hooks/outputcompliance/ ./security/sanitize/` 全绿（streaming 103.9s）+ build/vet/
+> gofmt 干净。
+> ★ **明确没做**：守卫语义不动（model-native 非法 JSON 仍 fail-closed 拦断＝既有设计）；
+> **登记观察项**：非 hold 模式下片段已流出后才在 done 帧拦断，「拦」不收回已发字节、只把
+> 「客户端可自愈的参数解析错」升级成「整流中断」——若后续仍有大量 model-native 误伤，
+> 「披露+放行 done 帧」的豁免面需 owner 裁决；responses 桥无 chat 桥的
+> ValidateStreamingToolArgs 续拼终态校验（无证据形状，登记为已知差异）。
+>>>>>>> Stashed changes
 
 > **2026-11-11 上游恢复检测及时性轮 · ★★★★★ 第 21 处口径修正：★ 「对照组」的跨窗比较被「突发批次的相位」污染 ⇒ ★ 假红 ⇒ ★ 必须先问「两窗口的失败形态是否同构」；★ 并新增「关窗预演」工具 ⇒ ★ 把「当天会不会整表作废」提前到关窗前（★ 窗口关闭前 ~13h，goal 会话，通用式见 `LESSONS.md` **§667**）**：
 > ★ 承接 §666 —— ★ 距关窗还有 ~18h ⇒ ★★ 做了一件**从没做过**的事：**「关窗预演」** ⇒ ★★ 用**关窗时钟**（as-of = era 切点 + 24h）把**整条判定链**先跑一遍 ⇒ ★★ 头一个产出不是结论，而是**一个只在关窗那一刻才显形的 ❌**。
