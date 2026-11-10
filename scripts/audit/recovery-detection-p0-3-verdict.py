@@ -35,11 +35,12 @@ BASELINES = {
     "M6_free_featured_pairs": (80, ">=80", "免费在服对 featured 命中（★ 资格面，非行为面）"),
     "M9_missing_raw_variant": (0, "==0", "展开覆盖完整性"),
     "M5_probe_runs_24h": (9242, "<=9334", "24h 探测量（爆炸半径；9233×1.01）"),
-    "M11_ns_pre": ((6, 511, 1791), "<=", "namespaced 恢复感知时延 pre（med/p90/max 分钟）"),
-    "M11_bare_pre": ((3, 120, 360), "<=", "bare 恢复感知时延 pre（med/p90/max 分钟）"),
-    "M12s_ns_feat_pre": ((3, 120, 1791), "<=", "ns featured 复检间隔 pre（med/p90/p99 分钟）"),
-    "M12s_ns_not_pre": ((360, 368, 5524), "-", "ns 非 featured 复检间隔 pre（★ 对照，不应变快）"),
-    "M12p_pending_ns_not_pre": (1.1, "<=", "ns 非 featured 待复检率 pre %（★ 护栏）"),
+    # ★★ 以下基线是**修正 join 后**的实测值（pre 段 7 天，2026-11-10 14:2x +08）
+    "M11_ns_pre": ((3, 360, 1791), "<=", "namespaced 恢复感知时延 pre（med/p90/max 分钟）"),
+    "M11_bare_pre": ((3, 180, 360), "<=", "bare 恢复感知时延 pre（med/p90/max 分钟）"),
+    "M12s_ns_feat_pre": ((3, 60, 1791), "<=", "ns featured 复检间隔 pre（med/p90/p99 分钟）"),
+    "M12s_ns_not_pre": ((360, 361, 5524), "-", "ns 非 featured 复检间隔 pre（★ 对照，不应变快）"),
+    "M12p_pending_ns_not_pre": (1.3, "<=", "ns 非 featured 待复检率 pre %（★ 护栏）"),
 }
 
 # ★ 三个「冷金丝雀」：目标人群（106 个新覆盖变体）里仍被探测到的冷对
@@ -47,6 +48,7 @@ CANARIES = [
     "minimaxai/minimax-m2.7",
     "minimaxai/minimax-m3",
     "deepseek-ai/deepseek-v4-pro-0813",
+    "z-ai/glm-5.3",          # ★ 修正 join 后才发现它（pre 13 events / med 360 min）
 ]
 CANARY_PRE_MED = 360          # ★ pre 段实测中位（各 13 次/7 天）
 CANARY_POST_MAX_MED = 180     # ★ 期望：featured backoff 减半 ⇒ ≤180 分钟
@@ -168,10 +170,13 @@ def main() -> int:
         rows.append(("M3b namespaced backoff 档位", "—", "—", verdict(None, "档位读数缺失")))
 
     # ── M12s：复检节奏（群体）────────────────────────────────────────
-    for grp, label, base_txt in (
-        ("ns_feat", "M12s ns featured 复检间隔（med/p90/p99）", "pre 3 / 120 / 1791"),
-        ("ns_not", "M12s ns 非featured 复检间隔（med/p90/p99）", "pre 360 / 368 / 5524"),
+    for grp, label, bkey in (
+        ("ns_feat", "M12s ns featured 复检间隔（med/p90/p99）", "M12s_ns_feat_pre"),
+        ("ns_not", "M12s ns 非featured 复检间隔（med/p90/p99）", "M12s_ns_not_pre"),
     ):
+        # ★ 基线文字一律从 BASELINES 取（★ 硬编码字面量会和基线脱钩 —— 本轮踩过）
+        _b = BASELINES[bkey][0]
+        base_txt = f"pre {_b[0]} / {_b[1]} / {_b[2]}"
         key = f"M12s_settled_post_{grp}"
         obs = data.get(key)
         if obs is None:
@@ -212,14 +217,16 @@ def main() -> int:
             print("   " + line)
 
     # ── M11：episode 层症状（★ Stage 1 样本不足 ⇒ 不外推）────────────
-    for tag, label, base in (("namespaced", "M11 namespaced 恢复感知时延", (6, 511, 1791)),
-                             ("bare", "M11 bare 恢复感知时延", (3, 120, 360))):
-        key = f"M11b_post_{tag}"
+    for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
+                             ("bare", "M11 bare 恢复感知时延", "M11_bare_pre")):
+        base = BASELINES[bkey][0]
+        key = f"M11b_post_fix_{tag}"
         obs = data.get(key)
         if obs is None:
             rows.append((label, f"pre med/p90/max = {base[0]}/{base[1]}/{base[2]}", "—",
                          verdict(None, "★ post 段无 episode")))
             continue
+        # ★ M11 的样本率（修正 join 后 ≈7/日）⇒ Stage 1 也能判
         vals = ints(obs)
         n = vals[0] if vals else None
         med = vals[1] if len(vals) > 1 else None
@@ -239,9 +246,16 @@ def main() -> int:
     # ── M12p：待复检护栏 ─────────────────────────────────────────────
     obs = data.get("M12p_pending_post_ns_not")
     if obs:
-        rows.append(("M12p ns 非featured 待复检率", "pre 1.1%",
+        rows.append(("M12p ns 非featured 待复检率",
+                     f"pre {BASELINES['M12p_pending_ns_not_pre'][0]}%",
                      obs, verdict(None, "★ 护栏项：若 post 显著升高 ⇒ 说明复检反而变慢")))
 
+    if args.stage == 2:
+        print("★ Stage 2（7 天窗口）：M11 episode 层与 M15 金丝雀为**主判据**"
+              "（★ Stage 1 的「样本不足」项在此应全部可判）。")
+    else:
+        print("★ Stage 1（24h 窗口）：M11 若 post episode ≥5 即可判"
+              "（★ 修正 join 后样本率 ≈7/日）；M15 逐对幅度仍不足（≈2/对/日）⇒ 方向可读。")
     print(f"\n== 裁决表（Stage {args.stage}；era 切点 {EPOCH}）==")
     w = [34, 30, 46, 62]
     print(" | ".join(h.ljust(w[i]) for i, h in enumerate(["判据", "基线", "观测", "裁决"])))
@@ -253,11 +267,15 @@ def main() -> int:
     print("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
           "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
     print("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"
-          "目标人群（106 个冷门变体）7 天仅 7 个对被探到（≈13.7 事件/日）"
-          "⇒ ★ 当前需求下几乎不可观测。")
+          "目标人群（106 个新覆盖变体）修正 join 后 7 天有 **461 事件 / 9 个对"
+          "（≈66 事件/日）**，但其中四个「冷金丝雀」各仅 13 次（≈1.9/日）"
+          "⇒ ★★ 群体层可判（M14），★ 逐对幅度仍需 Stage 2。")
     print("   ③ M12 post 段存在**右删失**（漏掉复检慢的对 ⇒ 偏差方向对我们有利）"
           "⇒ 已用 M12s（结算版）+ M12p（护栏）对冲，但**必须在报告里披露**。")
     print("   ④ M6 是**资格面**，不是「行为已改善」的证据。")
+    print("   ⑤ ★★ 基线口径已在 2026-11-10 14:2x 修正：原先的绑定过滤用 "
+          "`provider_model_id = (… LIMIT 1)`，而 raw_model_name 是**一对多**"
+          "⇒ 只统计到 30% 事件（4,073 vs 13,555）⇒ ★ 现全部基线均为**修正后**口径。")
     return 0
 
 

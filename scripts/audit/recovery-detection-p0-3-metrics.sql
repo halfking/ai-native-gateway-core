@@ -29,6 +29,23 @@
 --
 -- ⚠ psql 语法坑（已踩 3 次）：★ `GROUP BY 2` 里若 2 是**聚合表达式**会报
 --   "aggregate functions are not allowed in GROUP BY" ⇒ 必须「子查询包一层 + 外层聚合」。
+--
+-- ★★★★ 口径修订（2026-11-10 14:1x，★ **本轮自查抓到的真缺陷**）：
+--   原先绑定过滤写成
+--     AND b.provider_model_id = (SELECT pm.id FROM provider_models pm
+--                                WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+--   ★★ 但 `provider_models.raw_model_name` 是**一对多**（实测：441 个名有 2 行、
+--   `zcode/GLM-5.3` 有 **9 行**）⇒ ★ `LIMIT 1` 只取**任意一行** ⇒ ★ **大量事件被丢弃**：
+--   实测免费面 7 天 strict = **4,073** 事件 vs 正确口径 = **13,555**（只统计到 30%）。
+--   ⇒ ★ M11 / M12 / M12s / M12p / M14 / M15 全部受影响。
+--   ⇒ 改为**半连接（EXISTS）**：`EXISTS (… provider_models pm WHERE pm.raw_model_name = n.raw_model_name …)`
+--     ★ 半连接**不会放大行数**（实测 `(credential_id, raw_model_name)` 每个组合只有 1 个绑定，
+--       4,053 个组合全部 dup=1）⇒ 增加的事件**全是找回的被丢弃事件**。
+--   ⇒ ★★ **修正后的基线**（pre 段 7 天）：M11 namespaced **49 episodes** med=3 p90=360 max=**1791**
+--     （修正前 17 / 6 / 511 / 1791 ⇒ ★★ 样本率 2–3/日 ⇒ **7/日**，★ Stage 1 可判了）；
+--     bare 36 / med 3 / p90 180 / max 360；M12 ns feat n=437 med=3 **p90=32**、ns not n=1723 med=360 p90=361。
+--   ⇒ ★★ **定性结论不变且更强**：ns featured vs 非 featured 的复检间隔差 **20×**（p90 上 11×），
+--     且 namespaced 的 max 仍是 **1791 分钟（29.9h）** ⇒ 「~24h 未感知恢复」的尾部症状确认。
 
 -- ═══ M1 绑定可用性（全库 + 免费面）═══
 SELECT 'M1_total_bindings' k,
@@ -308,10 +325,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
           (lower(btrim(n.raw_model_name)) IN (SELECT m FROM st)) is_feat_now,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
      AND n.created_at < now() - interval '2 hours'   -- ★ 排除进行中的段
  ), seg AS (
@@ -351,10 +368,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
           (lower(btrim(n.raw_model_name)) IN (SELECT m FROM st)) is_feat_now,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
      AND n.created_at < now() - interval '2 hours'
  ), seg AS (
@@ -414,10 +431,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
@@ -446,10 +463,10 @@ WITH fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '14 days'
      AND n.created_at < now() - interval '2 hours'
 ), seg AS (
@@ -476,10 +493,10 @@ WITH fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '14 days'
      AND n.created_at < now() - interval '2 hours'
 ), seg AS (
@@ -515,10 +532,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
@@ -559,10 +576,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
@@ -606,10 +623,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
@@ -655,10 +672,10 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
           (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
-   JOIN credential_model_bindings b
-     ON b.credential_id = n.credential_id
-    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
-   WHERE b.billing_mode = 'free'
+   WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id
+                   AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
      AND n.created_at > now() - interval '7 days'
 ), seg AS (
    SELECT credential_id, raw_model_name, is_ns, created_at, success,
