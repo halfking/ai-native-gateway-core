@@ -160,7 +160,23 @@ func CheckWithCounter(body []byte, spec Spec, counter Counter) (Receipt, error) 
 	if err != nil {
 		return Receipt{}, err
 	}
-	spec.OutputReserve = max(spec.OutputReserve, info.outputReserve)
+	// 2026-11-11（211 实证，ZCode 会话连续 4×ErrProtectedContext + 1×422）：
+	// body 侧的 max_tokens 是「本轮允许的输出上界」，不是「必然同时占满的
+	// 输入预留」。此前把它全额并入 OutputReserve 再做 window−reserve 扣除
+	// ⇒ claude-sonnet-5（200k 窗）× ZCode max_tokens=128000 ⇒ 输入预算只剩
+	// 72000，76,792 的校准估计被拒 ⇒ fit 字节目标 216KB 装不下受保护区
+	// （系统指令+工具链+最近轮）⇒ ErrProtectedContext ⇒ 422 retryable=false。
+	// 厂商（Anthropic/OpenAI）请求期都不校验 input+max_tokens ≤ window——
+	// 生成到窗口耗尽自然收尾，容量裁决归上游（2026-11-10 分层执法的既定
+	// 哲学）。因此 body 侧预留按半窗封顶：输入至少拿到半窗、输出至少保住
+	// min(max_tokens, 半窗)。桶侧显式配置的 spec.OutputReserve 仍全额扣除，
+	// 配置语义不变。
+	if info.outputReserve > 0 && spec.ContextWindow > 0 {
+		capped := min(info.outputReserve, spec.ContextWindow/2)
+		spec.OutputReserve = max(spec.OutputReserve, capped)
+	} else if info.outputReserve > 0 {
+		spec.OutputReserve = max(spec.OutputReserve, info.outputReserve)
+	}
 	budget, err = Resolve(spec)
 	if err != nil {
 		return Receipt{}, err
