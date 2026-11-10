@@ -2163,6 +2163,30 @@ def selftest() -> int:
     if "M5" not in hb or "基线口径" not in hb:
         failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
 
+    # ㉡ ★★★★ **诚实边界必须包含「负控几何」这条**（★ 第 23 处口径修正）
+    hb = "\n".join(honest_boundary_lines())
+    if "负控" not in hb or "几何" not in hb:
+        failures.append("[㉡ 诚实边界] 缺少「负控的窗口几何必须与被验收窗口一致」边界")
+    if "假红" not in hb:
+        failures.append("[㉡ 诚实边界] 缺少「原负控里旧 featured 判 ❌ 是几何错配造成的假红」提醒")
+
+    # ㉢ ★★★★ **跨脚本守卫：★ 负控脚本必须真的做几何对齐**（★ 第 23 处口径修正）
+    #   ★★ 负控脚本若被回退（★ 只平移切点、不平移 now()）⇒ ★★ 负控仍是「~35h 窗口」
+    #   ⇒ ★★ **与验收几何不一致** ⇒ ★★ 负控的绿不能代表验收窗口 ⇒ ★★ 门没牙
+    #   ⇒ ★★ ⇒ 断言它**真的**含「now() 随切点平移」的实现（★ 跨文件断言 ⇒ 守得住）
+    try:
+        negsrc = Path(__file__).with_name("recovery-detection-p0-3-negcontrol.py").read_text(encoding="utf-8")
+    except Exception as e:  # ★ 读不到 ⇒ 必须判失败（★ 不得静默跳过）
+        negsrc = ""
+        failures.append(f"[㉢ 负控几何守卫] 读不到负控脚本 ⇒ {e}")
+    if negsrc:
+        if "build_shifted_sql" not in negsrc:
+            failures.append("[㉢ 负控几何守卫] 负控脚本里没有 `build_shifted_sql`（★ 几何对齐的实现）")
+        if 'replace("now()"' not in negsrc:
+            failures.append("[㉢ 负控几何守卫] 负控脚本没有把 `now()` 平移（★ 负控仍是错几何 ⇒ 门没牙）")
+        if "asof" not in negsrc:
+            failures.append("[㉢ 负控几何守卫] 负控脚本没有 as-of 概念（★ post 窗口长度未对齐验收窗口）")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2203,6 +2227,8 @@ def selftest() -> int:
     print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
     print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
     print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
+    print("   ✔ ㉡ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
+    print("   ✔ ㉢ ★★★ **跨脚本守卫**：★ 负控脚本必须真的把 `now()` 随 era 切点平移（★ 否则门没牙）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2375,6 +2401,16 @@ def honest_boundary_lines() -> list[str]:
           "（★ **裁决符号保持 ❌** ⇒ ★ 门不钝化；★ 且逐日分布键缺失时必须显式写「基线口径不可见」）"
           "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，而不是单日快照）"
           "**登记为 Stage 2 之后的基线口径改进项**（★ 关窗前**不重冻**已验证基线）。")
+    lines.append("   ㉙ ★★★★ **负控的窗口几何必须与被验收窗口一致（★ `now()` 必须随 era 切点一起平移）**"
+          "（★ 本轮第 23 处口径修正）：★ 原负控只平移了**切点**、没平移 `now()`"
+          "⇒ ★★ 负控的 post 窗口 = **[切点-N天, 真实now]** = **~35h**（★ 而被验收的 Stage 1 窗口是 **24h**）"
+          "⇒ ★★ **两者几何不一致** ⇒ ★★ 实测**两行裁决符号在两种几何下翻转**"
+          "（★ M14 / M14x 旧 featured 人群（无回归）：35h ⇒ **❌ 未达成**、24h ⇒ **✅ 达成**）"
+          "⇒ ★★ ⇒ **负控的绿不能代表验收窗口** ⇒ ★★ 修法：★ `now()` 一并平移到「**新切点 + stage 窗口**」"
+          "⇒ ★★ 负控成为验收窗口的**忠实复刻**（★ 窗口长度、成熟度尾部（now-6h）、事件总量全对齐）"
+          "⇒ ★★ **门不钝**（★ 实测两种几何下效应行 M20 **都判 ❌** ⇒ 负控仍有牙）。"
+          "⇒ ★★★ **★ 另**：★ 原负控里「M14 / M14x 旧 featured 判 ❌」是**几何错配造成的假红**"
+          "（★ 35h post 比 24h pre ⇒ 不同量纲）⇒ ★★ **不得**读成「负控里旧 featured 人群也退化了」。")
     return lines
 
 
