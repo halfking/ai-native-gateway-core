@@ -3040,6 +3040,16 @@ func transientSuppressErrorCode(kind errorsx.ErrorKind) (string, bool) {
 // five minutes — the breaker's free-tier profile already bounds the hard
 // stop, and the URSM soft-demote ranks a noisy free binding behind healthy
 // paid ones without removing it from the pool.
+//
+// 2026-11-11 (error-family audit P1, symmetric with recordModelNotFound):
+// ON CONFLICT now uses GREATEST(suppress window, existing next_retry_at) —
+// a traffic-side suppression write must never SHORTEN the bg probe ladder's
+// future schedule (protocol recheck 6h / sustained tier 1h). Deliberately NO
+// cf-based escalation here, unlike the MNF path: transient errors are the
+// recoverable family and the recovery SLA (5-min recheck) is load-bearing —
+// slowing it down would delay recovery detection for flaky-but-alive
+// upstreams (recovery-detectability lesson, LESSONS §653-663). GREATEST
+// cannot delay any probe below its own ladder schedule.
 func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentialID int, rawModel string, errorCode string, billingMode string) {
 	if e.DB == nil || !e.DB.Enabled() || credentialID <= 0 || rawModel == "" {
 		return
@@ -3048,7 +3058,26 @@ func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentia
 	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
 		suppressWindow = time.Minute
 	}
-	_, err := e.DB.Pool().Exec(ctx, `
+	_, err := e.DB.Pool().Exec(ctx, recordTransientDispatchFailureStateUpsertSQL(),
+		credentialID, rawModel, suppressWindow.String(), errorCode)
+	if err != nil {
+		slog.Warn("record_transient_dispatch_failure: node_probe_state UPSERT failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error_code", errorCode,
+			"error", err)
+	}
+}
+
+// recordTransientDispatchFailureStateUpsertSQL is the node_probe_state upsert
+// executed by recordTransientDispatchFailure. Extracted verbatim (same R50 F20
+// precedent as recordModelNotFoundStateUpsertSQL) so the realdb behavior gate
+// executes the production statement instead of pinning its text.
+//
+// Parameters: $1 credential_id, $2 raw_model_name, $3 suppress window
+// (interval text), $4 error code.
+func recordTransientDispatchFailureStateUpsertSQL() string {
+	return `
 		INSERT INTO node_probe_state (
 			credential_id, raw_model_name,
 			consecutive_failures, consecutive_successes,
@@ -3070,20 +3099,14 @@ func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentia
 		SET last_direct_ok = FALSE,
 		    last_gateway_ok = FALSE,
 		    last_attempt_at = now(),
-		    next_retry_at = now() + $3::interval,
-		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
+		    next_retry_at = GREATEST(now() + $3::interval, node_probe_state.next_retry_at),
+		    next_retry_seconds = EXTRACT(EPOCH FROM (
+		        GREATEST(now() + $3::interval, node_probe_state.next_retry_at) - now()))::int,
 		    consecutive_failures = node_probe_state.consecutive_failures + 1,
 		    last_err_code = $4,
 		    in_flight_until = NULL,
 		    updated_at = now()
-	`, credentialID, rawModel, suppressWindow.String(), errorCode)
-	if err != nil {
-		slog.Warn("record_transient_dispatch_failure: node_probe_state UPSERT failed",
-			"credential_id", credentialID,
-			"raw_model", rawModel,
-			"error_code", errorCode,
-			"error", err)
-	}
+	`
 }
 
 // recordMnfStreak (Step 6, 2026-06-18) increments the per-credential
