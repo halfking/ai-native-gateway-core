@@ -1157,6 +1157,37 @@ WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - inter
      OR (era = 'post' AND fail_at < now() - interval '6 hours') )
 GROUP BY exemption, win
 UNION ALL
+-- ★★★★ M20 的**阶梯构成**读数键（★ 本轮第 14 处口径修正，★★ 判据阈值的「同量纲」问题）
+--   ★★ **问题（★ 实测）**：★ 「newly_covered」的定义 = `st_new \ st_old`，而 `st_old` 的
+--   ★★ `rawv_old` **只覆盖「models_canonical.featured=TRUE 且 status='active'」的 raw 变体**
+--   ★★ ⇒ ★★ **「routing_policy.featured_models 里某个 canonical 的 raw 变体」不在 st_old 里**
+--   ★★ ⇒ ★★ 而 featured 乘数（`globalIsFeaturedModel`）**恰恰对这些 raw 变体生效**
+--   ★★ ⇒ ★★ 于是它们**pre 期就已 featured（阶梯已减半）**，却落在「newly」组里
+--   ★★ ⇒ ★★ ⇒ 「newly」≠「pre 期未 featured」⇒ ★★ 「pre/post 同一批对」只在**未 featured**
+--   ★★   这一维上成立 ⇒ ★★ 「pre/2」阈值被污染 ⇒ ★★ **偏严**（污染样本阶梯短 ⇒ 拉低 pre 的 slow）
+--   ★★ **实测**：★ M20 normal pre7d **41/154 = 26.6%** 是这类样本（★ 来源：`zcode/GLM-5.3-Flash-Trial`
+--   ★★   一只：ladder 150×33 + 1800×8，出现在 11-05/07/09）；★ pre24 normal **0/21**；
+--   ★★   exempt 两窗口 **0** ⇒ ★★ **只有 normal 的 pre7d 被污染** ⇒ ★★ Stage 2 的 slow 阈值
+--   ★★   应按「**干净 pre**」推导（16.8%/2 = 8.4%，而原 12.3%/2 = 6.15% ⇒ ★★ **偏严 37%**）
+--   ★★ **乘数证据集（★ 无歧义）**：★ 三条链的**未减半并集** =
+--   ★★   {0,5,10,15,30,60,120,300,900,3600,7200,21600}
+--   ★★   （Node [5,30,60,300,3600,7200,21600] · Active [5,30,120,300,900] · HTTP [0,10,15,30]）
+--   ★★ ⇒ ⇒ **只有 {150,450,1800,10800} 是「乘数已生效」的无歧义证据**
+--   ★★   （★ 15 在 HTTP 链未减半就有、30 在 Node 链未减半就有 ⇒ ★★ **不可**当证据）
+--   ★★ ⇒ 「干净 pre」= 剔除这些样本后的集合 ⇒ ★★ 阈值与 post 段**同量纲**（post 全是 featured 后）
+SELECT 'M20_'||exemption||'_'||win||'_composition' k,
+  'n='||COUNT(*)::text
+  ||' | mul_evidence='||(COUNT(*) FILTER (WHERE next_retry_seconds IN (150,450,1800,10800)))::text
+  ||' | clean_n='||(COUNT(*) FILTER (WHERE next_retry_seconds NOT IN (150,450,1800,10800)))::text
+  ||' | clean_slow='||(COUNT(*) FILTER (WHERE recheck_min>300 AND next_retry_seconds NOT IN (150,450,1800,10800)))::text
+  ||' | slow='||(COUNT(*) FILTER (WHERE recheck_min>300))::text
+  ||' | contam_pct='||ROUND(100.0*COUNT(*) FILTER (WHERE next_retry_seconds IN (150,450,1800,10800))/COUNT(*),1)::text v
+FROM exp
+WHERE ( (era = 'pre'  AND fail_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '6 hours'
+                     AND next_at < TIMESTAMPTZ '2026-11-10 13:42:30+08')
+     OR (era = 'post' AND fail_at < now() - interval '6 hours') )
+GROUP BY exemption, win
+UNION ALL
 -- ★★★ **era 纯度的存活者偏差自检**（★ 本轮新增，★ 见主档 §5.9.21.13.8）
 --   ★★ pre 侧成熟度过滤要求 `next_at < 切点` ⇒ ★★ **凡是被这条规则丢掉的事件，
 --   ★★ 其间隔必然跨越切点（≥6h）⇒ ★★ 它们**必然**是「慢事件」⇒ ⇒ ★★ 若丢弃量 > 0，

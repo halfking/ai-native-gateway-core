@@ -44,7 +44,8 @@ VERDICT_PATH = ROOT / "scripts/audit/recovery-detection-p0-3-verdict.py"
 #     ⇒ ★★ 否则「M15x 的 pre 键是否时钟无关」**没人查** ⇒ ★ 漂移只会在 Stage 2 暴露
 PRE_KEY_RE = re.compile(
     r"^(M14_(pre24|pre7d|pre6d)_|M14x_(pre24|pre7d|pre6d)_|M20_(normal|exempt)_(pre24|pre7d|pre6d)$|"
-    r"^M20_era_dropped_(pre24|pre7d)$|M15x_(pre24|pre7d)__)"
+    r"^M20_era_dropped_(pre24|pre7d)$|M15x_(pre24|pre7d)__|"
+    r"^M20_(normal|exempt)_(pre24|pre7d|pre6d)_composition$)"
 )
 
 

@@ -832,6 +832,31 @@ def judge(data: dict[str, str], stage: int = 1,
         p90 = field(obs, "p90_gap")
         slow = field(obs, "slow_gt300_pct")
         top = field(obs, "top21600_n")
+        # ★★★★ **pre 基线的「阶梯构成」**（★ 本轮第 14 处口径修正，★★ 阈值同量纲）
+        #   ★★ 「newly」的定义 = `st_new \ st_old`，而 `st_old` 的 `rawv_old` **只覆盖
+        #   ★★ 「models_canonical.featured=TRUE 且 active」的 raw 变体** ⇒ ★★ **rp 成员的 raw 变体**
+        #   ★★ 不在 st_old 里 ⇒ ★★ 而 featured 乘数**恰恰对它们生效** ⇒ ★★ 它们 pre 期就已 featured
+        #   ★★   ⇒ ★★ 「newly」≠「pre 期未 featured」⇒ ★★ pre 基线里混着**已 featured 的样本**
+        #   ★★   ⇒ ★★ 它们阶梯短 ⇒ **拉低 pre 的 slow** ⇒ ★★ 「post ≤ pre/2」**偏严** ⇒ ★★ 假阴性
+        #   ★★ 实测：★ M20 normal pre7d **41/154 = 26.6%**（★ pre24 = 0、exempt 两窗口 = 0）
+        #   ★★ ⇒ ★★ 阈值必须按「**干净 pre**」推导（★ 干净 pre 与 post 段**同量纲**：post 全是 featured 后）
+        #   ★★ ★ 「乘数已生效」的**无歧义证据集** = {150,450,1800,10800}
+        #   ★★   （★ 三条链的未减半并集 = {0,5,10,15,30,60,120,300,900,3600,7200,21600}）
+        comp = data.get(f"M20_{lay}_{win}_composition")
+        c_n = field(comp, "clean_n") if comp else None
+        c_slow = field(comp, "clean_slow") if comp else None
+        contam = field(comp, "contam_pct") if comp else None
+        mul_ev = field(comp, "mul_evidence") if comp else None
+        if c_n and c_slow is not None and c_n > 0:
+            pre_slow_eff = round(100.0 * c_slow / c_n, 1)
+            pre_slow_src = "★ **干净 pre**（★ 已剔除乘数证据样本 ⇒ 与 post 段**同量纲**）"
+        else:
+            pre_slow_eff = pre_slow
+            pre_slow_src = "★ 原始 pre（★ ★ composition 缺失 ⇒ 阈值**可能偏严** ⇒ 判负前先复核）"
+        contam_txt = ""
+        if contam is not None and mul_ev:
+            contam_txt = (f" ★ ⚠️ **pre 基线含 {mul_ev:.0f} 条「乘数已生效」样本**"
+                          f"（★ pre 期已 featured、却被算进 newly ⇒ 污染 **{contam:.1f}%**）")
         if n is None or n < 10:
             rows.append((label, base_txt, obs,
                          verdict(None, f"★ post n={n} < 10 ⇒ **样本不足以判定**（★ 方向可读，★ 不许外推）")))
@@ -841,7 +866,7 @@ def judge(data: dict[str, str], stage: int = 1,
                 rows.append((label, base_txt, obs,
                              verdict_missing("★ post 的 top21600_n / slow_gt300_pct 算不出")))
                 continue
-            lim_slow = round(pre_slow / 2, 1)
+            lim_slow = round(pre_slow_eff / 2, 1)
             ok_top = top == 0
             ok_slow = slow <= lim_slow
             ok = ok_top and ok_slow
@@ -861,20 +886,20 @@ def judge(data: dict[str, str], stage: int = 1,
             rows.append((label, base_txt, obs,
                          verdict(ok, f"★ 未减半 6h 顶格 {top:.0f} 条（期望 0；pre {pre_top:.0f}）"
                                    f" ⇒ {'★ 阶梯已减半（乘数生效）' if ok_top else '★ 仍有未减半顶格'}"
-                                   f" / 慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；pre {pre_slow}%）"
+                                   f" / 慢事件(>300min) {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                                    f" ⇒ {'冷簇已收缩' if ok_slow else '★ 冷簇未收缩'}"
-                                   f"{p90_txt}（★ n={n}）{bias_txt}")))
+                                   f"{p90_txt}（★ n={n}）{bias_txt}{contam_txt}")))
         else:
             if p90 is None or slow is None:
                 rows.append((label, base_txt, obs, verdict_missing("★ post 的 p90_gap / slow 算不出")))
                 continue
-            lim_slow = round(pre_slow * 1.25, 1)
+            lim_slow = round(pre_slow_eff * 1.25, 1)
             ok = p90 <= pre_p90 and slow <= lim_slow
             rows.append((label, base_txt, obs,
                          verdict(ok, f"★ 豁免类（★ 协议形态：设计上钉 6h、乘数豁免）post p90_gap={p90:.0f}"
-                                   f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；pre {pre_slow}%）"
+                                   f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                                    f" ⇒ {'未变慢（不回归成立）' if ok else '★ 豁免类被拖慢'}"
-                                   f"（★ n={n}）")))
+                                   f"（★ n={n}）{contam_txt}")))
 
     # ── M11：episode 层症状 ──────────────────────────────────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
@@ -1086,6 +1111,19 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
         # ★★ era 纯度存活者偏差自检（★ 真库实测 pre24/pre7d 均为 0 ⇒ 无存活者偏差）
         "M20_era_dropped_pre24": "0 events dropped_by_era_purity",
         "M20_era_dropped_pre7d": "0 events dropped_by_era_purity",
+        # ★★★★ M20 的**阶梯构成**（★ 本轮第 14 处口径修正）：★ pre 基线里混着
+        #   「pre 期已 featured（乘数已生效）」的样本 ⇒ ★ 「newly」≠「pre 期未 featured」
+        #   ⇒ ★ 「post ≤ pre/2」阈值**偏严** ⇒ ★ 阈值必须按「**干净 pre**」推导
+        #   ★★ 乘数证据集 = {150,450,1800,10800}（★ 三条链的未减半并集里没有这 4 个值）
+        #   ★★ 真库实测：★ normal pre7d 污染 41/154 = **26.6%**；★ pre24 与两个 exempt 层 = 0
+        "M20_normal_pre24_composition": ("21 events | n=21 | mul_evidence=0 | clean_n=21"
+                                          " | clean_slow=3 | slow=3 | contam_pct=0.0"),
+        "M20_normal_pre7d_composition": ("77 events | n=154 | mul_evidence=41 | clean_n=113"
+                                          " | clean_slow=19 | slow=19 | contam_pct=26.6"),
+        "M20_exempt_pre24_composition": ("57 events | n=57 | mul_evidence=0 | clean_n=57"
+                                         " | clean_slow=50 | slow=50 | contam_pct=0.0"),
+        "M20_exempt_pre7d_composition": ("537 events | n=537 | mul_evidence=0 | clean_n=537"
+                                         " | clean_slow=173 | slow=173 | contam_pct=0.0"),
     }
     # ★★ M15x 的 **12 个键**（★ 本轮第 13 处口径修正）：
     #   ★ pre 键的**事件数必须与冻结基线逐字一致**（★ 否则 M18 守卫会报漂移 ⇒ 整表作废
@@ -1469,6 +1507,53 @@ def selftest() -> int:
     if not bad:
         failures.append("[⑰ M15x 逐对穷尽性] 逐对分层不穷尽时守卫未判失败")
 
+    # ⑱ ★★★★ **阈值必须由「干净 pre」推导**（★ 本轮第 14 处口径修正）
+    #   ★★ 场景：pre 基线含 26.6% 的「乘数已生效」样本 ⇒ ★ 「pre/2」偏严
+    #   ★★ ⇒ ★ 阈值 = clean_slow/clean_n/2（★ 与 post 段**同量纲**）⇒ ★ 行内必须披露污染率
+    rows, _, _ = judge(_synthetic(True), stage=2)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    # ★ 合成数据里 clean_slow=19 / clean_n=113 ⇒ 16.8% ⇒ 阈值 8.4%（★ 而非原始 12.3%/2=6.15%）
+    if "≤8.4%" not in v:
+        failures.append(f"[⑱ 干净 pre 阈值] Stage 2 的 slow 阈值应按干净 pre 推导（8.4%）⇒ {v}")
+    if "26.6" not in v or "乘数已生效" not in v:
+        failures.append(f"[⑱ 污染披露] 行内必须披露 pre 基线的污染率 ⇒ {v}")
+    # ★ 把 composition 改掉（clean_n 改成 154 ⇒ clean slow% = 12.3 ⇒ 阈值 6.15）⇒ ★ 阈值必须跟着变
+    d = _synthetic(True)
+    d["M20_normal_pre7d_composition"] = ("77 events | n=154 | mul_evidence=41 | clean_n=154"
+                                          " | clean_slow=19 | slow=19 | contam_pct=26.6")
+    rows, _, _ = judge(d, stage=2)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if "≤6.2%" not in v:
+        failures.append(f"[⑱ 阈值来源] 阈值必须**来自 composition 读数**（⇒ 随 clean_n 变化）⇒ {v}")
+
+    # ⑲ ★★★★ **composition 缺失 ⇒ 回退 + 显式提示**（★ 不得静默用偏严阈值）
+    d = _synthetic(True)
+    d.pop("M20_normal_pre7d_composition")
+    rows, _, _ = judge(d, stage=2)
+    v = rows_by_label(rows).get("M20 新覆盖组·非豁免（★ 效应主判据）", "<缺行>")
+    if "composition 缺失" not in v:
+        failures.append(f"[⑲ composition 缺失] 必须显式提示「阈值可能偏严」⇒ {v}")
+
+    # ⑳ ★★★★ **诚实边界的披露不许被静默删掉**（★ 本轮第 14/15 处口径修正 ⇒ 抽成函数才可测）
+    #   ★★ 形态：★ ⑳（污染率 26.6% / newly ≠ pre 期未 featured）、⑳（M15x 逐对判据**未被负控证伪**）、
+    #   ★★ ㉒（deepseek pre 基线是**短窗口快照**）——★ 这三条都是**结论的限定条件**，
+    #   ★★ 若被静默删掉 ⇒ ★ 报告会读成「机制生效 + 逐对已判 + 样本充足」⇒ ★★ **假绿**。
+    #   ★★ ⇒ 断言基于**实际打印出来的文本**（★ 不是源码字符串断言 ⇒ 不是 §654 说的那种假门）。
+    import contextlib
+    import io as _io
+    _buf = _io.StringIO()
+    with contextlib.redirect_stdout(_buf):
+        print_honest_boundaries()
+    _printed = _buf.getvalue()
+    for _need, _why in (
+        ("26.6", "⑳ 必须披露 pre 基线的污染率"),
+        ("干净 pre", "⑳ 必须说明 slow 阈值改由「干净 pre」推导"),
+        ("未被证伪", "㉑ 必须披露 M15x 逐对判据**未被负控证伪**"),
+        ("短窗口快照", "㉒ 必须披露 deepseek 的 pre 基线是短窗口快照"),
+    ):
+        if _need not in _printed:
+            failures.append(f"[⑳ 诚实边界披露] {_why}（打印文本里缺 {_need!r}）")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -1492,11 +1577,118 @@ def selftest() -> int:
     print("   ✔ ⑮ ★★ 逐对判据三个分量（med / 阶梯中位 / 未减半档位清零）各自可被单独变异抓住")
     print("   ✔ ⑯ ★★ **恒真分量必须被标注**（★ pre 计数=0 的档位 ⇒ 恒真 ⇒ 不作判据）")
     print("   ✔ ⑰ M15x 逐对分层穷尽性（exempt+normal == total）⇒ 不穷尽即报警")
+    print("   ✔ ⑱ ★★ 阈值必须由「干净 pre」推导（★ 剔除「乘数已生效」样本 ⇒ 与 post 同量纲）+ 污染率披露")
+    print("   ✔ ⑲ composition 缺失 ⇒ 回退原阈值 + **显式提示「可能偏严」**（★ 不得静默偏严）")
+    print("   ✔ ⑳ ★★ 诚实边界的**限定条件不许被静默删掉**（★ 污染率 26.6% / M15x 未被负控证伪 / pre 基线是短窗口快照）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
 
 # ─────────────────────────────────────────────────────────────────────
+def honest_boundary_lines() -> list[str]:
+    """★ 诚实边界的**唯一来源**（★ 本轮抽成函数 ⇒ 自测能守住「披露不许被静默删掉」）"""
+    lines: list[str] = []
+    lines.append("   ⑮ ★★★★ **判据的「可达性」必须先审计**（★★ 本轮第 11 处口径修正，★★ 差点造成结构性假阴性）："
+          "★ 实测新覆盖人群 **78%** 的失败是**豁免类**（协议形态 ⇒ 设计上钉 6h ⇒ **豁免 featured 乘数**）"
+          "⇒ ★★ 混合口径的「post p90 ≤180」**结构性不可达** ⇒ ★★ 若不先审可达性就关窗 ⇒ "
+          "**必然假阴性**且会被读成「修复没生效」⇒ ★★ 纪律：**阈值先问「机制能不能做到」，"
+          "再问「读数长什么样」**；★ 效应判据必须**分层**（该减半的 / 设计上不变的），"
+          "且 ★ **分层穷尽性要有守卫**（normal + exempt == 原集合）。")
+    lines.append("   ⑱ ★★★★ **同一个模型在不同口径下结论可以相反**（★ 本轮第 13 处口径修正，★★ 差点写错进结论）："
+          "★ M15 旧键是 **free 切片** ⇒ 实测四只金丝雀**完全同形**（pre7d 各 13 条 = **12 豁免 + 1 normal**，"
+          "★ 豁免占比 **92%**）⇒ ★ 「post med ≤180」**结构性不可达** + 剔豁免后**只剩 1 条** ⇒ ★★ **四只全是观察面**；"
+          "★ 而**全计费口径**下 **deepseek-v4-pro-0813 的 normal 有 41 条（pre7d）/ 18 条（pre24）**"
+          "⇒ ★★ **它是唯一**可做逐对判据的金丝雀 ⇒ ★★ 逐对判据**只落在它一只**。"
+          "⇒ ★★ 纪律：**同一段论证里出现两个口径的数字，必须标口径**（★ 「deepseek normal 47 条」是全计费口径，"
+          "★ 「normal 1 条」是 free 切片 ⇒ ★ 混着说就会得出相反结论）。")
+    lines.append("   ⑲ ★★★★ **逐对判据必须「逐只」自证可达性**（★ 本轮第 13 处口径修正）：★ 每只金丝雀按**它自己**的"
+          "normal 样本量（阈值 10）决定判据 / 观察面（★ **数据驱动**，★ 不硬编码模型名）；★ 阈值**全部由该只 pre 实测推导**"
+          "（★ deepseek 的 normal 阶梯 pre = **3600s（60min）** ⇒ 期望 post ≤ **1800s（30min）**，"
+          "★ 而**不是**笼统的「≤180min」⇒ ★★ 180min 对 60min 的事件**毫无鉴别力**）；"
+          "★ 且 ★ **pre 期计数为 0 的档位 ⇒ post 侧恒真 ⇒ 必须标注「不作判据」**（★ 否则就是**恒真判据**＝门没牙）。")
+    lines.append("   ⑳ ★★★★ **「newly」≠「pre 期未 featured」**（★ 本轮第 14 处口径修正，★★ 同量纲的第 2 维）："
+          "★ 「newly」的定义 = `st_new \\ st_old`，而 `st_old` 的 raw 变体**只覆盖 `models_canonical.featured=TRUE` 且 active**"
+          "⇒ ★★ **`routing_policy.featured_models` 成员的 raw 变体不在 st_old 里** ⇒ ★★ 而 featured 乘数**恰恰对它们生效**"
+          "⇒ ★★ 它们**pre 期就已 featured（阶梯已减半）**却落在 newly 组 ⇒ ★★ 「pre/post 同一批对」**只在未 featured 这一维成立**"
+          "⇒ ★★ pre 基线里混着**短阶梯样本** ⇒ ★★ 拉低 pre 的 slow ⇒ ★★ 「post ≤ pre/2」**偏严**。"
+          "⇒ ★ 实测污染：★ M20 normal pre7d **41/154 = 26.6%**（★ 来源几乎全是 `zcode/GLM-5.3-Flash-Trial` 一只："
+          "ladder 150×33 + 1800×8，出现在 11-05/07/09）；★ pre24 normal = **0/21**；★ exempt 两窗口 = **0**。"
+          "⇒ ★★ 修法（★ **不改 st_old 口径、不重冻基线**，★ 关窗前重冻风险太高）：① 把污染率固化成 "
+          "`M20_<层>_<窗>_composition` 读数键（n/mul_evidence/clean_n/clean_slow/slow/contam_pct）⇒ ★★ 行内**披露污染率**；"
+          "② slow 阈值改由「**干净 pre**」推导（★ 干净 pre 与 post 段**同量纲**：post 全是 featured 后）"
+          "⇒ ★★ normal pre7d 干净 slow = 19/113 = **16.8%** ⇒ 阈值 **8.4%**（★ 原 12.3%/2 = 6.15% ⇒ ★★ **偏严 37%**）；"
+          "③ composition 缺失 ⇒ **回退原阈值 + 显式提示「可能偏严」**（★ 不得静默偏严）。"
+          "⇒ ★★ 纪律：**「同量纲」不只指窗口长度，也指**人群状态**（★ pre 的这批样本在 post 段会「变样」⇒ 阈值必须同状态）。")
+    lines.append("   ㉑ ★★ **M15x 逐对判据未被负控证伪**（★ 只能作为「未被证伪的判据」披露）："
+          "★ 负控把 era 切点前移 N 天 ⇒ ★ 负控 era 里 **deepseek 的 normal = 0 条** ⇒ ★★ 它被**自动降级为观察面**"
+          "⇒ ★★ 也就是说 ★ **M15x 的逐对判据没有经历过一次「必须判负」的检验**（★ 与群体层的 M20 不同：★ M20 负控**判负** ✔）。"
+          "⇒ ★★ 诚实表述：★ M15x 是「**未被证伪**」，不是「**已被证伪为恒真/恒假**」⇒ ★ Stage 1/2 读出 ✅ 时必须并列这句。")
+    lines.append("   ㉒ ★★ **pre 基线的「时间构成」必须披露**（★ 本轮第 14/15 处口径修正）："
+          "★ 逐日拆开看，★ M20 normal pre7d 的阶梯**混了三个阶段**（11-03/04 = 6h 顶格；11-05~07 = 极短阶梯 0/150；"
+          "11-09 = 1800 且同日还有 top3600=24）⇒ ★★ pre 基线**严重不均匀** ⇒ ★★ 「pre/2」阈值的含义**受限**；"
+          "★ 且 ★ deepseek 的 41 条 normal **几乎全来自 11-09、11-10 两天**（11-09 单日 23 条 http=503 ladder=3600；"
+          "11-06~11-08 三天一条都没有）⇒ ★★ 它的 pre 基线是「**短窗口快照**」而非 7 天稳态。"
+          "⇒ ★★ 推论：★ **Stage 1 的 pre24/post24 是紧邻两个 24h 窗口 ⇒ 构成漂移最小** ⇒ ★★ 反而比 Stage 2 的 "
+          "pre7d/post7d 更稳（★ 成本是样本量更小 ⇒ ★ Stage 1 只给方向）。")
+    lines.append("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
+          "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
+    lines.append("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"
+          "目标人群（106 个新覆盖变体）修正 join 后 7 天有 **461 事件（free 口径）"
+          "/ 691 事件（全计费口径）**，但其中四个「冷金丝雀」各仅 13 次（≈1.9/日）"
+          "⇒ ★★ 群体层可判（M14），★ 逐对幅度仍需 Stage 2。")
+    lines.append("   ③ M12 post 段存在**右删失**（漏掉复检慢的对 ⇒ 偏差方向对我们有利）"
+          "⇒ 已用 M12s（结算版）+ M12p（护栏）对冲，但**必须在报告里披露**。")
+    lines.append("   ④ M6 是**资格面**，不是「行为已改善」的证据。")
+    lines.append("   ⑤ ★★ 基线口径已在 2026-11-10 14:2x 修正：原先的绑定过滤用 "
+          "`provider_model_id = (… LIMIT 1)`，而 raw_model_name 是**一对多**"
+          "⇒ 只统计到 30% 事件（4,073 vs 13,555）⇒ ★ 现全部基线均为**修正后**口径。")
+    lines.append("   ⑥ ★★ 「量具算不出」（分位缺失）单列为「不可判」，**不并入未达成**；"
+          "守卫指标**缺失**同样判量具不可信 ⇒ 整表作废。")
+    lines.append("   ⑦ ★★★ 判据的第四道关 = **人群稳定性**：★ 高样本 ≠ 可判 —— "
+          "M12s 的 post ns|feat 混入了 era2 新纳入的 106 个冷对 ⇒ 尾部变化**不可归因** "
+          "⇒ ★ 降级为参考；★ 判据改用 **M14 三组**（st_old ⊆ st_new ⇒ pre/post 同一批对）。")
+    lines.append("   ⑧ ★★★ pre 基线必须**冻结**：★ 口径已把窗口/成熟度/era 纯度全部**锚定到切点** "
+          "⇒ ★ 真跑 / Stage 1 / Stage 2 三个时钟下 pre 段**逐字节一致**（41/41 键）；"
+          "★ 否则 Stage 2 的 pre 侧会整段消失、Stage 1 的 pre 会随查询时刻漂移。")
+    lines.append("   ⑨ ★★★ **样本量不能用「事件率 × 窗口长度」外推**：★ 事件**成簇**"
+          "（48h 内只有 11 个活跃小时桶、前 5 簇占 75%）+ ★ **右删失**"
+          "（慢阶梯 6h 的失败在 6h 内不计入 ⇒ post 段样本随时间「回填」）"
+          "⇒ ★★ 只能用「同长度、同成熟度」的实测窗口算（★ 本轮新增 pre24 维度）。")
+    lines.append("   ⑩ ★★ **同量纲不只是「同人群」，还是「同窗口长度」**：★ 实测 newly 组的 "
+          "pre24（14 条，slow 100%）与 pre7d（461 条，slow 13.0%）**分布截然不同** "
+          "⇒ ★★ 借用另一窗口的基线 = 判错 ⇒ ★★ **判据基线随 stage 切换**"
+          "（Stage 1 → pre24、Stage 2 → pre7d）。")
+    lines.append("   ⑪ ★★ **指标的「窗口维度」标签必须与边界一致**：★ 本轮曾把 CASE 顺序写反 ⇒ "
+          "「pre24」标签实际命中「更早 5 天」（样本差 32×、阈值差 4×）"
+          "⇒ ★★ **用「两个窗口长度对拍同一查询」验一次**（7d 461 条 vs 48h 55 条 ⇒ 物理上不可能）。")
+    lines.append("   ⑫ ★★★ **标签名必须代表它真实的窗口长度**（★ 本轮第 10 处修正）：★ 改完标签后 "
+          "「pre7d」实际只覆盖 [切点-7d, 切点-24h) ⇒ **只有 6 天**却叫 pre7d "
+          "⇒ ★ Stage 2 拿「6 天 pre」比「7 天 post」⇒ **不同量纲** "
+          "⇒ ★★ 而且判据阈值是按 7 天的 slow 13.0% 折半来的、显示的却是 6 天的 10.3% "
+          "⇒ ★★ **基线与阈值静默脱钩**。⇒ 现在四桶：pre6d / pre24 / **pre7d（整 7 天）** / post，"
+          "且恒等式 **pre7d = pre6d + pre24** 可对拍（★ 461 = 447 + 14 ✔）；"
+          "⇒ ★★ 并加了 **M18 守卫**：pre 基线事件数与冻结值不符 ⇒ 整表作废。")
+    lines.append("   ⑬ ★★★ **口径过滤器也会静默丢样本**（★ 本轮第 9 处修正）：★ M14 原先限定 "
+          "`billing_mode='free'` ⇒ ★★ 同一模型名同时挂在 free / per_token / token_plan "
+          "三种凭据上 ⇒ ★★ 另外两类凭据上的探测被**静默丢掉**（★ 与「一对多取代表行」同类）"
+          "⇒ ★★ post era 实测 5 次新覆盖探测**全在 per_token** ⇒ free 口径下 post 恒为 0 "
+          "⇒ ★★ **效应判据会永远空**，被误读成「修复没生效」。⇒ 现在同时产出 free 切片与"
+          "全计费口径（★ pre24 新覆盖：free **14** 条 vs all **78** 条 ⇒ ★ Stage 1 才够样）。")
+    lines.append("   ⑭ ★★ **判据的目标人群要先算「可观测子集」**：★ 106 个新覆盖变体里 "
+          "**61 个挂在 `providers.enabled=false` 的供应商上**（结构性不可探）+ 48 个无 free 绑定 "
+          "⇒ ★★ 真正可探的只有 **60 个**（且这 60 个恰好都在 `node_probe_state` 调度表里）"
+          "⇒ ★★ 7 天内真正发出过探测的只有 **≈21 个模型名** ⇒ ★★ 头条口径「106 个」"
+          "**高估了效应面约 5×** ⇒ ★★ 结论必须写成「**可观测子集**上的效应」，不能写成「106 个全部」。")
+    return lines
+
+
+def print_honest_boundaries() -> None:
+    """★ 打印诚实边界（★ 唯一来源 ⇒ 自测可**直接断言打印出来的文本** ⇒ 披露不会被静默删掉）"""
+    print("\n★ 诚实边界（必须一起写进结论）：")
+    for _line in honest_boundary_lines():
+        print(_line)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ssh-host", default="211")
@@ -1624,74 +1816,7 @@ def main() -> int:
         for k, v in h5[:5]:
             print(f"      - {v}")
 
-    print("\n★ 诚实边界（必须一起写进结论）：")
-    print("   ⑮ ★★★★ **判据的「可达性」必须先审计**（★★ 本轮第 11 处口径修正，★★ 差点造成结构性假阴性）："
-          "★ 实测新覆盖人群 **78%** 的失败是**豁免类**（协议形态 ⇒ 设计上钉 6h ⇒ **豁免 featured 乘数**）"
-          "⇒ ★★ 混合口径的「post p90 ≤180」**结构性不可达** ⇒ ★★ 若不先审可达性就关窗 ⇒ "
-          "**必然假阴性**且会被读成「修复没生效」⇒ ★★ 纪律：**阈值先问「机制能不能做到」，"
-          "再问「读数长什么样」**；★ 效应判据必须**分层**（该减半的 / 设计上不变的），"
-          "且 ★ **分层穷尽性要有守卫**（normal + exempt == 原集合）。")
-    print("   ⑱ ★★★★ **同一个模型在不同口径下结论可以相反**（★ 本轮第 13 处口径修正，★★ 差点写错进结论）："
-          "★ M15 旧键是 **free 切片** ⇒ 实测四只金丝雀**完全同形**（pre7d 各 13 条 = **12 豁免 + 1 normal**，"
-          "★ 豁免占比 **92%**）⇒ ★ 「post med ≤180」**结构性不可达** + 剔豁免后**只剩 1 条** ⇒ ★★ **四只全是观察面**；"
-          "★ 而**全计费口径**下 **deepseek-v4-pro-0813 的 normal 有 41 条（pre7d）/ 18 条（pre24）**"
-          "⇒ ★★ **它是唯一**可做逐对判据的金丝雀 ⇒ ★★ 逐对判据**只落在它一只**。"
-          "⇒ ★★ 纪律：**同一段论证里出现两个口径的数字，必须标口径**（★ 「deepseek normal 47 条」是全计费口径，"
-          "★ 「normal 1 条」是 free 切片 ⇒ ★ 混着说就会得出相反结论）。")
-    print("   ⑲ ★★★★ **逐对判据必须「逐只」自证可达性**（★ 本轮第 13 处口径修正）：★ 每只金丝雀按**它自己**的"
-          "normal 样本量（阈值 10）决定判据 / 观察面（★ **数据驱动**，★ 不硬编码模型名）；★ 阈值**全部由该只 pre 实测推导**"
-          "（★ deepseek 的 normal 阶梯 pre = **3600s（60min）** ⇒ 期望 post ≤ **1800s（30min）**，"
-          "★ 而**不是**笼统的「≤180min」⇒ ★★ 180min 对 60min 的事件**毫无鉴别力**）；"
-          "★ 且 ★ **pre 期计数为 0 的档位 ⇒ post 侧恒真 ⇒ 必须标注「不作判据」**（★ 否则就是**恒真判据**＝门没牙）。")
-    print("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
-          "credential_recovery 扫描 6h 周期 ⇒ 采样须标注「距上次 sweep 多久」）。")
-    print("   ② era2 的增量效果是「消除资格障碍」的**潜在收益**；"
-          "目标人群（106 个新覆盖变体）修正 join 后 7 天有 **461 事件（free 口径）"
-          "/ 691 事件（全计费口径）**，但其中四个「冷金丝雀」各仅 13 次（≈1.9/日）"
-          "⇒ ★★ 群体层可判（M14），★ 逐对幅度仍需 Stage 2。")
-    print("   ③ M12 post 段存在**右删失**（漏掉复检慢的对 ⇒ 偏差方向对我们有利）"
-          "⇒ 已用 M12s（结算版）+ M12p（护栏）对冲，但**必须在报告里披露**。")
-    print("   ④ M6 是**资格面**，不是「行为已改善」的证据。")
-    print("   ⑤ ★★ 基线口径已在 2026-11-10 14:2x 修正：原先的绑定过滤用 "
-          "`provider_model_id = (… LIMIT 1)`，而 raw_model_name 是**一对多**"
-          "⇒ 只统计到 30% 事件（4,073 vs 13,555）⇒ ★ 现全部基线均为**修正后**口径。")
-    print("   ⑥ ★★ 「量具算不出」（分位缺失）单列为「不可判」，**不并入未达成**；"
-          "守卫指标**缺失**同样判量具不可信 ⇒ 整表作废。")
-    print("   ⑦ ★★★ 判据的第四道关 = **人群稳定性**：★ 高样本 ≠ 可判 —— "
-          "M12s 的 post ns|feat 混入了 era2 新纳入的 106 个冷对 ⇒ 尾部变化**不可归因** "
-          "⇒ ★ 降级为参考；★ 判据改用 **M14 三组**（st_old ⊆ st_new ⇒ pre/post 同一批对）。")
-    print("   ⑧ ★★★ pre 基线必须**冻结**：★ 口径已把窗口/成熟度/era 纯度全部**锚定到切点** "
-          "⇒ ★ 真跑 / Stage 1 / Stage 2 三个时钟下 pre 段**逐字节一致**（41/41 键）；"
-          "★ 否则 Stage 2 的 pre 侧会整段消失、Stage 1 的 pre 会随查询时刻漂移。")
-    print("   ⑨ ★★★ **样本量不能用「事件率 × 窗口长度」外推**：★ 事件**成簇**"
-          "（48h 内只有 11 个活跃小时桶、前 5 簇占 75%）+ ★ **右删失**"
-          "（慢阶梯 6h 的失败在 6h 内不计入 ⇒ post 段样本随时间「回填」）"
-          "⇒ ★★ 只能用「同长度、同成熟度」的实测窗口算（★ 本轮新增 pre24 维度）。")
-    print("   ⑩ ★★ **同量纲不只是「同人群」，还是「同窗口长度」**：★ 实测 newly 组的 "
-          "pre24（14 条，slow 100%）与 pre7d（461 条，slow 13.0%）**分布截然不同** "
-          "⇒ ★★ 借用另一窗口的基线 = 判错 ⇒ ★★ **判据基线随 stage 切换**"
-          "（Stage 1 → pre24、Stage 2 → pre7d）。")
-    print("   ⑪ ★★ **指标的「窗口维度」标签必须与边界一致**：★ 本轮曾把 CASE 顺序写反 ⇒ "
-          "「pre24」标签实际命中「更早 5 天」（样本差 32×、阈值差 4×）"
-          "⇒ ★★ **用「两个窗口长度对拍同一查询」验一次**（7d 461 条 vs 48h 55 条 ⇒ 物理上不可能）。")
-    print("   ⑫ ★★★ **标签名必须代表它真实的窗口长度**（★ 本轮第 10 处修正）：★ 改完标签后 "
-          "「pre7d」实际只覆盖 [切点-7d, 切点-24h) ⇒ **只有 6 天**却叫 pre7d "
-          "⇒ ★ Stage 2 拿「6 天 pre」比「7 天 post」⇒ **不同量纲** "
-          "⇒ ★★ 而且判据阈值是按 7 天的 slow 13.0% 折半来的、显示的却是 6 天的 10.3% "
-          "⇒ ★★ **基线与阈值静默脱钩**。⇒ 现在四桶：pre6d / pre24 / **pre7d（整 7 天）** / post，"
-          "且恒等式 **pre7d = pre6d + pre24** 可对拍（★ 461 = 447 + 14 ✔）；"
-          "⇒ ★★ 并加了 **M18 守卫**：pre 基线事件数与冻结值不符 ⇒ 整表作废。")
-    print("   ⑬ ★★★ **口径过滤器也会静默丢样本**（★ 本轮第 9 处修正）：★ M14 原先限定 "
-          "`billing_mode='free'` ⇒ ★★ 同一模型名同时挂在 free / per_token / token_plan "
-          "三种凭据上 ⇒ ★★ 另外两类凭据上的探测被**静默丢掉**（★ 与「一对多取代表行」同类）"
-          "⇒ ★★ post era 实测 5 次新覆盖探测**全在 per_token** ⇒ free 口径下 post 恒为 0 "
-          "⇒ ★★ **效应判据会永远空**，被误读成「修复没生效」。⇒ 现在同时产出 free 切片与"
-          "全计费口径（★ pre24 新覆盖：free **14** 条 vs all **78** 条 ⇒ ★ Stage 1 才够样）。")
-    print("   ⑭ ★★ **判据的目标人群要先算「可观测子集」**：★ 106 个新覆盖变体里 "
-          "**61 个挂在 `providers.enabled=false` 的供应商上**（结构性不可探）+ 48 个无 free 绑定 "
-          "⇒ ★★ 真正可探的只有 **60 个**（且这 60 个恰好都在 `node_probe_state` 调度表里）"
-          "⇒ ★★ 7 天内真正发出过探测的只有 **≈21 个模型名** ⇒ ★★ 头条口径「106 个」"
-          "**高估了效应面约 5×** ⇒ ★★ 结论必须写成「**可观测子集**上的效应」，不能写成「106 个全部」。")
+    print_honest_boundaries()
     return 0
 
 
