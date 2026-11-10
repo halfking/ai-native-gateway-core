@@ -1815,6 +1815,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 而免费供应商 raw 名多带命名空间前缀（z-ai/…、minimaxai/…）
 			// ⇒ 只标裸 canonical 名对 namespaced 免费对零效果。
 			"956_minimax_m31_flash_featured.sql",
+			// 957（2026-11-11 闭集门第三次复发轮）：self_check_runs.error_type 的
+			// CHECK 闭集补 `rate_limit_observed`（errorsx 新 kind 的镜像面）——
+			// 缺它 ⇒ 上游请求侧 4xx 回限流形态正文时 finalizeRun 的 UPDATE 被 DB
+			// 以 23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行半写 ⇒ 这次自检在系统里
+			// 「根本没发生过」，但调度器以为发生过。
+			"957_self_check_error_type_kind_closure_rate_limit_observed.sql",
 		},
 	}
 }

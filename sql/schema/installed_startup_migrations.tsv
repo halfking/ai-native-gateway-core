@@ -372,3 +372,4 @@
 354	954_probe_lane_trace_events.sql
 355	955_passive_model_fingerprints.sql
 356	956_minimax_m31_flash_featured.sql
+357	957_self_check_error_type_kind_closure_rate_limit_observed.sql

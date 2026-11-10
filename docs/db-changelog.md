@@ -10858,3 +10858,24 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 
 回滚：执行 956 down（置回 featured=FALSE）+ 回滚 `bg/model_tier.go` 的展开改动。注意 down 只还原 canonical 侧标记；代码侧的 raw 变体展开不由迁移回滚（回滚后仍在 featured 集合里，这与回滚前的 static 集合口径一致，非本迁移引入）。
 
+
+## 2026-11-11 — self_check_runs.error_type CHECK 闭集第三次复发：957 补 `rate_limit_observed`
+
+| version | file | sha256 | status |
+|---|---|---|---|
+| 957 | `957_self_check_error_type_kind_closure_rate_limit_observed.sql` | `358c9daab7eec74d936827083dbef7db4258455d91846cd9d4752646284fe0e7` | registered（2026-11-11 闭集门第三次复发轮；**待部署**） |
+| 957 | `957_self_check_error_type_kind_closure_rate_limit_observed.down.sql` | `5b66cb248c66c64b3bbda4218ef36dd04af9b9498187d66a09afce224ce11a21` | registered |
+
+缺口本体：`errorsx.AllErrorKinds()` 闭集现在是 **34** 个 kind（930 落地时是 33），闭集少的那一项是审计 F50 轮加的 `errorsx.KindRateLimitObserved`（`errorsx/classify.go:51`）—— 「上游用**请求侧 4xx** 回了一个**限流形态**的正文」（例：HTTP 400 + `{"error":{"message":"rate limit exceeded"}}`）⇒ 归因到「**不惩罚节点**」的独立 kind（`PenaltyOf` 走 `PenaltyNone`，与 `KindRateLimit` 的 `PenaltyBinding`——拉黑 + 连败累计——**明确不同**）。
+
+★ 后果不是「多了一个新错误类型」，而是**写入被 DB 拒绝**：写侧 `bg/credential_selfcheck.go:844` 写的就是 kind 名（`r.ErrType = string(errorsx.ClassifyErrorWithBody(resp.StatusCode, body))`），一旦上游 4xx 落到 `rate_limit_observed`，`finalizeRun`（:896）的 UPDATE 被 **23514** 拒绝 ⇒ **整条回滚** ⇒ run 行停在 `status='running'` / `error_type=NULL` / `completed_at=NULL` 的**半写态** ⇒ `auditToSystemProbeRuns`（:433）与 `publishSelfcheck` 都不执行 ⇒ ★ **这次自检在系统里根本没发生过**，但调度器以为发生过。
+
+★ 这是「镜像面没跟上」家族的**第三次**复发：第一次 929 补 6 个 kind、第二次 930 补 `model_unavailable`、第三次本条补 `rate_limit_observed`。★ 而每复发一次都暴露同一条**结构性成本**：「加一个 kind」的系统成本 = 一次跨仓的人工动作（上游加 kind 的那一笔不会顺手改已冻结的迁移字节）⇒ 闭集门**能抓到**但**不会自动修好** ⇒ 判据：**每加一个 kind 都要预留一次「新增迁移」的跨仓动作**（929 是第一次、930 是第二次、本条是第三次执行记录）。
+
+修法：新增一条 startup 迁移重建 `self_check_runs_error_type_check`，把 errorsx kind 闭集**整份**纳入（34 kind）+ 保留 `http_%` 通配（旧装机的历史诊断值仍可读）⇒ 合计 **39** 项（34 kind + 5 个 worker 专用字面量 none/internal/parse_error/unattributed/upstream_fail）。★ **不改 930 的字节**（930 已进部署台账 content_sha256 ⇒ 改字节会走 content replay 通道并连锁 break，914/928 教训）⇒ 同 929/930 的处置。
+
+登记面：canonical up/down、installer embeddata 双副本（SHA 现场一致）、`go:embed` 变量 + `embeddedSQLFiles` 映射、`dbinit` StartupFiles、部署显式清单（`apply-db-revision-sequence.sh` files + `ledger_artifact_probe` 终态探针）、`installed_startup_migrations.tsv` 第 **357** 位（由 `StartupFiles` 经 `go test ./internal/dbinit -run TestStartupManifest -update` 重新生成，非手改）、正典目录 `sql/objects/tables/self_check_runs.sql`（同步 38 项 → 39 项）、契约门 `migration_957_error_type_closure_test.go` 两件（up 形态 / down 只退自己那一步）。
+
+幂等：先读 `pg_get_constraintdef`，若已覆盖全部 39 个必需字面量 ⇒ 直接跳过（可重入）。字面量匹配**带引号**（`position('''' || v_val || '''' IN v_def)`）⇒ `'rate_limit'` 不会被 `'rate_limit_observed'` 误命中。`BEGIN/COMMIT` + `SET LOCAL lock_timeout='5s'` / `statement_timeout='60s'`（SET LOCAL 落在事务块内 ⇒ 真生效）。`NOT VALID` ⇒ 只拦新行、不重洗存量历史 run 行。
+
+回滚：执行 957 down —— **只退一步**（957 → 930 的 38 项集合，930 → 929 那一步由 930 自己的 down 负责）。★ 幂等判据是「**不含**任何一个 957 新增的 kind」而不是「包含旧集全部值」—— 后者会让新集（超集）被判成「已是旧集」⇒ down 静默跳过 ⇒ 约束根本没退回去（★ 这正是 929 down 真库跑出来的第一版缺陷，静态读代码看不出来）。★ 有行落在 `rate_limit_observed` 上时 down **响亮中止**（RAISE EXCEPTION）而**不删审计证据**：静默删行去迁就约束 = 销毁审计证据；处置顺序 = 先导出这些行 → 人工确认口径 → 再跑 down。

@@ -1575,6 +1575,21 @@ var minimaxM31FlashFeatured956 []byte
 //go:embed embeddata/startup/956_minimax_m31_flash_featured.down.sql
 var minimaxM31FlashFeatured956Down []byte
 
+// ★ 957（2026-11-11 闭集门第三次复发轮）：self_check_runs.error_type 的
+//   CHECK 闭集再补一个 kind —— `rate_limit_observed`（审计 F50 轮加的
+//   `errorsx.KindRateLimitObserved`）。
+//   ★ 缺它 ⇒ 上游用请求侧 4xx 回限流形态正文时，finalizeRun 的 UPDATE 被
+//     DB 以 23514 拒绝 ⇒ 整条回滚 ⇒ run 行停在半写态 ⇒ 这次自检在系统里
+//     「根本没发生过」，但调度器以为发生过。
+//   ★ 这是「镜像面没跟上」家族的第三次复发（929 补 6 个 ⇒ 930 补
+//     model_unavailable ⇒ 957 补 rate_limit_observed）。
+
+//go:embed embeddata/startup/957_self_check_error_type_kind_closure_rate_limit_observed.sql
+var selfCheckErrorTypeKindClosureRateLimitObserved957 []byte
+
+//go:embed embeddata/startup/957_self_check_error_type_kind_closure_rate_limit_observed.down.sql
+var selfCheckErrorTypeKindClosureRateLimitObserved957Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -2072,6 +2087,10 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
 	"startup/956_minimax_m31_flash_featured.sql":      minimaxM31FlashFeatured956,
 	"startup/956_minimax_m31_flash_featured.down.sql": minimaxM31FlashFeatured956Down,
+	// ★ 957（2026-11-11 闭集门第三次复发轮）：self_check_runs.error_type 的
+	//   CHECK 闭集补 `rate_limit_observed`（errorsx 新 kind 的镜像面）。
+	"startup/957_self_check_error_type_kind_closure_rate_limit_observed.sql":      selfCheckErrorTypeKindClosureRateLimitObserved957,
+	"startup/957_self_check_error_type_kind_closure_rate_limit_observed.down.sql": selfCheckErrorTypeKindClosureRateLimitObserved957Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,
