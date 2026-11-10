@@ -1563,6 +1563,18 @@ var passiveModelFingerprints955 []byte
 //go:embed embeddata/startup/955_passive_model_fingerprints.down.sql
 var passiveModelFingerprints955Down []byte
 
+// ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
+//   判据 = 实测有 24h 真实业务流量（110 次）的免费模型（免费面 24h 有流量的
+//   canonical 只有 glm-5.3-flash 与本项两个）。
+//   配套代码改动在 bg/model_tier.go：装载 featured canonical 时展开
+//   provider_models.raw_model_name 变体（只比裸名 ⇒ namespaced 免费对零效果）。
+
+//go:embed embeddata/startup/956_minimax_m31_flash_featured.sql
+var minimaxM31FlashFeatured956 []byte
+
+//go:embed embeddata/startup/956_minimax_m31_flash_featured.down.sql
+var minimaxM31FlashFeatured956Down []byte
+
 // ★ 921（2026-10-29 输出合规误报轮）：拦截审核工作台。
 //   - sanitize_block_reviews 追加 session_id / label / label_comment /
 //     labeled_by / labeled_at（末尾追加，既有列序不变）；
@@ -2057,6 +2069,9 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
+	// ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
+	"startup/956_minimax_m31_flash_featured.sql":      minimaxM31FlashFeatured956,
+	"startup/956_minimax_m31_flash_featured.down.sql": minimaxM31FlashFeatured956Down,
 	// ★ 928（2026-11-02）：探测流量物理隔离车道（session_turns_probe_hot + request_stats_probe_minute）。
 	"startup/928_probe_traffic_physical_lane.sql":      probeTrafficPhysicalLane928,
 	"startup/928_probe_traffic_physical_lane.down.sql": probeTrafficPhysicalLane928Down,
