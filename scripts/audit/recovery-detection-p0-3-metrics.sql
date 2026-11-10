@@ -203,6 +203,38 @@ SELECT 'M5_probe_runs_24h' k, COUNT(*)::text||' total | free='||
       AND pm.raw_model_name=node_probe_runs.raw_model_name))::text v
 FROM node_probe_runs WHERE created_at > now() - interval '24 hours';
 
+-- ═══ M5b 探测量分解（★ 2026-11-11 关窗预演补：★ M5 超预算时的**归因证据**）═══
+--
+-- ★★ 为什么需要它：★ M5 是总量键 ⇒ 超 9334 预算判 ❌ 时**无法分辨**增量来自
+--   ★ 「设计内的恢复探测」还是「调度失控」⇒ 关窗预演实测（pre24 vs post 前 ~11h，
+--   2026-11-11 00:4x 手算，本键把它固化）：
+--   · credential_recovery 240.3 → 237.3/h（**持平**）
+--   · periodic            135.7 → 140.7/h（**+3.7%**：era2 的 106 个新覆盖变体
+--     入 periodic 调度 ⇒ 设计内）
+--   · sync_request          9.3 →  21.4/h（**+131%**：恢复链 F-B re-arm /
+--     F-A 回退的再探测 ⇒ 设计内 ⇒ 正是本轮修复的**目的行为**）
+--   ⇒ ★★ 预判：关窗读数 ≈9600（仍超 9334）⇒ ❌ 的**增量可完全归因**于设计内行为。
+-- ★★ 口径：与 M5 同窗（now()-24h 滚动）⇒ 关窗时刻（now = 切点+24h）读数
+--   恰好 = 纯 post 段 ⇒ 与 M5 主键同窗同时刻，归因可直接引用。
+-- ★★ 必须 VALUES + LEFT JOIN（★ §667 同款坑：GROUP BY 空集**不产生行** ⇒ 键缺失
+--   ⇒ ★ 恰好在最需要它的时候没有它）；★ 枚举 = node_probe_runs_trigger_kind_check
+--   闭集（9 值，db/db.go:6212）+ 'other' 兜底（★ 未来新增 kind 不在枚举里 ⇒
+--   进 other ⇒ **不会被静默吞掉**）。
+SELECT 'M5_probe_runs_24h_by_kind' k,
+  string_agg(w.kind||'='||COALESCE(c.n,0)::text, ' | ' ORDER BY COALESCE(c.n,0) DESC, w.kind) v
+FROM (VALUES ('credential_recovery'),('periodic'),('sync_request'),('request_failure'),
+             ('manual'),('admin'),('integrity_probe_planner'),('selfcheck'),
+             ('external_async'),('other')) w(kind)
+LEFT JOIN (
+  SELECT CASE WHEN trigger_kind IN ('credential_recovery','periodic','sync_request','request_failure',
+                                    'manual','admin','integrity_probe_planner','selfcheck','external_async')
+              THEN trigger_kind ELSE 'other' END AS kind,
+         COUNT(*) AS n
+  FROM node_probe_runs
+  WHERE created_at > now() - interval '24 hours'
+  GROUP BY 1
+) c ON c.kind = w.kind;
+
 -- ═══ ★★★ 第 22 处口径修正（2026-11-11 00:2x）：★ M5 的「逐日探测量分布」═══
 --
 -- ★★ **为什么需要它（★ 实测抓到的真缺陷）**：★ M5 的 base = **pre24 的单日快照**（9242）
