@@ -1027,8 +1027,15 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
                  OR (direct_http_status IN (400,422)
                      AND NOT (lower(coalesce(response_body,'')) ~ 'insufficient_quota|insufficient balance|quota exceeded|exceeded your current quota|billing|arrears|unpaid|balance is not enough|not enough balance|余额不足|欠费|额度不足|余额已不足|账户余额'))
                  OR direct_err_code IN ('http_404','probe_http_404')
+                 -- ★★★ 2026-11-10 修正（★★ 第 12 处口径修正，★ 未来时钟模拟抓到的真缺陷）：
+                 --   ★ 原来写 `quota_recover_at > now()` ⇒ ★★ **用当前时钟判历史事件**
+                 --   ★★ ⇒ 在 Stage 2 的未来时钟（2026-11-17）下分层归属会整体改变
+                 --   ★★ （实测 normal 154→459、exempt 537→232，★ 总数 691 不变 ⇒ 纯分层污染）
+                 --   ★★ ⇒ ★★ M18 守卫会报「pre 基线漂移」⇒ ★★ **Stage 2 直接跑不了**
+                 --   ★★ ⇒ 正确语义 = 「**这条失败发生时**配额是否处于用尽窗口」
+                 --   ★★ ⇒ 锚定**事件时点**（fail_at）⇒ ★★ 时钟无关 ✔
                  OR (quota_state IN ('periodic_exhausted','balance_exhausted','permanently_exhausted')
-                     AND quota_recover_at > now())
+                     AND quota_recover_at > created_at)
                THEN 'exempt' ELSE 'normal' END AS exemption,
           LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) AS next_at,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END AS era
