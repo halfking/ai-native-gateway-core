@@ -500,6 +500,10 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/mcp_metrics_scrape_wiring_test.sh
 	@bash tests/gate_scripts_caller_registry_test.sh
 	@bash tests/market_price_sync_contract_test.sh
+	@bash tests/cross_doc_registry_collision_test.sh
+	@bash tests/anthropic_reasoning_trace_contract_test.sh
+	@bash tests/rate_limit_body_attribution_contract_test.sh
+	@bash tests/migration_delivery_boundary_convergence_test.sh
 	@if command -v python3 >/dev/null 2>&1; then \
 		python3 tests/market_price_sync_accounting_test.py; \
 	else \
