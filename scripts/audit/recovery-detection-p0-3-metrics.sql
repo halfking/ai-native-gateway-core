@@ -235,3 +235,92 @@ SELECT 'M10_diff_'||raw_model_name k,
        WHERE b.billing_mode='free' AND pm2.raw_model_name=diff.raw_model_name),0)::text
   ||' | nps_rows='||COALESCE((SELECT COUNT(*) FROM node_probe_state n WHERE n.raw_model_name=diff.raw_model_name),0)::text v
 FROM diff ORDER BY raw_model_name;
+
+-- ═══ M11 ★★★ 恢复感知时延（★ 最直接回答"恢复检测及时性"的指标）═══
+-- 定义：从「上游开始失败」到「网关确认它好了」的时延。
+-- 方法：node_probe_runs 时序里，连续失败段的最后一条失败 → 之后第一条成功。
+-- ★ 排除最近 2 小时（当前仍在进行中的段，避免把"还没恢复"算成"恢复慢"）。
+-- ★ 按 raw 名形态分组（namespaced = 免费供应商主体；bare = 裸名）。
+-- ★ 按修复时刻切 era（部署 2026-11-10 13:16 +08）⇒ **同一口径的前后对比**。
+--
+-- ★ 修复前基线（7 天窗口实测，已记入 T0 锚点）：
+--   bare       : 19 episodes | med 3 min  | p90 120 min | max  360 min
+--   namespaced : 17 episodes | med 6 min  | p90 511 min | max 1791 min（★ 29.9h ⇒
+--                  这就是「免费供应商 ~24h 未感知恢复」的量化形态）
+-- ★ 续篇判定：post_fix 段的 namespaced p90/max 是否显著低于 pre_fix 段。
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
+          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
+          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (lower(btrim(n.raw_model_name)) IN (SELECT m FROM st)) is_feat_now,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+     AND n.created_at < now() - interval '2 hours'   -- ★ 排除进行中的段
+ ), seg AS (
+   SELECT credential_id, raw_model_name, is_feat_now, is_ns, created_at, success,
+          LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
+          LEAD(created_at)  OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_feat_now, is_ns, created_at AS fail_at,
+          EXTRACT(EPOCH FROM (next_at - created_at))/60 AS lat,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:16:00+08' THEN 'pre_fix' ELSE 'post_fix' END era
+   FROM seg
+   WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
+ )
+SELECT 'M11_latency_'||era||'_'||CASE WHEN is_ns THEN 'namespaced' ELSE 'bare' END||'_featnow_'||CASE WHEN is_feat_now THEN 'Y' ELSE 'N' END k,
+  COUNT(*)::text||' episodes | med_min='||COALESCE((percentile_disc(0.5) WITHIN GROUP (ORDER BY lat))::int::text,'?')
+  ||' | p90_min='||COALESCE((percentile_disc(0.9) WITHIN GROUP (ORDER BY lat))::int::text,'?')
+  ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY lat))::int::text,'?') v
+FROM rec GROUP BY era, is_ns, is_feat_now ORDER BY era, is_ns, is_feat_now;
+
+-- ★ 同口径但按 raw 名的"当前 featured"分组的汇总（★ post_fix 段的读数才是有效对比；
+--   pre_fix 段的 featnow 标签是回溯标注，只能当参考）
+WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
+ cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
+          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
+          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+ st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
+ fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
+          (lower(btrim(n.raw_model_name)) IN (SELECT m FROM st)) is_feat_now,
+          (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free'
+     AND n.created_at > now() - interval '7 days'
+     AND n.created_at < now() - interval '2 hours'
+ ), seg AS (
+   SELECT credential_id, raw_model_name, is_feat_now, is_ns, created_at, success,
+          LEAD(success) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_success,
+          LEAD(created_at)  OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_feat_now, is_ns,
+          EXTRACT(EPOCH FROM (next_at - created_at))/60 AS lat,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:16:00+08' THEN 'pre_fix' ELSE 'post_fix' END era
+   FROM seg
+   WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
+ ), agg AS (
+   SELECT era, is_ns, COUNT(*) c,
+          percentile_disc(0.5) WITHIN GROUP (ORDER BY lat) med,
+          percentile_disc(0.9) WITHIN GROUP (ORDER BY lat) p90,
+          percentile_disc(1.0) WITHIN GROUP (ORDER BY lat) mx
+   FROM rec GROUP BY era, is_ns
+ )
+SELECT 'M11b_'||era||'_'||CASE WHEN is_ns THEN 'namespaced' ELSE 'bare' END k,
+  c::text||' episodes | med='||COALESCE(med::int::text,'?')||' | p90='||COALESCE(p90::int::text,'?')
+  ||' | max='||COALESCE(mx::int::text,'?') v
+FROM agg ORDER BY era, is_ns;
