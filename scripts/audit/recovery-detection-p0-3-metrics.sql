@@ -16,9 +16,16 @@
 --   · 免费面 = credential_model_bindings.billing_mode='free'
 --   · 探测运行 = node_probe_runs（权威表；model_probe_runs 仅 6 行，属另一层）
 --   · featured 集合 = routing_policy.featured_models ∪ models_canonical.featured
---     **并按 bg/model_tier.go 的新装载逻辑展开 provider_models.raw_model_name 变体**
+--     **并按 bg/model_tier.go 的装载逻辑展开 provider_models.raw_model_name 变体**
 --     ⇒ ★ 不展开会把 namespaced 免费对误读成"非 featured" ⇒ **假零**。
---   · 部署时刻 = 2026-11-10 13:16 +08（DB 本地时钟；★ 不是 UTC —— 踩过）。
+--     ★★ era2（2026-11-10 第二次部署）：展开覆盖**两个来源**的 canonical
+--     （此前只展开 models_canonical.featured 一侧 ⇒ 漏 106 个 namespaced 变体）。
+--   · era 切点（★ DB 本地时钟 +08；★ 不是 UTC —— 用 UTC 切会得到**假零**，已踩）：
+--       era1 = 2026-11-10 13:16 +08（canonical 侧展开首次上线，build_seq 2994，static=92）
+--       era2 = 2026-11-10 13:42:30 +08（★ **统一展开**上线，build_seq 2995，static=210）
+--     ★ 当前在役 era = era2 ⇒ M8 / M11 的前后切分一律按 era2。
+--     ★ era2 取「容器启动 13:42:26.9 + 静态集合刷新 13:42:28」之后 2 秒 ⇒ post 段
+--       严格是新二进制产出的数据（不含旧槽尾巴）。
 --
 -- ⚠ psql 语法坑（已踩 3 次）：★ `GROUP BY 2` 里若 2 是**聚合表达式**会报
 --   "aggregate functions are not allowed in GROUP BY" ⇒ 必须「子查询包一层 + 外层聚合」。
@@ -50,9 +57,15 @@ SELECT 'M1b_free_unavail_'||bucket k, COUNT(*)::text v FROM tagged GROUP BY buck
 -- ═══ M2 featured 集合规模（新装载逻辑的真值；修复前 34 rp + 15 canon + 0 raw）═══
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>'')
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>'')
 SELECT 'M2_featured_static' k,
   (SELECT COUNT(*) FROM rp)::text||' rp + '||(SELECT COUNT(*) FROM cf)::text||' canon + '
   ||(SELECT COUNT(*) FROM rawv)::text||' raw_variant = '
@@ -66,9 +79,15 @@ FROM models_canonical WHERE featured=TRUE AND status='active';
 --             namespaced featured 与非 featured **同为 4**（无差异）★ ← 修复目标
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  runs AS (
    SELECT n.credential_id, n.raw_model_name, count(*) cnt
@@ -92,9 +111,15 @@ FROM tagged GROUP BY f, ns ORDER BY 1;
 -- 部署后 T0 实测：ns featured http_429/timeout → 1800s；ns 非 featured 同类 → 3600s（2:1）。
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  tagged AS (
    SELECT (lower(btrim(n.raw_model_name)) IN (SELECT m FROM st)) is_feat,
@@ -145,9 +170,15 @@ FROM node_probe_runs WHERE created_at > now() - interval '24 hours';
 -- ═══ M6 ★ 收益面：免费在服对里命中 featured 的对数（修复前 15 → 部署后 34）═══
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  freeb AS (
   SELECT DISTINCT b.credential_id, pm.raw_model_name, mc.canonical_name, b.available
@@ -169,13 +200,19 @@ SELECT 'M7_target_featured' k, canonical_name||' featured='||featured::text v
 FROM models_canonical WHERE canonical_name='minimax-m3.1-flash';
 
 -- ═══ M8 ★ 部署前后切分（★ 判定"修复后是否真的拉开差距"）═══
--- ★ 部署时刻 = 2026-11-10 13:16 +08（★ DB 本地时钟；用 UTC 切会得到假零）。
+-- ★ era 切点 = 2026-11-10 13:42:30 +08（era2；★ DB 本地时钟；用 UTC 切会得到假零）。
 -- 用法：窗口未满时看 post 段样本量是否足够；★ 样本不足时**不能**下结论。
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  r AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at,
@@ -184,7 +221,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    FROM node_probe_runs n WHERE n.created_at > now() - interval '24 hours'
  ), tagged AS (
    SELECT CASE WHEN is_feat THEN 'featured' ELSE 'not' END f,
-          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:16:00+08' THEN 'pre' ELSE 'post' END win,
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END win,
           credential_id, raw_model_name
    FROM r WHERE is_ns
  ), agg AS (
@@ -200,9 +237,15 @@ FROM agg GROUP BY f, win ORDER BY 1;
 -- ★ T0 实测 = 0（完整覆盖）；若这里 > 0 ⇒ 展开逻辑与数据已脱节。
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv)
 SELECT 'M9_missing_raw_variant' k,
   COUNT(*)::text||' 个 featured canonical 的 raw 变体未进 static（★ 期望 0）' v
@@ -241,7 +284,7 @@ FROM diff ORDER BY raw_model_name;
 -- 方法：node_probe_runs 时序里，连续失败段的最后一条失败 → 之后第一条成功。
 -- ★ 排除最近 2 小时（当前仍在进行中的段，避免把"还没恢复"算成"恢复慢"）。
 -- ★ 按 raw 名形态分组（namespaced = 免费供应商主体；bare = 裸名）。
--- ★ 按修复时刻切 era（部署 2026-11-10 13:16 +08）⇒ **同一口径的前后对比**。
+-- ★ 按在役 era 切分（era2 = 2026-11-10 13:42:30 +08）⇒ **同一口径的前后对比**。
 --
 -- ★ 修复前基线（7 天窗口实测，已记入 T0 锚点）：
 --   bare       : 19 episodes | med 3 min  | p90 120 min | max  360 min
@@ -250,9 +293,15 @@ FROM diff ORDER BY raw_model_name;
 -- ★ 续篇判定：post_fix 段的 namespaced p90/max 是否显著低于 pre_fix 段。
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
@@ -273,7 +322,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  ), rec AS (
    SELECT is_feat_now, is_ns, created_at AS fail_at,
           EXTRACT(EPOCH FROM (next_at - created_at))/60 AS lat,
-          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:16:00+08' THEN 'pre_fix' ELSE 'post_fix' END era
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre_fix' ELSE 'post_fix' END era
    FROM seg
    WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
  )
@@ -287,9 +336,15 @@ FROM rec GROUP BY era, is_ns, is_feat_now ORDER BY era, is_ns, is_feat_now;
 --   pre_fix 段的 featnow 标签是回溯标注，只能当参考）
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
+ -- ★★ era2（2026-11-10 第二次部署）：featured 集合改为**统一展开** —— raw 变体来自
+ --   ★ **两个来源**的 canonical（此前只展开 models_canonical.featured 一侧，漏了
+ --   ★ routing_policy 侧 ⇒ 实测 106 个 namespaced 变体未覆盖 ⇒ 同一缺陷只修一半）。
+ --   ★ 与 bg/model_tier.go 的装载查询保持同一套语义（feat_names UNION ⇒ JOIN 展开）。
  rawv AS (SELECT DISTINCT lower(btrim(pm.raw_model_name)) m
-          FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
-          WHERE mc.featured=TRUE AND mc.status='active' AND pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
+          FROM (SELECT m FROM rp UNION SELECT m FROM cf) fn
+          JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
+          JOIN provider_models pm ON pm.canonical_id = mc.id
+          WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>''),
  st AS (SELECT m FROM rp UNION SELECT m FROM cf UNION SELECT m FROM rawv),
  fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success,
@@ -310,7 +365,7 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  ), rec AS (
    SELECT is_feat_now, is_ns,
           EXTRACT(EPOCH FROM (next_at - created_at))/60 AS lat,
-          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:16:00+08' THEN 'pre_fix' ELSE 'post_fix' END era
+          CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre_fix' ELSE 'post_fix' END era
    FROM seg
    WHERE success = FALSE AND next_success = TRUE AND next_at IS NOT NULL
  ), agg AS (
