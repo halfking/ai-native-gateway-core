@@ -137,6 +137,16 @@ func isCentralPolicyKind(kind errorsx.ErrorKind) bool {
 		// 2026-11-02 事故的放大器形态（盲重试 + 把 (凭据,模型) 按 http_5xx
 		// 拉黑 5 分钟 + 3 连败后整凭据 cooling）。漏登记 ⇒ 本轮修复静默失效。
 		errorsx.KindRequestRejected,
+		// 2026-11-10（审计 F50）：rate_limit_observed 必须登记在这里。
+		//
+		// ★ 同上：不在表里的 kind 会被下面的 `kind = errorsx.KindTransient`
+		//   **重写**——而 KindTransient 正是 2026-11-02 事故的放大器形态
+		//   （盲重试 + 把 (凭据,模型) 按 http_5xx 拉黑 5 分钟 + 3 连败后
+		//   整凭据 cooling ⇒ 全租户 503）。
+		//   ★ 本 kind 的语义恰恰是「**不**惩罚节点」（上游用 4xx 回了限流
+		//   形态的正文 ⇒ 证据指向这次请求，不指向节点）⇒ 漏登记 ⇒ 这条
+		//   修复**静默失效**，而且是往**更狠**的方向失效。
+		errorsx.KindRateLimitObserved,
 		// 2026-11-02（4xx 归因族收口轮）：model_unavailable 必须登记在这里。
 		//
 		// 本函数是**闭集**：不在表里的 kind 会被下面的

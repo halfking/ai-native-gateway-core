@@ -1027,6 +1027,29 @@ func buildAnthropicUsageObject(usage *ResponseUsage) map[string]any {
 func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 	content := make([]map[string]any, 0)
 
+	// F7 (2026-11-10 · 属主裁决「恢复 Anthropic 腿的 reasoning trace 转发」):
+	// OpenAI 系上游（DeepSeek-R1 / GLM-Z1 / QwQ …）把思考链放在
+	// `choices[].message.reasoning_content`，而 ParseOpenAIResponse 只把它
+	// 存进 ir.ReasoningContent、**不**建 "thinking" 内容块（Anthropic 原生
+	// 上游那条路才建）。⇒ Anthropic 客户端只读 "thinking" 块 ⇒ 此前整条 trace
+	// 在 Anthropic 腿被静默丢弃。
+	//
+	// 线形态：{"type":"thinking","thinking":"<trace>"}，且**排在内容数组最前**
+	// （Anthropic 要求 thinking 块先于 text / tool_use）。
+	// `signature` 字段在没有时**不写**（IR 把签名挂在内容块上，不在
+	// ReasoningContent 上 ⇒ 无块的 trace 没有签名可转；写空签名会被
+	// Anthropic API 拒）。
+	//
+	// 去重：ir.Content 里已经有 "thinking" 块时以那块为准（它同时带文本和
+	// 签名）⇒ 不再补第二块（否则 trace 双写；Anthropic→Anthropic 原样透传
+	// 也因此保持逐字不变）。
+	if ir.ReasoningContent != "" && !hasAnthropicThinkingBlock(ir.Content) {
+		content = append(content, map[string]any{
+			"type":     "thinking",
+			"thinking": ir.ReasoningContent,
+		})
+	}
+
 	for _, c := range ir.Content {
 		switch c.Type {
 		case "text":
@@ -1114,6 +1137,22 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		content = append(content, map[string]any{"type": "text", "text": ""})
 	}
 	return content
+}
+
+// hasAnthropicThinkingBlock reports whether the IR content already carries
+// an Anthropic "thinking" block.
+//
+// F7 (2026-11-10): the Anthropic response serializer uses it to decide
+// whether ir.ReasoningContent still needs to be forwarded as a `thinking`
+// block. A block already in the content wins — it carries the text AND the
+// signature, so adding a second one would duplicate the trace.
+func hasAnthropicThinkingBlock(content []ResponseContentBlock) bool {
+	for _, c := range content {
+		if c.Type == "thinking" {
+			return true
+		}
+	}
+	return false
 }
 
 // SerializeResponsesResponse serializes an InternalResponse into a complete
