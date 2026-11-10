@@ -3044,6 +3044,31 @@ def selftest() -> int:
                 failures.append("[㉷ 真实调用点] `main()` 虽红了但**不是**重复键守卫红的 ⇒ ★★ "
                                 f"{_out[-300:]}")
 
+    # ⑫ ★★★★ **第 33 处：★ 「锚点档 ③ 的诚实边界清单」vs「判定器实际打印的边界」⇒ 必须机械化**
+    #   ★★ 两份清单**必然漂移**（★ 代码加一条边界 ⇒ 清单不会自动更新）
+    #   ★★ ⇒ ★★ 关窗当天**照抄清单** ⇒ ★★ **静默漏披露** ⇒ ★★ 第 27 处「缺覆盖的全绿」的同款
+    #   ★★ 判据侧 = **锚点档**（★ 与被守卫的代码**不同源** ⇒ 同源变异打不中它 ⇒ LESSONS §680）
+    try:
+        _anchor_ids = _load_anchor_boundary_ids()
+    except Exception as exc:
+        _anchor_ids = set()
+        failures.append(f"[㉸ 锚点档清单] 读不到锚点档 ③ 的诚实边界清单（★ {exc}）⇒ ★★ **不可判**"
+                        f"（★ 不得静默跳过 ⇒ ★ 「读不到判据」≠「没发现问题」）")
+    _hb_lines = honest_boundary_lines()
+    _judge_ids = _boundary_ids_from_lines(_hb_lines)
+    if _anchor_ids and _judge_ids:
+        if _anchor_ids != _judge_ids:
+            failures.append(f"[㉸ 锚点档清单] 锚点档 ③ 的清单与判定器实际打印的边界**不一致**"
+                            f"（★ 锚点档独有 {sorted(_anchor_ids - _judge_ids)} / "
+                            f"★ 判定器独有 {sorted(_judge_ids - _anchor_ids)}）"
+                            f"⇒ ★★ 关窗当天照抄清单 ⇒ ★★ **会漏披露** ⇒ ★★ 必须同步更新两处")
+        if len(_judge_ids) != len(_hb_lines):
+            failures.append(f"[㉸ 锚点档清单] 边界行数 {len(_hb_lines)} ≠ 带编号行数 {len(_judge_ids)}"
+                            f" ⇒ ★★ 有边界**没有行首编号** ⇒ ★★ 清单**必然漏掉它**")
+    elif _anchor_ids or _judge_ids:
+        failures.append(f"[㉸ 锚点档清单] 一侧为空（★ 锚点档 {len(_anchor_ids)} / 判定器 {len(_judge_ids)}）"
+                        f" ⇒ ★★ **不可判**")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -3124,11 +3149,76 @@ def selftest() -> int:
           "＋ ★ 解析侧「**重复键守卫**」（★ 异值/同值**都** ⇒ **rc≠0** ⇒ fail-closed）"
           "＋ ★ 三个解析器**统一收敛到同一实现**（★ 原先 verdict 留首行、clockcheck/negcontrol 留末行 ⇒ 同一份输出三个数）"
           "＋ ★ 期望值**与期望串**都走**独立夹具** ⇒ ★★ 同源变异打不中它")
+    print("   ✔ ㉸ ★★★★ **第 33 处：★ 「锚点档 ③ 的诚实边界清单」vs「判定器实际打印的边界」**"
+          "（★ 两份清单**必然漂移** ⇒ ★★ 关窗当天照抄清单 ⇒ ★★ **静默漏披露** ⇒ ★★ 第 27 处的同款）"
+          "＋ ★ 机械化守卫（★ 判据侧 = **锚点档**，★ 与代码**不同源** ⇒ 同源变异打不中它）"
+          "＋ ★ 读不到锚点档 ⇒ **fail-closed**（★ 不可判 ≠ 没发现问题）"
+          "＋ ★ 圈号**码位 ≠ 语义编号** ⇒ ★★ 一律按**字符集合**比对（★ 不做算术映射）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
 
 # ─────────────────────────────────────────────────────────────────────
+# ★★★ 第 33 处（★ 2026-11-11 04:3x +08）：★ 「锚点档 ③ 的诚实边界清单」是**手写**的
+#   ★★ 而判定器实际打印的边界来自 `honest_boundary_lines()`（★ 代码侧）
+#   ★★ ⇒ ★★ 两份**必然漂移**（★ 代码加一条边界 ⇒ 清单不会自动更新）
+#   ★★ ⇒ ★★ 关窗当天**照抄清单** ⇒ ★★ **静默漏披露** ⇒ ★★ 第 27 处「缺覆盖的全绿」的同款
+#   ⇒ ★★ 修法：★ 把两份清单的**一致性**做成机器可核的门（★ 判据侧 = 锚点档，★ 与代码**不同源** ⇒ §680）
+ANCHOR_DOC_GLOB = "docs/audit/*P0-3*观测锚点*.md"
+# ★ 诚实边界编号的字符集合：★ ①-⑳（U+2460-U+2473）★ ㉑-㉿（U+3251-U+327F）
+#   ★★ ⚠️ 这些圈号的 **Unicode 码位与语义编号不一致**（★ ㉦ = U+3266、★ ㉩ = U+3269 …）
+#   ★★   ⇒ ★★ **不能**做算术映射 ⇒ ★★ 一律按**字符集合**比对
+BOUNDARY_ID_CHARS = r"①-⑳㉑-㉿"
+
+
+def _boundary_ids_from_text(text: str) -> set[str]:
+    """★ 从一段文本里抽出**诚实边界编号**（★ 支持 `①–⑭` 这样的**区间**写法）。
+
+    ★★ 区间只支持 ①-⑳ 段（★ 码位**连续** ⇒ 可展开）；★ ㉑-㉿ 段虽码位连续，
+    ★★   但其**语义编号与码位不一致** ⇒ ★★ 不做区间展开（★ 清单里也没这么写）。
+    """
+    t = text.replace("**", "")
+    out: set[str] = set()
+    for m in re.finditer(r"([①-⑳])[–—-]([①-⑳])", t):
+        out |= {chr(c) for c in range(ord(m.group(1)), ord(m.group(2)) + 1)}
+        t = t.replace(m.group(0), " ")
+    out |= set(re.findall(f"[{BOUNDARY_ID_CHARS}]", t))
+    return out
+
+
+def _boundary_ids_from_lines(lines: list[str]) -> set[str]:
+    """★ 从 `honest_boundary_lines()` 的每一行里抽出**行首编号**（★ 代码侧的事实）。"""
+    out: set[str] = set()
+    for ln in lines:
+        m = re.match(rf"\s*([{BOUNDARY_ID_CHARS}])", ln)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def _load_anchor_boundary_ids() -> set[str]:
+    """★ 读**锚点档 ③** 里手写的诚实边界清单（★ 人类侧的那一份）⇒ ★★ 返回编号集合
+
+    ★★ **读不到 ⇒ 抛异常** ⇒ 自测 **fail-closed**（★ 「不可判」≠「没发现问题」★ ★ 不得静默跳过）
+    """
+    root = Path(__file__).resolve().parents[2]
+    cands = sorted(root.glob(ANCHOR_DOC_GLOB))
+    if not cands:
+        raise FileNotFoundError(f"★ 锚点档（{ANCHOR_DOC_GLOB}）不存在")
+    doc = cands[0].read_text(encoding="utf-8")
+    if "### ③" not in doc:
+        raise ValueError("★ 锚点档里找不到 ③ 段（★ 诚实边界清单）")
+    line = ""
+    for ln in doc[doc.index("### ③"):].splitlines():
+        s = ln.strip()
+        if s.startswith("★") and re.search(r"[①-⑳]", s):
+            line = s
+            break
+    if not line:
+        raise ValueError("★ 锚点档 ③ 段里找不到诚实边界清单行")
+    return _boundary_ids_from_text(line)
+
+
 def honest_boundary_lines() -> list[str]:
     """★ 诚实边界的**唯一来源**（★ 本轮抽成函数 ⇒ 自测能守住「披露不许被静默删掉」）"""
     lines: list[str] = []
