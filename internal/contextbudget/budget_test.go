@@ -59,9 +59,14 @@ func TestResolveBucketBudget(t *testing.T) {
 }
 
 func TestCheckFinalBodyAndOutputReserve(t *testing.T) {
-	body := []byte(`{"model":"model","messages":[{"role":"user","content":"hello"}],"max_tokens":7000}`)
+	// 2026-11-11 改判（211 ZCode 连续 422 根修）：body 的 max_tokens 按半窗
+	// 封顶后才并入预留。旧断言 1192（=8192−7000 全额扣除）钉的是「输出
+	// 上界当预留」的旧语义；新语义下 body 侧 ask 无法把输入预算压到半窗
+	// 以下 ⇒ 小 ask（2000）与无 ask 同形（4096）。ask>半窗的封顶形状见
+	// TestBodyOutputCeilingCappedAtHalfWindow。
+	body := []byte(`{"model":"model","messages":[{"role":"user","content":"hello"}],"max_tokens":2000}`)
 	got, err := Check(body, Spec{ContextWindow: 8192})
-	if err != nil || got.Budget.InputTokens != 1192 || got.Tokens <= 0 || got.BodySHA256 == "" {
+	if err != nil || got.Budget.InputTokens != 4096 || got.Tokens <= 0 || got.BodySHA256 == "" {
 		t.Fatalf("Check = %+v, %v", got, err)
 	}
 	_, err = Check(body, Spec{ContextWindow: 8192, MaxJSONBytes: 10})
@@ -88,10 +93,61 @@ func TestCheckFinalBodyAndOutputReserve(t *testing.T) {
 }
 
 func TestThinkingIsIncludedInOutputLimit(t *testing.T) {
+	// 2026-11-11 改判：body 侧输出参数（max_tokens / thinking.budget_tokens）
+	// 合并取 max 后再按半窗封顶 ⇒ 任何 body 输出参数组合都不得把输入预算
+	// 压到半窗以下。旧断言 2192（=8192−6000 全额扣除）钉的是旧语义；新
+	// 断言：带与不带 thinking.budget_tokens 的预算同形（=半窗 4096）——
+	// 「thinking 不被二次扣除」由「取 max + 封顶」的结构保证（若被加总，
+	// 6000+4000=10000 > 4096 半窗，预算仍是 4096，不会更小）。
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":6000,"thinking":{"type":"enabled","budget_tokens":4000}}`)
 	got, err := Check(body, Spec{ContextWindow: 8192})
-	if err != nil || got.Budget.InputTokens != 2192 {
-		t.Fatalf("thinking was counted twice: %+v, %v", got, err)
+	if err != nil || got.Budget.InputTokens != 4096 {
+		t.Fatalf("thinking budget tightened the input budget below half window: %+v, %v", got, err)
+	}
+	noThinking := []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":6000}`)
+	got2, err := Check(noThinking, Spec{ContextWindow: 8192})
+	if err != nil || got2.Budget.InputTokens != got.Budget.InputTokens {
+		t.Fatalf("thinking budget changed the input budget: %+v vs %+v, %v", got.Budget, got2.Budget, err)
+	}
+}
+
+// TestBodyOutputCeilingCappedAtHalfWindow 钉 2026-11-11 211 生产事故形状：
+// claude-sonnet-5（窗口 200k）× ZCode max_tokens=128000。
+// 旧行为：预留全额扣除 ⇒ 输入预算 = min(100k, 200k−128k) = 72000 ⇒ ~76.8k
+// 估计值被拒 ⇒ fit 字节目标 216KB 装不下受保护区 ⇒ ErrProtectedContext 422。
+// 新行为：body 侧预留封顶半窗 ⇒ 输入预算恒 ≥ 半窗；ask ≤ 半窗时行为与
+// 旧版一致（window/2 本就是 min 独立项）。桶侧显式配置的 OutputReserve
+// 不受封顶（仍全额扣除，配置语义不变）。
+func TestBodyOutputCeilingCappedAtHalfWindow(t *testing.T) {
+	// 事故形状：max_tokens=128000 > 半窗 100000 ⇒ 预算取 100000（而非 72000）。
+	incident := []byte(`{"model":"claude-sonnet-5","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}`)
+	got, err := Check(incident, Spec{ContextWindow: 200000})
+	if err != nil || got.Budget.InputTokens != 100000 {
+		t.Fatalf("incident shape must resolve to half-window input budget, got %+v, %v", got.Budget, err)
+	}
+	// 小于半窗的 ask：与无 ask 同形（半窗），与旧版一致。
+	small := []byte(`{"model":"m","max_tokens":32000,"messages":[{"role":"user","content":"hi"}]}`)
+	got, err = Check(small, Spec{ContextWindow: 200000})
+	if err != nil || got.Budget.InputTokens != 100000 {
+		t.Fatalf("sub-half ask keeps half-window budget, got %+v, %v", got.Budget, err)
+	}
+	// 无 max_tokens：折半默认（历史行为不变）。
+	none := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	got, err = Check(none, Spec{ContextWindow: 200000})
+	if err != nil || got.Budget.InputTokens != 100000 {
+		t.Fatalf("no explicit ask keeps half-window default, got %+v, %v", got.Budget, err)
+	}
+	// 桶侧配置（spec 直配）不走封顶：128k 窗口配 100k 预留 ⇒ 27k−margin。
+	confBudget, err := Resolve(Spec{ContextWindow: 128000, OutputReserve: 100000, SafetyMargin: 1000})
+	if err != nil || confBudget.InputTokens != 27000 {
+		t.Fatalf("operator-configured reserve must keep full subtraction, got %+v, %v", confBudget, err)
+	}
+	// 事故形状的终态判据：估计 ~76.8k 的事故请求在新预算下必须**放行**
+	//（旧预算 72000 会以 TokensExceeded 拒绝）。
+	admitted := []byte(`{"model":"claude-sonnet-5","max_tokens":128000,"messages":[{"role":"user","content":"` +
+		strings.Repeat("word ", 53800) + `"}]}`)
+	if _, err := Check(admitted, Spec{ContextWindow: 200000}); err != nil {
+		t.Fatalf("incident-shaped body (~77k est tokens) must be admitted under half-window budget: %v", err)
 	}
 }
 

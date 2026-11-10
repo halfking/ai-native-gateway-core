@@ -413,12 +413,7 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	targetSecs := mult * baseSecs
 
 	tag, err := r.db.Exec(ctx, `
-			WITH static AS (
-			    SELECT lower(unnest(COALESCE(
-			        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
-			        ARRAY[]::TEXT[]
-			    ))) AS model
-			), usage AS (
+			WITH `+StaticFeaturedCTESQL()+`, usage AS (
 			    SELECT lower(raw_model) AS raw_model FROM (
 			        SELECT rl.raw_model_name AS raw_model,
 			               count(*) AS calls
@@ -497,12 +492,7 @@ func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	tag, err := r.db.Exec(dctx, `
-			WITH static AS (
-			    SELECT lower(unnest(COALESCE(
-			        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
-			        ARRAY[]::TEXT[]
-			    ))) AS model
-			)
+			WITH `+StaticFeaturedCTESQL()+`
 			UPDATE model_probe_state mps
 			SET state = 'recovering',
 			    consecutive_successes = 0,

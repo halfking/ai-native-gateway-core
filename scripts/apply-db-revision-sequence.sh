@@ -2603,6 +2603,12 @@ files=(
   #   配套的代码改动在 bg/model_tier.go：装载 featured canonical 时展开
   #   provider_models.raw_model_name 变体（否则只比裸名 ⇒ namespaced 免费对零效果）。
   "$ROOT_DIR/sql/migrations/startup/956_minimax_m31_flash_featured.sql"
+  # ★ 957（2026-11-11 闭集门第三次复发轮）：self_check_runs.error_type 的
+  #   CHECK 闭集补 `rate_limit_observed`（errorsx 新 kind 的镜像面）——
+  #   缺它 ⇒ 上游请求侧 4xx 回限流形态正文时 finalizeRun 的 UPDATE 被 DB 以
+  #   23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行半写 ⇒ 这次自检在系统里
+  #   「根本没发生过」，但调度器以为发生过。
+  "$ROOT_DIR/sql/migrations/startup/957_self_check_error_type_kind_closure_rate_limit_observed.sql"
 )
 
 
@@ -3172,6 +3178,11 @@ ledger_artifact_probe "955_passive_model_fingerprints.sql" \
 #   重复重放安全 ⇒ 幂等）。
 ledger_artifact_probe "956_minimax_m31_flash_featured.sql" \
   "EXISTS (SELECT 1 FROM public.models_canonical WHERE canonical_name = 'minimax-m3.1-flash' AND featured = TRUE)"
+# ★ 957（2026-11-11 闭集门第三次复发轮）：产物 = self_check_runs 的
+#   error_type CHECK 确实覆盖 `rate_limit_observed`（迁移体内自带
+#   「已覆盖全闭集就跳过」的幂等守卫 ⇒ 重放安全）。
+ledger_artifact_probe "957_self_check_error_type_kind_closure_rate_limit_observed.sql" \
+  "EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.self_check_runs'::regclass AND c.conname = 'self_check_runs_error_type_check' AND pg_get_constraintdef(c.oid) LIKE '%rate_limit_observed%')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

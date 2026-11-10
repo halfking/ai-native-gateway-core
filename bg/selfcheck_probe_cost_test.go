@@ -172,8 +172,11 @@ func expectPickModelsThree(mock pgxmock.PgxPoolIface, credID int) {
 	mock.ExpectQuery("COALESCE\\(cmb.available, FALSE\\) = \\$2").WithArgs(credID, false).
 		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "standardized_name"}).
 			AddRow("model-b", "model-b").AddRow("model-c", "model-c"))
-	mock.ExpectQuery("FROM routing_policy").WithArgs("default").
-		WillReturnRows(pgxmock.NewRows([]string{"featured_models"}).AddRow([]string{"model-a"}))
+	// ★ 2026-11-11（断链⑦）：selfcheckFeatured 改走统一双源装载
+	// （QueryStaticFeaturedModels ⇒ SELECT model FROM static），返回
+	// 逐行字符串而非单行数组。行为语义不变：featured 集合={model-a}。
+	mock.ExpectQuery("SELECT model FROM static").WithArgs("default").
+		WillReturnRows(pgxmock.NewRows([]string{"model"}).AddRow("model-a"))
 	// No _request_logs_hot expectation: with no Redis ranking (w.redis nil)
 	// recentInUsageWindow short-circuits on the empty recent set.
 }

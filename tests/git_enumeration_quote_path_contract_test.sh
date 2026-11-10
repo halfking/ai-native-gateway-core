@@ -65,7 +65,7 @@ extract_raw() {
   grep -rnE \
     --include='*.sh' --include='*.bash' \
     --include='*.go' --include='*.py' --include='*.mjs' \
-    '[^A-Za-z0-9_-]git[^|;]*ls-files|[^A-Za-z0-9_-]git[^|;]*--name-only' \
+    '[^A-Za-z0-9_-]git[^|;]*ls-files|[^A-Za-z0-9_-]git[^|;]*--name-only|[^A-Za-z0-9_-]git[^|;]*status --porcelain' \
     . 2>/dev/null \
   | grep -vE '^\./(docs|vendor|node_modules|\.git|build|dist|out|coverage)/' \
   | grep -vE ':[[:space:]]*(#|//)' \
@@ -100,6 +100,16 @@ EXEMPT_TABLE_RAW=(
   "tests/deploy_sops_test@@|ls-files --error-unmatch -- scripts/scan-secrets.private.replacements|--error-unmatch -- scripts/scan-secrets.private.replacements|wc -l|scripts/scan-secrets.private.replacements"
   "tests/env_injector_test@@|ls-files -- '.env.252.enc'|-- '.env.252.enc'|wc -l|.env.252.enc"
   "tests/deploy_sync_prune_contract_test@@|ls-files \"\$rel\"| |wc -l|probe-sh.sh"
+  # ★ ★ 2026-11-10（审计 F53 再普查）：★ **新增 `git status --porcelain` 形态** ★
+  #   ⇒ ★ 本门原先**只认** `ls-files` ／ `--name-only` ⇒ ⇒ 状态类枚举点
+  #   ⇒ ⇒ **一条都没进射程** ⇒ ⇒ 而 `scripts/pre-commit-check.sh` 那处**是真洞**
+  #   ⇒ ⇒ （★ 已 -z 化 ★）⇒ ⇒ 下面这两处是**判断不受转义影响**的 ⇒ ⇒ 登记豁免 ★
+  # ★ ★ 而【★ 状态类探针必须**未跟踪** ★】：★ 否则 `git status --porcelain` 恒空
+  #   ⇒ ⇒ 两侧都空 ⇒ ⇒ 差分探针**无牙**（★ 而「无牙」会被断言⑤当成「探针缺失」★）
+  "scripts/validate-phase1@@|status --porcelain|status --porcelain|wc -l|probe-untracked.txt"
+  "scripts/deploy-kaixuan1@@|status --porcelain|status --porcelain|wc -l|probe-untracked.txt"
+  "scripts/deploy-seamless-docker@@|status --porcelain --untracked-files=no|status --porcelain --untracked-files=no|wc -l|probe-untracked.txt"
+  "scripts/deploy-seamless-docker@@|status --porcelain --untracked-files=no -- .|status --porcelain --untracked-files=no -- .|wc -l|probe-untracked.txt"
 )
 EXEMPT_TABLE=()
 for _r in "${EXEMPT_TABLE_RAW[@]}"; do EXEMPT_TABLE+=("${_r//@@/.sh}"); done
@@ -108,7 +118,17 @@ unset EXEMPT_TABLE_RAW
 # ═══ 断言 ①：★ 抽取器本身不退化 ═════════════════════════════════════
 RAW="$(extract_raw)"
 R_N="$(printf '%s\n' "${RAW}" | grep -c . || true)"
-NONZ="$(printf '%s\n' "${RAW}" | while IFS= read -r l; do [[ -n "${l}" ]] || continue; is_z_line "${l}" || printf '%s\n' "${l}"; done)"
+# ★ ★★ 2026-11-10（审计 F53 再普查）：★ **`core.quotepath=false` 的调用豁免** ★
+#   ★ 逐进程覆盖（★ `git -c core.quotepath=false …` ★）⇒ ★ git **不转义**任何路径
+#   ★ ⇒ ⇒ 那种形态**天然免疫** ⇒ ⇒ 不该被算进「不带 -z」的洞面 ★
+#   ★ ⇒ ★ 否则本门会把【★ 自己那条**正确**的写法 ★】判成洞（★ 本轮就踩到了：
+#   ★   ★ `tests/cross_doc_registry_collision_test.sh` 那处 ★）★★ ★
+NONZ="$(printf '%s\n' "${RAW}" | while IFS= read -r l; do
+  [[ -n "${l}" ]] || continue
+  is_z_line "${l}" && continue
+  printf '%s' "${l}" | grep -qiE 'core\.quotepath=false' && continue
+  printf '%s\n' "${l}"
+done)"
 NZ_N="$(printf '%s\n' "${NONZ}" | grep -c . || true)"
 Z_N=$(( R_N - NZ_N ))
 if [[ "${R_N}" -ge 20 && "${NZ_N}" -ge 3 && "${Z_N}" -ge 5 ]]; then
@@ -172,10 +192,23 @@ git config core.quotePath true
 
 # ★ 先按豁免表把探针文件放进合成仓（★ 断言⑤：★ 那个名字【★ 得真的在仓里 ★】★★ ★）
 for row in "${EXEMPT_TABLE[@]}"; do
-  probe="$(printf '%s' "${row}" | cut -d'|' -f4)"
-  [[ -z "${probe}" ]] && continue
+  probe="$(printf '%s' "${row}" | cut -d'|' -f5)"
+  [[ -z "$probe" ]] && continue
+  # ★ 状态类探针必须**留到提交之后**再建（★ 否则它被**跟踪** ⇒
+  #   ★ `git status --porcelain` 恒空 ⇒ ⇒ 差分探针**无牙** ★）
+  case "$probe" in *untracked*) continue ;; esac
   mkdir -p "${SYN}/$(dirname "${probe}")" 2>/dev/null || true
   printf 'x\n' > "${SYN}/${probe}"
+done
+# ★ 提交之后再建【★ 状态类探针 ★】（★ 它们必须**未跟踪** ★）
+for row in "${EXEMPT_TABLE[@]}"; do
+  probe="$(printf '%s' "${row}" | cut -d'|' -f5)"
+  case "$probe" in
+    *untracked*)
+      mkdir -p "${SYN}/$(dirname "${probe}")" 2>/dev/null || true
+      printf 'x\n' > "${SYN}/${probe}"
+      ;;
+  esac
 done
 # ★ 再放通用探针 ★
 mkdir -p "${SYN}/sql/migrations/startup"
@@ -186,10 +219,10 @@ printf 'x\n' > "${SYN}/sql/migrations/startup/123_中文迁移.sql"
 git add -A >/dev/null 2>&1
 git -c user.email=t@t -c user.name=t commit -qm probe >/dev/null 2>&1
 
-probe_diff() { # 枚举参数 ｜ 归约管道 → 0=判定相同（★ 豁免成立 ★）
-  local args="$1" pipe="$2" d1 d2
-  d1="$(eval "git ls-files ${args} 2>/dev/null | ${pipe:-cat}" 2>/dev/null)"
-  d2="$(eval "git ls-files -z ${args} 2>/dev/null | tr '\\0' '\\n' | ${pipe:-cat}" 2>/dev/null)"
+probe_diff() { # 枚举命令 ｜ 枚举参数 ｜ 归约管道 → 0=判定相同（★ 豁免成立 ★）
+  local cmd="$1" args="$2" pipe="$3" d1 d2
+  d1="$(eval "git ${cmd} ${args} 2>/dev/null | ${pipe:-cat}" 2>/dev/null)"
+  d2="$(eval "git ${cmd} -z ${args} 2>/dev/null | tr '\\0' '\\n' | ${pipe:-cat}" 2>/dev/null)"
   if [[ "${d1}" == "${d2}" ]]; then return 0; fi
   printf '     · D1（转义形态）＝[%s]\n' "${d1}" >&2
   printf '     · D2（-z 形态）＝[%s]\n' "${d2}" >&2
@@ -198,14 +231,19 @@ probe_diff() { # 枚举参数 ｜ 归约管道 → 0=判定相同（★ 豁免�
 
 for row in "${EXEMPT_TABLE[@]}"; do
   f="$(printf '%s' "${row}" | cut -d'|' -f1)"
-  args="$(printf '%s' "${row}" | cut -d'|' -f2)"
-  pipe="$(printf '%s' "${row}" | cut -d'|' -f3)"
-  probe="$(printf '%s' "${row}" | cut -d'|' -f4)"
+  args="$(printf '%s' "${row}" | cut -d'|' -f3)"
+  pipe="$(printf '%s' "${row}" | cut -d'|' -f4)"
+  probe="$(printf '%s' "${row}" | cut -d'|' -f5)"
+  # ★ 枚举命令：★ 默认 `ls-files`；★ 参数以 `status ` 开头 ⇒ 状态类（★ 2026-11-10 ★）
+  cmd="ls-files"
+  case "$args" in
+    status\ *) cmd="status"; args="${args#status }" ;;
+  esac
   if [[ -z "${probe}" || ! -e "${SYN}/${probe}" ]]; then
     bad "豁免条目【★ 缺探针文件 ★】：★ ${f}（★ 探针名【★ ${probe:-空 ★}★】★）⇒ ★ 差分探针【★ 无牙 ★】"
     continue
   fi
-  if probe_diff "${args}" "${pipe}"; then
+  if probe_diff "${cmd}" "${args}" "${pipe}"; then
     ok "豁免差分成立：★ ${f}（★ 枚举参数【★ ${args:-无 ★}★】★）⇒ ★ 转义不改变它的判定 ★"
   else
     bad "豁免差分【★ 不成立 ★】：★ ${f}（★ 枚举参数【★ ${args:-无 ★}★】★）⇒ ★ 那处【★ 是真洞 ★】★"

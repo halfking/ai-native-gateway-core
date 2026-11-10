@@ -1079,8 +1079,8 @@ restore "$CHANNEL_SCRIPT"
 echo
 echo "── 变异残留校验（只查**本脚本动过的路径**）"
 RESIDUE=""
-RESIDUE+=$(git status --porcelain -- sql/migrations/startup/ | sed 's/^/    /')
-RESIDUE+=$(git status --porcelain -- "$EMBED_DIR" | sed 's/^/    /')
+RESIDUE+=$(git status --porcelain -z -- sql/migrations/startup/ 2>/dev/null | tr '\0' '\n' | sed 's/^/    /')
+RESIDUE+=$(git status --porcelain -z -- "$EMBED_DIR" 2>/dev/null | tr '\0' '\n' | sed 's/^/    /')
 for leftover in \
   sql/migrations/startup/912b_zzz_probe_delivery.sql \
   sql/migrations/startup/up/912b_zzz_probe_in_subdir.sql \

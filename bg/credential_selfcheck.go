@@ -557,17 +557,13 @@ func (w *CredentialSelfcheckWorker) selfcheckBindings(ctx context.Context, crede
 	return out, rows.Err()
 }
 
+// selfcheckFeatured returns the static featured model set for primary-model
+// selection. ★ 2026-11-11（断链⑦）：与 model_tier/watchdog 统一为双源
+// （routing_policy ∪ models_canonical.featured）+ raw 变体展开 —— 此前只读
+// routing_policy 裸名 ⇒ 命名空间形态绑定（z-ai/glm-5.3-flash 等）在深度
+// 自检里永远选不上 featured primary，与探针分层口径分叉。
 func (w *CredentialSelfcheckWorker) selfcheckFeatured(ctx context.Context, tenant string) ([]string, error) {
-	var featured []string
-	if err := w.db.QueryRow(ctx, `
-		SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
-		FROM routing_policy WHERE tenant_id = $1 ORDER BY id LIMIT 1`, tenant).Scan(&featured); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return featured, nil
+	return QueryStaticFeaturedModels(ctx, w.db, tenant)
 }
 
 // recentInUsageWindow narrows the shared seven-day Redis ranking (tenant-scoped,
