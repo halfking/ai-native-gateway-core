@@ -693,3 +693,70 @@ SELECT 'M15_'||era||'__'||raw_model_name k,
   ||' | max_min='||COALESCE((percentile_disc(1.0) WITHIN GROUP (ORDER BY recheck_min))::int::text,'?') v
 FROM rec WHERE fail_at < now() - interval '6 hours' AND next_at IS NOT NULL
 GROUP BY era, raw_model_name ORDER BY 1;
+
+-- ═══ M16 ★★ 口径自检（★ 常驻体检：防止绑定 join 再次静默漂移）═══
+-- ★ 背景：2026-11-10 自查抓到 —— 绑定过滤若写成
+--   `provider_model_id = (SELECT pm.id … WHERE raw_model_name = … LIMIT 1)`，
+--   而 `provider_models.raw_model_name` 是**一对多** ⇒ ★ 静默丢掉 70% 事件
+--   （strict 4,073 vs loose 13,555）⇒ ★★ 基线全错、判定计划翻转。
+--
+-- ★★ 本块的设计要点（★ 第一版这里写错了，被自查抓到）：
+--   ★ **守卫本身必须是正确的** ⇒ 决不能拿「旧写法 vs 现写法」来判退化
+--   （那会**恒定误报**：旧写法本来就丢 70%）⇒ ★ 正确形态是
+--   ★ **「脚本实际使用的口径」vs「另一种独立写法的等价口径」**，两者必须**相等**；
+--   旧写法只作为**对照背景**打印，不参与判定。
+WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
+   SELECT n.id
+   FROM node_probe_runs n
+   WHERE n.created_at > now() - interval '7 days'
+     AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
+), fr_ref AS (     -- ★ 独立等价写法（显式 JOIN + COUNT(DISTINCT n.id)）
+   SELECT DISTINCT n.id
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b ON b.credential_id = n.credential_id AND b.billing_mode = 'free'
+   JOIN provider_models pm ON pm.id = b.provider_model_id AND pm.raw_model_name = n.raw_model_name
+   WHERE n.created_at > now() - interval '7 days'
+), fr_legacy AS (  -- ★ 旧写法（★ 仅作背景对照：★ 已知会丢 70% ⇒ 不参与判定）
+   SELECT n.id
+   FROM node_probe_runs n
+   JOIN credential_model_bindings b
+     ON b.credential_id = n.credential_id
+    AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
+   WHERE b.billing_mode = 'free' AND n.created_at > now() - interval '7 days'
+)
+SELECT 'M16_join_caliber_check' k,
+  'used='||(SELECT COUNT(*) FROM fr_used)::text
+  ||' ref='||(SELECT COUNT(*) FROM fr_ref)::text
+  ||' | legacy_背景='||(SELECT COUNT(*) FROM fr_legacy)::text
+  ||' | '||CASE WHEN (SELECT COUNT(*) FROM fr_used) = (SELECT COUNT(*) FROM fr_ref)
+               THEN '✔ 口径健康（used == ref ⇒ 两种独立写法一致）'
+               ELSE '★★ **used != ref ⇒ 量具漂移 ⇒ 读数不可信 ⇒ 先修口径**' END v;
+
+-- ═══ M17 ★★ 事件定义自检（★ 防重复行把间隔算成 0）═══
+-- ★ M12/M12s 的事件 = 「一次失败 → 该对的下一次探测」，用 LEAD 取相邻行。
+--   若 node_probe_runs 存在同一次尝试的重复行 ⇒ 间隔会被算成 0 ⇒ 人为拉快「快复检」那一侧。
+-- ★ 实测（2026-11-10）：同一 (credential_id, raw_model_name, created_at) **无重复**
+--   （48,626 组合全部 dup=1）⇒ 零间隔事件 = 0 ⇒ ★ 事件定义干净。
+WITH fr AS (
+   SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, (n.raw_model_name LIKE '%/%') is_ns
+   FROM node_probe_runs n
+   WHERE n.created_at > now() - interval '7 days'
+     AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
+                 WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
+                   AND pm.raw_model_name = n.raw_model_name)
+), seg AS (
+   SELECT credential_id, raw_model_name, is_ns, created_at, success,
+          LEAD(created_at) OVER (PARTITION BY credential_id, raw_model_name ORDER BY created_at) next_at
+   FROM fr
+ ), rec AS (
+   SELECT is_ns, EXTRACT(EPOCH FROM (next_at - created_at))/60 AS gap_min
+   FROM seg WHERE success = FALSE AND next_at IS NOT NULL
+ )
+SELECT 'M17_event_definition_check' k,
+  COUNT(*)::text||' events | zero_gap='||COUNT(*) FILTER (WHERE gap_min = 0)::text
+  ||' | under_1min='||ROUND(100.0*COUNT(*) FILTER (WHERE gap_min < 1)/COUNT(*),1)::text||'%'
+  ||' | '||CASE WHEN COUNT(*) FILTER (WHERE gap_min = 0) = 0 THEN '✔ 无重复行污染'
+                ELSE '★★ **存在零间隔 ⇒ 可能有重复行 ⇒ 事件定义需复查**' END v
+FROM rec;

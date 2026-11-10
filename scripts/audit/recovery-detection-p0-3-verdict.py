@@ -115,11 +115,31 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ssh-host", default="211")
     ap.add_argument("--stage", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--inject-guard-fail", action="store_true",
+                    help="★ 自测用：把 M16 守卫改成失败 ⇒ 应看到整表裁决作废")
     args = ap.parse_args()
 
     print(f"== 复采（ssh {args.ssh_host} → acc-pg17）==", flush=True)
     data = parse(run_metrics(args.ssh_host))
     print(f"   指标条数：{len(data)}")
+
+    # ── ★★ 先看量具守卫：守卫不过 ⇒ **整张裁决表作废** ──────────────
+    guards = []
+    g16 = data.get("M16_join_caliber_check", "")
+    g17 = data.get("M17_event_definition_check", "")
+    guards.append(("M16 绑定 join 口径", g16))
+    guards.append(("M17 事件定义", g17))
+    if args.inject_guard_fail:
+        # ★ 自测：模拟守卫失败（★ 只改判定，不改采集）
+        g16 = "used=13563 ref=99999 | ★★ **量具漂移（注入）**"
+        guards[0] = ("M16 绑定 join 口径", g16)
+    bad = [g for g in guards if "★★" in g[1]]
+    print("\n== 量具守卫（★ 守卫不过 ⇒ 下列所有裁决作废）==")
+    for name, val in guards:
+        mark = "✔" if "★★" not in val else "★★"
+        print(f"   {mark} {name}: {val}")
+    if bad:
+        print("\n★★ **量具守卫未通过 ⇒ 全部读数不可信 ⇒ 立即修口径，勿采信下面的裁决表**")
 
     rows: list[tuple[str, str, str, str]] = []   # 判据 | 基线 | 观测 | 裁决
 
@@ -182,14 +202,34 @@ def main() -> int:
         if obs is None:
             rows.append((label, base_txt, "—", verdict(None, "★ post 段无事件（尚未结算）")))
             continue
-        med = ints(obs)[0] if ints(obs) else None
+        vals = ints(obs)
+        n = vals[0] if vals else None
+        med = vals[1] if len(vals) > 1 else None
+        p90 = vals[2] if len(vals) > 2 else None
+        p99 = vals[3] if len(vals) > 3 else None
+        _pre = BASELINES[bkey][0]
         if grp == "ns_feat":
-            note = (f"post med={med}（★ 注意：post 的 ns|feat 混入了新覆盖的冷对 ⇒ "
-                    "★ **整体中位不是正确判据**，逐对看 M15）")
-            rows.append((label, base_txt, obs, verdict(None, note)))
+            # ★ post 的 ns|feat **混入了新覆盖的冷对** ⇒ 整体中位不是正确判据；
+            #   ★★ 可判的是「尾部没有变差」（p90 / p99 不劣于 pre）。
+            if n is None or n < 20:
+                rows.append((label, base_txt, obs,
+                             verdict(None, f"★ post n={n} < 20 ⇒ 尾部读数不稳（方向可读）")))
+            else:
+                ok = (p90 is not None and p90 <= _pre[1]) and (p99 is not None and p99 <= _pre[2])
+                rows.append((label, base_txt, obs,
+                             verdict(ok, f"★ post p90={p90} / p99={p99}（pre {_pre[1]}/{_pre[2]}）"
+                                       f"⇒ 尾部{'未变差' if ok else '变差'}"
+                                       "（★ 中位不作判据：post 混入了新覆盖的冷对）")))
         else:
-            rows.append((label, base_txt, obs,
-                         verdict(None, "★ 对照项：非 featured 不应变快")))
+            # ★ 对照项：非 featured 的复检节奏**不该变**（变了说明还有别的因素在动）
+            if n is None or n < 20:
+                rows.append((label, base_txt, obs,
+                             verdict(None, f"★ post n={n} < 20 ⇒ 对照读数不稳")))
+            else:
+                ok = med is not None and abs(med - _pre[0]) <= max(30, int(_pre[0] * 0.2))
+                rows.append((label, base_txt, obs,
+                             verdict(ok, f"★ 对照：post med={med}（pre {_pre[0]}，容差 ±20%）"
+                                       f"⇒ {'非featured 节奏未变' if ok else '★ 对照也变了 ⇒ 有其它因素'}")))
 
     # ── M15：三个冷金丝雀逐对 ────────────────────────────────────────
     canary_lines = []
@@ -215,6 +255,14 @@ def main() -> int:
         print("\n== M15 逐对明细 ==")
         for line in canary_lines:
             print("   " + line)
+
+    # ── M14：目标人群（群体层）—— ★ 参考项：内部两极 ⇒ 逐对看 M15 ──────
+    for era in ("pre", "post"):
+        obs = data.get(f"M14_{era}_newly_covered")
+        if obs:
+            vals = ints(obs)
+            rows.append((f"M14 目标人群（{era} 段）· newly_covered", "pre 461 events / med 2 / p90 360",
+                         obs, verdict(None, "★ 参考项：群体内部两极（热对 vs 冷对）⇒ 幅度看 M15")))
 
     # ── M11：episode 层症状（★ Stage 1 样本不足 ⇒ 不外推）────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
@@ -261,7 +309,10 @@ def main() -> int:
     print(" | ".join(h.ljust(w[i]) for i, h in enumerate(["判据", "基线", "观测", "裁决"])))
     print("-" * (sum(w) + 12))
     for r in rows:
-        print(" | ".join(str(c).ljust(w[i]) for i, c in enumerate(r)))
+        cells = [str(c) for c in r]
+        if bad:
+            cells[3] = "★★ **量具守卫未通过 ⇒ 本行裁决作废**"
+        print(" | ".join(cells[i].ljust(w[i]) for i in range(len(cells))))
 
     print("\n★ 诚实边界（必须一起写进结论）：")
     print("   ① M1 / M1b 可用率**一律不作判据**（归因不可分 + 相位敏感："
