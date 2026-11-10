@@ -310,6 +310,41 @@ SELECT 'M5_post_runs_by_day' k,
   ||' | total='||COALESCE(sum(c)::text,'0')
   v FROM d;
 
+-- ═══ ★★★ 第 31 处口径修正（★ 2026-11-11 04:4x +08）：★ M5 的「等长滚动 24h 基线」═══
+--
+-- ★★ **为什么需要它**：★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而 `M5_pre7d_runs_by_day` 的
+--   **日历日桶**不能直接当 24h 基线 ⇒ ★★ 7 天窗口跨 **8 个日历日** ⇒ ★★ 首尾两桶是 **partial day**
+--   （★ 11-03 只覆盖 10.29h、★ 11-10 只到 13.71h）⇒ ★★ 计数**必然低估** ⇒ ★★ 用它的均值会**系统性压低**基线
+--   ⇒ ★★ 必须用**等长**（★ 恰好 24h）**滚动窗口** ⇒ ★★ 与 M5 的裁决窗口**同量纲**（★ 「跨段比必须等长」）
+-- ★★ **口径**：★ 窗口端点**锚定 era 切点**（★ **不用 `now()`**）⇒ ★★ **时钟无关**
+--   ⇒ ★★ ⇒ ★★ **不进 M18 冻结对拍**（★ `PRE_KEY_RE` 不匹配 `M5_*`）⇒ ★★ **不触发重冻**
+--   （★ 与 `M5_pre7d_runs_by_day` 同款定位：★ 只出证据、不动已冻结基线）
+-- ★★ n = 145（★ 逐小时采样：★ 端点 ∈ [切点-7d+24h, 切点] ⇒ ★ 每个窗口**恰好 24h**）
+WITH cut AS (SELECT TIMESTAMPTZ '2026-11-10 13:42:30+08' AS t),
+samples AS (
+  SELECT gs AS t_end FROM cut c,
+  LATERAL generate_series(c.t - interval '7 days' + interval '24 hours', c.t, interval '1 hour') gs
+),
+roll AS (
+  SELECT s.t_end,
+         (SELECT COUNT(*) FROM node_probe_runs r
+          WHERE r.created_at > s.t_end - interval '24 hours'
+            AND r.created_at <= s.t_end) AS c
+  FROM samples s
+)
+SELECT 'M5_roll24_pre7d_dist' k,
+  'n=' || COUNT(*)::text
+  || ' | min=' || MIN(c)::text
+  || ' | mean=' || ROUND(AVG(c)::numeric, 1)::text
+  || ' | p50=' || (percentile_disc(0.50) WITHIN GROUP (ORDER BY c))::text
+  || ' | p75=' || (percentile_disc(0.75) WITHIN GROUP (ORDER BY c))::text
+  || ' | p90=' || (percentile_disc(0.90) WITHIN GROUP (ORDER BY c))::text
+  || ' | p95=' || (percentile_disc(0.95) WITHIN GROUP (ORDER BY c))::text
+  || ' | max=' || MAX(c)::text
+  || ' | sum=' || SUM(c)::text
+  || ' | each_window_hours=24'
+  v FROM roll;
+
 -- ═══ M6 ★ 收益面：免费在服对里命中 featured 的对数（修复前 15 → 部署后 34）═══
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),

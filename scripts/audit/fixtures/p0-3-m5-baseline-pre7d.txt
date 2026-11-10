@@ -1,0 +1,51 @@
+# ★ 真捕获夹具（★ 2026-11-11 03:4x +08，★ 211 生产库 acc-pg17/llm_gateway）
+# ★ M5 的「等长滚动 24h 基线」+「pre24 by_kind」⇒ ★★ 判定器自测 ㉶ 的**期望值**
+#
+# ★★ **用途（★ 承第 30 处 ⇒ 见 LESSONS §680）**：★ 这份登记表是自测的**期望值**
+# ★★ ⇒ ★★ 「判据字面量」与「被守卫内容」**必须不同源** ⇒ ★★ 否则「只改事实」的同源变异
+# ★★   会**把判据一起改掉** ⇒ ★★ 守卫被致盲 ⇒ ★★ 「变异打不中」会被误读成「守卫没牙」
+# ★★ ⇒ ★★ 本夹具就是那道隔离层（★ 期望值在这里、★ 被守卫的文本在 verdict.py）
+#
+# ★ 来源命令（★ 复采时必须逐字比对本文件 ⇒ 若不一致 ⇒ pre 侧事实变了 ⇒ 需重新评估并**显式**更新本文件）：
+#   scp -q scripts/audit/recovery-detection-p0-3-m5-baseline-probe.sql 211:/tmp/m5probe.sql
+#   ssh 211 'docker cp /tmp/m5probe.sql acc-pg17:/tmp/m5probe.sql && docker exec acc-pg17 psql -U acc_super -d llm_gateway -tA -F"|" -v ON_ERROR_STOP=1 -f /tmp/m5probe.sql'
+#
+# ★ 格式：key|value（★ 每行一条；★ 值为空表示该事实此刻不成立）
+#
+# ── ① 等长滚动 24h 窗口在 pre7d 上的分布（★ n = 145 个逐小时采样点；★ 端点锚定 era 切点 ⇒ 时钟无关）──
+roll24_n|145
+roll24_min|2467
+roll24_mean|7037.5
+roll24_p50|7871
+roll24_p75|9755
+roll24_p90|10417
+roll24_max|11197
+# ── ② 冻结阈值 9334 在该分布里的位置（★ 「阈值在 pre 期就不成立」的等长同量纲量化）──
+thresh|9334
+thresh_le|90/145
+thresh_pct_rank|62.1
+thresh_pct_gt|37.9
+# ── ③ pre24 侧 by_kind（★ 锚定切点 ⇒ 时钟无关）⇒ 与 post 侧 by_kind 对拍 ⇒ 增量的来源 ──
+pre24_kind_credential_recovery|5766
+pre24_kind_periodic|3257
+pre24_kind_sync_request|222
+# ── ④ post24 侧 by_kind（★ ★ **时点观测**：★ 2026-11-11 03:4x +08）⇒ 与 ③ 对拍 ⇒ 增量的来源 ──
+post24_kind_credential_recovery|6172
+post24_kind_periodic|3141
+post24_kind_sync_request|428
+post24_total_delta|+496
+post24_total_pct|+5.4%
+post24_credential_recovery_pct|+7.0%
+post24_sync_request_pct|+92.8%
+post24_periodic_pct|-3.6%
+post24_periodic_delta|-116
+
+# ── ⑤ 守卫的**期望串**登记（★ ★ 第 30 处的隔离层 ⇒ ★★ 判据字面量**不得**与被守卫内容同源）
+#   ★★ `guard_` 前缀 = ★ **守卫专用**：★ 不进「每个期望值都必须出现在边界里」的泛化循环
+#   ★★   （★ 前两个是**必须出现**的标记；★ 后一个是**必须不出现**的反向守卫串）
+#   ★★ 形态（★ 本轮当场复现）：★ 守卫形如 `if "<事实短语>" not in hb:` ⇒ ★★ 该字面量与事实住在**同一文件**
+#   ★★   ⇒ ★★ 同源变异会把**判据与事实一起改掉** ⇒ ★★ 守卫致盲 ⇒ ★★ 「打不中」被误读成「没牙」
+#   ★★ ⇒ ★★ 把**期望串**登记到本文件 ⇒ ★★ 守卫从夹具取值 ⇒ ★★ 改 verdict.py 改不动判据 ⇒ ★★ 守卫照样红
+guard_marker_m5_baseline|阈值口径无效
+guard_marker_half_truth|增量与修复无关
+guard_forbidden_old_claim|故本行 ❌ **不可归因于修复**

@@ -54,7 +54,7 @@ PRE_KEY_RE = re.compile(
 # ★★★ 第 22 处口径修正：★ 「**披露用**」的 pre 侧键（★ **不进 M18 冻结对拍** ⇒ ★ 不重冻基线）
 #   ★★ 但它仍是 **pre 侧读数** ⇒ ★★ 若混进 `now()` 依赖 ⇒ ★ 随时钟漂移
 #   ★★ ⇒ ★★ 必须在各时钟下逐字节一致 ⇒ ★★ **单独查**（★ 不扩冻结面 ⇒ ★ 不触发重冻）
-CLOCK_INDEP_KEYS = ("M5_pre7d_runs_by_day",)
+CLOCK_INDEP_KEYS = ("M5_pre7d_runs_by_day", "M5_roll24_pre7d_dist")
 
 
 def run_sql(sql_text: str, tag: str, ssh_host: str) -> str:

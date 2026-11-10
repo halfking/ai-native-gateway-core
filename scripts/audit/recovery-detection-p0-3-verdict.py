@@ -365,11 +365,81 @@ def m5_baseline_disclosure(data: dict[str, str], n, lim) -> str:
     except (TypeError, ValueError, ZeroDivisionError):
         ratio = "?"
     post_days = field_str(post_raw, "days") or "-"
+    # ★★★ 第 31 处：★ 「**等长 24h 口径**」⇒ ★ 与 M5 的裁决窗口**同量纲**
+    #   ★★ 「跨段比必须等长」（★ LESSONS §667 / §679）—— ★ 日历日桶里首尾是 partial day ⇒ ★★ 不能当 24h 基线
+    _dist_raw = data.get("M5_roll24_pre7d_dist") or ""
+    _p50 = field_str(_dist_raw, "p50")
+    _p75 = field_str(_dist_raw, "p75")
+    _p90 = field_str(_dist_raw, "p90")
+    _dn = field_str(_dist_raw, "n")
+    try:
+        _p50v, _p75v, _p90v = float(_p50), float(_p75), float(_p90)
+    except (TypeError, ValueError):
+        _p50v = _p75v = _p90v = None
+    if _p50v is None:
+        eq_txt = ("★ ★★ **等长 24h 基线不可见**（★ 键 `M5_roll24_pre7d_dist` 未产出 ⇒ ★★ "
+                  "**不得**默认本行读数在 pre 分布里的位置）")
+    else:
+        try:
+            _nv = float(n)
+        except (TypeError, ValueError):
+            _nv = None
+        if _nv is None:
+            _bucket = "**本行读数不可见 ⇒ 位置不可判**"
+        elif _nv > _p90v:
+            _bucket = "**高于 p90**"
+        elif _nv > _p75v:
+            _bucket = "**p75–p90 之间**"
+        elif _nv > _p50v:
+            _bucket = "**p50–p75 之间**"
+        else:
+            _bucket = "**低于 p50**"
+        eq_txt = (f"★ ★★ **等长 24h 口径**（★ pre7d 的 **{_dn}** 个**等长**滚动 24h 窗 ⇒ ★ 与本行**同量纲**）："
+                  f"★ p50 = **{_p50v:g}** / p75 = **{_p75v:g}** / p90 = **{_p90v:g}**"
+                  f" ⇒ ★★ **本行读数 = {n}** ⇒ ★★ 落在 {_bucket}"
+                  f"（★ 窗口：post = 滚动 24h（now-24h→now）/ pre = [切点-7d, 切点] 内的等长 24h 窗）")
+    # ★★★ 第 31 处：★ pre24 侧 by_kind（★ 来自**独立夹具**的期望值 ⇒ ★★ 判据与被守卫内容不同源）
+    #   ★★★ ★★ **方向必须从 live 数据算出来**（★ 硬编码「periodic 反降」⇒ ★★ 关窗时若方向变了 ⇒ ★★ 与真实 by_kind 冲突）
+    _m5fx = _load_m5_fixture()
+    _post_kind_raw = (data.get("M5_probe_runs_24h_by_kind") or "").strip()
+    if _m5fx and _post_kind_raw:
+        _kk = []
+        for _k, _fxk in (("credential_recovery", "pre24_kind_credential_recovery"),
+                         ("periodic", "pre24_kind_periodic"),
+                         ("sync_request", "pre24_kind_sync_request")):
+            _pv = _m5fx.get(_fxk, "")
+            _qv = field_str(_post_kind_raw, _k)
+            try:
+                _pn, _qn = float(_pv), float(_qv)
+                _d = _qn - _pn
+                _pc = f"{(_d / _pn * 100):+.1f}%" if _pn else "?"
+                _kk.append(f"★ {_k} **{_pv} → {_qv}**（**{_pc}**）")
+            except (TypeError, ValueError, ZeroDivisionError):
+                _kk.append(f"★ {_k} **{_pv} → {_qv or '?'}**")
+        # ★★ **方向结论由 live 值推出**（★ 不硬编码）
+        try:
+            _dp = float(field_str(_post_kind_raw, "periodic")) - float(_m5fx.get("pre24_kind_periodic"))
+        except (TypeError, ValueError):
+            _dp = None
+        _dir = ("★ ★★ **periodic 反降**（★ 爆炸半径的直接代理是 periodic 调度量 ⇒ ★ 它降 ⇒ ★ 不是调度失控）"
+                if (_dp is not None and _dp < 0) else
+                "★ ★★ **periodic 未下降**（★ ⇒ ★★ 「爆炸半径失控」这一读法**不能**被排除 ⇒ ★★ 须按真实增量对待）")
+        kind_txt = (f"⇒ ★★ **pre24 → post24 的 by_kind 对拍**（★ pre 侧锚定切点 ⇒ 时钟无关；★ post 侧 = 本行窗口）："
+                    f"{' ｜ '.join(_kk)} ⇒ ★★ {_dir}")
+    else:
+        kind_txt = ("⇒ ★★ **by_kind 对拍不可见**（★ 期望值登记表或 post 侧 by_kind 键读不到 ⇒ ★★ "
+                    "增量来源不可分辨 ⇒ ★★ 不得断言归因）")
     txt = (f"★ 基线口径：★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而探测量**按天波动**"
            f"（★ pre7d 逐日（★ 按**日历日**切 ⇒ 7 天窗口跨 8 个日历日）min={dmin} / max={dmax}"
            f" ⇒ **{ratio} 差距**；★ n_days={nd}）"
            f"⇒ ★★ **pre 期已有 {over}/{total_days} 个日历日超预算 {lim}** ⇒ ★★ 该阈值**在 pre 期就不成立**"
-           f"⇒ ★★ 故本行 ❌ **不可归因于修复**（★ post 逐日：{post_days}）")
+           f"⇒ ★★ 故 **「❌ ⇒ 修复引起爆炸半径」这个读法不成立**"
+           f"⇒ ★★★ **★ 但「不可归因于修复」这半也不成立（★ 第 31 处修正）**：★ 增量按 **下面的 by_kind 对拍**"
+           f"**看来源**（★ 方向由 live 值推出，★ 不硬编码）⇒ ★★ **正确读法 = 预算口径过时（单日快照）+ 增量按 by_kind 归因**"
+           f"⇒ ★★ **既不能读成「爆炸半径失控」，★ 也不能读成「与修复无关」**"
+           f"⇒ {eq_txt}"
+           f"{kind_txt}"
+           f"⇒ ★★ （post 逐日：{post_days}）")
     return txt
 
 
@@ -1574,6 +1644,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
                                  " | max=9905 | total=48502"),
         "M5_post_runs_by_day": ("days=11-10:4218,11-11:115 | n_days=2 | min=115"
                                 " | max=4218 | total=4333"),
+        # ★★★ 第 31 处：★ M5 的「**等长滚动 24h**」基线分布（★ 真捕获 2026-11-11 03:4x / 211）
+        #   ★★ **端点锚定 era 切点 ⇒ 时钟无关** ⇒ ★★ 由 clockcheck 的 CLOCK_INDEP_KEYS 单独查
+        #   ★★ ⇒ ★★ **不进 M18 冻结对拍** ⇒ ★★ **不触发重冻**（★ 与 `M5_pre7d_runs_by_day` 同款定位）
+        "M5_roll24_pre7d_dist": ("n=145 | min=2467 | mean=7037.5 | p50=7871 | p75=9755"
+                                 " | p90=10417 | p95=10693 | max=11197 | sum=1020438"
+                                 " | each_window_hours=24"),
         # ★ 2026-11-11 关窗预演补：★ M5 的 **by_kind 分解**（★ 真捕获 2026-11-11 00:5x / 211；
         #   ★★ now()-锚定滚动 24h 窗（与 M5 主键同窗）⇒ **不进** CLOCK_INDEP_KEYS
         #   ★（★ 关窗时刻 now=切点+24h ⇒ 读数恰好 = 纯 post 段））
@@ -1749,6 +1825,23 @@ def _load_expected_facts(filename: str) -> dict[str, str]:
         k, v = line.split("|", 1)
         out[k.strip()] = v.strip()
     return out
+
+
+_M5_FX_CACHE: dict[str, str] | None = None
+
+
+def _load_m5_fixture() -> dict[str, str]:
+    """★ 读 M5 的**期望值登记表**（★ 独立夹具 ⇒ ★★ 判据字面量与被守卫内容**不同源** ⇒ ★ 同源变异打不中它）
+
+    ★★ 读不到 ⇒ 返回空 dict（★ 行内披露写「不可见」）★ ★★ 但自测会 **fail-closed**（★ 不可判 ≠ 没发现问题）
+    """
+    global _M5_FX_CACHE
+    if _M5_FX_CACHE is None:
+        try:
+            _M5_FX_CACHE = _load_expected_facts("p0-3-m5-baseline-pre7d.txt")
+        except Exception:
+            _M5_FX_CACHE = {}
+    return _M5_FX_CACHE
 
 
 def selftest() -> int:
@@ -2367,8 +2460,17 @@ def selftest() -> int:
 
     # ㉠ ★★★★ **诚实边界必须包含「M5 的 ❌ 不可归因于修复」这条**（★ 第 22 处口径修正）
     hb = "\n".join(honest_boundary_lines())
-    if "M5" not in hb or "基线口径" not in hb:
-        failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
+    # ★★★ 第 31 处：★ **期望串从夹具取**（★ ★ 第 30 处的隔离层 ⇒ ★ 同源变异打不中本守卫）
+    #   ★★ 形态（★ 本轮当场复现）：★ 若这里写死字面量 ⇒ ★★ 同源变异会把**判据与事实一起改掉** ⇒ ★★ 守卫致盲
+    _m5fx_t = _load_m5_fixture()
+    _mk_base = _m5fx_t.get("guard_marker_m5_baseline", "")
+    _mk_half = _m5fx_t.get("guard_marker_half_truth", "")
+    if not _mk_base or _mk_base not in hb:
+        failures.append(f"[㉠ 诚实边界] 缺少「M5 的 ❌：★ 阈值口径无效 ⇒ 「爆炸半径失控」不成立」边界"
+                        f"（★ 期望标记 = {_mk_base or '?（★ 夹具读不到 ⇒ 不可判）'}）")
+    if not _mk_half or _mk_half not in hb:
+        failures.append(f"[㉠ 诚实边界] 缺少「M5 的 ❌ 的**另一半**（★ 「阈值无效」不推出「增量与修复无关」）」"
+                        f"（★ 期望标记 = {_mk_half or '?（★ 夹具读不到 ⇒ 不可判）'}）")
 
     # ㉣ ★★★★ **诚实边界必须包含「负控几何」这条**（★ 第 23 处口径修正）
     hb = "\n".join(honest_boundary_lines())
@@ -2666,6 +2768,59 @@ def selftest() -> int:
     if "两次部署" in hb or "第二次部署" in hb:
         failures.append("[㉵ 事件链] 诚实边界里仍残留「两次部署 / 第二次部署」的旧措辞 ⇒ ★★ 与「已跨三次构建」自相矛盾")
 
+    # ㉶ ★★★★ **第 31 处：★ 「阈值口径无效」≠「增量与修复无关」⇒ ★★ 两半必须同时披露**
+    #   ★★ 形态（★ 真踩到）：★ M5 的 ❌ 曾只写「不可归因于修复」⇒ ★★ 与同一行的 by_kind 增量归因**自相矛盾**
+    #   ★★   ⇒ ★★ 关窗报告若照抄 ⇒ ★★ 会漏掉一个**真实且可解释**的增量 ⇒ ★★ ⇒ ★★ 必须先修
+    #   ★★ ⇒ ★★ 期望值放**独立夹具**（★ 承第 30 处 ⇒ ★★ 同源变异打不中它）
+    try:
+        _m5fx = _load_expected_facts("p0-3-m5-baseline-pre7d.txt")
+    except Exception as _e:
+        _m5fx = {}
+        failures.append(f"[㉶ 期望值登记表] 读不到 `fixtures/p0-3-m5-baseline-pre7d.txt` ⇒ ★★ **不可判**"
+                        f"（★ 不得静默跳过 ⇒ ★★ 「读不到判据」≠「没发现问题」）⇒ {_e}")
+    # ★★ ① 夹具里的每个期望值必须出现在**边界文本**里（★ 隔离层 ⇒ 同源变异打不中）
+    #   ★★ ★ 注意：`guard_` 前缀的是**守卫专用期望串**（★ 有的必须出现、有的必须**不**出现）⇒ ★ 不进本循环
+    for _k, _v in sorted(_m5fx.items()):
+        if _k.startswith("guard_"):
+            continue
+        if _v and _v not in hb:
+            failures.append(f"[㉶ 期望值登记表] 诚实边界缺少登记事实 {_k}={_v} ⇒ ★★ 「次数」与「列举」必须一致"
+                            f" ⇒ ★ 否则「阈值无效 ≠ 增量不可归因」这句话读者无从复核")
+    # ★★ ② **反向守卫**：★ 旧的**错误断言句**不得残留（★ 期望串同样从夹具取 ⇒ ★★ 同源变异打不中）
+    _forbid = _m5fx.get("guard_forbidden_old_claim", "")
+    if _forbid and _forbid in hb:
+        failures.append(f"[㉶ 事件链] 诚实边界里仍残留「{_forbid}」这句**错误断言**"
+                        f" ⇒ ★★ 与 by_kind 增量归因**自相矛盾**（★ 第 31 处）")
+    # ★★ ③ **行为守卫**：★ M5 判 ❌ 时行内必须给出「等长 24h 基线」的**两个数字**（★ 第 28 处纪律）
+    _d31 = _synthetic(True)
+    # ★★ 守卫必须打在 **M5 判 ❌** 的场景上（★ 基线合成场景是 9228 ≤ 9334 ⇒ ✅ ⇒ 披露不渲染）
+    _d31["M5_probe_runs_24h"] = "9800 total | free=1900"
+    _rows31, _, _ = judge(_d31, stage=1)
+    _v31 = rows_by_label(_rows31).get("M5 24h 探测量", "<缺行>")
+    if "等长 24h" not in _v31:
+        failures.append(f"[㉶ 行内披露] M5 判 ❌ 时必须给出「等长 24h 基线」的口径（★ 与裁决窗口同量纲）⇒ {_v31}")
+    if "p50" not in _v31 or "p75" not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须给出 pre 侧等长分布的 **p50 / p75**（★ 两边数字 ⇒ 读者能自行判读）⇒ {_v31}")
+    if "爆炸半径失控" not in _v31 or "与修复无关" not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须同时出现两半：「爆炸半径失控」不成立 **且**「与修复无关」不成立 ⇒ {_v31}")
+    # ★★ ④ **反向守卫（行为级）**：★ 旧措辞不得出现在 M5 行内（★ 期望串从夹具取）
+    _forbid_row = _m5fx.get("guard_forbidden_old_claim", "")
+    if _forbid_row and _forbid_row in _v31:
+        failures.append(f"[㉶ 行内披露] M5 行内仍写「{_forbid_row}」⇒ ★★ 与同行的 by_kind 增量归因矛盾 ⇒ {_v31}")
+    # ★★★ ★★ **判据必须是结构而不是关键词**（★ 本轮 mutation 抓到的第二个真缺陷）：
+    #   ★★ 弱判据 `if "等长 24h" not in _v31` ⇒ ★★ 变异整段后，**兜底分支**里的「等长 24h 基线不可见」
+    #   ★★ **仍然命中该关键词** ⇒ ★★ 守卫打不中 ⇒ ★★ ⇒ ★★ 改为断言**具体数值** + **禁止兜底分支**
+    _m5_p50 = _m5fx.get("roll24_p50", "")
+    _m5_p75 = _m5fx.get("roll24_p75", "")
+    if _m5_p50 and _m5_p50 not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须给出 pre 侧等长分布的 **p50 = {_m5_p50}**（★ 具体数值 ⇒ 读者能自行判读）⇒ {_v31}")
+    if _m5_p75 and _m5_p75 not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须给出 pre 侧等长分布的 **p75 = {_m5_p75}**（★ 具体数值 ⇒ 读者能自行判读）⇒ {_v31}")
+    if "等长 24h 基线不可见" in _v31:
+        failures.append(f"[㉶ 行内披露] 分布键已产出却写「等长 24h 基线不可见」⇒ ★★ 兜底分支误触发 ⇒ {_v31}")
+    if "by_kind 对拍不可见" in _v31:
+        failures.append(f"[㉶ 行内披露] by_kind 两侧都在却写「by_kind 对拍不可见」⇒ ★★ 兜底分支误触发 ⇒ {_v31}")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2704,8 +2859,10 @@ def selftest() -> int:
     print("   ✔ ㉜ ★★ 摇摆 0 ⇒ 行内必须给出「featured 状态稳定 ⇒ 修复已真正落地」的正向结论")
     print("   ✔ ㉝ ★★★ 「对照组」的**相位/构成**必须披露（★ 零 6h 顶格 ⇒ 不可归因；★ 裁决符号不得软化）")
     print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
-    print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
-    print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
+    print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ 阈值口径无效 ⇒ 「爆炸半径失控」不成立；"
+          "★★ 但「增量与修复无关」同样不成立；★ 符号不得软化）")
+    print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌：★ 阈值口径无效 ⇒ 「爆炸半径失控」不成立」"
+          "＋「★ 但『增量与修复无关』同样不成立」两条")
     print("   ✔ ㉡ ★★★ M5 判 ❌ 时必须给出「增量归因（by_kind）」分解（★ 回答「增量从哪来」）"
           "（★ 与 ㉟ 的「基线口径」互补：★ 那边答「阈值是否成立」、★ 这边答「增量从哪来」）")
     print("   ✔ ㉣ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
@@ -2734,6 +2891,10 @@ def selftest() -> int:
           "＋ ★ **1 分钟停探必须披露**（★ 02:07 = 0 ⇒ 0.07% ≪ ㉰ 的 5.8% ⇒ 不影响分位数、★ 但不许写成「零中断」）"
           "＋ ★ 两条新纪律（★「部署后出现 X」≠「部署引起 X」/ ★ 自己写的等长窗也要打印长度核对）"
           "＋ ★★ **期望值登记表**（★ `fixtures/p0-3-deploy-events.txt`）⇒ ★★ 判据与被守卫内容**不同源** ⇒ ★★ 同源变异也打不中它")
+    print("   ✔ ㉶ ★★★★★ **第 31 处：★ 「阈值口径无效」≠「增量与修复无关」⇒ ★★ 两半必须同时披露**"
+          "（★ 证据①等长 24h 口径：★ n=145、★ p50=7871 / p75=9755 / p90=10417 ⇒ ★ 阈值 9334 落在 62.1% 分位"
+          "＋ ★ 证据②日历日桶是 partial day ⇒ 不得当 24h 基线 ＋ ★ 证据③pre24 by_kind 5766/3257/222 ⇒ ★ periodic 反降）"
+          "＋ ★ 期望值走**独立夹具** ⇒ ★★ 同源变异打不中它 ＋ ★ 反向守卫（★ 旧错误断言句不得残留）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
@@ -2906,13 +3067,31 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ 但 post 窗口在投影里**仍是「当前已积累的那一段」** ⇒ ★★ 任何按「窗口内事件构成」"
           "计算的判据（★ 尤其是**对照组的中位数**）在投影里可能**相位失真** ⇒ ★★ 投影对这类判据"
           "只能**提示**，**不能定论** ⇒ ★★ 一切结论以**关窗当天真读**为准。")
-    lines.append("   ㉘ ★★★★ **M5 的 ❌ 不可归因于修复（★ 阈值取自 pre24 的「单日快照」）**："
+    lines.append("   ㉘ ★★★★ **M5 的 ❌：★ 「阈值口径无效」⇒ 「❌ ⇒ 爆炸半径失控」不成立；★★ 但「增量与修复无关」**同样不成立** ⇒ ★★ 两半必须同时披露（★ 第 31 处口径修正，★ 2026-11-11 04:4x +08）**："
           "★ M5 的 base = **9242** = **pre24 单日快照**（★ 实测 pre_24h_count = 9243）"
           "⇒ ★ 而探测量**按天剧烈波动**（★ 实测 pre7d 逐日 min=**1292** / max=**9905** ⇒ **7.7×**）"
           "⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立**"
           "⇒ ★★ ⇒ M5 判 ❌ 时**不得**被读成「修复引起爆炸半径」⇒ ★★ 本轮只做**行内披露**"
           "（★ **裁决符号保持 ❌** ⇒ ★ 门不钝化；★ 且逐日分布键缺失时必须显式写「基线口径不可见」）"
-          "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，而不是单日快照）"
+          "⇒ ★★★★ **★★★ 第 31 处补上「另一半」（★ 关窗前实测 ⇒ ★★ 否则关窗报告会自相矛盾）**："
+          "★ **「阈值无效」只推出「爆炸半径失控」不成立 ⇒ ★★ 它并不推出「增量与修复无关」**"
+          "⇒ ★★ ⇒ ★★ **两半必须同时披露**，★ 否则同一行里「❌ 不可归因」与 by_kind 的「增量可完全归因」**自相矛盾**"
+          "⇒ ★★★★ **★ 证据 ①（★ 等长 24h 口径 ⇒ ★ 与 M5 裁决窗口**同量纲**）**："
+          "★ pre7d 的 **145** 个**等长**滚动 24h 窗口（★ 端点锚定 era 切点 ⇒ 时钟无关）："
+          "★ **p50 = 7871 / p75 = 9755 / p90 = 10417 / max = 11197 / min = 2467 / mean = 7037.5**"
+          "⇒ ★★ 冻结阈值 **9334** 落在该分布的 **62.1%** 分位（★ **90/145** 个窗口 ≤ 它、★ **37.9%** 的窗口超过它）"
+          "⇒ ★★ ⇒ 「阈值在 pre 期就不成立」**第一次有了等长同量纲的量化**"
+          "⇒ ★★★★ **★ 证据 ②（★ 日历日桶不能当 24h 基线 ⇒ ★ 另一个口径缺陷）**："
+          "★ `M5_pre7d_runs_by_day` 的 8 个桶里首尾是 **partial day**（★ 11-03 只覆盖 **10.29h**、★ 11-10 只到 **13.71h**）"
+          "⇒ ★★ 计数**必然低估** ⇒ ★★ 用它的均值当 24h 基线会**系统性压低**基线 ⇒ ★★ 真修法必须用**等长 24h 口径**"
+          "⇒ ★★★★ **★ 证据 ③（★ 增量的来源 ⇒ ★ 归因钉死）**："
+          "★ pre24 by_kind = **credential_recovery 5766 / periodic 3257 / sync_request 222**"
+          "⇒ ★★ post24 by_kind（★ **时点观测**：★ 2026-11-11 03:4x +08）= **credential_recovery 6172 / periodic 3141 / sync_request 428**"
+          "⇒ ★★ 总量 **+496（+5.4%）** ⇒ ★★ **全部**来自 **credential_recovery +406（+7.0%）** 与 **sync_request +206（+92.8%）**"
+          "⇒ ★★ 而 **periodic 反而 -116（-3.6%）** ⇒ ★★ ⇒ ★★ **「爆炸半径失控」的最强反证就在 periodic 下降**"
+          "（★ 爆炸半径的直接代理是 periodic 调度量 ⇒ ★ 它降 ⇒ ★ 不是调度失控）"
+          "⇒ ★★ ⇒ ★★ **正确读法：★ ❌ = 「预算口径过时（单日快照）+ 增量来自设计内的恢复探测」；★ 不是「爆炸半径失控」，★ 也不是「与修复无关」**"
+          "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，★ 且必须**等长 24h 口径**、★ 不得用日历日桶）"
           "**登记为 Stage 2 之后的基线口径改进项**（★ 关窗前**不重冻**已验证基线）。")
     lines.append("   ㉙ ★★★★ **负控的窗口几何必须与被验收窗口一致（★ `now()` 必须随 era 切点一起平移）**"
           "（★ 本轮第 23 处口径修正）：★ 原负控只平移了**切点**、没平移 `now()`"
