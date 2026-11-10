@@ -332,8 +332,44 @@ def literal_le_cut(rhs: str, cut_text: str) -> bool:
     return base <= cut_base
 
 
-def ctx_id_of(p: dict, ranges: list[tuple[int, int]]) -> object:
-    """★ 谓词所属的**窗口上下文**（★ 最内层的 CTE 体；★ 不在任何 CTE 体里 ⇒ 'outer'）
+def subquery_ranges(mask: str, depths: list[int], cte_ranges_: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """★ **子查询**（★ 标量子查询 / EXISTS）的范围（★ 深度 ≥1 且**不在 CTE 体内**）
+
+    ★★★ **★ 为什么必须单独成窗（★ 本轮真踩到 ⇒ v2 的第四个假阴性来源）**：
+    ★★★   `M20_<层>_post_split` 的 **tail_n** 是一个**标量子查询**：★ 它的窗口是
+    ★★★   `[now-6h, ∞)`（★ **只有下界**）⇒ ★★ 而它**不在** CTE 体内 ⇒ ★★ 语句级/CTE 级判定都看不见它
+    ★★★   ⇒ ★★★ ⇒ **必须把子查询也当成独立窗口**
+    """
+    out: list[tuple[int, int]] = []
+    for m in SELECT_RE.finditer(mask):
+        if depths[m.start()] == 0:
+            continue
+        if any(a <= m.start() <= b for a, b in cte_ranges_):
+            continue
+        op = None
+        for k in range(m.start(), -1, -1):
+            if mask[k] == "(":
+                op = k
+                break
+        if op is None:
+            continue
+        d = 0
+        end = -1
+        for k in range(op, len(mask)):
+            if mask[k] == "(":
+                d += 1
+            elif mask[k] == ")":
+                d -= 1
+                if d == 0:
+                    end = k
+                    break
+        if end > 0:
+            out.append((op, end))
+    return out
+
+
+def ctx_id_of(p: dict, ranges: list[tuple]) -> object:
+    """★ 谓词所属的**窗口上下文**（★ 最内层的 CTE 体 / 子查询；★ 都不在 ⇒ 'outer'）
 
     ★★★ **★ 为什么必须逐窗口（★ 本轮真踩到）**：★ M16 一条语句里有三个独立窗口
     ★★★   （★ fr_used / fr_ref / fr_legacy 三个 CTE 体）⇒ ★★ 语句级判定时
@@ -341,11 +377,12 @@ def ctx_id_of(p: dict, ranges: list[tuple[int, int]]) -> object:
     """
     best = "outer"
     best_size = None
-    for idx, (a, b) in enumerate(ranges):
+    for entry in ranges:
+        cid, a, b = entry
         if a <= p["pos"] <= b:
             size = b - a
             if best_size is None or size < best_size:
-                best, best_size = idx, size
+                best, best_size = cid, size
     return best
 
 
@@ -545,9 +582,13 @@ def analyze(stmt: str, stmt_idx: int = -1) -> dict:
     #   ★★★   ⇒ ★★★ 审计器报「全部合规」⇒ ★★★ **假阴性**
     #   ★★★ ⇒ ★★★ ⇒ 上下界必须**在同一窗口上下文内配对**（★ 同一 CTE 体，或同一外层区）
     reads_events = any(t in mask for t in EVENT_TABLES)
+    # ★★★ **子查询 = 独立窗口**（★ tail_n 同族：★ 标量子查询的窗口没有 CTE 体兜着）
+    subqs = subquery_ranges(mask, depths, ranges)
+    all_ranges: list[tuple] = [(i, a, b) for i, (a, b) in enumerate(ranges)]
+    all_ranges += [("subq%d" % k, a, b) for k, (a, b) in enumerate(subqs)]
     ctx_preds: dict[object, list[dict]] = {}
     for p in preds:
-        ctx_preds.setdefault(ctx_id_of(p, ranges), []).append(p)
+        ctx_preds.setdefault(ctx_id_of(p, all_ranges), []).append(p)
     open_ctx: list[object] = []
     for cid, ps in ctx_preds.items():
         lcols = {base_col(p["col"]) for p in ps if p["op"] in (">", ">=")}
@@ -562,6 +603,22 @@ def analyze(stmt: str, stmt_idx: int = -1) -> dict:
         if not closed:
             open_ctx.append(cid)
     closed_upper = not open_ctx
+
+    # ★★ **子查询窗口必须自闭合**（★ 不许继承外层的界：★ 标量子查询是**独立**的窗口）
+    open_subq: list[object] = []
+    for idx, (a, b) in enumerate(subqs):
+        ps = [p for p in preds if a <= p["pos"] <= b]
+        lcols = {base_col(p["col"]) for p in ps if p["op"] in (">", ">=")}
+        if not lcols:
+            continue
+        closed = any(
+            p["scope"] != "case"
+            and base_col(p["col"]) in lcols
+            and (p["now"] or (p["literal"] and literal_le_cut(p["rhs"], cut_text)))
+            for p in ps if p["op"] in ("<", "<=")
+        )
+        if not closed:
+            open_subq.append(idx)
 
     prefix = key_prefix(key_all, text)
 
@@ -581,6 +638,7 @@ def analyze(stmt: str, stmt_idx: int = -1) -> dict:
         "segmented": segmented,
         "n_branches": len(branch_spans),
         "uncovered_branches": uncovered_branches,
+        "open_subq": open_subq,
         "reads_events": reads_events,
         "closed_upper": closed_upper,
         "era_block": bool(re.search(r"\b(?:era|win)\b", key_all, re.IGNORECASE)),
@@ -654,6 +712,7 @@ def audit(sql: str) -> tuple[list[dict], list[dict]]:
             "closed_upper": info["closed_upper"], "segmented": info["segmented"],
             "n_branches": info["n_branches"],
             "uncovered_branches": info["uncovered_branches"],
+            "open_subq": info["open_subq"],
             "stmt_idx": info["stmt_idx"], "n_keys": len(info["keys"]),
             "preds": [(p["col"], p["op"], p["rhs"], p["scope"]) for p in info["preds"]],
         }
@@ -665,6 +724,9 @@ def audit(sql: str) -> tuple[list[dict], list[dict]]:
         if info["uncovered_branches"]:
             why.append("★ 输出分支 %s 没有 now() 上界（★ 同语句的其它分支替它背书 ⇒ 假阴性）"
                        % info["uncovered_branches"])
+        if info.get("open_subq"):
+            why.append("★ 子查询窗口 %s 没有闭合上界（★ 标量子查询 = 独立窗口）"
+                       % info["open_subq"])
         if not info["segmented"] and info["reads_events"] and not info["closed_upper"]:
             why.append("★ 连续窗块：读事件表但事件时间窗没有闭合上界（★ 窗口 = [下界, ∞)）")
         if why:
