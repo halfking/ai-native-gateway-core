@@ -17,8 +17,14 @@ type fakePassiveSink struct {
 	loadErr   error
 }
 
-func fakeKey(credentialID int64, model string) string {
-	return fmt.Sprintf("%d|%s", credentialID, model)
+// ★ 2026-11-10 审计 P1-C：基线键必须含 tenant（与生产表唯一键
+// (tenant_id, credential_id, model_name) 同口径）。原替身只按
+// cred|model 建键 ⇒ 天然无法暴露「读路径写死 default 租户」的缺陷。
+func fakeKey(tenantID string, credentialID int64, model string) string {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return fmt.Sprintf("%s|%d|%s", tenantID, credentialID, model)
 }
 
 func (f *fakePassiveSink) UpsertPassiveBaseline(_ context.Context, fp *PassiveFingerprint) error {
@@ -28,17 +34,17 @@ func (f *fakePassiveSink) UpsertPassiveBaseline(_ context.Context, fp *PassiveFi
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := *fp
-	f.baselines[fakeKey(fp.CredentialID, fp.ModelID)] = &cp
+	f.baselines[fakeKey(fp.TenantID, fp.CredentialID, fp.ModelID)] = &cp
 	return nil
 }
 
-func (f *fakePassiveSink) LoadPassiveBaseline(_ context.Context, credentialID int64, modelName string) (*PassiveFingerprint, error) {
+func (f *fakePassiveSink) LoadPassiveBaseline(_ context.Context, tenantID string, credentialID int64, modelName string) (*PassiveFingerprint, error) {
 	if f.loadErr != nil {
 		return nil, f.loadErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if fp, ok := f.baselines[fakeKey(credentialID, modelName)]; ok {
+	if fp, ok := f.baselines[fakeKey(tenantID, credentialID, modelName)]; ok {
 		cp := *fp
 		return &cp, nil
 	}
@@ -88,7 +94,7 @@ func TestPassiveCollectorWindowAggregate(t *testing.T) {
 		t.Fatalf("Pending after flush = %d, want 0", c.Pending())
 	}
 
-	fp, err := sink.LoadPassiveBaseline(context.Background(), 31, "claude-opus-5-5")
+	fp, err := sink.LoadPassiveBaseline(context.Background(), "default", 31, "claude-opus-5-5")
 	if err != nil || fp == nil {
 		t.Fatalf("load baseline: %v, %+v", err, fp)
 	}
@@ -154,7 +160,7 @@ func TestPassiveCollectorMergesWithExisting(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	fp, _ := sink.LoadPassiveBaseline(context.Background(), 31, "claude-opus-5-5")
+	fp, _ := sink.LoadPassiveBaseline(context.Background(), "default", 31, "claude-opus-5-5")
 	if fp == nil {
 		t.Fatal("baseline missing after flush")
 	}
@@ -199,7 +205,7 @@ func TestPassiveCollectorStaleBaselineRebuilt(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	fp, _ := sink.LoadPassiveBaseline(context.Background(), 31, "claude-opus-5-5")
+	fp, _ := sink.LoadPassiveBaseline(context.Background(), "default", 31, "claude-opus-5-5")
 	if fp == nil {
 		t.Fatal("baseline missing")
 	}
@@ -224,7 +230,7 @@ func TestPassiveCollectorSampleCap(t *testing.T) {
 	if _, err := c.Flush(context.Background(), sink); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	fp, _ := sink.LoadPassiveBaseline(context.Background(), 1, "m")
+	fp, _ := sink.LoadPassiveBaseline(context.Background(), "default", 1, "m")
 	if fp == nil {
 		t.Fatal("baseline missing")
 	}
@@ -286,7 +292,7 @@ func TestPassiveCollectorConcurrentAdd(t *testing.T) {
 	if _, err := c.Flush(context.Background(), sink); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	fp, _ := sink.LoadPassiveBaseline(context.Background(), 1, "m")
+	fp, _ := sink.LoadPassiveBaseline(context.Background(), "default", 1, "m")
 	if fp == nil || fp.SampleCount != 400 {
 		t.Fatalf("SampleCount = %+v, want 400 (8×50, no lost samples)", fp)
 	}

@@ -417,7 +417,6 @@ func nativeStreamPolicyFailureFrame(protocol, ruleID, requestID, reviewID string
 	}
 }
 
-
 // jsonEscapeSSEField 转义放进 SSE JSON 字符串里的文本。
 //
 // 原因短语里可能带引号/换行（参数位置、模型写的内容），不转义会让整帧
@@ -5771,6 +5770,42 @@ goalRetryLoopDone:
 				return
 			}
 
+			// 2026-11-10 审计 P1-B：KindClientBug = 请求本身畸形（格式门
+			// fail-closed 命中）。它是**请求侧**错误 ⇒ 必须回 4xx。
+			//
+			// ★ 修前形态：executor 侧未设 StatusCode ⇒ StatusCode=0 ⇒
+			// dispatchHTTPStatus 原样返回 0 ⇒ 落到下方通用兜底 ⇒ 客户端拿到
+			// 502/503「上游过载 / All providers unavailable」⇒ 客户端 SDK
+			// 按 5xx 退避重试一个**永久畸形**的请求，且真实原因被埋。
+			// ⇒ 这里按仓内既有形态（unsupported_feature / context_length
+			// 两支的同款写法）显式回 400 + 不可重试标记。
+			if execErrTyped.LastKind == errorsx.KindClientBug {
+				reason := extractUpstreamReason(execErr)
+				msg := "request rejected: the request body failed the provider wire format validation"
+				if reason != "" {
+					msg = msg + " Reason: " + reason
+				}
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("client_bug", execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusBadRequest))
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "client_bug", failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				debugInfo := map[string]any{
+					"stage":     "execution",
+					"kind":      string(execErrTyped.LastKind),
+					"tried":     execErrTyped.Tried,
+					"retryable": false,
+					"reason":    reason,
+				}
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, msg, "invalid_request_error", "client_bug")
+					return
+				}
+				writeErrorJSONWithKindProto(proto, w, http.StatusBadRequest, requestID, msg, "invalid_request_error", "client_bug", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
 			if execErrTyped.LastKind == errorsx.KindModelDeprecated {
 				// 2026-08-05 P0: upstream has permanently end-of-lifed the
 				// model (HTTP 410 Gone + "end of life" body, or 404/422
@@ -6374,6 +6409,52 @@ func failureAttribution(execErr error, candidates []provider.Candidate) (*int, *
 }
 
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
+	// 2026-11-10 审计 P0-B：被动时序指纹采样点。
+	//
+	// ★ 原位置（`if len(result.ResponseBody) > 0` 之内）**在生产上不可达**：
+	// 流式成功路径的 ExecuteResult 不含 ResponseBody
+	// （executor_chat.go:2489-2506 / executor_anthropic.go:1441-1465），
+	// 而 passive tracker 只挂在流式 lane（capture 仅在 isStream 时创建，
+	// handler.go:3592-3595）⇒ 两个 lane 互斥 ⇒ 全仓唯一的
+	// `passiveSink.Submit(...)` 从不执行 ⇒ 955 表恒空、该特性整体空转。
+	//
+	// ★ 为什么放在**函数最前面**（而不是 usage 解析之后）：这里有两个
+	// 独立的耦合要拆掉——
+	//   ① `result.ResponseBody` 耦合：流式 lane 恒为空 ⇒ 采样点永不进入；
+	//   ② `h.telemetryClient.Enabled()` 耦合：原位置在遥测客户端的早退
+	//      之后（handler.go:6413）⇒ 遥测关掉 ⇒ 指纹采集也跟着关掉
+	//      （两个本不相干的功能被绑在一起）。
+	// ⇒ 现在它只依赖自己的接线（factory + sink），且在流式 lane 上
+	// capture 已在手 ⇒ 采样点真正可达。
+	//
+	// factory/sink 任一未接线 ⇒ PassiveTrackerFromCapture 返回 nil
+	// ⇒ 零开销旁路（legacy 行为不变）。
+	if h != nil && h.passiveSink != nil && result != nil {
+		if tr := PassiveTrackerFromCapture(capture); tr != nil {
+			// completion tokens：流式 lane 的 usage 在 capture 摘要里
+			// （非流式 lane 才有 result.ResponseBody）⇒ 这里直接读摘要，
+			// 避免依赖下面那段「遥测开启后才会解析」的 reqLog。
+			comp := 0
+			if capture != nil {
+				if v, ok := capture.SummaryAsMap()["completion_tokens"].(int); ok && v > 0 {
+					comp = v
+				}
+			}
+			tenant := ""
+			if keyInfo != nil {
+				tenant = keyInfo.TenantID
+			}
+			if feat := ExtractPassiveFromTracker(tr, comp, modelcredibility.Metadata{
+				TenantID:     tenant,
+				ModelName:    evt.CanonicalName,
+				CredentialID: int64(result.Candidate.CredentialID),
+				RequestID:    evt.RequestID,
+			}); feat != nil {
+				h.passiveSink.Submit(feat)
+			}
+		}
+	}
+
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
@@ -7014,32 +7095,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				slog.Info("cache write ttl split observed", "request_id", evt.RequestID, "model", evt.CanonicalName, "ttl", "long", "tokens", lv)
 			}
 		}
-		// 被动时序指纹采样点（2026-11-09 模型指纹验证增强轮）：
-		// usage（LLM 回报优先，估算兜底）就绪后取一次样本交给 sink。
-		// factory/sink 任一未接线 ⇒ PassiveTrackerFromCapture 返回 nil
-		// ⇒ 零开销旁路（legacy 行为不变）。
-		if h.passiveSink != nil {
-			if tr := PassiveTrackerFromCapture(capture); tr != nil {
-				comp := 0
-				if reqLog.CompletionTokens != nil {
-					comp = *reqLog.CompletionTokens
-				} else if ct > 0 {
-					comp = ct
-				}
-				tenant := ""
-				if keyInfo != nil {
-					tenant = keyInfo.TenantID
-				}
-				if feat := ExtractPassiveFromTracker(tr, comp, modelcredibility.Metadata{
-					TenantID:     tenant,
-					ModelName:    evt.CanonicalName,
-					CredentialID: int64(result.Candidate.CredentialID),
-					RequestID:    evt.RequestID,
-				}); feat != nil {
-					h.passiveSink.Submit(feat)
-				}
-			}
-		}
+		// 被动时序指纹采样点（2026-11-09 模型指纹验证增强轮）**已移出本块**
+		// ⇒ 见下方「2026-11-10 审计 P0-B」处：原位置在
+		// `if len(result.ResponseBody) > 0` 之内，而流式成功路径根本不填
+		// ResponseBody（executor_chat.go:2489-2506）⇒ passiveSink.Submit()
+		// 在生产上永远不执行 ⇒ 955 表恒空、该特性整体失效。
 		if pt > 0 || ct > 0 {
 			// A receipt-time estimate is provisional. Replace it whenever the
 			// upstream response provides the real prompt token count.
@@ -7147,6 +7207,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	} else if reqLog.UsageSource == nil && (reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil) {
 		reqLog.UsageSource = strPtr(UsageSourceEstimated)
 	}
+
 
 	// CO-2 (2026-08-15): 真实 usage 到达时，异步修正本请求此前可能已落库的
 	// estimated 行（同 request_id 的早写路径，如重试/断连补写），并回填

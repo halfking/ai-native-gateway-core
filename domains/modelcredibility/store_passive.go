@@ -22,7 +22,15 @@ type PassiveBaselineSink interface {
 	// UpsertPassiveBaseline 按 (tenant, credential, model) 键写入/覆盖基线行。
 	UpsertPassiveBaseline(ctx context.Context, fp *PassiveFingerprint) error
 	// LoadPassiveBaseline 读取基线；没有行时返回 (nil, nil)。
-	LoadPassiveBaseline(ctx context.Context, credentialID int64, modelName string) (*PassiveFingerprint, error)
+	//
+	// ★ 2026-11-10 审计 P1-C：tenantID **必须**进签名。
+	// 原实现读路径写死 `tenant_id = 'default'`，而写路径用真实租户
+	// （UpsertPassiveBaseline 里 tenant := fp.TenantID）⇒ 非 default 租户
+	// 的行写进 (acme, cred, model)，下一次 flush 却读 (default, cred, model)
+	// ⇒ 混进 default 租户的统计，并**丢弃 acme 自己积累的历史**
+	// （upsert 覆盖）。表的唯一键本来就支持多租户（tenant_id 在键里），
+	// 是读路径单方面把它丢了。
+	LoadPassiveBaseline(ctx context.Context, tenantID string, credentialID int64, modelName string) (*PassiveFingerprint, error)
 }
 
 // UpsertPassiveBaseline 实现 PassiveBaselineSink（生产实现）。
@@ -113,7 +121,15 @@ ON CONFLICT (tenant_id, credential_id, model_name) DO UPDATE SET
 }
 
 // LoadPassiveBaseline 实现 PassiveBaselineSink；没有行时返回 (nil, nil)。
-func (s *Store) LoadPassiveBaseline(ctx context.Context, credentialID int64, modelName string) (*PassiveFingerprint, error) {
+//
+// ★ 2026-11-10 审计 P1-C：租户从入参取（与写路径同一口径），不再写死
+// 'default'。空串归一为 'default'，与 UpsertPassiveBaseline 的
+// `if tenant == "" { tenant = "default" }` 保持一致。
+func (s *Store) LoadPassiveBaseline(ctx context.Context, tenantID string, credentialID int64, modelName string) (*PassiveFingerprint, error) {
+	tenant := tenantID
+	if tenant == "" {
+		tenant = "default"
+	}
 	const q = `
 SELECT
     tenant_id,
@@ -124,10 +140,10 @@ SELECT
     vocab_freq, format_flags,
     sample_count, collected_from, collected_to
 FROM public.passive_model_fingerprints
-WHERE tenant_id = 'default' AND credential_id = $1 AND model_name = $2`
+WHERE tenant_id = $1 AND credential_id = $2 AND model_name = $3`
 
 	var (
-		tenant      string
+		rowTenant   string
 		ttftMeanMS  *float64
 		ttftP95MS   *float64
 		ittMeanMS   *float64
@@ -146,8 +162,8 @@ WHERE tenant_id = 'default' AND credential_id = $1 AND model_name = $2`
 		colFrom     *time.Time
 		colTo       *time.Time
 	)
-	err := s.db.QueryRow(ctx, q, credentialID, modelName).Scan(
-		&tenant,
+	err := s.db.QueryRow(ctx, q, tenant, credentialID, modelName).Scan(
+		&rowTenant,
 		&ttftMeanMS, &ttftP95MS,
 		&ittMeanMS, &ittStdMS, &ittP50MS, &ittP95MS, &ittDistRaw,
 		&tpMean, &tpStd,
@@ -168,8 +184,8 @@ WHERE tenant_id = 'default' AND credential_id = $1 AND model_name = $2`
 		SampleCount:  sampleCount,
 		FormatFlags:  uint32(formatFlags),
 	}
-	if tenant != "" {
-		fp.TenantID = tenant
+	if rowTenant != "" {
+		fp.TenantID = rowTenant
 	}
 	if colFrom != nil {
 		fp.CollectedFrom = *colFrom
