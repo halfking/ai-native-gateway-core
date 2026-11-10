@@ -1,5 +1,13 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-10 同步轮（拉取合并 → 修正 → 编译测试 → 双仓推送，goal 会话，通用式见 `LESSONS.md` **§650**）**：
+> ★ 合并＝**纯 ff**（`f22e0d388`→`fe136ea86`，5 提交：被动基线 worker 加心跳 + sanitizerules 两处确定性缺陷修正）；合并前 codeup(`origin`) 与 github 两远端 main **已是同一 SHA**（`fe136ea86`）⇒ 两仓无分叉。
+> ★★ **复核出上游自带的两处观测面缺陷**（本轮修正对象，均非本轮引入）：① **测试量具自带 race**——上游新增 `bg/passive_baseline_worker_test.go` 用裸 `bytes.Buffer` 捕获 slog（slog 默认 logger 是进程级全局 + worker goroutine 写 / 测试主 goroutine 读）⇒ `go test -race ./bg/` 实测 4 次 DATA RACE ⇒ **这条门在 race 通道上恒红、读数不可信** ⇒ 换 mutex+`strings.Builder`（与 `domains/session/v2` 的 `safeBuffer` 同源）★ 注意 **`bg` 不在 `CORE_GO_PACKAGES`** ⇒ `make test-race-core` 抓不到它；② **计数口径与字段名不符**——心跳键 `nodes_written_since_last_beat` 承诺「自上次心跳以来」而实现只累加不归零 ⇒ 实际是「自 Start 累计」⇒ 运维会误读成「本窗口有写入」（而心跳用途恰是判断本窗口是否活跃）⇒ 发出心跳时归零 + 新增 per-window 口径用例。
+> ★ **负控两处都做**：删 `w.flushes = 0` ⇒ 新用例红（30≠0）；换回裸 `bytes.Buffer` ⇒ `-race` 复现 DATA RACE。
+> ★ **既有环境红的分离**（§649 多遍×多树法）：`make guards-fast` 判红于 `guards-gate-scripts` 的 `FAIL build lock was not released after the early collision` ⇒ 我树 3/3 复现、**干净 origin/main 对照树 2/2 复现且同一行** ⇒ **零回归**（根因＝本机 `rm` 是 mavis-trash 可恢复删除 shim；AGENTS.md:1116 已登记为环境红）。★ **对照树必须建在同级兄弟目录**——`scripts/deploy-lib` 是仓内**相对符号链接**（`../../../deploy-lib`）⇒ 建在 `/tmp` 会让对照树以**另一个错误**失败（读数同为 exit=1）⇒ 差点把环境红误判成真回归。
+> ★ 验证：build rc=0；`go test ./bg/... ./domains/sanitizerules/... ./domains/modelcredibility/... ./domains/streaming/... ./cmd/gateway/` 全绿；**`go test -race ./bg/` 全包绿**（56.9s）；vet rc=0；gofmt 零新增（仓内存量漂移 538 文件属上游既有）；guards-fast 五项中四项绿、第五项为上述已证环境红。
+> ★ 明确没做：全量 `go test ./...` 未跑；前端未构建；未部署任何环境；gofmt 存量漂移未批量重排（避免与并行会话大规模冲突）。
+
 > **2026-11-10 211 蓝绿部署轮（sanitizerules 两处确定性缺陷修正 + 本批修复在役专项验证，goal 会话，通用式见 `LESSONS.md` **§649**）**：
 > ★ 用户目标＝「拉取合并 → 修正问题 → 部署 211（蓝绿、健康才切流、前后端正常）→ 专项测试验证」。
 > 开工 ff-merge `42db9fba`（9 提交：reasoning 预算重试/Redis sticky-first/mock 压测栈等）；
