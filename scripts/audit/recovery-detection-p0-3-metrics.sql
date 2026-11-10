@@ -125,9 +125,17 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  runs AS (
    SELECT n.credential_id, n.raw_model_name, count(*) cnt
    FROM node_probe_runs n
-   -- ★★ 锚定（★ 本轮第 7 处口径修正）：pre 段固定为「切点前 24h」，post 段为「切点→now」
-   --   ⇒ 否则这两个 era 对比块的 pre 侧只在关窗后 24h 内存在（Stage 2 时整段消失）
+   -- ★★★ 第 27 处口径修正（★ 2026-11-11 02:5x）：★ **事件窗口必须有闭合上界**
+   --   ★★ 形态：★ 本块**只有下界**（★ `created_at > CUT - 24h`）⇒ ★★ 窗口 = **[CUT-24h, ∞)**
+   --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口长度 = 真实漂移量（★ 不是 stage 窗口）
+   --   ★★ ⇒ ★★ 且**原注释宣称「post 段为切点→now」但 SQL 里根本没有那个上界** ⇒ ★★ 注释与实现不符
+   --   ★★   （★ 真相：★ 本块的键**没有 era 维度**（★ `M3_feat_<f>_ns_<ns>`）⇒ ★★ 它是**连续窗口**
+   --   ★★     不是 era 对比块 ⇒ ★★ 「这两个 era 对比块」指的是 M8 / M12s ⇒ ★★ 本块的注释是**张冠李戴**）
+   --   ★★★ 修法：★ 加 `n.created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+   --   ★★   ⇒ ★★ pre 侧不受影响（★ 全部 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+   --   ★★   ⇒ ★★ 窗口变成 [CUT-24h, now] ⇒ ★★ as-of 可替换 ⇒ ★★ **关窗时刻的读数可精确复现**
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+     AND n.created_at <= now()
    GROUP BY n.credential_id, n.raw_model_name
  ), joined AS (
    SELECT r.cnt, (lower(btrim(r.raw_model_name)) IN (SELECT m FROM st)) is_feat,
@@ -356,7 +364,14 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    FROM node_probe_runs n
    -- ★★ 锚定（★ 本轮第 7 处口径修正）：pre 段固定为「切点前 24h」，post 段为「切点→now」
    --   ⇒ 否则这两个 era 对比块的 pre 侧只在关窗后 24h 内存在（Stage 2 时整段消失）
+   -- ★★★ 第 27 处口径修正（★ 2026-11-11 02:5x）：★ **post 段原本是开区间**
+   --   ★★ 形态：★ `r` CTE **只有下界** ⇒ ★★ 而 `tagged` 用 CASE 切 pre/post
+   --   ★★ ⇒ ★★ post 段 = **[CUT, ∞)** ⇒ ★★ as-of 替换对它无效
+   --   ★★ ⇒ ★★ 陷阱：★ 本块**唯一**的「上界」是 CASE **内**的 `created_at < CUT`
+   --   ★★   （★ 那是**分桶条件**、不是行过滤）⇒ ★★ 若把它当上界 ⇒ ★★ 会误判成「窗口闭合」（★ 假阴性）
+   --   ★★★ 修法：★ 加 `n.created_at <= now()`（★ 真实读数逐字节不变 ⇒ ★ M18 不受影响）
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+     AND n.created_at <= now()
  ), tagged AS (
    SELECT CASE WHEN is_feat THEN 'featured' ELSE 'not' END f,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END win,
@@ -1206,6 +1221,10 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
    SELECT n.id
    FROM node_probe_runs n
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★★ 第 27 处口径修正：★ **窗口必须闭合**（★ 原来只有下界 ⇒ [CUT-7d, ∞)）
+     --   ★★ 三个口径（used/ref/legacy）**必须加同一个上界** ⇒ ★★ 否则 used==ref 的等式在
+     --   ★★ 「有未来时间戳的行」时会被破坏（★ 此刻无 ⇒ ★★ 等式不变 ⇒ ★★ 真实读数逐字节不变）
+     AND n.created_at <= now()
      AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
@@ -1215,6 +1234,7 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
    JOIN credential_model_bindings b ON b.credential_id = n.credential_id AND b.billing_mode = 'free'
    JOIN provider_models pm ON pm.id = b.provider_model_id AND pm.raw_model_name = n.raw_model_name
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     AND n.created_at <= now()          -- ★ 第 27 处：★ 与 fr_used 同款上界（★ 等式才成立）
 ), fr_legacy AS (  -- ★ 旧写法（★ 仅作背景对照：★ 已知会丢 70% ⇒ 不参与判定）
    SELECT n.id
    FROM node_probe_runs n
@@ -1222,6 +1242,7 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
      ON b.credential_id = n.credential_id
     AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
    WHERE b.billing_mode = 'free' AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     AND n.created_at <= now()          -- ★ 第 27 处：★ 同款上界（★ 背景值也须同一窗口）
 )
 SELECT 'M16_join_caliber_check' k,
   'used='||(SELECT COUNT(*) FROM fr_used)::text
@@ -1240,6 +1261,7 @@ WITH fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     AND n.created_at <= now()    -- ★ 第 27 处：★ 窗口必须闭合（★ 原来只有下界 ⇒ [CUT-7d, ∞)）
      AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
@@ -1462,7 +1484,16 @@ fpr AS (
   UNION ALL
   SELECT r.*, 'pre7d' FROM fpr r WHERE r.era='pre'
   UNION ALL
-  SELECT r.*, 'post' FROM fpr r WHERE r.era='post'
+  -- ★★★★ 第 27 处口径修正（★ 2026-11-11 03:2x）：★ **fp 视图的 post 段必须被 now() 界定**
+  --   ★★ 形态：★ 本视图**按设计**不含成熟度过滤（★ 尾部 6h 要可见 ⇒ 不得加 `now()-6h`）
+  --   ★★   ⇒ ★★ 但「**没有成熟度过滤**」≠「**没有上界**」⇒ ★★ 原写法 post 段 = **[切点, ∞)**
+  --   ★★ ⇒ ★★ as-of 替换对它**完全无效** ⇒ ★★ 负控/预演里 fp 的 post 窗口 = **[切点, 真实now]**
+  --   ★★   ⇒ ★★ **不是 stage 窗口** ⇒ ★★ 负控里 fp 的 top21600_n 会**比 Stage 1 的更长**
+  --   ★★   ⇒ ★★ ⇒ ★★ **几何不一致**（★ 第 23 处的纪律：★ 负控必须与被验收窗口同几何）
+  --   ★★★ 修法：★ 只给 **post 分支**补 `fail_at < now()`（★ **不加 -6h** ⇒ ★ 尾部 6h 仍可见 ⇒ ★ 设计不变）
+  --   ★★★ 且 **pre 分支一个都不动** ⇒ ★★★ pre 键仍**时钟无关**（★ 三时钟门逐字节一致不受影响）
+  --   ★★★ 且真实读数**逐字节不变**（★ 所有已落库事件都 ≤ now()）⇒ ★★★ **M18 不重冻** ✔
+  SELECT r.*, 'post' FROM fpr r WHERE r.era='post' AND r.fail_at < now()
 ), fpm AS (
   -- ★★ 逐模型聚合（★ post 窗口）⇒ ★★ 「摇摆」分量与**逐模型复核**的输入
   SELECT raw_model_name, exemption,
@@ -1588,7 +1619,18 @@ SELECT 'M20_'||w.lay||'_post_split' k,
      WHERE s.exemption = w.lay AND NOT s.success
        AND s.raw_model_name LIKE '%/%' AND lower(btrim(s.raw_model_name)) IN (SELECT m FROM newly)
        AND s.created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
-       AND s.created_at >= now() - interval '6 hours') v
+       -- ★★★★ 第 27 处口径修正（★ 2026-11-11 03:4x）：★ **tail 子查询必须也有 now() 上界**
+       --   ★★ 形态：★ 原写法只有下界（★ `s.created_at >= now() - interval '6 hours'`）
+       --   ★★   ⇒ ★★ tail 段 = **[now-6h, ∞)** ⇒ ★★ 无界
+       --   ★★ ⇒ ★★ **负控里（★ as-of 前移）tail 会延伸到 as-of 之外** ⇒ ★★ 而 fp 视图是 [切点, asof]
+       --   ★★   ⇒ ★★ 「fp ≥ 窗口 + 尾部」不变量**被撑破** ⇒ ★★ 守卫报错
+       --   ★★ ⇒ ★★ ⇒ ★★ 真相：**这个不变量此前是「恒真」的**（★ fp 与 tail 都无界 ⇒ 两边都是 [切点, 真实now]
+       --   ★★   ⇒ ★★ ⇒ **相等** ⇒ ★★ ⇒ **守卫在 fp 视图缺上界这件事上没有牙** ⇒ ★★ 盲区正在缺陷所在处
+       --   ★★★ 修法：★ 给 tail 补 `s.created_at < now()`（★ 真实读数逐字节不变 ⇒ ★ 所有已落库事件都 ≤ now）
+       --   ★★★   ⇒ ★★ tail = [now-6h, now) ⇒ ★★ window+tail = [切点, now) = fp ⇒ ★★ 不变量恢复为「真不变量」
+       --   ★★★   ⇒ ★★ 且**守卫的牙齿恢复**：★ 若 fp 视图被改回带成熟度过滤 ⇒ fp = window < window+tail ⇒ ★★ 报警
+       AND s.created_at >= now() - interval '6 hours'
+       AND s.created_at < now()) v
 FROM (VALUES ('normal'),('exempt')) AS w(lay)
 UNION ALL
 -- ★★★★ M20 的**逐模型 fp 阶梯谱**（★ post 窗口）⇒ ★★ 「摇摆」分量的原料 + **逐模型复核**工具
