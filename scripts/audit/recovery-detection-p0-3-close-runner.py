@@ -265,6 +265,68 @@ JUDGE_BLOCK_SPECS = [
 ]
 
 
+# ★★★ 第 35 处（★ 2026-11-11）：★ **期望值登记到独立夹具** ⇒ ★★ 同源变异打不中它（★ LESSONS §680）
+#   ★★ 形态（★ 实测复现）：★ 第 34 处的完整性守卫**用 `JUDGE_BLOCK_SPECS` 同时当「抽取规格」和「期望清单」**
+#   ★★ ⇒ ★★ **删掉 `JUDGE_BLOCK_SPECS` 里的一项** ⇒ ★★ 抽取少了它、期望也少了它 ⇒ ★★ 守卫**照样绿**
+#   ★★ ⇒ ★★ 实测：★ 删「量具守卫」⇒ **rc=0**、★ 产物里 `量具守卫` **一行都没有**、★ 守卫还打印「四个要素齐（含量具守卫）」
+#   ★★ ⇒ ★★ ⇒ ★★ **守卫自己也要被审计**（★ 第 27 处同款）
+#   ⇒ ★★ 修法：★ **期望清单独立成文件**（★ 夹具）★ ★ 守卫从夹具取值 ⇒ ★★ 同源变异改不动判据
+#   ⇒ ★★ ＋ ★ **集合相等**（★ 产物块标题集合 == 登记表 label 集合）⇒ ★★ 少抽 / 多登**双向**都红
+ARCHIVE_BLOCKS_FIXTURE = Path(__file__).with_name("fixtures") / "p0-3-close-archive-blocks.txt"
+
+# ★ 产物里 ②b 节的**块标题**格式（★ 必须是**行级精确**匹配 ⇒ ★★ 断言落到结构、不落到标签词）
+RE_ARTIFACT_BLOCK_HDR = re.compile(r"^\*\*★ (.+)\*\*$")
+
+# ★ 产物里 ②b 节的**节标题**（★ 用于圈定解析范围 ⇒ ★ 不把别节的 `**★ …**` 行误当块）
+ARTIFACT_BLOCK_SECTION = "②b 判定器读数摘录"
+
+
+def load_archive_blocks(path: Path) -> list[tuple[str, str]]:
+    """★ 读「关窗必归档要素」登记表（★ 期望侧）⇒ ★★ **读不到 / 格式错 / 重复 label ⇒ 抛异常 ⇒ fail-closed**"""
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        ln = raw.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        if "|" not in ln:
+            raise ValueError(f"登记行**缺 '|'**（★ 格式：label|marker）⇒ ★ {raw!r}")
+        label, marker = ln.split("|", 1)
+        label = label.strip()
+        marker = marker.strip()
+        if not label:
+            raise ValueError(f"登记行**缺 label** ⇒ ★ {raw!r}")
+        if label in seen:
+            raise ValueError(f"登记行 **label 重复**（★ 歧义 ⇒ fail-closed）⇒ ★ {label!r}")
+        seen.add(label)
+        rows.append((label, marker))
+    if not rows:
+        raise ValueError("登记表**为空**（★ 没有任何必归档要素 ⇒ ★ 守卫空转 ⇒ fail-closed）")
+    return rows
+
+
+def extract_artifact_blocks(text: str) -> dict[str, list[str]]:
+    """★ 从**产物**里解析 ②b 节的要素块（★ 键 = 块标题标签）⇒ ★★ 与写入方**独立** ⇒ ★★ 可作交叉核对"""
+    out: dict[str, list[str]] = {}
+    in_sec = False
+    cur: str | None = None
+    for ln in text.splitlines():
+        if ln.startswith("#### "):
+            in_sec = ARTIFACT_BLOCK_SECTION in ln
+            cur = None
+            continue
+        if not in_sec:
+            continue
+        m = RE_ARTIFACT_BLOCK_HDR.match(ln)
+        if m:
+            cur = m.group(1).strip()
+            out.setdefault(cur, [])
+            continue
+        if cur is not None:
+            out[cur].append(ln)
+    return out
+
+
 def extract_judge_blocks(text: str) -> dict[str, list[str]]:
     """★ 从**判定器输出**里**逐字**摘出关窗要归档的块（★ 缺块 ⇒ 返回里就没有 ⇒ 守卫会红）"""
     out: dict[str, list[str]] = {}
@@ -529,22 +591,44 @@ def main() -> int:
                             f"⇒ ★ 缺 {len(_miss)} 条 / 多 {len(_extra)} 条 ⇒ ★ **归档片段不可信**")
         else:
             print(f"★★ ✔ 裁决片段自校验：★ {len(_src)} 条诚实边界**逐字一致**")
-        # ★★★ **第 34 处**：★ **片段完整性守卫**（★ 缺要素 ⇒ 关窗当天只能手抄 ⇒ ★★ 片段不可信 ⇒ **rc≠0**）
+        # ★★★ **第 35 处**：★ **期望值登记到独立夹具** ⇒ ★★ 同源变异打不中它（★ LESSONS §680）
+        #   ★★ ⇒ ★★ 判据不再来自 `JUDGE_BLOCK_SPECS`（★ 那是**机制侧**，★ 同源 ⇒ 会连守卫一起改掉）
+        #   ★★ ⇒ ★★ 并且做**集合相等**核对（★ 产物块标题集合 == 登记表 label 集合）⇒ ★★ 双向漂移都红
         _txt = rp.read_text(encoding="utf-8")
-        _miss = [lb for lb, st, _sp in JUDGE_BLOCK_SPECS if st.strip() not in _txt]
-        if _miss:
-            failures.append(f"[裁决片段] **缺要素** {_miss}（★ 关窗当天只能回日志**手抄** ⇒ ★★ "
-                            f"归档片段不可信 ⇒ ★ **不得用它出结论**）")
+        _exp: list[tuple[str, str]] = []
+        try:
+            _exp = load_archive_blocks(ARCHIVE_BLOCKS_FIXTURE)
+        except Exception as exc:
+            failures.append(f"[裁决片段] 读不到「关窗必归档要素」登记表（★ {exc}）⇒ ★★ **不可判** ⇒ "
+                            f"★ 归档片段不可信 ⇒ ★ **rc≠0**")
+        if _exp:
+            _got = extract_artifact_blocks(_txt)
+            _glabels = set(_got)
+            _elabels = [lb for lb, _mk in _exp]
+            _missing_lbl = [lb for lb in _elabels if lb not in _glabels]
+            _extra_lbl = sorted(_glabels - set(_elabels))
+            _missing_mk = [lb for lb, mk in _exp if mk and mk not in _txt]
+            if _missing_lbl:
+                failures.append(f"[裁决片段] 登记表要的要素**缺** {_missing_lbl}（★ 产物里没有对应块 ⇒ ★★ "
+                                f"关窗当天只能回日志**手抄** ⇒ ★ 归档片段不可信 ⇒ ★ **rc≠0**）")
+            if _extra_lbl:
+                failures.append(f"[裁决片段] 产物里有**登记表未登记**的块 {_extra_lbl}（★ ⇒ ★ 登记表与产物**漂移** ⇒ "
+                                f"★ 不可信 ⇒ ★ **rc≠0**）")
+            if _missing_mk:
+                failures.append(f"[裁决片段] 要素**内容缺失** {_missing_mk}（★ 有块头无内容 ⇒ ★ 归档片段不可信 ⇒ "
+                                f"★ **rc≠0**）")
+            if not (_missing_lbl or _extra_lbl or _missing_mk):
+                print(f"★★ ✔ 裁决片段完整性：★ 登记表 **{len(_exp)}** 个要素全齐且内容在位"
+                      f"（★ {' / '.join(_elabels)}）")
+        # ★★ **独立属性检查**：★ H5 必须**逐模型多行**（★ 第 32 处：★ 若只有 1 行 ⇒ ★★ 采集侧又出现一对多键 ⇒ ★★ 读数不可信 ⇒ 停）
+        #   ★★ ⇒ ★★ 这条**不依赖登记表** ⇒ ★★ 登记表被同源改坏时它仍是兜底（★ 第 34 处实测：★ 删 H5 登记项 ⇒ rc=1 ★ 靠的就是它）
+        _h5n = sum(1 for ln in _txt.splitlines()
+                   if ln.startswith("      - ") and "probes_24h=" in ln)
+        if _h5n < 2:
+            failures.append(f"[裁决片段] H5 只有 {_h5n} 行（★ 必须是**逐模型**多行 ⇒ ★ 若只有 1 行 ⇒ "
+                            f"★★ 采集侧又出现一对多键 ⇒ ★★ 读数不可信 ⇒ **停**）")
         else:
-            # ★★ H5 必须**逐模型多行**（★ 第 32 处：★ 若只有 1 行 ⇒ ★★ 采集侧又出现一对多键 ⇒ ★★ 读数不可信 ⇒ 停）
-            _h5n = sum(1 for ln in _txt.splitlines()
-                       if ln.startswith("      - ") and "probes_24h=" in ln)
-            if _h5n < 2:
-                failures.append(f"[裁决片段] H5 只有 {_h5n} 行（★ 必须是**逐模型**多行 ⇒ ★ 若只有 1 行 ⇒ "
-                                f"★★ 采集侧又出现一对多键 ⇒ ★★ 读数不可信 ⇒ **停**）")
-            else:
-                print(f"★★ ✔ 裁决片段完整性：★ 四个要素齐（★ 指标条数 / 量具守卫 / 逐对明细 / H5）"
-                      f"＋ ★ H5 逐模型 **{_h5n}** 行")
+            print(f"★★ ✔ H5 逐模型读数：**{_h5n}** 行（★ ≥2 ⇒ ★ 不是一对多键折叠）")
         print(f"★★ 裁决片段（★ 可直接归档）：{rp}")
 
     if failures:
