@@ -1190,6 +1190,16 @@ type ChatHandler struct {
 	normalizer  *Normalizer
 	executor    *executors.Executor
 	adminAPIKey string
+	// executorOverrideForTest（2026-11-11 · claude-fable-5-2 事故轮第三层）：
+	// 测试专用注入点。生产恒为 nil ⇒ 走 h.executor.Execute 的真实路径。
+	//
+	// ★ 为什么需要它：2026-11-10 的 P1-B 审计把「格式门 fail-closed ⇒ 必须
+	// 回 4xx」只加在了 **chat 面**（handler.go），anthropic-messages 面与
+	// responses 面漏了 ⇒ 畸形请求在这两个面上拿到 503「All providers
+	// unavailable」。这个缺口**只在协议面层可见**（executor 层的 kind 是
+	// 对的）⇒ 只测判据函数抓不到「某个面忘了接线」⇒ 必须有一条能真正跑
+	// 到协议面渲染的端到端钉测。
+	executorOverrideForTest func(*executors.ExecParams) (*executors.ExecuteResult, error)
 	// SR-W2 request survival (doc 18 §6): nil gate keeps the survival branch
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
@@ -1804,6 +1814,32 @@ func (h *ChatHandler) AuthKeyVerifier() *authentication.KeyVerifier {
 
 func (h *ChatHandler) setRequestKeyVerifierForTest(verifier requestKeyVerifier) {
 	h.keyVerifier = verifier
+}
+
+// setExecutorOverrideForTest installs a synthetic executor for the protocol
+// faces (2026-11-11 · claude-fable-5-2 事故轮第三层). Test-only: the
+// override short-circuits h.executor.Execute so a test can drive a
+// *specific* executor failure (e.g. the anthropic-messages format gate's
+// KindClientBug) all the way to the protocol face's HTTP rendering.
+//
+// Production never calls this ⇒ the override is nil ⇒ the real dispatch
+// pipeline runs. Same pattern as setRequestKeyVerifierForTest.
+func (h *ChatHandler) setExecutorOverrideForTest(fn func(*executors.ExecParams) (*executors.ExecuteResult, error)) {
+	h.executorOverrideForTest = fn
+}
+
+// executeForRequest runs the executor for one request. The test override
+// short-circuits it; production always takes the h.executor path.
+//
+// ★ 当前只有 anthropic-messages 面（messages.go）与 responses 面
+// （responses.go）走这个入口——它们正是本轮补 client_bug 分支的两个面。
+// chat 面（handler.go 的 serveWithExecutor）仍直连 h.executor.Execute：
+// 它本来就已有 client_bug 分支（2026-11-10 P1-B 审计），本轮不改它。
+func (h *ChatHandler) executeForRequest(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	if h.executorOverrideForTest != nil {
+		return h.executorOverrideForTest(params)
+	}
+	return h.executor.Execute(params)
 }
 
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {

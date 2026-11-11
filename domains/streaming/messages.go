@@ -917,7 +917,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			defer nativeStreamWriter.finish()
 			execWriter = nativeStreamWriter
 		}
-		result, execErr = h.chatHandler.executor.Execute(buildExecParams(execWriter))
+		result, execErr = h.chatHandler.executeForRequest(buildExecParams(execWriter))
 	}
 	if nativeStreamWriter != nil {
 		// Finalize buffered output before the generic execErr branch. A policy
@@ -1022,6 +1022,13 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
+		// 2026-11-11（claude-fable-5-2 事故轮 · 第三层）：请求**形态**拒绝
+		// （格式门 fail-closed，KindClientBug）必须回 4xx，且落库分类要是
+		// client_bug 而不是误导性的 model_not_found。
+		// ★ 为什么单独判：下面的 else-if 只覆盖「Exhausted 且不是请求形态
+		// 问题」的一类；请求形态问题的语义与「候选全试完」无关 ⇒ 在此
+		// 单独取出，供下面的渲染分支复用。
+		shapeStatus, shapeErrType, shapeMsg, shapeCode, shapeRejected := requestShapeRejection(execErr)
 		// R59 audit (S7-1): survival terminal decisions must keep their
 		// structured failure_detail_code on every protocol face, not just
 		// chat (handler.go). Without this, /v1/messages logs
@@ -1031,6 +1038,9 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			if ste.kinds != "" {
 				w.Header().Set("X-Gateway-Last-Kind", ste.kinds)
 			}
+		} else if shapeRejected {
+			errCode = shapeCode
+			errMsg = shapeMsg
 		} else if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
 			errCode = "model_not_found"
 			errMsg = "all providers unavailable"
@@ -1042,6 +1052,20 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo, r)
 		*attemptLogged = true
 		if usedSurvival {
+			return
+		}
+		// 2026-11-11（claude-fable-5-2 事故轮 · 第三层）：请求形态拒绝 ⇒ 4xx。
+		// ★ 放在 Exhausted 块**之前**：请求形态问题的判定与「候选是否试完」
+		// 无关（Exhausted=true / false 都该回 4xx）。
+		// ★ 与 chat 面（handler.go 的 KindClientBug 分支）同款语义：400 +
+		// 不可重试标记 + 真实 kind 的 X-Gateway-Last-Kind 头。
+		if shapeRejected {
+			w.Header().Set("X-Gateway-Last-Kind", shapeCode)
+			if preStreamPrepared {
+				writeAnthropicStreamError(w, shapeErrType, shapeMsg)
+			} else {
+				writeAnthropicError(w, shapeStatus, shapeErrType, shapeMsg)
+			}
 			return
 		}
 		if execErr, ok := execErr.(*executors.ExecuteError); ok && execErr.Exhausted {
