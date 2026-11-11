@@ -614,6 +614,23 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		if upstreamRateLimitKind(err) {
 			return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindRateLimit}
 		}
+		// 2026-11-11（claude-fable-5-2 事故轮 · 第二层）：请求**形态**错误
+		// （上游 4xx，如 "requires adaptive thinking"）此前在此塌成
+		// KindTransient ⇒ EffectiveRetryable(transient)=true ⇒ 同一个坏请求
+		// 被**盲重试**（211 日志实证：all 2 candidates failed —— 两个凭据各
+		// 被试一次，纯浪费且放大上游压力），且 request_logs 的 error_kind
+		// 记成 transient / 兜底 model_not_found，运维读到的是误导性分类。
+		//
+		// ★ 为什么在这里取：ExhaustedError.Cause 是最后一个具体上游失败
+		// （*upstream.Error，带真实 Kind），而本函数此前只认 rate_limit，
+		// 其余一律 transient ⇒ **真实 kind 在这里被丢弃**。
+		//
+		// ★ 只放行「请求侧」族，不放行全部：请求侧错误重试无意义（换候选
+		// 也一样会被拒），而 transient / network 等仍然走原路径（保留既有
+		// 重试与恢复语义，零回归面）。
+		if kind := upstreamRequestSideKind(err); kind != "" {
+			return &ExecuteError{LastErr: err, Exhausted: true, LastKind: kind}
+		}
 		if ce, ok := err.(*dispatchErr); ok && ce != nil {
 			// Forward-path sentinels (circuit open / fp saturated / keys
 			// exhausted / no candidate): treat as transient exhaustion.
@@ -621,6 +638,33 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		}
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindTransient}
 	}
+}
+
+// upstreamRequestSideKind returns the upstream error kind when that kind is
+// **request-side**（证据指向「这次请求」本身，而不是节点/容量）。
+//
+// 2026-11-11（claude-fable-5-2 事故轮 · 第二层）：请求形态错误（上游 4xx）
+// 此前在 dispatchErrToExecuteError 的 default 分支塌成 KindTransient ⇒
+// ① EffectiveRetryable(transient)=true ⇒ 同一个坏请求被盲重试；
+// ② request_logs 的 error_kind 记成 transient（甚至兜底 model_not_found）⇒
+// 运维读到的是误导性分类。
+//
+// ★ 范围纪律：只放行 errorsx.IsRequestSideError 族（request_rejected /
+// context_length / content_filter / tool_call_id_mismatch / unsupported_feature
+// 等）—— 这些换候选也是同样被拒，重试纯属浪费。transient / network /
+// rate_limit 等**不在**本族，保持既有路径不变（零回归面）。
+//
+// ★ 凭据级致命错误（auth / quota）也**不在**本族：它们的处理路径在
+// credential writer 与凭据状态写入侧，不能在这里改语义。
+func upstreamRequestSideKind(err error) errorsx.ErrorKind {
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) || ue == nil || ue.Kind == "" {
+		return ""
+	}
+	if !errorsx.IsRequestSideError(ue.Kind) {
+		return ""
+	}
+	return ue.Kind
 }
 
 // upstreamRateLimitKind reports whether the dispatch error chain terminates

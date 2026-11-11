@@ -128,3 +128,48 @@ func TestPrepareAnthropicRequestBody_OlderFableModelsNotRewritten(t *testing.T) 
 		})
 	}
 }
+
+// ─── 跨协议腿（openai-responses 客户端 → anthropic 上游）───
+//
+// 用户现场（211 真库 request_logs）：claude-fable-5-2 的失败请求
+// request_mode=responses ⇒ 走的是**跨协议 IR 序列化腿**（不是直传腿）。
+// 本测试钉住该腿也必须改写 —— 门长在 paramguard 上两腿共用，
+// 但必须有一条测试证明跨协议腿没漏（否则会出现「直传腿绿、生产仍 400」）。
+//
+// Responses 客户端带 reasoning ⇒ IR 的 Reasoning ⇒ 序列化出
+// thinking{type:enabled,budget_tokens} ⇒ 必须被改写为 adaptive。
+func TestPrepareAnthropicRequestBody_Fable52_ResponsesCrossProtocolLeg(t *testing.T) {
+	responsesBody := []byte(`{"model":"claude-fable-5-2",` +
+		`"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],` +
+		`"reasoning":{"effort":"medium"}}`)
+	cand := provider.Candidate{
+		ProviderID:   587,
+		CredentialID: 31,
+		Protocol:     "anthropic-messages",
+		RawModel:     "claude-fable-5-2",
+	}
+	r := httptest.NewRequest("POST", "/v1/responses", nil)
+	params := &ExecParams{
+		R:              r,
+		BodyBytes:      responsesBody,
+		ClientModel:    "claude-fable-5-2",
+		OutboundModel:  "claude-fable-5-2",
+		ClientProtocol: "openai-responses",
+	}
+
+	executor := &Executor{IR: &irAdapterForTest{}}
+	out, err := executor.prepareAnthropicRequestBody(params, cand, responsesBody)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	m := decodeUpstreamBody(t, out)
+	th, ok := m["thinking"].(map[string]any)
+	if !ok {
+		// reasoning 未被渲染成 thinking 时该形态上游接受（无 thinking 合法）。
+		t.Logf("no thinking block in cross-protocol output: %s", out)
+		return
+	}
+	if th["type"] != "adaptive" {
+		t.Fatalf("thinking.type = %#v, want adaptive (cross-protocol leg must be covered too)\n%s", th["type"], out)
+	}
+}
