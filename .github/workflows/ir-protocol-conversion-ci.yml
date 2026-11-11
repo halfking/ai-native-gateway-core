@@ -1,0 +1,108 @@
+name: ir-protocol-conversion-ci
+
+# IR 协议转换层的**专用**守卫 job（2026-11-11 审计轮新增）。
+#
+# 为什么需要独立 job（沿用 audit-guards-ci.yml 的判词）：
+#
+#  1. **触发面**：转换层的输入是 internal/ir/** + domains/transformation/**，
+#     改它们必须唤醒本 job；而 audit-guards-ci 的 paths 是全仓 `**/*.go`，
+#     与本 job 的输入面不同。
+#  2. **成本/信噪比**：本 job 跑的是「变异 harness」（每个要改文件、跑测试、
+#     还原、复核 SHA）⇒ 比普通单测贵一个量级，但**信号极强**：
+#     它证明的是「守卫真的有牙」，而不是「守卫是绿的」。
+#     「一个永远绿的断言」和「一个没牙的守卫」是同一种失效 —— 只有变异能区分。
+#  3. **独立性**：本 job 红了必须单独红，不能被重型 job 的噪声淹没。
+#
+# 三道门：
+#   ① 三个变异 harness（客户端错误修正 / Gemini 丢失披露 / 数值容错层）
+#      —— 全部「抓住 N/N」才算绿。
+#   ② IR 包单测 + 覆盖率门禁。
+#   ③ 真实会话回放（夹具在仓内 ⇒ 无外部依赖、无网络）。
+#
+# ⚠️ 变异 harness 会**改工作树文件**⇒ 必须独占一个 job（不与其它 step 并行），
+#    且每个 harness 内部自带「还原 + SHA 复核 + 正向复跑」。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/ir/**"
+      - "domains/transformation/**"
+      - "internal/paramreg/**"
+      - "scripts/audit/ir-*-mutation.sh"
+      - "scripts/extract_211_session_fixtures.sh"
+      - ".github/workflows/ir-protocol-conversion-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/ir/**"
+      - "domains/transformation/**"
+      - "internal/paramreg/**"
+      - "scripts/audit/ir-*-mutation.sh"
+      - "scripts/extract_211_session_fixtures.sh"
+      - ".github/workflows/ir-protocol-conversion-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ir-protocol-conversion-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  conversion-guards:
+    name: ir protocol conversion guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go build ./...
+        run: go build ./...
+
+      # ── 门 ①：变异 harness（证明守卫有牙）─────────────────────────────
+      # 每个 harness 内部：备份(补丁后) → 逐臂变异 → 门必须变红 → 还原 →
+      # SHA 复核 → 正向复跑。三件套缺一 ⇒ 该 harness 的结论不成立。
+      - name: mutation harness — client error fix
+        run: bash scripts/audit/ir-client-error-fix-mutation.sh
+
+      - name: mutation harness — gemini only loss
+        run: bash scripts/audit/ir-gemini-only-loss-mutation.sh
+
+      - name: mutation harness — coerce numeric
+        run: bash scripts/audit/ir-coerce-numeric-mutation.sh
+
+      # ── 门 ②：IR 包单测 + 覆盖率 ─────────────────────────────────────
+      - name: ir package tests (with coverage)
+        run: |
+          go test ./internal/ir/... -count=1 -timeout=600s \
+            -coverprofile=/tmp/ir.cover -covermode=atomic
+          go tool cover -func=/tmp/ir.cover | tail -1
+
+      # 覆盖率下限（登记在案）：本轮实测基线 **82.3%**；门槛设 75%
+      # ⇒ 留约 7 个点的回落余量（够吸收新增分支的暂时未覆盖），
+      # 又足够紧到能抓住「整块代码被删/被绕过」这类真回归。
+      - name: coverage gate (ir >= 75%)
+        run: |
+          COV=$(go tool cover -func=/tmp/ir.cover | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "total coverage: ${COV}%"
+          awk -v c="$COV" 'BEGIN { if (c+0 < 75) { printf "coverage %.2f%% < 75%% gate\n", c; exit 1 } }'
+
+      # ── 门 ③：真实会话回放（夹具在仓内 ⇒ 无外部依赖）─────────────────
+      - name: production session replay
+        run: go test ./internal/ir -run 'TestProductionReplay' -count=1 -v -timeout=600s
+
+      # ── 门 ④：并发安全（-race）────────────────────────────────────────
+      - name: concurrency (race detector)
+        run: go test -race ./internal/ir -run 'TestConcurrent' -count=1 -timeout=600s

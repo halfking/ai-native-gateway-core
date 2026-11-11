@@ -73,6 +73,21 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		Prompt string `json:"prompt,omitempty"`
 	}
 
+	// 2026-11-11 客户端错误修正：数值/布尔参数被客户端写成字符串
+	// （{"temperature":"0.7"}）时，先做一次**无歧义**的容错修正再解析。
+	// 只转「字符串 → 目标类型的数值/布尔」且字符串能无损解析的情形；
+	// 转不了仍按原样报错（不猜客户端意图）。详见 coerce_numeric.go。
+	//
+	// 与「严格解析失败后再修正」等价：目标类型是数值的字段若收到字符串，
+	// 严格解析本就必然失败 ⇒ 预修正不会改变任何原本能成功的请求。
+	if fixed, changed := coerceNumericStrings(body, &src); changed {
+		body = fixed
+		// Phase 1 的 rawMap 也要同步（Extensions 取值基于它）。
+		if err := json.Unmarshal(fixed, &rawMap); err != nil {
+			return nil, fmt.Errorf("unmarshal openai body to map: %w", err)
+		}
+	}
+
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, fmt.Errorf("unmarshal openai body: %w", err)
 	}

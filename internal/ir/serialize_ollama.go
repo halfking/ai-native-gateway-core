@@ -183,7 +183,48 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 	// serializers all report this field.
 	reportOllamaCacheControlLoss(req)
 
+	// 2026-11-11：Gemini 专有语义参数（safetySettings / cachedContent）在
+	// Ollama 目标上无法表达 ⇒ 诚实披露丢失（不许静默蒸发）。
+	reportGeminiOnlyLosses(req, ProtocolOllamaChat)
+
+	// 2026-11-11：非 ollama.* 命名空间的扩展字段在 Ollama 目标上被丢弃
+	// ⇒ 诚实披露丢失（丢弃本身是**有意的**设计，见函数头契约；缺的是披露）。
+	reportOllamaExtensionLosses(req)
+
 	return json.Marshal(body)
+}
+
+// reportOllamaExtensionLosses 上报「扩展字段在 Ollama 目标上被丢弃」。
+//
+// ── 背景（2026-11-11 审计轮）─────────────────────────────────────────
+// SerializeOllama **有意**不还原未知字段 —— 函数头契约明写：
+// 「The function will NOT emit fields it does not recognize, so unknown keys
+// from other dialects (e.g. anthropic-style `system`) do not leak into Ollama.」
+// ⇒ 这是**正确的设计决定**（避免外域键污染 Ollama body）。
+//
+// 但**丢弃本身没有任何披露** ⇒ 与其余四个序列化器口径不一致：它们走
+// restoreExtensions，其语义是「方言私有字段 → 仅目标方言认识时还原，
+// 否则**裁剪并上报 loss**」（internal/ir/extensions_restore.go 头注释）。
+// ⇒ Ollama 路径少了「上报」这一半 ⇒ 违反「静默丢失是敌人」的纪律。
+//
+// 本函数**只披露、不还原**：还原与否是设计决定，披露与否是纪律要求。
+//
+// 不上报的键：
+//   · `ollama.options.*` → 已提升进 options（不是丢弃）
+//   · `ollama.*`（其余）  → 已提升进 body 顶层（不是丢弃）
+func reportOllamaExtensionLosses(req *InternalRequest) {
+	if req == nil || len(req.Extensions) == 0 {
+		return
+	}
+	for key := range req.Extensions {
+		if strings.HasPrefix(key, OllamaExtensionPrefix) {
+			continue // Ollama 私有键已被提升到线上，不是丢弃
+		}
+		ReportProtocolLoss("", key, req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_extension_drop",
+			"non-Ollama extension field has no Ollama request-side equivalent and was dropped",
+			nil)
+	}
 }
 
 // reportOllamaCacheControlLoss emits one protocol-loss event when the request

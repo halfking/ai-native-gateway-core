@@ -886,3 +886,29 @@ clean: ## 清理 bin/、coverage.* 与根目录构建产物
 	rm -rf $(BIN_DIR) coverage.out coverage.html
 	rm -f gateway llm-gateway llm-gateway-linux-amd64 migrate-ursm-v2 routing-test-client
 	rm -f *.test
+
+# ── IR 协议转换层专用门（2026-11-11 审计轮）────────────────────────────
+#
+# 为什么单独一个 target：这三个是**变异 harness**——它们会改工作树文件、
+# 跑目标测试、要求门变红、再还原并复核 SHA ⇒ 比普通单测贵一个量级，
+# 但信号强得多：普通单测只证明「现在是绿的」，变异证明「**守卫有牙**」。
+#
+# 「一个永远绿的断言」与「一个没牙的守卫」是同一种失效 ⇒ 只有变异能区分。
+#
+# 三个 harness 各带三件套纪律：① 变异生效有独立证据（SHA 变化）
+# ② 门必须变红 ③ 还原后 SHA 复核 + 正向复跑。
+#
+# CI 接线：.github/workflows/ir-protocol-conversion-ci.yml
+.PHONY: ir-conversion-guards
+ir-conversion-guards: ## IR 协议转换层变异门（证明守卫有牙；13 臂全被抓住才算绿）
+	@bash scripts/audit/ir-client-error-fix-mutation.sh
+	@bash scripts/audit/ir-gemini-only-loss-mutation.sh
+	@bash scripts/audit/ir-coerce-numeric-mutation.sh
+
+.PHONY: ir-conversion-test
+ir-conversion-test: ## IR 协议转换层单测 + 覆盖率（门禁 75%）
+	$(GO) test ./internal/ir/... -count=1 -timeout=600s \
+	  -coverprofile=coverage.ir.out -covermode=atomic
+	@COV=$$($(GO) tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	 echo "ir coverage: $$COV%"; \
+	 awk -v c="$$COV" 'BEGIN { if (c+0 < 75) { printf "coverage %.2f%% < 75%% gate\n", c; exit 1 } }'

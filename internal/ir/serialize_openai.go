@@ -208,6 +208,9 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	// Step 4.10 (2026-07-28): emit explicit anomaly when source fields
 	// cannot be expressed on the OpenAI Chat Completions wire format.
 	reportSerializeOpenAILosses(req, thinkingRendered)
+	// 2026-11-11：Gemini 专有语义参数（safetySettings / cachedContent）在
+	// OpenAI Chat 目标上无法表达 ⇒ 诚实披露丢失（不许静默蒸发）。
+	reportGeminiOnlyLosses(req, ProtocolOpenAIChat)
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}

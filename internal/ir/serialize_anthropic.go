@@ -313,6 +313,9 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 
 	// Step 4.10 (2026-07-28): explicit anomaly for cross-protocol losses.
 	reportSerializeAnthropicLosses(req)
+	// 2026-11-11：Gemini 专有语义参数（safetySettings / cachedContent）在
+	// Anthropic 目标上无法表达 ⇒ 诚实披露丢失（不许静默蒸发）。
+	reportGeminiOnlyLosses(req, ProtocolAnthropicMessages)
 
 	return json.Marshal(out)
 }

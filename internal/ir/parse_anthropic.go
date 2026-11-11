@@ -37,6 +37,16 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 		Container         json.RawMessage `json:"container,omitempty"`
 	}
 
+	// 2026-11-11 客户端错误修正：数值/布尔参数被客户端写成字符串时，
+	// 先做一次**无歧义**的容错修正再解析（详见 coerce_numeric.go）。
+	if fixed, changed := coerceNumericStrings(body, &src); changed {
+		body = fixed
+		// Phase 1 的 rawMap 也要同步（Extensions 取值基于它）。
+		if err := json.Unmarshal(fixed, &rawMap); err != nil {
+			return nil, fmt.Errorf("unmarshal anthropic body to map: %w", err)
+		}
+	}
+
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, fmt.Errorf("unmarshal anthropic body: %w", err)
 	}
