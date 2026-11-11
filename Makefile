@@ -502,6 +502,7 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/anthropic_reasoning_trace_contract_test.sh
 	@bash tests/rate_limit_body_attribution_contract_test.sh
 	@bash tests/ci_carrier_ir_conversion_wiring_test.sh
+	@bash tests/daily_regression_wiring_test.sh
 	@bash tests/cross_doc_registry_collision_test.sh
 	@bash tests/market_price_sync_contract_test.sh
 	@bash tests/migration_delivery_boundary_convergence_test.sh
@@ -945,3 +946,26 @@ guards-ir-conversion: ## IR 协议转换层守卫（4 个变异 harness 23 臂 +
 	@COV=$$($(GO) tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	 echo "ir coverage: $$COV%"; \
 	 awk -v c="$$COV" 'BEGIN { if (c+0 < 75) { printf "coverage %.2f%% < 75%% gate\n", c; exit 1 } }'
+
+# ── 每日回归（2026-11-11 协议转换审计轮 · 剩余任务②）──────────────────
+#
+# ★ 为什么要有它：★ 仓内的门**全部**挂在 push/PR 上 ⇒ ⇒ 「每日」才会暴露的
+#   那类回归（时间相关漂移、偶发失败、外部依赖变化）**没有任何机制在跑**。
+#
+# ★ ★ 为什么**包集合是机器派生**的 ★：
+#   ★ 派生口径 = 「传递依赖闭包里含 internal/ir 的包」⇒ ⇒ 新增一个
+#   ★★ import internal/ir 的包**自动**进每日回归 ⇒ ⇒ 不需要改任何清单 ★★
+#   ⇒ ★★ 手抄清单 = 必然漂移 = 仓内 LESSONS 同款坑 ★★。
+#   ⇒ ★★ 这条性质由 tests/daily_regression_wiring_test.sh 的**判据④**
+#   ★★ （PATH shim 让派生源失效 ⇒ 脚本必须 fail-closed）钉住 ★★。
+#
+# ★ ★ 节奏（每日触发）在平台侧 ★★：
+#   ★ codeup Flow 的「定时触发」是**控制台（UI）侧**配置，★ **YAML 表达不了**
+#   ★（官方 YAML schema 顶层只有 name/sources/stages；sources 侧是代码源事件）
+#   ⇒ ⇒ 仓内能做的只有「内容做实 + 接线门禁化 + 节奏规格写清」
+#   ⇒ ⇒ 一次人工配置（cron）见 docs/audit/2026-11-11-每日回归机制.md §4
+#   ⇒ ⇒ ★ 另：★ 本脚本是**纯 bash + go** ⇒ 不依赖云效 ⇒ 任何能跑 cron 的机器
+#   ⇒ ⇒ ★★ 都能直接排（见该文档 §4.3）⇒ ⇒ ★★ 当天就能生效 ★★。
+.PHONY: daily-regression
+daily-regression: ## 每日回归（IR 影响面套件【机器派生】+ IR 变异门 ×4 + 载体接线门）—— 供 CI 定时触发与本地每日跑
+	@bash scripts/audit/daily_regression.sh

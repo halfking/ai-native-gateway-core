@@ -162,3 +162,26 @@ stages:
                 # Linux 上裸跑实测腿 = 整片假红源（Windows 专属失败集不在 Linux 复现）。
                 bash -n scripts/guards/check-win-test-baseline.sh
                 python3 -c "import json; d=json.load(open('scripts/guards/win-test-baseline.json', encoding='utf-8')); assert d['packages'] and isinstance(d.get('package_level'), list); print('win-test-baseline.json OK:', len(d['packages']), 'packages')"
+            # ★★★ 2026-11-11（协议转换审计轮 · 剩余任务②）：每日回归接进载体 ★★★
+            #
+            # ★ 为什么要有这一步：★ 仓内的门**全部**挂在 push/PR 上 ⇒ ⇒
+            #   「每日」才会暴露的那一类回归（时间相关漂移、偶发失败、外部依赖
+            #   变化、数据随时间变化导致的断言失效）**没有任何机制在跑**。
+            #
+            # ★ ★ 「每日」的节奏来自哪 ★★：
+            #   ★ codeup Flow 的**定时触发是控制台（UI）侧**配置，★ **YAML 表达不了**
+            #   ★（官方 YAML schema 顶层只有 name/sources/stages；sources 侧是
+            #   ★ 「代码源事件」push/tagPush，**没有 cron**）★★
+            #   ⇒ ⇒ 本步骤是**内容**；**节奏**（cron）需在云效控制台配一次
+            #   ⇒ ⇒ 规格与人工动作清单见 docs/audit/2026-11-11-每日回归机制.md §4
+            #   ⇒ ⇒ ★ 另：★ 同一脚本是**纯 bash + go** ⇒ 不依赖云效 ⇒
+            #   ⇒ ⇒ ★★ 任何能跑 cron 的机器都能直接排（该文档 §4.3）★★。
+            #
+            # ★ 判据写在这条**非注释行**上是有意的：
+            #   `tests/daily_regression_wiring_test.sh` 的判据③要求
+            #   「**真正在跑的载体**里必须有非注释行调它」⇒ 注释里写不算。
+            - step: shell
+              name: daily-regression
+              script: |
+                export PATH=$PATH:/usr/local/go/bin
+                make daily-regression
