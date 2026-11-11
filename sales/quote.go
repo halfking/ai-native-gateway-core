@@ -1317,7 +1317,7 @@ SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::floa
 		slog.Warn("sales: cost-drift supply-view query failed (drift markers skipped)", "err", err)
 		return
 	}
-	withheld, _ := withholdGroups(viewRows) // 单一变体判定源（ListSellable 同源，2026-11-12 收口）
+	withheld, _ := withholdGroups(viewRows)        // 单一变体判定源（ListSellable 同源，2026-11-12 收口）
 	current := pickSupplyRows(viewRows, annStatus) // 与派生同一 pick（2026-11-12 P2-3）
 	driftThreshold := float64(settings.GetPlatformInt("sales.quote.cost_drift_alert_pct", 10))
 	for vid, perCanon := range snaps {
