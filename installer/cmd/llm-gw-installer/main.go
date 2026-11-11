@@ -1535,6 +1535,28 @@ var modelPriceVersions952 []byte
 //go:embed embeddata/startup/952_model_price_versions.down.sql
 var modelPriceVersions952Down []byte
 
+// ★ 958（2026-11-11 总体设计定稿轮 G1，六面补登记 2026-11-12 A-17 收口轮）：
+//   市场平台注册表 —— 双币制（A-17）区域/币种裁定唯一权威 + A-5 我方平台排除清单。
+//   958 当日 applied(245/252) 但漏了 installer 四面登记（embeddata×2 / go:embed /
+//   dbinit / apply script）⇒ installer 链部署的机器拿不到 registry 表 ⇒ 本轮补齐。
+//
+//go:embed embeddata/startup/958_market_platform_registry.sql
+var marketPlatformRegistry958 []byte
+
+//go:embed embeddata/startup/958_market_platform_registry.down.sql
+var marketPlatformRegistry958Down []byte
+
+// ★ 959（2026-11-12 A-17 双币收口轮）：market_price_reference 双地板 17 列 +
+//   supplier_market_position 双读数 5 列 + registry 对拍补种 12 平台（958 种子
+//   取自 provider_catalog，与同步源 salesdecorate.platform 对拍缺 12）+
+//   v_supplier_price_vs_baseline v3 追加双地板投影（29→40 列，append-only）。
+//
+//go:embed embeddata/startup/959_market_dual_floor_a17.sql
+var marketDualFloorA17959 []byte
+
+//go:embed embeddata/startup/959_market_dual_floor_a17.down.sql
+var marketDualFloorA17959Down []byte
+
 // ★ 953（2026-11-09 恢复检测及时性优化）：models_canonical.featured 列。
 //
 //	增加 featured 布尔列用于标记需要优先探测的模型（免费/入门级模型），
@@ -2077,6 +2099,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/951_armor_judgments_created_at_idx.down.sql":         armorJudgmentsCreatedAtIdx951Down,
 	"startup/952_model_price_versions.sql":                        modelPriceVersions952,
 	"startup/952_model_price_versions.down.sql":                   modelPriceVersions952Down,
+	// ★ 958/959（2026-11-12 A-17 双币收口轮）：registry 表（958 六面补登记）+
+	//   双地板地基（959）。
+	"startup/958_market_platform_registry.sql":                   marketPlatformRegistry958,
+	"startup/958_market_platform_registry.down.sql":              marketPlatformRegistry958Down,
+	"startup/959_market_dual_floor_a17.sql":                      marketDualFloorA17959,
+	"startup/959_market_dual_floor_a17.down.sql":                 marketDualFloorA17959Down,
 	"startup/953_models_canonical_featured.sql":                   modelsCanonicalFeatured953,
 	"startup/953_models_canonical_featured.down.sql":              modelsCanonicalFeatured953Down,
 	"startup/954_probe_lane_trace_events.sql":                     probeLaneTraceEvents954,

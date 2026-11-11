@@ -1821,6 +1821,18 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 以 23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行半写 ⇒ 这次自检在系统里
 			// 「根本没发生过」，但调度器以为发生过。
 			"957_self_check_error_type_kind_closure_rate_limit_observed.sql",
+			// 958（2026-11-11 总体设计定稿轮 G1；六面补登记 2026-11-12）：市场平台
+			// 注册表 —— 双币制（A-17）区域/币种裁定唯一权威 + A-5 我方平台排除。
+			// 漏登的后果＝installer 链的全新安装没有 registry ⇒ A-17 同步器
+			// platform_unmapped_region 拒绝族把全部源平台拒掉 ⇒ 行情面空。
+			"958_market_platform_registry.sql",
+			// 959（2026-11-12 A-17 双币收口轮）：market_price_reference 双地板 17 列
+			// （P1 原生币 + overseas/domestic 地板 + 快照折算）+
+			// supplier_market_position 双读数 5 列 + registry 对拍补种 12 平台
+			// （958 种子取自 provider_catalog，与同步源 salesdecorate.platform
+			// 对拍缺 12 ⇒ 不补则一半源平台被拒）+ v_supplier_price_vs_baseline
+			// v3 追加双地板投影（append-only）。
+			"959_market_dual_floor_a17.sql",
 		},
 	}
 }
