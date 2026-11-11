@@ -79,6 +79,13 @@ func ApplyReported(body []byte, dialect paramreg.Dialect) ([]byte, []Report) {
 	// Anthropic thinking forbids sampling parameters. Do this before the
 	// generic cap so we never clamp a value that is immediately discarded.
 	if dialect == paramreg.DialectAnthropic {
+		// 2026-11-11（claude-fable-5-2 事故轮）：该模型只接受
+		// thinking.type=adaptive（211 直连 apiclaude 实测：enabled/disabled
+		// 必 400）。改写**必须排在采样参数剥离之前** ——
+		// removeSamplingIfThinking 按 thinking 当前形态判定「是否开启」，
+		// 而 disabled 形态会被本规则改写成 adaptive（= 开启）⇒ 若剥离在前，
+		// temperature/top_p 会残留，触发上游二次 400。
+		modified = fixAdaptiveOnlyThinking(obj, dialect, rep) || modified
 		modified = removeSamplingIfThinking(obj, rep) || modified
 		modified = fixAnthropicBudgetCap(obj, rep) || modified
 	}
