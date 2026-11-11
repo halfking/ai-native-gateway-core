@@ -101,8 +101,8 @@ scripts/checks/install-entrypoints-test.sh	33	absent	var-write	judgment	unknown	
 scripts/configure-journald.sh	316	do_verify	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if ! printf '%s' "$merged" | grep -qE '^\s*SystemMaxUse\s*='; then
 scripts/deploy-local-lib.sh	1220	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
 scripts/deploy-local-lib.sh	1223	dl_shared_root	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$probed" | grep -qx "$other"; then
-scripts/deploy-seamless-docker.sh	3075	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
-scripts/deploy-seamless-docker.sh	3076	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
+scripts/deploy-seamless-docker.sh	3101	_dd_unq	var-write	bare	unknown	needs-human-read	head	unknown	print(sys.stdin.read()[:120])' 2>/dev/null || printf '%s' "$ver_body" | head -c 120)"
+scripts/deploy-seamless-docker.sh	3102	_dd_unq	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if [[ -n "${DD_BUILD_SHA:-}" ]] && ! printf '%s' "$ver_body" | grep -qF "${DD_BUILD_SHA%-dirty}"; then
 scripts/deploy-seamless-goacos_test.sh	335	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s\n' "$forwarded" | grep -qx "$v" \
 scripts/deploy-seamless-goacos_test.sh	343	gate_body	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$forwarded" | grep -qx "$v"; then
 scripts/deploy-seamless-goacos_test.sh	346	gate_body	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s' "$register_block" | grep -q "${v}:-" \
@@ -161,20 +161,25 @@ tests/audit_ledger_consistency_test.sh	146	extract_sib6	var-write	bare	unknown	n
 tests/audit_ledger_consistency_test.sh	189	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_closed" | grep -qx "$id"; then
 tests/audit_ledger_consistency_test.sh	201	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_closed" | grep -qx "$id"; then
 tests/audit_ledger_consistency_test.sh	208	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_intent" | grep -qx "$id"; then
-tests/audit_ledger_consistency_test.sh	214	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_open" | grep -qx "F7"; then
-tests/audit_ledger_consistency_test.sh	225	run_checks	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sib_ids" | grep -qx "$id" || continue
-tests/audit_ledger_consistency_test.sh	264	run_checks	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$line" | grep -qE '★ \*\*(已闭合|已关闭|已实施|已落地|有意如此|仍开)\*\*'; then
-tests/audit_ledger_consistency_test.sh	269	run_checks	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$line" | grep -qE '★ \*\*仍开\*\*'; then
-tests/audit_ledger_consistency_test.sh	286	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_open" | grep -qx "$oid"; then
-tests/audit_ledger_consistency_test.sh	293	run_checks	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sib_ids" | grep -qx "$oid" || continue
-tests/audit_ledger_consistency_test.sh	294	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' $sib_open_ids | grep -qx "$oid"; then
+tests/audit_ledger_consistency_test.sh	218	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_open" | grep -qx "F24"; then
+tests/audit_ledger_consistency_test.sh	229	run_checks	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sib_ids" | grep -qx "$id" || continue
+tests/audit_ledger_consistency_test.sh	268	run_checks	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$line" | grep -qE '★ \*\*(已闭合|已关闭|已实施|已落地|有意如此|仍开)\*\*'; then
+tests/audit_ledger_consistency_test.sh	273	run_checks	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$line" | grep -qE '★ \*\*仍开\*\*'; then
+tests/audit_ledger_consistency_test.sh	290	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$canon_open" | grep -qx "$oid"; then
+tests/audit_ledger_consistency_test.sh	297	run_checks	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s\n' "$sib_ids" | grep -qx "$oid" || continue
+tests/audit_ledger_consistency_test.sh	298	run_checks	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' $sib_open_ids | grep -qx "$oid"; then
 tests/deploy_nocgo_build_test.sh	164	test_cgo_only_package_fails_nocgo	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s' "$err" | grep -q "sqlite3"; then
 tests/deploy_nocgo_build_test.sh	198	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s\n' "$deps" | grep -q "github.com/mattn/go-sqlite3"; then
 tests/deploy_nocgo_build_test.sh	216	test_nocgo_dep_graph_no_sqlite3	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if printf '%s\n' "$deps" | grep -q "github.com/kaixuan/llm-gateway-go/storage/sqlite"; then
 tests/deploy_promotion_test.sh	269	test_gate_refuses_promotion_on_245_failure	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$log" | grep -q "refusing 154"; then
 tests/deploy_seamless_version_identity_test.sh	86	build_machine_gate	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s' "$gate" | grep -q 'rev-parse --short=8 HEAD' || return 1
 tests/deploy_sops_test.sh	294	test_scan_secrets_does_not_exempt_non_sops	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE '\[BLOCK\]'; then
+tests/git_enumeration_quote_path_contract_test.sh	83	is_z_line	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s' "$1" | grep -qE '(^|[[:space:]"'"'"'])-z([[:space:]"'"'"',;)]|$)'
 tests/lib/fake-remote-host.sh	123	fake_host_setup	var-write	bare	scalar	safe-single-line	grep-q	consumed	echo "$base" | grep -qE '^[0-9]{3}_' || continue
+tests/mock-system-test/run-mock-only.sh	197	run_gates	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$body" | grep -q 'mock-vendor-'; then
+tests/mock-system-test/run-mock-only.sh	200	run_gates	var-write	value	bulk	real-defect-candidate	head	consumed	echo "G4 FAILED: body=$(echo "$body" | head -c 400)"
+tests/mock-system-test/run-mock-only.sh	228	stack_smoke	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$body" | grep -q 'data: \[DONE\]'; then
+tests/mock-system-test/run-mock-only.sh	231	stack_smoke	var-write	bare	bulk	real-defect-candidate	head	discarded	die "stream smoke failed: $(echo "$body" | head -c 300)"
 tests/rotate_credentials_test.sh	133	test_list	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -q "SSH_PASS_252" && echo "$out" | grep -q "PG_PASS_KAIXUAN1"; then
 tests/rotate_credentials_test.sh	183	test_dry_run_no_io	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! echo "$out" | grep -q "Dry-run:.*1"; then
 tests/routing/layer1_direct/test_protocol_conversion.sh	191	test_streaming_conversion	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$output" | grep -q '"choices"'; then

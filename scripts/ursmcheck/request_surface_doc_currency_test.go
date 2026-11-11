@@ -201,20 +201,22 @@ type docEvidence struct {
 // 2026-11-09 大请求实施：RAW 入口装配插入链前；重钉实际 builder 与独立注释，
 // 不扩大证据范围。main_pipeline.go 同步重钉日志及 request-id 合成/写回本体。
 // 同日合入远端 MCP 指标/quote-path 修复：main.go 净增 12 行，三处窗口精确平移。
+// 2026-11-11（48h 审计第二轮）：window 迁移再平移（CI 载体接线轮改动 main.go 上游
+// 行数 ⇒ 链体整体下移 47 行），语义锚与判据不变，不扩大证据范围。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8330, to: 8349,
+		file: "cmd/gateway/main.go", from: 8370, to: 8395,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8330, to: 8340,
+		file: "cmd/gateway/main.go", from: 8372, to: 8388,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8300, to: 8310,
+		file: "cmd/gateway/main.go", from: 8330, to: 8342,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

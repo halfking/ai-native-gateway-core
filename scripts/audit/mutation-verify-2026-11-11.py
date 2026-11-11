@@ -18,6 +18,9 @@ import os
 import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, str(((__import__("pathlib").Path(__file__).resolve().parent) / ".." / "lib").resolve()))
+import gocache  # 仓内专用 Go 构建缓存（r1047 约定；gocache_script_family_guard 门判据①）
 import tempfile
 from dataclasses import dataclass, field
 
@@ -242,6 +245,7 @@ def run_go(pkg: str, test: str) -> tuple[int, str]:
     proc = subprocess.run(
         ["go", "test", pkg, "-run", test, "-count=1", "-timeout", "90s"],
         cwd=REPO,
+        env=gocache.env("mutate"),
         capture_output=True,
         text=True,
     )

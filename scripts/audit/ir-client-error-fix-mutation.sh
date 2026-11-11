@@ -17,6 +17,11 @@
 
 set -uo pipefail
 
+# 2026-11-11（48h 审计第二轮）：接入仓内专用 Go 构建缓存（r1047 约定）——
+# 变异 harness 是「改树 ⇒ 跑 go test ⇒ 还原」形态 ⇒ 每次跑都会往用户全局
+# 缓存写一批永不再命中的产物 ⇒ 必须指向专用目录（gocache_script_family_guard 门判据①）。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 

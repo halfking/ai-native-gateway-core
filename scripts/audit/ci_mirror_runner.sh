@@ -24,6 +24,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -u
 
+# 2026-11-11（48h 审计第二轮）：接入仓内专用 Go 构建缓存（r1047 约定，
+# gocache_script_family_guard 门判据①）。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 WT="$1"
 TRANSCRIPT="$2"
 TARGET_SHA="${3:-}"

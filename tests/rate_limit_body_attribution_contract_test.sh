@@ -42,7 +42,11 @@
 # ★ 零仓库副作用：★ 变异体建在**仓库内**的临时包目录里（★ go test 需要它
 #   在模块内才解析得到），EXIT trap 必删 ⇒ 正常跑完仓库是干净的。
 # =====================================================================
-set -uo pipefail
+set -uo
+
+# 2026-11-11（48h 审计第二轮）：接入仓内专用 Go 构建缓存（r1047 约定，
+# gocache_script_family_guard 门判据①——本脚本调 go test ⇒ 必须指向专用目录）。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" guard)" pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"

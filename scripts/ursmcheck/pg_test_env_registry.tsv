@@ -91,3 +91,4 @@ WA877_ALLOW_ANY_DSN	dangerous	允许任意 DSN（迁移 877 门）；打开即�
 XIAOMI_API_KEY	component	外部服务 API key（发现逻辑）
 XIAOMI_BASE_URL	component	外部服务 base URL（发现逻辑）
 LLM_GATEWAY_REALDB_ALLOW_ANY_DSN	dangerous	授权开关：=1 才允许 sales realdb 腿连任意 DSN（一次性容器）；缺省时库名守卫 fail-closed 只认 test/scratch/realdb（2026-11-08 报价审计轮 W1 腿登记）
+TEST_MODELCREDIBILITY_PASSIVE_DATABASE_URL	dsn_exclusive	被动指纹真库腿的专用 DSN（2026-11-11 48h 审计第二轮登记；来源=11-10/11 被动指纹轮新增 domains/modelcredibility/store_passive_realdb_test.go）：守卫按 current_database() 断言库名以 _test 结尾（不合规即 Fatal）且该腿写被动指纹基线表 ⇒ 必须指向一次性 *_test 库 ⇒ 与通用 DSN 同值必被守卫拒绝（假红）⇒ 不能与通用 DSN 同值，故不进事实源（与同包 TEST_MODELCREDIBILITY_ROLLUP_DATABASE_URL 同款先例）
