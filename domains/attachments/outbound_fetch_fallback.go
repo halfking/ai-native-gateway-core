@@ -1,9 +1,7 @@
 package attachments
 
 import (
-	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"log/slog"
 	"strings"
 
@@ -51,74 +49,59 @@ func NewURLFetchFallback(baseURL string, fetcher AttachmentContentFetcher) *URLF
 }
 
 // InlineOpenAIBody rewrites one outbound OpenAI-format attempt body. It walks
-// messages[].content[].image_url.url, and for every gateway-URL reference
-// (baseURL prefix) fetches the stored content and splices in a data URI.
+// messages[].content[] and, for every **attachment-carrying field** whose
+// value is a gateway-URL reference (baseURL prefix), fetches the stored
+// content and splices in a data URI.
+//
+// ★ 2026-11-11（附件域审计轮）：本函数的实现从「**全 body 字节级替换**」
+//   改成了「**字段精确替换**」，同时修掉两处缺陷：
+//
+//   ★ 缺陷①（只内联 image_url ⇒ 文档/视频在链路上丢失）：★★
+//     旧实现只认 `messages[].content[].image_url.url` ⇒ ⇒ 文档
+//     （file.file_data）与视频（video_url.url）**原样**把网关 URL 发给上游
+//     ⇒ ⇒ 而不支持 URL 的上游**取不到**它 ⇒ ⇒ **附件在链路上丢失**
+//     ⇒ ⇒ 现在走 attachment_fields.go 的**共享字段表** ⇒ ⇒ 三类都内联 ★★
+//
+//   ★ 缺陷②（字节级替换 ⇒ 文本污染 + 载荷外泄）：★★
+//     旧实现用 `bytes.ReplaceAll(out, oldURL, dataURI)` 在**整个 body** 上替换
+//     ⇒ ⇒ 同一个网关 URL 若出现在**文本消息**里（例如用户在聊天里贴了上一轮
+//     的附件链接），也会被替换成 base64 载荷 ⇒ ⇒ **内容污染 + 载荷外泄**
+//     ⇒ ⇒ 现在只改「附件承载字段」⇒ ⇒ 文本**逐字不动** ★★
+//
 // External URLs and existing data URIs are untouched. Fetch failures and
 // provider inline-size overruns keep the original URL (best-effort, never
 // fails the request). Returns the body (unchanged when nothing applies) and
-// the number of URL references inlined.
+// the number of attachment fields inlined.
 func (f *URLFetchFallback) InlineOpenAIBody(body []byte, provider string) ([]byte, int) {
 	if f == nil || f.fetcher == nil || len(body) == 0 || !ShouldFetchFallback(provider) {
 		return body, 0
 	}
 
-	var parsed struct {
-		Messages []struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return body, 0
-	}
-
-	// blocksOf decodes one message's content; string content (plain text
-	// turns) is not multimodal and yields no blocks.
-	blocksOf := func(raw json.RawMessage) []struct {
-		ImageURL *struct {
-			URL string `json:"url"`
-		} `json:"image_url"`
-	} {
-		var blocks []struct {
-			ImageURL *struct {
-				URL string `json:"url"`
-			} `json:"image_url"`
-		}
-		if err := json.Unmarshal(raw, &blocks); err != nil {
-			return nil
-		}
-		return blocks
-	}
-
 	prefix := f.baseURL + "/"
 	capability := sessionv2.GetProviderCapability(provider)
 
-	// Dedupe fetches per object key; collect URL → data-URI replacements.
-	replacements := make(map[string]string)
+	// Dedupe fetches per object key; a relPath is fetched at most once even
+	// when the same attachment is referenced by several fields.
 	dataURIs := make(map[string]string) // relPath → data URI
-	for i := range parsed.Messages {
-		blocks := blocksOf(parsed.Messages[i].Content)
-		for j := range blocks {
-			iu := blocks[j].ImageURL
-			if iu == nil || !strings.HasPrefix(iu.URL, prefix) {
-				continue
+
+	out, inlined, err := rewriteChatAttachmentFields(body,
+		func(ref attachmentSlotRef, value string) string {
+			if !strings.HasPrefix(value, prefix) {
+				return ""
 			}
-			if _, done := replacements[iu.URL]; done {
-				continue
-			}
-			relPath := strings.TrimPrefix(iu.URL, prefix)
+			relPath := strings.TrimPrefix(value, prefix)
 			if relPath == "" || strings.Contains(relPath, "..") {
-				continue
+				return ""
 			}
 			if dataURI, ok := dataURIs[relPath]; ok {
-				replacements[iu.URL] = dataURI
-				continue
+				return dataURI
 			}
 			content, mime, err := f.fetcher.LoadAttachment(relPath)
 			if err != nil {
 				// best-effort：取回失败保留原 URL 引用。
 				slog.Warn("attachments: fetch fallback load failed, keep URL",
 					"path", relPath, "error", err)
-				continue
+				return ""
 			}
 			if mime == "" {
 				mime = "application/octet-stream"
@@ -128,28 +111,13 @@ func (f *URLFetchFallback) InlineOpenAIBody(body []byte, provider string) ([]byt
 					"path", relPath,
 					"content_bytes", len(content),
 					"max_inline_bytes", capability.MaxInlineBytes)
-				continue
+				return ""
 			}
 			dataURI := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(content)
 			dataURIs[relPath] = dataURI
-			replacements[iu.URL] = dataURI
-		}
-	}
-	if len(replacements) == 0 {
-		return body, 0
-	}
-
-	out := body
-	inlined := 0
-	for oldURL, dataURI := range replacements {
-		occurrences := bytes.Count(out, []byte(oldURL))
-		if occurrences == 0 {
-			continue
-		}
-		out = bytes.ReplaceAll(out, []byte(oldURL), []byte(dataURI))
-		inlined += occurrences
-	}
-	if inlined == 0 {
+			return dataURI
+		})
+	if err != nil {
 		return body, 0
 	}
 	return out, inlined
