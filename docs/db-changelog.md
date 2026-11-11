@@ -10879,3 +10879,14 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 幂等：先读 `pg_get_constraintdef`，若已覆盖全部 39 个必需字面量 ⇒ 直接跳过（可重入）。字面量匹配**带引号**（`position('''' || v_val || '''' IN v_def)`）⇒ `'rate_limit'` 不会被 `'rate_limit_observed'` 误命中。`BEGIN/COMMIT` + `SET LOCAL lock_timeout='5s'` / `statement_timeout='60s'`（SET LOCAL 落在事务块内 ⇒ 真生效）。`NOT VALID` ⇒ 只拦新行、不重洗存量历史 run 行。
 
 回滚：执行 957 down —— **只退一步**（957 → 930 的 38 项集合，930 → 929 那一步由 930 自己的 down 负责）。★ 幂等判据是「**不含**任何一个 957 新增的 kind」而不是「包含旧集全部值」—— 后者会让新集（超集）被判成「已是旧集」⇒ down 静默跳过 ⇒ 约束根本没退回去（★ 这正是 929 down 真库跑出来的第一版缺陷，静态读代码看不出来）。★ 有行落在 `rate_limit_observed` 上时 down **响亮中止**（RAISE EXCEPTION）而**不删审计证据**：静默删行去迁就约束 = 销毁审计证据；处置顺序 = 先导出这些行 → 人工确认口径 → 再跑 down。
+## 2026-11-11T10:12:18Z — deploy 245 build_seq 2960 (590c632d)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 388 | `388_billing_cancellation_audit.sql` | `9f3e0de84509736e1e235f22887ae515b11fa8d55b2ca3fe922bdc3ae9bddc4e` | applied+verified |
+| 392 | `392_candidate_failure_logs_monthly_partition.sql` | `469aa2a2f7c15116e5f336ef6d070f57ab4d6ebb1a45066e5b63cfe70584aa6c` | applied+verified |
+| 394 | `394_request_stats_minute.sql` | `08984477dff2e2ece67d9796063401bbd0b03259b4625efe61d5583fed058c1b` | applied+verified |
+| 956 | `956_minimax_m31_flash_featured.sql` | `9df04687e07867091abd82e07ac51e35ad08a6442dc0756920510ea2a9de3ef2` | applied+verified |
+| 957 | `957_self_check_error_type_kind_closure_rate_limit_observed.sql` | `358c9daab7eec74d936827083dbef7db4258455d91846cd9d4752646284fe0e7` | applied+verified |
+| 958 | `958_market_platform_registry.sql` | `155cc51aac2036b6d1b4e10af63bdaaec41e9d912b26b07d2d06990cbacb832c` | applied+verified |
+
