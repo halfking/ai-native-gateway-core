@@ -427,6 +427,12 @@ type ChatToAnthropicFunc func(body []byte) ([]byte, error)
 // package does not import relay.
 type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
 
+// ResponsesToChatFunc converts an OpenAI Responses body to the legacy chat
+// shape. 2026-11-12（审计第二轮批 5）：IR 主路径迁移后（ir.ParseResponses
+// 直接吃 responses wire），本转换仅作 IR 断路器打开时的应急回退
+// （与 AnthropicToOpenAI 之于 anthropic 分支的地位相同）。
+type ResponsesToChatFunc func(body []byte) ([]byte, error)
+
 // AnthropicToOpenAISSEFunc is the streaming counterpart of
 // AnthropicToOpenAIFunc: reads Anthropic-format SSE upstream and
 // writes OpenAI-format SSE chunks to w (Q3 path: openai client →
@@ -652,6 +658,9 @@ type Executor struct {
 	// AnthropicToOpenAI converts Anthropic Messages body to OpenAI chat
 	// format. Used by executeOpenAI when ClientProtocol == "anthropic-messages".
 	AnthropicToOpenAI AnthropicToOpenAIFunc
+	// ResponsesToChat converts OpenAI Responses body to legacy chat shape.
+	// 2026-11-12（批 5）：IR 主路径（ir.ParseResponses）的断路器应急回退。
+	ResponsesToChat ResponsesToChatFunc
 	// AnthropicToOpenAIStream is the Q3 streaming counterpart of
 	// AnthropicToOpenAI: reads Anthropic-format SSE upstream and writes
 	// OpenAI-format SSE chunks to the client. Used by executeAnthropic

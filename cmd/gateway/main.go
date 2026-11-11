@@ -1955,6 +1955,9 @@ func main() {
 		}
 		routingExec.ChatToAnthropic = streaming.ConvertChatRequestToAnthropic
 		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
+		// 2026-11-12（审计第二轮批 5）：responses 客户端 IR 主路径的断路器应急回退
+		//（主路径 = executor 按 ClientProtocol 分派 ir.ParseResponses）。
+		routingExec.ResponsesToChat = streaming.ConvertResponsesBodyToChat
 
 		// Phase B (2026-06-22): IR-based protocol converter.
 		// 2026-08-27: restored from deployed build 298201fe0. IR is the
