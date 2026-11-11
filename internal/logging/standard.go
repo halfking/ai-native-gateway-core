@@ -409,10 +409,82 @@ func redactAttr(a slog.Attr) slog.Attr {
 	if isSensitiveKey(a.Key) {
 		return slog.String(a.Key, RedactedPlaceholder)
 	}
-	if a.Value.Kind() == slog.KindString {
+	switch a.Value.Kind() {
+	case slog.KindString:
 		return slog.String(a.Key, redactString(a.Value.String()))
+	case slog.KindAny:
+		// 2026-11-11（48h 审计 · rule 71 嵌套脱敏缺口收口）：slog.Any 的
+		// map/slice 值此前**原样落盘**——嵌套对象里的 api_key/token 及命中
+		// 敏感模式的字符串全部穿透进可全文检索的日志面。递归走一遍
+		//（深度封顶，防自引用 map 死循环）。
+		return slog.Attr{Key: a.Key, Value: slog.AnyValue(redactValue(a.Key, a.Value.Any(), 0))}
 	}
 	return a
+}
+
+// maxRedactDepth 是嵌套值递归的深度上限。到顶即整体替换——宁可多脱敏
+//（不可信面），也不给自引用结构一个死循环或栈溢出的机会。
+const maxRedactDepth = 8
+
+// redactValue 对 slog.Any 携带的**结构化值**做递归脱敏。
+//
+// 覆盖面（实测泄漏形态 = map[string]any 细节对象）：
+//   - map[string]any / map[string]string：逐键判定（嵌套层同样吃
+//     sensitiveKeys 判定）+ 值递归；
+//   - []any / []string：逐元素递归；
+//   - string / []byte：模式脱敏 + 截断（与顶层同规则）；
+//   - slog.Value：解包后按 any 递归；
+//   - 其它（time.Duration、数值、结构体等）原样返回——JSONHandler 的
+//     序列化语义不变。
+//
+// 幂等：已脱敏的 "[REDACTED]" 与 "…[truncated]" 不命中任何模式 ⇒ 二次
+// 应用是恒等（redactRecord 与内层 ReplaceAttr 双路径叠加安全）。
+func redactValue(key string, v any, depth int) any {
+	if depth > maxRedactDepth {
+		return RedactedPlaceholder + "[depth]"
+	}
+	switch val := v.(type) {
+	case string:
+		return redactString(val)
+	case []byte:
+		return []byte(redactString(string(val)))
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, av := range val {
+			if isSensitiveKey(k) {
+				out[k] = RedactedPlaceholder
+				continue
+			}
+			out[k] = redactValue(k, av, depth+1)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(val))
+		for k, av := range val {
+			if isSensitiveKey(k) {
+				out[k] = RedactedPlaceholder
+				continue
+			}
+			out[k] = redactString(av)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, av := range val {
+			out[i] = redactValue(key, av, depth+1)
+		}
+		return out
+	case []string:
+		out := make([]string, len(val))
+		for i, av := range val {
+			out[i] = redactString(av)
+		}
+		return out
+	case slog.Value:
+		return redactValue(key, val.Any(), depth+1)
+	default:
+		return v
+	}
 }
 
 // replaceAttr 把 slog 默认字段名换成规范名，并做值脱敏。
@@ -440,8 +512,13 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 	if isSensitiveKey(a.Key) {
 		return slog.String(a.Key, RedactedPlaceholder)
 	}
-	if a.Value.Kind() == slog.KindString {
+	switch a.Value.Kind() {
+	case slog.KindString:
 		return slog.String(a.Key, redactString(a.Value.String()))
+	case slog.KindAny:
+		// 2026-11-11（48h 审计 · rule 71 嵌套脱敏缺口收口）：与 redactAttr
+		// 同款——结构化值递归脱敏，嵌套 map/slice 不再穿透。
+		return slog.Attr{Key: a.Key, Value: slog.AnyValue(redactValue(a.Key, a.Value.Any(), 0))}
 	}
 	return a
 }
