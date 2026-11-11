@@ -229,11 +229,15 @@ func buildResponsesInput(messages []Message) []map[string]any {
 
 		// Assistant tool calls become a function_call input item alongside any
 		// output_text blocks.
-		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+		//
+		// ★ 2026-11-11（协议转换审计轮 · D5）：工具调用改从**规范视图**取
+		//   （canonicalToolCalls），不再只读 msg.ToolCalls ⇒ 否则 Gemini 客户端
+		//   的 functionCall（IR 里是内容块 tool_use）在 Responses 上游上会**整个消失**。
+		if msg.Role == "assistant" && len(canonicalToolCalls(msg)) > 0 {
 			content := buildResponsesContent(msg)
 			// Emit one function_call item per tool call (Responses expects each
 			// call as its own input item), then any text as a separate message.
-			for _, call := range msg.ToolCalls {
+			for _, call := range canonicalToolCalls(msg) {
 				args := call.Function.Arguments
 				if args == "" {
 					args = "{}"

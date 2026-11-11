@@ -72,6 +72,16 @@ func SanitizeToolMessages(messages []Message, requestID string) []Message {
 					}
 				}
 			}
+			// ★ 2026-11-11（协议转换审计轮 · D3）：**内容块里的 tool_use 也要
+			//   计入活跃调用 ID 集**。
+			//   根因：Gemini parser 把 functionCall 存成**内容块 tool_use**
+			//   （不写 Message.ToolCalls）⇒ 活跃集为空 ⇒ 紧随其后的工具结果
+			//   （ToolUseID 指向那个调用）被判成「孤儿」⇒ **被删除**。
+			for _, block := range msg.Content {
+				if block.Type == "tool_use" && block.ToolUse != nil && block.ToolUse.ID != "" {
+					activeToolCallIds[block.ToolUse.ID] = true
+				}
+			}
 			out = append(out, msg)
 
 		case "tool":

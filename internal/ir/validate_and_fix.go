@@ -97,8 +97,22 @@ func removeEmptyMessages(messages []Message) []Message {
 
 		switch msg.Role {
 		case "tool":
-			// Tool message must have tool_call_id
-			if msg.ToolCallID == "" {
+			// ★ 2026-11-11（协议转换审计轮 · D3）：工具消息为空的判据是
+			//   「**既没有** tool_call_id，**也没有**承载结果的 tool_result 内容块」。
+			//
+			//   根因：★ Gemini parser 把 functionResponse 的 role 映射成 "tool"，
+			//   而**关联键在内容块**的 ToolResult.ToolUseID 上（协议里根本没有
+			//   消息级 tool_call_id）⇒ 消息级 ToolCallID 恒空
+			//   ⇒ ★ 旧判据把它当「空消息」**删除**
+			//   ⇒ ★ Gemini 客户端发来的工具结果**凭空消失**（生产路径上
+			//     ValidateAndFixRequest 有 4 个调用点：executor_chat.go:3046/
+			//     3138/3206 + inline_validation.go:52）。
+			//
+			//   ⚠ 本步在 expandToolResultMessages **之前**跑 ⇒ 若这里不放行，
+			//     展开器永远看不到这条消息 ⇒ 必须**三处同改**：
+			//     ① 本判据放行 → ② expandToolResultMessages 展开（补 ToolCallID）
+			//     → ③ SanitizeToolMessages 的活跃 ID 集含内容块 tool_use 的 ID。
+			if msg.ToolCallID == "" && !hasToolResultBlock(msg.Content) {
 				isEmpty = true
 			}
 

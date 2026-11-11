@@ -7,7 +7,17 @@ package ir
 func expandToolResultMessages(messages []Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Role != "user" || !hasToolResultBlock(msg.Content) {
+		// ★ 2026-11-11（协议转换审计轮 · D3）：**role=="tool"** 的消息也可能
+		//   承载工具结果（Gemini 形态：parse_gemini.go 把 functionResponse 的
+		//   role 映射成 "tool"，关联键在**内容块**的 ToolUseID 上）。
+		//   ⇒ 此前只展开 role=="user" ⇒ Gemini 解析出的工具结果**不会被展开**
+		//   ⇒ Message.ToolCallID 恒空 ⇒ SanitizeToolMessages 当「无 tool_call_id
+		//   的非法工具消息」**静默删除** ⇒ ★ Gemini 客户端的工具结果凭空消失。
+		//   ⇒ 判据：role=="user"（Anthropic 形态）或 role=="tool" 且消息级
+		//   ToolCallID 为空（Gemini 形态；消息级 ID 有值时以它为准，不展开）。
+		isUserShape := msg.Role == "user"
+		isToolShape := (msg.Role == "tool" || msg.Role == "function") && msg.ToolCallID == ""
+		if (!isUserShape && !isToolShape) || !hasToolResultBlock(msg.Content) {
 			out = append(out, msg)
 			continue
 		}

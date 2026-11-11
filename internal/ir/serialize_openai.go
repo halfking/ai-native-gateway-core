@@ -525,13 +525,20 @@ func serializeOpenAIMessage(msg Message) map[string]any {
 	}
 
 	// Handle content for non-tool roles
+	//
+	// ★ 2026-11-11（协议转换审计轮 · D5）：工具调用改从**规范视图**取
+	//   （canonicalToolCalls），不再只读 msg.ToolCalls。
+	//   根因：IR 里工具调用有**两种表示**（内容块 tool_use / 消息级 ToolCalls），
+	//   而 Gemini parser **只写内容块** ⇒ 此前 Gemini 客户端的 functionCall
+	//   到 OpenAI 上游时**整个消失**（模型看不到该调用）。
+	toolCalls := canonicalToolCalls(msg)
 	if len(msg.Content) == 0 {
 		// Empty content - may still have tool_calls
 		out["content"] = ""
-		if len(msg.ToolCalls) > 0 {
-			out["tool_calls"] = serializeOpenAIToolCalls(msg.ToolCalls)
+		if len(toolCalls) > 0 {
+			out["tool_calls"] = serializeOpenAIToolCalls(toolCalls)
 		}
-	} else if len(msg.Content) == 1 && msg.Content[0].Type == "text" && msg.ToolCalls == nil {
+	} else if len(msg.Content) == 1 && msg.Content[0].Type == "text" && len(toolCalls) == 0 {
 		// Simple text content - use string format
 		out["content"] = msg.Content[0].Text
 	} else {
@@ -540,8 +547,8 @@ func serializeOpenAIMessage(msg Message) map[string]any {
 		out["content"] = content
 
 		// Add tool_calls for assistant messages
-		if len(msg.ToolCalls) > 0 {
-			out["tool_calls"] = serializeOpenAIToolCalls(msg.ToolCalls)
+		if len(toolCalls) > 0 {
+			out["tool_calls"] = serializeOpenAIToolCalls(toolCalls)
 		}
 	}
 

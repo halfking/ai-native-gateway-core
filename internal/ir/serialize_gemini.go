@@ -257,6 +257,14 @@ func buildGeminiSystemInstruction(sys *SystemPrompt) map[string]any {
 func buildGeminiContents(messages []Message) []map[string]any {
 	out := make([]map[string]any, 0, len(messages))
 
+	// ★ 2026-11-11（协议转换审计轮 · D2）：工具调用 ID → 工具名 的索引。
+	//   Gemini 协议**没有工具调用 ID** ⇒ functionResponse 只能靠**函数名**
+	//   与 functionCall 配对 ⇒ 必须能按结果侧的关联键（ToolUseID）查回调用名。
+	//   ⚠ 不能靠解析 ID 字符串猜（旧实现只认 `gemini_call_` 前缀，遇到
+	//   Anthropic 的 `toolu_xxx` / OpenAI 的 `call_xxx` 就原样返回 ⇒
+	//   functionResponse.name 与 functionCall.name 对不上 ⇒ 工具结果成孤儿）。
+	toolNames := toolNameIndex(messages)
+
 	for _, msg := range messages {
 		role := msg.Role
 		switch role {
@@ -271,10 +279,14 @@ func buildGeminiContents(messages []Message) []map[string]any {
 
 		parts := make([]map[string]any, 0)
 
-		// OpenAI Chat/Responses input may normalize tool calls into the
-		// message-level ToolCalls field. Preserve those calls when the same IR
-		// is sent to native Gemini instead of relying only on Anthropic blocks.
-		for _, call := range msg.ToolCalls {
+		// ★ 2026-11-11（协议转换审计轮 · D1）：工具调用改从**规范视图**取
+		//   （canonicalToolCalls）⇒ 同一调用在 IR 里的两种表示（内容块 tool_use /
+		//   消息级 ToolCalls）**只发一次**。
+		//   根因：Anthropic parser **两者都写**（parse_anthropic.go:276 + :291），
+		//   而此前本函数**两处都发** ⇒ Anthropic 客户端到 Gemini 上游时，
+		//   同一个 functionCall 被发了**两次**（模型会看到重复的工具调用）。
+		//   ★ 配套：下面的内容块循环**不再**单独处理 "tool_use"（已由规范视图覆盖）。
+		for _, call := range canonicalToolCalls(msg) {
 			name := call.Function.Name
 			if name == "" {
 				continue
@@ -302,8 +314,15 @@ func buildGeminiContents(messages []Message) []map[string]any {
 				break
 			}
 		}
+		// ★ 2026-11-11（D4）：本条消息的文本内容**已经被**下面的 functionResponse
+		//   承载（response.result）⇒ 不能再作为独立 text part 再发一遍
+		//   ⇒ 否则同一个工具结果载荷在 Gemini body 里出现**两次**。
+		consumedAsResponse := false
 		if !hasToolResultBlock && (msg.Role == "function" || (msg.Role == "tool" && msg.ToolCallID != "")) {
 			name := msg.Name
+			if name == "" {
+				name = toolNames[msg.ToolCallID]
+			}
 			if name == "" {
 				name = toolUseNameFromID(msg.ToolCallID)
 			}
@@ -314,6 +333,7 @@ func buildGeminiContents(messages []Message) []map[string]any {
 						"response": map[string]any{"result": extractTextFromContent(msg.Content)},
 					},
 				})
+				consumedAsResponse = true
 			}
 		}
 
@@ -321,6 +341,10 @@ func buildGeminiContents(messages []Message) []map[string]any {
 		for _, block := range msg.Content {
 			switch block.Type {
 			case "text":
+				// ★ D4：本条消息的文本已被 functionResponse 承载 ⇒ 不再重复发。
+				if consumedAsResponse {
+					continue
+				}
 				if block.Text != "" {
 					parts = append(parts, map[string]any{"text": block.Text})
 				}
@@ -369,14 +393,10 @@ func buildGeminiContents(messages []Message) []map[string]any {
 					}
 				}
 			case "tool_use":
-				if block.ToolUse != nil {
-					parts = append(parts, map[string]any{
-						"functionCall": map[string]any{
-							"name": block.ToolUse.Name,
-							"args": block.ToolUse.Input,
-						},
-					})
-				}
+				// ★ 2026-11-11（D1）：内容块 tool_use 已由上面的**规范视图**
+				//   （canonicalToolCalls）统一发出 ⇒ 此处**不再**重复发，
+				//   否则同一个 functionCall 会被发两次。
+				continue
 			case "tool_result":
 				if block.ToolResult != nil {
 					response := any(map[string]any{
@@ -385,9 +405,16 @@ func buildGeminiContents(messages []Message) []map[string]any {
 					if block.ToolResult.GeminiResponse != nil {
 						response = block.ToolResult.GeminiResponse
 					}
+					// ★ 2026-11-11（D2）：name 必须是**函数名**（Gemini 按名配对
+					//   functionResponse ↔ functionCall）⇒ 先按 ToolUseID 查索引，
+					//   查不到再退回旧的「从 ID 猜名字」。
+					name := toolNames[block.ToolResult.ToolUseID]
+					if name == "" {
+						name = toolUseNameFromID(block.ToolResult.ToolUseID)
+					}
 					parts = append(parts, map[string]any{
 						"functionResponse": map[string]any{
-							"name":     toolUseNameFromID(block.ToolResult.ToolUseID),
+							"name":     name,
 							"response": response,
 						},
 					})
