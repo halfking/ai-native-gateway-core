@@ -149,7 +149,7 @@ export const NAV_GROUPS: NavGroup[] = [
       // 需求/报价动作带 owner 语义 ⇒ 菜单项不设 super 门，由服务端按角色收）。
       { path: '/operations/sales', labelKey: 'nav.item.salesWorkbench', icon: '💼', hideForTenant: true },
       // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动；superAdmin）。
-      { path: '/operations/marketing', labelKey: 'nav.item.operationsMarketing', icon: '🎯', super: true, hideForTenant: true },
+      { path: '/operations/marketing', labelKey: 'nav.item.operationsMarketing', icon: '🎯', platformOps: true, hideForTenant: true }, // 2026-11-12 A-8 权限对齐：super → platformOps（与组内 pricing 页同档）
     ],
   },
   {
