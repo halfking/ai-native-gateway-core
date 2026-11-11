@@ -1,5 +1,15 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-11 48h 修正任务审计与完善轮 · 第三轮（goal 会话，主档 `docs/audit/2026-11-11-48h审计第三轮-主档.md`，部署回填待 Phase 7）**：
+> ★ 范围＝第二轮收官（`88a4c84ba` 版本戳）之后**新落的 6 笔提交**（`06206f631..999aedb15`，21:08–21:46 +0800，并行会话 huangzhouzixuan：IR 工具调用规范视图 D1–D5 + 附件域 + 每日回归机制）逐条批判审计 + 三台取证 + 三台部署。
+> ★★★★ **审计定案**：★ `06206f631`＝**实质修复非 no-op**（按 b12fd1ef7 教训做 no-op 排查：4 序列化器+sanitizer+展开器真实行为变化；parse_anthropic 双写/serialize 双读声称逐行核实为真；46 条全矩阵往返测试真实存在）——**但「同源」声称未兑现**：`representedToolCallIndexes` 与 `serialize_anthropic.go` 内联 `represented` 规则双主（该提交自陈的 SRP 纲领只兑现一半）⇒ 本轮收口。★ `f139d9d39`+`24a1241e4`＝自愈型序列（Makefile 接线早于 harness 认识 `--group` 6.5 分钟，后者自曝并补三道 fail-closed）；`53608c0a4` 附件域＝真缺陷修复（ReplaceAll 全 body 替换 ⇒ 文本污染+载荷外泄，改字段精确替换）+ 五项披露诚实。
+> ★★★★ **修复（行为保持 ×3 + 门维护 ×1）**：① serialize_anthropic 接入 `representedToolCallIndexes` 规则收敛单源（删内联）；② `canonicalToolCalls` O(T²) 重算提升循环外；③ serialize_responses 每消息只算一次规范视图；④ TC02/TC04 臂锚点跟随重构更新。**★ 门联动实证（§680 的镜像面）**：重构后重跑 TC 组 ⇒ TC02/TC04 锚点落 0 次 ⇒ fail-closed 正确红且定位到文件 ⇒ 证明「重构生产代码必须同步重跑对应变异组并更新锚点，不能只跑单测」；更新后 10/10 恢复全绿。
+> ★ **全量套件 exit 0 零失败** ⇒ 本窗口 HEAD 无既有红（与上轮 5 失败包对照——并行推送纪律在改善）；TC 10/10 + AT 10/10 复验全绿、未知组/未知旗标 rc=2 实测（★ 第一遍 `$?` 被 `| tail` 掩盖取到 0，重验定案）。
+> ★★★★ **三台取证**：★ 版本面＝三台今晚 20:49–21:05 已被并行会话部署 a3cb8392 系（211=**3012 槽a dirty**/245=2963/154=2962）⇒ **本窗 6 笔未在役**，三台由本轮统一带新。★ 211 503 族 379/2.4h＝**早于部署**（退役槽b 25 分钟寿命内 101×503、首条在启动后 26s；deepseek-v4-flash/glm-4.5-flash 已知配额族 + node/upstream fault ladder 伴随）；★★ **测量伪影留痕：对已退出容器用 `docker logs --since` 的读数不可信**（首遍得「槽b 零 503」被全量日志推翻 ⇒ 退役容器必须全量+时间戳分桶）。★ 慢 SQL：52.1s=并行会话 session_bodies jsonb::text 扫描同款再犯；3×~6.8s 整点 :17:08=每小时审计自动化；网关热路径 PG ERROR=0。★ 154 登记不追：**acc-nginx 崩溃循环**（他产品 agent-control-center 面，`pwrite /run/nginx.pid` EPERM，15:31 起）；★ 拓扑澄清：245/154 的 acc-green/acc-blue 容器是他产品，本仓走 systemd canary 通道。
+> ★ **遗留优先项四项复核（goal 指定）**：① rule71 嵌套脱敏已修在位（`internal/logging/standard.go`）✔；② tooldialect ForProtocol 活查表在位（Slice 2 按架构档排期）✔；③ internal/bucket 维持休眠裁决（本轮 6 笔未触碰）✔；④ rpm_limit 与第二轮移交态一致（4×nvidia@10 已设 / 93 NULL、apiclaude 3 笔待运营，211 库实测）。**四项全部闭环或有主，无新开口。**
+> ★ stash 裁决：`stash@{0}`（00:14 迁移交付边界 WIP，4 文件）四块全被 HEAD 超越 ⇒ 已 drop。分支裁决：远端仅 main，无未合并子分支。
+> ★ 主档 §一~§八 / LESSONS §690 / AGENTS 本横幅。
+
 > **2026-11-11 48h 修正任务审计与完善轮 · 第二轮（goal 会话，主档 `docs/audit/2026-11-11-48h审计第二轮-主档.md`，双仓推送 `15fcacf72` + 部署回填提交）**：
 > ★ 范围＝上轮（同日 17:43 收官 e6df780e7）之后**新落的 7 笔提交**逐条批判审计 + 上轮修复 HEAD 复核 + 四项遗留优先项 + 三台 log 取证 + 三台部署。
 > ★★★★ **HEAD 既有红实证（★ 全量套件是唯一公共量具——并行会话推送前没跑它）**：★ 上轮/本窗推送留下 **5 失败包**：① bucket 框架的 credit provider 带 **v1 双臂读点**（890 后两表全环境不存在 ⇒ 42P01 地雷）且未登记间接清单（两门红）；② requestfact golden corpus 与 internal/ir 守护测试**互相矛盾**（旧断言钉 7dabda830 丢弃前的 raw 回注契约）；③ ursmcheck 六道台账门红（并行会话加迁移/脚本不重算台账的系统性漂移）；④ nodestatecache p99 门=并行负载伪影（静置复跑 ×3 绿）；⑤ migrations 958 DDL 预算门（走 grandfathered，R189 规约：改已应用迁移字节会撞内容指纹——本轮先改后当场回退，处置走豁免表带实测证据）。
