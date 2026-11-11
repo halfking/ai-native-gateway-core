@@ -137,6 +137,20 @@ func normalizeAndRegisterClientSession(
 		// the store is degraded; returning forbidden would blame the
 		// client for our outage. Surface a distinct error so handlers can
 		// stop dispatch (503) instead.
+		//
+		// 2026-11-11（ZCode 事故轮 · 可诊断性修复）：这里原本把**底层错误
+		// 整个丢掉**，只回一个笼统的 errClientSessionUnavailable ⇒ 生产上
+		// 只能看到 503「session store unavailable」，看不到成因（Redis 读
+		// 错？连接池？键类型？超时？）⇒ 排查无从下手（2026-11-11 实证：
+		// 该 503 在 211 上已持续 24h+ 且间歇命中多个 api key，而日志里
+		// **一个字**都查不到原因）。
+		// ⇒ 补一条带成因的服务端日志。**不改任何返回语义**（仍是 503、
+		// 仍不放行未验证的会话 id）—— 只让成因可见。
+		slog.Warn("client session store fault (session lookup failed)",
+			"session_id", sessionID,
+			"tenant_id", keyInfo.TenantID,
+			"api_key_id", keyInfo.ID,
+			"error", getErr)
 		return sessionID, nil, errClientSessionUnavailable
 	}
 	if getErr == nil && si != nil {

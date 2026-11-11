@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -238,6 +239,12 @@ func (g *LargeIngress) resolveArchiveSession(w http.ResponseWriter, r *http.Requ
 		// id must never masquerade as an explicit client session header.
 		assignment, err := g.handler.assignGatewaySession(r.Context(), body, r, keyInfo, "", nil, clientProfileFromKey(keyInfo))
 		if err != nil {
+			// 2026-11-11（ZCode 事故轮 · 可诊断性修复）：原本只回一个笼统的
+			// errClientSessionUnavailable，**底层错误被整个丢掉** ⇒ 生产日志
+			// 里查不到「为什么分配会话会失败」。⇒ 补一条带成因的日志；
+			// 返回语义不变（仍是 503，不放行未验证的会话）。
+			slog.Warn("gateway session assignment failed",
+				"error", err)
 			return "", nil, errClientSessionUnavailable
 		}
 		if assignment != nil {
