@@ -1271,7 +1271,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						// `{}` 占位符语义由 tooldialect 单点拥有（此前内联
 						// `!= "{}"` 守卫与 IR 解析器各一份、responses 桥缺失
 						// 一份——2026-11-11 211 事故的根源形状）。
-						if args := toolArgsDialect.StartArguments(evt.ContentBlock.InputRaw); args != "" {
+						if args := bridgeToolArgsDialect().StartArguments(evt.ContentBlock.InputRaw); args != "" {
 							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, &args, true))
 							toolCallIndex++
 							initialArgsSent = true
@@ -1419,7 +1419,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						// 续拼；非法 → 丢弃尾部、保留初始片段（pre-fix wire 形状）
 						// 并留痕。校验/修复策略由方言注入
 						//（anthropictransform.ValidateStreamingToolArgs）。
-						merged, ok := toolArgsDialect.MergeContinuation(sentInitialToolArgs, bufferedToolArgs.String())
+						merged, ok := bridgeToolArgsDialect().MergeContinuation(sentInitialToolArgs, bufferedToolArgs.String())
 						if !ok {
 							if capture != nil {
 								capture.AddQualityFlag("tool_args_continuation_discarded")
@@ -1442,7 +1442,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						// 不再绕过 toolArgsDialect 直调校验器）——方言在 start==""
 						// 时会剥掉 delta 位置的 "{}" 占位符回声（非标准中继形态，
 						// 否则终态拼出 "{}{...}" 非法 JSON、整流中断）。
-						validated, vOk := toolArgsDialect.MergeContinuation("", args)
+						validated, vOk := bridgeToolArgsDialect().MergeContinuation("", args)
 						if !vOk {
 							if capture != nil {
 								capture.AddQualityFlag("malformed_tool_args_blocked")
