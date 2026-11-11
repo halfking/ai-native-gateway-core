@@ -249,7 +249,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -501,6 +501,7 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/gate_scripts_caller_registry_test.sh
 	@bash tests/anthropic_reasoning_trace_contract_test.sh
 	@bash tests/rate_limit_body_attribution_contract_test.sh
+	@bash tests/ci_carrier_ir_conversion_wiring_test.sh
 	@bash tests/cross_doc_registry_collision_test.sh
 	@bash tests/market_price_sync_contract_test.sh
 	@bash tests/migration_delivery_boundary_convergence_test.sh
@@ -612,7 +613,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
@@ -880,30 +881,50 @@ open-mutation-report: ## 在浏览器打开 mutation 报告
 
 .PHONY: clean
 clean: ## 清理 bin/、coverage.* 与根目录构建产物
-	rm -rf $(BIN_DIR) coverage.out coverage.html
+	rm -rf $(BIN_DIR) coverage.out coverage.html coverage.ir.out
 	rm -f gateway llm-gateway llm-gateway-linux-amd64 migrate-ursm-v2 routing-test-client
 	rm -f *.test
 
 # ── IR 协议转换层专用门（2026-11-11 审计轮）────────────────────────────
 #
-# 为什么单独一个 target：这三个是**变异 harness**——它们会改工作树文件、
-# 跑目标测试、要求门变红、再还原并复核 SHA ⇒ 比普通单测贵一个量级，
-# 但信号强得多：普通单测只证明「现在是绿的」，变异证明「**守卫有牙**」。
+# ★★ 为什么**接进 guards-fast**（codeup Flow 的唯一守卫入口 ⇒ 真正在 CI 上跑）：
 #
-# 「一个永远绿的断言」与「一个没牙的守卫」是同一种失效 ⇒ 只有变异能区分。
+#   ★ 起因：★ 这三个变异 harness 与「覆盖率门禁」原先**只有**
+#     `.github/workflows/ir-protocol-conversion-ci.yml` 这一个调用方
+#     ⇒ ★★ 而本仓远端是 codeup.aliyun.com ⇒ **`.github/workflows/` 从来不在
+#     任何在跑的 CI 里**（`.workflow/main-verify.yml` 第 64–70 行与
+#     `scripts/ursmcheck/ci_carrier_truth_test.go` 的 C3 判据都写明了这件事：
+#     「往那个目录里加 step **不会**让门在 CI 上跑起来」）
+#     ⇒ ⇒ **接线了却跑不到** ⇒ ★★ 按仓内纪律「门没有调用方 = 声明不是门」，
+#     它们此前**不是门，是文件**。
+#   ★ 修法：★ 挂到 `guards` 与 `guards-fast` 两个 target
+#     （⇒ `.workflow/main-verify.yml` 里 `make guards-fast` 的**非注释行**会执行到）
 #
-# 三个 harness 各带三件套纪律：① 变异生效有独立证据（SHA 变化）
-# ② 门必须变红 ③ 还原后 SHA 复核 + 正向复跑。
+# ★ 为什么三个 harness 值得占 CI 预算：它们是**变异 harness**——改工作树文件、
+#   跑目标测试、要求门变红、再还原并复核 SHA ⇒ 比普通单测贵，但信号强得多：
+#   普通单测只证明「现在是绿的」，变异证明「**守卫有牙**」。
+#   「一个永远绿的断言」与「一个没牙的守卫」是同一种失效 ⇒ 只有变异能区分。
+#   三个 harness 各带三件套纪律：① 变异生效有独立证据（SHA 变化）
+#   ② 门必须变红 ③ 还原后 SHA 复核 + 正向复跑。
 #
-# CI 接线：.github/workflows/ir-protocol-conversion-ci.yml
-.PHONY: ir-conversion-guards
-ir-conversion-guards: ## IR 协议转换层变异门（证明守卫有牙；13 臂全被抓住才算绿）
+# ★ 预算（按「在门里跑」的读数定，不是按隔离跑的读数定 —— 见本仓 sqlguard 先例）：
+#   · 三个 harness（macOS / darwin-arm64 / go1.27.2 / 干净 worktree 对齐远端提交）：
+#     8s + 8s + 8s = 24s（热缓存）；IR 包测试 + 覆盖率 2s；覆盖率门禁 <1s
+#     ⇒ 合计 ≈ **26s（热）**
+#   · 冷缓存单包 `go test ./internal/ir/...` 实测 **6.7s 墙钟**（27.7s user CPU）
+#     ⇒ 冷态上界 ≈ 3×13s + 7s ≈ **46s**
+#   ⇒ ⚠ 4 核 Linux 容器的**实测**读数待 CI 复测后回填（本仓既有做法同款：
+#     `.workflow/main-verify.yml` 里多处「4 核 Linux 的新读数待 CI 复测」）。
+#   ⇒ 本门**不是**慢门那一档（仓内慢门是 270s / 1122s）⇒ 26–46s 量级可接受。
+#
+# ★ 顺序：★ 本 target 挂在 `guards` / `guards-fast` 的**最后一个**前置
+#   ⇒ 变异 harness 若中途失败，make 会中止（前置失败 ⇒ 配方不执行）
+#   ⇒ 绝不会带着「被变异过的 internal/ir」去跑后续 `go test $(GUARD_PACKAGES)`。
+.PHONY: guards-ir-conversion
+guards-ir-conversion: ## IR 协议转换层守卫（3 个变异 harness 13 臂 + 覆盖率门禁 75%）—— CI 载体入口
 	@bash scripts/audit/ir-client-error-fix-mutation.sh
 	@bash scripts/audit/ir-gemini-only-loss-mutation.sh
 	@bash scripts/audit/ir-coerce-numeric-mutation.sh
-
-.PHONY: ir-conversion-test
-ir-conversion-test: ## IR 协议转换层单测 + 覆盖率（门禁 75%）
 	$(GO) test ./internal/ir/... -count=1 -timeout=600s \
 	  -coverprofile=coverage.ir.out -covermode=atomic
 	@COV=$$($(GO) tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \

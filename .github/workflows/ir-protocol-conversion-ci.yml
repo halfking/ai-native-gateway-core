@@ -2,6 +2,20 @@ name: ir-protocol-conversion-ci
 
 # IR 协议转换层的**专用**守卫 job（2026-11-11 审计轮新增）。
 #
+# ⚠️⚠️ **载体声明（2026-11-11 补）**：★ 本仓远端是 `codeup.aliyun.com`
+#   ⇒ **本文件不在本仓的执行路径上** ⇒ **这里的 step 在远端一次都不会跑**。
+#   （本仓自己的 `.workflow/main-verify.yml` 第 64–70 行、以及
+#   `scripts/ursmcheck/ci_carrier_truth_test.go` 的 C3 判据，都写明了这件事。）
+#   ⇒ ★ **真正在跑的载体**是 `.workflow/main-verify.yml`（codeup Flow）
+#   ⇒ ★ 本仓 IR 转换层门**已按仓内纪律接进那个载体**：
+#     `Makefile` 的 `guards-ir-conversion` target（挂在 `guards` 与 `guards-fast`）
+#     ⇒ 由 `.workflow/main-verify.yml` 里 `make guards-fast` 的**非注释行**执行。
+#   ⇒ ★ **本文件保留**，用于 GitHub 镜像仓 / 本地复现 / 审阅「门到底要跑什么」；
+#     ★ 但**不要**把「本文件是绿的」读成「门在 CI 上跑过」——★ 那正是仓内纪律
+#     反复警告的「接线了却跑不到 ⇒ 门是假的」。
+#
+# ★ 门在**真正在跑的载体**上的等价值入口：`make guards-ir-conversion`。
+#
 # 为什么需要独立 job（沿用 audit-guards-ci.yml 的判词）：
 #
 #  1. **触发面**：转换层的输入是 internal/ir/** + domains/transformation/**，
