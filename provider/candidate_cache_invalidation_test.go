@@ -147,9 +147,7 @@ func TestCandidateCacheInvalidationNoLoopOnReceive(t *testing.T) {
 	}, "remote instance did not apply the received invalidation")
 
 	// ★ 无回环：队列里不得堆积本进程发出的广播。
-	candidateInvalidationMu.Lock()
-	b := candidateInvalidationActive
-	candidateInvalidationMu.Unlock()
+	b := candidateInvalidationActive.Load()
 	if b == nil {
 		t.Fatal("bridge is not running")
 	}

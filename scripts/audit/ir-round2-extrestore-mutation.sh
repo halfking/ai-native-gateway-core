@@ -99,7 +99,7 @@ while IFS=$'\t' read -r id target anchor repl expect; do
     python3 "$HELPER" replace "$target" "$(b64 "$anchor")" "$(b64 "$repl")" >/dev/null
     rc=$?
     if [[ $rc -ne 0 ]]; then
-        echo "❌ $id 替换失败（rc=$rc）"
+        echo "❌ $id 替换失败（rc=${rc}）"
         FAIL=$((FAIL + 1))
         FAILED_ARMS="${FAILED_ARMS} $id(替换失败)"
         continue
