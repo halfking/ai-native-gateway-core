@@ -68,6 +68,32 @@ ssh 211 "docker logs --since 2h llm-gateway-211-b 2>&1" | \
 - 覆盖: 实时健康检查 + 定期深度分析
 - 告警: 异常时自动通知
 
+### 1.4 一键检查脚本（本指南的可执行形态）
+
+本节以上的检查/判定标准已脚本化：`scripts/monitoring/passive-fingerprint-check.sh`
+
+```bash
+# 实时健康检查（30分钟窗口）
+scripts/monitoring/passive-fingerprint-check.sh
+# 实时 + 深度质量分析（2小时窗口，评级用）
+scripts/monitoring/passive-fingerprint-check.sh --deep
+```
+
+- 容器名自动发现 ⇒ 不唯一/取不到 ⇒ **fail-closed**（rc=3）；蓝绿窗口期两台同跑用 `--container` 显式钉住
+- 判定标准与本文档逐条对应（健康/警告/异常三级；深度评级优秀/合格/不达标）
+- 退出码：0 健康·优秀 / 1 警告·合格 / 2 异常·不达标 / 3 环境失败（可直接接自动化）
+- 口径：flush 日志仅在 nodes>0 时打 ⇒「Flush次数」指有写入的 flush；成功率 = flush/(flush+failures)
+- 日志时间戳恒 UTC，报告时钟统一 UTC
+
+**TTFT P95 读数**（`ttft_p95_ms` 列已在库完整采集，无需改表，缺的只是消费方）：
+```sql
+SELECT model_name, credential_id, sample_count,
+       ttft_mean_ms, ttft_p95_ms, updated_at
+FROM passive_model_fingerprints
+WHERE tenant_id = 'default'
+ORDER BY updated_at DESC LIMIT 20;
+```
+
 ---
 
 ## 二、性能基线
