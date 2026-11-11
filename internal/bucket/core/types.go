@@ -142,6 +142,27 @@ const (
 	ErrTypeInvalidInput  = "invalid_input"
 )
 
+// 预定义错误
+var (
+	// ErrBucketExceeded 桶容量超限
+	ErrBucketExceeded = &BucketError{
+		Type:    ErrTypeQuotaExhausted,
+		Message: "bucket capacity exceeded",
+	}
+
+	// ErrBucketWaitTimeout 等待超时
+	ErrBucketWaitTimeout = &BucketError{
+		Type:    ErrTypeTimeout,
+		Message: "wait timeout",
+	}
+
+	// ErrBucketNotFound 桶不存在
+	ErrBucketNotFound = &BucketError{
+		Type:    ErrTypeNotFound,
+		Message: "bucket not found",
+	}
+)
+
 // Helper functions
 
 // NewTimeWindow 创建时间窗口
