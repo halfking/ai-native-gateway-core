@@ -129,7 +129,9 @@ def check_source_sql_not_filtering(mod):
     """
     src = open(SCRIPT, encoding="utf-8").read()
     start = src.find('src_sql = latest_cte + """')
-    end = src.find('""".format(', start)
+    # ★ 2026-11-12：format 移挂 latest_cte 定义处 ⇒ src 拼接段的终结符是裸 """
+    #   （旧锚 '""".format(' 已不存在；取 start 之后第一处三引号）
+    end = src.find('"""', start + len('src_sql = latest_cte + """'))
     if start < 0 or end < 0:
         bad("A8 找不到源 SQL 模板（脚本形态变了 ⇒ 门需重新对齐）")
         return
@@ -389,10 +391,11 @@ def check_end_to_end_ledger(mod):
         if "to_regclass('public.market_platform_registry')" in s:
             return [["t"]]      # 958/959 前置门
         if "FROM public.market_platform_registry" in s:
-            return [["openai", "domestic", "CNY", "f", "t"],
-                    ["anthropic", "overseas", "USD", "f", "t"],
-                    ["bge", "domestic", "CNY", "f", "t"],
-                    ["x", "domestic", "CNY", "f", "t"]]
+            # boolean::text 渲染 = 'true'/'false'（裸列才是 't'/'f'）
+            return [["openai", "domestic", "CNY", "false", "true"],
+                    ["anthropic", "overseas", "USD", "false", "true"],
+                    ["bge", "domestic", "CNY", "false", "true"],
+                    ["x", "domestic", "CNY", "false", "true"]]
         # ★ A-17 平台×币种诊断查询必须先于源查询判定：diag 与 src 共享
         #   latest_cte（都含 price_observation + canonical_key），唯一区分锚是
         #   "FROM mapped r"（diag 独有）。

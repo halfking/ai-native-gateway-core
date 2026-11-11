@@ -2615,6 +2615,9 @@ files=(
   #   registry 对拍补种 12 平台 + 视图 v3 append-only）。
   "$ROOT_DIR/sql/migrations/startup/958_market_platform_registry.sql"
   "$ROOT_DIR/sql/migrations/startup/959_market_dual_floor_a17.sql"
+  # ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复（950/951/957/958 缺
+  #   自登记行 ⇒ schema_migrations 断层；守卫式回填，对象在场才记账）。
+  "$ROOT_DIR/sql/migrations/startup/960_migration_ledger_continuity_repair.sql"
 )
 
 
@@ -3193,6 +3196,8 @@ ledger_artifact_probe "958_market_platform_registry.sql" \
   "to_regclass('public.market_platform_registry') IS NOT NULL"
 ledger_artifact_probe "959_market_dual_floor_a17.sql" \
   "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_reference' AND column_name='overseas_min_in_per_1m') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='supplier_market_position' AND column_name='market_position_vs_overseas')"
+ledger_artifact_probe "960_migration_ledger_continuity_repair.sql" \
+  "EXISTS (SELECT 1 FROM public.schema_migrations WHERE version IN ('950','951','957','958'))"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

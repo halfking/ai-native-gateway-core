@@ -1557,6 +1557,16 @@ var marketDualFloorA17959 []byte
 //go:embed embeddata/startup/959_market_dual_floor_a17.down.sql
 var marketDualFloorA17959Down []byte
 
+// ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
+//   迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
+//   守卫式回填（对象在场才记账）+ 自登记纪律门（≥952 必须自登记）。
+//
+//go:embed embeddata/startup/960_migration_ledger_continuity_repair.sql
+var migrationLedgerContinuityRepair960 []byte
+
+//go:embed embeddata/startup/960_migration_ledger_continuity_repair.down.sql
+var migrationLedgerContinuityRepair960Down []byte
+
 // ★ 953（2026-11-09 恢复检测及时性优化）：models_canonical.featured 列。
 //
 //	增加 featured 布尔列用于标记需要优先探测的模型（免费/入门级模型），
@@ -2105,6 +2115,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/958_market_platform_registry.down.sql":              marketPlatformRegistry958Down,
 	"startup/959_market_dual_floor_a17.sql":                      marketDualFloorA17959,
 	"startup/959_market_dual_floor_a17.down.sql":                 marketDualFloorA17959Down,
+	"startup/960_migration_ledger_continuity_repair.sql":         migrationLedgerContinuityRepair960,
+	"startup/960_migration_ledger_continuity_repair.down.sql":    migrationLedgerContinuityRepair960Down,
 	"startup/953_models_canonical_featured.sql":                   modelsCanonicalFeatured953,
 	"startup/953_models_canonical_featured.down.sql":              modelsCanonicalFeatured953Down,
 	"startup/954_probe_lane_trace_events.sql":                     probeLaneTraceEvents954,
