@@ -1,5 +1,13 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-11 48h 修正任务审计与完善轮（goal 会话，主档 `docs/audit/2026-11-11-48h审计与完善-主档.md`，提交 `aeaf07703`→`e6df780e7` 双仓推送）**：
+> ★ 范围＝对 48h 窗口（11-09 13:00 → 11-11 18:30，247 笔非 merge 提交）做主分支同步/分支清理/批判审计/重点域修复/log 取证/三台部署。
+> ★★★★ **审计定案（★ 值得单列）**：★★ 并行会话 `b12fd1ef7`（「修复强制输出守卫不受总开关控制」）**代码改动是布尔等价 no-op**——旧 `A && (B||C)` ≡ 新 `if !A return false; return B||C`；★★ **实证法**：★ 把该提交的新增测试复制到**父提交** worktree 跑 ⇒ **绿** ⇒ 无行为变化；★★ 且 211 过去 24h 日志 **0 条** rewrite_refused ⇒ 宣称的事故无实证、分析在 /tmp 不可复核。★★ **通用式：★ 审计「修复」提交 ⇒ 先看布尔等价 ⇒ 再把新测试放到父提交上跑 ⇒ 绿即 no-op ⇒「修了」是幻觉。**
+> ★★★★ **修复（全部带钉测 + 变异验证红）**：① sanitizerules **PG 两臂**保留裁剪补 `count DESC` 平局裁决（`ce1543935` 只修了 MemoryStore ⇒ 绿测试认证的是生产没有的行为——「同一缺陷只修一半」的跨存储形态）；② IR 嵌套 function 工具缺 `parameters` ⇒ **双层缺省** `{"type":"object","properties":{}}`（解析层+序列化层；f1a3caab1 漏缺省 ⇒ 序列化不发 input_schema ⇒ Anthropic 400；streaming 层历来有缺省）；③ `parse_gemini` 未识别 part 的 anomaly metadata 不再携带原文（`redactRawPart`：bytes/keys，与 `redactReasoningItem` 同族）；④ **delta 位置 `{}` 占位符回声**：`AnthropicDialect.MergeContinuation` 在 start=="" 时剥回声 + chat 桥终态校验改走方言（顺带修掉「绕过方言直调校验器」）+ responses 桥 `toolArgumentsJSON` 同款（211 实测 1 次/24h 触发守卫拦断 ⇒ 现在终态归一化不中断）。
+> ★★★★ **log/DB 取证归因**：网关热路径无 >500ms 慢 SQL；>7s 全是并行会话 ad-hoc `session_bodies` jsonb_typeof 全表扫描；`orchestrator.audit_logs` RLS 违规 30 次/12h 属 **redclaw 栈**（同机他项目，勿再追）；journey seq conflict 24/12h＝观测面 at-most-once 守卫按设计（outbox 空表无毒行）。
+> ★ **登记不修**：rule 71 嵌套 `slog.Any` 不脱敏（结构性）；tooldialect wiring 钉死 vs ir 活查表分叉（Slice 2）；`internal/bucket/` 框架**零生产消费方**（Phase 1 脚手架）；gofmt 1.27.x 对齐伪影 131 文件（工具链版本差异，非真脏，无硬门不做 churn）；rpm_limit 76/79 未设（运营面）。
+> ★ 分支清理：远端仅 main；唯一 stash 已全部被 HEAD 超越（`diff <(git show stash@{0}:f) <(git show HEAD:f)` 比对法）。Makefile 三行重复门脚本接线已去重。
+
 > **2026-11-11 上游恢复检测及时性轮 · ★★★★ 第 34 处口径修正：★ 「归档片段」必须包含关窗当天要归档的「全部要素」⇒ ★★ 否则关窗作者只能回日志**手抄** ⇒ ★★ 手抄 = 漂移 = 漏限定条件 ⇒ ★★ 「不要手抄」这句承诺必须**在产物上可验证**（★ 2026-11-11 04:4x–05:1x +08，goal 会话，通用式见 `LESSONS.md` **§685**）**：
 > ★ 触发：★ 第 33 处收尾后**审了一遍关窗产物本身**（★ `--emit-report` 生成的 markdown 片段）⇒ ★★★ 撞出**一处会让「关窗当天不手抄」落空**的缺口 ⇒ ★★ ⇒ ★★ 必须**关窗前**修（★ 当时距关窗只剩 ~8.8h）。
 > ★★★★ **发现 ①：★★★ 片段缺了四块「关窗要归档的要素」⇒ ★★ 关窗当天只能回日志**手抄****：★ 片段原本只有五节（① 步骤链 ② 几何与守卫 ③ 裁决表 ④ ❌ 明细 ⑤ 诚实边界清单）★★ ⇒ ★★ **不在**片段里的有：★★ **量具守卫全量**（★ 判定器打印 **5 项**：M16/M17/M18/M19/M20-fp）★★ **M15/M15x 逐对明细**（★ 含判定器自带的「Stage 1 判据集」与「预期边界」两段）★★ **H5 逐模型读数**（★ 第 32 处的关窗必看项）★★ **指标条数**★★ ⇒ ★★ 而锚点档 ② 的判读规则**明确要归档这几项** ⇒ ★★ ⇒ ★★ **产物缺要素 ⇒ 关窗当天必然手抄** ⇒ ★★ 手抄 = 漏限定条件 = 第 27 处「无覆盖的谎」的同款。
