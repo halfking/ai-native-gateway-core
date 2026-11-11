@@ -593,7 +593,15 @@ func parseAnthropicTools(raw json.RawMessage) ([]ToolDefinition, error) {
 			if desc, ok := fn["description"].(string); ok {
 				td.Description = desc
 			}
-			td.Parameters = marshalAnyToRaw(sanitizeInputSchema(fn["parameters"]))
+			// 2026-11-11（48h 审计 P1）：parameters 缺失/非对象时必须缺省
+			// {"type":"object","properties":{}}——与 streaming 层归一化
+			// （tools_normalize.go）对齐。否则 td.Parameters=nil ⇒ 序列化器
+			// 不发 input_schema ⇒ Anthropic 对 custom tool 必填 ⇒ 400。
+			if params, ok := fn["parameters"].(map[string]any); ok {
+				td.Parameters = marshalAnyToRaw(sanitizeInputSchema(params))
+			} else {
+				td.Parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+			}
 			// "function" 键已被消费 → 不进 Extra（否则并回 Anthropic 输出
 			// 会同时出现 name/input_schema 与 function 两套形态）。
 			td.Extra = toolExtrasFrom(leftovers, toolKnownKeysWith(irToolKnownKeysAnthropic, "function"))

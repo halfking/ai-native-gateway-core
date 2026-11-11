@@ -982,6 +982,11 @@ func serializeAnthropicTools(tools []ToolDefinition) []map[string]any {
 				// Fallback: use raw if unmarshal fails
 				toolMap["input_schema"] = tool.Parameters
 			}
+		} else {
+			// 2026-11-11（48h 审计 P1）：Anthropic 对 custom tool 的 input_schema
+			// 必填——Parameters 为 nil 时缺省空对象 schema，不再静默省略
+			// （省略 ⇒ 上游 400；此前只有 streaming 层归一化有缺省，IR 层漏）。
+			toolMap["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
 		// RISK-2（2026-10-29）：工具顶层非标准键并回（不覆盖已写入键；
 		// anthropic 目标上非规范键由 sanitize（非原生）/直通（原生）语义接管）。

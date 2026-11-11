@@ -4,8 +4,34 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
+
+// redactRawPart 去掉未识别 part 里**不可外泄**的内容，只留描述性字段。
+//
+// ★ 2026-11-11（48h 审计 P1）：★ 与 redactReasoningItem（parse_responses.go，
+// ★ 2026-11-11 审计 P2-I）同族：★ 原实现把**整个原始 part**（map{"raw": ...}）
+// ★ 塞进 ReportParseUnknownField 的 metadata ⇒ ★ part 里的用户文本 / 工具调用
+// ★ 参数 / inline media 的 base64 会**逐字**进 ir.anomaly 事件 ⇒ ★ 随
+// ★ slog.Warn 落进可全文检索的日志面、并随 format-anomaly 采集落库 ⇒ ★
+// ★ 这是内容外泄面，而 rule 71 的模式脱敏（bearer/JWT/sk- 等）对普通用户
+// ★ 内容不命中 ⇒ ★ 兜不住这条路。★ 修法同族：★ 只留「有多大 / 有哪些键」，
+// ★ 不留「内容是什么」。★ 去重键不含 metadata（anomaly_reporter.go dedupKey）
+// ★ ⇒ ★ 脱敏不改变去重行为。
+func redactRawPart(raw json.RawMessage) map[string]any {
+	out := map[string]any{"bytes": len(raw)}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		keys := make([]string, 0, len(probe))
+		for k := range probe {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out["keys"] = keys
+	}
+	return out
+}
 
 // ParseGemini parses a Gemini generateContent request body into IR.
 //
@@ -175,7 +201,7 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Type:       "raw",
 					RawContent: string(rawPart),
 				})
-				ReportParseUnknownField("", ProtocolGeminiGenerate, "contents[].parts", map[string]any{"raw": string(rawPart)})
+				ReportParseUnknownField("", ProtocolGeminiGenerate, "contents[].parts", redactRawPart(rawPart))
 				continue
 			}
 			// Gemini thinking part. R34 (2026-09-17 audit): the real wire
@@ -294,7 +320,7 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Type:       "raw",
 					RawContent: string(trimmed),
 				})
-				ReportParseUnknownField("", ProtocolGeminiGenerate, "contents[].parts", map[string]any{"raw": string(trimmed)})
+				ReportParseUnknownField("", ProtocolGeminiGenerate, "contents[].parts", redactRawPart(trimmed))
 			}
 		}
 		out = append(out, msg)
