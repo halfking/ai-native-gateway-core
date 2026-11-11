@@ -15,6 +15,53 @@ import (
 	"fmt"
 )
 
+// anthropicRoles 是 Anthropic Messages API 请求侧 messages 数组里允许的角色。
+//
+// 2026-11-11（ZCode system-role 事故轮）：本闭集**加入 system**。
+//
+// ★ 事故本体（211 生产实证）：ZCode 经 /v1/messages 发来的请求里
+//
+//	messages[1].role = "system"，本门按「官方最小形状」拒之 ⇒ 网关自造
+//	失败：请求从未出网，客户端拿到 503「All providers unavailable」
+//	（2026-11-11 第三层修复前）或 400 client_bug（修复后）。
+//
+// ★ 为什么是「放行」而不是「归一化到顶层 system 字段」——211 真凭据直连
+//
+//	apiclaude 实测（2026-11-11，claude-fable-5-2）：
+//
+//	  A  messages 内 role=system（可验证指令「Reply with exactly:
+//	     SYSPROMPT-OK」）⇒ HTTP 200，模型回「OK」
+//	     ⇒ 上游**接受**该形状，且 system 内容**确实被模型看到**；
+//	  B  顶层 system 字段（同一条可验证指令）⇒ HTTP 200，模型回
+//	     「Hey! What can I help you with today?」
+//	     ⇒ 该上游**不把顶层 system 当系统提示**（直接丢弃）。
+//
+//	⇒ 若把 system 消息「修正」成官方形态（提到顶层），恰恰会**丢掉 system
+//	  语义**（B 形态实证）⇒ 归一化是**语义降级**，不能做。
+//
+// ★ 为什么放行不违反「官方最小形状」：本包的设计声明是「fail-closed 只拒
+//
+//	协议层面不合法的体，**不做网关方言级别的强校验——直传语义要求网关不
+//	替上游做裁决**」。实测证明该闭集比真实上游**更严**（上游接受）⇒ 门在
+//	替上游做裁决 ⇒ 按本包自己的原则应放行，让上游自己裁决：上游若拒绝，
+//	其 400 会如实透传（第二层修复已保证请求侧错误不塌成 transient ⇒ 不盲
+//	重试、分类如实）。
+//
+// ★ 仓内口径一致性：本闭集此前与
+//
+//	domains/transformation/anthropic_message_fix.go 的
+//	ValidateAnthropicMessages（明确允许 user|assistant|**system**，见其
+//	"Claude only supports user/assistant/system"）**互相矛盾** ⇒ 本次把
+//	两处收敛到同一口径。
+//
+// ★ 仍然拒绝的角色（负向闭集不变）：tool / developer / engine / 空串 …
+//
+//	—— 那些是真的协议外形状（如 anthropic 侧没有 tool 角色；tool 角色由
+//	FixAnthropicMessages 转成 user + tool_result）。
+var anthropicRoles = map[string]bool{
+	"user": true, "assistant": true, "system": true,
+}
+
 // anthropicBlockTypes 是 Anthropic Messages API 请求侧合法内容块闭集
 // （docs.anthropic.com Messages API reference）。
 var anthropicBlockTypes = map[string]bool{
@@ -74,8 +121,8 @@ func ValidateAnthropicRequest(body []byte) error {
 		if err := json.Unmarshal(msg["role"], &role); err != nil {
 			return fmt.Errorf("messages[%d].role must be a string", i)
 		}
-		if role != "user" && role != "assistant" {
-			return fmt.Errorf("messages[%d].role %q is not allowed (anthropic-messages accepts user|assistant)", i, role)
+		if !anthropicRoles[role] {
+			return fmt.Errorf("messages[%d].role %q is not allowed (anthropic-messages accepts user|assistant|system)", i, role)
 		}
 		if err := validateAnthropicContent(i, role, msg["content"]); err != nil {
 			return err
