@@ -308,6 +308,11 @@ func serveSearchMemory(ctx context.Context, deps ToolDeps, call ToolCall, maxByt
 	}
 	if len(items) == 0 {
 		res.Content = "长期记忆里没有命中相关内容。"
+		if deps.Identity.MemoryNamespaceNote != "" {
+			// ★ 显式带上命名空间的边界说明：否则「没命中」会被读成
+			//	「记忆是空的」，而真相是「不在同一个命名空间里」。
+			res.Content += " " + deps.Identity.MemoryNamespaceNote
+		}
 		return res
 	}
 

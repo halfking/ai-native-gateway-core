@@ -204,11 +204,12 @@ func messageFingerprint(m map[string]any) string {
 
 // PGIndexLoader 从逐步摘要表取回 L0 索引层。
 //
-// ★ 权威源：public.session_request_summaries
+// ★ 权威源：public.session_request_summaries（摘要内容）
 //
-//	（gw_session_id / step_index / request_summary / response_summary）。
-//	该表由 domains/analysis/request_summary.go 的 RequestSummarizer 写入，
-//	触发点是 domains/hooks/sessionanalysis 的 PostResponse Hook。
+//   - public.session_turns / session_turns_hot（**权威步号** turn_no）
+//
+//     该表由 domains/analysis/request_summary.go 的 RequestSummarizer 写入，
+//     触发点是 domains/hooks/sessionanalysis 的 PostResponse Hook。
 type PGIndexLoader struct {
 	DB Queryer
 }
@@ -218,11 +219,47 @@ func NewPGIndexLoader(db Queryer) *PGIndexLoader {
 	return &PGIndexLoader{DB: db}
 }
 
+// sqlLoadIndex 读 L0 索引层：摘要内容 + **权威步号**。
+//
+// ★ 为什么必须 join（2026-11-11 审计轮）：
+//
+//	摘要表的 step_index **不是** turn_no。它是
+//	domains/analysis/request_summary.go 里对
+//	`ORDER BY ts ASC LIMIT 100` 的结果取**稠密行号**（i+1）得到的：
+//	· 某一轮摘要写失败时（saveSummary 只记日志、不重试）该轮没有摘要行
+//	  ⇒ 后续行的 step_index 仍按行号递增 ⇒ **与轮次号错位**；
+//	· ts 序与轮次分配序（advisory lock 单调分配 turn_no）不保证一致；
+//	· LIMIT 100 ⇒ 超过 100 轮的会话根本没有摘要。
+//	而 L1 明细层按 `session_bodies_unified.turn_no` 精确寻址
+//	⇒ 索引里的「步N」与明细层的「步N」**不是同一个 N**
+//	⇒ 模型按索引给的步号去取明细，会取回**别的轮**。
+//
+//	⇒ 权威对齐键是 request_id：摘要表与 session_turns 都有它，
+//	  而 session_turns.turn_no 就是网关的原生轮次号（= L1 的寻址键）。
+//
+// ★ 两臂都要查：写入只落 session_turns_hot，促销把老行搬进
+//
+//	session_turns 的月分区 ⇒ 完整集合 = hot ∪ cold
+//	（与 db.SessionFamilyTurnsForSessionSQL 同一形状）。
+//	用 UNION（去重）而不是 UNION ALL：促销窗口内同一 request_id
+//	若同时出现在两臂，去重后才不会让索引出现重复行。
+//
+// ★ 内连接（而不是左连接）：没有权威 turn_no 的摘要行**不列出**。
+//
+//	列出一个寻址不到的步号，比不列更糟：模型会拿它去调
+//	load_step_detail，取回**别的轮**（静默给错数据）。
 const sqlLoadIndex = `
-	SELECT step_index, COALESCE(request_summary, ''), COALESCE(response_summary, '')
-	FROM session_request_summaries
-	WHERE gw_session_id = $1 AND tenant_id = $2
-	ORDER BY step_index ASC
+	SELECT t.turn_no, COALESCE(s.request_summary, ''), COALESCE(s.response_summary, '')
+	FROM session_request_summaries s
+	JOIN (
+		SELECT request_id, turn_no FROM public.session_turns_hot
+		WHERE tenant_id = $2 AND session_id = $1
+		UNION
+		SELECT request_id, turn_no FROM public.session_turns
+		WHERE tenant_id = $2 AND session_id = $1
+	) t ON t.request_id = s.request_id
+	WHERE s.gw_session_id = $1 AND s.tenant_id = $2
+	ORDER BY t.turn_no ASC
 `
 
 // LoadIndex 实现 IndexLoader。

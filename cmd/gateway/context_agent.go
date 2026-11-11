@@ -50,6 +50,19 @@ const (
 	envContextAgentEnabled   = "LLM_GATEWAY_CONTEXT_AGENT_ENABLED"
 	envContextAgentRecordDir = "LLM_GATEWAY_CONTEXT_AGENT_RECORD_DIR"
 	envContextAgentLoopback  = "LLM_GATEWAY_CONTEXT_AGENT_LOOPBACK_URL"
+	// envContextAgentModelKey 是**模型面凭据**（sk-* 明文，不含 "Bearer "）。
+	//
+	// ★ 为什么必须有：/resolve 挂在管理令牌中间件后面 ⇒ 请求里的
+	// Authorization 恒为管理令牌（ops_ 形态），而数据面只认 sk-*
+	// ⇒ 用它回灌必然 401；且它的哈希与写记忆用的 sk-* 哈希不同
+	// ⇒ 记忆命名空间也永远对不上。
+	envContextAgentModelKey = "LLM_GATEWAY_CONTEXT_AGENT_MODEL_KEY"
+	// envContextAgentAllowRequestCredential 是否允许调用方用请求头
+	// X-Model-Key 覆盖模型面凭据。
+	//
+	// ★ 默认关：凭据决定记忆命名空间 ⇒ 让客户端自选 = 放大同租户内的
+	//	记忆读取面（上一轮已拍板）。
+	envContextAgentAllowRequestCredential = "LLM_GATEWAY_CONTEXT_AGENT_ALLOW_REQUEST_CREDENTIAL"
 	// ★ 2026-11-11 审计 A-9：★ 可还原记录此前**无轮转/无清理/无 TTL**
 	// ★ ⇒ ★★ 磁盘占用无上界 ★★。⇒ ★★ 现在由这两个开关控制保留策略：
 	envContextAgentRecordMaxFiles = "LLM_GATEWAY_CONTEXT_AGENT_RECORD_MAX_FILES"
@@ -171,7 +184,13 @@ func registerContextAgent(mux *http.ServeMux, logger *slog.Logger, deps contextA
 	}
 
 	bundle.Agent = agent
-	bundle.Service = &contextagent.Service{Agent: agent}
+	bundle.Service = &contextagent.Service{
+		Agent: agent,
+		// ★ 模型面凭据：回灌上游 + 记忆命名空间都要用（见 envContextAgentModelKey）。
+		ModelCredential: strings.TrimSpace(os.Getenv(envContextAgentModelKey)),
+		// ★ 默认**不允许**调用方自选凭据（读面放大风险）。
+		AllowRequestCredential: envBoolStrict(envContextAgentAllowRequestCredential),
+	}
 
 	// ── MCP 本地工具：把两个记忆能力暴露给 MCP 数据面 ──
 	registerContextMemoryTools(bundle.LocalTools, agent)
@@ -285,8 +304,30 @@ func registerContextMemoryTools(reg *mcp.LocalToolRegistry, agent *contextagent.
 //
 // ★ 租户来自**凭证**（id.TenantID），不来自参数 ⇒ 调用方无法通过参数
 //
-//	把租户改掉。会话 / 任务来自参数（MCP 客户端自己知道它在哪个会话里），
+//	把租户改掉。会话来自参数（MCP 客户端自己知道它在哪个会话里），
 //	但读的时候仍受 tenant_id 条件约束。
+//
+// ★ 参数白名单纪律（审计轮修复）：
+//
+//	旧实现读 args["task"] 与 args["project"]，但两个本地工具的
+//	AllowedParams 里**都没有**这两个参数，而 mcp/policy.go 的
+//	validateParams 对未列入白名单的参数是**直接拒绝**（ErrForbidden）
+//	⇒ 这两段读取恒为死代码（handler 根本走不到）。
+//	⇒ 现在**删掉**这两段读取，而不是把它们加进白名单：
+//		· project 不参与记忆寻址（项目是归属维度，不是寻址维度）；
+//		· task 会决定命名空间 ⇒ 让客户端自选 task = 扩大同租户内的
+//		  记忆读取面（上一轮已拍板：不让客户端自选作用域）。
+//	⇒ 作用域只由**凭证**（tenant + key）与 **session_id 参数**决定。
+//
+// ★ 记忆命名空间：用 **MCP 凭证自己的**稳定 id 派生（写侧同口径）。
+//
+//	★ 诚实边界（**结构性**，不是可修的缺陷）：
+//	MCP 凭证（mcp.Key / HashSecret）与数据面 sk-* 凭据是**两套凭证体系**
+//	⇒ 即便哈希口径完全一致，两边的 api_key_id 也必然不同
+//	⇒ MCP 侧**召不到**数据面写下的记忆。
+//	⇒ 该边界已登记在设计档「记忆命名空间的边界」一节；
+//		本函数把边界**显式带进**命名空间备注，让工具的返回文本能说清楚
+//		「为什么召回为空」，而不是让读数看起来像「记忆里没有」。
 func contextIdentityFromMCP(id *mcp.Identity, args map[string]any) contextagent.Identity {
 	cid := contextagent.Identity{}
 	if id != nil {
@@ -296,11 +337,14 @@ func contextIdentityFromMCP(id *mcp.Identity, args map[string]any) contextagent.
 	if v, ok := args["session_id"].(string); ok {
 		cid.Session = strings.TrimSpace(v)
 	}
-	if v, ok := args["task"].(string); ok {
-		cid.Task = strings.TrimSpace(v)
-	}
-	if v, ok := args["project"].(string); ok {
-		cid.Project = strings.TrimSpace(v)
+	// 命名空间：凭证分量用 MCP 凭证 id 的稳定哈希，任务分量用会话。
+	if id != nil && id.KeyID != "" && cid.Session != "" {
+		apiKeyID := memory.StableHashKey("mcp:" + id.KeyID)
+		taskID := "s:" + cid.Session
+		cid.MemoryAPIKeyID = apiKeyID
+		cid.MemoryTaskID = taskID
+		cid.MemoryNamespace = memory.UserID(cid.TenantID, apiKeyID, taskID)
+		cid.MemoryNamespaceNote = "命名空间由 MCP 凭证派生；MCP 凭证与数据面 sk-* 凭据是两套体系，命名空间不重叠 ⇒ 这里召不到数据面写入的记忆（已登记的结构性边界）。"
 	}
 	return cid
 }

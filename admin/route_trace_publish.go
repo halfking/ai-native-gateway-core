@@ -5,10 +5,18 @@
 // traces and fans out updates via SSE.
 //
 // 2026-11-11: Initial implementation for dynamic routing visualization.
+// 2026-11-11 (merge fix): 上游初版按一个本仓库不存在的 client API 编写
+// （c.identity.TenantID/.Super、client.send 通道）⇒ admin 包无法编译。
+// 现按 hub 真实的投递原语重写：mu 保护下的客户端扫描 + writeEvent +
+// evict（与 fanOutScope 同构）；route_trace 不携带 Delta/TileDelta ⇒
+// 各客户端字节相同，序列化一次即可。租户隔离用 liveStreamClient 的
+// 真实字段（tenantID string / isSuper bool）。
 package admin
 
 import (
+	"encoding/json"
 	"log/slog"
+	"strconv"
 	"time"
 )
 
@@ -18,10 +26,10 @@ import (
 func (h *LiveStreamSSEHub) StartRouteTrace(requestID string, tenantID int, clientModel string) *RouteTrace {
 	trace := NewRouteTrace(requestID, tenantID, clientModel)
 	h.routeTraceStore.Set(trace)
-	
+
 	// Broadcast initial trace state
 	h.publishRouteTrace(trace)
-	
+
 	return trace
 }
 
@@ -38,25 +46,43 @@ func (h *LiveStreamSSEHub) PublishRouteTraceUpdate(trace *RouteTrace) {
 // publishRouteTrace is the internal method that creates and fans out a
 // route_trace envelope to connected clients.
 func (h *LiveStreamSSEHub) publishRouteTrace(trace *RouteTrace) {
+	if h == nil || trace == nil {
+		return
+	}
 	snapshot := trace.Snapshot()
-	
+
 	envelope := LiveStreamEnvelope{
 		Type:       "route_trace",
 		Timestamp:  time.Now(),
 		RouteTrace: &snapshot,
 	}
-	
-	h.fanOutEnvelope(envelope, func(c *liveStreamClient) bool {
-		// Tenant isolation: only deliver to clients with matching tenant scope
-		if c.identity.TenantID != nil && *c.identity.TenantID == snapshot.TenantID {
-			return true
+
+	// 序列化一次：route_trace 无 Delta/TileDelta 变体（同 fanOut 的
+	// format-agnostic 路径），各客户端字节相同。
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		slog.Warn("route trace marshal failed", "err", err.Error())
+		return
+	}
+
+	tenantKey := strconv.Itoa(snapshot.TenantID)
+
+	h.mu.RLock()
+	clients := make([]*liveStreamClient, 0, len(h.clients))
+	for c := range h.clients {
+		// Tenant isolation: matching tenant scope or super-admin sees all.
+		if !c.isSuper && normalizeLiveStreamTenant(c.tenantID) != normalizeLiveStreamTenant(tenantKey) {
+			continue
 		}
-		// Super-admin clients see all traces
-		if c.identity.Super {
-			return true
+		clients = append(clients, c)
+	}
+	h.mu.RUnlock()
+
+	for _, c := range clients {
+		if !h.writeEvent(c, data) {
+			h.evict(c)
 		}
-		return false
-	})
+	}
 }
 
 // CompleteRouteTrace marks a route trace as complete and broadcasts the final
@@ -67,10 +93,10 @@ func (h *LiveStreamSSEHub) CompleteRouteTrace(requestID string, finalStatus int,
 	if trace == nil {
 		return
 	}
-	
+
 	trace.MarkDone(finalStatus, latencyMs)
 	h.publishRouteTrace(trace)
-	
+
 	// Note: trace is NOT immediately removed from store here.
 	// The periodic cleanup ticker will remove it after 10 minutes.
 	// This allows clients to query recent completed traces.
@@ -83,7 +109,7 @@ func (h *LiveStreamSSEHub) FailRouteTrace(requestID string, finalStatus int, lat
 	if trace == nil {
 		return
 	}
-	
+
 	trace.MarkFailed(finalStatus, latencyMs, errorKind, errorMsg)
 	h.publishRouteTrace(trace)
 }
@@ -92,41 +118,6 @@ func (h *LiveStreamSSEHub) FailRouteTrace(requestID string, finalStatus int, lat
 // Returns nil if not found. Thread-safe.
 func (h *LiveStreamSSEHub) GetRouteTrace(requestID string) *RouteTrace {
 	return h.routeTraceStore.Get(requestID)
-}
-
-// fanOutEnvelope sends an envelope to all clients matching the predicate.
-// This is a lower-level primitive used by publishRouteTrace and other
-// specialized broadcast methods.
-func (h *LiveStreamSSEHub) fanOutEnvelope(envelope LiveStreamEnvelope, predicate func(*liveStreamClient) bool) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	
-	sent := 0
-	for client := range h.clients {
-		if predicate(client) {
-			select {
-			case client.send <- envelope:
-				sent++
-			default:
-				// Client's send buffer is full; skip this message.
-				// The client will catch up on reconnect via initial_data.
-				slog.Debug("route trace: client send buffer full, dropping envelope",
-					"client", client.identity.Name, "type", envelope.Type)
-			}
-		}
-	}
-	
-	if sent > 0 {
-		slog.Debug("route trace: envelope fanned out",
-			"type", envelope.Type,
-			"request_id", func() string {
-				if envelope.RouteTrace != nil {
-					return envelope.RouteTrace.RequestID
-				}
-				return ""
-			}(),
-			"clients", sent)
-	}
 }
 
 // RouteTraceStats returns current statistics about route trace storage.

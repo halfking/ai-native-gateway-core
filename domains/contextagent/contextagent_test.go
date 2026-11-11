@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,13 +58,15 @@ func (f *fakeRows) Scan(dest ...any) error {
 func (f *fakeRows) Err() error { return f.err }
 func (f *fakeRows) Close()     {}
 
-// fakeQueryer 按调用顺序吐出预置的行组。
+// fakeQueryer 按调用顺序吐出预置的行组，并记录每次执行的 SQL。
 type fakeQueryer struct {
 	groups []*fakeRows
 	calls  int
+	sqls   []string
 }
 
-func (f *fakeQueryer) Query(_ context.Context, _ string, _ ...any) (Rows, error) {
+func (f *fakeQueryer) Query(_ context.Context, sql string, _ ...any) (Rows, error) {
+	f.sqls = append(f.sqls, sql)
 	if f.calls >= len(f.groups) {
 		return &fakeRows{}, nil
 	}
@@ -167,19 +170,94 @@ func TestRecognize_ProjectFallsBackToApplicationCode(t *testing.T) {
 	}
 }
 
-// TestRecognize_NamespaceMatchesMemoryUserID —— 身份命名空间必须与
-// domains/memory.UserID 同构，否则跨层检索会串租户/串任务。
-func TestRecognize_NamespaceMatchesMemoryUserID(t *testing.T) {
-	id := Identity{TenantID: "tenant-1", APIKeyID: 9, Task: "task-42"}
-	got := id.Namespace()
-	want := "t:tenant-1:k:9:task-42"
-	if got != want {
-		t.Fatalf("namespace: got %q want %q", got, want)
+// TestRecognize_NamespaceMatchesWriteSideFormula —— 读侧命名空间必须与
+// **写侧**（domains/streaming/executors 的三行公式）逐字节一致，
+// 否则 Memora 召回恒空。
+//
+// ★ 审计轮把这条门从「手工构造 Identity 比字符串格式」改成
+//
+//	「拿真请求走真派生，再与写侧公式对拍」——
+//	旧门只比格式，永远发现不了「头名用错 / 前缀漏了 / api_key_id 恒 0」
+//	这三处发散。
+func TestRecognize_NamespaceMatchesWriteSideFormula(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Task-Id", "task-42")
+	const cred = "sk-write-side-credential"
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+
+	id := Recognize(r, body, IdentityFacts{
+		TenantID:        "tenant-1",
+		ModelCredential: cred,
+	})
+
+	// 写侧口径：apiKeyID = hash(凭据明文)；taskID = memory.TaskID；
+	// userID = memory.UserID(tenant, apiKeyID, taskID)。
+	writeAPIKeyID := memory.APIKeyIDFromToken(cred)
+	writeTaskID := memory.TaskID(r, body, writeAPIKeyID)
+	writeUserID := memory.UserID("tenant-1", writeAPIKeyID, writeTaskID)
+
+	if writeUserID == "" {
+		t.Fatal("write-side namespace must be derivable in this scenario")
 	}
-	// default 租户走 k: 前缀。
-	id2 := Identity{TenantID: "default", APIKeyID: 9, Task: "task-42"}
-	if got := id2.Namespace(); got != "k:9:task-42" {
-		t.Fatalf("default tenant namespace: got %q", got)
+	if got := id.Namespace(); got != writeUserID {
+		t.Fatalf("namespace diverges from write side: got %q want %q", got, writeUserID)
+	}
+	// 逐段对拍（防止有人「恰好相等」但分段不同）。
+	want := "t:tenant-1:k:" + strconv.Itoa(writeAPIKeyID) + ":task-42"
+	if got := id.Namespace(); got != want {
+		t.Fatalf("namespace shape: got %q want %q", got, want)
+	}
+	if id.MemoryTaskID != writeTaskID {
+		t.Fatalf("memory task id: got %q want %q", id.MemoryTaskID, writeTaskID)
+	}
+	if id.MemoryAPIKeyID != writeAPIKeyID {
+		t.Fatalf("memory api key id: got %d want %d", id.MemoryAPIKeyID, writeAPIKeyID)
+	}
+}
+
+// TestRecognize_NoModelCredentialMeansNoNamespace —— 没有模型面凭据时
+// 命名空间必须**为空**（fail-closed），而不是拿「猜出来的」分量去查。
+//
+// ★ 旧实现会用 APIKeyID(恒 0) + X-Gw-Task-Id 拼一个看起来合法的串，
+//
+//	结果必然 0 命中，却让读数像「记忆是空的」。
+func TestRecognize_NoModelCredentialMeansNoNamespace(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set(HeaderTaskID, "task-42")
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+
+	id := Recognize(r, body, IdentityFacts{TenantID: "tenant-1"})
+	if got := id.Namespace(); got != "" {
+		t.Fatalf("namespace must be empty without a model credential, got %q", got)
+	}
+	if id.MemoryAPIKeyID != 0 {
+		t.Fatalf("memory api key id must stay 0, got %d", id.MemoryAPIKeyID)
+	}
+}
+
+// TestRecognize_NamespaceUsesWriteSideTaskVocabulary —— 任务分量必须走
+// **写侧词表**（X-Task-Id 原值 / X-Session-Id → "s:" 前缀）。
+func TestRecognize_NamespaceUsesWriteSideTaskVocabulary(t *testing.T) {
+	const cred = "sk-vocab-credential"
+
+	// X-Task-Id ⇒ 原值，无前缀。
+	r1, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r1.Header.Set("X-Task-Id", "T-42")
+	id1 := Recognize(r1, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), IdentityFacts{
+		TenantID: "acme", ModelCredential: cred,
+	})
+	if !strings.HasSuffix(id1.Namespace(), ":T-42") {
+		t.Fatalf("X-Task-Id must map to the raw value: %q", id1.Namespace())
+	}
+
+	// X-Session-Id ⇒ "s:" 前缀。
+	r2, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r2.Header.Set("X-Session-Id", "S-7")
+	id2 := Recognize(r2, []byte(`{"messages":[{"role":"user","content":"hi"}]}`), IdentityFacts{
+		TenantID: "acme", ModelCredential: cred,
+	})
+	if !strings.HasSuffix(id2.Namespace(), ":s:S-7") {
+		t.Fatalf("X-Session-Id must map to the s: vocabulary: %q", id2.Namespace())
 	}
 }
 
@@ -398,7 +476,12 @@ func TestServeMemoryTool_SearchMemory(t *testing.T) {
 		{ID: "m2", Text: "探针窗口对齐 60s"},
 	}}
 	res := ServeMemoryTool(context.Background(), ToolDeps{
-		Identity: Identity{TenantID: "t", APIKeyID: 1, Task: "tk"},
+		Identity: Identity{
+			TenantID:        "t",
+			MemoryNamespace: "t:t:k:1:tk",
+			MemoryTaskID:    "tk",
+			MemoryAPIKeyID:  1,
+		},
 		LongTerm: lt,
 	}, ToolCall{ID: "c2", Name: ToolSearchMemory, Arguments: json.RawMessage(`{"query":"鉴权","top_k":2}`)})
 

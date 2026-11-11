@@ -29,6 +29,64 @@ func registerMemoryLikeLocalTool(reg *LocalToolRegistry, called *int) {
 	})
 }
 
+// registerGroupedLocalTool 注册一个带 group 的本地工具（分组过滤用）。
+func registerGroupedLocalTool(reg *LocalToolRegistry, name, group string) {
+	reg.Register(LocalTool{
+		Name:        name,
+		Description: "分组过滤用的本地工具",
+		Group:       group,
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(_ context.Context, _ *Identity, _ map[string]any) (any, error) {
+			return "ok", nil
+		},
+	})
+}
+
+// TestLocalTool_GroupFilterApplies —— tools/list?group=… 的过滤必须
+// **对本地工具同样生效**。
+//
+// ★ 审计轮的缺陷：上游分支按 `meta.Group != group` 过滤，而本地分支
+//
+//	无条件全列 ⇒ 按 group 拉清单的客户端会拿到不属于该 group 的本地工具。
+func TestLocalTool_GroupFilterApplies(t *testing.T) {
+	reg := NewLocalToolRegistry()
+	registerGroupedLocalTool(reg, "memory_probe", "memory")
+	registerGroupedLocalTool(reg, "other_probe", "other")
+
+	g, srv := newTestGateway(t, nil, func(c *Config) { c.LocalTools = reg })
+	secret := issueKey(t, g, KeySpec{TenantID: "default", Scopes: []string{ScopeRead, ScopeExecute}})
+
+	// 无 group ⇒ 全列。
+	status, body := rpcCall(t, srv, "/mcp", secret, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("tools/list status=%d body=%v", status, body)
+	}
+	res := rpcResult(t, body)
+	tools, _ := res["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("without group both local tools must be listed, got %d", len(tools))
+	}
+
+	// group=other ⇒ 只有 other_probe。
+	status, body = rpcCall(t, srv, "/mcp?group=other", secret, map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("tools/list?group=other status=%d body=%v", status, body)
+	}
+	res = rpcResult(t, body)
+	tools, _ = res["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("group=other must list exactly one local tool, got %d (%v)", len(tools), tools)
+	}
+	m, _ := tools[0].(map[string]any)
+	if m["name"] != "other_probe" {
+		t.Fatalf("group=other must list other_probe, got %v", m["name"])
+	}
+}
+
 // TestLocalTool_ListedInToolsList —— 本地工具必须出现在清单里。
 func TestLocalTool_ListedInToolsList(t *testing.T) {
 	reg := NewLocalToolRegistry()

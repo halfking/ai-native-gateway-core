@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 )
@@ -63,6 +64,26 @@ type Identity struct {
 	Protocol   string `json:"protocol"`
 	ClientType string `json:"client_type"`
 	RequestID  string `json:"request_id"`
+
+	// MemoryNamespace 是该身份在 Memora 里的命名空间（= memory.UserID 的结果）。
+	//
+	// ★ 它是**写侧同构**的：由 domains/memory.NamespaceFor 派生，
+	//
+	//	与「写记忆」的那一侧逐字节同口径 ⇒ 召回才可能命中。
+	//	（审计轮实测：原实现自己拼字符串，与写侧三处发散 ⇒ 恒空。）
+	MemoryNamespace string `json:"memory_namespace,omitempty"`
+	// MemoryTaskID 是写侧口径的任务分量（带 s:/m:/gateway:auto: 前缀）。
+	MemoryTaskID string `json:"memory_task_id,omitempty"`
+	// MemoryAPIKeyID 是写侧口径的凭据分量（凭据明文的稳定哈希）。
+	MemoryAPIKeyID int `json:"memory_api_key_id,omitempty"`
+	// MemoryNamespaceNote 是命名空间的**结构性边界备注**（可空）。
+	//
+	// ★ 存在的理由：某些调用面（如 MCP）的凭证体系与数据面不同，
+	//
+	//	命名空间**必然**不重叠 ⇒ 召回恒空。
+	//	若不显式说明，工具返回的「没有命中」会被读成「记忆里没有」，
+	//	而真相是「压根不在同一个命名空间里」。
+	MemoryNamespaceNote string `json:"memory_namespace_note,omitempty"`
 }
 
 // IdentityFacts 是识别阶段需要的、**由网关其它部件已经解析好**的事实。
@@ -80,6 +101,21 @@ type IdentityFacts struct {
 	RequestID       string
 	// ClientProtocol 由调用方按请求路径推断（openai-chat / anthropic-messages …）。
 	ClientProtocol string
+	// ModelCredential 是**模型面**凭据明文（sk-* 形态，不含 "Bearer " 前缀）。
+	//
+	// ★ 它决定两件事，二者都必须与写侧同口径：
+	//
+	//	① 记忆命名空间的凭据分量（memory.APIKeyIDFromToken 的哈希）
+	//	② 回灌上游时用谁的凭据记账（否则归属挂到网关内部身份上）
+	//
+	// ★ 为什么单独一个字段而不是复用 Authorization：
+	//
+	//	/resolve 挂在管理令牌中间件后面 ⇒ Authorization 恒为**管理令牌**
+	//	（ops_ 形态），而数据面只认 sk-* ⇒ 用它回灌必然 401；
+	//	而且管理令牌的哈希与写记忆时用的 sk-* 凭据哈希不同
+	//	⇒ 命名空间也永远对不上。
+	//	⇒ 调用方（或运维配置）必须显式给出模型面凭据。
+	ModelCredential string
 }
 
 // 头名常量。
@@ -151,6 +187,29 @@ func Recognize(r *http.Request, body []byte, facts IdentityFacts) Identity {
 		}
 	}
 
+	// ── 记忆命名空间（写侧同构）────────────────────────────────────────
+	//
+	// ★ 单一真源：domains/memory.NamespaceFor。
+	//
+	//	它内部用 memory.TaskID 的词表 + memory.UserID 的拼装，
+	//	与「写记忆」的那一侧（domains/streaming/executors 的
+	//	memory.UserID(tenant, extractAPIKeyID(...), memory.TaskID(...))）
+	//	**逐字节同构** ⇒ 召回才可能命中。
+	//
+	// ★ 没有模型面凭据 ⇒ 派生不出命名空间 ⇒ 留空。
+	//
+	//	留空是**故意的**：拿「猜出来的」命名空间去查 Memora，
+	//	结果必然是 0 命中，却让读数看起来像「记忆是空的」。
+	//	空串 ⇒ 召回被**跳过**（tool.go / loop.go 都判空串），
+	//	并在响应里显式说明原因。
+	if facts.ModelCredential != "" {
+		apiKeyID := memory.APIKeyIDFromToken(facts.ModelCredential)
+		ns, taskID := memory.NamespaceFor(facts.TenantID, apiKeyID, r, body)
+		id.MemoryNamespace = ns
+		id.MemoryTaskID = taskID
+		id.MemoryAPIKeyID = apiKeyID
+	}
+
 	return id
 }
 
@@ -181,26 +240,82 @@ func sanitizeIdentity(v string) string {
 
 // Namespace 返回该身份在记忆体系里的命名空间。
 //
-// ★ 与 domains/memory.UserID 同构（t:<tenant>:k:<key>:<task>），
+// ★ 与写侧**逐字节同构**（domains/memory.NamespaceFor → memory.UserID）：
 //
-//	保证「网关 PG 的层」与「Memora 的层」落在**同一个命名空间**下，
-//	否则跨层检索会串租户/串任务。
+//	t:<tenant>:k:<api_key_id>:<task>     （租户非空）
+//	k:<api_key_id>:<task>               （租户为空 / default）
+//
+//	其中 <task> 是写侧词表派生的结果（memory.TaskID）：
+//	X-Task-Id 原值 / X-Session-Id→"s:" / body task_id→"m:" /
+//	body session_id→"s:" / 兜底 "gateway:auto:<key>:<sha1前8hex>"。
+//
+// ★ 空串表示「没有可用的记忆命名空间」（缺模型面凭据或缺任务标识）。
+//
+//	调用方必须据此**跳过**召回，而不是拿空串去查。
+//
+// ★ 审计轮修掉的坑：本函数原先**自己拼字符串**，用错了头名
+//
+//	（X-Gw-Task-Id 而非 X-Task-Id）、漏了前缀、且 api_key_id 恒为 0
+//	⇒ 与写侧三处发散 ⇒ Memora 召回恒空。
+//	⇒ 现在一律走 domains/memory 的单一真源。
 func (id Identity) Namespace() string {
-	task := id.Task
-	if task == "" {
-		task = id.Session
-	}
-	if task == "" {
-		return ""
-	}
-	if id.TenantID == "" || id.TenantID == "default" {
-		return "k:" + strconv.Itoa(id.APIKeyID) + ":" + task
-	}
-	return "t:" + id.TenantID + ":k:" + strconv.Itoa(id.APIKeyID) + ":" + task
+	return id.MemoryNamespace
 }
 
 // SameNamespace 判断两个身份是否落在同一记忆命名空间。
 func (id Identity) SameNamespace(other Identity) bool {
 	a, b := id.Namespace(), other.Namespace()
 	return a != "" && a == b
+}
+
+// ApplyMemoryNamespace 在身份**还没有**记忆命名空间时补齐它。
+//
+// ★ 为什么需要它：调用方可以显式给出 Identity（/resolve 的 identity 字段、
+//
+//	MCP 工具的显式身份），那条路径不会经过 Recognize ⇒ 命名空间是空的。
+//	⇒ 这里按**同一个**真源补齐，避免「有的路径有命名空间、有的没有」。
+func (id *Identity) ApplyMemoryNamespace(tenantID, credential string, r *http.Request, body []byte) {
+	if id == nil || credential == "" || id.MemoryNamespace != "" {
+		return
+	}
+	apiKeyID := memory.APIKeyIDFromToken(credential)
+	ns, taskID := memory.NamespaceFor(tenantID, apiKeyID, r, body)
+	id.MemoryNamespace = ns
+	id.MemoryTaskID = taskID
+	id.MemoryAPIKeyID = apiKeyID
+}
+
+// MemoryTaskHeaders 派生出「让回灌请求落到**同一**记忆命名空间」所需的头。
+//
+// ★ 写侧的任务分量词表（domains/memory.TaskID）：
+//
+//	X-Task-Id       → 原值（无前缀）
+//	X-Session-Id    → "s:" + 原值
+//	body task_id    → "m:" + 原值
+//	body session_id → "s:" + 原值
+//	兜底             → "gateway:auto:<key>:<sha1(body)前8hex>"（**依赖请求体**）
+//
+// ⇒ 能用头复现的只有前两种；"m:" 只能来自 body、"gateway:auto:" 依赖 body
+//
+//	的哈希 ⇒ **头复现不了**。复现不了时**不造头**：造一个近似的头会让回灌
+//	落到**另一个**命名空间，比不造更糟（写进去的记忆再也召不回来）。
+//
+// ★ 这是一个**诚实的边界**：回灌轮次本身写进 Memora 时，可能落在与原
+//
+//	请求不同的任务分区。不影响「读侧召回原请求写下的记忆」。
+func (id Identity) MemoryTaskHeaders() map[string]string {
+	out := map[string]string{}
+	switch {
+	case id.MemoryTaskID == "":
+		return out
+	case strings.HasPrefix(id.MemoryTaskID, "s:"):
+		out["X-Session-Id"] = strings.TrimPrefix(id.MemoryTaskID, "s:")
+	case strings.HasPrefix(id.MemoryTaskID, "m:"):
+		// 只能来自 body ⇒ 头复现不了 ⇒ 不造。
+	case strings.HasPrefix(id.MemoryTaskID, "gateway:auto:"):
+		// 依赖请求体哈希 ⇒ 复现不了 ⇒ 不造。
+	default:
+		out["X-Task-Id"] = id.MemoryTaskID
+	}
+	return out
 }

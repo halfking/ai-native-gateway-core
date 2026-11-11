@@ -113,6 +113,11 @@ type PlanInput struct {
 	// SearchQuery 是 L2 召回查询；空则不做 L2。
 	SearchQuery string
 	// AvailableSteps 是已知的步骤序号（升序）。用于决定按需加载哪些步。
+	//
+	// ★ 生产路径**不填**它：L1 明细按需走记忆工具（load_step_detail），
+	//	不自动装进装配 —— 理由见 loop.go 的 loadLayers 契约注释
+	//	（request_delta 可能是整份历史的重复，自动装 N 步会把历史注入 N 次）。
+	//	本字段保留，是为了让 MakePlan 的预算算式可被完整单测。
 	AvailableSteps []int
 	// StepTokens 是每个步骤的 token 估计（键为步骤序号）。
 	StepTokens map[int]int

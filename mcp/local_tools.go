@@ -247,7 +247,13 @@ func renderLocalToolResult(result any) string {
 }
 
 // localToolViews 把本地工具投影成 tools/list 的条目。
-func (g *Gateway) localToolViews(id *Identity) []ToolView {
+//
+// ★ group 过滤与上游分支**同一口径**（审计轮修复）：
+//
+//	上游分支按 `meta.Group != group` 过滤，而本地分支原本**无条件全列**
+//	⇒ 按 group 拉清单的客户端会拿到不属于该 group 的本地工具。
+//	⇒ 本地工具的 group 就是 LocalTool.Group（asTool 原样带过来）。
+func (g *Gateway) localToolViews(id *Identity, group string) []ToolView {
 	if g == nil || g.cfg.LocalTools == nil {
 		return nil
 	}
@@ -258,6 +264,9 @@ func (g *Gateway) localToolViews(id *Identity) []ToolView {
 			continue
 		}
 		if !keyAllowsTool(g.keyOf(id), tool.Name) {
+			continue
+		}
+		if group != "" && tool.Group != group {
 			continue
 		}
 		meta := map[string]any{
