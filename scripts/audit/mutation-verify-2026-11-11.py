@@ -310,8 +310,11 @@ ARMS += [
         test="TestToolCallCanonical_OpenAINoDuplicateToolCalls",
         edits=[
             (
+                "\t// 2026-11-11（48h 审计第三轮）：判定结果提升到循环外——此前在循环体内对每个\n"
+                "\t// 调用重算一遍 representedToolCallIndexes（O(T²)），语义不变、只算一次。\n"
+                "\trepresented := representedToolCallIndexes(msg)\n"
                 "\tfor i, tc := range msg.ToolCalls {\n"
-                "\t\tif representedToolCallIndexes(msg)[i] {\n"
+                "\t\tif represented[i] {\n"
                 "\t\t\tcontinue\n"
                 "\t\t}\n"
                 "\t\tout = append(out, tc)\n"
@@ -347,11 +350,12 @@ ARMS += [
         test="TestToolCallCanonical_GeminiToolCallSurvivesToResponses",
         edits=[
             (
-                "\t\tif msg.Role == \"assistant\" && len(canonicalToolCalls(msg)) > 0 {",
+                "\t\tcanonicalCalls := canonicalToolCalls(msg)\n"
+                "\t\tif msg.Role == \"assistant\" && len(canonicalCalls) > 0 {",
                 "\t\tif msg.Role == \"assistant\" && len(msg.ToolCalls) > 0 {",
             ),
             (
-                "\t\t\tfor _, call := range canonicalToolCalls(msg) {",
+                "\t\t\tfor _, call := range canonicalCalls {",
                 "\t\t\tfor _, call := range msg.ToolCalls {",
             ),
         ],

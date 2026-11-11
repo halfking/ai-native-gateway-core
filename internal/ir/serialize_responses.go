@@ -233,11 +233,14 @@ func buildResponsesInput(messages []Message) []map[string]any {
 		// ★ 2026-11-11（协议转换审计轮 · D5）：工具调用改从**规范视图**取
 		//   （canonicalToolCalls），不再只读 msg.ToolCalls ⇒ 否则 Gemini 客户端
 		//   的 functionCall（IR 里是内容块 tool_use）在 Responses 上游上会**整个消失**。
-		if msg.Role == "assistant" && len(canonicalToolCalls(msg)) > 0 {
+		// 2026-11-11（48h 审计第三轮）：规范视图每条 assistant 消息只算一次
+		// （此前 len 判断与循环各调一遍 canonicalToolCalls）。
+		canonicalCalls := canonicalToolCalls(msg)
+		if msg.Role == "assistant" && len(canonicalCalls) > 0 {
 			content := buildResponsesContent(msg)
 			// Emit one function_call item per tool call (Responses expects each
 			// call as its own input item), then any text as a separate message.
-			for _, call := range canonicalToolCalls(msg) {
+			for _, call := range canonicalCalls {
 				args := call.Function.Arguments
 				if args == "" {
 					args = "{}"

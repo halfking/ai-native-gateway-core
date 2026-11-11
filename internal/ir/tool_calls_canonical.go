@@ -49,8 +49,11 @@ func canonicalToolCalls(msg Message) []ToolCall {
 		tc.Function.Arguments = string(block.ToolUse.Input)
 		out = append(out, tc)
 	}
+	// 2026-11-11（48h 审计第三轮）：判定结果提升到循环外——此前在循环体内对每个
+	// 调用重算一遍 representedToolCallIndexes（O(T²)），语义不变、只算一次。
+	represented := representedToolCallIndexes(msg)
 	for i, tc := range msg.ToolCalls {
-		if representedToolCallIndexes(msg)[i] {
+		if represented[i] {
 			continue
 		}
 		out = append(out, tc)
