@@ -555,6 +555,11 @@ guards-deploy-state-machine: ## 切流状态机门（慢门，实测 ≈270s ⇒
 .PHONY: guards-audit-ledger
 guards-audit-ledger: ## 跨文档登记册一致性门（两份审计档的登记项状态必须一致）
 	@bash tests/audit_ledger_consistency_test.sh
+	@if command -v python3 >/dev/null 2>&1; then \
+		python3 scripts/audit/registered-items-balance-2026-11-11.py; \
+	else \
+		echo "⚠️ 跳过登记项计数守恒门：本机无 python3（★ 不因缺解释器让整门红）"; \
+	fi
 
 # ── 基线副本一致性门 ───────────────────────────────────────────────────────
 #

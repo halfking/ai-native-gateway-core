@@ -49,10 +49,45 @@ cd "$REPO_ROOT"
 
 # ── 扫描面：事实源上的全部门脚本 ───────────────────────────────────
 # ★ 分母锚在**磁盘**上（不是手写清单）⇒ 新增一个门脚本，这道门立刻看得见。
+#
+# ★ ★★ 2026-11-11 第五十四轮：★ 扫描面扩到 **`.py` 形态的门** ★
+#   ★ 触发：★ 新登记体系（★ `docs/12小时内修订审计-2026-11-11-0707.md` 那套 ★）的
+#   ★ 守恒门 `scripts/audit/registered-items-balance-2026-11-11.py` ★ **自称门**
+#   ★ （★ 头里写着 fail-closed / rc≠0 判红 ★）⇒ ★ 而**全仓零调用方** ⇒ ★
+#   ★ ★ ⇒ 按本仓纪律「★ 门没有调用方 = 声明不是门 ★」⇒ ★ 它**当时不是门** ★
+#   ★ ⇒ ★ 而它是**守恒门** ⇒ ★ 登记项一漂移就**没人知道** ★
+#   ★ ⇒ 本轮：★ ① 给它接线（★ Makefile 的 `guards-audit-ledger` ★）★
+#   ★           ② 把扫描面扩到 `.py` ⇒ ★ 下一个 `.py` 门不会再隐形 ★
+#
+# ★ ★★ **口径必须精确（★ 否则会误收几十个探针 ★）**：★
+#   ★ `scripts/audit/` 下有 **80+** 个 `.py`，★ 其中绝大多数是
+#   ★   · `mutate_*.py`（★ **变异探针** ★ —— ★ 它们**故意**改坏被验对象 ★
+#   ★     ⇒ ★ 按设计**不该**有调用方 ★）
+#   ★   · `mutation*`（★ 变异体生成器 ★）
+#   ★   · 报表 / 工具（★ `build-*` / `parse_*` / `map_*` / `extract_*` / `resolve_*` ★）
+#   ★ ★ ⇒ 所以 `.py` 的收录规则是**可判的窄口径**（★ 不是「目录里有就算」★）：
+#   ★   ✔ 文件名**含** `gate` 或 `balance`（★ 门语义 ★）
+#   ★   ✘ 且**不在** `mutate_` / `mutation` 族里（★ 探针 ★）
+#   ★ ⇒ ★ 实测该窄口径只命中 **1** 个 `.py`（★ 守恒门 ★）⇒ ★ 零误报 ★
 mapfile_gate_scripts() {
   find tests -maxdepth 1 -name '*.sh' -type f | sort
   find scripts/checks -maxdepth 1 -name '*.sh' -type f 2>/dev/null | sort
   find scripts/guards -maxdepth 1 -name '*.sh' -type f 2>/dev/null | sort
+  # ★ ★★ `.py` 形态的门（★ 窄口径：★ 含 gate/balance 且非 mutate/mutation 族 ★）★★
+  #
+  # ★ ★★ **必须是「独立词段」而不是子串**（★ 第五十四轮实测踩到的三个误收 ★）：
+  #   ★ ① `tests/test_gateway_delivery.py` ⇒ ★ 子串 `gateway` 里含 `gate` ★
+  #      ⇒ ★ 但它是**测试**、不是门 ★
+  #   ★ ② `scripts/audit/registered-items-balance-mutation-2026-11-11.py` ⇒ ★
+  #      ★ 是守恒门的**变异体**（★ 它**故意**改坏被验对象 ★）⇒ ★ 按设计不该有调用方 ★
+  #   ★ ③ `scripts/audit/verify_14337_overview_gate_ab.py` ⇒ ★ 需**生产环境**的
+  #      ★ 只读 A/B 脚本（★ 用法写在它头里：★ 走 `lgwp-prod.sh` ★）⇒ ★ 人工触发 ★
+  # ★ ⇒ 所以判据是：★ 词段含 `gate`/`balance`（★ 用分隔符切开 ★）
+  #   ★ **且** 不在 `mutate_`/`mutation` 族 **且** 不带 `_ab` 后缀 ★
+  find scripts/audit tests -maxdepth 1 -name '*.py' -type f 2>/dev/null \
+    | grep -vE 'mutat(e|ion)|_ab\.py$' \
+    | grep -iE '(^|[^A-Za-z0-9])(gate|balance)([^A-Za-z0-9]|$)' \
+    | sort
 }
 
 # ── 调用方集合：剥离注释行后出现过该文件名的文件 ──────────────────
@@ -64,8 +99,19 @@ caller_files() {
     find .workflow -maxdepth 1 -name '*.yml' -type f 2>/dev/null
     find .github/workflows -maxdepth 1 -name '*.yml' -type f 2>/dev/null
     find scripts -name '*.sh' -type f
+    # ★ ★ 2026-11-11 第五十四轮：★ `.py` 门也可能被 **`.py` 脚本**调用 ★
+    #   （★ 例：★ 变异脚本 `registered-items-balance-mutation-2026-11-11.py` ★
+    #     会调用守恒门 ★）⇒ ⇒ 候选调用方集合必须含 `.py` ★
+    find scripts/audit -maxdepth 1 -name '*.py' -type f 2>/dev/null
+    find tests -maxdepth 1 -name '*.py' -type f 2>/dev/null
     find tests -maxdepth 1 -name '*.sh' -type f
-  } | sort -u
+    # ★ ★★ **但「变异探针」不算调用方**（★ 第五十四轮实测踩到 ★）：
+    #   ★ 守恒门的**变异脚本**在**非注释行**里引用了守恒门 ⇒ ★ 若把它算调用方 ★
+    #   ★ ⇒ ★ 「把守恒门的 Makefile 接线摘掉」这个变异臂**不会让门变红** ★
+    #   ★ ⇒ ★ 门就退化成「★ 探针在引用它 ★」的**假阳性豁免** ★
+    #   ★ ★ ⇒ 判据：★ 变异探针（★ `mutate_*` / `*mutation*` ★）**不是**调用方 ★
+    #   ★ ⇒ ★ 只有【★ 真正会被 CI 跑到的入口 ★】才算 ★
+  } | grep -vE 'mutat(e|ion)' | sort -u
 }
 
 # ── 调用方索引（**一次建索引**，不要每个脚本重扫一遍）─────────────────
@@ -85,7 +131,7 @@ build_caller_index() {
   while IFS= read -r f; do
     [[ -f "$f" ]] || continue
     grep -vE '^[[:space:]]*#' "$f" 2>/dev/null \
-      | grep -oE '[A-Za-z0-9_.+-]+\.sh' \
+      | grep -oE '[A-Za-z0-9_.+-]+\.(sh|py)' \
       | sort -u \
       | while IFS= read -r b; do
           printf '%s\t%s\n' "$b" "$(printf '%s' "$f" | sed 's|^\./||')"
