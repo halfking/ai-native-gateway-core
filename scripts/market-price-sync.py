@@ -473,8 +473,10 @@ def main():
                         "SELECT platform_id, region, native_currency, is_ours::text, enabled::text"
                         " FROM public.market_platform_registry")
     reg = {}   # pid -> (region, native_currency, excluded_bool)
+    # ★ boolean::text 渲染为 'true'/'false'（裸列 -tA 才是 't'/'f'）——
+    #   按 't' 判会把全部平台误判成 excluded ⇒ 地板全空（211 dry-run 实测）。
     for pid, region, native, is_ours, enabled in reg_rows:
-        reg[pid] = (region, native, is_ours == "t" or enabled != "t")
+        reg[pid] = (region, native, is_ours == "true" or enabled != "true")
     reg_values = ", ".join(
         "(%s, %s, %s, %s)" % (qstr(pid), qstr(region), qstr(native),
                               "true" if excluded else "false")
@@ -519,7 +521,11 @@ mapped AS (
     SELECT r.*, reg.reg_region, reg.reg_native, reg.reg_excluded
     FROM rows_ r
     LEFT JOIN reg ON lower(reg.platform_id) = lower(r.platform_id)
-)"""
+)""".format(scope_q=qstr(args.scope), unit_q=qstr(args.unit),
+            asof=asof_cond, exclude=exclude_cond, reg_values=reg_values)
+    # ★ format 必须挂在 latest_cte 的定义处（占位符都在这一段里）——挂到拼接后的
+    #   第二段字面量上 ⇒ latest_cte 里的 {scope_q} 永远不被替换（211 dry-run
+    #   实测红：psql syntax error at or near "{"）。
     src_sql = latest_cte + """,
 agg AS (
     SELECT canonical_key,
@@ -588,16 +594,13 @@ FROM agg
 --    聚合 FILTER 层 ⇒ 候选仍进 src_rows 恒等式；逐平台行数由下面的
 --    诊断查询补进台账 detail.a17_*，不静默。
 ORDER BY canonical_key
-""".format(scope_q=qstr(args.scope), unit_q=qstr(args.unit),
-           asof=asof_cond, exclude=exclude_cond, reg_values=reg_values)
+"""
 
     # 诊断查询：本 scope 每平台×币种的行数（A-17 台账 detail 的数据源）。
     diag_sql = latest_cte + """
 SELECT r.platform_id, r.currency, count(*)
 FROM mapped r
-GROUP BY 1, 2 ORDER BY 1, 2
-""".format(scope_q=qstr(args.scope), unit_q=qstr(args.unit),
-           asof=asof_cond, exclude=exclude_cond, reg_values=reg_values)
+GROUP BY 1, 2 ORDER BY 1, 2"""
 
     src_rows = psql_tsv(args.source_container, args.source_user, args.source_db, src_sql)
     # source_platforms = 源侧本 scope 出现过的独立平台数（全量，未排除前）
