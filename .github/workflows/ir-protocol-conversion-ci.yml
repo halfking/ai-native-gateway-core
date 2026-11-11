@@ -97,6 +97,16 @@ jobs:
       - name: mutation harness — coerce numeric
         run: bash scripts/audit/ir-coerce-numeric-mutation.sh
 
+      # ★ 2026-11-11（协议转换审计轮）：第 4 个 harness = 通用变异验证器的
+      #   **toolcall-canonical 组**（守 D1–D5 的「工具调用规范视图」族，10 臂）。
+      #   ★ 注意：本文件**不在执行路径上**（远端是 codeup ⇒ 真正在跑的是
+      #   ★ `.workflow/main-verify.yml` ⇒ `make guards-fast`）⇒ ★★ 这里加 step
+      #   ★★ 不会让门在 CI 上跑起来 ⇒ ★★ 真正生效的接线在
+      #   ★★ `Makefile` 的 `guards-ir-conversion` ⇒ ★★ 两个文件都写是为了
+      #   ★★ 不让它们漂移（★ 本仓纪律：同一事实不许有两份会分叉的副本）★★。
+      - name: mutation harness — toolcall canonical
+        run: python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
+
       # ── 门 ②：IR 包单测 + 覆盖率 ─────────────────────────────────────
       - name: ir package tests (with coverage)
         run: |

@@ -225,10 +225,15 @@ go test ./... -count=1 -timeout=1800s
 # ★ 实测（macOS / darwin-arm64 / go1.27.2）：热 ≈26s、冷 ≈46s
 #   ⇒ 远低于本文件里 270s / 1122s 那一档慢门 ⇒ 进官方门零预算压力。
 # ★ `set -euo pipefail` ⇒ 任一 harness 变红 ⇒ 本文件立刻中止 ⇒ 门有牙。
-echo "[verify] IR protocol conversion guards (mutation harness x3 + coverage gate)"
+echo "[verify] IR protocol conversion guards (mutation harness x4 + coverage gate)"
 bash scripts/audit/ir-client-error-fix-mutation.sh
 bash scripts/audit/ir-gemini-only-loss-mutation.sh
 bash scripts/audit/ir-coerce-numeric-mutation.sh
+# ★ 2026-11-11（协议转换审计轮）：第 4 个 harness = 通用变异验证器的
+#   **toolcall-canonical 组**（守 D1–D5 的「工具调用规范视图」族，10 臂）。
+#   ★ 用 `--group` 而不是整文件跑 ⇒ ★ 那份文件还含其它轮别的包的臂 ⇒
+#   ★ 整文件跑会把别的关注点拖进 IR 段的预算 ⇒ ★★ 而「组」是按关注点分的 ★★。
+python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
 go test ./internal/ir/... -count=1 -timeout=600s -coverprofile=coverage.ir.out -covermode=atomic
 COV=$(go tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$3); print $3}')
 echo "[verify] internal/ir coverage: ${COV}% (gate >= 75%)"

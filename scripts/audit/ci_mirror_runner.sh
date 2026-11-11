@@ -95,12 +95,17 @@ echo ""
 step "go build ./..." go build ./...
 [ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
 
-# ── step 4~6: 三个变异 harness ─────────────────────────────────────
+# ── step 4~7: 四个变异 harness ─────────────────────────────────────
 step "mutation harness — client error fix" bash scripts/audit/ir-client-error-fix-mutation.sh
 [ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
 step "mutation harness — gemini only loss" bash scripts/audit/ir-gemini-only-loss-mutation.sh
 [ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
 step "mutation harness — coerce numeric" bash scripts/audit/ir-coerce-numeric-mutation.sh
+[ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
+# ★ 2026-11-11（协议转换审计轮）：第 4 个 harness = 通用变异验证器的
+#   **toolcall-canonical 组**（守 D1–D5 的「工具调用规范视图」族，10 臂）。
+step "mutation harness — toolcall canonical" \
+  python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
 [ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
 
 # ── step 7: ir package tests (with coverage) ────────────────────────

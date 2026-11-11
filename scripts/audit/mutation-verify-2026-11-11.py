@@ -9,7 +9,21 @@
   ② **还原后按 SHA 复核** ★ ⇒ ★★ 不靠「跑通了」当还原成功的证据 ★★。
   ③ **还原后复跑正向用例** ★ ⇒ ★★ 否则验的可能是另一个状态 ★★。
 
+★★ **2026-11-11（协议转换审计轮）扩充**：★★
+  · 新增 **group** 字段 ⇒ CI 可按组调用（★ `--group toolcall-canonical`）
+    ⇒ ★★ **不把臂名单手抄进 Makefile**（★★ 名单手抄 = 必然漂移 = LESSONS 同款坑）★★。
+  · 新增 **① 变异生效的独立证据 = 目标文件 SHA 变化** ⇒ ★★ 原来只有
+    「锚点命中恰好 1 次」⇒ ★★ 那是**同源**证据（★ 锚点与替换在同一份
+    脚本里 ⇒ 同源变异可能把锚点一起改掉）⇒ ★★ 现在补一条**独立**证据 ★★。
+  · 新增 `--group` **fail-closed**：★ 组内 0 臂 ⇒ rc≠0（★ 「读不到判据」
+    ≠ 「没发现问题」★）★★
+  · ★★ **未知参数必须报错**：★★ `--group` / `--only` 写错时**不许**静默忽略
+    ⇒ ★★ 静默忽略 = 「调了一个不存在的组，harness 跑别的臂，退出 0」
+    ⇒ ★★ ⇒ **门绿着，而它要保护的东西根本没被跑到** ⇒ ★★ 正是
+    ★★ LESSONS「守卫自己也要被审计」的同款 ⇒ ★★ 现在 rc≠0 ★★。
+
 用法：python3 scripts/audit/mutation-verify-2026-11-11.py [--only M3,M7]
+      python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
 """
 from __future__ import annotations
 
@@ -37,6 +51,9 @@ class Arm:
     # (old, new) 精确替换；old 必须**恰好出现一次**（否则判失败 ⇒ 防改错地方）
     edits: list[tuple[str, str]]
     expect_in_output: str
+    # ★ 2026-11-11（协议转换审计轮）：分组 ⇒ CI 按组调用 ⇒ **不手抄臂名单**。
+    #   ★ 空串 = 未分组（⇒ `--group` 选不中 ⇒ 保持旧行为）。
+    group: str = ""
 
 
 ARMS: list[Arm] = [
@@ -233,6 +250,217 @@ ARMS: list[Arm] = [
 ]
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ★★★ 2026-11-11（协议转换审计轮 · D1–D5）★★★
+#
+# ★ 这组臂守的是「工具调用的**规范视图**」这一族修复 ★
+#   （internal/ir/tool_calls_canonical.go + 三个序列化器 + 清洗链三处）。
+#
+# ★ **为什么单独成组**：★ 这一族修复的共同根因是「IR 里同一个工具调用有
+#   **两种表示**（内容块 tool_use / 消息级 ToolCalls）」⇒ ⇒ 修复面横跨
+#   **6 个生产文件** ⇒ ⇒ 任何一处回退都可能让缺陷复活 ⇒ ⇒ 必须**逐处**有臂。
+#
+# ★ **每条臂对应一个可独立回退的决策点**：
+#   TC01 D1 Gemini 侧重复发 functionCall（内容块分支被放行）
+#   TC02 规范视图的去重规则被拆掉（D1 的根因层）
+#   TC03 D5 OpenAI 侧丢工具调用（退回只读消息级 ToolCalls）
+#   TC04 D5 Responses 侧丢工具调用（退回只读消息级 ToolCalls）
+#   TC05 D2 内容块 tool_result 的 functionResponse.name 退回「从 ID 猜名字」
+#   TC06 D2 消息级工具结果的 functionResponse.name 退回「从 ID 猜名字」
+#   TC07 D4 工具结果载荷发两次（consumedAsResponse 被置回 false）
+#   TC08 D3① removeEmptyMessages 把 Gemini 工具结果当空消息删除
+#   TC09 D3② expandToolResultMessages 不展开 tool 角色消息
+#   TC10 D3③ SanitizeToolMessages 的活跃 ID 集不含内容块 tool_use 的 ID
+# ══════════════════════════════════════════════════════════════════════════
+TOOLCALL_GROUP = "toolcall-canonical"
+
+ARMS += [
+    Arm(
+        name="TC01",
+        desc="D1：Gemini 序列化器的内容块 tool_use 分支被放行 ⇒ 同一调用发两次",
+        files=["internal/ir/serialize_gemini.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiNoDuplicateFunctionCall",
+        edits=[
+            (
+                "\t\t\tcase \"tool_use\":\n"
+                "\t\t\t\t// ★ 2026-11-11（D1）：内容块 tool_use 已由上面的**规范视图**\n"
+                "\t\t\t\t//   （canonicalToolCalls）统一发出 ⇒ 此处**不再**重复发，\n"
+                "\t\t\t\t//   否则同一个 functionCall 会被发两次。\n"
+                "\t\t\t\tcontinue\n",
+                "\t\t\tcase \"tool_use\":\n"
+                "\t\t\t\tif block.ToolUse != nil {\n"
+                "\t\t\t\t\tparts = append(parts, map[string]any{\n"
+                "\t\t\t\t\t\t\"functionCall\": map[string]any{\n"
+                "\t\t\t\t\t\t\t\"name\": block.ToolUse.Name,\n"
+                "\t\t\t\t\t\t\t\"args\": block.ToolUse.Input,\n"
+                "\t\t\t\t\t\t},\n"
+                "\t\t\t\t\t})\n"
+                "\t\t\t\t}\n",
+            )
+        ],
+        expect_in_output="只发一个 functionCall",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC02",
+        desc="规范视图的去重规则被拆掉（D1 的根因层：两种表示各发一次）",
+        files=["internal/ir/tool_calls_canonical.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_OpenAINoDuplicateToolCalls",
+        edits=[
+            (
+                "\tfor i, tc := range msg.ToolCalls {\n"
+                "\t\tif representedToolCallIndexes(msg)[i] {\n"
+                "\t\t\tcontinue\n"
+                "\t\t}\n"
+                "\t\tout = append(out, tc)\n"
+                "\t}\n",
+                "\tfor _, tc := range msg.ToolCalls {\n"
+                "\t\tout = append(out, tc)\n"
+                "\t}\n",
+            )
+        ],
+        expect_in_output="只发一个 tool_calls",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC03",
+        desc="D5：OpenAI 序列化器退回只读消息级 ToolCalls ⇒ 内容块形态的调用消失",
+        files=["internal/ir/serialize_openai.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiToolCallSurvivesToOpenAI",
+        edits=[
+            (
+                "\ttoolCalls := canonicalToolCalls(msg)",
+                "\ttoolCalls := msg.ToolCalls",
+            )
+        ],
+        expect_in_output="不得被当成孤儿工具结果而拒绝整条请求",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC04",
+        desc="D5：Responses 序列化器退回只读消息级 ToolCalls ⇒ 内容块形态的调用消失",
+        files=["internal/ir/serialize_responses.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiToolCallSurvivesToResponses",
+        edits=[
+            (
+                "\t\tif msg.Role == \"assistant\" && len(canonicalToolCalls(msg)) > 0 {",
+                "\t\tif msg.Role == \"assistant\" && len(msg.ToolCalls) > 0 {",
+            ),
+            (
+                "\t\t\tfor _, call := range canonicalToolCalls(msg) {",
+                "\t\t\tfor _, call := range msg.ToolCalls {",
+            ),
+        ],
+        expect_in_output="不得消失",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC05",
+        desc="D2：内容块 tool_result 的 functionResponse.name 退回「从 ID 猜名字」",
+        files=["internal/ir/serialize_gemini.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiFunctionResponseNameMatchesCall",
+        edits=[
+            (
+                "\t\t\t\t\tname := toolNames[block.ToolResult.ToolUseID]\n"
+                "\t\t\t\t\tif name == \"\" {\n"
+                "\t\t\t\t\t\tname = toolUseNameFromID(block.ToolResult.ToolUseID)\n"
+                "\t\t\t\t\t}\n",
+                "\t\t\t\t\tname := toolUseNameFromID(block.ToolResult.ToolUseID)\n",
+            )
+        ],
+        expect_in_output="functionResponse.name 必须等于 functionCall.name",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC06",
+        desc="D2：消息级工具结果的 functionResponse.name 退回「从 ID 猜名字」",
+        files=["internal/ir/serialize_gemini.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiFunctionResponseNameMatchesCall",
+        edits=[
+            (
+                "\t\t\tname := msg.Name\n"
+                "\t\t\tif name == \"\" {\n"
+                "\t\t\t\tname = toolNames[msg.ToolCallID]\n"
+                "\t\t\t}\n",
+                "\t\t\tname := msg.Name\n",
+            )
+        ],
+        expect_in_output="functionResponse.name 必须等于 functionCall.name",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC07",
+        desc="D4：工具结果载荷发两次（consumedAsResponse 被置回 false）",
+        files=["internal/ir/serialize_gemini.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiToolResultNotDuplicated",
+        edits=[
+            (
+                "\t\t\t\tconsumedAsResponse = true",
+                "\t\t\t\tconsumedAsResponse = false",
+            )
+        ],
+        expect_in_output="不得再作为独立 text part 发一遍",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC08",
+        desc="D3①：removeEmptyMessages 退回「无 tool_call_id 即空消息」⇒ Gemini 工具结果被删",
+        files=["internal/ir/validate_and_fix.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiClientToolResultSurvivesFix",
+        edits=[
+            (
+                "\t\t\tif msg.ToolCallID == \"\" && !hasToolResultBlock(msg.Content) {",
+                "\t\t\tif msg.ToolCallID == \"\" {",
+            )
+        ],
+        expect_in_output="不得被 ValidateAndFixRequest 删除",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC09",
+        desc="D3②：expandToolResultMessages 不展开 tool 角色消息 ⇒ 关联键恒空 ⇒ 被删",
+        files=["internal/ir/tool_result_messages.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiClientToolResultSurvivesFix",
+        edits=[
+            (
+                "\t\tisToolShape := (msg.Role == \"tool\" || msg.Role == \"function\") && msg.ToolCallID == \"\"",
+                "\t\tisToolShape := false",
+            )
+        ],
+        expect_in_output="不得被 ValidateAndFixRequest 删除",
+        group=TOOLCALL_GROUP,
+    ),
+    Arm(
+        name="TC10",
+        desc="D3③：SanitizeToolMessages 的活跃调用 ID 集不含内容块 tool_use 的 ID ⇒ 孤儿被删",
+        files=["internal/ir/sanitize_tool_messages.go"],
+        pkg="./internal/ir/",
+        test="TestToolCallCanonical_GeminiClientToolResultSurvivesFix",
+        edits=[
+            (
+                "\t\t\tfor _, block := range msg.Content {\n"
+                "\t\t\t\tif block.Type == \"tool_use\" && block.ToolUse != nil && block.ToolUse.ID != \"\" {\n"
+                "\t\t\t\t\tactiveToolCallIds[block.ToolUse.ID] = true\n"
+                "\t\t\t\t}\n"
+                "\t\t\t}\n",
+                "",
+            )
+        ],
+        expect_in_output="不得被 ValidateAndFixRequest 删除",
+        group=TOOLCALL_GROUP,
+    ),
+]
+
+
 def sha(path: str) -> str:
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
@@ -253,14 +481,60 @@ def run_go(pkg: str, test: str) -> tuple[int, str]:
 
 
 def main() -> int:
+    # ★★ 未知参数必须报错（★ 2026-11-11 协议转换审计轮实测踩到）：★★
+    #   ★ 本轮把 `--group toolcall-canonical` 写进 Makefile ⇒ 但 harness 的
+    #   ★ 那一版**不认识** `--group` ⇒ ★★ 旧写法会**静默忽略**它 ⇒ ★★
+    #   ★★ 于是 harness 跑的是**别的** 14 条臂、退出 0 ⇒ ★★ 门绿着，★★
+    #   ★★ 而它要保护的那 10 条臂**根本没被跑到** ⇒ ★★ 这正是 LESSONS
+    #   ★★「守卫自己也要被审计」的同款 ⇒ ★★ 现在：未知参数 ⇒ rc≠0 ★★。
+    argv = sys.argv[1:]
+    known_flags = {"--only", "--group"}
+    for i, tok in enumerate(argv):
+        if tok in known_flags:
+            continue
+        if tok.startswith("--"):
+            print(f"✘ 未知参数 {tok!r}（已知：{sorted(known_flags)}）⇒ ⇒ "
+                  f"【调用方与本 harness 的接口不一致】⇒ ⇒ fail-closed（rc≠0）")
+            return 2
+        # 位置参数（--only/--group 的取值）由下面按 flag 消费。
+
     only = None
-    if "--only" in sys.argv:
-        only = set(sys.argv[sys.argv.index("--only") + 1].split(","))
+    if "--only" in argv:
+        idx = argv.index("--only")
+        if idx + 1 >= len(argv):
+            print("✘ --only 缺取值 ⇒ ⇒ fail-closed（rc≠0）")
+            return 2
+        only = set(argv[idx + 1].split(","))
+    # ★ 2026-11-11（协议转换审计轮）：--group ⇒ CI 按组调用 ⇒ **不手抄臂名单**。
+    group = None
+    if "--group" in argv:
+        idx = argv.index("--group")
+        if idx + 1 >= len(argv):
+            print("✘ --group 缺取值 ⇒ ⇒ fail-closed（rc≠0）")
+            return 2
+        group = argv[idx + 1]
+
+    def selected(arm: Arm) -> bool:
+        if group is not None:
+            return arm.group == group
+        if only is not None:
+            return arm.name in only
+        return True
+
+    # ★ fail-closed：★ 选中的组里 0 条臂 ⇒ ⇒ 「判据不存在」≠ 「没发现问题」
+    #   ⇒ ⇒ 直接 rc≠0 ⇒ ⇒ 不许静默跳过（★ 与「读不到锚点档 ⇒ fail-closed」同款）。
+    picked = [a for a in ARMS if selected(a)]
+    if group is not None and not picked:
+        print(f"✘ 组 {group!r} 里没有任何臂 ⇒ ⇒ 【判据不存在】⇒ ⇒ fail-closed（rc≠0）")
+        return 2
+    if only is not None and not picked:
+        print(f"✘ --only {sorted(only)} 没有命中任何臂 ⇒ ⇒ 【判据不存在】⇒ ⇒ fail-closed（rc≠0）")
+        return 2
 
     backup = tempfile.mkdtemp(prefix="mut-verify-backup-")
     try:
         # ★ 纪律①：备份取在**所有补丁之后**（★ 现在）。
-        targets = sorted({f for arm in ARMS for f in arm.files})
+        targets = sorted({f for arm in picked for f in arm.files})
         for rel in targets:
             src = os.path.join(REPO, rel)
             dst = os.path.join(backup, rel)
@@ -273,9 +547,7 @@ def main() -> int:
         # ★ 正向基线：★ 变异前必须全绿（★ 否则测的是别的状态）。
         print("── 正向基线 ──")
         base_ok = True
-        for arm in ARMS:
-            if only and arm.name not in only:
-                continue
+        for arm in picked:
             rc, out = run_go(arm.pkg, arm.test)
             status = "rc=0 ✔" if rc == 0 else f"rc={rc} ✘"
             print(f"  {arm.name} {arm.test[:52]:<52} {status}")
@@ -288,11 +560,10 @@ def main() -> int:
         print()
 
         results = []
-        for arm in ARMS:
-            if only and arm.name not in only:
-                continue
+        for arm in picked:
             print(f"── {arm.name}：{arm.desc} ──")
             applied = True
+            mut_sha: dict[str, str] = {}
             for rel in arm.files:
                 path = os.path.join(REPO, rel)
                 with open(path, "r", encoding="utf-8") as fh:
@@ -308,10 +579,23 @@ def main() -> int:
                     break
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(body)
+                mut_sha[rel] = sha(path)
             if not applied:
                 results.append((arm.name, "锚点不唯一", False))
                 print()
                 continue
+
+            # ★ 纪律①的**独立证据**：★ 变异必须真的改了文件（★ SHA 变化）★★
+            #   ⇒ ★★ 「锚点命中 1 次」是**同源**证据（★ 锚点与替换物同在这份
+            #   ⇒ ★★ 脚本里 ⇒ 同源变异可能把锚点一起改掉 ⇒ ★★ 门被改瞎）
+            #   ⇒ ⇒ ★★ 这里用**目标文件的 SHA**当独立证据 ★★。
+            unchanged = [rel for rel in arm.files if mut_sha.get(rel) == baseline[rel]]
+            if unchanged:
+                print(f"  ✘ 变异后目标文件 SHA 未变（{', '.join(unchanged)}）⇒ ⇒ 变异**没生效**"
+                      f"⇒ ⇒ 不能判「门没牙」")
+                results.append((arm.name, "变异未生效（SHA 未变）", False))
+            else:
+                print(f"  变异生效证据：目标文件 SHA 已变化（{', '.join(arm.files)}）✔")
 
             rc, out = run_go(arm.pkg, arm.test)
             red = rc != 0
