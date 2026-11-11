@@ -1,3 +1,6 @@
+# ⚠ 审计状态（2026-11-11 48h 审计轮）：本文件的指标名**未经代码核对**——
+# 抽检 18 个指标名，17/18 在全仓代码中不存在（见 ../AUDIT-2026-11-11.md）。
+# 真实告警规则面：deploy/prometheus/rules/（自带测试门）。本文件不得直接装载。
 # 运营体系监控告警规则
 # Prometheus Alert Rules for Operations System
 

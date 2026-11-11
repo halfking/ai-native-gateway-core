@@ -1,3 +1,7 @@
+> ⚠ **审计状态（2026-11-11 48h 审计轮）**：本手册**未经逐条执行验证**
+>（判定见 [../AUDIT-2026-11-11.md](../AUDIT-2026-11-11.md)）。执行任何
+> 流程前先对码 `deploy/prometheus/rules/`、`deploy/grafana/` 与仓库代码。
+
 # 运营体系运维手册
 # Operations System Manual v1.0
 
