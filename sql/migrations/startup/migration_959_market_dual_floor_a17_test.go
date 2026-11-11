@@ -38,9 +38,11 @@ const (
 	mig958DownName = "958_market_platform_registry.down.sql"
 )
 
-// 视图 941 版的输出列别名清单按文件实测提取（下述断言以 29 为准；
-// 941 头注写的「26 列」是旧基线陈旧口径 —— 以文件为准，不进口头数）。
-var view941ColumnAliases = []string{
+// 视图 949 版的输出列别名清单（30 列 = 941 的 29 + 949 末尾追加的
+// provider_model_id）——追加纪律的比对基线。★ 基线必须取**树的最新视图定义
+// （949）**而不是 941：211 真库部署实测（2026-11-12）——按 941 文本重写视图
+// 会撞 PostgreSQL 的「不能改既有列名」错误（live 列 30 = provider_model_id）。
+var view949BaselineAliases = []string{
 	"credential_id", "raw_model_name", "canonical_name", "provider_name",
 	"supplier_currency", "billing_mode", "supplier_in_per_1m", "supplier_out_per_1m",
 	"supplier_pricing_source", "supplier_pricing_updated_at",
@@ -50,7 +52,7 @@ var view941ColumnAliases = []string{
 	"cache_read_price_ratio", "cache_write_price_ratio",
 	"market_ref_currency", "market_ref_in_per_1m", "market_ref_out_per_1m",
 	"market_ref_platform_id", "market_ref_platform_count",
-	"market_position", "price_confidence",
+	"market_position", "price_confidence", "provider_model_id",
 }
 
 // 959 追加的 11 列（按定义顺序）。
@@ -206,32 +208,34 @@ func TestMigration959Down(t *testing.T) {
 			t.Fatalf("959 down missing %q", want)
 		}
 	}
-	// down 的视图恢复必须恰好 29 列（= 941 版实测形状）。
-	if aliases := extractViewAliases(body); len(aliases) != 29 {
-		t.Fatalf("959 down view restore must have exactly 29 columns (941 shape), got %d: %v", len(aliases), aliases)
+	// down 的视图恢复必须恰好 30 列（= 949 版实测形状）。
+	if aliases := extractViewAliases(body); len(aliases) != 30 {
+		t.Fatalf("959 down view restore must have exactly 30 columns (949 shape), got %d: %v", len(aliases), aliases)
 	}
 }
 
 func TestMigration959ViewAppendOnly(t *testing.T) {
 	root := mig951Tree(t)
-	up941 := mig951Read(t, root, "sql/migrations/startup/941_supplier_view_market_columns.sql")
+	// ★ 基线 = 树的**最新**视图定义（949，30 列），不是 941 —— 部署实测教训：
+	//   按 941 文本重写会撞「cannot change name of view column provider_model_id」。
+	up949 := mig951Read(t, root, "sql/migrations/startup/949_supplier_view_binding_id.sql")
 	up959 := mig951Read(t, root, "sql/migrations/startup/"+mig959Name)
 
-	base := extractViewAliases(up941)
+	base := extractViewAliases(up949)
 	next := extractViewAliases(up959)
 	if len(base) == 0 || len(next) == 0 {
-		t.Fatalf("alias extraction failed: 941=%d 959=%d", len(base), len(next))
+		t.Fatalf("alias extraction failed: 949=%d 959=%d", len(base), len(next))
 	}
-	// 前缀逐字一致（名+序）：941 的 29 列在 959 里必须原样出现在最前。
-	if len(base) != 29 {
-		t.Fatalf("941 view baseline must be 29 columns, extracted %d: %v", len(base), base)
+	// 前缀逐字一致（名+序）：949 的 30 列在 959 里必须原样出现在最前。
+	if len(base) != 30 {
+		t.Fatalf("949 view baseline must be 30 columns, extracted %d: %v", len(base), base)
 	}
-	if len(next) != 40 {
-		t.Fatalf("959 view must have 40 columns (29+11), got %d", len(next))
+	if len(next) != 41 {
+		t.Fatalf("959 view must have 41 columns (30+11), got %d", len(next))
 	}
 	for i, a := range base {
 		if next[i] != a {
-			t.Fatalf("view column %d drifted: 941=%q 959=%q (append-only violation)", i+1, a, next[i])
+			t.Fatalf("view column %d drifted: 949=%q 959=%q (append-only violation)", i+1, a, next[i])
 		}
 	}
 	for i, a := range view959AppendedAliases {
@@ -239,13 +243,13 @@ func TestMigration959ViewAppendOnly(t *testing.T) {
 			t.Fatalf("appended column %d mismatch: want %q got %q", i+1, a, next[len(base)+i])
 		}
 	}
-	// 提取清单与 941 文件实测清单双向对账（手写清单漂移即红 —— LESSONS §684）。
-	if len(view941ColumnAliases) != len(base) {
-		t.Fatalf("hand-written 941 alias list (%d) drifts from extracted (%d)", len(view941ColumnAliases), len(base))
+	// 提取清单与 949 文件实测清单双向对账（手写清单漂移即红 —— LESSONS §684）。
+	if len(view949BaselineAliases) != len(base) {
+		t.Fatalf("hand-written 949 alias list (%d) drifts from extracted (%d)", len(view949BaselineAliases), len(base))
 	}
-	for i, a := range view941ColumnAliases {
+	for i, a := range view949BaselineAliases {
 		if base[i] != a {
-			t.Fatalf("hand-written 941 alias %d = %q, file has %q", i+1, a, base[i])
+			t.Fatalf("hand-written 949 alias %d = %q, file has %q", i+1, a, base[i])
 		}
 	}
 

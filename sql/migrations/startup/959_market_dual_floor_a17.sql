@@ -35,11 +35,14 @@
 --                  列」纪律；前 33 列名/序/型逐字不变；两个既有 LATERAL 的
 --                  JOIN 条件 / ORDER BY / LIMIT 1 一字不改）。
 --
--- 与 941 完全同款纪律：
---   · CREATE OR REPLACE VIEW 只追加末尾列 ⇒ 既有 29 列（实测提取，941 头注
---     的「26 列」是旧基线的陈旧口径）位置/类型/顺序逐字不变
---     （消费方 sales/service.go、sales/quote.go、
+-- 与 844/941/949 完全同款纪律：
+--   · CREATE OR REPLACE VIEW 只追加末尾列 ⇒ 既有 **30 列（基线 = 树的最新视图
+--     定义 949**，= 941 的 29 + 949 末尾追加的 provider_model_id）位置/类型/
+--     顺序逐字不变（消费方 sales/service.go、sales/quote.go、
 --     bg/routing_health_checks.go 全部显式列名，无 SELECT *）；
+--     ★ 211 部署实测教训（2026-11-12）：按 941 文本（29 列）重写会撞
+--     「cannot change name of view column provider_model_id」——**重写视图前
+--     必须以树的最新定义（最后一个改它的迁移）为基线**，不是头注或更早的版本；
 --   · 基线 JOIN（LATERAL mc）与市场 LATERAL（mpr）的命中条件不变，
 --     mpr LATERAL 只扩充 SELECT 列清单（不改 WHERE/ORDER/LIMIT）；
 --   · 双 C2 读数（vs_overseas / vs_domestic）只在「绑定币种 == 该区原生币」
@@ -150,7 +153,7 @@ VALUES
     ('volcengine-ark',    '火山方舟',               'domestic', 'CNY', false, true, '959 对拍补种（salesdecorate 源平台；vendor=字节跳动）')
 ON CONFLICT (platform_id) DO NOTHING;
 
--- ── ④ v_supplier_price_vs_baseline v3：只追加末尾列（前 29 列逐字不动） ──
+-- ── ④ v_supplier_price_vs_baseline v3：只追加末尾列（基线 = 949 的 30 列逐字不动） ──
 CREATE OR REPLACE VIEW public.v_supplier_price_vs_baseline AS
 SELECT
     cmb.credential_id,
@@ -207,7 +210,7 @@ SELECT
       THEN NULL
       ELSE round(cmb.cache_write_price_per_1m / mc.baseline_cache_write_price_per_1m, 4)
     END                                             AS cache_write_price_ratio,
-    -- ── 941 新增：市场口径（P2 市场最低 + C2 位势 + C3 置信度门） ────────
+    -- ── 941：市场口径（P2 市场最低 + C2 位势 + C3 置信度门） ─────────────
     mpr.currency                                    AS market_ref_currency,
     mpr.market_min_in_per_1m                        AS market_ref_in_per_1m,
     mpr.market_min_out_per_1m                       AS market_ref_out_per_1m,
@@ -238,6 +241,8 @@ SELECT
         THEN 'suspect_symmetric'
       ELSE 'trusted'
     END                                             AS price_confidence,
+    -- ── 949 新增：binding 身份（供给登记 942 的精确 join 键） ─────────────
+    cmb.provider_model_id                           AS provider_model_id,
     -- ── 959 新增（A-17 双币制）：双地板原生投影 + 双 C2 读数 ─────────────
     mpr.overseas_min_in_per_1m                      AS overseas_ref_in_per_1m,
     mpr.overseas_min_out_per_1m                     AS overseas_ref_out_per_1m,
@@ -279,7 +284,7 @@ FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
 JOIN credentials c      ON c.id = cmb.credential_id
 LEFT JOIN providers p   ON p.id = c.provider_id
--- ★ 这个 JOIN 的条件、ORDER BY、LIMIT 1 与 826/844 **逐字一致**，一字未改。
+-- ★ 这个 JOIN 的条件、ORDER BY、LIMIT 1 与 826/844/941 **逐字一致**，一字未改。
 LEFT JOIN LATERAL (
     SELECT mc.id, mc.canonical_name, mc.baseline_price_currency,
            mc.baseline_input_price_per_1m, mc.baseline_output_price_per_1m,
@@ -292,9 +297,7 @@ LEFT JOIN LATERAL (
      ORDER BY (pm.canonical_id IS NOT NULL AND mc.id = pm.canonical_id) DESC
      LIMIT 1
 ) mc ON true
--- ★ 941 新增 LATERAL：市场参考价（dimension='standard'；canonical_id 解析
---   优先（AF-8），未解析行走名字匹配；两个 LATERAL 各 LIMIT 1 ⇒ 行数不变）。
---   959 只扩充本 LATERAL 的 SELECT 列清单（双地板列），WHERE/ORDER/LIMIT 不动。
+-- ★ 941 的市场 LATERAL（dedup：canonical_id 解析优先，AF-8），逐字保留。
 LEFT JOIN LATERAL (
     SELECT mpr.currency, mpr.market_min_in_per_1m, mpr.market_min_out_per_1m,
            mpr.market_min_platform_id, mpr.market_min_platform_count,
@@ -312,7 +315,7 @@ LEFT JOIN LATERAL (
 ) mpr ON true;
 
 COMMENT ON VIEW public.v_supplier_price_vs_baseline IS
-    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set. Migration 941 appends the market dimension: P2 market minimum (from market_price_reference, matched by canonical_id first then name, standard dimension only), the C2 market position ratio (only when supplier and market currencies are comparable), and the C3 price_confidence gate. Migration 959 (A-17 dual currency) appends the dual regional floors in native currency plus the dual C2 readings (same-region native comparison only, zero FX in-view) and market_ref_used. Market FX conversion is deliberately NOT done here — the sync/scoring layer owns currency folding with snapshot fx_rate.';
+    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set. 941 appends the market dimension (P2 minimum + C2 + C3 gate); 949 appends provider_model_id; 959 (A-17 dual currency) appends the dual regional floors in native currency plus the dual C2 readings (same-region native comparison only, zero FX in-view) and market_ref_used. Baseline = the 949 definition (30 columns) preserved byte-wise, 11 columns appended. Market FX conversion is deliberately NOT done here — the sync/scoring layer owns currency folding with snapshot fx_rate.';
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('959', 'A-17 dual-currency market floors: market_price_reference +17 cols (vendor native currency + overseas/domestic floors + snapshot folds), supplier_market_position +5 dual-readings cols, registry +12 platforms (salesdecorate reconciliation), view v3 append dual-floor projections')
