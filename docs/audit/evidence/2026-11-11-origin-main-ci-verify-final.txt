@@ -1,0 +1,842 @@
+==============================================================
+ CI 镜像执行记录（ir-protocol-conversion-ci.yml 逐 step 复刻）
+==============================================================
+工作树        : /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/../ci-verify-clean
+对齐提交      : 48ea8b926522a2ded89fa7004e20eefb1a1d0193
+提交标题      : Merge remote-tracking branch 'origin/main'
+工作树状态    : 0 个改动（0=干净）
+远端          : git@codeup.aliyun.com:kaixuan/official-deploy/llm-gateway-go.git
+工具链        : go version go1.27.2 darwin/arm64
+宿主          : Darwin 25.6.0 arm64
+开始时间      : 2026-11-11 18:53:04 +0800
+==============================================================
+
+--------------------------------------------------------------
+>>> STEP: Checkout（核对：HEAD == 目标提交 且 工作树干净）
+>>> CMD : bash -c test "$(git rev-parse HEAD)" = "48ea8b926522a2ded89fa7004e20eefb1a1d0193" && test -z "$(git status --porcelain)" && echo "OK: HEAD 与目标提交一致，工作树干净"
+--------------------------------------------------------------
+OK: HEAD 与目标提交一致，工作树干净
+<<< EXIT: 0   (耗时 0s)
+
+--------------------------------------------------------------
+>>> STEP: Setup Go（工作流声明 go-version=1.23）
+--------------------------------------------------------------
+实测工具链： go version go1.27.2 darwin/arm64
+★ 差异披露：本地工具链与工作流声明的版本不一致 ⇒ 记录如实标注。
+
+
+--------------------------------------------------------------
+>>> STEP: go build ./...
+>>> CMD : go build ./...
+--------------------------------------------------------------
+# github.com/shoenig/go-m1cpu
+vendor/github.com/shoenig/go-m1cpu/cpu.go:75:17: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+vendor/github.com/shoenig/go-m1cpu/cpu.go:77:16: warning: variable length array folded to constant array as an extension [-Wgnu-folding-constant]
+<<< EXIT: 0   (耗时 32s)
+
+--------------------------------------------------------------
+>>> STEP: mutation harness — client error fix
+>>> CMD : bash scripts/audit/ir-client-error-fix-mutation.sh
+--------------------------------------------------------------
+==============================================================
+ 变异 harness —— 客户端错误修正守卫
+ 目标文件: internal/ir/parse_anthropic.go
+==============================================================
+基线 SHA: 01c32251afe3c81ca6cfe1f5d967170d1a695690f2f80c61d1903251c1f4e509
+
+✅ M1 门变红（变异生效 SHA=31f3ccb7）
+✅ M2 门变红（变异生效 SHA=7918086f）
+✅ M3 门变红（变异生效 SHA=143bcb4c）
+✅ M4 门变红（变异生效 SHA=ace12856）
+✅ M5 门变红（变异生效 SHA=cfa4ff2d）
+
+✅ 还原后 SHA 复核一致（01c32251afe3c81ca6cfe1f5d967170d1a695690f2f80c61d1903251c1f4e509）
+✅ 还原后正向复跑通过
+
+==============================================================
+ 结果: 抓住 5 / 5
+==============================================================
+<<< EXIT: 0   (耗时 8s)
+
+--------------------------------------------------------------
+>>> STEP: mutation harness — gemini only loss
+>>> CMD : bash scripts/audit/ir-gemini-only-loss-mutation.sh
+--------------------------------------------------------------
+==============================================================
+ 变异 harness —— Gemini 专有参数丢失披露守卫
+ 目标文件: internal/ir/gemini_only_loss.go
+==============================================================
+基线 SHA: 33eb8d39e8b8f8c8933d231caeb5899ad6cf3e97b9c79917f1a540405f66ae9e
+
+✅ G1 门变红（变异生效 SHA=25bcbb6a）
+✅ G2 门变红（变异生效 SHA=495ca9b8）
+✅ G3 门变红（变异生效 SHA=cd19be0e）
+✅ G4 门变红（变异生效 SHA=49771bdf）
+
+✅ 还原后 SHA 复核一致（33eb8d39e8b8f8c8933d231caeb5899ad6cf3e97b9c79917f1a540405f66ae9e）
+✅ 还原后正向复跑通过
+
+==============================================================
+ 结果: 抓住 4 / 4
+==============================================================
+<<< EXIT: 0   (耗时 9s)
+
+--------------------------------------------------------------
+>>> STEP: mutation harness — coerce numeric
+>>> CMD : bash scripts/audit/ir-coerce-numeric-mutation.sh
+--------------------------------------------------------------
+==============================================================
+ 变异 harness —— 数值/布尔容错层守卫
+ 目标文件: internal/ir/coerce_numeric.go
+==============================================================
+基线 SHA: e0ca22f84db74beef8fec6888af7b7b66dfb4e00fc459b3e8d42162797000034
+
+✅ C1 门变红（变异生效 SHA=77296304）
+✅ C2 门变红（变异生效 SHA=9e9a1330）
+✅ C3 门变红（变异生效 SHA=77630f5a）
+✅ C4 门变红（变异生效 SHA=ea6a1a21）
+
+✅ 还原后 SHA 复核一致（e0ca22f84db74beef8fec6888af7b7b66dfb4e00fc459b3e8d42162797000034）
+✅ 还原后正向复跑通过
+
+==============================================================
+ 结果: 抓住 4 / 4
+==============================================================
+<<< EXIT: 0   (耗时 7s)
+
+--------------------------------------------------------------
+>>> STEP: ir package tests (with coverage)
+>>> CMD : bash -c go test ./internal/ir/... -count=1 -timeout=600s -coverprofile=/tmp/ir.cover -covermode=atomic && go tool cover -func=/tmp/ir.cover | tail -1
+--------------------------------------------------------------
+ok  	github.com/kaixuan/llm-gateway-go/internal/ir	0.960s	coverage: 82.4% of statements
+total:										(statements)					82.4%
+<<< EXIT: 0   (耗时 2s)
+
+--------------------------------------------------------------
+>>> STEP: coverage gate (ir >= 75%)
+>>> CMD : bash -c COV=$(go tool cover -func=/tmp/ir.cover | awk "/^total:/ {gsub(\"%\",\"\",\$3); print \$3}"); echo "total coverage: ${COV}%"; awk -v c="$COV" "BEGIN { if (c+0 < 75) { printf \"coverage %.2f%% < 75%% gate\n\", c; exit 1 } }"
+--------------------------------------------------------------
+total coverage: 82.4%
+<<< EXIT: 0   (耗时 0s)
+
+--------------------------------------------------------------
+>>> STEP: production session replay
+>>> CMD : go test ./internal/ir -run TestProductionReplay -count=1 -v -timeout=600s
+--------------------------------------------------------------
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session
+2026/11/11 18:54:03 WARN ir.anomaly anomaly_type=ir_protocol_loss severity=medium request_id=unknown field_path=cache_control source_protocol=anthropic-messages target_protocol=openai-chat reason=loss raw_value_truncated=true metadata={} message="Anthropic cache_control cannot be expressed on OpenAI Chat Completions"
+2026/11/11 18:54:03 WARN ir.anomaly anomaly_type=ir_protocol_loss severity=medium request_id=unknown field_path=cache_control source_protocol=anthropic-messages target_protocol=openai-responses reason=loss raw_value_truncated=true metadata={} message="Anthropic cache_control cannot be expressed on Responses API"
+2026/11/11 18:54:03 WARN ir.anomaly anomaly_type=ir_protocol_loss severity=medium request_id="" field_path=cache_control source_protocol=anthropic-messages target_protocol=ollama-chat reason=ollama_cache_control_drop raw_value_truncated=true metadata={} message="Anthropic cache_control has no Ollama request-side equivalent and was dropped"
+2026/11/11 18:54:03 WARN ir.anomaly anomaly_type=ir_protocol_loss severity=medium request_id=unknown field_path=cache_control source_protocol=anthropic-messages target_protocol=gemini-generate reason=loss raw_value_truncated=true metadata={} message="Anthropic cache_control has no Gemini equivalent"
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN ir.anomaly anomaly_type=ir_protocol_loss severity=medium request_id=unknown field_path=messages[*].tool_use.input source_protocol="" target_protocol=anthropic-messages reason=loss raw_value_truncated=true metadata="{\"anomaly\":\"format\",\"arg_bytes\":384}" message="tool arguments are not a JSON object; wrapped as {\"raw\":...} to keep tool_use.input schema-valid"
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#01
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#01
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#01
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=replay-redacted-session tool_call_id=call_482129a0e5c1456091ecca81 index=0 total=58 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=replay-redacted-session removed=1 original=58 sanitized=57
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=replay-redacted-session original_messages=58 fixed_messages=57 removed_count=1
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#02
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#02
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#02
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#03
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#03
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#03
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#04
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#04
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#04
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#05
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#05
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=18 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#05
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#06
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#06
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=25 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#06
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=replay-redacted-session tool_call_id=call_01a1a94d7059764fa7404472 index=0 total=47 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=replay-redacted-session removed=1 original=47 sanitized=46
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=replay-redacted-session original_messages=47 fixed_messages=46 removed_count=1
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#07
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#07
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#07
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#08
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#08
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=6 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#08
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#09
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#09
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#09
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#10
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#10
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#10
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#11
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#11
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#11
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#12
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#12
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#12
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=26 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#13
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#13
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#13
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#14
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#14
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#14
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=replay-redacted-session tool_call_id=call_01a1a95c969e77d9a466b734 index=0 total=48 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=replay-redacted-session removed=1 original=48 sanitized=47
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=replay-redacted-session original_messages=48 fixed_messages=47 removed_count=1
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#15
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#15
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=10 first_index=5 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#15
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=replay-redacted-session tool_call_id=call_01a1a9590493743da8fd6061 index=0 total=43 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=replay-redacted-session removed=1 original=43 sanitized=42
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=replay-redacted-session original_messages=43 fixed_messages=42 removed_count=1
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#16
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#16
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#16
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=replay-redacted-session tool_call_id=11341237-1aba-4243-8d80-93a9ffb38a9d index=0 total=55 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=replay-redacted-session removed=1 original=55 sanitized=54
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=replay-redacted-session original_messages=55 fixed_messages=54 removed_count=1
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#17
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#17
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#17
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#18
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#18
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#18
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#19
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#19
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#19
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#20
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#20
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=4 first_index=5 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#20
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#21
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#21
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=8 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#21
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=22 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#22
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#22
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#22
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#23
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#23
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#23
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#24
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#24
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=5 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#24
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=13 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#25
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#25
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=9 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#25
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#26
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#26
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#26
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#27
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#27
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#27
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=6 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#28
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#28
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#28
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#29
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#29
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=14 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#29
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+=== NAME  TestProductionReplay_AllProtocolsRoundTrip
+    production_replay_test.go:335: 回放统计: map[anthropic-messages:90 gemini-generate:90 ollama-chat:90 openai-chat:90 openai-responses:90]
+--- PASS: TestProductionReplay_AllProtocolsRoundTrip (0.07s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#01 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#01 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#01 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#02 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#02 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#02 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#03 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#03 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#03 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#04 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#04 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#04 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#05 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#05 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#05 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#06 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#06 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#06 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#07 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#07 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#07 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#08 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#08 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#08 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#09 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#09 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#09 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#10 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#10 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#10 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#11 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#11 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#11 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#12 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#12 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#12 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#13 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#13 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#13 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#14 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#14 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#14 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#15 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#15 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#15 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#16 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#16 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#16 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#17 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#17 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#17 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#18 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#18 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#18 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#19 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#19 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#19 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#20 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#20 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#20 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#21 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#21 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#21 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#22 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#22 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#22 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#23 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#23 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#23 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#24 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#24 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#24 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#25 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#25 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#25 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#26 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#26 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#26 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#27 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#27 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#27 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#28 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#28 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#28 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/anthropic-messages/redacted-session#29 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-chat/redacted-session#29 (0.00s)
+    --- PASS: TestProductionReplay_AllProtocolsRoundTrip/openai-responses/redacted-session#29 (0.00s)
+=== RUN   TestProductionReplay_MatchesProductionEgress
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#01
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#02
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#03
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#04
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#05
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#06
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#07
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#08
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#09
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#10
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#11
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#12
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#13
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#14
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#15
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#16
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#17
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#18
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#19
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#20
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#21
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#22
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#23
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#24
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#25
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#26
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#27
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#28
+=== RUN   TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#29
+=== NAME  TestProductionReplay_MatchesProductionEgress
+    production_replay_test.go:433: 黄金对拍: 30 条参与，60 条跳过（无出站体或形态不可比）
+--- PASS: TestProductionReplay_MatchesProductionEgress (0.02s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#01 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#02 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#03 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#04 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#05 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#06 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#07 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#08 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#09 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#10 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#11 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#12 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#13 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#14 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#15 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#16 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#17 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#18 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#19 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#20 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#21 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#22 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#23 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#24 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#25 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#26 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#27 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#28 (0.00s)
+    --- PASS: TestProductionReplay_MatchesProductionEgress/openai-chat/redacted-session/golden#29 (0.00s)
+=== RUN   TestProductionReplay_Deterministic
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#01
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#01
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#01
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_482129a0e5c1456091ecca81 index=0 total=58 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=58 sanitized=57
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=58 fixed_messages=57 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_482129a0e5c1456091ecca81 index=0 total=58 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=58 sanitized=57
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=58 fixed_messages=57 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_482129a0e5c1456091ecca81 index=0 total=58 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=58 sanitized=57
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=58 fixed_messages=57 removed_count=1
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#02
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#02
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=15 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#02
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#03
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#03
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=23 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#03
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#04
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#04
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#04
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#05
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#05
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=18 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=18 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=18 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#05
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#06
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#06
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=25 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=25 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=25 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#06
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a94d7059764fa7404472 index=0 total=47 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=47 sanitized=46
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=47 fixed_messages=46 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a94d7059764fa7404472 index=0 total=47 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=47 sanitized=46
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=47 fixed_messages=46 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a94d7059764fa7404472 index=0 total=47 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=47 sanitized=46
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=47 fixed_messages=46 removed_count=1
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#07
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#07
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#07
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#08
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#08
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=6 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=6 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=6 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#08
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#09
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#09
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#09
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#10
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#10
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#10
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#11
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#11
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#11
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#12
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#12
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#12
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=26 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=26 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=26 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#13
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#13
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#13
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#14
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#14
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#14
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a95c969e77d9a466b734 index=0 total=48 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=48 sanitized=47
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=48 fixed_messages=47 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a95c969e77d9a466b734 index=0 total=48 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=48 sanitized=47
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=48 fixed_messages=47 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a95c969e77d9a466b734 index=0 total=48 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=48 sanitized=47
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=48 fixed_messages=47 removed_count=1
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#15
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#15
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=10 first_index=5 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=10 first_index=5 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=10 first_index=5 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#15
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a9590493743da8fd6061 index=0 total=43 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=43 sanitized=42
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=43 fixed_messages=42 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a9590493743da8fd6061 index=0 total=43 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=43 sanitized=42
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=43 fixed_messages=42 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=call_01a1a9590493743da8fd6061 index=0 total=43 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=43 sanitized=42
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=43 fixed_messages=42 removed_count=1
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#16
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#16
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#16
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=11341237-1aba-4243-8d80-93a9ffb38a9d index=0 total=55 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=55 sanitized=54
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=55 fixed_messages=54 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=11341237-1aba-4243-8d80-93a9ffb38a9d index=0 total=55 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=55 sanitized=54
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=55 fixed_messages=54 removed_count=1
+2026/11/11 18:54:03 WARN sanitize_tool_messages: removing orphaned tool message request_id=determinism tool_call_id=11341237-1aba-4243-8d80-93a9ffb38a9d index=0 total=55 active_ids=0
+2026/11/11 18:54:03 INFO sanitize_tool_messages: removed orphaned tool messages request_id=determinism removed=1 original=55 sanitized=54
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 INFO validate_and_fix_request: applied automatic fixes request_id=determinism original_messages=55 fixed_messages=54 removed_count=1
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#17
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#17
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#17
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#18
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#18
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#18
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#19
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#19
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#19
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#20
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#20
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=4 first_index=5 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=4 first_index=5 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=4 first_index=5 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#20
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=17 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#21
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#21
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=8 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=8 first_index=4 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=8 first_index=4 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#21
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=22 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=22 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=22 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#22
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#22
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=16 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#22
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#23
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#23
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=19 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#23
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#24
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#24
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=5 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=5 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=7 first_index=5 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#24
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=13 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=13 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=13 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#25
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#25
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=9 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=9 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=1 first_index=9 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#25
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#26
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#26
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#26
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#27
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#27
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#27
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=6 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=6 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=12 first_index=6 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#28
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#28
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#28
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=20 first_index=2 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#29
+=== RUN   TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#29
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=14 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=14 first_index=3 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=14 first_index=3 first_role=assistant
+=== RUN   TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#29
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+2026/11/11 18:54:03 WARN validate_and_fix: role alternation violations detected (not auto-fixed) violations=21 first_index=2 first_role=assistant
+--- PASS: TestProductionReplay_Deterministic (0.07s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#01 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#01 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#01 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#02 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#02 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#02 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#03 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#03 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#03 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#04 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#04 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#04 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#05 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#05 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#05 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#06 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#06 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#06 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#07 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#07 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#07 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#08 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#08 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#08 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#09 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#09 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#09 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#10 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#10 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#10 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#11 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#11 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#11 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#12 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#12 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#12 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#13 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#13 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#13 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#14 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#14 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#14 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#15 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#15 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#15 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#16 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#16 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#16 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#17 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#17 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#17 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#18 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#18 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#18 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#19 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#19 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#19 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#20 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#20 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#20 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#21 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#21 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#21 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#22 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#22 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#22 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#23 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#23 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#23 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#24 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#24 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#24 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#25 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#25 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#25 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#26 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#26 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#26 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#27 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#27 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#27 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#28 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#28 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#28 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/anthropic-messages/redacted-session/determinism#29 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-chat/redacted-session/determinism#29 (0.00s)
+    --- PASS: TestProductionReplay_Deterministic/openai-responses/redacted-session/determinism#29 (0.00s)
+PASS
+ok  	github.com/kaixuan/llm-gateway-go/internal/ir	0.373s
+<<< EXIT: 0   (耗时 1s)
+
+--------------------------------------------------------------
+>>> STEP: concurrency (race detector)
+>>> CMD : go test -race ./internal/ir -run TestConcurrent -count=1 -timeout=600s
+--------------------------------------------------------------
+ok  	github.com/kaixuan/llm-gateway-go/internal/ir	2.780s
+<<< EXIT: 0   (耗时 9s)
+
+--------------------------------------------------------------
+>>> STEP: 跨模块回归（追加：IR 工作流未覆盖的包）
+>>> CMD : go test ./internal/ir/... ./internal/protocolformat/... ./internal/paramreg/... ./domains/transformation/... ./domains/streaming/... ./cmd/gateway/... -count=1
+--------------------------------------------------------------
+ok  	github.com/kaixuan/llm-gateway-go/internal/ir	1.697s
+ok  	github.com/kaixuan/llm-gateway-go/internal/protocolformat	1.091s
+ok  	github.com/kaixuan/llm-gateway-go/internal/paramreg	0.699s
+ok  	github.com/kaixuan/llm-gateway-go/domains/transformation	1.842s
+ok  	github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic	1.159s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming	85.944s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/executors	24.965s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/executors/webcookie	1.829s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/integrity	2.413s
+ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/state	2.818s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway	6.826s
+ok  	github.com/kaixuan/llm-gateway-go/cmd/gateway/webhooks	3.900s
+<<< EXIT: 0   (耗时 94s)
+
+==============================================================
+ 工作树还原复核（harness 必须把文件改回原样）
+==============================================================
+结束后工作树改动数： 0
+OK: 工作树已还原干净（0 改动）
+
+结束时间： 2026-11-11 18:55:46 +0800
+总判定  ： 全部 step 通过
+==============================================================
