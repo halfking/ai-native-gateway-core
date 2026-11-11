@@ -36,6 +36,18 @@ trap cleanup EXIT
 
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
+# ★ 可移植 SHA-256（仓内既有惯例，见 scripts/retire-request-logs-v1-family.sh:148
+#   与 scripts/verify-migration-checksums.sh:58）：
+#   ★ `shasum` 是 macOS/Perl 系的命令 ⇒ **Linux 容器（尤其精简镜像）未必有**
+#   ⇒ ★ 只用 `shasum` 会让本 harness 在 CI 载体上「命令不存在」⇒ 假红。
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 # 变异臂（tab 分隔：id / 锚点 / 替换物 / 期望失败的用例）
 read -r -d '' ARMS <<'EOF'
 C1	for ft.Kind() == reflect.Pointer {	if false {	TestCoerceNumeric_
@@ -54,7 +66,7 @@ echo " 目标文件: $TARGET_FILE"
 echo "=============================================================="
 
 cp "$TARGET_FILE" "$BACKUP_DIR/coerce_numeric.go"
-BASE_SHA=$(shasum -a 256 "$TARGET_FILE" | awk '{print $1}')
+BASE_SHA=$(sha256_of "$TARGET_FILE")
 echo "基线 SHA: $BASE_SHA"
 echo
 
@@ -80,7 +92,7 @@ while IFS=$'\t' read -r id anchor repl expect; do
         continue
     fi
 
-    MUT_SHA=$(shasum -a 256 "$TARGET_FILE" | awk '{print $1}')
+    MUT_SHA=$(sha256_of "$TARGET_FILE")
     if [[ "$MUT_SHA" == "$BASE_SHA" ]]; then
         echo "❌ $id 变异后 SHA 未变 —— 变异根本没生效（不能判为门没牙）"
         FAIL=$((FAIL + 1))
@@ -107,7 +119,7 @@ done <<< "$ARMS"
 
 # ③ 还原后 SHA 复核 + 正向复跑
 cp "$BACKUP_DIR/coerce_numeric.go" "$TARGET_FILE"
-RESTORED_SHA=$(shasum -a 256 "$TARGET_FILE" | awk '{print $1}')
+RESTORED_SHA=$(sha256_of "$TARGET_FILE")
 echo
 if [[ "${RESTORED_SHA}" == "${BASE_SHA}" ]]; then
     echo "✅ 还原后 SHA 复核一致（${RESTORED_SHA}）"

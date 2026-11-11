@@ -216,6 +216,24 @@ echo "[verify] full Go tests"
 #   ★ ★ 调大它不会让任何一道门从红变绿 ⇒ ★★ 它只会让一个**健康但慢**的包不被腰斩。
 go test ./... -count=1 -timeout=1800s
 
+# ★ 2026-11-11（IR 协议转换层审计轮）：把**从未被运行过**的门接进官方门。
+# ★ 这三个变异 harness + 覆盖率门禁原先**只有** `.github/workflows/` 里的调用方
+#   ⇒ ★★ 而本仓远端是 codeup ⇒ `.github/workflows/` 从来不在执行路径上
+#   ⇒ ⇒ **接线了却跑不到** ⇒ 按本仓纪律「门没有调用方 = 声明不是门」，
+#   它们此前**不是门，是文件**。
+# ★ 本文件的写法约定是**直接调脚本**（不调 `make`）⇒ 与上面那批快门同款。
+# ★ 实测（macOS / darwin-arm64 / go1.27.2）：热 ≈26s、冷 ≈46s
+#   ⇒ 远低于本文件里 270s / 1122s 那一档慢门 ⇒ 进官方门零预算压力。
+# ★ `set -euo pipefail` ⇒ 任一 harness 变红 ⇒ 本文件立刻中止 ⇒ 门有牙。
+echo "[verify] IR protocol conversion guards (mutation harness x3 + coverage gate)"
+bash scripts/audit/ir-client-error-fix-mutation.sh
+bash scripts/audit/ir-gemini-only-loss-mutation.sh
+bash scripts/audit/ir-coerce-numeric-mutation.sh
+go test ./internal/ir/... -count=1 -timeout=600s -coverprofile=coverage.ir.out -covermode=atomic
+COV=$(go tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+echo "[verify] internal/ir coverage: ${COV}% (gate >= 75%)"
+awk -v c="$COV" 'BEGIN { if (c+0 < 75) { printf "coverage %.2f%% < 75%% gate\n", c; exit 1 } }'
+
 # 2026-10-14（r1031 §五-3 / 判据纪律 #11）：TestStorageAudit* 集成审计是三域存储
 # 契约（冷读一致性/跨实例一致性/V2 元数据配对）的唯一观测器，带 -tags=integration
 # 且需要一次性回环 Redis+PG——上面的 `go test ./...` 从不编译它们，此前无任何入口
