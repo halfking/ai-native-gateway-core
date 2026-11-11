@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -147,7 +148,7 @@ func LoadPrivateKeyFromPEM(pemStr string) (*rsa.PrivateKey, error) {
 }
 
 func LoadPublicKeyFromPEM(pemStr string) (*rsa.PublicKey, error) {
-	block, _ := pem.Decode([]byte(pemStr))
+	block, _ := pem.Decode([]byte(NormalizeInlinePEM(pemStr)))
 	if block == nil {
 		return nil, errors.New("invalid PEM")
 	}
@@ -176,6 +177,44 @@ func MarshalToBase64(signed *SignedLicense) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// NormalizeInlinePEM 把「单行环境变量形态」的 PEM 还原成标准多行形态。
+//
+// ── 背景（2026-11-11 48h 审计 · 154 实测）────────────────────────────
+// systemd 的 EnvironmentFile **不接受含真实换行的赋值**——154 的
+// /etc/llm-gateway-go/env 里 LLM_GATEWAY_LICENSE_PUBLIC_KEY 以原生多行 PEM
+// 写入 ⇒ systemd 逐行解析时把首行之后的每行都当独立赋值，整段
+// 「Ignoring invalid environment assignment」丢弃 ⇒ 变量从未进入进程 ⇒
+// 网关启动只有一行 Warn（"license verification disabled"），公钥配置意图
+// 被静默吞掉。本函数让 env 文件可以写**单行**形态，两种等价写法都收：
+//
+//	① 转义形态：换行写成字面 `\n`（`-----BEGIN...-----\nMIIB...`）；
+//	② Base64 整块：整段 PEM 做 StdEncoding（不含 -----BEGIN 前缀 ⇒ 可判）。
+//
+// 标准多行输入原样返回（不改既有行为）。还原失败（既非 PEM 开头、
+// base64 也解不出 PEM）⇒ 返回原串，让 pem.Decode 报原本的错误——
+// 本函数只负责「形态还原」，不做校验裁决。
+func NormalizeInlinePEM(pemStr string) string {
+	const pemHeader = "-----BEGIN"
+	trimmed := strings.TrimSpace(pemStr)
+	if trimmed == "" {
+		return pemStr
+	}
+	if strings.Contains(trimmed, pemHeader) && strings.Contains(trimmed, "\n") {
+		return pemStr // 标准多行形态：原样返回
+	}
+	if strings.Contains(trimmed, pemHeader) {
+		// 单行但保留字面 `\n` 转义 ⇒ 还原换行。
+		return strings.ReplaceAll(trimmed, `\n`, "\n")
+	}
+	// 不含 PEM 头 ⇒ 视为整块 Base64；解不出（或解出后仍无 PEM 头）⇒ 原样退回。
+	if dec, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
+		if s := string(dec); strings.Contains(s, pemHeader) {
+			return s
+		}
+	}
+	return pemStr
 }
 
 func UnmarshalFromBase64(b64 string) (*SignedLicense, error) {
