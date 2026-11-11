@@ -1,0 +1,59 @@
+# error_type_closure_faces.txt —— 「self_check_runs.error_type 的 CHECK 闭集」
+# **声明面登记表**（一行一个路径，相对仓根）。
+#
+# ★ 这份登记表与被守卫的内容**不同源**：
+# ★ 登记表只回答「**哪些文件**声明了该约束」，
+# ★ 而「**声明了什么**」在那些 SQL 文件里
+# ★ ⇒ ⇒ 同源变异（改 SQL 而不改登记表）打不中那道门
+# ★ ⇒ ⇒ 这是 LESSONS §680「守卫的期望值必须与被守卫内容分文件」的要求。
+#
+# ★ 门（sql/migrations/startup/migration_957_error_type_mirror_faces_test.go）
+# ★ 做**双向**对账：
+# ★   · 登记了却不存在 / 不再声明 ⇒ 红（有人删了或改了一个声明面）；
+# ★   · 存在却没登记 ⇒ 红（新增的镜像面逃出了登记表）。
+# ★ ⇒ 登记表**不能靠人记得全**：漏登记会被发现，多登记也会被发现。
+#
+# ★ 面 ≠ 文件：一个文件里可能同时「声明」与「删除」该约束（V361 是
+# ★ 「先删后建」⇒ 记为声明面）。纯注释里提到该名的文件**不算面**
+# ★ （例：docs/audit/2026-10-12-schema-parity-252-vs-local/03-prod-fix.sql
+# ★   ——那是散文，不是声明）。
+#
+# ── 清单（2026-11-11 C-1/C-2 轮实测枚举：全仓 .sql 逐个锚定提取的结果）────
+#
+# —— deploy 迁移系列（V361 会**重建**该约束 ⇒ 终态必须覆盖必需闭集）——
+deploy/sql/migrations/V361__self_check_runs_canonical_taxonomy.sql
+#
+# —— 随一键包分发的基线（deploy/one-click/lib/bootstrap.sh 会打进生产包）——
+deploy/sql/schemas/baseline/01-schema.sql
+#
+# —— installer 内嵌基线（//go:embed）——
+installer/cmd/llm-gw-installer/embeddata/01-schema.sql
+#
+# —— installer startup 链（embeddata 副本）——
+installer/cmd/llm-gw-installer/embeddata/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql
+installer/cmd/llm-gw-installer/embeddata/startup/929_self_check_error_type_kind_closure.down.sql
+installer/cmd/llm-gw-installer/embeddata/startup/929_self_check_error_type_kind_closure.sql
+installer/cmd/llm-gw-installer/embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql
+installer/cmd/llm-gw-installer/embeddata/startup/930_self_check_error_type_kind_closure_model_unavailable.sql
+installer/cmd/llm-gw-installer/embeddata/startup/957_self_check_error_type_kind_closure_rate_limit_observed.down.sql
+installer/cmd/llm-gw-installer/embeddata/startup/957_self_check_error_type_kind_closure_rate_limit_observed.sql
+#
+# —— domain 链（338 声明 7 值；339 把约束**删掉**⇒ 该链终态「无约束」⇒ deferred）——
+sql/migrations/domain/338_self_check.sql
+sql/migrations/domain/339_self_check_error_types.down.sql
+sql/migrations/domain/339_self_check_error_types.sql
+#
+# —— installer startup 链（canonical）——
+sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql
+sql/migrations/startup/929_self_check_error_type_kind_closure.down.sql
+sql/migrations/startup/929_self_check_error_type_kind_closure.sql
+sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.down.sql
+sql/migrations/startup/930_self_check_error_type_kind_closure_model_unavailable.sql
+sql/migrations/startup/957_self_check_error_type_kind_closure_rate_limit_observed.down.sql
+sql/migrations/startup/957_self_check_error_type_kind_closure_rate_limit_observed.sql
+#
+# —— 正典对象（SSOT 文档形态）——
+sql/objects/tables/self_check_runs.sql
+#
+# —— 基线 SSOT（sql/schema/ 的正典）——
+sql/schema/01-schema.sql
