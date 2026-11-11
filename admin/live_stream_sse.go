@@ -141,6 +141,13 @@ type LiveStreamEnvelope struct {
 	// frames (主从关系建立/更新： title/summary/sensitive_check/compression).
 	// Optional — empty on every other envelope type.
 	ParentRequestID string `json:"parent_request_id,omitempty"`
+	
+	// RouteTrace (2026-11-11) carries the routing decision chain for a request.
+	// Type="route_trace" identifies this variant. Incremental updates are sent
+	// as routing progresses (selecting → attempting → responding → done/failed).
+	// Wire-safe: no sensitive data (credentials, internal IDs). Optional — nil
+	// on envelopes that don't carry routing trace data. Older clients ignore it.
+	RouteTrace *RouteTrace `json:"route_trace,omitempty"`
 }
 
 // LiveQueueSnapshot is the wire shape of a dispatch queue snapshot pushed
@@ -639,6 +646,10 @@ type LiveStreamSSEHub struct {
 	// avoid an import cycle. nil disables node pushes.
 	nodeStatusMu       sync.RWMutex
 	nodeStatusProvider func() []LiveNodeStatus
+	
+	// routeTraceStore (2026-11-11) tracks active route traces for dynamic
+	// routing visualization. Cleaned up periodically to bound memory usage.
+	routeTraceStore *RouteTraceStore
 
 	// OBS-BE2 (V3.3-OBS, 2026-08-15): request_lifecycle action consumption
 	// state. See live_stream_lifecycle.go — the hot-path emitter
@@ -799,6 +810,7 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		// Run 未调用时保持 nil, Stop 的 join 据此跳过。
 		actionTrigger: make(chan struct{}, 1),
 		recordQueue:   make(chan LiveRequest, recordQueueCapacity),
+		routeTraceStore: NewRouteTraceStore(), // 2026-11-11: dynamic routing visualization
 	}
 	// 查询缝默认指向真实 DB 实现; 构造完成后再挂, 避免构造期内自引用。
 	h.credentialLabelsQuery = h.queryCredentialLabels
@@ -875,6 +887,9 @@ func (h *LiveStreamSSEHub) Run() {
 	// end-to-end latency (poll interval + one tick of aggregation) inside
 	// the ≤500ms budget from 27号 §3.
 	actionTicker := time.NewTicker(h.cfg.ActionPollInterval)
+	// 2026-11-11: route trace cleanup ticker. Clean up stale route traces
+	// every 5 minutes to prevent unbounded memory growth.
+	routeTraceCleanupTicker := time.NewTicker(5 * time.Minute)
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
 	defer cacheCleanupTicker.Stop()
@@ -883,6 +898,7 @@ func (h *LiveStreamSSEHub) Run() {
 	defer queueTicker.Stop()
 	defer nodeTicker.Stop()
 	defer actionTicker.Stop()
+	defer routeTraceCleanupTicker.Stop()
 
 	// Emit initial health status immediately so freshly-connected
 	// clients do not have to wait 30s to learn about Redis state.
@@ -998,6 +1014,14 @@ func (h *LiveStreamSSEHub) Run() {
 			h.fanOutQueueSnapshot()
 		case <-nodeTicker.C:
 			h.fanOutNodeUpdate()
+		case <-routeTraceCleanupTicker.C:
+			// 2026-11-11: Clean up route traces older than 10 minutes.
+			// Route traces are short-lived (request duration + small buffer)
+			// and this prevents unbounded memory growth.
+			removed := h.routeTraceStore.Cleanup(10 * time.Minute)
+			if removed > 0 {
+				slog.Debug("route trace cleanup", "removed", removed, "remaining", h.routeTraceStore.Len())
+			}
 		}
 	}
 }
