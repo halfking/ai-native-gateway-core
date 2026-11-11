@@ -322,12 +322,21 @@ func bucketsCoverLookback(now time.Time, oldest, newest *time.Time, lookbackDays
 	return headOK && tailOK
 }
 
-// requestLogsSource 返回请求日志表名和别名
-func requestLogsSource(lookbackDays int) (table, alias string) {
-	if lookbackDays <= 7 {
-		return "_request_logs", "rl"
-	}
-	return "_request_logs_partitions", "rlp"
+// requestLogsSource 返回请求日志读源和别名。
+//
+// 2026-11-11（48h 审计）：旧的两个分支（`_request_logs` 短窗 /
+// `_request_logs_partitions` 长窗）读的都是 **v1 族基表**——迁移 890 把 v1
+// 族整体退役后，两张表在所有环境上都不存在（211 实测 to_regclass 双双为空）
+// ⇒ backfill 一旦执行必 42P01，且与 maas 包同名切换层当年的缺陷同形
+//（maas 已在 890 轮把两分支合并为恒走 canonical 视图）。本层是 Phase 1
+// 脚手架、尚无生产消费方 ⇒ 现在收敛，接线前不再留地雷。
+//
+// canonical 视图 request_logs_with_current_month 是会话族两臂体（由
+// ensureRequestLogsCurrentMonthView 在启动时安装），列面覆盖
+// tenant_id / ts / credits_charged / prompt / completion / cache_read /
+// cache_write，backfill 用到的列全在。
+func requestLogsSource(_ int) (table, alias string) {
+	return "request_logs_with_current_month", "rl"
 }
 
 // requestLogCreditsSQL 返回计算信用的 SQL 表达式

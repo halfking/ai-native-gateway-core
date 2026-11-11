@@ -523,6 +523,16 @@ var indirectSiteAssessments = map[string]siteAssessment{
 		Via:         ":262 countTurnsSessionSQL `FROM ` + db.SessionFamilyTurnsForSessionSQL()（S3 波 2 会话族化）。",
 		Consequence: "与 v1 无关。",
 	},
+	// 2026-11-11（48h 审计轮）：bucket 框架轮引入的读点，初版带 v1 双臂
+	// （≤7 天 → `_request_logs`、否则 `_request_logs_partitions`）⇒ 890 后两表
+	// 已删（211 实测 to_regclass 双空）⇒ backfill 必 42P01 且 v1 桶被顶回 1。
+	// 本轮合并为恒走 canonical 视图（maas 同名切换层 890 轮的合并先例）。
+	"internal/bucket/credit/provider.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via:     ":331 requestLogsSource 恒返回 request_logs_with_current_month（会话族两臂视图，启动 ensure 安装）；backfill 的 INSERT..SELECT 走它。",
+		Consequence: "与 v1 无关。历史：该读点在 85d1de3ca 引入时是 v1 基表读（退役后 42P01 地雷），" +
+			"2026-11-11 收敛到 canonical；Phase 1 脚手架暂无生产消费方，接线前无线上路径。",
+	},
 	"admin/compression_sessions.go": {
 		Verdict: verdictNonV1ByInspection,
 		Via: "countSQL + 主查询 + LATERAL 三段：SessionFamilyTurnsSourceSQL() ×3、" +
@@ -1626,7 +1636,20 @@ var documentedSnapshot = bucketSnapshot{
 	//   ＋ 把 CanonFiles 由 64 改成 65。
 	//   ⚠ 方向 = **canonical 桶变大** =「把看不见变成看得见」⇒ 按门规改数字即可；
 	//   ⚠ 无任何桶变小 ⇒ 不是「扫描范围被改小 / 解析失败被吞」。
-	TotalSites: 159,
+	// ★ 2026-11-11（48h 审计轮）：159 → 160（canonical 65 → 66 文件 / 133 → 134 处；
+	//   两个 v1 桶与 unresolved 14/26 逐字未动）。
+	//   成因：internal/bucket 框架轮（85d1de3ca 等）引入 internal/bucket/credit/
+	//   provider.go 的 backfill 读点，其 requestLogsSource 当时带 v1 双臂
+	//   （≤7 天 → `_request_logs`、否则 `_request_logs_partitions`）⇒ 890 之后
+	//   两张基表在所有环境都不存在（211 实测 to_regclass 双空）⇒ 该读点
+	//   （a）把 v1 桶从 0 顶回 1、（b）从未登记进 indirectSiteAssessments ⇒
+	//   两道门同时红。本轮把两分支合并为恒返回 canonical 视图
+	//   request_logs_with_current_month（maas 包同名切换层 890 轮的合并先例）
+	//   ⇒ 读点仍在（只是落在 canonical 桶），v1 桶重新归零。
+	//   ⚠ 方向 = 「读法变了（v1 → canonical）+ 新增读点被看见」；
+	//   ⚠ 无任何桶变小（v1 的 1→0 是**读点被改掉**，不是扫描变瞎——
+	//   provider.go 仍被报出，只是桶位移动）。
+	TotalSites: 160,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1644,8 +1667,8 @@ var documentedSnapshot = bucketSnapshot{
 	// 且豁免要过三道可证伪的腿：切换迁移存在 / 在启动链里 / 排在 v1 退役之前）。
 	V1ArmFiles: 0,
 	V1ArmSites: 0,
-	CanonFiles: 65,
-	CanonSites: 133,
+	CanonFiles: 66,
+	CanonSites: 134,
 	UnresFiles: 14,
 	UnresSites: 26,
 }
