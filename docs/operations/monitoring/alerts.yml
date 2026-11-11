@@ -1,0 +1,419 @@
+# 运营体系监控告警规则
+# Prometheus Alert Rules for Operations System
+
+groups:
+  # ============================================================================
+  # 1. 请求统计对账告警
+  # ============================================================================
+  - name: stats_reconciliation
+    interval: 60s
+    rules:
+      - alert: StatsResweepArmDelayed
+        expr: |
+          (time() - stats_minute_rollup_last_resweep_timestamp) > 300
+        for: 5m
+        labels:
+          severity: warning
+          component: stats_reconciliation
+        annotations:
+          summary: "统计重扫臂延迟超过5分钟"
+          description: "重扫臂上次执行时间: {{ $value }}秒前，超过阈值5分钟"
+          runbook_url: "https://wiki.internal/runbooks/stats-resweep-delayed"
+          
+      - alert: StatsReconciliationGapHigh
+        expr: |
+          abs(
+            (stats_minute_client_count - stats_minute_rollup_count) 
+            / stats_minute_client_count
+          ) > 0.02
+        for: 15m
+        labels:
+          severity: critical
+          component: stats_reconciliation
+        annotations:
+          summary: "统计对账差异超过2%"
+          description: "对账gap: {{ $value | humanizePercentage }}，连续15分钟超过阈值2%"
+          runbook_url: "https://wiki.internal/runbooks/stats-gap-recovery"
+          
+      - alert: StatsCostUSDAllZero
+        expr: |
+          (
+            sum(rate(request_stats_minute_cost_usd_zero_count[1h]))
+            / sum(rate(request_stats_minute_total_count[1h]))
+          ) > 0.10
+        for: 30m
+        labels:
+          severity: warning
+          component: stats_reconciliation
+        annotations:
+          summary: "成本链cost_usd全0行占比过高"
+          description: "过去1小时cost_usd=0的行占比: {{ $value | humanizePercentage }}，超过10%阈值"
+          runbook_url: "https://wiki.internal/runbooks/cost-usd-missing"
+
+      - alert: StatsPartitionSwitchAnomaly
+        expr: |
+          increase(stats_event_inbox_partition_errors_total[5m]) > 0
+        labels:
+          severity: critical
+          component: stats_reconciliation
+        annotations:
+          summary: "统计表分区切换异常"
+          description: "过去5分钟发生 {{ $value }} 次分区错误"
+          runbook_url: "https://wiki.internal/runbooks/partition-maintenance"
+
+  # ============================================================================
+  # 2. 市场行情同步告警
+  # ============================================================================
+  - name: market_price_sync
+    interval: 60s
+    rules:
+      - alert: MarketPriceSyncFailed
+        expr: |
+          (time() - market_price_sync_last_success_timestamp) > 86400
+        for: 1h
+        labels:
+          severity: critical
+          component: market_sync
+        annotations:
+          summary: "市场行情同步连续失败"
+          description: "上次成功同步: {{ $value | humanizeDuration }}前，超过24小时"
+          runbook_url: "https://wiki.internal/runbooks/market-sync-failure"
+          
+      - alert: MarketPriceSyncRejectedRowsHigh
+        expr: |
+          rate(market_price_reference_sync_rejected_rows[24h]) > 100
+        labels:
+          severity: warning
+          component: market_sync
+        annotations:
+          summary: "行情同步拒绝行数过多"
+          description: "过去24小时拒绝行数: {{ $value }}，超过100行阈值"
+          runbook_url: "https://wiki.internal/runbooks/market-sync-rejected"
+          
+      - alert: MarketPriceFXStale
+        expr: |
+          (time() - market_price_fx_rate_update_timestamp) > 172800
+        labels:
+          severity: warning
+          component: market_sync
+        annotations:
+          summary: "外汇汇率更新滞后"
+          description: "fx汇率上次更新: {{ $value | humanizeDuration }}前，超过48小时"
+          runbook_url: "https://wiki.internal/runbooks/fx-rate-stale"
+
+      - alert: MarketPriceSyncRedLineViolation
+        expr: |
+          market_price_sync_redline_violation_total > 0
+        labels:
+          severity: critical
+          component: market_sync
+        annotations:
+          summary: "⚠️ 行情同步红线违规：尝试写入路由/计费表"
+          description: "检测到 {{ $value }} 次红线违规尝试，契约测试失败"
+          runbook_url: "https://wiki.internal/runbooks/redline-violation"
+
+  # ============================================================================
+  # 3. 探测恢复系统告警
+  # ============================================================================
+  - name: probe_recovery
+    interval: 60s
+    rules:
+      - alert: CredentialStuckSuspended
+        expr: |
+          count(
+            credential_health_status{status="suspended"} 
+            and on(credential_id) 
+            (time() - credential_last_probe_attempt_timestamp) > 86400
+          ) > 0
+        for: 1h
+        labels:
+          severity: critical
+          component: probe_recovery
+        annotations:
+          summary: "凭据挂起超过24小时无恢复尝试"
+          description: "{{ $value }}个凭据挂起超24h，探测恢复链可能失效"
+          runbook_url: "https://wiki.internal/runbooks/probe-stuck-credential"
+          
+      - alert: ProbeFallbackLadderAllFailed
+        expr: |
+          (
+            sum(rate(credential_probe_fallback_all_failed_total[1h]))
+            / sum(rate(credential_probe_fallback_attempts_total[1h]))
+          ) > 0.20
+        for: 30m
+        labels:
+          severity: warning
+          component: probe_recovery
+        annotations:
+          summary: "探测回退梯全失败率过高"
+          description: "过去1小时回退梯全失败率: {{ $value | humanizePercentage }}，超过20%阈值"
+          runbook_url: "https://wiki.internal/runbooks/probe-fallback-tuning"
+          
+      - alert: ProbeWarnGateThrottlingHigh
+        expr: |
+          rate(balance_floor_guard_warn_gate_throttled_total[1h]) > 10
+        labels:
+          severity: warning
+          component: probe_recovery
+        annotations:
+          summary: "探测恢复节流触发频繁"
+          description: "过去1小时warnGate节流 {{ $value }}次，超过10次/小时阈值"
+          runbook_url: "https://wiki.internal/runbooks/probe-throttling"
+
+      - alert: BalanceFloorGuardRearmFailed
+        expr: |
+          rate(balance_floor_guard_rearm_errors_total[15m]) > 0
+        labels:
+          severity: critical
+          component: probe_recovery
+        annotations:
+          summary: "证据门控re-arm失败"
+          description: "过去15分钟发生 {{ $value }} 次re-arm失败"
+          runbook_url: "https://wiki.internal/runbooks/rearm-failure"
+
+  # ============================================================================
+  # 4. 营销活动告警
+  # ============================================================================
+  - name: marketing_campaigns
+    interval: 60s
+    rules:
+      - alert: CampaignBudgetNearExhaustion
+        expr: |
+          (
+            promotion_campaigns_granted_credits 
+            / promotion_campaigns_total_budget_credits
+          ) > 0.90
+        labels:
+          severity: warning
+          component: marketing
+          campaign_id: "{{ $labels.campaign_id }}"
+        annotations:
+          summary: "营销活动预算使用率超过90%"
+          description: "活动[{{ $labels.campaign_name }}]预算使用: {{ $value | humanizePercentage }}"
+          runbook_url: "https://wiki.internal/runbooks/campaign-budget"
+          
+      - alert: CampaignRedemptionFailureRateHigh
+        expr: |
+          (
+            sum(rate(promotion_redemption_failures_total[1h]))
+            / sum(rate(promotion_redemption_attempts_total[1h]))
+          ) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+          component: marketing
+        annotations:
+          summary: "营销活动兑现失败率超过5%"
+          description: "过去1小时兑现失败率: {{ $value | humanizePercentage }}"
+          runbook_url: "https://wiki.internal/runbooks/redemption-failures"
+          
+      - alert: DiscountCalculationAnomaly
+        expr: |
+          promotion_discount_calculation_errors_total > 0
+        labels:
+          severity: critical
+          component: marketing
+        annotations:
+          summary: "折扣计算异常"
+          description: "检测到 {{ $value }} 次折扣计算错误"
+          runbook_url: "https://wiki.internal/runbooks/discount-errors"
+
+      - alert: BonusCreditsGrantMismatch
+        expr: |
+          abs(
+            promotion_redemptions_credits_granted_sum
+            - credit_ledger_campaign_credits_sum
+          ) > 1000
+        labels:
+          severity: warning
+          component: marketing
+        annotations:
+          summary: "赠送积分对账不一致"
+          description: "redemptions表与ledger表差异: {{ $value }}积分"
+          runbook_url: "https://wiki.internal/runbooks/bonus-reconciliation"
+
+  # ============================================================================
+  # 5. 定价版本化告警
+  # ============================================================================
+  - name: model_pricing
+    interval: 60s
+    rules:
+      - alert: PriceSyncLagHigh
+        expr: |
+          (time() - model_price_versions_last_sync_timestamp) > 3600
+        labels:
+          severity: warning
+          component: pricing
+        annotations:
+          summary: "定价同步滞后"
+          description: "上次同步: {{ $value | humanizeDuration }}前，超过1小时"
+          runbook_url: "https://wiki.internal/runbooks/price-sync-lag"
+          
+      - alert: CurrentPriceViolation
+        expr: |
+          model_price_versions_current_period_violations > 0
+        labels:
+          severity: critical
+          component: pricing
+        annotations:
+          summary: "⚠️ 现行价唯一性违规"
+          description: "检测到 {{ $value }} 个(模型,模式)有多个现行价"
+          runbook_url: "https://wiki.internal/runbooks/current-price-violation"
+
+      - alert: PriceHistoryGapDetected
+        expr: |
+          model_price_versions_period_gaps_total > 0
+        labels:
+          severity: warning
+          component: pricing
+        annotations:
+          summary: "价格历史出现空洞"
+          description: "检测到 {{ $value }} 个模型价格期出现非连续空洞"
+          runbook_url: "https://wiki.internal/runbooks/price-history-gap"
+
+  # ============================================================================
+  # 6. 免费模型系统告警
+  # ============================================================================
+  - name: free_models
+    interval: 60s
+    rules:
+      - alert: OmnifreeeSeedFailure
+        expr: |
+          omnifree_seed_errors_total > 0
+        labels:
+          severity: warning
+          component: free_models
+        annotations:
+          summary: "免费模型种子初始化失败"
+          description: "检测到 {{ $value }} 次omnifree种子加载错误"
+          runbook_url: "https://wiki.internal/runbooks/omnifree-seed"
+          
+      - alert: FreeDiscoveryScanStuck
+        expr: |
+          (time() - freediscovery_last_scan_timestamp) > 7200
+        labels:
+          severity: warning
+          component: free_models
+        annotations:
+          summary: "免费模型扫描停滞"
+          description: "上次扫描: {{ $value | humanizeDuration }}前，超过2小时"
+          runbook_url: "https://wiki.internal/runbooks/freediscovery-stuck"
+
+      - alert: FreeLLMAPIUnreachable
+        expr: |
+          probe_success{target="freellmapi:3001"} == 0
+        for: 15m
+        labels:
+          severity: critical
+          component: free_models
+        annotations:
+          summary: "freellmapi服务不可达"
+          description: "freellmapi:3001连续15分钟探测失败"
+          runbook_url: "https://wiki.internal/runbooks/freellmapi-down"
+
+  # ============================================================================
+  # 7. 系统级告警（跨组件）
+  # ============================================================================
+  - name: system_health
+    interval: 60s
+    rules:
+      - alert: OperationsSystemDatabaseConnectionPool
+        expr: |
+          (
+            db_connections_active{subsystem=~"stats|market|pricing"}
+            / db_connections_max
+          ) > 0.80
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "运营子系统数据库连接池使用率高"
+          description: "{{ $labels.subsystem }}连接池使用率: {{ $value | humanizePercentage }}"
+          
+      - alert: CronJobMissedExecution
+        expr: |
+          (time() - cron_job_last_execution_timestamp{job=~"market-sync|stats-reconcile"}) 
+          > (cron_job_expected_interval_seconds * 1.5)
+        labels:
+          severity: critical
+          component: cron
+        annotations:
+          summary: "Cron任务错过执行"
+          description: "{{ $labels.job }}上次执行: {{ $value | humanizeDuration }}前"
+          runbook_url: "https://wiki.internal/runbooks/cron-missed"
+
+      - alert: OperationsSystemHighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{path=~"/api/admin/maas/.*",status=~"5.."}[5m]))
+            / sum(rate(http_requests_total{path=~"/api/admin/maas/.*"}[5m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "运营API错误率超过5%"
+          description: "过去10分钟maas API错误率: {{ $value | humanizePercentage }}"
+
+# ============================================================================
+# 告警路由配置建议（需在Alertmanager中配置）
+# ============================================================================
+# route:
+#   routes:
+#     - match:
+#         severity: critical
+#       receiver: pagerduty-critical
+#       continue: true
+#     - match:
+#         component: stats_reconciliation
+#       receiver: team-data-platform
+#     - match:
+#         component: market_sync
+#       receiver: team-pricing
+#     - match:
+#         component: probe_recovery
+#       receiver: team-infrastructure
+#     - match:
+#         component: marketing
+#       receiver: team-operations
+
+# ============================================================================
+# 指标收集要求
+# ============================================================================
+# 以下指标需要在应用代码中暴露（Prometheus格式）：
+#
+# 1. 统计对账：
+#   - stats_minute_rollup_last_resweep_timestamp
+#   - stats_minute_client_count / stats_minute_rollup_count
+#   - request_stats_minute_cost_usd_zero_count / request_stats_minute_total_count
+#   - stats_event_inbox_partition_errors_total
+#
+# 2. 行情同步：
+#   - market_price_sync_last_success_timestamp
+#   - market_price_reference_sync_rejected_rows
+#   - market_price_fx_rate_update_timestamp
+#   - market_price_sync_redline_violation_total
+#
+# 3. 探测恢复：
+#   - credential_health_status / credential_last_probe_attempt_timestamp
+#   - credential_probe_fallback_all_failed_total / credential_probe_fallback_attempts_total
+#   - balance_floor_guard_warn_gate_throttled_total
+#   - balance_floor_guard_rearm_errors_total
+#
+# 4. 营销活动：
+#   - promotion_campaigns_granted_credits / promotion_campaigns_total_budget_credits
+#   - promotion_redemption_failures_total / promotion_redemption_attempts_total
+#   - promotion_discount_calculation_errors_total
+#   - promotion_redemptions_credits_granted_sum / credit_ledger_campaign_credits_sum
+#
+# 5. 定价版本化：
+#   - model_price_versions_last_sync_timestamp
+#   - model_price_versions_current_period_violations
+#   - model_price_versions_period_gaps_total
+#
+# 6. 免费模型：
+#   - omnifree_seed_errors_total
+#   - freediscovery_last_scan_timestamp
+#   - probe_success{target="freellmapi:3001"}

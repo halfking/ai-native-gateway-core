@@ -1,0 +1,312 @@
+{
+  "dashboard": {
+    "title": "运营体系 - 市场行情同步",
+    "tags": ["operations", "market", "pricing"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "1m",
+    "panels": [
+      {
+        "id": 1,
+        "title": "同步状态概览",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "(time() - market_price_sync_last_success_timestamp) / 3600",
+            "legendFormat": "上次成功同步(小时前)",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "h",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 12, "color": "yellow"},
+                {"value": 24, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 2,
+        "title": "同步成功率 (7天)",
+        "type": "gauge",
+        "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(increase(market_price_sync_success_total[7d])) / sum(increase(market_price_sync_attempts_total[7d])) * 100",
+            "legendFormat": "成功率",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 90, "color": "yellow"},
+                {"value": 95, "color": "green"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        }
+      },
+      {
+        "id": 3,
+        "title": "红线违规检测",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "market_price_sync_redline_violation_total",
+            "legendFormat": "违规次数",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 1, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "colorMode": "background",
+          "textMode": "value_and_name",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 4,
+        "title": "拒绝行数 (24h)",
+        "type": "stat",
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "targets": [
+          {
+            "expr": "sum(increase(market_price_reference_sync_rejected_rows[24h]))",
+            "legendFormat": "拒绝行",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 50, "color": "yellow"},
+                {"value": 100, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "colorMode": "background",
+          "reduceOptions": {"calcs": ["lastNotNull"]}
+        }
+      },
+      {
+        "id": 5,
+        "title": "同步数据量趋势",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "market_price_sync_rows_inserted",
+            "legendFormat": "插入行数",
+            "refId": "A"
+          },
+          {
+            "expr": "market_price_sync_rows_updated",
+            "legendFormat": "更新行数",
+            "refId": "B"
+          },
+          {
+            "expr": "market_price_sync_rows_rejected",
+            "legendFormat": "拒绝行数",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          }
+        },
+        "options": {
+          "legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "lastNotNull", "sum"]},
+          "tooltip": {"mode": "multi"}
+        }
+      },
+      {
+        "id": 6,
+        "title": "外汇汇率更新",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "market_price_fx_rate{from=\"USD\", to=\"CNY\"}",
+            "legendFormat": "USD→CNY汇率",
+            "refId": "A"
+          },
+          {
+            "expr": "(time() - market_price_fx_rate_update_timestamp) / 3600",
+            "legendFormat": "汇率更新滞后(小时)",
+            "refId": "B",
+            "yAxisIndex": 1
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short"
+          },
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "汇率更新滞后(小时)"},
+              "properties": [
+                {"id": "unit", "value": "h"},
+                {"id": "custom.axisPlacement", "value": "right"}
+              ]
+            }
+          ]
+        },
+        "options": {
+          "legend": {"displayMode": "list", "placement": "bottom"}
+        }
+      },
+      {
+        "id": 7,
+        "title": "价格覆盖率",
+        "type": "piechart",
+        "gridPos": {"x": 0, "y": 12, "w": 8, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(market_price_reference_has_vendor_price)",
+            "legendFormat": "有原厂价",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(market_price_reference_has_market_price)",
+            "legendFormat": "有市场价",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(market_price_reference_no_price)",
+            "legendFormat": "无价格",
+            "refId": "C"
+          }
+        ],
+        "options": {
+          "legend": {"displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "percent"]},
+          "pieType": "donut"
+        }
+      },
+      {
+        "id": 8,
+        "title": "拒绝原因分布",
+        "type": "table",
+        "gridPos": {"x": 8, "y": 12, "w": 16, "h": 8},
+        "targets": [
+          {
+            "expr": "topk(10, sum by(rejection_reason) (increase(market_price_sync_rejected_by_reason[24h])))",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "renameByName": {
+                "rejection_reason": "拒绝原因",
+                "Value": "24h拒绝次数"
+              }
+            }
+          }
+        ],
+        "options": {
+          "sortBy": [{"displayName": "24h拒绝次数", "desc": true}]
+        }
+      },
+      {
+        "id": 9,
+        "title": "同步执行时长",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 20, "w": 24, "h": 8},
+        "targets": [
+          {
+            "expr": "market_price_sync_duration_seconds{quantile=\"0.50\"}",
+            "legendFormat": "P50",
+            "refId": "A"
+          },
+          {
+            "expr": "market_price_sync_duration_seconds{quantile=\"0.95\"}",
+            "legendFormat": "P95",
+            "refId": "B"
+          },
+          {
+            "expr": "market_price_sync_duration_seconds{quantile=\"0.99\"}",
+            "legendFormat": "P99",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s"
+          }
+        },
+        "options": {
+          "legend": {"displayMode": "list", "placement": "bottom"},
+          "tooltip": {"mode": "multi"}
+        }
+      }
+    ],
+    "annotations": {
+      "list": [
+        {
+          "name": "同步执行时刻",
+          "datasource": "Prometheus",
+          "expr": "changes(market_price_sync_last_success_timestamp[1m]) > 0",
+          "iconColor": "green",
+          "textFormat": "同步完成"
+        },
+        {
+          "name": "同步失败",
+          "datasource": "Prometheus",
+          "expr": "changes(market_price_sync_failures_total[1m]) > 0",
+          "iconColor": "red",
+          "textFormat": "同步失败"
+        }
+      ]
+    },
+    "time": {
+      "from": "now-7d",
+      "to": "now"
+    }
+  }
+}

@@ -286,7 +286,11 @@ func (s *PostgresStore) RecordEvents(ctx context.Context, events []Event, limit 
 	if _, err = tx.ExecContext(ctx, sb.String(), args...); err != nil {
 		return storeError("event write", err)
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,id DESC OFFSET $1)`, retentionLimit(limit)); err != nil {
+	// 2026-11-11（48h 审计 P1）：LastSeen 同刻并列时的平局裁决补 count DESC——
+	// 与 MemoryStore（memory.go 2026-11-10 修复）对齐：纯创建序（id DESC）会把
+	// 本批刚被重复聚合、count 最高的条目（恰是最活跃的指纹）当"最老"删掉。
+	// LastSeen 不同刻时行为与原先逐字节一致。两臂（批量/单条）同款。
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,sanitize_rule_events.count DESC,id DESC OFFSET $1)`, retentionLimit(limit)); err != nil {
 		return storeError("event retention", err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -313,7 +317,11 @@ func (s *PostgresStore) RecordEvent(ctx context.Context, event Event, limit int)
 	if err != nil {
 		return storeError("event write", err)
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,id DESC OFFSET $1)`, retentionLimit(limit)); err != nil {
+	// 2026-11-11（48h 审计 P1）：LastSeen 同刻并列时的平局裁决补 count DESC——
+	// 与 MemoryStore（memory.go 2026-11-10 修复）对齐：纯创建序（id DESC）会把
+	// 本批刚被重复聚合、count 最高的条目（恰是最活跃的指纹）当"最老"删掉。
+	// LastSeen 不同刻时行为与原先逐字节一致。两臂（批量/单条）同款。
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,sanitize_rule_events.count DESC,id DESC OFFSET $1)`, retentionLimit(limit)); err != nil {
 		return storeError("event retention", err)
 	}
 	if err = tx.Commit(); err != nil {

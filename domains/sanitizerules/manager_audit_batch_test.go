@@ -262,7 +262,7 @@ func TestPostgresRecordEventsBatchSQLContract(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 2)).
 		WithArgs(sqlmock.AnyArg(), "tenant-1", "rule-1", int64(1), "output", "mask", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(5),
 			sqlmock.AnyArg(), "tenant-1", "rule-2", int64(1), "input", "block", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(1))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,id DESC OFFSET $1)")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM sanitize_rule_events WHERE id IN (SELECT id FROM sanitize_rule_events ORDER BY last_seen DESC,sanitize_rule_events.count DESC,id DESC OFFSET $1)")).
 		WithArgs(10000).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()

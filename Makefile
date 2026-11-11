@@ -503,9 +503,6 @@ guards-gate-scripts: ## 门脚本接线门（快门 + 登记册门，防新增�
 	@bash tests/rate_limit_body_attribution_contract_test.sh
 	@bash tests/cross_doc_registry_collision_test.sh
 	@bash tests/market_price_sync_contract_test.sh
-	@bash tests/cross_doc_registry_collision_test.sh
-	@bash tests/anthropic_reasoning_trace_contract_test.sh
-	@bash tests/rate_limit_body_attribution_contract_test.sh
 	@bash tests/migration_delivery_boundary_convergence_test.sh
 	@bash tests/scan_secrets_reading_set_parity_test.sh
 	@if command -v python3 >/dev/null 2>&1; then \
