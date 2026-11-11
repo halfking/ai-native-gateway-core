@@ -1,6 +1,6 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
-> **2026-11-11 48h 修正任务审计与完善轮 · 第三轮（goal 会话，主档 `docs/audit/2026-11-11-48h审计第三轮-主档.md`，部署回填待 Phase 7）**：
+> **2026-11-11 48h 修正任务审计与完善轮 · 第三轮（goal 会话，主档 `docs/audit/2026-11-11-48h审计第三轮-主档.md`，推送 `fa1bf1027`+`de1337757`（codeup；github 镜像分叉=并行会话半程同步移交）+ 三台部署 de133775 全验证：211=3013 槽b（公网 200/admin 200/9527·Veritrans=陈旧短语再证）/245=2964@8781（admin 登录 200+凭据解密 17/0）/154=2965@8782（同））**：
 > ★ 范围＝第二轮收官（`88a4c84ba` 版本戳）之后**新落的 6 笔提交**（`06206f631..999aedb15`，21:08–21:46 +0800，并行会话 huangzhouzixuan：IR 工具调用规范视图 D1–D5 + 附件域 + 每日回归机制）逐条批判审计 + 三台取证 + 三台部署。
 > ★★★★ **审计定案**：★ `06206f631`＝**实质修复非 no-op**（按 b12fd1ef7 教训做 no-op 排查：4 序列化器+sanitizer+展开器真实行为变化；parse_anthropic 双写/serialize 双读声称逐行核实为真；46 条全矩阵往返测试真实存在）——**但「同源」声称未兑现**：`representedToolCallIndexes` 与 `serialize_anthropic.go` 内联 `represented` 规则双主（该提交自陈的 SRP 纲领只兑现一半）⇒ 本轮收口。★ `f139d9d39`+`24a1241e4`＝自愈型序列（Makefile 接线早于 harness 认识 `--group` 6.5 分钟，后者自曝并补三道 fail-closed）；`53608c0a4` 附件域＝真缺陷修复（ReplaceAll 全 body 替换 ⇒ 文本污染+载荷外泄，改字段精确替换）+ 五项披露诚实。
 > ★★★★ **修复（行为保持 ×3 + 门维护 ×1）**：① serialize_anthropic 接入 `representedToolCallIndexes` 规则收敛单源（删内联）；② `canonicalToolCalls` O(T²) 重算提升循环外；③ serialize_responses 每消息只算一次规范视图；④ TC02/TC04 臂锚点跟随重构更新。**★ 门联动实证（§680 的镜像面）**：重构后重跑 TC 组 ⇒ TC02/TC04 锚点落 0 次 ⇒ fail-closed 正确红且定位到文件 ⇒ 证明「重构生产代码必须同步重跑对应变异组并更新锚点，不能只跑单测」；更新后 10/10 恢复全绿。
