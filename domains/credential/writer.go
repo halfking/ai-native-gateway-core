@@ -810,6 +810,12 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 		// 提供 Retry-After 时优先用其值（coolingDuration 首行已处理）。
 		// 参考：OpenAI 的 rate_limit_exceeded 常见 Retry-After 为 1-60s；
 		// 部分中转的 quota 窗口为 1-5 分钟；3 分钟覆盖大部分场景。
+		// ★ 2026-11-11（冷却/令牌池审计档 §5.3-1）：本固定档与 ratebackoff
+		//   的 W1 节奏校准是**双轨**，不是漂移——本函数的触发源是 nodehealth
+		//   的整卡降级决策（executor_nodehealth.go → SetCredentialUnavailable，
+		//   一次决策关整张凭据，固定档即可）；单次 429 的绑定级冷却走
+		//   WriteOnError → rateLimitedCoolingDuration → ObserveWithPace
+		//   （窗口校准 + 升级梯）。改这一档前先确认动的是哪条轨。
 		return 3 * time.Minute
 	case errorsx.KindNoAvailableChannel:
 		// 2026-08-09: distributor group has no channel for this model. 15

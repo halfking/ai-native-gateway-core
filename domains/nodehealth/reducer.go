@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Phase distinguishes independently observable outcomes within one attempt.
@@ -159,7 +160,23 @@ const DefaultSeenTTL = 15 * time.Minute
 // semantics keep short aggregates blips (a one-off relay hiccup) from removing
 // usable capacity. The executor wires the settings-backed value over this
 // default; the constant pins the ladder for tests and zero-value configs.
-const DefaultEmptyResponseStreakThreshold = 5
+//
+// ★ 2026-11-11 审计 B-7：★ 本常量此前与 settings 包里的同名常量**各写一份**
+// ★（★ 两处都是 5 ⇒ 数值一致 ⇒ 漂移不会立刻暴露 ⇒ 但它们已经是两个真相源）
+// ★ ★⇒ ★★ 现在**只保留 settings 那一份**，本常量改为**引用**它
+// ★★ ⇒ ★★ 阈值区间的**下限/上限/默认值**三者在仓内**只有一处**定义。
+const DefaultEmptyResponseStreakThreshold = settings.DefaultEmptyResponseStreakThreshold
+
+// EmptyResponseStreakWindow 是「连续空响应」的**时间窗**。
+//
+// ★ 2026-11-11 审计 F-B1：★ emptyStreak 被实现成**纯计数**（★ 没有任何时间维度）
+// ★ ★⇒ ★★ 「连续」的语义被时间**抹平**：★ 3 个月前 4 次 + 今天 1 次 = 5
+// ★ ★⇒ ★★ ⇒ 触发绑定降级（★ 而今天这条绑定可能完全健康）
+// ★ ★⇒ ★★ 而仓内**自己的规格文本**写的就是「**48 起/6h**」
+// ★ ★（★ settings/spec_thresholds.go 的 KeyEmptyResponseStreakThreshold 描述）
+// ★ ★⇒ ★★ 即「窗口内的连续」⇒ ★★ **实现与自述不符**。
+// ⇒ ★★ 修法：★ 记 `lastEmptyAt`；★ 间隔超过本窗口 ⇒ ★ streak 归零后再计数。
+const EmptyResponseStreakWindow = 6 * time.Hour
 
 // OutcomeReducer is safe for concurrent Reduce calls.
 type OutcomeReducer struct {
@@ -181,6 +198,9 @@ type nodeState struct {
 	status              requestjourney.NodeHealthStatus
 	consecutiveFailures int
 	emptyStreak         int
+	// lastEmptyAt 是**最近一次**空响应的时间（★ 零值 = 本窗口内还没有过空响应）。
+	// ★ 用途：★ 让「连续」带上时间维度（★ 见 EmptyResponseStreakWindow）。
+	lastEmptyAt time.Time
 }
 
 type eventKey struct {
@@ -249,6 +269,13 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		return Decision{}, errors.New("nodehealth: nil reducer")
 	}
 
+	// ★ 2026-11-11 审计 F-B2：★ 阈值读取**可能触发 DB 读**（★ settings 的 uncached 族
+	// ★ ★⇒ ★★ 每次一条 `SELECT value::text FROM settings_kv`、★ 5s 超时）
+	// ★ ★⇒ ★★ 绝不能在**进程级全局锁**（★ r.mu）内做 ⇒ ★★ 否则 DB 抖动时，
+	// ★ ★⇒ ★★ 每一次 Reduce 都会把**全网关**的 nodehealth 归约**串行化**阻塞。
+	// ⇒ ★★ 修法：★ **锁外**取快照（★ 锁内只做纯计算）★ ★ 配合注入端的缓存版读取器。
+	threshold := r.emptyStreakThresholdSnapshot()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -290,6 +317,7 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		// Any success on the node — request or probe — is direct evidence the
 		// upstream produces content again, so an empty-response streak ends.
 		state.emptyStreak = 0
+		state.lastEmptyAt = time.Time{}
 		if observation.Phase == PhaseDirectProbe {
 			state.status = requestjourney.NodeHealthRecovering
 			break
@@ -306,13 +334,20 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 			// is not an outage), so consecutiveFailures stays untouched. The
 			// per-node streak feeds the binding-scoped escalation below; any
 			// other outcome kind breaks the "consecutive" property.
+			// ★ 2026-11-11 审计 F-B1：★ 「连续」必须带**时间维度**
+			// ★ ★⇒ ★★ 间隔超过窗口 ⇒ ★★ 之前的计数**不再连续** ⇒ ★★ 归零后重新计数。
+			if !state.lastEmptyAt.IsZero() && now.Sub(state.lastEmptyAt) > EmptyResponseStreakWindow {
+				state.emptyStreak = 0
+			}
 			state.emptyStreak++
+			state.lastEmptyAt = now
 			break
 		}
 		if observation.ErrorKind == ErrorKindRequest {
 			break
 		}
 		state.emptyStreak = 0
+		state.lastEmptyAt = time.Time{}
 		state.consecutiveFailures++
 		if isPermanent(observation.ErrorKind) {
 			state.status = requestjourney.NodeHealthQuarantined
@@ -339,7 +374,7 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 	decision.Status = state.status
 	decision.ConsecutiveFailures = state.consecutiveFailures
 	decision.EmptyResponseStreak = state.emptyStreak
-	decision.Effects = r.effectsFor(observation, decision)
+	decision.Effects = r.effectsFor(observation, decision, threshold)
 	r.rememberLocked(key, decision, now)
 	return decision, nil
 }
@@ -362,17 +397,29 @@ func (r *OutcomeReducer) defaultsLocked() {
 	if r.now == nil {
 		r.now = time.Now
 	}
-	if r.emptyStreakThreshold == nil {
-		threshold := DefaultEmptyResponseStreakThreshold
-		r.emptyStreakThreshold = func() int { return threshold }
-	}
+	// ★ emptyStreakThreshold **刻意不在这里修复**：★ 它必须**只由构造器写一次**
+	// ★ ★（★ Reduce 在锁外无锁读它 ⇒ ★ 若这里也写 ⇒ ★★ 无锁读与锁内写构成数据竞争）
+	// ★ ★⇒ ★★ nil 的情形由 emptyStreakThresholdSnapshot() 自己兜住（★ 取默认阈值）。
 }
 
-// emptyStreakThresholdOr returns the configured escalation count, defended
-// against non-positive injectables.
-func (r *OutcomeReducer) emptyStreakThresholdOr() int {
-	if n := r.emptyStreakThreshold(); n > 0 {
-		return n
+// emptyStreakThresholdSnapshot 返回配置的空响应升级阈值（★ **锁外**调用）。
+//
+// ★ ★ 它**可能触发 DB 读**（★ 注入的是 settings 读取器）⇒ ★★ **必须在 r.mu 之外调用**。
+// ★ ★ r.emptyStreakThreshold **只由构造器写一次**（★ defaultsLocked 刻意不碰它）
+// ★ ★⇒ ★★ 这里无锁读它是安全的（★ happens-before 由 goroutine 启动保证）。
+func (r *OutcomeReducer) emptyStreakThresholdSnapshot() int {
+	if fn := r.emptyStreakThreshold; fn != nil {
+		// ★ 2026-11-11 审计 B-7：★ 守卫此前是 `n > 0` ⇒ ★ **1 会被接受**
+		// ★ ⇒ ★★ 与 admin UI 契约（Min=2）与运行时 clamp（≥2）**不一致**
+		// ★ ★⇒ ★★ 同一个「下限」散在三处、各写各的。
+		// ★★ 现在下限**只有一处定义**（settings.MinEmptyResponseStreakThreshold）。
+		//
+		// ★ 行为影响：**零**。★ settings 侧已把读到的值 clamp 到 ≥2
+		// ★ ⇒ ★ 生产注入值恒 ≥2 ⇒ ★ 本守卫的判定结果与改前**逐字相同**。
+		// ★ 它只是把「下限」的口径**收敛到一处**（★ 防的是未来有人绕过 clamp）。
+		if n := fn(); n >= settings.MinEmptyResponseStreakThreshold {
+			return n
+		}
 	}
 	return DefaultEmptyResponseStreakThreshold
 }
@@ -468,7 +515,7 @@ func (r *OutcomeReducer) directProbeSucceeded(observation Observation) bool {
 	return ok && direct.Outcome == requestjourney.OutcomeSuccess
 }
 
-func (r *OutcomeReducer) effectsFor(observation Observation, decision Decision) []Effect {
+func (r *OutcomeReducer) effectsFor(observation Observation, decision Decision, emptyStreakThreshold int) []Effect {
 	if observation.Outcome == requestjourney.OutcomeCanceled || observation.ErrorKind == ErrorKindRequest {
 		return nil
 	}
@@ -483,7 +530,7 @@ func (r *OutcomeReducer) effectsFor(observation Observation, decision Decision) 
 		// Scope stays binding-level by construction: no circuit failure, no
 		// credential-wide unavailability — sibling models on the same
 		// credential are unaffected, mirroring ErrorKindModelUnavailable.
-		if decision.EmptyResponseStreak >= r.emptyStreakThresholdOr() {
+		if decision.EmptyResponseStreak >= emptyStreakThreshold {
 			return []Effect{
 				{Kind: EffectUpdateURSM},
 				{Kind: EffectSetBindingUnavailable},

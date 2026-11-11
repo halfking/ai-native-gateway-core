@@ -1,0 +1,37 @@
+# ★ 真捕获夹具（★ 2026-11-11 03:2x–03:3x +08，★ 211 生产容器 + 生产库 acc-pg17/llm_gateway）
+# ★ **观测窗口的三次跨构建事件 + 第三次事件的三条证据腿**（★ 事实登记，★ 不是手写结论）
+#
+# ★★ **用途（★ 本轮新发现 ⇒ 见 LESSONS §679）**：★ 这份登记表是判定器自测 ㉵ 的**期望值**
+# ★★ ⇒ ★★ 「判据字面量」与「被守卫内容」**必须不同源** ⇒ ★★ 否则「只改事实」的同源变异
+# ★★   会**把判据一起改掉** ⇒ ★★ 守卫被致盲 ⇒ ★★ 「变异打不中」会被误读成「守卫没牙」
+# ★★ ⇒ ★★ 真因是「守卫自己被同源变异改瞎了」⇒ ★★ 本夹具就是那道隔离层
+#
+# ★ 来源命令（★ 复采时必须逐字比对本文件 ⇒ 若不一致 ⇒ 观测层事实变了 ⇒ 需重新评估并**显式**更新本文件）：
+#   ssh 211 'docker ps -a --filter name=llm-gateway-211 --format "{{.Names}}|{{.Status}}|{{.Image}}"'
+#   ssh 211 'docker inspect <容器> --format "{{.State.StartedAt}}|{{.Config.Image}}"'
+#   ssh 211 'docker image inspect llm-gateway-211 --format "{{.Id}}|{{index .RepoTags 0}}"'
+#
+# ★ 格式：key|value（★ 每行一条；★ 值为空表示该事实此刻不成立）
+#
+# ── 三次跨构建事件（★ 事件链）──
+event1_ts|19:01:04
+event1_build|8028459d
+event2_ts|01:07:37
+event2_build|199c20a00
+event3_ts|02:06:59
+event3_build|7b926bfb
+event3_exit|Exited (137)
+# ── 第三次事件的三条证据腿 ──
+code_leg|逐字节未变
+code_leg_caller|responses_bridge.go
+data_leg|相位对齐
+data_leg_w1_total|89
+data_leg_w3_total|66
+form_leg_model|claude/sonnet-5
+form_leg_err|http_404
+# ── 必须披露的一处瑕疵（★ 部署瞬间 1 分钟停探）──
+gap_minute|02:07
+gap_pct|0.07%
+# ── 两条新增纪律 ──
+discipline_cause|不能读成「部署引起 X」
+discipline_winlen|窗口长度

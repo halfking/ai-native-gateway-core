@@ -68,6 +68,26 @@ const (
 	// ——「短促突发仍只走 URSM 软信号」（既有语义，3 次以内不罚）与
 	// 「持续性空响应必须有持久降级器」的分界线取 5。
 	DefaultEmptyResponseStreakThreshold = 5
+
+	// MinEmptyResponseStreakThreshold / MaxEmptyResponseStreakThreshold 是
+	// 空响应连击阈值的**唯一**下限/上限口径（★ 2026-11-11 审计 B-7）。
+	//
+	// ★ 此前这个区间散在**三处**且彼此不一致：
+	//
+	//	① admin UI 契约（spec 的 Min: 2 / Max: 50）
+	//	② 运行时防御性 clamp（clampThresholdInt(..., 2, 50)）—— 两处
+	//	③ reducer 的注入值有效性守卫（domains/nodehealth 的 `n > 0` ⇒ 1 会被接受）
+	//
+	// ★★ 三处各写各的字面量 ⇒ ★★ 改一处忘另一处 ⇒ ★★ 迟早漂移
+	// ★★（★ 这正是本仓反复出现的「同一口径散在多处」形态）。
+	// ⇒ ★★ 现在**只有这一处**定义；②③ 一律引用它。
+	//
+	// ★ 为什么下限是 2 而不是 1：★ 阈值 **1** 等于「一次空响应即降级」，
+	// ★ 与既有语义「短促突发（3 次以内）只走 URSM 软信号」冲突
+	// ★ ⇒ admin 契约与运行时 clamp 一律把它夹到 2。
+	MinEmptyResponseStreakThreshold = 2
+	MaxEmptyResponseStreakThreshold = 50
+
 	// DefaultEmptyResponseCooldownSeconds 空响应连击首次冷却（10min 档）：
 	// 覆盖上游思考预算失控/中继半故障的常见恢复尺度；冷却期内连击再触发
 	// 升级为 3×（30min）。远小于 MNF 档（30min/7d）——空响应是质量问题而非
@@ -237,8 +257,8 @@ func ThresholdSpecs() []*Spec {
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
 			Category:        CategoryCircuitBreaker,
-			Min:             floatPtr(2),
-			Max:             floatPtr(50),
+			Min:             floatPtr(MinEmptyResponseStreakThreshold),
+			Max:             floatPtr(MaxEmptyResponseStreakThreshold),
 			Default:         DefaultEmptyResponseStreakThreshold,
 			Description:     "空响应连击降级阈值（次）",
 			DescriptionLong: "同一 (凭据,模型) 绑定连续 N 次 empty_response（上游 200 但零内容，如 NIM 中继空流/思考型模型烧光预算）时写绑定级冷却（auto_empty_response_streak），从候选池摘除一段时间。阈值以下仍只记 URSM 软信号，不影响绑定可用性。2026-11-11 节点状态链断链①：此前空响应在断路器/绑定/探针三处均无痕迹，48 起/6h 全失败仅剩窗口分软信号。",
@@ -361,7 +381,19 @@ func ModelDeprecatedCooldownSeconds() int {
 // EmptyResponseStreakThreshold returns the consecutive empty-response count
 // that escalates a binding-scoped cooldown (node-state chain gap #1, 2026-11-11).
 func EmptyResponseStreakThreshold() int {
-	return clampThresholdInt(GetPlatformInt(KeyEmptyResponseStreakThreshold, DefaultEmptyResponseStreakThreshold), 2, 50)
+	return clampThresholdInt(GetPlatformInt(KeyEmptyResponseStreakThreshold, DefaultEmptyResponseStreakThreshold), MinEmptyResponseStreakThreshold, MaxEmptyResponseStreakThreshold)
+}
+
+// EmptyResponseStreakThresholdCached 是 EmptyResponseStreakThreshold 的**缓存**版。
+//
+// ★ 2026-11-11 审计 F-B2：★ 该阈值在 nodehealth 归约路径上**逐次**读取
+// ★ ★⇒ ★★ uncached 族每次都打一次 DB（★ settings_kv 一条 SELECT、★ 5s 超时）
+// ★ ★⇒ ★★ 而 uncached 版曾被放在**进程级全局锁**内调用（★ 详见 reducer.go 的修复说明）
+// ★ ★⇒ ★★ DB 抖动 ⇒ ★★ 全网关的 nodehealth 归约串行化阻塞。
+// ⇒ ★★ 修法：★ 走 **CachedPlatformInt**（★ 5s TTL）★ ★ 热更语义只损失 ≤5s
+// ★ ★（★ ★ 该缓存族自己的注释就写着「短 TTL 保留运维热更语义」★ ★ ⇒ ★★ 属既有口径）。
+func EmptyResponseStreakThresholdCached() int {
+	return clampThresholdInt(CachedPlatformInt(KeyEmptyResponseStreakThreshold, DefaultEmptyResponseStreakThreshold), MinEmptyResponseStreakThreshold, MaxEmptyResponseStreakThreshold)
 }
 
 // EmptyResponseCooldownSeconds returns the initial binding cooldown for an

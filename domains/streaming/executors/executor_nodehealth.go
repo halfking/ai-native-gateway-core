@@ -33,7 +33,7 @@ func (e *Executor) nodeOutcomeAuthority() (*nodehealth.OutcomeReducer, nodehealt
 		// （nodehealth.empty_response_streak_threshold，默认 5）。reducer
 		// 保持零依赖纯函数形态，阈值经注入读取。
 		e.NodeOutcomeReducer = nodehealth.NewOutcomeReducerWithConfig(nodehealth.ReducerConfig{
-			EmptyResponseStreakThreshold: settings.EmptyResponseStreakThreshold,
+			EmptyResponseStreakThreshold: settings.EmptyResponseStreakThresholdCached,
 		})
 	}
 	adapter := e.NodeHealthAdapter

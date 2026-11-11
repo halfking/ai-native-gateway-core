@@ -125,9 +125,17 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
  runs AS (
    SELECT n.credential_id, n.raw_model_name, count(*) cnt
    FROM node_probe_runs n
-   -- ★★ 锚定（★ 本轮第 7 处口径修正）：pre 段固定为「切点前 24h」，post 段为「切点→now」
-   --   ⇒ 否则这两个 era 对比块的 pre 侧只在关窗后 24h 内存在（Stage 2 时整段消失）
+   -- ★★★ 第 27 处口径修正（★ 2026-11-11 02:5x）：★ **事件窗口必须有闭合上界**
+   --   ★★ 形态：★ 本块**只有下界**（★ `created_at > CUT - 24h`）⇒ ★★ 窗口 = **[CUT-24h, ∞)**
+   --   ★★ ⇒ ★★ as-of 替换**只改得动下界** ⇒ ★★ 负控/预演里窗口长度 = 真实漂移量（★ 不是 stage 窗口）
+   --   ★★ ⇒ ★★ 且**原注释宣称「post 段为切点→now」但 SQL 里根本没有那个上界** ⇒ ★★ 注释与实现不符
+   --   ★★   （★ 真相：★ 本块的键**没有 era 维度**（★ `M3_feat_<f>_ns_<ns>`）⇒ ★★ 它是**连续窗口**
+   --   ★★     不是 era 对比块 ⇒ ★★ 「这两个 era 对比块」指的是 M8 / M12s ⇒ ★★ 本块的注释是**张冠李戴**）
+   --   ★★★ 修法：★ 加 `n.created_at <= now()`（★ now = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
+   --   ★★   ⇒ ★★ pre 侧不受影响（★ 全部 < now()）⇒ ★★ **基线不漂 ⇒ M18 不受影响**
+   --   ★★   ⇒ ★★ 窗口变成 [CUT-24h, now] ⇒ ★★ as-of 可替换 ⇒ ★★ **关窗时刻的读数可精确复现**
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+     AND n.created_at <= now()
    GROUP BY n.credential_id, n.raw_model_name
  ), joined AS (
    SELECT r.cnt, (lower(btrim(r.raw_model_name)) IN (SELECT m FROM st)) is_feat,
@@ -197,22 +205,30 @@ SELECT 'M4b_free_gap_gt24h' k, COUNT(*)::text||' rows | med_gap_min='||
 FROM nps WHERE gap > interval '24h';
 
 -- ═══ M5 探测量总量（★ 爆炸半径复核：基线 24h 9233 次；修复后增量应 < 1%）═══
-SELECT 'M5_probe_runs_24h' k, COUNT(*)::text||' total | free='||
-  COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id=b.provider_model_id
-    WHERE b.billing_mode='free' AND b.credential_id=node_probe_runs.credential_id
-      AND pm.raw_model_name=node_probe_runs.raw_model_name))::text v
-FROM node_probe_runs
-WHERE created_at > now() - interval '24 hours'
--- ★★★★ 2026-11-11 第 25 处口径修正（★ 穷举审计抓到的**同类第二处**）：★ **post 段窗口的 `now()` 上界**
---   ★★ 形态：★ M5 的 24h 窗口**只有下界**（★ `created_at > now() - 24h`）⇒ ★★ 窗口 = **[now-24h, ∞)**
---     ⇒ ★★ **as-of 替换只改得动下界** ⇒ ★★ 负控里（★ as-of 在过去、真实 now 在现在）窗口变成
---     ★★ **[asof-24h, 真实now]** = **~35h** ⇒ ★★ ⇒ **M5 的负控读数会测错窗口**（★ 与 24h 基线不同量纲 ⇒ 假红）
---   ★★ 为什么必须修：★ M5 是「**爆炸半径**」判据（★ base = pre24 单日快照、limit = base×1.01）
---     ⇒ ★★ 一旦它进负控的「必须判负」清单 ⇒ ★★ 负控拿 ~35h 的量去比 24h 的基线 ⇒ ★★ **必然假红**
---   ★★★ **修法**：★ 加 `created_at <= now()`（★ now 时刻 = 「观测到的全部」⇒ ★ **真实读数逐字节不变**
---     ⇒ ★★ pre 侧不受影响（★ M5 无 pre 侧读数键）⇒ ★★ **M18 冻结面不受影响 ⇒ 不重冻**
---   ★★ ⇒ ★★ 负控/预演里 M5 的窗口 == 恰好 stage 窗口（★ 24h / 168h）⇒ ★★ **与 M14 族同款**
-AND created_at <= now();
+--
+-- ★★ 2026-11-11 改写采纳（docs/26 §3.2，r60 双修的脚本侧落地）：原版
+--   ★ `COUNT(*) FILTER (WHERE EXISTS (...))` 对 node_probe_runs 每行触发一次
+--   ★ credential_model_bindings JOIN provider_models 的 Seq Scan（9460 loops ×
+--   ★ 2680 removed）+ JIT ~136ms ⇒ 1090.6ms。改写 = 先物化 24h 集合（走
+--   ★ idx_node_probe_runs_created）+ 先聚 free 面一次，再 JOIN ⇒ 42.4ms（-96%）。
+-- ★★ 输出契约不变：键 `M5_probe_runs_24h`，值 `total | free=`（r60 实测两口径
+--   ★ 逐字节一致：9463|1924 / 复跑 9465|1923）。
+-- ★★ 合并第 25 处口径修正（origin/main 同日）：★ p24 窗口必须**双界** —— 加
+--   ★ `created_at <= now()`。否则 as-of 负控里窗口变 [asof-24h, 真实now] ≈ 35h，
+--   ★ 与 24h 基线不同量纲 ⇒ 假红。now 时刻 = 「观测到的全部」⇒ 真实读数逐字节不变。
+WITH p24 AS (
+  SELECT credential_id, raw_model_name FROM node_probe_runs
+  WHERE created_at > now() - interval '24 hours'
+    AND created_at <= now()
+), fr AS (
+  SELECT DISTINCT b.credential_id, pm.raw_model_name
+  FROM credential_model_bindings b
+  JOIN provider_models pm ON pm.id = b.provider_model_id
+  WHERE b.billing_mode = 'free'
+)
+SELECT 'M5_probe_runs_24h' k,
+  (SELECT COUNT(*) FROM p24)::text || ' total | free=' ||
+  (SELECT COUNT(*) FROM p24 JOIN fr USING (credential_id, raw_model_name))::text v;
 
 -- ═══ M5b 探测量分解（★ 2026-11-11 关窗预演补：★ M5 超预算时的**归因证据**）═══
 --
@@ -294,6 +310,41 @@ SELECT 'M5_post_runs_by_day' k,
   ||' | total='||COALESCE(sum(c)::text,'0')
   v FROM d;
 
+-- ═══ ★★★ 第 31 处口径修正（★ 2026-11-11 04:4x +08）：★ M5 的「等长滚动 24h 基线」═══
+--
+-- ★★ **为什么需要它**：★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而 `M5_pre7d_runs_by_day` 的
+--   **日历日桶**不能直接当 24h 基线 ⇒ ★★ 7 天窗口跨 **8 个日历日** ⇒ ★★ 首尾两桶是 **partial day**
+--   （★ 11-03 只覆盖 10.29h、★ 11-10 只到 13.71h）⇒ ★★ 计数**必然低估** ⇒ ★★ 用它的均值会**系统性压低**基线
+--   ⇒ ★★ 必须用**等长**（★ 恰好 24h）**滚动窗口** ⇒ ★★ 与 M5 的裁决窗口**同量纲**（★ 「跨段比必须等长」）
+-- ★★ **口径**：★ 窗口端点**锚定 era 切点**（★ **不用 `now()`**）⇒ ★★ **时钟无关**
+--   ⇒ ★★ ⇒ ★★ **不进 M18 冻结对拍**（★ `PRE_KEY_RE` 不匹配 `M5_*`）⇒ ★★ **不触发重冻**
+--   （★ 与 `M5_pre7d_runs_by_day` 同款定位：★ 只出证据、不动已冻结基线）
+-- ★★ n = 145（★ 逐小时采样：★ 端点 ∈ [切点-7d+24h, 切点] ⇒ ★ 每个窗口**恰好 24h**）
+WITH cut AS (SELECT TIMESTAMPTZ '2026-11-10 13:42:30+08' AS t),
+samples AS (
+  SELECT gs AS t_end FROM cut c,
+  LATERAL generate_series(c.t - interval '7 days' + interval '24 hours', c.t, interval '1 hour') gs
+),
+roll AS (
+  SELECT s.t_end,
+         (SELECT COUNT(*) FROM node_probe_runs r
+          WHERE r.created_at > s.t_end - interval '24 hours'
+            AND r.created_at <= s.t_end) AS c
+  FROM samples s
+)
+SELECT 'M5_roll24_pre7d_dist' k,
+  'n=' || COUNT(*)::text
+  || ' | min=' || MIN(c)::text
+  || ' | mean=' || ROUND(AVG(c)::numeric, 1)::text
+  || ' | p50=' || (percentile_disc(0.50) WITHIN GROUP (ORDER BY c))::text
+  || ' | p75=' || (percentile_disc(0.75) WITHIN GROUP (ORDER BY c))::text
+  || ' | p90=' || (percentile_disc(0.90) WITHIN GROUP (ORDER BY c))::text
+  || ' | p95=' || (percentile_disc(0.95) WITHIN GROUP (ORDER BY c))::text
+  || ' | max=' || MAX(c)::text
+  || ' | sum=' || SUM(c)::text
+  || ' | each_window_hours=24'
+  v FROM roll;
+
 -- ═══ M6 ★ 收益面：免费在服对里命中 featured 的对数（修复前 15 → 部署后 34）═══
 WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featured_models) AS f WHERE tenant_id='default' AND btrim(f)<>''),
  cf AS (SELECT DISTINCT lower(btrim(canonical_name)) m FROM models_canonical WHERE featured=TRUE AND status='active'),
@@ -348,7 +399,14 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
    FROM node_probe_runs n
    -- ★★ 锚定（★ 本轮第 7 处口径修正）：pre 段固定为「切点前 24h」，post 段为「切点→now」
    --   ⇒ 否则这两个 era 对比块的 pre 侧只在关窗后 24h 内存在（Stage 2 时整段消失）
+   -- ★★★ 第 27 处口径修正（★ 2026-11-11 02:5x）：★ **post 段原本是开区间**
+   --   ★★ 形态：★ `r` CTE **只有下界** ⇒ ★★ 而 `tagged` 用 CASE 切 pre/post
+   --   ★★ ⇒ ★★ post 段 = **[CUT, ∞)** ⇒ ★★ as-of 替换对它无效
+   --   ★★ ⇒ ★★ 陷阱：★ 本块**唯一**的「上界」是 CASE **内**的 `created_at < CUT`
+   --   ★★   （★ 那是**分桶条件**、不是行过滤）⇒ ★★ 若把它当上界 ⇒ ★★ 会误判成「窗口闭合」（★ 假阴性）
+   --   ★★★ 修法：★ 加 `n.created_at <= now()`（★ 真实读数逐字节不变 ⇒ ★ M18 不受影响）
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '24 hours'
+     AND n.created_at <= now()
  ), tagged AS (
    SELECT CASE WHEN is_feat THEN 'featured' ELSE 'not' END f,
           CASE WHEN created_at < TIMESTAMPTZ '2026-11-10 13:42:30+08' THEN 'pre' ELSE 'post' END win,
@@ -396,7 +454,13 @@ WHERE pm.standardized_name IS NOT NULL AND pm.standardized_name<>''
   AND lower(pm.standardized_name) <> lower(mc.canonical_name);
 
 WITH diff AS (
-  SELECT pm.raw_model_name, pm.standardized_name, mc.canonical_name, mc.featured
+  -- ★★★ 2026-11-11 第 32 处：★ **DISTINCT**（★ 同一 raw 名可挂在**多个 provider_id** 下
+  --   ⇒ ★ 真库实测：`glm-4-7-251222` 与 `glm-5-2-260617` 各有 **2 行**（★ provider 34 / 35）
+  --   ⇒ ★★ 原形态发**同键同值**多行 ⇒ ★★ 解析器照样折叠 ⇒ ★★ **键数 < 行数**
+  --   ⇒ ★★ ⇒ ★★ 「键数一致」这类对拍是**缺覆盖的全绿**（★ 第 27 处覆盖率缺陷的同族）
+  --   ⇒ ★★ 修法：★ 采集侧去重（★ 值只依赖 raw 名 ⇒ ★★ 去重后**值逐字节不变**）
+  --   ⇒ ★★ 解析侧另加「重复键守卫」（★ 同值重复也失败 ⇒ 防止再出现同款折叠）
+  SELECT DISTINCT pm.raw_model_name, pm.standardized_name, mc.canonical_name, mc.featured
   FROM provider_models pm JOIN models_canonical mc ON mc.id=pm.canonical_id
   WHERE pm.standardized_name IS NOT NULL AND pm.standardized_name<>''
     AND lower(pm.standardized_name) <> lower(mc.canonical_name)
@@ -1198,6 +1262,10 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
    SELECT n.id
    FROM node_probe_runs n
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     -- ★★★ 第 27 处口径修正：★ **窗口必须闭合**（★ 原来只有下界 ⇒ [CUT-7d, ∞)）
+     --   ★★ 三个口径（used/ref/legacy）**必须加同一个上界** ⇒ ★★ 否则 used==ref 的等式在
+     --   ★★ 「有未来时间戳的行」时会被破坏（★ 此刻无 ⇒ ★★ 等式不变 ⇒ ★★ 真实读数逐字节不变）
+     AND n.created_at <= now()
      AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
@@ -1207,6 +1275,7 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
    JOIN credential_model_bindings b ON b.credential_id = n.credential_id AND b.billing_mode = 'free'
    JOIN provider_models pm ON pm.id = b.provider_model_id AND pm.raw_model_name = n.raw_model_name
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     AND n.created_at <= now()          -- ★ 第 27 处：★ 与 fr_used 同款上界（★ 等式才成立）
 ), fr_legacy AS (  -- ★ 旧写法（★ 仅作背景对照：★ 已知会丢 70% ⇒ 不参与判定）
    SELECT n.id
    FROM node_probe_runs n
@@ -1214,6 +1283,7 @@ WITH fr_used AS (   -- ★ 脚本实际使用的口径（半连接 EXISTS）
      ON b.credential_id = n.credential_id
     AND b.provider_model_id = (SELECT pm.id FROM provider_models pm WHERE pm.raw_model_name = n.raw_model_name LIMIT 1)
    WHERE b.billing_mode = 'free' AND n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     AND n.created_at <= now()          -- ★ 第 27 处：★ 同款上界（★ 背景值也须同一窗口）
 )
 SELECT 'M16_join_caliber_check' k,
   'used='||(SELECT COUNT(*) FROM fr_used)::text
@@ -1232,6 +1302,7 @@ WITH fr AS (
    SELECT n.credential_id, n.raw_model_name, n.created_at, n.success, (n.raw_model_name LIKE '%/%') is_ns
    FROM node_probe_runs n
    WHERE n.created_at > TIMESTAMPTZ '2026-11-10 13:42:30+08' - interval '7 days'
+     AND n.created_at <= now()    -- ★ 第 27 处：★ 窗口必须闭合（★ 原来只有下界 ⇒ [CUT-7d, ∞)）
      AND EXISTS (SELECT 1 FROM credential_model_bindings b JOIN provider_models pm ON pm.id = b.provider_model_id
                  WHERE b.credential_id = n.credential_id AND b.billing_mode = 'free'
                    AND pm.raw_model_name = n.raw_model_name)
@@ -1300,9 +1371,20 @@ WITH rp AS (SELECT DISTINCT lower(btrim(f)) m FROM routing_policy, unnest(featur
           JOIN models_canonical mc ON lower(btrim(mc.canonical_name)) = fn.m
           JOIN provider_models pm ON pm.canonical_id = mc.id
           WHERE pm.raw_model_name IS NOT NULL AND btrim(pm.raw_model_name)<>'')
-SELECT 'H5_featured_probe_freq' k, raw_model_name||' | probes_24h='||c::text v
+-- ★★★ 2026-11-11 第 32 处（★ 一对多键 ⇒ 解析器**静默折叠** ⇒ 静默丢读数）：
+--   ★★ 本块是**逐模型**读数（★ 每行一个 featured 模型、★ 值各不相同）
+--   ⇒ ★★ 原形态用**常量键** `H5_featured_probe_freq` 发 **10 行**
+--   ⇒ ★★ 而下游解析器是 `partition("|") → dict` ⇒ ★★ **同键后到者覆盖先到者**
+--   ⇒ ★★ ⇒ ★★ **9/10 行被静默丢弃**（★ 真库实测：260 行 ⇒ 249 个唯一键）
+--   ⇒ ★★ 且**三个解析器三种语义**：★ verdict `setdefault` 留**首**行、★ clockcheck/negcontrol `d[k]=v`
+--   ⇒ ★★ 留**末**行 ⇒ ★★ 同一份原始输出 ⇒ ★★ **给出三个不同的数** ⇒ ★★ 逐模型读数在 H5 上被违反
+--   ⇒ ★★ 修法（★ **键的粒度必须 == 值的粒度**）：★ **一模型一键** ⇒ `H5_featured_probe_freq_<model>`
+--   ⇒ ★★ 解析侧另加「重复键守卫」（★ 任何重复键 ⇒ **rc≠0** ⇒ 防再出现同款折叠）
+SELECT 'H5_featured_probe_freq_'||t.m k,
+       'probes_24h='||t.c::text v
 FROM (
-  SELECT n.raw_model_name, COUNT(*) c
+  -- ★ 大小写归一（★ 否则 `Foo` 与 `foo` 两个 raw 名会**折成同一个键** ⇒ 又是重复键）
+  SELECT lower(btrim(n.raw_model_name)) m, COUNT(*) c
   FROM node_probe_runs n
   WHERE n.created_at > NOW() - INTERVAL '24 hours'
     -- ★★ 2026-11-11 第 25 处（★ 穷举审计）：★ 「最近 24h 探了几次」**原来只有下界**
@@ -1454,7 +1536,16 @@ fpr AS (
   UNION ALL
   SELECT r.*, 'pre7d' FROM fpr r WHERE r.era='pre'
   UNION ALL
-  SELECT r.*, 'post' FROM fpr r WHERE r.era='post'
+  -- ★★★★ 第 27 处口径修正（★ 2026-11-11 03:2x）：★ **fp 视图的 post 段必须被 now() 界定**
+  --   ★★ 形态：★ 本视图**按设计**不含成熟度过滤（★ 尾部 6h 要可见 ⇒ 不得加 `now()-6h`）
+  --   ★★   ⇒ ★★ 但「**没有成熟度过滤**」≠「**没有上界**」⇒ ★★ 原写法 post 段 = **[切点, ∞)**
+  --   ★★ ⇒ ★★ as-of 替换对它**完全无效** ⇒ ★★ 负控/预演里 fp 的 post 窗口 = **[切点, 真实now]**
+  --   ★★   ⇒ ★★ **不是 stage 窗口** ⇒ ★★ 负控里 fp 的 top21600_n 会**比 Stage 1 的更长**
+  --   ★★   ⇒ ★★ ⇒ ★★ **几何不一致**（★ 第 23 处的纪律：★ 负控必须与被验收窗口同几何）
+  --   ★★★ 修法：★ 只给 **post 分支**补 `fail_at < now()`（★ **不加 -6h** ⇒ ★ 尾部 6h 仍可见 ⇒ ★ 设计不变）
+  --   ★★★ 且 **pre 分支一个都不动** ⇒ ★★★ pre 键仍**时钟无关**（★ 三时钟门逐字节一致不受影响）
+  --   ★★★ 且真实读数**逐字节不变**（★ 所有已落库事件都 ≤ now()）⇒ ★★★ **M18 不重冻** ✔
+  SELECT r.*, 'post' FROM fpr r WHERE r.era='post' AND r.fail_at < now()
 ), fpm AS (
   -- ★★ 逐模型聚合（★ post 窗口）⇒ ★★ 「摇摆」分量与**逐模型复核**的输入
   SELECT raw_model_name, exemption,
@@ -1580,7 +1671,18 @@ SELECT 'M20_'||w.lay||'_post_split' k,
      WHERE s.exemption = w.lay AND NOT s.success
        AND s.raw_model_name LIKE '%/%' AND lower(btrim(s.raw_model_name)) IN (SELECT m FROM newly)
        AND s.created_at >= TIMESTAMPTZ '2026-11-10 13:42:30+08'
-       AND s.created_at >= now() - interval '6 hours') v
+       -- ★★★★ 第 27 处口径修正（★ 2026-11-11 03:4x）：★ **tail 子查询必须也有 now() 上界**
+       --   ★★ 形态：★ 原写法只有下界（★ `s.created_at >= now() - interval '6 hours'`）
+       --   ★★   ⇒ ★★ tail 段 = **[now-6h, ∞)** ⇒ ★★ 无界
+       --   ★★ ⇒ ★★ **负控里（★ as-of 前移）tail 会延伸到 as-of 之外** ⇒ ★★ 而 fp 视图是 [切点, asof]
+       --   ★★   ⇒ ★★ 「fp ≥ 窗口 + 尾部」不变量**被撑破** ⇒ ★★ 守卫报错
+       --   ★★ ⇒ ★★ ⇒ ★★ 真相：**这个不变量此前是「恒真」的**（★ fp 与 tail 都无界 ⇒ 两边都是 [切点, 真实now]
+       --   ★★   ⇒ ★★ ⇒ **相等** ⇒ ★★ ⇒ **守卫在 fp 视图缺上界这件事上没有牙** ⇒ ★★ 盲区正在缺陷所在处
+       --   ★★★ 修法：★ 给 tail 补 `s.created_at < now()`（★ 真实读数逐字节不变 ⇒ ★ 所有已落库事件都 ≤ now）
+       --   ★★★   ⇒ ★★ tail = [now-6h, now) ⇒ ★★ window+tail = [切点, now) = fp ⇒ ★★ 不变量恢复为「真不变量」
+       --   ★★★   ⇒ ★★ 且**守卫的牙齿恢复**：★ 若 fp 视图被改回带成熟度过滤 ⇒ fp = window < window+tail ⇒ ★★ 报警
+       AND s.created_at >= now() - interval '6 hours'
+       AND s.created_at < now()) v
 FROM (VALUES ('normal'),('exempt')) AS w(lay)
 UNION ALL
 -- ★★★★ M20 的**逐模型 fp 阶梯谱**（★ post 窗口）⇒ ★★ 「摇摆」分量的原料 + **逐模型复核**工具

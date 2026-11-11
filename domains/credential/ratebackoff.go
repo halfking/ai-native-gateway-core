@@ -173,6 +173,10 @@ func (t *RateBackoffTracker) Observe(key string) RateBackoffDecision {
 //
 // refill == 0 = 遗留 A2（无条件升级，与 Observe 逐字节同语义）。
 // threshold < 2 按 2 兜底（防 0/负值让梯子第一次就触发）。
+//
+// ★ 2026-11-11（冷却/令牌池审计档 §5.3-1）：本函数（绑定级、单次 429）与
+// writer.go coolingDuration(KindRateLimit) 的固定 3 分钟（凭据级、触发源 =
+// nodehealth 整卡降级决策）是双轨，各有触发面；两处已互指。
 func (t *RateBackoffTracker) ObserveWithPace(key string, refill time.Duration, threshold int) RateBackoffDecision {
 	if t == nil {
 		return RateBackoffDecision{}

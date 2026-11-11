@@ -54,7 +54,7 @@ PRE_KEY_RE = re.compile(
 # ★★★ 第 22 处口径修正：★ 「**披露用**」的 pre 侧键（★ **不进 M18 冻结对拍** ⇒ ★ 不重冻基线）
 #   ★★ 但它仍是 **pre 侧读数** ⇒ ★★ 若混进 `now()` 依赖 ⇒ ★ 随时钟漂移
 #   ★★ ⇒ ★★ 必须在各时钟下逐字节一致 ⇒ ★★ **单独查**（★ 不扩冻结面 ⇒ ★ 不触发重冻）
-CLOCK_INDEP_KEYS = ("M5_pre7d_runs_by_day",)
+CLOCK_INDEP_KEYS = ("M5_pre7d_runs_by_day", "M5_roll24_pre7d_dist")
 
 
 def run_sql(sql_text: str, tag: str, ssh_host: str) -> str:
@@ -75,13 +75,14 @@ def run_sql(sql_text: str, tag: str, ssh_host: str) -> str:
 
 
 def parse(raw: str) -> dict[str, str]:
-    d: dict[str, str] = {}
-    for line in raw.splitlines():
-        if "|" not in line:
-            continue
-        k, _, v = line.partition("|")
-        d[k.strip()] = v.strip()
-    return d
+    """★ 第 32 处：★ 走**严格解析**（★ 重复键 ⇒ **fail-closed** ⇒ rc≠0）。
+
+    ★★ 原形态：本文件自带一份 `d[k.strip()] = v.strip()` ⇒ ★ **留末行**
+      ⇒ ★★ 而判定器的 `parse()` 用 `setdefault` ⇒ ★★ **留首行**
+      ⇒ ★★ 同一份原始输出 ⇒ ★★ **两个解析器给出两个不同的数** ⇒ ★★ 静默丢行
+      ⇒ ★★ 现在**统一收敛到判定器的那一份实现**（★ 单一真源 ⇒ 不再漂移）。
+    """
+    return load_verdict().parse_strict(raw, where="clockcheck")
 
 
 def load_verdict():

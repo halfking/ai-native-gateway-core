@@ -1,0 +1,36 @@
+# ★ 真捕获夹具（★ 2026-11-11 04:2x +08，★ 211 生产库 acc-pg17/llm_gateway）
+# ★ 第 32 处：「采集侧一对多键 ⇒ 解析器**静默折叠** ⇒ 静默丢读数」的**期望事实**与**守卫期望串**
+#
+# ★★ 用途（★ 承第 30/31 处 ⇒ LESSONS §680/§682）：★ 期望值**与期望串**都放在**独立文件**
+# ★★   ⇒ ★★ 判据侧与被守卫内容**不同源** ⇒ ★★ 「只改事实」的同源变异打不中判据 ⇒ ★★ 守卫照样红
+# ★★   ⇒ ★★ 修法要**递归**应用（★ 第 31 处的教训：★ 新写的守卫会立刻继承同一个缺陷）
+#
+# ★ 来源命令（★ 复采时必须逐字比对本文件 ⇒ 若不一致 ⇒ 采集侧又出现了一对多键 ⇒ 需重新评估）：
+#   scp -q scripts/audit/recovery-detection-p0-3-metrics.sql 211:/tmp/m32_metrics.sql
+#   ssh 211 'docker cp /tmp/m32_metrics.sql acc-pg17:/tmp/m32_metrics.sql && docker exec acc-pg17 psql -U acc_super -d llm_gateway -tA -F"|" -v ON_ERROR_STOP=1 -f /tmp/m32_metrics.sql'
+#   ★ 然后按「首键第二次出现」统计行数 vs 唯一键数
+#
+# ★ 格式：key|value（★ 每行一条；★ 值为空表示该事实此刻不成立）
+
+# ── ① 修复前的重复键全貌（★ 真库实测）──
+raw_rows_before|260
+unique_keys_before|249
+folded_rows_before|11
+h5_rows|10
+h5_distinct_values|10
+h5_models_top3|deepseek-v4-flash=1312 / kimi-k3=943 / glm-5.2=817
+m10_diff_dup_keys|2
+m10_diff_dup_rows_each|2
+m10_diff_dup_reason|同一 raw 名挂在两个 provider_id（34 / 35）下 ⇒ 采集侧发同键同值多行
+# ── ② 键形态（★ 键的粒度必须 == 值的粒度）──
+h5_old_key|H5_featured_probe_freq
+h5_key_prefix|H5_featured_probe_freq_
+h5_value_shape|probes_24h=<n>
+m10_diff_key_prefix|M10_diff_
+m10_diff_grain|一 raw 名一键（★ 值只依赖 raw 名 ⇒ 去重后值逐字节不变）
+# ── ③ 守卫的**期望串**登记（★ `guard_` 前缀 = ★ **守卫专用**：★ 不进「每个期望值都必须出现在边界里」的泛化循环）
+#   ★★ 这四个串必须真的出现在守卫输出里（★ 从本文件取值 ⇒ ★★ 改 verdict.py 改不动判据）
+guard_marker_dup_guard|重复键守卫失败
+guard_marker_grain_hint|键的粒度
+guard_marker_conflict|异值
+guard_marker_same_value|同值

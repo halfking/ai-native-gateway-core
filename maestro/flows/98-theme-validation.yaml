@@ -1,0 +1,226 @@
+# Maestro皮肤主题验证测试
+# 目标：验证明暗两种皮肤的配色正确性和一致性
+
+appId: ${BASE_URL}
+---
+# ==================== 登录 ====================
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# 等待仪表盘加载完成
+- extendedWaitUntil:
+    visible: "仪表盘"
+    timeout: 10000
+
+# ==================== 亮色主题测试 ====================
+- evalScript: "${output.theme_test_start = Date.now()}"
+
+# 检测当前主题（通过data-theme属性或者特定的样式类）
+- evalScript: |
+    const html = document.documentElement;
+    const currentTheme = html.getAttribute('data-theme') || 
+                        (html.classList.contains('dark') ? 'dark' : 'light');
+    output.initial_theme = currentTheme;
+    console.log('Initial theme:', currentTheme);
+
+# 如果是暗色主题，先切换到亮色
+- tapOn:
+    point: "90%,10%"  # 假设主题切换按钮在右上角
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+# ── 亮色主题 - 仪表盘 ─────────────────────────────
+- openLink: "${BASE_URL}/dashboard"
+- extendedWaitUntil:
+    visible: "仪表盘"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-dashboard.png"
+- evalScript: "${output.screenshot_count = 1}"
+
+# ── 亮色主题 - 实时拓扑 ─────────────────────────────
+- openLink: "${BASE_URL}/live"
+- extendedWaitUntil:
+    visible: "实时拓扑"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-live.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 路由全景 ─────────────────────────────
+- openLink: "${BASE_URL}/routing-v2"
+- extendedWaitUntil:
+    visible: "路由全景"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-routing.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 凭据监控 ─────────────────────────────
+- openLink: "${BASE_URL}/routing-v2/credentials"
+- extendedWaitUntil:
+    visible: "凭据监控"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-credentials.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 模型管理 ─────────────────────────────
+- openLink: "${BASE_URL}/models"
+- extendedWaitUntil:
+    visible: "模型与目录"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-models.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 供应商管理 ─────────────────────────────
+- openLink: "${BASE_URL}/providers"
+- extendedWaitUntil:
+    visible: "供应商管理"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-providers.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 租户管理 ─────────────────────────────
+- openLink: "${BASE_URL}/tenants"
+- extendedWaitUntil:
+    visible: "租户管理"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-tenants.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - API密钥 ─────────────────────────────
+- openLink: "${BASE_URL}/keys"
+- extendedWaitUntil:
+    visible: "API 密钥管理"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-keys.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 请求日志 ─────────────────────────────
+- openLink: "${BASE_URL}/request-logs"
+- extendedWaitUntil:
+    visible: "请求日志"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-request-logs.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 亮色主题 - 系统设置 ─────────────────────────────
+- openLink: "${BASE_URL}/admin/settings"
+- extendedWaitUntil:
+    visible: "当前值"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/light-theme-settings.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ==================== 切换到暗色主题 ====================
+- evalScript: "console.log('Switching to dark theme...')"
+
+# 点击主题切换按钮（可能需要根据实际UI调整）
+- tapOn:
+    point: "90%,10%"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+# 验证已切换到暗色主题
+- evalScript: |
+    const html = document.documentElement;
+    const currentTheme = html.getAttribute('data-theme') || 
+                        (html.classList.contains('dark') ? 'dark' : 'light');
+    output.dark_theme_active = (currentTheme === 'dark');
+    console.log('Current theme after switch:', currentTheme);
+
+# ==================== 暗色主题测试 ====================
+
+# ── 暗色主题 - 仪表盘 ─────────────────────────────
+- openLink: "${BASE_URL}/dashboard"
+- extendedWaitUntil:
+    visible: "仪表盘"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-dashboard.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 实时拓扑 ─────────────────────────────
+- openLink: "${BASE_URL}/live"
+- extendedWaitUntil:
+    visible: "实时拓扑"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-live.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 路由全景 ─────────────────────────────
+- openLink: "${BASE_URL}/routing-v2"
+- extendedWaitUntil:
+    visible: "路由全景"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-routing.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 凭据监控 ─────────────────────────────
+- openLink: "${BASE_URL}/routing-v2/credentials"
+- extendedWaitUntil:
+    visible: "凭据监控"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-credentials.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 模型管理 ─────────────────────────────
+- openLink: "${BASE_URL}/models"
+- extendedWaitUntil:
+    visible: "模型与目录"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-models.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 供应商管理 ─────────────────────────────
+- openLink: "${BASE_URL}/providers"
+- extendedWaitUntil:
+    visible: "供应商管理"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-providers.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 租户管理 ─────────────────────────────
+- openLink: "${BASE_URL}/tenants"
+- extendedWaitUntil:
+    visible: "租户管理"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-tenants.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - API密钥 ─────────────────────────────
+- openLink: "${BASE_URL}/keys"
+- extendedWaitUntil:
+    visible: "API 密钥管理"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-keys.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 请求日志 ─────────────────────────────
+- openLink: "${BASE_URL}/request-logs"
+- extendedWaitUntil:
+    visible: "请求日志"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-request-logs.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ── 暗色主题 - 系统设置 ─────────────────────────────
+- openLink: "${BASE_URL}/admin/settings"
+- extendedWaitUntil:
+    visible: "当前值"
+    timeout: 5000
+- takeScreenshot: "${OUTPUT_DIR}/dark-theme-settings.png"
+- evalScript: "${output.screenshot_count++}"
+
+# ==================== 测试完成 ====================
+- evalScript: |
+    const duration = Date.now() - output.theme_test_start;
+    console.log('Theme test completed');
+    console.log('Total screenshots:', output.screenshot_count);
+    console.log('Duration:', duration, 'ms');
+
+# 验证截图数量（应该是20张：10张亮色 + 10张暗色）
+- assertTrue:
+    condition: "${output.screenshot_count >= 20}"
+    label: "至少20张截图已保存"

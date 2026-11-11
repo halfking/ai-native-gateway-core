@@ -63,7 +63,35 @@ const (
 	// ★ 默认关：凭据决定记忆命名空间 ⇒ 让客户端自选 = 放大同租户内的
 	//	记忆读取面（上一轮已拍板）。
 	envContextAgentAllowRequestCredential = "LLM_GATEWAY_CONTEXT_AGENT_ALLOW_REQUEST_CREDENTIAL"
+	// ★ 2026-11-11 审计 A-9：★ 可还原记录此前**无轮转/无清理/无 TTL**
+	// ★ ⇒ ★★ 磁盘占用无上界 ★★。⇒ ★★ 现在由这两个开关控制保留策略：
+	envContextAgentRecordMaxFiles = "LLM_GATEWAY_CONTEXT_AGENT_RECORD_MAX_FILES"
+	envContextAgentRecordTTLHours = "LLM_GATEWAY_CONTEXT_AGENT_RECORD_TTL_HOURS"
 )
+
+// contextAgentRecordPolicy 从环境变量装配**可还原记录的保留策略**。
+//
+// ★ 默认即有界（★ 见 contextagent.DefaultFileRetentionPolicy）★★
+// ★ ⇒ ★★ 「忘了配」不会退化成无界增长 ★★。
+// ★ 两项都可用 **0** 单独关掉（★ 0 = 不限 / 不过期）★ ⇒ ★★
+// ★★ 想要「永久保留」时是**显式**选择，★ 而不是默认行为 ★★。
+//
+// ★ 解析失败（★ 非数字 / 负数）⇒ ★★ 退回该项的默认值 ★★（★ 不让一个
+// ★★ 拼错的 env 把记录功能整个关掉 ⇒ ★★ 那是「配置错误 ⇒ 数据静默丢失」★★）。
+func contextAgentRecordPolicy() contextagent.FileRetentionPolicy {
+	policy := contextagent.DefaultFileRetentionPolicy()
+	if raw := strings.TrimSpace(os.Getenv(envContextAgentRecordMaxFiles)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			policy.MaxFiles = n
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(envContextAgentRecordTTLHours)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			policy.TTL = time.Duration(n) * time.Hour
+		}
+	}
+	return policy
+}
 
 // contextAgentBundle 是装配产物。
 type contextAgentBundle struct {
@@ -129,11 +157,19 @@ func registerContextAgent(mux *http.ServeMux, logger *slog.Logger, deps contextA
 
 	// ── 可还原记录（可选）──
 	if dir := strings.TrimSpace(os.Getenv(envContextAgentRecordDir)); dir != "" {
-		rec, err := contextagent.NewFileRecorder(dir)
+		policy := contextAgentRecordPolicy()
+		rec, err := contextagent.NewFileRecorderWithPolicy(dir, policy)
 		if err != nil {
 			logger.Error("context agent: recorder init failed, recording disabled", "error", err)
 		} else {
 			agent.Recorder = rec
+			// ★ 2026-11-11 审计 A-9：★ 把**实际生效**的保留策略打进日志
+			// ★ ⇒ ★★ 「记录会被自动清理」这件事**可观测**（★ 而不是
+			// ★★ 悄悄发生 ⇒ ★★ 事后才发现「昨天的记录读不到了」）★★。
+			logger.Info("context agent: recorder ready",
+				"dir", dir,
+				"max_files", policy.MaxFiles,
+				"ttl_hours", int(policy.TTL.Hours()))
 		}
 	}
 

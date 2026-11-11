@@ -171,17 +171,51 @@ func (m *MemoryRecorder) Load(_ context.Context, requestID string) (*Record, err
 type FileRecorder struct {
 	dir string
 	mu  sync.Mutex
+
+	// ★ 2026-11-11 审计 A-9：★ 此前每请求写一个 JSON 文件（★ 含三份
+	// ★ base64 正文）★ **无轮转/无清理/无 TTL** ⇒ ★★ 磁盘占用无上界 ★★。
+	// ⇒ ★★ 现在记录文件受**保留策略**约束（★ 见 record_retention.go）★★。
+	policy FileRetentionPolicy
+	// lastSweep 是上次清扫的时刻（★ 限频用）。
+	lastSweep time.Time
+	// pending 是上次清扫之后新写入的文件数（★ 限频用）。
+	pending int
+	// sweeps 是累计清扫次数（★ 供测试观测「限频是否真的生效」）。
+	sweeps int
+	// now 是时钟（★ 测试可注入 ⇒ ★ TTL/间隔判定不必真等）。
+	now func() time.Time
 }
 
 // NewFileRecorder 构造文件型 Recorder（目录不存在时创建）。
+//
+// ★ 使用**生产默认的保留策略**（★ 见 DefaultFileRetentionPolicy）★ ⇒ ★★
+// ★★构造器即带界（★ 「忘了配」不会退化成无界增长）★★。
 func NewFileRecorder(dir string) (*FileRecorder, error) {
+	return NewFileRecorderWithPolicy(dir, DefaultFileRetentionPolicy())
+}
+
+// NewFileRecorderWithPolicy 构造带**指定保留策略**的文件型 Recorder。
+//
+// ★ 构造时会先做**一次**清扫（★ 清掉上一次进程遗留的超量/过期文件）★
+// ★ ⇒ ★★ 「重启后目录仍然是满的」这个形态被当场消掉 ★★。
+//
+// ★ 清扫失败**不**影响构造（★ 记录功能本身不依赖清扫）。
+func NewFileRecorderWithPolicy(dir string, policy FileRetentionPolicy) (*FileRecorder, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("contextagent: recorder dir is empty")
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("contextagent: create recorder dir: %w", err)
 	}
-	return &FileRecorder{dir: dir}, nil
+	f := &FileRecorder{
+		dir:    dir,
+		policy: policy,
+		now:    time.Now,
+	}
+	// ★ 启动清扫：★ keepPath 传空 ⇒ ★ 此时还没有「刚写入」的文件。
+	f.sweepLocked("", f.now())
+	f.lastSweep = f.now()
+	return f, nil
 }
 
 // filePath 返回某请求的记录文件路径。
@@ -235,6 +269,10 @@ func (f *FileRecorder) Save(_ context.Context, rec *Record) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("contextagent: commit record: %w", err)
 	}
+	// ★ 2026-11-11 审计 A-9：★ 记录文件**受保留策略约束**（★ 数量上限 + TTL）
+	// ★ ⇒ ★★ 磁盘占用不再无上界 ★★。
+	// ★ 清扫是**限频**的（★ 时间间隔 or 写满一批）★★ ⇒ ★★ 摊还成本 O(1) ★★。
+	f.maybeSweepLocked(path, f.now())
 	return nil
 }
 

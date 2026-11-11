@@ -72,9 +72,27 @@ type featuredQueryDB interface {
 // QueryStaticFeaturedModels returns the unified static featured set (bare
 // canonical names + raw variants, lowercased) for a tenant. Callers that only
 // need a Go-side list (selfcheck primary selection) use this instead of
-// re-implementing a single-source query. Query errors fail EMPTY (callers
-// treat an empty featured set as "no featured primary preference", the same
-// fail-open posture the old single-source ErrNoRows path had).
+// re-implementing a single-source query.
+//
+// ★ 2026-11-11 审计 B-6（★ 注释与代码直接矛盾）：★ 本注释此前写的是
+// 「Query errors fail EMPTY（★ 同样的 fail-open 姿态）」，
+// ★ ★ 而代码是 `return nil, err` ⇒ ★★ 注释是**假**的。
+// ⇒ ★★ 现在按**真实行为**写，并明确区分两种「空」：
+//
+//	① db == nil        ⇒ 返回 (nil, nil) —— ★ **真的**「空」，★ 无 DB 可问。
+//	② 查询/扫描出错   ⇒ 返回 (nil, err) —— ★ **不是**空，★ 是**失败**。
+//
+// ★ 为什么 ② 必须**向上抛**（★ fail-closed）而不是退化成「无 featured 偏好」：
+// ★★ featured 集合决定**自检主模型**；★ 若读不到它却当作「没有 featured」
+// ★ ★⇒ ★★ 会退化成「按其它信号随便挑一个主模型去探」★★ ⇒ ★★ 那是在
+// ★★ **没有依据**的情况下发起上游调用（★ 租户可能压根没有 featured 模型）。
+// ★★ 与之相对，同一文件里 `recentInUsageWindow` 的失败是 **fail-open**
+// ★★（★ 它只是**收窄**一个优化用的榜单，★ 读不到就保留原榜单）。
+// ★★ 两者姿态不同是因为**语义不同**（★ 一个决定**探谁**、★ 一个只决定**排序**）。
+//
+// ★ 调用方（★ bg/credential_selfcheck.go 的 selfcheckFeatured）★ 遇错
+// ★ **放弃整轮自检**（★ `pickModelsResult{}, err`）★ ⇒ ★★ 上面这条
+// ★★ fail-closed 语义在调用链上是**兑现**的（★ 而不是被悄悄吞掉）。
 func QueryStaticFeaturedModels(ctx context.Context, db featuredQueryDB, tenant string) ([]string, error) {
 	if db == nil {
 		return nil, nil

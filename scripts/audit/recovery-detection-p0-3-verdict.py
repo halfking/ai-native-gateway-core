@@ -31,6 +31,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import importlib.util
+import io
 import re
 import subprocess
 import sys
@@ -38,6 +41,13 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("recovery-detection-p0-3-metrics.sql")
+
+# ★★★ 第 32 处：★ H5 的键形态（★ **一模型一键** ⇒ ★ 键的粒度 == 值的粒度）
+#   ★★ 原形态是常量键 `H5_featured_probe_freq` + 10 行 ⇒ ★★ 解析器**静默折叠** ⇒ ★★ 丢 9 行
+H5_KEY_PREFIX = "H5_featured_probe_freq_"
+# ★ 第 32 处：★ 「重复键」失败的**期望串**登记在**独立夹具**里（★ LESSONS §680/§682：
+#   ★ 期望值与期望串都**不得**与被守卫内容同源 ⇒ ★★ 否则同源变异会把守卫一起改掉）
+KEY_GRAIN_FIXTURE = Path(__file__).with_name("fixtures") / "p0-3-key-grain.txt"
 
 # ★★ 基线（全部来自 T1 锚点，2026-11-10 13:45~14:05 +08 实测；★ 写「方法+观测值」）
 #    —— ★ 样本量规则同样预先写死：post episode < 5 ⇒ 「样本不足以判定」，不许外推。
@@ -258,7 +268,27 @@ def run_metrics(host: str) -> str:
         return out.stdout
 
 
+def h5_readout_lines(data: dict[str, str]) -> list[str]:
+    """★ H5 的**逐模型读数渲染**（★ 第 32 处：★ 一模型一键 ⇒ ★ 打印时也必须带**键**）
+
+    ★★ 为什么不能只打印值：★ 原形态的值里带模型名、键是常量 ⇒ ★ 折叠后只剩**一行**
+      ⇒ ★★ 读者看到的是「一个数」而不是「逐模型分布」⇒ ★★ 「不得只报总数」的纪律被违反
+    ★★ 现在键里带模型名 ⇒ ★ 逐行打印「模型名: 探测量」⇒ ★★ 每个模型都可见
+    """
+    out: list[str] = []
+    for k, v in sorted(data.items()):
+        if not k.startswith(H5_KEY_PREFIX):
+            continue
+        out.append(f"{k[len(H5_KEY_PREFIX):]}: {v}")
+    return out
+
+
 def parse(output: str) -> dict[str, str]:
+    """★ **宽松**解析：★ 同键**后者不覆盖前者**（★ `setdefault` ⇒ 留**首**行）。
+
+    ★★ ⚠️ 这个函数**会静默折叠重复键** ⇒ ★★ 只在「已确认无重复键」时用
+      ⇒ ★★ 正式路径一律走 `parse_strict()`（★ 第 32 处）。
+    """
     data: dict[str, str] = {}
     for line in output.splitlines():
         if "|" not in line:
@@ -266,6 +296,54 @@ def parse(output: str) -> dict[str, str]:
         k, _, v = line.partition("|")
         data.setdefault(k.strip(), v.strip())
     return data
+
+
+# ★★★ 第 32 处（★ 2026-11-11 04:2x +08）：★ **重复键守卫**（★ 一对多采集 ⇒ 解析器**静默折叠**）
+#
+# ★★ 形态（★ 真库实测）：★ 采集侧 `H5_featured_probe_freq` 用**常量键**发了 **10 行**
+#   （★ 每行一个 featured 模型、★ 值各不相同）⇒ ★★ 而 `parse()` 是 `partition("|") → dict`
+#   ⇒ ★★ **同键折叠** ⇒ ★★ **9/10 行被静默丢弃**（★ 真库：260 行 ⇒ 249 个唯一键）
+#   ⇒ ★★ 且**三个解析器三种语义**：★ verdict `setdefault` 留**首**行、★ clockcheck `d[k]=v` 留**末**行、
+#   ★★ negcontrol `d[k]=v` 留**末**行 ⇒ ★★ 同一份原始输出 ⇒ ★★ **给出三个不同的数**
+#
+# ★★ 纪律：★★ **键的粒度必须 == 值的粒度**（★ 一对多的对象 ⇒ 必须写进键）
+#   ⇒ ★★ 采集侧改「一对象一键」+ ★★ 解析侧加守卫（★ 任何重复键 ⇒ **rc≠0** ⇒ fail-closed）
+def scan_duplicate_keys(output: str) -> list[tuple[str, list[str]]]:
+    """★ 扫描**重复键**：★ 返回 `[(键, 该键的**不同值**列表)]`（★ 按键名排序）。
+
+    ★★ 与 `parse()` 的关系：★ `parse()` 把重复键**折叠**（★ 静默丢行）
+      ⇒ ★★ 本函数是**折叠前**的真相 ⇒ ★★ 任何「键数 == 行数」的结论都必须先过它。
+    """
+    seen: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        if "|" not in line:
+            continue
+        k, _, v = line.partition("|")
+        seen.setdefault(k.strip(), []).append(v.strip())
+    return [(k, sorted(set(v))) for k, v in sorted(seen.items()) if len(v) > 1]
+
+
+def parse_strict(output: str, *, where: str = "metrics") -> dict[str, str]:
+    """★ **严格解析**：★ 出现**任何**重复键 ⇒ **fail-closed**（★ rc≠0）。
+
+    ★★ 为什么「同值重复」也要失败：★ 重复键本身就是**粒度错配**的信号
+      （★ 一对多的采集没把对象写进键）⇒ ★★ 被折叠掉的那几行是**静默丢失的读数**
+      ⇒ ★★ 这次两个值碰巧相同 ≠ 下次也相同 ⇒ ★★ 必须当场红 ⇒ ★★ 不可等到「读出怪数」才发现。
+    """
+    dups = scan_duplicate_keys(output)
+    if dups:
+        print(f"★★ **重复键守卫失败**（★ {where}）：★ {len(dups)} 个键出现多次 ⇒ "
+              f"★ **键的粒度 ≠ 值的粒度** ⇒ ★ 解析器会**静默折叠** ⇒ ★ 读数会**静默丢失**",
+              file=sys.stderr)
+        for k, vs in dups[:20]:
+            kind = "★ 异值（冲突）" if len(vs) > 1 else "同值"
+            print(f"   - {k}：{len(vs)} 个不同值（{kind}）", file=sys.stderr)
+            for v in vs[:4]:
+                print(f"       {v[:200]}", file=sys.stderr)
+        if len(dups) > 20:
+            print(f"   ★ … 其余 {len(dups) - 20} 个重复键略", file=sys.stderr)
+        raise SystemExit("★★ 重复键守卫失败 ⇒ 本次采集作废（★ **不可判**，★ 不是「没发现问题」）")
+    return parse(output)
 
 
 def num(text: str) -> float | None:
@@ -365,11 +443,81 @@ def m5_baseline_disclosure(data: dict[str, str], n, lim) -> str:
     except (TypeError, ValueError, ZeroDivisionError):
         ratio = "?"
     post_days = field_str(post_raw, "days") or "-"
+    # ★★★ 第 31 处：★ 「**等长 24h 口径**」⇒ ★ 与 M5 的裁决窗口**同量纲**
+    #   ★★ 「跨段比必须等长」（★ LESSONS §667 / §679）—— ★ 日历日桶里首尾是 partial day ⇒ ★★ 不能当 24h 基线
+    _dist_raw = data.get("M5_roll24_pre7d_dist") or ""
+    _p50 = field_str(_dist_raw, "p50")
+    _p75 = field_str(_dist_raw, "p75")
+    _p90 = field_str(_dist_raw, "p90")
+    _dn = field_str(_dist_raw, "n")
+    try:
+        _p50v, _p75v, _p90v = float(_p50), float(_p75), float(_p90)
+    except (TypeError, ValueError):
+        _p50v = _p75v = _p90v = None
+    if _p50v is None:
+        eq_txt = ("★ ★★ **等长 24h 基线不可见**（★ 键 `M5_roll24_pre7d_dist` 未产出 ⇒ ★★ "
+                  "**不得**默认本行读数在 pre 分布里的位置）")
+    else:
+        try:
+            _nv = float(n)
+        except (TypeError, ValueError):
+            _nv = None
+        if _nv is None:
+            _bucket = "**本行读数不可见 ⇒ 位置不可判**"
+        elif _nv > _p90v:
+            _bucket = "**高于 p90**"
+        elif _nv > _p75v:
+            _bucket = "**p75–p90 之间**"
+        elif _nv > _p50v:
+            _bucket = "**p50–p75 之间**"
+        else:
+            _bucket = "**低于 p50**"
+        eq_txt = (f"★ ★★ **等长 24h 口径**（★ pre7d 的 **{_dn}** 个**等长**滚动 24h 窗 ⇒ ★ 与本行**同量纲**）："
+                  f"★ p50 = **{_p50v:g}** / p75 = **{_p75v:g}** / p90 = **{_p90v:g}**"
+                  f" ⇒ ★★ **本行读数 = {n}** ⇒ ★★ 落在 {_bucket}"
+                  f"（★ 窗口：post = 滚动 24h（now-24h→now）/ pre = [切点-7d, 切点] 内的等长 24h 窗）")
+    # ★★★ 第 31 处：★ pre24 侧 by_kind（★ 来自**独立夹具**的期望值 ⇒ ★★ 判据与被守卫内容不同源）
+    #   ★★★ ★★ **方向必须从 live 数据算出来**（★ 硬编码「periodic 反降」⇒ ★★ 关窗时若方向变了 ⇒ ★★ 与真实 by_kind 冲突）
+    _m5fx = _load_m5_fixture()
+    _post_kind_raw = (data.get("M5_probe_runs_24h_by_kind") or "").strip()
+    if _m5fx and _post_kind_raw:
+        _kk = []
+        for _k, _fxk in (("credential_recovery", "pre24_kind_credential_recovery"),
+                         ("periodic", "pre24_kind_periodic"),
+                         ("sync_request", "pre24_kind_sync_request")):
+            _pv = _m5fx.get(_fxk, "")
+            _qv = field_str(_post_kind_raw, _k)
+            try:
+                _pn, _qn = float(_pv), float(_qv)
+                _d = _qn - _pn
+                _pc = f"{(_d / _pn * 100):+.1f}%" if _pn else "?"
+                _kk.append(f"★ {_k} **{_pv} → {_qv}**（**{_pc}**）")
+            except (TypeError, ValueError, ZeroDivisionError):
+                _kk.append(f"★ {_k} **{_pv} → {_qv or '?'}**")
+        # ★★ **方向结论由 live 值推出**（★ 不硬编码）
+        try:
+            _dp = float(field_str(_post_kind_raw, "periodic")) - float(_m5fx.get("pre24_kind_periodic"))
+        except (TypeError, ValueError):
+            _dp = None
+        _dir = ("★ ★★ **periodic 反降**（★ 爆炸半径的直接代理是 periodic 调度量 ⇒ ★ 它降 ⇒ ★ 不是调度失控）"
+                if (_dp is not None and _dp < 0) else
+                "★ ★★ **periodic 未下降**（★ ⇒ ★★ 「爆炸半径失控」这一读法**不能**被排除 ⇒ ★★ 须按真实增量对待）")
+        kind_txt = (f"⇒ ★★ **pre24 → post24 的 by_kind 对拍**（★ pre 侧锚定切点 ⇒ 时钟无关；★ post 侧 = 本行窗口）："
+                    f"{' ｜ '.join(_kk)} ⇒ ★★ {_dir}")
+    else:
+        kind_txt = ("⇒ ★★ **by_kind 对拍不可见**（★ 期望值登记表或 post 侧 by_kind 键读不到 ⇒ ★★ "
+                    "增量来源不可分辨 ⇒ ★★ 不得断言归因）")
     txt = (f"★ 基线口径：★ M5 的 base = **pre24 单日快照**（9242）⇒ ★ 而探测量**按天波动**"
            f"（★ pre7d 逐日（★ 按**日历日**切 ⇒ 7 天窗口跨 8 个日历日）min={dmin} / max={dmax}"
            f" ⇒ **{ratio} 差距**；★ n_days={nd}）"
            f"⇒ ★★ **pre 期已有 {over}/{total_days} 个日历日超预算 {lim}** ⇒ ★★ 该阈值**在 pre 期就不成立**"
-           f"⇒ ★★ 故本行 ❌ **不可归因于修复**（★ post 逐日：{post_days}）")
+           f"⇒ ★★ 故 **「❌ ⇒ 修复引起爆炸半径」这个读法不成立**"
+           f"⇒ ★★★ **★ 但「不可归因于修复」这半也不成立（★ 第 31 处修正）**：★ 增量按 **下面的 by_kind 对拍**"
+           f"**看来源**（★ 方向由 live 值推出，★ 不硬编码）⇒ ★★ **正确读法 = 预算口径过时（单日快照）+ 增量按 by_kind 归因**"
+           f"⇒ ★★ **既不能读成「爆炸半径失控」，★ 也不能读成「与修复无关」**"
+           f"⇒ {eq_txt}"
+           f"{kind_txt}"
+           f"⇒ ★★ （post 逐日：{post_days}）")
     return txt
 
 
@@ -384,6 +532,8 @@ def rounding_disclosure(raw_text, threshold, *, slack: float = 0.5, what: str = 
     ★ ⇒ ★★ **实测（M20 豁免组）**：post raw p90 = **360.5069** min ⇒ `::int` = **361**
     ★   而基线取整值 = **360** ⇒ 基线真值 ∈ [359.5, 360.5)
     ★   ⇒ ⇒ **真实差 ∈ (0.01, 1.01] 分钟 ⇒ 上界 ≈ 60 秒（= 判据的整个分辨率）** ⇒ ⇒ **判 ❌** ⇒ ★★ **假红**
+    ★   ⇒ ⇒ ★★ **更锋利的实测（★ 同一份诊断 SQL 同时读到 pre24 的 raw）**：★ pre24 **raw** p90 = **360.2095**
+    ★     ⇒ ⇒ **实测真实差 = 0.2974 分钟 = 17.8 秒** ⇒ ⇒ **比判据的 1 分钟分辨率细 ~3.4 倍** ⇒ ⇒ **那个 ❌ 几乎就是噪声**
     ★ ⇒ ★★ **同款形态在第 23 处已于 M14/M14x 的 `p99 361 vs 360` 上出现** ⇒ ★★ **同一类缺陷**
 
     ★★★★ **纪律（★ 本轮处置）**：
@@ -451,6 +601,50 @@ def percentile_fragility_disclosure(n_post, n_pre, pct_label: str) -> str:
             f"★ 只差 1 条新事件就可能从 31 跳到 360）"
             f"⇒ ★★ ⇒ ★ **本 ❌ 必须与「关窗当天真读」比**（★ 窗口越满 ⇒ n 越大 ⇒ 越稳）"
             f"⇒ ★★ 且 {pct_label} 的**真实差**须配合 ㉭ 的 raw 读数一起读")
+
+
+def cross_window_disclosure(mature_n, fp_n_all, window_n=None, tail_n=None) -> str:
+    """★★★ 第 13 处纪律的**最后一个候选点**：★★ **同一行里并列出现的两个 n 可能来自不同窗口**
+
+    ★★ **形态（★ 211 真库实测，★ 2026-11-11 05:2x）**：★ M20 的 post 段有**两个视图**：
+    ★ · **成熟视图**（★ `M20_<层>_post`）：★ 带两道只对「已结算段」成立的过滤
+    ★   （★ ① `fail_at < now() - 6h`（成熟度）★ ② `next_at IS NOT NULL`（LEAD 必须找到下一次探测））
+    ★   ⇒ ★★ 它覆盖到「读数时刻 − 6h」
+    ★ · **指纹视图**（★ `M20_<层>_post_fp`）：★ 无成熟度过滤、无 next_at 要求 ⇒ ★★ 覆盖到「读数时刻」
+    ★ ⇒ ★★ 两个视图的 **n 本来就不同**（★ 成熟视图 = fp 视图 − 尾部 6h − 无 next_at 的那部分）
+    ★ ⇒ ★★ ⇒ ★★ **把两个 n 并列写在一行、却不标明各自窗口** ⇒ ★★ 读者会自然地拿它们相比
+    ★   ⇒ ★★ **读成「fp 比成熟视图多出 X 条 ⇒ 尾部有回归」** ⇒ ★★ **这是误读**
+    ★   （★ 那 X 条**本来就该在 fp 里** ⇒ ★★ 指纹分量的设计就是要看见它们）
+    ★ ⇒ ★★ ⇒ **行内必须显式给出两个 n 各自的窗口**（★ 这也是第 26 处「跨窗比分位数必须同时报两边的 n」的同款）
+
+    ★ ★★ **处置**：★ **只披露，不改裁决符号**（★ ❌ 仍是 ❌ ⇒ 门不钝化）
+    ★ ★★ **不制造噪声**：★ 两个 n 相等 ⇒ 无混淆风险 ⇒ 不披露。
+    """
+    if mature_n is None or fp_n_all is None:
+        return ""
+    try:
+        mature_n = float(mature_n)
+        fp_n_all = float(fp_n_all)
+    except (TypeError, ValueError):
+        return ""
+    if fp_n_all == mature_n:
+        return ""      # ★ 两视图同数 ⇒ 不披露（★ 不得制造噪声）
+    tail_txt = ""
+    if window_n is not None and tail_n is not None:
+        try:
+            tail_txt = (f"（★ 切分：成熟段 {float(window_n):.0f} 条 + 尾部 6h {float(tail_n):.0f} 条"
+                        f" = fp {fp_n_all:.0f} 条）")
+        except (TypeError, ValueError):
+            tail_txt = ""
+    diff_txt = ""
+    if fp_n_all > mature_n:
+        diff_txt = (f"（★ fp 多出的 {fp_n_all - mature_n:.0f} 条**本来就该在 fp 里**"
+                    f" ⇒ ★ **不是「尾部有回归」）")
+    return (f" ★ ⚠️ **两个 n 不同窗口（第 13 处纪律）**：★ 成熟视图 n={mature_n:.0f}"
+            f"（★ 覆盖到「读数时刻 − 6h」⇒ ★ **慢事件需结算**）"
+            f" vs fp 视图 n_all={fp_n_all:.0f}"
+            f"（★ 覆盖到「读数时刻」⇒ ★ **指纹无需结算**）{tail_txt}"
+            f" ⇒ ★★ **两个 n 不可直接相减/相比**{diff_txt}")
 
 
 def control_phase_disclosure(data: dict[str, str], scope: str, pre_med: float) -> str:
@@ -1275,12 +1469,18 @@ def judge(data: dict[str, str], stage: int = 1,
             obs_txt = (f"【指纹·fp】{fobs or '—（键未产出）'}"
                        f" || 【slow·成熟】{obs or '—（未结算）'}"
                        f" || 【摇摆】{sw or '—（键未产出）'}")
+            # ★★★★ 第 13 处纪律的最后一处候选点：★ **同一行里两个 n 来自不同窗口** ⇒ 必须显式标明
+            _split_e = data.get(f"M20_{lay}_post_split")
+            xwin_txt = cross_window_disclosure(n, field(fobs, "n_all"),
+                                                field(_split_e, "window_n"),
+                                                field(_split_e, "tail_n"))
             rows.append((label, base_txt, obs_txt,
                          verdict(ok, f"★ 【指纹·fp 视图（★ 无成熟度过滤 ⇒ 尾部不被截断）】{fp_txt}"
                                    f" / ★ 【slow·成熟视图（★ 需 6h 结算）】{slow_txt}{p90_txt}"
                                    f" / ★ 【摇摆（★ featured 状态稳定性）】{swing_txt}"
                                    f"（★ ★ 两分量**跨度不同**：★ 指纹覆盖到「读数时刻」，"
                                    f"★ slow 覆盖到「读数时刻 − 6h」⇒ ★ 行内数字不可直接相加）"
+                                   f"{xwin_txt}"
                                    f"{bias_txt}{contam_txt}")))
         else:
             if n is None or n < 10:
@@ -1308,11 +1508,16 @@ def judge(data: dict[str, str], stage: int = 1,
                 if _ftop is not None:
                     fctl = (f" ★（★ 对照：豁免类在 fp 口径的未减半 6h 顶格 {_ftop:.0f} 条"
                             f"（★ 设计上钉 6h ⇒ **期望 >0** ⇒ 若为 0 ⇒ 说明分层或机制变了））")
+            # ★★★★ 第 13 处纪律的最后一处候选点：★ **本行同时引用了两个视图** ⇒ 两个 n 必须标明窗口
+            _split_x = data.get(f"M20_{lay}_post_split")
+            xwin_txt = cross_window_disclosure(n, field(fobs, "n_all"),
+                                                field(_split_x, "window_n"),
+                                                field(_split_x, "tail_n"))
             rows.append((label, base_txt, obs,
                          verdict(ok, f"★ 豁免类（★ 协议形态：设计上钉 6h、乘数豁免）post p90_gap={p90:.0f}"
                                    f"（期望 ≤{pre_p90}）/ 慢事件 {slow}%（期望 ≤{lim_slow}%；★ {pre_slow_src}：{pre_slow_eff}%）"
                                    f" ⇒ {'未变慢（不回归成立）' if ok else '★ 豁免类被拖慢'}"
-                                   f"（★ n={n}）{fctl}{contam_txt}{rnd_txt}")))
+                                   f"（★ n={n}）{fctl}{xwin_txt}{contam_txt}{rnd_txt}")))
 
     # ── M11：episode 层症状 ──────────────────────────────────────────
     for tag, label, bkey in (("namespaced", "M11 namespaced 恢复感知时延", "M11_ns_pre"),
@@ -1517,6 +1722,12 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
                                  " | max=9905 | total=48502"),
         "M5_post_runs_by_day": ("days=11-10:4218,11-11:115 | n_days=2 | min=115"
                                 " | max=4218 | total=4333"),
+        # ★★★ 第 31 处：★ M5 的「**等长滚动 24h**」基线分布（★ 真捕获 2026-11-11 03:4x / 211）
+        #   ★★ **端点锚定 era 切点 ⇒ 时钟无关** ⇒ ★★ 由 clockcheck 的 CLOCK_INDEP_KEYS 单独查
+        #   ★★ ⇒ ★★ **不进 M18 冻结对拍** ⇒ ★★ **不触发重冻**（★ 与 `M5_pre7d_runs_by_day` 同款定位）
+        "M5_roll24_pre7d_dist": ("n=145 | min=2467 | mean=7037.5 | p50=7871 | p75=9755"
+                                 " | p90=10417 | p95=10693 | max=11197 | sum=1020438"
+                                 " | each_window_hours=24"),
         # ★ 2026-11-11 关窗预演补：★ M5 的 **by_kind 分解**（★ 真捕获 2026-11-11 00:5x / 211；
         #   ★★ now()-锚定滚动 24h 窗（与 M5 主键同窗）⇒ **不进** CLOCK_INDEP_KEYS
         #   ★（★ 关窗时刻 now=切点+24h ⇒ 读数恰好 = 纯 post 段））
@@ -1672,6 +1883,43 @@ def _synthetic(pass_case: bool) -> dict[str, str]:
                 " | normal_top3600_n=0 | normal_top7200_n=0 | normal_top21600_n=1"
                 " | normal_ladder_max_s=21600")
     return d
+
+
+def _load_expected_facts(filename: str) -> dict[str, str]:
+    """★ 读「期望值登记表」（★ **独立文件** ⇒ ★★ 判据字面量与被守卫内容**不同源** ⇒ ★ 守卫不会被同源变异致盲）
+
+    ★★ 形态（本轮真踩到，★ LESSONS §679）：★ 守卫的判据字面量若与被守卫的事实住在**同一个文件**里
+    ★★   ⇒ ★★ 变异「事实」时会**把判据一起改掉** ⇒ ★★ 守卫被致盲 ⇒ ★★ 「变异打不中」会被误读成「守卫没牙」
+    ★★ ⇒ ★★ 隔离层 = ★ 把期望值放到**另一个文件** ⇒ ★ 只改内容不改判据 ⇒ ★ 守卫照样红
+
+    ★ 格式：``key|value`` 逐行（★ 与 fixtures/ 下既有夹具同格式）；★ ``#`` 开头为注释；★ 值为空 = 该事实此刻不成立
+    """
+    p = Path(__file__).resolve().parent / "fixtures" / filename
+    out: dict[str, str] = {}
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "|" not in line:
+            continue
+        k, v = line.split("|", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+_M5_FX_CACHE: dict[str, str] | None = None
+
+
+def _load_m5_fixture() -> dict[str, str]:
+    """★ 读 M5 的**期望值登记表**（★ 独立夹具 ⇒ ★★ 判据字面量与被守卫内容**不同源** ⇒ ★ 同源变异打不中它）
+
+    ★★ 读不到 ⇒ 返回空 dict（★ 行内披露写「不可见」）★ ★★ 但自测会 **fail-closed**（★ 不可判 ≠ 没发现问题）
+    """
+    global _M5_FX_CACHE
+    if _M5_FX_CACHE is None:
+        try:
+            _M5_FX_CACHE = _load_expected_facts("p0-3-m5-baseline-pre7d.txt")
+        except Exception:
+            _M5_FX_CACHE = {}
+    return _M5_FX_CACHE
 
 
 def selftest() -> int:
@@ -2290,8 +2538,17 @@ def selftest() -> int:
 
     # ㉠ ★★★★ **诚实边界必须包含「M5 的 ❌ 不可归因于修复」这条**（★ 第 22 处口径修正）
     hb = "\n".join(honest_boundary_lines())
-    if "M5" not in hb or "基线口径" not in hb:
-        failures.append("[㉠ 诚实边界] 缺少「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」边界")
+    # ★★★ 第 31 处：★ **期望串从夹具取**（★ ★ 第 30 处的隔离层 ⇒ ★ 同源变异打不中本守卫）
+    #   ★★ 形态（★ 本轮当场复现）：★ 若这里写死字面量 ⇒ ★★ 同源变异会把**判据与事实一起改掉** ⇒ ★★ 守卫致盲
+    _m5fx_t = _load_m5_fixture()
+    _mk_base = _m5fx_t.get("guard_marker_m5_baseline", "")
+    _mk_half = _m5fx_t.get("guard_marker_half_truth", "")
+    if not _mk_base or _mk_base not in hb:
+        failures.append(f"[㉠ 诚实边界] 缺少「M5 的 ❌：★ 阈值口径无效 ⇒ 「爆炸半径失控」不成立」边界"
+                        f"（★ 期望标记 = {_mk_base or '?（★ 夹具读不到 ⇒ 不可判）'}）")
+    if not _mk_half or _mk_half not in hb:
+        failures.append(f"[㉠ 诚实边界] 缺少「M5 的 ❌ 的**另一半**（★ 「阈值无效」不推出「增量与修复无关」）」"
+                        f"（★ 期望标记 = {_mk_half or '?（★ 夹具读不到 ⇒ 不可判）'}）")
 
     # ㉣ ★★★★ **诚实边界必须包含「负控几何」这条**（★ 第 23 处口径修正）
     hb = "\n".join(honest_boundary_lines())
@@ -2372,6 +2629,39 @@ def selftest() -> int:
             failures.append("[㉬ 穷举审计守卫] 审计器一个读数块都没解析出来（★ 口径失效 ⇒ 守卫是假门）")
     except Exception as e:  # ★ 读不到/跑不动 ⇒ 必须判失败（★ 不得静默跳过）
         failures.append(f"[㉬ 穷举审计守卫] 读不到/跑不动穷举审计器 ⇒ {e}")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ㉳ ★★★★ **第 27 处：★ 「审计器自己也要被审计」⇒ ★★ 覆盖率守卫 + 边界 ㉲ 必须存在**
+    #   ★★ 形态（★ 本轮真踩到）：★ 第 25 处的审计器 v1 **看不见 M14/M14x 主判据块**
+    #   ★★   （★ 键是 CASE 表达式 ⇒ v1 的键提取抓不到 ⇒ ★★ 覆盖率 0%）
+    #   ★★   ⇒ ★★ v1 报「全部合规」时，★ **没人知道它没看过主判据** ⇒ ★★ 静默失效
+    #   ★★★ ⇒ ★★★ 守卫必须做两件事：★ ① **断言覆盖到的块数与关键块可见**
+    #   ★★★   ② ★ **断言新边界 ㉲ 存在**（★ 归档档 ≠ 报告里能看见 ⇒ 等于没发现）
+    # ═══════════════════════════════════════════════════════════════════════
+    if "㉲" not in hb:
+        failures.append("[㉳ 诚实边界] 缺少「审计器自己也要被审计 ⇒ 守卫必须报告覆盖率 + 窗口必须逐个判定」边界（★ 第 27 处）")
+    if "覆盖率" not in hb or "post_fix" not in hb:
+        failures.append("[㉳ 诚实边界] 缺少第 27 处的两个关键事实：★ 覆盖率（M14/M14x 曾为 0%）与 ★ era 词表漏 `post_fix`")
+    try:
+        import importlib.util as _ilu3
+        _auditp3 = Path(__file__).with_name("recovery-detection-p0-3-post-bound-audit.py")
+        _spec3 = _ilu3.spec_from_file_location("p0_3_audit_cov", _auditp3)
+        _am3 = _ilu3.module_from_spec(_spec3)
+        _spec3.loader.exec_module(_am3)
+        _rows3, _viol3 = _am3.audit(_am3.SQL_PATH.read_text(encoding="utf-8"))
+        _cov3 = _am3.coverage(_rows3)
+        # ★★ ① 覆盖率守卫：★ 关键块必须可见（★ 否则「审计器自己瞎了」）
+        if _cov3["missing_required"]:
+            failures.append(f"[㉳ 覆盖率守卫] 审计器看不见这些关键块 ⇒ ★★ 它对它们的「合规」结论是**空的** ⇒ {_cov3['missing_required']}")
+        # ★★ ② 覆盖到的块数下界（★ v1 只解析 37 块且主判据不可见 ⇒ 现在 38 块全可见）
+        if _cov3["n_blocks"] < 38:
+            failures.append(f"[㉳ 覆盖率守卫] 审计器解析到的读数块数 { _cov3['n_blocks'] } < 38 ⇒ ★★ 覆盖面回退 ⇒ ★★ 可能是键提取又退化了")
+        # ★★ ③ 行为守卫：★ 主判据块必须**在**被检查的列表里（★ v1 时它不在）
+        _pfx3 = [r["prefix"] for r in _rows3]
+        if not any(p.startswith("M14x_") for p in _pfx3):
+            failures.append("[㉳ 覆盖率守卫] **M14/M14x 主判据块不在审计器的可见列表里** ⇒ ★★ v1 的老问题又回来了")
+    except Exception as e:  # ★ 读不到/跑不动 ⇒ 必须判失败（★ 不得静默跳过）
+        failures.append(f"[㉳ 覆盖率守卫] 读不到/跑不动穷举审计器 ⇒ {e}")
 
     # ㉨ ★★★★ **跨脚本**行为**守卫：★ 负控必须真的要求「M11 namespaced 判负」（★ 第 24 处口径修正）
     #   ★★ 形态：★ 若负控脚本里这条要求被回退（★ 或被改成两个 stage 共用）
@@ -2499,6 +2789,286 @@ def selftest() -> int:
         failures.append(f"[㉱ 小样本披露] post n 与 pre n 相当（200 vs 226）时**不得**出现「小样本分位数不稳」"
                         f"（★ 守卫必须是结构判据，不是关键词匹配）⇒ {_v26e}")
 
+    # ㉴ ★★★★ **第 13 处纪律的最后一个候选点**：★ 「同一行里两个 n 来自不同窗口」的披露必须出现
+    #   ★★ 形态：★ M20 的**豁免行**也引用了 fp 视图（★ 对照读数：未减半 6h 顶格）⇒ ★★ 一行里出现两个 n
+    #   ★★   ⇒ ★★ 读者会自然地拿它们相比 ⇒ ★★ 读成「fp 多出的 X 条 ⇒ 尾部有回归」⇒ ★★ **误读**
+    #   ★★ ⇒ ★★ 行内必须显式标明两个 n 各自的窗口
+    #   ★★ ⇒ ★★ 断言必须是**行为级**（★ 真的构造两个视图 n 不同的数据再跑 judge）
+    if "㉔" not in hb or "两个 n" not in hb:
+        failures.append("[㉴ 诚实边界] 缺少「同一行里出现两个 n 时必须标明各自窗口」这条边界（★ 第 13 处纪律）")
+    if "豁免" not in hb or "fp 视图" not in hb:
+        failures.append("[㉴ 诚实边界] 缺少「豁免行同样引用 fp 视图 ⇒ 两个 n 同源不同窗」这个关键事实")
+    # ★★ **行为守卫**：★ 合成数据里成熟视图 n=57、fp 视图 n_all=4 ⇒ ★ 必须行内披露
+    _d27 = _synthetic(True)
+    _rows27, _, _ = judge(_d27, stage=1)
+    _v27 = rows_by_label(_rows27).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "两个 n 不同窗口" not in _v27:
+        failures.append(f"[㉴ 跨窗口披露] M20 豁免行同时引用两个视图时必须行内披露"
+                        f"「两个 n 不同窗口」（★ 第 13 处纪律）⇒ {_v27}")
+    if "n=57" not in _v27 or "n_all=4" not in _v27:
+        failures.append(f"[㉴ 跨窗口披露] 披露里必须**同时给出两个 n 的数字**（★ 成熟 57 / fp 4）⇒ {_v27}")
+    # ★★ **反向守卫**：★ 两个 n 相等 ⇒ **不得**出现该披露（★ 不得制造噪声）
+    _d27b = _synthetic(True)
+    _d27b["M20_exempt_post_fp"] = ("n_all=57 | top21600_n=4 | top10800_n=0 | mul_evidence_n=0"
+                                   " | ladder_p50=360 | ladder_max_s=21600")
+    _rows27b, _, _ = judge(_d27b, stage=1)
+    _v27b = rows_by_label(_rows27b).get("M20 新覆盖组·豁免（★ 不回归守卫）", "<缺行>")
+    if "两个 n 不同窗口" in _v27b:
+        failures.append(f"[㉴ 跨窗口披露] 两个视图的 n 相等（57 vs 57）时**不得**出现「两个 n 不同窗口」"
+                        f"（★ 守卫必须是结构判据，不是关键词匹配）⇒ {_v27b}")
+
+    # ㉵ ★★★★ **第三次跨构建（★ 11-11 02:06:59）**：★ 四条关键事实 + 1 分钟缺口披露 + 两条新纪律
+    #   ★★ 形态：★ post 窗口**第三次**跨构建 ⇒ ★★ 「机制连续」的结论必须落在**可复核证据**上
+    #   ★★   ⇒ ★★ 这四条事实（★ 事件链 / ★ 代码腿 / ★ 数据腿 / ★ 形态腿）必须**留在打印文本里**
+    #   ★★   ⇒ ★★ 否则「era 切点为何不重划」这句话**后人无从复核**（★ 同 §671 的教训）
+    #   ★★ ⇒ ★★ 且 ★ **「探针未中断」不能写成「零中断」**（★ 部署瞬间有 1 分钟停探）⇒ ★★ 必须带量化
+    #   ★★ ⇒ ★★ 本块的守卫是**文本级**的（★ 这四条是**观测事件**的事实、不是可由 judge() 计算的行为）
+    #   ★★   ⇒ ★★ 但仍必须有：★ **退回「两次」版 ⇒ 必须报警**（★ 这正是本轮要防的回归）
+    #   ★★ ⇒ ★★ ★★ **★★ 期望值必须「分文件」（★ 本轮真踩到 ⇒ LESSONS §679）**：
+    #   ★★   形态：★ 守卫的**判据字面量**与**被守卫的事实**住在**同一个文件**里
+    #   ★★     ⇒ ★★ 变异「事实」时会**把判据一起改掉** ⇒ ★★ 守卫被**同源变异**致盲
+    #   ★★     ⇒ ★★ 「变异打不中」会被误读成「守卫没牙」⇒ ★★ 真因是「守卫自己被改瞎了」
+    #   ★★   ⇒ ★★ 修法：★ 期望值登记到**独立夹具**（★ fixtures/p0-3-deploy-events.txt）
+    #   ★★     ⇒ ★★ 只改 verdict.py 的边界文本 ⇒ ★★ 判据不动 ⇒ ★★ 守卫照样红
+    #   ★★ ⇒ ★★ ★★ **fail-closed**：★ 登记表读不到 ⇒ ★★ **不可判**（★ 不得静默跳过）
+    try:
+        _facts = _load_expected_facts("p0-3-deploy-events.txt")
+    except Exception as _e:
+        _facts = {}
+        failures.append(f"[㉵ 期望值登记表] 读不到 `fixtures/p0-3-deploy-events.txt` ⇒ ★★ 守卫的期望值必须"
+                        f"**独立于**被守卫内容 ⇒ ★★ 缺失 ⇒ **不可判**（★ 不得静默跳过）⇒ {_e}")
+    for _k, _v in sorted(_facts.items()):
+        if _v and _v not in hb:
+            failures.append(f"[㉵ 期望值登记表] 诚实边界缺少登记事实 {_k}={_v} ⇒ ★★ 「次数」与「列举」必须一致"
+                            f" ⇒ ★ 否则「era 切点为何不重划」这句话后人无从复核")
+    # ★★ **反向守卫**：★ 旧的「两次」措辞不得残留（★ 与「三次」自相矛盾 ⇒ ★★ 文字层面的内部不一致）
+    #   ★★ ★★ 这条**不受同源变异影响**：★ 变异是「往边界里**注入**」旧措辞 ⇒ ★ 判据侧不变 ⇒ ★ 照样红
+    if "两次部署" in hb or "第二次部署" in hb:
+        failures.append("[㉵ 事件链] 诚实边界里仍残留「两次部署 / 第二次部署」的旧措辞 ⇒ ★★ 与「已跨三次构建」自相矛盾")
+
+    # ㉶ ★★★★ **第 31 处：★ 「阈值口径无效」≠「增量与修复无关」⇒ ★★ 两半必须同时披露**
+    #   ★★ 形态（★ 真踩到）：★ M5 的 ❌ 曾只写「不可归因于修复」⇒ ★★ 与同一行的 by_kind 增量归因**自相矛盾**
+    #   ★★   ⇒ ★★ 关窗报告若照抄 ⇒ ★★ 会漏掉一个**真实且可解释**的增量 ⇒ ★★ ⇒ ★★ 必须先修
+    #   ★★ ⇒ ★★ 期望值放**独立夹具**（★ 承第 30 处 ⇒ ★★ 同源变异打不中它）
+    try:
+        _m5fx = _load_expected_facts("p0-3-m5-baseline-pre7d.txt")
+    except Exception as _e:
+        _m5fx = {}
+        failures.append(f"[㉶ 期望值登记表] 读不到 `fixtures/p0-3-m5-baseline-pre7d.txt` ⇒ ★★ **不可判**"
+                        f"（★ 不得静默跳过 ⇒ ★★ 「读不到判据」≠「没发现问题」）⇒ {_e}")
+    # ★★ ① 夹具里的每个期望值必须出现在**边界文本**里（★ 隔离层 ⇒ 同源变异打不中）
+    #   ★★ ★ 注意：`guard_` 前缀的是**守卫专用期望串**（★ 有的必须出现、有的必须**不**出现）⇒ ★ 不进本循环
+    for _k, _v in sorted(_m5fx.items()):
+        if _k.startswith("guard_"):
+            continue
+        if _v and _v not in hb:
+            failures.append(f"[㉶ 期望值登记表] 诚实边界缺少登记事实 {_k}={_v} ⇒ ★★ 「次数」与「列举」必须一致"
+                            f" ⇒ ★ 否则「阈值无效 ≠ 增量不可归因」这句话读者无从复核")
+    # ★★ ② **反向守卫**：★ 旧的**错误断言句**不得残留（★ 期望串同样从夹具取 ⇒ ★★ 同源变异打不中）
+    _forbid = _m5fx.get("guard_forbidden_old_claim", "")
+    if _forbid and _forbid in hb:
+        failures.append(f"[㉶ 事件链] 诚实边界里仍残留「{_forbid}」这句**错误断言**"
+                        f" ⇒ ★★ 与 by_kind 增量归因**自相矛盾**（★ 第 31 处）")
+    # ★★ ③ **行为守卫**：★ M5 判 ❌ 时行内必须给出「等长 24h 基线」的**两个数字**（★ 第 28 处纪律）
+    _d31 = _synthetic(True)
+    # ★★ 守卫必须打在 **M5 判 ❌** 的场景上（★ 基线合成场景是 9228 ≤ 9334 ⇒ ✅ ⇒ 披露不渲染）
+    _d31["M5_probe_runs_24h"] = "9800 total | free=1900"
+    _rows31, _, _ = judge(_d31, stage=1)
+    _v31 = rows_by_label(_rows31).get("M5 24h 探测量", "<缺行>")
+    if "等长 24h" not in _v31:
+        failures.append(f"[㉶ 行内披露] M5 判 ❌ 时必须给出「等长 24h 基线」的口径（★ 与裁决窗口同量纲）⇒ {_v31}")
+    if "p50" not in _v31 or "p75" not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须给出 pre 侧等长分布的 **p50 / p75**（★ 两边数字 ⇒ 读者能自行判读）⇒ {_v31}")
+    if "爆炸半径失控" not in _v31 or "与修复无关" not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须同时出现两半：「爆炸半径失控」不成立 **且**「与修复无关」不成立 ⇒ {_v31}")
+    # ★★ ④ **反向守卫（行为级）**：★ 旧措辞不得出现在 M5 行内（★ 期望串从夹具取）
+    _forbid_row = _m5fx.get("guard_forbidden_old_claim", "")
+    if _forbid_row and _forbid_row in _v31:
+        failures.append(f"[㉶ 行内披露] M5 行内仍写「{_forbid_row}」⇒ ★★ 与同行的 by_kind 增量归因矛盾 ⇒ {_v31}")
+    # ★★★ ★★ **判据必须是结构而不是关键词**（★ 本轮 mutation 抓到的第二个真缺陷）：
+    #   ★★ 弱判据 `if "等长 24h" not in _v31` ⇒ ★★ 变异整段后，**兜底分支**里的「等长 24h 基线不可见」
+    #   ★★ **仍然命中该关键词** ⇒ ★★ 守卫打不中 ⇒ ★★ ⇒ ★★ 改为断言**具体数值** + **禁止兜底分支**
+    _m5_p50 = _m5fx.get("roll24_p50", "")
+    _m5_p75 = _m5fx.get("roll24_p75", "")
+    if _m5_p50 and _m5_p50 not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须给出 pre 侧等长分布的 **p50 = {_m5_p50}**（★ 具体数值 ⇒ 读者能自行判读）⇒ {_v31}")
+    if _m5_p75 and _m5_p75 not in _v31:
+        failures.append(f"[㉶ 行内披露] 必须给出 pre 侧等长分布的 **p75 = {_m5_p75}**（★ 具体数值 ⇒ 读者能自行判读）⇒ {_v31}")
+    if "等长 24h 基线不可见" in _v31:
+        failures.append(f"[㉶ 行内披露] 分布键已产出却写「等长 24h 基线不可见」⇒ ★★ 兜底分支误触发 ⇒ {_v31}")
+    if "by_kind 对拍不可见" in _v31:
+        failures.append(f"[㉶ 行内披露] by_kind 两侧都在却写「by_kind 对拍不可见」⇒ ★★ 兜底分支误触发 ⇒ {_v31}")
+
+    # ★★★ 第 32 处（★ 2026-11-11 04:2x +08）：★ **重复键守卫**（★ 一对多采集 ⇒ 解析器**静默折叠**）
+    #   ★★ 期望值**与期望串**都登记在**独立夹具** ⇒ ★★ 判据侧与被守卫内容**不同源**（★ LESSONS §680/§682）
+    try:
+        _kg = _load_expected_facts("p0-3-key-grain.txt")
+    except Exception as exc:
+        _kg = {}
+        failures.append(f"[㉷ 期望值登记表] 读不到 `fixtures/p0-3-key-grain.txt`（★ {exc}）⇒ ★★ **不可判**"
+                        f"（★ 不得静默跳过 ⇒ ★ 「读不到判据」≠「没发现问题」）")
+    for _k in ("raw_rows_before", "unique_keys_before", "folded_rows_before",
+               "h5_rows", "h5_old_key", "h5_key_prefix", "m10_diff_key_prefix",
+               "guard_marker_dup_guard", "guard_marker_grain_hint",
+               "guard_marker_conflict", "guard_marker_same_value"):
+        if _k not in _kg:
+            failures.append(f"[㉷ 期望值登记表] 缺事实 {_k} ⇒ ★★ **不可判**")
+
+    # ② ★★ 异值重复 ⇒ 必须被抓（★ 断言落到**结构**：★ 键名 + 不同值个数 + 不同值列表）
+    _conf = "k|1\nk|2\n"
+    _dups = scan_duplicate_keys(_conf)
+    if len(_dups) != 1 or _dups[0][0] != "k" or _dups[0][1] != ["1", "2"]:
+        failures.append(f"[㉷ 重复键扫描] 异值重复未被抓或抓错：★ {_dups}")
+    # ③ 同值重复 ⇒ **也要**被抓（★ 同值也是**粒度错配**的信号 ⇒ ★ 这次同值 ≠ 下次同值）
+    _same = "k|1\nk|1\n"
+    _dups2 = scan_duplicate_keys(_same)
+    if len(_dups2) != 1 or _dups2[0][0] != "k" or _dups2[0][1] != ["1"]:
+        failures.append(f"[㉷ 重复键扫描] 同值重复未被抓或抓错：★ {_dups2}")
+    # ④ ★★ `parse_strict` 必须 **fail-closed**（★ 抛 SystemExit ⇒ 脚本 rc≠0 ⇒ 门有牙）
+    for _nm, _raw in (("异值", _conf), ("同值", _same)):
+        try:
+            parse_strict(_raw, where="selftest")
+            failures.append(f"[㉷ fail-closed] {_nm}重复 ⇒ `parse_strict` **没有**抛错 ⇒ ★★ 守卫没牙")
+        except SystemExit:
+            pass
+    # ⑤ 干净输入 ⇒ 不抛错、且 **键数 == 行数**（★ 折叠数必须为 0）
+    try:
+        _d = parse_strict("a|1\nb|2\n", where="selftest")
+        if len(_d) != 2:
+            failures.append(f"[㉷ 干净输入] 键数应为 2，实际 {len(_d)}")
+    except SystemExit:
+        failures.append("[㉷ 干净输入] `parse_strict` 对干净输入抛错 ⇒ ★★ 守卫过严")
+
+    # ⑥ ★★★ **历史缺陷形态必须被抓**（★ 真库实测的旧 H5 形态：★ 同键 10 行、★ 10 个不同值）
+    _h5_rows = int(_kg.get("h5_rows", "0") or 0)
+    _old_key = _kg.get("h5_old_key", "")
+    if _old_key and _h5_rows >= 2:
+        _hist = "".join(f"{_old_key}|m{i} | probes_24h={i}\n" for i in range(_h5_rows))
+        _dh = scan_duplicate_keys(_hist)
+        if len(_dh) != 1 or len(_dh[0][1]) != _h5_rows:
+            failures.append(f"[㉷ 历史形态] 旧 H5 形态（同键 {_h5_rows} 行异值）未被如实抓到：★ {_dh}")
+        if len(parse(_hist)) != 1:
+            failures.append("[㉷ 历史形态] 宽松解析对旧 H5 形态**没有**折叠成 1 键 ⇒ ★★ 场景不真实")
+        try:
+            parse_strict(_hist, where="selftest")
+            failures.append("[㉷ 历史形态] `parse_strict` 对旧 H5 形态**没有**抛错 ⇒ ★★ 守卫没牙")
+        except SystemExit:
+            pass
+
+    # ⑦ ★★★ **修复后形态**：★ 一模型一键 ⇒ ★ 键数 == 行数 ⇒ ★ **逐模型读数全部可见**
+    _pre = _kg.get("h5_key_prefix", "")
+    if _pre and _h5_rows >= 2:
+        _new = "".join(f"{_pre}m{i}|probes_24h={i}\n" for i in range(_h5_rows))
+        try:
+            _dn = parse_strict(_new, where="selftest")
+        except SystemExit:
+            _dn = {}
+            failures.append("[㉷ 修复后形态] 一模型一键**反而**被抓 ⇒ ★★ 守卫过严")
+        if len(_dn) != _h5_rows:
+            failures.append(f"[㉷ 修复后形态] 键数应为 {_h5_rows}（★ 逐模型各一键），实际 {len(_dn)}")
+        if _dn.get(f"{_pre}m0") != "probes_24h=0":
+            failures.append(f"[㉷ 修复后形态] 逐模型读数不可见：★ {_dn.get(f'{_pre}m0')!r}")
+        # ★★ 反向守卫：★ 旧的**常量键**形态不得再出现（★ 用**整行完全相等**判 ⇒ 不被前缀误命中）
+        if any(k == _old_key for k in _dn):
+            failures.append("[㉷ 修复后形态] 仍出现旧的常量键形态 ⇒ ★★ 采集侧没改干净")
+
+    # ⑧ ★★★ 守卫的**期望串**必须真的出现在守卫输出里（★ 从夹具取 ⇒ ★★ 同源变异打不中判据）
+    _buf = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(_buf):
+            parse_strict(_conf, where="selftest")
+    except SystemExit:
+        pass
+    _msg = _buf.getvalue()
+    for _mk in ("guard_marker_dup_guard", "guard_marker_grain_hint",
+                "guard_marker_conflict", "guard_marker_same_value"):
+        _v = _kg.get(_mk, "")
+        if not _v:
+            failures.append(f"[㉷ 期望串] 夹具缺 {_mk} ⇒ ★★ 不可判")
+        elif _v not in _msg:
+            failures.append(f"[㉷ 期望串] 守卫输出里**没有**登记的期望串 {_mk}={_v!r} ⇒ ★★ 守卫输出与判据脱钩")
+
+    # ⑨ ★★★ **跨脚本行为守卫**：★ clockcheck / negcontrol 的 parse 也必须**严格**
+    #   ★★ 否则「同一份原始输出」在三个脚本里**折叠语义不同** ⇒ ★★ 给出三个数（★ 第 32 处实测）
+    for _peer in ("recovery-detection-p0-3-clockcheck.py",
+                  "recovery-detection-p0-3-negcontrol.py"):
+        _p = Path(__file__).with_name(_peer)
+        if not _p.exists():
+            failures.append(f"[㉷ 跨脚本] 找不到 {_peer} ⇒ ★★ 不可判")
+            continue
+        try:
+            _spec = importlib.util.spec_from_file_location(f"peer_{_p.stem}", _p)
+            _m = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_m)
+        except Exception as exc:
+            failures.append(f"[㉷ 跨脚本] 载入 {_peer} 失败（★ {exc}）⇒ ★★ 不可判")
+            continue
+        try:
+            _m.parse(_conf)
+            failures.append(f"[㉷ 跨脚本] {_peer} 的 parse 对**异值重复**没有抛错 ⇒ ★★ 守卫没牙")
+        except SystemExit:
+            pass
+        except Exception as exc:
+            failures.append(f"[㉷ 跨脚本] {_peer} 的 parse 抛了非预期异常（★ {exc}）⇒ ★★ 不可判")
+
+    # ⑩ ★★★ **渲染守卫**：★ 逐模型读数必须**每模型一行**（★ 不得只剩一行）
+    #   ★★ 断言落到**行数与内容**（★ 结构），不是落到「打印了某个词」
+    if _pre and _h5_rows >= 2:
+        _dl = h5_readout_lines({f"{_pre}m{i}": f"probes_24h={i}" for i in range(_h5_rows)})
+        if len(_dl) != _h5_rows:
+            failures.append(f"[㉷ 渲染] 逐模型读数应为 {_h5_rows} 行，实际 {len(_dl)} ⇒ ★★ 仍有折叠")
+        if _dl and not _dl[0].startswith("m0: probes_24h=0"):
+            failures.append(f"[㉷ 渲染] 首行必须是「模型名: 探测量」⇒ ★★ {_dl[0]!r}")
+        # ★★ 反向：★ 旧的常量键形态 ⇒ 渲染**必须为空**（★ 旧形态已被采集侧根除）
+        if h5_readout_lines({_old_key: "m0 | probes_24h=0"}):
+            failures.append("[㉷ 渲染] 旧的常量键形态仍被渲染 ⇒ ★★ 采集侧没改干净")
+
+    # ⑪ ★★★ **真实调用点守卫**（★ ★★ 变异验证当场漏掉的正是这一处）：
+    #   ★★ 只测 `parse_strict` **本身** ⇒ ★★ **测不出 `main()` 走的是哪条路**
+    #   ⇒ ★★ 变异「main 退回宽松 parse」⇒ ★★ 自测照样绿 ⇒ ★★ **守卫没牙**
+    #   ⇒ ★★ 修法：★ **真的跑一次 `main()`**（★ `--from-file` ⇒ 不连库）⇒ ★★ 断言它 **rc≠0**
+    #   ⇒ ★★ 且要断言「**是重复键守卫红的**」（★ 不然别的失败也能凑出 rc≠0）
+    with tempfile.TemporaryDirectory() as _td:
+        _f = Path(_td) / "dup_metrics.txt"
+        _f.write_text("H5_featured_probe_freq|m0 | probes_24h=1\n"
+                      "H5_featured_probe_freq|m1 | probes_24h=2\n", encoding="utf-8")
+        _pr = subprocess.run([sys.executable, str(Path(__file__)), "--from-file", str(_f)],
+                             capture_output=True, text=True, timeout=600)
+        if _pr.returncode == 0:
+            failures.append("[㉷ 真实调用点] `main()` 对**重复键**竟然 rc=0 ⇒ ★★ 守卫没牙"
+                            "（★ 只测 `parse_strict` 测不到 `main()` 走哪条路）")
+        else:
+            _out = (_pr.stdout or "") + (_pr.stderr or "")
+            _mk = _kg.get("guard_marker_dup_guard", "")
+            if _mk and _mk not in _out:
+                failures.append("[㉷ 真实调用点] `main()` 虽红了但**不是**重复键守卫红的 ⇒ ★★ "
+                                f"{_out[-300:]}")
+
+    # ⑫ ★★★★ **第 33 处：★ 「锚点档 ③ 的诚实边界清单」vs「判定器实际打印的边界」⇒ 必须机械化**
+    #   ★★ 两份清单**必然漂移**（★ 代码加一条边界 ⇒ 清单不会自动更新）
+    #   ★★ ⇒ ★★ 关窗当天**照抄清单** ⇒ ★★ **静默漏披露** ⇒ ★★ 第 27 处「缺覆盖的全绿」的同款
+    #   ★★ 判据侧 = **锚点档**（★ 与被守卫的代码**不同源** ⇒ 同源变异打不中它 ⇒ LESSONS §680）
+    try:
+        _anchor_ids = _load_anchor_boundary_ids()
+    except Exception as exc:
+        _anchor_ids = set()
+        failures.append(f"[㉸ 锚点档清单] 读不到锚点档 ③ 的诚实边界清单（★ {exc}）⇒ ★★ **不可判**"
+                        f"（★ 不得静默跳过 ⇒ ★ 「读不到判据」≠「没发现问题」）")
+    _hb_lines = honest_boundary_lines()
+    _judge_ids = _boundary_ids_from_lines(_hb_lines)
+    if _anchor_ids and _judge_ids:
+        if _anchor_ids != _judge_ids:
+            failures.append(f"[㉸ 锚点档清单] 锚点档 ③ 的清单与判定器实际打印的边界**不一致**"
+                            f"（★ 锚点档独有 {sorted(_anchor_ids - _judge_ids)} / "
+                            f"★ 判定器独有 {sorted(_judge_ids - _anchor_ids)}）"
+                            f"⇒ ★★ 关窗当天照抄清单 ⇒ ★★ **会漏披露** ⇒ ★★ 必须同步更新两处")
+        if len(_judge_ids) != len(_hb_lines):
+            failures.append(f"[㉸ 锚点档清单] 边界行数 {len(_hb_lines)} ≠ 带编号行数 {len(_judge_ids)}"
+                            f" ⇒ ★★ 有边界**没有行首编号** ⇒ ★★ 清单**必然漏掉它**")
+    elif _anchor_ids or _judge_ids:
+        failures.append(f"[㉸ 锚点档清单] 一侧为空（★ 锚点档 {len(_anchor_ids)} / 判定器 {len(_judge_ids)}）"
+                        f" ⇒ ★★ **不可判**")
+
     print("== 判定器合成数据自测 ==")
     if failures:
         for f in failures:
@@ -2537,8 +3107,10 @@ def selftest() -> int:
     print("   ✔ ㉜ ★★ 摇摆 0 ⇒ 行内必须给出「featured 状态稳定 ⇒ 修复已真正落地」的正向结论")
     print("   ✔ ㉝ ★★★ 「对照组」的**相位/构成**必须披露（★ 零 6h 顶格 ⇒ 不可归因；★ 裁决符号不得软化）")
     print("   ✔ ㉞ ★★ 诚实边界必须含「相位效应」与「投影只投影时钟、不投影数据积累」两条")
-    print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ pre 期已超预算 ⇒ ❌ 不可归因于修复；★ 符号不得软化）")
-    print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌ 不可归因于修复（阈值取自 pre24 单日快照）」一条")
+    print("   ✔ ㉟ ★★★ M5 判 ❌ 时必须给出「基线口径」披露（★ 阈值口径无效 ⇒ 「爆炸半径失控」不成立；"
+          "★★ 但「增量与修复无关」同样不成立；★ 符号不得软化）")
+    print("   ✔ ㉠ ★★ 诚实边界必须含「M5 的 ❌：★ 阈值口径无效 ⇒ 「爆炸半径失控」不成立」"
+          "＋「★ 但『增量与修复无关』同样不成立」两条")
     print("   ✔ ㉡ ★★★ M5 判 ❌ 时必须给出「增量归因（by_kind）」分解（★ 回答「增量从哪来」）"
           "（★ 与 ㉟ 的「基线口径」互补：★ 那边答「阈值是否成立」、★ 这边答「增量从哪来」）")
     print("   ✔ ㉣ ★★★ 诚实边界必须含「负控窗口几何必须与被验收窗口一致」+「原负控的旧 featured ❌ 是假红」")
@@ -2549,6 +3121,7 @@ def selftest() -> int:
           "（★ 且 Stage 2 不得要求 ⇒ 否则是假红）")
     print("   ✔ ㉪ ★★★ 诚实边界必须含「第二次部署（11-11 01:07:37）★ diff 碰了 featured 路径 ⇒ ★ 代码解耦 + 等长窗口实测 ⇒ era 切点仍有效」")
     print("   ✔ ㉬ ★★★ 诚实边界必须含「同类缺陷必须穷举」＋ ★★ **跨脚本行为守卫**：★ 穷举审计器必须真的跑通且零违例")
+    print("   ✔ ㉳ ★★★★ **第 27 处：★ 「审计器自己也要被审计」⇒ ★★ 覆盖率守卫（★ M14/M14x 主判据块必须可见、★ 块数 ≥ 38、★ 关键块不得缺失）＋ ★★ 边界 ㉲ 必须存在**（★ v1 时主判据块覆盖率 = 0% ⇒ 「全部合规」是空的）")
     print("   ✔ ㉮ ★★★ 诚实边界必须含「分钟型量被 ::int 截到分钟 ⇒ 与阈值做精确比较 ⇒ 亚分钟差被放大成 1 单位假红」"
           "（★ 含实测 raw p90 = 360.5069）+「判据分辨率必须 ≥ 被测抖动幅度」")
     print("   ✔ ㉯ ★★★ **行为守卫**：★ 「取整边界伪影」披露必须在 M20 豁免行真的出现（含 raw 值）"
@@ -2556,11 +3129,96 @@ def selftest() -> int:
     print("   ✔ ㉱ ★★★ 诚实边界必须含「分位数是秩统计量 ⇒ 样本量小的时候极不稳定」"
           "＋ ★ **行为守卫**：★ post n ≪ pre n 时 M14x 旧 featured 判 ❌ 必须行内披露「小样本分位数不稳」"
           "＋ ★ 样本量相当时**不得**出现该披露（★ 假阳性也要治）")
+    print("   ✔ ㉴ ★★★★ **第 13 处纪律的最后一个候选点**：★ 「同一行里两个 n 来自不同窗口」必须行内披露"
+          "（★ M20 **豁免行也引用 fp 视图** ⇒ 成熟 n vs fp n_all 不同窗 ⇒ 不可相减 ⇒ 不得读成「尾部有回归」）"
+          "＋ ★ 披露须**同时给出两个 n 的数字** ＋ ★ 两个 n 相等时**不得**出现该披露（★ 假阳性也要治）")
+    print("   ✔ ㉵ ★★★★ **第三次跨构建（★ 11-11 02:06:59 / ★ 构建 `7b926bfb`）**：★ 事件链（★ 19:01:04 / ★ 01:07:37 / ★ 02:06:59）"
+          "＋ ★ 代码腿（★ `bg/` diff 为空 ⇒ 探针源码逐字节未变；★ `ir.ParseAnthropicStreamEvent` 只被 `responses_bridge.go` 调用 ⇒ 探针层与被改层解耦）"
+          "＋ ★ 数据腿（★ 相位对齐等长窗 W1 = 89 / W3 = 66 ⇒ 形态同构 ⇒ 部署未改变机制）"
+          "＋ ★ 形态腿（★ `claude/sonnet-5` / ★ `http_404` ⇒ exempt ⇒ 设计上钉 6h ⇒ 6h 周期常态）"
+          "＋ ★ **1 分钟停探必须披露**（★ 02:07 = 0 ⇒ 0.07% ≪ ㉰ 的 5.8% ⇒ 不影响分位数、★ 但不许写成「零中断」）"
+          "＋ ★ 两条新纪律（★「部署后出现 X」≠「部署引起 X」/ ★ 自己写的等长窗也要打印长度核对）"
+          "＋ ★★ **期望值登记表**（★ `fixtures/p0-3-deploy-events.txt`）⇒ ★★ 判据与被守卫内容**不同源** ⇒ ★★ 同源变异也打不中它")
+    print("   ✔ ㉶ ★★★★★ **第 31 处：★ 「阈值口径无效」≠「增量与修复无关」⇒ ★★ 两半必须同时披露**"
+          "（★ 证据①等长 24h 口径：★ n=145、★ p50=7871 / p75=9755 / p90=10417 ⇒ ★ 阈值 9334 落在 62.1% 分位"
+          "＋ ★ 证据②日历日桶是 partial day ⇒ 不得当 24h 基线 ＋ ★ 证据③pre24 by_kind 5766/3257/222 ⇒ ★ periodic 反降）"
+          "＋ ★ 期望值走**独立夹具** ⇒ ★★ 同源变异打不中它 ＋ ★ 反向守卫（★ 旧错误断言句不得残留）")
+    print("   ✔ ㉷ ★★★★★ **第 32 处：★ 「采集侧一对多键 ⇒ 解析器静默折叠」**"
+          "（★ 真库实测：★ 260 行 ⇒ 只有 **249** 个唯一键 ⇒ ★ **11 行被静默丢弃**）"
+          "＋ ★ 采集侧改「**一对象一键**」（★ H5 ⇒ `H5_featured_probe_freq_<model>`；★ M10_diff ⇒ DISTINCT）"
+          "＋ ★ 解析侧「**重复键守卫**」（★ 异值/同值**都** ⇒ **rc≠0** ⇒ fail-closed）"
+          "＋ ★ 三个解析器**统一收敛到同一实现**（★ 原先 verdict 留首行、clockcheck/negcontrol 留末行 ⇒ 同一份输出三个数）"
+          "＋ ★ 期望值**与期望串**都走**独立夹具** ⇒ ★★ 同源变异打不中它")
+    print("   ✔ ㉸ ★★★★ **第 33 处：★ 「锚点档 ③ 的诚实边界清单」vs「判定器实际打印的边界」**"
+          "（★ 两份清单**必然漂移** ⇒ ★★ 关窗当天照抄清单 ⇒ ★★ **静默漏披露** ⇒ ★★ 第 27 处的同款）"
+          "＋ ★ 机械化守卫（★ 判据侧 = **锚点档**，★ 与代码**不同源** ⇒ 同源变异打不中它）"
+          "＋ ★ 读不到锚点档 ⇒ **fail-closed**（★ 不可判 ≠ 没发现问题）"
+          "＋ ★ 圈号**码位 ≠ 语义编号** ⇒ ★★ 一律按**字符集合**比对（★ 不做算术映射）")
     print("\n== 合成数据自测通过 ==")
     return 0
 
 
 # ─────────────────────────────────────────────────────────────────────
+# ★★★ 第 33 处（★ 2026-11-11 04:3x +08）：★ 「锚点档 ③ 的诚实边界清单」是**手写**的
+#   ★★ 而判定器实际打印的边界来自 `honest_boundary_lines()`（★ 代码侧）
+#   ★★ ⇒ ★★ 两份**必然漂移**（★ 代码加一条边界 ⇒ 清单不会自动更新）
+#   ★★ ⇒ ★★ 关窗当天**照抄清单** ⇒ ★★ **静默漏披露** ⇒ ★★ 第 27 处「缺覆盖的全绿」的同款
+#   ⇒ ★★ 修法：★ 把两份清单的**一致性**做成机器可核的门（★ 判据侧 = 锚点档，★ 与代码**不同源** ⇒ §680）
+ANCHOR_DOC_GLOB = "docs/audit/*P0-3*观测锚点*.md"
+# ★ 诚实边界编号的字符集合：★ ①-⑳（U+2460-U+2473）★ ㉑-㉿（U+3251-U+327F）
+#   ★★ ⚠️ 这些圈号的 **Unicode 码位与语义编号不一致**（★ ㉦ = U+3266、★ ㉩ = U+3269 …）
+#   ★★   ⇒ ★★ **不能**做算术映射 ⇒ ★★ 一律按**字符集合**比对
+BOUNDARY_ID_CHARS = r"①-⑳㉑-㉿"
+
+
+def _boundary_ids_from_text(text: str) -> set[str]:
+    """★ 从一段文本里抽出**诚实边界编号**（★ 支持 `①–⑭` 这样的**区间**写法）。
+
+    ★★ 区间只支持 ①-⑳ 段（★ 码位**连续** ⇒ 可展开）；★ ㉑-㉿ 段虽码位连续，
+    ★★   但其**语义编号与码位不一致** ⇒ ★★ 不做区间展开（★ 清单里也没这么写）。
+    """
+    t = text.replace("**", "")
+    out: set[str] = set()
+    for m in re.finditer(r"([①-⑳])[–—-]([①-⑳])", t):
+        out |= {chr(c) for c in range(ord(m.group(1)), ord(m.group(2)) + 1)}
+        t = t.replace(m.group(0), " ")
+    out |= set(re.findall(f"[{BOUNDARY_ID_CHARS}]", t))
+    return out
+
+
+def _boundary_ids_from_lines(lines: list[str]) -> set[str]:
+    """★ 从 `honest_boundary_lines()` 的每一行里抽出**行首编号**（★ 代码侧的事实）。"""
+    out: set[str] = set()
+    for ln in lines:
+        m = re.match(rf"\s*([{BOUNDARY_ID_CHARS}])", ln)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def _load_anchor_boundary_ids() -> set[str]:
+    """★ 读**锚点档 ③** 里手写的诚实边界清单（★ 人类侧的那一份）⇒ ★★ 返回编号集合
+
+    ★★ **读不到 ⇒ 抛异常** ⇒ 自测 **fail-closed**（★ 「不可判」≠「没发现问题」★ ★ 不得静默跳过）
+    """
+    root = Path(__file__).resolve().parents[2]
+    cands = sorted(root.glob(ANCHOR_DOC_GLOB))
+    if not cands:
+        raise FileNotFoundError(f"★ 锚点档（{ANCHOR_DOC_GLOB}）不存在")
+    doc = cands[0].read_text(encoding="utf-8")
+    if "### ③" not in doc:
+        raise ValueError("★ 锚点档里找不到 ③ 段（★ 诚实边界清单）")
+    line = ""
+    for ln in doc[doc.index("### ③"):].splitlines():
+        s = ln.strip()
+        if s.startswith("★") and re.search(r"[①-⑳]", s):
+            line = s
+            break
+    if not line:
+        raise ValueError("★ 锚点档 ③ 段里找不到诚实边界清单行")
+    return _boundary_ids_from_text(line)
+
+
 def honest_boundary_lines() -> list[str]:
     """★ 诚实边界的**唯一来源**（★ 本轮抽成函数 ⇒ 自测能守住「披露不许被静默删掉」）"""
     lines: list[str] = []
@@ -2635,8 +3293,16 @@ def honest_boundary_lines() -> list[str]:
           "{7,90,150,450,1800,10800} ∉ 未减半空间 ⇒ ★ 只能是乘数产生的；★ 且 **量具正控**：★ pre 侧同口径"
           "必须能读到未减半顶格 ⇒ 否则「**量具无鉴别力 ⇒ post 的 0 不可解释**」⇒ fail-closed）；"
           "② **slow** 仍读成熟段（★ 固有 6h 结算延迟 ⇒ 行内披露「两分量跨度不同」）。"
+          "⇒ ★★★★ **★ 补（第 13 处纪律的最后一个候选点，★ 2026-11-11 05:2x 实测）**："
+          "★ **不只有 normal 行有两个视图** ⇒ ★ **豁免行同样引用了 fp 视图**（★ 对照读数：未减半 6h 顶格）"
+          "⇒ ★★ ⇒ ★★ **一行里并列出现的两个 n 可能来自不同窗口** ⇒ ★★ 读者会自然地拿它们相比"
+          "⇒ ★★ **读成「fp 比成熟视图多出 X 条 ⇒ 尾部有回归」** ⇒ ★★ **这是误读**"
+          "（★ ★ 那 X 条**本来就该在 fp 里** ⇒ ★ 指纹分量的设计就是要看见它们）"
+          "⇒ ★★ ⇒ **行内必须显式给出两个 n 各自的窗口**（★ `cross_window_disclosure()`）"
+          "⇒ ★★ 且 **两个 n 相等时不披露**（★ 不得制造噪声）。"
           "⇒ ★★ **纪律：★ 凡判据有多个分量，先逐分量问一句「这个量需要等结算吗」；"
-          "★ 需要与不需要的，必须分视图读，否则尾部会静默失明。**")
+          "★ 需要与不需要的，必须分视图读，否则尾部会静默失明；"
+          "★ ★★ 且**同一行里出现两个 n 时，必须标明各自窗口**（★ 否则读者会误读成「尾部有回归」）。**")
     lines.append("   ㉕ ★★★★ **观测窗口中途的部署 ⇒ 必须显式核查「机制连续性」，不能假设**（★ 2026-11-10 19:01 实测）："
           "★ era2（★ build_seq 2995 / sha 8028459d）在 **2026-11-10 19:01:04 +08** 被 SIGKILL(137) 停掉，"
           "★ 由 **build_seq 2996 / sha b92313da**（★ P0-B streaming 修复）接管 ⇒ ★★ **post 窗口跨越两个构建**。"
@@ -2720,13 +3386,31 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ 但 post 窗口在投影里**仍是「当前已积累的那一段」** ⇒ ★★ 任何按「窗口内事件构成」"
           "计算的判据（★ 尤其是**对照组的中位数**）在投影里可能**相位失真** ⇒ ★★ 投影对这类判据"
           "只能**提示**，**不能定论** ⇒ ★★ 一切结论以**关窗当天真读**为准。")
-    lines.append("   ㉘ ★★★★ **M5 的 ❌ 不可归因于修复（★ 阈值取自 pre24 的「单日快照」）**："
+    lines.append("   ㉘ ★★★★ **M5 的 ❌：★ 「阈值口径无效」⇒ 「❌ ⇒ 爆炸半径失控」不成立；★★ 但「增量与修复无关」**同样不成立** ⇒ ★★ 两半必须同时披露（★ 第 31 处口径修正，★ 2026-11-11 04:4x +08）**："
           "★ M5 的 base = **9242** = **pre24 单日快照**（★ 实测 pre_24h_count = 9243）"
           "⇒ ★ 而探测量**按天剧烈波动**（★ 实测 pre7d 逐日 min=**1292** / max=**9905** ⇒ **7.7×**）"
           "⇒ ★★ **pre 期实测 11-09 = 9685 已超 limit 9334** ⇒ ★★ ⇒ **该阈值在 pre 期就不成立**"
           "⇒ ★★ ⇒ M5 判 ❌ 时**不得**被读成「修复引起爆炸半径」⇒ ★★ 本轮只做**行内披露**"
           "（★ **裁决符号保持 ❌** ⇒ ★ 门不钝化；★ 且逐日分布键缺失时必须显式写「基线口径不可见」）"
-          "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，而不是单日快照）"
+          "⇒ ★★★★ **★★★ 第 31 处补上「另一半」（★ 关窗前实测 ⇒ ★★ 否则关窗报告会自相矛盾）**："
+          "★ **「阈值无效」只推出「爆炸半径失控」不成立 ⇒ ★★ 它并不推出「增量与修复无关」**"
+          "⇒ ★★ ⇒ ★★ **两半必须同时披露**，★ 否则同一行里「❌ 不可归因」与 by_kind 的「增量可完全归因」**自相矛盾**"
+          "⇒ ★★★★ **★ 证据 ①（★ 等长 24h 口径 ⇒ ★ 与 M5 裁决窗口**同量纲**）**："
+          "★ pre7d 的 **145** 个**等长**滚动 24h 窗口（★ 端点锚定 era 切点 ⇒ 时钟无关）："
+          "★ **p50 = 7871 / p75 = 9755 / p90 = 10417 / max = 11197 / min = 2467 / mean = 7037.5**"
+          "⇒ ★★ 冻结阈值 **9334** 落在该分布的 **62.1%** 分位（★ **90/145** 个窗口 ≤ 它、★ **37.9%** 的窗口超过它）"
+          "⇒ ★★ ⇒ 「阈值在 pre 期就不成立」**第一次有了等长同量纲的量化**"
+          "⇒ ★★★★ **★ 证据 ②（★ 日历日桶不能当 24h 基线 ⇒ ★ 另一个口径缺陷）**："
+          "★ `M5_pre7d_runs_by_day` 的 8 个桶里首尾是 **partial day**（★ 11-03 只覆盖 **10.29h**、★ 11-10 只到 **13.71h**）"
+          "⇒ ★★ 计数**必然低估** ⇒ ★★ 用它的均值当 24h 基线会**系统性压低**基线 ⇒ ★★ 真修法必须用**等长 24h 口径**"
+          "⇒ ★★★★ **★ 证据 ③（★ 增量的来源 ⇒ ★ 归因钉死）**："
+          "★ pre24 by_kind = **credential_recovery 5766 / periodic 3257 / sync_request 222**"
+          "⇒ ★★ post24 by_kind（★ **时点观测**：★ 2026-11-11 03:4x +08）= **credential_recovery 6172 / periodic 3141 / sync_request 428**"
+          "⇒ ★★ 总量 **+496（+5.4%）** ⇒ ★★ **全部**来自 **credential_recovery +406（+7.0%）** 与 **sync_request +206（+92.8%）**"
+          "⇒ ★★ 而 **periodic 反而 -116（-3.6%）** ⇒ ★★ ⇒ ★★ **「爆炸半径失控」的最强反证就在 periodic 下降**"
+          "（★ 爆炸半径的直接代理是 periodic 调度量 ⇒ ★ 它降 ⇒ ★ 不是调度失控）"
+          "⇒ ★★ ⇒ ★★ **正确读法：★ ❌ = 「预算口径过时（单日快照）+ 增量来自设计内的恢复探测」；★ 不是「爆炸半径失控」，★ 也不是「与修复无关」**"
+          "⇒ ★★★ **真正的修法**（★ 用 ≥7 天的均值/中位/分位做基线，★ 且必须**等长 24h 口径**、★ 不得用日历日桶）"
           "**登记为 Stage 2 之后的基线口径改进项**（★ 关窗前**不重冻**已验证基线）。")
     lines.append("   ㉙ ★★★★ **负控的窗口几何必须与被验收窗口一致（★ `now()` 必须随 era 切点一起平移）**"
           "（★ 本轮第 23 处口径修正）：★ 原负控只平移了**切点**、没平移 `now()`"
@@ -2763,31 +3447,40 @@ def honest_boundary_lines() -> list[str]:
           "★★ 另注：★ 「必须判负」**只能是 Stage 1 专属**（★ Stage 2 的 168h 窗口**不含**那段退化"
           "⇒ 实测 M11 ns = 50 ep / med **3** ⇒ ✅ 达成 ⇒ ★★ 对 Stage 2 也要求就是**假红**；"
           "★ 且 **bare 行不作要求**（★ 该 24h pre-fix 窗口 bare 人群未退化）。")
-    lines.append("   ㉩ ★★★★ **观测窗口的第二次部署（2026-11-11 01:07:37 +08）：★ diff「碰了」featured 路径 ⇒ ★★ 但经「三核查 + 代码解耦 + 等长窗口实测」⇒ ★★ era 切点仍有效 ⇒ ★ 不重划**（★ 观察层事件）**"
-          "★ 事件：★ 并行会话把构建 `211-199c20a0`（★ commit `199c20a00`）部署到 211"
-          "（★ `StartedAt` = 2026-11-10T17:07:37Z = **11-11 01:07:37 +08**）⇒ ★★ post 窗口**再次**跨越两个构建。"
-          "⇒ ★★ ★ **与 19:01 事件的关键差别**：★ 那次 diff **不碰** featured 路径；★ **这次 diff 碰了**"
-          "（★ `bg/featured_sources.go` 新增 **+90 行**、★ `bg/model_tier.go` **-13 行**、★ `bg/model_probe.go` **-14 行**）"
-          "⇒ ★★ ⇒ 诚实边界 ㉕ 的「③ diff 不碰被测路径」这条**这次不成立** ⇒ ★★ 必须换一套证据。"
-          "⇒ ★★★★ **三核查（★ 本轮实测）**："
-          "① ★★ **featured 集未变**（★ M2 static = **210** / M6 = **80·1067** / M9 缺口 = **0**；"
-          "★ 库侧 15 canon_featured / 15 active / 34 rp_names / 55 old_raw + 200 new_raw）✔；"
+    lines.append("   ㉩ ★★★★ **观测窗口已**第三次**跨构建（★ 11-10 19:01:04 / ★ 11-11 01:07:37 / ★ **11-11 02:06:59**）⇒ ★★ 三次都经「代码解耦 + **相位对齐的等长窗口实测**」⇒ ★★ era 切点（★ 11-10 13:42:30 +08）**仍有效 ⇒ 不重划**（★ 观察层事件）**"
+          "★ **三次事件一览**：★ ① **19:01:04**（★ `8028459d`）★ ② **01:07:37**（★ `199c20a00`）★ ③ **02:06:59**（★ `7b926bfb9-dirty`）"
+          "⇒ ★★ post 窗口共跨 **3 个构建** ⇒ ★★ ⇒ ★★ **「机制连续」的结论必须落到可复核的证据上**（★ 代码解耦的位置 + ★ 等长窗口实测）⇒ ★★ **不能只写「已核查」**。"
+          "⇒ ★★★★ **★ 第二次（01:07:37）的证据（★ 已有）**：★ diff **碰了** featured 路径（★ `bg/featured_sources.go` **+90 行**、★ `bg/model_tier.go` **-13**、★ `bg/model_probe.go` **-14**）"
+          "⇒ ★★ ⇒ 诚实边界 ㉕ 的「③ diff 不碰被测路径」这条**这次不成立** ⇒ ★★ 换证据：① ★★ **featured 集未变**（★ M2 static = **210** / M6 = **80·1067** / M9 缺口 = **0**）✔"
           "② ★★ **探针未中断**（★ 部署前后每分钟 **1–12** 条 node_probe_runs；★ 等长窗口全量 A = **61** vs B = **83**）✔；"
-          "③ ★★ **diff 碰了 ⇒ 但可证「解耦」**（★ 这是本轮的新证据，不是「假设没影响」）："
-          "★ · `bg/model_tier.go` 的 SQL 体**逐字未变**（★ 纯「单一事实源化」重构）⇒ ★★ 探针分层口径（★ 210 集合）不变"
-          "⇒ ★★ ⇒ **era 切点语义不变**；"
-          "★ · watchdog 改的是 `model_probe_state`（★ `bg/model_probe.go`）⇒ ★★ 而 **node_probe 模式不读该表**"
-          "（★ `bg/node_probe.go:26-29` 注释：「broken_probe_reviver only touches the legacy model_probe_state table, "
-          "and is **a no-op under this new probe mode since R36**」；★ 且 `node_probe.go`/`probe_service.go` 里"
-          "**没有** `FROM/JOIN model_probe_state` 的真实读取）⇒ ⇒ **被判定的读数（node_probe_runs）不受影响**；"
-          "★ · ★★ **等长窗口实测**（★ 部署前后各 **15 分钟** ⇒ 同量纲）：全量探测量 A = 61 / B = 83（★ 没停）；"
-          "★ newly 失败 A = **0** / B = **1**，且该 1 条是**减半独占值**（★ mul_evidence = 1、★ **top21600_n = 0**）"
+          "③ ★★ **diff 碰了 ⇒ 但可证「解耦」**：★ · `bg/model_tier.go` 的 SQL 体**逐字未变**（★ 纯「单一事实源化」重构）⇒ ★★ 探针分层口径（★ 210 集合）不变；"
+          "★ · watchdog 改的是 `model_probe_state`（★ `bg/model_probe.go`）⇒ ★★ 而 **node_probe 模式不读该表**（★ `bg/node_probe.go:26-29` 注释 + `node_probe.go`/`probe_service.go` 里**没有** `FROM/JOIN model_probe_state` 的真实读取）⇒ ⇒ **被判定的读数（node_probe_runs）不受影响**；"
+          "★ · ★★ **等长窗口实测**（★ 部署前后各 **15 分钟** ⇒ 同量纲）：全量探测量 A = 61 / B = 83（★ 没停）；★ newly 失败 A = **0** / B = **1**，且该 1 条是**减半独占值**（★ mul_evidence = 1、★ **top21600_n = 0**）"
           "⇒ ⇒ **没有出现「未减半 6h 顶格」** ⇒ ⇒ 诚实边界 ㉕ 的「tier 冷启动窗口 ⇒ 未减半顶格」这条指纹**当前读数下不成立**。"
-          "⇒ ★★★ **结论：★ era 切点（11-10 13:42:30）仍有效 ⇒ 不重划**（★ post 的定义 = 「探针分层用 210 集合」⇒ ★ 该口径前后未变）。"
+          "⇒ ★★★★ **★★ 第三次（02:06:59）的事件与证据（★ 本轮新增，★ 2026-11-11 03:2x–03:3x +08）**："
+          "★ 事件：★ 并行会话把构建 `211-7b926bfb-dirty`（★ commit `7b926bfb9` = ★ **tooldialect 工具参数流方言抽象工厂**）部署到 211"
+          "（★ `StartedAt` = 2026-11-10T18:06:59Z = **11-11 02:06:59 +08**；★ 旧容器 `llm-gateway-211-a` **Exited (137)** = SIGKILL，★ 与 19:01 事件同款）⇒ ★★ post 窗口**第三次**跨构建。"
+          "⇒ ★★ ★ **代码腿（★ 本轮最强的一腿）**：★ `git diff 199c20a00..7b926bfb -- bg/` = **空** ⇒ ★★ **探针源码逐字节未变**；"
+          "★ 全部生产改动只在 `domains/streaming/`（★ anthropic_bridge + toolargs_dialect_wiring）、★ `internal/ir/stream.go`、★ 新包 `internal/tooldialect/`、★ `installer/`（★ CLI + migration 957）"
+          "⇒ ★★ ⇒ ★★ **`bg/` 对 `internal/ir` 与 `internal/tooldialect` 零 import**（★ bg/ 里唯一的 “domains/streaming” 是**测试断言里的字符串字面量**，★ 不是 import）"
+          "⇒ ★★ ⇒ ★★ 而 `ir.ParseAnthropicStreamEvent` **只被 `domains/streaming/responses_bridge.go` 调用**（★ 客户端流量路径）⇒ ★★ **探针层与被改层完全解耦**"
+          "⇒ ★★ ⇒ ★★ ⇒ **被测口径（★ 探针分层用 210 集合 + `node_probe_runs` 的阶梯值）前后逐字未变 ⇒ era 切点语义不变**。"
+          "⇒ ★★★★ **★★ 数据腿（★ 相位对齐的等长窗口，★ 三个各 15 分钟、距边界 6h / 1h / 0h）**："
+          "★ W1（★ 11-10 20:06:59）= 全量 **89** / ns_fail **2** / newly_fail **1** / newly_top21600 **1**（★ 模型 = `claude/sonnet-5`）；"
+          "★ W2（★ 11-11 01:06:59）= 全量 **83** / ns_fail **1** / newly_fail **1** / newly_top21600 **0**；"
+          "★ W3（★ 11-11 02:06:59）= 全量 **66** / ns_fail **2** / newly_fail **2** / newly_top21600 **1**（★ 模型 = `claude/sonnet-5`）"
+          "⇒ ★★ ⇒ ★★ **W1（部署前 6h）与 W3（部署后）形态同构**（★ 同量纲 + 同相位 + 同一只模型 + 同一失败形态）⇒ ★★ **部署未改变机制**。"
+          "⇒ ★★★★ **★★ 形态腿（★ 定位到具体对象）**：★ 那条「未减半 6h 顶格」= **`claude/sonnet-5`**，★ `direct_http_status = 404` / `direct_err_code = http_404`"
+          "⇒ ★★ ⇒ ★★ 按 M20 的豁免分类（★ `404/405/410/415` ⇒ **exempt**）⇒ ★★ **协议形态 ⇒ 设计上钉 6h ⇒ 乘数豁免 ⇒ 「未减半」是设计使然**，★ **不是** featured 状态翻转"
+          "⇒ ★★ ⇒ ★★ 且它在 post 窗内出现在 **14:17 / 20:17 / 02:17**（★ **严格 6 小时一次**）⇒ ★★ 与部署时刻无关；★ pre 窗背景频率 = 每天 **1–75** 条 ⇒ ★★ **常态**。"
+          "⇒ ★★★★ **★★ 必须披露的一处瑕疵（★ 诚实）**：★ 逐分钟探测量显示 **02:07 那一分钟为 0**（★ 部署瞬间的 **1 分钟停探**；★ 对照：01:07 那次**没有**缺口）"
+          "⇒ ★★ ⇒ ★★ **已量化**：★ 1 分钟 / 1440 分钟 = **0.07%** ⇒ ★★ 远小于 ㉰ 的 6h 批次占比（★ **5.8%**）⇒ ★★ **不影响 24h 口径的分位数**，★ ★★ 但**必须写进报告**（★ 「探针未中断」这条不能写成「零中断」）。"
+          "⇒ ★★★ **★★★ 两条新增纪律**："
+          "★★ ① ★★ **「部署后出现 X」不能读成「部署引起 X」** ⇒ ★★ 必须找**部署前同相位**的对照（★ 本轮实测：★ 部署后 newly 出现 1 条「未减半 6h 顶格」⇒ ★★ 但部署前 **6h** 的同一 15 分钟窗里**同一只模型、同一形态**也出现了 ⇒ ★★ **与部署无关**）"
+          "★★ ② ★★ **自己写的「相位对齐等长窗」也可能不等长** ⇒ ★★ 必须把**窗口长度打印出来**核对（★ 本轮自踩：★ 第一版「A 段」的 WHERE 跨了 75 分钟而 CASE 只在边界分段 ⇒ ★★ **「A 段」实际是 60 分钟** ⇒ ★★ 607 vs 66 是**窗口长度 + 批次覆盖**的产物 ⇒ ★★ **假象**）"
+          "⇒ ★★★ **结论：★ era 切点（★ 11-10 13:42:30 +08）仍有效 ⇒ 不重划**（★ post 的定义 = 「探针分层用 210 集合」⇒ ★ 该口径前后逐字未变）。"
           "⇒ ★★★ **纪律**：★★ 「窗口中途换构建 ⇒ 核查机制连续性」的三条里，★ 第 ③ 条**不是**「diff 不碰被测路径」的同义词"
-          "⇒ ★★ **diff 碰了 ≠ 机制变了**（★ 若被测链与被改路径**代码解耦** ⇒ 仍连续）"
-          "⇒ ★★ ⇒ ★★ **「机制连续」的结论必须落到可复核的证据上**（★ 代码解耦的位置 + ★ 等长窗口实测），"
-          "★ **不能只写「已核查」** ⇒ ★★ 否则「碰了但没影响」就是一句无法复核的话。")
+          "⇒ ★★ **diff 碰了 ≠ 机制变了**（★ 若被测链与被改路径**代码解耦** ⇒ 仍连续）；★ ★★ 且 ★★ **「跨构建次数多」也不是不连续的理由**（★ 连续性取决于**口径**，★ 不取决于构建数）。")
     lines.append("   ㉫ ★★★★ **同一类缺陷必须「穷举」而不是「抽查」⇒ ★★ 第 25 处：★ 除 M11 外还有 8 处同类无界窗口；★ 其中 M5 就是爆炸半径判据本身**"
           "（★ 本轮第 25 处口径修正）：★ 第 24 处是**抽查**发现的（★ 只看了 M11 vs M14 族）"
           "⇒ ★★ ⇒ 本轮做了**穷举审计**（★ 静态分析采集 SQL 的每个读数块）⇒ ★★ **又找出 8 处**同款「post 段无 `now()` 上界」："
@@ -2820,6 +3513,9 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★ ⇒ 真实差只要落在 **[−0.5, +0.5) 分钟** 的取整跨界带里 ⇒ ★★ **裁决符号就会翻转**。"
           "⇒ ★★★★ **实测（★ 211 真库，★ M20 豁免组）**：★ post raw p90 = **360.5069** min ⇒ `::int` = **361**"
           "⇒ ★★ 而基线取整值 = **360** ⇒ 基线真值 ∈ [359.5, 360.5) ⇒ ★★ ⇒ **真实差 ∈ (0.01, 1.01] 分钟 ⇒ 上界 ≈ 60 秒（★ = 判据的整个分辨率）**"
+          "⇒ ★★ ★★ **更锋利的实测（★ 同一份诊断 SQL 同时读到 pre24 的 raw）**：★ pre24 **raw** p90 = **360.2095**"
+          "⇒ ★★ ⇒ **实测真实差 = 0.2974 分钟 = 17.8 秒** ⇒ ★★ ⇒ **比判据的 1 分钟分辨率细 ~3.4 倍**"
+          "⇒ ★★ ⇒ ★★★ **那个 ❌ 几乎就是噪声**（★ 诊断 SQL：`scripts/audit/recovery-detection-p0-3-m26-rounding-raw.sql` ⇒ 可复核）"
           "⇒ ★★ ⇒ 该行判 **❌** ⇒ ★★ **纯假红**（★ 慢事件分量 100% ≤ 109.6% **是通过的** ⇒ ❌ 只由 p90 一项造成）。"
           "⇒ ★★ **同款形态第 23 处已在 M14/M14x 的 `p99 361 vs 360` 上出现** ⇒ ★★ **同一类缺陷、同一机制**。"
           "⇒ ★★★★ **穷举结论（★ 按第 25 处纪律，不抽查）**：★ 判据族里**只有「分钟型分位数」这一族**受影响 ⇒ "
@@ -2862,6 +3558,24 @@ def honest_boundary_lines() -> list[str]:
           "⇒ ★★★ **纪律**：★★ ① **跨窗比分位数时，必须同时报两边的 n**（★ 只报分位数不报 n ⇒ 读者无法判断脆不脆）"
           "★ ② ★ **窗口未满时的裁决符号会摇摆**（★ 本轮实测：★ 同一批数据，真实 now ❌ / 预演 ✅）"
           "★ ⇒ ★★ **一切以关窗当天真读为准**（★ 窗口越满 ⇒ n 越大 ⇒ 越稳）")
+    lines.append("   ㉲ ★★★★ **审计器自己也要被审计 ⇒ ★★ 判据的守卫必须报告自己的覆盖率 ⇒ ★★ 且每个「窗口」必须**逐个**判定 ⇒ ★★ 否则同语句的另一个窗口会替它背书 ⇒ ★★ 结构性假阴性**（★ 第 27 处口径修正，★ 真库实测）"
+          "：★ **形态**：★ 第 25 处造的穷举审计器 v1 的键提取只认「`SELECT` 后**紧跟**字面量」⇒ ★★ 而 **M14/M14x 块的键是 CASE 表达式**"
+          "（★ `SELECT CASE WHEN scope='all' THEN 'M14x_' ELSE 'M14_' END || win || '_' || grp_new k`）⇒ ★★ **整个主判据块（★ 11413 字符）对审计器完全不可见**"
+          "⇒ ★★ ⇒ ★★ v1 报「全部合规」时，★ **它对主判据的覆盖率 = 0%** ⇒ ★★ ⇒ ★★ **「全部合规」这句话必须附带覆盖率**（★ 否则读者无法判断它覆盖了什么）"
+          "⇒ ★★★★ **★★ 四个假阴性来源（★ 本轮逐个实测 ⇒ 每个都用变异验证钉死）**："
+          "① ★ **键提取只认字面量** ⇒ ★ CASE 键（M14/M14x）不可见 ⇒ ★★ 修法：★ 读顶层 SELECT 的**首个输出表达式**（★ 不要求它是字面量）"
+          "② ★ **post 判定靠键名前缀** ⇒ ★ 键由 `era`/`win` 拼出的块（M15x / M12p）被判非 post ⇒ ★★ 修法：★ 结构化三路（★ 键含 post 标记 / 键引用窗口列且块内有 post 取值 / 时间轴在切点处被分桶）"
+          "③ ★ **era 取值词表漏了 `post_fix`** ⇒ ★ `'post_fix'` 里**不含** `'post'`（★ 后面是 `_` 不是引号）⇒ ★★ **M11 的 post 段从未被检查** ⇒ ★★ 修法：★ 词表按真实取值穷举"
+          "④ ★★ **窗口粒度太粗** ⇒ ★★ 同一条语句里的**另一个**窗口会替它背书：★ ① **输出分支级**（★ M14/M20 的 `UNION ALL` 分支）② **CTE 体级**（★ M16 的 fr_used / fr_ref / fr_legacy = 三个独立窗口）③ **标量子查询级**（★ M20 的 `tail_n` ⇒ `[now-6h, ∞)`）⇒ ★★ ⇒ ★★ 修法：★ **逐分支 / 逐 CTE / 逐子查询**判定"
+          "★ ★★ ★ **CASE 内的分桶条件不是行过滤**：★ era 切分写成 `CASE WHEN created_at < 切点 THEN 'pre' ELSE 'post' END` ⇒ ★★ 里面的 `created_at < 切点` **不是上界** ⇒ ★★ 若把它当上界 ⇒ ★★ `M8_ns_` 会被误判成「窗口闭合」⇒ ★★ **假阴性**"
+          "⇒ ★★★★ **★★ 采集侧真缺口（★ v1 从未看见 ⇒ 因为它看不见那些块）**：★ `M3_feat_*`（★ 窗口 = **[CUT-24h, ∞)**）★ `M8_ns_*`（★ post 段 = **[CUT, ∞)**）★ `M16` / `M17`（★ 只有下界）"
+          "★ ★★ **`M20` 的 fp 指纹视图 post 段 = [CUT, ∞)**（★ 「**无成熟度过滤**」≠「**无上界**」⇒ ★★ as-of 替换对它**完全无效** ⇒ ★★ 负控里的 fp 窗口比 Stage 1 更长 ⇒ ★★ **几何不一致**）"
+          "★ ★★ **`M20` 的 `tail_n` 子查询 = [now-6h, ∞)** ⇒ ★★ ⇒ ★★ **「fp ≥ 窗口+尾部」这个不变量此前是「恒真」的**（★ 两个视图都无界 ⇒ 两边都 = [CUT, 真实now] ⇒ 相等）⇒ ★★ ⇒ ★★ **守卫在缺陷所在处没有牙**（★ 盲区正在缺陷处）⇒ ★★ 补界后恢复为「真不变量」（★ 且**牙齿恢复**：★ 若 fp 被改回带成熟度过滤 ⇒ fp = window < window+tail ⇒ ★★ 报警）"
+          "⇒ ★★★ **★ 处置**：★ 采集侧 6 处补界**只补上界、不动下界与阈值** ⇒ ★★ **同事务双跑对拍：259 键逐字节 0 差异** ⇒ ★★ **M18 不受影响 ⇒ 不重冻**（★ M20 的 fp 视图**只给 post 分支**补界 ⇒ ★★ pre 侧仍时钟无关 ⇒ ★★ 三时钟门逐字节一致不受影响）"
+          "⇒ ★★★ **纪律**：★★ ① **任何「全部合规 / 无违例」的结论必须附带它检查了哪些东西（★ 覆盖率）**"
+          "★★ ② ★ **守卫必须能看见自己瞎了**（★ 覆盖率缺口 ⇒ **rc≠0**）"
+          "★★ ③ ★ **窗口 = 最小独立读数单元** ⇒ ★★ 判上界必须**逐单元**判定 ⇒ ★★ 「同语句别的窗口替它背书」是**结构性假阴性**"
+          "★★ ④ ★ **不变量必须验证它不是「恒真」**（★ 两个视图都无界 ⇒ 等式恒成立 ⇒ 守卫无牙 ⇒ ★ 问「**它要防的缺陷真的存在时，它会红吗？**」）")
     return lines
 
 
@@ -2892,7 +3606,7 @@ def main() -> int:
     else:
         print(f"== 复采（ssh {args.ssh_host} → acc-pg17）==", flush=True)
         raw = run_metrics(args.ssh_host)
-    data = parse(raw)
+    data = parse_strict(raw, where="verdict")
     print(f"   指标条数：{len(data)}")
 
     rows, bad, guards = judge(data, stage=args.stage,
@@ -2993,11 +3707,14 @@ def main() -> int:
     for label, obs, note in handoff_rows:
         print(f"   {label}: {obs}")
         print(f"      ⇒ {note}")
-    h5 = sorted((k, v) for k, v in data.items() if k.startswith("H5_featured_probe_freq"))
+    h5 = h5_readout_lines(data)
     if h5:
-        print("   H5 featured 真实高频模型（handoff 任务 2.2-3 的修正版；★ 原样用幻觉模型名 ⇒ 必然 0 行）:")
-        for k, v in h5[:5]:
-            print(f"      - {v}")
+        print(f"   H5 featured 真实高频模型（handoff 任务 2.2-3 的修正版；★ 原样用幻觉模型名 ⇒ 必然 0 行）："
+              f"★ 共 {len(h5)} 行（★ 一模型一键 ⇒ ★ 解析器不会折叠 ⇒ ★ **逐模型读数可见**）")
+        for _line in h5:
+            print(f"      - {_line}")
+        print(f"      ★★ **两条限定**（★ 第 32 处补）：★ ① 本块是 **Top 10**（★ `LIMIT 10`）⇒ ★★ **不得**读成「全部 featured 模型的分布」"
+              f"；★ ② 窗口 = **[now-24h, now]** ⇒ ★★ **随时钟变** ⇒ ★★ **不在 M18 冻结面** ⇒ ★ 不作判据、只作参考项")
 
     print_honest_boundaries()
     # ★★★ **守卫不过 ⇒ 退出码必须非 0**（★ 本轮第 19 处修正，★★ 又一个「静默失效」）

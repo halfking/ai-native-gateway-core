@@ -20,6 +20,23 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
+// toolArgumentsJSON 返回 tool call **终态**的 arguments 字串。
+//
+// ★ 2026-11-11 审计 F-A1（★ 本轮**实测复现**的**回归**）：★ 根修 `9381d13a4` 把
+// ★★ anthropic `content_block_start` 里的 `{}` **占位符**排除掉（★ internal/ir/stream.go:587）
+// ★★ ⇒ ★★ **零参工具调用**（★ 上游只发 `input:{}`、★ 不发 `input_json_delta`）
+// ★★ 的终态 arguments 就变成 **空串** ⇒ ★★ `json.Valid("")` = **false**
+// ★★ ⇒ ★★ 客户端 `JSON.parse(arguments)` 抛错 ⇒ ★★ **工具不可用**
+// ★★ ⇒ ★★ 而**修复前**同一输入得到的是 `"{}"`（★ 合法 JSON）★★ ⇒ ★★ 这是本轮引入的**回归**。
+// ★★ ⇒ ★★ 且守卫生不了它：★ `domains/hooks/outputcompliance` 对空串直接 `continue`。
+// ⇒ ★★ 修法：★ 终态累计为空时**回落 `"{}"`**（★ 合法 JSON、★ 与修复前**逐字一致**）。
+func toolArgumentsJSON(arguments string) string {
+	if arguments == "" {
+		return "{}"
+	}
+	return arguments
+}
+
 // Phase E (2026-07-01): Responses API SSE bridges. Two orchestrators that
 // read upstream SSE in their native wire format, lift chunks into the IR
 // StreamChunk superset via the IR parsers, then emit Responses API SSE
@@ -394,12 +411,12 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 		// top-level status + incomplete_details on the final envelope.
 		item := map[string]any{
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
-			"name": state.Name, "arguments": state.Arguments.String(), "status": "completed",
+			"name": state.Name, "arguments": toolArgumentsJSON(state.Arguments.String()), "status": "completed",
 		}
 		emit("response.function_call_arguments.done", map[string]any{
 			"type": "response.function_call_arguments.done", "item_id": state.ID,
 			"output_index": index, "call_id": state.ID, "name": state.Name,
-			"arguments": state.Arguments.String(),
+			"arguments": toolArgumentsJSON(state.Arguments.String()),
 		})
 		emit("response.output_item.done", map[string]any{
 			"type": "response.output_item.done", "output_index": index, "item": item,
@@ -462,7 +479,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 		}
 		output = append(output, map[string]any{
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
-			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
+			"name": state.Name, "arguments": toolArgumentsJSON(state.Arguments.String()), "status": status,
 		})
 	}
 	completed := map[string]any{
