@@ -571,7 +571,37 @@ func parseAnthropicTools(raw json.RawMessage) ([]ToolDefinition, error) {
 		// type and carries name + input_schema — those keep going through
 		// the function path below.
 		toolType, _ := tool["type"].(string)
-		isBuiltin := toolType != "" && toolType != "custom_tool"
+
+		// 2026-11-11 客户端错误修正 · 形制 A：客户端把 **OpenAI 工具定义**
+		// 发到 Anthropic 端点（{"type":"function","function":{...}}）。
+		//
+		// 缺陷（本轮实测撞出）：旧路径把 type="function" 当成 Anthropic 的
+		// provider-specific builtin（isBuiltin 判据只排除 "custom_tool"），
+		// 于是走 Raw 兜底分支 → ToolDefinition{Type:"function", Raw:...}，
+		// **Name/Description/Parameters 全丢** → 序列化成 Anthropic 时输出
+		// {"name":""} → 上游拒绝 / 工具调用静默失效。
+		//
+		// 修法：与 parseOpenAITools 同构 —— 检测嵌套 function 对象并归一化
+		// 到标准 function 工具（IR 的 Name/Description/Parameters），
+		// 目标侧序列化器再按目标协议输出原生形态。
+		// 客户端的形制错误在 IR 层一次性归一，不在序列化层打补丁。
+		if fn, ok := tool["function"].(map[string]any); ok && (toolType == "function" || toolType == "") {
+			td := ToolDefinition{}
+			if name, ok := fn["name"].(string); ok {
+				td.Name = name
+			}
+			if desc, ok := fn["description"].(string); ok {
+				td.Description = desc
+			}
+			td.Parameters = marshalAnyToRaw(sanitizeInputSchema(fn["parameters"]))
+			// "function" 键已被消费 → 不进 Extra（否则并回 Anthropic 输出
+			// 会同时出现 name/input_schema 与 function 两套形态）。
+			td.Extra = toolExtrasFrom(leftovers, toolKnownKeysWith(irToolKnownKeysAnthropic, "function"))
+			result = append(result, td)
+			continue
+		}
+
+		isBuiltin := toolType != "" && toolType != "custom_tool" && toolType != "function"
 		// Anthropic built-ins may carry "name" (computer_use) or not (bash).
 		// Treat presence of a schema-less builtin type as provider-specific.
 		_, hasInputSchema := tool["input_schema"]

@@ -50,7 +50,10 @@ RUN find . -type f \( -name '._*' -o -name '.DS_Store' \) -delete
 #     不含 SQLiteConn.Exec 等）。sqlite3.c 由 go-sqlite3 静态编入二进制，
 #     运行时仅动态依赖 musl libc，与 alpine:3.22 运行时兼容。
 #   - full 模式行为不受影响（SQLite 驱动不会被打开）。
-RUN apk --no-cache add gcc musl-dev \
+# 2026-11-11: 添加 China mirror 以解决 Alpine 官方源 TLS 错误
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories \
+    && apk update \
+    && apk --no-cache add gcc musl-dev \
     && CGO_ENABLED=1 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
 
 # 运行阶段
@@ -58,7 +61,9 @@ RUN apk --no-cache add gcc musl-dev \
 # non-empty; otherwise fall back to the mutable tag (dev only).
 FROM ${RUNTIME_BASE_IMAGE}${RUNTIME_IMAGE_DIGEST:+@${RUNTIME_IMAGE_DIGEST}} AS runtime
 
-RUN apk --no-cache add ca-certificates wget \
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories \
+    && apk update \
+    && apk --no-cache add ca-certificates wget \
     && addgroup -g 65532 -S llmgw \
     && adduser -u 65532 -S -G llmgw llmgw
 

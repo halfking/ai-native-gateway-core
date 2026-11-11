@@ -35,6 +35,24 @@ var (
 	}
 )
 
+// toolKnownKeysWith 返回 known 的副本并额外标记一个已消费键。
+//
+// 用途（2026-11-11 客户端错误修正）：某些 parser 在特定形态下会消费
+// 一个本不属于该协议消费集的键（如 Anthropic parser 消费 OpenAI 嵌套
+// 工具定义里的 "function"）。这些键必须标记为已消费，否则会落进 Extra
+// 并在 serialize 时并回输出，造成两套形态并存（如 Anthropic 工具同时
+// 带 name/input_schema 与 function）。
+//
+// 只在检测到该形态时调用（罕见路径），不做全局改动。
+func toolKnownKeysWith(known map[string]bool, extraKey string) map[string]bool {
+	out := make(map[string]bool, len(known)+1)
+	for k, v := range known {
+		out[k] = v
+	}
+	out[extraKey] = true
+	return out
+}
+
 // splitToolRaw 把单个工具的原始字节拆成「消费视图」（给既有 parse 逻辑）
 // 与「剩余键视图」（按字节保真，不经过 float64 —— 与 preservedRawValue
 // 同一保真纪律）。
