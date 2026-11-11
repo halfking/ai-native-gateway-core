@@ -9,9 +9,13 @@
 --                    + 原生 vendor_list_in/out + 双向折算快照列（CNY/USD）；
 --                  · P2a 海外地板（USD 原生）+ 折 CNY 快照列；
 --                  · P2b 国内地板（CNY 原生）+ 折 USD 快照列；
---                  · 旧 market_min_* 语义升级为「综合地板」（双地板按快照
---                    汇率折算后的最低者，值 = 赢家的原生币表达；
---                    market_min_cny_* = 综合地板的 CNY 表达，保留旧读数不破）。
+--                  · 旧 market_min_* 语义钉死为「综合地板」＝双地板按快照
+--                    汇率折到 CNY 的**逐轴全局最低**（与 940 旧值同口径，币种
+--                    恒 CNY ⇒ overview/941 视图/报价 P2 轴零漂移）；
+--                    定稿建议的「currency = vendor_list_currency 镜像」被
+--                    **有意偏离**（镜像会破坏 941 视图旧门与消费方标注的
+--                    币种一致性；镜像语义由 vendor_list_currency 新列承载，
+--                    偏离理由钉在本文件 currency 列 COMMENT）。
 --                ② supplier_market_position 双读数列（5 列）：
 --                  vs_overseas / vs_domestic / market_ref_used / fx_used /
 --                  vendor_ref_currency —— 评分 job（定稿 M2-T3）落库面。
@@ -79,7 +83,7 @@ ALTER TABLE public.market_price_reference
     ADD COLUMN IF NOT EXISTS domestic_min_usd_out_per_1m numeric(14,6);
 
 COMMENT ON COLUMN public.market_price_reference.currency IS
-    'A-17：= vendor_list_currency 的镜像（厂商侧原生币，overseas=USD / domestic=CNY）。959 前恒写 CNY（单地板旧口径），959 起由同步器按 registry 裁定写原生币。';
+    'A-17 落地口径（959）：本列描述 market_min_*（综合地板）的币种 = 综合地板折算基准 CNY，保持写 ''CNY'' —— 定稿原建议「= vendor_list_currency 镜像」被本轮**有意偏离**：941 视图的 market_position 旧门（cmb.currency IS DISTINCT FROM mpr.currency ⇒ NULL）与全部既有消费者的标注都按「本列=market_min 的币种」工作；镜像语义由新列 vendor_list_currency 承载（厂商原生币）。';
 COMMENT ON COLUMN public.market_price_reference.vendor_list_currency IS
     'P1 原厂刊例价的原生币（registry 裁定）；vendor_list_in/out_per_1m 即该币种的值。折算列（vendor_list_cny_*/usd_*）只是派生视图，原币列是事实源（A-17 工程红线）。';
 COMMENT ON COLUMN public.market_price_reference.vendor_list_cny_in_per_1m IS
@@ -97,7 +101,7 @@ COMMENT ON COLUMN public.market_price_reference.domestic_min_in_per_1m IS
 COMMENT ON COLUMN public.market_price_reference.domestic_min_usd_in_per_1m IS
     'P2b 折 USD 表达（快照 fx_rate）。';
 COMMENT ON COLUMN public.market_price_reference.market_min_in_per_1m IS
-    '959 语义升级：综合地板 = 双地板按快照 fx 折算后的最低者，值为赢家的原生币表达（赢家具名见 market_min_platform_id 与 overseas/domestic_min_platform_id 的对应关系）；CNY 表达固定在 market_min_cny_*。959 前该列恒为 CNY（单地板旧口径）。';
+    '959 语义钉死：综合地板 = 双地板按快照 fx 折到 CNY 后的**逐轴全局最低**（in/out 各自取 min；与 940 旧值逐字节同口径 ⇒ overview/941 视图/报价 P2 轴零漂移），币种恒 CNY（= market_min_cny_* 同值双列：market_min_* 是 940 原列位，market_min_cny_* 是定稿命名的 CNY 表达位）。区域原生事实在 overseas_min_*（USD）/ domestic_min_*（CNY）两列组。';
 
 -- ── ② supplier_market_position：双读数列（评分 job 落库面，定稿 M2-T3） ──
 ALTER TABLE public.supplier_market_position
