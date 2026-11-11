@@ -101,10 +101,34 @@ func TestRegistryOpenForExtension(t *testing.T) {
 	if merged, ok := d.MergeContinuation("", `{"x":1}`); !ok || merged != `{"x":1}` {
 		t.Fatalf("fake 厂商续拼: merged=%q ok=%v", merged, ok)
 	}
+	if got := d.TerminalArguments(""); got != "null" {
+		t.Fatalf("fake 厂商零参终态约定（null）: got %q", got)
+	}
 	// 未注册协议回落直通方言（不吞首帧输入）。
 	p := tooldialect.ForProtocol("unknown-proto")
 	if got := p.StartArguments([]byte(`{}`)); got != `{}` {
 		t.Fatalf("直通方言不得吞首帧输入: got %q", got)
+	}
+	if got := p.TerminalArguments(""); got != "" {
+		t.Fatalf("直通方言终态不做假设（原样返回）: got %q", got)
+	}
+}
+
+// TerminalArguments 语义门（2026-11-11 审计第二轮 · Slice 1 尾巴收口）：
+// 终态归一 = 占位符回声剥离 + 零参回落，且必须与 responses 桥历史内联
+// 行为逐字一致（F-A1 回归的修法语义）。
+func TestAnthropicTerminalArguments(t *testing.T) {
+	d := tooldialect.ForProtocol(tooldialect.ProtocolAnthropicMessages)
+	for _, tc := range []struct{ acc, want string }{
+		{"", "{}"},                // 零参工具终态回落（F-A1）
+		{"{}", "{}"},              // 占位符本身 = 零参终态
+		{`{"a":1}`, `{"a":1}`},    // 正常参数原样
+		{`{}{"a":1}`, `{"a":1}`},  // delta 位置占位符回声剥离
+		{`{}{broken`, `{broken`},  // 剥离不校验（终态守卫负责合法性）
+	} {
+		if got := d.TerminalArguments(tc.acc); got != tc.want {
+			t.Fatalf("TerminalArguments(%q) = %q, want %q", tc.acc, got, tc.want)
+		}
 	}
 }
 
@@ -114,6 +138,16 @@ func (fakeVendorDialect) Name() string                     { return "fake-vendor
 func (fakeVendorDialect) StartArguments(raw []byte) string { return "" } // 该厂商首帧恒为 null 占位
 func (fakeVendorDialect) MergeContinuation(start, buffered string) (string, bool) {
 	return start + buffered, true
+}
+
+// TerminalArguments implements tooldialect.Dialect（2026-11-11 接口扩展）：
+// fake 厂商的零参终态约定为 "null"（与其 null 占位符首帧对称）—— 证明
+// 终态归一是方言能力而非 anthropic 专属硬编码（OCP）。
+func (fakeVendorDialect) TerminalArguments(accumulated string) string {
+	if accumulated == "" {
+		return "null"
+	}
+	return accumulated
 }
 
 // ★ 2026-11-11（48h 审计 P2）：delta 位置的 "{}" 占位符回声——非标准中继把
