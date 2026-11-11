@@ -115,3 +115,28 @@ func (fakeVendorDialect) StartArguments(raw []byte) string { return "" } // 该�
 func (fakeVendorDialect) MergeContinuation(start, buffered string) (string, bool) {
 	return start + buffered, true
 }
+
+// ★ 2026-11-11（48h 审计 P2）：delta 位置的 "{}" 占位符回声——非标准中继把
+// content_block_start 的占位符回声进 input_json_delta ⇒ start="" 且 buffered
+// 以 "{}" 开头还有后续 ⇒ 剥掉回声再校验；否则终态 "{}{...}" 非法 JSON
+// （9381d13a4 修的原始事故在 delta 位置的镜像，211 实测 1 次/24h）。
+// "{}" 单独出现是零参工具的合法终态 ⇒ 保留。
+func TestAnthropicMergeContinuationStripsLeadingPlaceholderEcho(t *testing.T) {
+	d := tooldialect.ForProtocol(tooldialect.ProtocolAnthropicMessages) // 种子版（validate=nil）
+	// 回声 + 真实参数：必须剥掉回声、终态合法
+	if merged, ok := d.MergeContinuation(``, `{}{"city":"Tokyo"}`); !ok || merged != `{"city":"Tokyo"}` {
+		t.Fatalf("回声+真实参数: merged=%q ok=%v（want ok 且剥掉回声）", merged, ok)
+	}
+	// "{}" 单独出现：零参工具合法终态，保留
+	if merged, ok := d.MergeContinuation(``, `{}`); !ok || merged != `{}` {
+		t.Fatalf("零参终态: merged=%q ok=%v（want ok 且保持 {}）", merged, ok)
+	}
+	// start 非空时不剥（回声只可能出现在整个参数文档的开头）
+	if merged, ok := d.MergeContinuation(`{"a":`, `1}`); !ok || merged != `{"a":1}` {
+		t.Fatalf("真实续拼不受影响: merged=%q ok=%v", merged, ok)
+	}
+	// 回声 + 非法尾部：仍必须失败（剥回声不是 blanket 豁免）
+	if merged, ok := d.MergeContinuation(``, `{}`+"{junk"); ok || merged != `` {
+		t.Fatalf("剥回声后仍非法必须失败: merged=%q ok=%v", merged, ok)
+	}
+}

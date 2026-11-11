@@ -1438,8 +1438,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								"quality", chunk.Quality,
 								"reason", chunk.ArgumentsJSONReason)
 						}
-						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
-						if vErr != nil {
+						// 2026-11-11（48h 审计 P2）：终态校验走方言（单一语义源，
+						// 不再绕过 toolArgsDialect 直调校验器）——方言在 start==""
+						// 时会剥掉 delta 位置的 "{}" 占位符回声（非标准中继形态，
+						// 否则终态拼出 "{}{...}" 非法 JSON、整流中断）。
+						validated, vOk := toolArgsDialect.MergeContinuation("", args)
+						if !vOk {
 							if capture != nil {
 								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}

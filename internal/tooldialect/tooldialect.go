@@ -20,6 +20,7 @@ package tooldialect
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 )
 
@@ -80,6 +81,15 @@ func (d *AnthropicDialect) MergeContinuation(start, buffered string) (string, bo
 		return start, true
 	}
 	doc := start + buffered
+	// 2026-11-11（48h 审计 P2）：delta 位置的占位符回声。标准 Anthropic 上游
+	// 永远不会把 "{}" 作为 input_json_delta 发出（占位符住在
+	// content_block_start.input，StartArguments 已清空）；start 为空且 buffered
+	// 以 "{}" 开头还有后续内容 ⇒ 非标准中继把占位符回声进了增量流 ⇒ 终态拼出
+	// "{}{...}" 非法 JSON（与 9381d13a4 修的原始事故同形态）。剥掉这个回声。
+	// "{}" 单独出现是零参工具的合法终态 ⇒ 保留。
+	if start == "" && strings.HasPrefix(buffered, "{}") && len(buffered) > 2 {
+		doc = buffered[2:]
+	}
 	if d.validate != nil {
 		validated, _, err := d.validate(doc)
 		if err != nil {
