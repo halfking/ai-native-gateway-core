@@ -159,6 +159,10 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var mods []string
 		if err := json.Unmarshal(src.Modalities, &mods); err == nil {
 			ir.Modalities = mods
+		} else {
+			// 2026-11-11 审计第二轮（批 2）：形状错此前静默丢（字段蒸发）。
+			reportClientShapeFix(ProtocolOpenAIChat, "modalities", "unmarshal_failed_dropped",
+				map[string]any{"err": err.Error()})
 		}
 	}
 
@@ -167,6 +171,9 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var ac AudioConfig
 		if err := json.Unmarshal(src.Audio, &ac); err == nil {
 			ir.AudioConfig = &ac
+		} else {
+			reportClientShapeFix(ProtocolOpenAIChat, "audio", "unmarshal_failed_dropped",
+				map[string]any{"err": err.Error()})
 		}
 	}
 
@@ -175,6 +182,9 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var lb map[string]float64
 		if err := json.Unmarshal(src.LogitBias, &lb); err == nil {
 			ir.LogitBias = lb
+		} else {
+			reportClientShapeFix(ProtocolOpenAIChat, "logit_bias", "unmarshal_failed_dropped",
+				map[string]any{"err": err.Error()})
 		}
 	}
 
@@ -183,6 +193,9 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var p Prediction
 		if err := json.Unmarshal(src.Prediction, &p); err == nil {
 			ir.Prediction = &p
+		} else {
+			reportClientShapeFix(ProtocolOpenAIChat, "prediction", "unmarshal_failed_dropped",
+				map[string]any{"err": err.Error()})
 		}
 	}
 
@@ -191,6 +204,9 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var wso WebSearchOptions
 		if err := json.Unmarshal(src.WebSearchOptions, &wso); err == nil {
 			ir.WebSearchOptions = &wso
+		} else {
+			reportClientShapeFix(ProtocolOpenAIChat, "web_search_options", "unmarshal_failed_dropped",
+				map[string]any{"err": err.Error()})
 		}
 	}
 
@@ -225,6 +241,15 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	// Parse stop sequences
 	if src.Stop != nil && string(src.Stop) != "null" {
 		ir.Stop = parseStringArray(src.Stop)
+		// 2026-11-11 审计第二轮（批 2）：stop 既非数组也非字符串（如对象/
+		// 数字）⇒ 解析结果为空 ⇒ 停止序列语义蒸发且无痕。披露（不猜测：
+		// 数字 1 应转 "1" 还是丢弃不可证明）。
+		if len(ir.Stop) == 0 && len(src.Stop) > 0 && string(src.Stop) != "null" {
+			var stopProbe any
+			_ = json.Unmarshal(src.Stop, &stopProbe)
+			reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_dropped",
+				map[string]any{"value_type": jsonTypeName(stopProbe)})
+		}
 	}
 
 	// Parse streaming
@@ -319,7 +344,10 @@ func parseOpenAIMessages(raw json.RawMessage) ([]Message, error) {
 
 // parseOpenAIMessage parses a single OpenAI message into IR Message.
 func parseOpenAIMessage(msg map[string]any) (*Message, error) {
-	role, _ := msg["role"].(string)
+	// 2026-11-11 审计第二轮（批 2）：role 缺失/空/非字符串此前静默透传空串
+	// ⇒ 下游校验与上游线格式行为未定义。归一化（带 tool_call_id → tool，
+	// 否则 → user）+ anomaly。
+	role := normalizeMessageRole(msg, ProtocolOpenAIChat)
 
 	irMsg := &Message{
 		Role: role,
@@ -354,10 +382,13 @@ func parseOpenAIMessage(msg map[string]any) (*Message, error) {
 	// Handle tool_calls (assistant messages)
 	if toolCalls, ok := msg["tool_calls"].([]any); ok {
 		irMsg.ToolCalls = make([]ToolCall, 0, len(toolCalls))
-		for _, tc := range toolCalls {
+		for tci, tc := range toolCalls {
 			if tcMap, ok := tc.(map[string]any); ok {
 				irMsg.ToolCalls = append(irMsg.ToolCalls, parseOpenAIToolCall(tcMap))
+				continue
 			}
+			// 2026-11-11 审计第二轮（批 2）：非对象元素此前静默跳过。
+			reportSkippedElement(ProtocolOpenAIChat, "messages[].tool_calls[]", tci, tc)
 		}
 	}
 
@@ -377,9 +408,11 @@ func parseOpenAIMessage(msg map[string]any) (*Message, error) {
 // parseOpenAIContentBlocks parses OpenAI content blocks into IR ContentBlock.
 func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 	result := make([]ContentBlock, 0, len(blocks))
-	for _, block := range blocks {
+	for bi, block := range blocks {
 		blockMap, ok := block.(map[string]any)
 		if !ok {
+			// 2026-11-11 审计第二轮（批 2）：非对象块此前静默跳过。
+			reportSkippedElement(ProtocolOpenAIChat, "messages[].content[]", bi, block)
 			continue
 		}
 
@@ -663,7 +696,10 @@ func parseOpenAIToolCall(tc map[string]any) ToolCall {
 			tcResult.Function.Name = name
 		}
 		if args, ok := fn["arguments"].(string); ok {
-			tcResult.Function.Arguments = args
+			// 2026-11-11 审计第二轮（批 2）：空串→"{}"（无参调用无歧义），
+			// 非法 JSON 原样保留 + 披露。此前 arguments 的 JSON 有效性
+			// 完全不校验。
+			tcResult.Function.Arguments = coerceToolCallArguments(args, ProtocolOpenAIChat)
 		}
 	}
 
@@ -816,7 +852,9 @@ func extractSystemPrompt(messages *[]Message) *SystemPrompt {
 	return nil
 }
 
-// parseStringArray parses a JSON array of strings.
+// parseStringArray parses a JSON array of strings. 无法解析为数组或单串时
+// 返回空切片（= 丢弃），由调用方决定是否披露 —— 2026-11-11 审计第二轮
+// （批 2）：stop 的畸形值此前静默蒸发，调用点补披露。
 func parseStringArray(raw json.RawMessage) []string {
 	var result []string
 	if raw == nil {

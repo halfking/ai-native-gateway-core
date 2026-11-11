@@ -267,8 +267,11 @@ func fixToolCallStructure(messages []Message) []Message {
 //
 // Behavior is controlled by the LLM_GATEWAY_FIX_ROLE_ALTERNATION environment
 // variable (docs/omni-ref3 E3):
-//   - "false" or unset (default): soft enforcement — warn only, do not modify
-//   - "true": merge consecutive same-role messages (excluding system/tool)
+//   - unset or "true" (default, 2026-11-11 审计第二轮 · 用户裁决)：merge
+//     consecutive same-role messages（合并 + WARN 留痕）—— 211 实测 6h 内
+//     725 次告警、单请求最高 235 处，客户端智能体（ZCode/MiniMaxCode）的
+//     会话形态就是非严格交替；OpenAI 系上游多接受，严格交替上游需要修复
+//   - "false": soft enforcement — warn only, do not modify（旧默认，可回退）
 //
 // When merging is enabled, consecutive messages with the same role (user or
 // assistant) are combined by concatenating their Content arrays. This ensures
@@ -279,8 +282,9 @@ func enforceRoleAlternation(messages []Message) []Message {
 		return messages
 	}
 
-	// Check if auto-fix is enabled (E3: default false, opt-in per provider)
-	shouldFix := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION") == "true"
+	// 2026-11-11 审计第二轮：默认翻转 —— 合并默认开启，env=false 显式回退
+	// 旧的 warn-only 行为（升级路径可平滑退回）。
+	shouldFix := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION") != "false"
 
 	if !shouldFix {
 		// Legacy behavior: warn only, do not modify

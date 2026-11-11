@@ -385,9 +385,9 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	if itemType == "function_call" {
 		name, _ := item["name"].(string)
 		args, _ := item["arguments"].(string)
-		if args == "" {
-			args = "{}"
-		}
+		// 2026-11-11 审计第二轮（批 2）：空串→"{}"（既有行为，改走统一
+		// helper 使其可观测）；非法 JSON 披露。
+		args = coerceToolCallArguments(args, ProtocolOpenAIResponses)
 		callID, _ := item["call_id"].(string)
 		if callID == "" {
 			callID, _ = item["id"].(string)
@@ -425,6 +425,10 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 			text, _ := item["text"].(string)
 			return &Message{Role: "user", Content: []ContentBlock{{Type: "text", Text: text}}}, "", nil
 		case "message":
+			// 2026-11-11 审计第二轮（批 2）：message 型 item 缺 role 的兜底
+			// 保留（既有行为），补披露使其可观测。
+			reportClientShapeFix(ProtocolOpenAIResponses, "input[].role", "inferred_user",
+				map[string]any{"inferred": "user", "item_type": itemType})
 			role = "user"
 		}
 	}
@@ -468,9 +472,8 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	// function_call items (assistant tool calls) carry name/arguments directly.
 	if name, _ := item["name"].(string); name != "" {
 		args, _ := item["arguments"].(string)
-		if args == "" {
-			args = "{}"
-		}
+		// 2026-11-11 审计第二轮（批 2）：同上，统一 helper。
+		args = coerceToolCallArguments(args, ProtocolOpenAIResponses)
 		callID, _ := item["call_id"].(string)
 		if callID == "" {
 			callID, _ = item["id"].(string)
@@ -497,9 +500,11 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 // ContentBlocks. textType picks the normalization target based on role.
 func parseResponsesContentBlocks(blocks []any, role string) ([]ContentBlock, error) {
 	result := make([]ContentBlock, 0, len(blocks))
-	for _, block := range blocks {
+	for bi, block := range blocks {
 		blockMap, ok := block.(map[string]any)
 		if !ok {
+			// 2026-11-11 审计第二轮（批 2）：非对象块此前静默跳过。
+			reportSkippedElement(ProtocolOpenAIResponses, "input[].content[]", bi, block)
 			continue
 		}
 		blockType, _ := blockMap["type"].(string)

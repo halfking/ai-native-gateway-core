@@ -212,6 +212,12 @@ func (e assertErrf) Error() string { return string(e) }
 //   · 消息数与角色序列保持（tool 结果被清理的情形除外，见下）
 //   · 工具调用 ID 集合保持
 func TestProductionReplay_AllProtocolsRoundTrip(t *testing.T) {
+	// 2026-11-12：本测试验证**协议转换**不变量（工具 ID/名/计数保持），
+	// 与 role 交替策略无关 ⇒ 显式关闭合并（2026-11-11 批 2 起默认开启，
+	// 连续 user 消息会被合并 ⇒ ④ user 消息数不变量不再逐条成立）。
+	// 黄金对拍（TestProductionReplay_MatchesProductionEgress）另行显式
+	// 开启合并以对齐生产口径。
+	t.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", "false")
 	fixtures := loadProductionFixtures(t)
 
 	targets := []struct {
