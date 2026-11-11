@@ -1016,6 +1016,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month AS r", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；本读点读 request_logs_with_current_month AS r ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 		},
 	},
+	"internal/bucket/credit/provider.go": {
+		Form:  formHelperConcat,
+		Class: classSwitchArm,
+		Note:  "信用桶 backfill：requestLogsSource(_ int) 在 2026-11-11（48h 审计）之后**恒**返回 canonical 视图（原 v1 双臂 `_request_logs`/`_request_logs_partitions` 在 890 后是已删表，42P01 地雷）⇒ 源由 helper 决定 ⇒ 归切换层裁决；Phase 1 脚手架、无生产消费方",
+		Points: []canonicalReadPoint{
+			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "requestLogsSource(_ int) 恒返回 canonical 视图（2026-11-11 从 v1 双臂收敛，与 maas 同名切换层同款）⇒ 源由切换层决定 ⇒ 调用点改不动；别名在拼接侧（rl）"},
+		},
+	},
 }
 
 // ─────────────────────── 扫描器 ───────────────────────
@@ -2557,6 +2565,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"internal/collector/gateway_adapters.go": "collector 适配：① 延迟分位；② 模型计数；③ 30 秒计数；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"internal/quality/minute_aggregator.go":  "离线分钟聚合（provider_id 走 details 腿，缺 details 行的轮次被谓词排除）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"maas/usage.go":                          "requestLogsSource(days) 在 890 之后**恒**返回 canonical 视图（原 days>7 分臂已合并，分流本身已无意义）⇒ 源仍由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"internal/bucket/credit/provider.go":     "信用桶 backfill（INSERT..SELECT FROM request_logs_with_current_month，`ts >= now()-N 天` 谓词；Phase 1 脚手架无生产消费方，2026-11-11 从 v1 双臂收敛到 canonical 视图）⇒ 源由 helper 决定 ⇒ 归切换层裁决；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 }
 
 // TestCanonicalViewCannotExpressPartitionPruning 是【行为判据】。

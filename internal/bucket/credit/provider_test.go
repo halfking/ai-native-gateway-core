@@ -133,17 +133,21 @@ func TestBucketsCoverLookback(t *testing.T) {
 	}
 }
 
+// TestRequestLogsSource 钉住 2026-11-11（48h 审计）收敛后的契约：
+// 旧断言钉的是 v1 双臂（≤7 天 `_request_logs`、>7 天 `_request_logs_partitions`）——
+// 那两张基表随迁移 890 在所有环境退役（211 实测 to_regclass 双空），
+// 旧契约钉的是 42P01 地雷。现恒返回 canonical 视图（与 maas 包同名切换层一致）。
 func TestRequestLogsSource(t *testing.T) {
 	tests := []struct {
 		lookbackDays int
 		wantTable    string
 		wantAlias    string
 	}{
-		{1, "_request_logs", "rl"},
-		{7, "_request_logs", "rl"},
-		{8, "_request_logs_partitions", "rlp"},
-		{30, "_request_logs_partitions", "rlp"},
-		{90, "_request_logs_partitions", "rlp"},
+		{1, "request_logs_with_current_month", "rl"},
+		{7, "request_logs_with_current_month", "rl"},
+		{8, "request_logs_with_current_month", "rl"},
+		{30, "request_logs_with_current_month", "rl"},
+		{90, "request_logs_with_current_month", "rl"},
 	}
 
 	for _, tt := range tests {
