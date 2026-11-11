@@ -1,0 +1,181 @@
+appId: com.llmgateway.web
+---
+# 测试：故障转移功能
+
+- launchApp:
+    clearState: false
+
+# 进入故障转移页面
+- assertVisible: "故障转移"
+- tapOn: "故障转移"
+
+# 验证故障转移概览
+- assertVisible: "供应商状态"
+- assertVisible: "健康检查"
+- assertVisible: "故障转移规则"
+
+# 查看供应商健康状态
+- assertVisible: "OpenAI"
+- assertVisible: "Azure"
+- assertVisible: "Anthropic"
+
+# 查看健康检查配置
+- tapOn: "健康检查配置"
+- assertVisible: "检查间隔"
+- assertVisible: "超时时间"
+- assertVisible: "失败阈值"
+
+# 编辑健康检查
+- tapOn: "编辑"
+- tapOn: "检查间隔"
+- inputText: "30"
+
+- tapOn: "超时时间"
+- inputText: "10"
+
+- tapOn: "失败阈值"
+- inputText: "3"
+
+- tapOn: "成功阈值"
+- inputText: "2"
+
+- tapOn: "保存"
+- assertVisible: "配置更新成功"
+
+# 创建故障转移规则
+- tapOn: "添加规则"
+- assertVisible: "规则名称"
+
+- tapOn: "规则名称"
+- inputText: "主备切换规则"
+
+# 配置主供应商
+- tapOn: "主供应商"
+- assertVisible: "选择供应商"
+- tapOn: "OpenAI"
+
+# 配置备用供应商
+- tapOn: "备用供应商"
+- tapOn: "Azure"
+
+# 切换条件
+- scrollUntilVisible: "切换条件"
+- tapOn: "错误率阈值"
+- inputText: "50"
+
+- tapOn: "连续失败次数"
+- inputText: "5"
+
+- tapOn: "响应时间阈值"
+- inputText: "5000"
+
+# 恢复条件
+- scrollUntilVisible: "恢复条件"
+- tapOn: "启用自动恢复"
+
+- tapOn: "恢复检查间隔"
+- inputText: "60"
+
+- tapOn: "连续成功次数"
+- inputText: "3"
+
+# 通知配置
+- scrollUntilVisible: "通知配置"
+- tapOn: "启用通知"
+
+- tapOn: "通知渠道"
+- tapOn: "邮件"
+- tapOn: "Webhook"
+
+- tapOn: "通知邮箱"
+- inputText: "admin@example.com"
+
+# 保存规则
+- tapOn: "保存"
+- assertVisible: "规则创建成功"
+
+# 验证规则列表
+- assertVisible: "主备切换规则"
+- assertVisible: "OpenAI → Azure"
+- assertVisible: "已启用"
+
+# 测试手动切换
+- tapOn: "OpenAI"
+- assertVisible: "供应商详情"
+- assertVisible: "手动切换"
+
+- tapOn: "手动切换"
+- assertVisible: "确认切换到备用供应商"
+- tapOn: "确认"
+- assertVisible: "切换成功"
+
+# 查看切换历史
+- tapOn: "切换历史"
+- assertVisible: "手动切换"
+- assertVisible: "OpenAI → Azure"
+- assertVisible:
+    text: ".*\\d{4}-\\d{2}-\\d{2}.*"
+    regex: true
+
+# 测试手动恢复
+- tapOn: "返回"
+- tapOn: "手动恢复"
+- assertVisible: "确认恢复到主供应商"
+- tapOn: "确认"
+- assertVisible: "恢复成功"
+
+# 查看故障统计
+- tapOn: "统计"
+- assertVisible: "总切换次数"
+- assertVisible: "自动切换"
+- assertVisible: "手动切换"
+- assertVisible: "平均恢复时间"
+
+# 测试模拟故障
+- tapOn: "返回"
+- tapOn: "测试工具"
+- assertVisible: "模拟故障"
+
+- tapOn: "模拟供应商故障"
+- tapOn: "OpenAI"
+- tapOn: "故障类型"
+- tapOn: "超时"
+
+- tapOn: "持续时间"
+- inputText: "60"
+
+- tapOn: "开始模拟"
+- assertVisible: "故障模拟已启动"
+
+# 等待自动切换
+- waitForAnimationToEnd:
+    timeout: 10000
+
+- assertVisible: "自动切换到 Azure"
+
+# 查看实时监控
+- tapOn: "实时监控"
+- assertVisible: "当前供应商"
+- assertVisible: "Azure"
+- assertVisible: "健康状态"
+- assertVisible: "正常"
+
+# 停止模拟
+- tapOn: "返回"
+- tapOn: "停止模拟"
+- assertVisible: "故障模拟已停止"
+
+# 验证自动恢复
+- waitForAnimationToEnd:
+    timeout: 70000
+
+- assertVisible: "自动恢复到 OpenAI"
+
+# 截图验证
+- takeScreenshot: "tests/screenshots/08-failover-light.png"
+
+# 深色模式验证
+- tapOn: "设置"
+- tapOn: "深色模式"
+- tapOn: "故障转移"
+- takeScreenshot: "tests/screenshots/08-failover-dark.png"

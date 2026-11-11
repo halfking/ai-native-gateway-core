@@ -1,0 +1,60 @@
+appId: com.llmgateway.tenant
+---
+# 测试4：租户门户功能
+
+# 1. 租户用户登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "tenant_user"
+- tapOn: "密码"
+- inputText: "${TENANT_PASSWORD}"
+- tapOn: "登录"
+
+# 2. 验证租户仪表盘
+- assertVisible: "我的仪表盘"
+- assertVisible: "使用统计"
+- assertVisible: "配额信息"
+
+# 3. 明主题验证
+- assertVisible: "今日请求"
+- assertVisible: "成功率"
+- assertVisible: "平均延迟"
+
+# 4. 切换暗主题
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+
+# 5. 查看我的密钥
+- tapOn: "我的密钥"
+- assertVisible: "密钥列表"
+- assertVisible: "创建密钥"
+
+# 6. 测试密钥创建
+- tapOn: "创建密钥"
+- assertVisible: "创建密钥"
+- tapOn: "密钥名称"
+- inputText: "test-key"
+- tapOn: "取消"
+
+# 7. 查看使用记录
+- tapOn: "使用记录"
+- assertVisible: "请求历史"
+- assertVisible: "时间范围"
+
+# 8. 测试时间范围筛选
+- tapOn:
+    id: "time-range-selector"
+- tapOn: "最近7天"
+- assertVisible: "请求历史"
+
+# 9. 查看配额详情
+- tapOn: "配额管理"
+- assertVisible: "配额详情"
+- assertVisible: "剩余配额"
+
+# 10. 退出
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"

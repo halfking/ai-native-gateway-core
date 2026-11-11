@@ -1,0 +1,133 @@
+appId: com.llmgateway.web
+---
+# 测试：路由策略功能
+
+- launchApp:
+    clearState: false
+
+# 进入路由策略页面
+- assertVisible: "路由策略"
+- tapOn: "路由策略"
+
+# 验证策略列表
+- assertVisible: "策略列表"
+- assertVisible: "添加策略"
+
+# 创建新策略
+- tapOn: "添加策略"
+- assertVisible: "策略名称"
+
+# 填写策略信息
+- tapOn: "策略名称"
+- inputText: "测试路由策略"
+
+- tapOn: "策略类型"
+- assertVisible: "轮询"
+- assertVisible: "权重"
+- assertVisible: "优先级"
+- assertVisible: "最低延迟"
+- tapOn: "权重"
+
+# 配置路由规则
+- scrollUntilVisible: "路由规则"
+- tapOn: "添加规则"
+
+# 规则条件
+- tapOn: "条件类型"
+- tapOn: "模型名称"
+- tapOn: "条件值"
+- inputText: "gpt-4"
+
+# 目标供应商
+- tapOn: "目标供应商"
+- tapOn: "OpenAI"
+
+# 权重配置
+- tapOn: "权重"
+- inputText: "70"
+
+# 添加第二个规则
+- tapOn: "添加规则"
+- tapOn: "目标供应商"
+- tapOn: "Azure"
+- tapOn: "权重"
+- inputText: "30"
+
+# 高级配置
+- scrollUntilVisible: "高级配置"
+- tapOn: "高级配置"
+
+# 超时设置
+- tapOn: "超时时间"
+- inputText: "30"
+
+# 重试配置
+- tapOn: "重试次数"
+- inputText: "3"
+
+- tapOn: "重试间隔"
+- inputText: "1"
+
+# 熔断配置
+- scrollUntilVisible: "熔断配置"
+- tapOn: "启用熔断"
+- tapOn: "错误阈值"
+- inputText: "50"
+
+- tapOn: "熔断时长"
+- inputText: "60"
+
+# 保存策略
+- tapOn: "保存"
+- assertVisible: "策略创建成功"
+
+# 验证策略列表
+- assertVisible: "测试路由策略"
+- assertVisible: "权重"
+- assertVisible: "启用"
+
+# 测试编辑策略
+- tapOn: "测试路由策略"
+- assertVisible: "编辑策略"
+- tapOn: "编辑"
+
+- tapOn: "权重"
+- inputText: "80"
+
+- tapOn: "保存"
+- assertVisible: "策略更新成功"
+
+# 测试禁用策略
+- longPressOn: "测试路由策略"
+- tapOn: "禁用"
+- assertVisible: "已禁用"
+
+# 测试启用策略
+- tapOn: "启用"
+- assertVisible: "已启用"
+
+# 测试策略优先级
+- tapOn: "调整优先级"
+- assertVisible: "拖动排序"
+
+# 查看策略统计
+- tapOn: "统计"
+- assertVisible: "请求次数"
+- assertVisible: "成功率"
+- assertVisible: "平均延迟"
+
+# 测试删除策略
+- tapOn: "返回"
+- longPressOn: "测试路由策略"
+- tapOn: "删除"
+- assertVisible: "确认删除"
+- tapOn: "确认"
+- assertVisible: "策略删除成功"
+
+# 截图验证
+- takeScreenshot: "tests/screenshots/07-routing-light.png"
+
+# 深色模式验证
+- tapOn: "设置"
+- tapOn: "深色模式"
+- takeScreenshot: "tests/screenshots/07-routing-dark.png"
