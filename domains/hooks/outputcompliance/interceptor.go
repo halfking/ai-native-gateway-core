@@ -103,7 +103,14 @@ func NewMandatoryOutputComplianceInterceptor(checker interface {
 }
 
 func (it *OutputComplianceInterceptor) isEnabled() bool {
-	return settings.GetPlatformBool("sanitize.output_check_enabled", true) && (it.mandatory || enabled())
+	// ★ 2026-11-11 修复：强制守卫也应受 sanitize.output_check_enabled 控制
+	// 问题：mandatory guard 的 it.mandatory=true 导致即使总开关关闭也会运行
+	// 修复：总开关关闭时，所有守卫（包括强制守卫）都不运行
+	// 影响：sanitize.output_check_enabled=false 现在会完全关闭输出检测
+	if !settings.GetPlatformBool("sanitize.output_check_enabled", true) {
+		return false
+	}
+	return it.mandatory || enabled()
 }
 
 func (it *OutputComplianceInterceptor) FailClosed() bool { return true }
