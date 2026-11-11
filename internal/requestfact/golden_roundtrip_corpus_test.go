@@ -1229,14 +1229,20 @@ func goldenCorpus() []goldenCorpusCase {
 				if req.Reasoning == nil || req.Reasoning.Effort != "medium" {
 					t.Fatalf("reasoning config = %#v, want effort medium", req.Reasoning)
 				}
-				assistant, ok := goldenFindMessage(req, "assistant")
-				if !ok || len(assistant.Content) != 1 {
-					t.Fatalf("assistant message = %#v, want one reasoning item", assistant)
-				}
-				raw, ok := assistant.Content[0].RawContent.(string)
-				if !ok || !strings.Contains(raw, `"rs_1"`) || !strings.Contains(raw, `"encrypted_content"`) {
-					t.Fatalf("reasoning item raw content = %#v, want replayable JSON with id and encrypted content",
-						assistant.Content[0].RawContent)
+				// 2026-11-11 订正（48h 审计第二轮）：7dabda830（11-09 opus-5-5
+				// empty_model_response 事故根修）起，input[] 的外族 reasoning
+				// item 在**解析层**被丢弃 + anomaly——对任何 anthropic-messages
+				// 上游都不 wire-legal（旧 unknown-item fallback + raw 回注是
+				// 跨协议 400 制造机）；serialize_anthropic 另有非法类型降级的
+				// 纵深防御。本用例旧断言钉的是丢弃前的「raw 回注」契约，
+				// 与 internal/ir 的守护测试
+				//（responses_reasoning_item_anthropic_test.go）**互相矛盾**
+				// ⇒ 按事故根修的现行契约同步本钉。
+				// ★ 登记缺口（Phase 2 设计项）：解析层丢弃 ⇒ IR 基底的归档
+				// 不再保真 reasoning 历史 ⇒ 重放会得到截断的对话；分层拆分
+				//（解析保真 / wire 执法在序列化层）需独立设计轮裁决。
+				if assistant, ok := goldenFindMessage(req, "assistant"); ok {
+					t.Fatalf("foreign reasoning item must be dropped before IR (7dabda830); got assistant message %#v", assistant)
 				}
 			},
 		},
