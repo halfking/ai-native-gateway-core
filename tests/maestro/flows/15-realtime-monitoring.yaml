@@ -1,0 +1,372 @@
+appId: com.llmgateway.web
+---
+# 测试：实时监控功能
+
+- launchApp:
+    clearState: false
+
+# 进入实时监控页面
+- assertVisible: "实时监控"
+- tapOn: "实时监控"
+
+# 验证实时监控界面
+- assertVisible: "实时指标"
+- assertVisible: "请求流"
+- assertVisible: "性能图表"
+- assertVisible: "拓扑视图"
+
+# 查看实时指标
+- assertVisible: "当前QPS"
+- assertVisible: "平均响应时间"
+- assertVisible: "错误率"
+- assertVisible: "活跃连接"
+
+# 验证实时数字跳动
+- assertVisible:
+    text: ".*\\d+.*"
+    regex: true
+
+# 请求流视图
+- tapOn: "请求流"
+- assertVisible: "实时请求"
+- assertVisible: "方法"
+- assertVisible: "路径"
+- assertVisible: "状态"
+- assertVisible: "耗时"
+
+# 查看请求详情
+- tapOn:
+    text: ".*POST.*|.*GET.*"
+    regex: true
+    index: 0
+
+- assertVisible: "请求详情"
+- assertVisible: "请求头"
+- assertVisible: "请求体"
+- assertVisible: "响应头"
+- assertVisible: "响应体"
+- assertVisible: "追踪链路"
+
+# 查看追踪链路
+- tapOn: "追踪链路"
+- assertVisible: "调用链"
+- assertVisible: "时间轴"
+
+# 关闭详情
+- tapOn: "关闭"
+
+# 过滤请求流
+- tapOn: "过滤"
+- tapOn: "状态码"
+- tapOn: "5xx"
+
+- assertVisible:
+    text: ".*5\\d{2}.*"
+    regex: true
+
+# 清除过滤
+- tapOn: "清除过滤"
+
+# 性能图表
+- tapOn: "性能图表"
+- assertVisible: "响应时间"
+- assertVisible: "吞吐量"
+- assertVisible: "错误率"
+
+# 响应时间图表
+- assertVisible: "折线图"
+- assertVisible: "P50"
+- assertVisible: "P95"
+- assertVisible: "P99"
+
+# 切换时间窗口
+- tapOn: "时间窗口"
+- assertVisible: "1分钟"
+- assertVisible: "5分钟"
+- assertVisible: "15分钟"
+- assertVisible: "1小时"
+- tapOn: "5分钟"
+
+# 吞吐量图表
+- tapOn: "吞吐量"
+- assertVisible: "请求/秒"
+- assertVisible: "面积图"
+
+# 错误率图表
+- tapOn: "错误率"
+- assertVisible: "百分比"
+- assertVisible: "柱状图"
+
+# 拓扑视图
+- tapOn: "拓扑视图"
+- assertVisible: "服务拓扑"
+- assertVisible: "依赖关系"
+
+# 查看服务节点
+- assertVisible: "API网关"
+- assertVisible: "认证服务"
+- assertVisible: "路由服务"
+- assertVisible: "OpenAI"
+- assertVisible: "Azure"
+
+# 节点健康状态
+- assertVisible: "健康"
+- assertVisible: "正常"
+
+# 点击节点查看详情
+- tapOn: "API网关"
+- assertVisible: "节点详情"
+- assertVisible: "QPS"
+- assertVisible: "延迟"
+- assertVisible: "错误率"
+- assertVisible: "实例数"
+
+# 查看实例列表
+- scrollUntilVisible: "实例列表"
+- assertVisible: "实例ID"
+- assertVisible: "状态"
+- assertVisible: "CPU"
+- assertVisible: "内存"
+
+# 关闭节点详情
+- tapOn: "关闭"
+
+# 查看连接线
+- tapOn:
+    text: ".*→.*"
+    regex: true
+    index: 0
+
+- assertVisible: "连接详情"
+- assertVisible: "调用次数"
+- assertVisible: "平均延迟"
+- assertVisible: "成功率"
+
+# 关闭连接详情
+- tapOn: "关闭"
+
+# 供应商监控
+- tapOn: "供应商监控"
+- assertVisible: "供应商列表"
+
+# OpenAI监控
+- tapOn: "OpenAI"
+- assertVisible: "供应商详情"
+- assertVisible: "可用性"
+- assertVisible: "请求量"
+- assertVisible: "成功率"
+- assertVisible: "平均延迟"
+
+# 模型使用分布
+- scrollUntilVisible: "模型分布"
+- assertVisible: "gpt-4"
+- assertVisible: "gpt-3.5-turbo"
+- assertVisible: "饼图"
+
+# 实时请求
+- scrollUntilVisible: "实时请求"
+- assertVisible: "请求列表"
+
+# 关闭供应商详情
+- tapOn: "返回"
+
+# Azure监控
+- tapOn: "Azure"
+- assertVisible: "供应商详情"
+
+# 查看健康检查历史
+- scrollUntilVisible: "健康检查"
+- assertVisible: "检查历史"
+- assertVisible: "成功"
+
+# 返回
+- tapOn: "返回"
+
+# 模型监控
+- tapOn: "模型监控"
+- assertVisible: "模型列表"
+
+# gpt-4监控
+- tapOn: "gpt-4"
+- assertVisible: "模型详情"
+- assertVisible: "使用量"
+- assertVisible: "成功率"
+- assertVisible: "Token统计"
+
+# Token使用分布
+- scrollUntilVisible: "Token统计"
+- assertVisible: "输入Token"
+- assertVisible: "输出Token"
+- assertVisible: "总Token"
+
+# 费用估算
+- scrollUntilVisible: "费用估算"
+- assertVisible: "本小时费用"
+- assertVisible: "今日费用"
+- assertVisible: "本月预估"
+
+# 返回
+- tapOn: "返回"
+
+# 租户监控
+- tapOn: "租户监控"
+- assertVisible: "租户列表"
+- assertVisible: "活跃租户"
+
+# 查看租户排行
+- assertVisible: "请求量排行"
+- tapOn: "排序"
+- assertVisible: "请求量"
+- assertVisible: "Token使用"
+- assertVisible: "费用"
+- tapOn: "Token使用"
+
+# 点击租户查看详情
+- tapOn:
+    text: ".*租户.*"
+    regex: true
+    index: 0
+
+- assertVisible: "租户实时数据"
+- assertVisible: "当前QPS"
+- assertVisible: "配额使用"
+
+# 配额预警
+- scrollUntilVisible: "配额使用"
+- assertVisible: "使用百分比"
+
+# 返回
+- tapOn: "返回"
+
+# 告警监控
+- tapOn: "告警监控"
+- assertVisible: "活动告警"
+- assertVisible: "告警趋势"
+
+# 查看活动告警
+- assertVisible: "告警列表"
+
+# 告警等级分布
+- scrollUntilVisible: "等级分布"
+- assertVisible: "严重"
+- assertVisible: "警告"
+- assertVisible: "信息"
+
+# 告警趋势图
+- scrollUntilVisible: "告警趋势"
+- assertVisible: "时间轴"
+
+# 系统资源监控
+- tapOn: "系统资源"
+- assertVisible: "资源使用"
+
+# CPU监控
+- assertVisible: "CPU使用率"
+- assertVisible: "实时曲线"
+
+# 内存监控
+- scrollUntilVisible: "内存使用"
+- assertVisible: "已用内存"
+- assertVisible: "可用内存"
+
+# 磁盘监控
+- scrollUntilVisible: "磁盘使用"
+- assertVisible: "磁盘空间"
+- assertVisible: "IO速率"
+
+# 网络监控
+- scrollUntilVisible: "网络流量"
+- assertVisible: "入站流量"
+- assertVisible: "出站流量"
+
+# 自定义仪表板
+- tapOn: "仪表板"
+- tapOn: "自定义"
+- assertVisible: "添加图表"
+
+# 添加图表
+- tapOn: "添加图表"
+- assertVisible: "图表类型"
+
+- tapOn: "图表类型"
+- assertVisible: "折线图"
+- assertVisible: "柱状图"
+- assertVisible: "饼图"
+- assertVisible: "仪表盘"
+- tapOn: "折线图"
+
+- tapOn: "指标"
+- tapOn: "响应时间"
+
+- tapOn: "时间范围"
+- tapOn: "15分钟"
+
+- tapOn: "添加"
+- assertVisible: "图表已添加"
+
+# 调整图表布局
+- longPressOn: "响应时间"
+- tapOn: "移动"
+
+# 保存仪表板
+- tapOn: "保存仪表板"
+- tapOn: "仪表板名称"
+- inputText: "自定义监控"
+
+- tapOn: "保存"
+- assertVisible: "仪表板已保存"
+
+# 导出数据
+- tapOn: "导出"
+- assertVisible: "导出选项"
+
+- tapOn: "导出格式"
+- tapOn: "CSV"
+
+- tapOn: "时间范围"
+- tapOn: "最近1小时"
+
+- tapOn: "导出"
+- assertVisible: "数据导出成功"
+
+# 分享仪表板
+- tapOn: "分享"
+- assertVisible: "分享链接"
+- tapOn: "生成链接"
+- assertVisible: "链接已生成"
+
+- tapOn: "复制链接"
+- assertVisible: "已复制"
+
+# 全屏模式
+- tapOn: "全屏"
+- assertVisible: "退出全屏"
+
+- tapOn: "退出全屏"
+
+# 自动刷新
+- tapOn: "自动刷新"
+- assertVisible: "刷新间隔"
+
+- tapOn: "刷新间隔"
+- assertVisible: "5秒"
+- assertVisible: "10秒"
+- assertVisible: "30秒"
+- assertVisible: "1分钟"
+- tapOn: "10秒"
+
+# 暂停刷新
+- tapOn: "暂停"
+- assertVisible: "已暂停"
+
+# 恢复刷新
+- tapOn: "恢复"
+
+# 截图验证
+- takeScreenshot: "tests/screenshots/15-realtime-light.png"
+
+# 深色模式验证
+- tapOn: "设置"
+- tapOn: "深色模式"
+- tapOn: "实时监控"
+- takeScreenshot: "tests/screenshots/15-realtime-dark.png"

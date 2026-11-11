@@ -1,0 +1,101 @@
+appId: com.llmgateway.web
+---
+# 测试：密钥管理功能
+
+- launchApp:
+    clearState: false
+
+# 进入密钥管理
+- assertVisible: "密钥"
+- tapOn: "密钥"
+
+# 验证密钥列表
+- assertVisible: "密钥列表"
+- assertVisible: "创建密钥"
+
+# 创建新密钥
+- tapOn: "创建密钥"
+- assertVisible: "创建密钥"
+- inputText: "测试密钥"
+- tapOn: "名称"
+
+# 选择权限
+- tapOn: "权限设置"
+- tapOn: "模型访问"
+- tapOn: "gpt-4"
+- tapOn: "gpt-3.5-turbo"
+- tapOn: "确定"
+
+# 设置速率限制
+- tapOn: "速率限制"
+- inputText: "100"
+- tapOn:
+    id: "rate-limit-rpm"
+- inputText: "1000"
+- tapOn:
+    id: "rate-limit-rpd"
+
+# 设置预算
+- tapOn: "预算限制"
+- inputText: "100"
+- tapOn:
+    id: "budget-daily"
+
+# 提交创建
+- tapOn: "创建"
+- assertVisible: "创建成功"
+- assertVisible: "sk-"
+
+# 复制密钥
+- tapOn: "复制密钥"
+- assertVisible: "已复制"
+
+# 关闭对话框
+- tapOn: "关闭"
+
+# 验证列表中有新密钥
+- assertVisible: "测试密钥"
+
+# 查看密钥详情
+- tapOn: "测试密钥"
+- assertVisible: "密钥详情"
+- assertVisible: "使用统计"
+- assertVisible: "请求次数"
+- assertVisible: "Token用量"
+
+# 测试启用/禁用
+- tapOn: "禁用"
+- assertVisible: "已禁用"
+- tapOn: "启用"
+- assertVisible: "已启用"
+
+# 测试编辑功能
+- tapOn: "编辑"
+- tapOn: "速率限制"
+- inputText: "200"
+- tapOn:
+    id: "rate-limit-rpm"
+- tapOn: "保存"
+- assertVisible: "保存成功"
+
+# 测试删除（先取消）
+- tapOn: "删除"
+- assertVisible: "确认删除"
+- tapOn: "取消"
+
+# 截图
+- takeScreenshot: "tests/screenshots/05-key-management-light.png"
+
+# 深色模式
+- tapOn: "设置"
+- tapOn: "深色模式"
+- takeScreenshot: "tests/screenshots/05-key-management-dark.png"
+
+# 清理：实际删除测试密钥
+- tapOn: "设置"
+- tapOn: "深色模式"  # 切回浅色
+- tapOn: "密钥"
+- tapOn: "测试密钥"
+- tapOn: "删除"
+- tapOn: "确认"
+- assertVisible: "删除成功"

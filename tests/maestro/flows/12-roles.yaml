@@ -1,0 +1,324 @@
+appId: com.llmgateway.web
+---
+# 测试：角色与权限管理功能
+
+- launchApp:
+    clearState: false
+
+# 进入角色管理页面
+- assertVisible: "角色管理"
+- tapOn: "角色管理"
+
+# 验证角色列表
+- assertVisible: "角色列表"
+- assertVisible: "添加角色"
+- assertVisible: "系统角色"
+- assertVisible: "自定义角色"
+
+# 查看系统角色
+- assertVisible: "管理员"
+- assertVisible: "开发者"
+- assertVisible: "运维"
+- assertVisible: "只读"
+
+# 创建自定义角色
+- tapOn: "添加角色"
+- assertVisible: "角色信息"
+
+# 填写基本信息
+- tapOn: "角色名称"
+- inputText: "API管理员"
+
+- tapOn: "角色标识"
+- inputText: "api-admin"
+
+- tapOn: "描述"
+- inputText: "负责API配置和管理"
+
+# 功能权限配置
+- scrollUntilVisible: "功能权限"
+- assertVisible: "仪表板"
+- assertVisible: "请求管理"
+- assertVisible: "模型管理"
+- assertVisible: "密钥管理"
+
+# 选择权限
+- tapOn: "仪表板"
+- tapOn: "查看"
+
+- tapOn: "请求管理"
+- tapOn: "查看"
+- tapOn: "创建"
+- tapOn: "编辑"
+
+- tapOn: "模型管理"
+- tapOn: "查看"
+- tapOn: "创建"
+- tapOn: "编辑"
+- tapOn: "删除"
+
+- tapOn: "密钥管理"
+- tapOn: "查看"
+- tapOn: "创建"
+
+# 数据权限配置
+- scrollUntilVisible: "数据权限"
+- tapOn: "数据范围"
+- assertVisible: "全部数据"
+- assertVisible: "本部门数据"
+- assertVisible: "本人数据"
+- tapOn: "本部门数据"
+
+# 租户权限
+- scrollUntilVisible: "租户权限"
+- tapOn: "可访问租户"
+- tapOn: "选择租户"
+- tapOn: "租户A"
+- tapOn: "租户B"
+- tapOn: "确认"
+
+# API权限
+- scrollUntilVisible: "API权限"
+- tapOn: "允许的端点"
+- tapOn: "/v1/chat/completions"
+- tapOn: "/v1/models"
+- tapOn: "/v1/admin/keys"
+
+# 速率限制
+- scrollUntilVisible: "速率限制"
+- tapOn: "每分钟请求数"
+- inputText: "1000"
+
+- tapOn: "每日请求数"
+- inputText: "100000"
+
+# 时间限制
+- scrollUntilVisible: "时间限制"
+- tapOn: "启用时间限制"
+
+- tapOn: "工作日"
+- tapOn: "周一"
+- tapOn: "周二"
+- tapOn: "周三"
+- tapOn: "周四"
+- tapOn: "周五"
+
+- tapOn: "工作时间"
+- tapOn: "开始时间"
+- inputText: "09:00"
+
+- tapOn: "结束时间"
+- inputText: "18:00"
+
+# 保存角色
+- tapOn: "保存"
+- assertVisible: "角色创建成功"
+
+# 验证角色列表
+- assertVisible: "API管理员"
+- assertVisible: "自定义角色"
+
+# 查看角色详情
+- tapOn: "API管理员"
+- assertVisible: "角色详情"
+- assertVisible: "基本信息"
+- assertVisible: "权限列表"
+- assertVisible: "成员列表"
+
+# 添加成员
+- tapOn: "成员列表"
+- tapOn: "添加成员"
+- assertVisible: "选择用户"
+
+- tapOn: "用户搜索"
+- inputText: "李四"
+
+- tapOn: "李四"
+- tapOn: "确认"
+- assertVisible: "成员添加成功"
+
+# 查看成员权限
+- tapOn: "李四"
+- assertVisible: "用户权限"
+- assertVisible: "继承的角色权限"
+
+# 移除成员
+- tapOn: "移除"
+- assertVisible: "确认移除"
+- tapOn: "确认"
+- assertVisible: "成员已移除"
+
+# 测试编辑角色
+- tapOn: "返回"
+- tapOn: "编辑"
+
+- scrollUntilVisible: "密钥管理"
+- tapOn: "编辑"
+- tapOn: "删除"
+
+- tapOn: "保存"
+- assertVisible: "角色更新成功"
+
+# 权限继承
+- tapOn: "返回"
+- tapOn: "创建子角色"
+
+- tapOn: "角色名称"
+- inputText: "初级API管理员"
+
+- tapOn: "父角色"
+- tapOn: "API管理员"
+
+- assertVisible: "继承权限"
+- assertVisible: "模型管理"
+
+# 覆盖权限
+- tapOn: "覆盖权限"
+- tapOn: "模型管理"
+- tapOn: "删除"
+
+- tapOn: "保存"
+- assertVisible: "子角色创建成功"
+
+# 角色克隆
+- tapOn: "API管理员"
+- tapOn: "克隆"
+
+- tapOn: "新角色名称"
+- inputText: "API管理员-副本"
+
+- tapOn: "确认"
+- assertVisible: "角色克隆成功"
+
+# 权限审计
+- tapOn: "返回"
+- tapOn: "权限审计"
+- assertVisible: "权限变更历史"
+
+# 查看变更记录
+- assertVisible: "操作时间"
+- assertVisible: "操作人"
+- assertVisible: "操作类型"
+- assertVisible: "变更内容"
+
+# 权限对比
+- tapOn: "对比"
+- tapOn: "选择角色"
+- tapOn: "API管理员"
+- tapOn: "开发者"
+
+- tapOn: "开始对比"
+- assertVisible: "权限差异"
+- assertVisible: "独有权限"
+- assertVisible: "共同权限"
+
+# 用户管理
+- tapOn: "返回"
+- tapOn: "用户管理"
+- assertVisible: "用户列表"
+
+# 创建用户
+- tapOn: "添加用户"
+- tapOn: "用户名"
+- inputText: "testuser"
+
+- tapOn: "邮箱"
+- inputText: "[REDACTED:email]"
+
+- tapOn: "手机"
+- inputText: "[REDACTED:phone]"
+
+# 分配角色
+- scrollUntilVisible: "角色分配"
+- tapOn: "选择角色"
+- tapOn: "API管理员"
+- tapOn: "开发者"
+
+# 部门设置
+- scrollUntilVisible: "部门"
+- tapOn: "选择部门"
+- tapOn: "技术部"
+
+- tapOn: "保存"
+- assertVisible: "用户创建成功"
+
+# 查看用户权限
+- tapOn: "testuser"
+- assertVisible: "用户详情"
+- assertVisible: "角色列表"
+- assertVisible: "有效权限"
+
+# 展开有效权限
+- tapOn: "有效权限"
+- assertVisible: "功能权限"
+- assertVisible: "数据权限"
+- assertVisible: "API权限"
+
+# 临时授权
+- tapOn: "临时授权"
+- tapOn: "选择权限"
+- tapOn: "租户管理"
+
+- tapOn: "有效期"
+- inputText: "24"
+
+- tapOn: "授权原因"
+- inputText: "临时处理问题"
+
+- tapOn: "确认"
+- assertVisible: "临时授权成功"
+
+# 查看临时权限
+- assertVisible: "临时权限"
+- assertVisible: "剩余时间"
+
+# 撤销临时权限
+- tapOn: "撤销"
+- assertVisible: "临时权限已撤销"
+
+# 测试禁用用户
+- tapOn: "禁用用户"
+- inputText: "离职"
+- tapOn: "确认"
+- assertVisible: "用户已禁用"
+
+# 测试启用用户
+- tapOn: "启用用户"
+- assertVisible: "用户已启用"
+
+# 权限测试工具
+- tapOn: "返回"
+- tapOn: "权限测试"
+- assertVisible: "测试工具"
+
+- tapOn: "选择用户"
+- tapOn: "testuser"
+
+- tapOn: "测试权限"
+- inputText: "model:create"
+
+- tapOn: "测试"
+- assertVisible: "权限检查结果"
+- assertVisible: "允许"
+
+# 批量授权
+- tapOn: "返回"
+- tapOn: "批量授权"
+- tapOn: "选择用户"
+- tapOn: "testuser"
+- tapOn: "user2"
+
+- tapOn: "选择角色"
+- tapOn: "只读"
+
+- tapOn: "确认"
+- assertVisible: "批量授权成功"
+
+# 截图验证
+- takeScreenshot: "tests/screenshots/12-roles-light.png"
+
+# 深色模式验证
+- tapOn: "设置"
+- tapOn: "深色模式"
+- tapOn: "角色管理"
+- takeScreenshot: "tests/screenshots/12-roles-dark.png"

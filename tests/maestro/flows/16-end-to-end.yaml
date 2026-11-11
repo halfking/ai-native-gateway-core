@@ -1,0 +1,384 @@
+appId: com.llmgateway.web
+---
+# 测试：端到端综合流程
+
+- launchApp:
+    clearState: true
+
+# ========== 场景1: 管理员初始化系统 ==========
+
+# 登录
+- assertVisible: "登录"
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "admin123"
+- tapOn: "登录"
+- assertVisible: "欢迎"
+
+# 配置系统设置
+- tapOn: "设置"
+- tapOn: "通用设置"
+- tapOn: "系统名称"
+- inputText: "LLM Gateway E2E Test"
+- tapOn: "保存"
+- assertVisible: "设置已保存"
+
+# 创建租户
+- tapOn: "租户管理"
+- tapOn: "添加租户"
+- tapOn: "租户名称"
+- inputText: "E2E测试租户"
+- tapOn: "租户ID"
+- inputText: "e2e-tenant"
+- tapOn: "每日请求限制"
+- inputText: "10000"
+- tapOn: "保存"
+- assertVisible: "租户创建成功"
+
+# 创建用户角色
+- tapOn: "角色管理"
+- tapOn: "添加角色"
+- tapOn: "角色名称"
+- inputText: "E2E开发者"
+- tapOn: "请求管理"
+- tapOn: "查看"
+- tapOn: "创建"
+- tapOn: "保存"
+- assertVisible: "角色创建成功"
+
+# ========== 场景2: 配置供应商和模型 ==========
+
+# 配置OpenAI供应商
+- tapOn: "模型管理"
+- tapOn: "供应商配置"
+- tapOn: "OpenAI"
+- tapOn: "API密钥"
+- inputText: "sk-test-key"
+- tapOn: "测试连接"
+- tapOn: "保存"
+- assertVisible: "配置已保存"
+
+# 添加自定义模型
+- tapOn: "添加模型"
+- tapOn: "模型名称"
+- inputText: "e2e-test-model"
+- tapOn: "供应商"
+- tapOn: "OpenAI"
+- tapOn: "基础模型"
+- tapOn: "gpt-4"
+- tapOn: "保存"
+- assertVisible: "模型创建成功"
+
+# ========== 场景3: 配置路由策略 ==========
+
+# 创建路由策略
+- tapOn: "路由策略"
+- tapOn: "添加策略"
+- tapOn: "策略名称"
+- inputText: "E2E路由策略"
+- tapOn: "策略类型"
+- tapOn: "权重"
+- tapOn: "添加规则"
+- tapOn: "目标供应商"
+- tapOn: "OpenAI"
+- tapOn: "权重"
+- inputText: "80"
+- tapOn: "添加规则"
+- tapOn: "目标供应商"
+- tapOn: "Azure"
+- tapOn: "权重"
+- inputText: "20"
+- tapOn: "保存"
+- assertVisible: "策略创建成功"
+
+# ========== 场景4: 配置故障转移 ==========
+
+# 创建故障转移规则
+- tapOn: "故障转移"
+- tapOn: "添加规则"
+- tapOn: "规则名称"
+- inputText: "E2E故障转移"
+- tapOn: "主供应商"
+- tapOn: "OpenAI"
+- tapOn: "备用供应商"
+- tapOn: "Azure"
+- tapOn: "错误率阈值"
+- inputText: "50"
+- tapOn: "保存"
+- assertVisible: "规则创建成功"
+
+# ========== 场景5: 生成API密钥 ==========
+
+# 切换租户视角
+- tapOn: "切换租户"
+- tapOn: "e2e-tenant"
+
+# 生成密钥
+- tapOn: "密钥管理"
+- tapOn: "生成密钥"
+- tapOn: "密钥名称"
+- inputText: "E2E测试密钥"
+- tapOn: "权限范围"
+- tapOn: "读写"
+- tapOn: "生成"
+- assertVisible: "密钥已生成"
+- tapOn: "复制密钥"
+- tapOn: "我已保存"
+
+# ========== 场景6: 发送测试请求 ==========
+
+# 查看仪表板
+- tapOn: "仪表板"
+- assertVisible: "总请求数"
+- assertVisible: "成功率"
+
+# 发送API请求（模拟）
+- tapOn: "请求管理"
+- tapOn: "测试请求"
+- tapOn: "模型"
+- tapOn: "e2e-test-model"
+- tapOn: "消息"
+- inputText: "Hello, this is an E2E test"
+- tapOn: "发送"
+- assertVisible: "请求成功"
+
+# 查看请求详情
+- assertVisible: "请求ID"
+- assertVisible: "响应内容"
+- assertVisible: "Token统计"
+
+# ========== 场景7: 监控和观察 ==========
+
+# 查看实时监控
+- tapOn: "实时监控"
+- assertVisible: "当前QPS"
+- assertVisible: "请求流"
+
+# 查看请求在请求流中
+- assertVisible: "e2e-test-model"
+
+# 查看拓扑视图
+- tapOn: "拓扑视图"
+- assertVisible: "API网关"
+- assertVisible: "OpenAI"
+
+# 查看供应商监控
+- tapOn: "供应商监控"
+- tapOn: "OpenAI"
+- assertVisible: "请求量"
+
+# ========== 场景8: 配置告警 ==========
+
+# 创建告警规则
+- tapOn: "告警"
+- tapOn: "告警规则"
+- tapOn: "添加规则"
+- tapOn: "规则名称"
+- inputText: "E2E配额告警"
+- tapOn: "指标类型"
+- tapOn: "请求量"
+- tapOn: "阈值"
+- inputText: "9000"
+- tapOn: "通知渠道"
+- tapOn: "邮件"
+- tapOn: "保存"
+- assertVisible: "规则创建成功"
+
+# ========== 场景9: 查看日志和审计 ==========
+
+# 查看日志
+- tapOn: "日志"
+- tapOn: "搜索"
+- inputText: "e2e-test-model"
+- assertVisible: "e2e-test-model"
+
+# 查看审计日志
+- tapOn: "审计日志"
+- tapOn: "操作类型"
+- tapOn: "创建"
+- assertVisible: "E2E测试租户"
+- assertVisible: "E2E路由策略"
+
+# ========== 场景10: 性能测试准备 ==========
+
+# 批量创建测试数据
+- tapOn: "请求管理"
+- tapOn: "批量测试"
+- tapOn: "并发数"
+- inputText: "10"
+- tapOn: "请求数"
+- inputText: "100"
+- tapOn: "开始测试"
+- assertVisible: "测试进行中"
+
+- waitForAnimationToEnd:
+    timeout: 30000
+
+- assertVisible: "测试完成"
+
+# 查看测试结果
+- assertVisible: "总请求数: 100"
+- assertVisible: "成功率"
+- assertVisible: "平均响应时间"
+
+# ========== 场景11: 数据分析 ==========
+
+# 查看统计报表
+- tapOn: "监控概览"
+- tapOn: "统计"
+- assertVisible: "请求趋势"
+- assertVisible: "模型使用分布"
+
+# 按模型分析
+- tapOn: "按模型"
+- assertVisible: "e2e-test-model"
+- assertVisible: "请求量"
+
+# 按租户分析
+- tapOn: "按租户"
+- assertVisible: "e2e-tenant"
+- assertVisible: "配额使用"
+
+# ========== 场景12: 导出报表 ==========
+
+# 导出统计报表
+- tapOn: "导出报表"
+- tapOn: "时间范围"
+- tapOn: "今天"
+- tapOn: "报表类型"
+- tapOn: "综合报表"
+- tapOn: "导出"
+- assertVisible: "报表导出成功"
+
+# ========== 场景13: 配置优化 ==========
+
+# 查看性能分析
+- tapOn: "性能分析"
+- assertVisible: "慢请求"
+- assertVisible: "热点模型"
+
+# 优化路由策略
+- tapOn: "路由策略"
+- tapOn: "E2E路由策略"
+- tapOn: "编辑"
+- tapOn: "OpenAI"
+- tapOn: "权重"
+- inputText: "70"
+- tapOn: "Azure"
+- tapOn: "权重"
+- inputText: "30"
+- tapOn: "保存"
+- assertVisible: "策略更新成功"
+
+# ========== 场景14: 模拟故障和恢复 ==========
+
+# 模拟供应商故障
+- tapOn: "故障转移"
+- tapOn: "测试工具"
+- tapOn: "模拟供应商故障"
+- tapOn: "OpenAI"
+- tapOn: "故障类型"
+- tapOn: "超时"
+- tapOn: "持续时间"
+- inputText: "60"
+- tapOn: "开始模拟"
+- assertVisible: "故障模拟已启动"
+
+# 等待自动切换
+- waitForAnimationToEnd:
+    timeout: 10000
+
+- assertVisible: "自动切换到 Azure"
+
+# 查看告警
+- tapOn: "告警"
+- assertVisible: "活动告警"
+- assertVisible: "故障转移告警"
+
+# 停止模拟，验证恢复
+- tapOn: "故障转移"
+- tapOn: "测试工具"
+- tapOn: "停止模拟"
+- assertVisible: "故障模拟已停止"
+
+- waitForAnimationToEnd:
+    timeout: 70000
+
+- assertVisible: "自动恢复到 OpenAI"
+
+# ========== 场景15: 清理和备份 ==========
+
+# 创建备份
+- tapOn: "设置"
+- tapOn: "备份与恢复"
+- tapOn: "创建备份"
+- tapOn: "备份说明"
+- inputText: "E2E测试完成备份"
+- tapOn: "开始备份"
+
+- waitForAnimationToEnd:
+    timeout: 10000
+
+- assertVisible: "备份成功"
+
+# 查看最终统计
+- tapOn: "仪表板"
+- assertVisible: "总请求数"
+- assertVisible: "成功率"
+- assertVisible: "Token使用"
+
+# 验证审计完整性
+- tapOn: "审计日志"
+- assertVisible: "操作记录"
+- assertVisible: "创建"
+- assertVisible: "更新"
+- assertVisible: "测试"
+
+# ========== 验证完整性 ==========
+
+# 验证所有核心功能已配置
+- tapOn: "仪表板"
+- assertVisible: "E2E测试租户"
+
+- tapOn: "租户管理"
+- assertVisible: "e2e-tenant"
+
+- tapOn: "模型管理"
+- assertVisible: "e2e-test-model"
+
+- tapOn: "路由策略"
+- assertVisible: "E2E路由策略"
+
+- tapOn: "故障转移"
+- assertVisible: "E2E故障转移"
+
+- tapOn: "密钥管理"
+- assertVisible: "E2E测试密钥"
+
+- tapOn: "告警"
+- assertVisible: "E2E配额告警"
+
+# 截图验证 - 浅色模式
+- tapOn: "仪表板"
+- takeScreenshot: "tests/screenshots/16-e2e-light-dashboard.png"
+
+- tapOn: "实时监控"
+- takeScreenshot: "tests/screenshots/16-e2e-light-monitoring.png"
+
+# 深色模式验证
+- tapOn: "设置"
+- tapOn: "外观设置"
+- tapOn: "主题"
+- tapOn: "深色"
+
+- tapOn: "仪表板"
+- takeScreenshot: "tests/screenshots/16-e2e-dark-dashboard.png"
+
+- tapOn: "实时监控"
+- takeScreenshot: "tests/screenshots/16-e2e-dark-monitoring.png"
+
+# 登出
+- tapOn: "设置"
+- tapOn: "登出"
+- assertVisible: "登录"

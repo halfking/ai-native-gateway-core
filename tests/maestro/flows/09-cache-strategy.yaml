@@ -1,0 +1,90 @@
+appId: com.llmgateway.admin
+---
+# 测试9：缓存策略测试
+
+# 1. 登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+
+# 2. 进入缓存管理
+- tapOn: "系统设置"
+- tapOn: "缓存管理"
+- assertVisible: "缓存配置"
+
+# 3. 查看当前缓存状态
+- assertVisible: "缓存命中率"
+- assertVisible: "缓存大小"
+- assertVisible: "已缓存条目"
+
+# 4. 配置缓存策略
+- tapOn:
+    id: "cache-policy-select"
+- tapOn:
+    text: "LRU"
+- tapOn:
+    id: "cache-ttl-input"
+- inputText: "3600"
+- tapOn:
+    id: "max-cache-size-input"
+- inputText: "10000"
+- tapOn: "保存配置"
+- assertVisible: "配置已更新"
+
+# 5. 测试缓存命中
+- tapOn: "返回"
+- tapOn: "API测试"
+- tapOn:
+    id: "model-select"
+- tapOn:
+    text: "gpt-3.5-turbo"
+- tapOn:
+    id: "message-input"
+- inputText: "什么是人工智能？"
+- tapOn: "发送"
+- waitForAnimationToEnd:
+    timeout: 10000
+- assertVisible: "请求成功"
+
+# 6. 重复请求验证缓存
+- tapOn:
+    id: "message-input"
+- clearText
+- inputText: "什么是人工智能？"
+- tapOn: "发送"
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: "缓存命中"
+- assertVisible:
+    id: "response-time-indicator"
+
+# 7. 切换暗主题验证
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+
+# 8. 清空缓存
+- tapOn: "系统设置"
+- tapOn: "缓存管理"
+- tapOn:
+    id: "clear-cache-button"
+- tapOn: "确认清空"
+- assertVisible: "缓存已清空"
+- assertVisible:
+    id: "cache-count"
+    text: "0"
+
+# 9. 查看缓存统计
+- tapOn: "缓存统计"
+- assertVisible: "命中率曲线"
+- assertVisible: "未命中次数"
+- tapOn: "关闭"
+
+# 10. 退出
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"

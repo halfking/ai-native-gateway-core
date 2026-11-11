@@ -1,0 +1,46 @@
+appId: com.llmgateway.web
+---
+# 测试：概览监控页面
+
+- launchApp:
+    clearState: false
+
+# 登录（假设已有凭据）
+- tapOn: "登录"
+- inputText: "admin@example.com"
+- tapOn: "密码"
+- inputText: "admin123"
+- tapOn: "登录"
+
+# 进入概览页
+- assertVisible: "概览"
+- tapOn: "概览"
+
+# 验证关键指标卡片
+- assertVisible: "今日请求数"
+- assertVisible: "成功率"
+- assertVisible: "平均响应时间"
+- assertVisible: "活跃用户数"
+
+# 验证图表
+- assertVisible: "请求趋势"
+- assertVisible: "供应商分布"
+- assertVisible: "模型使用分布"
+
+# 切换时间范围
+- tapOn: "时间范围"
+- tapOn: "最近7天"
+- assertVisible: "请求趋势"
+
+# 验证明暗主题
+- tapOn: "设置"
+- tapOn: "主题"
+- tapOn: "深色模式"
+- takeScreenshot: "tests/screenshots/02-dashboard-dark.png"
+
+- tapOn: "浅色模式"
+- takeScreenshot: "tests/screenshots/02-dashboard-light.png"
+
+# 验证刷新功能
+- tapOn: "刷新"
+- assertVisible: "数据已更新"

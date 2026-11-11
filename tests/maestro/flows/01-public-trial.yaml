@@ -1,0 +1,39 @@
+appId: com.llmgateway.web
+---
+# 测试：公开试用申请流程
+
+- launchApp:
+    clearState: true
+
+- tapOn: "公开试用"
+- assertVisible: "申请试用"
+
+# 填写表单
+- tapOn: "姓名"
+- inputText: "测试用户"
+
+- tapOn: "邮箱"
+- inputText: "test@example.com"
+
+- tapOn: "公司"
+- inputText: "测试公司"
+
+- tapOn: "用途说明"
+- inputText: "用于自动化测试验证"
+
+# 提交申请
+- tapOn: "提交申请"
+
+# 验证成功消息
+- assertVisible: "申请已提交"
+- assertVisible: "我们会尽快与您联系"
+
+# 验证邮箱格式校验
+- tapOn: "重新申请"
+- tapOn: "邮箱"
+- inputText: "invalid-email"
+- tapOn: "提交申请"
+- assertVisible: "请输入有效的邮箱地址"
+
+# 截图
+- takeScreenshot: "tests/screenshots/01-public-trial-success.png"

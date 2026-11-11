@@ -1,0 +1,299 @@
+appId: com.llmgateway.web
+---
+# 测试：告警管理功能
+
+- launchApp:
+    clearState: false
+
+# 进入告警页面
+- assertVisible: "告警"
+- tapOn: "告警"
+
+# 验证告警概览
+- assertVisible: "告警列表"
+- assertVisible: "告警规则"
+- assertVisible: "通知渠道"
+
+# 查看活动告警
+- assertVisible: "活动告警"
+- assertVisible: "已解决"
+- assertVisible: "已静默"
+
+# 创建告警规则
+- tapOn: "告警规则"
+- tapOn: "添加规则"
+- assertVisible: "规则名称"
+
+# 填写基本信息
+- tapOn: "规则名称"
+- inputText: "高错误率告警"
+
+- tapOn: "描述"
+- inputText: "API错误率超过阈值时触发"
+
+- tapOn: "严重级别"
+- tapOn: "严重"
+
+# 配置告警条件
+- scrollUntilVisible: "告警条件"
+- tapOn: "指标类型"
+- assertVisible: "错误率"
+- assertVisible: "响应时间"
+- assertVisible: "请求量"
+- assertVisible: "可用性"
+- tapOn: "错误率"
+
+# 阈值设置
+- tapOn: "比较运算符"
+- tapOn: "大于"
+
+- tapOn: "阈值"
+- inputText: "5"
+
+- tapOn: "单位"
+- tapOn: "%"
+
+# 时间窗口
+- tapOn: "时间窗口"
+- inputText: "5"
+
+- tapOn: "单位"
+- tapOn: "分钟"
+
+# 评估频率
+- tapOn: "评估频率"
+- inputText: "1"
+
+# 持续时长
+- tapOn: "持续时长"
+- inputText: "3"
+
+# 过滤条件
+- scrollUntilVisible: "过滤条件"
+- tapOn: "添加过滤"
+
+- tapOn: "字段"
+- tapOn: "供应商"
+
+- tapOn: "运算符"
+- tapOn: "等于"
+
+- tapOn: "值"
+- inputText: "OpenAI"
+
+# 通知配置
+- scrollUntilVisible: "通知配置"
+- tapOn: "通知渠道"
+- tapOn: "邮件"
+- tapOn: "Webhook"
+- tapOn: "Slack"
+
+# 邮件配置
+- tapOn: "邮件接收者"
+- inputText: "admin@example.com"
+
+# Webhook配置
+- tapOn: "Webhook URL"
+- inputText: "https://example.com/webhook"
+
+# 通知频率
+- scrollUntilVisible: "通知频率"
+- tapOn: "立即通知"
+
+- tapOn: "重复间隔"
+- inputText: "30"
+
+# 静默时段
+- scrollUntilVisible: "静默时段"
+- tapOn: "添加静默时段"
+
+- tapOn: "开始时间"
+- inputText: "22:00"
+
+- tapOn: "结束时间"
+- inputText: "08:00"
+
+- tapOn: "工作日"
+- tapOn: "周六"
+- tapOn: "周日"
+
+# 保存规则
+- tapOn: "保存"
+- assertVisible: "规则创建成功"
+
+# 验证规则列表
+- assertVisible: "高错误率告警"
+- assertVisible: "严重"
+- assertVisible: "已启用"
+
+# 创建第二个规则（慢响应告警）
+- tapOn: "添加规则"
+- tapOn: "规则名称"
+- inputText: "慢响应告警"
+
+- tapOn: "指标类型"
+- tapOn: "响应时间"
+
+- tapOn: "阈值"
+- inputText: "2000"
+
+- tapOn: "单位"
+- tapOn: "毫秒"
+
+- tapOn: "严重级别"
+- tapOn: "警告"
+
+- tapOn: "保存"
+- assertVisible: "规则创建成功"
+
+# 测试告警触发
+- tapOn: "测试工具"
+- assertVisible: "模拟告警"
+
+- tapOn: "选择规则"
+- tapOn: "高错误率告警"
+
+- tapOn: "触发告警"
+- assertVisible: "告警已触发"
+
+# 查看活动告警
+- tapOn: "返回"
+- tapOn: "活动告警"
+- assertVisible: "高错误率告警"
+- assertVisible: "严重"
+- assertVisible:
+    text: ".*\\d{4}-\\d{2}-\\d{2}.*"
+    regex: true
+
+# 查看告警详情
+- tapOn: "高错误率告警"
+- assertVisible: "告警详情"
+- assertVisible: "触发时间"
+- assertVisible: "当前值"
+- assertVisible: "阈值"
+- assertVisible: "影响范围"
+
+# 查看告警历史
+- scrollUntilVisible: "告警历史"
+- assertVisible: "触发记录"
+
+# 查看通知记录
+- scrollUntilVisible: "通知记录"
+- assertVisible: "邮件"
+- assertVisible: "已发送"
+
+# 添加备注
+- scrollUntilVisible: "备注"
+- tapOn: "添加备注"
+- inputText: "正在调查原因"
+- tapOn: "提交"
+- assertVisible: "备注已添加"
+
+# 确认告警
+- tapOn: "确认"
+- assertVisible: "告警已确认"
+
+# 关闭告警
+- tapOn: "关闭"
+- assertVisible: "关闭原因"
+- tapOn: "问题已解决"
+- inputText: "已修复配置错误"
+- tapOn: "确认关闭"
+- assertVisible: "告警已关闭"
+
+# 查看已解决告警
+- tapOn: "返回"
+- tapOn: "已解决"
+- assertVisible: "高错误率告警"
+- assertVisible: "已关闭"
+
+# 测试告警静默
+- tapOn: "告警规则"
+- tapOn: "高错误率告警"
+- tapOn: "静默"
+
+- tapOn: "静默时长"
+- inputText: "60"
+
+- tapOn: "静默原因"
+- inputText: "维护期间"
+
+- tapOn: "确认"
+- assertVisible: "规则已静默"
+
+# 查看已静默
+- tapOn: "返回"
+- tapOn: "已静默"
+- assertVisible: "高错误率告警"
+- assertVisible: "剩余时间"
+
+# 取消静默
+- tapOn: "高错误率告警"
+- tapOn: "取消静默"
+- assertVisible: "静默已取消"
+
+# 通知渠道管理
+- tapOn: "返回"
+- tapOn: "通知渠道"
+- assertVisible: "渠道列表"
+
+# 添加邮件渠道
+- tapOn: "添加渠道"
+- tapOn: "渠道类型"
+- tapOn: "邮件"
+
+- tapOn: "渠道名称"
+- inputText: "生产环境邮件"
+
+- tapOn: "SMTP服务器"
+- inputText: "smtp.example.com"
+
+- tapOn: "端口"
+- inputText: "587"
+
+- tapOn: "用户名"
+- inputText: "alerts@example.com"
+
+- tapOn: "密码"
+- inputText: "password123"
+
+- tapOn: "保存"
+- assertVisible: "渠道创建成功"
+
+# 测试渠道
+- tapOn: "生产环境邮件"
+- tapOn: "测试"
+- inputText: "test@example.com"
+- tapOn: "发送测试"
+- assertVisible: "测试邮件已发送"
+
+# 告警统计
+- tapOn: "返回"
+- tapOn: "统计"
+- assertVisible: "告警统计"
+- assertVisible: "总告警数"
+- assertVisible: "活动告警"
+- assertVisible: "平均响应时间"
+
+# 按严重级别统计
+- assertVisible: "严重级别分布"
+- assertVisible: "严重"
+- assertVisible: "警告"
+- assertVisible: "信息"
+
+# 按规则统计
+- scrollUntilVisible: "规则触发次数"
+- assertVisible: "高错误率告警"
+
+# 时间趋势
+- scrollUntilVisible: "告警趋势"
+- assertVisible: "24小时趋势"
+
+# 截图验证
+- takeScreenshot: "tests/screenshots/10-alerts-light.png"
+
+# 深色模式验证
+- tapOn: "设置"
+- tapOn: "深色模式"
+- tapOn: "告警"
+- takeScreenshot: "tests/screenshots/10-alerts-dark.png"

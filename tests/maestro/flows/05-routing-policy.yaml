@@ -1,0 +1,68 @@
+appId: com.llmgateway.admin
+---
+# 测试5：路由策略配置
+
+# 1. 登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+
+# 2. 进入路由策略页面
+- tapOn: "路由策略"
+- assertVisible: "路由规则列表"
+- assertVisible: "添加规则"
+
+# 3. 明主题验证路由列表
+- assertVisible: "规则名称"
+- assertVisible: "优先级"
+- assertVisible: "状态"
+- assertVisible: "目标模型"
+
+# 4. 切换暗主题验证
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+- assertVisible: "路由规则列表"
+
+# 5. 测试规则搜索
+- tapOn:
+    id: "rule-search-input"
+- inputText: "default"
+- assertVisible: "搜索结果"
+- tapOn:
+    id: "clear-search"
+
+# 6. 查看规则详情
+- tapOn:
+    text: "查看"
+    index: 0
+- assertVisible: "规则详情"
+- assertVisible: "匹配条件"
+- assertVisible: "路由目标"
+- tapOn: "关闭"
+
+# 7. 测试规则启用/禁用
+- tapOn:
+    id: "rule-toggle"
+    index: 0
+- assertVisible: "状态已更新"
+
+# 8. 测试优先级排序
+- tapOn:
+    id: "sort-by-priority"
+- assertVisible: "路由规则列表"
+
+# 9. 测试规则类型筛选
+- tapOn:
+    id: "rule-type-filter"
+- tapOn: "模型路由"
+- assertVisible: "路由规则列表"
+
+# 10. 退出
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"
