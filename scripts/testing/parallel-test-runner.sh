@@ -1,4 +1,9 @@
 #!/bin/bash
+# requires-bash: 4
+# ↑ 本脚本第 203 行用了 mapfile/readarray（bash 4+ 特性）⇒ macOS 自带的
+#   /bin/bash 是 **3.2**（无 mapfile）⇒ 运行前提是 bash ≥ 4。这条声明把该
+#   前提从「隐含前提」变成**可检查的事实**
+#   （sql/schema/shell_bash_prereq_declaration_gate_test.go）。
 set -euo pipefail
 
 # 并行测试执行器
