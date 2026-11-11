@@ -503,6 +503,15 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureApiKeyAutoProfileIdentity(migCtx); err != nil {
 		return err
 	}
+	// 2026-11-11（48h 审计）：migration 832 的启动自愈。211 实测该迁移被跳过
+	//（schema_migrations 已到 956 而 832/833 缺席 ⇒ 文件链的版本水位线越过了
+	// 这两笔），bg/pricing_baseline_reconcile.go 每轮对账成功却写不进健康面
+	//（42P01，8 次/24h）。迁移本身全幂等（CREATE TABLE/INDEX IF NOT EXISTS）
+	// ⇒ 按 847/848 先例补 ensure：无论这台库是全新安装、目录扫描部署还是
+	// 历史遗留，重启即收敛。
+	if err := db.ensureModelBaselineObservationHealth(migCtx); err != nil {
+		return err
+	}
 	// 2026-10-08 migration 847: credentials.routing_scope — media/chat 路由域
 	// 隔离。缺列时候选 SQL 的 COALESCE(c.routing_scope,'all') 仍可编译失败
 	// （列不存在 42703），必须在流量前补齐。
@@ -3144,6 +3153,51 @@ func (d *DB) ensureBillingUnitAndAudioSeconds(ctx context.Context) error {
 		return err
 	}
 	slog.Info("billing_unit schema ensured (migration 848)")
+	return nil
+}
+
+// ensureModelBaselineObservationHealth mirrors sql/migrations/startup/832_model_baseline_observation_health.sql.
+// 2026-11-11（48h 审计）：外部观察源健康表。漂移对账 worker（bg/pricing_baseline_reconcile.go）
+// 每周期 upsert 本表；缺表 ⇒ 成功的交叉核对对健康面不可见（42P01，211 实测
+// 8 次/24h；迁移被文件链版本水位线跳过）。幂等 CREATE TABLE/INDEX IF NOT
+// EXISTS + schema_migrations stamp。
+func (d *DB) ensureModelBaselineObservationHealth(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if d.tableExists(ctx, "model_baseline_price_observation_health") {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('832', 'model_baseline_price_observation_health: per-source health of the external price observation feed')
+			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+		`); err != nil {
+			return err
+		}
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.model_baseline_price_observation_health (
+		    source_url          text PRIMARY KEY,
+		    last_success_at     timestamptz,
+		    last_attempt_at     timestamptz,
+		    consecutive_failures integer NOT NULL DEFAULT 0,
+		    last_error          text,
+		    observed_models     integer,
+		    updated_at          timestamptz NOT NULL DEFAULT now(),
+		    CONSTRAINT model_baseline_price_observation_health_nonneg
+		        CHECK (consecutive_failures >= 0 AND (observed_models IS NULL OR observed_models >= 0))
+		);
+		CREATE INDEX IF NOT EXISTS idx_model_baseline_price_observation_health_stale
+		    ON public.model_baseline_price_observation_health (last_success_at NULLS FIRST)
+		    WHERE consecutive_failures > 0 OR last_success_at IS NULL;
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('832', 'model_baseline_price_observation_health: per-source health of the external price observation feed')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("model_baseline_price_observation_health ensured (migration 832)")
 	return nil
 }
 
