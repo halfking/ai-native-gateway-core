@@ -18,6 +18,31 @@
 > ★ **给方案 v2 的修正清单 D1'/D-①~⑧**（审计档 §七）：核心＝RateLimitHandler 降级为 W1+sink+breaker 之上的只读投影（＝11-07 W2 BucketRegistry 影子层原案）、硬拒绝必须带兜底、探测复用既有泵、随机比例门改确定性再准入、三新表缓建。
 > ★ **本轮明确没做**：不动任何生产代码；不改任何阈值；不实施 W2-W4；不替 owner 裁决（裁决面＝审计档 §七）；不修 magpie 两条交接项（已登记复现路径）；仿真数字引用必须带「仿真」限定词（非 211 真库重放）。
 
+> **2026-11-12 报价系统 MVP 终版实施轮复审审计（goal 会话，审计档
+> `docs/audit/2026-11-12-报价系统MVP-终版实施轮复审审计.md`；通用式见 `LESSONS.md` **§692**）**：
+> ★ owner 指令＝「对任务进行审计，修正发现的问题，然后提交代码并推送」。开工树 `89830b362`
+> （ff 到 origin/main）；审计对象 = `b79bf2ff5` 交付面隔着 **431 笔并行提交**做 fresh-eyes 复审
+> （2 并行只读代理 + 三项承重结论亲验）。**交付面零漂移**：sales/quote.go 0 字节改动、四类型
+> 契约逐字对齐、后端 431 笔仅 1 笔触 sales（纯测试）。
+> ★★★★ **P1＝withhold 宇宙漂移**：派生路径把 empty 档 NULL 价行当 (0,0) 变体计数
+> （parseNum(nil)=0 违反 NULL≠0）⇒ **211 实测 12 只可售模型 8 只建单必拒**（fail-closed 的
+> 挡人墙；realdb 夹具没有该形状所以全绿掩盖）⇒ withholdNames 跳 NULL 价 + 新 realdb 腿
+> （trusted 同价+NULL 同名 ⇒ 建单成功；真多价反断言）。★★ **P2＝11-08 的 ReviseQuote
+> settle 并发守卫是安慰剂**（UPDATE 无状态谓词 ⇒ RowsAffected 永不触发）⇒ 补状态谓词；
+> DecideApproval 头 CAS 同款补计数。★★ **F-13 结案**：normalizeCostCurrency 严格化
+> {USD,CNY} 白名单（''/变体/第三币种归 ""，与视图 949 口径一致），11-09 登记的 3 条停断言
+> 按登记意图对派生架构重写后落地（11-09 的「成本语义变更」顾虑已随派生架构失效）。
+> ★ P2/P3 组＝前端需求池死筛选（reload 传 filter）/三档快填单位错位（法定币价直写 credits
+> 轴差 ~4 个量级 ⇒ pricing_hints{fx,cents} 下发 + precomputeLines 精确逆换算抽纯函数
+> quoteQuickFill.ts + 8 语种单位注记）/pick 同源化（pickSupplyRows：suspended rank2>非
+> trusted rank1>trusted rank0）/漂移阈值 0=关/漂移日志补真/centsPerCredit 错误上抛/GetQuote
+> 漂移对称（顺带修自引入的 slice 副本 bug）/ownerScope 对空 username JWT fail-closed/路径段
+> 闭集/en-fr 文案大写/fp ceil/tokens 整数/分享按钮状态门/apiKey-only canDecide 收窄/死代码。
+> ★ 验收＝build/vet 全绿；realdb **14 腿**（+1）；F-13 3 断言绿；vue-tsc rc=0；报价面 vitest
+> 13/13 + mobileListUx 8/8（NON_NAVIGABLE 重钉 109→111）；vite build ✓；两道 i18n 棘轮既有红
+> 经 stash 对拍归因并行会话（登记不盲修）。
+> ★ 登记不修（裁决面）：视图 949 NULL→'USD' 的 COALESCE（需迁移改 CASE）、pricing.go currency
+> 写边界白名单（maas 域）、reviseQuote 前端 UI 缺位（MVP 遗留）。
 > **2026-11-11 48h 修正任务审计与完善轮 · 第二轮（goal 会话，主档 `docs/audit/2026-11-11-48h审计第二轮-主档.md`，双仓推送 `15fcacf72` + 部署回填提交）**：
 > ★ 范围＝上轮（同日 17:43 收官 e6df780e7）之后**新落的 7 笔提交**逐条批判审计 + 上轮修复 HEAD 复核 + 四项遗留优先项 + 三台 log 取证 + 三台部署。
 > ★★★★ **HEAD 既有红实证（★ 全量套件是唯一公共量具——并行会话推送前没跑它）**：★ 上轮/本窗推送留下 **5 失败包**：① bucket 框架的 credit provider 带 **v1 双臂读点**（890 后两表全环境不存在 ⇒ 42P01 地雷）且未登记间接清单（两门红）；② requestfact golden corpus 与 internal/ir 守护测试**互相矛盾**（旧断言钉 7dabda830 丢弃前的 raw 回注契约）；③ ursmcheck 六道台账门红（并行会话加迁移/脚本不重算台账的系统性漂移）；④ nodestatecache p99 门=并行负载伪影（静置复跑 ×3 绿）；⑤ migrations 958 DDL 预算门（走 grandfathered，R189 规约：改已应用迁移字节会撞内容指纹——本轮先改后当场回退，处置走豁免表带实测证据）。

@@ -80,6 +80,7 @@ export default {
   tabDashboard: 'Tableau de bord',
   costDrifted: 'Coût dérivé. nouveau devis recommandé',
   tierQuickFill: 'Remplissage rapide par palier',
+  rateUnitNote: 'Les prix de vente sont en crédits par million de tokens — le remplissage rapide convertit le coût fournisseur sur cet axe (marge au facteur c = 1 − 1/c)',
   pickModel: 'Choisir un modèle dans la liste vendable',
   itemExists: 'Modèle déjà dans la liste',
   quoteCloseTitle: 'Clore le devis #{id}',

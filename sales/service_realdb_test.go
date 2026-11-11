@@ -1202,3 +1202,97 @@ func TestRealDBContactMinimization(t *testing.T) {
 		t.Errorf("super view must carry vendor_contact")
 	}
 }
+
+// TestRealDBWithholdUniverseTrustedPlusEmpty —— 2026-11-12 复审审计 P1-1 钉：
+// 「trusted 行 + empty 档 NULL 价行」的同名组**不得**判 withhold（NULL 价不是
+// 价格变体，NULL≠0）。修复前派生宇宙把 NULL 当 (0,0) 变体 ⇒ 211 实测 12 只
+// 可售模型 8 只建单必拒（与 W1 的 23514 同构，方向 fail-closed 但可用性坏）。
+// 真库腿用「同名：2 行 trusted 同价 + 2 行 empty NULL 价」驱动。
+func TestRealDBWithholdUniverseTrustedPlusEmpty(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, realdbDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+	salesFixture(t, ctx, pool)
+	seedSellable(t, ctx, pool)
+	svc := NewService(pool)
+
+	// model-e：2 行 trusted 同价 (2.0,4.0) + 2 行 empty（NULL 价 ⇒ 视图判 empty 档）。
+	// NULL 价行的 cost 基础列不落数值（保持 NULL）。
+	_, err = pool.Exec(ctx, `
+INSERT INTO public.provider_models (id, provider_id, raw_model_name, canonical_raw_name) VALUES
+    (120, 1, 'model-e', 'model-e'),
+    (121, 1, 'model-e', 'model-e'),
+    (122, 1, 'model-e', 'model-e'),
+    (123, 1, 'model-e', 'model-e');
+INSERT INTO public.credential_model_bindings
+    (credential_id, provider_model_id, unit_price_in_per_1m, unit_price_out_per_1m, currency) VALUES
+    (10, 120, 2.0, 4.0, 'USD'),
+    (11, 121, 2.0, 4.0, 'USD'),
+    (10, 122, NULL, NULL, 'USD'),
+    (11, 123, NULL, NULL, 'USD');`)
+	if err != nil {
+		t.Fatalf("seed model-e: %v", err)
+	}
+	t.Cleanup(func() {
+		dropCtx := context.WithoutCancel(ctx)
+		for _, stmt := range []string{
+			"DELETE FROM public.credential_model_bindings WHERE provider_model_id BETWEEN 120 AND 123",
+			"DELETE FROM public.provider_models WHERE id BETWEEN 120 AND 123",
+		} {
+			if _, err := pool.Exec(dropCtx, stmt); err != nil {
+				t.Errorf("cleanup model-e: %v", stmt)
+			}
+		}
+	})
+
+	// sellable 清单必须含 model-e（trusted 同价重复不是冲突）。
+	list, err := svc.ListSellable(ctx, false)
+	if err != nil {
+		t.Fatalf("ListSellable: %v", err)
+	}
+	found := false
+	for _, r := range list.Items {
+		if r.CanonicalName == "model-e" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("model-e missing from sellable items（trusted 同价 + empty NULL 价不得整组扣下）")
+	}
+
+	// 建单必须成功（修复前：派生宇宙 NULL→(0,0) 计为第二变体 ⇒ withheld 拒绝）。
+	in := trustedQuoteInput(nil)
+	in.Items = []QuoteItemInput{{
+		CanonicalName: "model-e",
+		DisplayName:   "Model E",
+		EstTokensIn:   100_000_000,
+		RateIn:        ptrF(100),
+		RateOut:       ptrF(200),
+	}}
+	q, err := svc.CreateQuote(ctx, in, "sales01")
+	if err != nil {
+		t.Fatalf("CreateQuote on trusted+empty same-name group: %v（P1-1 修复前必拒）", err)
+	}
+	if q.Version == nil || q.Version.PriceConfidence != "trusted" {
+		t.Fatalf("derived confidence = %v, want trusted（pick 应落 trusted 行）", q.Version)
+	}
+	for _, it := range q.Version.Items {
+		if it.CanonicalName == "model-e" && (it.CostInPer1M == nil || *it.CostInPer1M != 2.0) {
+			t.Errorf("derived cost = %v, want trusted 行的 2.0（pick 不得落 NULL 价行）", it.CostInPer1M)
+		}
+	}
+
+	// 同名两行 trusted **不同价** ⇒ 仍然整组扣下（红线本体不得被本修复放松）。
+	if _, err := pool.Exec(ctx, `UPDATE public.credential_model_bindings
+	     SET unit_price_in_per_1m = 9.0, unit_price_out_per_1m = 9.0
+	   WHERE credential_id = 11 AND provider_model_id = 121`); err != nil {
+		t.Fatalf("diverge trusted price: %v", err)
+	}
+	in.Items[0].CanonicalName = "model-e"
+	if _, err := svc.CreateQuote(ctx, in, "sales01"); err == nil {
+		t.Errorf("genuinely multi-priced trusted group must stay withheld")
+	}
+}

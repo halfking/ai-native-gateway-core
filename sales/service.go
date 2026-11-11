@@ -110,6 +110,19 @@ type SellableList struct {
 	// 三档一键报价系数（风暴档 §8-5，settings 热改即生效；仅前端快填用，
 	// 服务端不校验零售价与系数的关系——红线在审批）。
 	TierCoefficients map[string]float64 `json:"tier_coefficients"`
+	// PricingHints（2026-11-12 复审审计 P2-2）：快填的单位换算事实源。
+	// 成本轴是法定币（supplier_currency），零售价轴是 credits/1M —— 换算链
+	// credits = cost_usd × coef × fx × 100 / cents（precomputeLines 收入算术的
+	// 精确逆变换：coef 倍加成 ⇒ 毛利率恰为 1 − 1/coef）。fallback 与服务端
+	// 自身 fallback 对齐（R72f：fx=7.2 / cents=0.01）。
+	PricingHints *PricingHints `json:"pricing_hints,omitempty"`
+}
+
+// PricingHints carries the server-side constants the frontend quick-fill
+// needs for the fiat→credits conversion (2026-11-12 复审审计 P2-2).
+type PricingHints struct {
+	FXRate         float64 `json:"fx_rate"`          // CNY→USD 记账锚点（settings.CNYToUSDFX）
+	CentsPerCredit float64 `json:"cents_per_credit"` // 分/积分（maas_settings；缺行 = 0.01）
 }
 
 // ListSellable reads v_supplier_price_vs_baseline WHERE
@@ -122,6 +135,10 @@ type SellableList struct {
 // 写面本就是 super-only，故联系人读面同样收窄到 super，2026-11-08 审计
 // P2-4 修复）。
 func (s *Service) ListSellable(ctx context.Context, revealContacts bool) (*SellableList, error) {
+	cents, err := s.centsPerCredit(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
 SELECT v.credential_id,
        v.provider_model_id,
@@ -277,6 +294,7 @@ SELECT v.credential_id,
 			"standard":     tierCoefficient("standard", 1.6),
 			"conservative": tierCoefficient("conservative", 2.0),
 		},
+		PricingHints: &PricingHints{FXRate: settings.CNYToUSDFX, CentsPerCredit: cents},
 	}
 	for i := range out.Withheld {
 		out.Withheld[i].Rows = nil

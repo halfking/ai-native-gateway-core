@@ -8,7 +8,7 @@ export default {
   forCustomer: 'Prepared for: {name}',
   tierLabel: 'Tier: {tier}',
   validUntil: 'Valid until {date}',
-  expiredBanner: 'This quote has passed its validity date. prices are for reference only; please confirm the latest quote with your sales contact.',
+  expiredBanner: 'This quote has passed its validity date. Prices are for reference only; please confirm the latest quote with your sales contact.',
   colModel: 'Model',
   colTokensIn: 'Est. input',
   colTokensOut: 'Est. output',
