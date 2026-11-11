@@ -172,7 +172,14 @@ func (s *Service) MarketPriceOverview(ctx context.Context, q string, onlyResolve
 			&r.DomesticMinIn, &r.DomesticMinOut, &r.DomesticPlatformID, &r.DomesticPlatforms,
 			&r.FXRate,
 			&r.SupplierIn, &r.SupplierOut, &r.SupplierCur,
-			&manualInFlag, &manualOutFlag, &manualIn, &manualOut,
+			// 2026-11-12 48h 审计第四轮 P1 修复：Scan 列序必须与 SELECT 逐位对齐
+			// ——SELECT 列 26-29 = [credits_per_1m_in, credits_per_1m_out,
+			// COALESCE(manual_in,FALSE), COALESCE(manual_out,FALSE)]（值、值、旗、旗），
+			// 此前 Scan 写成 [旗、旗、值、值] ⇒ BIGINT 扫进 *bool / bool 扫进 *int64
+			// ⇒ pgx 报 "cannot scan int8 into *bool" ⇒ 该端点自 D7（2026-11-10 08af89b1f
+			// 引入 4 个 scan 变量起）每次调用必 500（845ba1d3b/14bc988cb 的线上冒烟都在
+			// D7 之前，此后无人冒烟过）。pgx 离线探针实证两向皆报错。
+			&manualIn, &manualOut, &manualInFlag, &manualOutFlag,
 			&r.SourceRunDate,
 		); err != nil {
 			return nil, err

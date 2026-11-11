@@ -163,7 +163,7 @@ func TestWithholdNamesFactored(t *testing.T) {
 		{CanonicalName: "b", SupplierInPer1M: &p1, SupplierOutPer1M: &p2},
 		{CanonicalName: "b", SupplierInPer1M: &p1, SupplierOutPer1M: &p2}, // 同价重复
 	}
-	got := withholdNames(rows)
+	got, _ := withholdGroups(rows)
 	if !got["a"] {
 		t.Errorf("multi-price group must withhold")
 	}
@@ -184,7 +184,7 @@ func TestWithholdNamesSkipsNullPrices(t *testing.T) {
 		{CanonicalName: "e"}, // NULL 价（empty 档）
 		{CanonicalName: "e"}, // NULL 价（empty 档）
 	}
-	if got := withholdNames(rows); got["e"] {
+	if got, _ := withholdGroups(rows); got["e"] {
 		t.Errorf("trusted+NULL same-name group must NOT withhold（NULL 价不是变体）")
 	}
 }

@@ -383,17 +383,26 @@ SELECT v.credential_id,
 	return out, annStatus, rows.Err()
 }
 
-// withholdNames computes the same-name multi-price groups (整组 withhold 红线)
-// over the given rows — the exact variant logic of ListSellable, factored out
-// so derivation and the sellable list can never drift apart.
+// withholdGroups computes the same-name multi-price groups (整组 withhold 红线)
+// over the given rows — the **single** variant-counting source consumed by
+// quote derivation (deriveQuoteItems), the cost-drift comparer, and the
+// sellable list (ListSellable).
 //
 // 2026-11-12 复审审计 P1-1 修复：**价格为 NULL 的行不是价格变体**（NULL≠0 红线
 // —— parseNum(nil) 把 NULL 当 (0,0) 参与变体计数，是把它当 0 价用了）。此前
 // 派生宇宙（任意置信档）里「trusted 行 + empty 档 NULL 行」的同名组被误判
 // withhold ⇒ 211 实测 12 只可售模型 8 只建单必拒（与本轮自己修的 P1 同构，
-// 方向 fail-closed 但可用性坏）。ListSellable 的 trusted 宇宙不受影响
-// （trusted 行必有价）。
-func withholdNames(rows []SellableRow) map[string]bool {
+// 方向 fail-closed 但可用性坏）。
+//
+// 2026-11-12 48h 审计第四轮同源化收口（LESSONS §690 同款）：P1-1 修在派生侧
+// 函数时，ListSellable 的内联变体计数**没有删**（双主并存）⇒ 两份即刻语义
+// 分叉：视图 949 的 price_confidence CASE 对「单边 NULL」（in=NULL,out>0）落
+// `ELSE 'trusted'` ⇒ trusted 宇宙**并非**「行行有价」⇒ 同一「trusted+单边
+// NULL 同名组」在可售清单被判 withhold（旧份把 NULL 当 (0,0) 计变体）而派生
+// 不 withhold（新份跳 NULL）——正是本函数原注释声称要防的那种漂移。现在
+// ListSellable 也走这里（WithheldGroup.PriceVariants 同序同值由第二返回值
+// 承载），变体判定语义只有一个主。
+func withholdGroups(rows []SellableRow) (map[string]bool, []WithheldGroup) {
 	groups := map[string][]SellableRow{}
 	order := make([]string, 0, 16)
 	for _, r := range rows {
@@ -406,12 +415,14 @@ func withholdNames(rows []SellableRow) map[string]bool {
 		groups[r.CanonicalName] = append(groups[r.CanonicalName], r)
 	}
 	out := map[string]bool{}
+	detail := make([]WithheldGroup, 0, 8)
 	for _, canon := range order {
 		g := groups[canon]
 		if len(g) < 2 {
 			continue
 		}
 		var seenPrices [][2]float64
+		var seenVariants [][2]*string
 		for _, row := range g {
 			// NULL 价不是变体（NULL≠0）：无价行不参与「多价」计数。
 			if row.SupplierInPer1M == nil || row.SupplierOutPer1M == nil {
@@ -428,13 +439,19 @@ func withholdNames(rows []SellableRow) map[string]bool {
 			}
 			if !dup {
 				seenPrices = append(seenPrices, [2]float64{inF, outF})
+				seenVariants = append(seenVariants, [2]*string{row.SupplierInPer1M, row.SupplierOutPer1M})
 			}
 		}
 		if len(seenPrices) >= 2 {
 			out[canon] = true
+			detail = append(detail, WithheldGroup{
+				CanonicalName: canon,
+				Reason:        "canonical_multi_price",
+				PriceVariants: seenVariants,
+			})
 		}
 	}
-	return out
+	return out, detail
 }
 
 // pickSupplyRows chooses one deterministic row per canonical from view rows,
@@ -494,7 +511,7 @@ func (s *Service) deriveQuoteItems(ctx context.Context, items []QuoteItemInput, 
 	if err != nil {
 		return nil, err
 	}
-	withheld := withholdNames(rows)
+	withheld, _ := withholdGroups(rows) // 单一变体判定源（ListSellable 同源，2026-11-12 收口）
 	pick := pickSupplyRows(rows, annStatus)
 	axesItems := map[string]any{}
 	for i := range items {
@@ -1300,7 +1317,7 @@ SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::floa
 		slog.Warn("sales: cost-drift supply-view query failed (drift markers skipped)", "err", err)
 		return
 	}
-	withheld := withholdNames(viewRows)
+	withheld, _ := withholdGroups(viewRows) // 单一变体判定源（ListSellable 同源，2026-11-12 收口）
 	current := pickSupplyRows(viewRows, annStatus) // 与派生同一 pick（2026-11-12 P2-3）
 	driftThreshold := float64(settings.GetPlatformInt("sales.quote.cost_drift_alert_pct", 10))
 	for vid, perCanon := range snaps {

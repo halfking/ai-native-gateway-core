@@ -100,7 +100,8 @@ const (
 	//      ＋ 1 处 ursm-snapshot-slot-refresh.sh）⇒ 实际 120 / 43 文件。
 	//   ★ **差值不变**（剥注释 −2、顶层收紧 ±0）⇒ 变的只是绝对值 ⇒ 口径没错、树变了。
 	//   ★★ **基线不得再【从清单抄】** ⇒ 那等于自证 ⇒ 判据⑤才是真牙。
-	sc1975ListRowsBaseline = 100
+	sc1975ListRowsBaseline = 106
+	// 2026-11-12 48h 审计第四轮：与 §19.20.72 同源（并行会话新增 shell 站点，生成器重跑 100→106）。
 	// 2026-11-09 48h 审计：4cf786109 已重生清单新增 deploy-seamless.sh 的
 	// detect_active_side / prune_releases_safe 两站点（98→100），却漏同步此计数。
 	// 现独立重跑生成器仍为 100；逐字内容对拍判据保持不变。

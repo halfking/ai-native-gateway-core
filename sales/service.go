@@ -224,53 +224,15 @@ SELECT v.credential_id,
 		return nil, fmt.Errorf("sales: iterate sellable: %w", err)
 	}
 
-	// 整组 withhold：同一 canonical 名出现 ≥2 个不同 (in,out) 价 ⇒ 整组
-	// 扣下（canonical_price_collision.go withholdConflictingPrices 同口径；
-	// 判不出 canonical 名的行原样放过——问题在名字不在价）。
-	groups := map[string][]SellableRow{}
-	order := make([]string, 0, 16)
-	for _, r := range all {
-		if r.CanonicalName == "" {
-			continue
-		}
-		if _, seen := groups[r.CanonicalName]; !seen {
-			order = append(order, r.CanonicalName)
-		}
-		groups[r.CanonicalName] = append(groups[r.CanonicalName], r)
-	}
-	withheldNames := map[string]bool{}
-	var withheld []WithheldGroup
-	for _, canon := range order {
-		g := groups[canon]
-		if len(g) < 2 {
-			continue
-		}
-		variants := make([][2]*string, 0, len(g))
-		var seenPrices [][2]float64
-		for _, row := range g {
-			inF := parseNum(row.SupplierInPer1M)
-			outF := parseNum(row.SupplierOutPer1M)
-			dup := false
-			for _, p := range seenPrices {
-				if p[0] == inF && p[1] == outF {
-					dup = true
-					break
-				}
-			}
-			if !dup {
-				seenPrices = append(seenPrices, [2]float64{inF, outF})
-				variants = append(variants, [2]*string{row.SupplierInPer1M, row.SupplierOutPer1M})
-			}
-		}
-		if len(seenPrices) < 2 {
-			continue // 同价重复：数字唯一，不是冲突
-		}
-		withheldNames[canon] = true
-		withheld = append(withheld, WithheldGroup{
-			CanonicalName: canon,
-			Reason:        "canonical_multi_price",
-			PriceVariants: variants,
-		})
+	// 整组 withhold：同一 canonical 名出现 ≥2 个不同 (in,out) 价 ⇒ 整组扣下
+	// ——变体判定与派生/漂移**同源**（quote.go withholdGroups，2026-11-12 收口
+	// 删内联双主：旧内联版没有 NULL 跳过，而视图 949 的 price_confidence CASE
+	// 对单边 NULL 落 'trusted' ⇒ 与派生侧在「trusted+单边 NULL 同名组」上结论
+	// 相反）。判不出 canonical 名的行原样放过——问题在名字不在价。
+	withheldNames, withheldDetail := withholdGroups(all)
+	withheld := make([]WithheldGroup, 0, len(withheldDetail))
+	for _, g := range withheldDetail {
+		withheld = append(withheld, g)
 	}
 
 	items := make([]SellableRow, 0, len(all))

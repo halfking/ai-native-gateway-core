@@ -10889,4 +10889,5 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 | 956 | `956_minimax_m31_flash_featured.sql` | `9df04687e07867091abd82e07ac51e35ad08a6442dc0756920510ea2a9de3ef2` | applied+verified |
 | 957 | `957_self_check_error_type_kind_closure_rate_limit_observed.sql` | `358c9daab7eec74d936827083dbef7db4258455d91846cd9d4752646284fe0e7` | applied+verified |
 | 958 | `958_market_platform_registry.sql` | `155cc51aac2036b6d1b4e10af63bdaaec41e9d912b26b07d2d06990cbacb832c` | applied+verified |
+| 959 | `959_market_dual_floor_a17.sql` | `fd2164914d857808d93c409abb36173a14abc25108c6efe9fcbc068cb635674d` | applied+verified（2026-11-12 48h 审计第四轮回填：211 acc-pg17 引擎台账 gateway_db_revision_sequences 实测 applied_at=2026-11-12 01:40:50 +08、content_sha256=execution_sha256=fd216491… 与仓库文件实测 sha 逐字一致（d28d26847 终版字节）；up/down 双副本 embeddata cmp 一致；83388d51d（up 基线钉 949 版 30 列）与 d28d26847（down 改 DROP+CREATE 不加 CASCADE）两轮修正均已含在本 sha 内） |
 
