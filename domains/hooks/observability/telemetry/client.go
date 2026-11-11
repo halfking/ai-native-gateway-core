@@ -669,6 +669,44 @@ var findRecentGatewaySessionSQL = `
 		LIMIT 1
 	`
 
+// findRecentGatewaySessionArgs 把会话粘滞查询与它的参数绑定在一起。
+//
+// 2026-11-11（ZCode 事故轮 · 会话粘滞查询修复）：绑定关系单列出来，是因为
+// **参数类型必须与 SQL 的 cast 对齐**——不对齐时 pgx 在**编码期**才炸，
+// 且炸在热路径上：
+//
+//	$2 的占位符是 `$2::text`（session_turns_hot.api_key_id 列本身就是
+//	text），而此前这里传的是 Go 的 **int** ⇒ pgx 按 text(OID 25) 去找 int
+//	的编码计划、找不到 ⇒
+//
+//	failed to encode args[1]: unable to encode 2 into text format for
+//	text (OID 25): cannot find encode plan
+//
+//	⇒ **每次真正走到这条查询的请求都必然失败**。而这条查询只在「最近会话
+//	索引 miss」时才会被走到（该 api key 空闲超过 5 分钟、或设备种子不匹配）
+//	⇒ 表现为**间歇性** 503「session store unavailable」（211 生产实证：
+//	24h+ 持续、每小时 15~30 条、命中多个 api key）。
+//
+// ★ 修法：api_key_id 按列的真实类型（text）传 ⇒ strconv.Itoa。
+//
+// ★ 不能改成「去掉 `::text` 然后传 int」：列是 text，PostgreSQL 里
+//
+//	text = integer 没有隐式转换 operator，会变成另一类错误。
+//
+// ★ 绑定抽成函数的目的：让「参数类型 ↔ 占位符 cast」这条不变量可以**离线**
+//
+//	被检查（见 find_recent_gateway_session_param_test.go）——运行期才炸的错误
+//	必须有一道不用连库的守卫，否则它只在生产上以 503 的形式出现，而日志里
+//	连原因都没有。
+func findRecentGatewaySessionArgs(tenantID string, apiKeyID int, identityHash string, since time.Duration) (string, []any) {
+	return findRecentGatewaySessionSQL, []any{
+		tenantID,               // $1 → text（tenant_id 列是 varchar）
+		strconv.Itoa(apiKeyID), // $2 → text（api_key_id 列是 text）
+		identityHash,           // $3 → text（identity_hash 列是 text）
+		int(since.Seconds()),   // $4 → integer（乘 interval）
+	}
+}
+
 func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identityHash string, apiKeyID int, since time.Duration) (string, error) {
 	if c == nil || c.dbPool == nil || tenantID == "" || identityHash == "" || apiKeyID <= 0 {
 		return "", nil
@@ -683,7 +721,8 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 	// 会话查找窗口（默认 5 分钟）落在会话族热表的保留期内，查热表
 	// （独立 heap 表，性能最优）即可。
 	// 符合 docs/partition/partition-standards.md 查询规范。
-	err := c.dbPool.QueryRow(queryCtx, findRecentGatewaySessionSQL, tenantID, apiKeyID, identityHash, int(since.Seconds())).Scan(&sessionID)
+	query, args := findRecentGatewaySessionArgs(tenantID, apiKeyID, identityHash, since)
+	err := c.dbPool.QueryRow(queryCtx, query, args...).Scan(&sessionID)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
 			return "", nil
