@@ -33,19 +33,43 @@ type LoopbackSubmitter struct {
 	Headers map[string]string
 	// Client 是 HTTP 客户端（nil ⇒ 默认）。
 	Client *http.Client
-	// Timeout 是单次回灌的超时（默认 120s）。
+	// Timeout 是单次回灌的超时（<=0 ⇒ defaultLoopbackTimeout）。
+	//
+	// ★ 2026-11-11 审计 A-5：★ 该字段此前**从未被读取**——
+	//
+	//	默认客户端写死 120s（Timeout 被忽略）、注入 Client 时连超时
+	//	都管不到 ⇒ 运维改这个字段**毫无效果** ⇒ 字段本身是"死字段"。
+	//
+	// ⇒ 现在它同时约束**两处**：① 默认 http.Client 的 Timeout；
+	// ② 请求 ctx 的 deadline（★ 这一层对**注入的** Client 也生效，
+	// ★ 因为注入方的 Client.Timeout 可能是 0（= 不超时））。
 	Timeout time.Duration
 }
+
+// defaultLoopbackTimeout 是回灌超时的兜底值（★ 旧代码里写死的 120s）。
+const defaultLoopbackTimeout = 120 * time.Second
 
 // Submit 实现 Submitter。
 func (s *LoopbackSubmitter) Submit(ctx context.Context, body []byte) ([]byte, error) {
 	if s == nil || strings.TrimSpace(s.Endpoint) == "" {
 		return nil, fmt.Errorf("contextagent: loopback endpoint is empty")
 	}
+	// ★ 2026-11-11 审计 A-5：★ Timeout 此前是死字段 ⇒ 现在真正生效。
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = defaultLoopbackTimeout
+	}
 	client := s.Client
 	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+		client = &http.Client{Timeout: timeout}
 	}
+	// ★ ctx 这一层兜底：注入的 Client 可能没有超时（Timeout==0 ⇒ 不超时）
+	// ⇒ 只有 ctx 能把"回灌挂死"变成**有界失败**。
+	//
+	// ★ context.WithTimeout 在父 ctx 已有**更早**的 deadline 时保留更早的那个
+	// ⇒ 不会放宽调用方自己设的预算。
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("contextagent: build loopback request: %w", err)

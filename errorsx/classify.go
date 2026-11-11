@@ -1942,16 +1942,30 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
 		}
-		// ★ 2026-11-10（审计 F50）：与 ClassifyErrorWithBody **逐字同门**、
-		//   **逐字同判**（限流形态正文 + 请求侧状态族 ⇒ KindRateLimitObserved）。
+		// ★ 2026-11-10（审计 F50）：本规则与 ClassifyErrorWithBody
+		//   **同门同判**（限流形态正文 + 请求侧状态族 ⇒ KindRateLimitObserved）。
 		//
-		// ★ 为什么必须在这里也放一份：仓内纪律是「两个分类器**不得**在同一
-		//   (status, body) 上**分叉**」（V20 / R30）。本条是**请求侧**归因，
-		//   落在哪一侧都不罚节点 ⇒ 门 1（罚则单调性）不因此变红；但若只有
-		//   ClassifyErrorWithBody 有这条，两个分类器对同一个 (400, 限流正文)
-		//   会给出**不同的 kind**（一个说 rate_limit_observed、一个说「没命中」
-		//   ⇒ "")⇒ 任何新调用点接上就是一个分叉源。
-		//   ⇒ 放在**所有**正文规则之后，与 ClassifyErrorWithBody 同序。
+		// ★★ 2026-11-11 审计 C-5（★ 措辞修正）：★ 原措辞是「**逐字同门**、
+		// ★★ **逐字同判**」★★ ⇒ ★★ 那句话**范围写大了** ⇒ ★★ 读者会以为
+		// ★★ 「两个分类器整体处处同值」★★ ⇒ ★★ 而实测不是（★ 见下）。
+		// ⇒ ★★ 现在明确：**同门同判说的是本条规则**，★ 不是两个函数的整体。
+		//
+		// ★★ 实测（★ 400..599 × 仓内语料，★ 2026-11-11）：★★ 两个分类器
+		// ★★ **确实**会在同一 (status, body) 上分叉，★ 而且**不止 429 一处**：
+		// ★★ ①「空串族」**2462** 例（★ 正文分类器不表态、状态分类器按状态兜底）
+		// ★★ ②「异值族」**913** 例（★ 两边都表态但值不同）★★
+		// ★★ ⇒ ★★ 「429 是唯一例外」这个量化**被推翻**（★ 它只是异值族里
+		// ★★ 一个被先看到的样本）★★。
+		//
+		// ★★ 但分叉的**成因被收口成两类**（★ 机器可核）：★★ ① 单边规则
+		// ★★ （★ 当前只有 eofWithoutDoneRe ⇒ 已登记在
+		// ★★ errorsx/testdata/dual_classifier_rule_sets.txt）★★ ② 状态优先
+		// ★★ （★ 状态分类器带状态族早退/兜底 ⇒它的结果不受正文影响）★★。
+		// ★★ 门（★ errorsx/classify_dual_classifier_divergence_test.go）★★：
+		// ★★ C5-a 规则集对账 + C5-b「真分叉必须为零」+ C5-c 分歧规模量化 ★★。
+		//
+		// ★ 为什么必须在这里放一份：★ 本函数是**公开分类器** ⇒ ★ 任何新调用点
+		//   接上就是一条敞着的分叉链 ⇒ ★ 门必须在这里，★ 不依赖调用点自律。
 		if isRequestRejectionStatus(status) && rateLimitBodyRe.Match(body) {
 			return KindRateLimitObserved
 		}

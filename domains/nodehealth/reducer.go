@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Phase distinguishes independently observable outcomes within one attempt.
@@ -159,7 +160,12 @@ const DefaultSeenTTL = 15 * time.Minute
 // semantics keep short aggregates blips (a one-off relay hiccup) from removing
 // usable capacity. The executor wires the settings-backed value over this
 // default; the constant pins the ladder for tests and zero-value configs.
-const DefaultEmptyResponseStreakThreshold = 5
+//
+// ★ 2026-11-11 审计 B-7：★ 本常量此前与 settings 包里的同名常量**各写一份**
+// ★（★ 两处都是 5 ⇒ 数值一致 ⇒ 漂移不会立刻暴露 ⇒ 但它们已经是两个真相源）
+// ★ ★⇒ ★★ 现在**只保留 settings 那一份**，本常量改为**引用**它
+// ★★ ⇒ ★★ 阈值区间的**下限/上限/默认值**三者在仓内**只有一处**定义。
+const DefaultEmptyResponseStreakThreshold = settings.DefaultEmptyResponseStreakThreshold
 
 // EmptyResponseStreakWindow 是「连续空响应」的**时间窗**。
 //
@@ -403,7 +409,15 @@ func (r *OutcomeReducer) defaultsLocked() {
 // ★ ★⇒ ★★ 这里无锁读它是安全的（★ happens-before 由 goroutine 启动保证）。
 func (r *OutcomeReducer) emptyStreakThresholdSnapshot() int {
 	if fn := r.emptyStreakThreshold; fn != nil {
-		if n := fn(); n > 0 {
+		// ★ 2026-11-11 审计 B-7：★ 守卫此前是 `n > 0` ⇒ ★ **1 会被接受**
+		// ★ ⇒ ★★ 与 admin UI 契约（Min=2）与运行时 clamp（≥2）**不一致**
+		// ★ ★⇒ ★★ 同一个「下限」散在三处、各写各的。
+		// ★★ 现在下限**只有一处定义**（settings.MinEmptyResponseStreakThreshold）。
+		//
+		// ★ 行为影响：**零**。★ settings 侧已把读到的值 clamp 到 ≥2
+		// ★ ⇒ ★ 生产注入值恒 ≥2 ⇒ ★ 本守卫的判定结果与改前**逐字相同**。
+		// ★ 它只是把「下限」的口径**收敛到一处**（★ 防的是未来有人绕过 clamp）。
+		if n := fn(); n >= settings.MinEmptyResponseStreakThreshold {
 			return n
 		}
 	}

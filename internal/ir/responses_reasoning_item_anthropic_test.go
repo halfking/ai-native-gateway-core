@@ -77,8 +77,18 @@ func TestResponsesReasoningItemNotPassedToAnthropic(t *testing.T) {
 			}
 			// Anthropic Messages content-block closure: text, image, document,
 			// tool_use, tool_result, thinking, redacted_thinking,
-			// server_tool_use, web_search_tool_result, guard_content,
-			// citations. "reasoning" (OpenAI Responses item type) is NOT in it.
+			// server_tool_use, web_search_tool_result, search_result,
+			// container_upload, citations. "reasoning" (OpenAI Responses item
+			// type) is NOT in it.
+			//
+			// ★ 2026-11-11 审计 R-3（★ 注释滞后修正）：★ 此前这份枚举里
+			// ★ 有 guard_content（★ **不属于任何一处实现**）★ 且**漏了**
+			// ★ search_result / container_upload（★ 两处实现都有）★★
+			// ★★ ⇒ ★★ 这份注释此前是**假的**（★ 与两处实现都不一致）★★
+			// ★★ ⇒ ★★ 现在它由门（★ protocol_block_closure_gate_test.go）★★
+			// ★★ **逐项核对**：★ 注释里的枚举 vs 两处实现（★
+			// ★★ internal/protocolformat 的 anthropicBlockTypes 与
+			// ★★ internal/ir 的 anthropicLegalBlockType）★★ 的并集 ★★。
 			if probe.Type == "reasoning" {
 				t.Fatalf("OpenAI Responses reasoning item leaked verbatim into the "+
 					"Anthropic wire: messages[%d].content[%d] type=%s (%s) — upstream "+
