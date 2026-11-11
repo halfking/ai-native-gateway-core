@@ -163,7 +163,7 @@
   - `formatTokens()` - 格式化 Token
 
 - ✅ 常量定义
-  - `ROUTE_PHASE_LABELS` - 中文标签
+  - `ROUTE_PHASE_LABEL_KEYS` - 阶段 i18n 键（显示名在 locales/<locale>/trace.ts 的 routePhase 段；2026-11-12 按硬编码中文棘轮门要求从内联中文改为键）
   - `ROUTE_PHASE_COLORS` - 颜色主题
 
 ### 5. 文档阶段 ✅

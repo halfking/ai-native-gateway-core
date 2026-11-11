@@ -1148,7 +1148,7 @@ onMounted(load)
 .market-filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .market-resolved-toggle { display: flex; gap: 4px; align-items: center; font-size: 12px; }
 .market-table-wrap { max-height: 480px; overflow-y: auto; }
-.market-table th, .market-table td { padding: 6px 8px; font-size: 12px; }
+.market-table th, .market-table td { padding: 4px 8px; font-size: 12px; }
 .badge-red { background: #d9302514; color: #d93025; }
 .price-history-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
 .price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border); }

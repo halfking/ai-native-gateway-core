@@ -69,5 +69,14 @@ export default {
     module_upstream: 'Upstream',
     module_session: 'Sesión',
   },
+  routePhase: {
+    started: 'Enrutamiento iniciado',
+    selecting: 'Seleccionando credencial',
+    attempting: 'Solicitando',
+    responding: 'Recibiendo respuesta',
+    fallback: 'Cambiando credencial',
+    done: 'Completado',
+    failed: 'Falló',
+  },
   generateFailed: 'No se pudo generar el resumen. Vuelva a intentarlo.',
 }

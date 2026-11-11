@@ -69,5 +69,14 @@ export default {
     module_upstream: '上游',
     module_session: '會話',
   },
+  routePhase: {
+    started: '開始路由',
+    selecting: '選擇憑據',
+    attempting: '請求中',
+    responding: '接收回應',
+    fallback: '切換憑據',
+    done: '已完成',
+    failed: '失敗',
+  },
   generateFailed: '摘要沒能產生，請重試',
 }

@@ -80,7 +80,7 @@ export default {
   tabDashboard: 'Dashboard',
   costDrifted: 'Cost drifted. requote suggested',
   tierQuickFill: 'Quick fill by tier',
-  rateUnitNote: 'Retail prices are in credits per 1M tokens — quick fill converts supplier cost to this axis (margin at coef c = 1 − 1/c)',
+  rateUnitNote: 'Retail prices are in credits per 1M tokens; quick fill converts supplier cost to this axis (margin at coef c = 1 − 1/c)',
   pickModel: 'Pick a model from the sellable list',
   itemExists: 'Model already in the list',
   quoteCloseTitle: 'Close quote #{id}',

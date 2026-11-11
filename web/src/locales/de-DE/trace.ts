@@ -69,5 +69,14 @@ export default {
     module_upstream: 'Upstream',
     module_session: 'Sitzung',
   },
+  routePhase: {
+    started: 'Routing gestartet',
+    selecting: 'Anmeldedaten werden ausgewählt',
+    attempting: 'Anfrage läuft',
+    responding: 'Antwort wird empfangen',
+    fallback: 'Anmeldedaten wechseln',
+    done: 'Fertig',
+    failed: 'Fehlgeschlagen',
+  },
   generateFailed: 'Zusammenfassung konnte nicht erzeugt werden. Bitte erneut versuchen.',
 }

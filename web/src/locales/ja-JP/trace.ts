@@ -69,5 +69,14 @@ export default {
     module_upstream: '上流',
     module_session: 'セッション',
   },
+  routePhase: {
+    started: 'ルーティング開始',
+    selecting: '資格情報の選択中',
+    attempting: 'リクエスト中',
+    responding: 'レスポンス受信中',
+    fallback: '資格情報の切替中',
+    done: '完了',
+    failed: '失敗',
+  },
   generateFailed: '要約を生成できませんでした。再試行してください。',
 }
