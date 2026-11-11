@@ -112,6 +112,27 @@ type ModelProbeRunner struct {
 	manualProbeQueue      chan manualProbeTask
 	manualProbeWG         sync.WaitGroup
 	manualProbeWorkerOnce sync.Once
+
+	// invalidateCandidateCache 是「候选缓存失效」的注入点（2026-11-11
+	// 缓存与路由状态即时同步轮）。
+	//
+	// ★ 为什么这里**必须有**它（★ 之前这里是**空的** ⇒ ⇒ 同一个缺陷只修了一半）：
+	//   applyResult 在 broken_confirmed / healthy_confirmed 两个臂里会写
+	//   credential_model_bindings.available（+ unavailable_reason）⇒ ⇒
+	//   **候选计划的候选集因此变了**（候选 SQL 直接读这一列）⇒ ⇒
+	//   缓存里那条计划必须**立刻**作废 ⇒ ⇒ 否则已被判死的桶还能再被选中
+	//   最多 candidateCacheTTL（30s）⇒ ⇒ 表现就是「路由总是命中不可用或
+	//   失败的供应商桶」。
+	//
+	// ★ 为什么它在**新探针模式下也是活的**（★ 别以为「legacy 就没人管」）：
+	//   新模式下 consensus 循环确实被跳过，但 **TriggerManual（管理端
+	//   「立即探测」）走的是同一条 applyResult** ⇒ ⇒ 运维点一次探测、
+	//   上游确实挂了 ⇒ 绑定被标成不可用 ⇒ ⇒ **而候选缓存没被清**
+	//   ⇒ ⇒ 缓存里的旧计划还在路由 ⇒ ⇒ 正是本轮要修的那条路。
+	//
+	// ★ nil 可空：未注入时（单测/非网关进程）本 runner 照旧工作，
+	//   只是不做缓存失效 ⇒ **不构成新的失败模式**。
+	invalidateCandidateCache func(credentialID int)
 }
 
 type manualProbeTask struct {
@@ -132,6 +153,27 @@ func (r *ModelProbeRunner) SetKeyring(kr *secret.Keyring) { r.keyring = kr }
 
 func (r *ModelProbeRunner) SetAvailabilityCache(cache *ModelAvailabilityCache) {
 	r.cache = cache
+}
+
+// SetInvalidateCandidateCache wires the candidate-cache invalidator that must
+// run whenever this runner changes a binding's routability.
+//
+// ★ 语义与 bg/node_probe.go 的同名注入点**逐字一致**（同一族、同一形状）⇒
+//   两个探针栈的「判定变了 ⇒ 缓存作废」不再一个有一个没有。
+func (r *ModelProbeRunner) SetInvalidateCandidateCache(fn func(credentialID int)) {
+	if r == nil {
+		return
+	}
+	r.invalidateCandidateCache = fn
+}
+
+// invalidateCandidateCacheForCredential 把「该凭据的判定变了」通知出去。
+// nil 注入 ⇒ 静默跳过（不阻断探测流程本身）。
+func (r *ModelProbeRunner) invalidateCandidateCacheForCredential(credentialID int) {
+	if r == nil || r.invalidateCandidateCache == nil || credentialID == 0 {
+		return
+	}
+	r.invalidateCandidateCache(credentialID)
 }
 
 // SetResponsesCapabilitySink wires durable capability feedback from native
@@ -1284,6 +1326,10 @@ func (r *ModelProbeRunner) applyResult(
 				"credential_id", t.CredentialID, "raw_model", t.RawModel)
 		}
 		r.writeAvailabilityCache(ctx, t, newState, false, status, newSucc, newFail, nextRetryInterval)
+		// 2026-11-11（缓存与路由状态即时同步轮）：绑定被标成不可用 ⇒
+		//   **候选计划的候选集变了** ⇒ ⇒ 缓存里那条计划必须立刻作废
+		//   ⇒ ⇒ 否则已被判死的桶还能再被选中最多 30s（candidateCacheTTL）。
+		r.invalidateCandidateCacheForCredential(t.CredentialID)
 	case "healthy_confirmed":
 		_, err := r.db.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
@@ -1306,6 +1352,10 @@ func (r *ModelProbeRunner) applyResult(
 				"credential_id", t.CredentialID, "raw_model", t.RawModel)
 		}
 		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
+		// 2026-11-11（缓存与路由状态即时同步轮）：绑定被恢复成可路由 ⇒
+		//   **候选计划的候选集同样变了**（这个桶重新可用了）⇒ ⇒ 缓存必须作废
+		//   ⇒ ⇒ 否则恢复要等 30s 才生效（表现为「探针说好了但路由还不选它」）。
+		r.invalidateCandidateCacheForCredential(t.CredentialID)
 	default:
 		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, nextRetryInterval)
 	}
