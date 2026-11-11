@@ -460,6 +460,211 @@ ARMS += [
     ),
 ]
 
+# ══════════════════════════════════════════════════════════════════════
+# 2026-11-11 附件域审计轮（AT 组）：多模态附件的「上传缓存 + 转发」族
+#
+# ★ 本组守的是**四项修复 + 本轮当场抓出的一处真缺陷**：
+#   ① IRTransformer 只处理 image ⇒ 文档/视频/音频不落盘（每次请求全量重传）
+#   ② URLFetchFallback 只内联 image_url ⇒ 文档/视频的网关 URL 原样发给
+#      不支持 URL 的上游 ⇒ 附件在链路上丢失
+#   ③ URLFetchFallback 全 body 字节级替换 ⇒ 文本消息里的同名 URL 也被替换
+#      成 base64 载荷 ⇒ 内容污染 + 载荷外泄
+#   ④ OutboundURLRewriter 只改写 image_url（Anthropic 侧只处理 image）
+#      ⇒ 文档/视频每次请求全量重传
+#   ⑤ 落盘记录的 Type 被 storage.SaveBase64Image 硬编码成 "image"
+#      ⇒ file/video/audio 被静默误标（★ 本轮由新钉测当场抓出 ★）
+#
+# ★ 纪律沿用本 harness 既有四段证据：
+#   ① 变异生效的**独立证据** = 目标文件 SHA 变化（不是「锚点命中 1 次」）
+#   ② 门变红（rc≠0）
+#   ③ 还原后 SHA 复核 + 正向复跑
+# ══════════════════════════════════════════════════════════════════════
+
+ATTACH_GROUP = "attachments"
+
+ARMS += [
+    Arm(
+        name="AT01",
+        desc="缺陷①：IRTransformer 的 document 分支被关掉 ⇒ 文档不落盘（载荷每次全量重传）",
+        files=["domains/attachments/ir_transformer.go"],
+        pkg="./domains/attachments/",
+        test="TestIRTransformer_DocumentVideoAudio_AreStoredAndReplaced",
+        edits=[
+            (
+                '\t\t\tcase "document":\n',
+                '\t\t\tcase "document_disabled":\n',
+            )
+        ],
+        expect_in_output="落盘记录数",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT02",
+        desc="缺陷①：IRTransformer 的 video 分支被关掉 ⇒ 视频不落盘",
+        files=["domains/attachments/ir_transformer.go"],
+        pkg="./domains/attachments/",
+        test="TestIRTransformer_DocumentVideoAudio_AreStoredAndReplaced",
+        edits=[
+            (
+                '\t\t\tcase "video":\n',
+                '\t\t\tcase "video_disabled":\n',
+            )
+        ],
+        expect_in_output="落盘记录数",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT03",
+        desc="缺陷①：音频**只落盘不换成 URL** ⇒ 音频载荷仍每次全量重传给上游",
+        files=["domains/attachments/ir_transformer.go"],
+        pkg="./domains/attachments/",
+        test="TestIRTransformer_DocumentVideoAudio_AreStoredAndReplaced",
+        edits=[
+            (
+                '\t\t\t\t\t\t\taud.Type = "url"\n',
+                '\t\t\t\t\t\t\taud.Type = "base64"\n',
+            )
+        ],
+        expect_in_output="音频块未被换成网关 URL",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT04",
+        desc="缺陷②：共享字段表少登记 file ⇒ 文档的网关 URL 原样发给不支持 URL 的上游（附件丢失）",
+        files=["domains/attachments/attachment_fields.go"],
+        pkg="./domains/attachments/",
+        test="TestURLFetchFallback_InlinesImageFileAndVideo",
+        edits=[
+            (
+                '\t"file":      {{"file", "file_data"}},\n',
+                '\t"file":      {{"file", "file_data_disabled"}},\n',
+            )
+        ],
+        expect_in_output="内联处数",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT05",
+        desc="缺陷③：回退到**旧实现**（全 body 字节级替换）⇒ 文本消息里的同名 URL 也被替换成 base64 载荷",
+        files=["domains/attachments/outbound_fetch_fallback.go"],
+        pkg="./domains/attachments/",
+        test="TestURLFetchFallback_DoesNotTouchTextMessages",
+        edits=[
+            (
+                "\tif err != nil {\n"
+                "\t\treturn body, 0\n"
+                "\t}\n"
+                "\treturn out, inlined\n",
+                "\tif err != nil {\n"
+                "\t\treturn body, 0\n"
+                "\t}\n"
+                "\t// ★ MUTANT：★ 旧实现形态 —— 全 body 字节级替换 ★\n"
+                "\tmutated := string(out)\n"
+                "\tfor relPath, dataURI := range dataURIs {\n"
+                "\t\tmutated = strings.ReplaceAll(mutated, prefix+relPath, dataURI)\n"
+                "\t}\n"
+                "\treturn []byte(mutated), inlined\n",
+            )
+        ],
+        expect_in_output="文本消息被改写了",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT06",
+        desc="缺陷④：共享字段表少登记 video_url ⇒ 视频不被换成网关 URL（每次全量重传）",
+        files=["domains/attachments/attachment_fields.go"],
+        pkg="./domains/attachments/",
+        test="TestOutboundURLRewriter_RewritesFileAndVideoBlocks",
+        edits=[
+            (
+                '\t"video_url": {{"video_url", "url"}},\n',
+                '\t"video_url_disabled": {{"video_url", "url"}},\n',
+            )
+        ],
+        expect_in_output="改写块数",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT07",
+        desc="缺陷④：Anthropic 侧 document 被排除 ⇒ 文档永远不被换成网关 URL",
+        files=["domains/attachments/outbound_url_rewriter.go"],
+        pkg="./domains/attachments/",
+        test="TestOutboundURLRewriter_RewritesAnthropicDocument",
+        edits=[
+            (
+                '\t\tif (block.Type != "image" && block.Type != "document") ||\n',
+                '\t\tif (block.Type != "image") ||\n',
+            )
+        ],
+        expect_in_output="改写块数",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT08",
+        desc="缺陷⑤：落盘 Type 的无条件覆盖退回条件式 ⇒ file/video/audio 被误标成 image",
+        files=["domains/attachments/ir_transformer.go"],
+        pkg="./domains/attachments/",
+        test="TestIRTransformer_DocumentVideoAudio_AreStoredAndReplaced",
+        edits=[
+            (
+                "\tmeta.Type = kind\n",
+                "\tif meta.Type == \"\" {\n\t\tmeta.Type = kind\n\t}\n",
+            )
+        ],
+        expect_in_output="落盘记录 Type",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT09",
+        desc="请求内去重键**去掉附件种类** ⇒ 同载荷的 image/document 共用 manifest ⇒ document 被误标 image",
+        files=["domains/attachments/ir_transformer.go"],
+        pkg="./domains/attachments/",
+        test="TestIRTransformer_Multimodal_DedupKeyIncludesKind",
+        edits=[
+            (
+                '\tkey := kind + "\\x00" + data\n',
+                '\tkey := data\n',
+            )
+        ],
+        expect_in_output="落盘记录 Type",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT10",
+        desc="缺陷③（组合臂）：遍历器把 text 块也纳入 **且** 前缀判断放宽为子串 ⇒ text 块里的同名 URL 被污染",
+        files=[
+            "domains/attachments/attachment_fields.go",
+            "domains/attachments/outbound_fetch_fallback.go",
+        ],
+        pkg="./domains/attachments/",
+        test="TestURLFetchFallback_DoesNotTouchTextMessages",
+        edits=[
+            (
+                '\t\t\tpaths, ok := chatAttachmentFields[blockType]\n'
+                '\t\t\tif !ok {\n'
+                '\t\t\t\tcontinue\n'
+                '\t\t\t}\n',
+                '\t\t\tpaths, ok := chatAttachmentFields[blockType]\n'
+                '\t\t\tif !ok {\n'
+                '\t\t\t\tpaths = []attachmentFieldPath{{"text"}}\n'
+                '\t\t\t}\n',
+            ),
+            (
+                '\t\t\tif !strings.HasPrefix(value, prefix) {\n'
+                '\t\t\t\treturn ""\n'
+                '\t\t\t}\n'
+                '\t\t\trelPath := strings.TrimPrefix(value, prefix)\n',
+                '\t\t\tif !strings.Contains(value, prefix) {\n'
+                '\t\t\t\treturn ""\n'
+                '\t\t\t}\n'
+                '\t\t\trelPath := value[strings.Index(value, prefix)+len(prefix):]\n',
+            ),
+        ],
+        expect_in_output="文本块被改写了",
+        group=ATTACH_GROUP,
+    ),
+]
+
 
 def sha(path: str) -> str:
     with open(path, "rb") as fh:
@@ -564,22 +769,34 @@ def main() -> int:
             print(f"── {arm.name}：{arm.desc} ──")
             applied = True
             mut_sha: dict[str, str] = {}
+            # ★ 2026-11-11（附件域审计轮）：★ 锚点**定位到文件** ⇒ ★
+            #   ★ 旧实现把**每条 edit**都套用到 arm 的**每个文件**上 ⇒ ★
+            #   ★ ⇒ 多文件臂（★ 一条臂同时改两个文件 ★）根本没法写 ⇒ ★
+            #   ★ ⇒ 而「一条臂同时撤掉两处协作的决策点」正是组合缺陷的形态 ★。
+            #   ★ 现在：★ 每条 edit 必须**恰好**落在 arm.files 里的**一个**文件里 ★
+            #   ★（★ 落在 0 个文件 ⇒ 锚点写错；落在 ≥2 个文件 ⇒ 锚点不唯一 ⇒ ★
+            #   ★   ⇒ 两种都判失败 ⇒ 不许猜 ★）。
+            bodies: dict[str, str] = {}
             for rel in arm.files:
-                path = os.path.join(REPO, rel)
-                with open(path, "r", encoding="utf-8") as fh:
-                    body = fh.read()
-                for old, new in arm.edits:
-                    cnt = body.count(old)
-                    if cnt != 1:
-                        print(f"  ✘ 变异锚点在 {rel} 出现 {cnt} 次（要求恰好 1 次）⇒ 判失败")
-                        applied = False
-                        break
-                    body = body.replace(old, new)
-                if not applied:
+                with open(os.path.join(REPO, rel), "r", encoding="utf-8") as fh:
+                    bodies[rel] = fh.read()
+            for old, new in arm.edits:
+                hits = [rel for rel in arm.files if bodies[rel].count(old) == 1]
+                if len(hits) != 1:
+                    detail = "；".join(
+                        f"{rel} 出现 {bodies[rel].count(old)} 次" for rel in arm.files
+                    )
+                    print(f"  ✘ 变异锚点没有**恰好**落在一个文件里（{detail}）⇒ 判失败")
+                    applied = False
                     break
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(body)
-                mut_sha[rel] = sha(path)
+                rel = hits[0]
+                bodies[rel] = bodies[rel].replace(old, new)
+            if applied:
+                for rel in arm.files:
+                    path = os.path.join(REPO, rel)
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(bodies[rel])
+                    mut_sha[rel] = sha(path)
             if not applied:
                 results.append((arm.name, "锚点不唯一", False))
                 print()

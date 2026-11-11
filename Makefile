@@ -932,15 +932,26 @@ clean: ## 清理 bin/、coverage.* 与根目录构建产物
 #     ★★ go1.27.2 / 热缓存，2026-11-11）★★ ⇒ ★★ ⇒ 本 target 合计
 #     **实测 66.3s**（`time make guards-ir-conversion`）★★ ⇒ ⇒ 仍在慢门之下 ★★。
 #
+# ★★ 2026-11-11（附件域审计轮）：**第 5 个 harness** = ★ 同一份 Python 变异
+#   验证器的**第 2 个组** `--group attachments`（★ 10 臂，守「多模态附件的
+#   ★ 上传缓存 + 转发」族：IRTransformer 落盘四类、共享字段表、字段精确
+#   ★ 替换、类型闸、落盘 Type 标注、去重键含种类 ★）★★
+#   ⇒ ★★ 仍然是「按组调用」⇒ ★★ **不需要把臂名单手抄进 Makefile** ★★
+#   ⇒ ★★ 并且它守的包（domains/attachments）**就在** IR 影响面闭包里 ⇒
+#   ★★ 每日回归也会跑到它 ★★。
+#   ⇒ ★★ 实测增量：★ **实测 23.8s**（10 臂 × 3 次 `go test ./domains/attachments/`，
+#     ★★ 本机 macOS / darwin-arm64 / 热缓存，2026-11-11）★★。
+#
 # ★ 顺序：★ 本 target 挂在 `guards` / `guards-fast` 的**最后一个**前置
 #   ⇒ 变异 harness 若中途失败，make 会中止（前置失败 ⇒ 配方不执行）
 #   ⇒ 绝不会带着「被变异过的 internal/ir」去跑后续 `go test $(GUARD_PACKAGES)`。
 .PHONY: guards-ir-conversion
-guards-ir-conversion: ## IR 协议转换层守卫（4 个变异 harness 23 臂 + 覆盖率门禁 75%）—— CI 载体入口
+guards-ir-conversion: ## IR 协议转换层守卫（5 个变异 harness 33 臂 + 覆盖率门禁 75%）—— CI 载体入口
 	@bash scripts/audit/ir-client-error-fix-mutation.sh
 	@bash scripts/audit/ir-gemini-only-loss-mutation.sh
 	@bash scripts/audit/ir-coerce-numeric-mutation.sh
 	@python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
+	@python3 scripts/audit/mutation-verify-2026-11-11.py --group attachments
 	$(GO) test ./internal/ir/... -count=1 -timeout=600s \
 	  -coverprofile=coverage.ir.out -covermode=atomic
 	@COV=$$($(GO) tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \

@@ -156,6 +156,25 @@ func e2eTextOf(t *testing.T, w map[string]any, msgIdx int) string {
 	}
 }
 
+// e2eAllMessagesText 拼起出站 body 里**所有**消息的文本。
+//
+// ★ 为什么不用固定下标：★ 客户端连着两条 user 消息时，网关的清洗链会**合并**
+//   它们 ⇒ ⇒ 出站消息的**条数不固定**（★ 本轮实测：合并成 1 条 ★）⇒ ⇒
+//   断言必须对「全部消息的文本」做，而不是对某一条做（★ 否则就是「假锚点」★）。
+func e2eAllMessagesText(t *testing.T, w map[string]any) string {
+	t.Helper()
+	msgs, ok := w["messages"].([]any)
+	if !ok {
+		t.Fatalf("出站 body 里没有 messages 数组（%T）", w["messages"])
+	}
+	var sb strings.Builder
+	for i := range msgs {
+		sb.WriteString(e2eTextOf(t, w, i))
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 // e2eBlockField 取块里某个嵌套对象的字符串字段（如 image_url.url）。
 func e2eBlockField(t *testing.T, block map[string]any, obj, field string) string {
 	t.Helper()
@@ -372,7 +391,7 @@ func TestE2EMultimodalOutbound_ReplacementIsFieldPrecise_NoTextContamination(t *
 		"messages": [
 			{"role": "user", "content": "上一轮的图在这里：` + imgURL + ` 麻烦看看"},
 			{"role": "user", "content": [
-				{"type": "text", "text": "这张呢"},
+				{"type": "text", "text": "这张呢 ` + imgURL + `"},
 				{"type": "image_url", "image_url": {"url": "` + imgURL + `"}}
 			]}
 		]
@@ -381,14 +400,21 @@ func TestE2EMultimodalOutbound_ReplacementIsFieldPrecise_NoTextContamination(t *
 	out := e2eRunOutboundWithStorage(t, "openai-chat", "deepseek", clientBody, storage)
 	w := e2eWire(t, out)
 
-	// ★ 文本消息必须**逐字**保留原 URL。
-	text0 := e2eTextOf(t, w, 0)
-	if !strings.Contains(text0, imgURL) {
+	// ★★ 两种文本形态都必须**逐字**保留原 URL ★★：
+	//   ① content 是**字符串**（"上一轮的图在这里：…"）
+	//   ② content 是**块数组**里的 text 块（"这张呢 …"）
+	// ⇒ ★ 断言打在「全部消息的文本」上（★ 消息条数不固定：网关清洗链会合并 ★）。
+	all := e2eAllMessagesText(t, w)
+	if !strings.Contains(all, "上一轮的图在这里："+imgURL) {
 		t.Errorf("文本消息被改写了：%q\n★ 期望原样保留 %q\n★ ⇒ 字节级全 body 替换把文本污染了",
-			text0, imgURL)
+			all, imgURL)
 	}
-	if strings.Contains(text0, "base64,") {
-		t.Errorf("文本消息里混进了 base64 载荷：%q ⇒ 内容污染 + 载荷外泄", text0)
+	if !strings.Contains(all, "这张呢 "+imgURL) {
+		t.Errorf("文本块被改写了：%q\n★ 期望原样保留 %q\n★ ⇒ 字段表被扩到 text ⇒ 文本污染",
+			all, imgURL)
+	}
+	if strings.Contains(all, "base64,") {
+		t.Errorf("文本消息里混进了 base64 载荷：%q ⇒ 内容污染 + 载荷外泄", all)
 	}
 }
 

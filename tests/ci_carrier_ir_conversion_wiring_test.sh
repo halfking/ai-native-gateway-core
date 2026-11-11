@@ -55,6 +55,7 @@ IR_HARNESSES=(
   "ir-gemini-only-loss-mutation.sh"
   "ir-coerce-numeric-mutation.sh"
   "mutation-verify-2026-11-11.py --group toolcall-canonical"
+  "mutation-verify-2026-11-11.py --group attachments"
 )
 
 pass=0; fail=0

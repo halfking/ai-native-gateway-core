@@ -137,6 +137,43 @@ func TestIRTransformer_Multimodal_DedupWithinRequest(t *testing.T) {
 	}
 }
 
+// TestIRTransformer_Multimodal_DedupKeyIncludesKind 钉住「请求内去重的键
+// 必须**含附件种类**」。
+//
+// ★ 为什么：★ 去重键若只是载荷本身 ⇒ ★ 同载荷的 image 与 document 会**共用**
+//   同一个 manifest ⇒ ⇒ document 的落盘记录被标成 image ⇒ ⇒ 改写器的类型闸
+//   会把它判成「类型不符」而跳过 ⇒ ⇒ 文档**永远**不会被换成 URL ⇒ ⇒
+//   正好退回本轮修掉的那个缺陷。
+func TestIRTransformer_Multimodal_DedupKeyIncludesKind(t *testing.T) {
+	storage := newTestStorage(t)
+	tr := NewIRTransformer(storage, "https://cdn.example.com/attachments")
+
+	same := base64.StdEncoding.EncodeToString([]byte("identical-payload"))
+	req := &ir.InternalRequest{
+		Messages: []ir.Message{
+			{Role: "user", Content: []ir.ContentBlock{
+				{Type: "image", Image: &ir.ImageSource{Type: "base64", MediaType: "image/png", Data: same}},
+			}},
+			{Role: "user", Content: []ir.ContentBlock{
+				{Type: "document", Document: &ir.DocumentBlock{
+					Source: &ir.DocumentSource{Type: "base64", MediaType: "application/pdf", Data: same},
+				}},
+			}},
+		},
+	}
+
+	result := tr.TransformRequest(context.Background(), "req_kind", req)
+	if len(result.Attachments) != 2 {
+		t.Fatalf("落盘记录数 = %d，期望 2（同载荷但不同种类各一条记录）", len(result.Attachments))
+	}
+	wantTypes := []string{"image", "file"}
+	for i, att := range result.Attachments {
+		if att.Type != wantTypes[i] {
+			t.Errorf("第 %d 条落盘记录 Type = %q，期望 %q（去重键必须含附件种类）", i, att.Type, wantTypes[i])
+		}
+	}
+}
+
 // ── 钉测 ②③：URLFetchFallback 的字段级内联 ───────────────────────────
 
 // mmFallbackFetcher 是一份最小附件存储（按相对路径返回固定内容）。
@@ -215,21 +252,33 @@ func TestURLFetchFallback_DoesNotTouchTextMessages(t *testing.T) {
 	f := NewURLFetchFallback("https://gw/att", fetcher)
 
 	const url = "https://gw/att/a/img.png"
+	// ★★ 两种文本形态都要覆盖 ★★：
+	//   ① content 是**字符串**（整条消息就是一个文本）
+	//   ② content 是**块数组**，其中有一个 text 块
+	// ⇒ ★ 缺任何一种 ⇒ ★★ 遍历器一旦把 text 块也纳入字段表 ⇒ 现有断言抓不到 ★★
+	// ⇒ ★★（★ 本轮补这条覆盖，正是为了给变异臂 AT05 一个「必红」的落点 ★★）。
 	body := []byte(`{"messages":[
 		{"role":"user","content":"上一轮的图在这里：` + url + ` 看看"},
-		{"role":"user","content":[{"type":"text","text":"这张呢"},{"type":"image_url","image_url":{"url":"` + url + `"}}]}
+		{"role":"user","content":[{"type":"text","text":"这张呢 ` + url + `"},{"type":"image_url","image_url":{"url":"` + url + `"}}]}
 	]}`)
 
 	out, n := f.InlineOpenAIBody(body, "deepseek")
-	if n != 1 {
-		t.Fatalf("内联处数 = %d，期望 1（只有附件字段该被替换）", n)
-	}
 	s := string(out)
+	// ★★ 断言顺序：★ 先断「文本没被污染」（★ 语义要点 ★），再断「替换处数」★★
+	// ★ 顺序很重要：★ 处数断言是 t.Fatalf ⇒ ★ 一旦它先触发，后面的语义断言
+	// ★ 就永远跑不到 ⇒ ★★ 组合变异臂（★ 遍历范围 + 匹配放宽 ★）就会被
+	// ★★ 「判成红了但定位不准」★★ ⇒ ★ 这不是洁癖：★ 是「红了要能指到病因」★。
 	if !strings.Contains(s, "上一轮的图在这里："+url+" 看看") {
 		t.Errorf("文本消息被改写了 ⇒ 内容污染 + 载荷外泄：%s", s)
 	}
+	if !strings.Contains(s, "这张呢 "+url) {
+		t.Errorf("文本块被改写了 ⇒ 内容污染 + 载荷外泄：%s", s)
+	}
 	if strings.Count(s, "base64,") != 1 {
 		t.Errorf("出站 body 里 base64 载荷出现了 %d 次，期望 1 次（文本里不应有）", strings.Count(s, "base64,"))
+	}
+	if n != 1 {
+		t.Fatalf("内联处数 = %d，期望 1（只有附件字段该被替换）", n)
 	}
 }
 

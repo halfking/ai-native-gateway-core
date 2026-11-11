@@ -148,6 +148,12 @@ stage "IR 变异 harness — coerce numeric" \
   bash scripts/audit/ir-coerce-numeric-mutation.sh
 stage "IR 变异 harness — toolcall canonical" \
   python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
+# ★ 2026-11-11（附件域审计轮）：★ 多模态附件的「上传缓存 + 转发」族（10 臂）★
+#   ★ 它守的包（domains/attachments）**就在** IR 影响面闭包里 ⇒ ★
+#   ★ ⇒ 每日回归本来就会跑它的测试 ⇒ ★⇒ 这里再跑它的**变异臂** ⇒
+#   ★⇒ 「测试过了」与「测试有牙」两件事都在每日节奏里 ★。
+stage "附件变异 harness — 多模态附件上传缓存与转发" \
+  python3 scripts/audit/mutation-verify-2026-11-11.py --group attachments
 
 # ── 阶段⑤：载体接线门（门必须在真正在跑的载体上）────────────────────
 stage "CI 载体接线门（IR 变异 harness 的载体链路）" \
