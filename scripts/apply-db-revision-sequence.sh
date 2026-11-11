@@ -2609,6 +2609,12 @@ files=(
   #   23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行半写 ⇒ 这次自检在系统里
   #   「根本没发生过」，但调度器以为发生过。
   "$ROOT_DIR/sql/migrations/startup/957_self_check_error_type_kind_closure_rate_limit_observed.sql"
+  # ★ 958/959（2026-11-12 A-17 双币收口轮）：958 = 市场平台注册表（当日
+  #   applied(245/252) 但漏了 installer 面 ⇒ 本行补登记）；959 = 双地板地基
+  #   （market_price_reference 17 列 + supplier_market_position 5 列 +
+  #   registry 对拍补种 12 平台 + 视图 v3 append-only）。
+  "$ROOT_DIR/sql/migrations/startup/958_market_platform_registry.sql"
+  "$ROOT_DIR/sql/migrations/startup/959_market_dual_floor_a17.sql"
 )
 
 
@@ -3183,6 +3189,10 @@ ledger_artifact_probe "956_minimax_m31_flash_featured.sql" \
 #   「已覆盖全闭集就跳过」的幂等守卫 ⇒ 重放安全）。
 ledger_artifact_probe "957_self_check_error_type_kind_closure_rate_limit_observed.sql" \
   "EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.self_check_runs'::regclass AND c.conname = 'self_check_runs_error_type_check' AND pg_get_constraintdef(c.oid) LIKE '%rate_limit_observed%')"
+ledger_artifact_probe "958_market_platform_registry.sql" \
+  "to_regclass('public.market_platform_registry') IS NOT NULL"
+ledger_artifact_probe "959_market_dual_floor_a17.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_reference' AND column_name='overseas_min_in_per_1m') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='supplier_market_position' AND column_name='market_position_vs_overseas')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

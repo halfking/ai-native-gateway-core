@@ -93,6 +93,7 @@ export default {
     empty: "Datos de mercado vacíos: ejecute scripts/market-price-sync.py en 211 o espere la recolección diaria",
     colModel: "Modelo",
     colMarketMin: "Mínimo mercado entrada/salida (CNY/1M)",
+    colFloors: "Suelo internacional/doméstico (moneda original · plataformas)",
     colMarketMinOut: "Mínimo mercado salida (CNY/1M)",
     colVendor: "Ancla de fabricante entrada/salida (CNY/1M)",
     colRetail: "Nuestro precio entrada/salida (CNY/1M)",

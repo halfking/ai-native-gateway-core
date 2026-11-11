@@ -249,7 +249,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门）
+guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -614,7 +614,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
@@ -957,6 +957,34 @@ guards-ir-conversion: ## IR 协议转换层守卫（5 个变异 harness 33 臂 +
 	@COV=$$($(GO) tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	 echo "ir coverage: $$COV%"; \
 	 awk -v c="$$COV" 'BEGIN { if (c+0 < 75) { printf "coverage %.2f%% < 75%% gate\n", c; exit 1 } }'
+
+# ── 跨实例候选缓存同步门（2026-11-11 缓存与路由状态即时同步轮）────────────
+#
+# ★ 它守的是什么：★ 候选计划（Provider.Client.candCache）的**内容取决于
+#   跨进程的共享事实**（探测判定：availability_state / broken_confirmed 裁剪，
+#   见 provider/client.go 的 brokenPairExcludeSQL）⇒ ⇒ 而缓存是**进程内**的
+#   ⇒ ⇒ 判定在别的进程翻时，本进程的缓存里那条「已被别处判死的桶」还能再活
+#   candidateCacheTTL（30s）⇒ ⇒ 表现就是「路由总是命中不可用或失败的供应商桶」。
+#   ⇒ 修法 = 跨实例失效广播（provider/candidate_cache_invalidation.go）。
+#
+# ★ 为什么**必须做变异验证**（而不是「测试绿了就算数」）：★ 这类守卫钉的是
+#   **跨进程语义**（A 翻判定 ⇒ B 的缓存自己被清掉）⇒ ⇒ 最常见的退化形态是
+#   「测的其实是自己那一半」（断言只覆盖本地失效、广播那一半压根没执行）
+#   ⇒ ⇒ 测试照样绿 ⇒ ⇒ 只有「把广播掐掉 ⇒ 门必须红」才能证明它真跨了进程。
+#   ⇒ 同款纪律：① 变异生效 = 目标文件 SHA 变化 ② 门必须变红**且定位精确**
+#     ③ 还原后 SHA 复核 + 正向复跑。
+#
+# ★ 实测增量：★ 8 臂 × 3 次 `go test ./provider ./bg`（★ 每臂都跑**两个包**
+#   ⇒ ⇒ 变异命中 bg 侧时也能被定位到）★★ ⇒ ★★ **实测墙钟 1m55.8s**
+#   （本机 macOS / darwin-arm64 / go1.27.2 / 热缓存，2026-11-11）★★
+#   ⇒ ⇒ 在快门预算（600s/包）之下 ★。
+#
+# ★ 顺序：★ 本 target 挂在 `guards` / `guards-fast` 的**最后一个**前置
+#   ⇒ 变异 harness 若中途失败，make 会中止（前置失败 ⇒ 配方不执行）
+#   ⇒ 绝不会带着「被变异过的 provider」去跑后续 `go test $(GUARD_PACKAGES)`。
+.PHONY: guards-candidate-cache-sync
+guards-candidate-cache-sync: ## 跨实例候选缓存同步守卫（1 个变异 harness 8 臂）—— CI 载体入口
+	@bash scripts/audit/provider-candidate-cache-invalidation-mutation.sh
 
 # ── 每日回归（2026-11-11 协议转换审计轮 · 剩余任务②）──────────────────
 #

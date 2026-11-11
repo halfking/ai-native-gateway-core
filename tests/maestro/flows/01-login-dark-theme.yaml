@@ -1,0 +1,22 @@
+appId: com.llmgateway.web
+---
+# 测试登录功能 - 暗色主题
+- launchApp
+- tapOn: "登录"
+- inputText: "${ADMIN_USER}"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+- assertVisible: "控制台"
+- assertVisible: "模型管理"
+# 切换到暗色主题
+- tapOn: 
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+# 验证菜单配色与主题一致
+- assertVisible:
+    id: "sidebar-menu"
+- assertNotVisible:
+    text: "反色区域"
+- takeScreenshot: "login-dark-theme"

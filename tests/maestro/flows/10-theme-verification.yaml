@@ -1,0 +1,81 @@
+appId: com.llmgateway.admin
+---
+# 测试10：主题验证测试（明暗主题切换）
+
+# 1. 登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+
+# 2. 验证默认主题（亮色）
+- assertVisible:
+    id: "light-theme-indicator"
+- assertVisible: "概览"
+- assertVisible: "供应商管理"
+
+# 3. 切换到暗主题
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+
+# 4. 验证暗主题配色 - 主界面
+- assertVisible: "概览"
+- assertNotVisible:
+    id: "color-inversion-error"
+
+# 5. 验证暗主题 - 供应商管理
+- tapOn: "供应商管理"
+- assertVisible: "供应商列表"
+- assertNotVisible:
+    id: "color-inversion-error"
+
+# 6. 验证暗主题 - 租户门户
+- tapOn: "租户门户"
+- assertVisible: "租户列表"
+- assertNotVisible:
+    id: "color-inversion-error"
+
+# 7. 验证暗主题 - 路由策略
+- tapOn: "路由策略"
+- assertVisible: "路由规则"
+- assertNotVisible:
+    id: "color-inversion-error"
+
+# 8. 验证暗主题 - 密钥管理
+- tapOn: "密钥管理"
+- assertVisible: "API密钥"
+- assertNotVisible:
+    id: "color-inversion-error"
+
+# 9. 切换回亮主题
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "light-theme-indicator"
+
+# 10. 验证亮主题配色 - 系统设置
+- tapOn: "系统设置"
+- assertVisible: "系统配置"
+- assertNotVisible:
+    id: "color-inversion-error"
+
+# 11. 验证菜单配色一致性
+- assertVisible:
+    id: "menu-theme-consistent"
+
+# 12. 再次切换到暗主题验证
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+- assertVisible:
+    id: "menu-theme-consistent"
+
+# 13. 退出
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"

@@ -1,0 +1,59 @@
+appId: com.llmgateway.web
+---
+# 测试：供应商管理
+
+- launchApp:
+    clearState: false
+
+# 进入供应商管理
+- assertVisible: "供应商"
+- tapOn: "供应商"
+
+# 验证供应商列表
+- assertVisible: "供应商列表"
+- assertVisible: "OpenAI"
+- assertVisible: "Anthropic"
+- assertVisible: "智谱AI"
+- assertVisible: "MiniMax"
+
+# 查看供应商详情
+- tapOn: "OpenAI"
+- assertVisible: "供应商详情"
+- assertVisible: "可用模型"
+- assertVisible: "健康状态"
+- assertVisible: "配置信息"
+
+# 验证模型列表
+- scrollUntilVisible: "gpt-4"
+- assertVisible: "gpt-4"
+- assertVisible: "gpt-3.5-turbo"
+
+# 查看模型详情
+- tapOn: "gpt-4"
+- assertVisible: "模型详情"
+- assertVisible: "能力"
+- assertVisible: "价格"
+- assertVisible: "上下文长度"
+
+# 返回供应商列表
+- tapOn: "返回"
+- tapOn: "返回"
+
+# 测试供应商筛选
+- tapOn: "筛选"
+- tapOn: "状态"
+- tapOn: "可用"
+- tapOn: "应用"
+
+# 验证健康检查
+- tapOn: "刷新健康状态"
+- assertVisible: "正在检查"
+- waitForAnimationToEnd
+
+# 截图验证
+- takeScreenshot: "tests/screenshots/04-provider-light.png"
+
+# 深色模式
+- tapOn: "设置"
+- tapOn: "深色模式"
+- takeScreenshot: "tests/screenshots/04-provider-dark.png"

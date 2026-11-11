@@ -1,0 +1,84 @@
+appId: com.llmgateway.admin
+---
+# 测试6：密钥管理
+
+# 1. 登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+
+# 2. 进入密钥管理页面
+- tapOn: "密钥管理"
+- assertVisible: "API密钥列表"
+- assertVisible: "创建密钥"
+
+# 3. 明主题验证密钥列表
+- assertVisible: "密钥名称"
+- assertVisible: "创建时间"
+- assertVisible: "状态"
+- assertVisible: "使用量"
+
+# 4. 创建新密钥
+- tapOn: "创建密钥"
+- assertVisible: "创建API密钥"
+- tapOn:
+    id: "key-name-input"
+- inputText: "test-key-${random}"
+- tapOn:
+    id: "key-description-input"
+- inputText: "Test key for automation"
+- tapOn: "确认创建"
+- assertVisible: "密钥创建成功"
+- assertVisible:
+    id: "new-key-value"
+
+# 5. 复制密钥
+- tapOn:
+    id: "copy-key-button"
+- assertVisible: "已复制"
+
+# 6. 切换暗主题验证
+- tapOn: "关闭"
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+- assertVisible: "API密钥列表"
+
+# 7. 测试密钥搜索
+- tapOn:
+    id: "key-search-input"
+- inputText: "test"
+- assertVisible: "搜索结果"
+
+# 8. 查看密钥详情
+- tapOn:
+    text: "详情"
+    index: 0
+- assertVisible: "密钥详情"
+- assertVisible: "使用统计"
+- tapOn: "关闭"
+
+# 9. 禁用密钥
+- tapOn:
+    id: "key-toggle"
+    index: 0
+- assertVisible: "确认禁用"
+- tapOn: "确认"
+- assertVisible: "已禁用"
+
+# 10. 启用密钥
+- tapOn:
+    id: "key-toggle"
+    index: 0
+- assertVisible: "确认启用"
+- tapOn: "确认"
+- assertVisible: "已启用"
+
+# 11. 退出
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"

@@ -1721,6 +1721,16 @@ func main() {
 	providerClient := provider.NewClient()
 	if fpSlotRedis != nil {
 		providerClient.SetAvailabilityRedis(fpSlotRedis)
+		// 2026-11-11（缓存与路由状态即时同步轮）：**跨实例**候选缓存失效桥。
+		//   候选计划的内容取决于跨进程共享事实（探测判定：availability_state /
+		//   broken_confirmed 裁剪，见 brokenPairExcludeSQL），而判定可能是在
+		//   **别的进程**里翻的（蓝绿两槽同时在跑 / 多副本）⇒ 进程内失效不够
+		//   ⇒ 别的实例的缓存里那条「已被别处判死的桶」还能再活 30s
+		//   ⇒ 表现就是「路由总是命中不可用或失败的供应商桶」。
+		//   通道形状与 URSM v2 的节点失效通道同构（见
+		//   provider/candidate_cache_invalidation.go 文件头）。
+		//   ★ 没有 Redis ⇒ 整条桥不启动 ⇒ 行为退回到「进程内失效 + 30s 上界」。
+		provider.StartCandidateCacheInvalidationBridge(context.Background(), providerClient, fpSlotRedis)
 	}
 	if dbConn != nil && dbConn.Enabled() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
@@ -4661,6 +4671,16 @@ func main() {
 				modelProbe.SetKeyring(keyring)
 			}
 			modelProbe.SetAvailabilityCache(modelAvailabilityCache)
+			// 2026-11-11（缓存与路由状态即时同步轮）：★ 探针翻判定 ⇒ 候选缓存作废。
+			//   ★ 之前**这个 runner 一次都没通知过** ⇒ ⇒ 绑定被标成不可用后，
+			//     缓存里那条计划还能再被选中最多 30s（candidateCacheTTL）
+			//     ⇒ ⇒ 表现就是「路由总是命中不可用或失败的供应商桶」。
+			//   ★ 新探针栈的 nodeProbeWorker 早就有这个注入点（bg/node_probe.go），
+			//     而 legacy 栈没有 ⇒ ⇒ **同一个缺陷只修了一半** ⇒ 本行补齐另一半。
+			//   ★ 注意：★ 新模式下 consensus 循环被跳过，但 **TriggerManual
+			//     （管理端「立即探测」）走的是同一条 applyResult** ⇒ ⇒
+			//     这条路在新模式下**也是活的**。
+			modelProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			slog.Info("CHECKPOINT: before modelProbe.Start")
 			if useNewProbeMode() {
 				slog.Info("modelProbe (legacy 5min consensus) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")

@@ -21,6 +21,10 @@
   A5 NOT NULL 列保护：源侧 NULL 的 NOT NULL 文本列 ⇒ 落成 '' 而不是 SQL NULL
   A6 NULL≠0：缺价既不折 0、也不写空行
   A7 变异臂：把 plan_rows 的拒绝判定删掉 ⇒ A2/A3 必须红（门有牙）
+  A8 源 SQL 不得在 DB 层丢弃候选行
+  A9 端到端 main()（假 psql）验台账三联真闭合
+  A10 A-17 双地板折算（derive_dual_floors）：原生币事实源 + 快照 fx 折算 +
+      综合地板逐轴 CNY 最低 + fx 缺失 fail-closed（fx_missing 旗标，不猜）
 
 用法：python3 tests/market_price_sync_accounting_test.py
 """
@@ -70,11 +74,15 @@ def make_resolver(pairs):
     return resolve
 
 
-def row(key, min_in=None, min_out=None, plat_cnt="0", min_platform=None,
-        vendor_in=None, vendor_out=None, vendor_name=None, max_run_date="2026-11-09"):
-    """构造一行 src_rows（列序与 psql_tsv 输出一致：9 列）。"""
-    return [key, min_in, min_out, plat_cnt, min_platform,
-            vendor_in, vendor_out, vendor_name, max_run_date]
+def row(key, ov_in=None, ov_out=None, ov_cnt="0", ov_platform=None,
+        dm_in=None, dm_out=None, dm_cnt="0", dm_platform=None,
+        vd_cur=None, vd_in=None, vd_out=None, vd_cny_in=None, vd_cny_out=None,
+        vd_name=None, vd_platform=None, max_run_date="2026-11-09"):
+    """构造一行 src_rows（列序与 psql_tsv 输出一致：17 列，A-17 双地板）。"""
+    return [key, ov_in, ov_out, ov_cnt, ov_platform,
+            dm_in, dm_out, dm_cnt, dm_platform,
+            vd_cur, vd_in, vd_out, vd_cny_in, vd_cny_out,
+            vd_name, vd_platform, max_run_date]
 
 
 # ── A1: psql_tsv 的 NULL 渲染 ─────────────────────────────────────────────
@@ -120,7 +128,7 @@ def check_source_sql_not_filtering(mod):
       本身含 "min_in IS NOT NULL" ⇒ 门自己红 ⇒ 门不可信）。
     """
     src = open(SCRIPT, encoding="utf-8").read()
-    start = src.find('src_sql = """')
+    start = src.find('src_sql = latest_cte + """')
     end = src.find('""".format(', start)
     if start < 0 or end < 0:
         bad("A8 找不到源 SQL 模板（脚本形态变了 ⇒ 门需重新对齐）")
@@ -137,6 +145,10 @@ def check_source_sql_not_filtering(mod):
         bad("A8 源 SQL 在 DB 层丢弃无价候选（min_in/min_out IS NOT NULL）"
             "⇒ rejected_rows 会恒为 0 ⇒ 空恒等式")
         return
+    if "ov_in IS NOT NULL" in sql or "dm_in IS NOT NULL" in sql or "vd_in IS NOT NULL" in sql:
+        bad("A8 源 SQL 在 DB 层丢弃无价候选（A-17 双地板版同款预过滤）"
+            "⇒ rejected_rows 会恒为 0 ⇒ 空恒等式")
+        return
     ok("A8 源 SQL 不在 DB 层丢弃无价候选（拒绝判定交给 Python 侧）")
 
 
@@ -146,13 +158,15 @@ def check_accounting(mod):
 
     # 批次：3 个有价候选 + 2 个无价候选 + 1 个无名候选
     src_rows = [
-        row("gpt-4o", "1.0", "2.0", "3", "openai", vendor_in="1.5", vendor_out="3.0",
-            vendor_name="OpenAI"),
-        row("claude-opus-4-8", "33.38", "166.92", "4", "anthropic",
-            vendor_in="30.0", vendor_out="150.0", vendor_name="Anthropic"),
-        row("bge-m3", None, None, "2", "bge"),                       # 无价候选
-        row("embed-3", None, None, "1", "azure"),                    # 无价候选
-        row(None, "1.0", "2.0", "1", "x"),                            # 无名候选
+        row("gpt-4o", dm_in="1.0", dm_out="2.0", dm_cnt="3", dm_platform="openai",
+            vd_cur="CNY", vd_in="1.5", vd_out="3.0", vd_name="OpenAI",
+            vd_platform="openai"),
+        row("claude-opus-4-8", ov_in="33.38", ov_out="166.92", ov_cnt="4",
+            ov_platform="anthropic", vd_cur="USD", vd_in="30.0", vd_out="150.0",
+            vd_name="Anthropic", vd_platform="anthropic"),
+        row("bge-m3"),                                               # 无价候选
+        row("embed-3"),                                              # 无价候选
+        row(None, dm_in="1.0", dm_out="2.0", dm_cnt="1", dm_platform="x"),  # 无名候选
     ]
     landable, rejects = mod.plan_rows(src_rows, resolve, {})
 
@@ -192,7 +206,7 @@ def check_accounting(mod):
         ok("A6 无价候选未被算作可落地（不折 0、不写空行）")
 
     # canonical 解析不出来的行**仍然落地**（canonical_id=NULL，如实保留 NULL）
-    unresolved_landed = [r for r in landable if r[9] is None and r[0] is not None]
+    unresolved_landed = [r for r in landable if r[17] is None and r[0] is not None]
     if len(unresolved_landed) != 0:
         bad("A2 解析不出的候选被丢掉了（应为落地+canonical_id=NULL）：%r"
             % [r[0] for r in unresolved_landed])
@@ -200,9 +214,9 @@ def check_accounting(mod):
         ok("A2 解析不出的候选仍落地（本次批次无此类行，逻辑在 A3 覆盖）")
 
     # 解析不出的候选也要能被解析为 unresolved ⇒ 仍落地（构造一批）
-    src_rows2 = [row("mystery-model", "1.0", "2.0", "1", "x")]
+    src_rows2 = [row("mystery-model", dm_in="1.0", dm_out="2.0", dm_cnt="1", dm_platform="x")]
     landable2, rejects2 = mod.plan_rows(src_rows2, resolve, {})
-    if len(landable2) != 1 or landable2[0][9] is not None or landable2[0][10] != "unresolved":
+    if len(landable2) != 1 or landable2[0][17] is not None or landable2[0][18] != "unresolved":
         bad("A2 unresolved 候选未按「落地 + canonical_id=NULL」处理：%r" % (landable2,))
     else:
         ok("A2 unresolved 候选落地且 canonical_id=NULL（未解析行不静默消失）")
@@ -233,32 +247,43 @@ def check_notnull_columns(mod):
     #   ⇒ 改成按 VALUES 元组的位置逐列核对。
     resolve = make_resolver({"gpt-4o": ["42"]})
     landable, _ = mod.plan_rows(
-        [row("gpt-4o", "1.0", "2.0", "3", "openai", vendor_name=None)],
+        [row("gpt-4o", dm_in="1.0", dm_out="2.0", dm_cnt="3", dm_platform="openai",
+             vd_cur="USD", vd_in="1.5", vd_out="3.0", vd_name="OpenAI",
+             vd_platform="openai")],
         resolve, {})
     if not landable:
         bad("A5 构造不出可落地行，测试本身失效")
         return
-    sql = mod.build_upsert_sql(landable[0], "standard", "7.2")
+    sql = mod.build_upsert_sql(landable[0], mod.derive_dual_floors(landable[0], "7.2"),
+                               "standard", "7.2")
 
     values_part = sql.split("VALUES", 1)[-1]
     values_part = values_part[:values_part.index("ON CONFLICT")].strip()
     cells = [c.strip() for c in values_part.rstrip(";").split(",")]
-    # 940 列序（与 940 迁移 DDL 一致）：
-    #  0 canonical_name  1 dimension  2 currency(字面量)  3 canonical_id
+    # 940+959 列序（36 列；959 新 16 列插在 market_min_cny_* 与 fx_rate 之间）：
+    #  0 canonical_name  1 dimension  2 currency(字面量'CNY')  3 canonical_id
     #  4 vendor_list_in  5 vendor_list_out  6 vendor_platform_id  7 vendor_vendor
     #  8 market_min_in   9 market_min_out   10 market_min_platform_id
     # 11 market_min_platform_count 12 market_min_cny_in 13 market_min_cny_out
-    # 14 fx_rate  15 source_run_date  16 source_confidence  17 source_url  18 updated_at
-    if len(cells) != 19:
-        bad("A5 生成的 VALUES 元组有 %d 个值（应为 19）⇒ 测试与实现不同步：\n%s"
+    # 14 vendor_list_currency 15 vendor_list_cny_in 16 vendor_list_cny_out
+    # 17 vendor_list_usd_in 18 vendor_list_usd_out
+    # 19 overseas_min_in 20 overseas_min_out 21 overseas_min_platform_id
+    # 22 overseas_min_platform_count 23 overseas_min_cny_in 24 overseas_min_cny_out
+    # 25 domestic_min_in 26 domestic_min_out 27 domestic_min_platform_id
+    # 28 domestic_min_platform_count 29 domestic_min_usd_in 30 domestic_min_usd_out
+    # 31 fx_rate 32 source_run_date 33 source_confidence 34 source_url 35 updated_at
+    if len(cells) != 36:
+        bad("A5 生成的 VALUES 元组有 %d 个值（应为 36）⇒ 测试与实现不同步：\n%s"
             % (len(cells), sql[:400]))
         return
 
     # NOT NULL 文本列：canonical_name / vendor_platform_id / vendor_vendor /
-    #                 market_min_platform_id / source_url
+    #                 market_min_platform_id / vendor_list_currency /
+    #                 overseas_min_platform_id / domestic_min_platform_id / source_url
     notnull_text = {0: "canonical_name", 6: "vendor_platform_id",
                     7: "vendor_vendor", 10: "market_min_platform_id",
-                    17: "source_url"}
+                    14: "vendor_list_currency", 21: "overseas_min_platform_id",
+                    27: "domestic_min_platform_id", 34: "source_url"}
     for idx, name in notnull_text.items():
         if cells[idx].upper() == "NULL":
             bad("A5 NOT NULL 列 %s 被写成了 SQL NULL ⇒ 整笔事务会 abort：\n%s"
@@ -267,11 +292,39 @@ def check_notnull_columns(mod):
     ok("A5 NOT NULL 文本列（%s）都不是 SQL NULL"
        % "/".join(sorted(notnull_text.values())))
 
-    # 源侧 vendor_name=NULL ⇒ vendor_vendor 必须是 ''（不是 NULL、也不是别的）
-    if cells[7] != "''":
-        bad("A5 源侧 vendor_name=NULL ⇒ vendor_vendor 应为 ''，实得 %r" % (cells[7],))
+    # vendor 原生币事实源（A-17 原则 1）：USD 原生价进 vendor_list_*，
+    # 快照 fx 折算进 vendor_list_cny_*（1.5×7.2=10.8）、USD 列=原币值。
+    if cells[4] != "1.5" or cells[5] != "3.0":
+        bad("A5 vendor 原生价应为 1.5/3.0（事实源），实得 %r/%r" % (cells[4], cells[5]))
         return
-    ok("A5 源侧 vendor_name=NULL ⇒ vendor_vendor 落成 ''")
+    if cells[14] != "'USD'":
+        bad("A5 vendor_list_currency 应为 'USD'（registry 裁定），实得 %r" % (cells[14],))
+        return
+    if cells[15] != "10.800000" or cells[17] != "1.500000":
+        bad("A5 vendor 折算列错：cny=1.5×7.2 应为 10.800000、usd=原币 1.500000，"
+            "实得 %r/%r" % (cells[15], cells[17]))
+        return
+    ok("A5 vendor 原生币事实源 + 快照 fx 折算列（10.800000/1.5）")
+
+    # 综合地板（CNY 逐轴最低）：dm 1.0/2.0 原生 CNY，ov 无 ⇒ 1.0/2.0
+    # （fmt6 归一 numeric(14,6) 精度）；归属 = domestic（dm_platform）。
+    if cells[8] != "1.000000" or cells[9] != "2.000000" or cells[10] != "'openai'":
+        bad("A5 综合地板错：应为 1.000000/2.000000@openai，实得 %r/%r/%r"
+            % (cells[8], cells[9], cells[10]))
+        return
+    ok("A5 综合地板 = 双地板折 CNY 逐轴最低（1.000000/2.000000@openai）")
+
+    # A-17 双地板列：海外地板全缺 ⇒ NULL；国内容生 1.0/2.0 + 折 USD 列
+    # （2.0/7.2=0.277778、1.0/7.2=0.138889）。
+    if cells[19] != "NULL" or cells[20] != "NULL" or cells[23] != "NULL" or cells[24] != "NULL":
+        bad("A5 海外地板应为全 NULL（无海外观测），实得 %r/%r/%r/%r"
+            % (cells[19], cells[20], cells[23], cells[24]))
+        return
+    if cells[25] != "1.0" or cells[26] != "2.0" or cells[29] != "0.138889" or cells[30] != "0.277778":
+        bad("A5 国内地板原生/折算错：应为 1.0/2.0 + 折 USD 0.138889/0.277778，"
+            "实得 %r/%r/%r/%r" % (cells[25], cells[26], cells[29], cells[30]))
+        return
+    ok("A5 双地板列：overseas=NULL（无观测）、domestic 原生+折 USD（快照 fx=7.2）")
 
     # ★ NULL≠0：**半价行**（市场侧只有输入价、输出价缺）才是「未知 ≠ 免费」的真实形态。
     #   ⚠ 判据不能用「市场侧完全无价」的行来验：那种候选按设计就是**被拒**
@@ -280,25 +333,27 @@ def check_notnull_columns(mod):
     #     但缺失的那一维必须是 NULL 而不是 0。
     resolve2 = make_resolver({"gpt-4o": ["42"]})
     landable2, _ = mod.plan_rows(
-        [row("gpt-4o", "1.0", None, "3", "openai",
-             vendor_in="1.5", vendor_out="3.0", vendor_name="OpenAI")],
+        [row("gpt-4o", dm_in="1.0", dm_cnt="3", dm_platform="openai",
+             vd_cur="USD", vd_in="1.5", vd_out="3.0", vd_name="OpenAI",
+             vd_platform="openai")],
         resolve2, {})
     if not landable2:
         bad("A5 半价候选未被落地（测试前提失效）")
         return
-    sql2 = mod.build_upsert_sql(landable2[0], "standard", "7.2")
+    sql2 = mod.build_upsert_sql(landable2[0], mod.derive_dual_floors(landable2[0], "7.2"),
+                                "standard", "7.2")
     vp = sql2.split("VALUES", 1)[-1]
     vp = vp[:vp.index("ON CONFLICT")].strip()
     cells2 = [c.strip() for c in vp.rstrip(";").split(",")]
     # 8 market_min_in（=1.0） 9 market_min_out（缺失 ⇒ 必须 NULL）
-    if cells2[8] != "1.0":
-        bad("A5 market_min_in 应为 1.0，实得 %r" % (cells2[8],))
+    if cells2[8] != "1.000000":
+        bad("A5 market_min_in 应为 1.000000，实得 %r" % (cells2[8],))
         return
     if cells2[9] != "NULL":
         bad("A5 NULL≠0 被破坏：缺失的市场输出价应写 NULL（未知），实得 %r" % (cells2[9],))
         return
     # 12/13 market_min_cny_in/out：缺的那一维也必须是 NULL
-    if cells2[12] != "1.0" or cells2[13] != "NULL":
+    if cells2[12] != "1.000000" or cells2[13] != "NULL":
         bad("A5 market_min_cny_out 应为 NULL（未知≠免费），实得 %r" % (cells2[13],))
         return
     # 原厂侧有价 ⇒ 必须落成真实数值（不能一起被 NULL 掉）
@@ -319,16 +374,30 @@ def check_end_to_end_ledger(mod):
     import contextlib
 
     src_rows = [
-        row("gpt-4o", "1.0", "2.0", "3", "openai", vendor_in="1.5",
-            vendor_out="3.0", vendor_name="OpenAI"),
-        row("claude-opus-4-8", "33.38", "166.92", "4", "anthropic"),
-        row("bge-m3", None, None, "2", "bge"),          # 无价候选
-        row(None, "1.0", "2.0", "1", "x"),              # 无名候选
+        row("gpt-4o", dm_in="1.0", dm_out="2.0", dm_cnt="3", dm_platform="openai",
+            vd_cur="CNY", vd_in="1.5", vd_out="3.0", vd_name="OpenAI",
+            vd_platform="openai"),
+        row("claude-opus-4-8", ov_in="33.38", ov_out="166.92", ov_cnt="4",
+            ov_platform="anthropic"),
+        row("bge-m3"),          # 无价候选
+        row(None, dm_in="1.0", dm_out="2.0", dm_cnt="1", dm_platform="x"),  # 无名候选
     ]
     captured = {}
 
     def fake_psql_tsv(container, user, db, sql):
         s = sql
+        if "to_regclass('public.market_platform_registry')" in s:
+            return [["t"]]      # 958/959 前置门
+        if "FROM public.market_platform_registry" in s:
+            return [["openai", "domestic", "CNY", "f", "t"],
+                    ["anthropic", "overseas", "USD", "f", "t"],
+                    ["bge", "domestic", "CNY", "f", "t"],
+                    ["x", "domestic", "CNY", "f", "t"]]
+        # ★ A-17 平台×币种诊断查询必须先于源查询判定：diag 与 src 共享
+        #   latest_cte（都含 price_observation + canonical_key），唯一区分锚是
+        #   "FROM mapped r"（diag 独有）。
+        if "FROM mapped r" in s:
+            return []           # A-17 平台×币种诊断（本批无行）
         if "FROM price_observation" in s and "canonical_key" in s:
             return src_rows
         if "count(DISTINCT platform_id)" in s:
@@ -427,7 +496,10 @@ def check_end_to_end_ledger(mod):
 def check_mutation_arm(mod):
     """把拒绝判定删掉 ⇒ A2/A3 必须红（证明门有牙）。"""
     src = open(SCRIPT, encoding="utf-8").read()
-    marker = 'if min_in is None and min_out is None:\n            rejects["no_price"] += 1\n            continue'
+    marker = ('if (ov_in is None and ov_out is None and dm_in is None and dm_out is None\n'
+              '                and vd_in is None and vd_out is None):\n'
+              '            rejects["no_price"] += 1\n'
+              '            continue')
     if marker not in src:
         bad("A7 变异臂锚点不在脚本里（拒绝判定形态变了 ⇒ 门需重新对齐）")
         return
@@ -444,8 +516,9 @@ def check_mutation_arm(mod):
             fh.write(mutated)
         mmod = load_module(tmp_path, name="mps_mutant")
         resolve = make_resolver({"gpt-4o": ["42"]})
-        src_rows = [row("gpt-4o", "1.0", "2.0", "3", "openai"),
-                    row("bge-m3", None, None, "2", "bge")]
+        src_rows = [row("gpt-4o", dm_in="1.0", dm_out="2.0", dm_cnt="3",
+                        dm_platform="openai"),
+                    row("bge-m3")]
         landable, rejects = mmod.plan_rows(src_rows, resolve, {})
         rejected = sum(rejects.values())
         if rejected == 0:
@@ -457,6 +530,74 @@ def check_mutation_arm(mod):
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+# ── A10: A-17 双地板折算（derive_dual_floors 行为门） ───────────────────
+def check_dual_floors(mod):
+    """A-17 双币制的折算行为门（纯函数直调）：
+      ① 原生币事实源：USD vendor 原生价不动，CNY 折算 = ×快照 fx；
+      ② 双地板：overseas（USD 原生）折 CNY、domestic（CNY 原生）折 USD；
+      ③ 综合地板 = 逐轴 CNY 全局最低（海外折算值 vs 国内容生值）；
+      ④ fx 缺失 ⇒ 需要 fx 的折算列全 NULL + fx_missing 旗标（fail-closed，
+        绝不猜第二把汇率；NULL≠0）。
+    """
+    if not hasattr(mod, "derive_dual_floors"):
+        bad("A10 脚本缺少 derive_dual_floors（A-17 双币折算缺失）")
+        return
+
+    # 场景 1：海外 USD 地板 33.38/166.92 vs 国内 CNY 地板 220/1100，fx=7.2
+    # ⇒ 海外折 CNY = 240.336/1201.824；国内折 USD = 30.556/152.778；
+    #   综合地板逐轴 CNY = min(240.336, 220)/min(1201.824, 1100) = 220/1100（国内赢）。
+    r = row("m", ov_in="33.38", ov_out="166.92", ov_cnt="3", ov_platform="openrouter",
+            dm_in="220", dm_out="1100", dm_cnt="4", dm_platform="siliconflow",
+            vd_cur="USD", vd_in="30.0", vd_out="150.0", vd_name="Anthropic",
+            vd_platform="anthropic")
+    d = mod.derive_dual_floors(r[:17] + [None, None, None], "7.2")
+    if d["ov_cny_in"] != "240.336000" or d["ov_cny_out"] != "1201.824000":
+        bad("A10 海外地板折 CNY 错：应为 240.336000/1201.824000，实得 %r/%r"
+            % (d["ov_cny_in"], d["ov_cny_out"]))
+        return
+    if d["dm_usd_in"] != "30.555556" or d["dm_usd_out"] != "152.777778":
+        bad("A10 国内地板折 USD 错：应为 30.555556/152.777778，实得 %r/%r"
+            % (d["dm_usd_in"], d["dm_usd_out"]))
+        return
+    if d["mm_in"] != "220.000000" or d["mm_out"] != "1100.000000":
+        bad("A10 综合地板应为国内赢（220/1100），实得 %r/%r" % (d["mm_in"], d["mm_out"]))
+        return
+    if d["winner"] != "domestic" or d["mm_platform"] != "siliconflow" or d["mm_cnt"] != "4":
+        bad("A10 综合地板归属错：应为 domestic@siliconflow(4)，实得 %r/%r/%r"
+            % (d["winner"], d["mm_platform"], d["mm_cnt"]))
+        return
+    if d["vd_cny_in"] != "216.000000" or d["vd_usd_in"] != "30.000000":
+        bad("A10 vendor 折算错：cny=30×7.2=216、usd=原币 30，实得 %r/%r"
+            % (d["vd_cny_in"], d["vd_usd_in"]))
+        return
+    if d["fx_missing"]:
+        bad("A10 fx=7.2 ⇒ fx_missing 必须为 False")
+        return
+    ok("A10 双地板折算：overseas×fx / domestic÷fx / 综合地板国内赢（逐轴 CNY）")
+
+    # 场景 2：fx 缺失 ⇒ 折算列全 NULL + fx_missing=True；综合地板仍可用
+    # 国内原生（零折算）值；海外原生值保留在 regional 列（由 upsert 写）。
+    d2 = mod.derive_dual_floors(r[:17] + [None, None, None], None)
+    if not d2["fx_missing"]:
+        bad("A10 fx=None ⇒ fx_missing 必须为 True（fail-closed）")
+        return
+    if d2["ov_cny_in"] is not None or d2["dm_usd_in"] is not None or d2["vd_cny_in"] is not None:
+        bad("A10 fx 缺失 ⇒ 需要 fx 的折算列必须 NULL（不猜第二把汇率）：%r" % (d2,))
+        return
+    if d2["mm_in"] != "220.000000" or d2["winner"] != "domestic":
+        bad("A10 fx 缺失时综合地板应回落国内原生（220）：%r" % (d2,))
+        return
+    ok("A10 fx 缺失 fail-closed：折算列 NULL + 旗标 + 综合地板回落国内原生")
+
+    # 场景 3：纯国内（无海外观测、无 vendor）——currency_region 之外的候选形态。
+    r3 = row("m2", dm_in="5.0", dm_out="10.0", dm_cnt="2", dm_platform="ppio")
+    d3 = mod.derive_dual_floors(r3[:17] + [None, None, None], "7.2")
+    if d3["mm_in"] != "5.000000" or d3["winner"] != "domestic" or d3["fx_missing"]:
+        bad("A10 纯国内候选错：%r" % (d3,))
+        return
+    ok("A10 纯国内候选：综合地板=国内原生、无 fx 依赖")
 
 
 def main():
@@ -476,6 +617,7 @@ def main():
     check_notnull_columns(mod)
     check_end_to_end_ledger(mod)
     check_mutation_arm(mod)
+    check_dual_floors(mod)
 
     print("\n================ 汇总 ================")
     print("通过 %d / 失败 %d" % (PASS, FAIL))

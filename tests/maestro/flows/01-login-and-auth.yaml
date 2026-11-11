@@ -1,0 +1,42 @@
+appId: com.llmgateway.admin
+---
+# 测试1：登录与认证流程
+
+# 1. 打开应用
+- launchApp
+
+# 2. 等待登录页面加载
+- assertVisible: "用户名"
+- assertVisible: "密码"
+
+# 3. 明主题下登录
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+
+# 4. 验证登录成功
+- assertVisible: "仪表盘"
+- assertVisible: "模型管理"
+- assertVisible: "凭据管理"
+
+# 5. 切换到暗主题
+- tapOn: 
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+
+# 6. 验证暗主题下UI正常
+- assertVisible: "仪表盘"
+- assertVisible: "模型管理"
+- assertVisible: "凭据管理"
+
+# 7. 退出登录
+- tapOn: 
+    id: "user-menu"
+- tapOn: "退出登录"
+
+# 8. 验证返回登录页
+- assertVisible: "用户名"
+- assertVisible: "密码"

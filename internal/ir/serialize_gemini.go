@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
@@ -207,6 +208,103 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 			nil,
 		)
 	}
+
+	// 2026-11-11 审计第二轮（还原通道覆盖矩阵收口）：此前以下结构化 IR 字段
+	// 在 Gemini 目标上被静默蒸发。逐组披露 —— 只披露、不还原：Gemini
+	// generateContent 是严格 proto3 JSON（未知字段整单 400），把外域键写进
+	// body 会把「丢一个参数」升级成「整条请求失败」，与 documents/cache_control
+	// 的既有处置同款。
+	//
+	// 消费矩阵（buildGeminiGenerationConfig 已消费，不在披露之列）：
+	// Temperature/TopP/TopK/MaxTokens/Stop/Seed/N/PresencePenalty/
+	// FrequencyPenalty/ResponseFormat → generationConfig；Thinking/Reasoning →
+	// thinkingConfig；SafetySettings/CachedContent → 顶层。
+	src2 := ifaceNonEmpty(src, ProtocolOpenAIChat)
+	structured := []struct {
+		field string
+		have  bool
+		note  string
+	}{
+		{"mcp_servers", len(req.MCPServers) > 0, "Anthropic MCP server config has no Gemini equivalent"},
+		{"context_management", req.ContextManagement != nil, "Anthropic context management has no Gemini equivalent"},
+		{"container", req.Container != nil, "Anthropic container config has no Gemini equivalent"},
+		{"repetition_penalty", req.RepetitionPenalty != nil, "repetition_penalty has no Gemini generationConfig equivalent"},
+		{"logprobs", req.Logprobs != nil, "OpenAI-only field has no Gemini equivalent"},
+		{"top_logprobs", req.TopLogprobs != nil, "OpenAI-only field has no Gemini equivalent"},
+		{"logit_bias", len(req.LogitBias) > 0, "OpenAI-only field has no Gemini equivalent"},
+		{"store", req.Store != nil, "OpenAI-only field has no Gemini equivalent"},
+		{"service_tier", req.ServiceTier != "", "OpenAI-only field has no Gemini equivalent"},
+		{"prediction", req.Prediction != nil, "OpenAI-only field has no Gemini equivalent"},
+		{"verbosity", req.Verbosity != "", "OpenAI-only field has no Gemini equivalent"},
+		{"web_search_options", req.WebSearchOptions != nil, "OpenAI-only field has no Gemini equivalent"},
+		{"safety_identifier", req.SafetyIdentifier != "", "OpenAI-only field has no Gemini equivalent"},
+		{"prompt_cache_key", req.PromptCacheKey != "", "OpenAI Responses-only field has no Gemini equivalent"},
+		{"truncation", req.Truncation != "", "OpenAI-only field has no Gemini equivalent"},
+		{"parallel_tool_calls", req.ParallelToolCalls != nil, "OpenAI-only field has no Gemini equivalent"},
+		{"modalities", len(req.Modalities) > 0, "OpenAI/Gemini speech config surfaces via audioConfig, not modalities"},
+		{"audio", req.AudioConfig != nil, "audio output config has no Gemini generationConfig equivalent"},
+		{"user", req.User != "", "OpenAI user field has no Gemini equivalent"},
+		// metadata 只披露客户端可见部分（user_id / other）；request_id /
+		// project / tags / turn_total 是网关内部归因载体（types.go 注释），
+		// 若按整体披露会对每个带归因的请求发噪声事件。
+		{"metadata", req.Metadata != nil && (req.Metadata.UserID != "" || len(req.Metadata.Other) > 0), "client metadata has no Gemini equivalent"},
+	}
+	for _, f := range structured {
+		if !f.have {
+			continue
+		}
+		ReportProtocolLoss(
+			"unknown",
+			f.field,
+			src2,
+			ProtocolGeminiGenerate,
+			"loss",
+			f.note,
+			nil,
+		)
+	}
+
+	// 工具级：ToolDefinition.Extra（RISK-2 载体）在 Gemini 目标上无法并回
+	// functionDeclarations（严格 proto3 拒绝未知字段）⇒ 披露丢弃。聚合为
+	// 一条事件，metadata 带键名集合（无值，不含凭据形状）。
+	reportGeminiToolExtrasLoss(req)
+}
+
+// reportGeminiToolExtrasLoss 披露工具顶层非标准键在 Gemini 目标上的丢弃。
+// 与 openai/anthropic/responses 三线的 mergeToolExtras 不同：Gemini 的
+// functionDeclarations 在严格 proto3 JSON 下拒绝未知键，合并会把「丢一个
+// 工具级参数」升级成整条请求 400 —— 与 documents/cache_control 的披露
+// 式处置同款（还原与否是设计决定，披露与否是纪律要求）。
+func reportGeminiToolExtrasLoss(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	var keys []string
+	for i := range req.Tools {
+		if len(req.Tools[i].Extra) == 0 {
+			continue
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(req.Tools[i].Extra, &m) != nil {
+			continue
+		}
+		for k := range m {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.Strings(keys)
+	ReportProtocolLoss(
+		"unknown",
+		"tools[].extra",
+		ifaceNonEmpty(req.SourceProtocol, ProtocolOpenAIChat),
+		ProtocolGeminiGenerate,
+		"loss",
+		"tool top-level non-standard keys have no Gemini functionDeclarations equivalent (strict proto3 rejects unknown fields)",
+		map[string]any{"keys": keys},
+	)
 }
 
 // reportSerializeGeminiUnsupportedThinking records that a Gemini model

@@ -383,6 +383,9 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 			{"parallel_tool_calls", req.ParallelToolCalls != nil},
 			{"modalities", len(req.Modalities) > 0},
 			{"audio", req.AudioConfig != nil},
+			// 2026-11-11 审计第二轮（还原通道覆盖矩阵收口）：seed 此前
+			// 被静默丢弃 —— IR 结构化字段有解析、无发射、无披露。
+			{"seed", req.Seed != nil},
 		}
 		for _, f := range openAIOnly {
 			if !f.have {
@@ -395,6 +398,21 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 				ProtocolAnthropicMessages,
 				"loss",
 				"OpenAI Chat Completions-only field has no Anthropic equivalent",
+				nil,
+			)
+		}
+		// 2026-11-11 审计第二轮：repetition_penalty（vLLM/GLM/Qwen/Ark/
+		// OpenRouter 通用扩展，paramreg KindIRHandled）此前被静默丢弃。
+		// 不放进 openAIOnly 列表：它不是 OpenAI 原生字段，来源可能是任何
+		// openai 族线格式，措辞须如实。
+		if req.RepetitionPenalty != nil {
+			ReportProtocolLoss(
+				reqID,
+				"repetition_penalty",
+				ifaceNonEmpty(src, ProtocolOpenAIChat),
+				ProtocolAnthropicMessages,
+				"loss",
+				"repetition_penalty has no Anthropic equivalent",
 				nil,
 			)
 		}

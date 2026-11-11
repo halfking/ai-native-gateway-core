@@ -1,0 +1,60 @@
+appId: com.llmgateway.web
+---
+# 测试：请求列表与详情查看
+
+- launchApp:
+    clearState: false
+
+# 进入请求管理页面
+- assertVisible: "请求"
+- tapOn: "请求"
+
+# 验证列表加载
+- assertVisible: "请求列表"
+- assertVisible: "筛选"
+
+# 测试搜索功能
+- tapOn: "搜索"
+- inputText: "gpt-4"
+- assertVisible: "搜索结果"
+
+# 清除搜索
+- tapOn: "清除"
+
+# 测试筛选
+- tapOn: "筛选"
+- tapOn: "状态"
+- tapOn: "成功"
+- tapOn: "应用"
+- assertVisible: "已筛选"
+
+# 点击查看详情
+- tapOn:
+    index: 0
+    id: "request-item"
+- assertVisible: "请求详情"
+- assertVisible: "请求ID"
+- assertVisible: "模型"
+- assertVisible: "耗时"
+- assertVisible: "Token用量"
+
+# 验证详情面板内容
+- assertVisible: "请求参数"
+- assertVisible: "响应内容"
+- assertVisible: "时间轴"
+
+# 测试复制功能
+- tapOn: "复制请求ID"
+- assertVisible: "已复制"
+
+# 测试导出功能
+- tapOn: "导出"
+- assertVisible: "导出成功"
+
+# 截图
+- takeScreenshot: "tests/screenshots/03-request-list-light.png"
+
+# 切换深色模式
+- tapOn: "设置"
+- tapOn: "深色模式"
+- takeScreenshot: "tests/screenshots/03-request-list-dark.png"

@@ -95,6 +95,7 @@ export default {
     empty: "行情資料為空——先在 211 上跑 scripts/market-price-sync.py 或等每日採集",
     colModel: "模型",
     colMarketMin: "市場最低入/出（CNY/1M）",
+    colFloors: "海外/國內地板（原幣 · 平台數）",
     colMarketMinOut: "市場最低出價（CNY/1M）",
     colVendor: "原廠錨入/出（CNY/1M）",
     colRetail: "我方零售入/出（CNY/1M）",

@@ -405,6 +405,19 @@ export interface MarketPriceOverviewRow {
   market_min_platform_id: string
   vendor_list_in_cny_per_1m: number | null
   vendor_list_out_cny_per_1m: number | null
+  // A-17（959）：原厂锚原生币事实源 + 双地板（overseas USD / domestic CNY）
+  vendor_list_currency: string
+  vendor_list_native_in_per_1m: number | null
+  vendor_list_native_out_per_1m: number | null
+  overseas_min_in_per_1m: number | null
+  overseas_min_out_per_1m: number | null
+  overseas_min_platform_id: string
+  overseas_min_platform_count: number
+  domestic_min_in_per_1m: number | null
+  domestic_min_out_per_1m: number | null
+  domestic_min_platform_id: string
+  domestic_min_platform_count: number
+  fx_rate: number | null
   vendor_vendor: string
   supplier_in_per_1m: number | null
   supplier_out_per_1m: number | null

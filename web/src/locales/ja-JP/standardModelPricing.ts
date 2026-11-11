@@ -95,6 +95,7 @@ export default {
     empty: "相場データが空です——211 で scripts/market-price-sync.py を実行するか毎日収集までお待ちください",
     colModel: "モデル",
     colMarketMin: "市場最安入/出（CNY/1M）",
+    colFloors: "海外/国内フロア（現地通貨 · プラットフォーム数）",
     colMarketMinOut: "市場最安出力（CNY/1M）",
     colVendor: "ベンダー錨入/出（CNY/1M）",
     colRetail: "自社小売入/出（CNY/1M）",
