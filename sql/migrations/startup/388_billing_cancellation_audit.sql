@@ -4,9 +4,19 @@
 
 BEGIN;
 
-ALTER TABLE request_logs
-    ADD COLUMN IF NOT EXISTS billed_despite_cancellation boolean
-    NOT NULL DEFAULT false;
+-- ★ 2026-11-11（48h 审计）：★ 表存在性守卫——低版本投递清单（F48）会把本迁移
+--   ★ 投给已过 890（v1 族退役）的存量库 ⇒ request_logs 已不存在 ⇒ 裸 ALTER 42P01
+--   ★ 中止部署（245 实测）；本文件其余 request_logs 触碰点同款守卫。
+--   ★ 表不存在 = 计费审计列随 v1 族一起退役 ⇒ 跳过是正确终态。
+DO $do$
+BEGIN
+IF to_regclass('request_logs') IS NOT NULL THEN
+    ALTER TABLE request_logs
+        ADD COLUMN IF NOT EXISTS billed_despite_cancellation boolean
+        NOT NULL DEFAULT false;
+END IF;
+END
+$do$;
 
 DO $$
 BEGIN
@@ -43,11 +53,17 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS request_logs_billing_audit ON request_logs;
-CREATE TRIGGER request_logs_billing_audit
-BEFORE INSERT OR UPDATE OF credits_charged, stream_interrupted, failure_detail_code, error_kind
-ON request_logs
-FOR EACH ROW EXECUTE FUNCTION set_billed_despite_cancellation();
+DO $do$
+BEGIN
+IF to_regclass('request_logs') IS NOT NULL THEN
+    DROP TRIGGER IF EXISTS request_logs_billing_audit ON request_logs;
+    CREATE TRIGGER request_logs_billing_audit
+    BEFORE INSERT OR UPDATE OF credits_charged, stream_interrupted, failure_detail_code, error_kind
+    ON request_logs
+    FOR EACH ROW EXECUTE FUNCTION set_billed_despite_cancellation();
+END IF;
+END
+$do$;
 
 DO $$
 BEGIN
@@ -60,9 +76,15 @@ BEGIN
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_request_logs_billed_cancel
-    ON request_logs (tenant_id, ts DESC)
-    WHERE billed_despite_cancellation = TRUE;
+DO $do$
+BEGIN
+IF to_regclass('request_logs') IS NOT NULL THEN
+    CREATE INDEX IF NOT EXISTS idx_request_logs_billed_cancel
+        ON request_logs (tenant_id, ts DESC)
+        WHERE billed_despite_cancellation = TRUE;
+END IF;
+END
+$do$;
 
 DO $$
 BEGIN
@@ -73,7 +95,13 @@ BEGIN
     END IF;
 END $$;
 
-COMMENT ON COLUMN request_logs.billed_despite_cancellation IS
-    'TRUE when client cancellation followed upstream usage and a credit charge';
+DO $do$
+BEGIN
+IF to_regclass('request_logs') IS NOT NULL THEN
+    EXECUTE $$COMMENT ON COLUMN request_logs.billed_despite_cancellation IS
+        'TRUE when client cancellation followed upstream usage and a credit charge'$$;
+END IF;
+END
+$do$;
 
 COMMIT;

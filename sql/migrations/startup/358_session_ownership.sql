@@ -273,6 +273,12 @@ $$ LANGUAGE plpgsql;
 
 -- 4.1 回填 session_dim 主属主：取每个 gw_session_id 最早一条 request_log 的 owner 列
 --     （仅回填仍为 NULL 的字段，不覆盖已由 trigger 设置的值）
+-- ★ 2026-11-11（48h 审计）：★ 表存在性守卫——低版本投递清单（F48）会把本迁移
+--   ★ 投给**已过 890（v1 族退役）**的存量库 ⇒ ★ 那里 `request_logs` 已不存在
+--   ★ ⇒ ★ 裸回填 42P01 中止部署（245 实测）；表不存在 = 数据源已退役 ⇒ 回填无意义。
+DO $do$
+BEGIN
+IF to_regclass('request_logs') IS NOT NULL THEN
 WITH earliest AS (
     SELECT DISTINCT ON (gw_session_id)
         gw_session_id, tenant_id, gw_task_id,
@@ -298,9 +304,16 @@ WHERE sd.gw_session_id = e.gw_session_id
   AND (sd.api_key_id IS NULL
        OR sd.owner_user IS NULL OR TRIM(sd.owner_user) = ''
        OR sd.client_id IS NULL OR TRIM(sd.client_id) = '');
+END IF;
+END
+$do$;
 
 -- 4.2 回填 session_owners：从 request_logs 聚合每个 (session,owner,end_user,apikey) 组合
 --     仅插入尚不存在的组合行（ON CONFLICT DO NOTHING，避免重复回填翻倍）
+-- ★ 2026-11-11（48h 审计）：★ 同 4.1 的表存在性守卫（理由同上）。
+DO $do$
+BEGIN
+IF to_regclass('request_logs') IS NOT NULL THEN
 INSERT INTO session_owners (
     gw_session_id, tenant_id, owner_user, end_user_id,
     api_key_id, application_id, application_code, client_id,
@@ -328,6 +341,9 @@ GROUP BY gw_session_id, tenant_id, api_key_owner_user, end_user_id, api_key_id,
          application_id, application_code, api_key_prefix
 ON CONFLICT (gw_session_id, tenant_id, owner_user, end_user_id, api_key_id)
 DO NOTHING;
+END IF;
+END
+$do$;
 
 -- ============================================================
 -- 5. 补 session_client_task_matrix 的 unique index（修复 357 CONCURRENTLY bug）
