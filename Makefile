@@ -917,14 +917,28 @@ clean: ## 清理 bin/、coverage.* 与根目录构建产物
 #     `.workflow/main-verify.yml` 里多处「4 核 Linux 的新读数待 CI 复测」）。
 #   ⇒ 本门**不是**慢门那一档（仓内慢门是 270s / 1122s）⇒ 26–46s 量级可接受。
 #
+# ★★ 2026-11-11（协议转换审计轮）：**第 4 个 harness** = ★ Python 版的通用
+#   变异验证器（`scripts/audit/mutation-verify-2026-11-11.py`）**按组调用**
+#   `--group toolcall-canonical`（★ 10 臂，守 D1–D5 的「工具调用规范视图」族）
+#   ⇒ ★★ 为什么用「按组」而不是「整文件跑」：★ 那份文件还含**其它轮**的 14 臂
+#   ⇒ ★★ 整文件跑会把别的包的测试也拖进 IR 门的预算 ⇒ ★★ 而「组」是**按关注点**
+#   ⇒ ★★ 新增关注点只需新增一组 ⇒ ★★ **不需要把臂名单手抄进 Makefile**
+#   ⇒ ★★（★★ 手抄名单 = 必然漂移 = LESSONS 同款坑 ★★）。
+#   ⇒ ★★ 与前三者同款纪律：① 变异生效 = 目标文件 SHA 变化 ② 门必须变红
+#     **且定位精确**（输出须含期望串）③ 还原后 SHA 复核 + 正向复跑。
+#   ⇒ ★★ 实测增量：10 臂 × (1 正向基线 + 1 变异 + 1 还原后正向) = **30 次
+#     `go test ./internal/ir`** ⇒ 实测 ≈ **55s**（热缓存，本机 macOS/darwin-arm64）
+#     ⇒ ⇒ 本 target 合计上界 ≈ 26s + 55s ≈ **81s（热）** ⇒ 仍在慢门之下 ⇒ 零压力。
+#
 # ★ 顺序：★ 本 target 挂在 `guards` / `guards-fast` 的**最后一个**前置
 #   ⇒ 变异 harness 若中途失败，make 会中止（前置失败 ⇒ 配方不执行）
 #   ⇒ 绝不会带着「被变异过的 internal/ir」去跑后续 `go test $(GUARD_PACKAGES)`。
 .PHONY: guards-ir-conversion
-guards-ir-conversion: ## IR 协议转换层守卫（3 个变异 harness 13 臂 + 覆盖率门禁 75%）—— CI 载体入口
+guards-ir-conversion: ## IR 协议转换层守卫（4 个变异 harness 23 臂 + 覆盖率门禁 75%）—— CI 载体入口
 	@bash scripts/audit/ir-client-error-fix-mutation.sh
 	@bash scripts/audit/ir-gemini-only-loss-mutation.sh
 	@bash scripts/audit/ir-coerce-numeric-mutation.sh
+	@python3 scripts/audit/mutation-verify-2026-11-11.py --group toolcall-canonical
 	$(GO) test ./internal/ir/... -count=1 -timeout=600s \
 	  -coverprofile=coverage.ir.out -covermode=atomic
 	@COV=$$($(GO) tool cover -func=coverage.ir.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
