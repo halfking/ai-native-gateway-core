@@ -105,6 +105,14 @@ func TestHeavyDDLModernMigrationsDeclareMeasuredBudget(t *testing.T) {
 	// 与 TestNumericUpMigrationVersionsAreUnique 同款豁免表形态。
 	grandfathered := map[string]string{
 		"900": "applied；字节冻结；表小靠角色级 30s 侥幸通过",
+		// 2026-11-11（48h 审计第二轮）：958 由 LESSONS §689（撞号订正前记 §686）定稿轮落地并于当日
+		// applied(245/252) ⇒ 字节冻结（R189 规约：改已应用迁移字节会撞
+		// 内容指纹 fail-closed，处置走本表豁免而非改文件——本审计轮先改了
+		// 958 字节、当场按本规约回退）。DDL 预算证据：两张非并发索引
+		// （idx_market_platform_registry_region/_is_ours）建在同文件新建的
+		// 空表上（16 行种子 ⇒ 秒级，无存量扫描）；211 水位线在 956，走到
+		// 958 时同样是空表新索引 ⇒ 无 914 型「拍小了中止部署」风险。
+		"958": "applied(245/252)；字节冻结；两张非并发索引建在同文件新建的空表上（16 行种子 ⇒ 秒级，无存量扫描）",
 		"914": "applied(211/245/252/154)；字节冻结；245 实测 VALIDATE 2m25s > 120s 已按改副本+stamp 收场",
 		// 2026-10-31 逐行判据上线时抓到的旧判据假绿：912/913 头注释里的
 		// 「非 CONCURRENTLY」字样让旧【整文件】CONCURRENTLY 匹配误判豁免。

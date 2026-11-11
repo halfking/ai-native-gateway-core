@@ -54,6 +54,8 @@ const repoRoot = "../.."
 //
 //	⇒ ⇒ 所以「提前豁免一个还不存在的问题」会在下一次运行时被抓出来。
 var exemptedDanglingRefs = map[string]string{
+	// ── 解析器假阳性（拼接 CTE）—— 2026-11-11 48h 审计第二轮定性 ──
+	"static": "解析器假阳性：CTE 名 `static` 由 bg/featured_sources.go 的 StaticFeaturedCTESQL() 拼接定义，引用点（bg/model_probe.go:457/:515 等）的查询头是 `WITH `+StaticFeaturedCTESQL()+`，运行时关系在场 ⇒ 静态提取器跨函数拼不出 WITH 体 ⇒ 非缺口",
 	// ── PostgreSQL 系统目录（pg_catalog）—— 由 PG 自身提供，仓内当然不建 ──
 	// ★ 这 11 个不是缺口 ⇒ 它们的「不在 DDL 集合里」是**正确**的。
 	"pg_am":               "PG 系统目录（pg_catalog）：由 PostgreSQL 自身提供 ⇒ 仓内不建是正确形态 ⇒ 不是缺口",
