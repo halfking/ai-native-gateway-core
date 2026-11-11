@@ -512,6 +512,17 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureModelBaselineObservationHealth(migCtx); err != nil {
 		return err
 	}
+	// 2026-11-11（48h 审计）：migration 833 的启动自愈（832 的姊妹缺口）。
+	// 同一次水位线跳过把 832/833 一起越过；832 已在上面收敛，833 仍在缺席
+	//（211 实测 pg_constraint 里四个 cmb_price_nonneg_* 一条都没有）⇒
+	// credential_model_bindings 的供应商价格列没有非负约束，负价新写入不被拒
+	//（833 文件头的立项实测：-5.00/1M 对 5.00 基线 ⇒ 倍率 -1.0，成本报表
+	// 读成「比原厂便宜 100%」）。镜像文件语义：四个独立 CHECK 各带 NOT VALID
+	//（对新写入立即强制、不扫存量 ⇒ 结构上不可能因存量数据中止 boot）；
+	// DROP IF EXISTS + ADD ⇒ 可重放。
+	if err := db.ensureSupplierPriceNonnegCheckConstraints(migCtx); err != nil {
+		return err
+	}
 	// 2026-10-08 migration 847: credentials.routing_scope — media/chat 路由域
 	// 隔离。缺列时候选 SQL 的 COALESCE(c.routing_scope,'all') 仍可编译失败
 	// （列不存在 42703），必须在流量前补齐。
@@ -3199,6 +3210,84 @@ func (d *DB) ensureModelBaselineObservationHealth(ctx context.Context) error {
 	}
 	slog.Info("model_baseline_price_observation_health ensured (migration 832)")
 	return nil
+}
+
+// ensureSupplierPriceNonnegCheckConstraints mirrors sql/migrations/startup/833_supplier_price_nonneg_check.sql.
+// 2026-11-11（48h 审计）：832 的姊妹缺口——同一次文件链版本水位线跳过把
+// 832/833 一起越过，832 已有 ensure，833 仍缺席（211 实测四个
+// cmb_price_nonneg_* 约束 0 条）⇒ 供应商价格列的负价新写入不被拒。
+// 幂等：约束已齐时只补账本戳；缺失时全量重放（文件本身就是
+// DROP IF EXISTS + ADD 的幂等形态，部分缺失也收敛）。表不存在 ⇒ 返回
+//（该库还没走到 826，交给文件链，与 590c632db 的 to_regclass 守卫同纪律）。
+func (d *DB) ensureSupplierPriceNonnegCheckConstraints(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if !d.tableExists(ctx, "credential_model_bindings") {
+		return nil
+	}
+	var have int
+	if err := d.pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_constraint
+		 WHERE conrelid = 'public.credential_model_bindings'::regclass
+		   AND conname IN ('cmb_price_nonneg_in', 'cmb_price_nonneg_out',
+		                   'cmb_price_nonneg_cache_read', 'cmb_price_nonneg_cache_write')
+	`).Scan(&have); err != nil {
+		return err
+	}
+	if have == 4 {
+		return d.stampSchemaMigration(ctx, "833",
+			"supplier_price_nonneg_check: NOT VALID nonneg CHECKs on credential_model_bindings price columns (mirror of migration 833)")
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.credential_model_bindings
+		    DROP CONSTRAINT IF EXISTS cmb_price_nonneg_in;
+		ALTER TABLE public.credential_model_bindings
+		    ADD CONSTRAINT cmb_price_nonneg_in
+		    CHECK (unit_price_in_per_1m IS NULL OR unit_price_in_per_1m >= 0) NOT VALID;
+		ALTER TABLE public.credential_model_bindings
+		    DROP CONSTRAINT IF EXISTS cmb_price_nonneg_out;
+		ALTER TABLE public.credential_model_bindings
+		    ADD CONSTRAINT cmb_price_nonneg_out
+		    CHECK (unit_price_out_per_1m IS NULL OR unit_price_out_per_1m >= 0) NOT VALID;
+		ALTER TABLE public.credential_model_bindings
+		    DROP CONSTRAINT IF EXISTS cmb_price_nonneg_cache_read;
+		ALTER TABLE public.credential_model_bindings
+		    ADD CONSTRAINT cmb_price_nonneg_cache_read
+		    CHECK (cache_read_price_per_1m IS NULL OR cache_read_price_per_1m >= 0) NOT VALID;
+		ALTER TABLE public.credential_model_bindings
+		    DROP CONSTRAINT IF EXISTS cmb_price_nonneg_cache_write;
+		ALTER TABLE public.credential_model_bindings
+		    ADD CONSTRAINT cmb_price_nonneg_cache_write
+		    CHECK (cache_write_price_per_1m IS NULL OR cache_write_price_per_1m >= 0) NOT VALID;
+		COMMENT ON CONSTRAINT cmb_price_nonneg_in ON public.credential_model_bindings IS
+		    'A negative supplier price is always a data error. Added NOT VALID on purpose: enforced on every new INSERT/UPDATE, existing rows are not scanned, so this can never abort a deploy run. See migration 833 header for the two-step closeout. convalidated=false is expected until then.';
+		COMMENT ON CONSTRAINT cmb_price_nonneg_out ON public.credential_model_bindings IS
+		    'Same as cmb_price_nonneg_in, for the output side. NOT VALID by design.';
+		COMMENT ON CONSTRAINT cmb_price_nonneg_cache_read ON public.credential_model_bindings IS
+		    'Same as cmb_price_nonneg_in, for cache-read pricing. NOT VALID by design.';
+		COMMENT ON CONSTRAINT cmb_price_nonneg_cache_write ON public.credential_model_bindings IS
+		    'Same as cmb_price_nonneg_in, for cache-write pricing. NOT VALID by design.';
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('833', 'supplier_price_nonneg_check: NOT VALID nonneg CHECKs on credential_model_bindings price columns (mirror of migration 833)')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("supplier_price_nonneg_check constraints ensured (migration 833)")
+	return nil
+}
+
+// stampSchemaMigration 记一笔迁移账（幂等），供 ensure 链在「对象已由其他
+// 途径就位」时补齐 schema_migrations 台账。
+func (d *DB) stampSchemaMigration(ctx context.Context, version, description string) error {
+	_, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ($1, $2)
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`, version, description)
+	return err
 }
 
 // ensureCredentialRoutingScope mirrors sql/migrations/startup/847_credential_routing_scope.sql.
