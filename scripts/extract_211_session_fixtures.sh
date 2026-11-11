@@ -45,10 +45,15 @@ PG_DB="${PG_DB:-llm_gateway}"
 
 LIMIT=60
 REDACT=1
+VARIETY=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --raw)   REDACT=0; shift ;;
-        --limit) LIMIT="$2"; shift 2 ;;
+        --raw)    REDACT=0; shift ;;
+        --limit)  LIMIT="$2"; shift 2 ;;
+        # 2026-11-12（审计第二轮批 4）：--variety 按（协议 × 会话形态）轮转取样
+        # —— 形态桶：role_violation / thinking / multimodal / long_conv /
+        # tool_heavy / general。每桶配额 = LIMIT/5，总样本 ≈ 3 协议 × 6 桶 × 配额。
+        --variety) VARIETY=1; shift ;;
         *) echo "未知参数: $1" >&2; exit 2 ;;
     esac
 done
@@ -73,6 +78,33 @@ trap cleanup EXIT
 #    openai-responses 同理无出站体。
 #    ⇒ 出站体缺失的样本仍可用：它们验证「客户端形态 → IR → 目标协议」的
 #      正确性（不与生产出站对拍）。
+# ── 轮转策略 ─────────────────────────────────────────────────────────────
+# 默认（round-1 口径）：按协议轮转（pr），每协议取 LIMIT 条。
+# --variety（批 4）：按（协议 × 形态）轮转，每桶配额 = LIMIT/5 ⇒ 总样本
+# ≈ 3 协议 × 6 桶 × 配额（≈LIMIT×3.6）。形态桶保证夹具覆盖：role 违规
+# （智能体会话形态）/ thinking 块 / 多模态 / 长会话 / 工具密集。
+if [[ "$VARIETY" == "1" ]]; then
+  SHAPE_QUOTA=$(( LIMIT / 5 ))
+  ROTATED_SQL="rotated AS (
+  SELECT r.*,
+         row_number() OVER (PARTITION BY r.client_protocol, r.shape
+                            ORDER BY r.pr, r.session_id) AS rr
+  FROM ranked r
+  WHERE r.pr <= ${LIMIT}
+)"
+  FINAL_WHERE="c.rr <= ${SHAPE_QUOTA}"
+  FINAL_ORDER="c.client_protocol, c.shape, c.rr"
+else
+  ROTATED_SQL="rotated AS (
+  SELECT r.*,
+         row_number() OVER (ORDER BY r.pr, r.client_protocol) AS rr
+  FROM ranked r
+  WHERE r.pr <= ${LIMIT}
+)"
+  FINAL_WHERE="c.rr <= ${LIMIT}"
+  FINAL_ORDER="c.rr"
+fi
+
 cat > "$TMP_SQL" <<SQL
 \\pset pager off
 \\pset format unaligned
@@ -106,6 +138,44 @@ eligible AS (
      OR jsonb_typeof(t.outbound_body) <> 'array'
      OR octet_length(t.outbound_body::text) BETWEEN 1024 AND 200000
 ),
+shaped AS (
+  -- 2026-11-12（批 4）：会话形态分类（--variety 轮转用；非 variety 模式
+  -- 不影响取样，只是多算几列）。
+  --   role_violation：消息序列存在相邻同 role（客户端智能体会话形态）
+  --   thinking      ：含 thinking / redacted_thinking 块或 reasoning_content
+  --   multimodal    ：含 image / audio / file 载荷
+  --   long_conv     ：≥ 40 条消息
+  --   tool_heavy    ：≥ 6 条 tool 结果消息
+  --   general       ：以上皆非
+  SELECT r.*,
+         CASE
+           WHEN rv.role_violations > 0 THEN 'role_violation'
+           WHEN r.request_delta::text LIKE '%"type":"thinking"%'
+             OR r.request_delta::text LIKE '%"type":"redacted_thinking"%'
+             OR r.request_delta::text LIKE '%reasoning_content%' THEN 'thinking'
+           WHEN r.request_delta::text LIKE '%"type":"image_url"%'
+             OR r.request_delta::text LIKE '%"type":"image"%'
+             OR r.request_delta::text LIKE '%inline_data%'
+             OR r.request_delta::text LIKE '%"type":"input_audio"%' THEN 'multimodal'
+           WHEN jsonb_array_length(r.request_delta) >= 40 THEN 'long_conv'
+           WHEN tm.tool_msgs >= 6 THEN 'tool_heavy'
+           ELSE 'general'
+         END AS shape
+  FROM eligible r
+  CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE prev = cur) AS role_violations
+    FROM (
+      SELECT el->>'role' AS cur,
+             lag(el->>'role') OVER (ORDER BY ord) AS prev
+      FROM jsonb_array_elements(r.request_delta) WITH ORDINALITY AS a(el, ord)
+    ) seq
+  ) rv
+  CROSS JOIN LATERAL (
+    SELECT count(*) AS tool_msgs
+    FROM jsonb_array_elements(r.request_delta) AS el
+    WHERE el->>'role' = 'tool'
+  ) tm
+),
 ranked AS (
   SELECT e.*,
          -- 优先挑「可与生产出站对拍」的轮次：出站体存在 且 消息数相等。
@@ -118,14 +188,9 @@ ranked AS (
                                       AND jsonb_array_length(e.outbound_body)
                                           = jsonb_array_length(e.request_delta)) DESC,
                                      e.session_id) AS pr
-  FROM eligible e
+  FROM shaped e
 ),
-rotated AS (
-  SELECT r.*,
-         row_number() OVER (ORDER BY r.pr, r.client_protocol) AS rr
-  FROM ranked r
-  WHERE r.pr <= ${LIMIT}
-)
+${ROTATED_SQL}
 SELECT jsonb_build_object(
          'session_id',   c.session_id,
          'turn_no',      c.turn_no,
@@ -138,8 +203,8 @@ SELECT jsonb_build_object(
          END
        )::text
 FROM rotated c
-WHERE c.rr <= ${LIMIT}
-ORDER BY c.rr;
+WHERE ${FINAL_WHERE}
+ORDER BY ${FINAL_ORDER};
 SQL
 
 echo "▸ 在 ${SSH_HOST} 上执行提取（容器 ${PG_CONTAINER}）..."
