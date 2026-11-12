@@ -599,3 +599,30 @@ func (fc *FileCache) Stats() map[string]interface{} {
 
 // Close 释放缓存。当前实现没有后台协程与外部资源，幂等返回 nil。
 func (fc *FileCache) Close() error { return nil }
+
+// Clear 清空整个文件缓存（跨实例失效桥的 "all" 载荷用）。
+//
+// 尽力而为：逐文件 Remove（幂等 + 有界重试，与 Delete 同语义），任何单个
+// 文件失败不阻断其余清理；记账（index/sizeUsed）无条件归零 —— 与 boot 时
+// 的磁盘 Walk 对齐口径，下一次 Get 对「索引无 / 磁盘有」的残留按 miss 处理
+// （get 会摘除索引并按 L3 回填），不会读到脏数据。
+func (fc *FileCache) Clear() error {
+	if fc == nil {
+		return nil
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	var firstErr error
+	for key, entry := range fc.index {
+		if entry == nil {
+			delete(fc.index, key)
+			continue
+		}
+		if err := atomicrename.Remove(entry.path); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(fc.index, key)
+	}
+	fc.sizeUsed = 0
+	return firstErr
+}

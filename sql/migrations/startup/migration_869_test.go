@@ -106,10 +106,11 @@ func TestMigration869IsTerminalInEveryChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chain := "'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|897_session_turns_promote_final_success_self_heal.sql|'"
+	chain := "'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|897_session_turns_promote_final_success_self_heal.sql|963_promote_session_turns_default_retention_realign.sql|'"
 	if !strings.Contains(string(script), chain) {
 		t.Fatal("deployment channel chain must end with the terminal promote-function version " +
-			"(897 since the 2026-10-23 hot-drain round; previously 869); without it the clobber " +
+			"(963 since the 2026-11-13 default-realign round; previously 897 since the " +
+			"2026-10-23 hot-drain round; originally 869); without it the clobber " +
 			"guard aborts, and with 640 last the hardcoded body wins again")
 	}
 	if strings.Contains(string(script), "|640_session_turns_protocol_fields.sql|'") {

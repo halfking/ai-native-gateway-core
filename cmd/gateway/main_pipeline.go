@@ -125,9 +125,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
-	"github.com/kaixuan/llm-gateway-go/internal/sessionid"                                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/internal/taskbus"                                     //nolint:depguard // 03: Hook 双模 taskbus 内核
-	"github.com/kaixuan/llm-gateway-go/security/sensitive"                                   //nolint:depguard // AC敏感词引擎
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/taskbus"   //nolint:depguard // 03: Hook 双模 taskbus 内核
+	"github.com/kaixuan/llm-gateway-go/security/sensitive" //nolint:depguard // AC敏感词引擎
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
@@ -829,6 +829,19 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		if setForceCompressionMetadata(env.Metadata, r.Header.Get("X-Gw-Force-Compression")) {
 			if messages := compressionMessagesFromBody(rawBody); len(messages) > 0 {
 				env.Metadata[compression.MetaKeyMessages] = messages
+			}
+		}
+
+		// F-41（2026-11-13 PR-V4-11 桥接配套）：user_content 写入。promptinjection /
+		// security / intentanalysis 三个 hook 都读这个键，但此前 v1 包装器从不写入
+		// ⇒ 即使 detector 桥上，hook.Enabled() 也恒 false（双重空转的第二重）。
+		// 提取失败/无用户文本时不写键 —— 保留「客户端没发」与「发了但为空」的区分
+		// （与 /v2/* 端点 main_v2_pipeline.go 的 q 参数口径一致）。
+		// dump 面：audit hook 已改为剥离大体积/敏感键后再记录（injection_bridge.go
+		// 头注释的 rule 71 审查结论）；pipeline 各 stage 无 slog 全量 dump。
+		if userContentEnabled() && len(rawBody) > 0 {
+			if uc := injectionUserContentFromBody(rawBody); uc != "" {
+				env.Metadata["user_content"] = uc
 			}
 		}
 

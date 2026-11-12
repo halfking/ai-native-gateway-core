@@ -622,10 +622,20 @@ func (r *storageRuntime) disableRedisEnv() {
 //     保留 L2 Redis 治理缓存、注入 L1.5（da6b95627 契约翻转：full+fileCache
 //     即共享 L1.5），读链 L1 → L1.5 → L2 → L3，由 H2 装配点可选注入正式落地。
 func (r *storageRuntime) newSessionCacheV2(db *pgxpool.Pool, redisAddr string, redisDB int) *v2.SessionCacheV2 {
+	var cache *v2.SessionCacheV2
 	if r == nil {
-		return v2.NewSessionCacheV2(db, redisAddr, redisDB)
+		cache = v2.NewSessionCacheV2(db, redisAddr, redisDB)
+	} else {
+		cache = v2.NewSessionCacheV2WithMode(db, redisAddr, redisDB, storage.StorageMode(r.mode), r.fileCache)
 	}
-	return v2.NewSessionCacheV2WithMode(db, redisAddr, redisDB, storage.StorageMode(r.mode), r.fileCache)
+	// F-47（2026-11-13 53 增量移交轮）：session 缓存跨实例失效桥 —— 复用
+	// candidate_cache_invalidation 同款形状（provider 桥只接了候选缓存一条链）。
+	// 无 Redis（lite / 未配 Redis）时整条桥不启动 ⇒ 行为退回进程内失效 + LRU TTL 上界。
+	// 订阅端只清本地两层（L1/L1.5），L2 是 Redis 共享源由写方刷新（见桥文件头注释）。
+	if cache != nil && redisAddr != "" {
+		v2.StartSessionCacheInvalidationBridgeWithAddr(context.Background(), cache, redisAddr, redisDB)
+	}
+	return cache
 }
 
 // Get*Store getter 已移除（audit 2026-09-14 R28 #19）：SQLite catalog 四表
@@ -641,6 +651,8 @@ func (r *storageRuntime) Shutdown() {
 		return
 	}
 	r.shutdownOnce.Do(func() {
+		// F-47：停掉 session 缓存跨实例失效桥（幂等；未启动时 no-op）。
+		v2.StopSessionCacheInvalidationBridge()
 		if r.trimmerCancel != nil {
 			r.trimmerCancel()
 			r.waitTrimmers(trimmerStopWaitBound)

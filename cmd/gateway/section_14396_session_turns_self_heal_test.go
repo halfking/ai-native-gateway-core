@@ -498,10 +498,13 @@ func TestSection14396RegistrationChainIsComplete(t *testing.T) {
 			"★ ★★★★ 897 与 707/640/869 **重定义同一个函数**⇒ ⇒ 不登记 = 部署在应用任何文件之前 abort（exit 5）（文件：%s）",
 			section14396Channel)
 	}
-	if !strings.HasSuffix(chainLine, "897_session_turns_promote_final_success_self_heal.sql|'") {
-		t.Errorf("★ intentional_function_chains 里 897 **不是最后一项** —— "+
-			"★ ★★★★ 链序 = 投递序 ⇒ ⇒「最后一项胜出」⇒ ⇒ 897 必须排在 869 之后"+
-			"★ ⇒ ⇒ ★★ 否则 897 的函数体被 869 覆盖 ⇒ ⇒ 自愈静默失效（★ 而迁移自己还会报成功）（文件：%s）",
+	// ★ 2026-11-13（963 realign）：链尾从 897 移交 963 —— 897 的函数体仍是
+	//   963 的逐字基线（963 只改签名 DEFAULT 一行），「最后一项胜出」的终态
+	//   现在由 963 承载（默认值面 = 与调度器对齐的 8h）。
+	if !strings.HasSuffix(chainLine, "963_promote_session_turns_default_retention_realign.sql|'") {
+		t.Errorf("★ intentional_function_chains 里 963 **不是最后一项** —— "+
+			"★ ★★★★ 链序 = 投递序 ⇒ ⇒「最后一项胜出」⇒ ⇒ 终态（963 的 8h 默认体）必须排在最后"+
+			"★ ⇒ ⇒ ★★ 否则链尾把 963 的对齐覆盖回去（869/897 形态回归）（文件：%s）",
 			section14396Channel)
 	}
 }

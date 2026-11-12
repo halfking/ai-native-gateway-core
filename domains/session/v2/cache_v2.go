@@ -343,12 +343,54 @@ func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 		}
 	}
 	if c.l2 == nil {
+		// F-47：本地两层已写新状态 ⇒ 广播给其它实例清它们的旧 L1/L1.5
+		// （非阻塞、桥未启动时 no-op；见 cache_v2_invalidation_bridge.go）。
+		publishSessionCacheInvalidation(state.TenantID, state.SessionID)
 		return nil
 	}
 	if err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta); err != nil {
 		slog.WarnContext(ctx, "cache v2 l2 set failed", "session_id", state.SessionID, "error", err)
 	}
+	// F-47：L2 也写完再广播 —— 远端实例清本地层后经 L2/L3 回填拿到的是新状态。
+	publishSessionCacheInvalidation(state.TenantID, state.SessionID)
 	return nil
+}
+
+// invalidateStaleLocal 只清**本进程**的两层易失缓存（L1 内存 + L1.5 本地文件），
+// 不动 L2 —— 供跨实例失效桥的订阅端使用：L2 是 Redis 共享源，写方已经刷新，
+// 订阅端再删一遍是冗余 IO 且可能与写方的 Set 竞态（把刚写的新治理状态删掉）。
+func (c *SessionCacheV2) invalidateStaleLocal(ctx context.Context, tenantID, sessionID string) {
+	if c == nil {
+		return
+	}
+	if c.l1_5 != nil || c.l1 != nil {
+		g := c.guardFor(tenantID, sessionID)
+		g.Lock()
+		if c.l1_5 != nil {
+			if err := c.l1_5.Delete(tenantID, sessionID); err != nil {
+				slog.WarnContext(ctx, "cache v2 bridge l1.5 delete failed", "session_id", sessionID, "error", err)
+			}
+		}
+		if c.l1 != nil {
+			c.l1.Delete(tenantID, sessionID)
+		}
+		g.Unlock()
+	}
+}
+
+// invalidateAllStaleLocal 是 invalidateStaleLocal 的整库形态（载荷 "all"）。
+func (c *SessionCacheV2) invalidateAllStaleLocal(ctx context.Context) {
+	if c == nil {
+		return
+	}
+	if c.l1 != nil {
+		c.l1.Clear()
+	}
+	if c.l1_5 != nil {
+		if err := c.l1_5.Clear(); err != nil {
+			slog.WarnContext(ctx, "cache v2 bridge l1.5 clear failed", "error", err)
+		}
+	}
 }
 
 // Invalidate removes the session from every non-nil cache tier (L1, L1.5, L2).
@@ -385,7 +427,22 @@ func (c *SessionCacheV2) Invalidate(ctx context.Context, tenantID, sessionID str
 		}
 		g.Unlock()
 	}
+	// F-47：本地失效完成后再广播（远端只清本地两层，不清 L2 —— 与订阅端语义对称）。
+	publishSessionCacheInvalidation(tenantID, sessionID)
 	return l2Err
+}
+
+// Clear 清空整个 L1（跨实例失效桥的 "all" 载荷用）。
+func (c *CompressionMetaCache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, entry := range c.items {
+		c.lru.remove(entry.node)
+	}
+	c.items = make(map[string]*cacheEntry)
 }
 
 // CompressionMetadata returns the compression portion of the current V2 state

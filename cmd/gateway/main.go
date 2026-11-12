@@ -6744,6 +6744,12 @@ func main() {
 		judgeEndpoint := os.Getenv("ARMOR_JUDGE_ENDPOINT") // e.g. "https://api.openai.com/v1"
 		judgeModel := os.Getenv("ARMOR_JUDGE_MODEL")       // e.g. "gpt-4o-mini"
 		judgeAPIKey := os.Getenv("ARMOR_JUDGE_API_KEY")    // OpenAI-compatible API key
+		// F-41 缺省披露（2026-11-13）：armor 全程 observe-only（永不阻断）且
+		// threshold 硬编码 0.7（handler.go 的 TODO 未接 policy）⇒ 两条缺省路径
+		// 都要把「判定是噪声」这件事在 boot 时说清楚，别让运维把 mock 0 分
+		// 当成「一切正常」的指标。
+		const armorJudgeMode = "observe-only"
+		const armorJudgeThreshold = 0.7
 		if judgeEndpoint != "" && judgeModel != "" && judgeAPIKey != "" {
 			var err error
 			armorJudge, err = armor.NewHTTPJudge(armor.HTTPOptions{
@@ -6752,14 +6758,25 @@ func main() {
 				APIKey:  judgeAPIKey,
 			})
 			if err != nil {
-				slog.Error("armor judge init failed", "error", err)
+				slog.Error("armor judge init failed",
+					"error", err,
+					"mode", armorJudgeMode,
+					"threshold", armorJudgeThreshold,
+					"judge", "mock(suspended; scores always 0 — judgments are noise until fixed)",
+					"fix", "check ARMOR_JUDGE_ENDPOINT/MODEL/API_KEY")
 				armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
 			} else {
-				slog.Info("armor judge initialized", "endpoint", judgeEndpoint, "model", judgeModel)
+				slog.Info("armor judge initialized",
+					"endpoint", judgeEndpoint, "model", judgeModel,
+					"mode", armorJudgeMode, "threshold", armorJudgeThreshold)
 			}
 		} else {
 			armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
-			slog.Warn("armor judge not configured, using mock judge (always safe)")
+			slog.Warn("armor judge not configured, using mock judge (always safe)",
+				"mode", armorJudgeMode,
+				"threshold", armorJudgeThreshold,
+				"judge", "mock(scores always 0 — judgments are noise)",
+				"fix", "set ARMOR_JUDGE_ENDPOINT + ARMOR_JUDGE_MODEL + ARMOR_JUDGE_API_KEY to score for real")
 		}
 
 		// Wire armor into chat handler
@@ -7410,9 +7427,18 @@ func main() {
 				pool := dbConn.Pool()
 				pub := bus.NewPGPublisher(pool, slog.Default())
 				intentStore := assets.NewPGIntentAggregateStore(pool, slog.Default())
-				// PR-V4-11: detector / checker / summarizer 当前传 nil；
-				// 它们需要 *sql.DB（不是 pgxpool），后续 PR 再桥接。
-				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, nil, nil, nil, fpSlotRedis)
+				// PR-V4-11 桥接（2026-11-13 全面审计v3 53 增量移交轮，F-41 收口第一步）：
+				// detector 经 db.DB.Stdlib() 的共享 *sql.DB 桥接注入（见
+				// injection_bridge.go 的注释与 dump 面审查结论）。checker / summarizer
+				// 仍传 nil：outputcompliance.Checker 的结果类型与 hook 侧镜像结构
+				// 不同（Issues 列表形态），映射面是独立一片，不与 detector 桥混车。
+				injectionDetector := newPromptInjectionDetector(dbConn.Stdlib())
+				if injectionDetector == nil {
+					slog.Error("PR-V4-11: injection detector bridge failed; governance_prompt_injection stage stays unregistered (fail-open)")
+				} else {
+					slog.Info("PR-V4-11: injection detector bridged (governance_prompt_injection stage registered; user_content from v1 wrapper body)")
+				}
+				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, injectionDetector, nil, nil, fpSlotRedis)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)
