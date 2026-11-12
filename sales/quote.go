@@ -34,6 +34,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -148,13 +149,23 @@ type Quote struct {
 
 // centsPerCredit reads the billing anchor from maas_settings (row may be
 // absent on bare fixtures → 0.01 default mirrors the maas seed).
-func (s *Service) centsPerCredit(ctx context.Context) float64 {
+// centsPerCredit reads the billing anchor from maas_settings. Absent row ⇒
+// 0.01 default (mirrors the maas seed); a real DB failure propagates —
+// swallowing it would mis-price every line at the default while the true
+// anchor differs（2026-11-12 复审审计 P3-7：此前一切错误都吞成默认值）。
+func (s *Service) centsPerCredit(ctx context.Context) (float64, error) {
 	var v float64
 	err := s.pool.QueryRow(ctx, `SELECT cents_per_credit::float8 FROM public.maas_settings WHERE id = 1`).Scan(&v)
-	if err != nil || v <= 0 {
-		return 0.01
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0.01, nil
 	}
-	return v
+	if err != nil {
+		return 0, fmt.Errorf("sales: read cents_per_credit: %w", err)
+	}
+	if v <= 0 {
+		return 0.01, nil
+	}
+	return v, nil
 }
 
 // precomputeLines folds Decision C math per line: effective rate = ceil(rate×(1-d)),
@@ -233,14 +244,24 @@ func confidenceRank(c string) int {
 	}
 }
 
+// normalizeCostCurrency maps a cost-currency string onto the two currencies
+// the cost model actually understands. Everything else — empty, lowercase
+// variants ('usd'), third currencies ('EUR'/'USDT') — maps to "" (unknown).
+//
+// F-13（2026-11-09 12h 审计登记，2026-11-12 复审轮收口）：此前 "" 返回 "USD"
+// ⇒ 缺币种被静默当成美元 ⇒ confidence=unknown_currency 的行成本仍按 USD 照算
+// （视图 949 的 price_confidence CASE 对 ”/大小写变体判 unknown_currency，两边
+// 不一致）。现在 Go 侧与视图口径对齐：**只有**精确的 USD/CNY 参与金额计算，
+// 其余一律走 precomputeLines 的 unknown 分支（成本 0 + 降档 + C3 门拦正式单）。
+// 旧的「客户端空币种默认 USD」形状已随服务端派生死掉（派生值来自视图）。
 func normalizeCostCurrency(c string) string {
 	switch strings.ToUpper(strings.TrimSpace(c)) {
 	case "CNY":
 		return "CNY"
-	case "USD", "":
+	case "USD":
 		return "USD"
 	default:
-		return strings.ToUpper(strings.TrimSpace(c))
+		return "" // 未知币种（含空串）：拒绝默认 USD（NULL≠0 红线的币种面）
 	}
 }
 
@@ -362,10 +383,26 @@ SELECT v.credential_id,
 	return out, annStatus, rows.Err()
 }
 
-// withholdNames computes the same-name multi-price groups (整组 withhold 红线)
-// over the given rows — the exact variant logic of ListSellable, factored out
-// so derivation and the sellable list can never drift apart.
-func withholdNames(rows []SellableRow) map[string]bool {
+// withholdGroups computes the same-name multi-price groups (整组 withhold 红线)
+// over the given rows — the **single** variant-counting source consumed by
+// quote derivation (deriveQuoteItems), the cost-drift comparer, and the
+// sellable list (ListSellable).
+//
+// 2026-11-12 复审审计 P1-1 修复：**价格为 NULL 的行不是价格变体**（NULL≠0 红线
+// —— parseNum(nil) 把 NULL 当 (0,0) 参与变体计数，是把它当 0 价用了）。此前
+// 派生宇宙（任意置信档）里「trusted 行 + empty 档 NULL 行」的同名组被误判
+// withhold ⇒ 211 实测 12 只可售模型 8 只建单必拒（与本轮自己修的 P1 同构，
+// 方向 fail-closed 但可用性坏）。
+//
+// 2026-11-12 48h 审计第四轮同源化收口（LESSONS §690 同款）：P1-1 修在派生侧
+// 函数时，ListSellable 的内联变体计数**没有删**（双主并存）⇒ 两份即刻语义
+// 分叉：视图 949 的 price_confidence CASE 对「单边 NULL」（in=NULL,out>0）落
+// `ELSE 'trusted'` ⇒ trusted 宇宙**并非**「行行有价」⇒ 同一「trusted+单边
+// NULL 同名组」在可售清单被判 withhold（旧份把 NULL 当 (0,0) 计变体）而派生
+// 不 withhold（新份跳 NULL）——正是本函数原注释声称要防的那种漂移。现在
+// ListSellable 也走这里（WithheldGroup.PriceVariants 同序同值由第二返回值
+// 承载），变体判定语义只有一个主。
+func withholdGroups(rows []SellableRow) (map[string]bool, []WithheldGroup) {
 	groups := map[string][]SellableRow{}
 	order := make([]string, 0, 16)
 	for _, r := range rows {
@@ -378,13 +415,19 @@ func withholdNames(rows []SellableRow) map[string]bool {
 		groups[r.CanonicalName] = append(groups[r.CanonicalName], r)
 	}
 	out := map[string]bool{}
+	detail := make([]WithheldGroup, 0, 8)
 	for _, canon := range order {
 		g := groups[canon]
 		if len(g) < 2 {
 			continue
 		}
 		var seenPrices [][2]float64
+		var seenVariants [][2]*string
 		for _, row := range g {
+			// NULL 价不是变体（NULL≠0）：无价行不参与「多价」计数。
+			if row.SupplierInPer1M == nil || row.SupplierOutPer1M == nil {
+				continue
+			}
 			inF := parseNum(row.SupplierInPer1M)
 			outF := parseNum(row.SupplierOutPer1M)
 			dup := false
@@ -396,13 +439,44 @@ func withholdNames(rows []SellableRow) map[string]bool {
 			}
 			if !dup {
 				seenPrices = append(seenPrices, [2]float64{inF, outF})
+				seenVariants = append(seenVariants, [2]*string{row.SupplierInPer1M, row.SupplierOutPer1M})
 			}
 		}
 		if len(seenPrices) >= 2 {
 			out[canon] = true
+			detail = append(detail, WithheldGroup{
+				CanonicalName: canon,
+				Reason:        "canonical_multi_price",
+				PriceVariants: seenVariants,
+			})
 		}
 	}
-	return out
+	return out, detail
+}
+
+// pickSupplyRows chooses one deterministic row per canonical from view rows,
+// shared by derivation and cost-drift so the two never drift apart
+// （2026-11-12 复审审计 P2-3 同源化）：跳过 suspended（rank 2）＞ 非 trusted
+// （rank 1）＞ trusted（rank 0）；同 rank 内取 ORDER BY 的首行（credential_id
+// 最小）。调用方对 pick 结果再判 suspended（全停用时 pick 落在 rank 2 行）。
+func pickSupplyRows(rows []SellableRow, annStatus map[string]string) map[string]SellableRow {
+	pick := map[string]SellableRow{}
+	rank := func(r SellableRow) int {
+		if annStatus[fmt.Sprintf("%d:%d", r.CredentialID, r.ProviderModelID)] == "suspended" {
+			return 2
+		}
+		if r.PriceConfidence != "trusted" {
+			return 1
+		}
+		return 0
+	}
+	for _, r := range rows { // ordered ⇒ 首见即同 rank 内 credential_id 最小
+		cur, ok := pick[r.CanonicalName]
+		if !ok || rank(r) < rank(cur) {
+			pick[r.CanonicalName] = r
+		}
+	}
+	return pick
 }
 
 // deriveQuoteItems overwrites each item's cost/currency/confidence from the
@@ -437,13 +511,8 @@ func (s *Service) deriveQuoteItems(ctx context.Context, items []QuoteItemInput, 
 	if err != nil {
 		return nil, err
 	}
-	withheld := withholdNames(rows)
-	pick := map[string]SellableRow{}
-	for _, r := range rows { // ordered ⇒ first per canonical is the pick
-		if _, ok := pick[r.CanonicalName]; !ok {
-			pick[r.CanonicalName] = r
-		}
-	}
+	withheld, _ := withholdGroups(rows) // 单一变体判定源（ListSellable 同源，2026-11-12 收口）
+	pick := pickSupplyRows(rows, annStatus)
 	axesItems := map[string]any{}
 	for i := range items {
 		n := strings.ToLower(strings.TrimSpace(items[i].CanonicalName))
@@ -478,12 +547,12 @@ func (s *Service) deriveQuoteItems(ctx context.Context, items []QuoteItemInput, 
 				"position": textPtrToAny(row.MarketPosition),
 			},
 			"p3_supplier": map[string]any{
-				"in":               textPtrToAny(row.SupplierInPer1M),
-				"out":              textPtrToAny(row.SupplierOutPer1M),
-				"currency":         normalizeCostCurrency(row.SupplierCurrency),
-				"credential_id":    row.CredentialID,
+				"in":                textPtrToAny(row.SupplierInPer1M),
+				"out":               textPtrToAny(row.SupplierOutPer1M),
+				"currency":          normalizeCostCurrency(row.SupplierCurrency),
+				"credential_id":     row.CredentialID,
 				"provider_model_id": row.ProviderModelID,
-				"provider":         row.ProviderName,
+				"provider":          row.ProviderName,
 			},
 			"p5_retail": map[string]any{
 				"in":           items[i].RateIn,
@@ -536,7 +605,7 @@ type quoteVersionWrite struct {
 // moving the head pointer inside one transaction. statusNow is the head
 // status at materialization time (the audit row records it as both from and
 // to — a version materialization is not a state transition; the previous
-// '' / '' rows diluted the transition-table semantics, 2026-11-08 audit).
+// ” / ” rows diluted the transition-table semantics, 2026-11-08 audit).
 func (s *Service) insertQuoteVersion(ctx context.Context, tx pgx.Tx, quoteID int64, versionNo int, in QuoteInput, w quoteVersionWrite, actor, statusNow string) (int64, error) {
 	fx := settings.CNYToUSDFX
 	axes := w.axes
@@ -631,7 +700,10 @@ func (s *Service) CreateQuote(ctx context.Context, in QuoteInput, actor string) 
 	if err != nil {
 		return nil, err
 	}
-	cents := s.centsPerCredit(ctx)
+	cents, err := s.centsPerCredit(ctx)
+	if err != nil {
+		return nil, err
+	}
 	lines, confidence := precomputeLines(in.Items, settings.CNYToUSDFX, cents)
 	costTotal, saleTotal := 0.0, 0.0
 	for i := range lines {
@@ -711,7 +783,10 @@ func (s *Service) ReviseQuote(ctx context.Context, quoteID int64, in QuoteInput,
 	if err != nil {
 		return nil, err
 	}
-	cents := s.centsPerCredit(ctx)
+	cents, err := s.centsPerCredit(ctx)
+	if err != nil {
+		return nil, err
+	}
 	lines, confidence := precomputeLines(in.Items, settings.CNYToUSDFX, cents)
 	costTotal, saleTotal := 0.0, 0.0
 	for i := range lines {
@@ -780,13 +855,15 @@ VALUES ($1, $2, $3, $4, $5)`,
 		}
 	}
 	res, err := tx.Exec(ctx, `
-UPDATE public.sales_quotes SET status = $2, locked = $3, updated_at = now() WHERE id = $1`,
-		quoteID, nextStatus, locked)
+UPDATE public.sales_quotes SET status = $2, locked = $3, updated_at = now()
+ WHERE id = $1 AND status = $4`, quoteID, nextStatus, locked, head.Status)
 	if err != nil {
 		return nil, fmt.Errorf("sales: settle head on revise: %w", err)
 	}
-	// 并发守卫（2026-11-08 审计 P3-7）：settle 必须命中恰好一行——0 行说明
-	// 头状态在 GetQuote 之后被并发迁移，整单回滚而不是静默落地。
+	// 并发守卫（2026-11-12 复审审计 P2-2：11-08 的守卫是安慰剂——旧 UPDATE 无
+	// 状态谓词，RowsAffected==0 只在行消失时触发，而 API 无删头端点 ⇒ 永不
+	// 触发；真实竞态 = GetQuote 与 settle 之间并发 Submit/Close 后盲写复活旧
+	// 状态）。现在 status 谓词 + RowsAffected 合起来才是真牙。
 	if res.RowsAffected() == 0 {
 		return nil, errors.New("sales: quote head moved concurrently — revise aborted")
 	}
@@ -994,10 +1071,17 @@ UPDATE public.sales_quote_approvals
 	if res.RowsAffected() == 0 {
 		return nil, errors.New("sales: no pending approval row for this quote")
 	}
-	if _, err := tx.Exec(ctx, `
+	resHead, err := tx.Exec(ctx, `
 UPDATE public.sales_quotes SET status = $2, locked = false, updated_at = now()
- WHERE id = $1 AND status = $3`, quoteID, next, StatusPendingApproval); err != nil {
+ WHERE id = $1 AND status = $3`, quoteID, next, StatusPendingApproval)
+	if err != nil {
 		return nil, fmt.Errorf("sales: apply decision: %w", err)
+	}
+	// 并发守卫（2026-11-12 复审审计 P3-8）：审批行已在本事务判成 pending，
+	// 头表 CAS 仍可能被并发迁移打空（0 行）——回滚整事务，不让 decision
+	// 落在错误的头状态上。
+	if resHead.RowsAffected() == 0 {
+		return nil, errors.New("sales: quote is no longer pending_approval (concurrent transition)")
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO public.sales_quote_status_log (quote_id, actor, from_status, to_status, reason)
@@ -1197,7 +1281,10 @@ func (s *Service) attachCostDrift(ctx context.Context, quotes []Quote) {
 SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::float8, cost_currency
   FROM public.sales_quote_items WHERE version_id = ANY($1)`, versionIDs)
 	if err != nil {
-		return // 漂移是增强信息，读失败不阻断清单（内部错误照常落日志）
+		// 漂移是增强信息，读失败不阻断清单；但「照常落日志」必须是真的
+		// （2026-11-12 复审审计 P3-5：此前注释声称落日志而全函数零日志）。
+		slog.Warn("sales: cost-drift items query failed (drift markers skipped)", "err", err)
+		return
 	}
 	defer itemRows.Close()
 	for itemRows.Next() {
@@ -1206,6 +1293,7 @@ SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::floa
 		var inC, outC *float64
 		var cur string
 		if itemRows.Scan(&vid, &canon, &inC, &outC, &cur) != nil {
+			slog.Warn("sales: cost-drift item scan failed (drift markers skipped)", "err", itemRows.Err())
 			return
 		}
 		if snaps[vid] == nil {
@@ -1219,19 +1307,18 @@ SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::floa
 		}
 	}
 	if itemRows.Err() != nil || len(canonNames) == 0 {
+		if itemRows.Err() != nil {
+			slog.Warn("sales: cost-drift items iteration failed (drift markers skipped)", "err", itemRows.Err())
+		}
 		return
 	}
 	viewRows, annStatus, err := s.fetchSupplyViewRows(ctx, canonNames)
 	if err != nil {
+		slog.Warn("sales: cost-drift supply-view query failed (drift markers skipped)", "err", err)
 		return
 	}
-	withheld := withholdNames(viewRows)
-	current := map[string]SellableRow{}
-	for _, r := range viewRows { // ordered ⇒ first per canonical = same pick as derivation
-		if _, ok := current[r.CanonicalName]; !ok {
-			current[r.CanonicalName] = r
-		}
-	}
+	withheld, _ := withholdGroups(viewRows)        // 单一变体判定源（ListSellable 同源，2026-11-12 收口）
+	current := pickSupplyRows(viewRows, annStatus) // 与派生同一 pick（2026-11-12 P2-3）
 	driftThreshold := float64(settings.GetPlatformInt("sales.quote.cost_drift_alert_pct", 10))
 	for vid, perCanon := range snaps {
 		q := active[vid]
@@ -1244,6 +1331,11 @@ SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::floa
 			if !ok || withheld[canon] ||
 				annStatus[fmt.Sprintf("%d:%d", row.CredentialID, row.ProviderModelID)] == "suspended" {
 				continue // 供给行消失/被扣下/停用：无可比价，不假报漂移
+			}
+			// 现价 NULL（empty 档）不可比：NULL≠0 —— 把它当 0 价会假报 100%
+			// 「从有到无」（2026-11-12 复审审计 P1-1 同族）。跳过。
+			if row.SupplierInPer1M == nil || row.SupplierOutPer1M == nil {
+				continue
 			}
 			if normalizeCostCurrency(row.SupplierCurrency) != snap.currency {
 				continue // 币种变了不可比（拒绝默认换算，红线）
@@ -1269,7 +1361,10 @@ SELECT version_id, canonical_name, cost_in_per_1m::float8, cost_out_per_1m::floa
 		if maxDrift > 0 {
 			p := maxDrift
 			q.CostDriftPct = &p
-			q.CostDrifted = maxDrift >= driftThreshold
+			// 阈值 0 = 关闭漂移标记（spec_sales.go 明写；2026-11-12 P3-6：
+			// 此前 0 阈值把任何 >0 漂移都标 drifted）。CostDriftPct 仍下发
+			// （信息位），drifted 才是「建议重报」徽标的判定。
+			q.CostDrifted = driftThreshold > 0 && maxDrift >= driftThreshold
 		}
 	}
 }
@@ -1315,7 +1410,12 @@ SELECT id, demand_card_id, customer_name, title, status, current_version_id,
 			return nil, err
 		}
 	}
-	return &head, nil
+	// 详情页与清单同权携带漂移标记（2026-11-12 复审审计 P3-11：此前只有
+	// ListQuotes 挂 ⇒ 详情页无徽标的不对称）。attachCostDrift 按 slice 元素
+	// 原地写标记 ⇒ 必须让返回指针指向同一个被写的元素。
+	withDrift := []Quote{head}
+	s.attachCostDrift(ctx, withDrift)
+	return &withDrift[0], nil
 }
 
 func (s *Service) getQuoteVersion(ctx context.Context, versionID int64, withItems bool) (*QuoteVersion, error) {

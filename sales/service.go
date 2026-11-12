@@ -110,6 +110,19 @@ type SellableList struct {
 	// 三档一键报价系数（风暴档 §8-5，settings 热改即生效；仅前端快填用，
 	// 服务端不校验零售价与系数的关系——红线在审批）。
 	TierCoefficients map[string]float64 `json:"tier_coefficients"`
+	// PricingHints（2026-11-12 复审审计 P2-2）：快填的单位换算事实源。
+	// 成本轴是法定币（supplier_currency），零售价轴是 credits/1M —— 换算链
+	// credits = cost_usd × coef × fx × 100 / cents（precomputeLines 收入算术的
+	// 精确逆变换：coef 倍加成 ⇒ 毛利率恰为 1 − 1/coef）。fallback 与服务端
+	// 自身 fallback 对齐（R72f：fx=7.2 / cents=0.01）。
+	PricingHints *PricingHints `json:"pricing_hints,omitempty"`
+}
+
+// PricingHints carries the server-side constants the frontend quick-fill
+// needs for the fiat→credits conversion (2026-11-12 复审审计 P2-2).
+type PricingHints struct {
+	FXRate         float64 `json:"fx_rate"`          // CNY→USD 记账锚点（settings.CNYToUSDFX）
+	CentsPerCredit float64 `json:"cents_per_credit"` // 分/积分（maas_settings；缺行 = 0.01）
 }
 
 // ListSellable reads v_supplier_price_vs_baseline WHERE
@@ -122,6 +135,10 @@ type SellableList struct {
 // 写面本就是 super-only，故联系人读面同样收窄到 super，2026-11-08 审计
 // P2-4 修复）。
 func (s *Service) ListSellable(ctx context.Context, revealContacts bool) (*SellableList, error) {
+	cents, err := s.centsPerCredit(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
 SELECT v.credential_id,
        v.provider_model_id,
@@ -207,53 +224,15 @@ SELECT v.credential_id,
 		return nil, fmt.Errorf("sales: iterate sellable: %w", err)
 	}
 
-	// 整组 withhold：同一 canonical 名出现 ≥2 个不同 (in,out) 价 ⇒ 整组
-	// 扣下（canonical_price_collision.go withholdConflictingPrices 同口径；
-	// 判不出 canonical 名的行原样放过——问题在名字不在价）。
-	groups := map[string][]SellableRow{}
-	order := make([]string, 0, 16)
-	for _, r := range all {
-		if r.CanonicalName == "" {
-			continue
-		}
-		if _, seen := groups[r.CanonicalName]; !seen {
-			order = append(order, r.CanonicalName)
-		}
-		groups[r.CanonicalName] = append(groups[r.CanonicalName], r)
-	}
-	withheldNames := map[string]bool{}
-	var withheld []WithheldGroup
-	for _, canon := range order {
-		g := groups[canon]
-		if len(g) < 2 {
-			continue
-		}
-		variants := make([][2]*string, 0, len(g))
-		var seenPrices [][2]float64
-		for _, row := range g {
-			inF := parseNum(row.SupplierInPer1M)
-			outF := parseNum(row.SupplierOutPer1M)
-			dup := false
-			for _, p := range seenPrices {
-				if p[0] == inF && p[1] == outF {
-					dup = true
-					break
-				}
-			}
-			if !dup {
-				seenPrices = append(seenPrices, [2]float64{inF, outF})
-				variants = append(variants, [2]*string{row.SupplierInPer1M, row.SupplierOutPer1M})
-			}
-		}
-		if len(seenPrices) < 2 {
-			continue // 同价重复：数字唯一，不是冲突
-		}
-		withheldNames[canon] = true
-		withheld = append(withheld, WithheldGroup{
-			CanonicalName: canon,
-			Reason:        "canonical_multi_price",
-			PriceVariants: variants,
-		})
+	// 整组 withhold：同一 canonical 名出现 ≥2 个不同 (in,out) 价 ⇒ 整组扣下
+	// ——变体判定与派生/漂移**同源**（quote.go withholdGroups，2026-11-12 收口
+	// 删内联双主：旧内联版没有 NULL 跳过，而视图 949 的 price_confidence CASE
+	// 对单边 NULL 落 'trusted' ⇒ 与派生侧在「trusted+单边 NULL 同名组」上结论
+	// 相反）。判不出 canonical 名的行原样放过——问题在名字不在价。
+	withheldNames, withheldDetail := withholdGroups(all)
+	withheld := make([]WithheldGroup, 0, len(withheldDetail))
+	for _, g := range withheldDetail {
+		withheld = append(withheld, g)
 	}
 
 	items := make([]SellableRow, 0, len(all))
@@ -277,6 +256,7 @@ SELECT v.credential_id,
 			"standard":     tierCoefficient("standard", 1.6),
 			"conservative": tierCoefficient("conservative", 2.0),
 		},
+		PricingHints: &PricingHints{FXRate: settings.CNYToUSDFX, CentsPerCredit: cents},
 	}
 	for i := range out.Withheld {
 		out.Withheld[i].Rows = nil

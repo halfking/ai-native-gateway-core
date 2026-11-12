@@ -81,6 +81,7 @@ export default {
   tabDashboard: '看板',
   costDrifted: '成本已漂移，建议重报',
   tierQuickFill: '三档快填',
+  rateUnitNote: '零售价单位是 credits/百万 tokens——快填已把供应商成本换算到该轴（系数 c 对应毛利率 1 − 1/c）',
   pickModel: '从可售清单选择模型',
   itemExists: '该模型已在清单中',
   quoteCloseTitle: '报价 #{id} 收口',

@@ -134,16 +134,18 @@ export function extractRouteTraceSummary(trace: RouteTrace): RouteTraceSummary {
 }
 
 /**
- * 路由阶段的用户友好描述
+ * 路由阶段的 i18n 键（★ 键值而非显示名 —— 硬编码中文棘轮门要求显示文案走 locale）。
+ * 消费方：`t(ROUTE_PHASE_LABEL_KEYS[phase])`（与 RequestTracePanel 的 STAGE_LABEL_KEYS 同一范式）。
+ * 键登记在 web/src/locales/<locale>/trace.ts 的 routePhase 段（8 个语种平价）。
  */
-export const ROUTE_PHASE_LABELS: Record<RoutePhase, string> = {
-  started: '开始路由',
-  selecting: '选择凭据',
-  attempting: '请求中',
-  responding: '接收响应',
-  fallback: '切换凭据',
-  done: '完成',
-  failed: '失败',
+export const ROUTE_PHASE_LABEL_KEYS: Record<RoutePhase, string> = {
+  started: 'trace.routePhase.started',
+  selecting: 'trace.routePhase.selecting',
+  attempting: 'trace.routePhase.attempting',
+  responding: 'trace.routePhase.responding',
+  fallback: 'trace.routePhase.fallback',
+  done: 'trace.routePhase.done',
+  failed: 'trace.routePhase.failed',
 }
 
 /**

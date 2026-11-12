@@ -55,6 +55,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -126,11 +127,12 @@ type candidateInvalidationBridge struct {
 	wg     sync.WaitGroup
 }
 
-var (
-	candidateInvalidationMu sync.Mutex
-	// candidateInvalidationActive 是**当前进程**的桥（未启动时为 nil）。
-	candidateInvalidationActive *candidateInvalidationBridge
-)
+// candidateInvalidationActive 是**当前进程**的桥（未启动时为 nil）。
+//
+// ★ 用 atomic.Pointer 而不是 mutex ⇒ ★★ 因为 publishCandidateCacheInvalidation
+//   走在**请求热路径**上（凭据失败 → executor 调失效）⇒ ⇒ 每次都取一次全局锁
+//   ⇒ ⇒ 高并发 + 批量失败时会成一个串行点 ⇒ ⇒ 原子读没有这个成本。
+var candidateInvalidationActive atomic.Pointer[candidateInvalidationBridge]
 
 // StartCandidateCacheInvalidationBridge 启动跨实例失效桥：
 //
@@ -157,16 +159,12 @@ func StartCandidateCacheInvalidationBridge(ctx context.Context, c *Client, rdb *
 		stop:   cancel,
 	}
 
-	candidateInvalidationMu.Lock()
-	if candidateInvalidationActive != nil {
+	if !candidateInvalidationActive.CompareAndSwap(nil, b) {
 		// 已有活桥 ⇒ 不重复启动（照抄 URSM 订阅者的 double-start 守卫：
 		// 重复启动会孤儿前一个 cancel func 并让 WaitGroup 计数失衡）。
-		candidateInvalidationMu.Unlock()
 		cancel()
 		return
 	}
-	candidateInvalidationActive = b
-	candidateInvalidationMu.Unlock()
 
 	b.wg.Add(2)
 	go b.runPublisher(bridgeCtx)
@@ -179,10 +177,7 @@ func StartCandidateCacheInvalidationBridge(ctx context.Context, c *Client, rdb *
 
 // StopCandidateCacheInvalidationBridge 停掉桥（进程停机路径用）。
 func StopCandidateCacheInvalidationBridge() {
-	candidateInvalidationMu.Lock()
-	b := candidateInvalidationActive
-	candidateInvalidationActive = nil
-	candidateInvalidationMu.Unlock()
+	b := candidateInvalidationActive.Swap(nil)
 	if b == nil {
 		return
 	}
@@ -198,9 +193,7 @@ func StopCandidateCacheInvalidationBridge() {
 // ★ 不带 client 参数：广播的内容是**全局事实**（「凭据 X 的判定变了」），
 //   与「谁发布的」无关 ⇒ ⇒ 任何实例都可以发布同一条事件。
 func publishCandidateCacheInvalidation(credentialID int) {
-	candidateInvalidationMu.Lock()
-	b := candidateInvalidationActive
-	candidateInvalidationMu.Unlock()
+	b := candidateInvalidationActive.Load()
 	if b == nil {
 		return
 	}

@@ -80,6 +80,7 @@ export default {
   tabDashboard: 'ダッシュボード',
   costDrifted: 'コスト変動 — 再見積り推奨',
   tierQuickFill: 'ティア別クイック入力',
+  rateUnitNote: '販売価格の単位は credits/100万トークンです。クイック入力は仕入コストをこの軸に換算します（係数 c のマージン = 1 − 1/c）',
   pickModel: '販売可能リストからモデルを選択',
   itemExists: 'モデルは既にリスト内です',
   quoteCloseTitle: '見積もり #{id} の締め',

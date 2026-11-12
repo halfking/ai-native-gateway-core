@@ -24,9 +24,12 @@ package startup
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -63,11 +66,110 @@ var view959AppendedAliases = []string{
 	"market_ref_used",
 }
 
-// extractViewAliases 提取一条 `CREATE OR REPLACE VIEW public.v_supplier_price_vs_baseline AS`
+// view949AddedAlias —— 949 在 941 之后追加的列（binding 身份）。
+//
+// ★ 959 的定义必须原样保留它：CREATE OR REPLACE VIEW 按**位置**配对列，
+//
+//	少这一列 ⇒ 第 30 列由 provider_model_id 变成 overseas_ref_in_per_1m
+//	⇒ PG 报 "cannot change name of view column ..." ⇒ 迁移必炸
+//	（2026-11-11 211 acc-pg17 实测，该迁移卡死全部 211 部署）。
+var view949AddedAlias = "provider_model_id"
+
+// view949ColumnAliases —— 949 版视图的**绝对**列形状（30 列，逐字逐序）。
+//
+// ★ 这是本门真正的「绝对钉」：它对齐的是**活库实测形状**（211 acc-pg17 的
+//
+//	information_schema.columns 实测 30 列，第 30 列 = provider_model_id），
+//	不是手写想象。白名单自清洁：将来有迁移再追加本视图的列时，门变红并
+//	要求更新本清单（与 sql/schema/installed_startup_migrations.tsv 同款纪律）。
+//
+// ★ 为什么绝对钉必须落在**前驱**（949）而不是 959：959 的形状已由
+//
+//	「前驱形状 + 11 列追加」完全确定 ⇒ 若绝对钉钉在 959 上，它在
+//	「前驱与 959 同时被改」时永远先被前驱的等效断言挡住 ⇒ 不可达
+//	⇒ 装饰性恒绿门（LESSONS：没做过变异验证的门只是装饰）。
+var view949ColumnAliases = append(append([]string{}, view941ColumnAliases...),
+	view949AddedAlias)
+
+// viewDef = 迁移链上的一个「本视图定义」。
+type viewDef struct {
+	num     int
+	name    string
+	aliases []string
+}
+
+// viewDefinitionChain 扫描 sql/migrations/startup 下所有定义
+// v_supplier_price_vs_baseline 的迁移（排除 .down.sql），按编号升序返回。
+//
+// ★ 为什么必须**机械发现**基线（★ 本轮真踩到）：旧门把 941（29 列）当基线，
+//
+//	而真实链是 826(18) → 844(22) → 941(29) → 949(30) → 959(41)。
+//	949 在 941 与 959 之间追加了 provider_model_id（第 30 列），959 的定义
+//	却少了这一列 ⇒ PG 按位置配对 ⇒ 迁移在已应用 949 的库上必炸。
+//	旧门全绿 ⇒ 「缺覆盖的全绿」的同款。基线必须来自链上**前一版**，
+//	否则任何夹在中间的迁移都会被无视。
+func viewDefinitionChain(t *testing.T, root string) []viewDef {
+	t.Helper()
+	dir := filepath.Join(root, "sql", "migrations", "startup")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read startup migrations dir: %v", err)
+	}
+	var defs []viewDef
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		body := mig951Read(t, root, filepath.Join("sql", "migrations", "startup", name))
+		if findViewDDL(body) < 0 {
+			continue
+		}
+		al := extractViewAliases(body)
+		if len(al) == 0 {
+			t.Fatalf("%s defines the view but column extraction returned 0 aliases", name)
+		}
+		num, err := strconv.Atoi(strings.SplitN(name, "_", 2)[0])
+		if err != nil {
+			t.Fatalf("migration filename %s has no numeric prefix: %v", name, err)
+		}
+		defs = append(defs, viewDef{num: num, name: name, aliases: al})
+	}
+	sort.Slice(defs, func(i, j int) bool { return defs[i].num < defs[j].num })
+	return defs
+}
+
+// ★ 下面两处关键字守门（up 不得 DROP 视图 / down 不得带 CASCADE）用**代码行**
+// 口径比对（stripSQLComments —— 见 migration_602_test.go 的既有实现，本包复用）：
+// 头注里常出现「不加 CASCADE」「DROP VIEW + CREATE VIEW」等说明文字 ⇒ 不去注释
+// 就会把**注释**当成代码命中（实测踩到：down 头注里那句「不加 CASCADE」直接把
+// 新守门顶红了）。仓内既有惯例同样是「比对前去注释」。
+
+// viewDDLMarker —— 本视图的 DDL 标记（两种形态都认）。
+const viewDDLMarker = "public.v_supplier_price_vs_baseline"
+
+// findViewDDL 返回该视图 CREATE 语句在 body 中的偏移。
+//
+// ★ 两种形态都认：CREATE OR REPLACE VIEW（**追加**列时用 ⇒ 保住授权、
+//
+//	注释与下游依赖）与 CREATE VIEW（DROP+CREATE **回滚**时用 ⇒ 因为
+//	PG 硬规则「CREATE OR REPLACE VIEW 不能丢列」，211 acc-pg17 实测报
+//	ERROR: cannot drop columns from view）。
+func findViewDDL(body string) int {
+	if i := strings.Index(body, "CREATE OR REPLACE VIEW "+viewDDLMarker); i >= 0 {
+		return i
+	}
+	if i := strings.Index(body, "CREATE VIEW "+viewDDLMarker); i >= 0 {
+		return i
+	}
+	return -1
+}
+
+// extractViewAliases 提取一条 `CREATE [OR REPLACE] VIEW public.v_supplier_price_vs_baseline AS`
 // 定义里的顶层输出列别名（AS 别名优先；无别名的裸列用其列名）。
 // 只统计顶层 SELECT 清单（到第一个 FROM keyword 行为止），不进 LATERAL。
 func extractViewAliases(body string) []string {
-	start := strings.Index(body, "CREATE OR REPLACE VIEW public.v_supplier_price_vs_baseline")
+	start := findViewDDL(body)
 	if start < 0 {
 		return nil
 	}
@@ -200,46 +302,142 @@ func TestMigration959Down(t *testing.T) {
 		"DELETE FROM public.market_platform_registry",
 		"notes LIKE '959 对拍补种%'",
 		"DELETE FROM public.schema_migrations WHERE version = '959'",
-		"CREATE OR REPLACE VIEW public.v_supplier_price_vs_baseline",
+		"DROP VIEW IF EXISTS public.v_supplier_price_vs_baseline",
+		"CREATE VIEW public.v_supplier_price_vs_baseline",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("959 down missing %q", want)
 		}
 	}
-	// down 的视图恢复必须恰好 29 列（= 941 版实测形状）。
-	if aliases := extractViewAliases(body); len(aliases) != 29 {
-		t.Fatalf("959 down view restore must have exactly 29 columns (941 shape), got %d: %v", len(aliases), aliases)
+	// ★ down 必须用 DROP VIEW + CREATE VIEW：CREATE OR REPLACE VIEW **不能丢列**
+	//   （PG 硬规则；211 acc-pg17 实测原写法报 ERROR: cannot drop columns from
+	//   view —— 959 应用后视图 41 列，回滚目标是 30 列 ⇒ 少 11 列）。
+	//   且不得带 CASCADE：CASCADE 会把下游依赖**静默毁掉**（[M10] 的教训：
+	//   不能靠 CASCADE 消掉）⇒ 无依赖时 DROP 成功，有依赖时**响亮失败**。
+	if strings.Contains(body, "CREATE OR REPLACE VIEW "+viewDDLMarker) {
+		t.Fatalf("959 down must use DROP VIEW IF EXISTS + CREATE VIEW (CREATE OR REPLACE VIEW cannot drop columns — PG hard rule)")
+	}
+	code := stripSQLComments(body)
+	if !strings.Contains(code, "DROP VIEW IF EXISTS "+viewDDLMarker) {
+		t.Fatalf("959 down must drop the view before recreating it (to shrink 41 -> 30 columns)")
+	}
+	if regexp.MustCompile(`DROP\s+VIEW[^;]*CASCADE`).MatchString(code) {
+		t.Fatalf("959 down must not use CASCADE (it would silently destroy downstream dependents)")
+	}
+	// down 的视图恢复必须恰好回到 **949 版形状**（30 列 = 941 的 29 列 +
+	// 949 追加的 provider_model_id）—— 回滚目标是「959 之前的那一版」，
+	// 不是 941（少 provider_model_id ⇒ CREATE OR REPLACE VIEW 同样报
+	// "cannot change name of view column" ⇒ 回滚也炸）。
+	chain := viewDefinitionChain(t, root)
+	var prev949 []string
+	for _, d := range chain {
+		if d.num == 949 {
+			prev949 = d.aliases
+			break
+		}
+	}
+	if prev949 == nil {
+		t.Fatalf("migration 949 not found in view definition chain")
+	}
+	downAliases := extractViewAliases(body)
+	if len(downAliases) != len(prev949) {
+		t.Fatalf("959 down view restore must have exactly %d columns (949 shape), got %d: %v",
+			len(prev949), len(downAliases), downAliases)
+	}
+	for i, a := range prev949 {
+		if downAliases[i] != a {
+			t.Fatalf("959 down view column %d = %q, 949 shape has %q (rollback must restore the pre-959 shape)", i+1, downAliases[i], a)
+		}
 	}
 }
 
 func TestMigration959ViewAppendOnly(t *testing.T) {
 	root := mig951Tree(t)
-	up941 := mig951Read(t, root, "sql/migrations/startup/941_supplier_view_market_columns.sql")
-	up959 := mig951Read(t, root, "sql/migrations/startup/"+mig959Name)
-
-	base := extractViewAliases(up941)
-	next := extractViewAliases(up959)
-	if len(base) == 0 || len(next) == 0 {
-		t.Fatalf("alias extraction failed: 941=%d 959=%d", len(base), len(next))
+	chain := viewDefinitionChain(t, root)
+	if len(chain) < 3 {
+		t.Fatalf("view definition chain must have >= 3 entries, got %d", len(chain))
 	}
-	// 前缀逐字一致（名+序）：941 的 29 列在 959 里必须原样出现在最前。
+	chainNames := func() []string {
+		out := make([]string, 0, len(chain))
+		for _, d := range chain {
+			out = append(out, fmt.Sprintf("%d(%d cols)", d.num, len(d.aliases)))
+		}
+		return out
+	}
+	// ① 链门：每一版都必须是前一版的**前缀扩展**（名+序逐字一致，列数不减）。
+	//    「CREATE OR REPLACE VIEW 只追加末尾列」纪律的机械化 —— 任何一版
+	//    丢列 / 改名 / 重排即红，且定位到具体迁移号。
+	for i := 1; i < len(chain); i++ {
+		prev, cur := chain[i-1], chain[i]
+		if len(cur.aliases) < len(prev.aliases) {
+			t.Fatalf("view column count shrank at %s: %d -> %d (append-only violation)",
+				cur.name, len(prev.aliases), len(cur.aliases))
+		}
+		for j := range prev.aliases {
+			if cur.aliases[j] != prev.aliases[j] {
+				t.Fatalf("view column %d drifted at %s: %s=%q -> %s=%q (append-only violation: CREATE OR REPLACE VIEW pairs columns by position)",
+					j+1, cur.name, prev.name, prev.aliases[j], cur.name, cur.aliases[j])
+			}
+		}
+	}
+	// ② 959 的基线 = 链上**前一版**（949），不是 941。
+	idx959 := -1
+	for i, d := range chain {
+		if d.num == 959 {
+			idx959 = i
+			break
+		}
+	}
+	if idx959 < 1 {
+		t.Fatalf("migration 959 not found in view definition chain (or is the first entry): %v", chainNames())
+	}
+	prev, cur := chain[idx959-1], chain[idx959]
+	if prev.num != 949 {
+		t.Fatalf("959's view-definition predecessor must be 949, got %d (%s) — 链变了，基线要重取: %v",
+			prev.num, prev.name, chainNames())
+	}
+	// ★ up 必须走 append-only（CREATE OR REPLACE VIEW）：不得 DROP 视图 ——
+	//   DROP 会毁掉授权、注释与下游依赖（211 实测该视图当下零下游依赖，
+	//   但「当下零依赖」不是可以 DROP 的理由）。
+	upBody := mig951Read(t, root, filepath.Join("sql", "migrations", "startup", mig959Name))
+	upCode := stripSQLComments(upBody)
+	if !strings.Contains(upCode, "CREATE OR REPLACE VIEW "+viewDDLMarker) {
+		t.Fatalf("959 up must use CREATE OR REPLACE VIEW (append-only: it only appends columns)")
+	}
+	if regexp.MustCompile(`DROP\s+VIEW`).MatchString(upCode) {
+		t.Fatalf("959 up must not DROP the view (would destroy grants/comments/dependents)")
+	}
+	// ② 绝对形状钉（落在**前驱** 949 上，对齐**活库实测**的 30 列）：
+	//    211 acc-pg17 的 information_schema.columns 实测 = 30 列，第 30 列
+	//    = provider_model_id。钉前驱而不是 959：959 的形状已由
+	//    「前驱 + 11 列追加」完全确定，钉在 959 上就永远不可达（装饰门）。
+	if len(prev.aliases) != len(view949ColumnAliases) {
+		t.Fatalf("949 view baseline (%d cols) drifts from the live-verified shape (%d cols): %v",
+			len(prev.aliases), len(view949ColumnAliases), prev.aliases)
+	}
+	for i, a := range view949ColumnAliases {
+		if prev.aliases[i] != a {
+			t.Fatalf("949 view column %d = %q, live-verified shape has %q",
+				i+1, prev.aliases[i], a)
+		}
+	}
+	// ③ 959 = 前驱形状 + 11 列追加（名/序逐字）。
+	if len(cur.aliases) != len(prev.aliases)+len(view959AppendedAliases) {
+		t.Fatalf("959 view must have %d columns (%d prior + %d appended), got %d: %v",
+			len(prev.aliases)+len(view959AppendedAliases), len(prev.aliases),
+			len(view959AppendedAliases), len(cur.aliases), cur.aliases)
+	}
+	for i, a := range view959AppendedAliases {
+		if cur.aliases[len(prev.aliases)+i] != a {
+			t.Fatalf("appended column %d mismatch: want %q got %q",
+				i+1, a, cur.aliases[len(prev.aliases)+i])
+		}
+	}
+	// ④ 提取清单与 941 文件实测清单双向对账（手写清单漂移即红 —— LESSONS §684）。
+	base := extractViewAliases(mig951Read(t, root, "sql/migrations/startup/941_supplier_view_market_columns.sql"))
 	if len(base) != 29 {
 		t.Fatalf("941 view baseline must be 29 columns, extracted %d: %v", len(base), base)
 	}
-	if len(next) != 40 {
-		t.Fatalf("959 view must have 40 columns (29+11), got %d", len(next))
-	}
-	for i, a := range base {
-		if next[i] != a {
-			t.Fatalf("view column %d drifted: 941=%q 959=%q (append-only violation)", i+1, a, next[i])
-		}
-	}
-	for i, a := range view959AppendedAliases {
-		if next[len(base)+i] != a {
-			t.Fatalf("appended column %d mismatch: want %q got %q", i+1, a, next[len(base)+i])
-		}
-	}
-	// 提取清单与 941 文件实测清单双向对账（手写清单漂移即红 —— LESSONS §684）。
 	if len(view941ColumnAliases) != len(base) {
 		t.Fatalf("hand-written 941 alias list (%d) drifts from extracted (%d)", len(view941ColumnAliases), len(base))
 	}

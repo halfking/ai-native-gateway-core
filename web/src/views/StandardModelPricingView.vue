@@ -44,6 +44,18 @@ interface MarketPriceOverviewRow {
   market_min_platform_id: string
   vendor_list_in_cny_per_1m: number | null
   vendor_list_out_cny_per_1m: number | null
+  vendor_list_currency: string
+  vendor_list_native_in_per_1m: number | null
+  vendor_list_native_out_per_1m: number | null
+  overseas_min_in_per_1m: number | null
+  overseas_min_out_per_1m: number | null
+  overseas_min_platform_id: string
+  overseas_min_platform_count: number
+  domestic_min_in_per_1m: number | null
+  domestic_min_out_per_1m: number | null
+  domestic_min_platform_id: string
+  domestic_min_platform_count: number
+  fx_rate: number | null
   vendor_vendor: string
   supplier_in_per_1m: number | null
   supplier_out_per_1m: number | null
@@ -204,10 +216,41 @@ function fmtMarketCNY(v: MarketPriceOverviewRow): string {
 }
 
 function fmtVendorCNY(v: MarketPriceOverviewRow): string {
+  // A-17 三级展示（运营面）：原厂锚先给**原生币**价（事实源，959
+  // vendor_list_currency 裁定），括注快照 fx 折算的 CNY；原生币即 CNY 时
+  // 保持旧形态（不重复括注）。折算列缺失 ⇒ 只给可成立的那一级。
+  const pair = (fmtCell: (x: number) => string, a: number | null, b: number | null): string => {
+    if (a == null && b == null) return ''
+    const cells = [
+      a != null ? fmtCell(a) : null,
+      b != null ? fmtCell(b) : null,
+    ].filter((x) => x != null) as string[]
+    return cells.join(' / ')
+  }
+  const cny = pair((x) => `¥${fmtNum(x)}`, v.vendor_list_in_cny_per_1m, v.vendor_list_out_cny_per_1m)
   const parts: string[] = []
-  if (v.vendor_list_in_cny_per_1m != null) parts.push(`¥${fmtNum(v.vendor_list_in_cny_per_1m)}`)
-  if (v.vendor_list_out_cny_per_1m != null) parts.push(`¥${fmtNum(v.vendor_list_out_cny_per_1m)}`)
-  return parts.length ? parts.join(' / ') : '—'
+  if (v.vendor_list_currency === 'USD') {
+    const native = pair((x) => `$${fmtNum(x)}`, v.vendor_list_native_in_per_1m, v.vendor_list_native_out_per_1m)
+    if (native) parts.push(native)
+    if (cny) parts.push(cny)
+  } else if (cny) {
+    parts.push(cny)
+  }
+  return parts.length ? parts.join('（') + (parts.length > 1 ? '）' : '') : '—'
+}
+
+function fmtFloors(v: MarketPriceOverviewRow): string {
+  // A-17 双地板并列（overseas USD 原生 / domestic CNY 原生），各自标注平台数；
+  // 某区无观测 ⇒ 「—」（NULL=无观测，不是 0 —— NULL≠0 红线）。
+  const seg = (sign: string, a: number | null, b: number | null, n: number): string => {
+    if (a == null && b == null) return '—'
+    const cells = [
+      a != null ? `${sign}${fmtNum(a)}` : null,
+      b != null ? `${sign}${fmtNum(b)}` : null,
+    ].filter((x) => x != null) as string[]
+    return `${cells.join(' / ') || '—'}（${n}）`
+  }
+  return `${seg('$', v.overseas_min_in_per_1m, v.overseas_min_out_per_1m, v.overseas_min_platform_count)} / ${seg('¥', v.domestic_min_in_per_1m, v.domestic_min_out_per_1m, v.domestic_min_platform_count)}`
 }
 
 function fmtRetailCNY(v: MarketPriceOverviewRow): string {
@@ -927,6 +970,7 @@ onMounted(load)
               <tr>
                 <th>{{ t('standardModelPricing.market.colModel') }}</th>
                 <th>{{ t('standardModelPricing.market.colMarketMin') }}</th>
+                <th>{{ t('standardModelPricing.market.colFloors') }}</th>
                 <th>{{ t('standardModelPricing.market.colVendor') }}</th>
                 <th>{{ t('standardModelPricing.market.colRetail') }}</th>
                 <th>{{ t('standardModelPricing.market.colMarketMinOut') }}</th>
@@ -942,6 +986,7 @@ onMounted(load)
                   <span v-if="!v.resolved" class="badge badge-gray">{{ t('standardModelPricing.market.unresolved') }}</span>
                 </td>
                 <td class="num">{{ fmtMarketCNY(v) }}</td>
+                <td class="num">{{ fmtFloors(v) }}</td>
                 <td class="num">{{ fmtVendorCNY(v) }}</td>
                 <td class="num">{{ fmtRetailCNY(v) }}</td>
                 <td class="num">{{ fmtNum(v.market_min_out_cny_per_1m ?? 0) }}</td>
@@ -1103,7 +1148,7 @@ onMounted(load)
 .market-filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .market-resolved-toggle { display: flex; gap: 4px; align-items: center; font-size: 12px; }
 .market-table-wrap { max-height: 480px; overflow-y: auto; }
-.market-table th, .market-table td { padding: 6px 8px; font-size: 12px; }
+.market-table th, .market-table td { padding: 4px 8px; font-size: 12px; }
 .badge-red { background: #d9302514; color: #d93025; }
 .price-history-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
 .price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border); }

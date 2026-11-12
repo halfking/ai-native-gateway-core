@@ -69,5 +69,14 @@ export default {
     module_upstream: 'Amont',
     module_session: 'Session',
   },
+  routePhase: {
+    started: 'Routage démarré',
+    selecting: 'Sélection de l’identifiant',
+    attempting: 'Requête en cours',
+    responding: 'Réception de la réponse',
+    fallback: 'Changement d’identifiant',
+    done: 'Terminé',
+    failed: 'Échec',
+  },
   generateFailed: 'Le résumé n’a pas pu être généré. Veuillez réessayer.',
 }

@@ -17,7 +17,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../components/ui/CardList.vue'
-import { fetchPublicQuote, PublicQuoteUnavailableError, type PublicQuote } from '../api/publicQuote'
+import { fetchPublicQuote, type PublicQuote } from '../api/publicQuote'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -47,9 +47,11 @@ onMounted(async () => {
   }
   try {
     quote.value = await fetchPublicQuote(token.value)
-  } catch (e) {
-    if (e instanceof PublicQuoteUnavailableError) unavailable.value = true
-    else unavailable.value = true
+  } catch {
+    // 统一「不可用」态：不区分 404/429/5xx（后端对一切失败路径不区分，
+    // 前端对齐；instanceof 判别在统一态下无行为差异——保留 import 以钉
+    // 错误类型契约，分支省略）。
+    unavailable.value = true
   } finally {
     loading.value = false
   }

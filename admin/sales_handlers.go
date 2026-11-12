@@ -315,6 +315,13 @@ func (h *Handler) handleSalesQuoteAction(w http.ResponseWriter, r *http.Request)
 	if len(parts) == 2 {
 		action = parts[1]
 	}
+	// 路径段闭集（2026-11-12 复审审计 P3-12）：合法形状 = {id} / {id}/{action} /
+	// {id}/shares/{sid}/revoke。此前 >2 段静默忽略多余段（POST /quotes/1/shares/5
+	// 会被当成 revise 建新版本）——与 demand action 的恰好 2 段判法对齐。
+	if len(parts) > 2 && !(len(parts) == 4 && parts[1] == "shares" && parts[3] == "revoke") {
+		writeError(w, http.StatusBadRequest, "invalid quote action path")
+		return
+	}
 	// 分享撤销（2026-11-08 审计缺口收口：RevokeShare 此前没有任何 API 面，
 	// 风暴档 §3.5「可撤销」只有服务半边）：POST .../quotes/{id}/shares/{sid}/revoke
 	if len(parts) == 4 && parts[1] == "shares" && parts[3] == "revoke" {
@@ -557,8 +564,16 @@ func salesOwnerScope(r *http.Request) (actor string, unrestricted bool) {
 	if auth == nil {
 		return "", false
 	}
-	if !auth.IsJWT || strings.TrimSpace(auth.Username) == "" {
-		return "", true // legacy admin_key 服务账号不收窄（有意）
+	// legacy admin_key（非 JWT 的服务账号）不收窄——有意，A-11 myOwnerScope 同款。
+	// 2026-11-12 复审审计 P3-10：JWT 但 username 为空的形状改 **fail-closed**
+	// （此前沿用先例 fail-open ⇒ 无身份的 JWT 能看全量报价）。报价单是商业
+	// 数据，收窄语义比 maas 目录面更紧；真服务账号走非 JWT 通道。
+	if !auth.IsJWT {
+		return "", true
 	}
-	return auth.Username, auth.Role == "super_admin"
+	username := strings.TrimSpace(auth.Username)
+	if username == "" {
+		return "", false // fail-closed：无身份 JWT 不放行（非本人 404 路径）
+	}
+	return username, auth.Role == "super_admin"
 }

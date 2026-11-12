@@ -69,5 +69,14 @@ export default {
     module_upstream: 'المنبع',
     module_session: 'الجلسة',
   },
+  routePhase: {
+    started: 'بدء التوجيه',
+    selecting: 'جاري اختيار الاعتماد',
+    attempting: 'جاري إرسال الطلب',
+    responding: 'جاري استلام الاستجابة',
+    fallback: 'جاري تبديل الاعتماد',
+    done: 'تم',
+    failed: 'فشل',
+  },
   generateFailed: 'تعذّر إنشاء الملخص. أعد المحاولة.',
 }

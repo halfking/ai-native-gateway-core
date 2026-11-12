@@ -1833,6 +1833,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 对拍缺 12 ⇒ 不补则一半源平台被拒）+ v_supplier_price_vs_baseline
 			// v3 追加双地板投影（append-only）。
 			"959_market_dual_floor_a17.sql",
+			// 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958
+			// 文件缺自登记行 ⇒ schema_migrations 断层；守卫式回填 + ≥952 自登记门。
+			"960_migration_ledger_continuity_repair.sql",
+			// 961（2026-11-12 A-17 收口 M2-T4 轮）：market_scoring_runs 每日评分
+			// 运行台账（price_confidence_degraded 环比的两日读数源）。
+			"961_market_scoring_runs.sql",
 		},
 	}
 }

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-11T12:55:01.885Z",
+  "exported_at": "2026-11-11T20:30:28.857Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -125,7 +125,7 @@
           "path": "/operations/marketing",
           "labelKey": "nav.item.operationsMarketing",
           "icon": "🎯",
-          "super": true,
+          "platformOps": true,
           "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"

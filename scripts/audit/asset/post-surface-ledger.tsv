@@ -19,6 +19,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 10 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 672 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 682 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 683 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 5 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 685 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -569,6 +570,8 @@
 /api/system/background-tasks	ANY	admin/handler.go:1418	read	json-decode	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/system/bootstrap/	ANY	cmd/gateway/main.go:7506	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/system/client-error	ANY	admin/handler.go:1002	write	r.Body			not-probed-writes	★ 静态分级：写库
+/api/system/context-agent	ANY	cmd/gateway/context_agent.go:200	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/system/context-agent/	ANY	cmd/gateway/context_agent.go:201	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/system/license/	ANY	cmd/gateway/main.go:7504	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/system/memora-context/	ANY	admin/handler.go:1425	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/system/memora-ping	ANY	admin/handler.go:1421	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -651,11 +654,14 @@
 /plugins/{pluginId}/{rest...}	GET	cmd/gateway/plugin_proxy_init.go:12	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /readyz	ANY	cmd/gateway/main.go:6608	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /recommend	GET	mcp/control.go:114	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/record/	ANY	domains/contextagent/http.go:24	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/resolve	ANY	domains/contextagent/http.go:22	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /routes	GET	mcp/control.go:112	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /skills	POST	mcp/control.go:133	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /skills/{id}	DELETE	mcp/control.go:134	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /stats	GET	mcp/control.go:123	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/tool	ANY	domains/contextagent/http.go:23	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /tools	POST	mcp/control.go:123	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /tools	POST	mcp/control.go:123	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /tools/{name}	PUT	mcp/control.go:125	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

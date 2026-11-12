@@ -70,5 +70,14 @@ export default {
     module_upstream: '上游',
     module_session: '会话',
   },
+  routePhase: {
+    started: '开始路由',
+    selecting: '选择凭据',
+    attempting: '请求中',
+    responding: '接收响应',
+    fallback: '切换凭据',
+    done: '完成',
+    failed: '失败',
+  },
   generateFailed: '摘要没能生成，请重试',
 }

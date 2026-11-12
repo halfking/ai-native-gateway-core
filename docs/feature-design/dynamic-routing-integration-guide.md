@@ -246,7 +246,7 @@ func publishRouteTraceUpdate(ctx context.Context, trace *admin.RouteTrace) {
       <span class="route-arrow">→</span>
       <span class="route-provider">{{ routeTrace.provider || '...' }}</span>
       <el-tag :type="getPhaseType(routeTrace.phase)" size="small">
-        {{ ROUTE_PHASE_LABELS[routeTrace.phase] }}
+        {{ t(ROUTE_PHASE_LABEL_KEYS[routeTrace.phase]) }}
       </el-tag>
       <span v-if="routeTrace.latency_ms" class="route-latency">
         {{ formatLatency(routeTrace.latency_ms) }}
@@ -258,7 +258,7 @@ func publishRouteTraceUpdate(ctx context.Context, trace *admin.RouteTrace) {
       <div class="route-header">
         <h3>路由决策链</h3>
         <el-tag :type="getPhaseType(routeTrace.phase)">
-          {{ ROUTE_PHASE_LABELS[routeTrace.phase] }}
+          {{ t(ROUTE_PHASE_LABEL_KEYS[routeTrace.phase]) }}
         </el-tag>
       </div>
 
@@ -364,7 +364,7 @@ func publishRouteTraceUpdate(ctx context.Context, trace *admin.RouteTrace) {
 import { computed } from 'vue'
 import type { RouteTrace } from '@/types/routeTrace'
 import {
-  ROUTE_PHASE_LABELS,
+  ROUTE_PHASE_LABEL_KEYS,
   formatLatency,
   formatTokens,
 } from '@/types/routeTrace'

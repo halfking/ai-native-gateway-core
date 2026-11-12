@@ -213,9 +213,11 @@ describe('SalesWorkbenchView', () => {
       created_at: '2026-11-05T00:00:00Z', token: 'tok-abc123',
     })
     // quotes 页签要有一行真实 quote，shares 按钮才会渲染（行内操作列）
+    // 2026-11-12 复审审计 P3-6：分享按钮带状态门（approved/sent/won）⇒
+    // 夹具用真实的分享流状态 sent（draft 行不再渲染分享按钮）。
     vi.mocked(listQuotes).mockResolvedValue({
       items: [{
-        id: 7, customer_name: '客户甲', title: '首次报价', status: 'draft',
+        id: 7, customer_name: '客户甲', title: '首次报价', status: 'sent',
         locked: false, created_by: 'op', created_at: '2026-11-05T00:00:00Z',
         updated_at: '2026-11-05T00:00:00Z',
       }],

@@ -1,5 +1,6 @@
 -- 959_market_dual_floor_a17.down.sql —— 回滚 A-17 双币地基：
--- 视图回 941 版 29 列定义（实测形状；941 头注「26 列」为陈旧口径） → 剥 supplier_market_position 5 列 →
+-- 视图回 949 版 30 列定义（实测形状 = 941 的 29 列 + 949 追加的
+-- provider_model_id；941 头注「26 列」为陈旧口径） → 剥 supplier_market_position 5 列 →
 -- 剥 market_price_reference 17 列 → 撤 959 补种的 12 平台 → 删 schema_migrations 行。
 
 BEGIN;
@@ -7,8 +8,19 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '10min';
 
--- 视图恢复 941 版（33 列，与 941_supplier_view_market_columns.sql 逐字一致）
-CREATE OR REPLACE VIEW public.v_supplier_price_vs_baseline AS
+-- 视图恢复 949 版（30 列 = 941 的 29 列 + 949 追加的 provider_model_id，
+-- 与 949_supplier_view_binding_id.sql 的 SELECT 清单逐字一致）
+--
+-- ★ 回滚必须 **DROP VIEW + CREATE VIEW**，不能用 CREATE OR REPLACE VIEW：
+--   PG 硬规则「CREATE OR REPLACE VIEW 不能丢列」（仓内 [M1] 同款）——
+--   211 acc-pg17 实测原写法报 ERROR: cannot drop columns from view
+--   （959 应用后视图 41 列 ⇒ 回滚目标是 30 列 ⇒ 少 11 列）。
+--   这是仓内 E1 决策形态（view-rewriting 文件改 DROP VIEW IF EXISTS + CREATE VIEW）。
+-- ★ **不加 CASCADE**：若有下游依赖，DROP 会**响亮失败**并整体回滚，
+--   而不是静默毁掉依赖方（[M10] 的教训：不能靠 CASCADE 消掉）。
+DROP VIEW IF EXISTS public.v_supplier_price_vs_baseline;
+
+CREATE VIEW public.v_supplier_price_vs_baseline AS
 SELECT
     cmb.credential_id,
     pm.raw_model_name,
@@ -84,7 +96,11 @@ SELECT
        AND cmb.unit_price_in_per_1m = cmb.unit_price_out_per_1m
         THEN 'suspect_symmetric'
       ELSE 'trusted'
-    END                                             AS price_confidence
+    END                                             AS price_confidence,
+    -- ── 949 追加列（binding 身份）：回滚目标＝**949 版 30 列**，不是 941 的
+    --   29 列 ⇒ 少了这一列，CREATE OR REPLACE VIEW 同样会报
+    --   "cannot change name of view column"（按位置配对）⇒ 回滚也必炸。
+    cmb.provider_model_id                           AS provider_model_id
 FROM credential_model_bindings cmb
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
 JOIN credentials c      ON c.id = cmb.credential_id
@@ -112,6 +128,10 @@ LEFT JOIN LATERAL (
      ORDER BY (mpr.canonical_id IS NOT NULL) DESC
      LIMIT 1
 ) mpr ON true;
+
+-- 视图被重建 ⇒ 949 留下的 COMMENT 随旧视图一起消失 ⇒ 这里逐字恢复。
+COMMENT ON VIEW public.v_supplier_price_vs_baseline IS
+    'Per (credential, model) supplier price against the vendor baseline. Ratios are NULL unless the currencies match and the baseline is set. Migration 941 appends the market dimension: P2 market minimum (from market_price_reference, matched by canonical_id first then name, standard dimension only), the C2 market position ratio (only when supplier and market currencies are comparable), and the C3 price_confidence gate (trusted/suspect_symmetric/empty/unknown_currency, mirroring the offer_price_looks_like_placeholder health check). Market FX conversion is deliberately NOT done here — the Go scorer (sync tool) owns currency folding. Migration 949 appends provider_model_id (the binding identity, cmb.provider_model_id) so supply annotations (942, keyed by credential_id + provider_model_id) can join exactly; matching by raw name alone is ambiguous with same-name double bindings on one credential.';
 
 ALTER TABLE public.supplier_market_position
     DROP COLUMN IF EXISTS market_position_vs_overseas,

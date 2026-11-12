@@ -163,11 +163,28 @@ func TestWithholdNamesFactored(t *testing.T) {
 		{CanonicalName: "b", SupplierInPer1M: &p1, SupplierOutPer1M: &p2},
 		{CanonicalName: "b", SupplierInPer1M: &p1, SupplierOutPer1M: &p2}, // 同价重复
 	}
-	got := withholdNames(rows)
+	got, _ := withholdGroups(rows)
 	if !got["a"] {
 		t.Errorf("multi-price group must withhold")
 	}
 	if got["b"] {
 		t.Errorf("same-price duplicates must not withhold")
+	}
+}
+
+// TestWithholdNamesSkipsNullPrices —— 2026-11-12 复审审计 P1-1 钉：NULL 价行
+// 不是价格变体（NULL≠0——parseNum(nil)=0 把它当 0 价是违反红线的计数）。
+// trusted 行 + empty 档 NULL 行的同名组不得判 withhold（211 实测 8/12 可售
+// 模型被这个误判挡在建单门外的根修）。
+func TestWithholdNamesSkipsNullPrices(t *testing.T) {
+	p1, p2 := "2.0", "4.0"
+	rows := []SellableRow{
+		{CanonicalName: "e", SupplierInPer1M: &p1, SupplierOutPer1M: &p2},
+		{CanonicalName: "e", SupplierInPer1M: &p1, SupplierOutPer1M: &p2}, // 同价重复
+		{CanonicalName: "e"}, // NULL 价（empty 档）
+		{CanonicalName: "e"}, // NULL 价（empty 档）
+	}
+	if got, _ := withholdGroups(rows); got["e"] {
+		t.Errorf("trusted+NULL same-name group must NOT withhold（NULL 价不是变体）")
 	}
 }

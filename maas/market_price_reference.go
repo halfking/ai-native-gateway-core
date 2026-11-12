@@ -30,10 +30,29 @@ type MarketPriceOverviewRow struct {
 	MarketMinOutCNY  *float64 `json:"market_min_out_cny_per_1m"`
 	MarketPlatforms  int      `json:"market_min_platform_count"`
 	MarketPlatformID string   `json:"market_min_platform_id"`
-	// P1 原厂锚（CNY；NULL=无原厂价，≠0=原厂确认免费 —— NULL≠0 红线）
-	VendorListInCNY  *float64 `json:"vendor_list_in_cny_per_1m"`
-	VendorListOutCNY *float64 `json:"vendor_list_out_cny_per_1m"`
-	VendorVendor     string   `json:"vendor_vendor"`
+	// P1 原厂锚（A-17 双币制，959）：
+	//   *CNY 字段 = vendor_list_cny_*（快照 fx 折算列，恒 CNY —— 959 前该字段
+	//     直读 vendor_list_*（当时恒 CNY）；959 起原列改存区域原生价（海外厂商
+	//     USD），直读会把 USD 数值标成 CNY ⇒ 2026-11-12 收口轮改读折算列）；
+	//   *Native 字段 = vendor_list_*（区域原生价，事实源，币种见 vendor_list_currency）。
+	//   NULL=无原厂价，≠0=原厂确认免费 —— NULL≠0 红线。
+	VendorListInCNY     *float64 `json:"vendor_list_in_cny_per_1m"`
+	VendorListOutCNY    *float64 `json:"vendor_list_out_cny_per_1m"`
+	VendorVendor        string   `json:"vendor_vendor"`
+	VendorListCurrency  string   `json:"vendor_list_currency"`
+	VendorListNativeIn  *float64 `json:"vendor_list_native_in_per_1m"`
+	VendorListNativeOut *float64 `json:"vendor_list_native_out_per_1m"`
+	// P2a/P2b 双地板（A-17，959）：overseas（USD 原生）/ domestic（CNY 原生），
+	// platform_count <3 时为参考值（告警 market_ref_thin_coverage）。
+	OverseasMinIn      *float64 `json:"overseas_min_in_per_1m"`
+	OverseasMinOut     *float64 `json:"overseas_min_out_per_1m"`
+	OverseasPlatformID string   `json:"overseas_min_platform_id"`
+	OverseasPlatforms  int      `json:"overseas_min_platform_count"`
+	DomesticMinIn      *float64 `json:"domestic_min_in_per_1m"`
+	DomesticMinOut     *float64 `json:"domestic_min_out_per_1m"`
+	DomesticPlatformID string   `json:"domestic_min_platform_id"`
+	DomesticPlatforms  int      `json:"domestic_min_platform_count"`
+	FXRate             *float64 `json:"fx_rate"`
 	// P3 我方实付（绑定 min 单价；币种如实携带，不默认折算）
 	SupplierIn  *float64 `json:"supplier_in_per_1m"`
 	SupplierOut *float64 `json:"supplier_out_per_1m"`
@@ -73,7 +92,14 @@ const marketPriceOverviewSQL = `
 	SELECT m.canonical_name, m.canonical_id, COALESCE(mc.display_name, ''),
 	       m.market_min_cny_in_per_1m, m.market_min_cny_out_per_1m,
 	       m.market_min_platform_count, m.market_min_platform_id,
-	       m.vendor_list_in_per_1m, m.vendor_list_out_per_1m, m.vendor_vendor,
+	       -- A-17（959）：*CNY 字段读快照 fx 折算列（恒 CNY）；原生价/币种单列携带
+	       m.vendor_list_cny_in_per_1m, m.vendor_list_cny_out_per_1m, m.vendor_vendor,
+	       m.vendor_list_currency, m.vendor_list_in_per_1m, m.vendor_list_out_per_1m,
+	       m.overseas_min_in_per_1m, m.overseas_min_out_per_1m,
+	       m.overseas_min_platform_id, m.overseas_min_platform_count,
+	       m.domestic_min_in_per_1m, m.domestic_min_out_per_1m,
+	       m.domestic_min_platform_id, m.domestic_min_platform_count,
+	       m.fx_rate,
 	       s.s_in, s.s_out, s.s_cur,
 	       r.credits_per_1m_in, r.credits_per_1m_out,
 	       COALESCE(r.manual_in, FALSE), COALESCE(r.manual_out, FALSE),
@@ -141,8 +167,19 @@ func (s *Service) MarketPriceOverview(ctx context.Context, q string, onlyResolve
 			&r.MarketMinInCNY, &r.MarketMinOutCNY,
 			&r.MarketPlatforms, &r.MarketPlatformID,
 			&r.VendorListInCNY, &r.VendorListOutCNY, &r.VendorVendor,
+			&r.VendorListCurrency, &r.VendorListNativeIn, &r.VendorListNativeOut,
+			&r.OverseasMinIn, &r.OverseasMinOut, &r.OverseasPlatformID, &r.OverseasPlatforms,
+			&r.DomesticMinIn, &r.DomesticMinOut, &r.DomesticPlatformID, &r.DomesticPlatforms,
+			&r.FXRate,
 			&r.SupplierIn, &r.SupplierOut, &r.SupplierCur,
-			&manualInFlag, &manualOutFlag, &manualIn, &manualOut,
+			// 2026-11-12 48h 审计第四轮 P1 修复：Scan 列序必须与 SELECT 逐位对齐
+			// ——SELECT 列 26-29 = [credits_per_1m_in, credits_per_1m_out,
+			// COALESCE(manual_in,FALSE), COALESCE(manual_out,FALSE)]（值、值、旗、旗），
+			// 此前 Scan 写成 [旗、旗、值、值] ⇒ BIGINT 扫进 *bool / bool 扫进 *int64
+			// ⇒ pgx 报 "cannot scan int8 into *bool" ⇒ 该端点自 D7（2026-11-10 08af89b1f
+			// 引入 4 个 scan 变量起）每次调用必 500（845ba1d3b/14bc988cb 的线上冒烟都在
+			// D7 之前，此后无人冒烟过）。pgx 离线探针实证两向皆报错。
+			&manualIn, &manualOut, &manualInFlag, &manualOutFlag,
 			&r.SourceRunDate,
 		); err != nil {
 			return nil, err

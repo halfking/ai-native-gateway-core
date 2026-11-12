@@ -6,10 +6,10 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-09T05:18:02+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=355 package_up=355 rows=889
+# ★ generated_at=2026-11-11T19:33:25+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=361 package_up=361 rows=893
 # ★ ★★ census_bundled_at=2026-11-08T23:15:30+00:00 census_env_sha256=local:c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d,fresh:9cf37dfbe147cd4f0c775aee54bbc652d8e22bb396cbc296ec8e1ea82a7ccce0,252:b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55,211:550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 75, "reachable-and-present": 423, "unreachable-and-missing": 49}
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 79, "reachable-and-present": 423, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -899,3 +899,7 @@ idx_armor_judgments_created_at	armor_judgments	951	951_armor_judgments_created_a
 idx_model_price_versions_timeline	model_price_versions	952	952_model_price_versions.sql	yes	fresh,211		reachable-and-present	none	
 uq_model_price_versions_current	model_price_versions	952	952_model_price_versions.sql	yes	fresh,211		reachable-and-present	none	
 idx_models_canonical_featured	models_canonical	953	953_models_canonical_featured.sql	yes			reachable-and-legitimately-retired	none	
+idx_passive_model_fingerprints_model	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes			reachable-and-legitimately-retired	none	
+idx_passive_model_fingerprints_updated	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes			reachable-and-legitimately-retired	none	
+idx_market_platform_registry_is_ours	market_platform_registry	958	958_market_platform_registry.sql	yes			reachable-and-legitimately-retired	none	
+idx_market_platform_registry_region	market_platform_registry	958	958_market_platform_registry.sql	yes			reachable-and-legitimately-retired	none	

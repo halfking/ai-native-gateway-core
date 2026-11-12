@@ -306,6 +306,7 @@ func main() {
 	// after dbConn is initialized.
 	var peakCollector *bg.ConcurrencyPeakCollector
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
+	var marketScoringWorker *bg.MarketScoringWorker
 	var statsMinuteAccumulator *stats.MinuteAccumulator
 	var statsEventWriter *stats.EventWriter
 	var statsInboxConsumer *stats.InboxConsumer
@@ -5982,6 +5983,10 @@ func main() {
 			// domains/stats.MinuteAccumulator（后者全仓无 New* 调用方）。
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
+			// 定稿 M2-T3：每日评分 job（C1/C2/C3 双币落 supplier_market_position，
+			// 默认 03:10 本地时 —— 同步 cron 02:30 之后；bg/market_scoring.go）。
+			marketScoringWorker = bg.NewMarketScoringWorker(dbConn.Pool())
+			marketScoringWorker.Start(context.Background())
 			// 探测排除的历史回填（superAdmin 端点）：
 			// POST /api/admin/dashboard/rollup/rebuild
 			// 游标只前进，已聚合的分钟不会被重算，存量脏数据只能靠它修正。
@@ -9050,6 +9055,9 @@ func main() {
 		}
 		if weeklyPeakRollup != nil {
 			weeklyPeakRollup.Stop()
+		}
+		if marketScoringWorker != nil {
+			marketScoringWorker.Stop()
 		}
 		if statsBoardCache != nil {
 			statsBoardCache.Stop()

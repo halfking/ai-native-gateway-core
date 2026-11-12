@@ -80,6 +80,7 @@ export default {
   tabDashboard: 'Kennzahlen',
   costDrifted: 'Kosten abgewichen. neues Angebot empfohlen',
   tierQuickFill: 'Schnellbefüllung nach Stufe',
+  rateUnitNote: 'Verkaufspreise sind Credits pro 1M Tokens; die Schnellbefüllung rechnet Lieferantenkosten auf diese Achse um (Marge bei Faktor c = 1 − 1/c)',
   pickModel: 'Modell aus der verkaufbaren Liste wählen',
   itemExists: 'Modell bereits in der Liste',
   quoteCloseTitle: 'Angebot #{id} abschließen',

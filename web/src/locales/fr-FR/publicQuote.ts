@@ -8,7 +8,7 @@ export default {
   forCustomer: 'Pour : {name}',
   tierLabel: 'Palier : {tier}',
   validUntil: 'Valable jusqu’au {date}',
-  expiredBanner: 'Ce devis a expiré. prix à titre indicatif ; veuillez confirmer le devis à jour auprès de votre contact commercial.',
+  expiredBanner: 'Ce devis a expiré. Prix à titre indicatif ; veuillez confirmer le devis à jour auprès de votre contact commercial.',
   colModel: 'Modèle',
   colTokensIn: 'Entrée est.',
   colTokensOut: 'Sortie est.',
