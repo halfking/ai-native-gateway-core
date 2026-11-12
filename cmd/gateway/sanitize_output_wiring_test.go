@@ -8,7 +8,7 @@ import (
 
 func TestSmartSaniGuardWithoutRedisWiresOutputBeforeRestoration(t *testing.T) {
 	h := &streaming.ChatHandler{}
-	detector := installSmartSaniGuard(h, nil, nil)
+	detector := installSmartSaniGuard(h, nil, nil, nil, nil)
 	if detector == nil {
 		t.Fatal("Redis-free gateway lost sanitization")
 	}

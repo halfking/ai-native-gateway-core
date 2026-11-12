@@ -268,7 +268,12 @@ type v2DispatchDeps struct {
 	// ── V4 governance hooks (PR-V4-11) ───────────────────────────
 	// 这三个接口均为 nil 时对应 Hook 不注册（Enabled=false）。
 	// 由 main.go 在 dbConn 可用时注入具体实现。
+	// F-41（2026-11-13）：pipeline 在 v2DispatchMux 内构建，而
+	// SetV2DispatchAnalysisResources 在构建之后才注入 detector——构建时刻
+	// 的 nil 使 stage 永不注册（双重空转第二重）。现改为 stage 无条件注册 +
+	// PromptInjectionHook 延迟绑定（见 BindDetector），注入经本字段到达 hook。
 	PromptInjectionDetector promptinjectionhooks.Detector
+	PromptInjectionHook     *promptinjectionhooks.Hook
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
 
@@ -473,14 +478,18 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
 	})
 
-	// PR-V4-11: prompt injection hook（可选；deps.PromptInjectionDetector 非 nil 时启用）。
+	// PR-V4-11: prompt injection hook。
 	// 放在 governance_security 之后，interception engine 之前，让 Engine 汇总它的 verdict。
-	if deps.PromptInjectionDetector != nil {
-		p.AddStage(&pipeline.PipelineStage{
-			Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{promptinjectionhooks.NewHook(deps.PromptInjectionDetector)},
-		})
-	}
+	// F-41（2026-11-13）：stage 改为**无条件注册**——构建时刻 deps.PromptInjectionDetector
+	// 恒为 nil（真实现由 SetV2DispatchAnalysisResources 在构建后注入），条件注册使
+	// governance_prompt_injection 永不出现（双重空转第二重）。hook 经
+	// deps.PromptInjectionHook 延迟绑定；detector 未到场时 Enabled() 恒 false，
+	// 与「未注册」逐请求等价（pipeline.go executeStage 先过 Enabled 过滤）。
+	deps.PromptInjectionHook = promptinjectionhooks.NewHook(deps.PromptInjectionDetector)
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{deps.PromptInjectionHook},
+	})
 
 	// V4 interception engine (PR-V4-04): 把 security verdicts 汇总成 Decision，
 	// 写入 env.Governance.Decision。后续 PR 引入 dispatch gate 后接管 HTTP 拦截。
@@ -826,22 +835,21 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			"remote": r.RemoteAddr,
 			"agent":  r.UserAgent(),
 		}
+		// F-41（2026-11-13）user_content 写面：v1 包装器此前无人写入，
+		// governance_prompt_injection hook 与 security plugins 的
+		// user_content 消费面全部空转（唯一写入点在 /v2/* 命名空间）。
+		// 取最后一条 user 消息（注入检测面向「当前这条用户输入」）。
+		// 泄漏面审查（§全面审计v3 02 F-41 修复前提）：① 事件面契约
+		// （event_fields.go）明确剥离 user_content；② 全仓无 env.Metadata
+		// 全量 dump 进日志的写点（本轮逐点排查留痕）⇒ 写入仅限进程内
+		// hook 消费；③ 大小上限 64KiB（detector 侧另有 policy.MaxInputLength
+		// 截断），避免多 MB 请求把 Metadata 撑爆。
+		if uc := lastUserContentFromBody(rawBody); uc != "" {
+			env.Metadata["user_content"] = uc
+		}
 		if setForceCompressionMetadata(env.Metadata, r.Header.Get("X-Gw-Force-Compression")) {
 			if messages := compressionMessagesFromBody(rawBody); len(messages) > 0 {
 				env.Metadata[compression.MetaKeyMessages] = messages
-			}
-		}
-
-		// F-41（2026-11-13 PR-V4-11 桥接配套）：user_content 写入。promptinjection /
-		// security / intentanalysis 三个 hook 都读这个键，但此前 v1 包装器从不写入
-		// ⇒ 即使 detector 桥上，hook.Enabled() 也恒 false（双重空转的第二重）。
-		// 提取失败/无用户文本时不写键 —— 保留「客户端没发」与「发了但为空」的区分
-		// （与 /v2/* 端点 main_v2_pipeline.go 的 q 参数口径一致）。
-		// dump 面：audit hook 已改为剥离大体积/敏感键后再记录（injection_bridge.go
-		// 头注释的 rule 71 审查结论）；pipeline 各 stage 无 slog 全量 dump。
-		if userContentEnabled() && len(rawBody) > 0 {
-			if uc := injectionUserContentFromBody(rawBody); uc != "" {
-				env.Metadata["user_content"] = uc
 			}
 		}
 
@@ -1023,6 +1031,32 @@ func compressionMessagesFromBody(body []byte) []compression.Message {
 		}
 	}
 	return messages
+}
+
+// userContentMaxBytes 是 user_content 写入 Metadata 的单值上限。detector 侧
+// 另有 per-tenant policy.MaxInputLength 截断；这里防的是「多 MB 请求把
+// env.Metadata 撑爆」（Metadata 会被进程内多个 hook 复制/遍历）。
+const userContentMaxBytes = 64 * 1024
+
+// lastUserContentFromBody 从请求体取最后一条 user 消息文本（F-41 user_content
+// 写面）。无 messages 数组 / 无 user 角色 / 内容为空 ⇒ 返回空串（调用方跳过
+// 写入，与 /v2/* 命名空间「q 参数不在场就不写」的形态一致——下游可区分
+// 「客户端没发」与「显式发空」）。解析失败视为无内容（chatHandler 拥有
+// 真正的协议解码与 400 面）。
+func lastUserContentFromBody(body []byte) string {
+	messages := compressionMessagesFromBody(body)
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role != "user" || m.Content == "" {
+			continue
+		}
+		content := m.Content
+		if len(content) > userContentMaxBytes {
+			content = content[:userContentMaxBytes]
+		}
+		return content
+	}
+	return ""
 }
 
 // extractFirstUserMessage 从 env 中尝试取出第一条用户消息文本。
@@ -1405,6 +1439,12 @@ func SetV2DispatchAnalysisResources(
 	}
 	if detector != nil {
 		deps.PromptInjectionDetector = detector
+		// F-41（2026-11-13）：stage 已无条件注册，detector 到场后经
+		// PromptInjectionHook 延迟绑定补上（仅更新本 deps 的 hook；
+		// buildV2DispatchPipeline 构建时刻捕获的 nil 无法感知此次注入）。
+		if deps.PromptInjectionHook != nil {
+			deps.PromptInjectionHook.BindDetector(detector)
+		}
 	}
 	if checker != nil {
 		deps.OutputComplianceChecker = checker

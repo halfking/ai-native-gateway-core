@@ -1474,8 +1474,8 @@ const tenantLogQueryWindow = 72 * time.Hour
 // （默认 8h，2026-08-25 起即是）⇒ 8h~7d 的窗（dashboard 默认 3d）静默少算
 // 约 2/3 窗口。SQL 函数默认 ≠ 生产行为：retention 只认 PartitionManager 的
 // 传参链（bg/partition_manager.go resolvePromoteConfig）。
-// 2026-11-13（迁移 963）：签名默认已随 F-43 收口对齐到 '8 hours'（688 的对齐
-// 曾被 640 投递序事故覆盖、869 有意保守在役错值——见 963 头注释）；
+// 2026-11-13（迁移 964）：签名默认已随 F-43 收口对齐到 '8 hours'（688 的对齐
+// 曾被 640 投递序事故覆盖、869 有意保守在役错值——见 964 头注释）；
 // 本常量仍是 7d 硬帽（见 hotLegGateWindow 的 min 语义），与签名默认无关。
 const hotLegMaxWindow = 7 * 24 * time.Hour
 

@@ -34,6 +34,8 @@ import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
 import operationsMarketing from './operationsMarketing'
+import marketPrices from './marketPrices'
+import priceCompare from './priceCompare'
 import routing from './routing'
 import chat from './chat'
 import sessions from './sessions'
@@ -125,6 +127,8 @@ export default {
   pricingManagement,
   standardModelPricing,
   operationsMarketing,
+  marketPrices,
+  priceCompare,
   routing,
   chat,
   sessions,

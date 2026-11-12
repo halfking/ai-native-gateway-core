@@ -761,7 +761,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	}
 
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
-	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := responsesDispatchOptions(
+	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := requestDispatchOptions(
 		logCtx, hasMultipleProviders(candidates),
 	)
 	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
@@ -1148,7 +1148,12 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	*attemptLogged = true
 }
 
-func responsesDispatchOptions(logCtx *RequestLogContext, allowProviderChange bool) (bool, bool, []string) {
+// requestDispatchOptions（2026-11-13 由 responsesDispatchOptions 改名并升为
+// 三协议入口共享）：provider 许可=候选跨多供应商；model 换模许可=仅 auto
+// 请求（title/summary 回环）且 env 开启。messages.go 与 responses.go 共用
+// 同一语义源；chat 面（handler.go）因 retry 循环形态差异保留内联实现，
+// 钉测 dispatch_provider_change_wiring_test.go 保证三面同形。
+func requestDispatchOptions(logCtx *RequestLogContext, allowProviderChange bool) (bool, bool, []string) {
 	allowModelChange := logCtx != nil && logCtx.IsAutoRequest && dispatchAllowModelChangeEnabled()
 	if !allowModelChange {
 		return allowProviderChange, false, nil

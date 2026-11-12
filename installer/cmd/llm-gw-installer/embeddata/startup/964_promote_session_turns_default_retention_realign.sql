@@ -1,4 +1,4 @@
--- 963_promote_session_turns_default_retention_realign.sql
+-- 964_promote_session_turns_default_retention_realign.sql
 -- 2026-11-13（全面审计v3 第 53 增量移交清单 F-43 收口的最后一步）：
 --   把 promote_session_turns_hot_to_partition 的签名默认保留期
 --   **'7 days' → '8 hours'**（与 Go 调度器 DefaultRetentionWindow =
@@ -35,7 +35,7 @@
 -- ── 函数体零改动（★ 只改签名默认常量）────────────────────────────────────
 --   函数体整段复制自 **897**（现行体：目录派生列清单 + 形状守卫 + final_success
 --   demote 自愈），除 DEFAULT 一行外**逐字不变**——门
---   sql/migrations/startup/migration_963_promote_default_realigned_test.go
+--   sql/migrations/startup/migration_964_promote_default_realigned_test.go
 --   会把「897 + 一处 DEFAULT 差异」钉成唯一允许的 delta，其余任何漂移都红。
 --
 -- Idempotent: YES（纯 CREATE OR REPLACE FUNCTION + 后置条件断言）。
@@ -43,7 +43,7 @@
 --   回滚后裸调不传参的默认窗口重新放大到 7 天（回到 F-43 登记的形态）；
 --   自动调度与显式传参路径不受影响。
 -- ★ 编号说明：移交清单曾按「候选迁移 961」登记本项，但 961 已被
---   961_market_scoring_runs.sql（A-17 M2-T3 评分 job 轮）占用 ⇒ 本迁移取 963。
+--   961_market_scoring_runs.sql（A-17 M2-T3 评分 job 轮）与 963_credential_total_requests_rollup（2026-11-13 24h 审计轮，并行已推）先后占用 ⇒ 本迁移取 964。
 
 BEGIN;
 
@@ -262,9 +262,9 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.promote_session_turns_hot_to_partition(INTERVAL, INTEGER) IS
-  'Move cold rows from session_turns_hot to monthly partitions. 897 keeps 869''s catalog-derived column list and adds the final-success self-heal (695 design): the hardcoded 54-column list silently dropped 52 columns (trace_events, is_final_success, request_delta, identity_hash, ...) on every promotion. Columns are now derived from pg_attribute and mapped by name, with a hot/parent shape guard, so symmetric ADD COLUMN flows through and asymmetric drift raises instead of dropping data. 897 adds the demote step that 695 introduced for the v1 request_logs family: before the batch is selected, a hot row whose (tenant_id, session_id, partition_date) already holds is_final_success in the parent is demoted to FALSE, so the batch INSERT can no longer violate uq_session_turns_final_success (23505) and roll the whole batch back. 963 realigns the p_retention signature default to 8 hours: the 688 alignment was overwritten when a channel-ordering accident replayed the pre-688 640 body after 707, and 869 then deliberately preserved the deployed (wrong) value; the Go scheduler and the admin manual endpoint always pass explicit arguments, so the default only affects bare ad-hoc calls.';
+  'Move cold rows from session_turns_hot to monthly partitions. 897 keeps 869''s catalog-derived column list and adds the final-success self-heal (695 design): the hardcoded 54-column list silently dropped 52 columns (trace_events, is_final_success, request_delta, identity_hash, ...) on every promotion. Columns are now derived from pg_attribute and mapped by name, with a hot/parent shape guard, so symmetric ADD COLUMN flows through and asymmetric drift raises instead of dropping data. 897 adds the demote step that 695 introduced for the v1 request_logs family: before the batch is selected, a hot row whose (tenant_id, session_id, partition_date) already holds is_final_success in the parent is demoted to FALSE, so the batch INSERT can no longer violate uq_session_turns_final_success (23505) and roll the whole batch back. 964 realigns the p_retention signature default to 8 hours: the 688 alignment was overwritten when a channel-ordering accident replayed the pre-688 640 body after 707, and 869 then deliberately preserved the deployed (wrong) value; the Go scheduler and the admin manual endpoint always pass explicit arguments, so the default only affects bare ad-hoc calls.';
 
-DO $post_963$
+DO $post_964$
 DECLARE
     v_parent_shape TEXT;
     v_hot_shape TEXT;
@@ -274,7 +274,7 @@ DECLARE
 BEGIN
     IF to_regclass('public.session_turns_hot') IS NULL
        OR to_regclass('public.session_turns') IS NULL THEN
-        RAISE EXCEPTION '963 post-condition failed: session_turns family missing';
+        RAISE EXCEPTION '964 post-condition failed: session_turns family missing';
     END IF;
 
     SELECT COALESCE(string_agg(attname || ':' || format_type(atttypid, atttypmod)
@@ -288,7 +288,7 @@ BEGIN
      WHERE attrelid = 'public.session_turns_hot'::regclass
        AND attnum > 0 AND NOT attisdropped;
     IF v_parent_shape IS DISTINCT FROM v_hot_shape THEN
-        RAISE EXCEPTION '963 post-condition failed: session_turns hot/parent column sets diverge';
+        RAISE EXCEPTION '964 post-condition failed: session_turns hot/parent column sets diverge';
     END IF;
 
     SELECT string_agg(quote_ident(attname), ',' ORDER BY attnum) INTO v_cols
@@ -296,7 +296,7 @@ BEGIN
      WHERE attrelid = 'public.session_turns_hot'::regclass
        AND attnum > 0 AND NOT attisdropped;
     IF v_cols IS NULL OR v_cols NOT LIKE '%trace_events%' THEN
-        RAISE EXCEPTION '963 post-condition failed: derived column list lacks trace_events';
+        RAISE EXCEPTION '964 post-condition failed: derived column list lacks trace_events';
     END IF;
 
     SELECT p.prosrc INTO v_prosrc
@@ -305,21 +305,21 @@ BEGIN
        AND p.proname = 'promote_session_turns_hot_to_partition'
        AND pg_get_function_identity_arguments(p.oid) = 'p_retention interval, p_batch_size integer';
     IF v_prosrc IS NULL THEN
-        RAISE EXCEPTION '963 post-condition failed: promote_session_turns_hot_to_partition missing';
+        RAISE EXCEPTION '964 post-condition failed: promote_session_turns_hot_to_partition missing';
     END IF;
     IF v_prosrc NOT LIKE '%v_cols%' OR v_prosrc NOT LIKE '%INSERT INTO public.session_turns (%s)%' THEN
-        RAISE EXCEPTION '963 post-condition failed: installed body is not the catalog-derived form';
+        RAISE EXCEPTION '964 post-condition failed: installed body is not the catalog-derived form';
     END IF;
     -- 派生清单本身不得按列名过滤（897 的牙，原样保留）。
     IF v_prosrc ~ 'INTO\s+v_cols[^;]*attname\s*(<>|!=)\s*' THEN
-        RAISE EXCEPTION '963 post-condition failed: derived column list is filtered by column name';
+        RAISE EXCEPTION '964 post-condition failed: derived column list is filtered by column name';
     END IF;
     -- ★ 897 的牙：**demote 步必须在位**（原样保留）。
     IF v_prosrc NOT LIKE '%SET is_final_success = FALSE%' THEN
-        RAISE EXCEPTION '963 post-condition failed: demote step missing (the self-heal was not installed)';
+        RAISE EXCEPTION '964 post-condition failed: demote step missing (the self-heal was not installed)';
     END IF;
 
-    -- ★★ 963 自己的牙：**签名默认必须是 8 小时形态**。
+    -- ★★ 964 自己的牙：**签名默认必须是 8 小时形态**。
     --   本迁移的全部语义就落在这一行 ⇒ 没有它 ⇒ 本迁移只是把 897 重新装了一遍
     --   ⇒ 「安装成功」掩盖「什么也没修」（897 的 demote 牙同款教训）。
     --   判据用 pg_get_functiondef（PG 把 '8 hours' 归一化渲染为 '08:00:00'::interval，
@@ -330,17 +330,17 @@ BEGIN
        AND p.proname = 'promote_session_turns_hot_to_partition'
        AND pg_get_function_identity_arguments(p.oid) = 'p_retention interval, p_batch_size integer';
     IF position('DEFAULT ''08:00:00''::interval' in v_fndef) = 0 THEN
-        RAISE EXCEPTION '963 post-condition failed: p_retention default is not the 8-hour form';
+        RAISE EXCEPTION '964 post-condition failed: p_retention default is not the 8-hour form';
     END IF;
     IF position('7 days' in v_fndef) > 0 THEN
-        RAISE EXCEPTION '963 post-condition failed: stale 7-day default is back';
+        RAISE EXCEPTION '964 post-condition failed: stale 7-day default is back';
     END IF;
 END
-$post_963$;
+$post_964$;
 
 -- 双账本自登记（695-705 定式）。
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('963', 'promote_session_turns_hot_to_partition: realign the p_retention signature default to 8 hours — the 688 alignment was overwritten by a 640 replay-ordering accident and then deliberately preserved at the deployed (wrong) value by 869 (pinned by migration_869_test.go) and 897; body is byte-identical to 897 except that one constant')
+VALUES ('964', 'promote_session_turns_hot_to_partition: realign the p_retention signature default to 8 hours — the 688 alignment was overwritten by a 640 replay-ordering accident and then deliberately preserved at the deployed (wrong) value by 869 (pinned by migration_869_test.go) and 897; body is byte-identical to 897 except that one constant')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

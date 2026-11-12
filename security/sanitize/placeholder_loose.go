@@ -634,6 +634,34 @@ func RedactionMarker(typ SensitiveType) string {
 	return redactedMarker[:len(redactedMarker)-1] + ":" + string(typ) + "]"
 }
 
+// redactedMaskValuePattern 匹配遮蔽标记的整值原形：`[REDACTED]` /
+// `[REDACTED:type]`（大小写不敏感——模型也会自造小写形态），以及**无闭括号
+// 的前缀形态**（`[REDACTED:secret`）。
+//
+// r1043（2026-11-13，211 ZCode 事故轮）：遮蔽标记是**网关自己的词汇**，不是
+// 用户数据。生产实证：`SSH_USER="[REDACTED:account]"`（模型在事故会话里写下/
+// 回显的标记）被 account_declaration 规则当「账号赋值」命中，标记本身被铸成
+// 占位符的值（{SENSITIVE:account:6} → [REDACTED:account]，Redis 字典逐字核对）
+// ⇒ 还原器此后每次都把标记「忠实地」写回输出，标记成了会话词汇表的永久成员。
+//
+// 前缀形态必须覆盖：声明族值文法的裸 token 臂**在 `]` 处截断**
+// （`password: [REDACTED:secret]` 的捕获值是 `[REDACTED:secret`，闭括号永远
+// 到不了值里）——只认完整标记会把这个最常见的投毒入口漏掉。真实凭据不会以
+// `[REDACTED` 开头，前缀判据没有误豁免面。
+//
+// 刻意**整值锚定**（^…$）而非 span 级：粘着形态（`password=[REDACTED]真凭据`）
+// 的规则匹配本来只咬住标记前缀，span 级豁免会把真凭据的检测一起挖空。
+var redactedMaskValuePattern = regexp.MustCompile(`(?i)^\[REDACTED(?::[a-z_]+)?\]?$`)
+
+// isRedactionMarkerValue 报告 value（去空白后）是否**整个就是**一个遮蔽标记。
+//
+// 用于字典清洗：值恰好是标记的映射项是投毒产物（真值永远不会长得像自己的
+// 遮蔽标记）。注意只认「整个值是标记」——值里**嵌着**标记的复合形态
+// （如 `smm:[REDACTED:secret]`，DSN 一类）可能是真实结构，不属于本判据。
+func isRedactionMarkerValue(value string) bool {
+	return redactedMaskValuePattern.MatchString(strings.TrimSpace(value))
+}
+
 // foldPlaceholderWidth maps full-width ASCII to half-width and the ideographic
 // space to a plain space. A CJK input method turns "{SENSITIVE:secret:1}" into
 // "{ＳＥＮＳＩＴＩＶＥ：ｓｅｃｒｅｔ：１}" without the model noticing.

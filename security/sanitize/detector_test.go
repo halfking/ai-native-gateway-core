@@ -17,7 +17,10 @@ func TestPatternDetector_Detect(t *testing.T) {
 		want int
 	}{
 		{"phone CN mobile", "我的手机是13800138000", 1},
-		{"id card CN", "身份证号110101199001011234", 2}, // id_card + phone substring overlap; sanitizer position-dedup handles it
+		// r1046 改判：原期望 2（id_card + 内嵌 phone 子串）——phone 是更长
+		// 数字串的子串 ⇒ r1046 嵌入豁免；整串由结构合法的 id_card 片段一次
+		// 遮蔽，重叠 dedup 形态就此消失（泄漏防线由 r71 回归测试钉住）。
+		{"id card CN", "身份证号110101199001011234", 1},
 		{"email", "联系邮箱test@example.com", 1},
 		{"multiple PII", "手机13800138000，邮箱test@example.com", 2},
 		{"no PII", "今天天气真好", 0},

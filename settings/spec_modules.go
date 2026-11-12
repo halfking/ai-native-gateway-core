@@ -16,6 +16,20 @@ func ModuleSpecs() []*Spec {
 			Description:     "输出敏感检查总开关",
 			DescriptionLong: "默认开启。关闭后跳过输出敏感守卫（含工具参数外传检查）、可选输出合规和写出前脱敏；输入脱敏与占位符还原继续执行。保存后各网关后续请求自动读取新值；流式守卫在首帧固定检查状态。可通过参数历史回滚恢复。",
 		},
+		// r1045（2026-11-13 owner 裁决）：「对于脱敏的信息在客户端一级一定要还原，
+		// 不然执行工具或显示内容都会出错」。
+		//
+		// 拆分语义：输出**检查**（检测/台账/审核单/硬拦清单）与输出**遮蔽改写**
+		// （把客户端可见文本重写成 [REDACTED:*]）是两个动作。占位符还原链不受本
+		// 开关影响（有字典条目的值照常还原）；本开关只控制「把没有字典条目的
+		// 命中（模型自造值）改写成遮蔽标记」这一步。默认关闭＝客户端字节不被
+		// 遮蔽改写，命中照常进台账（observe）与审核面；显式开启恢复旧行为。
+		{
+			Key: "sanitize.output_mask_enabled", Type: TypeBool, Scope: ScopePlatform,
+			Category: CategoryModules, Default: false, HotReload: true, DangerLevel: Warning,
+			Description:     "输出遮蔽改写开关（客户端可见 [REDACTED:*] 改写）",
+			DescriptionLong: "默认关闭（2026-11-13 裁决：客户端一级必须还原，遮蔽标记不得改写客户端可见内容）。关闭时输出敏感检查照常运行：检测、台账、审核单、硬拦清单全部保留；占位符还原链照常还原；仅「把输出文本改写成 [REDACTED:*]」不做。开启后恢复旧行为（文本 lane 命中被遮蔽；thinking 等不可改写 lane 命中将 rewrite_refused 终止回合）。",
+		},
 		// ── Audit logging ─────────────────────────────────────────────
 		{
 			Key:             "audit.enabled",

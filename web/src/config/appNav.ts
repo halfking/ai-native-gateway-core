@@ -150,6 +150,10 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/operations/sales', labelKey: 'nav.item.salesWorkbench', icon: '💼', hideForTenant: true },
       // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动；superAdmin）。
       { path: '/operations/marketing', labelKey: 'nav.item.operationsMarketing', icon: '🎯', platformOps: true, hideForTenant: true }, // 2026-11-12 A-8 权限对齐：super → platformOps（与组内 pricing 页同档）
+      // 2026-11-13 A-17 收口 M3-T1/M3-T2：市场价格采集面（registry 管理 + 同步台账）
+      // 与价格对比分析面（评分/双地板三级币，只读对账——不喂路由/计费）。
+      { path: '/operations/market-prices', labelKey: 'nav.item.marketPrices', icon: '🌐', platformOps: true, hideForTenant: true },
+      { path: '/operations/price-compare', labelKey: 'nav.item.priceCompare', icon: '📊', platformOps: true, hideForTenant: true },
     ],
   },
   {

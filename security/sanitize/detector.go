@@ -148,7 +148,7 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 	var blocked string
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)
-	reserved := PlaceholderPattern.FindAllStringIndex(text, -1)
+	reserved := detectionExemptSpans(text)
 	credentialView, syntaxSpans := credentialtext.DetectionView(text)
 	var pairAccount, pairSecret bool
 	for _, p := range patterns {
@@ -268,6 +268,68 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 				}
 				continue
 			}
+			// r1043（2026-11-13，211 ZCode 事故轮）：账号声明/赋值族的值守卫。
+			//
+			// 生产实证（事故会话字典 38 个 account 占位符大多为毒值）：
+			// ① 遮蔽标记本身（`SSH_USER="[REDACTED:account]"`）被铸成占位符值
+			//   ⇒ 还原器把标记永久写回输出（标记投毒循环）；
+			// ② 模型代码片段（`'SSH_USER=' in l or l.startswith('…'`、
+			//   `\$(docker`、`${DB_USER:-$(whoami)}`）被当「账号」铸造 ⇒ 输入
+			//   侧把含引号的 span 挖走 ⇒ 模型收到的代码语法残缺；
+			// ③ `root` 等公开默认账号被占位符化 ⇒ 触发模型「过滤器捉迷藏」。
+			//
+			// 判据与边界见 r1043_account_literal.go；真阳性
+			// （zhangsan_ops_2024 / kaixuan.admin）不受影响（钉测钉住）。
+			//
+			// 标记免疫（① 的引擎面）对**所有规则族**生效且刻意放在**值级**：
+			// 值恰好整个是标记才豁免——粘着形态（`password=[REDACTED]真凭据`）
+			// 的规则匹配本来只咬住标记前缀，span 级豁免会把真凭据的检测一起
+			// 挖空（TestSedMaskWithProductionYAML 钉住的既有行为）。
+			if isRedactionMarkerValue(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			if p.sType == TypeAccount && accountValueIsExempt(p.kind, value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			// r1046（2026-11-13，211 rv-1735）：「形状像卡」≠「是卡」。快照
+			// 血统里仍带着 r1039 修复前的 bank_card 正则（任意 16-19 位数字
+			// 串），Chrome 进程参数 ID / 字节数 / 时间戳全部被当 credit_card
+			// ——输入面一晚铸了 550 个占位符（模型看不见自己的 ps/du 输出），
+			// 输出面在 thinking lane 想遮蔽 ⇒ rewrite_refused 杀整回合。
+			// 引擎级 IIN 前缀族 + Luhn 守卫（判据与取舍见
+			// r1046_credit_card_credibility.go），对所有规则来源同口径生效，
+			// 对已发布快照即刻生效，不动 DB。
+			//
+			// 同族第二层（legacy compliance.pii.* 无边界正则）：数字类 PII
+			// （phone / id_card / credit_card）不许是更长数字串的子串；
+			// id_card 另需省级前缀 + 真实出生日期的结构合法性（15 位串与
+			// 无日期结构的 18 位串都不是身份证）。
+			if p.sType == TypePhone || p.sType == TypeIDCard || p.sType == TypeCreditCard {
+				if !standaloneDigitRun(text, start, end) {
+					if snapshot != nil {
+						d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+					}
+					continue
+				}
+			}
+			if p.sType == TypeCreditCard && !credibleCardCandidate(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			if p.sType == TypeIDCard && !credibleIDCardCandidate(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
 			// r1037（2026-10-20，211）：network_destination 是**形状规则**——
 			// 它的 pattern 是通配 `(?s).+`，本身不带判别力，命中与否全看
 			// 「文本里有没有公网主机」。它保留原语义（r1016/r1028 契约），
@@ -281,6 +343,15 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 			}
 			typ := p.sType
 			if p.vendorKeyShape && !credibleSecretCandidate(value) {
+				continue
+			}
+			// r1042（2026-11-13，211 rv-1710）：git SSH remote 不是邮箱。引擎级
+			// 判定（而非改某一条 email 规则）⇒ 对所有已发布快照里的 email 类
+			// 规则同口径生效（pii.email / compliance.pii.1 / 运营自定义规则）。
+			if p.sType == TypeEmail && isGitSCPRemoteForm(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
 				continue
 			}
 			if typ == TypeServerIP || typ == TypeInternalIP {
@@ -566,6 +637,75 @@ func credibleSecretCandidate(value string) bool {
 		return false
 	}
 	return strings.ContainsFunc(body, func(r rune) bool { return r >= '0' && r <= '9' })
+}
+
+// markerEchoIndexPattern 是「无花括号、无 SENSITIVE 词」的占位符回声尾巴：
+// `:secret:3` / `:email:1` / `secret:3`。
+//
+// r1042（2026-11-13，211 rv-1635/rv-1691/rv-1720）：模型在输出里回显网关占位符
+// `{SENSITIVE:secret:3}` 时会逐层退化——restore 侧的 loose 语法（looseMarkerSpans）
+// 认识带词的退化（`SENSITIVE:secret:3`），但**连前导冒号都丢**的尾巴只有本模式
+// 认识。rv-1720 实证了第三种退化：**流式 delta 碎片边界**——前一个 fragment 以
+// `:` 结尾、本 fragment 以 `secret:3"` 开头，前导冒号被切走 ⇒ 事件路径逐帧检查
+// 在碎片上命中 password 规则（终态合并本可豁免，但事件路径先拦）⇒ 模式**不得
+// 依赖前导冒号**。
+//
+// 收窄轴（防散文/真凭据误豁免）：
+//   - 类型词限定在网关标记词表（见 placeholder.go 的 SensitiveType 常量）——
+//     `chapter:3` / `step:2` / `version:1` 不在词表；**password/token/apikey 也不在
+//     词表**（它们不是标记类型）⇒ `password:1234` 类真赋值不受影响；
+//   - 值必须是**紧贴冒号的纯数字、≤4 位**（占位符是每请求计数器）⇒ 带空格的
+//     真赋值（`secret: 4831`）与长数字（`secret:48312233`）不落形；代价＝
+//     「类型词 + 无空格 + ≤4 位纯数字」的真赋值（如 `secret:4831`）会被豁免——
+//     该形状与回声不可区分，接受并登记；
+//   - 冒号接受全角形态（`secret：3`）——restore 侧同款宽度容忍（数字只认
+//     ASCII：RE2 的 `\b` 只对 ASCII 词字符成立，全角数字会破坏尾边界）。
+var markerEchoIndexPattern = regexp.MustCompile(`(?i)\b(?:phone|id_card|email|credit_card|secret|internal_ip|server_ip|server_ipv6|account|name|custom|unknown)[:\x{FF1A}][0-9]{1,4}\b`)
+
+// detectionExemptSpans 返回检测器**不得命中**的字节区间（升序、已合并）：
+//
+//   - 花括号原形 `{SENSITIVE:type:index}`（既有行为，PlaceholderPattern）；
+//   - 带词退化 `SENSITIVE:secret:3` 及其全角折叠形态——候选区间来自 restore
+//     侧的 looseMarkerSpans，但**必须过严格校验**（parseLoosePlaceholder /
+//     looksLikeMarkerSpan）才能豁免：loose 扫描是故意宽松的（短花括号段一律
+//     是候选，restore 侧由校验器裁决），把候选直接当豁免会把任意短 JSON
+//     对象从检测面挖掉（`{"foo":"R7#kQ92!"}`，2026-11-13 本轮变异期实测）；
+//   - 无词尾巴 `:secret:3`（markerEchoIndexPattern，类型词表 + 索引位数
+//     双重收窄，本身即严格）。
+//
+// 这些区间只从规则命中的 span 里**挖掉标记字节本身**，标记里没有载荷
+// （类型是规则名、索引是计数器），挖掉它不构成泄漏面。
+//
+// r1043 注意：遮蔽标记的免疫**不在这里**（span 级会把 `password=[REDACTED]真凭据`
+// 这类「粘着形态」的**前缀匹配**也挖空 ⇒ 真凭据的检测一起消失）——标记免疫在
+// 值级判定（见下方 isRedactionMarkerValue）：值恰好**整个是**标记才豁免。
+func detectionExemptSpans(text string) [][]int {
+	spans := PlaceholderPattern.FindAllStringIndex(text, -1)
+	for _, candidate := range looseMarkerSpans(text) {
+		value := text[candidate[0]:candidate[1]]
+		if _, _, ok := parseLoosePlaceholder(value); ok || looksLikeMarkerSpan(value) {
+			spans = append(spans, candidate)
+		}
+	}
+	spans = append(spans, markerEchoIndexPattern.FindAllStringIndex(text, -1)...)
+	return mergeMarkerSpans(spans)
+}
+
+// isGitSCPRemoteForm 报告这个 email 形态的命中是不是 git SSH remote。
+//
+// r1042（2026-11-13，211 rv-1710）：`git@github.com`（以及 `git@<任意主机>`）
+// 是 git 的 SSH remote 形态，不是任何人的邮箱。它被 email 规则命中的两个代价
+// 都在生产实测过：输出侧，模型在 thinking 里推理「刚才什么被脱敏成了
+// email:1」时写下 remote，命中 ⇒ thinking lane 不可改写 ⇒ 整回合 rewrite_refused；
+// 输入侧，`git clone git@github.com:kaixuan/...` 被遮成占位符 ⇒ 可执行命令被打坏
+// （rv-1710 会话里两者同时发生）。local part 恰为 `git` 的邮箱在真实语料里
+// 不存在——那是 SSH 的服务账号约定，不是人名。
+func isGitSCPRemoteForm(value string) bool {
+	at := strings.IndexByte(value, '@')
+	if at <= 0 {
+		return false
+	}
+	return strings.EqualFold(value[:at], "git")
 }
 
 func outsideReservedSpans(start, end int, reserved [][]int) [][2]int {

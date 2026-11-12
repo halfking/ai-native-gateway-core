@@ -775,6 +775,16 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	dispatchDueAt := parseDispatchDueAt(r)
 	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
 	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
+	// 2026-11-13（glm-5.3-flash /v1/messages 全供应商不可用事故）：与 chat
+	// 面（handler.go）和 responses 面对称，把跨供应商故障转移的许可带进
+	// dispatch。此前本入口从不设置 DispatchAllowProviderChange ⇒ 零值 false
+	// ⇒ providerSwitchAllowed 把切换钉死在首供应商 ⇒ 首供应商 3×request_
+	// rejected（bigmodel coding 1210）后直接终态「All providers unavailable」，
+	// 而 resolve 面里其余 9 家可用候选一个都没试。三个协议入口必须同形
+	// （钉测：dispatch_provider_change_wiring_test.go）。
+	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := requestDispatchOptions(
+		logCtx, hasMultipleProviders(candidates),
+	)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
@@ -860,6 +870,11 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			JourneyGatewayInstanceID: journeyInstanceID,
 			JourneySeq:               journeySeq,
 			JourneyTerminal:          journeyTerminal,
+			// 2026-11-13：三面同形（见上方注释）。chat/responses 面自
+			// 2026-11 前就有；漏的是本入口。
+			DispatchAllowProviderChange: dispatchAllowProviderChange,
+			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchModelAlternatives:   dispatchModelAlternatives,
 		}
 	}
 

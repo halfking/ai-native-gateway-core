@@ -148,16 +148,38 @@ func TestPostSurfaceProbeScriptExistsAndParses(t *testing.T) {
 	}
 }
 
+// pspPython 解释器解析：python3 优先，回退 python。
+// ★ 只看 LookPath 不够：Windows 的 Microsoft Store「应用执行别名」会在
+//
+//	WindowsApps 里放一个 python3.exe/python.exe **存根**（0 字节 reparse 点，
+//	LookPath 找得到 ⇒ 执行 exit 9009）⇒ 必须真跑 `-c pass` 探测可用性
+//
+// （db_changelog_authoritative_gate_test.go 的候选回退先例 + 可用性探测）。
+func pspPython(t *testing.T) string {
+	t.Helper()
+	for _, cand := range []string{"python3", "python"} {
+		p, err := exec.LookPath(cand)
+		if err != nil {
+			continue
+		}
+		if err := exec.Command(p, "-c", "pass").Run(); err == nil {
+			return p
+		}
+	}
+	t.Fatalf("找不到可用的 python3/python 解释器（WindowsApps 存根不算）⇒ 分类器语法检查不可判")
+	return ""
+}
+
 // TestPostSurfaceClassifierExistsAndParses —— 分级器在位且是合法 Python。
 func TestPostSurfaceClassifierExistsAndParses(t *testing.T) {
 	p := pspPath(t, pscRelPath)
 	if _, err := os.Stat(p); err != nil {
 		t.Fatalf("%s 不存在：%v", pscRelPath, err)
 	}
-	cmd := exec.Command("python3", "-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", p)
+	cmd := exec.Command(pspPython(t), "-c", "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())", p)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("分类器语法错（★ python3 ast.parse 失败）：%v\n%s", err, out)
+		t.Fatalf("分类器语法错（★ python ast.parse 失败）：%v\n%s", err, out)
 	}
 }
 

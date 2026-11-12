@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -49,10 +50,31 @@ type ImagesGenerationsHandler struct {
 	upstream    *upstream.Client
 	keyVerifier imageKeyVerifier
 	rateLimiter ratelimit.RPMLimiter
+	// sanitizeInput / restoreHook 由 SetSanitizeGuard 注入（2026-11-13 脱敏域
+	// 审计 P2 收口）：此前本端点完全绕过 SmartSaniGuard——prompt 明文出上游、
+	// 响应占位符无从还原。nil 时行为与历史完全一致（零开销直通）。
+	sanitizeInput func(http.Handler) http.Handler
+	restoreHook   *sanitize.SanitizeRestoreInterceptor
 }
 
 func NewImagesGenerationsHandler(resolver imageProviderResolver, upstreamClient *upstream.Client) *ImagesGenerationsHandler {
 	return &ImagesGenerationsHandler{provider: resolver, upstream: upstreamClient}
+}
+
+// SetSanitizeGuard 挂载 SmartSaniGuard 的请求侧中间件与响应侧占位符还原。
+// 与 ChatHandler.SetSanitizeInputMiddleware 同一装配来源（installSmartSaniGuard）。
+func (h *ImagesGenerationsHandler) SetSanitizeGuard(mw func(http.Handler) http.Handler, restore *sanitize.SanitizeRestoreInterceptor) {
+	h.sanitizeInput = mw
+	h.restoreHook = restore
+}
+
+// SanitizeGuardWired 装配完整探针：输入中间件与还原 hook **成对**在场才返回
+// restore hook，否则 nil。装配序钉测用（半装配 = 只脱敏不还原 = 禁止态）。
+func (h *ImagesGenerationsHandler) SanitizeGuardWired() *sanitize.SanitizeRestoreInterceptor {
+	if h.sanitizeInput != nil && h.restoreHook != nil {
+		return h.restoreHook
+	}
+	return nil
 }
 
 func (h *ImagesGenerationsHandler) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimiter ratelimit.RPMLimiter) {
@@ -82,6 +104,31 @@ func (h *ImagesGenerationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// SmartSaniGuard 入口（与 ChatHandler.ServeHTTP 同款形态）：租户身份先于
+	// 中间件绑定（占位符映射按租户隔离，攻击者预置的租户头不被采信——
+	// sanitize.WithAuthenticatedTenant 的契约），中间件改写 body 后
+	// serveMediaInner 读到的已是脱敏后的请求。
+	if h.sanitizeInput != nil {
+		r = r.WithContext(sanitize.WithAuthenticatedTenant(r.Context(), mediaTenantID(keyInfo)))
+		h.sanitizeInput(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			h.serveMediaInner(w, req, keyInfo)
+		})).ServeHTTP(w, r)
+		return
+	}
+	h.serveMediaInner(w, r, keyInfo)
+}
+
+// mediaTenantID 归一 media 面的租户身份：verifier 关停的本地形态与 chat 的
+// no-verifier 模式同口径落 "default"，绝不采信请求头。
+func mediaTenantID(keyInfo *authentication.KeyInfo) string {
+	if keyInfo != nil && strings.TrimSpace(keyInfo.TenantID) != "" {
+		return keyInfo.TenantID
+	}
+	return "default"
+}
+
+func (h *ImagesGenerationsHandler) serveMediaInner(w http.ResponseWriter, r *http.Request, keyInfo *authentication.KeyInfo) {
+	requestID := w.Header().Get("X-Request-Id")
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxImagesRequestBytes+1))
 	if err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, requestID, "failed to read body", "invalid_request_error", "invalid_body")
@@ -131,6 +178,19 @@ func (h *ImagesGenerationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 		if status >= 200 && status < 300 {
+			// 响应侧占位符还原（输入侧脱敏的对称出口）。fail-closed：
+			// 还原通道报错（含残余保留标记）时 502 拒单，绝不把内部
+			// 标记或半还原原文漏给客户端；未启用时零开销直通。
+			if h.restoreHook != nil {
+				restored, changed, rerr := h.restoreHook.RestoreMediaBody(r.Context(), respBody)
+				if rerr != nil {
+					writeErrorJSON(w, http.StatusBadGateway, requestID, "response restore blocked", "server_error", "sanitize_restore_blocked")
+					return
+				}
+				if changed && restored != nil {
+					respBody = restored
+				}
+			}
 			if ct == "" {
 				ct = "application/json"
 			}

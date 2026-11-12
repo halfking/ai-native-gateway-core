@@ -1,6 +1,8 @@
 package ir
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -877,5 +879,43 @@ func TestIRScopedReporter_SetAsGlobal_RoutesThroughScope(t *testing.T) {
 	events := scope.Snapshot()
 	if len(events) != 1 {
 		t.Fatalf("scope expected 1 event via global helper, got %d: %+v", len(events), events)
+	}
+}
+
+// TestAnomaly_DefaultReporter_ByDesignDialectScopeDowngradedToInfo —
+// disposition 为 by_design 前缀的事件（Slice 2 方言管辖投影，厂商分歧 ≠
+// 语义损失）落日志面降级 INFO：事件照发，级别随事实走。2026-11-13 211
+// 实测其以每请求节奏打 WARN（986 条/2h ≈ 11.8k/24h）。
+func TestAnomaly_DefaultReporter_ByDesignDialectScopeDowngradedToInfo(t *testing.T) {
+	prev := SetAnomalyReporter(nil)
+	defer SetAnomalyReporter(prev)
+
+	var buf bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(oldDefault)
+
+	r := DefaultAnomalyReporter()
+	r(AnomalyEvent{
+		AnomalyType:    AnomalyProtocolLoss,
+		FieldPath:      "thinking",
+		SourceProtocol: "anthropic-messages",
+		TargetProtocol: "openai-chat",
+		Reason:         "rejected_by_target_dialect",
+		Metadata:       map[string]any{"disposition": "by_design_dialect_scope"},
+	})
+	r(AnomalyEvent{
+		AnomalyType:    AnomalyProtocolLoss,
+		FieldPath:      "x",
+		SourceProtocol: "openai-chat",
+		Reason:         "loss",
+	})
+
+	out := buf.String()
+	if strings.Count(out, "\"level\":\"INFO\"") != 1 || strings.Count(out, "\"level\":\"WARN\"") != 1 {
+		t.Fatalf("by_design must log INFO and real loss must log WARN, got: %s", out)
+	}
+	if !strings.Contains(out, "by_design_dialect_scope") {
+		t.Fatalf("by_design event content must survive the downgrade, got: %s", out)
 	}
 }

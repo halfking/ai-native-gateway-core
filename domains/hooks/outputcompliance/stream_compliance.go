@@ -697,6 +697,14 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		}
 		for _, part := range parts {
 			if part.field.immutable || (it.mandatory && (isToolArgumentLane(lane) || part.field.label != "")) {
+				// r1045（2026-11-13，rv-1735 复盘）：refused 日志此前不带
+				// **想改写的底层规则**——「lane 被杀」看得见、「为什么想改写」
+				// 看不见 ⇒ 取证只能靠审核单摘录回放。与 blocked 日志同形补齐
+				// reason_codes / rule_id（载荷预览仍故意不入日志）。
+				refusedReasons := make([]string, 0, len(result.Issues))
+				for _, issue := range result.Issues {
+					refusedReasons = append(refusedReasons, issue.Subtype)
+				}
 				slog.Warn("output_compliance: refused stream lane rewrite",
 					"request_id", meta.RequestID,
 					"session_id", meta.SessionID,
@@ -705,6 +713,8 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 					"mandatory", it.mandatory,
 					"immutable_field", part.field.immutable,
 					"lane_bytes", len(original),
+					"reason_codes", refusedReasons,
+					"rule_id", policyRuleFromIssues(result.Issues),
 				)
 				return nil, &errorsx.PolicyBlockError{
 					RuleID: GuardRewriteRefusedRuleID,
@@ -839,7 +849,11 @@ func errOrMissingResult(err error) error {
 
 func (it *OutputComplianceInterceptor) shouldRedact(ctx context.Context, callerOwner, sessionID, tenantID string) bool {
 	if it.mandatory {
-		return true
+		// r1045（2026-11-13 owner 裁决「客户端一级一定要还原」）：强制守卫的
+		// 遮蔽改写默认关闭——检测/台账/硬拦清单照常（streamState.enabled 与
+		// releaseCheckedFrames 的 Blocked 分支不受影响），只有「把 lane 改写成
+		// [REDACTED:*]」需要显式开启 sanitize.output_mask_enabled。
+		return outputMaskingEnabled()
 	}
 	dataOwner := ""
 	if it.ownerFn != nil {
@@ -996,6 +1010,32 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 				//   路径**（releaseCheckedFrames）已按它们归因 ⇒ ⇒ 本处补齐，
 				//   两处调用点口径一致（不再出现「同一形态在 lane 路有归因、
 				//   在 event 路没有」）。
+				//
+				// ★ r1042（2026-11-13，211 rv-1720）：审核单有了归因，但**日志
+				//   仍然没有**——lane 路径有 refused WARN（见 releaseCheckedFrames），
+				//   事件路径此前一条日志不打 ⇒ 线上「客户端报 output_policy_blocked
+				//   而网关日志零痕迹」⇒ 排查只能靠翻审核单。补齐与 lane 路径同形
+				//   的 WARN（载荷预览仍故意不入日志：被拦文本可能正是策略拒绝
+				//   外发的字节）。
+				//
+				// ★ r1045（2026-11-13，rv-1735 复盘）：与 lane 路径同步补齐
+				//   reason_codes / rule_id——「想改写的底层规则」必须进日志。
+				refusedReasons := make([]string, 0, len(result.Issues))
+				for _, issue := range result.Issues {
+					refusedReasons = append(refusedReasons, issue.Subtype)
+				}
+				slog.Warn("output_compliance: refused stream event rewrite",
+					"request_id", meta.RequestID,
+					"session_id", meta.SessionID,
+					"tenant_id", meta.TenantID,
+					"lane", field.lane,
+					"label", label,
+					"mandatory", it.mandatory,
+					"immutable_field", field.immutable,
+					"field_bytes", len(original),
+					"reason_codes", refusedReasons,
+					"rule_id", policyRuleFromIssues(result.Issues),
+				)
 				return nil, &errorsx.PolicyBlockError{
 					RuleID: GuardRewriteRefusedRuleID,
 					Reason: policyBlockErrorReason("output policy refused to rewrite a signed or sensitive tool stream event", GuardRewriteRefusedRuleID, field.lane),

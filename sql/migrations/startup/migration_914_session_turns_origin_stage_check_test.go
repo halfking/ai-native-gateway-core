@@ -521,6 +521,11 @@ func TestNoGoSourceStillClaimsTheRetiredOriginStageCheck(t *testing.T) {
 		if relErr != nil {
 			rel = path
 		}
+		// ★ Windows 假红族根修：filepath.Walk/Rel 在 Windows 上产出反斜杠
+		//   （internal\probekind\probekind.go），与豁免表的正斜杠键对不上
+		//   ⇒ 已豁免的订正说明文件在 Windows 上被误判成「未登记」。
+		//   ToSlash 在 Unix 上是恒等函数 ⇒ 牙不变、只修分隔符。
+		rel = filepath.ToSlash(rel)
 		if why, ok := retiredOriginStageAllowlist[rel]; ok {
 			// ★ 豁免的附加条件：必须同时提到现役形态（否则这不是「订正说明」，
 			//   而是一句还在生效的错误断言）。

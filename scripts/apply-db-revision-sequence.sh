@@ -2638,6 +2638,11 @@ files=(
   #   （db.recentSuccessRateEnsureSQL）收敛到正确形态（实测 index_aligned=t）
   #   ⇒ 但「账本说没做」就是「下次有人按账本判断要重跑什么」时会踩空。
   "$ROOT_DIR/sql/migrations/startup/962_recent_success_rate_index_aligned.sql"
+  # ★ 963（2026-11-13 24h 审计轮路径③）：credential_total_requests_rollup ——
+  #   monitor-summary 的 total_requests 预物化表（写入方 bg.CredentialRollupRefresher，
+  #   读面 O(1) 化、空表回落旧两臂实时计数）。六通道登记（本次逐通道补齐，
+  #   吸取 962 漏登记本清单致 211 记账链断层的教训）。
+  "$ROOT_DIR/sql/migrations/startup/963_credential_total_requests_rollup.sql"
   # ★ 963（2026-11-13 全面审计v3 53 增量移交轮）：promote_session_turns_hot_to_partition
   #   的签名默认保留期 '7 days' → '8 hours'。★ 这不是首次对齐：688 曾对齐到
   #   '8 hours'，640 的投递序事故（869 头注释有记录）用旧形态体把对齐覆盖掉，
@@ -2645,7 +2650,7 @@ files=(
   #   963 把 897 的现行体原样重装、仅改 DEFAULT 一行。
   #   PartitionManager / admin 手动端点都显式传参 ⇒ 自动调度零行为变化；
   #   影响面 = 裸调 `SELECT promote_session_turns_hot_to_partition();` 的默认窗口。
-  "$ROOT_DIR/sql/migrations/startup/963_promote_session_turns_default_retention_realign.sql"
+  "$ROOT_DIR/sql/migrations/startup/964_promote_session_turns_default_retention_realign.sql"
 )
 
 
@@ -2753,7 +2758,7 @@ intentional_function_chains=(
   # ★ 963（2026-11-13 53 增量移交轮）追加为链尾：函数体 = 897 逐字，仅把签名
   #   默认 '7 days' → '8 hours'（688 对齐被 640 事故覆盖、869 有意保守在役错值
   #   之后的再对齐）。963 必须是最后一项 —— 它是活库里应有的最终体（默认值面）。
-  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|897_session_turns_promote_final_success_self_heal.sql|963_promote_session_turns_default_retention_realign.sql|'
+  'promote_session_turns_hot_to_partition|707_session_turns_s1a.sql|640_session_turns_protocol_fields.sql|869_promote_session_turns_trace_events.sql|897_session_turns_promote_final_success_self_heal.sql|964_promote_session_turns_default_retention_realign.sql|'
   # 2026-10-23（§143.97，会话族 hot 排水轮）：promote_session_bodies_hot_to_partition
   # 的链 = 708 → 899，**899 必须是最后一项**。
   #
@@ -3251,11 +3256,15 @@ ledger_artifact_probe "961_market_scoring_runs.sql" \
 #   LIKE 的 '%'/'_' 通配会与它打架 ⇒ 用 position('...' in prosrc) > 0 最稳。
 ledger_artifact_probe "962_recent_success_rate_index_aligned.sql" \
   "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_success_rate' AND position('CASE WHEN credential_id' in p.prosrc) > 0) AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_cache_hit_rate' AND position('CASE WHEN credential_id' in p.prosrc) > 0)"
+# ★ 963 的产物 = **预物化表**（写入方 bg.CredentialRollupRefresher；读面
+#   admin/credential_monitor.go 双形态 CASE：表非空走 O(1)，空表回落两臂计数）。
+ledger_artifact_probe "963_credential_total_requests_rollup.sql" \
+  "to_regclass('public.credential_total_requests_rollup') IS NOT NULL"
 # ★ 963 的产物 = promote_session_turns_hot_to_partition 的**签名默认值**（不是表/索引）
 #   ⇒ 默认值不在 prosrc（那是函数体）而在签名里 ⇒ 探针读 pg_get_functiondef；
 #   PG 把 '8 hours' 归一化渲染为 '08:00:00'::interval（963 落地前已在临时夹具库实测）。
 #   同时钉 897 的 demote 自愈步仍在位（963 只改默认值这一行）。
-ledger_artifact_probe "963_promote_session_turns_default_retention_realign.sql" \
+ledger_artifact_probe "964_promote_session_turns_default_retention_realign.sql" \
   "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'promote_session_turns_hot_to_partition' AND position('DEFAULT ''08:00:00''::interval' in pg_get_functiondef(p.oid)) > 0 AND position('SET is_final_success = FALSE' in p.prosrc) > 0)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"

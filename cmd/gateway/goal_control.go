@@ -555,7 +555,7 @@ func newSanitizePatternDetector() *sanitize.PatternDetector {
 // 入口：main.go 在调用 initGoalControl 之外单独调用本函数，
 //
 //	bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
-func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client, db *sql.DB) *sanitize.PatternDetector {
+func installSmartSaniGuard(chatHandler *streaming.ChatHandler, imagesHandler *streaming.ImagesGenerationsHandler, videosHandler *streaming.VideosGenerationsHandler, redisClient *redis.Client, db *sql.DB) *sanitize.PatternDetector {
 	if chatHandler == nil {
 		return nil
 	}
@@ -571,6 +571,15 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 	} else {
 		chatHandler.SetSanitizeInputMiddleware(mwFn)
 		slog.Info("smart_sani_guard: input middleware wired")
+		// media generations 面同款装配（2026-11-13 脱敏域审计 P2：此前
+		// images/videos 两个端点完全绕过 SmartSaniGuard）。响应侧还原
+		// hook 在下方 2 段构建成功后一并挂（二者缺一不可，与 chat 同纪律）。
+		if imagesHandler != nil {
+			imagesHandler.SetSanitizeGuard(mwFn, nil)
+		}
+		if videosHandler != nil {
+			videosHandler.SetSanitizeGuard(mwFn, nil)
+		}
 	}
 
 	// 2. 响应侧还原拦截器：先恢复输出中的原文，再让 output_compliance
@@ -579,7 +588,23 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 	if restoreErr != nil || restoreHook == nil {
 		slog.Warn("smart_sani_guard: restore interceptor init failed, skip response-side",
 			"error", restoreErr)
+		// media 面撤回到无守卫（输入中间件已在上段挂上）：半装配
+		// （只脱敏不还原）比不装配更糟——占位符出得去、原文回不来。
+		// 撤回后 media 面保持历史直通行为，等下一次启动重试成对装配。
+		if imagesHandler != nil {
+			imagesHandler.SetSanitizeGuard(nil, nil)
+		}
+		if videosHandler != nil {
+			videosHandler.SetSanitizeGuard(nil, nil)
+		}
 		return detector
+	}
+	// media 面的响应侧还原补挂：输入中间件 + 还原拦截器成对生效。
+	if imagesHandler != nil {
+		imagesHandler.SetSanitizeGuard(mwFn, restoreHook)
+	}
+	if videosHandler != nil {
+		videosHandler.SetSanitizeGuard(mwFn, restoreHook)
 	}
 
 	// 把现有 chain + 还原拦截器重组成新 chain，保持插入顺序。

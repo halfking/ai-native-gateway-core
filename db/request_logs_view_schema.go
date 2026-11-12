@@ -765,6 +765,69 @@ func SessionFamilyCredentialCountSourceSQL(credExpr string) string {
 	return "(" + leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") + ")"
 }
 
+// SessionFamilyCredentialCountAggregateSQL 返回「**全凭据 × 两臂计数**」的
+// 一次聚合 SQL（迁移 963 预物化的写入源，2026-11-13 24h 审计轮路径③）。
+//
+// # 形态与口径
+//
+//	SELECT credential_id, SUM(cnt) FROM (
+//	  SELECT <SessionFamilyCredentialIDExpr> AS credential_id, COUNT(*) AS cnt
+//	    FROM public.session_turns_hot GROUP BY 1
+//	  UNION ALL
+//	  SELECT <SessionFamilyCredentialIDExpr> AS credential_id, COUNT(*) AS cnt
+//	    FROM public.session_turns GROUP BY 1
+//	) agg WHERE credential_id IS NOT NULL GROUP BY credential_id
+//
+// ★ credential_id 表达式复用 **SessionFamilyCredentialIDExpr 逐字同款**
+// （与按凭据 source / 索引表达式 / 962 函数体同源）⇒ 口径等价的前提①
+// 由单点常量承担，不是字符串复写。
+// ★ 两臂不重叠（promote 是移动）⇒ SUM 合并不重复计数（前提③）。
+// ★ 无 details 腿 ⇒ LEFT JOIN 不改行数的顾虑在这里不存在。
+//
+// # 252 生产实测（2026-11-13，只读）
+//
+//	全凭据一次聚合 = **17.3 s**（1,416,428 行 / 两臂 GROUP BY）
+//	——作为后台 job 的单次成本可承受（对比：端点逐凭据实时计数
+//	热凭据 ~12 s × 74 ⇒ 必越 15 s context）。
+//
+// # 消费方
+//
+//	bg.CredentialRollupRefresher 把本聚合 UPSERT 进
+//	public.credential_total_requests_rollup（迁移 963，单语句原子：
+//	空表 → 全量行一次可见）。
+func SessionFamilyCredentialCountAggregateSQL() string {
+	leg := func(src string) string {
+		return "SELECT " + SessionFamilyCredentialIDExpr + " AS credential_id, COUNT(*) AS cnt FROM " + src + " t GROUP BY 1"
+	}
+	return "SELECT credential_id, SUM(cnt) AS total_requests FROM (" +
+		leg("public.session_turns_hot") + " UNION ALL " + leg("public.session_turns") +
+		") agg WHERE credential_id IS NOT NULL GROUP BY credential_id"
+}
+
+// CredentialTotalRequestsReadSQL 返回 monitor-summary 读面 total_requests 的
+// **双形态表达式**（迁移 963 预物化，2026-11-13 24h 审计轮路径③）：
+//
+//	CASE WHEN 预物化表非空 THEN 读预物化（O(1) PK 探针/行取）
+//	     ELSE 回落旧两臂实时计数（SessionFamilyCredentialCountSourceSQL 同款）
+//	END
+//
+// # 为什么带回落分支（口径零变化的实现形态）
+//
+// 预物化表由 bg.CredentialRollupRefresher 异步填充（boot 不等首跑）；
+// 「表全空」只有两种成因——**job 尚未首跑**（新装/刚部署）与**持续失败**
+// ——两种情况下回落分支都给出与 963 之前**逐字相同**的行为（包括慢与
+// 超时语义）。表非空 ⇒ 单语句 UPSERT 保证全量行一次可见 ⇒ 读面拿到的
+// 永远是完整快照（新鲜度 ≤ 刷新间隔），不存在半刷新态。
+//
+// ★ 口径：同一数字定义（两臂 all-time 计数），仅新鲜度有界陈旧——
+// 第五轮主档 §八第 12 条路径③「口径零变化」的落地形态。
+// ★ credExpr 会被拼进回落分支的两处谓词（同 SessionFamilyCredentialCountSourceSQL）。
+func CredentialTotalRequestsReadSQL(credExpr string) string {
+	return "(CASE WHEN EXISTS (SELECT 1 FROM public.credential_total_requests_rollup)" +
+		" THEN COALESCE((SELECT tr.total_requests FROM public.credential_total_requests_rollup tr WHERE tr.credential_id = " + credExpr + "), 0)" +
+		" ELSE COALESCE((SELECT COUNT(*) FROM " + SessionFamilyCredentialCountSourceSQL(credExpr) + " q), 0) END)"
+}
+
 // SessionFamilyMostUsedClientModelSourceSQL 返回「**most-used client_model**」
 // 查询用的**窄投影** source（7 列；两臂 hot ∪ 母表，各带 details LEFT JOIN 腿）。
 //

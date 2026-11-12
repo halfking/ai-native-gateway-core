@@ -80,6 +80,9 @@ type Handler struct {
 	// topologyProviderKindsDB（2026-10-28 选路层轮）：provider-kinds 端点的
 	// 注入口，理由与 topologyStatsDB 相同 —— 单测要能注入 pgxmock。
 	topologyProviderKindsDB topologyStatsDB
+	// marketPlatformDB（2026-11-13 A-17 收口 M1-T3）：市场平台注册表读写面
+	// 注入口，同款范式（nil ⇒ 用 h.db）—— market_platforms.go。
+	marketPlatformDB marketPlatformDB
 	bodyServiceJWTSecret string
 	secret               string
 	encKey               []byte
@@ -1631,6 +1634,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/model-credibility/scan", h.superAdmin(h.handleModelCredibilityScan))
 
 		h.registerMaasRoutes(mux)
+
+		// 2026-11-13（A-17 收口 M1-T3）：市场平台注册表（958）admin 读写面
+		// —— A-17 双币制区域/币种裁定权威 + A-5 我方平台排除清单。元数据表，
+		// 无价格数字 ⇒ 无「行情价回流」通路（红线锚点见 market_platforms.go 头注释）。
+		mux.HandleFunc("GET /api/admin/market/platforms", h.superAdmin(h.handleMarketPlatformsList))
+		mux.HandleFunc("PUT /api/admin/market/platforms/{platformId}", h.superAdmin(h.handleMarketPlatformUpdate))
+		// M3-T2：价格对比分析页读面（C1/C2/C3 评分行 + 双地板对拍，只读对账）。
+		mux.HandleFunc("GET /api/admin/market/compare", h.superAdmin(h.handleMarketCompare))
 
 		// 2026-11-05 W1：报价系统 MVP admin 面（supply/demand/quotes，
 		// 角色闸在应用层 —— 自营内部运营表，无 RLS，见 sales 包头注释）。

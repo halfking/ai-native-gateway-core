@@ -11,7 +11,7 @@ func TestResponsesDispatchOptionsPreserveProviderAndModelSwitchPolicy(t *testing
 	t.Cleanup(func() { dispatch.SetModelChangeEnabled(previous) })
 
 	dispatch.SetModelChangeEnabled(true)
-	allowProvider, allowModel, alternatives := responsesDispatchOptions(
+	allowProvider, allowModel, alternatives := requestDispatchOptions(
 		&RequestLogContext{IsAutoRequest: true, AutoFallbackModels: []string{"model-b", "model-c"}},
 		true,
 	)
@@ -22,13 +22,13 @@ func TestResponsesDispatchOptionsPreserveProviderAndModelSwitchPolicy(t *testing
 		t.Fatalf("model alternatives = %v, want [model-b model-c]", alternatives)
 	}
 
-	allowProvider, allowModel, alternatives = responsesDispatchOptions(nil, true)
+	allowProvider, allowModel, alternatives = requestDispatchOptions(nil, true)
 	if !allowProvider || allowModel || alternatives != nil {
 		t.Fatalf("non-auto policy = provider:%v model:%v alternatives:%v", allowProvider, allowModel, alternatives)
 	}
 
 	dispatch.SetModelChangeEnabled(false)
-	allowProvider, allowModel, alternatives = responsesDispatchOptions(
+	allowProvider, allowModel, alternatives = requestDispatchOptions(
 		&RequestLogContext{IsAutoRequest: true, AutoFallbackModels: []string{"model-b"}},
 		false,
 	)

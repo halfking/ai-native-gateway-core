@@ -1,4 +1,4 @@
--- 963_promote_session_turns_default_retention_realign.down.sql
+-- 964_promote_session_turns_default_retention_realign.down.sql
 -- 回滚 = **重放 897 的函数体**（★ 即「退回 688 对齐被吃掉后的 '7 days' 形态」）。
 --
 -- ★ 幂等：YES（纯 CREATE OR REPLACE FUNCTION）。
@@ -226,7 +226,7 @@ $$;
 COMMENT ON FUNCTION public.promote_session_turns_hot_to_partition(INTERVAL, INTEGER) IS
   'Move cold rows from session_turns_hot to monthly partitions. 897 keeps 869''s catalog-derived column list and adds the final-success self-heal (695 design): the hardcoded 54-column list silently dropped 52 columns (trace_events, is_final_success, request_delta, identity_hash, ...) on every promotion. Columns are now derived from pg_attribute and mapped by name, with a hot/parent shape guard, so symmetric ADD COLUMN flows through and asymmetric drift raises instead of dropping data. 897 adds the demote step that 695 introduced for the v1 request_logs family: before the batch is selected, a hot row whose (tenant_id, session_id, partition_date) already holds is_final_success in the parent is demoted to FALSE, so the batch INSERT can no longer violate uq_session_turns_final_success (23505) and roll the whole batch back.';
 
-DO $post_963_down$
+DO $post_964_down$
 DECLARE
     v_fndef TEXT;
 BEGIN
@@ -236,9 +236,9 @@ BEGIN
        AND p.proname = 'promote_session_turns_hot_to_partition'
        AND pg_get_function_identity_arguments(p.oid) = 'p_retention interval, p_batch_size integer';
     IF position('DEFAULT ''7 days''::interval' in v_fndef) = 0 THEN
-        RAISE EXCEPTION '963 down post-condition failed: p_retention default is not the pre-963 7-day form';
+        RAISE EXCEPTION '964 down post-condition failed: p_retention default is not the pre-964 7-day form';
     END IF;
 END
-$post_963_down$;
+$post_964_down$;
 
 COMMIT;

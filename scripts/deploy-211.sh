@@ -42,6 +42,20 @@
 #   bash scripts/deploy-211.sh --dry-run       # 打印目标合同 JSON
 #   bash scripts/deploy-211.sh --force         # 转交引擎：目标机锁恢复（陈旧锁判定后抢回；引擎 deploy_lib lock_recover_remote）
 #
+# ── 双通道 ssh（2026-11-12 内外网双位置轮）──────────────────────────────
+#   211 有两条 ssh 通道（~/.ssh/config）：
+#     · 内网/路由  211      → 192.168.31.211（31 网段直连；从外网/其他网段走
+#       lan-router-100 时**不通**——CGNAT 出口 + netbird 常态 Connecting）
+#     · mesh 中继  211-mesh → 100.106.67.198（netbird relay，外网可用；
+#       首次 ssh 握手 15~20s，`ConnectTimeout` 必须 ≥ 15）
+#   通道选择（优先级从高到低）：
+#     1. 显式环境变量 DD_SSH_TARGET=<别名>（原样生效，最高优先）
+#     2. 显式参数 --via-mesh（强制走 211-mesh）
+#     3. 自动探测：内网别名 ping 通（<3s）⇒ 用内网；否则 ⇒ 回落 mesh
+#   ★ 通道只影响 **ssh 怎么连**；DD_HOST（192.168.31.211）是目标机自身的
+#     LAN 地址，公网复验/goacos 注册照旧用它 —— 两条通道下**都不变**。
+#   ★ 探测通过的通道会打印到日志（"ssh 通道: ..."），排查时先看这一行。
+#
 # 前端: **不需要手工预构建**。引擎在**部署机**侧（--via 分支）先跑
 #   scripts/lib/node-pm.sh 的包管理器决策 → 必要时按 lockfile 装依赖 →
 #   pnpm build web / pnpm build web-mobile → 再判产物新鲜度 → 随 tar 上树
@@ -108,6 +122,18 @@ fi
 export DD_SLOT_A_PORT="${DD_SLOT_A_PORT:-8781}"
 export DD_SLOT_B_PORT="${DD_SLOT_B_PORT:-8783}"
 
+# ── ssh 双通道变量：**必须在这里定义**（与上方槽位端口同理）────────────
+#   --dry-run 的合同 JSON 在参数分派段就要打印解析出的 ssh 通道 ⇒ 通道解析
+#   （_dd_resolve_ssh_channel）会读这三个变量 ⇒ 若定义在下方「主机信息」块，
+#   dry-run 会撞 set -u 未绑定变量直接死（2026-11-12 实测 rc=1）。
+#   · 211      → 192.168.31.211：31 网段直连；外网/其他网段常态不通
+#   · 211-mesh → 100.106.67.198：netbird relay，外网可用（ssh 握手 15~20s）
+#   ★ 通道只影响 **ssh 怎么连**；DD_HOST 是目标机自身 LAN 地址（公网复验/
+#     goacos 注册用），两条通道下都不变。
+export DD_SSH_TARGET="${DD_SSH_TARGET:-}"
+export DD_SSH_MESH_TARGET="${DD_SSH_MESH_TARGET:-211-mesh}"
+export DD_HOST="${DD_HOST:-192.168.31.211}"
+
 # Password authentication is never used by the canonical deploy path. Clear a
 # stale inherited value so unrelated shell configuration cannot block a key-only
 # deployment or leak into child processes.
@@ -130,6 +156,61 @@ extract_force_unlock FORCE_UNLOCK ARGS "$@"
 
 # bash 3.2 + set -u: empty-array "${ARGS[@]}" / "${ARGS[*]}" expansions die as
 # unbound — guard by count (no-arg `bash scripts/deploy-211.sh` path).
+
+# =====================================================================
+# ── --via-mesh / 通道解析（2026-11-12 内外网双位置轮）──────────────────
+#   ★ 定义在参数分派（--dry-run）**之前**：dry-run 的合同 JSON 也要带通道。
+#   211 有两条 ssh 通道（~/.ssh/config）：
+#     · 内网/路由  211      → 192.168.31.211（31 网段直连；从外网/其他网段走
+#       lan-router-100 时**不通**——CGNAT 出口 + netbird 常态 Connecting）
+#     · mesh 中继  211-mesh → 100.106.67.198（netbird relay，外网可用；
+#       首次 ssh 握手 15~20s，全局 ConnectTimeout=120s 已覆盖）
+#   优先级：显式 DD_SSH_TARGET > --via-mesh > 自动探测（ping 内网 3s）。
+#   ★ 通道只影响 **ssh 怎么连**；DD_HOST（192.168.31.211）是目标机自身的
+#     LAN 地址，公网复验/goacos 注册照旧用它 —— 两条通道下**都不变**。
+DD_FORCE_MESH=0
+if [[ " ${ARGS[*]+${ARGS[*]}} " == *' --via-mesh '* ]]; then
+  DD_FORCE_MESH=1
+  _dd_args2=()
+  for _dd_arg in ${ARGS[@]+"${ARGS[@]}"}; do
+    [[ "$_dd_arg" == "--via-mesh" ]] && continue
+    _dd_args2+=("$_dd_arg")
+  done
+  ARGS=("${_dd_args2[@]+"${_dd_args2[@]}"}")
+fi
+
+_dd_resolve_ssh_channel() {
+  # ① 显式 DD_SSH_TARGET（调用方 export 过）最高优先 —— 原样生效。
+  if [[ -n "${DD_SSH_TARGET:-}" ]]; then
+    echo "[deploy-211] ssh 通道: ${DD_SSH_TARGET}（DD_SSH_TARGET 显式指定）" >&2
+    return 0
+  fi
+  # ② --via-mesh：强制 mesh（探测失败也用它，让 ssh 自己报错——显式语义）。
+  if [[ "${DD_FORCE_MESH:-0}" == "1" ]]; then
+    DD_SSH_TARGET="$DD_SSH_MESH_TARGET"
+    export DD_SSH_TARGET
+    echo "[deploy-211] ssh 通道: ${DD_SSH_TARGET}（--via-mesh 显式指定）" >&2
+    return 0
+  fi
+  # ③ 自动探测：内网别名 ping 得通（3s 内）⇒ 内网；否则回落 mesh。
+  #   ★ macOS ping 用 -t <秒>；Linux ping 用 -W <秒>——按平台给参数。
+  local _ping_ok=0
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    ping -c 1 -t 3 "$DD_HOST" >/dev/null 2>&1 && _ping_ok=1
+  else
+    ping -c 1 -W 3 "$DD_HOST" >/dev/null 2>&1 && _ping_ok=1
+  fi
+  if [[ "$_ping_ok" == "1" ]]; then
+    DD_SSH_TARGET="${DD_SSH_INTERNAL_TARGET:-211}"
+    export DD_SSH_TARGET
+    echo "[deploy-211] ssh 通道: ${DD_SSH_TARGET}（内网直连探测通过）" >&2
+  else
+    DD_SSH_TARGET="$DD_SSH_MESH_TARGET"
+    export DD_SSH_TARGET
+    echo "[deploy-211] ssh 通道: ${DD_SSH_TARGET}（内网 ${DD_HOST} ping 不通 ⇒ 回落 mesh 中继）" >&2
+  fi
+}
+
 if (( ${#ARGS[@]} > 0 )); then
   for arg in "${ARGS[@]}"; do
     [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,40p' "$0"; exit 0; }
@@ -139,8 +220,12 @@ if (( ${#ARGS[@]} > 0 )); then
     # nginx upstream 实际指向的端口决定（事实优先于状态文件）。
     # ⚠ 端口从下面的 export 读，**不写死字面量** ⇒ 改了 DD_SLOT_*_PORT 时
     #   dry-run 的合同 JSON 不会继续报旧端口（否则合同与实际不一致）。
-    printf '{"target":"211","slot_a_port":"%s","slot_b_port":"%s","active_slot":null,"candidate_slot":null}\n' \
-      "${DD_SLOT_A_PORT:-8781}" "${DD_SLOT_B_PORT:-8783}"
+    # ★ 2026-11-12：合同里带上实际解析出的 ssh 通道（双通道轮）——
+    #   dry-run 是「先看清要走哪条路」的工具，通道恰恰是这条路的一部分；
+    #   探测不额外耗时（ping 3s 上限），不影响 dry-run 的轻量语义。
+    _dd_resolve_ssh_channel
+    printf '{"target":"211","ssh_channel":"%s","slot_a_port":"%s","slot_b_port":"%s","active_slot":null,"candidate_slot":null}\n' \
+      "${DD_SSH_TARGET}" "${DD_SLOT_A_PORT:-8781}" "${DD_SLOT_B_PORT:-8783}"
     exit 0
   fi
 fi
@@ -182,8 +267,9 @@ export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-120}"
 export DD_TARGET="211"
 # ssh 目标与探测 IP 分开：ssh 走别名（~/.ssh/config 里带 User/Port/密钥），
 # 探测 IP 用于切流后的公网复验（--resolve 到 211 的 LAN 443 监听）。
-export DD_SSH_TARGET="${DD_SSH_TARGET:-211}"
-export DD_HOST="${DD_HOST:-192.168.31.211}"
+# ★ DD_SSH_TARGET / DD_SSH_MESH_TARGET / DD_HOST 三个通道变量**已定义在文件头**
+#   （dry-run 合同需要）——此处不再重复 export（重复 export 是无害的，但会
+#   诱导「在两处各改一份默认值」的漂移，2026-11-12 双通道轮收口时删）。
 export DD_STATE_DIR="${DD_STATE_DIR:-/opt/llm-gateway-go-211}"
 export DD_REMOTE_ROOT="${DD_REMOTE_ROOT:-/root/llm-gateway-go-211}"
 export DD_NETWORK="${DD_NETWORK:-llm-gateway-net}"
@@ -224,6 +310,17 @@ export DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-211.itestu.cn}"
 export DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
 export DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
 
+# =====================================================================
+# ── 通道解析执行（真实部署路径；--via-mesh 的 flag 剥离与解析函数都定义
+#    在文件头参数分派段）──
+#   ★ 历史缺陷留痕（2026-11-12 双通道轮收口）：本段曾有两份重复实现——
+#     这份后置副本无条件 `DD_FORCE_MESH=0`，会把前一份剥 flag 时置上的 1
+#     洗掉（flag 已被剥 ⇒ 后置检测永远匹配不上）⇒ `--via-mesh` 在真实部署
+#     路径上静默失效（只有 dry-run 那次解析是对的）。已删除后置副本，
+#     单一实现留在文件头；此处只保留调用（--doctor 与 exec 都消费 DD_SSH_TARGET）。
+_dd_resolve_ssh_channel
+
+# =====================================================================
 # ★ 2026-10-23：--doctor = **只读体检**（不部署、不改配置、不 reload）。
 #   回答「这台机器上的「流量 → 槽位 → 端口」绑定还是真的吗？」
 #   ⇒ 211 的 nginx 把活跃槽端口**烤死**在 upstream 块里（154/245 是 include

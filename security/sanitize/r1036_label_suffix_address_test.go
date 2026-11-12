@@ -67,7 +67,9 @@ func TestR1036LabelSuffixIsNotAddress(t *testing.T) {
 		{"标签+号+手机号", "手机号 13800138001", "手机号 {SENSITIVE:phone:1}"},
 		{"前缀+标签+号+手机号", "请记住手机号 13800138001", "请记住手机号 {SENSITIVE:phone:1}"},
 		{"轮次前缀+标签+号+手机号", "第1轮：手机号 13800138001", "第1轮：手机号 {SENSITIVE:phone:1}"},
-		{"标签+号+银行卡", "卡号 6222021234567890123", "卡号 {SENSITIVE:credit_card:1}"},
+		// r1046：卡号换 Luhn 合法值（原 6222021234567890123 不过 Luhn，
+		// r1046 起 credit_card 候选须过 IIN+Luhn 可信度门）。
+		{"标签+号+银行卡", "卡号 6222021234567890128", "卡号 {SENSITIVE:credit_card:1}"},
 		{"标签+号+邮箱", "邮箱 zhangsan@example.com", "邮箱 {SENSITIVE:email:1}"},
 		{"标签+号+身份证", "身份证 110101199003078515", "身份证 {SENSITIVE:id_card:1}"},
 	}

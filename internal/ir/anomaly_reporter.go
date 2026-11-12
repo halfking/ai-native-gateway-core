@@ -130,9 +130,15 @@ type AnomalyReporter func(AnomalyEvent)
 
 // DefaultAnomalyReporter writes a structured slog.Warn. It is the fallback
 // when no other reporter is installed via SetAnomalyReporter.
+//
+// 2026-11-13 211 实测订正：disposition 为 by_design 前缀的事件（Slice 2 的
+// 方言管辖投影，厂商分歧 ≠ 语义损失）以每请求节奏打 WARN——单实例 986 条/2h
+// ≈ 11.8k/24h，把真异常埋掉。这类事件的「设计内转换」身份在发出时就已判定
+// （emitter 侧 metadata），落日志面时降级 INFO：事件照发（census/遥测面
+// 不变），只有日志级别随事实走。
 func DefaultAnomalyReporter() AnomalyReporter {
 	return func(ev AnomalyEvent) {
-		slog.Warn("ir.anomaly",
+		attrs := []any{
 			"anomaly_type", string(ev.AnomalyType),
 			"severity", string(ev.Severity),
 			"request_id", ev.RequestID,
@@ -143,7 +149,12 @@ func DefaultAnomalyReporter() AnomalyReporter {
 			"raw_value_truncated", ev.RawValueTruncated,
 			"metadata", ev.MetadataAsJSON(),
 			"message", ev.Message,
-		)
+		}
+		if byDesign, ok := ev.Metadata["disposition"].(string); ok && strings.HasPrefix(byDesign, "by_design") {
+			slog.Info("ir.anomaly", attrs...)
+			return
+		}
+		slog.Warn("ir.anomaly", attrs...)
 	}
 }
 

@@ -381,7 +381,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 			c.state_reason_code,
 			c.state_reason_detail,
 			c.health_checked_at,
-				COALESCE((SELECT COUNT(*) FROM ` + dbpkg.SessionFamilyCredentialCountSourceSQL("c.id") + ` q), 0) AS total_requests,
+				` + dbpkg.CredentialTotalRequestsReadSQL("c.id") + ` AS total_requests,
 			COALESCE(ms.model_total, 0) AS model_total,
 			COALESCE(ms.model_available, 0) AS model_available,
 				COALESCE(ms.broken_model_count, 0) AS broken_model_count,

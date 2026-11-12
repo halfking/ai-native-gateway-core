@@ -58,11 +58,22 @@ func TestOutputSensitiveGuardRunsBeforeSanitizeRestore(t *testing.T) {
 
 	// nil Redis is a supported production configuration (goal_control.go:535),
 	// so this exercises the same code path without external dependencies.
-	installSmartSaniGuard(handler, nil, nil)
+	installSmartSaniGuard(handler, nil, nil, nil, nil)
 
 	got := handler.ResponseInterceptorForWire().ListInterceptors()
 	if len(got) == 0 {
 		t.Fatal("installSmartSaniGuard left an empty response chain")
+	}
+
+	// 2026-11-13 脱敏域审计 P2 收口：media generations 两个 handler 在
+	// installSmartSaniGuard 里与 chat 成对装配（输入中间件 + 响应还原）。
+	// 这里用真实的 handler 实例钉住装配面——任何一侧漏挂都会在这里红。
+	images := streaming.NewImagesGenerationsHandler(nil, nil)
+	videos := streaming.NewVideosGenerationsHandler(nil, nil)
+	installSmartSaniGuard(handler, images, videos, nil, nil)
+	if images.SanitizeGuardWired() == nil || videos.SanitizeGuardWired() == nil {
+		t.Fatal("media generations handlers did not receive the sanitize guard pair " +
+			"(input middleware + restore hook) from installSmartSaniGuard")
 	}
 
 	restoreIdx := -1

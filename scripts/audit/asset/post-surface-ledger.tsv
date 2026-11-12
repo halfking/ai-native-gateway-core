@@ -21,6 +21,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 683 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 5 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 685 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 8 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 690 行逐字保留，含人工改判）
+#gen_append	2026-11-13 A-17 收口轮（M1-T3/M3-T2）—— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 698 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -215,6 +216,9 @@
 /api/admin/maas/topup-packages	ANY	admin/maas_handlers.go:21	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/maas/topup-packages-upsert	ANY	admin/maas_handlers.go:26	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/maas/topup-packages/	ANY	admin/maas_handlers.go:27	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/market/compare	GET	admin/handler.go:1644	read				not-probed-not-reached	★ M3-T2 价格对比读面：GET-only 注册（handler.go:1644）+ handler 内 method guard（market_compare.go）只读对账；静态分级 read 与源码一致；未真探测（待部署面）
+/api/admin/market/platforms	GET	admin/handler.go:1641	read				not-probed-not-reached	★ M1-T3 registry 清单读点：GET-only 注册（handler.go:1641）+ handler 内 method guard 只读；静态分级 read 与源码一致；未真探测（待部署面）
+/api/admin/market/platforms/{platformId}	PUT	admin/handler.go:1642	write	400-guard			not-probed-writes	★ 源码确证 write：PUT-only 注册（handler.go:1642）+ UPDATE 落库 + routing_audit_log 审计行（market_platforms.go）⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判 write；真探测待部署面
 /api/admin/mobile-node/descriptor	ANY	admin/handler.go:1030	write				not-probed-writes	★ 静态分级：写库
 /api/admin/model-credibility/catalog	ANY	admin/handler.go:1609	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/model-credibility/detail	ANY	admin/handler.go:1610	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查

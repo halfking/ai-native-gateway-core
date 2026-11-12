@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **A-17 收口轮：市场平台注册表 admin CRUD + 价格对比两页（2026-11-13）**：定稿 M1-T3/M3-T1/M3-T2 落地。
+  - `GET /api/admin/market/platforms` + `PUT /api/admin/market/platforms/{platformId}`（superAdmin 闸；部分更新：指针字段=只改提交项；region/币种配对校验与 958 CHECK 同形；platform_id 不可变、无 INSERT——补录平台归迁移种子 + 运营裁决；UPDATE 落 routing_audit_log before/after 审计）。`admin/market_platforms.go`。
+  - `GET /api/admin/market/compare`（M3-T2 只读对账：supplier_market_position 评分行 × market_price_reference 双地板对拍 + price_confidence 四档覆盖率摘要；表缺席 ⇒ 200 + available:false 空态语义；NULL≠0 全列 sql.NullFloat64）。`admin/market_compare.go`。
+  - `/operations/market-prices`（M3-T1：registry 管理 + 940 同步台账；空态「为什么空 + 下一步」）与 `/operations/price-compare`（M3-T2：四档摘要 + 评分行 × 双地板三级币展示——原币/CNY/USD，USD 表达仅快照 fx 存在时导出；平台数 <3 橙色 thin_coverage 口径）。i18n ×8 真译；requiresPlatformOps（服务端仍 superAdmin 闸）。
+  - **price_confidence_degraded 环比口径对照读数入档（裁决面=运营，零代码改动）**：真库两日数据实证现口径在 empty 主导分布下必发假警报（non_trusted 增量与新增绑定对逐字相等 = 纯 churn）；非 empty 口径（suspect+unknown）两库两日 9→9 沉默且成员稳定。`docs/audit/2026-11-13-A17收口M1T3与M3两页实施轮.md` §二。
+  - Windows 假红三族根修（LESSONS §706）：origin_stage 豁免表 ToSlash 归一 / exec-bit GOOS 门（权威=git mode 100755；同族穷举 4 处：q-usage + admin_routes + api_sweep + v1_family_retirement）/ post-surface python3 存根真跑探测 + awk `-v` 转义改 ENVIRON；menu-config.json 经 F-8 门再生。
 - **rule 71 统一日志标准接入（2026-11-09，补记）**：本仓接入 `vibe-coding` rule 71
   （结构化 JSONL + 9 个必填字段 + handler 层脱敏 + 小写 `level` 别名）。
   ⚠ 该次接入**当时漏记**了本文件与 `docs/changelogs/` 归档（违反 rule 36），
