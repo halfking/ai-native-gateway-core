@@ -66,7 +66,7 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 // 兜底这一 ir 层没有的输入）。
 //
 // src/dst 语义与 restoreExtensions 的自行解析完全一致；其余门禁
-//（NativePassthrough / PARAMREG_ENABLED 回退）与阶段 1/2a/2b/3 逐字同源。
+// （NativePassthrough / PARAMREG_ENABLED 回退）与阶段 1/2a/2b/3 逐字同源。
 func RestoreExtensionsWithDialects(out map[string]any, req *InternalRequest, src, dst paramreg.Dialect, targetProtocol string) {
 	if req == nil || len(req.Extensions) == 0 {
 		return
@@ -105,9 +105,9 @@ func RestoreExtensionsWithDialects(out map[string]any, req *InternalRequest, src
 }
 
 // restoreExtensionsStages 承载 paramreg 启用路径的全部阶段
-//（确定性快照 / reasoning·thinking 特例 / 排序通用还原）。
+// （确定性快照 / reasoning·thinking 特例 / 排序通用还原）。
 // 由 restoreExtensions（自行解析方言）与 RestoreExtensionsWithDialects
-//（显式方言）共用 —— 单一语义源。
+// （显式方言）共用 —— 单一语义源。
 func restoreExtensionsStages(out map[string]any, req *InternalRequest, src, dst paramreg.Dialect, targetProtocol string) {
 
 	// ══ 阶段 1：确定性快照（2026-11-01 12h 审计 P1-1）══════════════════════
@@ -311,6 +311,11 @@ func restoreExtensionsStages(out map[string]any, req *InternalRequest, src, dst 
 					"source_dialect": string(src),
 					"target_dialect": string(dst),
 					"note":           note,
+					// Slice 2（2026-11-12）语义化投影：paramreg 策略丢弃是
+					// **按设计的方言管辖**（厂商分歧 ≠ 语义损失），处置标记
+					// 让 census 能把它与真丢失分离。去重键不含 metadata
+					// ⇒ 富化不改变去重行为。
+					"disposition": "by_design_dialect_scope",
 				})
 
 		case paramreg.ActionSkip:
