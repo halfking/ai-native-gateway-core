@@ -10907,6 +10907,12 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 
 ★ 台账面诚实边界：252 库的 `gateway_db_revision_sequences` 引擎台账**无** 959/960 行（最新行停在 2026-10-21 的 890）——245/154 通道的迁移应用走网关启动 runner（自带 ≥952 自登记），引擎台账写面只有 211 的 seamless 部署路径在维护；记账连续性的验收量具以 `public.schema_migrations` 为准（本轮实测依据）。
 
+## 2026-11-12T03:20:53Z — deploy 154 build_seq 2967 (638fdea3)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 961 | `961_market_scoring_runs.sql` | `128c9b4f6c198d3ca4663886ffe778c27f138542de2e99f5515d1ddbc622a86c` | applied+verified |
+
 
 ## 2026-11-12 — 48h 审计第五轮 — 962 索引同形谓词（修凭据监控摘要 500）
 
