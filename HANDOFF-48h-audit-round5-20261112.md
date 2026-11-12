@@ -36,6 +36,12 @@
    - **判定依据＝机器比对**：磁盘 632 条 / 清单 327 条，但**编号 ≥900 的全部在清单、唯独 962 不在** ⇒ **疏漏而非取舍**。
    - **实施**：962 补进清单 + `ledger_artifact_probe`（用 `position()` 不用 `LIKE` —— 函数体含正则字面量）＋ **新增第三通道门**（覆盖 / 解析精度 / 例外表带理由）＋ 变异臂（移除清单条目 ⇒ 红并精确定位）。
    - ★ **「记账断层 ≠ 功能缺失」**：两轴必须分别取读数再决定处置哪一轴（见主档 §六之三之三）。
+10. ★★★★ **补齐通道登记 ≠ 补齐通道契约**：把 962 补进 `files=(...)` 后，**211 部署当场 abort（EXIT=1）** ⇒ 仓内既有的 **clobber 守卫**（`intentional_function_chains` 白名单）要求登记「有意链」：
+   `'recent_cache_hit_rate|915_recent_cache_hit_rate.sql|962_recent_success_rate_index_aligned.sql|'`
+   （★ 签名/返回契约/采样窗口全不变 ⇒ 调用方零改动；★ 同名 `recent_success_rate` 不需要——890 已被整行注释移出自动重放列表）⇒ 补登后 `bash scripts/apply-db-revision-sequence_test.sh` ⇒ **contract passed rc=0**。
+   - ★ **通道不是「一个数组」，而是「数组 + 守卫 + 探针 + 账本」四件套**。
+   - ★ **部署 abort 时线上仍是上一版**（fail-closed 的可靠形态）⇒ 部署失败后必须先确认「线上跑的是哪一版」。
+   - ★★ **仓内本来就有那道门**：上一轮全量套件的第二个红包（`scripts/ursmcheck` 的 `TestTsvHollowoutReadersRejectEmptyRegistry`，100 s）**已逐字报出**「962 exists but is missing from the channel files=(...) array」⇒ 本轮只读了包名没读失败项 ⇒ **每道红都要读到失败原文**。
 
 ## 发布真值与验证
 

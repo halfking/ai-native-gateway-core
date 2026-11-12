@@ -2674,6 +2674,21 @@ legacy_content_replays=(
 # SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
 # that merely mentions CREATE OR REPLACE cannot trigger it.
 intentional_function_chains=(
+  # ★ 962（2026-11-12 48h 审计第五轮）：recent_cache_hit_rate 的**谓词**
+  #   改成与既有索引 idx_session_turns_hot_credential_ts **逐字同形**
+  #   （修「凭据监控摘要在 245/154 上必 500」：旧谓词不是索引键表达式 ⇒
+  #   planner 用不上该索引 ⇒ 每次调用扫 3 小时窗全量 ⇒ 1959 次调用
+  #   ⇒ 越过 15s context ⇒ 500）。
+  #   链序 = 投递序 915 → 962，**962 必须是最后一项**——它是活库里应有的最终体。
+  #   ★ 签名/返回契约/采样窗口全不变（只有 WHERE 谓词的写法变了）⇒ 调用方零改动。
+  #   ★ 少这一行，211 通道会在应用任何文件之前 abort（exit 5）——
+  #     本轮实测：补登记 962 进 files=(...) 后，211 部署被 clobber 守卫拦死
+  #     （EXIT=1，消息逐字给出要登的链）⇒ 按消息补登即通。
+  #   ★ 注意：同名的 recent_success_rate **不需要**这一行 ——
+  #     890（第一个定义 recent_success_rate 的迁移）**已被整行注释移出自动重放列表**
+  #     （它自带非空闸 ⇒ 天然不可自动重放，见上方 890 条目）⇒
+  #     通道里只有 962 定义它 ⇒ 不构成「多文件重定义」。
+  'recent_cache_hit_rate|915_recent_cache_hit_rate.sql|962_recent_success_rate_index_aligned.sql|'
   # 919（2026-10-29，R176 252 SQL 日志审计轮）重定义
   # refresh_ursm_snapshot_slot_daily：在 892 的体上增加 active_minutes 列
   # （hour 粒度 = count(DISTINCT date_trunc('minute', snapshot_ts))，minute 恒 1）
