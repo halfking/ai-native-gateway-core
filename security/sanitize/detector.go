@@ -268,6 +268,35 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 				}
 				continue
 			}
+			// r1043（2026-11-13，211 ZCode 事故轮）：账号声明/赋值族的值守卫。
+			//
+			// 生产实证（事故会话字典 38 个 account 占位符大多为毒值）：
+			// ① 遮蔽标记本身（`SSH_USER="[REDACTED:account]"`）被铸成占位符值
+			//   ⇒ 还原器把标记永久写回输出（标记投毒循环）；
+			// ② 模型代码片段（`'SSH_USER=' in l or l.startswith('…'`、
+			//   `\$(docker`、`${DB_USER:-$(whoami)}`）被当「账号」铸造 ⇒ 输入
+			//   侧把含引号的 span 挖走 ⇒ 模型收到的代码语法残缺；
+			// ③ `root` 等公开默认账号被占位符化 ⇒ 触发模型「过滤器捉迷藏」。
+			//
+			// 判据与边界见 r1043_account_literal.go；真阳性
+			// （zhangsan_ops_2024 / kaixuan.admin）不受影响（钉测钉住）。
+			//
+			// 标记免疫（① 的引擎面）对**所有规则族**生效且刻意放在**值级**：
+			// 值恰好整个是标记才豁免——粘着形态（`password=[REDACTED]真凭据`）
+			// 的规则匹配本来只咬住标记前缀，span 级豁免会把真凭据的检测一起
+			// 挖空（TestSedMaskWithProductionYAML 钉住的既有行为）。
+			if isRedactionMarkerValue(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			if p.sType == TypeAccount && accountValueIsExempt(p.kind, value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
 			// r1037（2026-10-20，211）：network_destination 是**形状规则**——
 			// 它的 pattern 是通配 `(?s).+`，本身不带判别力，命中与否全看
 			// 「文本里有没有公网主机」。它保留原语义（r1016/r1028 契约），
@@ -613,6 +642,10 @@ var markerEchoIndexPattern = regexp.MustCompile(`(?i)\b(?:phone|id_card|email|cr
 //
 // 这些区间只从规则命中的 span 里**挖掉标记字节本身**，标记里没有载荷
 // （类型是规则名、索引是计数器），挖掉它不构成泄漏面。
+//
+// r1043 注意：遮蔽标记的免疫**不在这里**（span 级会把 `password=[REDACTED]真凭据`
+// 这类「粘着形态」的**前缀匹配**也挖空 ⇒ 真凭据的检测一起消失）——标记免疫在
+// 值级判定（见下方 isRedactionMarkerValue）：值恰好**整个是**标记才豁免。
 func detectionExemptSpans(text string) [][]int {
 	spans := PlaceholderPattern.FindAllStringIndex(text, -1)
 	for _, candidate := range looseMarkerSpans(text) {
