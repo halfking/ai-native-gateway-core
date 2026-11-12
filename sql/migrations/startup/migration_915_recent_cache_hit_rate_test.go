@@ -109,12 +109,38 @@ func TestMigration915BodyMatchesRuntimeSSOT(t *testing.T) {
 	}
 	migBody := seg[o2+len("AS $$") : o2+len("AS $$")+c2]
 
-	if normalizeSQL915(migBody) != normalizeSQL915(ssotBody) {
+	// ★ 2026-11-12（48h 审计第五轮）：SSOT 的谓词在 962 **合法演进**了
+	//   （改成与既有索引 idx_session_turns_hot_credential_ts 同形）。
+	//   ⇒ 「逐字相等」必须允许**这一条被钉住的 delta**，否则对合法演进报红。
+	//   ⇒ 折叠掉 delta 之后再比 ⇒ delta 之外的任何漂移仍然红。
+	//   ⚠ 配套的正向断言在下面：「允许 delta，但不许退回旧形态」。
+	normalizedMig := normalizeSQL915(migBody)
+	normalizedSSOT := foldIndexAlignedPredicate962(normalizeSQL915(ssotBody))
+
+	if normalizedMig != normalizedSSOT {
 		t.Fatalf("915's recent_cache_hit_rate body and db.recentCacheHitRateEnsureSQL have drifted.\n"+
 			"Consequence: the gateway's boot-time CREATE OR REPLACE would swap the body the "+
 			"migration installed (or vice versa) ⇒ candidate query behavior changes on the "+
 			"next boot ⇒ a silent routing-semantics flip that reads like 'all upstreams down'.\n"+
 			"--- migration ---\n%s\n--- runtime SSOT ---\n%s", migBody, ssotBody)
+	}
+
+	// ★★ 正向断言：SSOT 必须携带**索引同形**谓词（不许退回旧形态）。
+	//
+	// ⚠ 没有它，上面的「折叠」就是「允许退回」⇒ 门恒绿 ⇒ 缺陷原样复发
+	//   （本轮生产形态：迁移 962 已记账、函数体仍旧 ⇒ monitor-summary 稳定 500）。
+	if !strings.Contains(ssotBody, "CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint") {
+		t.Fatalf("db.recentCacheHitRateEnsureSQL must carry the index-aligned predicate "+
+			"(CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint ELSE NULL::bigint END).\n"+
+			"The old form cannot match idx_session_turns_hot_credential_ts ⇒ every call "+
+			"degrades to a full 3h-window scan (13.2s measured).\n"+
+			"--- runtime SSOT ---\n%s", ssotBody)
+	}
+	if strings.Contains(ssotBody, "AND credential_id::bigint = p_credential_id") {
+		t.Fatalf("db.recentCacheHitRateEnsureSQL still carries the old predicate form "+
+			"(regex guard AND credential_id::bigint = p_credential_id) — it must be index-aligned "+
+			"(migration 962 + db.recentCacheHitRateEnsureSQL are two carriers of the SAME body).\n"+
+			"--- runtime SSOT ---\n%s", ssotBody)
 	}
 }
 
@@ -182,7 +208,7 @@ func TestMigration915DownDropsExactSignature(t *testing.T) {
 }
 
 // TestMigration915RegisteredInEveryDeliveryChannel —— 三条投递通道登记核对
-//（事故第一层根因：首版只登记了 installer 侧，部署序列 files=() 漏了它 ⇒
+// （事故第一层根因：首版只登记了 installer 侧，部署序列 files=() 漏了它 ⇒
 // 升级库永远轮不到 ⇒ 函数从未建）。
 //
 //	· installer embeddata：字节级一致（那份是逐字执行的，不是等价执行）；

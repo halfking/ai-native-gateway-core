@@ -10907,3 +10907,10 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 
 ★ 台账面诚实边界：252 库的 `gateway_db_revision_sequences` 引擎台账**无** 959/960 行（最新行停在 2026-10-21 的 890）——245/154 通道的迁移应用走网关启动 runner（自带 ≥952 自登记），引擎台账写面只有 211 的 seamless 部署路径在维护；记账连续性的验收量具以 `public.schema_migrations` 为准（本轮实测依据）。
 
+
+## 2026-11-12 — 48h 审计第五轮 — 962 索引同形谓词（修凭据监控摘要 500）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 962 | `962_recent_success_rate_index_aligned.sql` | `8d267fadfedb4fabe97409216cc8bd6fc7b8158572592dc53416252d16ed60e0` | registered（2026-11-12 48h 审计第五轮：把 `recent_success_rate` / `recent_cache_hit_rate` 的谓词改成与既有索引 `idx_session_turns_hot_credential_ts`（迁移 729 建）的键表达式**逐字同形** —— 旧形态「正则守卫 + AND + 数值相等」不是索引键 ⇒ planner 用不上该索引 ⇒ 每次调用退化成「扫 3 小时窗全量再过滤」（真库 EXPLAIN ANALYZE：13184 ms、Rows Removed by Filter: 1876）⇒ admin 凭据监控摘要对每个 (凭据 × 模型) 行做一次 CROSS JOIN LATERAL 调用（74 凭据 × 2015 offer = 1959 次）⇒ 稳定越过 15s context ⇒ **500**（245/154 生产实证：credential_monitor.go:762、duration_ms=15002）。同形后同查询实测 113 ms（Index Scan 命中该索引，116 倍）。★ 语义面零变化：CASE 的 ELSE 分支落 NULL ⇒ `NULL = $1` 非真 ⇒ 非数字 credential_id 仍匹配不上；不改索引/表/签名/返回契约/采样窗口。★ 本迁移同时把**在役函数体补回仓内**（此前仓内只有已随 890 退役的 v1 形态 ⇒ 迁移链不可复现）。**载体纪律**：同一函数体有两份载体（SQL 迁移文件 + Go 运行时 SSOT db.recentSuccessRateEnsureSQL / db.recentCacheHitRateEnsureSQL），boot 的 ensure 链在迁移之后跑 ⇒ 只改迁移会被 SSOT 覆盖回去 ⇒ 两份载体同改 + 跨包等价门（见 §698）。本行 sha 为仓库文件实测值；embeddata 双副本逐字节一致；**待部署**（211/245/154 列车）） |
+| 962 | `962_recent_success_rate_index_aligned.down.sql` | `71bad116fea64eae60af330490fe9dd566adacf93adedb0c5d60e1f9faedccb6` | registered（2026-11-12 48h 审计第五轮补登记；回退目标 = 962 之前的旧谓词形态（旧形态**不可命中索引**但语义等价）；本行 sha 为仓库文件实测值） |
