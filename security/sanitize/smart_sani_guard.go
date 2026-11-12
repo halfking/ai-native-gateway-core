@@ -955,8 +955,16 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 
 	sm, err := it.loadMap(ctx, meta.SessionID, meta.TenantID)
 	if err != nil {
-		it.logger.Warn("sanitize_restore: stream chunk load map failed, masking placeholders",
-			"error", err, "session_id", meta.SessionID)
+		// 客户端中断流（context canceled）是常态而非故障：2026-11-12 211 实测
+		// 一次中断风暴 1h 刷 8,661 条同文 WARN。遮蔽兜底照常执行（安全语义
+		// 不变——masking 决不因取消而省略），只有取消类错误降为 DEBUG。
+		if errors.Is(err, context.Canceled) {
+			it.logger.Debug("sanitize_restore: stream chunk load map canceled, masking placeholders",
+				"error", err, "session_id", meta.SessionID)
+		} else {
+			it.logger.Warn("sanitize_restore: stream chunk load map failed, masking placeholders",
+				"error", err, "session_id", meta.SessionID)
+		}
 		sm = SanitizeMap{}
 	}
 	if meta.State == nil {

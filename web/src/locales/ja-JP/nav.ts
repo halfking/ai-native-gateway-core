@@ -74,6 +74,7 @@ export default {
     requestActions: 'リクエスト操作タイムライン',
     storageAndLogConfig: 'ストレージとログ設定',
     sessionPlugin: "セッション運用（プラグイン）",
+    approvalCenter: "統一承認センター",
     sessionPluginSettings: "セッションプラグイン設定",
     sessionAnalysis: "セッション分析",
     sessionSkills: "便利スキル",

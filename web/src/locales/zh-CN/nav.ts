@@ -78,6 +78,7 @@ export default {
     sessionAnalytics: '会话分析中心',
     sessionAnalyticsFilterOptions: '会话分析筛选',
     sessionPlugin: '会话运营（插件）',
+    approvalCenter: '统一审批中心',
     sessionPluginSettings: '会话插件设置',
     sessionAnalysis: '会话分析',
     sessionSkills: '有用技能',
