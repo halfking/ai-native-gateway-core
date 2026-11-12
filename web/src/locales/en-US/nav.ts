@@ -79,6 +79,7 @@ export default {
     sessionAnalytics: 'Session Analytics',
     sessionAnalyticsFilterOptions: 'Session Analytics Filters',
     sessionPlugin: 'Session operations',
+    approvalCenter: 'Unified approval center',
     sessionPluginSettings: 'Session plugin settings',
     sessionAnalysis: 'Session analysis',
     sessionSkills: 'Useful skills',

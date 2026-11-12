@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElSelect, ElOption } from 'element-plus'
 import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
@@ -7,7 +8,7 @@ import { sortByName } from '../utils/sortByName'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
-  getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser,
+  getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser, createUser,
   getAdminMaasWallet, getAdminMaasLedger, adjustAdminMaasCredits, grantAdminMaasCredits,
   getAdminMaasTenantOrders, confirmAdminMaasOrder,
   getAdminMaasConsumptionDetail,
@@ -62,6 +63,15 @@ const statsMetric = ref<'token' | 'credits'>('token')
 const overviewDaily = ref<TenantDailyStat[]>([])
 const keyAppFilter = ref('')
 const keyOwnerFilter = ref('')
+const showCreateUser = ref(false)
+const newUser = ref({
+  username: '',
+  password: '',
+  display_name: '',
+  email: '',
+  role: 'tenant_admin',
+})
+const createUserSaving = ref(false)
 
 function fmtTokensCompact(n?: number | null): string {
   const v = n ?? 0
@@ -409,6 +419,55 @@ async function toggleUserEnabled(u: TenantUser) {
   }
 }
 
+async function submitCreateUser() {
+  if (!newUser.value.username || !newUser.value.password) {
+    error.value = t('tenants.detail.usernameRequired')
+    return
+  }
+  if (newUser.value.password.length < 8) {
+    error.value = t('tenants.detail.passwordTooShort')
+    return
+  }
+  createUserSaving.value = true
+  error.value = ''
+  try {
+    await createUser({
+      username: newUser.value.username,
+      password: newUser.value.password,
+      display_name: newUser.value.display_name,
+      email: newUser.value.email,
+      role: newUser.value.role,
+      tenant_id: tenantCode.value,
+    })
+    showCreateUser.value = false
+    // 重置表单
+    newUser.value = {
+      username: '',
+      password: '',
+      display_name: '',
+      email: '',
+      role: 'tenant_admin',
+    }
+    await loadUsers()
+  } catch (e: unknown) {
+    error.value = surfaceError(e, { key: 'tenants.detail.createUserFailed' })
+  } finally {
+    createUserSaving.value = false
+  }
+}
+
+function cancelCreateUser() {
+  showCreateUser.value = false
+  newUser.value = {
+    username: '',
+    password: '',
+    display_name: '',
+    email: '',
+    role: 'tenant_admin',
+  }
+  error.value = ''
+}
+
 function openEdit() {
   showEdit.value = true
 }
@@ -562,9 +621,14 @@ watch(() => route.params.tenantId, loadTenant)
 
       <!-- Users Tab -->
       <div v-if="activeTab === 'users'" class="tab-content">
+        <div style="margin-bottom: 16px; display: flex; justify-content: flex-end;">
+          <button class="btn btn-primary" @click="showCreateUser = true">
+            <span style="margin-right: 4px;">+</span> {{ $t('tenants.detail.createUserBtn') }}
+          </button>
+        </div>
         <table class="table" style="width:100%">
           <thead>
-            <tr><th>ID</th><th>{{ $t('common.terms.username') }}</th><th>{{ $t('common.terms.displayName') }}</th><th>{{ $t('common.terms.email') }}</th><th>{{ $t('common.terms.role') }}</th><th>{{ $t('common.terms.status') }}</th><th>最后登录</th><th>{{ $t('common.actions') }}</th></tr>
+            <tr><th>ID</th><th>{{ $t('common.terms.username') }}</th><th>{{ $t('common.terms.displayName') }}</th><th>{{ $t('common.terms.email') }}</th><th>{{ $t('common.terms.role') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('tenants.detail.lastLoginCol') }}</th><th>{{ $t('common.actions') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="u in sortedUsers" :key="u.id">
@@ -920,6 +984,37 @@ watch(() => route.params.tenantId, loadTenant)
     </div>
 
     <TenantEditDialog v-if="showEdit && tenant" :tenant="tenant" @close="showEdit = false; loadTenant()" @updated="loadTenant" />
+    
+    <!-- Create User Dialog -->
+    <el-dialog v-model="showCreateUser" :title="$t('tenants.detail.createUserTitle')" width="500px" style="max-height: 80vh; overflow-y: auto;">
+      <el-form :model="newUser" label-width="100px">
+        <el-form-item :label="$t('tenants.detail.usernameLabel')" required>
+          <el-input v-model="newUser.username" :placeholder="$t('tenants.detail.usernamePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="$t('tenants.detail.passwordLabel')" required>
+          <el-input v-model="newUser.password" type="password" :placeholder="$t('tenants.detail.passwordPlaceholder')" show-password />
+        </el-form-item>
+        <el-form-item :label="$t('tenants.detail.displayNameLabel')">
+          <el-input v-model="newUser.display_name" :placeholder="$t('tenants.detail.displayNamePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="$t('tenants.detail.emailLabel')">
+          <el-input v-model="newUser.email" type="email" :placeholder="$t('tenants.detail.emailPlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="$t('tenants.detail.roleLabel')">
+          <el-select v-model="newUser.role" style="width: 100%">
+            <el-option :label="$t('tenants.detail.roleTenantAdmin')" value="tenant_admin" />
+            <el-option :label="$t('tenants.detail.roleSuperAdmin')" value="super_admin" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div v-if="error" style="color: var(--danger); margin-bottom: 16px;">{{ error }}</div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="cancelCreateUser">{{ $t('tenants.detail.cancel') }}</el-button>
+          <el-button type="primary" @click="submitCreateUser" :loading="createUserSaving">{{ $t('tenants.detail.create') }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

@@ -78,6 +78,7 @@ export default {
     requestActions: 'Zeitleiste der Anfrageaktionen',
     storageAndLogConfig: 'Speicher- und Protokollkonfiguration',
     sessionPlugin: "Sitzungsbetrieb (Plugin)",
+    approvalCenter: "Einheitliches Genehmigungszentrum",
     sessionPluginSettings: "Sitzungs-Plugin-Einstellungen",
     sessionAnalysis: "Sitzungsanalyse",
     sessionSkills: "Nützliche Skills",

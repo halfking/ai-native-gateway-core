@@ -76,6 +76,7 @@ export default {
     requestActions: 'خط زمني إجراءات الطلبات',
     storageAndLogConfig: 'إعدادات التخزين والسجلات',
     sessionPlugin: "تشغيل الجلسات (إضافة)",
+    approvalCenter: "مركز الموافقات الموحد",
     sessionPluginSettings: "إعدادات إضافة الجلسة",
     sessionAnalysis: "تحليل الجلسة",
     sessionSkills: "مهارات مفيدة",

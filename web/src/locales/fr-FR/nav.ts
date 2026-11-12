@@ -78,6 +78,7 @@ export default {
     requestActions: 'Chronologie des actions de requête',
     storageAndLogConfig: 'Configuration du stockage et des journaux',
     sessionPlugin: "Opérations de session (plugin)",
+    approvalCenter: "Centre d’approbation unifié",
     sessionPluginSettings: "Paramètres du plugin de session",
     sessionAnalysis: "Analyse de session",
     sessionSkills: "Compétences utiles",

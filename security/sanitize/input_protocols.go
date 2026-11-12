@@ -92,6 +92,22 @@ func (s *requestInputSanitizer) sanitizeEnvelope(body []byte, path string) ([]by
 				envelope["prompt"], changed = updated, true
 			}
 		}
+	case "/v1/images/generations", "/v1/videos/generations":
+		// 2026-11-13 脱敏域逐条审计 P2：media generations 两个端点此前完全
+		// 绕过 SmartSaniGuard（prompt 明文出上游、响应占位符无从还原）。
+		// prompt 是唯一的客户端明文承载字段（model/size/n 等是元数据）；
+		// 字符串与字符串数组两种形态都按 /v1/completions 同款口径入洗，
+		// 非文本形态（token-id 数组）按既有直通契约跳过。
+		if raw, ok := envelope["prompt"]; ok {
+			updated, promptRefs, didChange, err := s.sanitizeCompletionPrompt(raw)
+			if err != nil {
+				return nil, nil, err
+			}
+			refs = promptRefs
+			if didChange {
+				envelope["prompt"], changed = updated, true
+			}
+		}
 	default:
 		var err error
 		refs, changed, err = s.sanitizeMessageList(envelope, "messages", false)
