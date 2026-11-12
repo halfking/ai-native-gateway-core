@@ -34,6 +34,8 @@ export default {
     reconciliation: "供應商對帳",
     salesWorkbench: '報價工作台',
     operationsMarketing: "行銷管理",
+    marketPrices: "市場價格採集",
+    priceCompare: "價格對比分析",
     settlementReport: "結算報表",
     usageTrends: "用量趨勢分析",
     pricing: "成本價格",

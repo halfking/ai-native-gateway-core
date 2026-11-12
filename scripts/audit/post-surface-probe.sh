@@ -168,8 +168,13 @@ ledger_mode() {
   # ★★★★ ★★ **三个输入文件用【FILENAME】区分**（★ 不用 `-v` 传多行内容）：
   # ★★ ★★ awk 的 `-v` 会【处理转义序列】，★ 而多行字符串里含真换行 ⇒ ★★ 直接报
   # ★★ `awk: newline in string` ⇒ ★★ ⇒ **多行数据必须走【文件】而不是【变量】**。
-  LC_ALL=C awk -F'\t' -v OFS='\t' \
-    -v exclfile="$excluded" -v classfile="$class_file" -v probefile="$probe_file" '
+  # ★★ ★★ 2026-11-13 Windows 假红根修：**路径也不能走 `-v`** —— `-v` 对值做
+  # ★★ 转义展开，Windows 反斜杠路径含 `\b`（go-build 临时目录 \b001）、`\t`
+  # ★★ 等序列时被吃掉 ⇒ FILENAME 永不匹配 ⇒ 静默 0 行 rc=0（比报错更险）。
+  # ★★ ⇒ 改走 `ENVIRON`（POSIX：ENVIRON 值不做转义处理）+ 导出三个变量。
+  PSC_EXCL="$excluded" PSC_CLASS="$class_file" PSC_PROBE="$probe_file" \
+  LC_ALL=C awk -F'\t' -v OFS='\t' '
+    BEGIN { exclfile = ENVIRON["PSC_EXCL"]; classfile = ENVIRON["PSC_CLASS"]; probefile = ENVIRON["PSC_PROBE"] }
     FILENAME == exclfile { if ($1 !~ /^#/) ex[$1] = 1; next }
     FILENAME == classfile {
       if ($1 ~ /^#/) next
@@ -234,7 +239,16 @@ fi
 # ★ 静态分级
 if [[ -z "$CLASSIFY_TSV" ]]; then
   CLASSIFY_TSV="$(mktemp "${TMPDIR:-/tmp}/post-surface-classify.XXXXXX")" || exit 64
-  python3 "${SCRIPT_DIR}/post-surface-classify.py" > "$CLASSIFY_TSV" || {
+  # ★ 解释器解析：python3 优先，回退 python；**必须真跑一次探测** ——
+  #   Windows 的 Store 别名存根（WindowsApps\python3.exe）LookPath/command -v
+  #   找得到但执行 exit 9009 ⇒ 只看存在性会让本脚本在 Windows 上假死。
+  PSC_PY=""
+  for _cand in python3 python; do
+    _p="$(command -v "$_cand" 2>/dev/null)" || continue
+    if "$_p" -c 'pass' >/dev/null 2>&1; then PSC_PY="$_p"; break; fi
+  done
+  [[ -n "$PSC_PY" ]] || { printf 'FATAL: 找不到可用的 python3/python 解释器\n' >&2; exit 3; }
+  "$PSC_PY" "${SCRIPT_DIR}/post-surface-classify.py" > "$CLASSIFY_TSV" || {
     printf 'FATAL: 静态分级失败\n' >&2; exit 3; }
 fi
 [[ -f "$CLASSIFY_TSV" ]] || { die "分级文件不存在：${CLASSIFY_TSV}"; exit 64; }

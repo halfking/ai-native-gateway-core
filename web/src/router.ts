@@ -89,6 +89,8 @@ const ReconciliationReportView = () => import('./views/admin/ReconciliationRepor
 // 数据权限由应用层角色闸承载）
 const SalesWorkbenchView = () => import('./views/operations/SalesWorkbenchView.vue')
 const OperationsMarketingView = () => import('./views/operations/OperationsMarketingView.vue') // 2026-11-09 运营审计轮项4
+const MarketPricesView = () => import('./views/operations/MarketPricesView.vue') // 2026-11-13 A-17 收口 M3-T1
+const PriceCompareView = () => import('./views/operations/PriceCompareView.vue') // 2026-11-13 A-17 收口 M3-T2
 const PublicQuoteView = () => import('./views/PublicQuoteView.vue') // 客户版报价落地页（2026-11-08 W2）
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
@@ -341,6 +343,8 @@ export const router = createRouter({
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/operations/sales', component: SalesWorkbenchView, meta: { requiresAuth: true } }, // 报价系统 MVP 工作台（2026-11-05 W1-T2；供给/需求/报价三页签；内部运营面 requiresAuth，写权限应用层闸）
     { path: '/operations/marketing', component: OperationsMarketingView, meta: { requiresPlatformOps: true } }, // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动）；2026-11-12 A-8 权限对齐（定稿 M3-T4）：super-only → platformOps（与 /pricing 同档；服务端仍 superAdmin 闸——platformOps=super_admin@default，中间件无需改动）
+    { path: '/operations/market-prices', component: MarketPricesView, meta: { requiresPlatformOps: true } }, // 2026-11-13 A-17 收口 M3-T1：市场价格采集面（平台注册表 958 管理 + 940 同步台账；服务端 superAdmin 闸，与 /operations/marketing 同档）
+    { path: '/operations/price-compare', component: PriceCompareView, meta: { requiresPlatformOps: true } }, // 2026-11-13 A-17 收口 M3-T2：价格对比分析面（C1/C2/C3 评分 + 双地板三级币，只读对账——不喂路由/计费）；服务端 superAdmin 闸
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
     { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理

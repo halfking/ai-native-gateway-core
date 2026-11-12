@@ -36,6 +36,8 @@ export default {
     reconciliation: '供应商对账',
     salesWorkbench: '报价工作台',
     operationsMarketing: "营销管理",
+    marketPrices: "市场价格采集",
+    priceCompare: "价格对比分析",
     settlementReport: '结算报表',
     usageTrends: '用量趋势分析',
     usageEnhanced: '用量增强分析',

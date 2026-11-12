@@ -34,6 +34,8 @@ export default {
     reconciliation: "Anbieterabrechnung",
     salesWorkbench: 'Vertriebswerkbank',
     operationsMarketing: "Marketing",
+    marketPrices: "Marktpreise",
+    priceCompare: "Preisvergleich",
     settlementReport: "Abrechnungsbericht",
     usageTrends: "Nutzungstrends",
     pricing: "Kostenpreise",
