@@ -355,6 +355,18 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 		}
 		for token, value := range values {
 			if p, ok := ParsePlaceholder(token); ok && p.Index > 0 {
+				// r1043（2026-11-13，211 ZCode 事故轮）：投毒清洗。
+				//
+				// 生产实证：值恰好是遮蔽标记的映射项（{SENSITIVE:account:6} →
+				// [REDACTED:account]）会被还原器永久写回输出——标记成了会话
+				// 词汇表的永久成员，与真值不可区分。这类条目是 r1043 之前检测
+				// 面免疫缺失时期的投毒产物：**载入时丢弃**（Redis 里的原字段
+				// 不动——commit 脚本只 HSET 从不删除，天然幂等；丢掉的只是
+				// 本请求的字典项，旧回声按未命中走 fail-closed 遮蔽，不再
+				// 注入毒值）。偏移量不受影响（它是按占位符字段名算的高水位）。
+				if isRedactionMarkerValue(value) {
+					continue
+				}
 				dictionary[token] = value
 				key := sensitiveValue{p.Type, value}
 				previous, exists := existing[key]
@@ -1742,6 +1754,12 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	}
 	sm := make(SanitizeMap, len(vals))
 	for ph, val := range vals {
+		// r1043（2026-11-13）：投毒清洗——值恰好是遮蔽标记的条目（投毒产物，
+		// 见 sanitizeRequestBody 载入侧同款注释）不进还原字典；旧回声按未命中
+		// 处理（fail-closed 遮蔽），不再把标记当「真值」写回客户端。
+		if isRedactionMarkerValue(val) {
+			continue
+		}
 		sm[ph] = val
 	}
 	for ph, val := range local {
@@ -1797,7 +1815,9 @@ func (it *SanitizeRestoreInterceptor) SessionValues(ctx context.Context, session
 func sanitizeMapValues(sm SanitizeMap) []string {
 	values := make([]string, 0, len(sm))
 	for _, value := range sm {
-		if value != "" {
+		// r1043：遮蔽标记不是「已还原的原值」——把它放进输出豁免集只会让
+		// 标记文本免于本就该做的检查（字典侧已清洗，这里兜 ctx 本地路径）。
+		if value != "" && !isRedactionMarkerValue(value) {
 			values = append(values, value)
 		}
 	}

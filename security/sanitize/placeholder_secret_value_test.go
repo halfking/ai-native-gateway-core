@@ -63,7 +63,22 @@ func TestSedMaskWithProductionYAML(t *testing.T) {
 					if !found {
 						t.Fatalf("real credential hidden: managed=%v scope=%v", managed, scope)
 					}
-					for _, literal := range []string{"password=[REDACTED]TrulySensitive987!", "password=[MASKED]TrulySensitive987!", "password=[REDACTED:secret]/TrulySensitive987!", command + "; password=[REDACTED]/TrulySensitive987!", `password='[REDACTED]'TrulySensitive987!`, `password="[MASKED]"TrulySensitive987!`, `password=[REDACTED]"TrulySensitive987!"`, `password='****'TrulySensitive987!`, `password=[MASKED]" TrulySensitive987!"`, `password=[REDACTED]";TrulySensitive987!"`, `password=[REDACTED],TrulySensitive987!`, `password='[REDACTED]',TrulySensitive987!`} {
+					// r1043（2026-11-13，211 ZCode 事故轮）改判：值恰好是遮蔽标记
+					// （含声明文法 `]` 截断出的**前缀形态**）的粘着命中不再铸造
+					// 占位符——旧断言的「非空」是被标记本身当作凭据值铸造撑起来
+					// 的（投毒产物：{SENSITIVE:secret:16}→smm:[REDACTED:secret]
+					// 同族，事故会话 Redis 字典实证）。粘着在标记后面的真凭据
+					// （TrulySensitive987!）在旧文法里也**从未**被捕获（裸 token
+					// 臂在 `]` 截断，遮蔽标记只是 cosmetics）——该文法可达性缺口
+					// 属既有行为，与 r1043 无关，登记不修。
+					for _, literal := range []string{"password=[REDACTED]TrulySensitive987!", "password=[REDACTED:secret]/TrulySensitive987!", command + "; password=[REDACTED]/TrulySensitive987!", `password='[REDACTED]'TrulySensitive987!`, `password=[REDACTED]"TrulySensitive987!"`, `password=[REDACTED]";TrulySensitive987!"`, "password=[REDACTED],TrulySensitive987!", `password='[REDACTED]',TrulySensitive987!`} {
+						fragments, err := d.DetectScope(context.Background(), literal, scope)
+						if err != nil || len(fragments) != 0 {
+							t.Fatalf("mask-valued glued form minted: %q managed=%v scope=%v fragments=%v err=%v", literal, managed, scope, fragments, err)
+						}
+					}
+					// 非标记值（[MASKED]/星号族）的粘着形态保持检出。
+					for _, literal := range []string{"password=[MASKED]TrulySensitive987!", `password="[MASKED]"TrulySensitive987!`, `password='****'TrulySensitive987!`, `password=[MASKED]" TrulySensitive987!"`} {
 						fragments, err := d.DetectScope(context.Background(), literal, scope)
 						if err != nil || len(fragments) == 0 {
 							t.Fatalf("glued literal hidden: %q managed=%v scope=%v err=%v", literal, managed, scope, err)
