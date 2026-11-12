@@ -46,6 +46,14 @@ func TestR1042_MarkerEchoPlaceholderIsNotACredentialAssignment(t *testing.T) {
 	for _, echo := range []string{
 		":secret:3",
 		"the gateway masked it as :secret:3 earlier",
+		// rv-1720（2026-11-13 02:57，部署验证窗内的新证）：流式 delta 碎片
+		// 把前导冒号切在前一个 fragment 里 ⇒ 事件路径逐帧检查看到的是**无
+		// 前导冒号**的 `secret:3"`（证据摘录逐字）。终态合并本可豁免，但
+		// 事件路径先拦 ⇒ 豁免不得依赖前导冒号。
+		`secret:3"`,
+		`marker echo secret:3 done`,
+		// 全角冒号形态（restore 侧 loose 语法同款宽度容忍）。
+		"masked as secret：3 earlier",
 		// 带词的无花括号回声（restore 侧 loose 语法早已认识；检测侧此前
 		// 没保留它——这里一并钉住）。
 		"SENSITIVE:secret:3",
@@ -135,7 +143,12 @@ func TestR1042_TruePositivesStayCaught(t *testing.T) {
 	}{
 		{"real credential assignment", `config: api_key = "sk-live-9f2c41ab77d0e3"`},
 		{"password with real value", `password: hunter2-secret`},
-		{"numeric secret is not an ellipsis", `secret: 4831`},
+		// r1042 放宽的边界（markerEchoIndexPattern 不再要求前导冒号）：
+		// 带空格的真赋值与 >4 位数字不受影响；password/token 不在标记词表。
+		{"numeric secret with space", `secret: 4831`},
+		{"long numeric secret no space", `secret:48312233`},
+		{"password numeric no space", `password:1234`},
+		{"token numeric no space", `token:99`},
 		{"real personal email", `contact me at zhang.wu@example.com thanks`},
 		{"non-git local part is still email", `mavis@github.com is a real mailbox`},
 		{"real vendor key shape", `use sk-ant-api03-7c9b2e4d81af`},

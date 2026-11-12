@@ -578,17 +578,27 @@ func credibleSecretCandidate(value string) bool {
 }
 
 // markerEchoIndexPattern 是「无花括号、无 SENSITIVE 词」的占位符回声尾巴：
-// `:secret:3` / `:email:1`。
+// `:secret:3` / `:email:1` / `secret:3`。
 //
-// r1042（2026-11-13，211 rv-1635/rv-1691）：模型在输出里回显网关占位符时会把
-// `{SENSITIVE:secret:3}` 逐层退化——restore 侧的 loose 语法（looseMarkerSpans）
-// 认识带词的退化（`SENSITIVE:secret:3`），但**两个都丢**的尾巴（`:secret:3`）
-// 只有本模式认识。类型词限定在网关自身的标记词表内（见 placeholder.go 的
-// SensitiveType 常量），散文里的 `chapter:3` / `step:2` 不在词表内，不会被保留。
-// 索引封顶 4 位数字：占位符是每请求计数器，4 位以内覆盖真实分布；真凭据
-// 赋值的值（`secret: 4831` 这类数字口令）不以**前导冒号 + 类型词**开头，
-// 不落进这个形状。
-var markerEchoIndexPattern = regexp.MustCompile(`(?i):(?:phone|id_card|email|credit_card|secret|internal_ip|server_ip|server_ipv6|account|name|custom|unknown):[0-9]{1,4}\b`)
+// r1042（2026-11-13，211 rv-1635/rv-1691/rv-1720）：模型在输出里回显网关占位符
+// `{SENSITIVE:secret:3}` 时会逐层退化——restore 侧的 loose 语法（looseMarkerSpans）
+// 认识带词的退化（`SENSITIVE:secret:3`），但**连前导冒号都丢**的尾巴只有本模式
+// 认识。rv-1720 实证了第三种退化：**流式 delta 碎片边界**——前一个 fragment 以
+// `:` 结尾、本 fragment 以 `secret:3"` 开头，前导冒号被切走 ⇒ 事件路径逐帧检查
+// 在碎片上命中 password 规则（终态合并本可豁免，但事件路径先拦）⇒ 模式**不得
+// 依赖前导冒号**。
+//
+// 收窄轴（防散文/真凭据误豁免）：
+//   - 类型词限定在网关标记词表（见 placeholder.go 的 SensitiveType 常量）——
+//     `chapter:3` / `step:2` / `version:1` 不在词表；**password/token/apikey 也不在
+//     词表**（它们不是标记类型）⇒ `password:1234` 类真赋值不受影响；
+//   - 值必须是**紧贴冒号的纯数字、≤4 位**（占位符是每请求计数器）⇒ 带空格的
+//     真赋值（`secret: 4831`）与长数字（`secret:48312233`）不落形；代价＝
+//     「类型词 + 无空格 + ≤4 位纯数字」的真赋值（如 `secret:4831`）会被豁免——
+//     该形状与回声不可区分，接受并登记；
+//   - 冒号接受全角形态（`secret：3`）——restore 侧同款宽度容忍（数字只认
+//     ASCII：RE2 的 `\b` 只对 ASCII 词字符成立，全角数字会破坏尾边界）。
+var markerEchoIndexPattern = regexp.MustCompile(`(?i)\b(?:phone|id_card|email|credit_card|secret|internal_ip|server_ip|server_ipv6|account|name|custom|unknown)[:\x{FF1A}][0-9]{1,4}\b`)
 
 // detectionExemptSpans 返回检测器**不得命中**的字节区间（升序、已合并）：
 //
