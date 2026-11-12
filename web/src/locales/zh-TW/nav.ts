@@ -76,6 +76,7 @@ export default {
     requestActions: '請求動作時間線',
     storageAndLogConfig: '儲存與日誌設定',
     sessionPlugin: "會話營運（外掛）",
+    approvalCenter: "統一審批中心",
     sessionPluginSettings: "會話外掛設定",
     sessionAnalysis: "會話分析",
     sessionSkills: "實用技能",
