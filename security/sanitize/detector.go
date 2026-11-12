@@ -297,6 +297,39 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 				}
 				continue
 			}
+			// r1046（2026-11-13，211 rv-1735）：「形状像卡」≠「是卡」。快照
+			// 血统里仍带着 r1039 修复前的 bank_card 正则（任意 16-19 位数字
+			// 串），Chrome 进程参数 ID / 字节数 / 时间戳全部被当 credit_card
+			// ——输入面一晚铸了 550 个占位符（模型看不见自己的 ps/du 输出），
+			// 输出面在 thinking lane 想遮蔽 ⇒ rewrite_refused 杀整回合。
+			// 引擎级 IIN 前缀族 + Luhn 守卫（判据与取舍见
+			// r1046_credit_card_credibility.go），对所有规则来源同口径生效，
+			// 对已发布快照即刻生效，不动 DB。
+			//
+			// 同族第二层（legacy compliance.pii.* 无边界正则）：数字类 PII
+			// （phone / id_card / credit_card）不许是更长数字串的子串；
+			// id_card 另需省级前缀 + 真实出生日期的结构合法性（15 位串与
+			// 无日期结构的 18 位串都不是身份证）。
+			if p.sType == TypePhone || p.sType == TypeIDCard || p.sType == TypeCreditCard {
+				if !standaloneDigitRun(text, start, end) {
+					if snapshot != nil {
+						d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+					}
+					continue
+				}
+			}
+			if p.sType == TypeCreditCard && !credibleCardCandidate(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			if p.sType == TypeIDCard && !credibleIDCardCandidate(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
 			// r1037（2026-10-20，211）：network_destination 是**形状规则**——
 			// 它的 pattern 是通配 `(?s).+`，本身不带判别力，命中与否全看
 			// 「文本里有没有公网主机」。它保留原语义（r1016/r1028 契约），

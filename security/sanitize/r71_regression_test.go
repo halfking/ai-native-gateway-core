@@ -35,10 +35,15 @@ func TestSanitizeInput_OverlappingFragmentsLeaveNoPlaintext(t *testing.T) {
 		mustNotAppear []string
 	}{
 		{
-			// id_card[0,18) 与 phone[0,11) 同起点；phone 在前，尾部 7 位曾泄漏
-			name:          "id card whose prefix is a phone number",
-			text:          "138001380001234567",
-			mustNotAppear: []string{"1234567", "138001380001234567"},
+			// r1046 改判：原 138001380001234567（结构不合法的 18 位数字串）
+			// 在 r1046 起**不是 PII**（phone 是更长数字串的子串⇒嵌入豁免；
+			// id_card 无合法出生日期⇒结构豁免）——「phone 前缀在更长数字串
+			// 内」的重叠泄漏形态由此整体消灭。本用例改钉**结构合法**的
+			// 身份证号（138001 河北 + 19900101 真实日期）：整串由 id_card
+			// 片段一次遮蔽，内嵌的 phone 形态子串被嵌入豁免，无部分泄漏。
+			name:          "structured id card containing a phone-shaped prefix",
+			text:          "138001199001011234",
+			mustNotAppear: []string{"19001011234", "138001199001011234"},
 		},
 		{
 			name:          "id card with Chinese prefix",
@@ -46,8 +51,12 @@ func TestSanitizeInput_OverlappingFragmentsLeaveNoPlaintext(t *testing.T) {
 			mustNotAppear: []string{"19900307123"},
 		},
 		{
-			name:          "id card followed by more digits",
-			text:          "11010119900307123X999",
+			// r1046 改判：身份证号被数字直接粘连（…X999）时按「更长数字串的
+			// 子串」豁免——真 PII 被数字粘住是极罕见形态，而 Chrome 命令行/
+			// 时间戳/字节数互相粘连是常态（rv-1735 的 550 例误遮蔽来源）。
+			// 「ID 后跟更多数字」的防泄漏语义由本用例的非数字分隔形态钉住。
+			name:          "id card followed by separated digits",
+			text:          "11010119900307123X ref=999",
 			mustNotAppear: []string{"19900307123"},
 		},
 	}

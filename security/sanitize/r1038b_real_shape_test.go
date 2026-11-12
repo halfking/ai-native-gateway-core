@@ -150,10 +150,14 @@ var r1038bLocatorSamples = []string{
 const r1038bControlSample = "ZZZ_CONTROL_NO_DISCRIMINATING_RULE_MATCHES_THIS_ZZZ"
 
 // r1038bSecretSamples 是**反向对照** —— 豁免不得越界成「什么都不遮」。
+//
+// r1046：身份证样本由 16 位的 110101199003074X（截断形态，无规则可命中）
+// 换为 18 位结构合法的 11010119900307123X——r1046 起 id_card 候选须过
+// 「省级前缀 + 真实出生日期」结构门，截断/无日期结构的数字串不再是身份证。
 var r1038bSecretSamples = []string{
 	"13812345678",
 	"zhangsan@example.com",
-	"110101199003074X",
+	"11010119900307123X",
 	"4111111111111111",
 	"123-45-6789",
 }

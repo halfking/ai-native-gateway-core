@@ -74,7 +74,10 @@ func TestR1039GenuineFinancialAndPassportValuesStillDetected(t *testing.T) {
 		{"mastercard", "5500005555555559", "credit_card", "financial.bank_card"},
 		{"amex15", "340000000000009", "credit_card", "financial.bank_card"},
 		{"discover", "6011000000000004", "credit_card", "financial.bank_card"},
-		{"unionpay19", "6222021234567890123", "credit_card", "financial.bank_card"},
+		// r1046：值由 6222021234567890123（Luhn 不过的合成号）改为 Luhn 合法
+		// 的 6222021234567890128——r1046 起 credit_card 候选须过 IIN 前缀族
+		// + Luhn 可信度门（真 UnionPay 卡过 Luhn）。
+		{"unionpay19", "6222021234567890128", "credit_card", "financial.bank_card"},
 		{"jcb", "3530111333300000", "credit_card", "financial.bank_card"},
 		// IBAN：德国 / 英国 / 法国 / 挪威（最短 15 位）。
 		{"iban_de", "DE89370400440532013000", "custom", "financial.iban"},
