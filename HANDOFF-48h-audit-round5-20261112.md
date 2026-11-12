@@ -95,8 +95,15 @@
   | `422e2c90e` | fix(db)：**clobber 守卫「有意链」补登** ⇒ 契约 `passed` rc=0 |
   | `59657b9f2` | docs(audit)：**★ 纠正上一轮归因** + 三台部署读数 + LESSONS §698/§699/§700 |
   | `a5e6a87d5` | Merge：并行会话的 4 笔（`d21037e99` 自动同步 / `7a8e43030` 三处红收口 / `e3db4a8d5` IR 变异脚本 shell 站点 / `291912dbf` 两份错误模式审计报告）⇒ 合并后复跑关键门（`internal/sqlguard` / `sql/migrations/startup` / `db` + 契约脚本）全绿 |
+  | `139f03393` | Merge：并行会话第二批 3 笔（含 958 lock 豁免、962 的 go:embed 双副本补齐）⇒ ★ **两次都让本会话的 push 变成非 FF** |
+  | `06b51190e` / `9989d182a` | fix(ursmcheck)：合并后**重算两本台账**（`extract-admin-routes.sh --update-snapshot` ⇒ 698 条；`db-object-census.py reachability` ⇒ 893 行 / manifest=363 / package_up=363）⇒ ★ 通用式（LESSONS §701）：**台账是「当前树的函数」**，合并后必须重算，且必须在「将被提交的树状态」上重算 |
+  | `5232bc914` | docs(handoff)：提交序列、三台部署真值、下一轮提示词 |
+  | `ebca51d4d` | docs(lessons)：★ 本会话的 §701（台账重算面）⇒ ★★ **与并行 `52d444191` 的 §701 撞号** ⇒ 本轮**两次让号**（§701 → §702 → §703） |
+  | `c0b4239ca` | ★ **fix(docs)：AGENTS.md 体积棘轮按门自带处方归档** —— 「上游恢复检测及时性轮」族 31 段 / 366 行 / 164,299 字节**逐字原文**追加进 `AGENTS-archive-20261031.md`，AGENTS.md 侧留一条指针 ⇒ **526,438 → 361,121 字节**（余量 163 KB）⇒ 四道棘轮门 + R 标记交接门全绿；同时 LESSONS 让号 §702（撞号根因＝取号命令 `sort -t§` 自身失效）|
+  | `2ed65b12e` | Merge：并行会话 **53 笔**（`81b865cbd` 等，含 F-41 top-models hot 腿闸门 / F-44 `StickyCache.Close` 并发幂等 / F-43 注释订正）⇒ 唯一冲突文件 `LESSONS.md` ⇒ 按「已推一侧不动」解：并行侧 §701/§702 一字未动，本会话**再让号 §703** ⇒ ★ **通用式：让号不是一次性动作，让号后仍须对拍合并后的实际节号分布** |
 - 211 取证快照：`/tmp/lgw-audit-1015/gateway-current.json.log`（75MB / 135065 行 / 2026-11-11T20:23Z→11-12T02:15Z）
-- 本轮全量套件日志：`/tmp/lgw_verify4.log`（2 红包，@`0e76c24cf`）→ `/tmp/lgw_verify5.log`（EXIT=0 / 382 包 ok，@`422e2c90e`）→ `/tmp/lgw_verify6.log`（合并后终态，@`a5e6a87d5`）
+- 本轮全量套件日志：`/tmp/lgw_verify4.log`（2 红包，@`0e76c24cf`）→ `/tmp/lgw_verify5.log`（EXIT=0 / 382 包 ok，@`422e2c90e`）→ `/tmp/lgw_verify6.log`（合并后台账漂移，@`a5e6a87d5`）→ `/tmp/lgw_verify8.log`（EXIT=1 / 381 ok / 1 红＝AGENTS 棘轮，@`9989d182a`）→ **`/tmp/lgw_verify10.log`（★ 终态：EXIT=0 / 382 包 ok / 0 失败，@`2ed65b12e`，`git worktree` 复验树）**
+  - ★ 同期弃用读数：`/tmp/lgw_verify9.log`（**归档树**复验，EXIT=1 / 379 ok / **51 个失败项 / 3 个包红** ⇒ 51/51 条同一句 `解析仓根失败…exit status 128` ⇒ **归档树无 `.git` ⇒ 系统性假红，不是产品缺陷**）
 - 本轮部署日志：`/tmp/deploy_211_3024.log`（EXIT=0）→ `/tmp/deploy_211_3025.log`（**EXIT=1**，clobber 守卫 abort）→ `/tmp/deploy_211_3026.log`（EXIT=0）／`/tmp/deploy_245_3026.log`（EXIT=0）／`/tmp/deploy_154_3027.log`（EXIT=0）
 
 ## 下一轮提示词
@@ -133,6 +140,23 @@
 · 合并 origin/main 后**先跑全量套件**（go test ./... -count=1 -timeout=2400s）；台账漂移一律走仓内官方
   生成器重算（禁止手改台账）；子分支裁决逐文件进行；并行会话的在途文件**不纳入提交也不删除**；
   ★ 推送前必须**再 fetch**（并行会话每几十分钟推一次，本轮就被非 FF 拒过一次）⇒ 合并后复跑关键门再推。
+· ★★★ **凡「终态 / 全量 / 已验证」这类读数，必须同时写下它对应的 commit id，并在收口前对拍
+  `git rev-parse HEAD`** —— 本轮那份「终态读数」跑在 `9989d182a`，而本会话随后才推 `ebca51d4d`
+  （新增 §701 ⇒ 撞号 ⇒ 两道节号门红）⇒ ★★ **本会话自己引入的红，会被「读数取自上一提交」这件事掩盖**。
+· ★★★ **取号（LESSONS 节号等）前必须先证明取号命令本身没报错，且不能只看管道的 rc**（rc 取自最后一个
+  命令）—— 本轮实测 `sort -t§ -k2 -n` 在 macOS 上报 `sort: §: Invalid argument`（多字节分隔符）⇒
+  管道 rc=0、读数为空 ⇒ **把「空」当成了「实测最高 §700」** ⇒ 正确读数是 701。
+  另：★ **让号不是一次性动作** —— 让号后仍必须对拍「合并后的实际节号分布」（本轮让到 §702 后，
+  并行会话随后把他们的 §696 也改成 §702 ⇒ 只能再让到 §703）。
+· ★★ **「分档归档」是持续机制，不是一次性动作** —— AGENTS.md 每天都在长（两天 ≈ +122 KB）⇒ **每轮收口
+  都要看一眼字节数**（门：`TestAgentsMdSizeRatchet`，上限 524,288）⇒ 处置形态＝**按门自带的处方整族搬进
+  `AGENTS-archive-20261031.md`（逐字原文）＋ 交接面留一条指针**，**不是**压缩内容（压缩＝把历史压成摘要）。
+· ★★ **「复验树」必须用 `git worktree add --detach`，不能用 `git archive` 归档树** —— 本轮实测：归档树无
+  `.git` ⇒ 仓内用 `git rev-parse --show-toplevel` 定位仓根的门**必假红** ⇒ **51 个失败项 / 3 个包，
+  失败原因 51/51 全是同一句 `解析仓根失败…exit status 128`**（`cmd/tools/propose-baseline-prices` 2 项、
+  `plugin-runtime` 2 项、`scripts/ursmcheck` 47 项）⇒ 同一提交在 worktree 树上全绿 ⇒ **复验树要保留读方
+  依赖的仓库元数据**（部署树才可以用归档树）⇒ ★ **看到成片的同源失败（同一句报错刷屏）先查「量具的读方依赖」，
+  别一条条当产品缺陷去修**。
 · 部署 211→245→154 并用 admin/Veritrans&9527 验证（口令只经 stdin 传给仓内
   scripts/audit/deploy-smoke-admin.sh，**不进命令行/环境变量/仓库**）；部署用冻结树
   （git archive HEAD → 冻结树内重建前端 → LLM_GATEWAY_ROOT + DD_SKIP_WEB_BUILD=1），
