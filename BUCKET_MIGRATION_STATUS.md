@@ -246,7 +246,7 @@ result, err := admission.Admit(ctx, keyID, limit)
 1. ★ **框架仍是休眠态**：实测全仓**零生产消费方**（`grep -rn 'internal/bucket' --include='*.go'`
    在 `internal/bucket/` 之外零命中，排除测试文件）。此前审计轮已裁决「令牌池家族与
    FpSlots/Governor/P2C 重叠 ⇒ 不接线」，本轮复核结论不变。
-2. ★ **本文中的性能与覆盖率数字（80%+ 缓存收益、100ms→<10ms、10k→50k req/s、>90% 覆盖率）
+2. ★ **本文中的性能与覆盖率数字（80%+ 缓存收益、100ms→<10ms、10k→2M ops/s (200x)、>90% 覆盖率；与正文口径对齐——2026-11-12 批判审计订正：注记原引「10k→50k」与正文「10k→2M」数字错位）
    是并行会话自述，本轮未逐条复算** ⇒ 引用时按「自述/待复算」对待，**不得**当作生产读数。
 3. ★ **限流桶的真实现役实现不在本框架内**：`ratelimit/`、`domains/credential/limiter.go`、
    `credentialfpslot/`、`domains/streaming/rate_limit.go` 才是网关当前生效的限流路径。

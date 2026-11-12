@@ -46,12 +46,20 @@ type EmptyCandidateBreakdown struct {
 	// （遗留 v1 健康列；仓内另有 5 处查询用 `status IN ('active','cooling','degraded')`
 	//  当作可用 ⇒ 此闸比仓内其它口径**更严**）。
 	BlockedByCredentialStatus int
+	// BlockedByCredentialManualDisabled：被 `credentials.manual_disabled` 闸滤掉
+	// （2026-11-12 批判审计 P2 补：候选 SQL 有此闸而诊断漏数 ⇒ 该闸单独
+	//  触发时旧版报「状态闸全开 ⇒ 状态不是原因」——恰是要消灭的误导形态）。
+	BlockedByCredentialManualDisabled int
 	// BlockedByCredentialLifecycle：被 `credentials.lifecycle_status` 闸滤掉。
 	BlockedByCredentialLifecycle int
 	// BlockedByCredentialQuota：被 `credentials.quota_state` 闸滤掉。
 	BlockedByCredentialQuota int
 	// BlockedByProviderDisabled：被 `providers.enabled/manual_disabled` 闸滤掉。
 	BlockedByProviderDisabled int
+	// BlockedByProviderTenant：被 `providers.tenant_id` 闸滤掉
+	// （2026-11-12 批判审计 P2 补：候选 SQL 限定 `p.tenant_id=$2` 而诊断
+	//  无租户谓词 ⇒ 计数跨租户）。
+	BlockedByProviderTenant int
 	// BlockedByUnavailableReason：被 `model_offers.unavailable_reason LIKE 'manual%'` 闸滤掉。
 	BlockedByUnavailableReason int
 	// BlockedByCredentialMissing：凭据行不存在/被删（LEFT JOIN 为空）。
@@ -74,6 +82,9 @@ func (b EmptyCandidateBreakdown) Summarize() string {
 	case b.BlockedByCredentialStatus > 0:
 		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.status 闸滤掉（遗留 v1 健康列，与 lifecycle_status/health_status 不同源）⇒ 处置：核对并打开该凭据的 status",
 			b.OffersTotal, b.BlockedByCredentialStatus)
+	case b.BlockedByCredentialManualDisabled > 0:
+		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.manual_disabled 闸滤掉 ⇒ 处置：解除该凭据的人工停用标记",
+			b.OffersTotal, b.BlockedByCredentialManualDisabled)
 	case b.BlockedByCredentialLifecycle > 0:
 		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.lifecycle_status 闸滤掉 ⇒ 处置：在凭据生命周期面启用/解除 retired",
 			b.OffersTotal, b.BlockedByCredentialLifecycle)
@@ -86,6 +97,9 @@ func (b EmptyCandidateBreakdown) Summarize() string {
 	case b.BlockedByUnavailableReason > 0:
 		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 model_offers.unavailable_reason(manual*) 滤掉 ⇒ 处置：解除该 offer 的人工下线标记",
 			b.OffersTotal, b.BlockedByUnavailableReason)
+	case b.BlockedByProviderTenant > 0:
+		return fmt.Sprintf("模型已登记（%d offer），但 %d 条属于其他租户的供应商（候选 SQL 限定 p.tenant_id=$tenant）⇒ 处置：为当前租户登记模型/凭据，或核对请求租户",
+			b.OffersTotal, b.BlockedByProviderTenant)
 	default:
 		return fmt.Sprintf("模型已登记（%d offer）且状态闸全开 ⇒ 状态不是原因 ⇒ 继续查租户/档位/模态/客户端档匹配", b.OffersTotal)
 	}
@@ -96,7 +110,8 @@ func (b EmptyCandidateBreakdown) Summarize() string {
 // ★★ 闸的集合**逐条对齐** provider/client.go 的候选 SQL（loadCandidatesByModalityDB）：
 // ★   · credentials.status
 // ★   · credentials.lifecycle_status
-// ★   · credentials.manual_disabled / status
+// ★   · credentials.manual_disabled（2026-11-12 批判审计 P2 补数：此前 CTE
+// ★     算了没用 ⇒ 该闸触发时报「状态不是原因」假归因）
 // ★   · credentials.quota_state
 // ★   · providers.enabled / providers.manual_disabled / base_url / protocol
 // ★   · model_offers.unavailable_reason LIKE 'manual%'
@@ -116,6 +131,7 @@ WITH matched AS (
            COALESCE(p.manual_disabled, FALSE)          AS p_manual_disabled,
            COALESCE(p.base_url, '')                    AS p_base_url,
            COALESCE(p.protocol, '')                    AS p_protocol,
+           p.tenant_id                                 AS p_tenant_id,
            COALESCE(mo.unavailable_reason, '')         AS unavailable_reason
     FROM model_offers mo
     LEFT JOIN credentials c ON c.id = mo.credential_id
@@ -135,12 +151,14 @@ WITH matched AS (
 )
 SELECT
     COUNT(*)::int AS offers_total,
-    COUNT(*) FILTER (WHERE credential_missing)::int AS blocked_credential_missing,
-    COUNT(*) FILTER (WHERE NOT credential_missing AND c_status <> 'active')::int AS blocked_credential_status,
-    COUNT(*) FILTER (WHERE NOT credential_missing AND c_lifecycle <> 'active')::int AS blocked_credential_lifecycle,
-    COUNT(*) FILTER (WHERE NOT credential_missing AND c_quota IN ('permanently_exhausted','balance_exhausted','periodic_exhausted'))::int AS blocked_credential_quota,
-    COUNT(*) FILTER (WHERE NOT credential_missing AND (NOT p_enabled OR p_manual_disabled OR p_base_url = '' OR p_protocol = ''))::int AS blocked_provider_disabled,
-    COUNT(*) FILTER (WHERE NOT credential_missing AND unavailable_reason LIKE 'manual%%')::int AS blocked_unavailable_reason
+    COUNT(*) FILTER (WHERE credential_missing)::int AS blocked_by_credential_missing,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND c_status <> 'active')::int AS blocked_by_credential_status,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND c_manual_disabled)::int AS blocked_by_credential_manual_disabled,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND c_lifecycle <> 'active')::int AS blocked_by_credential_lifecycle,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND c_quota IN ('permanently_exhausted','balance_exhausted','periodic_exhausted'))::int AS blocked_by_credential_quota,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND (NOT p_enabled OR p_manual_disabled OR p_base_url = '' OR p_protocol = ''))::int AS blocked_by_provider_disabled,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND p_tenant_id IS DISTINCT FROM $2)::int AS blocked_by_provider_tenant,
+    COUNT(*) FILTER (WHERE NOT credential_missing AND unavailable_reason LIKE 'manual%%')::int AS blocked_by_unavailable_reason
 FROM matched`
 
 // diagnoseEmptyCandidates 给出「候选为空」的归因。
@@ -156,17 +174,29 @@ func (c *Client) diagnoseEmptyCandidates(ctx context.Context, model, tenantID st
 	if lookup == "" {
 		return b, fmt.Errorf("empty model")
 	}
-	row := c.dbPool.QueryRow(ctx, emptyCandidateBreakdownSQL, lookup)
-	if err := row.Scan(
-		&b.OffersTotal,
-		&b.BlockedByCredentialMissing,
-		&b.BlockedByCredentialStatus,
-		&b.BlockedByCredentialLifecycle,
-		&b.BlockedByCredentialQuota,
-		&b.BlockedByProviderDisabled,
-		&b.BlockedByUnavailableReason,
-	); err != nil {
+	// $2 = tenantID：与候选 SQL 的 p.tenant_id=$2 同参（审计 P2 补）。
+	row := c.dbPool.QueryRow(ctx, emptyCandidateBreakdownSQL, lookup, tenantID)
+	if err := row.Scan(emptyCandidateScanTargets(&b)...); err != nil {
 		return EmptyCandidateBreakdown{}, err
 	}
 	return b, nil
+}
+
+// emptyCandidateScanTargets 返回与 emptyCandidateBreakdownSQL 终端 SELECT
+// 列序**逐位同序**的 Scan 目标切片。§695 列序钉（2026-11-12）：这条平行
+// 数组此前靠人眼对位（批判审计正是抓出「列了但没数」的 manual_disabled），
+// 收敛到单一构造点后由 TestEmptyCandidateBreakdownScanOrderPinned 机器钉住
+// ——加列不改这里 / 改这里不加列 / 调序，任一漂移当场红。
+func emptyCandidateScanTargets(b *EmptyCandidateBreakdown) []any {
+	return []any{
+		&b.OffersTotal,
+		&b.BlockedByCredentialMissing,
+		&b.BlockedByCredentialStatus,
+		&b.BlockedByCredentialManualDisabled,
+		&b.BlockedByCredentialLifecycle,
+		&b.BlockedByCredentialQuota,
+		&b.BlockedByProviderDisabled,
+		&b.BlockedByProviderTenant,
+		&b.BlockedByUnavailableReason,
+	}
 }

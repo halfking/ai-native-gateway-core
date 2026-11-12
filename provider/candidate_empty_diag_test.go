@@ -8,6 +8,8 @@
 package provider
 
 import (
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -130,6 +132,70 @@ func TestEmptyCandidateBreakdownSQLMatchesGatePredicates(t *testing.T) {
 	for _, k := range []string{"COUNT(*)::int AS offers_total", "FILTER (WHERE"} {
 		if !strings.Contains(emptyCandidateBreakdownSQL, k) {
 			t.Errorf("归因 SQL 缺少 %q ⇒ 无法区分「模型没登记」与「被闸滤空」", k)
+		}
+	}
+	// ★ $2 必须是租户参数（2026-11-12 批判审计 P2：候选 SQL 限定
+	// ★ p.tenant_id=$2 而诊断无租户谓词 ⇒ 计数跨租户；补齐后由本断言钉住）。
+	if !strings.Contains(emptyCandidateBreakdownSQL, "$2") {
+		t.Errorf("归因 SQL 缺少租户参数 $2 ⇒ 与候选 SQL 的租户闸分叉")
+	}
+}
+
+// TestEmptyCandidateBreakdownScanOrderPinned —— §695 列序钉（2026-11-12）：
+// 「SQL 终端 SELECT 列清单 ↔ Scan 目标清单」是平行数组，必须有机器序钉。
+// 关键词包含判据（上面 mustHave）会被「列了但没用」骗过（§682：断言落在
+// 标签词上）——本门把**末段 SELECT 的 AS 别名序**与
+// EmptyCandidateBreakdown 的**字段声明序**（= Scan 传参序的规范来源）逐位
+// 对齐：加列不改 Scan / 改 Scan 不加列 / 调列序，任一漂移当场红。
+func TestEmptyCandidateBreakdownScanOrderPinned(t *testing.T) {
+	// 取最后一段 SELECT（终端投影段）到 FROM matched 之间。
+	tail := emptyCandidateBreakdownSQL[strings.LastIndex(emptyCandidateBreakdownSQL, "\nSELECT"):]
+	end := strings.Index(tail, "FROM matched")
+	if end < 0 {
+		t.Fatalf("归因 SQL 缺少终端 FROM matched 段")
+	}
+	tail = tail[:end]
+	re := regexp.MustCompile(`AS (\w+)`)
+	matches := re.FindAllStringSubmatch(tail, -1)
+	if len(matches) == 0 {
+		t.Fatalf("终端 SELECT 段未解析出任何 AS 别名")
+	}
+	// snake_case → Go 导出字段名（与 Scan 目标的字段一一对应）。
+	var got []string
+	for _, m := range matches {
+		parts := strings.Split(m[1], "_")
+		for i, p := range parts {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+		got = append(got, strings.Join(parts, ""))
+	}
+	// Scan 目标序（反射解引用 emptyCandidateScanTargets 的指针切片）——
+	// **Scan 传参序的机器可读规范来源**（结构体声明序 ≠ Scan 序：SQL 把
+	// credential_missing 放第 2 位而结构体把它放末位）。
+	b := &EmptyCandidateBreakdown{}
+	typ := reflect.TypeOf(EmptyCandidateBreakdown{})
+	targets := emptyCandidateScanTargets(b)
+	// Scan 目标是 &b.Field 指针 ⇒ 按指针值对回结构体字段名（机器可读）。
+	structFieldByPtr := map[uintptr]string{}
+	for i := 0; i < typ.NumField(); i++ {
+		structFieldByPtr[reflect.ValueOf(b).Elem().Field(i).Addr().Pointer()] = typ.Field(i).Name
+	}
+	var want []string
+	for _, tgt := range targets {
+		name, ok := structFieldByPtr[reflect.ValueOf(tgt).Pointer()]
+		if !ok {
+			t.Fatalf("Scan 目标不指向结构体字段（类型 %T）", tgt)
+		}
+		want = append(want, name)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("列数漂移：SQL 终端 SELECT %d 列 vs Scan %d 目标\nSQL=%v\nScan=%v",
+			len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("列序漂移 @%d：SQL %q vs Scan %q（平行数组必须同序同位）",
+				i, got[i], want[i])
 		}
 	}
 }

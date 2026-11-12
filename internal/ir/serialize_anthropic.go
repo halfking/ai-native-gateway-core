@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
+	"github.com/kaixuan/llm-gateway-go/internal/reasoningdialect"
 )
 
 // SerializeAnthropic serializes an InternalRequest into an Anthropic Messages request body.
@@ -98,139 +98,35 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
-	// Thinking config (native Anthropic). Budget tokens are only emitted
-	// when the type is explicit "enabled" — adaptive / disabled omit it
-	// (mirrors TestAnthropicNativeThinkingPrecedesReasoning).
+	// Thinking config (native Anthropic) —— anthropic 家族方言投影。
+	// Budget tokens are only emitted when the type is explicit "enabled" —
+	// adaptive / disabled omit it (mirrors TestAnthropicNativeThinkingPrecedesReasoning)。
+	// Slice 2（2026-11-12）：实现体收敛到 internal/reasoningdialect 种子方言
+	// anthropic（仲裁走 Arbitrate 单源；loss 走 Projection.Losses 语义载体），
+	// 此处只做调用与转发，行为逐字保持。
 	if req.Thinking != nil {
-		t := map[string]any{
-			"type": req.Thinking.Type,
+		proj := projectReasoningNative(req, reasoningdialect.FamilyAnthropic, req.Thinking.Type, req.Thinking.BudgetTokens)
+		if v, ok := proj.Wire["thinking"]; ok {
+			out["thinking"] = v
 		}
-		if req.Thinking.Type == "enabled" {
-			t["budget_tokens"] = req.Thinking.BudgetTokens
-		}
-		out["thinking"] = t
-		// claude-opus-5-5 always thinks; record loss when native disabled intent
-		// is requested (TestNativeDisabledModelLossesRemainVisible/Anthropic_native_thinking).
-		if req.Thinking.Type == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
-			reportSerializeAnthropicUnsupportedDisable(req)
-		}
+		reportProjectionLosses(req, proj)
 	}
 
 	// Reasoning effort → Anthropic thinking block.
 	//
 	// When Reasoning is set without Thinking, convert Effort/BudgetTokens into
 	// the Anthropic thinking object. The budget table is the canonical one from
-	// reasonnorm (based on LiteLLM production constants), replacing the ad-hoc
-	// mapEffortToBudget that had different values (low→2048 vs canonical 1024).
+	// reasonnorm (based on LiteLLM production constants). Slice 2（2026-11-12）：
+	// 仲裁优先级（Type 指令词汇 > 显式预算 > Effort 拼写）收敛到
+	// reasoningdialect.Arbitrate 单源（取代 reasoningDisabled 死权威 +
+	// anthropic/gemini 两份内联镜像）；家族策略（8192 兜底 / 2026-10-01 审计
+	// 的 max_tokens 钳制 / opus-5-5 模型门）在 anthropic 家族方言内，行为逐字保持。
 	if req.Reasoning != nil && req.Thinking == nil {
-		// Resolve intent by precedence (mirrors reasoningDisabled in reasoning_dialect.go):
-		//   1. explicit Type wins — but only the known directive vocabulary
-		//      (enabled/disabled/adaptive). Responses reasoning.summary values
-		//      ("auto"/"concise"/"detailed") collide into this field
-		//      (parseResponsesReasoning) and are NOT thinking directives;
-		//      emitting them as thinking.type is an upstream 400
-		//      (N21-2 residue, fixed 2026-09-30).
-		//   2. explicit BudgetTokens: zero disables, positive beats "none"/"disabled" effort
-		//   3. Effort spelling (cross-protocol "none" / "disabled" / " DISABLED ") is the fallback
-		typeIsDirective := req.Reasoning.Type == "enabled" ||
-			req.Reasoning.Type == "disabled" || req.Reasoning.Type == "adaptive"
-		thinkingType := "enabled"
-		thinkingBudget := 0
-		hasBudget := false
-		disableUnsupported := false
-		switch {
-		case typeIsDirective:
-			thinkingType = req.Reasoning.Type
-			if thinkingType == "enabled" {
-				// Explicit Type wins, but must not drop an explicit positive
-				// budget (R23-A): parse_gemini builds {Type:"enabled",
-				// BudgetTokens} for any positive thinkingBudget, and Anthropic
-				// requires budget_tokens whenever thinking is enabled.
-				hasBudget = true
-				if req.Reasoning.BudgetTokens != nil && *req.Reasoning.BudgetTokens > 0 {
-					thinkingBudget = *req.Reasoning.BudgetTokens
-				} else {
-					thinkingBudget = 8192 // safe default (xhigh); enabled without budget is an API error
-				}
-			}
-			// disabled / adaptive carry no budget: the adaptive canonical form
-			// is budgetless (reasonnorm renders native adaptive without one),
-			// mirroring the native Thinking path.
-		case req.Reasoning.BudgetTokens != nil:
-			if *req.Reasoning.BudgetTokens == 0 {
-				thinkingType = "disabled"
-			} else {
-				thinkingBudget = *req.Reasoning.BudgetTokens
-				hasBudget = true
-			}
-		case req.Reasoning.Effort != "":
-			if reasonnorm.IsDisableEffort(req.Reasoning.Effort) {
-				thinkingType = "disabled"
-			} else if b, ok := reasonnormEffortToBudget(req.Reasoning.Effort); ok && b > 0 {
-				thinkingBudget = b
-				hasBudget = true
-			} else {
-				thinkingBudget = 8192 // safe default (xhigh)
-				hasBudget = true
-			}
-		default:
-			// No recognizable intent (unknown Type vocabulary only, no budget,
-			// no effort): omit the thinking block entirely — a budgetless
-			// {"type":"enabled"} is an Anthropic 400.
-			thinkingType = ""
+		proj := projectReasoningDerived(req, req.Reasoning, reasoningdialect.FamilyAnthropic, finalMaxTokens, req.MaxTokens > 0)
+		if v, ok := proj.Wire["thinking"]; ok {
+			out["thinking"] = v
 		}
-
-		// Model-specific gate: claude-opus-5-5 always thinks; the API
-		// rejects thinking.type=disabled. Per TestAnthropicOpus55Disabled
-		// OmittedAndReported, omit the entire thinking block on this model
-		// (the client intent to disable is recorded as a loss instead).
-		if thinkingType == "disabled" && anthropicRejectsDisabledThinking(req.Model) {
-			disableUnsupported = true
-			thinkingType = "" // omit the entire block
-		}
-
-		// 2026-10-01 审计：thinking budget × 最终 max_tokens 的最终一致性钳制
-		// （**仅客户端省略 max_tokens 时生效**，req.MaxTokens<=0 → 最终值是
-		// 序列化默认 4096，客户端从未见过该值）。Reasoning 派生的 budget
-		// （effort 预算表、8192 兜底、跨协议恢复值）此前从不对照最终
-		// max_tokens：effort=xhigh 兜底 budget=8192 vs 默认 max_tokens=4096 →
-		// budget_tokens(8192) >= max_tokens(4096) → Anthropic 硬 400；同请求
-		// 走 legacy 路径会被 reasonnorm.renderAnthropic 钳到 4095 成功发出。
-		// 钳制语义与 renderAnthropic / ClampRestoredReasoningForAnthropic 同款：
-		// cap 到 max-1；cap 后低于 1024 硬下限则整体省略 thinking（可发出的
-		// 请求优先于必 400 的请求）。
-		// 显式 max_tokens 时不钳：原生 thinking（req.Thinking）与 Reasoning 派生
-		// budget 都保持逐字透传——显式 max_tokens + 超界 budget 的组合由 legacy
-		// ChatToAnthropic 同样原样发射（chat_to_anthropic_parity 金标准钉住两路
-		// 对等），此处收口会破坏两路对等并被该金标准捕获；该组合的最终治理属
-		// 序列化边界整体钳制设计，不在本修复范围。
-		// 仅作用于 Reasoning 派生路径的省略 max_tokens 形态；native req.Thinking
-		// 客户端显式选值恒不钳（TestSerializeAnthropic_Thinking 钉住 1024/10000）。
-		if req.MaxTokens <= 0 && thinkingType != "" && thinkingType != "disabled" && hasBudget {
-			if thinkingBudget >= finalMaxTokens {
-				thinkingBudget = finalMaxTokens - 1
-			}
-			if thinkingBudget < anthropicMinBudget {
-				thinkingType = "" // 放不下 thinking：整体省略
-			}
-		}
-
-		if thinkingType != "" {
-			thinking := map[string]any{}
-			thinking["type"] = thinkingType
-			// Disabled thinking cannot carry a budget_tokens field
-			// (TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget);
-			// hasBudget is never set for disabled in the switch above.
-			if hasBudget && thinkingType != "disabled" {
-				thinking["budget_tokens"] = thinkingBudget
-			}
-			if len(thinking) > 0 {
-				out["thinking"] = thinking
-			}
-		}
-		if disableUnsupported {
-			reportSerializeAnthropicUnsupportedDisable(req)
-		}
+		reportProjectionLosses(req, proj)
 	}
 
 	// Cache control (top-level)
@@ -446,29 +342,6 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 			map[string]any{"top_k_value": 0},
 		)
 	}
-}
-
-// reportSerializeAnthropicUnsupportedDisable records that a model rejected
-// thinking.type=disabled (e.g. claude-opus-5-5 always thinks). The IR's
-// disable intent is reported as an ir_protocol_loss with reason="unsupported"
-// so the request still goes upstream but the loss is observable downstream.
-func reportSerializeAnthropicUnsupportedDisable(req *InternalRequest) {
-	if req == nil {
-		return
-	}
-	fieldPath := "reasoning_effort"
-	if req.SourceProtocol == ProtocolAnthropicMessages && req.Thinking != nil {
-		fieldPath = "thinking.type"
-	}
-	ReportProtocolLoss(
-		irRequestID(req),
-		fieldPath,
-		req.SourceProtocol,
-		ProtocolAnthropicMessages,
-		"unsupported",
-		"Anthropic model rejected thinking.type=disabled; omitted thinking block to keep request valid",
-		map[string]any{"model": req.Model},
-	)
 }
 
 // serializeAnthropicSystem serializes the system prompt.
@@ -1297,28 +1170,6 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 	}
 
 	return nil
-}
-
-// reasonnormEffortToBudget delegates to the canonical effort→budget table from
-// reasonnorm. We keep the call in the ir package (rather than importing
-// internal/reasonnorm directly) to avoid a cross-package dependency cycle while
-// keeping the table in one place. The table is reproduced via a thin shim.
-//
-// Source: internal/reasonnorm.EffortToBudget / litellm constants.py:83-192.
-func reasonnormEffortToBudget(effort string) (int, bool) {
-	// Canonical table (LiteLLM-verified):
-	//   none=0, minimal=1024, low=1024, medium=2048, high=4096, xhigh=8192, max=16384
-	effortBudgets := map[string]int{
-		"none":    0,
-		"minimal": 1024,
-		"low":     1024,
-		"medium":  2048,
-		"high":    4096,
-		"xhigh":   8192,
-		"max":     16384,
-	}
-	v, ok := effortBudgets[effort]
-	return v, ok
 }
 
 // DefaultAnthropicMaxTokens matches the pre-IR conversion path

@@ -263,6 +263,36 @@ func TestClientShape_CompoundFieldMalformed(t *testing.T) {
 		assert.Equal(t, 1, shapeFixKinds(evs)["unparseable_dropped"])
 	})
 
+	// 2026-11-12 批判审计 P3 订正：合法空数组 `[]` parse 成功（语义=无停止
+	// 序列），旧判据误报 "unparseable_dropped"——披露不得撒谎。
+	t.Run("stop_empty_array_not_disclosed", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-x","messages":[{"role":"user","content":"hi"}],
+			"stop":[]}`)
+		var evs []AnomalyEvent
+		prev := SetAnomalyReporter(func(ev AnomalyEvent) {
+			if strings.HasPrefix(ev.Reason, "client_shape_fix") {
+				evs = append(evs, ev)
+			}
+		})
+		req, err := ParseOpenAI(body)
+		SetAnomalyReporter(prev)
+		require.NoError(t, err)
+		assert.Empty(t, req.Stop)
+		assert.Equal(t, 0, shapeFixKinds(evs)["unparseable_dropped"], "合法空数组不得披露为 unparseable")
+	})
+
+	// 登记不修（2026-11-12 批判审计）：`"stop":[1,2]` 走 []string 部分填充
+	// 得 ["",""]（垃圾空串停止序列）——parseStringArray 既有语义，非本次
+	// 订正范围；len>0 ⇒ 披露判据不触发 ⇒ 不撒谎但值是垃圾。真修需
+	// parseStringArray 对类型不匹配元素 fail-visible（登记为后续候选）。
+	t.Run("stop_array_numeric_elements_current_semantics", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-x","messages":[{"role":"user","content":"hi"}],
+			"stop":[1,2]}`)
+		req, err := ParseOpenAI(body)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"", ""}, req.Stop, "既有部分填充语义（登记不修）")
+	})
+
 	t.Run("valid_compound_fields_untouched", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-x","messages":[{"role":"user","content":"hi"}],
 			"modalities":["text"],"stop":["END"]}`)

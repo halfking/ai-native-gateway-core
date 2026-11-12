@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
-	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
+	"github.com/kaixuan/llm-gateway-go/internal/reasoningdialect"
 	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
@@ -74,13 +74,14 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["response_format"] = rf
 	}
 
-	// audit-provider-multimodal (2026-07-13): Personalized provider fields
-	if req.Reasoning != nil && req.Reasoning.Effort != "" {
-		// R25-U4: an explicit disabled Type outranks Effort (same priority
-		// as the Anthropic/Gemini serializers) — emitting reasoning_effort
-		// alongside would silently re-enable what the caller disabled.
-		if req.Reasoning.Type != "disabled" {
-			out["reasoning_effort"] = req.Reasoning.Effort
+	// audit-provider-multimodal (2026-07-13): Personalized provider fields.
+	// Slice 2（2026-11-12）：effort 原生发射收敛到 openai 家族方言
+	// （R25-U4 disabled 压倒 effort 的语义在方言内），行为逐字保持。
+	if req.Reasoning != nil {
+		if proj := projectReasoningDerived(req, req.Reasoning, reasoningdialect.FamilyOpenAI, 0, false); len(proj.Wire) > 0 {
+			if v, ok := proj.Wire["reasoning_effort"]; ok {
+				out["reasoning_effort"] = v
+			}
 		}
 	}
 	if len(req.Modalities) > 0 {
@@ -295,41 +296,19 @@ func applyThinkingToOpenAIChat(out map[string]any, req *InternalRequest) bool {
 	if !haveIntent {
 		return false
 	}
-	dst := resolveTargetDialect(req, ProtocolOpenAIChat)
-	caps, ok := syntheticReasonCaps(dst)
+	// Slice 2（2026-11-12）：目标族经 ForVendorFamily 注册表取用（OCP：
+	// 新增 openai-wire 家族 = 注册一个实现 IntentProjector 的方言，核心零
+	// 改动）；渲染与「已存在键不覆盖」写回在方言内（reasonnorm.Render
+	// 单源不变），行为逐字保持。
+	familyKey, ok := openAIWireFamilyKey(resolveTargetDialect(req, ProtocolOpenAIChat))
 	if !ok {
 		return false
 	}
-	res := reasonnorm.Render(intent, caps, req.MaxTokens)
-	if res.IsEmpty() {
+	projector, isProjector := reasoningdialect.ForVendorFamily(familyKey).(reasoningdialect.IntentProjector)
+	if !isProjector {
 		return false
 	}
-	rendered := false
-	if res.ThinkingObject != nil {
-		if _, exists := out["thinking"]; !exists {
-			out["thinking"] = res.ThinkingObject
-			rendered = true
-		}
-	}
-	if res.EnableThinking != nil {
-		if _, exists := out["enable_thinking"]; !exists {
-			out["enable_thinking"] = *res.EnableThinking
-			rendered = true
-		}
-	}
-	if res.ThinkingBudget != nil {
-		if _, exists := out["thinking_budget"]; !exists {
-			out["thinking_budget"] = *res.ThinkingBudget
-			rendered = true
-		}
-	}
-	if res.ReasoningEffort != "" {
-		if _, exists := out["reasoning_effort"]; !exists {
-			out["reasoning_effort"] = res.ReasoningEffort
-			rendered = true
-		}
-	}
-	return rendered
+	return projector.RenderIntent(intent, req.MaxTokens, out)
 }
 
 // openAIReasoningIntent extracts the cross-protocol reasoning intent for
@@ -380,33 +359,6 @@ func openAIReasoningIntent(req *InternalRequest) (reasonnorm.Intent, bool) {
 		return reasonnorm.Intent{Mode: reasonnorm.ModeEnabled, BudgetTokens: budget}, true
 	}
 	return reasonnorm.Intent{}, false
-}
-
-// syntheticReasonCaps maps a paramreg target dialect to the minimal reasoncap
-// Caps needed by reasonnorm.Render for OpenAI-wire output. ok=false means the
-// dialect has no verified OpenAI-wire reasoning surface here — callers keep
-// the loss-report behavior.
-func syntheticReasonCaps(dst paramreg.Dialect) (reasoncap.Caps, bool) {
-	capsOf := func(d reasoncap.Dialect) (reasoncap.Caps, bool) {
-		return reasoncap.Caps{
-			Supported:  true,
-			Dialect:    d,
-			CanDisable: true, // family members all accept an explicit off toggle
-		}, true
-	}
-	switch dst {
-	case paramreg.DialectMiniMax:
-		return capsOf(reasoncap.DialectMiniMax)
-	case paramreg.DialectDeepSeek:
-		return capsOf(reasoncap.DialectDeepSeek)
-	case paramreg.DialectGLM:
-		return capsOf(reasoncap.DialectGLM)
-	case paramreg.DialectArk:
-		return capsOf(reasoncap.DialectArk)
-	case paramreg.DialectQwen:
-		return capsOf(reasoncap.DialectQwen)
-	}
-	return reasoncap.Caps{}, false
 }
 
 // systemPlainText flattens IR System to plain text for text-only system

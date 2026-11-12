@@ -244,11 +244,29 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		// 2026-11-11 审计第二轮（批 2）：stop 既非数组也非字符串（如对象/
 		// 数字）⇒ 解析结果为空 ⇒ 停止序列语义蒸发且无痕。披露（不猜测：
 		// 数字 1 应转 "1" 还是丢弃不可证明）。
+		// 2026-11-12 批判审计 P3 订正：合法空数组 `[]` 同样 parse 成功且
+		// 得空切片 ⇒ 旧判据把它误报成 "unparseable_dropped"（披露在撒谎：
+		// parse 实际成功、客户端意图就是「无停止序列」）。先判形状再披露。
 		if len(ir.Stop) == 0 && len(src.Stop) > 0 && string(src.Stop) != "null" {
 			var stopProbe any
-			_ = json.Unmarshal(src.Stop, &stopProbe)
-			reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_dropped",
-				map[string]any{"value_type": jsonTypeName(stopProbe)})
+			if err := json.Unmarshal(src.Stop, &stopProbe); err == nil {
+				switch v := stopProbe.(type) {
+				case []any:
+					if len(v) == 0 {
+						// 合法空数组（含 `[ ]` 空白变体）：parse 成功、语义就是
+						// 「无停止序列」——不是不可解析，免披露。
+						break
+					}
+					// 数组有元素却解析结果为空：现行 parseStringArray 对类型
+					// 不匹配元素做 []string 部分填充（非空）⇒ 本分支实际不可达；
+					// 保留为 fail-visible 防线（语义若变化，披露兜底而非静默）。
+					reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_dropped",
+						map[string]any{"value_type": "array_non_string_elements"})
+				default:
+					reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_dropped",
+						map[string]any{"value_type": jsonTypeName(stopProbe)})
+				}
+			}
 		}
 	}
 

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/reasoningdialect"
 )
 
 // ErrSerializeOllamaMissingModel is returned by SerializeOllama when the
@@ -343,43 +345,36 @@ func reportOllamaCacheControlLoss(req *InternalRequest) {
 // SerializeOllama drops. Ollama configures reasoning at serve time, not per
 // request, so the IR carries no expressible equivalent — report rather than
 // render. Budgets/enums only: no free text, nothing credential-shaped.
+// Slice 2（2026-11-12）：字段枚举与 reason 字面量收敛到 ollama 家族方言
+// （internal/reasoningdialect），此处只做调用与转发，行为逐字保持。
 func reportOllamaReasoningLoss(req *InternalRequest) {
 	if req == nil {
 		return
 	}
+	fam := reasoningdialect.ForVendorFamily(reasoningdialect.FamilyOllama)
 	if req.Thinking != nil {
-		ReportProtocolLoss("", "thinking", req.SourceProtocol, ProtocolOllamaChat,
-			"ollama_reasoning_drop",
-			"thinking config has no Ollama request-side equivalent and was dropped",
-			map[string]any{"thinking_type": req.Thinking.Type})
+		if np, ok := fam.(reasoningdialect.NativeProjector); ok {
+			reportProjectionLosses(req, np.ProjectNative(reasoningdialect.NativeRequest{
+				Type:           req.Thinking.Type,
+				Budget:         req.Thinking.BudgetTokens,
+				Model:          req.Model,
+				SourceProtocol: req.SourceProtocol,
+			}))
+		}
 	}
 	r := req.Reasoning
 	if r == nil {
 		return
 	}
-	if r.Type != "" {
-		ReportProtocolLoss("", "reasoning.type", req.SourceProtocol, ProtocolOllamaChat,
-			"ollama_reasoning_drop",
-			"reasoning toggle has no Ollama request-side equivalent and was dropped",
-			map[string]any{"reasoning_type": r.Type})
-	}
-	if r.Effort != "" {
-		ReportProtocolLoss("", "reasoning.effort", req.SourceProtocol, ProtocolOllamaChat,
-			"ollama_reasoning_drop",
-			"reasoning effort has no Ollama request-side equivalent and was dropped",
-			map[string]any{"reasoning_effort": r.Effort})
-	}
-	if r.BudgetTokens != nil {
-		ReportProtocolLoss("", "reasoning.budget_tokens", req.SourceProtocol, ProtocolOllamaChat,
-			"ollama_reasoning_drop",
-			"reasoning token budget has no Ollama request-side equivalent and was dropped",
-			map[string]any{"budget_tokens": *r.BudgetTokens})
-	}
-	if r.MaxReasoningTokens != nil {
-		ReportProtocolLoss("", "reasoning.max_reasoning_tokens", req.SourceProtocol, ProtocolOllamaChat,
-			"ollama_reasoning_drop",
-			"max reasoning token cap has no Ollama request-side equivalent and was dropped",
-			map[string]any{"max_reasoning_tokens": *r.MaxReasoningTokens})
+	if dp, ok := fam.(reasoningdialect.DerivedProjector); ok {
+		reportProjectionLosses(req, dp.ProjectDerived(reasoningdialect.DerivedRequest{
+			Type:               r.Type,
+			BudgetTokens:       r.BudgetTokens,
+			Effort:             r.Effort,
+			MaxReasoningTokens: r.MaxReasoningTokens,
+			Model:              req.Model,
+			SourceProtocol:     req.SourceProtocol,
+		}))
 	}
 }
 

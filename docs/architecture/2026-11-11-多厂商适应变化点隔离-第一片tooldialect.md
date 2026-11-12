@@ -41,7 +41,7 @@
 | 变化点 | 现状 | 模式指派 | 迁移切片 |
 |---|---|---|---|
 | A. 上游 wire 方言·工具参数流（占位符/续拼/修复） | 3 处内联（1 处曾缺失） | **SRP+抽象工厂（本轮落地）** `internal/tooldialect` | ✅ Slice 1 |
-| B. 上游 wire 方言·reasoning 字段族 | IR 投影逐字段 if + anomaly 噪声 | 方言对象（同 A 家族）：`ReasoningDialect`（投影/回注/丢弃策略） | Slice 2 |
+| B. 上游 wire 方言·reasoning 字段族 | IR 投影逐字段 if + anomaly 噪声 | 方言对象（同 A 家族）：`ReasoningDialect`（投影/回注/丢弃策略） | ✅ Slice 2（2026-11-12） |
 | C. 供应商命名/归一化 | `normalizeModelKey` 一处、归一歧义 WARN | 策略 + 单一归一权威（归一函数注册表，按供应商族） | Slice 3 |
 | D. 智能体会话形态（role 交替/连续同角色/tool_result 配对） | 通用修复器内特判 | 形态归一化器（按 client family 的 `ConversationShapeNormalizer`） | Slice 4 |
 | E. 厂商空流/恢复策略 | 按错误码散落 failover 判定 | 恢复策略对象（per-vendor `RecoveryPolicy`） | Slice 5 |
@@ -102,9 +102,62 @@
   `context_budget_exceeded` 与 `tool_json_invalid` 保持 0、真实流量 200 正常。
 - 方言迁移为行为保持重构，211 实测与迁移前同形（tool-call 流量正常完成）。
 
-## 6. 边界（本轮明确没做）
+## 6. 边界（Slice 1 轮明确没做）
 
 - Slice 2-6 未实施（本文档仅指派模式与切片顺序；每片独立一轮，行为保持）。
 - `ir.anomaly` 的 thinking 噪声本轮不静默（那是 Slice 2 的正题：语义化投影，
   而不是把 WARN 关掉）。
 - registry 无撤销接口（当前无撤销需求；加之前先加门）。
+
+## 7. Slice 2 落地记录（2026-11-12，行为保持）
+
+新叶子包 `internal/reasoningdialect`（依赖仅 reasonnorm/reasoncap）：
+
+- **`Arbitrate`** —— 「Type 指令词汇 > 显式预算(0=关) > Effort 拼写
+  （IsDisableEffort / EffortToBudget）」的**单一权威**。取代四份平行实现：
+  `ir.reasoningDisabled`（★ 实证**死代码**——零调用方，却被两处 serializer
+  注释自称 "mirrors"；已真删）、serialize_anthropic 内联 switch、
+  serialize_gemini 平行复制 switch（均改方言内 Arbitrate 消费）。
+  `openAIReasoningIntent` 的 effort-native 短路是 openai 家族策略而非漂移，
+  保留原位并登记为家族策略（非第二权威）。
+- **家族方言**（小接口按能力切 NativeProjector / DerivedProjector /
+  IntentProjector）：anthropic（8192 兜底 + 2026-10-01 max_tokens 钳制 +
+  opus-5-5 模型门）/ gemini25（-1 动态默认 + R45 0 哨兵模型门）/
+  openai（effort 原生发射，R25-U4）/ ollama（请求侧无表达，按设计丢弃 ×5
+  字段）/ openai-wire thinking 家族 ×5（minimax/deepseek/glm/ark/qwen，
+  经 reasonnorm.Render 单源出向；caps 随方言内聚）。
+- **`ForVendorFamily` 注册表**：键 = reasoncap.Dialect 词表（契约门对齐）；
+  内置种子九族「未装配即正确」；未注册族回落 noop（不发射、不发明 wire、
+  不供投影能力——kimi/grok/mistral 等未验证族保持 loss 路径）。
+- **消费方迁移**：serialize_anthropic / serialize_gemini（Native+Derived）/
+  serialize_ollama（丢弃面）/ serialize_openai（effort 原生 +
+  applyThinkingToOpenAIChat 经注册表）。实现体逐字搬移，行为保持
+  （ir 全量 + transformation 金标准 + streaming 全量 111s 全绿）。
+- **真删（§690 同源纪律）**：`internal/ir/reasoning_dialect.go` 整文件
+  （死权威 reasoningDisabled / 死路径 reasoningDisableFieldPath / 模型族门
+  随方言搬移）、serialize_openai 的 syntheticReasonCaps switch、
+  serialize_anthropic 的 reasonnormEffortToBudget（自称 thin shim 实为
+  effort→budget 表的**再复制**）。
+- **ir.anomaly 语义化投影**（不静默）：①serializer 按设计丢弃经
+  `Projection.Losses` 载体，metadata 富化 `family`+`disposition`
+  （by_design_model_gate / by_design_no_request_side_surface）；②extensions_restore
+  paramreg 策略丢弃（生产噪声主源）metadata 补 `disposition:
+  by_design_dialect_scope`。去重键不含 metadata ⇒ 富化不改变去重行为；
+  reason 字面量逐字保持（ollama_reasoning_drop / unsupported /
+  dialect_scoped_field / rejected_by_target_dialect）。
+- **门（有牙）**：reasoningdialect_test.go 七道（键对齐×2 / 仲裁优先级
+  矩阵 / 跨家族 disable 判定一致 + 钳制形状 / OCP 演示 / 语义投影 /
+  noop fail-closed / 种子完整性）+ ir 侧消费生效门三道（映射表 / 种子
+  RenderIntent 真实产出 qwen 形态 / loss 转发含语义 metadata）。
+  **变异验证 ×4 全部红**：M1 仲裁优先级互换（预算赢过指令）⇒ 矩阵门 +
+  ir 既有优先级钉测双红；M2 anthropic 种子退化 ⇒ ir serialize_anthropic 红；
+  M3 qwen enable_thinking 写回删除 ⇒ 新消费门 + 既有 ApplyThinking 红双咬；
+  M4 ollama budget 披露删除 ⇒ 转发门 + 既有 Ollama loss 红双咬。
+- **边界（Slice 2 明确没做）**：openAIReasoningIntent 的家族策略分支未改写
+  （行为保持优先；adaptive→预算回落的 legacy 语义登记为观察项）；
+  extensions_restore 的 reasoning/thinking 特例块（r-P1-1 确定性快照纪律）
+  未并入方言层——它是 paramreg 消费方不是第二实现，无收敛对象；
+  trace 族（thinking signature / redacted_thinking 中继）属另一族未动；
+  paramguard 的模型级例外（adaptive-only 强制改写）按其注释留在模型层；
+  gemini3 thinkingLevel 形态未实现（reasonnorm 有 render 分支但 ir
+  serializer 从未消费，不发明行为）。
