@@ -26,7 +26,7 @@ export default {
     namePlaceholder: "z. B. Acme Corp",
     statusLabel: "Status",
     contactLabel: "Kontakt-E-Mail",
-    contactPlaceholder: "admin@example.com",
+    contactPlaceholder: "you{'@'}company.com",
     descLabel: "Beschreibung",
     descPlaceholder: "Optional",
     create: "Erstellen",

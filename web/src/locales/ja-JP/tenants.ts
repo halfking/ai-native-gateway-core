@@ -26,7 +26,7 @@ export default {
     namePlaceholder: "例: Acme Corp",
     statusLabel: "ステータス",
     contactLabel: "連絡先メール",
-    contactPlaceholder: "admin@example.com",
+    contactPlaceholder: "you{'@'}company.com",
     descLabel: "説明",
     descPlaceholder: "任意",
     create: "作成",
