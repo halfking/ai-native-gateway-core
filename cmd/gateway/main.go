@@ -6164,7 +6164,7 @@ func main() {
 			if redisClientForCache != nil {
 				redisForGuard = redisClientForCache.Client()
 			}
-			sanitizePatternDetector = installSmartSaniGuard(chatHandler, redisForGuard, dbConn.Stdlib())
+			sanitizePatternDetector = installSmartSaniGuard(chatHandler, imagesGenerationsHandler, videosGenerationsHandler, redisForGuard, dbConn.Stdlib())
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
@@ -6797,7 +6797,7 @@ func main() {
 	// Redis/DB-free and lite startup must still protect visible request/output
 	// text. With no Redis, restoration uses the current request's private map.
 	if sanitizePatternDetector == nil && chatHandler != nil {
-		sanitizePatternDetector = installSmartSaniGuard(chatHandler, nil, nil)
+		sanitizePatternDetector = installSmartSaniGuard(chatHandler, imagesGenerationsHandler, videosGenerationsHandler, nil, nil)
 	}
 
 	// ── Sensitive Word Engine (2026-07-18) ───────────────────────────────
