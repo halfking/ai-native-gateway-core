@@ -847,9 +847,11 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 						"offers_total", b.OffersTotal,
 						"blocked_credential_missing", b.BlockedByCredentialMissing,
 						"blocked_credential_status", b.BlockedByCredentialStatus,
+						"blocked_credential_manual_disabled", b.BlockedByCredentialManualDisabled,
 						"blocked_credential_lifecycle", b.BlockedByCredentialLifecycle,
 						"blocked_credential_quota", b.BlockedByCredentialQuota,
 						"blocked_provider_disabled", b.BlockedByProviderDisabled,
+						"blocked_provider_tenant", b.BlockedByProviderTenant,
 						"blocked_unavailable_reason", b.BlockedByUnavailableReason,
 						"likely_cause", b.Summarize(),
 					)

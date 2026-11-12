@@ -268,6 +268,12 @@ func newMemoraV2Client() *memora.Client {
 }
 
 // routes 注册 HTTP 路由。
+//
+// ★ 部署阻断项（2026-11-12 批判审计 P2）：本 mux **零鉴权**——所有端点对
+// 能触达端口的调用方完全开放，而服务持有 LLM_API_KEY 可调上游 ⇒ 一旦发布
+// 到有外网面的机器＝「开放 LLM 代理」（prompt 外泄 + 额度盗刷）。接线/
+// 公网部署前必须补鉴权中间件（bearer token 或仅 loopback+反代鉴权）；
+// docker-compose 已把端口发布收敛到 127.0.0.1 止血。
 func (s *service) routes() http.Handler {
 	mux := http.NewServeMux()
 

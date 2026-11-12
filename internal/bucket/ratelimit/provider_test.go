@@ -329,7 +329,9 @@ func TestMinuteBucketAdmissionWithBudget(t *testing.T) {
 	// ★ 窗口是**绝对时间网格**（`now.Truncate(window)`）⇒ 两次 Admit 之间一旦跨过 100ms 边界，
 	// ★ 第二次落进**新窗口**⇒ 配额已刷新 ⇒ **本该「预算超限」的请求被直接放行** ⇒
 	// ★ 断言 `err == nil` 失败。★ 实测复现：串行 3/3 绿；**8 路并行 1/8 红**。
-	// ★ 改用 1s 窗口（与同文件其它三个用例同款口径）⇒ 窗口内不会跨界 ⇒ 断言确定。
+	// ★ 改用 1h 窗口（2026-11-12 批判审计订正：注释原写「1s 窗口」是手抄
+	// ★ 漂移——代码实际是 1 * time.Hour，见下一行；窗口远长于测试时长 ⇒
+	// ★ 窗口内不会跨界 ⇒ 断言确定）。
 	config.Window = 1 * time.Hour
 	config.MaxWaitTime = 50 * time.Millisecond
 	admission := NewMinuteBucketAdmissionWithConfig(config)

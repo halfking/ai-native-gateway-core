@@ -150,13 +150,22 @@ shaped AS (
   SELECT r.*,
          CASE
            WHEN rv.role_violations > 0 THEN 'role_violation'
-           WHEN r.request_delta::text LIKE '%"type":"thinking"%'
-             OR r.request_delta::text LIKE '%"type":"redacted_thinking"%'
+           -- 2026-11-12 批判审计 P2 修正：request_delta 是 **jsonb** 列，
+           -- `::text` 渲染带空格且**重排键**（`{"type": "thinking"}`）⇒
+           -- 旧 Go-marshal 风格 LIKE 模式（无空格）**永不命中** ⇒
+           -- thinking/multimodal 两桶静默欠采样（LIVE PG 实证：
+           -- 112 夹具 thinking=1、multimodal=0）。修法 = 空格剥离后
+           -- 保留原键值对 LIKE（`replace(::text,' ','')`；键值对匹配
+           -- 与键序无关）。注：PG jsonpath 无 `**` 递归下降
+           -- （`$**.type` 语法错误，211 实测）⇒ 不走 jsonb_path_exists。
+           -- 模式只钉单个键值对，嵌套 content[].type 与顶层 type 都命中。
+           WHEN replace(r.request_delta::text, ' ', '') LIKE '%"type":"thinking"%'
+             OR replace(r.request_delta::text, ' ', '') LIKE '%"type":"redacted_thinking"%'
              OR r.request_delta::text LIKE '%reasoning_content%' THEN 'thinking'
-           WHEN r.request_delta::text LIKE '%"type":"image_url"%'
-             OR r.request_delta::text LIKE '%"type":"image"%'
-             OR r.request_delta::text LIKE '%inline_data%'
-             OR r.request_delta::text LIKE '%"type":"input_audio"%' THEN 'multimodal'
+           WHEN replace(r.request_delta::text, ' ', '') LIKE '%"type":"image_url"%'
+             OR replace(r.request_delta::text, ' ', '') LIKE '%"type":"image"%'
+             OR replace(r.request_delta::text, ' ', '') LIKE '%"inline_data"%'
+             OR replace(r.request_delta::text, ' ', '') LIKE '%"type":"input_audio"%' THEN 'multimodal'
            WHEN jsonb_array_length(r.request_delta) >= 40 THEN 'long_conv'
            WHEN tm.tool_msgs >= 6 THEN 'tool_heavy'
            ELSE 'general'

@@ -37,7 +37,10 @@ services:
       - LLM_BASE_URL=http://mock-llm:8099/v1
       - LLM_API_KEY=mock-key
     ports:
-      - "8090:8090"
+      # 2026-11-12 批判审计 P2 止血：服务 HTTP API 当前零鉴权（routes() 裸
+      # mux），发布到 0.0.0.0 = 一旦部署到有外网面的机器即「开放 LLM 代理」。
+      # 收敛到 loopback；补鉴权前不得改回（部署阻断项见审计主档）。
+      - "127.0.0.1:8090:8090"
     networks:
       - optimizer-network
     depends_on:
