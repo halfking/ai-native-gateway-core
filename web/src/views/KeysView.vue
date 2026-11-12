@@ -6,7 +6,7 @@ import { sortByNameStable } from '../utils/sortByName'
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
-import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isTenantAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
@@ -283,7 +283,12 @@ function openNew() {
     newTenant.value = tenantId
   }
   newKeyAlias.value = ''
-  newOwner.value = ''
+  // 非管理员自动锁定 owner 为当前用户（2026-11-12）
+  if (!isSuperAdmin() && !isTenantAdmin()) {
+    newOwner.value = store.userInfo?.username || ''
+  } else {
+    newOwner.value = ''
+  }
   newBudget.value = ''
   newRpm.value = ''
   newRemark.value = ''
@@ -441,6 +446,16 @@ async function disableSelected() {
     error.value = t('keys.systemKeyCannotDisable')
     return
   }
+  
+  // 权限检查：非管理员只能操作自己的 key（2026-11-12）
+  if (!isSuperAdmin() && !isTenantAdmin()) {
+    const currentUsername = store.userInfo?.username || ''
+    if (k.owner_user !== currentUsername) {
+      error.value = '您只能禁用自己的密钥'
+      return
+    }
+  }
+  
   if (!(await confirmDialog(t('keys.list.confirm.disable', { prefix: k.key_prefix })))) return
   try {
     await disableKey(k.id)
@@ -460,6 +475,16 @@ async function disableSelected() {
 async function enableSelected() {
   const k = selectedKey.value
   if (!k) return
+  
+  // 权限检查：非管理员只能操作自己的 key（2026-11-12）
+  if (!isSuperAdmin() && !isTenantAdmin()) {
+    const currentUsername = store.userInfo?.username || ''
+    if (k.owner_user !== currentUsername) {
+      error.value = '您只能启用自己的密钥'
+      return
+    }
+  }
+  
   try {
     await enableKey(k.id)
     closeKeyDrawer()
@@ -649,6 +674,15 @@ onBeforeUnmount(() => {
           :options="uniqueOwners"
           placeholder="按归属用户过滤"
         />
+        <button
+          v-if="store.userInfo?.username"
+          class="btn btn-ghost btn-xs"
+          :class="{ 'btn-primary': filterOwner === store.userInfo.username }"
+          @click="filterOwner = filterOwner === store.userInfo.username ? '' : store.userInfo.username"
+          :title="filterOwner === store.userInfo.username ? '显示全部' : '仅看我的密钥'"
+        >
+          {{ filterOwner === store.userInfo.username ? '✓ 我的' : '我的' }}
+        </button>
         <button
           v-if="filterTenant || filterApp || filterProfile || filterOwner"
           class="btn btn-ghost btn-xs"
@@ -926,7 +960,15 @@ onBeforeUnmount(() => {
           </div>
           <div class="form-group">
             <label>归属用户（可选）</label>
-            <input v-model="newOwner" placeholder="如: admin" />
+            <input 
+              v-model="newOwner" 
+              placeholder="如: admin" 
+              :disabled="!isSuperAdmin() && !isTenantAdmin()"
+              :title="(!isSuperAdmin() && !isTenantAdmin()) ? '普通用户只能创建归属自己的密钥' : ''"
+            />
+            <span v-if="!isSuperAdmin() && !isTenantAdmin() && newOwner" class="hint">
+              密钥将归属于当前用户（{{ newOwner }}）
+            </span>
           </div>
           <div class="form-group">
             <label>预算上限 USD（可选）</label>
