@@ -87,7 +87,7 @@ while IFS=$'\t' read -r id target anchor repl expect; do
     python3 "$HELPER" replace "$target" "$(b64 "$anchor")" "$(b64 "$repl")" >/dev/null
     rc=$?
     if [[ $rc -ne 0 ]]; then
-        echo "❌ $id 替换失败（rc=$rc）"
+        echo "❌ $id 替换失败（rc=${rc}）"
         FAIL=$((FAIL + 1))
         FAILED_ARMS="${FAILED_ARMS} $id(替换失败)"
         continue
@@ -111,10 +111,10 @@ while IFS=$'\t' read -r id target anchor repl expect; do
     esac
 
     out=$(go test "$PKG" -run "$expect" -count=1 2>&1)
-    if echo "$out" | grep -qE "^(FAIL|--- FAIL)"; then
+    if grep -qE "^(FAIL|--- FAIL)" <<<"$out"; then
         echo "✅ $id 门变红（${target##*/} SHA=${MUT_SHA:0:8}）"
         PASS=$((PASS + 1))
-    elif echo "$out" | grep -qE "build failed|cannot use|undefined:|vet:"; then
+    elif grep -qE "build failed|cannot use|undefined:|vet:" <<<"$out"; then
         echo "⚠️  $id 编译红 —— 不算判据有牙（锚点选错）"
         FAIL=$((FAIL + 1))
         FAILED_ARMS="${FAILED_ARMS} $id(编译红)"
@@ -136,7 +136,7 @@ else
 fi
 
 RESTORED_OUT=$(go test ./internal/tooldialect ./internal/ir ./domains/transformation -run "TestAnthropicTerminalArguments|TestRegistryOpenForExtension|TestRestoreExtensions_NativePassthrough|TestClientShape_RoleAlternationDefaultMerged|TestR1026Pass2" -count=1 2>&1)
-if echo "$RESTORED_OUT" | grep -qE "^(ok|--- PASS)" && ! echo "$RESTORED_OUT" | grep -qE "FAIL"; then
+if grep -qE "^(ok|--- PASS)" <<<"$RESTORED_OUT" && ! grep -qE "FAIL" <<<"$RESTORED_OUT"; then
     echo " 还原后正向复跑绿 ✅"
     exit 0
 else

@@ -115,10 +115,10 @@ while IFS=$'\t' read -r id target anchor repl expect; do
 
     # ② 门必须变红
     out=$(go test ./internal/ir -run "$expect" -count=1 2>&1)
-    if echo "$out" | grep -qE "^(FAIL|--- FAIL)"; then
+    if grep -qE "^(FAIL|--- FAIL)" <<<"$out"; then
         echo "✅ $id 门变红（${target##*/} SHA=${MUT_SHA:0:8}）"
         PASS=$((PASS + 1))
-    elif echo "$out" | grep -qE "build failed|cannot use|undefined:"; then
+    elif grep -qE "build failed|cannot use|undefined:" <<<"$out"; then
         echo "⚠️  $id 编译红 —— 不算判据有牙（锚点选错）"
         FAIL=$((FAIL + 1))
         FAILED_ARMS="${FAILED_ARMS} $id(编译红)"
@@ -145,7 +145,7 @@ if diff -q <(git show HEAD:internal/ir/serialize_ollama.go 2>/dev/null) internal
     :
 fi
 RESTORED_OUT=$(go test ./internal/ir -run "TestStructuredFieldCoverageMatrix|TestMatrixSpotChecks" -count=1 2>&1)
-if echo "$RESTORED_OUT" | grep -qE "^ok"; then
+if grep -qE "^ok" <<<"$RESTORED_OUT"; then
     echo " 还原后正向复跑绿 ✅"
     exit 0
 else

@@ -22,6 +22,9 @@
 
 set -uo pipefail
 
+# ★ 专用 Go 构建缓存（★ scripts/lib/gocache.sh）：编译型 go 命令的产物不许落进用户全局缓存。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 MEMORA_BASE="${MEMORA_BASE_URL:-http://127.0.0.1:12113}"
 OLLAMA_BASE="${OLLAMA_BASE_URL:-http://127.0.0.1:11434/v1}"
 PROJECT_ID="${MEMORA_PROJECT_ID:-prompt-optimizer}"

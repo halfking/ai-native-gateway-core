@@ -19,6 +19,9 @@
 
 set -uo pipefail
 
+# ★ 专用 Go 构建缓存（★ scripts/lib/gocache.sh）：编译型 go 命令的产物不许落进用户全局缓存。
+export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 

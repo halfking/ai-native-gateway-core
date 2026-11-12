@@ -27,6 +27,16 @@ var knownCandidates = []string{
 	// 「丢的是另一个返回值」。
 	"bg/lite_retention_worker.go",
 
+	// ★ 2026-11-12（48h 审计第五轮）bg/market_scoring.go:490,504 —— **同类假阳性**
+	// （与 lite_retention_worker.go 同款）：`if _, err := w.ScoreNow(ctx); err != nil {
+	// slog.Warn(...) }` 里的 `_` 是**本轮评分汇总**（MarketScoringRunStats），
+	// err **有**被检查并以 warn 落日志（catch-up 失败 / 定时轮失败两条路径各一处）
+	// ⇒ 错误既未丢弃也未静默。★ 引入点＝ origin/main 的 df8fbe518（A-17 M2-T3 评分 job），
+	// ★ 该提交推后**未跑全量套件** ⇒ 这条红是并行会话遗留、本轮合并后由全量套件当场抓住
+	// （与前三轮「既有红」同款形态：推 6 笔未跑全量 ⇒ 台账/门漂移）。
+	// ★ 处置＝按门的指引「带理由登记」，**不改上游那段本来正确的错误处理**。
+	"bg/market_scoring.go",
+
 	// ★★ 2026-11-09（r1050 轮复核）**曾**登记过 `internal/largebody/index.go` 与
 	// ★★ `internal/largebody/store.go`（★ 上游 2026-11-09 的 largebody 轮新增包带进来的
 	// ★★ 8 处**同款假阳性**：★ `_` 是字符/字节返回值、★ `err` 有被检查并原样上抛）⇒

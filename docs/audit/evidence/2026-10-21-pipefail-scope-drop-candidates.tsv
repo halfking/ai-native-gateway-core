@@ -88,6 +88,8 @@ scripts/252-monitor/ursm-snapshot-health.sh	321	sql_failed	var-write	bare	unknow
 scripts/252-monitor/ursm-snapshot-slot-refresh.sh	157	sql_failed	var-write	bare	unknown	needs-human-read	grep-q	discarded	sql_failed() { printf '%s\n' "$1" | grep -qE '^\s*(ERROR|FATAL)'; }
 scripts/audit-all-tables.sh	268	audit_request_wal	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "completed"; then
 scripts/audit-all-tables.sh	87	audit_usage_ledger	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$updated" | grep -q "0.999"; then
+scripts/audit/prompt-optimizer-mutation-verify.sh	82	run_arm	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	elif echo "$out" | grep -qE '^\s*\[build failed\]|build constraints|cannot use|undefined:'; then
+scripts/audit/prompt-optimizer-mutation-verify.sh	84	run_arm	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$out" | head -5
 scripts/audit/q-usage.sh	215	run_self_test	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if ! printf '%s' "$out" | grep -q "轮转"; then
 scripts/audit/verify-g1-route-contract.sh	144	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
 scripts/audit/verify-l11b-cost-view-rowset.sh	331	expect_red	var-write	bare	bulk	real-defect-candidate	head	discarded	echo "$output" | head -10
@@ -145,6 +147,9 @@ scripts/scan-secrets.sh	348	is_sops_envelope	var-write	bare	bulk	real-defect-can
 scripts/scan-secrets.sh	349	is_sops_envelope	var-write	bare	bulk	real-defect-candidate	grep-q	consumed	echo "$head" | grep -Eq '^[[:space:]]*"(age|pgp|kms)":' || return 1
 scripts/test-e2e-bodies.sh	104	test_e2e_001	var-write	judgment	scalar	safe-single-line	grep-q	consumed	if echo "$API_RESPONSE" | grep -q "request_id"; then
 scripts/test-e2e-bodies.sh	192	test_perf_001	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$EXPLAIN_OUTPUT" | grep -qi "Index Scan"; then
+scripts/test-prompt-optimizer.sh	135	assert_contains	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if printf '%s' "$payload" | grep -qF -- "$needle"; then
+scripts/test-prompt-optimizer.sh	140	assert_contains	var-write	bare	unknown	needs-human-read	head	discarded	printf '%s\n' "$payload" | head -20
+scripts/test-prompt-optimizer.sh	203	test_optimize_without_harness	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if printf '%s' "$payload" | grep -q '安全规则'; then
 scripts/test-runtime-tc.sh	90	tc6	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$used_cred" | grep -q "^$test_cred_id|"; then
 scripts/upload/upload-to-cloudreve.sh	101	login_v4	var-write	bare	bulk	real-defect-candidate	head	discarded	log_err "v4 登录失败: $(echo "$resp" | head -c 200)"
 scripts/ursm-redis-db-migrate.sh	260	verify_count	var-write	value	unknown	needs-human-read	head	discarded	cur="$(printf '%s\n' "$batch" | head -1)"
