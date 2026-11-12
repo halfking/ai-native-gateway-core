@@ -1839,6 +1839,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 961（2026-11-12 A-17 收口 M2-T4 轮）：market_scoring_runs 每日评分
 			// 运行台账（price_confidence_degraded 环比的两日读数源）。
 			"961_market_scoring_runs.sql",
+			// 962（2026-11-12 48h 审计第五轮）：recent_success_rate +
+			// recent_cache_hit_rate 的谓词改成与既有索引
+			// idx_session_turns_hot_credential_ts **逐字同形**（CASE 形态）
+			// ⇒ 修「凭据监控摘要在 245/154 上必 500」（15s context 超时；
+			// 真库实测 13184 ms → 94 ms）；同时把在役的 session_turns_hot
+			// 函数体**补回仓内**（此前只有已退役的 v1 形态 ⇒ 仓内无法复现在役）。
+			"962_recent_success_rate_index_aligned.sql",
 		},
 	}
 }
