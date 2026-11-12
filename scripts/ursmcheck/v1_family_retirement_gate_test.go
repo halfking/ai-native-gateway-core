@@ -236,7 +236,8 @@ func TestV1FamilyRetirementScriptExistsAndParses(t *testing.T) {
 	if st.IsDir() {
 		t.Fatalf("%s 是目录，不是脚本", v1RetireRelPath)
 	}
-	if st.Mode().Perm()&0111 == 0 {
+	// Windows 假红族（LESSONS §704 发现②）：NTFS 不携带 POSIX 位；权威 = git mode 100755。
+	if runtime.GOOS != "windows" && st.Mode().Perm()&0111 == 0 {
 		t.Errorf("%s 没有可执行位（%v）⇒ 用 `bash %s` 能跑，但直接执行会失败",
 			v1RetireRelPath, st.Mode().Perm(), v1RetireRelPath)
 	}

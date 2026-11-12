@@ -147,7 +147,8 @@ func TestApiSweepScriptExistsAndParses(t *testing.T) {
 	if st.IsDir() {
 		t.Fatalf("%s 是目录，不是脚本", apiSweepRelPath)
 	}
-	if st.Mode().Perm()&0111 == 0 {
+	// Windows 假红族（LESSONS §704 发现②）：NTFS 不携带 POSIX 位；权威 = git mode 100755。
+	if runtime.GOOS != "windows" && st.Mode().Perm()&0111 == 0 {
 		t.Errorf("%s 没有可执行位（%v）⇒ 用 `bash %s` 能跑，但直接执行会失败",
 			apiSweepRelPath, st.Mode().Perm(), apiSweepRelPath)
 	}
@@ -742,11 +743,13 @@ func TestApiSweepClassifiesResponsesBehaviourally(t *testing.T) {
 //	★⇒ ★★ 修法：★ 让工具支持三列形态（★ method=ANY 视为 GET）。
 //
 // ★★ 为什么这条门必须是【行为层】而不是【形状层】：
-//   ★ 形状层只能断言「脚本里写了 TAB 解析分支」⇒ ★ **脚本里写了一段死代码也能过**；
-//   ★★ 行为层真的跑一次工具、真的喂三列清单、★ 然后断言**没有 URL 畸形**。
+//
+//	★ 形状层只能断言「脚本里写了 TAB 解析分支」⇒ ★ **脚本里写了一段死代码也能过**；
+//	★★ 行为层真的跑一次工具、真的喂三列清单、★ 然后断言**没有 URL 畸形**。
 //
 // ★ 用不可达 BASE 制造「快速失败」：★ curl 连不上立即退出（exit 7）
-//   ⇒ ★★ **秒级返回** ⇒ ★ 不给门加时间负担。
+//
+//	⇒ ★★ **秒级返回** ⇒ ★ 不给门加时间负担。
 func TestApiSweepConsumesCanonicalRouteManifest(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("windows 下跳过（★ 脚本是 bash，★ 且本门依赖 shell 行为）")

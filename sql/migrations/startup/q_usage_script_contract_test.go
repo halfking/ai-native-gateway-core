@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -286,7 +287,10 @@ func TestQUsageScriptIsExecutableBash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat %s 失败: %v", qUsageScript, err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows 假红族：NTFS/FAT 不携带 POSIX exec 位（git 里 mode=100755 才是
+	// 权威），os.Stat 在 Windows 上恒报 -rw-rw-rw- ⇒ 这条检查只对 Unix 有意义。
+	// 牙在 Unix 侧保留（部署通道的 Linux 面会真跑这道检查）。
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("%s 没有可执行位（mode=%s）", qUsageScript, info.Mode())
 	}
 	raw, err := os.ReadFile(qUsageScript)
