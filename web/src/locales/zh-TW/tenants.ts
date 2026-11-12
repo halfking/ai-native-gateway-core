@@ -56,7 +56,6 @@ export default {
     appDistributionHint: '選擇任意一行，可跳轉到已依該應用篩選的金鑰列表',
     createUserBtn: '新增使用者',
     createUserTitle: '新增使用者',
-    createUserSaving: '建立中…',
     createUserFailed: '使用者沒能建立出來，請重試',
     usernameRequired: '使用者名稱和密碼不能為空',
     passwordTooShort: '密碼至少需要 8 個字元',

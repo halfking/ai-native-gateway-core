@@ -60,7 +60,6 @@ export default {
     appDistributionHint: 'Select any row to jump to the API key list filtered by that application.',
     createUserBtn: 'Add user',
     createUserTitle: 'Add user',
-    createUserSaving: 'Creating…',
     createUserFailed: 'The user could not be created. Please retry.',
     usernameRequired: 'Username and password are required',
     passwordTooShort: 'Password must be at least 8 characters',

@@ -56,7 +56,6 @@ export default {
     appDistributionHint: 'اختر أي صف للانتقال إلى قائمة المفاتيح المصفّاة حسب ذلك التطبيق.',
     createUserBtn: 'إضافة مستخدم',
     createUserTitle: 'إضافة مستخدم',
-    createUserSaving: 'جارٍ الإنشاء…',
     createUserFailed: 'تعذّر إنشاء المستخدم. أعد المحاولة.',
     usernameRequired: 'اسم المستخدم وكلمة المرور مطلوبان',
     passwordTooShort: 'يجب أن تتكون كلمة المرور من 8 أحرف على الأقل',

@@ -56,7 +56,6 @@ export default {
     appDistributionHint: '任意の行を選ぶと、そのアプリケーションで絞り込んだ API キー一覧へ移動できます',
     createUserBtn: 'ユーザーを追加',
     createUserTitle: 'ユーザーを追加',
-    createUserSaving: '作成中…',
     createUserFailed: 'ユーザーを作成できませんでした。再試行してください。',
     usernameRequired: 'ユーザー名とパスワードは必須です',
     passwordTooShort: 'パスワードは8文字以上で入力してください',

@@ -56,7 +56,6 @@ export default {
     appDistributionHint: 'Sélectionnez une ligne pour accéder à la liste des clés filtrée par cette application.',
     createUserBtn: 'Ajouter un utilisateur',
     createUserTitle: 'Ajouter un utilisateur',
-    createUserSaving: 'Création…',
     createUserFailed: "L'utilisateur n'a pas pu être créé. Veuillez réessayer.",
     usernameRequired: "Le nom d'utilisateur et le mot de passe sont requis",
     passwordTooShort: 'Le mot de passe doit contenir au moins 8 caractères',

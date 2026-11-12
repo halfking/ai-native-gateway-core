@@ -59,7 +59,6 @@ export default {
     appDistributionHint: '选择任意一行，可跳转到已按该应用过滤的密钥列表',
     createUserBtn: '新增用户',
     createUserTitle: '新增用户',
-    createUserSaving: '创建中…',
     createUserFailed: '用户没能创建出来，请重试',
     usernameRequired: '用户名和密码不能为空',
     passwordTooShort: '密码至少需要 8 个字符',

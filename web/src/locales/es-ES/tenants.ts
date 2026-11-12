@@ -56,7 +56,6 @@ export default {
     appDistributionHint: 'Seleccione cualquier fila para ir a la lista de claves filtrada por esa aplicación',
     createUserBtn: 'Añadir usuario',
     createUserTitle: 'Añadir usuario',
-    createUserSaving: 'Creando…',
     createUserFailed: 'No se pudo crear el usuario. Vuelva a intentarlo.',
     usernameRequired: 'El nombre de usuario y la contraseña son obligatorios',
     passwordTooShort: 'La contraseña debe tener al menos 8 caracteres',

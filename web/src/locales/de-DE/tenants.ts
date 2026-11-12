@@ -56,7 +56,6 @@ export default {
     appDistributionHint: 'Wählen Sie eine beliebige Zeile, um zur nach dieser App gefilterten Schlüsselliste zu springen',
     createUserBtn: 'Benutzer hinzufügen',
     createUserTitle: 'Benutzer hinzufügen',
-    createUserSaving: 'Wird erstellt…',
     createUserFailed: 'Der Benutzer konnte nicht erstellt werden. Bitte erneut versuchen.',
     usernameRequired: 'Benutzername und Passwort sind erforderlich',
     passwordTooShort: 'Das Passwort muss mindestens 8 Zeichen lang sein',
