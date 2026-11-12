@@ -86,25 +86,55 @@
 ## 资产与记录
 
 - 主档：`docs/audit/2026-11-12-48h审计第五轮-主档.md`
-- 本轮提交：`00351f53a`（merge）→ `bca112f9a`（go mod tidy）→ `a11c76ff3`（prompt-optimizer 落库）→ `f860792f0`（桶自述文档+注记）→ `5e43eeb56`（既有红收口）→ `667d566c8`（候选空归因诊断+主档）→ `7ef9dd6e3`（桶测试窗口假红）＋ AGENTS 横幅
+- **本轮提交序列（前半段）**：`00351f53a`（merge）→ `bca112f9a`（go mod tidy）→ `a11c76ff3`（prompt-optimizer 落库）→ `f860792f0`（桶自述文档+注记）→ `5e43eeb56`（既有红收口）→ `667d566c8`（候选空归因诊断+主档）→ `7ef9dd6e3`（桶测试窗口假红）→ `fedd65144`（第五轮 handoff）→ `86cc4a24d`（i18n CJK 棘轮真红修复）→ `838d2594f`（迁移 962）→ `0e76c24cf`（主档回填 + LESSONS §696/§697）
+- **本轮提交序列（续，本会话）**：
+  | 提交 | 内容 |
+  |---|---|
+  | `23afcd6ef` | fix(db)：**两层载体漂移**（迁移文件 vs Go 运行时 SSOT）⇒ 改 SSOT + 跨包等价门 + 890/915 门改造（折叠 delta + 正向断言）⇒ 变异 ×3 全红 |
+  | `e5f44819a` | fix(db)：**第三条投递通道漏登记** ⇒ 211 通道 `files=(...)` 补 962 + `ledger_artifact_probe` + 新增第三通道门 ⇒ 变异臂红 |
+  | `422e2c90e` | fix(db)：**clobber 守卫「有意链」补登** ⇒ 契约 `passed` rc=0 |
+  | `59657b9f2` | docs(audit)：**★ 纠正上一轮归因** + 三台部署读数 + LESSONS §698/§699/§700 |
+  | `a5e6a87d5` | Merge：并行会话的 4 笔（`d21037e99` 自动同步 / `7a8e43030` 三处红收口 / `e3db4a8d5` IR 变异脚本 shell 站点 / `291912dbf` 两份错误模式审计报告）⇒ 合并后复跑关键门（`internal/sqlguard` / `sql/migrations/startup` / `db` + 契约脚本）全绿 |
 - 211 取证快照：`/tmp/lgw-audit-1015/gateway-current.json.log`（75MB / 135065 行 / 2026-11-11T20:23Z→11-12T02:15Z）
+- 本轮全量套件日志：`/tmp/lgw_verify4.log`（2 红包，@`0e76c24cf`）→ `/tmp/lgw_verify5.log`（EXIT=0 / 382 包 ok，@`422e2c90e`）→ `/tmp/lgw_verify6.log`（合并后终态，@`a5e6a87d5`）
+- 本轮部署日志：`/tmp/deploy_211_3024.log`（EXIT=0）→ `/tmp/deploy_211_3025.log`（**EXIT=1**，clobber 守卫 abort）→ `/tmp/deploy_211_3026.log`（EXIT=0）／`/tmp/deploy_245_3026.log`（EXIT=0）／`/tmp/deploy_154_3027.log`（EXIT=0）
 
 ## 下一轮提示词
 
 ```
 对 llm-gateway-go 做下一轮 48h 审计与完善，优先做三件（按顺序）：
-1) 注入检测与敏感信息脱敏/恢复两域的**逐条审计**：先读 docs/audit/2026-11-12-48h审计第五轮-主档.md
-   §8 第 5 条与 docs/audit/** 既有登记，找出**攻击面 vs 检测面**的缺口与**泄漏面**，
-   每条必须给出 file:line + 可复现触发路径；先跑仓内门（make guards / scripts/run-injection-test.sh）
-   再判「门绿但门测的不是那件事」的形态；修复要带钉测 + 变异验证。
-2) 运营面收口：按第五轮主档 §4.4 的 SQL 与复核口径，把 211 上 6 个「status='disabled' ∧
-   lifecycle_status='active'」的凭据（whisper×2 / tts-macos-say / glm 家族 / minimax 家族）
-   与 F1 口径分叉（候选解析的 status='active' vs 仓内 5 处的 status IN (active,cooling,degraded)）
+1) ★★★【本轮未修、下轮首项】`/api/credentials/monitor-summary` 在 245/154 上**仍然 500**（实测
+   duration_ms=15007）。主档 §六之三之三 与 §八第 12 条已把真凶二分清楚：**不是** `recent_success_rate`
+   的谓词（那一面本轮已修好：1965 次调用 → 0.044 ms/次、Index Scan 命中），而是 **`total_requests` 的
+   两臂 COUNT**（252 库 `session_turns` 母表 1,411,419 行 / 7 分区 ⇒ 单凭据计数 12 s 超时 ⇒ 74 个凭据
+   各一次 ⇒ 必越 15 s；索引**确实命中**，但 `Bitmap Heap Scan` 要回表十几万行 ⇒ 根因是「要数完」）。
+   ⇒ 本轮**登记不修**（裁决面＝运营/产品：那个数字是什么意思）。下轮请**先出四条路径的代价与口径影响**
+   （① 改近窗口径 ② 换 credential_model_call_history 预聚合（1min 桶，24h 窗口径）③ 异步物化
+   汇总表（**口径零变化**，工程量最大，建议按此立项）④ 接受 500），**由运营/产品拍板后再实施**；
+   实施时必须带真库对照（252 上 EXPLAIN ANALYZE + 端点 HTTP 计时，211 与 245/154 两侧都要）。
+2) 注入检测与敏感信息脱敏/恢复两域的**逐条审计**（本轮仍未完成）：先读主档 §八第 6 条与 docs/audit/**
+   既有登记，找出**攻击面 vs 检测面**的缺口与**泄漏面**，每条给出 file:line + 可复现触发路径；
+   先跑仓内门（make guards / scripts/run-injection-test.sh），再判「门绿但门测的不是那件事」的形态；
+   修复要带钉测 + 变异验证。
+3) 运营面收口：按第五轮主档 §4.4 的 SQL 与复核口径，把 211 上 6 个「status='disabled' ∧
+   lifecycle_status='active'」的凭据（whisper×2 / tts-macos-say / glm 家族 / minimax 家族）与 F1 口径分叉
    **由运营拍板**后实施，并复测 ASR/TTS 端点不再 503；注意 DB 改完要复核候选数与 5xx 族。
-3) 取 PG 慢查询日志（acc-pg17 容器内 log_min_duration_statement）做慢 SQL 归因，
-   重点复核第五轮登记的「session_bodies jsonb::text 全表扫描」惯犯是否复发；
-   同时取 245/154 的 journal 与 5xx 分桶，核对上一轮的已知族是否仍在。
-纪律：合并 origin/main 后**先跑全量套件**（go test ./... -count=1 -timeout=1800s），
-台账漂移一律走仓内官方生成器重算（禁止手改台账）；子分支裁决逐文件进行；
-并行会话的在途文件**不纳入提交也不删除**；部署 211→245→154 并用 admin/Veritrans&9527 验证。
+
+纪律（本轮新增，必须照做）：
+· ★ **全量套件红了之后，「失败包名」不是读数，「失败项的原文」才是** —— 上一轮的第二个红包
+  （ursmcheck 的 TestTsvHollowoutReadersRejectEmptyRegistry）**本来就已经逐字报出了**「962 漏 channel
+  files=(...) array」，却被当成普通待办 ⇒ 每道红都要读到失败原文，且在读之前不要开始猜。
+· ★ **同一条慢查询有多个候选热点 ⇒ 必须逐段二分**（把候选逐个摘掉再测），并接受「我上一轮的归因可能是
+  错的」；★ **「修好了一个真缺陷」≠「端点变绿」**（验收分机制层与端点层两层）。
+· ★ **改一个对象前先问「它还有几份副本、谁最后写」**（迁移文件 / Go 运行时 SSOT / 基线 schema /
+  投递通道清单 / clobber 白名单）—— ★ 通道＝数组 + 守卫 + 探针 + 账本 四件套，补一处不算补齐。
+· ★ **新增 startup 迁移必须三条通道同时登记**（台账 / installer StartupFiles / 211 的
+  apply-db-revision-sequence 清单）＋ 若重定义了既有函数，还要在 `intentional_function_chains` 登「有意链」。
+· 合并 origin/main 后**先跑全量套件**（go test ./... -count=1 -timeout=2400s）；台账漂移一律走仓内官方
+  生成器重算（禁止手改台账）；子分支裁决逐文件进行；并行会话的在途文件**不纳入提交也不删除**；
+  ★ 推送前必须**再 fetch**（并行会话每几十分钟推一次，本轮就被非 FF 拒过一次）⇒ 合并后复跑关键门再推。
+· 部署 211→245→154 并用 admin/Veritrans&9527 验证（口令只经 stdin 传给仓内
+  scripts/audit/deploy-smoke-admin.sh，**不进命令行/环境变量/仓库**）；部署用冻结树
+  （git archive HEAD → 冻结树内重建前端 → LLM_GATEWAY_ROOT + DD_SKIP_WEB_BUILD=1），
+  部署进程用 nohup bash -c '…' & 且父 shell 立即退出。
 ```
