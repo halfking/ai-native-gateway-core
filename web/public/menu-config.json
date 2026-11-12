@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-12T15:24:45.222Z",
+  "exported_at": "2026-11-12T18:27:42.634Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -125,6 +125,24 @@
           "path": "/operations/marketing",
           "labelKey": "nav.item.operationsMarketing",
           "icon": "🎯",
+          "platformOps": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/operations/market-prices",
+          "labelKey": "nav.item.marketPrices",
+          "icon": "🌐",
+          "platformOps": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/operations/price-compare",
+          "labelKey": "nav.item.priceCompare",
+          "icon": "📊",
           "platformOps": true,
           "hideForTenant": true,
           "tenantScope": "default",

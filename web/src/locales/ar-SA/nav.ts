@@ -32,6 +32,8 @@ export default {
     reconciliation: "تهوية الحسابات",
     salesWorkbench: 'منصة المبيعات',
     operationsMarketing: "التسويق",
+    marketPrices: "أسعار السوق",
+    priceCompare: "مقارنة الأسعار",
     settlementReport: "تقرير التسوية",
     usageTrends: "اتجاهات الاستخدام",
     pricing: "تكلفة التسعير",

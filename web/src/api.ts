@@ -43,6 +43,7 @@ export * from './api/request-anomalies'
 export * from './api/ops'
 export * from './api/dispatch'
 export * from './api/request-journeys'
+export * from './api/market'
 
 // Default export: axios-style HTTP client (api.get/put/patch/post/delete).
 // Wraps the low-level `req<T>(method, path, body?)` from api/_core so views

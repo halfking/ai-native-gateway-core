@@ -32,6 +32,8 @@ export default {
     reconciliation: "プロバイダー照合",
     salesWorkbench: '営業見積ワークベンチ',
     operationsMarketing: "マーケティング",
+    marketPrices: "市場価格の収集",
+    priceCompare: "価格比較分析",
     settlementReport: "決算レポート",
     usageTrends: "使用量トレンド",
     pricing: "コスト価格",

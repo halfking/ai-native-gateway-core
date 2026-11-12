@@ -35,6 +35,8 @@ export default {
     reconciliation: 'Provider Reconciliation',
     salesWorkbench: 'Sales workbench',
     operationsMarketing: "Marketing",
+    marketPrices: "Market prices",
+    priceCompare: "Price comparison",
     settlementReport: 'Settlement Report',
     usageTrends: 'Usage Trends',
     usageEnhanced: 'Usage Enhanced',
