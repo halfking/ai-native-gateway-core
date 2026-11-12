@@ -310,6 +310,23 @@ func TestMain(m *testing.M) {
 		} else if pruned {
 			fmt.Fprintf(os.Stderr, "掏空门专用构建缓存超上限 ⇒ 已整个删掉重建（★ 这轮是冷编译）\n")
 		}
+		// ★★ 2026-11-12 批判审计（跨 run 污染真案）：自愈预检**上移到 TestMain**
+		// ——此前它只活在 TestTsvHollowoutReadersRejectEmptyRegistry 开头，而该
+		// 测试在包序里排在 section_1972/1975 **之后** ⇒ 上一次 run 被超时 alarm
+		// panic 打断在掏空窗口内时（实测：panic dump 里它正拿着
+		// pipefail-scope-drop-candidates.tsv），下一次 run 的段 1972/1975 会先于
+		// 自愈读到**空台账** ⇒ 三道门假红（本轮 25m 复跑实测 0 行 vs 基线 106；
+		// 静置单跑三门 16.3s 全绿 ⇒ 非判据问题、是恢复时点问题）。
+		// 自愈失败 ⇒ 整个包按失败退出（与 healHollowLeftovers 的
+		// 「任一还原失败 ⇒ 门必须红」契约同款）。
+		healed, herr := healHollowLeftovers(root)
+		if herr != nil {
+			fmt.Fprintf(os.Stderr, "★ 自愈预检失败（还原上一次遗留的掏空台账）：%v ⇒ 按失败处理\n", herr)
+			os.Exit(1)
+		}
+		if healed > 0 {
+			fmt.Fprintf(os.Stderr, "自愈预检（TestMain 前置）：还原了 %d 份上一次遗留的掏空台账\n", healed)
+		}
 	}
 	code := m.Run()
 	n, err := cleanupHollowBinTmpDirs()
