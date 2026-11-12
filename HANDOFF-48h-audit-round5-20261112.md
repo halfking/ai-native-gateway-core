@@ -28,20 +28,26 @@
 
 | 目标 | 应用 sha / 槽位 | 验收 |
 |---|---|---|
-| 211 | （见 §部署读数） | readyz + 公网 200；admin 登录 admin/Veritrans&9527 取 token；管理 API 200 |
-| 245 | （见 §部署读数） | 同上 |
-| 154 | （见 §部署读数） | 同上 |
+| **211** | `86cc4a24d` / 槽 **b** @8783（旧槽 a 已停、容器保留可回滚；nginx upstream 已切 8781→8783；goacos 已登记） | `/version` = `2.5.9-86cc4a24d-20261112-211`（build_seq 3017）；公网 `llm.itestu.cn` 200；冒烟**全绿**：`/healthz` 200、`/readyz` 200、`POST /api/auth/token` **200 + token**、`/api/credentials/monitor-summary` **200（55 719 B）**、`/api/admin/topology/providers-today` 200、`/api/admin/request-anomalies` 200、`/api/system/bootstrap/status` 200 |
+| **245** | `3020-86cc4a24`（systemd + 符号链接 release；旧 `2966-01fea706`；234 s / 切换 20 s；admin 密码已同步 + 登录 200；凭据解密 17/0；verified） | 冒烟 7/8 绿（healthz/readyz/登录/token/拓扑/异常/bootstrap 全 200）；★ `/api/credentials/monitor-summary` **500** ⇒ 主档 §六之三 的缺陷（**迁移 962 已修**，见下「实施与验证」行） |
+| **154** | `3021-86cc4a24`（旧 `2968-21282597`；198 s / 切换 13 s；admin 密码同步 + 登录 200；凭据解密 17/0；verified；**活跃端口 8782**） | 冒烟 7/8 绿；★ 同一条 `/api/credentials/monitor-summary` **500**（与 245 共用 252 同一套库 ⇒ 同一失败） |
+
+★ **部署方式**：211 走**冻结树部署**（`git archive HEAD` 出冻结树 → 冻结树内构建前端 → `LLM_GATEWAY_ROOT` 指向它 + `DD_SKIP_WEB_BUILD=1`）⇒ ★ **部署物可从 commit 复现**，且不受并行会话在途编辑干扰（工作树并发编辑会让「构建→同步」必然踩前端新鲜度门 —— 本轮真实踩了两次）；245/154 走 systemd + release 包。★ 211 的 ssh 通道用 **`211-mesh`**（100.106.67.198，683 KB/s）—— 本机到 `192.168.31.211` 直连在 netbird relay 1/5 时不通。
+
+★ **「凭据监控摘要 500」的实施与验证（主档 §六之三）**：迁移 `962` 把 `recent_success_rate` / `recent_cache_hit_rate` 的谓词改成与既有索引 `idx_session_turns_hot_credential_ts` **逐字同形** ⇒ 真库事务内对照 **13184 ms → 94 ms**（140 倍）⇒ 钉测（结构化比对 + 变异臂红）绿 ⇒ ★ **部署含 962 后 245/154 的该端点由 500 变 200**（读数见主档 §六之四的回填行）。
 
 ## 遗留与下一轮
 
 1. ★ **ASR/TTS 在 211 上仍会 503**（待运营处置那 6 个凭据：主档 §4.4 的 SQL + 复核口径）。
 2. ★ **F1 口径分叉**（`status='active'` vs `status IN (active,cooling,degraded)`）＝潜伏分叉，活体影响当前 0 ⇒ 登记不修。
-3. ★ **PG 慢查询日志本轮未取**（`acc-pg17` 容器内）⇒ 上一轮登记的「`session_bodies` jsonb::text 全表扫描」惯犯未复现也未排除。
-4. ★ **245/154 的运行面取证**本轮未做（只做部署验证）⇒ 上一轮的已知族未复核。
-5. ★ **注入检测**与**敏感信息脱敏/恢复**两域**未完成逐条审计** ⇒ 下轮首项（本轮只覆盖了仓内门与 211 运行面的可机检部分）。
-6. ★ **`llm-gateway-go-cursor` 的未合并分支仍在**（机器人正在该 clone 跑套件）⇒ 待机器人收工后由属主处置。
-7. ★ **并行会话仍在改工作树**（web 三文件 + 部署产物）⇒ 本轮**未纳入任何提交**（不毁别人在途）⇒ 其落地后需再跑颜色/i18n 基线门。
-8. ★ **`internal/bucket` 休眠框架**：本轮只修了它的测试假红；adapter 层没有 clock 注入 ⇒ 彻底解法（可注入时钟）留给该框架真正接线那一轮。
+3. ★ **PG 慢查询本轮已取证**（主档 §六）：三族全部指向本仓定时任务（半点物化视图刷新 2.4 s / 每小时桶聚合 6.7 s / 单次凭据列表 10.75 s），**网关热路径在 500ms 阈值之上零记录**；★ 但上一轮的「`session_bodies` jsonb::text 全表扫描」惯犯**未复现也未排除**（未取 `pg_stat_statements`）。
+4. ★ **凭据列表在生产数据量下是秒级慢查询**（单次 10.75 s；`/api/credentials/monitor-summary` 返回 56 KB）⇒ 本轮**登记不修**（动 admin 读面需与运营口径对齐）⇒ **下轮优化首项**。
+5. ★ **245/154 的运行面取证**：见主档 §六之二。
+6. ★ **注入检测**与**敏感信息脱敏/恢复**两域**未完成逐条审计** ⇒ 下轮首项（本轮只覆盖了仓内门与 211 运行面的可机检部分）。
+7. ★ **`llm-gateway-go-cursor` 的未合并分支仍在**（机器人正在该 clone 跑套件）⇒ 待机器人收工后由属主处置。
+8. ★ **并行会话仍在改工作树**：本轮观测到的在途件＝8 语种 `tenants.ts`、`TenantDetailView.vue`、`element-dark.css`、`theme.dark-skin.test.ts`、`scripts/deploy-211.sh`（双通道 ssh）、`VERSION`/`version.json`/`web/public/version.json`/`web/public/menu-config.json`、`docs/db-changelog.md` ⇒ ★ **其 i18n 修复已由本轮代落库**（`86cc4a24d`，因为它修的正是 origin/main 上的红），**其余在途件一律未纳入**（不毁别人在途）⇒ 其落地后需再跑颜色/i18n 基线门。
+9. ★ **`internal/bucket` 休眠框架**：本轮只修了它的测试假红；adapter 层没有 clock 注入 ⇒ 彻底解法（可注入时钟）留给该框架真正接线那一轮。
+10. ★ **提交信息自陈「有红仍推」的提交，其责任面在提交方**（`638fdea33` 明写「唯一红为并行会话 WIP 的 hardcoded_cjk 棘轮」仍照推）⇒ 下一轮应把「推送前跑全量」的纪律落到 CI/钩子，而不是只靠审计轮自觉。
 
 ## 资产与记录
 
