@@ -191,6 +191,10 @@ func r86ScanRepo(t *testing.T, root string, exported map[string]bool) []r86Pair 
 		}
 		src := string(raw)
 		rel, _ := filepath.Rel(root, path)
+		// Windows 假红族（LESSONS §704 发现①同款）：Rel 在 Windows 产出反斜杠，
+		// 与台账的正斜杠键对不上 ⇒ 同一对既报「未登记」又报「腐化」。
+		// ToSlash 在 Unix 恒等 ⇒ 牙不变。
+		rel = filepath.ToSlash(rel)
 		out = append(out, r86CandidatePairsOf(t, path, rel, src, exported)...)
 		return nil
 	})

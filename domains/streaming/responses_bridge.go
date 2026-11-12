@@ -141,6 +141,13 @@ type responsesScaffold struct {
 	reasoningText strings.Builder
 	toolStates    map[int]*responsesToolTerminalState
 
+	// 2026-11-13 方案A: 跟踪reasoning vs content字节数,用于判定reasoning-only场景
+	// 以支持延迟commit,允许网关层failover。
+	// reasoningBytes记录reasoning内容字节数
+	// contentBytes记录非reasoning的实际输出字节数(text content + tool calls)
+	reasoningBytes int
+	contentBytes   int
+
 	// wireToolIndex memoizes upstream tool-call index (OpenAI tool_calls[].index
 	// or Anthropic content_block index) → Responses output_index. The
 	// pre-declared message item owns output_index 0, so tool items are assigned
@@ -760,6 +767,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				conversionOverflow = true
 				return
 			}
+			// 2026-11-13 方案A: 追踪reasoning vs content字节数
+			scaffold.contentBytes += len(chunk.Delta.Content)
+			scaffold.reasoningBytes += len(chunk.Delta.ReasoningContent)
 			for _, tc := range chunk.Delta.ToolCalls {
 				state := scaffold.toolStates[tc.Index]
 				// After toolHold.adjust: phantoms / pre-name fragments must
@@ -1263,10 +1273,26 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	// otherwise the bridge writes response.completed (or incomplete) and the
 	// executor never retries / switches candidates the way Magpie does on
 	// "an empty reply (the model answered nothing; try again)".
+	//
+	// 2026-11-13 方案A: reasoning-only延迟commit
+	// 修改判定逻辑:只有实际content(非reasoning)或tool_calls才算semantic output
+	// 这允许在reasoning耗尽预算但无实际输出时,网关层failover到其他候选节点
+	//
+	// 实现策略: 优先使用精确的contentBytes追踪(当可用时),
+	// 回退到fullText.Len()(向后兼容,用于未经过追踪代码路径的场景)
 	responsesHasSemanticOutput := func() bool {
-		if fullText.Len() > 0 {
+		// 方案A: 当contentBytes和reasoningBytes都被追踪时,使用精确判定
+		// 这能区分reasoning-only场景
+		if scaffold.reasoningBytes > 0 || scaffold.contentBytes > 0 {
+			// 已追踪:只有非reasoning的content才算semantic output
+			if scaffold.contentBytes > 0 {
+				return true
+			}
+		} else if fullText.Len() > 0 {
+			// 未追踪(向后兼容):任何文本都算semantic output
 			return true
 		}
+		// tool_calls仍然算semantic output
 		for _, state := range scaffold.toolStates {
 			if state != nil && state.Name != "" {
 				return true

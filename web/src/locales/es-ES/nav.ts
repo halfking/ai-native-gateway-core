@@ -33,6 +33,8 @@ export default {
     reconciliation: "Conciliación de proveedores",
     salesWorkbench: 'Taller comercial',
     operationsMarketing: "Marketing",
+    marketPrices: "Precios de mercado",
+    priceCompare: "Comparación de precios",
     settlementReport: "Informe de liquidación",
     usageTrends: "Tendencias de uso",
     pricing: "Precios de coste",
