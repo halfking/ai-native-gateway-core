@@ -57,6 +57,23 @@ func NewHook(detector Detector) *Hook {
 	return &Hook{detector: detector}
 }
 
+// BindDetector 延迟绑定检测器（F-41 桥接，2026-11-13）。
+//
+// 为什么需要：pipeline 在 v2DispatchMux 内构建，而 main.go 的
+// SetV2DispatchAnalysisResources 在构建**之后**才注入 detector——
+// buildV2DispatchPipeline 里的 `if deps.PromptInjectionDetector != nil`
+// 在构建时刻恒为 nil，stage 永不注册（F-41「双重空转」的第二重）。
+// 现改为 stage 无条件注册 + 本方法延迟绑定：构建时 detector 为 nil ⇒
+// Enabled() 恒 false（与「未注册」逐请求等价，pipeline.go:176 过滤）；
+// SetV2DispatchAnalysisResources 到场后 BindDetector 补上，无需重建 pipeline。
+// nil 实参无操作（保持既有 no-op 安全语义）。
+func (h *Hook) BindDetector(d Detector) {
+	if h == nil || d == nil {
+		return
+	}
+	h.detector = d
+}
+
 // Name 实现 pipeline.Hook。
 func (h *Hook) Name() string { return "prompt_injection.detect" }
 

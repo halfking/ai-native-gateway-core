@@ -368,6 +368,14 @@ export LLM_GATEWAY_ADMIN_API_KEY=xxx
 export LLM_GATEWAY_SECRET_KEY=xxx
 export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=xxx
 
+# Armor judge（armor observe-only 面的判分器；2026-11-13 F-41 随轮披露）
+# 三项全部设置时用 OpenAI 兼容 HTTP judge 真实判分；任一缺省退 MockJudge
+# （恒 0 分）⇒ armor 呈现「零判别力观测面」——告警/分数不具判别力，属已知
+# 形态而非故障。判定阈值 0.7 当前硬编码（TODO 见 cmd/gateway/main.go）。
+# export ARMOR_JUDGE_ENDPOINT=https://api.openai.com/v1   # OpenAI 兼容 base URL
+# export ARMOR_JUDGE_MODEL=gpt-4o-mini                    # 判分模型
+# export ARMOR_JUDGE_API_KEY=xxx                          # judge API key
+
 # 完整变量清单以 config/config.go 为准
 ```
 

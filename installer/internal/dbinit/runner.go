@@ -1846,6 +1846,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 真库实测 13184 ms → 94 ms）；同时把在役的 session_turns_hot
 			// 函数体**补回仓内**（此前只有已退役的 v1 形态 ⇒ 仓内无法复现在役）。
 			"962_recent_success_rate_index_aligned.sql",
+			// 963（2026-11-13 24h 审计轮路径③）：credential_total_requests_rollup
+			// —— monitor-summary 的 total_requests 预物化表（写入方
+			// bg.CredentialRollupRefresher；读面 O(1)、空表回落旧两臂实时计数）。
+			"963_credential_total_requests_rollup.sql",
 		},
 	}
 }

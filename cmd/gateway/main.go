@@ -36,6 +36,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
 	"github.com/kaixuan/llm-gateway-go/api"
@@ -61,28 +62,30 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/freediscovery" //nolint:depguard // 2026-11-09 运营审计轮项5：扫描成功自动导入
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                           //nolint:depguard // OmniFree virtual auto/* routing
-	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // v4 T2: queue mirror wiring at pipeline assembly
-	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
-	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                     //nolint:depguard // Wave 2-D: HTTP API integration
-	"github.com/kaixuan/llm-gateway-go/domains/goalrun"                             //nolint:depguard // Wave 2-A: durable ledger
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                                  //nolint:depguard // OmniFree virtual auto/* routing
+	"github.com/kaixuan/llm-gateway-go/domains/credential"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                              //nolint:depguard // 数据库降级模块
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                                   //nolint:depguard // v4 T2: queue mirror wiring at pipeline assembly
+	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                               //nolint:depguard // OmniFree quota tracker
+	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                            //nolint:depguard // Wave 2-D: HTTP API integration
+	"github.com/kaixuan/llm-gateway-go/domains/goalrun"                                    //nolint:depguard // Wave 2-A: durable ledger
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	promptinjectionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection" //nolint:depguard // F-41 桥接：hook 最小 Detector 接口
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"        //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
-	"github.com/kaixuan/llm-gateway-go/domains/integration"      //nolint:depguard // clientprofile worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // 模型可信度（防掺水）worker 扫描面
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"     //nolint:depguard // 模型质量监控
-	"github.com/kaixuan/llm-gateway-go/domains/notification"     //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"  //nolint:depguard // 供应商画像告警 handler (AlertType)
-	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"     //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"    //nolint:depguard // in-flight request content store
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"   //nolint:depguard // request lifecycle observation
-	"github.com/kaixuan/llm-gateway-go/domains/routeincident"    //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
+	"github.com/kaixuan/llm-gateway-go/domains/integration"                     //nolint:depguard // clientprofile worker wiring
+	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility"                // 模型可信度（防掺水）worker 扫描面
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                    //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/notification"                    //nolint:depguard // 审批通知器
+	promptinjection "github.com/kaixuan/llm-gateway-go/domains/promptinjection" //nolint:depguard // F-41 桥接：hook Detector 的具体实现
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                 //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                    //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                   //nolint:depguard // in-flight request content store
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                  //nolint:depguard // request lifecycle observation
+	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/security" //nolint:depguard // 2026-10-18 topology plugins source（v2Deps.SecurityRegistry 类型）
 	"github.com/kaixuan/llm-gateway-go/domains/session"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -317,6 +320,9 @@ func main() {
 	var statsMinuteRollup *bg.StatsMinuteRollup
 	var slotSuggester *bg.SlotSuggester
 	var autoIndexRefresher *bg.AutoIndexRefresher
+	// credRollupRefresher：凭据请求数预物化（迁移 963）——monitor-summary 的
+	// total_requests 读面 O(1) 化（2026-11-13 24h 审计轮路径③）。
+	var credRollupRefresher *bg.CredentialRollupRefresher
 	// memorySvc holds the legacy memora concrete client/sink behind the
 	// live memory.Reader / memory.Writer interfaces used by gateway runtime.
 	var memorySvc *legacyMemoryServices
@@ -6169,6 +6175,13 @@ func main() {
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
 
+			// 迁移 963（2026-11-13 24h 审计轮路径③）：凭据请求数预物化。
+			// monitor-summary 的 total_requests 读面在预物化表非空时走
+			// O(1) 行取；首跑落地前（或刷新持续失败时）读面自动回落
+			// 旧两臂实时计数（行为与 963 之前一致）。首跑异步，不阻塞 boot。
+			credRollupRefresher = bg.NewCredentialRollupRefresher(dbConn.Pool())
+			credRollupRefresher.Start(context.Background())
+
 			// v2.0.1: realtime listener for sub-second index refresh
 			// (PG LISTEN/NOTIFY trigger on credential_model_bindings /
 			// credentials / api_keys / model_offers).
@@ -7410,9 +7423,24 @@ func main() {
 				pool := dbConn.Pool()
 				pub := bus.NewPGPublisher(pool, slog.Default())
 				intentStore := assets.NewPGIntentAggregateStore(pool, slog.Default())
-				// PR-V4-11: detector / checker / summarizer 当前传 nil；
-				// 它们需要 *sql.DB（不是 pgxpool），后续 PR 再桥接。
-				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, nil, nil, nil, fpSlotRedis)
+				// F-41 桥接（2026-11-13，docs/全面审计v3/2026-11-12/03 移交清单）：
+				// 注入检测器按 EnhancedPIPlugin 同款 pgxpool→*sql.DB 桥接形态构建，
+				// governance_prompt_injection stage 经 BindDetector 延迟绑定生效。
+				// checker/summarizer 仍传 nil（output compliance hook 与会话摘要
+				// 分别走既有 outputcompliance / session analytics 面，非 F-41 范围）。
+				// 整条链在 LLM_GATEWAY_USE_V2_PIPELINE（默认关）之内——默认生产形态
+				// 行为不变；detector 初始化失败仅降级（stage 空转），不阻断启动。
+				var piDetector promptinjectionhooks.Detector
+				piSQLDB := stdlib.OpenDB(*pool.Config().ConnConfig)
+				if d, derr := promptinjection.NewDetector(piSQLDB); derr != nil {
+					slog.Warn("prompt injection detector init failed; governance_prompt_injection stays no-op",
+						"error", derr)
+					_ = piSQLDB.Close()
+				} else {
+					piDetector = piDetectorAdapter{core: d}
+					v2Deps.AnalysisSQLDBs = append(v2Deps.AnalysisSQLDBs, piSQLDB) // 随 v2ShutdownPipeline 统一关闭
+				}
+				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, piDetector, nil, nil, fpSlotRedis)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)
@@ -9086,12 +9114,15 @@ func main() {
 		}
 		if autoIndexRefresher != nil {
 			autoIndexRefresher.Stop()
-			if autoRouteListener != nil {
-				autoRouteListener.Stop()
-			}
-			if healthAutoRecover != nil {
-				healthAutoRecover.Stop()
-			}
+		}
+		if credRollupRefresher != nil {
+			credRollupRefresher.Stop()
+		}
+		if autoRouteListener != nil {
+			autoRouteListener.Stop()
+		}
+		if healthAutoRecover != nil {
+			healthAutoRecover.Stop()
 		}
 		// Provider Profile System shutdown (Phase 1, 2026-07-26)
 		stopProviderProfile(profileWorkers)

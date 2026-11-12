@@ -2638,6 +2638,11 @@ files=(
   #   （db.recentSuccessRateEnsureSQL）收敛到正确形态（实测 index_aligned=t）
   #   ⇒ 但「账本说没做」就是「下次有人按账本判断要重跑什么」时会踩空。
   "$ROOT_DIR/sql/migrations/startup/962_recent_success_rate_index_aligned.sql"
+  # ★ 963（2026-11-13 24h 审计轮路径③）：credential_total_requests_rollup ——
+  #   monitor-summary 的 total_requests 预物化表（写入方 bg.CredentialRollupRefresher，
+  #   读面 O(1) 化、空表回落旧两臂实时计数）。六通道登记（本次逐通道补齐，
+  #   吸取 962 漏登记本清单致 211 记账链断层的教训）。
+  "$ROOT_DIR/sql/migrations/startup/963_credential_total_requests_rollup.sql"
 )
 
 
@@ -3240,6 +3245,10 @@ ledger_artifact_probe "961_market_scoring_runs.sql" \
 #   LIKE 的 '%'/'_' 通配会与它打架 ⇒ 用 position('...' in prosrc) > 0 最稳。
 ledger_artifact_probe "962_recent_success_rate_index_aligned.sql" \
   "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_success_rate' AND position('CASE WHEN credential_id' in p.prosrc) > 0) AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_cache_hit_rate' AND position('CASE WHEN credential_id' in p.prosrc) > 0)"
+# ★ 963 的产物 = **预物化表**（写入方 bg.CredentialRollupRefresher；读面
+#   admin/credential_monitor.go 双形态 CASE：表非空走 O(1)，空表回落两臂计数）。
+ledger_artifact_probe "963_credential_total_requests_rollup.sql" \
+  "to_regclass('public.credential_total_requests_rollup') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

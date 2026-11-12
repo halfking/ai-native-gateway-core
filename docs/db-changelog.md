@@ -10926,3 +10926,10 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 |-----------|------|---------|--------|
 | 361b | `361b_provider_models_source_prelude.sql` | `4a1995a7598e2242dca5059e2cdaff33be2de8925580b318e3c8b8f172c7d624` | applied+verified |
 
+
+## 2026-11-13 — 24h 审计轮 — 963 monitor-summary total_requests 预物化（路径③）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 963 | `963_credential_total_requests_rollup.sql` | `1b3edf5fbdfd482bdd44224934fca203d9f0afe48d20c2fc2b3c71987cb3fa2f` | registered（2026-11-13 24h 审计轮：第五轮主档 §八第 12 条**路径③（异步物化，口径零变化）**兑现。背景=端点对每个凭据实时跑 `session_turns_hot ∪ session_turns` 两臂 COUNT（热凭据单次 ~12 s，「要数完」不是「找不到」）⇒ 74 凭据必越 15 s context ⇒ 245/154 恒 500。本迁移建预物化表 `credential_total_requests_rollup`（credential_id PK / total_requests / refreshed_at）；写入方=新 `bg.CredentialRollupRefresher`（单语句原子 UPSERT，聚合 SQL 来自 `db.SessionFamilyCredentialCountAggregateSQL`——credential_id 表达式复用 `SessionFamilyCredentialIDExpr` 单点常量；2026-11-13 252 真库只读实测：全凭据一次聚合 **17.3 s** @1,416,428 行，间隔默认 30m、`LLM_GATEWAY_CRED_ROLLUP_INTERVAL/_TIMEOUT` 可调）；读面（admin/credential_monitor.go）改双形态 CASE：**表非空走 O(1) 行取、空表回落旧两臂实时计数**（回落分支保证 job 未首跑/持续失败时行为与 963 之前逐字一致 ⇒ 口径零变化、无半刷新态）。★ 本行 sha 为仓库文件实测值；embeddata 双副本逐字节一致；六通道登记（runner.go StartupFiles / installer embed 双副本+map / 本台账 / apply-db-revision-sequence.sh files+artifact_probe / schema_migrations 自登记行）——吸取 962 漏登记 apply 清单致 211 记账断层的教训。**待部署**（211/245/154 列车）） |
+| 963 | `963_credential_total_requests_rollup.down.sql` | `3c5b4813a22b7cbf7a7f72179ee8b162c62d102f7b819acc7881da613f2d4db8` | registered（drop 预物化表；读面 EXISTS 判定失败 ⇒ 自动回落旧两臂实时计数，与 963 之前行为一致；记账行不删——down 是「可回退」不是「抹掉历史」） |

@@ -1582,6 +1582,19 @@ var recentSuccessRateIndexAligned962 []byte
 //go:embed embeddata/startup/962_recent_success_rate_index_aligned.down.sql
 var recentSuccessRateIndexAligned962Down []byte
 
+// ★ 963（2026-11-13 24h 审计轮路径③）：credential_total_requests_rollup ——
+//
+//	monitor-summary total_requests 预物化表（写入方 bg.CredentialRollupRefresher；
+//	读面 O(1) 化、空表回落旧两臂实时计数）。六通道登记：本 embed 双副本 +
+//	embeddedSQLFiles map 两行 + runner.go StartupFiles + apply-db-revision-sequence.sh
+//	+ db-changelog + schema_migrations 自登记行。
+//
+//go:embed embeddata/startup/963_credential_total_requests_rollup.sql
+var credentialTotalRequestsRollup963 []byte
+
+//go:embed embeddata/startup/963_credential_total_requests_rollup.down.sql
+var credentialTotalRequestsRollup963Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2148,6 +2161,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/961_market_scoring_runs.down.sql":                marketScoringRuns961Down,
 	"startup/962_recent_success_rate_index_aligned.sql":       recentSuccessRateIndexAligned962,
 	"startup/962_recent_success_rate_index_aligned.down.sql":  recentSuccessRateIndexAligned962Down,
+	"startup/963_credential_total_requests_rollup.sql":        credentialTotalRequestsRollup963,
+	"startup/963_credential_total_requests_rollup.down.sql":   credentialTotalRequestsRollup963Down,
 	"startup/953_models_canonical_featured.sql":               modelsCanonicalFeatured953,
 	"startup/953_models_canonical_featured.down.sql":          modelsCanonicalFeatured953Down,
 	"startup/954_probe_lane_trace_events.sql":                 probeLaneTraceEvents954,
