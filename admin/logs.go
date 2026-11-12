@@ -16,6 +16,7 @@ import (
 
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 type requestLogRow struct {
@@ -1364,11 +1365,16 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 	// 类消失；alias JOIN 键同步加 outbound/canonical 臂（raw_name 本就是
 	// 小写，会话臂 outbound=归一化名，命中 raw_name 别名的概率随目录覆盖）。
 	//
-	// 2026-10-15：≤hotLegMaxWindow(7d) 窗只用 hot 腿——dashboard 默认 3d 在 MV
-	// REFRESH 争用下曾 10s 打满 500；hot 腿 3d COUNT 生产实测 ~8ms。闸门必须
-	// ≤ hot 留存（见 hotLegMaxWindow 注释：原 8d 会在 7~8d 窗静默少算）。
+	// 2026-10-15：短窗只用 hot 腿——dashboard 默认 3d 在 MV REFRESH 争用下
+	// 曾 10s 打满 500；hot 腿 COUNT 生产实测 ~8ms。闸门必须 ≤ hot 留存
+	// （见 hotLegGateWindow 注释：原 8d 会在 7~8d 窗静默少算）。
+	// 2026-11-12 修复（53 增量 F-58）：闸门从常量 7d 改为运行时
+	// min(实际留存, 7d 硬帽)——session_turns_hot 的真实保留由
+	// PartitionManager 按 lifecycle.hot_retention_hours（默认 8h）promote，
+	// 旧常量 7d 来自迁移 526 的 SQL 函数默认（从未是生产行为），8h~7d 窗
+	// 会静默少算（dashboard 默认 3d 只见最近 ~8h）。
 	turnsSrc := dbpkg.SessionFamilyTurnsSourceSQL()
-	if end.Sub(start) <= hotLegMaxWindow {
+	if end.Sub(start) <= hotLegGateWindow() {
 		turnsSrc = dbpkg.SessionFamilyTurnsHotSourceSQL()
 	}
 	rows, err := h.db.Query(ctx, `
@@ -1454,15 +1460,41 @@ const maxLogQueryWindow = 366 * 24 * time.Hour
 // 越过商务约束的数据边界（行级过滤仍在）。服务端为准。
 const tenantLogQueryWindow = 72 * time.Hour
 
-// hotLegMaxWindow 是 top-models「只用 hot 腿」的最大窗口（2026-10-15 审计）。
+// hotLegMaxWindow 是 top-models「只用 hot 腿」窗口的**硬帽**（2026-10-15 审计）。
 //
-// 必须 **≤ session_turns_hot 的实际留存（0-7 天）**：超过留存的窗口会在 hot
-// 腿上**静默少算**且不报错——热门模型排行只呈现 hot 腿还留着的那些天，听起来
-// 像「那几天没人用」。原闸门是 8d，与 7d 留存之间正好留出 1 天缺口；default
-// 租户不被 clampQueryWindowForTenant 的 72h 夹住，是唯一能踩进去的调用方。
+// 真正的闸门是 hotLegGateWindow() = min(硬帽, session_turns_hot 实际留存)：
+// 超过留存的窗口若走 hot 腿会**静默少算**且不报错——热门模型排行只呈现 hot 腿
+// 还留着的那些小时，听起来像「那段时间没人用」。方向性（2026-10-15 定）：
+// 宁可多走一趟全族慢源，也不要少算——少算是静默的，慢只是超时可见。
 //
-// 方向性：宁可多走一趟全族慢源，也不要少算——少算是静默的，慢只是超时可见。
+// 2026-11-12（53 增量 F-58）历史教训：本常量曾被直接当闸门用，且注释声称
+// 留存「0-7 天」——那个 7d 来自迁移 526 的 SQL 函数签名默认
+// promote_session_turns_hot_to_partition(p_retention DEFAULT '7 days')，
+// 但生产行为是 PartitionManager 显式传 lifecycle.hot_retention_hours
+// （默认 8h，2026-08-25 起即是）⇒ 8h~7d 的窗（dashboard 默认 3d）静默少算
+// 约 2/3 窗口。SQL 函数默认 ≠ 生产行为：retention 只认 PartitionManager 的
+// 传参链（bg/partition_manager.go resolvePromoteConfig）。
 const hotLegMaxWindow = 7 * 24 * time.Hour
+
+// hotLegGateWindow 返回当前配置下可安全走 hot-only 腿的最大查询窗口：
+// min(hotLegMaxWindow, lifecycle.hot_retention_hours)。与
+// bg/partition_manager.go resolvePromoteConfig 的 floor/默认语义逐字对齐
+// （floor 1h、默认 8h、热更新）——两处再漂移即重演 F-58。
+func hotLegGateWindow() time.Duration {
+	return clampHotLegGateHours(settings.GetPlatformInt("lifecycle.hot_retention_hours", 8))
+}
+
+// clampHotLegGateHours 是闸门的纯钳位部分（可测）：floor 1h、帽 7d。
+func clampHotLegGateHours(hours int) time.Duration {
+	retention := time.Duration(hours) * time.Hour
+	if retention < time.Hour {
+		retention = time.Hour
+	}
+	if retention > hotLegMaxWindow {
+		return hotLegMaxWindow
+	}
+	return retention
+}
 
 // clampQueryWindow enforces the cap, keeping `end` anchored and pulling
 // `start` forward when the span exceeds it.

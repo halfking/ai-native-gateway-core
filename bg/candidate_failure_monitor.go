@@ -231,10 +231,12 @@ func (m *CandidateFailureMonitor) tick(ctx context.Context) {
 // ⚠ 为什么是**热腿**而不是 hot ∪ parent（与被删视图的读取范围相比是收窄的）：
 //
 //	① 语义上等价：这条查询只问「最近 5 分钟有没有请求活动」，而
-//	   promote_session_turns_hot_to_partition 的保留期默认 **7 天**
-//	   （实测该函数签名 p_retention interval DEFAULT '7 days'）⇒ 5 分钟内的行
-//	   必然还在热表里，冷腿不可能持有更新的行。真库核对：两条腿返回的
-//	   lastRequest 完全相同（2026-10-20 13:11:03）。
+//	   session_turns_hot 的实际保留 = PartitionManager 显式传
+//	   lifecycle.hot_retention_hours（默认 8h；2026-11-12 订正——本注释原引
+//	   迁移 526 的 SQL 函数签名默认 '7 days'，那是从未生效的默认，53 增量
+//	   F-43/F-58）⇒ 5 分钟 ≪ 保留，行必然还在热表里，冷腿不可能持有
+//	   更新的行。真库核对：两条腿返回的 lastRequest 完全相同（2026-10-20
+//	   13:11:03）。
 //	② 成本上不等价：会话族原生源是 118 列投影 + UNION ALL + LEFT JOIN 特征层，
 //	   **规划**成本实测 ~390 ms（其中执行仅 0.7 ms；热腿 5 ms）。这条查询按
 //	   monitor 的 tick（默认 1 分钟）跑 ⇒ 每次 tick 付 0.4 s 规划只为算一个

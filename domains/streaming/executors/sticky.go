@@ -113,6 +113,8 @@ type StickyCache struct {
 	// 2026-08-06 FIX (P2-4): Add goroutine lifecycle management
 	stopSweep chan struct{}
 	sweepDone sync.WaitGroup
+	// 2026-11-12 修复（53 增量 F-44）：Close 并发幂等真 sync.Once。
+	closeOnce sync.Once
 }
 
 type stickyEntry struct {
@@ -239,19 +241,15 @@ func (s *StickyCache) ClearForCredential(credID int) (int, error) {
 
 // Close gracefully shuts down the StickyCache background goroutines.
 // 2026-08-06 FIX (P2-4): Prevent goroutine leak in tests and shutdown scenarios.
-// Safe to call multiple times (stopSweep close is idempotent via sync.Once pattern).
+// 2026-11-12 修复（53 增量 F-44）：旧实现用 select-default 判「已关」——两个并发
+// Close 可同时进 default 臂 double-close stopSweep panic（注释自称 sync.Once
+// pattern 实则不是）。真 sync.Once 保证并发幂等；Wait 仍每次执行（等待者安全）。
 func (s *StickyCache) Close() {
 	if s == nil {
 		return
 	}
-	select {
-	case <-s.stopSweep:
-		// Already closed
-		return
-	default:
-		close(s.stopSweep)
-		s.sweepDone.Wait()
-	}
+	s.closeOnce.Do(func() { close(s.stopSweep) })
+	s.sweepDone.Wait()
 }
 
 // SetDB installs the pgx pool used for sticky persistence.

@@ -203,7 +203,7 @@ func TestLockGuardDetectorCanFire(t *testing.T) {
 }
 
 // lockGuardAllowlist 是显式豁免：迁移号 → 豁免理由。
-// ⚠️ 当前为空。往里加条目必须同时写清「为什么它不需要 lock_timeout」，
+// ⚠️ 往里加条目必须同时写清「为什么它不需要 lock_timeout」，
 // 且该迁移仍需自己用 CONCURRENTLY 或 REPEATABLE READ 等手段处理并发。
 //
 // ★ 第 50 增量审计轮曾为 950 登记豁免（字节 checksum 冻结不能补 lock_timeout）；
@@ -226,6 +226,33 @@ var lockGuardAllowlist = map[int]string{
 	950: "已应用字节冻结（2026-11-07 02:18 应用共享生产库，deploy checksum 台账 4a258e16…）；" +
 		"R189 的 lock_timeout 包裹改写被还原以免 content replay break。" +
 		"重跑面仅剩全新安装（空表、毫秒级锁窗）；951 起新迁移继续带 BEGIN+SET LOCAL 守卫。",
+
+	// ★★ 958（2026-11-12 同步轮登记）：★ 与 950 同族 = **已应用字节冻结**，
+	// ★ 不能改字节补 lock_timeout（改了会撞 R189「已应用迁移字节冻结 ⇒
+	// ★ content replay break」，deploy 切换前 checksum 校验 fail-closed）。
+	//
+	// ★ 实测证据（2026-11-12 同步轮逐条核对，非推理）：
+	// ① **已应用 + 字节与台账逐字一致**：docs/db-changelog.md 第 958 行
+	//    记 `applied+verified`，sha256=155cc51aac2036b6d1b4e10af63bdaaec41e9d912b26b07d2d06990cbacb832c；
+	//    实测 `shasum -a 256 sql/migrations/startup/958_market_platform_registry.sql`
+	//    ＝ **同一指纹** ⇒ 字节已是冻结态，改它就是改已应用迁移。
+	// ② **锁面只涉及一张全新表**：全文件强锁语句仅 3 条 ——
+	//    `CREATE TABLE IF NOT EXISTS public.market_platform_registry`（第 5 行）
+	//    + 2 个 `CREATE INDEX IF NOT EXISTS …_region / …_is_ours`（第 85/87 行）；
+	//    ★ **无 ALTER TABLE / DROP INDEX / REINDEX / CLUSTER / TRUNCATE**
+	//    ⇒ **不触碰任何既有大表**（★ §44 那条的形态是「在常驻大表上拿强锁」）。
+	// ③ **重跑面仅剩全新安装，锁窗毫秒级**：既有库已记名（applied）不重跑；
+	//    fresh install 时 market_platform_registry 是**新建空表**，种子只有
+	//    **32 行**（实测 INSERT 行数）⇒ 建表 + 两个索引的锁窗是毫秒级，
+	//    与 §44「常驻大表重建索引」的等待面不同量级；且 installer runner
+	//    单迁移短事务。
+	// ④ **后续 959/960/961 均自带守卫**（实测各自含 lock_timeout）⇒
+	//    本豁免只针对 958 这一条已冻结字节，不放松增量面。
+	958: "已应用字节冻结（2026-11-11 总体设计定稿轮 G1 引入；docs/db-changelog.md 记 applied+verified，" +
+		"sha256=155cc51a…，实测与仓库文件逐字一致 ⇒ 改字节即触发 R189 content replay break）。" +
+		"锁面仅 CREATE 一张全新表 + 2 个索引（无 ALTER/DROP INDEX/REINDEX ⇒ 不触碰既有大表）；" +
+		"既有库已记名不重跑，重跑面仅 fresh install（新建空表、种子 32 行 ⇒ 毫秒级锁窗）。" +
+		"959/960/961 均自带 lock_timeout 守卫 ⇒ 豁免仅限 958 一条已冻结字节。",
 }
 
 // TestStartupMigrationsAboveCutoffHaveLockGuard 是本门的正题。

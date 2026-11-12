@@ -17,6 +17,3 @@
 # 存量来源：R85 轮全仓实测（52 处 / 33 文件；其中 49 处在 set -u 脚本里）。
 # ★ 存量未批量修的原因：47 处落在**别人正在改**的脚本上 ⇒ 跨写者改动需属主拍板。
 #
-scripts/audit/ir-client-error-fix-mutation.sh	1	第 96 行等 1 处
-scripts/audit/ir-coerce-numeric-mutation.sh	1	第 89 行等 1 处
-scripts/audit/ir-gemini-only-loss-mutation.sh	1	第 88 行等 1 处
