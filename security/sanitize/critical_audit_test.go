@@ -97,6 +97,7 @@ func TestCriticalMediaShapedToolDoesNotHideText(t *testing.T) {
 }
 
 func TestCriticalCustomToolOperationsBlocked(t *testing.T) {
+	enableOutputMaskingForTest(t) // r1045：遮蔽族钉测显式 opt-in（默认已关）
 	s, _ := NewSanitizer(NewPatternDetector())
 	guard := NewOutputSensitiveInterceptor(s, OutputMask)
 	result, err := guard.InterceptNonStream(context.Background(), &response.InterceptRequest{ResponseBody: []byte(`{"object":"response","output":[{"type":"custom_tool_call","input":"connect password=FreshSecret"}]}`)})
@@ -114,6 +115,7 @@ func TestCriticalCustomToolOperationsBlocked(t *testing.T) {
 }
 
 func TestCriticalReasoningTextStreamIsCheckedAndRestored(t *testing.T) {
+	enableOutputMaskingForTest(t) // r1045：遮蔽族钉测显式 opt-in（默认已关）
 	s, _ := NewSanitizer(NewPatternDetector())
 	restore, _ := NewSanitizeRestoreInterceptor(s, nil, 0)
 	chain := response.NewInterceptorChain(NewOutputSensitiveInterceptor(s, OutputMask), restore)

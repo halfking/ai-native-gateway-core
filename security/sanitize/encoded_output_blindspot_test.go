@@ -97,6 +97,9 @@ func mustJSONString(t *testing.T, s string) string {
 }
 
 func TestOutputGateSharesTheInputSidesEncodingBlindSpot(t *testing.T) {
+	// r1045：遮蔽改写默认关闭（owner 裁决「客户端一级一定要还原」）；本测试
+	// 钉的是**开启遮蔽子模式**时编码盲区仍存在——对照组需要 mask-on 才成立。
+	enableOutputMaskingForTest(t)
 	const phone = "13800138000"
 	enc := base64.StdEncoding.EncodeToString([]byte(phone))
 
@@ -181,6 +184,8 @@ func runOutputGateStream(t *testing.T, frames []string) string {
 // same control-then-measure shape: a plaintext phone split across frames must
 // still be masked, otherwise "the encoded form survived" proves nothing.
 func TestOutputGateStreamSharesTheSameBlindSpot(t *testing.T) {
+	// r1045：同上——mask-on 子模式的流式对照。
+	enableOutputMaskingForTest(t)
 	const phone = "13800138000"
 	enc := base64.StdEncoding.EncodeToString([]byte(phone))
 

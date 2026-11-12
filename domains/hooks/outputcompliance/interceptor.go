@@ -93,11 +93,14 @@ func NewMandatoryOutputComplianceInterceptor(checker interface {
 	// ★ 启动即把【生效值】说清楚（2026-10-29 输出合规误报轮）：
 	// 运维要能在日志里直接确认「缓冲上限抬到多少、越界是放行还是阻断」——
 	// 否则只能读代码才知道线上跑的是哪套。
+	// r1045：mask_enabled 一并打印——客户端可见遮蔽改写的开关态是裁决面，
+	// 部署后第一眼日志就要能对拍。
 	slog.Info("output compliance guard configured",
 		"pending_max_bytes", compliancePendingCap(),
 		"pending_max_mib", compliancePendingCap()>>20,
 		"cap_mode", complianceCapMode(),
 		"capacity_rule", GuardCapacityRuleID,
+		"mask_enabled", outputMaskingEnabled(),
 	)
 	return &OutputComplianceInterceptor{checker: checker, mandatory: true, stateKey: stateKey}
 }
@@ -111,6 +114,29 @@ func (it *OutputComplianceInterceptor) isEnabled() bool {
 		return false
 	}
 	return it.mandatory || enabled()
+}
+
+// outputMaskingEnabled 报告强制守卫是否允许**改写客户端可见字节**为遮蔽标记。
+//
+// r1045（2026-11-13 owner 裁决）：「对于脱敏的信息在客户端一级一定要还原，不然
+// 执行工具或显示内容都会出错」。语义拆分：
+//
+//   - 检查（检测/台账/审核单/硬拦清单）——不受本开关影响，照常执行；
+//   - 占位符**还原**——不受本开关影响（有字典条目的值在还原链换回原值）；
+//   - **遮蔽改写**（把没有字典条目的命中改写成 [REDACTED:*]）——本开关控制，
+//     默认关闭：客户端字节原样下发，命中进 observe 台账。
+//
+// 旧行为（遮蔽改写开启）的可恢复代价写在规格描述里：不可改写 lane（thinking
+// 签名段）命中时会 rewrite_refused 终止整回合——那正是裁决要消除的「执行工具
+// 或显示内容出错」的形态之一。
+func outputMaskingEnabled() bool {
+	// 与 redactionMode() 同款的注册表缺位回退：纯单元环境（未装配 settings）
+	// 保持 legacy 遮蔽行为，让既有 checker/链路钉测继续测遮蔽机制本身；
+	// 生产（注册表在场）读平台值——规格默认 false（裁决值）。
+	if settings.Global == nil {
+		return true
+	}
+	return settings.GetPlatformBool("sanitize.output_mask_enabled", false)
 }
 
 func (it *OutputComplianceInterceptor) FailClosed() bool { return true }
@@ -321,7 +347,10 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	if it.ownerFn != nil {
 		dataOwner = it.ownerFn(ctx, req.SessionID, req.TenantID)
 	}
-	shouldRedact := it.mandatory || outputcompliance.ShouldRedact(redactionMode(), req.CallerOwner, dataOwner)
+	// r1045：强制守卫的**遮蔽改写**由 sanitize.output_mask_enabled 控制（默认
+	// 关闭＝客户端字节原样下发，检测/台账/硬拦照常）。可选守卫维持自己的
+	// redaction_mode 语义不变。
+	shouldRedact := (it.mandatory && outputMaskingEnabled()) || (!it.mandatory && outputcompliance.ShouldRedact(redactionMode(), req.CallerOwner, dataOwner))
 
 	// r1039（D3）：拦截原因（规则名 / 原因码 / 出问题的位置）在**拦截那一刻**
 	// 记下来。原来的非流式 403 只有一句 message，客户端既说不出因为什么规则

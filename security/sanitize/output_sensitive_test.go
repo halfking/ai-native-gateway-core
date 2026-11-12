@@ -10,6 +10,9 @@ import (
 )
 
 func TestOutputSensitiveMasksNewValuesAndRestoresKnownValues(t *testing.T) {
+	// r1045：遮蔽改写默认关闭；本测试钉 opt-in（sanitize.output_mask_enabled=true）
+	// 时的遮蔽语义。默认面（原样下发+observe 台账）在 r1045 钉测里。
+	enableOutputMaskingForTest(t)
 	s, _ := NewSanitizer(NewPatternDetector())
 	guard := NewOutputSensitiveInterceptor(s, OutputMask)
 	restore, _ := NewSanitizeRestoreInterceptor(s, nil, 0)
@@ -41,6 +44,8 @@ func TestOutputSensitiveMasksNewValuesAndRestoresKnownValues(t *testing.T) {
 }
 
 func TestOutputSensitiveSplitStreamMaskAndRestore(t *testing.T) {
+	// r1045：mask-on 子模式（同上）。
+	enableOutputMaskingForTest(t)
 	s, _ := NewSanitizer(NewPatternDetector())
 	guard := NewOutputSensitiveInterceptor(s, OutputMask)
 	restore, _ := NewSanitizeRestoreInterceptor(s, nil, 0)
@@ -88,6 +93,7 @@ func TestOutputSensitiveBlockAndDetectionFailure(t *testing.T) {
 }
 
 func TestProviderErrorMessageIsSensitiveOutput(t *testing.T) {
+	enableOutputMaskingForTest(t) // r1045：遮蔽族钉测显式 opt-in（默认已关）
 	s, _ := NewSanitizer(NewPatternDetector())
 	result, err := NewOutputSensitiveInterceptor(s, OutputMask).InterceptNonStream(context.Background(), &response.InterceptRequest{ResponseBody: []byte(`{"error":{"message":"connection password=NewSecret server=203.0.113.8","type":"provider_error"}}`)})
 	if err != nil || result == nil || result.ShouldBlock || strings.Contains(string(result.ModifiedBody), "NewSecret") || !strings.Contains(string(result.ModifiedBody), "provider_error") {
@@ -111,6 +117,8 @@ func TestUnknownEnvelopeRestorationPreservesJSON(t *testing.T) {
 }
 
 func TestOutputSensitiveEOFStillRunsRestoration(t *testing.T) {
+	// r1045：mask-on 子模式（同上）。
+	enableOutputMaskingForTest(t)
 	s, _ := NewSanitizer(NewPatternDetector())
 	guard := NewOutputSensitiveInterceptor(s, OutputMask)
 	restore, _ := NewSanitizeRestoreInterceptor(s, nil, 0)
@@ -147,6 +155,7 @@ func TestGeneratedSensitiveToolOperationsAreBlocked(t *testing.T) {
 }
 
 func TestLegacyCompletionAndReasoningStreamsMaskAndRestore(t *testing.T) {
+	enableOutputMaskingForTest(t) // r1045：遮蔽族钉测显式 opt-in（默认已关）
 	s, _ := NewSanitizer(NewPatternDetector())
 	ctx := WithSanitizeMap(context.Background(), SanitizeMap{"{SENSITIVE:phone:1}": "13800138000"})
 	for _, lane := range []string{"text", "reasoning_content"} {

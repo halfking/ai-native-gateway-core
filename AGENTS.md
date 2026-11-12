@@ -1,6 +1,11 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
-> **2026-11-13 脱敏/恢复域 r1043 会话字典投毒根修轮（goal 会话，主档 `docs/audit/2026-11-13-脱敏恢复域r1043会话字典投毒根修.md`，LESSONS §708）**：
+> **2026-11-13 r1045 客户端一级还原裁决轮（goal 会话，主档 `docs/audit/2026-11-13-脱敏恢复域r1043会话字典投毒根修.md` §八，LESSONS §709）**：
+> ★ owner 裁决原话：「对于脱敏的信息在客户端一级一定要还原，不然执行工具或显示内容都会出错」⇒ r1042 轮挂着的两个裁决面（「关闭输出检查」开关意图 + thinking 命中杀回合）就此落定。
+> ★★★ **实施＝动作级开关拆分**：新 `sanitize.output_mask_enabled`（**默认 false**）只管「把无字典条目的命中（模型自造值）改写成 `[REDACTED:*]` 下发客户端」；输出**检查**（检测/台账/审核单/硬拦清单）不动（`sanitize.output_check_enabled` 仍总控）；占位符**还原**链不动（请求级字典经 r.Context() 全程可达，Redis 中途故障 ctx 本地字典兜底——r1045 钉测：流式全 lane 含跨帧撕开 tool args、中途删 Redis 键仍还原）。硬拦（Blocked）与遮蔽正交——开关只拆遮蔽。
+> ★ 门：r1045 钉测 6 条 + 变异 ×2 全红→还原绿；既有遮蔽族钉测 8 处改显式 opt-in（`enableOutputMaskingForTest`）；`settings.Global==nil` 回退 legacy（redactionMode 先例）。干净 worktree 验证 sanitize/outputcompliance/settings/streaming(103s) 全绿。共享树 9 红＝并行 r1044（credit_card 可信度轮）在途件（stash 对拍归因）；并行同日占 r1044 编号 ⇒ 本轮让号 r1045。
+
+> **2026-11-13 脱敏/恢复域 r1043 会话字典投毒根修轮（goal 会话，主档 `docs/audit/2026-11-13-脱敏恢复域r1043会话字典投毒根修.md`，LESSONS §707）**：
 > ★ owner 报障＝执行任务时「局部情况敏感信息没有恢复，导致命令执行失败」（模型原话：『权限系统的敏感信息过滤器总是将默认的 root 替换为 [REDACTED:account]……第 32 行的 SSH_USER="[REDACTED:account]" 打破了引用平衡』）；事故会话＝211 `gw_ae47d6bb…`（ZCode/3.18.0→/v1/chat/completions→glm-5.3-flash，11-13 03:14~03:23+08，峰值请求 1.02MB/1127 消息）。
 > ★★★★ **定案证据＝事故会话的 Redis 占位符字典（db5 wm-acc-chain-redis）逐字段核对**：单会话 **38 个 account 占位符大多为毒值**——`{SENSITIVE:account:6}→[REDACTED:account]`（**遮蔽标记本身被当「值」铸造**）、`{SENSITIVE:account:34}→{SENSITIVE')+20)+']', 'SSH_USER=`（**模型修补占位符的 Python 代码被当值**）、`\$(docker`/`$(`/` in l or l.startswith(`（代码片段）、`smm:[REDACTED:secret]`（嵌标记）——`root` 本体反而不在值集。还原器全程**无 map-miss**（容器日志零告警）⇒ 用户看到的「没有恢复」不是还原缺口，是**字典内容被投毒**：还原链把毒值/标记「忠实地」永久写回输出 ⇒ 文件写坏 ⇒ bash -n 永远失败。
 > ★★★★ **三条根因链（生产快照规则逐字本地复现）**：D1 `SSH_USER="[REDACTED:account]"` 被 account_declaration 命中⇒标记铸成占位符值（§705 回声免疫族**第六次复发**——r1038 标记带类型化的新形状没进免疫清单）；D2 值文法引号臂捕获 `' in l or l.startswith('`、裸 token 臂吃 `\$(docker`⇒**输入脱敏把含引号 span 挖走⇒模型收到的代码语法残缺**（「命令执行失败」本体）；D3 `SSH_USER="root"` 占位符化＝触发器（模型发现「过滤器在改我的文件」⇒写修补代码⇒引爆 D1/D2）。
