@@ -61,7 +61,8 @@ var probeGoModes = []string{"pass", "skip", "nomatch", "fail"}
 //   - 其余（建库 / 跑迁移 / 读形态）⇒ 空输出、退出 0（脚本的链因此「applied=N failed=0」）
 //
 // ★ 所有调用都记进 $TRACE_FILE：门要能证明「脚本真的走到第 ⑥ 步」，
-//   而不是「脚本提前退出所以没有假绿」。
+//
+//	而不是「脚本提前退出所以没有假绿」。
 func fakeProbeDocker(t *testing.T, dir string) string {
 	t.Helper()
 	script := `#!/bin/sh
@@ -99,10 +100,11 @@ exit 0
 // probeGoStdout 是假 go 在各模式下打印的**唯一事实源**。
 //
 // ★ 为什么单独抽出来：门要断言「脚本说了某个**诊断措辞**」，
-//   而第 ⑥ 步会把 go test 的输出**原样 tail -12 转述**出来 ⇒
-//   ⇒ 若诊断措辞恰好也出现在 go 输出里（第一版的 "no tests to run" 就是），
-//   ⇒ 判据就**自证**（无论脚本有没有真的检测，都会绿）。
-//   ⇒ 所以门的标记词必须满足：**不在 go 输出里**（下面有断言钉住这条）。
+//
+//	而第 ⑥ 步会把 go test 的输出**原样 tail -12 转述**出来 ⇒
+//	⇒ 若诊断措辞恰好也出现在 go 输出里（第一版的 "no tests to run" 就是），
+//	⇒ 判据就**自证**（无论脚本有没有真的检测，都会绿）。
+//	⇒ 所以门的标记词必须满足：**不在 go 输出里**（下面有断言钉住这条）。
 var probeGoStdout = map[string]string{
 	"pass": "=== RUN   TestFreshInstallRuntimeShape_EnsureChain\n" +
 		"--- PASS: TestFreshInstallRuntimeShape_EnsureChain (5.76s)\n" +
@@ -123,14 +125,16 @@ var probeGoStdout = map[string]string{
 // probeGoExitCode 是假 go 在各模式下的**真实**退出码。
 //
 // ★★ 这里是最容易骗过自己的地方：**SKIP 与「无匹配」的退出码都是 0**，
-//   只有 FAIL 是 1 ⇒ ⇒ 「只看退出码」必然把跳过当成跑过了。
-//   ⇒ 必须同时看「PASS/SKIP/FAIL 标记」**和**「退出码」。
+//
+//	只有 FAIL 是 1 ⇒ ⇒ 「只看退出码」必然把跳过当成跑过了。
+//	⇒ 必须同时看「PASS/SKIP/FAIL 标记」**和**「退出码」。
 var probeGoExitCode = map[string]int{"pass": 0, "skip": 0, "nomatch": 0, "fail": 1}
 
 // fakeProbeGo 写一个假 go：按 $FAKE_GO_MODE 印出对应的 `go test -v` 形态。
 //
 // ★ 关键：**SKIP 与「无匹配」两种形态的退出码都是 0** ——
-//   这正是旧判据（只看退出码）会把它们当成「跑过了」的根因。
+//
+//	这正是旧判据（只看退出码）会把它们当成「跑过了」的根因。
 func fakeProbeGo(t *testing.T, dir string) string {
 	t.Helper()
 	script := `#!/bin/sh
@@ -199,14 +203,16 @@ func runProbeShape(t *testing.T, mode string) (string, int) {
 // TestProbeShapeStep6TrustsOnlyRealPass 钉住「只有真 PASS 才认形态可信」。
 //
 // 四个形态各自断言「嘴上说了什么 + 退出码是多少」：
-//   pass    ⇒ 必须印「✓ ensure 链已跑（库现在 = 产品真实形态）」且退出 0；
-//   skip    ⇒ **不得**印那句，且退出 3（量具坏了）；
-//   nomatch ⇒ **不得**印那句，且退出 3；
-//   fail    ⇒ **不得**印那句，且退出 3。
+//
+//	pass    ⇒ 必须印「✓ ensure 链已跑（库现在 = 产品真实形态）」且退出 0；
+//	skip    ⇒ **不得**印那句，且退出 3（量具坏了）；
+//	nomatch ⇒ **不得**印那句，且退出 3；
+//	fail    ⇒ **不得**印那句，且退出 3。
 //
 // ★ 这里刻意**不用**子串断言「脚本里写了 SKIP 检测」——
-//   那样只要有人在别处也写了 "SKIP" 字样就可能糊过去。
-//   断的是**行为**：脚本在四种结局下各自说什么、退出什么。
+//
+//	那样只要有人在别处也写了 "SKIP" 字样就可能糊过去。
+//	断的是**行为**：脚本在四种结局下各自说什么、退出什么。
 func TestProbeShapeStep6TrustsOnlyRealPass(t *testing.T) {
 	skipWindows(t)
 
@@ -270,12 +276,14 @@ func TestProbeShapeStep6TrustsOnlyRealPass(t *testing.T) {
 // TestProbeShapeStep6RefusesWhenStartupChainFailed 钉住第 ④ 步链失败时的拒绝。
 //
 // ★ 这是**最危险**的变体：startup 链失败 ⇒ 库压根不是产品形态，
-//   但旧写法里 `go test` 仍可能 PASS（⇒ 印「形态可信」）。
-//   ⇒ 本门让 startup 链**失败**，再断言脚本**不认**形态可信。
+//
+//	但旧写法里 `go test` 仍可能 PASS（⇒ 印「形态可信」）。
+//	⇒ 本门让 startup 链**失败**，再断言脚本**不认**形态可信。
 //
 // 手法：让假 docker 对**启动迁移**这一步失败（其余照常成功）⇒
-//   脚本第 ④ 步的 failed 计数 > 0 ⇒ 但第 ⑥ 步的 go test 仍报 PASS
-//   ⇒ ⇒ 若判据只看 go test 的结果，这一步就会印出「形态可信」⇒ 门红。
+//
+//	脚本第 ④ 步的 failed 计数 > 0 ⇒ 但第 ⑥ 步的 go test 仍报 PASS
+//	⇒ ⇒ 若判据只看 go test 的结果，这一步就会印出「形态可信」⇒ 门红。
 func TestProbeShapeStep6RefusesWhenStartupChainFailed(t *testing.T) {
 	skipWindows(t)
 

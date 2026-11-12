@@ -1,3 +1,5 @@
+//go:build ursmhollowout
+
 package ursm_test
 
 // structured_registry_hollowout_test.go —— 2026-10-28 R87 轮（非 `.tsv` 登记册的**行为化掏空验证**）
@@ -55,23 +57,6 @@ import (
 )
 
 // ── 掏空模式 ──────────────────────────────────────────────────────────────
-
-// structuredHollowMode 是【掏空模式】的封闭词表。
-type structuredHollowMode string
-
-const (
-	// structuredHollowEntries：★ 清单型。容器清空 ＋ 数值归零；键集合与类型骨架保留。
-	structuredHollowEntries structuredHollowMode = "entries"
-	// structuredHollowUnusable：★ 上限型。整册替换成 `{}` / `[]`（读方拿不到真值）。
-	structuredHollowUnusable structuredHollowMode = "unusable"
-)
-
-// structuredHollowModeList 返回词表的稳定排序列表（★ 只用于报错信息）。
-func structuredHollowModeList() []string {
-	out := []string{string(structuredHollowEntries), string(structuredHollowUnusable)}
-	sort.Strings(out)
-	return out
-}
 
 // ── 格式感知的掏空变换 ───────────────────────────────────────────────────
 
@@ -263,24 +248,6 @@ func structuredDecodeJSON(data []byte) (any, error) {
 }
 
 // ── 读方跑批（★ 复用共享 harness 的 node / vitest / gotest 臂） ───────────
-
-// structuredReaderKinds 是【读方形态】的封闭词表。
-//
-// ★★★ r1039 第三轮新增 `shell`（★ 2026-10-28 实测）：
-//
-//	★ 本词表原本**比共享 harness 窄**：★ `runHollowReaderOverlay`（★
-//	  tsv_hollowout_gate_test.go）**早就支持 `shell`**（★ `bash -c <spec>` ⇒
-//	  cwd = 仓根）⇒ ⇒ TSV 侧一直在用 shell 读方 ⇒ ★ 而本表（结构化侧）把
-//	  shell 排除在外 ⇒ ⇒ **同一套 harness、两套词表** ⇒ ⇒ 一条「读方是 shell
-//	  脚本」的结构化登记册**没法在本表里登记**（★ 只能被普查门当成「没归属」）。
-//	★ ⇒ 那不是「读方没有牙」，而是**本表没有那条腿** ⇒ ⇒ 把词表补齐到
-//	  harness 的真实能力（★ 只**加**不**改**：★ 既有 54 条的行为不变）。
-var structuredReaderKinds = map[string]bool{
-	"node":   true,
-	"vitest": true,
-	"gotest": true,
-	"shell":  true,
-}
 
 // structuredOutcome 是某一条登记册的实测分类。
 type structuredOutcome string

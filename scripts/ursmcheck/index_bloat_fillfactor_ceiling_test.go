@@ -53,8 +53,9 @@ func bloatHeadroomMB(dead, leaf int, density float64) int {
 //
 // 这条是**行为级**的：同一组输入，旧口径判 CANDIDATE、新口径判 ok。
 // 选参数：leaf=60000、密度 90.05%
-//   旧口径（到 100%）：60000×(1−0.9005)×8KB ≈ 46.7MB ≥ 32MB 门槛 ⇒ CANDIDATE
-//   新口径（到 90%）  ：min(90.05,90)=90 ⇒ 0MB ⇒ ok
+//
+//	旧口径（到 100%）：60000×(1−0.9005)×8KB ≈ 46.7MB ≥ 32MB 门槛 ⇒ CANDIDATE
+//	新口径（到 90%）  ：min(90.05,90)=90 ⇒ 0MB ⇒ ok
 func TestBloatHeadroomCeilingIsFillfactorNotFullDensity(t *testing.T) {
 	e := newBloatEnv(t)
 	log, _ := e.run(t, 0, 60000, "90.05")
@@ -71,10 +72,11 @@ func TestBloatHeadroomCeilingIsFillfactorNotFullDensity(t *testing.T) {
 // 「页被摊薄」类的可回收量必须等于「排序建」的模型值。
 //
 // 取生产实测的一对真值（2026-10-19 pgstatindex 全字段）：
-//   stats_event_dedup_pkey: leaf=13644、dead=0、密度 70.11%
-//   旧口径给 31MB（= 填到 100%），新口径给 23MB（= 填到 90%）
-//   受控实验交叉验证：70.20% → 排序建 89.82% ⇒ 体积少 21.98%
-//   （新口径对同一密度给 22.0% ⇒ 吻合）
+//
+//	stats_event_dedup_pkey: leaf=13644、dead=0、密度 70.11%
+//	旧口径给 31MB（= 填到 100%），新口径给 23MB（= 填到 90%）
+//	受控实验交叉验证：70.20% → 排序建 89.82% ⇒ 体积少 21.98%
+//	（新口径对同一密度给 22.0% ⇒ 吻合）
 func TestBloatHeadroomMatchesSortedRebuildModel(t *testing.T) {
 	e := newBloatEnv(t)
 	log, _ := e.run(t, 0, 13644, "70.11")
@@ -94,9 +96,10 @@ func TestBloatHeadroomMatchesSortedRebuildModel(t *testing.T) {
 // TestBloatDeadPagesTermStillAdditive 钉住「死页项没有被新公式吃掉」。
 //
 // 新公式改的是**密度项**的目标，死页项必须照旧可加：
-//   2026-10-19 生产真值：pg_toast_81522141_index  leaf=1、dead=29299、密度 0.54%
-//   ⇒ 可回收 = 29299×8KB ≈ 228.9MB ⇒ 必须仍是候选（229MB 死 TOAST 索引是
-//     §104 已定的主回收目标，不许被口径修正顺带降级成「ok」）。
+//
+//	2026-10-19 生产真值：pg_toast_81522141_index  leaf=1、dead=29299、密度 0.54%
+//	⇒ 可回收 = 29299×8KB ≈ 228.9MB ⇒ 必须仍是候选（229MB 死 TOAST 索引是
+//	  §104 已定的主回收目标，不许被口径修正顺带降级成「ok」）。
 func TestBloatDeadPagesTermStillAdditive(t *testing.T) {
 	e := newBloatEnv(t)
 	log, _ := e.run(t, 29299, 1, "0.54")
@@ -116,12 +119,15 @@ func TestBloatDeadPagesTermStillAdditive(t *testing.T) {
 // TestBloatBaselineIsInheritedByFamilyKey 钉住③：基线按族键继承。
 //
 // 正例：$STATE 里是**父表索引**的族键（`ursm_node_snapshot_min_pkey 90.2`，
-//       生产上唯一那条真实数据点），候选是**叶分区索引**且族键指向它
-//       ⇒ 密度 89.94% 应被判为「已达自然填充率」（基线 90.2 − 容差 2 = 88.2）。
+//
+//	生产上唯一那条真实数据点），候选是**叶分区索引**且族键指向它
+//	⇒ 密度 89.94% 应被判为「已达自然填充率」（基线 90.2 − 容差 2 = 88.2）。
+//
 // 反例：族键指回自己（匹配不上基线）⇒ 基线不生效 ⇒ 不得出现「已达自然填充率」。
 //
 // ★ 反例不是「装饰」：把族键回退成「只用索引名找」的变异，会让正例红、反例绿，
-//   只有两个都钉住才挡得住「把族键逻辑删掉」这种改法。
+//
+//	只有两个都钉住才挡得住「把族键逻辑删掉」这种改法。
 func TestBloatBaselineIsInheritedByFamilyKey(t *testing.T) {
 	// 正例：族键 = 父表索引名
 	e := newBloatEnv(t)
@@ -203,4 +209,3 @@ func TestBloatCandidateQueryResolvesParentIndexForFamilyKey(t *testing.T) {
 //   ⇒ 恒真门不提供任何保证，删掉（2026-10-19，§143.12）。
 //   族键路径本身的保证由 TestBloatBaselineIsInheritedByFamilyKey 承担，
 //   且 M2 变异（把族键查找整段去掉）确认它会红。
-

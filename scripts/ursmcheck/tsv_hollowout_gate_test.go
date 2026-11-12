@@ -1,3 +1,5 @@
+//go:build ursmhollowout
+
 package ursm_test
 
 // tsv_hollowout_gate_test.go —— 2026-10-23 R85 轮（掏空法门）
@@ -36,8 +38,6 @@ package ursm_test
 //	   **不数登记册的行数**，只问「读方红不红」。
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,50 +65,6 @@ type hollowEntry struct {
 	// ★★ 「人工审计」的那一段仍然写在 Reason 里 ⇒ ⇒ 两者合起来才是完整理由。
 }
 
-// hollowMechKinds 是【机械可核断言】的封闭词表（★ R86 轮新增；★ R87 轮扩容）。
-//
-// ★★ 为什么要有它（R86 轮，承接 §19.25.19.10 优先级 1 ②）：
-//
-//	★ 上一轮的例外理由是**一整段散文** ⇒ ⇒ 门的机械部分只能证明「理由非空非占位」
-//	  ⇒ ⇒ **理由本身成立与否，机器无从判断**（★ 诚实的边界，但很弱）。
-//	★ ⇒ R86 轮把理由**拆成两段**：
-//	  ① **机械可核段**（本字段）：★ 门会**真的去核对** ⇒ ⇒ 理由的「骨架」不再靠人说了算。
-//	  ② **人工审计段**（Reason）：★ 只能靠人读 ⇒ ⇒ 如实标注，不假装能机检。
-//
-// ★ 词表刻意**短**（★ 只实现真在用的）⇒ ⇒ 每一条都有真实用例 ⇒ 不留空转机制。
-//
-// ★★ R87 轮扩容的两条（★ 承接 §19.25.19.10 优先级 1 ②）：
-//
-//	★ **`reader-red-on-missing`** —— 「读方在【登记册文件**不在**】时必须红」
-//	  ⇒ ⇒ 它比 `rows=0` **强得多**：
-//	    · `rows=0` 只说「它现在恰好是 0 行」⇒ ⇒ 明天它长出一行 ⇒ ⇒ 理由就过期了
-//	    · `reader-red-on-missing` 说「**这个文件本身是承重的**」
-//	      ⇒ ⇒ 文件一消失，读方立刻红 ⇒ ⇒ 事实源丢了不会被静默放过
-//	  ⇒ ⇒ 用例：`scripts/ursmcheck/cjk_var_sites.tsv`
-//	    （★ 它的读方 `TestCJKVarExpansionNoNewSites` 在登记册**读不到**时 `t.Fatalf`）。
-//	★ **`reader-red-on-hollow`** —— 「读方在【**掏空版**】下必须红」
-//	  ⇒ ⇒ 这是**最强**的一条：★ 它直接断言「掏空这份登记册 ⇒ 门会抓到」
-//	  ⇒ ⇒ 用例：**结构化登记册那一侧**（★ `structured-registry-census.json` 的
-//	    `hollow_mode` + `red_signal` ⇒ ⇒ 每条登记册都跑这条）⇒ ⇒ 与本词表**同源**
-//	    ⇒ ⇒ 两侧的词表不会漂。
-var hollowMechKinds = map[string]bool{
-	"rows=0":                true, // ★ 该登记册当前 0 数据行（★ 「掏空 = 空操作」这类理由的骨架）
-	"reader-green":          true, // ★ 该条目指定的读方在【基线】是绿的（★ 两向判据类理由的骨架）
-	"no-code-reader":        true, // ★ 仓内（除文档与本清单外）没有任何被追踪文件提及该路径
-	"reader-red-on-missing": true, // ★★ R87 轮：★ 读方在【登记册文件不在】时必须红
-	"reader-red-on-hollow":  true, // ★★ R87 轮：★ 读方在【掏空版】下必须红（★ 结构化侧的主力断言）
-}
-
-// hollowMechKindList 返回词表的稳定排序列表（★ 只用于报错信息）。
-func hollowMechKindList() []string {
-	out := make([]string, 0, len(hollowMechKinds))
-	for k := range hollowMechKinds {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // hollowOutcome 是某一条目的实测结果分类。
 type hollowOutcome string
 
@@ -118,16 +74,6 @@ const (
 	outcomeInconclusive hollowOutcome = "inconclusive" // ★ 变换是空操作 ⇒ 什么都没测到
 	outcomeBaselineRed  hollowOutcome = "baseline-red" // ★ 读方在基线就红 ⇒ 不可判定
 )
-
-// hollowRepoRoot 返回仓根。
-func hollowRepoRoot(t *testing.T) string {
-	t.Helper()
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		t.Fatalf("解析仓根失败（需要 git 在 PATH）：%v", err)
-	}
-	return strings.TrimSpace(string(out))
-}
 
 // readHollowInventory 读清单。
 func readHollowInventory(t *testing.T, root string) []hollowEntry {
@@ -191,53 +137,6 @@ func readHollowInventory(t *testing.T, root string) []hollowEntry {
 // ★ 返回 (新内容, 丢弃的数据行数, 保留的非注释行数)。
 // ⇒ 后两个返回值是【判据②「探针是否有效」】的量具：★ 若丢弃数为 0
 // ⇒ ⇒ 变换没真的掏空 ⇒ ⇒ 本条目**什么都没测到**（不能报「绿 ⇒ 门有洞」）。
-func hollowBytes(data []byte, headerRows int) ([]byte, int, int) {
-	lines := strings.SplitAfter(string(data), "\n")
-	var out []string
-	kept := 0
-	dropped := 0
-	for _, ln := range lines {
-		if ln == "" {
-			continue
-		}
-		body := strings.TrimRight(ln, "\n")
-		if strings.TrimSpace(body) == "" || strings.HasPrefix(strings.TrimSpace(body), "#") {
-			out = append(out, ln) // ★ 注释行与空行：逐字节保留
-			continue
-		}
-		if kept < headerRows {
-			out = append(out, ln)
-			kept++
-			continue
-		}
-		dropped++
-	}
-	return []byte(strings.Join(out, "")), dropped, kept
-}
-
-// countDataRows 数「非注释、非空」的行数。
-func countDataRows(data []byte) int {
-	n := 0
-	for _, ln := range strings.Split(string(data), "\n") {
-		body := strings.TrimSpace(ln)
-		if body == "" || strings.HasPrefix(body, "#") {
-			continue
-		}
-		n++
-	}
-	return n
-}
-
-// goBinDir 返回 go 可执行文件所在目录（用于给子进程补 PATH）。
-func goBinDir() string {
-	if p, err := exec.LookPath("go"); err == nil {
-		return filepath.Dir(p)
-	}
-	if gr := runtime.GOROOT(); gr != "" {
-		return filepath.Join(gr, "bin")
-	}
-	return ""
-}
 
 // runHollowReader 跑读方，返回退出码与合并输出。
 //
@@ -557,29 +456,6 @@ func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
 		<-done
 		return []byte(buf.String()), fmt.Errorf("读方超时（%v）", timeout)
 	}
-}
-
-// md5Of 算 md5（十六进制）。
-func md5Of(data []byte) string {
-	sum := md5.Sum(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// hollowAllTrackedTsv 返回仓内【git 追踪】的全部 `.tsv`（相对仓根，已排序）。
-func hollowAllTrackedTsv(root string) ([]string, error) {
-	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "*.tsv").Output()
-	if err != nil {
-		return nil, err
-	}
-	var rels []string
-	for _, p := range strings.Split(string(out), "\x00") {
-		if p == "" {
-			continue
-		}
-		rels = append(rels, p)
-	}
-	sort.Strings(rels)
-	return rels, nil
 }
 
 // ---------------------------------------------------------------- 判据
@@ -1010,15 +886,6 @@ func TestTsvHollowoutExceptionMechanicsHold(t *testing.T) {
 	if checked == 0 {
 		t.Fatalf("清单里一条 exception 都没有 ⇒ 例外表判据空转（★ 门恒绿）")
 	}
-}
-
-// tailLines 取输出末尾 n 行。
-func tailLines(s string, n int) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n")
 }
 
 // ---------------------------------------------------------------- 自检

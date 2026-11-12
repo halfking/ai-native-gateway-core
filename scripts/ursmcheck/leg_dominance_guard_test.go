@@ -62,7 +62,8 @@ import (
 // TestR88LegLevelDominanceSelfCheck 腿级支配判据的夹具门。
 //
 // ★ 这道门是 R88 变异 M1 的教训固化：M1 揭穿了 R87 门自己的洞
-//   （「判定存在」被当成「判定一定执行」）⇒ ⇒ 必须有夹具把这条形态钉死。
+//
+//	（「判定存在」被当成「判定一定执行」）⇒ ⇒ 必须有夹具把这条形态钉死。
 func TestR88LegLevelDominanceSelfCheck(t *testing.T) {
 	exported := r71ParseDatasourceExports(t, r86DSPath)
 	if len(exported) < 30 {

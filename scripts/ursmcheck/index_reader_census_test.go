@@ -62,13 +62,14 @@ func censusSource(t *testing.T) string {
 // censusExecutableSource 读脚本原文，但把**整行注释**换成空行（行号保持不变）。
 //
 // ★★ 为什么必须剥注释（2026-10-19，§143.13 实测）：
-//   下面那道「裸 $VAR 紧跟全角字符」的门是**源码文本**判据。
-//   而「源码文本断言先剥注释」是本仓的老教训（§917 同款：JSDoc 里的示例代码
-//   把登记表变成空气门）——
-//   本轮给普查器补了一段解释**单引号展开 bug**的注释，
-//   注释里写了 `$IDX` 后面紧跟中文 ⇒ 那道门立刻红了。
-//   ⇒ 红的是**注释**，不是代码 ⇒ 判据必须只管**可执行部分**。
-//   ⇒ 保留行号（注释行替换成空行）⇒ 报错仍指向原来的行。
+//
+//	下面那道「裸 $VAR 紧跟全角字符」的门是**源码文本**判据。
+//	而「源码文本断言先剥注释」是本仓的老教训（§917 同款：JSDoc 里的示例代码
+//	把登记表变成空气门）——
+//	本轮给普查器补了一段解释**单引号展开 bug**的注释，
+//	注释里写了 `$IDX` 后面紧跟中文 ⇒ 那道门立刻红了。
+//	⇒ 红的是**注释**，不是代码 ⇒ 判据必须只管**可执行部分**。
+//	⇒ 保留行号（注释行替换成空行）⇒ 报错仍指向原来的行。
 func censusExecutableSource(t *testing.T) string {
 	t.Helper()
 	lines := strings.Split(censusSource(t), "\n")
@@ -234,7 +235,9 @@ func TestCensusNeverWrites(t *testing.T) {
 // TestCensusSQLIsRealNotJustStubs —— 出货 SQL 必须在真库跑过一次。
 //
 // ★ 这条门记的是 §82 本轮的真实事故：meta SQL 里
-//   `c.relkind || '|' || ...`
+//
+//	`c.relkind || '|' || ...`
+//
 // 真库报 `operator is not unique: "char" || unknown`（relkind 是 "char" 类型），
 // 而**假 psql 桩对 SQL 照单全收，永远绿**。
 // ⇒ 与本仓 `$1` 那条注释是同一个坑，第二次。

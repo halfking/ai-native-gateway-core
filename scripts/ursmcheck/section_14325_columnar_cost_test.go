@@ -202,7 +202,8 @@ func TestRunbook14325CorrectionBannerSixKeepsOriginal(t *testing.T) {
 // TestRunbook14325ScriptKeepsColumnarPath 钉住**实测脚本仍然走真 columnar 路径**。
 //
 // ★ 这是本节证据力的根：脚本若被改成「无条件把 `USING columnar` 替换成 `USING heap`」，
-//   §143.25 的实测结论就退回成 §143.23 的 heap 路径 ⇒ 结论失去证据力。
+//
+//	§143.25 的实测结论就退回成 §143.23 的 heap 路径 ⇒ 结论失去证据力。
 func TestRunbook14325ScriptKeepsColumnarPath(t *testing.T) {
 	raw, err := os.ReadFile(columnarScript14325)
 	if err != nil {
@@ -259,13 +260,15 @@ func TestRunbook14325SectionHeadingsPresent(t *testing.T) {
 // TestRunbook14325MigrationNumberDrift 钉住「迁移号 885 已被并行会话占用 ⇒ 下一个空号 890」。
 //
 // ⚠★ **这里的 885 指的是「被并行会话占用的那个号」，不是本会话的 v1 族退役迁移号**
-//   （本会话的 v1 族退役迁移在改号后是 **890**、配套索引迁移是 **891**）。
-//   ⇒ §143.25.8 记的是**当时**的取号现场（885 被占 ⇒ 下一个空号 890），
-//   原文保留、不做改号；改号会让这条 needle 与 runbook 正文脱钩 ⇒ 门变红。
-//   ⇒ 890 随后**被本会话占用**，这就是「取号会漂移」的活样本（订正见 §143.25.8）。
+//
+//	（本会话的 v1 族退役迁移在改号后是 **890**、配套索引迁移是 **891**）。
+//	⇒ §143.25.8 记的是**当时**的取号现场（885 被占 ⇒ 下一个空号 890），
+//	原文保留、不做改号；改号会让这条 needle 与 runbook 正文脱钩 ⇒ 门变红。
+//	⇒ 890 随后**被本会话占用**，这就是「取号会漂移」的活样本（订正见 §143.25.8）。
 //
 // ★ 这是共享仓库的硬约束：任何「预留某个迁移号」的结论**都会漂移**
-//   ⇒ 必须钉住「先现场取号」这条纪律，否则后人会照着旧号写迁移、撞上别人的号。
+//
+//	⇒ 必须钉住「先现场取号」这条纪律，否则后人会照着旧号写迁移、撞上别人的号。
 func TestRunbook14325MigrationNumberDrift(t *testing.T) {
 	s := section14325(t)
 

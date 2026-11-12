@@ -105,7 +105,8 @@ import (
 //	下调）⇒ 不是把护栏拆掉，是把护栏按它自己的口径走完。
 //
 // ★ 基线现在是**空的**：这不代表门形同虚设 —— 「恒绿护栏」已由**端到端正控**
-//   （TestTrackedBinaryScannerPositiveControl）承担，见文件头 §②。
+//
+//	（TestTrackedBinaryScannerPositiveControl）承担，见文件头 §②。
 //
 // ★ 未来若真有一个独立可执行工具需要入库，必须**显式**登记进下表并写清理由。
 var trackedBinaryBaseline = map[string]string{}

@@ -174,9 +174,9 @@ func TestStaleExpiryCriterionIsSessionFamilyEvidence(t *testing.T) {
 				return true
 			}
 			if sel.Sel.Name == "RequestLogsWriteEnabled" {
-				t.Errorf("discovery.go 仍在调用 settings.RequestLogsWriteEnabled()——\n"+
-					"v1 已随 890 退役，该判据恒为 false ⇒ 护栏恒 skip ⇒\n"+
-					"陈旧模型永不再自动下架（211 生产日志实证）。",)
+				t.Errorf("discovery.go 仍在调用 settings.RequestLogsWriteEnabled()——\n" +
+					"v1 已随 890 退役，该判据恒为 false ⇒ 护栏恒 skip ⇒\n" +
+					"陈旧模型永不再自动下架（211 生产日志实证）。")
 			}
 			return true
 		})

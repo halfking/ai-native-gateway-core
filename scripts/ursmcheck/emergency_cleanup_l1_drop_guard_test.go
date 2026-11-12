@@ -47,11 +47,12 @@ const emergencyScript = "../252-monitor/pg17-emergency-cleanup.sh"
 // 并按 SQL 内容应答。
 //
 // ⚠ 只有一个 $FAKE_COUNT 而不是「按表名分别应答」：早期版本做了按表名的变体，
-//   那个变体**整体覆盖**了本脚本、连轨迹记录都没留 ⇒ 测试读不到 trace.txt，
-//   而「轨迹为空」会让 `strings.Contains("")` 恒为 false ⇒ 用例**假绿**。
-//   ⇒ 教训：假运行时的多个变体必须**共享同一份行为定义**，否则某一变体
-//   会静默地把「没调到」伪装成「没发生」。
-//   三个用例各自只需一个行数（2836620 / 0 / 0），单值足够。
+//
+//	那个变体**整体覆盖**了本脚本、连轨迹记录都没留 ⇒ 测试读不到 trace.txt，
+//	而「轨迹为空」会让 `strings.Contains("")` 恒为 false ⇒ 用例**假绿**。
+//	⇒ 教训：假运行时的多个变体必须**共享同一份行为定义**，否则某一变体
+//	会静默地把「没调到」伪装成「没发生」。
+//	三个用例各自只需一个行数（2836620 / 0 / 0），单值足够。
 func fakeEmergencyDocker(t *testing.T, dir string) string {
 	t.Helper()
 	script := `#!/bin/sh
@@ -262,12 +263,13 @@ func TestEmergencyL1RefusesToDropEmptyTableReferencedByFunctionBody(t *testing.T
 // TestEmergencyL1DependencyLookupUsesBareTableName 钉住**归一化**这一步。
 //
 // ⚠ 这条是本组门里最容易被忽略、后果最重的一条：
-//   候选第一列是 `format('%I)'` 的**加引号**形式（public."_request_logs_bodies_hot"），
-//   而函数体里写的是**裸名**。若直接拿第一列去 strpos，就**永远匹配不上**
-//   ⇒ 闸恒「无依赖」⇒ 恒放行，而上面那条阻断侧用例**照样全绿**
-//   （假 docker 不看表名，只看 SQL 里有没有 pg_proc+strpos 两个词）。
-//   ⇒ 换句话说：上面那道门测的是「有应答时会不会 SKIP」，
-//     这道门测的才是「问的对象对不对」。
+//
+//	候选第一列是 `format('%I)'` 的**加引号**形式（public."_request_logs_bodies_hot"），
+//	而函数体里写的是**裸名**。若直接拿第一列去 strpos，就**永远匹配不上**
+//	⇒ 闸恒「无依赖」⇒ 恒放行，而上面那条阻断侧用例**照样全绿**
+//	（假 docker 不看表名，只看 SQL 里有没有 pg_proc+strpos 两个词）。
+//	⇒ 换句话说：上面那道门测的是「有应答时会不会 SKIP」，
+//	  这道门测的才是「问的对象对不对」。
 func TestEmergencyL1DependencyLookupUsesBareTableName(t *testing.T) {
 	skipWindows(t)
 
@@ -291,8 +293,8 @@ func TestEmergencyL1DependencyLookupUsesBareTableName(t *testing.T) {
 
 // TestEmergencyL1SkipsWhenBareNameCannotBeResolved 钉住空模式防护。
 //
-// PG 里 `strpos(x,'')` 返回 **1**（永远命中），而 `strpos(x,NULL)` 返回 NULL
-//（永不命中）—— 空模式的语义与「查不到」**完全相反**，是能静默改判的方向。
+// PG 里 `strpos(x,”)` 返回 **1**（永远命中），而 `strpos(x,NULL)` 返回 NULL
+// （永不命中）—— 空模式的语义与「查不到」**完全相反**，是能静默改判的方向。
 // 解析不出裸表名时必须 SKIP，且**不能**发出那次依赖查询。
 func TestEmergencyL1SkipsWhenBareNameCannotBeResolved(t *testing.T) {
 	skipWindows(t)
@@ -386,7 +388,7 @@ func bashForScriptFor(t *testing.T, script string) string {
 var bash4OnlyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\$\{[0-9A-Za-z_][^}]*\^\^`), // ${x^^} / ${2^^}：变量名可能是纯数字
 	regexp.MustCompile(`\$\{[0-9A-Za-z_][^}]*,,\}`), // ${x,,}
-	regexp.MustCompile(`declare\s+-A`),                // 关联数组
+	regexp.MustCompile(`declare\s+-A`),              // 关联数组
 	regexp.MustCompile(`\bmapfile\b`),
 	regexp.MustCompile(`\breadarray\b`),
 	regexp.MustCompile(`\bcoproc\b`),

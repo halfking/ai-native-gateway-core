@@ -155,11 +155,13 @@ func (o sigObs) exitTrapRan() bool { return o.ExitTrapMS >= 0 }
 //	（实测：机器 load 420+ 时 wait 形态的触发延迟被拉长 ⇒ 越过了那条绝对上限））。
 //
 // ⇒⇒⇒ ⇒★ **判据的形态必须与【被测量的机制】同源**：
+//
 //	机制 = 「两个形态的触发时刻差两个数量级」⇒ ⇒⇒ 判据就该是【差值】，不是各自的绝对值。
 //	· 形态 F 的延迟由**前台命令时长**决定（≈1300ms，负载无关）⇒ 下界可以断言；
 //	· 形态 W 的延迟**随机器负载浮动**（常态 13–30ms，高负载下会拉长）⇒ **不设绝对上限**。
 //
 // ⇒⇒⇒ ⇒★ 所以判据 = 「fg 的延迟 − wait 的延迟 ≥ minGapMS」⇒ ⇒ **负载再高也不会假红**
+//
 //	（只要形态差异本身还在）。
 func judgeFormContrast(waitObs, fgObs sigObs, minGapMS int) error {
 	if !waitObs.sigTrapFired() || !fgObs.sigTrapFired() {
@@ -448,9 +450,12 @@ func bashVersion(bin string) string {
 //	「EXIT trap 在信号终止下会不会执行」**不是确定性的** ⇒ 第一轮 24 格里 3 格没跑、
 //	随后每格 3 次复跑 36/36 全跑、门那一轮又出现 1 格没跑
 //	⇒ ⇒⇒ **「不保证会跑」是实测事实**（这也是仓内原注释那句话**对**的原因）。
+//
 // ⇒⇒⇒ ⇒★ 于是判据不能写成「这一次必须跑」（那是在赌一个未验证的普适性 ⇒ 必然假红）。
 // ⇒⇒⇒ ⇒★ 正确形态：**最多试 N 次，至少 1 次成功即通过**；
-//	  ⇒⇒⇒   全部失败 ⇒ 说明机制**彻底**变了（那才是真回归）⇒ ⇒⇒ 门必须红。
+//
+//	⇒⇒⇒   全部失败 ⇒ 说明机制**彻底**变了（那才是真回归）⇒ ⇒⇒ 门必须红。
+//
 // ⇒⇒⇒ ⇒★ 且每次失败都要**打印**（⇒ 「不保证」这件事持续可见 ⇒ 不会被下一个人当成「总是会跑」）。
 const sigAttempts = 3
 
@@ -484,8 +489,9 @@ func probeUntil(t *testing.T, bashBin, form, mode string, sig syscall.Signal, la
 //	  · 前台形态（前台外部命令）      ⇒ trap **被推迟**到前台命令结束
 //
 // ★★ 这条门同时裁决两件事：
-//   ① 「挂信号 trap ⇒ 收割更晚」**只在形态 F 成立**；
-//   ② ⇒⇒⇒ 并行会话基于形态 F 的建议**不能外推到仓内形态 W**。
+//
+//	① 「挂信号 trap ⇒ 收割更晚」**只在形态 F 成立**；
+//	② ⇒⇒⇒ 并行会话基于形态 F 的建议**不能外推到仓内形态 W**。
 func TestSignalPathFormContrastIsReal(t *testing.T) {
 	for _, bashBin := range bashCandidates(t) {
 		bashBin := bashBin
@@ -582,10 +588,13 @@ func TestSignalPathTrapWithoutExitLetsBodyContinue(t *testing.T) {
 // TestSignalPathExitTrapRunsUnderTermination 断言「EXIT trap 在信号终止下执行」。
 //
 // ★ 只断言**两个最关键的格子**（实测 3/3 稳定）：
-//   · 形态 W + SIGTERM + 无 INT/TERM trap（★ 仓内形态：EXIT-only 的那条路）
-//   · 形态 W + SIGTERM + 带 exit 的 trap（★ 仓内真实形态）
+//
+//	· 形态 W + SIGTERM + 无 INT/TERM trap（★ 仓内形态：EXIT-only 的那条路）
+//	· 形态 W + SIGTERM + 带 exit 的 trap（★ 仓内真实形态）
+//
 // ⇒★ 其余格子只打印、不写成断言（★ 本轮实测里出现过 1 格偶发未执行
-//   ⇒ 写成普适断言就是在赌一个未验证的普适性 ⇒ ★ 这正是仓内原注释「不保证」是对的场合）。
+//
+//	⇒ 写成普适断言就是在赌一个未验证的普适性 ⇒ ★ 这正是仓内原注释「不保证」是对的场合）。
 func TestSignalPathExitTrapRunsUnderTermination(t *testing.T) {
 	for _, bashBin := range bashCandidates(t) {
 		bashBin := bashBin
@@ -660,9 +669,12 @@ var r101GuardedScripts = []string{
 // TestSignalPathRepoTrapsMustExit 静态守卫：仓内的一次性库脚本，其 INT/TERM trap 必须带 `exit`。
 //
 // ★ 为什么是静态守卫而不是动态门：动态门测的是**机制**；
-//   而「本仓这行 trap 是否符合正确机制」是**逐文件**的事实 ⇒ ⇒ 静态断言更贴切。
+//
+//	而「本仓这行 trap 是否符合正确机制」是**逐文件**的事实 ⇒ ⇒ 静态断言更贴切。
+//
 // ⇒⇒⇒ ★★ 而这条守卫的存在理由（实测反模式）：trap 不带 exit ⇒ 收到终止信号后
-//   脚本体**继续执行** ⇒ ⇒ 一次性库脚本可能在 cleanup 之后**继续建库** ⇒ ⇒ 泄漏。
+//
+//	脚本体**继续执行** ⇒ ⇒ 一次性库脚本可能在 cleanup 之后**继续建库** ⇒ ⇒ 泄漏。
 func TestSignalPathRepoTrapsMustExit(t *testing.T) {
 	root := r101RepoRoot(t)
 	for _, rel := range r101GuardedScripts {

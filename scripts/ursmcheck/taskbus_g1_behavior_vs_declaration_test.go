@@ -31,9 +31,9 @@ func taskbusG1Root(t *testing.T) string {
 
 // path suffix → reason（相对 domains/hooks/）
 var taskbusG1V4Exempt = map[string]string{
-	"memoraauto/hook.go": "A4: production-unmounted; migrate only after wire-up",
-	"sessionaudit/hook.go": "batch2 candidate; still Inline ad-hoc async",
-	"security/hook.go": "pre-existing Inline async; not this wave",
+	"memoraauto/hook.go":                      "A4: production-unmounted; migrate only after wire-up",
+	"sessionaudit/hook.go":                    "batch2 candidate; still Inline ad-hoc async",
+	"security/hook.go":                        "pre-existing Inline async; not this wave",
 	"compression/strategy/runner_parallel.go": "strategy helper, not a pipeline Hook Execute contract site",
 }
 

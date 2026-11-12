@@ -72,7 +72,7 @@ func TestRunbook14323DefectReproducedOnRealDB(t *testing.T) {
 	mustContain14323(t, s,
 		"is not a partition of relation", // 报错原文
 		"DETACH PARTITION credential_model_index_2026_09",
-		"dst_2026_09_exists=0",  // 回滚：dst 不存在
+		"dst_2026_09_exists=0",    // 回滚：dst 不存在
 		"src_orphan_rows=345,600", // 回滚：源行数仍在
 		"345,600",
 	)

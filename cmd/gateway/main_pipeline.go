@@ -844,8 +844,10 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// 全量 dump 进日志的写点（本轮逐点排查留痕）⇒ 写入仅限进程内
 		// hook 消费；③ 大小上限 64KiB（detector 侧另有 policy.MaxInputLength
 		// 截断），避免多 MB 请求把 Metadata 撑爆。
-		if uc := lastUserContentFromBody(rawBody); uc != "" {
-			env.Metadata["user_content"] = uc
+		if userContentEnabled() {
+			if uc := userContentFromBody(rawBody); uc != "" {
+				env.Metadata["user_content"] = uc
+			}
 		}
 		if setForceCompressionMetadata(env.Metadata, r.Header.Get("X-Gw-Force-Compression")) {
 			if messages := compressionMessagesFromBody(rawBody); len(messages) > 0 {
@@ -1031,32 +1033,6 @@ func compressionMessagesFromBody(body []byte) []compression.Message {
 		}
 	}
 	return messages
-}
-
-// userContentMaxBytes 是 user_content 写入 Metadata 的单值上限。detector 侧
-// 另有 per-tenant policy.MaxInputLength 截断；这里防的是「多 MB 请求把
-// env.Metadata 撑爆」（Metadata 会被进程内多个 hook 复制/遍历）。
-const userContentMaxBytes = 64 * 1024
-
-// lastUserContentFromBody 从请求体取最后一条 user 消息文本（F-41 user_content
-// 写面）。无 messages 数组 / 无 user 角色 / 内容为空 ⇒ 返回空串（调用方跳过
-// 写入，与 /v2/* 命名空间「q 参数不在场就不写」的形态一致——下游可区分
-// 「客户端没发」与「显式发空」）。解析失败视为无内容（chatHandler 拥有
-// 真正的协议解码与 400 面）。
-func lastUserContentFromBody(body []byte) string {
-	messages := compressionMessagesFromBody(body)
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.Role != "user" || m.Content == "" {
-			continue
-		}
-		content := m.Content
-		if len(content) > userContentMaxBytes {
-			content = content[:userContentMaxBytes]
-		}
-		return content
-	}
-	return ""
 }
 
 // extractFirstUserMessage 从 env 中尝试取出第一条用户消息文本。

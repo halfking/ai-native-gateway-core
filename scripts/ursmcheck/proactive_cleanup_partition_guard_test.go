@@ -31,10 +31,10 @@ package ursm_test
 // 两条都必须成立。撤掉任一条，另一条仍能兜住 —— 这正是要测的。
 
 import (
-	"runtime"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )

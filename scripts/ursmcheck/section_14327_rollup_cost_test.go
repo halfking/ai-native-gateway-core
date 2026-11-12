@@ -112,7 +112,8 @@ func TestRunbook14327P0IsAnswered(t *testing.T) {
 // TestRunbook14327WarmVersusColdIsSeparated 钉住「热态 vs 冷态」被分开测了。
 //
 // ★ 这是本节最容易被后人搞混的一对数字：26,295 ms 是冷态，3,758 ms 是热态。
-//   若只读到其中一个，就会得出「这个作业要么 3.8 s 要么 26 s」的错结论。
+//
+//	若只读到其中一个，就会得出「这个作业要么 3.8 s 要么 26 s」的错结论。
 func TestRunbook14327WarmVersusColdIsSeparated(t *testing.T) {
 	s := section14327(t)
 
@@ -176,7 +177,8 @@ func TestRunbook14327StorageWinIsSemanticsFree(t *testing.T) {
 // TestRunbook14327PkeyCannotSimplyBeDropped 钉住「pkey 不能直接删」这个**差点误判的地方**。
 //
 // ★ 写侧的 `ON CONFLICT (event_id) DO UPDATE SET occurred_at = …` 让 pkey 的
-//   唯一性成为「occurred_at 可被改写」的载体 ⇒ 删它 = 改不变式。
+//
+//	唯一性成为「occurred_at 可被改写」的载体 ⇒ 删它 = 改不变式。
 func TestRunbook14327PkeyCannotSimplyBeDropped(t *testing.T) {
 	s := section14327(t)
 

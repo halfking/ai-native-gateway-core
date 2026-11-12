@@ -92,7 +92,8 @@ func TestRunbook14329SectionHeadingsPresent(t *testing.T) {
 // TestRunbook14329NewRulerIsExplicit 钉住「换尺子」这件事本身。
 //
 // ★ 本节的方法论核心：**在超载机器上墙钟时间不可用作成本度量**（波动 2.71×），
-//   改用 `shared_blks_read / calls`（物理块/次）⇒ 门钉住这两句与这个式子。
+//
+//	改用 `shared_blks_read / calls`（物理块/次）⇒ 门钉住这两句与这个式子。
 func TestRunbook14329NewRulerIsExplicit(t *testing.T) {
 	s := section14329(t)
 
@@ -125,7 +126,8 @@ func TestRunbook14329TopCostCenterIsPinned(t *testing.T) {
 // TestRunbook14329RankingIsStructuralCost 钉住「按物理块/次排名」这张表的关键行。
 //
 // ★ 特别要钉住 **rollup 排第 11**（9,512 块/次）—— 这是**方向性反转**：
-//   §143.26 把 B1 排第一、§143.27 把 rollup 排第一，都建立在墙钟上。
+//
+//	§143.26 把 B1 排第一、§143.27 把 rollup 排第一，都建立在墙钟上。
 func TestRunbook14329RankingIsStructuralCost(t *testing.T) {
 	s := section14329(t)
 

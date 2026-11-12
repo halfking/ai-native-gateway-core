@@ -28,7 +28,8 @@ const (
 // healthBaselineDays 从巡检脚本里解析 `: "${BASELINE_DAYS:=N}"` 的默认值。
 //
 // ★ 必须解析真实源而不是硬编码 7：硬编码的话，改脚本的人只要忘了改测试就恒绿，
-//   而这道门的作用恰恰是「挡住单边改动」。
+//
+//	而这道门的作用恰恰是「挡住单边改动」。
 var reBaselineDefault = regexp.MustCompile(`BASELINE_DAYS:=(\d+)`)
 
 // retentionDefaultDays 从 retention.go 的 DefaultSnapshotRetentionConfig() 里

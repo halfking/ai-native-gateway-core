@@ -116,8 +116,9 @@ var sec14398Views = []string{
 // sec14398StripSQLComments 剥掉 SQL 注释。
 //
 // ★★★ 为什么必须剥：断言 SQL/源码前必须剥注释，否则「注释里写了
-//   `WHERE ss.last_request_at >= NOW() - INTERVAL '30 days'`」就会让
-//   一条**已经删掉时间窗**的迁移看起来合规。
+//
+//	`WHERE ss.last_request_at >= NOW() - INTERVAL '30 days'`」就会让
+//	一条**已经删掉时间窗**的迁移看起来合规。
 func sec14398StripSQLComments(s string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(s, "\n") {
@@ -147,7 +148,8 @@ func sec14398MigrationNumber(name string) (int, bool) {
 // sec14398DefiningMigrations 返回目录里所有「定义了该视图」的迁移，按迁移号升序。
 //
 // ★ 判据绑在**生效位置**上：谁定义了这个视图，就检查谁 —— 而不是门自己
-//   写死一份定义（那会漏掉「有人重建了视图」这件事）。
+//
+//	写死一份定义（那会漏掉「有人重建了视图」这件事）。
 func sec14398DefiningMigrations(t *testing.T, dir, view string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)

@@ -49,15 +49,17 @@ const censusSQLSep = "--__M__CENSUS_SQL__M__--"
 // censusSQLRecorder 是「记录 + 转发」的 psql 包装脚本。
 //
 // ★ 它转发的目标是**本机 PG 沙箱**：普查器的第一条 SQL 只读 pg_catalog
-//   （pg_index / pg_class / pg_inherits / pg_stat_user_indexes），
-//   在任何 PG 上都能执行 ⇒ **不需要造任何夹具**。
-//   而「能不能执行」正是我们要断言的性质。
+//
+//	（pg_index / pg_class / pg_inherits / pg_stat_user_indexes），
+//	在任何 PG 上都能执行 ⇒ **不需要造任何夹具**。
+//	而「能不能执行」正是我们要断言的性质。
 //
 // ★ 转发用的 psql 参数与工具自己的 PSQL_CMD **刻意不同**（多了 ON_ERROR_STOP）：
-//   工具自己的参数是「-v ON_ERROR_STOP=1 -X -q -A -t -F'|'」，
-//   而这里要的是「**语法错必须以非零退出码失败**」——
-//   少了 ON_ERROR_STOP 时 psql 对单条 -c 的语法错**仍返回 0**（只打印 ERROR），
-//   那这道门就成了空气门。
+//
+//	工具自己的参数是「-v ON_ERROR_STOP=1 -X -q -A -t -F'|'」，
+//	而这里要的是「**语法错必须以非零退出码失败**」——
+//	少了 ON_ERROR_STOP 时 psql 对单条 -c 的语法错**仍返回 0**（只打印 ERROR），
+//	那这道门就成了空气门。
 const censusSQLRecorder = `#!/bin/sh
 # 记录工具实际下发的完整 SQL（$1 可能有多行 ⇒ 用分隔行隔开，别按行切）
 printf '%s\n%s\n' "$CENSUS_SQL_SEP" "$1" >> "$CENSUS_SQL_LOG"

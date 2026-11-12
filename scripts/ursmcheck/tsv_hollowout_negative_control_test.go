@@ -1,3 +1,5 @@
+//go:build ursmhollowout
+
 package ursm_test
 
 // tsv_hollowout_negative_control_test.go —— 2026-10-28 R86 轮（掏空法门的**负控臂**）

@@ -150,7 +150,8 @@ func TestCronDriftStatusIsConsistentWithBothChecksums(t *testing.T) {
 // TestCronDriftManifestIsNotEmpty —— 台账不能被清空。
 //
 // ★ 为什么这条不是废话：一道门如果台账空了就会**全部跳过**，
-//   变成恒真门。删行（而不是把状态改掉并写明原因）会让漂移重新变成不可见。
+//
+//	变成恒真门。删行（而不是把状态改掉并写明原因）会让漂移重新变成不可见。
 func TestCronDriftManifestIsNotEmpty(t *testing.T) {
 	rows := readCronDriftManifest(t)
 	if len(rows) == 0 {
@@ -172,14 +173,15 @@ func TestCronDriftManifestIsNotEmpty(t *testing.T) {
 // TestCronCanonicalSchedulesEveryLedgeredScript —— 仓内正典必须为**每个**已登记脚本排一条调度。
 //
 // ★ 这条与 `deployed_script_drift_test.go` 的集合相等门**方向相反**、互为补充：
-//   那条比的是「仓内 cron 里有的 == 台账里有的」（防幽灵）；
-//   这条比的是「台账里的每个脚本 == 仓内 cron 里都有它的调度行」（防漏排）。
 //
-//   为什么还要有它：脚本台账能记「文件已部署且与仓内一致」，
-//   但**文件在 /opt/scripts/ 里 ≠ 它被调度**。
-//   §143.12 实测：pg17-duplicate-index-check.sh 正是这种形态
-//   （文件在、md5 一致、台账 in-sync，却从没被调度过）。
-//   ⇒ 本门在**仓内**就能把「已登记却没排调度」的点出来。
+//	那条比的是「仓内 cron 里有的 == 台账里有的」（防幽灵）；
+//	这条比的是「台账里的每个脚本 == 仓内 cron 里都有它的调度行」（防漏排）。
+//
+//	为什么还要有它：脚本台账能记「文件已部署且与仓内一致」，
+//	但**文件在 /opt/scripts/ 里 ≠ 它被调度**。
+//	§143.12 实测：pg17-duplicate-index-check.sh 正是这种形态
+//	（文件在、md5 一致、台账 in-sync，却从没被调度过）。
+//	⇒ 本门在**仓内**就能把「已登记却没排调度」的点出来。
 func TestCronCanonicalSchedulesEveryLedgeredScript(t *testing.T) {
 	scriptRows := readDriftManifest(t)
 	canonical := md5OfFile(t, cronDriftCanonical) // 顺带确保文件可读

@@ -137,14 +137,14 @@ func TestRunbook14321ColdFamilyIsHealthTimeSeries(t *testing.T) {
 
 	// 形态：组数 × 每组 bucket 数（两个实例各一组读数）。
 	mustContain14321(t, s,
-		"301,255",     // 252 09 月总行数
-		"1,018",       // 252 09 月 distinct 组数
-		"295.9",       // 每组平均 bucket 数
-		"3,635",       // 单组最多 bucket 数
-		"40,524",      // 211 10 月总行数
-		"702",         // 211 10 月 distinct 组数
+		"301,255",                                // 252 09 月总行数
+		"1,018",                                  // 252 09 月 distinct 组数
+		"295.9",                                  // 每组平均 bucket 数
+		"3,635",                                  // 单组最多 bucket 数
+		"40,524",                                 // 211 10 月总行数
+		"702",                                    // 211 10 月 distinct 组数
 		"DefaultRetentionWindow = 8 * time.Hour", // promote 窗口（机制）
-		"8.4 h",       // 实测 hot 跨度，与 8h 窗口吻合
+		"8.4 h",                                  // 实测 hot 跨度，与 8h 窗口吻合
 	)
 
 	// 结论：这批行是历史曲线 ⇒ A1 的风险被上调。
@@ -169,10 +169,10 @@ func TestRunbook14321A2IsReclassifiedAgainstArchive(t *testing.T) {
 	s := section14321(t)
 
 	mustContain14321(t, s,
-		"654",              // 冲突的来源
-		"DETACH",           // archive 的三步：搬 → DETACH → DROP
+		"654",            // 冲突的来源
+		"DETACH",         // archive 的三步：搬 → DETACH → DROP
 		"先搬进 archive 再删", // A2 的正确形态
-		"静默丢弃",          // 直接 DELETE 的后果
+		"静默丢弃",           // 直接 DELETE 的后果
 	)
 
 	// A1/A2 的关系被改写为「同一决策的两个参数」（原 §143.19.7 说「互补」）。
@@ -191,7 +191,7 @@ func TestRunbook14321ArchivePathHasZeroOutput(t *testing.T) {
 	mustContain14321(t, s,
 		"credential_model_index_archive",
 		"0 行",
-		"193 次",  // promote 的调用次数（对照：archive 是 0 次）
+		"193 次", // promote 的调用次数（对照：archive 是 0 次）
 		"18.2 s",
 	)
 

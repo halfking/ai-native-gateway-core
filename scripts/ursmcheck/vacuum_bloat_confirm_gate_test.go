@@ -144,9 +144,10 @@ func runVacuumBloat3(t *testing.T, targets, realPct string, extra ...string) (st
 // runVacuumBloat 是既有用例的薄封装（只要轨迹与日志）。
 //
 // ★ 2026-10-19（§143.7）：签名加了 freeBytes。确认闸现在一次取两个量
-//   （dead_tuple_percent | approx_free_space），桩也复刻了这个形态；
-//   **每个调用点都必须显式给出 freeBytes** —— 留空会落进「量不出来」分支，
-//   而那个分支的结论恰好也是 SKIP ⇒ 断言 SKIP 的门会**因为错的原因变绿**。
+//
+//	（dead_tuple_percent | approx_free_space），桩也复刻了这个形态；
+//	**每个调用点都必须显式给出 freeBytes** —— 留空会落进「量不出来」分支，
+//	而那个分支的结论恰好也是 SKIP ⇒ 断言 SKIP 的门会**因为错的原因变绿**。
 func runVacuumBloat(t *testing.T, targets, realPct, freeBytes string) (string, string) {
 	t.Helper()
 	trace, logBody, _ := runVacuumBloat3(t, targets, realPct, "FAKE_FREE_BYTES="+freeBytes)
@@ -171,9 +172,10 @@ func requireVacuumCalls(t *testing.T, trace string) {
 // 并**取代**原来的 TestVacuumBloatSkipsWhenEstimateLies。
 //
 // ★ 为什么必须取代而不是保留：旧判据下「估算 52.3% / 实测 3.1% ⇒ SKIP」
-//   验的是「别信估算」。新判据**根本不看比例** ⇒ 同一条断言在新代码里
-//   会因为「free 字节数不够」而 SKIP —— **结论对、原因错**，
-//   而「因为错的原因变绿」的门比红的门更危险：它会在比例腿被改坏时继续绿。
+//
+//	验的是「别信估算」。新判据**根本不看比例** ⇒ 同一条断言在新代码里
+//	会因为「free 字节数不够」而 SKIP —— **结论对、原因错**，
+//	而「因为错的原因变绿」的门比红的门更危险：它会在比例腿被改坏时继续绿。
 //
 // 本例反过来钉：实测 dead 高达 60%（远超旧门槛 30%）、估算也 52.3%，
 // 但 993MB 的表只可回收 1MB ⇒ **必须 SKIP**。
@@ -201,12 +203,13 @@ func TestVacuumBloatDecidesOnReclaimableBytesNotDeadRatio(t *testing.T) {
 // ⇒ **必须 VACUUM FULL**。旧代码在这个输入下会 SKIP（0.4 < 30）⇒ 本门对它转红。
 //
 // ⚠ 夹具是**刻意**挑的：free=200,000,000B < 256MB(=268,435,456B)
-//   ⇒ 绝对腿**不满足**；ratio=200/500=40.00% ≥ 30% 且 500MB ≤ 1GB
-//   ⇒ **只有比例腿能让它通过**。
-//   ⇒ 比例腿若被删或被改阈值，这条就红。
-//   ⚠ 第一版这里写的是 free=300MB，而 300,000,000 > 268,435,456 ——
-//     绝对腿照样满足，这条门会因为「错的原因」变绿（它压根没验到比例腿）。
-//     这正是「边界值要取在两侧、不要取一个自以为在阈值内侧的数」。
+//
+//	⇒ 绝对腿**不满足**；ratio=200/500=40.00% ≥ 30% 且 500MB ≤ 1GB
+//	⇒ **只有比例腿能让它通过**。
+//	⇒ 比例腿若被删或被改阈值，这条就红。
+//	⚠ 第一版这里写的是 free=300MB，而 300,000,000 > 268,435,456 ——
+//	  绝对腿照样满足，这条门会因为「错的原因」变绿（它压根没验到比例腿）。
+//	  这正是「边界值要取在两侧、不要取一个自以为在阈值内侧的数」。
 func TestVacuumBloatIgnoresDeadRatioWhenBytesAreWorthIt(t *testing.T) {
 	skipVacuumWindows(t)
 
@@ -248,9 +251,10 @@ func TestVacuumBloatSkipsWhenUnmeasurable(t *testing.T) {
 // 确认闸量到了、且**确实值得做**时，必须执行 VACUUM FULL。
 //
 // ★ 2026-10-19（§143.7）：夹具从「dead=55%」换成「free=300MB」，因为
-//   决策量换了。**并且刻意只用绝对腿**：size=4GB > MAX_RECLAIM_MB(1024MB)
-//   ⇒ 比例腿被体积上限挡住；free=300MB ≥ 256MB ⇒ 只有绝对腿能让它通过。
-//   ⇒ 这条门因此专门钉「绝对腿」，与比例腿的门各钉一条，删任一条都会被抓到。
+//
+//	决策量换了。**并且刻意只用绝对腿**：size=4GB > MAX_RECLAIM_MB(1024MB)
+//	⇒ 比例腿被体积上限挡住；free=300MB ≥ 256MB ⇒ 只有绝对腿能让它通过。
+//	⇒ 这条门因此专门钉「绝对腿」，与比例腿的门各钉一条，删任一条都会被抓到。
 func TestVacuumBloatStillRunsWhenConfirmed(t *testing.T) {
 	skipVacuumWindows(t)
 
@@ -269,19 +273,21 @@ func TestVacuumBloatStillRunsWhenConfirmed(t *testing.T) {
 // TestVacuumBloatRatioLegRespectsSizeCap 钉住比例腿的**体积上限**。
 //
 // ★★ 这道门是**变异验证逼出来的**：第一版夹具用「2.9GB 表可回收 40%」
-//   去验上限，而把上限删掉（变异 M3）时它**照样全绿**。
-//   算下来原因很硬：比例腿要求 free ≥ MIN_FREE_PCT×size = 30%×size，
-//   而上限针对的是 size > 1GB ⇒ free > 300MB > MIN_RECLAIM_BYTES(256MB)
-//   ⇒ **绝对腿必然先满足** ⇒ 在当前默认值下，这个上限**永远不可能生效**。
-//   ⇒ 第一版夹具验的其实是「free 太小所以比例腿也不满足」，与上限无关。
+//
+//	去验上限，而把上限删掉（变异 M3）时它**照样全绿**。
+//	算下来原因很硬：比例腿要求 free ≥ MIN_FREE_PCT×size = 30%×size，
+//	而上限针对的是 size > 1GB ⇒ free > 300MB > MIN_RECLAIM_BYTES(256MB)
+//	⇒ **绝对腿必然先满足** ⇒ 在当前默认值下，这个上限**永远不可能生效**。
+//	⇒ 第一版夹具验的其实是「free 太小所以比例腿也不满足」，与上限无关。
 //
 // ⇒ 所以本门改成显式注入 MIN_RECLAIM_MB=512（>300MB）**把绝对腿挪开**，
-//   再对同一组数字做 A/B：
-//     900MB / free 270MB(30.00%)  ⇒ 比例腿满足、体积 ≤1GB ⇒ VACUUM FULL
-//     1500MB / free 450MB(30.00%) ⇒ 比例腿满足、体积 >1GB ⇒ 上限挡住 ⇒ SKIP
-//   两条的 free 都 < 512MB ⇒ 绝对腿在两例中都不满足 ⇒ 差异只可能来自上限。
-//   ⚠ 结论同样要写进脚本注释：默认 256/30/1024 下这个上限是**不可达的**，
-//     它是「旋钮被调小之后的事故护栏」，不是当前在起作用的判据。
+//
+//	再对同一组数字做 A/B：
+//	  900MB / free 270MB(30.00%)  ⇒ 比例腿满足、体积 ≤1GB ⇒ VACUUM FULL
+//	  1500MB / free 450MB(30.00%) ⇒ 比例腿满足、体积 >1GB ⇒ 上限挡住 ⇒ SKIP
+//	两条的 free 都 < 512MB ⇒ 绝对腿在两例中都不满足 ⇒ 差异只可能来自上限。
+//	⚠ 结论同样要写进脚本注释：默认 256/30/1024 下这个上限是**不可达的**，
+//	  它是「旋钮被调小之后的事故护栏」，不是当前在起作用的判据。
 func TestVacuumBloatRatioLegRespectsSizeCap(t *testing.T) {
 	skipVacuumWindows(t)
 
@@ -310,9 +316,11 @@ func TestVacuumBloatRatioLegRespectsSizeCap(t *testing.T) {
 // 在边界两侧各取一个样本。
 //
 // ⚠ 为什么取两侧而不是「正好 30」：free/size 是浮点除法，
-//   「正好 30%」要求 free = 0.30*size 取整后仍精确等于 30.00% ——
-//   这类样本会随分母大小漂，做出来的是不存在的形态（§907 同族坑）。
-//   ⇒ 29.90%（差 0.1 点，必须 SKIP）与 30.40%（过 0.4 点，必须做）才是真边界。
+//
+//	「正好 30%」要求 free = 0.30*size 取整后仍精确等于 30.00% ——
+//	这类样本会随分母大小漂，做出来的是不存在的形态（§907 同族坑）。
+//	⇒ 29.90%（差 0.1 点，必须 SKIP）与 30.40%（过 0.4 点，必须做）才是真边界。
+//
 // 体积取 800MB，使两侧的 free（239.2MB / 243.2MB）**都小于**绝对腿 256MB
 // ⇒ 绝对腿在这两例中都不满足，测到的确实是比例腿的默认值。
 func TestVacuumBloatRatioLegDefaultBoundary(t *testing.T) {
@@ -334,11 +342,12 @@ func TestVacuumBloatRatioLegDefaultBoundary(t *testing.T) {
 // TestVacuumBloatReclaimThresholdDefaults 钉住三个可注入旋钮的**默认值**。
 //
 // ⚠ 为什么这三条需要单独一道门：MIN_RECLAIM_MB / MIN_FREE_PCT / MAX_RECLAIM_MB
-//   是为了让行为门能驱动边界分支而做成注入点的（同 emergency 分支的 DOCKER_BIN）。
-//   **注入点本身就是放松生产约束的后门** —— 有人把 256 改成 25，
-//   判据全绿而脚本开始对着小表疯狂 VACUUM FULL。
-//   ⇒ 必须有一条门钉住「不传时就是这些值」，且这条门自己也要能被变异打到
-//   （把 256 改成 25，下面第 ① 条即红）。
+//
+//	是为了让行为门能驱动边界分支而做成注入点的（同 emergency 分支的 DOCKER_BIN）。
+//	**注入点本身就是放松生产约束的后门** —— 有人把 256 改成 25，
+//	判据全绿而脚本开始对着小表疯狂 VACUUM FULL。
+//	⇒ 必须有一条门钉住「不传时就是这些值」，且这条门自己也要能被变异打到
+//	（把 256 改成 25，下面第 ① 条即红）。
 func TestVacuumBloatReclaimThresholdDefaults(t *testing.T) {
 	b, err := os.ReadFile(vacuumBloatScript)
 	if err != nil {
@@ -360,11 +369,12 @@ func TestVacuumBloatReclaimThresholdDefaults(t *testing.T) {
 // TestVacuumBloatCandidateSQLHasNoDeadRatioFilter 钉住候选层**不再按死元组比例筛选**。
 //
 // ★ 这是一道**判据空洞的补丁**，不是可有可无的加固：
-//   上面的行为门全部通过「注入 TARGETS」驱动，而 TARGETS 是**桩给的**，
-//   它不经过候选 SQL。⇒ 有人把 `dead_pct >= 30` 加回 BLOAT_SQL 的 WHERE，
-//   脚本会退回「本库恒不命中」的状态（§119 实测：44 张大表估算最高只有 8.51%），
-//   **而所有行为门依然全绿** —— 因为它们压根不看候选 SQL 长什么样。
-//   ⇒ 候选层是唯一一处「只能靠源码断言钉住」的地方，必须单独立一道门。
+//
+//	上面的行为门全部通过「注入 TARGETS」驱动，而 TARGETS 是**桩给的**，
+//	它不经过候选 SQL。⇒ 有人把 `dead_pct >= 30` 加回 BLOAT_SQL 的 WHERE，
+//	脚本会退回「本库恒不命中」的状态（§119 实测：44 张大表估算最高只有 8.51%），
+//	**而所有行为门依然全绿** —— 因为它们压根不看候选 SQL 长什么样。
+//	⇒ 候选层是唯一一处「只能靠源码断言钉住」的地方，必须单独立一道门。
 func TestVacuumBloatCandidateSQLHasNoDeadRatioFilter(t *testing.T) {
 	b, err := os.ReadFile(vacuumBloatScript)
 	if err != nil {
@@ -456,8 +466,9 @@ func TestVacuumBloatCandidateExcludesColumnarTables(t *testing.T) {
 //
 // ⇒ 锁它 30 分钟只换回 1.81%，是 §119 说的**负收益** ⇒ 必须 SKIP。
 // 旧判据下这条也 SKIP，但**原因是 dead 0.427% < 30%** —— 那是巧合：
-//   一张「dead 低但 free 高」的表（§143.7 实测 request_stage_events 正是这个形态）
-//   会被旧判据放过。所以本门现在断言的是**可回收字节**出现在日志里。
+//
+//	一张「dead 低但 free 高」的表（§143.7 实测 request_stage_events 正是这个形态）
+//	会被旧判据放过。所以本门现在断言的是**可回收字节**出现在日志里。
 func TestVacuumBloatSkipsAtProductionCalibration(t *testing.T) {
 	skipVacuumWindows(t)
 

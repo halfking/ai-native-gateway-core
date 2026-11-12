@@ -60,7 +60,8 @@ import (
 
 // productionComposeFiles = 仓内「会被装到客户实例上」的 compose 模板。
 // ★ 只收生产口径的两份；测试用 compose（docker-compose.deploy-test.yml 等）
-//   刻意排除 ⇒ 它们是 CI 一次性环境，不承担观测职责。
+//
+//	刻意排除 ⇒ 它们是 CI 一次性环境，不承担观测职责。
 var productionComposeFiles = []string{
 	"../../installer/templates/compose.yml",
 	"../../installer/cmd/llm-gw-installer/embeddata/compose.yml",
@@ -126,12 +127,14 @@ func TestProductionComposeEnablesPgSlowQueryObservability(t *testing.T) {
 // composeParamValue 从 compose 文本里抽出 `key=value` 形态的**参数值**。
 //
 // ★ 只认 compose `command:` 列表里的 `- key=value` 形态
-//   （★ 这是本仓生产 compose 的实际写法）⇒ ⇒ 注释里的同名文本不会被抽到。
+//
+//	（★ 这是本仓生产 compose 的实际写法）⇒ ⇒ 注释里的同名文本不会被抽到。
 //
 // ★★ 关键：**返回值必须是「值」而不是「出现过的位置」** ——
-//   首版判据写成 `strings.Contains(s, "pg_stat_statements")` ⇒
-//   变异臂 A（删掉参数值里的那个库）实测仍 PASS ⇒ 门没牙
-//   ⇒ ★ 教训：★ 判据必须指名道姓到【值】，不能停在【出现过】。
+//
+//	首版判据写成 `strings.Contains(s, "pg_stat_statements")` ⇒
+//	变异臂 A（删掉参数值里的那个库）实测仍 PASS ⇒ 门没牙
+//	⇒ ★ 教训：★ 判据必须指名道姓到【值】，不能停在【出现过】。
 func composeParamValue(s, key string) (string, bool) {
 	prefix := key + "="
 	for _, line := range strings.Split(s, "\n") {
@@ -218,7 +221,7 @@ func TestLivePgSlowQueryObservabilityIsActuallyUsable(t *testing.T) {
 		t.Fatalf("读 log_min_duration_statement 失败：%v", err)
 	}
 	if strings.TrimSpace(minDur) == "-1" {
-		t.Errorf("真库 log_min_duration_statement = -1 ⇒ 慢查询日志关闭 ⇒ "+
+		t.Errorf("真库 log_min_duration_statement = -1 ⇒ 慢查询日志关闭 ⇒ " +
 			"「慢 SQL」这个类别完全不可观测")
 	}
 
