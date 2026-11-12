@@ -148,7 +148,7 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 	var blocked string
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)
-	reserved := PlaceholderPattern.FindAllStringIndex(text, -1)
+	reserved := detectionExemptSpans(text)
 	credentialView, syntaxSpans := credentialtext.DetectionView(text)
 	var pairAccount, pairSecret bool
 	for _, p := range patterns {
@@ -281,6 +281,15 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 			}
 			typ := p.sType
 			if p.vendorKeyShape && !credibleSecretCandidate(value) {
+				continue
+			}
+			// r1042（2026-11-13，211 rv-1710）：git SSH remote 不是邮箱。引擎级
+			// 判定（而非改某一条 email 规则）⇒ 对所有已发布快照里的 email 类
+			// 规则同口径生效（pii.email / compliance.pii.1 / 运营自定义规则）。
+			if p.sType == TypeEmail && isGitSCPRemoteForm(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
 				continue
 			}
 			if typ == TypeServerIP || typ == TypeInternalIP {
@@ -566,6 +575,61 @@ func credibleSecretCandidate(value string) bool {
 		return false
 	}
 	return strings.ContainsFunc(body, func(r rune) bool { return r >= '0' && r <= '9' })
+}
+
+// markerEchoIndexPattern 是「无花括号、无 SENSITIVE 词」的占位符回声尾巴：
+// `:secret:3` / `:email:1`。
+//
+// r1042（2026-11-13，211 rv-1635/rv-1691）：模型在输出里回显网关占位符时会把
+// `{SENSITIVE:secret:3}` 逐层退化——restore 侧的 loose 语法（looseMarkerSpans）
+// 认识带词的退化（`SENSITIVE:secret:3`），但**两个都丢**的尾巴（`:secret:3`）
+// 只有本模式认识。类型词限定在网关自身的标记词表内（见 placeholder.go 的
+// SensitiveType 常量），散文里的 `chapter:3` / `step:2` 不在词表内，不会被保留。
+// 索引封顶 4 位数字：占位符是每请求计数器，4 位以内覆盖真实分布；真凭据
+// 赋值的值（`secret: 4831` 这类数字口令）不以**前导冒号 + 类型词**开头，
+// 不落进这个形状。
+var markerEchoIndexPattern = regexp.MustCompile(`(?i):(?:phone|id_card|email|credit_card|secret|internal_ip|server_ip|server_ipv6|account|name|custom|unknown):[0-9]{1,4}\b`)
+
+// detectionExemptSpans 返回检测器**不得命中**的字节区间（升序、已合并）：
+//
+//   - 花括号原形 `{SENSITIVE:type:index}`（既有行为，PlaceholderPattern）；
+//   - 带词退化 `SENSITIVE:secret:3` 及其全角折叠形态——候选区间来自 restore
+//     侧的 looseMarkerSpans，但**必须过严格校验**（parseLoosePlaceholder /
+//     looksLikeMarkerSpan）才能豁免：loose 扫描是故意宽松的（短花括号段一律
+//     是候选，restore 侧由校验器裁决），把候选直接当豁免会把任意短 JSON
+//     对象从检测面挖掉（`{"foo":"R7#kQ92!"}`，2026-11-13 本轮变异期实测）；
+//   - 无词尾巴 `:secret:3`（markerEchoIndexPattern，类型词表 + 索引位数
+//     双重收窄，本身即严格）。
+//
+// 这些区间只从规则命中的 span 里**挖掉标记字节本身**，标记里没有载荷
+// （类型是规则名、索引是计数器），挖掉它不构成泄漏面。
+func detectionExemptSpans(text string) [][]int {
+	spans := PlaceholderPattern.FindAllStringIndex(text, -1)
+	for _, candidate := range looseMarkerSpans(text) {
+		value := text[candidate[0]:candidate[1]]
+		if _, _, ok := parseLoosePlaceholder(value); ok || looksLikeMarkerSpan(value) {
+			spans = append(spans, candidate)
+		}
+	}
+	spans = append(spans, markerEchoIndexPattern.FindAllStringIndex(text, -1)...)
+	return mergeMarkerSpans(spans)
+}
+
+// isGitSCPRemoteForm 报告这个 email 形态的命中是不是 git SSH remote。
+//
+// r1042（2026-11-13，211 rv-1710）：`git@github.com`（以及 `git@<任意主机>`）
+// 是 git 的 SSH remote 形态，不是任何人的邮箱。它被 email 规则命中的两个代价
+// 都在生产实测过：输出侧，模型在 thinking 里推理「刚才什么被脱敏成了
+// email:1」时写下 remote，命中 ⇒ thinking lane 不可改写 ⇒ 整回合 rewrite_refused；
+// 输入侧，`git clone git@github.com:kaixuan/...` 被遮成占位符 ⇒ 可执行命令被打坏
+// （rv-1710 会话里两者同时发生）。local part 恰为 `git` 的邮箱在真实语料里
+// 不存在——那是 SSH 的服务账号约定，不是人名。
+func isGitSCPRemoteForm(value string) bool {
+	at := strings.IndexByte(value, '@')
+	if at <= 0 {
+		return false
+	}
+	return strings.EqualFold(value[:at], "git")
 }
 
 func outsideReservedSpans(start, end int, reserved [][]int) [][2]int {

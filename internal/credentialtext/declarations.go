@@ -111,6 +111,22 @@ func credibleCredentialValue(value string) bool {
 // questionLead limits prose exemptions to unquoted natural-language declarations.
 var questionLead = regexp.MustCompile(`(?i)^(?:` + SecretLabel + `|` + AccountLabel + `)["']?(?:\*{1,2}|` + "`" + `)?\s*(?:是|为|\s+is\s+)\s*$`)
 
+// ellipsisOnlyValue reports whether the declaration value is nothing but an
+// ellipsis placeholder (`...`, `….`, `…`), the shape models emit when they
+// transcribe config code with the credential value omitted (rv-1637).
+func ellipsisOnlyValue(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r != '.' && r != '…' {
+			return false
+		}
+	}
+	return true
+}
+
 // NonLiteralDeclaration recognizes references and questions while retaining
 // quote semantics: shell single quotes and quoted human input denote literals.
 func NonLiteralDeclaration(prefix, raw, value, suffix string, shell bool) bool {
@@ -127,6 +143,17 @@ func NonLiteralDeclaration(prefix, raw, value, suffix string, shell bool) bool {
 	// ★ 只作用于「恰好是标签 + 空白」的前缀 ⇒ 成对声明（`admin account to `
 	// / `username/密码：`）与 `:`/`=`/中文动词形态**完全不受影响**。
 	if plainSpaceLabelSeparator.MatchString(prefix) && !credibleCredentialValue(value) {
+		return true
+	}
+	// r1042（2026-11-13，211 rv-1637）：省略号占位值不是凭据。
+	//
+	// 模型在输出里讨论/转写配置代码时，凭据键的值经常是省略号占位
+	// （`map[string]string{"api_key": ...}`、`password: ...`）——rv-1637 的
+	// thinking lane 正是被这个形状命中（值 `...`）⇒ 不可改写 ⇒ 整回合
+	// rewrite_refused。省略号（无论裸 `...`、带引号还是 `…`）不携带任何
+	// 载荷，遮蔽它没有收益、只制造误报；放在 quoted 判定**之前**，带引号
+	// 的省略号（反引号代码形态）同样豁免。
+	if ellipsisOnlyValue(value) {
 		return true
 	}
 	quoted := raw != value
