@@ -37,6 +37,15 @@ type Dialect interface {
 	//（保留已下发的 start，不回撤）；返回的 merged 在 ok=true 时是
 	// 校验（或保守修复）后的整文档，调用方自行切出超出 start 的增量。
 	MergeContinuation(start, buffered string) (merged string, ok bool)
+	// TerminalArguments 把「终态累计参数串」归一为应下发客户端的形态。
+	//
+	// 为什么是独立能力（2026-11-11 审计第二轮 · Slice 1 尾巴收口）：桥在
+	// 终态（content_block_stop / output_item.done）拿到的是**累计串**而非
+	// (start, buffered) 对，此时仍需方言裁决两件事——delta 位置的 "{}"
+	// 占位符回声要剥离（非标准中继形态）、零参工具的空串终态要回落成
+	// 该方言的合法无参形态（anthropic = "{}"）。这是同一份 wire 语义的
+	// 终态投影，此前在 responses 桥内联第 4 份拷贝（toolArgumentsJSON）。
+	TerminalArguments(accumulated string) string
 }
 
 // Validator 校验（并尽力保守修复）终态整文档。ok=false 表示非法且不可修复。
@@ -75,21 +84,28 @@ func (d *AnthropicDialect) StartArguments(raw []byte) string {
 	return string(raw)
 }
 
+// stripPlaceholderEcho 在「start 为空且 buffered 以 "{}" 占位符开头还有
+// 后续内容」时剥掉回声前缀。标准 Anthropic 上游永远不会把 "{}" 作为
+// input_json_delta 发出（占位符住在 content_block_start.input，
+// StartArguments 已清空）；出现该形态 ⇒ 非标准中继把占位符回声进了
+// 参数流 ⇒ 终态拼出 "{}{...}" 非法 JSON（与 9381d13a4 修的原始事故同
+// 形态）。"{}" 单独出现是零参工具的合法终态 ⇒ 保留。
+//
+// MergeContinuation（增量侧）与 TerminalArguments（终态侧）共用这一条
+// 剥离规则 —— 单一语义源，不复制。
+func stripPlaceholderEcho(start, buffered string) string {
+	if start == "" && strings.HasPrefix(buffered, "{}") && len(buffered) > 2 {
+		return buffered[2:]
+	}
+	return buffered
+}
+
 // MergeContinuation implements Dialect。
 func (d *AnthropicDialect) MergeContinuation(start, buffered string) (string, bool) {
 	if buffered == "" {
 		return start, true
 	}
-	doc := start + buffered
-	// 2026-11-11（48h 审计 P2）：delta 位置的占位符回声。标准 Anthropic 上游
-	// 永远不会把 "{}" 作为 input_json_delta 发出（占位符住在
-	// content_block_start.input，StartArguments 已清空）；start 为空且 buffered
-	// 以 "{}" 开头还有后续内容 ⇒ 非标准中继把占位符回声进了增量流 ⇒ 终态拼出
-	// "{}{...}" 非法 JSON（与 9381d13a4 修的原始事故同形态）。剥掉这个回声。
-	// "{}" 单独出现是零参工具的合法终态 ⇒ 保留。
-	if start == "" && strings.HasPrefix(buffered, "{}") && len(buffered) > 2 {
-		doc = buffered[2:]
-	}
+	doc := start + stripPlaceholderEcho(start, buffered)
 	if d.validate != nil {
 		validated, _, err := d.validate(doc)
 		if err != nil {
@@ -103,6 +119,18 @@ func (d *AnthropicDialect) MergeContinuation(start, buffered string) (string, bo
 		return doc, true
 	}
 	return start, false
+}
+
+// TerminalArguments implements Dialect：剥占位符回声 + 零参终态回落
+// "{}"（无参调用在 anthropic wire 上的合法表达就是占位符本身）。
+// 2026-11-11 审计 F-A1 回归（零参工具终态空串 ⇒ 客户端 JSON.parse 抛错）
+// 的修法即此语义 —— 原先内联在 responses 桥 toolArgumentsJSON。
+func (d *AnthropicDialect) TerminalArguments(accumulated string) string {
+	acc := stripPlaceholderEcho("", accumulated)
+	if acc == "" {
+		return "{}"
+	}
+	return acc
 }
 
 // ── 注册表式抽象工厂 ──────────────────────────────────────────────────────
@@ -159,3 +187,7 @@ func (passthrough) MergeContinuation(start, buffered string) (string, bool) {
 	doc := start + buffered
 	return doc, json.Valid([]byte(doc))
 }
+
+// TerminalArguments implements Dialect：passthrough 对累计串不做任何假设
+//（无占位符概念 ⇒ 无回声可剥、无零参回落形态）。
+func (passthrough) TerminalArguments(accumulated string) string { return accumulated }

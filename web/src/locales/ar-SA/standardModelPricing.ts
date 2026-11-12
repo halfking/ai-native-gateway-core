@@ -95,6 +95,7 @@ export default {
     empty: "بيانات السوق فارغة - شغّل scripts/market-price-sync.py على 211 أو انتظر الجمع اليومي",
     colModel: "النموذج",
     colMarketMin: "أدنى سوق دخول/خروج (CNY/1M)",
+    colFloors: "الحد الأدنى الدولي/المحلي (العملة الأصلية · عدد المنصات)",
     colMarketMinOut: "أدنى سوق إخراج (CNY/1M)",
     colVendor: "مرساة الشركة المصنعة دخول/خروج (CNY/1M)",
     colRetail: "سعرنا للبيع دخول/خروج (CNY/1M)",

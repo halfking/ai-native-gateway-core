@@ -8,6 +8,46 @@
 > `buildV2DispatchPipeline()` 注册的 20 个 stage 中不存在
 > `prompt_optimization`。设 `PROMPT_OPTIMIZATION_ENABLED=1`
 > **不会有任何效果也不会报错**。接线前本功能不生效。
+>
+> **2026-11-12 更新：契约缺口已补，接线仍刻意不做。**
+>
+> ① 契约缺口：`prompt-optimizer-service` 原先只有 `POST /api/v1/optimize`
+>    （单条 prompt、字段完全不同），而本 Hook 调用的是
+>    `POST /api/v1/prompts/optimize` ⇒ 即使接线也只会一直 404 回退。
+>    现在**本仓的** `cmd/prompt-optimizer` 已实现该契约端点
+>    （含 SHA256 结果缓存），`PROMPT_OPTIMIZER_URL` 指向它即可。
+> ② 仍然不接线的原因：**效果实验尚未给出"优化能提升任务正确率"的证据**，
+>    而这一步会把优化服务放进**生产请求路径**。在结论为正之前不贸然上线。
+>    接线的 6 行改法见下方「接线步骤（待效果实验结论为正后执行）」。
+
+## 接线步骤（待效果实验结论为正后执行）
+
+`cmd/gateway/main_pipeline.go` 的 `buildV2DispatchPipeline()` 里，
+在 `compression` stage（priority 100）**之前**加一个 stage：
+
+```go
+// 提示词优化 Hook（默认关闭：PROMPT_OPTIMIZATION_ENABLED=1 才生效）。
+// 必须排在 compression 之前 —— 优化基于原始语义，压缩产物不该被再优化。
+if promptoptimization.FromEnv().Enabled {
+    p.AddStage(&pipeline.PipelineStage{
+        Name: "prompt_optimization", Phase: pipeline.PhaseTransform, Mode: pipeline.ModeSequential,
+        Hooks: []pipeline.Hook{promptoptimization.NewHookFromEnv(slog.Default())},
+    })
+}
+```
+
+配套环境变量：
+
+| 变量 | 值 |
+|---|---|
+| `PROMPT_OPTIMIZATION_ENABLED` | `1`（默认关闭）|
+| `PROMPT_OPTIMIZER_URL` | `http://<prompt-optimizer 服务>:8090` |
+| `OPTIMIZATION_CACHE_TTL` | `24h` |
+| `OPTIMIZATION_TIMEOUT` | `5s` |
+
+> ⚠️ 接线后**每次请求**都会调一次优化服务（Hook 侧有 SHA256 缓存，
+> 命中则不打远端）。因此优化服务必须与网关同可用域，且失败必须能回退
+> —— Hook 已实现"任何失败都保持原始请求不变"。
 
 ## 功能概述
 

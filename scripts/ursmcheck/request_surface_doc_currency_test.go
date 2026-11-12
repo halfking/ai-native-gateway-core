@@ -203,20 +203,22 @@ type docEvidence struct {
 // 同日合入远端 MCP 指标/quote-path 修复：main.go 净增 12 行，三处窗口精确平移。
 // 2026-11-11（48h 审计第二轮）：window 迁移再平移（CI 载体接线轮改动 main.go 上游
 // 行数 ⇒ 链体整体下移 47 行），语义锚与判据不变，不扩大证据范围。
+// 2026-11-12（48h 审计第四轮）：第十六次重钉（并行提交再推移 main.go 行号，
+// 窗口 8370-8395 → 8396-8415；Recovery :8397 … SecurityHeaders :8415），语义锚与判据不变。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8370, to: 8395,
+		file: "cmd/gateway/main.go", from: 8396, to: 8415,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8372, to: 8388,
+		file: "cmd/gateway/main.go", from: 8407, to: 8414,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8330, to: 8342,
+		file: "cmd/gateway/main.go", from: 8364, to: 8369,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

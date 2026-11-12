@@ -1535,6 +1535,64 @@ var modelPriceVersions952 []byte
 //go:embed embeddata/startup/952_model_price_versions.down.sql
 var modelPriceVersions952Down []byte
 
+// ★ 958（2026-11-11 总体设计定稿轮 G1，六面补登记 2026-11-12 A-17 收口轮）：
+//
+//	市场平台注册表 —— 双币制（A-17）区域/币种裁定唯一权威 + A-5 我方平台排除清单。
+//	958 当日 applied(245/252) 但漏了 installer 四面登记（embeddata×2 / go:embed /
+//	dbinit / apply script）⇒ installer 链部署的机器拿不到 registry 表 ⇒ 本轮补齐。
+//
+//go:embed embeddata/startup/958_market_platform_registry.sql
+var marketPlatformRegistry958 []byte
+
+//go:embed embeddata/startup/958_market_platform_registry.down.sql
+var marketPlatformRegistry958Down []byte
+
+// ★ 959（2026-11-12 A-17 双币收口轮）：market_price_reference 双地板 17 列 +
+//
+//	supplier_market_position 双读数 5 列 + registry 对拍补种 12 平台（958 种子
+//	取自 provider_catalog，与同步源 salesdecorate.platform 对拍缺 12）+
+//	v_supplier_price_vs_baseline v3 追加双地板投影（29→40 列，append-only）。
+//
+//go:embed embeddata/startup/959_market_dual_floor_a17.sql
+var marketDualFloorA17959 []byte
+
+//go:embed embeddata/startup/959_market_dual_floor_a17.down.sql
+var marketDualFloorA17959Down []byte
+
+// ★ 961（2026-11-12 A-17 收口 M2-T4 轮）：market_scoring_runs 每日评分运行
+//
+//	台账 —— price_confidence_degraded 告警（C3 非 trusted 环比）的两日读数源；
+//	写入方 bg.MarketScoringWorker（定稿 M2-T3 评分 job，单事务同写）。
+//
+//go:embed embeddata/startup/961_market_scoring_runs.sql
+var marketScoringRuns961 []byte
+
+//go:embed embeddata/startup/961_market_scoring_runs.down.sql
+var marketScoringRuns961Down []byte
+
+// ★ 962（2026-11-12 第五轮）：recent_success_rate / recent_cache_hit_rate
+//
+//	谓词与既有索引同形（凭据监控摘要 500 根修）。本轮补齐 962 缺失的
+//	installer go:embed 双副本 + embeddedSQLFiles map 两行（TestStartupFilesAreAllEmbedded
+//	抓 runner.go StartupFiles 已登记而 embed 面 0 —— 六面登记的镜像缺口）。
+//
+//go:embed embeddata/startup/962_recent_success_rate_index_aligned.sql
+var recentSuccessRateIndexAligned962 []byte
+
+//go:embed embeddata/startup/962_recent_success_rate_index_aligned.down.sql
+var recentSuccessRateIndexAligned962Down []byte
+
+// ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
+//
+//	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
+//	守卫式回填（对象在场才记账）+ 自登记纪律门（≥952 必须自登记）。
+//
+//go:embed embeddata/startup/960_migration_ledger_continuity_repair.sql
+var migrationLedgerContinuityRepair960 []byte
+
+//go:embed embeddata/startup/960_migration_ledger_continuity_repair.down.sql
+var migrationLedgerContinuityRepair960Down []byte
+
 // ★ 953（2026-11-09 恢复检测及时性优化）：models_canonical.featured 列。
 //
 //	增加 featured 布尔列用于标记需要优先探测的模型（免费/入门级模型），
@@ -1553,9 +1611,10 @@ var probeLaneTraceEvents954 []byte
 var probeLaneTraceEvents954Down []byte
 
 // ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
-//   从真实用户流量聚合的 (凭据×模型) 行为基线（TTFT/ITT 分布/吞吐 +
-//   Token 签名 + 内容特征），供 domains/modelcredibility.EvaluatePassive
-//   做零成本、难规避的持续渗水检测（被动为主、主动探针为辅）。
+//
+//	从真实用户流量聚合的 (凭据×模型) 行为基线（TTFT/ITT 分布/吞吐 +
+//	Token 签名 + 内容特征），供 domains/modelcredibility.EvaluatePassive
+//	做零成本、难规避的持续渗水检测（被动为主、主动探针为辅）。
 //
 //go:embed embeddata/startup/955_passive_model_fingerprints.sql
 var passiveModelFingerprints955 []byte
@@ -2077,10 +2136,22 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/951_armor_judgments_created_at_idx.down.sql":         armorJudgmentsCreatedAtIdx951Down,
 	"startup/952_model_price_versions.sql":                        modelPriceVersions952,
 	"startup/952_model_price_versions.down.sql":                   modelPriceVersions952Down,
-	"startup/953_models_canonical_featured.sql":                   modelsCanonicalFeatured953,
-	"startup/953_models_canonical_featured.down.sql":              modelsCanonicalFeatured953Down,
-	"startup/954_probe_lane_trace_events.sql":                     probeLaneTraceEvents954,
-	"startup/954_probe_lane_trace_events.down.sql":                probeLaneTraceEvents954Down,
+	// ★ 958/959（2026-11-12 A-17 双币收口轮）：registry 表（958 六面补登记）+
+	//   双地板地基（959）。
+	"startup/958_market_platform_registry.sql":                marketPlatformRegistry958,
+	"startup/958_market_platform_registry.down.sql":           marketPlatformRegistry958Down,
+	"startup/959_market_dual_floor_a17.sql":                   marketDualFloorA17959,
+	"startup/959_market_dual_floor_a17.down.sql":              marketDualFloorA17959Down,
+	"startup/960_migration_ledger_continuity_repair.sql":      migrationLedgerContinuityRepair960,
+	"startup/960_migration_ledger_continuity_repair.down.sql": migrationLedgerContinuityRepair960Down,
+	"startup/961_market_scoring_runs.sql":                     marketScoringRuns961,
+	"startup/961_market_scoring_runs.down.sql":                marketScoringRuns961Down,
+	"startup/962_recent_success_rate_index_aligned.sql":       recentSuccessRateIndexAligned962,
+	"startup/962_recent_success_rate_index_aligned.down.sql":  recentSuccessRateIndexAligned962Down,
+	"startup/953_models_canonical_featured.sql":               modelsCanonicalFeatured953,
+	"startup/953_models_canonical_featured.down.sql":          modelsCanonicalFeatured953Down,
+	"startup/954_probe_lane_trace_events.sql":                 probeLaneTraceEvents954,
+	"startup/954_probe_lane_trace_events.down.sql":            probeLaneTraceEvents954Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

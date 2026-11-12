@@ -3110,6 +3110,86 @@ func (e *Executor) finalizeOpenAIUpstreamBodyNative(params *ExecParams, cand pro
 		return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 	}
 
+	// 2026-11-12（审计第二轮批 5）：/v1/responses 入站迁移 IR 主路径。
+	// 此前 responses 客户端的 body 在 handler 经手写 convertResponsesToChatBody
+	// 预转成 chat 形态再按 openai-chat 解析 —— Responses 专有顶层参数
+	//（store / previous_response_id / truncation / service_tier /
+	// safety_identifier / text.format 等）在手写转换里被丢弃或走样
+	//（text.format 原样以 "text" 键透传 chat wire ⇒ 严格上游 400），且
+	// responses wire 语义存在双实现（convertResponsesToChatBody vs
+	// ir.ParseResponses）。迁移后原始 responses wire 直接走
+	// ir.ParseResponses（与上方 anthropic 分支同款盖章链）。
+	// 断路器打开时回退 e.ResponsesToChat（手写转换降级为应急路径）。
+	if params.ClientProtocol == providercatalog.ProtocolOpenAIResponses && e.IR != nil {
+		// Check format_conversion.enabled (provider-level override, 同 anthropic 分支)
+		if e.ProviderSettings != nil {
+			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
+				return nil, fmt.Errorf("format conversion disabled for provider %d (responses→openai)", cand.ProviderID)
+			}
+		}
+		var irScoped IRConverter
+		if scoped, ok := e.IR.(ProviderScoped); ok {
+			irScoped = scoped.WithProviderScope(cand.ProviderID)
+		} else {
+			irScoped = e.IR
+		}
+		if converter, ok := irScoped.(interface {
+			SetContext(*domain.TransportContext)
+		}); ok {
+			converter.SetContext(&domain.TransportContext{
+				UpstreamCatalogCode: cand.CatalogCode,
+				ProviderID:          cand.ProviderID,
+				RequestClass:        string(ir.ClassOf(params.DispatchDueAt)),
+				DueAt:               params.DispatchDueAt,
+			})
+		}
+		irReq, err := irScoped.ParseResponses(sourceBody)
+		if err != nil {
+			if errors.Is(err, transformation.ErrConverterCircuitOpen) && e.ResponsesToChat != nil {
+				slog.Warn("ir_converter_circuit_open_fallback_to_legacy_chat",
+					"request_id", params.RequestID,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.ClientModel,
+					"stage", "parse_responses",
+				)
+				return e.legacyResponsesToOpenAIBody(params, cand, nativePair)
+			}
+			return nil, fmt.Errorf("ir parse responses: %w", err)
+		}
+		irReq.Model = resolveOutboundModel(params, cand)
+		irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
+		// 与 anthropic 分支同款方言盖章（P5/unknown-relay 哨兵语义见彼处注释）。
+		if cand.CatalogCode != "" {
+			irReq.TargetProvider = cand.CatalogCode
+		} else {
+			irReq.TargetProvider = paramreg.CatalogCodeUnknownRelay
+		}
+		irReq.NativePassthrough = nativePair
+		irReq = stampIRRequestID(irReq, params.RequestID)
+		bodyBytes, err := irScoped.SerializeOpenAI(irReq)
+		if err != nil {
+			if errors.Is(err, transformation.ErrConverterCircuitOpen) && e.ResponsesToChat != nil {
+				slog.Warn("ir_converter_circuit_open_fallback_to_legacy_chat",
+					"request_id", params.RequestID,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.ClientModel,
+					"stage", "serialize_openai",
+				)
+				return e.legacyResponsesToOpenAIBody(params, cand, nativePair)
+			}
+			return nil, fmt.Errorf("ir serialize openai: %w", err)
+		}
+		bodyBytes, err = e.applyOpenAITailTransformsNative(params, cand, bodyBytes, nativePair)
+		if err != nil {
+			return nil, err
+		}
+		return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
+	}
+
 	// Legacy path (no IR converter set): use existing callbacks
 	p := *params
 	p.BodyBytes = sourceBody
@@ -3344,6 +3424,27 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 			}
 			bodyBytes = converted
 		}
+	}
+	bodyBytes, err := e.applyOpenAITailTransformsNative(params, cand, bodyBytes, nativePair)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
+}
+
+// legacyResponsesToOpenAIBody 是 responses 分支的 IR 断路器应急回退
+// （镜像 legacyChatToOpenAIBody，2026-11-12 批 5）：responses wire 经
+// e.ResponsesToChat 回调（手写转换，主路径已退役）转成 chat 形态后走
+// 通用 legacy 出站管线。
+func (e *Executor) legacyResponsesToOpenAIBody(params *ExecParams, cand provider.Candidate, nativePair bool) ([]byte, error) {
+	p := *params
+	bodyBytes := prepareRequestBodyWithNative(&p, cand, nativePair, e.ParamLedger)
+	if e.ResponsesToChat != nil {
+		converted, err := e.ResponsesToChat(bodyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("convert responses body to openai: %w", err)
+		}
+		bodyBytes = converted
 	}
 	bodyBytes, err := e.applyOpenAITailTransformsNative(params, cand, bodyBytes, nativePair)
 	if err != nil {

@@ -1,0 +1,37 @@
+# Mock LLM 镜像 —— 提示词优化模块本地测试用
+#
+# 与 Dockerfile.prompt-optimizer 同构：Go 版本对齐 go.mod（1.27）、
+# vendor 模式编译、静态二进制跑在 alpine 上。
+#
+# 构建上下文复用仓库根（靠 Dockerfile.prompt-optimizer.dockerignore
+# 同类规则排除大文件）；本文件另建一份专属 ignore。
+
+FROM golang:1.27-alpine AS builder
+
+WORKDIR /build
+
+RUN apk add --no-cache git make
+
+COPY go.mod go.sum ./
+COPY vendor/ ./vendor/
+COPY . .
+
+RUN go list -mod=vendor ./cmd/prompt-optimizer-mockllm >/dev/null
+
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/mockllm ./cmd/prompt-optimizer-mockllm
+
+FROM alpine:3.20
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates curl wget
+
+COPY --from=builder /out/mockllm ./mockllm
+
+EXPOSE 8099
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=6 \
+  CMD wget -q -O- http://127.0.0.1:8099/health >/dev/null 2>&1 || exit 1
+
+CMD ["./mockllm"]

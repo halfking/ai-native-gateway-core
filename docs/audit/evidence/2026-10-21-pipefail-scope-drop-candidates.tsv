@@ -174,6 +174,7 @@ tests/deploy_nocgo_build_test.sh	216	test_nocgo_dep_graph_no_sqlite3	var-write	j
 tests/deploy_promotion_test.sh	269	test_gate_refuses_promotion_on_245_failure	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$log" | grep -q "refusing 154"; then
 tests/deploy_seamless_version_identity_test.sh	86	build_machine_gate	var-write	bare	unknown	needs-human-read	grep-q	consumed	printf '%s' "$gate" | grep -q 'rev-parse --short=8 HEAD' || return 1
 tests/deploy_sops_test.sh	294	test_scan_secrets_does_not_exempt_non_sops	var-write	judgment	unknown	needs-human-read	grep-q	consumed	if echo "$out" | grep -qE '\[BLOCK\]'; then
+tests/functional/web-ui-test.sh	96	test_html_content	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$response" | grep -q "$content"; then
 tests/git_enumeration_quote_path_contract_test.sh	83	is_z_line	var-write	bare	unknown	needs-human-read	grep-q	discarded	printf '%s' "$1" | grep -qE '(^|[[:space:]"'"'"'])-z([[:space:]"'"'"',;)]|$)'
 tests/lib/fake-remote-host.sh	123	fake_host_setup	var-write	bare	scalar	safe-single-line	grep-q	consumed	echo "$base" | grep -qE '^[0-9]{3}_' || continue
 tests/mock-system-test/run-mock-only.sh	197	run_gates	var-write	judgment	bulk	real-defect-candidate	grep-q	consumed	if echo "$body" | grep -q 'mock-vendor-'; then

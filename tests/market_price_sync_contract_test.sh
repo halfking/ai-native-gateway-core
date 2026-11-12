@@ -21,6 +21,12 @@
 #   C8 两趟解析：精确小写 + 归一化（normalize）都存在
 #   C9 --dry-run 与 --dump-sql 存在
 #   C10 变异臂：把 C2 白名单中的 upsert 目标表名改成 model_credit_rates ⇒ 门必须红
+#   C11 registry 裁定（A-17）：读 market_platform_registry + 拒绝族
+#       platform_unmapped_region + 958/959 前置 fail-closed
+#   C12 A-17 双地板写列（vendor 原生币 + overseas/domestic 地板 + a17_* 台账）
+#   C13 币种列语义钉死（currency='CNY' 综合地板基准 + 币种冲突计数）
+#   C14 源容器默认 acc-pg17（wa-pg17 退役根修）
+#   C15 变异臂：改写 registry 读取 ⇒ C11 判据集合当场不再齐
 #
 # ★★ 2026-11-10 审计 P2-C 轮修（本门此前有**两个真缺陷**）：
 #   ① 本门用 `python` 调解释器 ⇒ **本机/多数环境只有 python3** ⇒ C1b 恒红
@@ -178,6 +184,85 @@ fi
 fi
 rm -f "${TMP}"
 rm -rf "${MUT_DIR}"
+
+# ── A-17 双币制契约（2026-11-12 收口轮；总体设计定稿 §3.6）────────────────
+# C11 registry 裁定：读 market_platform_registry + 拒绝族 platform_unmapped_region
+#     + 958/959 前置 fail-closed（缺迁移即 FATAL，不静默降级）
+# C12 双地板列：vendor_list_currency / overseas_min_in_per_1m / domestic_min_in_per_1m
+#     必须出现在 upsert 写列清单；台账带 a17_unmapped_rows
+# C13 币种列语义钉死：currency 槽 = 字面量 'CNY'（综合地板折算基准；959 COMMENT
+#     钉死的有意偏离 —— 厂商原生币在 vendor_list_currency 列）+ 币种冲突计数
+# C14 源容器默认 acc-pg17（wa-pg17 已退役 ⇒ 11-11 夜跑 FATAL 的根修）
+# C15 变异臂：把 registry 读取行改写 ⇒ C11 门必须当场红
+if printf '%s' "${BODY}" | grep -q "FROM public.market_platform_registry" && \
+   printf '%s' "${BODY}" | grep -q "platform_unmapped_region" && \
+   printf '%s' "${BODY}" | grep -q "to_regclass('public.market_platform_registry')"; then
+  ok "C11 registry 裁定（958/959 前置 fail-closed + 拒绝族 platform_unmapped_region）"
+else
+  bad "C11 registry 裁定缺失（A-17 原则 2）"
+fi
+
+if printf '%s' "${BODY}" | grep -q "vendor_list_currency" && \
+   printf '%s' "${BODY}" | grep -q "overseas_min_in_per_1m" && \
+   printf '%s' "${BODY}" | grep -q "domestic_min_in_per_1m" && \
+   printf '%s' "${BODY}" | grep -q "a17_unmapped_rows"; then
+  ok "C12 A-17 双地板写列（vendor 原生币 + overseas/domestic 地板 + 台账 a17_*）"
+else
+  bad "C12 A-17 双地板写列缺失"
+fi
+
+if printf '%s' "${BODY}" | grep -q "VALUES (%s, %s, 'CNY', %s," && \
+   printf '%s' "${BODY}" | grep -q "a17_currency_mismatch_rows"; then
+  ok "C13 币种列语义钉死（currency='CNY' 综合地板基准；原生币在 vendor_list_currency）"
+else
+  bad "C13 币种列语义漂移（currency 槽不再是 'CNY' 字面量或缺币种冲突计数）"
+fi
+
+if printf '%s' "${BODY}" | grep -q '"--source-container", default="acc-pg17"' && \
+   ! printf '%s' "${BODY}" | grep -q 'default="wa-pg17"'; then
+  ok "C14 源容器默认 acc-pg17（wa-pg17 退役根修，夜跑不再 FATAL）"
+else
+  bad "C14 源容器默认漂移（仍指 wa-pg17 或缺 acc-pg17 默认）"
+fi
+
+# C15 变异臂：改写 registry 读取与拒绝族 ⇒ C11 判据集合当场不再齐（门有牙）
+MUT2_DIR="$(mktemp -d)"
+TMP2="${MUT2_DIR}/mps-mutant2.py"
+cp "${SCRIPT}" "${TMP2}"
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "C15 跳过：本机无 python3"
+  rm -f "${TMP2}"; rm -rf "${MUT2_DIR}"
+else
+python3 - "${TMP2}" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = '" FROM public.market_platform_registry")'
+if old not in s:
+    sys.exit(3)
+s = s.replace(old, '" FROM public.nonexistent_table_xyz")')
+s = s.replace("platform_unmapped_region", "platform_redacted_family")
+open(p, 'w', encoding='utf-8', newline='').write(s)
+PYEOF
+MUT2_RC=$?
+# ★ 变异必须真的改了文件（同 C10 教训：改前改后必须不同 ⇒ 否则自报红）。
+if [ "${MUT2_RC}" != "0" ]; then
+  bad "C15a 变异臂自身失效：变异脚本 rc=${MUT2_RC}（锚点失配）=> 变异未施加"
+elif cmp -s "${SCRIPT}" "${TMP2}"; then
+  bad "C15a 变异臂自身失效：变异后文件与原文逐字相同 => 变异未生效"
+else
+  ok "C15a 变异确实施加（registry 读取与拒绝族均被改写）"
+  MUT2_BODY="$(cat "${TMP2}")"
+  if printf '%s' "${MUT2_BODY}" | grep -q "FROM public.market_platform_registry" && \
+     printf '%s' "${MUT2_BODY}" | grep -q "platform_unmapped_region"; then
+    bad "C15b 变异臂未检出（门无牙）"
+  else
+    ok "C15b 变异臂：registry 读取/拒绝族被改写 ⇒ C11 判据集合当场不再齐（有牙）"
+  fi
+fi
+fi
+rm -f "${TMP2}"
+rm -rf "${MUT2_DIR}"
 
 printf '\n================ 汇总 ================\n'
 printf '通过 %d / 失败 %d\n' "${pass}" "${fail}"

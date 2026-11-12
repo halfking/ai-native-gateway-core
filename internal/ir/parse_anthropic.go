@@ -255,11 +255,21 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 	irMsg := &Message{
 		Role: role,
 	}
+	// 2026-11-11 审计第二轮（批 2）：role 缺失/空/非字符串的修复放在内容
+	// 解析之后（见下方 role=="" 补推断）—— Anthropic 的 tool 结果是 content
+	// 块而非消息级 tool_call_id，需要块信息才能做出无歧义推断。
 
 	// Handle content
 	content := msg["content"]
 	if content == nil {
 		irMsg.Content = []ContentBlock{}
+		// 2026-11-11 审计第二轮（批 2）：早退路径同样做 role 归一化
+		//（无块可推断 → "user"）。
+		if irMsg.Role == "" {
+			irMsg.Role = "user"
+			reportClientShapeFix(ProtocolAnthropicMessages, "messages[].role", "inferred_user",
+				map[string]any{"inferred": "user", "note": "null content"})
+		}
 		return irMsg, nil
 	}
 
@@ -308,6 +318,20 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 		irMsg.Name = name
 	}
 
+	// 2026-11-11 审计第二轮（批 2）：role 缺失/空的归一化（内容解析后做，
+	// 依块形态推断：含 tool_result 块 → "tool"，否则 → "user"）。
+	if irMsg.Role == "" {
+		if inferred, ok := inferRoleFromContentBlocks(irMsg.Content); ok {
+			irMsg.Role = inferred
+			reportClientShapeFix(ProtocolAnthropicMessages, "messages[].role", "inferred_tool_from_blocks",
+				map[string]any{"inferred": inferred})
+		} else {
+			irMsg.Role = "user"
+			reportClientShapeFix(ProtocolAnthropicMessages, "messages[].role", "inferred_user",
+				map[string]any{"inferred": "user"})
+		}
+	}
+
 	// Handle tool_use_id (for tool role)
 	if toolUseID, ok := msg["tool_use_id"].(string); ok {
 		irMsg.ToolCallID = toolUseID
@@ -323,9 +347,11 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 // parseAnthropicContentBlocks parses Anthropic content blocks into IR ContentBlock.
 func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 	result := make([]ContentBlock, 0, len(blocks))
-	for _, block := range blocks {
+	for bi, block := range blocks {
 		blockMap, ok := block.(map[string]any)
 		if !ok {
+			// 2026-11-11 审计第二轮（批 2）：非对象块此前静默跳过。
+			reportSkippedElement(ProtocolAnthropicMessages, "messages[].content[]", bi, block)
 			continue
 		}
 

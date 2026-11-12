@@ -1,0 +1,140 @@
+# 提示词优化模块 —— 本地 Docker 测试环境
+#
+# 设计取舍（2026-11-11 实测后修正）：
+#   1. **不引入不存在的镜像**。原版写 `image: memora:latest`（Docker Hub 无此镜像），
+#      `docker compose up` 会直接 pull 失败。memora 是内部服务，本地测试用
+#      nginx 健康桩（沿用仓内 docker-compose.dev-research.yml 的成熟做法）占位，
+#      真实接入时用 LLM_GATEWAY_MEMORA_BASE_URL 指向真实实例。
+#   2. **不引用不存在的文件**。原版引用 ./scripts/init-db.sql、./Dockerfile.test、
+#      ./wait-for-it.sh —— 三个都不存在，构建/启动必然失败。
+#   3. **不引入用不到的中间件**。优化器当前是无状态服务（不连 DB、不连 Redis），
+#      保留 postgres/redis 只会让 compose 变慢并误导读者以为有持久化。
+#      需要持久化时再用 compose profile 打开。
+#
+# 快速验证：
+#   docker compose -f docker-compose.prompt-optimizer.yml up -d --build
+#   curl -s localhost:8090/health
+#   ./scripts/test-prompt-optimizer.sh test
+
+services:
+  prompt-optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile.prompt-optimizer
+    container_name: prompt_optimizer_svc
+    environment:
+      - ENV=development
+      - LOG_LEVEL=info
+      - EVALUATOR_MODEL=gpt-4
+      - OPTIMIZER_MODEL=gpt-4
+      # memora 记忆后端：默认指向本 compose 内的健康桩。
+      # 真实环境请覆盖为真实 memora 实例地址。
+      - LLM_GATEWAY_MEMORA_BASE_URL=http://memora-stub:80
+      - LLM_GATEWAY_MEMORA_PROJECT_ID=prompt-optimizer
+      - MEMORA_USER_ID=prompt-optimizer
+      # LLM 通道：指向本 compose 内的 mock（OpenAI 兼容）。
+      # 生产环境改指向网关自身的 /v1，网关会路由到内部小模型。
+      - LLM_BASE_URL=http://mock-llm:8099/v1
+      - LLM_API_KEY=mock-key
+    ports:
+      - "8090:8090"
+    networks:
+      - optimizer-network
+    depends_on:
+      - memora-stub
+      - mock-llm
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: on-failure
+
+  # Mock LLM（OpenAI Chat Completions 兼容）。
+  #
+  # 让 mode=output 的对比与带评估的优化这两条路径能在本地被真实跑到 ——
+  # 它们必须真的跑一次模型才能打分，没有模型通道就测不到。
+  # 复用仓内 internal/providers/mock 的协议实现。
+  mock-llm:
+    build:
+      context: .
+      dockerfile: Dockerfile.prompt-optimizer-mockllm
+    container_name: prompt_optimizer_mock_llm
+    # compose 的 command 会**替换** Dockerfile 的 CMD，必须写完整可执行路径。
+    command: ["./mockllm", "-listen", ":8099"]
+    networks:
+      - optimizer-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8099/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # Memora 健康桩（占位）。
+  #
+  # 优化器只在 UseMemora=true 时才访问记忆后端；桩同时提供
+  #   - /healthz        健康探针
+  #   - /api/search     memora 真实搜索契约（否则 client 解析非 JSON 会报错）
+  # 让"接了 memora"的链路能被真实跑通，而不是因为没有后端就跳过整条路径。
+  memora-stub:
+    image: nginx:alpine
+    container_name: prompt_optimizer_memora_stub
+    volumes:
+      - ./scripts/mocks/memora-search-stub.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - optimizer-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1/healthz | grep -q ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ───────────────────────────────────────────────────────────────────
+  # 可选中间件（默认不启动）
+  #
+  # 优化器当前无状态，测试不需要 DB/Redis。若后续接入持久化或缓存，
+  # 用 `docker compose --profile with-db up -d` 打开。
+  # ───────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: prompt_optimizer_pg
+    profiles: ["with-db"]
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres_password
+      - POSTGRES_DB=prompt_optimizer
+    ports:
+      - "5433:5432"
+    volumes:
+      - prompt_optimizer_pg_data:/var/lib/postgresql/data
+    networks:
+      - optimizer-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: prompt_optimizer_redis
+    profiles: ["with-db"]
+    ports:
+      - "6380:6379"
+    networks:
+      - optimizer-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  optimizer-network:
+    driver: bridge
+
+volumes:
+  prompt_optimizer_pg_data:

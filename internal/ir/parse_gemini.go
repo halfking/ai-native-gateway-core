@@ -241,6 +241,12 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 				}
 				if err := json.Unmarshal(p.InlineData, &id); err == nil && id.Data != "" {
 					msg.Content = append(msg.Content, geminiMediaBlock(id.MimeType, id.Data))
+				} else {
+					// 2026-11-11 审计第二轮（批 2）：载荷畸形（unmarshal 失败
+					// 或 data 为空）此前静默丢 —— 与未识别 part 的 raw+anomaly
+					// 兜底不对齐（已知 part 反而无痕）。
+					reportClientShapeFix(ProtocolGeminiGenerate, "contents[].parts[].inlineData", "malformed_part_dropped",
+						map[string]any{"reason": geminiMalformedReason(err, id.Data == "")})
 				}
 				continue
 			}
@@ -253,6 +259,9 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 				}
 				if err := json.Unmarshal(p.FileData, &fd); err == nil && fd.FileURI != "" {
 					msg.Content = append(msg.Content, geminiFileURIMediaBlock(fd.MimeType, fd.FileURI))
+				} else {
+					reportClientShapeFix(ProtocolGeminiGenerate, "contents[].parts[].fileData", "malformed_part_dropped",
+						map[string]any{"reason": geminiMalformedReason(err, fd.FileURI == "")})
 				}
 				continue
 			}
@@ -281,6 +290,9 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 						},
 					})
 					_ = argsStr
+				} else {
+					reportClientShapeFix(ProtocolGeminiGenerate, "contents[].parts[].functionCall", "malformed_part_dropped",
+						map[string]any{"reason": geminiMalformedReason(err, fc.Name == "")})
 				}
 				continue
 			}
@@ -308,6 +320,9 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 						Type:       "tool_result",
 						ToolResult: result,
 					})
+				} else {
+					reportClientShapeFix(ProtocolGeminiGenerate, "contents[].parts[].functionResponse", "malformed_part_dropped",
+						map[string]any{"reason": geminiMalformedReason(err, fr.Name == "")})
 				}
 				continue
 			}

@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/tooldialect"
 )
 
 // toolArgumentsJSON 返回 tool call **终态**的 arguments 字串。
@@ -30,20 +31,13 @@ import (
 // ★★ ⇒ ★★ 而**修复前**同一输入得到的是 `"{}"`（★ 合法 JSON）★★ ⇒ ★★ 这是本轮引入的**回归**。
 // ★★ ⇒ ★★ 且守卫生不了它：★ `domains/hooks/outputcompliance` 对空串直接 `continue`。
 // ⇒ ★★ 修法：★ 终态累计为空时**回落 `"{}"`**（★ 合法 JSON、★ 与修复前**逐字一致**）。
+//
+// 2026-11-11 审计第二轮（Slice 1 尾巴收口）：占位符回声剥离 + 零参回落是
+// anthropic wire 参数流语义的**终态投影**，语义单点化到 tooldialect
+//（Dialect.TerminalArguments）—— 本函数曾是该语义的第 4 份内联拷贝
+//（ir 解析器 / chat 桥 / 方言本身之外）。行为逐字保持。
 func toolArgumentsJSON(arguments string) string {
-	// 2026-11-11（48h 审计 P2）：delta 位置的 "{}" 占位符回声（非标准中继形态）
-	// ——与 tooldialect.AnthropicDialect.MergeContinuation 的回声剥离同族。
-	// 标准 Anthropic 上游不会把 "{}" 作为 input_json_delta 发出；累计串以 "{}"
-	// 开头且还有后续 ⇒ 剥掉，否则终态拼出 "{}{...}" 非法 JSON（9381d13a4 修的
-	// 原始事故在 delta 位置的镜像形态，211 实测 1 次/24h 触发守卫拦断）。
-	// "{}" 单独出现是零参工具的合法终态 ⇒ 保留。
-	if strings.HasPrefix(arguments, "{}") && len(arguments) > 2 {
-		arguments = arguments[2:]
-	}
-	if arguments == "" {
-		return "{}"
-	}
-	return arguments
+	return tooldialect.ForProtocol(tooldialect.ProtocolAnthropicMessages).TerminalArguments(arguments)
 }
 
 // Phase E (2026-07-01): Responses API SSE bridges. Two orchestrators that

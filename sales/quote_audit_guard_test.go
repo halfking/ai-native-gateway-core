@@ -22,6 +22,11 @@ import (
 // ★ **仍完整保留**在另一会话的工作树里（★ llm-gateway-go/sales/quote_audit_guard_test.go）
 // ★ ⇒ ★ 随该缺陷被修复时一并落地（★ 三条断言名与修法登记：
 // ★ docs/12小时内修订审计-20261109-0730.md 的 F-13）。
+//
+// ★★ 2026-11-12（复审审计轮）：★ F-13 **已结案**——normalizeCostCurrency
+// ★ 严格化（只有精确 USD/CNY 参与金额计算，空串/变体/第三币种一律归 ""，
+// ★ 与视图 949 的 price_confidence 口径一致），★ 3 条停断言按登记意图对
+// ★ 当前服务端派生架构重写后**落地在本文件尾部**。
 
 func f64(v float64) *float64 { return &v }
 
@@ -156,4 +161,71 @@ func mustReadQuoteSource(t *testing.T) string {
 		t.Fatalf("read quote.go: %v", err)
 	}
 	return string(raw)
+}
+
+// ── F-13 三条停断言落地（2026-11-12 复审审计轮；登记于
+// docs/12小时内修订审计-20261109-0730.md F-13，随 normalizeCostCurrency
+// 严格化一并落地）────────────────────────────────────────────────────────
+
+// TestNormalizeCostCurrencyKeepsEmptyEmpty —— 停断言①：空币种保持空
+// （未知），不再被静默当成 "USD"。
+func TestNormalizeCostCurrencyKeepsEmptyEmpty(t *testing.T) {
+	if got := normalizeCostCurrency(""); got != "" {
+		t.Fatalf(`normalizeCostCurrency("") = %q, want "" (F-13：缺币种不得静默当 USD)`, got)
+	}
+	if got := normalizeCostCurrency("usd"); got != "USD" {
+		// 大小写归一仍是合法形态（trim+upper 后精确命中）。
+		t.Fatalf(`normalizeCostCurrency("usd") = %q, want "USD"`, got)
+	}
+	if got := normalizeCostCurrency("EUR"); got != "" {
+		t.Fatalf(`normalizeCostCurrency("EUR") = %q, want ""（第三币种 = 未知：成本模型只有 USD/CNY）`, got)
+	}
+	if got := normalizeCostCurrency("CNY"); got != "CNY" {
+		t.Fatalf(`normalizeCostCurrency("CNY") = %q, want "CNY"`, got)
+	}
+}
+
+// TestPrecomputeLinesMissingCurrencyDoesNotSilentlyBecomeUSD —— 停断言②：
+// 缺币种行成本不得按 USD 照算（confidence 与成本计算必须一致）。
+func TestPrecomputeLinesMissingCurrencyDoesNotSilentlyBecomeUSD(t *testing.T) {
+	price := 3.0
+	out, confidence := precomputeLines([]QuoteItemInput{{
+		CanonicalName: "m",
+		EstTokensIn:   1_000_000,
+		CostInPer1M:   &price,
+		// CostCurrency 留空 = 派生架构下视图给了未知币种
+		RateIn: ptrF(30),
+	}}, 7.2, 20)
+	if len(out) != 1 {
+		t.Fatalf("lines = %d, want 1", len(out))
+	}
+	it := out[0]
+	if it.CostUSD != 0 {
+		t.Errorf("CostUSD = %v, want 0（未知币种不按 USD 照算——F-13 的不一致形态）", it.CostUSD)
+	}
+	if it.Confidence != "unknown_currency" {
+		t.Errorf("confidence = %q, want unknown_currency", it.Confidence)
+	}
+	if confidence != "unknown_currency" {
+		t.Errorf("version confidence = %q, want unknown_currency（最差档传导）", confidence)
+	}
+}
+
+// TestPrecomputeLinesDefaultPayloadSurvivesConfidenceCheck —— 停断言③：
+// 「零置信」payload 的版本置信必须落在 945 CHECK 闭集内（非空、四值之一），
+// 不再出现空串撞 CHECK 的 23514 形态。
+func TestPrecomputeLinesDefaultPayloadSurvivesConfidenceCheck(t *testing.T) {
+	out, confidence := precomputeLines([]QuoteItemInput{{
+		CanonicalName: "m",
+		EstTokensIn:   1_000_000,
+		RateIn:        ptrF(30),
+	}}, 7.2, 20)
+	if len(out) != 1 {
+		t.Fatalf("lines = %d, want 1", len(out))
+	}
+	switch confidence {
+	case "trusted", "suspect_symmetric", "empty", "unknown_currency":
+	default:
+		t.Fatalf("version confidence = %q —— 不在 945 CHECK 闭集内（空串形态已死）", confidence)
+	}
 }

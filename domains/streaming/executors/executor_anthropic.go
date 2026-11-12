@@ -548,8 +548,17 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				DueAt:               params.DispatchDueAt,
 			})
 		}
-		// Parse OpenAI body → IR → Serialize Anthropic
-		irReq, err := irScoped.ParseOpenAI(sourceBody)
+		// Parse client body → IR → Serialize Anthropic
+		// 2026-11-12（审计第二轮批 5）：responses 客户端迁移 IR 主路径后，
+		// BodyBytes 是 responses wire ⇒ 按协议分派 ParseResponses
+		//（此前手写转换把它预转成 chat 形态，Responses 专有参数静默丢失）。
+		var irReq *ir.InternalRequest
+		var err error
+		if params.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
+			irReq, err = irScoped.ParseResponses(sourceBody)
+		} else {
+			irReq, err = irScoped.ParseOpenAI(sourceBody)
+		}
 		if err != nil {
 			// 2026-08-08 P0 Fix: when the IR stream-side circuit breaker is
 			// OPEN (process-local counter, see
@@ -697,6 +706,16 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
 				return nil, fmt.Errorf("format conversion disabled for provider %d (openai→anthropic)", cand.ProviderID)
 			}
+		}
+		// 2026-11-12（审计第二轮批 5）：responses 客户端迁移 IR 主路径后，
+		// BodyBytes 是 responses wire；legacy 回退（断路器打开）需要先经
+		// ResponsesToChat 转回 chat 形态才能喂 ChatToAnthropic。
+		if params.ClientProtocol == providercatalog.ProtocolOpenAIResponses && e.ResponsesToChat != nil {
+			converted, err := e.ResponsesToChat(bodyBytes)
+			if err != nil {
+				return nil, fmt.Errorf("convert responses body to openai: %w", err)
+			}
+			bodyBytes = converted
 		}
 		if e.ChatToAnthropic != nil {
 			converted, err := e.ChatToAnthropic(bodyBytes)

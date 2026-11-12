@@ -80,6 +80,7 @@ export default {
   tabDashboard: '儀表板',
   costDrifted: '成本已漂移，建議重報',
   tierQuickFill: '三檔快填',
+  rateUnitNote: '零售價單位是 credits/百萬 tokens——快填已把供應商成本換算到該軸（係數 c 對應毛利率 1 − 1/c）',
   pickModel: '從可售清單選擇模型',
   itemExists: '該模型已在清單中',
   quoteCloseTitle: '報價 #{id} 結案',

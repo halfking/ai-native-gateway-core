@@ -3218,7 +3218,7 @@ func (d *DB) ensureModelBaselineObservationHealth(ctx context.Context) error {
 // cmb_price_nonneg_* 约束 0 条）⇒ 供应商价格列的负价新写入不被拒。
 // 幂等：约束已齐时只补账本戳；缺失时全量重放（文件本身就是
 // DROP IF EXISTS + ADD 的幂等形态，部分缺失也收敛）。表不存在 ⇒ 返回
-//（该库还没走到 826，交给文件链，与 590c632db 的 to_regclass 守卫同纪律）。
+// （该库还没走到 826，交给文件链，与 590c632db 的 to_regclass 守卫同纪律）。
 func (d *DB) ensureSupplierPriceNonnegCheckConstraints(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -7239,8 +7239,8 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	//     2026-06-23: Add p_window_hours parameter for time-based windowing.
 	if fnMissing > 0 {
 		if _, err := d.pool.Exec(ctx, `
-			DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
-			DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
+			DROP FUNCTION IF EXISTS public.recent_success_rate(bigint, text, int);
+			DROP FUNCTION IF EXISTS public.recent_success_rate(bigint, text, int, int);
 		`); err != nil {
 			return err
 		}
@@ -7280,8 +7280,41 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 // 独供"完全一致（v1 腿在停写后本来就恒空）。
 //
 // ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
+//
+// ★★ 2026-11-12（48h 审计第五轮）：本谓词改成**与既有索引表达式同形**。
+//
+//	既有索引（迁移 729 建）：
+//	  idx_session_turns_hot_credential_ts
+//	    ON session_turns_hot ((CASE WHEN credential_id ~ '^[0-9]+$'
+//	                              THEN credential_id::bigint END), ts DESC)
+//	旧谓词（本文件在此之前）：
+//	  WHERE credential_id ~ '^[0-9]+$' AND credential_id::bigint = p_credential_id
+//	★ 旧谓词**不是**索引键表达式 ⇒ planner 用不上该索引 ⇒ 每次调用退化成
+//	  「扫 3 小时窗全量再过滤」（真库 EXPLAIN ANALYZE：13184 ms，
+//	  Rows Removed by Filter: 1876）⇒ admin 的凭据监控摘要端点
+//	  （admin/credential_monitor.go）对每个 (凭据 × 模型) 行做一次
+//	  CROSS JOIN LATERAL 调用（74 凭据 × 2015 offer = 1959 次）
+//	  ⇒ 稳定越过 15s context ⇒ **500**（245/154 生产实证）。
+//	★ 同形后同查询实测 113 ms（Index Scan using 该索引，116 倍）。
+//
+// ★★ ★ 这一段同时是本轮最贵的教训载体：**同一个函数体有两份载体**
+//
+//	① SQL 迁移文件（890 播种、962 改谓词）
+//	② 本文件这段 Go 运行时 SSOT（boot 时 CREATE OR REPLACE）
+//	★ 而 **boot 的 ensure 链在迁移之后跑** ⇒ 只改 ① 会被 ② **覆盖回去**
+//	⇒ 修复曾一度「迁移已记账、函数体却仍是旧形态」＝最坏的形态：
+//	  账本说修好了，运行面没修好。
+//	⇒ 纪律（见 LESSONS §698）：**改函数体必须同时改两份载体**，
+//	  且门必须钉「两份载体等价」——只钉迁移文件的那道门（962 的形状门）
+//	  在这个形态下**恒绿**。
+//	⇒ 跨包等价门：sql/migrations/startup/migration_962_recent_success_rate_index_aligned_test.go
+//	  的 TestMigration962_RuntimeSSOTCarriesTheSamePredicate。
+//
+// ⚠ 语义面零变化：CASE 的 ELSE 分支落 NULL ⇒ `NULL = p_credential_id`
+//
+//	不是真 ⇒ 非数字 credential_id 仍然匹配不上（与旧谓词完全等价）。
 const recentSuccessRateEnsureSQL = `
-		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
+		CREATE OR REPLACE FUNCTION public.recent_success_rate(p_credential_id BIGINT,
 		                                    p_raw_model     TEXT,
 		                                    p_sample_n      INT DEFAULT 50,
 		                                    p_window_hours  INT DEFAULT 3)
@@ -7292,8 +7325,8 @@ const recentSuccessRateEnsureSQL = `
 			    WITH recent AS (
 			        SELECT success, ts
 				    FROM public.session_turns_hot
-				    WHERE credential_id ~ '^[0-9]+$'
-				      AND credential_id::bigint = p_credential_id
+				    WHERE (CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint ELSE NULL::bigint END)
+				          = p_credential_id
 				      AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
 				      AND ts > NOW() - (p_window_hours || ' hours')::interval
 				      AND COALESCE(task_type, '') <> 'probe_triggered'

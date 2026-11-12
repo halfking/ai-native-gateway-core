@@ -59,6 +59,22 @@ func (d *DB) ensureRecentCacheHitRate(ctx context.Context) error {
 //     samples 0 ⇒ 调用方按「无信号 → 中性」fail-open。
 //
 // ⚠ 注释里不许出现反引号：本段 SQL 在 Go raw string 里。
+//
+// ★★ 2026-11-12（48h 审计第五轮）：谓词改成**与既有索引表达式同形**。
+//
+//	既有索引（迁移 729 建）：
+//	  idx_session_turns_hot_credential_ts
+//	    ON session_turns_hot ((CASE WHEN credential_id ~ '^[0-9]+$'
+//	                              THEN credential_id::bigint END), ts DESC)
+//	★ 本函数与 recent_success_rate 是**同一款**不可命中索引的谓词
+//	⇒ 只修一半＝缺陷仍在 ⇒ 两条一起改（迁移 962 与本文件）。
+//
+// ★★ 本函数体同样有**两份载体**（迁移 915 播种 + 本文件这段运行时 SSOT），
+//
+//	而 boot 的 ensure 链在迁移之后跑 ⇒ 只改迁移会被本文件覆盖回去。
+//	⇒ 改函数体必须同时改两份载体（LESSONS §698），
+//	⇒ 跨包等价门：migration_962_recent_success_rate_index_aligned_test.go
+//	  的 TestMigration962_RuntimeSSOTCarriesTheSamePredicate。
 const recentCacheHitRateEnsureSQL = `
 		CREATE OR REPLACE FUNCTION public.recent_cache_hit_rate(
 		    p_credential_id bigint,
@@ -72,8 +88,8 @@ const recentCacheHitRateEnsureSQL = `
 		    WITH recent AS (
 		        SELECT prompt_tokens, cache_read_tokens, ts
 		        FROM public.session_turns_hot
-		        WHERE credential_id ~ '^[0-9]+$'
-		          AND credential_id::bigint = p_credential_id
+		        WHERE (CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint ELSE NULL::bigint END)
+		          = p_credential_id
 		          AND lower(COALESCE(model, canonical_model)) = lower(p_raw_model)
 		          AND ts > NOW() - (p_window_hours || ' hours')::interval
 		          AND COALESCE(task_type, '') <> 'probe_triggered'

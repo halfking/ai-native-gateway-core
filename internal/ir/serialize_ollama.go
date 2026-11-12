@@ -84,7 +84,7 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 
 	body := map[string]any{
 		"model":    req.Model,
-		"messages": serializeOllamaMessages(req.Messages),
+		"messages": serializeOllamaMessages(req),
 	}
 	// Always emit `stream` to match Ollama's documented body shape (the
 	// Ollama server defaults stream=false; we still emit explicitly so
@@ -115,6 +115,14 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 	}
 	if req.RepetitionPenalty != nil {
 		opts["repeat_penalty"] = *req.RepetitionPenalty
+	}
+	// 2026-11-11 审计第二轮：Ollama 原生支持 frequency_penalty /
+	// presence_penalty（与 OpenAI 同名同义），此前在 Ollama 目标上被静默丢弃。
+	if req.FrequencyPenalty != nil {
+		opts["frequency_penalty"] = *req.FrequencyPenalty
+	}
+	if req.PresencePenalty != nil {
+		opts["presence_penalty"] = *req.PresencePenalty
 	}
 	// Pass through private options.* — naming convention is
 	// "ollama.options.<native-key>" so a future protocol normalization
@@ -151,6 +159,29 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 			continue
 		}
 		body[topKey] = v
+	}
+
+	// 2b. Structured response_format → Ollama top-level `format`.
+	// 2026-11-11 审计第二轮：此前 OpenAI 族的 ResponseFormat 在 Ollama 目标上
+	// 被静默丢弃（structured output 语义蒸发）。映射（docs/vendor-formats/
+	// ollama.md：`format` 是顶层 "json" 字符串或 JSON schema 对象）：
+	//   {"type":"json_object"}                      → "json"
+	//   {"type":"json_schema","json_schema":{...}}  → schema 对象
+	//   {"type":"text"}                             → 不发射（无等价物）
+	// 放在 2（ollama.* 命名空间提升）之后：Ollama 原生客户端经
+	// Extensions["ollama.format"] 直通的值是 Ollama 形态的事实源，优先，
+	// 已存在时不覆盖。
+	if rf := req.ResponseFormat; rf != nil {
+		if _, exists := body["format"]; !exists {
+			switch rf.Type {
+			case "json_object":
+				body["format"] = "json"
+			case "json_schema":
+				if rf.Schema != nil {
+					body["format"] = rf.Schema
+				}
+			}
+		}
 	}
 
 	// 3. Tools — Ollama 0.5+ accepts the OpenAI tool schema verbatim.
@@ -191,7 +222,71 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 	// ⇒ 诚实披露丢失（丢弃本身是**有意的**设计，见函数头契约；缺的是披露）。
 	reportOllamaExtensionLosses(req)
 
+	// 2026-11-11 审计第二轮：本序列化器未消费的结构化 IR 字段统一披露。
+	// 在此之前 MCPServers / Documents / ContextManagement / Container /
+	// ToolChoice / logprobs 族 / store 等一律静默蒸发，与其余四个序列化器
+	// 的口径不一致（「还原通道覆盖矩阵」批 1 收口）。
+	reportOllamaStructuredFieldLosses(req)
+
 	return json.Marshal(body)
+}
+
+// reportOllamaStructuredFieldLosses 披露「结构化 IR 字段在 Ollama 目标上
+// 被丢弃」。只披露、不还原 —— 与 reportOllamaExtensionLosses 同一哲学：
+// 还原与否是设计决定，披露与否是纪律要求。
+//
+// 消费矩阵（本文件其余部分负责消费，不在披露之列）：
+//
+//	Temperature/TopP/TopK/MaxTokens/Stop/Seed/RepetitionPenalty/
+//	FrequencyPenalty/PresencePenalty → options.*；ResponseFormat → format；
+//	System → 首条 system 消息；Messages/Tools/Model/Stream → 顶层。
+//
+// 新增 IR 结构化字段时必须同步更新本清单（internal/ir 结构化字段覆盖矩阵
+// 测试会强制这一点 —— 未知字段出现在 InternalRequest 上 ⇒ 测试红）。
+func reportOllamaStructuredFieldLosses(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	type lossField struct {
+		field string
+		have  bool
+	}
+	fields := []lossField{
+		{"tool_choice", req.ToolChoice != nil},
+		{"parallel_tool_calls", req.ParallelToolCalls != nil},
+		{"logprobs", req.Logprobs != nil},
+		{"top_logprobs", req.TopLogprobs != nil},
+		{"logit_bias", len(req.LogitBias) > 0},
+		{"store", req.Store != nil},
+		{"service_tier", req.ServiceTier != ""},
+		{"prediction", req.Prediction != nil},
+		{"verbosity", req.Verbosity != ""},
+		{"web_search_options", req.WebSearchOptions != nil},
+		{"safety_identifier", req.SafetyIdentifier != ""},
+		{"prompt_cache_key", req.PromptCacheKey != ""},
+		{"previous_response_id", req.PreviousResponseID != ""},
+		{"truncation", req.Truncation != ""},
+		{"n", req.N > 0},
+		{"user", req.User != ""},
+		// metadata 只披露客户端可见部分（user_id / other）；request_id 等
+		// 是网关内部归因载体，整体披露会对每个带归因的请求发噪声事件。
+		{"metadata", req.Metadata != nil && (req.Metadata.UserID != "" || len(req.Metadata.Other) > 0)},
+		{"modalities", len(req.Modalities) > 0},
+		{"audio", req.AudioConfig != nil},
+		{"mcp_servers", len(req.MCPServers) > 0},
+		{"context_management", req.ContextManagement != nil},
+		{"container", req.Container != nil},
+		{"documents", len(req.Documents) > 0},
+	}
+	for _, f := range fields {
+		if !f.have {
+			continue
+		}
+		ReportProtocolLoss("", f.field, req.SourceProtocol, ProtocolOllamaChat,
+			"ollama_structured_field_drop",
+			"structured IR field has no Ollama request-side equivalent and was dropped",
+			nil)
+	}
 }
 
 // reportOllamaExtensionLosses 上报「扩展字段在 Ollama 目标上被丢弃」。
@@ -210,8 +305,9 @@ func SerializeOllama(req *InternalRequest) ([]byte, error) {
 // 本函数**只披露、不还原**：还原与否是设计决定，披露与否是纪律要求。
 //
 // 不上报的键：
-//   · `ollama.options.*` → 已提升进 options（不是丢弃）
-//   · `ollama.*`（其余）  → 已提升进 body 顶层（不是丢弃）
+//
+//	· `ollama.options.*` → 已提升进 options（不是丢弃）
+//	· `ollama.*`（其余）  → 已提升进 body 顶层（不是丢弃）
 func reportOllamaExtensionLosses(req *InternalRequest) {
 	if req == nil || len(req.Extensions) == 0 {
 		return
@@ -295,8 +391,21 @@ func reportOllamaReasoningLoss(req *InternalRequest) {
 // multimodal Ollama support is out of P3 scope — the executor MUST reject
 // multimodal requests when the inbound protocol was Ollama-native, per
 // schema gate in §2.6.1).
-func serializeOllamaMessages(msgs []Message) []map[string]any {
-	out := make([]map[string]any, 0, len(msgs))
+//
+// 2026-11-11 审计第二轮：req.System 前置为首条 system 消息。此前
+// parse_openai 把 system 消息从 Messages 摘进 IR.System 后，Ollama 目标
+// 从不发射它 ⇒ openai-chat 客户端 → Ollama 上游的系统提示词静默丢失
+// （既有测试直接构造 IR Messages 绕过 parse，掩盖了该生产路径缺陷）。
+// 与 serializeOpenAIMessages 的 systemPlainText 前置同款语义。
+func serializeOllamaMessages(req *InternalRequest) []map[string]any {
+	msgs := req.Messages
+	out := make([]map[string]any, 0, len(msgs)+1)
+	if text := systemPlainText(req.System); text != "" {
+		out = append(out, map[string]any{
+			"role":    "system",
+			"content": text,
+		})
+	}
 	for _, m := range msgs {
 		out = append(out, map[string]any{
 			"role":    m.Role,
@@ -345,6 +454,11 @@ func ollamaMessageContent(m Message) string {
 // "parameters": <JSON Schema>}} — which matches IR ToolDefinition with
 // Parameters as json.RawMessage. The conversion passes Parameters through
 // directly via RawMessage so the upstream sees the canonical schema.
+//
+// 2026-11-11 审计第二轮：ToolDefinition.Extra（工具顶层非标准键，
+// RISK-2 载体）并回工具对象顶层 —— 与 openai/anthropic/responses 三线
+// 对齐。Ollama 服务端用 Go encoding/json 解码，未知键被忽略不报错，
+// 合并无 400 风险；不覆盖 type/function 已写键。
 func serializeOllamaTools(tools []ToolDefinition) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
@@ -357,10 +471,12 @@ func serializeOllamaTools(tools []ToolDefinition) []map[string]any {
 		if len(t.Parameters) > 0 {
 			fn["parameters"] = json.RawMessage(t.Parameters)
 		}
-		out = append(out, map[string]any{
+		tool := map[string]any{
 			"type":     "function",
 			"function": fn,
-		})
+		}
+		mergeToolExtras(tool, t.Extra)
+		out = append(out, tool)
 	}
 	return out
 }

@@ -543,13 +543,38 @@ func InvalidateAllCandidateCache() {
 	if defaultClient == nil {
 		return
 	}
-	defaultClient.mu.Lock()
-	defaultClient.candGeneration++
-	defaultClient.candCache = make(map[string]cacheEntry[*resolveResponse])
-	defaultClient.mu.Unlock()
+	defaultClient.InvalidateAllCandidateCache()
+}
+
+// InvalidateAllCandidateCache 清空**本实例**的候选缓存，并广播给别的实例。
+//
+// ★ 实例作用域（而不是只有包级全局）的原因：跨实例失效桥的**订阅端**
+//   必须能清「自己那一份」缓存 ⇒ 失效逻辑必须是方法，不能只认包级全局
+//   （否则多 Client 场景下订阅端会清错对象）。
+func (c *Client) InvalidateAllCandidateCache() {
+	if c == nil {
+		return
+	}
+	c.invalidateAllCandidateCacheLocal()
+	// 2026-11-11（缓存与路由状态即时同步轮）：整库失效也要**跨进程**广播
+	//   —— 否则别的实例仍按旧计划挑桶（本地清了、远端没清 ⇒ 远端继续命中
+	//   已被判死的桶）。见 candidate_cache_invalidation.go 文件头。
+	publishCandidateCacheInvalidation(0)
 	// 2026-07-03: 降级为 Debug —— 此函数在每次永久故障/状态变更时都会被调用，
 	// Info 级别会在批量故障场景下刷屏日志。
 	slog.Debug("candidate cache invalidated (all)")
+}
+
+// invalidateAllCandidateCacheLocal 只清本进程的候选缓存，**不广播**。
+// 跨实例失效桥的订阅端调用它（回环防护：收到的事件不再往外发）。
+func (c *Client) invalidateAllCandidateCacheLocal() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.candGeneration++
+	c.candCache = make(map[string]cacheEntry[*resolveResponse])
+	c.mu.Unlock()
 }
 
 // InvalidateCandidateCacheForCredential (OPT-5, 2026-07-12) clears only
@@ -573,35 +598,66 @@ func InvalidateAllCandidateCache() {
 // under 10-way concurrency). An invalidation that deletes nothing cannot
 // change any cached plan, so in-flight lookups stay valid.
 func InvalidateCandidateCacheForCredential(credentialID int) {
-	if defaultClient == nil || credentialID == 0 {
+	if defaultClient == nil {
 		return
 	}
-	defaultClient.mu.Lock()
+	defaultClient.InvalidateCandidateCacheForCredential(credentialID)
+}
+
+// InvalidateCandidateCacheForCredential 清掉**本实例**里 PlanOrder 含该凭据的
+// 缓存条目，并把这次失效**广播**给别的实例。
+//
+// ★ 实例作用域（方法）而不是只有包级全局的原因：跨实例失效桥的订阅端必须
+//   能清「自己那一份」缓存 ⇒ 失效逻辑必须是方法。
+func (c *Client) InvalidateCandidateCacheForCredential(credentialID int) {
+	if c == nil || credentialID == 0 {
+		return
+	}
+	c.invalidateCandidateCacheLocal(credentialID)
+	// 2026-11-11（缓存与路由状态即时同步轮）：本地清了还不够 ——
+	//   **候选计划的内容取决于跨进程的共享事实**（探测判定：
+	//   availability_state / broken_confirmed 裁剪，见 brokenPairExcludeSQL），
+	//   而判定可能是在**别的进程**里翻的（蓝绿两槽 / 多副本）。
+	//   ⇒ 本地失效必须**广播**出去，否则别的实例的缓存里那条
+	//   「已被别处判死的桶」还能再活 candidateCacheTTL（30s）⇒
+	//   ⇒ 表现就是「路由总是命中不可用或失败的供应商桶」。
+	//   广播是**非阻塞**的（队列满即丢弃）⇒ 不把 Redis 延迟带进请求热路径。
+	publishCandidateCacheInvalidation(credentialID)
+}
+
+// invalidateCandidateCacheLocal 只清本实例里 PlanOrder 含该凭据的缓存条目，
+// 返回被删的条目数。**不广播**（跨实例失效桥的订阅端调用它 ⇒ 无回环）。
+func (c *Client) invalidateCandidateCacheLocal(credentialID int) int {
+	if c == nil || credentialID == 0 {
+		return 0
+	}
+	c.mu.Lock()
 	deleted := 0
-	for key, entry := range defaultClient.candCache {
+	for key, entry := range c.candCache {
 		if entry.value == nil {
-			delete(defaultClient.candCache, key)
+			delete(c.candCache, key)
 			deleted++
 			continue
 		}
 		for _, p := range entry.value.PlanOrder {
 			if p.CredentialID == credentialID {
-				delete(defaultClient.candCache, key)
+				delete(c.candCache, key)
 				deleted++
 				break
 			}
 		}
 	}
 	if deleted > 0 {
-		defaultClient.candGeneration++
+		c.candGeneration++
 	}
-	defaultClient.mu.Unlock()
+	c.mu.Unlock()
 	if deleted > 0 {
 		slog.Debug("candidate cache invalidated for credential",
 			"credential_id", credentialID,
 			"entries_deleted", deleted,
 		)
 	}
+	return deleted
 }
 
 // ResetKeyRotatorForCredential clears the shared in-memory multi-key rotation
@@ -771,14 +827,36 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		resp, shared, err := c.fetchCandidateGeneration(key, queryGeneration, func() (*resolveResponse, error) {
 			resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
 			if fetchErr == nil && (planCount(resp) == 0 || candidateCount(resp) == 0) {
-				logCandidateDiagnostic("db_empty",
+				// ★★ 2026-11-12（48h 审计第五轮）：**归因**诊断——★「db_empty」本身
+				// ★★ 分不清「模型没登记」与「模型登记了但被状态闸滤空」⇒ ★★ 运维只能
+				// ★★ 盯着 db_empty 猜（211 真机：whisper ASR 上游活着却 503 35 次，
+				// ★★ 真因是 credentials.status 这道**遗留 v1 闸**把 offer 滤空）。
+				// ★★ ⇒ 这里补一次**只在空路径发生**的归因查询（成功路径零开销），
+				// ★★ 把「可执行的结论」直接写进日志。
+				// ★★ 诊断是**旁路**：查询失败不改结论、不影响返回（见 diagnoseEmptyCandidates）。
+				diagArgs := []any{
 					"model", routeModel,
 					"profile", profile,
 					"tenant_id", tenantID,
 					"cache_key", key,
 					"plan_count", planCount(resp),
 					"candidate_count", candidateCount(resp),
-				)
+				}
+				if b, diagErr := c.diagnoseEmptyCandidates(ctx, routeModel, tenantID); diagErr == nil {
+					diagArgs = append(diagArgs,
+						"offers_total", b.OffersTotal,
+						"blocked_credential_missing", b.BlockedByCredentialMissing,
+						"blocked_credential_status", b.BlockedByCredentialStatus,
+						"blocked_credential_lifecycle", b.BlockedByCredentialLifecycle,
+						"blocked_credential_quota", b.BlockedByCredentialQuota,
+						"blocked_provider_disabled", b.BlockedByProviderDisabled,
+						"blocked_unavailable_reason", b.BlockedByUnavailableReason,
+						"likely_cause", b.Summarize(),
+					)
+				} else {
+					diagArgs = append(diagArgs, "diag_error", diagErr.Error())
+				}
+				logCandidateDiagnostic("db_empty", diagArgs...)
 			}
 			return resp, fetchErr
 		})

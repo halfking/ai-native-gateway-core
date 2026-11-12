@@ -1821,6 +1821,31 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 以 23514 拒绝 ⇒ 整条回滚 ⇒ self_check run 行半写 ⇒ 这次自检在系统里
 			// 「根本没发生过」，但调度器以为发生过。
 			"957_self_check_error_type_kind_closure_rate_limit_observed.sql",
+			// 958（2026-11-11 总体设计定稿轮 G1；六面补登记 2026-11-12）：市场平台
+			// 注册表 —— 双币制（A-17）区域/币种裁定唯一权威 + A-5 我方平台排除。
+			// 漏登的后果＝installer 链的全新安装没有 registry ⇒ A-17 同步器
+			// platform_unmapped_region 拒绝族把全部源平台拒掉 ⇒ 行情面空。
+			"958_market_platform_registry.sql",
+			// 959（2026-11-12 A-17 双币收口轮）：market_price_reference 双地板 17 列
+			// （P1 原生币 + overseas/domestic 地板 + 快照折算）+
+			// supplier_market_position 双读数 5 列 + registry 对拍补种 12 平台
+			// （958 种子取自 provider_catalog，与同步源 salesdecorate.platform
+			// 对拍缺 12 ⇒ 不补则一半源平台被拒）+ v_supplier_price_vs_baseline
+			// v3 追加双地板投影（append-only）。
+			"959_market_dual_floor_a17.sql",
+			// 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958
+			// 文件缺自登记行 ⇒ schema_migrations 断层；守卫式回填 + ≥952 自登记门。
+			"960_migration_ledger_continuity_repair.sql",
+			// 961（2026-11-12 A-17 收口 M2-T4 轮）：market_scoring_runs 每日评分
+			// 运行台账（price_confidence_degraded 环比的两日读数源）。
+			"961_market_scoring_runs.sql",
+			// 962（2026-11-12 48h 审计第五轮）：recent_success_rate +
+			// recent_cache_hit_rate 的谓词改成与既有索引
+			// idx_session_turns_hot_credential_ts **逐字同形**（CASE 形态）
+			// ⇒ 修「凭据监控摘要在 245/154 上必 500」（15s context 超时；
+			// 真库实测 13184 ms → 94 ms）；同时把在役的 session_turns_hot
+			// 函数体**补回仓内**（此前只有已退役的 v1 形态 ⇒ 仓内无法复现在役）。
+			"962_recent_success_rate_index_aligned.sql",
 		},
 	}
 }

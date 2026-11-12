@@ -142,6 +142,18 @@
     },
     {
       "file": "views/StandardModelPricingView.vue",
+      "value": "#666"
+    },
+    {
+      "file": "views/StandardModelPricingView.vue",
+      "value": "#d93025"
+    },
+    {
+      "file": "views/StandardModelPricingView.vue",
+      "value": "#d9302514"
+    },
+    {
+      "file": "views/StandardModelPricingView.vue",
       "value": "rgba(148, 163, 184, 0.18)"
     },
     {

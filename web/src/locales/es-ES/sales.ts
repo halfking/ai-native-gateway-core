@@ -80,6 +80,7 @@ export default {
   tabDashboard: 'Panel',
   costDrifted: 'Coste desviado: se sugiere recotizar',
   tierQuickFill: 'Relleno rápido por nivel',
+  rateUnitNote: 'Los precios de venta están en créditos por millón de tokens; el relleno rápido convierte el coste del proveedor a este eje (margen con factor c = 1 − 1/c)',
   pickModel: 'Elegir modelo de la lista vendible',
   itemExists: 'El modelo ya está en la lista',
   quoteCloseTitle: 'Cerrar presupuesto #{id}',

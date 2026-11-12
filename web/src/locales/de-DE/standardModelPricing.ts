@@ -95,6 +95,7 @@ export default {
     empty: "Marktdaten leer - scripts/market-price-sync.py auf 211 ausführen oder auf den täglichen Crawl warten",
     colModel: "Modell",
     colMarketMin: "Marktminimum in/out (CNY/1M)",
+    colFloors: "Übersee-/Inlandsuntergrenze (Originalwährung · Plattformen)",
     colMarketMinOut: "Marktminimum Output (CNY/1M)",
     colVendor: "Herstelleranker in/out (CNY/1M)",
     colRetail: "Unser Einzelpreis in/out (CNY/1M)",

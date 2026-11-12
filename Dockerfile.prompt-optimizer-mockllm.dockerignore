@@ -1,0 +1,57 @@
+# Dockerfile.prompt-optimizer 专属忽略规则（BuildKit: <dockerfile>.dockerignore）
+#
+# 为什么单独一个文件：仓库根的 .dockerignore 是所有 Dockerfile 共用的，
+# 在那里加规则会影响其它镜像的构建上下文。Dockerfile 专属规则把影响面
+# 限在本服务这一个镜像内。
+#
+# 目的：排除与编译无关的大体积产物（历史二进制、审计报告、文档），
+# 让构建上下文从数百 MB 降到几十 MB。
+
+# ── 编译产物（历史遗留二进制，合计 > 250MB）─────────────────────────
+gateway
+gateway-v2
+llm-gateway
+llm-gateway-go.linux.amd64
+session.test
+quality-monitor
+sql_source_indirection_audit
+tmp_admin_typecheck.exe
+tmpstub.exe
+coverage.ir.out
+
+# ── 文档与审计产物 ───────────────────────────────────────────────────
+AGENTS.md
+AGENTS-archive-*.md
+LESSONS.md
+CHANGELOG.md
+docs/
+reports/
+test-reports/
+diagnostics_reports/
+raw-logs/
+logs/
+
+# ── VCS / IDE / 本地工具 ─────────────────────────────────────────────
+.git
+.github
+.idea
+.vscode
+*.log
+.DS_Store
+Thumbs.db
+.zcode/
+.codegraph/
+.audit-validation/
+.worktrees/
+.agents/
+.workflow/
+
+# ── 其他大目录（本服务不依赖）────────────────────────────────────────
+web/
+web-mobile/
+admin/
+node_modules/
+npm/
+examples/
+pending/
+.autoupdate/

@@ -27,6 +27,15 @@ var knownCandidates = []string{
 	// 「丢的是另一个返回值」。
 	"bg/lite_retention_worker.go",
 
+	// ★ 2026-11-12（上游 A-17 M2-T3 评分 job 轮，df8fbe518 引入）**同款假阳性**：
+	// bg/market_scoring.go:490,504 —— `if _, err := w.ScoreNow(ctx); err != nil {` 里的
+	// `_` 是**第一个返回值**（本轮的评分结果快照），err **有**被检查并原样 warn 记录
+	// （"market scoring catch-up failed" / "market scoring run failed"）。
+	// ★ 与 bg/lite_retention_worker.go 同族：★ 本门只认「LHS 上出现 `_`」，
+	// ★ 分不清「丢的是 err」与「丢的是另一个返回值」⇒ ★ **按门的指引「带理由登记」**
+	// ★ （★ 而不是改上游那段本来正确的错误处理）。
+	"bg/market_scoring.go",
+
 	// ★★ 2026-11-09（r1050 轮复核）**曾**登记过 `internal/largebody/index.go` 与
 	// ★★ `internal/largebody/store.go`（★ 上游 2026-11-09 的 largebody 轮新增包带进来的
 	// ★★ 8 处**同款假阳性**：★ `_` 是字符/字节返回值、★ `err` 有被检查并原样上抛）⇒

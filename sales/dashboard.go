@@ -34,10 +34,10 @@ type ReasonCount struct {
 
 // SalesDashboard is the management funnel read model (computed, no new table).
 type SalesDashboard struct {
-	Funnel              map[string]int `json:"funnel"`                // status → 单数（含派生 expired）
-	Approvals           map[string]int `json:"approvals"`             // decision(pending/approved/rejected) → 行数
-	SubmittedQuotes     int            `json:"submitted_quotes"`      // 提交过的单（分母）
-	TriggeredQuotes     int            `json:"triggered_quotes"`      // 进过人审的单（分子）
+	Funnel              map[string]int `json:"funnel"`           // status → 单数（含派生 expired）
+	Approvals           map[string]int `json:"approvals"`        // decision(pending/approved/rejected) → 行数
+	SubmittedQuotes     int            `json:"submitted_quotes"` // 提交过的单（分母）
+	TriggeredQuotes     int            `json:"triggered_quotes"` // 进过人审的单（分子）
 	TriggerRatePct      float64        `json:"trigger_rate_pct"`
 	TriggerAlertPct     int            `json:"trigger_alert_pct"`     // settings 键读数
 	TriggerRateAlert    bool           `json:"trigger_rate_alert"`    // 触发率超告警线
@@ -82,7 +82,13 @@ SELECT count(*) FROM public.sales_quotes q
 		return nil, fmt.Errorf("sales: dashboard expired: %w", err)
 	}
 	if expired > 0 {
-		out.Funnel["expired"] = expired // 派生态键（存储闭集故意没有它）
+		// 派生态键（存储闭集故意没有它）。口径声明（2026-11-12 复审审计
+		// P3-9）：expired 只数 approved/sent 的活单（draft/pending 的过期
+		// 无行动意义），且它与自身状态桶**并存**（一张 sent 过期单同时计入
+		// sent 与 expired）⇒ 漏斗各键是「阶段计数」不是「互斥分桶」，加和
+		// 可以 > 头表总数——前端 funnelOrder 把 expired 排在末位、标签为
+		// 「已过期（派生）」，语义即「其中已过期的」。
+		out.Funnel["expired"] = expired
 	}
 
 	// ② 审批触发率（DealHub 突破率自校准，分母/分子都走 status_log 面）。

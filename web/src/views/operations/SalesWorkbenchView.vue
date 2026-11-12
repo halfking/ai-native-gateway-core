@@ -19,7 +19,8 @@ import {
   ElTabPane, ElTabs, ElTag,
 } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { isSuperAdmin } from '../../store'
+import { isSuperAdmin, store } from '../../store'
+import { QUICK_FILL_FALLBACK, tierQuickFillCredits } from '../../utils/quoteQuickFill'
 import {
   closeDemandCard, claimDemandCard, createDemandCard, listDemandCards,
   closeQuote, createQuote, createQuoteShare, decideQuote, getSalesDashboard,
@@ -37,7 +38,11 @@ const { t } = useI18n()
 // POST supply = h.superAdmin）⇒ 前端对非 super 隐藏对应写按钮（读侧
 // 与其余 h.admin 动作不收窄），避免「必 403 的按钮」。
 // 2026-11-08：看板端点同样是 super-only（全团队聚合毛利 ⇒ 管理层面）。
-const canDecide = isSuperAdmin()
+// canDecide（2026-11-12 复审审计 P3-7 收窄）：isSuperAdmin() 对 apiKey-only
+// 会话恒 true（全站旧约定），但 dashboard/supply 写/decide 的后端面是
+// JWT-only（SuperAdminMiddleware 无 JWT ⇒ 401）⇒ 销售工作台对「有 JWT 登录
+// 态」（store.userInfo 在位）才渲染 super 按钮，不造必 403 的入口。
+const canDecide = isSuperAdmin() && !!store.userInfo
 
 type WorkbenchTab = 'supply' | 'demand' | 'quotes' | 'dashboard'
 const tab = ref<WorkbenchTab>('supply')
@@ -65,7 +70,6 @@ const demandForm = ref({ customer_name: '', scenario: '', monthly_usage: '', bud
 
 // ── 报价单 ──
 const quotes = ref<Quote[]>([])
-const quoteFilter = ref('')
 const quoteDialogVisible = ref(false)
 // 报价行：模型从可售清单选（服务端只认视图内 canonical）；成本是展示位
 // （服务端派生，只读），销售填的是量/零售价/折扣。
@@ -106,7 +110,9 @@ async function reload() {
       if (seq !== reloadSeq) return
       sellable.value = r
     } else if (tab.value === 'demand') {
-      const r = (await listDemandCards()).items
+      // 2026-11-12 复审审计 P2-1：筛选下拉此前是死的（reload 永不传 status
+      // ⇒ 换筛选只重取同一份未过滤清单）。状态筛选 = 服务端查询参数。
+      const r = (await listDemandCards(demandFilter.value || undefined)).items
       if (seq !== reloadSeq) return
       demandCards.value = r
     } else if (tab.value === 'dashboard') {
@@ -247,17 +253,27 @@ function removeQuoteItem(idx: number) {
   quoteItems.value.splice(idx, 1)
 }
 
-// 三档快填（风暴档 §8-5）：零售价 = 派生成本 × 档位系数（系数来自
-// sellable.tier_coefficients，settings 热改即生效）。基础价轴之外的商业
-// 折扣不动；已手改过价的行也整体重算（快填语义）。
+// 三档快填（风暴档 §8-5）：零售价（credits/1M）= 成本（法定币）× 档位系数
+// 后换算到 credits 轴（2026-11-12 复审审计 P2-2：此前把法定币价直接写进
+// credits 轴，差 ~4 个数量级）。换算链 = precomputeLines 收入算术的精确逆：
+//   cost_usd = currency==='CNY' ? cost/fx : cost
+//   rate_credits = cost_usd × coef × fx × 100 / cents_per_credit
+// ⇒ coef 倍加成的毛利率恰为 1 − 1/coef（红线判定与快填意图同构）。
+// fp 舍入先 round 到 1e-6 再 ceil（P3-4：3.0×1.6 直接 ceil 会得 4.81）。
 function applyTierCoef(tier: string) {
   const coefs = sellable.value?.tier_coefficients || {}
   const coef = coefs[tier]
   if (!coef || coef <= 0) return
+  const ph = sellable.value?.pricing_hints
+  const hints = {
+    fxRate: ph?.fx_rate ?? QUICK_FILL_FALLBACK.fxRate,
+    centsPerCredit: ph?.cents_per_credit ?? QUICK_FILL_FALLBACK.centsPerCredit,
+  }
+  if (!(hints.fxRate > 0) || !(hints.centsPerCredit > 0)) return
   quoteForm.value.tier = tier
   for (const it of quoteItems.value) {
-    if (it.cost_in != null) it.rate_in = Math.ceil(it.cost_in * coef * 100) / 100
-    if (it.cost_out != null) it.rate_out = Math.ceil(it.cost_out * coef * 100) / 100
+    if (it.cost_in != null) it.rate_in = tierQuickFillCredits(it.cost_in, it.cost_currency, coef, hints)
+    if (it.cost_out != null) it.rate_out = tierQuickFillCredits(it.cost_out, it.cost_currency, coef, hints)
   }
 }
 
@@ -630,7 +646,7 @@ onMounted(reload)
             <el-button v-if="row.status === 'sent'" size="small" type="info" @click="act(row as unknown as Quote, 'lost')">{{ t('sales.markLost') }}</el-button>
             <el-button size="small" @click="showApprovals(row as unknown as Quote)">{{ t('sales.approvals') }}</el-button>
             <el-button size="small" @click="showVersions(row as unknown as Quote)">{{ t('sales.versions') }}</el-button>
-            <el-button size="small" @click="openShares(row as unknown as Quote)">{{ t('sales.shares') }}</el-button>
+            <el-button v-if="['approved','sent','won'].includes(row.status)" size="small" @click="openShares(row as unknown as Quote)">{{ t('sales.shares') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -658,6 +674,7 @@ onMounted(reload)
           <el-button size="small" @click="applyTierCoef('aggressive')">aggressive ×{{ sellable?.tier_coefficients?.aggressive ?? '1.3' }}</el-button>
           <el-button size="small" @click="applyTierCoef('standard')">standard ×{{ sellable?.tier_coefficients?.standard ?? '1.6' }}</el-button>
           <el-button size="small" @click="applyTierCoef('conservative')">conservative ×{{ sellable?.tier_coefficients?.conservative ?? '2.0' }}</el-button>
+          <span class="tier-unit-note">{{ t('sales.rateUnitNote') }}</span>
         </div>
         <el-select
           :model-value="''"
@@ -678,12 +695,12 @@ onMounted(reload)
           </el-table-column>
           <el-table-column :label="t('sales.tokensIn')" width="130">
             <template #default="{ row }">
-              <el-input-number v-model="row.est_tokens_in" size="small" :min="0" :controls="false" />
+              <el-input-number v-model="row.est_tokens_in" size="small" :min="0" :precision="0" :step="1" :controls="false" />
             </template>
           </el-table-column>
           <el-table-column :label="t('sales.tokensOut')" width="130">
             <template #default="{ row }">
-              <el-input-number v-model="row.est_tokens_out" size="small" :min="0" :controls="false" />
+              <el-input-number v-model="row.est_tokens_out" size="small" :min="0" :precision="0" :step="1" :controls="false" />
             </template>
           </el-table-column>
           <el-table-column :label="t('sales.rateIn')" width="110">
@@ -896,6 +913,10 @@ onMounted(reload)
 .tier-quick-label {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+.tier-unit-note {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 /* 看板（W2-T2）：四数漏斗 + 三卡。间距走 4/8/12/16 阶。 */
 .dash-funnel {

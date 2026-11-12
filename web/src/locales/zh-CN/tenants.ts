@@ -29,7 +29,7 @@ export default {
     namePlaceholder: '例如: Acme Corp',
     statusLabel: '状态',
     contactLabel: '联系邮箱',
-    contactPlaceholder: 'admin@example.com',
+    contactPlaceholder: "you{'@'}company.com",
     descLabel: '描述',
     descPlaceholder: '可选',
     create: '创建',

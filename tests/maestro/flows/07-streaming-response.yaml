@@ -1,0 +1,71 @@
+appId: com.llmgateway.admin
+---
+# 测试7：流式响应测试
+
+# 1. 登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+
+# 2. 进入API测试页面
+- tapOn: "API测试"
+- assertVisible: "发送请求"
+
+# 3. 配置流式请求
+- tapOn:
+    id: "model-select"
+- tapOn:
+    text: "gpt-3.5-turbo"
+- tapOn:
+    id: "stream-toggle"
+- assertVisible:
+    id: "stream-enabled-indicator"
+
+# 4. 输入测试消息
+- tapOn:
+    id: "message-input"
+- inputText: "请讲一个简短的故事"
+
+# 5. 发送请求
+- tapOn: "发送"
+- assertVisible: "正在接收流式响应"
+
+# 6. 验证流式输出
+- waitForAnimationToEnd:
+    timeout: 10000
+- assertVisible:
+    id: "streaming-content"
+- assertVisible: "已完成"
+
+# 7. 切换暗主题验证流式响应
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+- assertVisible:
+    id: "streaming-content"
+
+# 8. 测试流式中断
+- tapOn:
+    id: "message-input"
+- inputText: "请写一篇长文章"
+- tapOn: "发送"
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "stop-button"
+- assertVisible: "已停止"
+
+# 9. 查看流式日志
+- tapOn: "查看日志"
+- assertVisible: "流式事件"
+- assertVisible: "数据块"
+- tapOn: "关闭"
+
+# 10. 退出
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"

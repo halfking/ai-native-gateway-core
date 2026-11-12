@@ -284,13 +284,47 @@ func TestMigration890RecentSuccessRateMatchesRuntimeSSOT(t *testing.T) {
 	}
 	migBody := seg[o2+len("AS $$") : o2+len("AS $$")+c2]
 
-	if normalizeSQL885(migBody) != normalizeSQL885(ssotBody) {
+	// ★ 2026-11-12（48h 审计第五轮）：SSOT 的谓词在 962 **合法演进**了
+	//   （改成与既有索引 idx_session_turns_hot_credential_ts 同形，
+	//    修「凭据监控摘要在 245/154 上必 500」）。
+	//   ⇒ 「逐字相等」必须允许**这一条被钉住的 delta**，否则这道门会对
+	//     合法演进报红（假红），久了就没人信它。
+	//   ⇒ 做法：把 SSOT 归一化后**折叠掉 delta**再比 ⇒ delta 之外的任何漂移
+	//     仍然红（门的牙齿保留），合法演进不再被误报。
+	//   ⚠ 折叠只许在归一化之后做（空白已折叠 ⇒ 文本形态唯一）。
+	normalizedMig := normalizeSQL885(migBody)
+	normalizedSSOT := foldIndexAlignedPredicate962(normalizeSQL885(ssotBody))
+
+	if normalizedMig != normalizedSSOT {
 		t.Fatalf("890's recent_success_rate body and db.recentSuccessRateEnsureSQL have drifted.\n"+
 			"Consequence: the gateway's boot-time CREATE OR REPLACE would RESTORE the "+
 			"v1 leg that 890 just removed ⇒ every restart re-breaks the provider "+
 			"candidate query ⇒ 100%% traffic failure (and the symptom looks like "+
 			"'all upstreams down', not like a migration mismatch).\n"+
 			"--- migration ---\n%s\n--- runtime SSOT ---\n%s", migBody, ssotBody)
+	}
+
+	// ★★ 正向断言：SSOT 必须携带**索引同形**谓词。
+	//
+	// ⚠⚠ 没有它，上面那个「折叠」就变成了「允许退回旧形态」：
+	//   SSOT 退回「正则守卫 + AND + 数值相等」时，折叠后仍然与 890 相等
+	//   ⇒ 这道门恒绿 ⇒ **缺陷原样复发**（2026-11-12 生产实测形态：
+	//   迁移 962 已记账、函数体仍是旧谓词 ⇒ monitor-summary 稳定 500）。
+	// ⇒ 这条断言是「折叠」的配套：**允许 delta，但不许退回**。
+	if !strings.Contains(ssotBody, "CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint") {
+		t.Fatalf("db.recentSuccessRateEnsureSQL must carry the index-aligned predicate "+
+			"(CASE WHEN credential_id ~ '^[0-9]+$' THEN credential_id::bigint ELSE NULL::bigint END).\n"+
+			"The old form (regex guard AND credential_id::bigint = $1) is NOT the index key "+
+			"expression of idx_session_turns_hot_credential_ts ⇒ the planner cannot use that index ⇒ "+
+			"every call degrades to a full 3h-window scan (13.2s) ⇒ the credential monitor summary "+
+			"crosses its 15s context and returns 500 (245/154 production evidence).\n"+
+			"--- runtime SSOT ---\n%s", ssotBody)
+	}
+	if strings.Contains(ssotBody, "AND credential_id::bigint = p_credential_id") {
+		t.Fatalf("db.recentSuccessRateEnsureSQL still carries the old predicate form "+
+			"(regex guard AND credential_id::bigint = p_credential_id) — it must be index-aligned "+
+			"(migration 962 + db.recentSuccessRateEnsureSQL are two carriers of the SAME body).\n"+
+			"--- runtime SSOT ---\n%s", ssotBody)
 	}
 }
 

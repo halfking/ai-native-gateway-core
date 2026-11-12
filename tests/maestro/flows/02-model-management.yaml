@@ -1,0 +1,66 @@
+appId: com.llmgateway.admin
+---
+# 测试2：模型管理功能
+
+# 1. 登录
+- launchApp
+- tapOn: "用户名"
+- inputText: "admin"
+- tapOn: "密码"
+- inputText: "${ADMIN_PASSWORD}"
+- tapOn: "登录"
+- assertVisible: "仪表盘"
+
+# 2. 进入模型管理页面
+- tapOn: "模型管理"
+- assertVisible: "模型列表"
+- assertVisible: "添加模型"
+
+# 3. 测试明主题下的模型列表
+- assertVisible: "模型名称"
+- assertVisible: "提供商"
+- assertVisible: "状态"
+- assertVisible: "操作"
+
+# 4. 切换到暗主题
+- tapOn:
+    id: "theme-toggle"
+- assertVisible:
+    id: "dark-theme-indicator"
+
+# 5. 验证暗主题下模型列表UI
+- assertVisible: "模型列表"
+- assertVisible: "添加模型"
+- assertVisible: "模型名称"
+
+# 6. 测试模型搜索功能
+- tapOn:
+    id: "model-search-input"
+- inputText: "gpt"
+- assertVisible: "gpt-4"
+
+# 7. 清空搜索
+- tapOn:
+    id: "clear-search"
+- assertVisible: "模型列表"
+
+# 8. 测试模型详情查看
+- tapOn:
+    text: "查看详情"
+    index: 0
+- assertVisible: "模型详情"
+- assertVisible: "基本信息"
+- assertVisible: "配置参数"
+- tapOn: "关闭"
+
+# 9. 测试模型状态切换
+- tapOn:
+    text: "禁用"
+    index: 0
+- assertVisible: "确认禁用"
+- tapOn: "取消"
+
+# 10. 退出登录
+- tapOn:
+    id: "user-menu"
+- tapOn: "退出登录"

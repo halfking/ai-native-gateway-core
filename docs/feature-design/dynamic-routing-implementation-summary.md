@@ -134,7 +134,7 @@
   - `formatLatency()` - 格式化延迟
   - `formatTokens()` - 格式化 token 数量
 - ✅ 常量定义：
-  - `ROUTE_PHASE_LABELS` - 阶段标签（中文）
+  - `ROUTE_PHASE_LABEL_KEYS` - 阶段 i18n 键（显示名在 locales/<locale>/trace.ts 的 routePhase 段）
   - `ROUTE_PHASE_COLORS` - 阶段颜色主题
 
 ## 技术架构

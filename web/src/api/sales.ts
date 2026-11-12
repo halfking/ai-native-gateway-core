@@ -60,6 +60,14 @@ export interface SellableList {
   withheld_count: number
   // 三档一键报价系数（settings 热改即生效；仅前端快填用，服务端不校验）。
   tier_coefficients?: Record<string, number>
+  // 单位换算事实源（2026-11-12 复审审计 P2-2）：credits = cost_usd × coef
+  // × fx × 100 / cents_per_credit（precomputeLines 收入算术的精确逆）。
+  pricing_hints?: PricingHints
+}
+
+export interface PricingHints {
+  fx_rate: number
+  cents_per_credit: number
 }
 
 export interface SupplyAnnotationUpsert {

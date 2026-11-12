@@ -383,6 +383,9 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 			{"parallel_tool_calls", req.ParallelToolCalls != nil},
 			{"modalities", len(req.Modalities) > 0},
 			{"audio", req.AudioConfig != nil},
+			// 2026-11-11 审计第二轮（还原通道覆盖矩阵收口）：seed 此前
+			// 被静默丢弃 —— IR 结构化字段有解析、无发射、无披露。
+			{"seed", req.Seed != nil},
 		}
 		for _, f := range openAIOnly {
 			if !f.have {
@@ -395,6 +398,21 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 				ProtocolAnthropicMessages,
 				"loss",
 				"OpenAI Chat Completions-only field has no Anthropic equivalent",
+				nil,
+			)
+		}
+		// 2026-11-11 审计第二轮：repetition_penalty（vLLM/GLM/Qwen/Ark/
+		// OpenRouter 通用扩展，paramreg KindIRHandled）此前被静默丢弃。
+		// 不放进 openAIOnly 列表：它不是 OpenAI 原生字段，来源可能是任何
+		// openai 族线格式，措辞须如实。
+		if req.RepetitionPenalty != nil {
+			ReportProtocolLoss(
+				reqID,
+				"repetition_penalty",
+				ifaceNonEmpty(src, ProtocolOpenAIChat),
+				ProtocolAnthropicMessages,
+				"loss",
+				"repetition_penalty has no Anthropic equivalent",
 				nil,
 			)
 		}
@@ -625,16 +643,13 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 	// The original content carries order and block metadata such as cache_control.
 	// Keep a proven mirror there and suppress only its corresponding canonical
 	// call below. Track occurrences so duplicate actual calls remain visible.
-	represented := make([]bool, len(msg.ToolCalls))
+	//
+	// 2026-11-11（48h 审计第三轮）：「代表判定」收敛到 tool_calls_canonical.go 的
+	// representedToolCallIndexes 单一实现。此前本函数内联了同一规则（与
+	// canonicalToolCalls 引入的同日），规则双主必漂——本提交的 D1–D5 修复
+	// 恰恰是以「收敛单一语义源」为纲的。
+	represented := representedToolCallIndexes(msg)
 	for _, block := range msg.Content {
-		if block.Type == "tool_use" && block.ToolUse != nil {
-			for i, call := range msg.ToolCalls {
-				if !represented[i] && call.ID == block.ToolUse.ID && call.Function.Name == block.ToolUse.Name && call.Function.Arguments == string(block.ToolUse.Input) {
-					represented[i] = true
-					break
-				}
-			}
-		}
 		if block.Type == "text" && block.Text == "" {
 			continue
 		}

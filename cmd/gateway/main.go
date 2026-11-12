@@ -306,6 +306,7 @@ func main() {
 	// after dbConn is initialized.
 	var peakCollector *bg.ConcurrencyPeakCollector
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
+	var marketScoringWorker *bg.MarketScoringWorker
 	var statsMinuteAccumulator *stats.MinuteAccumulator
 	var statsEventWriter *stats.EventWriter
 	var statsInboxConsumer *stats.InboxConsumer
@@ -1721,6 +1722,16 @@ func main() {
 	providerClient := provider.NewClient()
 	if fpSlotRedis != nil {
 		providerClient.SetAvailabilityRedis(fpSlotRedis)
+		// 2026-11-11（缓存与路由状态即时同步轮）：**跨实例**候选缓存失效桥。
+		//   候选计划的内容取决于跨进程共享事实（探测判定：availability_state /
+		//   broken_confirmed 裁剪，见 brokenPairExcludeSQL），而判定可能是在
+		//   **别的进程**里翻的（蓝绿两槽同时在跑 / 多副本）⇒ 进程内失效不够
+		//   ⇒ 别的实例的缓存里那条「已被别处判死的桶」还能再活 30s
+		//   ⇒ 表现就是「路由总是命中不可用或失败的供应商桶」。
+		//   通道形状与 URSM v2 的节点失效通道同构（见
+		//   provider/candidate_cache_invalidation.go 文件头）。
+		//   ★ 没有 Redis ⇒ 整条桥不启动 ⇒ 行为退回到「进程内失效 + 30s 上界」。
+		provider.StartCandidateCacheInvalidationBridge(context.Background(), providerClient, fpSlotRedis)
 	}
 	if dbConn != nil && dbConn.Enabled() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
@@ -1945,6 +1956,9 @@ func main() {
 		}
 		routingExec.ChatToAnthropic = streaming.ConvertChatRequestToAnthropic
 		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
+		// 2026-11-12（审计第二轮批 5）：responses 客户端 IR 主路径的断路器应急回退
+		//（主路径 = executor 按 ClientProtocol 分派 ir.ParseResponses）。
+		routingExec.ResponsesToChat = streaming.ConvertResponsesBodyToChat
 
 		// Phase B (2026-06-22): IR-based protocol converter.
 		// 2026-08-27: restored from deployed build 298201fe0. IR is the
@@ -4661,6 +4675,16 @@ func main() {
 				modelProbe.SetKeyring(keyring)
 			}
 			modelProbe.SetAvailabilityCache(modelAvailabilityCache)
+			// 2026-11-11（缓存与路由状态即时同步轮）：★ 探针翻判定 ⇒ 候选缓存作废。
+			//   ★ 之前**这个 runner 一次都没通知过** ⇒ ⇒ 绑定被标成不可用后，
+			//     缓存里那条计划还能再被选中最多 30s（candidateCacheTTL）
+			//     ⇒ ⇒ 表现就是「路由总是命中不可用或失败的供应商桶」。
+			//   ★ 新探针栈的 nodeProbeWorker 早就有这个注入点（bg/node_probe.go），
+			//     而 legacy 栈没有 ⇒ ⇒ **同一个缺陷只修了一半** ⇒ 本行补齐另一半。
+			//   ★ 注意：★ 新模式下 consensus 循环被跳过，但 **TriggerManual
+			//     （管理端「立即探测」）走的是同一条 applyResult** ⇒ ⇒
+			//     这条路在新模式下**也是活的**。
+			modelProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			slog.Info("CHECKPOINT: before modelProbe.Start")
 			if useNewProbeMode() {
 				slog.Info("modelProbe (legacy 5min consensus) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
@@ -5959,6 +5983,10 @@ func main() {
 			// domains/stats.MinuteAccumulator（后者全仓无 New* 调用方）。
 			statsMinuteRollup = bg.NewStatsMinuteRollup(dbConn.Pool())
 			statsMinuteRollup.Start(context.Background())
+			// 定稿 M2-T3：每日评分 job（C1/C2/C3 双币落 supplier_market_position，
+			// 默认 03:10 本地时 —— 同步 cron 02:30 之后；bg/market_scoring.go）。
+			marketScoringWorker = bg.NewMarketScoringWorker(dbConn.Pool())
+			marketScoringWorker.Start(context.Background())
 			// 探测排除的历史回填（superAdmin 端点）：
 			// POST /api/admin/dashboard/rollup/rebuild
 			// 游标只前进，已聚合的分钟不会被重算，存量脏数据只能靠它修正。
@@ -9027,6 +9055,9 @@ func main() {
 		}
 		if weeklyPeakRollup != nil {
 			weeklyPeakRollup.Stop()
+		}
+		if marketScoringWorker != nil {
+			marketScoringWorker.Stop()
 		}
 		if statsBoardCache != nil {
 			statsBoardCache.Stop()
