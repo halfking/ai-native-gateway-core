@@ -67,7 +67,7 @@ func TestRateLimitProviderBasic(t *testing.T) {
 	defer quickCancel()
 
 	result, err := provider.Query(quickCtx, query)
-	
+
 	// 应该要么是队列满，要么是超时
 	if err == nil {
 		if admitted, ok := result.Metadata["admitted"].(bool); ok && admitted {
@@ -76,7 +76,7 @@ func TestRateLimitProviderBasic(t *testing.T) {
 	} else if err != core.ErrBucketExceeded && err != context.DeadlineExceeded {
 		t.Logf("Got error (acceptable): %v", err)
 	}
-	
+
 	t.Logf("Request 4 correctly handled: err=%v, admitted=%v", err, result.Metadata["admitted"])
 }
 
@@ -93,7 +93,7 @@ func TestRateLimitProviderWindowReset(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	
+
 	windowStart := fakeClock.Now().Truncate(config.Window)
 
 	key := core.BucketKey{
@@ -128,7 +128,7 @@ func TestRateLimitProviderWindowReset(t *testing.T) {
 	// 第3个请求应该被拒绝（使用短超时）
 	quickCtx, quickCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer quickCancel()
-	
+
 	result, err := provider.Query(quickCtx, query)
 	if err == nil {
 		if admitted, ok := result.Metadata["admitted"].(bool); ok && admitted {
@@ -169,7 +169,7 @@ func TestRateLimitProviderConcurrency(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	
+
 	limit := 10
 	concurrency := 20
 
@@ -233,7 +233,11 @@ func TestRateLimitProviderConcurrency(t *testing.T) {
 // TestMinuteBucketAdmissionAdapter 测试适配器兼容性
 func TestMinuteBucketAdmissionAdapter(t *testing.T) {
 	config := DefaultConfig()
-	config.Window = 1 * time.Second // 较长窗口确保在同一窗口内
+	// ★ 2026-11-12（48h 审计第五轮）窗口改 1h：★ 限流窗口是**绝对时间网格**
+	// ★ （provider 侧 `p.sameWindow(bucket.start, now)` 按当前时间判是否换窗）
+	// ★ ⇒ 只要两次调用之间跨过网格边界，配额就**已刷新** ⇒ 「超出 limit 应当被拒」的断言失真。
+	// ★ 1s 窗口在负载下（12 路并行实测 1/12 假红）会跨界 ⇒ 用 1h 窗口把边界概率压到可忽略。
+	config.Window = 1 * time.Hour
 	admission := NewMinuteBucketAdmissionWithConfig(config)
 
 	ctx := context.Background()
@@ -259,7 +263,7 @@ func TestMinuteBucketAdmissionAdapter(t *testing.T) {
 	// 下一个请求应该失败或排队，使用短超时避免长时间等待
 	ctx2, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	
+
 	result, err := admission.Admit(ctx2, keyID, limit)
 	if err == nil && result.Admitted {
 		t.Error("Request beyond limit should not be immediately admitted")
@@ -271,7 +275,11 @@ func TestMinuteBucketAdmissionAdapter(t *testing.T) {
 // TestMinuteBucketAdmissionWithWait 测试等待机制
 func TestMinuteBucketAdmissionWithWait(t *testing.T) {
 	config := DefaultConfig()
-	config.Window = 100 * time.Millisecond
+	// ★ 2026-11-12（48h 审计第五轮）窗口改长：★ 窗口是**绝对时间网格**（`now.Truncate(window)`）
+	// ★ ⇒ 若两次调用之间跨过了窗口边界，第二次会落进**新窗口**⇒ 配额已刷新 ⇒ 断言失真。
+	// ★ 100ms 窗口在负载下（8 路并行实测 1/8 假红）会跨边界 ⇒ 本测试用 1s 窗口
+	// ★（与同文件 TestRateLimitProviderBasic / TestMinuteBucketAdmissionAdapter 同款口径）。
+	config.Window = 1 * time.Second
 	admission := NewMinuteBucketAdmissionWithConfig(config)
 
 	ctx := context.Background()
@@ -289,7 +297,7 @@ func TestMinuteBucketAdmissionWithWait(t *testing.T) {
 	// 下一个请求需要等待，使用短超时避免测试卡住
 	ctx2, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	
+
 	notified := false
 	result, err := admission.AdmitRPMWithWait(ctx2, keyID, limit, func(ar AdmissionResult) {
 		notified = true
@@ -310,14 +318,19 @@ func TestMinuteBucketAdmissionWithWait(t *testing.T) {
 	if !result.Admitted && !notified {
 		t.Error("Should either be admitted or notified")
 	}
-	
+
 	t.Logf("Test completed: admitted=%v, notified=%v, err=%v", result.Admitted, notified, err)
 }
 
 // TestMinuteBucketAdmissionWithBudget 测试预算控制
 func TestMinuteBucketAdmissionWithBudget(t *testing.T) {
 	config := DefaultConfig()
-	config.Window = 100 * time.Millisecond
+	// ★ 2026-11-12（48h 审计第五轮）窗口改长（本测试原为 100ms ⇒ **负载下必假红**）：
+	// ★ 窗口是**绝对时间网格**（`now.Truncate(window)`）⇒ 两次 Admit 之间一旦跨过 100ms 边界，
+	// ★ 第二次落进**新窗口**⇒ 配额已刷新 ⇒ **本该「预算超限」的请求被直接放行** ⇒
+	// ★ 断言 `err == nil` 失败。★ 实测复现：串行 3/3 绿；**8 路并行 1/8 红**。
+	// ★ 改用 1s 窗口（与同文件其它三个用例同款口径）⇒ 窗口内不会跨界 ⇒ 断言确定。
+	config.Window = 1 * time.Hour
 	config.MaxWaitTime = 50 * time.Millisecond
 	admission := NewMinuteBucketAdmissionWithConfig(config)
 
@@ -339,9 +352,9 @@ func TestMinuteBucketAdmissionWithBudget(t *testing.T) {
 	if err == nil {
 		t.Error("Expected an error when budget is exceeded")
 	}
-	
+
 	t.Logf("Got error (expected): %v", err)
-	t.Logf("Result: admitted=%v, waiting=%v, position=%d, estimatedWait=%ds", 
+	t.Logf("Result: admitted=%v, waiting=%v, position=%d, estimatedWait=%ds",
 		result.Admitted, result.Waiting, result.Position, result.EstimatedWaitSec)
 
 	if result.Admitted {
