@@ -451,11 +451,11 @@ async function disableSelected() {
   if (!isSuperAdmin() && !isTenantAdmin()) {
     const currentUsername = store.userInfo?.username || ''
     if (k.owner_user !== currentUsername) {
-      error.value = '您只能禁用自己的密钥'
+      error.value = t('keys.disableOwnKeyOnly')
       return
     }
   }
-  
+
   if (!(await confirmDialog(t('keys.list.confirm.disable', { prefix: k.key_prefix })))) return
   try {
     await disableKey(k.id)
@@ -480,11 +480,11 @@ async function enableSelected() {
   if (!isSuperAdmin() && !isTenantAdmin()) {
     const currentUsername = store.userInfo?.username || ''
     if (k.owner_user !== currentUsername) {
-      error.value = '您只能启用自己的密钥'
+      error.value = t('keys.enableOwnKeyOnly')
       return
     }
   }
-  
+
   try {
     await enableKey(k.id)
     closeKeyDrawer()
@@ -679,9 +679,9 @@ onBeforeUnmount(() => {
           class="btn btn-ghost btn-xs"
           :class="{ 'btn-primary': filterOwner === store.userInfo.username }"
           @click="filterOwner = filterOwner === store.userInfo.username ? '' : store.userInfo.username"
-          :title="filterOwner === store.userInfo.username ? '显示全部' : '仅看我的密钥'"
+          :title="filterOwner === store.userInfo.username ? $t('keys.showAllOwnerFilter') : $t('keys.filterMineTitle')"
         >
-          {{ filterOwner === store.userInfo.username ? '✓ 我的' : '我的' }}
+          {{ filterOwner === store.userInfo.username ? $t('keys.mineOnlyActive') : $t('keys.mineOnlyBtn') }}
         </button>
         <button
           v-if="filterTenant || filterApp || filterProfile || filterOwner"
@@ -959,15 +959,15 @@ onBeforeUnmount(() => {
             <input v-model="newKeyAlias" placeholder="如: prod, dev, zhangsan-cli" />
           </div>
           <div class="form-group">
-            <label>归属用户（可选）</label>
-            <input 
-              v-model="newOwner" 
-              placeholder="如: admin" 
+            <label>{{ $t('keys.ownerOptionalLabel') }}</label>
+            <input
+              v-model="newOwner"
+              :placeholder="$t('keys.ownerPlaceholder')"
               :disabled="!isSuperAdmin() && !isTenantAdmin()"
-              :title="(!isSuperAdmin() && !isTenantAdmin()) ? '普通用户只能创建归属自己的密钥' : ''"
+              :title="(!isSuperAdmin() && !isTenantAdmin()) ? $t('keys.ownerLockedHint') : ''"
             />
             <span v-if="!isSuperAdmin() && !isTenantAdmin() && newOwner" class="hint">
-              密钥将归属于当前用户（{{ newOwner }}）
+              {{ $t('keys.ownerWillBeYou', { name: newOwner }) }}
             </span>
           </div>
           <div class="form-group">
