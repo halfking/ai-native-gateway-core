@@ -62,8 +62,10 @@ describe('dark skin bridging (EP components)', () => {
   })
 
   it('element-dark.css bridges EP surfaces to app tokens at higher specificity', () => {
-    // 选择器只出现在规则处（行首），亮色不得被波及：桥接只存在于 dark 门控内
-    expect(elementDarkCss.match(/(^|\n)html\.dark\[data-theme/g)).toHaveLength(1)
+    // 选择器只出现在规则处（行首），亮色不得被波及：桥接只存在于 dark 门控内。
+    // （多行选择器按行首计有 16 处 = 1 变量桥接块 + 7 个 EP 裸 #fff 覆盖规则展开，
+    // 2026-11-12 P3 收口；逐处清单钉在下一守卫。）
+    expect(elementDarkCss.match(/(^|\n)html\.dark\[data-theme/g)).toHaveLength(16)
     for (const epVar of [
       '--el-bg-color:',
       '--el-bg-color-overlay:',
@@ -74,6 +76,44 @@ describe('dark skin bridging (EP components)', () => {
     ]) {
       expect(elementDarkCss).toContain(epVar)
       expect(elementDarkCss).toContain('var(--kx-')
+    }
+  })
+
+  it('EP theme-chalk bare #fff leftovers have dark overrides (2026-11-12 P3 closeout)', () => {
+    // EP theme-chalk/index.css 有 7 处不消费 --el-* 变量的裸白底（carousel 指示器/
+    // color-picker 滑块/date-range-picker 内嵌面板/el-table 固定角补丁/tour 按钮
+    // 与圆点）——--el-bg-color 变量桥接管不到它们，暗色下弹层偏亮。
+    // 守卫逐处钉住 element-dark.css 必须带对应覆盖（选择器与 EP 原选择器一致）。
+    const overrides: Array<[RegExp, string]> = [
+      [/html\.dark\[data-theme='dark'\] \.el-carousel__button/, 'carousel indicator'],
+      [/html\.dark\[data-theme='dark'\] \.el-color-hue-slider__thumb/, 'color hue thumb'],
+      [
+        /html\.dark\[data-theme='dark'\] \.el-color-alpha-slider__thumb/,
+        'color alpha thumb',
+      ],
+      [
+        /html\.dark\[data-theme='dark'\] \.el-date-range-picker__time-picker-wrap \.el-picker-panel/,
+        'date-range inner panel',
+      ],
+      [/html\.dark\[data-theme='dark'\] \.el-table__fixed-right-patch/, 'table right patch'],
+      [/html\.dark\[data-theme='dark'\] \.el-table__fixed-left-patch/, 'table left patch'],
+      [
+        /html\.dark\[data-theme='dark'\] \.el-tour\.el-tour--primary \.el-button--default/,
+        'tour primary button',
+      ],
+      [
+        /html\.dark\[data-theme='dark'\] \.el-tour\.el-tour--primary \.el-tour-indicator/,
+        'tour indicator',
+      ],
+    ]
+    for (const [pattern, label] of overrides) {
+      const found = elementDarkCss.match(pattern)
+      expect(found, `missing dark override for: ${label}`).not.toBeNull()
+    }
+    // 覆盖只允许出现在 dark 门控内：文件中不得有裸（非 html.dark 前缀）的 EP
+    // 组件选择器形态，防止亮色被波及
+    for (const m of elementDarkCss.matchAll(/(^|\n)\.el-(carousel|color|date|table|tour)/g)) {
+      expect(m).toBeUndefined()
     }
   })
 

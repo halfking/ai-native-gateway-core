@@ -56,3 +56,66 @@ html.dark[data-theme='dark'] {
   --el-color-primary-light-8: color-mix(in srgb, var(--kx-primary) 20%, #000000);
   --el-color-primary-light-9: color-mix(in srgb, var(--kx-primary) 10%, #000000);
 }
+
+/*
+ * EP theme-chalk 内不消费 --el-* 变量的裸 #fff 残留（2026-11-12 主题验证 P3 收口）。
+ * 来源：element-plus/theme-chalk/index.css 中 6 处 background:#fff + 1 处 #ffffff26，
+ * 组件侧未走变量，--el-bg-color 桥接管不到，暗色下弹层偏亮：
+ *   ① .el-carousel__button（指示器，background-color:#fff）
+ *   ② .el-color-hue-slider__thumb / .el-color-alpha-slider__thumb（滑块）
+ *   ③ .el-date-range-picker__time-picker-wrap .el-picker-panel（内嵌面板）
+ *   ④ .el-table__fixed-*-patch（固定列四角补丁，background:#fff）
+ *   ⑤ .el-tour--primary .el-button--default / .el-tour-indicator（引导层按钮/圆点）
+ * 覆盖选择器与 EP 原选择器逐字一致（同特异性，靠本文件后于 index.css 加载取胜出，
+ * main.ts 的引入顺序是前提）；色值对齐桥接面板体系：表面用 --el-bg-color-overlay
+ * （= --kx-surface），滑块/圆点用 --kx-border，tour 主按钮文字回 --kx-text。
+ */
+html.dark[data-theme='dark'] .el-carousel__button {
+  background-color: var(--el-bg-color-overlay);
+}
+
+html.dark[data-theme='dark'] .el-color-hue-slider__thumb,
+html.dark[data-theme='dark'] .el-color-alpha-slider__thumb {
+  background: var(--kx-border);
+}
+
+html.dark[data-theme='dark'] .el-date-range-picker__time-picker-wrap .el-picker-panel {
+  background: var(--el-bg-color-overlay);
+}
+
+html.dark[data-theme='dark']
+    .el-table__header-wrapper
+    tr
+    td.el-table__fixed-right-patch,
+html.dark[data-theme='dark']
+    .el-table__header-wrapper
+    tr
+    th.el-table__fixed-right-patch,
+html.dark[data-theme='dark'] .el-table__body-wrapper tr td.el-table__fixed-right-patch,
+html.dark[data-theme='dark'] .el-table__body-wrapper tr th.el-table__fixed-right-patch,
+html.dark[data-theme='dark']
+    .el-table__footer-wrapper
+    tr
+    td.el-table__fixed-right-patch,
+html.dark[data-theme='dark']
+    .el-table__footer-wrapper
+    tr
+    th.el-table__fixed-right-patch,
+html.dark[data-theme='dark'] .el-table__fixed-right-patch,
+html.dark[data-theme='dark'] .el-table__fixed-left-patch {
+  background: var(--el-bg-color-overlay);
+}
+
+html.dark[data-theme='dark'] .el-tour.el-tour--primary .el-button--default {
+  color: var(--kx-text);
+  border-color: var(--el-color-primary);
+  background: var(--el-bg-color-overlay);
+}
+
+html.dark[data-theme='dark'] .el-tour.el-tour--primary .el-tour-indicator {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+html.dark[data-theme='dark'] .el-tour.el-tour--primary .el-tour-indicator.is-active {
+  background: var(--kx-text);
+}
