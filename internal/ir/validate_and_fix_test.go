@@ -6,6 +6,10 @@ import (
 )
 
 func TestValidateAndFixRequest_EmptyMessages(t *testing.T) {
+	// 2026-11-12：role alternation 默认已翻转为合并（批 2）。本测试验证的是
+	// 「空消息删除」语义，与交替策略无关 ⇒ 显式关闭合并，避免 [user,user]
+	// 被合并成 1 条干扰消息数断言。
+	t.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", "false")
 	req := &InternalRequest{
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hello"}}},

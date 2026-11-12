@@ -1,0 +1,61 @@
+# 提示词优化服务 —— 多阶段构建
+#
+# 关键约束（2026-11-11 实测修正）：
+#   - Go 版本必须与 go.mod 对齐（本仓是 1.27.2）。原版写 golang:1.21-alpine
+#     ⇒ 编译器比 go.mod 老 ⇒ 直接报 "go.mod requires go >= 1.27.2"。
+#   - 本仓用 vendor/ 模式（vendor/ 存在 ⇒ go 自动 -mod=vendor）。
+#     原版的 `go mod download` 在 vendor 模式下毫无用处，且会因需要访问
+#     模块代理而在离线/内网构建中失败。改为直接用 vendor/ 编译。
+#   - 构建只需 go.mod/go.sum/vendor/ + 源码树；大体积历史二进制由
+#     Dockerfile.prompt-optimizer.dockerignore 排除（不动共享 .dockerignore）。
+
+# ── 构建阶段 ─────────────────────────────────────────────────────────
+FROM golang:1.27-alpine AS builder
+
+WORKDIR /build
+
+# git：部分依赖的 go.mod 可能含 git 伪版本；make：部分包的构建脚本需要。
+RUN apk add --no-cache git make
+
+# 先复制依赖描述文件，让依赖层可被缓存。
+COPY go.mod go.sum ./
+
+# vendor 目录是 vendor 模式编译的必需物，必须与 go.mod 同步复制。
+COPY vendor/ ./vendor/
+
+# 复制源码。
+#
+# 为什么不用"手工枚举依赖闭包"（只 COPY 几个包目录）：
+#   手工枚举必然漏掉传递依赖（实测漏了 pkg/httputil 与 metrics ⇒ 构建失败），
+#   且每次新增内部依赖都要改 Dockerfile ⇒ 脆。
+#   改用"整树复制 + Dockerfile 专属 .dockerignore 排除大体积产物"，
+#   编译结果与本地 `go build ./cmd/prompt-optimizer` 完全一致。
+#   大文件（>250MB 历史二进制等）由 Dockerfile.prompt-optimizer.dockerignore 排除，
+#   不动仓库根的共享 .dockerignore，避免影响其它镜像。
+COPY . .
+
+# 编译前先确认 vendor 模式生效（vendor/ 存在 ⇒ go 自动 -mod=vendor）。
+RUN go list -mod=vendor ./cmd/prompt-optimizer >/dev/null
+
+# CGO_ENABLED=0 ⇒ 静态二进制，可跑在 alpine 上。
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/prompt-optimizer-service ./cmd/prompt-optimizer
+
+# ── 运行阶段 ─────────────────────────────────────────────────────────
+FROM alpine:3.20
+
+WORKDIR /app
+
+# ca-certificates：访问 https 上游时需要；curl：健康检查与排障。
+RUN apk add --no-cache ca-certificates curl wget && \
+    mkdir -p /app/logs
+
+COPY --from=builder /out/prompt-optimizer-service ./prompt-optimizer-service
+
+EXPOSE 8090
+
+# 容器内自检：用与 compose 相同的探针路径，避免"compose 说健康、容器说不健康"。
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=6 \
+  CMD wget -q -O- http://127.0.0.1:8090/health >/dev/null 2>&1 || exit 1
+
+CMD ["./prompt-optimizer-service"]

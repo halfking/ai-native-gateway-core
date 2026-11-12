@@ -421,17 +421,12 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Build the legacy Chat fallback only after auto-route has rewritten the
-	// Responses model, so both protocol bodies describe the same attempt.
-	chatBody := convertResponsesToChatBody(&reqBody)
-	chatBodyBytes, err := json.Marshal(chatBody)
-	if err != nil {
-		attemptErrCode = "conversion_error"
-		attemptErrMsg = "internal conversion error"
-		attemptClientModel = reqBody.Model
-		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
-		return
-	}
+	// 2026-11-12（审计第二轮批 5）：/v1/responses 入站迁移 IR 主路径。
+	// 此前此处把手写 convertResponsesToChatBody 的产物作为 ExecParams.BodyBytes
+	// 喂给 executor（按 openai-chat 解析）—— Responses 专有顶层参数在转换中
+	// 被静默丢弃。迁移后 BodyBytes 直接送 responses 原文，由 executor 按客户端
+	// 协议分派 ir.ParseResponses；手写转换退役为 IR 断路器应急回退
+	//（Executor.ResponsesToChat，main.go 装配）。
 	responsesBodyBytes := append([]byte(nil), bodyBytes...)
 
 	// 2026-07-14: lowercase at the wire boundary.
@@ -775,9 +770,11 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                          streamWriter,
-			R:                          r,
-			BodyBytes:                  chatBodyBytes,
+			W: streamWriter,
+			R: r,
+			// 2026-11-12（批 5）：BodyBytes 直接送 responses 原文（IR 主路径），
+			// executor 按客户端协议分派 ir.ParseResponses。
+			BodyBytes:                  responsesBodyBytes,
 			ResponsesBodyBytes:         responsesBodyBytes,
 			FailoverNotices:            executors.NewFailoverNoticeCollector(),
 			IsStream:                   isStream,
@@ -964,7 +961,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			} else {
 				latency := int(time.Since(startTime).Milliseconds())
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-					providerID, credentialID, blockCode, blockMessage, latency, chatBodyBytes, keyInfo, r)
+					providerID, credentialID, blockCode, blockMessage, latency, responsesBodyBytes, keyInfo, r)
 			}
 			*attemptLogged = true
 			return
@@ -1006,7 +1003,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		} else {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-				providerID, credentialID, code, message, latency, chatBodyBytes, keyInfo, r)
+				providerID, credentialID, code, message, latency, responsesBodyBytes, keyInfo, r)
 		}
 		*attemptLogged = true
 		writeResponsesError(w, http.StatusForbidden, message, code, "blocked",
@@ -1058,7 +1055,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		attemptErrMsg = errMsg
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo, r)
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, responsesBodyBytes, keyInfo, r)
 		*attemptLogged = true
 		if usedSurvival {
 			return
@@ -1082,7 +1079,7 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				msg := i18n.T(r.Context(), i18n.MsgContentFilter,
 					map[string]any{"Reason": reason})
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-					attemptProviderID, attemptCredentialID, "content_filter", msg, latency, chatBodyBytes, keyInfo, r)
+					attemptProviderID, attemptCredentialID, "content_filter", msg, latency, responsesBodyBytes, keyInfo, r)
 				if preStreamPrepared {
 					writeResponsesStreamError(w, msg, "content_filter")
 				} else {
@@ -1157,6 +1154,23 @@ func responsesDispatchOptions(logCtx *RequestLogContext, allowProviderChange boo
 		return allowProviderChange, false, nil
 	}
 	return allowProviderChange, true, append([]string(nil), logCtx.AutoFallbackModels...)
+}
+
+// ConvertResponsesBodyToChat 把 OpenAI Responses wire 转成 legacy chat 形态。
+//
+// 2026-11-12（审计第二轮批 5）：主路径已迁移 ir.ParseResponses（executor 按
+// 客户端协议分派），本转换从请求热路径退役，仅作 IR 断路器打开时的应急回退
+// （Executor.ResponsesToChat，cmd/gateway/main.go 装配）——与
+// ConvertAnthropicBodyToOpenAI 之于 anthropic 分支的地位相同。
+// Responses 专有顶层参数的语义权威在 internal/ir/parse_responses.go；本函数
+// 的丢弃/走样行为（text.format 原样透传等）见 convertResponsesToChatBody
+// 注释与批 5 审计记录，不应再作为语义参考。
+func ConvertResponsesBodyToChat(body []byte) ([]byte, error) {
+	var req responsesRequestBody
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("unmarshal responses body: %w", err)
+	}
+	return json.Marshal(convertResponsesToChatBody(&req))
 }
 
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {

@@ -1,7 +1,7 @@
 {
   "note": "r1048 轮（2026-10-29）：【专用构建缓存门】的排除清单登记簿。★ 排除是【政策】⇒ ⇒ 政策会漂 ⇒ ⇒ ⇒ 所以每条排除都必须写【理由】+【实测计数】⇒ ⇒ ⇒ 门（scripts/ursmcheck/gocache_script_family_guard_test.go 的判据⑥）拿实测值逐字对拍 ⇒ ⇒ ⇒ 「新增没人发现」与「登记值过期」两种失效形态都会被当场抓住。★ ★★ 【禁止】用本登记簿来「豁免一个本该隔离的脚本」—— ★★ 排除的是【目录】，不是【脚本】； ★★ 目录里的脚本仍受门管（★ 在作用域内的脚本必须指向专用缓存）。★ ★★ 2026-11-11（缓存与路由状态即时同步轮）：★ 实测计数 174 → **176**，两条来源都记在这里，避免下一个人猜：★★ ① **本轮新增** scripts/audit/provider-candidate-cache-invalidation-mutation.sh（跨实例候选缓存失效的变异 harness）★★ ② **并行会话**同日提交的 scripts/audit/ir-round2-extrestore-mutation.sh（IR 扩展参数还原轮的变异 harness）★ ⇒ 174 + 本轮 1 + 该条 1 = **176** ⇒ ⇒ 与**已提交树**的实测个数逐字对上（★ 在干净已提交树上实测复核过 ⇒ ⇒ CI 检出的那棵树即为此数）★★。★ ★★ **本值只记已提交树**：★ 并行会话还有在途脚本（如 scripts/audit/prompt-optimizer-mutation-verify.sh）未提交 ⇒ ⇒ 本地工作树实测会比本值多 ⇒ ⇒ 本地红、CI 绿 ⇒ ⇒ ★★ 那条一旦被提交 ⇒ ⇒ 作用域 +1 ⇒ ⇒ 门会当场红 ⇒ ⇒ ★★ 那正是门该做的（★ 「有人重新审一遍口径」）⇒ ⇒ ★★ **不预先把值调大**（★ 预调大 = 门在自己没盖住的那段上装绿）⇒ ⇒ ★★ 也不替别人改在途脚本的代码（★ 改别人在途文件 = 毁别人工作）⇒ ⇒ ★★ 登记册如实记数、红如实留痕。",
   "minCompileFiles": 100,
-  "measuredCompileFiles": 176,
+  "measuredCompileFiles": 181,
   "excludedPaths": [
     {
       "path": "docs",

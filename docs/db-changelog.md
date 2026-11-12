@@ -10890,5 +10890,27 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 | 957 | `957_self_check_error_type_kind_closure_rate_limit_observed.sql` | `358c9daab7eec74d936827083dbef7db4258455d91846cd9d4752646284fe0e7` | applied+verified |
 | 958 | `958_market_platform_registry.sql` | `155cc51aac2036b6d1b4e10af63bdaaec41e9d912b26b07d2d06990cbacb832c` | applied+verified |
 | 959 | `959_market_dual_floor_a17.sql` | `fd2164914d857808d93c409abb36173a14abc25108c6efe9fcbc068cb635674d` | applied+verified（2026-11-12 48h 审计第四轮回填：211 acc-pg17 引擎台账 gateway_db_revision_sequences 实测 applied_at=2026-11-12 01:40:50 +08、content_sha256=execution_sha256=fd216491… 与仓库文件实测 sha 逐字一致（d28d26847 终版字节）；up/down 双副本 embeddata cmp 一致；83388d51d（up 基线钉 949 版 30 列）与 d28d26847（down 改 DROP+CREATE 不加 CASCADE）两轮修正均已含在本 sha 内） |
-| 960 | `960_migration_ledger_continuity_repair.sql` | `c34632f68f7de0df19568b98ef176bf44534accd16abf2cea0d2c797d2da58d3` | registered（2026-11-12 48h 审计第四轮补登记：aeee3af58 迁移记账连续性修复——950/951/957/958 补 schema_migrations 自登记行；本行 sha 为仓库文件实测值；待部署） |
+| 960 | `960_migration_ledger_continuity_repair.sql` | `c34632f68f7de0df19568b98ef176bf44534accd16abf2cea0d2c797d2da58d3` | applied+verified（2026-11-12 48h 审计第四轮补登记；同日 245/154 部署收口轮升级为 applied：① 211 acc-pg17 引擎台账 gateway_db_revision_sequences 实测 960 行 execution_sha256=c34632f68f7d… 与仓库文件 sha 逐字一致；② 245/154 共用库（252 pg-252-pg17/llm_gateway）`public.schema_migrations` 链实测 949→960 连续无断层（950/951 正是本迁移回填的自登记行），959 applied_at=2026-11-12 04:28:31 +08 / 960 applied_at=2026-11-12 04:28:32 +08（随 245=2966 / 154=2967 的 01fea706 部署由启动 runner 应用）；950/951/957/958 四处记账断层在 252 库与 211 库均已闭合） |
+| 959 | `959_market_dual_floor_a17.down.sql` | `d326e5cceec602d94da3665fddb26c8c4a63a26b53168decd0123456fd2d9ce5` | registered（2026-11-12 245/154 部署收口轮补登记；DROP VIEW（无 CASCADE）+ CREATE VIEW 恢复 949 版 30 列，d28d26847 重写形态；本行 sha 为仓库文件实测值） |
+| 960 | `960_migration_ledger_continuity_repair.down.sql` | `8de7cee33f2c3132a2d739bf7ab9b56ccd539a61e1a33339fa72b2c59eaa2242` | registered（2026-11-12 245/154 部署收口轮补登记；本行 sha 为仓库文件实测值） |
+| 961 | `961_market_scoring_runs.sql` | `128c9b4f6c198d3ca4663886ffe778c27f138542de2e99f5515d1ddbc622a86c` | registered（2026-11-12 A-17 收口 M2-T4 轮：`market_scoring_runs` 每日评分运行台账 —— 定稿 M2-T4 告警 `price_confidence_degraded`（C3 非 trusted 绑定数环比上升）的两日读数源；supplier_market_position 是 upsert 活表没有历史 ⇒ 环比无源，本表由 bg.MarketScoringWorker（定稿 M2-T3 评分 job）在评分事务内逐日一行写入（ON CONFLICT (run_date) 幂等重放收敛）。up+down+重放三态在隔离 PG17 真库预演 rc=0（table_alive=t / 台账 1 行无重复）；六面登记（canonical up/down、embeddata 双副本字节一致、go:embed+map、dbinit StartupFiles、apply script+ledger_artifact_probe、tsv 第 361 行）+ 契约门 ×4（形态含 10 列精确计数/down 只退自己/tsv+registry 面/变异臂×2）；≥952 自登记纪律在位；本行 sha 为仓库文件实测值；**applied+verified（同日批判复审轮升级）**：随并行第五轮列车上车——211 acc-pg17 与 252 pg-252-pg17（245/154 共用库）schema_migrations 均实测 961 在位（211 构建态 422e2c90@3027 / 154 = 86cc4a24@3021 同含本迁移）；**评分 job 两库首跑活体**：market_scoring_runs 当日行 211=4126/27/4099、252=2000/27/1973，smp 行数自洽） |
+| 961 | `961_market_scoring_runs.down.sql` | `71f5443129dc4b71375e75aa1634d7bc5a75a60c6d86027abd5dc8bf4963baee` | registered（2026-11-12 A-17 收口 M2-T4 轮补登记；只 DROP 自己的表；本行 sha 为仓库文件实测值） |
 
+## 2026-11-12 — deploy 245 build_seq 2966 / 154 build_seq 2967 (01fea706) — A-17 双币 959/960 上车 + 记账链连续性验证
+
+部署面：245 活跃 release `2966-01fea706`（canary@8782，readyz 200，公网 llmgo.kxpms.cn 200）、154 活跃 release `2967-01fea706`（canary@8781，readyz 200，公网 llm.kxpms.cn 200）——48h 审计第四轮执行（版本戳 ec89de06fb22 与 01fea706 的差异仅 docs/版本戳，二进制同源，未重复部署）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 959 | `959_market_dual_floor_a17.sql` | `fd2164914d857808d93c409abb36173a14abc25108c6efe9fcbc068cb635674d` | applied+verified（252 库 schema_migrations applied_at=2026-11-12 04:28:31 +08；`v_supplier_price_vs_baseline` 实测 41 列（30+11 append-only）、`market_platform_registry` 44 行；211 引擎台账 execution_sha256 同值） |
+| 960 | `960_migration_ledger_continuity_repair.sql` | `c34632f68f7de0df19568b98ef176bf44534accd16abf2cea0d2c797d2da58d3` | applied+verified（252 库 schema_migrations applied_at=2026-11-12 04:28:32 +08；**记账链连续性验证 = 949,950,…,960 无断层**（252 与 211 两库同读数）——950/951/957/958 四处自登记断层由本迁移闭合） |
+
+★ 台账面诚实边界：252 库的 `gateway_db_revision_sequences` 引擎台账**无** 959/960 行（最新行停在 2026-10-21 的 890）——245/154 通道的迁移应用走网关启动 runner（自带 ≥952 自登记），引擎台账写面只有 211 的 seamless 部署路径在维护；记账连续性的验收量具以 `public.schema_migrations` 为准（本轮实测依据）。
+
+
+## 2026-11-12 — 48h 审计第五轮 — 962 索引同形谓词（修凭据监控摘要 500）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 962 | `962_recent_success_rate_index_aligned.sql` | `8d267fadfedb4fabe97409216cc8bd6fc7b8158572592dc53416252d16ed60e0` | registered（2026-11-12 48h 审计第五轮：把 `recent_success_rate` / `recent_cache_hit_rate` 的谓词改成与既有索引 `idx_session_turns_hot_credential_ts`（迁移 729 建）的键表达式**逐字同形** —— 旧形态「正则守卫 + AND + 数值相等」不是索引键 ⇒ planner 用不上该索引 ⇒ 每次调用退化成「扫 3 小时窗全量再过滤」（真库 EXPLAIN ANALYZE：13184 ms、Rows Removed by Filter: 1876）⇒ admin 凭据监控摘要对每个 (凭据 × 模型) 行做一次 CROSS JOIN LATERAL 调用（74 凭据 × 2015 offer = 1959 次）⇒ 稳定越过 15s context ⇒ **500**（245/154 生产实证：credential_monitor.go:762、duration_ms=15002）。同形后同查询实测 113 ms（Index Scan 命中该索引，116 倍）。★ 语义面零变化：CASE 的 ELSE 分支落 NULL ⇒ `NULL = $1` 非真 ⇒ 非数字 credential_id 仍匹配不上；不改索引/表/签名/返回契约/采样窗口。★ 本迁移同时把**在役函数体补回仓内**（此前仓内只有已随 890 退役的 v1 形态 ⇒ 迁移链不可复现）。**载体纪律**：同一函数体有两份载体（SQL 迁移文件 + Go 运行时 SSOT db.recentSuccessRateEnsureSQL / db.recentCacheHitRateEnsureSQL），boot 的 ensure 链在迁移之后跑 ⇒ 只改迁移会被 SSOT 覆盖回去 ⇒ 两份载体同改 + 跨包等价门（见 §698）。本行 sha 为仓库文件实测值；embeddata 双副本逐字节一致；**待部署**（211/245/154 列车）） |
+| 962 | `962_recent_success_rate_index_aligned.down.sql` | `71bad116fea64eae60af330490fe9dd566adacf93adedb0c5d60e1f9faedccb6` | registered（2026-11-12 48h 审计第五轮补登记；回退目标 = 962 之前的旧谓词形态（旧形态**不可命中索引**但语义等价）；本行 sha 为仓库文件实测值） |

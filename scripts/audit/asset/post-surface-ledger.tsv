@@ -20,6 +20,7 @@
 #gen_append	2026-10-29 审计轮 —— 补 1 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 682 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 2 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 683 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 5 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 685 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 8 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 690 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -595,12 +596,17 @@
 /api/users	ANY	admin/handler.go:1010	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/users/	ANY	admin/handler.go:1031	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/v1/approvals/	ANY	cmd/gateway/main.go:7870	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/v1/compare	ANY	cmd/prompt-optimizer/main.go:290	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
+/api/v1/optimize	ANY	cmd/prompt-optimizer/main.go:287	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
+/api/v1/optimize/batch	ANY	cmd/prompt-optimizer/main.go:288	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
+/api/v1/optimize/evaluate	ANY	cmd/prompt-optimizer/main.go:289	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
 /api/v1/plugin-nav	ANY	cmd/gateway/main.go:6785	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/	ANY	cmd/gateway/main.go:6775	unknown				not-probed-unresolved	★ 前缀路由 + 闭包内部分派（/settings ⇒ SettingsHandler）⇒ 静态分级解析不出（func-not-indexed），与 /api/v1/plugins/install 同族待真探测
 /api/v1/plugins/install	POST	cmd/gateway/main.go:6813	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/activate	POST	cmd/gateway/main.go:6824	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/deactivate	POST	cmd/gateway/main.go:6828	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/uninstall	POST	cmd/gateway/main.go:6832	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/prompts/optimize	ANY	cmd/prompt-optimizer/main.go:285	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
 /api/v2/capabilities	ANY	cmd/gateway/main.go:6633	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/vendors/credentials/{id}/error-detail	ANY	admin/handler.go:1384	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/dingtalk/approval-callback	POST	api/dingtalk_callback.go:307	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -619,6 +625,8 @@
 /debug/pprof/symbol	ANY	cmd/gateway/pprof_server.go:22	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /debug/pprof/trace	ANY	cmd/gateway/pprof_server.go:23	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /health	GET	mcp/control.go:108	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/health	GET	mcp/control.go:116	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ mcp/control.go 注册的 health 探针（非网关业务面）
+/health	GET	mcp/control.go:116	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ mcp/control.go 注册的 health 探针（非网关业务面）
 /healthz	ANY	cmd/gateway/main.go:6602	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /healthz	GET	mcp/control.go:109	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /healthz/full	ANY	cmd/gateway/main.go:6603	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -675,6 +683,7 @@
 /v1/chat/completions	ANY	cmd/gateway/main.go:6947	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/chat/completions	ANY	cmd/gateway/main.go:7046	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/chat/completions	ANY	cmd/gateway/main_pipeline.go:1110	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/v1/chat/completions	ANY	cmd/prompt-optimizer-mockllm/main.go:35	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【本地 mock LLM】cmd/prompt-optimizer-mockllm（仅 compose 内网用）
 /v1/classify	ANY	cmd/gateway/main.go:6981	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/completions	ANY	cmd/gateway/main.go:6948	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /v1/completions	ANY	cmd/gateway/main.go:7047	unknown				not-probed-unresolved	★ 静态分级：解析不出

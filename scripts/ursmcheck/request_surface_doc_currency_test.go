@@ -213,12 +213,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8399, to: 8406,
+		file: "cmd/gateway/main.go", from: 8407, to: 8414,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8356, to: 8361,
+		file: "cmd/gateway/main.go", from: 8364, to: 8369,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

@@ -18,6 +18,11 @@ func (s sentinelDialect) MergeContinuation(start, buffered string) (string, bool
 	return start + buffered, json.Valid([]byte(start + buffered))
 }
 
+// TerminalArguments implements tooldialect.Dialect（2026-11-11 接口扩展）。
+func (s sentinelDialect) TerminalArguments(accumulated string) string {
+	return accumulated
+}
+
 // TestBridgeToolArgsDialectFollowsRegistry 钉住 2026-11-11（48h 审计遗留）
 // 收口的装配分叉：桥此前持有 init 时钉死的实例，与 internal/ir 的
 // ForProtocol 活查表分叉 ⇒ 后续 Register 会静默分裂两侧语义（ir 用新方言、

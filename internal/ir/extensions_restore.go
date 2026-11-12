@@ -50,6 +50,27 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 	if req == nil || len(req.Extensions) == 0 {
 		return
 	}
+	src := paramreg.DialectForProtocol(req.SourceProtocol)
+	dst := resolveTargetDialect(req, targetProtocol)
+	RestoreExtensionsWithDialects(out, req, src, dst, targetProtocol)
+}
+
+// RestoreExtensionsWithDialects 是 restoreExtensions 的显式方言变体（导出）。
+//
+// 2026-11-11 审计第二轮（批 3 · 双实现统一）：transport 层
+// （domains/transformation/ir_converter.go）的第二遍还原曾有一份**独立的
+// 简化拷贝**——缺 NativePassthrough、reasoning/thinking 特例、确定性快照
+// 三阶段，靠注释约定「与 ir 层同形」维持一致；r1021（thinking 400 复发）
+// 正是这种双实现漂移的既遂案例。修法 = 阶段逻辑单点化到本函数，transport
+// 层委托（方言解析仍由调用方承担：transport 有 ctx.UpstreamCatalogCode
+// 兜底这一 ir 层没有的输入）。
+//
+// src/dst 语义与 restoreExtensions 的自行解析完全一致；其余门禁
+//（NativePassthrough / PARAMREG_ENABLED 回退）与阶段 1/2a/2b/3 逐字同源。
+func RestoreExtensionsWithDialects(out map[string]any, req *InternalRequest, src, dst paramreg.Dialect, targetProtocol string) {
+	if req == nil || len(req.Extensions) == 0 {
+		return
+	}
 
 	// 原厂直通（2026-10-28）：NativePassthrough 置位时 Extensions 全量
 	// 原样还原，仅让位于 IR 序列化器已输出的键（结构性字段）。既不走
@@ -80,8 +101,14 @@ func restoreExtensions(out map[string]any, req *InternalRequest, targetProtocol 
 		return
 	}
 
-	src := paramreg.DialectForProtocol(req.SourceProtocol)
-	dst := resolveTargetDialect(req, targetProtocol)
+	restoreExtensionsStages(out, req, src, dst, targetProtocol)
+}
+
+// restoreExtensionsStages 承载 paramreg 启用路径的全部阶段
+//（确定性快照 / reasoning·thinking 特例 / 排序通用还原）。
+// 由 restoreExtensions（自行解析方言）与 RestoreExtensionsWithDialects
+//（显式方言）共用 —— 单一语义源。
+func restoreExtensionsStages(out map[string]any, req *InternalRequest, src, dst paramreg.Dialect, targetProtocol string) {
 
 	// ══ 阶段 1：确定性快照（2026-11-01 12h 审计 P1-1）══════════════════════
 	//

@@ -504,6 +504,10 @@ func (a *circuitOpenIRAdapter) ParseOpenAI(body []byte) (*ir.InternalRequest, er
 // breaker-independent package-level ir.ParseOpenAI/ValidateAndFixRequest/
 // SerializeOpenAI still run, stripping the orphaned tool message.
 func TestIRConverter_LegacyPath_CircuitOpen_StillSanitizesOrphanedToolCall(t *testing.T) {
+	// 2026-11-12：本测试验证孤儿 tool 消息清理（断路器打开时也不漏），
+	// 与 role 交替策略无关 ⇒ 显式关闭合并（2026-11-11 批 2 起默认开启，
+	// 两条 user 会被合并成 1 条干扰消息数断言）。
+	t.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", "false")
 	executor := &Executor{IR: &circuitOpenIRAdapter{}}
 
 	// Orphaned tool message: "call_orphaned_999" does not match any

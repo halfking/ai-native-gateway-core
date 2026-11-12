@@ -1151,6 +1151,120 @@ WITH orphan AS (
       WHERE (SELECT count(*) FROM orphan) > 20
 )
 SELECT k, n, d FROM rows ORDER BY ord, n LIMIT 50`},
+
+		// ── A-17 市场面四条（2026-11-12 定稿 M2-T4，按既有健康门形状） ─────────
+		//
+		// 判据全部出自《总体设计定稿》§4.6 的种子值（正式阈值从首月实测分布
+		// 推导后再调）。四条都 Optional：940/959/961 未应用的环境缺的是关系
+		// ⇒ 42P01 落在 Optional 已支持的跳过路径上，健康面整体不受影响。
+		//
+		// 刻意的**不**覆盖（防告警疲劳，逐条留痕）：
+		//   · market_ref_thin_coverage 只报「地板**有价**但平台数 <3」——地板
+		//     整体缺失（min IS NULL / count=0）是「该模型该区域没有行情」，
+		//     不是「覆盖薄」；全量报会把每只单区模型都变成常态红（211 实测
+		//     四只验收模型全部只覆盖一个区域）。
+		//   · supplier_price_above_market 要求 price_confidence='trusted'：
+		//     C3 门判为 suspect_symmetric/empty 的价本身就是占位候选，拿它
+		//     评「我方比市场贵」是纯噪声；要求 computed_at 48h 内：评分 job
+		//     停跑时宁可沉默（停跑归 bg worker 健康面），不发陈旧快照的假警报。
+		{CheckID: "supplier_price_above_market", Severity: "warning", Optional: true, Query: `
+SELECT s.credential_id::text || ':' || s.provider_model_id::text AS k,
+       s.canonical_name || ' (cred ' || s.credential_id || ')' AS n,
+       'C2 market_position=' || s.market_position::text ||
+         ' < 1/1.5 — 我方实付比同区地板贵超 50%' ||
+         ' | floor=' || s.market_ref_platform_id ||
+         ' n=' || s.market_ref_platform_count ||
+         ' | used=' || s.market_ref_used || ' currency=' || s.currency AS d
+  FROM public.supplier_market_position s
+ WHERE s.market_position IS NOT NULL
+   AND s.market_ref_platform_count >= 3
+   AND s.price_confidence = 'trusted'
+   AND s.computed_at > now() - interval '48 hours'
+   AND s.market_position < 1.0/1.5
+ ORDER BY s.market_position ASC
+ LIMIT 50`},
+		{CheckID: "market_ref_thin_coverage", Severity: "warning", Optional: true, Query: `
+WITH floors AS (
+    SELECT canonical_name, 'overseas' AS side, overseas_min_platform_id AS pid,
+           overseas_min_in_per_1m AS pin, overseas_min_out_per_1m AS pout,
+           overseas_min_platform_count AS cnt
+      FROM public.market_price_reference
+     WHERE dimension = 'standard'
+       AND overseas_min_in_per_1m IS NOT NULL
+       AND overseas_min_platform_count < 3
+    UNION ALL
+    SELECT canonical_name, 'domestic', domestic_min_platform_id,
+           domestic_min_in_per_1m, domestic_min_out_per_1m,
+           domestic_min_platform_count
+      FROM public.market_price_reference
+     WHERE dimension = 'standard'
+       AND domestic_min_in_per_1m IS NOT NULL
+       AND domestic_min_platform_count < 3
+)
+SELECT lower(canonical_name) || ':' || side AS k,
+       canonical_name || ' [' || side || ']' AS n,
+       '地板平台数=' || cnt || ' (<3 ⇒ 降级为参考，不作硬判据)' ||
+         ' | floor=' || pid ||
+         ' (' || COALESCE(pin::text, 'NULL') || '/' || COALESCE(pout::text, 'NULL') || ')' ||
+         ' | 处置=market_platform_registry 补录平台或运营补价' AS d
+  FROM floors
+ ORDER BY canonical_name, side
+ LIMIT 100`},
+		// price_confidence_degraded 的环比读数源 = 961 market_scoring_runs
+		// （supplier_market_position 是 upsert 活表，没有历史）。两行都没有
+		// ⇒ 没有基线 ⇒ 沉默（「没跑过」不是「退化了」）；最新行早于 48h ⇒
+		// 评分停跑 ⇒ 沉默（停跑归 bg worker 健康面，不发冻结比较的假信号）。
+		{CheckID: "price_confidence_degraded", Severity: "warning", Optional: true, Query: `
+WITH runs AS (
+    SELECT run_date, trusted_count, non_trusted_count,
+           row_number() OVER (ORDER BY run_date DESC) AS rn
+      FROM public.market_scoring_runs
+),
+latest AS (SELECT run_date, trusted_count, non_trusted_count FROM runs WHERE rn = 1),
+prev    AS (SELECT run_date, non_trusted_count FROM runs WHERE rn = 2)
+SELECT 'price_confidence' AS k,
+       'price_confidence' AS n,
+       'C3 非 trusted 绑定数环比上升: ' || latest.non_trusted_count ||
+         ' (run ' || latest.run_date || ') > ' || prev.non_trusted_count ||
+         ' (run ' || prev.run_date || ')' ||
+         ' | total=' || (latest.trusted_count + latest.non_trusted_count) AS d
+  FROM latest
+  JOIN prev ON true
+ WHERE latest.run_date >= current_date - 1
+   AND latest.non_trusted_count > prev.non_trusted_count
+ LIMIT 5`},
+		// ★ 新鲜度门（48h）：syncer 每日 02:30 一跑；台账停更 48h 以上 ⇒
+		// 沉默（「unmapped 平台」可能已在 registry 补登而无人再同步取证——
+		// 对冻结读数告警会变成 false alarm；停跑本身归运维巡检面）。
+		// 与 supplier_price_above_market 的 computed_at 48h 门同纪律。
+		{CheckID: "platform_region_unmapped", Severity: "warning", Optional: true, Query: `
+WITH latest AS (
+    SELECT detail
+      FROM public.market_price_reference_sync
+     WHERE created_at > now() - interval '48 hours'
+     ORDER BY created_at DESC
+     LIMIT 1
+),
+per_platform AS (
+    SELECT d.key AS pk, d.value::text AS cnt
+      FROM latest l, jsonb_each(l.detail -> 'a17_unmapped_by_platform') d
+     WHERE COALESCE((l.detail ->> 'a17_unmapped_rows')::int, 0) > 0
+),
+summary AS (
+    SELECT '__total__' AS pk, (l.detail ->> 'a17_unmapped_rows') AS cnt
+      FROM latest l
+     WHERE COALESCE((l.detail ->> 'a17_unmapped_rows')::int, 0) > 0
+       AND NOT EXISTS (SELECT 1 FROM jsonb_each(l.detail -> 'a17_unmapped_by_platform'))
+)
+SELECT u.pk AS k,
+       CASE WHEN u.pk = '__total__' THEN 'platform_region_unmapped'
+            ELSE 'platform ' || u.pk END AS n,
+       '同步台账 a17_unmapped_rows>0：观测行未落在任何 registry 地板（被拒）' ||
+         ' | unmapped=' || u.cnt ||
+         ' | 处置=market_platform_registry 补登平台区域（A-17 拒绝族 fail-closed 的提醒面）' AS d
+  FROM (SELECT pk, cnt FROM per_platform UNION ALL SELECT pk, cnt FROM summary) u
+ ORDER BY u.pk
+ LIMIT 50`},
 	}
 }
 
@@ -1500,6 +1614,19 @@ func runChecksWithRecorder(ctx context.Context, db *pgxpool.Pool, checks []Healt
 				// 定论），不是一个 UPDATE 能解决的。给一个假的 fix_sql 只会让运维
 				// 点一个注定无效的按钮。
 				fixSQL = fixText
+
+			// ── A-17 市场面四条（M2-T4）：全部 3 列文本键形态（textHash）──
+			// 不给一键修复：降价/补录 registry/补价都是运营决策，没有任何一条
+			// 是单个 UPDATE 能替人做的（同 recorded_cost_is_negative 的取舍）。
+			case "supplier_price_above_market", "market_ref_thin_coverage",
+				"price_confidence_degraded", "platform_region_unmapped":
+				var key, name, detailText string
+				if scanErr := rows.Scan(&key, &name, &detailText); scanErr != nil {
+					continue
+				}
+				entityID = textHash(key)
+				entityName = name
+				detail = detailText
 			}
 
 			_, insErr := db.Exec(ctx, `

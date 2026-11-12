@@ -376,3 +376,5 @@
 358	958_market_platform_registry.sql
 359	959_market_dual_floor_a17.sql
 360	960_migration_ledger_continuity_repair.sql
+361	961_market_scoring_runs.sql
+362	962_recent_success_rate_index_aligned.sql

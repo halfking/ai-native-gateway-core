@@ -26,7 +26,7 @@ export default {
     namePlaceholder: "例如: Acme Corp",
     statusLabel: "狀態",
     contactLabel: "聯絡郵箱",
-    contactPlaceholder: "admin@example.com",
+    contactPlaceholder: "you{'@'}company.com",
     descLabel: "描述",
     descPlaceholder: "可選",
     create: "建立",

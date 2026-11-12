@@ -26,7 +26,7 @@ export default {
     namePlaceholder: "مثال: Acme Corp",
     statusLabel: "الحالة",
     contactLabel: "البريد الإلكتروني للتواصل",
-    contactPlaceholder: "admin@example.com",
+    contactPlaceholder: "you{'@'}company.com",
     descLabel: "الوصف",
     descPlaceholder: "اختياري",
     create: "إنشاء",

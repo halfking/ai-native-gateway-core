@@ -1,0 +1,158 @@
+# Prompt Optimizer 配置
+
+# 服务配置
+server:
+  port: 8090
+  log_level: info
+  read_timeout: 30s
+  write_timeout: 30s
+
+# 优化器配置
+optimizer:
+  # 默认策略
+  default_strategies:
+    - structural
+    - fewshot
+  
+  # 最大迭代次数
+  max_iterations: 3
+  
+  # 并发优化
+  concurrent: false
+  max_workers: 4
+
+# Memora集成配置
+memora:
+  enabled: true
+  host: localhost
+  port: 8080
+  max_history: 10
+  similarity_threshold: 0.7
+  cache_enabled: true
+  cache_ttl: 3600
+
+# Harness注入配置
+harness:
+  enabled: true
+  inject_tools: true
+  inject_safety: true
+  inject_errors: true
+  inject_observability: false
+  tool_registry: "default"
+
+# 评估配置
+evaluation:
+  enabled: true
+  metrics:
+    - accuracy
+    - completeness
+    - consistency
+    - token_usage
+  concurrent: false
+  max_workers: 4
+  timeout: 30
+
+# 迭代优化配置
+iteration:
+  max_iterations: 3
+  convergence_threshold: 0.05
+  early_stopping_enabled: true
+  improvement_threshold: 0.01
+
+# LLM配置
+llm:
+  # 评估模型
+  evaluator_model: gpt-4
+  evaluator_temperature: 0.3
+  evaluator_max_tokens: 1000
+  
+  # 优化模型
+  optimizer_model: gpt-4
+  optimizer_temperature: 0.7
+  optimizer_max_tokens: 2000
+  
+  # API配置
+  api_key: ${LLM_API_KEY}
+  api_base: ${LLM_API_BASE}
+  timeout: 60s
+  max_retries: 3
+
+# 数据库配置
+database:
+  host: ${DB_HOST:localhost}
+  port: ${DB_PORT:5432}
+  name: ${DB_NAME:prompt_optimizer}
+  user: ${DB_USER:postgres}
+  password: ${DB_PASSWORD}
+  max_connections: 20
+  max_idle_connections: 5
+  connection_lifetime: 300s
+
+# Redis配置
+redis:
+  host: ${REDIS_HOST:localhost}
+  port: ${REDIS_PORT:6379}
+  password: ${REDIS_PASSWORD}
+  db: 0
+  max_retries: 3
+  pool_size: 10
+
+# 日志配置
+logging:
+  level: ${LOG_LEVEL:info}
+  format: json
+  output: stdout
+  
+  # 文件日志
+  file:
+    enabled: true
+    path: /app/logs/prompt-optimizer.log
+    max_size: 100  # MB
+    max_backups: 10
+    max_age: 30  # days
+    compress: true
+
+# 监控配置
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  health_check_interval: 30s
+  
+  # Prometheus
+  prometheus:
+    enabled: true
+    path: /metrics
+  
+  # 追踪
+  tracing:
+    enabled: false
+    service_name: prompt-optimizer
+    endpoint: http://jaeger:14268/api/traces
+
+# 安全配置
+security:
+  # API认证
+  auth:
+    enabled: false
+    type: bearer  # bearer, api_key
+    header: Authorization
+  
+  # 速率限制
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+  
+  # CORS
+  cors:
+    enabled: true
+    allowed_origins:
+      - "*"
+    allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+    allowed_headers:
+      - "*"
+    max_age: 3600

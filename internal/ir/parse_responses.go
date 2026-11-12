@@ -59,27 +59,54 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 
 	// Phase 2: decode known fields.
 	var src struct {
-		Model              string          `json:"model"`
-		Instructions       string          `json:"instructions"`
-		Input              json.RawMessage `json:"input"`
-		MaxOutputTokens    *int            `json:"max_output_tokens"`
-		Temperature        *float64        `json:"temperature,omitempty"`
-		TopP               *float64        `json:"top_p,omitempty"`
-		Stop               json.RawMessage `json:"stop,omitempty"`
-		Stream             *bool           `json:"stream,omitempty"`
-		Tools              json.RawMessage `json:"tools,omitempty"`
-		ToolChoice         json.RawMessage `json:"tool_choice,omitempty"`
-		ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
-		PreviousResponseID string          `json:"previous_response_id,omitempty"`
-		User               string          `json:"user,omitempty"`
-		Metadata           json.RawMessage `json:"metadata,omitempty"`
-		Store              *bool           `json:"store,omitempty"`
-		Truncation         string          `json:"truncation,omitempty"`
-		PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
-		ServiceTier        string          `json:"service_tier,omitempty"`
-		SafetyIdentifier   string          `json:"safety_identifier,omitempty"`
-		Reasoning          json.RawMessage `json:"reasoning,omitempty"`
-		Text               json.RawMessage `json:"text,omitempty"` // {format:{type,...}}
+		Model           string          `json:"model"`
+		Instructions    string          `json:"instructions"`
+		Input           json.RawMessage `json:"input"`
+		MaxOutputTokens *int            `json:"max_output_tokens"`
+		// 2026-11-12（批 5 迁移语义对齐）：max_completion_tokens 是 chat 线的
+		// 同义别名（o1+ 现代形态）。此前 parse_responses 不消费 ⇒ 落 Extensions
+		// 原样透传，与 parse_openai（消费进 MaxTokens → 规范化为 max_tokens）
+		// 不对称。客户端意图 = 输出上限，别名应归一。
+		MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
+		Temperature         *float64        `json:"temperature,omitempty"`
+		TopP                *float64        `json:"top_p,omitempty"`
+		Stop                json.RawMessage `json:"stop,omitempty"`
+		Stream              *bool           `json:"stream,omitempty"`
+		Tools               json.RawMessage `json:"tools,omitempty"`
+		ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
+		ParallelToolCalls   *bool           `json:"parallel_tool_calls,omitempty"`
+		PreviousResponseID  string          `json:"previous_response_id,omitempty"`
+		User                string          `json:"user,omitempty"`
+		Metadata            json.RawMessage `json:"metadata,omitempty"`
+		Store               *bool           `json:"store,omitempty"`
+		Truncation          string          `json:"truncation,omitempty"`
+		PromptCacheKey      string          `json:"prompt_cache_key,omitempty"`
+		ServiceTier         string          `json:"service_tier,omitempty"`
+		SafetyIdentifier    string          `json:"safety_identifier,omitempty"`
+		Reasoning           json.RawMessage `json:"reasoning,omitempty"`
+		Text                json.RawMessage `json:"text,omitempty"` // {format:{type,...}}
+
+		// 2026-11-12（批 5 迁移语义对齐 · 第二批）：OpenAI chat 族参数在
+		// responses wire 上到达时（客户端 SDK 混发 / 中继转发）此前不消费
+		// ⇒ 落 Extensions ⇒ 经 restoreExtensions **原样**写进目标 body ——
+		// 对 anthropic 等严格上游是整单 400（upstream_bytes golden 实测抓到
+		// response_format）。消费集与 parse_openai 对齐：意图进 IR 结构化
+		// 字段，由各序列化器统一裁决（发射 / 披露丢弃），不再裸透传。
+		ResponseFormat    json.RawMessage `json:"response_format,omitempty"`
+		ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+		FrequencyPenalty  *float64        `json:"frequency_penalty,omitempty"`
+		PresencePenalty   *float64        `json:"presence_penalty,omitempty"`
+		LogProbs          *bool           `json:"logprobs,omitempty"`
+		TopLogProbs       *int            `json:"top_logprobs,omitempty"`
+		Seed              *int64          `json:"seed,omitempty"`
+		N                 *int            `json:"n,omitempty"`
+		LogitBias         json.RawMessage `json:"logit_bias,omitempty"`
+		Prediction        json.RawMessage `json:"prediction,omitempty"`
+		Verbosity         string          `json:"verbosity,omitempty"`
+		WebSearchOptions  json.RawMessage `json:"web_search_options,omitempty"`
+		Modalities        json.RawMessage `json:"modalities,omitempty"`
+		Audio             json.RawMessage `json:"audio,omitempty"`
+		RepetitionPenalty *float64        `json:"repetition_penalty,omitempty"`
 	}
 	// 2026-11-11 客户端错误修正：数值/布尔参数被客户端写成字符串时，
 	// 先做一次**无歧义**的容错修正再解析（详见 coerce_numeric.go）。
@@ -98,12 +125,19 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 	// Phase 3: capture unknown top-level fields into Extensions + anomaly.
 	knownFields := map[string]bool{
 		"model": true, "instructions": true, "input": true,
-		"max_output_tokens": true, "temperature": true, "top_p": true,
+		"max_output_tokens": true, "max_completion_tokens": true, "temperature": true, "top_p": true,
 		"stop": true, "stream": true, "tools": true, "tool_choice": true,
 		"parallel_tool_calls": true, "previous_response_id": true,
 		"user": true, "metadata": true, "store": true, "truncation": true,
 		"prompt_cache_key": true, "service_tier": true, "safety_identifier": true,
 		"reasoning": true, "text": true,
+		// 2026-11-12（批 5）：chat 族参数消费集对齐（见 src struct 注释）。
+		"response_format": true, "reasoning_effort": true,
+		"frequency_penalty": true, "presence_penalty": true,
+		"logprobs": true, "top_logprobs": true, "seed": true, "n": true,
+		"logit_bias": true, "prediction": true, "verbosity": true,
+		"web_search_options": true, "modalities": true, "audio": true,
+		"repetition_penalty": true,
 	}
 	extensions := make(map[string]json.RawMessage)
 	for key, val := range rawMap {
@@ -135,6 +169,70 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 	if src.MaxOutputTokens != nil {
 		req.MaxTokens = *src.MaxOutputTokens
 	}
+	// 别名归一：max_completion_tokens 与 max_output_tokens 同义；显式
+	// max_output_tokens 优先（两个都发时取 Responses 线的原生名）。
+	if src.MaxCompletionTokens != nil && src.MaxOutputTokens == nil {
+		req.MaxTokens = *src.MaxCompletionTokens
+	}
+	// 2026-11-12（批 5）：chat 族参数 → IR 结构化字段（映射与 parse_openai
+	// 同源；parseOpenAIResponseFormat 直接复用）。
+	if src.ResponseFormat != nil && string(src.ResponseFormat) != "null" {
+		rf, err := parseOpenAIResponseFormat(src.ResponseFormat)
+		if err != nil {
+			return nil, fmt.Errorf("parse response_format: %w", err)
+		}
+		req.ResponseFormat = rf
+	}
+	if src.ReasoningEffort != "" {
+		// reasoning_effort（chat 形）与 reasoning 对象（responses 形）同义；
+		// 对象显式优先（与 serialize 层 Thinking > Reasoning 的先序一致）。
+		if req.Reasoning == nil {
+			req.Reasoning = &ReasoningConfig{Effort: src.ReasoningEffort}
+		}
+	}
+	req.FrequencyPenalty = src.FrequencyPenalty
+	req.PresencePenalty = src.PresencePenalty
+	req.Logprobs = src.LogProbs
+	req.TopLogprobs = src.TopLogProbs
+	req.Seed = src.Seed
+	if src.N != nil {
+		req.N = *src.N
+	}
+	if src.LogitBias != nil && string(src.LogitBias) != "null" {
+		var lb map[string]float64
+		if err := json.Unmarshal(src.LogitBias, &lb); err == nil {
+			req.LogitBias = lb
+		} else {
+			reportClientShapeFix(ProtocolOpenAIResponses, "logit_bias", "unmarshal_failed_dropped",
+				map[string]any{"err": err.Error()})
+		}
+	}
+	if src.Prediction != nil && string(src.Prediction) != "null" {
+		var p Prediction
+		if err := json.Unmarshal(src.Prediction, &p); err == nil {
+			req.Prediction = &p
+		}
+	}
+	req.Verbosity = src.Verbosity
+	if src.WebSearchOptions != nil && string(src.WebSearchOptions) != "null" {
+		var wso WebSearchOptions
+		if err := json.Unmarshal(src.WebSearchOptions, &wso); err == nil {
+			req.WebSearchOptions = &wso
+		}
+	}
+	if src.Modalities != nil && string(src.Modalities) != "null" {
+		var mods []string
+		if err := json.Unmarshal(src.Modalities, &mods); err == nil {
+			req.Modalities = mods
+		}
+	}
+	if src.Audio != nil && string(src.Audio) != "null" {
+		var ac AudioConfig
+		if err := json.Unmarshal(src.Audio, &ac); err == nil {
+			req.AudioConfig = &ac
+		}
+	}
+	req.RepetitionPenalty = src.RepetitionPenalty
 	if src.Temperature != nil {
 		req.Temperature = src.Temperature
 	}
@@ -385,9 +483,9 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	if itemType == "function_call" {
 		name, _ := item["name"].(string)
 		args, _ := item["arguments"].(string)
-		if args == "" {
-			args = "{}"
-		}
+		// 2026-11-11 审计第二轮（批 2）：空串→"{}"（既有行为，改走统一
+		// helper 使其可观测）；非法 JSON 披露。
+		args = coerceToolCallArguments(args, ProtocolOpenAIResponses)
 		callID, _ := item["call_id"].(string)
 		if callID == "" {
 			callID, _ = item["id"].(string)
@@ -425,6 +523,10 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 			text, _ := item["text"].(string)
 			return &Message{Role: "user", Content: []ContentBlock{{Type: "text", Text: text}}}, "", nil
 		case "message":
+			// 2026-11-11 审计第二轮（批 2）：message 型 item 缺 role 的兜底
+			// 保留（既有行为），补披露使其可观测。
+			reportClientShapeFix(ProtocolOpenAIResponses, "input[].role", "inferred_user",
+				map[string]any{"inferred": "user", "item_type": itemType})
 			role = "user"
 		}
 	}
@@ -468,9 +570,8 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	// function_call items (assistant tool calls) carry name/arguments directly.
 	if name, _ := item["name"].(string); name != "" {
 		args, _ := item["arguments"].(string)
-		if args == "" {
-			args = "{}"
-		}
+		// 2026-11-11 审计第二轮（批 2）：同上，统一 helper。
+		args = coerceToolCallArguments(args, ProtocolOpenAIResponses)
 		callID, _ := item["call_id"].(string)
 		if callID == "" {
 			callID, _ = item["id"].(string)
@@ -497,9 +598,11 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 // ContentBlocks. textType picks the normalization target based on role.
 func parseResponsesContentBlocks(blocks []any, role string) ([]ContentBlock, error) {
 	result := make([]ContentBlock, 0, len(blocks))
-	for _, block := range blocks {
+	for bi, block := range blocks {
 		blockMap, ok := block.(map[string]any)
 		if !ok {
+			// 2026-11-11 审计第二轮（批 2）：非对象块此前静默跳过。
+			reportSkippedElement(ProtocolOpenAIResponses, "input[].content[]", bi, block)
 			continue
 		}
 		blockType, _ := blockMap["type"].(string)
