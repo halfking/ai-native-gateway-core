@@ -223,14 +223,6 @@ func TestLockGuardDetectorCanFire(t *testing.T) {
 //	为空表，约束重建锁窗毫秒级（文件头注释实测口径），且 installer
 //	runner 单迁移短事务，等待面与 §44 的常驻大表形态不同量级。
 var lockGuardAllowlist = map[int]string{
-	958: "已应用字节冻结（2026-11-12 04:28 随 245=2966/154=2967 部署应用到共享生产库 252、" +
-		"211 引擎台账同日落名；db-changelog 958 行 sha=155cc51a… 与 959 契约门字节一致门钉住）。" +
-		"A-17 双币收口轮交付时漏带 lock_timeout（installer 模块测试不在当轮套件范围，2026-11-12 " +
-		"M2-T3/T4 轮补跑 installer go test ./... 当场暴露）。锁风险再评估（950 同款口径）：" +
-		"958 对象 = 全新空表 market_platform_registry 的 CREATE TABLE IF NOT EXISTS + 种子 " +
-		"INSERT ON CONFLICT DO NOTHING + 表内 CHECK——不触碰任何既有大表，锁窗毫秒级；" +
-		"既有库经台账记名永不重跑，重跑面仅剩全新安装（空表）。" +
-		"959 起后续迁移继续带 BEGIN+SET LOCAL 守卫（959/960/961 均已带）。",
 	950: "已应用字节冻结（2026-11-07 02:18 应用共享生产库，deploy checksum 台账 4a258e16…）；" +
 		"R189 的 lock_timeout 包裹改写被还原以免 content replay break。" +
 		"重跑面仅剩全新安装（空表、毫秒级锁窗）；951 起新迁移继续带 BEGIN+SET LOCAL 守卫。",
