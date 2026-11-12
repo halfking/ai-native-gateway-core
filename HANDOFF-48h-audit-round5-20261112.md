@@ -23,6 +23,19 @@
 5. ★ **限流桶测试的「窗口边界」假红**：`internal/bucket/ratelimit` 两个用例用 100ms/1s 窗口，而限流窗口是**绝对时间网格** ⇒ 负载下跨界 ⇒ 配额「已刷新」⇒ 断言失真（实测 8 路并行 1/8、12 路 1/12 红）⇒ 窗口改 1h ⇒ **16 路并行 0/16**。
 6. ★ **台账漂移重算（全部走官方生成器、零手改）**：admin-routes 690→**698**｜installer-reachability 361→**362**｜pipefail 台账 0 pending｜scope-drop 清单 106→111→**106**｜request-surface 对拍表 8399-8406→**8407-8414** / 8356-8361→**8364-8369**｜gocache 登记册 176→**181**｜post-surface 台账 690→**698**（note 逐条注明 prompt-optimizer 属独立服务）。
 7. ★ **errdiscard 门**：`bg/market_scoring.go:490,504`（origin/main `df8fbe518` 引入）＝同款假阳性（`_` 是评分汇总，err 有被检查并 warn）⇒ 按门自己的指引「带理由登记」。
+8. ★★★★ **「凭据监控摘要 500」的第二层根因（本轮最有价值的根因修正）：同一个函数体有【两份载体】，而 boot 的 ensure 链在迁移之后跑 ⇒ 只改迁移会被运行时 SSOT 覆盖回去**：
+   - **矛盾读数**：245 重部署日志显示「切换前应用 1 个 pending 迁移 → `962`（sha256=`8d267fadfedb`）」、psql 输出 `BEGIN / CREATE FUNCTION / COMMENT / CREATE FUNCTION / COMMENT / INSERT 0 1 / COMMIT`（**无 ERROR**）、`schema_migrations` 与 `llm_gateway_migration_checksums` **两本记账都有 962 行**（`applied_at` 18:35:22）⇒ ★ **但 `pg_proc.prosrc` 仍是旧谓词** ⇒ **账本说修好了、运行面没修好**。
+   - **排除清单**：同名多 schema（仅 public 一份）｜迁移跑了别的库（两本记账就在该库）｜`ON_ERROR_ROLLBACK` 吞错（输出无 ERROR）｜deploy runner 用了别的 `DATABASE_URL`（`_env_file_for_target()` 对 245 返回 `/opt/llm-gateway-go/.env`，与手工查询同源）。
+   - **真因**：函数体同时存在于 ① SQL 迁移文件 ② Go 运行时 SSOT（`db/db.go` 的 `recentSuccessRateEnsureSQL`、`db/recent_cache_hit_rate_ensure.go` 的 `recentCacheHitRateEnsureSQL`）⇒ **网关 boot 的 `ensureRoutingRecentSuccessRate` / `ensureRecentCacheHitRate`（`db.go:670/677`）用 `CREATE OR REPLACE` 在迁移之后又写一遍** ⇒ 每台重启一次就把修好的函数体擦回去。
+   - **实施**（`23afcd6ef`）：改**载体 ②**（真正生效的那一份）的谓词；新增**跨包等价门** `TestMigration962_RuntimeSSOTCarriesTheSamePredicate`（三方不变式：索引表达式 == 迁移谓词 == SSOT 谓词；且两份载体**归一化空白后逐字相等**）；改造 890/915 两道「逐字等价门」（**折叠一条被钉住的 delta** 再比 ⇒ delta 之外的漂移仍红，**并补正向断言**「SSOT 必须携带索引同形态、旧形态不得回归」，否则折叠＝开了一个「允许退回」的门）；**不需要新迁移**（boot 自愈本身就会收敛）。
+   - **变异验证 ×3 全红**：M1 SSOT 退回旧谓词（＝生产实测形态）⇒ 890 门 + 962 跨包门红；M2 只退迁移 ⇒ 962 形状门 + 跨包门红；M3 SSOT 语义微改（采样门槛 `>0`⇒`>=0`）⇒ 915 门 + 跨包门红。
+   - ★ **为什么能溜到生产**：上一轮那道 962 形状门**只测载体 ①** ⇒ 在「改了迁移、没改 SSOT」这个形态下**完全绿** ⇒ ★ **门测的是迁移文件，真正生效的是 SSOT**。
+9. ★★★★ **第三层缺口＝startup 迁移有【三条投递通道】，962 漏了「211 seamless 通道」那一条**：
+   - **三条通道**：① 台账 `docs/db-changelog.md`（门 `TestMigrationRegistryStaysContinuous`）② installer 通道 `installer/internal/dbinit/runner.go` 的 `StartupFiles`（门 `TestStartupManifest`）③ ★ **211 部署通道 `scripts/apply-db-revision-sequence.sh` 的 `files=(...)` 显式清单（此前无门覆盖）** ⇒ 962 只登记了 ①② ⇒ **211 从未应用它**。
+   - **211 实测（不对称读数）**：`prosrc` **已带索引同形谓词**（`index_aligned=t`，功能面是好的，boot 自愈写对了）｜★ `schema_migrations` 停在 **961**｜★ `gateway_db_revision_sequences` **无 962 行** ⇒ **211 记账链断层**。
+   - **判定依据＝机器比对**：磁盘 632 条 / 清单 327 条，但**编号 ≥900 的全部在清单、唯独 962 不在** ⇒ **疏漏而非取舍**。
+   - **实施**：962 补进清单 + `ledger_artifact_probe`（用 `position()` 不用 `LIKE` —— 函数体含正则字面量）＋ **新增第三通道门**（覆盖 / 解析精度 / 例外表带理由）＋ 变异臂（移除清单条目 ⇒ 红并精确定位）。
+   - ★ **「记账断层 ≠ 功能缺失」**：两轴必须分别取读数再决定处置哪一轴（见主档 §六之三之三）。
 
 ## 发布真值与验证
 

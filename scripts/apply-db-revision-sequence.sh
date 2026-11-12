@@ -2621,6 +2621,23 @@ files=(
   # ★ 961（2026-11-12 A-17 收口 M2-T4 轮）：market_scoring_runs 每日评分运行
   #   台账（price_confidence_degraded 环比的两日读数源；写入方 bg 评分 job）。
   "$ROOT_DIR/sql/migrations/startup/961_market_scoring_runs.sql"
+  # ★ 962（2026-11-12 48h 审计第五轮）：recent_success_rate /
+  #   recent_cache_hit_rate 的谓词改成与既有索引
+  #   idx_session_turns_hot_credential_ts **逐字同形**（修「凭据监控摘要在
+  #   245/154 上必 500」：旧谓词不是索引键表达式 ⇒ planner 用不上该索引 ⇒
+  #   每次调用扫 3 小时窗全量 ⇒ 1959 次调用 ⇒ 越过 15s context ⇒ 500）。
+  #
+  # ★★ 本行是**补漏**，不是新增迁移：962 在 838d2594f 就已落地，但当时只登记
+  #   了 installer 面（installer/internal/dbinit/runner.go 的 StartupFiles）
+  #   ⇒ 漏了**本清单**（211 seamless 部署通道的投递面）
+  #   ⇒ 211 实测：schema_migrations 停在 961、gateway_db_revision_sequences
+  #   也没有 962 行 ⇒ **211 的记账链在 962 处断层**
+  #   ⇒ 而仓内「编号 ≥900 的 startup 迁移全部在本清单里」是既有惯例
+  #   （实测：900~961 全在，唯独 962 不在）⇒ ⇒ 是疏漏，不是取舍。
+  #   ⇒ ★ 顺带说明：**记账断层 ≠ 功能缺失** —— 211 的函数体仍被 boot 自愈
+  #   （db.recentSuccessRateEnsureSQL）收敛到正确形态（实测 index_aligned=t）
+  #   ⇒ 但「账本说没做」就是「下次有人按账本判断要重跑什么」时会踩空。
+  "$ROOT_DIR/sql/migrations/startup/962_recent_success_rate_index_aligned.sql"
 )
 
 
@@ -3203,6 +3220,11 @@ ledger_artifact_probe "960_migration_ledger_continuity_repair.sql" \
   "EXISTS (SELECT 1 FROM public.schema_migrations WHERE version IN ('950','951','957','958'))"
 ledger_artifact_probe "961_market_scoring_runs.sql" \
   "to_regclass('public.market_scoring_runs') IS NOT NULL"
+# ★ 962 的产物 = **两个函数的函数体形态**（不是表/索引）⇒ 探针要读 pg_proc。
+#   判据用 position() 而不是 LIKE：函数体里有正则字面量 '^[0-9]+$'，
+#   LIKE 的 '%'/'_' 通配会与它打架 ⇒ 用 position('...' in prosrc) > 0 最稳。
+ledger_artifact_probe "962_recent_success_rate_index_aligned.sql" \
+  "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_success_rate' AND position('CASE WHEN credential_id' in p.prosrc) > 0) AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'recent_cache_hit_rate' AND position('CASE WHEN credential_id' in p.prosrc) > 0)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
