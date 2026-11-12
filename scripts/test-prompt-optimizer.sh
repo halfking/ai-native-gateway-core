@@ -132,12 +132,12 @@ FAIL_COUNT=0
 # assert_contains <名称> <JSON> <子串>
 assert_contains() {
   local name="$1" payload="$2" needle="$3"
-  if printf '%s' "$payload" | grep -qF -- "$needle"; then
+  if grep -qF -- "$needle" <<<"$payload"; then
     log_ok "$name"
     PASS_COUNT=$((PASS_COUNT + 1))
   else
     log_error "$name —— 输出中找不到: $needle"
-    printf '%s\n' "$payload" | head -20
+    head -20 <<<"$payload"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
 }
@@ -200,7 +200,7 @@ test_optimize_without_harness() {
   payload="$(cat /tmp/po_body.txt)"
 
   assert_status "返回 200" 200 "$code"
-  if printf '%s' "$payload" | grep -q '安全规则'; then
+  if grep -q '安全规则' <<<"$payload"; then
     log_error "未开启 harness 却出现安全规则章节"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   else

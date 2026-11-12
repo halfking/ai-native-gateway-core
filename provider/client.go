@@ -827,14 +827,36 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		resp, shared, err := c.fetchCandidateGeneration(key, queryGeneration, func() (*resolveResponse, error) {
 			resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
 			if fetchErr == nil && (planCount(resp) == 0 || candidateCount(resp) == 0) {
-				logCandidateDiagnostic("db_empty",
+				// ★★ 2026-11-12（48h 审计第五轮）：**归因**诊断——★「db_empty」本身
+				// ★★ 分不清「模型没登记」与「模型登记了但被状态闸滤空」⇒ ★★ 运维只能
+				// ★★ 盯着 db_empty 猜（211 真机：whisper ASR 上游活着却 503 35 次，
+				// ★★ 真因是 credentials.status 这道**遗留 v1 闸**把 offer 滤空）。
+				// ★★ ⇒ 这里补一次**只在空路径发生**的归因查询（成功路径零开销），
+				// ★★ 把「可执行的结论」直接写进日志。
+				// ★★ 诊断是**旁路**：查询失败不改结论、不影响返回（见 diagnoseEmptyCandidates）。
+				diagArgs := []any{
 					"model", routeModel,
 					"profile", profile,
 					"tenant_id", tenantID,
 					"cache_key", key,
 					"plan_count", planCount(resp),
 					"candidate_count", candidateCount(resp),
-				)
+				}
+				if b, diagErr := c.diagnoseEmptyCandidates(ctx, routeModel, tenantID); diagErr == nil {
+					diagArgs = append(diagArgs,
+						"offers_total", b.OffersTotal,
+						"blocked_credential_missing", b.BlockedByCredentialMissing,
+						"blocked_credential_status", b.BlockedByCredentialStatus,
+						"blocked_credential_lifecycle", b.BlockedByCredentialLifecycle,
+						"blocked_credential_quota", b.BlockedByCredentialQuota,
+						"blocked_provider_disabled", b.BlockedByProviderDisabled,
+						"blocked_unavailable_reason", b.BlockedByUnavailableReason,
+						"likely_cause", b.Summarize(),
+					)
+				} else {
+					diagArgs = append(diagArgs, "diag_error", diagErr.Error())
+				}
+				logCandidateDiagnostic("db_empty", diagArgs...)
 			}
 			return resp, fetchErr
 		})

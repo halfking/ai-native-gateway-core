@@ -82,9 +82,9 @@ run_arm() {
     log_fail "$name —— 变异后测试仍全绿 ⇒ 这条测试没有牙"
     FAIL=$((FAIL + 1))
     FAILED_ARMS+=("$name")
-  elif echo "$out" | grep -qE '^\s*\[build failed\]|build constraints|cannot use|undefined:'; then
+  elif grep -qE '^\s*\[build failed\]|build constraints|cannot use|undefined:' <<<"$out"; then
     log_fail "$name —— 变异后是编译失败（红的原因不是断言）⇒ 不算证据"
-    echo "$out" | head -5
+    head -5 <<<"$out"
     FAIL=$((FAIL + 1))
     FAILED_ARMS+=("$name")
   else
