@@ -1233,10 +1233,15 @@ SELECT 'price_confidence' AS k,
  WHERE latest.run_date >= current_date - 1
    AND latest.non_trusted_count > prev.non_trusted_count
  LIMIT 5`},
+		// ★ 新鲜度门（48h）：syncer 每日 02:30 一跑；台账停更 48h 以上 ⇒
+		// 沉默（「unmapped 平台」可能已在 registry 补登而无人再同步取证——
+		// 对冻结读数告警会变成 false alarm；停跑本身归运维巡检面）。
+		// 与 supplier_price_above_market 的 computed_at 48h 门同纪律。
 		{CheckID: "platform_region_unmapped", Severity: "warning", Optional: true, Query: `
 WITH latest AS (
     SELECT detail
       FROM public.market_price_reference_sync
+     WHERE created_at > now() - interval '48 hours'
      ORDER BY created_at DESC
      LIMIT 1
 ),
