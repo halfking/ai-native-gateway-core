@@ -122,7 +122,8 @@ func TestRunbook14334Host245Recon(t *testing.T) {
 // TestRunbook14334ScriptAbsentNotJustCron 钉住「连脚本都不存在」这一条。
 //
 // ★★★ 这是本节最容易被后人弱化的地方：只钉「cron 里没有」会放过
-//   「脚本已部署、只是调度没配」那种中间形态。
+//
+//	「脚本已部署、只是调度没配」那种中间形态。
 func TestRunbook14334ScriptAbsentNotJustCron(t *testing.T) {
 	s := section14334(t, "§143.34 ")
 
@@ -204,7 +205,8 @@ func TestRunbook14334BannerLivesIn14332(t *testing.T) {
 // TestRunbook14334ReconScriptIsInRepo 钉住侦察脚本入仓 + 四路都在脚本里。
 //
 // ★ 只钉「文档写了四路」不够 ⇒ 还要钉「脚本里真的有四路」，
-//   否则「文档说四路、脚本只做两路」会长期共存而无人发现。
+//
+//	否则「文档说四路、脚本只做两路」会长期共存而无人发现。
 func TestRunbook14334ReconScriptIsInRepo(t *testing.T) {
 	s := section14334(t, "§143.34 ")
 

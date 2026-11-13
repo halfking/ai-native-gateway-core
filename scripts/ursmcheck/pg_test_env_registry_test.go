@@ -433,7 +433,8 @@ func r71ParseRunnerEnvBlock(t *testing.T, path string) map[string]bool {
 // 拿的是 $TENANT_DSN，不是通用库）。
 // ⇒ ⇒ 只看名字分不出「专用值」与「通用值」⇒ ⇒ 必须看值。
 // ★ 判据用**值字面量**判定「通用值」：runner 把 DSN 一律绑到 "$GATE_URL"
-//   （门禁自己的那个一次性库）⇒ 那就是通用值。
+//
+//	（门禁自己的那个一次性库）⇒ 那就是通用值。
 func r71ParseRunnerEnvValues(t *testing.T, path string) map[string]string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -460,7 +461,7 @@ func r71ParseRunnerEnvValues(t *testing.T, path string) map[string]string {
 		value = strings.TrimSuffix(value, `\`)
 		value = strings.TrimSpace(value)
 		value = strings.Trim(value, `"'`)
-		if reR71Export.MatchString("export " + name+"=") {
+		if reR71Export.MatchString("export " + name + "=") {
 			out[name] = value
 		}
 	}

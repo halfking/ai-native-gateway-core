@@ -768,6 +768,13 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				return
 			}
 			// 2026-11-13 方案A: 追踪reasoning vs content字节数
+			// ★ 2026-11-13 48h 审计轮订正（68bd6c29d 审计裁定，主档 §三）：
+			// 本函数（StreamAnthropicSSEToResponsesWithDiagnostics）只写不读
+			// 这两个计数器——它们没有任何本函数内的读点，也没有跨函数共享
+			// scaffold 的通道（两个桥各自 newResponsesScaffold）⇒ 死写。
+			// 本函数的空输出判定走 fullText（只累计 Delta.Content）⇒
+			// reasoning-only 判空 failover 的语义本来就在；计数器保留为
+			// 观测面，不得作为「精确判定已生效」的依据引用。
 			scaffold.contentBytes += len(chunk.Delta.Content)
 			scaffold.reasoningBytes += len(chunk.Delta.ReasoningContent)
 			for _, tc := range chunk.Delta.ToolCalls {
@@ -1283,6 +1290,12 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	responsesHasSemanticOutput := func() bool {
 		// 方案A: 当contentBytes和reasoningBytes都被追踪时,使用精确判定
 		// 这能区分reasoning-only场景
+		// ★ 2026-11-13 48h 审计轮订正（68bd6c29d 审计裁定，主档 §三）：
+		// 本函数（StreamOpenAIToResponsesSSEWithDiagnostics）的 scaffold 自建，
+		// reasoningBytes/contentBytes **恒 0**（写入点在 Anthropic 桥，不共享）
+		// ⇒ 本分支恒不进入，实际恒走下方 fullText 分支；fullText 只累计
+		// Delta.Content ⇒ reasoning-only 早判空、早 failover（r1029 chat 面同语义）
+		// ——行为与父提交逐字节等价（no-op），「精确判定」从未生效。
 		if scaffold.reasoningBytes > 0 || scaffold.contentBytes > 0 {
 			// 已追踪:只有非reasoning的content才算semantic output
 			if scaffold.contentBytes > 0 {

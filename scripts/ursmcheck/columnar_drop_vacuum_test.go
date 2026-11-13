@@ -75,9 +75,10 @@ func TestVacuumNotWrappedInImplicitTransaction(t *testing.T) {
 // reSETinStmt 匹配「语句串里的 SET 语句」。
 //
 // ★ 首版写成 `;\s*SET\s+\w+\s*=`（只认 SET 在分号**之后**）⇒ **变异验证首轮假绿**：
-//   把它改成 `SET x=…; VACUUM`（SET 在**开头**）时门照样通过。
-//   两种顺序都会把语句串变成多语句、都会构成隐式事务块 ⇒ 两种都必须匹配。
-//   锚点放宽为「行首或分号之后」。
+//
+//	把它改成 `SET x=…; VACUUM`（SET 在**开头**）时门照样通过。
+//	两种顺序都会把语句串变成多语句、都会构成隐式事务块 ⇒ 两种都必须匹配。
+//	锚点放宽为「行首或分号之后」。
 var reSETinStmt = regexp.MustCompile(`(?:^|;)\s*SET\s+\w+\s*=`)
 
 // TestVacuumCompletionLogIsNotUnconditional —— 防「做没做都报完成」。

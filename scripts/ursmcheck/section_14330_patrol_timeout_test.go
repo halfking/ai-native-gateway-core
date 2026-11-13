@@ -169,7 +169,8 @@ func TestRunbook14330VersionSwitchIsPinned(t *testing.T) {
 // TestRunbook14330TwoRulersReconcile 钉住两把尺子互证的对照表。
 //
 // ★ 这是「矛盾是假的」的核心证据：pgss 的 26 / 190,473 ms / 591,621 ms
-//   与脚本日志的 OK 23 / 202 s / 603 s / ABORT 18 必须并排出现。
+//
+//	与脚本日志的 OK 23 / 202 s / 603 s / ABORT 18 必须并排出现。
 func TestRunbook14330TwoRulersReconcile(t *testing.T) {
 	s := section14330(t)
 

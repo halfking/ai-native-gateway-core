@@ -138,14 +138,16 @@ esac`
 // TestHealthSpanSQLExcludesEmptyPartitions —— 覆盖**上面四条测试够不着**的那一半。
 //
 // ★ 为什么需要它：上面四条用的是固定返回值的假 psql，
-//   **无论脚本发出什么 SQL，它都吐同一串** ⇒ SQL 语句被改坏而 shell 逻辑不变时，
-//   四条全绿。变异验证实测：把 `pg_relation_size(c.oid) > 0` 去掉，四条依然全过。
-//   ⇒ 这是「桩测试与真库验证不能互相替代」的第三例（§86 第七节是前两例的静态/运行时版）。
+//
+//	**无论脚本发出什么 SQL，它都吐同一串** ⇒ SQL 语句被改坏而 shell 逻辑不变时，
+//	四条全绿。变异验证实测：把 `pg_relation_size(c.oid) > 0` 去掉，四条依然全过。
+//	⇒ 这是「桩测试与真库验证不能互相替代」的第三例（§86 第七节是前两例的静态/运行时版）。
 //
 // ★ 它的边界要写清：这是**源码文本断言**，只能钉住「排除空分区」这个属性，
-//   钉不住 SQL 的语法正确性（那个只能真跑一次，§86 已真跑过：
-//   返回 `2026-10-18|2026-10-11|8`，8 而非 9）。
-//   所以它与真库验证是**互补**的：前者防回归，后者保语法。
+//
+//	钉不住 SQL 的语法正确性（那个只能真跑一次，§86 已真跑过：
+//	返回 `2026-10-18|2026-10-11|8`，8 而非 9）。
+//	所以它与真库验证是**互补**的：前者防回归，后者保语法。
 func TestHealthSpanSQLExcludesEmptyPartitions(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", healthPath))
 	if err != nil {
@@ -164,12 +166,14 @@ func TestHealthSpanSQLExcludesEmptyPartitions(t *testing.T) {
 // TestHealthSpanProbeStaysQuietOnNonPartitionedTable —— §143.32 的 P18。
 //
 // ★ 背景（211 实测）：`ursm_node_snapshot_min` 在 211 上是**普通表**（relkind='r'），
-//   而这条探针只数「带日期的分区」⇒ 在普通表上**恒返回 0 天**
-//   ⇒ 于是它每轮报「0 day(s) with data」+「基线样本不足 / OK 判定偏宽松」
-//   ⇒ ★ **那是假告警**：211 的表里实测有 7 天数据（5,933,760 行）。
+//
+//	而这条探针只数「带日期的分区」⇒ 在普通表上**恒返回 0 天**
+//	⇒ 于是它每轮报「0 day(s) with data」+「基线样本不足 / OK 判定偏宽松」
+//	⇒ ★ **那是假告警**：211 的表里实测有 7 天数据（5,933,760 行）。
 //
 // ★ 修法：探针对「不适用」的形态必须说 **n/a**，不能把「数不到」说成「没有」；
-//   而「基线真薄」的形态（分区表 + 天数不足）**必须继续告警**（见上面两条）。
+//
+//	而「基线真薄」的形态（分区表 + 天数不足）**必须继续告警**（见上面两条）。
 func TestHealthSpanProbeStaysQuietOnNonPartitionedTable(t *testing.T) {
 	stub := `
 case "$1" in
@@ -213,9 +217,10 @@ esac`
 // TestHealthSpanProbeSQLCarriesShapeFields —— 钉住「探针必须带上形态判据」。
 //
 // ★ 为什么要有这条（源码文本断言）：上面的用例用的是**假 psql**，
-//   它按 SQL 文本分派返回固定值 ⇒ ★ **SQL 少返回了形态字段，桩照样吐 5 段**，
-//   ⇒ 脚本读到空的 relkind ⇒ 就会走进 n/a 分支 ⇒ ★ **「真薄基线要告警」那条会被静默跳过**。
-//   ⇒ 所以「探针到底返回了什么」必须被源码文本钉住。
+//
+//	它按 SQL 文本分派返回固定值 ⇒ ★ **SQL 少返回了形态字段，桩照样吐 5 段**，
+//	⇒ 脚本读到空的 relkind ⇒ 就会走进 n/a 分支 ⇒ ★ **「真薄基线要告警」那条会被静默跳过**。
+//	⇒ 所以「探针到底返回了什么」必须被源码文本钉住。
 func TestHealthSpanProbeSQLCarriesShapeFields(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", healthPath))
 	if err != nil {
@@ -224,10 +229,10 @@ func TestHealthSpanProbeSQLCarriesShapeFields(t *testing.T) {
 	src := stripFullLineComments(string(b))
 
 	for _, n := range []string{
-		"relkind::text",           // 表的形态
+		"relkind::text",                    // 表的形态
 		"FROM pg_inherits WHERE inhparent", // 分区总数
-		`!= "p"`,                  // 非分区父表 ⇒ n/a
-		"baseline span: n/a",      // 「不适用」必须有明确措辞
+		`!= "p"`,                           // 非分区父表 ⇒ n/a
+		"baseline span: n/a",               // 「不适用」必须有明确措辞
 	} {
 		if !strings.Contains(src, n) {
 			t.Fatalf("%s 的基线跨度探针必须包含 %q —— 探针要能区分「数不到」与「没有」。\n"+

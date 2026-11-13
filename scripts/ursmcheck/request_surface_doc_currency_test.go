@@ -205,20 +205,30 @@ type docEvidence struct {
 // 行数 ⇒ 链体整体下移 47 行），语义锚与判据不变，不扩大证据范围。
 // 2026-11-12（48h 审计第四轮）：第十六次重钉（并行提交再推移 main.go 行号，
 // 窗口 8370-8395 → 8396-8415；Recovery :8397 … SecurityHeaders :8415），语义锚与判据不变。
+// 2026-11-13（53 增量移交四项收口轮）：第十七次重钉（本轮 armor 缺省披露块与
+// PR-V4-11 detector 桥接线在链前净增 34 行，窗口 8396-8415 → 8430-8449；
+// Recovery :8431 … SecurityHeaders :8449；Logging 注释 8407-8414 → 8433-8440；
+// maintain 注释 8364-8369 → 8390-8395；main_pipeline.go 启动日志 :1124 → :1137），
+// 语义锚与判据不变，设计页/认证表 A1 同步。
+// 2026-11-13（48h 审计轮修复：user_content 全形态提取器移植 + 探针卫生清理）：
+// 第十八次重钉（并行提交再推移 main.go 行号，窗口 8430-8449 → 8449-8468；
+// Recovery :8450 … SecurityHeaders :8468；Logging 注释 8433-8440 → 8452-8459；
+// maintain 注释 8390-8395 → 8409-8414；main_pipeline.go 启动日志 :1137 → :1147），
+// 语义锚与判据不变，设计页/认证表 A1 同步。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8396, to: 8415,
+		file: "cmd/gateway/main.go", from: 8449, to: 8468,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8407, to: 8414,
+		file: "cmd/gateway/main.go", from: 8452, to: 8459,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8364, to: 8369,
+		file: "cmd/gateway/main.go", from: 8409, to: 8414,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -264,12 +274,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "v2 开关的读取（默认关、启动时读一次）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 1124, to: 1124,
+		file: "cmd/gateway/main_pipeline.go", from: 1147, to: 1147,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 761, to: 771,
+		file: "cmd/gateway/main_pipeline.go", from: 770, to: 781,
 		mustContain: "v2pipe-", kind: evidenceCode,
 		why: "D09 的 v2 request-id 合成与写回（★ 存在 ⇒ 那条差异不是「没实现」）",
 	},

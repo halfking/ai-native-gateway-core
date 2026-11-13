@@ -43,11 +43,13 @@ import (
 const bloatScriptPath = "../252-monitor/pg17-index-bloat.sh"
 
 // fakePodmanBloat 是假容器运行时：
-//   记录下发的 SQL 到 $FAKE_SQL_LOG，并按查询类型返回固定结果。
+//
+//	记录下发的 SQL 到 $FAKE_SQL_LOG，并按查询类型返回固定结果。
 //
 // ★ 匹配顺序要紧：候选集查询的 SQL 里同时含 "pg_relation_size" 与
-//   "ORDER BY … DESC"，所以**候选集**的模式必须排在通用的
-//   "pg_relation_size" 之前，否则会答错问题。
+//
+//	"ORDER BY … DESC"，所以**候选集**的模式必须排在通用的
+//	"pg_relation_size" 之前，否则会答错问题。
 const fakePodmanBloat = `#!/bin/sh
 sql=""
 while [ $# -gt 0 ]; do
@@ -219,7 +221,8 @@ func TestBloatCandidateQueryCoversLeafPartitionsAndToast(t *testing.T) {
 // 候选集里出现 TOAST 索引后，脚本确实对它发起了 pgstatindex 探测。
 //
 // ★ 这条比「查询里写了 pg_toast」强一档：它验的是**行为**，
-//   不是文本 —— 写进查询但没走到探测分支，一样会红。
+//
+//	不是文本 —— 写进查询但没走到探测分支，一样会红。
 func TestBloatProbesToastIndexEndToEnd(t *testing.T) {
 	e := newBloatEnv(t)
 	_, sql := e.run(t, 30000, 1, "0.54")
@@ -235,17 +238,19 @@ func TestBloatProbesToastIndexEndToEnd(t *testing.T) {
 // TestBloatJudgeNeedsEitherWasteForm 钉住**两种浪费形态各自都能独立把索引推进候选**。
 //
 // ⚠⚠ 本门**第一版是假绿的**，变异验证当场抓出来的：
-//   第一版把「密度信号」当成一个独立的候选门，构造「无死页 + 低密度」期望判 CANDIDATE。
-//   但脚本里密度信号只参与 `reason` 文案，**真正的判定门是 headroom**，
-//   而 headroom = (deleted_pages + leaf_pages×(1-密度))×8KB —— 密度项本来就在公式里。
-//   ⇒ 把密度项改成恒假（变异）后，第一版**照样全绿**。
-//   ⇒ 教训：**「某信号参与判断」不等于「该信号参与最终判定」**。
-//     判据必须构造**同一组输入、只改一个信号、结论必须翻转**的对照，
-//     否则测的是别的东西。
+//
+//	第一版把「密度信号」当成一个独立的候选门，构造「无死页 + 低密度」期望判 CANDIDATE。
+//	但脚本里密度信号只参与 `reason` 文案，**真正的判定门是 headroom**，
+//	而 headroom = (deleted_pages + leaf_pages×(1-密度))×8KB —— 密度项本来就在公式里。
+//	⇒ 把密度项改成恒假（变异）后，第一版**照样全绿**。
+//	⇒ 教训：**「某信号参与判断」不等于「该信号参与最终判定」**。
+//	  判据必须构造**同一组输入、只改一个信号、结论必须翻转**的对照，
+//	  否则测的是别的东西。
 //
 // 现在的形态：每一对用例只有**一个**信号不同，结论必须相反。
-//   ① 死页项独立生效：leaf/density 固定，改 dead_pages ⇒ 候选 ↔ ok
-//   ② 密度项独立生效：dead/leaf 固定，改 density ⇒ 候选 ↔ ok
+//
+//	① 死页项独立生效：leaf/density 固定，改 dead_pages ⇒ 候选 ↔ ok
+//	② 密度项独立生效：dead/leaf 固定，改 density ⇒ 候选 ↔ ok
 func TestBloatJudgeNeedsEitherWasteForm(t *testing.T) {
 	cases := []struct {
 		name          string

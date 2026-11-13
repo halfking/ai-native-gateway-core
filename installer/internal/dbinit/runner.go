@@ -1850,6 +1850,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// —— monitor-summary 的 total_requests 预物化表（写入方
 			// bg.CredentialRollupRefresher；读面 O(1)、空表回落旧两臂实时计数）。
 			"963_credential_total_requests_rollup.sql",
+			// 963（2026-11-13 全面审计v3 53 增量移交轮）：promote_session_turns
+			// 的签名默认保留期 '7 days' → '8 hours' —— 688 的对齐被 640 的投递序
+			// 事故覆盖掉、869 再把在役错值有意保守保留（migration_869_test.go 钉死）
+			// ⇒ 963 完成再对齐（F-43 收口最后一步）；函数体 = 897 逐字，仅改
+			// DEFAULT 一行，PartitionManager 显式传参 ⇒ 自动调度零行为变化。
+			"964_promote_session_turns_default_retention_realign.sql",
 		},
 	}
 }

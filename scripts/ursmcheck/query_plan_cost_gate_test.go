@@ -84,8 +84,8 @@ const (
 	qpcKindApp    = "app"
 	qpcKindNonApp = "non-app"
 
-	qpcCatSlow    = "slow"
-	qpcCatNonApp  = "non-app"
+	qpcCatSlow   = "slow"
+	qpcCatNonApp = "non-app"
 
 	// ★ 变异验证用：★ 允许把台账 / 豁免登记指向仓外副本（★ 默认行为完全不变）。
 	qpcCostEnvOverride   = "URSM_QUERY_PLAN_COST_LEDGER_TSV"

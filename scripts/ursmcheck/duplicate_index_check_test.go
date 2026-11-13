@@ -179,10 +179,11 @@ func TestDupIndexWrongFieldCountAborts(t *testing.T) {
 // 阈值必须真的进到 SQL 里：把 MIN_PAIR_BYTES 调到极大值，0 对才成立。
 //
 // ★ 这一版第一稿是假绿：它只让桩「什么都不打印」，于是无论阈值有没有
-//   被替换进 SQL，第二次都会拿到 exit 0 —— 用例的名字承诺了「阈值被应用」，
-//   实测的却只是「桩不说话」。
-//   现在改成让桩**自己检查 SQL 文本里有没有那个数字**：脚本是内联占位符的，
-//   所以这是可验的。
+//
+//	被替换进 SQL，第二次都会拿到 exit 0 —— 用例的名字承诺了「阈值被应用」，
+//	实测的却只是「桩不说话」。
+//	现在改成让桩**自己检查 SQL 文本里有没有那个数字**：脚本是内联占位符的，
+//	所以这是可验的。
 func TestDupIndexThresholdIsActuallyApplied(t *testing.T) {
 	const row = `echo 'session_summaries|a|b|59801600|56184448|116162560|162491|1671095|1|0'`
 	stub := `
@@ -397,8 +398,9 @@ func TestIdenticalSegmentStillReportedAlongsidePrefix(t *testing.T) {
 // 两段各自命中时要分段报数。
 //
 // ★ 桩必须用 segAwareStub3（不是旧的两段版）：脚本已是三段，
-//   两段桩里未匹配的段会落进 `*)` 分支，于是「段1 命中」被重复计入，
-//   断言的合计数自然对不上。这不是判据变严，是**桩没跟上形态**。
+//
+//	两段桩里未匹配的段会落进 `*)` 分支，于是「段1 命中」被重复计入，
+//	断言的合计数自然对不上。这不是判据变严，是**桩没跟上形态**。
 func TestBothSegmentCountsAreReportedSeparately(t *testing.T) {
 	code, out := runDupIndexRaw(t, segAwareStub3(seg1Row, seg2Row, "true"))
 	if code != 1 {
@@ -502,8 +504,8 @@ func TestPrefixSegmentRebasesOidvectorArrays(t *testing.T) {
 
 // ★★ 量具钉子：只比列名会造假阳性（实测命中过一对真非冗余的索引）。
 //
-//   request_logs_2026_10_client_model_idx      — (client_model)
-//   request_logs_2026_10_client_model_idx2     — (client_model text_pattern_ops)
+//	request_logs_2026_10_client_model_idx      — (client_model)
+//	request_logs_2026_10_client_model_idx2     — (client_model text_pattern_ops)
 //
 // text_pattern_ops 服务 LIKE 'x%'，默认 opclass 服务 =/</排序，
 // 是**两种索引**，删一个就会让一类查询走全表扫。

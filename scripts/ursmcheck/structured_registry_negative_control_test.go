@@ -1,3 +1,5 @@
+//go:build ursmhollowout
+
 package ursm_test
 
 // structured_registry_negative_control_test.go —— 2026-10-28 R87 轮

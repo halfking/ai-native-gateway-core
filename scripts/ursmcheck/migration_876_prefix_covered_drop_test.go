@@ -40,9 +40,10 @@ func mig876Read(t *testing.T, name string) string {
 // mig876Code 去掉整行注释，只留可执行行。
 //
 // ★ 必须去注释再判定：本迁移的文件头**大量**引用了索引名、覆盖关系、
-//   以及「刻意保留 idx_usage_ledger_part_tenant」这句话。
-//   不去注释的话，下面三条断言都会被文件头的说明文字满足 ——
-//   门就变成了「文档里提到过就算数」，正是本仓反复踩的形态。
+//
+//	以及「刻意保留 idx_usage_ledger_part_tenant」这句话。
+//	不去注释的话，下面三条断言都会被文件头的说明文字满足 ——
+//	门就变成了「文档里提到过就算数」，正是本仓反复踩的形态。
 func mig876Code(t *testing.T) string {
 	t.Helper()
 	var out []string

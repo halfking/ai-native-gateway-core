@@ -67,7 +67,9 @@ const attachmentsPresencePredicateConstName = "attachmentsPresencePredicate"
 //
 // ★ 为什么不能用 `rl.has_attachments IS TRUE`：那一列是
 // `CASE WHEN attachment_count IS NULL THEN NULL WHEN attachment_count > 0
-//  THEN true ELSE false END`，规划器**推不出**它蕴含索引谓词
+//
+//	THEN true ELSE false END`，规划器**推不出**它蕴含索引谓词
+//
 // `attachment_count > 0`（NULL 分支）⇒ 部分索引用不上 ⇒ 退回全扫。
 const attachmentsPresencePredicateWant = "rl.attachment_count > 0"
 
@@ -201,7 +203,7 @@ func TestAttachmentsPresencePredicateIsUsedByEverySessionFamilyReader(t *testing
 		}
 		return true
 	})
-	uses := refs - 1 // 减去 const 声明本身的名字
+	uses := refs - 1   // 减去 const 声明本身的名字
 	const wantUses = 3 // 列表 / 统计 / 清理预览
 	if uses < wantUses {
 		t.Fatalf("常量 %s 只被引用 %d 处，至少要 %d 处（列表 / 统计 / 清理预览）：\n"+

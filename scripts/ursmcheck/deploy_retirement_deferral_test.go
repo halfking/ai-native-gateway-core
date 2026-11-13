@@ -78,7 +78,8 @@ const (
 //	execute 分支一次）⇒ 改掉一处，另一处还在 ⇒ ⇒ **门照样绿**。
 //
 // ⇒ ⇒ 判据必须落在【它该在的那个块】里 ⇒ ⇒ 同一个文件的两个分支不能互相
-//     顶替对方的证据。
+//
+//	顶替对方的证据。
 func shellCaseBlock(stripped, name string) (string, bool) {
 	lines := strings.Split(stripped, "\n")
 	start := -1
@@ -251,8 +252,9 @@ func TestRetirementDeferralScriptInvariants(t *testing.T) {
 // defer 机制**完全依赖**「台账行 content_sha256 == 文件 sha ⇒ 跳过」这条
 // 规则（scripts/apply-db-revision-sequence.sh 的执行循环）。
 // ⇒ ★ 上游一旦把这条规则换掉（例如改成只比对 execution_sha256），
-//   defer 会**静默失效**：台账里明明有 sha 相同的行，自动通道却照样执行
-//   890 ⇒ ⇒ 部署又被非空闸挡住，而**没有任何门会红**。
+//
+//	defer 会**静默失效**：台账里明明有 sha 相同的行，自动通道却照样执行
+//	890 ⇒ ⇒ 部署又被非空闸挡住，而**没有任何门会红**。
 func TestAutoChannelSkipRuleStillPresent(t *testing.T) {
 	src := readRetireFile(t, applySeqScriptPath)
 	if !strings.Contains(src, `[[ "$stored_sha" == "$file_sha" ]]`) {
@@ -269,9 +271,12 @@ func TestAutoChannelSkipRuleStillPresent(t *testing.T) {
 // extractSkipBlock 从真实脚本里**按内容**抽出「跳过判据块」。
 //
 // ⚠ 为什么不写死行号：那个文件正被并行会话编辑 ⇒ 行号会漂 ⇒
-//   写死行号会让门在别人改文件后**指向别的代码**（静默失准）。
+//
+//	写死行号会让门在别人改文件后**指向别的代码**（静默失准）。
+//
 // ⇒ 定位规则：从含 `stored_sha="$` 的那行开始，到**第一个** 2 空格缩进的
-//   `fi` 为止（那是外层 if 的收尾）。
+//
+//	`fi` 为止（那是外层 if 的收尾）。
 func extractSkipBlock(t *testing.T) string {
 	t.Helper()
 	lines := strings.Split(readRetireFile(t, applySeqScriptPath), "\n")
@@ -346,7 +351,8 @@ done
 // TestDeferralMakesAutoChannelSkip890 —— ★ 行为证明：defer 之后自动通道跳过 890。
 //
 // ★ 这里用的是**真实脚本里的判据块**（按内容抽取）⇒ 不复制逻辑 ⇒
-//   副本漂移这一类假绿被排除。
+//
+//	副本漂移这一类假绿被排除。
 func TestDeferralMakesAutoChannelSkip890(t *testing.T) {
 	block := extractSkipBlock(t)
 	// 真实的文件 sha（defer 写进台账的就是它）

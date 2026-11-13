@@ -6758,6 +6758,12 @@ func main() {
 		judgeEndpoint := os.Getenv("ARMOR_JUDGE_ENDPOINT") // e.g. "https://api.openai.com/v1"
 		judgeModel := os.Getenv("ARMOR_JUDGE_MODEL")       // e.g. "gpt-4o-mini"
 		judgeAPIKey := os.Getenv("ARMOR_JUDGE_API_KEY")    // OpenAI-compatible API key
+		// F-41 缺省披露（2026-11-13）：armor 全程 observe-only（永不阻断）且
+		// threshold 硬编码 0.7（handler.go 的 TODO 未接 policy）⇒ 两条缺省路径
+		// 都要把「判定是噪声」这件事在 boot 时说清楚，别让运维把 mock 0 分
+		// 当成「一切正常」的指标。
+		const armorJudgeMode = "observe-only"
+		const armorJudgeThreshold = 0.7
 		if judgeEndpoint != "" && judgeModel != "" && judgeAPIKey != "" {
 			var err error
 			armorJudge, err = armor.NewHTTPJudge(armor.HTTPOptions{
@@ -6766,14 +6772,25 @@ func main() {
 				APIKey:  judgeAPIKey,
 			})
 			if err != nil {
-				slog.Error("armor judge init failed", "error", err)
+				slog.Error("armor judge init failed",
+					"error", err,
+					"mode", armorJudgeMode,
+					"threshold", armorJudgeThreshold,
+					"judge", "mock(suspended; scores always 0 — judgments are noise until fixed)",
+					"fix", "check ARMOR_JUDGE_ENDPOINT/MODEL/API_KEY")
 				armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
 			} else {
-				slog.Info("armor judge initialized", "endpoint", judgeEndpoint, "model", judgeModel)
+				slog.Info("armor judge initialized",
+					"endpoint", judgeEndpoint, "model", judgeModel,
+					"mode", armorJudgeMode, "threshold", armorJudgeThreshold)
 			}
 		} else {
 			armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
-			slog.Warn("armor judge not configured, using mock judge (always safe)")
+			slog.Warn("armor judge not configured, using mock judge (always safe)",
+				"mode", armorJudgeMode,
+				"threshold", armorJudgeThreshold,
+				"judge", "mock(scores always 0 — judgments are noise)",
+				"fix", "set ARMOR_JUDGE_ENDPOINT + ARMOR_JUDGE_MODEL + ARMOR_JUDGE_API_KEY to score for real")
 		}
 
 		// Wire armor into chat handler

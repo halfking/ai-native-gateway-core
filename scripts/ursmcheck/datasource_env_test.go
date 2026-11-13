@@ -50,10 +50,11 @@ const (
 // builtinEnvExemptions：字面量豁免族（非 DSN 名 / 特殊接线名），每个都必须写明理由。
 //
 // ★ **dsn_exclusive 族不在这里**——它已抽成共享台账
-//   `scripts/audit/dsn_exclusive_registry.tsv`（2026-11-01 结构项收口，48h 轮遗留 2）：
-//   本门与 sql/schema 集成门（destructiveGuardedDB / dedicatedSessionDB 两条非注入车道）
-//   读**同一份文件**。要新增「专用破坏型 DSN」豁免，改 TSV，不改这里——
-//   sql/schema 的对账门会要求它的两条非注入车道之一同步登记，单向改动必然报红。
+//
+//	`scripts/audit/dsn_exclusive_registry.tsv`（2026-11-01 结构项收口，48h 轮遗留 2）：
+//	本门与 sql/schema 集成门（destructiveGuardedDB / dedicatedSessionDB 两条非注入车道）
+//	读**同一份文件**。要新增「专用破坏型 DSN」豁免，改 TSV，不改这里——
+//	sql/schema 的对账门会要求它的两条非注入车道之一同步登记，单向改动必然报红。
 //
 // 门会强制「豁免表里的理由非空」且「豁免表与事实源不相交」，
 // ⇒ 豁免表不会变成「什么都往里塞」的垃圾桶。

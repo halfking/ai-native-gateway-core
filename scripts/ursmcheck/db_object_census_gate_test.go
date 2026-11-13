@@ -70,9 +70,9 @@ const (
 
 	dbObjCensusCols  = 17 // env + 16（★ R162：从 15 列扩到 17 列，★ 多了 index_columns / index_predicate）
 	dbObjLedgerCols  = 9
-	dbObjExpectCols  = 6 // ★ R163：★ 加了 declared_columns（★ 列级联退役判据的输入）
+	dbObjExpectCols  = 6  // ★ R163：★ 加了 declared_columns（★ 列级联退役判据的输入）
 	dbObjRetiredCols = 10 // ★ R163：★ 加了 retire_kind / retired_column（★ 第二类退役证据）
-	dbObjColumnsCols = 4 // ★ R163：★ env + schema + table + column
+	dbObjColumnsCols = 4  // ★ R163：★ env + schema + table + column
 	dbObjReachCols   = 10
 )
 
@@ -359,7 +359,7 @@ var (
 	// ★★★ ⇒ ⇒ 修法：★ 两侧都显式容忍 `ONLY`（★ 并用下面的自证钉死）
 	dbObjReCreate = regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_"]+)\s+ON\s+(?:ONLY\s+)?([a-z0-9_."]+)`)
 	// ★★ 括号配对扫描的头（★ 允许 `USING <method>` 夹在表名与列清单之间）
-	dbObjReCreateHead = regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_"]+)\s+ON\s+(?:ONLY\s+)?([a-z0-9_."]+)\s*(?:USING\s+[a-z0-9_]+\s*)?\(`)
+	dbObjReCreateHead  = regexp.MustCompile(`(?is)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_"]+)\s+ON\s+(?:ONLY\s+)?([a-z0-9_."]+)\s*(?:USING\s+[a-z0-9_]+\s*)?\(`)
 	dbObjReDrop        = regexp.MustCompile(`(?is)DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?([a-z0-9_."]+)`)
 	dbObjReUsing       = regexp.MustCompile(`(?is)ADD\s+CONSTRAINT[^;]*?USING\s+INDEX\s+([a-z0-9_."]+)`)
 	dbObjReLineCm      = regexp.MustCompile(`(?m)--[^\n]*`)
@@ -1283,7 +1283,6 @@ func TestDbObjGapKindSynthetic(t *testing.T) {
 		t.Errorf("★ partially applied migration must count as a real gap: got %q want hole", got)
 	}
 }
-
 
 // ─────────────────────────── 审计档与台账的一致性 ───────────────────────────
 

@@ -157,9 +157,10 @@ func ahcFingerprint(handler, defFile string) string {
 //	写进注释头 ⇒ ★★ 门就能**机器判定**「台账是不是用当前这版工具生成的」。
 //
 // ★ 诚实边界（★ 必须写在门里，否则就是半个承诺）：
-//   ★ 本判据只能发现「**工具**变了」；
-//   ★ 「**代码**变了」也会让覆盖度变，★ 而那需要重跑 go test 才能知道
-//   ⇒ ★★ 代码改过**必须手动重生成台账**（★ 命令写在台账头注释里）。
+//
+//	★ 本判据只能发现「**工具**变了」；
+//	★ 「**代码**变了」也会让覆盖度变，★ 而那需要重跑 go test 才能知道
+//	⇒ ★★ 代码改过**必须手动重生成台账**（★ 命令写在台账头注释里）。
 func ahcReadLedgerHeader(t *testing.T) map[string]string {
 	t.Helper()
 	root := ahcRepoRoot(t)
@@ -549,9 +550,11 @@ func TestApiHandlerCoverageLedgerIsNotEmpty(t *testing.T) {
 //	★ 而台账是「缺口清单」的载体 ⇒ ★★ 它一旦过期，★ 收口跟踪就在追一个幻影。
 //
 // ★ 机制：★ 工具在生成台账时把**自己的 sha256**写进注释头（`# gen_tool_sha=`）
+//
 //	⇒ ★ 本门重算当前工具的 sha256 并与台账头比对 ⇒ ★ 不一致 ⇒ 红。
 //
 // ★ ★ 诚实边界（★ 不写清楚就是半个承诺）：
+//
 //	★ 本判据只能发现「**工具**变了」；
 //	★ 「**代码**变了」同样会让覆盖度变，★ 而那要重跑 go test 才知道
 //	⇒ ★★ 代码改过**必须手动重生成台账**（★ 命令见台账头注释）。
@@ -561,8 +564,8 @@ func TestApiHandlerCoverageLedgerWasGeneratedByCurrentTool(t *testing.T) {
 
 	got, ok := hdr["tool_sha"]
 	if !ok || got == "" {
-		t.Fatalf("★ 台账头缺 `# gen_tool_sha=` ⇒ 台账的生成工具版本不可知 ⇒ " +
-			"「工具改了台账没重生成」这件事无法被机器判定 ⇒ 拒绝接受这份台账\n" +
+		t.Fatalf("★ 台账头缺 `# gen_tool_sha=` ⇒ 台账的生成工具版本不可知 ⇒ "+
+			"「工具改了台账没重生成」这件事无法被机器判定 ⇒ 拒绝接受这份台账\n"+
 			"  ⇒ 修法：用当前工具重生成：bash scripts/audit/api-handler-coverage.sh --ledger %s", ahcLedgerRel)
 	}
 	want := ahcFileSHA256(t, filepath.Join(root, ahcToolRel))
@@ -589,9 +592,11 @@ func TestApiHandlerCoverageLedgerWasGeneratedByCurrentTool(t *testing.T) {
 //	    CalculateNow / ListProfiles / GetProfile）。
 //
 // ★ 于是「台账是用哪种口径生成的」就是**台账正确性的一部分**
+//
 //	⇒ ★ 必须写进台账头（★ `# gen_coverpkg=`）⇒ ★ 门来钉住它。
 //
 // ★ 本门**不**重跑全量（★ 要跑 5 遍 go test，★ ≈ 5 分钟，★ 门里不允许）⇒ ★★ 只断言
+//
 //	★ 「台账头记录的 coverpkg **确实覆盖了全部定义包**」⇒ ★ 而定义包可以**从台账自己**
 //	★ 推出来（★ def_file 列的前缀）⇒ ★★ 这是**自洽性**判据，★ 不需要真跑。
 func TestApiHandlerCoverageLedgerCoverageScopeIsJoint(t *testing.T) {
@@ -608,8 +613,8 @@ func TestApiHandlerCoverageLedgerCoverageScopeIsJoint(t *testing.T) {
 	//   external = 外部提供的 profile ⇒ ★ 口径由提供方保证 ⇒ 记录但**不断言包覆盖**
 	switch hdr["cover_mode"] {
 	case "none":
-		t.Fatalf("★ 台账是用「各包自跑」口径生成的（gen_cover_mode=none）\n"+
-			"  ⇒ ★★ 该口径**漏判跨包执行**（★ 实测 8642 个语句块受影响）\n"+
+		t.Fatalf("★ 台账是用「各包自跑」口径生成的（gen_cover_mode=none）\n" +
+			"  ⇒ ★★ 该口径**漏判跨包执行**（★ 实测 8642 个语句块受影响）\n" +
 			"  ⇒ 零覆盖清单会含**假缺口** ⇒ 必须用两遍模式（★ 默认开）重生成")
 	case "joint":
 		// ★ 联合覆盖：★ 继续断言「coverpkg 覆盖了台账里出现的每一个定义包」

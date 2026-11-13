@@ -135,9 +135,10 @@ func TestOnconflictExpectColsMatchesWriter(t *testing.T) {
 // 命中：存在列集合完全相等的唯一索引 ⇒ exit 0
 //
 // ★ 夹具里 indisunique 用 `true` 而不是 `t`：2026-10-06 在 252 真库实测
-//   psql -A -t 对 boolean::text 返回的就是 `true`。
-//   夹具要照抄真实源的形状，否则判据可能测的是「我想象的 psql」。
-//   （本门只数字段个数，所以两者都能过 —— 但那属于这道门的运气，不是设计。）
+//
+//	psql -A -t 对 boolean::text 返回的就是 `true`。
+//	夹具要照抄真实源的形状，否则判据可能测的是「我想象的 psql」。
+//	（本门只数字段个数，所以两者都能过 —— 但那属于这道门的运气，不是设计。）
 func TestOnconflictMatchExitsZero(t *testing.T) {
 	stub := "echo 'ursm_node_snapshot_min_pkey|credential_id,raw_model_name,snapshot_ts,tenant_id|true|1'"
 	code, out := runOnconflict(t, 0, stub)
@@ -152,7 +153,7 @@ func TestOnconflictMatchExitsZero(t *testing.T) {
 	//   这与同族那条「报 3 但一个字都没输出」是同一条纪律的两面：
 	//   **退出码必须配上可核对的输出**。
 	if strings.TrimSpace(out) == "" {
-		t.Fatalf("exit 0 却没有任何输出 —— 脚本多半没跑完（被静默截断），"+
+		t.Fatalf("exit 0 却没有任何输出 —— 脚本多半没跑完（被静默截断），" +
 			"而 exit 0 按契约读作「健康」。不能把「没跑完」记成「没问题」。")
 	}
 	if !strings.Contains(out, "恰好覆盖") {

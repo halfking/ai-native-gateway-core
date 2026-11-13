@@ -126,7 +126,8 @@ func TestSection14335MigrationShape(t *testing.T) {
 // TestSection14335MigrationHasBackfill 钉住「迁移内做首次回填」。
 //
 // ★★★ 为什么必须钉住这条：若表是空的，巡检读到「没有基线」
-//   ⇒ 所有桶判成 NO-BASELINE ⇒ **巡检会安静地失明**（比慢更坏）。
+//
+//	⇒ 所有桶判成 NO-BASELINE ⇒ **巡检会安静地失明**（比慢更坏）。
 func TestSection14335MigrationHasBackfill(t *testing.T) {
 	body := readFile14335(t, mig892)
 
@@ -146,11 +147,12 @@ func TestSection14335MigrationHasBackfill(t *testing.T) {
 // TestSection14335NoOverloadAmbiguity 钉住「只有【一个】重载」。
 //
 // ★★★ 本地真库实测过的两条坑：
-//   ① `COMMENT ON FUNCTION` **不会创建函数** ⇒ 调单参数版报 does not exist；
-//   ② ★ 只要存在【可省略参数】的重载，`f(1)` 就会同时匹配多个候选
-//      ⇒ `ERROR: function ... is not unique`（实测：给单参数版去掉默认值也救不了）。
-//   ⇒ ⇒ ★★ 唯一可行形态：**只保留一个函数**，第二个参数带默认值
-//      （`f(1)` 落到 'hour'，`f(8, 'minute')` 显式指定粒度）。
+//
+//	① `COMMENT ON FUNCTION` **不会创建函数** ⇒ 调单参数版报 does not exist；
+//	② ★ 只要存在【可省略参数】的重载，`f(1)` 就会同时匹配多个候选
+//	   ⇒ `ERROR: function ... is not unique`（实测：给单参数版去掉默认值也救不了）。
+//	⇒ ⇒ ★★ 唯一可行形态：**只保留一个函数**，第二个参数带默认值
+//	   （`f(1)` 落到 'hour'，`f(8, 'minute')` 显式指定粒度）。
 func TestSection14335NoOverloadAmbiguity(t *testing.T) {
 	body := readFile14335(t, mig892)
 
@@ -164,7 +166,7 @@ func TestSection14335NoOverloadAmbiguity(t *testing.T) {
 
 	// ★ 且必须是【双参数、第二个带默认值】的形态。
 	if !strings.Contains(body, "p_days_back integer DEFAULT 1,\n    p_granularity text DEFAULT 'hour'") {
-		t.Fatalf("迁移 892 的函数签名不是「双参数 + 第二个带默认值」⇒ "+
+		t.Fatalf("迁移 892 的函数签名不是「双参数 + 第二个带默认值」⇒ " +
 			"要么 f(1) 匹配不到、要么 f(8,'minute') 匹配不到")
 	}
 
@@ -177,7 +179,8 @@ func TestSection14335NoOverloadAmbiguity(t *testing.T) {
 // TestSection14335PatrolHasTwoIndependentSQL 钉住「两路是两段独立 SQL」。
 //
 // ★★★ 这是本节最重要的判据：PG 在规划期解析表名 ⇒ 同一段 SQL 里写两路
-//   ⇒ 汇总表不存在时**整条语句崩** ⇒ 回退机制是假的。
+//
+//	⇒ 汇总表不存在时**整条语句崩** ⇒ 回退机制是假的。
 func TestSection14335PatrolHasTwoIndependentSQL(t *testing.T) {
 	body := readFile14335(t, patrolSh)
 
@@ -221,7 +224,8 @@ func TestSection14335PatrolHasTwoIndependentSQL(t *testing.T) {
 // TestSection14335PatrolHasNoBacktickInSQLStrings 钉住「SQL 字符串里没有反引号」。
 //
 // ★★★ 本地真库实测踩过：反引号在双引号字符串里会被 bash 当【命令替换】执行
-//   ⇒ 运行时报「syntax: 未找到命令」，而 `bash -n` **发现不了**。
+//
+//	⇒ 运行时报「syntax: 未找到命令」，而 `bash -n` **发现不了**。
 func TestSection14335PatrolHasNoBacktickInSQLStrings(t *testing.T) {
 	body := readFile14335(t, patrolSh)
 
@@ -246,7 +250,8 @@ func TestSection14335PatrolHasNoBacktickInSQLStrings(t *testing.T) {
 // TestSection14335PatrolUsesBucketAlignedWindow 钉住「窗口桶对齐」。
 //
 // ★★ 这是【判定输入的一处真实改动】（旧路原本用行时间下界）
-//   ⇒ 必须被门钉住，否则后人会以为「零成本改动」。
+//
+//	⇒ 必须被门钉住，否则后人会以为「零成本改动」。
 func TestSection14335PatrolUsesBucketAlignedWindow(t *testing.T) {
 	body := readFile14335(t, patrolSh)
 
@@ -334,7 +339,8 @@ func TestSection14335RegistrationPoints(t *testing.T) {
 // TestSection14335EmbeddataCopyIsByteIdentical 钉住「canonical 与 embeddata 副本逐字相同」。
 //
 // ★ 迁移正文改一个字而副本没跟上 ⇒ 两条通道执行的**不是同一份字节**，
-//   而「两份 sha 现场一致」是台账行里的承诺 ⇒ 门钉住它。
+//
+//	而「两份 sha 现场一致」是台账行里的承诺 ⇒ 门钉住它。
 func TestSection14335EmbeddataCopyIsByteIdentical(t *testing.T) {
 	for _, pair := range [][2]string{
 		{mig892, embedMig892},
@@ -349,7 +355,8 @@ func TestSection14335EmbeddataCopyIsByteIdentical(t *testing.T) {
 // TestSection14335ChangelogShaIsMeasured 钉住「台账里的 sha 是文件实测值」。
 //
 // ★ 历史上出现过手抄 sha 导致对账门判红（见 885 那一行的订正记录）⇒
-//   本门要求台账里出现的 sha **等于**当场对文件算出来的 sha。
+//
+//	本门要求台账里出现的 sha **等于**当场对文件算出来的 sha。
 func TestSection14335ChangelogShaIsMeasured(t *testing.T) {
 	want := sha256Of14335(t, mig892)
 	ch := readFile14335(t, dbChangelog)
@@ -387,10 +394,11 @@ func TestSection14335LedgerIsUpdated(t *testing.T) {
 //
 // ★ 历史判据（2026-10-22 写）：「线上未部署 ⇒ 台账必须记 drift 且写清原因」。
 // ★ 2026-10-24 llmgo 六页面修复轮：P11 两件套（巡检新版本 + slot-refresh）与
-//   /etc/cron.d/pg17 的刷新行已实际部署到 252（手动实测 base_source=daily、
-//   64.7s 完成、coverage 7/7）⇒ 事实翻转 ⇒ 本门同步翻转到新事实：
-//   「已部署 ⇒ 台账必须 in-sync 且写清部署证据」。
-//   （门的意图不变：台账不许对部署状态说谎——状态必须与线上实测一致。）
+//
+//	/etc/cron.d/pg17 的刷新行已实际部署到 252（手动实测 base_source=daily、
+//	64.7s 完成、coverage 7/7）⇒ 事实翻转 ⇒ 本门同步翻转到新事实：
+//	「已部署 ⇒ 台账必须 in-sync 且写清部署证据」。
+//	（门的意图不变：台账不许对部署状态说谎——状态必须与线上实测一致。）
 func TestSection14335LedgerRecordsDrift(t *testing.T) {
 	ledger := readFile14335(t, ledger252)
 
@@ -495,7 +503,8 @@ func TestRunbook14335ThreeLayersAreMeasured(t *testing.T) {
 // TestRunbook14335RecordsTheFailedFirstRun 钉住「第一次 A/B 是 FAIL 的」。
 //
 // ★★★ 这条最重要：只写「验证通过」而不写「先失败后改设计」，
-//   后人就看不到「零语义风险」这句话被修正过一次 ⇒ 也会低估下一次的风险。
+//
+//	后人就看不到「零语义风险」这句话被修正过一次 ⇒ 也会低估下一次的风险。
 func TestRunbook14335RecordsTheFailedFirstRun(t *testing.T) {
 	s := section14335(t, "§143.35 ")
 	mustContain14335(t, "§143.35 正文", s,

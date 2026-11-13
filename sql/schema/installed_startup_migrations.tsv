@@ -379,3 +379,4 @@
 361	961_market_scoring_runs.sql
 362	962_recent_success_rate_index_aligned.sql
 363	963_credential_total_requests_rollup.sql
+364	964_promote_session_turns_default_retention_realign.sql

@@ -34,8 +34,9 @@ import (
 // stripShellComments 去掉整行注释。
 //
 // ★ 本门必须剥注释再断言：订正处自己就写了 "90000" / "45000" 来解释
-//   「为什么删掉这两个数」，不剥就会被自己的解释文字判绿——
-//   这正是 §899 那条「源码门会被一条过期/解释性注释救活」的形态。
+//
+//	「为什么删掉这两个数」，不剥就会被自己的解释文字判绿——
+//	这正是 §899 那条「源码门会被一条过期/解释性注释救活」的形态。
 func stripShellComments(src string) string {
 	var out []string
 	for _, l := range strings.Split(src, "\n") {

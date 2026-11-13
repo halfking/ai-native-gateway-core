@@ -130,15 +130,17 @@ func (r *CredentialRollupRefresher) Start(ctx context.Context) {
 	)
 }
 
-// Stop 停止刷新循环（幂等）。
+// Stop 停止刷新循环（幂等）。终态等待只在「已 Start」（cancel 已置位）时
+// 可达 —— 构造未启动的实例 Stop 必须立即返回（stopguard 门，2026-11-13
+// 48h 审计轮补；passive_probe_listener 同形先例）。
 func (r *CredentialRollupRefresher) Stop() {
 	r.mu.Lock()
 	cancel := r.cancel
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
+		<-r.done
 	}
-	<-r.done
 }
 
 func (r *CredentialRollupRefresher) run(ctx context.Context) {

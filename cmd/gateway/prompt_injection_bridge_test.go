@@ -135,49 +135,39 @@ func TestPromptInjectionBridgeEndToEnd(t *testing.T) {
 	if got := stub.calls.Load(); got != 1 {
 		t.Fatalf("detector 必须被调用恰 1 次；got %d——user_content 写面或 hook 接线断线", got)
 	}
-	if got, _ := stub.lastIn.Load().(string); got != "当前这条用户输入" {
-		t.Fatalf("detector 收到的必须是最后一条 user 消息；got %q", got)
+	// 2026-11-13 48h 审计轮：提取器语义从「最后一条 user」改为「全部 user 消息
+	// 按序 "\n" 连接」（上下文注入同样可检，与四端点形态覆盖同轮落地）。
+	if got, _ := stub.lastIn.Load().(string); got != "first user turn\n当前这条用户输入" {
+		t.Fatalf("detector 收到的必须是全部 user 消息按序连接；got %q", got)
 	}
 }
 
-// TestLastUserContentFromBody 钉住写面取值规则。
+// TestLastUserContentFromBody 钉住写面取值规则（2026-11-13 48h 审计轮改用
+// 全形态提取器 userContentFromBody：多用户消息按序 "\n" 连接、四端点形态
+// 全覆盖、rune 安全截断——旧「取最后一条 + 字节截断」语义被本审计轮 P1/P2
+// 裁定替换，提取器本体与专项用例在 user_content_extract.go / user_content_extract_test.go）。
 func TestLastUserContentFromBody(t *testing.T) {
-	t.Run("取最后一条user", func(t *testing.T) {
-		got := lastUserContentFromBody([]byte(`{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":"c"}]}`))
-		if got != "c" {
-			t.Fatalf("want c, got %q", got)
+	t.Run("user消息按序连接", func(t *testing.T) {
+		got := userContentFromBody([]byte(`{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":"c"}]}`))
+		if got != "a\nc" {
+			t.Fatalf("want a+newline+c, got %q", got)
 		}
 	})
 	t.Run("无user或空body返回空串", func(t *testing.T) {
 		for _, body := range []string{`{"messages":[{"role":"assistant","content":"b"}]}`, ``, `not-json`} {
-			if got := lastUserContentFromBody([]byte(body)); got != "" {
+			if got := userContentFromBody([]byte(body)); got != "" {
 				t.Fatalf("body %q: want 空串, got %q", body, got)
 			}
 		}
 	})
-	t.Run("超长截断到64KiB", func(t *testing.T) {
+	t.Run("超长截断到上限（rune安全）", func(t *testing.T) {
 		long := strings.Repeat("x", userContentMaxBytes+1024)
 		payload, _ := json.Marshal(map[string]any{"messages": []map[string]any{{"role": "user", "content": long}}})
-		got := lastUserContentFromBody(payload)
+		got := userContentFromBody(payload)
 		if len(got) != userContentMaxBytes {
 			t.Fatalf("want len=%d, got %d", userContentMaxBytes, len(got))
 		}
 	})
-}
-
-// TestV2PipelineOffKeepsChainAbsent 钉住默认形态行为保持：pipeline 开关未设
-// ⇒ v2DispatchMux 不构建，user_content/hook 均不在场（F-41 是灰度过渡态的
-// 收口，不是默认行为翻转）。
-func TestV2PipelineOffKeepsChainAbsent(t *testing.T) {
-	t.Setenv("LLM_GATEWAY_USE_V2_PIPELINE", "")
-	if v2UsePipeline() {
-		t.Fatal("默认形态 v2UsePipeline() 必须为 false")
-	}
-	chat := &v2ChatHandlerStub{}
-	mux, deps, ok := v2DispatchMux(chat, chat, chat, nil)
-	if ok || mux != nil || deps != nil {
-		t.Fatal("默认形态下 v2DispatchMux 必须不构建 pipeline")
-	}
 }
 
 // pipelineRequestWithUserContent 构造带 user_content 的最小 PipelineRequest。

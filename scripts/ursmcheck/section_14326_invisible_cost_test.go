@@ -104,10 +104,13 @@ func TestRunbook14326SectionHeadingsPresent(t *testing.T) {
 // TestRunbook14326GateLimitationIsRecorded 钉住「Contains 型门只保护『至少有一处』」这条自省。
 //
 // ★ 这是本节**做门的过程中被自己的门绊了一次**才浮出来的教训：
-//   6 个变异一开始「仍是绿的」，真因不是判据没守卫力，而是**变异只替换了第一次出现**
-//   ⇒ 门只钉住「读数存在」，不钉住「每处都对」。
+//
+//	6 个变异一开始「仍是绿的」，真因不是判据没守卫力，而是**变异只替换了第一次出现**
+//	⇒ 门只钉住「读数存在」，不钉住「每处都对」。
+//
 // ★ 若后人把这条自省删掉，下一个做门的人会**重复踩同一个坑**，并且很可能
-//   误判成「门没有守卫力」⇒ 去写一个更弱的门。
+//
+//	误判成「门没有守卫力」⇒ 去写一个更弱的门。
 func TestRunbook14326GateLimitationIsRecorded(t *testing.T) {
 	s := section14326(t)
 
@@ -210,7 +213,8 @@ func TestRunbook14326NegativeResultKept(t *testing.T) {
 // TestRunbook14326StructuralPointIsQuantified 钉住唯一可动手的结构点的读数。
 //
 // ★ 「不能删臂」（203,430 行 = 60.0%）与「反连接代价」（438,962 行 / cost 171,357）
-//   必须同时在 ⇒ 否则后人会误以为可以删掉第 3 臂。
+//
+//	必须同时在 ⇒ 否则后人会误以为可以删掉第 3 臂。
 func TestRunbook14326StructuralPointIsQuantified(t *testing.T) {
 	s := section14326(t)
 
@@ -274,7 +278,8 @@ func TestRunbook14326RecommendationsAreTiered(t *testing.T) {
 // TestRunbook14326ParserUsesSyntaxHeadAttribution 钉住**解析器按语句语法头部归属**。
 //
 // ★ 这是本节证据力的根：本节抓到的教科书级误判，正是「正文含 REFRESH ⇒ 判成 REFRESH」。
-//   若解析器被改回「正文含 REFRESH 就算 REFRESH」，§143.26.2 的订正就失去证据力。
+//
+//	若解析器被改回「正文含 REFRESH 就算 REFRESH」，§143.26.2 的订正就失去证据力。
 func TestRunbook14326ParserUsesSyntaxHeadAttribution(t *testing.T) {
 	raw, err := os.ReadFile(pgKillParser14326)
 	if err != nil {

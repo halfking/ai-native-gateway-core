@@ -66,7 +66,7 @@ const hollowoutLockName = ".ursmcheck-hollowout.lock"
 //
 // ★★ 又为什么**不能更长**：★ Go 的 `testing` 超时是 **alarm goroutine 里的 panic**
 // ⇒ ⇒ 进程被杀时**其它 goroutine 的 defer 不跑**⇒ ⇒ 掏空态会留在盘上
-// ⇒ ⇒ **等待上限必须显著小于测试超时预算**（★ 本轮统一 `-timeout=1800s`）。
+// ⇒ ⇒ **等待上限必须显著小于测试超时预算**（★ 2026-11-13 起三通道统一 `-timeout=3600s`，见 Makefile make test 注释）。
 const hollowoutLockWait = 15 * time.Minute
 
 // hollowoutLockPath 返回整仓掏空锁的路径。

@@ -354,8 +354,13 @@ $$;
 COMMENT ON FUNCTION public.session_turns_advisory_lock_key(TEXT, TEXT) IS
     'Canonical tenant/session advisory-lock key shared by session turn writers, enrichment, aggregation, and hot-row promotion.';
 
+-- ★ 2026-11-13（963 realign）：DEFAULT 与 Go 调度器（DefaultRetentionWindow=8h）
+--   对齐。本 bootstrap 是 526+636 投影（瞬态形态，链上 688→…→963 会继续重写
+--   本函数），但保留 '7 days' 会延续「签名默认与生产行为背离」的旧形态
+--   —— 640 的投递序事故覆盖掉 688/707 的对齐后，869 又把该错值有意保守
+--   保留下来（见 963 头注释与 migration_869_test.go 的钉测）。
 CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition(
-    p_retention INTERVAL DEFAULT '7 days',
+    p_retention INTERVAL DEFAULT '8 hours',
     p_batch_size INTEGER DEFAULT 5000
 )
 RETURNS BIGINT
