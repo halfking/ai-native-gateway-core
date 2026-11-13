@@ -651,6 +651,25 @@ var modelDeprecatedRe = regexp.MustCompile(
 // 只在中转报配额缺失时出现，误报面可忽略。
 var noActiveQuotaRe = regexp.MustCompile(`(?i)\bno\s+active\s+(limited\s+)?quota\b`)
 
+// bindingGroupAccessRe 识别 new_api 家族的「单模型分组权限拒绝」：
+// 「无权访问 <组名> 分组」（HTTP 403）。证据指向 (凭据, 分组)——即发起
+// 请求的那一对 (凭据,模型)，映射到其它分组的兄弟模型照常服务
+// （211 cred 71 实证：opus-4-8 探针 403 连败把整凭据 auth_failed 按探针
+// 退避梯推到 24h，而同凭据 opus-5-5 探针 95 连胜完全健康 ⇒ resolve 页
+// 对健康模型显示「鉴权失败」整整一天）。
+// ⇒ 归 KindModelUnavailable（绑定级，同裸 404 的处置：只冷却这一对，
+// 保留跨凭据故障转移），不归凭据级 KindAuth。
+// ★ 必须「无权访问」+「分组」**成对**出现：裸「无权访问」（账号级拒绝）
+//   不在本模式内——账号级 403 保持 KindAuth 凭据级处置不放宽。
+var bindingGroupAccessRe = regexp.MustCompile(`无权访问.{0,40}分组`)
+
+// IsBindingGroupAccessDenied 是 bindingGroupAccessRe 的导出面：bg 探针侧
+// （isPerModelChatFailure 的 403 分组臂）与两个分类器共用同一份词表，
+// 防止「分类器改了、探针侧忘改」的三处抄写漂移（§700 单源纪律）。
+func IsBindingGroupAccessDenied(body []byte) bool {
+	return bindingGroupAccessRe.Match(body)
+}
+
 // fallback "no available credits?" / "out of quota" / "quota exhausted"
 // (which were previously caught by concurrentOverloadRe's overly-broad
 // trailing group, producing KindConcurrent → same-cred retry against
@@ -698,6 +717,20 @@ var budgetExceededRe = regexp.MustCompile(
 		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
 		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
 		`"code"\s*:\s*"insufficient_balance"|` +
+		// 2026-11-14（suyun 轮）：new_api 家族的余额**预扣**失败——
+		// HTTP 403 + {"code":"insufficient_user_quota"} + 中文形态
+		// 「预扣费额度失败, 用户剩余额度: ¥x, 需要预扣费额度: ¥y」。
+		// 此前本正则只认 INSUFFICIENT_BALANCE 码、中文动词表（用尽/用完/
+		// 耗尽/不足/超限/上限）不含「失败」⇒ 同一上游（suyun）的姊妹形态
+		// 「用户额度不足」命中 quota 而「预扣费额度失败」漏网落 403 auth 门
+		// ⇒ 整凭据 auth_failed（211 cred 39：探针 150 连胜 + 96 笔真实流量
+		// 全成功的健康凭据被误标 15 分钟，72h 窗口同类误标 15+ 次）。
+		// ★ 刻意**不含**裸 insufficient_quota（OpenAI 标准码）：那个码在
+		//   429 上的既有口径是 KindRateLimit
+		//   （classify_quota_code_characterization_test 钉死），user 段避免误吞。
+		`"code"\s*:\s*"insufficient_user_quota"|` +
+		`insufficient[_ -]?user[_ -]?quota|` +
+		`预扣费|` +
 		// Chinese quota exhaustion patterns (智谱AI, 智码, apigpt, MiniMax).
 		// 2026-08-20 扩展: 加入 `费用` 名词变体（用户原文："节点费用已用完"），
 		// 加入 `用完` 动词变体（"用完"是口语"已耗尽"的标准说法，原 regex 仅含
@@ -1417,6 +1450,12 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if noActiveQuotaRe.Match(body) {
 			return KindQuotaPermanent
 		}
+		// 2026-11-14（suyun 轮）：单模型分组权限拒绝（403）⇒ 绑定级
+		// KindModelUnavailable（同裸 404 的处置：只冷却这一对，保留跨凭据
+		// 故障转移），不归凭据级 KindAuth。两分类器同门（不分叉纪律）。
+		if status == 403 && IsBindingGroupAccessDenied(body) {
+			return KindModelUnavailable
+		}
 		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
 			if quotaResetsRe.Match(body) {
 				return KindQuotaPeriodic
@@ -1860,6 +1899,12 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// 智谱 trial 配额以 400 出现，见 noActiveQuotaRe 注释。两分类器同门（不分叉纪律）。
 		if noActiveQuotaRe.Match(body) {
 			return KindQuotaPermanent
+		}
+		// 2026-11-14（suyun 轮）：单模型分组权限拒绝（403）⇒ 绑定级
+		// KindModelUnavailable。与 ClassifyErrorWithBody 的同名分支
+		// **逐字同门**（锁步纪律）。
+		if status == 403 && IsBindingGroupAccessDenied(body) {
+			return KindModelUnavailable
 		}
 		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
 			if quotaResetsRe.Match(body) {
