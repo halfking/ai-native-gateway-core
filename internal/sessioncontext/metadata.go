@@ -47,11 +47,20 @@ func fileMetadataBounded(ctx context.Context, r io.ReaderAt, span largebody.Span
 	_ = json.Unmarshal(root["type"], &kind)
 	switch kind {
 	case "image", "image_url", "input_image", "input_audio", "audio", "video", "input_video", "document", "file", "input_file", "redacted_thinking", "item_reference":
-		return nil, ErrProtectedContext
+		// r1052（2026-11-13，211 fable-5-2 入口 422 根修）：巨型消息（>64KB）
+		// 内的媒体块此前直接 ErrProtectedContext ⇒ 整个 Reduce 失败 ⇒
+		// LargeIngress 422「cannot produce a valid bounded context; split the
+		// protected input」⇒ 带截图的 ZCode 会话（历史全量 >1MB）每笔请求
+		// 必败。媒体块的 token 计量归 contextbudget 的 external 面管；本层
+		// 只需要 role + 工具链元数据——媒体块没有工具链，打桩保留类型、
+		// 丢弃数据，让缩减继续（该消息若非保护区成员，后续照样被丢弃）。
+		stub, _ := json.Marshal(map[string]any{"type": kind, "gw_media_omitted": true})
+		return stub, nil
 	}
 	for _, key := range []string{"inlineData", "inline_data", "fileData", "file_data", "encrypted_content", "image_url", "input_audio"} {
 		if _, ok := doc.Fields[key]; ok {
-			return nil, ErrProtectedContext
+			// r1052：同上——消息级媒体字段打桩而非整请求拒绝。
+			root[key] = json.RawMessage(`"[media omitted from bounded context]"`)
 		}
 	}
 	for _, key := range []string{"content", "parts"} {

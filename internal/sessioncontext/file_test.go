@@ -119,6 +119,12 @@ func TestExtractiveQualityChineseCodeAndLongLines(t *testing.T) {
 }
 
 func TestReduceCannotSilentlyRemoveUncountedHistoricalMedia(t *testing.T) {
+	// 2026-11-13 改判（r1052，211 fable-5-2 入口 422 根修）：历史媒体不再
+	// 使整个 Reduce 失败（旧断言＝必须报错——带截图的 ZCode 会话历史
+	// >1MB 时每笔请求 422「split the protected input」，客户端无法自救，
+	// 会话砖化）。新语义＝**显式省略**：缩减成功、base64 载荷不入缩减体、
+	// 且必须携带「media omitted」标记——媒体不无声消失（本测试的原设计
+	// 意图保住：模型知道这里曾有一张图，不幻觉、不静默）。
 	store, _ := largebody.NewStore(t.TempDir())
 	defer store.Close()
 	body := `{"messages":[{"role":"user","content":"task"},{"role":"assistant","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + strings.Repeat("a", 300000) + `"}}]},{"role":"user","content":"Describe the earlier image"}],"model":"m"}`
@@ -126,9 +132,26 @@ func TestReduceCannotSilentlyRemoveUncountedHistoricalMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = Reduce(context.Background(), store, ref, 64<<10); err == nil {
-		t.Fatal("media disappeared before accounting")
+	out, report, err := Reduce(context.Background(), store, ref, 64<<10)
+	if err != nil {
+		t.Fatalf("media history must reduce with an explicit omission marker: %v", err)
 	}
+	if !report.Reduced {
+		t.Fatalf("expected a reduction, report=%+v", report)
+	}
+	if strings.Contains(string(out), "aaaa") || strings.Contains(string(out), strings.Repeat("a", 4096)) {
+		t.Fatal("base64 media payload leaked into the reduced context")
+	}
+	if !strings.Contains(string(out), "media omitted") {
+		t.Fatalf("media was removed silently — explicit omission marker missing: %s", truncateForTest(out, 400))
+	}
+}
+
+func truncateForTest(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "..."
 }
 
 func TestFileMetadataBoundsEmptyNestedStructures(t *testing.T) {
