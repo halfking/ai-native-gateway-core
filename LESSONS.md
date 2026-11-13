@@ -30351,3 +30351,11 @@ normal pre7d 污染 **47/154=30.5%**、干净 pre **19/107=17.8%** ⇒ 阈值 **
 
 ★ 过程坑（测试基建）：`settings.Global = NewRegistry()` **恒非 nil**——「纯单元环境走缺省」的假设不成立，单测里钉开关值必须用 fakeSettingsBackend 显式装配（audio_usage_gate 同款）；第一版钩子测试正因此假绿转红。另：vendor 模式下往 git-archive 冻结树里加**新包**要手动建目录（archive 不含未提交文件）。
 
+
+## §718 ·（★★ 改写出站 body 的层，必须维持网关自己在入口强制的不变量——「出站零 user」是网关自己制造、自己渲染、再回敬客户端的 4xx）2026-11-13 r1048 trim 吞 user 根修轮
+
+★ 事故链（211 gw_23a0614a turn 1030）：ZCode hydration 会话出站＝863 system+2 asst+4 tool、**零 user** ⇒ 智谱 coding 端点 400 code 1214「messages 参数非法」⇒ 网关 `invalidRequestFormatRe` 判 KindClientBug ⇒ `requestShapeRejection` 渲染成「provider wire format validation」400 回客户端。四层证据全部亲验：final_full 出站本体 / 上一笔同为零 user 却成功（排除形状、锁定「无 user」）/ 管线数字（1179→strip 872→trim 869，丢的 3 条=仅有的 3 条 user）/ 本地真实数据先红复现。上游语义活体实证：/v1/messages 发 assistant-only ⇒ **逐字复现 owner 报错**；同形状带 1 条 user ⇒ 200。
+
+★★ 通用式：**入口有 `HasUserMessage` 强制（no_user_message 400）的网关，压缩/裁剪层没有任何等价守卫——改写体（trim/strip/摘要重建）悄悄制造出入口自己都不放行的 body**。修法＝在**改写原语层**（trimOldestPairs + dropOldestMessageUnit 两原语覆盖全部 4 调用点）加 post-condition `ensureUserSurvived`：零 user 时回插最新一条**非 tool-result 载体**的 user（Anthropic 形态 user 可能是 tool_result 载体，回插=孤儿 tool_result，必须跳过），回插点=首条非 system 前（顺序单调，且 Anthropic 本要求首消息 user）。
+
+★ 两个伴生发现：① trim 循环预算只算消息不算 envelope（tools ~225KB 不入账 ⇒ 67.8K≤76.8K 提前「收敛」，真实 body est 114K）——aggressive 路径有 envelope 预留、default 路径漏了，**登记不修**（改预算=全局改激进度）；② 智谱对 system 为主的奇形 body 极宽容（862 连 system/869 条/630KB 全 200）——**上游拒收的边界是「无 user」而非「system 太多」**，定位上游 4xx 语义必须做原因性对照（同形状±单变量），不能拿「形状罕见」当结论。

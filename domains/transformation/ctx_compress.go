@@ -251,7 +251,69 @@ func trimOldestPairs(messages []json.RawMessage, softLimit int) []json.RawMessag
 	out := make([]json.RawMessage, 0, len(system)+len(rest))
 	out = append(out, system...)
 	out = append(out, rest...)
+	return ensureUserSurvived(messages, out)
+}
+
+// ensureUserSurvived restores the newest dropped user message when a trim has
+// removed every user message from the array (r1048, 2026-11-13).
+//
+// Incident: a hydrated ZCode session carried 853 system messages, two tool
+// rounds and exactly three user messages at the head of the non-system
+// section. trimOldestPairs' pair-drop swallowed those three users in its first
+// iteration (dropExtent Case 3's user-ack extension), the loop then exited on
+// its message-only budget, and the outbound body shipped with zero user
+// messages — Zhipu rejects that shape with 400 code 1214 "messages 参数非法。
+// 请检查文档。", which the gateway then (correctly) surfaced as a client_bug
+// 400. The entry layer already enforces "at least one user message"
+// (HasUserMessage); the trim must not silently break the same contract the
+// gateway itself demands of clients.
+//
+// The restored message is the newest user message that is not itself a tool
+// result (an Anthropic user turn carrying tool_result blocks would orphan
+// those results once their tool_use anchor is gone). It is spliced in before
+// the first non-system message of the trimmed array: everything that survived
+// is younger than anything dropped, so the historical order stays monotonic,
+// and a leading user message is exactly what Anthropic requires anyway.
+func ensureUserSurvived(original, trimmed []json.RawMessage) []json.RawMessage {
+	if hasPlainUserRole(trimmed) || !hasPlainUserRole(original) {
+		return trimmed
+	}
+	var restore json.RawMessage
+	for i := len(original) - 1; i >= 0; i-- {
+		if messageRole(original[i]) == "user" && !isToolResultMessage(original[i]) {
+			restore = original[i]
+			break
+		}
+	}
+	if restore == nil {
+		return trimmed
+	}
+	insertAt := len(trimmed)
+	for i, m := range trimmed {
+		if !isSystemMessage(m) {
+			insertAt = i
+			break
+		}
+	}
+	out := make([]json.RawMessage, 0, len(trimmed)+1)
+	out = append(out, trimmed[:insertAt]...)
+	out = append(out, restore)
+	out = append(out, trimmed[insertAt:]...)
+	slog.Warn("ctx_compress: trim would drop the last user message; restored newest user turn",
+		"original_count", len(original), "trimmed_count", len(trimmed))
 	return out
+}
+
+// hasPlainUserRole reports whether the array contains at least one user
+// message (any user message, including tool-result bearers — for the
+// "did any user survive" question a tool-result user turn still counts).
+func hasPlainUserRole(msgs []json.RawMessage) bool {
+	for _, m := range msgs {
+		if messageRole(m) == "user" {
+			return true
+		}
+	}
+	return false
 }
 
 func countNonSystemMessages(messages []json.RawMessage) int {
@@ -286,7 +348,7 @@ func dropOldestMessageUnit(messages []json.RawMessage) []json.RawMessage {
 	out := make([]json.RawMessage, 0, len(system)+len(rest)-n)
 	out = append(out, system...)
 	out = append(out, rest[n:]...)
-	return out
+	return ensureUserSurvived(messages, out)
 }
 
 // dropExtent returns how many leading messages of `rest` should be dropped as
