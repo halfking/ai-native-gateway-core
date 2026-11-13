@@ -21,6 +21,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -220,7 +221,12 @@ LEFT JOIN LATERAL (
 SELECT price_confidence, count(*)
   FROM public.supplier_market_position
  GROUP BY price_confidence`)
-	if err == nil {
+	if err != nil {
+		// 降级可见性（2026-11-13 12h 修订审计轮补：此前静默吞成空 map，前端把
+		// 「API 失败」显示成「0 覆盖」——误导排查方向）。主件（评分行）已到手，
+		// summary 失败不构成 5xx 的理由，降级 + WARN 留痕。
+		slog.Warn("admin/market/compare: summary query failed (degrading to empty summary)", "error", err)
+	} else {
 		defer sumRows.Close()
 		for sumRows.Next() {
 			var k string
@@ -229,11 +235,12 @@ SELECT price_confidence, count(*)
 				summary[k] = n
 			}
 		}
-		// 终态检查（rowsguard 钉测抓住的缺口，2026-11-13 48h 审计轮补）：
-		// 迭代/网络中断若不查 Err()，截断的 summary 会被当成完整分档下发
-		// （「少了一档」与「真的没有那一档」不可区分）。summary 缺口直接
-		// 影响前端分档摘要的完备性，fail-closed 到 available:false。
+		// 终态检查（rowsguard 钉测抓住的缺口，2026-11-13 48h 审计轮补；
+		// 12h 修订审计轮合并两方：取并行侧 fail-closed 形态——截断的 summary
+		// 会被当成完整分档下发（「少了一档」与「真的没有那一档」不可区分），
+		// 缺口直接 影响前端分档摘要的完备性 ⇒ available:false；另补 WARN 留痕）。
 		if serr := sumRows.Err(); serr != nil {
+			slog.Warn("admin/market/compare: summary rows iteration failed (fail-closed available:false)", "error", serr)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"available": false,
 				"reason":    "summary rows iteration failed",

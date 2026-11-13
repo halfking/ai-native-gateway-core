@@ -545,6 +545,13 @@ func (w *MarketScoringWorker) ScoreNow(ctx context.Context) (MarketScoringRunSta
 	if err != nil {
 		return MarketScoringRunStats{}, fmt.Errorf("market scoring read: %w", err)
 	}
+	// rows.Close 卫生（2026-11-13 12h 修订审计轮补真：52d444191 台账宣称
+	// 「ScoreNow 早退路径补 defer rows.Close()」但 diff 未落——此处补上。
+	// scan 错误 / rows.Err() 早退路径此前依赖 `defer tx.Rollback` 连带回收
+	// （pgx 事务回滚释放连接时连带关 rows），显式 defer 让回收不依赖该隐式
+	// 行为；循环后的显式 Close 保持（提前释放，长循环早结束不占连接）。
+	// Close 幂等：显式 Close 后 defer 再 Close 是 no-op。）
+	defer rows.Close()
 
 	var bindings []*marketScoringBinding
 	seen := map[[2]int64]struct{}{}

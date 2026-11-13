@@ -11,6 +11,7 @@ export default {
   syncTitle: 'Preis-Sync-Ledger (letzte 10 Läufe)',
   syncHint: 'Quellzeilen = gelandet + abgelehnt (abgleichbar); rote Spalten für abgelehnt/Konflikt bedeuten, dass das Detail dieses Laufs geprüft werden muss.',
   syncEmptyWhy: 'Noch keine Sync-Einträge —— der hostseitige Preis-Syncer hat noch nie gelaufen.',
+  syncLoadFailed: 'Sync-Ledger konnte nicht geladen werden —— möglicherweise ein Serverfehler; wiederholen oder Browser-Konsole prüfen.',
   syncEmptyNext: 'Nächster Schritt: Prüfen, ob der Cron für market-price-sync.py (hostseitig) konfiguriert ist und der erste Lauf abgeschlossen ist.',
   colPlatformId: 'Plattform-ID',
   colName: 'Bezeichnung',

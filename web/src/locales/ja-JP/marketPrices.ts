@@ -11,6 +11,7 @@ export default {
   syncTitle: '価格同期台帳（直近 10 回）',
   syncHint: 'ソース件数 = 着地 + 拒否（照合可能）。拒否／競合列が赤い場合は、その同期の detail を確認する必要があります。',
   syncEmptyWhy: '同期記録がまだありません —— ホスト側の価格シンクロナイザーは一度も実行されていません。',
+  syncLoadFailed: '同期台帳の読み込みに失敗しました —— サーバーエラーの可能性があります。再試行するかブラウザーコンソールを確認してください。',
   syncEmptyNext: '次のステップ：ホスト側の market-price-sync.py の cron が設定済みで初回実行が完了していることを確認してください。',
   colPlatformId: 'プラットフォーム ID',
   colName: '名前',

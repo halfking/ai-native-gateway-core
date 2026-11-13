@@ -324,6 +324,12 @@ func TestR1039InnerRescanScannerAllocationsAreBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("alloc gate skipped in -short")
 	}
+	// -race 插桩把 allocs 计数放大数倍（基线 7c63ec91a^ 实测 3357 > 1024 门），
+	// 绝对阈值门与 race 模式冲突——race 下跳过（门在非 race 模式与 CI 默认下仍承重）。
+	// 2026-11-13 12h 修订审计轮登记：-race 下稳定红是插桩放大，非扫描器回归。
+	if raceEnabled {
+		t.Skip("alloc gate skipped under -race (instrumentation inflates allocs, see 12h audit round 2026-11-13)")
+	}
 	body := strings.Repeat(`{"name":"login","note":"订单已发货，请妥善保管"}`, 320)
 	allocs := testing.AllocsPerRun(100, func() {
 		_ = markerSpans(body)

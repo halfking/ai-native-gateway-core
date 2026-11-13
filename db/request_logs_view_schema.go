@@ -821,6 +821,10 @@ func SessionFamilyCredentialCountAggregateSQL() string {
 //
 // ★ 口径：同一数字定义（两臂 all-time 计数），仅新鲜度有界陈旧——
 // 第五轮主档 §八第 12 条路径③「口径零变化」的落地形态。
+// ★ 已知微漂移（2026-11-13 12h 修订审计轮登记，接受不修）：表非空后**新增**
+// 的凭据在下一次刷新（≤30m）之前没有 rollup 行 ⇒ COALESCE(...,0) 读 0，
+// 而实时口径会给出小数值——与「口径零变化」承诺的偏差以刷新间隔自愈，
+// 权衡后不为此把读面复杂化（回落分支只救「全空」，不救「缺行」）。
 // ★ credExpr 会被拼进回落分支的两处谓词（同 SessionFamilyCredentialCountSourceSQL）。
 func CredentialTotalRequestsReadSQL(credExpr string) string {
 	return "(CASE WHEN EXISTS (SELECT 1 FROM public.credential_total_requests_rollup)" +

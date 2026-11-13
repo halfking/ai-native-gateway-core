@@ -70,6 +70,11 @@ var marketAlertSpecs = []marketAlertSpec{
 			//   展示文本里（'同步台账 a17_unmapped_rows>0：…'），Contains 判据
 			//   分不开「判据在」与「文案提到」（960 轮前缀误匹配同族）。
 			`->> 'a17_unmapped_rows'`,
+			// 48h 新鲜度门（2026-11-13 12h 修订审计轮补钉：52d444191 加了
+			// `WHERE created_at > now() - interval '48 hours'` 但漏进承重清单
+			// ⇒ 未来编辑可静默删掉该门而形状门不红——与 above_market 35 行
+			// 的 computed_at 48h 门同纪律补齐）。
+			"created_at > now() - interval '48 hours'",
 		},
 		mutant: func(q string) string {
 			return strings.ReplaceAll(q, "'a17_unmapped_rows'", "'a17_sync_unmapped_total'")
