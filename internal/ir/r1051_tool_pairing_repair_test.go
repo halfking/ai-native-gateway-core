@@ -113,3 +113,40 @@ func protocolValidateOpenAIForTest(req *InternalRequest) error {
 	}
 	return protocolformat.ValidateOpenAIChatRequest(body)
 }
+
+// TestRepairOpenAIToolCallIDs_RawWire（r1051 补丁）：同协议直传腿的格式门
+// 跑在原始 body 上（不经 parse 层）——211 事故 glm-5.3-flash 直传形态
+// （10:37 一簇）首版修复只接 parse 层、直传仍 400。raw 版修复后必须过门。
+func TestRepairOpenAIToolCallIDs_RawWire(t *testing.T) {
+	body := []byte(`{"model":"glm-5.3-flash","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_r1","type":"function","function":{"name":"run","arguments":"{}"}}]},
+		{"role":"tool","content":"output of the tool"},
+		{"role":"user","content":"continue"}
+	]}`)
+	repaired, changed := RepairOpenAIToolCallIDs(body)
+	if !changed {
+		t.Fatal("raw repair must fire for missing tool_call_id")
+	}
+	if err := protocolformat.ValidateOpenAIChatRequest(repaired); err != nil {
+		t.Fatalf("format gate after raw repair: %v", err)
+	}
+	if !strings.Contains(string(repaired), "call_r1") {
+		t.Fatalf("repaired body should carry the backfilled id: %s", repaired)
+	}
+}
+
+// 无缺 id 时原样返回（零开销路径不重写 body）。
+func TestRepairOpenAIToolCallIDs_NoChangeWhenComplete(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"ok"}
+	]}`)
+	out, changed := RepairOpenAIToolCallIDs(body)
+	if changed {
+		t.Fatal("complete body must pass through unchanged")
+	}
+	if string(out) != string(body) {
+		t.Fatal("unchanged body must be byte-identical")
+	}
+}

@@ -755,6 +755,14 @@ func (e *Executor) executeOpenAI(
 	// ollama 腿同款），不再在新位置另写一份比较。
 	if cand.Protocol == providercatalog.ProtocolOpenAICompletions &&
 		(params.ClientProtocol == "" || canonicalInboundWire(params.ClientProtocol) == providercatalog.ProtocolOpenAICompletions) {
+		// 2026-11-13（211 错误盘点轮，glm-5.3-flash 10:37 一簇）：ZCode 会话
+		// 重放的 tool 消息缺 tool_call_id 此前被本门 fail-closed 拒绝 ⇒ 重放
+		// 同败 ⇒ 会话砖化。校验前先做配对修复（顺序回填最近 assistant 未消费
+		// call id；无可配对降级 user 文本）——修复语义与 parse_openai 的
+		// repairChatToolCallIDs 同款（转换路径走 parse 层，直传路径走这里）。
+		if repaired, changed := ir.RepairOpenAIToolCallIDs(params.BodyBytes); changed {
+			params.BodyBytes = repaired
+		}
 		if err := protocolformat.ValidateOpenAIChatRequest(params.BodyBytes); err != nil {
 			return nil, &upstreampkg.Error{
 				Kind:    errorsx.KindClientBug,

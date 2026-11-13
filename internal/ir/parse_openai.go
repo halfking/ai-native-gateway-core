@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -366,6 +367,131 @@ func parseOpenAIMessages(raw json.RawMessage) ([]Message, error) {
 	repairChatToolCallIDs(messages)
 
 	return messages, nil
+}
+
+// RepairOpenAIToolCallIDs 修复 openai chat wire 体内缺 tool_call_id 的 tool
+// 消息（raw JSON 版——同协议直传腿的格式门在 protocolformat 层跑在原始
+// body 上，不经过 parse_openai；211 事故 glm-5.3-flash 直传形态即此路）。
+// 修复语义与 parse 层 repairChatToolCallIDs 同款：顺序回填最近 assistant
+// tool_calls 未消费 id；无可配对降级 user 文本。返回 (body, true) 表示有修。
+func RepairOpenAIToolCallIDs(body []byte) ([]byte, bool) {
+	var root struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if dec.Decode(&root) != nil || len(root.Messages) == 0 {
+		return body, false
+	}
+	missing := false
+	for _, msg := range root.Messages {
+		if role, _ := msg["role"].(string); role == "tool" {
+			if id, _ := msg["tool_call_id"].(string); id == "" {
+				missing = true
+				break
+			}
+		}
+	}
+	if !missing {
+		return body, false
+	}
+	type pendingCall struct {
+		msgIdx  int
+		callIdx int
+		id      string
+	}
+	var pending []pendingCall
+	fixed, downgraded := 0, 0
+	for i, msg := range root.Messages {
+		role, _ := msg["role"].(string)
+		switch role {
+		case "assistant":
+			if calls, ok := msg["tool_calls"].([]any); ok {
+				for ci, tc := range calls {
+					tcMap, ok := tc.(map[string]any)
+					if !ok {
+						continue
+					}
+					if id, _ := tcMap["id"].(string); id != "" {
+						pending = append(pending, pendingCall{msgIdx: i, callIdx: ci, id: id})
+					}
+				}
+			}
+		case "tool":
+			id, _ := msg["tool_call_id"].(string)
+			if id != "" {
+				for j, p := range pending {
+					if p.id == id {
+						pending = append(pending[:j], pending[j+1:]...)
+						break
+					}
+				}
+				continue
+			}
+			if len(pending) > 0 {
+				root.Messages[i]["tool_call_id"] = pending[0].id
+				pending = pending[1:]
+				fixed++
+				continue
+			}
+			// 降级为 user 文本（role=tool 无 id 在 openai 线格式上不合法）。
+			content := rawToolContentText(msg["content"])
+			root.Messages[i]["role"] = "user"
+			root.Messages[i]["content"] = "[tool result without tool_call_id]\n" + content
+			delete(root.Messages[i], "name")
+			downgraded++
+		}
+	}
+	if fixed == 0 && downgraded == 0 {
+		return body, false
+	}
+	reportClientShapeFix(ProtocolOpenAIChat, "messages[].tool_call_id", "backfilled_from_assistant_tool_calls",
+		map[string]any{"count": fixed, "downgraded": downgraded})
+	// 保留完整 root（model/max_tokens/tools 等顶层键不动）——只替换 messages。
+	// 首版只 marshal messages ⇒ model 丢失 ⇒ 格式门「model must be non-empty」
+	// 当场抓住。
+	var full map[string]json.RawMessage
+	if json.Unmarshal(body, &full) != nil {
+		return body, false
+	}
+	msgsJSON, err := json.Marshal(root.Messages)
+	if err != nil {
+		return body, false
+	}
+	full["messages"] = msgsJSON
+	out, err := json.Marshal(full)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
+// rawToolContentText 提取 raw JSON content 的文本形态（字符串原样；块数组
+// 拼接 text 字段；封顶 2000 字符）。
+func rawToolContentText(content any) string {
+	const capLen = 2000
+	switch v := content.(type) {
+	case string:
+		if len(v) > capLen {
+			return v[:capLen] + "…"
+		}
+		return v
+	case []any:
+		var sb strings.Builder
+		for _, block := range v {
+			if blockMap, ok := block.(map[string]any); ok {
+				if text, ok := blockMap["text"].(string); ok {
+					sb.WriteString(text)
+					sb.WriteString("\n")
+					if sb.Len() > capLen {
+						return sb.String()[:capLen] + "…"
+					}
+				}
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 // repairChatToolCallIDs 修复 role=tool 但缺 tool_call_id 的消息。
