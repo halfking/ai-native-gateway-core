@@ -74,4 +74,10 @@
 
 ## 六、部署与验证
 
-（部署后回填）
+- **211 部署**：`2.5.9-1f6e44c8-dirty-20261114-211` build 3046，槽 a 接管（8781），readyz/公网版本身份 OK（1f6e44c8 三探）。
+- **活体验证矩阵**（铸临时 key id=256，验后 revoked；密钥文件 shred）：
+  - glm-5.3-flash × 事故同形状合成体（1,140,235B + 68KB tool_calls 单 call）：**200**，模型正常作答（修复前该形状 422 必败）。
+  - gpt-6-astra × 同形状：**503 + alternatives**（路由层无候选的既有形态，candidate_diag 有实证：23 offers 全被 manual_disabled/quota/provider_disabled 闸滤掉）——**关键判据＝不再是 422 bounded context**，入口 Reduce 腿通过；候选闸处置归运营面（与本案无关）。
+  - 部署后 15 分钟窗口 `bounded context` 日志 **0 条**。
+- 砖化会话 gw_staging_ee2683c3 暂无新请求（ZCode 侧未重试）；修复在役后该会话下一笔请求即恢复（Reduce 对同形状已实证收敛）。
+- 取证坑回填：铸 key 的 `docker exec` 又一次栽在缺 `-i`（stdin 不转发，§609 同族第四次）——**psql 必须走 `docker exec -i`**。
