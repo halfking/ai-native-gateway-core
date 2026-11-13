@@ -10939,3 +10939,10 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 |-----------|------|---------|--------|
 | 963 | `964_promote_session_turns_default_retention_realign.sql` | `d0f7fb267d9c7c8b607ef01e317f561167b3fc504f623ac81fe95fdedbb728ea` | registered（2026-11-13 53 增量移交轮：把 `promote_session_turns_hot_to_partition` 的签名默认保留期 **'7 days' → '8 hours'**（= Go 调度器 DefaultRetentionWindow / lifecycle.hot_retention_hours 默认 8）。★ 交接清单原按「候选迁移 961」登记，961 已被 market_scoring_runs 占用、963 已被并行 24h 审计轮 credential_total_requests_rollup 占用 ⇒ 合并时重编号取 964（2026-11-13）。★ **这不是首次对齐**：688（2026-09-08）曾对齐到 '8 hours'，640 的投递序事故（869 头注释有记录）用旧形态体把对齐覆盖掉，869 再把「在役值」（= 被覆盖出来的错值）**有意保守**保留（migration_869_test.go:96 钉死 must preserve the deployed default，理由 = 数据修复不混行为变更）⇒ 897 沿袭 ⇒ 现场实测全仓 10 个 688 对齐过的 promote 函数唯独本函数回退。★ 语义面零行为变化：PartitionManager 每次 tick 显式传参、admin 手动 promote 端点显式传参 ⇒ 影响面 = 仅裸调 `SELECT promote_xxx();` 的默认窗口（修复前多保留 21 倍 hot 数据）。★ 函数体 = 897 逐字（目录派生列清单 + 形状守卫 + final_success demote 自愈），仅改 DEFAULT 一行；门 migration_964_promote_default_realigned_test.go 四道牙（动态最新载体门 / 折叠 delta 逐字等价门 / 跨包 bg.DefaultRetentionWindow 真常量对拍 / 六点登记钉）。★ 同轮把 fresh-install bootstrap（session_turns_hot_bootstrap.sql，526+636 投影）的同款默认一并对齐。本行 sha 为仓库文件实测值；embeddata 双副本逐字节一致；**待部署**（211/245/154 列车）） |
 | 963 | `964_promote_session_turns_default_retention_realign.down.sql` | `b07c2b1e0b3f69bbb500cab05e076a01e9afcfb9065501bcf561157fc7d4ef78` | registered（2026-11-13 53 增量移交轮补登记；回退目标 = 897 形态逐字（'7 days' 默认）。回滚后果如实登记：裸调默认窗口重新放大到 7 天 = 回到 F-43 登记的双默认漂移；显式传参路径不受影响。本行 sha 为仓库文件实测值） |
+## 2026-11-13T16:38:42Z — deploy 154 build_seq 3029 (3fd9c26c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 963 | `963_credential_total_requests_rollup.sql` | `1b3edf5fbdfd482bdd44224934fca203d9f0afe48d20c2fc2b3c71987cb3fa2f` | applied+verified |
+| 964 | `964_promote_session_turns_default_retention_realign.sql` | `d0f7fb267d9c7c8b607ef01e317f561167b3fc504f623ac81fe95fdedbb728ea` | applied+verified |
+
