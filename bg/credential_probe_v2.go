@@ -1689,8 +1689,14 @@ var probeModelAccessFailureRe = regexp.MustCompile(`(?i)\b(?:this\s+model|model\
 func isPerModelChatFailure(errMsg string) bool {
 	switch chatProbeStatusCode(errMsg) {
 	case 403:
+		// 2026-11-14（suyun 轮）：new_api 的「无权访问 <组名> 分组」403 是
+		// 单模型分组权限拒绝（211 cred 71 实证：opus-4-8 探针 403 连败把
+		// 整凭据 auth_failed 退避 24h，同凭据 opus-5-5 探针 95 连胜健康）。
+		// 词表单源在 errorsx.IsBindingGroupAccessDenied（与两个分类器共用），
+		// 此处只加**通道门**（chatProbeStatusCode 已保证生成通道 403）。
 		return !probeKeyFailureRe.MatchString(errMsg) && !isProbeQuotaFailure(errMsg) &&
-			probeModelAccessFailureRe.MatchString(errMsg)
+			(probeModelAccessFailureRe.MatchString(errMsg) ||
+				errorsx.IsBindingGroupAccessDenied([]byte(errMsg)))
 	case 410:
 		// chat/messages 通道上的 410 Gone：探针模型已被上游永久移除。
 		// 状态码是标准信号，厂商换措辞不影响判定；/v1/models 通道的

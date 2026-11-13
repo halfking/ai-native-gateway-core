@@ -131,6 +131,11 @@ func lockstepBodyCorpus() []string {
 		"insufficient credit",
 		"quota exhausted",
 		"no available credits",
+		// ★ 2026-11-14（suyun 轮）：new_api 余额预扣失败与单模型分组权限
+		//   拒绝——两条新正文规则的**真实生产体**进语料，防止「语料缺 ⇒
+		//   门绿」（第十一轮教训：规则加了但语料没有，锁步门永远看不到）。
+		`{"error":{"message":"预扣费额度失败, 用户剩余额度: ¥1.474664, 需要预扣费额度: ¥2.497896 (request id: x)","type":"new_api_error","param":"","code":"insufficient_user_quota"}}`,
+		`{"error":{"code":"","message":"无权访问 claude不降智稳定版 分组 (request id: x)","type":"new_api_error"}}`,
 		// 模型族
 		"model_not_found",
 		"模型 model not found",

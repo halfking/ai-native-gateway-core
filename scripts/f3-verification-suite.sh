@@ -45,9 +45,12 @@ for arg in "$@"; do
 done
 
 # 自动探测（如果没有显式指定）
+# ★ 2026-11-13 复核轮修：原版 `... || true` 使 if 条件恒真 ⇒ else 分支（mesh 回落）
+#   不可达 ⇒ 探测永远报「内网直连可用」。if 条件位置的命令失败本就不触发 set -e
+#   （§ 第五轮 P1 同族：条件臂无需兜底），直接去掉。
 if [ "$USE_MESH" = false ]; then
     echo "🔍 自动探测网络连通性..."
-    if timeout 3 ping -c 1 192.168.31.211 &>/dev/null 2>&1 || true; then
+    if timeout 3 ping -c 1 192.168.31.211 &>/dev/null 2>&1; then
         echo "✅ 内网直连可用"
         SSH_TARGET="211"
     else
@@ -60,7 +63,9 @@ fi
 mkdir -p "$REPORT_DIR"
 
 # 初始化报告
-cat > "$REPORT_FILE" << 'REPORT_HEADER'
+# ★ 2026-11-13 复核轮修：原版 heredoc 带引号（'REPORT_HEADER'）⇒ 内部 $(date …) 与
+#   ${SSH_TARGET} 不展开 ⇒ 报告头永远是字面量。去引号启用展开（内容无反引号/无危险注入面）。
+cat > "$REPORT_FILE" << REPORT_HEADER
 # F3 智谱 trial 配额归因验证报告
 
 **验证时间**：$(date '+%Y-%m-%d %H:%M:%S %Z')  

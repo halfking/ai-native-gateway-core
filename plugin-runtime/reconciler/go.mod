@@ -7,7 +7,7 @@ replace github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor => ../superv
 replace github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery => ../discovery
 
 require (
-	github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery v0.0.0-00010101000000-000000000000
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery v0.0.0
 	github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor v0.0.0-00010101000000-000000000000
 )
 

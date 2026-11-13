@@ -597,6 +597,14 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, imagesHandler *st
 		if videosHandler != nil {
 			videosHandler.SetSanitizeGuard(nil, nil)
 		}
+		// R-7③ 收口（2026-11-14 复审）：chat 面同纪律——上段已挂的输入
+		// 中间件必须一并撤回（SetSanitizeInputMiddleware(nil) 安全：直接
+		// 赋值，nil 即不挂）。此前只撤 media 两面，chat 面保持半装配态：
+		// 占位符照发、还原链已断 ⇒ 原文回不来（r1043 会话字典污染族的同
+		// 启动形态）⇒「成对在场或成对缺席」对三个面一视同仁。
+		chatHandler.SetSanitizeInputMiddleware(nil)
+		slog.Warn("smart_sani_guard: chat input middleware retracted — paired-assembly discipline (§704②)",
+			"reason", "restore interceptor init failed")
 		return detector
 	}
 	// media 面的响应侧还原补挂：输入中间件 + 还原拦截器成对生效。

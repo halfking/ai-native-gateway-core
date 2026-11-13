@@ -7,6 +7,7 @@ package supervisor
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -19,11 +20,11 @@ import (
 type Supervisor struct {
 	mu        sync.RWMutex
 	processes map[string]*ManagedProcess
-	
+
 	// Configuration
-	restartPolicy      RestartPolicy
+	restartPolicy       RestartPolicy
 	healthCheckInterval time.Duration
-	
+
 	// Dependencies
 	eventBus EventBus
 }
@@ -33,11 +34,21 @@ type ManagedProcess struct {
 	manifest *discovery.Manifest
 	cmd      *exec.Cmd
 	state    *ProcessState
-	
+
 	// Health check
 	healthTicker *time.Ticker
 	healthDone   chan struct{}
-	
+
+	// waitDone is closed by monitorProcess (the single owner of cmd.Wait)
+	// once Wait has returned. Stop waits on it instead of calling
+	// cmd.Wait itself: exec.Cmd.Wait is documented to return an error if
+	// called concurrently or twice (2026-11-14 audit D3).
+	waitDone chan struct{}
+	// stoppedManually marks a Stop-initiated termination so monitorProcess
+	// records a graceful stop instead of a crash for the unavoidable
+	// "signal: terminated" Wait error.
+	stoppedManually bool
+
 	// Resource limiter
 	limiter *ResourceLimiter
 }
@@ -75,11 +86,11 @@ type HealthStatus struct {
 
 // RestartPolicy defines when to restart a failed plugin.
 type RestartPolicy struct {
-	Mode               RestartMode
-	BackoffInitial     time.Duration
-	BackoffMax         time.Duration
-	BackoffMultiplier  float64
-	MaxRestartCount    int
+	Mode              RestartMode
+	BackoffInitial    time.Duration
+	BackoffMax        time.Duration
+	BackoffMultiplier float64
+	MaxRestartCount   int
 }
 
 // RestartMode defines restart behavior.
@@ -139,37 +150,37 @@ func DefaultRestartPolicy() RestartPolicy {
 func (s *Supervisor) Start(ctx context.Context, manifest *discovery.Manifest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	pluginID := manifest.Metadata.Name
-	
+
 	// Check if already running
 	if _, exists := s.processes[pluginID]; exists {
 		return fmt.Errorf("plugin %s already running", pluginID)
 	}
-	
+
 	// Create managed process
 	mp, err := s.createProcess(manifest)
 	if err != nil {
 		return fmt.Errorf("failed to create process: %w", err)
 	}
-	
+
 	// Start the process
 	if err := mp.cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
-	
+
 	mp.state.PID = mp.cmd.Process.Pid
 	mp.state.Status = StatusRunning
 	mp.state.StartTime = time.Now()
-	
+
 	s.processes[pluginID] = mp
-	
+
 	// Start health check
 	go s.runHealthCheck(pluginID, mp)
-	
+
 	// Monitor process exit
 	go s.monitorProcess(pluginID, mp)
-	
+
 	// Publish event
 	s.eventBus.Publish(ctx, Event{
 		Type:     EventPluginStarted,
@@ -179,7 +190,7 @@ func (s *Supervisor) Start(ctx context.Context, manifest *discovery.Manifest) er
 			"start_time": mp.state.StartTime,
 		},
 	})
-	
+
 	fmt.Printf("INFO: plugin started: %s (PID %d)\n", pluginID, mp.state.PID)
 	return nil
 }
@@ -187,58 +198,69 @@ func (s *Supervisor) Start(ctx context.Context, manifest *discovery.Manifest) er
 func (s *Supervisor) createProcess(manifest *discovery.Manifest) (*ManagedProcess, error) {
 	// Create command
 	cmd := exec.Command(manifest.Spec.Executable, manifest.Spec.Args...)
-	
+
 	// Set working directory
 	if manifest.Spec.WorkDir != "" {
 		cmd.Dir = manifest.Spec.WorkDir
 	}
-	
-	// Set environment variables
-	cmd.Env = append(cmd.Env, formatEnv(manifest.Spec.Env)...)
-	
+
+	// Set environment variables. 2026-11-14 audit D15: inherit the parent
+	// environment first — a bare append(cmd.Env, ...) leaves the child with
+	// only the manifest env (no PATH/HOME), breaking most binaries.
+	cmd.Env = append(os.Environ(), formatEnv(manifest.Spec.Env)...)
+
 	// Create resource limiter
 	limiter, err := NewResourceLimiter(manifest.Metadata.Name, manifest.Spec.Resources)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource limiter: %w", err)
 	}
-	
+
 	// Apply resource limits
 	if err := limiter.Apply(cmd); err != nil {
 		return nil, fmt.Errorf("failed to apply resource limits: %w", err)
 	}
-	
+
 	mp := &ManagedProcess{
 		manifest:   manifest,
 		cmd:        cmd,
 		limiter:    limiter,
 		healthDone: make(chan struct{}),
+		waitDone:   make(chan struct{}),
 		state: &ProcessState{
 			PluginID: manifest.Metadata.Name,
 			Status:   StatusStarting,
 		},
 	}
-	
+
 	return mp, nil
 }
 
 func (s *Supervisor) monitorProcess(pluginID string, mp *ManagedProcess) {
+	// monitorProcess is the SINGLE owner of cmd.Wait (exec.Cmd.Wait must be
+	// called exactly once; a concurrent Wait from Stop returns
+	// "exec: Wait was already called" — 2026-11-14 audit D3). Stop signals
+	// its intent via stoppedManually and waits on waitDone.
 	err := mp.cmd.Wait()
-	
+	close(mp.waitDone)
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	
+
 	// Stop health check
 	close(mp.healthDone)
 	if mp.healthTicker != nil {
 		mp.healthTicker.Stop()
 	}
-	
+
+	// A Stop-initiated SIGTERM surfaces as Wait error "signal: terminated";
+	// it is a graceful stop by design, not a crash (2026-11-14 audit D3).
+	gracefulStop := mp.stoppedManually
+
 	// Update state
-	if err != nil {
+	if err != nil && !gracefulStop {
 		mp.state.Status = StatusCrashed
 		mp.state.LastError = err.Error()
 		fmt.Printf("ERROR: plugin crashed: %s (error: %v)\n", pluginID, err)
-		
+
 		s.eventBus.Publish(context.Background(), Event{
 			Type:     EventPluginCrashed,
 			PluginID: pluginID,
@@ -246,34 +268,49 @@ func (s *Supervisor) monitorProcess(pluginID string, mp *ManagedProcess) {
 		})
 	} else {
 		mp.state.Status = StatusStopped
+		if gracefulStop {
+			mp.state.LastError = ""
+		} else if err != nil {
+			mp.state.LastError = err.Error()
+		}
 		fmt.Printf("INFO: plugin stopped: %s\n", pluginID)
-		
+
 		s.eventBus.Publish(context.Background(), Event{
 			Type:     EventPluginStopped,
 			PluginID: pluginID,
 		})
 	}
-	
-	// Decide whether to restart
-	if s.shouldRestart(mp, err) {
+
+	// Decide whether to restart. 2026-11-14 audit D1: the dead entry must be
+	// removed from the map BEFORE the restart attempt, otherwise s.Start
+	// rejects with "already running" forever — the crash-restart loop never
+	// succeeds and the stale entry blocks manual Start/Restart too.
+	shouldRestart := s.shouldRestart(mp, err) && !gracefulStop
+	if shouldRestart {
 		mp.state.RestartCount++
 		backoff := s.calculateBackoff(mp.state.RestartCount)
-		
-		fmt.Printf("INFO: restarting plugin %s in %v (attempt %d)\n", 
+		manifest := mp.manifest
+		// Remove the dead entry while still under the lock so concurrent
+		// Start/Stop observe a consistent "not running" state.
+		delete(s.processes, pluginID)
+		s.mu.Unlock()
+
+		fmt.Printf("INFO: restarting plugin %s in %v (attempt %d)\n",
 			pluginID, backoff, mp.state.RestartCount)
-		
+
+		// Backoff sleep must NOT hold the lock: s.mu guards Start/Stop/
+		// ListAll/StateOf, and a 60s capped sleep under the lock stalls the
+		// whole supervisor (2026-11-14 audit D4).
 		time.Sleep(backoff)
-		
-		// Restart in background
-		go func() {
-			ctx := context.Background()
-			if err := s.Start(ctx, mp.manifest); err != nil {
-				fmt.Printf("ERROR: failed to restart plugin %s: %v\n", pluginID, err)
-			}
-		}()
+
+		ctx := context.Background()
+		if err := s.Start(ctx, manifest); err != nil {
+			fmt.Printf("ERROR: failed to restart plugin %s: %v\n", pluginID, err)
+		}
 	} else {
 		// Remove from processes map
 		delete(s.processes, pluginID)
+		s.mu.Unlock()
 	}
 }
 
@@ -295,7 +332,7 @@ func (s *Supervisor) calculateBackoff(restartCount int) time.Duration {
 	for i := 1; i < restartCount; i++ {
 		backoff *= s.restartPolicy.BackoffMultiplier
 	}
-	
+
 	duration := time.Duration(backoff)
 	if duration > s.restartPolicy.BackoffMax {
 		return s.restartPolicy.BackoffMax
@@ -306,14 +343,14 @@ func (s *Supervisor) calculateBackoff(restartCount int) time.Duration {
 func (s *Supervisor) runHealthCheck(pluginID string, mp *ManagedProcess) {
 	mp.healthTicker = time.NewTicker(s.healthCheckInterval)
 	defer mp.healthTicker.Stop()
-	
+
 	for {
 		select {
 		case <-mp.healthTicker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			health, err := s.HealthCheck(ctx, pluginID)
 			cancel()
-			
+
 			if err != nil {
 				fmt.Printf("WARN: health check failed for %s: %v\n", pluginID, err)
 				health = &HealthStatus{
@@ -322,11 +359,11 @@ func (s *Supervisor) runHealthCheck(pluginID string, mp *ManagedProcess) {
 					CheckedAt: time.Now(),
 				}
 			}
-			
+
 			s.mu.Lock()
 			mp.state.Health = health
 			s.mu.Unlock()
-			
+
 		case <-mp.healthDone:
 			return
 		}
@@ -342,28 +379,28 @@ func (s *Supervisor) Stop(ctx context.Context, pluginID string) error {
 		return fmt.Errorf("plugin %s not found", pluginID)
 	}
 	mp.state.Status = StatusStopping
+	mp.stoppedManually = true
 	s.mu.Unlock()
-	
+
 	// Send SIGTERM
 	if err := mp.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("failed to send SIGTERM: %w", err)
 	}
-	
-	// Wait for graceful shutdown (10 seconds)
-	done := make(chan error, 1)
-	go func() {
-		done <- mp.cmd.Wait()
-	}()
-	
+
+	// Wait for graceful shutdown (10 seconds). 2026-11-14 audit D3: do NOT
+	// call cmd.Wait here — monitorProcess is the single Wait owner and a
+	// concurrent Wait returns "exec: Wait was already called". Wait on the
+	// waitDone signal instead; the timeout arm force-kills (the resulting
+	// Wait return is still consumed by monitorProcess).
 	select {
 	case <-time.After(10 * time.Second):
 		// Timeout, force kill
 		fmt.Printf("WARN: plugin %s did not stop gracefully, killing\n", pluginID)
 		return mp.cmd.Process.Kill()
-		
-	case err := <-done:
+
+	case <-mp.waitDone:
 		fmt.Printf("INFO: plugin %s stopped gracefully\n", pluginID)
-		return err
+		return nil
 	}
 }
 
@@ -372,19 +409,19 @@ func (s *Supervisor) Restart(ctx context.Context, pluginID string) error {
 	s.mu.RLock()
 	mp, exists := s.processes[pluginID]
 	s.mu.RUnlock()
-	
+
 	if !exists {
 		return fmt.Errorf("plugin %s not found", pluginID)
 	}
-	
+
 	manifest := mp.manifest
-	
+
 	if err := s.Stop(ctx, pluginID); err != nil {
 		return fmt.Errorf("failed to stop plugin: %w", err)
 	}
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	return s.Start(ctx, manifest)
 }
 
@@ -392,12 +429,12 @@ func (s *Supervisor) Restart(ctx context.Context, pluginID string) error {
 func (s *Supervisor) StateOf(pluginID string) (*ProcessState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	mp, exists := s.processes[pluginID]
 	if !exists {
 		return nil, fmt.Errorf("plugin %s not found", pluginID)
 	}
-	
+
 	return mp.state, nil
 }
 
@@ -405,7 +442,7 @@ func (s *Supervisor) StateOf(pluginID string) (*ProcessState, error) {
 func (s *Supervisor) ListAll() []*ProcessState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	states := make([]*ProcessState, 0, len(s.processes))
 	for _, mp := range s.processes {
 		states = append(states, mp.state)
@@ -420,11 +457,11 @@ func (s *Supervisor) HealthCheck(ctx context.Context, pluginID string) (*HealthS
 	s.mu.RLock()
 	mp, exists := s.processes[pluginID]
 	s.mu.RUnlock()
-	
+
 	if !exists {
 		return nil, fmt.Errorf("plugin not found")
 	}
-	
+
 	// Check if process is still alive
 	if mp.cmd.ProcessState != nil && mp.cmd.ProcessState.Exited() {
 		return &HealthStatus{
@@ -433,7 +470,7 @@ func (s *Supervisor) HealthCheck(ctx context.Context, pluginID string) (*HealthS
 			CheckedAt: time.Now(),
 		}, nil
 	}
-	
+
 	return &HealthStatus{
 		Healthy:   true,
 		Message:   "ok",

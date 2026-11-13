@@ -63,6 +63,15 @@ var modalityRules = []modalityRule{
 	// model_offers inventory. 2026-08-09.
 	{"gpt-5", "multimodal", 1},
 
+	// GPT-6 family: same convention as gpt-5 — natively multimodal
+	// (text+image). Covers gpt-6, gpt-6.1 and the astra/luna/sol/terra
+	// variants. 2026-11-13 事故：本表缺 gpt-6 前缀，discovery 把 10 个
+	// gpt-6* 行种成 text（modality 粘滞），带图请求被模态门判 400
+	// modality_mismatch。读侧展示推断（catalog.inferModalityFromName）
+	// 当天补了 gpt-6，但请求时刻的候选过滤读的是本函数种出的
+	// models_canonical.modality 存储值——写侧不补，新发现的行照样复发。
+	{"gpt-6", "multimodal", 1},
+
 	// OpenAI - Audio
 	{"whisper-", "audio", 1},
 	{"tts-", "audio", 1},
