@@ -11,17 +11,22 @@ import (
 )
 
 func TestResolveBucketBudget(t *testing.T) {
+	// 2026-11-13 改判（r1050，opus-4-8 反复 422 根修）：输入预算不再叠加
+	// 半窗帽（旧断言：128000→64000、256000→128000、8193→4096 均为 W/2）。
+	// 新语义：W − 预留 − 安全边际（输出预留另有 body 侧半窗封顶保底，见
+	// TestBodyOutputCeilingCappedAtHalfWindow）⇒ 无预留时输入可用全窗
+	//（仍受 MaxInputTokens 全局帽约束）。
 	for _, tc := range []struct {
 		spec Spec
 		want int
 	}{
-		{Spec{ContextWindow: 128000}, 64000},
-		{Spec{ContextWindow: 256000}, 128000},
+		{Spec{ContextWindow: 128000}, 128000},
+		{Spec{ContextWindow: 256000}, 256000},
 		{Spec{ContextWindow: 1000000}, 500000},
 		{Spec{ContextWindow: 2000000}, 500000},
 		{Spec{ContextWindow: 1000000, MaxInputTokens: 32000}, 32000},
 		{Spec{ContextWindow: 128000, OutputReserve: 100000, SafetyMargin: 1000}, 27000},
-		{Spec{ContextWindow: 8193}, 4096},
+		{Spec{ContextWindow: 8193}, 8193},
 	} {
 		got, err := Resolve(tc.spec)
 		if err != nil || got.InputTokens != tc.want || got.JSONBytes != DefaultMaxJSONBytes {
@@ -66,7 +71,8 @@ func TestCheckFinalBodyAndOutputReserve(t *testing.T) {
 	// TestBodyOutputCeilingCappedAtHalfWindow。
 	body := []byte(`{"model":"model","messages":[{"role":"user","content":"hello"}],"max_tokens":2000}`)
 	got, err := Check(body, Spec{ContextWindow: 8192})
-	if err != nil || got.Budget.InputTokens != 4096 || got.Tokens <= 0 || got.BodySHA256 == "" {
+	// r1050：无半窗帽后，2000 的 ask 全额扣除 ⇒ 8192−2000 = 6192（旧 4096）。
+	if err != nil || got.Budget.InputTokens != 6192 || got.Tokens <= 0 || got.BodySHA256 == "" {
 		t.Fatalf("Check = %+v, %v", got, err)
 	}
 	_, err = Check(body, Spec{ContextWindow: 8192, MaxJSONBytes: 10})
@@ -125,17 +131,21 @@ func TestBodyOutputCeilingCappedAtHalfWindow(t *testing.T) {
 	if err != nil || got.Budget.InputTokens != 100000 {
 		t.Fatalf("incident shape must resolve to half-window input budget, got %+v, %v", got.Budget, err)
 	}
-	// 小于半窗的 ask：与无 ask 同形（半窗），与旧版一致。
+	// 小于半窗的 ask：r1050 后全额扣除 ⇒ 200000−32000 = 168000（旧 100000
+	// 半窗帽）。这正是 opus-4-8 反复 422 事故的解锁形状：ZCode 固定载荷
+	// （tools ~225KB + system ≈ 70k token）+ 会话历史 ≈ 109k 估计值在旧
+	// 100k 预算下被拒且 fit 不可行，新预算 168k 放行。
 	small := []byte(`{"model":"m","max_tokens":32000,"messages":[{"role":"user","content":"hi"}]}`)
 	got, err = Check(small, Spec{ContextWindow: 200000})
-	if err != nil || got.Budget.InputTokens != 100000 {
-		t.Fatalf("sub-half ask keeps half-window budget, got %+v, %v", got.Budget, err)
+	if err != nil || got.Budget.InputTokens != 168000 {
+		t.Fatalf("sub-half ask must free the unsubtracted window (r1050), got %+v, %v", got.Budget, err)
 	}
-	// 无 max_tokens：折半默认（历史行为不变）。
+	// 无 max_tokens：全窗可用（仍受 MaxInputTokens 全局帽；估不准的残余归
+	// 上游 context_length 错误 + 网关恢复链处理——2026-11-10 分层执法哲学）。
 	none := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
 	got, err = Check(none, Spec{ContextWindow: 200000})
-	if err != nil || got.Budget.InputTokens != 100000 {
-		t.Fatalf("no explicit ask keeps half-window default, got %+v, %v", got.Budget, err)
+	if err != nil || got.Budget.InputTokens != 200000 {
+		t.Fatalf("no explicit ask frees the full window (r1050), got %+v, %v", got.Budget, err)
 	}
 	// 桶侧配置（spec 直配）不走封顶：128k 窗口配 100k 预留 ⇒ 27k−margin。
 	confBudget, err := Resolve(Spec{ContextWindow: 128000, OutputReserve: 100000, SafetyMargin: 1000})

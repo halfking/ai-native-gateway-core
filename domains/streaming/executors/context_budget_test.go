@@ -22,7 +22,7 @@ func contextBudgetBody(content string) []byte {
 func TestContextBudgetRejectsBeforePhysicalAttempt(t *testing.T) {
 	e := &Executor{EnforceContextBudget: true}
 	params := &ExecParams{R: httptest.NewRequest("POST", "/v1/chat/completions", nil), UpstreamAttempts: NewUpstreamAttemptBudget(3)}
-	err := e.beginUpstreamAttempt(params, contextBudgetCandidate(128000), "openai-completions", contextBudgetBody(strings.Repeat("x", 330000)))
+	err := e.beginUpstreamAttempt(params, contextBudgetCandidate(128000), "openai-completions", contextBudgetBody(strings.Repeat("x", 700000)))
 	if !IsContextBudgetError(err) || params.UpstreamAttempts.Used() != 0 {
 		t.Fatalf("got err=%v physical attempts=%d", err, params.UpstreamAttempts.Used())
 	}
@@ -32,7 +32,7 @@ func TestContextBudgetRejectsBeforePhysicalAttempt(t *testing.T) {
 }
 
 func TestContextBudgetFitStartsFromEachImmutableCandidateSource(t *testing.T) {
-	source := contextBudgetBody(strings.Repeat("x", 340000))
+	source := contextBudgetBody(strings.Repeat("x", 700000))
 	before := append([]byte(nil), source...)
 	var limits []int
 	e := &Executor{EnforceContextBudget: true, FitContext: func(body []byte, limit int) ([]byte, error) {
@@ -85,17 +85,20 @@ func TestContextBudgetUnknownWindowFallsBackToGlobalCaps(t *testing.T) {
 }
 
 func TestContextBudgetToolsCountAnd500KCeiling(t *testing.T) {
+	// r1050（2026-11-13）：断言改 (window, body) 显式配对——旧的「按 body
+	// 字节数选窗口」在 700KB 夹具下误选 2M 窗（limit=500k > est 140k ⇒
+	// 放行）。新配对：128k 窗 × 700KB blob 夹具（est=140000 > 128000 拒）；
+	// 2M 窗 × 2.6MB 夹具（est=520000 > 全局帽 500000 拒）。
 	e := &Executor{EnforceContextBudget: true}
-	for _, body := range [][]byte{
-		[]byte(`{"model":"test","messages":[],"tools":[{"type":"function","function":{"name":"f","description":"` + strings.Repeat("x", 330000) + `"}}]}`),
-		contextBudgetBody(strings.Repeat("x", 2600000)),
+	for _, tc := range []struct {
+		window int
+		body   []byte
+	}{
+		{128000, []byte(`{"model":"test","messages":[],"tools":[{"type":"function","function":{"name":"f","description":"` + strings.Repeat("x", 700000) + `"}}]}`)},
+		{2000000, contextBudgetBody(strings.Repeat("x", 2600000))},
 	} {
-		window := 128000
-		if len(body) > 500000 {
-			window = 2000000
-		}
-		if err := e.checkCandidateContextBudget(nil, contextBudgetCandidate(window), "chat", body); !IsContextBudgetError(err) {
-			t.Fatalf("oversized tools/input accepted: %v", err)
+		if err := e.checkCandidateContextBudget(nil, contextBudgetCandidate(tc.window), "chat", tc.body); !IsContextBudgetError(err) {
+			t.Fatalf("window=%d oversized tools/input accepted: %v", tc.window, err)
 		}
 	}
 }

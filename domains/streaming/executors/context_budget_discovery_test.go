@@ -36,9 +36,11 @@ func TestContextBudgetDiscoveryIsSharedOnlyWithinExactRequestBucket(t *testing.T
 	cand := provider.Candidate{CredentialID: 22, ProviderID: 32, RawModel: "model", Protocol: "chat", BaseURL: "https://one.invalid", ContextWindow: &window}
 	// Dispatch copies parameters for each candidate, but discoveries must
 	// survive those copies when a later attempt revisits the same bucket.
+	// r1050（2026-11-13）：发现限额从 200 收到 64——半窗帽移除后 200-token
+	// 窗的输入预算 = 200−预留，小夹具（est≈180）不再必拒；64 之下必拒。
 	initContextBudgetWindows(params)
 	copyParams := *params
-	recordDiscoveredContextLimit(&copyParams, cand, 200)
+	recordDiscoveredContextLimit(&copyParams, cand, 64)
 	body := contextBudgetBody("important value=42")
 	if err := e.checkCandidateContextBudget(params, cand, "chat", body); !IsContextBudgetError(err) {
 		t.Fatal("discovery was lost across a dispatch parameter copy")

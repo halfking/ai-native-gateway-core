@@ -83,7 +83,21 @@ func Resolve(spec Spec) (Budget, error) {
 	if spec.OutputReserve >= spec.ContextWindow || spec.SafetyMargin >= spec.ContextWindow-spec.OutputReserve {
 		return Budget{}, &Error{Kind: TokensExceeded, Detail: "output and safety reserves exhaust context", Limit: spec.ContextWindow}
 	}
-	limit := min(MaxInputTokens, spec.ContextWindow/2, spec.ContextWindow-spec.OutputReserve-spec.SafetyMargin)
+	// r1050（2026-11-13，opus-4-8 反复 422 根修）：输入侧不再叠加「半窗帽」
+	// （旧的 spec.ContextWindow/2 min 项）。半窗帽与 2026-11-11 的「body 侧
+	// 预留按半窗封顶」修复意图相反：该修复的语义是「输入至少拿到半窗、
+	// 输出至少保住 min(max_tokens, 半窗)」，但半窗帽把输入钉死在至多半窗
+	// ——输出预留取小时（ZCode 对 opus 只 ask 32k），200k 窗的输入预算仍
+	// 是 100k。ZCode 固定载荷（tools ~225KB + system ≈ 70k 估计 token）吃掉
+	// 七成，会话历史只剩 ~30k token 余量；越过即 TokensExceeded → fit 字节
+	// 目标 300KB 装不下「tools+system+受保护区」（Fit 只裁 messages，tools
+	// 不可裁）⇒ ErrProtectedContext ⇒ 422 retryable=false。会话缓存重放同一
+	// 出站体 ⇒ 重试同败（211 gw_f9fdc2de 10:23 失败 → 10:52 重试同形状再败，
+	// 生产实证）。容量等式由 W−OutputReserve−SafetyMargin 独立保证：body
+	// 侧预留仍按半窗封顶（CheckWithCounter），输出保底不变；真正超窗的
+	// 请求照旧被拒/经 fit 压缩，估不准的残余归上游 context_length 错误 +
+	// 网关既有恢复链（2026-11-10 分层执法哲学）。
+	limit := min(MaxInputTokens, spec.ContextWindow-spec.OutputReserve-spec.SafetyMargin)
 	if spec.MaxInputTokens > 0 {
 		limit = min(limit, spec.MaxInputTokens)
 	}

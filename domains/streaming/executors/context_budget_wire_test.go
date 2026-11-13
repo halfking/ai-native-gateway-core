@@ -33,13 +33,13 @@ func TestContextBudgetFinalWirePaths(t *testing.T) {
 				_, _ = io.WriteString(w, reply)
 			}))
 			defer srv.Close()
-			source := contextBudgetBody(strings.Repeat("x", 330000))
+			source := contextBudgetBody(strings.Repeat("x", 700000))
 			clientProtocol := "openai-completions"
 			if protocol == "anthropic-messages" {
 				// anthropic-messages 官方规范要求 max_tokens；同协议格式门按
 				// 官方形状校验，夹具补齐（2026-11-10）。
 				clientProtocol = protocol
-				source = []byte(`{"model":"test-model","max_tokens":512,"messages":[{"role":"user","content":"` + strings.Repeat("x", 330000) + `"}]}`)
+				source = []byte(`{"model":"test-model","max_tokens":512,"messages":[{"role":"user","content":"` + strings.Repeat("x", 700000) + `"}]}`)
 			}
 			before := append([]byte(nil), source...)
 			params := &ExecParams{R: httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(source)), W: httptest.NewRecorder(), BodyBytes: source,
@@ -92,7 +92,7 @@ func TestContextBudgetContinuationCannotAddUnbudgetedPrefill(t *testing.T) {
 	params := &ExecParams{R: httptest.NewRequest("POST", "/v1/chat/completions", nil), UpstreamAttempts: NewUpstreamAttemptBudget(3)}
 	s := &chatStreamContinuation{e: &Executor{EnforceContextBudget: true}, cand: contextBudgetCandidate(128000), params: params,
 		body: contextBudgetBody("hello"), mode: "partial", req: req, client: srv.Client()}
-	_, err := s.invoke(strings.Repeat("x", 330000))
+	_, err := s.invoke(strings.Repeat("x", 700000))
 	if !IsContextBudgetError(err) || calls.Load() != 0 || params.UpstreamAttempts.Used() != 0 {
 		t.Fatalf("err=%v calls=%d physicalAttempts=%d", err, calls.Load(), params.UpstreamAttempts.Used())
 	}

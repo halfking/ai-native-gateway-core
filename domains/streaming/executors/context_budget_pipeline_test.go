@@ -60,14 +60,31 @@ func (s *budgetPipelineSeen) server(t *testing.T, failFirst bool) *httptest.Serv
 }
 
 func budgetPipelineBody() []byte {
-	msgs := []map[string]string{{"role": "system", "content": "Preserve exact facts."}, {"role": "user", "content": "Investigate the recorded deployment release."}}
-	for i := 0; i < 80; i++ {
-		msgs = append(msgs, map[string]string{"role": "assistant", "content": strings.Repeat("unrelated earlier transcript ", 60)})
-		if i == 39 {
-			msgs = append(msgs, map[string]string{"role": "assistant", "content": "release 1047: path=/srv/app/config.yaml; total=42.75"})
-		}
+	// r1050（2026-11-13）改判：旧夹具（80 条均匀 assistant 文本）在新预算
+	// 数学下测不到 dispatch 级 fit——prepare 段预裁剪
+	//（CompressMessagesIfNeededWithReserve，0.8 触发 / 0.6 目标）恒先于
+	// executor 预算门把 pair-droppable 的历史裁到预算内（旧数学的输入半窗
+	// 帽反而让预算门比预裁剪更严——层级倒置，正是 opus-4-8 反复 422 的来
+	// 源）。要让预算门可达，夹具改为「预裁剪结构性无法收敛」形状：
+	// [system, user, 牺牲对 assistant-A, user 分隔, 巨型 assistant-B(内嵌
+	// fact), user]——A/B 之间的 user 挡住 MergeConsecutiveMessages（首版两
+	// assistant 相邻被合并后整对丢弃，b1 退化为 224B）；pair-drop 吞掉
+	// [user, A, user分隔]（user-ack 吞并）后剩余 [system, B, user] 因
+	// n>=len(rest) 不可再丢 ⇒ 预裁剪后仍超预算（est ≈ 134k > 127488）⇒
+	// 预算门触发 ⇒ sessioncontext.Fit 压缩并保留 fact（query 词命中采样）。
+	big := make([]string, 0, 9100)
+	for i := 0; i < 9099; i++ {
+		big = append(big, "unrelated earlier transcript filler line for volume")
 	}
-	msgs = append(msgs, map[string]string{"role": "user", "content": budgetPipelineTask})
+	big = append(big, "release 1047: path=/srv/app/config.yaml; total=42.75")
+	msgs := []map[string]string{
+		{"role": "system", "content": "Preserve exact facts."},
+		{"role": "user", "content": "Investigate the recorded deployment release."},
+		{"role": "assistant", "content": "unrelated earlier transcript"},
+		{"role": "user", "content": "continue the investigation."},
+		{"role": "assistant", "content": strings.Join(big, "\n")},
+		{"role": "user", "content": budgetPipelineTask},
+	}
 	body, _ := json.Marshal(map[string]any{"model": "budget-model", "messages": msgs, "max_tokens": 512})
 	return body
 }
@@ -96,7 +113,11 @@ func TestContextBudgetPipelineRateLimitThenSmallerBucket(t *testing.T) {
 	e.EnforceContextBudget, e.FitContext = true, sessioncontext.Fit
 	body := budgetPipelineBody()
 	before := append([]byte(nil), body...)
-	params := budgetPipelineParams(t, body, budgetPipelineCandidate(srv.URL, "bucket-a", 9101, 91001, 1000000), budgetPipelineCandidate(srv.URL, "bucket-b", 9102, 91002, 64000))
+	// r1050（2026-11-13）：bucket-b 窗口 64000→128000。夹具改「预裁剪不可
+	// 收敛」形状（巨型 assistant-B 载荷 ≈ 460KB / est ≈ 131k）后：128k 窗
+	// 预算 = 128000−512 = 127488 < 131k ⇒ 预算门触发（64k 窗会被 prepare
+	// 段预裁剪先收敛，测不到 fit）。
+	params := budgetPipelineParams(t, body, budgetPipelineCandidate(srv.URL, "bucket-a", 9101, 91001, 1000000), budgetPipelineCandidate(srv.URL, "bucket-b", 9102, 91002, 128000))
 	result, err := e.Execute(params)
 	if err != nil || result == nil || result.Candidate.CredentialID != 91002 {
 		t.Fatalf("result=%v err=%v", result, err)
@@ -106,7 +127,7 @@ func TestContextBudgetPipelineRateLimitThenSmallerBucket(t *testing.T) {
 	if len(seen.bodies) != 2 || seen.auth[0] != "Bearer bucket-a" || seen.auth[1] != "Bearer bucket-b" {
 		t.Fatalf("physical call sequence=%v", seen.auth)
 	}
-	for i, window := range []int{1000000, 64000} {
+	for i, window := range []int{1000000, 128000} {
 		if _, err := contextbudget.Check(seen.bodies[i], contextbudget.Spec{ContextWindow: window}); err != nil {
 			t.Fatalf("bucket %d actual wire budget: %v", i, err)
 		}
