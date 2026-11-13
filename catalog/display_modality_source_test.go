@@ -89,11 +89,13 @@ func TestEffectiveModality_unannotatedKeepsNameInference(t *testing.T) {
 		source string
 		want   string
 	}{
-		{"inferred source still infers", "minimax-m3", "text", ModalitySourceInferred, "multimodal"},
-		{"empty source still infers", "minimax-m3", "text", "", "multimodal"},
-		{"unknown source string still infers", "minimax-m3", "text", "whatever", "multimodal"},
-		{"vision name inference for inferred rows", "claude-3-5-sonnet", "text", ModalitySourceInferred, "multimodal"},
-		{"embedding is not overridden", "bge-m3", "text", ModalitySourceInferred, "embedding"},
+			{"inferred source still infers", "minimax-m3", "text", ModalitySourceInferred, "multimodal"},
+			{"empty source still infers", "minimax-m3", "text", "", "multimodal"},
+			{"unknown source string still infers", "minimax-m3", "text", "whatever", "multimodal"},
+			{"vision name inference for inferred rows", "claude-3-5-sonnet", "text", ModalitySourceInferred, "multimodal"},
+			{"embedding is not overridden", "bge-m3", "text", ModalitySourceInferred, "embedding"},
+			{"gpt-6 series inferred as multimodal", "gpt-6-astra", "text", ModalitySourceInferred, "multimodal"},
+			{"gpt-6 variants inferred as multimodal", "gpt-6.1-sol", "text", ModalitySourceInferred, "multimodal"},
 	}
 	for _, tc := range cases {
 		if got := EffectiveModality(tc.canon, tc.stored, tc.source); got != tc.want {

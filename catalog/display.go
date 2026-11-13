@@ -257,8 +257,9 @@ func inferModalityFromName(name string) string {
 	}
 	if strings.Contains(name, "-vl") || strings.Contains(name, "vl-") ||
 		strings.Contains(name, "vision") || strings.HasPrefix(name, "gpt-4o") ||
-		strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "claude-") ||
-		strings.HasPrefix(name, "gemini-") || strings.Contains(name, "qwen3-vl") {
+		strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "gpt-6") ||
+		strings.HasPrefix(name, "claude-") || strings.HasPrefix(name, "gemini-") ||
+		strings.Contains(name, "qwen3-vl") {
 		return "multimodal"
 	}
 	return ""
