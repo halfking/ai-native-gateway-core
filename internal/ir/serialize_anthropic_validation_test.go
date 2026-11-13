@@ -5,8 +5,13 @@ import (
 	"testing"
 )
 
-// TestSerializeAnthropic_OrphanedToolResult tests that orphaned tool_result blocks
-// (without matching assistant tool_use) are rejected with a clear error.
+// TestSerializeAnthropic_OrphanedToolResult tests orphaned tool_result handling.
+//
+// 2026-11-13 改判（211 事故 request 75777ea4…，claude-sonnet-5）：原契约是
+// 「孤儿必须拒绝」（清晰错误信息）——但 ZCode 会话压缩删 assistant tool_use
+// 留下 80 个孤儿 tool_result 时，拒绝 ⇒ 客户端重放同样失败 ⇒ 会话砖化
+// （r1048「trim 吞 user」同族灾难）。现契约：孤儿降级为 text 块（内容保留、
+// 带原 id 标注）放行 + anomaly 留痕（tool_result_orphan_downgrade）。
 func TestSerializeAnthropic_OrphanedToolResult(t *testing.T) {
 	req := &InternalRequest{
 		Model:     "claude-3-5-sonnet-20241022",
@@ -38,20 +43,17 @@ func TestSerializeAnthropic_OrphanedToolResult(t *testing.T) {
 		},
 	}
 
-	_, err := SerializeAnthropic(req)
-	if err == nil {
-		t.Fatalf("expected validation error for orphaned tool_result, got nil")
+	body, err := SerializeAnthropic(req)
+	if err != nil {
+		t.Fatalf("orphaned tool_result must be downgraded and serialized, got error: %v", err)
 	}
-
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "orphaned tool result") {
-		t.Errorf("error message should mention 'orphaned tool result', got: %v", errMsg)
+	// 孤儿内容必须以降级文本保留到达上游（不丢信息），且带原 id 标注。
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "[orphaned tool result toolu_orphaned_123]") {
+		t.Errorf("downgraded text should carry the orphaned ID annotation, got: %s", bodyStr)
 	}
-	if !strings.Contains(errMsg, "toolu_orphaned_123") {
-		t.Errorf("error message should include the orphaned ID, got: %v", errMsg)
-	}
-	if !strings.Contains(errMsg, "likely client bug") {
-		t.Errorf("error message should mention 'likely client bug', got: %v", errMsg)
+	if !strings.Contains(bodyStr, "Result") {
+		t.Errorf("orphaned tool_result content must survive the downgrade, got: %s", bodyStr)
 	}
 }
 
@@ -211,14 +213,18 @@ func TestSerializeAnthropic_PartialOrphans(t *testing.T) {
 		},
 	}
 
-	_, err := SerializeAnthropic(req)
-	if err == nil {
-		t.Fatalf("expected validation error for partial orphans, got nil")
+	// 2026-11-13 改判（同 TestSerializeAnthropic_OrphanedToolResult）：混排孤儿
+	// 降级放行——合法配对保持 tool_result，孤儿转 text。
+	body, err := SerializeAnthropic(req)
+	if err != nil {
+		t.Fatalf("partial orphans must be downgraded and serialized, got error: %v", err)
 	}
-
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "toolu_orphaned") {
-		t.Errorf("error should mention orphaned ID, got: %v", errMsg)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "[orphaned tool result toolu_orphaned]") {
+		t.Errorf("downgraded text should carry the orphaned ID, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "Lost") {
+		t.Errorf("orphaned content must survive, got: %s", bodyStr)
 	}
 }
 
@@ -292,17 +298,17 @@ func TestSerializeAnthropic_MultipleOrphans(t *testing.T) {
 		Content: orphanBlocks,
 	})
 
-	_, err := SerializeAnthropic(req)
-	if err == nil {
-		t.Fatalf("expected validation error for multiple orphans, got nil")
+	// 2026-11-13 改判（同 TestSerializeAnthropic_OrphanedToolResult）：多孤儿
+	// 降级放行——每个孤儿都保留 id 标注文本（原「错误信息截断前 3」契约随
+	// 拒绝路径一起退役）。
+	body, err := SerializeAnthropic(req)
+	if err != nil {
+		t.Fatalf("multiple orphans must be downgraded and serialized, got error: %v", err)
 	}
-
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "found 5 orphaned") {
-		t.Errorf("error should mention total count of 5, got: %v", errMsg)
-	}
-	// Should limit displayed IDs to first 3
-	if !strings.Contains(errMsg, "toolu_orphan_1") {
-		t.Errorf("error should show first orphan, got: %v", errMsg)
+	bodyStr := string(body)
+	for _, id := range []string{"toolu_orphan_1", "toolu_orphan_2", "toolu_orphan_3", "toolu_orphan_4", "toolu_orphan_5"} {
+		if !strings.Contains(bodyStr, "[orphaned tool result "+id+"]") {
+			t.Errorf("downgraded text should carry annotation for %s, got: %s", id, bodyStr)
+		}
 	}
 }

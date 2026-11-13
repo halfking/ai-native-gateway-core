@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/reasoningdialect"
 )
@@ -76,7 +77,26 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	// is available; do NOT weaken this gate without that context.
 	if len(messages) > 2 {
 		if err := validateAnthropicToolCallIntegrity(messages, req.TargetProvider, req.Model); err != nil {
-			return nil, fmt.Errorf("tool_call validation failed: %w", err)
+			// 2026-11-13（211 事故，claude-sonnet-5 / request 75777ea4…）：
+			// 80 个孤儿 tool_result（ZCode 会话压缩把 assistant tool_use 删了、
+			// tool_result 留下）此前整请求拒绝 ⇒ 客户端重放同样失败 ⇒ 会话砖化
+			// （与 r1048「trim 吞 user 导致会话砖化」同族灾难形态）。降级修复
+			// 优先：孤儿 tool_result 转普通 text 块（内容保留、带原 id 标注），
+			// 重验通过则放行 + anomaly 留痕；结构性坏形态（降级后仍不过）才拒绝。
+			repaired := downgradeOrphanedToolResults(messages, req.TargetProvider, req.Model)
+			if validateAnthropicToolCallIntegrity(repaired, req.TargetProvider, req.Model) != nil {
+				return nil, fmt.Errorf("tool_call validation failed: %w", err)
+			}
+			ReportParseUnknownField("tool_result_orphan_downgrade", req.SourceProtocol,
+				"messages", map[string]any{
+					"orphan_count": len(messages),
+					"model":        req.Model,
+					"note":         "orphaned tool_result blocks downgraded to text; client context compression dropped the matching tool_use",
+				})
+			messages = repaired
+			// out["messages"] 已在上方指向旧切片——降级结果必须写回出站体
+			// （首版只改局部变量，出站体原样带孤儿，测试当场抓住）。
+			out["messages"] = repaired
 		}
 	}
 
@@ -1170,6 +1190,117 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 	}
 
 	return nil
+}
+
+// downgradeOrphanedToolResults 把无匹配 assistant tool_use 的 tool_result 块
+// 降级为普通 text 块（内容保留、带原 id 标注），返回新的 messages 切片。
+// 2026-11-13（211 事故轮）：取代「孤儿即拒绝」——客户端上下文压缩删掉
+// assistant tool_use 后留下的孤儿 tool_result，降级放行比整请求拒绝更符合
+// 用户利益（会话不砖化），且信息不丢（文本仍到达模型）。
+func downgradeOrphanedToolResults(messages []map[string]any, targetProvider string, modelName string) []map[string]any {
+	toolUseIDs := make(map[string]bool)
+	for _, msg := range messages {
+		if role, _ := msg["role"].(string); role != "assistant" {
+			continue
+		}
+		for _, block := range contentBlocksOf(msg) {
+			if blockType, _ := block["type"].(string); blockType == "tool_use" {
+				if id, ok := block["id"].(string); ok && id != "" {
+					toolUseIDs[id] = true
+				}
+			}
+		}
+	}
+	idField := GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField
+	out := make([]map[string]any, len(messages))
+	for i, msg := range messages {
+		if role, _ := msg["role"].(string); role != "user" {
+			out[i] = msg
+			continue
+		}
+		blocks := contentBlocksOf(msg)
+		if blocks == nil {
+			out[i] = msg
+			continue
+		}
+		changed := false
+		newBlocks := make([]map[string]any, len(blocks))
+		for j, block := range blocks {
+			if blockType, _ := block["type"].(string); blockType == "tool_result" {
+				id, _ := block[idField].(string)
+				if id == "" || !toolUseIDs[id] {
+					newBlocks[j] = map[string]any{
+						"type": "text",
+						"text": fmt.Sprintf("[orphaned tool result %s]\n%s", id, toolResultTextPreview(block["content"])),
+					}
+					changed = true
+					continue
+				}
+			}
+			newBlocks[j] = block
+		}
+		if !changed {
+			out[i] = msg
+			continue
+		}
+		clone := make(map[string]any, len(msg))
+		for k, v := range msg {
+			clone[k] = v
+		}
+		clone["content"] = newBlocks
+		out[i] = clone
+	}
+	return out
+}
+
+// contentBlocksOf 抽取消息的 content 块数组（兼容 []interface{} 与
+// []map[string]any 两种来源——validateAnthropicToolCallIntegrity 同款双形态）。
+func contentBlocksOf(msg map[string]any) []map[string]any {
+	switch content := msg["content"].(type) {
+	case []interface{}:
+		blocks := make([]map[string]any, 0, len(content))
+		for _, block := range content {
+			if blockMap, ok := block.(map[string]interface{}); ok {
+				converted := make(map[string]any)
+				for k, v := range blockMap {
+					converted[k] = v
+				}
+				blocks = append(blocks, converted)
+			}
+		}
+		return blocks
+	case []map[string]any:
+		return content
+	}
+	return nil
+}
+
+// toolResultTextPreview 提取 tool_result content 的文本形态（字符串原样、
+// 块数组拼接 text 字段）；封顶 2000 字符防畸形巨块。
+func toolResultTextPreview(content any) string {
+	const cap = 2000
+	switch v := content.(type) {
+	case string:
+		if len(v) > cap {
+			return v[:cap] + "…"
+		}
+		return v
+	case []interface{}:
+		var sb strings.Builder
+		for _, block := range v {
+			if blockMap, ok := block.(map[string]interface{}); ok {
+				if text, ok := blockMap["text"].(string); ok {
+					sb.WriteString(text)
+					sb.WriteString("\n")
+					if sb.Len() > cap {
+						return sb.String()[:cap] + "…"
+					}
+				}
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 // DefaultAnthropicMaxTokens matches the pre-IR conversion path

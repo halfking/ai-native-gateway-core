@@ -641,6 +641,16 @@ var modelDeprecatedRe = regexp.MustCompile(
 // the user's exact phrasing: "节点费用已用完"); added `用完` to the
 // exhaustion-verb alternation (existing regex used 用尽/耗尽/不足/超限 but
 // missed 用完, which is the colloquial "used up" form); added English
+// noActiveQuotaRe（2026-11-13 211 错误盘点轮）：智谱 glm-5.3-flash-trial 的
+// 限购配额形态以 **HTTP 400 invalid_request_error** 出现（"ZCode has no
+// active limited quota for GLM-5.3-Flash-Trial"），落在 402/403/429 门之外
+// ⇒ 两个分类器都判 KindRequestRejected（请求侧参数错误）。这是**账号级
+// 配额裁决**：重试同请求永远失败、且运营面应按配额族处置。本模式单列
+// （400 也归 quota）而不整体放开 budgetExceededRe 到 400——其他 quota 词
+// 在 400 上误命中会误冷却凭据，本模式的措辞（"no active (limited )?quota"）
+// 只在中转报配额缺失时出现，误报面可忽略。
+var noActiveQuotaRe = regexp.MustCompile(`(?i)\bno\s+active\s+(limited\s+)?quota\b`)
+
 // fallback "no available credits?" / "out of quota" / "quota exhausted"
 // (which were previously caught by concurrentOverloadRe's overly-broad
 // trailing group, producing KindConcurrent → same-cred retry against
@@ -673,6 +683,12 @@ var budgetExceededRe = regexp.MustCompile(
 		// a quota signal — the relay's account is unreachable until reset.
 		`\baccount\s+(unavailable|disabled|suspended)\b|` +
 		`usage[_ -]?limit[_ -]?exceeded|` +
+		// 2026-11-13（211 错误盘点轮）：智谱 glm-5.3-flash-trial 的限购配额
+		// 形态 "ZCode has no active limited quota for GLM-5.3-Flash-Trial"
+		// （HTTP 400 invalid_request_error）——此前不命中任何 quota 词 ⇒ 落
+		// KindRequestRejected ⇒ 归因错族（请求侧参数错误 vs 账号级配额）。
+		// 注意：该模式同时进 noActiveQuotaRe（400 状态也归 quota，见其注释）。
+		`\bno\s+active\s+(limited\s+)?quota\b|` +
 		// 2026-08-20 P0 fix: apigpt / OpenAI-style "out of quota" signal.
 		// Different from "out of credits" (which the existing `out of credits`
 		// pattern already catches); both are quota exhaustion, both permanent.
@@ -1396,6 +1412,11 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// plus the new patterns added to budgetExceededRe (Chinese "费用/用完",
 		// English "no available credits?", "out of quota", "quota exhausted")
 		// close the apigpt/apiclaude.cc node-credit-exhaustion gap.
+		// 2026-11-13（211 错误盘点轮）：noActiveQuotaRe 单列在 quota 状态门之前——
+		// 智谱 trial 配额以 400 出现，见 noActiveQuotaRe 注释。两分类器同门（不分叉纪律）。
+		if noActiveQuotaRe.Match(body) {
+			return KindQuotaPermanent
+		}
 		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
 			if quotaResetsRe.Match(body) {
 				return KindQuotaPeriodic
@@ -1835,6 +1856,11 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// plus the new patterns added to budgetExceededRe (Chinese "费用/用完",
 		// English "no available credits?", "out of quota", "quota exhausted")
 		// close the apigpt/apiclaude.cc node-credit-exhaustion gap.
+		// 2026-11-13（211 错误盘点轮）：noActiveQuotaRe 单列在 quota 状态门之前——
+		// 智谱 trial 配额以 400 出现，见 noActiveQuotaRe 注释。两分类器同门（不分叉纪律）。
+		if noActiveQuotaRe.Match(body) {
+			return KindQuotaPermanent
+		}
 		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
 			if quotaResetsRe.Match(body) {
 				return KindQuotaPeriodic

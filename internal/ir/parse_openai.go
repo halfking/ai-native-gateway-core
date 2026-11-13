@@ -357,7 +357,92 @@ func parseOpenAIMessages(raw json.RawMessage) ([]Message, error) {
 		messages = append(messages, *irMsg)
 	}
 
+	// 2026-11-13（211 事故，glm-5.3-flash 10:37 一簇 5+ 笔）：tool role 消息
+	// 缺 tool_call_id（ZCode 会话压缩/重放丢字段）此前被同协议直传的格式门
+	// fail-closed 拒绝（"messages[N] tool role requires tool_call_id"）⇒ 重放
+	// 同样失败 ⇒ 会话砖化。配对修复在 parse 层（直传/跨协议转换两路都受益）：
+	// ① 按顺序回填最近 assistant tool_calls 中未消费的 id；② 无可配对 call 时
+	// 降级为 user 文本（内容保留、带标注）。留痕走 reportClientShapeFix。
+	repairChatToolCallIDs(messages)
+
 	return messages, nil
+}
+
+// repairChatToolCallIDs 修复 role=tool 但缺 tool_call_id 的消息。
+// 就地修改（messages 已是本函数栈内构造的切片）。
+func repairChatToolCallIDs(messages []Message) {
+	missing := 0
+	for i := range messages {
+		if messages[i].Role != "tool" || messages[i].ToolCallID != "" {
+			continue
+		}
+		missing++
+	}
+	if missing == 0 {
+		return
+	}
+	// 顺序消费队列：最近的 assistant tool_calls 中尚未被显式 tool_call_id
+	// 消费的 id（按出现顺序）。
+	var pending []string
+	fixed, downgraded := 0, 0
+	for i := range messages {
+		msg := &messages[i]
+		switch msg.Role {
+		case "assistant":
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					pending = append(pending, tc.ID)
+				}
+			}
+		case "tool":
+			if msg.ToolCallID != "" {
+				for j, id := range pending {
+					if id == msg.ToolCallID {
+						pending = append(pending[:j], pending[j+1:]...)
+						break
+					}
+				}
+				continue
+			}
+			if len(pending) > 0 {
+				msg.ToolCallID = pending[0]
+				pending = pending[1:]
+				fixed++
+				continue
+			}
+			// 无可配对的 call：降级为 user 文本（role=tool 无 id 在 openai 线
+			// 格式上不合法；转 user 保内容可发）。
+			msg.Role = "user"
+			text := "[tool result without tool_call_id]\n" + messageTextContent(msg)
+			msg.Content = []ContentBlock{{Type: "text", Text: text}}
+			downgraded++
+		}
+	}
+	if fixed > 0 {
+		reportClientShapeFix(ProtocolOpenAIChat, "messages[].tool_call_id", "backfilled_from_assistant_tool_calls",
+			map[string]any{"count": fixed})
+	}
+	if downgraded > 0 {
+		reportClientShapeFix(ProtocolOpenAIChat, "messages[].tool_call_id", "orphan_tool_downgraded_to_user_text",
+			map[string]any{"count": downgraded})
+	}
+}
+
+// messageTextContent 提取消息 content 的文本形态（拼接 text 块；封顶 2000
+// 字符防畸形巨块）。
+func messageTextContent(msg *Message) string {
+	const capLen = 2000
+	var sb strings.Builder
+	for _, block := range msg.Content {
+		if block.Type == "text" && block.Text != "" {
+			sb.WriteString(block.Text)
+			sb.WriteString("\n")
+			if sb.Len() > capLen {
+				return sb.String()[:capLen] + "…"
+			}
+		}
+	}
+	return sb.String()
 }
 
 // parseOpenAIMessage parses a single OpenAI message into IR Message.

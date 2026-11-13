@@ -1462,3 +1462,21 @@ func TestClassifyResponseBodyGeneric404Guard(t *testing.T) {
 		t.Errorf("ClassifyResponseBody(404, model-does-not-exist) = %q, want %q", got, KindModelNotFound)
 	}
 }
+
+// TestClassifyNoActiveLimitedQuota（2026-11-13 211 错误盘点轮）：智谱
+// glm-5.3-flash-trial 的限购配额形态（HTTP 400 invalid_request_error +
+// "ZCode has no active limited quota for GLM-5.3-Flash-Trial"）此前不命中
+// 任何 quota 词 ⇒ 误落 KindRequestRejected（归因错族：请求侧参数错误 vs
+// 账号级配额）。补词后必须归 quota 族。
+func TestClassifyNoActiveLimitedQuota(t *testing.T) {
+	body := []byte(`{"error":{"code":null,"message":"ZCode: ZCode has no active limited quota for GLM-5.3-Flash-Trial","param":null,"type":"invalid_request_error"}}`)
+	kind := ClassifyResponseBody(400, body)
+	if kind != KindQuotaPermanent {
+		t.Fatalf("ClassifyResponseBody = %q, want quota_permanent (no active limited quota is an account-level quota verdict)", kind)
+	}
+	// 变体：无 limited 前缀。
+	kind2 := ClassifyResponseBody(400, []byte(`{"error":{"message":"no active quota for plan X"}}`))
+	if kind2 != KindQuotaPermanent {
+		t.Fatalf("variant without 'limited' = %q, want quota_permanent", kind2)
+	}
+}
