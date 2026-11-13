@@ -11,6 +11,7 @@ export default {
   syncTitle: 'Price sync ledger (last 10 runs)',
   syncHint: 'Source rows = landed + rejected (reconcilable); a red rejected/conflict column means the sync detail needs review.',
   syncEmptyWhy: 'No sync records yet — the host-side price syncer has never run.',
+  syncLoadFailed: 'Failed to load the sync ledger — possibly a server error; retry or check the browser console.',
   syncEmptyNext: 'Next step: confirm the host-side market-price-sync.py cron is configured and has completed a first run.',
   colPlatformId: 'Platform ID',
   colName: 'Name',

@@ -48,6 +48,14 @@ const (
 	defaultCredRollupTimeout  = 2 * time.Minute
 )
 
+// credRollupLockKey 是本刷新器的**跨实例**互斥键（pg_advisory_xact_lock）。
+// 部署拓扑是 245+154 两个网关实例共用 252 库，两者都会跑 refresher——
+// 没有这把锁时每 30m 至少两次 17.3s 全表聚合（相位还随 boot 对齐），恰恰
+// 放大了 963 要减的 DB 负载。与 auto_index_refresher（llmgw:credential-
+// model-index-rollup）同纪律；单语句 UPSERT 幂等，双实例本不损坏数据，
+// 这把锁是省 DB 负载而非保正确性。
+const credRollupLockKey = "llmgw:credential-total-requests-rollup"
+
 // CredentialRollupRefresher 周期刷新凭据请求数预物化表（迁移 963）。
 type CredentialRollupRefresher struct {
 	pool *pgxpool.Pool
@@ -175,6 +183,13 @@ func (r *CredentialRollupRefresher) refreshOnce(ctx context.Context) error {
 		return fmt.Errorf("credential rollup refresher: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(rctx) }() // 提交后再 Rollup 是 pgx 的 no-op
+	// 跨实例互斥（2026-11-13 12h 修订审计轮补）：245+154 共用 252 库 ⇒ 无锁时
+	// 双实例各自全表聚合（17.3s×N/30m）。锁必须**先于**聚合 SQL 取；另一实例
+	// 持锁时本事务在此等待（受上方 rctx 超时约束，不会无限挂住）。
+	if _, err := tx.Exec(rctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, credRollupLockKey); err != nil {
+		r.logFailure(err, started)
+		return fmt.Errorf("credential rollup refresher: advisory lock: %w", err)
+	}
 	// 单语句聚合对角色级 statement_timeout（30s）不设防会被生产数据量增长
 	// 撞死（252 实测 17.3 s @1.4M 行）⇒ 事务内 SET LOCAL 自管上限。
 	if _, err := tx.Exec(rctx, "SET LOCAL statement_timeout = '"+strconv.Itoa(int(r.Timeout/time.Millisecond))+"ms'"); err != nil {

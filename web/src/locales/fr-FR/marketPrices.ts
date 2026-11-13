@@ -11,6 +11,7 @@ export default {
   syncTitle: 'Registre de synchronisation des prix (10 derniers runs)',
   syncHint: 'Lignes sources = atterrissées + rejetées (réconciliable) ; une colonne rejet/conflit en rouge ⇒ le détail de ce run doit être examiné.',
   syncEmptyWhy: 'Aucun enregistrement de synchronisation —— le synchroniseur de prix côté hôte na jamais tourné.',
+  syncLoadFailed: 'Échec du chargement du journal de synchronisation —— erreur serveur possible ; réessayez ou consultez la console du navigateur.',
   syncEmptyNext: 'Étape suivante : vérifier que le cron de market-price-sync.py (côté hôte) est configuré et quun premier run est terminé.',
   colPlatformId: 'ID de plateforme',
   colName: 'Nom',

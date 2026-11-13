@@ -23,6 +23,9 @@ const loading = ref(false)
 const platforms = ref<MarketPlatformRow[]>([])
 const platformsAvailable = ref(true)
 const syncRuns = ref<MarketPriceSyncRun[]>([])
+// 同步台账加载失败（2026-11-13 12h 修订审计轮补可见性）：降级成空数组会让
+// 空态文案「同步器没跑过」掩盖「API 失败」的真因 ⇒ 失败置位，sync 区改显错误文案。
+const syncLoadFailed = ref(false)
 
 async function load() {
   loading.value = true
@@ -34,6 +37,7 @@ async function load() {
     platforms.value = reg.items || []
     platformsAvailable.value = true
     syncRuns.value = sync.items || []
+    syncLoadFailed.value = false
   } catch {
     platformsAvailable.value = false
     notifyError(t('marketPrices.loadFailed'))
@@ -175,7 +179,10 @@ const platformFields = computed<CardField[]>(() => [
         <h3 class="section-title">{{ t('marketPrices.syncTitle') }}</h3>
         <span class="badge badge-gray">{{ syncRuns.length }}</span>
       </div>
-      <div v-if="!syncRuns.length" class="app-empty-state">
+      <div v-if="syncLoadFailed" class="app-empty-state">
+        <p>{{ t('marketPrices.syncLoadFailed') }}</p>
+      </div>
+      <div v-else-if="!syncRuns.length" class="app-empty-state">
         <p>{{ t('marketPrices.syncEmptyWhy') }}</p>
         <p class="empty-next">{{ t('marketPrices.syncEmptyNext') }}</p>
       </div>

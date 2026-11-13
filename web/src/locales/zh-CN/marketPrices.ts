@@ -11,6 +11,7 @@ export default {
   syncTitle: '行情同步台账（最近 10 次）',
   syncHint: '源条数 = 落地 + 拒绝（可对账）；拒绝/冲突列红色 ⇒ 需要看该次同步的 detail。',
   syncEmptyWhy: '还没有同步记录 —— 宿主侧行情同步器尚未跑过。',
+  syncLoadFailed: '同步台账加载失败 —— 可能是服务端错误，请重试或查看浏览器控制台。',
   syncEmptyNext: '下一步：确认宿主侧 market-price-sync.py 的 cron 已配置并首跑。',
   colPlatformId: '平台标识',
   colName: '名称',

@@ -11,6 +11,7 @@ export default {
   syncTitle: 'Libro de sincronización de precios (últimos 10 runs)',
   syncHint: 'Filas fuente = aterrizadas + rechazadas (conciliables); una columna de rechazos/conflictos en rojo ⇒ hay que revisar el detail de esa sincronización.',
   syncEmptyWhy: 'Todavía no hay registros de sincronización —— el sincronizador de precios del lado del host nunca se ha ejecutado.',
+  syncLoadFailed: 'Error al cargar el registro de sincronización —— posible error del servidor; reintente o consulte la consola del navegador.',
   syncEmptyNext: 'Siguiente paso: confirmar que el cron de market-price-sync.py (lado del host) está configurado y que la primera ejecución se completó.',
   colPlatformId: 'ID de plataforma',
   colName: 'Nombre',
