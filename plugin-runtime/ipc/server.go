@@ -52,6 +52,16 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
 	}
 
+	// 2026-11-14 audit D2: net.Listen creates the socket under the process
+	// umask (0755 by default) — any local user could connect and invoke the
+	// registered handlers (extension_point / health_check). There is no
+	// peer-credential check on this transport, so restrict to owner-only as
+	// the fail-closed baseline.
+	if err := os.Chmod(s.socketPath, 0o600); err != nil {
+		listener.Close()
+		return fmt.Errorf("chmod socket %s: %w", s.socketPath, err)
+	}
+
 	s.listener = listener
 	log.Printf("INFO: IPC server listening on %s", s.socketPath)
 

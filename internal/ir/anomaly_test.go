@@ -919,3 +919,35 @@ func TestAnomaly_DefaultReporter_ByDesignDialectScopeDowngradedToInfo(t *testing
 		t.Fatalf("by_design event content must survive the downgrade, got: %s", out)
 	}
 }
+
+// TestAnomaly_DefaultReporter_HighSeverityByDesignNotDowngraded — R-7④ 收口
+// （2026-11-14 复审）：压级闸必须同时看 disposition **与 severity**。by_design
+// 前缀 + severity=high 的事件保持 WARN——disposition 是「设计内转换」身份，
+// severity 才是事件量级；未来 emitter 对某 by_design 投影标 high 时不能被
+// 前缀判断静默压成 INFO。
+//
+// 变异臂（红→绿）：摘掉 && ev.Severity != SeverityHigh ⇒ 本测试红。
+func TestAnomaly_DefaultReporter_HighSeverityByDesignNotDowngraded(t *testing.T) {
+	prev := SetAnomalyReporter(nil)
+	defer SetAnomalyReporter(prev)
+
+	var buf bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(oldDefault)
+
+	r := DefaultAnomalyReporter()
+	r(AnomalyEvent{
+		AnomalyType:    AnomalyProtocolLoss,
+		FieldPath:      "thinking",
+		SourceProtocol: "anthropic-messages",
+		TargetProtocol: "openai-chat",
+		Reason:         "rejected_by_target_dialect",
+		Severity:       SeverityHigh,
+		Metadata:       map[string]any{"disposition": "by_design_model_gate"},
+	})
+
+	if strings.Count(buf.String(), "\"level\":\"WARN\"") != 1 {
+		t.Fatalf("by_design+severity=high must stay WARN (downgrade gate must consider severity, not prefix alone), got: %s", buf.String())
+	}
+}

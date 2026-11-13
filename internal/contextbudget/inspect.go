@@ -245,8 +245,18 @@ func classifyExternal(value any) (inline, remote bool) {
 				}
 			}
 		case "file", "input_file":
-			if nonempty(v["file_id"]) || nonempty(v["file_data"]) {
+			// 2026-11-14 audit B-P2-4: OpenAI Responses `input_file.file_data`
+			// is an INLINE base64 data URL (bytes visible to the gateway),
+			// not provider-managed state — only `file_id` is remote. Routing a
+			// data: URL here classified the request remote ⇒ Uncountable 422
+			// for every inline-file request, the r1052 incident shape's
+			// responses-file sibling (same class as image_url data: URLs,
+			// which classify inline below).
+			if nonempty(v["file_id"]) {
 				return false, true
+			}
+			if i, r := classifyImageURLValue(v["file_data"]); i || r {
+				return i, r
 			}
 			if i, r := classifySource(v["source"]); i || r {
 				return i, r

@@ -150,6 +150,15 @@ func compressResponsesInput(body []byte, contextWindow, outputReserve int, trigg
 			dropped = append(dropped, i)
 		}
 	}
+	// B-P2-3（2026-11-14 复审）登记不修——trim 层无 user 幸存守卫是**既有
+	// 设计契约**（responses_compress_test.go KeepFunctionCallPairAtomic 钉住
+	// 「删旧 user 保末项 function pair 原子」的合法 trim 语义；纯
+	// function-call continuation 在 Responses API 形状里合法）。零 user 形
+	// 状的上游风险出现在 **responses→chat rewrite 之后**（转 chat 上游时复
+	// 现 r1048 的 400 code 1214）⇒ 守卫的正确层级 = rewrite 矩阵后、发上
+	// 游前的 chat 形状（r1048 ensureUserSurvived 可复用），不在本 trim 层
+	// ——首版在 trim 层接线当场被 KeepFunctionCallPairAtomic 抓红（量具有
+	// 牙），撤回改登记，修法归下一修复轮。
 	encoded, err := json.Marshal(trimmed)
 	if err != nil {
 		return body, nil

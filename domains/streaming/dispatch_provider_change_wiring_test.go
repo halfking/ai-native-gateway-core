@@ -152,3 +152,79 @@ func exprString(e ast.Expr) string {
 		return "<expr>"
 	}
 }
+
+// TestHandlerFileEveryExecParamsWireProviderChange 是 R-7① 收口门（2026-11-14）：
+// handler.go 里**每一个** executors.ExecParams 复合字面量都必须设置
+// DispatchAllowProviderChange，值必须是 hasMultipleProviders(...) 调用。
+//
+// 背景：f0ed6187f 的门（上方 TestAllProtocolEntryFacesWireDispatchProviderChange）
+// 只扫 buildExecParams 闭包里的主字面量；D5 模型级回退的第二装配点
+// （handler.go `h.executor.Execute(&executors.ExecParams{...})`，fallback 分支）
+// 漏设 ⇒ 零值 false ⇒ fallback 候选被 providerSwitchAllowed 钉死在首供应商，
+// 与 2026-11-13 事故同构（503「All providers unavailable」而跨供应商候选一直
+// 都在）。「同一缺陷只修一半」的第二形态：修复门只覆盖主面 ⇒ 第二装配点
+// 静默漏填 ⇒ 本门把 handler.go 的字面量闭集整体纳入。
+//
+// 变异臂（红→绿）：删除 D5 fallback 的 DispatchAllowProviderChange 行 ⇒ 本门红。
+func TestHandlerFileEveryExecParamsWireProviderChange(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "handler.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse handler.go: %v", err)
+	}
+
+	var literals []*ast.CompositeLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		se, ok := cl.Type.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if x, ok := se.X.(*ast.Ident); ok && x.Name == "executors" && se.Sel.Name == "ExecParams" {
+			literals = append(literals, cl)
+		}
+		return true
+	})
+	if len(literals) < 2 {
+		t.Fatalf("handler.go: expected at least 2 executors.ExecParams literals (main + D5 fallback), got %d — if a third assembly point was added it must also wire DispatchAllowProviderChange", len(literals))
+	}
+
+	for _, lit := range literals {
+		pos := fset.Position(lit.Pos())
+		found := false
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != "DispatchAllowProviderChange" {
+				continue
+			}
+			found = true
+			// 两种合法形态：主面闭包 = 标识符 dispatchAllowProviderChange
+			// （hasMultipleProviders(candidates) 的局部变量）；D5 fallback =
+			// 内联 hasMultipleProviders(fbCandidates) 调用（fallback 用本次
+			// 重解析的 fbCandidates）。唯一非法形态 = 内联常量 true/false
+			// （绕过动态判定）。两种活形态都源于 hasMultipleProviders。
+			switch v := kv.Value.(type) {
+			case *ast.Ident:
+				if v.Name != "dispatchAllowProviderChange" {
+					t.Errorf("handler.go:%d: DispatchAllowProviderChange value = identifier %s, want dispatchAllowProviderChange or hasMultipleProviders(...) call", pos.Line, v.Name)
+				}
+			case *ast.CallExpr:
+				if fn, ok := v.Fun.(*ast.Ident); !ok || fn.Name != "hasMultipleProviders" {
+					t.Errorf("handler.go:%d: DispatchAllowProviderChange value = %s(...), want hasMultipleProviders(...) (dynamic per-candidate judgment)", pos.Line, exprString(v.Fun))
+				}
+			default:
+				t.Errorf("handler.go:%d: DispatchAllowProviderChange value = %s, inline constants bypass hasMultipleProviders", pos.Line, exprString(kv.Value))
+			}
+		}
+		if !found {
+			t.Errorf("handler.go:%d: executors.ExecParams literal does not set DispatchAllowProviderChange — this assembly point cannot fail over across providers (R-7① shape: fixed main face, missed second face)", pos.Line)
+		}
+	}
+}

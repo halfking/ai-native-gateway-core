@@ -107,8 +107,15 @@ func fileMetadataBounded(ctx context.Context, r io.ReaderAt, span largebody.Span
 	}
 	for _, key := range []string{"content", "parts"} {
 		if spans, ok := doc.Arrays[key]; ok {
-			if len(spans) > 1024 {
-				return nil, ErrProtectedContext
+			// B-P2-1（2026-11-14 复审）：元素数帽此前对 content/parts 硬失败
+			//（ErrProtectedContext ⇒ 整个 Reduce 失败 ⇒ LargeIngress 422）
+			//——与 r1053 修掉的 tool_calls 孪生检查同族（同函数 60 行外）。
+			// r1053 语义照搬：超帽截断省略（永不硬失败），describeMessage
+			// 只是看到更少的块；省略必须显式留痕，不无声消失。
+			if len(spans) > maxMetadataCalls {
+				truncated := spans[:maxMetadataCalls]
+				spans = truncated
+				root["gw_content_blocks_omitted"] = json.RawMessage(`true`)
 			}
 			blocks := make([]json.RawMessage, 0, len(spans))
 			for _, part := range spans {

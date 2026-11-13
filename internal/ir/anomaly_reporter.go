@@ -150,7 +150,11 @@ func DefaultAnomalyReporter() AnomalyReporter {
 			"metadata", ev.MetadataAsJSON(),
 			"message", ev.Message,
 		}
-		if byDesign, ok := ev.Metadata["disposition"].(string); ok && strings.HasPrefix(byDesign, "by_design") {
+		// R-7④ 收口（2026-11-14 复审）：压级只对 low/medium 生效——
+		// by_design* disposition 是「设计内转换」的身份标记，severity 才是
+		// 事件本身的量级；未来若 emitter 对某 by_design 投影标 high
+		// （例如方言分歧叠加在受保护面上），不能被前缀判断压成 INFO。
+		if byDesign, ok := ev.Metadata["disposition"].(string); ok && strings.HasPrefix(byDesign, "by_design") && ev.Severity != SeverityHigh {
 			slog.Info("ir.anomaly", attrs...)
 			return
 		}

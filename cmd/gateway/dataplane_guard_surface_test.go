@@ -433,6 +433,34 @@ func assertMediaPairedWiring(t *testing.T) {
 			t.Fatalf("media 撤回分支缺臂：%s 必须有 SetSanitizeGuard(nil, nil) 真实调用——还原拦截器构建失败时撤回输入中间件，保持「成对在场或成对缺席」（§704 发现②）", handler)
 		}
 	}
+	// R-7③ 收口门（2026-11-14）：restore 失败分支的撤回纪律必须覆盖 chat 面
+	// ——goal_control.go 装配体内必须存在 chatHandler.SetSanitizeInputMiddleware(nil)
+	// 真实调用（此前只撤 media 两面，chat 输入中间件单臂在挂 = 半装配：
+	// 占位符照发而还原链已断，r1043 会话字典污染族的同启动形态）。
+	{
+		_, goalFile, _ := parseFileAST(t, "cmd/gateway/goal_control.go")
+		found := false
+		ast.Inspect(goalFile, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "SetSanitizeInputMiddleware" || len(call.Args) != 1 {
+				return true
+			}
+			if id, ok := call.Args[0].(*ast.Ident); ok && id.Name == "nil" {
+				recv, _ := sel.X.(*ast.Ident)
+				if recv != nil && recv.Name == "chatHandler" {
+					found = true
+				}
+			}
+			return true
+		})
+		if !found {
+			t.Fatalf("chat 面撤回臂缺失：goal_control.go 还原拦截器构建失败分支必须真实调用 chatHandler.SetSanitizeInputMiddleware(nil)——成对在场或成对缺席对 chat 面同样适用（R-7①②③ 同族：修复面只盖 media 不盖 chat）")
+		}
+	}
 	for _, probe := range []struct {
 		file, recv string
 	}{

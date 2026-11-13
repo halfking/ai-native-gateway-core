@@ -132,9 +132,9 @@ type interceptingStreamWriter struct {
 	blockEvidence string
 	// degraded 记录「守卫降级放行」（待检缓冲越界但没有规则命中）。
 	// ★ 降级**不是**拦截 ⇒ 不渲染失败终帧，但**要留痕**（登记审核单）。
-	degraded     bool
-	degradedRule string
-	degradedReason string
+	degraded         bool
+	degradedRule     string
+	degradedReason   string
 	degradedEvidence string
 }
 
@@ -325,15 +325,15 @@ func (w *interceptingStreamWriter) finish() {
 		// 都带审核单号——客户端（含只显示 message 的那类）能看到
 		// 「等待审核，含敏感内容」，管理员在后台批准后重试即放行。
 		reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
-			TenantID:   w.meta.TenantID,
-			ClientType: w.meta.ClientType,
-			SessionID:  w.meta.SessionID,
-			RequestID:  w.meta.RequestID,
-			Rule:       w.blockRule,
-			Reason:     w.blockReason,
-			Field:      w.blockField,
-			Digest:     w.blockDigest,
-			Evidence:   w.blockEvidence,
+			TenantID:     w.meta.TenantID,
+			ClientType:   w.meta.ClientType,
+			SessionID:    w.meta.SessionID,
+			RequestID:    w.meta.RequestID,
+			Rule:         w.blockRule,
+			Reason:       w.blockReason,
+			Field:        w.blockField,
+			Digest:       w.blockDigest,
+			Evidence:     w.blockEvidence,
 			EvidenceKind: policyBlockEvidenceKind(w.blockRule),
 		})
 		w.writeTrustedTerminal(nativeStreamPolicyFailureFrame(w.meta.ClientProtocol,
@@ -5094,7 +5094,7 @@ func (h *ChatHandler) serveWithExecutor(
 		var survivalIntercepted *interceptingStreamWriter
 		if h.responseInterceptor != nil {
 			survivalIntercepted = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
-				ClientType:  extractClientType(r),
+				ClientType:     extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -5177,7 +5177,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
-				ClientType:  extractClientType(r),
+				ClientType:     extractClientType(r),
 				SessionID:      gwSessionID,
 				RequestID:      requestID,
 				TenantID:       tenantID,
@@ -5509,21 +5509,28 @@ goalRetryLoopDone:
 						BodyBytes:          rewritten,
 						AttachmentMetadata: attachmentsForOutbound(logCtx),
 						FailoverNotices:    executors.NewFailoverNoticeCollector(),
-						IsStream:           false,
-						ClientProtocol:     clientProtocol,
-						ClientModel:        nextModel,
-						OutboundModel:      nextModel,
-						ClientID:           clientID,
-						Transform:          txResult,
-						Resolution:         nil, // stale; executor resolves per-candidate
-						Candidates:         fbCandidates,
-						Policy:             fbPolicy,
-						RequestModality:    fbModality,
-						AuditBuilder:       auditBuilder,
-						Capture:            streamCapture,
-						ToolsRequested:     requestHasTools(rewritten),
-						SessionKey:         sessionKey,
-						StickyKey:          stickyKey,
+						// R-7① 收口（2026-11-14 复审）：f0ed6187f 只修了三协议入口的
+						// 主 ExecParams，D5 模型级回退这个第二装配点漏设 ⇒ 零值 false
+						// ⇒ fallback 候选被 providerSwitchAllowed 钉死在首供应商——
+						// 同 f0ed6187f 事故（503「All providers unavailable」而 resolve
+						// 面跨供应商候选一直都在）的同构形态。fallback 用的是本次
+						// resolveCandidatesForRequest 的 fbCandidates，许可判定同口径。
+						DispatchAllowProviderChange: hasMultipleProviders(fbCandidates),
+						IsStream:                    false,
+						ClientProtocol:              clientProtocol,
+						ClientModel:                 nextModel,
+						OutboundModel:               nextModel,
+						ClientID:                    clientID,
+						Transform:                   txResult,
+						Resolution:                  nil, // stale; executor resolves per-candidate
+						Candidates:                  fbCandidates,
+						Policy:                      fbPolicy,
+						RequestModality:             fbModality,
+						AuditBuilder:                auditBuilder,
+						Capture:                     streamCapture,
+						ToolsRequested:              requestHasTools(rewritten),
+						SessionKey:                  sessionKey,
+						StickyKey:                   stickyKey,
 						KeyID: func() int {
 							if keyInfo != nil {
 								return keyInfo.ID
@@ -7296,7 +7303,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	} else if reqLog.UsageSource == nil && (reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil) {
 		reqLog.UsageSource = strPtr(UsageSourceEstimated)
 	}
-
 
 	// CO-2 (2026-08-15): 真实 usage 到达时，异步修正本请求此前可能已落库的
 	// estimated 行（同 request_id 的早写路径，如重试/断连补写），并回填
