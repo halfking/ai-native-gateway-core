@@ -113,6 +113,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
+	"github.com/kaixuan/llm-gateway-go/internal/handlers/pluginapi"
 	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
@@ -7129,16 +7130,36 @@ func main() {
 		}
 		return nil
 	}
-	mux.Handle("/api/v1/plugins/", admin.AdminMiddleware(
-		func(w http.ResponseWriter, r *http.Request) {
+	// pluginapi: public list/get for the Shell. Settings stay behind admin auth.
+	// Shell asks for /manifests; the Day 3 probe asks for both slash forms.
+	pluginapiHandler := pluginapi.NewPluginAPIHandler(pluginsDir)
+	settingsHandler := admin.AdminMiddleware(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/settings") {
 				pluginruntime.SettingsHandler(manifestByID).ServeHTTP(w, r)
 				return
 			}
 			http.NotFound(w, r)
-		},
+		}),
 		dbConn.Pool(), cfg.SecretKey,
-	))
+	)
+	servePluginAPI := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			settingsHandler.ServeHTTP(w, r)
+			return
+		}
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plugins"), "/")
+		switch {
+		case rest == "" || rest == "manifests":
+			pluginapiHandler.ListPluginsHandler(w, r)
+		case strings.HasSuffix(rest, "/settings"):
+			settingsHandler.ServeHTTP(w, r)
+		default:
+			pluginapiHandler.GetPluginHandler(w, r)
+		}
+	}
+	mux.HandleFunc("GET /api/v1/plugins", servePluginAPI)
+	mux.HandleFunc("/api/v1/plugins/", servePluginAPI)
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
 			pluginruntime.NavHandler(pluginRegistry, pluginruntime.ViewerFromRequest).ServeHTTP(w, r)
