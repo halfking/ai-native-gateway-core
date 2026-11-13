@@ -136,6 +136,15 @@ func TestUpstreamRequestSideKind_Boundary(t *testing.T) {
 		errorsx.KindUnsupportedFeature,
 		errorsx.KindCanceled,
 		errorsx.KindRateLimitObserved,
+		// 2026-11-13 r1051 audit: credential-fatal kinds must pass through
+		// so handler's credential branch receives precise LastKind for
+		// classification (upstream_quota_permanent / upstream_credential_invalid).
+		errorsx.KindAuth,
+		errorsx.KindAuthRevoked,
+		errorsx.KindQuota,
+		errorsx.KindQuotaPermanent,
+		errorsx.KindQuotaPeriodic,
+		errorsx.KindQuotaBalance,
 	}
 	for _, k := range yes {
 		err := &upstreampkg.Error{Kind: k, StatusCode: 400}
@@ -146,8 +155,6 @@ func TestUpstreamRequestSideKind_Boundary(t *testing.T) {
 	no := []errorsx.ErrorKind{
 		errorsx.KindTransient,
 		errorsx.KindNetwork,
-		errorsx.KindAuth,
-		errorsx.KindQuota,
 		errorsx.KindModelNotFound,
 		errorsx.KindContextLength,
 		errorsx.KindContentFilter,

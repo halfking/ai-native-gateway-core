@@ -654,12 +654,22 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 // 等）—— 这些换候选也是同样被拒，重试纯属浪费。transient / network /
 // rate_limit 等**不在**本族，保持既有路径不变（零回归面）。
 //
-// ★ 凭据级致命错误（auth / quota）也**不在**本族：它们的处理路径在
-// credential writer 与凭据状态写入侧，不能在这里改语义。
+// ★ 2026-11-13（r1051 审计轮）：凭据级致命错误（auth / quota_permanent /
+// quota_periodic / quota_balance）此前注释说「不在本族」⇒ 被塌成 transient
+// ⇒ DB 落 error_kind='transient'（211 活体复现）。但这些错误**换候选也无意义**
+// （同凭据在所有候选上都失效），且 handler 的 credential 分支依赖精确 kind
+// 分类 → 必须在此放行，保证 LastKind 传递不失真。credential writer 的状态
+// 写入路径独立（executor 内已完成），本函数只负责 ExecuteError.LastKind 字段
+// 赋值 → 放行不改变凭据状态写入语义。
 func upstreamRequestSideKind(err error) errorsx.ErrorKind {
 	var ue *upstreampkg.Error
 	if !errors.As(err, &ue) || ue == nil || ue.Kind == "" {
 		return ""
+	}
+	// 2026-11-13: 凭据级致命错误单独放行（虽不属 IsRequestSideError，但
+	// 换候选无意义 + handler 依赖精确分类）。
+	if errorsx.IsCredentialFatal(ue.Kind) {
+		return ue.Kind
 	}
 	if !errorsx.IsRequestSideError(ue.Kind) {
 		return ""
