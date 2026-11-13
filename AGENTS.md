@@ -1,5 +1,8 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-13 命中二次判读（LLM 判官）方案分析轮（goal 会话，方案档 `docs/audit/2026-11-13-命中二次判读LLM判官方方案分析.md`，零代码）**：
+> ★ owner 提议＝规则命中后用小/快模型判读命中处 ±200B 上下文，判实才拦+发审批，判否放行。**体量证据定插桩面**：遮蔽面 73,437 次/日（不可逐次判读）vs 杀回合面 7 单/日（可行）⇒ 判官只放杀回合时刻；**211 现网实测**（5 张真实审核单证据+3 合成真阳性回放 glm-5.3-flash）：延迟中位 ~4s/p95>30s 超时（flash-trial 不可作判官后端）、JSON 纪律弱（截断）、判官车道实测未被输入脱敏遮蔽（碰巧非设计——判官车道需显式豁免登记+全量留痕）。**设计＝两段式**：Phase 0 影子模式（杀回合照旧+异步判官结论回写 rv-N 单，零风险）→ 数据达标后 Phase 1（`sanitize.judge_veto_enabled` 默认关，同步 2s 预算，benign=放行+observe 留痕，sensitive/超时/未配置=维持 fail-closed；**判官只能降级不能升级**；判实走现行 rv-N 审批不变）。与 armor.Judge/loopback 先例复用；ARMOR_JUDGE 外部 API 形态不适用（判官载荷带敏感原文，直发第三方=隐私面倒挂）。决策点 5 项在方案档 §五（判官后端选型/影子班车/超时预算/输入侧二期/capacity 预分类）。
+
 > **2026-11-13 r1046 数字族 PII 可信度守卫轮（goal 会话，主档 `docs/audit/2026-11-13-r1046-数字族PII可信度守卫-rv1735根修.md`，LESSONS §710；★ 编号流转：并行 r1045 横幅所称「并行 r1044 credit_card 可信度轮」即本轮在途件——并行侧测试文件占 r1044/r1045 名 ⇒ 本轮终取 r1046）**：
 > ★ owner 报障＝磁盘清理任务（ZCode@Mac）整回合被杀 `builtin.guard.rewrite_refused @ anthropic.block.1.thinking`（rv-1735，11-13 04:01+08，minimax-m3.1-flash）⇒ **判定＝误报：过于敏感（无 Luhn/无结构判据）× 配置错误（快照血统冻结 r1039 修复前旧正则）双成立**。
 > ★★★★ **定案证据（211 只读）**：拦断发生在旧槽 a 最后一秒（WARN 行自带版本指纹 0172a665；新槽 b 7c63ec91 04:01:12 起播）；机制＝checker 产生**遮蔽意图**（非硬拦）× thinking 签名 lane 不可改写 ⇒ fail-closed；turn 31 请求体＝**Chrome 命令行数字 ID**（`--variations-seed-version`/`--field-trial-handle` 的 16-19 位值），**输入侧同晚已铸 550 个 credit_card 占位符**（`session_censors_hot`——模型看不见自己的 ps/du 上下文＝整夜重复推理的直接原因）；生产快照 v2 的 `financial.bank_card`＝**r1039 修复前的旧正则**（`\b\d{4}…\d{4,7}\b` 任意 16-19 位数字串）+ legacy `compliance.pii.*` 无词边界正则（`\d{15}`/`\d{17}[\dXx]`/`\d{16,19}`）在更长数字串内部截段子串——**三层载体（YAML/内置fallback/DB快照血统）只修了 YAML，生产读的是快照**（§710 通用式①）。
