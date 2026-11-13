@@ -170,6 +170,15 @@ var paramRejectionHints = []string{
 	// 此前 hints 断链 → 整条 400 判不出 param_rejected → 不记录不剥参。
 	"input should be",
 	"allowed values",
+	// 2026-11-13（opus-5-5 事故轮）：adaptive-only 模型族拒绝 enabled/
+	// disabled 形态的文案 —— "<model> requires adaptive thinking; omit
+	// thinking or use thinking.type=adaptive and output_config.effort"
+	// （claude-fable-5-2 / claude-opus-5-5 双先例，apiclaude 中继）。八条
+	// named patterns 全不命中（参数名 "thinking.type" 裸写在补救句里、无
+	// 引号包裹）⇒ 判不出 param_rejected ⇒ anthropic 腿零记录、chat 腿零
+	// 剥参重试。paramguard 的 adaptiveOnlyModels 是首发防线（改写成
+	// adaptive），本 hint 是清单未覆盖时的第二道观测/兜底。
+	"requires adaptive thinking",
 }
 
 // jsonErrorMessages 提取错误体里各家常见的 message 字段（error.message /

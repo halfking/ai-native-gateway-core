@@ -57,13 +57,25 @@ import (
 // 对 enabled/disabled 全兼容（211 直连实测），只有 `claude-fable-5-2`
 // 强制 adaptive ⇒ 用前缀 "claude-fable-5" 会把这两个旧模型一起误伤
 // （它们此刻正在生产承载流量）。
+//
+// 2026-11-13（opus-5-5 事故轮）：apiclaude 把 fable-5-2 的同款语义
+// 推广到了 `claude-opus-5-5` —— 同文案 "claude-opus-5-5 requires adaptive
+// thinking; omit thinking or use thinking.type=adaptive and
+// output_config.effort"（211 网关日志 02:23~02:34 +08 三起活体，ZCode chat
+// 形态 thinking:{type:enabled,budget_tokens} ⇒ 400 ⇒ 全候选失败 ⇒ 客户端
+// 「No available provider for model 'claude-opus-5-5'」）。注意翻转证据：
+// 2026-11-11 时同中继同模型的 enabled 形态实测全 200（当时把 opus-5-5 钉在
+// 阴性对照组）—— 这是**上游语义升级**，不是网关回归。精确名判据继续防误伤：
+// `claude-opus-5` / `claude-opus-4-8` 等旧 opus 仍对 enabled 全兼容。
 var adaptiveOnlyModels = map[string]bool{
 	"claude-fable-5-2": true,
+	"claude-opus-5-5":  true,
 }
 
 // adaptiveOnlyModelNames 供测试与文档引用（保序，便于人工核对）。
 var adaptiveOnlyModelNames = []string{
 	"claude-fable-5-2",
+	"claude-opus-5-5",
 }
 
 // requiresAdaptiveThinking 报告该出站模型是否强制 adaptive thinking。

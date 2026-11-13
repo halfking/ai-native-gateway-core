@@ -135,3 +135,65 @@ func TestDiagnoseMiniMaxParamDialectWithoutStrippableNotParamRejected(t *testing
 		t.Fatalf("must not diagnose param_rejected when outbound has no strippable param, got %+v", diag)
 	}
 }
+
+// TestDiagnoseAdaptiveOnlyThinkingRequired（2026-11-13 opus-5-5 事故轮）：
+// adaptive-only 模型族拒绝 enabled/disabled 形态的文案
+// "<model> requires adaptive thinking; omit thinking or use
+// thinking.type=adaptive and output_config.effort"——参数名 "thinking.type"
+// 裸写在补救句里（无引号包裹）⇒ 八条 namedParamPatterns 全断链 ⇒ 此前判
+// 不出 param_rejected ⇒ anthropic 腿零记录、chat 腿零剥参重试（211 活体
+// 02:23~02:34 三起全候选失败）。补 "requires adaptive thinking" hint 后，
+// 出站体带 thinking 时必须判 param_rejected 并点名剔除（清单未覆盖新模型
+// 时的第二道兜底；首发防线在 paramguard.adaptiveOnlyModels）。
+func TestDiagnoseAdaptiveOnlyThinkingRequired(t *testing.T) {
+	outbound, _ := json.Marshal(map[string]any{
+		"model":      "claude-somefuture-9",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 2000,
+		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 1024},
+	})
+	in := Input{
+		HTTPStatus:   400,
+		ErrorBody:    []byte(`{"error":{"message":"claude-somefuture-9 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort","type":"invalid_request_error"}}`),
+		OutboundBody: outbound,
+		ErrorKind:    "request_rejected",
+	}
+	diag, ok := Diagnose(in)
+	if !ok {
+		t.Fatalf("expected diagnosis for adaptive-thinking-required 400")
+	}
+	if diag.Trigger != TriggerParamRejected {
+		t.Fatalf("trigger = %q, want param_rejected", diag.Trigger)
+	}
+	if diag.Param != "thinking" {
+		t.Fatalf("param = %q, want thinking", diag.Param)
+	}
+	stripped, removed := StripParamsForWire(outbound, diag.Param, "")
+	if len(removed) != 1 || removed[0] != "thinking" {
+		t.Fatalf("removed = %v, want [thinking]", removed)
+	}
+	var check map[string]json.RawMessage
+	_ = json.Unmarshal(stripped, &check)
+	if _, has := check["thinking"]; has {
+		t.Fatalf("thinking must be stripped from wire body")
+	}
+}
+
+// 反向：文案命中但出站体无 thinking ⇒ 不判 param_rejected（无物可剥）。
+func TestDiagnoseAdaptiveOnlyThinkingRequiredWithoutParam(t *testing.T) {
+	outbound, _ := json.Marshal(map[string]any{
+		"model":      "claude-somefuture-9",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 100,
+	})
+	in := Input{
+		HTTPStatus:   400,
+		ErrorBody:    []byte(`{"error":{"message":"claude-somefuture-9 requires adaptive thinking; omit thinking"}}`),
+		OutboundBody: outbound,
+		ErrorKind:    "request_rejected",
+	}
+	diag, ok := Diagnose(in)
+	if ok && diag.Trigger == TriggerParamRejected {
+		t.Fatalf("must not diagnose param_rejected when no thinking param present, got %+v", diag)
+	}
+}
