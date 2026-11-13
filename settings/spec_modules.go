@@ -30,6 +30,17 @@ func ModuleSpecs() []*Spec {
 			Description:     "输出遮蔽改写开关（客户端可见 [REDACTED:*] 改写）",
 			DescriptionLong: "默认关闭（2026-11-13 裁决：客户端一级必须还原，遮蔽标记不得改写客户端可见内容）。关闭时输出敏感检查照常运行：检测、台账、审核单、硬拦清单全部保留；占位符还原链照常还原；仅「把输出文本改写成 [REDACTED:*]」不做。开启后恢复旧行为（文本 lane 命中被遮蔽；thinking 等不可改写 lane 命中将 rewrite_refused 终止回合）。",
 		},
+		// r1047（2026-11-13 方案档 docs/audit/2026-11-13-命中二次判读LLM判官方方案分析.md）：
+		// 命中二次判读的**影子模式**总开关。开启后，每张拦截审核单（rv-N）登记时
+		// 异步调用 LLM 判官（SANITIZE_JUDGE_* env 配置的端点/模型/密钥）判读证据
+		// 摘录，结论回写审核单 match_detail 供审核员对照——**不改变任何拦截决策**
+		//（影子）。数据达标后再裁决是否开执法模式（判否放行）。
+		{
+			Key: "sanitize.judge_shadow_enabled", Type: TypeBool, Scope: ScopePlatform,
+			Category: CategoryModules, Default: false, HotReload: true, DangerLevel: Safe,
+			Description:     "命中二次判读·影子判官（异步 LLM 对照判读，不改变拦截决策）",
+			DescriptionLong: "默认关闭。开启前提：SANITIZE_JUDGE_ENDPOINT/MODEL/API_KEY 已配置（判官后端必须同信任域——载荷携带被审原文）。开启后每张拦截审核单异步获得一行判官对照结论（sensitive/benign/unclear + 理由 + 延迟），写进 match_detail；判官失败/超时不影响拦截与响应。用于积累「规则命中 × 判官判读 × 人工最终裁定」三方对照数据，为执法模式（判否放行）提供依据。",
+		},
 		// ── Audit logging ─────────────────────────────────────────────
 		{
 			Key:             "audit.enabled",
@@ -65,15 +76,15 @@ func ModuleSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
-			Key:         "sanitize.output_guard_autorelax_threshold",
-			Type:        TypeInt,
-			Scope:       ScopePlatform,
-			Category:    CategoryModules,
-			Default:     3,
-			Description: "误报自动放行阈值",
+			Key:             "sanitize.output_guard_autorelax_threshold",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryModules,
+			Default:         3,
+			Description:     "误报自动放行阈值",
 			DescriptionLong: "同一租户、同一规则的「误报」人工标注累计到该条数时，自动写入该租户该规则的 7 天放行（与人工批准同键同语义，可撤销、会过期）。0 = 关闭自动优化。规则是全局的，但误报是租户事实 ⇒ 自动动作只收窄到「这个租户、这条规则、一周」。",
-			DangerLevel: Warning,
-			HotReload:   true,
+			DangerLevel:     Warning,
+			HotReload:       true,
 		},
 		{
 			Key:             "output_compliance.redaction_mode",

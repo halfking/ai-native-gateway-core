@@ -94,7 +94,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
-	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"   //nolint:depguard
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/integrity"   //nolint:depguard // 2026-07-28: model integrity detection
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -131,6 +131,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
+	"github.com/kaixuan/llm-gateway-go/internal/sanitizejudge" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -6777,6 +6778,20 @@ func main() {
 
 		// Wire armor into chat handler
 		chatHandler.SetArmor(armorJudge, armorLogger)
+	}
+
+	// ── Sanitize Shadow Judge (r1047 Phase 0) ────────────────────────
+	// 命中二次判读·影子模式：审核单登记后异步 LLM 对照判读，结论回写
+	// match_detail。总开关是 settings 键 sanitize.judge_shadow_enabled（默认
+	// 关）；env 三件套（ENDPOINT/MODEL/API_KEY）任一缺失 ⇒ 完全不激活。
+	// ★ 后端必须同信任域（载荷携带被审原文）——方案档
+	// docs/audit/2026-11-13-命中二次判读LLM判官方方案分析.md §三。
+	if sj := sanitizejudge.FromEnv(); sj != nil {
+		streaming.SetShadowJudge(sj)
+		slog.Info("sanitize shadow judge configured",
+			"endpoint", os.Getenv("SANITIZE_JUDGE_ENDPOINT"),
+			"model", os.Getenv("SANITIZE_JUDGE_MODEL"),
+			"settings_switch", "sanitize.judge_shadow_enabled")
 	}
 
 	slog.Info("CHECKPOINT: before static handler init")

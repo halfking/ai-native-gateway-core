@@ -157,6 +157,30 @@ type BlockReviewInput struct {
 // 不重复登记（同一次请求的重试路径 / 多 lane 拦截只占一单）。持久化通道
 // 已安装时先查 DB 再插 DB；DB 查询失败降级内存（拦截主路径不因记录失败
 // 中断）。
+// AppendBlockReviewJudgeVerdict 把影子判官（r1047）结论追加到审核单
+// match_detail。持久化通道未安装 ⇒ 进程内环形队列回退（单可能在，也可能已被
+// 挤出容量窗——两种都静默返回：影子判读不因回写失败产生噪声）。
+func AppendBlockReviewJudgeVerdict(reviewID int64, note string) {
+	if p := reviewPersistenceInstalled(); p != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := p.AppendBlockReviewJudgeVerdictDB(ctx, reviewID, note); err != nil {
+			slog.Warn("sanitize block review judge verdict append failed",
+				"error", err, "review_id", reviewID)
+		}
+		return
+	}
+	blockReviews.mu.Lock()
+	defer blockReviews.mu.Unlock()
+	for i := range blockReviews.entries {
+		if blockReviews.entries[i].ID == reviewID {
+			blockReviews.entries[i].MatchDetail = strings.TrimRight(
+				blockReviews.entries[i].MatchDetail+"\n"+note, "\n")
+			return
+		}
+	}
+}
+
 func AddBlockReview(in BlockReviewInput) BlockReview {
 	scope := in.Scope
 	if scope == "" {

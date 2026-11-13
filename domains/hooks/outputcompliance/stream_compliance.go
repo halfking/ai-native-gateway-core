@@ -689,7 +689,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				Digest: policyIssueDigest(result.Issues),
 				// ★ 2026-10-29 输出合规误报轮：被拦的那段 lane 内容（有界
 				// 摘录）随错误一起上送 ⇒ 审核面能看到「当时拦的是什么」。
-				Evidence: boundedPolicyEvidence(original),
+				Evidence: boundedPolicyEvidenceAround(original, result.Issues),
 			}
 		}
 		if !state.redact || result.RedactedOutput == "" || result.RedactedOutput == original {
@@ -723,7 +723,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 					// ★ 摘录：这条 lane 需要脱敏却不能安全改写 ⇒ 审核员要看
 					// 「到底拦了哪段参数」⇒ 有界摘录随错误上送（★ 此前是裸 error
 					// ⇒ 审核单全空 ★）。
-					Evidence: boundedPolicyEvidence(original),
+					Evidence: boundedPolicyEvidenceAround(original, result.Issues),
 				}
 			}
 		}
@@ -736,7 +736,7 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				RuleID:   GuardRedactInvalidRuleID,
 				Reason:   policyBlockErrorReason("output policy produced invalid JSON for redacted tool arguments", GuardRedactInvalidRuleID, lane),
 				Path:     lane,
-				Evidence: boundedPolicyEvidence(original),
+				Evidence: boundedPolicyEvidenceAround(original, result.Issues),
 			}
 		}
 		parts[0].field.set(result.RedactedOutput)
@@ -993,7 +993,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 				Path:   policyIssueLocation(result.Issues),
 				Digest: policyIssueDigest(result.Issues),
 				// ★ 2026-10-29：同上（事件级被拦内容的摘录）。
-				Evidence: boundedPolicyEvidence(original),
+				Evidence: boundedPolicyEvidenceAround(original, result.Issues),
 			}
 		}
 		if incremental {
@@ -1041,7 +1041,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 					Reason: policyBlockErrorReason("output policy refused to rewrite a signed or sensitive tool stream event", GuardRewriteRefusedRuleID, field.lane),
 					Path:   field.lane,
 					// ★ 摘录：审核员要看「当时判的是哪段内容」⇒ 有界摘录随错误上送。
-					Evidence: boundedPolicyEvidence(original),
+					Evidence: boundedPolicyEvidenceAround(original, result.Issues),
 				}
 			}
 			if isToolJSONLabel(field.label) && json.Valid([]byte(original)) && !json.Valid([]byte(result.RedactedOutput)) {
@@ -1049,7 +1049,7 @@ func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, fram
 					RuleID:   GuardRedactInvalidRuleID,
 					Reason:   policyBlockErrorReason("output policy produced invalid JSON for redacted tool arguments", GuardRedactInvalidRuleID, field.lane),
 					Path:     field.lane,
-					Evidence: boundedPolicyEvidence(original),
+					Evidence: boundedPolicyEvidenceAround(original, result.Issues),
 				}
 			}
 			field.set(result.RedactedOutput)

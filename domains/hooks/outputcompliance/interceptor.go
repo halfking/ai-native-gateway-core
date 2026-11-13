@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
@@ -267,6 +269,61 @@ func boundedPolicyEvidence(text string) string {
 		cut--
 	}
 	return text[:cut]
+}
+
+// boundedPolicyEvidenceAround 是 boundedPolicyEvidence 的「以命中点为心」版
+// （r1047，rv-1735 复盘）：头部 4 KiB 摘录在命中位于长 lane 尾部时**看不到
+// 被拦内容**（rv-1735 的 thinking 6209B、命中在 4096 之后，审核面与影子判官
+// 都只能看到无关开头）。有 char:N-M 位置时取以命中起点为心、总长仍封顶
+// maxPolicyEvidenceBytes 的窗口（rune 安全）；无位置或位置非法回退头部摘录。
+func boundedPolicyEvidenceAround(text string, issues []outputcompliance.ComplianceIssue) string {
+	if len(text) <= maxPolicyEvidenceBytes {
+		return text
+	}
+	start, ok := policyIssueCharOffset(issues)
+	if !ok {
+		return boundedPolicyEvidence(text)
+	}
+	lo := start - maxPolicyEvidenceBytes/2
+	if lo < 0 {
+		lo = 0
+	}
+	hi := lo + maxPolicyEvidenceBytes
+	if hi > len(text) {
+		hi = len(text)
+		lo = hi - maxPolicyEvidenceBytes
+		if lo < 0 {
+			lo = 0
+		}
+	}
+	for lo > 0 && text[lo]&0xC0 == 0x80 {
+		lo--
+	}
+	for hi < len(text) && text[hi]&0xC0 == 0x80 {
+		hi++
+	}
+	return text[lo:hi]
+}
+
+// policyIssueCharOffset 解析首个 char:N-M 位置为字节偏移起点。
+// 工具参数的位置是 JSON 路径（$.command），不是字符区间 ⇒ 不可用。
+func policyIssueCharOffset(issues []outputcompliance.ComplianceIssue) (int, bool) {
+	for _, issue := range issues {
+		if !strings.HasPrefix(issue.Location, "char:") {
+			continue
+		}
+		span := strings.TrimPrefix(issue.Location, "char:")
+		dash := strings.IndexByte(span, '-')
+		if dash <= 0 {
+			continue
+		}
+		n, err := strconv.Atoi(span[:dash])
+		if err != nil || n < 0 {
+			continue
+		}
+		return n, true
+	}
+	return 0, false
 }
 
 // policyIssueDetail 取第一条带原因码/位置的问题。

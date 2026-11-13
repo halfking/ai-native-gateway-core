@@ -123,6 +123,19 @@ WHERE id=$1`, id, label, comment, labeledBy, labeledAt)
 	return s.GetBlockReviewDB(ctx, id)
 }
 
+// AppendBlockReviewJudgeVerdictDB 追加影子判官结论（r1047）。concat_ws 在
+// match_detail 为 NULL 时不留悬挂换行；单不存在是 no-op（判读晚于单的
+// 生命周期边界时不按错误记账）。
+func (s *PostgresStore) AppendBlockReviewJudgeVerdictDB(ctx context.Context, reviewID int64, note string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sanitize_block_reviews
+SET match_detail = concat_ws(E'\n', match_detail, $2::text)
+WHERE id=$1`, reviewID, note)
+	if err != nil {
+		return storeError("block review judge verdict append", err)
+	}
+	return nil
+}
+
 // CountBlockReviewLabelsDB 数同租户同规则的某标注条数。
 func (s *PostgresStore) CountBlockReviewLabelsDB(ctx context.Context, tenantID, rule, label string) (int, error) {
 	var count int
@@ -456,6 +469,7 @@ ORDER BY last_seen DESC, id DESC LIMIT $3`, to, from, limit, tenantIDs)
 //	对真正需要它的那批历史空白单**完全没生效** ★★。
 //
 // ⇒ ★ 修法：**每个审核单一个时间窗**，用 LATERAL 一次往返取回，**逐单预算**
+//
 //	（★ 撞上限只影响那一条审核单 ★）★★。
 //
 // ★ 判据与旧读面**逐字一致**（★ 不许顺手改口径 ★）：phase='egress'、

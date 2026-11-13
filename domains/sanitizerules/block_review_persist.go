@@ -88,6 +88,9 @@ type ReviewPersistence interface {
 	ListEgressRuleEventsForWindowsDB(ctx context.Context, tenantIDs []string, windows []EgressRuleEventWindow, perWindowLimit int) (map[int][]EgressRuleEventInWindow, error)
 	// InsertBlockReviewEvidence 落一条证据摘录（有界、带 TTL）。
 	InsertBlockReviewEvidence(ctx context.Context, e BlockReviewEvidence) error
+	// AppendBlockReviewJudgeVerdictDB 把影子判官（r1047）的对照结论追加到
+	// 审核单 match_detail（幂等追加一行；找不到单返回 no-op）。
+	AppendBlockReviewJudgeVerdictDB(ctx context.Context, reviewID int64, note string) error
 	// ListBlockReviewEvidenceDB 按审核单 ID 批量取证据摘录。
 	ListBlockReviewEvidenceDB(ctx context.Context, reviewIDs []int64) (map[int64]BlockReviewEvidence, error)
 	// 放行表落库（与进程内表同键：tenant+scope+rule+digest 唯一，同键覆盖）。

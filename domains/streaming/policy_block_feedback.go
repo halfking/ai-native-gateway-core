@@ -25,13 +25,19 @@ package streaming
 //   3. 管理员批准后（admin 后台），用户**重试**即拿到内容。
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"log/slog"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/sanitizejudge"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // PolicyBlockReviewInput 是登记一条拦截审核单的入参。
@@ -105,6 +111,10 @@ func policyBlockEvidenceFromMetadata(result *response.InterceptResult) string {
 //
 // 2026-10-29 输出合规误报轮：记录补 sessionID（原始会话内容的入口）与
 // **有界摘录**（被拦的那段内容）⇒ 审核员能判断「这次拦得对不对」。
+//
+// r1047（2026-11-13 命中二次判读方案档）：登记后按需触发**影子判官**——
+// 异步 LLM 判读同一份摘录，结论回写本单 match_detail。影子模式不改变任何
+// 拦截决策；判官未配置 / 开关关闭 / 摘录为空 / 容量类合成规则 ⇒ 不触发。
 func registerPolicyBlockReview(in PolicyBlockReviewInput) string {
 	info, _ := sanitizerules.BuiltinRuleInfoFor(in.Rule)
 	entry := sanitizerules.AddBlockReview(sanitizerules.BlockReviewInput{
@@ -123,7 +133,62 @@ func registerPolicyBlockReview(in PolicyBlockReviewInput) string {
 		EvidenceKind: in.EvidenceKind,
 		Degraded:     in.Degraded,
 	})
+	maybeShadowJudge(in, entry.ID)
 	return fmt.Sprintf("rv-%d", entry.ID)
+}
+
+// shadowJudge 是影子判官实例（boot 时由 cmd/gateway 装配，测试可替换）。
+// 装配只发生一次（boot 前），读侧无并发写 ⇒ 普通变量即可（armor judge 同款
+// 装配形态）。
+var shadowJudge sanitizejudge.Judge = sanitizejudge.Noop()
+
+// SetShadowJudge 装配影子判官（nil 恢复占位）。
+func SetShadowJudge(j sanitizejudge.Judge) {
+	if j == nil {
+		shadowJudge = sanitizejudge.Noop()
+		return
+	}
+	shadowJudge = j
+}
+
+// maybeShadowJudge 在「判官装配 + settings 开关 + 内容类命中 + 有摘录」四者
+// 同时在场时异步发起判读并回写。
+//
+// ★ 合成规则排除：builtin.guard.capacity_exceeded 的成因是守卫缓冲体量，
+// 不是内容命中——判官判不出任何东西，只会烧调用。
+func maybeShadowJudge(in PolicyBlockReviewInput, reviewID int64) {
+	j := shadowJudge
+	if j == nil || !j.ShadowEnabled() {
+		return
+	}
+	if in.Evidence == "" || in.Degraded || in.Rule == "builtin.guard.capacity_exceeded" {
+		return
+	}
+	if settings.Global != nil && !settings.GetPlatformBool("sanitize.judge_shadow_enabled", false) {
+		return
+	}
+	rule := in.Rule
+	excerpt := in.Evidence
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Warn("sanitize shadow judge panicked", "review_id", reviewID, "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		v, err := j.Judge(ctx, sanitizejudge.Request{RuleID: rule, Excerpt: excerpt})
+		if err != nil {
+			slog.Warn("sanitize shadow judge failed",
+				"review_id", reviewID, "rule", rule, "error", err)
+		} else {
+			slog.Info("sanitize shadow judge verdict",
+				"review_id", reviewID, "rule", rule,
+				"verdict", v.Verdict, "confidence", v.Confidence,
+				"latency_ms", v.LatencyMs, "model", v.Model)
+		}
+		sanitizerules.AppendBlockReviewJudgeVerdict(reviewID, sanitizejudge.FormatNote(v, err))
+	}()
 }
 
 // policyMatchDetail 组装审核记录的匹配说明。

@@ -376,6 +376,18 @@ export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=xxx
 # export ARMOR_JUDGE_MODEL=gpt-4o-mini                    # 判分模型
 # export ARMOR_JUDGE_API_KEY=xxx                          # judge API key
 
+# Sanitize shadow judge（命中二次判读·影子模式；r1047，方案档
+# docs/audit/2026-11-13-命中二次判读LLM判官方方案分析.md）
+# 三项全部设置且 settings 键 sanitize.judge_shadow_enabled=true 时，每张拦截
+# 审核单（rv-N）异步获得一行 LLM 对照判读结论（回写 match_detail，不改变拦截
+# 决策）。★ 后端必须同信任域（判官载荷携带被审原文——网关 loopback 自有
+# 端点+专用 key 或信任域内自建模型；不得直连第三方 API）。
+# export SANITIZE_JUDGE_ENDPOINT=http://127.0.0.1:8781/v1 # OpenAI 兼容 base（同信任域）
+# export SANITIZE_JUDGE_MODEL=xxx                         # 判读模型（需稳定，flash-trial 实测不可用）
+# export SANITIZE_JUDGE_API_KEY=sk-xxx                    # 专用数据面 key
+# export SANITIZE_JUDGE_TIMEOUT_SEC=8                     # 异步判读预算（默认 8s）
+# export SANITIZE_JUDGE_MAX_TOKENS=200                    # 判官输出 token 上限
+
 # 完整变量清单以 config/config.go 为准
 ```
 

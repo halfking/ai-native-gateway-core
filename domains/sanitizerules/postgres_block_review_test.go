@@ -331,3 +331,18 @@ func TestPgInsertBlockReviewPersistsDegraded(t *testing.T) {
 		t.Fatalf("unmet: %v", err)
 	}
 }
+
+// TestPgAppendBlockReviewJudgeVerdict（r1047）：影子判官结论追加的 SQL 形状
+// ——concat_ws 保证 NULL match_detail 时不留悬挂换行；找不到单 no-op 不报错。
+func TestPgAppendBlockReviewJudgeVerdict(t *testing.T) {
+	s, mock := newMockStore(t)
+	mock.ExpectExec(`UPDATE sanitize_block_reviews`).
+		WithArgs(int64(42), "判官（影子）：verdict=benign").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := s.AppendBlockReviewJudgeVerdictDB(context.Background(), 42, "判官（影子）：verdict=benign"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

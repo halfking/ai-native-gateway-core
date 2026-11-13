@@ -28,6 +28,7 @@ type fakeReviewPersistence struct {
 	hbFound   bool
 
 	errDedupe, errInsert, errList, errGet, errDecide, errUpsert, errDelete, errLoadReleases, errLoadHB, errSaveHB error
+	judgeNotes [][2]any
 }
 
 func newFakeReviewPersistence() *fakeReviewPersistence {
@@ -292,6 +293,14 @@ func (f *fakeReviewPersistence) BlockReviewInsightsDB(_ context.Context, tenantI
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+
+func (f *fakeReviewPersistence) AppendBlockReviewJudgeVerdictDB(_ context.Context, reviewID int64, note string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.judgeNotes = append(f.judgeNotes, [2]any{reviewID, note})
+	return nil
 }
 
 func (f *fakeReviewPersistence) InsertBlockReviewEvidence(_ context.Context, e BlockReviewEvidence) error {
