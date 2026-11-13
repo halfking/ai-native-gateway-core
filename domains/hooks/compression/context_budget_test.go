@@ -9,7 +9,7 @@ import (
 )
 
 func TestSummaryContextBudgetRejectsBeforeRequestBuild(t *testing.T) {
-	// 2026-11-13 改判（r1050 半窗帽移除）：旧 body 330KB blob（est=66000）
+	// 2026-11-13 改判（r1051 半窗帽移除）：旧 body 330KB blob（est=66000）
 	// 对 128k 窗的拒绝依赖旧半窗帽（limit=64000）；新语义下 66000 ≤ 128000
 	// 合法放行。重钉为真正超窗形状：700KB blob（est=140000 > 128000）。
 	window := 128000
@@ -22,7 +22,7 @@ func TestSummaryContextBudgetRejectsBeforeRequestBuild(t *testing.T) {
 }
 
 func TestSummaryContextBudgetUsesCurrentCandidateOnFailover(t *testing.T) {
-	// 2026-11-13 改判（r1050）：同上，body 从 330KB 提到 700KB——大候选
+	// 2026-11-13 改判（r1051）：同上，body 从 330KB 提到 700KB——大候选
 	//（2M 窗，limit=500000）放行、小候选（128k 窗，limit=128000）必拒。
 	large, small := 2000000, 128000
 	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("x", 700000) + `"}]}`)

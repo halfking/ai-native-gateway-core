@@ -85,7 +85,7 @@ func TestContextBudgetUnknownWindowFallsBackToGlobalCaps(t *testing.T) {
 }
 
 func TestContextBudgetToolsCountAnd500KCeiling(t *testing.T) {
-	// r1050（2026-11-13）：断言改 (window, body) 显式配对——旧的「按 body
+	// r1051（2026-11-13）：断言改 (window, body) 显式配对——旧的「按 body
 	// 字节数选窗口」在 700KB 夹具下误选 2M 窗（limit=500k > est 140k ⇒
 	// 放行）。新配对：128k 窗 × 700KB blob 夹具（est=140000 > 128000 拒）；
 	// 2M 窗 × 2.6MB 夹具（est=520000 > 全局帽 500000 拒）。

@@ -60,7 +60,7 @@ func (s *budgetPipelineSeen) server(t *testing.T, failFirst bool) *httptest.Serv
 }
 
 func budgetPipelineBody() []byte {
-	// r1050（2026-11-13）改判：旧夹具（80 条均匀 assistant 文本）在新预算
+	// r1051（2026-11-13）改判：旧夹具（80 条均匀 assistant 文本）在新预算
 	// 数学下测不到 dispatch 级 fit——prepare 段预裁剪
 	//（CompressMessagesIfNeededWithReserve，0.8 触发 / 0.6 目标）恒先于
 	// executor 预算门把 pair-droppable 的历史裁到预算内（旧数学的输入半窗
@@ -113,7 +113,7 @@ func TestContextBudgetPipelineRateLimitThenSmallerBucket(t *testing.T) {
 	e.EnforceContextBudget, e.FitContext = true, sessioncontext.Fit
 	body := budgetPipelineBody()
 	before := append([]byte(nil), body...)
-	// r1050（2026-11-13）：bucket-b 窗口 64000→128000。夹具改「预裁剪不可
+	// r1051（2026-11-13）：bucket-b 窗口 64000→128000。夹具改「预裁剪不可
 	// 收敛」形状（巨型 assistant-B 载荷 ≈ 460KB / est ≈ 131k）后：128k 窗
 	// 预算 = 128000−512 = 127488 < 131k ⇒ 预算门触发（64k 窗会被 prepare
 	// 段预裁剪先收敛，测不到 fit）。
