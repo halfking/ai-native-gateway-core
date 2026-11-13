@@ -30367,3 +30367,11 @@ normal pre7d 污染 **47/154=30.5%**、干净 pre **19/107=17.8%** ⇒ 阈值 **
 ★★ 通用式：**「反复出现」类报障先列表穷举历史修复「动了什么/没动什么」，没动的那一项就是候选病灶**；两个 min 项并存时删掉一个后必须重推「夹具是否还能到达被测路径」——本轮半窗帽删除后，prepare 段预裁剪（0.8×(W−reserve) 触发）恒先于预算门（W−reserve）收敛旧夹具 ⇒ dispatch 级 fit 不可达，测试全绿但测的是空路径（**层级倒置**：旧数学里预算门比预裁剪更严——这本身就是病灶的另一个面向）。夹具重设计要过两关：`MergeConsecutiveMessages` 会把相邻同角色合并后整对丢弃（用 user 分隔挡合并）、pair-drop 的 `n>=len(rest)` 断头（保留 [system,巨型载体,user] 三元尾巴不可再丢）。
 
 ★ 测试基建坑复用：executors 包 TestMain 默认 `slog→io.Discard`（KEEP_SLOG=1 才可见）——插桩 slog 不打印≠代码没跑；python 直构夹具的孤儿 tool 消息（tool_call_id 无 tool_calls 锚）会先撞 tool_call_id_mismatch 门，不是被测路径。
+
+## §720 ·（★★ 安全 fail-closed 与可用性的三方法裁决：拒绝（砖化）/无声删除（幻觉）/显式省略（账目恒在）——「不可无声消失」与「不可拒绝」可以同时满足；聚合账进摘要头，不进可被逐出的候选集）2026-11-13 r1052 入口归档器媒体根修轮
+
+★ 事故链（fable-5-2，request 7718f89a 逐字命中）：ZCode 历史带截图（content 数组 image_url 块）×全量历史 >1MiB ⇒ LargeIngress→Reduce 三处媒体 fail-closed（fileMetadata 媒体块/UpperBound Uncountable/objectExcerpt 超大字段）任一命中 ⇒ 422「split the protected input」——**客户端无法 split 历史里的媒体，重试必败，会话砖化**（改写层制造入口自己都不会放的形状·第三案，与 r1048/r1051 同族）。取证钥匙＝session-archive 归档件（raw.json=原始请求全文；入口拒绝不进 request_wal）。
+
+★★ 通用式：**「防滥用/防幻觉的 fail-closed」在改写层命中用户无法自拆的输入时＝可用性事故**。裁决三方法里：拒绝违背可用性、无声删除违背诚实性（既有钉测 TestReduceCannotSilentlyRemoveUncountedHistoricalMedia 钉的正是这个），**显式省略两头都满足**——但账目必须放在**不可被逐出的位置**：本轮首版把省略标记放进 best-16 摘要候选，真实归档件（149 候选）调试实证标记被逐出=无声删除复活；终版＝聚合计数恒进摘要头（`[media omitted: N message(s)]`）+块级标记（objectExcerptMedia 结构性感知：媒体型 type+媒体字段键）。**教训：给「账目」选载体时先问它会不会被有界容器逐出。**
+
+★ 过程坑：①python 批量替换递归调用点没咬合（objectExcerpt→objectExcerptMedia 只改了入口没改 parts 递归）——合成夹具过了、真身复现才暴露，**真实归档件重放必须是验收腿**；②变异要做「编译通过的断言红」（§710④）：首版变异留下未用 import=编译红不算数；③巨型消息的媒体感知要结构化（IndexObject 字段/类型），字节探针只配做记账不配做门。
