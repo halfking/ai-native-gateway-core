@@ -30359,3 +30359,11 @@ normal pre7d 污染 **47/154=30.5%**、干净 pre **19/107=17.8%** ⇒ 阈值 **
 ★★ 通用式：**入口有 `HasUserMessage` 强制（no_user_message 400）的网关，压缩/裁剪层没有任何等价守卫——改写体（trim/strip/摘要重建）悄悄制造出入口自己都不放行的 body**。修法＝在**改写原语层**（trimOldestPairs + dropOldestMessageUnit 两原语覆盖全部 4 调用点）加 post-condition `ensureUserSurvived`：零 user 时回插最新一条**非 tool-result 载体**的 user（Anthropic 形态 user 可能是 tool_result 载体，回插=孤儿 tool_result，必须跳过），回插点=首条非 system 前（顺序单调，且 Anthropic 本要求首消息 user）。
 
 ★ 两个伴生发现：① trim 循环预算只算消息不算 envelope（tools ~225KB 不入账 ⇒ 67.8K≤76.8K 提前「收敛」，真实 body est 114K）——aggressive 路径有 envelope 预留、default 路径漏了，**登记不修**（改预算=全局改激进度）；② 智谱对 system 为主的奇形 body 极宽容（862 连 system/869 条/630KB 全 200）——**上游拒收的边界是「无 user」而非「system 太多」**，定位上游 4xx 语义必须做原因性对照（同形状±单变量），不能拿「形状罕见」当结论。
+
+## §719 ·（★★ 「反复出现修不干净」的错误族，先找【不变的不变量】——每轮修复推边界，没动的那一项就是病灶；修复意图与实现方向相反时（≥半窗 vs ≤半窗），交界测试永远全绿）2026-11-13 r1050 输入半窗帽移除轮
+
+★ 事故链（opus-4-8 当日 4 笔、同会话重试同败）：`Resolve` 的 `ContextWindow/2` min 项把 200k 窗输入钉死 100k；ZCode 固定载荷（tools 225KB+system ≈ 70k token，`Fit` 只裁 messages 不可裁）吃七成，会话历史 ~30k 余量必跨 ⇒ est 109,337>100,000（真实数据逐字节复现）⇒ fit 字节目标 300KB 装不下 tools+system+受保护区 ⇒ ErrProtectedContext ⇒ 422 retryable=false；会话缓存重放出站体 ⇒ 重试同败。**为何修不干净**：11-10 修估计器、11-11 修预留封顶都只推边界，半窗帽恒在；且 11-11 的修复意图是「输入**至少**拿半窗」，实现却保留「输入**至多**半窗」——方向相反的两个约束在 ask≥半窗的交界点数值恰好相等（W−W/2=W/2），交界测试永远绿，意图错位不可见。
+
+★★ 通用式：**「反复出现」类报障先列表穷举历史修复「动了什么/没动什么」，没动的那一项就是候选病灶**；两个 min 项并存时删掉一个后必须重推「夹具是否还能到达被测路径」——本轮半窗帽删除后，prepare 段预裁剪（0.8×(W−reserve) 触发）恒先于预算门（W−reserve）收敛旧夹具 ⇒ dispatch 级 fit 不可达，测试全绿但测的是空路径（**层级倒置**：旧数学里预算门比预裁剪更严——这本身就是病灶的另一个面向）。夹具重设计要过两关：`MergeConsecutiveMessages` 会把相邻同角色合并后整对丢弃（用 user 分隔挡合并）、pair-drop 的 `n>=len(rest)` 断头（保留 [system,巨型载体,user] 三元尾巴不可再丢）。
+
+★ 测试基建坑复用：executors 包 TestMain 默认 `slog→io.Discard`（KEEP_SLOG=1 才可见）——插桩 slog 不打印≠代码没跑；python 直构夹具的孤儿 tool 消息（tool_call_id 无 tool_calls 锚）会先撞 tool_call_id_mismatch 门，不是被测路径。
