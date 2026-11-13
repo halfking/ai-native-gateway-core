@@ -23,17 +23,17 @@
 
 SELECT 
     CASE 
-        WHEN event_at < '2026-11-13 12:50:00+08' THEN 'before_deploy'
+        WHEN ts < '2026-11-13 12:50:00+08' THEN 'before_deploy'
         ELSE 'after_deploy'
     END AS deployment_phase,
     error_kind,
     COUNT(*) AS cnt,
-    MIN(event_at AT TIME ZONE 'Asia/Shanghai') AS earliest,
-    MAX(event_at AT TIME ZONE 'Asia/Shanghai') AS latest
-FROM _request_logs
+    MIN(ts AT TIME ZONE 'Asia/Shanghai') AS earliest,
+    MAX(ts AT TIME ZONE 'Asia/Shanghai') AS latest
+FROM request_logs_with_current_month
 WHERE client_model = 'glm-5.3-flash-trial'
-  AND error_message LIKE '%no active%quota%'
-  AND event_at BETWEEN '2026-11-13 10:00:00+08' AND '2026-11-13 14:00:00+08'
+  AND search_text LIKE '%no active%quota%'
+  AND ts BETWEEN '2026-11-13 10:00:00+08' AND '2026-11-13 14:00:00+08'
 GROUP BY 1, 2
 ORDER BY 1, 2;
 
@@ -49,17 +49,17 @@ ORDER BY 1, 2;
 \echo '========================================='
 
 SELECT 
-    event_at AT TIME ZONE 'Asia/Shanghai' AS event_time_beijing,
+    ts AT TIME ZONE 'Asia/Shanghai' AS event_time_beijing,
     request_id,
     error_kind,
     upstream_status_code,
     client_status_code,
-    LEFT(error_message, 80) AS error_msg_preview
-FROM _request_logs
+    LEFT(search_text, 80) AS error_msg_preview
+FROM request_logs_with_current_month
 WHERE client_model = 'glm-5.3-flash-trial'
-  AND error_message LIKE '%no active%quota%'
-  AND event_at BETWEEN '2026-11-13 10:00:00+08' AND '2026-11-13 14:00:00+08'
-ORDER BY event_at
+  AND search_text LIKE '%no active%quota%'
+  AND ts BETWEEN '2026-11-13 10:00:00+08' AND '2026-11-13 14:00:00+08'
+ORDER BY ts
 LIMIT 20;
 
 -- ============================================================================
@@ -80,10 +80,10 @@ SELECT
     COUNT(CASE WHEN client_status_code = 502 THEN 1 END) AS client_502_count,
     COUNT(CASE WHEN client_status_code = 429 THEN 1 END) AS client_429_count,
     COUNT(CASE WHEN success = false THEN 1 END) AS failure_count
-FROM _request_logs
+FROM request_logs_with_current_month
 WHERE client_model = 'glm-5.3-flash-trial'
-  AND error_message LIKE '%no active%quota%'
-  AND event_at BETWEEN '2026-11-13 10:00:00+08' AND '2026-11-13 14:00:00+08';
+  AND search_text LIKE '%no active%quota%'
+  AND ts BETWEEN '2026-11-13 10:00:00+08' AND '2026-11-13 14:00:00+08';
 
 -- ============================================================================
 -- 查询 4: 扩展时间窗口检查（最近 24 小时）
@@ -99,12 +99,12 @@ WHERE client_model = 'glm-5.3-flash-trial'
 SELECT 
     error_kind,
     COUNT(*) AS cnt,
-    MIN(event_at AT TIME ZONE 'Asia/Shanghai') AS earliest,
-    MAX(event_at AT TIME ZONE 'Asia/Shanghai') AS latest
-FROM _request_logs
+    MIN(ts AT TIME ZONE 'Asia/Shanghai') AS earliest,
+    MAX(ts AT TIME ZONE 'Asia/Shanghai') AS latest
+FROM request_logs_with_current_month
 WHERE client_model = 'glm-5.3-flash-trial'
-  AND error_message LIKE '%no active%quota%'
-  AND event_at > NOW() - INTERVAL '24 hours'
+  AND search_text LIKE '%no active%quota%'
+  AND ts > NOW() - INTERVAL '24 hours'
 GROUP BY 1
 ORDER BY 2 DESC;
 
@@ -118,31 +118,31 @@ ORDER BY 2 DESC;
 \echo '========================================='
 
 -- 修复前最后一条
-(SELECT 'before_deploy' AS phase, event_at AT TIME ZONE 'Asia/Shanghai' AS event_time, 
-        request_id, error_kind, upstream_status_code, error_message
- FROM _request_logs
+(SELECT 'before_deploy' AS phase, ts AT TIME ZONE 'Asia/Shanghai' AS event_time, 
+        request_id, error_kind, upstream_status_code, search_text AS error_message
+ FROM request_logs_with_current_month
  WHERE client_model = 'glm-5.3-flash-trial'
-   AND error_message LIKE '%no active%quota%'
-   AND event_at < '2026-11-13 12:50:00+08'
- ORDER BY event_at DESC LIMIT 1)
+   AND search_text LIKE '%no active%quota%'
+   AND ts < '2026-11-13 12:50:00+08'
+ ORDER BY ts DESC LIMIT 1)
 UNION ALL
 -- 修复后第一条
-(SELECT 'after_deploy_first' AS phase, event_at AT TIME ZONE 'Asia/Shanghai' AS event_time,
-        request_id, error_kind, upstream_status_code, error_message
- FROM _request_logs
+(SELECT 'after_deploy_first' AS phase, ts AT TIME ZONE 'Asia/Shanghai' AS event_time,
+        request_id, error_kind, upstream_status_code, search_text AS error_message
+ FROM request_logs_with_current_month
  WHERE client_model = 'glm-5.3-flash-trial'
-   AND error_message LIKE '%no active%quota%'
-   AND event_at >= '2026-11-13 12:50:00+08'
- ORDER BY event_at ASC LIMIT 1)
+   AND search_text LIKE '%no active%quota%'
+   AND ts >= '2026-11-13 12:50:00+08'
+ ORDER BY ts ASC LIMIT 1)
 UNION ALL
 -- 修复后最新一条
-(SELECT 'after_deploy_latest' AS phase, event_at AT TIME ZONE 'Asia/Shanghai' AS event_time,
-        request_id, error_kind, upstream_status_code, error_message
- FROM _request_logs
+(SELECT 'after_deploy_latest' AS phase, ts AT TIME ZONE 'Asia/Shanghai' AS event_time,
+        request_id, error_kind, upstream_status_code, search_text AS error_message
+ FROM request_logs_with_current_month
  WHERE client_model = 'glm-5.3-flash-trial'
-   AND error_message LIKE '%no active%quota%'
-   AND event_at >= '2026-11-13 12:50:00+08'
- ORDER BY event_at DESC LIMIT 1)
+   AND search_text LIKE '%no active%quota%'
+   AND ts >= '2026-11-13 12:50:00+08'
+ ORDER BY ts DESC LIMIT 1)
 ORDER BY event_time;
 
 \echo ''

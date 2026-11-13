@@ -30375,3 +30375,11 @@ normal pre7d 污染 **47/154=30.5%**、干净 pre **19/107=17.8%** ⇒ 阈值 **
 ★★ 通用式：**「防滥用/防幻觉的 fail-closed」在改写层命中用户无法自拆的输入时＝可用性事故**。裁决三方法里：拒绝违背可用性、无声删除违背诚实性（既有钉测 TestReduceCannotSilentlyRemoveUncountedHistoricalMedia 钉的正是这个），**显式省略两头都满足**——但账目必须放在**不可被逐出的位置**：本轮首版把省略标记放进 best-16 摘要候选，真实归档件（149 候选）调试实证标记被逐出=无声删除复活；终版＝聚合计数恒进摘要头（`[media omitted: N message(s)]`）+块级标记（objectExcerptMedia 结构性感知：媒体型 type+媒体字段键）。**教训：给「账目」选载体时先问它会不会被有界容器逐出。**
 
 ★ 过程坑：①python 批量替换递归调用点没咬合（objectExcerpt→objectExcerptMedia 只改了入口没改 parts 递归）——合成夹具过了、真身复现才暴露，**真实归档件重放必须是验收腿**；②变异要做「编译通过的断言红」（§710④）：首版变异留下未用 import=编译红不算数；③巨型消息的媒体感知要结构化（IndexObject 字段/类型），字节探针只配做记账不配做门。
+
+## §721 ·（★★ 同族 fail-closed 穷举不完整＝修复轮的隐藏欠账——修完 N 处后必须问「这一层还有第 N+1 处同构边界吗」；元数据面与输出面分离的结构事实决定降级修法的保真上限）2026-11-14 r1053 入口归档器 tool_calls 帽根修轮
+
+★ 事故链（gpt-6-astra，TraceID 97781748，422/97ms/1,059,055B）：r1052 修复在役（79631ce8 是在役祖先）但**纯文本 body 照样 422**——`fileMetadataBounded` 的 tool_calls 字段 69,901B > materializeItem(64KB) 帽 ⇒ ErrProtectedContext ⇒ 整个 Reduce 失败。生成机制＝ZCode Write 工具 arguments 携带整个文件内容（一条消息合法携带 >64KB tool_calls）。**与 r1052 的媒体三处同族但不同构**——同族穷举只搜了「媒体」，没搜「这一层所有 64KB/预算帽」。
+
+★★ 通用式：**修「一处 fail-closed」之后，对同一函数做一次「所有 ErrProtectedContext 出口」的清单式穷举**（grep 出口 × 逐条判定「触发形状是否合法生产形状」），而不是等下一个事故再来一轮——r1052→r1053 两轮同族事故证明「按报障逐个修」在同一层会继续漏。判定「降级是否安全」的依据是**结构事实**而非意图：fileMetadata 输出只喂 describeMessage 抽 id、从不进最终 body（受保护消息从 RAW 原样读回）⇒ 元数据面省略 arguments 零保真损失——**「中间产物不外发」的面，其内部预算帽永远应该降级而不是拒绝**。
+
+★ 过程坑：①取证时归档目录全部 mtime 相同（后台归档器批量 touch）⇒ 按 mtime 找会话失效，要按 `find -size +1000k | grep -v response` + 字节数与 http_request 的 request_bytes **逐字节对拍**定档；②`internal/` 包不能从模块外引用 ⇒ 重放 harness 必须写成包内 env 门测试（GW_FORENSIC_RAW 空则 skip）；③**先读保护集语义再写断言**：protectInfo 的保护集＝system+首尾 human+tail 之后+闭包传播——中段工具链属可裁历史，钉测首版断言「中段 call id 必须幸存」是错的；④变异臂用正则批量替换生产代码=编译红非断言红（§710④ 重演），要精确锚点替换。

@@ -13,6 +13,48 @@ func fileMetadata(ctx context.Context, r io.ReaderAt, span largebody.Span, depth
 	remaining := 256 << 10
 	return fileMetadataBounded(ctx, r, span, depth, &remaining)
 }
+
+// maxMetadataCalls bounds the per-message tool_calls array in metadata space;
+// beyond it the excess calls are explicitly omitted (never a hard failure) —
+// describeMessage simply sees fewer edges.
+const maxMetadataCalls = 1024
+
+// toolCallIDStub materializes only the linkage identity of one tool call
+// (r1053): {"id":…,"type":…} — the arguments/function payload is explicitly
+// omitted because this stub never leaves the metadata plane.
+func toolCallIDStub(ctx context.Context, r io.ReaderAt, span largebody.Span, depth int, remaining *int) (json.RawMessage, error) {
+	if depth > 6 || *remaining < 128 {
+		return nil, ErrProtectedContext
+	}
+	*remaining -= 128
+	doc, err := largebody.IndexObject(ctx, io.NewSectionReader(r, span.Offset, span.Length))
+	if err != nil {
+		return nil, err
+	}
+	stub := map[string]json.RawMessage{}
+	for _, key := range []string{"id", "type"} {
+		if p, ok := doc.Fields[key]; ok && p.Length <= 1024 {
+			b, e := func() (json.RawMessage, error) {
+				if p.Length > int64(*remaining) {
+					return nil, ErrProtectedContext
+				}
+				*remaining -= int(p.Length)
+				b := make([]byte, int(p.Length))
+				_, err := r.ReadAt(b, span.Offset+p.Offset)
+				return b, err
+			}()
+			if e != nil {
+				return nil, e
+			}
+			stub[key] = b
+		}
+	}
+	if _, ok := stub["id"]; !ok {
+		// 显式省略标记：id 缺失时 describeMessage 抽不到边——账目不无声消失。
+		stub["gw_tool_call_omitted"] = json.RawMessage("true")
+	}
+	return json.Marshal(stub)
+}
 func fileMetadataBounded(ctx context.Context, r io.ReaderAt, span largebody.Span, depth int, remaining *int) ([]byte, error) {
 	if depth > 4 || *remaining < 256 {
 		return nil, ErrProtectedContext
@@ -83,12 +125,47 @@ func fileMetadataBounded(ctx context.Context, r io.ReaderAt, span largebody.Span
 			}
 		}
 	}
-	if p, ok := doc.Fields["tool_calls"]; ok {
-		b, e := read(p, materializeItem)
-		if e != nil {
-			return nil, e
+	if arr, ok := doc.Arrays["tool_calls"]; ok {
+		// r1053（2026-11-14，211 gpt-6-astra 入口 422 根修）：tool_calls 整体
+		// 64KB 帽此前 fail-closed ⇒ ZCode 大文件写入（Write 工具 arguments
+		// 全文进 tool_calls）的消息元数据提取必败 ⇒ 整个 Reduce 失败 ⇒
+		// LargeIngress 422「cannot produce a valid bounded context」——与
+		// r1052 的媒体三处是同一族（改写层制造入口自己都不会放的形状·第四
+		// 案）。本函数的输出只喂 describeMessage 抽 role + 工具链 id，从不
+		// 进入最终 body（受保护消息从 RAW 原样读回）⇒ 每个 call 只需保
+		// id/type，arguments 载荷显式省略（工具链闭包完整性不受影响）。
+		if len(arr) > maxMetadataCalls {
+			arr = arr[:maxMetadataCalls]
 		}
-		root["tool_calls"] = b
+		calls := make([]json.RawMessage, 0, len(arr))
+		for _, call := range arr {
+			call.Offset += span.Offset
+			stub, e := toolCallIDStub(ctx, r, call, depth+1, remaining)
+			if e != nil {
+				return nil, e
+			}
+			calls = append(calls, stub)
+		}
+		root["tool_calls"], err = json.Marshal(calls)
+		if err != nil {
+			return nil, err
+		}
+	} else if p, ok := doc.Fields["tool_calls"]; ok {
+		// 非数组形态（畸形/异构 wire）：可整体物化则照旧；超帽打桩省略继续
+		//（id 抽不到 ⇒ 工具链闭包少一条边，保护集少保一条消息，不破坏正确性）。
+		if p.Length <= materializeItem {
+			b, e := read(p, materializeItem)
+			if e != nil {
+				return nil, e
+			}
+			root["tool_calls"] = b
+		} else {
+			if *remaining < 64 {
+				return nil, ErrProtectedContext
+			}
+			*remaining -= 64
+			root["tool_calls"] = json.RawMessage(`"[tool calls omitted from metadata]"`)
+		}
 	}
 	for _, key := range []string{"functionCall", "functionResponse"} {
 		if p, ok := doc.Fields[key]; ok {
