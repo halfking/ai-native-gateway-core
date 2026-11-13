@@ -1,5 +1,11 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-14 suyun 轮——resolve 可用性与流量去向错位根修（goal 会话，主档 `docs/audit/2026-11-14-suyun轮-resolve可用性与流量去向错位根修-主档.md`，LESSONS §722；提交 b8e5c8071 双仓已推；211 部署验证完成：蓝绿槽 b@8783 `2.5.9-b8e5c807-20261114-211`（build_seq 3049）接管、readyz/公网版本身份 OK、真 key 活体 5/5 全 200、临时 key 验后 revoked）**：
+> ★ owner 报障＝resolve 页查 claude-opus-5-5，suyun 节点显示不可用但请求大量发往 suyun ⇒ **211 取证定案：dispatch 侧完全守约**（auth_failed 窗口 01:32:56→01:47:56 零流量、恢复后立即回来）——「不可用却有流量」＝时间错位 + **resolve 页虚报「鉴权失败」**。取证钥匙＝`v_routable_credential_models`（页判定源）× session_turns_hot 分钟级流量 × node_probe_state 探针连胜 × state_reason_detail 原文。
+> ★★★★ **根因×2＝两个 new_api 403 形态漏进 auth 状态兜底**：F1 余额预扣失败（`insufficient_user_quota`/「预扣费额度失败」——key 有效、探针 150 连胜+96 笔真实流量全成功的健康凭据被整颗 auth_failed 15 分钟，72h 误标 15+ 次）；F2 单模型分组权限拒绝（「无权访问 X 分组」——同凭据 opus-5-5 探针 95 连胜被 24h 退避连坐）。★★ 族内分叉实锤：同上游同 code 姊妹形态「用户额度不足」已命中 quota ⇒ **给既有 family 加成员前先 grep 家族内既有钉测**（首版单列 KindQuotaBalance 被既有 creds67-70 钉测当场咬红，收敛为同族同判 quota_permanent）。
+> ★ 修复＝单源词表：budgetExceededRe 补码/裸词/`预扣费`（不含裸 insufficient_quota——characterization 钉死 429 口径）+ bindingGroupAccessRe（「无权访问」+「分组」**成对**才命中）⇒ KindModelUnavailable 绑定级 + 导出面 `IsBindingGroupAccessDenied` 供 bg 探针侧共用（BindingOnly）；两分类器同门逐字。门＝r1054 钉测（真实体逐字+阴性对照三面）+ 探针钉测 + 锁步语料补真体 + **变异 3/3 红→还原绿**；六包全绿（streaming 全子树）。
+> ★ 活体收口：cred 39/71 误分类遗留态按 force-recover 同语义 SQL 修复（带 auth_failed∧reason 守卫）⇒ resolve 视图 39/71 routable=true、38 保留真实 node_probe_failed；铸 key 两坑（gateway.secret 是 NAME=value 格式 HMAC 取 = 后值；psql RETURNING 标签行污染 source）；被动观察锚＝下次余额不足 403 应落 quota_permanent（error_kind 从 auth 变 quota_permanent 即在役实证）。
+
 > **2026-11-14 四项移交复核与台账收口轮（goal 复核会话，主档 `docs/audit/2026-11-14-四项移交复核与台账收口轮-主档.md`；零新迁移/零 LESSONS 新节）**：
 > ★ 用户任务＝「53 增量移交四项」（候选迁移 961/F-41/F-47/ursmcheck 慢包）——**四项已于 11-13 全部收编落库**（4225add0e→964 重编号 + 5b4120b2b 代落库拆通道），本轮=拉取复核 + 收口尾巴。
 > ★★★★ **四项在 HEAD 复核零缺口**：964 载体+四通道（apply :2653/链尾 :2761/探针 :3267/runner :1858）｜F-41 `prompt_injection_bridge.go`+`user_content_extract.go`（BindDetector 接线 :1422/:7460）｜F-47 `cache_v2_invalidation_bridge.go`｜拆通道（`guards-hollowout` :719-720 + 4 tag 文件）。**tagged/-list 双向验证**：tagged 27 = 14 掏空行为门 + 13 常驻卫生门；默认 13 ⇒ 掏空行为门 0 进默认套件；`-run 'Hollow|Tsv|Structured'` 与 14 函数名逐个匹配。
