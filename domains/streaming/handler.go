@@ -1831,10 +1831,12 @@ func (h *ChatHandler) setExecutorOverrideForTest(fn func(*executors.ExecParams) 
 // executeForRequest runs the executor for one request. The test override
 // short-circuits it; production always takes the h.executor path.
 //
-// ★ 当前只有 anthropic-messages 面（messages.go）与 responses 面
-// （responses.go）走这个入口——它们正是本轮补 client_bug 分支的两个面。
-// chat 面（handler.go 的 serveWithExecutor）仍直连 h.executor.Execute：
-// 它本来就已有 client_bug 分支（2026-11-10 P1-B 审计），本轮不改它。
+// ★ 三个协议面共用这个入口（2026-11-13 统一）：anthropic-messages 面
+// （messages.go）、responses 面（responses.go）与 chat 面（serveWithExecutor）
+// ——chat 面此前直连 h.executor.Execute，2026-11-13（request_rejected
+// 透明化轮）改为经本入口：生产等价（override 恒 nil 时同一路径），并让
+// 三面的错误渲染钉测共享同一枚 test hook（此前 chat 面在 stub 环境下
+// 直连真实 Router 会 panic，无法端到端驱动错误分支）。
 func (h *ChatHandler) executeForRequest(params *executors.ExecParams) (*executors.ExecuteResult, error) {
 	if h.executorOverrideForTest != nil {
 		return h.executorOverrideForTest(params)
@@ -5193,7 +5195,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// SP-02: state machine — executor has accepted the request and is now
 		// sending it upstream (no first byte yet).
 		rt.Emit(state.EventDispatching)
-		result, execErr = h.executor.Execute(buildExecParams(streamWriter))
+		result, execErr = h.executeForRequest(buildExecParams(streamWriter))
 		if interceptedWriter != nil {
 			interceptedWriter.finish()
 			// R25-V: finish() consumes FlushStreamPending. When output
@@ -5893,6 +5895,47 @@ goalRetryLoopDone:
 					return
 				}
 				writeErrorJSONWithKindProto(proto, w, http.StatusBadRequest, requestID, msg, "invalid_request_error", "client_bug", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
+			// 2026-11-13（claude-opus-5-5 adaptive-only 事故轮）：KindRequestRejected
+			// = 上游 4xx 拒收请求本身（参数/形态被上游判定非法，且无法再归因到
+			// 凭据/配额/限流/模型级裁决——errorsx.IsRequestSideError 的请求侧
+			// 错误族）。它是**请求侧**错误 ⇒ 必须回 4xx 并透传上游自己的
+			// message。
+			//
+			// ★ 修前形态：落下方通用兜底 ⇒ 503 + type=server_error +
+			//   code=model_not_found + "No available provider for model 'X'.
+			//   All N candidates failed." ⇒ 客户端把「自己的参数被上游拒了」
+			//   误读成「网关/供应商没有可用节点」（211 活体：ZCode →
+			//   claude-opus-5-5 thinking:{type:enabled} ⇒ apiclaude 400
+			//   "requires adaptive thinking" ⇒ 客户端收到 model_not_found）。
+			// ★ 与 KindClientBug 分支同款形状：400 + 不可重试 + reason 透传
+			//   （extractUpstreamReason 带 200 字符截断与脱敏）。
+			if execErrTyped.LastKind == errorsx.KindRequestRejected {
+				reason := extractUpstreamReason(execErr)
+				msg := fmt.Sprintf("Upstream rejected the request for model '%s' as invalid (all %d candidates failed).", clientModel, execErrTyped.Tried)
+				if reason != "" {
+					msg = msg + " Reason: " + reason
+				}
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("request_rejected", execErr.Error(), providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, http.StatusBadRequest))
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "request_rejected", failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				debugInfo := map[string]any{
+					"stage":     "execution",
+					"kind":      string(execErrTyped.LastKind),
+					"tried":     execErrTyped.Tried,
+					"retryable": false,
+					"reason":    reason,
+				}
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, msg, "invalid_request_error", "request_rejected")
+					return
+				}
+				writeErrorJSONWithKindProto(proto, w, http.StatusBadRequest, requestID, msg, "invalid_request_error", "request_rejected", string(execErrTyped.LastKind), debugInfo)
 				return
 			}
 

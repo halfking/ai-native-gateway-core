@@ -1057,8 +1057,20 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			errCode = shapeCode
 			errMsg = shapeMsg
 		} else if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
-			errCode = "model_not_found"
-			errMsg = "all providers unavailable"
+			// 2026-11-13（claude-opus-5-5 adaptive-only 事故轮 · 三面对称）：
+			// KindRequestRejected = 上游 4xx 拒收请求本身 ⇒ 落库分类必须是
+			// request_rejected（不是误导性的 model_not_found）。渲染分支在下方
+			// Exhausted 块（400 + 上游 reason 透传）。
+			if ee.LastKind == errorsx.KindRequestRejected {
+				errCode = "request_rejected"
+				errMsg = fmt.Sprintf("Upstream rejected the request for model '%s' as invalid (all %d candidates failed).", clientModel, ee.Tried)
+				if reason := extractUpstreamReason(execErr); reason != "" {
+					errMsg = errMsg + " Reason: " + reason
+				}
+			} else {
+				errCode = "model_not_found"
+				errMsg = "all providers unavailable"
+			}
 		}
 		attemptErrCode = errCode
 		attemptErrMsg = errMsg
@@ -1095,6 +1107,20 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 					writeAnthropicStreamError(w, "content_filter", msg)
 				} else {
 					writeAnthropicError(w, http.StatusBadRequest, "content_filter", msg)
+				}
+				return
+			}
+			// 2026-11-13（claude-opus-5-5 adaptive-only 事故轮 · 三面对称）：
+			// KindRequestRejected = 上游 4xx 拒收请求本身 ⇒ 回 4xx 并透传
+			// 上游 message。修前落 overloaded_error 503 "All providers
+			// unavailable" ⇒ 客户端把参数错误误读成「没有可用节点」。
+			// 落库分类在上方统一 record 前已定为 request_rejected（单行）。
+			if execErr.LastKind == errorsx.KindRequestRejected {
+				w.Header().Set("X-Gateway-Last-Kind", string(execErr.LastKind))
+				if preStreamPrepared {
+					writeAnthropicStreamError(w, "invalid_request_error", errMsg)
+				} else {
+					writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", errMsg)
 				}
 				return
 			}
