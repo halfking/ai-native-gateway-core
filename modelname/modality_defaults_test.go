@@ -22,6 +22,18 @@ func TestInferModality(t *testing.T) {
 		{"tts-1", "tts-1", "audio"},
 		{"gpt-4o-audio-preview", "gpt-4o-audio-preview", "audio"},
 
+		// GPT-6 family（2026-11-13 事故）：写侧 InferModality 缺 gpt-6 前缀，
+		// discovery 把 10 个 gpt-6* 行种成 text → 带图请求 400 modality_mismatch。
+		// 这几条钉的是**写侧**（discovery 种值/重连/探针的唯一推断源），
+		// 与 catalog/display.go 的读侧展示推断分属两份实现，必须各自有牙。
+		{"gpt-6 exact", "gpt-6", "multimodal"},
+		{"gpt-6-astra", "gpt-6-astra", "multimodal"},
+		{"gpt-6-astra-pro", "gpt-6-astra-pro", "multimodal"},
+		{"gpt-6.1-sol", "gpt-6.1-sol", "multimodal"},
+		{"gpt-6.1-terra", "gpt-6.1-terra", "multimodal"},
+		// 回归护栏：gpt-3.5/gpt-4 纯文本族不得被 gpt- 前缀误标
+		{"gpt-4 text family unchanged", "gpt-4", "text"},
+
 		// 2026-10-03 音频端点轮：后缀/中缀形态的 ASR/TTS 家族。小米
 		// mimo-v2.5-asr/-tts 此前双双落回 text 默认值，audio 候选过滤
 		// （modality IN ('audio','multimodal')）将其排除 → no_candidate 503。

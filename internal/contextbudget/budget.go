@@ -23,8 +23,11 @@ const (
 )
 
 // Spec must come from trusted bucket capabilities, never client claims.
-// ExternalInputTokens covers ALL media/remote state not represented by text in
-// this body. A known external bound must be positive when such input is used.
+// ExternalInputTokens covers remote external state not represented by text in
+// this body (URLs to fetch, file ids, provider-managed state). A known
+// external bound must be positive when such input is used. Inline media
+// (data: URLs, inline base64) does NOT need this bound: the calibrated
+// estimator meters its bytes through the blob branch (2026-11-13).
 type Spec struct {
 	ContextWindow       int
 	MaxInputTokens      int
@@ -197,7 +200,14 @@ func CheckWithCounter(body []byte, spec Spec, counter Counter) (Receipt, error) 
 	}
 	digest := sha256.Sum256(body)
 	if counter == nil {
-		if info.external && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
+		// 2026-11-13（211 实证，gpt-6 图片 422 链）：inline 媒体（data: URL /
+		// 内联 base64）的字节网关完全可见，校准估计器的 blob 分支（≥4KiB 无
+		// 空白串 bytes/5）可以计量它——保守方向（对照片高估 ~200 倍），从不是
+		// 低估面。只有 remote external（http(s) URL、file_id、provider 托管态）
+		// 才真正需要可信 token 界——那是安全不变量「remote state the gateway
+		// cannot see fails closed」的本意。旧实现把两者一起 fail-closed，而
+		// ExternalInputTokens 全仓无生产填充点 ⇒ 直发带图请求必 422。
+		if info.remote && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
 			return Receipt{}, &Error{Kind: Uncountable, Detail: "media or remote context requires a trusted token bound"}
 		}
 		count := int(estimateJSONStringTokens(body)) + requestOverhead + nodeOverhead*info.nodes + spec.ExternalInputTokens
@@ -223,7 +233,7 @@ func CheckWithCounter(body []byte, spec Spec, counter Counter) (Receipt, error) 
 	if count < 0 {
 		return Receipt{}, &Error{Kind: Uncountable, Detail: "counter returned a negative count"}
 	}
-	if info.external && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
+	if info.remote && (!spec.ExternalInputKnown || spec.ExternalInputTokens <= 0) {
 		return Receipt{}, &Error{Kind: Uncountable, Detail: "media or remote context requires a trusted token bound"}
 	}
 	count += spec.ExternalInputTokens
