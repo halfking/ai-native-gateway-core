@@ -60,7 +60,7 @@ CORE_GO_PACKAGES := ./internal/ir ./domains/dispatch ./domains/streaming/...
 
 .PHONY: test
 test: ## 全量单元测试（CI 默认入口）
-	$(GO) test ./... -count=1 -timeout=7200s
+	$(GO) test ./... -count=1 -timeout=3600s
 # ★★ 2026-11-09 r1050 轮复核：本 target 的每包预算 **300s → 1800s**。
 #   ★ 起因（★ 实测 + 推理）：★ 本 target 跑的是 `go test ./...` ⇒ ★★ **它包含
 #   ★★ `./scripts/ursmcheck`**（★ 慢门那 180 个门文件所在包）⇒ ★★★ 而该包实测
@@ -81,12 +81,11 @@ test: ## 全量单元测试（CI 默认入口）
 #   ★★ 按 r1050 的同一条规则（预算 = 最慢包的实际代价）三处同档：
 #   ★★ `make test` / `verify.sh` 全量腿 / `make guards-ursmcheck` —— 一处改三处不改
 #   ★★ ⇒ 慢门与官方门会给出不同结论（r1050 通用式）。
-#   ⚠★ 2026-11-13 二次上调 3600s → **7200s**（当日两起悬崖的活证）：① 并行会话
-#   ⚠★ solo 掏空 25m 预算 panic（1500.707s）；② 本轮满套件 3600s 在掏空门 51m15s
-#   ⚠★ 探中途中被杀。★ 成本模型：掏空门单条目自带 600s×2 探针预算 × ~30 条目 ⇒
-#   ⚠★ 掏空门自身的最坏情形可以越过任何中等固定预算（并发日尤甚）⇒ 预算必须覆盖
-#   ⚠★ 「观测上界 51m+ 完成余量」⇒ 7200s。★ 拆独立通道（§648 第二候选 / 用户任务
-#   ⚠★ 点名的「分包」）＝结构解，翻转条件 = 7200s 在常态机仍越线。
+#   ⚠★ 2026-11-13 拆通道轮终态：7200s → **3600s**。当日三起悬崖
+#   ⚠★ （solo 25m panic / 满套件 3600s 杀掏空门于 51m15s / 满套件 7200s 杀掏空门于
+#   ⚠★ 1h50m32s）⇒ §648 翻转条件触发 ⇒ 掏空门家族拆 `guards-hollowout` 专用通道
+#   ⚠★ （`ursmhollowout` build tag，14400s 预算）⇒ 本通道不再包含那个
+#   ⚠★ 「最坏情形越过任何固定预算」的门 ⇒ 回 3600s（ursmcheck 静态门 ≈900-1100s ⇒ 3x 余量）。
 #   ⚠ 3600s 覆盖 45m 实证上界 + 余量；**不是**「调大阈值让检测变松」——
 #   ⚠ 超时是 harness 杀开关，它只会让健康但慢的包不被腰斩。
 #   ⚠ 裸跑 `go test ./...`（默认 600s/包）对 ursmcheck 恒为超时伪影 —— 判读时
@@ -272,7 +271,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
+guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -696,8 +695,13 @@ guards-shell: ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描�
 #   ⇒ ★★ 余量由「~1.8x」收窄到 **1800/1122.817 ≈ 1.60x** ⇒ ★★ **仍然够用**
 #   （⇒ 预算不必再提；★ 但余量已非「宽松」，下一轮若继续变重需重新评估）。
 .PHONY: guards-ursmcheck
-guards-ursmcheck: ## scripts/ursmcheck 全量门（@URSMCK_GATE_COUNT@ 个门文件；★ 实时数，与 scripts/checks/guards-sync.sh 的 find 同源；CI 上此前从未执行过）
-	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=7200s
+guards-ursmcheck: ## scripts/ursmcheck 全量门（@URSMCK_GATE_COUNT@ 个门文件；★ 实时数，与 scripts/checks/guards-sync.sh 的 find 同源；★ 2026-11-13 起**不含**掏空门家族——那批门拆到 guards-hollowout 专用通道）
+	$(GO) test $(GUARD_PACKAGES_SLOW) -count=1 -timeout=3600s
+# ★★ 2026-11-13 拆通道轮：7200s → **3600s**。掏空门家族（tsv_hollowout_gate /
+#   structured_registry_hollowout / 两个 negative_control）已挂 `ursmhollowout`
+#   build tag ⇒ 不再进默认构建 ⇒ 本通道的包重回到静态门口径（历史上带掏空门
+#   实测 1122.817s；拆出后 ≈900-1100s）⇒ 3600s ≈ 3x 余量。
+#   ★ 掏空门家族的去处 = 下面的 guards-hollowout（★ 门没有调用方 = 不是门）。
 # ★★ 2026-11-13（53 增量移交轮）：1800s → **3600s**（与 `make test` / `verify.sh`
 #   # 全量腿**三处同档**，依据见 make test 上方的 2026-11-13 段：掏空门在冷构建图上
 #   # 单门 36min+、45m×2 单包实证 ⇒ 1800s 冷图必腰斩）。上一段 r1050 的
@@ -710,6 +714,20 @@ guards-ursmcheck: ## scripts/ursmcheck 全量门（@URSMCK_GATE_COUNT@ 个门文
 .PHONY: guards-installer
 guards-installer: ## installer 子模块全量测试（独立 go.mod，跨模块门禁）
 	cd installer && $(GO) test ./... -count=1 -timeout=300s
+
+.PHONY: guards-hollowout
+guards-hollowout: ## 掏空门家族专用通道（build tag ursmhollowout；★ 会【真掏空】仓内登记册 ⇒ 整仓锁互斥 ⇒ 不要与会话并发跑同一棵树；★ 逐条目现编译读方二进制 ⇒ 冷图最坏情形越过任何中等固定预算）
+	$(GO) test -tags ursmhollowout ./scripts/ursmcheck/ -run 'Hollow|Tsv|Structured' -count=1 -timeout=14400s
+# ★ 2026-11-13（53 增量移交轮 §714 的翻转兑现）：当日三起预算悬崖
+#   （并行 solo 25m panic 1500.707s / 满套件 3600s 在掏空门 51m15s 被杀 /
+#   满套件 7200s 在掏空门 1h50m32s 被杀——第 25 条目处）⇒ §648「分包 vs 大预算」
+#   的翻转条件（7200s 仍越线）已触发 ⇒ **拆独立通道**。
+#   ★ 预算 14400s（4h）：观测上界 = 掏空门 1h50m（并发日、未跑完）+ 完成余量；
+#     掏空门单条目自带 600s×2 探针预算 × ~30 条目 ⇒ 理论最坏可达 10h ⇒
+#     14400s 是「覆盖观测 + 有界」的折中，若仍越线 ⇒ 下一层是给掏空门内部
+#     逐条目预算/并发化（需先废掉 R87 整仓锁，另立项）。
+#   ★ 通道内跑的是 tag 后的全部掏空家族（含 gocache 卫生门与 lock 自证的重复执行，
+#     代价 ~2min，换来「-run 过滤不会漏新成员」的鲁棒性）。
 
 .PHONY: guards-sync
 guards-sync: ## 校验：internal/ 下每个 *guard 包都已被登记进 GUARD_PACKAGES

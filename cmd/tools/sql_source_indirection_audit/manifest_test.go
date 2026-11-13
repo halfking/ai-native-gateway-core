@@ -985,10 +985,15 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"① 271 行 `\"FROM (SELECT session_id, max(turn_no) AS turn_no FROM \" + src + \" t \"`、" +
 			"② 274 行 `\"JOIN \" + src + \" t ON t.session_id = l.session_id AND t.turn_no = l.turn_no\"`。" +
 			"★ `src` 是**形参** ⇒ 工具解析不到 ⇒ 判 unresolved。" +
-			"★★ **唯一的两个调用点在 276 行**：`leg(\"public.session_turns_hot\")` 与 " +
-			"`leg(\"public.session_turns\")` ⇒ **两个入参都是会话族字面量**，没有任何第三个入参。" +
+			"★ 调用点入参都是会话族字面量（276 行同款形态贯穿本文件所有 leg 闭包）。" +
 			"⚠ 工具判 unresolved 的原因与 bg/candidate_failure_monitor.go 同族：**跨作用域形参**，" +
-			"不是「解析失败被吞」。",
+			"不是「解析失败被吞」。" +
+			"★★ 2026-11-13 增补（48h 审计轮，daf3fce5b 引入的 963 预物化读面）：本文件新增三个" +
+			"同族构造器 —— `SessionFamilyCredentialCountSourceSQL(credExpr)`（窄投影两臂，leg 闭包 + " +
+			"credExpr 形参拼接）、`SessionFamilyCredentialCountAggregateSQL()`（全凭据聚合，leg 闭包）、" +
+			"`CredentialTotalRequestsReadSQL(credExpr)`（CASE WHEN 非空读 963 预物化表 ELSE 回落两臂）——" +
+			"拼接形态与 271/274 同族（**形参 src / credExpr 跨作用域**）⇒ 工具新增 1 处 unresolved " +
+			"（快照 26 → 27、总数 160 → 161 的成因）；两个关系名桶（预物化表 / 会话族两臂）都不是 v1。",
 		Consequence: "与 v1 无关（读会话族 hot ∪ 父表）。" +
 			"★ **该文件全篇无 v1 关系读点**，逐条核对过：" +
 			"(a) 两处拼接点的形参入参只有 session_turns_hot / session_turns 两个（271/274/276 行）；" +
@@ -1009,19 +1014,17 @@ var indirectSiteAssessments = map[string]siteAssessment{
 	// ★ 本轮把 r1040 新立的「事实源漂移」线**先落在样板自己身上**：
 	//   样板是这条线的**形态来源** ⇒ 一个自身还红的样板立不住。
 	//   ⇒ 四条都**逐个读源码**后判定（不是抄工具输出），机制与后果写在下面。
-	"admin/credential_monitor.go": {
-		Verdict: verdictCanonicalOnly,
-		Via: "1 处（384 行）：`COALESCE((SELECT COUNT(*) FROM ` + " +
-			"`dbpkg.SessionFamilyCredentialCountSourceSQL(\"c.id\")` + ` q), 0) AS total_requests`。" +
-			"★ 该 helper（db/request_logs_view_schema.go:761）返回**会话族两臂**：" +
-			"`(SELECT t.credential_id FROM public.session_turns_hot t WHERE …) UNION ALL " +
-			"(SELECT t.credential_id FROM public.session_turns t WHERE …)` ⇒ 两个关系名都是**会话族**。",
-		Consequence: "凭据面板的 total_requests 走**会话族窄投影**（session_turns_hot ∪ session_turns），" +
-			"不读 v1 族 ⇒ 退役 v1 对它无影响。" +
-			"⚠ 该文件另有 `request_logs_with_current_month` 的**字面量**读法（546 行的 canonical 臂、" +
-			"468 行的 p95 live 腿）—— 那些是**字面量**读点，不在本工具的口径里（本工具只管" +
-			"「关系名不是字面量」的拼接点）。",
-	},
+	// ★★ 2026-11-13（48h 审计轮）删行：admin/credential_monitor.go 的
+	//   total_requests 读法已上移 —— daf3fce5b（2026-11-13 24h 审计轮）把
+	//   双形态 CASE 表达式封进 db/request_logs_view_schema.go 的
+	//   CredentialTotalRequestsReadSQL(credExpr) 常量构造器，credential_monitor.go
+	//   384 行只**消费**该返回值（拼接发生在构造器所在的 view_schema.go，
+	//   工具口径不再把 credential_monitor.go 报为拼接点）⇒ 本判定成为
+	//   「清单里有、审计不再报出」的陈旧行（门报：清单 80 vs 实测 79）。
+	//   ⚠ 读法语义（会话族窄投影两臂 + 963 预物化 CASE）在下面 view_schema.go
+	//   的判定里续载，不是「读点消失」。
+	//   ⚠ 该文件仍有的 _request_logs 相关**字面量**读法（546/468 行等）本就
+	//   不在本工具口径里（见原判定 Consequence），不受本删行影响。
 	"bg/shared_pick.go": {
 		Verdict: verdictCanonicalOnly,
 		Via: "1 处（52 行）：`FROM ` + `dbpkg.SessionFamilyMostUsedClientModelSourceSQL()` + ` ` + alias。" +
@@ -1649,7 +1652,15 @@ var documentedSnapshot = bucketSnapshot{
 	//   ⚠ 方向 = 「读法变了（v1 → canonical）+ 新增读点被看见」；
 	//   ⚠ 无任何桶变小（v1 的 1→0 是**读点被改掉**，不是扫描变瞎——
 	//   provider.go 仍被报出，只是桶位移动）。
-	TotalSites: 160,
+	// ★ 2026-11-13（48h 审计轮）：160 → 161（unresolved 26 → 27 处；两个 v1 桶、
+	//   canonical 66/134、unresolved 14 文件逐字未动）。
+	//   成因：daf3fce5b（2026-11-13 24h 审计轮）在 db/request_logs_view_schema.go
+	//   新增 963 预物化读面三构造器（CredentialTotalRequestsReadSQL 等，见上面
+	//   该文件判定的增补段），credExpr 形参拼接 +1 处被判 unresolved。
+	//   ⚠ 方向 = **新增读点被看见**（变大）⇒ 按门规改数字；无任何桶变小。
+	//   同轮删掉 admin/credential_monitor.go 的陈旧判定（读法上移 ⇒ 工具不再
+	//   报出该文件；清单 80 → 79 与实测文件数对齐）。
+	TotalSites: 161,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1670,7 +1681,7 @@ var documentedSnapshot = bucketSnapshot{
 	CanonFiles: 66,
 	CanonSites: 134,
 	UnresFiles: 14,
-	UnresSites: 26,
+	UnresSites: 27,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

@@ -13,7 +13,6 @@
 ../../bg/feature_stats_worker_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:LLM_GATEWAY_FEATURE_STATS_TEST_DSN	原 fallback 到写死库 ⇒ 连不上则静默 SKIP（R69 §19.18 记的形态 b）⇒ R70 取消 fallback，改成未设即明确 SKIP
 ../../bg/materialized_view_refresher_test.go	postgres://127.0.0.1:1/postgres?sslmode=disable&connect_timeout=1	556c206dfb	probe	pending	端口 1 + 注释自证「unreachable DSN」
 ../../bg/systemmonitor/metrics_collector_test.go	postgres://localhost/llm_gateway_test?sslmode=disable	ddbf707c2e	target	env:TEST_DATABASE_URL	原写死且无视 env ⇒ 连不上则静默 SKIP 被记成绿 ⇒ R70 改成认事实源
-../../cmd/gateway/injection_bridge_test.go	host=127.0.0.1 port=1 user=bridge-test dbname=bridge_test sslmode=disable	50addcd73a	probe	pending	端口 1 = 必连不上；F-41 桥 fail-open 探针（sql.Open 后立即 Close，从不连接；见 TestNewPromptInjectionDetectorFailOpen）
 ../../cmd/gateway/recovery_gate_adapter_test.go	postgres://u:p@127.0.0.1:1/db?sslmode=disable	c281483052	probe	pending	端口 1 = 必连不上
 ../../cmd/gateway/routing_optimizer_init_test.go	postgres://gateway:gw@127.0.0.1:1/gw?sslmode=disable	12891fe9dd	probe	pending	端口 1 = 必连不上
 ../../domains/credential/flusher_test.go	postgres://kxuser:KAIXUAN_PW@localhost:5434/llm_gateway?sslmode=disable	14061457b5	target	env:TEST_DATABASE_URL	原写死**带明文口令**、且库名是生产库名 ⇒ 本机有那个库就会真连上 ⇒ R70 改成认事实源（**口令同时从源码移除**）

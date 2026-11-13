@@ -229,6 +229,18 @@ SELECT price_confidence, count(*)
 				summary[k] = n
 			}
 		}
+		// 终态检查（rowsguard 钉测抓住的缺口，2026-11-13 48h 审计轮补）：
+		// 迭代/网络中断若不查 Err()，截断的 summary 会被当成完整分档下发
+		// （「少了一档」与「真的没有那一档」不可区分）。summary 缺口直接
+		// 影响前端分档摘要的完备性，fail-closed 到 available:false。
+		if serr := sumRows.Err(); serr != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"available": false,
+				"reason":    "summary rows iteration failed",
+				"error":     serr.Error(),
+			})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
