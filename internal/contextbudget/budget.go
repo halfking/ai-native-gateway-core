@@ -83,7 +83,7 @@ func Resolve(spec Spec) (Budget, error) {
 	if spec.OutputReserve >= spec.ContextWindow || spec.SafetyMargin >= spec.ContextWindow-spec.OutputReserve {
 		return Budget{}, &Error{Kind: TokensExceeded, Detail: "output and safety reserves exhaust context", Limit: spec.ContextWindow}
 	}
-	// r1050（2026-11-13，opus-4-8 反复 422 根修）：输入侧不再叠加「半窗帽」
+	// r1051（2026-11-13，opus-4-8 反复 422 根修）：输入侧不再叠加「半窗帽」
 	// （旧的 spec.ContextWindow/2 min 项）。半窗帽与 2026-11-11 的「body 侧
 	// 预留按半窗封顶」修复意图相反：该修复的语义是「输入至少拿到半窗、
 	// 输出至少保住 min(max_tokens, 半窗)」，但半窗帽把输入钉死在至多半窗

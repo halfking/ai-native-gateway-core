@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// r1050（2026-11-13，opus-4-8 反复 422 根修）钉测。
+// r1051（2026-11-13，opus-4-8 反复 422 根修）钉测。
 //
 // 事故形状（211 生产实证，gw_f9fdc2de 10:23 失败 → 10:52 重试同败）：
 // ZCode/3.18 对 claude-opus-4-8（200k 窗）发 max_tokens=32000 的会话，固定
@@ -17,11 +17,11 @@ import (
 // 缓存重放同一出站体 ⇒ 重试同败（会话被「砖化」）。
 // 新预算：W − 预留（body 侧半窗封顶后 32000）= 168,000 ⇒ 放行。
 func TestR1049ZCodeFixedPayloadAdmitted(t *testing.T) {
-	body := r1050IncidentBody(t, 85*1024, 225*1024, 15*1024, 32000)
+	body := r1051IncidentBody(t, 85*1024, 225*1024, 15*1024, 32000)
 	spec := Spec{ContextWindow: 200000}
 	got, err := Check(body, spec)
 	if err != nil {
-		t.Fatalf("r1050 incident shape must be admitted (est=%d budget=%+v): %v", got.Tokens, got.Budget, err)
+		t.Fatalf("r1051 incident shape must be admitted (est=%d budget=%+v): %v", got.Tokens, got.Budget, err)
 	}
 	if got.Budget.InputTokens != 168000 {
 		t.Fatalf("budget = %d, want 168000 (200000-32000, no half-window cap)", got.Budget.InputTokens)
@@ -41,10 +41,10 @@ func TestR1049OutputReserveCeilingStillGuaranteesOutput(t *testing.T) {
 	}
 }
 
-// 真正超窗（估计 > W − 预留）仍必须被拒——r1050 放宽的是半窗帽，不是
+// 真正超窗（估计 > W − 预留）仍必须被拒——r1051 放宽的是半窗帽，不是
 // 容量等式本身；超窗请求走 fit/恢复链，不是放行。
 func TestR1049GenuinelyOverWindowStillRejected(t *testing.T) {
-	body := r1050IncidentBody(t, 500*1024, 225*1024, 15*1024, 32000)
+	body := r1051IncidentBody(t, 500*1024, 225*1024, 15*1024, 32000)
 	_, err := Check(body, Spec{ContextWindow: 200000})
 	if err == nil {
 		t.Fatal("body far over window-reserve must still be rejected")
@@ -66,9 +66,9 @@ func asBudgetErr(err error, target **Error) bool {
 	return false
 }
 
-// r1050IncidentBody builds a ZCode-shaped request: `history` bytes of session
+// r1051IncidentBody builds a ZCode-shaped request: `history` bytes of session
 // messages + `toolsBytes` of tool schema text + `systemBytes` of system text.
-func r1050IncidentBody(t *testing.T, history, toolsBytes, systemBytes, maxTokens int) []byte {
+func r1051IncidentBody(t *testing.T, history, toolsBytes, systemBytes, maxTokens int) []byte {
 	t.Helper()
 	msgs := []any{}
 	size := 0
