@@ -195,13 +195,15 @@ func TestTextProtocolsAreCountedConservatively(t *testing.T) {
 }
 
 func TestUncountedExternalContextFailsClosed(t *testing.T) {
+	// 2026-11-14 改判：document base64 / inlineData 两个用例从本清单移出——
+	// 它们是**内联字节**（网关逐字节可见），由 classifyExternal 归入 inline，
+	// 由校准估计器的 blob 分支计量（见 TestInlineMediaIsMeteredNotUncountable）。
+	// 本清单只保留 remote 类：网关看不见字节的引用与托管态。
 	for _, body := range []string{
 		`{"input":"hi","previous_response_id":"resp_1"}`,
 		`{"input":"hi","conversation":{"id":"conv_1"}}`,
 		`{"contents":[],"cachedContent":"cachedContents/one"}`,
 		`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/image"}}]}]}`,
-		`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AA=="}}]}]}`,
-		`{"contents":[{"parts":[{"inlineData":{"mimeType":"image/png","data":"AA=="}}]}]}`,
 		`{"prompt":"hi","images":["AA=="]}`,
 		`{"input":"hi","tools":[{"type":"web_search"}]}`,
 		`{"input":[{"type":"reasoning","encrypted_content":"opaque"}]}`,
@@ -209,6 +211,8 @@ func TestUncountedExternalContextFailsClosed(t *testing.T) {
 		`{"prompt":{"id":"pmpt_1"},"input":"hi"}`,
 		`{"messages":[{"role":"assistant","audio":{"id":"audio_1"}}]}`,
 		`{"messages":[{"role":"user","content":[{"type":"audio_url","url":"https://example.invalid/audio"}]}]}`,
+		`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.invalid/image"}}]}]}`,
+		`{"messages":[{"role":"user","content":[{"type":"input_image","file_id":"file_1"}]}]}`,
 	} {
 		_, err := Check([]byte(body), Spec{ContextWindow: 128000})
 		var budgetErr *Error
@@ -220,6 +224,63 @@ func TestUncountedExternalContextFailsClosed(t *testing.T) {
 	got, err := Check(body, Spec{ContextWindow: 128000, ExternalInputKnown: true, ExternalInputTokens: 1000})
 	if err != nil || got.Tokens < 1000+len(body) || got.Counter != "calibrated_json_estimator" {
 		t.Fatalf("trusted external count must stay in the advisory receipt: %+v, %v", got, err)
+	}
+}
+
+// TestInlineMediaIsMeteredNotUncountable 钉住 2026-11-14 的分类根修：
+// 内联媒体（data: URL / 内联 base64）的字节网关逐字节可见，由校准估计器的
+// blob 分支计量——不再 Uncountable。真实事故形状：ZCode 直发带图请求，
+// modality 门放行后仍 422 "media or remote context requires a trusted token
+// bound"（211 生产日志 2026-11-13 实证），因为 ExternalInputTokens 全仓无
+// 生产填充点。remote 类（https URL / file_id）不在本钉测范围——见
+// TestUncountedExternalContextFailsClosed。
+func TestInlineMediaIsMeteredNotUncountable(t *testing.T) {
+	tinyPNG := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	for _, body := range []string{
+		// 事故形状逐字形态：OpenAI chat data: URL（1x1 PNG）。
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,` + tinyPNG + `"}}]}]}`,
+		// Responses input_image data: URL。
+		`{"input":[{"type":"input_image","image_url":"data:image/png;base64,` + tinyPNG + `"}]}`,
+		// Gemini inlineData。
+		`{"contents":[{"parts":[{"inlineData":{"mimeType":"image/png","data":"` + tinyPNG + `"}}]}]}`,
+		// Anthropic image source base64。
+		`{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}}]}]}`,
+		// Anthropic document source base64（改判自旧 fail-closed 清单）。
+		`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AA=="}}]}]}`,
+		// OpenAI chat input_audio 内联 base64。
+		`{"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"` + tinyPNG + `","format":"wav"}}]}]}`,
+	} {
+		got, err := Check([]byte(body), Spec{ContextWindow: 128000})
+		if err != nil {
+			t.Fatalf("inline media must be metered, not Uncountable: %s: %v", body, err)
+		}
+		if got.Counter != "calibrated_json_estimator" {
+			t.Fatalf("unexpected counter: %s", got.Counter)
+		}
+	}
+	// blob 计量必须有牙：同一 envelope 只放大内联 payload，估计必须随字节
+	// 增长（≥4KiB 无空白串走 blob 分支 bytes/5）。与文本基线跨 envelope 比较
+	// 是错的——不同 envelope 的 JSON 节点数不同，基线不可比。
+	bigBlob := strings.Repeat("Q7z", 1800) // 5400 字符无空白 base64 形态
+	smallBody := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + tinyPNG + `"}}]}]}`)
+	bigBody := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + bigBlob + `"}}]}]}`)
+	smallGot, err := Check(smallBody, Spec{ContextWindow: 128000})
+	if err != nil {
+		t.Fatalf("small inline media failed: %v", err)
+	}
+	bigGot, err := Check(bigBody, Spec{ContextWindow: 128000})
+	if err != nil {
+		t.Fatalf("big inline media must stay metered (advisory on known window only rejects over-budget): %v", err)
+	}
+	if bigGot.Tokens <= smallGot.Tokens {
+		t.Fatalf("inline blob bytes must raise the estimate: small=%d big=%d", smallGot.Tokens, bigGot.Tokens)
+	}
+	// 混合形状：inline + remote ⇒ 整体仍是 Uncountable（remote 分量主导）。
+	mixed := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + tinyPNG + `"}},{"type":"image_url","image_url":{"url":"https://example.invalid/x"}}]}]}`)
+	_, err = Check(mixed, Spec{ContextWindow: 128000})
+	var budgetErr *Error
+	if !errors.As(err, &budgetErr) || budgetErr.Kind != Uncountable {
+		t.Fatalf("mixed inline+remote must stay Uncountable: %v", err)
 	}
 }
 
