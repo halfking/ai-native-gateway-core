@@ -16,14 +16,14 @@ func TestDispatchErrToExecuteError_QuotaPermanent(t *testing.T) {
 		StatusCode: 400,
 		Body:       []byte(`{"error":{"message":"no active limited quota"}}`),
 	}
-	
+
 	execErr := dispatchErrToExecuteError(upstreamErr)
-	
+
 	if execErr == nil {
 		t.Fatal("dispatchErrToExecuteError returned nil")
 	}
 	if execErr.LastKind != errorsx.KindQuotaPermanent {
-		t.Errorf("LastKind = %v, want %v (upstream kind was lost)", 
+		t.Errorf("LastKind = %v, want %v (upstream kind was lost)",
 			execErr.LastKind, errorsx.KindQuotaPermanent)
 	}
 	if !execErr.Exhausted {

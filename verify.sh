@@ -226,7 +226,12 @@ echo "[verify] full Go tests"
 #   # ★★ 2026-11-13 二次上调 → 7200s：满套件 3600s 在掏空门 51m15s 探中途中被杀
 #   # （当日第二起悬崖）⇒ 掏空门单条目 600s×2 探针 × ~30 条目的最坏情形越过任何
 #   # 中等固定预算；拆独立通道 = 结构解（翻转条件 = 7200s 常态机仍越线）。
-go test ./... -count=1 -timeout=7200s
+#   # ★★ 2026-11-13 拆通道轮终态：7200s → **3600s**。掏空门家族（tsv_hollowout_gate /
+#   #   structured_registry_hollowout / 负控）已拆到 `guards-hollowout` 专用通道
+#   #   （build tag `ursmhollowout`，14400s 预算）⇒ build tag ⇒ 不再进默认构建 ⇒
+#   #   本全量腿重回到静态门口径（≈900-1100s 实测）⇒ 3600s ≈ 3x 余量。
+#   #   ★ 与 `make test` / `make guards-ursmcheck` 三处同档（r1050 通用式）。
+go test ./... -count=1 -timeout=3600s
 
 # ★ 2026-11-11（IR 协议转换层审计轮）：把**从未被运行过**的门接进官方门。
 # ★ 这三个变异 harness + 覆盖率门禁原先**只有** `.github/workflows/` 里的调用方

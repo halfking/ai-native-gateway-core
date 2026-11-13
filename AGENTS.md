@@ -1,5 +1,13 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-14 四项移交复核与台账收口轮（goal 复核会话，主档 `docs/audit/2026-11-14-四项移交复核与台账收口轮-主档.md`；零新迁移/零 LESSONS 新节）**：
+> ★ 用户任务＝「53 增量移交四项」（候选迁移 961/F-41/F-47/ursmcheck 慢包）——**四项已于 11-13 全部收编落库**（4225add0e→964 重编号 + 5b4120b2b 代落库拆通道），本轮=拉取复核 + 收口尾巴。
+> ★★★★ **四项在 HEAD 复核零缺口**：964 载体+四通道（apply :2653/链尾 :2761/探针 :3267/runner :1858）｜F-41 `prompt_injection_bridge.go`+`user_content_extract.go`（BindDetector 接线 :1422/:7460）｜F-47 `cache_v2_invalidation_bridge.go`｜拆通道（`guards-hollowout` :719-720 + 4 tag 文件）。**tagged/-list 双向验证**：tagged 27 = 14 掏空行为门 + 13 常驻卫生门；默认 13 ⇒ 掏空行为门 0 进默认套件；`-run 'Hollow|Tsv|Structured'` 与 14 函数名逐个匹配。
+> ★★★★ **四红复核收口（全部转绿）**：① request-surface **第十九次重钉**——归因 `git log 3153b6b1e..HEAD -- main.go` ⇒ r1047 sanitizejudge 装配接线净增 15 行（f7182bba2/d1b0ca449）；三面同钉（对拍表链 8449-8468→**8464-8483**、Logging 注释→8467-8474、maintain 注释→8424-8429、main_pipeline:1147 无漂移；设计页 4 处；认证表 A1 Recovery :8465…Auth :8480 + 链条追加）② admin-routes 快照官方生成器重生成——**diff 先验纯行号**（701 条/661 唯一 path 不变、110 行全 +15）③ **db-changelog 964 编号列订正**（重编号残留：左列仍 963，两行+节头改 964）④ DSN/reachability/sqlguard 绿。
+> ★ **verify.sh 在途件落库**：全量腿 7200s→**3600s**（拆通道轮漏改的第三处；`make test`/`guards-ursmcheck` 已提交态均 3600s ⇒ r1050 三处同档补齐）；`guards-hollowout` 有调用方（make guards :274）⇒ 门纪律无缺口。
+> ★ **新进提交批判复审**：gpt-6 catalog（161e29507）方向正确+**gofmt 修**（测试三层缩进）｜**F3 自动化脚本（369c112c9）两真缺陷本轮修**：`if ping…|| true` ⇒ 条件恒真 ⇒ **mesh 回落分支死代码**（第五轮 P1 条件臂同族）+ 报告头 heredoc 带引号 ⇒ `$(date)`/`${SSH_TARGET}` 字面量不展开｜LastKind 放行（971a04627）边界+配额族钉测绿。**gofmt 全仓 286 = 历史基线登记不修**（本窗口引入 2 个已修）。
+> ★ 验证：build/vet rc=0；bash -n 过；catalog/executors/sqlguard/ursmcheck（四红+Registry+ratchet）全绿。遗留：gofmt 历史基线 286（独立裁决面）｜964/963 部署债维持｜plugin-runtime W1 深审留独立轮。
+
 > **2026-11-13 r1052 入口归档器媒体 fail-closed 根修轮（goal 会话，主档 `docs/audit/2026-11-13-r1052-入口归档器媒体fail-closed根修.md`，LESSONS §720；提交 31bde9e1f；211 脚本部署验证完成：蓝绿 3042→3043 `2.5.9-79631ce8-20261113-211` 槽 b、readyz/公网身份+入口 OK；**真实归档件重放 422→200**（缩减 160KB/modality text/标记在场）+受保护媒体变体=400 vision-alternatives（设计行为）+1.87MB 纯文本 200+r1051 回归过（并行 12:00 部署曾覆盖 r1051 致 limit=100000 复活，本次部署以合并 HEAD 兑现回归）；key id=253 revoked）**：
 > ★ owner 报障＝ZCode `request cannot produce a valid bounded context; split the protected input / context_budget_exceeded / claude-fable-5-2`（request=7718f89a 逐字命中 12:34+08 的 422/688ms）⇒ **入口拒绝不进 request_wal，取证钥匙＝session-archive 归档件**（raw.json 原文）：1,365,000B/149 消息，4 条 170-333KB 巨型 user 消息内含 `image_url` base64 JPEG（ZCode「Tool result media from Read」截图）。
 > ★★★★ **根因＝Reduce 三处媒体 fail-closed**（>1MiB 才走压缩腿）：fileMetadata 媒体型块/消息级媒体字段、≤64KB 消息 UpperBound Uncountable、objectExcerpt 超大非字符串字段——任一命中 ⇒ 整个缩减失败 ⇒ 422「split the protected input」；**客户端无法 split 历史里的截图 ⇒ 会话砖化**（改写层制造入口自己都不会放的形状·第三案，与 r1048/r1051 同族）。本地真实归档件重放先红复现（插桩定位 333KB 媒体消息）。
