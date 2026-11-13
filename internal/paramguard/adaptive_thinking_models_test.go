@@ -239,7 +239,7 @@ func TestAdaptiveOnlyThinking_OlderOpusUntouched(t *testing.T) {
 
 // requiresAdaptiveThinking 的判据表自身要钉住（防止有人把它改成前缀匹配）。
 func TestRequiresAdaptiveThinking_ExactNameTable(t *testing.T) {
-	yes := []string{"claude-fable-5-2", "anthropic/claude-fable-5-2", "CLAUDE-FABLE-5-2", "claude-opus-5-5", "anthropic/claude-opus-5-5"}
+	yes := []string{"claude-fable-5-2", "anthropic/claude-fable-5-2", "CLAUDE-FABLE-5-2", "claude-opus-5-5", "anthropic/claude-opus-5-5", "claude-sonnet-5-5"}
 	for _, m := range yes {
 		if !requiresAdaptiveThinking(m) {
 			t.Fatalf("requiresAdaptiveThinking(%q) = false, want true", m)
@@ -250,5 +250,40 @@ func TestRequiresAdaptiveThinking_ExactNameTable(t *testing.T) {
 		if requiresAdaptiveThinking(m) {
 			t.Fatalf("requiresAdaptiveThinking(%q) = true, want false", m)
 		}
+	}
+}
+
+// ─── claude-sonnet-5-5（2026-11-13 r1050 追记）───
+// 文案变体："requires adaptive thinking or thinking.type=between_tools;
+// omit thinking or use one of those modes"——adaptive 在接受集内。
+// 无清单时的兜底链已被 211 活体验证（reqprobe hint 学习剥参，第二候选
+// 起恢复）；补清单消除每笔一跳 400。
+func TestAdaptiveOnlyThinking_Sonnet55EnabledBecomesAdaptive(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-5-5","max_tokens":2000,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[]}`)
+	out, reports := ApplyReported(body, paramreg.DialectAnthropic)
+
+	if got := thinkingType(t, out); got != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive (body=%s)", got, out)
+	}
+	var obj map[string]any
+	_ = json.Unmarshal(out, &obj)
+	th := obj["thinking"].(map[string]any)
+	if _, ok := th["budget_tokens"]; ok {
+		t.Fatalf("budget_tokens survived adaptive rewrite: %s", out)
+	}
+	if len(reports) != 1 || reports[0].Field != "thinking.type" {
+		t.Fatalf("reports = %+v, want exactly one thinking.type report", reports)
+	}
+}
+
+// sonnet-5（不带 -5-5）当日实测 enabled 200，不得被前缀误伤。
+func TestAdaptiveOnlyThinking_PlainSonnet5Untouched(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-5","max_tokens":2000,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[]}`)
+	out, reports := ApplyReported(body, paramreg.DialectAnthropic)
+	if got := thinkingType(t, out); got != "enabled" {
+		t.Fatalf("thinking.type = %q, want enabled (plain sonnet-5 must not be rewritten): %s", got, out)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("reports = %+v, want none", reports)
 	}
 }

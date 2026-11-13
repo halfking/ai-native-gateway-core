@@ -67,15 +67,23 @@ import (
 // 2026-11-11 时同中继同模型的 enabled 形态实测全 200（当时把 opus-5-5 钉在
 // 阴性对照组）—— 这是**上游语义升级**，不是网关回归。精确名判据继续防误伤：
 // `claude-opus-5` / `claude-opus-4-8` 等旧 opus 仍对 enabled 全兼容。
+//
+// 2026-11-13（r1050 追记）：`claude-sonnet-5-5` 同日被推广（文案变体
+// "requires adaptive thinking **or thinking.type=between_tools**"——adaptive
+// 仍在接受集内，改写安全）。211 活体：无清单时靠 r1049 的 reqprobe hint
+// 学习剥参兜底（第一候选 400 → 第二候选起剥 thinking 恢复 200），补清单
+// 消除每笔一跳 400 的延迟与学习态依赖。
 var adaptiveOnlyModels = map[string]bool{
-	"claude-fable-5-2": true,
-	"claude-opus-5-5":  true,
+	"claude-fable-5-2":  true,
+	"claude-opus-5-5":   true,
+	"claude-sonnet-5-5": true,
 }
 
 // adaptiveOnlyModelNames 供测试与文档引用（保序，便于人工核对）。
 var adaptiveOnlyModelNames = []string{
 	"claude-fable-5-2",
 	"claude-opus-5-5",
+	"claude-sonnet-5-5",
 }
 
 // requiresAdaptiveThinking 报告该出站模型是否强制 adaptive thinking。
