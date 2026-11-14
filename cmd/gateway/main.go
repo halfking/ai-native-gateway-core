@@ -7144,11 +7144,26 @@ func main() {
 		dbConn.Pool(), cfg.SecretKey,
 	)
 	servePluginAPI := func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plugins"), "/")
+		// POST /api/v1/plugins/{id}/activate|deactivate：Shell启停按钮的落点。
+		//仅切换运行期启用标记（见 pluginapi.setEnabled注释），不编排插件进程。
+		if r.Method == http.MethodPost {
+			switch {
+			case strings.HasSuffix(rest, "/activate"):
+				pluginapiHandler.ActivatePluginHandler(w, r)
+				return
+			case strings.HasSuffix(rest, "/deactivate"):
+				pluginapiHandler.DeactivatePluginHandler(w, r)
+				return
+			default:
+				settingsHandler.ServeHTTP(w, r)
+				return
+			}
+		}
 		if r.Method != http.MethodGet {
 			settingsHandler.ServeHTTP(w, r)
 			return
 		}
-		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plugins"), "/")
 		switch {
 		case rest == "" || rest == "manifests":
 			pluginapiHandler.ListPluginsHandler(w, r)

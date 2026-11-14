@@ -14,7 +14,7 @@ import (
 func TestListPluginsHandler(t *testing.T) {
 	// Create temporary plugin directory
 	tmpDir := t.TempDir()
-	
+
 	// Create test plugin manifests
 	createTestPlugin(t, tmpDir, "test-plugin-1", "Test Plugin 1", "1.0.0")
 	createTestPlugin(t, tmpDir, "test-plugin-2", "Test Plugin 2", "2.0.0")
@@ -181,11 +181,11 @@ func createTestPlugin(t *testing.T, baseDir, pluginID, displayName, version stri
 			APIContract: "gateway-plugin-v2",
 		},
 		Runtime: pluginruntime.Runtime{
-			Entrypoint:          "bin/plugin",
-			Protocol:            "http-unix-socket",
-			HealthPath:          "/plugin/healthz",
-			HandshakePath:       "/plugin/handshake",
-			ShutdownGraceSecs:   5,
+			Entrypoint:        "bin/plugin",
+			Protocol:          "http-unix-socket",
+			HealthPath:        "/plugin/healthz",
+			HandshakePath:     "/plugin/handshake",
+			ShutdownGraceSecs: 5,
 		},
 		Capabilities: []string{"request.observe"},
 		Web: pluginruntime.Web{
@@ -206,5 +206,97 @@ func createTestPlugin(t *testing.T, baseDir, pluginID, displayName, version stri
 
 	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
 		t.Fatalf("failed to write manifest: %v", err)
+	}
+}
+
+func TestActivateDeactivateHandlers(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTestPlugin(t, tmpDir, "toggle-plugin", "Toggle Plugin", "1.0.0")
+
+	handler := NewPluginAPIHandler(tmpDir)
+
+	//初始应为启用
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+	listW := httptest.NewRecorder()
+	handler.ListPluginsHandler(listW, listReq)
+
+	var listResp PluginListResponse
+	if err := json.Unmarshal(listW.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("failed to decode list response: %v", err)
+	}
+	if len(listResp.Data) != 1 || !listResp.Data[0].Enabled {
+		t.Fatalf("expected1 enabled plugin initially, got %+v", listResp.Data)
+	}
+
+	//停用
+	deactReq := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/deactivate", nil)
+	deactW := httptest.NewRecorder()
+	handler.DeactivatePluginHandler(deactW, deactReq)
+	if deactW.Code != http.StatusOK {
+		t.Fatalf("expected200 on deactivate, got %d: %s", deactW.Code, deactW.Body.String())
+	}
+
+	var deactResp PluginListResponse
+	if err := json.Unmarshal(deactW.Body.Bytes(), &deactResp); err != nil {
+		t.Fatalf("failed to decode deactivate response: %v", err)
+	}
+	if len(deactResp.Data) != 1 || deactResp.Data[0].Enabled || deactResp.Data[0].Status != "disabled" {
+		t.Fatalf("expected disabled plugin after deactivate, got %+v", deactResp.Data)
+	}
+
+	//列表应反映停用状态
+	listW2 := httptest.NewRecorder()
+	handler.ListPluginsHandler(listW2, httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil))
+	var listResp2 PluginListResponse
+	if err := json.Unmarshal(listW2.Body.Bytes(), &listResp2); err != nil {
+		t.Fatalf("failed to decode list response: %v", err)
+	}
+	if len(listResp2.Data) != 1 || listResp2.Data[0].Enabled {
+		t.Fatalf("expected list to reflect disabled state, got %+v", listResp2.Data)
+	}
+
+	//重新启用
+	actReq := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/activate", nil)
+	actW := httptest.NewRecorder()
+	handler.ActivatePluginHandler(actW, actReq)
+	if actW.Code != http.StatusOK {
+		t.Fatalf("expected200 on activate, got %d: %s", actW.Code, actW.Body.String())
+	}
+	var actResp PluginListResponse
+	if err := json.Unmarshal(actW.Body.Bytes(), &actResp); err != nil {
+		t.Fatalf("failed to decode activate response: %v", err)
+	}
+	if len(actResp.Data) != 1 || !actResp.Data[0].Enabled {
+		t.Fatalf("expected enabled plugin after activate, got %+v", actResp.Data)
+	}
+}
+
+func TestActivateUnknownPluginAndBadID(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTestPlugin(t, tmpDir, "known-plugin", "Known", "1.0.0")
+	handler := NewPluginAPIHandler(tmpDir)
+
+	//不存在的插件
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/ghost/activate", nil)
+	w := httptest.NewRecorder()
+	handler.ActivatePluginHandler(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected404 for unknown plugin, got %d", w.Code)
+	}
+
+	//路径穿越
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/../activate", nil)
+	w2 := httptest.NewRecorder()
+	handler.ActivatePluginHandler(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected400 for traversal id, got %d", w2.Code)
+	}
+
+	//错误方法
+	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/known-plugin/activate", nil)
+	w3 := httptest.NewRecorder()
+	handler.ActivatePluginHandler(w3, req3)
+	if w3.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected405 for GET, got %d", w3.Code)
 	}
 }
