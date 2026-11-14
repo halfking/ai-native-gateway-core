@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -90,6 +91,53 @@ func TestClassifyRoutingError(t *testing.T) {
 			wantCode:    "routing_database_error",
 			wantStatus:  http.StatusInternalServerError,
 			wantMessage: "Internal routing service error",
+		},
+		// ── 2026-11-15 211 incident shapes (verbatim from production logs) ──
+		{
+			// Client hung up while its request was parked behind an open
+			// circuit (300s ZCode timeout during the outage). Must not land in
+			// the routing_database_error bucket that ops dashboards group by.
+			name:        "client canceled (raw context.Canceled)",
+			err:         context.Canceled,
+			wantCode:    "routing_client_canceled",
+			wantStatus:  499,
+			wantMessage: "Client closed the request before routing completed",
+		},
+		{
+			name:        "client canceled (wrapped string, production shape)",
+			err:         errors.New("context canceled"),
+			wantCode:    "routing_client_canceled",
+			wantStatus:  499,
+			wantMessage: "Client closed the request before routing completed",
+		},
+		{
+			// Protective circuit after repeated candidate-query failures.
+			// Retryable condition: 503, its own dashboard code — not a 500
+			// "database" error.
+			name:        "candidates query circuit open (production shape)",
+			err:         errors.New("candidates query circuit open (retry after 2026-11-14T15:43:01Z)"),
+			wantCode:    "routing_circuit_open",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantMessage: "Routing service temporarily unavailable",
+		},
+		{
+			// The d5eb218a2 regression: candidates SQL referenced mc.released_at
+			// outside the CTE scope. Gateway-side SQL defect = schema/config
+			// error, NOT database infrastructure.
+			name:        "missing FROM-clause entry (production shape, 42P01)",
+			err:         errors.New(`query candidates failed: ERROR: missing FROM-clause entry for table "mc" (SQLSTATE 42P01) (context: model=claude-opus-5-5, tenant_id=default)`),
+			wantCode:    "routing_schema_error",
+			wantStatus:  http.StatusInternalServerError,
+			wantMessage: "Internal routing configuration error",
+		},
+		{
+			// Bare deadline (no "timeout" substring) previously fell through to
+			// the database fallback too.
+			name:        "bare context deadline exceeded",
+			err:         errors.New("context deadline exceeded"),
+			wantCode:    "routing_connection_error",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantMessage: "Routing service temporarily unavailable",
 		},
 	}
 

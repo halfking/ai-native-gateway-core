@@ -2124,35 +2124,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 
 	// 候选查询熔断（2026-10-28 routing_schema_error 轮）：open 期不碰库，
 	// 把本请求 park 到冷却到期点（半开探测由醒来的第一个请求承担）。
-	// parkCap 内循环等待/重试；预算耗尽快速失败（ErrCandidatesCircuitOpen），
-	// handler 走既有 no-candidates 路径返回 503 —— 坏路径在断路期每个冷却窗
-	// 只被真实查询一次，而不是每个请求一撞。
-	allow, retryAt := c.candCircuit.AllowProbe(time.Now())
-	if !allow {
-		parkCap := candidatesCircuitParkCap()
-		parked := false
-		for !allow {
-			remaining := parkCap
-			if wait := time.Until(retryAt); wait < remaining {
-				remaining = wait
-			}
-			if remaining <= 0 {
-				return nil, fmt.Errorf("%w (retry after %s)", ErrCandidatesCircuitOpen, retryAt.Format(time.RFC3339))
-			}
-			if !parked {
-				candidatesCircuitParkedTotal.Inc()
-				parked = true
-			}
-			slog.Warn("[candidate_diag] circuit open — parking request until cooldown probe",
-				"model", clientModel, "tenant_id", tenantID, "modality", modality,
-				"park_seconds", remaining.Seconds())
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(remaining):
-			}
-			allow, retryAt = c.candCircuit.AllowProbe(time.Now())
-		}
+	// 预算语义与事故修正记录见 awaitCircuitProbe。
+	if err := c.awaitCircuitProbe(ctx, clientModel, tenantID, modality); err != nil {
+		return nil, err
 	}
 
 	sqlText := candidateQuerySQL()

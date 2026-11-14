@@ -55,7 +55,7 @@ func (s *stubSystemMonitorBackend) RecoveryStats() SystemMonitorRecoveryStats {
 // expected JSON shape.
 func TestSystemMonitorRecoveryHandler_ReturnsSnapshot(t *testing.T) {
 	now := time.Now().UTC()
-	h := NewHandler(nil, "", nil)
+	h := NewHandler(nil, "", nil, nil)
 	backend := &stubSystemMonitorBackend{
 		recoveryStats: systemmonitor.RecoveryStats{
 			LastError:            "redis unreachable",
@@ -109,7 +109,7 @@ func TestSystemMonitorRecoveryHandler_ReturnsSnapshot(t *testing.T) {
 // when SetSystemMonitor was never called (or called with nil), the
 // handler returns 503 instead of panicking.
 func TestSystemMonitorRecoveryHandler_NilMonitor(t *testing.T) {
-	h := NewHandler(nil, "", nil)
+	h := NewHandler(nil, "", nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterSystemMonitorRoutes(mux, identityWrap, identityWrap)
 
@@ -125,7 +125,7 @@ func TestSystemMonitorRecoveryHandler_NilMonitor(t *testing.T) {
 // TestSystemMonitorRecoveryHandler_MethodNotAllowed verifies the
 // handler rejects non-GET methods with 405.
 func TestSystemMonitorRecoveryHandler_MethodNotAllowed(t *testing.T) {
-	h := NewHandler(nil, "", nil)
+	h := NewHandler(nil, "", nil, nil)
 	h.SetSystemMonitor(&stubSystemMonitorBackend{})
 
 	mux := http.NewServeMux()

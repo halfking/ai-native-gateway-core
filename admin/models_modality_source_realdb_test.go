@@ -217,7 +217,7 @@ func TestListModels_modalityProvenanceReachesTheList(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
-	NewHandler(pool, "", nil).listModels(rec, req)
+	NewHandler(pool, "", nil, nil).listModels(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
 	}
@@ -282,7 +282,7 @@ func TestGetModel_exposesProvenanceInTheResponseBody(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/models/"+strconv.FormatInt(ids["minimax-m3-sem"], 10), nil)
-	NewHandler(pool, "", nil).getModel(rec, req, int(ids["minimax-m3-sem"]))
+	NewHandler(pool, "", nil, nil).getModel(rec, req, int(ids["minimax-m3-sem"]))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
 	}

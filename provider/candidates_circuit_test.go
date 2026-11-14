@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -146,4 +147,78 @@ func errWrap() error {
 
 func errWrapInner() error {
 	return errors.Join(ErrCandidatesCircuitOpen)
+}
+
+// ── 2026-11-15 211 routing_database_error 事故：park 预算钉测 ──────────────
+//
+// 旧实现 `remaining := parkCap` 每次迭代重新给满预算 ⇒ 总 park 无上限：冷却
+// 翻倍后（30s→60s→…→10min cap）请求被一路挂到冷却点或客户端超时（生产实测
+// 300s 挂起、以 "context canceled" 收场）。以下钉死「parkCap 是单请求总预算」。
+
+// openCircuitWithLongCooldown 在 c 上打开熔断并把冷却推远（模拟半开探测
+// 失败后的翻倍梯子：3 连败 open 30s → 到期探测再败 ⇒ 60s）。
+func openCircuitWithLongCooldown(t *testing.T, c *candidatesCircuit) {
+	t.Helper()
+	now := time.Now()
+	for i := 0; i < circuitFailThreshold; i++ {
+		c.RecordFailure(now) // 3 连败 → open，冷却 30s
+	}
+	// 一次已到期的探测再失败 ⇒ 冷却翻倍（60s），retryAt 距今 ~95s。
+	c.AllowProbe(now.Add(circuitCooldownInitial + time.Second))
+	c.RecordFailure(now.Add(circuitCooldownInitial + 2*time.Second))
+}
+
+func TestAwaitCircuitProbe_ParkBudgetIsTotalNotPerIteration(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_CANDIDATES_CIRCUIT_PARK_SECONDS", "1")
+	cl := &Client{}
+	openCircuitWithLongCooldown(t, &cl.candCircuit)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := cl.awaitCircuitProbe(ctx, "m", "default", "text")
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "budget exhausted must fast-fail instead of parking to the cooldown point")
+	assert.True(t, errors.Is(err, ErrCandidatesCircuitOpen),
+		"fast-fail must carry the sentinel, got %v", err)
+	assert.Less(t, elapsed, 3*time.Second,
+		"total park must stay within the 1s budget (+slack); waited %v — per-iteration refill regression", elapsed)
+}
+
+func TestAwaitCircuitProbe_ClientCancelDuringParkReturnsCtxErr(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_CANDIDATES_CIRCUIT_PARK_SECONDS", "60")
+	cl := &Client{}
+	openCircuitWithLongCooldown(t, &cl.candCircuit)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel() // production shape: ZCode client hangs up mid-park
+	}()
+
+	start := time.Now()
+	err := cl.awaitCircuitProbe(ctx, "m", "default", "text")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled,
+		"client hang-up must surface as the raw ctx error (classified upstream as routing_client_canceled)")
+	assert.Less(t, elapsed, 3*time.Second)
+}
+
+func TestAwaitCircuitProbe_ZeroBudgetFailsFast(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_CANDIDATES_CIRCUIT_PARK_SECONDS", "0")
+	cl := &Client{}
+	openCircuitWithLongCooldown(t, &cl.candCircuit)
+
+	err := cl.awaitCircuitProbe(context.Background(), "m", "default", "text")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCandidatesCircuitOpen), "0 budget = pure fast-fail, got %v", err)
+}
+
+func TestAwaitCircuitProbe_ClosedCircuitReturnsImmediately(t *testing.T) {
+	cl := &Client{} // zero value: closed
+	require.NoError(t, cl.awaitCircuitProbe(context.Background(), "m", "default", "text"))
 }

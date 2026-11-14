@@ -4056,8 +4056,12 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	if err != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
-		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(err)
+		// routing_client_canceled = the caller hung up mid-resolve (client
+		// timeout / abort). ERROR-level spam here read as an upstream outage
+		// during the 2026-11-15 incident; WARN keeps the signal without the
+		// false alarm.
+		logCandidatesFailure(rc.code, err, clientModel, requestID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, rc.code, nil, int(time.Since(startTime).Milliseconds()))
 		// Same rc.httpStatus that writeErrorJSON below puts on the wire.
 		logCtx.failAndMark(rc.code, rc.message, nil, nil, rc.httpStatus)

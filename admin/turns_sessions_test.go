@@ -9,7 +9,7 @@ import (
 )
 
 func TestHandleTurnsSessions_ServiceUnavailableWithoutDB(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions", nil)
 	req.Header.Set("X-Test-Admin", "1")
 	req.Header.Set("X-Tenant-ID", "default")
@@ -23,7 +23,7 @@ func TestHandleTurnsSessions_ServiceUnavailableWithoutDB(t *testing.T) {
 }
 
 func TestHandleTurnsSessions_MethodNotAllowed(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/turns/sessions", nil)
 	req.Header.Set("X-Test-Admin", "1")
 	req.Header.Set("X-Tenant-ID", "default")

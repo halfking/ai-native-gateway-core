@@ -13,7 +13,7 @@ import (
 )
 
 func TestDecryptCredToleratesPlaintextLocalPlaceholder(t *testing.T) {
-	h := NewHandler(nil, "unit-test-secret-key", nil)
+	h := NewHandler(nil, "unit-test-secret-key", nil, nil)
 	pt, isLegacy, err := h.decryptCred(localNoKeyPlaceholder)
 	if err != nil {
 		t.Fatalf("plaintext placeholder must pass through, got error: %v", err)

@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -56,7 +59,7 @@ var ErrCandidatesCircuitOpen = errors.New("candidates query circuit open")
 
 // candidatesCircuitParkCap 是 open 期单请求 park 预算（env
 // LLM_GATEWAY_CANDIDATES_CIRCUIT_PARK_SECONDS，默认 10s）。0 = 不 park
-//（纯快速失败熔断）。预算内循环 park 到各冷却点；耗尽即返回
+// （纯快速失败熔断）。预算内循环 park 到各冷却点；耗尽即返回
 // ErrCandidatesCircuitOpen，由既有 no-candidates 路径出 503。
 func candidatesCircuitParkCap() time.Duration {
 	if s := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CANDIDATES_CIRCUIT_PARK_SECONDS")); s != "" {
@@ -151,3 +154,49 @@ func (c *candidatesCircuit) RecordFailure(now time.Time) {
 }
 
 func setCircuitGauge(v int32) { candidatesCircuitState.Set(float64(v)) }
+
+// awaitCircuitProbe blocks while the candidates-query circuit is open, parking
+// the caller until the cooldown probe is allowed. parkCap is the caller's
+// 【total】 budget: within it we park/wait slice by slice; once exhausted we
+// fast-fail with ErrCandidatesCircuitOpen (handler returns the retryable 503
+// no-candidates path), so a bad query path gets probed once per cooldown window
+// instead of being hammered by every request.
+//
+// ★ 2026-11-15 fix (211 routing_database_error incident amplifier): the old
+// in-loop `remaining := parkCap` refilled the budget on EVERY iteration, so the
+// total wait was unbounded — after the cooldown ladder doubled (30s→…→10min
+// cap), requests parked all the way to the cooldown point or the client's own
+// timeout (production: 300s hangs ending in ctx canceled). The parkDeadline
+// below bounds the total park time; budget exhausted ⇒ immediate fast-fail.
+func (c *Client) awaitCircuitProbe(ctx context.Context, clientModel, tenantID, modality string) error {
+	allow, retryAt := c.candCircuit.AllowProbe(time.Now())
+	if allow {
+		return nil
+	}
+	parkCap := candidatesCircuitParkCap()
+	parkDeadline := time.Now().Add(parkCap)
+	parked := false
+	for !allow {
+		remaining := time.Until(parkDeadline)
+		if wait := time.Until(retryAt); wait < remaining {
+			remaining = wait
+		}
+		if remaining <= 0 {
+			return fmt.Errorf("%w (retry after %s)", ErrCandidatesCircuitOpen, retryAt.Format(time.RFC3339))
+		}
+		if !parked {
+			candidatesCircuitParkedTotal.Inc()
+			parked = true
+		}
+		slog.Warn("[candidate_diag] circuit open — parking request until cooldown probe",
+			"model", clientModel, "tenant_id", tenantID, "modality", modality,
+			"park_seconds", remaining.Seconds())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(remaining):
+		}
+		allow, retryAt = c.candCircuit.AllowProbe(time.Now())
+	}
+	return nil
+}

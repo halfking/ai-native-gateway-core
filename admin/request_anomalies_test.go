@@ -16,7 +16,7 @@ import (
 // super_admin JWT 与注册了全部路由的 mux（走真实 superAdmin 鉴权链）。
 func newRequestAnomalyTestServer(t *testing.T) (*Handler, *http.ServeMux, string) {
 	t.Helper()
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	coord := reqprobe.NewCoordinator(reqprobe.NewMemoryStore())
 	h.SetRequestAnomalyStore(coord)
 	mux := http.NewServeMux()
@@ -155,7 +155,7 @@ func TestRequestAnomaliesListCountResolveFlow(t *testing.T) {
 }
 
 func TestRequestAnomaliesWithoutStoreReturns503(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	token, _, err := SignToken(1, "default", "root", "super_admin", "test-secret", false)
