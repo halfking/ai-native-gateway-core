@@ -530,7 +530,7 @@ if [[ -n "$VIA" ]]; then
             DD_BASE_REGISTRY DD_GO_BASE_IMAGE DD_RUNTIME_BASE_IMAGE \
             DD_ALLOW_STALE_WEB DD_PUBLIC_PROBE_IP DD_ADMIN_USER DD_ADMIN_PASSWORD \
             DD_SKIP_LOGIN_SMOKE LLM_GATEWAY_HARD_BLOCK_RULES \
-            LLM_GATEWAY_PROBE_LANE_PHYSICAL \
+            LLM_GATEWAY_PROBE_LANE_PHYSICAL LLM_GATEWAY_INGRESS_MAX_CONCURRENT \
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
             LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN \
@@ -2323,6 +2323,24 @@ if [[ -z "$PROBE_LANE_PHYSICAL" && -f "$ENV_FILE" ]]; then
 fi
 LLM_GATEWAY_PROBE_LANE_PHYSICAL="$PROBE_LANE_PHYSICAL"
 
+# ── 大请求入口并发槽（2026-11-14 审计轮 sizing）────────────────────────
+# 生成面 LargeIngress 槽位上限：槽按请求全生命周期持有（长流式也占位），
+# 默认 4 会让第 5 个并发请求吃 429 ingress_capacity_exceeded（2026-11-11
+# mock 压测轮登记的旋钮；2026-11-14 取证 4h 63 笔 429 且含公网真实用户）。
+# 取值优先级同 HARD_BLOCK：部署机环境变量 > gateway.env 上次值 > 不设（网关默认 4）。
+# 格式体检：只接受正整数。非法值不注入——让网关用内置默认 4。
+INGRESS_MAX_CONCURRENT="${LLM_GATEWAY_INGRESS_MAX_CONCURRENT:-}"
+if [[ -z "$INGRESS_MAX_CONCURRENT" && -f "$ENV_FILE" ]]; then
+  INGRESS_MAX_CONCURRENT="$(sed -nE 's/^(export )?LLM_GATEWAY_INGRESS_MAX_CONCURRENT=(.*)$/\2/p' "$ENV_FILE" | tail -1)"
+  INGRESS_MAX_CONCURRENT="${INGRESS_MAX_CONCURRENT%\'}"; INGRESS_MAX_CONCURRENT="${INGRESS_MAX_CONCURRENT#\'}"
+  INGRESS_MAX_CONCURRENT="${INGRESS_MAX_CONCURRENT%\"}"; INGRESS_MAX_CONCURRENT="${INGRESS_MAX_CONCURRENT#\"}"
+fi
+if [[ -n "$INGRESS_MAX_CONCURRENT" && ! "$INGRESS_MAX_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
+  log "LLM_GATEWAY_INGRESS_MAX_CONCURRENT 含非法字符（须正整数），忽略并用网关内置默认 4: ${INGRESS_MAX_CONCURRENT}"
+  INGRESS_MAX_CONCURRENT=""
+fi
+LLM_GATEWAY_INGRESS_MAX_CONCURRENT="$INGRESS_MAX_CONCURRENT"
+
 # ── 网关 → ASM 事件投递开关（2026-10-21）──────────────────────────────
 # 网关把 outbox 事件投给 ai-session-manager，需要**两个开关同时非空**：
 #   ASM_INTERNAL_ENDPOINT                    —— ASM 的 /internal/v1/events 地址
@@ -2546,6 +2564,10 @@ dd_identity_env "$ENV_FILE"
   if [[ -n "${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}" ]]; then
     printf 'export LLM_GATEWAY_PROBE_LANE_PHYSICAL=%q\n' "$LLM_GATEWAY_PROBE_LANE_PHYSICAL"
   fi
+  # 2026-11-14 入口并发槽 sizing：跨部署保留（与 PROBE_LANE 同口径）。
+  if [[ -n "${LLM_GATEWAY_INGRESS_MAX_CONCURRENT:-}" ]]; then
+    printf 'export LLM_GATEWAY_INGRESS_MAX_CONCURRENT=%q\n' "$LLM_GATEWAY_INGRESS_MAX_CONCURRENT"
+  fi
   # 2026-11-03 身份网：共享密钥跨部署保留（不配 = 网关不签发票据，兄弟服务免登不可用）。
   if [[ -n "${IDENTITY_SHARED_SECRET:-}" ]]; then
     printf 'export IDENTITY_SHARED_SECRET=%q\n' "$IDENTITY_SHARED_SECRET"
@@ -2591,6 +2613,13 @@ if [[ -n "${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}" ]]; then
   log "探测物理隔离 LLM_GATEWAY_PROBE_LANE_PHYSICAL=${LLM_GATEWAY_PROBE_LANE_PHYSICAL}"
 else
   log "探测物理隔离未配置 → 关（探测仍写业务表；DDL 928 可已建表）"
+fi
+# 大请求入口并发槽（2026-11-14 审计轮 sizing）：空值不注入 ⇒ 网关内置默认 4。
+if [[ -n "$INGRESS_MAX_CONCURRENT" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_INGRESS_MAX_CONCURRENT=${INGRESS_MAX_CONCURRENT}" )
+  log "入口并发槽 LLM_GATEWAY_INGRESS_MAX_CONCURRENT=${INGRESS_MAX_CONCURRENT}（>1MiB 归档路径并发上限）"
+else
+  log "入口并发槽未配置 → 网关内置默认 4（2026-11-14 取证该默认在 211 造成 4h 63 笔 429）"
 fi
 # 可信代理网段（2026-10-29 客户端识别轮）：空值不注入 ⇒ 网关回落 loopback-only。
 if [[ -n "$TRUSTED_PROXY_CIDRS" ]]; then
