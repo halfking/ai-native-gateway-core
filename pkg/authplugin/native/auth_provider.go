@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
@@ -23,13 +22,13 @@ import (
 // NativeAuthProvider implements authplugin.AuthProvider using the existing
 // PostgreSQL users table and HMAC-HS256 JWT stack.
 type NativeAuthProvider struct {
-	db        *pgxpool.Pool
+	db        DBPool
 	secretKey string // JWT signing key (LLM_GATEWAY_JWT_SECRET or SecretKey)
 }
 
 // NewNativeAuthProvider creates a NativeAuthProvider.
 // db must be non-nil; secretKey is the JWT signing key fallback.
-func NewNativeAuthProvider(db *pgxpool.Pool, secretKey string) (*NativeAuthProvider, error) {
+func NewNativeAuthProvider(db DBPool, secretKey string) (*NativeAuthProvider, error) {
 	if db == nil {
 		return nil, errors.New("native auth provider: db must not be nil")
 	}
