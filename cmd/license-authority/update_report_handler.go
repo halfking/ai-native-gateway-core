@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // UpdateReport 升级结果上报请求
@@ -32,7 +32,7 @@ func NewUpdateReportHandler(updateStore autoupdate.Store) *UpdateReportHandler {
 }
 
 // HandleReport 处理 POST /api/v1/updates/report
-func (h *UpdateReportHandler) HandleReport(c echo.Context) error {
+func (h *UpdateReportHandler) HandleReport(c *echo.Context) error {
 	var report UpdateReport
 	if err := c.Bind(&report); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")

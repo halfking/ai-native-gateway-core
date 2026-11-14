@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/kaixuan/llm-gateway-go/routingopt"
 )
@@ -35,7 +35,7 @@ func registerRoutingOptMLRoutes(g *echo.Group) {
 	g.GET("/routing-opt/ml", handleRoutingOptML)
 }
 
-func handleRoutingOptML(c echo.Context) error {
+func handleRoutingOptML(c *echo.Context) error {
 	routingOptMLMu.RLock()
 	opt := routingOptML
 	routingOptMLMu.RUnlock()

@@ -17,7 +17,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 ### 1. Development Environment
 
 **Prerequisites:**
-- Go 1.27.2+ ([install](https://go.dev/dl/))
+- Go 1.27.4+ ([install](https://go.dev/dl/))
 - PostgreSQL 14+ (local or Docker)
 - Redis 7+ (local or Docker)
 - Node.js 18+ and pnpm 8+ (for frontend)

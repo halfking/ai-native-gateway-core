@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strconv"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 func slogCallerLicensing() string {
@@ -33,7 +33,7 @@ func slogCallerLicensing() string {
 // {"error": op} wire shape the licensing admin API already uses) and logs
 // the real error server-side. op must be static text — never compose
 // err.Error() into it.
-func writeInternalErr(c echo.Context, op string, err error) error {
+func writeInternalErr(c *echo.Context, op string, err error) error {
 	slog.Error("licensing handler internal error", "op", op, "caller", slogCallerLicensing(), "err", err)
 	return c.JSON(http.StatusInternalServerError, map[string]string{"error": op})
 }

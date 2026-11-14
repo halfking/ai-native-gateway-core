@@ -10,7 +10,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // CollectHandler ingests allowlisted runtime metrics from gateway instances.
@@ -25,7 +25,7 @@ func NewCollectHandler(store *center.PgxStore, blocklist *ipblocklist.Service) *
 }
 
 // HandleRuntimeMetrics handles POST /api/v1/collect/runtime.
-func (h *CollectHandler) HandleRuntimeMetrics(c echo.Context) error {
+func (h *CollectHandler) HandleRuntimeMetrics(c *echo.Context) error {
 	rawInstanceID, _ := c.Get("instance_id").(string)
 	instanceID := strings.TrimPrefix(rawInstanceID, "instance:")
 	if instanceID == "" || instanceID == rawInstanceID {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // ManifestHandler handles manifest requests
@@ -40,7 +40,7 @@ type ImageManifest struct {
 }
 
 // HandleManifest handles GET /api/v1/updates/manifest?version=v1.14.0
-func (h *ManifestHandler) HandleManifest(c echo.Context) error {
+func (h *ManifestHandler) HandleManifest(c *echo.Context) error {
 	version := c.QueryParam("version")
 	if version == "" {
 		// Support alternative query param name

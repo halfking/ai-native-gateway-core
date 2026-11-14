@@ -41,18 +41,18 @@ type Metadata struct {
 
 // Spec defines the plugin specification.
 type Spec struct {
-	Type             PluginType            `yaml:"type"`
-	Executable       string                `yaml:"executable,omitempty"`
-	Args             []string              `yaml:"args,omitempty"`
-	Env              map[string]string     `yaml:"env,omitempty"`
-	WorkDir          string                `yaml:"workDir,omitempty"`
-	Remote           *RemoteConfig         `yaml:"remote,omitempty"`
-	Dependencies     []Dependency          `yaml:"dependencies,omitempty"`
-	ExtensionPoints  []ExtensionPointDecl  `yaml:"extensionPoints"`
-	Capabilities     Capabilities          `yaml:"capabilities"`
-	Resources        ResourceLimits        `yaml:"resources"`
-	Health           *HealthConfig         `yaml:"health,omitempty"`
-	ConfigSchema     map[string]interface{} `yaml:"configSchema,omitempty"`
+	Type            PluginType             `yaml:"type"`
+	Executable      string                 `yaml:"executable,omitempty"`
+	Args            []string               `yaml:"args,omitempty"`
+	Env             map[string]string      `yaml:"env,omitempty"`
+	WorkDir         string                 `yaml:"workDir,omitempty"`
+	Remote          *RemoteConfig          `yaml:"remote,omitempty"`
+	Dependencies    []Dependency           `yaml:"dependencies,omitempty"`
+	ExtensionPoints []ExtensionPointDecl   `yaml:"extensionPoints"`
+	Capabilities    Capabilities           `yaml:"capabilities"`
+	Resources       ResourceLimits         `yaml:"resources"`
+	Health          *HealthConfig          `yaml:"health,omitempty"`
+	ConfigSchema    map[string]interface{} `yaml:"configSchema,omitempty"`
 }
 
 // PluginType indicates the plugin deployment type.
@@ -88,12 +88,12 @@ type Dependency struct {
 
 // ExtensionPointDecl declares an extension point provided by the plugin.
 type ExtensionPointDecl struct {
-	Name         string `yaml:"name"`
-	Phase        string `yaml:"phase"`
-	Priority     int    `yaml:"priority"`
-	Interface    string `yaml:"interface"`
-	Description  string `yaml:"description,omitempty"`
-	Async        bool   `yaml:"async,omitempty"`
+	Name        string `yaml:"name"`
+	Phase       string `yaml:"phase"`
+	Priority    int    `yaml:"priority"`
+	Interface   string `yaml:"interface"`
+	Description string `yaml:"description,omitempty"`
+	Async       bool   `yaml:"async,omitempty"`
 }
 
 // Capabilities declares what the plugin can access.
@@ -113,11 +113,11 @@ type Capabilities struct {
 
 // ResourceLimits defines resource constraints for the plugin.
 type ResourceLimits struct {
-	Memory        *ResourceQuantity `yaml:"memory,omitempty"`
-	CPU           *ResourceQuantity `yaml:"cpu,omitempty"`
-	Timeout       string            `yaml:"timeout,omitempty"`
-	MaxOpenFiles  int               `yaml:"max_open_files,omitempty"`
-	MaxProcesses  int               `yaml:"max_processes,omitempty"`
+	Memory       *ResourceQuantity `yaml:"memory,omitempty"`
+	CPU          *ResourceQuantity `yaml:"cpu,omitempty"`
+	Timeout      string            `yaml:"timeout,omitempty"`
+	MaxOpenFiles int               `yaml:"max_open_files,omitempty"`
+	MaxProcesses int               `yaml:"max_processes,omitempty"`
 }
 
 // ResourceQuantity represents a resource quantity with request/limit.
@@ -134,14 +134,14 @@ type HealthConfig struct {
 
 // HTTPHealthCheck configures HTTP health checks.
 type HTTPHealthCheck struct {
-	Path              string `yaml:"path"`
-	Port              int    `yaml:"port"`
-	Scheme            string `yaml:"scheme,omitempty"`
-	InitialDelay      string `yaml:"initial_delay,omitempty"`
-	Period            string `yaml:"period,omitempty"`
-	Timeout           string `yaml:"timeout,omitempty"`
-	SuccessThreshold  int    `yaml:"success_threshold,omitempty"`
-	FailureThreshold  int    `yaml:"failure_threshold,omitempty"`
+	Path             string `yaml:"path"`
+	Port             int    `yaml:"port"`
+	Scheme           string `yaml:"scheme,omitempty"`
+	InitialDelay     string `yaml:"initial_delay,omitempty"`
+	Period           string `yaml:"period,omitempty"`
+	Timeout          string `yaml:"timeout,omitempty"`
+	SuccessThreshold int    `yaml:"success_threshold,omitempty"`
+	FailureThreshold int    `yaml:"failure_threshold,omitempty"`
 }
 
 // GRPCHealthCheck configures gRPC health checks.

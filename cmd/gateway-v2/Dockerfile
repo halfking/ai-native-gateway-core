@@ -16,13 +16,14 @@ USER root
 ENV GOPATH=/tmp/go
 RUN mkdir -p /tmp/go /tmp/go/pkg /tmp/go/bin
 COPY go.mod go.sum ./
-ARG GOTOOLCHAIN=auto
+COPY vendor/ ./vendor/
+ARG GOTOOLCHAIN=go1.27.4
 ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
-RUN GOTOOLCHAIN=auto GOPROXY=${GOPROXY} go mod download
+ENV GOTOOLCHAIN=${GOTOOLCHAIN}
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto go build -a -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway-v2
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -a -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway-v2
 
 FROM --platform=linux/amd64 ${REGISTRY}kx-base:go-vue-alpine-slim-runtime
 WORKDIR /

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -91,7 +91,7 @@ func SignatureVerifier(clientPublicKeyLookup ClientPublicKeyLookup) echo.Middlew
 	store := newNonceStore()
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// Extract required headers
 			instanceID := c.Request().Header.Get("X-Instance-ID")
 			if instanceID == "" || len(instanceID) > 256 {
@@ -175,7 +175,7 @@ func SignatureVerifierWithRedis(clientPublicKeyLookup ClientPublicKeyLookup, red
 	store := newRedisNonceStore(redisClient)
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// Extract required headers
 			instanceID := c.Request().Header.Get("X-Instance-ID")
 			if instanceID == "" || len(instanceID) > 256 {

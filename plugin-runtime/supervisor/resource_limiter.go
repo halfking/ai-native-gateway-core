@@ -22,7 +22,7 @@ type ResourceLimiter struct {
 func NewResourceLimiter(pluginName string, limits discovery.ResourceLimits) (*ResourceLimiter, error) {
 	// Create cgroup path: /sys/fs/cgroup/llm-gateway-plugins/<plugin-name>
 	cgroupPath := filepath.Join("/sys/fs/cgroup", "llm-gateway-plugins", pluginName)
-	
+
 	// Create cgroup directory (if not exists)
 	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
 		// If cgroup not supported, continue without limits
@@ -33,7 +33,7 @@ func NewResourceLimiter(pluginName string, limits discovery.ResourceLimits) (*Re
 			limits:     limits,
 		}, nil
 	}
-	
+
 	return &ResourceLimiter{
 		pluginName: pluginName,
 		cgroupPath: cgroupPath,
@@ -47,26 +47,26 @@ func (r *ResourceLimiter) Apply(cmd *exec.Cmd) error {
 		// Cgroup not supported, skip
 		return nil
 	}
-	
+
 	// Apply memory limit
 	if r.limits.Memory != nil && r.limits.Memory.Limit != "" {
 		memoryBytes, err := parseMemory(r.limits.Memory.Limit)
 		if err != nil {
 			return fmt.Errorf("failed to parse memory limit: %w", err)
 		}
-		
+
 		if err := r.writeCgroup("memory.max", fmt.Sprintf("%d", memoryBytes)); err != nil {
 			fmt.Printf("WARN: failed to set memory limit: %v\n", err)
 		}
 	}
-	
+
 	// Apply CPU limit
 	if r.limits.CPU != nil && r.limits.CPU.Limit != "" {
 		cpuPercent, err := parseCPU(r.limits.CPU.Limit)
 		if err != nil {
 			return fmt.Errorf("failed to parse CPU limit: %w", err)
 		}
-		
+
 		// Convert percentage to quota (100ms period)
 		// Example: 50% = 50000 quota per 100000 period
 		quota := cpuPercent * 1000
@@ -74,22 +74,22 @@ func (r *ResourceLimiter) Apply(cmd *exec.Cmd) error {
 			fmt.Printf("WARN: failed to set CPU limit: %v\n", err)
 		}
 	}
-	
+
 	// Apply PID limit (max processes)
 	if r.limits.MaxProcesses > 0 {
 		if err := r.writeCgroup("pids.max", fmt.Sprintf("%d", r.limits.MaxProcesses)); err != nil {
 			fmt.Printf("WARN: failed to set PID limit: %v\n", err)
 		}
 	}
-	
+
 	// Set up SysProcAttr to join cgroup
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	
+
 	// Note: Actual cgroup assignment happens via cgroup.procs after process starts
 	// This is handled in a post-start hook (not shown here for simplicity)
-	
+
 	return nil
 }
 
@@ -104,7 +104,7 @@ func (r *ResourceLimiter) AssignProcess(pid int) error {
 	if r.cgroupPath == "" {
 		return nil // Cgroup not supported
 	}
-	
+
 	procsPath := filepath.Join(r.cgroupPath, "cgroup.procs")
 	return os.WriteFile(procsPath, []byte(strconv.Itoa(pid)), 0644)
 }
@@ -114,7 +114,7 @@ func (r *ResourceLimiter) Cleanup() error {
 	if r.cgroupPath == "" {
 		return nil
 	}
-	
+
 	return os.RemoveAll(r.cgroupPath)
 }
 
@@ -125,11 +125,11 @@ func parseMemory(mem string) (int64, error) {
 	if len(mem) < 2 {
 		return 0, fmt.Errorf("invalid memory format: %s", mem)
 	}
-	
+
 	// Extract number and unit
 	var value int64
 	var unit string
-	
+
 	if mem[len(mem)-2:] == "Mi" || mem[len(mem)-2:] == "Gi" || mem[len(mem)-2:] == "Ki" {
 		fmt.Sscanf(mem, "%d%s", &value, &unit)
 	} else if mem[len(mem)-2:] == "MB" || mem[len(mem)-2:] == "GB" || mem[len(mem)-2:] == "KB" {
@@ -139,7 +139,7 @@ func parseMemory(mem string) (int64, error) {
 		fmt.Sscanf(mem, "%d", &value)
 		return value, nil
 	}
-	
+
 	// Convert to bytes
 	switch unit {
 	case "Ki":
@@ -165,10 +165,10 @@ func parseCPU(cpu string) (int, error) {
 	if _, err := fmt.Sscanf(cpu, "%d", &percent); err != nil {
 		return 0, fmt.Errorf("invalid CPU format: %s", cpu)
 	}
-	
+
 	if percent < 0 || percent > 100 {
 		return 0, fmt.Errorf("CPU percent must be 0-100, got %d", percent)
 	}
-	
+
 	return percent, nil
 }

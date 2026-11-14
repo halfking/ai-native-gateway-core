@@ -231,6 +231,7 @@ echo "[verify] full Go tests"
 #   #   （build tag `ursmhollowout`，14400s 预算）⇒ build tag ⇒ 不再进默认构建 ⇒
 #   #   本全量腿重回到静态门口径（≈900-1100s 实测）⇒ 3600s ≈ 3x 余量。
 #   #   ★ 与 `make test` / `make guards-ursmcheck` 三处同档（r1050 通用式）。
+make test-plugin-runtime-modules
 go test ./... -count=1 -timeout=3600s
 
 # ★ 2026-11-11（IR 协议转换层审计轮）：把**从未被运行过**的门接进官方门。

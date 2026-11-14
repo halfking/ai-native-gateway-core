@@ -24,16 +24,24 @@ func TestSessionCache_L1ByteBudget(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Large entries retain only metadata; inspect membership rather than
+	// asking the public read path for an unavailable complete pair.
+	contains := func(sessionID string) bool {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		_, ok := cache.l1[l1Key("tenant1", sessionID)]
+		return ok
+	}
 
 	// Insert entry 1: should fit (100 MB < 256 MB).
 	cache.Set(ctx, "tenant1", "session1", state, largeBody)
-	if got, _, _ := cache.GetOrLoad(ctx, "tenant1", "session1"); got == nil {
+	if !contains("session1") {
 		t.Fatal("entry 1 should be present after Set")
 	}
 
 	// Insert entry 2: should fit (200 MB < 256 MB).
 	cache.Set(ctx, "tenant1", "session2", state, largeBody)
-	if got, _, _ := cache.GetOrLoad(ctx, "tenant1", "session2"); got == nil {
+	if !contains("session2") {
 		t.Fatal("entry 2 should be present after Set")
 	}
 
@@ -41,15 +49,15 @@ func TestSessionCache_L1ByteBudget(t *testing.T) {
 	cache.Set(ctx, "tenant1", "session3", state, largeBody)
 
 	// session3 (MRU) and session2 should be present.
-	if got, _, _ := cache.GetOrLoad(ctx, "tenant1", "session3"); got == nil {
+	if !contains("session3") {
 		t.Error("entry 3 (MRU) should be present after byte-triggered eviction")
 	}
-	if got, _, _ := cache.GetOrLoad(ctx, "tenant1", "session2"); got == nil {
+	if !contains("session2") {
 		t.Error("entry 2 should still be present (not LRU)")
 	}
 
 	// session1 (LRU) should have been evicted to bring the total under budget.
-	if got, _, _ := cache.GetOrLoad(ctx, "tenant1", "session1"); got != nil {
+	if contains("session1") {
 		t.Error("entry 1 (LRU) should have been evicted when byte budget was exceeded")
 	}
 

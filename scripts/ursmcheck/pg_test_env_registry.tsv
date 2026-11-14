@@ -7,10 +7,16 @@
 #   dangerous     危险开关（取消保护）        ⇒ 事实源必须不导出
 #   component     拼装型/夹具参数/外部依赖    ⇒ 事实源必须不导出
 ABS_SESSIONS_DIR	component	会话快照目录（路径），与「连哪个库」无关
+AI_SESSION_MANAGER_MANIFEST	component	Controller 真实子进程夹具读取的插件 manifest 文件路径；不选择 PG 目标、不取消连库保护
+AI_SESSION_MANAGER_PLUGIN_SOCKET	component	Controller 真实子进程夹具的 HTTP Unix socket 路径；不选择 PG 目标、不取消连库保护
 AUTO_USE_CHANNEL_QUALITY_ROUTING	component	特性开关（布尔），不改变连库目标
 FREEDISCOVERY_DEFINITELY_UNSET_VAR_2	component	哨兵变量：用来断言某变量「确实未被设置」
 GATEWAY_CANONICAL_TEST_DSN	dsn_exclusive	canonical fixture 的专用 DSN：除主库外还必须连第二个库 `identity_shadow` ⇒ 只能指向「本地联调专用库」⇒ 不能与通用 DSN 同值（否则把「连本地库」的前提给了一个通用库 ⇒ 产品守卫正确拒绝 ⇒ 门禁得到假红）
 GATEWAY_CANONICAL_TEST_LOCAL_ONLY	dangerous	授权开关：=yes 才允许 canonical fixture 连本地库（不给则 t.Fatal 而非 SKIP）；打开即授予「连本地库」的权限
+GATEWAY_CONTROLLER_TEST_HANDSHAKE	component	生产 Controller 真实子进程测试写入握手证据的文件路径；不是 DSN 或连库授权开关
+GATEWAY_PLUGIN_EVENT_SOCKET	component	Controller 子进程事件 IPC 的 Unix socket 路径；不是 PG 连接串
+GATEWAY_PLUGIN_EVENT_TOKEN	component	Controller 子进程事件 IPC 的独立可撤销身份凭证；不选择 PG 目标、不取消连库保护
+GATEWAY_PLUGIN_ID	component	Controller 子进程事件 IPC 身份绑定的插件 ID；不是数据库或 schema 标识
 GATEWAY_URL	component	网关 HTTP 地址（不是 DSN），真库腿打的是 API 不是库
 GUARD_IT_DSN	dsn_exclusive	balance-floor 集成腿的专用 DSN：建池后裸 TRUNCATE credentials, providers CASCADE ⇒ 文件头明写「绝不写线上 llm_gateway 库」⇒ 必须指向一次性 scratch 库 ⇒ 不能与通用 DSN 同值（R86 轮移出事实源 + 给该腿补库名守卫）
 HOME	component	环境杂项（HOME），测试只用来拼路径

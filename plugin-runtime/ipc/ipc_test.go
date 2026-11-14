@@ -1,11 +1,13 @@
 package ipc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -379,10 +381,8 @@ func TestServerStop(t *testing.T) {
 	}
 }
 
-// Test large message (reduced size for reliability)
+// Test a valid 10 MiB JSON payload through the real request/response path.
 func TestLargeMessage(t *testing.T) {
-	t.Skip("Skipping large message test - requires further optimization for large payloads")
-
 	socketPath := filepath.Join(t.TempDir(), "test.sock")
 
 	// Create server
@@ -417,10 +417,9 @@ func TestLargeMessage(t *testing.T) {
 	client := NewClient(socketPath)
 	defer client.Close()
 
-	// Create medium-sized payload (10KB - safer for testing)
-	largeData := make([]byte, 10*1024)
-	for i := range largeData {
-		largeData[i] = byte(i % 256)
+	largeData, err := json.Marshal(strings.Repeat("a", 10*1024*1024))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	req := ExtensionPointRequest{
@@ -431,7 +430,10 @@ func TestLargeMessage(t *testing.T) {
 		Context: largeData,
 	}
 
-	reqData, _ := json.Marshal(req)
+	reqData, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Use longer timeout for large message
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -452,7 +454,7 @@ func TestLargeMessage(t *testing.T) {
 	if !resp.Success {
 		t.Error("Expected success=true")
 	}
-	if len(resp.Result) != len(largeData) {
-		t.Errorf("Expected result length %d, got %d", len(largeData), len(resp.Result))
+	if !bytes.Equal(resp.Result, largeData) {
+		t.Errorf("Response differs from the complete %d-byte payload (got %d)", len(largeData), len(resp.Result))
 	}
 }

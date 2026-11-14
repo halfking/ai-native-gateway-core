@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

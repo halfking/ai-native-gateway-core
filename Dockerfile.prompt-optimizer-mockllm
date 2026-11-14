@@ -6,7 +6,7 @@
 # 构建上下文复用仓库根（靠 Dockerfile.prompt-optimizer.dockerignore
 # 同类规则排除大文件）；本文件另建一份专属 ignore。
 
-FROM golang:1.27-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
 

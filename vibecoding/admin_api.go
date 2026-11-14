@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // AdminAPI Admin API Handler
@@ -52,7 +52,7 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 }
 
 // CreateProject 创建项目
-func (a *AdminAPI) CreateProject(c echo.Context) error {
+func (a *AdminAPI) CreateProject(c *echo.Context) error {
 	var req struct {
 		Name        string `json:"name" validate:"required"`
 		Description string `json:"description"`
@@ -84,7 +84,7 @@ func (a *AdminAPI) CreateProject(c echo.Context) error {
 }
 
 // ListProjects 列出项目
-func (a *AdminAPI) ListProjects(c echo.Context) error {
+func (a *AdminAPI) ListProjects(c *echo.Context) error {
 	tenantID, _ := c.Get("tenant_id").(string)
 	status := ProjectStatus(c.QueryParam("status"))
 	offset := 0
@@ -107,7 +107,7 @@ func (a *AdminAPI) ListProjects(c echo.Context) error {
 }
 
 // GetProject 获取项目详情
-func (a *AdminAPI) GetProject(c echo.Context) error {
+func (a *AdminAPI) GetProject(c *echo.Context) error {
 	var id int64
 	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
@@ -120,7 +120,7 @@ func (a *AdminAPI) GetProject(c echo.Context) error {
 }
 
 // UpdateProject 更新项目
-func (a *AdminAPI) UpdateProject(c echo.Context) error {
+func (a *AdminAPI) UpdateProject(c *echo.Context) error {
 	var id int64
 	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
@@ -170,7 +170,7 @@ func (a *AdminAPI) UpdateProject(c echo.Context) error {
 }
 
 // ArchiveProject 归档项目
-func (a *AdminAPI) ArchiveProject(c echo.Context) error {
+func (a *AdminAPI) ArchiveProject(c *echo.Context) error {
 	var id int64
 	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
@@ -183,7 +183,7 @@ func (a *AdminAPI) ArchiveProject(c echo.Context) error {
 }
 
 // DeleteProject 删除项目
-func (a *AdminAPI) DeleteProject(c echo.Context) error {
+func (a *AdminAPI) DeleteProject(c *echo.Context) error {
 	var id int64
 	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
@@ -196,7 +196,7 @@ func (a *AdminAPI) DeleteProject(c echo.Context) error {
 }
 
 // GetProjectStats 获取项目统计
-func (a *AdminAPI) GetProjectStats(c echo.Context) error {
+func (a *AdminAPI) GetProjectStats(c *echo.Context) error {
 	tenantID, _ := c.Get("tenant_id").(string)
 
 	stats, err := a.projectManager.GetProjectStats(c.Request().Context(), tenantID)
@@ -209,7 +209,7 @@ func (a *AdminAPI) GetProjectStats(c echo.Context) error {
 }
 
 // CreateSession 创建会话
-func (a *AdminAPI) CreateSession(c echo.Context) error {
+func (a *AdminAPI) CreateSession(c *echo.Context) error {
 	var req struct {
 		TaskType  string `json:"task_type" validate:"required"`
 		ProjectID *int64 `json:"project_id"`
@@ -230,7 +230,7 @@ func (a *AdminAPI) CreateSession(c echo.Context) error {
 }
 
 // ListSessions 列出会话
-func (a *AdminAPI) ListSessions(c echo.Context) error {
+func (a *AdminAPI) ListSessions(c *echo.Context) error {
 	var projectID *int64
 	if pidStr := c.QueryParam("project_id"); pidStr != "" {
 		var pid int64
@@ -259,7 +259,7 @@ func (a *AdminAPI) ListSessions(c echo.Context) error {
 }
 
 // GetSession 获取会话详情
-func (a *AdminAPI) GetSession(c echo.Context) error {
+func (a *AdminAPI) GetSession(c *echo.Context) error {
 	var id int64
 	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
@@ -272,7 +272,7 @@ func (a *AdminAPI) GetSession(c echo.Context) error {
 }
 
 // AddMessage 添加消息
-func (a *AdminAPI) AddMessage(c echo.Context) error {
+func (a *AdminAPI) AddMessage(c *echo.Context) error {
 	sessionID := c.Param("id")
 
 	var req struct {
@@ -293,7 +293,7 @@ func (a *AdminAPI) AddMessage(c echo.Context) error {
 }
 
 // CompleteSession 完成会话
-func (a *AdminAPI) CompleteSession(c echo.Context) error {
+func (a *AdminAPI) CompleteSession(c *echo.Context) error {
 	sessionID := c.Param("id")
 
 	if err := a.sessionManager.CompleteSession(c.Request().Context(), sessionID); err != nil {
@@ -305,7 +305,7 @@ func (a *AdminAPI) CompleteSession(c echo.Context) error {
 }
 
 // CancelSession 取消会话
-func (a *AdminAPI) CancelSession(c echo.Context) error {
+func (a *AdminAPI) CancelSession(c *echo.Context) error {
 	sessionID := c.Param("id")
 
 	if err := a.sessionManager.CancelSession(c.Request().Context(), sessionID); err != nil {
@@ -317,7 +317,7 @@ func (a *AdminAPI) CancelSession(c echo.Context) error {
 }
 
 // GetSessionStats 获取会话统计
-func (a *AdminAPI) GetSessionStats(c echo.Context) error {
+func (a *AdminAPI) GetSessionStats(c *echo.Context) error {
 	var projectID *int64
 	if pidStr := c.QueryParam("project_id"); pidStr != "" {
 		var pid int64
@@ -335,7 +335,7 @@ func (a *AdminAPI) GetSessionStats(c echo.Context) error {
 }
 
 // CreateReview 创建代码审查
-func (a *AdminAPI) CreateReview(c echo.Context) error {
+func (a *AdminAPI) CreateReview(c *echo.Context) error {
 	var req struct {
 		SessionID *int64 `json:"session_id"`
 		FilePath  string `json:"file_path"`
@@ -361,7 +361,7 @@ func (a *AdminAPI) CreateReview(c echo.Context) error {
 }
 
 // ListReviews 列出代码审查
-func (a *AdminAPI) ListReviews(c echo.Context) error {
+func (a *AdminAPI) ListReviews(c *echo.Context) error {
 	var sessionID *int64
 	if sidStr := c.QueryParam("session_id"); sidStr != "" {
 		var sid int64
@@ -389,7 +389,7 @@ func (a *AdminAPI) ListReviews(c echo.Context) error {
 }
 
 // GetReview 获取代码审查详情
-func (a *AdminAPI) GetReview(c echo.Context) error {
+func (a *AdminAPI) GetReview(c *echo.Context) error {
 	var id int64
 	_, _ = fmt.Sscanf(c.Param("id"), "%d", &id)
 
@@ -402,7 +402,7 @@ func (a *AdminAPI) GetReview(c echo.Context) error {
 }
 
 // GetReviewStats 获取审查统计
-func (a *AdminAPI) GetReviewStats(c echo.Context) error {
+func (a *AdminAPI) GetReviewStats(c *echo.Context) error {
 	var sessionID *int64
 	if sidStr := c.QueryParam("session_id"); sidStr != "" {
 		var sid int64

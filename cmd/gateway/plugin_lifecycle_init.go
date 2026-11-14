@@ -234,6 +234,8 @@ func makeLifecycleHandler(lc pluginLifecycle, action string, do func(context.Con
 			if e, ok := err.(*pluginLifecycleError); ok {
 				ple = e
 				switch ple.code {
+				case "plugin.managed_by_runtime_config":
+					status = http.StatusConflict
 				case "plugin.not_found":
 					status = http.StatusNotFound
 				case "plugin.invalid_id":

@@ -383,7 +383,21 @@ esac
 #       - 「一条阈值都没触发」时脚本不得崩（bash 3.2 空数组展开曾使其当场退出）
 #       - gauge 失败计数确实能被数出来（子 shell 文件计数是否真的生效）
 #       - top5 / dead_tup 不得谎称 clean
-bdir=$(mktemp -d)
+# This scenario isolates unavailable database gauges. Host disk usage must not
+# introduce a higher-priority disk warning, and no real notifier is invoked.
+bdir="$tmp/gauge"
+mkdir -p "$bdir"
+cat > "$bdir/df" <<'GAUGE_DF'
+#!/bin/sh
+printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted' 'fixture 104857600 10485760 94371840 10% /'
+GAUGE_DF
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$bdir/docker"
+chmod +x "$bdir/df" "$bdir/docker"
+DF_BIN="$bdir/df" \
+DOCKER_BIN="$bdir/docker" \
+LLMGW_PG17_CONF="$bdir/no-config" \
+PG17_NOTIFY_BIN="$bdir/no-notifier" \
+PG17_DISK_WATCH_STATE="$bdir/alertstate" \
 LLMGW_LOCK_DIR="$bdir/lock" \
 LLMGW_DISK_WATCH_LOG="$bdir/dw.log" \
 LLMGW_DISK_WATCH_ALERT_LOG="$bdir/dw.alert.log" \

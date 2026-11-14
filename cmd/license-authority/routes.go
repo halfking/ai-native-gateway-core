@@ -14,7 +14,7 @@ import (
 	mw "github.com/kaixuan/llm-gateway-go/cmd/license-authority/middleware"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -149,7 +149,7 @@ func signedGroup(parent *echo.Group, lookup mw.ClientPublicKeyLookup, redisClien
 func instanceTokenGroup(parent *echo.Group, serverPubKey ed25519.PublicKey) *echo.Group {
 	group := parent.Group("")
 	group.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			auth := c.Request().Header.Get("Authorization")
 			if len(auth) <= len("Bearer ") || auth[:len("Bearer ")] != "Bearer " {
 				return echo.NewHTTPError(401, "unauthorized")
@@ -178,7 +178,7 @@ func adminGroup(api *echo.Group, path string) *echo.Group {
 
 func adminTokenMiddleware(expected string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			const prefix = "Bearer "
 			auth := c.Request().Header.Get("Authorization")
 			if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix || !equalSecret(auth[len(prefix):], expected) {
