@@ -167,6 +167,15 @@ func (h *PluginAPIHandler) GetPluginHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	pluginID := pathParts[3]
+	// 2026-11-14 12h 审计轮补：路径穿越门。Go ServeMux 已对 %2e/%2f URL 解码，
+	// id=".." 会拼出 pluginDir/../plugin-manifest.json（越一级读任意目录中
+	// 恰好叫 plugin-manifest.json 的文件）。合法插件 ID 是单段目录名，
+	// 含分隔符/相对段一律 400（fail-closed）。
+	if pluginID == "" || pluginID == "." || pluginID == ".." ||
+		strings.ContainsAny(pluginID, "/\\") || filepath.Base(pluginID) != pluginID {
+		h.sendError(w, http.StatusBadRequest, "Invalid plugin ID")
+		return
+	}
 
 	plugin, err := h.registry.GetPlugin(pluginID)
 	if err != nil {

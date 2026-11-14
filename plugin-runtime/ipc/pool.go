@@ -84,6 +84,13 @@ func (p *connectionPool) dial() (net.Conn, error) {
 }
 
 // Close closes all connections in the pool.
+//
+// 2026-11-14 12h 审计轮补（D-Pool1）：原实现 close(p.conns) 后
+// `for conn := range p.conns` 排空——与 Put 的「先验 closed 再（锁外）
+// select send」存在竞态窗：Put 在 Unlock 后 Close 才置位 ⇒ send on closed
+// channel panic。修法 = 不 close channel，改「closed 标志 + 持锁非阻塞
+// 排空」：Get/Put 的 closed 先验仍挡住 Close 之后的取还，Close 自身
+// drain 掉池内余量。channel 永不 close ⇒ 任何时序的 send 都安全。
 func (p *connectionPool) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -93,14 +100,17 @@ func (p *connectionPool) Close() error {
 	}
 
 	p.closed = true
-	close(p.conns)
 
-	// Close all pooled connections
-	for conn := range p.conns {
-		conn.Close()
+	// Drain pooled connections (non-blocking: channel is buffered and
+	// never closed, so a plain range would block on an empty pool).
+	for {
+		select {
+		case conn := <-p.conns:
+			conn.Close()
+		default:
+			return nil
+		}
 	}
-
-	return nil
 }
 
 // Size returns the current number of connections in the pool.
