@@ -7182,12 +7182,38 @@ func main() {
 		}),
 		dbConn.Pool(), cfg.SecretKey,
 	)
+	// activate/deactivate需鉴权；wrap为AdminMiddleware handler
+	activateHandler := admin.AdminMiddleware(
+		http.HandlerFunc(pluginapiHandler.ActivatePluginHandler),
+		dbConn.Pool(), cfg.SecretKey,
+	)
+	deactivateHandler := admin.AdminMiddleware(
+		http.HandlerFunc(pluginapiHandler.DeactivatePluginHandler),
+		dbConn.Pool(), cfg.SecretKey,
+	)
+
 	servePluginAPI := func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plugins"), "/")
+		// POST activate/deactivate: 需admin权限
+		if r.Method == http.MethodPost {
+			switch {
+			case strings.HasSuffix(rest, "/activate"):
+				activateHandler.ServeHTTP(w, r)
+				return
+			case strings.HasSuffix(rest, "/deactivate"):
+				deactivateHandler.ServeHTTP(w, r)
+				return
+			default:
+				// 其他POST请求（如settings）走settingsHandler
+				settingsHandler.ServeHTTP(w, r)
+				return
+			}
+		}
 		if r.Method != http.MethodGet {
 			settingsHandler.ServeHTTP(w, r)
 			return
 		}
-		rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plugins"), "/")
+		// GET请求：list/get公开，settings需鉴权
 		switch {
 		case rest == "" || rest == "manifests":
 			pluginapiHandler.ListPluginsHandler(w, r)
@@ -7197,6 +7223,7 @@ func main() {
 			pluginapiHandler.GetPluginHandler(w, r)
 		}
 	}
+
 	mux.HandleFunc("GET /api/v1/plugins", servePluginAPI)
 	mux.HandleFunc("/api/v1/plugins/", servePluginAPI)
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(

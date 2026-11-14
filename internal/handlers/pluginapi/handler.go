@@ -5,6 +5,7 @@ package pluginapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -422,14 +423,35 @@ func (r *fileBasedRegistry) ListPlugins() ([]PluginInfo, error) {
 }
 
 func (r *fileBasedRegistry) GetPlugin(id string) (*PluginInfo, error) {
-	manifestPath := filepath.Join(r.pluginDir, id, "plugin-manifest.json")
-	manifest, err := pluginruntime.LoadManifest(manifestPath)
+	// Scan all directories to find matching plugin_id
+	// (directory name may differ from plugin_id)
+	entries, err := os.ReadDir(r.pluginDir)
 	if err != nil {
 		return nil, err
 	}
 
-	info := r.manifestToPluginInfo(manifest)
-	return &info, nil
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		manifestPath := filepath.Join(r.pluginDir, entry.Name(), "plugin-manifest.json")
+		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+			continue
+		}
+
+		manifest, err := pluginruntime.LoadManifest(manifestPath)
+		if err != nil {
+			continue
+		}
+
+		if manifest.PluginID == id {
+			info := r.manifestToPluginInfo(manifest)
+			return &info, nil
+		}
+	}
+
+	return nil, fmt.Errorf("plugin not found: %s", id)
 }
 
 func (r *fileBasedRegistry) manifestToPluginInfo(m *pluginruntime.Manifest) PluginInfo {
