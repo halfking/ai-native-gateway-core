@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 type AdminHandler struct {
@@ -56,7 +56,7 @@ func generateLicenseKey() string {
 	return fmt.Sprintf("LIC-%s", hex.EncodeToString(b))
 }
 
-func (h *AdminHandler) CreateLicense(c echo.Context) error {
+func (h *AdminHandler) CreateLicense(c *echo.Context) error {
 	var req struct {
 		Customer         string   `json:"customer"`
 		CustomerEmail    string   `json:"customer_email"`
@@ -109,7 +109,7 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 	return c.JSON(http.StatusCreated, lic)
 }
 
-func (h *AdminHandler) ListLicenses(c echo.Context) error {
+func (h *AdminHandler) ListLicenses(c *echo.Context) error {
 	offset, _ := strconv.Atoi(c.QueryParam("offset"))
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
 	if limit == 0 {
@@ -135,7 +135,7 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 	})
 }
 
-func (h *AdminHandler) GetLicense(c echo.Context) error {
+func (h *AdminHandler) GetLicense(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -152,7 +152,7 @@ func (h *AdminHandler) GetLicense(c echo.Context) error {
 	return c.JSON(http.StatusOK, lic)
 }
 
-func (h *AdminHandler) RevokeLicense(c echo.Context) error {
+func (h *AdminHandler) RevokeLicense(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -172,7 +172,7 @@ func (h *AdminHandler) RevokeLicense(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "license revoked"})
 }
 
-func (h *AdminHandler) UpdateLicense(c echo.Context) error {
+func (h *AdminHandler) UpdateLicense(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -226,7 +226,7 @@ func (h *AdminHandler) UpdateLicense(c echo.Context) error {
 	return c.JSON(http.StatusOK, existing)
 }
 
-func (h *AdminHandler) ListDevices(c echo.Context) error {
+func (h *AdminHandler) ListDevices(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -249,7 +249,7 @@ func (h *AdminHandler) ListDevices(c echo.Context) error {
 	return c.JSON(http.StatusOK, devices)
 }
 
-func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
+func (h *AdminHandler) DeactivateDevice(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -281,7 +281,7 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "device deactivated"})
 }
 
-func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
+func (h *AdminHandler) ListOfflineRequests(c *echo.Context) error {
 	requests, err := h.store.ListOfflineRequests(c.Request().Context())
 	if err != nil {
 		return writeInternalErr(c, "list offline requests failed", err)
@@ -292,7 +292,7 @@ func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
 	return c.JSON(http.StatusOK, requests)
 }
 
-func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
+func (h *AdminHandler) ApproveOfflineRequest(c *echo.Context) error {
 	requestID := c.Param("id")
 
 	result, err := h.offlineManager.ApproveOfflineRequest(c.Request().Context(), requestID)
@@ -307,7 +307,7 @@ func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 	})
 }
 
-func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
+func (h *AdminHandler) RejectOfflineRequest(c *echo.Context) error {
 	requestID := c.Param("id")
 	var req struct {
 		Reason string `json:"reason"`

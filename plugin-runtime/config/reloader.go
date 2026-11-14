@@ -2,9 +2,11 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -30,8 +32,10 @@ type ConfigReloader interface {
 	Stop() error
 }
 
-// ReloadHandler is called when configuration is successfully reloaded.
-// It receives both the old and new configuration for comparison.
+// ReloadHandler applies configuration before the new snapshot is published.
+// It applies newConfig. On failure, handlers already attempted are invoked in
+// reverse with the arguments swapped to restore the old state. Handlers must
+// therefore be idempotent and support applying either configuration.
 type ReloadHandler func(ctx context.Context, oldConfig, newConfig *Config) error
 
 type configReloader struct {
@@ -41,40 +45,58 @@ type configReloader struct {
 	watcher    *fsnotify.Watcher
 	configPath string
 
-	mu      sync.RWMutex
-	stopCh  chan struct{}
-	stopped bool
+	mu       sync.RWMutex
+	reloadMu sync.Mutex
+	wg       sync.WaitGroup
+	watching bool
+	stopCh   chan struct{}
+	stopped  bool
+	lifetime context.Context
+	cancel   context.CancelFunc
+	stopOnce sync.Once
+	stopErr  error
 }
 
 // NewConfigReloader creates a new configuration reloader.
 func NewConfigReloader(initialConfig *Config, validator Validator) (ConfigReloader, error) {
+	if initialConfig == nil || validator == nil {
+		return nil, fmt.Errorf("initial config and validator are required")
+	}
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create watcher: %w", err)
 	}
 
+	lifetime, cancel := context.WithCancel(context.Background())
 	return &configReloader{
 		holder:    NewConfigHolder(initialConfig),
 		validator: validator,
 		watcher:   watcher,
 		stopCh:    make(chan struct{}),
+		lifetime:  lifetime, cancel: cancel,
 	}, nil
 }
 
 // Watch starts watching the configuration file.
 func (r *configReloader) Watch(ctx context.Context, configPath string) error {
-	r.mu.Lock()
-	if r.stopped {
-		r.mu.Unlock()
-		return fmt.Errorf("reloader is stopped")
+	path, err := filepath.Abs(configPath)
+	if err != nil {
+		return err
 	}
-	r.configPath = configPath
-	r.mu.Unlock()
-
-	// Add file to watcher
-	if err := r.watcher.Add(configPath); err != nil {
+	r.mu.Lock()
+	if r.stopped || r.watching {
+		r.mu.Unlock()
+		return fmt.Errorf("reloader is stopped or already watching")
+	}
+	// Watch the directory so atomic replacement retains the watch on Linux too.
+	if err := r.watcher.Add(filepath.Dir(path)); err != nil {
+		r.mu.Unlock()
 		return fmt.Errorf("watch config file: %w", err)
 	}
+	r.configPath = path
+	r.watching = true
+	r.wg.Add(1)
+	r.mu.Unlock()
 
 	log.Printf("INFO: Watching configuration file: %s", configPath)
 
@@ -86,9 +108,15 @@ func (r *configReloader) Watch(ctx context.Context, configPath string) error {
 
 // watch monitors file changes and triggers reloads.
 func (r *configReloader) watch(ctx context.Context) {
+	defer r.wg.Done()
 	// Debounce timer to avoid multiple reloads on rapid file changes
 	var timer *time.Timer
 	var timerCh <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 
 	for {
 		select {
@@ -97,9 +125,8 @@ func (r *configReloader) watch(ctx context.Context) {
 				return
 			}
 
-			// Only handle Write and Create events
-			if event.Op&fsnotify.Write == fsnotify.Write ||
-				event.Op&fsnotify.Create == fsnotify.Create {
+			if filepath.Clean(event.Name) == r.configPath &&
+				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
 				log.Printf("INFO: Config file changed: %s (op: %s)", event.Name, event.Op)
 
 				// Debounce: wait 100ms before reloading
@@ -111,6 +138,7 @@ func (r *configReloader) watch(ctx context.Context) {
 			}
 
 		case <-timerCh:
+			timerCh = nil
 			// Trigger reload after debounce
 			if err := r.Reload(ctx); err != nil {
 				log.Printf("ERROR: Config reload failed: %v", err)
@@ -136,13 +164,28 @@ func (r *configReloader) OnReload(handler ReloadHandler) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.stopped || handler == nil {
+		return fmt.Errorf("reloader stopped or nil handler")
+	}
 	r.handlers = append(r.handlers, handler)
 	return nil
 }
 
 // Reload manually triggers a configuration reload.
 func (r *configReloader) Reload(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	stopCancel := context.AfterFunc(r.lifetime, cancel)
+	defer func() { stopCancel(); cancel() }()
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	r.mu.RLock()
+	if r.stopped {
+		r.mu.RUnlock()
+		return fmt.Errorf("reloader is stopped")
+	}
 	configPath := r.configPath
 	handlers := make([]ReloadHandler, len(r.handlers))
 	copy(handlers, r.handlers)
@@ -166,19 +209,23 @@ func (r *configReloader) Reload(ctx context.Context) error {
 		return fmt.Errorf("validate config: %w", err)
 	}
 
-	// Atomically replace config
-	r.holder.Set(newConfig)
-
-	log.Printf("INFO: Configuration reloaded successfully")
-
-	// Call reload handlers
+	// Publish only after every application succeeds. Include the failing handler
+	// in rollback: it may have partially changed its own state before returning.
 	for i, handler := range handlers {
 		if err := handler(ctx, oldConfig, newConfig); err != nil {
-			log.Printf("ERROR: Reload handler %d failed: %v", i, err)
-			// Continue calling other handlers
+			failures := []error{fmt.Errorf("reload handler %d: %w", i, err)}
+			rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			for j := i; j >= 0; j-- {
+				if rollbackErr := handlers[j](rollbackCtx, newConfig, oldConfig); rollbackErr != nil {
+					failures = append(failures, fmt.Errorf("rollback handler %d: %w", j, rollbackErr))
+				}
+			}
+			return errors.Join(failures...)
 		}
 	}
-
+	r.holder.Set(newConfig)
+	log.Printf("INFO: Configuration reloaded successfully")
 	return nil
 }
 
@@ -204,20 +251,17 @@ func (r *configReloader) GetConfig() *Config {
 
 // Stop stops watching for configuration changes.
 func (r *configReloader) Stop() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.stopped {
-		return nil
-	}
-
-	r.stopped = true
-	close(r.stopCh)
-
-	if err := r.watcher.Close(); err != nil {
-		return fmt.Errorf("close watcher: %w", err)
-	}
-
-	log.Println("INFO: Config reloader stopped")
-	return nil
+	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		r.stopped = true
+		r.cancel()
+		close(r.stopCh)
+		r.mu.Unlock()
+		r.stopErr = r.watcher.Close()
+		r.wg.Wait()
+		r.reloadMu.Lock()
+		r.reloadMu.Unlock()
+		log.Println("INFO: Config reloader stopped")
+	})
+	return r.stopErr
 }

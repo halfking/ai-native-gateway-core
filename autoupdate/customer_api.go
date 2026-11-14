@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // VersionProvider returns the running gateway's version triple.
@@ -64,11 +64,11 @@ type UpgradeCheckResponse struct {
 	CheckedAt string `json:"checked_at"`
 }
 
-func (api *CustomerAPI) handleStatus(c echo.Context) error {
+func (api *CustomerAPI) handleStatus(c *echo.Context) error {
 	return c.JSON(http.StatusOK, api.buildStatus(c.Request().Context()))
 }
 
-func (api *CustomerAPI) handleCheck(c echo.Context) error {
+func (api *CustomerAPI) handleCheck(c *echo.Context) error {
 	resp := api.buildStatus(c.Request().Context())
 	return c.JSON(http.StatusOK, UpgradeCheckResponse{
 		UpgradeStatusResponse: resp,

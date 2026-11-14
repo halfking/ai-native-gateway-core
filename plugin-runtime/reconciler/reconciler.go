@@ -9,8 +9,10 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery"
@@ -138,12 +140,21 @@ type reconciler struct {
 	ticker       *time.Ticker
 	stopCh       chan struct{}
 	crashTracker *CrashTracker
+	cycleMu      sync.Mutex
+	lifecycleMu  sync.Mutex
+	cancel       context.CancelFunc
+	done         chan struct{}
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
 func NewReconciler(config *Config, supervisor SupervisorInterface, registry PluginRegistry) Reconciler {
+	if config == nil {
+		config = &Config{}
+	}
+	copyConfig := *config
+	config = &copyConfig
 	// Apply defaults
-	if config.Interval == 0 {
+	if config.Interval <= 0 {
 		config.Interval = 30 * time.Second
 	}
 	if config.MaxCrashCount == 0 {
@@ -164,24 +175,36 @@ func NewReconciler(config *Config, supervisor SupervisorInterface, registry Plug
 
 // Start begins the reconciliation loop.
 func (r *reconciler) Start(ctx context.Context) error {
-	r.ticker = time.NewTicker(r.config.Interval)
+	r.lifecycleMu.Lock()
+	if r.cancel != nil {
+		r.lifecycleMu.Unlock()
+		return fmt.Errorf("reconciler already started")
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+	r.done = make(chan struct{})
+	done := r.done
+	r.lifecycleMu.Unlock()
 
 	// Perform initial reconciliation immediately
-	if err := r.Reconcile(ctx); err != nil {
-		log.Printf("ERROR: Initial reconciliation failed: %v", err)
+	if err := r.Reconcile(loopCtx); err != nil {
+		cancel()
+		close(done)
+		return fmt.Errorf("initial reconciliation: %w", err)
 	}
+	ticker := time.NewTicker(r.config.Interval)
 
 	// Start periodic reconciliation
 	go func() {
+		defer close(done)
+		defer ticker.Stop()
 		for {
 			select {
-			case <-r.ticker.C:
-				if err := r.Reconcile(ctx); err != nil {
+			case <-ticker.C:
+				if err := r.Reconcile(loopCtx); err != nil {
 					log.Printf("ERROR: Reconciliation failed: %v", err)
 				}
-			case <-r.stopCh:
-				return
-			case <-ctx.Done():
+			case <-loopCtx.Done():
 				return
 			}
 		}
@@ -193,16 +216,24 @@ func (r *reconciler) Start(ctx context.Context) error {
 
 // Stop halts the reconciliation loop.
 func (r *reconciler) Stop() error {
-	if r.ticker != nil {
-		r.ticker.Stop()
+	r.lifecycleMu.Lock()
+	cancel, done := r.cancel, r.done
+	r.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
 	}
-	close(r.stopCh)
 	log.Println("INFO: Reconciler stopped")
 	return nil
 }
 
 // Reconcile performs a single reconciliation cycle.
 func (r *reconciler) Reconcile(ctx context.Context) error {
+	r.cycleMu.Lock()
+	defer r.cycleMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// 1. Get desired states from registry
 	desiredStates, err := r.getDesiredStates(ctx)
 	if err != nil {
@@ -219,15 +250,16 @@ func (r *reconciler) Reconcile(ctx context.Context) error {
 	actions := r.computeActions(desiredStates, actualStates)
 
 	// 4. Execute actions
+	var failures []error
 	for _, action := range actions {
 		if err := r.executeAction(ctx, action); err != nil {
 			log.Printf("ERROR: Execute action %s for plugin %s failed: %v",
 				action.Action, action.PluginID, err)
-			// Continue with other actions
+			failures = append(failures, fmt.Errorf("%s plugin %s: %w", action.Action, action.PluginID, err))
 		}
 	}
 
-	return nil
+	return errors.Join(failures...)
 }
 
 // getDesiredStates retrieves the desired state for all enabled plugins.
@@ -260,6 +292,7 @@ func (r *reconciler) getActualStates(ctx context.Context) (map[string]*PluginSta
 	for _, proc := range processes {
 		states[proc.PluginID] = &PluginState{
 			PluginID:    proc.PluginID,
+			Version:     proc.Version,
 			ActualState: mapProcessStatus(proc.Status),
 			CrashCount:  r.crashTracker.GetCount(proc.PluginID),
 		}
@@ -372,6 +405,17 @@ func (r *reconciler) executeAction(ctx context.Context, action *ReconcileAction)
 		return r.supervisor.Restart(ctx, action.PluginID)
 
 	case ActionUpgrade:
+		manifest, err := r.registry.GetManifest(ctx, action.PluginID)
+		if err != nil {
+			return fmt.Errorf("get upgrade manifest: %w", err)
+		}
+		// A production adapter can preserve readiness/rollback semantics instead
+		// of splitting an upgrade into unrelated Stop and Start calls.
+		if upgrader, ok := r.supervisor.(interface {
+			Upgrade(context.Context, *discovery.Manifest) error
+		}); ok {
+			return upgrader.Upgrade(ctx, manifest)
+		}
 		// Stop old version
 		if err := r.supervisor.Stop(ctx, action.PluginID); err != nil {
 			return fmt.Errorf("stop old version: %w", err)
@@ -382,23 +426,17 @@ func (r *reconciler) executeAction(ctx context.Context, action *ReconcileAction)
 			return fmt.Errorf("update version: %w", err)
 		}
 
-		// Wait briefly for clean shutdown
-		time.Sleep(1 * time.Second)
-
-		// Start new version
-		manifest, err := r.registry.GetManifest(ctx, action.PluginID)
-		if err != nil {
-			return fmt.Errorf("get manifest: %w", err)
-		}
+		// Stop is synchronous; no fixed delay is needed before starting.
 		return r.supervisor.Start(ctx, manifest)
 
 	case ActionDisable:
 		// Stop the plugin
-		if err := r.supervisor.Stop(ctx, action.PluginID); err != nil {
-			log.Printf("WARN: Stop plugin failed (will continue to disable): %v", err)
+		stopErr := r.supervisor.Stop(ctx, action.PluginID)
+		if stopErr != nil {
+			log.Printf("WARN: Stop plugin failed (will continue to disable): %v", stopErr)
 		}
 		// Update status in registry
-		return r.registry.UpdateStatus(ctx, action.PluginID, StatusDisabled)
+		return errors.Join(stopErr, r.registry.UpdateStatus(ctx, action.PluginID, StatusDisabled))
 
 	default:
 		return fmt.Errorf("unknown action: %s", action.Action)

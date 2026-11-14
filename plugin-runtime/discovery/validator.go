@@ -28,22 +28,22 @@ func (v *Validator) Validate(m *Manifest) error {
 	if m.APIVersion != "llm-gateway.io/v1" {
 		return fmt.Errorf("unsupported apiVersion: %s", m.APIVersion)
 	}
-	
+
 	// Check kind
 	if m.Kind != "Plugin" {
 		return fmt.Errorf("kind must be 'Plugin', got: %s", m.Kind)
 	}
-	
+
 	// Validate metadata
 	if err := v.validateMetadata(&m.Metadata); err != nil {
 		return fmt.Errorf("metadata validation failed: %w", err)
 	}
-	
+
 	// Validate spec
 	if err := v.validateSpec(&m.Spec); err != nil {
 		return fmt.Errorf("spec validation failed: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -55,7 +55,7 @@ func (v *Validator) validateMetadata(m *Metadata) error {
 	if !v.namePattern.MatchString(m.Name) {
 		return fmt.Errorf("invalid name format: %s (must match [a-z0-9]([a-z0-9-]*[a-z0-9])?)", m.Name)
 	}
-	
+
 	// Validate version
 	if m.Version == "" {
 		return fmt.Errorf("version is required")
@@ -63,12 +63,12 @@ func (v *Validator) validateMetadata(m *Metadata) error {
 	if !v.versionPattern.MatchString(m.Version) {
 		return fmt.Errorf("invalid version format: %s (must be semantic version)", m.Version)
 	}
-	
+
 	// Description is required
 	if m.Description == "" {
 		return fmt.Errorf("description is required")
 	}
-	
+
 	return nil
 }
 
@@ -80,7 +80,7 @@ func (v *Validator) validateSpec(s *Spec) error {
 	default:
 		return fmt.Errorf("invalid type: %s", s.Type)
 	}
-	
+
 	// Type-specific validation
 	switch s.Type {
 	case TypeExternal:
@@ -92,12 +92,12 @@ func (v *Validator) validateSpec(s *Spec) error {
 			return fmt.Errorf("remote.url is required for remote plugins")
 		}
 	}
-	
+
 	// Validate extension points
 	if len(s.ExtensionPoints) == 0 {
 		return fmt.Errorf("at least one extension point is required")
 	}
-	
+
 	for i, ep := range s.ExtensionPoints {
 		if ep.Name == "" {
 			return fmt.Errorf("extensionPoints[%d].name is required", i)
@@ -108,13 +108,13 @@ func (v *Validator) validateSpec(s *Spec) error {
 		if ep.Interface == "" {
 			return fmt.Errorf("extensionPoints[%d].interface is required", i)
 		}
-		
+
 		// Validate phase (must be one of the 16 phases)
 		if !isValidPhase(ep.Phase) {
 			return fmt.Errorf("extensionPoints[%d].phase is invalid: %s", i, ep.Phase)
 		}
 	}
-	
+
 	return nil
 }
 

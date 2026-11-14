@@ -40,7 +40,7 @@ stages:
             - step: shell
               name: setup-go
               script: |
-                GO_VERSION=1.27.2
+                GO_VERSION=1.27.4
                 if ! command -v go >/dev/null 2>&1 || [ "$(go version)" != "go version go${GO_VERSION} linux/amd64" ]; then
                   curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
                   rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
@@ -154,6 +154,7 @@ stages:
               name: audit-guards
               script: |
                 export PATH=$PATH:/usr/local/go/bin
+                make test-plugin-runtime-modules
                 make guards-fast
                 # Windows 全量测试基线门（2026-10-29 审计轮）：CI runner 是 Linux ⇒
                 # 全量 go test 的失败集与 Windows 基线不同族 ⇒ 这里只跑**静态自证腿**

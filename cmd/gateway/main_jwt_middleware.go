@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 )
@@ -64,7 +64,7 @@ var jwtRevocationProbe = admin.RevokedByPasswordChange
 //	/api/admin/center/* /api/admin/routing-opt/ml
 //
 // 而前端 web/src/api/_core.ts **刻意不发** Authorization 头
-// （`const bearer = isAuthenticated() && store.userInfo ? '' : authBearer()`：
+// （`const bearer = isAuthenticated() && store.userInfo ? ” : authBearer()`：
 // 登录成功后靠 HttpOnly cookie 鉴权，避免内存里的 JWT 盖住别的标签页更新的 cookie）
 // ⇒ 这些管理页在浏览器里**恒 401**（页面能开、数据全空）。
 //
@@ -82,7 +82,7 @@ var jwtRevocationProbe = admin.RevokedByPasswordChange
 // （必须改密的账号只能访问改密路径），Echo 侧**没有**这道闸。
 func newJWTMiddleware(secret string, db *pgxpool.Pool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			if secret == "" {
 				return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "admin authentication is not configured"})
 			}
@@ -123,7 +123,7 @@ func newJWTMiddleware(secret string, db *pgxpool.Pool) echo.MiddlewareFunc {
 // Must be installed AFTER newJWTMiddleware in the chain.
 func newRequireSuperAdminMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			if role, _ := c.Get("role").(string); role != "super_admin" {
 				return c.JSON(http.StatusForbidden, map[string]string{"error": "super_admin required"})
 			}

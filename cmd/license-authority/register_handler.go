@@ -9,7 +9,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/licensing"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // RegisterHandler handles instance registration
@@ -32,7 +32,7 @@ func NewRegisterHandler(licenseStore licensing.Store, centerStore *center.PgxSto
 }
 
 // HandleRegister handles POST /api/v1/instances/register
-func (h *RegisterHandler) HandleRegister(c echo.Context) error {
+func (h *RegisterHandler) HandleRegister(c *echo.Context) error {
 	var req struct {
 		InstanceID     string `json:"instance_id"`
 		InstanceType   string `json:"instance_type"`

@@ -221,20 +221,24 @@ type docEvidence struct {
 // Auth :8465 → :8480、SecurityHeaders :8468 → :8483；Logging 注释 8452-8459 →
 // 8467-8474；maintain 注释 8409-8414 → 8424-8429；main_pipeline.go 启动日志
 // :1147 无漂移），语义锚与判据不变，设计页/认证表 A1 同步。
+// 2026-11-14（插件运行时修复与安全依赖升级整合轮）：第二十次重钉，
+// 候选 main.go 链体 8464-8483 → 8527-8546（整体 +63）；Recovery :8528、
+// Auth :8543、SecurityHeaders :8546；Logging 注释 8530-8537、maintain 注释
+// 8487-8492。仅按实际位置平移，语义锚、窗口宽度与判据不变；设计页/认证表 A1 同步。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8464, to: 8483,
+		file: "cmd/gateway/main.go", from: 8527, to: 8546,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8467, to: 8474,
+		file: "cmd/gateway/main.go", from: 8530, to: 8537,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8424, to: 8429,
+		file: "cmd/gateway/main.go", from: 8487, to: 8492,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},

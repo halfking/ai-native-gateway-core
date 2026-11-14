@@ -9,6 +9,7 @@
 //   - LICENSE_AUTHORITY_DATABASE_URL: PostgreSQL connection string (required)
 //   - LICENSE_AUTHORITY_LOG_LEVEL: log level (debug/info/warn/error, default info)
 //   - LICENSE_AUTHORITY_DATA_DIR: directory for Ed25519 keys (default ./data)
+//   - LLM_GATEWAY_TRUSTED_PROXY_CIDRS: trusted immediate proxy CIDRs (default loopback only)
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"crypto/ed25519"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,9 +25,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/center"
+	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
-	"github.com/labstack/echo/v4"
+	"github.com/kaixuan/llm-gateway-go/middleware"
+	"github.com/labstack/echo/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -101,9 +105,8 @@ func main() {
 	}
 
 	// ── Echo ──────────────────────────────────────────────────────────────
-	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = true
+	e := newAuthorityEcho()
+	srv := &http.Server{Addr: *listen, Handler: e, ReadHeaderTimeout: 10 * time.Second}
 
 	// ── Routes ────────────────────────────────────────────────────────────
 	registerRoutes(e, dbConn.Pool(), serverPrivKey, redisClient)
@@ -117,7 +120,7 @@ func main() {
 
 	// ── Graceful Shutdown ─────────────────────────────────────────────────
 	go func() {
-		if err := e.Start(*listen); err != nil {
+		if err := srv.ListenAndServe(); err != nil {
 			slog.Info("server stopped", "error", err)
 		}
 	}()
@@ -129,7 +132,7 @@ func main() {
 	slog.Info("shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := e.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
 	}
 	slog.Info("server exited")
@@ -142,9 +145,21 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func newAuthorityEcho() *echo.Echo {
+	e := echo.New()
+	e.Logger = slog.Default()
+	origin := middleware.NewOriginMiddlewareWithTrustedProxies(
+		middleware.ParseTrustedProxyCIDRs(config.Load().TrustedProxyCIDRs))
+	e.IPExtractor = func(r *http.Request) string {
+		ip, _ := origin.ResolveClientIP(r)
+		return ip
+	}
+	return e
+}
+
 func registerRoutes(e *echo.Echo, pool *pgxpool.Pool, serverPrivKey ed25519.PrivateKey, redisClient *redis.Client) {
 	// Health check
-	e.GET("/api/v1/healthz", func(c echo.Context) error {
+	e.GET("/api/v1/healthz", func(c *echo.Context) error {
 		return c.JSON(200, map[string]string{"status": "ok"})
 	})
 

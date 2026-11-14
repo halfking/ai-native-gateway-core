@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // RollbackRequest represents rollback request payload
@@ -30,7 +30,7 @@ func NewRollbackHandler(updateStore autoupdate.Store) *RollbackHandler {
 }
 
 // HandleRollback handles POST /api/v1/updates/rollback
-func (h *RollbackHandler) HandleRollback(c echo.Context) error {
+func (h *RollbackHandler) HandleRollback(c *echo.Context) error {
 	var req RollbackRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")

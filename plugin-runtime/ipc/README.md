@@ -44,16 +44,16 @@ import (
 server := ipc.NewServer("/tmp/my-plugin.sock")
 
 // 注册扩展点处理器
-server.RegisterHandler(ipc.MessageTypeExtensionPoint, 
+server.RegisterHandler(ipc.MessageTypeExtensionPoint,
     func(ctx context.Context, request []byte) ([]byte, error) {
         var req ipc.ExtensionPointRequest
         if err := json.Unmarshal(request, &req); err != nil {
             return nil, err
         }
-        
+
         // 处理扩展点逻辑
         result := processExtensionPoint(req.Phase, req.Context)
-        
+
         // 构造响应
         resp := ipc.ExtensionPointResponse{
             Type:    ipc.MessageTypeExtensionPoint,
@@ -61,7 +61,7 @@ server.RegisterHandler(ipc.MessageTypeExtensionPoint,
             Success: true,
             Result:  result,
         }
-        
+
         return json.Marshal(resp)
     })
 
@@ -70,14 +70,14 @@ server.RegisterHandler(ipc.MessageTypeHealthCheck,
     func(ctx context.Context, request []byte) ([]byte, error) {
         var req ipc.HealthCheckRequest
         json.Unmarshal(request, &req)
-        
+
         resp := ipc.HealthCheckResponse{
             Type:    ipc.MessageTypeHealthCheck,
             ID:      req.ID,
             Healthy: true,
             Message: "OK",
         }
-        
+
         return json.Marshal(resp)
     })
 
@@ -151,6 +151,8 @@ if err != nil {
 
 ## 消息协议
 
+每条连接传输一个完整 JSON 请求和一个完整 JSON 响应；对象保持原有 JSON wire 格式，无长度前缀。`ReadMessage` 通过有界 JSON 解码处理流分片，`WriteMessage` 校验合法 JSON 并处理短写；标量 JSON 以换行分隔。请求和响应分别受 `MaxMessageSize = 16 MiB` 限制，超限返回 `ErrMessageTooLarge`，不会把部分消息当作成功结果。
+
 ### 扩展点请求
 
 ```json
@@ -212,9 +214,10 @@ if err != nil {
 
 ### 默认超时
 
-- **读超时**：10 秒
-- **写超时**：10 秒
-- **连接超时**：2 秒
+- **客户端默认请求超时**：10 秒，覆盖连接、写入与读取；已有 context deadline 时使用该 deadline
+- **服务端读/写超时**：各 10 秒
+- **连接超时**：最多 2 秒，context 可提前终止
+- **主动取消**：立即中断连接或进行中的读写；`errors.Is` 可识别 `context.Canceled` / `context.DeadlineExceeded`
 
 ### 自定义超时
 
@@ -253,7 +256,7 @@ server.RegisterHandler(messageType, func(ctx context.Context, request []byte) ([
     if err := validate(request); err != nil {
         return nil, fmt.Errorf("validation failed: %w", err)
     }
-    
+
     // 正常处理
     return processRequest(request)
 })
@@ -269,50 +272,24 @@ server.RegisterHandler(messageType, func(ctx context.Context, request []byte) ([
 }
 ```
 
-## 性能特征
+## 验证与基准
 
-### 基准测试结果
-
-```
-BenchmarkSingleRequest-16         10000 ops
-BenchmarkConcurrentRequests-16    支持并发
-BenchmarkJSONEncoding-16          1600485 ops  747.7 ns/op
-```
-
-### 延迟
-
-- **小消息（< 1KB）**：< 1ms
-- **中等消息（1-10KB）**：1-5ms
-- **并发请求**：支持 100+ 并发连接
-
-### 吞吐量
-
-- 单连接：~1000 req/s
-- 多连接：取决于并发数
-
-## 测试
-
-运行单元测试：
+运行当前模块的测试与静态检查：
 
 ```bash
-go test -v -cover
+go test -race -count=1 -cover ./...
+go vet ./...
 ```
 
-当前测试覆盖率：**70.2%**
+测试覆盖合法 10 MiB JSON 完整往返、双向分片、16 MiB 消息边界、取消阻塞读写、Close 与并发请求、Stop 取消并等待 handler、重复启停和 100 并发请求。覆盖率以当前命令输出为准。
 
-运行性能测试：
+运行有限次数的真实通信基准：
 
 ```bash
-go test -bench=. -benchmem
+go test -run '^$' -bench . -benchtime=3x -benchmem -count=1 ./...
 ```
 
-测试用例包括：
-- 基本客户端-服务端通信
-- 健康检查
-- 并发请求（100 并发）
-- 超时处理
-- 未知消息类型处理
-- 服务端启停
+载荷为合法 JSON，分别包含 1 KiB、100 KiB 和 10 MiB 的 JSON context（总请求还包含信封字段）。每次 Marshal、Send、解码和完整 echo 都检查结果。并发基准启动 100 个 worker，每个 `op` 为每个 worker 各一次请求，因此显示 `100 requests/op`，其 `ns/op` 是每组 100 个请求的耗时，不是单请求延迟。每个请求仍使用独立连接。历史未检查错误的测量结果不可用作性能依据。
 
 ## 使用场景
 
@@ -367,15 +344,17 @@ Plugin A → Gateway (Client) → Gateway (Router) → Plugin B
 
 ### 消息大小限制
 
-- 当前缓冲区：1MB
-- 超过限制的消息可能被截断
-- 建议单个消息 < 100KB
+- 单条 JSON 请求或响应上限为 16 MiB，包含 JSON 字符及空白（不含标量传输分隔符）
+- 解码器最多读取上限加一个字节，防止消息读取无界增长
+- 10 MiB 合法 JSON 已纳入完整字节往返回归测试
 
 ### 连接管理
 
-- 当前实现：每次请求创建新连接
-- 未来优化：连接池复用
-- 性能影响：连接开销 ~100μs
+- 每次请求创建新连接，客户端统一管理连接的生命周期
+- `Client.Close` 拒绝后续请求、取消进行中的 dial 并关闭活跃连接，返回 `ErrClientClosed`
+- `Server.Stop` 取消 handler context、关闭监听和活跃连接，并等待 handler 退出；handler 必须响应取消，不要在 handler 内同步调用 `Stop`
+- `Stop` 可重复或并发调用；`Start` 只允许一次，停止后需创建新的 Server
+- 取消传入 `Start` 的父 context 会触发相同的停止流程
 
 ## 扩展
 

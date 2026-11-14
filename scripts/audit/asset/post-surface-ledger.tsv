@@ -723,3 +723,6 @@
 /v2/chat/completions	ANY	cmd/gateway/main_v2_pipeline.go:369	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /v2/healthz	ANY	cmd/gateway/main_v2_pipeline.go:412	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /version	ANY	cmd/gateway/main.go:6609	unknown				not-probed-unresolved	★ 静态分级：解析不出
+
+#gen_append	2026-11-14 插件运行时收口：补上游新增列表路由；不虚构探测结果
+/api/v1/plugins	GET	cmd/gateway/main.go:7200	unknown				not-probed-unresolved	上游新增插件列表闭包路由；未运行独立POST探测，保持未探测裁决

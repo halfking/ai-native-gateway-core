@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // AdminAPI Admin API Handler
@@ -46,7 +46,7 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 }
 
 // CreateRelease 创建发布版本
-func (a *AdminAPI) CreateRelease(c echo.Context) error {
+func (a *AdminAPI) CreateRelease(c *echo.Context) error {
 	var req struct {
 		Version     string  `json:"version" validate:"required"`
 		BuildSeq    int     `json:"build_seq" validate:"required"`
@@ -93,7 +93,7 @@ func (a *AdminAPI) CreateRelease(c echo.Context) error {
 }
 
 // ListReleases 列出发布版本
-func (a *AdminAPI) ListReleases(c echo.Context) error {
+func (a *AdminAPI) ListReleases(c *echo.Context) error {
 	channel := Channel(c.QueryParam("channel"))
 	if channel == "" {
 		channel = ChannelStable
@@ -119,7 +119,7 @@ func (a *AdminAPI) ListReleases(c echo.Context) error {
 }
 
 // GetRelease 获取发布版本详情
-func (a *AdminAPI) GetRelease(c echo.Context) error {
+func (a *AdminAPI) GetRelease(c *echo.Context) error {
 	version := c.Param("version")
 
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
@@ -131,7 +131,7 @@ func (a *AdminAPI) GetRelease(c echo.Context) error {
 }
 
 // PublishRelease 发布版本
-func (a *AdminAPI) PublishRelease(c echo.Context) error {
+func (a *AdminAPI) PublishRelease(c *echo.Context) error {
 	version := c.Param("version")
 
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
@@ -148,7 +148,7 @@ func (a *AdminAPI) PublishRelease(c echo.Context) error {
 }
 
 // UnpublishRelease 取消发布
-func (a *AdminAPI) UnpublishRelease(c echo.Context) error {
+func (a *AdminAPI) UnpublishRelease(c *echo.Context) error {
 	version := c.Param("version")
 
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
@@ -165,7 +165,7 @@ func (a *AdminAPI) UnpublishRelease(c echo.Context) error {
 }
 
 // CreateGrayRelease 创建灰度发布
-func (a *AdminAPI) CreateGrayRelease(c echo.Context) error {
+func (a *AdminAPI) CreateGrayRelease(c *echo.Context) error {
 	version := c.Param("version")
 
 	var req struct {
@@ -200,7 +200,7 @@ func (a *AdminAPI) CreateGrayRelease(c echo.Context) error {
 }
 
 // UpdateGrayPhase 更新灰度阶段
-func (a *AdminAPI) UpdateGrayPhase(c echo.Context) error {
+func (a *AdminAPI) UpdateGrayPhase(c *echo.Context) error {
 	version := c.Param("version")
 
 	var req struct {
@@ -246,7 +246,7 @@ func (a *AdminAPI) UpdateGrayPhase(c echo.Context) error {
 }
 
 // GetRolloutStatus returns rollout gate evaluation for a release version.
-func (a *AdminAPI) GetRolloutStatus(c echo.Context) error {
+func (a *AdminAPI) GetRolloutStatus(c *echo.Context) error {
 	version := c.Param("version")
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
 	if err != nil {
@@ -270,7 +270,7 @@ func (a *AdminAPI) GetRolloutStatus(c echo.Context) error {
 }
 
 // PauseGrayRelease pauses an active gray rollout.
-func (a *AdminAPI) PauseGrayRelease(c echo.Context) error {
+func (a *AdminAPI) PauseGrayRelease(c *echo.Context) error {
 	version := c.Param("version")
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
 	if err != nil {
@@ -284,7 +284,7 @@ func (a *AdminAPI) PauseGrayRelease(c echo.Context) error {
 }
 
 // ResumeGrayRelease resumes a paused gray rollout after gate re-check.
-func (a *AdminAPI) ResumeGrayRelease(c echo.Context) error {
+func (a *AdminAPI) ResumeGrayRelease(c *echo.Context) error {
 	version := c.Param("version")
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
 	if err != nil {
@@ -311,7 +311,7 @@ func (a *AdminAPI) ResumeGrayRelease(c echo.Context) error {
 }
 
 // ListGrayRules lists all gray rollout rules.
-func (a *AdminAPI) ListGrayRules(c echo.Context) error {
+func (a *AdminAPI) ListGrayRules(c *echo.Context) error {
 	limit := 50
 	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
 
@@ -327,7 +327,7 @@ func (a *AdminAPI) ListGrayRules(c echo.Context) error {
 }
 
 // GetGrayRelease returns the active gray rule for a release version.
-func (a *AdminAPI) GetGrayRelease(c echo.Context) error {
+func (a *AdminAPI) GetGrayRelease(c *echo.Context) error {
 	version := c.Param("version")
 	rel, err := a.store.GetRelease(c.Request().Context(), version)
 	if err != nil {
@@ -341,7 +341,7 @@ func (a *AdminAPI) GetGrayRelease(c echo.Context) error {
 }
 
 // GetUpgradeLogs 获取升级日志
-func (a *AdminAPI) GetUpgradeLogs(c echo.Context) error {
+func (a *AdminAPI) GetUpgradeLogs(c *echo.Context) error {
 	instanceID := c.QueryParam("instance_id")
 	offset := 0
 	limit := 50
@@ -367,7 +367,7 @@ func (a *AdminAPI) GetUpgradeLogs(c echo.Context) error {
 }
 
 // RollbackRelease 回滚版本
-func (a *AdminAPI) RollbackRelease(c echo.Context) error {
+func (a *AdminAPI) RollbackRelease(c *echo.Context) error {
 	var req struct {
 		TargetVersion string `json:"target_version" validate:"required"`
 	}

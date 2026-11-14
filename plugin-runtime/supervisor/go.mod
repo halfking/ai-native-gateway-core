@@ -1,6 +1,6 @@
 module github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor
 
-go 1.27.2
+go 1.27.4
 
 require github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery v0.0.0
 

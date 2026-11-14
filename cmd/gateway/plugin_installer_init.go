@@ -48,8 +48,12 @@ func makePluginInstallHandler(inst pluginInstaller) http.HandlerFunc {
 			return
 		}
 		if err := inst.Install(r.Context(), req.PluginID, req.Version); err != nil {
+			if err == errPluginConfigManaged {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": errPluginConfigManaged.code})
+				return
+			}
 			// rule 71：version 是保留名（服务版本），业务语义改用 plugin_version。
-		slog.Error("plugin install failed", "plugin", req.PluginID, "plugin_version", req.Version, "error", err)
+			slog.Error("plugin install failed", "plugin", req.PluginID, "plugin_version", req.Version, "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": err.Error(),
 				"code":  "plugin.install_failed",
