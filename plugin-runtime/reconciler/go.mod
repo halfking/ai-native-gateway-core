@@ -1,6 +1,6 @@
 module github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler
 
-go 1.27.2
+go 1.27.4
 
 replace github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor => ../supervisor
 

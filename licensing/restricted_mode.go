@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // Restricted-mode middleware (v2 hardening).
@@ -30,7 +30,7 @@ import (
 // restricted mode" without parsing free-text strings.
 func RestrictedModeMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			path := c.Request().URL.Path
 
 			// 1. Allow exact-match health endpoints.

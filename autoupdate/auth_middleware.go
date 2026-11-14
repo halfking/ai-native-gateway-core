@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // AuthMiddleware P1 修复：autoupdate Admin API 认证中间件
@@ -19,7 +19,7 @@ func AuthMiddleware() echo.MiddlewareFunc {
 	}
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// 从 Authorization header 提取 Bearer token
 			auth := c.Request().Header.Get("Authorization")
 			if auth == "" {

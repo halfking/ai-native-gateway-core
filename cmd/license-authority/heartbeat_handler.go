@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/center"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // HeartbeatHandler handles instance heartbeat requests
@@ -25,7 +25,7 @@ func NewHeartbeatHandler(store *center.PgxStore, serverPubKey ed25519.PublicKey)
 }
 
 // HandleHeartbeat handles POST /api/v1/instances/heartbeat
-func (h *HeartbeatHandler) HandleHeartbeat(c echo.Context) error {
+func (h *HeartbeatHandler) HandleHeartbeat(c *echo.Context) error {
 	// Extract Authorization header
 	authHeader := c.Request().Header.Get("Authorization")
 	if authHeader == "" {

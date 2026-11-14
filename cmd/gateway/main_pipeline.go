@@ -711,21 +711,16 @@ func dispatchRequestBody(r *http.Request) (model string, stream bool, rawBody []
 	if r.Body == nil {
 		return "", false, nil, nil
 	}
-	
-	// Defense-in-depth: if large ingress already archived this request,
-	// the body should be small (reduced context). If somehow we see a large
-	// body here, it means the large ingress layer was bypassed.
-	if _, archived := streaming.LargeRequestArchive(r.Context()); archived {
-		// Large request was archived; body should be reduced
-		r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
-	} else if r.ContentLength > 32<<20 {
-		// Non-archived request larger than 32MB should have gone through
-		// large ingress. This is a misconfiguration or bypass attempt.
-		return "", false, nil, fmt.Errorf("large request bypassed ingress layer: %d bytes", r.ContentLength)
-	} else {
-		r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
+
+	// Preserve the dispatch maximum even when ingress was bypassed.
+	if r.ContentLength > MaxDispatchBodyBytes {
+		return "", false, nil, &http.MaxBytesError{Limit: MaxDispatchBodyBytes}
 	}
-	
+	// Non-archived large requests must use the ingress reduction path.
+	if _, archived := streaming.LargeRequestArchive(r.Context()); !archived && r.ContentLength > 32<<20 {
+		return "", false, nil, &http.MaxBytesError{Limit: 32 << 20}
+	}
+	r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
 	rawBody, err = io.ReadAll(r.Body)
 	if err != nil {
 		var mbErr *http.MaxBytesError
@@ -742,7 +737,7 @@ func dispatchRequestBody(r *http.Request) (model string, stream bool, rawBody []
 	// Best-effort: sniff for known top-level fields. Don't fail the
 	// request on parse errors — chatHandler will return a 400.
 	if len(rawBody) == 0 {
-		return "", false, rawBody, nil
+		return "", false, nil, nil
 	}
 	var sniff struct {
 		Model  string `json:"model"`
@@ -830,8 +825,8 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			if errors.As(derr, &mbErr) {
 				slog.Warn("dispatch: body exceeds limit",
 					"path", r.URL.Path,
-					"limit_bytes", MaxDispatchBodyBytes)
-				writePayloadTooLarge(w, MaxDispatchBodyBytes)
+					"limit_bytes", mbErr.Limit)
+				writePayloadTooLarge(w, int(mbErr.Limit))
 				return
 			}
 			// Non-size parse error — continue with empty metadata;

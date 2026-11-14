@@ -390,7 +390,7 @@ func (c *SessionCache) getShared(ctx context.Context, tenantID, sessionID string
 		key := l1Key(tenantID, sessionID)
 		c.mu.Lock()
 		entry := c.l1[key]
-		if entry != nil && entry.revision == rev {
+		if entry != nil && entry.revision == rev && !entry.oversized {
 			c.ll.MoveToFront(entry.elem)
 			st, body = cloneSessionState(entry.state), append([]byte(nil), entry.body...)
 			c.mu.Unlock()

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // CustomerAPI exposes customer-facing license endpoints under /api/system/license/*.
@@ -83,7 +83,7 @@ type telemetryPreferenceRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
-func (api *CustomerAPI) handleTelemetryPreference(c echo.Context) error {
+func (api *CustomerAPI) handleTelemetryPreference(c *echo.Context) error {
 	role, _ := c.Get("role").(string)
 	if role != "tenant_admin" && role != "super_admin" {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "tenant_admin required"})
@@ -138,7 +138,7 @@ type trialRequest struct {
 	Agree bool   `json:"agree"`
 }
 
-func (api *CustomerAPI) handleTrial(c echo.Context) error {
+func (api *CustomerAPI) handleTrial(c *echo.Context) error {
 	var req trialRequest
 	if err := c.Bind(&req); err != nil || strings.TrimSpace(req.Email) == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "email is required"})
@@ -206,7 +206,7 @@ const (
 	graceWindow = 7 * 24 * time.Hour
 )
 
-func (api *CustomerAPI) handleStatus(c echo.Context) error {
+func (api *CustomerAPI) handleStatus(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	fp, err := GenerateFingerprint()
@@ -261,7 +261,7 @@ type CustomerInfoResponse struct {
 	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
 }
 
-func (api *CustomerAPI) handleInfo(c echo.Context) error {
+func (api *CustomerAPI) handleInfo(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	fp, err := GenerateFingerprint()
@@ -343,7 +343,7 @@ type ActivateRequest struct {
 	DeviceName string `json:"device_name,omitempty"`
 }
 
-func (api *CustomerAPI) handleActivate(c echo.Context) error {
+func (api *CustomerAPI) handleActivate(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	var req ActivateRequest
@@ -399,7 +399,7 @@ type OfflineActivateRequest struct {
 	ActivationCode string `json:"activation_code"`
 }
 
-func (api *CustomerAPI) handleOfflineActivate(c echo.Context) error {
+func (api *CustomerAPI) handleOfflineActivate(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	var req OfflineActivateRequest
@@ -546,7 +546,7 @@ type OfflineRequestPayload struct {
 	DeviceName string `json:"device_name,omitempty"`
 }
 
-func (api *CustomerAPI) handleOfflineRequest(c echo.Context) error {
+func (api *CustomerAPI) handleOfflineRequest(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	var req OfflineRequestPayload
@@ -597,7 +597,7 @@ func (api *CustomerAPI) handleOfflineRequest(c echo.Context) error {
 	})
 }
 
-func (api *CustomerAPI) handleHeartbeat(c echo.Context) error {
+func (api *CustomerAPI) handleHeartbeat(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	fp, err := GenerateFingerprint()

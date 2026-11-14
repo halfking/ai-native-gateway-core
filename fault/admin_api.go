@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 type AdminHandler struct {
@@ -37,7 +37,7 @@ func (h *AdminHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/reload", h.ReloadRules)
 }
 
-func (h *AdminHandler) CreateRule(c echo.Context) error {
+func (h *AdminHandler) CreateRule(c *echo.Context) error {
 	var rule Rule
 	if err := c.Bind(&rule); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -58,7 +58,7 @@ func (h *AdminHandler) CreateRule(c echo.Context) error {
 	return c.JSON(http.StatusCreated, rule)
 }
 
-func (h *AdminHandler) ListRules(c echo.Context) error {
+func (h *AdminHandler) ListRules(c *echo.Context) error {
 	offset, _ := strconv.Atoi(c.QueryParam("offset"))
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
 	if limit == 0 {
@@ -78,7 +78,7 @@ func (h *AdminHandler) ListRules(c echo.Context) error {
 	})
 }
 
-func (h *AdminHandler) GetRule(c echo.Context) error {
+func (h *AdminHandler) GetRule(c *echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	rule, err := h.store.GetRule(c.Request().Context(), id)
@@ -89,7 +89,7 @@ func (h *AdminHandler) GetRule(c echo.Context) error {
 	return c.JSON(http.StatusOK, rule)
 }
 
-func (h *AdminHandler) UpdateRule(c echo.Context) error {
+func (h *AdminHandler) UpdateRule(c *echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	var rule Rule
@@ -112,7 +112,7 @@ func (h *AdminHandler) UpdateRule(c echo.Context) error {
 	return c.JSON(http.StatusOK, rule)
 }
 
-func (h *AdminHandler) DeleteRule(c echo.Context) error {
+func (h *AdminHandler) DeleteRule(c *echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	if err := h.store.DeleteRule(c.Request().Context(), id); err != nil {
@@ -124,7 +124,7 @@ func (h *AdminHandler) DeleteRule(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "rule deleted"})
 }
 
-func (h *AdminHandler) ListEvents(c echo.Context) error {
+func (h *AdminHandler) ListEvents(c *echo.Context) error {
 	statusStr := c.QueryParam("status")
 	offset, _ := strconv.Atoi(c.QueryParam("offset"))
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
@@ -145,7 +145,7 @@ func (h *AdminHandler) ListEvents(c echo.Context) error {
 	})
 }
 
-func (h *AdminHandler) GetEvent(c echo.Context) error {
+func (h *AdminHandler) GetEvent(c *echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	event, err := h.store.GetEvent(c.Request().Context(), id)
@@ -156,7 +156,7 @@ func (h *AdminHandler) GetEvent(c echo.Context) error {
 	return c.JSON(http.StatusOK, event)
 }
 
-func (h *AdminHandler) AcknowledgeEvent(c echo.Context) error {
+func (h *AdminHandler) AcknowledgeEvent(c *echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	var req struct {
@@ -173,7 +173,7 @@ func (h *AdminHandler) AcknowledgeEvent(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "event acknowledged"})
 }
 
-func (h *AdminHandler) ResolveEvent(c echo.Context) error {
+func (h *AdminHandler) ResolveEvent(c *echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	var req struct {
@@ -190,7 +190,7 @@ func (h *AdminHandler) ResolveEvent(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "event resolved"})
 }
 
-func (h *AdminHandler) GetDashboardStats(c echo.Context) error {
+func (h *AdminHandler) GetDashboardStats(c *echo.Context) error {
 	stats, err := h.store.GetDashboardStats(c.Request().Context())
 	if err != nil {
 		return writeInternalErr(c, "load dashboard stats failed", err)
@@ -199,7 +199,7 @@ func (h *AdminHandler) GetDashboardStats(c echo.Context) error {
 	return c.JSON(http.StatusOK, stats)
 }
 
-func (h *AdminHandler) ReloadRules(c echo.Context) error {
+func (h *AdminHandler) ReloadRules(c *echo.Context) error {
 	if err := h.detector.ReloadRules(c.Request().Context()); err != nil {
 		return writeInternalErr(c, "reload rules failed", err)
 	}

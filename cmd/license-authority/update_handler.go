@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // UpdateHandler handles update check requests
@@ -32,7 +32,7 @@ func (h *UpdateHandler) RegisterRoutes(g *echo.Group) {
 }
 
 // HandleCheckUpdates handles GET /api/v1/updates/latest
-func (h *UpdateHandler) HandleCheckUpdates(c echo.Context) error {
+func (h *UpdateHandler) HandleCheckUpdates(c *echo.Context) error {
 	// Extract Authorization header
 	authHeader := c.Request().Header.Get("Authorization")
 	if authHeader == "" {

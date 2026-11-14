@@ -8,7 +8,8 @@ import (
 	"log/slog"
 
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
-	"github.com/labstack/echo/v4"
+	"github.com/kaixuan/llm-gateway-go/middleware"
+	"github.com/labstack/echo/v5"
 )
 
 // customerRateLimiter is a token-bucket per remote IP for the
@@ -90,19 +91,11 @@ func (l *customerRateLimiter) allow(ip string) bool {
 
 var sharedCustomerLimiter = newCustomerRateLimiter()
 
-// clientIPFromEchoRequest extracts the originating client IP, falling back
-// to RemoteAddr. The trusted-proxy hop count is intentionally small: a
-// correct network deployment terminates X-Forwarded-For at the gateway
-// edge.
-func clientIPFromEchoRequest(c echo.Context) string {
-	xff := c.Request().Header.Get("X-Forwarded-For")
-	if xff != "" {
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
-		}
-		return xff
+// clientIPFromEchoRequest uses the origin middleware's configured proxy trust
+// policy. Standalone Echo handlers fall back to the directly connected peer.
+func clientIPFromEchoRequest(c *echo.Context) string {
+	if ip := middleware.ContextClientIP(c.Request().Context()); ip != "" {
+		return ip
 	}
 	return c.RealIP()
 }
@@ -121,7 +114,7 @@ func clientIPFromEchoRequest(c echo.Context) string {
 // even when the service is in restricted mode.
 func noAuthCustomerMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			start := time.Now()
 			ip := clientIPFromEchoRequest(c)
 			if !sharedCustomerLimiter.allow(ip) {
@@ -132,10 +125,11 @@ func noAuthCustomerMiddleware() echo.MiddlewareFunc {
 			}
 			err := next(c)
 			if slog.Default() != nil {
+				_, status := echo.ResolveResponseStatus(c.Response(), err)
 				slog.Debug("customer api",
 					"path", c.Request().URL.Path,
 					"method", c.Request().Method,
-					"status", c.Response().Status,
+					"status", status,
 					"client_ip", ip,
 					"latency_ms", time.Since(start).Milliseconds(),
 				)

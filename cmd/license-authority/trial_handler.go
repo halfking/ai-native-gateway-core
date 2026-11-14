@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/licensing"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -68,7 +68,7 @@ func (h *TrialHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/license/trial", h.handleTrial)
 }
 
-func (h *TrialHandler) handleTrial(c echo.Context) error {
+func (h *TrialHandler) handleTrial(c *echo.Context) error {
 	var body trialRequestBody
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, trialResponse{Message: "invalid request body"})
@@ -211,7 +211,7 @@ func (l *memoryTrialLimiter) ReleaseEmail(_ context.Context, email string) error
 	return nil
 }
 
-func clientKey(c echo.Context) string {
+func clientKey(c *echo.Context) string {
 	return hashTrialValue(c.RealIP())
 }
 

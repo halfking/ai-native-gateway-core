@@ -262,13 +262,13 @@ type LastOutboundRow struct {
 // list.Element in the LRU ordering, AND its elem pointer lets the LRU
 // promote an entry to the front in O(1) on access.
 type l1Entry struct {
-	key      string // tenantID + ":" + gwSessionID (back-reference for eviction)
-	state    *SessionState
-	body     []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
-	bytes    int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
-	elem     *list.Element
-	revision string // immutable shared commit token; empty for L1-only entries
-	oversized bool  // true if original body was >1MB and not retained
+	key       string // tenantID + ":" + gwSessionID (back-reference for eviction)
+	state     *SessionState
+	body      []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
+	bytes     int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
+	elem      *list.Element
+	revision  string // immutable shared commit token; empty for L1-only entries
+	oversized bool   // true if original body was >1MB and not retained
 }
 
 // SessionCache provides three-tier session state caching.
@@ -422,17 +422,19 @@ func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID strin
 			c.mu.Unlock()
 			return nil, nil, fmt.Errorf("session_cache: oversized body rejected in strict mode")
 		}
-		// Apply normal bounded check for entries with bodies
-		if cacheBudgetStrict(ctx) && len(e.body) > 0 {
-			if err := boundedCachePair(e.state, e.body); err != nil {
-				c.mu.Unlock()
-				return nil, nil, err
+		// Metadata-only large entries are not complete pairs; reload below.
+		if !e.oversized {
+			if cacheBudgetStrict(ctx) {
+				if err := boundedCachePair(e.state, e.body); err != nil {
+					c.mu.Unlock()
+					return nil, nil, err
+				}
 			}
+			c.ll.MoveToFront(e.elem)
+			st, body := cloneSessionState(e.state), append([]byte(nil), e.body...)
+			c.mu.Unlock()
+			return st, body, nil
 		}
-		c.ll.MoveToFront(e.elem)
-		st, body := cloneSessionState(e.state), append([]byte(nil), e.body...)
-		c.mu.Unlock()
-		return st, body, nil
 	}
 	c.mu.Unlock()
 	if c.turnReader != nil || c.db != nil {
@@ -562,15 +564,15 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := cloneSessionState(state)
-	
+
 	// For large bodies (>1MB), don't retain the full copy in L1 memory cache.
-	// The body is already on disk via large ingress; L1 only needs state metadata.
+	// Reads must reload a complete pair from Redis or DB, or report a miss.
 	// However, we still account for the original size in byte budget to limit
 	// the number of large-body sessions cached.
 	var bodyCopy []byte
 	oversized := false
 	originalSize := len(body)
-	
+
 	if len(body) > strictCacheBodyBytes {
 		// Large body: store only a marker, not the actual content
 		bodyCopy = []byte{} // Empty slice signals "body too large for L1"
@@ -578,7 +580,7 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 	} else {
 		bodyCopy = append([]byte(nil), body...)
 	}
-	
+
 	// Account for original size in byte budget, even if we didn't store it
 	entryBytes := originalSize + len(key) + l1EntryOverheadBytes
 

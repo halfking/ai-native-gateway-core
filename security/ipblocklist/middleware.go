@@ -4,13 +4,13 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // EchoMiddleware rejects blocked client IPs before handlers run.
 func EchoMiddleware(svc *Service, scope string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			if svc == nil || svc.Cache == nil {
 				return next(c)
 			}
@@ -72,8 +72,8 @@ func RecordAuthFailure(svc *Service, r *http.Request, scope, reason string) {
 	}
 }
 
-// RecordEchoAuthFailure is the echo.Context variant.
-func RecordEchoAuthFailure(svc *Service, c echo.Context, scope, reason string) {
+// RecordEchoAuthFailure is the *echo.Context variant.
+func RecordEchoAuthFailure(svc *Service, c *echo.Context, scope, reason string) {
 	if c == nil {
 		return
 	}

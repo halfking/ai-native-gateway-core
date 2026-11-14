@@ -11,7 +11,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // OpsNodeHandler handles ops node registration + heartbeat via llm.kxpms.cn API.
@@ -47,7 +47,7 @@ type opsRegisterReq struct {
 }
 
 // HandleRegister POST /api/v1/ops/nodes/register
-func (h *OpsNodeHandler) HandleRegister(c echo.Context) error {
+func (h *OpsNodeHandler) HandleRegister(c *echo.Context) error {
 	var req opsRegisterReq
 	if err := c.Bind(&req); err != nil {
 		ipblocklist.RecordEchoAuthFailure(h.blocklist, c, ipblocklist.ScopeOps, "bad_request")
@@ -118,7 +118,7 @@ func (h *OpsNodeHandler) HandleRegister(c echo.Context) error {
 	})
 }
 
-func (h *OpsNodeHandler) upsertOpsRegistration(c echo.Context, req opsRegisterReq, licenseID int64, now time.Time) error {
+func (h *OpsNodeHandler) upsertOpsRegistration(c *echo.Context, req opsRegisterReq, licenseID int64, now time.Time) error {
 	_, err := h.centerStore.Pool().Exec(c.Request().Context(), `
 		INSERT INTO ops_node_registrations
 		    (instance_id, region, license_key, license_id, admin_user, admin_email,
@@ -142,7 +142,7 @@ func (h *OpsNodeHandler) upsertOpsRegistration(c echo.Context, req opsRegisterRe
 }
 
 // HandleHeartbeat POST /api/v1/ops/nodes/heartbeat
-func (h *OpsNodeHandler) HandleHeartbeat(c echo.Context) error {
+func (h *OpsNodeHandler) HandleHeartbeat(c *echo.Context) error {
 	authHeader := c.Request().Header.Get("Authorization")
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || parts[0] != "Bearer" {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // Handler exposes read-only tenant operations. It deliberately does not share
@@ -20,7 +20,7 @@ func (h *Handler) RegisterRoutes(g *echo.Group) {
 	g.GET("/autoupdate/check", h.updateCheck)
 }
 
-func tenantID(c echo.Context) (string, bool) {
+func tenantID(c *echo.Context) (string, bool) {
 	role, _ := c.Get("role").(string)
 	id, _ := c.Get("tenant_id").(string)
 	if role == "tenant_admin" && id != "" {
@@ -33,7 +33,7 @@ func tenantID(c echo.Context) (string, bool) {
 	return "", false
 }
 
-func (h *Handler) licenseStatus(c echo.Context) error {
+func (h *Handler) licenseStatus(c *echo.Context) error {
 	id, ok := tenantID(c)
 	if !ok {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "tenant scope required"})
@@ -64,7 +64,7 @@ func (h *Handler) licenseStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"tenant_id": id, "tenant_name": h.tenantName(c, id), "licenses": items})
 }
 
-func (h *Handler) updateCheck(c echo.Context) error {
+func (h *Handler) updateCheck(c *echo.Context) error {
 	id, ok := tenantID(c)
 	if !ok {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "tenant scope required"})
@@ -113,7 +113,7 @@ func pointerValue(v *any) any {
 // tenantName resolves the human-readable name for a tenant code from the
 // tenants table. Returns an empty string when the tenant row is absent (e.g.
 // the 'default' platform tenant), so the caller can fall back to the code.
-func (h *Handler) tenantName(c echo.Context, code string) string {
+func (h *Handler) tenantName(c *echo.Context, code string) string {
 	var name string
 	err := h.db.QueryRow(c.Request().Context(),
 		`SELECT name FROM tenants WHERE code = $1`, code).Scan(&name)

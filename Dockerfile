@@ -10,6 +10,7 @@
 #     mutable tag (local dev only — production builds must pin).
 
 ARG BASE_REGISTRY=registry.kxpms.cn/kx-base
+# Keep the published base tag; GOTOOLCHAIN below selects the patched compiler.
 ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.27.1-alpine
 ARG GO_IMAGE_DIGEST=
 ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
@@ -21,13 +22,15 @@ FROM ${GO_BASE_IMAGE}${GO_IMAGE_DIGEST:+@${GO_IMAGE_DIGEST}} AS builder
 # China network: proxy.golang.org is unreachable, use goproxy.cn instead.
 # The offline-package build script already does this; Docker builds need it too.
 ENV GOPROXY=https://goproxy.cn,direct
-ENV GOTOOLCHAIN=go1.27.2
+ENV GOTOOLCHAIN=go1.27.4
 
 WORKDIR /app
 
 # 复制依赖文件
 COPY go.mod go.sum ./
-RUN go mod download
+# Local runtime modules are replaced by paths in this repository. Vendored
+# sources make this layer independent of those paths and the module proxy.
+COPY vendor/ ./vendor/
 
 # 复制源代码
 COPY . .
@@ -54,7 +57,7 @@ RUN find . -type f \( -name '._*' -o -name '.DS_Store' \) -delete
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories \
     && apk update \
     && apk --no-cache add gcc musl-dev \
-    && CGO_ENABLED=1 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
+    && CGO_ENABLED=1 GOOS=linux go build -mod=vendor -o /app/bin/llm-gateway ./cmd/gateway
 
 # 运行阶段
 # Compose the digest-pinned reference when the CI-provided digest is

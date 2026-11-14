@@ -4,14 +4,14 @@
 server:
   # Server listening address
   host: 0.0.0.0
-  
+
   # Server listening port (1-65535)
   port: 8080
 
 plugins:
   # Plugin directory path (must exist)
   directory: /etc/llm-gateway/plugins
-  
+
   # List of enabled plugins
   enabled:
     - auth
@@ -22,9 +22,9 @@ plugins:
 security:
   # Enable TLS/HTTPS
   tls_enabled: false
-  
+
   # TLS certificate file (required if tls_enabled is true)
   # cert_file: /etc/llm-gateway/certs/server.crt
-  
+
   # TLS private key file (required if tls_enabled is true)
   # key_file: /etc/llm-gateway/certs/server.key

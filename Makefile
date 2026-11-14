@@ -59,8 +59,15 @@ help: ## 显示帮助
 CORE_GO_PACKAGES := ./internal/ir ./domains/dispatch ./domains/streaming/...
 
 .PHONY: test
-test: ## 全量单元测试（CI 默认入口）
+test: test-plugin-runtime-modules ## 全量单元测试（CI 默认入口）
 	$(GO) test ./... -count=1 -timeout=3600s
+
+.PHONY: test-plugin-runtime-modules
+test-plugin-runtime-modules: ## 验证独立运行时模块和生产接入
+	@set -e; for module in config discovery eventbus ipc reconciler supervisor; do \
+		(cd plugin-runtime/$$module && $(GO) test -count=1 ./... && $(GO) vet ./...); \
+	done
+	$(GO) test -count=1 ./plugin-runtime/controller ./cmd/gateway -run 'TestController|TestPluginController|TestConfigManaged'
 # ★★ 2026-11-09 r1050 轮复核：本 target 的每包预算 **300s → 1800s**。
 #   ★ 起因（★ 实测 + 推理）：★ 本 target 跑的是 `go test ./...` ⇒ ★★ **它包含
 #   ★★ `./scripts/ursmcheck`**（★ 慢门那 180 个门文件所在包）⇒ ★★★ 而该包实测

@@ -150,6 +150,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 	"github.com/kaixuan/llm-gateway-go/pkg/monitor"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/controller"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/proxy"
@@ -167,7 +168,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/tenantops"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/kaixuan/llm-gateway-go/vibecoding"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -7045,6 +7046,13 @@ func main() {
 	pluginRegistry := pluginruntime.NewRegistry()
 	pluginCapabilities := pluginruntime.NewCapabilityRegistry()
 	pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR")
+	runtimeConfigPath := os.Getenv("LLM_GATEWAY_PLUGIN_RUNTIME_CONFIG")
+	pluginsDir, runtimeConfigErr := pluginControllerDirectory(runtimeConfigPath, pluginsDir, cfg.Listen)
+	if runtimeConfigErr != nil {
+		slog.Error("plugin runtime configuration invalid", "error", runtimeConfigErr)
+		os.Exit(1)
+	}
+	var pluginController *controller.Controller
 	var sup *pluginruntime.Supervisor // P12: hoisted so the install handler can use it when plugins are enabled
 	var pluginManifests []*pluginruntime.Manifest
 	if pluginsDir != "" {
@@ -7059,20 +7067,37 @@ func main() {
 		// supervisor's actual unix socket paths. pluginBaseFor returns
 		// "unix://<socketPath>" for a running plugin, or "" if the plugin
 		// failed to start — the proxy then responds 502 Bad Gateway.
-		sup = pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
-			SocketDir:     filepath.Join(pluginsDir, ".sockets"),
-			ContextSecret: []byte(cfg.SecretKey),
-			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
-		})
-		pluginBases := ScanAndStartPluginsWithRegistryDir(sup, pluginRegistry, pluginManifests, pluginsDir)
-		for _, manifest := range pluginManifests {
-			// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
-			//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
-			//   其余能力照常登记 ⇒ 一个多声明了一条用不了的能力的插件，
-			//   不会因此失去它本来能用的能力。
-			if err := pluginCapabilities.RegisterManifest(manifest); err != nil {
-				slog.Warn("plugin manifest declares unimplemented capabilities",
-					"error", err)
+		var pluginBases map[string]string
+		if runtimeConfigPath != "" {
+			pluginController, err = startPluginController(context.Background(), runtimeConfigPath, pluginRegistry, pluginCapabilities)
+			if err != nil {
+				slog.Error("plugin controller start failed", "error", err)
+				os.Exit(1)
+			}
+			sup = pluginController.Supervisor()
+			defer func() {
+				if err := pluginController.Close(); err != nil {
+					slog.Error("plugin controller shutdown failed", "error", err)
+				}
+			}()
+		} else {
+			sup = pluginruntime.NewSupervisor(pluginruntime.SupervisorConfig{
+				SocketDir:     filepath.Join(pluginsDir, ".sockets"),
+				ContextSecret: []byte(cfg.SecretKey),
+				SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
+			})
+			pluginBases = ScanAndStartPluginsWithRegistryDir(sup, pluginRegistry, pluginManifests, pluginsDir)
+		}
+		if pluginController == nil {
+			for _, manifest := range pluginManifests {
+				// ★ 2026-10-24 P0-2：manifest 声明**未实现**的插件能力 ⇒ 声明即拒
+				//   （该能力永远不被授予 ⇒ 走那条路由必然 403 capability_denied）。
+				//   其余能力照常登记 ⇒ 一个多声明了一条用不了的能力的插件，
+				//   不会因此失去它本来能用的能力。
+				if err := pluginCapabilities.RegisterManifest(manifest); err != nil {
+					slog.Warn("plugin manifest declares unimplemented capabilities",
+						"error", err)
+				}
 			}
 		}
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
@@ -7088,8 +7113,17 @@ func main() {
 			entitlementAuthorizer = pluginruntime.NewEntitlementClient(maintainServiceURL, jwtSecret, "ai-native-gateway")
 		}
 		registerPluginAPIProxyWithCapabilities(mux, []byte(cfg.SecretKey), func(pluginID string) string {
+			if pluginController != nil {
+				return pluginController.BaseURL(pluginID)
+			}
 			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
 		}, func(pluginID string) (string, bool) {
+			if pluginController != nil {
+				if m := pluginController.Manifest(pluginID); m != nil {
+					return m.Activation.ModuleKey, m.Activation.LicenseRequired
+				}
+				return "", false
+			}
 			activation, ok := pluginActivations[pluginID]
 			if !ok {
 				return "", false
@@ -7103,26 +7137,31 @@ func main() {
 		// the registry, which surfaces in /api/v1/plugin-nav. P8: switched from
 		// socket-only dial (which missed wedged-but-listening plugins) to a
 		// real GET that requires a 200 response.
-		healthCheck := newPluginHealthCheck(sup)
-		healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
-			Interval:         30 * time.Second,
-			FailureThreshold: 2,
-			Restarter:        sup.Restart, // P7: auto-restart crashed plugins
-			MaxRestarts:      5,
-			BackoffStart:     5 * time.Second,
-			BackoffMax:       2 * time.Minute,
-		})
-		healthLoop.Start()
-		defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
-		// graceful shutdown: SIGTERM each plugin process (health loop already stopped above)
-		defer func() {
-			for pluginID := range pluginBases {
-				_ = sup.Stop(pluginID)
-			}
-		}()
+		if pluginController == nil {
+			healthCheck := newPluginHealthCheck(sup)
+			healthLoop := pluginruntime.NewHealthLoop(pluginRegistry, healthCheck, pluginruntime.HealthLoopConfig{
+				Interval:         30 * time.Second,
+				FailureThreshold: 2,
+				Restarter:        sup.Restart, // P7: auto-restart crashed plugins
+				MaxRestarts:      5,
+				BackoffStart:     5 * time.Second,
+				BackoffMax:       2 * time.Minute,
+			})
+			healthLoop.Start()
+			defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
+			// graceful shutdown: SIGTERM each plugin process (health loop already stopped above)
+			defer func() {
+				for pluginID := range pluginBases {
+					_ = sup.Stop(pluginID)
+				}
+			}()
+		}
 	}
 	wirePluginAuthExtractor()
 	manifestByID := func(id string) *pluginruntime.Manifest {
+		if pluginController != nil {
+			return pluginController.Manifest(id)
+		}
 		for _, m := range pluginManifests {
 			if m != nil && m.PluginID == id {
 				return m
@@ -7173,7 +7212,9 @@ func main() {
 	// pluginsDir is unset (sup == nil).
 	maintainURL := os.Getenv("LLM_GATEWAY_MAINTAIN_URL")
 	var installer pluginInstaller
-	if maintainURL != "" && sup != nil {
+	if pluginController != nil {
+		installer = configManagedPluginControl{}
+	} else if maintainURL != "" && sup != nil {
 		catalogClient := pluginruntime.NewMaintainCatalogClient(
 			maintainURL, runtime.GOOS, runtime.GOARCH, Version(),
 		)
@@ -7199,6 +7240,9 @@ func main() {
 	// is not yet consulted — the catalog side will fold in under the same
 	// handler when ready.
 	lifecycle := resolveLifecycle(sup, pluginsDir)
+	if pluginController != nil {
+		lifecycle = configManagedPluginControl{}
+	}
 	mux.Handle("POST /api/v1/plugins/{id}/activate", admin.AdminMiddleware(
 		makePluginActivateHandler(lifecycle),
 		dbConn.Pool(), cfg.SecretKey,
@@ -7778,15 +7822,13 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() {
 		// 创建 Echo 实例用于运维平台路由
 		e := echo.New()
-		e.HideBanner = true
-		e.HidePort = true
+		e.Logger = slog.Default()
 
 		// Customer-facing routes must use a separate Echo instance. Echo's
 		// e.Use middleware applies to every route in the instance, so mounting
 		// public customer routes on the admin instance would still require JWT.
 		customerEcho := echo.New()
-		customerEcho.HideBanner = true
-		customerEcho.HidePort = true
+		customerEcho.Logger = slog.Default()
 
 		jwtSecret := resolveJWTSecret(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
 		// ★ 2026-10-27（r1039 后续轮，§8 第 9 条）：把连接池交给中间件，
