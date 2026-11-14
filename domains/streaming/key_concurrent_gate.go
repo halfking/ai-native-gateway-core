@@ -28,7 +28,6 @@ import (
 // KeyConcurrentGate 按调用方 API key 执法并发帽。
 type KeyConcurrentGate struct {
 	mu   sync.Mutex
-	next http.Handler
 	used map[int]int // keyID -> 在飞请求数
 }
 
@@ -37,22 +36,28 @@ func NewKeyConcurrentGate() *KeyConcurrentGate {
 	return &KeyConcurrentGate{used: make(map[int]int)}
 }
 
-// Wrap 包装 handler。
+// Wrap 包装 handler。每个调用返回独立闭包捕获各自的 next——**不得**把
+// next 存进实例字段：2026-11-15 S09 下钻轮三方 A/B 定案（39b4d8e5a=chat
+// 形状 ✓ / 79237f4d4 与后续=responses 形状 ✗），单实例对 chat/messages/
+// responses 三个路由各调一次 Wrap 时，g.next 被最后一次调用覆盖 ⇒
+// /v1/chat/completions 实际路由到 responsesHandler（chat 面全量反转为
+// responses 形状——共享实例多处 Wrap=后者遮蔽前者，D-S4 双路由遮蔽同族）。
+// 钉测：TestKeyConcurrentGate_WrapPerRoute。
 func (g *KeyConcurrentGate) Wrap(next http.Handler) http.Handler {
-	g.next = next
-	return g
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.serve(w, r, next)
+	})
 }
 
-// ServeHTTP 实现 http.Handler。
-func (g *KeyConcurrentGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (g *KeyConcurrentGate) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	keyInfo := VerifiedKeyInfoFromContext(r.Context())
 	if keyInfo == nil || keyInfo.IsInternal {
-		g.next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 		return
 	}
 	limit := keyInfo.EffectiveConcurrent()
 	if limit <= 0 {
-		g.next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 		return
 	}
 
@@ -81,7 +86,7 @@ func (g *KeyConcurrentGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 	}()
 
-	g.next.ServeHTTP(w, r)
+	next.ServeHTTP(w, r)
 }
 
 // requestIDOf 提取请求 ID（无则退回占位）——错误信封字段。

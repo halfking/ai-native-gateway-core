@@ -144,3 +144,38 @@ func TestKeyConcurrentGate_PerKeyIsolation(t *testing.T) {
 		t.Fatalf("key B 不得被 key A 的满槽污染: %d", recB.Code)
 	}
 }
+
+// TestKeyConcurrentGate_WrapPerRoute — 2026-11-15 S09 下钻轮钉测：同一个
+// gate 实例对三个路由各调一次 Wrap，三个路由必须各自命中自己的 handler
+// （首版实现把 next 存进实例字段 ⇒ 最后一次 Wrap 覆盖前两次 ⇒ chat 面
+// 全量反转为 responses 形状——245 mock 栈 A/B 三方对拍实证）。
+// 变异臂：把 Wrap 退回 g.next 字段形态 ⇒ 本测试红。
+func TestKeyConcurrentGate_WrapPerRoute(t *testing.T) {
+	gate := NewKeyConcurrentGate()
+	var chatHit, messagesHit, responsesHit bool
+	chatHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { chatHit = true })
+	messagesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { messagesHit = true })
+	responsesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { responsesHit = true })
+
+	chatWrapped := gate.Wrap(chatHandler)
+	messagesWrapped := gate.Wrap(messagesHandler)
+	responsesWrapped := gate.Wrap(responsesHandler)
+
+	// 无 key 身份走豁免直通（各自 next 必须被命中）。
+	for _, tc := range []struct {
+		name string
+		h    http.Handler
+		want *bool
+	}{
+		{"chat", chatWrapped, &chatHit},
+		{"messages", messagesWrapped, &messagesHit},
+		{"responses", responsesWrapped, &responsesHit},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/"+tc.name, nil)
+		rec := httptest.NewRecorder()
+		tc.h.ServeHTTP(rec, req)
+		if !*tc.want {
+			t.Fatalf("%s route did not reach its own handler — shared-gate next shadowing regression", tc.name)
+		}
+	}
+}
