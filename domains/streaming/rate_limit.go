@@ -41,10 +41,17 @@ type rateLimitOutcome struct {
 	Reason    string
 }
 
-// checkGatewayRateLimit runs the single-source-of-truth RPM check used by
+// checkGatewayRateLimit runs the single-source-of-truth RPM+TPM check used by
 // the chat, responses and messages endpoints. It never writes to the
 // response — callers compose headers + body themselves so each endpoint
 // keeps its own response shape (OpenAI vs Anthropic vs Responses).
+//
+// 2026-11-15（限流统一按 key 轮）：接入 TPM 执法。estimatedTokens 由调用方
+// 按入口估计传入（有 body 的生成面 = len(bodyBytes)/3.5 仓内惯例；读 body 前
+// 就要挡住的面如 count_tokens、非 token 面传 0 ⇒ TPM 跳过）。语义：NULL/0
+// 不执法（EffectiveTPM），正值按 60s 滑窗预检预记账（admission control 口径，
+// 完成侧 token 不入账——登记于 EffectiveTPM）。Reason="tpm_limit" 走各面现有
+// Blocked 渲染路径，形状自动统一。
 //
 // AUDIT-2 (2026-07-12): when rate_limit.enabled is OFF, the entire
 // gateway RPM layer is bypassed (Skipped=true). This matches the user
@@ -55,7 +62,39 @@ type rateLimitOutcome struct {
 // callers. It must not be treated as a tenant API-key quota, or aggregate
 // frontend traffic exhausts one shared RPM window. AuthMiddleware creates the
 // context marker only after constant-time static-key verification.
-func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter, notify func(ratelimit.AdmissionResult)) rateLimitOutcome {
+func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter, notify func(ratelimit.AdmissionResult), estimatedTokens int) rateLimitOutcome {
+	outcome := admitGatewayRPM(ctx, keyInfo, rl, notify)
+	if outcome.Skipped || outcome.Blocked {
+		return outcome
+	}
+	// TPM（2026-11-15）：RPM 通过后的第二道按 key 配置闸。显式无限 RPM
+	// （DB=0）不豁免 TPM——两列独立语义。仅在有估计值时执法（estimate=0
+	// 的面不预记账，避免把「没法估」变成「无限」）。
+	if estimatedTokens > 0 {
+		if tpmLimit := keyInfo.EffectiveTPM(); tpmLimit > 0 {
+			if tpmc, ok := rl.(ratelimit.TPMChecker); ok {
+				if !tpmc.CheckTPM(keyInfo.ID, estimatedTokens, tpmLimit) {
+					return rateLimitOutcome{
+						Blocked:   true,
+						Limit:     tpmLimit,
+						Remaining: 0,
+						ResetSec:  60,
+						Reason:    "tpm_limit",
+					}
+				}
+			}
+		}
+	}
+	return outcome
+}
+
+// TPMChecker 是支持 token 预算预检的限流器可选能力（SlidingWindowLimiter /
+// RedisLimiter 均已实现，此前零调用方）。
+var _ ratelimit.TPMChecker = (*ratelimit.SlidingWindowLimiter)(nil)
+
+// admitGatewayRPM 是既有的 RPM 准入逻辑（原 checkGatewayRateLimit 函数体），
+// 提取出来以便 TPM 作为第二道闸叠加。
+func admitGatewayRPM(ctx context.Context, keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter, notify func(ratelimit.AdmissionResult)) rateLimitOutcome {
 	// AUDIT-2: 限流总开关关闭 → 整个 RPM 检查 no-op。
 	if !ratelimit.IsRateLimitEnabled() {
 		return rateLimitOutcome{Skipped: true}

@@ -268,12 +268,24 @@ func (h *ImagesGenerationsHandler) authenticate(w http.ResponseWriter, r *http.R
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
-	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, nil); !outcome.Skipped {
-		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limited")
+	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, nil, 0); !outcome.Skipped {
+		// 2026-11-15（限流统一按 key 轮）：code 与其它面统一为
+		// rate_limit_exceeded（旧 rate_limited 是本面独有的第五种限流词汇）。
+		writeRateLimitHeaders(w, outcome)
+		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 		return nil, false
 	}
 	if err := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); err != nil {
-		writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exceeded", "insufficient_quota", "budget_exceeded")
+		// 2026-11-15（限流统一按 key 轮）：与 handler.go 的 budget 闸同形——
+		// 仅 BudgetExceededError 判 402；其它错误是「不知道超没超」，按
+		// fail-closed 判 503 budget_unavailable（R89-133 缺陷B 同款语义，
+		// 放行会把预算闸变成静默 fail-open）。旧形状任何 err 一律 402。
+		if _, ok := err.(*authentication.BudgetExceededError); ok {
+			writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exceeded", "insufficient_quota", "budget_exceeded")
+			return nil, false
+		}
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+			"Budget check temporarily unavailable", "server_error", "budget_unavailable")
 		return nil, false
 	}
 	return keyInfo, true

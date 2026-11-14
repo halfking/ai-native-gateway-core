@@ -121,26 +121,89 @@ func TestStandardSeverityNumber(t *testing.T) {
 }
 
 // TestStandardRedactsSensitiveKeys 验证敏感键被脱敏。
+// 2026-11-15 假名化改判：脱敏值不再是常量 "[REDACTED]"，而是确定性假名
+// "[REDACTED:<key>:<8hex>]"（不同值不同假名——脱敏不可塌缩，同值同假名可
+// 关联/可还原对拍）。此处钉：原值不出现 + 假名形状（前缀+键段+8hex）。
 func TestStandardRedactsSensitiveKeys(t *testing.T) {
 	last := captureStandard(t, StandardOptions{})
 	slog.Info("secret check", "password", "hunter2", "api_key", "sk-abcdefghijklmnop")
 
 	obj := last()
-	if obj["password"] != RedactedPlaceholder {
-		t.Errorf("password=%v，期望 %q", obj["password"], RedactedPlaceholder)
+	if got, _ := obj["password"].(string); !isRedactionPseudonym(got) || strings.Contains(got, "hunter2") {
+		t.Errorf("password=%v，期望假名形状且不含原值", obj["password"])
 	}
-	if obj["api_key"] != RedactedPlaceholder {
-		t.Errorf("api_key=%v，期望 %q", obj["api_key"], RedactedPlaceholder)
+	if got, _ := obj["api_key"].(string); !isRedactionPseudonym(got) || strings.Contains(got, "sk-abcdefghijklmnop") {
+		t.Errorf("api_key=%v，期望假名形状且不含原值", obj["api_key"])
+	}
+	var pw, ak string
+	pw, _ = obj["password"].(string)
+	ak, _ = obj["api_key"].(string)
+	if pw != "[REDACTED:password:"+Pseudonym("password", "hunter2")+"]" {
+		t.Errorf("password=%v，期望确定性假名（键段=password）", pw)
+	}
+	if ak != "[REDACTED:api_key:"+Pseudonym("api_key", "sk-abcdefghijklmnop")+"]" {
+		t.Errorf("api_key=%v，期望确定性假名（键段=api_key）", ak)
 	}
 }
 
 // TestStandardRedactsSensitiveValues 验证敏感值模式被脱敏。
+// 2026-11-15 假名化改判：模式命中 → "[REDACTED:<8hex>]"（无键段）。
 func TestStandardRedactsSensitiveValues(t *testing.T) {
 	last := captureStandard(t, StandardOptions{})
 	slog.Info("value check", "note", "token is Bearer abcdef123456")
 
-	if got := last()["note"]; got != RedactedPlaceholder {
-		t.Errorf("note=%v，期望整体脱敏", got)
+	got, _ := last()["note"].(string)
+	if !isRedactionPseudonym(got) || strings.Contains(got, "Bearer") {
+		t.Errorf("note=%v，期望整体脱敏为假名", got)
+	}
+}
+
+// TestStandardRedactionPseudonymInjective 钉脱敏假名的注入性（2026-11-15）：
+// 不同原值 → 不同假名（不可塌缩）；同值同键 → 同假名（可关联/可还原）；
+// 异键同值 → 异假名（键段参与哈希，命名空间隔离）。
+func TestStandardRedactionPseudonymInjective(t *testing.T) {
+	last := captureStandard(t, StandardOptions{})
+
+	// 同键异值 → 异假名（脱敏不可塌缩——本测试是本轮的核心钉）。
+	slog.Info("injective check", "session_id", "gw_aaa")
+	sidA, _ := last()["session_id"].(string)
+	slog.Info("injective check", "session_id", "gw_bbb")
+	sidB, _ := last()["session_id"].(string)
+	if sidA == "" || sidA == sidB {
+		t.Errorf("同键异值必须得到异假名：aaa=%v bbb=%v", sidA, sidB)
+	}
+
+	// 异键同值 → 异假名（键段参与哈希）。
+	slog.Info("injective check", "credential_id", "gw_aaa")
+	cidA, _ := last()["credential_id"].(string)
+	if cidA == sidA {
+		t.Errorf("异键同值必须得到异假名：session_id=%v credential_id=%v", sidA, cidA)
+	}
+
+	// 同值同键跨两次调用恒同假名（关联性/可还原对拍的前提）。
+	slog.Info("injective check again", "session_id", "gw_aaa")
+	sidA2, _ := last()["session_id"].(string)
+	if sidA2 != sidA {
+		t.Errorf("假名不稳定：%v → %v", sidA, sidA2)
+	}
+	if sidA != "[REDACTED:session_id:"+Pseudonym("session_id", "gw_aaa")+"]" {
+		t.Errorf("假名与 Pseudonym 对拍不符：%v", sidA)
+	}
+}
+
+// TestStandardRedactionIdempotent 钉假名幂等（2026-11-15）：已经是假名的值
+// 二次脱敏必须恒等——redactRecord 与内层 ReplaceAttr 双路径叠加安全。
+func TestStandardRedactionIdempotent(t *testing.T) {
+	pseudo := PseudonymToken("session_id", "gw_xyz")
+	if got := redactKeyValue("session_id", pseudo); got != pseudo {
+		t.Errorf("假名二次按键脱敏被改写：%v → %v", pseudo, got)
+	}
+	if got := redactString(pseudo); got != pseudo {
+		t.Errorf("假名二次按模式脱敏被改写：%v → %v", pseudo, got)
+	}
+	bare := RedactedPlaceholder
+	if got := redactString(bare); got != bare {
+		t.Errorf("裸占位符被改写：%v → %v", bare, got)
 	}
 }
 

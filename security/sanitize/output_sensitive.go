@@ -754,14 +754,23 @@ func (c *outputSensitiveChecker) Check(ctx context.Context, tenant string, text 
 	// HardBlockAllowed 判定），这里补齐同一条底线：非托管要拦，也必须清单
 	// 显式开（scope=output），否则降级为遮蔽。
 	block := c.action == OutputBlock && !c.managed() && anyOutputFragmentMayBlock(fragments)
+	// 2026-11-15：带值上下文的遮蔽走按值序号分配（两段式：预扫计数 → 渲染）。
+	// 同一 type 出现 ≥2 个不同值才启用序号形态——不同自造值不再塌缩成同一个
+	// "[REDACTED:type]"；单值 type 保持经典形态（客户端解析/既有钉测兼容）。
+	// 台账 Issue.Content 与客户端可见标记同源。
+	markers := NewMarkerIndexAllocator()
+	for _, span := range spans {
+		markers.Observe(span.typ, text[span.start:span.end])
+	}
 	var safe strings.Builder
 	last := 0
 	for _, span := range spans {
 		safe.WriteString(text[last:span.start])
-		safe.WriteString(RedactionMarker(span.typ))
+		marker := markers.MarkerFor(span.typ, text[span.start:span.end])
+		safe.WriteString(marker)
 		last = span.end
 		result.Issues = append(result.Issues, outputcompliance.ComplianceIssue{
-			Type: "sensitive", Subtype: string(span.typ), Content: RedactionMarker(span.typ), Severity: 8, Score: 1, Redacted: !block,
+			Type: "sensitive", Subtype: string(span.typ), Content: marker, Severity: 8, Score: 1, Redacted: !block,
 		})
 	}
 	safe.WriteString(text[last:])

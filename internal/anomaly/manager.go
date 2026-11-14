@@ -84,14 +84,19 @@ func (m *Manager) CheckAll(ctx context.Context, req *Request) []*AnomalyResult {
 		if result := detector.Check(ctx, req); result != nil {
 			results = append(results, result)
 
-			// 指标埋点：记录检测结果
+			// 指标埋点：记录检测结果。
+			// 2026-11-15：ObserveOnly 面（频率检测）不进 blocked 指标——它
+			// 不拦截；action=observed 供看板区分观察信号与执法面。
+			apiKeyID := fmt.Sprintf("%d", req.APIKeyID)
 			action := "passed"
-			if ShouldBlock(result.Severity) {
+			switch {
+			case result.ObserveOnly:
+				action = "observed"
+			case ShouldBlock(result.Severity):
 				action = "blocked"
 				// 记录被拦截的请求
-				apiKeyID := fmt.Sprintf("%d", req.APIKeyID)
 				anomalyBlockedRequests.WithLabelValues(result.Code, apiKeyID).Inc()
-			} else if result.Severity == "medium" {
+			case result.Severity == "medium":
 				action = "warned"
 			}
 			anomalyDetections.WithLabelValues(result.Code, result.Severity, action).Inc()
@@ -158,7 +163,9 @@ func ShouldBlock(severity string) bool {
 	return severity == "high" || severity == "critical"
 }
 
-// SessionRateDetector 包装器，实现 Detector 接口
+// SessionRateDetector 包装器，实现 Detector 接口。
+// 2026-11-15：窗口按 api key ID 分桶；调用方（wrapAnomalyDetector）负责在
+// 无 key 身份时跳过（空桶共享缺陷的消除面）。
 type SessionRateDetector struct {
 	limiter *SessionRateLimiter
 }
@@ -172,17 +179,17 @@ func NewSessionRateDetector() *SessionRateDetector {
 
 // Check 实现 Detector 接口
 func (d *SessionRateDetector) Check(ctx context.Context, req *Request) *AnomalyResult {
-	return d.limiter.Check(ctx, req.SessionID)
+	return d.limiter.Check(ctx, req.APIKeyID)
 }
 
 // GetStats 获取会话统计
-func (d *SessionRateDetector) GetStats(sessionID string) map[string]interface{} {
-	return d.limiter.GetStats(sessionID)
+func (d *SessionRateDetector) GetStats(keyID int64) map[string]interface{} {
+	return d.limiter.GetStats(keyID)
 }
 
 // Clear 清除会话
-func (d *SessionRateDetector) Clear(sessionID string) {
-	d.limiter.Clear(sessionID)
+func (d *SessionRateDetector) Clear(keyID int64) {
+	d.limiter.Clear(keyID)
 }
 
 // NewDefaultManager 创建带默认检测器的管理器

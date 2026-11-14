@@ -1310,7 +1310,7 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID, "API key throttled", "rate_limit_error", "key_throttled")
 		return nil, false
 	}
-	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, s.rateLimiter, nil); !outcome.Skipped {
+	if outcome := checkGatewayRateLimit(r.Context(), keyInfo, s.rateLimiter, nil, 0); !outcome.Skipped {
 		writeRateLimitHeaders(w, outcome)
 		if outcome.Blocked {
 			ratelimit.MarkGatewaySharedKeyRateLimit(w)

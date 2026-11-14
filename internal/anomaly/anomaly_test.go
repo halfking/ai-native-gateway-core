@@ -41,7 +41,7 @@ func TestAttachmentFingerprintDetector_ReplayLoop(t *testing.T) {
 			assert.Equal(t, "attachment_replay_loop", result.Code)
 			assert.Equal(t, "high", result.Severity)
 			assert.Contains(t, result.Message, "连续")
-			
+
 			// 检查指标
 			assert.Greater(t, result.Metrics["consecutive_replays"], 2)
 			assert.Equal(t, int64(len(attachment)), result.Metrics["attachment_bytes"])
@@ -106,15 +106,17 @@ func TestAttachmentFingerprintDetector_SmallAttachments(t *testing.T) {
 	}
 }
 
-// TestSessionRateLimiter_Storm 测试请求风暴检测
+// TestSessionRateLimiter_Storm 测试请求风暴检测。
+// 2026-11-15 改判：窗口按 api key ID 分桶；结果恒 ObserveOnly（观察模式，
+// 调用方不拦截——客户端限流由按 key RPM 链执法）。
 func TestSessionRateLimiter_Storm(t *testing.T) {
 	limiter := NewSessionRateLimiter()
-	sessionID := "test_session_storm"
+	const keyID = int64(101)
 	ctx := context.Background()
 
 	// 模拟 5 分钟内发送 15 笔请求
 	for i := 0; i < 15; i++ {
-		result := limiter.Check(ctx, sessionID)
+		result := limiter.Check(ctx, keyID)
 
 		if i < 5 {
 			// 前 5 笔不触发任何异常
@@ -130,23 +132,48 @@ func TestSessionRateLimiter_Storm(t *testing.T) {
 			assert.Equal(t, "session_request_storm", result.Code)
 			assert.Equal(t, "high", result.Severity)
 		}
+		if result != nil {
+			// 观察模式钉：任何检出都不得执法。
+			assert.True(t, result.ObserveOnly, "频率检测必须是观察模式")
+		}
 	}
 
 	// 检查统计
-	stats := limiter.GetStats(sessionID)
+	stats := limiter.GetStats(keyID)
 	assert.NotNil(t, stats)
 	assert.Equal(t, 15, stats["requests_5min"])
+}
+
+// TestSessionRateLimiter_PerKeyIsolation 钉按 key 分桶隔离（2026-11-15）：
+// 一个 key 的风暴窗口不得污染另一个 key——旧实现按 session 分桶且空 session
+// 共享一个全局桶（211 事故：无会话头流量 ~9 笔/分钟即全体被拦）。
+func TestSessionRateLimiter_PerKeyIsolation(t *testing.T) {
+	limiter := NewSessionRateLimiter()
+	ctx := context.Background()
+
+	// key 7 打满风暴阈值。
+	for i := 0; i < 12; i++ {
+		limiter.Check(ctx, 7)
+	}
+	storm := limiter.Check(ctx, 7)
+	if storm == nil || storm.Code != "session_request_storm" {
+		t.Fatalf("key 7 应处于风暴态: %+v", storm)
+	}
+
+	// key 8 首笔必须干净（无共享桶污染）。
+	other := limiter.Check(ctx, 8)
+	assert.Nil(t, other, "另一个 key 的首笔不得被 key 7 的窗口污染")
 }
 
 // TestSessionRateLimiter_BurstDetection 测试短期突发检测
 func TestSessionRateLimiter_BurstDetection(t *testing.T) {
 	limiter := NewSessionRateLimiter()
-	sessionID := "test_session_burst"
+	const keyID = int64(102)
 	ctx := context.Background()
 
 	// 1 分钟内发送 8 笔
 	for i := 0; i < 8; i++ {
-		result := limiter.Check(ctx, sessionID)
+		result := limiter.Check(ctx, keyID)
 
 		if i < 5 {
 			assert.Nil(t, result, "前 5 笔应放行")
@@ -161,18 +188,18 @@ func TestSessionRateLimiter_BurstDetection(t *testing.T) {
 // TestSessionRateLimiter_TimeWindow 测试时间窗口清理
 func TestSessionRateLimiter_TimeWindow(t *testing.T) {
 	limiter := NewSessionRateLimiter()
-	sessionID := "test_session_window"
+	const keyID = int64(103)
 	ctx := context.Background()
 
 	// 发送 5 笔（不触发）
 	for i := 0; i < 5; i++ {
-		result := limiter.Check(ctx, sessionID)
+		result := limiter.Check(ctx, keyID)
 		assert.Nil(t, result)
 	}
 
 	// 模拟时间流逝（实际测试中无法真正等待，这里只是逻辑验证）
 	// 在实际应用中，旧记录会被自动清理
-	stats := limiter.GetStats(sessionID)
+	stats := limiter.GetStats(keyID)
 	assert.Equal(t, 5, stats["requests_1min"])
 }
 

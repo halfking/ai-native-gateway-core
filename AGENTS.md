@@ -1,5 +1,13 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-15 限流统一按 key 轮 + 日志脱敏假名化（goal 会话，LESSONS §725；零迁移/零路由变更）**：
+> ★ 背景＝211 取证定案：「会话请求频率过高：5 分钟内 15 笔（3.0/min）」683 次检出/344 拦截由 2026-11-14 上线的 anomaly 频率检测器发出——裸字符串 context 键（api_key_id 恒 0）、空 session 共享全局桶（无会话头流量 ~9 笔/分钟即全体被拦）、被拦请求自喂窗口自锁、429 信封与按 key RPM 链不同形。用户裁决：脱敏不可塌缩不同值；限流统一按 key 配置一个标准。
+> ★★★★ **WP1 日志脱敏假名化**：16 个 sensitiveKeys 整体塌缩 `[REDACTED]` → 确定性假名 `[REDACTED:<key>:<8hex>]`（HMAC-SHA256，env LLM_GATEWAY_LOG_REDACT_HMAC_KEY，未设每进程随机+WARN；还原=密钥持有者重算对拍，零敏感映射落库）；输出侧遮蔽标记两段式索引（同 type ≥2 个不同值才启用 `[REDACTED:type:n]`，单值经典形态 ⇒ sanitize 29 处形状钉测零改判）。**坑：RedactedPlaceholder 带闭合括号直接拼接产出畸形假名；HMAC 懒初始化 WARN 混进记录计数测试捕获窗（init 期初始化修）**。
+> ★★★★ **WP2 限流收敛**：① anomaly 频率检测→观察模式（`ObserveOnly`，窗口 key=api key ID，无身份/IsInternal 跳过，零客户端拦截；删死代码 middleware/anomaly_detector_mw.go 整文件）；② 429 形状统一（messages 族 529→429、images code 统一+budget fail-closed 503 分支）；③ TPM 死字段接线（EffectiveTPM+TPMChecker+estimatedTokens 参数，count_tokens 类面传 0=跳过）；④ per-key 并发闸真执法（domains/streaming/key_concurrent_gate.go，executors 软告警保留为纵深）；⑤ createKey 补帽（keyLimitCaps 与 updateKeyLimits 共用）。
+> ★ 验证：触碰十一包全量绿（streaming 104s/admin 107s/cmd/gateway 18s）；变异 6/6 红→还原绿；gofmt 经手文件零漂移；dataplane_guard_surface 门对新 wrapper 零咬红。
+> ★ 遗留：messages/responses 无 CheckBudget（ingressguard registeredGap 单独立项）｜TPM=入口估计 admission 口径｜并发计数进程内｜211 部署随下一班列车（在役 anomaly 拦截形态随部署消除）。
+
+
 > **2026-11-15 routing_database_error 事故根修与止血轮（goal 会话，主档 `docs/audit/2026-11-15-routing_database_error事故根修与止血-主档.md`；提交 `eea844247` 双仓已推；211 部署验证完成：蓝绿 `2.5.9-eea844247-20261115-211`（build_seq 3055）槽 a @8781 接管、readyz/公网版本身份 OK、**临时 key 真实模型请求公网 3/3 全 200+PONG**、部署后 routing_database_error 增量 0、65/65 全成功；key 261 验后 revoked）**：
 > ★ owner 报障「failure upstream · routing_database_error」⇒ **三层链定案（211 全实测）**：① 触发＝23:42 并行会话「部署债交付」把 a 槽部署成 **d5eb218a（旧两档）**——不含 23:09 `8066b57c0` 刚修的 lifecycle SQL 别名 P0（`mc.released_at` 越出 CTE 作用域 ⇒ 候选查询 42P01）并杀掉在役 b 槽（39b4d8e5a 含修复、6h 零错误）＝**回退式部署，r1052 教训复演**；② 连锁＝42P01 连败→候选熔断 open→请求 parked→客户端 300s 超时挂断→`context canceled` 全落 routing_database_error 兜底（**83 笔/7 模型/21 分钟** chat 面全瘫）；③ 取证钥匙＝request_logs `failure_detail_code` × 容器日志 `failed to get candidates` 原文对拍。
 > ★★★★ **修复一＝分类器三形态补齐**：context canceled→`routing_client_canceled`/499（客户端挂断不是上游故障；日志降 WARN）、`circuit open (retry after …)`→`routing_circuit_open`/503、`missing FROM-clause entry`/SQLSTATE 42P01→`routing_schema_error`（网关侧 SQL 缺陷≠DB 基础设施）；bare deadline exceeded 补进 connection 臂。**★★ 通用式：兜底分类器是归因黑洞——每个真实生产错误形态都必须有自己的类，否则仪表盘把「客户端挂断」记成「数据库故障」。**

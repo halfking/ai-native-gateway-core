@@ -160,6 +160,21 @@ func (ki *KeyInfo) EffectiveConcurrent() int {
 	return tierDefaults["default"][1]
 }
 
+// EffectiveTPM returns the applicable TPM limit.
+//
+// 2026-11-15（限流统一按 key 轮）：api_keys.rate_limit_tpm 一直是死字段——
+// KeyInfo 带着值、admin 面可写、但数据面零执法（CheckTPM 零调用方）。本
+// getter 是执法入口。与 RPM 的语义差异：tierDefaults 只带 {rpm, concurrent}
+// 两列，平台 spec 的 TPM 默认也是 0 ⇒ **NULL 与 0 都表示不执法**，只有
+// 显式正值才设帽。口径边界（登记）：TPM 预检用入口估计值（len(body)/3.5
+// 的仓内惯例），完成侧 token 不入账——admission control 语义，非计费口径。
+func (ki *KeyInfo) EffectiveTPM() int {
+	if ki.RateLimitTPM != nil && *ki.RateLimitTPM > 0 {
+		return *ki.RateLimitTPM
+	}
+	return 0
+}
+
 // DBQuerier 是 KeyVerifier 用于查询 api_keys 表的最小化接口。
 // 真实实现是 *pgxpool.Pool；测试可以用 mock（pgxmock.PgxPoolIface 天然满足）。
 // Query (2026-09-04) 支撑 keystore_sync.go 的全量/增量加载。

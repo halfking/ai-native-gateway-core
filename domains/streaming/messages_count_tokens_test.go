@@ -91,10 +91,13 @@ func (b *countingBody) Close() error { return nil }
 // 被限流的请求**不得**再去读那个最多 128MB 的 body。
 //
 // ★ 为什么这条要单独钉：补这道闸的**全部意义**就是「限流挡住网关自己的
-//   算力与内存开销」⇒ 若闸被放到读 body 之后，被拒的请求已经付掉了全部
-//   读取成本 ⇒ 限流就只剩一个「拒绝」语义、挡不住消耗。
+//
+//	算力与内存开销」⇒ 若闸被放到读 body 之后，被拒的请求已经付掉了全部
+//	读取成本 ⇒ 限流就只剩一个「拒绝」语义、挡不住消耗。
+//
 // ⇒ 这是一条**位置断言**，不是行为断言：把闸挪到 body 读取之后，
-//   状态码仍然是 529、测试若只断言状态码就会照样绿 ⇒ 必须显式断言 body 未被读。
+//
+//	状态码仍然是 429、测试若只断言状态码就会照样绿 ⇒ 必须显式断言 body 未被读。
 func TestCountTokens_RateLimitedDoesNotReadBody(t *testing.T) {
 	ratelimit.EnableRateLimit()
 	limit := 1
@@ -102,7 +105,7 @@ func TestCountTokens_RateLimitedDoesNotReadBody(t *testing.T) {
 
 	h := NewChatHandler(nil, nil, nil, nil, nil, nil)
 	h.setRequestKeyVerifierForTest(&stubKeyVerifier{info: keyInfo})
-	// budgetExceededLimiter ⇒ 闸必然判定为超预算 ⇒ 走 529 分支。
+	// budgetExceededLimiter ⇒ 闸必然判定为超预算 ⇒ 走限流分支。
 	h.rateLimiter = budgetExceededLimiter{estimatedWaitSec: 7}
 
 	body := &countingBody{reader: strings.NewReader(
@@ -121,8 +124,10 @@ func TestCountTokens_RateLimitedDoesNotReadBody(t *testing.T) {
 
 	NewCountTokensHandler(h).ServeHTTP(rec, req)
 
-	if rec.Code != 529 {
-		t.Fatalf("status = %d, want 529 (same family as /v1/messages); body=%s", rec.Code, rec.Body.String())
+	// 2026-11-15 改判：529 → 429（限流统一按 key 轮——Anthropic 协议
+	// 529=overloaded，限流是 429；与 /v1/messages 及全仓其余面对齐）。
+	if rec.Code != 429 {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
 	}
 	if body.read {
 		t.Fatal("rate-limited request must NOT read the request body — " +

@@ -454,7 +454,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	}
 
 	isStream := reqBody.Stream
-	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
+	// 2026-11-15：TPM 接入——入口估计随 RPM 闸一并预检（chat 面同口径）。
+	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream), estimatePromptTokens(bodyBytes)); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
 			recordGatewayRateLimitRejection(rlOutcome)

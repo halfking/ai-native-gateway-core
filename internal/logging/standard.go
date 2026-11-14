@@ -35,6 +35,10 @@ package logging
 
 import (
 	"context"
+	"crypto/hmac"
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -85,8 +89,94 @@ func severityText(l slog.Level) string {
 	}
 }
 
-// RedactedPlaceholder 是敏感值的统一替换文本。
+// RedactedPlaceholder 是敏感值的统一替换文本（假名前缀）。
+//
+// 2026-11-15 假名化改造：此前所有敏感值（无论键名还是值模式命中）都塌缩成
+// 同一个字面量 "[REDACTED]"——不同 session/credential 在日志里不可区分、不可
+// 关联，取证时无法还原归属。现改为**确定性假名**：
+//
+//	按键名脱敏 → "[REDACTED:<key>:<8hex>]"（如 [REDACTED:session_id:ab12cd34]）
+//	按值模式命中 → "[REDACTED:<8hex>]"（消息内模式命中无键名上下文）
+//
+// 8hex = HMAC-SHA256(密钥, key+"\x00"+value) 前 8 个 hex 字符。性质：
+//   - 同值恒同假名（跨行/跨字段可关联——同一 session 的所有日志行落同一假名）；
+//   - 异值恒异假名（不塌缩——这是可还原的前提，还原 = 密钥持有者对候选值
+//     重算 HMAC 对拍，确定性 ⇒ 无需落库任何敏感值映射）；
+//   - 无密钥不可逆（密钥不在日志面出现）。
+//
+// 密钥来源：env LLM_GATEWAY_LOG_REDACT_HMAC_KEY；未配置时进程启动随机生成
+// （进程内关联仍成立，跨重启不成立——启动 WARN 说明）。
 const RedactedPlaceholder = "[REDACTED]"
+
+// redactHMACKeyOnce / redactHMACKey 持有进程级脱敏密钥（懒初始化）。
+var (
+	redactHMACKeyOnce sync.Once
+	redactHMACKey     []byte
+)
+
+// redactionHMACKey 返回脱敏假名的 HMAC 密钥：env LLM_GATEWAY_LOG_REDACT_HMAC_KEY
+// 优先；未配置时生成进程级随机密钥并 WARN（跨重启关联不成立）。
+func redactionHMACKey() []byte {
+	redactHMACKeyOnce.Do(func() {
+		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_LOG_REDACT_HMAC_KEY")); v != "" {
+			redactHMACKey = []byte(v)
+			return
+		}
+		buf := make([]byte, 32)
+		if _, err := crand.Read(buf); err != nil {
+			// crypto/rand 失败极罕见；退化到时间戳派生，保证仍有键。
+			buf = []byte(fmt.Sprintf("redact-fallback-%d", time.Now().UnixNano()))
+		}
+		redactHMACKey = buf
+		slog.Warn("log redaction HMAC key not configured; generated per-process key (pseudonyms are NOT stable across restarts)",
+			"env", "LLM_GATEWAY_LOG_REDACT_HMAC_KEY")
+	})
+	return redactHMACKey
+}
+
+// Pseudonym 报告敏感值的确定性假名后缀（8 hex）。
+// key 为键名（按键名脱敏路径）；值为原始敏感值。同 (key,value) 恒同输出。
+// 导出供对拍/取证工具复用：持有同一密钥的一方对候选值重算即可验证归属。
+func Pseudonym(key, value string) string {
+	mac := hmac.New(sha256.New, redactionHMACKey())
+	mac.Write([]byte(key))
+	mac.Write([]byte{0})
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))[:8]
+}
+
+// redactedPrefix 是假名标记的开头（不含闭合括号——RedactedPlaceholder 带
+// 闭合括号，直接拼接会产出 "[REDACTED]:key:hex]" 的畸形）。
+const redactedPrefix = "[REDACTED"
+
+// PseudonymToken 报告完整的脱敏假名标记 "[REDACTED:<key>:<8hex>]"。
+// key 为空时省略键段（"[REDACTED:<8hex>]"，值模式命中路径）。
+// 供本包以外的脱敏面（如 access-log query 脱敏）复用同一词汇。
+func PseudonymToken(key, value string) string {
+	if key == "" {
+		return redactedPrefix + ":" + Pseudonym("", value) + "]"
+	}
+	k := strings.ToLower(key)
+	return redactedPrefix + ":" + k + ":" + Pseudonym(k, value) + "]"
+}
+
+// pseudonymPattern 匹配本层产出的脱敏假名整值（含历史裸 "[REDACTED]"）。
+// 注意：8 hex 不会命中 sensitivePatterns 的 32+ 位长十六进制判据，
+// "[REDACTED" 前缀也不命中任何模式 ⇒ 假名本身不会被二次脱敏改写（幂等）。
+var pseudonymPattern = regexp.MustCompile(`^\[REDACTED(?::[a-z_]+)?(?::[0-9a-f]{8})?\]$`)
+
+// init 在 import 期初始化脱敏密钥：未配置 env 的 WARN 落在进程最早窗口
+// （早于任何业务日志流/测试捕获窗口），不在首次脱敏时才发。
+func init() {
+	redactionHMACKey()
+}
+
+// isRedactionPseudonym 报告值是否已经是脱敏假名。
+// 幂等判据：redactRecord 与内层 ReplaceAttr 双路径叠加时二次应用必须恒等
+// （假名若被再哈希一次会漂移，破坏同值同假名性质）。
+func isRedactionPseudonym(s string) bool {
+	return pseudonymPattern.MatchString(s)
+}
 
 // sensitiveKeys 是需要脱敏的键名（小写比较）。
 //
@@ -117,16 +207,29 @@ func isSensitiveKey(key string) bool {
 }
 
 // redactString 对字符串值做模式脱敏 + 截断。
+// 模式命中 → "[REDACTED:<8hex>]"（无键名上下文，故无键段）；已假名 → 原样。
 func redactString(s string) string {
+	if isRedactionPseudonym(s) {
+		return s
+	}
 	for _, re := range sensitivePatterns {
 		if re.MatchString(s) {
-			return RedactedPlaceholder
+			return PseudonymToken("", s)
 		}
 	}
 	if len(s) > maxValueLength {
 		return s[:maxValueLength] + "…[truncated]"
 	}
 	return s
+}
+
+// redactKeyValue 按键名脱敏：值 → "[REDACTED:<key>:<8hex>]"。
+// 不同原值得到不同假名（注入性），同值得到同假名（可关联、可还原对拍）。
+func redactKeyValue(key, value string) string {
+	if isRedactionPseudonym(value) {
+		return value
+	}
+	return PseudonymToken(key, value)
 }
 
 // Resource 持有四个进程级常量字段（rule 71 §4.1）。
@@ -407,7 +510,7 @@ func redactRecord(r slog.Record) slog.Record {
 // redactAttr 脱敏单个属性。
 func redactAttr(a slog.Attr) slog.Attr {
 	if isSensitiveKey(a.Key) {
-		return slog.String(a.Key, RedactedPlaceholder)
+		return slog.String(a.Key, redactKeyValue(a.Key, a.Value.String()))
 	}
 	switch a.Value.Kind() {
 	case slog.KindString:
@@ -423,7 +526,7 @@ func redactAttr(a slog.Attr) slog.Attr {
 }
 
 // maxRedactDepth 是嵌套值递归的深度上限。到顶即整体替换——宁可多脱敏
-//（不可信面），也不给自引用结构一个死循环或栈溢出的机会。
+// （不可信面），也不给自引用结构一个死循环或栈溢出的机会。
 const maxRedactDepth = 8
 
 // redactValue 对 slog.Any 携带的**结构化值**做递归脱敏。
@@ -452,7 +555,11 @@ func redactValue(key string, v any, depth int) any {
 		out := make(map[string]any, len(val))
 		for k, av := range val {
 			if isSensitiveKey(k) {
-				out[k] = RedactedPlaceholder
+				if s, ok := av.(string); ok {
+					out[k] = redactKeyValue(k, s)
+				} else {
+					out[k] = RedactedPlaceholder
+				}
 				continue
 			}
 			out[k] = redactValue(k, av, depth+1)
@@ -462,7 +569,7 @@ func redactValue(key string, v any, depth int) any {
 		out := make(map[string]string, len(val))
 		for k, av := range val {
 			if isSensitiveKey(k) {
-				out[k] = RedactedPlaceholder
+				out[k] = redactKeyValue(k, av)
 				continue
 			}
 			out[k] = redactString(av)
@@ -510,7 +617,7 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 		return slog.String("msg", redactString(a.Value.String()))
 	}
 	if isSensitiveKey(a.Key) {
-		return slog.String(a.Key, RedactedPlaceholder)
+		return slog.String(a.Key, redactKeyValue(a.Key, a.Value.String()))
 	}
 	switch a.Value.Kind() {
 	case slog.KindString:
@@ -549,6 +656,11 @@ func NewStandardHandler(w interface{ Write([]byte) (int, error) }, opts Standard
 	if err != nil {
 		return nil, err
 	}
+	// 脱敏密钥在构造期初始化（而非首次脱敏时）：未配置 env 的 WARN 落在
+	// boot 窗口，不会混进业务日志流（也不会被记录计数类测试误捕）。
+	if !opts.DisableRedact {
+		redactionHMACKey()
+	}
 	attrFn := replaceAttr
 	if opts.DisableRedact {
 		attrFn = replaceAttrNoRedact
@@ -585,6 +697,10 @@ func WrapStandardHandler(inner slog.Handler, opts StandardOptions) (slog.Handler
 	res, err := NewResource(opts)
 	if err != nil {
 		return nil, err
+	}
+	// 与 NewStandardHandler 同款：脱敏密钥构造期初始化（boot 窗口 WARN）。
+	if !opts.DisableRedact {
+		redactionHMACKey()
 	}
 	return &standardHandler{
 		inner:  inner,

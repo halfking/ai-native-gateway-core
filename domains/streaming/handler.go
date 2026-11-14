@@ -3643,7 +3643,8 @@ func (h *ChatHandler) serveWithExecutor(
 		w.Header().Add("Trailer", "X-Gw-Client-Signal")
 		w.Header().Add("Trailer", "X-Gw-Client-Signal-Payload-B64")
 	}
-	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream))
+	// 2026-11-15：TPM 接入——入口估计（len(body)/3.5）随 RPM 闸一并预检。
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream), estimatePromptTokens(bodyBytes))
 	h.emitTrace(r.Context(), requestID,
 		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
 			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
