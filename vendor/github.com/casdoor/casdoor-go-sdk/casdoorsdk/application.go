@@ -1,0 +1,266 @@
+// Copyright 2021 The Casdoor Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package casdoorsdk
+
+import (
+	"encoding/json"
+)
+
+type ProviderItem struct {
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+
+	CanSignUp    bool      `json:"canSignUp"`
+	CanSignIn    bool      `json:"canSignIn"`
+	CanUnlink    bool      `json:"canUnlink"`
+	BindingRule  *[]string `json:"bindingRule"`
+	CountryCodes []string  `json:"countryCodes"`
+	Prompted     bool      `json:"prompted"`
+	SignupGroup  string    `json:"signupGroup"`
+	Rule         string    `json:"rule"`
+	Provider     *Provider `json:"provider"`
+}
+
+type ScopeItem struct {
+	Name        string   `json:"name"`
+	DisplayName string   `json:"displayName"`
+	Description string   `json:"description"`
+	Tools       []string `json:"tools"` // MCP tools allowed by this scope
+}
+
+type SignupItem struct {
+	Name        string   `json:"name"`
+	Visible     bool     `json:"visible"`
+	Required    bool     `json:"required"`
+	Prompted    bool     `json:"prompted"`
+	Type        string   `json:"type"`
+	CustomCss   string   `json:"customCss"`
+	Label       string   `json:"label"`
+	Placeholder string   `json:"placeholder"`
+	Options     []string `json:"options"`
+	Regex       string   `json:"regex"`
+	Rule        string   `json:"rule"`
+}
+
+type SigninMethod struct {
+	Name        string `xorm:"varchar(100) notnull pk" json:"name"`
+	DisplayName string `xorm:"varchar(100)" json:"displayName"`
+	Rule        string `json:"rule"`
+}
+
+type SigninItem struct {
+	Name        string `json:"name"`
+	Visible     bool   `json:"visible"`
+	Label       string `json:"label"`
+	CustomCss   string `json:"customCss"`
+	Placeholder string `json:"placeholder"`
+	Rule        string `json:"rule"`
+	IsCustom    bool   `json:"isCustom"`
+}
+
+type SamlItem struct {
+	Name       string `json:"name"`
+	NameFormat string `json:"nameFormat"`
+	Value      string `json:"value"`
+}
+
+type JwtItem struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Value    string `json:"value"`
+	Type     string `json:"type"`
+}
+
+// Application has the same definition as https://github.com/casdoor/casdoor/blob/master/object/application.go#L61
+type Application struct {
+	Owner       string `xorm:"varchar(100) notnull pk" json:"owner"`
+	Name        string `xorm:"varchar(100) notnull pk" json:"name"`
+	CreatedTime string `xorm:"varchar(100)" json:"createdTime"`
+
+	DisplayName                  string          `xorm:"varchar(100)" json:"displayName"`
+	Category                     string          `xorm:"varchar(20)" json:"category"`
+	Type                         string          `xorm:"varchar(20)" json:"type"`
+	Scopes                       []*ScopeItem    `xorm:"mediumtext" json:"scopes"`
+	Logo                         string          `xorm:"varchar(200)" json:"logo"`
+	LogoDark                     string          `xorm:"varchar(200)" json:"logoDark"`
+	Title                        string          `xorm:"varchar(100)" json:"title"`
+	Favicon                      string          `xorm:"varchar(200)" json:"favicon"`
+	Order                        int             `json:"order"`
+	HomepageUrl                  string          `xorm:"varchar(100)" json:"homepageUrl"`
+	Description                  string          `xorm:"mediumtext" json:"description"`
+	Organization                 string          `xorm:"varchar(100)" json:"organization"`
+	Cert                         string          `xorm:"varchar(100)" json:"cert"`
+	DefaultGroup                 string          `xorm:"varchar(100)" json:"defaultGroup"`
+	DefaultTag                   string          `xorm:"varchar(100)" json:"defaultTag"`
+	HeaderHtml                   string          `xorm:"mediumtext" json:"headerHtml"`
+	PageHtml                     string          `xorm:"mediumtext" json:"pageHtml"`
+	EnablePassword               bool            `json:"enablePassword"`
+	EnableSignUp                 bool            `json:"enableSignUp"`
+	EnableGuestSignin            bool            `json:"enableGuestSignin"`
+	DisableSignin                bool            `json:"disableSignin"`
+	EnableSigninSession          bool            `json:"enableSigninSession"`
+	EnableAutoSignin             bool            `json:"enableAutoSignin"`
+	EnableCodeSignin             bool            `json:"enableCodeSignin"`
+	EnableExclusiveSignin        bool            `json:"enableExclusiveSignin"`
+	MaxSessions                  int             `json:"maxSessions"`
+	EnableSamlCompress           bool            `json:"enableSamlCompress"`
+	EnableSamlC14n10             bool            `json:"enableSamlC14n10"`
+	EnableSamlPostBinding        bool            `json:"enableSamlPostBinding"`
+	DisableSamlAttributes        bool            `json:"disableSamlAttributes"`
+	EnableSamlAssertionSignature bool            `json:"enableSamlAssertionSignature"`
+	UseEmailAsSamlNameId         bool            `json:"useEmailAsSamlNameId"`
+	EnableWebAuthn               bool            `json:"enableWebAuthn"`
+	EnableLinkWithEmail          bool            `json:"enableLinkWithEmail"`
+	OrgChoiceMode                string          `json:"orgChoiceMode"`
+	SamlReplyUrl                 string          `xorm:"varchar(500)" json:"samlReplyUrl"`
+	SamlSingleLogoutUrl          string          `xorm:"mediumtext" json:"samlSingleLogoutUrl"`
+	Providers                    []*ProviderItem `xorm:"mediumtext" json:"providers"`
+	SigninMethods                []*SigninMethod `xorm:"varchar(2000)" json:"signinMethods"`
+	SignupItems                  []*SignupItem   `xorm:"varchar(3000)" json:"signupItems"`
+	SigninItems                  []*SigninItem   `xorm:"mediumtext" json:"signinItems"`
+	GrantTypes                   []string        `xorm:"varchar(1000)" json:"grantTypes"`
+	OrganizationObj              *Organization   `xorm:"-" json:"organizationObj"`
+	CertPublicKey                string          `xorm:"-" json:"certPublicKey"`
+	Tags                         []string        `xorm:"mediumtext" json:"tags"`
+	SamlAttributes               []*SamlItem     `xorm:"varchar(1000)" json:"samlAttributes"`
+	SamlHashAlgorithm            string          `xorm:"varchar(20)" json:"samlHashAlgorithm"`
+	SamlC14nPrefix               string          `xorm:"varchar(100)" json:"samlC14nPrefix"`
+	IsShared                     bool            `json:"isShared"`
+	IpRestriction                string          `json:"ipRestriction"`
+
+	ClientId                string     `xorm:"varchar(100)" json:"clientId"`
+	ClientSecret            string     `xorm:"varchar(100)" json:"clientSecret"`
+	ClientCert              string     `xorm:"varchar(100)" json:"clientCert"`
+	RedirectUris            []string   `xorm:"varchar(1000)" json:"redirectUris"`
+	BackchannelLogoutUri    string     `xorm:"varchar(500)" json:"backchannelLogoutUri"`
+	ForcedRedirectOrigin    string     `xorm:"varchar(100)" json:"forcedRedirectOrigin"`
+	TokenFormat             string     `xorm:"varchar(100)" json:"tokenFormat"`
+	TokenSigningMethod      string     `xorm:"varchar(100)" json:"tokenSigningMethod"`
+	TokenFields             []string   `xorm:"varchar(1000)" json:"tokenFields"`
+	TokenAttributes         []*JwtItem `xorm:"mediumtext" json:"tokenAttributes"`
+	TokenGroupFormat        string     `xorm:"varchar(100)" json:"tokenGroupFormat"`
+	ExpireInHours           float64    `json:"expireInHours"`
+	RefreshExpireInHours    float64    `json:"refreshExpireInHours"`
+	CookieExpireInHours     int64      `json:"cookieExpireInHours"`
+	SignupUrl               string     `xorm:"varchar(200)" json:"signupUrl"`
+	SigninUrl               string     `xorm:"varchar(200)" json:"signinUrl"`
+	ForgetUrl               string     `xorm:"varchar(200)" json:"forgetUrl"`
+	AffiliationUrl          string     `xorm:"varchar(100)" json:"affiliationUrl"`
+	IpWhitelist             string     `xorm:"varchar(200)" json:"ipWhitelist"`
+	TermsOfUse              string     `xorm:"varchar(200)" json:"termsOfUse"`
+	SignupHtml              string     `xorm:"mediumtext" json:"signupHtml"`
+	SigninHtml              string     `xorm:"mediumtext" json:"signinHtml"`
+	ThemeData               *ThemeData `xorm:"json" json:"themeData"`
+	FooterHtml              string     `xorm:"mediumtext" json:"footerHtml"`
+	FormCss                 string     `xorm:"text" json:"formCss"`
+	FormCssMobile           string     `xorm:"text" json:"formCssMobile"`
+	FormOffset              int        `json:"formOffset"`
+	FormSideHtml            string     `xorm:"mediumtext" json:"formSideHtml"`
+	FormBackgroundUrl       string     `xorm:"varchar(200)" json:"formBackgroundUrl"`
+	FormBackgroundUrlMobile string     `xorm:"varchar(200)" json:"formBackgroundUrlMobile"`
+
+	FailedSigninLimit      int `json:"failedSigninLimit"`
+	FailedSigninFrozenTime int `json:"failedSigninFrozenTime"`
+	CodeResendTimeout      int `json:"codeResendTimeout"`
+
+	CustomScopes []*ScopeDescription `xorm:"mediumtext" json:"customScopes"`
+
+	// Reverse proxy fields
+	Domain       string   `xorm:"varchar(100)" json:"domain"`
+	OtherDomains []string `xorm:"varchar(1000)" json:"otherDomains"`
+	UpstreamHost string   `xorm:"varchar(100)" json:"upstreamHost"`
+	SslMode      string   `xorm:"varchar(100)" json:"sslMode"`
+	SslCert      string   `xorm:"varchar(100)" json:"sslCert"`
+
+	CertObj *Cert `xorm:"-"`
+
+	RegistrationAccessToken string `xorm:"varchar(100)" json:"registrationAccessToken"`
+}
+
+func (c *Client) GetApplications() ([]*Application, error) {
+	queryMap := map[string]string{
+		"owner": "admin",
+	}
+
+	url := c.GetUrl("get-applications", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var applications []*Application
+	err = json.Unmarshal(bytes, &applications)
+	if err != nil {
+		return nil, err
+	}
+	return applications, nil
+}
+
+func (c *Client) GetOrganizationApplications() ([]*Application, error) {
+	queryMap := map[string]string{
+		"owner":        "admin",
+		"organization": c.OrganizationName,
+	}
+
+	url := c.GetUrl("get-organization-applications", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var applications []*Application
+	err = json.Unmarshal(bytes, &applications)
+	if err != nil {
+		return nil, err
+	}
+	return applications, nil
+}
+
+func (c *Client) GetApplication(name string) (*Application, error) {
+	queryMap := map[string]string{
+		"id": getAdminId(name),
+	}
+
+	url := c.GetUrl("get-application", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var application *Application
+	err = json.Unmarshal(bytes, &application)
+	if err != nil {
+		return nil, err
+	}
+	return application, nil
+}
+
+func (c *Client) AddApplication(application *Application) (bool, error) {
+	_, affected, err := c.modifyApplication("add-application", application, nil)
+	return affected, err
+}
+
+func (c *Client) DeleteApplication(application *Application) (bool, error) {
+	_, affected, err := c.modifyApplication("delete-application", application, nil)
+	return affected, err
+}
+
+func (c *Client) UpdateApplication(application *Application) (bool, error) {
+	_, affected, err := c.modifyApplication("update-application", application, nil)
+	return affected, err
+}

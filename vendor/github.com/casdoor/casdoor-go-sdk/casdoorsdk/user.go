@@ -1,0 +1,612 @@
+// Copyright 2021 The Casdoor Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package casdoorsdk
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+)
+
+const MfaRecoveryCodesSession = "mfa_recovery_codes"
+
+type ManagedAccount struct {
+	Application string `xorm:"varchar(100)" json:"application"`
+	Username    string `xorm:"varchar(100)" json:"username"`
+	Password    string `xorm:"varchar(100)" json:"password"`
+	SigninUrl   string `xorm:"varchar(200)" json:"signinUrl"`
+}
+
+type MfaAccount struct {
+	AccountName string `xorm:"varchar(100)" json:"accountName"`
+	Issuer      string `xorm:"varchar(100)" json:"issuer"`
+	SecretKey   string `xorm:"varchar(100)" json:"secretKey"`
+	Origin      string `xorm:"varchar(100)" json:"origin"`
+}
+
+type Address struct {
+	Tag     string `xorm:"varchar(100)" json:"tag"`
+	Line1   string `xorm:"varchar(100)" json:"line1"`
+	Line2   string `xorm:"varchar(100)" json:"line2"`
+	City    string `xorm:"varchar(100)" json:"city"`
+	State   string `xorm:"varchar(100)" json:"state"`
+	ZipCode string `xorm:"varchar(100)" json:"zipCode"`
+	Region  string `xorm:"varchar(100)" json:"region"`
+}
+
+type FaceId struct {
+	Name       string    `xorm:"varchar(100) notnull pk" json:"name"`
+	FaceIdData []float64 `json:"faceIdData"`
+	ImageUrl   string    `json:"imageUrl"`
+}
+
+type MfaProps struct {
+	Enabled       bool     `json:"enabled"`
+	IsPreferred   bool     `json:"isPreferred"`
+	MfaType       string   `json:"mfaType" form:"mfaType"`
+	Secret        string   `json:"secret,omitempty"`
+	CountryCode   string   `json:"countryCode,omitempty"`
+	URL           string   `json:"url,omitempty"`
+	RecoveryCodes []string `json:"recoveryCodes,omitempty"`
+
+	MfaRememberInHours int `json:"mfaRememberInHours"`
+}
+
+type Userinfo struct {
+	Sub           string   `json:"sub"`
+	Iss           string   `json:"iss"`
+	Aud           string   `json:"aud"`
+	Name          string   `json:"preferred_username,omitempty"`
+	DisplayName   string   `json:"name,omitempty"`
+	Email         string   `json:"email,omitempty"`
+	EmailVerified bool     `json:"email_verified,omitempty"`
+	Avatar        string   `json:"picture,omitempty"`
+	Address       string   `json:"address,omitempty"`
+	Phone         string   `json:"phone,omitempty"`
+	RealName      string   `json:"real_name,omitempty"`
+	IsVerified    bool     `json:"is_verified,omitempty"`
+	Groups        []string `json:"groups,omitempty"`
+	Roles         []string `json:"roles,omitempty"`
+	Permissions   []string `json:"permissions,omitempty"`
+}
+
+// User has the same definition as https://github.com/casdoor/casdoor/blob/master/object/user.go#L24
+type User struct {
+	Owner       string `xorm:"varchar(100) notnull pk" json:"owner"`
+	Name        string `xorm:"varchar(255) notnull pk" json:"name"`
+	CreatedTime string `xorm:"varchar(100) index" json:"createdTime"`
+	UpdatedTime string `xorm:"varchar(100)" json:"updatedTime"`
+	DeletedTime string `xorm:"varchar(100)" json:"deletedTime"`
+
+	Id                   string     `xorm:"varchar(100) index" json:"id"`
+	ExternalId           string     `xorm:"varchar(100) index" json:"externalId"`
+	Type                 string     `xorm:"varchar(100)" json:"type"`
+	Password             string     `xorm:"varchar(150)" json:"password"`
+	PasswordSalt         string     `xorm:"varchar(100)" json:"passwordSalt"`
+	PasswordType         string     `xorm:"varchar(100)" json:"passwordType"`
+	DisplayName          string     `xorm:"varchar(100)" json:"displayName"`
+	FirstName            string     `xorm:"varchar(100)" json:"firstName"`
+	LastName             string     `xorm:"varchar(100)" json:"lastName"`
+	Avatar               string     `xorm:"text" json:"avatar"`
+	AvatarType           string     `xorm:"varchar(100)" json:"avatarType"`
+	PermanentAvatar      string     `xorm:"varchar(500)" json:"permanentAvatar"`
+	Email                string     `xorm:"varchar(100) index" json:"email"`
+	EmailVerified        bool       `json:"emailVerified"`
+	Phone                string     `xorm:"varchar(100) index" json:"phone"`
+	CountryCode          string     `xorm:"varchar(6)" json:"countryCode"`
+	Region               string     `xorm:"varchar(100)" json:"region"`
+	Location             string     `xorm:"varchar(100)" json:"location"`
+	Address              []string   `json:"address"`
+	Addresses            []*Address `xorm:"addresses blob" json:"addresses"`
+	Affiliation          string     `xorm:"varchar(100)" json:"affiliation"`
+	Title                string     `xorm:"varchar(100)" json:"title"`
+	IdCardType           string     `xorm:"varchar(100)" json:"idCardType"`
+	IdCard               string     `xorm:"varchar(100) index" json:"idCard"`
+	RealName             string     `xorm:"varchar(100)" json:"realName"`
+	IsVerified           bool       `json:"isVerified"`
+	Homepage             string     `xorm:"varchar(100)" json:"homepage"`
+	Bio                  string     `xorm:"varchar(100)" json:"bio"`
+	Tag                  string     `xorm:"varchar(100)" json:"tag"`
+	Language             string     `xorm:"varchar(100)" json:"language"`
+	Gender               string     `xorm:"varchar(100)" json:"gender"`
+	Birthday             string     `xorm:"varchar(100)" json:"birthday"`
+	Education            string     `xorm:"varchar(100)" json:"education"`
+	Score                int        `json:"score"`
+	Karma                int        `json:"karma"`
+	Ranking              int        `json:"ranking"`
+	Balance              float64    `json:"balance"`
+	BalanceCredit        float64    `json:"balanceCredit"`
+	Currency             string     `xorm:"varchar(100)" json:"currency"`
+	BalanceCurrency      string     `xorm:"varchar(100)" json:"balanceCurrency"`
+	IsDefaultAvatar      bool       `json:"isDefaultAvatar"`
+	IsOnline             bool       `json:"isOnline"`
+	IsAdmin              bool       `json:"isAdmin"`
+	IsForbidden          bool       `json:"isForbidden"`
+	IsDeleted            bool       `json:"isDeleted"`
+	SignupApplication    string     `xorm:"varchar(100)" json:"signupApplication"`
+	Hash                 string     `xorm:"varchar(100)" json:"hash"`
+	PreHash              string     `xorm:"varchar(100)" json:"preHash"`
+	RegisterType         string     `xorm:"varchar(100)" json:"registerType"`
+	RegisterSource       string     `xorm:"varchar(100)" json:"registerSource"`
+	AccessToken          string     `xorm:"mediumtext" json:"accessToken"`
+	OriginalToken        string     `xorm:"mediumtext" json:"originalToken"`
+	OriginalRefreshToken string     `xorm:"mediumtext" json:"originalRefreshToken"`
+
+	CreatedIp      string `xorm:"varchar(100)" json:"createdIp"`
+	LastSigninTime string `xorm:"varchar(100)" json:"lastSigninTime"`
+	LastSigninIp   string `xorm:"varchar(100)" json:"lastSigninIp"`
+
+	GitHub          string `xorm:"github varchar(100)" json:"github"`
+	Google          string `xorm:"varchar(100)" json:"google"`
+	QQ              string `xorm:"qq varchar(100)" json:"qq"`
+	WeChat          string `xorm:"wechat varchar(100)" json:"wechat"`
+	Facebook        string `xorm:"facebook varchar(100)" json:"facebook"`
+	DingTalk        string `xorm:"dingtalk varchar(100)" json:"dingtalk"`
+	Weibo           string `xorm:"weibo varchar(100)" json:"weibo"`
+	Gitee           string `xorm:"gitee varchar(100)" json:"gitee"`
+	LinkedIn        string `xorm:"linkedin varchar(100)" json:"linkedin"`
+	Wecom           string `xorm:"wecom varchar(100)" json:"wecom"`
+	Lark            string `xorm:"lark varchar(100)" json:"lark"`
+	Gitlab          string `xorm:"gitlab varchar(100)" json:"gitlab"`
+	Adfs            string `xorm:"adfs varchar(100)" json:"adfs"`
+	Baidu           string `xorm:"baidu varchar(100)" json:"baidu"`
+	Alipay          string `xorm:"alipay varchar(100)" json:"alipay"`
+	Casdoor         string `xorm:"casdoor varchar(100)" json:"casdoor"`
+	Infoflow        string `xorm:"infoflow varchar(100)" json:"infoflow"`
+	Apple           string `xorm:"apple varchar(100)" json:"apple"`
+	AzureAD         string `xorm:"azuread varchar(100)" json:"azuread"`
+	AzureADB2c      string `xorm:"azureadb2c varchar(100)" json:"azureadb2c"`
+	Slack           string `xorm:"slack varchar(100)" json:"slack"`
+	Steam           string `xorm:"steam varchar(100)" json:"steam"`
+	Bilibili        string `xorm:"bilibili varchar(100)" json:"bilibili"`
+	Okta            string `xorm:"okta varchar(100)" json:"okta"`
+	Douyin          string `xorm:"douyin varchar(100)" json:"douyin"`
+	Kwai            string `xorm:"kwai varchar(100)" json:"kwai"`
+	Line            string `xorm:"line varchar(100)" json:"line"`
+	Amazon          string `xorm:"amazon varchar(100)" json:"amazon"`
+	Auth0           string `xorm:"auth0 varchar(100)" json:"auth0"`
+	BattleNet       string `xorm:"battlenet varchar(100)" json:"battlenet"`
+	Bitbucket       string `xorm:"bitbucket varchar(100)" json:"bitbucket"`
+	Box             string `xorm:"box varchar(100)" json:"box"`
+	CloudFoundry    string `xorm:"cloudfoundry varchar(100)" json:"cloudfoundry"`
+	Dailymotion     string `xorm:"dailymotion varchar(100)" json:"dailymotion"`
+	Deezer          string `xorm:"deezer varchar(100)" json:"deezer"`
+	DigitalOcean    string `xorm:"digitalocean varchar(100)" json:"digitalocean"`
+	Discord         string `xorm:"discord varchar(100)" json:"discord"`
+	Dropbox         string `xorm:"dropbox varchar(100)" json:"dropbox"`
+	EveOnline       string `xorm:"eveonline varchar(100)" json:"eveonline"`
+	Fitbit          string `xorm:"fitbit varchar(100)" json:"fitbit"`
+	Gitea           string `xorm:"gitea varchar(100)" json:"gitea"`
+	Heroku          string `xorm:"heroku varchar(100)" json:"heroku"`
+	InfluxCloud     string `xorm:"influxcloud varchar(100)" json:"influxcloud"`
+	Instagram       string `xorm:"instagram varchar(100)" json:"instagram"`
+	Intercom        string `xorm:"intercom varchar(100)" json:"intercom"`
+	Kakao           string `xorm:"kakao varchar(100)" json:"kakao"`
+	Lastfm          string `xorm:"lastfm varchar(100)" json:"lastfm"`
+	Mailru          string `xorm:"mailru varchar(100)" json:"mailru"`
+	Meetup          string `xorm:"meetup varchar(100)" json:"meetup"`
+	MicrosoftOnline string `xorm:"microsoftonline varchar(100)" json:"microsoftonline"`
+	Naver           string `xorm:"naver varchar(100)" json:"naver"`
+	Nextcloud       string `xorm:"nextcloud varchar(100)" json:"nextcloud"`
+	OneDrive        string `xorm:"onedrive varchar(100)" json:"onedrive"`
+	Oura            string `xorm:"oura varchar(100)" json:"oura"`
+	Patreon         string `xorm:"patreon varchar(100)" json:"patreon"`
+	Paypal          string `xorm:"paypal varchar(100)" json:"paypal"`
+	SalesForce      string `xorm:"salesforce varchar(100)" json:"salesforce"`
+	Shopify         string `xorm:"shopify varchar(100)" json:"shopify"`
+	Soundcloud      string `xorm:"soundcloud varchar(100)" json:"soundcloud"`
+	Spotify         string `xorm:"spotify varchar(100)" json:"spotify"`
+	Strava          string `xorm:"strava varchar(100)" json:"strava"`
+	Stripe          string `xorm:"stripe varchar(100)" json:"stripe"`
+	Telegram        string `xorm:"telegram varchar(100)" json:"telegram"`
+	TikTok          string `xorm:"tiktok varchar(100)" json:"tiktok"`
+	Tumblr          string `xorm:"tumblr varchar(100)" json:"tumblr"`
+	Twitch          string `xorm:"twitch varchar(100)" json:"twitch"`
+	Twitter         string `xorm:"twitter varchar(100)" json:"twitter"`
+	Typetalk        string `xorm:"typetalk varchar(100)" json:"typetalk"`
+	Uber            string `xorm:"uber varchar(100)" json:"uber"`
+	VK              string `xorm:"vk varchar(100)" json:"vk"`
+	Wepay           string `xorm:"wepay varchar(100)" json:"wepay"`
+	Xero            string `xorm:"xero varchar(100)" json:"xero"`
+	Yahoo           string `xorm:"yahoo varchar(100)" json:"yahoo"`
+	Yammer          string `xorm:"yammer varchar(100)" json:"yammer"`
+	Yandex          string `xorm:"yandex varchar(100)" json:"yandex"`
+	Zoom            string `xorm:"zoom varchar(100)" json:"zoom"`
+	MetaMask        string `xorm:"metamask varchar(100)" json:"metamask"`
+	Web3Onboard     string `xorm:"web3onboard varchar(100)" json:"web3onboard"`
+	Oidc            string `xorm:"oidc varchar(100)" json:"oidc"`
+	Custom          string `xorm:"custom varchar(100)" json:"custom"`
+	Custom2         string `xorm:"custom2 text" json:"custom2"`
+	Custom3         string `xorm:"custom3 text" json:"custom3"`
+	Custom4         string `xorm:"custom4 text" json:"custom4"`
+	Custom5         string `xorm:"custom5 text" json:"custom5"`
+	Custom6         string `xorm:"custom6 text" json:"custom6"`
+	Custom7         string `xorm:"custom7 text" json:"custom7"`
+	Custom8         string `xorm:"custom8 text" json:"custom8"`
+	Custom9         string `xorm:"custom9 text" json:"custom9"`
+	Custom10        string `xorm:"custom10 text" json:"custom10"`
+
+	// WebauthnCredentials is []webauthn.Credential in Casdoor. It is kept as raw JSON here so
+	// that the SDK does not depend on github.com/go-webauthn/webauthn, while still round-tripping
+	// the value untouched on GetUser/UpdateUser.
+	WebauthnCredentials json.RawMessage `xorm:"webauthnCredentials blob" json:"webauthnCredentials"`
+	PreferredMfaType    string          `xorm:"varchar(100)" json:"preferredMfaType"`
+	RecoveryCodes       []string        `xorm:"mediumtext" json:"recoveryCodes"`
+	TotpSecret          string          `xorm:"varchar(100)" json:"totpSecret"`
+	MfaPhoneEnabled     bool            `json:"mfaPhoneEnabled"`
+	MfaEmailEnabled     bool            `json:"mfaEmailEnabled"`
+	MfaRadiusEnabled    bool            `json:"mfaRadiusEnabled"`
+	MfaRadiusUsername   string          `xorm:"varchar(100)" json:"mfaRadiusUsername"`
+	MfaRadiusProvider   string          `xorm:"varchar(100)" json:"mfaRadiusProvider"`
+	MfaPushEnabled      bool            `json:"mfaPushEnabled"`
+	MfaPushReceiver     string          `xorm:"varchar(100)" json:"mfaPushReceiver"`
+	MfaPushProvider     string          `xorm:"varchar(100)" json:"mfaPushProvider"`
+	MultiFactorAuths    []*MfaProps     `xorm:"-" json:"multiFactorAuths,omitempty"`
+	Invitation          string          `xorm:"varchar(100) index" json:"invitation"`
+	InvitationCode      string          `xorm:"varchar(100) index" json:"invitationCode"`
+	FaceIds             []*FaceId       `json:"faceIds"`
+	Cart                []ProductInfo   `xorm:"mediumtext" json:"cart"`
+
+	Ldap       string            `xorm:"ldap varchar(100)" json:"ldap"`
+	UidNumber  int               `xorm:"index" json:"uidNumber"`
+	Properties map[string]string `json:"properties"`
+
+	ThirdPartyLinks []*ThirdPartyLink `xorm:"-" json:"thirdPartyLinks,omitempty"`
+
+	Roles       []*Role       `json:"roles"`
+	Permissions []*Permission `json:"permissions"`
+	Groups      []string      `xorm:"mediumtext" json:"groups"`
+
+	LastChangePasswordTime string `xorm:"varchar(100)" json:"lastChangePasswordTime"`
+	LastSigninWrongTime    string `xorm:"varchar(100)" json:"lastSigninWrongTime"`
+	SigninWrongTimes       int    `json:"signinWrongTimes"`
+
+	ManagedAccounts     []ManagedAccount `xorm:"managedAccounts blob" json:"managedAccounts"`
+	MfaAccounts         []MfaAccount     `xorm:"mfaAccounts blob" json:"mfaAccounts"`
+	MfaItems            []*MfaItem       `xorm:"varchar(300)" json:"mfaItems"`
+	MfaRememberDeadline string           `xorm:"varchar(100)" json:"mfaRememberDeadline"`
+	NeedUpdatePassword  bool             `json:"needUpdatePassword"`
+	IpWhitelist         string           `xorm:"varchar(200)" json:"ipWhitelist"`
+	ApplicationScopes   []ConsentRecord  `xorm:"mediumtext" json:"applicationScopes"`
+}
+
+type ConsentRecord struct {
+	// owner/name
+	Application   string   `json:"application"`
+	GrantedScopes []string `json:"grantedScopes"`
+}
+
+type ThirdPartyLink struct {
+	Owner        string `xorm:"varchar(100) notnull pk unique(link_unique)" json:"owner"`
+	UserName     string `xorm:"varchar(100) notnull pk" json:"userName"`
+	ProviderName string `xorm:"varchar(100) notnull pk unique(link_unique)" json:"providerName"`
+	ProviderId   string `xorm:"varchar(100) notnull unique(link_unique)" json:"providerId"`
+	CreatedTime  string `xorm:"varchar(100)" json:"createdTime"`
+}
+
+type ScopeDescription struct {
+	Scope       string `json:"scope"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+}
+
+func (c *Client) GetGlobalUsers() ([]*User, error) {
+	url := c.GetUrl("get-global-users", nil)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var users []*User
+	err = json.Unmarshal(bytes, &users)
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func (c *Client) GetUsers() ([]*User, error) {
+	queryMap := map[string]string{
+		"owner": c.OrganizationName,
+	}
+
+	url := c.GetUrl("get-users", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var users []*User
+	err = json.Unmarshal(bytes, &users)
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func (c *Client) GetSortedUsers(sorter string, limit int) ([]*User, error) {
+	queryMap := map[string]string{
+		"owner":  c.OrganizationName,
+		"sorter": sorter,
+		"limit":  strconv.Itoa(limit),
+	}
+
+	url := c.GetUrl("get-sorted-users", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var users []*User
+	err = json.Unmarshal(bytes, &users)
+	if err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func (c *Client) GetPaginationUsers(p int, pageSize int, queryMap map[string]string) ([]*User, int, error) {
+	queryMap["owner"] = c.OrganizationName
+	queryMap["p"] = strconv.Itoa(p)
+	queryMap["pageSize"] = strconv.Itoa(pageSize)
+
+	url := c.GetUrl("get-users", queryMap)
+
+	response, err := c.DoGetResponse(url)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	dataBytes, err := json.Marshal(response.Data)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var users []*User
+	err = json.Unmarshal(dataBytes, &users)
+	if err != nil {
+		return nil, 0, errors.New("response data format is incorrect")
+	}
+
+	return users, int(response.Data2.(float64)), nil
+}
+
+func (c *Client) GetUserCount(isOnline string) (int, error) {
+	queryMap := map[string]string{
+		"owner":    c.OrganizationName,
+		"isOnline": isOnline,
+	}
+
+	url := c.GetUrl("get-user-count", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return -1, err
+	}
+
+	var count int
+	err = json.Unmarshal(bytes, &count)
+	if err != nil {
+		return -1, err
+	}
+	return count, nil
+}
+
+func (c *Client) GetUser(name string) (*User, error) {
+	queryMap := map[string]string{
+		"id": c.GetId(name),
+	}
+
+	url := c.GetUrl("get-user", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var user *User
+	err = json.Unmarshal(bytes, &user)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// GetAccount gets the user that the client is authenticated as, by calling the
+// "/api/get-account" API. It's meant to be used with a client returned by
+// WithAccessToken(), so that the user of an access token can be retrieved:
+//
+//	user, err := client.WithAccessToken(token.AccessToken).GetAccount()
+func (c *Client) GetAccount() (*User, error) {
+	url := c.GetUrl("get-account", nil)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var user *User
+	err = json.Unmarshal(bytes, &user)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (c *Client) GetUserByEmail(email string) (*User, error) {
+	queryMap := map[string]string{
+		"owner": c.OrganizationName,
+		"email": email,
+	}
+
+	url := c.GetUrl("get-user", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var user *User
+	err = json.Unmarshal(bytes, &user)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (c *Client) GetUserByPhone(phone string) (*User, error) {
+	queryMap := map[string]string{
+		"owner": c.OrganizationName,
+		"phone": phone,
+	}
+
+	url := c.GetUrl("get-user", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var user *User
+	err = json.Unmarshal(bytes, &user)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (c *Client) GetUserByUserId(userId string) (*User, error) {
+	queryMap := map[string]string{
+		"owner":  c.OrganizationName,
+		"userId": userId,
+	}
+
+	url := c.GetUrl("get-user", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var user *User
+	err = json.Unmarshal(bytes, &user)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// note: oldPassword is not required, if you don't need, just pass a empty string
+func (c *Client) SetPassword(owner, name, oldPassword, newPassword string) (bool, error) {
+	param := map[string]string{
+		"userOwner":   owner,
+		"userName":    name,
+		"oldPassword": oldPassword,
+		"newPassword": newPassword,
+	}
+
+	bytes, err := json.Marshal(param)
+	if err != nil {
+		return false, err
+	}
+
+	resp, err := c.DoPost("set-password", nil, bytes, true, false)
+	if err != nil {
+		return false, err
+	}
+
+	return resp.Status == "ok", nil
+}
+
+func (c *Client) UpdateUserById(id string, user *User) (bool, error) {
+	_, affected, err := c.modifyUserById("update-user", id, user, nil)
+	return affected, err
+}
+
+func (c *Client) UpdateUserByUserId(owner string, userId string, user *User) (bool, error) {
+	_, affected, err := c.modifyUserByUserId("update-user", owner, userId, user, nil)
+	return affected, err
+}
+
+func (c *Client) UpdateUser(user *User) (bool, error) {
+	_, affected, err := c.modifyUser("update-user", user, nil)
+	return affected, err
+}
+
+func (c *Client) UpdateUserForColumns(user *User, columns []string) (bool, error) {
+	_, affected, err := c.modifyUser("update-user", user, columns)
+	return affected, err
+}
+
+func (c *Client) AddUser(user *User) (bool, error) {
+	_, affected, err := c.modifyUser("add-user", user, nil)
+	return affected, err
+}
+
+// RemoveUserFromGroup removes the user from the group, both in the owner organization
+// (the client's one when empty). It returns false if the user was not in the group.
+func (c *Client) RemoveUserFromGroup(owner string, name string, groupName string) (bool, error) {
+	queryMap := map[string]string{
+		"owner":     getOwner(owner, c.OrganizationName),
+		"name":      name,
+		"groupName": groupName,
+	}
+
+	resp, err := c.DoPost("remove-user-from-group", queryMap, nil, false, false)
+	if err != nil {
+		return false, err
+	}
+
+	return resp.Data == true, nil
+}
+
+func (c *Client) DeleteUser(user *User) (bool, error) {
+	_, affected, err := c.modifyUser("delete-user", user, nil)
+	return affected, err
+}
+
+// UploadUsers imports users from an Excel (.xlsx) file by calling the "/api/upload-users" API.
+// The first row of the first sheet is the header: each column is named after a field of the
+// User, e.g. "Owner", "Name", "Password", "DisplayName" and "Email". A boolean cell is true
+// when it's "1", and a list cell is a JSON array, e.g. ["group1","group2"].
+//
+// The users are created in the organization of the first row's "Owner" if the caller is a
+// global admin, or in the organization of the caller otherwise. The users that already exist
+// are skipped.
+//
+// The API acts on behalf of the signed-in admin user, so use a client returned by
+// WithAccessToken(): the application's client ID and client secret are rejected.
+// The fileBytes is the content of the file.
+func (c *Client) UploadUsers(fileBytes []byte) (bool, error) {
+	resp, err := c.DoPost("upload-users", nil, fileBytes, true, true)
+	if err != nil {
+		return false, err
+	}
+
+	return resp.Status == "ok", nil
+}
+
+func (c *Client) CheckUserPassword(user *User) (bool, error) {
+	_, affected, err := c.modifyUser("check-user-password", user, nil)
+	return affected, err
+}
+
+func (u User) GetId() string {
+	return fmt.Sprintf("%s/%s", u.Owner, u.Name)
+}
