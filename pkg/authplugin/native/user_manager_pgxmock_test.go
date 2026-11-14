@@ -533,3 +533,31 @@ func TestUserManager_UpdateLastLogin(t *testing.T) {
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// F-A1 同族穷举收口（2026-11-14 审计轮）正向对照：UpdateUser 的合法密码
+// 必须一路走到 UPDATE（不得被复杂度策略误拒）——弱密码侧的负向钉测在
+// user_manager_test.go（db=nil，拒门先于 DB）。
+func TestUserManager_UpdateUser_ValidPasswordReachesUpdate(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mgr, _ := NewNativeUserManager(mock)
+	ctx := context.Background()
+
+	rows := pgxmock.NewRows([]string{
+		"id", "tenant_id", "username", "display_name", "email",
+		"role", "enabled", "must_change_password", "last_login_at", "created_at",
+	}).AddRow(1, "default", "u", "U", "", "user", true, false, nil, time.Now())
+
+	mock.ExpectQuery(`UPDATE users SET password_hash = \$1, password_changed_at = \$2, updated_at = now\(\) WHERE id = \$3`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), 1).
+		WillReturnRows(rows)
+
+	ok := "Str0ngPass"
+	user, err := mgr.UpdateUser(ctx, 1, &authplugin.UpdateUserRequest{Password: &ok})
+	require.NoError(t, err)
+	assert.NotNil(t, user)
+
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

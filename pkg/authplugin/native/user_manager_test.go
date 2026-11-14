@@ -88,6 +88,12 @@ func TestNativeUserManager_PasswordComplexityGuard(t *testing.T) {
 		if err := m.ChangePassword(ctx, 1, "old", pw); err == nil {
 			t.Fatalf("ChangePassword 弱密码 %q 必须被复杂度策略拒绝", pw)
 		}
+		// F-A1 同族穷举收口（2026-11-14 审计轮）：UpdateUser 的密码字段是
+		// 第四条入口，缺失时为管理端更新路径的策略绕过。
+		pwPtr := pw
+		if _, err := m.UpdateUser(ctx, 1, &authplugin.UpdateUserRequest{Password: &pwPtr}); err == nil {
+			t.Fatalf("UpdateUser 弱密码 %q 必须被复杂度策略拒绝", pw)
+		}
 	}
 }
 

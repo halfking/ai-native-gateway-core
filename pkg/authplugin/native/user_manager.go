@@ -250,6 +250,13 @@ func (m *NativeUserManager) UpdateUser(ctx context.Context, userID int, req *aut
 		idx++
 	}
 	if req.Password != nil && *req.Password != "" {
+		// F-A1 同族穷举收口（2026-11-14 审计轮）：UpdateUser 的密码字段与
+		// CreateUser/ResetPassword/ChangePassword 同源策略——管理端对应路径
+		// admin/users.go UpdateUser 同样执法；缺失时本入口成为绕过复杂度
+		// 策略的第四条路径。
+		if err := admin.ValidatePasswordComplexity(*req.Password); err != nil {
+			return nil, err
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, fmt.Errorf("hash password: %w", err)
