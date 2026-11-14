@@ -1,5 +1,10 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-14 24h审计接力轮部署收口——211 列车交付部署债四项（zcode 会话，主档 `docs/24小时内修订审计-20261114-1630.md` §九；提交 3d08da25d+本轮台账；211 部署验证完成：蓝绿 8783→8781 `2.5.9-d5eb218a-20261114-211`（build_seq 3054）槽 a 接管、readyz DB 113µs/Redis 96µs、公网版本身份+入口 200 OK）**：
+> ★ 列车交付=964/963 schema（11-13 r1052 boot 探测已 applied，本轮运行时二进制兑现）+ R-7① fallback + cee5a24e inline 计量 + f61c1de77 zstd 门——**部署债四项全收口**；Go 工具链 1.27.4（8487a4a61）首次上 211 构建链。
+> ★ 列车前拦路=基础镜像缺失（run1/run2 FATAL）：8487a4a61 把构建 pin 升到 kx-base-golang:1.27.4-alpine-amd64，registry-211 无镜像且推送 403（既有凭据无推送权，登记环境债归 owner）、DD_BASE_IMAGES_DIR=/opt/kaixuan/base-images（**非** /opt/docker-base-images）缺 1.27.4 归档 ⇒ 本地 docker save→scp→双目录落位+sha256 校验后 run3 exit 0。**教训=引擎离线库变量是 DD_BASE_IMAGES_DIR（默认 /opt/kaixuan/base-images），与 deploy-lib 的 DEPLOY_DOCKER_BASE_*（~/work/docker-base-*）是两套坐标**。
+> ★ WARN 如实登记：登录冒烟未执行（无 DD_ADMIN_PASSWORD env）⇒ 登录路径本次未验证；registry-211.itestu.cn 推送权 403 归 owner。
+
 > **2026-11-14 suyun 轮——resolve 可用性与流量去向错位根修（goal 会话，主档 `docs/audit/2026-11-14-suyun轮-resolve可用性与流量去向错位根修-主档.md`，LESSONS §722；提交 b8e5c8071 双仓已推；211 部署验证完成：蓝绿槽 b@8783 `2.5.9-b8e5c807-20261114-211`（build_seq 3049）接管、readyz/公网版本身份 OK、真 key 活体 5/5 全 200、临时 key 验后 revoked）**：
 > ★ owner 报障＝resolve 页查 claude-opus-5-5，suyun 节点显示不可用但请求大量发往 suyun ⇒ **211 取证定案：dispatch 侧完全守约**（auth_failed 窗口 01:32:56→01:47:56 零流量、恢复后立即回来）——「不可用却有流量」＝时间错位 + **resolve 页虚报「鉴权失败」**。取证钥匙＝`v_routable_credential_models`（页判定源）× session_turns_hot 分钟级流量 × node_probe_state 探针连胜 × state_reason_detail 原文。
 > ★★★★ **根因×2＝两个 new_api 403 形态漏进 auth 状态兜底**：F1 余额预扣失败（`insufficient_user_quota`/「预扣费额度失败」——key 有效、探针 150 连胜+96 笔真实流量全成功的健康凭据被整颗 auth_failed 15 分钟，72h 误标 15+ 次）；F2 单模型分组权限拒绝（「无权访问 X 分组」——同凭据 opus-5-5 探针 95 连胜被 24h 退避连坐）。★★ 族内分叉实锤：同上游同 code 姊妹形态「用户额度不足」已命中 quota ⇒ **给既有 family 加成员前先 grep 家族内既有钉测**（首版单列 KindQuotaBalance 被既有 creds67-70 钉测当场咬红，收敛为同族同判 quota_permanent）。
