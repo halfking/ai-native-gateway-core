@@ -58,6 +58,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/internal/auth"
+	"github.com/kaixuan/llm-gateway-go/internal/handlers/pluginapi"
 	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/shutdown"
@@ -88,6 +89,9 @@ type v2Config struct {
 	MockProbeInterval         time.Duration
 	MockProbeFailureThreshold int
 	DatabaseURL               string
+
+	// Plugin directory (R1.12 P0 integration)
+	PluginsDir string
 }
 
 // loadConfig 加载配置
@@ -111,6 +115,15 @@ func loadConfig() *v2Config {
 	cfg.MockProbeInterval = full.MockProbeInterval
 	cfg.MockProbeFailureThreshold = full.MockProbeFailureThreshold
 	cfg.DatabaseURL = full.DatabaseURL
+
+	// Plugin directory: prefer canonical LLM_GATEWAY_PLUGINS_DIR, fall back to
+	// PLUGIN_DIR for handoff compatibility, default empty (plugins disabled).
+	pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR")
+	if pluginsDir == "" {
+		pluginsDir = os.Getenv("PLUGIN_DIR")
+	}
+	cfg.PluginsDir = pluginsDir
+
 	return cfg
 }
 
@@ -1047,11 +1060,56 @@ func httpHandler(deps *v2Deps) http.Handler {
 			"paths", "/mock/v1/chat/completions/{fast,slow},/mock/v1/messages/{fast,slow}")
 	}
 
+	// Plugin API (R1.12 P0): read-only list/detail/manifests endpoints.
+	// Only register when PluginsDir is configured; otherwise 404.
+	if deps.Config != nil && deps.Config.PluginsDir != "" {
+		registerPluginAPI(mux, deps.Config.PluginsDir)
+	}
+
 	return mux
+}
+
+// registerPluginAPI wires read-only plugin list/detail/manifests endpoints.
+// Does not start plugin processes; only exposes manifest metadata for frontend.
+func registerPluginAPI(mux *http.ServeMux, pluginsDir string) {
+	handler := pluginapi.NewPluginAPIHandler(pluginsDir, nil)
+
+	// GET /api/v1/plugins — list all plugins
+	// GET /api/v1/plugins/ — list (with trailing slash)
+	// GET /api/v1/plugins/manifests — consolidated JSON (Shell compatibility)
+	// GET /api/v1/plugins/{id} — single plugin detail
+	mux.HandleFunc("/api/v1/plugins", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		handler.ListPluginsHandler(w, r)
+	})
+
+	mux.HandleFunc("/api/v1/plugins/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/plugins/")
+		if path == "" {
+			handler.ListPluginsHandler(w, r)
+			return
+		}
+		if path == "manifests" {
+			handler.ListPluginsHandler(w, r)
+			return
+		}
+		handler.GetPluginHandler(w, r)
+	})
+
+	slog.Info("plugin API registered", "plugins_dir", pluginsDir,
+		"endpoints", "/api/v1/plugins,/api/v1/plugins/{id},/api/v1/plugins/manifests")
 }
 
 // prometheusTextContentType is the standard Prometheus text exposition format.
 const prometheusTextContentType = "text/plain; version=0.0.4; charset=utf-8"
+
 
 // renderInMemoryMetrics serializes the v2 in-memory observability.Registry
 // (Counters + Histograms) into Prometheus text format and writes it to w.

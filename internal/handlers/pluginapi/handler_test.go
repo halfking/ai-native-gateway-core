@@ -2,6 +2,7 @@ package pluginapi
 
 import (
 	"encoding/json"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,7 @@ func TestListPluginsHandler(t *testing.T) {
 	createTestPlugin(t, tmpDir, "test-plugin-1", "Test Plugin 1", "1.0.0")
 	createTestPlugin(t, tmpDir, "test-plugin-2", "Test Plugin 2", "2.0.0")
 
-	handler := NewPluginAPIHandler(tmpDir)
+	handler := NewPluginAPIHandler(tmpDir, nil)
 
 	tests := []struct {
 		name           string
@@ -78,7 +79,7 @@ func TestGetPluginHandler(t *testing.T) {
 	tmpDir := t.TempDir()
 	createTestPlugin(t, tmpDir, "test-plugin", "Test Plugin", "1.0.0")
 
-	handler := NewPluginAPIHandler(tmpDir)
+	handler := NewPluginAPIHandler(tmpDir, nil)
 
 	tests := []struct {
 		name           string
@@ -128,7 +129,7 @@ func TestGetPluginHandler(t *testing.T) {
 }
 
 func TestMethodNotAllowed(t *testing.T) {
-	handler := NewPluginAPIHandler(t.TempDir())
+	handler := NewPluginAPIHandler(t.TempDir(), nil)
 
 	tests := []struct {
 		name    string
@@ -213,7 +214,7 @@ func TestActivateDeactivateHandlers(t *testing.T) {
 	tmpDir := t.TempDir()
 	createTestPlugin(t, tmpDir, "toggle-plugin", "Toggle Plugin", "1.0.0")
 
-	handler := NewPluginAPIHandler(tmpDir)
+	handler := NewPluginAPIHandler(tmpDir, nil)
 
 	//初始应为启用
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
@@ -274,7 +275,7 @@ func TestActivateDeactivateHandlers(t *testing.T) {
 func TestActivateUnknownPluginAndBadID(t *testing.T) {
 	tmpDir := t.TempDir()
 	createTestPlugin(t, tmpDir, "known-plugin", "Known", "1.0.0")
-	handler := NewPluginAPIHandler(tmpDir)
+	handler := NewPluginAPIHandler(tmpDir, nil)
 
 	//不存在的插件
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/ghost/activate", nil)
@@ -298,5 +299,70 @@ func TestActivateUnknownPluginAndBadID(t *testing.T) {
 	handler.ActivatePluginHandler(w3, req3)
 	if w3.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected405 for GET, got %d", w3.Code)
+	}
+}
+
+// mockSupervisor记录Start/Stop调用以验证编排逻辑
+type mockSupervisor struct {
+	startCalled bool
+	stopCalled  bool
+	startErr    error
+	stopErr     error
+	manifests   map[string]*pluginruntime.Manifest
+}
+
+func (m *mockSupervisor) Start(ctx context.Context, manifest *pluginruntime.Manifest) (*pluginruntime.PluginState, error) {
+	m.startCalled = true
+	if m.startErr != nil {
+		return nil, m.startErr
+	}
+	return &pluginruntime.PluginState{PluginID: manifest.PluginID, Status: "running"}, nil
+}
+
+func (m *mockSupervisor) Stop(pluginID string) error {
+	m.stopCalled = true
+	return m.stopErr
+}
+
+func (m *mockSupervisor) ManifestOf(pluginID string) *pluginruntime.Manifest {
+	return m.manifests[pluginID]
+}
+
+func TestActivateWithSupervisor(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTestPlugin(t, tmpDir, "supervised-plugin", "Supervised", "1.0.0")
+
+	// 从磁盘读取manifest填充mock（生产环境supervisor在Start前已持有manifest）
+	manifestPath := filepath.Join(tmpDir, "supervised-plugin", "plugin-manifest.json")
+	data, _ := os.ReadFile(manifestPath)
+	var manifest pluginruntime.Manifest
+	json.Unmarshal(data, &manifest)
+
+	mock := &mockSupervisor{
+		manifests: map[string]*pluginruntime.Manifest{"supervised-plugin": &manifest},
+	}
+	handler := NewPluginAPIHandler(tmpDir, mock)
+
+	// 1) 停用
+	deactReq := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/supervised-plugin/deactivate", nil)
+	deactW := httptest.NewRecorder()
+	handler.DeactivatePluginHandler(deactW, deactReq)
+	if deactW.Code != http.StatusOK {
+		t.Fatalf("deactivate failed: %d %s", deactW.Code, deactW.Body.String())
+	}
+	if !mock.stopCalled {
+		t.Fatal("expected supervisor.Stop to be called on deactivate")
+	}
+
+	// 2) 启用
+	mock.startCalled, mock.stopCalled = false, false
+	actReq := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/supervised-plugin/activate", nil)
+	actW := httptest.NewRecorder()
+	handler.ActivatePluginHandler(actW, actReq)
+	if actW.Code != http.StatusOK {
+		t.Fatalf("activate failed: %d %s", actW.Code, actW.Body.String())
+	}
+	if !mock.startCalled {
+		t.Fatal("expected supervisor.Start to be called on activate")
 	}
 }

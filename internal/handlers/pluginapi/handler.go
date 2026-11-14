@@ -3,6 +3,7 @@
 package pluginapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -80,8 +81,16 @@ type PluginAPIHandler struct {
 	// disabled记录运行期被停用的插件。文件注册表本身无状态（状态恒为
 	// registered/Enabled=true），而 Shell的启用/禁用按钮需要可观察的状态变更，
 	//故在进程内维护停用集合；网关重启后回到 manifest默认（启用）。
-	mu       sync.RWMutex
-	disabled map[string]bool
+	mu         sync.RWMutex
+	disabled   map[string]bool
+	supervisor PluginSupervisor // nil when plugins disabled; activate/deactivate become state-only
+}
+
+// PluginSupervisor abstracts plugin process lifecycle; nil-safe activate/deactivate tolerate absence.
+type PluginSupervisor interface {
+	Start(ctx context.Context, m *pluginruntime.Manifest) (*pluginruntime.PluginState, error)
+	Stop(pluginID string) error
+	ManifestOf(pluginID string) *pluginruntime.Manifest
 }
 
 // PluginRegistry is an interface for plugin registry operations
@@ -91,11 +100,12 @@ type PluginRegistry interface {
 }
 
 // NewPluginAPIHandler creates a new plugin API handler
-func NewPluginAPIHandler(pluginDir string) *PluginAPIHandler {
+func NewPluginAPIHandler(pluginDir string, supervisor PluginSupervisor) *PluginAPIHandler {
 	return &PluginAPIHandler{
-		pluginDir: pluginDir,
-		registry:  &fileBasedRegistry{pluginDir: pluginDir},
-		disabled:  make(map[string]bool),
+		pluginDir:  pluginDir,
+		registry:   &fileBasedRegistry{pluginDir: pluginDir},
+		disabled:   make(map[string]bool),
+		supervisor: supervisor,
 	}
 }
 
@@ -238,6 +248,7 @@ func (h *PluginAPIHandler) setEnabled(w http.ResponseWriter, r *http.Request, en
 		return
 	}
 
+	// 状态变更：先改disabled集合，后调supervisor（顺序保证快速失败）
 	h.mu.Lock()
 	if enabled {
 		delete(h.disabled, pluginID)
@@ -245,6 +256,36 @@ func (h *PluginAPIHandler) setEnabled(w http.ResponseWriter, r *http.Request, en
 		h.disabled[pluginID] = true
 	}
 	h.mu.Unlock()
+
+	// 当supervisor非nil时，编排真实进程；nil时为state-only模式（开发/测试）
+	if h.supervisor != nil {
+		if enabled {
+			// 启用：从supervisor取manifest并start（manifest可能在supervisor内部已缓存）
+			m := h.supervisor.ManifestOf(pluginID)
+			if m == nil {
+				// 若supervisor无此manifest，从文件读取（fileBasedRegistry只返PluginInfo不含Runtime等）
+				// 生产环境supervisor通常已持有manifest；此处为防御性fallback
+				h.sendError(w, http.StatusInternalServerError, "manifest not found in supervisor for "+pluginID)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := h.supervisor.Start(ctx, m); err != nil {
+				// start失败回滚disabled状态
+				h.mu.Lock()
+				h.disabled[pluginID] = true
+				h.mu.Unlock()
+				h.sendError(w, http.StatusInternalServerError, "failed to start plugin: "+err.Error())
+				return
+			}
+		} else {
+			// 停用：调用supervisor.Stop
+			if err := h.supervisor.Stop(pluginID); err != nil {
+				// stop失败不回滚（进程可能已不存在，状态仍应为disabled）
+				// 仅记录日志，不返回错误（状态标记成功即可）
+			}
+		}
+	}
 
 	plugin, err := h.registry.GetPlugin(pluginID)
 	if err != nil {
@@ -396,8 +437,8 @@ func (r *fileBasedRegistry) manifestToPluginInfo(m *pluginruntime.Manifest) Plug
 		PluginID:     m.PluginID,
 		DisplayName:  m.DisplayName,
 		Version:      m.PluginVersion,
-		Status:       "registered", // Default status
-		Enabled:      true,         // Default enabled
+		Status:       "available",
+		Enabled:      true, // Default enabled; runtime state overlay applied by handler
 		Essential:    m.Essential,
 		Dependencies: m.Requires,
 		Capabilities: m.Capabilities,
@@ -414,7 +455,9 @@ func (r *fileBasedRegistry) manifestToPluginInfo(m *pluginruntime.Manifest) Plug
 			MinGWVersion: m.GatewayCompatibility.MinVersion,
 			MaxGWVersion: m.GatewayCompatibility.MaxVersion,
 			LoadedAt:     time.Now(),
-			ManifestPath: m.ManifestPath,
+			// ManifestPath intentionally omitted: exposing server filesystem
+			// paths over network API is a security concern. Frontend does not
+			// consume this field.
 		},
 	}
 

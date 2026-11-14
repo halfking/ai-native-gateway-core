@@ -7171,7 +7171,7 @@ func main() {
 	}
 	// pluginapi: public list/get for the Shell. Settings stay behind admin auth.
 	// Shell asks for /manifests; the Day 3 probe asks for both slash forms.
-	pluginapiHandler := pluginapi.NewPluginAPIHandler(pluginsDir)
+	pluginapiHandler := pluginapi.NewPluginAPIHandler(pluginsDir, sup)
 	settingsHandler := admin.AdminMiddleware(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/settings") {
