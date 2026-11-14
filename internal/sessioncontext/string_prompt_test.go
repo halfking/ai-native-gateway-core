@@ -19,14 +19,15 @@ func newTestStore(t *testing.T) *largebody.Store {
 	return s
 }
 
-// TestReduce_StringPromptWrapping — P2-2（2026-11-14 部分修复）：/v1/completions
-// prompt 与 /v1/responses input 的 string 形态（协议合法）此前触发
-// ErrProtectedContext（只认数组）。
+// TestReduce_StringPromptWrapping — P2-2：/v1/completions prompt 的 string
+// 形态（协议合法）此前触发 ErrProtectedContext（只认数组）。
 //
-// 当前实现：小 string prompt (≤maxBytes) 包装返回；**大 string prompt
-// 暂不支持缩减**（返回明确错误，移交下一轮实现内存缩减逻辑）。
-//
-// 本测试验证大 string prompt 的错误提示（而非成功缩减）。
+// 2026-11-14 审计轮改判：原钉测把 interim 状态（大 string prompt 返回
+// 「wrap + reduce not yet implemented」）钉为预期——与同批提交的
+// TestReduceStringPromptFitsBudget（要求缩减成功）互相矛盾，且按
+// r1051/r1052/r1053 族裁决，fail-closed 于可缩减内容=会话砖化（>1MiB 纯文本
+// prompt 422 且客户端无法 split）。终态＝大 string prompt 走裸字符串摘录
+// 缩减（string_field.go 机器），输出保持 prompt 为 JSON string。
 func TestReduce_StringPromptWrapping(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -50,16 +51,35 @@ func TestReduce_StringPromptWrapping(t *testing.T) {
 		t.Fatalf("store.Capture failed: %v", err)
 	}
 
-	// Reduce 应该返回明确错误（大 string prompt 缩减未实现）
+	// Reduce 必须缩减成功（2026-11-14 审计轮收口）：预算内、prompt 保持
+	// JSON string 原形、带披露标记。
 	maxBytes := 500000 // 500KB 预算
-	_, _, err = Reduce(ctx, store, ref, maxBytes)
-	if err == nil {
-		t.Fatal("Reduce succeeded on large string prompt (expected 'wrap + reduce not yet implemented' error)")
+	reduced, report, err := Reduce(ctx, store, ref, maxBytes)
+	if err != nil {
+		t.Fatalf("large string prompt must reduce, not reject: %v", err)
 	}
-	if !strings.Contains(err.Error(), "wrap + reduce not yet implemented") {
-		t.Errorf("unexpected error: %v (expected 'wrap + reduce not yet implemented')", err)
+	if !report.Reduced || len(reduced) > maxBytes {
+		t.Fatalf("bad reduction: reduced=%v len=%d", report.Reduced, len(reduced))
 	}
-	t.Logf("large string prompt correctly rejected: %v", err)
+	var out map[string]json.RawMessage
+	if json.Unmarshal(reduced, &out) != nil {
+		t.Fatal("output must stay an object")
+	}
+	var prompt string
+	if json.Unmarshal(out["prompt"], &prompt) != nil {
+		t.Fatalf("prompt must remain a JSON string, got %s", string(out["prompt"])[:min(40, len(out["prompt"]))])
+	}
+	if !strings.Contains(prompt, stringExcerptMarker[:40]) {
+		t.Error("excerpt must carry the disclosure marker")
+	}
+	t.Logf("large string prompt reduced: %d→%d bytes", ref.Size, len(reduced))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // TestReduce_StringPromptSmall — P2-2 核心修复：小 string prompt（≤maxBytes）
@@ -120,7 +140,8 @@ func TestReduce_StringPromptSmall(t *testing.T) {
 }
 
 // TestReduce_ResponsesStringInput — P2-2 扩展：/v1/responses input string 形态。
-// 大 input 暂不支持缩减（与 prompt 同理）。
+// 2026-11-14 审计轮改判：与 prompt 同一收口——大 input 必须摘录缩减成功
+// （保持 string 原形），不再返回 interim 报错。
 func TestReduce_ResponsesStringInput(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -139,12 +160,20 @@ func TestReduce_ResponsesStringInput(t *testing.T) {
 	}, strings.NewReader(string(bodyBytes)))
 
 	maxBytes := 500000
-	_, _, err := Reduce(ctx, store, ref, maxBytes)
-	if err == nil {
-		t.Fatal("Reduce succeeded on large string input (expected error)")
+	reduced, report, err := Reduce(ctx, store, ref, maxBytes)
+	if err != nil {
+		t.Fatalf("large string input must reduce, not reject: %v", err)
 	}
-	if !strings.Contains(err.Error(), "wrap + reduce not yet implemented") {
-		t.Errorf("unexpected error: %v", err)
+	if !report.Reduced || len(reduced) > maxBytes {
+		t.Fatalf("bad reduction: reduced=%v len=%d", report.Reduced, len(reduced))
 	}
-	t.Logf("large string input correctly rejected: %v", err)
+	var out map[string]json.RawMessage
+	if json.Unmarshal(reduced, &out) != nil {
+		t.Fatal("output must stay an object")
+	}
+	var input string
+	if json.Unmarshal(out["input"], &input) != nil {
+		t.Fatal("input must remain a JSON string")
+	}
+	t.Logf("large string input reduced: %d→%d bytes", ref.Size, len(reduced))
 }

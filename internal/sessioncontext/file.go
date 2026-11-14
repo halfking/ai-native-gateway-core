@@ -66,8 +66,15 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 			report.OutputBytes = len(wrapped)
 			return wrapped, report, nil
 		}
-		// 大 body：暂不支持缩减（需要内存缩减逻辑，移交下一轮）
-		return nil, report, fmt.Errorf("string prompt/input exceeds %d bytes and cannot be reduced (wrap + reduce not yet implemented)", maxBytes)
+		// 大 body（2026-11-14 审计轮收口，P2-2 第二半）：缩减输出必须保持
+		// prompt/input 为 JSON string——IR parse 的 completions 兜底分支与
+		// 上游合同依赖原形；包装只服务小 body 的统一处理。直接走裸字符串
+		// 摘录缩减（string_field.go 同一机器，流式有界，head+tail 语义）。
+		body, rep, handled, rerr := reduceStringGenerationField(ctx, f, doc, maxBytes, report)
+		if handled {
+			return body, rep, rerr
+		}
+		return nil, report, fmt.Errorf("string prompt/input exceeds %d bytes and cannot be reduced", maxBytes)
 	}
 	
 	if ref.Size <= int64(maxBytes) {
@@ -120,9 +127,14 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 					report.OutputBytes = len(wrapped)
 					return wrapped, report, nil
 				}
-				// 超 maxBytes 时需要缩减，但 f (store file) 还是原始 body
-				// ⇒ 需要创建临时的内存 reader。这太复杂了，暂时拒绝超大 string
-				return nil, report, fmt.Errorf("string prompt/input exceeds %d bytes and cannot be reduced (wrap + reduce not yet implemented)", maxBytes)
+				// 超 maxBytes（2026-11-14 审计轮收口，P2-2 第二半）：与上方
+				// needsWrap 分支同一收口——缩减输出保持 string 原形，直接走
+				// 裸字符串摘录缩减（f/doc 仍是原始 body 的文件与索引）。
+				body, rep, handled, rerr := reduceStringGenerationField(ctx, f, doc, maxBytes, report)
+				if handled {
+					return body, rep, rerr
+				}
+				return nil, report, fmt.Errorf("string prompt/input exceeds %d bytes and cannot be reduced", maxBytes)
 			}
 		}
 	}
