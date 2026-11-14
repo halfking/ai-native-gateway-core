@@ -711,7 +711,21 @@ func dispatchRequestBody(r *http.Request) (model string, stream bool, rawBody []
 	if r.Body == nil {
 		return "", false, nil, nil
 	}
-	r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
+	
+	// Defense-in-depth: if large ingress already archived this request,
+	// the body should be small (reduced context). If somehow we see a large
+	// body here, it means the large ingress layer was bypassed.
+	if _, archived := streaming.LargeRequestArchive(r.Context()); archived {
+		// Large request was archived; body should be reduced
+		r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
+	} else if r.ContentLength > 32<<20 {
+		// Non-archived request larger than 32MB should have gone through
+		// large ingress. This is a misconfiguration or bypass attempt.
+		return "", false, nil, fmt.Errorf("large request bypassed ingress layer: %d bytes", r.ContentLength)
+	} else {
+		r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
+	}
+	
 	rawBody, err = io.ReadAll(r.Body)
 	if err != nil {
 		var mbErr *http.MaxBytesError

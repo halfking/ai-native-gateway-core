@@ -268,6 +268,7 @@ type l1Entry struct {
 	bytes    int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
 	elem     *list.Element
 	revision string // immutable shared commit token; empty for L1-only entries
+	oversized bool  // true if original body was >1MB and not retained
 }
 
 // SessionCache provides three-tier session state caching.
@@ -416,7 +417,13 @@ func (c *SessionCache) getLocal(ctx context.Context, tenantID, gwSessionID strin
 	key := l1Key(tenantID, gwSessionID)
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
-		if cacheBudgetStrict(ctx) {
+		// If strict budget mode is enabled and entry was marked oversized, reject it
+		if cacheBudgetStrict(ctx) && e.oversized {
+			c.mu.Unlock()
+			return nil, nil, fmt.Errorf("session_cache: oversized body rejected in strict mode")
+		}
+		// Apply normal bounded check for entries with bodies
+		if cacheBudgetStrict(ctx) && len(e.body) > 0 {
 			if err := boundedCachePair(e.state, e.body); err != nil {
 				c.mu.Unlock()
 				return nil, nil, err
@@ -555,8 +562,25 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := cloneSessionState(state)
-	bodyCopy := append([]byte(nil), body...)
-	entryBytes := len(bodyCopy) + len(key) + l1EntryOverheadBytes
+	
+	// For large bodies (>1MB), don't retain the full copy in L1 memory cache.
+	// The body is already on disk via large ingress; L1 only needs state metadata.
+	// However, we still account for the original size in byte budget to limit
+	// the number of large-body sessions cached.
+	var bodyCopy []byte
+	oversized := false
+	originalSize := len(body)
+	
+	if len(body) > strictCacheBodyBytes {
+		// Large body: store only a marker, not the actual content
+		bodyCopy = []byte{} // Empty slice signals "body too large for L1"
+		oversized = true
+	} else {
+		bodyCopy = append([]byte(nil), body...)
+	}
+	
+	// Account for original size in byte budget, even if we didn't store it
+	entryBytes := originalSize + len(key) + l1EntryOverheadBytes
 
 	// Update-in-place + promote to front if the key already exists.
 	if existing, ok := c.l1[key]; ok {
@@ -566,6 +590,7 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 		existing.state = st
 		existing.body = bodyCopy
 		existing.revision = revision
+		existing.oversized = oversized
 
 		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
@@ -574,7 +599,7 @@ func (c *SessionCache) setL1Revision(key string, state *SessionState, body []byt
 	}
 
 	// New entry: push to front, evict the LRU (back) if over capacity OR bytes.
-	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes, revision: revision}
+	entry := &l1Entry{key: key, state: st, body: bodyCopy, oversized: oversized, bytes: entryBytes, revision: revision}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
 	c.curBytes += entryBytes

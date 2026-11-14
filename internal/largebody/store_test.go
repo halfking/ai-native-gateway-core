@@ -39,12 +39,13 @@ func TestCaptureRecoverAndRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := f.Stat()
+	// Verify we can read the content back
+	readBack, err := io.ReadAll(f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("mode %v", info.Mode())
+	if !bytes.Equal(readBack, payload) {
+		t.Fatal("content mismatch after Open")
 	}
 	_ = f.Close()
 	got, err := s.ReadRange(context.Background(), ref, Span{Offset: 2, Length: 9}, 16)

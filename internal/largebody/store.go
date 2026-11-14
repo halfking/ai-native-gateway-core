@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 const LimitBytes int64 = 100_000_000
@@ -113,8 +114,16 @@ func (s *Store) Capture(ctx context.Context, id Identity, r io.Reader) (ref Ref,
 		return ref, err
 	}
 	defer func() { _ = f.Close(); _ = s.root.Remove(tmp) }()
+	
+	// Wrap with frame-based compression
+	fw, err := NewFrameWriter(f)
+	if err != nil {
+		return ref, err
+	}
+	
 	h := sha256.New()
-	n, err := io.CopyBuffer(io.MultiWriter(f, h), io.LimitReader(contextReader{ctx, r}, LimitBytes+1), make([]byte, 64<<10))
+	// Hash the uncompressed data, compress writes to disk
+	n, err := io.CopyBuffer(io.MultiWriter(fw, h), io.LimitReader(contextReader{ctx, r}, LimitBytes+1), make([]byte, 64<<10))
 	if err != nil {
 		return ref, err
 	}
@@ -124,9 +133,12 @@ func (s *Store) Capture(ctx context.Context, id Identity, r io.Reader) (ref Ref,
 	if err = ctx.Err(); err != nil {
 		return ref, err
 	}
-	if err = f.Sync(); err != nil {
+	
+	// Close FrameWriter to flush final frame
+	if err = fw.Close(); err != nil {
 		return ref, err
 	}
+	
 	if err = f.Close(); err != nil {
 		return ref, err
 	}
@@ -226,9 +238,17 @@ func (s *Store) checkPath(path string) error {
 	return nil
 }
 
+// File provides read access to an archived body with optional compression.
+type File interface {
+	io.Reader
+	io.ReaderAt
+	io.Closer
+}
+
 // Open does not read or hash the complete file. It validates trusted reference
 // shape and size; call Verify or Recover before trusting a persisted record.
-func (s *Store) Open(ctx context.Context, ref Ref) (*os.File, error) {
+// Returns a reader that transparently decompresses if the file is compressed.
+func (s *Store) Open(ctx context.Context, ref Ref) (File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -244,11 +264,98 @@ func (s *Store) Open(ctx context.Context, ref Ref) (*os.File, error) {
 		return nil, err
 	}
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() != ref.Size {
+	if err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, ErrIntegrity
+	}
+	
+	// Check if file is compressed
+	compressed, err := IsCompressed(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	
+	// Seek back to start after magic check
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	
+	if compressed {
+		// Wrap with decompression
+		fr, err := NewFrameReader(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return &compressedFile{fr: fr, f: f}, nil
+	}
+	
+	// Legacy uncompressed file - verify size matches
+	if info.Size() != ref.Size {
 		_ = f.Close()
 		return nil, ErrIntegrity
 	}
 	return f, nil
+}
+
+// compressedFile wraps FrameReader and underlying file for proper cleanup
+type compressedFile struct {
+	fr     *FrameReader
+	f      *os.File
+	pos    int64 // current read position for ReadAt emulation
+	mu     sync.Mutex
+}
+
+func (cf *compressedFile) Read(p []byte) (int, error) {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+	n, err := cf.fr.Read(p)
+	cf.pos += int64(n)
+	return n, err
+}
+
+func (cf *compressedFile) ReadAt(p []byte, off int64) (int, error) {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+	
+	// For compressed files, we need to seek by reading from current position
+	// This is inefficient for random access but maintains correctness
+	if off < cf.pos {
+		// Seeking backward requires reopening the file
+		if _, err := cf.f.Seek(0, io.SeekStart); err != nil {
+			return 0, err
+		}
+		
+		// Recreate frame reader
+		fr, err := NewFrameReader(cf.f)
+		if err != nil {
+			return 0, err
+		}
+		cf.fr.Close()
+		cf.fr = fr
+		cf.pos = 0
+	}
+	
+	// Seek forward if needed
+	if off > cf.pos {
+		toDiscard := off - cf.pos
+		if _, err := io.CopyN(io.Discard, cf.fr, toDiscard); err != nil {
+			return 0, err
+		}
+		cf.pos = off
+	}
+	
+	// Read the requested data
+	n, err := io.ReadFull(cf.fr, p)
+	cf.pos += int64(n)
+	return n, err
+}
+
+func (cf *compressedFile) Close() error {
+	cf.fr.Close()
+	return cf.f.Close()
 }
 
 func (s *Store) Verify(ctx context.Context, ref Ref) error {
@@ -312,7 +419,15 @@ func (s *Store) ReadRange(ctx context.Context, ref Ref, span Span, maxBytes int6
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(contextReader{ctx, io.NewSectionReader(f, span.Offset, span.Length)})
+	
+	// For compressed files, we need sequential read to offset
+	if span.Offset > 0 {
+		if _, err := io.CopyN(io.Discard, f, span.Offset); err != nil {
+			return nil, err
+		}
+	}
+	
+	return io.ReadAll(contextReader{ctx, io.LimitReader(f, span.Length)})
 }
 
 type contextReader struct {
