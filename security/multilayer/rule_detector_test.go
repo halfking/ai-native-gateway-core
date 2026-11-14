@@ -84,9 +84,13 @@ func TestRuleDetector_EmailDetection(t *testing.T) {
 			shouldDetect: true,
 		},
 		{
+			// 2026-11-14 审计轮改判：git SSH remote 不是邮箱（rv-1735 族，
+			// r1042 在生产引擎 isGitSCPRemoteForm 豁免）——旧钉测把已根修的
+			// 误报钉为「应检出，靠不存在的 context layer 过滤」，接线即回归。
+			// 本层规则级应与 r1042 语义一致：不得检出。
 			name:         "git_ssh_remote",
 			content:      "git@github.com:user/repo.git",
-			shouldDetect: true, // Currently detects, but context layer should filter
+			shouldDetect: false,
 		},
 	}
 	

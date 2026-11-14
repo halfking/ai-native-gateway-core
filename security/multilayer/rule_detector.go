@@ -110,6 +110,22 @@ func (r *RuleDetector) Detect(ctx context.Context, content string, detectionCtx 
 }
 
 // matchPatterns applies all patterns for a threat type.
+// detectionExempt 报告该命中是否为已知误报形态。与生产引擎的豁免族对齐：
+// git SSH/SCP remote（git@github.com:user/repo.git）不是邮箱——rv-1735 族，
+// 生产 isGitSCPRemoteForm（security/sanitize/detector.go）同款判据：
+// email 命中的 local part 恰为 git 即豁免。本包若未来接线，缺此豁免会把
+// 已根修的误报重新带进生产（回归炸弹拆除）。
+func detectionExempt(threatType ThreatType, value string) bool {
+	if threatType != ThreatEmail {
+		return false
+	}
+	idx := strings.IndexByte(value, '@')
+	if idx <= 0 {
+		return false
+	}
+	return strings.EqualFold(value[:idx], "git")
+}
+
 func (r *RuleDetector) matchPatterns(content string, threatType ThreatType, patterns []*compiledPattern, ctx DetectionContext) []ThreatMatch {
 	var matches []ThreatMatch
 	
@@ -123,7 +139,12 @@ func (r *RuleDetector) matchPatterns(content string, threatType ThreatType, patt
 			
 			start, end := loc[0], loc[1]
 			value := content[start:end]
-			
+
+			// 已知误报形态豁免（2026-11-14 审计轮，与生产引擎 r1042/r1046 同族语义对齐）
+			if detectionExempt(threatType, value) {
+				continue
+			}
+
 			// Skip if too short
 			if len(value) < r.config.MinMatchLength {
 				continue

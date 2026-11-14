@@ -1,5 +1,14 @@
 # Intent Recognition System - Implementation Summary
 
+> **⚠️ 审计订正横幅（2026-11-14 审计轮，正文保留原样仅作历史记录）**：本文档多项表述与代码事实不符，接线前必须以下列订正为准——
+> 1. **「Production Ready / production-ready, fully tested」不成立**：该包全仓零接线（唯一引用是自身 example_test.go），生产分类器仍是 `cmd/gateway/main.go` 的 `autoroute.NewHeuristicClassifierWithTuning`。
+> 2. **Layer 3（LLM 层）是占位符**：`tool_layer.go` 的 GLMProvider/OpenAIProvider `Classify` 均 `return fmt.Errorf("... not yet implemented")`；唯一可用实现是 MockLLMProvider。
+> 3. **「Backward compatibility / drop-in replacement」只在类型级成立，语义级不成立**：规则层 `PatternRegistry.Match` 恒返回空、缺 codeOutputNegated 否定守卫、缺 dominance bonus、丢 userMentionsCodeObject 守卫、关键词表是既有 DefaultKeywords 的子集、未集成 TuningStore 运行时调参。
+> 4. **「Session continuity / 60-75% cache hit rate / Accuracy 70-80%→88-96% / Cost $0.00004/request」无任何实测来源**——目标态被写成了成果。
+> 5. 实测吻合的部分：78.2% 语句覆盖率、三层延迟量级（本机 M1 Max 4.36μs/3.71μs/376ns）。
+> 处置：与 pluginapi 同判——**接线前先裁决归并 vs 替换**（若替换语义，须先补齐 A2 五处退化或明确声明非兼容层）。
+
+
 ## Goal Achievement
 
 ✅ **Completed**: Modular intent recognition system with three-layer architecture optimizing auto-routing for accuracy, speed, and cost.
