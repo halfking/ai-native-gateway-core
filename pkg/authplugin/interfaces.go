@@ -109,6 +109,8 @@ type TokenClaims struct {
 type AuthFeature string
 
 const (
+	FeaturePasswordAuth      AuthFeature = "password_auth"      // Supports username+password authentication
+	FeatureTokenValidation   AuthFeature = "token_validation"   // Can validate tokens it issues
 	FeatureRefreshToken      AuthFeature = "refresh_token"      // Supports token refresh
 	FeatureMFA               AuthFeature = "mfa"                // Supports multi-factor authentication
 	FeatureSSO               AuthFeature = "sso"                // Supports single sign-on
