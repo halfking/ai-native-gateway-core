@@ -370,6 +370,10 @@ github.com/ebitengine/purego/internal/strings
 # github.com/felixge/httpsnoop v1.0.4
 ## explicit; go 1.13
 github.com/felixge/httpsnoop
+# github.com/fsnotify/fsnotify v1.10.1
+## explicit; go 1.23
+github.com/fsnotify/fsnotify
+github.com/fsnotify/fsnotify/internal
 # github.com/go-logr/logr v1.4.4
 ## explicit; go 1.18
 github.com/go-logr/logr
@@ -434,8 +438,26 @@ github.com/jackc/puddle/v2/internal/genstack
 # github.com/json-iterator/go v1.1.12
 ## explicit; go 1.12
 github.com/json-iterator/go
-# github.com/klauspost/compress v1.18.7
-## explicit; go 1.24
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/config v0.0.0 => ./plugin-runtime/config
+## explicit; go 1.27.4
+github.com/kaixuan/llm-gateway-go/plugin-runtime/config
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery v0.0.0 => ./plugin-runtime/discovery
+## explicit; go 1.27.4
+github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus v0.0.0 => ./plugin-runtime/eventbus
+## explicit; go 1.27.4
+github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/ipc v0.0.0 => ./plugin-runtime/ipc
+## explicit; go 1.27.4
+github.com/kaixuan/llm-gateway-go/plugin-runtime/ipc
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler v0.0.0 => ./plugin-runtime/reconciler
+## explicit; go 1.27.4
+github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor v0.0.0 => ./plugin-runtime/supervisor
+## explicit; go 1.27.4
+github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor
+# github.com/klauspost/compress v1.20.2
+## explicit; go 1.25
 github.com/klauspost/compress
 github.com/klauspost/compress/flate
 github.com/klauspost/compress/fse
@@ -443,6 +465,7 @@ github.com/klauspost/compress/gzip
 github.com/klauspost/compress/huff0
 github.com/klauspost/compress/internal/cpuinfo
 github.com/klauspost/compress/internal/le
+github.com/klauspost/compress/internal/regmask
 github.com/klauspost/compress/internal/snapref
 github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
@@ -451,13 +474,9 @@ github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/kylelemons/godebug v1.1.0
 ## explicit; go 1.11
 github.com/kylelemons/godebug/diff
-# github.com/labstack/echo/v4 v4.15.4
+# github.com/labstack/echo/v5 v5.4.5
 ## explicit; go 1.25.0
-github.com/labstack/echo/v4
-# github.com/labstack/gommon v0.5.0
-## explicit; go 1.23.0
-github.com/labstack/gommon/color
-github.com/labstack/gommon/log
+github.com/labstack/echo/v5
 # github.com/lib/pq v1.12.3
 ## explicit; go 1.21
 github.com/lib/pq
@@ -667,12 +686,6 @@ github.com/tklauser/go-sysconf
 # github.com/tklauser/numcpus v0.6.1
 ## explicit; go 1.13
 github.com/tklauser/numcpus
-# github.com/valyala/bytebufferpool v1.0.0
-## explicit
-github.com/valyala/bytebufferpool
-# github.com/valyala/fasttemplate v1.2.2
-## explicit; go 1.12
-github.com/valyala/fasttemplate
 # github.com/xitongsys/parquet-go v1.6.2
 ## explicit; go 1.16
 github.com/xitongsys/parquet-go/common
@@ -782,8 +795,6 @@ go.opentelemetry.io/proto/otlp/trace/v1
 go.uber.org/atomic
 # golang.org/x/crypto v0.57.0
 ## explicit; go 1.26.0
-golang.org/x/crypto/acme
-golang.org/x/crypto/acme/autocert
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
 golang.org/x/crypto/chacha20
@@ -992,3 +1003,9 @@ gopkg.in/natefinch/lumberjack.v2
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/config => ./plugin-runtime/config
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery => ./plugin-runtime/discovery
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus => ./plugin-runtime/eventbus
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/ipc => ./plugin-runtime/ipc
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler => ./plugin-runtime/reconciler
+# github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor => ./plugin-runtime/supervisor

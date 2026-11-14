@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/licensing"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -208,4 +208,38 @@ func TestTrialHandlerFailsClosedWithoutRedis(t *testing.T) {
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.Equal(t, 0, store.count)
+}
+
+func TestTrialClientKeyUsesDirectPeer(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS", "")
+	e := newAuthorityEcho()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set(echo.HeaderXRealIP, "198.51.100.17")
+	req.Header.Set(echo.HeaderXForwardedFor, "198.51.100.17")
+	c := e.NewContext(req, httptest.NewRecorder())
+
+	require.Equal(t, hashTrialValue("192.0.2.10"), clientKey(c))
+}
+
+func TestTrialHandlerKeepsProxyClientsInSeparateBuckets(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS", "")
+	store := &trialStore{}
+	h := newTrialHandlerForTest(store)
+	e := newAuthorityEcho()
+	h.RegisterRoutes(e.Group("/api/v1"))
+
+	for client, ip := range []string{"198.51.100.17", "198.51.100.18"} {
+		for request := 0; request < 3; request++ {
+			body := fmt.Sprintf(`{"email":"client-%d-%d@example.com","agree":true}`, client, request)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/license/trial", strings.NewReader(body))
+			req.RemoteAddr = "127.0.0.1:12345"
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			req.Header.Set(echo.HeaderXRealIP, ip)
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusCreated, rec.Code, "client %d request %d: %s", client, request, rec.Body.String())
+		}
+	}
+	require.Equal(t, 6, store.count)
 }

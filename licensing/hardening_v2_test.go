@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // ──────────────────── AC-LH1..AC-LH4: grace period ────────────────────
@@ -509,7 +509,7 @@ func TestRestrictedMode_MiddlewareBlocksBypass(t *testing.T) {
 		"/",
 	}
 
-	next := func(c echo.Context) error {
+	next := func(c *echo.Context) error {
 		return c.String(http.StatusOK, "next")
 	}
 

@@ -562,6 +562,13 @@ func (m *OriginMiddleware) resolveClientIP(r *http.Request) (single, chain strin
 	return single, chain
 }
 
+// ResolveClientIP shares the origin middleware's trusted-proxy policy with
+// standalone HTTP servers that also need a client identity for rate limits.
+// The allowlist is supplied through NewOriginMiddlewareWithTrustedProxies.
+func (m *OriginMiddleware) ResolveClientIP(r *http.Request) (single, chain string) {
+	return m.resolveClientIP(r)
+}
+
 // -------------------------------------------------------------------
 // context accessors
 // -------------------------------------------------------------------

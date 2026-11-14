@@ -146,7 +146,13 @@ check_sql_set_local() {
   # Skip lines starting with `--` (SQL comments) — historically 449_request_logs_hot_trace_events
   # documented the trap *as a comment* and tripped this check. Comments can't be
   # executed, so excluding them doesn't weaken the safety guarantee.
-  bad=$(grep -rE 'SET[[:space:]]+(LOCAL[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.]*[[:space:]]*=' \
+  # SET starts a statement or a quoted SQL string; UPDATE ... SET is valid.
+  local pattern
+  pattern=$(cat <<'SQL_PATTERN'
+(^|[;"'`]|\*/|(^|[^A-Za-z_])(BEGIN|THEN|ELSE|LOOP)[[:space:]])[[:space:]]*SET[[:space:]]+((LOCAL|SESSION)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.]*[[:space:]]*=
+SQL_PATTERN
+)
+  bad=$(grep -rEi "$pattern" \
         "$mig_dir"/ 2>/dev/null \
       | grep -v -E '^[^:]+:[[:space:]]*--' \
       | grep -E '\$[0-9]+' || true)
@@ -367,6 +373,7 @@ echo "pre-commit checks for llm-gateway-go"
 echo "==================================="
 
 run_check "go vet"                  check_go_vet
+run_check "SQL: SET lint contracts" bash "$REPO_ROOT/tests/sql_set_placeholder_contract_test.sh"
 run_check "SQL: no SET+placeholder" check_sql_set_local
 run_check "Migration: unique NNN"   check_migration_unique
 run_check "Migration: has down.sql" check_migration_has_down

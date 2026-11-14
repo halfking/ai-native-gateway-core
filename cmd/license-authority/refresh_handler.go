@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/center"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // RefreshHandler handles POST /api/v1/instances/refresh
@@ -37,7 +37,7 @@ type RefreshResponse struct {
 }
 
 // HandleRefresh handles the refresh token request
-func (h *RefreshHandler) HandleRefresh(c echo.Context) error {
+func (h *RefreshHandler) HandleRefresh(c *echo.Context) error {
 	ctx := c.Request().Context()
 
 	// Parse request

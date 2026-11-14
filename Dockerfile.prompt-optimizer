@@ -1,8 +1,8 @@
 # 提示词优化服务 —— 多阶段构建
 #
 # 关键约束（2026-11-11 实测修正）：
-#   - Go 版本必须与 go.mod 对齐（本仓是 1.27.2）。原版写 golang:1.21-alpine
-#     ⇒ 编译器比 go.mod 老 ⇒ 直接报 "go.mod requires go >= 1.27.2"。
+#   - Go 版本必须与 go.mod 对齐（本仓是 1.27.4）。原版写 golang:1.21-alpine
+#     ⇒ 编译器比 go.mod 老 ⇒ 直接报 "go.mod requires go >= 1.27.4"。
 #   - 本仓用 vendor/ 模式（vendor/ 存在 ⇒ go 自动 -mod=vendor）。
 #     原版的 `go mod download` 在 vendor 模式下毫无用处，且会因需要访问
 #     模块代理而在离线/内网构建中失败。改为直接用 vendor/ 编译。
@@ -10,7 +10,7 @@
 #     Dockerfile.prompt-optimizer.dockerignore 排除（不动共享 .dockerignore）。
 
 # ── 构建阶段 ─────────────────────────────────────────────────────────
-FROM golang:1.27-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
 

@@ -22,38 +22,50 @@ func NewClient(socketPath string) *Client {
 
 // Send sends a request and waits for the response.
 func (c *Client) Send(ctx context.Context, request []byte) ([]byte, error) {
-	// Get connection from pool (creates new connection each time in this simple version)
-	conn, err := c.pool.dial()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+	}
+	conn, err := c.pool.dialContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get connection: %w", err)
+		return nil, c.requestError(ctx, "get connection", err)
 	}
-	defer conn.Close()
-
-	// Determine deadline from context
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(10 * time.Second)
-	}
-
-	// Set write deadline
-	conn.SetWriteDeadline(deadline)
+	defer c.pool.Remove(conn)
+	// Closing interrupts both blocked writes and reads, including cancellation
+	// of contexts that had no deadline when Send was called.
+	stopCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopCancel()
 
 	// Write request
-	if _, err := conn.Write(request); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
+	if err := WriteMessage(conn, request); err != nil {
+		return nil, c.requestError(ctx, "write request", err)
 	}
-
-	// Set read deadline
-	conn.SetReadDeadline(deadline)
 
 	// Read response
-	buf := make([]byte, 1024*1024) // 1MB buffer
-	n, err := conn.Read(buf)
+	response, err := ReadMessage(conn)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, c.requestError(ctx, "read response", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := c.pool.closedError(); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
 
-	return buf[:n], nil
+func (c *Client) requestError(ctx context.Context, operation string, err error) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = contextErr
+	} else if closedErr := c.pool.closedError(); closedErr != nil {
+		err = closedErr
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 // SendWithTimeout sends a request with a specific timeout.

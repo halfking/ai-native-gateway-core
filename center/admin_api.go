@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // AdminAPI Admin API Handler
@@ -45,7 +45,7 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 }
 
 // ListInstances 列出实例
-func (a *AdminAPI) ListInstances(c echo.Context) error {
+func (a *AdminAPI) ListInstances(c *echo.Context) error {
 	status := c.QueryParam("status")
 	offset := 0
 	limit := 50
@@ -67,7 +67,7 @@ func (a *AdminAPI) ListInstances(c echo.Context) error {
 }
 
 // GetInstance 获取实例详情
-func (a *AdminAPI) GetInstance(c echo.Context) error {
+func (a *AdminAPI) GetInstance(c *echo.Context) error {
 	instanceID := c.Param("id")
 
 	instance, err := a.server.GetInstance(c.Request().Context(), instanceID)
@@ -79,7 +79,7 @@ func (a *AdminAPI) GetInstance(c echo.Context) error {
 }
 
 // DeleteInstance 删除实例
-func (a *AdminAPI) DeleteInstance(c echo.Context) error {
+func (a *AdminAPI) DeleteInstance(c *echo.Context) error {
 	instanceID := c.Param("id")
 
 	if err := a.store.DeleteInstance(c.Request().Context(), instanceID); err != nil {
@@ -91,7 +91,7 @@ func (a *AdminAPI) DeleteInstance(c echo.Context) error {
 }
 
 // IssueCommand 下发命令
-func (a *AdminAPI) IssueCommand(c echo.Context) error {
+func (a *AdminAPI) IssueCommand(c *echo.Context) error {
 	instanceID := c.Param("id")
 
 	var req struct {
@@ -114,7 +114,7 @@ func (a *AdminAPI) IssueCommand(c echo.Context) error {
 }
 
 // GetHeartbeats 获取心跳历史
-func (a *AdminAPI) GetHeartbeats(c echo.Context) error {
+func (a *AdminAPI) GetHeartbeats(c *echo.Context) error {
 	instanceID := c.Param("id")
 
 	since := time.Now().Add(-24 * time.Hour)
@@ -137,7 +137,7 @@ func (a *AdminAPI) GetHeartbeats(c echo.Context) error {
 }
 
 // GetStatus 获取实例状态
-func (a *AdminAPI) GetStatus(c echo.Context) error {
+func (a *AdminAPI) GetStatus(c *echo.Context) error {
 	instanceID := c.Param("id")
 
 	status, err := a.store.GetLatestStatus(c.Request().Context(), instanceID)
@@ -149,7 +149,7 @@ func (a *AdminAPI) GetStatus(c echo.Context) error {
 }
 
 // GetRuntimeMetrics returns recent runtime_metrics samples for one instance.
-func (a *AdminAPI) GetRuntimeMetrics(c echo.Context) error {
+func (a *AdminAPI) GetRuntimeMetrics(c *echo.Context) error {
 	instanceID := c.Param("id")
 	pgxStore, ok := a.store.(*PgxStore)
 	if !ok {
@@ -177,7 +177,7 @@ func (a *AdminAPI) GetRuntimeMetrics(c echo.Context) error {
 }
 
 // GetRuntimeAlerts returns open/recent runtime alerts for one instance.
-func (a *AdminAPI) GetRuntimeAlerts(c echo.Context) error {
+func (a *AdminAPI) GetRuntimeAlerts(c *echo.Context) error {
 	instanceID := c.Param("id")
 	pgxStore, ok := a.store.(*PgxStore)
 	if !ok {
@@ -198,7 +198,7 @@ func (a *AdminAPI) GetRuntimeAlerts(c echo.Context) error {
 }
 
 // GetCommand 获取命令详情
-func (a *AdminAPI) GetCommand(c echo.Context) error {
+func (a *AdminAPI) GetCommand(c *echo.Context) error {
 	commandID := c.Param("id")
 
 	cmd, err := a.server.GetCommandStatus(c.Request().Context(), commandID)
@@ -210,7 +210,7 @@ func (a *AdminAPI) GetCommand(c echo.Context) error {
 }
 
 // GetCommandStatus 获取命令状态
-func (a *AdminAPI) GetCommandStatus(c echo.Context) error {
+func (a *AdminAPI) GetCommandStatus(c *echo.Context) error {
 	commandID := c.Param("id")
 
 	cmd, err := a.server.GetCommandStatus(c.Request().Context(), commandID)
@@ -227,7 +227,7 @@ func (a *AdminAPI) GetCommandStatus(c echo.Context) error {
 }
 
 // GetDashboardStats 获取仪表盘统计
-func (a *AdminAPI) GetDashboardStats(c echo.Context) error {
+func (a *AdminAPI) GetDashboardStats(c *echo.Context) error {
 	stats, err := a.server.GetDashboardStats(c.Request().Context())
 	if err != nil {
 		slog.Error("get dashboard stats failed", "error", err)
@@ -238,7 +238,7 @@ func (a *AdminAPI) GetDashboardStats(c echo.Context) error {
 }
 
 // ListAlerts returns derived alerts from instance heartbeat/status and persisted runtime alerts.
-func (a *AdminAPI) ListAlerts(c echo.Context) error {
+func (a *AdminAPI) ListAlerts(c *echo.Context) error {
 	instances, _, err := a.server.ListInstances(c.Request().Context(), "", 0, 500)
 	if err != nil {
 		slog.Error("list alerts failed", "error", err)
@@ -309,7 +309,7 @@ type alertActionRequest struct {
 }
 
 // AcknowledgeAlert acknowledges a persisted runtime alert.
-func (a *AdminAPI) AcknowledgeAlert(c echo.Context) error {
+func (a *AdminAPI) AcknowledgeAlert(c *echo.Context) error {
 	id, err := parseRuntimeAlertID(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -332,7 +332,7 @@ func (a *AdminAPI) AcknowledgeAlert(c echo.Context) error {
 }
 
 // ResolveAlert resolves a persisted runtime alert.
-func (a *AdminAPI) ResolveAlert(c echo.Context) error {
+func (a *AdminAPI) ResolveAlert(c *echo.Context) error {
 	id, err := parseRuntimeAlertID(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -355,7 +355,7 @@ func (a *AdminAPI) ResolveAlert(c echo.Context) error {
 }
 
 // SuppressAlert suppresses a persisted runtime alert for a duration.
-func (a *AdminAPI) SuppressAlert(c echo.Context) error {
+func (a *AdminAPI) SuppressAlert(c *echo.Context) error {
 	id, err := parseRuntimeAlertID(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})

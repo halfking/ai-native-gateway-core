@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.27.1-alpine AS builder
+FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
 
@@ -9,13 +9,13 @@ RUN apk add --no-cache git ca-certificates tzdata
 
 # 复制 go mod 文件
 COPY go.mod go.sum ./
-RUN go mod download
+COPY vendor/ ./vendor/
 
 # 复制源码
 COPY . .
 
 # 构建二进制
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor \
     -ldflags="-w -s" \
     -o /build/license-authority \
     ./cmd/license-authority

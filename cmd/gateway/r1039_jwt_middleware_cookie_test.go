@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 )
@@ -44,7 +44,7 @@ func r1039Echo(t *testing.T, secret string) *echo.Echo {
 	t.Helper()
 	e := echo.New()
 	e.Use(newJWTMiddleware(secret, nil))
-	e.GET("/probe", func(c echo.Context) error {
+	e.GET("/probe", func(c *echo.Context) error {
 		role, _ := c.Get("role").(string)
 		uid, _ := c.Get("user_id").(int)
 		return c.JSON(http.StatusOK, map[string]any{"role": role, "user_id": uid})
@@ -161,7 +161,7 @@ func TestR1039RequireSuperAdminRejectsTenantViaCookie(t *testing.T) {
 	e := echo.New()
 	e.Use(newJWTMiddleware(r1039JWTSecret, nil))
 	e.Use(newRequireSuperAdminMiddleware())
-	e.GET("/probe", func(c echo.Context) error { return c.String(http.StatusOK, "ok") })
+	e.GET("/probe", func(c *echo.Context) error { return c.String(http.StatusOK, "ok") })
 
 	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
 	req.AddCookie(&http.Cookie{Name: admin.CookieName, Value: r1039Token(t, "tenant_admin")})

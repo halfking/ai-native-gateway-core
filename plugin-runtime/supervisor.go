@@ -28,6 +28,8 @@ type SupervisorConfig struct {
 	ContextSecret []byte
 	// SigningPubkey 是 ed25519 公钥 hex；为空时跳过 manifest 签名校验（开发模式）。
 	SigningPubkey string
+	// PluginEnv supplies per-plugin runtime transport identity, never gateway credentials.
+	PluginEnv func(pluginID string) []string
 }
 
 // Supervisor 管理所有已启动的插件进程。P0 为内存态骨架。
@@ -71,6 +73,9 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 		"AI_SESSION_MANAGER_PLUGIN_SOCKET=" + socketPath,
 		"GATEWAY_PLUGIN_CONTRACT=" + m.GatewayCompatibility.APIContract,
 		"AI_SESSION_MANAGER_MANIFEST=" + manifestPath,
+	}
+	if s.cfg.PluginEnv != nil {
+		env = append(env, s.cfg.PluginEnv(m.PluginID)...)
 	}
 	cmd := s.commandFactory(socketPath, m.Runtime.Entrypoint, env)
 	if err := cmd.Start(ctx); err != nil {

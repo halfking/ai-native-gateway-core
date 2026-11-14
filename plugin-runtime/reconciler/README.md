@@ -38,7 +38,7 @@ Reconciler 采用 Kubernetes Controller 的 Reconciliation Loop 模式：
 import (
     "context"
     "time"
-    
+
     "github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler"
     "github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor"
 )
@@ -109,7 +109,7 @@ Action: UPGRADE
 Reason: Version mismatch: 1.0.0 -> 2.0.0
 ```
 
-执行滚动升级：停止旧版本 → 更新注册表 → 启动新版本。
+实际版本来自 Supervisor 已启动进程记录。支持 Upgrade 适配接口时交由运行时执行；否则停止旧版本 → 更新注册表 → 启动新版本。此流程会中断服务，不保证零停机。
 
 ### 5. 不应运行 → 停止
 
@@ -207,7 +207,7 @@ type PluginRegistry interface {
 go test -v -cover
 ```
 
-当前测试覆盖率：**89.9%**
+使用 `go test -race -count=1 -cover ./...` 获取当前覆盖率。协调动作失败会汇总返回，其他插件仍继续处理；循环启动失败也会返回调用方。
 
 测试用例包括：
 - 插件未运行自动启动

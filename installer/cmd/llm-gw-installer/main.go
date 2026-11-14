@@ -1594,6 +1594,7 @@ var credentialTotalRequestsRollup963 []byte
 
 //go:embed embeddata/startup/963_credential_total_requests_rollup.down.sql
 var credentialTotalRequestsRollup963Down []byte
+
 // ★ 963（2026-11-13 全面审计v3 53 增量移交轮）：promote_session_turns_hot_to_partition
 //
 //	签名默认保留期 '7 days' → '8 hours'（688 的对齐被 640 投递序事故覆盖、
@@ -2162,22 +2163,6 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/952_model_price_versions.down.sql":                   modelPriceVersions952Down,
 	// ★ 958/959（2026-11-12 A-17 双币收口轮）：registry 表（958 六面补登记）+
 	//   双地板地基（959）。
-	"startup/958_market_platform_registry.sql":                marketPlatformRegistry958,
-	"startup/958_market_platform_registry.down.sql":           marketPlatformRegistry958Down,
-	"startup/959_market_dual_floor_a17.sql":                   marketDualFloorA17959,
-	"startup/959_market_dual_floor_a17.down.sql":              marketDualFloorA17959Down,
-	"startup/960_migration_ledger_continuity_repair.sql":      migrationLedgerContinuityRepair960,
-	"startup/960_migration_ledger_continuity_repair.down.sql": migrationLedgerContinuityRepair960Down,
-	"startup/961_market_scoring_runs.sql":                     marketScoringRuns961,
-	"startup/961_market_scoring_runs.down.sql":                marketScoringRuns961Down,
-	"startup/962_recent_success_rate_index_aligned.sql":       recentSuccessRateIndexAligned962,
-	"startup/962_recent_success_rate_index_aligned.down.sql":  recentSuccessRateIndexAligned962Down,
-	"startup/963_credential_total_requests_rollup.sql":        credentialTotalRequestsRollup963,
-	"startup/963_credential_total_requests_rollup.down.sql":   credentialTotalRequestsRollup963Down,
-	"startup/953_models_canonical_featured.sql":               modelsCanonicalFeatured953,
-	"startup/953_models_canonical_featured.down.sql":          modelsCanonicalFeatured953Down,
-	"startup/954_probe_lane_trace_events.sql":                 probeLaneTraceEvents954,
-	"startup/954_probe_lane_trace_events.down.sql":            probeLaneTraceEvents954Down,
 	"startup/958_market_platform_registry.sql":                             marketPlatformRegistry958,
 	"startup/958_market_platform_registry.down.sql":                        marketPlatformRegistry958Down,
 	"startup/959_market_dual_floor_a17.sql":                                marketDualFloorA17959,
@@ -2188,12 +2173,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/961_market_scoring_runs.down.sql":                             marketScoringRuns961Down,
 	"startup/962_recent_success_rate_index_aligned.sql":                    recentSuccessRateIndexAligned962,
 	"startup/962_recent_success_rate_index_aligned.down.sql":               recentSuccessRateIndexAligned962Down,
-	"startup/964_promote_session_turns_default_retention_realign.sql":      promoteSessionTurnsDefaultRetentionRealign963,
-	"startup/964_promote_session_turns_default_retention_realign.down.sql": promoteSessionTurnsDefaultRetentionRealign963Down,
+	"startup/963_credential_total_requests_rollup.sql":                     credentialTotalRequestsRollup963,
+	"startup/963_credential_total_requests_rollup.down.sql":                credentialTotalRequestsRollup963Down,
 	"startup/953_models_canonical_featured.sql":                            modelsCanonicalFeatured953,
 	"startup/953_models_canonical_featured.down.sql":                       modelsCanonicalFeatured953Down,
 	"startup/954_probe_lane_trace_events.sql":                              probeLaneTraceEvents954,
 	"startup/954_probe_lane_trace_events.down.sql":                         probeLaneTraceEvents954Down,
+	"startup/964_promote_session_turns_default_retention_realign.sql":      promoteSessionTurnsDefaultRetentionRealign963,
+	"startup/964_promote_session_turns_default_retention_realign.down.sql": promoteSessionTurnsDefaultRetentionRealign963Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 type ModuleAdminHandler struct {
@@ -25,7 +25,7 @@ func (h *ModuleAdminHandler) RegisterRoutes(g *echo.Group) {
 	g.DELETE("/licenses/:id/modules/:key", h.DeleteLicenseModule)
 }
 
-func (h *ModuleAdminHandler) ListProductModules(c echo.Context) error {
+func (h *ModuleAdminHandler) ListProductModules(c *echo.Context) error {
 	modules, err := h.store.ListProductModules(c.Request().Context())
 	if err != nil {
 		return writeInternalErr(c, "list modules failed", err)
@@ -61,7 +61,7 @@ func (h *ModuleAdminHandler) ListProductModules(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-func (h *ModuleAdminHandler) ListTiers(c echo.Context) error {
+func (h *ModuleAdminHandler) ListTiers(c *echo.Context) error {
 	tiers, err := h.store.ListSubscriptionTiers(c.Request().Context())
 	if err != nil {
 		return writeInternalErr(c, "list tiers failed", err)
@@ -97,7 +97,7 @@ func (h *ModuleAdminHandler) ListTiers(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-func (h *ModuleAdminHandler) ListLicenseModules(c echo.Context) error {
+func (h *ModuleAdminHandler) ListLicenseModules(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -114,7 +114,7 @@ func (h *ModuleAdminHandler) ListLicenseModules(c echo.Context) error {
 	return c.JSON(http.StatusOK, mods)
 }
 
-func (h *ModuleAdminHandler) UpsertLicenseModule(c echo.Context) error {
+func (h *ModuleAdminHandler) UpsertLicenseModule(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})
@@ -153,7 +153,7 @@ func (h *ModuleAdminHandler) UpsertLicenseModule(c echo.Context) error {
 	return c.JSON(http.StatusOK, lm)
 }
 
-func (h *ModuleAdminHandler) DeleteLicenseModule(c echo.Context) error {
+func (h *ModuleAdminHandler) DeleteLicenseModule(c *echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid license id"})

@@ -27,7 +27,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Show Go env
@@ -73,7 +73,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Require RLS database DSN
@@ -102,7 +102,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Require dedicated PostgreSQL contract DSNs
@@ -139,7 +139,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Require isolated V2 database DSN
@@ -185,7 +185,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
       - name: Determine ratchet base
         run: |
           BASE="HEAD~1"
@@ -222,7 +222,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Run identity unit tests (race detector)
@@ -236,7 +236,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.4'
           cache: true
       - name: Run logging and streaming race tests
         run: go test -race -count=1 -timeout=600s ./internal/logging/... ./domains/streaming/...
@@ -254,7 +254,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Run core vet checks
@@ -297,7 +297,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27.4'
           cache: true
 
       - name: Run concurrency tests (race detector)

@@ -10,6 +10,7 @@ import (
 )
 
 func TestNativeAuthProvider_Name(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	p, _ := NewNativeAuthProvider(&pgxpool.Pool{}, "test-secret")
 	if got := p.Name(); got != "native" {
 		t.Errorf("Name() = %q, want %q", got, "native")
@@ -17,8 +18,9 @@ func TestNativeAuthProvider_Name(t *testing.T) {
 }
 
 func TestNativeAuthProvider_SupportsFeature(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	p, _ := NewNativeAuthProvider(&pgxpool.Pool{}, "test-secret")
-	
+
 	tests := []struct {
 		feature authplugin.AuthFeature
 		want    bool
@@ -29,7 +31,7 @@ func TestNativeAuthProvider_SupportsFeature(t *testing.T) {
 		{authplugin.FeatureRefreshToken, false},
 		{authplugin.FeatureMFA, false},
 	}
-	
+
 	for _, tt := range tests {
 		if got := p.SupportsFeature(tt.feature); got != tt.want {
 			t.Errorf("SupportsFeature(%q) = %v, want %v", tt.feature, got, tt.want)
@@ -38,8 +40,9 @@ func TestNativeAuthProvider_SupportsFeature(t *testing.T) {
 }
 
 func TestSignAndVerifyToken(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	secret := "test-jwt-secret"
-	
+
 	token, expiresAt, err := signToken(1, "default", "testuser", "admin", secret, false)
 	if err != nil {
 		t.Fatalf("signToken() error = %v", err)
@@ -50,7 +53,7 @@ func TestSignAndVerifyToken(t *testing.T) {
 	if expiresAt.Before(time.Now()) {
 		t.Fatal("signToken() returned past expiration time")
 	}
-	
+
 	claims, err := verifyToken(token, secret)
 	if err != nil {
 		t.Fatalf("verifyToken() error = %v", err)
@@ -70,6 +73,7 @@ func TestSignAndVerifyToken(t *testing.T) {
 }
 
 func TestVerifyToken_InvalidToken(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	_, err := verifyToken("invalid.jwt.token", "test-secret")
 	if err == nil {
 		t.Error("verifyToken() with invalid token should fail")
@@ -77,6 +81,7 @@ func TestVerifyToken_InvalidToken(t *testing.T) {
 }
 
 func TestVerifyToken_WrongSecret(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	token, _, _ := signToken(1, "default", "testuser", "admin", "correct-secret", false)
 	_, err := verifyToken(token, "wrong-secret")
 	if err == nil {
@@ -85,6 +90,7 @@ func TestVerifyToken_WrongSecret(t *testing.T) {
 }
 
 func TestNativeAuthProvider_RefreshTokenNotSupported(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "")
 	p, _ := NewNativeAuthProvider(&pgxpool.Pool{}, "test-secret")
 	_, err := p.RefreshToken(context.Background(), "any-token")
 	if err == nil {

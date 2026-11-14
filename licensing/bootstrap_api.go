@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // BootstrapHandler exposes local first-boot APIs that work before admin login.
@@ -68,7 +68,7 @@ type bootstrapStatus struct {
 	Message        string `json:"message,omitempty"`
 }
 
-func (h *BootstrapHandler) handleStatus(c echo.Context) error {
+func (h *BootstrapHandler) handleStatus(c *echo.Context) error {
 	requested := strings.TrimSpace(c.QueryParam("instance_id"))
 	instanceID := resolveLocalInstanceID()
 	if requested != "" && requested != instanceID {
@@ -131,7 +131,7 @@ func (h *BootstrapHandler) handleStatus(c echo.Context) error {
 
 const timeRFC3339 = "2006-01-02T15:04:05Z07:00"
 
-func (h *BootstrapHandler) handleFingerprint(c echo.Context) error {
+func (h *BootstrapHandler) handleFingerprint(c *echo.Context) error {
 	instanceID := resolveLocalInstanceID()
 	fp, err := GenerateFingerprint()
 	if err != nil || fp == nil {
@@ -153,7 +153,7 @@ func (h *BootstrapHandler) handleFingerprint(c echo.Context) error {
 	})
 }
 
-func (h *BootstrapHandler) handleActivate(c echo.Context) error {
+func (h *BootstrapHandler) handleActivate(c *echo.Context) error {
 	var input struct {
 		InstanceID   string `json:"instance_id"`
 		LicenseKey   string `json:"license_key"`
@@ -265,7 +265,7 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 }
 
 // handleActivateQuick: agree-and-activate — issue license at center, then import locally.
-func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
+func (h *BootstrapHandler) handleActivateQuick(c *echo.Context) error {
 	var input struct {
 		InstanceID   string `json:"instance_id"`
 		HardwareHash string `json:"hardware_hash"`

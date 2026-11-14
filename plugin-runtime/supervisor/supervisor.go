@@ -36,8 +36,7 @@ type ManagedProcess struct {
 	state    *ProcessState
 
 	// Health check
-	healthTicker *time.Ticker
-	healthDone   chan struct{}
+	healthDone chan struct{}
 
 	// waitDone is closed by monitorProcess (the single owner of cmd.Wait)
 	// once Wait has returned. Stop waits on it instead of calling
@@ -56,6 +55,7 @@ type ManagedProcess struct {
 // ProcessState tracks the state of a plugin process.
 type ProcessState struct {
 	PluginID     string
+	Version      string
 	PID          int
 	Status       ProcessStatus
 	StartTime    time.Time
@@ -170,6 +170,7 @@ func (s *Supervisor) Start(ctx context.Context, manifest *discovery.Manifest) er
 	}
 
 	mp.state.PID = mp.cmd.Process.Pid
+	mp.state.Version = manifest.Metadata.Version
 	mp.state.Status = StatusRunning
 	mp.state.StartTime = time.Now()
 
@@ -241,15 +242,11 @@ func (s *Supervisor) monitorProcess(pluginID string, mp *ManagedProcess) {
 	// "exec: Wait was already called" — 2026-11-14 audit D3). Stop signals
 	// its intent via stoppedManually and waits on waitDone.
 	err := mp.cmd.Wait()
-	close(mp.waitDone)
 
 	s.mu.Lock()
 
 	// Stop health check
 	close(mp.healthDone)
-	if mp.healthTicker != nil {
-		mp.healthTicker.Stop()
-	}
 
 	// A Stop-initiated SIGTERM surfaces as Wait error "signal: terminated";
 	// it is a graceful stop by design, not a crash (2026-11-14 audit D3).
@@ -293,6 +290,7 @@ func (s *Supervisor) monitorProcess(pluginID string, mp *ManagedProcess) {
 		// Remove the dead entry while still under the lock so concurrent
 		// Start/Stop observe a consistent "not running" state.
 		delete(s.processes, pluginID)
+		close(mp.waitDone)
 		s.mu.Unlock()
 
 		fmt.Printf("INFO: restarting plugin %s in %v (attempt %d)\n",
@@ -310,6 +308,7 @@ func (s *Supervisor) monitorProcess(pluginID string, mp *ManagedProcess) {
 	} else {
 		// Remove from processes map
 		delete(s.processes, pluginID)
+		close(mp.waitDone)
 		s.mu.Unlock()
 	}
 }
@@ -341,12 +340,12 @@ func (s *Supervisor) calculateBackoff(restartCount int) time.Duration {
 }
 
 func (s *Supervisor) runHealthCheck(pluginID string, mp *ManagedProcess) {
-	mp.healthTicker = time.NewTicker(s.healthCheckInterval)
-	defer mp.healthTicker.Stop()
+	ticker := time.NewTicker(s.healthCheckInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case <-mp.healthTicker.C:
+		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			health, err := s.HealthCheck(ctx, pluginID)
 			cancel()
@@ -463,12 +462,14 @@ func (s *Supervisor) HealthCheck(ctx context.Context, pluginID string) (*HealthS
 	}
 
 	// Check if process is still alive
-	if mp.cmd.ProcessState != nil && mp.cmd.ProcessState.Exited() {
+	select {
+	case <-mp.waitDone:
 		return &HealthStatus{
 			Healthy:   false,
 			Message:   "process exited",
 			CheckedAt: time.Now(),
 		}, nil
+	default:
 	}
 
 	return &HealthStatus{

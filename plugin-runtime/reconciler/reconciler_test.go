@@ -30,6 +30,7 @@ func (m *mockSupervisor) Start(ctx context.Context, manifest *discovery.Manifest
 	}
 	m.processes[manifest.Metadata.Name] = &supervisor.ProcessState{
 		PluginID: manifest.Metadata.Name,
+		Version:  manifest.Metadata.Version,
 		Status:   supervisor.StatusRunning,
 	}
 	return nil

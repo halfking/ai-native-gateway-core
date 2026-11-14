@@ -39,6 +39,23 @@ func TestStrictLocalReadRejectsBeforeCopyingLegacyBody(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestStrictLocalReadChecksMetadataWithEmptyBody(t *testing.T) {
+	for _, size := range []int{1, strictCacheMetaBytes + 1} {
+		cache := NewSessionCache(nil, nil)
+		cache.setL1(l1Key("t", "s"), stateOf(strings.Repeat("x", size)), nil)
+		state, body, err := cache.getLocal(strictCacheContext(), "t", "s")
+		if size > strictCacheMetaBytes {
+			require.Error(t, err, "empty bodies must not bypass the metadata budget")
+			require.Nil(t, state)
+			require.Nil(t, body)
+		} else {
+			require.NoError(t, err)
+			require.NotNil(t, state)
+			require.Nil(t, body, "safe empty-body pairs remain valid")
+		}
+	}
+}
+
 type boundedReadProbe struct{ *sharedTestRedis }
 
 func (r boundedReadProbe) HGetAll(context.Context, string) (map[string]string, error) {

@@ -3,7 +3,7 @@ package licensing
 import (
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 type CenterHandler struct {
@@ -29,7 +29,7 @@ func (h *CenterHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/offline/verify", h.VerifyOfflineLicense)
 }
 
-func (h *CenterHandler) Activate(c echo.Context) error {
+func (h *CenterHandler) Activate(c *echo.Context) error {
 	var req ActivationRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -43,7 +43,7 @@ func (h *CenterHandler) Activate(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-func (h *CenterHandler) Deactivate(c echo.Context) error {
+func (h *CenterHandler) Deactivate(c *echo.Context) error {
 	var req DeactivateRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -56,7 +56,7 @@ func (h *CenterHandler) Deactivate(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"message": "deactivated"})
 }
 
-func (h *CenterHandler) Heartbeat(c echo.Context) error {
+func (h *CenterHandler) Heartbeat(c *echo.Context) error {
 	var req struct {
 		LicenseKey   string `json:"license_key"`
 		HardwareHash string `json:"hardware_hash"`
@@ -72,7 +72,7 @@ func (h *CenterHandler) Heartbeat(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *CenterHandler) Validate(c echo.Context) error {
+func (h *CenterHandler) Validate(c *echo.Context) error {
 	var req struct {
 		LicenseKey   string `json:"license_key"`
 		HardwareHash string `json:"hardware_hash"`
@@ -92,7 +92,7 @@ func (h *CenterHandler) Validate(c echo.Context) error {
 	})
 }
 
-func (h *CenterHandler) CreateOfflineRequest(c echo.Context) error {
+func (h *CenterHandler) CreateOfflineRequest(c *echo.Context) error {
 	var req OfflineRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -109,7 +109,7 @@ func (h *CenterHandler) CreateOfflineRequest(c echo.Context) error {
 	})
 }
 
-func (h *CenterHandler) VerifyOfflineLicense(c echo.Context) error {
+func (h *CenterHandler) VerifyOfflineLicense(c *echo.Context) error {
 	var req struct {
 		SignedLicense string `json:"signed_license"`
 	}

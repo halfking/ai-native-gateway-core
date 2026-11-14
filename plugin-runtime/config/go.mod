@@ -1,6 +1,6 @@
 module github.com/kaixuan/llm-gateway-go/plugin-runtime/config
 
-go 1.27.2
+go 1.27.4
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1

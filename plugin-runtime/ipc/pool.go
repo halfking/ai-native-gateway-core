@@ -1,11 +1,16 @@
 package ipc
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
 	"time"
 )
+
+// ErrClientClosed is returned when a client is closed before a request completes.
+var ErrClientClosed = errors.New("IPC client is closed")
 
 // connectionPool manages a pool of Unix socket connections for reuse.
 type connectionPool struct {
@@ -15,6 +20,9 @@ type connectionPool struct {
 	mu     sync.Mutex
 	conns  chan net.Conn
 	closed bool
+	active map[net.Conn]struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // newConnectionPool creates a new connection pool.
@@ -23,10 +31,14 @@ func newConnectionPool(socketPath string, maxSize int) *connectionPool {
 		maxSize = 5
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &connectionPool{
 		socketPath: socketPath,
 		maxSize:    maxSize,
 		conns:      make(chan net.Conn, maxSize),
+		active:     make(map[net.Conn]struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -35,15 +47,16 @@ func (p *connectionPool) Get() (net.Conn, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, fmt.Errorf("connection pool is closed")
+		return nil, ErrClientClosed
 	}
-	p.mu.Unlock()
 
 	// Try to get from pool
 	select {
 	case conn := <-p.conns:
+		p.mu.Unlock()
 		return conn, nil
 	default:
+		p.mu.Unlock()
 		// Pool is empty, create new connection
 		return p.dial()
 	}
@@ -52,45 +65,72 @@ func (p *connectionPool) Get() (net.Conn, error) {
 // Put returns a connection to the pool.
 func (p *connectionPool) Put(conn net.Conn) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
-		p.mu.Unlock()
+		delete(p.active, conn)
 		conn.Close()
 		return
 	}
-	p.mu.Unlock()
 
 	// Try to return to pool
 	select {
 	case p.conns <- conn:
-		// Connection returned to pool
+		p.active[conn] = struct{}{}
 	default:
 		// Pool is full, close connection
+		delete(p.active, conn)
 		conn.Close()
 	}
 }
 
 // Remove removes a bad connection from the pool.
 func (p *connectionPool) Remove(conn net.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.active, conn)
 	conn.Close()
 }
 
 // dial creates a new connection to the Unix socket.
 func (p *connectionPool) dial() (net.Conn, error) {
-	conn, err := net.DialTimeout("unix", p.socketPath, 2*time.Second)
+	return p.dialContext(context.Background())
+}
+
+func (p *connectionPool) dialContext(ctx context.Context) (net.Conn, error) {
+	if err := p.closedError(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopCancel := context.AfterFunc(p.ctx, cancel)
+	defer stopCancel()
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", p.socketPath)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, ErrClientClosed
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dial unix socket: %w", err)
 	}
+	p.active[conn] = struct{}{}
 	return conn, nil
 }
 
+func (p *connectionPool) closedError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return ErrClientClosed
+	}
+	return nil
+}
+
 // Close closes all connections in the pool.
-//
-// 2026-11-14 12h 审计轮补（D-Pool1）：原实现 close(p.conns) 后
-// `for conn := range p.conns` 排空——与 Put 的「先验 closed 再（锁外）
-// select send」存在竞态窗：Put 在 Unlock 后 Close 才置位 ⇒ send on closed
-// channel panic。修法 = 不 close channel，改「closed 标志 + 持锁非阻塞
-// 排空」：Get/Put 的 closed 先验仍挡住 Close 之后的取还，Close 自身
-// drain 掉池内余量。channel 永不 close ⇒ 任何时序的 send 都安全。
 func (p *connectionPool) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -100,17 +140,19 @@ func (p *connectionPool) Close() error {
 	}
 
 	p.closed = true
+	p.cancel()
 
-	// Drain pooled connections (non-blocking: channel is buffered and
-	// never closed, so a plain range would block on an empty pool).
-	for {
-		select {
-		case conn := <-p.conns:
-			conn.Close()
-		default:
-			return nil
-		}
+	// Active requests and idle connections share ownership, so Close interrupts
+	// requests already in flight as well as preventing new dials.
+	for conn := range p.active {
+		conn.Close()
+		delete(p.active, conn)
 	}
+	for len(p.conns) > 0 {
+		<-p.conns
+	}
+
+	return nil
 }
 
 // Size returns the current number of connections in the pool.

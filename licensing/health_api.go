@@ -40,7 +40,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // LicenseHealthHandler exposes the licensing subsystem's runtime
@@ -111,7 +111,7 @@ type LicenseHealthResponse struct {
 // zero-value (Healthy: true) response if the daemon has never
 // run — this lets dashboards render "no data yet" without
 // flashing red.
-func (h *LicenseHealthHandler) GetHealth(c echo.Context) error {
+func (h *LicenseHealthHandler) GetHealth(c *echo.Context) error {
 	snap := GetDaemonHealth()
 
 	interval := 1 * time.Hour // typical daemon refresh interval
@@ -184,7 +184,7 @@ type LicenseStatusResponse struct {
 // GetStatus returns the grace state for ops dashboards. Reads the
 // failure marker from disk and computes grace elapsed vs configured
 // duration.
-func (h *LicenseHealthHandler) GetStatus(c echo.Context) error {
+func (h *LicenseHealthHandler) GetStatus(c *echo.Context) error {
 	resp := LicenseStatusResponse{
 		GraceConfiguredSeconds: int64(h.DefaultGraceDuration / time.Second),
 		NoGraceHonored:         os.Getenv("LICENSE_NO_GRACE") == "1",

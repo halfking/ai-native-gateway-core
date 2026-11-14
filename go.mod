@@ -1,6 +1,6 @@
 module github.com/kaixuan/llm-gateway-go
 
-go 1.27.2
+go 1.27.4
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
@@ -18,8 +18,14 @@ require (
 	github.com/hashicorp/mdns v1.0.7
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/jackc/puddle/v2 v2.2.2
-	github.com/klauspost/compress v1.18.7
-	github.com/labstack/echo/v4 v4.15.4
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/config v0.0.0
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery v0.0.0
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus v0.0.0
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/ipc v0.0.0
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler v0.0.0
+	github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor v0.0.0
+	github.com/klauspost/compress v1.20.2
+	github.com/labstack/echo/v5 v5.4.5
 	github.com/lib/pq v1.12.3
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
@@ -106,6 +112,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
@@ -118,7 +125,6 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
-	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
@@ -152,8 +158,6 @@ require (
 	github.com/testcontainers/testcontainers-go v0.39.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
-	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.etcd.io/bbolt v1.4.0 // indirect
@@ -171,3 +175,16 @@ require (
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+// Local runtime modules are also exercised by test-plugin-runtime-modules.
+replace github.com/kaixuan/llm-gateway-go/plugin-runtime/config => ./plugin-runtime/config
+
+replace github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery => ./plugin-runtime/discovery
+
+replace github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus => ./plugin-runtime/eventbus
+
+replace github.com/kaixuan/llm-gateway-go/plugin-runtime/ipc => ./plugin-runtime/ipc
+
+replace github.com/kaixuan/llm-gateway-go/plugin-runtime/reconciler => ./plugin-runtime/reconciler
+
+replace github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor => ./plugin-runtime/supervisor

@@ -9,7 +9,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 )
@@ -80,13 +80,14 @@ func r1039TokenAt(t *testing.T, userID int, role string, issuedAt time.Time) str
 // r1039RevocationEcho 造一个只挂本中间件 + 一个记录是否到达 handler 的 Echo。
 //
 // ★ db 是**显式参数**：上一轮这个助手把池写死成 nil ⇒ 探针恒 fail-open ⇒
-//   「真库端到端」那条判据会**恒不吊销**（编译器在第一次跑时抓到了它）。
-//   ⇒ 池必须由调用方给，且**真库腿必须传真池**。
+//
+//	「真库端到端」那条判据会**恒不吊销**（编译器在第一次跑时抓到了它）。
+//	⇒ 池必须由调用方给，且**真库腿必须传真池**。
 func r1039RevocationEcho(t *testing.T, db *pgxpool.Pool, reached *bool) *echo.Echo {
 	t.Helper()
 	e := echo.New()
 	e.Use(newJWTMiddleware(r1039JWTSecret, db))
-	e.GET("/probe", func(c echo.Context) error {
+	e.GET("/probe", func(c *echo.Context) error {
 		*reached = true
 		role, _ := c.Get("role").(string)
 		return c.JSON(http.StatusOK, map[string]any{"role": role})

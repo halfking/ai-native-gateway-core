@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const ingestReconcileMigration = "865_session_bodies_kind_reconcile.sql"
@@ -40,6 +41,11 @@ func ingestFixture(t *testing.T) *pgxpool.Pool {
 	if !strings.HasSuffix(cfg.ConnConfig.Database, "_test") || os.Getenv("TEST_SESSION_INGEST_ISOLATED") != "1" {
 		t.Fatal("refusing schema changes outside explicitly isolated *_test database")
 	}
+	// These schema tests exercise body INSERTs; production consent stays fail-closed.
+	previousConsent := settings.TestingConsentOverride
+	consentOn := true
+	settings.TestingConsentOverride = &consentOn
+	t.Cleanup(func() { settings.TestingConsentOverride = previousConsent })
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	db, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {

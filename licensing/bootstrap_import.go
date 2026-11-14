@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
-func (h *BootstrapHandler) handleImportOffline(c echo.Context) error {
+func (h *BootstrapHandler) handleImportOffline(c *echo.Context) error {
 	var input struct {
 		InstanceID     string `json:"instance_id"`
 		HardwareHash   string `json:"hardware_hash"`
@@ -50,7 +50,7 @@ func (h *BootstrapHandler) handleImportOffline(c echo.Context) error {
 	})
 }
 
-func (h *BootstrapHandler) handleRegisterCenter(c echo.Context) error {
+func (h *BootstrapHandler) handleRegisterCenter(c *echo.Context) error {
 	var input struct {
 		InstanceID   string `json:"instance_id"`
 		LicenseKey   string `json:"license_key"`

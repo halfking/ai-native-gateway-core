@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // fakeStore is an in-memory implementation of Store for unit tests.
@@ -429,7 +429,7 @@ func TestCustomerAPI_RuntimeTelemetryPreference(t *testing.T) {
 		e := echo.New()
 		group := e.Group("/api/tenant/telemetry-preference")
 		group.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-			return func(c echo.Context) error {
+			return func(c *echo.Context) error {
 				c.Set("role", role)
 				c.Set("user_id", int64(7))
 				return next(c)
