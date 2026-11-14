@@ -484,6 +484,15 @@ func (m *CasdoorUserManager) ResetPassword(ctx context.Context, userID int, newP
 	return nil
 }
 
+// UpdateLastLogin updates the last login timestamp for a user.
+// Note: Casdoor tracks login times in signin logs, not in the user record.
+// This is a no-op for Casdoor user manager.
+func (m *CasdoorUserManager) UpdateLastLogin(ctx context.Context, userID int) error {
+	// Casdoor manages login tracking internally via signin logs
+	// We don't update the user record for this
+	return nil
+}
+
 // SupportsFeature reports which optional features this manager supports.
 func (m *CasdoorUserManager) SupportsFeature(feature authplugin.UserFeature) bool {
 	switch feature {

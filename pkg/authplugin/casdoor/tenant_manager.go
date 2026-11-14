@@ -225,6 +225,26 @@ func (m *CasdoorTenantManager) DeleteTenant(ctx context.Context, tenantID string
 	return nil
 }
 
+// DisableTenant disables a tenant (prevents user logins).
+// Note: Casdoor organizations don't have a direct enabled/disabled field.
+// This could be implemented by updating organization metadata or a custom field.
+// For now, this is not fully supported.
+func (m *CasdoorTenantManager) DisableTenant(ctx context.Context, tenantID string) error {
+	// Casdoor doesn't have a native disable/enable feature for organizations
+	// This would require custom implementation or metadata storage
+	return fmt.Errorf("disabling tenants is not supported by Casdoor tenant manager")
+}
+
+// EnableTenant enables a tenant (allows user logins).
+// Note: Casdoor organizations don't have a direct enabled/disabled field.
+// This could be implemented by updating organization metadata or a custom field.
+// For now, this is not fully supported.
+func (m *CasdoorTenantManager) EnableTenant(ctx context.Context, tenantID string) error {
+	// Casdoor doesn't have a native disable/enable feature for organizations
+	// This would require custom implementation or metadata storage
+	return fmt.Errorf("enabling tenants is not supported by Casdoor tenant manager")
+}
+
 // SupportsFeature reports which optional features this manager supports.
 func (m *CasdoorTenantManager) SupportsFeature(feature authplugin.TenantFeature) bool {
 	switch feature {
