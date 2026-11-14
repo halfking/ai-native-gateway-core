@@ -83,7 +83,7 @@ This release fixes several security issues. Upgrading is recommended. Some fixes
 ## v5.3.0 - 2026-07-12
 
 **Logic changes**
-PR [#2996](https://github.com/labstack/echo/pull/2996) revert back to `v4` behavior for a group registering implicit 404 handlers.
+PR [#2996](https://github.com/labstack/echo/pull/2996) revert back to `v4` behavior for a group registering implicit 404 handlers. 
 
 If you do not want this behavior, can do not want implicit 404 handlers for groups, use:
 ```go
@@ -431,7 +431,7 @@ PR: https://github.com/labstack/echo/pull/2858
   // Type-safe context access (no more panics from type assertions)
   user, err := echo.ContextGet[*User](c, "user")
   ```
-
+  
 PR: https://github.com/labstack/echo/pull/2856
 
 
@@ -617,7 +617,7 @@ The JWT middleware has been **removed from Echo core** due to another security v
 **Important**: Direct assignments like `token := c.Get("user").(*jwt.Token)` will now cause a panic due to an invalid cast. Update your code accordingly. Replace the current imports from `"github.com/golang-jwt/jwt"` in your handlers to the new middleware version using `"github.com/golang-jwt/jwt/v5"`.
 
 
-Background:
+Background: 
 
 The version of `golang-jwt/jwt` (v3.2.2) previously used in Echo core has been in an unmaintained state for some time. This is not the first vulnerability affecting this library; earlier issues were addressed in [PR #1946](https://github.com/labstack/echo/pull/1946).
 JWT middleware was marked as deprecated in Echo core as of [v4.10.0](https://github.com/labstack/echo/releases/tag/v4.10.0) on 2022-12-27. If you did not notice that, consider leveraging tools like [Staticcheck](https://staticcheck.dev/) to catch such deprecations earlier in you dev/CI flow.  For bonus points - check out [gosec](https://github.com/securego/gosec).
@@ -776,7 +776,7 @@ We sincerely apologize for any inconvenience caused by this change. While we str
 
 **Security**
 
-* We are deprecating JWT middleware in this repository. Please use https://github.com/labstack/echo-jwt instead.
+* We are deprecating JWT middleware in this repository. Please use https://github.com/labstack/echo-jwt instead. 
 
   JWT middleware is moved to separate repository to allow us to bump/upgrade version of JWT implementation (`github.com/golang-jwt/jwt`) we are using
 which we can not do in Echo core because this would break backwards compatibility guarantees we try to maintain.
@@ -841,7 +841,7 @@ which we can not do in Echo core because this would break backwards compatibilit
 
 You can now add any arbitrary HTTP method type as a route [#2237](https://github.com/labstack/echo/pull/2237)
 ```go
-e.Add("COPY", "/*", func(c echo.Context) error
+e.Add("COPY", "/*", func(c echo.Context) error 
   return c.String(http.StatusOK, "OK COPY")
 })
 ```
@@ -942,7 +942,7 @@ g.RouteNotFound("/*", func(c echo.Context) error { return c.NoContent(http.Statu
 
 ## v4.6.0 - 2021-09-20
 
-Introduced a new [request logger](https://github.com/labstack/echo/blob/master/middleware/request_logger.go) middleware
+Introduced a new [request logger](https://github.com/labstack/echo/blob/master/middleware/request_logger.go) middleware 
 to help with cases when you want to use some other logging library in your application.
 
 **Fixes**
@@ -986,7 +986,7 @@ go mod tidy
 
 * Split HeaderXForwardedFor header only by comma [#1878](https://github.com/labstack/echo/pull/1878)
 * Fix Timeout middleware Context propagation [#1910](https://github.com/labstack/echo/pull/1910)
-
+ 
 **Enhancements**
 
 * Bind data using headers as source [#1866](https://github.com/labstack/echo/pull/1866)
@@ -1002,7 +1002,7 @@ go mod tidy
 * Route matching has improvements for following cases:
   1. Correctly match routes with parameter part as last part of route (with trailing backslash)
   2. Considering handlers when resolving routes and search for matching http method handler
-* Echo minimal Go version is now 1.13.
+* Echo minimal Go version is now 1.13. 
 
 **Fixes**
 
@@ -1056,7 +1056,7 @@ aldas, clwluvw, lammel, Le0tk0k, maciej-jezierski, rkilingr, stffabi, withshubh
 **Important notes**
 
 The behaviour for binding data has been reworked for compatibility with echo before v4.1.11 by
-enforcing `explicit tagging` for processing parameters. This **may break** your code if you
+enforcing `explicit tagging` for processing parameters. This **may break** your code if you 
 expect combined handling of query/path/form params.
 Please see the updated documentation for [request](https://echo.labstack.com/guide/request) and [binding](https://echo.labstack.com/guide/request)
 
@@ -1119,6 +1119,6 @@ Please see [rewrite](https://echo.labstack.com/middleware/rewrite) and [proxy](h
 * Update README.md with an recents framework benchmark (#1679, pafuent)
 
 This release was made possible by **over 100 commits** from more than **20 contributors**:
-asahasrabuddhe, aldas, AndrewKlotz, arun0009, chotow, curvegrid, iambenkay, imxyb,
-juanbelieni,  lammel, little-cui, lnenad, pafuent, pofl, pr0head, pwli, RashadAnsari,
+asahasrabuddhe, aldas, AndrewKlotz, arun0009, chotow, curvegrid, iambenkay, imxyb, 
+juanbelieni,  lammel, little-cui, lnenad, pafuent, pofl, pr0head, pwli, RashadAnsari, 
 rkfg, santosh653, segfiner, stffabi, ulasakdeniz

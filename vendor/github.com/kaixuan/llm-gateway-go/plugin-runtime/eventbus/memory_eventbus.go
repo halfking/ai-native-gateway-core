@@ -167,10 +167,20 @@ func (s *subscription) run() {
 				return
 			}
 
-			// Call handler with subscription context
-			if err := s.handler(s.ctx, event); err != nil {
-				log.Printf("ERROR: Event handler failed for subscription %s: %v", s.id, err)
-			}
+			// Call handler with subscription context. recover 必须就地包住
+			// handler 调用（D-S6，2026-11-14 审计轮）：订阅者 panic 会沿
+			// goroutine 炸穿整个网关进程；当前唯一订阅者是 SSE 回调，但任何
+			// 未来订阅者都不得具备进程级杀伤力。
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("ERROR: Event handler panicked for subscription %s: %v", s.id, r)
+					}
+				}()
+				if err := s.handler(s.ctx, event); err != nil {
+					log.Printf("ERROR: Event handler failed for subscription %s: %v", s.id, err)
+				}
+			}()
 
 		case <-s.ctx.Done():
 			// Subscription cancelled
