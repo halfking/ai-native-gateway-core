@@ -549,8 +549,9 @@ func InvalidateAllCandidateCache() {
 // InvalidateAllCandidateCache 清空**本实例**的候选缓存，并广播给别的实例。
 //
 // ★ 实例作用域（而不是只有包级全局）的原因：跨实例失效桥的**订阅端**
-//   必须能清「自己那一份」缓存 ⇒ 失效逻辑必须是方法，不能只认包级全局
-//   （否则多 Client 场景下订阅端会清错对象）。
+//
+//	必须能清「自己那一份」缓存 ⇒ 失效逻辑必须是方法，不能只认包级全局
+//	（否则多 Client 场景下订阅端会清错对象）。
 func (c *Client) InvalidateAllCandidateCache() {
 	if c == nil {
 		return
@@ -608,7 +609,8 @@ func InvalidateCandidateCacheForCredential(credentialID int) {
 // 缓存条目，并把这次失效**广播**给别的实例。
 //
 // ★ 实例作用域（方法）而不是只有包级全局的原因：跨实例失效桥的订阅端必须
-//   能清「自己那一份」缓存 ⇒ 失效逻辑必须是方法。
+//
+//	能清「自己那一份」缓存 ⇒ 失效逻辑必须是方法。
 func (c *Client) InvalidateCandidateCacheForCredential(credentialID int) {
 	if c == nil || credentialID == 0 {
 		return
@@ -1788,7 +1790,8 @@ func candidateQuerySQLBase() string {
 //	⇒ 不是常量表达式。
 var candidateQuerySQLBaseTemplate = `
 		WITH matched AS MATERIALIZED (
-		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw
+		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw,
+		       mc.released_at AS _mc_released_at
 		FROM model_offers mo
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
@@ -2040,24 +2043,35 @@ SELECT
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
 		  AND ` + brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name") + `
-		  -- 2026-11-14 migration 966: Model lifecycle management — filter stale models.
-		  -- Models older than the configured threshold (default 2 years) are excluded
-		  -- from routing to reduce candidate pool noise. NULL released_at = unknown age,
-		  -- fail-open (included) until backfilled. Manual priority (mo.manual_priority > 0)
-		  -- bypasses the age filter — operators can explicitly pin any model regardless of age.
+		  -- 2026-11-14 migration 966: model lifecycle — drop stale models.
+		  --
+		  -- Semantics (deliberate, see the three arms):
+		  --   * manual priority always wins — operators can pin any model;
+		  --   * NULL released_at = unknown age ⇒ INCLUDED (fail-open). Most rows
+		  --     have no verified date yet; excluding them would empty the pool;
+		  --   * known date older than the threshold ⇒ excluded.
+		  --
+		  -- ★ released_at is read from the CTE projection (_mc_released_at), NOT
+		  -- from the models_canonical alias: the outer query selects FROM
+		  -- matched mo, where that alias is out of scope (it exists only inside
+		  -- the matched CTE). Referencing it here fails PREPARE with
+		  -- 42P01/missing-FROM-clause — verified against the 211 schema.
+		  --
+		  -- ★ The threshold subquery is wrapped in COALESCE(..., '2 years') at
+		  -- the OUTER level. Putting COALESCE only inside the subquery is a
+		  -- trap: when the settings row is missing the subquery yields no row,
+		  -- the age comparison against NULL evaluates to NULL, the OR chain is
+		  -- NULL, and every dated model is silently dropped — the exact
+		  -- opposite of fail-open. The outer COALESCE makes "no setting" mean
+		  -- "use the default".
 		  AND (
-		      COALESCE(mo.manual_priority, 0) > 0  -- manual priority always included
-		      OR mc.released_at IS NULL            -- unknown age: fail-open (include)
-		      OR (
-		          mc.released_at IS NOT NULL
-		          AND age(now(), mc.released_at) <= (
-		              SELECT COALESCE(
-		                  (value::text)::interval,
-		                  '2 years'::interval
-		              )
-		              FROM settings_kv
-		              WHERE key = 'model_lifecycle.stale_threshold'
-		          )
+		      COALESCE(mo.manual_priority, 0) > 0
+		      OR mo._mc_released_at IS NULL
+		      OR age(now(), mo._mc_released_at) <= COALESCE(
+		          (SELECT (value #>> '{}')::interval
+		             FROM settings_kv
+		            WHERE key = 'model_lifecycle.stale_threshold'),
+		          '2 years'::interval
 		      )
 		  )
 
