@@ -723,12 +723,23 @@ func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code
 		// error frame entirely.
 		body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code)
 		safeWriteSSE(w, body)
-		if flusher, ok := w.(http.Flusher); ok {
-			safeFlush(flusher)
-		}
+		terminatePrewarmedStream(w)
 		return
 	}
 	safeWriteSSE(w, "data: "+string(payload)+"\n\n")
+	terminatePrewarmedStream(w)
+}
+
+// terminatePrewarmedStream 在 prewarmed 错误帧之后补 `data: [DONE]` 并 flush
+// （2026-11-15 S09 下钻轮）。所有 writePrewarmedStreamError* 调用点都落在
+// 已提交的 SSE 流上且调用后立即 return —— 本帧就是该次响应的协议终态；
+// 只发错误帧不发 [DONE] 时，OpenAI 兼容客户端的流解析器会一直等终止标记
+// （S09 活体：mock 栈 40 笔 broken_stream 下钻 6 笔 silent，tail=错误帧
+// 戛然而止，客户端/量具按「静默截断」计）。与 stream.go §11.6 信封路径的
+// errChunk+[DONE] 成对纪律同形。重复终态防护由既有机制承担：survival
+// coordinator 渲染过终态时 w 已是 blackholeResponseWriter，此处写为 no-op。
+func terminatePrewarmedStream(w http.ResponseWriter) {
+	safeWriteSSE(w, "data: [DONE]\n\n")
 	if flusher, ok := w.(http.Flusher); ok {
 		safeFlush(flusher)
 	}

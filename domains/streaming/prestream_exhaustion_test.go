@@ -55,6 +55,13 @@ func TestPreStreamExhaustion_ClientReceivesErrorFrame(t *testing.T) {
 	if !strings.Contains(body, `"code":"model_not_found"`) {
 		t.Errorf("client body = %q, want a machine-readable code", body)
 	}
+	// 2026-11-15 S09 下钻轮钉测：prewarmed 错误帧必须以 data: [DONE] 收尾
+	// （错误帧=该响应的协议终态；无 [DONE] 时 OpenAI 兼容客户端的流解析器
+	// 恒等终止标记——mock 栈 40 笔 broken_stream 下钻 6 笔「静默截断」实证）。
+	// 变异臂：摘掉 terminatePrewarmedStream 的 [DONE] 写入 ⇒ 本断言红。
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Errorf("client body = %q; prewarmed error frame must be followed by data: [DONE] so OpenAI-compatible parsers finalize", body)
+	}
 }
 
 // TestPreStreamExhaustion_RetryAfterHeaderIsUnreachable documents a real

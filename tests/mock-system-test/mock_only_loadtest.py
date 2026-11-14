@@ -31,6 +31,7 @@ import os
 import re
 import socket
 import statistics
+import uuid
 import sys
 import threading
 import time
@@ -134,8 +135,15 @@ def chat_once(*, model: str, messages: list[dict], stream: bool = False,
         "Authorization": f"Bearer {API_KEY}",
         "Accept": "text/event-stream" if stream else "application/json",
     }
-    if session_id:
-        headers["X-Gw-Session-Id"] = session_id
+    # 2026-11-15 P8 收敛轮：无 session 时逐请求注入唯一会话头——风暴护栏把
+    # 无 session 请求聚进一个窗口（2026-11-15 事故轮登记的盲区；mock 栈
+    # 1658/min 即全拦，场景套件 0/14 实证）。真实多客户端形态=每客户端独立
+    # 会话；X-Session-Id 是护栏已登记的绕开头，X-Gw-Session-Id 供网关内
+    # 会话粘性使用。
+    if not session_id:
+        session_id = "lt-" + uuid.uuid4().hex[:12]
+    headers["X-Gw-Session-Id"] = session_id
+    headers["X-Session-Id"] = session_id
 
     rec: dict = {
         "ok": False, "status": 0, "latency_ms": 0.0, "ttfb_ms": None,
@@ -168,7 +176,15 @@ def chat_once(*, model: str, messages: list[dict], stream: bool = False,
                 buf += chunk
                 if b"data: [DONE]" in chunk:
                     saw_done = True
-                if b"upstream_incomplete" in chunk or b"eof_without_done" in chunk:
+                # 2026-11-15 S09 下钻轮：SSE 错误帧（data: {"error":…}，含
+                # 候选耗尽的 model_not_found 形态）也是结构化终态——旧分类器
+                # 只认 upstream_incomplete/eof_without_done 字面量，把「错误
+                # 帧后无 [DONE] 的旧网关形态」误判为静默截断。
+                if (
+                    b"upstream_incomplete" in chunk
+                    or b"eof_without_done" in chunk
+                    or b'data: {"error":' in chunk
+                ):
                     saw_envelope = True
                 if len(buf) > 4 * 1024 * 1024:
                     break
@@ -265,7 +281,13 @@ def set_all_mocks(mode: str, **extra) -> bool:
 def mock_counter(name: str, key: str = "requests") -> int:
     try:
         _, body = http_json("GET", f"{MOCK_URLS[name]}/admin/stats")
-        return int(body.get("counters", {}).get(key, 0))
+        # 2026-11-15 量具根修：/admin/stats 返回扁平 map（main.go
+        # snapshotCounters：{"requests":N,"rate_limited":N,...}），无 "counters"
+        # 包装 ⇒ 旧读点 .get("counters", {}) 恒得 0 且不抛异常——S05「alpha 吃到
+        # 429 计数>0」与 S07「alpha 重新接流」两个 witness 全被假 0 打死。
+        # 兼容读：扁平优先，保留 counters 包装容错。
+        counters = body.get("counters") if isinstance(body.get("counters"), dict) else body
+        return int(counters.get(key, 0))
     except Exception:
         return -1
 
