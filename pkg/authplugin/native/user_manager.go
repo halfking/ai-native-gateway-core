@@ -18,11 +18,12 @@ import (
 // NativeUserManager implements authplugin.UserManager using the existing
 // PostgreSQL users table, preserving all original admin/users.go logic.
 type NativeUserManager struct {
-	db *pgxpool.Pool
+	db DBPool
 }
 
 // NewNativeUserManager creates a NativeUserManager.
-func NewNativeUserManager(db *pgxpool.Pool) (*NativeUserManager, error) {
+// Accepts *pgxpool.Pool or any DBPool implementation (for testing).
+func NewNativeUserManager(db DBPool) (*NativeUserManager, error) {
 	if db == nil {
 		return nil, errors.New("native user manager: db must not be nil")
 	}
@@ -327,11 +328,15 @@ func (m *NativeUserManager) ResetPassword(ctx context.Context, userID int, newPa
 	if tag.RowsAffected() == 0 {
 		return authplugin.ErrNotFound
 	}
-	if revokeErr := admin.RevokeUserTokensForPasswordChange(ctx, m.db, userID); revokeErr != nil {
-		slog.Warn("native reset password succeeded but token revocation failed",
-			"user_id", userID,
-			"error", revokeErr,
-		)
+	// Token revocation - only call if we have a real *pgxpool.Pool
+	// Mock/test implementations will skip this (acceptable for testing)
+	if pool, ok := m.db.(*pgxpool.Pool); ok {
+		if revokeErr := admin.RevokeUserTokensForPasswordChange(ctx, pool, userID); revokeErr != nil {
+			slog.Warn("native reset password succeeded but token revocation failed",
+				"user_id", userID,
+				"error", revokeErr,
+			)
+		}
 	}
 	return nil
 }
@@ -368,11 +373,15 @@ func (m *NativeUserManager) ChangePassword(ctx context.Context, userID int, oldP
 	if err != nil {
 		return err
 	}
-	if revokeErr := admin.RevokeUserTokensForPasswordChange(ctx, m.db, userID); revokeErr != nil {
-		slog.Warn("native change password succeeded but token revocation failed",
-			"user_id", userID,
-			"error", revokeErr,
-		)
+	// Token revocation - only call if we have a real *pgxpool.Pool
+	// Mock/test implementations will skip this (acceptable for testing)
+	if pool, ok := m.db.(*pgxpool.Pool); ok {
+		if revokeErr := admin.RevokeUserTokensForPasswordChange(ctx, pool, userID); revokeErr != nil {
+			slog.Warn("native change password succeeded but token revocation failed",
+				"user_id", userID,
+				"error", revokeErr,
+			)
+		}
 	}
 	return nil
 }

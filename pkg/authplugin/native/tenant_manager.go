@@ -7,19 +7,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 )
 
 // NativeTenantManager implements authplugin.TenantManager using the existing
 // PostgreSQL tenants table, preserving all original admin/tenants.go logic.
 type NativeTenantManager struct {
-	db *pgxpool.Pool
+	db DBPool
 }
 
 // NewNativeTenantManager creates a NativeTenantManager.
-func NewNativeTenantManager(db *pgxpool.Pool) (*NativeTenantManager, error) {
+// Accepts *pgxpool.Pool or any DBPool implementation (for testing).
+func NewNativeTenantManager(db DBPool) (*NativeTenantManager, error) {
 	if db == nil {
 		return nil, errors.New("native tenant manager: db must not be nil")
 	}
