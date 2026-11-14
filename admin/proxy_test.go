@@ -14,7 +14,7 @@ import (
 // TestProxyRuntimeNilDBLifecycle verifies nil-DB lifecycle calls are repeatable
 // and do not panic.
 func TestProxyRuntimeNilDBLifecycle(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 
 	for i := 0; i < 3; i++ {
 		h.StartProxyRuntime()
@@ -197,7 +197,7 @@ func TestProxyHelpersValidateSafeBoundaries(t *testing.T) {
 }
 
 func TestProxyRuntimeDependentRoutesFailClosedWithoutDB(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	for _, tc := range []struct {
 		method string
 		path   string
@@ -264,7 +264,7 @@ func TestProxyRoutesAuth(t *testing.T) {
 }
 
 func TestProxyNewRoutesMethodEnforcement(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	tests := []struct {
 		path        string
 		wrongMethod string
@@ -306,7 +306,7 @@ func TestValidateHealthCheckURLRejectsSSRFTargets(t *testing.T) {
 // /api/proxy/policy 响应的 selection_advisory 字段；此前只有编译级存在，
 // 无任何行为断言。本钉测保证 GET 与 PUT 的 200 响应都真实回带该字段。
 func TestProxyPolicyAdvisoryExposed(t *testing.T) {
-	h := NewHandler(nil, "test-secret", nil)
+	h := NewHandler(nil, "test-secret", nil, nil)
 	// proxyRuntime 惰性初始化挂在 h.db 上；nil db 时返回 nil manager。
 	// 直接注入一个无 store 的 Manager（构造不触库），GET/PUT 均可走通。
 	h.proxyMgr = proxy.NewManager(nil, nil, nil)

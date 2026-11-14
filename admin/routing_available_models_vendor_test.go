@@ -46,7 +46,7 @@ func TestRoutingAvailableModelsVendorInference(t *testing.T) {
 		t.Skip("qwen3.8-27b not present in this database")
 	}
 
-	h := NewHandler(pool, "test-secret", nil)
+	h := NewHandler(pool, "test-secret", nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/routing/available-models", nil)
 	rec := httptest.NewRecorder()
 	h.handleRoutingAvailableModels(rec, req)
