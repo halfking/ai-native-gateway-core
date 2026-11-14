@@ -127,8 +127,9 @@
       <tr><td>部署闸门（原生）</td><td><code>bash scripts/deploy-211.sh</code>（worktree + go1.27.4）</td><td><span class="good">exit 0</span>（首轮 archive 冻结树被 fail-closed 拒；docker 兜底 OOM 假红自纠）</td></tr>
       <tr><td>245 并行负载</td><td><code>python3 loadtest.py</code> 128 req / 32 并发 / 真实网关</td><td>ingress 429=<span class="good">0</span>（旋钮生效）；74×429=风暴护栏按设计（≥17.6/min 空 session 聚合窗）；54 超时=245→252 跨机房 DB 路由写超时（拓扑约束登记）；p50 53.6s</td></tr>
       <tr><td>245 单发功能</td><td><code>curl POST /v1/chat/completions</code> glm-5.3-flash</td><td><span class="good">HTTP 200 真实作答</span>（"OK. How may I assist…"）</td></tr>
-      <tr><td>mock 栈（模拟供应商+客户端）</td><td><code>run-mock-only.sh up</code>（245 podman，citus pg 镜像+完全限定名+本地构建镜像传输）</td><td><span class="good">全部 gates 通过</span>；场景套件 <b>0/14 → 8/14</b>（0/14 根因=风暴护栏空 session 聚窗 1658/min 全拦——11-15 轮登记盲区活体实证；<code>X-Session-Id</code> 逐请求绕开实测有效）</td></tr>
-      <tr><td>场景套件 6 红定性</td><td>报告 <code>mock-only-20261114T181017Z.md</code></td><td>S05/S07=量具计数路径（mock admin 计数端点 404，成功率本身 100%）；S12/S13/S14=宿主容量墙（3.5GB RAM swap，c100 p95 19s）；<b>S09=候选真发现：silent_truncations=8</b>（断流响应无 [DONE]/无信封）——登记下轮逐请求下钻</td></tr>
+      <tr><td>mock 栈（模拟供应商+客户端）</td><td><code>run-mock-only.sh up</code>（245 podman，citus pg 镜像+完全限定名+本地构建镜像传输）</td><td><span class="good">全部 gates 通过</span>；场景套件收敛链 <b>0/14 → 8/14 → 11/14</b></td></tr>
+      <tr><td>S09 下钻（s09_drill.py 逐请求）</td><td>40 笔 broken_stream 逐请求分类 + 三方 A/B 对拍</td><td><b>捕获 P1 未部署回归</b>：KeyConcurrentGate 单实例三路由 Wrap 互相遮蔽 ⇒ chat 面全量反转为 responses 形状（79237f4d4 引入，211 在役版本未含；随下一班车将打挂全部 chat）+ prewarmed 错误帧缺 [DONE]。双修 <code>28ea9db75</code>+<code>e0000dc6a</code> 已推；drill 终态 <b>40/40 done 静默清零</b></td></tr>
+      <tr><td>收敛后基线 11/14</td><td>场景套件终轮</td><td>3 红全归因：S12/S14=宿主容量墙（3.5GB RAM swap，c100 p95 23.5s）；S01=同族负载瞬时（7×500 波动，复跑零 500；同族功能场景 S13 已 PASS）——量具侧修复：counter 扁平 map 兼容读+重试、admin 改密自举（must_change_password 403 八连实证）、错误帧信封识别、X-Session-Id 绕开（1658/min 聚窗全拦 → 0）</td></tr>
       <tr><td>gofmt</td><td><code>gofmt -l</code> 改动集前后对拍</td><td><span class="good">零新增漂移</span>（命中文件全属 286 历史基线）</td></tr>
     </table>
   </div>
