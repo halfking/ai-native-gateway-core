@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
+	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -70,6 +71,7 @@ type topologyStatsDB interface {
 
 type Handler struct {
 	db                   *pgxpool.Pool
+	registry             *authplugin.Registry // Phase 2: plugin registry for auth/user/tenant operations
 	bodyDB               controlledBodyDB
 	// blockReviewCandidateReader 是「审核单候选规则」的读面（★ 2026-10-31
 	// 拦截归因轮 ★）。★ nil ⇒ 用默认实现（sanitizerules 的逐单窗口读面）★
@@ -442,9 +444,12 @@ func (h *Handler) refreshDB() *pgxpool.Pool {
 	return h.db
 }
 
-func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
+// NewHandler creates a new admin handler.
+// registry can be nil for legacy operation (Phase 2 migration in progress).
+func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte, registry *authplugin.Registry) *Handler {
 	h := &Handler{
 		db:                   db,
+		registry:             registry,
 		bodyDB:               db,
 		topologyStatsDB:      db,
 		bodyServiceJWTSecret: strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET")),

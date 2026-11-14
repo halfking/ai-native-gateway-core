@@ -137,3 +137,16 @@ if needsWrap {
 1. **LargeIngress 在 IR Parse 之前**：sessioncontext Reduce 拿到原始 body bytes，IR 层的统一化（string→数组）在后面
 2. **阶段性交付策略**：完整实现复杂度高时，部分修复覆盖主流场景 + 明确错误提示 > 等待完整实现
 3. **测试驱动修复边界**：三段钉测清晰定义"已修复"范围（小 body 包装 / 大 body 明确拒绝 / 数组不受影响）
+
+## 五、收口追记（2026-11-14 goal 复核轮——本档描述的「实现路径」已落地并订正）
+
+本档是中途态工作档，最终态以 `02-审计发现与缺陷台账.md` P2-2 行为准：
+1. **大 body 内存缩减已落地**（7a14cd64e）：reduceStringGenerationField 走
+   stringExcerpt 流式摘录（本档 §二「实现路径」的落地形态），输出保持
+   prompt/input 为 JSON string 原形——不是「从包装后 body 创建临时 reader」，
+   而是直接对原始文件的字符串字段摘录（更简单且严格内存有界）。
+2. **小 body 包装被订正删除**（goal 复核轮）：本档 §三钉测「小 body 包装」
+   钉的是有害行为——包装删 input 注入 messages，responses 入站解析只读
+   input ⇒ 256KB–1MiB string input 在入口整段丢失（ir.ParseResponses 实证
+   messages=0）；「prompt 回声 + 真 messages」并存形态被回声覆盖。终态＝
+   小 body 直通（IR parse 两种形态原生统一）。证据链见台账。
