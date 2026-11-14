@@ -120,6 +120,8 @@ const (
 
 // Standard authentication errors.
 var (
+	ErrNotFound           = errors.New("not found")
+	ErrConflict           = errors.New("already exists")
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrInvalidToken       = errors.New("invalid or expired token")
 	ErrUserDisabled       = errors.New("user account is disabled")
