@@ -4,7 +4,7 @@
 # and no network. GO_BASE_IMAGE/RUNTIME_BASE_IMAGE are ARGs so the same
 # recipe builds on the local arm64 host and on 211 (amd64) with the
 # registry-pinned base images the deploy engine already uses.
-ARG GO_BASE_IMAGE=golang:1.27-alpine
+ARG GO_BASE_IMAGE=golang:1.27.4-alpine
 ARG RUNTIME_BASE_IMAGE=alpine:3.22
 
 FROM ${GO_BASE_IMAGE} AS build

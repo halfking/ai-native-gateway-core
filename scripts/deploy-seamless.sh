@@ -993,13 +993,12 @@ do_deploy() {
   # CGO-only 依赖（mattn/go-sqlite3、yalue/onnxruntime_go，见 Dockerfile
   # 2026-09-05 的 CGO_ENABLED=1 注）后，纯静态 CGO=0 构建必然失败（"build
   # constraints exclude all Go files"）。macOS 宿主机没有 linux 交叉 C
-  # 工具链，回退到 kx-base/golang:1.27-alpine-amd64 容器内 CGO 构建，
+  # 工具链，回退到 kx-base/golang:1.27.4-alpine-amd64 容器内 CGO 构建，
   # musl 产物可直接跑在 154 的 alpine 运行时上（LLM_GATEWAY_BUILD_IMAGE 可覆盖）。
-  # 默认值 2026-09-09 改：原 golang:1.27-alpine 在离线 + Apple Silicon 上
-  # 会去 Docker Hub 拉 amd64 失败；kx-base/golang:1.27-alpine-amd64 在
-  # ~/work/docker-base-images/lang-base/ 与 ~/work/docker-base-image/lang-base/
-  # 都有离线 tar.gz，且已推 registry.itestu.cn/lang-base/kx-base-golang
-  # 兜底。重新构建/保存：~/work/docker-base-images/scripts/build-kx-base-golang-1.27-alpine.sh
+  # 旧的 1.27 minor tag 在离线 + Apple Silicon 场景下需要平台特化镜像；
+  # 2026-11-14 将当前默认升级为精确 Go 1.27.4，并由对应的离线归档和私有
+  # registry tag 提供兜底。重新构建/保存：
+  # ~/work/docker-base-images/scripts/build-kx-base-golang-1.27.4-alpine.sh
   # （预编译入口已就位时整段构建跳过——tmpbin 非空即表示带外产物就绪。）
   if [[ -s "$tmpbin" ]]; then
     : # prebuilt binary supplied via LLM_GATEWAY_PREBUILT_BINARY
@@ -1009,7 +1008,7 @@ do_deploy() {
       err "CGO=0 构建失败且 docker 不可用，无法回退容器 CGO 构建; refusing to continue with stale binary"
       exit 1
     }
-    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27.4-alpine-amd64}"
     # 镜像解析走共享 SSOT resolve_build_image（UNIFICATION-PLAN-2026-09-09 §3.3，
     # P1.1 抽离原内联三层块）：docker inspect(含 linux/amd64 平台校验) → 离线
     # tar 自动 load(~/work/{docker-base-images,docker-base-image}/lang-base) →

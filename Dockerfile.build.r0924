@@ -1,4 +1,4 @@
-FROM --platform=linux/arm64 kx-base/golang:1.27-alpine AS src
+FROM --platform=linux/arm64 kx-base/golang:1.27.4-alpine-arm64 AS src
 WORKDIR /src
 ENV CGO_ENABLED=1
 ENV GOOS=linux

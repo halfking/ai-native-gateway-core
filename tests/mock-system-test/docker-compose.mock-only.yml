@@ -52,7 +52,7 @@ services:
     build:
       context: ../../tests/stress/mocks
       args:
-        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27.4-alpine}
         RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
     image: lgw-mock-only-upstream:local
     container_name: lgw-mock-only-alpha
@@ -69,7 +69,7 @@ services:
     build:
       context: ../../tests/stress/mocks
       args:
-        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27.4-alpine}
         RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
     image: lgw-mock-only-upstream:local
     container_name: lgw-mock-only-beta
@@ -87,7 +87,7 @@ services:
     build:
       context: ../../tests/stress/mocks
       args:
-        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27.4-alpine}
         RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
     image: lgw-mock-only-upstream:local
     container_name: lgw-mock-only-gamma
@@ -105,7 +105,7 @@ services:
     build:
       context: ../../tests/stress/mocks
       args:
-        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27.4-alpine}
         RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
     image: lgw-mock-only-upstream:local
     container_name: lgw-mock-only-delta
@@ -124,7 +124,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
       args:
-        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27-alpine}
+        GO_BASE_IMAGE: ${MOCK_GO_IMAGE:-golang:1.27.4-alpine}
         RUNTIME_BASE_IMAGE: ${MOCK_RUNTIME_IMAGE:-alpine:3.22}
     image: lgw-mock-only-gateway:local
     container_name: lgw-mock-only-gateway

@@ -809,7 +809,7 @@ if [[ -n "$VIA" ]]; then
   # 拉不到时引擎回落 /opt/kaixuan/base-images 离线包。空值 = 远端走脚本默认。
   # 入口未设时在 --via 侧按 target 拼 registry 默认，避免远端空值回落 docker.io。
   DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-${DD_TARGET}.itestu.cn}"
-  DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+  DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27.4-alpine-amd64}"
   DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
   log "在 $VIA 上执行 deploy（builder=${DD_GO_BASE_IMAGE} runtime=${DD_RUNTIME_BASE_IMAGE}）..."
   # ★ 2026-10-28：--via 路径的版本身份闸（部署机侧）。
@@ -2013,14 +2013,14 @@ done
 # =============================================================================
 # 内网机直连 docker.io 不通。权威基础镜像仓 = registry-<target>.itestu.cn
 # （方案 42；211 ⇒ registry-211.itestu.cn，由薄外壳注入）：
-#   builder = lang-base/kx-base-golang:1.27-alpine-amd64
+#   builder = lang-base/kx-base-golang:1.27.4-alpine-amd64
 #   runtime = lang-base/alpine:3.22-amd64
 # 拉不到时回落 /opt/kaixuan/base-images 离线包（load + retag 到期望名）。
 # ★ 默认值必须是**按 target 拼**的，不是写死某个主机名 —— 引擎主机无关。
 DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-${DD_TARGET}.itestu.cn}"
-DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27.4-alpine-amd64}"
 DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
-DD_GO_BASE_OFFLINE="${DD_GO_BASE_OFFLINE:-kx-base/golang:1.27-alpine-amd64}"
+DD_GO_BASE_OFFLINE="${DD_GO_BASE_OFFLINE:-kx-base/golang:1.27.4-alpine-amd64}"
 DD_RUNTIME_BASE_OFFLINE="${DD_RUNTIME_BASE_OFFLINE:-alpine:3.22}"
 DD_BASE_IMAGES_DIR="${DD_BASE_IMAGES_DIR:-/opt/kaixuan/base-images}"
 
@@ -2069,7 +2069,7 @@ dd_ensure_base_image() {
 
 dd_ensure_base_images() {
   dd_ensure_base_image "$DD_GO_BASE_IMAGE" "$DD_GO_BASE_OFFLINE" \
-    'kx-base-golang-1.27-alpine-amd64.tar.gz'
+    'kx-base-golang-1.27.4-alpine-amd64.tar.gz'
   dd_ensure_base_image "$DD_RUNTIME_BASE_IMAGE" "$DD_RUNTIME_BASE_OFFLINE" \
     'alpine-3.22-amd64.tar.gz'
 }

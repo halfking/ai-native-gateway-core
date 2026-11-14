@@ -54,9 +54,9 @@ elif command -v docker >/dev/null 2>&1; then
     x86_64|amd64)  HOST_ARCH=amd64 ;;
   esac
   BUILD_CMD=(docker run --rm -v "${ROOT}:/src" -w /src -e GOFLAGS=-mod=vendor -e CGO_ENABLED=0
-             -e "GOOS=${HOST_OS}" -e "GOARCH=${HOST_ARCH}" golang:1.27.2-alpine go)
+             -e "GOOS=${HOST_OS}" -e "GOARCH=${HOST_ARCH}" golang:1.27.4-alpine go)
   TEST_CMD=(docker run --rm -v "${ROOT}:/src" -w /src -e GOFLAGS=-mod=vendor -e CGO_ENABLED=0
-            golang:1.27.2-alpine go)
+            golang:1.27.4-alpine go)
 else
   log "!! 既没有 go 也没有 docker，无法构建 MCP 网关二进制"; exit 2
 fi

@@ -69,9 +69,9 @@ pick_env() {
     done
   fi
   if [[ -z "${MOCK_GO_IMAGE:-}" ]]; then
-    for cand in kx-base/golang:1.27-alpine-arm64 kx-base/golang:1.27-alpine-amd64 \
-                registry-211.itestu.cn/lang-base/kx-base-golang:1.27-alpine-amd64 \
-                golang:1.27-alpine golang:1.27.1-alpine; do
+    for cand in kx-base/golang:1.27.4-alpine-arm64 kx-base/golang:1.27.4-alpine-amd64 \
+                registry-211.itestu.cn/lang-base/kx-base-golang:1.27.4-alpine-amd64 \
+                golang:1.27.4-alpine; do
       if image_exists "$cand"; then export MOCK_GO_IMAGE="$cand"; break; fi
     done
   fi

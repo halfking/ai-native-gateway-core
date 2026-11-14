@@ -71,7 +71,7 @@ set -euo pipefail
 # ── 构建 linux/amd64 ─────────────────────────────────────────────────────
 # 与 deploy-seamless.sh do_deploy 同款两级策略（2026-09-05/09 CGO 回退）：
 # 上游引入 CGO-only 依赖（yalue/onnxruntime_go）后纯静态 CGO=0 必然失败，
-# 回退 kx-base/golang:1.27-alpine-amd64 容器内 CGO 静态构建（musl 静态产物
+# 回退 kx-base/golang:1.27.4-alpine-amd64 容器内 CGO 静态构建（musl 静态产物
 # 在 252 直接可跑）。resolve_build_image 复用共享镜像解析 SSOT。
 log "构建 linux/amd64（git $(git -C "$ROOT_DIR" rev-parse --short HEAD)）..."
 if [[ $DRY_RUN == 0 ]]; then
@@ -79,7 +79,7 @@ if [[ $DRY_RUN == 0 ]]; then
       -o "$BUILD_TMP/gateway" ./cmd/gateway; then
     # shellcheck source=deploy-lib/deploy-image-resolution.sh
     source "$SCRIPT_DIR/deploy-lib/deploy-image-resolution.sh"
-    local_build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
+    local_build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27.4-alpine-amd64}"
     resolve_build_image "$local_build_image" "linux/amd64" \
       || { log "ERROR: CGO 回退镜像 $local_build_image 不可用"; exit 1; }
     log "CGO=0 失败，回退 $local_build_image 容器内 CGO 构建"

@@ -73,7 +73,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ★ 闸门用的 Go 基础镜像（docker 兜底路径用）。
-GO_IMAGE="${DD_TEST_GO_IMAGE:-golang:1.27-alpine}"
+GO_IMAGE="${DD_TEST_GO_IMAGE:-golang:1.27.4-alpine}"
 # ★ 原生 go 的路径；留空自动探测（PATH → ~/sdk/go → /usr/local/go → homebrew）。
 NATIVE_GO="${DD_TEST_GO_BIN:-}"
 # ★ go test 自身的测试超时（防单个测试挂死）；docker 侧用秒。

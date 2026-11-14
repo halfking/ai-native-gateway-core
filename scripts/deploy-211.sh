@@ -69,7 +69,7 @@
 #
 # 基础镜像默认（可覆盖）:
 #   DD_BASE_REGISTRY=registry-211.itestu.cn
-#   DD_GO_BASE_IMAGE=$DD_BASE_REGISTRY/lang-base/kx-base-golang:1.27-alpine-amd64
+#   DD_GO_BASE_IMAGE=$DD_BASE_REGISTRY/lang-base/kx-base-golang:1.27.4-alpine-amd64
 #   DD_RUNTIME_BASE_IMAGE=$DD_BASE_REGISTRY/lang-base/alpine:3.22-amd64
 #
 # 等价于:
@@ -307,7 +307,7 @@ export DD_GOACOS_ENV="${DD_GOACOS_ENV:-lab-211}"
 # 211 直连 docker.io 不通；基础镜像权威仓是 registry-211.itestu.cn（方案 42）。
 # 入口显式钉默认值，经 --via 转发到远端，避免引擎静默回落 docker.io。
 export DD_BASE_REGISTRY="${DD_BASE_REGISTRY:-registry-211.itestu.cn}"
-export DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27-alpine-amd64}"
+export DD_GO_BASE_IMAGE="${DD_GO_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/kx-base-golang:1.27.4-alpine-amd64}"
 export DD_RUNTIME_BASE_IMAGE="${DD_RUNTIME_BASE_IMAGE:-${DD_BASE_REGISTRY}/lang-base/alpine:3.22-amd64}"
 
 # =====================================================================

@@ -3,6 +3,7 @@
 FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
+ENV GOTOOLCHAIN=local
 
 # 安装构建依赖
 RUN apk add --no-cache git ca-certificates tzdata

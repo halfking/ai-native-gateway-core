@@ -547,10 +547,10 @@ if grep -qF 'registry-211.itestu.cn' <<<"$_nocomment_engine"; then
 else
   ok "引擎不含写死的主机专属仓名"
 fi
-if grep -qF 'lang-base/kx-base-golang:1.27-alpine-amd64' <<<"$_nocomment_engine"; then
-  ok "引擎默认 GO 基础镜像 = lang-base/kx-base-golang:1.27-alpine-amd64"
+if grep -qF 'lang-base/kx-base-golang:1.27.4-alpine-amd64' <<<"$_nocomment_engine"; then
+  ok "引擎默认 GO 基础镜像 = lang-base/kx-base-golang:1.27.4-alpine-amd64"
 else
-  bad "引擎默认 GO 基础镜像不是 lang-base/kx-base-golang:1.27-alpine-amd64"
+  bad "引擎默认 GO 基础镜像不是 lang-base/kx-base-golang:1.27.4-alpine-amd64"
 fi
 if grep -qF 'lang-base/alpine:3.22-amd64' <<<"$_nocomment_engine"; then
   ok "引擎默认 RUNTIME 基础镜像 = lang-base/alpine:3.22-amd64"

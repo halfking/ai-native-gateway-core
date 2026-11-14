@@ -13,6 +13,7 @@
 FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
+ENV GOTOOLCHAIN=local
 
 # git：部分依赖的 go.mod 可能含 git 伪版本；make：部分包的构建脚本需要。
 RUN apk add --no-cache git make

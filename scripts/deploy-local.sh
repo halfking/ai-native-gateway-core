@@ -1170,7 +1170,7 @@ build_backend() {
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
     # 纯静态 CGO=0 构建自此后必然失败（"build constraints exclude all Go
     # files"）。宿主机不一定有 linux 交叉 C 工具链，因此回退到
-    # kx-base/golang:1.27-alpine-amd64 容器内 CGO 构建：musl 产物可直接
+    # kx-base/golang:1.27.4-alpine-amd64 容器内 CGO 构建：musl 产物可直接
     # 跑在默认 alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
     #
     # 默认值演进：
@@ -1179,7 +1179,8 @@ build_backend() {
     # - 2026-09-18：修正架构检测——根据宿主机 target_arch 动态选择
     #   kx-base/golang:1.27-alpine-{arm64,amd64}，避免 Apple Silicon 本地
     #   部署强制使用 amd64 构建镜像导致平台不匹配错误
-    #
+    # - 2026-11-14：当前默认升级为精确 Go 1.27.4，对应离线归档和 registry
+    #   tag 同步带完整 patch 版本。
     # 2026-09-09 进一步加固：之前 docker run 的 stderr 被 '>/dev/null'
     # 吞掉，go build 失败时操作员看到的就是空的 bash 错误；现在每个
     # 关键步骤都把 stderr 落到 $RUN_DIR/build-cgo-*.log，并用 [[ -s ]]
@@ -1202,9 +1203,9 @@ build_backend() {
     # 在 Apple Silicon 上拉到的实际是 arm64 镜像（因为 Docker 镜像缓存中存在
     # 错误的同 ID 多 tag 引用），导致 macOS 本地部署强行使用 amd64 镜像平台。
     # 修复后：默认 tag 不含平台段；resolve_build_image 会根据 $docker_platform
-    # 先尝试 kx-base/golang:1.27-alpine-arm64（Apple Silicon 命中），失败
-    # 再回退到 kx-base/golang:1.27-alpine-amd64（x86 Linux 命中）。
-    local default_build_image="kx-base/golang:1.27-alpine"
+    # 先尝试 kx-base/golang:1.27.4-alpine-arm64（Apple Silicon 命中），失败
+    # 再回退到 kx-base/golang:1.27.4-alpine-amd64（x86 Linux 命中）。
+    local default_build_image="kx-base/golang:1.27.4-alpine"
     local build_image="${LLM_GATEWAY_BUILD_IMAGE:-$default_build_image}"
     local cgo_log="$RUN_DIR/build-cgo.log"
     # 镜像解析走共享 SSOT resolve_build_image（UNIFICATION-PLAN-2026-09-09 §3.3，

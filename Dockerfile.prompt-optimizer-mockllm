@@ -9,6 +9,7 @@
 FROM golang:1.27.4-alpine AS builder
 
 WORKDIR /build
+ENV GOTOOLCHAIN=local
 
 RUN apk add --no-cache git make
 

@@ -4,6 +4,28 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// Prometheus 指标
+var (
+	anomalyDetections = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_anomaly_detections_total",
+			Help: "异常检测触发次数",
+		},
+		[]string{"code", "severity", "action"},
+	)
+
+	anomalyBlockedRequests = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_anomaly_blocked_requests_total",
+			Help: "被异常检测拦截的请求数",
+		},
+		[]string{"code", "api_key_id"},
+	)
 )
 
 // Detector 统一检测器接口
@@ -61,6 +83,18 @@ func (m *Manager) CheckAll(ctx context.Context, req *Request) []*AnomalyResult {
 	for _, detector := range detectors {
 		if result := detector.Check(ctx, req); result != nil {
 			results = append(results, result)
+
+			// 指标埋点：记录检测结果
+			action := "passed"
+			if ShouldBlock(result.Severity) {
+				action = "blocked"
+				// 记录被拦截的请求
+				apiKeyID := fmt.Sprintf("%d", req.APIKeyID)
+				anomalyBlockedRequests.WithLabelValues(result.Code, apiKeyID).Inc()
+			} else if result.Severity == "medium" {
+				action = "warned"
+			}
+			anomalyDetections.WithLabelValues(result.Code, result.Severity, action).Inc()
 		}
 	}
 

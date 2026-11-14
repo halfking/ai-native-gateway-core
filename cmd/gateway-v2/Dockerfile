@@ -1,15 +1,18 @@
 # Local-buildable Dockerfile for cmd/gateway-v2 (R1.12 demo entry point).
 #
-# 与根 Dockerfile 对齐：默认 REGISTRY="" 走本地缓存的 kx-base:go-vue-amd64，
-# 生产构建通过 --build-arg REGISTRY=registry.kxpms.cn/ 覆盖。
+# Production or mirrored builds can override GO_BASE_IMAGE with an approved,
+# exact Go 1.27.4 image reference.
 #
 # Build:
 #   docker compose -f docker-compose.dev-research.yml build gateway-v2
 #   # 或生产:
-#   docker build --build-arg REGISTRY=registry.kxpms.cn/ -t kx-gateway-v2 ./cmd/gateway-v2
-
+#   docker build --build-arg GO_BASE_IMAGE=registry.kxpms.cn/kx-base/golang:1.27.4-alpine -t kx-gateway-v2 ./cmd/gateway-v2
+#
+# 与根 Dockerfile 对齐：默认使用公开 Go 1.27.4 Alpine 构建器，私有环境通过
+# GO_BASE_IMAGE 覆盖为已验证镜像。
+ARG GO_BASE_IMAGE=golang:1.27.4-alpine
 ARG REGISTRY=""
-FROM --platform=linux/amd64 ${REGISTRY}kx-base:go-vue-amd64 AS builder
+FROM --platform=linux/amd64 ${GO_BASE_IMAGE} AS builder
 
 WORKDIR /src
 USER root
@@ -17,7 +20,7 @@ ENV GOPATH=/tmp/go
 RUN mkdir -p /tmp/go /tmp/go/pkg /tmp/go/bin
 COPY go.mod go.sum ./
 COPY vendor/ ./vendor/
-ARG GOTOOLCHAIN=go1.27.4
+ARG GOTOOLCHAIN=local
 ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 ENV GOTOOLCHAIN=${GOTOOLCHAIN}

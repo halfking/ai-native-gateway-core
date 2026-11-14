@@ -10,8 +10,8 @@
 #     mutable tag (local dev only — production builds must pin).
 
 ARG BASE_REGISTRY=registry.kxpms.cn/kx-base
-# Keep the published base tag; GOTOOLCHAIN below selects the patched compiler.
-ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.27.1-alpine
+# Default to the exact compiler required by go.mod. Private mirrors can override this argument with a digest-pinned reference.
+ARG GO_BASE_IMAGE=golang:1.27.4-alpine
 ARG GO_IMAGE_DIGEST=
 ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
 ARG RUNTIME_IMAGE_DIGEST=
@@ -22,7 +22,7 @@ FROM ${GO_BASE_IMAGE}${GO_IMAGE_DIGEST:+@${GO_IMAGE_DIGEST}} AS builder
 # China network: proxy.golang.org is unreachable, use goproxy.cn instead.
 # The offline-package build script already does this; Docker builds need it too.
 ENV GOPROXY=https://goproxy.cn,direct
-ENV GOTOOLCHAIN=go1.27.4
+ENV GOTOOLCHAIN=local
 
 WORKDIR /app
 
