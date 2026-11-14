@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 )
 
@@ -173,8 +175,11 @@ func (m *NativeUserManager) CreateUser(ctx context.Context, req *authplugin.Crea
 	if req.Username == "" || req.Password == "" {
 		return nil, fmt.Errorf("username and password are required")
 	}
-	if len(req.Password) < 8 {
-		return nil, fmt.Errorf("password must be at least 8 characters")
+	// F-A1（2026-11-14 24h 审计轮）：复杂度策略与 admin/users.go:372 同源
+	// （ValidatePasswordComplexity：≥8 位+大小写+数字）——首版只查长度，
+	// 「保留所有原有逻辑」的声明与事实不符，弱化密码策略。
+	if err := admin.ValidatePasswordComplexity(req.Password); err != nil {
+		return nil, err
 	}
 	if req.TenantID == "" {
 		req.TenantID = "default"
@@ -298,8 +303,11 @@ func (m *NativeUserManager) DeleteUser(ctx context.Context, userID int) error {
 
 // ResetPassword resets a user's password (admin action, no old password check).
 func (m *NativeUserManager) ResetPassword(ctx context.Context, userID int, newPassword string) error {
-	if len(newPassword) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+	// F-A1：复杂度策略与 admin/users.go:606 同源；R56 承诺=凭据泄露响应
+	// （admin 强制重置）必须吊销目标用户既有 token——与 B4 自助换密同 trade：
+	// 吊销失败不阻塞重置本身，WARN 留痕。
+	if err := admin.ValidatePasswordComplexity(newPassword); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -319,13 +327,22 @@ func (m *NativeUserManager) ResetPassword(ctx context.Context, userID int, newPa
 	if tag.RowsAffected() == 0 {
 		return authplugin.ErrNotFound
 	}
+	if revokeErr := admin.RevokeUserTokensForPasswordChange(ctx, m.db, userID); revokeErr != nil {
+		slog.Warn("native reset password succeeded but token revocation failed",
+			"user_id", userID,
+			"error", revokeErr,
+		)
+	}
 	return nil
 }
 
 // ChangePassword changes a user's own password (requires old password).
 func (m *NativeUserManager) ChangePassword(ctx context.Context, userID int, oldPassword, newPassword string) error {
-	if len(newPassword) < 8 {
-		return fmt.Errorf("new password must be at least 8 characters")
+	// F-A1：复杂度策略与 admin/users.go:706 同源；B4 承诺=自助换密必须
+	// 吊销换密前签发的全部 token（旧 JWT 到期前仍然密码学有效，吊销 epoch
+	// 是 auth 中间件拒绝它们的方式）——吊销失败不阻塞换密，WARN 留痕。
+	if err := admin.ValidatePasswordComplexity(newPassword); err != nil {
+		return err
 	}
 
 	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -348,7 +365,16 @@ func (m *NativeUserManager) ChangePassword(ctx context.Context, userID int, oldP
 		`UPDATE users SET password_hash = $1, must_change_password = FALSE, password_changed_at = now(), updated_at = now() WHERE id = $2`,
 		string(hash), userID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if revokeErr := admin.RevokeUserTokensForPasswordChange(ctx, m.db, userID); revokeErr != nil {
+		slog.Warn("native change password succeeded but token revocation failed",
+			"user_id", userID,
+			"error", revokeErr,
+		)
+	}
+	return nil
 }
 
 // UpdateLastLogin updates the last_login_at timestamp.

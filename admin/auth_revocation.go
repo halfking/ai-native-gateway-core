@@ -78,6 +78,15 @@ func RevokedByPasswordChange(ctx context.Context, db *pgxpool.Pool, userID int, 
 	return authRevocationProbe(ctx, db, userID, issuedAt)
 }
 
+// RevokeUserTokensForPasswordChange 是 revokeUserTokensForPasswordChange 的
+// 导出面：pkg/authplugin/native 等非 admin 包的密码变更实现与 admin 面共用
+// 同一吊销通道（2026-11-14 24h 审计轮 F-A1：NativeUserManager 此前缺吊销，
+// 换密后旧 JWT 存活到 TTL——B4/R56 承诺「凭据泄露响应必须吊销」被静默丢弃）。
+// admin 包不反向引用 pkg/authplugin ⇒ native→admin 单向，无循环依赖。
+func RevokeUserTokensForPasswordChange(ctx context.Context, db *pgxpool.Pool, userID int) error {
+	return revokeUserTokensForPasswordChange(ctx, db, userID)
+}
+
 // revokeUserTokensForPasswordChange advances the user's revocation epoch to
 // now, atomically merging into the shared settings_kv row.
 func revokeUserTokensForPasswordChange(ctx context.Context, db *pgxpool.Pool, userID int) error {
