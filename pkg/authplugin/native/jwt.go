@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/kaixuan/llm-gateway-go/admin"
 )
 
 // jwtClaims is the internal JWT structure matching admin/jwt.go JWTClaims.
@@ -28,7 +30,19 @@ func signToken(userID int, tenantID, username, role, secretKey string, mustChang
 	}
 
 	now := time.Now()
-	expiresAt := now.Add(24 * time.Hour * 7) // 7 days default
+	// F-A2 (2026-11-14 audit relay): TTL must come from the admin SSOT
+	// (admin.JWTExpiry → LLM_GATEWAY_JWT_EXPIRY env override → 7d default).
+	// The previous hardcoded 7d silently dropped the env override, so a
+	// deployment tightening admin token lifetimes kept issuing 7d native
+	// tokens. native→admin is the established one-way dependency
+	// (user_manager.go already imports admin; no reverse edge).
+	// F-A2 (2026-11-14 audit relay): TTL must come from the admin SSOT
+	// (admin.JWTExpiry → LLM_GATEWAY_JWT_EXPIRY env override → 7d default).
+	// The previous hardcoded 7d silently dropped the env override, so a
+	// deployment tightening admin token lifetimes kept issuing 7d native
+	// tokens. native→admin is the established one-way dependency
+	// (user_manager.go already imports admin; no reverse edge).
+	expiresAt := now.Add(admin.JWTExpiry())
 
 	claims := &jwtClaims{
 		UserID:             userID,

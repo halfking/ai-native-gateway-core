@@ -57,6 +57,17 @@ func jwtExpiry() time.Duration {
 	return 7 * 24 * time.Hour // SSOT: admin/auth_params.go JWTDefaultTTL
 }
 
+// JWTExpiry exposes the admin JWT TTL SSOT (jwtExpiry) to out-of-package
+// callers that must stay TTL-aligned with admin tokens. Added for F-A2
+// (2026-11-14 audit relay): the native authplugin signToken hardcoded the
+// 7d default, so the LLM_GATEWAY_JWT_EXPIRY env override never reached
+// natively-signed tokens — a deployment tightening the admin TTL would
+// silently keep issuing 7d native tokens. Precedence: env override →
+// JWTDefaultTTL (admin/auth_params.go, same fact source as CookieMaxAge).
+func JWTExpiry() time.Duration {
+	return jwtExpiry()
+}
+
 // SignToken creates a signed JWT string for the given user.
 // Returns an error if no JWT signing key is configured (rule 20 §8.2).
 func SignToken(userID int, tenantID, username, role, secretKey string, mustChangePassword bool) (string, time.Time, error) {

@@ -2,6 +2,7 @@ package native
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -102,4 +103,30 @@ func TestVerifyToken_NoSecret(t *testing.T) {
 	_, err := verifyToken("some.token.here", "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "JWT secret not configured")
+}
+
+// F-A2 (2026-11-14 audit relay): signToken must honour the admin JWT TTL
+// SSOT. The previous hardcoded 7d silently dropped the
+// LLM_GATEWAY_JWT_EXPIRY env override that admin.SignToken honours — a
+// deployment tightening admin token lifetimes kept issuing 7d native tokens.
+func TestSignToken_HonoursJWTExpirySSOT(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "test-secret-key-123456")
+	t.Setenv("LLM_GATEWAY_JWT_EXPIRY", "1h")
+
+	_, expiry, err := signToken(1, "tenant1", "testuser", "user", "", false)
+	assert.NoError(t, err)
+	ttl := time.Until(expiry)
+	assert.Greater(t, ttl, 55*time.Minute, "env override 1h must be honoured, got %v", ttl)
+	assert.Less(t, ttl, 65*time.Minute, "env override 1h must be honoured, got %v", ttl)
+}
+
+func TestSignToken_DefaultTTLIsSevenDays(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_JWT_SECRET", "test-secret-key-123456")
+	t.Setenv("LLM_GATEWAY_JWT_EXPIRY", "")
+
+	_, expiry, err := signToken(1, "tenant1", "testuser", "user", "", false)
+	assert.NoError(t, err)
+	ttl := time.Until(expiry)
+	assert.Greater(t, ttl, 6*24*time.Hour)
+	assert.LessOrEqual(t, ttl, 7*24*time.Hour)
 }

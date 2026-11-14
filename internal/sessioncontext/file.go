@@ -52,6 +52,12 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		}
 	}
 	if len(spans) == 0 {
+		// P2-2（2026-11-14）：没有数组形态生成字段——先尝试裸字符串
+		// prompt/input 形态再拒绝（string_field.go；IR parse 层早已统一
+		// 两种形态，缺口只在缩减层）。
+		if body, rep, handled, err := reduceStringGenerationField(ctx, f, doc, maxBytes, report); handled {
+			return body, rep, err
+		}
 		return nil, report, ErrProtectedContext
 	}
 	report.Messages = len(spans)

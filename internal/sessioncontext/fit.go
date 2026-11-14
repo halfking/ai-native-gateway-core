@@ -28,6 +28,11 @@ func Fit(body []byte, maxBytes int) ([]byte, error) {
 	}
 	key, msgs, err := messages(root)
 	if err != nil {
+		// P2-2（2026-11-14）：数组形态是主合同；不存在数组形态生成字段时，
+		// 先尝试裸字符串 prompt/input 形态（string_field.go）再拒绝。
+		if out, handled, serr := fitStringGenerationField(root, maxBytes); handled {
+			return out, serr
+		}
 		return nil, err
 	}
 	protected, tail := protectedMessages(msgs)
