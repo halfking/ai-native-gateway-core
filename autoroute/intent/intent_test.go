@@ -399,3 +399,20 @@ func BenchmarkChainedRecognizer_WithCache(b *testing.B) {
 		_, _ = chained.Recognize(ctx, signals)
 	}
 }
+
+// F-A4 (2026-11-14 audit relay): Stop must be idempotent. Shutdown
+// paths may call it twice (defer + explicit teardown); the old
+// implementation panicked on close of the already-closed stop channel.
+func TestInMemoryCache_StopIdempotent(t *testing.T) {
+	cache := NewInMemoryCache(time.Second)
+	defer cache.Stop()
+
+	cache.Set("s1", &IntentResult{Primary: IntentChat, Confidence: 1.0})
+	cache.Stop() // first call: janitor halted, janitor goroutine exits
+	cache.Stop() // second call: must not panic on double close
+
+	// Cache remains readable after Stop — Stop only halts the janitor.
+	if _, ok := cache.Get("s1"); !ok {
+		t.Fatalf("Get after Stop must still return the cached entry")
+	}
+}

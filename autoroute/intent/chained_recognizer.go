@@ -256,11 +256,12 @@ func (c *ChainedRecognizer) Layer() int   { return 0 } // Meta-layer
 
 // InMemoryCache implements a simple TTL-based cache.
 type InMemoryCache struct {
-	mu      sync.RWMutex
-	cache   map[string]*cacheEntry
-	ttl     time.Duration
-	janitor *time.Ticker
-	stop    chan bool
+	mu       sync.RWMutex
+	cache    map[string]*cacheEntry
+	ttl      time.Duration
+	janitor  *time.Ticker
+	stop     chan bool
+	stopOnce sync.Once
 }
 
 type cacheEntry struct {
@@ -355,8 +356,11 @@ func (c *InMemoryCache) cleanup() {
 	}
 }
 
-// Stop halts the cache janitor.
+// Stop halts the cache janitor. Idempotent: a second call must not
+// panic on close of the already-closed stop channel (F-A4, 2026-11-14
+// audit relay — wiring will call Stop from shutdown paths, where a
+// double invocation is the normal failure mode).
 func (c *InMemoryCache) Stop() {
 	c.janitor.Stop()
-	close(c.stop)
+	c.stopOnce.Do(func() { close(c.stop) })
 }

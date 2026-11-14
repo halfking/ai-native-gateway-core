@@ -720,14 +720,28 @@ func dispatchRequestBody(r *http.Request) (model string, stream bool, rawBody []
 	if _, archived := streaming.LargeRequestArchive(r.Context()); !archived && r.ContentLength > 32<<20 {
 		return "", false, nil, &http.MaxBytesError{Limit: 32 << 20}
 	}
-	r.Body = http.MaxBytesReader(nil, r.Body, MaxDispatchBodyBytes)
+	// D-A2 (2026-11-14 audit relay): both static checks above are blind
+	// to chunked bodies — Transfer-Encoding: chunked leaves
+	// r.ContentLength at -1, so a non-archived 50 MiB body used to slip
+	// past the 32 MiB ingress gate and get fully buffered for
+	// chatHandler (a Content-Length twin would have been 413'd).
+	// Restore the same effective limits on the read itself: the
+	// MaxBytesReader now enforces 32 MiB when the ingress reduction
+	// path was skipped, 100 MiB for archived bodies. Known-length
+	// paths are unaffected: their bodies already passed the pre-checks,
+	// so the tighter wrap only bites where the old wrap was too loose.
+	limit := int64(MaxDispatchBodyBytes)
+	if _, archived := streaming.LargeRequestArchive(r.Context()); !archived {
+		limit = 32 << 20
+	}
+	r.Body = http.MaxBytesReader(nil, r.Body, limit)
 	rawBody, err = io.ReadAll(r.Body)
 	if err != nil {
 		var mbErr *http.MaxBytesError
 		if errors.As(err, &mbErr) {
 			// Caller surfaces this as 413. We keep the original error
 			// wrapped so log lines make it obvious which limit hit.
-			return "", false, nil, fmt.Errorf("dispatch body exceeds %d bytes: %w", MaxDispatchBodyBytes, err)
+			return "", false, nil, fmt.Errorf("dispatch body exceeds %d bytes: %w", limit, err)
 		}
 		return "", false, nil, err
 	}
