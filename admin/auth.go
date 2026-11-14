@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/pkg/identity"
 )
 
@@ -171,6 +172,14 @@ func enforceMustChangePassword(w http.ResponseWriter, r *http.Request, claims *J
 	return true
 }
 
+// handleLogin handles user authentication via multiple paths:
+// 1. Plugin-based authentication (registry.GetAuthProvider) - Phase 2 refactored path
+// 2. Direct database authentication (legacy fallback when registry unavailable)
+// 3. Legacy admin key authentication (env LLM_GATEWAY_ADMIN_PASSWORD)
+//
+// Phase 2 Step 2.3: Refactored to use AuthProvider interface while preserving all
+// existing behavior: rate limiting, captcha verification, audit logging, identity
+// shadow mapping, cookie handling, and the 2026-07-09 no-fallback policy.
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -207,101 +216,206 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Try JWT auth (users table) first ──────────────────────────────
+	// ── Try JWT auth (users table) via AuthProvider ───────────────────
+	// Phase 2 Step 2.3: Use registry-based AuthProvider when available,
+	// preserving all existing behavior (audit logging, rate limiting,
+	// identity shadow mapping, legacy admin fallback).
 	if req.Username != "" && req.Password != "" {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-
-		var u struct {
-			ID                 int
-			TenantID           string
-			Username           string
-			PasswordHash       string
-			DisplayName        string
-			Email              string
-			Role               string
-			Enabled            bool
-			MustChangePassword bool
+		// Try to get AuthProvider from registry (may be nil if registry not initialized)
+		var authProvider authplugin.AuthProvider
+		if h.registry != nil {
+			var err error
+			authProvider, err = h.registry.GetAuthProvider()
+			if err != nil {
+				slog.Warn("handleLogin: registry GetAuthProvider failed, falling back to direct DB", "error", err)
+				authProvider = nil
+			}
 		}
-		err := h.db.QueryRow(ctx, `
-			SELECT id, tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password
-			FROM users WHERE username = $1
-		`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword)
 
-		// 2026-07-09: 如果在users表中找到用户，无论密码是否正确，都不再fallback到legacy admin
-		if err == nil {
-			// 用户存在，检查是否启用
-			if !u.Enabled {
-				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=user_disabled ip=%s", clientIP))
-				recordLoginFailure(clientIP)
-				writeError(w, http.StatusForbidden, "User account is disabled")
+		if authProvider != nil {
+			// ── Plugin-based authentication path (Phase 2 refactored) ──
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+
+			authReq := &authplugin.AuthRequest{
+				Username:    req.Username,
+				Password:    req.Password,
+				RememberMe:  req.RememberMe,
+				CaptchaID:   req.CaptchaID,
+				CaptchaCode: req.CaptchaCode,
+				IPAddress:   clientIP,
+				UserAgent:   r.UserAgent(),
+			}
+
+			result, authErr := authProvider.Authenticate(ctx, authReq)
+
+			// Handle authentication errors with proper audit logging
+			if authErr != nil {
+				// Check if user exists in database to determine if we should fall back to legacy admin
+				var userExists bool
+				checkErr := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, req.Username).Scan(&userExists)
+				
+				if checkErr == nil && userExists {
+					// User exists in DB, don't fall back to legacy admin (2026-07-09 policy)
+					var userID int
+					_ = h.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, req.Username).Scan(&userID)
+					
+					switch {
+					case errors.Is(authErr, authplugin.ErrUserDisabled):
+						h.auditLog(req.Username, "authentication.login_failed", "user", userID, fmt.Sprintf("method=plugin reason=user_disabled ip=%s", clientIP))
+						recordLoginFailure(clientIP)
+						writeError(w, http.StatusForbidden, "User account is disabled")
+						return
+					case errors.Is(authErr, authplugin.ErrTenantDisabled):
+						h.auditLog(req.Username, "authentication.login_failed", "user", userID, fmt.Sprintf("method=plugin reason=tenant_disabled ip=%s", clientIP))
+						recordLoginFailure(clientIP)
+						writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
+						return
+					case errors.Is(authErr, authplugin.ErrInvalidCredentials):
+						h.auditLog(req.Username, "authentication.login_failed", "user", userID, fmt.Sprintf("method=plugin reason=invalid_password ip=%s", clientIP))
+						recordLoginFailure(clientIP)
+						writeError(w, http.StatusUnauthorized, "Invalid credentials: password does not match the users table record (env admin password is not used when this username exists)")
+						return
+					default:
+						h.auditLog(req.Username, "authentication.login_failed", "user", userID, fmt.Sprintf("method=plugin reason=auth_error ip=%s error=%v", clientIP, authErr))
+						recordLoginFailure(clientIP)
+						writeError(w, http.StatusUnauthorized, "Authentication failed")
+						return
+					}
+				}
+				// User doesn't exist, continue to legacy admin fallback
+			} else if result != nil && result.Success {
+				// ── Successful authentication via plugin ──
+				
+				// Shadow mapping (provider=llm-gateway, subject=userID) into
+				// identity_shadow — used by cross-project trust to resolve
+				// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
+				identity.RecordShadow("llm-gateway", result.UserID, result.TenantID, result.DisplayName, result.Email)
+
+				h.auditLog(result.Username, "authentication.login", "user", result.UserID, fmt.Sprintf("method=plugin provider=%s role=%s tenant=%s ip=%s", authProvider.Name(), result.Role, result.TenantID, clientIP))
+				
+				// Reset rate limiter and clear failures (2026-10-17 fix)
+				loginLimiter.Reset(clientIP)
+				clearLoginFailures(clientIP)
+				
+				// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
+				// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
+				setSessionCookieRemember(w, r, result.Token, result.ExpiresAt, req.RememberMe)
+				
+				writeJSON(w, http.StatusOK, map[string]any{
+					"access_token": result.Token,
+					"token_type":   result.TokenType,
+					"expires_at":   result.ExpiresAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"id":                   result.UserID,
+						"tenant_id":            result.TenantID,
+						"username":             result.Username,
+						"display_name":         result.DisplayName,
+						"email":                result.Email,
+						"role":                 result.Role,
+						"enabled":              result.Enabled,
+						"must_change_password": result.MustChangePassword,
+					},
+				})
 				return
 			}
-			// 验证密码
-			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
-				// 密码错误 — users 表存在则不回退 env LLM_GATEWAY_ADMIN_PASSWORD
-				h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=invalid_password ip=%s", clientIP))
-				recordLoginFailure(clientIP)
-				writeError(w, http.StatusUnauthorized, "Invalid credentials: password does not match the users table record (env admin password is not used when this username exists)")
-				return
+		} else {
+			// ── Legacy direct DB authentication path (fallback when registry not available) ──
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+
+			var u struct {
+				ID                 int
+				TenantID           string
+				Username           string
+				PasswordHash       string
+				DisplayName        string
+				Email              string
+				Role               string
+				Enabled            bool
+				MustChangePassword bool
 			}
-			// 密码正确，检查租户状态
-			if u.TenantID != "default" {
-				var tenantStatus string
-				err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
-				if err != nil || tenantStatus == "disabled" {
-					h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
+			err := h.db.QueryRow(ctx, `
+				SELECT id, tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password
+				FROM users WHERE username = $1
+			`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword)
+
+			// 2026-07-09: 如果在users表中找到用户，无论密码是否正确，都不再fallback到legacy admin
+			if err == nil {
+				// 用户存在，检查是否启用
+				if !u.Enabled {
+					h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=user_disabled ip=%s", clientIP))
 					recordLoginFailure(clientIP)
-					writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
+					writeError(w, http.StatusForbidden, "User account is disabled")
 					return
 				}
-			}
-			// Update last_login_at
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
+				// 验证密码
+				if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
+					// 密码错误 — users 表存在则不回退 env LLM_GATEWAY_ADMIN_PASSWORD
+					h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=invalid_password ip=%s", clientIP))
+					recordLoginFailure(clientIP)
+					writeError(w, http.StatusUnauthorized, "Invalid credentials: password does not match the users table record (env admin password is not used when this username exists)")
+					return
+				}
+				// 密码正确，检查租户状态
+				if u.TenantID != "default" {
+					var tenantStatus string
+					err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
+					if err != nil || tenantStatus == "disabled" {
+						h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
+						recordLoginFailure(clientIP)
+						writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
+						return
+					}
+				}
+				// Update last_login_at
+				//nolint:errcheck // best-effort exec, non-critical
+				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
-			token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
-			if signErr != nil {
-				slog.Error("handleLogin: sign jwt failed", "error", signErr)
-				writeError(w, http.StatusInternalServerError, "token generation failed")
+				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
+				if signErr != nil {
+					slog.Error("handleLogin: sign jwt failed", "error", signErr)
+					writeError(w, http.StatusInternalServerError, "token generation failed")
+					return
+				}
+
+				// Shadow mapping (provider=llm-gateway, subject=userID) into
+				// identity_shadow — used by cross-project trust to resolve
+				// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
+				identity.RecordShadow("llm-gateway", u.ID, u.TenantID, u.DisplayName, u.Email)
+
+				h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, clientIP))
+				// 成功登录必须 Reset 限流桶：Allow() 在入口已计数，不 Reset 则
+				// 5 次成功登录后同一 IP 整分钟 429（legacy key 路径早已 Reset，
+				// JWT 路径漏了——2026-10-17 llm.itestu.cn 无法登录根因）。
+				loginLimiter.Reset(clientIP)
+				clearLoginFailures(clientIP)
+				// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
+				// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
+				setSessionCookieRemember(w, r, token, expiresAt, req.RememberMe)
+				writeJSON(w, http.StatusOK, map[string]any{
+					"access_token": token,
+					"token_type":   "Bearer",
+					"expires_at":   expiresAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"id":                   u.ID,
+						"tenant_id":            u.TenantID,
+						"username":             u.Username,
+						"display_name":         u.DisplayName,
+						"email":                u.Email,
+						"role":                 u.Role,
+						"enabled":              u.Enabled,
+						"must_change_password": u.MustChangePassword,
+					},
+				})
 				return
 			}
-
-			// Shadow mapping (provider=llm-gateway, subject=userID) into
-			// identity_shadow — used by cross-project trust to resolve
-			// canonical identities. DSN 未配置时 RecordShadow 内部 noop。
-			identity.RecordShadow("llm-gateway", u.ID, u.TenantID, u.DisplayName, u.Email)
-
-			h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, clientIP))
-			// 成功登录必须 Reset 限流桶：Allow() 在入口已计数，不 Reset 则
-			// 5 次成功登录后同一 IP 整分钟 429（legacy key 路径早已 Reset，
-			// JWT 路径漏了——2026-10-17 llm.itestu.cn 无法登录根因）。
-			loginLimiter.Reset(clientIP)
-			clearLoginFailures(clientIP)
-			// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token。
-			// remember_me=false → 会话级 cookie（无 Max-Age/Expires，关掉即失效）。
-			setSessionCookieRemember(w, r, token, expiresAt, req.RememberMe)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"access_token": token,
-				"token_type":   "Bearer",
-				"expires_at":   expiresAt.Format(time.RFC3339),
-				"user": map[string]any{
-					"id":                   u.ID,
-					"tenant_id":            u.TenantID,
-					"username":             u.Username,
-					"display_name":         u.DisplayName,
-					"email":                u.Email,
-					"role":                 u.Role,
-					"enabled":              u.Enabled,
-					"must_change_password": u.MustChangePassword,
-				},
-			})
-			return
+			// 用户不存在于users表，继续尝试legacy admin认证
 		}
-		// 用户不存在于users表，继续尝试legacy admin认证
 	}
 
 	// ── Fall back to legacy admin key auth ────────────────────────────
+	// This path is preserved exactly as-is for backward compatibility
 	if subtle.ConstantTimeCompare([]byte(req.Username), []byte("admin")) != 1 ||
 		subtle.ConstantTimeCompare([]byte(req.Password), []byte(getAdminPassword())) != 1 {
 		recordLoginFailure(clientIP)
