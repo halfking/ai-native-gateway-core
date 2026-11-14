@@ -535,7 +535,7 @@ if [[ -n "$VIA" ]]; then
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
             LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN \
             DD_GOACOS_ADDR DD_GOACOS_IP DD_GOACOS_SERVICE DD_GOACOS_NAMESPACE \
-            DD_GOACOS_GROUP DD_GOACOS_ENV DD_REMOTE_LOCK_PATH; do
+            DD_GOACOS_GROUP DD_GOACOS_ENV DD_REMOTE_LOCK_PATH DD_TEST_GO_BIN; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
   done
   _dd_args="${DD_ARGS[@]+"${DD_ARGS[@]}"}"
