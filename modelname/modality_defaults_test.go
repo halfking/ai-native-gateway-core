@@ -8,30 +8,30 @@ func TestInferModality(t *testing.T) {
 		model    string
 		expected string
 	}{
-			// OpenAI - Vision
-			{"gpt-4o exact", "gpt-4o", "vision"},
-			{"gpt-4o variant", "gpt-4o-2024-08-06", "vision"},
-			{"gpt-4-turbo", "gpt-4-turbo", "vision"},
-			{"gpt-4-turbo variant", "gpt-4-turbo-2024-04-09", "vision"},
-			
-			// OpenAI o1 family — 2026-11-14 modality audit: o1-mini/o1-preview/o1-pro
-			// are text-only reasoning models (exact matches prevent o1- prefix from
-			// swallowing them as vision). o1 (bare) is vision-capable.
-			{"o1 bare is vision", "o1", "vision"},
-			{"o1 dated variant", "o1-2024-12-17", "vision"},
-			{"o1-mini is text", "o1-mini", "text"}, // NOT vision despite o1- prefix
-			{"o1-preview is text", "o1-preview", "text"},
-			{"o1-pro is text", "o1-pro", "text"},
-			
-			// OpenAI o3 family — o3-mini-high/o3-pro are text-only, o3-mini is vision.
-			{"o3-mini is vision", "o3-mini", "vision"},
-			{"o3-mini-high is text", "o3-mini-high", "text"}, // NOT vision despite o3- prefix
-			{"o3-pro is text", "o3-pro", "text"},
-			{"o3 dated variant", "o3-2025-01-31", "vision"}, // future o3 variants from o3- prefix
-			
-			// OpenAI o4 family — o4-mini-high is text-only.
-			{"o4-mini-high is text", "o4-mini-high", "text"},
-			{"o4-mini is vision", "o4-mini", "vision"}, // from o4- prefix
+		// OpenAI - Vision
+		{"gpt-4o exact", "gpt-4o", "vision"},
+		{"gpt-4o variant", "gpt-4o-2024-08-06", "vision"},
+		{"gpt-4-turbo", "gpt-4-turbo", "vision"},
+		{"gpt-4-turbo variant", "gpt-4-turbo-2024-04-09", "vision"},
+
+		// OpenAI o1 family — 2026-11-14 modality audit: o1-mini/o1-preview/o1-pro
+		// are text-only reasoning models (exact matches prevent o1- prefix from
+		// swallowing them as vision). o1 (bare) is vision-capable.
+		{"o1 bare is vision", "o1", "vision"},
+		{"o1 dated variant", "o1-2024-12-17", "vision"},
+		{"o1-mini is text", "o1-mini", "text"}, // NOT vision despite o1- prefix
+		{"o1-preview is text", "o1-preview", "text"},
+		{"o1-pro is text", "o1-pro", "text"},
+
+		// OpenAI o3 family — o3-mini-high/o3-pro are text-only, o3-mini is vision.
+		{"o3-mini is vision", "o3-mini", "vision"},
+		{"o3-mini-high is text", "o3-mini-high", "text"}, // NOT vision despite o3- prefix
+		{"o3-pro is text", "o3-pro", "text"},
+		{"o3 dated variant", "o3-2025-01-31", "vision"}, // future o3 variants from o3- prefix
+
+		// OpenAI o4 family — o4-mini-high is text-only.
+		{"o4-mini-high is text", "o4-mini-high", "text"},
+		{"o4-mini is vision", "o4-mini", "vision"}, // from o4- prefix
 
 		// OpenAI - Audio
 		{"whisper-1", "whisper-1", "audio"},

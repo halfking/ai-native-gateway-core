@@ -39,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
+	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -3435,7 +3436,19 @@ func main() {
 		if dbConn != nil && dbConn.Enabled() {
 			adminDB = dbConn.Pool()
 		}
-		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		
+		// Phase 2: Initialize auth plugin registry
+		var authRegistry *authplugin.Registry
+		if adminDB != nil {
+			var err error
+			authRegistry, err = initAuthRegistry(adminDB, cfg.SecretKey)
+			if err != nil {
+				slog.Error("failed to initialize auth registry", "error", err)
+				// Continue without registry for now (legacy mode)
+			}
+		}
+		
+		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey, authRegistry)
 		if mobileNodeService, mobileNodeErr := admin.NewMobileNodeDescriptorServiceFromEnv(); mobileNodeErr != nil {
 			slog.Warn("mobile node QR provisioning disabled; check node descriptor and NetBird configuration")
 		} else if mobileNodeService != nil && adminHandler != nil {
