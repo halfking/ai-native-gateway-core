@@ -46,7 +46,7 @@ func main() {
 	defer dbConn.Close()
 
 	fernetKey, _ := secret.FernetKeyFromSecret(cfg.SecretKey, cfg.CredentialEncryptionKey)
-	h := admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
+	h := admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey, nil) // phase2: 新增 authplugin.Registry 参数
 	if kr, kerr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kerr == nil {
 		h.SetKeyring(kr)
 	}

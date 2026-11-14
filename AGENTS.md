@@ -1,5 +1,12 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-15 D9/D10 修复交付轮（zcode 会话）**：
+> ★ **D9 config 热重载 watch 停摆已修**（`plugin-runtime/config/reloader.go`：Rename/Remove 事件后重建 watch；`reload_regression_test.go` 新增 `TestWatch_AtomicReplace` 回归测试，模拟 `mv tmp.yaml config.yaml` atomic replace 后再次修改文件，验证 watch 存活）。
+> ★★ **D10 reconciler 无退避机制已修**（完整重构方案）：新增 `plugin-runtime/reconciler/backoff_policy.go`（~200 行，独立退避状态机，三策略可配置：线性/指数/Fibonacci，与 crashTracker 协同实现退避+MaxCrashCount 终态）+ `reconciler.go` 集成（Config.Backoff 字段、reconciler.backoffTracker、StateFailed 分支退避检查、ActionStart/ActionRestart 成功后重置）+ `backoff_policy_test.go` 12 钉测（算法/并发/边界/集成全覆盖，race 检测通过）。**默认行为**：指数退避（30s, 60s, 120s, ..., 上限 10min），10 次重试后 ActionDisable 永久禁用。
+> ★ **D11/D12 ipc 已于 7731cc504 修复**（framing.go 长度前缀帧 + client.go 走 pool + Close 拒绝）。
+> ★ **phase2 合并冲突修复**：`admin.NewHandler` 签名新增 `authplugin.Registry` 参数（phase2 并行合并引入），批量修复 `cmd/verify-model-fetch/main.go` + admin/*_test.go 共 9 处调用（传入 nil）。
+> ★ **全量验证通过**：config/reconciler 子模块单测全绿（含 race 检测）、go build ./...、go vet ./...。
+
 > **2026-11-14 24h审计接力轮部署收口——211 列车交付部署债四项（zcode 会话，主档 `docs/24小时内修订审计-20261114-1630.md` §九；提交 3d08da25d+本轮台账；211 部署验证完成：蓝绿 8783→8781 `2.5.9-d5eb218a-20261114-211`（build_seq 3054）槽 a 接管、readyz DB 113µs/Redis 96µs、公网版本身份+入口 200 OK）**：
 > ★ 列车交付=964/963 schema（11-13 r1052 boot 探测已 applied，本轮运行时二进制兑现）+ R-7① fallback + cee5a24e inline 计量 + f61c1de77 zstd 门——**部署债四项全收口**；Go 工具链 1.27.4（8487a4a61）首次上 211 构建链。
 > ★ 列车前拦路=基础镜像缺失（run1/run2 FATAL）：8487a4a61 把构建 pin 升到 kx-base-golang:1.27.4-alpine-amd64，registry-211 无镜像且推送 403（既有凭据无推送权，登记环境债归 owner）、DD_BASE_IMAGES_DIR=/opt/kaixuan/base-images（**非** /opt/docker-base-images）缺 1.27.4 归档 ⇒ 本地 docker save→scp→双目录落位+sha256 校验后 run3 exit 0。**教训=引擎离线库变量是 DD_BASE_IMAGES_DIR（默认 /opt/kaixuan/base-images），与 deploy-lib 的 DEPLOY_DOCKER_BASE_*（~/work/docker-base-*）是两套坐标**。
