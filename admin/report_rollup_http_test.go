@@ -140,7 +140,7 @@ func TestReportRollup_HTTPContract(t *testing.T) {
 		)
 	}
 
-	h := NewHandler(pool, "contract-test-secret", nil)
+	h := NewHandler(pool, "contract-test-secret", nil, nil)
 	tsSrc, err := os.ReadFile(reportRollupTSPath(t))
 	if err != nil {
 		t.Fatalf("read ts: %v", err)
