@@ -150,6 +150,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 	"github.com/kaixuan/llm-gateway-go/pkg/monitor"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
+	pluginruntimeeventbus "github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/controller"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -7182,6 +7183,10 @@ func main() {
 		}),
 		dbConn.Pool(), cfg.SecretKey,
 	)
+	// Plugin eventbus for broadcasting plugin lifecycle events to frontend SSE
+	pluginEventBus := pluginruntimeeventbus.NewMemoryEventBus(100)
+	// SSE endpoint: GET /api/v1/plugins/events (public for Shell consumption)
+	pluginEventsSSE := pluginapi.ServePluginEventsSSE(pluginEventBus)
 	// activate/deactivate需鉴权；wrap为AdminMiddleware handler
 	activateHandler := admin.AdminMiddleware(
 		http.HandlerFunc(pluginapiHandler.ActivatePluginHandler),
@@ -7225,6 +7230,7 @@ func main() {
 	}
 
 	mux.HandleFunc("GET /api/v1/plugins", servePluginAPI)
+	mux.HandleFunc("GET /api/v1/plugins/events", pluginEventsSSE)
 	mux.HandleFunc("/api/v1/plugins/", servePluginAPI)
 	mux.Handle("/api/v1/plugin-nav", admin.AdminMiddleware(
 		func(w http.ResponseWriter, r *http.Request) {
