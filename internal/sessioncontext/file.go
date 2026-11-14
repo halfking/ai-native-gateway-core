@@ -38,8 +38,40 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 	if err != nil {
 		return nil, report, err
 	}
+	
+	// P2-2 (2026-11-14): /v1/completions prompt 与 /v1/responses input 的
+	// string 形态（协议合法）此前触发 ErrProtectedContext（只认数组）。
+	// 在检查 ref.Size ≤ maxBytes 之前先检测 string 形态，包装后再判断。
+	needsWrap := false
+	var stringKey string
+	for _, k := range []string{"prompt", "input"} {
+		if field, ok := doc.Fields[k]; ok {
+			raw := make([]byte, int(field.Length))
+			if _, e := f.ReadAt(raw, field.Offset); e == nil && jsonKind(raw) == "string" {
+				needsWrap = true
+				stringKey = k
+				break
+			}
+		}
+	}
+	
+	if needsWrap {
+		// 包装 string 为 messages 数组
+		wrapped, wrapErr := wrapStringPromptAsMessages(ctx, store, ref, stringKey)
+		if wrapErr != nil {
+			return nil, report, wrapErr
+		}
+		// 小 body：直接返回包装后的结果
+		if len(wrapped) <= maxBytes {
+			report.OutputBytes = len(wrapped)
+			return wrapped, report, nil
+		}
+		// 大 body：暂不支持缩减（需要内存缩减逻辑，移交下一轮）
+		return nil, report, fmt.Errorf("string prompt/input exceeds %d bytes and cannot be reduced (wrap + reduce not yet implemented)", maxBytes)
+	}
+	
 	if ref.Size <= int64(maxBytes) {
-		b, e := store.ReadRange(ctx, ref, largebody.Span{Length: ref.Size}, int64(maxBytes))
+		b, e := store.ReadRange(ctx, ref, largebody.Span{Length: ref.Size}, ref.Size)
 		report.OutputBytes = len(b)
 		return b, report, e
 	}
@@ -49,6 +81,49 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		if a, ok := doc.Arrays[k]; ok {
 			key, spans = k, a
 			break
+		}
+	}
+	// P2-2 (2026-11-14): /v1/completions prompt 与 /v1/responses input 的
+	// string 形态（协议合法）此前触发 ErrProtectedContext（只认数组）。
+	// 检测 string 形态时，包装为 messages 数组后重新索引，走正常缩减流程。
+	if len(spans) == 0 {
+		// 尝试 string 形态回退：检测 prompt (completions) 或 input (responses)
+		stringKey := ""
+		for _, k := range []string{"prompt", "input"} {
+			if field, ok := doc.Fields[k]; ok {
+				raw := make([]byte, int(field.Length))
+				if _, e := f.ReadAt(raw, field.Offset); e == nil && jsonKind(raw) == "string" {
+					stringKey = k
+					break
+				}
+			}
+		}
+		if stringKey != "" {
+			// 读完整 body，包装 string 为 messages 数组
+			wrapped, wrapErr := wrapStringPromptAsMessages(ctx, store, ref, stringKey)
+			if wrapErr != nil {
+				return nil, report, wrapErr
+			}
+			// 重新索引包装后的 body
+			wrapDoc, idxErr := largebody.IndexObject(ctx, bytes.NewReader(wrapped))
+			if idxErr != nil {
+				return nil, report, idxErr
+			}
+			// 包装后的 body 必然有 messages 数组
+			if a, ok := wrapDoc.Arrays["messages"]; ok {
+				key, spans = "messages", a
+				doc = wrapDoc
+				// 用包装后的 body 替换 ref（后续 read 从这里读）
+				// 注意：这里不能修改 store 里的原始 ref，只能在内存操作
+				// 简化处理：直接返回包装后的 body（不走缩减）如果它已经 ≤ maxBytes
+				if len(wrapped) <= maxBytes {
+					report.OutputBytes = len(wrapped)
+					return wrapped, report, nil
+				}
+				// 超 maxBytes 时需要缩减，但 f (store file) 还是原始 body
+				// ⇒ 需要创建临时的内存 reader。这太复杂了，暂时拒绝超大 string
+				return nil, report, fmt.Errorf("string prompt/input exceeds %d bytes and cannot be reduced (wrap + reduce not yet implemented)", maxBytes)
+			}
 		}
 	}
 	if len(spans) == 0 {
@@ -373,4 +448,62 @@ func mediaMarkerOmitted(raw []byte) bool {
 		}
 	}
 	return false
+}
+
+// jsonKind returns the JSON type of raw bytes (P2-2: string prompt detection).
+func jsonKind(raw []byte) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "empty"
+	}
+	switch trimmed[0] {
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	case '"':
+		return "string"
+	case 't', 'f':
+		return "bool"
+	case 'n':
+		return "null"
+	default:
+		return "number"
+	}
+}
+
+// wrapStringPromptAsMessages reads the full body from store, wraps the string
+// prompt/input field as a messages array, and returns the rewritten body bytes.
+// P2-2 (2026-11-14): /v1/completions prompt 与 /v1/responses input 的 string
+// 形态需要包装为 messages 数组，才能被 sessioncontext Reduce 的数组缩减
+// 逻辑处理（protected / excerpt / summary）。
+func wrapStringPromptAsMessages(ctx context.Context, store *largebody.Store, ref largebody.Ref, stringKey string) ([]byte, error) {
+	// 读完整 body
+	fullBody, err := store.ReadRange(ctx, ref, largebody.Span{Length: ref.Size}, ref.Size)
+	if err != nil {
+		return nil, err
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(fullBody, &root); err != nil {
+		return nil, fmt.Errorf("unmarshal body for string wrap: %w", err)
+	}
+	// 读 string 值（已验证是 string）
+	stringValue := root[stringKey]
+	var text string
+	if err := json.Unmarshal(stringValue, &text); err != nil {
+		return nil, fmt.Errorf("unmarshal string %s: %w", stringKey, err)
+	}
+	// 包装为单条 user message
+	messages := []map[string]any{{
+		"role":    "user",
+		"content": text,
+	}}
+	root["messages"] = mustMarshal(messages)
+	delete(root, stringKey) // 移除原始 prompt/input 字段
+	return json.Marshal(root)
+}
+
+func mustMarshal(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
