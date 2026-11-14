@@ -2040,6 +2040,26 @@ SELECT
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
 		  AND ` + brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name") + `
+		  -- 2026-11-14 migration 966: Model lifecycle management — filter stale models.
+		  -- Models older than the configured threshold (default 2 years) are excluded
+		  -- from routing to reduce candidate pool noise. NULL released_at = unknown age,
+		  -- fail-open (included) until backfilled. Manual priority (mo.manual_priority > 0)
+		  -- bypasses the age filter — operators can explicitly pin any model regardless of age.
+		  AND (
+		      COALESCE(mo.manual_priority, 0) > 0  -- manual priority always included
+		      OR mc.released_at IS NULL            -- unknown age: fail-open (include)
+		      OR (
+		          mc.released_at IS NOT NULL
+		          AND age(now(), mc.released_at) <= (
+		              SELECT COALESCE(
+		                  (value::text)::interval,
+		                  '2 years'::interval
+		              )
+		              FROM settings_kv
+		              WHERE key = 'model_lifecycle.stale_threshold'
+		          )
+		      )
+		  )
 
 
 		ORDER BY

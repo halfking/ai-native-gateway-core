@@ -18,8 +18,29 @@ var modalityRules = []modalityRule{
 	{"gpt-4-turbo", "vision", 0},
 	{"gpt-4v", "vision", 0},
 	{"chatgpt-4o-latest", "vision", 0},
-	{"o1", "vision", 0},
+	
+	// OpenAI o1 family — 2026-11-14 modality audit: o1-mini/o1-preview/o1-pro
+	// are text-only reasoning models. Production evidence: id=6 (o1-mini) stuck
+	// at modality='text' despite o1- prefix rule existing since 2026-08-09.
+	// OpenAI docs confirm o1 (bare) supports text+image, but do not confirm
+	// o1-mini/o1-preview/o1-pro vision capabilities. These exact matches MUST
+	// come before the o1- prefix rule (priority 0 > 1) to prevent the prefix
+	// from swallowing them as vision.
+	{"o1-mini", "text", 0},      // text-only reasoning model
+	{"o1-preview", "text", 0},   // early o1 variant, text-only
+	{"o1-pro", "text", 0},       // text-only reasoning
+	{"o1", "vision", 0},         // o1 (bare) supports text+image per docs
+	
+	// OpenAI o3 family — 2026-11-14 modality audit: o3-mini-high/o3-pro are
+	// text-only reasoning models per production evidence (id=2664494 stuck at
+	// text). o3-mini is vision-capable (already has exact match below).
+	{"o3-mini-high", "text", 0}, // high-performance text reasoning
+	{"o3-pro", "text", 0},       // text-only reasoning
 	{"o3-mini", "vision", 0},
+	
+	// OpenAI o4 family — o4-mini-high is text-only per production evidence.
+	{"o4-mini-high", "text", 0}, // text-only reasoning
+	
 	{"gpt-3.5-turbo", "text", 0},
 
 	// Anthropic
