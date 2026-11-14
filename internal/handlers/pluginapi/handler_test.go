@@ -309,6 +309,8 @@ type mockSupervisor struct {
 	startErr    error
 	stopErr     error
 	manifests   map[string]*pluginruntime.Manifest
+	// D-S5（2026-11-14 审计轮）：SocketPathOf 模拟插件在运行态（幂等 activate 依据）
+	socketPaths map[string]string
 }
 
 func (m *mockSupervisor) Start(ctx context.Context, manifest *pluginruntime.Manifest) (*pluginruntime.PluginState, error) {
@@ -326,6 +328,10 @@ func (m *mockSupervisor) Stop(pluginID string) error {
 
 func (m *mockSupervisor) ManifestOf(pluginID string) *pluginruntime.Manifest {
 	return m.manifests[pluginID]
+}
+
+func (m *mockSupervisor) SocketPathOf(pluginID string) string {
+	return m.socketPaths[pluginID]
 }
 
 func TestActivateWithSupervisor(t *testing.T) {
@@ -382,5 +388,55 @@ func TestActivateDeactivateRequireAuth(t *testing.T) {
 	// 真实鉴权验证需在main.go集成测试中进行（curl带/不带token）
 	if w.Code != http.StatusOK {
 		t.Logf("handler without middleware returned %d (expected 200; middleware will add auth)", w.Code)
+	}
+}
+
+// D-S5（2026-11-14 审计轮）：幂等 activate——已在运行的插件再次 activate
+// 视为成功且不得再次 Start（防弹跳）；IsDisabled 供 HealthLoop 门（D-S1）。
+func TestActivateIdempotentWhenRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTestPlugin(t, tmpDir, "running-plugin", "Running", "1.0.0")
+	mock := &mockSupervisor{
+		manifests:   map[string]*pluginruntime.Manifest{},
+		socketPaths: map[string]string{"running-plugin": "/tmp/running-plugin.sock"},
+	}
+	handler := NewPluginAPIHandler(tmpDir, mock)
+
+	// 在运行的插件 activate：必须不调 Start（幂等跳过），且 disabled 集合清空
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/running-plugin/activate", nil)
+	w := httptest.NewRecorder()
+	handler.ActivatePluginHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("idempotent activate failed: %d %s", w.Code, w.Body.String())
+	}
+	if mock.startCalled {
+		t.Fatal("activate on running plugin must not call supervisor.Start again")
+	}
+	if handler.IsDisabled("running-plugin") {
+		t.Fatal("activated plugin must not stay in disabled set")
+	}
+	if !handler.IsDisabled("never-deactivated") == false && handler.IsDisabled("never-deactivated") {
+		t.Fatal("unknown plugin must not be reported disabled")
+	}
+}
+
+// D-S1：deactivate 后 IsDisabled 必须为真（HealthLoop 据此豁免健康检查，
+// 防止空 socket 触发 Restarter 复活）。
+func TestIsDisabledReflectsDeactivate(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTestPlugin(t, tmpDir, "gate-plugin", "Gate", "1.0.0")
+	handler := NewPluginAPIHandler(tmpDir, nil)
+
+	if handler.IsDisabled("gate-plugin") {
+		t.Fatal("fresh plugin must not be disabled")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/gate-plugin/deactivate", nil)
+	w := httptest.NewRecorder()
+	handler.DeactivatePluginHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("deactivate failed: %d %s", w.Code, w.Body.String())
+	}
+	if !handler.IsDisabled("gate-plugin") {
+		t.Fatal("deactivated plugin must be reported disabled")
 	}
 }

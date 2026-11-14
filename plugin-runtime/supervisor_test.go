@@ -406,3 +406,27 @@ func TestSupervisor_UpgradeRollbackOnStartFailure(t *testing.T) {
 		t.Errorf("after failed upgrade, manifest = %q, want 0.1.0 (rollback)", m.PluginVersion)
 	}
 }
+
+// D-S2（2026-11-14 审计轮）：Start 无「已在运行」互斥时并发 activate 产生
+// 两个进程抢同一 <id>.sock，先者被覆盖成不可停止的孤儿进程。变异臂：摘掉
+// already-running 守卫 ⇒ 本测试红（第二次 Start 成功）。
+func TestSupervisor_StartAlreadyRunningRejected(t *testing.T) {
+	s := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir(), ContextSecret: []byte("s")})
+	s.commandFactory = func(socketPath, entrypoint string, env []string) command {
+		return &fakeProc{socketPath: socketPath}
+	}
+	m := &Manifest{PluginID: "dup", PluginVersion: "0.1.0"}
+	if _, err := s.Start(context.Background(), m); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	second, err := s.Start(context.Background(), m)
+	if err == nil {
+		t.Fatal("second Start on running plugin must fail")
+	}
+	if second != nil {
+		t.Fatalf("second Start must not return state, got %v", second)
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("error should mention already running, got: %v", err)
+	}
+}

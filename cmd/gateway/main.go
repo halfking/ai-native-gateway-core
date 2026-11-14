@@ -7077,6 +7077,10 @@ func main() {
 	var pluginController *controller.Controller
 	var sup *pluginruntime.Supervisor // P12: hoisted so the install handler can use it when plugins are enabled
 	var pluginManifests []*pluginruntime.Manifest
+	// D-S1（2026-11-14 审计轮）：管理性停用门——pluginapiHandler 创建后赋值
+	// （闭包按引用捕获）。停用的插件跳过 HealthLoop 检查，空 socket 不再触发
+	// Restarter 把手动 deactivate 的进程复活。
+	pluginDisabledGate := func(pluginID string) bool { return false }
 	
 	// Plugin eventbus for broadcasting plugin lifecycle events to frontend SSE
 	pluginEventBus := pluginruntimeeventbus.NewMemoryEventBus(100)
@@ -7174,6 +7178,7 @@ func main() {
 				MaxRestarts:      5,
 				BackoffStart:     5 * time.Second,
 				BackoffMax:       2 * time.Minute,
+				ShouldCheck:      func(pluginID string) bool { return !pluginDisabledGate(pluginID) },
 			})
 			healthLoop.Start()
 			defer healthLoop.Stop() // graceful shutdown: stop the loop on gateway exit
@@ -7200,6 +7205,7 @@ func main() {
 	// pluginapi: public list/get for the Shell. Settings stay behind admin auth.
 	// Shell asks for /manifests; the Day 3 probe asks for both slash forms.
 	pluginapiHandler := pluginapi.NewPluginAPIHandler(pluginsDir, sup)
+	pluginDisabledGate = pluginapiHandler.IsDisabled
 	settingsHandler := admin.AdminMiddleware(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/settings") {
@@ -7301,12 +7307,18 @@ func main() {
 	if pluginController != nil {
 		lifecycle = configManagedPluginControl{}
 	}
+	// D-S4（2026-11-14 审计轮）：activate/deactivate 路由归一。此前 dedicated
+	// 单段路由（{id}/activate）按 ServeMux 优先级恒胜出 servePluginAPI 的
+	// catch-all 分发，pluginapi 的编排+disabled 覆盖层只在多段畸形 URL 可达，
+	// 且 lifecycle 路径从不更新 disabled ⇒ GET 清单恒报 Enabled=true。
+	// 现两条路径统一委派 pluginapiHandler（幂等 activate + disabled 覆盖层），
+	// uninstall 仍走 lifecycle（pluginapi 无此动作）。
 	mux.Handle("POST /api/v1/plugins/{id}/activate", admin.AdminMiddleware(
-		makePluginActivateHandler(lifecycle),
+		http.HandlerFunc(pluginapiHandler.ActivatePluginHandler),
 		dbConn.Pool(), cfg.SecretKey,
 	))
 	mux.Handle("POST /api/v1/plugins/{id}/deactivate", admin.AdminMiddleware(
-		makePluginDeactivateHandler(lifecycle),
+		http.HandlerFunc(pluginapiHandler.DeactivatePluginHandler),
 		dbConn.Pool(), cfg.SecretKey,
 	))
 	mux.Handle("POST /api/v1/plugins/{id}/uninstall", admin.AdminMiddleware(

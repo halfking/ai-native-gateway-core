@@ -41,6 +41,7 @@ type SupervisorConfig struct {
 type Supervisor struct {
 	cfg            SupervisorConfig
 	mu             sync.Mutex
+	startMu        sync.Mutex // 串行化 Start：进程已运行检查与 proc 落位必须原子
 	procs          map[string]command
 	states         map[string]*PluginState
 	manifests      map[string]*Manifest // P7: for Restart
@@ -66,6 +67,17 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	if m == nil || m.PluginID == "" {
 		return nil, fmt.Errorf("plugin manifest with id required")
 	}
+	// 2026-11-14 审计轮（D-S2）：Start 无「已在运行」互斥时，并发 activate
+	// 产生两个进程抢同一 <id>.sock，先者被覆盖成 supervisor 不可停止的孤儿
+	// 进程。startMu 使检查与落位串行；Restart 先 delete 再 Start 不受影响。
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	s.mu.Lock()
+	if _, running := s.procs[m.PluginID]; running {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("plugin %s already running", m.PluginID)
+	}
+	s.mu.Unlock()
 	if m.Runtime.Entrypoint == "" && m.ManifestPath != "" {
 		return nil, fmt.Errorf("plugin manifest entrypoint required")
 	}

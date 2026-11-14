@@ -23,6 +23,10 @@ type HealthLoopConfig struct {
 	MaxRestarts  int           // after this many restart attempts, mark failed (0 = unlimited)
 	BackoffStart time.Duration // initial backoff before the first restart attempt
 	BackoffMax   time.Duration // backoff cap; further attempts stay at this value
+	// ShouldCheck 门控单个插件是否参与健康检查（D-S1，2026-11-14 审计轮）：
+	// 管理员运行期停用的插件必须跳过——否则空 socket 连续失败会触发
+	// Restarter，把手动 deactivate 的插件自动复活。nil = 全部检查。
+	ShouldCheck func(pluginID string) bool
 }
 
 // HealthLoop periodically runs check against each registered plugin, updating
@@ -99,6 +103,9 @@ func (h *HealthLoop) tick(ctx context.Context) {
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return
+		}
+		if h.cfg.ShouldCheck != nil && !h.cfg.ShouldCheck(id) {
+			continue // D-S1: admin-deactivated plugins are exempt from health/revival
 		}
 		status := h.currentStatus(id)
 		if status != "ready" && status != "degraded" {

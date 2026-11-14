@@ -92,6 +92,16 @@ type PluginSupervisor interface {
 	Start(ctx context.Context, m *pluginruntime.Manifest) (*pluginruntime.PluginState, error)
 	Stop(pluginID string) error
 	ManifestOf(pluginID string) *pluginruntime.Manifest
+	// SocketPathOf 报告插件是否在运行（非空=在运行）；幂等 activate 依据。
+	SocketPathOf(pluginID string) string
+}
+
+// IsDisabled 报告插件是否被管理员在运行期停用。HealthLoop 的自动重启
+// （D-S1 修复）以此为准：管理性停用不得被健康循环复活。
+func (h *PluginAPIHandler) IsDisabled(pluginID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.disabled[pluginID]
 }
 
 // PluginRegistry is an interface for plugin registry operations
@@ -261,23 +271,34 @@ func (h *PluginAPIHandler) setEnabled(w http.ResponseWriter, r *http.Request, en
 	// 当supervisor非nil时，编排真实进程；nil时为state-only模式（开发/测试）
 	if h.supervisor != nil {
 		if enabled {
-			// 启用：从supervisor取manifest并start（manifest可能在supervisor内部已缓存）
-			m := h.supervisor.ManifestOf(pluginID)
-			if m == nil {
-				// 若supervisor无此manifest，从文件读取（fileBasedRegistry只返PluginInfo不含Runtime等）
-				// 生产环境supervisor通常已持有manifest；此处为防御性fallback
-				h.sendError(w, http.StatusInternalServerError, "manifest not found in supervisor for "+pluginID)
-				return
-			}
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-			defer cancel()
-			if _, err := h.supervisor.Start(ctx, m); err != nil {
-				// start失败回滚disabled状态
-				h.mu.Lock()
-				h.disabled[pluginID] = true
-				h.mu.Unlock()
-				h.sendError(w, http.StatusInternalServerError, "failed to start plugin: "+err.Error())
-				return
+			// 幂等 activate（2026-11-14 审计轮）：已在运行的插件再次 activate
+			// 视为成功（不弹跳进程）——此前 dedicated lifecycle 路由用
+			// Restart、本 handler 用 Start，双路由遮蔽修复后必须归一为幂等语义。
+			if h.supervisor.SocketPathOf(pluginID) != "" {
+				// already running: fall through to success response
+			} else {
+				// 启用：从supervisor取manifest并start（manifest可能在supervisor内部已缓存）
+				m := h.supervisor.ManifestOf(pluginID)
+				if m == nil {
+					// 若supervisor无此manifest，从文件读取（fileBasedRegistry只返PluginInfo不含Runtime等）
+					// 生产环境supervisor通常已持有manifest；此处为防御性fallback
+					h.sendError(w, http.StatusInternalServerError, "manifest not found in supervisor for "+pluginID)
+					return
+				}
+				// 2026-11-14 审计轮（D-S3）：不得用 request-scoped ctx 启动插件
+				// ——handler 返回即 cancel ⇒ exec.CommandContext SIGKILL 刚启动
+				// 的进程。WithoutCancel 保留值、丢弃取消传播；30s 只约束启动
+				// （握手/健康检查）本身。
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+				defer cancel()
+				if _, err := h.supervisor.Start(ctx, m); err != nil {
+					// start失败回滚disabled状态
+					h.mu.Lock()
+					h.disabled[pluginID] = true
+					h.mu.Unlock()
+					h.sendError(w, http.StatusInternalServerError, "failed to start plugin: "+err.Error())
+					return
+				}
 			}
 		} else {
 			// 停用：调用supervisor.Stop

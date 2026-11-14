@@ -131,3 +131,51 @@ func TestHealthLoop_MaxRestartsMarksFailed(t *testing.T) {
 		t.Fatalf("plugin should be failed after MaxRestarts, got %q", got)
 	}
 }
+
+// D-S1（2026-11-14 审计轮）：管理性停用的插件必须跳过健康检查——否则空
+// socket 连续失败触发 Restarter，把手动 deactivate 的插件复活。变异臂：
+// 摘掉 ShouldCheck 门 ⇒ check 被调用 + Restarter 拉起 ⇒ 本测试红。
+func TestHealthLoop_ShouldCheckGatesDisabledPlugin(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetPlugin(&PluginState{PluginID: "stopped", Status: "ready"})
+	reg.SetPlugin(&PluginState{PluginID: "live", Status: "ready"})
+
+	var stoppedChecked, liveChecked, liveRestarts uint32
+	check := func(id string) error {
+		if id == "stopped" {
+			atomic.AddUint32(&stoppedChecked, 1)
+		} else {
+			atomic.AddUint32(&liveChecked, 1)
+		}
+		return fmt.Errorf("socket gone") // both would fail if checked
+	}
+	loop := NewHealthLoop(reg, check, HealthLoopConfig{
+		Interval:         20 * time.Millisecond,
+		FailureThreshold: 1,
+		Restarter: func(id string) error {
+			if id == "live" {
+				atomic.AddUint32(&liveRestarts, 1)
+			}
+			return nil
+		},
+		ShouldCheck: func(id string) bool { return id != "stopped" }, // admin-deactivated
+	})
+	loop.Start()
+	defer loop.Stop()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if atomic.LoadUint32(&liveRestarts) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if n := atomic.LoadUint32(&stoppedChecked); n != 0 {
+		t.Fatalf("admin-deactivated plugin must not be health-checked, checked %d times", n)
+	}
+	if atomic.LoadUint32(&liveRestarts) == 0 {
+		t.Fatal("live plugin should still be checked/restarted (guard must not swallow everything)")
+	}
+}
