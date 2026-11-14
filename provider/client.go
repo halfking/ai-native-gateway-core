@@ -1135,9 +1135,41 @@ func canServeCandidateCacheDuringOutage(ctx context.Context, err error, entry ca
 		!entry.expires.IsZero() && now.Before(entry.expires.Add(candidateOutageGrace))
 }
 
+// logCandidateDiagnostic 是 candidate_diag 事件的统一出口：指标每事件 +1
+// （口径=事件发生数，与日志无关），日志按事件分流——
+//   · `db_empty`：同一 (model, tenant) 在 5 分钟冷却窗内只放行首条
+//     （R-76-3，2026-11-14：211 实测同一不可用模型逐请求重复 427 条/h，
+//     归因结论在处置前不变 ⇒ 重复条压掉、下一条放行时附 suppressed=N；
+//     其余事件罕见或为状态变化信号，逐条保留）。
 func logCandidateDiagnostic(event string, args ...any) {
 	recordCandidateDiagnostic(event)
+	if event == "db_empty" {
+		model, tenant := diagArgsKeyFields(args)
+		allowed, suppressed := candidateDiagLogGateInstance.allow(event, model, tenant, time.Now())
+		if !allowed {
+			return
+		}
+		if suppressed > 0 {
+			args = append(args, "suppressed_repeats", suppressed)
+		}
+	}
 	slog.Warn("[candidate_diag] "+event, args...)
+}
+
+// diagArgsKeyFields 从 args（key, value 交替对）里取 "model" 与 "tenant_id"
+// 的字符串值；缺失时返回空串（空值仍构成合法键，只是所有缺字段的调用方
+// 共享一个桶——与旧行为相比不会更差）。
+func diagArgsKeyFields(args []any) (model, tenant string) {
+	for i := 0; i+1 < len(args); i += 2 {
+		key, _ := args[i].(string)
+		switch key {
+		case "model":
+			model, _ = args[i+1].(string)
+		case "tenant_id":
+			tenant, _ = args[i+1].(string)
+		}
+	}
+	return model, tenant
 }
 
 func isRetryableDBError(err error) bool {
