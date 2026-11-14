@@ -92,7 +92,13 @@ MARKER = "ＳENSITIVE：secret：1"          # 混拼：首字母全角，其余
 SECRET = "MIXEDWIDTH-PROBE-9F3A2B7C"
 
 GOENV = dict(os.environ)
-GOENV["PATH"] = os.path.expanduser("~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.2.darwin-arm64/bin") + ":" + GOENV.get("PATH", "")
+GO_BIN = shutil.which("go")
+if GO_BIN is None:
+    sys.exit("Go 1.27.4 toolchain not found on PATH")
+GO_VERSION = subprocess.run([GO_BIN, "version"], capture_output=True, text=True, check=False).stdout.strip()
+if not GO_VERSION.startswith("go version go1.27.4 "):
+    sys.exit(f"Go 1.27.4 required, found: {GO_VERSION or 'unknown'}")
+GOENV["PATH"] = str(pathlib.Path(GO_BIN).parent) + ":" + GOENV.get("PATH", "")
 # ★★ r1048 轮（★ 2026-10-29）：★★ 原来的 `GOCACHE=os.path.expanduser("~/sdk/gocache")`
 # ★★ 是**仓外的用户目录** ⇒ ⇒ ★★ ⇒ 它会**覆盖掉**前导块刚设好的【专用缓存】
 # ★★ ⇒ ⇒ ★★ ⇒ 「文件里有没有专用证据」这个判据**照样绿** ⇒ ⇒ ★★ ⇒ **假绿**

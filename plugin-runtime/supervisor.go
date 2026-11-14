@@ -2,6 +2,7 @@ package pluginruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus"
 )
 
 // command 是对一个插件进程的抽象，便于测试注入 fake。
@@ -30,6 +33,8 @@ type SupervisorConfig struct {
 	SigningPubkey string
 	// PluginEnv supplies per-plugin runtime transport identity, never gateway credentials.
 	PluginEnv func(pluginID string) []string
+	// EventBus 用于发布插件生命周期事件（可选）
+	EventBus eventbus.EventBus
 }
 
 // Supervisor 管理所有已启动的插件进程。P0 为内存态骨架。
@@ -93,6 +98,15 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	s.states[m.PluginID] = st
 	s.manifests[m.PluginID] = m
 	s.mu.Unlock()
+
+	// 发布 plugin.started 事件
+	s.publishEvent(ctx, "plugin.started", m.PluginID, map[string]interface{}{
+		"plugin_id":      m.PluginID,
+		"plugin_version": m.PluginVersion,
+		"pid":            cmd.Pid(),
+		"status":         "starting",
+	})
+
 	return st, nil
 }
 
@@ -110,6 +124,13 @@ func (s *Supervisor) Stop(pluginID string) error {
 	if !ok {
 		return fmt.Errorf("plugin %s not running", pluginID)
 	}
+
+	// 发布 plugin.stopped 事件
+	s.publishEvent(context.Background(), "plugin.stopped", pluginID, map[string]interface{}{
+		"plugin_id": pluginID,
+		"status":    "stopped",
+	})
+
 	return cmd.Stop()
 }
 
@@ -293,4 +314,32 @@ func (e *execCommand) Pid() int {
 		return 0
 	}
 	return e.cmd.Process.Pid
+}
+
+// publishEvent 发布插件事件到 eventbus（如果已配置）
+func (s *Supervisor) publishEvent(ctx context.Context, eventType, pluginID string, payload map[string]interface{}) {
+	if s.cfg.EventBus == nil {
+		return
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		// 不阻塞主流程，仅记录警告
+		return
+	}
+
+	event := &eventbus.Event{
+		ID:        fmt.Sprintf("%s-%d", pluginID, time.Now().UnixNano()),
+		Type:      eventType,
+		Source:    "supervisor",
+		Timestamp: time.Now(),
+		Payload:   payloadBytes,
+	}
+
+	// 非阻塞发布
+	go func() {
+		publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.cfg.EventBus.Publish(publishCtx, event)
+	}()
 }

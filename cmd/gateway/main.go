@@ -107,6 +107,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
+	"github.com/kaixuan/llm-gateway-go/internal/anomaly"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
@@ -942,6 +943,26 @@ func main() {
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+
+	// ── 2026-11-14: Anomaly Detection (kimi-k3 incident defense) ────────────
+	// 异常检测管理器：拦截附件重发循环、请求频率风暴、媒体/文本失衡
+	// 默认启用，可通过 LLM_GATEWAY_ANOMALY_DETECTOR_ENABLED=false 禁用
+	var anomalyManager *anomaly.Manager
+	anomalyEnabled := os.Getenv("LLM_GATEWAY_ANOMALY_DETECTOR_ENABLED") != "false"
+	if anomalyEnabled {
+		var err error
+		anomalyManager, err = anomaly.NewDefaultManager()
+		if err != nil {
+			slog.Error("failed to create anomaly manager", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("anomaly detector initialized",
+			"enabled", true,
+			"detectors", []string{"attachment_replay", "request_rate", "media_ratio"})
+	} else {
+		slog.Info("anomaly detector disabled by LLM_GATEWAY_ANOMALY_DETECTOR_ENABLED=false")
+	}
+
 	// X-LLMGW-Preferred-Credential 钉扎的操作员闸门键。r1024（2026-10-13）：
 	// SetAdminAPIKey 此前从未被调用，adminAPIKey 恒空导致该路由覆盖在 v1
 	// 数据面静默失效（QA 钉扎请求被自由路由，E2E 归因失真）。键来自
@@ -7056,6 +7077,10 @@ func main() {
 	var pluginController *controller.Controller
 	var sup *pluginruntime.Supervisor // P12: hoisted so the install handler can use it when plugins are enabled
 	var pluginManifests []*pluginruntime.Manifest
+	
+	// Plugin eventbus for broadcasting plugin lifecycle events to frontend SSE
+	pluginEventBus := pluginruntimeeventbus.NewMemoryEventBus(100)
+	
 	if pluginsDir != "" {
 		var err error
 		pluginManifests, err = ScanPlugins(pluginsDir, pluginRegistry)
@@ -7068,6 +7093,7 @@ func main() {
 		// supervisor's actual unix socket paths. pluginBaseFor returns
 		// "unix://<socketPath>" for a running plugin, or "" if the plugin
 		// failed to start — the proxy then responds 502 Bad Gateway.
+		
 		var pluginBases map[string]string
 		if runtimeConfigPath != "" {
 			pluginController, err = startPluginController(context.Background(), runtimeConfigPath, pluginRegistry, pluginCapabilities)
@@ -7086,6 +7112,7 @@ func main() {
 				SocketDir:     filepath.Join(pluginsDir, ".sockets"),
 				ContextSecret: []byte(cfg.SecretKey),
 				SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
+				EventBus:      pluginEventBus,
 			})
 			pluginBases = ScanAndStartPluginsWithRegistryDir(sup, pluginRegistry, pluginManifests, pluginsDir)
 		}
@@ -7183,8 +7210,6 @@ func main() {
 		}),
 		dbConn.Pool(), cfg.SecretKey,
 	)
-	// Plugin eventbus for broadcasting plugin lifecycle events to frontend SSE
-	pluginEventBus := pluginruntimeeventbus.NewMemoryEventBus(100)
 	// SSE endpoint: GET /api/v1/plugins/events (public for Shell consumption)
 	pluginEventsSSE := pluginapi.ServePluginEventsSSE(pluginEventBus)
 	// activate/deactivate需鉴权；wrap为AdminMiddleware handler
@@ -7397,6 +7422,17 @@ func main() {
 			"base_delay_ms", srCfg.BaseDelayMs,
 			"max_delay_ms", srCfg.MaxDelayMs,
 			"keepalive_interval", srCfg.KeepaliveInterval)
+	}
+
+	// ── 2026-11-14: Anomaly Detection Wrapper ────────────────────────────
+	// 在 stream retry 之后、memora 预热之前包装异常检测器
+	// 检测附件重发循环、请求频率异常、媒体/文本失衡
+	if anomalyManager != nil {
+		chatRouteHandler = wrapAnomalyDetector(chatRouteHandler, anomalyManager)
+		messagesRouteHandler = wrapAnomalyDetector(messagesRouteHandler, anomalyManager)
+		responsesRouteHandler = wrapAnomalyDetector(responsesRouteHandler, anomalyManager)
+		slog.Info("anomaly_detector: handlers wrapped",
+			"endpoints", []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"})
 	}
 
 	// P1-2③ W1/W3 memora 上下文预热（ADR memory-prewarm-injection）：
@@ -9351,4 +9387,115 @@ func gatewayEarlyLogLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// wrapAnomalyDetector 包装 HTTP handler 添加异常检测
+// 2026-11-14: kimi-k3 事故防御 - 检测附件重发循环、请求频率异常
+func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 快速路径：非聊天端点直接放行
+		path := r.URL.Path
+		isChatEndpoint := strings.HasSuffix(path, "/chat/completions") ||
+			strings.HasSuffix(path, "/messages") ||
+			strings.HasSuffix(path, "/completions") ||
+			strings.HasSuffix(path, "/responses")
+
+		if !isChatEndpoint {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 从 context 提取基础信息（auth middleware 已设置）
+		sessionID := ""
+		if sid := r.Context().Value("session_id"); sid != nil {
+			if s, ok := sid.(string); ok {
+				sessionID = s
+			}
+		}
+		if sessionID == "" {
+			if sid := r.Header.Get("X-Session-Id"); sid != "" {
+				sessionID = sid
+			}
+		}
+
+		apiKeyID := int64(0)
+		if kid := r.Context().Value("api_key_id"); kid != nil {
+			switch v := kid.(type) {
+			case int64:
+				apiKeyID = v
+			case int:
+				apiKeyID = int64(v)
+			}
+		}
+
+		tenantID := "default"
+		if tid := r.Context().Value("tenant_id"); tid != nil {
+			if t, ok := tid.(string); ok {
+				tenantID = t
+			}
+		}
+
+		// 构造检测请求（轻量级，主要检测频率）
+		req := &anomaly.Request{
+			SessionID: sessionID,
+			APIKeyID:  apiKeyID,
+			TenantID:  tenantID,
+			// Attachments/Messages 暂时为空，只做频率检测
+			// 完整的附件检测需要解析 body，后续可优化
+		}
+
+		ctx := r.Context()
+		anomalies := manager.CheckAll(ctx, req)
+
+		if len(anomalies) > 0 {
+			worst := anomaly.SelectHighestSeverity(anomalies)
+
+			// 记录所有检测到的异常
+			for _, a := range anomalies {
+				slog.Info("anomaly_detected",
+					"code", a.Code,
+					"severity", a.Severity,
+					"message", a.Message,
+					"metrics", a.Metrics,
+					"session_id", sessionID,
+					"api_key_id", apiKeyID,
+					"path", path)
+			}
+
+			// 拦截高危异常
+			if anomaly.ShouldBlock(worst.Severity) {
+				slog.Warn("anomaly_blocked_request",
+					"code", worst.Code,
+					"severity", worst.Severity,
+					"message", worst.Message,
+					"session_id", sessionID,
+					"api_key_id", apiKeyID,
+					"path", path)
+
+				httpStatus := anomaly.GetHTTPStatus(worst.Severity)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Anomaly-Code", worst.Code)
+				w.WriteHeader(httpStatus)
+
+				// 返回错误响应
+				errResp := anomaly.FormatAnomalyError(worst)
+				if err := json.NewEncoder(w).Encode(errResp); err != nil {
+					slog.Error("failed to encode anomaly error", "error", err)
+				}
+				return
+			}
+
+			// medium/low severity：打标记但不拦截
+			ctx = context.WithValue(ctx, "anomaly_flags", anomalies)
+			r = r.WithContext(ctx)
+
+			slog.Info("anomaly_warning",
+				"code", worst.Code,
+				"severity", worst.Severity,
+				"action", "passed_with_flags",
+				"session_id", sessionID)
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

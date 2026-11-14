@@ -12,8 +12,8 @@ import (
 
 // IntegratePluginAPI shows how to integrate plugin API into gateway-v2
 func IntegratePluginAPI(mux *http.ServeMux, pluginDir string) {
-	// Create plugin API handler
-	handler := pluginapi.NewPluginAPIHandler(pluginDir)
+	// The standalone example has no process supervisor; lifecycle requests remain unavailable.
+	handler := pluginapi.NewPluginAPIHandler(pluginDir, nil)
 	
 	// Register routes
 	mux.HandleFunc("/api/v1/plugins", handler.ListPluginsHandler)
