@@ -1342,6 +1342,12 @@ func (e *LLMDetectionEngine) Detect(ctx context.Context, engineID int, input str
 		return nil, fmt.Errorf("query llm engine config: %w", err)
 	}
 
+	// P3-15 (2026-11-16): API key is read as plaintext from database.
+	// Technical debt: Should be encrypted at rest and decrypted only when needed.
+	// Current status: Acceptable for internal LLM engine config (not user-facing).
+	// Future work: Implement application-layer encryption with KMS.
+	// See: docs/P3-15-promptinjection-apikey-encryption.md
+
 	// 构建检测提示词（2026-11-15 P2审计修复：转义防元注入）
 	detectionPrompt := buildLLMDetectionPrompt(input)
 
@@ -1548,20 +1554,26 @@ func (e *LLMDetectionEngine) callLLMAPI(ctx context.Context, baseURL, model, api
 }
 
 // parseLLMResponse 解析 LLM 响应
+//
+// P3-16 (2026-11-16): 改用 json.Decoder 取代「strings.Index("{") + LastIndex("}")」切片。
+//
+//	旧实现的字串切片把「首 "{" 到末 "}"」当成**一个** JSON 对象：
+//	① LLM 在 JSON 前后带自然语言说明时（极常见），末 "}" 往往不属于首个对象
+//	   ⇒ 切出的片段是非法 JSON ⇒ unmarshal 直接失败；
+//	② 响应里出现多个 JSON 对象时，片段横跨两个对象 ⇒ 同样非法。
+//
+//	新实现按 "{" 的出现顺序逐个尝试解码，取**最后一个**能解出判官字段的对象
+//	（LLM 的习惯是在最后给出最终结论）；每个候选用**独立的** result 变量，
+//	避免「前一次半截解码污染后一次」——
+//	★ json.Decoder 解到一半失败时**已经写入了部分字段**，若复用同一个变量，
+//	  后一次解码没覆盖到的字段会残留前一次的取值 ⇒ 归因错乱。
+//
+//	★ 保留 2026-11-15 的既有语义（llm_judge_test.go 钉住）：
+//	  置信度阈值 + 归一化到 [0,1]（confidence 1.5 ⇒ 1.0，-0.3 ⇒ 0.0）。
 func (e *LLMDetectionEngine) parseLLMResponse(response string, threshold float64) (*LLMDetectionResult, error) {
-	// 提取 JSON 内容（LLM 可能返回带有前后文本的 JSON）
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
-
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
-		return nil, fmt.Errorf("no valid JSON found in response")
-	}
-
-	jsonStr := response[jsonStart : jsonEnd+1]
-
-	var result LLMDetectionResult
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return nil, fmt.Errorf("unmarshal json: %w", err)
+	result, err := decodeLLMDetectionResult(response)
+	if err != nil {
+		return nil, err
 	}
 
 	// 应用置信度阈值
@@ -1577,5 +1589,73 @@ func (e *LLMDetectionEngine) parseLLMResponse(response string, threshold float64
 		result.Confidence = 1
 	}
 
-	return &result, nil
+	return result, nil
+}
+
+// llmResultJudgeFields 是「这确实是一份判官结论」的标志字段。
+//
+// 为什么要判字段而不是「能解出 JSON 就算」：响应里可能出现与判官无关的
+// JSON 对象（例如 `{"note": "..."}`），把它当成判官结论会让置信度落到 0
+// ⇒ 「低置信度 ⇒ 不算注入」，等于把一次真实注入判成安全。
+var llmResultJudgeFields = []string{"is_injection", "confidence", "categories", "reason", "evidence"}
+
+// decodeLLMDetectionResult 从响应里解出判官结论。
+//
+// 候选顺序：整段直接解 → 逐个 "{" 起点尝试。后者取最后一个成功候选。
+func decodeLLMDetectionResult(response string) (*LLMDetectionResult, error) {
+	trimmed := strings.TrimSpace(response)
+	if trimmed == "" {
+		return nil, fmt.Errorf("no valid JSON found in response")
+	}
+
+	// 候选 1：整段就是一个 JSON 对象（最常见形态，无前后缀）
+	if r, ok := decodeLLMDetectionCandidate(trimmed); ok {
+		return r, nil
+	}
+
+	// 候选 2：逐个 "{" 起点尝试，取**最后一个**成功解出的判官结论
+	var last *LLMDetectionResult
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] != '{' {
+			continue
+		}
+		if r, ok := decodeLLMDetectionCandidate(trimmed[i:]); ok {
+			last = r
+		}
+	}
+	if last != nil {
+		return last, nil
+	}
+
+	return nil, fmt.Errorf("no valid JSON found in response")
+}
+
+// decodeLLMDetectionCandidate 尝试把 s 的**第一个** JSON 对象解成判官结果。
+//
+// ok=false 表示：不是合法 JSON、不是对象、或不含任何判官字段。
+func decodeLLMDetectionCandidate(s string) (*LLMDetectionResult, bool) {
+	// 第一遍：解成 map，用来判断「有没有判官字段」
+	probeDec := json.NewDecoder(strings.NewReader(s))
+	var probe map[string]json.RawMessage
+	if err := probeDec.Decode(&probe); err != nil {
+		return nil, false
+	}
+	hasJudgeField := false
+	for _, f := range llmResultJudgeFields {
+		if _, ok := probe[f]; ok {
+			hasJudgeField = true
+			break
+		}
+	}
+	if !hasJudgeField {
+		return nil, false
+	}
+
+	// 第二遍：解成结构体（用**独立**的 decoder 与变量，避免半截解码污染）
+	structDec := json.NewDecoder(strings.NewReader(s))
+	var r LLMDetectionResult
+	if err := structDec.Decode(&r); err != nil {
+		return nil, false
+	}
+	return &r, true
 }

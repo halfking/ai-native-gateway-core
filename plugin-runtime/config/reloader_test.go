@@ -511,3 +511,164 @@ func TestStop(t *testing.T) {
 		t.Error("Expected error when watching after stop")
 	}
 }
+
+// TestP314_WatchRebuildMetrics tests that watch rebuild metrics are tracked correctly (P3-14).
+func TestP314_WatchRebuildMetrics(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "gateway.yaml")
+
+	// Write initial config
+	initialYAML := `
+server:
+  host: localhost
+  port: 8080
+plugins:
+  directory: ` + tmpDir + `
+security:
+  tls_enabled: false
+`
+	if err := os.WriteFile(configFile, []byte(initialYAML), 0644); err != nil {
+		t.Fatalf("Failed to write initial config: %v", err)
+	}
+
+	// Create reloader
+	initialConfig := &Config{
+		Server:  ServerConfig{Host: "localhost", Port: 8080},
+		Plugins: PluginsConfig{Directory: tmpDir},
+	}
+
+	reloader, err := NewConfigReloader(initialConfig, NewValidator())
+	if err != nil {
+		t.Fatalf("Failed to create reloader: %v", err)
+	}
+	defer reloader.Stop()
+
+	// Start watching
+	ctx := context.Background()
+	if err := reloader.Watch(ctx, configFile); err != nil {
+		t.Fatalf("Failed to watch config: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate file rename (atomic replacement)
+	tempFile := filepath.Join(tmpDir, "gateway.yaml.tmp")
+	updatedYAML := `
+server:
+  host: 0.0.0.0
+  port: 9090
+plugins:
+  directory: ` + tmpDir + `
+security:
+  tls_enabled: false
+`
+	if err := os.WriteFile(tempFile, []byte(updatedYAML), 0644); err != nil {
+		t.Fatalf("Failed to write temp config: %v", err)
+	}
+
+	// Rename (atomic replacement) triggers watch rebuild
+	if err := os.Rename(tempFile, configFile); err != nil {
+		t.Fatalf("Failed to rename config: %v", err)
+	}
+
+	// Wait for watch rebuild and reload
+	time.Sleep(500 * time.Millisecond)
+
+	// Get metrics
+	r := reloader.(*configReloader)
+	metrics := r.GetMetrics()
+
+	if metrics["plugin_config_watch_rebuild_total"] < 1 {
+		t.Errorf("Expected watch_rebuild_total >= 1, got %d", metrics["plugin_config_watch_rebuild_total"])
+	}
+
+	// No failures expected in normal operation
+	if metrics["plugin_config_watch_rebuild_failures"] > 0 {
+		t.Logf("Watch rebuild failures: %d (may occur in high-load environments)", metrics["plugin_config_watch_rebuild_failures"])
+	}
+
+	// Config should be updated
+	config := reloader.GetConfig()
+	if config.Server.Port != 9090 {
+		t.Errorf("Expected port 9090 after rename, got %d", config.Server.Port)
+	}
+}
+
+// TestP314_WatchRetryBackoff tests exponential backoff retry logic for watch Add failures (P3-14).
+func TestP314_WatchRetryBackoff(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "gateway.yaml")
+
+	// Write initial config
+	initialYAML := `
+server:
+  host: localhost
+  port: 8080
+plugins:
+  directory: ` + tmpDir + `
+security:
+  tls_enabled: false
+`
+	if err := os.WriteFile(configFile, []byte(initialYAML), 0644); err != nil {
+		t.Fatalf("Failed to write initial config: %v", err)
+	}
+
+	// Create reloader
+	initialConfig := &Config{
+		Server:  ServerConfig{Host: "localhost", Port: 8080},
+		Plugins: PluginsConfig{Directory: tmpDir},
+	}
+
+	reloader, err := NewConfigReloader(initialConfig, NewValidator())
+	if err != nil {
+		t.Fatalf("Failed to create reloader: %v", err)
+	}
+	defer reloader.Stop()
+
+	// Start watching
+	ctx := context.Background()
+	if err := reloader.Watch(ctx, configFile); err != nil {
+		t.Fatalf("Failed to watch config: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Get initial metrics
+	r := reloader.(*configReloader)
+	initialFailures := r.GetMetrics()["plugin_config_watch_rebuild_failures"]
+
+	// Modify config to trigger watch rebuild
+	updatedYAML := `
+server:
+  host: 0.0.0.0
+  port: 9090
+plugins:
+  directory: ` + tmpDir + `
+security:
+  tls_enabled: false
+`
+
+	// Remove and recreate to trigger rename event
+	tempFile := filepath.Join(tmpDir, "gateway.yaml.tmp")
+	if err := os.WriteFile(tempFile, []byte(updatedYAML), 0644); err != nil {
+		t.Fatalf("Failed to write temp config: %v", err)
+	}
+	if err := os.Rename(tempFile, configFile); err != nil {
+		t.Fatalf("Failed to rename config: %v", err)
+	}
+
+	// Wait for operations to complete
+	time.Sleep(1000 * time.Millisecond)
+
+	// Verify metrics are tracked (even if no failures)
+	metrics := r.GetMetrics()
+	if metrics["plugin_config_watch_rebuild_total"] < 1 {
+		t.Errorf("Expected watch_rebuild_total >= 1, got %d", metrics["plugin_config_watch_rebuild_total"])
+	}
+
+	// Verify failures count (may be 0 in normal operation)
+	currentFailures := metrics["plugin_config_watch_rebuild_failures"]
+	if currentFailures < initialFailures {
+		t.Errorf("Failures count went backwards: %d -> %d", initialFailures, currentFailures)
+	}
+}

@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"sync"
@@ -61,6 +62,12 @@ type rpmShard struct {
 	mu        sync.Mutex
 	windows   map[int]*rpmWindow
 	tokenWins map[int]*tpmWindow
+
+	// P3-10: LRU tracking for keyID bucket eviction.
+	// When total entries exceed maxEntries, least-recently-used buckets are removed.
+	lruList    *list.List            // list.Element.Value is keyID (int)
+	lruKeyMap  map[int]*list.Element // keyID -> list.Element
+	maxEntries int                   // max total entries in this shard (0 = unlimited)
 }
 
 // SlidingWindowLimiter 是进程内的 RPM/TPM 滑窗限流器。
@@ -69,9 +76,22 @@ type rpmShard struct {
 // 有自己的 mutex。旧实现用单一全局 mutex,所有 key 的 CheckRPM/CheckTPM
 // 都串行化 —— 在请求热路径上成为瓶颈。分片后不同 key 并行,同一 key 仍互斥
 // (语义不变)。
+//
+// P3-10 (2026-11-16): 加入 LRU 驱逐，**为「内存无上界」兜底**。
+//
+//	★ 动机：改动前 windows/tokenWins 只增不减 —— 每个出现过的 keyID 都会
+//	  留下一个 rpmWindow/tpmWindow，且**没有任何过期清理**（本包内没有 purge
+//	  逻辑）。keyID 空间随接入方增长时，进程内存随之线性增长。
+//	★ 手段：单分片条目数超过 maxEntries 时，按 LRU 顺序驱逐整条 keyID 的桶。
+//	★ 代价（已知且刻意）：被驱逐的 key 其计数归零 ⇒ 该 key 的 RPM/TPM 计数
+//	  窗口被重置。热 key 不会被动（LRU 按访问时间排序，热 key 在队尾），
+//	  但「冷 key 的限额被重置」是驱逐式限流的固有代价。
+//	★ maxEntriesPerShard 的口径是 **条目数**（rpmWindow + tpmWindow 合计），
+//	  不是 key 数；同一个 keyID 若同时有 RPM 与 TPM 两个桶则计 2 条。
 type SlidingWindowLimiter struct {
-	shards    [rpmShardCount]*rpmShard
-	admission *MinuteBucketAdmission
+	shards             [rpmShardCount]*rpmShard
+	admission          *MinuteBucketAdmission
+	maxEntriesPerShard int // max entries per shard (0 = unlimited, default recommended: 10000)
 }
 
 type rpmWindow struct {
@@ -88,11 +108,37 @@ type tokenEntry struct {
 }
 
 func NewSlidingWindowLimiter() *SlidingWindowLimiter {
-	l := &SlidingWindowLimiter{admission: NewMinuteBucketAdmission()}
+	l := &SlidingWindowLimiter{
+		admission:          NewMinuteBucketAdmission(),
+		maxEntriesPerShard: 10000, // P3-10: default max entries per shard
+	}
 	for i := range l.shards {
 		l.shards[i] = &rpmShard{
-			windows:   make(map[int]*rpmWindow),
-			tokenWins: make(map[int]*tpmWindow),
+			windows:    make(map[int]*rpmWindow),
+			tokenWins:  make(map[int]*tpmWindow),
+			lruList:    list.New(),
+			lruKeyMap:  make(map[int]*list.Element),
+			maxEntries: l.maxEntriesPerShard,
+		}
+	}
+	return l
+}
+
+// NewSlidingWindowLimiterWithMaxEntries creates a limiter with custom max entries per shard (P3-10).
+// maxEntries <= 0 disables LRU eviction (unlimited memory).
+// Recommended: 10000 for production (allows ~160k API keys per 16 shards with some headroom).
+func NewSlidingWindowLimiterWithMaxEntries(maxEntriesPerShard int) *SlidingWindowLimiter {
+	l := &SlidingWindowLimiter{
+		admission:          NewMinuteBucketAdmission(),
+		maxEntriesPerShard: maxEntriesPerShard,
+	}
+	for i := range l.shards {
+		l.shards[i] = &rpmShard{
+			windows:    make(map[int]*rpmWindow),
+			tokenWins:  make(map[int]*tpmWindow),
+			lruList:    list.New(),
+			lruKeyMap:  make(map[int]*list.Element),
+			maxEntries: maxEntriesPerShard,
 		}
 	}
 	return l
@@ -131,8 +177,13 @@ func (l *SlidingWindowLimiter) CheckRPM(keyID int, limit int) bool {
 
 	w, ok := s.windows[keyID]
 	if !ok {
+		// P3-10: Create new window and add to LRU
 		w = &rpmWindow{}
 		s.windows[keyID] = w
+		s.updateLRU(keyID, keyID)
+	} else {
+		// P3-10: Update LRU on access
+		s.updateLRU(keyID, keyID)
 	}
 
 	if len(w.timestamps) > 0 {
@@ -166,8 +217,13 @@ func (l *SlidingWindowLimiter) CheckTPM(keyID int, estimatedTokens int, limit in
 
 	w, ok := s.tokenWins[keyID]
 	if !ok {
+		// P3-10: Create new window and add to LRU
 		w = &tpmWindow{}
 		s.tokenWins[keyID] = w
+		s.updateLRU(keyID, keyID)
+	} else {
+		// P3-10: Update LRU on access
+		s.updateLRU(keyID, keyID)
 	}
 
 	if len(w.entries) > 0 {
@@ -223,12 +279,62 @@ func (l *SlidingWindowLimiter) RPMStatus(keyID int, limit int) (used int, remain
 	return count, rem
 }
 
+// updateLRU 更新 keyID 的 LRU 位置，并在超过上限时驱逐冷桶（P3-10）。
+//
+// 必须在持有分片锁时调用。
+//
+// ★ protect：本次调用方**正在处理**的 keyID。驱逐时跳过它 ——
+//
+//	否则在「分片条目数已满、且本次请求新建了桶」的时刻，
+//	刚建好的桶可能被当作队头驱逐掉：
+//	调用方随后继续往那个（已脱离 map 的）桶里记时间戳，
+//	⇒ **本次请求的计数被丢弃** ⇒ 限流被绕过。
+func (s *rpmShard) updateLRU(keyID int, protect int) {
+	// Move to end (most recently used)
+	if elem, exists := s.lruKeyMap[keyID]; exists {
+		s.lruList.MoveToBack(elem)
+	} else {
+		// Add new entry
+		elem := s.lruList.PushBack(keyID)
+		s.lruKeyMap[keyID] = elem
+	}
+
+	// Evict LRU entries if over limit
+	if s.maxEntries > 0 {
+		totalEntries := len(s.windows) + len(s.tokenWins)
+		for totalEntries > s.maxEntries && s.lruList.Len() > 0 {
+			// Remove least recently used (front of list)
+			elem := s.lruList.Front()
+			if elem == nil {
+				break
+			}
+			lruKeyID := elem.Value.(int)
+			if lruKeyID == protect {
+				// ★ 本次请求正在用的 key：跳过它。
+				// 它刚被移到队尾 ⇒ 只有「队列里仅剩它一个」时才会出现在队头；
+				// 此时无人可驱逐 ⇒ 保留本轮超额，等下一轮再收敛。
+				break
+			}
+			s.lruList.Remove(elem)
+			delete(s.lruKeyMap, lruKeyID)
+
+			// Remove both windows for this keyID
+			delete(s.windows, lruKeyID)
+			delete(s.tokenWins, lruKeyID)
+
+			totalEntries = len(s.windows) + len(s.tokenWins)
+		}
+	}
+}
+
 func (l *SlidingWindowLimiter) Stop() {
 	// 并发清空所有分片。各分片独立加锁,避免单一全局锁。
 	for _, s := range l.shards {
 		s.mu.Lock()
 		s.windows = make(map[int]*rpmWindow)
 		s.tokenWins = make(map[int]*tpmWindow)
+		s.lruList = list.New()
+		s.lruKeyMap = make(map[int]*list.Element)
 		s.mu.Unlock()
 	}
 }

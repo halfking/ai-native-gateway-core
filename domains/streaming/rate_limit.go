@@ -70,6 +70,13 @@ func checkGatewayRateLimit(ctx context.Context, keyInfo *authentication.KeyInfo,
 	// TPM（2026-11-15）：RPM 通过后的第二道按 key 配置闸。显式无限 RPM
 	// （DB=0）不豁免 TPM——两列独立语义。仅在有估计值时执法（estimate=0
 	// 的面不预记账，避免把「没法估」变成「无限」）。
+	//
+	// P3-12 (2026-11-16): TPM uses admission-control pre-accounting.
+	// Tokens are deducted immediately on admission, NOT on completion.
+	// No refunds are issued even if actual consumption < estimate.
+	// Rationale: fail-fast (reject before LLM inference), simple concurrency model,
+	// predictable load curve. Configure limit = 0.85 * measured_peak to absorb variance.
+	// See docs/P3-12-TPM-preaccounting-design.md
 	if estimatedTokens > 0 {
 		if tpmLimit := keyInfo.EffectiveTPM(); tpmLimit > 0 {
 			if tpmc, ok := rl.(ratelimit.TPMChecker); ok {

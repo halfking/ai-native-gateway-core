@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -30,6 +31,29 @@ type ConfigReloader interface {
 
 	// Stop stops watching for configuration changes.
 	Stop() error
+}
+
+// MetricsProvider 是实现了可观测指标的组件所满足的**可选**接口（P3-14）。
+//
+// ★ 为什么用可选接口而不是直接给 ConfigReloader 加方法：
+//
+//	ConfigReloader 是导出接口，给它加方法会**破坏**任何外部实现者
+//	（接口方法集变大 ⇒ 旧实现不再满足该接口 ⇒ 编译失败）。
+//	可选接口是 Go 里的惯例：调用方用类型断言探测能力，不满足就不取。
+type MetricsProvider interface {
+	// GetMetrics 返回当前指标的快照（键为指标名，值为计数）。
+	GetMetrics() map[string]int64
+}
+
+// MetricsOf 探测 reloader 是否实现了 MetricsProvider，返回指标快照。
+//
+// 未实现时返回 nil（调用方需判空）。这是把 P3-14 的 watch 指标**暴露出去**的
+// 正规入口：configReloader 是未导出类型，外部包拿不到它，只能经由接口取。
+func MetricsOf(reloader ConfigReloader) map[string]int64 {
+	if mp, ok := reloader.(MetricsProvider); ok {
+		return mp.GetMetrics()
+	}
+	return nil
 }
 
 // ReloadHandler applies configuration before the new snapshot is published.
@@ -55,6 +79,10 @@ type configReloader struct {
 	cancel   context.CancelFunc
 	stopOnce sync.Once
 	stopErr  error
+
+	// P3-14: Metrics for watch failures
+	watchRebuildTotal    atomic.Int64
+	watchRebuildFailures atomic.Int64
 }
 
 // NewConfigReloader creates a new configuration reloader.
@@ -129,15 +157,19 @@ func (r *configReloader) watch(ctx context.Context) {
 				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
 				log.Printf("INFO: Config file changed: %s (op: %s)", event.Name, event.Op)
 
-				// Rename/Remove 后重建 watch（防 atomic replace 后 inode 变化导致失效）
+				// P3-14: Rename/Remove 后重建 watch（防 atomic replace 后 inode 变化导致失效）。
+				//
+				// ★ 重建的**正确机制是「先 Remove 再 Add」**：
+				//   fsnotify 按**路径字符串**去重，对同一路径再次 Add 会拿到
+				//   **已有的那个 watch**（Linux/inotify 下返回同一个 wd，指向**旧 inode**）
+				//   ⇒ 只 Add 不 Remove 根本不会重新挂到新 inode 上，等于没重建。
+				//   （这正是 2026-11-15 那版 Remove+Add 的用意。）
+				// ★ 因此本轮保留 Remove+Add 为主路径，把「指数退避重试」降级为
+				//   **Add 失败时的兜底**，而不是替代。
 				if event.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
 					dir := filepath.Dir(r.configPath)
-					r.watcher.Remove(dir) // 幂等，失败不致命
-					if err := r.watcher.Add(dir); err != nil {
-						log.Printf("ERROR: Rebuild watch after %s failed: %v", event.Op, err)
-					} else {
-						log.Printf("INFO: Rebuilt watch for %s after %s", dir, event.Op)
-					}
+					r.watchRebuildTotal.Add(1)
+					r.rebuildWatch(ctx, dir)
 				}
 
 				// Debounce: wait 100ms before reloading
@@ -168,6 +200,64 @@ func (r *configReloader) watch(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// rebuildWatch 重建对配置目录的 watch（P3-14）。
+//
+// 主路径：Remove(dir) → Add(dir)（Remove 幂等，失败不致命）。
+// 兜底：Add 失败时按指数退避重试（100ms / 200ms / 400ms，最多 3 次）。
+//
+// ★ 为什么必须先 Remove：fsnotify 按**路径**去重，对同一路径再次 Add 会复用
+//
+//	**已有的 watch**（inotify 下指向旧 inode）⇒ 只 Add 不 Remove 不会重新挂载。
+//
+// ★ 为什么是**同步**而不是起 goroutine：
+//
+//	① 原实现把重试放进 `go r.retryAddWatch(...)`，而 Stop() 里是 `r.wg.Wait()`；
+//	   当计数器已归零时再 `wg.Add(1)` ⇒ 命中 Go runtime 的
+//	   「WaitGroup misuse: Add called concurrently with Wait」panic；
+//	② 异步重试在 Stop() 之后仍可能动 watcher（生命周期不受控）。
+//	同步执行把重建收敛在 watch 循环内，最长阻塞 700ms；而这期间 Reload 会
+//	**重新读文件**，取到的仍是最新内容 ⇒ 语义无损失。
+func (r *configReloader) rebuildWatch(ctx context.Context, dir string) {
+	_ = r.watcher.Remove(dir) // 幂等，失败不致命
+	if err := r.watcher.Add(dir); err != nil {
+		log.Printf("WARN: Rebuild watch for %s failed: %v — retrying with backoff", dir, err)
+		r.retryAddWatch(ctx, dir, 1)
+		return
+	}
+	log.Printf("INFO: Rebuilt watch for %s", dir)
+}
+
+// retryAddWatch **同步**重试把目录加回 watcher（指数退避）。成功返回 true。
+//
+// P3-14: 处理 Add 的瞬时失败（例如目录刚被 rename 掉、尚未重新出现）。
+func (r *configReloader) retryAddWatch(ctx context.Context, dir string, attempt int) bool {
+	const maxRetries = 3
+	backoff := time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond // 100ms, 200ms, 400ms
+
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return false
+	case <-r.stopCh:
+		return false
+	}
+
+	if err := r.watcher.Add(dir); err != nil {
+		r.watchRebuildFailures.Add(1)
+		if attempt < maxRetries {
+			log.Printf("WARN: Watch re-add failed (attempt %d/%d, will retry in %v): %v",
+				attempt, maxRetries, backoff, err)
+			return r.retryAddWatch(ctx, dir, attempt+1)
+		}
+		log.Printf("ERROR: Watch re-add failed after %d attempts: %v", maxRetries, err)
+		return false
+	}
+	log.Printf("INFO: Watch re-established for %s after %d attempt(s)", dir, attempt)
+	return true
 }
 
 // OnReload registers a reload handler.
@@ -275,4 +365,13 @@ func (r *configReloader) Stop() error {
 		log.Println("INFO: Config reloader stopped")
 	})
 	return r.stopErr
+}
+
+// GetMetrics returns the current watch metrics (P3-14).
+// This is useful for monitoring watch rebuild failures.
+func (r *configReloader) GetMetrics() map[string]int64 {
+	return map[string]int64{
+		"plugin_config_watch_rebuild_total":    r.watchRebuildTotal.Load(),
+		"plugin_config_watch_rebuild_failures": r.watchRebuildFailures.Load(),
+	}
 }
