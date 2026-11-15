@@ -139,6 +139,22 @@ type FeatureFlags struct {
 	// 需要退回旧口径（整层不可用即让位）的部署显式设 false。
 	// 环境变量：AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK。
 	AutoRoleMainstreamFallback bool
+
+	// EnableTierSelection (2026-11-15) enables V3 3-tier model selection strategy.
+	// When true, TierSelector is used after classification to determine tier-a/b/c,
+	// and tier information is passed to model recommendation for filtering.
+	//
+	// Default: false (tier selection disabled, V2 behavior)
+	// When false: tier fields in Decision remain empty, no tier-based filtering
+	// When true: SelectTier() is called, Decision.Tier/TierReason/TierSource populated
+	//
+	// Priority: X-Gw-Model-Tier header > Agent depth >= 2 > Tenant > Global > Default
+	// Design: AUTO_MODEL_OPTIMIZATION_V3_PLAN.md Section 2.4
+	// Environment variable: AUTO_ENABLE_TIER_SELECTION
+	//
+	// SAFETY: Can be safely enabled with V2 classifier (backward-compatible tier mapping
+	// for V2 task types added in 2026-11-15). Does NOT require V3 classifier.
+	EnableTierSelection bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -229,6 +245,8 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		AutoRoleRoutingEnabled: getEnvBool("AUTO_ROLE_ROUTING_ENABLED", false),
 		// R52 主流兜底层（默认 true；父开关关闭时不生效）。
 		AutoRoleMainstreamFallback: getEnvBool("AUTO_ROLE_ROUTING_MAINSTREAM_FALLBACK", true),
+		// 2026-11-15: V3 tier selection (默认 false，gradual rollout)
+		EnableTierSelection: getEnvBool("AUTO_ENABLE_TIER_SELECTION", false),
 	}
 
 	if flags.EnableV2Logic {
