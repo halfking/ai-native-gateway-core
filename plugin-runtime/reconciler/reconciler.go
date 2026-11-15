@@ -355,6 +355,19 @@ func (r *reconciler) computeActions(desired, actual map[string]*PluginState) []*
 			// D10: 检查退避状态
 			crashCount := r.crashTracker.GetCount(pluginID)
 			if !r.backoffTracker.CanRetry(pluginID) {
+				// 2026-11-15 审计轮收口：退避耗尽必须有终态。此前这里只
+				// continue——插件永远停在 StateFailed，reconcile 每 30s
+				// WARN 一次、永不 disable（crashTracker 1h 窗口清零使
+				// CrashCount>=MaxCrashCount 的 disable 门也不可达）。
+				if st := r.backoffTracker.GetState(pluginID); st != nil && st.RetryCount >= r.backoffTracker.config.MaxRetries {
+					actions = append(actions, &ReconcileAction{
+						PluginID: pluginID,
+						Action:   ActionDisable,
+						Reason: fmt.Sprintf("Backoff retries exhausted (%d/%d), disabling",
+							st.RetryCount, r.backoffTracker.config.MaxRetries),
+					})
+					continue
+				}
 				nextRetry := r.backoffTracker.NextRetryTime(pluginID)
 				log.Printf("Plugin %s in backoff (retry %d), next attempt at %v",
 					pluginID, crashCount, nextRetry)

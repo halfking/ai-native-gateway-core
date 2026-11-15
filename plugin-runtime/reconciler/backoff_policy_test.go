@@ -1,9 +1,13 @@
 package reconciler
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/discovery"
+	"github.com/kaixuan/llm-gateway-go/plugin-runtime/supervisor"
 )
 
 // TestBackoffTracker_ExponentialPolicy 验证指数退避时间序列
@@ -325,5 +329,69 @@ func TestDefaultBackoffConfig(t *testing.T) {
 	}
 	if cfg.MaxRetries != 10 {
 		t.Errorf("Default MaxRetries: got %d, want 10", cfg.MaxRetries)
+	}
+}
+
+// ── 2026-11-15 审计轮收口钉测（computeActions 集成面）──────────────────────
+// 首版 D10 的缺陷：CanRetry=false 后 computeActions 只 continue——插件永远
+// 停在 StateFailed，每 30s WARN 一次、永不 disable（crashTracker 1h 窗口
+// 清零使 CrashCount>=MaxCrashCount 的 disable 门也不可达）。钉两条：
+//
+//	① 退避中（未耗尽）⇒ 零 action（不重启）
+//	② 退避耗尽（RetryCount>=MaxRetries）⇒ ActionDisable 终态
+func TestReconcile_BackoffExhausted_ProducesDisable(t *testing.T) {
+	sup := newMockSupervisor()
+	reg := newMockRegistry()
+
+	reg.plugins["p1"] = &RegistryPlugin{ID: "p1", Name: "p1", Version: "1.0.0", Enabled: true}
+	reg.manifests["p1"] = &discovery.Manifest{Metadata: discovery.Metadata{Name: "p1", Version: "1.0.0"}}
+
+	config := &Config{Interval: 30 * time.Second, MaxCrashCount: 10, CrashResetWindow: 1 * time.Hour}
+	r := NewReconciler(config, sup, reg).(*reconciler)
+
+	// 插件处于 failed 态，且退避已耗尽（10 次 ≥ 默认 MaxRetries=10）。
+	sup.processes["p1"] = &supervisor.ProcessState{PluginID: "p1", Status: supervisor.StatusCrashed}
+	for i := 0; i < 10; i++ {
+		r.backoffTracker.RecordRetry("p1")
+	}
+
+	desired, err := r.getDesiredStates(context.Background())
+	if err != nil {
+		t.Fatalf("getDesiredStates: %v", err)
+	}
+	actual, err := r.getActualStates(context.Background())
+	if err != nil {
+		t.Fatalf("getActualStates: %v", err)
+	}
+
+	actions := r.computeActions(desired, actual)
+	if len(actions) != 1 || actions[0].Action != ActionDisable {
+		t.Fatalf("退避耗尽必须产出 ActionDisable 终态, got %+v", actions)
+	}
+	if actions[0].PluginID != "p1" {
+		t.Fatalf("disable 指向错误插件: %s", actions[0].PluginID)
+	}
+}
+
+func TestReconcile_InBackoff_ProducesNoAction(t *testing.T) {
+	sup := newMockSupervisor()
+	reg := newMockRegistry()
+
+	reg.plugins["p1"] = &RegistryPlugin{ID: "p1", Name: "p1", Version: "1.0.0", Enabled: true}
+	reg.manifests["p1"] = &discovery.Manifest{Metadata: discovery.Metadata{Name: "p1", Version: "1.0.0"}}
+
+	config := &Config{Interval: 30 * time.Second, MaxCrashCount: 10, CrashResetWindow: 1 * time.Hour}
+	r := NewReconciler(config, sup, reg).(*reconciler)
+
+	sup.processes["p1"] = &supervisor.ProcessState{PluginID: "p1", Status: supervisor.StatusCrashed}
+	// 记录 1 次失败：指数退避 30s 内 CanRetry=false（退避中，未耗尽）。
+	r.backoffTracker.RecordRetry("p1")
+
+	desired, _ := r.getDesiredStates(context.Background())
+	actual, _ := r.getActualStates(context.Background())
+
+	actions := r.computeActions(desired, actual)
+	if len(actions) != 0 {
+		t.Fatalf("退避中不得产生任何 action（防重启风暴）, got %+v", actions)
 	}
 }
