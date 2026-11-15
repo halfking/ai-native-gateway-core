@@ -45,6 +45,11 @@ type Config struct {
 	// Backoff configures retry backoff policy (nil uses default exponential).
 	// D10 修复：防止无限重试，每次失败后按策略退避。
 	Backoff *BackoffConfig
+
+	// HealthWindow 持续健康后重置退避计数的窗口（默认5分钟）。
+	// 2026-11-15 P2审计修复：Start/Restart成功不立即Reset，改为持续健康N分钟后再清。
+	// 防止慢崩溃环（start成功、数分钟后崩）让RetryCount永停在1、MaxRetries不可达。
+	HealthWindow time.Duration
 }
 
 // PluginState represents the state of a plugin at a point in time.
@@ -145,6 +150,7 @@ type reconciler struct {
 	stopCh         chan struct{}
 	crashTracker   *CrashTracker
 	backoffTracker *BackoffTracker // D10: 退避状态跟踪器
+	healthTracker  *HealthTracker  // 2026-11-15 P2审计: 健康窗口跟踪器
 	cycleMu        sync.Mutex
 	lifecycleMu    sync.Mutex
 	cancel         context.CancelFunc
@@ -168,6 +174,10 @@ func NewReconciler(config *Config, supervisor SupervisorInterface, registry Plug
 	if config.CrashResetWindow == 0 {
 		config.CrashResetWindow = 1 * time.Hour
 	}
+	// 2026-11-15 P2审计: 健康窗口默认5分钟
+	if config.HealthWindow == 0 {
+		config.HealthWindow = 5 * time.Minute
+	}
 
 	// D10: 初始化退避配置（nil 使用默认指数退避）
 	backoffCfg := defaultBackoffConfig()
@@ -189,6 +199,7 @@ func NewReconciler(config *Config, supervisor SupervisorInterface, registry Plug
 		stopCh:         make(chan struct{}),
 		crashTracker:   NewCrashTracker(config.CrashResetWindow),
 		backoffTracker: NewBackoffTracker(backoffCfg), // D10: 退避跟踪器
+		healthTracker:  NewHealthTracker(config.HealthWindow), // 2026-11-15 P2审计
 	}
 }
 
@@ -393,20 +404,30 @@ func (r *reconciler) computeActions(desired, actual map[string]*PluginState) []*
 				Reason:   "Plugin stopped but desired running",
 			})
 
-		case StateRunning:
-			// Check version mismatch
-			if desiredState.Version != "" && actualState.Version != "" &&
-				actualState.Version != desiredState.Version {
-				// Version mismatch → upgrade
-				actions = append(actions, &ReconcileAction{
-					PluginID:   pluginID,
-					Action:     ActionUpgrade,
-					Reason:     fmt.Sprintf("Version mismatch: %s -> %s", actualState.Version, desiredState.Version),
-					OldVersion: actualState.Version,
-					NewVersion: desiredState.Version,
-				})
+			case StateRunning:
+				// 2026-11-15 P2审计修复: 持续健康窗口后重置退避
+				// 检查插件是否已持续健康足够长时间
+				if r.healthTracker.ShouldReset(pluginID) {
+					// 插件已持续健康，可以重置退避计数
+					r.backoffTracker.Reset(pluginID)
+					r.healthTracker.MarkReset(pluginID)
+					log.Printf("Plugin %s sustained healthy for %v, backoff reset",
+						pluginID, r.config.HealthWindow)
+				}
+				
+				// Check version mismatch
+				if desiredState.Version != "" && actualState.Version != "" &&
+					actualState.Version != desiredState.Version {
+					// Version mismatch → upgrade
+					actions = append(actions, &ReconcileAction{
+						PluginID:   pluginID,
+						Action:     ActionUpgrade,
+						Reason:     fmt.Sprintf("Version mismatch: %s -> %s", actualState.Version, desiredState.Version),
+						OldVersion: actualState.Version,
+						NewVersion: desiredState.Version,
+					})
+				}
 			}
-		}
 	}
 
 	// Check for plugins that shouldn't be running
@@ -440,8 +461,9 @@ func (r *reconciler) executeAction(ctx context.Context, action *ReconcileAction)
 		}
 		err = r.supervisor.Start(ctx, manifest)
 		if err == nil {
-			// D10: 启动成功，重置退避状态
-			r.backoffTracker.Reset(action.PluginID)
+			// 2026-11-15 P2审计修复: Start成功不立即Reset，记录启动时刻
+			// 等持续健康窗口（默认5分钟）后，由computeActions在StateRunning分支Reset
+			r.healthTracker.RecordStart(action.PluginID)
 		}
 		return err
 
@@ -451,8 +473,8 @@ func (r *reconciler) executeAction(ctx context.Context, action *ReconcileAction)
 	case ActionRestart:
 		err := r.supervisor.Restart(ctx, action.PluginID)
 		if err == nil {
-			// D10: 重启成功，重置退避状态
-			r.backoffTracker.Reset(action.PluginID)
+			// 2026-11-15 P2审计修复: Restart成功不立即Reset，记录重启时刻
+			r.healthTracker.RecordStart(action.PluginID)
 		}
 		return err
 
