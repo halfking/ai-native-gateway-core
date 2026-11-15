@@ -175,6 +175,26 @@ func (ki *KeyInfo) EffectiveTPM() int {
 	return 0
 }
 
+// ConfiguredConcurrent returns the per-key **explicit** concurrent cap
+// (0 = no cap).
+//
+// 2026-11-15 修正（211 生产反馈轮）：并发帽只执法显式列值——**NULL 不落
+// tier 默认**。理由：rate_limit_concurrent 与 TPM 同为「死字段复活」，存量
+// key 的 NULL 列在执法接入前从未代表「tier 默认 6 并发」；执法接入即按
+// tier 默认帽住全体 = 行为突变（211 实证：82 个 active key 的 NULL 列被
+// default 档 6 并发帽住，只差一个并行突发就触发**零可观测**的 429——闸在
+// telemetry 之前拦，不写 request_logs、不留 slog）。与 EffectiveTPM 的
+// explicit-only 语义对齐。
+//
+// EffectiveConcurrent（tier 默认回退版）保留给 executors 软告警路径（从不
+// 拒绝，历史行为不变）。
+func (ki *KeyInfo) ConfiguredConcurrent() int {
+	if ki.RateLimitConcurrent != nil && *ki.RateLimitConcurrent > 0 {
+		return *ki.RateLimitConcurrent
+	}
+	return 0
+}
+
 // DBQuerier 是 KeyVerifier 用于查询 api_keys 表的最小化接口。
 // 真实实现是 *pgxpool.Pool；测试可以用 mock（pgxmock.PgxPoolIface 天然满足）。
 // Query (2026-09-04) 支撑 keystore_sync.go 的全量/增量加载。
