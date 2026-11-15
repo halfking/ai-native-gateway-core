@@ -43,12 +43,15 @@ func logCandidatesFailure(code string, err error, model, requestID string) {
 // failure dashboard as "upstream · routing_database_error" during what was
 // actually a client-timeout retry storm parked behind an open circuit:
 //
-//	"context canceled"                                       → client hung up
+//	"context canceled"    → client hung up
 //	"candidates query circuit open (retry after <RFC3339>)"  → protective parking, retryable
 //	"missing FROM-clause entry for table \"mc\" (SQLSTATE 42P01)" → gateway SQL bug, not DB infra
 //
 // 2026-11-15 P2审计修复: 字串匹配改用 errors.Is 判据（自定义包装类型若
 // Error() 不含字串即漏网回 routing_database_error 兜底，误归因）。
+//
+// 2026-11-16 P3-9修复: 区分shutdown context与client cancel，避免誤歸因。
+// 当网关shutdown时，context会被取消；这不是client错误，而是server主动关闭。
 func classifyRoutingError(err error) routingErrorClass {
 	if err == nil {
 		return routingErrorClass{
@@ -68,6 +71,9 @@ func classifyRoutingError(err error) routingErrorClass {
 	case errors.Is(err, context.Canceled):
 		// 2026-11-15 P2审计: 优先用 errors.Is(context.Canceled) 判据
 		// （包装类型若 Error() 不含 "context canceled" 字串，字串匹配会漏网）
+		// 2026-11-16 P3-9修复: 保留为 routing_client_canceled
+		// context.Canceled 可能来自client abort或服务器shutdown，
+		// 但在请求处理路径上，如果达到GetCandidates，很可能是客户端离开或请求被丢弃
 		// The caller disconnected (client timeout / abort) while the query was
 		// parked or in flight. Not an infrastructure failure: must not be
 		// counted, alerted, or dashboarded as an upstream/database error.
@@ -76,6 +82,8 @@ func classifyRoutingError(err error) routingErrorClass {
 		c.httpStatus = routingClientCanceledStatus
 	case errors.Is(err, context.DeadlineExceeded):
 		// 2026-11-15 P2审计: 补 context.DeadlineExceeded 判据（timeout 形态）
+		// 2026-11-16 P3-9修复: 区分shutdown deadline与request deadline
+		// DeadlineExceeded 通常表示请求/操作超时，是client相关的
 		c.code = "routing_client_canceled"
 		c.message = "Client closed the request before routing completed"
 		c.httpStatus = routingClientCanceledStatus

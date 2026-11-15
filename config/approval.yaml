@@ -1,0 +1,61 @@
+# Casdoor Approval Integration Configuration
+# 
+# Dual-layer approval architecture (2026-11-15):
+#   L1: Native fast approval (existing approval_queue)
+#   L2: Casdoor approval platform (complex flows, cross-department)
+
+approval:
+  # Mode: native | casdoor | hybrid
+  # - native: use only L1 fast approval
+  # - casdoor: use only L2 Casdoor approval (not recommended)
+  # - hybrid: route by sensitivity (recommended)
+  mode: hybrid
+
+  # Native fast approval (L1)
+  native:
+    enabled: true
+    timeout_minutes: 30
+    
+  # Casdoor approval platform (L2)
+  casdoor:
+    enabled: ${CASDOOR_APPROVAL_ENABLED:-false}
+    endpoint: ${CASDOOR_ENDPOINT:-https://casdoor.kx.com}
+    client_id: ${CASDOOR_CLIENT_ID:-llm-gateway-bff}
+    client_secret: ${CASDOOR_CLIENT_SECRET}
+    
+    # Webhook configuration
+    callback_secret: ${CASDOOR_CALLBACK_SECRET}
+    callback_kid: ${CASDOOR_CALLBACK_KID:-llm-gateway-prod-1}
+    callback_url: ${CASDOOR_CALLBACK_URL:-https://llm-gateway.kx.com/api/webhooks/casdoor/approval}
+    
+    # Task configuration
+    task_owner: ${CASDOOR_TASK_OWNER:-admin}
+    default_flow: ${CASDOOR_DEFAULT_FLOW:-@admin/sensitive-content-approval}
+    ttl_minutes: 30
+    
+  # Routing configuration
+  router:
+    # Sensitivity threshold for L2 routing (0.0 - 1.0)
+    # Scores >= this value → Casdoor approval
+    high_sensitivity_threshold: 0.8
+    
+    # Keywords that force L2 Casdoor approval
+    require_casdoor_keywords:
+      - "财务数据"
+      - "薪资信息"
+      - "商业机密"
+      - "客户隐私"
+      - "financial_data"
+      - "salary"
+      - "trade_secret"
+      - "customer_privacy"
+      
+    # Cross-department detection → force L2
+    cross_department_requires_casdoor: true
+
+# Example environment variables:
+# export CASDOOR_APPROVAL_ENABLED=true
+# export CASDOOR_CLIENT_ID=llm-gateway-bff
+# export CASDOOR_CLIENT_SECRET=your_client_secret_here
+# export CASDOOR_CALLBACK_SECRET=your_webhook_secret_here
+# export CASDOOR_CALLBACK_KID=llm-gateway-prod-1

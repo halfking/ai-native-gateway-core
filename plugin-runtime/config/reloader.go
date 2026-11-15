@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -55,6 +56,10 @@ type configReloader struct {
 	cancel   context.CancelFunc
 	stopOnce sync.Once
 	stopErr  error
+
+	// P3-14: Metrics for watch failures
+	watchRebuildTotal    atomic.Int64
+	watchRebuildFailures atomic.Int64
 }
 
 // NewConfigReloader creates a new configuration reloader.
@@ -106,7 +111,7 @@ func (r *configReloader) Watch(ctx context.Context, configPath string) error {
 	return nil
 }
 
-// watch monitors file changes and triggers reloads.
+	// watch monitors file changes and triggers reloads.
 func (r *configReloader) watch(ctx context.Context) {
 	defer r.wg.Done()
 	// Debounce timer to avoid multiple reloads on rapid file changes
@@ -129,15 +134,13 @@ func (r *configReloader) watch(ctx context.Context) {
 				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
 				log.Printf("INFO: Config file changed: %s (op: %s)", event.Name, event.Op)
 
-				// Rename/Remove 后重建 watch（防 atomic replace 后 inode 变化导致失效）
+				// P3-14: Handle Rename/Remove with exponential backoff retry
+				// (the directory watch should persist, but we need to verify and retry if needed)
 				if event.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
 					dir := filepath.Dir(r.configPath)
-					r.watcher.Remove(dir) // 幂等，失败不致命
-					if err := r.watcher.Add(dir); err != nil {
-						log.Printf("ERROR: Rebuild watch after %s failed: %v", event.Op, err)
-					} else {
-						log.Printf("INFO: Rebuilt watch for %s after %s", dir, event.Op)
-					}
+					r.watchRebuildTotal.Add(1)
+					// Try to re-establish the watch with exponential backoff
+					go r.retryAddWatch(ctx, dir, 1)
 				}
 
 				// Debounce: wait 100ms before reloading
@@ -167,6 +170,35 @@ func (r *configReloader) watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// retryAddWatch retries adding a directory to the watcher with exponential backoff.
+// P3-14: Added to handle transient Add() failures
+func (r *configReloader) retryAddWatch(ctx context.Context, dir string, attempt int) {
+	const maxRetries = 3
+	backoff := time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond // 100ms, 200ms, 400ms
+
+	// Wait before retry
+	select {
+	case <-time.After(backoff):
+	case <-ctx.Done():
+		return
+	case <-r.stopCh:
+		return
+	}
+
+	if err := r.watcher.Add(dir); err != nil {
+		r.watchRebuildFailures.Add(1)
+		if attempt < maxRetries {
+			log.Printf("WARN: Watch re-add failed (attempt %d/%d, will retry in %v): %v",
+				attempt, maxRetries, backoff, err)
+			go r.retryAddWatch(ctx, dir, attempt+1)
+		} else {
+			log.Printf("ERROR: Watch re-add failed after %d attempts: %v", maxRetries, err)
+		}
+	} else {
+		log.Printf("INFO: Watch re-established for %s after %d attempt(s)", dir, attempt)
 	}
 }
 
@@ -275,4 +307,13 @@ func (r *configReloader) Stop() error {
 		log.Println("INFO: Config reloader stopped")
 	})
 	return r.stopErr
+}
+
+// GetMetrics returns the current watch metrics (P3-14).
+// This is useful for monitoring watch rebuild failures.
+func (r *configReloader) GetMetrics() map[string]int64 {
+	return map[string]int64{
+		"plugin_config_watch_rebuild_total":    r.watchRebuildTotal.Load(),
+		"plugin_config_watch_rebuild_failures": r.watchRebuildFailures.Load(),
+	}
 }

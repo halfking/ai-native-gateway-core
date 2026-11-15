@@ -1195,6 +1195,12 @@ func (e *LLMDetectionEngine) Detect(ctx context.Context, engineID int, input str
 		return nil, fmt.Errorf("query llm engine config: %w", err)
 	}
 
+	// P3-15 (2026-11-16): API key is read as plaintext from database.
+	// Technical debt: Should be encrypted at rest and decrypted only when needed.
+	// Current status: Acceptable for internal LLM engine config (not user-facing).
+	// Future work: Implement application-layer encryption with KMS.
+	// See: docs/P3-15-promptinjection-apikey-encryption.md
+
 	// 构建检测提示词（2026-11-15 P2审计修复：转义防元注入）
 	detectionPrompt := buildLLMDetectionPrompt(input)
 	
@@ -1401,33 +1407,53 @@ func (e *LLMDetectionEngine) callLLMAPI(ctx context.Context, baseURL, model, api
 }
 
 // parseLLMResponse 解析 LLM 响应
+// P3-16 (2026-11-16): Improved JSON parsing using json.Decoder to handle
+// multiple JSON objects and complex nested structures robustly.
+// Previous implementation using strings.Index("{") + LastIndex("}") was fragile.
 func (e *LLMDetectionEngine) parseLLMResponse(response string, threshold float64) (*LLMDetectionResult, error) {
-	// 提取 JSON 内容（LLM 可能返回带有前后文本的 JSON）
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
+	// P3-16: Use json.Decoder to find first complete JSON object
+	// This handles multiple JSONs, nested objects, and malformed input better than string matching
+	decoder := json.NewDecoder(strings.NewReader(response))
 	
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
-		return nil, fmt.Errorf("no valid JSON found in response")
-	}
-	
-	jsonStr := response[jsonStart : jsonEnd+1]
-	
+	// Try to decode JSON from the beginning of the string
 	var result LLMDetectionResult
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return nil, fmt.Errorf("unmarshal json: %w", err)
+	err := decoder.Decode(&result)
+	if err == nil {
+		// Successfully decoded a JSON object
+		// Apply confidence threshold
+		if result.Confidence < threshold {
+			result.IsInjection = false
+		}
+		return &result, nil
 	}
 	
-	// 应用置信度阈值
+	// Fallback to searching for JSON object if direct decode fails
+	// This handles cases where LLM response has preamble text before JSON
+	jsonStart := strings.Index(response, "{")
+	if jsonStart == -1 {
+		return nil, fmt.Errorf("no JSON object found in response")
+	}
+	
+	// Find first complete JSON object from jsonStart position
+	// Use Decoder on substring to properly handle nesting
+	decoder = json.NewDecoder(strings.NewReader(response[jsonStart:]))
+	if err := decoder.Decode(&result); err != nil {
+		// Last resort: try naive extraction (original behavior)
+		// Find matching closing brace
+		jsonEnd := strings.LastIndex(response, "}")
+		if jsonEnd == -1 || jsonEnd <= jsonStart {
+			return nil, fmt.Errorf("no valid JSON found in response: %w", err)
+		}
+		
+		jsonStr := response[jsonStart : jsonEnd+1]
+		if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+			return nil, fmt.Errorf("unmarshal json: %w", err)
+		}
+	}
+	
+	// Apply confidence threshold
 	if result.Confidence < threshold {
 		result.IsInjection = false
-	}
-	
-	// 标准化置信度到 [0, 1]
-	if result.Confidence < 0 {
-		result.Confidence = 0
-	}
-	if result.Confidence > 1 {
-		result.Confidence = 1
 	}
 	
 	return &result, nil

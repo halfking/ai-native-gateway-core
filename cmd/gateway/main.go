@@ -8575,13 +8575,35 @@ func main() {
 			}
 		}
 
+		// Phase 4 (2026-11-15): Plugin Registry Initialization
+		// Initialize plugin-based architecture supporting Native (PostgreSQL) and Casdoor providers.
+		// Enables runtime switching between authentication/user/tenant/approval providers.
+		var pluginRegistry *authplugin.Registry
+		if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
+			var err error
+			pluginRegistry, err = initializePluginRegistry(dbConn.Pool(), redisClientForCache.Client())
+			if err != nil {
+				slog.Error("failed to initialize plugin registry", "error", err)
+				// Continue without plugin registry - handlers will fall back to legacy implementations
+			} else {
+				slog.Info("plugin registry initialized successfully")
+			}
+		}
+
 		// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API
 		// Provides REST API for managing approval configuration, approvers, and rules.
 		// Enables tenant admins to configure approval workflows.
 		if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
 			approvalStore := approval.NewPGApprovalStore(dbConn.Pool(), redisClientForCache.Client())
 			approvalConfigMgr := approval.NewConfigManager(approvalStore, redisClientForCache.Client())
-			approvalConfigHandler := admin.NewApprovalConfigHandler(approvalConfigMgr)
+			
+			// Use plugin-aware handler if registry is available, otherwise fall back to legacy
+			var approvalConfigHandler *admin.ApprovalConfigHandler
+			if pluginRegistry != nil {
+				approvalConfigHandler = admin.NewApprovalConfigHandlerWithRegistry(pluginRegistry, approvalConfigMgr)
+			} else {
+				approvalConfigHandler = admin.NewApprovalConfigHandler(approvalConfigMgr)
+			}
 
 			// Configuration endpoints
 			// (2026-07-03 fix) Changed path from /api/admin/tenants/ to
@@ -8619,6 +8641,34 @@ func main() {
 				}
 			})
 			slog.Info("Phase 3.10 approval configuration API enabled (/api/admin/tenant-approval-config/{id}/approval-config, /approvers, /approval-rules)")
+			
+			// Phase 4 (2026-11-15): Plugin Configuration API
+			// Provides REST API for managing plugin provider selection (Native vs Casdoor).
+			// Enables super admins to switch between authentication providers at runtime.
+			if pluginRegistry != nil {
+				pluginConfigHandler := admin.NewPluginConfigHandler(pluginRegistry, dbConn.Pool())
+				
+				mux.HandleFunc("/api/admin/plugin-config", func(w http.ResponseWriter, r *http.Request) {
+					switch r.Method {
+					case http.MethodGet:
+						wrapAdmin(pluginConfigHandler.GetPluginConfig)(w, r)
+					case http.MethodPut:
+						wrapAdmin(pluginConfigHandler.UpdatePluginConfig)(w, r)
+					default:
+						http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					}
+				})
+				
+				mux.HandleFunc("/api/admin/plugin-providers", func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet {
+						wrapAdmin(pluginConfigHandler.GetProviderStatus)(w, r)
+					} else {
+						http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					}
+				})
+				
+				slog.Info("Phase 4 plugin configuration API enabled (/api/admin/plugin-config, /api/admin/plugin-providers)")
+			}
 		}
 	}
 
