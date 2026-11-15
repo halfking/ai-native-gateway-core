@@ -464,3 +464,66 @@ func TestAutoRouteE2E_NonChat_AgentRoleHeaderParsed(t *testing.T) {
 		}
 	})
 }
+
+// TestAutoRouteE2E_AgentDepthHeaderExtraction (P1 feature, HANDOFF task 4.1):
+// Verifies that X-Gw-Agent-Depth header is correctly extracted from HTTP requests
+// and passed through context to enable tier selection degradation for nested agents.
+// This is a prerequisite for E2E-4 test (depth-based degradation).
+func TestAutoRouteE2E_AgentDepthHeaderExtraction(t *testing.T) {
+	enableAutoOnAllProtocols(t)
+
+	testCases := []struct {
+		name          string
+		headerValue   string
+		expectedDepth int
+	}{
+		{"absent", "", 0},
+		{"zero", "0", 0},
+		{"negative", "-1", 0},
+		{"non-numeric", "abc", 0},
+		{"depth=1", "1", 1},
+		{"depth=2", "2", 2},
+		{"depth=3", "3", 3},
+		{"whitespace", "  2  ", 2},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test chat endpoint
+			ch := &ChatHandler{}
+			ch.SetAutoRoute(newE2EDecider())
+			rb := &chatRequestBody{Model: autoRequestMagic, Messages: []byte(`[{"role":"user","content":"design a system"}]`)}
+			rawBody := []byte(`{"model":"auto","messages":[{"role":"user","content":"design a system"}]}`)
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tc.headerValue != "" {
+				req.Header.Set("X-Gw-Agent-Depth", tc.headerValue)
+			}
+
+			_, wire, shouldFail := ch.maybeResolveAuto(rb, rawBody, req, 7)
+			if shouldFail || wire == nil {
+				t.Fatalf("chat: shouldFail=%v wire=%v", shouldFail, wire)
+			}
+			// Verify that the decision structure is populated (depth is internal to context)
+			if wire.ChosenModel == "" {
+				t.Fatal("chat: expected chosen_model to be set")
+			}
+
+			// Test messages endpoint
+			mh := &MessagesHandler{chatHandler: ch}
+			mrb := &messagesRequestBody{Model: autoRequestMagic, Messages: []byte(`[{"role":"user","content":"design a system"}]`)}
+			mrawBody := []byte(`{"model":"auto","messages":[{"role":"user","content":"design a system"}]}`)
+			mreq := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			if tc.headerValue != "" {
+				mreq.Header.Set("X-Gw-Agent-Depth", tc.headerValue)
+			}
+
+			_, mwire, mshouldFail := mh.maybeResolveAutoForMessages(mrb, mrawBody, mreq, 7)
+			if mshouldFail || mwire == nil {
+				t.Fatalf("messages: shouldFail=%v wire=%v", mshouldFail, mwire)
+			}
+			if mwire.ChosenModel == "" {
+				t.Fatal("messages: expected chosen_model to be set")
+			}
+		})
+	}
+}

@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -612,6 +613,15 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 		if l1, ok := h.decider.ResolveWorkType(workType); ok {
 			taskHint = l1
 			reqCtx = autoroute.WithWorkType(reqCtx, workType)
+		}
+	}
+
+	// Extract X-Gw-Agent-Depth header for tier selection degradation.
+	// Depth >= 2 triggers tier-c (economy) for nested agent cost optimization.
+	// P1 feature (HANDOFF task 4.1).
+	if depthStr := strings.TrimSpace(r.Header.Get("X-Gw-Agent-Depth")); depthStr != "" {
+		if depth, err := strconv.Atoi(depthStr); err == nil && depth > 0 {
+			reqCtx = autoroute.WithAgentDepth(reqCtx, depth)
 		}
 	}
 

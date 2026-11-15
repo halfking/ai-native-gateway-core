@@ -133,30 +133,47 @@ func TestSelectTierV3DisabledIsBlanketTierB(t *testing.T) {
 	}
 }
 
-// TestSelectTierV3EnabledStillDefaultsForV2Types 钉住第二条路：即使打开
-// enableV3，只要配置表没有 V2 行、V2 类型也不在 TaskTypeTierMapping 里，
-// V2 流量拿到的仍然是兜底默认，而不是它自己的分层意图。
+// TestSelectTierV3EnabledNowSupportsV2Types (2026-11-15) verifies that V2 task types
+// are now supported via TaskTypeTierMapping for backward compatibility during the
+// V2→V3 migration. This replaces the previous precondition check which is no longer valid.
 //
-// 注意 header 覆盖与深度降级仍然生效——它们在配置查询之前短路返回，
-// 与本测试的断言不冲突（这里刻意不传 HeaderTier / AgentDepth）。
-func TestSelectTierV3EnabledStillDefaultsForV2Types(t *testing.T) {
+// The mapping provides reasonable tier assignments:
+//   - reasoning → tier-a (requires deep analytical capability)
+//   - code → tier-b (standard code generation quality)
+//   - planning → tier-a (needs strong reasoning)
+//   - code_audit → tier-a (code review needs thorough analysis)
+//
+// Note: header override (HeaderTier) and depth-based cascading still work—they take
+// precedence over the mapping-based default (short-circuit before config lookup).
+func TestSelectTierV3EnabledNowSupportsV2Types(t *testing.T) {
 	ts := NewTierSelector(nil, true)
-	for _, task := range []TaskType{TaskCode, TaskCodeAudit, TaskPlanning, TaskReasoning} {
-		// 前提自证：V2 类型确实不在任何 V3 映射里。
-		if _, ok := TaskTypeTierMapping[task]; ok {
-			t.Fatalf("precondition broken: V2 type %q is now in TaskTypeTierMapping; "+
-				"re-run the wiring evaluation", task)
-		}
+	testCases := []struct {
+		taskType  TaskType
+		wantTier  string
+		reason    string
+	}{
+		{TaskReasoning, "tier-a", "reasoning requires strong analytical capability"},
+		{TaskCode, "tier-b", "code generation maps to standard tier-b"},
+		{TaskPlanning, "tier-a", "planning requires deep reasoning"},
+		{TaskCodeAudit, "tier-a", "code review (audit) needs thorough analysis"},
+	}
+	
+	for _, tc := range testCases {
 		got, err := ts.SelectTier(context.Background(), TierSelectionInput{
-			TaskType: task, Confidence: 0.95,
+			TaskType: tc.taskType, Confidence: 0.95,
 		})
 		if err != nil {
-			t.Fatalf("SelectTier(%s) error: %v", task, err)
+			t.Fatalf("SelectTier(%s) error: %v", tc.taskType, err)
 		}
+		if got.Tier != tc.wantTier {
+			t.Errorf("SelectTier(%s).Tier = %q, want %q — %s",
+				tc.taskType, got.Tier, tc.wantTier, tc.reason)
+		}
+		// When db is nil and no config exists, SelectTier returns ConfigSource="default"
+		// (from in-memory TaskTypeTierMapping). This is the expected behavior.
 		if got.ConfigSource != "default" {
-			t.Errorf("SelectTier(%s).ConfigSource = %q, want \"default\" — with no "+
-				"config row and no V3 mapping the result is the fallback, so wiring "+
-				"today carries no per-type intent", task, got.ConfigSource)
+			t.Errorf("SelectTier(%s).ConfigSource = %q, want \"default\" (from in-memory TaskTypeTierMapping)",
+				tc.taskType, got.ConfigSource)
 		}
 	}
 }

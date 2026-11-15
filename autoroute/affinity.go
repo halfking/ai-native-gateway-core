@@ -49,6 +49,11 @@ import (
 type requestIDCtxKey struct{}
 type workTypeCtxKey struct{}
 
+// agentDepthCtxKey carries the agent depth (X-Gw-Agent-Depth header) for tier
+// selection degradation. Set by maybeResolveAuto via WithAgentDepth.
+// Used in TierSelector to apply depth-based degradation (depth >= 2 → tier-c).
+type agentDepthCtxKey struct{}
+
 // WithRequestID returns a context carrying the request id for affinity sampling.
 func WithRequestID(ctx context.Context, requestID string) context.Context {
 	if requestID == "" {
@@ -84,6 +89,27 @@ func workTypeFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// WithAgentDepth returns a context carrying the agent depth for tier selection.
+// AgentDepth >= 2 triggers tier degradation (nested agent cost optimization).
+// Set by maybeResolveAuto from X-Gw-Agent-Depth header.
+func WithAgentDepth(ctx context.Context, depth int) context.Context {
+	if depth <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, agentDepthCtxKey{}, depth)
+}
+
+// agentDepthFromContext reads the agent depth set by WithAgentDepth, or 0 (no degradation).
+func agentDepthFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	if v, ok := ctx.Value(agentDepthCtxKey{}).(int); ok {
+		return v
+	}
+	return 0
 }
 
 // AffinityMode controls how much influence the learned affinity has.

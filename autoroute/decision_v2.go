@@ -393,10 +393,10 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		ChosenCredentialID: winner.Candidate.CredentialID,
 		ChosenRawModel:     winner.Candidate.RawModel,
 		TaskType:           cls.Primary,
-		Confidence:         cls.Confidence,
-		Profile:            profile,
-		Classifier:         cls.Classifier + "_v2",
-		Reason:             cls.Reason,
+		Confidence:  cls.Confidence,
+		Profile:     profile,
+		Classifier:  cls.Classifier + "_v2",
+		Reason:      cls.Reason,
 		CandidatesTopN:     recommended,
 		TierFailoverModels: tierFailoverModels,
 		EnabledFeatures:    enabledFeatures,
@@ -411,6 +411,28 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		decision.SessionRole = string(normalizeAgentRole(sigs.AgentRole))
 		decision.TaskKind = string(normalizeTaskKind(roleKind))
 	}
+
+	// V3 Tier Selection (2026-11-15): Perform tier-based model filtering if enabled.
+	// Same logic as Decide() path — duplicate to keep V1/V2 independent.
+	if d.tierSelector != nil {
+		if flags := GetFeatureFlags(); flags != nil && flags.EnableTierSelection {
+			agentDepth := agentDepthFromContext(ctx)
+			tierInput := TierSelectionInput{
+				TaskType:     cls.Primary,
+				Confidence:   cls.Confidence,
+				AgentDepth:   agentDepth,
+				TenantID:     "", // Populated from apiKeyID if needed
+				HeaderTier:   "", // Will be extracted from request headers in handler
+			}
+			if tierResult, err := d.tierSelector.SelectTier(ctx, tierInput); err == nil && tierResult != nil {
+				decision.Tier = tierResult.Tier
+				decision.TierReason = tierResult.Reason
+				decision.TierSource = tierResult.ConfigSource
+				decision.TierFailoverModels = tierResult.FallbackTiers
+			}
+		}
+	}
+
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 

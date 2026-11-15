@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -157,6 +158,12 @@ func (h *MessagesHandler) maybeResolveAutoForMessages(reqBody *messagesRequestBo
 			reqCtx = autoroute.WithWorkType(reqCtx, workType)
 		}
 	}
+	// Extract X-Gw-Agent-Depth header for tier selection degradation (P1 feature).
+	if depthStr := strings.TrimSpace(r.Header.Get("X-Gw-Agent-Depth")); depthStr != "" {
+		if depth, err := strconv.Atoi(depthStr); err == nil && depth > 0 {
+			reqCtx = autoroute.WithAgentDepth(reqCtx, depth)
+		}
+	}
 	decision, err := decider.DecideWithFeatureFlags(reqCtx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		return nil, nil, true // caller emits 502 auto_route_decider_failed
@@ -203,6 +210,12 @@ func (h *ResponsesHandler) maybeResolveAutoForResponses(reqBody *responsesReques
 		if l1, ok := decider.ResolveWorkType(workType); ok {
 			taskHint = l1
 			reqCtx = autoroute.WithWorkType(reqCtx, workType)
+		}
+	}
+	// Extract X-Gw-Agent-Depth header for tier selection degradation (P1 feature).
+	if depthStr := strings.TrimSpace(r.Header.Get("X-Gw-Agent-Depth")); depthStr != "" {
+		if depth, err := strconv.Atoi(depthStr); err == nil && depth > 0 {
+			reqCtx = autoroute.WithAgentDepth(reqCtx, depth)
 		}
 	}
 	decision, err := decider.DecideWithFeatureFlags(reqCtx, sigs, apiKeyID, headerProfile, taskHint, sessionID)

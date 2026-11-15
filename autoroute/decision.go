@@ -733,14 +733,14 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		ChosenModel:        winner.Candidate.CanonicalName,
 		ChosenCredentialID: winner.Candidate.CredentialID,
 		ChosenRawModel:     winner.Candidate.RawModel,
-		TaskType:           cls.Primary,
+		TaskType:    cls.Primary,
 		Confidence:         cls.Confidence,
-		Profile:            profile,
-		Classifier:         cls.Classifier,
-		Reason:             cls.Reason,
+		Profile:     profile,
+		Classifier:  cls.Classifier,
+		Reason:      cls.Reason,
 		ExternalUsage:      cls.ExternalUsage,
 		CandidatesTopN:     recommended,
-		DecidedAt:          time.Now(),
+		DecidedAt:   time.Now(),
 		RoutingSource:      routingSource,
 		RoleFallbackLayer:  roleFallbackLayer,
 	}
@@ -749,6 +749,30 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		decision.SessionRole = string(normalizeAgentRole(sigs.AgentRole))
 		decision.TaskKind = string(normalizeTaskKind(roleKind))
 	}
+
+	// V3 Tier Selection (2026-11-15): Perform tier-based model filtering if enabled.
+	// Priority: X-Gw-Model-Tier header > Agent depth >= 2 > Tenant config > Global config > Default
+	// Extract from context (set by maybeResolveAuto via X-Gw-Agent-Depth header).
+	if d.tierSelector != nil {
+		if flags := GetFeatureFlags(); flags != nil && flags.EnableTierSelection {
+			agentDepth := agentDepthFromContext(ctx)
+			tierInput := TierSelectionInput{
+				TaskType:     cls.Primary,
+				Confidence:   cls.Confidence,
+				AgentDepth:   agentDepth,
+				TenantID:     "", // Populated from apiKeyID if needed
+				HeaderTier:   "", // Will be extracted from request headers in handler
+			}
+			if tierResult, err := d.tierSelector.SelectTier(ctx, tierInput); err == nil && tierResult != nil {
+				decision.Tier = tierResult.Tier
+				decision.TierReason = tierResult.Reason
+				decision.TierSource = tierResult.ConfigSource
+				// TierFailoverModels will be populated from tierResult by the caller
+				decision.TierFailoverModels = tierResult.FallbackTiers
+			}
+		}
+	}
+
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
