@@ -89,32 +89,36 @@ func TestCasdoorAuthProvider_Integration(t *testing.T) {
 	}
 
 	t.Run("Authenticate", func(t *testing.T) {
-		token, err := provider.Authenticate(ctx, map[string]string{
-			"username": testUsername,
-			"password": testPassword,
-		})
+		req := &authplugin.AuthRequest{
+			Username: testUsername,
+			Password: testPassword,
+		}
+		
+		token, err := provider.Authenticate(ctx, req)
 		require.NoError(t, err, "authentication failed")
-		assert.NotEmpty(t, token.AccessToken)
+		assert.NotEmpty(t, token.Token)
 		assert.NotEmpty(t, token.RefreshToken)
-		assert.Greater(t, token.ExpiresIn, int64(0))
+		assert.Greater(t, token.ExpiresAt.Unix(), time.Now().Unix())
 
 		// Validate the token
-		userID, err := provider.ValidateToken(ctx, token.AccessToken)
+		claims, err := provider.ValidateToken(ctx, token.Token)
 		require.NoError(t, err, "token validation failed")
-		assert.Greater(t, userID, 0)
+		assert.NotNil(t, claims)
 
 		// Refresh the token
 		newToken, err := provider.RefreshToken(ctx, token.RefreshToken)
 		require.NoError(t, err, "token refresh failed")
-		assert.NotEmpty(t, newToken.AccessToken)
-		assert.NotEqual(t, token.AccessToken, newToken.AccessToken)
+		assert.NotEmpty(t, newToken.Token)
+		assert.NotEqual(t, token.Token, newToken.Token)
 	})
 
 	t.Run("Authenticate_InvalidCredentials", func(t *testing.T) {
-		_, err := provider.Authenticate(ctx, map[string]string{
-			"username": testUsername,
-			"password": "wrong-password",
-		})
+		req := &authplugin.AuthRequest{
+			Username: testUsername,
+			Password: "wrong-password",
+		}
+		
+		_, err := provider.Authenticate(ctx, req)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, authplugin.ErrInvalidCredentials)
 	})
@@ -378,8 +382,8 @@ func TestIDMapper_Integration(t *testing.T) {
 	})
 
 	t.Run("ListByProvider", func(t *testing.T) {
-		mappings, err := mapper.ListByProvider(ctx, "casdoor", 10, 0)
-		require.NoError(t, err)
+		mappings, err := mapper.ListByProvider(ctx, "casdoor", "", 10)
+		require.NoError(t, err, "list by provider failed")
 		assert.Greater(t, len(mappings), 0)
 
 		// Find our test mapping
@@ -432,28 +436,35 @@ func TestFullAuthFlow_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Step 1: Authenticate
-	token, err := authProvider.Authenticate(ctx, map[string]string{
-		"username": testUsername,
-		"password": testPassword,
-	})
+	req := &authplugin.AuthRequest{
+		Username: testUsername,
+		Password: testPassword,
+	}
+	
+	token, err := authProvider.Authenticate(ctx, req)
 	require.NoError(t, err, "authentication failed")
-	assert.NotEmpty(t, token.AccessToken)
+	assert.NotEmpty(t, token.Token)
 
-	// Step 2: Validate token and get internal user ID
-	userID, err := authProvider.ValidateToken(ctx, token.AccessToken)
+	// Step 2: Validate token and get claims
+	claims, err := authProvider.ValidateToken(ctx, token.Token)
 	require.NoError(t, err, "token validation failed")
-	assert.Greater(t, userID, 0)
+	assert.NotNil(t, claims)
 
-	// Step 3: Fetch user details
-	user, err := userManager.GetUser(ctx, userID)
+	// Step 3: Get internal user ID from ID mapper
+	// Use TenantID from claims for tenant scope
+	mapper := NewIDMapperFromPool(db)
+	internalID, err := mapper.GetByExternalID(ctx, "casdoor", claims.Subject, claims.TenantID)
+	require.NoError(t, err, "get internal ID failed")
+
+	// Step 4: Fetch user details
+	user, err := userManager.GetUser(ctx, internalID)
 	require.NoError(t, err, "get user failed")
-	assert.Equal(t, userID, user.ID)
+	assert.Equal(t, internalID, user.ID)
 	assert.NotEmpty(t, user.ExternalID)
 	assert.Equal(t, testUsername, user.Username)
 
-	// Step 4: Verify ID mapping was created
-	mapper := NewIDMapperFromPool(db)
-	provider, externalID, tenantID, err := mapper.GetByInternalID(ctx, userID)
+	// Step 5: Verify ID mapping was created
+	provider, externalID, tenantID, err := mapper.GetByInternalID(ctx, internalID)
 	require.NoError(t, err, "ID mapping not found")
 	assert.Equal(t, "casdoor", provider)
 	assert.Equal(t, user.ExternalID, externalID)

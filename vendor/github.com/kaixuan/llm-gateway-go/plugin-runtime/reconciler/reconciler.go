@@ -41,6 +41,10 @@ type Config struct {
 
 	// CrashResetWindow for resetting crash counters (default: 1 hour).
 	CrashResetWindow time.Duration
+
+	// Backoff configures retry backoff policy (nil uses default exponential).
+	// D10 修复：防止无限重试，每次失败后按策略退避。
+	Backoff *BackoffConfig
 }
 
 // PluginState represents the state of a plugin at a point in time.
@@ -134,16 +138,17 @@ func FilterEnabled() RegistryFilter {
 
 // reconciler implements the Reconciler interface.
 type reconciler struct {
-	config       *Config
-	supervisor   SupervisorInterface
-	registry     PluginRegistry
-	ticker       *time.Ticker
-	stopCh       chan struct{}
-	crashTracker *CrashTracker
-	cycleMu      sync.Mutex
-	lifecycleMu  sync.Mutex
-	cancel       context.CancelFunc
-	done         chan struct{}
+	config         *Config
+	supervisor     SupervisorInterface
+	registry       PluginRegistry
+	ticker         *time.Ticker
+	stopCh         chan struct{}
+	crashTracker   *CrashTracker
+	backoffTracker *BackoffTracker // D10: 退避状态跟踪器
+	cycleMu        sync.Mutex
+	lifecycleMu    sync.Mutex
+	cancel         context.CancelFunc
+	done           chan struct{}
 }
 
 // NewReconciler creates a new Reconciler with the given configuration.
@@ -164,12 +169,26 @@ func NewReconciler(config *Config, supervisor SupervisorInterface, registry Plug
 		config.CrashResetWindow = 1 * time.Hour
 	}
 
+	// D10: 初始化退避配置（nil 使用默认指数退避）
+	backoffCfg := defaultBackoffConfig()
+	if config.Backoff != nil {
+		backoffCfg = *config.Backoff
+		// 同步 MaxRetries 与 MaxCrashCount
+		if backoffCfg.MaxRetries == 0 {
+			backoffCfg.MaxRetries = config.MaxCrashCount
+		}
+	} else {
+		// 默认配置同步 MaxRetries
+		backoffCfg.MaxRetries = config.MaxCrashCount
+	}
+
 	return &reconciler{
-		config:       config,
-		supervisor:   supervisor,
-		registry:     registry,
-		stopCh:       make(chan struct{}),
-		crashTracker: NewCrashTracker(config.CrashResetWindow),
+		config:         config,
+		supervisor:     supervisor,
+		registry:       registry,
+		stopCh:         make(chan struct{}),
+		crashTracker:   NewCrashTracker(config.CrashResetWindow),
+		backoffTracker: NewBackoffTracker(backoffCfg), // D10: 退避跟踪器
 	}
 }
 
@@ -333,15 +352,38 @@ func (r *reconciler) computeActions(desired, actual map[string]*PluginState) []*
 		// Check state
 		switch actualState.ActualState {
 		case StateFailed:
-			// Plugin failed → restart
+			// D10: 检查退避状态
+			crashCount := r.crashTracker.GetCount(pluginID)
+			if !r.backoffTracker.CanRetry(pluginID) {
+				// 2026-11-15 审计轮收口：退避耗尽必须有终态。此前这里只
+				// continue——插件永远停在 StateFailed，reconcile 每 30s
+				// WARN 一次、永不 disable（crashTracker 1h 窗口清零使
+				// CrashCount>=MaxCrashCount 的 disable 门也不可达）。
+				if st := r.backoffTracker.GetState(pluginID); st != nil && st.RetryCount >= r.backoffTracker.config.MaxRetries {
+					actions = append(actions, &ReconcileAction{
+						PluginID: pluginID,
+						Action:   ActionDisable,
+						Reason: fmt.Sprintf("Backoff retries exhausted (%d/%d), disabling",
+							st.RetryCount, r.backoffTracker.config.MaxRetries),
+					})
+					continue
+				}
+				nextRetry := r.backoffTracker.NextRetryTime(pluginID)
+				log.Printf("Plugin %s in backoff (retry %d), next attempt at %v",
+					pluginID, crashCount, nextRetry)
+				continue
+			}
+
+			// 退避期已过，允许重启
 			actions = append(actions, &ReconcileAction{
 				PluginID: pluginID,
 				Action:   ActionRestart,
-				Reason:   "Plugin in failed state",
+				Reason:   fmt.Sprintf("Plugin in failed state (retry %d)", crashCount),
 			})
 
 			// Record crash
 			r.crashTracker.RecordCrash(pluginID)
+			r.backoffTracker.RecordRetry(pluginID) // D10: 更新退避状态
 
 		case StateStopped:
 			// Plugin stopped but should be running → start
@@ -396,13 +438,23 @@ func (r *reconciler) executeAction(ctx context.Context, action *ReconcileAction)
 		if err != nil {
 			return fmt.Errorf("get manifest: %w", err)
 		}
-		return r.supervisor.Start(ctx, manifest)
+		err = r.supervisor.Start(ctx, manifest)
+		if err == nil {
+			// D10: 启动成功，重置退避状态
+			r.backoffTracker.Reset(action.PluginID)
+		}
+		return err
 
 	case ActionStop:
 		return r.supervisor.Stop(ctx, action.PluginID)
 
 	case ActionRestart:
-		return r.supervisor.Restart(ctx, action.PluginID)
+		err := r.supervisor.Restart(ctx, action.PluginID)
+		if err == nil {
+			// D10: 重启成功，重置退避状态
+			r.backoffTracker.Reset(action.PluginID)
+		}
+		return err
 
 	case ActionUpgrade:
 		manifest, err := r.registry.GetManifest(ctx, action.PluginID)
