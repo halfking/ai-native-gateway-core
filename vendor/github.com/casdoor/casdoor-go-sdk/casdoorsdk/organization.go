@@ -1,0 +1,185 @@
+// Copyright 2021 The Casdoor Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package casdoorsdk
+
+import (
+	"encoding/json"
+)
+
+type AccountItem struct {
+	Name       string `json:"name"`
+	Visible    bool   `json:"visible"`
+	ViewRule   string `json:"viewRule"`
+	ModifyRule string `json:"modifyRule"`
+	Regex      string `json:"regex"`
+	Tab        string `json:"tab"`
+}
+
+type ThemeData struct {
+	ThemeType    string `xorm:"varchar(30)" json:"themeType"`
+	ColorPrimary string `xorm:"varchar(10)" json:"colorPrimary"`
+	BorderRadius int    `xorm:"int" json:"borderRadius"`
+	IsCompact    bool   `xorm:"bool" json:"isCompact"`
+	IsEnabled    bool   `xorm:"bool" json:"isEnabled"`
+}
+
+type MfaItem struct {
+	Name string `json:"name"`
+	Rule string `json:"rule"`
+}
+
+// Organization has the same definition as https://github.com/casdoor/casdoor/blob/master/object/organization.go#L50
+type Organization struct {
+	Owner       string `xorm:"varchar(100) notnull pk" json:"owner"`
+	Name        string `xorm:"varchar(100) notnull pk" json:"name"`
+	CreatedTime string `xorm:"varchar(100)" json:"createdTime"`
+
+	DisplayName            string     `xorm:"varchar(100)" json:"displayName"`
+	WebsiteUrl             string     `xorm:"varchar(100)" json:"websiteUrl"`
+	Logo                   string     `xorm:"varchar(200)" json:"logo"`
+	LogoDark               string     `xorm:"varchar(200)" json:"logoDark"`
+	Favicon                string     `xorm:"varchar(200)" json:"favicon"`
+	HasPrivilegeConsent    bool       `xorm:"bool" json:"hasPrivilegeConsent"`
+	PasswordType           string     `xorm:"varchar(100)" json:"passwordType"`
+	PasswordSalt           string     `xorm:"varchar(100)" json:"passwordSalt"`
+	PasswordOptions        []string   `xorm:"varchar(100)" json:"passwordOptions"`
+	PasswordObfuscatorType string     `xorm:"varchar(100)" json:"passwordObfuscatorType"`
+	PasswordObfuscatorKey  string     `xorm:"varchar(100)" json:"passwordObfuscatorKey"`
+	PasswordExpireDays     int        `json:"passwordExpireDays"`
+	PasswordHistoryCount   int        `json:"passwordHistoryCount"`
+	TokenRetentionDays     int        `json:"tokenRetentionDays"`
+	RecordRetentionDays    int        `json:"recordRetentionDays"`
+	CountryCodes           []string   `xorm:"mediumtext"  json:"countryCodes"`
+	DefaultAvatar          string     `xorm:"varchar(200)" json:"defaultAvatar"`
+	UsePermanentAvatar     bool       `xorm:"bool" json:"usePermanentAvatar"`
+	DefaultApplication     string     `xorm:"varchar(100)" json:"defaultApplication"`
+	DefaultTokenFormat     string     `xorm:"varchar(100)" json:"defaultTokenFormat"`
+	DefaultTokenFields     []string   `xorm:"varchar(1000)" json:"defaultTokenFields"`
+	UserTypes              []string   `xorm:"mediumtext" json:"userTypes"`
+	Tags                   []string   `xorm:"mediumtext" json:"tags"`
+	Languages              []string   `xorm:"varchar(255)" json:"languages"`
+	ThemeData              *ThemeData `xorm:"json" json:"themeData"`
+	MasterPassword         string     `xorm:"varchar(200)" json:"masterPassword"`
+	DefaultPassword        string     `xorm:"varchar(200)" json:"defaultPassword"`
+	MasterVerificationCode string     `xorm:"varchar(100)" json:"masterVerificationCode"`
+	IpWhitelist            string     `xorm:"varchar(200)" json:"ipWhitelist"`
+	InitScore              int        `json:"initScore"`
+	EnableSoftDeletion     bool       `json:"enableSoftDeletion"`
+	IsProfilePublic        bool       `json:"isProfilePublic"`
+	UseEmailAsUsername     bool       `json:"useEmailAsUsername"`
+	EnableTour             bool       `json:"enableTour"`
+	DisableSignin          bool       `json:"disableSignin"`
+	EnableExclusiveSignin  bool       `json:"enableExclusiveSignin"`
+	MaxSessions            int        `json:"maxSessions"`
+	DisableConsole         bool       `json:"disableConsole"`
+	IpRestriction          string     `json:"ipRestriction"`
+	NavItems               []string   `xorm:"mediumtext" json:"navItems"`
+	UserNavItems           []string   `xorm:"mediumtext" json:"userNavItems"`
+	WidgetItems            []string   `xorm:"mediumtext" json:"widgetItems"`
+
+	MfaItems           []*MfaItem     `xorm:"varchar(300)" json:"mfaItems"`
+	MfaRememberInHours int            `json:"mfaRememberInHours"`
+	AccountMenu        string         `xorm:"varchar(20)" json:"accountMenu"`
+	AccountItems       []*AccountItem `xorm:"mediumtext" json:"accountItems"`
+
+	DcrPolicy string `xorm:"varchar(100)" json:"dcrPolicy"`
+
+	LdapAttributes []string `xorm:"mediumtext" json:"ldapAttributes"`
+
+	KerberosRealm       string `xorm:"varchar(200)" json:"kerberosRealm"`
+	KerberosKdcHost     string `xorm:"varchar(200)" json:"kerberosKdcHost"`
+	KerberosKeytab      string `xorm:"mediumtext" json:"kerberosKeytab"`
+	KerberosServiceName string `xorm:"varchar(100)" json:"kerberosServiceName"`
+
+	OrgBalance      float64 `json:"orgBalance"`
+	UserBalance     float64 `json:"userBalance"`
+	BalanceCredit   float64 `json:"balanceCredit"`
+	BalanceCurrency string  `xorm:"varchar(100)" json:"balanceCurrency"`
+}
+
+func (c *Client) GetOrganization(name string) (*Organization, error) {
+	queryMap := map[string]string{
+		"id": getAdminId(name),
+	}
+
+	url := c.GetUrl("get-organization", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var organization *Organization
+	err = json.Unmarshal(bytes, &organization)
+	if err != nil {
+		return nil, err
+	}
+	return organization, nil
+}
+
+func (c *Client) GetOrganizations() ([]*Organization, error) {
+	queryMap := map[string]string{
+		"owner": "admin",
+	}
+
+	url := c.GetUrl("get-organizations", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var organizations []*Organization
+	err = json.Unmarshal(bytes, &organizations)
+	if err != nil {
+		return nil, err
+	}
+	return organizations, nil
+}
+
+func (c *Client) GetOrganizationNames() ([]*Organization, error) {
+	queryMap := map[string]string{
+		"owner": "admin",
+	}
+
+	url := c.GetUrl("get-organization-names", queryMap)
+
+	bytes, err := c.DoGetBytes(url)
+	if err != nil {
+		return nil, err
+	}
+
+	var organizationNames []*Organization
+	err = json.Unmarshal(bytes, &organizationNames)
+	if err != nil {
+		return nil, err
+	}
+	return organizationNames, nil
+}
+
+func (c *Client) AddOrganization(organization *Organization) (bool, error) {
+	_, affected, err := c.modifyOrganization("add-organization", organization, nil)
+	return affected, err
+}
+
+func (c *Client) DeleteOrganization(organization *Organization) (bool, error) {
+	_, affected, err := c.modifyOrganization("delete-organization", organization, nil)
+	return affected, err
+}
+
+func (c *Client) UpdateOrganization(organization *Organization) (bool, error) {
+	_, affected, err := c.modifyOrganization("update-organization", organization, nil)
+	return affected, err
+}
