@@ -733,14 +733,14 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		ChosenModel:        winner.Candidate.CanonicalName,
 		ChosenCredentialID: winner.Candidate.CredentialID,
 		ChosenRawModel:     winner.Candidate.RawModel,
-		TaskType:    cls.Primary,
+		TaskType:           cls.Primary,
 		Confidence:         cls.Confidence,
-		Profile:     profile,
-		Classifier:  cls.Classifier,
-		Reason:      cls.Reason,
+		Profile:            profile,
+		Classifier:         cls.Classifier,
+		Reason:             cls.Reason,
 		ExternalUsage:      cls.ExternalUsage,
 		CandidatesTopN:     recommended,
-		DecidedAt:   time.Now(),
+		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 		RoleFallbackLayer:  roleFallbackLayer,
 	}
@@ -757,11 +757,11 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		if flags := GetFeatureFlags(); flags != nil && flags.EnableTierSelection {
 			agentDepth := agentDepthFromContext(ctx)
 			tierInput := TierSelectionInput{
-				TaskType:     cls.Primary,
-				Confidence:   cls.Confidence,
-				AgentDepth:   agentDepth,
-				TenantID:     "", // Populated from apiKeyID if needed
-				HeaderTier:   "", // Will be extracted from request headers in handler
+				TaskType:   cls.Primary,
+				Confidence: cls.Confidence,
+				AgentDepth: agentDepth,
+				TenantID:   "", // Populated from apiKeyID if needed
+				HeaderTier: "", // Will be extracted from request headers in handler
 			}
 			if tierResult, err := d.tierSelector.SelectTier(ctx, tierInput); err == nil && tierResult != nil {
 				decision.Tier = tierResult.Tier

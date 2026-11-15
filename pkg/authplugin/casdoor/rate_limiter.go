@@ -11,17 +11,17 @@ import (
 
 // RateLimiter implements token bucket rate limiting with Redis backend.
 type RateLimiter struct {
-	redis         *redis.Client
-	keyPrefix     string
-	mu            sync.RWMutex
-	localBuckets  map[string]*TokenBucket // Fallback for when Redis is unavailable
+	redis        *redis.Client
+	keyPrefix    string
+	mu           sync.RWMutex
+	localBuckets map[string]*TokenBucket // Fallback for when Redis is unavailable
 }
 
 // TokenBucket represents a token bucket for rate limiting.
 type TokenBucket struct {
-	Capacity       int       `json:"capacity"`        // Maximum tokens
-	RefillRate     int       `json:"refill_rate"`     // Tokens per second
-	Tokens         int       `json:"tokens"`          // Current tokens
+	Capacity       int       `json:"capacity"`    // Maximum tokens
+	RefillRate     int       `json:"refill_rate"` // Tokens per second
+	Tokens         int       `json:"tokens"`      // Current tokens
 	LastRefillTime time.Time `json:"last_refill_time"`
 }
 
@@ -118,9 +118,16 @@ func (r *RateLimiter) AllowN(ctx context.Context, key string, rule *RateLimitRul
 }
 
 // GetRemaining returns the number of remaining requests.
+//
+// ★ 2026-11-16 12h 修订审计轮 P2 根修：rule == nil 时原来直接解引用
+//
+//	`rule.Capacity` ⇒ **nil 指针 panic**（同文件的 Allow 在同一情形下
+//	返回 `true, nil`，两处语义本就不一致）。
+//	现在：无规则 ⇒ 剩余额度记为 0（不限制），与 Allow 的「无规则即放行」
+//	语义对齐（0 = 不再扣减，且不 panic）。
 func (r *RateLimiter) GetRemaining(ctx context.Context, key string, rule *RateLimitRule) (int, error) {
 	if rule == nil {
-		return rule.Capacity, nil
+		return 0, nil
 	}
 
 	// Try Redis first
@@ -208,7 +215,7 @@ func (r *RateLimiter) allowLocal(key string, rule *RateLimitRule) bool {
 	now := time.Now()
 	elapsed := now.Sub(bucket.LastRefillTime).Seconds()
 	tokensToAdd := int(elapsed * float64(bucket.RefillRate))
-	
+
 	if tokensToAdd > 0 {
 		bucket.Tokens += tokensToAdd
 		if bucket.Tokens > bucket.Capacity {
@@ -265,7 +272,7 @@ func (r *RateLimiter) getRemainingLocal(key string, rule *RateLimitRule) int {
 	now := time.Now()
 	elapsed := now.Sub(bucket.LastRefillTime).Seconds()
 	tokensToAdd := int(elapsed * float64(bucket.RefillRate))
-	
+
 	tokens := bucket.Tokens + tokensToAdd
 	if tokens > bucket.Capacity {
 		tokens = bucket.Capacity

@@ -93,7 +93,7 @@ func TestCasdoorAuthProvider_Integration(t *testing.T) {
 			Username: testUsername,
 			Password: testPassword,
 		}
-		
+
 		token, err := provider.Authenticate(ctx, req)
 		require.NoError(t, err, "authentication failed")
 		assert.NotEmpty(t, token.Token)
@@ -117,7 +117,7 @@ func TestCasdoorAuthProvider_Integration(t *testing.T) {
 			Username: testUsername,
 			Password: "wrong-password",
 		}
-		
+
 		_, err := provider.Authenticate(ctx, req)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, authplugin.ErrInvalidCredentials)
@@ -440,7 +440,7 @@ func TestFullAuthFlow_Integration(t *testing.T) {
 		Username: testUsername,
 		Password: testPassword,
 	}
-	
+
 	token, err := authProvider.Authenticate(ctx, req)
 	require.NoError(t, err, "authentication failed")
 	assert.NotEmpty(t, token.Token)

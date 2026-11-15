@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -198,7 +199,7 @@ func NewReconciler(config *Config, supervisor SupervisorInterface, registry Plug
 		registry:       registry,
 		stopCh:         make(chan struct{}),
 		crashTracker:   NewCrashTracker(config.CrashResetWindow),
-		backoffTracker: NewBackoffTracker(backoffCfg), // D10: 退避跟踪器
+		backoffTracker: NewBackoffTracker(backoffCfg),         // D10: 退避跟踪器
 		healthTracker:  NewHealthTracker(config.HealthWindow), // 2026-11-15 P2审计
 	}
 }
@@ -228,6 +229,16 @@ func (r *reconciler) Start(ctx context.Context) error {
 	go func() {
 		defer close(done)
 		defer ticker.Stop()
+		// ★ 2026-11-16 12h 修订审计轮 P2 根修：后台循环加 recover。
+		//   goroutine 里的 panic **不会**被上层捕获 ⇒ 未捕获的 panic 直接
+		//   终止**整个进程**（不是只死这个 goroutine）⇒ 一条畸形状态就能
+		//   把整台网关带走。
+		//   同型面：plugin-runtime/controller/controller.go 的后台循环。
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("ERROR: Reconciler loop panicked: %v\n%s", rec, debug.Stack())
+			}
+		}()
 		for {
 			select {
 			case <-ticker.C:
@@ -404,30 +415,30 @@ func (r *reconciler) computeActions(desired, actual map[string]*PluginState) []*
 				Reason:   "Plugin stopped but desired running",
 			})
 
-			case StateRunning:
-				// 2026-11-15 P2审计修复: 持续健康窗口后重置退避
-				// 检查插件是否已持续健康足够长时间
-				if r.healthTracker.ShouldReset(pluginID) {
-					// 插件已持续健康，可以重置退避计数
-					r.backoffTracker.Reset(pluginID)
-					r.healthTracker.MarkReset(pluginID)
-					log.Printf("Plugin %s sustained healthy for %v, backoff reset",
-						pluginID, r.config.HealthWindow)
-				}
-				
-				// Check version mismatch
-				if desiredState.Version != "" && actualState.Version != "" &&
-					actualState.Version != desiredState.Version {
-					// Version mismatch → upgrade
-					actions = append(actions, &ReconcileAction{
-						PluginID:   pluginID,
-						Action:     ActionUpgrade,
-						Reason:     fmt.Sprintf("Version mismatch: %s -> %s", actualState.Version, desiredState.Version),
-						OldVersion: actualState.Version,
-						NewVersion: desiredState.Version,
-					})
-				}
+		case StateRunning:
+			// 2026-11-15 P2审计修复: 持续健康窗口后重置退避
+			// 检查插件是否已持续健康足够长时间
+			if r.healthTracker.ShouldReset(pluginID) {
+				// 插件已持续健康，可以重置退避计数
+				r.backoffTracker.Reset(pluginID)
+				r.healthTracker.MarkReset(pluginID)
+				log.Printf("Plugin %s sustained healthy for %v, backoff reset",
+					pluginID, r.config.HealthWindow)
 			}
+
+			// Check version mismatch
+			if desiredState.Version != "" && actualState.Version != "" &&
+				actualState.Version != desiredState.Version {
+				// Version mismatch → upgrade
+				actions = append(actions, &ReconcileAction{
+					PluginID:   pluginID,
+					Action:     ActionUpgrade,
+					Reason:     fmt.Sprintf("Version mismatch: %s -> %s", actualState.Version, desiredState.Version),
+					OldVersion: actualState.Version,
+					NewVersion: desiredState.Version,
+				})
+			}
+		}
 	}
 
 	// Check for plugins that shouldn't be running
@@ -509,6 +520,11 @@ func (r *reconciler) executeAction(ctx context.Context, action *ReconcileAction)
 		if stopErr != nil {
 			log.Printf("WARN: Stop plugin failed (will continue to disable): %v", stopErr)
 		}
+		// ★ 2026-11-16 12h 修订审计轮 P2 根修：禁用时清掉健康窗口状态。
+		//   HealthTracker 的 startTimes/lastResetTime 按 pluginID 增长，而
+		//   Clear() 在全仓**没有任何调用方** ⇒ 状态表只增不减（内存泄漏面）。
+		//   插件被禁用即其健康观测不再有意义 ⇒ 这里补上唯一的自然回收点。
+		r.healthTracker.Clear(action.PluginID)
 		// Update status in registry
 		return errors.Join(stopErr, r.registry.UpdateStatus(ctx, action.PluginID, StatusDisabled))
 

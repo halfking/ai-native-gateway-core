@@ -382,3 +382,4 @@
 364	964_promote_session_turns_default_retention_realign.sql
 365	965_api_key_concurrency_minute.sql
 366	966_auth_id_mapping_canonical_channel.sql
+367	967_prompt_injection_llm_policy_columns.sql

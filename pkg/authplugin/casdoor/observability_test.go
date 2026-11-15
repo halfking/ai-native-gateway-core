@@ -21,7 +21,7 @@ func TestMetricsCollector_Authentication(t *testing.T) {
 
 	t.Run("RecordSuccessfulAuth", func(t *testing.T) {
 		collector.RecordAuthAttempt(true, 100*time.Millisecond)
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(1), metrics.AuthAttempts)
 		assert.Equal(t, int64(1), metrics.AuthSuccesses)
@@ -32,7 +32,7 @@ func TestMetricsCollector_Authentication(t *testing.T) {
 	t.Run("RecordFailedAuth", func(t *testing.T) {
 		collector.Reset()
 		collector.RecordAuthAttempt(false, 50*time.Millisecond)
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(1), metrics.AuthAttempts)
 		assert.Equal(t, int64(0), metrics.AuthSuccesses)
@@ -44,7 +44,7 @@ func TestMetricsCollector_Authentication(t *testing.T) {
 		collector.Reset()
 		collector.RecordAuthAttempt(true, 100*time.Millisecond)
 		collector.RecordAuthAttempt(true, 200*time.Millisecond)
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, 150.0, metrics.AuthAvgLatencyMs)
 	})
@@ -56,7 +56,7 @@ func TestMetricsCollector_Tokens(t *testing.T) {
 	t.Run("RecordTokenValidation", func(t *testing.T) {
 		collector.RecordTokenValidation(true)
 		collector.RecordTokenValidation(false)
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(2), metrics.TokenValidations)
 		assert.Equal(t, int64(1), metrics.TokenValidSuccess)
@@ -68,7 +68,7 @@ func TestMetricsCollector_Tokens(t *testing.T) {
 		collector.Reset()
 		collector.RecordTokenRefresh()
 		collector.RecordTokenRefresh()
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(2), metrics.TokenRefreshes)
 	})
@@ -96,7 +96,7 @@ func TestMetricsCollector_MFA(t *testing.T) {
 		collector.RecordMFAEnabled()
 		collector.RecordMFAVerification(true)
 		collector.RecordMFAVerification(false)
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(1), metrics.MFAEnabled)
 		assert.Equal(t, int64(2), metrics.MFAVerifications)
@@ -113,7 +113,7 @@ func TestMetricsCollector_Sessions(t *testing.T) {
 		collector.RecordSessionCreation()
 		collector.RecordSessionCreation()
 		collector.RecordSessionRefresh()
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(2), metrics.SessionCreations)
 		assert.Equal(t, int64(1), metrics.SessionRefreshes)
@@ -132,7 +132,7 @@ func TestMetricsCollector_RateLimit(t *testing.T) {
 	t.Run("RecordRateLimitChecks", func(t *testing.T) {
 		collector.RecordRateLimitCheck(false)
 		collector.RecordRateLimitCheck(true)
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(2), metrics.RateLimitChecks)
 		assert.Equal(t, int64(1), metrics.RateLimitBlocked)
@@ -147,7 +147,7 @@ func TestMetricsCollector_Errors(t *testing.T) {
 		collector.RecordError("invalid_credentials")
 		collector.RecordError("invalid_credentials")
 		collector.RecordError("token_expired")
-		
+
 		metrics := collector.GetMetrics()
 		assert.Equal(t, int64(2), metrics.Errors["invalid_credentials"])
 		assert.Equal(t, int64(1), metrics.Errors["token_expired"])
@@ -174,9 +174,9 @@ func TestMetricsCollector_Reset(t *testing.T) {
 
 func TestMetricsCollector_Uptime(t *testing.T) {
 	collector := NewMetricsCollector()
-	
+
 	time.Sleep(100 * time.Millisecond)
-	
+
 	metrics := collector.GetMetrics()
 	assert.True(t, metrics.Uptime >= 100*time.Millisecond)
 }
@@ -185,7 +185,7 @@ func TestHealthChecker(t *testing.T) {
 	t.Run("AllHealthy", func(t *testing.T) {
 		checker := NewHealthChecker("http://casdoor:8000", "db", "redis")
 		ctx := context.Background()
-		
+
 		status := checker.Check(ctx)
 		assert.NotNil(t, status)
 		assert.NotEmpty(t, status.Components)
@@ -195,7 +195,7 @@ func TestHealthChecker(t *testing.T) {
 	t.Run("NoDatabase", func(t *testing.T) {
 		checker := NewHealthChecker("http://casdoor:8000", nil, nil)
 		ctx := context.Background()
-		
+
 		status := checker.Check(ctx)
 		assert.False(t, status.Healthy)
 		assert.Equal(t, "unhealthy", status.Status)
@@ -204,7 +204,7 @@ func TestHealthChecker(t *testing.T) {
 	t.Run("NoCasdoor", func(t *testing.T) {
 		checker := NewHealthChecker("", "db", nil)
 		ctx := context.Background()
-		
+
 		status := checker.Check(ctx)
 		assert.NotNil(t, status)
 		assert.Equal(t, "not_configured", status.Components["casdoor"])
@@ -220,7 +220,7 @@ func TestLogger(t *testing.T) {
 
 	t.Run("LogEntry", func(t *testing.T) {
 		logger := NewLogger(10)
-		
+
 		entry := LogEntry{
 			Level:    "info",
 			Message:  "Test message",
@@ -229,9 +229,9 @@ func TestLogger(t *testing.T) {
 			Action:   "login",
 			Status:   "success",
 		}
-		
+
 		logger.Log(entry)
-		
+
 		logs := logger.GetRecentLogs(1)
 		require.Len(t, logs, 1)
 		assert.Equal(t, "info", logs[0].Level)
@@ -241,7 +241,7 @@ func TestLogger(t *testing.T) {
 
 	t.Run("MaxSize", func(t *testing.T) {
 		logger := NewLogger(5)
-		
+
 		// Add 10 entries
 		for i := 0; i < 10; i++ {
 			logger.Log(LogEntry{
@@ -249,7 +249,7 @@ func TestLogger(t *testing.T) {
 				Message: "Test",
 			})
 		}
-		
+
 		// Should only keep last 5
 		logs := logger.GetRecentLogs(100)
 		assert.Len(t, logs, 5)
@@ -257,7 +257,7 @@ func TestLogger(t *testing.T) {
 
 	t.Run("GetRecentLogs", func(t *testing.T) {
 		logger := NewLogger(100)
-		
+
 		// Add 5 entries
 		for i := 0; i < 5; i++ {
 			logger.Log(LogEntry{
@@ -265,17 +265,17 @@ func TestLogger(t *testing.T) {
 				Message: "Test",
 			})
 		}
-		
+
 		logs := logger.GetRecentLogs(3)
 		assert.Len(t, logs, 3)
 	})
 
 	t.Run("Clear", func(t *testing.T) {
 		logger := NewLogger(100)
-		
+
 		logger.Log(LogEntry{Level: "info", Message: "Test"})
 		logger.Clear()
-		
+
 		logs := logger.GetRecentLogs(100)
 		assert.Empty(t, logs)
 	})
@@ -299,7 +299,7 @@ func TestLogLevels(t *testing.T) {
 // BenchmarkMetricsCollector_RecordAuth benchmarks auth recording.
 func BenchmarkMetricsCollector_RecordAuth(b *testing.B) {
 	collector := NewMetricsCollector()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		collector.RecordAuthAttempt(true, 100*time.Millisecond)
@@ -309,12 +309,12 @@ func BenchmarkMetricsCollector_RecordAuth(b *testing.B) {
 // BenchmarkMetricsCollector_GetMetrics benchmarks metrics retrieval.
 func BenchmarkMetricsCollector_GetMetrics(b *testing.B) {
 	collector := NewMetricsCollector()
-	
+
 	// Add some data
 	for i := 0; i < 100; i++ {
 		collector.RecordAuthAttempt(true, 100*time.Millisecond)
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		collector.GetMetrics()
@@ -324,12 +324,12 @@ func BenchmarkMetricsCollector_GetMetrics(b *testing.B) {
 // TestConcurrentMetrics tests concurrent metric recording.
 func TestConcurrentMetrics(t *testing.T) {
 	collector := NewMetricsCollector()
-	
+
 	// Run concurrent updates
 	concurrency := 10
 	iterations := 100
 	done := make(chan bool, concurrency)
-	
+
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			for j := 0; j < iterations; j++ {
@@ -340,12 +340,12 @@ func TestConcurrentMetrics(t *testing.T) {
 			done <- true
 		}()
 	}
-	
+
 	// Wait for completion
 	for i := 0; i < concurrency; i++ {
 		<-done
 	}
-	
+
 	metrics := collector.GetMetrics()
 	expected := int64(concurrency * iterations)
 	assert.Equal(t, expected, metrics.AuthAttempts)

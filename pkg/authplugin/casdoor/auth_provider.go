@@ -2,14 +2,48 @@ package casdoor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	casdoorsdk "github.com/casdoor/casdoor-go-sdk/casdoorsdk"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/oauth2"
 
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 )
+
+// isCasdoorCredentialError 判断 err 是否属于「凭据/授权配置类」错误。
+//
+// ★ 判据：oauth2.RetrieveError 且其 RFC 6749 error code 属凭据族
+//
+//	（invalid_grant = 用户名或密码错；invalid_client = client_id/secret 错；
+//	unauthorized_client = 应用没勾选 password grant）。
+//	⇒ 这些仍归 authplugin.ErrInvalidCredentials（调用方映成 401）。
+//
+// ★ 其它一切（网络不可达 / DNS 失败 / 超时 / 5xx / 未知错误）**不**归凭据错
+//
+//	⇒ 归服务故障（502/503 语义），且不计入登录失败计数。
+//
+// ★ 为什么必须分：Casdoor 一次抖动与「用户输错密码」在调用方完全不可区分时，
+//
+//	运维会被指向错误方向（且真实故障无日志可查）。
+func isCasdoorCredentialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var retrieveErr *oauth2.RetrieveError
+	if !errors.As(err, &retrieveErr) {
+		return false
+	}
+	switch retrieveErr.ErrorCode {
+	case "invalid_grant", "invalid_client", "unauthorized_client":
+		return true
+	default:
+		return false
+	}
+}
 
 // CasdoorAuthProvider implements authplugin.AuthProvider using Casdoor.
 // It handles authentication via Casdoor OAuth2/OIDC and maps external
@@ -102,8 +136,26 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 	// （GetOAuthTokenByPassword；前提：Casdoor 应用 Grant types 勾选 password）。
 	token, err := p.client.GetOAuthTokenByPassword(req.Username, req.Password)
 	if err != nil {
-		// Casdoor returns error for invalid credentials
-		return nil, authplugin.ErrInvalidCredentials
+		// ★ 2026-11-16 12h 修订审计轮 P2 根修：**区分「凭据错」与「服务故障」**。
+		//   旧实现把 SDK 返回的**所有**错误一律归成 ErrInvalidCredentials，
+		//   且**无任何日志** ⇒ Casdoor 网络不可达 / DNS 失败 / 5xx /
+		//   client_secret 配错 / 应用未勾选 password grant——这些**服务侧故障**
+		//   与「用户输错密码」在调用方完全不可区分。
+		//   后果：① admin/auth.go 会把它映成 401「password does not match」
+		//   并计入登录失败计数（recordLoginFailure）⇒ **Casdoor 一次抖动就
+		//   把该租户的登录失败率打上去**，运维被指向错误方向；
+		//   ② 真实故障无日志 ⇒ 无从排查。
+		//
+		//   现在：凭据类错误（oauth2.RetrieveError / invalid_grant 等）仍归
+		//   ErrInvalidCredentials；其余（网络/超时/5xx/配置）归为**服务故障**
+		//   并**留 WARN 日志**（含错误原文，不含密码）。
+		if isCasdoorCredentialError(err) {
+			return nil, authplugin.ErrInvalidCredentials
+		}
+		slog.Warn("casdoor: password grant failed for a non-credential reason "+
+			"(treat as service fault, not bad password)",
+			"username", req.Username, "error", err)
+		return nil, fmt.Errorf("casdoor password grant failed: %w", err)
 	}
 
 	if token == nil || token.AccessToken == "" {
@@ -136,9 +188,9 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 	internalID, err := p.idMapper.MapOrCreate(
 		ctx,
 		"casdoor",
-		user.Id,         // Casdoor UUID
-		user.Owner,      // Organization = tenant
-		user.Name,       // Username
+		user.Id,    // Casdoor UUID
+		user.Owner, // Organization = tenant
+		user.Name,  // Username
 		user.DisplayName,
 		user.Email,
 	)

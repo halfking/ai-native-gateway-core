@@ -148,16 +148,16 @@ func TestSelectTierV3DisabledIsBlanketTierB(t *testing.T) {
 func TestSelectTierV3EnabledNowSupportsV2Types(t *testing.T) {
 	ts := NewTierSelector(nil, true)
 	testCases := []struct {
-		taskType  TaskType
-		wantTier  string
-		reason    string
+		taskType TaskType
+		wantTier string
+		reason   string
 	}{
 		{TaskReasoning, "tier-a", "reasoning requires strong analytical capability"},
 		{TaskCode, "tier-b", "code generation maps to standard tier-b"},
 		{TaskPlanning, "tier-a", "planning requires deep reasoning"},
 		{TaskCodeAudit, "tier-a", "code review (audit) needs thorough analysis"},
 	}
-	
+
 	for _, tc := range testCases {
 		got, err := ts.SelectTier(context.Background(), TierSelectionInput{
 			TaskType: tc.taskType, Confidence: 0.95,

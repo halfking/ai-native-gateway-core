@@ -12,11 +12,11 @@ type MetricsCollector struct {
 	mu sync.RWMutex
 
 	// Authentication metrics
-	authAttempts        int64
-	authSuccesses       int64
-	authFailures        int64
-	authLatencySum      int64 // in milliseconds
-	authLatencyCount    int64
+	authAttempts     int64
+	authSuccesses    int64
+	authFailures     int64
+	authLatencySum   int64 // in milliseconds
+	authLatencyCount int64
 
 	// Token metrics
 	tokenValidations    int64
@@ -25,30 +25,30 @@ type MetricsCollector struct {
 	tokenRefreshes      int64
 
 	// User metrics
-	userCreations       int64
-	userUpdates         int64
-	userDeletions       int64
-	userLookups         int64
+	userCreations int64
+	userUpdates   int64
+	userDeletions int64
+	userLookups   int64
 
 	// MFA metrics
-	mfaEnabled          int64
-	mfaVerifications    int64
-	mfaSuccesses        int64
-	mfaFailures         int64
+	mfaEnabled       int64
+	mfaVerifications int64
+	mfaSuccesses     int64
+	mfaFailures      int64
 
 	// Session metrics
-	sessionCreations    int64
-	sessionRefreshes    int64
-	sessionDeletions    int64
-	activeSessions      int64
+	sessionCreations int64
+	sessionRefreshes int64
+	sessionDeletions int64
+	activeSessions   int64
 
 	// Rate limiting metrics
-	rateLimitChecks     int64
-	rateLimitBlocked    int64
+	rateLimitChecks  int64
+	rateLimitBlocked int64
 
 	// Error metrics
-	errors              map[string]int64
-	errorsMu            sync.RWMutex
+	errors   map[string]int64
+	errorsMu sync.RWMutex
 
 	// Start time
 	startTime time.Time
@@ -171,11 +171,11 @@ func (m *MetricsCollector) RecordError(errorType string) {
 // Metrics represents collected metrics.
 type Metrics struct {
 	// Authentication
-	AuthAttempts      int64   `json:"auth_attempts"`
-	AuthSuccesses     int64   `json:"auth_successes"`
-	AuthFailures      int64   `json:"auth_failures"`
-	AuthSuccessRate   float64 `json:"auth_success_rate"`
-	AuthAvgLatencyMs  float64 `json:"auth_avg_latency_ms"`
+	AuthAttempts     int64   `json:"auth_attempts"`
+	AuthSuccesses    int64   `json:"auth_successes"`
+	AuthFailures     int64   `json:"auth_failures"`
+	AuthSuccessRate  float64 `json:"auth_success_rate"`
+	AuthAvgLatencyMs float64 `json:"auth_avg_latency_ms"`
 
 	// Tokens
 	TokenValidations  int64   `json:"token_validations"`
@@ -204,8 +204,8 @@ type Metrics struct {
 	ActiveSessions   int64 `json:"active_sessions"`
 
 	// Rate Limiting
-	RateLimitChecks   int64   `json:"rate_limit_checks"`
-	RateLimitBlocked  int64   `json:"rate_limit_blocked"`
+	RateLimitChecks    int64   `json:"rate_limit_checks"`
+	RateLimitBlocked   int64   `json:"rate_limit_blocked"`
 	RateLimitBlockRate float64 `json:"rate_limit_block_rate"`
 
 	// Errors

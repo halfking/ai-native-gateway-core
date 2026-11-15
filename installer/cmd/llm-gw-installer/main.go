@@ -1617,6 +1617,35 @@ var apiKeyConcurrencyMinute965 []byte
 //go:embed embeddata/startup/965_api_key_concurrency_minute.down.sql
 var apiKeyConcurrencyMinute965Down []byte
 
+// ★ 966（2026-11-15 12h 修订审计轮 P1 收口）：auth_id_mapping 身份映射表
+//
+//	收编 startup 正典通道（原顶层 migrations/036_ 撞号死文件）。
+//
+//	★ 2026-11-16 12h 审计轮补正：本文件此前**只登记未投递**——runner.go
+//	  StartupFiles 与 installed_startup_migrations.tsv 都已登记，但
+//	  embeddata 副本缺失 ⇒ 全新安装/升级在 966 中断（installer's
+//	  applySQL 读不到文件）⇒ 三条安装器守卫在 HEAD 直接红。
+//	  本次补齐 embeddata 副本 + //go:embed + embeddedSQLFiles 映射。
+//
+//go:embed embeddata/startup/966_auth_id_mapping_canonical_channel.sql
+var authIDMappingCanonicalChannel966 []byte
+
+//go:embed embeddata/startup/966_auth_id_mapping_canonical_channel.down.sql
+var authIDMappingCanonicalChannel966Down []byte
+
+// ★ 967（2026-11-16 12h 修订审计轮 P1 根修）：prompt_injection_policies 补
+//
+//	三列（LLM 判官的成本/失败模式控制列）。
+//
+//	★ 967 与 966 同型病：投影加了列、迁移没跟上 ⇒ getPolicy 报 42703 ⇒
+//	  Detect 报错 ⇒ hook 降级 allow ⇒ 整个注入检测域静默全放行。
+//
+//go:embed embeddata/startup/967_prompt_injection_llm_policy_columns.sql
+var promptInjectionLLMPolicyColumns967 []byte
+
+//go:embed embeddata/startup/967_prompt_injection_llm_policy_columns.down.sql
+var promptInjectionLLMPolicyColumns967Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2193,6 +2222,13 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/964_promote_session_turns_default_retention_realign.down.sql": promoteSessionTurnsDefaultRetentionRealign963Down,
 	"startup/965_api_key_concurrency_minute.sql":                           apiKeyConcurrencyMinute965,
 	"startup/965_api_key_concurrency_minute.down.sql":                      apiKeyConcurrencyMinute965Down,
+	// ★ 966（2026-11-16 12h 审计轮补正）：此前只登记未投递 ⇒ 补 embeddata 副本
+	// + //go:embed + 本映射三项，缺任一项 installer 都在 966 中断。
+	"startup/966_auth_id_mapping_canonical_channel.sql":      authIDMappingCanonicalChannel966,
+	"startup/966_auth_id_mapping_canonical_channel.down.sql": authIDMappingCanonicalChannel966Down,
+	// ★ 967（2026-11-16 12h 审计轮补正）：prompt_injection_policies 三列。
+	"startup/967_prompt_injection_llm_policy_columns.sql":      promptInjectionLLMPolicyColumns967,
+	"startup/967_prompt_injection_llm_policy_columns.down.sql": promptInjectionLLMPolicyColumns967Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

@@ -1858,6 +1858,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"964_promote_session_turns_default_retention_realign.sql",
 			"965_api_key_concurrency_minute.sql",
 			"966_auth_id_mapping_canonical_channel.sql",
+			// 967（2026-11-16 12h 修订审计轮 P1 根修）：prompt_injection_policies
+			// 补三列（llm_detection_fail_closed / llm_detection_sample_rate /
+			// llm_detection_timeout_sec）。
+			//
+			// ★ 与 966 同型病：5a73df106 在 detector.go 的投影里用了这三列，
+			//   但全仓 *.sql 零命中 ⇒ getPolicy 报 42703 column does not exist
+			//   ⇒ Detect 报错 ⇒ hook 记一行 metadata 后 return nil（verdict=allow）
+			//   ⇒ **整个提示词注入检测域静默全放行**。
+			// ★ 提交说明里「读侧 COALESCE 已防 NULL」是误判：COALESCE 挡 NULL，
+			//   挡不住「列根本不存在」。
+			"967_prompt_injection_llm_policy_columns.sql",
 		},
 	}
 }

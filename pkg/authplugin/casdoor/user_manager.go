@@ -91,6 +91,19 @@ func (m *CasdoorUserManager) GetUser(ctx context.Context, userID int) (*authplug
 		return nil, fmt.Errorf("failed to fetch user %s from casdoor: %w", externalID, err)
 	}
 
+	// ★ 2026-11-16 12h 修订审计轮 P2 根修：SDK 在响应体为 `null` 时返回
+	//   (nil, nil)——错误为 nil，但 user 是 nil 指针（casdoorsdk 的
+	//   GetUserByUserId 里 `var user *User; json.Unmarshal(bytes, &user)`
+	//   对 `null` 不报错、也不赋值）。
+	//   ⇒ 旧实现直接解引用 user.Owner ⇒ **nil 指针 panic**。
+	//   ⇒ 旧行为（本轮之前走全量 GetUsers 未命中）返回的是
+	//   authplugin.ErrNotFound ⇒ 「用户不存在」由「返回错误」退化成
+	//   「panic」（net/http 会断连该请求，而不是回 401/404）。
+	//   现在：显式判 nil 并回 ErrNotFound，语义回到「用户不存在」。
+	if user == nil {
+		return nil, authplugin.ErrNotFound
+	}
+
 	// Verify tenant matches (defense in depth)
 	if user.Owner != tenantID {
 		return nil, fmt.Errorf("user %s owner mismatch: expected %s, got %s", externalID, tenantID, user.Owner)
@@ -558,6 +571,6 @@ func (m *CasdoorUserManager) convertUser(cu *casdoorsdk.User, internalID int) *a
 // contains is a simple case-insensitive substring check helper.
 func contains(s, substr string) bool {
 	// Simple implementation - in production, use strings.Contains with lowercasing
-	return len(s) > 0 && len(substr) > 0 && 
+	return len(s) > 0 && len(substr) > 0 &&
 		(s == substr || len(s) >= len(substr))
 }

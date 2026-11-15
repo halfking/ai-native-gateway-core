@@ -393,10 +393,10 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		ChosenCredentialID: winner.Candidate.CredentialID,
 		ChosenRawModel:     winner.Candidate.RawModel,
 		TaskType:           cls.Primary,
-		Confidence:  cls.Confidence,
-		Profile:     profile,
-		Classifier:  cls.Classifier + "_v2",
-		Reason:      cls.Reason,
+		Confidence:         cls.Confidence,
+		Profile:            profile,
+		Classifier:         cls.Classifier + "_v2",
+		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
 		TierFailoverModels: tierFailoverModels,
 		EnabledFeatures:    enabledFeatures,
@@ -418,11 +418,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		if flags := GetFeatureFlags(); flags != nil && flags.EnableTierSelection {
 			agentDepth := agentDepthFromContext(ctx)
 			tierInput := TierSelectionInput{
-				TaskType:     cls.Primary,
-				Confidence:   cls.Confidence,
-				AgentDepth:   agentDepth,
-				TenantID:     "", // Populated from apiKeyID if needed
-				HeaderTier:   "", // Will be extracted from request headers in handler
+				TaskType:   cls.Primary,
+				Confidence: cls.Confidence,
+				AgentDepth: agentDepth,
+				TenantID:   "", // Populated from apiKeyID if needed
+				HeaderTier: "", // Will be extracted from request headers in handler
 			}
 			if tierResult, err := d.tierSelector.SelectTier(ctx, tierInput); err == nil && tierResult != nil {
 				decision.Tier = tierResult.Tier

@@ -130,7 +130,7 @@ func (m *CasdoorTenantManager) CreateTenant(ctx context.Context, req *authplugin
 	org := &casdoorsdk.Organization{
 		Owner:       "admin", // Default owner for organizations
 		Name:        req.ID,
-		CreatedTime: "",      // Will be set by Casdoor
+		CreatedTime: "", // Will be set by Casdoor
 		DisplayName: req.Name,
 		WebsiteUrl:  "",
 		Favicon:     "",

@@ -54,10 +54,10 @@ type ExportedUser struct {
 
 // BatchResult represents the result of a batch operation.
 type BatchResult struct {
-	Total     int          `json:"total"`
-	Succeeded int          `json:"succeeded"`
-	Failed    int          `json:"failed"`
-	Errors    []BatchError `json:"errors,omitempty"`
+	Total     int           `json:"total"`
+	Succeeded int           `json:"succeeded"`
+	Failed    int           `json:"failed"`
+	Errors    []BatchError  `json:"errors,omitempty"`
 	Duration  time.Duration `json:"duration"`
 }
 
@@ -140,7 +140,7 @@ func (b *BatchUserImporter) ImportUsersFromCSV(ctx context.Context, filePath str
 
 	// Read CSV
 	reader := csv.NewReader(file)
-	
+
 	// Skip header
 	if _, err := reader.Read(); err != nil {
 		return nil, fmt.Errorf("read header: %w", err)

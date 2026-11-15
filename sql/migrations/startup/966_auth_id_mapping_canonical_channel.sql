@@ -36,6 +36,19 @@
 -- UP（幂等，重放安全）
 -- ============================================================================
 
+-- ★ 2026-11-16 12h 修订审计轮补正：本文件此前**既无事务块也无 lock_timeout**
+--   ⇒ ① `SET LOCAL` 写在事务块外会只发一条 WARNING、**值不生效**（空文守卫）；
+--   ② ADD/CREATE INDEX（ACCESS EXCLUSIVE）可能**无限期等锁**堵住全库
+--      （installer 的 startup_ddl_lock_guard_gate_test.go 门 >870 号迁移）。
+--   ⇒ 现在补 BEGIN/COMMIT + lock_timeout + statement_timeout。
+--   ★ 966 从未被任何环境应用过（投递通道此前就是断的，见审计档 P1-1）⇒
+--   改字节不撞 R189「已应用迁移字节冻结」。
+
+BEGIN;
+
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+
 -- External identity mapping table
 -- Maps external provider identities (Casdoor UUIDs, LDAP DNs, etc.) to internal user IDs
 CREATE TABLE IF NOT EXISTS auth_id_mapping (
@@ -118,3 +131,34 @@ SELECT
 FROM users
 WHERE EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users')
 ON CONFLICT (provider, external_id, tenant_id) DO NOTHING;
+
+-- ★ 2026-11-16 12h 修订审计轮 P2 根修：backfill 之后**推进序列**。
+--
+--   上面的 backfill **显式插入 internal_id**（= users.id）⇒ 不触发 nextval
+--   ⇒ 序列仍停在 1 ⇒ 后续 id_mapper.MapOrCreate 取号撞上已回填行
+--   ⇒ **PK 冲突 23505** ⇒ 登录 500（存量库跑完本迁移后必现）。
+--   ⇒ 且重放时若 backfill 的显式 id 撞上「序列已发出去」的号，整份迁移失败。
+--   同族先例：534/566/609/622 迁移都有 setval。
+--
+--   口径：setval(seq, MAX(internal_id), is_called=true) ⇒ 下一次 nextval = MAX+1。
+--   ★ 表为空时用 is_called=false + 值 1 ⇒ 下一次 nextval = 1（不跳号）。
+--   ★ 用 DO $$ 包裹且先判序列是否存在：手工建过表的库（早于 SERIAL 定义的
+--     变体）没有该序列 ⇒ 跳过而不是让整份迁移失败。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = 'auth_id_mapping_internal_id_seq'
+          AND n.nspname = 'public'
+    ) THEN
+        PERFORM setval(
+            'public.auth_id_mapping_internal_id_seq',
+            GREATEST(COALESCE((SELECT MAX(internal_id) FROM public.auth_id_mapping), 0), 1),
+            EXISTS (SELECT 1 FROM public.auth_id_mapping)
+        );
+    END IF;
+END $$;
+
+COMMIT;

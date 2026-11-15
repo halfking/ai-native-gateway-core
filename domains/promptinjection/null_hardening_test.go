@@ -47,55 +47,57 @@ import (
 // nullableColumnExpectations：表 → (可空列 → 期望的 COALESCE 默认值)。
 //
 // 默认值取自各表的 schema DEFAULT（sql/objects/tables/）：
-//   · prompt_injection_rules.sql      —— description **无 DEFAULT** ⇒ ''
-//   · prompt_injection_policies.sql   —— enabled/detection_mode/…
-//   · severity_action_matrix.sql      —— observe_action/enforce_action/…
 //
-// ★ description 的默认是 ''（空串）而不是 NULL：**列本身可空**，但本仓
-//   读它时要求「有值」⇒ 用 '' 表达「没有描述」，与 category_new /
-//   action_override 同族处置。
+//	· prompt_injection_rules.sql      —— description **无 DEFAULT** ⇒ ''
+//	· prompt_injection_policies.sql   —— enabled/detection_mode/…
+//	· severity_action_matrix.sql      —— observe_action/enforce_action/…
+//
+// ★ description 的默认是 ”（空串）而不是 NULL：**列本身可空**，但本仓
+//
+//	读它时要求「有值」⇒ 用 '' 表达「没有描述」，与 category_new /
+//	action_override 同族处置。
 var nullableColumnExpectations = map[string]map[string]string{
 	"prompt_injection_rules": {
-		"category_new":      "category_new::text, ''",
-		"description":       "description, ''",
-		"enabled":           "enabled, true",
-		"case_sensitive":    "case_sensitive, false",
-		"action_override":   "action_override::text, ''",
-		"tags":              "tags, '{}'",
+		"category_new":    "category_new::text, ''",
+		"description":     "description, ''",
+		"enabled":         "enabled, true",
+		"case_sensitive":  "case_sensitive, false",
+		"action_override": "action_override::text, ''",
+		"tags":            "tags, '{}'",
 	},
 	"prompt_injection_policies": {
-		"enabled":                    "enabled, true",
-		"detection_mode":             "detection_mode, 'observe'",
-		"enable_basic_rules":         "enable_basic_rules, true",
-		"enable_advanced_rules":      "enable_advanced_rules, true",
-		"enable_heuristics":          "enable_heuristics, true",
-		"enable_ml_model":            "enable_ml_model, false",
-		"enable_llm_detection":       "enable_llm_detection, true",
-		"enable_canary_detection":    "enable_canary_detection, true",
-		"enable_vector_similarity":   "enable_vector_similarity, false",
+		"enabled":                      "enabled, true",
+		"detection_mode":               "detection_mode, 'observe'",
+		"enable_basic_rules":           "enable_basic_rules, true",
+		"enable_advanced_rules":        "enable_advanced_rules, true",
+		"enable_heuristics":            "enable_heuristics, true",
+		"enable_ml_model":              "enable_ml_model, false",
+		"enable_llm_detection":         "enable_llm_detection, true",
+		"enable_canary_detection":      "enable_canary_detection, true",
+		"enable_vector_similarity":     "enable_vector_similarity, false",
 		"content_replacement_strategy": "content_replacement_strategy, 'llm_rewrite'",
-		"max_input_length":           "max_input_length, 50000",
-		"auto_learn_enabled":         "auto_learn_enabled, false",
-		"detection_timeout_ms":       "detection_timeout_ms, 5000",
-		"score_threshold_log":        "score_threshold_log, 3",
-		"score_threshold_warn":       "score_threshold_warn, 6",
-		"score_threshold_sanitize":   "score_threshold_sanitize, 8",
-		"score_threshold_block":      "score_threshold_block, 10",
-		"action_on_low_risk":         "action_on_low_risk, 'log'",
-		"action_on_medium_risk":      "action_on_medium_risk, 'warn'",
-		"action_on_high_risk":        "action_on_high_risk, 'block'",
+		"max_input_length":             "max_input_length, 50000",
+		"auto_learn_enabled":           "auto_learn_enabled, false",
+		"detection_timeout_ms":         "detection_timeout_ms, 5000",
+		"score_threshold_log":          "score_threshold_log, 3",
+		"score_threshold_warn":         "score_threshold_warn, 6",
+		"score_threshold_sanitize":     "score_threshold_sanitize, 8",
+		"score_threshold_block":        "score_threshold_block, 10",
+		"action_on_low_risk":           "action_on_low_risk, 'log'",
+		"action_on_medium_risk":        "action_on_medium_risk, 'warn'",
+		"action_on_high_risk":          "action_on_high_risk, 'block'",
 	},
 	"severity_action_matrix": {
-		"observe_action":            "observe_action::text, 'log'",
-		"enforce_action":            "enforce_action::text, 'block'",
-		"require_approval":          "require_approval, false",
-		"approval_timeout_minutes":  "approval_timeout_minutes, 0",
-		"notify_on_detect":          "notify_on_detect, false",
-		"notify_channels":           "notify_channels, '[]'",
-		"affect_session_health":     "affect_session_health, true",
-		"session_health_penalty":    "session_health_penalty, 10",
+		"observe_action":              "observe_action::text, 'log'",
+		"enforce_action":              "enforce_action::text, 'block'",
+		"require_approval":            "require_approval, false",
+		"approval_timeout_minutes":    "approval_timeout_minutes, 0",
+		"notify_on_detect":            "notify_on_detect, false",
+		"notify_channels":             "notify_channels, '[]'",
+		"affect_session_health":       "affect_session_health, true",
+		"session_health_penalty":      "session_health_penalty, 10",
 		"terminate_session_on_repeat": "terminate_session_on_repeat, false",
-		"repeat_threshold":          "repeat_threshold, 3",
+		"repeat_threshold":            "repeat_threshold, 3",
 	},
 }
 
@@ -155,45 +157,109 @@ func TestDetectorQueriesDoNotCoalesceNotNullColumns(t *testing.T) {
 // 抄的数再抄一遍 ⇒ 有人改了投影而忘了改 Scan（或反之），数字不变、
 // 门照样绿 ⇒ 那正是本族缺陷的原始形态（query 与 struct 形状对不上）。
 //
-// 判据：对 loadRules / getPolicy / getSeverityAction 三个函数，
-// 投影串的列数必须等于该函数里 Scan 的实参个数。
+// 判据：对 loadRules / scanPolicyRow / getSeverityAction 三个函数，
+// 投影串的列数必须等于该函数里某个 Scan 调用的实参个数。
+//
+// ★ 2026-11-16 12h 修订审计轮：getPolicy 的 Scan **下沉到 scanPolicyRow**
+//
+//	（主投影形状 + 降级读形状两套 Scan，实参数不同）⇒
+//	① 本门的被测函数从 getPolicy 改为 scanPolicyRow；
+//	② scanCallArityByFunction 从「取第一个 Scan」改为「取全部 Scan」
+//	   （一个函数现在有两套形状）；
+//	③ 另加一条门钉住「getPolicy 必须经 scanPolicyRow 读策略」——
+//	   否则有人把降级读路径删掉，门不会响（降级读是 P1-2 的兜底面，
+//	   它的消失会让「迁移未落地」重新退化成整体 fail-open）。
 //
 // ★ 这条门只查**个数**；列名与目标类型的对应关系由人读代码保证（仓内
-//   对此没有更好的自动化手段——把 Scan 目标抽成数据会改动生产代码形状）。
+//
+//	对此没有更好的自动化手段——把 Scan 目标抽成数据会改动生产代码形状）。
 func TestDetectorScanArityMatchesProjection(t *testing.T) {
-	want := map[string]string{
-		"loadRules":        detectorRuleSelectCols,
-		"getPolicy":        detectorPolicySelectCols,
-		"getSeverityAction": detectorSeverityActionSelectCols,
+	want := map[string][]string{
+		"loadRules":         {detectorRuleSelectCols},
+		"scanPolicyRow":     {detectorPolicySelectCols, detectorPolicySelectColsLegacy},
+		"getSeverityAction": {detectorSeverityActionSelectCols},
 	}
 
 	scanArity := scanCallArityByFunction(t)
-	for fn, proj := range want {
-		arity, ok := scanArity[fn]
+	for fn, projs := range want {
+		arities, ok := scanArity[fn]
 		if !ok {
 			t.Errorf("函数 %s 里没找到 Scan 调用 ⇒ 门覆盖不到它（函数改名/重构了？）", fn)
 			continue
 		}
-		cols := countProjectedColumns(proj)
-		if arity != cols {
-			t.Errorf("函数 %s：Scan 实参 %d 个，而投影串有 %d 列 ⇒ "+
-				"query 与 Scan 形状对不上（运行时会报 \"number of field descriptions "+
-				"must equal number of destinations\"，或把 A 列的值扫进 B 字段）",
-				fn, arity, cols)
+		for _, proj := range projs {
+			cols := countProjectedColumns(proj)
+			matched := false
+			for _, a := range arities {
+				if a == cols {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				t.Errorf("函数 %s：某个投影串有 %d 列，而该函数的 Scan 实参个数是 %v ⇒ "+
+					"query 与 Scan 形状对不上（运行时会报 \"number of field descriptions "+
+					"must equal number of destinations\"，或把 A 列的值扫进 B 字段）",
+					fn, cols, arities)
+			}
 		}
 	}
 }
 
-// scanCallArityByFunction 解析本包源码，返回「函数名 → 该函数里第一个
+// TestGetPolicyGoesThroughScanPolicyRow 钉住「getPolicy 的读面只经
+// scanPolicyRow」——即主投影与降级读投影**共用**同一条 Scan 形状校验。
+//
+// ★ 为什么要有：P1-2 的兜底面（降级读）就在 getPolicy 里；若有人把
+//
+//	scanPolicyRow 换成直接 Scan，或把降级分支删掉，本门会响。
+func TestGetPolicyGoesThroughScanPolicyRow(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", nil, 0)
+	if err != nil {
+		t.Fatalf("解析本包源码失败：%v", err)
+	}
+	found := false
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil || fn.Name.Name != "getPolicy" {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					ident, ok := call.Fun.(*ast.Ident)
+					if ok && ident.Name == "scanPolicyRow" {
+						found = true
+					}
+					return true
+				})
+			}
+		}
+	}
+	if !found {
+		t.Errorf("getPolicy 里没有对 scanPolicyRow 的调用 ⇒ 策略读面脱离了两套形状校验 " +
+			"（主投影 + 降级读投影）⇒ P1-2 的降级兜底面可能已被悄悄删掉")
+	}
+}
+
+// scanCallArityByFunction 解析本包源码，返回「函数名 → 该函数里**全部**
 // Scan 调用的实参个数」。
-func scanCallArityByFunction(t *testing.T) map[string]int {
+//
+// ★ 2026-11-16：从「第一个 Scan」改为「全部 Scan」——scanPolicyRow 有两套
+//
+//	形状（主投影 24 列 / 降级读 21 列），只取第一个会漏掉另一套的错配。
+func scanCallArityByFunction(t *testing.T) map[string][]int {
 	t.Helper()
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", nil, 0)
 	if err != nil {
 		t.Fatalf("解析本包源码失败：%v", err)
 	}
-	out := map[string]int{}
+	out := map[string][]int{}
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
 			for _, decl := range file.Decls {
@@ -210,9 +276,7 @@ func scanCallArityByFunction(t *testing.T) map[string]int {
 					if !ok || sel.Sel.Name != "Scan" {
 						return true
 					}
-					if _, exists := out[fn.Name.Name]; !exists {
-						out[fn.Name.Name] = len(call.Args)
-					}
+					out[fn.Name.Name] = append(out[fn.Name.Name], len(call.Args))
 					return true
 				})
 			}
