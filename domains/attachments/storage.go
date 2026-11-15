@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -299,14 +300,18 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	ext := mimeTypeToExt(contentType)
-	relDir := filepath.Join(
+	// ★ 存储键统一正斜杠（path.Join 而非 filepath.Join）：relPath 既是存储键
+	//   也是公开 URL 的路径段（joinAttachmentURL），Windows 下 filepath.Join
+	//   产生反斜杠会生成非法 URL/JSON（\1 转义）。本地后端按
+	//   filepath.Join(baseDir, key) 归一化，正斜杠键在 Windows 同样正确。
+	relDir := path.Join(
 		fmt.Sprintf("%04d", now.Year()),
 		fmt.Sprintf("%02d", int(now.Month())),
 		hashHex[:2],
 		hashHex[2:4],
 	)
 	fileName := hashHex + ext
-	relPath := filepath.Join(relDir, fileName)
+	relPath := path.Join(relDir, fileName)
 
 	backend := s.GetBackend()
 	ctx := context.Background()

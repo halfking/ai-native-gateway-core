@@ -222,7 +222,8 @@ func TestSafeJoin_DirectoryTraversal(t *testing.T) {
 	if err != nil {
 		t.Errorf("valid path rejected: %v", err)
 	}
-	if !strings.HasSuffix(good, "2026/07/req_x/abc.png") {
+	// Windows 下 safeJoin 返回反斜杠路径，统一转正斜杠后再比较。
+	if !strings.HasSuffix(filepath.ToSlash(good), "2026/07/req_x/abc.png") {
 		t.Errorf("unexpected path: %q", good)
 	}
 }

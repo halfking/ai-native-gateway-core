@@ -74,11 +74,14 @@ func goFilesUnder(root, sub string) []string {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
 		}
-		rel, rerr := filepath.Rel(root, path)
-		if rerr != nil {
-			return nil
-		}
-		out = append(out, rel)
+			rel, rerr := filepath.Rel(root, path)
+			if rerr != nil {
+				return nil
+			}
+			// 统一正斜杠：调用方测试用 "domains/attachments/repository.go"
+			// 等正斜杠路径做相等比较，Windows 下 filepath.Rel 产生反斜杠
+			// 会使跳过/断言失效（2026-11-15 Windows 构建轮修复）。
+			out = append(out, filepath.ToSlash(rel))
 		return nil
 	})
 	return out
