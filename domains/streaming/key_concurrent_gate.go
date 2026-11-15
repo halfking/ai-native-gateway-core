@@ -17,6 +17,11 @@
 // telemetry 之前拦 ⇒ 拒绝零可观测（无 request_logs 行、无日志、无指标）。
 // 显式正值照常执法（帽来自 key 自己的配置——「限流按 key 配置」的语义）。
 //
+// 2026-11-15 executors 对齐（双重标准收口轮）：handler.go / messages.go /
+// responses.go 的 KeyConcurrentLimit 四处调用点统一改用 ConfiguredConcurrent
+// （explicit-only），与本闸语义对齐。EffectiveConcurrent 保留给 executors
+// 软告警路径（从不拒绝，历史行为不变），但不再作为真执法依据。
+//
 // 口径边界：进程内计数（不跨实例聚合）——与 RPM 滑窗的进程内语义同档；
 // 跨实例精确并发归 Redis 限流器（登记为后续面）。全局资源兜底是
 // LargeIngress 的并发槽（ingress_capacity_exceeded），两者维度不同：本闸
