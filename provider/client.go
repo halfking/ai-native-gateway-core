@@ -2203,6 +2203,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		)
 
 		if err := waitForRetry(ctx, backoff); err != nil {
+			// 2026-11-15 P2审计修复: waitForRetry ctx cancel 也要 RecordFailure
+			// (halfOpen 探测失败路径——未记失败会让 halfOpen 恒 true 且 openUntil 已过，
+			// AllowProbe 永拒，全员秒败 503 直至进程重启)。
+			c.candCircuit.RecordFailure(time.Now())
 			return nil, fmt.Errorf("wait to retry candidate query failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
 		}
 	}
