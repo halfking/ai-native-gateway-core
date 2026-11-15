@@ -93,7 +93,14 @@ func (p *CasdoorAuthProvider) Authenticate(ctx context.Context, req *authplugin.
 
 	// Call Casdoor OAuth2 password grant
 	// This returns an access token if credentials are valid
-	token, err := p.client.GetOAuthToken(req.Username, req.Password)
+	//
+	// 2026-11-15 12h 审计轮 P1 根修：原调 GetOAuthToken(username, password)
+	// 是**授权码模式**签名 GetOAuthToken(code, state)——用户名被当授权码、
+	// 密码被当 state 传给 /api/login/oauth2_access_token 的 code 兑换端点，
+	// 密码登录必然失败且错误被吞成 ErrInvalidCredentials（无日志）。
+	// 正确通道 = Resource Owner Password Credentials Grant
+	// （GetOAuthTokenByPassword；前提：Casdoor 应用 Grant types 勾选 password）。
+	token, err := p.client.GetOAuthTokenByPassword(req.Username, req.Password)
 	if err != nil {
 		// Casdoor returns error for invalid credentials
 		return nil, authplugin.ErrInvalidCredentials

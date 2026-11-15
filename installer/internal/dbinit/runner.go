@@ -1856,11 +1856,19 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ⇒ 963 完成再对齐（F-43 收口最后一步）；函数体 = 897 逐字，仅改
 			// DEFAULT 一行，PartitionManager 显式传参 ⇒ 自动调度零行为变化。
 			"964_promote_session_turns_default_retention_realign.sql",
+<<<<<<< HEAD
 			// 965（2026-11-15 三点审计轮）：api_key_concurrency_minute——
 			// per-key 并发分钟观测表（写入方 bg.KeyConcurrencyStatsWriter
 			// 从 KeyConcurrentGate 每分钟 UPSERT：在飞/峰值/被拒/生效帽；
 			// instance_id 区分蓝绿双槽；retention 7d 由 worker 自清）。
 			"965_api_key_concurrency_minute.sql",
+=======
+			// 965 (2026-11-15, 12h 修订审计轮 P1 收口): Casdoor auth_id_mapping
+			// 身份映射表——phase3 原死放顶层 migrations/036_(无投递通道,745/752
+			// 同款病)且与 startup 036_fp_slot_limit 撞号异文件。收编正典通道并
+			// 幂等化(索引 IF NOT EXISTS/trigger 先 DROP);顶层 036 已删(752 先例)。
+			"965_auth_id_mapping_canonical_channel.sql",
+>>>>>>> 603dcaa17 (feat(phase3): Step 3.7 - Integration tests and final documentation)
 		},
 	}
 }
