@@ -20,16 +20,32 @@ func NewThreatDetector(severityThreshold int) *ThreatDetector {
 
 	// 编译 PII 正则表达式（大小写不敏感，优化性能）
 	piiPatterns := []*regexp.Regexp{
-		// SSN: 支持有无冒号、空格、连字符
-		regexp.MustCompile(`(?i)ssn(?:\s|[:：=]|is|是|为)*\d{3}[-\s]?\d{2}[-\s]?\d{4}`),
+		// SSN: 支持多种表达方式 - "ssn", "social security", "社保号"等
+		// 模式1: 带关键词的SSN
+		regexp.MustCompile(`(?i)(ssn|social\s*security\s*(number)?|社保号?)(?:\s|[:：=]|is|是|为)*\d{3}[-\s]?\d{2}[-\s]?\d{4}`),
+		// 模式2: 纯SSN格式（更严格，避免误报普通数字序列）
+		regexp.MustCompile(`\b\d{3}[-]\d{2}[-]\d{4}\b`),
+		
 		// Passport: 支持有无冒号、空格，6-12位字母数字
-		regexp.MustCompile(`(?i)passport:?\s*[A-Z0-9]{6,12}`),
+		regexp.MustCompile(`(?i)(passport|护照号?)(?:\s|[:：=]|is|是|为)*[A-Z0-9]{6,12}`),
+		
 		// 信用卡：支持中英文、空格、连字符、无分隔符，更宽松匹配
 		regexp.MustCompile(`(?i)(信用卡号?|credit\s*card\s*number?|card\s*number?)(?:\s|[:：=]|is|是|为)*\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
+		
 		// 身份证号（中国）：18位或15位
-		regexp.MustCompile(`(?i)(身份证号?|id\s*card):?\s*\d{15}(\d{2}[0-9Xx])?`),
+		// 模式1: 带关键词
+		regexp.MustCompile(`(?i)(身份证号?|id\s*card\s*number?|身份证|居民身份证)(?:\s|[:：=]|is|是|为)*\d{15}(\d{2}[0-9Xx])?`),
+		// 模式2: 纯18位身份证格式（中国身份证特征：地区码6位+出生日期8位+顺序码3位+校验码1位）
+		regexp.MustCompile(`\b[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[0-9Xx]\b`),
+		
 		// 电话号码：常见格式
-		regexp.MustCompile(`(?i)(电话|phone|mobile|tel):?\s*[\+\d][\d\s\-\(\)]{8,20}`),
+		regexp.MustCompile(`(?i)(电话|phone|mobile|tel|手机号?)(?:\s|[:：=]|is|是|为)*[\+\d][\d\s\-\(\)]{8,20}`),
+		
+		// 银行卡号：通常16-19位数字
+		regexp.MustCompile(`(?i)(银行卡号?|bank\s*card|account\s*number)(?:\s|[:：=]|is|是|为)*\d{16,19}`),
+		
+		// 邮箱地址：标准email格式
+		regexp.MustCompile(`(?i)(邮箱|email|e-mail)(?:\s|[:：=]|is|是|为)*[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
 	}
 
 	return &ThreatDetector{

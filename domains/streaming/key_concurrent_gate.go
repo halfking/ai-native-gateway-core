@@ -8,8 +8,14 @@
 // rate_limit_exceeded + X-RateLimit-* + Retry-After）。
 //
 // 豁免面与 RPM 链一致：无 key 身份（VerifiedKeyInfoFromContext=nil：静态 key
-// 旁路/内部回环探针/无验证模式）与 IsInternal key 不设闸；NULL 列取 tier
-// 默认（EffectiveConcurrent），0 = 显式无限。
+// 旁路/内部回环探针/无验证模式）与 IsInternal key 不设闸。
+//
+// 2026-11-15 修正（211 生产反馈轮）：并发帽**只执法显式配置**——
+// ConfiguredConcurrent（NULL 与 0 都不设帽）。原实现 NULL 落 tier 默认
+// （EffectiveConcurrent，default 档=6）：存量 82 个 active key 的 NULL 列
+// 在执法接入前从未代表「6 并发」，接入即全体被帽 = 行为突变，且闸在
+// telemetry 之前拦 ⇒ 拒绝零可观测（无 request_logs 行、无日志、无指标）。
+// 显式正值照常执法（帽来自 key 自己的配置——「限流按 key 配置」的语义）。
 //
 // 口径边界：进程内计数（不跨实例聚合）——与 RPM 滑窗的进程内语义同档；
 // 跨实例精确并发归 Redis 限流器（登记为后续面）。全局资源兜底是
@@ -17,10 +23,12 @@
 // 按 key 配置执法，槽门保护进程自身——executors 侧的软告警保留为纵深观察。
 //
 // 429 头语义：Retry-After: 1（并发槽随请求结束即时回落）；Remaining 为当前
-// 剩余额度（可为 0）。
+// 剩余额度（可为 0）。拒绝可观测：WARN 日志（key_concurrent_gate_rejected）
+// + llm_gateway_rate_limit_rejections_total{reason=key_concurrent_limit}。
 package streaming
 
 import (
+	"log/slog"
 	"net/http"
 	"sync"
 )
@@ -55,7 +63,8 @@ func (g *KeyConcurrentGate) serve(w http.ResponseWriter, r *http.Request, next h
 		next.ServeHTTP(w, r)
 		return
 	}
-	limit := keyInfo.EffectiveConcurrent()
+	// explicit-only（2026-11-15 修正）：NULL/0 = 不设帽；显式正值才执法。
+	limit := keyInfo.ConfiguredConcurrent()
 	if limit <= 0 {
 		next.ServeHTTP(w, r)
 		return
@@ -65,10 +74,20 @@ func (g *KeyConcurrentGate) serve(w http.ResponseWriter, r *http.Request, next h
 	if g.used[keyInfo.ID] >= limit {
 		used := g.used[keyInfo.ID]
 		g.mu.Unlock()
+		// 拒绝可观测（本轮补齐）：WARN + 指标（reason=key_concurrent_limit，
+		// 与 RPM 族的 llm_gateway_rate_limit_rejections_total 同家族）——
+		// 闸在 telemetry 之前拦，不写 request_logs，这两条是唯一痕迹。
+		outcome := rateLimitOutcome{Blocked: true, Limit: limit, Remaining: 0, ResetSec: 1, Reason: "key_concurrent_limit"}
+		recordGatewayRateLimitRejection(outcome)
+		slog.Warn("key_concurrent_gate_rejected",
+			"api_key_id", keyInfo.ID,
+			"path", r.URL.Path,
+			"limit", limit,
+			"in_flight", used)
 		// Blocked=true：走 writeRateLimitHeaders 的标准拒绝头路径
 		//（Retry-After / X-RateLimit-*）。并发槽随请求结束即时回落 ⇒
 		// ResetSec=1。
-		writeRateLimitHeaders(w, rateLimitOutcome{Blocked: true, Limit: limit, Remaining: 0, ResetSec: 1, Reason: "key_concurrent_limit"})
+		writeRateLimitHeaders(w, outcome)
 		writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusTooManyRequests, requestIDOf(r),
 			"Key concurrent request limit reached", "rate_limit_error", "rate_limit_exceeded", "rate_limit_exceeded",
 			map[string]any{"stage": "key_concurrency", "limit": limit, "in_flight": used})
