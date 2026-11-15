@@ -101,6 +101,31 @@ func policyBlockEvidenceFromMetadata(result *response.InterceptResult) string {
 	return evidence
 }
 
+// isFormatGuard 判定规则 ID 是否属于格式类守卫（format guard）。
+//
+// 格式类守卫拦截的不是敏感内容，而是结构性的格式问题：
+//   - tool_json_invalid: 上游返回的工具参数本身不是合法 JSON
+//   - redact_invalid: 脱敏后的结果不是合法 JSON
+//   - frame_encode_failed: 帧无法重新编码
+//
+// 这些失败**不应该生成审核单**，因为：
+//   1. 不是内容敏感性问题，管理员放行审核单也改变不了格式错误的事实；
+//   2. 应该引导用户重试（上游可能重新生成正确输出）或报告上游故障。
+//
+// 2026-11-15 根修轮：rv-2089 实证——tool_json_invalid 被误当成「内容含敏感
+// 信息，等待审核」，而实际是上游中转（apiclaude.cc）的 GLM 工具调用解析器
+// 漏出了原生 XML 标签，管理员放行这个审核单对重试没有任何帮助。
+func isFormatGuard(ruleID string) bool {
+	switch ruleID {
+	case "builtin.guard.tool_json_invalid",
+		"builtin.guard.redact_invalid",
+		"builtin.guard.frame_encode_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // registerPolicyBlockReview 登记一条拦截审核记录，返回审核单号
 // （rv-N）；登记不了（极老形态 / 无租户）返回空串，message 走「联系管理员」
 // 的兜底话术。
@@ -115,7 +140,16 @@ func policyBlockEvidenceFromMetadata(result *response.InterceptResult) string {
 // r1047（2026-11-13 命中二次判读方案档）：登记后按需触发**影子判官**——
 // 异步 LLM 判读同一份摘录，结论回写本单 match_detail。影子模式不改变任何
 // 拦截决策；判官未配置 / 开关关闭 / 摘录为空 / 容量类合成规则 ⇒ 不触发。
+//
+// 2026-11-15 格式类守卫收口轮：格式类守卫（tool_json_invalid / redact_invalid /
+// frame_encode_failed）**不再生成审核单**——它们拦的不是敏感内容，而是格式
+// 问题，管理员放行审核单改变不了上游输出格式错误的事实 ⇒ 直接返回空串，
+// message 走「请重试」的引导话术（见 policyBlockClientMessage）。
 func registerPolicyBlockReview(in PolicyBlockReviewInput) string {
+	// ★ 2026-11-15：格式类守卫不生成审核单 ★
+	if isFormatGuard(in.Rule) {
+		return ""
+	}
 	info, _ := sanitizerules.BuiltinRuleInfoFor(in.Rule)
 	entry := sanitizerules.AddBlockReview(sanitizerules.BlockReviewInput{
 		TenantID:     in.TenantID,
@@ -225,6 +259,10 @@ func policyMatchDetail(rule string, info sanitizerules.BuiltinRuleInfo, reason, 
 //
 // 中文行动指引是有意的：报错卡的读者是中文用户，机读部分（前缀 + 旁键）
 // 保持英文稳定。仓内先例：goal 重试的 SSE thinking 行就是中文上屏。
+//
+// 2026-11-15 格式类守卫收口轮：格式类守卫（tool_json_invalid 等）走专用话术，
+// 不再误导为「内容含敏感信息」——它们拦的是格式错误，应引导用户重试或报告
+// 上游故障，而不是等待审核放行。
 func policyBlockClientMessage(rule, reason, field, requestID, reviewID string) string {
 	var b strings.Builder
 	b.WriteString("Response blocked by output policy")
@@ -242,6 +280,14 @@ func policyBlockClientMessage(rule, reason, field, requestID, reviewID string) s
 	} else {
 		b.WriteString(".")
 	}
+	
+	// ★ 2026-11-15：格式类守卫走专用话术 ★
+	if isFormatGuard(rule) {
+		b.WriteString(" 上游返回的内容格式有误（非法 JSON 或编码失败），请重试。" +
+			"若反复出现，可能是上游服务的工具调用格式转换问题，请报告网关管理员检查上游中转。")
+		return b.String()
+	}
+	
 	if reviewID != "" {
 		b.WriteString(" 内容含敏感信息，等待审核（审核单 " + reviewID +
 			"）：管理员在网关后台放行后，重试即可获得内容。")

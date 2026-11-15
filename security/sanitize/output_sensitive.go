@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"strconv"
@@ -207,34 +209,46 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 	_, isMarker := ParsePlaceholder(text)
 	if toolName, isToolJSON := parseToolJSONLabel(label); isToolJSON {
 		if !json.Valid([]byte(text)) {
-			// ★ 2026-11-01 12h 审计轮：此前这里返回 `Blocked: true` **不带 Issues**
-			// ⇒ ⇒ 派生规则名的 policyRuleFromIssues 拿不到任何 RuleID ⇒ ⇒
-			// ⇒ 落到客户端/审核面的 rule_id 是**空串** ⇒ ⇒ 审核单只有一句
-			// ⇒ 「未知原因的拦截」，审核员既说不出是哪条规则、也拿不到载荷摘要
-			// ⇒ ⇒ **归因面在这条路径上等于没生效** ★★。
-			//
-			// ★ 处置方向：「工具参数本身不是合法 JSON」是**上游/协议适配**的问题，
-			// ★ 不是规则表达式太宽 ⇒ ★ 合成规则名必须能把它和「脱敏结果不是合法
-			// ★ JSON」（builtin.guard.redact_invalid）区分开 ★。
-			//
-			// ★ 摘要（Digest）留空：EgressPayloadDigest 是 sha256(ruleID+path+value)，
-			// ★ 而本条的值**不是合法 JSON**（无法按结构定位到某个路径）⇒ 给出摘要
-			// ★ 只会造出一个「谁也放行不了」的键（管理面据此精确放行这一次载荷）★★
-			// ⇒ 不给摘要比给一个假摘要诚实 ★。
-			return &outputcompliance.ComplianceResult{
-				Blocked: true,
-				Issues: []outputcompliance.ComplianceIssue{{
-					Type:        "sensitive",
-					Subtype:     "tool_json_invalid",
-					Severity:    8,
-					Location:    "$",
-					Content:     RedactionMarker(TypeSecret),
-					Score:       1,
-					Redacted:    true,
-					RuleID:      compliancehook.GuardToolJSONInvalidRuleID,
-					Description: "工具参数不是合法 JSON，无法在结构上做脱敏/判定 ⇒ fail-closed 阻断（非内容规则命中）",
-				}},
-			}, nil
+			// ★ 2026-11-15：尝试修补格式错误（方案 B）
+			if repaired, ok := tryRepairToolJSON(text, toolName); ok {
+				slog.Info("output_compliance: repaired malformed tool JSON",
+					"tenant_id", tenant,
+					"tool_name", toolName,
+					"original_bytes", len(text),
+					"repaired_bytes", len(repaired),
+				)
+				// 用修复后的文本继续检查
+				text = repaired
+			} else {
+				// ★ 2026-11-01 12h 审计轮：此前这里返回 `Blocked: true` **不带 Issues**
+				// ⇒ ⇒ 派生规则名的 policyRuleFromIssues 拿不到任何 RuleID ⇒ ⇒
+				// ⇒ 落到客户端/审核面的 rule_id 是**空串** ⇒ ⇒ 审核单只有一句
+				// ⇒ 「未知原因的拦截」，审核员既说不出是哪条规则、也拿不到载荷摘要
+				// ⇒ ⇒ **归因面在这条路径上等于没生效** ★★。
+				//
+				// ★ 处置方向：「工具参数本身不是合法 JSON」是**上游/协议适配**的问题，
+				// ★ 不是规则表达式太宽 ⇒ ★ 合成规则名必须能把它和「脱敏结果不是合法
+				// ★ JSON」（builtin.guard.redact_invalid）区分开 ★。
+				//
+				// ★ 摘要（Digest）留空：EgressPayloadDigest 是 sha256(ruleID+path+value)，
+				// ★ 而本条的值**不是合法 JSON**（无法按结构定位到某个路径）⇒ 给出摘要
+				// ★ 只会造出一个「谁也放行不了」的键（管理面据此精确放行这一次载荷）★★
+				// ⇒ 不给摘要比给一个假摘要诚实 ★。
+				return &outputcompliance.ComplianceResult{
+					Blocked: true,
+					Issues: []outputcompliance.ComplianceIssue{{
+						Type:        "sensitive",
+						Subtype:     "tool_json_invalid",
+						Severity:    8,
+						Location:    "$",
+						Content:     RedactionMarker(TypeSecret),
+						Score:       1,
+						Redacted:    true,
+						RuleID:      compliancehook.GuardToolJSONInvalidRuleID,
+						Description: "工具参数不是合法 JSON，无法在结构上做脱敏/判定 ⇒ fail-closed 阻断（非内容规则命中）",
+					}},
+				}, nil
+			}
 		}
 		decoder := json.NewDecoder(bytes.NewReader([]byte(text)))
 		decoder.UseNumber()
@@ -263,6 +277,112 @@ func (c *outputSensitiveChecker) CheckField(ctx context.Context, tenant, label, 
 		return &outputcompliance.ComplianceResult{Blocked: true, RedactedOutput: marker, Issues: []outputcompliance.ComplianceIssue{{Type: "sensitive", Subtype: "credential", Content: marker, Severity: 8, RuleID: secretFieldRuleID, Digest: EgressPayloadDigest(secretFieldRuleID, label, text)}}}, nil
 	}
 	return c.Check(ctx, tenant, text)
+}
+
+// tryRepairToolJSON 尝试修补格式错误的工具参数 JSON（2026-11-15 方案 B）。
+//
+// 返回 (repaired, true) 如果修补成功且结果是合法 JSON；
+// 返回 ("", false) 如果无法识别格式或修补后仍非法。
+//
+// ## 已知格式错误形态
+//
+// ### A. GLM 原生标记泄漏（rv-2089 实例，apiclaude.cc 转换错误）
+//
+//	原始: {"description</arg_key><ac7a3bd7><arg_value><b88a6f17>查找项目目录</arg_value>...
+//	修补: 提取 <arg_value>...</arg_value> 之间的内容
+//
+// ### B. JSON 截断（网络闪动）
+//
+//	原始: {"command": "ls -la
+//	修补: 补全未闭合的引号和括号
+//
+// ### C. 未闭合结构
+//
+//	原始: {"a": 1, "b": {"c": 2
+//	修补: 补全缺失的闭合括号
+//
+// ## 设计原则
+//
+// 1. **保守修补**：只修补可识别的、有明确规律的格式错误
+// 2. **验证优先**：修补后必须通过 json.Valid() 验证
+// 3. **fail-safe**：修补失败时返回 false，让原有的拦截逻辑生效
+// 4. **可观测**：修补成功时记录日志（调用方负责）
+func tryRepairToolJSON(text string, toolName string) (repaired string, ok bool) {
+	// A. 识别 GLM 原生格式（rv-2089 形态）
+	// GLM 的工具调用格式：<arg_key>name</arg_key><arg_value>value</arg_value>
+	if strings.Contains(text, "</arg_key>") && strings.Contains(text, "<arg_value>") {
+		startTag := "<arg_value>"
+		endTag := "</arg_value>"
+		start := strings.Index(text, startTag)
+		end := strings.Index(text, endTag)
+		
+		if start != -1 && end > start {
+			// 提取 <arg_value>...</arg_value> 之间的内容
+			extracted := text[start+len(startTag) : end]
+			
+			// 尝试1：提取的内容本身就是合法 JSON
+			if json.Valid([]byte(extracted)) {
+				return extracted, true
+			}
+			
+			// 尝试2：提取的内容是纯文本，构造一个简单的 JSON 对象
+			// 例如："查找项目目录" → {"value": "查找项目目录"}
+			wrapped := fmt.Sprintf(`{"value": %q}`, extracted)
+			if json.Valid([]byte(wrapped)) {
+				return wrapped, true
+			}
+		}
+	}
+	
+	// B. 补全截断的 JSON
+	// 策略：按需补全引号、方括号、大括号，并组合尝试
+	
+	openBraces := strings.Count(text, "{")
+	closeBraces := strings.Count(text, "}")
+	openBrackets := strings.Count(text, "[")
+	closeBrackets := strings.Count(text, "]")
+	quoteCount := strings.Count(text, `"`)
+	
+	needCloseBraces := openBraces - closeBraces
+	needCloseBrackets := openBrackets - closeBrackets
+	needCloseQuote := quoteCount % 2
+	
+	// 如果括号数量异常（闭合多于开放），无法通过简单补全修复
+	if needCloseBraces < 0 || needCloseBrackets < 0 {
+		return "", false
+	}
+	
+	// 如果所有括号和引号都平衡，说明已经是合法 JSON 或者无法通过简单补全修复
+	if needCloseBraces == 0 && needCloseBrackets == 0 && needCloseQuote == 0 {
+		return "", false
+	}
+	
+	// 尝试各种组合
+	attempts := []string{
+		// 只补引号
+		text + strings.Repeat(`"`, needCloseQuote),
+		// 只补大括号
+		text + strings.Repeat("}", needCloseBraces),
+		// 只补方括号
+		text + strings.Repeat("]", needCloseBrackets),
+		// 引号 + 大括号
+		text + strings.Repeat(`"`, needCloseQuote) + strings.Repeat("}", needCloseBraces),
+		// 引号 + 方括号
+		text + strings.Repeat(`"`, needCloseQuote) + strings.Repeat("]", needCloseBrackets),
+		// 方括号 + 大括号
+		text + strings.Repeat("]", needCloseBrackets) + strings.Repeat("}", needCloseBraces),
+		// 引号 + 方括号 + 大括号
+		text + strings.Repeat(`"`, needCloseQuote) + strings.Repeat("]", needCloseBrackets) + strings.Repeat("}", needCloseBraces),
+	}
+	
+	for _, attempt := range attempts {
+		if json.Valid([]byte(attempt)) {
+			return attempt, true
+		}
+	}
+	
+	// 所有修补尝试都失败
+	return "", false
 }
 
 // unsafeToolValue 深度遍历 tool 参数值，判定是否「不安全」。

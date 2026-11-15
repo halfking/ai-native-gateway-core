@@ -10951,3 +10951,9 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 |-----------|------|---------|--------|
 | 963 | `963_credential_total_requests_rollup.sql` | `1b3edf5fbdfd482bdd44224934fca203d9f0afe48d20c2fc2b3c71987cb3fa2f` | applied+verified |
 | 964 | `964_promote_session_turns_default_retention_realign.sql` | `d0f7fb267d9c7c8b607ef01e317f561167b3fc504f623ac81fe95fdedbb728ea` | applied+verified |
+## 2026-11-15T15:50:49Z — deploy 245 build_seq 3039 (517d2087)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 966 | `966_auth_id_mapping_canonical_channel.sql` | `c9cd0ddd542149134ebe8d99131cc29fac87fb3dfa3405540ade51f7d8f59e24` | applied+verified |
+

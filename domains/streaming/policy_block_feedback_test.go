@@ -327,3 +327,136 @@ func TestDegradedReviewRegistrationCarriesFlag(t *testing.T) {
 		t.Fatalf("待决断数必须排除降级单（=1），实际 %d", got)
 	}
 }
+
+// TestFormatGuard_NoReviewTicket 验证格式类守卫不生成审核单（2026-11-15）。
+//
+// rv-2089 实证：tool_json_invalid 被误当成「内容含敏感信息，等待审核」，
+// 而实际是上游中转的工具调用解析器输出格式错误，管理员放行审核单改变不了
+// 上游格式错误的事实 ⇒ 格式类守卫不再生成审核单，直接返回空串。
+func TestFormatGuard_NoReviewTicket(t *testing.T) {
+	sanitizerules.ResetBlockReviews()
+	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
+	
+	formatGuards := []string{
+		"builtin.guard.tool_json_invalid",
+		"builtin.guard.redact_invalid",
+		"builtin.guard.frame_encode_failed",
+	}
+	for _, rule := range formatGuards {
+		t.Run(rule, func(t *testing.T) {
+			reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+				TenantID:   "tenant-fmt",
+				ClientType: "zcode",
+				RequestID:  "req-format-1",
+				Rule:       rule,
+				Reason:     "format validation failed",
+				Field:      "$.tool.arguments",
+				Evidence:   `{"malformed`,
+			})
+			// ★ 格式类守卫必须返回空串（不生成审核单）
+			if reviewID != "" {
+				t.Errorf("%s 不得生成审核单，实际返回 %s", rule, reviewID)
+			}
+			// ★ 确认数据库里也没有记录
+			blocked := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "tenant-fmt", 10)
+			for _, rv := range blocked {
+				if rv.Rule == rule {
+					t.Errorf("%s 的审核单不得落库，实际 rv-%d", rule, rv.ID)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatGuard_ClientMessage 验证格式类守卫的客户端提示不误导为「敏感内容」。
+//
+// rv-2089 的客户端看到「内容含敏感信息，等待审核」，但真相是 GLM 工具调用
+// 格式错误 ⇒ message 必须说清楚「格式有误，请重试」，而不是「等待审核放行」。
+func TestFormatGuard_ClientMessage(t *testing.T) {
+	cases := []struct {
+		rule string
+		want []string // 必须包含的关键词
+		deny []string // 不得包含的关键词
+	}{
+		{
+			rule: "builtin.guard.tool_json_invalid",
+			want: []string{"格式有误", "请重试", "上游"},
+			deny: []string{"敏感信息", "等待审核", "rv-"},
+		},
+		{
+			rule: "builtin.guard.redact_invalid",
+			want: []string{"格式有误", "请重试"},
+			deny: []string{"敏感信息", "等待审核"},
+		},
+		{
+			rule: "builtin.guard.frame_encode_failed",
+			want: []string{"格式有误", "请重试"},
+			deny: []string{"敏感信息", "等待审核"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.rule, func(t *testing.T) {
+			msg := policyBlockClientMessage(tc.rule,
+				"output policy blocked stream lane",
+				"$.tool.0.arguments",
+				"req-fmt-123",
+				"", // reviewID 必须为空（格式守卫不生成审核单）
+			)
+			for _, w := range tc.want {
+				if !strings.Contains(msg, w) {
+					t.Errorf("message 必须包含 %q:\n%s", w, msg)
+				}
+			}
+			for _, d := range tc.deny {
+				if strings.Contains(msg, d) {
+					t.Errorf("message 不得包含 %q:\n%s", d, msg)
+				}
+			}
+			// ★ 稳定前缀不破（客户端子串匹配契约）
+			if !strings.HasPrefix(msg, "Response blocked by output policy") {
+				t.Errorf("前缀必须保持，实际: %s", msg)
+			}
+		})
+	}
+}
+
+// TestFormatGuard_vs_ContentBlock 对照：内容类规则仍生成审核单与敏感信息提示。
+//
+// 确保修复只影响格式类守卫，内容规则（credential / pii.* 等）的行为不变。
+func TestFormatGuard_vs_ContentBlock(t *testing.T) {
+	sanitizerules.ResetBlockReviews()
+	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
+	
+	// 内容类规则必须生成审核单
+	reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID:   "tenant-content",
+		ClientType: "zcode",
+		RequestID:  "req-content-1",
+		Rule:       "pii.credential",
+		Reason:     "detected password field",
+		Field:      "$.password",
+		Evidence:   "mypassword123",
+	})
+	if reviewID == "" {
+		t.Fatal("内容类规则必须生成审核单")
+	}
+	if !strings.HasPrefix(reviewID, "rv-") {
+		t.Errorf("审核单号格式错误: %s", reviewID)
+	}
+	// 内容类规则的 message 必须提示「敏感信息」
+	msg := policyBlockClientMessage("pii.credential",
+		"detected password field",
+		"$.password",
+		"req-content-1",
+		reviewID,
+	)
+	for _, want := range []string{"敏感信息", "等待审核", reviewID} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("内容类规则 message 必须包含 %q:\n%s", want, msg)
+		}
+	}
+	// 内容类规则不得走格式错误话术
+	if strings.Contains(msg, "格式有误") {
+		t.Errorf("内容类规则不得提示「格式有误」:\n%s", msg)
+	}
+}

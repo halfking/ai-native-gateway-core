@@ -112,6 +112,23 @@ type Decision struct {
 	// _request_logs.auto_decision JSONB。
 	SessionRole string `json:"session_role,omitempty"`
 	TaskKind    string `json:"task_kind,omitempty"`
+
+	// Tier (2026-11-15) is the selected model tier from V3 tier selection.
+	// One of: "tier-a" (high-performance), "tier-b" (standard), "tier-c" (economy).
+	// Populated only when TierSelector is wired and tier selection succeeds.
+	// Empty when tier selection is disabled or fails.
+	Tier string `json:"tier,omitempty"`
+
+	// TierReason (2026-11-15) explains how the tier was selected.
+	// Examples: "explicit header override", "depth-based degradation: depth=2",
+	// "task_type=coding → tier-b (source: global)".
+	// Empty when tier selection is disabled.
+	TierReason string `json:"tier_reason,omitempty"`
+
+	// TierSource (2026-11-15) identifies the tier selection authority.
+	// One of: "header", "depth", "tenant", "global", "default", "confidence_escalation".
+	// Empty when tier selection is disabled.
+	TierSource string `json:"tier_source,omitempty"`
 }
 
 // RoutingOptimizer is the P2.2 routing optimization plugin interface.
@@ -187,6 +204,15 @@ type Decider struct {
 	// 表 + 内存默认表）。nil = role 路由未装配；灰度开关 AutoRoleRoutingEnabled
 	// 在 Decide/DecideV2 内检查。
 	roleLLMRouter *RoleLLMRouter
+
+	// tierSelector (2026-11-15) implements V3 3-tier model selection strategy.
+	// When nil, tier selection is disabled and no tier filtering occurs.
+	// When set, SelectTier() is called after classification to determine tier-a/b/c,
+	// and the tier is passed to index.Recommend() for model filtering.
+	//
+	// Priority: X-Gw-Model-Tier header > Agent depth >= 2 > Tenant config > Global config > Default
+	// Design: docs/03-design/02-feature-design/design/AUTO_MODEL_OPTIMIZATION_V3_PLAN.md
+	tierSelector *TierSelector
 
 	// optimizer is the P2.2 routing optimization plugin. When nil (default),
 	// the Decider operates in baseline mode (no optimization). When set, the
@@ -295,6 +321,16 @@ func (d *Decider) SetWorkTypeRouteStore(store *WorkTypeRouteStore) {
 // Pass nil to disable（灰度关闭仍可装配，Decide 侧还会检查 flag）。
 func (d *Decider) SetRoleLLMRouter(r *RoleLLMRouter) {
 	d.roleLLMRouter = r
+}
+
+// SetTierSelector wires the V3 3-tier model selection strategy.
+// When set, tier selection is performed after classification and the result
+// is passed to model recommendation for tier-based filtering.
+// Pass nil to disable tier selection (default behavior).
+//
+// Design: AUTO_MODEL_OPTIMIZATION_V3_PLAN.md Section 2.4
+func (d *Decider) SetTierSelector(ts *TierSelector) {
+	d.tierSelector = ts
 }
 
 // SetShadowClassifier wires the optional embedding classifier used for

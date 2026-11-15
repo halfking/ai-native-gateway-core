@@ -339,29 +339,56 @@ func DefaultV3Keywords() V3KeywordSet {
 	}
 }
 
-// TaskTypeTierMapping defines the default tier for each V3 task type.
+// TaskTypeTierMapping defines the default tier for each task type.
 // This is used as a fallback when task_type_tier_config table is not available.
+//
+// COMPATIBILITY NOTE (2026-11-15):
+// This map includes BOTH V3 task types (architecture, audit, etc.) AND V2 task types
+// (chat, reasoning, code, etc.) to support gradual migration. The V2 mappings provide
+// reasonable tier assignments based on task characteristics:
+//   - reasoning → tier-a (requires deep analytical capability)
+//   - code → tier-b (maps to coding tasks, standard quality)
+//   - agent → tier-b (multi-step workflows need reliable models)
+//   - creative → tier-c (template-based, high throughput)
+//   - chat → tier-b (safe default for general conversation)
 var TaskTypeTierMapping = map[TaskType]string{
-	// Tier-A: High-performance (deep reasoning, complex analysis)
+	// V3 Task Types - Tier-A: High-performance (deep reasoning, complex analysis)
 	TaskArchitecture: "tier-a",
 	TaskAudit:        "tier-a",
 	TaskDebugging:    "tier-a",
 
-	// Tier-B: Standard (balanced quality/cost)
+	// V3 Task Types - Tier-B: Standard (balanced quality/cost)
 	TaskCoding:      "tier-b",
 	TaskRefactoring: "tier-b",
 	TaskTesting:     "tier-b",
 
-	// Tier-C: Economy (template-based, high throughput)
+	// V3 Task Types - Tier-C: Economy (template-based, high throughput)
 	TaskDevOps:        "tier-c",
 	TaskDocumentation: "tier-c",
 	TaskSummary:       "tier-c",
 	TaskDependency:    "tier-c",
+
+	// V2 Task Types (backward compatibility during migration)
+	TaskReasoning:            "tier-a", // Analytical tasks need strong reasoning
+	TaskCode:                 "tier-b", // Code generation, maps to V3 'coding'
+	TaskAgent:                "tier-b", // Multi-step workflows need reliability
+	TaskChat:                 "tier-b", // Safe default, general conversation
+	TaskCreative:             "tier-c", // Writing/translation, high throughput
+	TaskLongContext:          "tier-b", // Long context needs quality, not economy
+	TaskVision:               "tier-b", // Vision tasks need capable multimodal models
+	TaskFunctionCall:         "tier-b", // Function calling needs reliability
+	TaskCodeAudit:            "tier-a", // Code review maps to V3 'audit'
+	TaskIntentClassification: "tier-c", // Classification is fast/deterministic
+	TaskPlanning:             "tier-a", // Planning requires deep reasoning
 }
 
 // MinConfidenceThresholds defines minimum confidence thresholds for each task type.
 // Below these thresholds, the classifier should escalate to LLM re-classification.
+//
+// COMPATIBILITY NOTE (2026-11-15):
+// Includes both V3 and V2 task types for gradual migration support.
 var MinConfidenceThresholds = map[TaskType]float64{
+	// V3 Task Types
 	TaskArchitecture:  0.70,
 	TaskAudit:         0.70,
 	TaskDebugging:     0.65, // Lower threshold (often urgent, prefer action)
@@ -372,4 +399,17 @@ var MinConfidenceThresholds = map[TaskType]float64{
 	TaskDocumentation: 0.85, // Higher threshold (overlap with summary)
 	TaskSummary:       0.85, // Higher threshold (overlap with documentation)
 	TaskDependency:    0.75,
+
+	// V2 Task Types (backward compatibility)
+	TaskReasoning:            0.70,
+	TaskCode:                 0.75,
+	TaskAgent:                0.70,
+	TaskChat:                 0.60, // Lower threshold (catch-all, prefer action)
+	TaskCreative:             0.75,
+	TaskLongContext:          0.70,
+	TaskVision:               0.80, // Higher threshold (vision detection must be certain)
+	TaskFunctionCall:         0.75,
+	TaskCodeAudit:            0.70,
+	TaskIntentClassification: 0.80,
+	TaskPlanning:             0.70,
 }
