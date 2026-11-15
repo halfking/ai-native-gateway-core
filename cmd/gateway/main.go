@@ -7491,7 +7491,9 @@ func main() {
 	// 每 ~60s 从并发闸取观测窗口样本（在飞/峰值/被拒/生效帽）UPSERT 进
 	// api_key_concurrency_minute（迁移 965）。instance_id 取进程级常量
 	//（rule 71 同源），蓝绿双槽各写各的行；空窗口零写；retention 7d 自清。
-	if keyVerifier != nil && keyVerifier.Enabled() && dbConn != nil {
+	// 启动条件 = 有 DB（观测写入不依赖 keyVerifier.Enabled，lite 模式下
+	// 内存 key 的并发执法与观测仍有意义——批判式审计轮修正条件过严问题）。
+	if dbConn != nil {
 		keyConcurrencyStatsWriter := bg.NewKeyConcurrencyStatsWriter(dbConn.Pool(), func() []bg.KeyConcurrencySample {
 			src := keyConcurrentGate.SnapshotAndResetMinute()
 			out := make([]bg.KeyConcurrencySample, 0, len(src))

@@ -419,6 +419,7 @@ func TestKeyConcurrentGate_MinuteStatsAccounting(t *testing.T) {
 
 	// 第三窗口：窗口开始时刻两 key 仍在飞（占用真实存在过）⇒ 有样本，
 	// InFlight=0（已释放）但 Peak≥窗口开头占用（truthful 下界）。
+	// 批判式审计轮补：Limit 必须同步播种（否则 peak>0 而 limit=0 自相矛盾）。
 	third := gate.SnapshotAndResetMinute()
 	for _, s := range third {
 		if s.InFlight != 0 {
@@ -426,6 +427,9 @@ func TestKeyConcurrentGate_MinuteStatsAccounting(t *testing.T) {
 		}
 		if s.PeakInFlight < 1 {
 			t.Fatalf("窗口开头仍在飞的 key，peak 必须反映该占用: %+v", s)
+		}
+		if s.Limit <= 0 {
+			t.Fatalf("跨窗样本 Limit 必须播种（peak>0 意味着有帽在执法）: %+v", s)
 		}
 	}
 

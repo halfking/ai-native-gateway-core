@@ -244,20 +244,23 @@ func (g *KeyConcurrentGate) SnapshotAndResetMinute() []KeyConcurrencySample {
 			Limit:        g.minuteLimit[id],
 		})
 	}
+	// 重置前保存旧 limit（播种需要）
+	oldLimit := g.minuteLimit
 	g.minutePeak = make(map[int]int)
 	g.minuteRejected = make(map[int]int)
 	g.minuteLimit = make(map[int]int)
 	// 窗口播种：仍持有的在飞请求是下一窗口峰值的下界（长请求跨窗时
 	// peak ≥ 在飞数，否则跨窗窗口会出现 peak=0 而 in_flight=1 的自相矛盾
-	// 读数）；limit 同理保留仍生效的帽。
+	// 读数）；limit 同理保留仍生效的帽（否则跨窗样本 limit=0 而 peak>0
+	// 自相矛盾——有峰值意味着有帽在执法）。
 	for id, inFlight := range g.used {
 		if inFlight > 0 {
 			g.minutePeak[id] = inFlight
-		}
-	}
-	for _, s := range samples {
-		if s.InFlight > 0 {
-			g.minuteLimit[s.KeyID] = s.Limit
+			// 播种 limit：从重置前的旧值继承（上一窗口采到的帽在本窗口
+			// 开始时刻仍然生效——同一 key 的帽不会中途变化）。
+			if limit := oldLimit[id]; limit > 0 {
+				g.minuteLimit[id] = limit
+			}
 		}
 	}
 	return samples
