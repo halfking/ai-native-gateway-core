@@ -844,11 +844,12 @@ Built with ❤️ by the AI Native Gateway community
 
 
 
+
 ### 2026-11-15
 
-- feat(f41): 注入检测验证遗留件落库——LLM 判官引擎实现 + PII 模式扩展 + 验证套件编译收口 (Mavis Merge Bot, 31 minutes ago)
+- feat(f41): 注入检测验证遗留件落库——LLM 判官引擎实现 + PII 模式扩展 + 验证套件编译收口 (Mavis Merge Bot, 36 minutes ago)
 - docs(audit): P8 收敛轮回填——S09 下钻双根因（P1 gate 遮蔽回归+prewarmed 缺 DONE）/量具三修+改密自举/基线 11/14 三红归因闭环 (Mavis Merge Bot, 6 hours ago)
-- test(mock): 量具鲁棒性三修收敛——admin 改密自举/counter 重试/双密码回登 (Mavis Merge Bot, 6 hours ago)
+- test(mock): 量具鲁棒性三修收敛——admin 改密自举/counter 重试/双密码回登 (Mavis Merge Bot, 7 hours ago)
 - fix(streaming): KeyConcurrentGate 单实例三路由 Wrap 互相遮蔽——chat 面全量反转为 responses 形状（P1 未部署回归，mock 栈 S09 下钻活体捕获） (Mavis Merge Bot, 8 hours ago)
 - fix(streaming)+test(mock): prewarmed 错误帧补 [DONE] 终态 + mock 量具三修（计数读点/错误帧信封识别/会话头） (Mavis Merge Bot, 9 hours ago)
 - docs(audit): P8 完整回填——mock 栈 8/14 场景（X-Session-Id 绕开实证）+6 红定性（S09 silent_truncations=8 候选真发现登记）+HTML 报告同步 (Mavis Merge Bot, 9 hours ago)
@@ -867,7 +868,7 @@ Built with ❤️ by the AI Native Gateway community
 - fix(deploy): DD_TEST_GO_BIN 加入 --via 转发清单——部署机 go 与 PATH go 版本分裂时闸门原生跑法失效（2026-11-14 实测：homebrew 1.27.3 在前、~/sdk/go 1.27.4 在后，discovery 取 command -v go 恒命中旧版） (Mavis Merge Bot, 12 hours ago)
 - fix(P2-2): 删除小 body string prompt 包装层——responses 入口丢输入/messages 覆盖/内存契约三问题实证 (huangxt, 12 hours ago)
 - fix(lifecycle): 修正首轮三个真缺陷——SQL别名越界/COALESCE NULL传播/粗前缀日期污染 (Mavis Merge Bot, 12 hours ago)
-- feat(deploy): 入口并发槽旋钮 LLM_GATEWAY_INGRESS_MAX_CONCURRENT 全链透传 (Mavis Merge Bot, 12 hours ago)
+- feat(deploy): 入口并发槽旋钮 LLM_GATEWAY_INGRESS_MAX_CONCURRENT 全链透传 (Mavis Merge Bot, 13 hours ago)
 - fix(sessioncontext): P2-2 第二半收口——大 string prompt/input 摘录缩减落地，撤下互相矛盾的 interim 钉测 (Mavis Merge Bot, 13 hours ago)
 - fix(security,multilayer)+docs: git-remote 豁免对齐 r1042+钉测改判；两个 Phase1 摘要文档审计订正横幅 (Mavis Merge Bot, 13 hours ago)
 - fix(plugin-runtime,pluginapi): 审计轮 D-S1~S6——deactivate 复活/双路由遮蔽/孤儿进程/request-ctx 杀进程/eventbus panic 四项 P1+P2 根修 (Mavis Merge Bot, 13 hours ago)
@@ -881,9 +882,9 @@ Built with ❤️ by the AI Native Gateway community
 - docs: update architecture with multi-layer intelligent systems (Mavis Merge Bot, 13 hours ago)
 - docs(audit): 落库前序综合审计会话交付物——24h审计总结/HTML报告/任务清单/部署报告/意图识别与多层安全摘要 (Mavis Merge Bot, 13 hours ago)
 - fix(auth,sessioncontext): 审计接力第二轮——F-A2 TTL SSOT + P2-2 string prompt 缩减路径 (huangzhouzixuan, 13 hours ago)
-- feat(pluginruntime): Supervisor 接入 EventBus 发布 plugin.started/stopped 生命周期事件;gateway main 创建共享 MemoryEventBus;pluginapi example 适配 NewPluginAPIHandler(nil);审计脚本 Go 1.27.4 动态探测替代硬编码 PATH (huangzhouzixuan, 13 hours ago)
-- build(toolchain): Go 基础镜像统一 patch-pin 1.27.4——主 Dockerfile 默认 golang:1.27.4-alpine,GOTOOLCHAIN 收紧 local,部署脚本/离线归档/契约测试/测试 compose 全部升到 1.27.4-alpine(-amd64/-arm64) (huangzhouzixuan, 13 hours ago)
-- docs(authplugin): Phase 1 final verification - ALL CRITERIA MET (huangzhouzixuan, 13 hours ago)
+- feat(pluginruntime): Supervisor 接入 EventBus 发布 plugin.started/stopped 生命周期事件;gateway main 创建共享 MemoryEventBus;pluginapi example 适配 NewPluginAPIHandler(nil);审计脚本 Go 1.27.4 动态探测替代硬编码 PATH (huangzhouzixuan, 14 hours ago)
+- build(toolchain): Go 基础镜像统一 patch-pin 1.27.4——主 Dockerfile 默认 golang:1.27.4-alpine,GOTOOLCHAIN 收紧 local,部署脚本/离线归档/契约测试/测试 compose 全部升到 1.27.4-alpine(-amd64/-arm64) (huangzhouzixuan, 14 hours ago)
+- docs(authplugin): Phase 1 final verification - ALL CRITERIA MET (huangzhouzixuan, 14 hours ago)
 - docs(authplugin): Phase 1 COMPLETE - All acceptance criteria met (huangzhouzixuan, 16 hours ago)
 - feat(authplugin): Achieve >90% test coverage with comprehensive tests (huangzhouzixuan, 16 hours ago)
 - docs(authplugin): Phase 1 final completion report (huangzhouzixuan, 17 hours ago)
@@ -899,9 +900,9 @@ Built with ❤️ by the AI Native Gateway community
 - feat(pluginapi):启停接入 Supervisor 编排真实进程 (huangzhouzixuan, 17 hours ago)
 - fix(auth): 24h审计轮(2026-11-14 1630)——F-A1 P1安全回归修复:NativeUserManager密码策略+token吊销恢复 (huangzhouzixuan, 19 hours ago)
 - feat(pluginapi):补齐 activate/deactivate端点并暴露运行期启用状态 (huangzhouzixuan, 19 hours ago)
-- fix(plugin-runtime): resolve audit findings and upgrade security stack (huangzhouzixuan, 19 hours ago)
-- feat(auth): Phase 1完成 — Native三大Manager全实现 (huangzhouzixuan, 19 hours ago)
-- feat(autoroute): modular intent recognition system with 3-layer architecture (Mavis Merge Bot, 19 hours ago)
+- fix(plugin-runtime): resolve audit findings and upgrade security stack (huangzhouzixuan, 20 hours ago)
+- feat(auth): Phase 1完成 — Native三大Manager全实现 (huangzhouzixuan, 20 hours ago)
+- feat(autoroute): modular intent recognition system with 3-layer architecture (Mavis Merge Bot, 20 hours ago)
 - feat(auth): Phase 1启动 — NativeAuthProvider实现 (huangzhouzixuan, 20 hours ago)
 - feat(auth): 插件化架构设计 — 接口定义+7周实施计划 (huangzhouzixuan, 20 hours ago)
 - feat(largebody): 100MB接入审计轮P1修复 — 原文压缩/L1缓存优化/旁路防御 (huangzhouzixuan, 20 hours ago)
