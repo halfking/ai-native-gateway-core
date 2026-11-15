@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -247,7 +246,7 @@ func TestControllerRealProcessesReloadAndUpgrade(t *testing.T) {
 		t.Fatal("closed runtime still routes requests")
 	}
 	for _, state := range states {
-		if state.Pid > 0 && syscall.Kill(state.Pid, 0) == nil {
+		if state.Pid > 0 && processAlive(state.Pid) {
 			t.Errorf("child %s PID %d survived Close", state.PluginID, state.Pid)
 		}
 	}
@@ -436,7 +435,7 @@ func TestControllerConfigWatchAndLifecycleCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, state := range states {
-		if state.Pid > 0 && syscall.Kill(state.Pid, 0) == nil {
+		if state.Pid > 0 && processAlive(state.Pid) {
 			t.Errorf("PID %d survived cancellation", state.Pid)
 		}
 	}
@@ -461,7 +460,7 @@ func TestControllerUsesCurrentVersionAndRecoversCrash(t *testing.T) {
 	}
 	c := startController(t, path)
 	old := c.Supervisor().ProcessSnapshot()[0].Pid
-	if err := syscall.Kill(old, syscall.SIGKILL); err != nil {
+	if err := killProcess(old); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -547,8 +546,8 @@ func TestControllerRecoversLiveUnhealthyProcess(t *testing.T) {
 			old := c.Supervisor().ProcessSnapshot()[0].Pid
 			var response map[string]any
 			pluginCall(t, c, "one", "/test/health", map[string]int{"status": status}, &response)
-			if err := syscall.Kill(old, 0); err != nil {
-				t.Fatal("helper exited before health check", err)
+			if !processAlive(old) {
+				t.Fatal("helper exited before health check")
 			}
 			if err := c.Reconcile(context.Background()); err != nil {
 				t.Fatal(err)
@@ -599,7 +598,7 @@ func TestControllerInvalidDiskManifestDoesNotBlockRecovery(t *testing.T) {
 	if err := os.Remove(filepath.Join(plugins, "one", "run")); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(pids["one"], syscall.SIGKILL); err != nil {
+	if err := killProcess(pids["one"]); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -662,7 +661,7 @@ func TestControllerRetainsAcceptedBundleAfterFailedRecovery(t *testing.T) {
 	if err := os.Remove(filepath.Join(plugins, "one", "run")); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := killProcess(pid); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
