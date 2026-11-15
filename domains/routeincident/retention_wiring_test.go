@@ -89,7 +89,10 @@ func goFilesUnder(root, sub string) []string {
 		if rerr != nil {
 			return nil
 		}
-		out = append(out, rel)
+		// 统一正斜杠：defining 常量用正斜杠路径做相等比较，Windows 下
+		// filepath.Rel 产生反斜杠会使定义文件跳过失效（被误判为调用方，
+		// 与 attachments/cleanup_wiring_test.go 同型修复）。
+		out = append(out, filepath.ToSlash(rel))
 		return nil
 	})
 	return out
