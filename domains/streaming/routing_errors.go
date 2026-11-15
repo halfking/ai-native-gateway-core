@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // routingErrorClass holds the classification of a routing/GetCandidates error.
@@ -44,6 +46,9 @@ func logCandidatesFailure(code string, err error, model, requestID string) {
 //	"context canceled"                                       → client hung up
 //	"candidates query circuit open (retry after <RFC3339>)"  → protective parking, retryable
 //	"missing FROM-clause entry for table \"mc\" (SQLSTATE 42P01)" → gateway SQL bug, not DB infra
+//
+// 2026-11-15 P2审计修复: 字串匹配改用 errors.Is 判据（自定义包装类型若
+// Error() 不含字串即漏网回 routing_database_error 兜底，误归因）。
 func classifyRoutingError(err error) routingErrorClass {
 	if err == nil {
 		return routingErrorClass{
@@ -60,14 +65,22 @@ func classifyRoutingError(err error) routingErrorClass {
 		httpStatus: http.StatusInternalServerError,
 	}
 	switch {
-	case errors.Is(err, context.Canceled) || strings.Contains(errStr, "context canceled"):
+	case errors.Is(err, context.Canceled):
+		// 2026-11-15 P2审计: 优先用 errors.Is(context.Canceled) 判据
+		// （包装类型若 Error() 不含 "context canceled" 字串，字串匹配会漏网）
 		// The caller disconnected (client timeout / abort) while the query was
 		// parked or in flight. Not an infrastructure failure: must not be
 		// counted, alerted, or dashboarded as an upstream/database error.
 		c.code = "routing_client_canceled"
 		c.message = "Client closed the request before routing completed"
 		c.httpStatus = routingClientCanceledStatus
-	case strings.Contains(errStr, "circuit open"):
+	case errors.Is(err, context.DeadlineExceeded):
+		// 2026-11-15 P2审计: 补 context.DeadlineExceeded 判据（timeout 形态）
+		c.code = "routing_client_canceled"
+		c.message = "Client closed the request before routing completed"
+		c.httpStatus = routingClientCanceledStatus
+	case errors.Is(err, provider.ErrCandidatesCircuitOpen):
+		// 2026-11-15 P2审计: 优先用 errors.Is(ErrCandidatesCircuitOpen) 判据
 		// Protective circuit after repeated candidate-query failures. The
 		// primary failure is logged separately; this shape is a retryable
 		// temporary condition, so 503 (not 500) and its own dashboard code.
