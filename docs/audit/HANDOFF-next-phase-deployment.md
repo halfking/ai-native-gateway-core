@@ -8,8 +8,15 @@
 - ✅ 添加EnableTierSelection特性开关（默认关闭，支持灰度）
 - ✅ 创建25+集成测试，全部通过
 - ✅ 代码已提交推送 (commit 0277fbff6)
+- ✅ **实现X-Gw-Agent-Depth header提取（P1优先级，2026-11-16）**
+  - ✅ 在autoroute/affinity.go中添加WithAgentDepth和agentDepthFromContext helpers
+  - ✅ 在domains/streaming/auto_route.go中添加header提取和context传递
+  - ✅ 在domains/streaming/auto_route_nonchat.go中为/v1/messages和/v1/responses添加支持
+  - ✅ 在autoroute/decision.go中调用tierSelector.SelectTier并填充Decision的Tier字段
+  - ✅ 在autoroute/decision_v2.go中添加相同的tier selection逻辑
+  - ✅ 添加E2E-4集成测试用例验证X-Gw-Agent-Depth header处理
 
-**当前状态**：单元测试完整，但缺少端到端验证。系统可安全启用，但未在真实环境中验证功能。
+**当前状态**：单元测试完整，X-Gw-Agent-Depth header提取已实现，缺少端到端验证。系统可安全启用，但未在真实环境中验证功能。
 
 ---
 
