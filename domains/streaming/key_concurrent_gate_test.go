@@ -179,3 +179,32 @@ func TestKeyConcurrentGate_WrapPerRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyConcurrentGate_NullColumnMeansNoCap 钉 2026-11-15 修正（211 生产
+// 反馈轮）：并发帽 explicit-only——RateLimitConcurrent=NULL 的 key（tier
+// default 本会回退到 6）**不设帽**：存量 82 个 active key 的 NULL 列在执法
+// 接入前从未代表「6 并发」，接入即按 tier 默认帽住全体 = 行为突变。
+// 变异臂：serve 里改回 EffectiveConcurrent() ⇒ 本测试红。
+func TestKeyConcurrentGate_NullColumnMeansNoCap(t *testing.T) {
+	gate := NewKeyConcurrentGate()
+	// NULL 列 + default 档（tier 默认并发=6）——若落 tier 默认，第 7 笔必拦。
+	blocker := &blockingNext{entered: make(chan struct{}, 16), release: make(chan struct{}, 16), done: make(chan struct{}, 16)}
+	h := gate.Wrap(blocker)
+	ctx := gateCtxWith(&authentication.KeyInfo{ID: 31, TenantID: "t", KeyTier: "default"}) // RateLimitConcurrent=nil
+
+	const n = 10 // > tier 默认 6
+	done := make(chan int, n)
+	for i := 0; i < n; i++ {
+		go func() { h.ServeHTTP(httptest.NewRecorder(), gatePost("/v1/chat/completions", ctx)); done <- 1 }()
+	}
+	// 全部 10 笔都应进入下游（无人被 429）。
+	for i := 0; i < n; i++ {
+		<-blocker.entered
+	}
+	for i := 0; i < n; i++ {
+		blocker.release <- struct{}{}
+	}
+	for i := 0; i < n; i++ {
+		<-done
+	}
+}
