@@ -41,7 +41,7 @@ func TestHandleLogin_DirectDB_Success(t *testing.T) {
 
 	// Create handler WITHOUT registry (nil) - tests legacy path
 	h := &Handler{
-		db:       mock,
+		loginDB:       mock,
 		secret:   "test-secret",
 		registry: nil, // Explicitly nil to test fallback
 	}
@@ -112,7 +112,7 @@ func TestHandleLogin_DirectDB_InvalidCredentials(t *testing.T) {
 		))
 
 	h := &Handler{
-		db:       mock,
+		loginDB:       mock,
 		secret:   "test-secret",
 		registry: nil,
 	}
@@ -162,7 +162,7 @@ func TestHandleLogin_DirectDB_UserDisabled(t *testing.T) {
 		))
 
 	h := &Handler{
-		db:       mock,
+		loginDB:       mock,
 		secret:   "test-secret",
 		registry: nil,
 	}
@@ -236,7 +236,7 @@ func TestHandleLogin_InvalidRequestBody(t *testing.T) {
 	defer mock.Close()
 
 	h := &Handler{
-		db:       mock,
+		loginDB:       mock,
 		secret:   "test-secret",
 		registry: nil,
 	}

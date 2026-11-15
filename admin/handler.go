@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -69,10 +70,24 @@ type topologyStatsDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// loginDB 是 handleLogin 的读写查询面。刻意保持窄接口（QueryRow + Exec）：
+// db 字段是具体 *pgxpool.Pool，无法在单测里注入 pgxmock，而 handleLogin 的
+//登录路径（registry fallback探测 / users·tenants查询 / admin key落库）
+// 都必须能被单测钉住，所以按 controlledBodyDB 的同款范式开一个窄口。
+// nil ⇒ 用 h.db（生产路径零变化）。
+type loginDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 type Handler struct {
 	db                   *pgxpool.Pool
 	registry             *authplugin.Registry // Phase 2: plugin registry for auth/user/tenant operations
 	bodyDB               controlledBodyDB
+	// loginDB 是 handleLogin 的窄注入面（2026-11-15 phase3 合并轮）：nil ⇒ h.db。
+	// 单测（auth_handlelogin_integration_test.go）需注入 pgxmock，而 db 是具体
+	// *pgxpool.Pool —— 按 controlledBodyDB 同款范式开窄口。
+	loginDB loginDB
 	// blockReviewCandidateReader 是「审核单候选规则」的读面（★ 2026-10-31
 	// 拦截归因轮 ★）。★ nil ⇒ 用默认实现（sanitizerules 的逐单窗口读面）★
 	// ⇒ ★ 单测可注入（★ 这个读面的**口径**是本轮的关键：逐单窗口 vs

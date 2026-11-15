@@ -172,6 +172,20 @@ func enforceMustChangePassword(w http.ResponseWriter, r *http.Request, claims *J
 	return true
 }
 
+// authDB返回 handleLogin 的读写面：显式注入的窄口优先，否则回落到
+//具体连接池 h.db。单测可注入 pgxmock（*pgxpool.Pool 无法承载它）。
+//注意：h.db 是具体指针，typed-nil装进接口后 != nil（Go 经典坑），
+//所以 nil判定必须在具体类型上做，不能在返回的接口值上做。
+func (h *Handler) authDB() loginDB {
+	if h.loginDB != nil {
+		return h.loginDB
+	}
+	if h.db == nil {
+		return nil
+	}
+	return h.db
+}
+
 // handleLogin handles user authentication via multiple paths:
 // 1. Plugin-based authentication (registry.GetAuthProvider) - Phase 2 refactored path
 // 2. Direct database authentication (legacy fallback when registry unavailable)
@@ -185,7 +199,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if h.db == nil {
+	if h.authDB() == nil { //窄口注入（单测pgxmock）或真实连接池，二者其一非nil即可
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -253,12 +267,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			if authErr != nil {
 				// Check if user exists in database to determine if we should fall back to legacy admin
 				var userExists bool
-				checkErr := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, req.Username).Scan(&userExists)
+				checkErr := h.authDB().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, req.Username).Scan(&userExists)
 				
 				if checkErr == nil && userExists {
 					// User exists in DB, don't fall back to legacy admin (2026-07-09 policy)
 					var userID int
-					_ = h.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, req.Username).Scan(&userID)
+					_ = h.authDB().QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, req.Username).Scan(&userID)
 					
 					switch {
 					case errors.Is(authErr, authplugin.ErrUserDisabled):
@@ -335,7 +349,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				Enabled            bool
 				MustChangePassword bool
 			}
-			err := h.db.QueryRow(ctx, `
+			err := h.authDB().QueryRow(ctx, `
 				SELECT id, tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password
 				FROM users WHERE username = $1
 			`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword)
@@ -360,7 +374,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				// 密码正确，检查租户状态
 				if u.TenantID != "default" {
 					var tenantStatus string
-					err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
+					err := h.authDB().QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
 					if err != nil || tenantStatus == "disabled" {
 						h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
 						recordLoginFailure(clientIP)
@@ -370,7 +384,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				}
 				// Update last_login_at
 				//nolint:errcheck // best-effort exec, non-critical
-				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
+				h.authDB().Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
 				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
 				if signErr != nil {
@@ -427,7 +441,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var appID int
-	err := h.db.QueryRow(ctx, `SELECT id FROM applications WHERE code = 'admin' AND tenant_id = 'default'`).Scan(&appID)
+	err := h.authDB().QueryRow(ctx, `SELECT id FROM applications WHERE code = 'admin' AND tenant_id = 'default'`).Scan(&appID)
 	if err != nil {
 		slog.Error("admin app not found", "error", err)
 		writeError(w, http.StatusInternalServerError, "Admin application not initialized")
@@ -436,7 +450,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var existingID int
 	var ciphertext string
-	err = h.db.QueryRow(ctx, `
+	err = h.authDB().QueryRow(ctx, `
 		SELECT id, key_ciphertext FROM api_keys
 		WHERE application_id = $1 AND tenant_id = 'default'
 		  AND enabled = TRUE AND COALESCE(status, 'active') <> 'revoked'
@@ -447,7 +461,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		decrypted, decErr := h.decryptCredStr(ciphertext)
 		if decErr == nil {
 			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
+			h.authDB().Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
 			loginLimiter.Reset(clientIP)
 			clearLoginFailures(clientIP)
@@ -463,7 +477,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 	clearLoginFailures(clientIP)
-	_, err = h.db.Exec(ctx, `
+	_, err = h.authDB().Exec(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, is_system, remark)
 		VALUES ($1, 'default', $2, $3, $4, 'admin', TRUE, TRUE, 'admin login: no usable existing key')
 	`, appID, keyHash, keyPrefix, keyCiphertext)
