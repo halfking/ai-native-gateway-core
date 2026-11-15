@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -173,6 +174,11 @@ func classifyGatewayRoundRootCause(errCode string, httpStatus int, responseBody 
 // one failed round. Counting does NOT happen here — emitProbe is the single
 // counter choke point per round — so callers may log a round once while the
 // counter still fires exactly once.
+//
+// R-76-3（2026-11-14）：同一 (provider, model, rootCause) 组合在
+// probeRoundLogCooldown 内的重复轮合并为下一条放行时的 suppressed=N ——
+// 211 实测梯上逐轮同文案 WARN 389 条/h（429/503 族为大头），判决在配置或
+// 上游状态改变前不变；首条与根因/模型/供应商变化照旧立刻放行。
 func logProbeRoundRootCause(round string, r nodeProbeRoundResult) {
 	if r.ok {
 		return
@@ -181,18 +187,26 @@ func logProbeRoundRootCause(round string, r nodeProbeRoundResult) {
 	if cause == "" {
 		cause = ProbeRootCauseNode
 	}
+	allowed, suppressed := probeRoundLogGateInstance.allow(r.providerID, r.outboundModel, cause, time.Now())
+	if !allowed {
+		return
+	}
+	detail := r.errDetail
+	if suppressed > 0 {
+		detail = fmt.Sprintf("%s (suppressed_repeats=%d)", detail, suppressed)
+	}
 	switch cause {
 	case ProbeRootCauseProtocol:
 		slog.Warn("node probe failed: protocol mismatch, NOT a node fault — "+
 			"re-probing cannot heal it; fix the provider protocol/endpoint/model-catalog config (recheck parked at 6h)",
-			"round", round, "err_code", r.errCode, "http_status", r.httpStatus, "detail", r.errDetail)
+			"round", round, "err_code", r.errCode, "http_status", r.httpStatus, "detail", detail)
 	case ProbeRootCauseGateway:
 		slog.Warn("node probe failed: gateway-side fault, NOT a node fault — "+
 			"shared availability surfaces stay untouched; fix this instance's config/capability",
-			"round", round, "err_code", r.errCode, "http_status", r.httpStatus, "detail", r.errDetail)
+			"round", round, "err_code", r.errCode, "http_status", r.httpStatus, "detail", detail)
 	default:
 		slog.Warn("node probe failed: node/upstream fault (ladder applies)",
-			"round", round, "err_code", r.errCode, "http_status", r.httpStatus, "detail", r.errDetail)
+			"round", round, "err_code", r.errCode, "http_status", r.httpStatus, "detail", detail)
 	}
 }
 
