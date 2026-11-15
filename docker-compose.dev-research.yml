@@ -10,7 +10,7 @@
 #   ./scripts/local-down.sh [--volumes]                # 停止 + 清理 volumes
 #
 # 端口映射 (避免与本地其他 compose 冲突):
-#   - 5432  postgres  (citusdata/citus:11.3.0, 与生产一致)
+#   - 5432  postgres  (host PG: host.docker.internal:5432，非容器服务)
 #   - 6379  redis
 #   - 1080  llm-mock       (nginx 健康桩, 供 healthcheck 依赖)
 #   - ${LLM_MOCK_HOST_PORT:-19080} llm-mock-upstream (真 OpenAI 兼容 mock, aiohttp)
@@ -229,21 +229,20 @@ services:
       # ── 基础 ──
       GIN_MODE: release
       LOG_LEVEL: info
-      LISTEN_ADDR: ":8080"
       # ── 依赖指向 compose 内服务名 (docker DNS 自动解析) ──
       # DATABASE_URL 从 .env.dev-research 注入 (docker-compose v1/v2 共享同一份 env)
       # REDIS_URL: compose 内服务名解析
       REDIS_URL: redis://redis:${REDIS_PORT:-6379}/0
-      MEMORA_URL: http://memora-mcp:80
       # 指向真 OpenAI 兼容 mock (支持 chat/completions 真实回包)
-      OPENAI_BASE_URL: http://llm-mock-upstream:18080
-      # ── v2 特性开关 ──
-      GATEWAY_V2_ENABLED: "true"
-      COMPRESSOR_ENABLED: "true"
-      ARMOR_ENABLED: "true"
-      CREDENTIAL_FP_SLOTS_ENABLED: "true"
-      # ── 关闭外部认证 (本地测试不需要 Casdoor) ──
-      AUTH_DISABLED: "true"
+      LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
+      LLM_GATEWAY_MEMORA_BASE_URL: "http://memora-mcp:80"
+      # ── 特性开关 ──
+      # 此处原有的 GATEWAY_V2_ENABLED / COMPRESSOR_ENABLED / ARMOR_ENABLED /
+      # CREDENTIAL_FP_SLOTS_ENABLED / AUTH_DISABLED 均为裸名，gateway-v2 不读取：
+      # cmd/gateway-v2 只认 LLM_GATEWAY_* 前缀（对照 cmd/gateway-v2/main.go:113 的
+      # getEnv("LLM_GATEWAY_LISTEN", ":8782") 形态），裸 GATEWAY_V2_ENABLED 在 Go 代码中 0 命中。
+      # v2 Pipeline 开关 LLM_GATEWAY_V2_ENABLED 由 v1 网关 cmd/gateway 读取
+      # （cmd/gateway/main_pipeline.go:163），不属本服务；本 compose 两个服务均未设置它。
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8782/healthz | grep -q ok || exit 1"]
       interval: 5s
