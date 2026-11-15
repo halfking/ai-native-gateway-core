@@ -1856,6 +1856,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ⇒ 963 完成再对齐（F-43 收口最后一步）；函数体 = 897 逐字，仅改
 			// DEFAULT 一行，PartitionManager 显式传参 ⇒ 自动调度零行为变化。
 			"964_promote_session_turns_default_retention_realign.sql",
+			// 965（2026-11-15 三点审计轮）：api_key_concurrency_minute——
+			// per-key 并发分钟观测表（写入方 bg.KeyConcurrencyStatsWriter
+			// 从 KeyConcurrentGate 每分钟 UPSERT：在飞/峰值/被拒/生效帽；
+			// instance_id 区分蓝绿双槽；retention 7d 由 worker 自清）。
+			"965_api_key_concurrency_minute.sql",
 		},
 	}
 }

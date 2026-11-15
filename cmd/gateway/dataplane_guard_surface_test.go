@@ -179,8 +179,40 @@ func collectIdents(expr ast.Expr, out *[]string) {
 
 // scanMuxRoutes 扫描 main.go 的 mux.Handle/HandleFunc 注册面，过滤数据面
 // （模式前缀 /v1，覆盖 /v1 与 /v1beta；/mock、/api、/healthz 等不在数据面）。
+// keyConcurrentGateReceivers 收集由 streaming.NewKeyConcurrentGate() 赋值的
+// 局部变量名（2026-11-15 三点审计轮）。per-key 并发闸是**透传中间件**：
+// 守卫分类必须看穿它的 Wrap(...) 归类到内层内容处理器——否则六条被包
+// 路由被迫共享一个「keyConcurrentGate.Wrap」台账键，而它们的守卫类各异
+// （exempt 的 count_tokens ≠ registeredGap 的 embeddings）。变量名与构造器
+// 双重钉——改线/换中间件即红，防分类器静默漂移。
+func keyConcurrentGateReceivers(file *ast.File) map[string]bool {
+	recv := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		a, ok := n.(*ast.AssignStmt)
+		if !ok || len(a.Lhs) != 1 || len(a.Rhs) != 1 {
+			return true
+		}
+		lhs, ok := a.Lhs[0].(*ast.Ident)
+		if !ok {
+			return true
+		}
+		call, ok := a.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "NewKeyConcurrentGate" {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == "streaming" {
+				recv[lhs.Name] = true
+			}
+		}
+		return true
+	})
+	return recv
+}
+
 func scanMuxRoutes(t *testing.T, fset *token.FileSet, file *ast.File) []muxRoute {
 	t.Helper()
+	gateReceivers := keyConcurrentGateReceivers(file)
 	var routes []muxRoute
 	ast.Inspect(file, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -208,8 +240,26 @@ func scanMuxRoutes(t *testing.T, fset *token.FileSet, file *ast.File) []muxRoute
 		}
 		var idents []string
 		collectIdents(call.Args[1], &idents)
+		// 透传中间件解包：keyConcurrentGate.Wrap(inner) 的分类锚 = inner
+		//（并发闸不产生/不消费 LLM 内容；delegat 仍保留全量标识符）。
+		handlerExpr := call.Args[1]
+		for {
+			ce, ok := handlerExpr.(*ast.CallExpr)
+			if !ok || len(ce.Args) == 0 {
+				break
+			}
+			wrapSel, ok := ce.Fun.(*ast.SelectorExpr)
+			if !ok || wrapSel.Sel.Name != "Wrap" {
+				break
+			}
+			recv, ok := wrapSel.X.(*ast.Ident)
+			if !ok || !gateReceivers[recv.Name] {
+				break
+			}
+			handlerExpr = ce.Args[0]
+		}
 		head := ""
-		switch h := call.Args[1].(type) {
+		switch h := handlerExpr.(type) {
 		case *ast.Ident:
 			head = h.Name
 		case *ast.SelectorExpr:

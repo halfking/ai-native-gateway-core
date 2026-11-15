@@ -1477,7 +1477,8 @@ type ExecParams struct {
 	Model string
 	// KeyID is the API key ID from keyInfo.ID. Used for per-key concurrent limiting.
 	KeyID int
-	// KeyConcurrentLimit is the per-key concurrent limit from keyInfo.EffectiveConcurrent().
+	// KeyConcurrentLimit is the per-key concurrent limit from keyInfo.ConfiguredConcurrent()
+	// (explicit-only since 2026-11-15: NULL/0 = uncapped; aligned with KeyConcurrentGate).
 	// If 0, the per-key concurrent check is skipped.
 	KeyConcurrentLimit int
 	// TenantID is the tenant owning this request (from keyInfo.TenantID).

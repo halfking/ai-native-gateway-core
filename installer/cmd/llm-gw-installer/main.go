@@ -1607,6 +1607,16 @@ var promoteSessionTurnsDefaultRetentionRealign963 []byte
 //go:embed embeddata/startup/964_promote_session_turns_default_retention_realign.down.sql
 var promoteSessionTurnsDefaultRetentionRealign963Down []byte
 
+// ★ 965（2026-11-15 三点审计轮）：api_key_concurrency_minute——per-key
+//
+//	并发分钟观测表（写入方 bg.KeyConcurrencyStatsWriter；空窗口零写）。
+//
+//go:embed embeddata/startup/965_api_key_concurrency_minute.sql
+var apiKeyConcurrencyMinute965 []byte
+
+//go:embed embeddata/startup/965_api_key_concurrency_minute.down.sql
+var apiKeyConcurrencyMinute965Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2181,6 +2191,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/954_probe_lane_trace_events.down.sql":                         probeLaneTraceEvents954Down,
 	"startup/964_promote_session_turns_default_retention_realign.sql":      promoteSessionTurnsDefaultRetentionRealign963,
 	"startup/964_promote_session_turns_default_retention_realign.down.sql": promoteSessionTurnsDefaultRetentionRealign963Down,
+	"startup/965_api_key_concurrency_minute.sql":                           apiKeyConcurrencyMinute965,
+	"startup/965_api_key_concurrency_minute.down.sql":                      apiKeyConcurrencyMinute965Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

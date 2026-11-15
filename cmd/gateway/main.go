@@ -7463,13 +7463,51 @@ func main() {
 	// ── 2026-11-15: per-key 并发闸（限流统一按 key 轮）────────────────────
 	// api_keys.rate_limit_concurrent 从「软告警放行」变真执法；全局资源兜底
 	// 仍是 LargeIngress 并发槽（维度不同：按 key 配置 vs 进程保护）。
+	// 2026-11-15 三点审计轮：① 装配身份回退解析器（embeddings/audio(STT/TTS)/
+	// images/videos/count_tokens 不写 context memo，闸需自行 Verify 才能不
+	// 空转——Verify cache-backed，handler 内的二次 Verify 是 map 命中）；
+	// ② 扩面到全部「直连上游/独立鉴权」的数据面端点，同一 key 在任何端点
+	// 适用同一把并发帽。refine/analyze/summarize/mcp **不包**：其 LLM 步
+	// 环回 chat 面携带同一把 key，chat 闸已计一次，外层再包=双计并发槽
+	//（与 authenticateNoRPM 的 RPM 不双计纪律同款）。
+	// ③ gate 同时是分钟观测源（SnapshotAndResetMinute →
+	// bg.KeyConcurrencyStatsWriter → api_key_concurrency_minute 迁移 965）。
+	keyConcurrentGate := streaming.NewKeyConcurrentGate()
 	{
-		gate := streaming.NewKeyConcurrentGate()
-		chatRouteHandler = gate.Wrap(chatRouteHandler)
-		messagesRouteHandler = gate.Wrap(messagesRouteHandler)
-		responsesRouteHandler = gate.Wrap(responsesRouteHandler)
+		if keyVerifier != nil {
+			keyConcurrentGate.SetVerifier(keyVerifier)
+		}
+		chatRouteHandler = keyConcurrentGate.Wrap(chatRouteHandler)
+		messagesRouteHandler = keyConcurrentGate.Wrap(messagesRouteHandler)
+		responsesRouteHandler = keyConcurrentGate.Wrap(responsesRouteHandler)
 		slog.Info("key concurrent gate: handlers wrapped",
-			"config_source", "api_keys.rate_limit_concurrent (NULL=tier default, 0=unlimited, N=cap)")
+			"config_source", "api_keys.rate_limit_concurrent (explicit-only: NULL/0=uncapped, N=cap)",
+			"routes", []string{"/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses",
+				"/v1/messages/count_tokens", "/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/speech",
+				"/v1/images/generations", "/v1/videos/generations"})
+	}
+
+	// ── 2026-11-15 三点审计轮③：per-key 并发分钟观测落库 ──────────────────
+	// 每 ~60s 从并发闸取观测窗口样本（在飞/峰值/被拒/生效帽）UPSERT 进
+	// api_key_concurrency_minute（迁移 965）。instance_id 取进程级常量
+	//（rule 71 同源），蓝绿双槽各写各的行；空窗口零写；retention 7d 自清。
+	if keyVerifier != nil && keyVerifier.Enabled() && dbConn != nil {
+		keyConcurrencyStatsWriter := bg.NewKeyConcurrencyStatsWriter(dbConn.Pool(), func() []bg.KeyConcurrencySample {
+			src := keyConcurrentGate.SnapshotAndResetMinute()
+			out := make([]bg.KeyConcurrencySample, 0, len(src))
+			for _, s := range src {
+				out = append(out, bg.KeyConcurrencySample{
+					KeyID: s.KeyID, InFlight: s.InFlight, PeakInFlight: s.PeakInFlight,
+					Rejected: s.Rejected, Limit: s.Limit,
+				})
+			}
+			return out
+		}, instanceID)
+		keyConcurrencyStatsWriter.Start(context.Background())
+		defer keyConcurrencyStatsWriter.Stop()
+		slog.Info("key concurrency stats writer: started",
+			"interval", "60s (env LLM_GATEWAY_KEY_CONCURRENCY_STATS_INTERVAL)",
+			"retention", "7d (env LLM_GATEWAY_KEY_CONCURRENCY_RETENTION)")
 	}
 
 	// P1-2③ W1/W3 memora 上下文预热（ADR memory-prewarm-injection）：
@@ -7541,19 +7579,19 @@ func main() {
 	// plain-text 404 that strict clients treat as a session-fatal error. The
 	// handler answers with the same heuristic estimate the streaming bridge
 	// writes into message_start.usage.input_tokens.
-	mux.Handle("/v1/messages/count_tokens", streaming.NewCountTokensHandler(chatHandler))
+	mux.Handle("/v1/messages/count_tokens", keyConcurrentGate.Wrap(streaming.NewCountTokensHandler(chatHandler)))
 	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {
-		mux.Handle("/v1/embeddings", embeddingsHandler)
+		mux.Handle("/v1/embeddings", keyConcurrentGate.Wrap(embeddingsHandler))
 	}
 	// 2026-10-03 音频端点轮：OpenAI 兼容转写/合成 + MCP 面板。handler 仅在
 	// 数据面鉴权可用（keyVerifier.Enabled）时构造，与 embeddings 同款门槛。
 	if audioTranscriptionsHandler != nil {
-		mux.Handle("/v1/audio/transcriptions", audioTranscriptionsHandler)
+		mux.Handle("/v1/audio/transcriptions", keyConcurrentGate.Wrap(audioTranscriptionsHandler))
 	}
 	if audioSpeechHandler != nil {
-		mux.Handle("/v1/audio/speech", audioSpeechHandler)
+		mux.Handle("/v1/audio/speech", keyConcurrentGate.Wrap(audioSpeechHandler))
 	}
 	if audioMCPHandler != nil {
 		mux.Handle("/v1/mcp", audioMCPHandler)
@@ -7571,10 +7609,10 @@ func main() {
 	}
 	// 2026-10-08 Phase C：OpenAI 兼容图/视频生成出口。
 	if imagesGenerationsHandler != nil {
-		mux.Handle("/v1/images/generations", imagesGenerationsHandler)
+		mux.Handle("/v1/images/generations", keyConcurrentGate.Wrap(imagesGenerationsHandler))
 	}
 	if videosGenerationsHandler != nil {
-		mux.Handle("/v1/videos/generations", videosGenerationsHandler)
+		mux.Handle("/v1/videos/generations", keyConcurrentGate.Wrap(videosGenerationsHandler))
 	}
 	mux.Handle("/v1/models", modelsHandler)
 
