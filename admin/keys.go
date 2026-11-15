@@ -58,6 +58,21 @@ func (f limitField) sqlArg(max int, fieldName string) (any, error) {
 	return f.value, nil
 }
 
+// keyLimitCaps 是创建（createKey）与更新（updateKeyLimits）两路**共用**的
+// per-key 限流/预算上限帽。
+//
+// 2026-11-15（限流统一按 key 轮）：此前只有更新路径有帽，创建路径非负校验
+// 后照单全收（keys 自助管理 212825977 审计登记的「budget/rpm 无上限帽」）
+// ——自助入口可签出 rate_limit_rpm=0（显式无限）或任意大 budget 的 key，
+// 两路口径不齐。现在创建与更新走同一组常量，数值可调归 owner。
+// NULL（不设）语义不变——帽只约束显式给出的值。
+const (
+	maxKeyRPM        = 10000
+	maxKeyConcurrent = 1000
+	maxKeyTPM        = 1_000_000_000
+	maxKeyBudgetUSD  = 100_000.0
+)
+
 type keyActionRoute struct {
 	kind    string
 	idPart  string
@@ -402,6 +417,16 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if (req.BudgetUSD != nil && *req.BudgetUSD < 0) || (req.RateLimitRPM != nil && *req.RateLimitRPM < 0) {
 		writeError(w, http.StatusBadRequest, "budget and rate limit must be nonnegative")
+		return
+	}
+	// 2026-11-15：与 updateKeyLimits 同一组帽（keyLimitCaps）——创建路径
+	// 不再照单全收任意大的限流/预算值。
+	if req.RateLimitRPM != nil && *req.RateLimitRPM > maxKeyRPM {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("rate_limit_rpm must be between 0 and %d", maxKeyRPM))
+		return
+	}
+	if req.BudgetUSD != nil && *req.BudgetUSD > maxKeyBudgetUSD {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("budget_usd must be between 0 and %.0f", maxKeyBudgetUSD))
 		return
 	}
 	// tenant_admin callers may only create keys for their own tenant.
@@ -839,23 +864,18 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		return
 	}
 
-	const (
-		maxRPM        = 10000
-		maxConcurrent = 1000
-		maxTPM        = 1_000_000_000
-	)
-
-	rpmArg, err := body.RateLimitRPM.sqlArg(maxRPM, "rate_limit_rpm")
+	// 帽值与创建路径共用（keyLimitCaps，2026-11-15 统一口径）。
+	rpmArg, err := body.RateLimitRPM.sqlArg(maxKeyRPM, "rate_limit_rpm")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	concurrentArg, err := body.RateLimitConcurrent.sqlArg(maxConcurrent, "rate_limit_concurrent")
+	concurrentArg, err := body.RateLimitConcurrent.sqlArg(maxKeyConcurrent, "rate_limit_concurrent")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	tpmArg, err := body.RateLimitTPM.sqlArg(maxTPM, "rate_limit_tpm")
+	tpmArg, err := body.RateLimitTPM.sqlArg(maxKeyTPM, "rate_limit_tpm")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

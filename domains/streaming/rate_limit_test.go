@@ -46,17 +46,17 @@ func TestCheckGatewayRateLimit_StaticDataPlaneKeySkipsSharedRPM(t *testing.T) {
 	keyInfo := &authentication.KeyInfo{ID: 105, RateLimitRPM: &limit}
 
 	for i := 0; i < limit; i++ {
-		if outcome := checkGatewayRateLimit(context.Background(), keyInfo, limiter, nil); outcome.Blocked {
+		if outcome := checkGatewayRateLimit(context.Background(), keyInfo, limiter, nil, 0); outcome.Blocked {
 			t.Fatalf("database key request %d should be allowed", i+1)
 		}
 	}
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	waiting := make(chan rateLimitOutcome, 2)
-	go func() { waiting <- checkGatewayRateLimit(ctx1, keyInfo, limiter, nil) }()
-	go func() { waiting <- checkGatewayRateLimit(ctx2, keyInfo, limiter, nil) }()
+	go func() { waiting <- checkGatewayRateLimit(ctx1, keyInfo, limiter, nil, 0) }()
+	go func() { waiting <- checkGatewayRateLimit(ctx2, keyInfo, limiter, nil, 0) }()
 	time.Sleep(time.Millisecond)
-	if outcome := checkGatewayRateLimit(context.Background(), keyInfo, limiter, nil); !outcome.Blocked {
+	if outcome := checkGatewayRateLimit(context.Background(), keyInfo, limiter, nil, 0); !outcome.Blocked {
 		t.Fatal("request beyond 2L capacity must remain blocked")
 	}
 	cancel1()
@@ -70,7 +70,7 @@ func TestCheckGatewayRateLimit_StaticDataPlaneKeySkipsSharedRPM(t *testing.T) {
 	}
 
 	ctx := middleware.RegisterAuthOwnerUser(context.Background(), "global-auth-passed")
-	if outcome := checkGatewayRateLimit(ctx, keyInfo, limiter, nil); !outcome.Skipped {
+	if outcome := checkGatewayRateLimit(ctx, keyInfo, limiter, nil, 0); !outcome.Skipped {
 		t.Fatal("verified static data-plane key should bypass the shared RPM limit")
 	}
 }
@@ -91,7 +91,7 @@ func TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(30*time.Second))
 	defer cancel()
 	start := time.Now()
-	outcome := checkGatewayRateLimit(ctx, keyInfo, limiter, nil)
+	outcome := checkGatewayRateLimit(ctx, keyInfo, limiter, nil, 0)
 	if !outcome.Blocked {
 		t.Fatalf("expected fast block on over-budget queue wait, got %+v", outcome)
 	}
@@ -135,7 +135,7 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 			// chat 路径的限流检查在 serveWithExecutor 内，executor/provider
 			// 为 nil 时 serveHTTPInner 会在限流前以 503 提前返回。
 			enableExecutor: true,
-			wantRequestLog:  boolPtr(true),
+			wantRequestLog: boolPtr(true),
 		},
 		{
 			name:           "responses",
@@ -146,22 +146,25 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 			wantRequestLog: boolPtr(true),
 		},
 		{
-			name:           "messages",
-			path:           "/v1/messages",
-			body:           `{"model":"kimi-k3","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
-			wantStatus:     529,
+			name: "messages",
+			path: "/v1/messages",
+			body: `{"model":"kimi-k3","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+			// 2026-11-15 改判：529 → 429（限流统一按 key 轮——Anthropic 协议
+			// 529=overloaded_error，限流是 429 rate_limit_error）。
+			wantStatus:     http.StatusTooManyRequests,
 			wrap:           func(h *ChatHandler) http.Handler { return NewMessagesHandler(h) },
 			wantRequestLog: boolPtr(true),
 		},
 		{
 			// ★ 2026-10-30（ingressguard P2 缺口收口轮）：count_tokens 补上了
 			//   RPM 闸 ⇒ 它也在这张表里。
-			//   ★ 状态码 529 ⇒ 与同路由族 /v1/messages 同口径（不是 429）。
+			//   ★ 2026-11-15 改判：429 ⇒ 与全仓标准对齐（原与 /v1/messages 的
+			//     旧 529 同口径，两处一并改）。
 			//   ★ 不写请求日志 ⇒ 它不是推理面（不产生上游调用、不计费）。
 			name:       "messages count_tokens",
 			path:       "/v1/messages/count_tokens",
 			body:       `{"model":"kimi-k3","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
-			wantStatus: 529,
+			wantStatus: http.StatusTooManyRequests,
 			wrap:       func(h *ChatHandler) http.Handler { return NewCountTokensHandler(h) },
 		},
 	}
@@ -269,5 +272,66 @@ func TestNotifyRateLimitWaitWritesSSEEventOnlyForStreamingClient(t *testing.T) {
 	nonStreamRecorder := httptest.NewRecorder()
 	if notify := notifyRateLimitWait(nonStreamRecorder, false); notify != nil {
 		t.Fatal("non-streaming request must not receive a pre-response waiting event")
+	}
+}
+
+// tpmRecordingLimiter 是可编程的 TPM 检查桩：记录最后一次记账参数，
+// RPM 恒放行（隔离 TPM 语义），reject 臂可编程。
+type tpmRecordingLimiter struct {
+	gotKey    int
+	gotTokens int
+	gotLimit  int
+	calls     int
+	reject    bool
+}
+
+func (l *tpmRecordingLimiter) CheckRPM(int, int) bool { return true }
+func (l *tpmRecordingLimiter) RPMStatus(_ int, limit int) (int, int) {
+	return 0, limit
+}
+func (l *tpmRecordingLimiter) CheckTPM(keyID int, estimatedTokens int, limit int) bool {
+	l.calls++
+	l.gotKey, l.gotTokens, l.gotLimit = keyID, estimatedTokens, limit
+	return !l.reject
+}
+
+// TestCheckGatewayRateLimit_TPMLimitBlocks 钉 2026-11-15 TPM 接线（死字段
+// 复活）：EffectiveTPM>0 且限流器支持 TPM ⇒ RPM 通过后按入口估计预检；
+// 超限 Reason="tpm_limit"（走各面现有 Blocked 渲染路径）。estimate=0 的面
+// （count_tokens 等读 body 前挡住的面）不预记账——「没法估」不得变成「无限」
+// 的反面：skip 是登记的口径边界，不是豁免。
+func TestCheckGatewayRateLimit_TPMLimitBlocks(t *testing.T) {
+	ratelimit.EnableRateLimit()
+	rpm := 1000
+	tpm := 5000
+	keyInfo := &authentication.KeyInfo{ID: 321, RateLimitRPM: &rpm, RateLimitTPM: &tpm}
+	lim := &tpmRecordingLimiter{}
+
+	outcome := checkGatewayRateLimit(context.Background(), keyInfo, lim, nil, 1000)
+	if outcome.Blocked {
+		t.Fatalf("5000 TPM 槽内首笔（估计 1000）应放行: %+v", outcome)
+	}
+	if lim.calls != 1 || lim.gotKey != 321 || lim.gotTokens != 1000 || lim.gotLimit != 5000 {
+		t.Fatalf("TPM 预检参数不符: calls=%d key=%d tokens=%d limit=%d", lim.calls, lim.gotKey, lim.gotTokens, lim.gotLimit)
+	}
+
+	// 超限臂：后续调用拒绝。
+	lim.reject = true
+	outcome = checkGatewayRateLimit(context.Background(), keyInfo, lim, nil, 6000)
+	if !outcome.Blocked || outcome.Reason != "tpm_limit" || outcome.Limit != 5000 {
+		t.Fatalf("TPM 超限必须 Blocked/tpm_limit: %+v", outcome)
+	}
+
+	// 无估计值 ⇒ 跳过 TPM（口径边界：count_tokens 类面）。
+	lim2 := &tpmRecordingLimiter{}
+	if outcome := checkGatewayRateLimit(context.Background(), keyInfo, lim2, nil, 0); outcome.Blocked || lim2.calls != 0 {
+		t.Fatalf("estimate=0 不得触发 TPM: outcome=%+v calls=%d", outcome, lim2.calls)
+	}
+
+	// 无 TPM 列 ⇒ 不执法（NULL/0 语义）。
+	keyNoTPM := &authentication.KeyInfo{ID: 322, RateLimitRPM: &rpm}
+	lim3 := &tpmRecordingLimiter{}
+	if outcome := checkGatewayRateLimit(context.Background(), keyNoTPM, lim3, nil, 1000); outcome.Blocked || lim3.calls != 0 {
+		t.Fatalf("无 TPM 配置不得执法: outcome=%+v calls=%d", outcome, lim3.calls)
 	}
 }

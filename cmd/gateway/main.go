@@ -39,7 +39,6 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
-	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -61,6 +60,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/assets"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/freediscovery" //nolint:depguard // 2026-11-09 运营审计轮项5：扫描成功自动导入
+	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                                  //nolint:depguard // OmniFree virtual auto/* routing
@@ -152,8 +152,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 	"github.com/kaixuan/llm-gateway-go/pkg/monitor"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
-	pluginruntimeeventbus "github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime/controller"
+	pluginruntimeeventbus "github.com/kaixuan/llm-gateway-go/plugin-runtime/eventbus"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/proxy"
@@ -3436,7 +3436,7 @@ func main() {
 		if dbConn != nil && dbConn.Enabled() {
 			adminDB = dbConn.Pool()
 		}
-		
+
 		// Phase 2: Initialize auth plugin registry
 		var authRegistry *authplugin.Registry
 		if adminDB != nil {
@@ -3447,7 +3447,7 @@ func main() {
 				// Continue without registry for now (legacy mode)
 			}
 		}
-		
+
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey, authRegistry)
 		if mobileNodeService, mobileNodeErr := admin.NewMobileNodeDescriptorServiceFromEnv(); mobileNodeErr != nil {
 			slog.Warn("mobile node QR provisioning disabled; check node descriptor and NetBird configuration")
@@ -7094,10 +7094,10 @@ func main() {
 	// （闭包按引用捕获）。停用的插件跳过 HealthLoop 检查，空 socket 不再触发
 	// Restarter 把手动 deactivate 的进程复活。
 	pluginDisabledGate := func(pluginID string) bool { return false }
-	
+
 	// Plugin eventbus for broadcasting plugin lifecycle events to frontend SSE
 	pluginEventBus := pluginruntimeeventbus.NewMemoryEventBus(100)
-	
+
 	if pluginsDir != "" {
 		var err error
 		pluginManifests, err = ScanPlugins(pluginsDir, pluginRegistry)
@@ -7110,7 +7110,7 @@ func main() {
 		// supervisor's actual unix socket paths. pluginBaseFor returns
 		// "unix://<socketPath>" for a running plugin, or "" if the plugin
 		// failed to start — the proxy then responds 502 Bad Gateway.
-		
+
 		var pluginBases map[string]string
 		if runtimeConfigPath != "" {
 			pluginController, err = startPluginController(context.Background(), runtimeConfigPath, pluginRegistry, pluginCapabilities)
@@ -7458,6 +7458,18 @@ func main() {
 		responsesRouteHandler = wrapAnomalyDetector(responsesRouteHandler, anomalyManager)
 		slog.Info("anomaly_detector: handlers wrapped",
 			"endpoints", []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"})
+	}
+
+	// ── 2026-11-15: per-key 并发闸（限流统一按 key 轮）────────────────────
+	// api_keys.rate_limit_concurrent 从「软告警放行」变真执法；全局资源兜底
+	// 仍是 LargeIngress 并发槽（维度不同：按 key 配置 vs 进程保护）。
+	{
+		gate := streaming.NewKeyConcurrentGate()
+		chatRouteHandler = gate.Wrap(chatRouteHandler)
+		messagesRouteHandler = gate.Wrap(messagesRouteHandler)
+		responsesRouteHandler = gate.Wrap(responsesRouteHandler)
+		slog.Info("key concurrent gate: handlers wrapped",
+			"config_source", "api_keys.rate_limit_concurrent (NULL=tier default, 0=unlimited, N=cap)")
 	}
 
 	// P1-2③ W1/W3 memora 上下文预热（ADR memory-prewarm-injection）：
@@ -9414,8 +9426,21 @@ func gatewayEarlyLogLevel() slog.Level {
 	}
 }
 
-// wrapAnomalyDetector 包装 HTTP handler 添加异常检测
-// 2026-11-14: kimi-k3 事故防御 - 检测附件重发循环、请求频率异常
+// wrapAnomalyDetector 包装 HTTP handler 添加异常检测。
+//
+// 2026-11-14: kimi-k3 事故防御 - 检测附件重发循环、请求频率异常。
+// 2026-11-15（限流统一按 key 轮）三处改判：
+//
+//	① 身份读取改走 streaming.VerifiedKeyInfoFromContext（typed context，
+//	   LargeIngress 的 prepareSanitizeRequest 在本 wrap 之前已装配）——旧
+//	   裸字符串键 "api_key_id"/"session_id"/"tenant_id" 全仓无写入方，
+//	   api_key_id 恒 0、无法归因；
+//	② 无 key 身份（静态 key 旁路/内部回环探针/无验证模式）直接放行、不
+//	   计数——空桶共享缺陷的消除面（无会话头流量曾全挤一个窗口，211 实证
+//	   ~9 笔/分钟即越过 10 笔/5min 阈值，23:36 起全体被拦近 1 小时）；
+//	③ 频率检测降级为观察模式（ObserveOnly）：只 slog+指标，零客户端可见
+//	   拦截/改写；客户端限流统一由按 key RPM 链（checkGatewayRateLimit）
+//	   执法——「各处不同标准的限流」收敛为一个标准。
 func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 快速路径：非聊天端点直接放行
@@ -9430,41 +9455,21 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 			return
 		}
 
-		// 从 context 提取基础信息（auth middleware 已设置）
-		sessionID := ""
-		if sid := r.Context().Value("session_id"); sid != nil {
-			if s, ok := sid.(string); ok {
-				sessionID = s
-			}
-		}
-		if sessionID == "" {
-			if sid := r.Header.Get("X-Session-Id"); sid != "" {
-				sessionID = sid
-			}
+		// 无 key 身份不检测不计数（内部回环探针/静态 key 旁路/无验证模式）。
+		keyInfo := streaming.VerifiedKeyInfoFromContext(r.Context())
+		if keyInfo == nil || keyInfo.IsInternal {
+			next.ServeHTTP(w, r)
+			return
 		}
 
-		apiKeyID := int64(0)
-		if kid := r.Context().Value("api_key_id"); kid != nil {
-			switch v := kid.(type) {
-			case int64:
-				apiKeyID = v
-			case int:
-				apiKeyID = int64(v)
-			}
-		}
-
-		tenantID := "default"
-		if tid := r.Context().Value("tenant_id"); tid != nil {
-			if t, ok := tid.(string); ok {
-				tenantID = t
-			}
-		}
+		// session id 仅作日志元数据（窗口已按 api key ID 分桶）。
+		sessionID := r.Header.Get("X-Session-Id")
 
 		// 构造检测请求（轻量级，主要检测频率）
 		req := &anomaly.Request{
 			SessionID: sessionID,
-			APIKeyID:  apiKeyID,
-			TenantID:  tenantID,
+			APIKeyID:  int64(keyInfo.ID),
+			TenantID:  keyInfo.TenantID,
 			// Attachments/Messages 暂时为空，只做频率检测
 			// 完整的附件检测需要解析 body，后续可优化
 		}
@@ -9473,17 +9478,39 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 		anomalies := manager.CheckAll(ctx, req)
 
 		if len(anomalies) > 0 {
-			worst := anomaly.SelectHighestSeverity(anomalies)
-
-			// 记录所有检测到的异常
+			// 观察面：只记录（含原本会拦截的 high 档——观察模式零执法）。
+			var enforce []*anomaly.AnomalyResult
 			for _, a := range anomalies {
+				if a.ObserveOnly {
+					slog.Info("anomaly_observed",
+						"code", a.Code,
+						"severity", a.Severity,
+						"message", a.Message,
+						"metrics", a.Metrics,
+						"session_id", sessionID,
+						"api_key_id", keyInfo.ID,
+						"tenant_id", keyInfo.TenantID,
+						"path", path)
+					continue
+				}
+				enforce = append(enforce, a)
+			}
+			if len(enforce) == 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			worst := anomaly.SelectHighestSeverity(enforce)
+
+			// 记录所有执法面异常
+			for _, a := range enforce {
 				slog.Info("anomaly_detected",
 					"code", a.Code,
 					"severity", a.Severity,
 					"message", a.Message,
 					"metrics", a.Metrics,
 					"session_id", sessionID,
-					"api_key_id", apiKeyID,
+					"api_key_id", keyInfo.ID,
 					"path", path)
 			}
 
@@ -9494,7 +9521,7 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 					"severity", worst.Severity,
 					"message", worst.Message,
 					"session_id", sessionID,
-					"api_key_id", apiKeyID,
+					"api_key_id", keyInfo.ID,
 					"path", path)
 
 				httpStatus := anomaly.GetHTTPStatus(worst.Severity)
@@ -9511,14 +9538,15 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 			}
 
 			// medium/low severity：打标记但不拦截
-			ctx = context.WithValue(ctx, "anomaly_flags", anomalies)
+			ctx = context.WithValue(ctx, "anomaly_flags", enforce)
 			r = r.WithContext(ctx)
 
 			slog.Info("anomaly_warning",
 				"code", worst.Code,
 				"severity", worst.Severity,
 				"action", "passed_with_flags",
-				"session_id", sessionID)
+				"session_id", sessionID,
+				"api_key_id", keyInfo.ID)
 		}
 
 		next.ServeHTTP(w, r)

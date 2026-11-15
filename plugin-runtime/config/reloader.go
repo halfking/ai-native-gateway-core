@@ -129,6 +129,17 @@ func (r *configReloader) watch(ctx context.Context) {
 				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
 				log.Printf("INFO: Config file changed: %s (op: %s)", event.Name, event.Op)
 
+				// Rename/Remove 后重建 watch（防 atomic replace 后 inode 变化导致失效）
+				if event.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
+					dir := filepath.Dir(r.configPath)
+					r.watcher.Remove(dir) // 幂等，失败不致命
+					if err := r.watcher.Add(dir); err != nil {
+						log.Printf("ERROR: Rebuild watch after %s failed: %v", event.Op, err)
+					} else {
+						log.Printf("INFO: Rebuilt watch for %s after %s", dir, event.Op)
+					}
+				}
+
 				// Debounce: wait 100ms before reloading
 				if timer != nil {
 					timer.Stop()

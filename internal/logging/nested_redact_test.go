@@ -33,10 +33,10 @@ func TestNestedSlogAnyRedacted(t *testing.T) {
 	out := renderThroughReplaceAttr(t, func(l *slog.Logger) {
 		l.Info("audit probe",
 			"detail", map[string]any{
-				"api_key": secret,               // ① 嵌套敏感键
-				"note":    "bearer " + secret,   // ② 嵌套敏感值（bearer 模式）
-				"model":   "gpt-4o",             // ③ 非敏感必须原样
-				"deep":    map[string]any{"token": "tok-123"}, // ① 两层（键用枚举表内的 token）
+				"api_key": secret,                                             // ① 嵌套敏感键
+				"note":    "bearer " + secret,                                 // ② 嵌套敏感值（bearer 模式）
+				"model":   "gpt-4o",                                           // ③ 非敏感必须原样
+				"deep":    map[string]any{"token": "tok-123"},                 // ① 两层（键用枚举表内的 token）
 				"items":   []any{"ok-value", "sk-" + strings.Repeat("x", 20)}, // ④
 			},
 			"labels", map[string]string{"authorization": "Bearer abc.def", "env": "prod"}, // ⑤
@@ -47,7 +47,9 @@ func TestNestedSlogAnyRedacted(t *testing.T) {
 	if detail == nil {
 		t.Fatalf("detail missing from output: %v", out)
 	}
-	if detail["api_key"] != RedactedPlaceholder {
+	// 2026-11-15 假名化改判：按键名脱敏产出确定性假名
+	// "[REDACTED:<key>:<8hex>]"（不再是常量）——钉形状 + 原值不出现。
+	if ak, _ := detail["api_key"].(string); !isRedactionPseudonym(ak) || strings.Contains(ak, secret) {
 		t.Fatalf("nested sensitive key leaked: %v", detail["api_key"])
 	}
 	if note, _ := detail["note"].(string); strings.Contains(note, secret) || strings.Contains(note, "bearer ") {
@@ -57,16 +59,25 @@ func TestNestedSlogAnyRedacted(t *testing.T) {
 		t.Fatalf("non-sensitive nested value must stay verbatim, got %v", detail["model"])
 	}
 	deep, _ := detail["deep"].(map[string]any)
-	if deep == nil || deep["token"] != RedactedPlaceholder {
+	if deep == nil {
 		t.Fatalf("two-level sensitive key leaked: %v", detail["deep"])
+	}
+	if tok, _ := deep["token"].(string); !isRedactionPseudonym(tok) || strings.Contains(tok, "tok-123") {
+		t.Fatalf("two-level sensitive key leaked: %v", deep["token"])
 	}
 	items, _ := detail["items"].([]any)
 	if len(items) != 2 || items[0] != "ok-value" || strings.Contains(items[1].(string), "sk-") {
 		t.Fatalf("slice elements not walked: %v", detail["items"])
 	}
 	labels, _ := out["labels"].(map[string]any)
-	if labels == nil || labels["authorization"] != RedactedPlaceholder || labels["env"] != "prod" {
+	if labels == nil {
 		t.Fatalf("map[string]string not walked: %v", out["labels"])
+	}
+	if auth, _ := labels["authorization"].(string); !isRedactionPseudonym(auth) || strings.Contains(auth, "Bearer abc.def") {
+		t.Fatalf("map[string]string sensitive value leaked: %v", labels["authorization"])
+	}
+	if labels["env"] != "prod" {
+		t.Fatalf("map[string]string non-sensitive value must stay verbatim: %v", labels["env"])
 	}
 
 	// 全文兜底：整行不得出现密钥本体。
@@ -76,7 +87,7 @@ func TestNestedSlogAnyRedacted(t *testing.T) {
 }
 
 // TestNestedRedactSelfReferenceTerminates 钉住深度封顶：自引用 map 必须终止
-//（不得栈溢出/死循环），到顶输出 depth 占位。
+// （不得栈溢出/死循环），到顶输出 depth 占位。
 func TestNestedRedactSelfReferenceTerminates(t *testing.T) {
 	self := map[string]any{}
 	self["self"] = self
@@ -134,7 +145,8 @@ func TestTopLevelStringRedactionUnchanged(t *testing.T) {
 			"blob", strings.Repeat("z", maxValueLength+100),
 		)
 	})
-	if out["api_key"] != RedactedPlaceholder {
+	// 2026-11-15 假名化改判：顶层敏感键 → 确定性假名（形状钉 + 原值不出现）。
+	if ak, _ := out["api_key"].(string); !isRedactionPseudonym(ak) || strings.Contains(ak, "sk-toplevel-secret") {
 		t.Fatalf("top-level sensitive key behavior changed: %v", out["api_key"])
 	}
 	blob, _ := out["blob"].(string)

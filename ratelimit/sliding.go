@@ -18,6 +18,14 @@ type RPMAdmission interface {
 	AdmitRPM(ctx context.Context, keyID, limit int) (AdmissionResult, error)
 }
 
+// TPMChecker 是 token 预算预检的可选能力（SlidingWindowLimiter /
+// RedisLimiter 均已实现）。2026-11-15（限流统一按 key 轮）前零调用方——
+// api_keys.rate_limit_tpm 是死字段；现由 streaming.checkGatewayRateLimit
+// 的 TPM 第二道闸消费。
+type TPMChecker interface {
+	CheckTPM(keyID int, estimatedTokens int, limit int) bool
+}
+
 type RPMWaitingNotifier interface {
 	AdmitRPMWithWait(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error)
 }

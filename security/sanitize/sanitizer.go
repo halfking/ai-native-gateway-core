@@ -294,6 +294,26 @@ func (s *Sanitizer) restoreExactMarkers(ctx context.Context, text string, resolv
 		return text
 	}
 
+	// 2026-11-15：字典未命中的遮蔽走按值序号分配（值上下文 = 占位符 token
+	// 本身；两段式：先预扫计数未命中集合，再渲染）——同一 type 两个不同的
+	// 未知占位符不再塌缩成同一个 "[REDACTED:type]"；单值 type 保持经典形态。
+	markers := NewMarkerIndexAllocator()
+	for _, m := range matches {
+		match := text[m[0]:m[1]]
+		if foreign.isForeign(match) {
+			continue
+		}
+		if parsed, ok := ParsePlaceholder(match); ok {
+			if resolve == nil {
+				markers.Observe(maskType(parsed.Type), match)
+				continue
+			}
+			if _, hit := resolve(parsed.Type, parsed.Index); !hit {
+				markers.Observe(maskType(parsed.Type), match)
+			}
+		}
+	}
+
 	var b strings.Builder
 	b.Grow(len(text))
 	last := 0
@@ -345,7 +365,7 @@ func (s *Sanitizer) restoreExactMarkers(ctx context.Context, text string, resolv
 				//
 				// maskType 把「模型自造的类型」收敛成 unknown（与容错阶段一致）：
 				// 网关没有这个类型的规则，声称一个不存在的类别是错的。
-				replacement = RedactionMarker(maskType(parsedType))
+				replacement = markers.MarkerFor(maskType(parsedType), match)
 			} else {
 				replacement = match
 			}

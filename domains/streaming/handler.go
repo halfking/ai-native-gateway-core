@@ -723,12 +723,23 @@ func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code
 		// error frame entirely.
 		body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code)
 		safeWriteSSE(w, body)
-		if flusher, ok := w.(http.Flusher); ok {
-			safeFlush(flusher)
-		}
+		terminatePrewarmedStream(w)
 		return
 	}
 	safeWriteSSE(w, "data: "+string(payload)+"\n\n")
+	terminatePrewarmedStream(w)
+}
+
+// terminatePrewarmedStream 在 prewarmed 错误帧之后补 `data: [DONE]` 并 flush
+// （2026-11-15 S09 下钻轮）。所有 writePrewarmedStreamError* 调用点都落在
+// 已提交的 SSE 流上且调用后立即 return —— 本帧就是该次响应的协议终态；
+// 只发错误帧不发 [DONE] 时，OpenAI 兼容客户端的流解析器会一直等终止标记
+// （S09 活体：mock 栈 40 笔 broken_stream 下钻 6 笔 silent，tail=错误帧
+// 戛然而止，客户端/量具按「静默截断」计）。与 stream.go §11.6 信封路径的
+// errChunk+[DONE] 成对纪律同形。重复终态防护由既有机制承担：survival
+// coordinator 渲染过终态时 w 已是 blackholeResponseWriter，此处写为 no-op。
+func terminatePrewarmedStream(w http.ResponseWriter) {
+	safeWriteSSE(w, "data: [DONE]\n\n")
 	if flusher, ok := w.(http.Flusher); ok {
 		safeFlush(flusher)
 	}
@@ -3643,7 +3654,8 @@ func (h *ChatHandler) serveWithExecutor(
 		w.Header().Add("Trailer", "X-Gw-Client-Signal")
 		w.Header().Add("Trailer", "X-Gw-Client-Signal-Payload-B64")
 	}
-	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream))
+	// 2026-11-15：TPM 接入——入口估计（len(body)/3.5）随 RPM 闸一并预检。
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream), estimatePromptTokens(bodyBytes))
 	h.emitTrace(r.Context(), requestID,
 		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
 			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
@@ -4056,8 +4068,12 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	if err != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
-		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(err)
+		// routing_client_canceled = the caller hung up mid-resolve (client
+		// timeout / abort). ERROR-level spam here read as an upstream outage
+		// during the 2026-11-15 incident; WARN keeps the signal without the
+		// false alarm.
+		logCandidatesFailure(rc.code, err, clientModel, requestID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, rc.code, nil, int(time.Since(startTime).Milliseconds()))
 		// Same rc.httpStatus that writeErrorJSON below puts on the wire.
 		logCtx.failAndMark(rc.code, rc.message, nil, nil, rc.httpStatus)

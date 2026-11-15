@@ -3,14 +3,17 @@ package anomaly
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 )
 
-// SessionRateLimiter 会话请求频率检测器
-// 检测场景：客户端陷入重试循环，短时间内发送大量请求
+// SessionRateLimiter 请求频率检测器（观察模式，2026-11-15）。
+// 检测场景：客户端陷入重试循环，短时间内发送大量请求。窗口按 api key ID
+// 分桶（无 key 身份的请求由调用方跳过、不计数——空桶共享缺陷的消除面）；
+// 检出只产出观察信号，客户端限流由按 key RPM 链执法。
 type SessionRateLimiter struct {
-	windows sync.Map // key=session_id, val=*RateWindow
+	windows sync.Map // key=api key ID 十进制字串, val=*RateWindow
 }
 
 // RateWindow 请求频率窗口
@@ -24,11 +27,17 @@ func NewSessionRateLimiter() *SessionRateLimiter {
 	return &SessionRateLimiter{}
 }
 
-// Check 检测请求频率
-func (l *SessionRateLimiter) Check(ctx context.Context, sessionID string) *AnomalyResult {
+// Check 检测请求频率。
+//
+// 2026-11-15 观察模式改判：窗口 key 从 session_id 改为 **api key ID**（空
+// session 曾让所有无会话头请求共享一个全局桶——211 事故定案）；结果恒带
+// ObserveOnly=true（调用方只记录不拦截）。被观察请求仍计入窗口（检测信号
+// 的本意），但观察模式没有拦截 ⇒ 不存在「被拦请求喂窗口」的自锁面。
+func (l *SessionRateLimiter) Check(ctx context.Context, keyID int64) *AnomalyResult {
 	now := time.Now()
 
-	val, _ := l.windows.LoadOrStore(sessionID, &RateWindow{})
+	windowKey := strconv.FormatInt(keyID, 10)
+	val, _ := l.windows.LoadOrStore(windowKey, &RateWindow{})
 	window := val.(*RateWindow)
 
 	window.mu.Lock()
@@ -64,15 +73,16 @@ func (l *SessionRateLimiter) Check(ctx context.Context, sessionID string) *Anoma
 
 	if recentCount > 10 {
 		return &AnomalyResult{
-			Code:     "session_request_storm",
-			Severity: "high",
+			Code:        "session_request_storm",
+			Severity:    "high",
+			ObserveOnly: true,
 			Message: fmt.Sprintf("会话请求频率过高：5 分钟内 %d 笔（%.1f/min）",
 				recentCount, float64(recentCount)/5.0),
 			Metrics: map[string]interface{}{
-				"requests_5min":   recentCount,
-				"rate_per_min":    float64(recentCount) / 5.0,
-				"requests_10min":  len(window.Timestamps),
-				"session_id":      sessionID,
+				"requests_5min":  recentCount,
+				"rate_per_min":   float64(recentCount) / 5.0,
+				"requests_10min": len(window.Timestamps),
+				"api_key_id":     keyID,
 			},
 		}
 	}
@@ -88,14 +98,15 @@ func (l *SessionRateLimiter) Check(ctx context.Context, sessionID string) *Anoma
 
 	if oneMinCount > 5 {
 		return &AnomalyResult{
-			Code:     "session_burst_requests",
-			Severity: "medium",
+			Code:        "session_burst_requests",
+			Severity:    "medium",
+			ObserveOnly: true,
 			Message: fmt.Sprintf("会话请求突发：1 分钟内 %d 笔",
 				oneMinCount),
 			Metrics: map[string]interface{}{
 				"requests_1min": oneMinCount,
 				"rate_per_min":  float64(oneMinCount),
-				"session_id":    sessionID,
+				"api_key_id":    keyID,
 			},
 		}
 	}
@@ -103,9 +114,9 @@ func (l *SessionRateLimiter) Check(ctx context.Context, sessionID string) *Anoma
 	return nil
 }
 
-// GetStats 获取会话频率统计
-func (l *SessionRateLimiter) GetStats(sessionID string) map[string]interface{} {
-	val, ok := l.windows.Load(sessionID)
+// GetStats 获取会话频率统计（key = api key ID 的十进制字串）。
+func (l *SessionRateLimiter) GetStats(keyID int64) map[string]interface{} {
+	val, ok := l.windows.Load(strconv.FormatInt(keyID, 10))
 	if !ok {
 		return nil
 	}
@@ -146,7 +157,7 @@ func (l *SessionRateLimiter) GetStats(sessionID string) map[string]interface{} {
 	}
 }
 
-// Clear 清除会话窗口
-func (l *SessionRateLimiter) Clear(sessionID string) {
-	l.windows.Delete(sessionID)
+// Clear 清除会话窗口（key = api key ID）。
+func (l *SessionRateLimiter) Clear(keyID int64) {
+	l.windows.Delete(strconv.FormatInt(keyID, 10))
 }

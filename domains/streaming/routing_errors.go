@@ -1,6 +1,9 @@
 package streaming
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -12,10 +15,35 @@ type routingErrorClass struct {
 	httpStatus int
 }
 
+// Status used when the caller already hung up. Matches nginx's "client closed
+// request" convention; the response never reaches a client anyway, but the
+// recorded status must not masquerade as a server-side 5xx.
+const routingClientCanceledStatus = 499
+
+// logCandidatesFailure emits the "failed to get candidates from provider" line
+// at a severity matching the class: real infra/schema failures stay ERROR,
+// client-canceled resolves are WARN (the caller left; nothing is broken).
+func logCandidatesFailure(code string, err error, model, requestID string) {
+	if code == "routing_client_canceled" {
+		slog.Warn("failed to get candidates from provider", "error", err, "code", code, "model", model, "request_id", requestID)
+		return
+	}
+	slog.Error("failed to get candidates from provider", "error", err, "code", code, "model", model, "request_id", requestID)
+}
+
 // classifyRoutingError inspects an error returned by provider.GetCandidates
 // and maps it to a transparent error class. Database or infrastructure errors
 // must NOT be disguised as the business error "no_candidate" — they have
 // different root causes and require different operational responses.
+//
+// 2026-11-15 (211 incident attribution fix): three real production shapes were
+// all collapsing into the routing_database_error fallback, polluting the
+// failure dashboard as "upstream · routing_database_error" during what was
+// actually a client-timeout retry storm parked behind an open circuit:
+//
+//	"context canceled"                                       → client hung up
+//	"candidates query circuit open (retry after <RFC3339>)"  → protective parking, retryable
+//	"missing FROM-clause entry for table \"mc\" (SQLSTATE 42P01)" → gateway SQL bug, not DB infra
 func classifyRoutingError(err error) routingErrorClass {
 	if err == nil {
 		return routingErrorClass{
@@ -32,14 +60,35 @@ func classifyRoutingError(err error) routingErrorClass {
 		httpStatus: http.StatusInternalServerError,
 	}
 	switch {
+	case errors.Is(err, context.Canceled) || strings.Contains(errStr, "context canceled"):
+		// The caller disconnected (client timeout / abort) while the query was
+		// parked or in flight. Not an infrastructure failure: must not be
+		// counted, alerted, or dashboarded as an upstream/database error.
+		c.code = "routing_client_canceled"
+		c.message = "Client closed the request before routing completed"
+		c.httpStatus = routingClientCanceledStatus
+	case strings.Contains(errStr, "circuit open"):
+		// Protective circuit after repeated candidate-query failures. The
+		// primary failure is logged separately; this shape is a retryable
+		// temporary condition, so 503 (not 500) and its own dashboard code.
+		c.code = "routing_circuit_open"
+		c.message = "Routing service temporarily unavailable"
+		c.httpStatus = http.StatusServiceUnavailable
 	case strings.Contains(errStr, "not configured"):
 		c.code = "routing_not_configured"
 		c.message = "Routing service temporarily unavailable"
 		c.httpStatus = http.StatusServiceUnavailable
-	case strings.Contains(errStr, "connection") || strings.Contains(errStr, "timeout"):
+	case strings.Contains(errStr, "connection") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded"):
 		c.code = "routing_connection_error"
 		c.message = "Routing service temporarily unavailable"
 		c.httpStatus = http.StatusServiceUnavailable
+	case strings.Contains(errStr, "missing FROM-clause entry") || strings.Contains(errStr, "SQLSTATE 42P01"):
+		// "missing FROM-clause entry" and 42P01 (undefined_object/table class)
+		// are gateway-side SQL defects: the DB is reachable and healthy, the
+		// query itself is wrong. Attribute as configuration/schema, not infra.
+		c.code = "routing_schema_error"
+		c.message = "Internal routing configuration error"
+		c.httpStatus = http.StatusInternalServerError
 	case strings.Contains(errStr, "relation \"") && strings.Contains(errStr, "does not exist"):
 		c.code = "routing_schema_error"
 		c.message = "Internal routing configuration error"

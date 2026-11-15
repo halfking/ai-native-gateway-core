@@ -29,7 +29,9 @@ import (
 // ★★ 2026-10-30（ingressguard P2 缺口收口轮）：补 RPM 限流。
 // 218 号查出本端点「既无配额闸也无 RPM 限流」，并登记成 P2 缺口
 // （internal/ingressguard/ingress_surface_test.go 的 registry：RateLimit=gateNone，
-//  理由「单请求可读至 128MB 且无频率上限 ⇒ P2 缺口，待裁决是否补」）。
+//
+//	理由「单请求可读至 128MB 且无频率上限 ⇒ P2 缺口，待裁决是否补」）。
+//
 // ⇒ 本轮**补** RPM 闸，理由与 2026-10-29 的 Gemini :countTokens 轮同源：
 //
 //  1. ★ **本面消耗网关自身算力**：它要读整个 body（最多 128MB，handler.go:72 的
@@ -96,14 +98,16 @@ func (h *CountTokensHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//   网关自己的算力与内存开销 ⇒ 若把闸放在读 body 之后，被拒的请求已经
 	//   付掉了全部读取成本，限流就只剩了个「拒绝」语义、挡不住消耗。
 	if h.chatHandler != nil {
-		rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, false))
+		rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, false), 0)
 		if !rlOutcome.Skipped {
 			writeRateLimitHeaders(w, rlOutcome)
 			if rlOutcome.Blocked {
 				recordGatewayRateLimitRejection(rlOutcome)
 				ratelimit.MarkGatewaySharedKeyRateLimit(w)
-				// 529 与同路由族的 /v1/messages 同口径（messages.go:462）。
-				writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
+				// 2026-11-15（限流统一按 key 轮）：429 与全仓标准对齐
+				//（Anthropic 协议 529=overloaded，限流是 429；原与
+				// /v1/messages 的旧 529 同口径，两处一并改）。
+				writeAnthropicError(w, http.StatusTooManyRequests, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
 				return
 			}
 		}

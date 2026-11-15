@@ -5,7 +5,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
+
+// 假名化改判（2026-11-15）的期望值构造：与 internal/logging 的假名词汇一致。
+const redactedParamPrefix = "REDACTED"
+
+func pseudonymHex(key, value string) string { return logging.Pseudonym(key, value) }
 
 // TestExtractClientKey covers every presentation form the gateway accepts.
 //
@@ -249,14 +256,17 @@ func TestRedactQueryCredentials(t *testing.T) {
 			want: "model=gpt-4o&stream=true",
 		},
 		{
+			// 2026-11-15 假名化改判：凭证值不再塌缩为常量 "REDACTED"，而是
+			// 确定性假名 "[REDACTED:<param>:<8hex>]"（异值异名、同值同名，
+			// 可关联/可还原对拍，见 internal/logging standard.go）。
 			name: "gemini key parameter",
 			in:   "key=AIzaSy-secret-value&alt=sse",
-			want: "key=REDACTED&alt=sse",
+			want: "key=[" + redactedParamPrefix + ":key:" + pseudonymHex("key", "AIzaSy-secret-value") + "]&alt=sse",
 		},
 		{
 			name: "admin token parameter",
 			in:   "token=eyJhbGciOi&limit=10",
-			want: "token=REDACTED&limit=10",
+			want: "token=[" + redactedParamPrefix + ":token:" + pseudonymHex("token", "eyJhbGciOi") + "]&limit=10",
 		},
 		{
 			name: "identifier parameters are NOT credentials",
@@ -271,7 +281,7 @@ func TestRedactQueryCredentials(t *testing.T) {
 		{
 			name: "url-encoded parameter name",
 			in:   "%6bey=AIza-secret",
-			want: "%6bey=REDACTED",
+			want: "%6bey=[" + redactedParamPrefix + ":key:" + pseudonymHex("key", "AIza-secret") + "]",
 		},
 		{
 			name: "credential without value",

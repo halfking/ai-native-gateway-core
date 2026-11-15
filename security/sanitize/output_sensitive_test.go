@@ -3,6 +3,7 @@ package sanitize
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -192,4 +193,50 @@ func TestLegacyCompletionAndReasoningStreamsMaskAndRestore(t *testing.T) {
 	if err != nil || result == nil || result.ShouldBlock || strings.Contains(string(result.ModifiedBody), "NewSecret") {
 		t.Fatal("legacy nonstream output bypassed guard")
 	}
+}
+
+// TestOutputMaskDistinctValuesGetDistinctMarkers 钉 2026-11-15 用户裁决
+// 「脱敏不可把不同值脱成同一个值」：同一响应内同一类型出现 ≥2 个不同自造值
+// ⇒ 带序号形态且互异（[REDACTED:secret:1] / [REDACTED:secret:2]）；同值重复
+// ⇒ 同序号（可关联）；单值 type ⇒ 经典形态（无序号，客户端解析兼容）。
+func TestOutputMaskDistinctValuesGetDistinctMarkers(t *testing.T) {
+	enableOutputMaskingForTest(t)
+	s, _ := NewSanitizer(NewPatternDetector())
+	guard := NewOutputSensitiveInterceptor(s, OutputMask)
+	restore, _ := NewSanitizeRestoreInterceptor(s, nil, 0)
+	chain := response.NewInterceptorChain(guard, restore)
+	ctx := WithSanitizeMap(context.Background(), SanitizeMap{})
+	result, err := chain.InterceptNonStream(ctx, &response.InterceptRequest{
+		SessionID: "gw_output02", TenantID: "tenant-output",
+		// 同类型（secret）两个不同的自造值；AlphaSecret1 出现两次；email 单值。
+		ResponseBody: []byte(`{"choices":[{"message":{"content":"password=AlphaSecret1 password=AlphaSecret1 token=BetaSecret2 mail=bob@example.com"}}]}`),
+	})
+	if err != nil || result == nil || result.ShouldBlock {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	body := string(result.ModifiedBody)
+	for _, secret := range []string{"AlphaSecret1", "BetaSecret2"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("new sensitive output leaked: %s", body)
+		}
+	}
+	// 两个不同 secret 值 → 两个互异的带序号标记。
+	if !strings.Contains(body, indexedMarker("secret", 1)) || !strings.Contains(body, indexedMarker("secret", 2)) {
+		t.Fatalf("distinct values must get distinct indexed markers: %s", body)
+	}
+	// 同值重复 → 同序号（secret:1 恰好出现两次）。
+	if got := strings.Count(body, indexedMarker("secret", 1)); got != 2 {
+		t.Fatalf("same value must reuse the same marker (want 2, got %d): %s", got, body)
+	}
+	if strings.Contains(body, indexedMarker("secret", 3)) {
+		t.Fatalf("only two distinct secret values expected: %s", body)
+	}
+	// 单值 email → 经典形态（无序号）。
+	if !strings.Contains(body, RedactionMarker(TypeEmail)) || strings.Contains(body, indexedMarker("email", 1)) {
+		t.Fatalf("single-value type must keep the classic marker: %s", body)
+	}
+}
+
+func indexedMarker(typ SensitiveType, n int) string {
+	return "[REDACTED:" + string(typ) + ":" + strconv.Itoa(n) + "]"
 }

@@ -31,9 +31,11 @@ import os
 import re
 import socket
 import statistics
+import uuid
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -134,8 +136,15 @@ def chat_once(*, model: str, messages: list[dict], stream: bool = False,
         "Authorization": f"Bearer {API_KEY}",
         "Accept": "text/event-stream" if stream else "application/json",
     }
-    if session_id:
-        headers["X-Gw-Session-Id"] = session_id
+    # 2026-11-15 P8 收敛轮：无 session 时逐请求注入唯一会话头——风暴护栏把
+    # 无 session 请求聚进一个窗口（2026-11-15 事故轮登记的盲区；mock 栈
+    # 1658/min 即全拦，场景套件 0/14 实证）。真实多客户端形态=每客户端独立
+    # 会话；X-Session-Id 是护栏已登记的绕开头，X-Gw-Session-Id 供网关内
+    # 会话粘性使用。
+    if not session_id:
+        session_id = "lt-" + uuid.uuid4().hex[:12]
+    headers["X-Gw-Session-Id"] = session_id
+    headers["X-Session-Id"] = session_id
 
     rec: dict = {
         "ok": False, "status": 0, "latency_ms": 0.0, "ttfb_ms": None,
@@ -168,7 +177,15 @@ def chat_once(*, model: str, messages: list[dict], stream: bool = False,
                 buf += chunk
                 if b"data: [DONE]" in chunk:
                     saw_done = True
-                if b"upstream_incomplete" in chunk or b"eof_without_done" in chunk:
+                # 2026-11-15 S09 下钻轮：SSE 错误帧（data: {"error":…}，含
+                # 候选耗尽的 model_not_found 形态）也是结构化终态——旧分类器
+                # 只认 upstream_incomplete/eof_without_done 字面量，把「错误
+                # 帧后无 [DONE] 的旧网关形态」误判为静默截断。
+                if (
+                    b"upstream_incomplete" in chunk
+                    or b"eof_without_done" in chunk
+                    or b'data: {"error":' in chunk
+                ):
                     saw_envelope = True
                 if len(buf) > 4 * 1024 * 1024:
                     break
@@ -263,22 +280,87 @@ def set_all_mocks(mode: str, **extra) -> bool:
 
 
 def mock_counter(name: str, key: str = "requests") -> int:
-    try:
-        _, body = http_json("GET", f"{MOCK_URLS[name]}/admin/stats")
-        return int(body.get("counters", {}).get(key, 0))
-    except Exception:
-        return -1
+    last_exc: Exception | None = None
+    # 2026-11-15 收敛轮：压测峰值下 podman DNS/连接偶发瞬时失败——单次读
+    # 即 -1 会把 S05/S07 的 witness 打死（alpha_429_served=-1 实证）。三次
+    # 退避重试；仍失败才返回 -1（真异常）。
+    for attempt in range(3):
+        try:
+            _, body = http_json("GET", f"{MOCK_URLS[name]}/admin/stats", timeout=5.0)
+            # 量具根修：/admin/stats 返回扁平 map（main.go snapshotCounters：
+            # {"requests":N,"rate_limited":N,...}），无 "counters" 包装 ⇒ 旧
+            # 读点 .get("counters", {}) 恒得 0 且不抛异常。兼容读：扁平优先。
+            counters = body.get("counters") if isinstance(body.get("counters"), dict) else body
+            return int(counters.get(key, 0))
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            time.sleep(0.4 * (attempt + 1))
+    log(f"  mock_counter {name}.{key} FAILED after retries: {last_exc}")
+    return -1
 
 
 def admin_login() -> str | None:
+    # 双密码回退：上一轮 bootstrap 已改密时旧密码 401 ⇒ 依次尝试。
+    global ADMIN_PASSWORD
+    for pw in (ADMIN_PASSWORD, ADMIN_PASSWORD + "!"):
+        try:
+            _, body = http_json("POST", f"{GATEWAY}/api/auth/token",
+                                {"username": ADMIN_USER, "password": pw})
+            token = body.get("access_token") or body.get("token")
+            if token:
+                ADMIN_PASSWORD = pw
+                return admin_ensure_password_not_required(token)
+        except urllib.error.HTTPError:
+            continue  # 401：试下一个密码
+        except Exception as exc:
+            log(f"  admin login failed: {exc}")
+            return None
+    log("  admin login failed: both passwords rejected")
+    return None
+
+
+def admin_ensure_password_not_required(token: str) -> str:
+    """2026-11-15 收敛轮：种子 admin 带 must_change_password 时所有 admin API
+    403「password change required before accessing other APIs」（S07 的
+    admin_recover_all 八连 403 实证）⇒ 登录后自举改密一次，再重登换取
+    可用 token。改密失败（非该门）时原 token 原样返回。"""
+    auth = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        status, _ = http_json("POST", f"{GATEWAY}/api/providers/95001/node-probe-state/reset",
+                              {}, auth, timeout=5.0)
+        if status == 200:
+            return token  # 无改密门，直接可用
+    except urllib.error.HTTPError as exc:
+        if exc.code != 403:
+            return token  # 非 403（端点缺失等）不归本函数管
+        detail = ""
+        try:
+            detail = exc.read().decode(errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+        if "password change required" not in detail:
+            return token
+    except Exception:  # noqa: BLE001
+        return token
+    # 走产品自己的改密端点，再重登
+    new_pw = ADMIN_PASSWORD + "!"
+    try:
+        http_json("PUT", f"{GATEWAY}/api/auth/change-password",
+                  {"old_password": ADMIN_PASSWORD, "new_password": new_pw},
+                  {"Authorization": f"Bearer {token}"}, timeout=5.0)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  admin change-password failed: {exc}")
+        return token
     try:
         _, body = http_json("POST", f"{GATEWAY}/api/auth/token",
-                            {"username": ADMIN_USER, "password": ADMIN_PASSWORD})
-        token = body.get("access_token") or body.get("token")
-        return token or None
-    except Exception as exc:
-        log(f"  admin login failed: {exc}")
-        return None
+                            {"username": ADMIN_USER, "password": new_pw})
+        new_token = body.get("access_token") or body.get("token")
+        if new_token:
+            log("  admin password bootstrap done (must_change_password cleared)")
+            return new_token
+    except Exception as exc:  # noqa: BLE001
+        log(f"  admin re-login after bootstrap failed: {exc}")
+    return token
 
 
 def admin_recover_all(token: str | None) -> dict:

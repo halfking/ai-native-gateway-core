@@ -172,3 +172,81 @@ func TestAuditHandlerFailurePreservesOldConfig(t *testing.T) {
 		t.Errorf("failed apply committed port %d, want old port 8080", got)
 	}
 }
+
+// TestWatch_AtomicReplace verifies that watch survives atomic file replacement
+// (mv tmp.yaml config.yaml), which changes the inode and can break watchers
+// if not rebuilt (D9 regression test).
+func TestWatch_AtomicReplace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gateway.yaml")
+	auditConfigFile(t, path, dir, 8080)
+	
+	initial := &Config{Server: ServerConfig{Host: "localhost", Port: 8080}, Plugins: PluginsConfig{Directory: dir}}
+	r, err := NewConfigReloader(initial, NewValidator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop()
+	
+	// Track reload events
+	reloadCh := make(chan int, 3)
+	if err := r.OnReload(func(_ context.Context, _, next *Config) error {
+		reloadCh <- next.Server.Port
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	// Start watching
+	if err := r.Watch(ctx, path); err != nil {
+		t.Fatalf("Watch failed: %v", err)
+	}
+	
+	// 1st change: direct write (baseline, should work)
+	time.Sleep(200 * time.Millisecond)
+	auditConfigFile(t, path, dir, 9001)
+	
+	select {
+	case port := <-reloadCh:
+		if port != 9001 {
+			t.Errorf("1st reload: got port %d, want 9001", port)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("1st reload: timeout waiting for direct write event")
+	}
+	
+	// 2nd change: atomic replace (D9 regression trigger)
+	time.Sleep(200 * time.Millisecond)
+	tmpPath := filepath.Join(dir, "gateway.yaml.tmp")
+	auditConfigFile(t, tmpPath, dir, 9002)
+	if err := os.Rename(tmpPath, path); err != nil {
+		t.Fatalf("atomic replace failed: %v", err)
+	}
+	
+	select {
+	case port := <-reloadCh:
+		if port != 9002 {
+			t.Errorf("2nd reload: got port %d, want 9002", port)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("2nd reload: timeout after atomic replace (watch not rebuilt)")
+	}
+	
+	// 3rd change: verify watch still alive after atomic replace
+	time.Sleep(200 * time.Millisecond)
+	auditConfigFile(t, path, dir, 9003)
+	
+	select {
+	case port := <-reloadCh:
+		if port != 9003 {
+			t.Errorf("3rd reload: got port %d, want 9003", port)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("3rd reload: timeout, watch stopped after atomic replace (D9 not fixed)")
+	}
+	
+	t.Logf("SUCCESS: watch survived atomic replace and caught 3 changes (8080→9001→9002→9003)")
+}

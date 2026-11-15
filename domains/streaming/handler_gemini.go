@@ -710,7 +710,7 @@ func (h *GeminiHandler) serveCountTokens(w http.ResponseWriter, r *http.Request,
 	// **经环回 chat 面携带同一把调用方 key**，那一跳已计一次 ⇒ 再计即双计；
 	// 而本面**不产生任何上游调用** ⇒ 不存在「已计一次」的那一跳 ⇒ 按路由上
 	// 其他动作的口径计一次，是唯一自洽的选择。
-	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, false))
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, false), 0)
 	if !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {

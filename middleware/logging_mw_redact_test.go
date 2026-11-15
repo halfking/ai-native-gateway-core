@@ -41,8 +41,10 @@ func TestLoggingMiddleware_RedactsCredentialQueryParameters(t *testing.T) {
 	if strings.Contains(q, secret) {
 		t.Fatalf("access log leaked the credential in cleartext: %q", q)
 	}
-	if !strings.Contains(q, "key=REDACTED") {
-		t.Errorf("query = %q, want the key parameter redacted", q)
+	// 2026-11-15 假名化改判：值不再塌缩为常量 "REDACTED"，而是确定性假名
+	// "[REDACTED:key:<8hex>]"（internal/logging standard.go）——形状钉即可。
+	if !strings.Contains(q, "key=[REDACTED:key:") || !strings.HasSuffix(q, "]&alt=sse") {
+		t.Errorf("query = %q, want the key parameter pseudonymized", q)
 	}
 	if !strings.Contains(q, "alt=sse") {
 		t.Errorf("query = %q, want non-credential parameters preserved", q)

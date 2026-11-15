@@ -634,6 +634,65 @@ func RedactionMarker(typ SensitiveType) string {
 	return redactedMarker[:len(redactedMarker)-1] + ":" + string(typ) + "]"
 }
 
+// MarkerIndexAllocator 为「带值上下文」的遮蔽标记分配**按值稳定**的序号。
+//
+// 2026-11-15（用户裁决「脱敏不可把不同值脱成同一个值」）：此前输出遮蔽把
+// 同一类别两个不同的自造值都写成同一个 "[REDACTED:secret]"——客户端看到两处
+// 遮蔽点无法知道是两个不同的值还是同一个值；台账（ComplianceIssue.Content）
+// 也同步塌缩。
+//
+// 兼容性折衷（两段式）：先用 Observe 预扫全部 (type,value)，**只有同一 type
+// 出现 ≥2 个不同值时**该 type 才启用序号形态 "[REDACTED:type:1/2/…]"（首次
+// 出现顺序编号）；单值 type 保持经典形态 "[REDACTED:type]"——绝大多数既有
+// 钉测与客户端解析面不受影响，而「不同值不同标记」的裁决语义完整成立。
+// 序号**不参与值派生**（与输入侧 {SENSITIVE:type:n} 顺序号同款——避免
+// hash(value) 形态的猜测预言机面）。无值上下文的调用点（退化标记等）不走
+// 本分配器，保持 RedactionMarker 原形。
+//
+// 作用域 = 分配器持有者（一次 Check / 一次 restore 调用）。流式 lane 每次
+// Check 独立分配 ⇒ 跨 lane/跨 chunk 序号可能复用（同 lane 内恒互异）——残余
+// 面登记于此。登记不接序号的面：sse_restore.maskDegenerateMarkerSpans 与
+// placeholder_loose.rewriteLooseSpans（退化/残缺回声，值语义已损坏，保持
+// 经典形态）。
+type MarkerIndexAllocator struct {
+	distinct map[SensitiveType]map[string]int // type -> value -> 首现顺序（1 基）
+}
+
+// NewMarkerIndexAllocator 创建一个遮蔽标记序号分配器。
+func NewMarkerIndexAllocator() *MarkerIndexAllocator {
+	return &MarkerIndexAllocator{distinct: make(map[SensitiveType]map[string]int)}
+}
+
+// Observe 预扫登记一个 (type,value)（第一遍）。
+func (a *MarkerIndexAllocator) Observe(typ SensitiveType, value string) {
+	if typ == "" {
+		typ = unknownRedactionType
+	}
+	m, ok := a.distinct[typ]
+	if !ok {
+		m = make(map[string]int)
+		a.distinct[typ] = m
+	}
+	if _, seen := m[value]; !seen {
+		m[value] = len(m) + 1
+	}
+}
+
+// MarkerFor 返回 (type,value) 的遮蔽标记（第二遍）。type 为空归 unknown。
+// 该 type 在预扫中出现 ≥2 个不同值 ⇒ 带序号形态；否则经典形态。
+// 重复同值在两种形态下都恒得同一标记（可关联）。
+func (a *MarkerIndexAllocator) MarkerFor(typ SensitiveType, value string) string {
+	if typ == "" {
+		typ = unknownRedactionType
+	}
+	m := a.distinct[typ]
+	if len(m) < 2 {
+		return RedactionMarker(typ)
+	}
+	n := m[value]
+	return redactedMarker[:len(redactedMarker)-1] + ":" + string(typ) + ":" + strconv.Itoa(n) + "]"
+}
+
 // redactedMaskValuePattern 匹配遮蔽标记的整值原形：`[REDACTED]` /
 // `[REDACTED:type]`（大小写不敏感——模型也会自造小写形态），以及**无闭括号
 // 的前缀形态**（`[REDACTED:secret`）。
@@ -651,7 +710,11 @@ func RedactionMarker(typ SensitiveType) string {
 //
 // 刻意**整值锚定**（^…$）而非 span 级：粘着形态（`password=[REDACTED]真凭据`）
 // 的规则匹配本来只咬住标记前缀，span 级豁免会把真凭据的检测一起挖空。
-var redactedMaskValuePattern = regexp.MustCompile(`(?i)^\[REDACTED(?::[a-z_]+)?\]?$`)
+//
+// 2026-11-15：追加可选序号段（`[REDACTED:secret:2]`，MarkerIndexAllocator
+// 产物）——值级免疫/字典投毒清洗判据必须同步认得带序号形态，否则带序号的
+// 标记会被当真值铸成占位符（r1043 第六次复发形状）。
+var redactedMaskValuePattern = regexp.MustCompile(`(?i)^\[REDACTED(?::[a-z_]+)?(?::\d+)?\]?$`)
 
 // isRedactionMarkerValue 报告 value（去空白后）是否**整个就是**一个遮蔽标记。
 //

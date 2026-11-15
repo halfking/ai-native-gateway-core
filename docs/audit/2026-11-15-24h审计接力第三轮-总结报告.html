@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>24h 审计接力第三轮 — 总结报告（2026-11-14/15）</title>
+<style>
+  :root { --ink:#1a1f2e; --muted:#5a6478; --line:#e3e6ee; --bg:#f7f8fb; --card:#ffffff;
+          --blue:#2563eb; --green:#059669; --red:#dc2626; --orange:#d97706; --purple:#7c3aed; --cyan:#0891b2; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); font-size:14px; line-height:1.65; padding:28px 18px 60px; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  h2 { font-size:17px; margin:30px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size:14.5px; margin:16px 0 8px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; margin:14px 0; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .stat .v { font-size:24px; font-weight:600; }
+  .stat .l { color:var(--muted); font-size:12px; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:var(--card); border-radius:8px; overflow:hidden; }
+  th,td { border-bottom:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#eef1f7; font-weight:600; white-space:nowrap; }
+  code { background:#eef1f7; border-radius:4px; padding:1px 5px; font-size:12px; font-family:ui-monospace,Menlo,monospace; word-break:break-all; }
+  .tag { display:inline-block; border-radius:999px; padding:1px 9px; font-size:11.5px; font-weight:600; margin-right:4px; white-space:nowrap; }
+  .p1 { background:#fee2e2; color:#b91c1c; } .p2 { background:#fef3c7; color:#b45309; }
+  .ok { background:#d1fae5; color:#047857; } .info { background:#dbeafe; color:#1d4ed8; }
+  .warn { background:#ffedd5; color:#c2410c; } .reg { background:#ede9fe; color:#6d28d9; }
+  .li { margin:6px 0; } .li b { color:var(--ink); }
+  ul { padding-left:18px; } 
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:middle; }
+  svg { display:block; max-width:100%; height:auto; }
+  .note { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  .good { color:var(--green); font-weight:600; } .bad { color:var(--red); font-weight:600; }
+  @media print { body { background:#fff; } .card { break-inside:avoid; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>24h 审计接力第三轮 — 总结报告</h1>
+  <div class="sub">窗口 2026-11-14 22:00 → 11-15 01:00+08 ｜ 基线 origin/main 3d08da25d → 交付 39b4d8e5a（+台账 0ee9c0f3b）｜ goal 会话 · 与并行 11-15 事故根修轮/ D9-D10 轮同窗协同</div>
+
+  <div class="grid">
+    <div class="stat"><div class="v" style="color:var(--red)">2</div><div class="l">P1 根修（plugin 接线面）</div></div>
+    <div class="stat"><div class="v" style="color:var(--orange)">7</div><div class="l">P2 修复（5 plugin + UpdateUser 密码 + P2-2 第二半）</div></div>
+    <div class="stat"><div class="v" style="color:var(--purple)">3</div><div class="l">死面批判 + 2 份文档订正横幅</div></div>
+    <div class="stat"><div class="v" style="color:var(--blue)">3 台</div><div class="l">部署验证（211/245/154 全 39b4d8e5）</div></div>
+    <div class="stat"><div class="v" style="color:var(--green)">9</div><div class="l">提交推送（双仓 codeup+github）</div></div>
+  </div>
+
+  <h2>一、结论 / 根因</h2>
+  <div class="card">
+    <div class="li"><span class="tag p1">P1-1</span><b>D-S4 双路由遮蔽</b> — 根因：<code>POST /api/v1/plugins/{id}/activate</code> 的 dedicated 单段路由按 Go ServeMux <b>最长模式优先</b>恒胜出 catch-all 分发，792b0e373/939c89c82/35f27ab0d 三笔交付（supervisor 真实进程编排 + disabled 覆盖层 + 鉴权形态）只在多段畸形 URL 可达；lifecycle 路径从不更新 disabled ⇒ <code>GET /api/v1/plugins</code> 恒报 Enabled=true（UI 开关永不变化）。<b>通用式：同路径双实现并存时交付面落在哪条由 mux 算法决定，不由提交者声明决定；handler 层测试全绿测不出接线漂移。</b>修复：dedicated 路由统一委派 pluginapiHandler（幂等 activate）+ cmd/gateway 源码钉 ×2。</div>
+    <div class="li"><span class="tag p1">P1-2</span><b>D-S1 停用被复活</b> — 根因：手动 deactivate 后 SocketPath 清空 → HealthLoop 连续 2 次失败 → tryRestart → <code>sup.Restart(context.Background())</code> 把停用进程拉回，停用不持久。修复：HealthLoopConfig 新增 ShouldCheck 门（接 pluginapiHandler.IsDisabled），管理性停用豁免健康检查。</div>
+    <div class="li"><span class="tag p2">P2</span><b>D-S2/S3/S6 + 幂等</b> — Start 无已在运行互斥（并发 activate 孤儿进程）；shadow 路径 request-scoped ctx 启动插件（请求返回即 SIGKILL，exec 探针实证 Z 状态）；eventbus run() 无 recover（订阅者 panic 炸穿网关）；activate 语义分裂（Restart 弹跳 vs Start 二次报错）→ SocketPathOf 非空跳过。</div>
+    <div class="li"><span class="tag p2">P2-2</span><b>大 string prompt 422（第四案）</b> — 根因：并行接力轮提交<b>互相矛盾的两套测试</b>（要求缩减成功 vs 把 interim 报错「wrap + reduce not yet implemented」钉为预期）⇒ main 带红测。裁决终态=缩减成功（fail-closed 于可缩减内容=会话砖化，r1051 族语义）：两个拒绝点改走 reduceStringGenerationField（流式摘录、prompt 保持 JSON string 原形）。</div>
+    <div class="li"><span class="tag reg">死面</span><b>死面三连（24h 内再现）</b> — autoroute/intent（唯一引用=自身 example_test）、security/multilayer（全仓零引用）、pkg/authplugin/native（零接线）：覆盖率声明属实（78.2%/86.1%）但「Production Ready/三层架构/FP Reduction 40-60%」为<b>目标态写成成果</b>（LLM 层全是 not-yet-implemented 占位符、multilayer「三层」实为单层）。处置：文档订正横幅 + multilayer 补 r1042 git-remote 豁免（拆接线日回归炸弹）+ authplugin <b>UpdateUser 密码字段绕过复杂度校验</b>已修（F-A1 第 N+1 处）。</div>
+    <div class="li"><span class="tag p2">生产</span><b>ingress_capacity_exceeded 63 笔/4h 含公网真实用户</b> — 根因=2026-11-11 登记的 LargeIngress MaxConcurrent=4 默认（槽按请求全生命周期持有）「旋钮待 sizing」债变成用户可见 429。修复=部署引擎四点接线 LLM_GATEWAY_INGRESS_MAX_CONCURRENT + 三台 sizing（211=32/245=64/154=32）。</div>
+  </div>
+
+  <h2>二、修复分布与部署链</h2>
+  <div class="card">
+    <h3>修复项按级别</h3>
+    <svg viewBox="0 0 700 150" role="img" aria-label="修复项按级别条形图">
+      <text x="0" y="20" font-size="12" fill="#1a1f2e">P1 路由遮蔽 + 停用复活</text><rect x="230" y="10" width="230" height="14" rx="3" fill="#dc2626"/><text x="466" y="21" font-size="12" fill="#5a6478">2</text>
+      <text x="0" y="45" font-size="12" fill="#1a1f2e">P2 plugin 面五项</text><rect x="230" y="35" width="575" height="14" rx="3" fill="#d97706"/><text x="620" y="46" font-size="12" fill="#5a6478">5</text>
+      <text x="0" y="70" font-size="12" fill="#1a1f2e">P2-2 大 string prompt 缩减</text><rect x="230" y="60" width="115" height="14" rx="3" fill="#d97706"/><text x="351" y="71" font-size="12" fill="#5a6478">1</text>
+      <text x="0" y="95" font-size="12" fill="#1a1f2e">authplugin 密码第四路径</text><rect x="230" y="85" width="115" height="14" rx="3" fill="#d97706"/><text x="351" y="96" font-size="12" fill="#5a6478">1</text>
+      <text x="0" y="120" font-size="12" fill="#1a1f2e">死面钉测改判/豁免 + 文档订正</text><rect x="230" y="110" width="345" height="14" rx="3" fill="#7c3aed"/><text x="581" y="121" font-size="12" fill="#5a6478">3</text>
+    </svg>
+    <h3 style="margin-top:14px">211 部署链（本窗口三班车次交叠）</h3>
+    <svg viewBox="0 0 700 96" role="img" aria-label="211 部署时间线">
+      <line x1="30" y1="30" x2="670" y2="30" stroke="#e3e6ee" stroke-width="2"/>
+      <circle cx="90" cy="30" r="6" fill="#2563eb"/><text x="60" y="14" font-size="12" fill="#1a1f2e">22:55</text><text x="42" y="52" font-size="11.5" fill="#5a6478">3052@39b4d8e5 本侧</text>
+      <circle cx="330" cy="30" r="6" fill="#d97706"/><text x="300" y="14" font-size="12" fill="#1a1f2e">23:42</text><text x="278" y="52" font-size="11.5" fill="#5a6478">3054@d5eb218a 并行（回退式，致 P0）</text>
+      <circle cx="590" cy="30" r="6" fill="#059669"/><text x="560" y="14" font-size="12" fill="#1a1f2e">00:4x</text><text x="528" y="52" font-size="11.5" fill="#5a6478">3055@eea844247 根修轮收口</text>
+      <line x1="96" y1="30" x2="324" y2="30" stroke="#2563eb" stroke-width="2" opacity="0.35"/>
+      <line x1="336" y1="30" x2="584" y2="30" stroke="#d97706" stroke-width="2" opacity="0.35"/>
+      <text x="30" y="82" font-size="11.5" fill="#5a6478">本侧全部修复（39b4d8e5 祖先链）已随 3055 在役；42P01 P0 由 11-15 根修轮闭环（分类器三形态 + park 总预算）</text>
+    </svg>
+    <h3 style="margin-top:14px">三台在役（本轮验证时点）</h3>
+    <table>
+      <tr><th>机器</th><th>版本</th><th>槽/端口</th><th>INGRESS 旋钮</th><th>验证</th></tr>
+      <tr><td>211</td><td>3052@39b4d8e5 →（现 3055@eea844247）</td><td>槽 a / 8781</td><td>32（容器 env 实证）</td><td><span class="tag ok">readyz</span><span class="tag ok">公网</span><span class="tag ok">登录</span><span class="tag ok">鉴权矩阵</span></td></tr>
+      <tr><td>245</td><td>3034@39b4d8e5</td><td>canary / 8781</td><td>64（/proc environ 实证）</td><td><span class="tag ok">readyz</span><span class="tag ok">凭据解密冒烟</span><span class="tag ok">单发 200</span></td></tr>
+      <tr><td>154</td><td>3035@39b4d8e5</td><td>canary / 8782</td><td>32（/proc environ 实证）</td><td><span class="tag ok">readyz</span><span class="tag ok">登录</span></td></tr>
+    </table>
+  </div>
+
+  <h2>三、211 生产取证（4h 窗）</h2>
+  <div class="card">
+    <svg viewBox="0 0 700 168" role="img" aria-label="211 失败族分布条形图">
+      <text x="0" y="18" font-size="12" fill="#1a1f2e">upstream_context_loss (130dao 上游事件，自愈)</text><rect x="330" y="8" width="300" height="13" rx="3" fill="#0891b2"/><text x="636" y="19" font-size="12" fill="#5a6478">113</text>
+      <text x="0" y="42" font-size="12" fill="#1a1f2e">rate_limit_exceeded (上游 429 常态)</text><rect x="330" y="32" width="244" height="13" rx="3" fill="#7c3aed"/><text x="580" y="43" font-size="12" fill="#5a6478">92</text>
+      <text x="0" y="66" font-size="12" fill="#1a1f2e">ingress_capacity_exceeded (本旋钮债→已修)</text><rect x="330" y="56" width="167" height="13" rx="3" fill="#dc2626"/><text x="503" y="67" font-size="12" fill="#5a6478">63</text>
+      <text x="0" y="90" font-size="12" fill="#1a1f2e">no_candidate / session_unavailable</text><rect x="330" y="80" width="117" height="13" rx="3" fill="#d97706"/><text x="453" y="91" font-size="12" fill="#5a6478">44</text>
+      <text x="0" y="114" font-size="12" fill="#1a1f2e">upstream_quota_permanent / transient / 其他</text><rect x="330" y="104" width="32" height="13" rx="3" fill="#059669"/><text x="368" y="115" font-size="12" fill="#5a6478">12</text>
+      <text x="0" y="145" font-size="11.5" fill="#5a6478">成功率 93%（3199 成功 / 338 失败）；auth_failed 近 4h = 0（suyun 修复阴性面保持）；quota_permanent 锚未再见「预扣费/无权访问」原文</text>
+    </svg>
+    <div class="note">慢 SQL（6h 292 条）：request_stats_* DELETE 族 134 条 ~500-540ms（NOT EXISTS date_trunc 表达式不吃索引）+ 小时桶聚合 &gt;7s（既有登记族）+ mv_data 刷新 26 条 — 全部后台任务、非热路径，登记不修（NOT EXISTS→GROUP BY 改写归下轮）。</div>
+  </div>
+
+  <h2>四、改动文件与关键行为</h2>
+  <div class="card">
+    <table>
+      <tr><th>提交</th><th>文件</th><th>关键行为变化</th></tr>
+      <tr><td><code>cec05ceaf</code></td><td><code>pkg/authplugin/native/user_manager.go</code> + 测试×2</td><td>UpdateUser 密码分支入口补 ValidatePasswordComplexity（第四路径）；弱密码钉测扩第四路径 + pgxmock 正向对照（合法密码必须走到 UPDATE）</td></tr>
+      <tr><td><code>ce0149c66</code></td><td><code>plugin-runtime/supervisor.go</code>/<code>health_loop.go</code>/<code>eventbus/memory_eventbus.go</code>、<code>internal/handlers/pluginapi/handler.go</code>、<code>cmd/gateway/main.go</code>、<code>plugin_lifecycle_wiring_guard_test.go</code></td><td>startMu 串行 + already-running 拒绝；ShouldCheck 门；eventbus 就地 recover；幂等 activate（SocketPathOf 非空跳过）；dedicated 路由委派 pluginapiHandler；源码钉 ×2；删 .bak×6</td></tr>
+      <tr><td><code>03910fe4b</code></td><td><code>security/multilayer/rule_detector.go</code>+test、两份摘要文档</td><td>detectionExempt（local part=git 豁免，同生产 isGitSCPRemoteForm）；git@ 钉测改判；文档审计订正横幅（目标态≠成果）</td></tr>
+      <tr><td><code>7a14cd64e</code></td><td><code>internal/sessioncontext/file.go</code>、<code>string_prompt_test.go</code></td><td>两个「not yet implemented」拒绝点 → reduceStringGenerationField（流式摘录、string 原形、head+tail 语义）；interim 钉测改判成功断言</td></tr>
+      <tr><td><code>d5eb218a2</code>+<code>39b4d8e5a</code></td><td><code>scripts/deploy-seamless-docker.sh</code></td><td>LLM_GATEWAY_INGRESS_MAX_CONCURRENT 四点透传（--via 转发/env 读取/ENV-WRITE 持久化/GW_ENV 注入）+ DD_TEST_GO_BIN 入转发清单</td></tr>
+      <tr><td><code>d753d1b8c</code>/<code>0ee9c0f3b</code></td><td>主档 / LESSONS §724 / AGENTS 横幅</td><td>台账（双仓已推）</td></tr>
+    </table>
+  </div>
+
+  <h2>五、测试命令与结果</h2>
+  <div class="card">
+    <table>
+      <tr><th>测试</th><th>命令</th><th>结果</th></tr>
+      <tr><td>编译 + vet</td><td><code>go build ./... ; go vet ./...</code></td><td><span class="good">rc=0</span>（vendor/派生包外）</td></tr>
+      <tr><td>触碰包全量</td><td><code>go test ./plugin-runtime/... ./internal/handlers/pluginapi/... ./internal/sessioncontext/ ./internal/largebody/ ./security/multilayer/ ./pkg/authplugin/... ./domains/streaming/ ./cmd/gateway/</code></td><td><span class="good">全绿</span>（streaming 101.7s）</td></tr>
+      <tr><td>新钉测</td><td><code>-run TestSupervisor_StartAlreadyRunningRejected / TestHealthLoop_ShouldCheckGatesDisabledPlugin / TestActivateIdempotentWhenRunning / TestPluginLifecycleRoutesDelegateToPluginAPIHandler</code></td><td><span class="good">全绿</span>（变异臂设计在案）</td></tr>
+      <tr><td>部署合同门</td><td><code>bash tests/deploy_211_contract_test.sh</code></td><td><span class="good">135/135</span></td></tr>
+      <tr><td>节号/尺寸门</td><td><code>go test ./scripts/ursmcheck/ -run "TestSectionNumber|TestAgentsMdSizeRatchet"</code></td><td><span class="good">5/5 绿</span>（§724 取号安全法；AGENTS 469KB&lt;512K）</td></tr>
+      <tr><td>部署闸门（原生）</td><td><code>bash scripts/deploy-211.sh</code>（worktree + go1.27.4）</td><td><span class="good">exit 0</span>（首轮 archive 冻结树被 fail-closed 拒；docker 兜底 OOM 假红自纠）</td></tr>
+      <tr><td>245 并行负载</td><td><code>python3 loadtest.py</code> 128 req / 32 并发 / 真实网关</td><td>ingress 429=<span class="good">0</span>（旋钮生效）；74×429=风暴护栏按设计（≥17.6/min 空 session 聚合窗）；54 超时=245→252 跨机房 DB 路由写超时（拓扑约束登记）；p50 53.6s</td></tr>
+      <tr><td>245 单发功能</td><td><code>curl POST /v1/chat/completions</code> glm-5.3-flash</td><td><span class="good">HTTP 200 真实作答</span>（"OK. How may I assist…"）</td></tr>
+      <tr><td>mock 栈（模拟供应商+客户端）</td><td><code>run-mock-only.sh up</code>（245 podman，citus pg 镜像+完全限定名+本地构建镜像传输）</td><td><span class="good">全部 gates 通过</span>；场景套件收敛链 <b>0/14 → 8/14 → 11/14</b></td></tr>
+      <tr><td>S09 下钻（s09_drill.py 逐请求）</td><td>40 笔 broken_stream 逐请求分类 + 三方 A/B 对拍</td><td><b>捕获 P1 未部署回归</b>：KeyConcurrentGate 单实例三路由 Wrap 互相遮蔽 ⇒ chat 面全量反转为 responses 形状（79237f4d4 引入，211 在役版本未含；随下一班车将打挂全部 chat）+ prewarmed 错误帧缺 [DONE]。双修 <code>28ea9db75</code>+<code>e0000dc6a</code> 已推；drill 终态 <b>40/40 done 静默清零</b></td></tr>
+      <tr><td>收敛后基线 11/14</td><td>场景套件终轮</td><td>3 红全归因：S12/S14=宿主容量墙（3.5GB RAM swap，c100 p95 23.5s）；S01=同族负载瞬时（7×500 波动，复跑零 500；同族功能场景 S13 已 PASS）——量具侧修复：counter 扁平 map 兼容读+重试、admin 改密自举（must_change_password 403 八连实证）、错误帧信封识别、X-Session-Id 绕开（1658/min 聚窗全拦 → 0）</td></tr>
+      <tr><td>gofmt</td><td><code>gofmt -l</code> 改动集前后对拍</td><td><span class="good">零新增漂移</span>（命中文件全属 286 历史基线）</td></tr>
+    </table>
+  </div>
+
+  <h2>六、遗留风险（按影响排序）</h2>
+  <div class="card">
+    <ul>
+      <li class="li"><span class="tag p2">P2</span><b>SSE <code>/api/v1/plugins/events</code> 无鉴权 + ACAO\* + 无连接上限</b> — 暴露 plugin_id/pid/启停时序；EventSource 无法带 header 是其动机，改 query-token/cookie 属 Shell 客户端改造 → owner 裁决。</li>
+      <li class="li"><span class="tag p2">P2</span><b>vendor 内自家子模块手工副本 24 文件</b>（双重真相漂移陷阱）— <code>go mod vendor</code> 被 pre-existing <code>test/f41_activation_validation.go</code> 坏 import 卡死 → 先修 test/ 再重生成。</li>
+      <li class="li"><span class="tag p2">P2</span><b>pluginapi 半启动态回滚缺口</b> — enable 成功但 manifest 缺失时 disabled 已删（list 显示 enabled、进程未启动）；boot 失败过的插件经 API 永远激活不了（500 循环）。</li>
+      <li class="li"><span class="tag reg">裁决</span><b>死面三连接线前置条件</b> — intent 若接线需先补齐 5 处语义退化或声明为替代语义；multilayer 与 sanitize 族归并 vs 替换裁决；authplugin 接线面另立轮。</li>
+      <li class="li"><span class="tag info">拓扑</span><b>245→252 跨机房 DB 链路</b> — 32 并发下路由写超时（routing_database_error）；属部署拓扑约束，容量提升需本地只读副本或池化调优（owner）。</li>
+      <li class="li"><span class="tag info">环境</span><b>基础镜像发布权 403 + 离线库坐标分裂</b> — registry-211 推送权缺失（与 11-15 轮同结论）；1.27.4 基础镜像靠 docker save|load 直落（本侧）+ 双目录落位（并行侧）双轨并存。</li>
+      <li class="li"><span class="tag info">测试</span><b>mock-only 栈在 245 未闭环</b> — podman 4.9 短名→远端拉取 + localhost TLS 证书过期 + citus 镜像形态差异；需 podman 环境 variance 修复（--pull=never / 完全限定名已验证可行路径）或回退本地 docker 形态。</li>
+      <li class="li"><span class="tag warn">观察</span><b>130dao-cache 上游静默丢上下文</b>（18-19h 突发 113 笔后自愈）— 检测器按设计改判失败；凭据运营复核面。</li>
+      <li class="li"><span class="tag warn">观察</span><b>request_stats_* DELETE 族 ~500ms×22/h</b> — NOT EXISTS 表达式不吃索引；NOT EXISTS→GROUP BY 改写候选（下轮优化项）。</li>
+    </ul>
+  </div>
+
+  <h2>七、子目标达成分析</h2>
+  <div class="card">
+    <table>
+      <tr><th>goal 条目</th><th>状态</th><th>证据</th></tr>
+      <tr><td>拉取合并 + 编译测试修正</td><td><span class="tag ok">完成</span></td><td>ff 合并 10 笔 + 双镜像合并 4 笔；红测（sessioncontext）定位并根修</td></tr>
+      <tr><td>分支清扫</td><td><span class="tag ok">空集</span></td><td>本地仅 main、零未合并、远端零主题分支</td></tr>
+      <tr><td>提交逐个批判审计 + 修复</td><td><span class="tag ok">完成</span></td><td>2 子代理 15+15 条结论亲验；2×P1+5×P2+死面三连收口</td></tr>
+      <tr><td>六重点域（ir/路由/注入/脱敏/用量/桶）</td><td><span class="tag ok">覆盖</span></td><td>ir=intent 审计；路由=D-S4/mux；注入=multilayer/detector 审计；脱敏=r1042 豁免对齐；用量=211 取证；桶=ingress 旋钮 sizing</td></tr>
+      <tr><td>log/DB 取证 + 优化实施验证</td><td><span class="tag ok">完成</span></td><td>三失败族归因 + 慢 SQL 分型；ingress 旋钮实施+三台验证；DELETE 族登记</td></tr>
+      <tr><td>及时多次提交推送</td><td><span class="tag ok">完成</span></td><td>9 提交分四批，双仓推送</td></tr>
+      <tr><td>总结报告 + 优化方案</td><td><span class="tag ok">本文件</span></td><td>主档 + HTML 报告</td></tr>
+      <tr><td>deploy-211 + 验证</td><td><span class="tag ok">完成</span></td><td>3052@39b4d8e5 槽 a 接管（后随列车演进）；登录/公网/旋钮/鉴权矩阵</td></tr>
+      <tr><td>245/154 部署 + 验证</td><td><span class="tag ok">完成</span></td><td>3034/3035 双机接管 + 旋钮 + 登录</td></tr>
+      <tr><td>245 全面测试（模拟+压测）</td><td><span class="tag warn">部分</span></td><td>真实网关并行负载 + 单发 200 完成；mock-only 栈 podman 形态未闭环（遗留）</td></tr>
+      <tr><td>HTML 图表总结</td><td><span class="tag ok">本文件</span></td><td>结论/根因、改动、测试、遗留四段齐全</td></tr>
+      <tr><td>handoff 下一轮提示词</td><td><span class="tag ok">完成</span></td><td>见本轮最终输出 / handoff 技能</td></tr>
+    </table>
+  </div>
+
+  <div class="sub" style="margin-top:26px">生成于 2026-11-15 · llm-gateway-go 24h 审计接力第三轮 · 主档 <code>docs/audit/2026-11-14-24h审计接力第三轮-plugin生产接线面根修与P2-2收口-主档.md</code> · LESSONS §724</div>
+</div>
+</body>
+</html>

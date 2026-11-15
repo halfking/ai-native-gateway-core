@@ -454,7 +454,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	}
 
 	isStream := reqBody.Stream
-	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
+	// 2026-11-15：TPM 接入——入口估计随 RPM 闸一并预检（chat 面同口径）。
+	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream), estimatePromptTokens(bodyBytes)); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
 			recordGatewayRateLimitRejection(rlOutcome)
@@ -630,8 +631,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		// SP-02: routing error path.
 		rt.Emit(state.EventFailed)
 		// Database or infrastructure error - do NOT disguise as no_candidate
-		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(candErr)
+		logCandidatesFailure(rc.code, candErr, clientModel, requestID)
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 			nil, nil, rc.code, rc.message, latency, bodyBytes, keyInfo, r)

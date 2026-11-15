@@ -48,6 +48,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
 // CredentialSource names the presentation form a client credential arrived
@@ -78,12 +80,9 @@ const (
 
 // QueryKeyParam is the Gemini query-string credential parameter name.
 //
-// ★ It is only honoured on Gemini-native paths (IsGeminiNativePath) — see
-// the package comment for why it is NOT a global credential source.
+// ★ It is only honoured on Gemini-native paths (IsGeminiNativePath) — see the
+// package comment for why it is NOT a global credential source.
 const QueryKeyParam = "key"
-
-// RedactedValue replaces a credential value in log output.
-const RedactedValue = "REDACTED"
 
 // geminiNativePathRe matches the Gemini-native ingress paths the gateway
 // serves:
@@ -198,12 +197,21 @@ var credentialQueryParams = map[string]bool{
 }
 
 // RedactQueryCredentials returns raw with the value of every
-// credential-bearing query parameter replaced by RedactedValue.
+// credential-bearing query parameter replaced by a deterministic pseudonym
+// ("[REDACTED:<param>:<8hex>]", logging.Pseudonym).
 //
 // ★ Why this exists: the Gemini credential form `?key=<API_KEY>` puts the
 // key in the URL. The access log records the raw query string
 // (middleware/logging_mw.go) ⇒ without redaction the key would land in the
 // rotated log files (and in the panic log) in cleartext.
+//
+// ★ 2026-11-15: the replacement used to be the constant "REDACTED", which
+// collapsed every caller's key into the same token — different callers were
+// indistinguishable in the access log. The pseudonym keeps one property of
+// the old form (value never appears) and adds two: different values map to
+// different tokens (no collapse), and the same value maps to the same token
+// (correlation). Restoration = HMAC recompute-and-match by the key holder,
+// see internal/logging standard.go.
 //
 // ★ Redaction runs BEFORE truncation (the caller truncates), so a truncated
 // query can never expose a partial secret.
@@ -231,7 +239,7 @@ func RedactQueryCredentials(raw string) string {
 		if !credentialQueryParams[decoded] {
 			continue
 		}
-		parts[i] = name + "=" + RedactedValue
+		parts[i] = name + "=" + logging.PseudonymToken(decoded, value)
 		changed = true
 	}
 	if !changed {
