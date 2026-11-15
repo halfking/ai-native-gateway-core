@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,40 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/redis/go-redis/v9"
 )
+
+// handshakeCommandNames 是连接建立期的协议命令（HELLO / CLIENT / AUTH / SELECT）。
+//
+// ★ 为什么往返数**不**计它们：这些是**连接开销**，不是被测的「会话数据读取」往返。
+//   go-redis v9.23 起，连接初始化里的 CLIENT SETINFO 改走**流水线**下发
+//   （v9.20 是单命令），且连接池会不定时新建连接
+//   ⇒ 每新建一次连接就凭空多 2 次往返（HELLO + CLIENT 流水线）
+//   ⇒ 「每个会话的 hash 只读一次 ⇒ 2 次往返/会话」被凭空打断。
+//   —— 量的应该是**读会话数据**的往返，不是连了几次 Redis。
+//   （与 domains/session/session_state_batch_test.go 同型，两边都要改。）
+var handshakeCommandNames = map[string]bool{
+	"hello":  true,
+	"client": true,
+	"auth":   true,
+	"select": true,
+}
+
+// isHandshakeCommand 判断单条命令是否属于连接建立期协议命令。
+func isHandshakeCommand(cmd redis.Cmder) bool {
+	return handshakeCommandNames[strings.ToLower(cmd.Name())]
+}
+
+// isHandshakePipeline 判断这条流水线是否**只**由握手命令组成。
+func isHandshakePipeline(cmds []redis.Cmder) bool {
+	if len(cmds) == 0 {
+		return false
+	}
+	for _, cmd := range cmds {
+		if !isHandshakeCommand(cmd) {
+			return false
+		}
+	}
+	return true
+}
 
 // adminRoundTripCounter 数**网络往返**（单命令一次、管道一次），不数命令条数。
 // ★ 理由同 domains/session 侧：批量化不改变命令条数，只改变往返次数；
@@ -25,14 +60,20 @@ func (c *adminRoundTripCounter) DialHook(next redis.DialHook) redis.DialHook { r
 
 func (c *adminRoundTripCounter) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		c.roundTrips++
+		// 握手命令不计往返（见 handshakeCommandNames 的说明）。
+		if !isHandshakeCommand(cmd) {
+			c.roundTrips++
+		}
 		return next(ctx, cmd)
 	}
 }
 
 func (c *adminRoundTripCounter) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		c.roundTrips++
+		// 纯握手流水线（CLIENT SETINFO 等）不计往返。
+		if !isHandshakePipeline(cmds) {
+			c.roundTrips++
+		}
 		return next(ctx, cmds)
 	}
 }
@@ -204,7 +245,15 @@ func (s *pipelineFailSwitch) ProcessHook(next redis.ProcessHook) redis.ProcessHo
 
 func (s *pipelineFailSwitch) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		if s.armed {
+		// ★ 握手流水线**放行**（2026-11-16 巡检修）：
+		//   go-redis v9.23 起连接初始化的 CLIENT SETINFO 走**流水线**下发
+		//   （v9.20 是单命令）。
+		//   ⇒ 「凡流水线一律失败」会连带把**握手**打死 ⇒ 连接根本建不起来
+		//   ⇒ 连单命令 TYPE/HGETALL 都发不出去 ⇒ 降级路径拿到 0 个会话
+		//      （实测：sessions=0 want=6）。
+		//   —— 红的不是被测对象，是量具把「批量读失败」和「连不上 Redis」混成了一件事。
+		//   本开关要制造的**只是**「批量读失败 ⇒ 走逐键降级」，握手必须照常。
+		if s.armed && !isHandshakePipeline(cmds) {
 			return errors.New("injected pipeline failure (test)")
 		}
 		return next(ctx, cmds)

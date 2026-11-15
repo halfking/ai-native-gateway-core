@@ -2,12 +2,46 @@ package session
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+// handshakeCommandNames 是连接建立期的协议命令（HELLO / CLIENT / AUTH / SELECT）。
+//
+// ★ 为什么往返数**不**计它们：这些是**连接开销**，不是被测的「会话数据读取」往返。
+//   go-redis v9.23 起，连接初始化里的 CLIENT SETINFO 改走**流水线**下发
+//   （v9.20 是单命令），且连接池会不定时新建连接
+//   ⇒ 每新建一次连接就凭空多 2 次往返（HELLO + CLIENT 流水线）
+//   ⇒ 「量具自证：每会话恰好 4 次往返」被打断（实测 82 ≠ 80）。
+//   —— 量的应该是**读会话数据**的往返，不是连了几次 Redis。
+var handshakeCommandNames = map[string]bool{
+	"hello":  true,
+	"client": true,
+	"auth":   true,
+	"select": true,
+}
+
+// isHandshakeCommand 判断单条命令是否属于连接建立期协议命令。
+func isHandshakeCommand(cmd redis.Cmder) bool {
+	return handshakeCommandNames[strings.ToLower(cmd.Name())]
+}
+
+// isHandshakePipeline 判断这条流水线是否**只**由握手命令组成。
+func isHandshakePipeline(cmds []redis.Cmder) bool {
+	if len(cmds) == 0 {
+		return false
+	}
+	for _, cmd := range cmds {
+		if !isHandshakeCommand(cmd) {
+			return false
+		}
+	}
+	return true
+}
 
 // roundTripCounter 数的是**网络往返**，不是命令条数。
 //
@@ -26,16 +60,22 @@ func (c *roundTripCounter) DialHook(next redis.DialHook) redis.DialHook { return
 
 func (c *roundTripCounter) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		c.roundTrips++
-		c.commands++
+		// 握手命令不计往返（见 handshakeCommandNames 的说明）。
+		if !isHandshakeCommand(cmd) {
+			c.roundTrips++
+			c.commands++
+		}
 		return next(ctx, cmd)
 	}
 }
 
 func (c *roundTripCounter) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		c.roundTrips++
-		c.commands += int64(len(cmds))
+		// 纯握手流水线（CLIENT SETINFO 等）不计往返。
+		if !isHandshakePipeline(cmds) {
+			c.roundTrips++
+			c.commands += int64(len(cmds))
+		}
 		return next(ctx, cmds)
 	}
 }
