@@ -857,7 +857,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			}(),
 			KeyConcurrentLimit: func() int {
 				if keyInfo != nil {
-					return keyInfo.EffectiveConcurrent()
+					return keyInfo.ConfiguredConcurrent()
 				}
 				return 0
 			}(),

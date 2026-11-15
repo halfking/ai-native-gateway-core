@@ -5030,7 +5030,7 @@ func (h *ChatHandler) serveWithExecutor(
 			}(),
 			KeyConcurrentLimit: func() int {
 				if keyInfo != nil {
-					return keyInfo.EffectiveConcurrent()
+					return keyInfo.ConfiguredConcurrent()
 				}
 				return 0
 			}(),
@@ -5555,7 +5555,7 @@ goalRetryLoopDone:
 						}(),
 						KeyConcurrentLimit: func() int {
 							if keyInfo != nil {
-								return keyInfo.EffectiveConcurrent()
+								return keyInfo.ConfiguredConcurrent()
 							}
 							return 0
 						}(),
