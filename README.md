@@ -842,9 +842,10 @@ Built with ❤️ by the AI Native Gateway community
 
 
 
+
 ### 2026-11-15
 
-- feat(f41): 注入检测验证遗留件落库——LLM 判官引擎实现 + PII 模式扩展 + 验证套件编译收口 (Mavis Merge Bot, 25 minutes ago)
+- feat(f41): 注入检测验证遗留件落库——LLM 判官引擎实现 + PII 模式扩展 + 验证套件编译收口 (Mavis Merge Bot, 27 minutes ago)
 - docs(audit): P8 收敛轮回填——S09 下钻双根因（P1 gate 遮蔽回归+prewarmed 缺 DONE）/量具三修+改密自举/基线 11/14 三红归因闭环 (Mavis Merge Bot, 6 hours ago)
 - test(mock): 量具鲁棒性三修收敛——admin 改密自举/counter 重试/双密码回登 (Mavis Merge Bot, 6 hours ago)
 - fix(streaming): KeyConcurrentGate 单实例三路由 Wrap 互相遮蔽——chat 面全量反转为 responses 形状（P1 未部署回归，mock 栈 S09 下钻活体捕获） (Mavis Merge Bot, 8 hours ago)
@@ -857,7 +858,7 @@ Built with ❤️ by the AI Native Gateway community
 - fix(plugin-runtime): D9/D10 修复 - config热重载watch停摆 + reconciler退避机制 (huangxt, 11 hours ago)
 - fix(routing): routing_database_error 事故根修——分类器三形态补齐 + 候选熔断 park 总预算收口 (Mavis Merge Bot, 11 hours ago)
 - docs(audit): 24h审计接力第三轮主档 + LESSONS §724（路由双注册遮蔽/fail-closed 第四案/死面三连/ingress 旋钮 sizing 债变用户可见 429） (Mavis Merge Bot, 11 hours ago)
-- docs(deploy): 211列车收口——部署债四项全交付(d5eb218a/build_seq 3054) (huangzhouzixuan, 11 hours ago)
+- docs(deploy): 211列车收口——部署债四项全交付(d5eb218a/build_seq 3054) (huangzhouzixuan, 12 hours ago)
 - docs(phase2): Progress report after Steps 2.1 & 2.2 (huangzhouzixuan, 12 hours ago)
 - feat(phase2): Wire authplugin registry to admin.Handler (Step 2.2) (huangzhouzixuan, 12 hours ago)
 - feat(phase2): Add initAuthRegistry function (Step 2.1) (huangzhouzixuan, 12 hours ago)
@@ -867,8 +868,8 @@ Built with ❤️ by the AI Native Gateway community
 - fix(lifecycle): 修正首轮三个真缺陷——SQL别名越界/COALESCE NULL传播/粗前缀日期污染 (Mavis Merge Bot, 12 hours ago)
 - feat(deploy): 入口并发槽旋钮 LLM_GATEWAY_INGRESS_MAX_CONCURRENT 全链透传 (Mavis Merge Bot, 12 hours ago)
 - fix(sessioncontext): P2-2 第二半收口——大 string prompt/input 摘录缩减落地，撤下互相矛盾的 interim 钉测 (Mavis Merge Bot, 12 hours ago)
-- fix(security,multilayer)+docs: git-remote 豁免对齐 r1042+钉测改判；两个 Phase1 摘要文档审计订正横幅 (Mavis Merge Bot, 12 hours ago)
-- fix(plugin-runtime,pluginapi): 审计轮 D-S1~S6——deactivate 复活/双路由遮蔽/孤儿进程/request-ctx 杀进程/eventbus panic 四项 P1+P2 根修 (Mavis Merge Bot, 12 hours ago)
+- fix(security,multilayer)+docs: git-remote 豁免对齐 r1042+钉测改判；两个 Phase1 摘要文档审计订正横幅 (Mavis Merge Bot, 13 hours ago)
+- fix(plugin-runtime,pluginapi): 审计轮 D-S1~S6——deactivate 复活/双路由遮蔽/孤儿进程/request-ctx 杀进程/eventbus panic 四项 P1+P2 根修 (Mavis Merge Bot, 13 hours ago)
 - docs(audit): 第54增量最终交付总结——14项已修+1项撤回+21项登记 (huangxt, 13 hours ago)
 - docs(audit): 更新P2-2部分修复状态与遗留档 (huangxt, 13 hours ago)
 - docs(audit): 更新P2-2部分修复状态与遗留档 (huangxt, 13 hours ago)
