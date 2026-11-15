@@ -116,9 +116,20 @@ var (
 
 // redactionHMACKey 返回脱敏假名的 HMAC 密钥：env LLM_GATEWAY_LOG_REDACT_HMAC_KEY
 // 优先；未配置时生成进程级随机密钥并 WARN（跨重启关联不成立）。
+//
+// P3-11 修复（2026-11-15 审计轮）：弱口令防护 —— 配置密钥长度必须 ≥32 字节，
+// 否则 fail-closed 拒绝启动。理由：确定性 HMAC ⇒ 弱密钥可被暴力对拍还原假名。
 func redactionHMACKey() []byte {
 	redactHMACKeyOnce.Do(func() {
 		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_LOG_REDACT_HMAC_KEY")); v != "" {
+			// P3-11: 强制最小长度 32 字节（256 bits）
+			if len(v) < 32 {
+				slog.Error("LLM_GATEWAY_LOG_REDACT_HMAC_KEY too short; refusing weak key (min 32 bytes for secure pseudonym)",
+					"provided_length", len(v),
+					"required_min", 32,
+					"reason", "deterministic HMAC allows brute-force reversal with weak keys")
+				os.Exit(1) // fail-closed: 弱密钥不可用于生产
+			}
 			redactHMACKey = []byte(v)
 			return
 		}

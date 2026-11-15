@@ -672,6 +672,12 @@ func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code str
 	writePrewarmedStreamErrorWithKind(w, message, errType, code, "")
 }
 
+// writePrewarmedStreamErrorWithProtocol writes a prewarmed error with protocol-aware termination.
+// P3-13 修复（2026-11-15）：协议规范化入口，供调用方传入 protocolOfRequest(r) 结果。
+func writePrewarmedStreamErrorWithProtocol(w http.ResponseWriter, message, errType, code, protocol string) {
+	writePrewarmedStreamErrorFullWithProtocol(w, message, errType, code, "", nil, protocol)
+}
+
 // writePrewarmedStreamErrorWithKind is the variant that carries the real
 // upstream error kind so the SDK can distinguish "the model does not
 // exist" from "the relay is overloaded". When kind is empty the envelope
@@ -699,6 +705,11 @@ func writePrewarmedStreamErrorWithKind(w http.ResponseWriter, message, errType, 
 // designed recovery. Non-transient kinds keep the historical field set —
 // pass retryable=nil to omit the field entirely (byte-identical envelope).
 func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code, kind string, extras map[string]any) {
+	writePrewarmedStreamErrorFullWithProtocol(w, message, errType, code, kind, extras, "openai")
+}
+
+// writePrewarmedStreamErrorFullWithProtocol is the P3-13 protocol-aware variant.
+func writePrewarmedStreamErrorFullWithProtocol(w http.ResponseWriter, message, errType, code, kind string, extras map[string]any, protocol string) {
 	if errType == "" {
 		errType = "server_error"
 	}
@@ -723,23 +734,34 @@ func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code
 		// error frame entirely.
 		body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code)
 		safeWriteSSE(w, body)
-		terminatePrewarmedStream(w)
+		terminatePrewarmedStream(w, protocol)
 		return
 	}
 	safeWriteSSE(w, "data: "+string(payload)+"\n\n")
-	terminatePrewarmedStream(w)
+	terminatePrewarmedStream(w, protocol)
 }
 
-// terminatePrewarmedStream 在 prewarmed 错误帧之后补 `data: [DONE]` 并 flush
-// （2026-11-15 S09 下钻轮）。所有 writePrewarmedStreamError* 调用点都落在
-// 已提交的 SSE 流上且调用后立即 return —— 本帧就是该次响应的协议终态；
-// 只发错误帧不发 [DONE] 时，OpenAI 兼容客户端的流解析器会一直等终止标记
-// （S09 活体：mock 栈 40 笔 broken_stream 下钻 6 笔 silent，tail=错误帧
-// 戛然而止，客户端/量具按「静默截断」计）。与 stream.go §11.6 信封路径的
-// errChunk+[DONE] 成对纪律同形。重复终态防护由既有机制承担：survival
-// coordinator 渲染过终态时 w 已是 blackholeResponseWriter，此处写为 no-op。
-func terminatePrewarmedStream(w http.ResponseWriter) {
-	safeWriteSSE(w, "data: [DONE]\n\n")
+// terminatePrewarmedStream 在 prewarmed 错误帧之后补协议终止符并 flush
+// （2026-11-15 S09 下钻轮 + P3-13 协议规范化）。所有 writePrewarmedStreamError*
+// 调用点都落在已提交的 SSE 流上且调用后立即 return —— 本帧就是该次响应的
+// 协议终态；只发错误帧不发终止符时，客户端的流解析器会一直等终止标记（S09
+// 活体：mock 栈 40 笔 broken_stream 下钻 6 笔 silent，tail=错误帧戛然而止，
+// 客户端/量具按「静默截断」计）。与 stream.go §11.6 信封路径的 errChunk+终止符
+// 成对纪律同形。重复终态防护由既有机制承担：survival coordinator 渲染过终态
+// 时 w 已是 blackholeResponseWriter，此处写为 no-op。
+//
+// P3-13 修复（2026-11-15 审计轮）：协议规范化 —— Anthropic messages 族补
+// OpenAI [DONE] 属跨协议混入；修正为按协议发送对应终止符：
+//   - Anthropic: `event: message_stop\ndata: {"type":"message_stop"}\n\n`
+//   - OpenAI:    `data: [DONE]\n\n`
+func terminatePrewarmedStream(w http.ResponseWriter, protocol string) {
+	if protocol == "anthropic" {
+		// Anthropic SSE 协议：event-typed，客户端按 event: 类型解析
+		safeWriteSSE(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	} else {
+		// OpenAI SSE 协议：纯 data 行，[DONE] 是约定终止标记
+		safeWriteSSE(w, "data: [DONE]\n\n")
+	}
 	if flusher, ok := w.(http.Flusher); ok {
 		safeFlush(flusher)
 	}

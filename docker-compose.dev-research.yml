@@ -201,6 +201,12 @@ services:
   # ─────────────────────────────────────────────────────────────────────
   # Gateway v2 (本地 build, cmd/gateway-v2/Dockerfile)
   # 2026-07-14: disabled for arm64 local test (Dockerfile still amd64)
+  #
+  # ⚠️ P3-8 警告（2026-11-15）：gateway-v2 是演示专用二进制，禁止生产部署
+  #    - 不支持 streaming（拒绝 stream=true）
+  #    - 缺少 KeyConcurrentGate 并发执法
+  #    - 仅用于 Pipeline 架构集成测试
+  #    - 生产环境使用 cmd/gateway/main.go
   # ─────────────────────────────────────────────────────────────────────
   gateway-v2:
     image: r112-gateway-v2:disabled

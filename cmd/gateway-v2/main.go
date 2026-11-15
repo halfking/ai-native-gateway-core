@@ -1,8 +1,21 @@
 // Command gateway-v2 is the new Pipeline-based entry point for llm-gateway-go.
 //
-// 重要: 这是一个**并行的演示入口**，与 cmd/gateway/main.go 独立运行。
-// 目的：展示新 Hook Pipeline 架构的完整工作流程，供集成测试和未来切流参考。
-// 不替换/不修改 cmd/gateway/main.go（避免影响 71 生产部署路径）。
+// ⚠️ 重要警告（P3-8 审计轮 2026-11-15）：
+//
+// 本二进制是**演示/测试专用入口**，禁止用于生产环境。原因：
+//
+//   1. 不支持 streaming（line 534-538 明确拒绝 stream=true）
+//   2. 缺少 KeyConcurrentGate 并发执法（per-key 并发帽不生效）
+//   3. 缺少并发观测（api_key_concurrency_minute 迁移 965 数据不写入）
+//   4. tierDefaults 并发限制为死值（admin 面与文档宣称的动态配置失效）
+//
+// 若需生产部署，必须：
+//   - 集成 streaming.NewKeyConcurrentGate() 及其 Wrap 逻辑
+//   - 集成 bg.KeyConcurrencyStatsWriter 观测写入
+//   - 或改用 cmd/gateway/main.go（生产就绪）
+//
+// 当前定位：展示新 Hook Pipeline 架构的完整工作流程，供集成测试和未来切流参考。
+// 不替换/不修改 cmd/gateway/main.go（避免影响生产部署路径）。
 //
 // 用法：
 //

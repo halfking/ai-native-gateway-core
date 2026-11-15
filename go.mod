@@ -31,6 +31,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/pashagolub/pgxmock/v4 v4.9.0
+	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
 	github.com/redis/go-redis/v9 v9.23.0
@@ -98,6 +99,7 @@ require (
 	github.com/blevesearch/zapx/v15 v15.4.3 // indirect
 	github.com/blevesearch/zapx/v16 v16.3.4 // indirect
 	github.com/blevesearch/zapx/v17 v17.2.3 // indirect
+	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

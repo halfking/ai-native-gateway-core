@@ -70,6 +70,9 @@ func (m *CasdoorUserManager) Name() string {
 }
 
 // GetUser retrieves a user by internal ID.
+//
+// P3-18 修复（2026-11-15 审计轮）：性能优化 —— 使用 SDK 的 GetUserByUserId
+// 单查 API 替代全量 GetUsers 后遍历。原实现在用户数 >1000 时有性能问题。
 func (m *CasdoorUserManager) GetUser(ctx context.Context, userID int) (*authplugin.User, error) {
 	// Lookup external ID from internal ID
 	provider, externalID, tenantID, err := m.idMapper.GetByInternalID(ctx, userID)
@@ -81,20 +84,19 @@ func (m *CasdoorUserManager) GetUser(ctx context.Context, userID int) (*authplug
 		return nil, fmt.Errorf("user %d is not a casdoor user (provider: %s)", userID, provider)
 	}
 
-	// Get user from Casdoor by external ID
-	users, err := m.client.GetUsers()
+	// P3-18: 直接使用单查 API 而非全量拉取
+	// SDK method: GetUserByUserId(userId string) (*User, error)
+	user, err := m.client.GetUserByUserId(externalID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch users from casdoor: %w", err)
+		return nil, fmt.Errorf("failed to fetch user %s from casdoor: %w", externalID, err)
 	}
 
-	// Find user by external ID
-	for _, u := range users {
-		if u.Id == externalID && u.Owner == tenantID {
-			return m.convertUser(u, userID), nil
-		}
+	// Verify tenant matches (defense in depth)
+	if user.Owner != tenantID {
+		return nil, fmt.Errorf("user %s owner mismatch: expected %s, got %s", externalID, tenantID, user.Owner)
 	}
 
-	return nil, authplugin.ErrNotFound
+	return m.convertUser(user, userID), nil
 }
 
 // GetUserByUsername retrieves a user by username.
