@@ -843,17 +843,18 @@ Built with ❤️ by the AI Native Gateway community
 
 
 
+
 ### 2026-11-15
 
-- feat(f41): 注入检测验证遗留件落库——LLM 判官引擎实现 + PII 模式扩展 + 验证套件编译收口 (Mavis Merge Bot, 27 minutes ago)
+- feat(f41): 注入检测验证遗留件落库——LLM 判官引擎实现 + PII 模式扩展 + 验证套件编译收口 (Mavis Merge Bot, 31 minutes ago)
 - docs(audit): P8 收敛轮回填——S09 下钻双根因（P1 gate 遮蔽回归+prewarmed 缺 DONE）/量具三修+改密自举/基线 11/14 三红归因闭环 (Mavis Merge Bot, 6 hours ago)
 - test(mock): 量具鲁棒性三修收敛——admin 改密自举/counter 重试/双密码回登 (Mavis Merge Bot, 6 hours ago)
 - fix(streaming): KeyConcurrentGate 单实例三路由 Wrap 互相遮蔽——chat 面全量反转为 responses 形状（P1 未部署回归，mock 栈 S09 下钻活体捕获） (Mavis Merge Bot, 8 hours ago)
 - fix(streaming)+test(mock): prewarmed 错误帧补 [DONE] 终态 + mock 量具三修（计数读点/错误帧信封识别/会话头） (Mavis Merge Bot, 9 hours ago)
 - docs(audit): P8 完整回填——mock 栈 8/14 场景（X-Session-Id 绕开实证）+6 红定性（S09 silent_truncations=8 候选真发现登记）+HTML 报告同步 (Mavis Merge Bot, 9 hours ago)
-- docs(audit): 主档 §6.2/6.3 部署验证回填（211=3052→3055 链注记/245=3034/154=3035+旋钮路径差异）+ HTML 总结报告（图表+四段输出） (Mavis Merge Bot, 9 hours ago)
+- docs(audit): 主档 §6.2/6.3 部署验证回填（211=3052→3055 链注记/245=3034/154=3035+旋钮路径差异）+ HTML 总结报告（图表+四段输出） (Mavis Merge Bot, 10 hours ago)
 - fix(rate-limit+redact): 限流统一按 key 轮——anomaly 观察模式/429 形状统一/TPM+并发+创建帽接线 + 日志脱敏假名化 (Mavis Merge Bot, 10 hours ago)
-- docs(AGENTS): 24h审计接力第三轮横幅——plugin接线面双P1/P2-2第四案/死面三连/ingress旋钮sizing/三台部署（部署链3052→3054→3055 注记） (Mavis Merge Bot, 10 hours ago)
+- docs(AGENTS): 24h审计接力第三轮横幅——plugin接线面双P1/P2-2第四案/死面三连/ingress旋钮sizing/三台部署（部署链3052→3054→3055 注记） (Mavis Merge Bot, 11 hours ago)
 - docs(audit): routing_database_error 事故根修主档 + AGENTS 横幅——回退部署复盖P0/分类器三形态/park总预算/nginx 64k半修缺口收口 (Mavis Merge Bot, 11 hours ago)
 - fix(plugin-runtime): D9/D10 修复 - config热重载watch停摆 + reconciler退避机制 (huangxt, 11 hours ago)
 - fix(routing): routing_database_error 事故根修——分类器三形态补齐 + 候选熔断 park 总预算收口 (Mavis Merge Bot, 11 hours ago)
@@ -867,7 +868,7 @@ Built with ❤️ by the AI Native Gateway community
 - fix(P2-2): 删除小 body string prompt 包装层——responses 入口丢输入/messages 覆盖/内存契约三问题实证 (huangxt, 12 hours ago)
 - fix(lifecycle): 修正首轮三个真缺陷——SQL别名越界/COALESCE NULL传播/粗前缀日期污染 (Mavis Merge Bot, 12 hours ago)
 - feat(deploy): 入口并发槽旋钮 LLM_GATEWAY_INGRESS_MAX_CONCURRENT 全链透传 (Mavis Merge Bot, 12 hours ago)
-- fix(sessioncontext): P2-2 第二半收口——大 string prompt/input 摘录缩减落地，撤下互相矛盾的 interim 钉测 (Mavis Merge Bot, 12 hours ago)
+- fix(sessioncontext): P2-2 第二半收口——大 string prompt/input 摘录缩减落地，撤下互相矛盾的 interim 钉测 (Mavis Merge Bot, 13 hours ago)
 - fix(security,multilayer)+docs: git-remote 豁免对齐 r1042+钉测改判；两个 Phase1 摘要文档审计订正横幅 (Mavis Merge Bot, 13 hours ago)
 - fix(plugin-runtime,pluginapi): 审计轮 D-S1~S6——deactivate 复活/双路由遮蔽/孤儿进程/request-ctx 杀进程/eventbus panic 四项 P1+P2 根修 (Mavis Merge Bot, 13 hours ago)
 - docs(audit): 第54增量最终交付总结——14项已修+1项撤回+21项登记 (huangxt, 13 hours ago)
