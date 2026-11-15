@@ -3,8 +3,11 @@ package streaming
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 func TestClassifyRoutingError(t *testing.T) {
@@ -135,6 +138,40 @@ func TestClassifyRoutingError(t *testing.T) {
 			// the database fallback too.
 			name:        "bare context deadline exceeded",
 			err:         errors.New("context deadline exceeded"),
+			wantCode:    "routing_connection_error",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantMessage: "Routing service temporarily unavailable",
+		},
+		// ── 2026-11-16 巡检补正：哨兵形态与文本形态必须落同一个桶 ──
+		//
+		// ★ 为什么加这几条：2026-11-15 的 P2 审计把字串判据换成 errors.Is 时
+		//   **删掉了字串兜底**，而生产形态恰恰是裸文本形态
+		//   ⇒ 两条既有门禁转红（code=routing_database_error）。
+		// ★ 这几条把「同一个故障，哨兵形态与文本形态归因相同」钉死：
+		//   分类器最怕的是同一个故障因构造方式不同被拆进两个看板桶。
+		{
+			// 被 %w 包过的 context.Canceled：errors.Is 分支。
+			name:        "client canceled (wrapped sentinel)",
+			err:         fmt.Errorf("candidates query aborted: %w", context.Canceled),
+			wantCode:    "routing_client_canceled",
+			wantStatus:  499,
+			wantMessage: "Client closed the request before routing completed",
+		},
+		{
+			// 哨兵形态的熔断：provider 生产路径就是 %w 包出来的。
+			name:        "candidates query circuit open (wrapped sentinel)",
+			err:         fmt.Errorf("%w (retry after 2026-11-14T15:43:01Z)", provider.ErrCandidatesCircuitOpen),
+			wantCode:    "routing_circuit_open",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantMessage: "Routing service temporarily unavailable",
+		},
+		{
+			// ★ 哨兵形态的超时**不是**客户端断开：与文本形态 "timeout"
+			//   同归 routing_connection_error（503）。
+			//   若这里落成 routing_client_canceled(499)，
+			//   服务端超时会伪装成「客户端跑了」⇒ 看板归因错、告警错。
+			name:        "context deadline exceeded (sentinel)",
+			err:         context.DeadlineExceeded,
 			wantCode:    "routing_connection_error",
 			wantStatus:  http.StatusServiceUnavailable,
 			wantMessage: "Routing service temporarily unavailable",
