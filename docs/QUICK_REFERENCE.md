@@ -388,6 +388,24 @@ export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=xxx
 # export SANITIZE_JUDGE_TIMEOUT_SEC=8                     # 异步判读预算（默认 8s）
 # export SANITIZE_JUDGE_MAX_TOKENS=200                    # 判官输出 token 上限
 
+# Auto 路由三层链·Layer 3（LLM 兜底分类）旋钮（2026-11-15 归并裁决轮披露；
+# 审计主档 docs/audit/2026-11-15-auto意图三层匹配审计与归并裁决-主档.md §二/§五）
+# 机制：heuristic 置信 < LLM 阈值（TuningStore 动态）→ 升级本分类器；失败
+# fail-open 保启发式结果；熔断+指标+R44 低置信门三件套齐备。★ 三项 env 均未设
+# ⇒ DisabledCaller（现网默认惰性形态，非故障）——启用=选型+计费裁决（归 owner），
+# 配齐即生效，无需代码改动。
+# export LLMGatewayAutoLLMEndpoint=https://xxx/v1   # OpenAI 兼容 base URL
+# export LLMGatewayAutoLLMApiKey=xxx                # bearer（或 "env:VARNAME" 引用其它 env）
+# export LLMGatewayAutoLLMModel=xxx                 # 默认 gpt-4o-mini
+# export LLMGatewayAutoLLMTimeout=3                 # 秒，默认 3
+# Jev 替身（占同一兜底槽，默认关；启用时若旧 endpoint 三件套同时在场会打
+# inert Warn——R44 配置冲突点名）：
+# export LLM_GATEWAY_JEV_CLASSIFIER=1
+# export TYPESAFE_API_KEY=xxx
+# 影子分类器（EmbeddingClassifier 余弦近心，1% 采样 shadow，不改决策）：
+# feature flag LLM_GATEWAY_AUTO_EMBEDDING_ROUTE 开 + LLM_GATEWAY_ANALYSIS_BASE_URL
+# /ANALYSIS_API_KEY/EMBEDDING_MODEL 三件套配齐才挂载。
+
 # 完整变量清单以 config/config.go 为准
 ```
 

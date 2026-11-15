@@ -1,5 +1,7 @@
 # Intent Recognition System - Implementation Summary
 
+> **⚠️ 终态（2026-11-15 归并裁决轮）**：本包（`autoroute/intent`）已按 2026-11-15 归并裁决**真删**——生产 `autoroute` 单一实现为准（三层链实证与 13 缺口审计见 `docs/audit/2026-11-15-auto意图三层匹配审计与归并裁决-主档.md`）。本文档仅作历史记录保留。
+
 > **⚠️ 审计订正横幅（2026-11-14 审计轮，正文保留原样仅作历史记录）**：本文档多项表述与代码事实不符，接线前必须以下列订正为准——
 > 1. **「Production Ready / production-ready, fully tested」不成立**：该包全仓零接线（唯一引用是自身 example_test.go），生产分类器仍是 `cmd/gateway/main.go` 的 `autoroute.NewHeuristicClassifierWithTuning`。
 > 2. **Layer 3（LLM 层）是占位符**：`tool_layer.go` 的 GLMProvider/OpenAIProvider `Classify` 均 `return fmt.Errorf("... not yet implemented")`；唯一可用实现是 MockLLMProvider。

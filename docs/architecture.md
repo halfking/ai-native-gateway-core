@@ -259,32 +259,19 @@ The two modes share the same `storage` interfaces; per-store mapping table and c
 
 ## Multi-Layer Intelligent Systems (New)
 
-**Status**: Phase 1 Implemented (2026-11-14)
+**Status**: ① Intent 三层已由生产 `autoroute` 包承载（2026-11-15 归并裁决）；② Multi-Layer Security Detection 仍为 Phase 1 设计件（`security/multilayer/`，全仓零引用，归并裁决另案）
 
-The gateway now features two advanced multi-layer intelligent systems that optimize accuracy, speed, and cost through progressive escalation:
+> ★ 2026-11-15 审计订正（主档 `docs/audit/2026-11-15-auto意图三层匹配审计与归并裁决-主档.md`）：本节原把 `autoroute/intent/` 平行实现写为「Phase 1 Implemented」，其 LLM 层是 `not yet implemented` 占位符、规则层缺生产既有守卫（13 缺口 G1~G13，逐条 file:line 见主档 §三），且全仓零接线。**裁决＝归并：真删该包，生产 `autoroute` 单一实现为准**。下述「Intent Recognition」描述已改写为生产真身；原「60-75% cache hit rate / 88-96% accuracy / $0.00005」等数字无实测来源，删除。
 
-### 1. Intent Recognition System ✅
+### 1. Intent Recognition System ✅（生产真身：`autoroute` 包）
 
-**Location**: `autoroute/intent/`
+auto 模式请求分类的三层链（装配点 `cmd/gateway/main.go` ~6063-6170，裁决主档 §二有逐条 file:line）：
 
-A three-layer architecture for intelligent request classification in auto-routing mode:
-
-- **Layer 1 (Rule)**: Pattern matching + keyword analysis (<1ms, $0, 85-95% accuracy)
-- **Layer 2 (Context)**: Session history + semantic analysis (1-10ms, $0, 70-85% accuracy)
-- **Layer 3 (LLM)**: Semantic understanding for ambiguous cases (100-500ms, ~$0.0001, 90-98% accuracy)
-
-**Key Features**:
-- 11 intent types (chat, code, reasoning, agent, creative, etc.)
-- Session-level caching (60-75% hit rate)
-- Confidence-based escalation
-- Backward compatible with existing HeuristicClassifier
-
-**Performance**:
-- P50 latency: <1ms (with cache: 430ns)
-- Combined accuracy: 88-96%
-- Cost: $0.00005 average (85% use Layer 1, 10% Layer 2, 5% Layer 3)
-
-**Inspired by**: Rasa (26k stars), Haystack (16k stars), LangChain (80k stars)
+- **Layer 1（规则启发式）**：`HeuristicClassifier`（`autoroute/classifier.go` + `patterns.go` 24 条结构正则 + `task_types_ext.go` 五套守卫 + `codeOutputNegated` 否定守卫 + dominance bonus 置信顶推）。μs 级、$0。
+- **Layer 2（会话粘性）**：`SessionIntentCache`（内存+Redis，`autoroute/session_intent_cache.go`）+ 请求哈希分类缓存（`classification_cache.go`）+ 50 次命中漂移重分类。$0 边际成本。
+- **Layer 3（LLM 兜底）**：`Decider.classify`（`autoroute/decision.go:999-1048`）低置信升级 LLM fallback（HTTP caller + 熔断 + 指标，`http_llm_caller.go`），失败 fail-open 保启发式结果，R44 门拒低置信外部结论。**默认惰性（DisabledCaller）——生产启用需配 `LLMGatewayAutoLLM*` env（见 QUICK_REFERENCE），选型/计费归 owner**。
+- **任务类型 → 模型匹配**：`Index.Recommend`（5 分钟滚动快照热路径）× Profile 权重（smart/speed_first/cost_first 八维）× task profile overlay + admin 覆盖存储。
+- **运行时调参**：`TuningStore`（tuning_params 表）关键词/阈值/权重不重启生效。
 
 ### 2. Multi-Layer Security Detection 🚧
 
@@ -313,7 +300,7 @@ A three-layer architecture for output compliance and input injection detection w
 
 ### Implementation Strategy
 
-Both systems use identical architectural patterns:
+The security detection system (system ②) follows the progressive-escalation pattern; the intent system's production form is the `autoroute` chain above:
 
 | Aspect | Layer 1 | Layer 2 | Layer 3 |
 |--------|---------|---------|---------|
@@ -330,20 +317,14 @@ Both systems use identical architectural patterns:
 
 ### Monitoring
 
-Both systems provide comprehensive metrics:
-- Layer usage distribution
-- Confidence score distribution
-- P50/P95/P99 latency per layer
-- Cache hit rates
-- Cost per request
-- Accuracy metrics (with ground truth)
+The production intent chain exposes decision/outcome metrics (`autoroute/metrics.go` + `outcome_*.go`) and LLM-classifier telemetry (`llm_gateway_llm_classifier_*` via the instrumented caller wrapper).
 
-See detailed architecture: [Multi-Layer Intelligent Systems Architecture](design/2026-11-14-multi-layer-intelligent-systems-architecture.md)
+See detailed architecture: [Multi-Layer Intelligent Systems Architecture](design/2026-11-14-multi-layer-intelligent-systems-architecture.md)（设计档——intent 部分已按 2026-11-15 归并裁决由生产 `autoroute` 承载）
 
 ## Further Reading
 
 - [Multi-Layer Intelligent Systems Architecture](design/2026-11-14-multi-layer-intelligent-systems-architecture.md) - Comprehensive design document for both systems
-- [Intent Recognition Documentation](../autoroute/intent/README.md) - Complete API documentation and examples
+- [Intent 三层匹配审计与归并裁决](audit/2026-11-15-auto意图三层匹配审计与归并裁决-主档.md) - 生产 autoroute 三层链实证 + intent 平行实现 13 缺口审计（2026-11-15）
 - [Security Detection Design](../security/multilayer/DESIGN.md) - Security system architecture and roadmap
 - [Internal Architecture Deep Dive](03-design/01-architecture/architecture/ARCHITECTURE.md) - Evidence-graded, code-verified architecture facts (authoritative, Chinese)
 - [System Requirements](01-requirements/SYSTEM_REQUIREMENTS.md) - Regenerated SRS (2026-10-01 audit)
