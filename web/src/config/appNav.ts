@@ -51,6 +51,12 @@ export type NavItem = {
    * 避免未激活用户点进去看不到 license / 升级通道。
    */
   activateWhenNotActivated?: boolean
+  /**
+   * 2026-11-17: 暂时从导航/菜单隐藏，但条目仍保留在真源里（路由与页面不删）。
+   * 口径门（navCounts 63/62/50）仍计这条；渲染层经 canShowNavItem 过滤。
+   * 直达 URL（如 /live2）仍可用，便于审计与回放。
+   */
+  hidden?: boolean
 }
 
 export type NavGroup = {
@@ -67,7 +73,8 @@ export const NAV_PRIMARY_ITEMS: NavItem[] = [
   { path: '/live', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, exact: true },
   // 2026-11-16: 请求阶段树（live2）—— 与 /live 并存一个版本周期。
   // 入口放在 /live 旁边（同一分组），并由 /live 页顶栏的「阶段树」按钮直达。
-  { path: '/live2', labelKey: 'nav.item.liveStageTree', icon: '🌲', platformOps: true, exact: true },
+  // 2026-11-17: owner 要求暂时隐藏菜单（路由/页面保留；直达 /live2 仍可用）。
+  { path: '/live2', labelKey: 'nav.item.liveStageTree', icon: '🌲', platformOps: true, exact: true, hidden: true },
   { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
 
@@ -297,6 +304,7 @@ type NavVisibilityOpts = {
 }
 
 export function canShowNavItem(item: NavItem, opts: NavVisibilityOpts): boolean {
+  if (item.hidden) return false
   if (item.opsPlatform && !showOpsPlatform()) return false
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false

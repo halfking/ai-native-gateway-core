@@ -19,7 +19,19 @@ import {
   visibleNavItems,
   type NavItem,
 } from './appNav'
-import { buildSimpleNav, SIMPLE_ADVANCED_GROUP_ID } from './simpleNav'
+import {
+  buildSimpleNav,
+  SIMPLE_ADVANCED_GROUP_ID,
+  SIMPLE_HREF_REWRITE,
+} from './simpleNav'
+
+/** 把简易模式渲染 path 还原成专家面真源 path（台账对拍用）。 */
+function canonicalExpertPath(path: string): string {
+  for (const [expert, href] of Object.entries(SIMPLE_HREF_REWRITE)) {
+    if (href === path) return expert
+  }
+  return path
+}
 
 const SUPER_OPTS = {
   isSuperAdmin: true,
@@ -40,10 +52,11 @@ describe('简易模式导航派生', () => {
     const { primary, groups } = expertNav()
     const result = buildSimpleNav(primary, groups)
 
+    // 对拍用专家面真源 path（L3 href 改写还原后再比）
     const landed = new Set<string>()
-    for (const item of result.direct) landed.add(item.path)
+    for (const item of result.direct) landed.add(canonicalExpertPath(item.path))
     for (const g of result.groups) {
-      for (const item of g.items) landed.add(item.path)
+      for (const item of g.items) landed.add(canonicalExpertPath(item.path))
     }
 
     const expected: string[] = []
@@ -53,7 +66,7 @@ describe('简易模式导航派生', () => {
     for (const path of expected) {
       expect(landed.has(path), `入口 ${path} 在简易模式里消失了`).toBe(true)
     }
-    // 反向：简易模式不得**多出**专家面没有的入口。
+    // 反向：简易模式不得**多出**专家面没有的入口（按真源 path 计）。
     expect(landed.size).toBe(new Set(expected).size)
     expect(result.stats.total).toBe(expected.length)
     expect(result.stats.direct + result.stats.grouped + result.stats.advanced).toBe(expected.length)
@@ -82,12 +95,18 @@ describe('简易模式导航派生', () => {
     expect(result.stats.total).toBe(ledger.total)
     expect(result.stats.distinctPaths).toBe(ledger.distinctPaths)
 
-    // 前端实际落点 → path → 桶
+    // 前端实际落点 → 专家面真源 path → 桶
+    // （L3 会把 /keys 渲染成 /simple/keys，对拍必须还原后再比）
     const frontendBucket = new Map<string, string>()
-    for (const item of result.direct) frontendBucket.set(item.path, 'direct')
+    for (const item of result.direct) {
+      frontendBucket.set(canonicalExpertPath(item.path), 'direct')
+    }
     for (const g of result.groups) {
       for (const item of g.items) {
-        frontendBucket.set(item.path, g.id === SIMPLE_ADVANCED_GROUP_ID ? 'advanced' : g.id)
+        frontendBucket.set(
+          canonicalExpertPath(item.path),
+          g.id === SIMPLE_ADVANCED_GROUP_ID ? 'advanced' : g.id,
+        )
       }
     }
 
@@ -103,6 +122,15 @@ describe('简易模式导航派生', () => {
       }
     }
     expect(mismatches, `落点映射两处不一致：\n${mismatches.join('\n')}`).toEqual([])
+  })
+
+  it('L3：专家面 /keys 落在「密钥与用户」组，渲染 href 改写为 /simple/keys', () => {
+    const result = buildSimpleNav(NAV_PRIMARY_ITEMS, NAV_GROUPS)
+    const tenantUsers = result.groups.find((g) => g.id === 'tenant-users')
+    expect(tenantUsers).toBeDefined()
+    const keys = tenantUsers!.items.find((i) => i.path === '/simple/keys')
+    expect(keys, '简易模式应渲染 /simple/keys').toBeTruthy()
+    expect(tenantUsers!.items.some((i) => i.path === '/keys')).toBe(false)
   })
 
   it('「高级」组收集所有未点名落点的条目，且不与专家面分组重名', () => {

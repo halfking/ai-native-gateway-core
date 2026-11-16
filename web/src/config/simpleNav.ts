@@ -30,13 +30,23 @@ export const SIMPLE_DIRECT_PATHS: readonly string[] = [
 /**
  * 简易模式的分组。
  * key = 专家面分组 id（沿用其 labelKey ⇒ 不新增分组文案）
- * value = 该分组在简易模式下保留的路径
+ * value = 该分组在简易模式下保留的路径（必须是专家面真源 path，才能命中派生）
  */
 export const SIMPLE_GROUP_PATHS: Record<string, readonly string[]> = {
   'models-routing': ['/models', '/providers'],
-  'tenant-users': ['/users', '/simple/keys', '/tenants'], // L3: 简易模式用 /simple/keys 替代 /keys
+  'tenant-users': ['/users', '/keys', '/tenants'],
   'requests-sessions': ['/request-logs', '/usage'],
   guide: ['/examples', '/examples#auto-config', '/help'],
+}
+
+/**
+ * 落点命中后的 href 改写（L3）。
+ * 专家面真源仍是 `/keys`（台账 / navCounts / 「一条不删」都按真源 path 计）；
+ * 简易模式点击时跳到两字段签发页 `/simple/keys`。
+ * ★ 改写表的 key 必须是专家面 path；value 可以是专家面没有的简化页。
+ */
+export const SIMPLE_HREF_REWRITE: Readonly<Record<string, string>> = {
+  '/keys': '/simple/keys',
 }
 
 /** 「高级」折叠组的 id（与专家面任何分组 id 都不冲突） */
@@ -82,8 +92,10 @@ export function buildSimpleNav(
   const advanced: NavItem[] = []
 
   for (const { item, groupId } of ordered) {
+    const href = SIMPLE_HREF_REWRITE[item.path]
+    const rendered = href && href !== item.path ? { ...item, path: href } : item
     if (SIMPLE_DIRECT_PATHS.includes(item.path)) {
-      direct.push(item)
+      direct.push(rendered)
       continue
     }
     const target = Object.keys(SIMPLE_GROUP_PATHS).find((gid) =>
@@ -91,11 +103,11 @@ export function buildSimpleNav(
     )
     if (target) {
       const bucket = byGroup.get(target) ?? []
-      bucket.push(item)
+      bucket.push(rendered)
       byGroup.set(target, bucket)
       continue
     }
-    advanced.push(item)
+    advanced.push(rendered)
   }
 
   // ③ 组装分组：沿用专家面分组的 labelKey（不新增分组文案）
