@@ -141,18 +141,36 @@ func (w *StatsMinuteRollup) rollupProbe(ctx context.Context, since, until time.T
 //	⇒ 不做 retire ⇒ 探测分钟表会累积**已消失的探测桶**，读侧算出的
 //	「探测 QPS」会虚高。
 //
-// ★ 保守实现：只删「窗口之前、且窗口内没有任何探测流量」的桶。
+// ★ 保守实现：只删「窗口之前、且源流水已无同键」的桶。
 //
-//	用 NOT EXISTS 判「同键在窗口内仍有行」比逐键比对便宜，且天然幂等。
+//	用 NOT EXISTS 判「同键仍有源行」天然幂等。
+//
+// ★ 2026-11-17：改为 **LIMIT 批删**。旧语句对「bucket < since」的全表
+//
+//	做相关子查询 —— 211 实测约 10 万行时单次 650–900ms、每分钟 2 次。
+//	每 tick 最多删 retireProbeMinutesBatch 行，积压靠后续 tick 收敛；
+//	14d TTL（cleanupOldProbeLaneTables）仍是硬天花板。
+const (
+	retireProbeMinutesBatch = 2000
+)
+
 const retireProbeMinutesStatement = `
+	WITH doomed AS (
+		SELECT m.ctid
+		  FROM request_stats_probe_minute m
+		 WHERE m.bucket < $1
+		   AND NOT EXISTS (
+			SELECT 1 FROM session_turns_probe_hot r
+			 WHERE date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket
+			   AND r.tenant_id = m.tenant_id
+			   AND COALESCE(r.provider_id, 0) = m.provider_id
+		   )
+		 ORDER BY m.bucket
+		 LIMIT $2
+	)
 	DELETE FROM request_stats_probe_minute m
-	WHERE m.bucket < $1
-	  AND NOT EXISTS (
-		SELECT 1 FROM session_turns_probe_hot r
-		 WHERE date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket
-		   AND r.tenant_id = m.tenant_id
-		   AND COALESCE(r.provider_id, 0) = m.provider_id
-	  )
+	 USING doomed
+	 WHERE m.ctid = doomed.ctid
 `
 
 // retireProbeMinutes removes probe minute buckets that no longer have
@@ -170,7 +188,7 @@ func (w *StatsMinuteRollup) retireProbeMinutes(ctx context.Context, since time.T
 	if !probelane.PhysicalEnabled() {
 		return nil
 	}
-	if _, err := w.db.Exec(ctx, retireProbeMinutesStatement, since); err != nil {
+	if _, err := w.db.Exec(ctx, retireProbeMinutesStatement, since, retireProbeMinutesBatch); err != nil {
 		return err
 	}
 	return nil

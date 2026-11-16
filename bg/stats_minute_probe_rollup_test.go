@@ -141,3 +141,34 @@ func TestProbeRollupGuardedByLaneSwitch(t *testing.T) {
 			"  ⇒ 无条件执行会让同一批流量出现两个口径")
 	}
 }
+
+// TestRetireProbeMinutesIsBatched 钉住退役 DELETE 带 LIMIT 批删。
+//
+// 211 取证：无 LIMIT 时对 ~10 万行做相关子查询，单次 650–900ms。
+func TestRetireProbeMinutesIsBatched(t *testing.T) {
+	raw, err := os.ReadFile("stats_minute_probe_rollup.go")
+	if err != nil {
+		t.Fatalf("read stats_minute_probe_rollup.go: %v", err)
+	}
+	body := string(raw)
+	const marker = "const retireProbeMinutesStatement = `"
+	idx := strings.Index(body, marker)
+	if idx < 0 {
+		t.Fatal("retireProbeMinutesStatement 不存在")
+	}
+	rest := body[idx+len(marker):]
+	end := strings.Index(rest, "`")
+	if end < 0 {
+		t.Fatal("retireProbeMinutesStatement 未闭合")
+	}
+	sql := rest[:end]
+	if !strings.Contains(sql, "LIMIT $2") {
+		t.Error("退役 DELETE 必须 LIMIT $2 批删（否则全表相关子查询会拖慢每分钟 rollup）")
+	}
+	if !strings.Contains(sql, "WITH doomed AS") {
+		t.Error("退役 DELETE 必须经 CTE 选 ctid 再删（批删形状）")
+	}
+	if !strings.Contains(body, "retireProbeMinutesBatch") {
+		t.Error("必须有 retireProbeMinutesBatch 常量作为批大小")
+	}
+}

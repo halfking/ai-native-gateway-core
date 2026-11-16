@@ -85,9 +85,23 @@ func TestCmbExpiredRecoverySQL_Shape(t *testing.T) {
 		t.Errorf("cmb 恢复语句复活了 NULL 三值逻辑陷阱（reason 为 NULL 时整行被排除）：\n%s", sql)
 	}
 
-	// ② 孤儿盲区必须消失：cmb 自身 UPDATE 不得再内连接 provider_models。
-	if strings.Contains(sql, "FROM provider_models pm") {
-		t.Errorf("cmb 恢复语句不得内连接 provider_models（孤儿绑定会被整类挡在恢复之外）：\n%s", sql)
+	// ② 孤儿盲区必须消失：cmb 自身 UPDATE 的主 FROM 不得内连接 provider_models。
+	// P11 允许在 NOT EXISTS 里用标量子查询 `SELECT pm.raw_model_name FROM provider_models pm WHERE pm.id=...`
+	// （pm 缺失 ⇒ 子查询空 ⇒ 不挡恢复；与主 FROM 内连接的双盲不同）。
+	stripped := sql
+	for {
+		start := strings.Index(stripped, "SELECT pm.raw_model_name")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(stripped[start:], ")")
+		if end < 0 {
+			break
+		}
+		stripped = stripped[:start] + stripped[start+end+1:]
+	}
+	if strings.Contains(stripped, "FROM provider_models pm") {
+		t.Errorf("cmb 恢复语句不得在主 FROM 内连接 provider_models（孤儿绑定会被整类挡在恢复之外）：\n%s", sql)
 	}
 
 	// ③ F4：凭据级归因必须配「凭据已 ready」守卫（cmb 侧与镜像侧都要）。
@@ -109,6 +123,16 @@ func TestCmbExpiredRecoverySQL_Shape(t *testing.T) {
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("cmb 恢复语句丢失守卫 %q：\n%s", want, sql)
+		}
+	}
+
+	// ⑤ P11：冷却到期不得翻绿探针已判 broken_confirmed 的绑定。
+	for _, want := range []string{
+		"state = 'broken_confirmed'",
+		"nps.credential_id = cmb.credential_id",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("cmb 恢复语句缺少 P11 探针判坏守卫 %q：\n%s", want, sql)
 		}
 	}
 }
@@ -139,6 +163,15 @@ func TestMoExpiredRecoverySQL_Shape(t *testing.T) {
 	// 镜像语句只恢复三列（触发器只回写这三列 + updated_at）。
 	if !strings.Contains(sql, "unavailable_at     = NULL") {
 		t.Errorf("model_offers 镜像恢复语句形状漂移：\n%s", sql)
+	}
+	// P11：镜像侧必须与 cmb 同款 broken_confirmed 守卫（否则镜像会放回 cmb 刻意留住的行）。
+	for _, want := range []string{
+		"state = 'broken_confirmed'",
+		"nps.raw_model_name = mo.raw_model_name",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("model_offers 镜像恢复语句缺少 P11 守卫 %q：\n%s", want, sql)
+		}
 	}
 }
 
