@@ -67,7 +67,7 @@ type autoReselectResult struct {
 //
 // ★ 链的选取（根修 5）：
 //
-//	宽退路池 AutoReselectModels（48h 热度榜 LIMIT 32）**先走**；
+//	宽退路池 AutoReselectModels（索引快照 ∩ 实时可用，LIMIT 32）**先走**；
 //	宽池全灭时回退窄链 AutoFallbackModels（dispatch 换模梯子：tier 链或 top-3）。
 //
 //	★ 消费规则（两条链的边界）：

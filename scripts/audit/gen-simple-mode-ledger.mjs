@@ -105,12 +105,15 @@ const V2_DIRECT = ['/dashboard', '/live', '/chat', '/admin/settings'];
 //   根本没有用量页** ⇒ 它匹配不到任何 item，是个永远落不了地的死条目；
 //   且与 web/src/config/simpleNav.ts 的同名表**同源同错** ⇒ 两边互相掩盖、
 //   对拍永远绿（2026-11-17 实测）。总览页的「查看用量」按钮正是照着这个
-//   幻觉写的 ⇒ 点了跳 vue-router 的 no-match 空白页。两处同删（对台账产出零影响）。
+//   幻觉写的 ⇒ 点了跳 vue-router 的 no-match 空白页。
+// ★ 最终取值：改为**专家面导航真源里真实存在**的 '/tenant/usage'
+//   （appNav.ts:146，tenantOnly 项）⇒ 清单条目首次真正命中真源，
+//   简易模式「请求与会话」组由此多出一条能落地的入口（符合「专家面一条不删」）。
 const V2_GROUPS = {
   'models-routing': ['/models', '/providers'],
   'tenant-users': ['/users', '/keys', '/tenants'],
-  'requests-sessions': ['/request-logs'],
-  'guide': ['/examples', '/examples#auto-config', '/help'],
+  'requests-sessions': ['/request-logs', '/tenant/usage'],
+  guide: ['/examples', '/examples#auto-config', '/help'],
 };
 // 分组 id → 展示用中文名
 const V2_GROUP_CN = {

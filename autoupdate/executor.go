@@ -343,20 +343,32 @@ func (e *Executor) createLog(ctx context.Context, version string) (int64, error)
 }
 
 // findActionableLog 找出该版本上仍「待处理」的日志行（提醒行）。
+//
+// ★ 2026-11-17（12h 审计）：原实现只取**最近 200 行**
+//
+//	（GetUpgradeHistory 的 limit=200，SQL 是 ORDER BY started_at DESC LIMIT/OFFSET）
+//	⇒ 当那条待处理提醒行比第 200 行更老时**找不到它** ⇒ createLog 另起新行
+//	⇒ **提醒行永远停在 pending**（F13 原样复发，只是要攒够 200 行才触发）。
+//	⇒ 现在按 total 分页扫到底；找不到就如实返回 false。
 func (e *Executor) findActionableLog(ctx context.Context, version string) (int64, bool) {
-	history, _, err := e.store.GetUpgradeHistory(ctx, e.instanceID, 0, 200)
-	if err != nil {
-		return 0, false
-	}
-	for _, h := range history {
-		if h.Version != version || h.LogID <= 0 {
-			continue
+	const page = 200
+	for offset := 0; ; offset += page {
+		history, total, err := e.store.GetUpgradeHistory(ctx, e.instanceID, offset, page)
+		if err != nil {
+			return 0, false
 		}
-		if IsActionableStatus(h.Status) {
-			return h.LogID, true
+		for _, h := range history {
+			if h.Version != version || h.LogID <= 0 {
+				continue
+			}
+			if IsActionableStatus(h.Status) {
+				return h.LogID, true
+			}
+		}
+		if len(history) == 0 || offset+len(history) >= total {
+			return 0, false
 		}
 	}
-	return 0, false
 }
 
 // updateLog 更新升级日志行状态。

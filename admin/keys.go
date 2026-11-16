@@ -499,10 +499,17 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ★ 2026-11-17（12h 审计）：补上 key_alias / remark。
+	//   简易模式签发页（SimpleKeysView）按「客户端」「备注」两行展示这两个字段，
+	//   前端 API 契约（KeyCreatedResponse）也声明了它们 ⇒ 但本响应从不发 ⇒
+	//   前端读到 undefined ⇒ 「客户端」行永远空白、「备注」行永不渲染。
+	//   数据本来就在手上（alias / remark 就是刚插入的那两个列）⇒ 直接回。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":         id,
 		"api_key":    raw,
 		"key_prefix": keyPrefix,
+		"key_alias":  alias,
+		"remark":     remark,
 		"message":    "ok",
 	})
 }

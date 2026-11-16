@@ -1,56 +1,38 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { getCaptcha } from '../api/auth'
+import { watch } from 'vue'
+import type { CaptchaResponse } from '../api/auth'
 import { useI18n } from 'vue-i18n'
 import { Refresh } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 
-interface CaptchaData {
-  captcha_id: string
-  image: string
-  expires_at: string
-  required: boolean
-  ttl_seconds: number
-}
-
+// ★ 2026-11-17：验证码的**唯一持有者是父组件（LoginModal）**。
+//
+//   此前本组件自己 getCaptcha()，父组件也自己 getCaptcha() ⇒ 两个请求、
+//   两个 captcha_id ⇒ 谁后到谁覆盖 ⇒ **图是 A 的、id 是 B 的** ⇒
+//   服务端按 B 校验 ⇒ captcha_invalid（且一次性作废）⇒ 用户反复失败 ⇒ 锁死。
+//
+//   现在：父组件取一次（id 与图同源），本组件只渲染图、只发「要刷新」的意图。
+//   ★ 这样 captcha_id 与图**永远来自同一次响应** ⇒ 该形态被从结构上消除。
 const props = defineProps<{
   modelValue: string
-  captchaId: string
+  captcha: CaptchaResponse | null
+  loading?: boolean
+  error?: string
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
-  'update:captchaId': [value: string]
+  'refresh': []
 }>()
 
-const captchaData = ref<CaptchaData | null>(null)
-const loading = ref(false)
-const error = ref('')
-
-const loadCaptcha = async () => {
-  loading.value = true
-  error.value = ''
-  
-  try {
-    const data = await getCaptcha()
-    captchaData.value = data
-    emit('update:captchaId', data.captcha_id)
+// 换了一张验证码 ⇒ 上一次作答作废（否则用户会把旧答案提交到新图上）。
+watch(
+  () => props.captcha?.captcha_id,
+  () => {
     emit('update:modelValue', '')
-  } catch (err: any) {
-    error.value = err.message || t('login.captcha.loadFailed')
-  } finally {
-    loading.value = false
-  }
-}
-
-// 初始加载
-loadCaptcha()
-
-// 监听外部请求刷新（例如登录失败后）
-defineExpose({
-  refresh: loadCaptcha
-})
+  },
+)
 </script>
 
 <template>
@@ -59,34 +41,34 @@ defineExpose({
     
     <div v-if="error" class="captcha-error">
       {{ error }}
-      <button type="button" class="btn btn-sm btn-ghost" @click="loadCaptcha">
+      <button type="button" class="btn btn-sm btn-ghost" @click="emit('refresh')">
         {{ t('common.button.retry') }}
       </button>
     </div>
-    
+
     <div v-else class="captcha-container">
       <div class="captcha-image-wrapper">
-        <img 
-          v-if="captchaData" 
-          :src="captchaData.image" 
+        <img
+          v-if="captcha"
+          :src="captcha.image"
           :alt="t('login.captcha.imageAlt')"
           class="captcha-image"
         />
         <div v-else class="captcha-loading">
           {{ t('common.loading') }}
         </div>
-        
-        <button 
-          type="button" 
+
+        <button
+          type="button"
           class="btn btn-sm btn-ghost captcha-refresh"
           :disabled="loading"
-          @click="loadCaptcha"
+          @click="emit('refresh')"
           :title="t('login.captcha.refresh')"
         >
           <Refresh />
         </button>
       </div>
-      
+
       <input
         id="captcha-code"
         :value="modelValue"
@@ -97,9 +79,9 @@ defineExpose({
         @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
       />
     </div>
-    
-    <p v-if="captchaData" class="captcha-hint">
-      {{ t('login.captcha.hint', { seconds: captchaData.ttl_seconds }) }}
+
+    <p v-if="captcha" class="captcha-hint">
+      {{ t('login.captcha.hint', { seconds: captcha.ttl_seconds }) }}
     </p>
   </div>
 </template>

@@ -1078,6 +1078,13 @@ onMounted(async () => {
   if (typeof q.error_kind === 'string' && q.error_kind.trim()) {
     errorKindFilter.value = q.error_kind.trim()
   }
+  // 2026-11-17: 密钥详情页「查看全部」深链 ⇒ 按密钥预筛。
+  // ★ 此前 viewAllLogs 推的是 ?api_key_id=，但本页只读 success/error_kind/preset/
+  //   hours/from/to/owner_user/gw_session_id/gw_task_id ⇒ **预筛从未生效** ⇒
+  //   落点是「全部密钥」的未筛选列表（且提交说明称已预筛 ⇒ 自述与实现不符）。
+  if (typeof q.api_key_id === 'string' && /^\d+$/.test(q.api_key_id.trim())) {
+    apiKeyId.value = Number(q.api_key_id.trim())
+  }
   // 2026-08-09: 时间范围 query 兼容。
   // 优先级: 新版 ?preset=... > 旧版 ?hours=N (向后兼容, 仅识别 1/6/24/72/168) > 自定义 from/to。
   const hourToPreset: Record<number, TimePreset> = {

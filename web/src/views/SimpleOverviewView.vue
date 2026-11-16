@@ -341,9 +341,19 @@ function openSignKey(): void {
  *   （router.ts 里没有；appNav 的 requests-sessions 组里也没有）⇒ 点进去是
  *   vue-router 的 no-match 空白页。同一处幻觉还出现在 simpleNav.ts 与
  *   scripts/audit/gen-simple-mode-ledger.mjs 的分组清单里（两边同源 ⇒ 互相掩盖）。
- *   ⇒ 改跳专家面导航真源里真实存在的 `/request-logs`（RequestLogsView，
- *     无 super 限定，简易模式「请求与会话」组也保留它），
- *     文案随之改为已有的 `action.requests`（8 语种齐备，无需新增键）。
+ *
+ * ★ 为什么**不**跳 `/tenant/usage`（并行列车把幻觉改成了这个真实存在的路径）：
+ *   取证（super_admin 实开，2026-11-17）：
+ *     · /tenant/usage ⇒ 「我的消耗 / 积分流水」，积分消耗 **0 积分**、
+ *       「最近 50 条 consume 记录：**0 笔**」、空态「暂无流水记录。去购买积分」
+ *       —— 它是**租户积分账单**视角，super_admin 没有积分账户 ⇒ 落到空态。
+ *     · /request-logs ⇒ 「请求日志」，17,674 条真实流水 + 模型统计，
+ *       **全角色可用**（router.ts:300 无 meta 限定），与统计卡「今日请求」呼应。
+ *   ⇒ 按钮走 /request-logs：信息量足、没有空态陷阱，也不与本轮
+ *     「读不到 ≠ 0、不给用户看假零」的诚实口径冲突。
+ *   ★ 两条口径别混：simpleNav 的分组清单仍保留 '/tenant/usage'
+ *     （那是**导航投影**口径 —— 对租户用户它是对的入口）。
+ *   文案用**已存在**的 `action.requests`（8 语种齐备，无需新增键）。
  */
 function openRequestLogs(): void {
   void router.push('/request-logs')

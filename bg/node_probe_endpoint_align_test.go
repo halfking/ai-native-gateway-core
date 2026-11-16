@@ -35,4 +35,23 @@ func TestResolveDirectTargetPrefersProviderEndpointProtocols(t *testing.T) {
 	if strings.Count(rest, "provider_endpoint_protocols") < 2 {
 		t.Error("严格臂与 loose 回退臂都必须 JOIN provider_endpoint_protocols")
 	}
+
+	// ★ 2026-11-17（12h 审计 D1 回归门）：`OR pep.is_primary = TRUE` 逃逸口**不得**回来。
+	//   它让探针在**没有协议匹配行**时仍取 primary pep 行 ⇒ 拿到别的协议的端点 URL，
+	//   而探针请求形态按 p.protocol 构造 ⇒ 用 A 协议打 B 端点 ⇒ 404/400
+	//   ⇒ binding 被判 broken_confirmed ⇒ 供应商整体变暗（端点其实健康）。
+	//   权威口径：internal/endpointselect/selector.go Select() Stage1（协议匹配）
+	//   → Stage4（无匹配回落 cand.BaseURL）。
+	//
+	//   ★ 判据必须只量 **SQL**，不能量注释：本函数里就有一处注释写着
+	//   "OR pep.is_primary = TRUE"（解释它为何被删）⇒ 直接 grep 整段源码会
+	//   命中注释而**误报**。⇒ 先剥掉 -- 注释行再判。
+	sqlOnly := stripSQLComments(rest)
+	if strings.Contains(sqlOnly, "pep.is_primary = TRUE") {
+		t.Error("resolveDirectTarget 不得用 `OR pep.is_primary = TRUE` 逃逸口 —— 只能取协议匹配行（与 endpointselect.Select 的 Stage1→Stage4 同口径）")
+	}
+	// 协议匹配判据必须真的在 SQL 里（而不是靠 ORDER BY 里的 DESC 排序碰运气）。
+	if !strings.Contains(sqlOnly, "AND pep.protocol = COALESCE(p.protocol, 'openai-completions')") {
+		t.Error("resolveDirectTarget 的 pep 选取必须带协议匹配判据 `AND pep.protocol = COALESCE(p.protocol, 'openai-completions')`")
+	}
 }

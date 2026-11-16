@@ -29,8 +29,11 @@ async function load() {
       return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' })
     })
   } catch {
+    // ★ 2026-11-17（12h 审计）：reason 会被**原样渲染**（<p class="empty-next mono-sm">
+    //   {{ reason }}</p>）⇒ 此处塞内部 token 'load_failed' ⇒ 用户在页面上看到
+    //   一个英文机器词。改为已本地化的失败文案。
     available.value = false
-    reason.value = 'load_failed'
+    reason.value = t('marketPrices.loadFailed')
     rows.value = []
   } finally {
     loading.value = false

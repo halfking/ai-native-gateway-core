@@ -4,6 +4,8 @@ import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { login, getAuthMe, getCaptcha } from '../api'
+import { ApiError } from '../api/_core'
+import type { CaptchaResponse } from '../api/auth'
 import { setApiKey, setJwtToken, setUserInfo, userInfoFromAuthMe } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
 import { locationFromInternalPath } from '../utils/safeRedirect'
@@ -42,8 +44,14 @@ const error = ref('')
 const rememberMe = ref(false)
 
 // Captcha state
+//
+// ★ 2026-11-17：验证码在此**唯一获取**（id 与图同源）。
+//   此前本组件与 CaptchaInput 各取一次 ⇒ 图与 captcha_id 可能来自不同响应 ⇒
+//   服务端按另一个 id 校验 ⇒ captcha_invalid 且一次性作废 ⇒ 反复失败被锁死。
 const showCaptcha = ref(false)
-const captchaId = ref('')
+const captcha = ref<CaptchaResponse | null>(null)
+const captchaLoading = ref(false)
+const captchaError = ref('')
 const captchaCode = ref('')
 const captchaRequired = ref(false)
 
@@ -59,15 +67,32 @@ watch(
   },
 )
 
-async function checkCaptchaRequired() {
+async function fetchCaptcha(): Promise<CaptchaResponse | null> {
+  captchaLoading.value = true
+  captchaError.value = ''
   try {
     const resp = await getCaptcha()
-    captchaId.value = resp.captcha_id
+    captcha.value = resp
     captchaRequired.value = resp.required
-    showCaptcha.value = resp.required
-  } catch {
-    // Silently fail - captcha will be requested on login error if needed
+    return resp
+  } catch (e: unknown) {
+    captchaError.value = surfaceError(e, { key: 'login.captcha.loadFailed' })
+    return null
+  } finally {
+    captchaLoading.value = false
   }
+}
+
+async function checkCaptchaRequired() {
+  const resp = await fetchCaptcha()
+  showCaptcha.value = resp?.required ?? false
+}
+
+/** 刷新验证码（图与 id 同时换新，仍来自同一次响应）。 */
+async function refreshCaptcha() {
+  captchaCode.value = ''
+  const resp = await fetchCaptcha()
+  if (resp) showCaptcha.value = true
 }
 
 function close() {
@@ -107,8 +132,14 @@ async function handleLogin() {
       //   · 需要验证码但用户还没填 → 上面的守卫已提前返回，不会走到这里；
       //   · 服务端在弹窗打开期间把 required 翻成 true → 后端回 captcha_required
       //     ⇒ catch 分支置 captchaRequired 并刷新验证码 ⇒ 用户填码后成对提交。
+      //
+      // ★ 2026-11-17 12h 审计轮合并订正：captcha_id 取自**单一持有者**的
+      //   captcha 对象（captcha.value?.captcha_id），不是独立的 captchaId ref ——
+      //   原先 CaptchaInput 与父组件各取一次验证码 ⇒ 图与 id 可能来自**两次不同的
+      //   响应** ⇒ 用户照着图 A 填码、服务端按 id B 校验 ⇒ captcha_invalid 且一次性
+      //   作废 ⇒ 反复失败被锁死。⇒ 现在 id 与图同源。
       ...(captchaRequired.value && captchaCode.value
-        ? { captcha_id: captchaId.value, captcha_code: captchaCode.value }
+        ? { captcha_id: captcha.value?.captcha_id, captcha_code: captchaCode.value }
         : {}),
       remember_me: rememberMe.value,
     })
@@ -141,15 +172,19 @@ async function handleLogin() {
     }
   } catch (e: unknown) {
     const errorMsg = surfaceError(e, { key: 'login.error.failed' })
-    
-    // Check if captcha is required based on error
-    if (errorMsg.includes('captcha') || errorMsg.includes('验证码')) {
+
+    // ★ 2026-11-17：按**服务端错误码**判定，不再匹配本地化文案。
+    //   服务端契约（admin/auth_captcha.go）：required 且没带 → 400 captcha_required，
+    //   带了但对不上 → 400 captcha_invalid（一次性作废）。
+    //   此前用 `errorMsg.includes('captcha') || includes('验证码')` ⇒ 文案一旦改写、
+    //   本地化、或原因后缀被抑制 ⇒ 判定落空 ⇒ 验证码框永远不出现 ⇒ 用户被锁死。
+    const code = e instanceof ApiError ? e.code : ''
+    if (code === 'captcha_required' || code === 'captcha_invalid') {
       showCaptcha.value = true
       captchaRequired.value = true
-      captchaCode.value = ''
-      await checkCaptchaRequired()
+      await refreshCaptcha()
     }
-    
+
     error.value = errorMsg
   } finally {
     loading.value = false
@@ -218,7 +253,10 @@ function onModelUpdate(v: boolean) {
       <CaptchaInput
         v-if="showCaptcha"
         v-model="captchaCode"
-        v-model:captcha-id="captchaId"
+        :captcha="captcha"
+        :loading="captchaLoading"
+        :error="captchaError"
+        @refresh="refreshCaptcha"
       />
       
       <div class="form-group form-group-checkbox">

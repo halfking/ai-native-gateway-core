@@ -110,7 +110,7 @@ TIERS=$(sqlite3 "$TEST_DB" "SELECT COUNT(DISTINCT tier) FROM model_pricing WHERE
 if [[ "$TIERS" -eq 5 ]]; then
   echo "✓ 通过 (5个档位)"
 else
-  echo "❌ 失败 (只有$TIERS个档位)"
+  echo "❌ 失败 (只有${TIERS}个档位)"
 fi
 
 # 验证3: 检查价格字段非空

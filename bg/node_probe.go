@@ -3533,8 +3533,10 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		modality string
 	)
 	// 2026-11-17：base_url 优先取 provider_endpoint_protocols（与路由候选同表），
-	// 无 pep 行时回落 providers.base_url。否则 NIM 等多 endpoint 供应商会出现
-	// 「探针打主 URL、路由打 pep」的状态/流量错位。
+	// **且只取协议匹配的行**；没有协议匹配行时回落 providers.base_url。
+	// 否则 NIM 等多 endpoint 供应商会出现「探针打主 URL、路由打 pep」的状态/流量错位。
+	// ★ 2026-11-17（12h 审计 D1）：回落条件是「无**协议匹配**的 pep 行」，
+	//   不是「无 pep 行」——此前 primary 逃逸口会让探针打到别的协议的端点上。
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.secret_ciphertext,
 		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
@@ -3551,12 +3553,16 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			  FROM provider_endpoint_protocols pep
 			 WHERE pep.provider_id = p.id
 			   AND pep.enabled = TRUE
-			   AND (
-			         pep.protocol = COALESCE(p.protocol, 'openai-completions')
-			      OR pep.is_primary = TRUE
-			   )
-			 ORDER BY (pep.protocol = COALESCE(p.protocol, 'openai-completions')) DESC,
-			          pep.is_primary DESC,
+			   -- ★ 2026-11-17（12h 审计 D1）：**只取协议匹配的行**。
+			   --   此前还有 "OR pep.is_primary = TRUE" 这条逃逸口 ⇒ 没有协议匹配行时
+			   --   仍会取 primary pep 行 ⇒ 拿到**别的协议**的端点 URL，
+			   --   而探针的请求形态由 p.protocol 决定 ⇒ 用 A 协议打 B 端点 ⇒ 404/400
+			   --   ⇒ binding 被判 broken_confirmed ⇒ 供应商整体变暗（而端点其实健康）。
+			   --   ★ 现在与路由侧权威判据同口径：
+			   --   internal/endpointselect/selector.go Select() 的 Stage1（协议匹配）
+			   --   → Stage4（无匹配回落 cand.BaseURL）⇒ 探针与路由不再分叉。
+			   AND pep.protocol = COALESCE(p.protocol, 'openai-completions')
+			 ORDER BY pep.is_primary DESC,
 			          pep.weight DESC,
 			          pep.id ASC
 			 LIMIT 1
@@ -3599,12 +3605,10 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 				  FROM provider_endpoint_protocols pep
 				 WHERE pep.provider_id = p.id
 				   AND pep.enabled = TRUE
-				   AND (
-				         pep.protocol = COALESCE(p.protocol, 'openai-completions')
-				      OR pep.is_primary = TRUE
-				   )
-				 ORDER BY (pep.protocol = COALESCE(p.protocol, 'openai-completions')) DESC,
-				          pep.is_primary DESC,
+				   -- 同严格臂：只取协议匹配行（与 endpointselect.Select 的
+				   -- Stage1 → Stage4 同口径），不走 primary 逃逸口。
+				   AND pep.protocol = COALESCE(p.protocol, 'openai-completions')
+				 ORDER BY pep.is_primary DESC,
 				          pep.weight DESC,
 				          pep.id ASC
 				 LIMIT 1
