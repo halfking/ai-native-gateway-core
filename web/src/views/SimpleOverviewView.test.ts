@@ -99,6 +99,35 @@ describe('simple mode overview view contract', () => {
     expect(src).toContain('inactiveRows.length')
     expect(src).toContain('count-badge')
   })
+
+  // ── 2026-11-17：抓「快捷按钮跳空页」的那条 ──────────────────────────────
+  //
+  // ★ 事故：第 3 个快捷操作原先跳 `/usage`，而 **`/usage` 从来没有路由定义**
+  //   （router.ts 里没有、appNav 真源里也没有）⇒ 用户一点就是 vue-router 的
+  //   no-match 空白页。成因是 simpleNav.ts / 台账生成器两份**同源同错**的清单
+  //   里都列着 '/usage'，互相掩盖到没有任何门能看见。
+  // ★ 这条断言把「本视图的每一个跳转落点都必须在 router.ts 里注册」变成机器可验：
+  //   再写一个不存在的路径 ⇒ 立刻红，而不是等用户点到一个死按钮。
+  it('★ 常用操作的每个落点都必须有真实路由（不存在的路径 = 点了就空白）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    const routerSrc = await readSource('src/router.ts')
+
+    const registered = new Set<string>()
+    for (const m of routerSrc.matchAll(/path:\s*'([^']+)'/g)) registered.add(m[1])
+
+    const targets = new Set<string>()
+    for (const m of src.matchAll(/router\.push\('([^']+)'\)|go\('([^']+)'\)/g)) {
+      const hit = m[1] ?? m[2]
+      if (hit) targets.add(hit)
+    }
+    expect(targets.size, '总览页应至少有一个跳转落点').toBeGreaterThan(0)
+
+    const dead = [...targets].filter((t) => !registered.has(t))
+    expect(
+      dead,
+      `总览页跳到了未注册的路由（点了就是空白页）：\n${dead.join('\n')}`,
+    ).toEqual([])
+  })
 })
 
 describe('simple mode providers view contract', () => {

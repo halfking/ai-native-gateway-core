@@ -334,6 +334,21 @@ function openSignKey(): void {
   void router.push('/simple/keys')
 }
 
+/**
+ * 「查看请求」→ 请求日志页（/request-logs）。
+ *
+ * ★ 2026-11-17 实测修正：本按钮原先跳 `/usage`，而 **`/usage` 从来没有路由定义**
+ *   （router.ts 里没有；appNav 的 requests-sessions 组里也没有）⇒ 点进去是
+ *   vue-router 的 no-match 空白页。同一处幻觉还出现在 simpleNav.ts 与
+ *   scripts/audit/gen-simple-mode-ledger.mjs 的分组清单里（两边同源 ⇒ 互相掩盖）。
+ *   ⇒ 改跳专家面导航真源里真实存在的 `/request-logs`（RequestLogsView，
+ *     无 super 限定，简易模式「请求与会话」组也保留它），
+ *     文案随之改为已有的 `action.requests`（8 语种齐备，无需新增键）。
+ */
+function openRequestLogs(): void {
+  void router.push('/request-logs')
+}
+
 function openDetail(k: ApiKey): void {
   go(`/keys/${k.id}`)
 }
@@ -397,8 +412,8 @@ function openDetail(k: ApiKey): void {
       <button class="btn btn-secondary" data-testid="quick-sign-key" @click="openSignKey">
         {{ t('simpleMode.overview.action.signKey') }}
       </button>
-      <button class="btn btn-secondary" data-testid="quick-usage" @click="go('/usage')">
-        {{ t('simpleMode.overview.action.usage') }}
+      <button class="btn btn-secondary" data-testid="quick-requests" @click="openRequestLogs">
+        {{ t('simpleMode.overview.action.requests') }}
       </button>
       <button class="btn btn-secondary" data-testid="quick-chat" @click="go('/chat')">
         {{ t('simpleMode.overview.action.chat') }}

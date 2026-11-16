@@ -22,6 +22,7 @@ import {
 import {
   buildSimpleNav,
   SIMPLE_ADVANCED_GROUP_ID,
+  SIMPLE_GROUP_PATHS,
   SIMPLE_HREF_REWRITE,
 } from './simpleNav'
 
@@ -131,6 +132,34 @@ describe('简易模式导航派生', () => {
     const keys = tenantUsers!.items.find((i) => i.path === '/simple/keys')
     expect(keys, '简易模式应渲染 /simple/keys').toBeTruthy()
     expect(tenantUsers!.items.some((i) => i.path === '/keys')).toBe(false)
+  })
+
+  // ── 2026-11-17：抓「清单幻觉」的那条 ──────────────────────────────────
+  //
+  // ★ 事故：SIMPLE_GROUP_PATHS 里列过 '/usage'，但**专家面导航真源（appNav.ts）
+  //   里根本没有用量页** ⇒ 该条目派生时匹配不到任何 nav item，是个永远落不了地
+  //   的死条目；而 scripts/audit/gen-simple-mode-ledger.mjs 的同名表**同源同错**
+  //   ⇒ 两边互相掩盖、上一条「对拍」永远绿。
+  //   代价是总览页的「查看用量」按钮照着这个幻觉写 ⇒ 点了跳 vue-router 的
+  //   no-match 空白页（2026-11-17 Maestro 实跑撞出）。
+  //
+  // ★ 这条断言的价值：把「清单里的 path 必须在真源里存在」变成机器可验，
+  //   同一类幻觉再出现时立刻红，而不是等用户点到一个死按钮。
+  it('★ 分组清单里的每条 path 都必须在专家面导航真源里存在（死条目 = 幻觉）', () => {
+    const expertPaths = new Set<string>()
+    for (const item of NAV_PRIMARY_ITEMS) expertPaths.add(item.path)
+    for (const g of NAV_GROUPS) for (const item of g.items) expertPaths.add(item.path)
+
+    const dead: string[] = []
+    for (const [groupId, paths] of Object.entries(SIMPLE_GROUP_PATHS)) {
+      for (const p of paths) {
+        if (!expertPaths.has(p)) dead.push(`${groupId}: ${p}`)
+      }
+    }
+    expect(
+      dead,
+      `简易模式分组清单里有专家面真源不存在的 path（派生不出来 = 死条目）：\n${dead.join('\n')}`,
+    ).toEqual([])
   })
 
   it('「高级」组收集所有未点名落点的条目，且不与专家面分组重名', () => {

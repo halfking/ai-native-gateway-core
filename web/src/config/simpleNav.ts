@@ -31,11 +31,18 @@ export const SIMPLE_DIRECT_PATHS: readonly string[] = [
  * 简易模式的分组。
  * key = 专家面分组 id（沿用其 labelKey ⇒ 不新增分组文案）
  * value = 该分组在简易模式下保留的路径（必须是专家面真源 path，才能命中派生）
+ *
+ * ★ 2026-11-17 修正：本表曾列过 `/usage`，但**专家面导航真源（appNav.ts）里
+ *   根本没有用量页** ⇒ 该条目派生时匹配不到任何 nav item，是个永远落不了地的
+ *   死条目。更糟的是它与 scripts/audit/gen-simple-mode-ledger.mjs 的同名表
+ *   **同源同错** ⇒ 两边互相掩盖，对拍永远绿（2026-11-17 实测）。
+ *   而总览页的「查看用量」按钮正是照着这个幻觉写的 ⇒ 点了跳空白页。
+ *   ⇒ 两处同删（删除不改变任何派生结果：死条目从来就没派生出来过）。
  */
 export const SIMPLE_GROUP_PATHS: Record<string, readonly string[]> = {
   'models-routing': ['/models', '/providers'],
   'tenant-users': ['/users', '/keys', '/tenants'],
-  'requests-sessions': ['/request-logs', '/usage'],
+  'requests-sessions': ['/request-logs'],
   guide: ['/examples', '/examples#auto-config', '/help'],
 }
 

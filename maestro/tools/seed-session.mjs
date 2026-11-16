@@ -33,6 +33,7 @@
 //   调用方负责在用完后删掉那个文件。
 
 import { readFileSync } from 'node:fs'
+import { connect, evaluate, openPage } from './cdp-client.mjs'
 
 function parseArgs(argv) {
   const out = { cdp: 'http://127.0.0.1:9222', url: '', tokenFile: '', mode: 'simple' }
@@ -44,64 +45,6 @@ function parseArgs(argv) {
     else if (a === '--mode') out.mode = argv[++i]
   }
   return out
-}
-
-class CDP {
-  constructor(ws) {
-    this.ws = ws
-    this.nextId = 1
-    this.pending = new Map()
-    this.listeners = new Set()
-    ws.addEventListener('message', (ev) => {
-      let msg
-      try {
-        msg = JSON.parse(ev.data)
-      } catch {
-        return
-      }
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id)
-        this.pending.delete(msg.id)
-        if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`))
-        else resolve(msg.result)
-        return
-      }
-      for (const fn of this.listeners) fn(msg)
-    })
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = this.nextId++
-    const payload = { id, method, params }
-    if (sessionId) payload.sessionId = sessionId
-    this.ws.send(JSON.stringify(payload))
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id)
-          reject(new Error(`CDP timeout: ${method}`))
-        }
-      }, 30000)
-    })
-  }
-
-  waitFor(method, sessionId, timeoutMs = 20000) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.listeners.delete(fn)
-        reject(new Error(`CDP event timeout: ${method}`))
-      }, timeoutMs)
-      const fn = (msg) => {
-        if (msg.method === method && (!sessionId || msg.sessionId === sessionId)) {
-          clearTimeout(timer)
-          this.listeners.delete(fn)
-          resolve(msg.params)
-        }
-      }
-      this.listeners.add(fn)
-    })
-  }
 }
 
 const USER_INFO = {
@@ -126,18 +69,9 @@ async function main() {
     process.exit(2)
   }
 
-  const version = await (await fetch(`${args.cdp}/json/version`)).json()
-  const ws = new WebSocket(version.webSocketDebuggerUrl)
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true })
-    ws.addEventListener('error', () => reject(new Error('CDP websocket connect failed')), { once: true })
-  })
-  const cdp = new CDP(ws)
+  const { cdp, ws } = await connect(args.cdp)
+  const { targetId, sessionId } = await openPage(cdp, 'about:blank')
 
-  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
-  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
-
-  await cdp.send('Network.enable', {}, sessionId)
   // ★ 域与后端 setSessionCookieRemember 对齐：Path=/、SameSite=Strict、Secure。
   //   CDP 的 setCookie 不接受 SameSite=None + Secure 之外的组合；这里用 Lax，
   //   因为浏览器只对**同源**的 XHR 发 cookie，SameSite 的取值不影响本场景。
@@ -157,34 +91,33 @@ async function main() {
   if (!setRes.success) throw new Error('Network.setCookie failed')
 
   const loaded = cdp.waitFor('Page.loadEventFired', sessionId, 25000)
-  await cdp.send('Page.enable', {}, sessionId)
   await cdp.send('Page.navigate', { url: `${args.url}/` }, sessionId)
   await loaded.catch(() => {})
 
-  const expr = `(() => {
-    localStorage.setItem('llmgw_work_mode', ${JSON.stringify(args.mode)});
-    localStorage.setItem('llmgw_user_info', ${JSON.stringify(JSON.stringify(USER_INFO))});
-    return { mode: localStorage.getItem('llmgw_work_mode'), user: localStorage.getItem('llmgw_user_info') };
-  })()`
-  const evalRes = await cdp.send(
-    'Runtime.evaluate',
-    { expression: expr, returnByValue: true },
+  const value = await evaluate(
+    cdp,
     sessionId,
+    `(() => {
+      localStorage.setItem('llmgw_work_mode', ${JSON.stringify(args.mode)});
+      localStorage.setItem('llmgw_user_info', ${JSON.stringify(JSON.stringify(USER_INFO))});
+      return { mode: localStorage.getItem('llmgw_work_mode'), user: localStorage.getItem('llmgw_user_info') };
+    })()`,
   )
-  const value = evalRes?.result?.value
   if (!value || !value.user) throw new Error('localStorage seeding failed')
 
   // 探测一次 /api/auth/me：确认注入的 cookie 真被后端认（而不是只写进了浏览器）。
-  const probe = await cdp.send(
-    'Runtime.evaluate',
-    {
-      expression: `fetch('/api/auth/me', {credentials:'same-origin'}).then(async r => ({status: r.status, body: (await r.text()).slice(0, 200)}))`,
-      awaitPromise: true,
-      returnByValue: true,
-    },
+  // ★ 只回报状态码与角色，**不回显响应体** —— /api/auth/me 的响应里带着完整
+  //   access_token，落进终端日志就等于把它抄了一份出去。
+  const probeValue = await evaluate(
+    cdp,
     sessionId,
+    `fetch('/api/auth/me', {credentials:'same-origin'})
+       .then(async r => {
+         let role = '';
+         try { const j = JSON.parse(await r.text()); role = (j.user && j.user.role) || j.role || ''; } catch (e) { role = ''; }
+         return { status: r.status, role };
+       })`,
   )
-  const probeValue = probe?.result?.value
 
   await cdp.send('Target.closeTarget', { targetId })
 

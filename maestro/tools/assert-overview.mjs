@@ -1,0 +1,266 @@
+#!/usr/bin/env node
+// maestro/tools/assert-overview.mjs —— 简易模式「总览页」的**页面内**数值断言。
+//
+// ★ 为什么需要它（2026-11-17 实测）：
+//   Maestro 2.11.0 的 **web 驱动不支持 evalScript**（`CdpWebDriver` 没有
+//   `evaluateScript` 方法）⇒ 没法在 flow 里读 DOM 数值、也没法把页面里的
+//   API 响应与页面上的数字**逐字对拍**。
+//   而「统计口径与 /api/admin/dashboard/board 逐字一致」恰恰**必须在页面内做**：
+//   同一页面、同一时刻、同一份响应 ⇒ 口径天然一致；在外面用 curl 对拍会
+//   因为「两次请求之间流量在涨」而假红。
+//
+// ★ 本脚本做什么（全部在页面里一次求值）：
+//   1. 统计卡恰好 6 张、快捷操作恰好 4 个（结构计数）
+//   2. 六张卡的 label / value 逐字抓出
+//   3. 与 /api/admin/dashboard/board 的 summary **同页同刻**对拍：
+//      今日请求 ↔ total_requests；活跃密钥 ↔ active_api_keys；
+//      可用模型 ↔ active_models
+//   4. 「读不到 ≠ 0」：统计源不可读时，卡片必须是占位符而不是 0
+//   5. 不得出现 per-key 的 /api/usage/{id}/models 扇出（上一版实现是 208 次）
+//   6. 状态条 data-tone 必须是 ok / warn / blocked 之一
+//   7. 三步接入：不存在，或恰好三步
+//   8. 上游健康分级：各档计数，且「未探活」必须单列一档
+//
+// 用法：
+//   node maestro/tools/assert-overview.mjs \
+//     --cdp http://127.0.0.1:9222 \
+//     --url https://llm.itestu.cn \
+//     --token-file /tmp/llmgw-jwt.txt
+//
+// ★ 安全约束：JWT 只从 --token-file 读（0600 临时文件），**不打印**；
+//   调用方负责用完后删掉那个文件。
+// 退出码：0 = 全绿；1 = 有断言失败（报告里逐条列出）。
+
+import { readFileSync } from 'node:fs'
+import { connect, evaluate, openPage, waitFor } from './cdp-client.mjs'
+
+function parseArgs(argv) {
+  const out = { cdp: 'http://127.0.0.1:9222', url: '', tokenFile: '', mode: 'simple' }
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]
+    if (a === '--cdp') out.cdp = argv[++i]
+    else if (a === '--url') out.url = argv[++i]
+    else if (a === '--token-file') out.tokenFile = argv[++i]
+    else if (a === '--mode') out.mode = argv[++i]
+  }
+  return out
+}
+
+const USER_INFO = {
+  id: 41,
+  tenant_id: 'default',
+  username: 'admin',
+  display_name: 'admin',
+  email: '',
+  role: 'super_admin',
+  enabled: true,
+}
+
+/**
+ * 页面内的对拍脚本（一次求值，返回结构化报告）。
+ * ★ 刻意写成同步 XHR：要在**同一时刻**取到 board API 的响应，才能与页面上
+ *   已经渲染出来的数字逐字比。异步 promise 会让「取数时刻」晚于「渲染时刻」。
+ */
+const PAGE_PROBE = `(() => {
+  const q = (s) => document.querySelector(s)
+  const qa = (s) => Array.from(document.querySelectorAll(s))
+  const text = (el) => ((el && el.textContent) || '').trim()
+
+  const out = { ok: true, checks: [], facts: {} }
+
+  const check = (name, pass, detail) => {
+    out.checks.push({ name, pass: !!pass, detail: detail === undefined ? '' : String(detail) })
+    if (!pass) out.ok = false
+  }
+
+  // ── 1. 结构计数 ─────────────────────────────────────────────────────────
+  const cards = qa('[data-testid="overview-stats"] .app-stat-card')
+  const quickButtons = qa('[data-testid="overview-quick-actions"] button')
+  out.facts.statCards = cards.length
+  out.facts.quickActions = quickButtons.length
+  check('统计卡恰好 6 张', cards.length === 6, '实际 ' + cards.length)
+  check('常用操作恰好 4 个', quickButtons.length === 4, '实际 ' + quickButtons.length)
+
+  // ── 2. 卡片内容 ─────────────────────────────────────────────────────────
+  const cardData = cards.map((c) => ({
+    label: text(c.querySelector('.app-stat-card__label')),
+    value: text(c.querySelector('.app-stat-card__value')),
+    sub: text(c.querySelector('.app-stat-card__sub')),
+  }))
+  out.facts.cards = cardData
+  const byLabel = (needle) => cardData.find((c) => c.label.includes(needle)) || null
+  const requestsCard = byLabel('请求')
+  const keysCard = byLabel('密钥')
+  const modelsCard = byLabel('模型')
+  check('六张卡都有标签与值', cardData.every((c) => c.label && c.value), JSON.stringify(cardData.map((c) => c.label)))
+
+  // ── 3. 与 board API 同页同刻对拍 ────────────────────────────────────────
+  let board = null
+  let boardError = ''
+  try {
+    const x = new XMLHttpRequest()
+    x.open('GET', '/api/admin/dashboard/board?days=1', false)
+    x.send()
+    if (x.status >= 200 && x.status < 300) board = JSON.parse(x.responseText)
+    else boardError = 'HTTP ' + x.status
+  } catch (e) {
+    boardError = (e && e.name) || 'xhr-failed'
+  }
+  out.facts.boardError = boardError
+  const summary = (board && board.summary) || null
+  out.facts.boardSummary = summary
+
+  if (summary) {
+    const num = (s) => String(s == null ? '' : s).replace(/,/g, '').trim()
+    const uiRequests = requestsCard ? num(requestsCard.value) : ''
+    const apiRequests = num(summary.total_requests)
+    check('今日请求 = board.total_requests', uiRequests === apiRequests, 'UI=' + uiRequests + ' API=' + apiRequests)
+
+    // 活跃密钥展示成「启用数 / 总数」⇒ 取斜杠前半
+    const uiKeys = keysCard ? num(String(keysCard.value).split('/')[0] || '') : ''
+    const apiKeys = num(summary.active_api_keys)
+    check('活跃密钥启用数 = board.active_api_keys', uiKeys === apiKeys, 'UI=' + uiKeys + ' API=' + apiKeys)
+
+    const uiModels = modelsCard ? num(modelsCard.value) : ''
+    const apiModels = num(summary.active_models)
+    check('可用模型 = board.active_models', uiModels === apiModels, 'UI=' + uiModels + ' API=' + apiModels)
+
+    // ── 4. 「读不到 ≠ 0」：源可读就不许出现无出处的 0 ────────────────────
+    const zeroCards = cardData.filter((c) => c.value === '0').map((c) => c.label)
+    const zeroExpected = (num(summary.total_requests) === '0') ? ['今日请求'] : []
+    check(
+      '没有无出处的 0（源可读时）',
+      zeroCards.every((l) => zeroExpected.includes(l)),
+      '值为 0 的卡：' + JSON.stringify(zeroCards),
+    )
+  } else {
+    // 源不可读 ⇒ 卡片必须是占位符，不能是 0
+    const placeholders = cardData.filter((c) => c.value === '暂不可用').length
+    const zeros = cardData.filter((c) => c.value === '0').length
+    out.facts.boardUnreadable = true
+    check('统计源不可读时不得显示 0', zeros === 0, '值为 0 的卡数=' + zeros)
+    check('统计源不可读时显示占位符', placeholders > 0, '占位符数=' + placeholders)
+  }
+
+  // ── 5. 不得出现 per-key 的模型扇出 ──────────────────────────────────────
+  const hits = performance.getEntriesByType('resource')
+    .filter((e) => e.name.indexOf('/api/') >= 0)
+    .map((e) => e.name.replace(location.origin, ''))
+  const perKey = hits.filter((u) => u.indexOf('/api/usage/') >= 0 && u.indexOf('/models') >= 0)
+  out.facts.apiHits = hits.length
+  out.facts.perKeyCalls = perKey.length
+  check('无 per-key /api/usage/{id}/models 扇出', perKey.length === 0, '实际 ' + perKey.length + ' 次')
+
+  // ── 6. 状态条 ───────────────────────────────────────────────────────────
+  const statusEl = q('[data-testid="overview-status"]')
+  const tone = statusEl ? statusEl.getAttribute('data-tone') : ''
+  out.facts.tone = tone
+  out.facts.headline = text(q('[data-testid="overview-status"] .status-headline'))
+  out.facts.detail = text(q('[data-testid="overview-status"] .status-detail'))
+  out.facts.issues = qa('[data-testid="overview-status-issues"] li').map((li) => text(li))
+  check('状态条结论合法（ok/warn/blocked）', ['ok', 'warn', 'blocked'].indexOf(tone) >= 0, 'tone=' + tone)
+  check('状态条有一句话结论', out.facts.headline.length > 0, out.facts.headline)
+
+  // ── 7. 三步接入 ─────────────────────────────────────────────────────────
+  const onboardingEl = q('[data-testid="overview-onboarding"]')
+  const steps = qa('[data-testid="overview-onboarding"] .onboarding-step')
+  out.facts.onboardingPresent = !!onboardingEl
+  out.facts.onboardingSteps = steps.length
+  check('三步接入：不存在或恰好三步', !onboardingEl || steps.length === 3, '存在=' + !!onboardingEl + ' 步数=' + steps.length)
+
+  // ── 8. 上游健康分级 ─────────────────────────────────────────────────────
+  const rows = qa('[data-testid="overview-provider-health"] .provider-health-row')
+  const tones = rows.map((r) => text(r.querySelector('.badge')))
+  out.facts.providerRows = rows.length
+  out.facts.providerTones = tones
+  out.facts.providerUnknown = tones.filter((t) => t === '未探活').length
+  check('上游健康面板有行', rows.length > 0, '行数=' + rows.length)
+  // 分级口径：可用 / 有告警 / 不可达 / 未探活（未探活必须单列一档，不并进「可用」）
+  const legalTones = ['可用', '有告警', '不可达', '未探活']
+  check('上游健康分级只出现四档', tones.every((t) => legalTones.indexOf(t) >= 0), JSON.stringify([...new Set(tones)]))
+
+  return out
+})()`
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  if (!args.url || !args.tokenFile) {
+    console.error('usage: assert-overview.mjs --url <base> --token-file <path> [--cdp ...] [--mode ...]')
+    process.exit(2)
+  }
+  const token = readFileSync(args.tokenFile, 'utf8').trim()
+  if (!token) {
+    console.error('token file is empty')
+    process.exit(2)
+  }
+
+  const { cdp, ws } = await connect(args.cdp)
+  const { targetId, sessionId } = await openPage(cdp, 'about:blank')
+
+  // 预置会话 cookie（HttpOnly，域/路径/secure 与后端 setSessionCookieRemember 一致）
+  const setRes = await cdp.send(
+    'Network.setCookie',
+    {
+      name: 'llmgw_session',
+      value: token,
+      url: `${args.url}/`,
+      path: '/',
+      secure: true,
+      httpOnly: true,
+      sameSite: 'Lax',
+    },
+    sessionId,
+  )
+  if (!setRes.success) throw new Error('Network.setCookie failed')
+
+  // 打开总览页：先写本机选择（简易模式），再导航（工作模式在 SPA 启动时读一次）
+  await cdp.send('Page.navigate', { url: `${args.url}/dashboard` }, sessionId)
+  await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      localStorage.setItem('llmgw_work_mode', ${JSON.stringify(args.mode)});
+      localStorage.setItem('llmgw_user_info', ${JSON.stringify(JSON.stringify(USER_INFO))});
+      return true;
+    })()`,
+  )
+  await cdp.send('Page.navigate', { url: `${args.url}/dashboard` }, sessionId)
+
+  // 等总览页渲染出来（简易模式下 /dashboard ⇒ 总览页）
+  await waitFor(
+    cdp,
+    sessionId,
+    `!!document.querySelector('[data-testid="overview-stats"]')`,
+    40000,
+    500,
+  )
+  // 再等三块数据源落定（统计卡拿到值，而不是还空着）
+  await waitFor(
+    cdp,
+    sessionId,
+    `(() => {
+      const c = document.querySelector('[data-testid="overview-stats"] .app-stat-card .app-stat-card__value');
+      return !!(c && c.textContent && c.textContent.trim());
+    })()`,
+    40000,
+    500,
+  )
+
+  const report = await evaluate(cdp, sessionId, PAGE_PROBE)
+
+  await cdp.send('Target.closeTarget', { targetId })
+
+  const failed = (report.checks || []).filter((c) => !c.pass)
+  console.log(JSON.stringify({ ok: report.ok, checks: report.checks, facts: report.facts }, null, 2))
+  ws.close()
+  if (!report.ok) {
+    console.error(`\n断言失败 ${failed.length}/${report.checks.length} 条`)
+    process.exit(1)
+  }
+  console.error(`\n全部通过 ${report.checks.length} 条`)
+}
+
+main().catch((err) => {
+  console.error(`assert-overview failed: ${err.message}`)
+  process.exit(1)
+})

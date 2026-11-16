@@ -101,10 +101,15 @@ function parseNav(src) {
 const V2_DIRECT = ['/dashboard', '/live', '/chat', '/admin/settings'];
 // ★ 分组用**专家面分组 id**做键（与 web/src/config/simpleNav.ts 同款），
 //   中文名只用于展示 —— 两边对同一 path 的判断必须能逐字比对。
+// ★ 2026-11-17 修正：本表曾列 '/usage'，但**专家面导航真源（appNav.ts）里
+//   根本没有用量页** ⇒ 它匹配不到任何 item，是个永远落不了地的死条目；
+//   且与 web/src/config/simpleNav.ts 的同名表**同源同错** ⇒ 两边互相掩盖、
+//   对拍永远绿（2026-11-17 实测）。总览页的「查看用量」按钮正是照着这个
+//   幻觉写的 ⇒ 点了跳 vue-router 的 no-match 空白页。两处同删（对台账产出零影响）。
 const V2_GROUPS = {
   'models-routing': ['/models', '/providers'],
   'tenant-users': ['/users', '/keys', '/tenants'],
-  'requests-sessions': ['/request-logs', '/usage'],
+  'requests-sessions': ['/request-logs'],
   'guide': ['/examples', '/examples#auto-config', '/help'],
 };
 // 分组 id → 展示用中文名
@@ -140,6 +145,25 @@ function v2Position(path) {
 
 const locale = parseLocale(readFileSync(LOCALE_TS, 'utf8'));
 const items = parseNav(readFileSync(NAV_TS, 'utf8'));
+
+// ★ 2026-11-17 新增硬门：分组清单里的每条 path 都必须在专家面导航真源里存在。
+//   幻觉条目（曾列过的 '/usage'）匹配不到任何 item ⇒ 永远落不了地，
+//   且与 web/src/config/simpleNav.ts 的同名表**同源同错** ⇒ 两边互相掩盖、
+//   对拍永远绿。代价是总览页的「查看用量」按钮照着幻觉写 ⇒ 点了跳空白页。
+//   ⇒ 这里直接 die：台账生成器是台账的必经之路，硬门比软注释可靠。
+//   （只校验 V2_GROUPS：它的语义是「专家面分组里保留的路径」，必须来自真源；
+//     V2_DIRECT 的语义是「路由直链」，属另一层语义，另由 router 侧保证。）
+const navPaths = new Set(items.map((it) => it.path));
+for (const [groupId, paths] of Object.entries(V2_GROUPS)) {
+  for (const p of paths) {
+    if (!navPaths.has(p)) {
+      die(
+        `V2_GROUPS['${groupId}'] 里的 ${p} 在专家面导航真源（appNav.ts）里不存在` +
+          ` ⇒ 派生不出来（死条目）`,
+      );
+    }
+  }
+}
 
 function labelOf(it) {
   if (it.labelPlain) return it.labelPlain;
