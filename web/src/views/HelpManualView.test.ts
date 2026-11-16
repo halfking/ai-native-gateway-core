@@ -283,33 +283,154 @@ describe('manual source stays inside the flat block model', () => {
     expect(offenders, `indented table rows at lines: ${offenders.join(',')}`).toEqual([])
   })
 
-  it('starts every ordered list segment at 1 (a split list would restart at 3)', () => {
-    // ★ 这条判据**镜像解析器**：`markdown.ts` 的列表分支要求**连续**的
-    //   isListItem 行（`/^\s*([-*+]|\d+\.)\s+/`），一旦遇到非列表行就结束
-    //   当前列表段；有序性变了也另起一段。
-    //   ⇒ 一段有序列表中间夹了缩进子列表（`- `）或任何非列表行，后半段就会
-    //   **另起一个 <ol>**，视图用 <ol> 从 1 重新编号 ⇒ "第 3 步" 显示成 "1."。
+  it('numbers every ordered list segment 1..N (the view renders <ol>, which always numbers 1..N)', () => {
+    // ★ 关键：视图用的是 `<ol>`（v-for 渲染 `<li>`，**没有 start 属性**）
+    //   ⇒ 浏览器渲染出来的编号**恒为 1..N**，与源码里写的数字无关。
+    //   ⇒ 源码写 "9." 的那一行，页面上会显示成 "3." ⇒ 源码在骗读者。
+    //   ⇒ 判据：每一段有序列表的编号必须**从 1 起且连续**。
+    // ★ 为什么"段内连续"也要查：视图把**连续**的列表项拍平成一个 <ol>
+    //   （嵌套的有序子列表同样会被拍平），所以源码里的编号必须整段连续；
+    //   否则"第 3 步"在页面上会变成别的数字。
     const lines = scanOutsideFences(manualSource).map((l) => l.text)
     const isListItem = (t: string) => /^\s*([-*+]|\d+\.)\s+/.test(t)
     const isOrdered = (t: string) => /^\s*\d+\.\s+/.test(t)
     const offenders: string[] = []
-    let currentOrdered: boolean | null = null
+    let current: number[] = []
+    const flush = () => {
+      current.forEach((n, i) => {
+        if (n !== i + 1) offenders.push(`item ${i + 1} written as ${n}`)
+      })
+      current = []
+    }
     for (const text of lines) {
       if (isListItem(text)) {
-        const ordered = isOrdered(text)
-        if (currentOrdered === null || currentOrdered !== ordered) {
-          // 新的一段列表
-          if (ordered) {
-            const n = Number(/^(\d+)\./.exec(text)![1])
-            if (n !== 1) offenders.push(`segment starting at ${n}: ${text.slice(0, 40)}`)
-          }
-          currentOrdered = ordered
+        if (isOrdered(text)) {
+          current.push(Number(/^(\d+)\./.exec(text.trim())![1]))
+        } else {
+          flush() // 有序 → 无序：断段
         }
         continue
       }
-      currentOrdered = null // 任何非列表行结束当前列表段
+      flush() // 任何非列表行结束当前列表段
     }
-    expect(offenders, 'an ordered list segment does not start at 1').toEqual([])
+    flush()
+    expect(offenders, 'ordered list numbering must be 1..N within each segment').toEqual([])
+  })
+})
+
+/**
+ * 渲染层守卫：**源码声明的每个块，都必须真的渲染成对应的元素**。
+ *
+ * ★ 为什么源码层守卫不够：源码守卫管的是「写法别越界」，但决定用户看到
+ *   什么的是**渲染后的 DOM**。这轮实测校准里，引用块里的围栏在源码里
+ *   「看着对」，在 DOM 里却是**一段普通文字**（围栏标记和代码一起被压成
+ *   行内文本）—— 静态门禁全绿、解析器单测全绿，只有把渲染结果数一遍
+ *   才看得见。
+ * ★ 口径（避免「同一个解析器自证」的空转）：源码侧的计数**不经过
+ *   parseMarkdown**（自己扫源码），DOM 侧的计数来自挂载后的真实渲染
+ *   ⇒ 两边独立。引用块的前缀在源码侧被剥掉（语义上它仍是表格/围栏/
+ *   列表），在解析器侧却会被引用分支压平 ⇒ 差值正是要抓的缺陷。
+ */
+describe('manual renders every block the source declares', () => {
+  /** 剥掉引用块前缀（"> "）——看的是「这段内容在语义上是什么」。 */
+  function stripQuote(line: string): string {
+    return line.replace(/^\s*(?:>\s*)+/, '')
+  }
+
+  /** 源码里（围栏外）的行。 */
+  function sourceLinesOutsideFences(source: string): string[] {
+    const out: string[] = []
+    let inFence = false
+    for (const raw of source.split('\n')) {
+      if (/^\s*(?:>\s*)*```/.test(raw)) {
+        inFence = !inFence
+        continue
+      }
+      if (!inFence) out.push(raw)
+    }
+    return out
+  }
+
+  /** 源码里的围栏标记数（含嵌在引用块里的）⇒ 每个代码块两枚标记。 */
+  function countFenceMarkers(source: string): number {
+    return source.split('\n').filter((l) => /^\s*(?:>\s*)*```/.test(l)).length
+  }
+
+  /** 源码里的表格块数：表头行 + 下一行是分隔行 ⇒ 一张表。 */
+  function countSourceTables(source: string): number {
+    const lines = source.split('\n')
+    let n = 0
+    for (let i = 0; i < lines.length; i++) {
+      if (!stripQuote(lines[i]).trim().startsWith('|')) continue
+      const cells = stripQuote(lines[i + 1] ?? '')
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .split('|')
+        .map((c) => c.trim())
+      if (cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c))) n++
+    }
+    return n
+  }
+
+  /** 源码里有序列表「段」的数量（连续的有序项算一段）。 */
+  function countSourceOrderedRuns(source: string): number {
+    let runs = 0
+    let inRun = false
+    for (const raw of sourceLinesOutsideFences(source)) {
+      const isOrdered = /^\s*\d+\.\s+/.test(stripQuote(raw))
+      if (isOrdered) {
+        if (!inRun) runs++
+        inRun = true
+      } else {
+        inRun = false
+      }
+    }
+    return runs
+  }
+
+  it('renders one code block per fenced block in the source', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const expected = countFenceMarkers(manualSource) / 2
+    expect(expected).toBeGreaterThan(0)
+    expect(w.findAll('pre.manual-code')).toHaveLength(expected)
+  })
+
+  it('renders one table per table in the source', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const expected = countSourceTables(manualSource)
+    expect(expected).toBeGreaterThan(0)
+    expect(w.findAll('table.manual-table')).toHaveLength(expected)
+  })
+
+  it('renders one ordered list per ordered run in the source', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const expected = countSourceOrderedRuns(manualSource)
+    expect(expected).toBeGreaterThan(0)
+    expect(w.findAll('ol.manual-list-ordered')).toHaveLength(expected)
+  })
+
+  it('never flattens a fence into a quote', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const leaking = w
+      .findAll('blockquote.manual-quote')
+      .filter((q) => q.text().includes('```'))
+      .map((q) => q.text().slice(0, 60))
+    expect(leaking).toEqual([])
+  })
+
+  it('never nests a table or a code block inside a list or a quote', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const containers = [
+      ...w.findAll('ol.manual-list-ordered'),
+      ...w.findAll('ul.manual-list'),
+      ...w.findAll('blockquote.manual-quote'),
+    ]
+    expect(containers.length).toBeGreaterThan(0)
+    for (const c of containers) {
+      expect(c.find('table.manual-table').exists()).toBe(false)
+      expect(c.find('pre.manual-code').exists()).toBe(false)
+    }
   })
 })
 
