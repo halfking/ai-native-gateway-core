@@ -12,14 +12,14 @@
     <!-- Tabs -->
     <div class="tabs">
       <button
-        v-for="t in tabs"
-        :key="t.key"
+        v-for="tab in tabs"
+        :key="tab.key"
         class="tab"
-        :class="{ active: activeTab === t.key }"
-        @click="activeTab = t.key"
+        :class="{ active: activeTab === tab.key }"
+        @click="activeTab = tab.key"
       >
-        {{ t.label }}
-        <span v-if="t.badge" class="tab-badge">{{ t.badge }}</span>
+        {{ tab.labelKey ? t(tab.labelKey) : tab.label }}
+        <span v-if="tab.badge" class="tab-badge">{{ tab.badge }}</span>
       </button>
     </div>
 
@@ -32,6 +32,7 @@
     <BlobManager v-show="activeTab === 'blobs'" />
     <AttachmentManager v-show="activeTab === 'attachments'" />
     <FilesystemMaintenance v-show="activeTab === 'filesystem'" ref="filesystemRef" />
+    <DataInitialization v-show="activeTab === 'data-init'" ref="dataInitRef" />
     <div v-show="activeTab === 'logs'" class="legacy-panel">
       <!-- 老的请求日志管理面板（保留） -->
       <div class="stats-row" v-if="stats">
@@ -210,6 +211,7 @@ import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 import StorageConfig from './data-lifecycle/StorageConfig.vue'
 import DegradationRecovery from './data-lifecycle/DegradationRecovery.vue'
 import LogManagement from './data-lifecycle/LogManagement.vue'
+import DataInitialization from './data-lifecycle/DataInitialization.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
@@ -220,9 +222,11 @@ const { t } = useI18n()
 
 Chart.register(...registerables)
 
-type TabKey = 'storage' | 'hot-partition' | 'degradation-recovery' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
+type TabKey = 'storage' | 'hot-partition' | 'degradation-recovery' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs' | 'data-init'
 
-const tabs: { key: TabKey; label: string; badge?: string }[] = [
+// ★ 新标签用 labelKey（走 i18n），旧标签保留硬编码 —— 「硬编码中文只许降不许升」
+//   的棘轮门（web/scripts/i18n-cjk-count.mjs）不允许在 src/** 里新增中文串。
+const tabs: { key: TabKey; label?: string; labelKey?: string; badge?: string }[] = [
   { key: 'storage', label: '存储总览' },
   { key: 'hot-partition', label: 'Hot表迁移 & 分区清理' },
   { key: 'degradation-recovery', label: '降级恢复与清理' },
@@ -231,6 +235,7 @@ const tabs: { key: TabKey; label: string; badge?: string }[] = [
   { key: 'attachments', label: '会话附件' },
   { key: 'filesystem', label: '文件系统维护' },
   { key: 'blobs', label: '大字段/Blob' },
+  { key: 'data-init', labelKey: 'dataLifecycle.dataInit.tabLabel' },
   { key: 'logs', label: '请求日志（分区/归档）' },
 ]
 
@@ -255,6 +260,7 @@ const filesystemRef = ref<any>(null)
 const storageConfigRef = ref<any>(null)
 const logMgmtRef = ref<any>(null)
 const degradationRef = ref<any>(null)
+const dataInitRef = ref<any>(null)
 let chartInstance: Chart | null = null
 let themeObserver: MutationObserver | null = null
 
@@ -288,6 +294,7 @@ async function refreshAll() {
       storageConfigRef.value?.load?.(),
       logMgmtRef.value?.load?.(),
       degradationRef.value?.load?.(),
+      dataInitRef.value?.load?.(),
     ])
   } finally {
     isLoading.value = false
