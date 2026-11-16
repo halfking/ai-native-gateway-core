@@ -651,8 +651,35 @@ func isFallbackWinner(results []ScoredCandidate) bool {
 
 // ValidateCachedChoice verifies that a cached credential/model pair is still available.
 func ValidateCachedChoice(ctx context.Context, pool *pgxpool.Pool, credentialID int64, canonicalName string) bool {
+	routable, err := validateCachedChoiceDetailed(ctx, pool, credentialID, canonicalName)
+	return err == nil && routable
+}
+
+// validateCachedChoiceDetailed is ValidateCachedChoice with the query error
+// surfaced, so callers can tell "this choice is not routable" apart from
+// "we could not tell" (2026-11-16 auto 模式可用性轮).
+//
+// The distinction matters: a DB hiccup must not be read as "the model is
+// dead" (that would scatter every auto session), while an explicit
+// unavailable binding must invalidate the cached choice.
+//
+// ★ The predicates mirror the autoroute index refresh query (index.go:604-622)
+//
+//	**exactly on purpose**: the question being answered is "would this
+//	(credential, model) still be in the routing pool?" — so the answer must
+//	be computed by the same rules the pool is built from.
+//
+//	The original (2026-08-11) version only looked at binding/model
+//	availability. That was **not enough**: on 211 the credential behind most
+//	auto failures (credential 62 / zipu-max-account2) had all 20 of its
+//	bindings still `available = true` while the credential itself had been
+//	marked `availability_state = 'suspended'` and
+//	`quota_state = 'periodic_exhausted'` — i.e. the index had already dropped
+//	it, but the cache revalidation would have said "still fine" and kept
+//	handing the session back to the dead credential.
+func validateCachedChoiceDetailed(ctx context.Context, pool *pgxpool.Pool, credentialID int64, canonicalName string) (bool, error) {
 	if pool == nil {
-		return false
+		return false, nil
 	}
 
 	var available bool
@@ -662,16 +689,35 @@ func ValidateCachedChoice(ctx context.Context, pool *pgxpool.Pool, credentialID 
 			FROM credential_model_bindings cmb
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			JOIN models_canonical mc ON mc.id = pm.canonical_id
+			JOIN credentials cr ON cr.id = cmb.credential_id
+			LEFT JOIN providers p ON p.id = cr.provider_id
 			WHERE cmb.credential_id = $1
 			  AND mc.canonical_name = $2
 			  AND cmb.available = TRUE
 			  AND pm.available = TRUE
 			  AND (cmb.unavailable_reason IS NULL OR cmb.unavailable_reason NOT LIKE 'manual%')
 			  AND (pm.unavailable_reason IS NULL OR pm.unavailable_reason NOT LIKE 'manual%')
+			  AND COALESCE(cr.lifecycle_status, 'active') = 'active'
+			  AND COALESCE(cr.status, 'active') = 'active'
+			  AND COALESCE(cr.manual_disabled, false) = false
+			  AND COALESCE(cr.availability_state, 'ready') = 'ready'
+			  AND COALESCE(cr.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+			  AND COALESCE(cr.health_status, 'unknown') IN ('healthy', 'unknown')
+			  AND COALESCE(p.enabled, true) = true
+			  AND COALESCE(p.manual_disabled, false) = false
+			  AND NOT EXISTS (
+			    SELECT 1 FROM node_probe_state nps
+			    WHERE nps.credential_id = cmb.credential_id
+			      AND nps.raw_model_name = pm.raw_model_name
+			      AND nps.last_direct_ok = false
+			      AND nps.next_retry_at > now()
+			  )
 		)
 	`, credentialID, canonicalName).Scan(&available)
-
-	return err == nil && available
+	if err != nil {
+		return false, err
+	}
+	return available, nil
 }
 
 // stratifyAndPickTopN 实现池分层 + fallback 降权（CHANNEL_QUALITY_ROUTING）。

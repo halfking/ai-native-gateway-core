@@ -263,10 +263,11 @@ func (s *PgxStore) GetUpgradeHistory(ctx context.Context, instanceID string, off
 		var history []ReleaseStatus
 		for rows.Next() {
 			var rs ReleaseStatus
-			var id int64
 			var oldVer string
 			var errMsg *string
-			if err := rows.Scan(&id, &rs.InstanceID, &oldVer, &rs.Version, &rs.Status, &rs.StartedAt, &rs.CompletedAt, &errMsg, &rs.RetryCount); err != nil {
+			// id 直接进 rs.LogID：提醒行与安装任务日志行是同一行，
+			// 调用方要靠它推进那一行的状态（此前 id 被扫描进局部变量后丢弃）。
+			if err := rows.Scan(&rs.LogID, &rs.InstanceID, &oldVer, &rs.Version, &rs.Status, &rs.StartedAt, &rs.CompletedAt, &errMsg, &rs.RetryCount); err != nil {
 				return nil, err
 			}
 			if errMsg != nil {

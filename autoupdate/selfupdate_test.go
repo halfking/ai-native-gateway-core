@@ -129,6 +129,7 @@ func (s *stubStore) CreateUpgradeLog(ctx context.Context, instanceID string, old
 	s.nextID++
 	s.logs = append(s.logs, ReleaseStatus{
 		ReleaseID:  nil,
+		LogID:      s.nextID,
 		InstanceID: instanceID,
 		Status:     StatusPending,
 		Version:    newVer,
@@ -141,12 +142,17 @@ func (s *stubStore) UpdateUpgradeLog(ctx context.Context, id int64, status strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.logs {
-		if s.logs[i].Version != "" && status == StatusSuccess {
-			s.logs[i].Status = status
+		if s.logs[i].LogID != id {
+			continue
+		}
+		s.logs[i].Status = status
+		s.logs[i].Error = errMsg
+		if !completedAt.IsZero() {
 			s.logs[i].CompletedAt = &completedAt
 		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("upgrade log id not found: %d", id)
 }
 
 func (s *stubStore) GetUpgradeHistory(ctx context.Context, instanceID string, offset, limit int) ([]ReleaseStatus, int, error) {

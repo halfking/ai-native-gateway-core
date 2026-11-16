@@ -274,9 +274,14 @@ func (c *Checker) ensureRelease(ctx context.Context, rel *RemoteRelease) error {
 	return c.store.UpdateReleaseStatus(ctx, release.ID, true)
 }
 
-// ensureReminder 为新版本生成提醒行。同一个版本只提醒一次：
-// 已经有任何一行指向该版本（无论 pending 还是终态）时都不再重复生成，
+// ensureReminder 为新版本生成提醒行。同一个版本上**已有未完成的尝试**时不再重复生成，
 // 避免轮询把提醒列表刷成噪音。
+//
+// ★ 判据是「有没有未完成的尝试」，而不是「有没有任何一行」：
+//
+//	该版本上一轮装成功（status=success）之后，若运维又**手工回滚**到更旧的版本，
+//	远端会再次报「有新版」⇒ 此时**必须重新提醒**（否则节点就永远停在旧版上、
+//	再也没人知道该升一级）。所以 success 不抑制新提醒。
 func (c *Checker) ensureReminder(ctx context.Context, rel *RemoteRelease, currentVersion string) (bool, error) {
 	if c.store == nil {
 		return false, nil
@@ -286,7 +291,8 @@ func (c *Checker) ensureReminder(ctx context.Context, rel *RemoteRelease, curren
 		return false, err
 	}
 	for _, h := range history {
-		if h.Version == rel.Version {
+		if h.Version == rel.Version && h.Status != StatusSuccess {
+			// 该版本上还有一次未完成的尝试（待处理 / 失败 / 已回滚 / 进行中）⇒ 不重复提醒。
 			return false, nil
 		}
 	}

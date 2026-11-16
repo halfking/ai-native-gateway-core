@@ -249,6 +249,18 @@ type Decider struct {
 	// TopN is the size of CandidatesTopN stored in auto_decision.
 	// Default: 3.
 	TopN int
+
+	// CachedChoiceValidator decides whether a cached session choice is still
+	// routable (2026-11-16 auto 模式可用性轮).
+	//
+	// nil ⇒ use the default DB-backed check (validateCachedChoiceDetailed via
+	// the index's pool). It fails OPEN: no pool or a query error ⇒ "still
+	// routable" ⇒ the cached choice is kept.
+	//
+	// The seam exists so the invalidation path is testable without a database
+	// — the reported symptom ("原来的模型不可用") lives entirely in this
+	// branch, and a branch that cannot be exercised cannot be trusted.
+	CachedChoiceValidator func(ctx context.Context, credentialID int64, canonicalName string) bool
 }
 
 // NewDecider wires the pieces. classifier is required; fallback and
@@ -479,6 +491,20 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 			} else if cached.WorkType != requestedWorkType {
 				d.intentCache.Invalidate(sessionID)
 				recordCacheMiss() // F-7: workType mismatch invalidated cache
+			} else if !d.cacheChoiceStillRoutable(ctx, cached) {
+				// 2026-11-16（auto 模式可用性轮）：粘性目标已经不可路由 ⇒
+				// 作废缓存并重新决策，而不是继续把会话钉在一个已经死了的
+				// 模型/凭据上。
+				//
+				// magpie 的同款规则：「粘性目标正在休息 ⇒ 不用它，会话自然让给
+				// 下一个」（magpie internal/gateway/affinity.go:599-600）。
+				//
+				// 211 实测：会话 gw_455af85c-… 连续 55 轮全落在 glm-5.2，最后
+				// 一轮 203ms 直接失败；credential 62 的绑定全是 available=true
+				// 但凭据已被置 suspended/periodic_exhausted ⇒ 旧校验只看绑定会
+				// 误判「还可用」。
+				d.intentCache.Invalidate(sessionID)
+				recordCacheMiss()
 			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				recordCacheHit() // F-7: cache reused
 				decision := &Decision{

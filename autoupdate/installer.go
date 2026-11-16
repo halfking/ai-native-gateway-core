@@ -75,6 +75,12 @@ type InstallResult struct {
 	NewVersion string
 	Error      string
 	DurationMs int64
+	// RolledBack=true 表示安装失败后**已经把旧二进制与旧版本元数据都还原了**。
+	//
+	// ★ 它决定提醒行最终落成什么状态：
+	//   - RolledBack=true  ⇒ 节点仍在旧版本上 ⇒ 新版**仍待处理** ⇒ 提醒必须还在
+	//   - RolledBack=false ⇒ 装成功 ⇒ 提醒可以撤下
+	RolledBack bool
 }
 
 // InstallOptions 是一次安装的可选参数。
@@ -138,11 +144,18 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 	//
 	// ★ 版本真源：网关运行时读的是 dataDir/version.json（见 cmd/gateway/version.go），
 	//   VERSION 文件只是历史兼容物。所以两者都写，且 version.json 优先。
+	//
+	// ★ 写之前先**快照**旧的版本元数据：后续任何一步失败都要把它原样还原。
+	//   否则会出现「二进制已还原成旧版、网关却报新版号」的**版本身份漂移**：
+	//   网关的版本真源就是 version.json ⇒ 漂移后 Checker 会拿错误的基线去问远端
+	//   ⇒ 远端答「已是最新」⇒ **该节点永远停在旧二进制上，且再也不会被提醒**。
+	versionSnapshot := i.snapshotVersionFiles()
 	if err := i.writeVersionFiles(release, opts.VersionJSON); err != nil {
 		result.Error = fmt.Sprintf("write version file: %v", err)
 		if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 			result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 		}
+		_ = i.restoreVersionFiles(versionSnapshot)
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, fmt.Errorf("write version file: %w", err)
 	}
@@ -154,8 +167,9 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 			}
-			_ = i.restoreVersionFiles(result.OldVersion)
+			_ = i.restoreVersionFiles(versionSnapshot)
 			result.Success = false
+			result.RolledBack = true
 			result.DurationMs = time.Since(start).Milliseconds()
 			return result, fmt.Errorf("migration failed: %w", err)
 		}
@@ -168,8 +182,11 @@ func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string,
 			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 			}
-			_ = i.restoreVersionFiles(result.OldVersion)
+			// ★ 二进制换回去了，版本元数据**必须**一起还原 —— 否则节点会顶着
+			//   新版号跑旧二进制（见步骤 5 的注释）。
+			_ = i.restoreVersionFiles(versionSnapshot)
 			result.Success = false
+			result.RolledBack = true
 			result.DurationMs = time.Since(start).Milliseconds()
 			return result, fmt.Errorf("service restart failed: %w", err)
 		}
@@ -309,12 +326,61 @@ func (i *Installer) writeVersionFiles(release *Release, versionJSON []byte) erro
 	return nil
 }
 
-// restoreVersionFiles 回滚版本元数据（仅回写 VERSION，version.json 保持原值）。
-func (i *Installer) restoreVersionFiles(oldVersion string) error {
-	if oldVersion == "" {
-		return nil
+// versionSnapshot 是「旧版本元数据」的快照，用于失败时原样还原。
+type versionSnapshot struct {
+	versionJSON []byte
+	versionFile []byte
+	hadJSON     bool
+	hadFile     bool
+}
+
+// snapshotVersionFiles 快照当前版本元数据（version.json + VERSION）。
+func (i *Installer) snapshotVersionFiles() versionSnapshot {
+	snap := versionSnapshot{}
+	if raw, err := os.ReadFile(filepath.Join(i.dataDir, "version.json")); err == nil {
+		snap.versionJSON = raw
+		snap.hadJSON = true
 	}
-	return os.WriteFile(filepath.Join(i.dataDir, "VERSION"), []byte(oldVersion+"\n"), 0644)
+	if raw, err := os.ReadFile(filepath.Join(i.dataDir, "VERSION")); err == nil {
+		snap.versionFile = raw
+		snap.hadFile = true
+	}
+	return snap
+}
+
+// restoreVersionFiles 按快照还原版本元数据。
+//
+// ★ 关键：**version.json 才是真源**（网关运行时读它，见 cmd/gateway/version.go）。
+//
+//	只还原 VERSION 而留着新版 version.json ⇒ 二进制是旧的、报出来的版本号是新的
+//	⇒ **版本身份漂移** ⇒ Checker 拿错基线去问远端 ⇒ 「已是最新」
+//	⇒ 节点永远停在旧二进制上，且再也不会被提醒。
+//
+// 快照里本来就没有该文件时（首次安装）⇒ 删掉新建的那个，
+// 免得留下一个「假装这个版本装过」的元数据。
+func (i *Installer) restoreVersionFiles(snap versionSnapshot) error {
+	var firstErr error
+	record := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	jsonPath := filepath.Join(i.dataDir, "version.json")
+	if snap.hadJSON {
+		record(os.WriteFile(jsonPath, snap.versionJSON, 0644))
+	} else {
+		record(os.Remove(jsonPath))
+	}
+
+	versionPath := filepath.Join(i.dataDir, "VERSION")
+	if snap.hadFile {
+		record(os.WriteFile(versionPath, snap.versionFile, 0644))
+	} else {
+		record(os.Remove(versionPath))
+	}
+
+	return firstErr
 }
 
 // synthesizeVersionJSON 在没有显式元数据时按 release 合成一份 version.json。
