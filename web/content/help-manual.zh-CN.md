@@ -145,6 +145,99 @@ llm-gw-installer version
 | `LLM_GATEWAY_STORAGE_MODE` | `full` 或 `lite`，由安装器写入配置文件 |
 | `LLM_GATEWAY_MASTER_URL` | 授权与心跳服务地址，默认 `https://llm.kxpms.cn` |
 
+### 2.6 安装后的激活
+
+装完只把进程拉起来了；**激活**是把这台机器与许可证（License）绑定的一步。激活与账号是两件事：激活不产生管理员账号（那是 7.6 节的初始管理员），反过来管理员初始化也不会替你完成激活。激活之后网关才能被中心纳管（注册、心跳、后台自动注册）。
+
+激活有两条路径，二选一即可：**命令行**（`install.sh activate`）适合装机时无人值守；**控制台向导**（`/bootstrap`）适合人工装机。
+
+**命令行激活。** 安装脚本把 `activate` 原样透传给安装器：
+
+```bash
+# 申请试用许可证：输出 License Key 与过期时间
+bash install.sh activate --mode trial --email ops@example.com --agree
+
+# 在线激活（注册即激活）：向主控注册，凭据落到 ~/.kx-gateway/instance.token（0600）
+bash install.sh activate --mode key --license-key sk-xxxxxxxx
+
+# 离线申请：生成加密请求文件，交给主控管理员签发
+bash install.sh activate --mode offline-request --license-key sk-xxxxxxxx
+
+# 离线导入：把签发下来的 license.dat 落到安装目录
+bash install.sh activate --mode offline-import --license-path ./license.dat
+
+# 主控地址不是默认地址时
+bash install.sh activate --mode key --license-key sk-xxxxxxxx --master-url https://llm.example.com
+```
+
+| 模式 | 用途 | 必填参数 | 产出 |
+| --- | --- | --- | --- |
+| `trial` | 申请试用许可证 | `--email`、`--agree` | 打印 License Key 与过期时间 |
+| `key` | 在线激活（注册即激活） | `--license-key` | `instance_token` 写入 `~/.kx-gateway/instance.token`，`heartbeat` 子命令可直接使用 |
+| `offline-request` | 生成离线激活请求 | `--license-key` | 加密请求文件（含 instance_id、硬件指纹、设备名） |
+| `offline-import` | 导入离线许可证 | `--license-path`（默认 `license.dat`） | 许可证落到安装目录的 `license.dat` |
+
+**控制台激活向导。** 访问 `http://<网关地址>:8781/bootstrap`（公开路由，未登录也可进），向导固定五步：
+
+1. **用户协议** — 阅读并同意服务条款与隐私政策。
+2. **设备指纹** — 自动取本机指纹（instance_id、hardware_hash、系统与网络信息），确认与目标机器一致后再往下走。
+3. **激活 License** — 三选一：用 License Key 激活；一键激活（中心领码，中心不可达时自动改用本地免费许可证）；导入离线许可证。
+4. **注册中心** — 向中心登记本机。**中心不可达不阻塞**：此时返回「已记录待补注册」，后台会重试。
+5. **完成** — 提示已激活，可进入控制台。
+
+**激活 API。** 向导背后是六个公开端点：
+
+| 端点 | 方法 | 请求体 | 用途 |
+| --- | --- | --- | --- |
+| `/api/system/bootstrap/status` | GET | — | 查询激活态 |
+| `/api/system/bootstrap/fingerprint` | GET | — | 取本机指纹：`hardware_hash`、`instance_id`、`os`、`arch`、`network_summary` |
+| `/api/system/bootstrap/activate` | POST | `license_key`、`hardware_hash`、`device_name`、可选 `online` | 用许可证号激活；先走中心，失败回落本地激活器 |
+| `/api/system/bootstrap/activate-quick` | POST | `hardware_hash`、`device_name` | 一键激活：中心可达则领码＋验签＋本地导入；中心不可达则生成本地免费许可证 `FREE-<instance_id 前 12 位>`（限 1 台设备、10 年有效期） |
+| `/api/system/bootstrap/register-center` | POST | `license_key`、`hardware_hash`、`hostname`、`version`、`region` | 向中心注册或补注册 |
+| `/api/system/bootstrap/import-offline` | POST | `signed_license` 或 `activation_code`、可选 `hardware_hash` | 离线导入，本地验签后激活，联网后自动补注册 |
+
+这组端点在管理员登录之前即可调用（首启场景），因此**对外暴露时务必在前面加访问控制**，不要直接挂在公网入口。
+
+**激活状态的语义。** `GET /api/system/bootstrap/status` 的响应字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `activated` | 是否已激活 |
+| `registered` | 是否已向中心注册 |
+| `center_online` | 中心是否可达 |
+| `center_url` | 中心地址 |
+| `instance_id` | 本机实例 ID |
+| `hardware_hash` | 本机指纹哈希 |
+| `license_key` | 打码后的许可证号 |
+| `device_name` | 设备名 |
+| `primary_ip` | 主 IP |
+| `service_version` | 服务版本 |
+| `activated_at` | 激活时间（RFC3339） |
+| `admin_bootstrap_required` | 是否仍需初始管理员引导 |
+| `message` | 状态文案 |
+
+`message` 只有三种取值：**已激活；中心可达，后台将自动注册/心跳**｜**已激活（离线可用）；中心不可达时不阻塞本地运转**｜**尚未激活**。
+
+两条硬规则值得记住：
+
+- **一机一实例 ID。** 客户端上报的 `instance_id` 一律忽略，始终以服务端自算值为准（防止他人抢占许可证席位）。
+- **本地免费激活仅限本机。** 指纹与本机不符时直接拒绝。
+
+| 状态码 | `error` | 含义 | 处理 |
+| --- | --- | --- | --- |
+| 403 | `hardware_hash_mismatch` | 指纹与本机不符（常见于容器重建、换机） | 确认在目标机器上操作，重新取指纹后再激活 |
+| 409 | `need_deactivate` | 设备席位已被占用（免费许可证限 1 台） | 先解绑既有设备，再重新激活 |
+
+**前端的激活软门。** 未激活时访问控制台会被引导到 `/bootstrap`；这是软门——状态取不到时（接口异常或超时）直接放行，不阻塞使用，结果缓存 15 秒。自助部署若不想被跳转，可在浏览器控制台设置 `localStorage.llmgw_require_bootstrap = '0'`；激活成功后前端会自行写入 `llmgw_activated = '1'`。容器内免激活场景可设环境变量 `LLM_GATEWAY_LICENSE_ACTIVATED=1`，此时状态接口直接返回已激活。
+
+**验证激活结果。**
+
+```bash
+curl -s http://127.0.0.1:8781/api/system/bootstrap/status
+```
+
+期望 `"activated":true`，且 `message` 以「已激活」开头。激活完成后接着做两件事：按 7.6 节初始化管理员并登录；按第 4、5 章配置供应商与凭据。若这台机器是从旧环境迁过来的、还带着历史数据，**先按第 11 章做数据重置**，再开始正式接入流量。
+
 ## 3. 部署
 
 ### 3.1 快速启动（Docker Compose）
@@ -740,3 +833,100 @@ curl -s http://127.0.0.1:8781/version
 ### 10.7 报障时需要提供的信息
 
 提交问题时请附上：网关版本（`/version` 输出）、部署形态（容器或裸机）、操作系统与版本、数据库与 Redis 版本、复现步骤、期望结果与实际结果、相关时间段的脱敏日志，以及失败请求的 `request_id`。
+
+## 11. 数据重置
+
+拿到一台新环境、跑完一轮压测或演示、或者需要把旧环境的运行痕迹清干净时，都要做一次**数据重置**：先看清各类数据有多少，再预览将要删掉什么，最后才执行。这三步在系统里是三个端点，顺序固定，且**执行必须带上预览签发的令牌**。
+
+**重置是有权限门槛的破坏性操作。** 三个端点全部要求超级管理员（`super_admin` 角色，JWT 通过 `Authorization: Bearer` 或 `llmgw_session` Cookie 携带），租户管理员（`tenant_admin`）无权调用——它能删掉全部用户、租户与凭据。
+
+### 11.1 安全模型：三条不可让步的属性
+
+| 属性 | 做法 | 挡住的误操作 |
+| --- | --- | --- |
+| **客户端不能指定表名** | 请求体里只有「类别 key」，类别到表清单的映射写死在服务端注册表里 | 不存在「传个表名就能删任意表」的面 |
+| **先预览、后执行，执行须带令牌** | 预览返回受影响行数与 `confirm_token`（HMAC 签名，绑定类别集合与删除计划，**5 分钟有效**）；执行必须原样回传 | 执行的一定是「刚刚预览过的那一批类别与同一份计划」，预览与执行之间换了类别或数据变了都会验不过 |
+| **受保护行不删** | 每张表可声明保留谓词：系统 key、超级管理员、默认租户等骨架行永远不删 | 一次重置不会把环境变成「谁也登录不了」 |
+
+### 11.2 数据类别与破坏强度
+
+类别分两级：**运行数据（`operational`）**是运行期产生的历史与遥测，整类可清空，清掉不影响系统可用性；**配置数据（`configuration`）**是业务配置，清空时保留骨架行。
+
+| 类别 key | 强度 | 覆盖的表 |
+| --- | --- | --- |
+| `request_records` | 运行数据 | `session_turn_details`、`session_bodies`、`session_turns`、`sessions`、`request_wal`、`session_summaries`、`request_stats_minute`、`request_stats_dim_minute` |
+| `probe_records` | 运行数据 | `node_probe_runs`、`credential_probe_model_log`、`credential_health_checks`、`model_probe_runs`、`system_probe_runs`、`provider_metrics_minute`、`provider_metrics_hour` |
+| `routing_records` | 运行数据 | `routing_decision_log`、`route_decisions`、`routing_audit_log`、`route_incidents`、`candidate_failure_logs`、`routing_health_checks` |
+| `credentials` | 配置数据 | `credential_state_log`、`credential_state_nodes`、`credential_probe_configs`、`credential_probes`、`credential_keys`、`credential_quotas`、`credential_quota_usage`、`credential_model_bindings`、`credentials` |
+| `models` | 配置数据 | `model_modality_verification`、`model_aliases`、`provider_models`、`model_families`、`models_canonical` |
+| `providers` | 配置数据 | `provider_endpoint_protocols`、`provider_quality_configs`、`provider_quality_profiles`、`provider_header_profiles`、`provider_catalog`、`provider_settings`、`providers` |
+| `api_keys` | 配置数据 | `key_rpm_daily`、`key_applications`、`api_keys` |
+| `users` | 配置数据 | `users` |
+| `tenants` | 配置数据 | `tenants` |
+
+**执行顺序是唯一的，且按外键安全排列**（子表先于父表）：
+
+```text
+request_records → probe_records → routing_records → credentials →
+models → providers → api_keys → users → tenants
+```
+
+其中 `session_summaries` 在 `tenants` 之前删（它是 `tenants` 的级联子表，先删干净才不会让级联「偷跑」掉本该计入预览的行数）；`credential_probe_configs` 与 `credential_probes` 是 `credentials` 的限制级外键子表，必须先删，否则删父表会直接撞外键。
+
+### 11.3 保留谓词：哪些行永远不删
+
+| 类别 | 保留内容 | 原因 |
+| --- | --- | --- |
+| `api_keys` | `is_system = true` 的系统 key | 网关自身在用的内部调用凭据 |
+| `users` | 全部 `super_admin` + 当前执行操作者 | 保证重置后还登得进去 |
+| `tenants` | `code = 'default'` 的默认租户 + 当前操作者所属租户 | 保证默认租户骨架不被清空 |
+
+其余类别没有保留谓词，整类可清空。
+
+### 11.4 三步操作
+
+**第一步：统计。** `GET /api/admin/data-lifecycle/data-init/catalog` 返回每个类别、每张表的行数、占用空间、最早与最新数据时间、会被删掉的行数（`target_rows`）与被保留的行数（`protected_rows`）；本环境里不存在的表（如老部署没迁移到位）会如实列在 `missing_tables` 里，不会报错。
+
+**第二步：预览。** `POST /api/admin/data-lifecycle/data-init/preview`，请求体 `{"categories": ["request_records", "probe_records"]}`。响应给出每个类别的明细、`total_rows`、`total_protected_rows`、`total_target_rows`、`confirm_token` 与 `token_expires_at`，以及需要人工确认的 `warnings`。
+
+**第三步：执行。** `POST /api/admin/data-lifecycle/data-init/execute`，请求体 `{"categories": [...], "confirm_token": "<第二步拿到的令牌>"}`。响应给出 `actor`、`total_rows_deleted`、每个类别实际删掉的 `rows_deleted` 与 `executed_at`。
+
+**预览行数与实际删除行数可能不同**——级联删除与并发写入都会造成差异，所以响应里 `target_rows`（预览值）与 `rows_deleted`（实际值）分开给出，不要混为一谈。令牌只有 5 分钟有效期，超时或类别集合变动都会让执行被拒（400），需要重新预览。
+
+### 11.5 命令行演练
+
+```bash
+BASE=http://127.0.0.1:8781
+TOKEN=<超级管理员 JWT>
+
+# ① 统计：看各类数据有多少
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/api/admin/data-lifecycle/data-init/catalog" | jq '.categories[] | {key, level, rows, bytes_human, protected_rows, target_rows}'
+
+# ② 预览：只清运行数据
+TOKEN_JSON=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"categories":["request_records","probe_records","routing_records"]}' \
+  "$BASE/api/admin/data-lifecycle/data-init/preview")
+echo "$TOKEN_JSON" | jq '{total_rows, total_protected_rows, total_target_rows, token_expires_at}'
+CONFIRM=$(echo "$TOKEN_JSON" | jq -r '.confirm_token')
+
+# ③ 执行：带上预览签发的令牌（5 分钟内有效）
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"categories\":[\"request_records\",\"probe_records\",\"routing_records\"],\"confirm_token\":\"$CONFIRM\"}" \
+  "$BASE/api/admin/data-lifecycle/data-init/execute" | jq '{actor, total_rows_deleted, results}'
+```
+
+要连业务配置一起清（换环境、交接机器），在 `categories` 里追加 `credentials`、`models`、`providers`、`api_keys`、`users`、`tenants` 即可；由于保留谓词生效，系统 key、超级管理员与默认租户仍会留下。
+
+### 11.6 审计留痕
+
+每次执行都会写入 `routing_audit_log`，`action` 为 `data_init_reset`，`after_json` 里记录本次的类别集合、操作者、租户、计划摘要（`plan_digest`）、端点与删除条数。审计与删除在同一事务里落库——审计写失败，整个删除会一并回滚，不会出现「删了但没记录」。
+
+### 11.7 注意事项
+
+- **先备份再重置。** 重置是物理删除，没有回收站；配置数据一旦清掉，供应商、凭据、模型绑定都要重新配。
+- **重置期间停止写入。** 并发写入会让预览值与实际值产生偏差；重置前先把上游流量摘掉。
+- **令牌不要跨类别复用。** 令牌绑定了类别集合与删除计划，复制到别的类别组合会被拒绝。
+- **不要把清理当成常规操作。** 日常保留期收敛用「数据运维」组的「数据生命周期」清理（预览 → 执行两段式），数据重置是换环境、复现故障这类场景的归零动作。
+- **只清运行数据通常就够。** 排障复现、演示前后的清理，清 `request_records`、`probe_records`、`routing_records` 三类即可，不必动配置。
+
