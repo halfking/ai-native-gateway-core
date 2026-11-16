@@ -116,6 +116,14 @@ export default {
     limitsSaved: 'Límites guardados',
     error: {
       loadDetailFailed: 'No se pudo cargar el detalle de la clave. Vuelva a intentarlo.',
+      loadLogsFailed: 'No se pudieron cargar los registros de solicitudes. Vuelva a intentarlo.',
+    },
+    logs: {
+      title: 'Solicitudes recientes',
+      viewAll: 'Ver todo',
+      empty: 'Sin registros de solicitudes',
+      success: 'Correcto',
+      pending: 'En curso',
     },
   },
   applications: {

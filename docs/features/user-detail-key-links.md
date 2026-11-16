@@ -1,171 +1,98 @@
-# 用户详情抽屉：高频密钥可点击跳转
+# 用户详情抽屉：API 密钥管理
 
 ## 概述
 
-2026-11-17 实现用户详情抽屉中的"高频密钥"显示为可点击链接，点击后跳转到租户详情页的 Keys 标签页并高亮对应密钥行。
+`/users` 页面点击用户行弹出的详情抽屉里，管理员（超管 / 租户管理员）可以
+查看该用户名下的**全部** API 密钥、查看每把密钥的完整信息、签发新密钥、
+启用/禁用/吊销已有密钥。
 
-## 改动范围
+> ⚠ 本文档描述的是 **2026-11-17 审计修复轮之后**的行为。
+> 上一轮（`eb7601089`）的实现有 8 个缺陷（含「签发必然失败」「明文密钥跨用户残留」），
+> 已全部修复。审计与证据见
+> [`docs/audit/2026-11-17-用户详情API密钥管理-审计轮.md`](../audit/2026-11-17-用户详情API密钥管理-审计轮.md)。
 
-### 1. 后端（无改动）
+## 功能
 
-后端 API `/api/admin/users/:id/stats` 已经返回 `top_keys` 数组，每项包含：
-```json
-{
-  "id": 123,
-  "name": "key-alias",
-  "requests": 1000
-}
-```
+### 统计标签页（原有）
 
-### 2. 前端 - UserDetailDrawer.vue
+KPI（请求 / Token / 积分 / 失败率·P95）、请求与 Token 趋势、Top 模型与 Top 应用、
+最近请求、基本信息。「高频密钥」行里的密钥名可点击，跳到租户详情页并高亮对应行
+（仅超管，因为 `/tenants/:tenantId` 挂了 `requiresSuper` 路由门）。
 
-#### 新增函数
-```typescript
-function keyHref(keyId: number): string {
-  if (!user.value) return '#'
-  return `/tenants/${user.value.tenant_id}?tab=keys&key_id=${keyId}`
-}
-```
+### API 密钥标签页（新增）
 
-#### 模板改动
-- **原来**：`<span class="mono">{{ topKeysText }}</span>`（纯文本）
-- **现在**：分情况渲染
-  - 如果没有密钥：显示 `—`
-  - 如果有钻取权限（`canDrillKeys`）：显示可点击链接
-    - 有 `id` 的密钥：`<a :href="keyHref(k.id)">name×requests</a>`
-    - 无 `id` 的密钥：`<span class="mono">name×requests</span>`（降级为文本）
-  - 如果没有钻取权限：显示纯文本（`topKeysText`）
+| 能力 | 说明 |
+|---|---|
+| 列出全部密钥 | 按 `owner_user` + `tenant_id` **服务端过滤**（超管不会把全站密钥拉到浏览器） |
+| 完整信息 | 前缀、别名、应用、状态、请求数、Token、预算、速率限制、最后使用、创建时间、备注 |
+| 查看明文 | 「查看完整密钥」→ 调 `GET /api/keys/{id}/reveal`（后端写审计日志 `apikey.secret_revealed`） |
+| 签发密钥 | 应用代码 / 别名 / 预算 / RPM / 备注，创建后展示明文（仅此一次） |
+| 启用 / 禁用 | `PATCH /api/keys/{id}/enable` / `/disable` |
+| 吊销 | `DELETE /api/keys/{id}`（二次确认；不可恢复） |
 
-#### 新增样式
-```css
-.udd-key-links { display: inline; }
-.udd-key-sep { color: var(--muted); }  /* 密钥间的分隔符 · */
-```
+## 状态语义（重要）
 
-### 3. 前端 - TenantDetailView.vue
+密钥状态按 `api_keys.status` 判定（取值域来自表约束
+`sql/objects/tables/api_keys.sql`：`active / pending / disabled / throttled / revoked`）：
 
-#### 新增状态
-```typescript
-const highlightKeyId = ref<number | null>(null)
-```
+| status | 徽章 | 能否启用 | 能否吊销 | 说明 |
+|---|---|---|---|---|
+| `active` | 绿「正常」 | — | ✅ | 正常可用 |
+| `pending` | 黄「待审核」 | ✅ | ✅ | 已提交待审核 |
+| `throttled` | 黄「已限流」 | ✅ | ✅ | 仍可用，但被限流 |
+| `disabled` | 红「已禁用」 | ✅ | ✅ | 临时禁用，可恢复 |
+| `revoked` | 灰「已吊销」 | ❌ | ❌ | **终态**，不可恢复，需重新签发 |
 
-#### 读取 URL 参数
-在 `onMounted` 中添加：
-```typescript
-if (typeof route.query.key_id === 'string') {
-  const kid = Number.parseInt(route.query.key_id, 10)
-  if (!Number.isNaN(kid)) {
-    highlightKeyId.value = kid
-    // 高亮 3 秒后自动清除
-    setTimeout(() => { highlightKeyId.value = null }, 3000)
-  }
-}
-```
+★ 「已吊销」与「已禁用」必须区分：吊销是终态，对它点「启用」后端会返回 **409**
+（`setKeyEnabled` 只写 `enabled` 而不写 `status`，吊销语义不会被偷偷推翻）。
 
-#### 模板改动
-Keys 表格的行添加动态 class：
-```vue
-<tr v-for="k in sortedVisibleKeys" :key="k.id" 
-    :class="{ 'highlight-row': highlightKeyId === k.id }">
-```
+## 权限
 
-#### 新增样式
-```css
-.highlight-row {
-  background-color: color-mix(in srgb, var(--accent) 15%, transparent);
-  animation: highlight-fade 3s ease-out;
-}
-@keyframes highlight-fade {
-  0% { background-color: color-mix(in srgb, var(--accent) 25%, transparent); }
-  100% { background-color: transparent; }
-}
-```
+| 角色 | 能看到用户列表 | 能管该用户的密钥 |
+|---|---|---|
+| `super_admin` | 全站 | ✅ |
+| `tenant_admin` | 本租户 | ✅ |
+| 其它 | ❌（后端 `requireUserManager` 拒绝） | — |
 
-## 用户体验
+租户管理员**不需要** `requiresSuper` 路由即可使用 —— 抽屉内的密钥标签页不依赖
+`/tenants/:tenantId` 路由。
 
-1. **用户详情抽屉**
-   - 打开任意用户的详情抽屉
-   - "高频密钥"行显示可点击的密钥链接（蓝色，带悬停效果）
-   - 多个密钥用 ` · ` 分隔
+## 数据面
 
-2. **点击跳转**
-   - 点击任意密钥链接
-   - 自动跳转到该用户所属租户的详情页
-   - 自动切换到 Keys 标签页
-   - 目标密钥行以淡蓝色高亮显示
-   - 高亮效果 3 秒后自动淡出
+| 端点 | 用途 | 权限 |
+|---|---|---|
+| `GET /api/admin/users/{id}/stats` | 统计 + `key_count` | `requireUserManager` |
+| `GET /api/keys?tenant=&owner=` | 密钥列表（服务端过滤） | `requireUserManager`（租户管理员强制本租户） |
+| `POST /api/keys` | 签发 | `requireUserManager`（租户管理员强制本租户） |
+| `GET /api/keys/{id}/reveal` | 读明文（写审计） | `requireUserManager` + 租户范围断言 |
+| `PATCH /api/keys/{id}/enable` `/disable` | 启停 | 同上（revoked ⇒ 409） |
+| `DELETE /api/keys/{id}` | 吊销 | 同上 |
 
-3. **边界情况**
-   - 如果密钥没有 `id`（理论上不应该发生）：显示为纯文本，不可点击
-   - 如果用户没有密钥：显示 `—`
-   - 如果当前用户没有查看租户密钥的权限（`canDrillKeys` 为 false）：显示纯文本而非链接
+## 使用
 
-## 技术细节
-
-### URL 结构
-```
-/tenants/{tenant_id}?tab=keys&key_id={key_id}
-```
-
-### 高亮机制
-- 使用 CSS `color-mix()` 生成半透明的强调色背景
-- 使用 CSS 动画从 25% 透明度淡出到完全透明
-- 3 秒后通过 JavaScript 清除高亮状态（避免导航后仍保留高亮）
-
-### 权限控制
-继承现有的 `canDrillKeys` 逻辑：
-- 如果用户有查看租户密钥的权限：渲染链接
-- 如果没有权限：降级为纯文本显示
+1. 登录管理后台（超管或租户管理员）
+2. 进入 `/users`
+3. 点击任意用户行 → 抽屉打开
+4. 点顶部「**API 密钥**」标签页
+5. 查看 / 签发 / 启停 / 吊销
 
 ## 验证
 
-### 手工验证步骤
-1. 登录管理后台
-2. 进入用户列表（`/users`）
-3. 点击任意用户的详情按钮（眼睛图标）
-4. 在详情抽屉中查看"高频密钥"行
-5. 点击任意密钥链接
-6. 验证：
-   - 跳转到正确的租户详情页
-   - Keys 标签页已激活
-   - 目标密钥行高亮显示
-   - 3 秒后高亮淡出
-
-### 自动化验证
 ```bash
-cd web
-node /tmp/test_user_detail_keys.js
+# 后端契约层
+go test ./admin/ -run 'TestListKeysHasOwnerFilter|TestCreateKeyPersistsResolvedOwner|TestSetKeyEnabledRejectsRevoked' -v
+
+# 后端真库层（一次性库；见审计文档 §六）
+go test ./admin/ -run 'TestListKeysOwnerFilterRealDB|TestSetKeyEnabledRevokedReturnsConflictRealDB|TestCreateKeyOwnerDefaultsToAdminNotNullRealDB' -v
+
+# 前端契约层
+cd web && npx vitest run src/components/userDetailKeys.contract.test.ts
 ```
-
-检查项：
-- ✓ UserDetailDrawer 有 `keyHref` 函数
-- ✓ `keyHref` 使用 `key_id` 参数
-- ✓ 模板使用 `keyHref` 生成链接
-- ✓ TenantDetailView 有 `highlightKeyId` 状态
-- ✓ 从 `route.query.key_id` 读取参数
-- ✓ 表格行应用 `highlight-row` 类
-- ✓ 存在高亮样式和动画
-
-### 构建验证
-```bash
-cd web
-npm run build  # ✓ 构建成功
-npx vue-tsc --noEmit  # ✓ 类型检查通过
-npm run test  # ✓ 相关测试通过（已有的失败与本改动无关）
-```
-
-## 未来增强
-
-可选的改进方向：
-
-1. **滚动到视口**：当高亮的密钥行不在可见区域时，自动滚动到该行
-2. **URL 历史管理**：使用 `router.replace` 在 3 秒后移除 `key_id` 参数（避免刷新页面时重复高亮）
-3. **加载态提示**：如果密钥列表尚未加载，显示加载指示器
-4. **深色模式适配**：验证高亮颜色在深色主题下的可见性
 
 ## 相关文件
 
-- `web/src/components/UserDetailDrawer.vue` - 用户详情抽屉
-- `web/src/views/TenantDetailView.vue` - 租户详情页
-- `web/src/api/users.ts` - 用户 API（已有 `getUserStats` 接口）
-- `admin/users_stats.go` - 后端统计接口（已返回 `top_keys`）
+- `web/src/components/UserDetailDrawer.vue` — 用户详情抽屉（两个标签页）
+- `web/src/api/keys.ts` — 密钥 API 客户端（`getKeys(params?)` / `createKey` / `revealKey` / …）
+- `web/src/locales/*/users.ts` — 8 语种文案（`users.detail.*`）
+- `admin/keys.go` — 密钥端点（`listKeys` / `createKey` / `setKeyEnabled` / `revealKey`）
+- `admin/keys_user_scope_test.go` — 本功能的判据

@@ -116,6 +116,14 @@ export default {
     limitsSaved: 'Limites enregistrées',
     error: {
       loadDetailFailed: 'Le chargement du détail de la clé d\'API a échoué. Veuillez réessayer.',
+      loadLogsFailed: 'Le chargement des journaux de requêtes a échoué. Veuillez réessayer.',
+    },
+    logs: {
+      title: 'Requêtes récentes',
+      viewAll: 'Tout afficher',
+      empty: 'Aucun enregistrement de requête',
+      success: 'Réussi',
+      pending: 'En cours',
     },
   },
   applications: {

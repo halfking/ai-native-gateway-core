@@ -11,7 +11,9 @@ export interface ApiKey {
   key_prefix: string
   owner_user: string | null
   enabled: boolean
-  status: 'active' | 'pending' | 'disabled'
+  // ★ 取值域来自表约束 sql/objects/tables/api_keys.sql：
+  //   CHECK (status IN ('active','pending','disabled','throttled','revoked'))
+  status: 'active' | 'pending' | 'disabled' | 'throttled' | 'revoked'
   expires_at: string | null
   last_used_at: string | null
   budget_usd: number | null
@@ -30,6 +32,7 @@ export interface ApiKey {
   last_request_at: string | null
   tenant_id: string
   key_alias: string | null
+  created_at?: string | null
 }
 
 export interface KeyCreatedResponse {
@@ -42,8 +45,17 @@ export interface KeyCreatedResponse {
   message: string
 }
 
-export function getKeys() {
-  return req<ApiKey[]>('GET', '/api/keys')
+export function getKeys(params?: { application?: string; tenant?: string; owner?: string }) {
+  // 2026-11-17 审计修复：支持服务端过滤（application / tenant / owner）。
+  // 此前只有 application / tenant 两个口，「某用户名下密钥」只能拉全量回来
+  // 再前端筛 ⇒ 超管侧等于把全站密钥元数据下发到浏览器。
+  // owner 是 2026-11-17 新增的后端过滤参数（admin/keys.go listKeys）。
+  const qs = new URLSearchParams()
+  if (params?.application) qs.set('application', params.application)
+  if (params?.tenant) qs.set('tenant', params.tenant)
+  if (params?.owner) qs.set('owner', params.owner)
+  const suffix = qs.toString()
+  return req<ApiKey[]>('GET', suffix ? `/api/keys?${suffix}` : '/api/keys')
 }
 
 export function getKeyDetail(id: number) {
