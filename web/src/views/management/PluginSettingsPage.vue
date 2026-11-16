@@ -327,8 +327,10 @@ onMounted(() => {
 
 <style scoped>
 .plugin-settings-page {
-  max-width: 1200px;
-  margin: 0 auto;
+  /* 契约 A（全屏）：根容器不得有 max-width 收窄 / margin:0 auto 居中。
+     本文件此前写成 `max-width:1200px; margin:0 auto` ⇒ `pnpm build` 的
+     ui-audit --strict 硬门直接 exit 1 ⇒ **整条前端构建失败、部署被 FATAL 拦下**。
+     页面是管理端设置页，宽度由栅格（.provider-grid）自适应即可。 */
   padding: 24px;
 }
 
