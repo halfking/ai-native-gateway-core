@@ -492,3 +492,6 @@ docs/audit/**/ctr_snapshot_*.log
 
 # MCP 网关 Maestro 验证产物（每次实跑生成，不入库）。
 tests/mcp-gateway-maestro/reports/
+
+# 临时 PostgreSQL 检查目录（本地调试产物，不入库）
+tmp_pgcheck/
