@@ -40,44 +40,62 @@ func nodeProbeHealthyParkedSQL(alias string) string {
 //     parked rows also reset consecutive_failures and last_err_code);
 //   - mid-ladder rows (future next_retry_at with error evidence) keep their
 //     schedule and counter so the backoff chain can advance.
+//
+// ★ 2026-11-17 24h 审计（节点探测时效取证）：F2 只盖住了成功镜像臂，
+// Submit 武装臂此前无条件 `paused = FALSE` + 清 last_err_code ⇒ 运维
+// manual_offline 会被「一次业务失败 Submit」悄悄撤销。与成功臂同口径：
+// paused ∧ last_err_code='manual_offline' 时**不重武装、不清标记**。
 func nodeProbeSubmitUpsertSQL() string {
+	manualOffline := "node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'"
+	rearm := "((node_probe_state.paused = TRUE AND NOT (" + manualOffline + "))" +
+		" OR node_probe_state.next_retry_at <= now()" +
+		" OR (" + nodeProbeHealthyParkedSQL("node_probe_state") + "))"
 	return `
 		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
 		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
 		SET next_retry_at = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        WHEN ` + manualOffline + `
+		        THEN node_probe_state.next_retry_at
+		        WHEN ` + rearm + `
 		        THEN now() + interval '5 seconds'
 		        ELSE node_probe_state.next_retry_at
 		    END,
 		    next_retry_seconds = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        WHEN ` + manualOffline + `
+		        THEN node_probe_state.next_retry_seconds
+		        WHEN ` + rearm + `
 		        THEN 5
 		        ELSE node_probe_state.next_retry_seconds
 		    END,
 		    in_flight_until = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        WHEN ` + manualOffline + `
+		        THEN node_probe_state.in_flight_until
+		        WHEN ` + rearm + `
 		        THEN NULL
 		        ELSE node_probe_state.in_flight_until
 		    END,
-		    paused = FALSE,
+		    paused = CASE
+		        WHEN ` + manualOffline + `
+		        THEN TRUE
+		        ELSE FALSE
+		    END,
 		    -- Reset the counter when the cycle is being restarted from a
 		    -- paused or healthy-parked row. For already-expired ladder rows
 		    -- the worker (runOne) owns the counter and increments it by 1 per
 		    -- round; touching it here would collapse the ladder back to rung 1.
+		    -- manual_offline 行不动计数 —— 否则会连同下线标记一起被「洗成新周期」。
 		    consecutive_failures = CASE
+		        WHEN ` + manualOffline + `
+		        THEN node_probe_state.consecutive_failures
 		        WHEN node_probe_state.paused = TRUE
 		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
 		        THEN 0
 		        ELSE node_probe_state.consecutive_failures
 		    END,
 		    last_err_code = CASE
+		        WHEN ` + manualOffline + `
+		        THEN node_probe_state.last_err_code
 		        WHEN node_probe_state.paused = TRUE
 		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
 		        THEN NULL

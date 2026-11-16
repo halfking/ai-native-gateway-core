@@ -16,7 +16,9 @@ import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
 const MaintainUnavailableView = () => import('./views/MaintainUnavailableView.vue')
-const ProvidersView = () => import('./views/ProvidersView.vue')
+// 2026-11-17：简易/专家同路径包装（ProvidersModeView），避免 /providers 与
+// /providers-simple 双路由分裂深链。
+const ProvidersView = () => import('./views/ProvidersModeView.vue')
 const KeysView = () => import('./views/KeysView.vue')
 const KeyDetailView = () => import('./views/KeyDetailView.vue')
 const KeyApplicationsView = () => import('./views/KeyApplicationsView.vue')

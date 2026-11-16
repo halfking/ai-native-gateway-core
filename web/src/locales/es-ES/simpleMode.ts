@@ -1,5 +1,5 @@
-// simpleMode.ts — 简易模式文案（工作模式 / 接入清单 / 供应商）。
-// 2026-11-17：简易模式落地轮新增。键与其它语种严格平价（i18n parity 门覆盖）。
+// simpleMode.ts — Simple mode UI strings (work mode / access list / providers).
+// 2026-11-17: Added in simple mode implementation. Keys are strictly equivalent across locales (enforced by i18n parity gate).
 export default {
   mode: {
     label: 'Modo de trabajo',
@@ -45,7 +45,6 @@ export default {
     probePending: 'Sonda en segundo plano',
     noProvider: 'Todavía no hay ningún upstream conectado',
     added: 'Conectado; sonda en segundo plano',
-  },
     models: 'Modelos',
     modelsProvided: 'Actualmente proporcionado por este proveedor',
     modelsWithRequests: 'Modelos con solicitudes en este período',
@@ -57,4 +56,25 @@ export default {
     requests: 'solicitudes',
     enable: 'Habilitar',
     disable: 'Deshabilitar',
+  },
+  keys: {
+    subtitle: 'Emita una clave con dos campos; el inquilino y la aplicación se completan automáticamente con valores predeterminados',
+    clientName: 'Nombre del cliente',
+    clientNamePlaceholder: 'p.ej.: prod, dev, zhangsan-cli',
+    clientNameHint: 'Identificador único dentro del mismo inquilino+aplicación',
+    clientNameRequired: 'El nombre del cliente es obligatorio',
+    remark: 'Comentario',
+    remarkPlaceholder: 'Explique el motivo, p.ej.: prueba, producción',
+    sign: 'Emitir',
+    signing: 'Emitiendo...',
+    created: 'Clave emitida',
+    copyHint: 'Cópiela y guárdela ahora: no podrá ver la clave completa de nuevo después de cerrar',
+    client: 'Cliente',
+    signAnother: 'Emitir otra',
+    backToList: 'Volver a la lista de acceso',
+    tenant: 'Inquilino',
+    application: 'Aplicación',
+    autoFillHint: 'Los siguientes campos se completan automáticamente con valores predeterminados:',
+    advancedHint: '¿Necesita más opciones? Cambie al modo experto para el formulario de emisión completo.',
+  },
 }

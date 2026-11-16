@@ -55,6 +55,16 @@ export default {
       adaptive: 'adaptive - 自适应压缩',
     },
   },
+  gateway: {
+    modeEnum: {
+      simple: 'simple - 简易模式',
+      expert: 'expert - 专家模式',
+    },
+    modeDescriptions: {
+      simple: '简易模式：首页是接入清单，专家面收在「高级」组',
+      expert: '专家模式：完整导航与全部页面（当前默认）',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 压缩模式详解',
     compressionModeContent: `<p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>

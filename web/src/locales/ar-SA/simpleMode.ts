@@ -1,5 +1,5 @@
-// simpleMode.ts — 简易模式文案（工作模式 / 接入清单 / 供应商）。
-// 2026-11-17：简易模式落地轮新增。键与其它语种严格平价（i18n parity 门覆盖）。
+// simpleMode.ts — Simple mode UI strings (work mode / access list / providers).
+// 2026-11-17: Added in simple mode implementation. Keys are strictly equivalent across locales (enforced by i18n parity gate).
 export default {
   mode: {
     label: 'وضع العمل',
@@ -45,7 +45,6 @@ export default {
     probePending: 'الفحص يعمل في الخلفية',
     noProvider: 'لم يتم ربط أي مورّد بعد',
     added: 'تم الربط؛ الفحص يعمل في الخلفية',
-  },
     models: 'النماذج',
     modelsProvided: 'يوفرها هذا المزود حاليًا',
     modelsWithRequests: 'النماذج التي لها طلبات في هذه الفترة',
@@ -57,4 +56,25 @@ export default {
     requests: 'طلبات',
     enable: 'تمكين',
     disable: 'تعطيل',
+  },
+  keys: {
+    subtitle: 'أصدر مفتاحًا بحقلين؛ يتم ملء المستأجر والتطبيق تلقائيًا بالقيم الافتراضية',
+    clientName: 'اسم العميل',
+    clientNamePlaceholder: 'على سبيل المثال: prod، dev، zhangsan-cli',
+    clientNameHint: 'معرّف فريد ضمن نفس المستأجر+التطبيق',
+    clientNameRequired: 'اسم العميل مطلوب',
+    remark: 'ملاحظة',
+    remarkPlaceholder: 'اشرح السبب، على سبيل المثال: اختبار، إنتاج',
+    sign: 'إصدار',
+    signing: 'جارٍ الإصدار...',
+    created: 'تم إصدار المفتاح',
+    copyHint: 'انسخه واحفظه الآن - لن تتمكن من عرض المفتاح الكامل مرة أخرى بعد الإغلاق',
+    client: 'العميل',
+    signAnother: 'إصدار آخر',
+    backToList: 'العودة إلى قائمة الوصول',
+    tenant: 'المستأجر',
+    application: 'التطبيق',
+    autoFillHint: 'يتم ملء الحقول التالية تلقائيًا بالقيم الافتراضية:',
+    advancedHint: 'هل تحتاج إلى المزيد من الخيارات؟ قم بالتبديل إلى وضع الخبير للحصول على نموذج الإصدار الكامل.',
+  },
 }

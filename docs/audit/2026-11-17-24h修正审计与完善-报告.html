@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>2026-11-17 24h 修正审计报告</title>
+<style>
+  :root { --bg:#0f1419; --card:#1a2332; --text:#e7ecf3; --muted:#8b9bb4; --ok:#3ecf8e; --warn:#f5a623; --bad:#ff6b6b; --accent:#5b8def; }
+  body { margin:0; font:15px/1.55 "IBM Plex Sans","Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:28px 32px 12px; border-bottom:1px solid #243044; }
+  h1 { margin:0 0 6px; font-size:22px; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { padding:20px 32px 48px; max-width:1100px; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:16px 0 28px; }
+  .kpi { background:var(--card); border-radius:10px; padding:14px 16px; }
+  .kpi b { display:block; font-size:26px; margin-top:4px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  section { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  h2 { margin:0 0 10px; font-size:16px; color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid #243044; vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .bar { display:flex; height:18px; border-radius:9px; overflow:hidden; background:#243044; margin:8px 0 4px; }
+  .bar span { display:block; height:100%; }
+  .b-ok { background:var(--ok); } .b-warn { background:var(--warn); } .b-bad { background:var(--bad); }
+  ul { margin:6px 0 0 18px; } li { margin:4px 0; }
+  code { font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>24h 修正审计与完善 — 执行报告</h1>
+  <div class="sub">观测时点 2026-11-17 04:45 CST · 主档 docs/audit/2026-11-17-24h修正审计与完善-主档.md</div>
+</header>
+<main>
+  <div class="grid">
+    <div class="kpi">子目标达成<b class="warn">7 / 12</b></div>
+    <div class="kpi">P0 已闭合<b class="ok">F8 视图闸</b></div>
+    <div class="kpi">分支清理<b class="ok">2 删除</b></div>
+    <div class="kpi">211 部署<b class="bad">SSH 不可达</b></div>
+  </div>
+
+  <section>
+    <h2>子目标完成度</h2>
+    <div class="bar" title="达成 / 部分 / 未达成">
+      <span class="b-ok" style="width:42%"></span>
+      <span class="b-warn" style="width:25%"></span>
+      <span class="b-bad" style="width:33%"></span>
+    </div>
+    <div class="sub">绿=达成 · 黄=部分 · 红=未达成（含部署依赖）</div>
+    <table>
+      <tr><th>子目标</th><th>状态</th><th>证据</th></tr>
+      <tr><td>拉主分支 / 编译</td><td class="ok">达成</td><td><code>go build ./cmd/gateway</code> 绿；ff 至最新 main</td></tr>
+      <tr><td>不活跃分支清理</td><td class="ok">达成</td><td>删 r76 / live-phase-tree-updates</td></tr>
+      <tr><td>提交批判 + 修问题</td><td class="warn">部分</td><td>F8 已还原；NIM endpoint / 慢 SQL 未落地</td></tr>
+      <tr><td>简易/专家 UI</td><td class="warn">部分</td><td>切换器+导航+首页已接；缺 SimpleProvidersView</td></tr>
+      <tr><td>隐藏阶段树</td><td class="ok">达成</td><td><code>hidden:true</code> + 顶栏入口撤</td></tr>
+      <tr><td>IR/脱敏/注入防误修</td><td class="ok">审计达成</td><td>近 24h 执法面无误放行</td></tr>
+      <tr><td>探测时效</td><td class="warn">部分</td><td>featured 周期热重载；多 endpoint 盲区仍在</td></tr>
+      <tr><td>插件/微前端规划</td><td class="ok">文档达成</td><td>在役 vs 死面盘点入主档</td></tr>
+      <tr><td>211 日志/慢 SQL</td><td class="bad">未达成</td><td>主机不可达</td></tr>
+      <tr><td>三台部署</td><td class="bad">未达成</td><td>211 阻断；245/154 未开</td></tr>
+      <tr><td>NIM 四模型多轮</td><td class="bad">未达成</td><td>依赖 211</td></tr>
+      <tr><td>245 Maestro</td><td class="bad">未达成</td><td>未开跑</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>结论 / 根因</h2>
+    <ul>
+      <li><b>F8 回退</b>：大包 <code>c1871b017</code> squash 掉统一视图闸 ⇒ 决策面再与候选面漂移（历史量级 ~19%）。</li>
+      <li><b>简易模式「看起来做了」</b>：组件在仓、接线未入 ⇒ 切换无可见效果（本轮已接顶栏/导航/首页）。</li>
+      <li><b>探测不及时</b>：多因叠加；本轮只修 featured 周期热重载。NIM 探的是主 URL、路由走多 endpoint。</li>
+      <li><b>部署</b>：本机到 211 LAN/mesh 均失败（事实阻断，非脚本问题）。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>改动文件与关键行为</h2>
+    <table>
+      <tr><th>文件</th><th>行为</th></tr>
+      <tr><td><code>autoroute/availability_filter_sql.go</code></td><td>还原 EXISTS 统一可路由视图闸</td></tr>
+      <tr><td><code>domains/dispatch/forwarder.go</code> / <code>executor_dispatch.go</code></td><td>panic recover 补 stack</td></tr>
+      <tr><td><code>web/src/config/appNav.ts</code></td><td><code>/live2</code> hidden</td></tr>
+      <tr><td><code>web/src/config/simpleNav.ts</code></td><td>/keys 落点 + href 改写</td></tr>
+      <tr><td><code>web/src/composables/useAppNav.ts</code> / <code>HomeView.vue</code> / <code>AppTopbar.vue</code></td><td>简易模式接线</td></tr>
+      <tr><td><code>bg/model_probe.go</code> / <code>settings/spec_probe.go</code></td><td>featured 周期热重载</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>测试命令与结果</h2>
+    <table>
+      <tr><th>命令</th><th>结果</th></tr>
+      <tr><td><code>go build -o /tmp/llm-gateway-go-test ./cmd/gateway/</code></td><td class="ok">0</td></tr>
+      <tr><td><code>go test ./autoroute/ ./domains/dispatch/ ./bg/ -run AvailabilityFilter…</code></td><td class="ok">0</td></tr>
+      <tr><td><code>vitest</code> appNav / simpleNav / useAppNav / useWorkMode</td><td class="ok">45 passed</td></tr>
+      <tr><td>ssh 211 / 211-mesh</td><td class="bad">No route / Connection closed</td></tr>
+      <tr><td>ssh 245</td><td class="ok">可达</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>遗留风险</h2>
+    <ul>
+      <li>211 不可达 ⇒ 生产未吃到 F8 / 简易接线 / 探测热重载。</li>
+      <li>NIM 多节点探针盲区 ⇒ 状态页与真实流量仍可能错位。</li>
+      <li><code>SimpleProvidersView</code> 缺失 ⇒ 简易供应商入口会断。</li>
+      <li>ResourceLimiter / extpoints demo 文档夸大 ⇒ 运维误判能力。</li>
+      <li><code>redact_invalid</code> 可换节点重试可能空耗候选（观察项）。</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

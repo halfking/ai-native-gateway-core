@@ -148,6 +148,13 @@ type LiveStreamEnvelope struct {
 	// Wire-safe: no sensitive data (credentials, internal IDs). Optional — nil
 	// on envelopes that don't carry routing trace data. Older clients ignore it.
 	RouteTrace *RouteTrace `json:"route_trace,omitempty"`
+	
+	// StageTree (2026-11-16) carries the complete pipeline stage visualization
+	// for a request. Type="stage_tree" identifies this variant. Sent incrementally
+	// as the request progresses through pipeline stages (auth → provider → reply).
+	// Derived from RouteTrace but includes all pipeline stages, not just routing.
+	// Wire-safe: sanitized, no secrets. Optional — nil when not applicable.
+	StageTree *StageTreeFrame `json:"stage_tree,omitempty"`
 }
 
 // LiveQueueSnapshot is the wire shape of a dispatch queue snapshot pushed

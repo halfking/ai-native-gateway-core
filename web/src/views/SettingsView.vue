@@ -398,6 +398,18 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- gateway.mode enum: Select -->
+          <div v-else-if="selectedKey === 'gateway.mode'" class="editor-select">
+            <select v-model="editBuffer" class="select-input">
+              <option value="simple">{{ t('settings.gateway.modeEnum.simple') }}</option>
+              <option value="expert">{{ t('settings.gateway.modeEnum.expert') }} 【推荐】</option>
+            </select>
+            <div class="select-hint">
+              <div v-if="editBuffer === 'simple'" class="hint-item">{{ t('settings.gateway.modeDescriptions.simple') }}</div>
+              <div v-else-if="editBuffer === 'expert'" class="hint-item">{{ t('settings.gateway.modeDescriptions.expert') }}</div>
+            </div>
+          </div>
+
           <!-- Number type: Number input -->
           <div v-else-if="selected.type === 'int' || selected.type === 'float'" class="editor-number">
             <input

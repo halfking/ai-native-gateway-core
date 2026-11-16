@@ -1,5 +1,5 @@
-// simpleMode.ts — 简易模式文案（工作模式 / 接入清单 / 供应商）。
-// 2026-11-17：简易模式落地轮新增。键与其它语种严格平价（i18n parity 门覆盖）。
+// simpleMode.ts — Simple mode UI strings (work mode / access list / providers).
+// 2026-11-17: Added in simple mode implementation. Keys are strictly equivalent across locales (enforced by i18n parity gate).
 export default {
   mode: {
     label: 'Arbeitsmodus',
@@ -45,7 +45,6 @@ export default {
     probePending: 'Prüfung läuft im Hintergrund',
     noProvider: 'Noch kein Upstream verbunden',
     added: 'Verbunden; Prüfung läuft im Hintergrund',
-  },
     models: 'Modelle',
     modelsProvided: 'Derzeit von diesem Anbieter bereitgestellt',
     modelsWithRequests: 'Modelle mit Anfragen in diesem Zeitraum',
@@ -57,4 +56,25 @@ export default {
     requests: 'Anfragen',
     enable: 'Aktivieren',
     disable: 'Deaktivieren',
+  },
+  keys: {
+    subtitle: 'Geben Sie einen Schlüssel mit zwei Feldern aus; Mandant und Anwendung werden automatisch mit Standardwerten ausgefüllt',
+    clientName: 'Client-Name',
+    clientNamePlaceholder: 'z.B.: prod, dev, zhangsan-cli',
+    clientNameHint: 'Eindeutige Kennung innerhalb desselben Mandanten+Anwendung',
+    clientNameRequired: 'Client-Name ist erforderlich',
+    remark: 'Bemerkung',
+    remarkPlaceholder: 'Erklären Sie den Grund, z.B.: Test, Produktion',
+    sign: 'Ausstellen',
+    signing: 'Wird ausgestellt...',
+    created: 'Schlüssel ausgestellt',
+    copyHint: 'Kopieren und jetzt speichern – Sie können den vollständigen Schlüssel nach dem Schließen nicht mehr anzeigen',
+    client: 'Client',
+    signAnother: 'Einen weiteren ausstellen',
+    backToList: 'Zurück zur Zugriffsliste',
+    tenant: 'Mandant',
+    application: 'Anwendung',
+    autoFillHint: 'Die folgenden Felder werden automatisch mit Standardwerten ausgefüllt:',
+    advancedHint: 'Benötigen Sie mehr Optionen? Wechseln Sie in den Expertenmodus für das vollständige Ausstellungsformular.',
+  },
 }

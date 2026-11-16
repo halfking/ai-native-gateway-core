@@ -1,5 +1,5 @@
-// simpleMode.ts — 简易模式文案（工作模式 / 接入清单 / 供应商）。
-// 2026-11-17：简易模式落地轮新增。键与其它语种严格平价（i18n parity 门覆盖）。
+// simpleMode.ts — Simple mode UI strings (work mode / access list / providers).
+// 2026-11-17: Added in simple mode implementation. Keys are strictly equivalent across locales (enforced by i18n parity gate).
 export default {
   mode: {
     label: 'Work mode',
@@ -45,7 +45,6 @@ export default {
     probePending: 'Probing in background',
     noProvider: 'No upstream connected yet',
     added: 'Connected; probing in the background',
-  },
     models: 'Models',
     modelsProvided: 'Currently provided by this provider',
     modelsWithRequests: 'Models with requests in this period',
@@ -57,4 +56,25 @@ export default {
     requests: 'requests',
     enable: 'Enable',
     disable: 'Disable',
+  },
+  keys: {
+    subtitle: 'Issue a key with two fields; tenant and application are auto-filled with defaults',
+    clientName: 'Client name',
+    clientNamePlaceholder: 'e.g.: prod, dev, zhangsan-cli',
+    clientNameHint: 'Unique identifier within the same tenant+application',
+    clientNameRequired: 'Client name is required',
+    remark: 'Remark',
+    remarkPlaceholder: 'Explain the reason, e.g.: testing, production',
+    sign: 'Issue',
+    signing: 'Issuing...',
+    created: 'Key issued',
+    copyHint: 'Copy and save it now — you cannot view the full key again after closing',
+    client: 'Client',
+    signAnother: 'Issue another',
+    backToList: 'Back to access list',
+    tenant: 'Tenant',
+    application: 'Application',
+    autoFillHint: 'The following fields are auto-filled with defaults:',
+    advancedHint: 'Need more options? Switch to expert mode for the full issuance form.',
+  },
 }

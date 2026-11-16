@@ -3292,9 +3292,12 @@ ledger_artifact_probe "963_credential_total_requests_rollup.sql" \
 ledger_artifact_probe "964_promote_session_turns_default_retention_realign.sql" \
   "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'promote_session_turns_hot_to_partition' AND position('DEFAULT ''08:00:00''::interval' in pg_get_functiondef(p.oid)) > 0 AND position('SET is_final_success = FALSE' in p.prosrc) > 0)"
 # ★ 966 的产物 = auth_id_mapping 表 + 它的 updated_at 触发器 + 序列与 MAX(internal_id) 对齐。
-#   ⇒ 探针断言三件事：表在、触发器在、序列 nextval > MAX(internal_id)（防 backfill 撞号 23505）。
+#   ⇒ 探针断言三件事：表在、触发器在、序列 **下次 nextval** > MAX(internal_id)（防 backfill 撞号 23505）。
+#   ★ 2026-11-17：旧式 `MAX < last_value` 与迁移体内 `setval(MAX, is_called=true)` 语义冲突
+#     （正确终态 = last_value=MAX ∧ is_called=true ⇒ 下次 nextval=MAX+1；MAX==last_value 时旧探针恒假）。
+#     改读 is_called 推算下次 nextval，与 966 DO 块口径一致。
 ledger_artifact_probe "966_auth_id_mapping_canonical_channel.sql" \
-  "to_regclass('public.auth_id_mapping') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'auth_id_mapping' AND t.tgname = 'auth_id_mapping_updated_at' AND NOT t.tgisinternal) AND (SELECT COALESCE(MAX(internal_id), 0) FROM public.auth_id_mapping) < (SELECT last_value FROM public.auth_id_mapping_internal_id_seq)"
+  "to_regclass('public.auth_id_mapping') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'auth_id_mapping' AND t.tgname = 'auth_id_mapping_updated_at' AND NOT t.tgisinternal) AND (SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM public.auth_id_mapping_internal_id_seq) > (SELECT COALESCE(MAX(internal_id), 0) FROM public.auth_id_mapping)"
 # ★ 967 的产物 = prompt_injection_policies 的三列 +两条 CHECK 约束。
 #   ⇒ 探针断言三列都在且取值域约束在位（约束名与 down 文件的 DROP CONSTRAINT 对称）。
 ledger_artifact_probe "967_prompt_injection_llm_policy_columns.sql" \

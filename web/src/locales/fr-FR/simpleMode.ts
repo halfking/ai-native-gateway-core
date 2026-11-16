@@ -1,5 +1,5 @@
-// simpleMode.ts — 简易模式文案（工作模式 / 接入清单 / 供应商）。
-// 2026-11-17：简易模式落地轮新增。键与其它语种严格平价（i18n parity 门覆盖）。
+// simpleMode.ts — Simple mode UI strings (work mode / access list / providers).
+// 2026-11-17: Added in simple mode implementation. Keys are strictly equivalent across locales (enforced by i18n parity gate).
 export default {
   mode: {
     label: 'Mode de travail',
@@ -45,7 +45,6 @@ export default {
     probePending: 'Sonde en arrière-plan',
     noProvider: 'Aucun amont connecté pour l\'instant',
     added: 'Connecté ; sonde en arrière-plan',
-  },
     models: 'Modèles',
     modelsProvided: 'Actuellement fourni par ce fournisseur',
     modelsWithRequests: 'Modèles avec des demandes dans cette période',
@@ -57,4 +56,25 @@ export default {
     requests: 'demandes',
     enable: 'Activer',
     disable: 'Désactiver',
+  },
+  keys: {
+    subtitle: 'Émettez une clé avec deux champs ; le locataire et l\'application sont remplis automatiquement avec les valeurs par défaut',
+    clientName: 'Nom du client',
+    clientNamePlaceholder: 'par ex. : prod, dev, zhangsan-cli',
+    clientNameHint: 'Identifiant unique dans le même locataire+application',
+    clientNameRequired: 'Le nom du client est obligatoire',
+    remark: 'Remarque',
+    remarkPlaceholder: 'Expliquez la raison, par ex. : test, production',
+    sign: 'Émettre',
+    signing: 'Émission en cours...',
+    created: 'Clé émise',
+    copyHint: 'Copiez et enregistrez-la maintenant – vous ne pourrez plus afficher la clé complète après la fermeture',
+    client: 'Client',
+    signAnother: 'Émettre une autre',
+    backToList: 'Retour à la liste d\'accès',
+    tenant: 'Locataire',
+    application: 'Application',
+    autoFillHint: 'Les champs suivants sont remplis automatiquement avec les valeurs par défaut :',
+    advancedHint: 'Besoin de plus d\'options ? Passez en mode expert pour le formulaire d\'émission complet.',
+  },
 }

@@ -100,6 +100,13 @@ func (idx *Index) RecommendV2WithHints(
 		// failed" spikes; (b) a degraded log; (c) a counter that
 		// thresholds-trigger an alert after sustained failures.
 		recordLiveFilterFailure(pool != nil, err)
+		// F10 (2026-11-17): log snapshot age on fallback to help diagnose
+		// "selected model is no longer routable" incidents.
+		snapshotAge := time.Since(idx.LastRefresh())
+		slog.Warn("autoroute: live filter failed, falling back to snapshot",
+			"error", err.Error(),
+			"snapshot_age_sec", int(snapshotAge.Seconds()),
+			"snapshot_candidates", len(all))
 		filtered = fallbackSnapshotAvailability(all)
 	} else {
 		recordLiveFilterSuccess(len(all) - len(filtered))
@@ -477,6 +484,54 @@ func filterCurrentlyAvailable(ctx context.Context, pool *pgxpool.Pool, all []Can
 	return filtered, nil
 }
 
+// fallbackSnapshotAvailability is the degraded availability filter when the
+// live database query fails. It uses the in-memory snapshot (idx.entries)
+// built by the last successful Refresh call.
+//
+// ★ F10 (2026-11-17 auto 模式可用性轮 · 快照降级路径补闸)：
+//
+// 快照本身**已经过滤**了 node_probe / lifecycle / manual_disabled 等状态
+// （见 refreshIndexSQL 的 WHERE 子句），所以这里的 UnavailableReason 只
+// 反映 binding / provider_model 层的不可用（migration 347 以来的语义）。
+//
+// ★★ 为什么「快照已经过滤」还会选中坏模型：
+//
+// 快照的刷新间隔最多 5 分钟。在这个窗口内：
+//   - 探针可能刚失败（node_probe_state.next_retry_at 刚进入未来）
+//   - 凭据可能进入 cooling / rate_limited / suspended
+//   - 供应商可能被手动禁用
+//
+// 而决策面拿到的是 5 分钟前的快照 ⇒ 选中的模型在**路由时**（实时查询
+// v_routable_credential_models 视图）已经不可路由 ⇒ no_candidate。
+//
+// ★★★ 为什么不能简单补闸门：
+//
+// 快照里**没有**探针状态、lifecycle 状态等字段——它们在刷新时已经被
+// WHERE 子句过滤掉了。Candidate 结构体只保留了已通过过滤的绑定，以及
+// 它们的 UnavailableReason（binding/pm 层）。
+//
+// ★★★★ 本修复的策略：
+//
+//  1. 保留快照降级机制（高可用）——数据库故障时仍能选路由。
+//  2. 但**只过滤 UnavailableReason**（与旧实现一致）——因为快照本身已被过滤。
+//  3. 在调用方（filterCurrentlyAvailable 的 fallback 分支）记录降级事件，
+//     让运维能观察到「快照过时导致选中坏模型」的频率。
+//  4. ★ 新增：在快照降级时记录 WARN 日志，包含快照年龄（距上次刷新的时长）。
+//
+// ★ 替代方案（未采纳）：
+//
+//   - 方案A「禁止快照降级」：实时过滤失败直接返回 nil ⇒ 数据库故障时 auto
+//     完全不可用 ⇒ 可用性下降不可接受。
+//   - 方案B「缩短刷新周期」：5min → 1min ⇒ 增加数据库负载，且仍有 1min 窗口。
+//   - 方案C「快照补字段」：在 Candidate 里加 ProbeBackingOff / LifecycleDisabled
+//     等字段，refreshIndexSQL 投影它们 ⇒ 改动面太大（SQL / 结构体 / scanIndexRow）。
+//
+// ★ 通用式：
+//
+// 降级路径的判据**不能比正常路径更宽松**——降级是异常场景，更容易选中坏模型。
+// 但快照本身已经过滤过，所以这里「只检查 UnavailableReason」实际上**已经
+// 足够严格**（因为快照刷新的 WHERE 子句包含了所有核心闸门）。真正的问题是
+// **时效性**，而不是判据缺失。
 func fallbackSnapshotAvailability(all []Candidate) []Candidate {
 	filtered := make([]Candidate, 0, len(all))
 	for _, c := range all {
@@ -590,6 +645,12 @@ func (idx *Index) get48hFallback(ctx context.Context) *Candidate {
 
 	filtered, err := idx.filterCurrentlyAvailable(ctx, pool, availabilityFilter, candidates)
 	if err != nil {
+		// F10 (2026-11-17): log snapshot age on fallback in 48h path too.
+		snapshotAge := time.Since(idx.LastRefresh())
+		slog.Warn("autoroute: 48h fallback filter failed, using snapshot",
+			"error", err.Error(),
+			"snapshot_age_sec", int(snapshotAge.Seconds()),
+			"canonical_id", canonicalID)
 		filtered = fallbackSnapshotAvailability(candidates)
 	}
 	if len(filtered) == 0 {
