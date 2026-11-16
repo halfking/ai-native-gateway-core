@@ -11050,3 +11050,11 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
   文件头原写「运行期自然收敛」措辞不准（是"有界"不是"收敛"）。
 - 两侧闸仍是独立实现（本轮**维持不抽公共件**：键语义/冷却时长/并发形态都不同，
   抽公共件只会把两个口径焊死在一起），只把「归因进键」这条语义对齐。
+## 2026-11-16T21:54:55Z — deploy 245 build_seq 3042 (526cf7d7)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 968 | `968_plugin_config.sql` | `f1268b31b7c74ab396e2c09b06bffb54ff0eb68db560f7bf818d76b92abe6c8a` | applied+verified |
+| 969 | `969_approval_casdoor_mapping.sql` | `7ba285773a89b81bc62e16fa231c0816598ea189c810a30844078a2c4b358127` | applied+verified |
+| 970 | `970_market_price_platform_quotes.sql` | `825547fb970db8b624cd75e93bc3c39e7398f5d8a77e8a0dc4820406985c7a5a` | applied+verified |
+

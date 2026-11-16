@@ -8,8 +8,8 @@
 
 set -euo pipefail
 
-# 配置
-BASE_URL="${BASE_URL:-http://192.168.31.211}"
+# 配置（245 示例：BASE_URL=http://127.0.0.1:8781 在目标机上跑，或经 SSH 转发）
+BASE_URL="${BASE_URL:-http://192.168.31.211:8781}"
 USERNAME="${USERNAME:-admin}"
 PASSWORD="${PASSWORD:-Veritrans&9527}"
 TEST_RESULTS="/tmp/maestro-test-results-$(date +%Y%m%d-%H%M%S).log"
@@ -47,11 +47,11 @@ test_section() {
     echo "----------------------------------------" | tee -a "$TEST_RESULTS"
 }
 
-# 获取登录token
+# 获取登录 token（契约：POST /api/auth/token → access_token；勿用 /api/admin/login）
 login() {
     echo "正在登录..." | tee -a "$TEST_RESULTS"
     local response
-    response=$(curl -s -X POST "$BASE_URL/api/auth/login" \
+    response=$(curl -s -X POST "$BASE_URL/api/auth/token" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD\"}" \
         -w "\n%{http_code}")
@@ -60,7 +60,7 @@ login() {
     local body=$(echo "$response" | head -n -1)
     
     if [ "$http_code" = "200" ]; then
-        TOKEN=$(echo "$body" | jq -r '.token // .data.token // empty')
+        TOKEN=$(echo "$body" | jq -r '.access_token // .token // .data.token // empty')
         if [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; then
             test_passed "登录成功"
             return 0
@@ -202,14 +202,14 @@ test_frontend() {
 test_section "场景5：API健康检查"
 
 test_api_health() {
-    # 测试5.1：系统信息
+    # 测试5.1：版本身份（/api/system/info 已不存在）
     local response
-    response=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/system/info")
+    response=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/system/version")
     
     if [ "$response" = "200" ]; then
-        test_passed "系统信息API"
+        test_passed "系统版本API"
     else
-        test_failed "系统信息API" "HTTP $response"
+        test_failed "系统版本API" "HTTP $response"
     fi
     
     # 测试5.2：路由可用模型
