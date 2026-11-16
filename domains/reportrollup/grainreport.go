@@ -168,6 +168,20 @@ type GrainReport struct {
 // （本地 7 天 6336 行 grain、12% 失败）整条查询 826ms，其中 explode 分支
 // 占约 700ms，而不 explode 的同参数对照只要 11.8ms（真库 EXPLAIN ANALYZE
 // 变体对照，见 docs 注释）。拆成两个分支后同一查询降到十几毫秒量级。
+//
+// ★ 2026-11-17 审计轮：**每个维度都带上它的「归属维度」**。
+// 旧分组集只写维度本身（`(person)` / `(credential_id)` / `(api_key_id)`），
+// 归属维度被 GROUPING 折叠成 NULL ⇒
+//   - 人员行的租户**恒为空**（真库实测所有行的 tenant 都是 'default'，
+//     而读面人员行的 tenant 一律是空串）⇒ 导出「按用户」sheet 的租户列全空；
+//   - 跨租户同名人员被合并成一行（personKey 的注释本来就写明必须可区分，
+//     分组集与它自相矛盾）；
+//   - 凭据行丢掉供应商归属（导出代码里 `name + " @ " + provider` 那个分支
+//     因此永远不执行 ⇒ 已写好的功能从未生效）；
+//   - apikey 行丢掉租户归属（API 的 tenant_id 字段恒空）。
+//
+// 归属维度与维度本身是 1:N 的（一个凭据属一个供应商、一个 apikey 属一个租户），
+// 补进分组集**不改变任何度量**，只把被折叠掉的归属带回来。
 func grainGroupSets(daily bool) []string {
 	sets := []string{
 		"()",                            // 区间总计
@@ -175,19 +189,19 @@ func grainGroupSets(daily bool) []string {
 		"(report_date, raw_model_name)", // 按天 × 模型（图表）
 		"(provider_id)",                 // 按供应商
 		"(provider_id, raw_model_name)", // 按供应商 × 模型
-		"(credential_id)",               // 按凭据
+		"(provider_id, credential_id)",  // 按凭据（带供应商归属）
 		"(raw_model_name)",              // 按模型
 		"(tenant_id)",                   // 按租户
-		"(person)",                      // 按用户
-		"(api_key_id)",                  // 按 apikey
+		"(tenant_id, person)",           // 按用户（带租户归属）
+		"(tenant_id, api_key_id)",       // 按 apikey（带租户归属）
 	}
 	if daily {
 		sets = append(sets,
 			"(report_date, provider_id)",
-			"(report_date, credential_id)",
+			"(report_date, provider_id, credential_id)",
 			"(report_date, tenant_id)",
-			"(report_date, person)",
-			"(report_date, api_key_id)",
+			"(report_date, tenant_id, person)",
+			"(report_date, tenant_id, api_key_id)",
 		)
 	}
 	return sets
@@ -228,26 +242,63 @@ func grainAggSQL(scopes []string, filter GrainFilter, daily bool, excludeScope S
 	// 时留下悬空占位符，PG 直接 42P18「could not determine data type of
 	// parameter $N」（真库实测：只开 provider+credential+tenant 三个条件时
 	// $6 悬空，整条查询 500）。顺序与 runGrainAgg 的 args 追加顺序严格一致。
+	//
+	// ★ 2026-11-17 审计轮：**三个 id 维度共用同一套「-1 = 未落定」约定**
+	// （provider_id / credential_id / api_key_id）。未落定桶在快照里是 NULL
+	// （不是 -1）⇒ 该值必须落成 IS NULL 而不是等值，否则筛「未分配」永远
+	// 0 行——真库实测这三个桶分别是 38,035 / 38,035 / 16 笔（凭据未落定桶
+	// 占全量 30.8%），而读面把它们都显示成了行 ⇒ 看得见却筛不出。
+	//
+	// ★★ 但**旧口径回落查询除外**（excludeScope 非空时）：那一支读的
+	// daily_total / internal_tenant **根本不分解 id 维度** ⇒ 它们那些
+	// NULL 列的含义是「这个 scope 没有这一维」，不是「这批请求没落到该
+	// 维度」。若在这里也把 -1 落成 IS NULL，旧口径那天的**整天总量**会
+	// 被算进「未落定」桶——真库实测（隔离 PG 真库腿）筛「未落定供应商」
+	// 得 277 笔，而真实未落定只有 200 笔（多出的 77 是旧口径整天总量）。
+	// 旧口径行的正确处置是「不参与 id 维度过滤」⇒ 该过滤在旧口径行上
+	// 恒不成立（落成「该列必须有值」，不占占位符 ⇒ 两条查询参数序号一致），
+	// 而租户维度（internal_tenant 真的带租户）仍照常过滤。
 	var where []string
 	idx := 4
 	for _, f := range []struct {
 		col string
-		on  bool
+		val *int64
 	}{
-		{"provider_id", filter.ProviderID != nil},
-		{"credential_id", filter.CredentialID != nil},
-		{"api_key_id", filter.APIKeyID != nil},
-		{"tenant_id", filter.TenantID != ""},
-		{"person", filter.Person != ""},
+		{"provider_id", filter.ProviderID},
+		{"credential_id", filter.CredentialID},
+		{"api_key_id", filter.APIKeyID},
 	} {
-		if !f.on {
+		if f.val == nil {
 			continue
 		}
-		// provider_id = -1 是「未落定」哨兵（未路由到 provider 的失败行在
-		// 快照里是 NULL，不是 -1）⇒ 该值必须落成 IS NULL 而不是等值，
-		// 否则筛「未分配」永远 0 行——而这一桶在真库占了三成流量。
-		if f.col == "provider_id" && *filter.ProviderID == UnassignedID {
-			where = append(where, "AND provider_id IS NULL")
+		if *f.val == UnassignedID {
+			if excludeScope == "" {
+				where = append(where, "AND "+f.col+" IS NULL")
+			} else {
+				// 旧口径那一支（daily_total / internal_tenant）**不分解
+				// id 维度** ⇒ 它的 NULL 列不是「未落定」，而是「这个 scope
+				// 没有这一维」。若在这里也放行 -1，旧口径那天的**整天总量**
+				// 会被算进「未落定」桶——真库实测（隔离 PG 真库腿）筛
+				// 「未落定供应商」得 277 笔，而真实未落定只有 200 笔
+				// （多出的 77 是旧口径整天总量）。
+				// 正确处置：旧口径行不参与 id 维度过滤 ⇒ 该过滤在旧口径行上
+				// 恒不成立。用「该列必须有值」表达，**不占占位符** ⇒ 两条
+				// 查询的参数序号保持一致（grain / 回落两支共用一套 args）。
+				where = append(where, "AND "+f.col+" IS NOT NULL")
+			}
+			continue
+		}
+		where = append(where, fmt.Sprintf("AND %s = $%d", f.col, idx))
+		idx++
+	}
+	for _, f := range []struct {
+		col string
+		val string
+	}{
+		{"tenant_id", filter.TenantID},
+		{"person", filter.Person},
+	} {
+		if f.val == "" {
 			continue
 		}
 		where = append(where, fmt.Sprintf("AND %s = $%d", f.col, idx))
@@ -433,6 +484,13 @@ const (
 	gkDayAPIKey
 )
 
+// classify 把一行派发到它所属的分组集。
+//
+// 标志位语义：gDate==1 表示「日期被折叠掉」（不在这行的分组键里），
+// 于是 d := !gDate 为真表示**日期是分组键**。每个分组集对应唯一的标志组合，
+// 分组集一改（2026-11-17 审计轮给凭据/人员/apikey 补上归属维度），
+// 这里必须同步——否则行会被派发到兜底分支（gkTotal），
+// 「总计」就会把分组行的度量重复算一遍。
 func classify(r grainScanRow) groupKind {
 	d, p, c := !r.gDate, !r.gProvider, !r.gCredential
 	m, t, u, k := !r.gModel, !r.gTenant, !r.gPerson, !r.gKey
@@ -447,25 +505,25 @@ func classify(r grainScanRow) groupKind {
 		return gkProvider
 	case !d && p && !c && m && !t && !u && !k:
 		return gkProviderModel
-	case !d && !p && c && !m && !t && !u && !k:
+	case !d && p && c && !m && !t && !u && !k:
 		return gkCredential
 	case !d && !p && !c && m && !t && !u && !k:
 		return gkModel
 	case !d && !p && !c && !m && t && !u && !k:
 		return gkTenant
-	case !d && !p && !c && !m && !t && u && !k:
+	case !d && !p && !c && !m && t && u && !k:
 		return gkPerson
-	case !d && !p && !c && !m && !t && !u && k:
+	case !d && !p && !c && !m && t && !u && k:
 		return gkAPIKey
 	case d && p && !c && !m && !t && !u && !k:
 		return gkDayProvider
-	case d && !p && c && !m && !t && !u && !k:
+	case d && p && c && !m && !t && !u && !k:
 		return gkDayCredential
 	case d && !p && !c && !m && t && !u && !k:
 		return gkDayTenant
-	case d && !p && !c && !m && !t && u && !k:
+	case d && !p && !c && !m && t && u && !k:
 		return gkDayPerson
-	case d && !p && !c && !m && !t && !u && k:
+	case d && !p && !c && !m && t && !u && k:
 		return gkDayAPIKey
 	}
 	return gkTotal // 不可达：分组集枚举封闭；兜底避免空结构体静默丢行
@@ -552,17 +610,19 @@ func (a *grainAccumulator) breakdown() map[string]int64 {
 // 与 runGrainAgg 的 args 追加顺序**必须一致**——它是占位符连号性的自证
 // 基准（测试用它核对 $1..$N 无空洞）。
 //
-// 两处「不占参数」的特例：
-//   - provider_id = -1（未落定哨兵）落成 IS NULL，不带占位符；
+// 两处「不占参数」的特例（三个 id 维度共用同一条约定）：
+//   - provider_id / credential_id / api_key_id = -1（未落定哨兵）落成
+//     IS NULL，不带占位符；
 //   - 模型过滤走 ModelNames 集合（= ANY）时占 1 个参数，与 Model 精确匹配
 //     同为 1 个（二者互斥，取其一）。
 func filterArgCount(f GrainFilter) int {
 	n := 0
-	if f.ProviderID != nil && *f.ProviderID != UnassignedID {
-		n++
+	for _, v := range []*int64{f.ProviderID, f.CredentialID, f.APIKeyID} {
+		if v != nil && *v != UnassignedID {
+			n++
+		}
 	}
-	for _, on := range []bool{f.CredentialID != nil, f.APIKeyID != nil,
-		f.TenantID != "", f.Person != ""} {
+	for _, on := range []bool{f.TenantID != "", f.Person != ""} {
 		if on {
 			n++
 		}
@@ -580,15 +640,11 @@ func runGrainAgg(ctx context.Context, q Querier, scopes []Scope, start, end time
 	}
 	args := []any{names, start, end}
 	// 参数顺序必须与 grainAggSQL 的占位符顺序**逐个对齐**（$4 起）。
-	// provider_id = -1（未落定哨兵）不占占位符——SQL 侧落成 IS NULL。
-	if filter.ProviderID != nil && *filter.ProviderID != UnassignedID {
-		args = append(args, *filter.ProviderID)
-	}
-	if filter.CredentialID != nil {
-		args = append(args, *filter.CredentialID)
-	}
-	if filter.APIKeyID != nil {
-		args = append(args, *filter.APIKeyID)
+	// 三个 id 维度的 -1（未落定哨兵）都不占占位符——SQL 侧落成 IS NULL。
+	for _, v := range []*int64{filter.ProviderID, filter.CredentialID, filter.APIKeyID} {
+		if v != nil && *v != UnassignedID {
+			args = append(args, *v)
+		}
 	}
 	if filter.TenantID != "" {
 		args = append(args, filter.TenantID)
@@ -774,7 +830,7 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			case gkProvider:
 				getAccInt(providers, dimKey(r.providerID)).add(r)
 			case gkProviderModel:
-				key := strconv.FormatInt(int64(derefI(r.providerID)), 10) + "\x00" + r.model
+				key := strconv.FormatInt(dimKey(r.providerID), 10) + "\x00" + r.model
 				getAccStr(providerModels, key).add(r)
 				if _, ok := metaProviderModel[key]; !ok {
 					metaProviderModel[key] = r
@@ -926,10 +982,16 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			ErrorBreakdown: a.breakdown(),
 			QualityScore:   ProviderQualityScore(tot),
 		}
-		if meta := metaCredential[cid]; meta.providerID != nil {
-			pid := *meta.providerID
-			row.ProviderID = &pid
-			row.ProviderName = names.Providers[pid]
+		// 未落定凭据桶（credential_id IS NULL）的行**横跨多个供应商**
+		// （真库实测未落定的 38,035 笔分布在多家供应商名下）⇒ 不能把
+		// 其中任意一家的 id 当成这一桶的归属，否则审计人会读成
+		// 「这些失败全部来自某某供应商」——那是假的。
+		if cid != UnassignedID {
+			if meta := metaCredential[cid]; meta.providerID != nil {
+				pid := *meta.providerID
+				row.ProviderID = &pid
+				row.ProviderName = names.Providers[pid]
+			}
 		}
 		rep.Credentials = append(rep.Credentials, row)
 	}
@@ -947,7 +1009,11 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 			ErrorBreakdown: a.breakdown(),
 			QualityScore:   ProviderQualityScore(tot),
 		}
-		row.TenantID = metaAPIKey[kid].tenant
+		// 同理：未落定 apikey 桶（api_key_id IS NULL）的行横跨多个租户，
+		// 不能挂任意一个租户。
+		if kid != UnassignedID {
+			row.TenantID = metaAPIKey[kid].tenant
+		}
 		rep.APIKeys = append(rep.APIKeys, row)
 	}
 	sort.Slice(rep.APIKeys, func(i, j int) bool {

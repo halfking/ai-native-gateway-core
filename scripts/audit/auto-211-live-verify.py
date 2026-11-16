@@ -140,10 +140,13 @@ def main() -> int:
         print("    PASS")
 
     # ── 2. 临时 key ────────────────────────────────────────────────────────
+    # key_alias 在租户+应用维度必须唯一 ⇒ 用时间戳后缀，避免与既有别名撞车。
+    alias = f"auto-live-verify-{int(time.time())}"
     status, _, text = http("POST", f"{base}/api/keys", headers=auth, body={
-        "name": "auto-live-verify-20261116",
-        "application_id": None,
+        "application_code": "default",
         "tenant_id": TENANT,
+        "key_alias": alias,
+        "remark": "auto 模式可用性轮（2026-11-16）临时验收 key，验后即吊销",
     })
     if status not in (200, 201):
         print(f"[2] 临时 key 签发失败 HTTP {status}: {text[:300]}")

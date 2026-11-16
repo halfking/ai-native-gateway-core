@@ -63,6 +63,20 @@ type Decision struct {
 	// the latter is a capped audit view and must not hide viable fallbacks.
 	TierFailoverModels []string
 
+	// ReselectCandidates is the in-process **wide** ladder (canonical model
+	// names, hottest first) used by the gateway's zero-candidate reselect
+	// path: when the selected model turns out to have no routable candidate,
+	// the gateway walks this ladder instead of giving up with a 503.
+	//
+	// It exists because the decision pool itself is the 48h hot top-3
+	// (see recommend_v2.go / getHotTop3Canonicals) — a 3-model pool whose
+	// members can all be unusable at the same moment, while hundreds of
+	// other models are routable. See reselect.go for the full rationale.
+	//
+	// Unlike CandidatesTopN this is NOT part of the audit view: it is never
+	// serialised into the response header or the auto_decision JSONB.
+	ReselectCandidates []string
+
 	// EnabledFeatures records which routing sub-features were active when
 	// this decision was produced. Used for auditability and wire/header propagation.
 	EnabledFeatures []string
@@ -766,6 +780,9 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		Reason:             cls.Reason,
 		ExternalUsage:      cls.ExternalUsage,
 		CandidatesTopN:     recommended,
+		// 根修 5：宽退路池（48h 热度榜 LIMIT 32）——V1 与 V2 同款字段语义，
+		// 避免 V1/V2 退路能力分叉（V1 不是默认路径，但字段契约一致）。
+		ReselectCandidates: reselectCandidatesForAccessor(ctx, d.index, winner.Candidate.CanonicalName, ReselectPoolLimit),
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 		RoleFallbackLayer:  roleFallbackLayer,

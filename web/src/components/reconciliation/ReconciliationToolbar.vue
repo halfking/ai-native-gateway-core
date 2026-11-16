@@ -51,13 +51,15 @@ function labelOf(key: string, name: string | undefined, requests: number): strin
 }
 
 /**
- * 供应商下拉的展示名：-1 是「未落定」哨兵（未路由到 provider 的失败行）。
+ * id 类维度（供应商 / 凭据 / apikey）下拉的展示名：-1 是「未落定」哨兵
+ * （未路由到 provider / 未落到具体凭据 / 未落到具体 apikey 的失败行）。
  *
- * 它在快照里是 provider_id IS NULL，读面映射成 -1 显示成一行（真库实测这一桶
- * 占全量流量三成）。候选侧用同一个键（-1），所以这一行**可筛**——但键是 -1，
- * 直接显示 "-1 · 38,035" 对账人读不懂，得说人话。
+ * 它在快照里是 NULL，读面映射成 -1 显示成一行（真库实测未落定桶：供应商
+ * 38,035 笔 = 全量 30.8%、凭据 38,035 笔、apikey 16 笔）。候选侧用同一个键
+ * （-1），所以这一行**可筛**——但键是 -1，直接显示 "-1 · 38,035" 对账人
+ * 读不懂，得说人话。
  */
-function providerLabelOf(key: string, name: string | undefined, requests: number): string {
+function idLabelOf(key: string, name: string | undefined, requests: number): string {
   if (key === String(UNASSIGNED_ID)) {
     return `${t('reports.unassigned')} · ${fmtInt(requests)}`
   }
@@ -123,7 +125,7 @@ function onView(value: string | number | boolean | undefined) {
         v-for="item in dims?.providers ?? []"
         :key="item.key"
         :value="Number(item.key)"
-        :label="providerLabelOf(item.key, item.name, item.requests)"
+        :label="idLabelOf(item.key, item.name, item.requests)"
       />
     </el-select>
     <!--
@@ -182,7 +184,7 @@ function onView(value: string | number | boolean | undefined) {
             v-for="item in dims?.credentials ?? []"
             :key="item.key"
             :value="Number(item.key)"
-            :label="labelOf(item.key, item.name, item.requests)"
+            :label="idLabelOf(item.key, item.name, item.requests)"
           />
         </el-select>
       </label>
@@ -223,7 +225,7 @@ function onView(value: string | number | boolean | undefined) {
             v-for="item in dims?.api_keys ?? []"
             :key="item.key"
             :value="Number(item.key)"
-            :label="labelOf(item.key, item.name, item.requests)"
+            :label="idLabelOf(item.key, item.name, item.requests)"
           />
         </el-select>
       </label>

@@ -73,16 +73,16 @@ func TestClassify(t *testing.T) {
 		{"按天×模型", grainScanRow{gProvider: true, gCredential: true, gTenant: true, gPerson: true, gKey: true}, gkDayModel},
 		{"按供应商", grainScanRow{gDate: true, gCredential: true, gModel: true, gTenant: true, gPerson: true, gKey: true}, gkProvider},
 		{"按供应商×模型", grainScanRow{gDate: true, gCredential: true, gTenant: true, gPerson: true, gKey: true}, gkProviderModel},
-		{"按凭据", grainScanRow{gDate: true, gProvider: true, gModel: true, gTenant: true, gPerson: true, gKey: true}, gkCredential},
+		{"按凭据", grainScanRow{gDate: true, gModel: true, gTenant: true, gPerson: true, gKey: true}, gkCredential},
 		{"按模型", grainScanRow{gDate: true, gProvider: true, gCredential: true, gTenant: true, gPerson: true, gKey: true}, gkModel},
 		{"按租户", grainScanRow{gDate: true, gProvider: true, gCredential: true, gModel: true, gPerson: true, gKey: true}, gkTenant},
-		{"按用户", grainScanRow{gDate: true, gProvider: true, gCredential: true, gModel: true, gTenant: true, gKey: true}, gkPerson},
-		{"按 apikey", grainScanRow{gDate: true, gProvider: true, gCredential: true, gModel: true, gTenant: true, gPerson: true}, gkAPIKey},
+		{"按用户", grainScanRow{gDate: true, gProvider: true, gCredential: true, gModel: true, gKey: true}, gkPerson},
+		{"按 apikey", grainScanRow{gDate: true, gProvider: true, gCredential: true, gModel: true, gPerson: true}, gkAPIKey},
 		{"按天×供应商", grainScanRow{gCredential: true, gModel: true, gTenant: true, gPerson: true, gKey: true}, gkDayProvider},
-		{"按天×凭据", grainScanRow{gProvider: true, gModel: true, gTenant: true, gPerson: true, gKey: true}, gkDayCredential},
+		{"按天×凭据", grainScanRow{gModel: true, gTenant: true, gPerson: true, gKey: true}, gkDayCredential},
 		{"按天×租户", grainScanRow{gProvider: true, gCredential: true, gModel: true, gPerson: true, gKey: true}, gkDayTenant},
-		{"按天×用户", grainScanRow{gProvider: true, gCredential: true, gModel: true, gTenant: true, gKey: true}, gkDayPerson},
-		{"按天×apikey", grainScanRow{gProvider: true, gCredential: true, gModel: true, gTenant: true, gPerson: true}, gkDayAPIKey},
+		{"按天×用户", grainScanRow{gProvider: true, gCredential: true, gModel: true, gKey: true}, gkDayPerson},
+		{"按天×apikey", grainScanRow{gProvider: true, gCredential: true, gModel: true, gPerson: true}, gkDayAPIKey},
 	}
 	for _, tc := range cases {
 		if got := classify(tc.row); got != tc.want {
@@ -203,12 +203,15 @@ func TestGrainAggSQL_FilterPlaceholders(t *testing.T) {
 	// daily=false 时不得带「按天 × 单维度」明细分组集；但**按天**与
 	// 「按天 × 模型」必须常驻——趋势图与模型堆叠图每次都要用，它们不是
 	// 明细模式的产物。
+	// 2026-11-17 审计轮：按天×凭据 / 按天×用户 / 按天×apikey 三个明细
+	// 分组集**带上归属维度**（provider_id / tenant_id）——旧写法把归属
+	// GROUPING 折叠掉，人员行的租户恒空、凭据行丢供应商归属。
 	detailOnly := map[string]bool{
-		"(report_date, provider_id)":   true,
-		"(report_date, credential_id)": true,
-		"(report_date, tenant_id)":     true,
-		"(report_date, person)":        true,
-		"(report_date, api_key_id)":    true,
+		"(report_date, provider_id)":                true,
+		"(report_date, provider_id, credential_id)": true,
+		"(report_date, tenant_id)":                  true,
+		"(report_date, tenant_id, person)":          true,
+		"(report_date, tenant_id, api_key_id)":      true,
 	}
 	summary := grainGroupSets(false)
 	for _, s := range summary {

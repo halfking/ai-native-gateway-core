@@ -336,6 +336,11 @@ type autoRouteDecision struct {
 	// Process-local inputs for pre-first-byte dispatch recovery. They are not
 	// serialized into the response header or audit JSON.
 	failoverModels []string
+	// reselectModels is the **wide** zero-candidate reselect ladder
+	// (canonical model names, hottest first). Process-local only — never
+	// serialized into the response header or the auto_decision JSONB.
+	// See autoroute/reselect.go for the rationale.
+	reselectModels []string
 	signals        autoroute.ClassificationSignals
 
 	// Process-local selection snapshot fields. The wire candidate list is an
@@ -811,6 +816,8 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		similarity := d.EmbeddingShadowSimilarity
 		wire.EmbeddingShadowSimilarity = &similarity
 	}
+	// 根修 5：宽退路池透传到进程内字段（不进响应头 / 不进审计 JSON）。
+	wire.reselectModels = append([]string(nil), d.ReselectCandidates...)
 	for i, c := range d.CandidatesTopN {
 		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{
 			Model:          c.Candidate.CanonicalName,

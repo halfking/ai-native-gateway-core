@@ -37,8 +37,14 @@ const dims: DimensionOptions = {
     { key: '-1', requests: 38035 },
     { key: '95464', name: 'magpie', requests: 0 },
   ],
-  credentials: [],
-  api_keys: [],
+  credentials: [
+    { key: '11', name: '凭据一', requests: 110 },
+    { key: '-1', requests: 38035 },
+  ],
+  api_keys: [
+    { key: '248', name: 'apikey-a', requests: 3 },
+    { key: '-1', requests: 16 },
+  ],
   models: [
     { key: 'MiniMax-M2.5', requests: 25300 },
     { key: 'glm-5.2', requests: 1200 },
@@ -113,5 +119,26 @@ describe('ReconciliationToolbar 候选完整性（2026-11-16 审计轮）', () =
   it('没有截断时不显示截断提示（阴性对照）', () => {
     const wrapper = mountToolbar({ dims })
     expect(wrapper.text()).not.toContain('截断')
+  })
+})
+
+// ★ 2026-11-17 审计轮：凭据 / apikey 两个维度也各有「未落定」桶
+// （真库实测凭据未落定 38,035 笔 = 全量 30.8%、apikey 未落定 16 笔）。
+// 上一轮只给供应商配了「未落定」文案 ⇒ 另外两个维度的下拉显示裸的
+// "-1 · 38,035"，对账人读不懂，也看不出这一行可以筛。
+describe('ReconciliationToolbar 三个 id 维度的「未落定」文案（2026-11-17 审计轮）', () => {
+  it('凭据与 apikey 下拉里的 -1 都显示人话「未落定」', () => {
+    const wrapper = mountToolbar({ dims })
+    const options = wrapper.findAllComponents(ElOption)
+    const labels = options.map((o) => String(o.props('label')))
+    const values = options.map((o) => o.props('value'))
+    // 三个维度各有 1 个 -1 候选 ⇒ 共 3 个。
+    expect(values.filter((v) => v === -1).length).toBe(3)
+    // 三个 -1 都必须说人话，而不是裸 "-1 · N"。
+    const unassigned = labels.filter((l) => l.includes('未落定'))
+    expect(unassigned.length).toBe(3)
+    expect(labels.some((l) => /^-1 ·/.test(l)), '仍有裸 -1 标签').toBe(false)
+    // 请求数要跟着走（38,035 那一桶是凭据的未落定桶）。
+    expect(labels.some((l) => l.includes('38,035'))).toBe(true)
   })
 })

@@ -23,6 +23,21 @@
 ★ **F1 是主因**。F3 在当前生产配置下**不是主因**（V2 决策路径默认不读会话缓存 ⇒ 每轮重判），
 但它是「一旦开启会话粘性就会复发」的同型缺陷，一并修掉。
 
+### 1.1 第二轮（部署后 live 验收）追加的三个发现
+
+F1-F3 修完并部署（`2c425d15`）后，第一轮 live 验收**仍然三协议面全 503**。
+继续在 211 上取证，挖出下面三个更靠底层的形态：
+
+| # | 现象 | 量级（211 真库 / 日志） | 根因 |
+|---|---|---|---|
+| **F4** | auto 选中的模型**在进 dispatch 之前**就 503 —— 换模梯子根本没机会跑 | 2026-11-17 00:24 live 验收：chat 选到 `qwen2.5-7b-instruct`，`failure_detail_code=no_candidates`、`chosen_credential_id=99023`（哨兵） | handler 在 `resolveCandidatesForRequest` 拿到**零候选**时直接 503；dispatch 换模在 executor 里面 ⇒ 请求死在 executor 之前 |
+| **F5** | auto 的**决策池只有 48h 热门 top-3** ⇒ 退路也只有 2-3 个同类模型 | `autoroute/recommend_v2.go` 默认路径的 `candidatePool` 只装 `getHotTop3Canonicals`；而这三者在同一时刻**全枯竭**（`qwen2.5-7b-instruct` / `glm-4.7` / `glm-4.5-air` 实测全零候选） | 决策池宽度 = 3，与「此刻有 871 个模型可路由」的事实无关 |
+| **F6** | 决策面与候选面**判据不一致** ⇒ auto 选中一个候选面**必然滤空**的模型 | `qwen2.5-7b-instruct` / credential 99023：状态闸**全部通过**（ready/ok/healthy/enabled/is_routable=true），但 `models_canonical.released_at = 2024-09-19` ⇒ 被候选面的 **model lifecycle 闸**（migration 966，2026-11-14 上线）丢弃 | 决策侧实时过滤（`filterCurrentlyAvailable`）**缺**候选面的三道闸：canonical disabled、model lifecycle、broken_confirmed 探针对 |
+
+★ **F6 是这一轮最深的根因**：它不是竞态，是**同一行数据两个面对它给出相反答案**
+（决策说能用、路由说不能用）。症状与「键错位」一模一样，但修法完全不同。
+★ F5 与 F6 互补：**F6 是事前（不再选死模型），F5 是事后（真零候选时有够宽的退路）**。
+
 ---
 
 ## 二、magpie 的 auto 模式到底强在哪（源码取证）
@@ -154,6 +169,57 @@ magpie 的对应规则是 `affinity.go:599-600`：**粘性目标正在休息 ⇒
 211 上 credential 62 正是「20 条绑定全 `available=true`、凭据本身已 `suspended`」的形态
 ⇒ 旧校验会误判「还可用」。本轮把判据**改成与 autoroute 索引刷新 SQL 逐条对齐**。
 
+### 4.4 F4：零候选发生在 dispatch 之前，换模梯子根本没机会跑
+
+修完 F1-F3 并部署（`2c425d15`）后，第一轮 live 验收（2026-11-17 00:24）**三协议面仍全 503**：
+
+| 协议面 | auto 解析结果 | HTTP | 失败码 |
+|---|---|---|---|
+| chat | `qwen2.5-7b-instruct` | 503 | `no_candidates`（`chosen_credential_id=99023` 哨兵） |
+| messages | `glm-4.7` | 503 | — |
+| responses | `glm-4.5-air` | 503 | — |
+
+源码位置：`domains/streaming/handler.go:4148` —— `len(candidates) == 0` 的分支**当场 503**，
+而 dispatch 的换模梯子（`domains/dispatch/dispatcher.go:187-279`）在 **executor 里面**：
+请求死在 executor 之前 ⇒ 梯子永远走不到。
+
+⇒ 这是「修了换模闸门却仍然断掉」的原因：**闸门只是让梯子可用，梯子前面还有一道墙**。
+
+### 4.5 F5：决策池只有 48h 热门 top-3 ⇒ 退路也只有 3 个模型
+
+`autoroute/recommend_v2.go` 默认路径（非 `FullCandidateSet`）里：
+
+```
+candidatePool = hotTop3 的候选（getHotTop3Canonicals：48h 成功流量 LIMIT 3）
+```
+
+⇒ auto 的决策池 = **3 个模型**。选中模型此刻不可路由时，能退的地方也只有这 2-3 个同类模型。
+211 实测这三个（`qwen2.5-7b-instruct` / `glm-4.7` / `glm-4.5-air`）**同一时刻全枯竭**，
+而同一时刻平台上 `v_routable_credential_models.is_routable = TRUE` 的模型有 **871** 个。
+
+### 4.6 F6：决策面与候选面判据不一致 ⇒ 选中了「候选面必然滤空」的模型
+
+211 真库逐条对拍（credential 99023 / `qwen2.5-7b-instruct`）：
+
+| 闸 | 决策侧 `filterCurrentlyAvailable` | 候选面 `candidateQuerySQL` | 该模型实测 |
+|---|---|---|---|
+| credential status / lifecycle / manual_disabled | ✅ 有 | ✅ 有 | active / active / false ✅ |
+| credential availability_state / quota_state / health_status | ✅ 有 | ✅ 有 | ready / ok / healthy ✅ |
+| provider enabled / manual_disabled | ✅ 有 | ✅ 有 | true / false ✅ |
+| binding / provider_model available + manual% 原因 | ✅ 有 | ✅ 有 | true ✅ |
+| node_probe 退避 | ✅ 有 | — | — |
+| **models_canonical.status = 'disabled'** | ❌ **缺** | ✅ 有 | active ✅ |
+| **model lifecycle（released_at + stale_threshold）** | ❌ **缺** | ✅ 有（migration 966） | **released_at = 2024-09-19 ⇒ 被丢弃** |
+| **broken_confirmed 探针对** | ❌ **缺** | ✅ 有（`brokenPairExcludeSQL`） | — |
+
+⇒ **决策说「能用」，候选面说「不能」** ⇒ auto 把它排到第 1 并选中 ⇒ 必然零候选 ⇒ 503。
+
+★ 这不是竞态，是**判据分歧**：同一行数据，两个面对它给出相反答案。
+★ 通用式：**候选面与决策面必须同闸**。同键还不够——键一样、闸不一样，
+症状与键错位一模一样，但修法完全不同。
+★ 量化（211 真库同款 SQL）：决策池 **1017** 个模型中，**194 个（19%）**「决策面活、候选面死」；
+另有 48 个「此刻有货但不在决策池」。⇒ 命中死模型是**高频事件，不是偶发**。
+
 ---
 
 ## 五、改动（本轮）
@@ -168,6 +234,30 @@ magpie 的对应规则是 `affinity.go:599-600`：**粘性目标正在休息 ⇒
 | `autoroute/internal/legacyflags/legacyflags.go` | `AUTO_ON_MESSAGES` / `AUTO_ON_RESPONSES` 默认 **true** | F2 |
 | `autoroute/feature_flags.go` | 同步默认值与注释 | 同上 |
 | `domains/streaming/handler.go` | 订正 D5 块注释（死代码 + 指向活路） | 事实订正 |
+
+### 5.3 第二轮（F4/F5/F6）改动
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `domains/streaming/auto_route_reselect.go`（新） | **零候选重选器**：沿退路链逐个试，改写请求体后按新体重新解析候选，第一个有节点的即采用 | F4：换模梯子前面那道墙 |
+| `domains/streaming/handler.go` | `len(candidates)==0` 分支前插入 auto 重选块（命中则改写 model/body/candidates/policy/modality 并继续） | F4 接线点 |
+| `autoroute/availability_filter_sql.go`（新） | 决策面实时过滤**补齐候选侧三道闸**：canonical disabled / model lifecycle / broken_confirmed 探针对 | F6（治本：不再选死模型） |
+| `autoroute/recommend_v2.go` | 过滤 SQL 抽出为独立常量 + 占位符渲染探针闸 | F6 |
+| `autoroute/reselect.go`（新） | **宽退路池**：同一张 48h 热度榜的 LIMIT 32 版本 → canonical 名列表 | F5（事后：退路够宽） |
+| `autoroute/decision.go` / `decision_v2.go` | `Decision.ReselectCandidates` 新字段（V1/V2 同语义） | F5 载体 |
+| `autoroute/index.go` | 宽热度榜的缓存字段 + 测试注入点 | F5 |
+| `domains/streaming/auto_route.go` | wire 增加进程内字段 `reselectModels`（**不进响应头 / 不进审计 JSON**） | F5 传输 |
+| `domains/streaming/request_log_pipeline.go` | `RequestLogContext.AutoReselectModels` + `SetAutoDecision` 填充 | F5 传输 |
+| `domains/streaming/auto_route_reselect.go` | 重选链**优先宽池**、回退窄链；**两条链分开消费** | F5 |
+
+### 5.4 第二轮的三条作用域声明
+
+1. **零候选重选只对 auto 请求生效**（`logCtx.IsAutoRequest`）：显式点名模型的请求，
+   零候选的语义就是「这个模型确实不可用」，应如实 503 让客户端自己换；
+2. **宽退路池不进审计视图**：`Decision.ReselectCandidates` 与 wire 的 `reselectModels`
+   都是进程内字段 ⇒ `auto_decision` JSONB 与响应头**字节级不变**；
+3. **决策侧补闸是 fail-safe 方向的收紧**：只会让池子里的模型**更少**（都是本来就路由不到的）；
+   过滤查询出错时走既有的 `fallbackSnapshotAvailability`（放行），不会把 auto 打成空池。
 
 ### 5.1 三条安全边界（重校验）
 
@@ -212,6 +302,42 @@ go test ./autoroute/... ./domains/dispatch/... ./settings/...        # 全绿
 go test ./domains/streaming/... ./cmd/gateway/...                    # 全绿
 gofmt：经手文件零漂移
 ```
+
+### 6.3 第二轮（F4/F5/F6）钉测
+
+| 测试 | 守什么 | 变异（改坏）后 |
+|---|---|---|
+| `autoroute/availability_filter_sql_test.go::TestAvailabilityFilterSQL_HasCandidateSideGates` | 决策面过滤 SQL **带齐**候选侧三道闸（canonical disabled / lifecycle / broken_confirmed） | 摘掉任一道闸 ⇒ **红** |
+| `autoroute/availability_filter_sql_test.go::TestAvailabilityFilterSQL_ProbeTableIsProbemodeGuarded` | 探针闸读的是 `probemode.GuardStateTable()`（legacy/新栈同源，不与候选面分叉） | 换成别的表 ⇒ **红** |
+| `autoroute/availability_filter_sql_test.go::TestAvailabilityFilterSQL_PlaceholderRendered` | 占位符真的被渲染（否则闸会静默消失） | 占位符残留 ⇒ **红** |
+| `autoroute/reselect_test.go::TestReselectCandidateNames_SkipsChosenAndDuplicates` | 退路池去重 + 不含已选模型 | — |
+| `autoroute/reselect_test.go::TestReselectCandidateNames_EmptyWhenNoLadder` | 无榜 ⇒ 空池（行为退化为旧窄链，不丢退路） | — |
+| `autoroute/reselect_test.go::TestReselectCandidateNames_HonoursLimit` | 退路池宽度有上限（不会变成无界串行扫描） | 宽度退回 3 ⇒ **红** |
+| `autoroute/reselect_test.go::TestDecideV2_FillsReselectCandidates` | V2 决策**真的带上**宽退路池；审计视图 `CandidatesTopN` 不受影响 | 决策不填 ⇒ **红** |
+| `autoroute/reselect_test.go::TestDecideV1_FillsReselectCandidates` | V1 同语义（字段契约不分叉） | — |
+| `domains/streaming/auto_route_reselect_test.go::TestAutoRequestReselect_PrefersWideReselectLadder` | 宽池**优先**于窄链 | 宽池不参与 ⇒ **红** |
+| `domains/streaming/auto_route_reselect_test.go::TestAutoRequestReselect_WideLadderExhaustedFallsBackToNarrow` | 宽池全灭 ⇒ 仍走窄链 | 宽池不参与 ⇒ **红** |
+| `domains/streaming/auto_route_reselect_test.go::TestAutoRequestReselect_WideLadderDoesNotConsumeDispatchLadder` | 宽池命中时**不掏空** dispatch 换模梯子 | — |
+| `domains/streaming/auto_route_reselect_test.go::TestAutoRequestReselect_NotAutoRequest` | 非 auto 请求**不被**改路由 | 去掉 `IsAutoRequest` 边界 ⇒ **红** |
+| `domains/streaming/auto_route_reselect_test.go::TestApplyAutoReselect_RewritesRequestContext` | 接线**整体**改写（model/body/candidates/policy/modality 一起改） | 半写 ⇒ **红** |
+| `domains/streaming/auto_route_reselect_wiring_test.go::TestHandlerWiresAutoReselect` | handler 真的调用了 `applyAutoReselect`（接线形状门） | 去掉调用 ⇒ **红** |
+
+### 6.4 变异汇总（第二轮）
+
+`/tmp/auto-mutation-round2.sh`：**8/8 检出**（M1 lifecycle 闸摘掉｜M2 broken_confirmed 闸改名｜
+M3 canonical disabled 闸摘掉｜M4 宽池不参与重选｜M5 退路池宽度退回 3｜M6 决策不再填退路池｜
+M7 handler 不再应用重选结果｜M8 非 auto 请求也被重选）。
+
+★ **首轮其实是 7/8：M5 漏检**，且是**真阴性**（不是锚点问题）——
+`TestReselectCandidateNames_HonoursLimit` 传的是**显式 limit 参数**，
+所以它看不见「生产调用点实际使用的那个常量」被改窄。
+⇒ 补 `TestReselectPoolLimitIsWide`（直接钉住常量 ≥ 16）⇒ 重跑 M5：**红 → 还原绿**。
+
+★ 这一条正是 §701 纪律的现场复现：**守卫没覆盖到的地方，只有变异能发现**——
+「测试全绿」不等于「改动被守住了」。若没有跑变异，`ReselectPoolLimit`
+完全可以被改回 3 而无人察觉（而它退回去就等于本轮根修 5 白做）。
+★ 脚本另带**负控**：锚点未命中会单独报 `ANCHOR MISS`，不计入「已检出」
+（锚点未命中 ≠ 守卫失效，它意味着变异压根没发生）。
 
 ---
 
