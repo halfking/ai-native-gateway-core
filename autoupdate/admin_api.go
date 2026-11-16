@@ -480,7 +480,15 @@ func (a *AdminAPI) GetInstallStatus(c *echo.Context) error {
 
 // GetNotifications 列出「有新版待处理」的提醒。
 //
-// 提醒 = upgrade_logs 里 status=pending 的行（由 Checker 发现新版时生成）。
+// 提醒 = upgrade_logs 里仍处于**可行动**状态的行（pending / failed / rolled_back）。
+//
+// ★ 为什么不只取 pending：
+//
+//	回滚（装了但服务起不来 ⇒ 已还原成旧二进制）之后，新版**仍然待处理**——
+//	节点还停在旧版本上，正是最需要提醒的场景。此时那一行的状态是 rolled_back，
+//	若只筛 pending，提醒就彻底消失了 ⇒ 再也没人会来升这一级。
+//	同理，failed（下载失败/校验失败）也仍然待处理。
+//	只有 success（真的装成了）才算告一段落。
 func (a *AdminAPI) GetNotifications(c *echo.Context) error {
 	if a.store == nil {
 		return c.JSON(http.StatusOK, map[string]interface{}{"items": []any{}, "total": 0})
@@ -499,7 +507,7 @@ func (a *AdminAPI) GetNotifications(c *echo.Context) error {
 
 	pending := make([]ReleaseStatus, 0, len(history))
 	for _, h := range history {
-		if h.Status == StatusPending {
+		if IsActionableStatus(h.Status) {
 			pending = append(pending, h)
 		}
 	}

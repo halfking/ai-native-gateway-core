@@ -856,9 +856,17 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 						"blocked_provider_tenant", b.BlockedByProviderTenant,
 						"blocked_unavailable_reason", b.BlockedByUnavailableReason,
 						"likely_cause", b.Summarize(),
+						// ★ cause_class 是**有界**归因类（R-76-3 批判审计补）：日志冷却闸
+						// 靠它判「归因变了没」⇒ 变了就立刻放行，不必等 5 分钟窗口。
+						// 用它而不是 likely_cause 原文：原文含 offer 计数，计数抖动会让
+						// 键交替 ⇒ 洪水压不住。
+						"cause_class", b.CauseClass(),
 					)
 				} else {
-					diagArgs = append(diagArgs, "diag_error", diagErr.Error())
+					diagArgs = append(diagArgs, "diag_error", diagErr.Error(),
+						// 归因查询失败 ⇒ 拿不到 breakdown ⇒ 归因类记为 diag_error
+						// （有界，且与「未登记 / 配额…」等真实归因区分得开）。
+						"cause_class", CauseClassDiagError)
 				}
 				logCandidateDiagnostic("db_empty", diagArgs...)
 			}
@@ -1147,8 +1155,9 @@ func canServeCandidateCacheDuringOutage(ctx context.Context, err error, entry ca
 func logCandidateDiagnostic(event string, args ...any) {
 	recordCandidateDiagnostic(event)
 	if event == "db_empty" {
-		model, tenant := diagArgsKeyFields(args)
-		allowed, suppressed := candidateDiagLogGateInstance.allow(event, model, tenant, time.Now())
+		model, tenant, cause := diagArgsKeyFields(args)
+		// ★ cause 进键 ⇒ 归因变了就是新键 ⇒ 立刻放行（R-76-3 批判审计补）。
+		allowed, suppressed := candidateDiagLogGateInstance.allow(event, model, tenant, cause, time.Now())
 		if !allowed {
 			return
 		}
@@ -1159,10 +1168,13 @@ func logCandidateDiagnostic(event string, args ...any) {
 	slog.Warn("[candidate_diag] "+event, args...)
 }
 
-// diagArgsKeyFields 从 args（key, value 交替对）里取 "model" 与 "tenant_id"
-// 的字符串值；缺失时返回空串（空值仍构成合法键，只是所有缺字段的调用方
-// 共享一个桶——与旧行为相比不会更差）。
-func diagArgsKeyFields(args []any) (model, tenant string) {
+// diagArgsKeyFields 从 args（key, value 交替对）里取 "model"、"tenant_id" 与
+// "cause_class" 的字符串值；缺失时返回空串（空值仍构成合法键，只是所有缺
+// 字段的调用方共享一个桶——与旧行为相比不会更差）。
+//
+// ★ "cause_class" 是 R-76-3 批判审计补的第三个键字段：有界归因类，
+// 让「归因变了 ⇒ 立刻放行」成立（见 candidate_diag_dedup.go 文件头）。
+func diagArgsKeyFields(args []any) (model, tenant, cause string) {
 	for i := 0; i+1 < len(args); i += 2 {
 		key, _ := args[i].(string)
 		switch key {
@@ -1170,9 +1182,11 @@ func diagArgsKeyFields(args []any) (model, tenant string) {
 			model, _ = args[i+1].(string)
 		case "tenant_id":
 			tenant, _ = args[i+1].(string)
+		case "cause_class":
+			cause, _ = args[i+1].(string)
 		}
 	}
-	return model, tenant
+	return model, tenant, cause
 }
 
 func isRetryableDBError(err error) bool {

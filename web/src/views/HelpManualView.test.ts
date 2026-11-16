@@ -156,6 +156,45 @@ const TROUBLESHOOT_CONTRACT = [
   'api-211-admin-probe.py',
 ]
 
+/**
+ * 2026-11-17 真实网关 + 真实登录态逐项实测后校准的锚点。
+ *
+ * ★ 这一组是**实测出来的事实**：每一条都对应一次真实 HTTP 请求或一次真实
+ *   数据库查询的结果，不是从代码推的。改写它们＝把已经验证过的排障依据改坏。
+ * ★ 同样只用 ASCII（端点路径、错误码、字段名、状态串），不引入中文字面量。
+ */
+const TROUBLESHOOT_LIVE_CALIBRATION = [
+  // 健康检查：全量入口是查询参数，不是 /healthz/full 这个路径
+  '/healthz?full=true',
+  // 认证层两种 401 的真实 code（authentication_error 是 type，不是 code）
+  'missing_key',
+  'authentication_required',
+  // 预算与限流的真实 code
+  'budget_exceeded',
+  'rate_limit_exceeded',
+  'key_throttled',
+  'Retry-After',
+  // 诊断端点的必带参数
+  'provider_id=',
+  // 限流写入是整组覆盖：三个旋钮缺一即 400
+  'rate_limit_concurrent',
+  'rate_limit_tpm',
+  'dry-run=false',
+  // 模型列表口径：默认由运营可配，未识别取值返 400
+  'models.list_scope',
+  'canonical_id',
+  // 手工加绑定接口当前 500 的成因
+  '42P08',
+  // 强制改密闸与改密后的吊销纪元
+  'password change required before accessing other APIs',
+  'session revoked: password changed',
+  '/api/auth/change-password',
+  '/api/auth/token',
+  // 启动迁移的真源目录与清单
+  'embeddata/startup',
+  'installed_startup_migrations.tsv',
+]
+
 /** 排障章节的小节前缀（10.2 / 10.4 / 10.5 是重点三节）。 */
 const TROUBLESHOOT_SECTION_PREFIXES = ['10.2 ', '10.4 ', '10.5 ']
 
@@ -175,6 +214,102 @@ describe('troubleshooting sections', () => {
     for (const needle of TROUBLESHOOT_CONTRACT) {
       expect(manualSource).toContain(needle)
     }
+  })
+
+  it('pins the facts calibrated against a live gateway', () => {
+    for (const needle of TROUBLESHOOT_LIVE_CALIBRATION) {
+      expect(manualSource).toContain(needle)
+    }
+  })
+
+  it('does not present the unreadable health path as the full endpoint', () => {
+    // `/healthz/full` 仍然被提及（作为「它不是全量入口」的警示），
+    // 但全量入口的写法必须同时在场——否则读者只有警示、没有正确写法。
+    expect(manualSource).toContain('/healthz?full=true')
+    const fullPathMentions = manualSource.match(/healthz\/full/g) ?? []
+    expect(fullPathMentions.length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * 结构守卫：手册不得使用**解析器渲染不出来**的嵌套构造。
+ *
+ * ★ 背景：`web/src/lib/markdown.ts` 的块模型是**平的**——一个块里不能嵌套
+ *   另一个块。具体地：
+ *   - 引用块把**连续**的 `>` 行压成**一段行内文本** ⇒ 引用块里的 ``` 围栏
+ *     不会被当成代码块（围栏标记和代码会一起变成文字），引用块里的有序列表
+ *     会变成一段以 "1. … 2. …" 开头的长句；
+ *   - 表格识别用的是 `line.trim().startsWith('|')` ⇒ **缩进**的表格会被识别，
+ *     但它会**脱离**前面的列表成为兄弟块，把有序列表**劈成两段**；视图用
+ *     `<ol>` 自动编号 ⇒ 后一段从 1 重新开始，"第 3 步" 会显示成 "1."。
+ * ★ 这两类构造在 2026-11-17 那轮实测校准里真实出现过（引用块内的围栏 +
+ *   列表内的缩进表格），而**手测渲染才发现**：解析层的单测全绿、静态门禁
+ *   全绿、文件里也"看着对"。
+ * ★ 断言全用 ASCII（正则与结构），不引入中文字面量。
+ */
+describe('manual source stays inside the flat block model', () => {
+  /** 逐行扫描，跳过代码围栏内部（代码块里的 `|` 不是表格）。 */
+  function scanOutsideFences(source: string): { line: number; text: string }[] {
+    const out: { line: number; text: string }[] = []
+    let inFence = false
+    source.split('\n').forEach((text, idx) => {
+      if (text.trim().startsWith('```')) {
+        inFence = !inFence
+        return
+      }
+      if (!inFence) out.push({ line: idx + 1, text })
+    })
+    return out
+  }
+
+  it('has no fenced code block inside a block quote', () => {
+    const offenders = scanOutsideFences(manualSource)
+      .filter((l) => /^>\s*```/.test(l.text))
+      .map((l) => l.line)
+    expect(offenders, `fence inside a quote at lines: ${offenders.join(',')}`).toEqual([])
+  })
+
+  it('has no list item inside a block quote', () => {
+    const offenders = scanOutsideFences(manualSource)
+      .filter((l) => /^>\s*(\d+\.|[-*])\s/.test(l.text))
+      .map((l) => l.line)
+    expect(offenders, `list inside a quote at lines: ${offenders.join(',')}`).toEqual([])
+  })
+
+  it('has no indented table row (it would split the preceding list)', () => {
+    const offenders = scanOutsideFences(manualSource)
+      .filter((l) => /^\s+\|/.test(l.text))
+      .map((l) => l.line)
+    expect(offenders, `indented table rows at lines: ${offenders.join(',')}`).toEqual([])
+  })
+
+  it('starts every ordered list segment at 1 (a split list would restart at 3)', () => {
+    // ★ 这条判据**镜像解析器**：`markdown.ts` 的列表分支要求**连续**的
+    //   isListItem 行（`/^\s*([-*+]|\d+\.)\s+/`），一旦遇到非列表行就结束
+    //   当前列表段；有序性变了也另起一段。
+    //   ⇒ 一段有序列表中间夹了缩进子列表（`- `）或任何非列表行，后半段就会
+    //   **另起一个 <ol>**，视图用 <ol> 从 1 重新编号 ⇒ "第 3 步" 显示成 "1."。
+    const lines = scanOutsideFences(manualSource).map((l) => l.text)
+    const isListItem = (t: string) => /^\s*([-*+]|\d+\.)\s+/.test(t)
+    const isOrdered = (t: string) => /^\s*\d+\.\s+/.test(t)
+    const offenders: string[] = []
+    let currentOrdered: boolean | null = null
+    for (const text of lines) {
+      if (isListItem(text)) {
+        const ordered = isOrdered(text)
+        if (currentOrdered === null || currentOrdered !== ordered) {
+          // 新的一段列表
+          if (ordered) {
+            const n = Number(/^(\d+)\./.exec(text)![1])
+            if (n !== 1) offenders.push(`segment starting at ${n}: ${text.slice(0, 40)}`)
+          }
+          currentOrdered = ordered
+        }
+        continue
+      }
+      currentOrdered = null // 任何非列表行结束当前列表段
+    }
+    expect(offenders, 'an ordered list segment does not start at 1').toEqual([])
   })
 })
 
