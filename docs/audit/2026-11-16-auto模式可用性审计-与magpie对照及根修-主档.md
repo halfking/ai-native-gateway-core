@@ -436,11 +436,47 @@ M7 handler 不再应用重选结果｜M8 非 auto 请求也被重选｜M9 退路
 | 第二轮 live 验收（第一版） | auto **不再选死模型**（`qwen2.5-7b-instruct` → `kimi-k3`，lifecycle 闸生效 ✔ 根修 6 生效），但仍 503（`gw_no_candidate`），且**重选日志 0 条** ⇒ 逼出 **F7**（热度榜恒空 ⇒ 退路池空） |
 | 第三轮 live 验收 | 见 §9.4 |
 
-### 9.4 第三轮（F7 修正后）的 live 验收结果
+### 9.4 第三、四轮（F7 修正、F8 视图对齐后）的 live 验收结果
 
-见本节后续补写（部署版本 `2d234a93…`）。
+| 轮次 | 版本 | auto 解析到 | HTTP | 失败码 | 观测 |
+|---|---|---|---|---|---|
+| 第三轮 | `2d234a93` | `deepseek-v4-flash` | 503 | `transient` | ★ **候选有了、请求真的走到了上游**（`upstream_http_attempt` ⇒ `https://token.sensenova.cn/v1/chat/completions`）⇒ **F4/F5/F6/F7 那一层已打通**；但随后两笔又回到零候选（`db_empty`/`cache_empty`，35 个 offer 被 provider_disabled 12 / quota 9 / lifecycle 4 / manual_disabled 4 / status 2 全数拦下） |
+| 第四轮 | `f9d74215` | `qwen2.5-7b-instruct` | 503 | `no_candidates` | ★ 又选回了那个 **lifecycle 过期**（`released_at=2024-09-19`）且**唯一绑定 `available=f`** 的模型 ⇒ 与 F8 的视图闸矛盾（见 §9.6 未闭合项） |
 
-### 9.5 211 上的取证口径备忘（供后续轮次复用）
+⚠️ 两轮都记录到 **`dispatch forward panic: invalid memory address or nil pointer dereference`**
+（第三轮第一笔，provider 24 商汤 SenseNova，latency 15.7s）—— panic 被 recover（**不是进程崩溃**），
+但仍让请求失败。本轮已在 `domains/dispatch/forwarder.go` 与
+`domains/streaming/executors/executor_dispatch.go` 两处 recover 补 `runtime/debug.Stack()`
+⇒ **下一次现场可直接定位位置**（此前只有 panic 值、没有栈）。
+
+### 9.5 ★ 未闭合项：决策面为何仍能选中 `available = f` 的绑定（第四轮悖论）
+
+**现象**：第四轮 auto 选到 `qwen2.5-7b-instruct`，而它的**唯一**绑定
+（credential 99023 / provider_model 4443631）在真库上是 `cmb.available = f`
+（视图 `is_routable = f`、`unavailable_reason = binding_unavailable`）
+⇒ 按 F8 的视图闸，决策侧**本不该**把它放进候选。
+
+**已排除的假设**（都在 211 真库逐条验过）：
+
+| 假设 | 排除依据 |
+|---|---|
+| 视图闸 SQL 写错 | 真库直跑该 `EXISTS`：对 (99023, qwen2.5-7b-instruct) 返回 **f**（正确排除） |
+| tier 策略注入了池外候选 | `ApplyTierPolicyWithWorkType` 只对**已有** `scored` 做过滤/重排，不注入新候选 |
+| 48h 热度榜非空导致 hot top3 命中死模型 | 真库 `session_turns_hot` 近 48h **5338 行 `canonical_id` 全 NULL** ⇒ 榜恒空 ⇒ hot top3 为空 ⇒ 走「按 canonical id 升序回填」 |
+| 候选侧与决策侧配对键不同 | 两侧都用 (credential_id, canonical/raw 名)；本例两者同名 |
+
+⇒ **剩余最可能的路径**：`recommended` 在**可用性过滤之后**又经过
+`d.recommendWithOptimizer(...)`（plugin/optimizer 重排钩子），
+若该钩子能引入 `available` 之外的候选 ⇒ 就会绕过全部可用性闸。
+**本轮未验证该钩子的行为**（预算所限）。
+
+★ **下一步取证动作（一次现场即可定位）**：在 auto 决策完成后打一条
+「chosen_model + 该模型在统一视图里的可路由绑定数」的日志 ——
+若可路由数为 0 而仍被选中 ⇒ 路径在过滤之后（optimizer/钩子）；
+若可路由数 > 0 ⇒ 键口径仍有问题。
+
+### 9.6 211 上的取证口径备忘（供后续轮次复用）
+
 
 | 用途 | 命令/视图 |
 |---|---|
