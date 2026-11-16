@@ -2,6 +2,9 @@
 // 高频词（取消/确认/启用/禁用/加载中）在多个模块引用，优先抽取。
 export default {
   credentialFallback: '凭据',
+  protocol: '协议',
+  autoFilled: '自动填充',
+  credentials: '凭据',
   copy: '复制',
   button: {
     cancel: '取消',
@@ -24,6 +27,9 @@ export default {
     more: '更多',
   },
   status: {
+    healthy: '正常',
+    warning: '有告警',
+    unknown: '未知',
     enabled: '启用',
     disabled: '禁用',
     pending: '待处理',

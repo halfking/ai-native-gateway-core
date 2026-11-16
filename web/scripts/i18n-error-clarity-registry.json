@@ -1035,6 +1035,21 @@
       "kind": "test",
       "subject": "工作类型测试",
       "new": "工作类型测试没能通过，请重试"
+    },
+    "simpleMode.overview.loadFailed": {
+      "kind": "load",
+      "subject": "总览数据",
+      "new": "总览数据没能加载出来，请重试"
+    },
+    "simpleMode.providers.loadFailed": {
+      "kind": "load",
+      "subject": "供应商列表",
+      "new": "供应商列表没能加载出来，请重试"
+    },
+    "simpleMode.providers.addFailed": {
+      "kind": "create",
+      "subject": "上游接入",
+      "new": "上游没能接上，请重试"
     }
   },
   "exemptions": {

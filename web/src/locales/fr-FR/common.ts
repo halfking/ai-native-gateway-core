@@ -3,6 +3,10 @@
 // High-frequency words (cancel/confirm/enabled/disabled/loading) are referenced widely; extracted first.
 export default {
   credentialFallback: 'Identifiant',
+  protocol: 'Protocole',
+  autoFilled: 'Rempli automatiquement',
+  credentials: 'Identifiants',
+  copy: 'Copier',
   button: {
     cancel: 'Annuler',
     confirm: 'Confirmer',
@@ -24,6 +28,9 @@ export default {
     more: 'Plus',
   },
   status: {
+    healthy: 'Opérationnel',
+    warning: 'Avertissement',
+    unknown: 'Inconnu',
     enabled: 'Activé',
     disabled: 'Désactivé',
     pending: 'En attente',

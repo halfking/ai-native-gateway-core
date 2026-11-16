@@ -76,9 +76,12 @@ function closeSuccess() {
   createdKey.value = null
 }
 
-// 返回接入清单
+// 返回总览页
+// ★ 2026-11-17 修：原来推的是 '/simple/access-list'，**这条路由从来不存在**
+//   （路由表里只有 /simple/keys）⇒ 点「返回」落到空路由。
+//   简易模式的首页就是 /dashboard（HomeView 按模式分流）⇒ 回到它。
 function backToAccessList() {
-  router.push('/simple/access-list')
+  router.push('/dashboard')
 }
 </script>
 

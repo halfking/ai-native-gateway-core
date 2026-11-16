@@ -32,6 +32,7 @@ import {
 } from 'element-plus'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { useWorkMode } from '../composables/useWorkMode'
+import { surfaceError } from '../i18n/errorSurface'
 import { fmtDateTimeShort } from '../i18n/useFormat'
 
 const { t } = useI18n()
@@ -69,7 +70,9 @@ async function load(): Promise<void> {
     providers.value = p
     catalog.value = c.filter(e => !e.hidden) // 过滤掉隐藏的目录项
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    // ★ 2026-11-17：原来直接展示原始 error.message ⇒ 用户看到的是后端英文串
+    //   （i18n:error-outlet 门判红）。改走 surfaceError：本地化主文案 + 可选原因。
+    error.value = surfaceError(e, { key: 'simpleMode.providers.loadFailed' })
   } finally {
     loading.value = false
   }
@@ -173,17 +176,17 @@ async function handleQuickAdd() {
     // 2. 添加凭据
     await addCredential(provider.id, {
       api_key: apiKeyInput.value.trim(),
-      label: `${cat.display_name} 主凭据`,
+      label: t('simpleMode.providers.primaryCredentialLabel', { name: cat.display_name }),
     })
 
     ElMessage.success(t('simpleMode.providers.added'))
     quickAddVisible.value = false
-    
+
     // 3. 重新加载列表
     await load()
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    ElMessage.error(msg)
+    // ★ 2026-11-17：同 load()，原始 error.message 不直接上屏（error-outlet 门）。
+    ElMessage.error(surfaceError(e, { key: 'simpleMode.providers.addFailed' }))
   } finally {
     adding.value = false
   }

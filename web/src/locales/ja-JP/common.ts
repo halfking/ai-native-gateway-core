@@ -3,6 +3,10 @@
 // 高頻出語（キャンセル/確認/有効/無効/読み込み中）は複数のモジュールから参照されるため、優先的に抽出します。
 export default {
   credentialFallback: '資格情報',
+  protocol: 'プロトコル',
+  autoFilled: '自動入力',
+  credentials: '認証情報',
+  copy: 'コピー',
   button: {
     cancel: 'キャンセル',
     confirm: '確認',
@@ -24,6 +28,9 @@ export default {
     more: 'その他',
   },
   status: {
+    healthy: '正常',
+    warning: '警告',
+    unknown: '不明',
     enabled: '有効',
     disabled: '無効',
     pending: '保留中',

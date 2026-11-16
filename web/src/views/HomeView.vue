@@ -7,7 +7,7 @@ import { probeMaintainAvailable } from '../config/edition'
 import { useWorkMode } from '../composables/useWorkMode'
 import DashboardView from './DashboardView.vue'
 import LandingView from './LandingView.vue'
-import SimpleAccessListView from './SimpleAccessListView.vue'
+import SimpleOverviewView from './SimpleOverviewView.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,7 +17,7 @@ const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.use
 
 // 2026-07-21: 根路径 /
 //  - 未登录: redirect 到 ai-native-maintain 首页 (/maintain/home)
-//  - 已登录: 专家模式 DashboardView；简易模式接入清单（2026-11-17）
+//  - 已登录: 专家模式 DashboardView；简易模式总览页（2026-11-17）
 // 仅当 query.login=1 时（被 App.vue 触发）才内嵌 LandingView（用于弹登录框）。
 const showLoginOverlay = computed(() => route.query.login === '1' || route.query.login === 'true')
 const maintainUnavailable = ref(false)
@@ -37,7 +37,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <SimpleAccessListView v-if="isLoggedIn && isSimple" />
+  <SimpleOverviewView v-if="isLoggedIn && isSimple" />
   <DashboardView v-else-if="isLoggedIn" />
   <template v-else>
     <el-alert

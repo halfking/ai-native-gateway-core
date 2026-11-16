@@ -2,6 +2,10 @@
 // common.ts — نصوص مشتركة: الأزرار، الحالات، الملاحظات، الترقيم.
 export default {
   credentialFallback: 'بيانات اعتماد',
+  protocol: 'البروتوكول',
+  autoFilled: 'ملء تلقائي',
+  credentials: 'بيانات الاعتماد',
+  copy: 'نسخ',
   button: {
     cancel: 'إلغاء',
     confirm: 'تأكيد',
@@ -23,6 +27,9 @@ export default {
     more: 'المزيد',
   },
   status: {
+    healthy: 'سليم',
+    warning: 'تحذير',
+    unknown: 'غير معروف',
     enabled: 'مفعّل',
     disabled: 'معطّل',
     pending: 'قيد الانتظار',

@@ -3,6 +3,10 @@
 // 高頻詞（取消/確認/啟用/停用/載入中）在多個模組引用，優先抽取。
 export default {
   credentialFallback: '憑證',
+  protocol: '協定',
+  autoFilled: '自動填入',
+  credentials: '憑證',
+  copy: '複製',
   button: {
     cancel: '取消',
     confirm: '確認',
@@ -24,6 +28,9 @@ export default {
     more: '更多',
   },
   status: {
+    healthy: '運作正常',
+    warning: '有警示',
+    unknown: '不明',
     enabled: '啟用',
     disabled: '停用',
     pending: '待處理',

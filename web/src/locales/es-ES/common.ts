@@ -2,6 +2,10 @@
 // common.ts — Textos compartidos: botones, estados, feedback, paginación.
 export default {
   credentialFallback: 'Credencial',
+  protocol: 'Protocolo',
+  autoFilled: 'Rellenado automático',
+  credentials: 'Credenciales',
+  copy: 'Copiar',
   button: {
     cancel: 'Cancelar',
     confirm: 'Confirmar',
@@ -23,6 +27,9 @@ export default {
     more: 'Más',
   },
   status: {
+    healthy: 'Correcto',
+    warning: 'Advertencia',
+    unknown: 'Desconocido',
     enabled: 'Activado',
     disabled: 'Desactivado',
     pending: 'Pendiente',
