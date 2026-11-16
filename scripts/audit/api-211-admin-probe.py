@@ -21,11 +21,25 @@ import sys
 import time
 import urllib.request
 
-CONTAINER = "llm-gateway-211-b"
+CONTAINER_CANDIDATES = ("llm-gateway-211-a", "llm-gateway-211-b")
 USER_ID = 41
 USERNAME = "admin"
 TENANT = "default"
 ROLE = "super_admin"
+
+
+def _running_container() -> str:
+    """蓝绿部署后活跃槽可能是 a 也可能是 b ⇒ 取第一个在跑的。"""
+    import subprocess as _sp
+
+    out = _sp.run(
+        ["docker", "ps", "--format", "{{.Names}}"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()
+    for name in CONTAINER_CANDIDATES:
+        if name in out:
+            return name
+    raise SystemExit("没有在跑的 llm-gateway-211-* 容器")
 
 
 def _b64(raw: bytes) -> str:
@@ -33,8 +47,9 @@ def _b64(raw: bytes) -> str:
 
 
 def mint_token(ttl: int = 3600) -> str:
+    container = _running_container()
     secret = subprocess.check_output(
-        ["docker", "exec", CONTAINER, "printenv", "LLM_GATEWAY_SECRET_KEY"]
+        ["docker", "exec", container, "printenv", "LLM_GATEWAY_SECRET_KEY"]
     ).decode().strip()
     if not secret:
         raise SystemExit("LLM_GATEWAY_SECRET_KEY 为空")
