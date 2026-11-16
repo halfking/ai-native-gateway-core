@@ -48,8 +48,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ★ 目标路径一律用**仓内相对路径**（脚本虽然 cd 到 web/，但备份/还原/核对
+#   都按仓根解析 ⇒ 两种口径混用会让备份落到不存在的路径上）。
 GO_REL="admin/data_lifecycle_data_init.go"
-VUE_REL="src/views/data-lifecycle/DataInitialization.vue"
+VUE_REL="web/src/views/data-lifecycle/DataInitialization.vue"
 TEST_REL="src/views/data-lifecycle/DataInitialization.categoryParity.test.ts"
 
 # run_mutation <标签> <要改的仓内相对路径> <python 变异体>
