@@ -174,6 +174,12 @@ func (s *Supervisor) Start(ctx context.Context, manifest *discovery.Manifest) er
 	mp.state.Status = StatusRunning
 	mp.state.StartTime = time.Now()
 
+	// Assign process to cgroup (Linux) or start monitoring (macOS)
+	if err := mp.limiter.AssignProcess(mp.state.PID); err != nil {
+		fmt.Printf("WARN: failed to apply resource limits: %v\n", err)
+		// Continue anyway - don't fail plugin start due to resource limit issues
+	}
+
 	s.processes[pluginID] = mp
 
 	// Start health check
@@ -247,6 +253,13 @@ func (s *Supervisor) monitorProcess(pluginID string, mp *ManagedProcess) {
 
 	// Stop health check
 	close(mp.healthDone)
+
+	// Cleanup resource limiter
+	if mp.limiter != nil {
+		if cleanupErr := mp.limiter.Cleanup(); cleanupErr != nil {
+			fmt.Printf("WARN: failed to cleanup resource limiter for %s: %v\n", pluginID, cleanupErr)
+		}
+	}
 
 	// A Stop-initiated SIGTERM surfaces as Wait error "signal: terminated";
 	// it is a graceful stop by design, not a crash (2026-11-14 audit D3).
