@@ -38,6 +38,22 @@ F1-F3 修完并部署（`2c425d15`）后，第一轮 live 验收**仍然三协�
 （决策说能用、路由说不能用）。症状与「键错位」一模一样，但修法完全不同。
 ★ F5 与 F6 互补：**F6 是事前（不再选死模型），F5 是事后（真零候选时有够宽的退路）**。
 
+### 1.2 第二轮部署后的 live 验收逼出 F7（热度榜恒空 ⇒ 决策池退化）
+
+把 F4/F5/F6 部署到 211（版本 `2.6.0-13dd6532`）后，第二轮 live 验收**仍然 503**，
+但失败形态变了（`no_candidates` → `gw_no_candidate`），且**重选一条日志都没有** ⇒
+「重选没被触发」。继续取证挖到 **F7**：
+
+| # | 现象 | 量级（211 真库） | 根因 |
+|---|---|---|---|
+| **F7** | **48 小时热门榜恒空** ⇒ 决策池退化成「按 canonical id 升序取第一个」；退路池建在同一张榜上 ⇒ **同样为空** ⇒ 零候选时无链可走 | `session_turns_hot` 近 48h **5338 行，`canonical_id` 5338 行全为 NULL** ⇒ 热度榜 SQL（`WHERE canonical_id IS NOT NULL GROUP BY canonical_id`）返回 **0 行** | ① `getHotTop3Canonicals` 返回空 ⇒ `recommend_v2.go` 的 `len(hotTop3) < 3` 回填分支接管 ⇒ 决策池 = **全部可用候选按 canonical id 升序** ⇒ auto 永远选 **canonical id 最小的那个**（kimi-k3，id 2067363）—— 这才是「auto 总是选那个冷门模型、然后它不可用」的真正机制；② 退路池若也建在这张榜上 ⇒ 空链 ⇒ 重选静默返回 |
+
+★ **本轮自己踩的坑**：F5 的第一版退路池取自「同一张 48h 热度榜 LIMIT 32」，
+在本地单测里完全正常（可注入），到生产才发现**那张榜是空的** ⇒
+**「用同一张榜做更宽的版本」是个陷阱：它把榜的退化原样继承了下来**。
+⇒ 现在退路池改为 **索引快照 ∩ 实时可用过滤**（内容来自「此刻可路由」这个事实本身），
+并加 30 秒进程内缓存（不为每个 auto 请求多打一次库）。
+
 ---
 
 ## 二、magpie 的 auto 模式到底强在哪（源码取证）
@@ -243,9 +259,9 @@ candidatePool = hotTop3 的候选（getHotTop3Canonicals：48h 成功流量 LIMI
 | `domains/streaming/handler.go` | `len(candidates)==0` 分支前插入 auto 重选块（命中则改写 model/body/candidates/policy/modality 并继续） | F4 接线点 |
 | `autoroute/availability_filter_sql.go`（新） | 决策面实时过滤**补齐候选侧三道闸**：canonical disabled / model lifecycle / broken_confirmed 探针对 | F6（治本：不再选死模型） |
 | `autoroute/recommend_v2.go` | 过滤 SQL 抽出为独立常量 + 占位符渲染探针闸 | F6 |
-| `autoroute/reselect.go`（新） | **宽退路池**：同一张 48h 热度榜的 LIMIT 32 版本 → canonical 名列表 | F5（事后：退路够宽） |
+| `autoroute/reselect.go`（新） | **宽退路池**：索引快照 ∩ **实时可用过滤** → canonical 名列表（**不依赖任何统计表**；30s 进程内缓存） | F5 + F7（第一版建在空榜上 ⇒ 空链） |
 | `autoroute/decision.go` / `decision_v2.go` | `Decision.ReselectCandidates` 新字段（V1/V2 同语义） | F5 载体 |
-| `autoroute/index.go` | 宽热度榜的缓存字段 + 测试注入点 | F5 |
+| `autoroute/index.go` | 退路池的进程内缓存字段 | 避免每次 auto 请求多打一次库 |
 | `domains/streaming/auto_route.go` | wire 增加进程内字段 `reselectModels`（**不进响应头 / 不进审计 JSON**） | F5 传输 |
 | `domains/streaming/request_log_pipeline.go` | `RequestLogContext.AutoReselectModels` + `SetAutoDecision` 填充 | F5 传输 |
 | `domains/streaming/auto_route_reselect.go` | 重选链**优先宽池**、回退窄链；**两条链分开消费** | F5 |
@@ -324,20 +340,27 @@ gofmt：经手文件零漂移
 
 ### 6.4 变异汇总（第二轮）
 
-`/tmp/auto-mutation-round2.sh`：**8/8 检出**（M1 lifecycle 闸摘掉｜M2 broken_confirmed 闸改名｜
+`/tmp/auto-mutation-round2.sh`：**9/9 检出**（M1 lifecycle 闸摘掉｜M2 broken_confirmed 闸改名｜
 M3 canonical disabled 闸摘掉｜M4 宽池不参与重选｜M5 退路池宽度退回 3｜M6 决策不再填退路池｜
-M7 handler 不再应用重选结果｜M8 非 auto 请求也被重选）。
+M7 handler 不再应用重选结果｜M8 非 auto 请求也被重选｜M9 退路池不查实时可用）。
 
-★ **首轮其实是 7/8：M5 漏检**，且是**真阴性**（不是锚点问题）——
-`TestReselectCandidateNames_HonoursLimit` 传的是**显式 limit 参数**，
-所以它看不见「生产调用点实际使用的那个常量」被改窄。
-⇒ 补 `TestReselectPoolLimitIsWide`（直接钉住常量 ≥ 16）⇒ 重跑 M5：**红 → 还原绿**。
+★ **M5 两次漏检，两次都是「守卫没覆盖到」，而不是「守卫失效」**——这正是本轮最值钱的两条负控：
 
-★ 这一条正是 §701 纪律的现场复现：**守卫没覆盖到的地方，只有变异能发现**——
-「测试全绿」不等于「改动被守住了」。若没有跑变异，`ReselectPoolLimit`
-完全可以被改回 3 而无人察觉（而它退回去就等于本轮根修 5 白做）。
-★ 脚本另带**负控**：锚点未命中会单独报 `ANCHOR MISS`，不计入「已检出」
-（锚点未命中 ≠ 守卫失效，它意味着变异压根没发生）。
+1. **第一次**：`TestReselectCandidateNames_HonoursLimit` 传的是**显式 limit 参数**，
+   所以它看不见「生产调用点实际使用的那个常量」被改窄 ⇒ 补 `TestReselectPoolLimitIsWide`
+   （直接钉住常量 ≥ 16）。
+2. **第二次**：脚本的 `-run` 正则是 `TestReselectCandidateNames`，
+   **根本没匹配到**新加的 `TestReselectPoolLimitIsWide` ⇒ 那条测试**一次都没跑**，
+   而 `go test` 对「无测试可跑」**照样输出 ok** ⇒ 脚本误判成「守卫失效」。
+   ⇒ 修法：脚本改用 `-v` 并**显式断言 `--- PASS/FAIL:` 出现过**，否则报
+   `NO TEST RAN`（与「守卫失效」分开记）。
+
+★ 通用式：**「测试全绿」不等于「改动被守住了」**；而**「守卫没生效」与「守卫压根没跑」
+是两种不同的失败**——后者尤其阴险，因为它同时伪装成「代码有 bug」。
+⇒ 负控脚本自己要能被审计：锚点未命中、`-run` 未匹配、测试未执行，三种情况必须分开报。
+
+★ M9 是本轮新增的变异，专门钉「退路池必须查实时可用」——它是 F7 那版
+「退路池建在恒空的热度榜上」的守卫。
 
 ---
 
