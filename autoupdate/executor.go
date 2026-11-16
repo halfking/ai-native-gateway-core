@@ -219,7 +219,17 @@ func (e *Executor) run(ctx context.Context, req InstallRequest, job *InstallJob)
 		})
 	}
 	if err != nil {
-		e.finish(ctx, job, logID, StatusFailed, err.Error())
+		// ★ 失败分两种，对提醒的影响不同：
+		//   - RolledBack（装了但起不来 / 迁移失败 ⇒ 已还原成旧二进制与旧版本元数据）
+		//     ⇒ 节点**仍在旧版本上** ⇒ 新版**仍待处理** ⇒ 提醒行必须还在
+		//   - Failed（下载失败 / 校验失败 ⇒ 压根没换二进制）
+		//     ⇒ 同样仍待处理
+		// 两种都是「可行动」状态（见 IsActionableStatus）⇒ 提醒不会消失。
+		status := StatusFailed
+		if result != nil && result.RolledBack {
+			status = StatusRollback
+		}
+		e.finish(ctx, job, logID, status, err.Error())
 		return
 	}
 
@@ -309,16 +319,44 @@ func (e *Executor) resolveRelease(ctx context.Context, req InstallRequest, binar
 	}, nil
 }
 
-// createLog 建一条升级日志行，返回其 ID（失败时返回 0，不阻断安装）。
+// createLog 定位「本次安装要推进的那一行升级日志」，返回其 ID。
+//
+// ★ 关键：**复用检索器生成的那条待处理提醒行**，而不是新建一行。
+//
+//	提醒行与安装任务日志行**是同一行**（同一件事的两个阶段：待处理 → 执行中 → 终态）。
+//	若新建一行，就会出现「提醒行永远停在 pending（升级成功了它还显示待处理）」
+//	与「提醒和任务两处对不齐」两个问题。
+//
+// 没有可复用的行（例如运维手工安装一个尚未被检索到的版本）⇒ 新建一行。
 func (e *Executor) createLog(ctx context.Context, version string) (int64, error) {
 	if e.store == nil {
 		return 0, nil
+	}
+	if id, ok := e.findActionableLog(ctx, version); ok {
+		return id, nil
 	}
 	old := ""
 	if e.version != nil {
 		old, _ = e.version()
 	}
 	return e.store.CreateUpgradeLog(ctx, e.instanceID, old, version)
+}
+
+// findActionableLog 找出该版本上仍「待处理」的日志行（提醒行）。
+func (e *Executor) findActionableLog(ctx context.Context, version string) (int64, bool) {
+	history, _, err := e.store.GetUpgradeHistory(ctx, e.instanceID, 0, 200)
+	if err != nil {
+		return 0, false
+	}
+	for _, h := range history {
+		if h.Version != version || h.LogID <= 0 {
+			continue
+		}
+		if IsActionableStatus(h.Status) {
+			return h.LogID, true
+		}
+	}
+	return 0, false
 }
 
 // updateLog 更新升级日志行状态。

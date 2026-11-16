@@ -70,6 +70,15 @@ type ReleaseStatus struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	Error       string     `json:"error,omitempty"`
 	RetryCount  int        `json:"retry_count"`
+
+	// LogID 是 upgrade_logs.id（仅 GetUpgradeHistory 填充；来自
+	// instance_release_status 的行恒为 0 —— 那张表没有 id 列，主键是 instance_id）。
+	//
+	// ★ 为什么要有它：提醒行与安装任务日志行**是同一行**（同一件事的两个阶段）。
+	//   安装执行器要复用「检索器生成的那条待处理提醒行」并推进它的状态，
+	//   就必须拿到这一行的主键；而 UpgradeUpgradeLog 的更新条件正是 id。
+	//   查询本来就 SELECT 了 id，此前只是扫描进局部变量后丢弃了。
+	LogID int64 `json:"log_id,omitempty"`
 }
 
 const (
@@ -81,6 +90,28 @@ const (
 	StatusFailed    = "failed"
 	StatusRollback  = "rolled_back"
 )
+
+// IsActionableStatus 判断该状态是否仍代表「有新版待处理」。
+//
+// ★ 这条判据是提醒生命周期的核心：
+//   - pending      ＝ 已发现新版、还没动手
+//   - failed       ＝ 装失败（未换二进制），新版**仍然待处理**
+//   - rolled_back  ＝ 装了但起不来、已还原成旧二进制 ⇒ 新版**仍然待处理**
+//   - success      ＝ 装成了 ⇒ 不再是待办
+//   - downloading / ready_to_restart / upgrading ＝ 正在处理中
+//
+// ⇒ 提醒列表 = {pending, failed, rolled_back}。
+//
+//	★ 若把 failed / rolled_back 排除在外，**回滚之后提醒就彻底消失了**：
+//	  新版还在、节点还停在旧二进制上，却再也没有人知道该再升一次。
+func IsActionableStatus(status string) bool {
+	switch status {
+	case StatusPending, StatusFailed, StatusRollback:
+		return true
+	default:
+		return false
+	}
+}
 
 type VersionInfo struct {
 	Version   string `json:"version"`
