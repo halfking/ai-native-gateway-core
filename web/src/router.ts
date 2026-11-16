@@ -20,6 +20,7 @@ const ProvidersView = () => import('./views/ProvidersView.vue')
 const KeysView = () => import('./views/KeysView.vue')
 const KeyDetailView = () => import('./views/KeyDetailView.vue')
 const KeyApplicationsView = () => import('./views/KeyApplicationsView.vue')
+const SimpleKeysView = () => import('./views/SimpleKeysView.vue')
 const ExamplesView = () => import('./views/ExamplesView.vue')
 const HelpManualView = () => import('./views/HelpManualView.vue')
 const ChatView = () => import('./views/ChatView.vue')
@@ -306,6 +307,7 @@ export const router = createRouter({
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)
     { path: '/keys',               component: KeysView },
     { path: '/keys/:id',           component: KeyDetailView },
+    { path: '/simple/keys',        component: SimpleKeysView }, // L3: 简易模式密钥签发（两字段）
     { path: '/routing',            redirect: { path: '/routing-v2', query: { tab: 'resolve' } } },
     { path: '/routing-overview',   component: RoutingOverviewView, meta: { requiresPlatformOps: true } },
     { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },

@@ -2,6 +2,7 @@
 // 高频词（取消/确认/启用/禁用/加载中）在多个模块引用，优先抽取。
 export default {
   credentialFallback: '凭据',
+  copy: '复制',
   button: {
     cancel: '取消',
     confirm: '确认',

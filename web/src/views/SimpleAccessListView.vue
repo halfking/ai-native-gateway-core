@@ -14,7 +14,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { getKeys, createKey, type ApiKey } from '../api'
+import { getKeys, type ApiKey } from '../api'
 import { getKeyUsageByModel } from '../api/usage'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { useWorkMode } from '../composables/useWorkMode'
@@ -28,12 +28,6 @@ const keys = ref<ApiKey[]>([])
 const keyModels = ref<Map<number, string>>(new Map()) // keyId → 最近使用的模型名
 const loading = ref(false)
 const error = ref('')
-
-const showCreate = ref(false)
-const createAlias = ref('')
-const createBudget = ref<number | ''>('')
-const creating = ref(false)
-const createError = ref('')
 
 async function load(): Promise<void> {
   loading.value = true
@@ -124,39 +118,8 @@ function fmtUsd(v: number | null | undefined): string {
 }
 
 function openCreate(): void {
-  createAlias.value = ''
-  createBudget.value = ''
-  createError.value = ''
-  showCreate.value = true
-}
-
-/**
- * 两字段签发：① 应用 / 别名 ② 预算上限。
- * ★ 后端 POST /api/keys 要求 application_code 与 key_alias 都非空
- *   （admin/keys.go:1113 与冲突检查），所以这一个可见字段**同时**填这两项
- *   （key_alias = application_code）—— 少一个输入点，但不绕过任何后端校验。
- */
-async function submitCreate(): Promise<void> {
-  const alias = createAlias.value.trim()
-  if (!alias) {
-    createError.value = t('common.feedback.operationFailed')
-    return
-  }
-  creating.value = true
-  createError.value = ''
-  try {
-    await createKey({
-      application_code: alias,
-      key_alias: alias,
-      budget_usd: createBudget.value === '' ? undefined : Number(createBudget.value),
-    })
-    showCreate.value = false
-    await load()
-  } catch (e) {
-    createError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    creating.value = false
-  }
+  // L3: 路由到独立的简易签发页（体验更好：显示生成的密钥、复制按钮、成功提示）
+  void router.push('/simple/keys')
 }
 
 function openDetail(k: ApiKey): void {
@@ -222,28 +185,6 @@ function openDetail(k: ApiKey): void {
       </div>
       <div class="card-toolbar">
         <span class="section-hint">{{ t('simpleMode.accessList.usageHint') }}</span>
-      </div>
-    </div>
-
-    <!-- 两字段签发 -->
-    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
-      <div class="modal-panel">
-        <h3>{{ t('simpleMode.accessList.signKey') }}</h3>
-        <div v-if="createError" class="alert alert-danger">{{ createError }}</div>
-        <div class="form-group">
-          <label>{{ t('simpleMode.accessList.client') }}</label>
-          <input v-model="createAlias" class="cf-input" type="text" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label>{{ t('simpleMode.accessList.spend') }}</label>
-          <input v-model="createBudget" class="cf-input" type="number" min="0" step="1" />
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-ghost" @click="showCreate = false">{{ t('common.button.cancel') }}</button>
-          <button class="btn btn-primary" :disabled="creating" @click="submitCreate">
-            {{ creating ? t('common.feedback.loading') : t('common.button.confirm') }}
-          </button>
-        </div>
       </div>
     </div>
   </div>

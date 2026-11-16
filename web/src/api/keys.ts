@@ -37,6 +37,8 @@ export interface KeyCreatedResponse {
   api_key: string
   key_prefix: string
   application_code: string
+  key_alias?: string
+  remark?: string
   message: string
 }
 
