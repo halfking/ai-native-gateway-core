@@ -6,7 +6,8 @@
 #
 # ★ 红线（940 迁移头注 + 2026-11-03 方案档 §4.4）：行情价禁止回流路由/计费表。
 #   本门用【文本级断言】钉住生成 SQL 的写目标白名单——脚本里允许出现的
-#   INSERT/UPDATE 目标只有 market_price_reference / market_price_reference_sync；
+#   INSERT/UPDATE 目标只有 market_price_reference / market_price_reference_sync /
+#   market_price_platform_quotes（970 平台现价明细）；
 #   model_credit_rates / model_price_versions / credential_model_bindings /
 #   models_canonical 只允许出现在【读/锚点/解析】上下文，绝不作写目标。
 #
@@ -64,7 +65,7 @@ else
 fi
 
 # C2 写目标白名单（★ 关键红线）
-WHITE='market_price_reference|market_price_reference_sync'
+WHITE='market_price_reference|market_price_reference_sync|market_price_platform_quotes'
 WRITE_TARGETS="$(printf '%s' "${BODY}" | grep -oE '(INSERT INTO public\.[a-z_]+|INSERT INTO [a-z_]+|UPDATE public\.[a-z_]+|UPDATE [a-z_]+ )' | sed 's/INSERT INTO //;s/UPDATE //;s/public\.//;s/ $//' | sort -u)"
 ILLEGAL=0
 while IFS= read -r t; do
@@ -75,7 +76,14 @@ while IFS= read -r t; do
   fi
 done <<< "${WRITE_TARGETS}"
 if [ "${ILLEGAL}" = "0" ] && [ -n "${WRITE_TARGETS}" ]; then
-  ok "C2 写目标白名单（全部 ⊆ {market_price_reference, market_price_reference_sync}）"
+  ok "C2 写目标白名单（全部 ⊆ {market_price_reference, market_price_reference_sync, market_price_platform_quotes}）"
+fi
+# C2b 970 平台明细落地（DELETE+INSERT 快照语义）
+if printf '%s' "${BODY}" | grep -q "DELETE FROM public.market_price_platform_quotes" && \
+   printf '%s' "${BODY}" | grep -q "INSERT INTO public.market_price_platform_quotes"; then
+  ok "C2b 970 平台明细 DELETE+INSERT 在位"
+else
+  bad "C2b 缺少 market_price_platform_quotes 落地语句"
 fi
 
 # C3 幂等 upsert

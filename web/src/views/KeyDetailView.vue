@@ -16,9 +16,12 @@ import {
   type KeyUsageSummary,
   type ModelUsageForKey,
   type TrendEntry,
+  getRequestLogs,
+  type RequestLogRow,
 } from '../api'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 
 // ── Route params ──────────────────────────────────────────────────────────
 const route = useRoute()
@@ -41,6 +44,12 @@ const sortedKeyModels = computed(() => sortByName(keyModels.value, undefined, ['
 const keyTrend = ref<TrendEntry[]>([])
 const detailLoading = ref(false)
 const detailError = ref('')
+
+// ── Request logs ───────────────────────────────────────────────────────────
+const recentLogs = ref<RequestLogRow[]>([])
+const logsLoading = ref(false)
+const logsError = ref('')
+const activeRequestId = ref<string | null>(null)
 
 // ── Limit editing ──────────────────────────────────────────────────────────
 const showLimitsEditor = ref(false)
@@ -545,10 +554,44 @@ async function changePeriod() {
   await loadDetail()
 }
 
+async function loadRecentLogs() {
+  if (!keyId.value) return
+
+  logsLoading.value = true
+  logsError.value = ''
+  recentLogs.value = []
+
+  try {
+    const response = await getRequestLogs({
+      api_key_id: keyId.value,
+      page: 1,
+      page_size: 10,
+    })
+    recentLogs.value = response.items
+  } catch (e: unknown) {
+    logsError.value = surfaceError(e, { key: 'keys.detail.error.loadLogsFailed' })
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+function openLogDetail(requestId: string) {
+  activeRequestId.value = requestId
+}
+
+function closeLogDetail() {
+  activeRequestId.value = null
+}
+
+function viewAllLogs() {
+  router.push(`/request-logs?api_key_id=${keyId.value}`)
+}
+
 onMounted(async () => {
   await loadKey()
   if (keyId.value) {
     await loadDetail()
+    await loadRecentLogs()
   }
 })
 
@@ -898,9 +941,67 @@ watch(keyId, async () => {
             </table>
             <div v-else class="empty small">{{ t('keys.detail.modelTable.empty') }}</div>
           </div>
+
+          <!-- Recent request logs -->
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">{{ t('keys.detail.logs.title') }}</div>
+              <button class="btn btn-sm btn-ghost" @click="viewAllLogs">
+                {{ t('keys.detail.logs.viewAll') }}
+              </button>
+            </div>
+
+            <div v-if="logsLoading" class="empty small">{{ t('keys.common.loading') }}</div>
+            <div v-else-if="logsError" class="alert alert-danger">{{ logsError }}</div>
+            <div v-else-if="recentLogs.length === 0" class="empty small">{{ t('keys.detail.logs.empty') }}</div>
+
+            <div v-else class="logs-list">
+              <div
+                v-for="log in recentLogs"
+                :key="log.request_id"
+                class="log-item"
+                @click="openLogDetail(log.request_id)"
+              >
+                <div class="log-main">
+                  <div class="log-status">
+                    <span
+                      class="status-badge"
+                      :class="{
+                        'status-success': log.success,
+                        'status-failure': !log.success && log.error_kind,
+                        'status-pending': !log.success && !log.error_kind
+                      }"
+                    >
+                      {{ log.success ? t('keys.detail.logs.success') : (log.error_kind || t('keys.detail.logs.pending')) }}
+                    </span>
+                  </div>
+                  <div class="log-model">
+                    <code>{{ log.canonical_model || log.client_model || '—' }}</code>
+                  </div>
+                  <div class="log-time">
+                    {{ fmtDateTimeShort(log.ts) }}
+                  </div>
+                </div>
+                <div class="log-details">
+                  <span v-if="log.latency_ms">{{ log.latency_ms }}ms</span>
+                  <span v-if="log.prompt_tokens || log.completion_tokens">
+                    {{ log.prompt_tokens || 0 }} + {{ log.completion_tokens || 0 }} tokens
+                  </span>
+                  <span v-if="log.cost_usd" class="log-cost">{{ fmtCost(log.cost_usd) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </template>
       </div>
     </template>
+
+    <!-- Request log detail drawer -->
+    <RequestLogDrawer
+      :request-id="activeRequestId"
+      :open="activeRequestId !== null"
+      @close="closeLogDetail"
+    />
   </div>
 </template>
 
@@ -1287,5 +1388,92 @@ watch(keyId, async () => {
 
 .limit-options input[type="radio"] {
   width: auto;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.logs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.log-item:hover {
+  background: var(--bg-secondary);
+  border-color: var(--primary);
+}
+
+.log-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.log-status {
+  flex-shrink: 0;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.status-success {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+
+.status-failure {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+}
+
+.status-pending {
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  color: var(--warning);
+}
+
+.log-model {
+  flex: 1;
+  min-width: 0;
+}
+
+.log-model code {
+  font-size: 12px;
+}
+
+.log-time {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.log-details {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.log-cost {
+  color: var(--success);
+  font-weight: 500;
 }
 </style>

@@ -212,6 +212,7 @@ type userStatsKpi struct {
 
 // userStatsBucket — Top 模型/应用/密钥行。
 type userStatsBucket struct {
+	ID       *int64  `json:"id,omitempty"`       // API Key ID (仅 top_keys 有值，供前端跳转)
 	Name     string  `json:"name"`
 	Requests int64   `json:"requests"`
 	Tokens   int64   `json:"tokens"`
@@ -396,9 +397,11 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	}
 
 	// Top 模型 / 应用 / 密钥（各 5 行）。
+	// TopKeys 按 api_key_id 分组并返回 ID，供前端跳转；TopModels/TopApps 只返回名称。
 	bucketQueries := []struct {
-		target *[]userStatsBucket
-		sql    string
+		target  *[]userStatsBucket
+		sql     string
+		withID  bool
 	}{
 		{&resp.TopModels, `
 			SELECT COALESCE(NULLIF(f.raw_model_name, ''), '<unknown>'),
@@ -408,7 +411,7 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 			       COALESCE(SUM(f.cost_amount), 0)::float8
 			FROM usage_facts f
 			WHERE ` + factFilter + `
-			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`},
+			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`, false},
 		{&resp.TopApps, `
 			SELECT COALESCE(app.code, '<none>'),
 			       COUNT(*)::bigint,
@@ -418,9 +421,10 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 			FROM usage_facts f
 			LEFT JOIN applications app ON app.id = f.application_id
 			WHERE ` + factFilter + `
-			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`},
+			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`, false},
 		{&resp.TopKeys, `
-			SELECT COALESCE(NULLIF(k.key_alias, ''), COALESCE(NULLIF(k.key_prefix, ''), '<unknown>')),
+			SELECT k.id,
+			       COALESCE(NULLIF(k.key_alias, ''), COALESCE(NULLIF(k.key_prefix, ''), '<unknown>')),
 			       COUNT(*)::bigint,
 			       COALESCE(SUM(f.total_tokens), 0)::bigint,
 			       COALESCE(SUM(f.credits_charged), 0)::bigint,
@@ -428,7 +432,7 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 			FROM usage_facts f
 			JOIN api_keys k ON k.id = f.api_key_id
 			WHERE ` + factFilter + `
-			GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 5`},
+			GROUP BY k.id, k.key_alias, k.key_prefix ORDER BY COUNT(*) DESC LIMIT 5`, true},
 	}
 	for _, bq := range bucketQueries {
 		// Reject failed or truncated buckets rather than returning an empty success.
@@ -439,9 +443,19 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 		}
 		for bRows.Next() {
 			var b userStatsBucket
-			if serr := bRows.Scan(&b.Name, &b.Requests, &b.Tokens, &b.Credits, &b.CostUSD); serr != nil {
+			var scanErr error
+			if bq.withID {
+				var id int64
+				scanErr = bRows.Scan(&id, &b.Name, &b.Requests, &b.Tokens, &b.Credits, &b.CostUSD)
+				if scanErr == nil {
+					b.ID = &id
+				}
+			} else {
+				scanErr = bRows.Scan(&b.Name, &b.Requests, &b.Tokens, &b.Credits, &b.CostUSD)
+			}
+			if scanErr != nil {
 				bRows.Close()
-				writeInternalErr(w, "bucket scan failed", serr)
+				writeInternalErr(w, "bucket scan failed", scanErr)
 				return
 			}
 			*bq.target = append(*bq.target, b)

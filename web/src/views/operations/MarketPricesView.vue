@@ -11,33 +11,45 @@ import {
   putAdminMarketPlatform,
   type MarketPlatformRow,
 } from '../../api/market'
-import { getAdminMaasMarketPriceSyncStatus, type MarketPriceSyncRun } from '../../api/maas'
+import {
+  getAdminMaasMarketPriceOverview,
+  getAdminMaasMarketPriceSyncStatus,
+  type MarketPriceSyncRun,
+} from '../../api/maas'
 import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
+import { useRouter } from 'vue-router'
+import SyncLedgerPanel from './SyncLedgerPanel.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 const { message: actionMsg, error: actionErr, notifySuccess, notifyError, clear: clearActionMsg } = useActionMessage()
 
 const loading = ref(false)
 const platforms = ref<MarketPlatformRow[]>([])
 const platformsAvailable = ref(true)
 const syncRuns = ref<MarketPriceSyncRun[]>([])
-// 同步台账加载失败（2026-11-13 12h 修订审计轮补可见性）：降级成空数组会让
-// 空态文案「同步器没跑过」掩盖「API 失败」的真因 ⇒ 失败置位，sync 区改显错误文案。
 const syncLoadFailed = ref(false)
+const refResolved = ref(0)
+const refTotal = ref(0)
+const refSyncDate = ref('')
 
 async function load() {
   loading.value = true
   try {
-    const [reg, sync] = await Promise.all([
+    const [reg, sync, overview] = await Promise.all([
       getAdminMarketPlatforms(),
-      getAdminMaasMarketPriceSyncStatus(10).catch(() => ({ items: [] })),
+      getAdminMaasMarketPriceSyncStatus(10).catch(() => ({ items: [] as MarketPriceSyncRun[] })),
+      getAdminMaasMarketPriceOverview('', true, 50).catch(() => ({ items: [], sync: [] as MarketPriceSyncRun[] })),
     ])
     platforms.value = reg.items || []
     platformsAvailable.value = true
     syncRuns.value = sync.items || []
     syncLoadFailed.value = false
+    refTotal.value = (overview.items || []).length
+    refResolved.value = (overview.items || []).filter(i => i.resolved).length
+    refSyncDate.value = overview.sync?.[0]?.run_date || syncRuns.value[0]?.run_date || ''
   } catch {
     platformsAvailable.value = false
     notifyError(t('marketPrices.loadFailed'))
@@ -100,11 +112,6 @@ function fmtWhen(s: string) {
   return s ? s.replace('T', ' ').replace('Z', ' UTC') : '—'
 }
 
-// 同步台账冲突计数（conflicts 是对象映射）。
-function conflictCount(d: { conflicts?: Record<string, unknown> | null }) {
-  if (!d || !d.conflicts) return 0
-  return Object.keys(d.conflicts).length
-}
 
 const platformFields = computed<CardField[]>(() => [
   { key: 'platform_id', label: t('marketPrices.colPlatformId') },
@@ -120,6 +127,17 @@ const platformFields = computed<CardField[]>(() => [
   <div class="page">
     <h2 class="page-title">{{ t('marketPrices.title') }}</h2>
     <p class="page-sub">{{ t('marketPrices.subtitle') }}</p>
+
+    <!-- ⓪ 定价参考摘要 -->
+    <div class="card summary-card">
+      <div class="summary-row">
+        <span class="badge badge-gray">{{ t('marketPrices.refTotal', { n: refTotal }) }}</span>
+        <span class="badge badge-green">{{ t('marketPrices.refResolved', { n: refResolved }) }}</span>
+        <span v-if="refSyncDate" class="badge badge-blue">{{ t('marketPrices.refSyncAsOf', { date: refSyncDate }) }}</span>
+        <button class="btn btn-ghost btn-sm" @click="router.push('/operations/price-compare')">{{ t('marketPrices.refOpenCompare') }}</button>
+      </div>
+      <p class="hint-line">{{ t('marketPrices.refHint') }}</p>
+    </div>
 
     <!-- ① 平台注册表（958） -->
     <div class="card table-wrap">
@@ -173,45 +191,7 @@ const platformFields = computed<CardField[]>(() => [
       <p v-if="platformsAvailable && platforms.length" class="hint-line">{{ t('marketPrices.registryHint') }}</p>
     </div>
 
-    <!-- ② 同步台账（940） -->
-    <div class="card table-wrap">
-      <div class="table-head-row">
-        <h3 class="section-title">{{ t('marketPrices.syncTitle') }}</h3>
-        <span class="badge badge-gray">{{ syncRuns.length }}</span>
-      </div>
-      <div v-if="syncLoadFailed" class="app-empty-state">
-        <p>{{ t('marketPrices.syncLoadFailed') }}</p>
-      </div>
-      <div v-else-if="!syncRuns.length" class="app-empty-state">
-        <p>{{ t('marketPrices.syncEmptyWhy') }}</p>
-        <p class="empty-next">{{ t('marketPrices.syncEmptyNext') }}</p>
-      </div>
-      <table v-else class="data-table">
-        <thead>
-          <tr>
-            <th>{{ t('marketPrices.colRunDate') }}</th>
-            <th>{{ t('marketPrices.colSourcePlatforms') }}</th>
-            <th>{{ t('marketPrices.colSourceRows') }}</th>
-            <th>{{ t('marketPrices.colLanded') }}</th>
-            <th>{{ t('marketPrices.colRejected') }}</th>
-            <th>{{ t('marketPrices.colConflicts') }}</th>
-            <th>{{ t('marketPrices.colCreatedAt') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in syncRuns" :key="s.id">
-            <td>{{ s.run_date }}</td>
-            <td class="num">{{ s.source_platforms }}</td>
-            <td class="num">{{ s.source_rows }}</td>
-            <td class="num">{{ s.landed_rows }}</td>
-            <td class="num" :class="{ 'num-warn': s.rejected_rows > 0 }">{{ s.rejected_rows }}</td>
-            <td class="num" :class="{ 'num-warn': conflictCount(s) > 0 }">{{ conflictCount(s) }}</td>
-            <td class="mono-sm">{{ fmtWhen(s.created_at) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="syncRuns.length" class="hint-line">{{ t('marketPrices.syncHint') }}</p>
-    </div>
+    <SyncLedgerPanel :runs="syncRuns" :load-failed="syncLoadFailed" />
 
     <p v-if="actionMsg" class="action-message success">{{ actionMsg }}</p>
     <p v-if="actionErr" class="action-message error">{{ actionErr }}</p>
@@ -270,8 +250,9 @@ const platformFields = computed<CardField[]>(() => [
 .notes-cell { max-width: 220px; font-size: 12px; color: var(--text-secondary, #666); }
 .hint-line { font-size: 12px; color: var(--text-secondary, #666); margin: 6px 0 0; }
 .empty-next { font-size: 12px; color: var(--text-secondary, #888); }
-.num-warn { color: #c0392b; font-weight: 600; }
 .action-message { font-size: 13px; margin-top: 8px; }
 .action-message.error { color: #c0392b; }
 .action-message.success { color: #1e8e3e; }
+.summary-card { display: flex; flex-direction: column; gap: 6px; }
+.summary-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 </style>

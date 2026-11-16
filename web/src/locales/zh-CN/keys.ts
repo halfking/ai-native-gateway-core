@@ -116,6 +116,14 @@ statusLabel: '状态',
     limitsSaved: '限制已保存',
     error: {
       loadDetailFailed: '密钥详情没能加载出来，请重试',
+      loadLogsFailed: '请求日志没能加载出来，请重试',
+    },
+    logs: {
+      title: '最近请求日志',
+      viewAll: '查看全部',
+      empty: '暂无请求记录',
+      success: '成功',
+      pending: '进行中',
     },
   },
   applications: {

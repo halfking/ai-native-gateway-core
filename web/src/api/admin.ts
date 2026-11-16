@@ -503,6 +503,7 @@ export interface UserStatsKpi {
 }
 
 export interface UserStatsBucket {
+  id?: number // API Key ID (仅 top_keys 有值，供跳转)
   name: string
   requests: number
   tokens: number

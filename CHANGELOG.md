@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **运营定价参考完善（对齐 salesdecorate Compare，2026-11-17）**：
+  - 迁移 `970_market_price_platform_quotes`：按模型×平台落最新现价明细（六面登记）。
+  - `market-price-sync.py` 同步落地平台明细；契约白名单扩至新表。
+  - `GET /api/admin/market/model-platforms`：跨平台现价只读 API（表缺席 ⇒ available:false）。
+  - `/operations/price-compare` 三页签：五价定价参考 / 供应评分 / 跨平台现价；采集页补参考摘要与同步拒绝/冲突明细展开。
 - **A-17 收口轮：市场平台注册表 admin CRUD + 价格对比两页（2026-11-13）**：定稿 M1-T3/M3-T1/M3-T2 落地。
   - `GET /api/admin/market/platforms` + `PUT /api/admin/market/platforms/{platformId}`（superAdmin 闸；部分更新：指针字段=只改提交项；region/币种配对校验与 958 CHECK 同形；platform_id 不可变、无 INSERT——补录平台归迁移种子 + 运营裁决；UPDATE 落 routing_audit_log before/after 审计）。`admin/market_platforms.go`。
   - `GET /api/admin/market/compare`（M3-T2 只读对账：supplier_market_position 评分行 × market_price_reference 双地板对拍 + price_confidence 四档覆盖率摘要；表缺席 ⇒ 200 + available:false 空态语义；NULL≠0 全列 sql.NullFloat64）。`admin/market_compare.go`。

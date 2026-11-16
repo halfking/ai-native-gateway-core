@@ -808,6 +808,7 @@ onMounted(load)
     <div class="bulk-bar">
       <button class="btn btn-ghost btn-sm" @click="openChanges">{{ t('standardModelPricing.history.openChanges') }}</button>
       <button class="btn btn-ghost btn-sm" @click="openMarket">{{ t('standardModelPricing.market.open') }}</button>
+      <a class="btn btn-ghost btn-sm" href="/operations/price-compare">{{ t('priceCompare.tabReference') }}</a>
     </div>
 
     <div class="card table-wrap">

@@ -10,6 +10,10 @@ vi.mock('../../composables/useDataViewMode', () => ({
 }))
 vi.mock('../../api/market', () => ({
   getAdminMarketCompare: vi.fn(),
+  getAdminMarketModelPlatforms: vi.fn(async () => ({ available: true, items: [] })),
+}))
+vi.mock('../../api/maas', () => ({
+  getAdminMaasMarketPriceOverview: vi.fn(async () => ({ items: [], sync: [] })),
 }))
 
 const ROW = {
@@ -62,6 +66,10 @@ describe('PriceCompareView', () => {
     })
     const w = mount(PriceCompareView, { global: { plugins: [testI18n] } })
     await flushPromises()
+    // 默认 tab=定价参考；切到供应评分再断言评分行。
+    const tabs = w.findAll('.tab-row button')
+    await tabs[1].trigger('click')
+    await flushPromises()
 
     expect(w.text()).toContain('glm-5.3')
     expect(w.text()).toContain('trusted')
@@ -88,6 +96,8 @@ describe('PriceCompareView', () => {
     })
     const w = mount(PriceCompareView, { global: { plugins: [testI18n] } })
     await flushPromises()
+    await w.findAll('.tab-row button')[1].trigger('click')
+    await flushPromises()
     // NULL 格子必须显示「—」而不是 0。
     expect(w.text()).not.toContain('0.0000')
     expect(w.findAll('td').some(td => td.text() === '—')).toBe(true)
@@ -99,6 +109,8 @@ describe('PriceCompareView', () => {
       items: [], summary: {},
     })
     const w = mount(PriceCompareView, { global: { plugins: [testI18n] } })
+    await flushPromises()
+    await w.findAll('.tab-row button')[1].trigger('click')
     await flushPromises()
     expect(w.findAll('.app-empty-state').length).toBe(1)
     // 空态必须带「为什么」指针（服务端 reason 原文）与「下一步」。

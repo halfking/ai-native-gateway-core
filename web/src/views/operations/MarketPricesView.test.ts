@@ -12,10 +12,17 @@ vi.mock('../../api/market', () => ({
   getAdminMarketPlatforms: vi.fn(),
   putAdminMarketPlatform: vi.fn(),
 }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
 vi.mock('../../api/maas', () => ({
   getAdminMaasMarketPriceSyncStatus: vi.fn(async () => ({ items: [
-    { id: 1, run_date: '2026-11-13', source_platforms: 25, source_rows: 1200, landed_rows: 1100, rejected_rows: 100, conflicts: { platform_unmapped_region: 90, other: 10 }, created_at: '2026-11-13T02:30:00Z' },
+    { id: 1, run_date: '2026-11-13', source_platforms: 25, source_rows: 1200, landed_rows: 1100, rejected_rows: 100, conflicts: { platform_unmapped_region: 90, other: 10 }, detail: { rejected_by_reason: { no_price: 100 } }, created_at: '2026-11-13T02:30:00Z' },
   ] })),
+  getAdminMaasMarketPriceOverview: vi.fn(async () => ({
+    items: [{ canonical_name: 'glm-4', resolved: true }],
+    sync: [{ run_date: '2026-11-13' }],
+  })),
 }))
 
 const PLATFORMS = [

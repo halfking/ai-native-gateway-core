@@ -63,6 +63,7 @@ const statsMetric = ref<'token' | 'credits'>('token')
 const overviewDaily = ref<TenantDailyStat[]>([])
 const keyAppFilter = ref('')
 const keyOwnerFilter = ref('')
+const highlightKeyId = ref<number | null>(null)
 const showCreateUser = ref(false)
 const newUser = ref({
   username: '',
@@ -382,6 +383,14 @@ function applyRouteFocus() {
   }
   if (typeof route.query.app === 'string') keyAppFilter.value = route.query.app
   if (typeof route.query.owner === 'string') keyOwnerFilter.value = route.query.owner
+  if (typeof route.query.key_id === 'string') {
+    const kid = Number.parseInt(route.query.key_id, 10)
+    if (!Number.isNaN(kid)) {
+      highlightKeyId.value = kid
+      // 高亮 3 秒后自动清除
+      setTimeout(() => { highlightKeyId.value = null }, 3000)
+    }
+  }
 }
 
 function formatDayDelta(v: number | null): string {
@@ -664,7 +673,7 @@ watch(() => route.params.tenantId, loadTenant)
             <tr><th>ID</th><th>密钥前缀</th><th>别名</th><th>{{ $t('common.terms.application') }}</th><th>{{ $t('common.terms.status') }}</th><th>{{ $t('common.terms.requestCount') }}</th><th>{{ $t('common.terms.fee') }}</th><th>创建</th></tr>
           </thead>
           <tbody>
-            <tr v-for="k in sortedVisibleKeys" :key="k.id">
+            <tr v-for="k in sortedVisibleKeys" :key="k.id" :class="{ 'highlight-row': highlightKeyId === k.id }">
               <td>{{ k.id }}</td>
               <td><code>{{ k.key_prefix }}</code></td>
               <td>{{ k.key_alias || '-' }}</td>
@@ -1316,4 +1325,14 @@ watch(() => route.params.tenantId, loadTenant)
    ⇒ 浏览器按包含块宽度渲染（会撑爆布局）⇒ 必须显式定尺寸。
    尺寸沿用原字形的 font-size 观感（字形墨迹 ≈ 0.7em）。 */
 .maas-shortcut-icon > svg { width: 18px; height: 18px; }
+
+/* ── 2026-11-17 用户详情抽屉高频密钥点击高亮 ── */
+.highlight-row {
+  background-color: color-mix(in srgb, var(--accent) 15%, transparent);
+  animation: highlight-fade 3s ease-out;
+}
+@keyframes highlight-fade {
+  0% { background-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+  100% { background-color: transparent; }
+}
 </style>

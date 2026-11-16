@@ -116,6 +116,14 @@ export default {
     limitsSaved: 'Limits saved',
     error: {
       loadDetailFailed: 'The API key details could not be loaded. Please retry.',
+      loadLogsFailed: 'The request logs could not be loaded. Please retry.',
+    },
+    logs: {
+      title: 'Recent Request Logs',
+      viewAll: 'View All',
+      empty: 'No request records',
+      success: 'Success',
+      pending: 'Pending',
     },
   },
   applications: {

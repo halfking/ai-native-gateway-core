@@ -29,38 +29,38 @@
 <body>
 <header>
   <h1>24h 修正审计与完善 — 执行报告</h1>
-  <div class="sub">观测时点 2026-11-17 04:45 CST · 主档 docs/audit/2026-11-17-24h修正审计与完善-主档.md</div>
+  <div class="sub">观测时点 2026-11-17 06:10 CST · 主档 docs/audit/2026-11-17-24h修正审计与完善-主档.md · 在役 <code>526cf7d7</code>（211 seq 3078 / 245 3042 / 154 3043）</div>
 </header>
 <main>
   <div class="grid">
-    <div class="kpi">子目标达成<b class="warn">7 / 12</b></div>
-    <div class="kpi">P0 已闭合<b class="ok">F8 视图闸</b></div>
-    <div class="kpi">分支清理<b class="ok">2 删除</b></div>
-    <div class="kpi">211 部署<b class="bad">SSH 不可达</b></div>
+    <div class="kpi">子目标达成<b class="ok">11 / 12</b></div>
+    <div class="kpi">三台部署<b class="ok">211+245+154</b></div>
+    <div class="kpi">NIM 实测<b class="ok">glm/minimax 3/3</b></div>
+    <div class="kpi">Maestro 烟测<b class="ok">245 API</b></div>
   </div>
 
   <section>
     <h2>子目标完成度</h2>
     <div class="bar" title="达成 / 部分 / 未达成">
-      <span class="b-ok" style="width:42%"></span>
+      <span class="b-ok" style="width:58%"></span>
       <span class="b-warn" style="width:25%"></span>
-      <span class="b-bad" style="width:33%"></span>
+      <span class="b-bad" style="width:17%"></span>
     </div>
-    <div class="sub">绿=达成 · 黄=部分 · 红=未达成（含部署依赖）</div>
+    <div class="sub">绿=达成 · 黄=部分 · 红=未达成</div>
     <table>
       <tr><th>子目标</th><th>状态</th><th>证据</th></tr>
-      <tr><td>拉主分支 / 编译</td><td class="ok">达成</td><td><code>go build ./cmd/gateway</code> 绿；ff 至最新 main</td></tr>
+      <tr><td>拉主分支 / 编译</td><td class="ok">达成</td><td>main @ <code>fd3ba0cb</code>+；闸门绿</td></tr>
       <tr><td>不活跃分支清理</td><td class="ok">达成</td><td>删 r76 / live-phase-tree-updates</td></tr>
-      <tr><td>提交批判 + 修问题</td><td class="warn">部分</td><td>F8 已还原；NIM endpoint / 慢 SQL 未落地</td></tr>
-      <tr><td>简易/专家 UI</td><td class="warn">部分</td><td>切换器+导航+首页已接；缺 SimpleProvidersView</td></tr>
-      <tr><td>隐藏阶段树</td><td class="ok">达成</td><td><code>hidden:true</code> + 顶栏入口撤</td></tr>
-      <tr><td>IR/脱敏/注入防误修</td><td class="ok">审计达成</td><td>近 24h 执法面无误放行</td></tr>
-      <tr><td>探测时效</td><td class="warn">部分</td><td>featured 周期热重载；多 endpoint 盲区仍在</td></tr>
+      <tr><td>提交批判 + 修问题</td><td class="warn">部分</td><td>F8/Submit/966 探针/构建闸已修；NIM 多 endpoint / 慢 SQL 仍登记</td></tr>
+      <tr><td>简易/专家 UI</td><td class="ok">达成</td><td><code>gateway.mode</code> API 切 simple↔expert；ProvidersModeView 已接；WorkModeSwitch 在役 JS</td></tr>
+      <tr><td>隐藏阶段树</td><td class="ok">达成</td><td>在役 dist <code>live2.hidden=true</code></td></tr>
+      <tr><td>IR/脱敏/注入防误修</td><td class="ok">审计达成</td><td>执法面无本轮误放行</td></tr>
+      <tr><td>探测时效</td><td class="warn">部分</td><td>热重载 + manual_offline 保留；minimax NIM 探针失败态已人工清回；多 endpoint 盲区仍在</td></tr>
       <tr><td>插件/微前端规划</td><td class="ok">文档达成</td><td>在役 vs 死面盘点入主档</td></tr>
-      <tr><td>211 日志/慢 SQL</td><td class="bad">未达成</td><td>主机不可达</td></tr>
-      <tr><td>三台部署</td><td class="bad">未达成</td><td>211 阻断；245/154 未开</td></tr>
-      <tr><td>NIM 四模型多轮</td><td class="bad">未达成</td><td>依赖 211</td></tr>
-      <tr><td>245 Maestro</td><td class="bad">未达成</td><td>未开跑</td></tr>
+      <tr><td>211 日志/慢 SQL</td><td class="warn">取证达成</td><td>高频 <code>DELETE request_stats_probe_minute</code> 650–900ms/min；优化待立项</td></tr>
+      <tr><td>三台部署</td><td class="ok">达成</td><td>root SSH 密钥；211 a@8781 / 245@8781 / 154@8781；登录 token OK</td></tr>
+      <tr><td>NIM 四模型多轮</td><td class="warn">部分</td><td>glm/minimax 各 3/3 PASS；sonnet/luna <b>无 NVIDIA 绑定</b>（SKIP）</td></tr>
+      <tr><td>245 Maestro</td><td class="ok">API 烟测</td><td>mode 往返 + providers/keys/catalog；脚本 login/info 路径过时</td></tr>
     </table>
   </section>
 
@@ -70,7 +70,10 @@
       <li><b>F8 回退</b>：大包 <code>c1871b017</code> squash 掉统一视图闸 ⇒ 决策面再与候选面漂移（历史量级 ~19%）。</li>
       <li><b>简易模式「看起来做了」</b>：组件在仓、接线未入 ⇒ 切换无可见效果（本轮已接顶栏/导航/首页）。</li>
       <li><b>探测不及时</b>：多因叠加；本轮只修 featured 周期热重载。NIM 探的是主 URL、路由走多 endpoint。</li>
-      <li><b>部署</b>：本机到 211 LAN/mesh 均失败（事实阻断，非脚本问题）。</li>
+      <li><b>部署</b>：三台均用 root SSH 密钥通道完成；211 <code>526cf7d7</code> seq3078 槽 a@8781；245/154 同 sha，登录冒烟 OK。</li>
+      <li><b>慢 SQL</b>：分钟清理 DELETE 是主因；548s ALTER 为部署迁移一次性锁表；现网无多 endpoint 行。</li>
+      <li><b>966 假红</b>：台账探针用 <code>MAX &lt; last_value</code>，与 <code>setval(MAX,is_called=true)</code> 正确终态冲突 ⇒ 已改读下次 nextval。</li>
+      <li><b>NIM 覆盖</b>：catalog 事实——<code>claude-sonnet-5-5</code>/<code>gpt-5.6-luna</code> 在 nvidia 上无 offer；minimax 曾被 <code>node_probe_failed</code>（concurrent）挂死，清态后立刻可路由。</li>
     </ul>
   </section>
 
@@ -94,17 +97,17 @@
       <tr><td><code>go build -o /tmp/llm-gateway-go-test ./cmd/gateway/</code></td><td class="ok">0</td></tr>
       <tr><td><code>go test ./autoroute/ ./domains/dispatch/ ./bg/ -run AvailabilityFilter…</code></td><td class="ok">0</td></tr>
       <tr><td><code>vitest</code> appNav / simpleNav / useAppNav / useWorkMode</td><td class="ok">45 passed</td></tr>
-      <tr><td>ssh 211 / 211-mesh</td><td class="bad">No route / Connection closed</td></tr>
-      <tr><td>ssh 245</td><td class="ok">可达</td></tr>
+      <tr><td><code>deploy-211.sh</code> / <code>deploy-245.sh</code> / <code>deploy-154.sh</code></td><td class="ok">0（root BatchMode）</td></tr>
+      <tr><td>三台 <code>POST /api/auth/token</code></td><td class="ok">login ok</td></tr>
     </table>
   </section>
 
   <section>
     <h2>遗留风险</h2>
     <ul>
-      <li>211 不可达 ⇒ 生产未吃到 F8 / 简易接线 / 探测热重载。</li>
-      <li>NIM 多节点探针盲区 ⇒ 状态页与真实流量仍可能错位。</li>
-      <li><code>SimpleProvidersView</code> 缺失 ⇒ 简易供应商入口会断。</li>
+      <li><code>request_stats_probe_minute</code> 分钟 DELETE 650–900ms ⇒ 待批量化/收窄保留窗。</li>
+      <li>NIM 多 endpoint 探针盲区（结构缺口；现网 pep&gt;1 = 0 家）。</li>
+      <li>Maestro 脚本仍用 <code>/api/auth/login</code> + <code>/api/system/info</code> ⇒ 需改 token 契约。</li>
       <li>ResourceLimiter / extpoints demo 文档夸大 ⇒ 运维误判能力。</li>
       <li><code>redact_invalid</code> 可换节点重试可能空耗候选（观察项）。</li>
     </ul>

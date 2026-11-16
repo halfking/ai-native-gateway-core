@@ -87,3 +87,35 @@ export function getAdminMarketCompare(q = '', confidence = '', limit = 200) {
   const params = new URLSearchParams({ q, confidence, limit: String(limit) })
   return req<MarketCompareResp>('GET', `/api/admin/market/compare?${params}`)
 }
+
+// ── 按模型跨平台现价（970，对齐 salesdecorate Compare） ─────────────────
+
+export interface MarketPlatformQuoteRow {
+  canonical_name: string
+  platform_id: string
+  platform_name: string
+  region: string
+  native_currency: string
+  is_vendor: boolean
+  vendor: string
+  currency: string
+  input_per_1m: number | null
+  output_per_1m: number | null
+  cny_in_per_1m: number | null
+  cny_out_per_1m: number | null
+  run_date: string
+  source_url: string
+}
+
+export interface MarketModelPlatformsResp {
+  available: boolean
+  reason?: string
+  items: MarketPlatformQuoteRow[]
+  model?: string
+  dimension?: string
+}
+
+export function getAdminMarketModelPlatforms(model = '', dimension = 'standard', limit = 200) {
+  const params = new URLSearchParams({ model, dimension, limit: String(limit) })
+  return req<MarketModelPlatformsResp>('GET', `/api/admin/market/model-platforms?${params}`)
+}
