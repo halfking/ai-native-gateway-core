@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"runtime/debug"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -811,11 +810,6 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			out = dispatch.ForwardOutcome{Err: fmt.Errorf("dispatch forward panic: %v", recovered)}
-			// ★ 栈随错误一起带走：executor 这层 recover 不记栈 ⇒ 现场只剩
-			// 一句「invalid memory address or nil pointer dereference」。
-			slog.Error("dispatch forward panic recovered",
-				"panic", recovered,
-				"stack", string(debug.Stack()))
 		}
 		if IsContextBudgetError(out.Err) {
 			// No provider call occurred: capacity mismatch must not become a

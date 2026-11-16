@@ -383,3 +383,5 @@
 365	965_api_key_concurrency_minute.sql
 366	966_auth_id_mapping_canonical_channel.sql
 367	967_prompt_injection_llm_policy_columns.sql
+368	968_plugin_config.sql
+369	969_approval_casdoor_mapping.sql

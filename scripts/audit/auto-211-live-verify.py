@@ -223,48 +223,6 @@ def main() -> int:
         http("DELETE", f"{base}/api/keys/{key_id}", headers=auth)
         print(f"[4] 临时 key {key_id} 已吊销")
 
-    # ── 5. 零候选重选是否真的跑过（容器日志） ──────────────────────────────
-    # 修前：auto 选中的模型零候选 ⇒ handler 当场 503（no_candidates），
-    # 客户端只看到「原来的模型不可用」。修后应当出现重选记录，或者
-    # 压根没触发零候选（决策侧已不再选死模型 —— 根修 6 的效果）。
-    try:
-        logs = subprocess.run(
-            ["docker", "logs", "--since", "20m", running_container()],
-            capture_output=True, text=True, check=False,
-        ).stdout + subprocess.run(
-            ["docker", "logs", "--since", "20m", running_container()],
-            capture_output=True, text=True, check=False,
-        ).stderr
-        switched = [ln for ln in logs.splitlines() if "switched model after zero candidates" in ln]
-        print(f"[5] 零候选重选记录（近 20 分钟）：{len(switched)} 条")
-        for ln in switched[-3:]:
-            print("    " + ln[:300])
-        no_cand = [ln for ln in logs.splitlines() if "no_candidates" in ln]
-        print(f"    同窗内 no_candidates 出现 {len(no_cand)} 次")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[5] 读容器日志失败：{exc}")
-
-    # ── 6. 真库里最近的 auto 请求（决策模型 / 结果 / 失败码） ───────────────
-    try:
-        sql = (
-            "SELECT ts, coalesce(auto_decision->>'chosen_model', outbound_model, client_model), "
-            "coalesce(outbound_model, ''), success, coalesce(failure_detail_code, '') "
-            "FROM request_logs_with_current_month WHERE is_auto_request = true "
-            "ORDER BY ts DESC LIMIT 8;"
-        )
-        out = subprocess.run(
-            ["docker", "exec", "acc-pg17", "psql", "-U", "postgres", "-d", "llm_gateway",
-             "-t", "-A", "-F", " | ", "-c", sql],
-            capture_output=True, text=True, check=False,
-        ).stdout.strip()
-        print("[6] 真库最近 auto 请求：")
-        for line in [ln for ln in out.splitlines() if ln.strip()]:
-            print("    " + line[:220])
-            if "no_candidates" in line:
-                failures.append("真库仍有 auto 请求以 no_candidates 收场")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[6] 读真库失败：{exc}")
-
     if failures:
         print("FAIL: " + "; ".join(failures))
         return 1

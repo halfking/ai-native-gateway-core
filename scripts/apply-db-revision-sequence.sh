@@ -2665,6 +2665,17 @@ files=(
   #   （llm_detection_fail_closed / sample_rate / timeout_sec）。ADD COLUMN IF NOT
   #   EXISTS ×3 + CHECK 约束，幂等可重放。缺本行 ⇒ 211 记账链停在 966。
   "$ROOT_DIR/sql/migrations/startup/967_prompt_injection_llm_policy_columns.sql"
+  # ★ 968（2026-11-16 12h 审计轮 0820）：plugin_config 表——插件 provider 选择
+  #   （Native / Casdoor）的持久化。★ 原 DDL 落在**顶层 migrations/** 死文件区
+  #   ⇒ 全新安装/211 升级序列永不建表 ⇒ admin 面上改的 provider 选择无法持久化
+  #   （loadConfigFromDatabase 读不到表 ⇒ 静默回落 default）。
+  #   本行补齐 211 部署通道（sqlguard: TestStartupMigrationsStayInEveryDeliveryChannel）。
+  "$ROOT_DIR/sql/migrations/startup/968_plugin_config.sql"
+  # ★ 969（2026-11-16 12h 审计轮 0820）：approval_casdoor_mapping 表——请求ID
+  #   ↔ Casdoor 任务ID 的本地映射。★ 原 DDL 落在 db/migrations/（README 明令
+  #   冻结禁新增）⇒ 同样永不建表 ⇒ internal/approval.PgxApprovalStore 首个
+  #   INSERT 即 42P01 ⇒ **Casdoor 审批链路不可用**（P1）。
+  "$ROOT_DIR/sql/migrations/startup/969_approval_casdoor_mapping.sql"
 )
 
 
@@ -3280,6 +3291,20 @@ ledger_artifact_probe "963_credential_total_requests_rollup.sql" \
 #   同时钉 897 的 demote 自愈步仍在位（963 只改默认值这一行）。
 ledger_artifact_probe "964_promote_session_turns_default_retention_realign.sql" \
   "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'promote_session_turns_hot_to_partition' AND position('DEFAULT ''08:00:00''::interval' in pg_get_functiondef(p.oid)) > 0 AND position('SET is_final_success = FALSE' in p.prosrc) > 0)"
+# ★ 966 的产物 = auth_id_mapping 表 + 它的 updated_at 触发器 + 序列与 MAX(internal_id) 对齐。
+#   ⇒ 探针断言三件事：表在、触发器在、序列 nextval > MAX(internal_id)（防 backfill 撞号 23505）。
+ledger_artifact_probe "966_auth_id_mapping_canonical_channel.sql" \
+  "to_regclass('public.auth_id_mapping') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'auth_id_mapping' AND t.tgname = 'auth_id_mapping_updated_at' AND NOT t.tgisinternal) AND (SELECT COALESCE(MAX(internal_id), 0) FROM public.auth_id_mapping) < (SELECT last_value FROM public.auth_id_mapping_internal_id_seq)"
+# ★ 967 的产物 = prompt_injection_policies 的三列 +两条 CHECK 约束。
+#   ⇒ 探针断言三列都在且取值域约束在位（约束名与 down 文件的 DROP CONSTRAINT 对称）。
+ledger_artifact_probe "967_prompt_injection_llm_policy_columns.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='prompt_injection_policies' AND column_name='llm_detection_fail_closed') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='prompt_injection_policies' AND column_name='llm_detection_sample_rate') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='prompt_injection_policies' AND column_name='llm_detection_timeout_sec') AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='prompt_injection_policies' AND c.conname='prompt_injection_policies_llm_sample_rate_check') AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='prompt_injection_policies' AND c.conname='prompt_injection_policies_llm_timeout_sec_check')"
+# ★ 968 的产物 = plugin_config 表 + 单例默认行（id=1，全部 native）。
+ledger_artifact_probe "968_plugin_config.sql" \
+  "to_regclass('public.plugin_config') IS NOT NULL AND EXISTS (SELECT 1 FROM public.plugin_config WHERE id = 1)"
+# ★ 969 的产物 = approval_casdoor_mapping 表 + 它的 updated_at 触发器 + 租户隔离 RLS 策略。
+ledger_artifact_probe "969_approval_casdoor_mapping.sql" \
+  "to_regclass('public.approval_casdoor_mapping') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'approval_casdoor_mapping' AND t.tgname = 'trigger_update_approval_casdoor_mapping_timestamp' AND NOT t.tgisinternal) AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='approval_casdoor_mapping' AND policyname='approval_casdoor_mapping_tenant_isolation')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

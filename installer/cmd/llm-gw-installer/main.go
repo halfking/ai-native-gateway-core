@@ -1646,6 +1646,33 @@ var promptInjectionLLMPolicyColumns967 []byte
 //go:embed embeddata/startup/967_prompt_injection_llm_policy_columns.down.sql
 var promptInjectionLLMPolicyColumns967Down []byte
 
+// ★ 968（2026-11-16 12h 审计轮 0820）：plugin_config 表——插件 provider 选择
+//
+//	（Native / Casdoor）的持久化。
+//	★ 该表的 DDL 原先落在**顶层 migrations/** 目录（死文件区，无执行器接线）
+//	  ⇒ 全新安装/211 升级序列**永不建表** ⇒ admin 面上的 provider 选择无法
+//	  持久化（loadConfigFromDatabase 读不到表 ⇒ 静默回落 default）。
+//	★ 本笔收编进 startup 正典通道 ⇒ 与 967 同样的五点同步纪律齐备。
+//
+//go:embed embeddata/startup/968_plugin_config.sql
+var pluginConfig968 []byte
+
+//go:embed embeddata/startup/968_plugin_config.down.sql
+var pluginConfig968Down []byte
+
+// ★ 969（2026-11-16 12h 审计轮 0820）：approval_casdoor_mapping 表——请求ID
+//
+//	↔ Casdoor 任务ID 的本地映射（双层审批 L2 的持久化面）。
+//	★ 该表的 DDL 原先落在 **db/migrations/**（README 明令冻结禁新增）
+//	  ⇒ 同样永不建表 ⇒ internal/approval.PgxApprovalStore 首个 INSERT
+//	  即 42P01 ⇒ **Casdoor 审批链路在存储层不可用**（P1）。
+//
+//go:embed embeddata/startup/969_approval_casdoor_mapping.sql
+var approvalCasdoorMapping969 []byte
+
+//go:embed embeddata/startup/969_approval_casdoor_mapping.down.sql
+var approvalCasdoorMapping969Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2229,6 +2256,14 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 967（2026-11-16 12h 审计轮补正）：prompt_injection_policies 三列。
 	"startup/967_prompt_injection_llm_policy_columns.sql":      promptInjectionLLMPolicyColumns967,
 	"startup/967_prompt_injection_llm_policy_columns.down.sql": promptInjectionLLMPolicyColumns967Down,
+	// ★ 968（2026-11-16 12h 审计轮 0820）：plugin_config 表——原 DDL 在死通道
+	// （顶层 migrations/）⇒ 永不建表 ⇒ 收编进正典通道。
+	"startup/968_plugin_config.sql":      pluginConfig968,
+	"startup/968_plugin_config.down.sql": pluginConfig968Down,
+	// ★ 969（2026-11-16 12h 审计轮 0820）：approval_casdoor_mapping 表——
+	// 原 DDL 在死通道（db/migrations/，README 冻结）⇒ 收编进正典通道。
+	"startup/969_approval_casdoor_mapping.sql":      approvalCasdoorMapping969,
+	"startup/969_approval_casdoor_mapping.down.sql": approvalCasdoorMapping969Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

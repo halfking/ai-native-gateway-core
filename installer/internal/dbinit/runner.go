@@ -1869,6 +1869,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// ★ 提交说明里「读侧 COALESCE 已防 NULL」是误判：COALESCE 挡 NULL，
 			//   挡不住「列根本不存在」。
 			"967_prompt_injection_llm_policy_columns.sql",
+			// ★ 968（2026-11-16 12h 审计轮 0820）：plugin_config 表——插件
+			//   provider 选择（Native / Casdoor）的持久化。
+			//   ★ 此前该表的 DDL 被写在**顶层 migrations/ 目录**（死文件区，
+			//     无执行器接线）⇒ 全新安装/211 升级序列**永远不建这张表**。
+			//   ⇒ cmd/gateway/plugin_init.go 的 loadConfigFromDatabase 查询
+			//     报 42P01 ⇒ 静默回落 default（全部 native）⇒ admin 面上
+			//     改的 provider 选择无法持久化。
+			"968_plugin_config.sql",
+			// ★ 969（2026-11-16 12h 审计轮 0820）：approval_casdoor_mapping 表
+			//   ——llm-gateway 请求ID ↔ Casdoor 任务ID 的本地映射。
+			//   ★ 此前该表的 DDL 被写在 **db/migrations/**（README 明令冻结
+			//     禁新增）⇒ 同样永不建表 ⇒ internal/approval.PgxApprovalStore
+			//     的第一个 INSERT 就42P01 ⇒ **Casdoor 审批链路不可用**（P1）。
+			"969_approval_casdoor_mapping.sql",
 		},
 	}
 }

@@ -6,19 +6,15 @@ package autoroute
 //
 // auto 的决策池只有 48h 热门 top-3（recommend_v2.go 的 getHotTop3Canonicals）。
 // 选中模型一旦此刻不可路由，退路也只有那 2-3 个同类模型 ⇒ 211 真机实测
-// 两轮 auto 都以 503 收场，而平台上明明有 871 个此刻可路由的模型。
+// 三笔 auto 全 503，而平台上明明有 871 个此刻可路由的模型。
 //
-// ★★ 第一版的退路池建在同一张 48h 热度榜上，而那张榜在生产上**恒空**
-// （`session_turns_hot.canonical_id` 近 48h 5338 行**全为 NULL**）⇒
-// 退路池也空 ⇒ 重选无链可走 ⇒ 仍然 503。⇒ 现在退路池改为
-// **索引快照 ∩ 实时可用过滤**，不再依赖任何一张可能空掉的统计表。
+// ⇒ 退路池必须比决策池宽（48h 热度榜 LIMIT 32），且：去重、排除已选模型、
+// 顺序稳定（热度序）。
 
 import (
 	"context"
 	"reflect"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func seedReselectIndex(candidates ...Candidate) *Index {
@@ -27,73 +23,35 @@ func seedReselectIndex(candidates ...Candidate) *Index {
 	return idx
 }
 
-// filterAllowing keeps only the canonicals named in keep.
-func filterAllowing(keep ...string) func(context.Context, *pgxpool.Pool, []Candidate) ([]Candidate, error) {
-	return func(_ context.Context, _ *pgxpool.Pool, all []Candidate) ([]Candidate, error) {
-		out := make([]Candidate, 0, len(all))
-		for _, c := range all {
-			for _, k := range keep {
-				if c.CanonicalName == k {
-					out = append(out, c)
-					break
-				}
-			}
-		}
-		return out, nil
-	}
-}
-
-// TestReselectCandidateNames_UsesLiveFilterAndSkipsChosen pins the ladder
-// contract: the names come from the **live availability filter** (not from a
-// statistics table), the chosen model is excluded, and duplicates collapse.
-func TestReselectCandidateNames_UsesLiveFilterAndSkipsChosen(t *testing.T) {
+// TestReselectCandidateNames_SkipsChosenAndDuplicates pins the ladder
+// contract: the chosen model never appears in its own ladder, and the same
+// canonical id listed twice yields one entry.
+func TestReselectCandidateNames_SkipsChosenAndDuplicates(t *testing.T) {
 	idx := seedReselectIndex(
-		Candidate{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a"},
-		Candidate{CredentialID: 2, CanonicalID: 2, CanonicalName: "model-b"},
-		Candidate{CredentialID: 3, CanonicalID: 3, CanonicalName: "model-c"},
+		Candidate{CanonicalID: 10, CanonicalName: "model-a"},
+		Candidate{CanonicalID: 20, CanonicalName: "model-b"},
+		Candidate{CanonicalID: 30, CanonicalName: "model-c"},
 	)
-	// The live filter says model-b has no routable binding.
-	idx.availabilityFilter = filterAllowing("model-a", "model-c")
+	idx.hotReselectLoader = func(context.Context, int) []int {
+		return []int{10, 20, 30, 10}
+	}
 
-	got := reselectCandidateNames(context.Background(), idx, "model-a", ReselectPoolLimit)
-	want := []string{"model-c"}
+	got := reselectCandidateNames(context.Background(), idx, "model-b", ReselectPoolLimit)
+	want := []string{"model-a", "model-c"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reselect ladder = %v, want %v", got, want)
 	}
 }
 
-// TestReselectCandidateNames_DeduplicatesCanonical pins that several
-// bindings of the same canonical collapse into one ladder entry.
-func TestReselectCandidateNames_DeduplicatesCanonical(t *testing.T) {
-	idx := seedReselectIndex(
-		Candidate{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a"},
-		Candidate{CredentialID: 2, CanonicalID: 1, CanonicalName: "model-a"},
-		Candidate{CredentialID: 3, CanonicalID: 2, CanonicalName: "model-b"},
-	)
-	idx.availabilityFilter = filterAllowing("model-a", "model-b")
+// TestReselectCandidateNames_EmptyWhenNoLadder pins the fail-safe: with no
+// ladder source (no pool / query failed) the result is empty, so the caller
+// keeps the pre-existing narrow behaviour instead of losing the ladder.
+func TestReselectCandidateNames_EmptyWhenNoLadder(t *testing.T) {
+	idx := seedReselectIndex(Candidate{CanonicalID: 10, CanonicalName: "model-a"})
+	idx.hotReselectLoader = func(context.Context, int) []int { return nil }
 
-	got := reselectCandidateNames(context.Background(), idx, "chosen", ReselectPoolLimit)
-	want := []string{"model-a", "model-b"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("reselect ladder = %v, want %v (duplicates must collapse)", got, want)
-	}
-}
-
-// TestReselectCandidateNames_FilterErrorFailsOpen pins the fail-safe: a
-// failing live filter must NOT produce an empty ladder — an empty ladder
-// kills the request, while a wider one is re-verified downstream anyway.
-func TestReselectCandidateNames_FilterErrorFailsOpen(t *testing.T) {
-	idx := seedReselectIndex(
-		Candidate{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a"},
-	)
-	idx.availabilityFilter = func(context.Context, *pgxpool.Pool, []Candidate) ([]Candidate, error) {
-		return nil, context.DeadlineExceeded
-	}
-
-	got := reselectCandidateNames(context.Background(), idx, "chosen", ReselectPoolLimit)
-	want := []string{"model-a"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("reselect ladder = %v, want %v (must fail open)", got, want)
+	if got := reselectCandidateNames(context.Background(), idx, "chosen", ReselectPoolLimit); len(got) != 0 {
+		t.Fatalf("expected an empty ladder, got %v", got)
 	}
 }
 
@@ -103,33 +61,20 @@ func TestReselectCandidateNames_FilterErrorFailsOpen(t *testing.T) {
 func TestReselectCandidateNames_HonoursLimit(t *testing.T) {
 	var candidates []Candidate
 	for i := 1; i <= 50; i++ {
-		candidates = append(candidates, Candidate{
-			CredentialID:  int64(i),
-			CanonicalID:   i,
-			CanonicalName: "model-" + string(rune('a'+i%26)) + string(rune('0'+i/10)),
-		})
+		candidates = append(candidates, Candidate{CanonicalID: i, CanonicalName: "model-" + string(rune('a'+i%26)) + string(rune('0'+i/10))})
 	}
 	idx := seedReselectIndex(candidates...)
-	idx.availabilityFilter = func(_ context.Context, _ *pgxpool.Pool, all []Candidate) ([]Candidate, error) {
-		return all, nil
+	idx.hotReselectLoader = func(context.Context, int) []int {
+		out := make([]int, 0, 50)
+		for i := 1; i <= 50; i++ {
+			out = append(out, i)
+		}
+		return out
 	}
 
 	got := reselectCandidateNames(context.Background(), idx, "chosen", 8)
 	if len(got) != 8 {
 		t.Fatalf("ladder width = %d, want 8", len(got))
-	}
-}
-
-// TestReselectPoolLimitIsWide pins the ladder width itself.
-//
-// Why this needs its own test: the other tests pass an explicit limit, so
-// they cannot see a change to the constant that the production call sites
-// actually use. Without this test, narrowing ReselectPoolLimit back to 3
-// (i.e. back to the decision pool) would leave every other test green — a
-// real false negative caught by mutation M5.
-func TestReselectPoolLimitIsWide(t *testing.T) {
-	if ReselectPoolLimit < 16 {
-		t.Fatalf("ReselectPoolLimit = %d, want >= 16 — the reselect ladder must be far wider than the 3-model decision pool", ReselectPoolLimit)
 	}
 }
 
@@ -146,6 +91,7 @@ func TestDecideV2_FillsReselectCandidates(t *testing.T) {
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "winner", Tags: []string{"code"}, SuccessRate: 0.99},
 		{CredentialID: 2, CanonicalID: 2, CanonicalName: "backup", Tags: []string{"code"}, SuccessRate: 0.90},
 	})
+	idx.hotReselectLoader = func(context.Context, int) []int { return []int{1, 2} }
 
 	d := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
 	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
@@ -173,6 +119,7 @@ func TestDecideV1_FillsReselectCandidates(t *testing.T) {
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "winner", Tags: []string{"code"}, SuccessRate: 0.99},
 		{CredentialID: 2, CanonicalID: 2, CanonicalName: "backup", Tags: []string{"code"}, SuccessRate: 0.90},
 	})
+	idx.hotReselectLoader = func(context.Context, int) []int { return []int{1, 2} }
 
 	d := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
 	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
@@ -181,5 +128,18 @@ func TestDecideV1_FillsReselectCandidates(t *testing.T) {
 	}
 	if len(dec.ReselectCandidates) == 0 {
 		t.Fatal("V1 decision must carry a wide reselect ladder too")
+	}
+}
+
+// TestReselectPoolLimitIsWide pins the ladder width itself.
+//
+// Why this needs its own test: TestReselectCandidateNames_HonoursLimit
+// passes an explicit limit, so it cannot see a change to the constant that
+// the production call sites actually use. Without this test, narrowing
+// ReselectPoolLimit back to 3 (i.e. back to the decision pool) would leave
+// every other test green — a real false negative caught by mutation M5.
+func TestReselectPoolLimitIsWide(t *testing.T) {
+	if ReselectPoolLimit < 16 {
+		t.Fatalf("ReselectPoolLimit = %d, want >= 16 — the reselect ladder must be far wider than the 3-model decision pool", ReselectPoolLimit)
 	}
 }

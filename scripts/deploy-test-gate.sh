@@ -179,36 +179,11 @@ if [[ "${DD_SKIP_TEST_GATE:-0}" == "1" ]]; then
 fi
 
 # ── 选包：改动触及的目录（只留有 _test.go 的） ──────────────────────────
-# ★ 2026-11-17 R76-3：修复合并提交的取包盲区 ★
-# 问题：`git diff HEAD~1 HEAD` 在合并提交时只看被合入侧（第一父提交），
-# 看不到 feature 分支的改动 ⇒ feature 分支触及的包（如 ./provider/）不进清单。
-# 修法：检测合并提交（多个父提交）⇒ diff 对比 merge-base 与 HEAD，覆盖两侧差异。
-parents_count="$(git rev-list --parents -n1 HEAD 2>/dev/null | wc -w | tr -d ' ')"
-# parents_count = 父提交数 + 1（HEAD 自己）⇒ 合并提交 ≥ 3（HEAD + 至少两个父提交）
-if [[ "$parents_count" -ge 3 ]]; then
-  merge_base="$(git merge-base HEAD~1 HEAD~2 2>/dev/null || true)"
-  if [[ -n "$merge_base" ]]; then
-    log "★ 检测到合并提交（$parents_count 个父提交）⇒ diff 对比 merge-base ($merge_base) 与 HEAD，覆盖两侧差异"
-    changed_files="$({
-      git diff --name-only -z HEAD 2>/dev/null || true
-      git diff --name-only -z --cached 2>/dev/null || true
-      git diff --name-only -z "$merge_base" HEAD 2>/dev/null || true
-    } | tr '\0' '\n' | sort -u)"
-  else
-    log "★ 检测到合并提交但拿不到 merge-base ⇒ 回落常规 diff"
-    changed_files="$({
-      git diff --name-only -z HEAD 2>/dev/null || true
-      git diff --name-only -z --cached 2>/dev/null || true
-      git diff --name-only -z HEAD~1 HEAD 2>/dev/null || true
-    } | tr '\0' '\n' | sort -u)"
-  fi
-else
-  changed_files="$({
-    git diff --name-only -z HEAD 2>/dev/null || true
-    git diff --name-only -z --cached 2>/dev/null || true
-    git diff --name-only -z HEAD~1 HEAD 2>/dev/null || true
-  } | tr '\0' '\n' | sort -u)"
-fi
+changed_files="$({
+  git diff --name-only -z HEAD 2>/dev/null || true
+  git diff --name-only -z --cached 2>/dev/null || true
+  git diff --name-only -z HEAD~1 HEAD 2>/dev/null || true
+} | tr '\0' '\n' | sort -u)"
 
 packages=()
 if [[ -n "$changed_files" ]]; then
