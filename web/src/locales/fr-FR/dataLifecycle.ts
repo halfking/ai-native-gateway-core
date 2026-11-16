@@ -343,6 +343,18 @@ export default {
 
   // Initialisation des données (2026-11-16) : statistiques et réinitialisation par catégorie.
   dataInit: {
+    defaultHint: 'Toutes les catégories sont sélectionnées par défaut : « Prévisualiser la réinitialisation » montre combien de lignes seront supprimées, puis confirmez. Les lignes protégées (clés système, super administrateurs, tenant par défaut) ne sont jamais supprimées.',
+    selectAll: 'Tout sélectionner',
+    selectNone: 'Tout désélectionner',
+    wizard: {
+      stepLabel: 'Réinitialiser les données',
+      title: 'Réinitialiser les données locales',
+      desc: 'Lors de la première activation, les données locales sont remises à zéro par défaut avant la mise en service.',
+      hint: 'La réinitialisation se fait en tant que super administrateur depuis « Cycle de vie des données, Initialisation des données ». Toutes les catégories y sont déjà sélectionnées : « Prévisualiser la réinitialisation » permet de confirmer le nombre de lignes.',
+      goReset: 'Réinitialiser les données',
+      skip: 'Environnement neuf, ignorer la réinitialisation',
+      continue: 'Continuer',
+    },
     tabLabel: 'Initialisation des données',
     title: 'Initialisation des données',
     intro: "Consultez le volume de données de chaque catégorie sur cette instance et réinitialisez-les par catégorie. Les données d'exploitation peuvent être effacées entièrement ; les données de configuration conservent le squelette système (clés système, super administrateurs, tenant par défaut) afin qu'une réinitialisation ne verrouille personne.",

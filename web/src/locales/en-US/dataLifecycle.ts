@@ -337,6 +337,18 @@ export default {
 
   // Data initialization (2026-11-16): per-category statistics and reset.
   dataInit: {
+    defaultHint: 'Every category is selected by default: click "Preview reset" to see how many rows will be deleted, then confirm to run it. Protected rows (system keys, super admins, the default tenant) are never deleted.',
+    selectAll: 'Select all',
+    selectNone: 'Clear selection',
+    wizard: {
+      stepLabel: 'Reset data',
+      title: 'Reset local data',
+      desc: 'On first activation, local history is reset to zero by default before you start taking traffic.',
+      hint: 'The reset runs as a super admin from "Data lifecycle, Data initialization". That panel already has every category selected, so click "Preview reset" to confirm the row counts.',
+      goReset: 'Go reset data',
+      skip: 'Brand-new environment, skip reset',
+      continue: 'Continue',
+    },
     tabLabel: 'Data initialization',
     title: 'Data initialization',
     intro: 'See how much data each category holds on this instance, and reset them by category. Runtime data can be cleared entirely; configuration data keeps the system skeleton (system keys, super admins, the default tenant) so a reset never locks everyone out.',

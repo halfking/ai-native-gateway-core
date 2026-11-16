@@ -196,7 +196,8 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { ref, onMounted, onUnmounted, nextTick, reactive, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, reactive, computed, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { Chart, ChartConfiguration, registerables } from 'chart.js'
 import {
   dataLifecycleStats,
@@ -239,7 +240,22 @@ const tabs: { key: TabKey; label?: string; labelKey?: string; badge?: string }[]
   { key: 'logs', label: '请求日志（分区/归档）' },
 ]
 
-const activeTab = ref<TabKey>('storage')
+const route = useRoute()
+
+// ★ 深链解析：首启向导的「重置数据」步骤直接跳到 /admin/data-lifecycle?tab=data-init
+//   ⇒ 落到「数据初始化」页签（面板默认已全选 ⇒ 默认要重置数据 ⇒ 预览 → 确认执行）。
+//   认不出的 tab 值一律回落到第一个页签（不留空白页签）。
+function resolveTabFromQuery(value: unknown): TabKey {
+  const raw = Array.isArray(value) ? value[0] : value
+  const found = tabs.find(tab => tab.key === raw)
+  return found ? found.key : 'storage'
+}
+
+const activeTab = ref<TabKey>(resolveTabFromQuery(route.query.tab))
+// 查询参数变化时跟着切（同一页面内改 URL 也能落到对应页签）。
+watch(() => route.query.tab, (value) => {
+  activeTab.value = resolveTabFromQuery(value)
+})
 const stats = ref<DataLifecycleStatsResponse | null>(null)
 const cleanupForm = reactive({ action: 'archive', from: '', to: '' })
 

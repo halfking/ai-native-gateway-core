@@ -140,9 +140,12 @@ describe('BootstrapWizardView：激活状态取不到时不得说「未激活 / 
   it('② status 失败 → 结束页不许说「已就绪」（status.message 的兜底文案）', async () => {
     statusMock.mockRejectedValue(new Error('status 503'))
     const w = await renderWizard()
-    // ⚠️ 直接把 step 推到 4 去**看那句文案**，因为修复后正常路径根本到不了这里。
+    // ⚠️ 直接把 step 推到 5 去**看那句文案**，因为修复后正常路径根本到不了这里。
     //   这条断言守的是「万一到了结束页，也不许拿兜底文案说已就绪」。
-    ;(vm(w) as unknown as { step: number }).step = 4
+    //   ★ 2026-11-16：向导新增第 4 步「重置数据」（首次激活的默认步骤）⇒
+    //     **结束页由第 4 步后移到第 5 步** ⇒ 本断言的步号同步后移；
+    //     断言的**语义不变**（仍是「结束页不许拿兜底文案说已就绪」）。
+    ;(vm(w) as unknown as { step: number }).step = 5
     await flushPromises()
     const text = w.text()
     expect(text).not.toContain('可以登录本地后台开始使用')
@@ -163,7 +166,8 @@ describe('BootstrapWizardView：激活状态取不到时不得说「未激活 / 
     statusMock.mockResolvedValue(ACTIVATED)
     const w = await renderWizard()
     expect(vm(w).statusError).toBe('')
-    expect(vm(w).step).toBe(4)
+    // ★ 第 5 步 = 结束页（2026-11-16 新增第 4 步「重置数据」后，结束页后移一格）
+    expect(vm(w).step).toBe(5)
     expect(w.text()).toContain('本机已激活。')
   })
 
