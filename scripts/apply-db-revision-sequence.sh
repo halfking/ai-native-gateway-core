@@ -2676,6 +2676,9 @@ files=(
   #   冻结禁新增）⇒ 同样永不建表 ⇒ internal/approval.PgxApprovalStore 首个
   #   INSERT 即 42P01 ⇒ **Casdoor 审批链路不可用**（P1）。
   "$ROOT_DIR/sql/migrations/startup/969_approval_casdoor_mapping.sql"
+  # ★ 970（2026-11-17 定价参考完善）：market_price_platform_quotes——
+  #   salesdecorate 按平台现价明细的网关侧只读副本（运营跨平台比价）。
+  "$ROOT_DIR/sql/migrations/startup/970_market_price_platform_quotes.sql"
 )
 
 
@@ -3308,6 +3311,9 @@ ledger_artifact_probe "968_plugin_config.sql" \
 # ★ 969 的产物 = approval_casdoor_mapping 表 + 它的 updated_at 触发器 + 租户隔离 RLS 策略。
 ledger_artifact_probe "969_approval_casdoor_mapping.sql" \
   "to_regclass('public.approval_casdoor_mapping') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'approval_casdoor_mapping' AND t.tgname = 'trigger_update_approval_casdoor_mapping_timestamp' AND NOT t.tgisinternal) AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='approval_casdoor_mapping' AND policyname='approval_casdoor_mapping_tenant_isolation')"
+# ★ 970 的产物 = market_price_platform_quotes 表 + 双索引。
+ledger_artifact_probe "970_market_price_platform_quotes.sql" \
+  "to_regclass('public.market_price_platform_quotes') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND tablename='market_price_platform_quotes' AND indexname='idx_mppq_canon')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

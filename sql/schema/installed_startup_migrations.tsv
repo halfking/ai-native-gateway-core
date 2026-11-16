@@ -385,3 +385,4 @@
 367	967_prompt_injection_llm_policy_columns.sql
 368	968_plugin_config.sql
 369	969_approval_casdoor_mapping.sql
+370	970_market_price_platform_quotes.sql

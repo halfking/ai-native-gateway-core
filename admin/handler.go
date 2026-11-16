@@ -1678,6 +1678,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/admin/market/platforms/{platformId}", h.superAdmin(h.handleMarketPlatformUpdate))
 		// M3-T2：价格对比分析页读面（C1/C2/C3 评分行 + 双地板对拍，只读对账）。
 		mux.HandleFunc("GET /api/admin/market/compare", h.superAdmin(h.handleMarketCompare))
+		// 970：按模型跨平台现价（运营定价参考，对齐 salesdecorate Compare）。
+		mux.HandleFunc("GET /api/admin/market/model-platforms", h.superAdmin(h.handleMarketModelPlatforms))
 
 		// 2026-11-05 W1：报价系统 MVP admin 面（supply/demand/quotes，
 		// 角色闸在应用层 —— 自营内部运营表，无 RLS，见 sales 包头注释）。

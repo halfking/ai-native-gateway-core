@@ -14,9 +14,14 @@ import { getAdminMarketCompare, type MarketCompareRow } from '../../api/market'
 import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
+import MarketReferenceTable from './MarketReferenceTable.vue'
+import ModelPlatformCompare from './ModelPlatformCompare.vue'
 
 const { t } = useI18n()
 const { notifyError } = useActionMessage()
+
+// reference = 五价定价参考；scoring = C1/C2/C3 评分对拍；platforms = 跨平台现价
+const tab = ref<'reference' | 'scoring' | 'platforms'>('reference')
 
 const loading = ref(false)
 const available = ref(true)
@@ -130,6 +135,16 @@ const compareFields = computed<CardField[]>(() => [
     <h2 class="page-title">{{ t('priceCompare.title') }}</h2>
     <p class="page-sub">{{ t('priceCompare.subtitle') }}</p>
 
+    <div class="card tab-row">
+      <button class="btn btn-sm" :class="tab === 'reference' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'reference'">{{ t('priceCompare.tabReference') }}</button>
+      <button class="btn btn-sm" :class="tab === 'scoring' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'scoring'">{{ t('priceCompare.tabScoring') }}</button>
+      <button class="btn btn-sm" :class="tab === 'platforms' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'platforms'">{{ t('priceCompare.tabPlatforms') }}</button>
+    </div>
+
+    <MarketReferenceTable v-if="tab === 'reference'" />
+    <ModelPlatformCompare v-else-if="tab === 'platforms'" />
+
+    <template v-else>
     <!-- ① 覆盖率摘要 -->
     <div class="card summary-card">
       <div class="summary-row">
@@ -229,10 +244,12 @@ const compareFields = computed<CardField[]>(() => [
       </ResponsiveDataView>
       <p class="hint-line">{{ t('priceCompare.tableHint') }}</p>
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.tab-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .summary-card { display: flex; flex-direction: column; gap: 6px; }
 .summary-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .filter-card { display: flex; gap: 8px; align-items: center; }
