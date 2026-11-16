@@ -9,6 +9,8 @@ import { locationFromInternalPath } from './utils/safeRedirect'
 import LoginView from './views/LoginView.vue'
 import HomeView from './views/HomeView.vue'
 import LiveTopologyView from './views/LiveTopologyView.vue'
+// 2026-11-16: 请求阶段树（live2）—— 与 /live 并存，可回退。
+import LiveStageTreeView from './views/LiveStageTreeView.vue'
 import RequestDetailPage from './views/RequestDetailPage.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
@@ -222,6 +224,10 @@ export const router = createRouter({
     // /dashboard 一行未改，本页只新增一个入口，不接管根路径。
     // 权限与 /dashboard 同级（requiresAuth），租户管理员进入即按会话租户收窄。
     { path: '/live',               component: LiveTopologyView, meta: { requiresAuth: true } },
+    // 2026-11-16: 请求阶段树（live2）。与 /live **并存**一个版本周期：
+    // 过滤条件常驻顶层、统计点开是全页浮层、逐段显示请求走过的管线。
+    // 权限与 /live 同级（requiresAuth），可回退到 /live。
+    { path: '/live2',              component: LiveStageTreeView, meta: { requiresAuth: true } },
     // 2026-10-18: 请求详情**全页**（owner 要求：面板可整页打开某条请求的
     // 详情）。非导航项（navCoverage 按孤儿登记）；数据来自实时滚动窗口，
     // 直链/刷新时可能已滚出（页面如实说明，不冒充空详情）。

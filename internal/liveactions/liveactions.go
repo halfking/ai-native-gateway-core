@@ -72,9 +72,39 @@ const (
 	ActionStateChange Action = "state_change"
 	// ActionNoRoute: 无可用路由. Detail: blocked_reasons.
 	ActionNoRoute Action = "no_route"
+
+	// ── 2026-11-16（/live 阶段树 Phase 1 补点）────────────────────────
+	// 下面四个动作补的是**阶段树主干上原本没有实时信号的四段**（审批 /
+	// 注入检测 / 脱敏 / 还原）。它们不是新语义，是把既有判定**投递**到
+	// liveactions 这条已经在役的实时通道上（ActionEvent.Detail 是
+	// map[string]string ⇒ 零契约改动、零前端破坏）。
+	//
+	// ★ 为什么必须是「动作」而不是「新字段」：阶段树要按**到达顺序 + 耗时**
+	// 逐段点亮，字段表达不了「这一段跑了多久、跑没跑过」。dur_ms 一律走
+	// Detail，且**缺省不写**（没测到就是没测到，不写 0 冒充）。
+	//
+	// ★ 判定口径：动作的 Detail 里只放**结论与计数**，不放正文/原文/密钥
+	// （延续本包的安全红线）。
+
+	// ActionApprovalDecided: 审批门判定（S2，★ 审批在注入检测**之前**）。
+	// Detail: decision(pass|need_approval|block) / approval_id(仅 need_approval) / dur_ms.
+	ActionApprovalDecided Action = "approval_decided"
+	// ActionInjectionScored: 提示词注入检测打分（S3）。
+	// Detail: score / decision(safe|warn|block) / dur_ms.
+	ActionInjectionScored Action = "injection_scored"
+	// ActionSanitizeApplied: 输入侧脱敏改写（S4）。
+	// Detail: mutations（脱敏片段数；0 = 无敏感内容）/ dur_ms.
+	ActionSanitizeApplied Action = "sanitize_applied"
+	// ActionToolsRestored: 压缩后 tools 还原（出站前）。
+	// Detail: restored(0|1) / tools_count / dur_ms.
+	ActionToolsRestored Action = "tools_restored"
 )
 
 // Actions is the full closed enum, in doc-24 §2 order. Test/枚举完整性用.
+//
+// 2026-11-16（/live 阶段树 Phase 1）：追加 4 个动作（审批/注入检测/脱敏/还原）
+// ⇒ 词表由 13 变 17。追加项排在 doc-24 的 13 个之后（**词表顺序不是管线
+// 顺序**：阶段树的段序由前端自己的阶段表定义，不依赖本列表的排列）。
 var Actions = []Action{
 	ActionArrive,
 	ActionRouteResolved,
@@ -89,6 +119,10 @@ var Actions = []Action{
 	ActionModelSwitch,
 	ActionStateChange,
 	ActionNoRoute,
+	ActionApprovalDecided,
+	ActionInjectionScored,
+	ActionSanitizeApplied,
+	ActionToolsRestored,
 }
 
 // ActionEvent is one request-scoped action (24 号 §2). All fields except

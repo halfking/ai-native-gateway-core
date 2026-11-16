@@ -37,6 +37,17 @@ export interface LiveRequest {
   is_auto_request?: boolean
   task_type?: string
   token_band?: string
+  // 2026-11-16（/live 阶段树 Phase 1）：上游协议。
+  //
+  // ★ 缓存命中率的分母口径**取决于上游协议**（domains/streaming/usage.go 的
+  //   CacheTokenConventionForProtocol）：
+  //     · anthropic-messages ⇒ 并列口径（input_tokens 不含 cache_read）
+  //       ⇒ 分母 = prompt + cache_read；
+  //     · openai-*         ⇒ 包含口径（prompt_tokens 已含 cached_tokens）
+  //       ⇒ 分母 = prompt；
+  //     · 其它 / 空 / 未知 ⇒ **不猜**（与生产同一把尺）⇒ 命中率显示「—」。
+  // 缺省 = 上游未上报 ⇒ 禁止用 0% 冒充。
+  upstream_protocol?: string
   // 2026-10-28 环回口径轮：压缩层实际改写出站体（strategy 非空且非
   // delta_append）。★ token_band ≠ 压缩发生：档位只按绝对 token 量分类，
   // COUNT/相对窗口/IDLE 触发的压缩 band 可以是 below（211 实测 4665 条
@@ -123,6 +134,35 @@ export interface ActionEvent {
   from_model?: string
   to_model?: string
   blocked_reasons?: string[]
+  // 2026-11-16（/live 阶段树 Phase 1）：**线上真形状**。
+  //
+  // ★ 上面那批扁平字段是历史声明，Go 侧 ActionEvent **并没有**这些顶层
+  //   JSON tag —— 真正的 per-action 明细全部装在 `Detail map[string]string`
+  //   里（internal/liveactions/liveactions.go 的 `json:"detail,omitempty"`）。
+  //   值一律是**字符串**（Go 侧已用 strconv 转换过），前端要自己 parse。
+  //
+  // ★ 纪律：读动作明细必须走 `detail`，不要按扁平字段读 —— 后者永远
+  //   undefined，任何依赖它的界面都只能显示「未测量」。
+  //
+  // 各动作的 detail 键（2026-11-16 对生产发射点逐条核过）：
+  //   arrive              → client_protocol
+  //   route_resolved      → candidates / auto / auto_task_type / auto_confidence
+  //                         / auto_fallbacks
+  //   model_enqueued      → queue_depth
+  //   credential_selected → candidates / weight / tier
+  //   node_enqueued       → queue_depth / vendor
+  //   node_selected       → attempt
+  //   upstream_request    → attempt / provider_id / raw_model
+  //   first_byte          → ttfb_ms
+  //   reply               → status / latency_ms
+  //   node_switch         → from_credential_id / to_credential_id / reason
+  //   model_switch        → from_model / to_model / reason
+  //   no_route            → blocked_reason
+  //   approval_decided    → decision / approval_id / dur_ms
+  //   injection_scored    → score / decision / dur_ms
+  //   sanitize_applied    → mutations / dur_ms
+  //   tools_restored      → restored / tools_count / dur_ms
+  detail?: Record<string, string>
 }
 
 export interface LiveStreamStats {

@@ -1126,6 +1126,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/top", admin(h.handleDataLifecycleBlobTop))
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/cleanup/preview", admin(h.handleDataLifecycleBlobCleanupPreview))
 	mux.HandleFunc("/api/admin/data-lifecycle/blobs/cleanup/execute", h.superAdmin(h.handleDataLifecycleBlobCleanupExecute))
+	// 数据初始化（2026-11-16）：各类数据的统计 + 重置。
+	// ★ 三个端点全部 superAdmin —— 能删掉全部用户/租户/凭据的动作不给 tenant_admin。
+	// ★ 客户端只传「类别 key」；类别 → 表清单的映射写死在 admin/data_lifecycle_data_init.go。
+	mux.HandleFunc("/api/admin/data-lifecycle/data-init/catalog", h.superAdmin(h.handleDataInitCatalog))
+	mux.HandleFunc("/api/admin/data-lifecycle/data-init/preview", h.superAdmin(h.handleDataInitPreview))
+	mux.HandleFunc("/api/admin/data-lifecycle/data-init/execute", h.superAdmin(h.handleDataInitExecute))
 	// Attachment filesystem management endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/attachments/filesystem/stats", admin(h.handleAttachmentFilesystemStats))
 	mux.HandleFunc("/api/admin/attachments/filesystem/cleanup", h.superAdmin(h.handleAttachmentFilesystemCleanup))

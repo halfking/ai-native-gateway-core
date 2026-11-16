@@ -19,6 +19,7 @@ import providers from './providers'
 import landing from './landing'
 import dashboard from './dashboard'
 import liveTopology from './liveTopology'
+import liveStageTree from './liveStageTree'
 import providerDetail from './providerDetail'
 import providerDetailPage from './providerDetailPage'
 import tenants from './tenants'
@@ -180,6 +181,7 @@ export default {
   reports,
   routeIncidentDrawer,
   liveTopology,
+  liveStageTree,
   sales,
   publicQuote,
 }

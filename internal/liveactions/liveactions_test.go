@@ -84,9 +84,11 @@ func TestEmitWritesBoundedRedisQueue(t *testing.T) {
 	})
 }
 
-// TestEmitAllThirteenActionsRoundTrip: 13 种动作各发射一条并断言按原样落到
+// TestEmitAllActionsRoundTrip: 每种动作各发射一条并断言按原样落到
 // Redis 队列（枚举与序列化完整性）。
-func TestEmitAllThirteenActionsRoundTrip(t *testing.T) {
+// 2026-11-16（/live 阶段树 Phase 1）：词表由 13 扩到 17（追加 审批/
+// 注入检测/脱敏/还原 四个动作）。
+func TestEmitAllActionsRoundTrip(t *testing.T) {
 	ResetSeqForTest()
 	_, rdb := newMiniredis(t)
 	e := NewEmitter(rdb, 0)
@@ -110,8 +112,8 @@ func TestEmitAllThirteenActionsRoundTrip(t *testing.T) {
 		return n == int64(len(Actions))
 	})
 
-	if len(Actions) != 13 {
-		t.Fatalf("Actions enum must have exactly 13 entries (24 号 §2), got %d", len(Actions))
+	if len(Actions) != 17 {
+		t.Fatalf("Actions enum must have exactly 17 entries (24 号 §2 的 13 个 + 阶段树 Phase 1 的 4 个), got %d", len(Actions))
 	}
 	vals, err := rdb.LRange(ctx, RedisKey, 0, -1).Result()
 	if err != nil {

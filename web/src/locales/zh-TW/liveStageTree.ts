@@ -1,0 +1,112 @@
+// liveStageTree.ts — 請求階段樹（live2）文案（2026-11-16）
+export default {
+  title: '請求階段樹',
+  empty: '目前篩選條件下視窗內沒有請求',
+  stage: {
+    auth: '驗證/限流',
+    sanitize: '去識別化',
+    approval: '審批',
+    injection: '注入偵測',
+    route: '路由選擇',
+    compress: '壓縮',
+    firstByte: '首個位元組',
+    restore: '脫敏回填',
+    provider: '供應商/權杖池',
+    meter: '計量',
+    reply: '回覆',
+  },
+  state: {
+    pending: '尚未到達',
+    active: '進行中',
+    done: '完成',
+    skipped: '不適用',
+    failed: '失敗',
+    warned: '有警告',
+    unmeasured: '未測量',
+  },
+  value: {
+    sanitize: '{n} 處',
+    route: '{n} 個候選',
+    meter: '{n} 個 token',
+    injection: '分數 {n}（{d}）',
+    compress: {
+      yes: '已壓縮',
+      no: '未壓縮',
+    },
+  },
+  decision: {
+    pass: '允許通過',
+    need_approval: '待人工審批',
+    block: '拒絕',
+    safe: '無風險',
+    warn: '命中（僅警告）',
+    unknown: '無法判定',
+  },
+  return: {
+    lane: '回覆沿回程線回到用戶端',
+    label: '回用戶端',
+  },
+  band: {
+    status: {
+      success: '順利完成',
+      in_progress: '進行中',
+      failure: '失敗',
+    },
+    toolsRestore: 'tools 還原 {n}',
+    toolsRestored: '已還原',
+    finalModel: '最終模型',
+    upstreamModel: '上游端模型',
+    finalModelTip: {
+      action: '來源：路由選定的節點動作（解析後的標準模型名）。',
+      canonical: '來源：請求框架記錄的標準模型名。',
+      upstreamRaw: '來源：實際送往上游的模型字串。',
+      frame: '來源：請求框架的模型欄位。',
+      none: '未測量：沒有可判定的模型來源。',
+    },
+    modelEntry: {
+      auto: 'AUTO 配對 {model}',
+      direct: '請求 {model}',
+    },
+    chain: {
+      auto: 'auto 任務類型 {task} → 匹配 {model}',
+      alias: '{from} 解析為 {model}',
+      switch: '模型切換 {from} → {to}',
+    },
+    cache: {
+      hit: '快取命中 {pct}%',
+      na: '快取命中率 —',
+      anomaly: '快取口徑異常',
+      tip: {
+        na: '上游沒有回報快取命中數，不是 0%。',
+        unknown: '上游協定未判定，快取命中率的分母無法確定。',
+        anomaly: '命中率超過 100%，表示兩個口徑混用了。',
+        parallel: '口徑：快取讀取與輸入並列，分母 = 輸入 + 快取讀取。',
+        subset: '口徑：快取讀取已含在輸入內，分母 = 輸入。',
+      },
+    },
+  },
+  credibility: {
+    verified: '可信賴',
+    suspected: '疑似混水',
+    diluted: '已混水',
+    unknown: '無法判定',
+    unmeasured: '可信度未測量',
+    fingerprintMissing: '無此資訊',
+    measuredAtMissing: '未註明',
+    tip: {
+      unmeasured: '該憑證與上游模型的組合沒有可信度測量紀錄。',
+      detail:
+        '判定 {verdict}｜身分一致性 {identity}｜能力 {capability}｜穩定性 {consistency}｜基準 {reference}｜系統指紋 {fingerprint}｜測量時間 {measuredAt}',
+    },
+  },
+  stats: {
+    open: '展開統計（全頁）',
+    readout: '{total} 筆 · 成功率 {rate}% · 進行中 {inFlight}',
+    title: '即時統計',
+    hint: '統計口徑與即時拓撲頁一致：近 5 分鐘與近 1 小時為資料庫直查，當天為日桶（滯後不超過 1 小時）。',
+    close: '關閉',
+  },
+  idle: {
+    wait: '已等待 {ms} 毫秒沒有新請求',
+  },
+}

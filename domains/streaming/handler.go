@@ -2418,6 +2418,16 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			"client_protocol": clientProtocolFromPath(r.URL.Path),
 			"method":          r.Method,
 		})
+		// ── 2026-11-16（/live 阶段树 Phase 1）：输入侧脱敏判定投递 ──
+		// 脱敏中间件在 serveHTTPInner **之前**就跑完了 ⇒ 到这里「脱敏跑没跑」
+		// 是确定的；命中几处 / 跑了多久从 ctx 的**计数载体**取（不含任何原文）。
+		// 载体缺失 = 未测量 ⇒ 不发动作（阶段树显示「未测量」，不冒充 0 处命中）。
+		if sum, ok := sanitize.SanitizeMutationSummaryFromContext(r.Context()); ok {
+			h.emitAction(r.Context(), requestID, liveactions.ActionSanitizeApplied, map[string]string{
+				"mutations": strconv.Itoa(sum.Count),
+				"dur_ms":    strconv.FormatInt(sum.DurMs, 10),
+			})
+		}
 	}
 
 	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
@@ -3448,13 +3458,35 @@ func (h *ChatHandler) serveWithExecutor(
 		if keyInfo != nil {
 			hookTenant = keyInfo.TenantID
 		}
+		auditStart := time.Now()
 		res := h.sessionAuditHook.CheckV1(ctx, sessionID, hookTenant, clientModel, hookContent, r.Header.Get("User-Agent"), r.RemoteAddr)
+		auditDurMs := time.Since(auditStart).Milliseconds()
 		if sessionaudithook.IsApprovedResume(ctx) && res.StatusCode == http.StatusAccepted {
 			slog.Info("session-audit approval gate bypassed for approved resume",
 				"session_id", sessionID,
 				"tenant_id", hookTenant)
 			res.StatusCode = 0
 		}
+		// ── 2026-11-16（/live 阶段树 Phase 1）：审批判定投递到 liveactions ──
+		// 阶段树要显示「审批」这一段（审批在注入检测之前），此前实时通道上
+		// **没有任何审批信号** ⇒ 该段只能是「未测量」。这里把既有判定投到
+		// 在役的 request_lifecycle 通道上：Detail 只放结论/审批单号/耗时，
+		// 不放正文与原因原文（安全红线）。
+		auditDecision := "pass"
+		switch res.StatusCode {
+		case http.StatusForbidden:
+			auditDecision = "block"
+		case http.StatusAccepted:
+			auditDecision = "need_approval"
+		}
+		auditDetail := map[string]string{
+			"decision": auditDecision,
+			"dur_ms":   strconv.FormatInt(auditDurMs, 10),
+		}
+		if res.ApprovalID != "" {
+			auditDetail["approval_id"] = res.ApprovalID
+		}
+		h.emitAction(ctx, requestID, liveactions.ActionApprovalDecided, auditDetail)
 		switch res.StatusCode {
 		case 403:
 			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil, http.StatusForbidden)
@@ -3811,6 +3843,15 @@ func (h *ChatHandler) serveWithExecutor(
 
 			// Async write to armor_judgments (never blocks relay)
 			go h.armorLogger.Log(context.Background(), judgment)
+
+			// ── 2026-11-16（/live 阶段树 Phase 1）：注入检测判定投递到 liveactions ──
+			// 此前实时通道上没有注入检测信号 ⇒ 阶段树该段恒为「未测量」。
+			// 只投结论（分数 + 判定 + 耗时），**不投 prompt 原文/原因原文**。
+			h.emitAction(ctx, requestID, liveactions.ActionInjectionScored, map[string]string{
+				"score":    strconv.FormatFloat(scoreResp.Score, 'f', 4, 64),
+				"decision": judgment.Decision.String(),
+				"dur_ms":   strconv.FormatInt(judgeLatency.Milliseconds(), 10),
+			})
 
 			// v1 observe-only: log warning but never block
 			if judgment.Decision == armor.DecisionWarn || judgment.Decision == armor.DecisionBlock {
@@ -4449,6 +4490,13 @@ func (h *ChatHandler) serveWithExecutor(
 			// and a model that CANNOT call tools looks exactly like one that
 			// chose not to. Silence here is indistinguishable from success.
 			var outbound map[string]json.RawMessage
+			// ── 2026-11-16（/live 阶段树 Phase 1）：tools 还原判定投递 ──
+			// 「还原」是阶段树出站前的最后一段，此前实时通道上**没有信号**
+			// ⇒ 恒为「未测量」。这里把既有判定投上去：只放是否还原与
+			// tools 条数，不放任何 tools 内容（安全红线）。
+			toolsRestoreStart := time.Now()
+			toolsRestored := 0
+			toolsCount := 0
 			if err := json.Unmarshal(bodyBytes, &outbound); err != nil {
 				h.recordDataLoss(ctx, AnomalyToolsRestoreFailed, string(SeverityHigh), requestID,
 					"compressed body is not a JSON object, tools cannot be restored: "+err.Error(),
@@ -4461,6 +4509,7 @@ func (h *ChatHandler) serveWithExecutor(
 						"body marked _tools_cached but original request carried no tools to restore",
 						map[string]any{"stage": "no_source_tools"})
 				default:
+					toolsCount = len(reqBody.Tools)
 					outbound["tools"] = reqBody.Tools
 					delete(outbound, "_tools_cached")
 					restored, err := json.Marshal(outbound)
@@ -4470,9 +4519,15 @@ func (h *ChatHandler) serveWithExecutor(
 							map[string]any{"stage": "marshal_restored", "tools_count": len(reqBody.Tools)})
 					} else {
 						bodyBytes = restored
+						toolsRestored = 1
 					}
 				}
 			}
+			h.emitAction(ctx, requestID, liveactions.ActionToolsRestored, map[string]string{
+				"restored":    strconv.Itoa(toolsRestored),
+				"tools_count": strconv.Itoa(toolsCount),
+				"dur_ms":      strconv.FormatInt(time.Since(toolsRestoreStart).Milliseconds(), 10),
+			})
 		}
 		if scResult != nil && scResult.Degraded {
 			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")

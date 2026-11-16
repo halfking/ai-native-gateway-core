@@ -20,6 +20,7 @@ export default {
   item: {
     operationsOverview: '运营总览',
     liveTopology: '实时拓扑',
+    liveStageTree: '请求阶段树',
     overview: '总览',
     tenantModels: '标准模型',
     tenantAccount: '我的账户',

@@ -22,6 +22,9 @@
 #gen_append	2026-10-29 审计轮 —— 补 5 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 685 行逐字保留，含人工改判）
 #gen_append	2026-10-29 审计轮 —— 补 8 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 690 行逐字保留，含人工改判）
 #gen_append	2026-11-13 A-17 收口轮（M1-T3/M3-T2）—— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 698 行逐字保留，含人工改判）
+#gen_append	2026-11-14 插件运行时收口：补上游新增列表路由；不虚构探测结果
+#gen_append	2026-10-29 审计轮 —— 补 10 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 702 行逐字保留，含人工改判）
+#gen_append	2026-11-16 数据初始化轮 —— 补 10 条新增路由（★ 本轮 3 条 data-init + 并发会话 plugin/Casdoor 7 条；★ 无探测观测 ⇒ 裁决按静态分级推导；既有 702 行逐字保留，含人工改判）
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -127,6 +130,9 @@
 /api/admin/data-lifecycle/blobs/cleanup/preview	ANY	admin/handler.go:1098	read		400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/data-lifecycle/blobs/top	ANY	admin/handler.go:1097	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/data-lifecycle/cleanup/preview	ANY	admin/handler.go:1064	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
+/api/admin/data-lifecycle/data-init/catalog	ANY	admin/handler.go:1132	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/data-lifecycle/data-init/execute	ANY	admin/handler.go:1134	write	400-guard			not-probed-writes	★ ★ 源码确证 write：handler 经 store.Apply 在**同一事务**里 DELETE 各类别表 + INSERT 审计行 ⇒ 静态分级器判 read 是调用链盲区（与本表既有人工改判同族）
+/api/admin/data-lifecycle/data-init/preview	ANY	admin/handler.go:1133	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/data-lifecycle/degradation/control	ANY	admin/handler.go:1283	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/data-lifecycle/degradation/recover	ANY	admin/handler.go:1285	read	400-guard	400	validated	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/data-lifecycle/degradation/status	ANY	admin/handler.go:1284	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
@@ -250,6 +256,8 @@
 /api/admin/pending-responses	ANY	admin/handler.go:1496	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/admin/pending-responses/	ANY	admin/handler.go:1497	read		404	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/pending-responses/stats	ANY	admin/handler.go:1495	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
+/api/admin/plugin-config	ANY	cmd/gateway/main.go:8651	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/admin/plugin-providers	ANY	cmd/gateway/main.go:8662	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/policies	ANY	cmd/gateway/main.go:7589	write	400-guard			not-probed-writes	★ 静态分级：写库
 /api/admin/policies/check	ANY	cmd/gateway/main.go:7592	read	400-guard	405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/admin/policies/delete	ANY	cmd/gateway/main.go:7591	write	400-guard			not-probed-writes	★ 静态分级：写库
@@ -605,7 +613,11 @@
 /api/v1/optimize/batch	ANY	cmd/prompt-optimizer/main.go:288	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
 /api/v1/optimize/evaluate	ANY	cmd/prompt-optimizer/main.go:289	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
 /api/v1/plugin-nav	ANY	cmd/gateway/main.go:6785	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/v1/plugins	GET	cmd/gateway/main.go:7200	unknown				not-probed-unresolved	上游新增插件列表闭包路由；未运行独立POST探测，保持未探测裁决
+/api/v1/plugins	GET	cmd/gateway/main.go:7276	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/	ANY	cmd/gateway/main.go:6775	unknown				not-probed-unresolved	★ 前缀路由 + 闭包内部分派（/settings ⇒ SettingsHandler）⇒ 静态分级解析不出（func-not-indexed），与 /api/v1/plugins/install 同族待真探测
+/api/v1/plugins/	ANY	internal/handlers/pluginapi/example/integration.go:20	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
+/api/v1/plugins/events	GET	cmd/gateway/main.go:7277	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/install	POST	cmd/gateway/main.go:6813	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/activate	POST	cmd/gateway/main.go:6824	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/v1/plugins/{id}/deactivate	POST	cmd/gateway/main.go:6828	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -613,6 +625,7 @@
 /api/v1/prompts/optimize	ANY	cmd/prompt-optimizer/main.go:285	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 本条属【独立服务进程】cmd/prompt-optimizer（不接网关公网面，见 docs/hooks/prompt-optimization.md）
 /api/v2/capabilities	ANY	cmd/gateway/main.go:6633	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/vendors/credentials/{id}/error-detail	ANY	admin/handler.go:1384	unknown				not-probed-unresolved	★ 静态分级：解析不出
+/api/webhooks/casdoor/approval	ANY	examples/approval_integration/main.go:192	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/dingtalk/approval-callback	POST	api/dingtalk_callback.go:307	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/feishu/callback	ANY	cmd/gateway/feishubot_init.go:106	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /api/webhooks/quota/recharged	POST	cmd/gateway/main.go:6590	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -631,6 +644,7 @@
 /health	GET	mcp/control.go:108	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /health	GET	mcp/control.go:116	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ mcp/control.go 注册的 health 探针（非网关业务面）
 /health	GET	mcp/control.go:116	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ mcp/control.go 注册的 health 探针（非网关业务面）
+/health	GET	mcp/control.go:116	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /healthz	ANY	cmd/gateway/main.go:6602	unknown				not-probed-unresolved	★ 静态分级：解析不出
 /healthz	GET	mcp/control.go:109	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /healthz/full	ANY	cmd/gateway/main.go:6603	unknown				not-probed-unresolved	★ 静态分级：解析不出
@@ -723,6 +737,3 @@
 /v2/chat/completions	ANY	cmd/gateway/main_v2_pipeline.go:369	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /v2/healthz	ANY	cmd/gateway/main_v2_pipeline.go:412	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /version	ANY	cmd/gateway/main.go:6609	unknown				not-probed-unresolved	★ 静态分级：解析不出
-
-#gen_append	2026-11-14 插件运行时收口：补上游新增列表路由；不虚构探测结果
-/api/v1/plugins	GET	cmd/gateway/main.go:7200	unknown				not-probed-unresolved	上游新增插件列表闭包路由；未运行独立POST探测，保持未探测裁决

@@ -18,6 +18,7 @@ export default {
     activateAction: 'Activer',
     activateActionTip: 'Allez activer cette instance',
     liveTopology: 'Topologie temps réel',
+    liveStageTree: 'Arbre des étapes',
     overview: "Aperçu",
     tenantModels: "Modèles standards",
     tenantAccount: "Mon compte",

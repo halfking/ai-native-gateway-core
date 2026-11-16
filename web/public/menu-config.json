@@ -23,6 +23,15 @@
       "pluginScope": "*"
     },
     {
+      "path": "/live2",
+      "labelKey": "nav.item.liveStageTree",
+      "icon": "🌲",
+      "platformOps": true,
+      "exact": true,
+      "tenantScope": "default",
+      "pluginScope": "*"
+    },
+    {
       "path": "/dashboard",
       "labelKey": "nav.item.overview",
       "icon": "📊",

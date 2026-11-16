@@ -210,7 +210,19 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		ErrorKind:        entry.ErrorKind,
 		CredentialID:     fallbackCredentialID, // 2026-08-26: 凭据维度（label 不可得时泳道用 "凭据 #ID"）
 		GwSessionID:      gwSessionID,
+		// 2026-11-16（/live 阶段树 Phase 1）：上游协议（缓存命中率分母口径判据）。
+		// 兜底投影也要带 —— 只在 hub 主路径补会让「无 hub 时缓存命中率不可判定」
+		// 这件事变成**偶发**（更难排查）。缺省保持空，前端显示「—」。
+		UpstreamProtocol: fallbackUpstreamProtocol(entry),
 	}
+}
+
+// fallbackUpstreamProtocol 取 telemetry 帧里的上游协议（缺省空 = 未上报）。
+func fallbackUpstreamProtocol(entry *telemetry.RequestLogEntry) string {
+	if entry == nil || entry.UpstreamProtocol == nil {
+		return ""
+	}
+	return strings.TrimSpace(*entry.UpstreamProtocol)
 }
 
 func liveStreamEventTime(entry *telemetry.RequestLogEntry) time.Time {

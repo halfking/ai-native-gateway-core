@@ -589,21 +589,33 @@ describe('LiveTopologyView 版面契约（owner 2026-10-18：筛选一行 + 字�
   // jsdom 的 getComputedStyle 恒为空串（AGENTS 判据纪律 19），样式契约按
   // 本仓 honesty.test 的 readSrc 先例直接钉源码文本。变异验证：把 nowrap
   // 改回 wrap 或字号改大，本组立刻红。
+  //
+  // ★ 2026-11-16：过滤栏的**样式与实现**已抽到共享组件
+  //   `components/live-topology/LiveTopologyFilterBar.vue`（/live 与 /live2
+  //   共用同一份 ⇒ 两页的过滤口径与版面不会漂移）⇒ 样式契约钉的是**那份组件**
+  //   的源码，而不是视图里的拷贝 —— 钉视图会随抽取而假红。
+  //   同时钉一条「视图确实在用这份组件」，免得契约与页面脱钩。
   const source = readFileSync(resolve(process.cwd(), 'src/views/LiveTopologyView.vue'), 'utf8')
+  const filterBarSource = readFileSync(
+    resolve(process.cwd(), 'src/components/live-topology/LiveTopologyFilterBar.vue'),
+    'utf8',
+  )
 
   it('★ filter bar never wraps (one row, horizontal scroll as narrow fallback)', () => {
-    const filtersBlock = source.split('.live-topology__filters {')[1]?.split('\n}')[0] ?? ''
+    const filtersBlock = filterBarSource.split('.live-topology__filters {')[1]?.split('\n}')[0] ?? ''
     expect(filtersBlock, '过滤栏样式块必须存在').toContain('flex-wrap: nowrap')
     expect(filtersBlock).toContain('overflow-x: auto')
+    // 视图必须真的在用这份共享组件（否则契约与页面脱钩 = 假绿）。
+    expect(source, '/live 必须使用共享过滤栏组件').toContain('LiveTopologyFilterBar')
   })
 
   it('★ every filter control is 11px and 24px tall (uniform size)', () => {
     for (const block of ['.live-topology__filters select {', '.live-topology__toggle {', '.live-topology__clear {']) {
-      const body = source.split(block)[1]?.split('\n}')[0] ?? ''
+      const body = filterBarSource.split(block)[1]?.split('\n}')[0] ?? ''
       expect(body, `${block} 必须存在`).toContain('font-size: 11px')
     }
     // el-select 走 element 变量注入统一字号
-    expect(source).toContain('--el-font-size-base: 11px')
+    expect(filterBarSource).toContain('--el-font-size-base: 11px')
   })
 
   it('★ topology nodes overlay is click-transparent; only node cards take the pointer', () => {
