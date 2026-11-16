@@ -39,10 +39,27 @@ func TestLoadDefaultsAllFalse(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	f := Load()
-	// 全部默认 false
+	// 评分/pool/重校验/48h 族与 embedding 族仍默认 false
 	if f.UseSimplifiedScoring || f.UseHotTop3Pool || f.UseCacheRevalidation || f.Use48hFallback ||
-		f.AutoOnMessages || f.AutoOnResponses || f.AutoOnEmbeddings || f.AutoEmbeddingRoute {
-		t.Error("defaults should all be false")
+		f.AutoOnEmbeddings || f.AutoEmbeddingRoute {
+		t.Error("scoring/pool/revalidation/fallback/embedding flags should default to false")
+	}
+	// 2026-11-16（auto 模式可用性轮）：协议面 auto 默认开启——同一个
+	// model="auto" 请求换协议就变成「模型 auto 不可用」是 auto 模式没做完，
+	// 不是另一个协议不支持 auto。三协议面共用同一个 Decider。
+	if !f.AutoOnMessages || !f.AutoOnResponses {
+		t.Error("auto on messages/responses should default to true")
+	}
+}
+
+// TestLoadProtocolAutoOptOut pins the escape hatch: an operator can still
+// turn the protocol-face auto routing off per protocol.
+func TestLoadProtocolAutoOptOut(t *testing.T) {
+	t.Setenv("AUTO_ON_MESSAGES", "false")
+	t.Setenv("AUTO_ON_RESPONSES", "false")
+	f := Load()
+	if f.AutoOnMessages || f.AutoOnResponses {
+		t.Error("explicit env=false must opt out of protocol-face auto routing")
 	}
 }
 

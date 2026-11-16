@@ -56,7 +56,7 @@ type FeatureFlags struct {
 	UseComplexityScore bool
 
 	// AutoOnMessages gates model=auto on non-chat endpoints (22 章 §22.2).
-	// Default off; independent of the other AutoOn* flags.
+	// Default on (2026-11-16 auto 模式可用性轮; opt-out: AUTO_ON_MESSAGES=false).
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
 	// Deprecated: 属遗留 flag（autoroute/internal/legacyflags），唯一来源是
@@ -66,7 +66,7 @@ type FeatureFlags struct {
 	// auto 现状只能用 AUTO_ON_* 控制（消费点 auto_route_nonchat.go）。
 	AutoOnMessages bool
 	// AutoOnResponses gates model=auto on non-chat endpoints (22 章 §22.2).
-	// Default off; independent of the other AutoOn* flags.
+	// Default on (2026-11-16 auto 模式可用性轮; opt-out: AUTO_ON_RESPONSES=false).
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
 	// Deprecated: 同 AutoOnMessages（env AUTO_ON_RESPONSES；URSM_V2_MODE
@@ -178,10 +178,15 @@ func DefaultFeatureFlags() *FeatureFlags {
 		EnableV2Logic:            false,
 		UseExplicitDefault:       false,
 		UseComplexityScore:       false,
-		AutoOnMessages:           false,
-		AutoOnResponses:          false,
-		AutoOnEmbeddings:         false,
-		AutoEmbeddingRoute:       false,
+		// 2026-11-16（auto 模式可用性轮）：AutoOnMessages / AutoOnResponses
+		// 默认开启——auto 模式此前只存在于 chat completions 一个协议面，
+		// 同一个 model="auto" 请求换到 Anthropic/Responses 协议就变成
+		// 「模型 auto 不可用」。三个协议面共用同一个 Decider。
+		// （与 LoadFeatureFlagsFromEnv 的取值保持一致；embeddings 仍关闭。）
+		AutoOnMessages:     true,
+		AutoOnResponses:    true,
+		AutoOnEmbeddings:   false,
+		AutoEmbeddingRoute: false,
 		// RT-1 MinStandardIQ gate: default off (hard requirement — flag-off
 		// routing decisions must be byte-identical).
 		UseStandardIQGate: false,

@@ -5547,8 +5547,33 @@ goalRetryLoopDone:
 	// When the chosen model is exhausted (all its credentials failed), retry
 	// the request against the next-best model from the auto-route CandidatesTop3.
 	//
-	// Safety gates:
-	//   - feature-flag OFF by default (AUTO_ROUTE_FALLBACK_ENABLED=true to enable)
+	// ★★ 2026-11-16（auto 模式可用性轮）订正本块的现状注释 ——
+	//
+	// 原文写「feature-flag OFF by default (AUTO_ROUTE_FALLBACK_ENABLED=true
+	// to enable)」，**与实现相反**：本块的进入条件里同时要求
+	// `!dispatchModelAlternativesConsumed` 与 `dispatchAllowModelChangeEnabled()`，
+	// 而 `dispatchModelAlternativesConsumed` 在上面被初始化为
+	// `dispatchAllowModelChange`（= IsAutoRequest && dispatchAllowModelChangeEnabled()）
+	// —— 两个条件**互斥** ⇒ **本块从来没能执行过**。
+	//
+	// 真正在跑的是 **dispatch 流水线里的换模梯子**
+	// （domains/dispatch/dispatcher.go tryModelChangeOutcome →
+	//  planner.go PlanNoRoute/PlanModelChange）：同模型凭据耗尽后换下一个模型，
+	// **多跳**（PlanModelChange 在候选里挑第一个没试过的），并且**首字节前
+	// 的流式请求也能换**（本块的 `!isStream` 限制只管 handler 这条旧路）。
+	//
+	// 那条梯子此前也从未生效：它的两个开关是
+	// `qr.AllowModelChange`（= params.DispatchAllowModelChange，唯一来源是
+	// `logCtx.IsAutoRequest` ⇒ 仅 auto 请求）与
+	// `p.modelChangeEnabled()`（= dispatch.IsModelChangeEnabled，默认 **false**）
+	// ⇒ 全站 30 天 87 笔 auto 请求 `fallback_used` 全为 false，一次都没换过模。
+	//
+	// 本轮把 dispatch_v2.allow_model_change 的默认值改为 true（见
+	// domains/dispatch/gate.go 的 ModelChangeGateKey 注释）⇒ 换模梯子对 auto
+	// 请求生效。D5 这块保留为 handler 层的旧路径记录，不删（它仍被
+	// dispatchModelAlternativesConsumed 挡着，与换模梯子互斥 ⇒ 不会双跑）。
+	//
+	// Safety gates (unchanged):
 	//   - only non-streaming requests (streaming already committed the response)
 	//   - only auto-route requests that still have untried fallback models
 	//   - only when the failure is a true Exhausted (all candidates failed)
