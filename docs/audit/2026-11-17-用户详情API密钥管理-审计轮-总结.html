@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>2026-11-17 用户详情 API 密钥管理 · 批判式审计轮总结</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --card2:#1d212a; --border:#272c37;
+    --text:#e6e8ee; --muted:#98a0b0; --accent:#4f8cff;
+    --red:#ff6b6b; --amber:#ffb454; --green:#3ddc97; --purple:#b07cff; --cyan:#4dd0e1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",Inter,system-ui,sans-serif;
+    line-height:1.65;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 22px 70px}
+  header.hero{border:1px solid var(--border);border-radius:14px;padding:28px 30px;
+    background:linear-gradient(135deg,#171a21 0%,#1b2130 55%,#1a2033 100%);margin-bottom:26px}
+  .kicker{color:var(--accent);font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+  h1{font-size:29px;margin:10px 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:14px}
+  .badges{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap}
+  .badge{font-size:11.5px;padding:4px 10px;border-radius:999px;border:1px solid var(--border);
+    background:var(--card2);color:var(--muted)}
+  .badge.ok{color:var(--green);border-color:#1f5c46;background:#12241d}
+  .badge.warn{color:var(--amber);border-color:#5c4520;background:#241d12}
+  .badge.bad{color:var(--red);border-color:#5c2626;background:#241414}
+  h2{font-size:19px;margin:34px 0 14px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+  h3{font-size:14.5px;margin:20px 0 9px;color:var(--text)}
+  .grid{display:grid;gap:14px}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:900px){.g4,.g3,.g2{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:11px;padding:16px 18px}
+  .card .n{font-size:27px;font-weight:700;letter-spacing:-.02em;line-height:1.25}
+  .card .l{color:var(--muted);font-size:12px;margin-top:3px}
+  .card .d{font-size:11.5px;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)}
+  .n.red{color:var(--red)} .n.amber{color:var(--amber)} .n.green{color:var(--green)} .n.purple{color:var(--purple)} .n.cyan{color:var(--cyan)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+    padding:9px 10px;border-bottom:1px solid var(--border);font-weight:600}
+  td{padding:9px 10px;border-bottom:1px solid #212631;vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .sev{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;letter-spacing:.04em}
+  .sev.p0{background:#3a1414;color:#ff8f8f;border:1px solid #6b2a2a}
+  .sev.p1{background:#3a2c14;color:#ffc77a;border:1px solid #6b4a24}
+  .sev.p2{background:#2a2f3a;color:#aab4c6;border:1px solid #3d4552}
+  .tag{display:inline-block;font-size:10.5px;padding:2px 7px;border-radius:5px;background:#222836;color:#9fb0c9;border:1px solid #313a49}
+  code,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:12.2px}
+  .code{background:#0c0e13;border:1px solid var(--border);border-radius:8px;padding:12px 14px;
+    overflow-x:auto;margin:8px 0;color:#c9d4e5;line-height:1.55}
+  .ok-line{color:var(--green)} .bad-line{color:var(--red)} .warn-line{color:var(--amber)}
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin:14px 0}
+  .step{flex:1;min-width:190px;background:var(--card);border:1px solid var(--border);padding:13px 15px;position:relative}
+  .step:first-child{border-radius:11px 0 0 11px}
+  .step:last-child{border-radius:0 11px 11px 0}
+  .step+.step{border-left:none}
+  .step .t{font-weight:600;font-size:13.5px;margin-bottom:5px}
+  .step .b{font-size:12px;color:var(--muted)}
+  .step .r{font-size:11px;margin-top:7px;padding-top:7px;border-top:1px dashed var(--border)}
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0;font-size:13.5px}
+  .foot{color:var(--muted);font-size:12px;margin-top:34px;padding-top:16px;border-top:1px solid var(--border)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:10px}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:12.5px}
+  .bar-row .lbl{width:230px;color:var(--muted);flex-shrink:0}
+  .bar-track{flex:1;height:20px;background:#0c0e13;border:1px solid var(--border);border-radius:5px;overflow:hidden;position:relative}
+  .bar-fill{height:100%;border-radius:4px 0 0 4px}
+  .bar-val{width:118px;text-align:right;font-variant-numeric:tabular-nums;flex-shrink:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">llm-gateway-go · 批判式审计轮 · 2026-11-17</div>
+  <h1>用户详情「API 密钥管理」—— 审计 11 个缺陷，全部修复</h1>
+  <p class="sub">复核上一轮刚交付的功能，发现 3 个「功能不可用」级、1 个「跨账号明文泄露」级缺陷，外加 3 处后端根因与 1 处门禁回归。</p>
+  <div class="badges">
+    <span class="badge ok">真库判据 3/3 绿</span>
+    <span class="badge ok">前端契约 9/9 绿</span>
+    <span class="badge ok">i18n 缺失 0</span>
+    <span class="badge ok">CJK 棘轮净减 22</span>
+    <span class="badge warn">存量 i18n 棘轮仍红（并行会话）</span>
+    <span class="badge ok">211 已上线 · 验收 13/13</span>
+    <span class="badge bad">154 / 245 被台账闸门阻断</span>
+    <span class="badge">提交 c483b6d02 / adb227199</span>
+  </div>
+</header>
+
+<!-- ── KPI ── -->
+<h2>一、结果概览</h2>
+<div class="grid g4">
+  <div class="card"><div class="n red">11</div><div class="l">修复的缺陷总数</div>
+    <div class="d">前端 8 + 后端 3</div></div>
+  <div class="card"><div class="n amber">4</div><div class="l">P0（功能不可用 / 泄露）</div>
+    <div class="d">签发必失败 · 启用静默失败 · 明文跨用户 · 缺查看完整密钥</div></div>
+  <div class="card"><div class="n green">6</div><div class="l">真库 + 契约判据</div>
+    <div class="d">后端真库 3 / 后端契约 3 / 前端契约 9</div></div>
+  <div class="card"><div class="n cyan">−29</div><div class="l">i18n 缺失键净变化</div>
+    <div class="d">29 → 0（含上一轮遗留 6 语种缺口）</div></div>
+</div>
+
+<!-- ── 根因 ── -->
+<h2>二、根因：缺陷为什么会同时发生</h2>
+<div class="card">
+  <p style="margin:0 0 10px">上一轮把「管理员管理用户密钥」当成<b>纯前端任务</b>做，而后端其实早有一套完整的密钥端点
+  （<code>/api/keys</code> 的 CRUD + reveal + approve + enable/disable/revoke）。于是出现两类问题：</p>
+  <div class="grid g2">
+    <div class="card" style="background:var(--card2)">
+      <h3 style="margin-top:0;color:var(--red)">① 前端按错误契约接后端</h3>
+      <ul style="margin:0">
+        <li>以为 <code>enabled</code> 就是「状态」，没读鉴权谓词</li>
+        <li>后端「静默失败」被前端当「成功」渲染出去</li>
+        <li>空输入字符串没归一 ⇒ 必 400</li>
+        <li>把「关弹层 / 切实体 / 关容器」当成一件事</li>
+      </ul>
+    </div>
+    <div class="card" style="background:var(--card2)">
+      <h3 style="margin-top:0;color:var(--red)">② 复用了不该复用的读面</h3>
+      <ul style="margin:0">
+        <li><code>getKeys()</code> 无过滤参数 ⇒ 只能拉全量回前端筛</li>
+        <li>多租户下 = <b>越权下发</b>（浏览器拿到其它租户密钥元数据）</li>
+        <li>后端明明有 <code>reveal</code>，一个字没接</li>
+      </ul>
+    </div>
+  </div>
+  <div class="code" style="margin-top:14px">
+<span class="warn-line">★ 通用式：「端点已存在」≠「端点语义与你的用法一致」。</span>
+<span class="warn-line">  setKeyEnabled 只写 enabled 不写 status —— 在 KeysView 无害，</span>
+<span class="warn-line">  换到「用户密钥管理」这个新场景，它立刻变成一个骗人的成功提示。</span>
+  </div>
+</div>
+
+<!-- ── 缺陷清单 ── -->
+<h2>三、缺陷清单（按严重度）</h2>
+<table>
+  <thead><tr><th style="width:52px">级别</th><th style="width:190px">缺陷</th><th>事实链</th><th style="width:270px">修法</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><span class="sev p0">P0-1</span></td>
+      <td><b>「启用」对已吊销密钥是静默失败</b><br><span style="font-size:11.5px;color:var(--muted)">骗管理员</span></td>
+      <td>鉴权谓词 <code>enabled=TRUE AND status NOT IN ('revoked','disabled')</code>；
+          <code>setKeyEnabled</code> 只写 enabled 不写 status ⇒ 点「启用」返回 200，
+          但 <code>status</code> 仍是 revoked ⇒ <b>认证照样拒绝</b></td>
+      <td>后端对 revoked 返回 <b>409</b> + 说明（不偷偷推翻吊销语义）；前端 revoked 不再渲染「启用」</td>
+    </tr>
+    <tr>
+      <td><span class="sev p0">P0-2</span></td>
+      <td><b>签发密钥必然失败</b><br><span style="font-size:11.5px;color:var(--muted)">只要不填预算/速率</span></td>
+      <td><code>v-model.number</code> 空输入在 Vue 3 是 <b>''</b>（<code>looseToNumber</code> 返回原串）⇒
+          发出 <code>budget_usd:""</code> ⇒ 后端 <code>*float64</code> 解 JSON 失败 ⇒ 400</td>
+      <td>改 <code>v-model</code>，提交前 <code>numOrUndef()</code> 归一（空/非数字 ⇒ undefined）</td>
+    </tr>
+    <tr>
+      <td><span class="sev p0">P0-3</span></td>
+      <td><b>明文密钥跨用户残留</b><br><span style="font-size:11.5px;color:var(--muted)">跨账号泄露</span></td>
+      <td>明文 state 只在点弹窗「关闭」时清空 ⇒ 关抽屉不点关闭 ⇒
+          <b>下一个用户看到上一个用户的完整密钥</b></td>
+      <td><code>resetSecretState()</code> 在<b>关抽屉 / 切用户 / 关弹窗</b>三处清零</td>
+    </tr>
+    <tr>
+      <td><span class="sev p0">P0-4</span></td>
+      <td><b>缺「查看存量密钥完整信息」</b><br><span style="font-size:11.5px;color:var(--muted)">客观需求的直接缺失</span></td>
+      <td>后端 <code>GET /api/keys/{id}/reveal</code> 早已存在（含审计日志），上一轮<b>一个字没接</b></td>
+      <td>接入 <code>revealKey</code>，与签发结果共用「完整密钥」对话框（含复制 + 一次性警告）</td>
+    </tr>
+    <tr>
+      <td><span class="sev p1">P1-5</span></td>
+      <td>状态徽章只反映 enabled</td>
+      <td>表约束 <code>CHECK (status IN ('active','pending','disabled','throttled','revoked'))</code>
+          —— <b>5 个态</b>，旧 UI 只有二态；throttled 显示成「正常」会误导管理员</td>
+      <td><code>keyState()</code> 按真 status 判定，5 态各有徽章与文案</td>
+    </tr>
+    <tr>
+      <td><span class="sev p1">P1-6</span></td>
+      <td>i18n 门禁红 + CJK +42</td>
+      <td>22 键缺失（UserDetailDrawer）+ 6 语种缺 <code>keys.detail.logs.*</code> 与
+          <code>loadLogsFailed</code>（上一轮 KeyDetailView 引入）</td>
+      <td>45 键 × 8 语种全落 locale；同形词改用更准且字面不同的译法 ⇒ 棘轮净贡献 <b>0</b></td>
+    </tr>
+    <tr>
+      <td><span class="sev p1">P1-7</span></td>
+      <td>拉全站密钥回浏览器</td>
+      <td><code>listKeys</code> 对超管不加租户过滤 ⇒ 浏览器拿到<b>其它租户</b>的密钥元数据，
+          且每次打开抽屉下载全表</td>
+      <td>后端加 <code>owner</code> 过滤 + <code>created_at</code>；前端改 <code>getKeys({tenant,owner})</code></td>
+    </tr>
+    <tr>
+      <td><span class="sev p1">P1-8</span></td>
+      <td>密钥操作无角色门禁</td>
+      <td>无条件渲染标签页与操作按钮；后端只允许 super/tenant_admin</td>
+      <td><code>canManageKeys = isSuperAdmin() || isTenantAdmin()</code>（租户管理员<b>不依赖</b>
+          <code>requiresSuper</code> 的 <code>/tenants/:tenantId</code>）</td>
+    </tr>
+    <tr>
+      <td><span class="sev p2">P2-9</span></td>
+      <td>ESC 取消却弹「吊销失败」</td>
+      <td>element-plus 的 confirm：点取消 reject <code>'cancel'</code>，点 X/ESC reject <code>'close'</code>；
+          旧代码只排除了 <code>'cancel'</code></td>
+      <td><code>isDialogDismiss()</code> 同时排除两者</td>
+    </tr>
+    <tr>
+      <td><span class="sev p2">B1</span></td>
+      <td><code>createKey</code> 把 owner 写成 NULL</td>
+      <td>传的是<b>指针</b>（nil ⇒ SQL NULL），而算出的默认 <code>'admin'</code> 只用于建 application
+          ⇒ 密钥在所有 owner 维度<b>隐身</b>、<code>key_count</code> 少算</td>
+      <td>写解析后的 <code>ownerUser</code>（列可空性已核对权威 DDL）</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ── 状态语义 ── -->
+<h2>四、密钥状态语义（按真 status，不是 enabled 布尔量）</h2>
+<div class="card">
+  <table>
+    <thead><tr><th style="width:120px">status</th><th style="width:130px">徽章</th><th style="width:110px">可启用</th><th style="width:110px">可吊销</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>active</code></td><td><span class="badge ok">正常</span></td><td>—</td><td>✅</td><td>正常可用</td></tr>
+      <tr><td><code>pending</code></td><td><span class="badge warn">待审核</span></td><td>✅</td><td>✅</td><td>已提交待审核</td></tr>
+      <tr><td><code>throttled</code></td><td><span class="badge warn">已限流</span></td><td>✅</td><td>✅</td><td>仍可用但被限流 —— 显示成「禁用」会误导管理员去点启用</td></tr>
+      <tr><td><code>disabled</code></td><td><span class="badge bad">已禁用</span></td><td>✅</td><td>✅</td><td>临时禁用，可恢复</td></tr>
+      <tr><td><code>revoked</code></td><td><span class="badge">已吊销</span></td><td>❌</td><td>❌</td><td><b>终态</b>，不可恢复，需重新签发</td></tr>
+    </tbody>
+  </table>
+  <div class="code" style="margin-top:14px">
+<span class="warn-line">★ 「已吊销」与「已禁用」必须区分。</span>
+  <span class="warn-line">吊销是终态 —— 后端 setKeyEnabled 对它明确 409。</span>
+<span style="color:var(--muted)">  吊销语义不会被偷偷推翻。</span>
+  </div>
+</div>
+
+<!-- ── 流程 ── -->
+<h2>五、真库判据怎么跑的（不碰生产数据）</h2>
+<div class="flow">
+  <div class="step"><div class="t">① 建一次性库</div>
+    <div class="b">211 的 <code>acc-pg17</code> 上 <code>CREATE DATABASE llmgw_audit_s2_&lt;pid&gt;</code></div>
+    <div class="r ok-line">base DSN 只是「建库的落点」，不承载任何一行</div></div>
+  <div class="step"><div class="t">② 灌权威 DDL</div>
+    <div class="b">直接取仓内 <code>sql/objects/tables/api_keys.sql</code> + <code>applications.sql</code> + 约束</div>
+    <div class="r ok-line">表定义来自事实源，不是手抄</div></div>
+  <div class="step"><div class="t">③ 端口转发</div>
+    <div class="b">随机本地端口 → <code>211:127.0.0.1:15432</code>（容器已发布端口）</div>
+    <div class="r warn-line">踩坑：容器名 <code>acc-pg17</code> 在宿主上不解析</div></div>
+  <div class="step"><div class="t">④ 跑判据</div>
+    <div class="b"><code>TEST_DATABASE_URL</code> 指向一次性库，<code>connect_timeout=5</code> 防挂</div>
+    <div class="r ok-line">3/3 PASS</div></div>
+  <div class="step"><div class="t">⑤ 删库收尾</div>
+    <div class="b"><code>DROP DATABASE … WITH (FORCE)</code> + 关转发</div>
+    <div class="r ok-line">零残留</div></div>
+</div>
+<div class="code">
+<span class="ok-line">PASS</span>  TestListKeysOwnerFilterRealDB                      <span class="mono">0.31s</span>
+<span class="ok-line">PASS</span>  TestSetKeyEnabledRevokedReturnsConflictRealDB      <span class="mono">0.10s</span>
+<span class="ok-line">PASS</span>  TestCreateKeyOwnerDefaultsToAdminNotNullRealDB     <span class="mono">0.09s</span>
+<span class="ok-line">PASS</span>  <span class="mono">ok  github.com/kaixuan/llm-gateway-go/admin  1.095s</span>
+</div>
+
+<!-- ── 门禁对拍 ── -->
+<h2>六、门禁对拍：每个数字都是 stash 前后实测对出来的</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>门禁</th><th style="width:170px">HEAD（改动前）</th><th style="width:170px">本轮（改动后）</th><th style="width:120px">我的净贡献</th></tr></thead>
+    <tbody>
+      <tr><td><code>i18n-audit</code> missing keys</td><td>29</td><td class="ok-line">0</td><td class="ok-line">−29</td></tr>
+      <tr><td>CJK 硬编码计数</td><td>4590</td><td class="ok-line">4568</td><td class="ok-line">−22</td></tr>
+      <tr><td><code>untranslated.de-DE</code></td><td>1147</td><td>1147</td><td class="ok-line">0</td></tr>
+      <tr><td><code>untranslated.fr-FR</code></td><td>1149</td><td>1149</td><td class="ok-line">0</td></tr>
+      <tr><td><code>sameAsSource.ja-JP</code></td><td>146</td><td>146</td><td class="ok-line">0</td></tr>
+      <tr><td><code>sameAsSource.zh-TW</code></td><td>783</td><td>783</td><td class="ok-line">0</td></tr>
+      <tr><td>vitest 失败数</td><td>13</td><td class="ok-line">12</td><td class="ok-line">−1</td></tr>
+    </tbody>
+  </table>
+  <div class="legend">
+    <span><i style="background:var(--green)"></i>我的改动让门禁变好</span>
+    <span><i style="background:var(--muted)"></i>与 HEAD 逐字相同 ⇒ 我零增量</span>
+  </div>
+  <div class="code" style="margin-top:12px">
+<span style="color:var(--muted)">★ 剩余 12 个失败全部是存量，与本轮无关：</span>
+  <span style="color:var(--muted)">  settings.gateway.mode*（并行会话）· login.captcha.hint 死参数（并行会话）</span>
+  <span style="color:var(--muted)">  style.token-resolution ×2 · lib/shell/hyper/gates.spec.ts 断点白名单</span>
+  <span style="color:var(--muted)">  localeValueQuality / hardcoded_cjk 棘轮基线（并行会话抬高）</span>
+  </div>
+</div>
+
+<!-- ── 冲突裁决 ── -->
+<h2>七、合并冲突的裁决（远程有一份并行实现）</h2>
+<div class="card">
+  <p style="margin:0 0 10px">推送时远程 <code>299b0cac2</code> 有一份<b>未经审计的同功能实现</b>，改动面与本轮完全重叠。
+  我用<b>实测</b>而非印象裁决 —— 远程版仍带本轮修掉的全部缺陷：</p>
+  <div class="grid g2">
+    <div class="card" style="background:#1a1414;border-color:#4a2626">
+      <h3 style="margin-top:0;color:var(--red)">远程版仍带（未审计）</h3>
+      <ul style="margin:0">
+        <li><code>getKeys()</code> 无参 ⇒ 拉全站密钥</li>
+        <li><code>v-model.number</code> ⇒ 签发必 400</li>
+        <li>无 <code>revealKey</code> ⇒ 缺「完整信息」</li>
+        <li>无 <code>resetSecretState</code> ⇒ 明文残留</li>
+        <li>无 <code>isDialogDismiss</code> ⇒ ESC 弹假错误</li>
+        <li>无 <code>canManageKeys</code> ⇒ 无角色门禁</li>
+      </ul>
+    </div>
+    <div class="card" style="background:#121c17;border-color:#26503c">
+      <h3 style="margin-top:0;color:var(--green)">本轮审计后版本</h3>
+      <ul style="margin:0">
+        <li>全部 8 项已修，且带钉测</li>
+        <li>真库腿 3/3 绿</li>
+        <li>前端契约 9/9 绿</li>
+        <li>门禁净贡献：i18n −29 / CJK −22 / vitest −1</li>
+      </ul>
+    </div>
+  </div>
+  <div class="code" style="margin-top:14px">
+<span style="color:var(--muted)">★ 随远程实现一并移除的 5 个别名键</span>
+<span style="color:var(--muted)">  （keyCreatedSuccess / keyCreatedWarn / rateLimit / rateLimitRpm / budgetUsd）：</span>
+<span style="color:var(--muted)">  它们只被那一版组件引用，无其它消费者；本轮用语义更准的</span>
+<span style="color:var(--muted)">  keyStatus* / keyRateLimit / keyBudget 覆盖同一批功能。</span>
+<span class="warn-line">  ⇒ 显式裁决，不是静默删除（删除对象与其唯一消费者同批落地）。</span>
+  </div>
+</div>
+
+<!-- ── 遗留 ── -->
+<h2>八、遗留风险与未做项（如实登记）</h2>
+<div class="card">
+  <table>
+    <thead><tr><th style="width:270px">风险</th><th>说明</th><th style="width:250px">处置</th></tr></thead>
+    <tbody>
+      <tr><td><b>存量 <code>owner_user IS NULL</code> 的密钥</b></td>
+          <td>B1 修的是<b>新建</b>路径；库里已有的 NULL 行仍隐身</td>
+          <td><b>登记不修</b> —— 批量回填需要业务口径（该归属给谁？），属 owner 决策。<br>
+              盘点 SQL：<code>SELECT count(*) FROM api_keys WHERE owner_user IS NULL</code></td></tr>
+      <tr><td><b>i18n 棘轮仍红</b></td>
+          <td>剩余 12 个 vitest 失败全属并行会话的在途改动</td>
+          <td>不越界修别人的文件；已如实登记并给出 stash 对拍数据</td></tr>
+      <tr><td><b><code>throttled</code> 的处置口径</b></td>
+          <td>限流态密钥仍可通过认证（谓词只排除 revoked/disabled）</td>
+          <td>本轮只做<b>如实显示</b>；「限流是否该拒绝认证」是产品决策，不在本轮范围</td></tr>
+      <tr><td><b><code>status='disabled'</code> 无写入点</b></td>
+          <td>表约束允许，但代码里没人写它</td>
+          <td>UI 仍按约束全量支持 5 态 ⇒ 将来若有人写 disabled，UI 无需改</td></tr>
+      <tr><td><b>真库腿未纳入 <code>run-realdb-gate.sh</code></b></td>
+          <td>该脚本的 <code>REALDB_FILES</code> 只覆盖 <code>bg/</code> 包</td>
+          <td>沿用仓内既有约定（<code>TEST_DATABASE_URL</code> 未设置则 skip）</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── 部署 ── -->
+<h2>九、部署结果与阻断</h2>
+<div class="grid g3">
+  <div class="card"><div class="n green">211</div><div class="l">docker 蓝绿 · 已上线</div>
+    <div class="d">槽 a 接管 8781 · build_seq 3082 · 线上验收 13/13 绿</div></div>
+  <div class="card"><div class="n red">154</div><div class="l">host 形态 · 被闸门拦下</div>
+    <div class="d">未切换符号链接 · 旧版仍在役 · 无中间态</div></div>
+  <div class="card"><div class="n red">245</div><div class="l">host 形态 · 同一阻断</div>
+    <div class="d">与 154 共用 252 的 PG ⇒ 同一张台账</div></div>
+</div>
+
+<h3>211 —— 已上线，并顺手修掉一个线上 P0</h3>
+<div class="card">
+  <div class="flow">
+    <div class="step"><div class="t">第一轮 adb227199</div>
+      <div class="b">本轮提交上线，槽 b 接管 8783，build_seq 3081</div>
+      <div class="r ok-line">公网版本身份 OK · 公网入口 200</div></div>
+    <div class="step" style="background:var(--card2)"><div class="t">⚠ 带病上线</div>
+      <div class="b">同批带入并行提交 976c565ed 的 captcha 契约不一致</div>
+      <div class="r bad-line">网页登录对所有用户 100% 失败（并行会话 06:53 实测）</div></div>
+    <div class="step"><div class="t">第二轮 48a33952</div>
+      <div class="b">含登录修复 83b3e72c0，槽 a 接管 8781</div>
+      <div class="r ok-line">build_seq 3082 · captcha 形态已回到条件成对</div></div>
+  </div>
+  <p style="margin:10px 0 0">线上验收脚本：<code>scripts/audit/user-key-management-live-check.py</code>（密钥与 token 不落盘不回显，明文只报长度与摘要）</p>
+  <table>
+    <tr><th>断言组</th><th>内容</th><th>结果</th></tr>
+    <tr><td>A · owner 服务端过滤</td><td>接口计数与真库逐条相等（admin 7/7、e2e 8/8），返回行全部属于该 owner，含新增字段 <code>status</code>/<code>created_at</code></td><td class="ok-line">8/8 PASS</td></tr>
+    <tr><td>B · 查看完整密钥</td><td><code>GET /api/keys/220/reveal</code> → 200，明文长度 51（非空且 key_id 与请求一致）；明文与摘要只在操作机本地打印，不入库本文档</td><td class="ok-line">3/3 PASS</td></tr>
+    <tr><td>C · 已吊销密钥点「启用」</td><td>→ <code>409</code>「revoked is a terminal state」；且复查确认 409 分支<b>未写库</b>（status/enabled 前后一致）</td><td class="ok-line">2/2 PASS</td></tr>
+  </table>
+</div>
+
+<h3>154 / 245 —— 阻断根因（并行会话引入，非本轮）</h3>
+<div class="card">
+  <p style="margin:0 0 10px">154 部署在 <code>[6.5/9] 切换前 pending 迁移 + db-changelog</code> 中止，<b>未切换符号链接</b>（旧版 <code>2.6.1-582f9841-20261116-3045</code> 仍在役，无中间态）。闸门原话：</p>
+  <div class="code">已应用迁移 checksum 不匹配，拒绝继续：965:965_api_key_concurrency_minute.sql:<br>
+recorded=987ed31c128b571cfd729ebcdf8238a0b44c96a11561818463c0b7d8354a3565<br>
+local   =f1b874f154ac6d79cbc4d44eac0fe8c34204f8d128ecbdfe5c973147ecd9d79b</div>
+  <table>
+    <tr><th>环节</th><th>事实</th></tr>
+    <tr><td>谁引入</td><td>并行会话 <code>157fdbb96</code>（2026-11-17 06:40，已在主干）改写 965/966/968/969 四份迁移内容：+<code>statement_timeout</code> 预算、事务包裹、幂等自登记 <code>INSERT</code>、实测注释</td></tr>
+    <tr><td>字节级证据</td><td><code>git show 157fdbb96^:…965….sql</code> 的 sha256 = <code>987ed31c…</code>（＝DB 记录值）；<code>157fdbb96</code> 起 = <code>f1b874f1…</code>（＝本地值）⇒ DB 里记的是<b>改动前</b>的字节</td></tr>
+    <tr><td>漂移范围</td><td>965 / 966 / 968 / 969 四行；967 一致（未改动）</td></tr>
+    <tr><td>影响面</td><td>154 / 245 / 252 三套生产环境<b>共用</b> 252 的 <code>pg-252-pg17</code> ⇒ 同一张台账 ⇒ 三套同时被卡；211 用独立 PG 且走 docker 引擎的另一套闸门，不受影响</td></tr>
+    <tr><td>为何不会自愈</td><td>内容重放通道 <code>apply-db-revision-sequence.sh</code> <b>从不写</b> <code>llm_gateway_migration_checksums</code>；官方修复脚本 <code>repair-252-migration-ledger.sh</code> 用 <code>ON CONFLICT DO NOTHING</code> 且遇失配<b>直接抛异常</b> ⇒ 只能补缺行，改不了已漂移行 ⇒ 死锁：台账要靠「迁移被重新应用」来更新，而迁移因「已在 schema_migrations」被跳过</td></tr>
+    <tr><td>安全性前置</td><td>四份迁移均<b>显式幂等</b>（<code>CREATE TABLE/INDEX IF NOT EXISTS</code> + <code>ON CONFLICT</code> + DO 守卫），且对象已在库中（<code>api_key_concurrency_minute</code> 存在）⇒ 重放对现库是 no-op</td></tr>
+  </table>
+</div>
+
+<!-- ── 通用式 ── -->
+<h2>十、本轮可复用的通用式</h2>
+<div class="grid g2">
+  <div class="card">
+    <ul style="margin:0">
+      <li><b>端点已存在 ≠ 端点语义与你的用法一致</b> —— 复用前先读它的<b>写入面</b>，不只读路由</li>
+      <li><b>鉴权谓词是唯一权威</b> —— UI 必须按谓词建模，否则必然出现「显示正常但不可用」</li>
+      <li><b><code>v-model.number</code> 的空值不是 null</b> —— Vue 3 的 <code>looseToNumber</code> 对 <code>''</code> 返回原串</li>
+      <li><b>一次性状态要在三个时机清零</b> —— 关弹层 / 切实体 / 关容器是三件不同的事，漏一个就是跨实体泄露</li>
+    </ul>
+  </div>
+  <div class="card">
+    <ul style="margin:0">
+      <li><b>守卫自己也要被审计</b> —— 本轮第一版断言 <code>not.toContain('v-model.number')</code> 命中了<b>文件头描述缺陷的注释</b> ⇒ 假阳性 ⇒ 改查属性用法形态</li>
+      <li><b>权威 DDL 优于代码里的枚举</b> —— <code>status</code> 的 5 个取值域来自表约束 CHECK，不来自任何 TS 类型或 Go 常量</li>
+      <li><b>读面的过滤口要开在服务端</b> —— 「拉全量回来前端筛」在多租户下是越权下发</li>
+      <li><b>归因用 stash 对拍，不靠印象</b> —— 每个门禁数字都量了改动前/后两遍</li>
+      <li><b>部署闸门失败先问「谁引入的」</b> —— 用 <code>git show &lt;rev&gt;^:file</code> 的 sha256 对拍 DB 记录值，字节级锁定漂移来源</li>
+      <li><b>管道会吃掉退出码</b> —— <code>deploy.sh | tail -80</code> 永远返回 0 ⇒ 必须 <code>set -o pipefail</code>，否则「失败」会被读成「成功」</li>
+      <li><b>共用一个 PG 就是共用一份债</b> —— 154/245/252 同库 ⇒ 一次台账漂移同时卡住三套环境</li>
+      <li><b>上线的每一行都要问「它带着谁一起上线了」</b> —— 本轮 211 带上了并行提交的 captcha 契约缺陷</li>
+    </ul>
+  </div>
+</div>
+
+<div class="foot">
+  提交：<code>cf10f3242</code>（审计轮主体）· <code>c483b6d02</code>（合并远程 + 冲突裁决）· <code>adb227199</code>（UI 契约 B 门修复）<br>
+  主档：<code>docs/audit/2026-11-17-用户详情API密钥管理-审计轮.md</code> · <code>docs/features/user-detail-key-links.md</code><br>
+  线上验收脚本：<code>scripts/audit/user-key-management-live-check.py</code><br>
+  部署：211 ✅ 已上线（<code>48a33952</code> · build_seq 3082 · 槽 a@8781 · 验收 13/13）· 154 ⛔ 被迁移台账校验和闸门拦下（未切换，旧版在役）· 245 ⛔ 同一阻断（与 154 共用 252 的 PG）
+</div>
+
+</div>
+</body>
+</html>

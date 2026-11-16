@@ -116,6 +116,14 @@ export default {
     limitsSaved: 'تم حفظ الحدود',
     error: {
       loadDetailFailed: 'تعذّر تحميل تفاصيل المفتاح. أعد المحاولة.',
+      loadLogsFailed: 'تعذّر تحميل سجلات الطلبات. أعد المحاولة.',
+    },
+    logs: {
+      title: 'سجلات الطلبات الأخيرة',
+      viewAll: 'عرض الكل',
+      empty: 'لا توجد سجلات طلبات',
+      success: 'نجح',
+      pending: 'قيد التنفيذ',
     },
   },
   applications: {

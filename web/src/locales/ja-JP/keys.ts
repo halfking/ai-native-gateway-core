@@ -116,6 +116,14 @@ export default {
     limitsSaved: "制限を保存しました",
     error: {
       loadDetailFailed: 'キー詳細の読み込みに失敗しました。再試行してください。',
+      loadLogsFailed: 'リクエストログの読み込みに失敗しました。再試行してください。',
+    },
+    logs: {
+      title: '最近のリクエストログ',
+      viewAll: 'すべて表示',
+      empty: 'リクエスト記録がありません',
+      success: 'OK',
+      pending: '進行中',
     },
   },
   applications: {

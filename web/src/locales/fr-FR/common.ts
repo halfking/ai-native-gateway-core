@@ -44,6 +44,7 @@ export default {
     deleteFailed: 'Échec de la suppression. Veuillez réessayer.',
     operationFailed: 'L’opération n’a pas pu aboutir. Veuillez réessayer.',
     loading: 'Chargement…',
+    submitting: 'Envoi…',
     unknownReason: 'Impossible d’obtenir le détail de l’erreur.',
     probeLaneHistoricalHint: 'La voie d\'isolation physique du trafic de sonde n\'est pas active ; il s\'agit des enregistrements de sonde historiques d\'avant l\'isolation.',
     saveFailedWithReason: 'Échec de l’enregistrement : {reason}. Veuillez réessayer.',

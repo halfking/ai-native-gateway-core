@@ -118,8 +118,29 @@ async function handleLogin() {
     const resp = await login({
       username: username.value,
       password: password.value,
-      captcha_id: captcha.value?.captcha_id || undefined,
-      captcha_code: captchaCode.value || undefined,
+      // ★ 后端契约（admin/auth_captcha.go 的 verifyLoginCaptcha）：captcha_id 与
+      //   captcha_code 必须**成对**：
+      //     · 两个都不带            ⇒ 放行（自适应：正常用户不必被打扰）
+      //     · required 却不带       ⇒ 400 captcha_required
+      //     · 只带其中一个          ⇒ 400 captcha_invalid（「answer is incomplete」）
+      //   2026-11-17 实测事故：前端曾**无条件**带 captcha_id（checkCaptchaRequired
+      //   总是把服务端返回的 captcha_id 存下来）却只在用户填了码时才带
+      //   captcha_code ⇒ 不需要验证码时反而恒被后端判 captcha_invalid
+      //   ⇒ **网页登录对所有用户整体不可用**（实测：带 id 不带 code → HTTP 400
+      //     captcha_invalid；两个都不带 → HTTP 200）。
+      //   ⇒ 这里改成：**要么成对带、要么都不带**。
+      //   · 需要验证码但用户还没填 → 上面的守卫已提前返回，不会走到这里；
+      //   · 服务端在弹窗打开期间把 required 翻成 true → 后端回 captcha_required
+      //     ⇒ catch 分支置 captchaRequired 并刷新验证码 ⇒ 用户填码后成对提交。
+      //
+      // ★ 2026-11-17 12h 审计轮合并订正：captcha_id 取自**单一持有者**的
+      //   captcha 对象（captcha.value?.captcha_id），不是独立的 captchaId ref ——
+      //   原先 CaptchaInput 与父组件各取一次验证码 ⇒ 图与 id 可能来自**两次不同的
+      //   响应** ⇒ 用户照着图 A 填码、服务端按 id B 校验 ⇒ captcha_invalid 且一次性
+      //   作废 ⇒ 反复失败被锁死。⇒ 现在 id 与图同源。
+      ...(captchaRequired.value && captchaCode.value
+        ? { captcha_id: captcha.value?.captcha_id, captcha_code: captchaCode.value }
+        : {}),
       remember_me: rememberMe.value,
     })
     if (resp.access_token) {

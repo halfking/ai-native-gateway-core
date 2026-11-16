@@ -26,12 +26,32 @@
 --                  观测没有长期价值（用量归 request_stats_minute 族管）。
 --
 -- Down: 965_api_key_concurrency_minute.down.sql
+--
+-- ── 超时预算（2026-11-17 补测；门 TestHeavyDDLModernMigrationsDeclareMeasuredBudget）
+--   本文件含**非并发 CREATE INDEX**（idx_akcm_key_minute，非 CONCURRENTLY）
+--   ⇒ 命中「全表扫描类 DDL」判据 ⇒ 预算必须按目标环境最大表实测后抬够
+--   （761 先例：实测 18.9s ⇒ 抬 10min；914 反例：拍 120s ⇒ 245 部署中止）。
+--
+--   实测（目标环境 = 211，acc-pg17 / PostgreSQL 17 / arm64 Docker，
+--        2026-11-17 06:4x，psql \timing）：
+--     · 量的是**最坏情形行数**：208 个密钥 × 1440 分钟/天 × 7 天 retention
+--       × 2 个蓝绿槽（instance_id 进主键）= 4,193,280 行
+--       —— 同结构 TEMP 表灌数后建 idx_akcm_key_minute 同形索引：
+--           INSERT 4,193,280 行：6.175 s
+--           CREATE INDEX (api_key_id, minute_ts DESC)：**2.999 s**
+--     · 对照：211 上该表当前行数 = 0（965 于 2026-11-15 16:29 应用时
+--       索引建在空表上，瞬时完成）⇒ 实测值来自**最坏行数**而非当前行数。
+--   抬到 10min 的理由（不是拍脑袋）：上面 3.0s 是**空载**共享库上的单次测量，
+--   而迁移窗口内网关仍在写、ensure 链与索引维护叠加（761 的 18.9s 正是在
+--   这种争用下越过了 30s 的角色级上限）⇒ 按 761 同一惯例留足余量。
+--   另注：SET LOCAL 只对本事务生效，不污染集群全局，也不留下
+--   「建索引中途超时 → 事务回滚 → 部署中止后状态不明」的残局。
 -- ===========================================================================
 
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
-SET LOCAL statement_timeout = '60s';
+SET LOCAL statement_timeout = '10min';
 
 CREATE TABLE IF NOT EXISTS public.api_key_concurrency_minute (
     minute_ts        timestamptz NOT NULL,

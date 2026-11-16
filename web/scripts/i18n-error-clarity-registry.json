@@ -1050,6 +1050,26 @@
       "kind": "create",
       "subject": "上游接入",
       "new": "上游没能接上，请重试"
+    },
+    "users.detail.loadKeysFailed": {
+      "kind": "load",
+      "subject": "该用户的密钥列表",
+      "new": "该用户的密钥列表没能加载出来，请重试"
+    },
+    "users.detail.createKeyFailed": {
+      "kind": "create",
+      "subject": "为该用户签发的密钥",
+      "new": "为该用户签发的密钥没能创建出来，请重试"
+    },
+    "users.detail.revokeKeyFailed": {
+      "kind": "operation",
+      "subject": "吊销该用户密钥",
+      "new": "吊销该用户密钥的操作没能完成，请重试"
+    },
+    "users.detail.toggleKeyFailed": {
+      "kind": "toggle",
+      "subject": "该用户密钥的启停",
+      "new": "该用户密钥的启停操作没能完成，请重试"
     }
   },
   "exemptions": {

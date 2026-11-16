@@ -2702,6 +2702,31 @@ legacy_content_replays=(
   # definition-aware 守卫（canonical CHECK 已在位时不再重跑 ADD CONSTRAINT），
   # 重放对已修复库是幂等 no-op，对未修复库补齐加固。
   '644_tuning_views_selfcheck_and_candidate_failure_cache.sql|5dc5731fb58af65039a26536d7867ffba55c77169d0e5cc4db84aa1e0ea4553c'
+  # 2026-11-17 简易总览页部署轮（并行车欠账收口）：965/966/968/969 四份迁移
+  #   **内容加固** ⇒ 必须按当前内容重放一次，否则本轮修复到不了已部署的库。
+  #   加固内容与重放理由：
+  #   · 966/968/969：**补 ≤952 自登记纪律要求的 INSERT INTO
+  #     public.schema_migrations**（它们的 down 侧一直带着配对的
+  #     DELETE FROM ... WHERE version = 'NNN'，只有 up 侧漏写）。
+  #     211 实测（acc-pg17 / llm_gateway）：auth_id_mapping /
+  #     plugin_config / approval_casdoor_mapping 三张表**对象在场**，
+  #     但 schema_migrations 里**没有** 966/968/969 这三行 ⇒ 记账链断层
+  #     （950/951/957/958 同款）：人读台账少记、审计按台账判「未应用」
+  #     会得出与事实相反的结论。文件自带的 INSERT 是 ON CONFLICT DO UPDATE
+  #     ⇒ 重放幂等。
+  #   · 965：statement_timeout 由 60s 抬到 10min（含非并发 CREATE INDEX
+  #     ⇒ 命中「全表扫描类 DDL」预算门；211 上按最坏行数 4,193,280 行实测
+  #     建索引 2.999s，按 761 同一惯例留足争用余量）。
+  #   ★ 重放安全性：三份的 DDL 全是 IF NOT EXISTS / ON CONFLICT 形态
+  #     （对象已在场 ⇒ 零行为变化），965 的重放只多写一条台账描述。
+  '965_api_key_concurrency_minute.sql|f1b874f154ac6d79cbc4d44eac0fe8c34204f8d128ecbdfe5c973147ecd9d79b'
+  '966_auth_id_mapping_canonical_channel.sql|27fffb9db3fae00be50f9f2940c90ef340c468bf2ae5ffdaa129f629bcaef527'
+  '968_plugin_config.sql|7f9f785d79c45027b83f70cbfbe67a312264142057a56010d948091e905836be'
+  '969_approval_casdoor_mapping.sql|c0292e37db9fefecfcd6aca215f5082472a0dde90046aa5aece2bf830979c4f0'
+  #   · 970：补「全表扫描类 DDL 预算」的**实测**注释（211 上按最坏行数
+  #     100,000 行实测两条索引 80.285 / 89.610 ms；10min 预算本就已就位）。
+  #     重放对本表是零行为变化（CREATE TABLE/INDEX ... IF NOT EXISTS）。
+  '970_market_price_platform_quotes.sql|9c99083a1b1bfd99ee360c9346d5034c2a4687edda7951ded4081d3a306304e8'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

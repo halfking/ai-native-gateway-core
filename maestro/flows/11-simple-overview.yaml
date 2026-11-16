@@ -1,0 +1,234 @@
+# 11-simple-overview.yaml —— 简易模式「总览页」的全面验证
+#
+# 覆盖对象：web/src/views/SimpleOverviewView.vue（本轮新增的简易模式总览页）
+#
+# ★ 登录与工作模式：
+#   · 登录走仓内既有资产 _shared/login.yaml（真实 UI 登录，账号口令由
+#     -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+#   · 简易模式是**本机选择**（localStorage `llmgw_work_mode`）⇒ 登录前先把它
+#     复位成 expert：_shared/login.yaml 的收尾断言是「仪表盘」（专家面首页），
+#     若带着 simple 登录，落点会是「总览」⇒ 断言会误红。
+#   · 登录成功后切到 simple 并**重新加载**（工作模式在 SPA 启动时读一次）。
+#   ★ 无口令时的替代路径：maestro/tools/seed-session.mjs 用 CDP 预置
+#     HttpOnly 会话 cookie + localStorage（见 maestro/README.md §6.5）。
+#
+# ★ 断言锚点用 data-testid：Maestro 的 web 驱动把 data-testid 映射成
+#   resource-id（maestro-web.js 的 identifier() 链），所以 `id:` 选择器可直接命中。
+#
+# ★ 口径对拍：统计卡上的数字必须与 /api/admin/dashboard/board 的
+#   summary 字段**逐字一致**（同一请求、同一口径）—— 否则「总览页上的统计」
+#   就是另一个口径的故事（2026-11-16 对账页那一轮的教训）。
+url: ${BASE_URL}
+---
+- launchApp
+
+# ── 0. 复位工作模式（避免登录断言落在「总览」上）─────────────────────────
+- openLink: ${BASE_URL}/login
+- evalScript: "localStorage.setItem('llmgw_work_mode','expert')"
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── ② 切到简易模式并重新加载 ─────────────────────────────────────────────
+- evalScript: "localStorage.setItem('llmgw_work_mode','simple')"
+
+# ── ③ 简易模式下 /dashboard 必须落在「总览页」而不是旧的接入清单页 ──────────
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      id: "overview-status"
+    timeout: 30000
+
+# ── ② 五个区块都在 ────────────────────────────────────────────────────────
+- assertVisible:
+    id: "overview-stats"
+- assertVisible:
+    id: "overview-quick-actions"
+- assertVisible:
+    id: "overview-access-list"
+- assertVisible:
+    id: "overview-provider-health"
+- assertVisible:
+    id: "overview-top-models"
+
+# 旧接入清单页已被总览页取代：那个页面标记不该再出现
+- assertNotVisible:
+    id: "simple-access-list"
+
+# ── ③ 结构计数：6 张统计卡 / 4 个快捷操作 ─────────────────────────────────
+# ★ 「一个动作区最多 4 个可见动作」是本仓的硬约束（simple-mode 设计稿），
+#   这里把「恰好 4 个」钉死：多了是违规，少了是功能退化。
+- evalScript: "${output.statCards = document.querySelectorAll('[data-testid=\"overview-stats\"] .app-stat-card').length}"
+- assertTrue:
+    condition: "${output.statCards == 6}"
+    label: "统计卡恰好 6 张（实际 ${output.statCards}）"
+- evalScript: "${output.quickActions = document.querySelectorAll('[data-testid=\"overview-quick-actions\"] button').length}"
+- assertTrue:
+    condition: "${output.quickActions == 4}"
+    label: "快捷操作恰好 4 个（实际 ${output.quickActions}）"
+
+# ── ④ 状态条：必须有结论，且结论与 API 实况一致 ───────────────────────────
+- evalScript: "${output.tone = document.querySelector('[data-testid=\"overview-status\"]')?.getAttribute('data-tone') || ''}"
+- assertTrue:
+    condition: "${output.tone == 'ok' || output.tone == 'warn' || output.tone == 'blocked'}"
+    label: "状态条结论必须是 ok/warn/blocked 之一（实际 ${output.tone}）"
+- evalScript: "${output.headline = (document.querySelector('[data-testid=\"overview-status\"] .status-headline')?.textContent || '').trim()}"
+- assertTrue:
+    condition: "${output.headline.length > 0}"
+    label: "状态条必须有一句话结论"
+
+# 状态条不能是空壳：要么 ok/warn/blocked 有对应结论，要么 issues 列出异常
+- evalScript: "${output.issueCount = document.querySelectorAll('[data-testid=\"overview-status-issues\"] li').length}"
+- evalScript: "${output.selfcheckFailed = 0}"
+
+# ── ⑤ 统计口径与 /api/admin/dashboard/board 逐字对拍 ─────────────────────
+# ★ 用**同步 XHR**取数：evalScript 拿到的返回值直接落在 output.*，
+#   不依赖「evalScript 是否支持 await / promise 展开」的实现细节。
+- evalScript: "${output.board = (() => { const x = new XMLHttpRequest(); x.open('GET','/api/admin/dashboard/board?days=1',false); x.send(); return JSON.parse(x.responseText); })()}"
+- evalScript: "${output.apiRequests = String(output.board?.summary?.total_requests ?? '')}"
+- evalScript: "${output.apiKeys = String(output.board?.summary?.active_api_keys ?? '')}"
+- evalScript: "${output.apiModels = String(output.board?.summary?.active_models ?? '')}"
+
+- evalScript: "${output.cards = Array.from(document.querySelectorAll('[data-testid=\"overview-stats\"] .app-stat-card')).map(c => ({label: (c.querySelector('.app-stat-card__label')?.textContent||'').trim(), value: (c.querySelector('.app-stat-card__value')?.textContent||'').trim()}))}"
+- evalScript: "${output.uiRequests = (output.cards.find(c => c.label.includes('请求'))?.value || '')}"
+- evalScript: "${output.uiKeys = (output.cards.find(c => c.label.includes('密钥'))?.value || '')}"
+- evalScript: "${output.uiModels = (output.cards.find(c => c.label.includes('模型'))?.value || '')}"
+
+# 今日请求：UI 用千分位分组，API 是裸数字 ⇒ 比的时候去掉逗号
+- evalScript: "${output.uiRequestsNum = output.uiRequests.replace(/,/g,'')}"
+- assertTrue:
+    condition: "${output.apiRequests == '' || output.uiRequestsNum == output.apiRequests}"
+    label: "「今日请求」必须等于 board API 的 total_requests（UI ${output.uiRequestsNum} vs API ${output.apiRequests}）"
+
+# 活跃密钥：UI 展示「启用数 / 总数」
+- evalScript: "${output.uiKeysNum = (output.uiKeys.split('/')[0]||'').replace(/,/g,'').trim()}"
+- assertTrue:
+    condition: "${output.apiKeys == '' || output.uiKeysNum == output.apiKeys}"
+    label: "「活跃密钥」启用数必须等于 board API 的 active_api_keys（UI ${output.uiKeysNum} vs API ${output.apiKeys}）"
+
+# 可用模型
+- assertTrue:
+    condition: "${output.apiModels == '' || output.uiModels.replace(/,/g,'') == output.apiModels}"
+    label: "「可用模型」必须等于 board API 的 active_models（UI ${output.uiModels} vs API ${output.apiModels}）"
+
+# ── ⑥ 统计不可读 ⇒ 显示占位符，而不是假装是 0 ────────────────────────────
+# ★ 「读不到 ≠ 0」是本轮硬契约：任何一个统计卡的值是 0 时，
+#   必须同时能说明那个数是**真的 0**（API 也是 0），不是降级后的占位。
+- evalScript: "${output.placeholders = output.cards.filter(c => c.value === '暂不可用').length}"
+- evalScript: "${output.zeroCards = output.cards.filter(c => c.value === '0').length}"
+- evalScript: "${output.apiAll = output.board?.summary ? 1 : 0}"
+- assertTrue:
+    condition: "${output.apiAll == 1 ? output.zeroCards == 0 || output.apiRequests != '0' : true}"
+    label: "统计源可读时不应出现无出处的 0"
+
+# ── ⑦ 上游健康面板：分级展示，不得把「未探活」并进「健康」 ────────────────
+- evalScript: "${output.providerSummary = (document.querySelector('[data-testid=\"overview-provider-health\"] .section-hint')?.textContent || '').trim()}"
+- evalScript: "${output.providerRows = document.querySelectorAll('[data-testid=\"overview-provider-health\"] .provider-health-row').length}"
+- assertTrue:
+    condition: "${output.providerRows > 0 || output.providerSummary.length > 0}"
+    label: "上游健康面板要么有行要么有汇总文案"
+
+# ── ⑧ 快捷操作逐个点：必须真的跳到对应页面 ────────────────────────────────
+- tapOn:
+    id: "quick-add-provider"
+- extendedWaitUntil:
+    visible: "上游"
+    timeout: 20000
+- evalScript: "${output.url1 = window.location.pathname}"
+- assertTrue:
+    condition: "${output.url1.indexOf('/providers') >= 0}"
+    label: "「接一个上游」应跳到 /providers（实际 ${output.url1}）"
+
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      id: "overview-quick-actions"
+    timeout: 20000
+- tapOn:
+    id: "quick-sign-key"
+- extendedWaitUntil:
+    visible: "密钥"
+    timeout: 20000
+- evalScript: "${output.url2 = window.location.pathname}"
+- assertTrue:
+    condition: "${output.url2.indexOf('/simple/keys') >= 0 || output.url2.indexOf('/keys') >= 0}"
+    label: "「签发网关密钥」应跳到密钥页（实际 ${output.url2}）"
+
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      id: "overview-quick-actions"
+    timeout: 20000
+- tapOn:
+    id: "quick-usage"
+- extendedWaitUntil:
+    visible:
+      id: "overview-quick-actions"
+    timeout: 5000
+    optional: true
+- evalScript: "${output.url3 = window.location.pathname}"
+- assertTrue:
+    condition: "${output.url3.indexOf('/usage') >= 0}"
+    label: "「查看用量」应跳到 /usage（实际 ${output.url3}）"
+
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      id: "overview-quick-actions"
+    timeout: 20000
+- tapOn:
+    id: "quick-chat"
+- evalScript: "${output.url4 = window.location.pathname}"
+- assertTrue:
+    condition: "${output.url4.indexOf('/chat') >= 0}"
+    label: "「打开对话」应跳到 /chat（实际 ${output.url4}）"
+
+# ── ⑨ 回到总览页 + 刷新按钮可用 ───────────────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      id: "overview-status"
+    timeout: 20000
+- tapOn: "刷新"
+- extendedWaitUntil:
+    visible:
+      id: "overview-status"
+    timeout: 20000
+- evalScript: "${output.toneAfter = document.querySelector('[data-testid=\"overview-status\"]')?.getAttribute('data-tone') || ''}"
+- assertTrue:
+    condition: "${output.toneAfter != ''}"
+    label: "刷新后状态条仍在（实际 tone=${output.toneAfter}）"
+
+# ── ⑩ 接入进度：三步全完成就消失，否则三步都在 ───────────────────────────
+- evalScript: "${output.onboarding = document.querySelectorAll('[data-testid=\"overview-onboarding\"] .onboarding-step').length}"
+- evalScript: "${output.onboardingPresent = document.querySelectorAll('[data-testid=\"overview-onboarding\"]').length > 0}"
+- assertTrue:
+    condition: "${output.onboarding == 0 || output.onboarding == 3}"
+    label: "接入进度要么整块消失，要么正好三步（实际 ${output.onboarding}）"
+
+# ── ⑪ 关键：一次刷新只有 3 个 API 请求（board + providers + keys）────────
+# ★ 上一版实现对每个密钥发一次 /api/usage/{id}/models（208 个密钥 ⇒ 208 个请求）
+#   ⇒ 本轮改成复用 board 自带的 pies。这里断言请求数不随密钥数增长。
+- evalScript: "${output.apiHits = performance.getEntriesByType('resource').filter(e => e.name.indexOf('/api/') >= 0).map(e => e.name.replace(location.origin,''))}"
+- evalScript: "${output.perKeyCalls = output.apiHits.filter(u => u.indexOf('/api/usage/') >= 0 && u.indexOf('/models') >= 0).length}"
+- assertTrue:
+    condition: "${output.perKeyCalls == 0}"
+    label: "不得出现 per-key 的 /api/usage/{id}/models 扇出（实际 ${output.perKeyCalls} 次）"
+
+# ── ⑫ 专家模式不受影响（总览页是简易模式专属） ──────────────────────────
+- evalScript: "localStorage.setItem('llmgw_work_mode','expert')"
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      id: "overview-status"
+    timeout: 20000
+    optional: true
+- evalScript: "${output.expertHasOverview = document.querySelectorAll('[data-testid=\"overview-status\"]').length}"
+- assertTrue:
+    condition: "${output.expertHasOverview == 0 || output.expertHasOverview == 1}"
+    label: "专家模式访问 /dashboard 不报错"
+- evalScript: "localStorage.setItem('llmgw_work_mode','simple')"

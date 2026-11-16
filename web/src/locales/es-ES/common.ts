@@ -43,6 +43,7 @@ export default {
     deleteFailed: 'No se pudo eliminar. Vuelva a intentarlo.',
     operationFailed: 'No se pudo completar la operación. Vuelva a intentarlo.',
     loading: 'Cargando…',
+    submitting: 'Enviando…',
     unknownReason: 'No se obtuvo el detalle del error',
     probeLaneHistoricalHint: 'El carril de aislamiento físico del tráfico de sondeo no está activo; estos son registros históricos de sondeo anteriores al aislamiento.',
     saveFailedWithReason: 'No se pudo guardar: {reason}. Vuelva a intentarlo.',
