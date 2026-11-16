@@ -2656,6 +2656,15 @@ files=(
   #   每分钟 UPSERT：在飞/峰值/被拒/生效帽）；instance_id 区分蓝绿双槽；
   #   retention 7d 由 worker 自清。空窗口零写。
   "$ROOT_DIR/sql/migrations/startup/965_api_key_concurrency_minute.sql"
+  # ★ 966（2026-11-16 12h 审计轮收口登记）：auth_id_mapping 正典通道收编。
+  #   CREATE TABLE IF NOT EXISTS + setval 序列对齐（DO $$ 先判序列存在）；
+  #   幂等可重放。966 此前只登记未投递（embeddata 缺失），6d93373f1 已修投递，
+  #   本行补齐 211 部署通道（sqlguard: TestStartupMigrationsStayInEveryDeliveryChannel）。
+  "$ROOT_DIR/sql/migrations/startup/966_auth_id_mapping_canonical_channel.sql"
+  # ★ 967（2026-11-16 12h 审计轮 P1-2 收口登记）：prompt_injection_policies 三列
+  #   （llm_detection_fail_closed / sample_rate / timeout_sec）。ADD COLUMN IF NOT
+  #   EXISTS ×3 + CHECK 约束，幂等可重放。缺本行 ⇒ 211 记账链停在 966。
+  "$ROOT_DIR/sql/migrations/startup/967_prompt_injection_llm_policy_columns.sql"
 )
 
 
