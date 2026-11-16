@@ -29,16 +29,16 @@ type DBRegistry struct {
 type PluginEntry struct {
 	PluginID     string                 `json:"plugin_id"`
 	ManifestJSON map[string]interface{} `json:"manifest_json"`
-	State        PluginState            `json:"state"`
+	State        DBPluginState          `json:"state"`
 	UpdatedAt    time.Time              `json:"updated_at"`
 }
 
-// PluginState represents the runtime state of a plugin.
-type PluginState string
+// DBPluginState represents the database state of a plugin (enabled/disabled).
+type DBPluginState string
 
 const (
-	StateEnabled  PluginState = "enabled"
-	StateDisabled PluginState = "disabled"
+	StateEnabled  DBPluginState = "enabled"
+	StateDisabled DBPluginState = "disabled"
 )
 
 // NewDBRegistry creates a new database-backed plugin registry.
@@ -144,7 +144,7 @@ func (r *DBRegistry) loadFromDB(ctx context.Context) error {
 }
 
 // Register registers a plugin in the database and memory cache.
-func (r *DBRegistry) Register(ctx context.Context, pluginID string, manifest map[string]interface{}, state PluginState) error {
+func (r *DBRegistry) Register(ctx context.Context, pluginID string, manifest map[string]interface{}, state DBPluginState) error {
 	manifestJSON, err := json.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("failed to marshal manifest: %w", err)
@@ -182,7 +182,7 @@ func (r *DBRegistry) Register(ctx context.Context, pluginID string, manifest map
 }
 
 // SetState updates the plugin state (enabled/disabled).
-func (r *DBRegistry) SetState(ctx context.Context, pluginID string, state PluginState) error {
+func (r *DBRegistry) SetState(ctx context.Context, pluginID string, state DBPluginState) error {
 	// Update database first
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE plugin_registry 
@@ -216,7 +216,7 @@ func (r *DBRegistry) SetState(ctx context.Context, pluginID string, state Plugin
 }
 
 // GetState retrieves the current state of a plugin.
-func (r *DBRegistry) GetState(pluginID string) (PluginState, error) {
+func (r *DBRegistry) GetState(pluginID string) (DBPluginState, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -255,7 +255,7 @@ func (r *DBRegistry) List() []*PluginEntry {
 }
 
 // ListByState returns all plugins with the specified state.
-func (r *DBRegistry) ListByState(state PluginState) []*PluginEntry {
+func (r *DBRegistry) ListByState(state DBPluginState) []*PluginEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
