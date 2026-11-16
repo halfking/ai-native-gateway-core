@@ -3,13 +3,14 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { login, getAuthMe } from '../api'
+import { login, getAuthMe, getCaptcha } from '../api'
 import { setApiKey, setJwtToken, setUserInfo, userInfoFromAuthMe } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
 import { locationFromInternalPath } from '../utils/safeRedirect'
 import { currentTheme, detectTheme, logoSrc } from '../theme'
 import { SITE_LOGO_SIZE } from '../config/brand'
 import AppModal from './ui/AppModal.vue'
+import CaptchaInput from './CaptchaInput.vue'
 import { Close } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
@@ -38,6 +39,13 @@ const username = ref('admin')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
+const rememberMe = ref(false)
+
+// Captcha state
+const showCaptcha = ref(false)
+const captchaId = ref('')
+const captchaCode = ref('')
+const captchaRequired = ref(false)
 
 watch(
   () => props.modelValue,
@@ -45,9 +53,22 @@ watch(
     if (open) {
       error.value = ''
       password.value = ''
+      captchaCode.value = ''
+      checkCaptchaRequired()
     }
   },
 )
+
+async function checkCaptchaRequired() {
+  try {
+    const resp = await getCaptcha()
+    captchaId.value = resp.captcha_id
+    captchaRequired.value = resp.required
+    showCaptcha.value = resp.required
+  } catch {
+    // Silently fail - captcha will be requested on login error if needed
+  }
+}
 
 function close() {
   emit('update:modelValue', false)
@@ -60,9 +81,22 @@ async function handleLogin() {
     error.value = t('login.error.required')
     return
   }
+  
+  if (captchaRequired.value && !captchaCode.value) {
+    error.value = t('login.captcha.required')
+    showCaptcha.value = true
+    return
+  }
+  
   loading.value = true
   try {
-    const resp = await login(username.value, password.value)
+    const resp = await login({
+      username: username.value,
+      password: password.value,
+      captcha_id: captchaId.value || undefined,
+      captcha_code: captchaCode.value || undefined,
+      remember_me: rememberMe.value,
+    })
     if (resp.access_token) {
       setJwtToken(resp.access_token)
       if (resp.user) {
@@ -91,7 +125,17 @@ async function handleLogin() {
       error.value = t('login.error.badResponse')
     }
   } catch (e: unknown) {
-    error.value = surfaceError(e, { key: 'login.error.failed' })
+    const errorMsg = surfaceError(e, { key: 'login.error.failed' })
+    
+    // Check if captcha is required based on error
+    if (errorMsg.includes('captcha') || errorMsg.includes('验证码')) {
+      showCaptcha.value = true
+      captchaRequired.value = true
+      captchaCode.value = ''
+      await checkCaptchaRequired()
+    }
+    
+    error.value = errorMsg
   } finally {
     loading.value = false
   }
@@ -155,6 +199,20 @@ function onModelUpdate(v: boolean) {
           autocomplete="current-password"
         />
       </div>
+      
+      <CaptchaInput
+        v-if="showCaptcha"
+        v-model="captchaCode"
+        v-model:captcha-id="captchaId"
+      />
+      
+      <div class="form-group form-group-checkbox">
+        <label>
+          <input v-model="rememberMe" type="checkbox" />
+          <span>{{ t('login.rememberMe') }}</span>
+        </label>
+      </div>
+      
       <div class="login-modal__actions">
         <button type="button" class="btn btn-ghost" @click="close">{{ $t('common.button.cancel') }}</button>
         <button class="btn btn-primary" type="submit" :disabled="loading">
@@ -221,5 +279,23 @@ function onModelUpdate(v: boolean) {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
+}
+
+.form-group-checkbox {
+  margin: 12px 0;
+}
+
+.form-group-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.form-group-checkbox input[type="checkbox"] {
+  cursor: pointer;
+  width: auto;
+  margin: 0;
 }
 </style>

@@ -11,6 +11,14 @@ import type { UserInfo } from './_core'
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 
+export interface CaptchaResponse {
+  captcha_id: string
+  image: string // data:image/png;base64,...
+  expires_at: string
+  required: boolean
+  ttl_seconds: number
+}
+
 export interface LoginResponse {
   access_token?: string
   token_type?: string
@@ -22,8 +30,20 @@ export interface LoginResponse {
   message?: string
 }
 
-export function login(username: string, password: string) {
-  return req<LoginResponse>('POST', '/api/auth/token', { username, password })
+export function getCaptcha() {
+  return req<CaptchaResponse>('GET', '/api/auth/captcha')
+}
+
+export interface LoginRequest {
+  username: string
+  password: string
+  captcha_id?: string
+  captcha_code?: string
+  remember_me?: boolean
+}
+
+export function login(params: LoginRequest) {
+  return req<LoginResponse>('POST', '/api/auth/token', params)
 }
 
 export function logout() {

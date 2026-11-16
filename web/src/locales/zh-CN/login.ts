@@ -5,6 +5,17 @@ export default {
   password: '密码',
   submit: '登录',
   submitting: '登录中…',
+  rememberMe: '保持登录',
+  captcha: {
+    label: '验证码',
+    placeholder: '请输入验证码',
+    required: '请输入验证码后再登录',
+    refresh: '刷新验证码',
+    loading: '加载中…',
+    loadFailed: '验证码加载失败',
+    imageAlt: '验证码图片',
+    hint: '多次登录失败后需要输入验证码',
+  },
   error: {
     required: '请输入用户名和密码',
     failed: '没能登录，请检查用户名和密码后重试',

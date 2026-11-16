@@ -6,6 +6,17 @@ export default {
   password: 'Contraseña',
   submit: 'Iniciar sesión',
   submitting: 'Iniciando sesión…',
+  rememberMe: 'Mantener la sesión iniciada',
+  captcha: {
+    label: 'Código de verificación',
+    placeholder: 'Introduce el código de verificación',
+    required: 'Introduce el código de verificación para iniciar sesión',
+    refresh: 'Actualizar código',
+    loading: 'Cargando…',
+    loadFailed: 'Error al cargar el código de verificación',
+    imageAlt: 'Imagen del código de verificación',
+    hint: 'Se requiere un código de verificación después de varios intentos fallidos de inicio de sesión',
+  },
   error: {
     required: 'Introduzca usuario y contraseña',
     failed: 'No se pudo iniciar sesión. Compruebe el nombre de usuario y la contraseña y vuelva a intentarlo.',

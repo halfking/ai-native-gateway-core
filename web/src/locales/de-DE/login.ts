@@ -6,6 +6,17 @@ export default {
   password: 'Passwort',
   submit: 'Anmelden',
   submitting: 'Anmeldung läuft…',
+  rememberMe: 'Angemeldet bleiben',
+  captcha: {
+    label: 'Bestätigungscode',
+    placeholder: 'Bestätigungscode eingeben',
+    required: 'Bitte Bestätigungscode eingeben, um sich anzumelden',
+    refresh: 'Code aktualisieren',
+    loading: 'Laden…',
+    loadFailed: 'Bestätigungscode konnte nicht geladen werden',
+    imageAlt: 'Bestätigungscode-Bild',
+    hint: 'Nach mehreren fehlgeschlagenen Anmeldeversuchen ist ein Bestätigungscode erforderlich',
+  },
   error: {
     required: 'Bitte Benutzername und Passwort eingeben',
     failed: 'Anmeldung konnte nicht durchgeführt werden. Bitte Benutzername und Passwort prüfen und erneut versuchen.',

@@ -201,8 +201,7 @@ function backToAccessList() {
 
 <style scoped>
 .simple-keys-view {
-  max-width: 600px;
-  margin: 0 auto;
+  max-width: 100%;
   padding: 24px 16px;
 }
 

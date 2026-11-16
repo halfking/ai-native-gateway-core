@@ -5,6 +5,17 @@ export default {
   password: 'Password',
   submit: 'Sign in',
   submitting: 'Signing in…',
+  rememberMe: 'Keep me signed in',
+  captcha: {
+    label: 'Verification code',
+    placeholder: 'Enter verification code',
+    required: 'Please enter the verification code to sign in',
+    refresh: 'Refresh code',
+    loading: 'Loading…',
+    loadFailed: 'Failed to load verification code',
+    imageAlt: 'Verification code image',
+    hint: 'Verification code is required after multiple failed login attempts',
+  },
   error: {
     required: 'Please enter username and password',
     failed: 'Sign-in could not be completed. Check the username and password, then retry.',

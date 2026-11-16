@@ -6,6 +6,17 @@ export default {
   password: 'Mot de passe',
   submit: 'Se connecter',
   submitting: 'Connexion en cours…',
+  rememberMe: 'Rester connecté',
+  captcha: {
+    label: 'Code de vérification',
+    placeholder: 'Entrez le code de vérification',
+    required: 'Veuillez saisir le code de vérification pour vous connecter',
+    refresh: 'Actualiser le code',
+    loading: 'Chargement…',
+    loadFailed: 'Échec du chargement du code de vérification',
+    imageAlt: 'Image du code de vérification',
+    hint: 'Un code de vérification est requis après plusieurs tentatives de connexion échouées',
+  },
   error: {
     required: 'Veuillez saisir le nom d\'utilisateur et le mot de passe',
     failed: 'La connexion n\'a pas pu aboutir. Vérifiez le nom d\'utilisateur et le mot de passe, puis réessayez.',

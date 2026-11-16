@@ -6,6 +6,17 @@ export default {
   password: '密碼',
   submit: '登入',
   submitting: '登入中…',
+  rememberMe: '保持登入',
+  captcha: {
+    label: '驗證碼',
+    placeholder: '請輸入驗證碼',
+    required: '請輸入驗證碼後再登入',
+    refresh: '刷新驗證碼',
+    loading: '載入中…',
+    loadFailed: '驗證碼載入失敗',
+    imageAlt: '驗證碼圖片',
+    hint: '多次登入失敗後需要輸入驗證碼',
+  },
   error: {
     required: '請輸入使用者名稱和密碼',
     failed: '沒能登入，請檢查使用者名稱和密碼後重試',
