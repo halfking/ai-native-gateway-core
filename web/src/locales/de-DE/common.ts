@@ -44,6 +44,7 @@ export default {
     deleteFailed: 'Löschen fehlgeschlagen. Bitte erneut versuchen.',
     operationFailed: 'Vorgang fehlgeschlagen. Bitte erneut versuchen.',
     loading: 'Wird geladen…',
+    submitting: 'Wird gesendet…',
     unknownReason: 'Keine Fehlerdetails erhalten',
     probeLaneHistoricalHint: 'Die physische Trennspur für Probe-Traffic ist nicht aktiv; dies sind historische Probe-Aufzeichnungen vor der Trennung.',
     saveFailedWithReason: 'Speichern fehlgeschlagen: {reason}. Bitte erneut versuchen.',

@@ -35,7 +35,7 @@ export default {
     quickAddHint: '两个字段就能接上；base URL、协议与模型清单由目录自动填好，探活在后台跑。',
     catalog: '供应商',
     catalogPlaceholder: '选择目录，例如「智谱 AI」',
-    apiKey: 'API 金鑰',
+    apiKey: 'API 密钥',
     apiKeyPlaceholder: '粘贴厂商的 API Key',
     add: '添加',
     adding: '添加中',

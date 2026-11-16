@@ -43,6 +43,7 @@ export default {
     deleteFailed: 'Couldn\'t delete, please retry.',
     operationFailed: 'The operation could not be completed. Please retry.',
     loading: 'Loading…',
+    submitting: 'Submitting…',
     unknownReason: 'No error details received',
     probeLaneHistoricalHint: 'The probe traffic physical isolation lane is off; these are historical probe records from before isolation.',
     saveFailedWithReason: 'Save failed: {reason}. Please retry.',
