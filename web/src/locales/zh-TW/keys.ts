@@ -116,6 +116,14 @@ export default {
     limitsSaved: '限制已儲存',
     error: {
       loadDetailFailed: '金鑰詳情沒能載入出來，請重試',
+      loadLogsFailed: '請求日誌沒能載入出來，請重試',
+    },
+    logs: {
+      title: '最近請求日誌',
+      viewAll: '檢視全部',
+      empty: '暫無請求記錄',
+      success: '執行成功',
+      pending: '進行中',
     },
   },
   applications: {

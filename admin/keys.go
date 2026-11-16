@@ -481,11 +481,18 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 
 	var id int
+	// 2026-11-17 审计修复：owner_user 必须写**已解析后的** ownerUser（默认
+	// 'admin'），不能写 req.OwnerUser 指针 —— 指针为 nil 时 pgx 传 NULL，
+	// 而 owner_user 列可空 ⇒ 落库成 NULL。这类密钥：
+	//   - 不出现在任何用户名下（owner_user = username 关联不上）
+	//   - 不计入 GET /api/admin/users/{id}/stats 的 key_count
+	//   - 在「用户明细 → API 密钥」里完全隐身
+	// 即：调用方不传 owner_user 时，代码算出了 'admin' 却没有落库。
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias)
 		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10)
 		RETURNING id
-	`, appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias).Scan(&id)
+	`, appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, ownerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias).Scan(&id)
 	if err != nil {
 		slog.Error("createKey insert failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -678,6 +685,12 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 
 	appCode := queryString(r, "application")
 	tenantFilter := queryString(r, "tenant")
+	// 2026-11-17 审计修复：新增 owner 过滤（按 api_keys.owner_user 精确匹配）。
+	// 之前只有 application/tenant 两个过滤口，「用户明细 → API 密钥」这类
+	// 场景只能把**全站**密钥拉回浏览器再前端筛 —— super_admin 侧等于把
+	// 其它租户的密钥元数据（owner_user / 前缀 / 用量 / 备注）下发到客户端。
+	// 服务端过滤同时修掉「无谓下载全表」的性能问题。
+	ownerFilter := queryString(r, "owner")
 	// tenant_admin callers may only ever see their own tenant's keys.
 	if IsTenantAdmin(r) {
 		tenantFilter = GetTenantID(r)
@@ -693,13 +706,14 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		       ak.last_used_at, ak.remark,
 		       ak.total_requests, ak.total_prompt_tokens, ak.total_completion_tokens,
 		       COALESCE(ak.total_cost_usd, 0)::float8, ak.last_request_at,
-		       ak.tenant_id, ak.key_alias
+		       ak.tenant_id, ak.key_alias, ak.created_at
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ($1 = '' OR app.code = $1)
 		  AND ($2 = '' OR ak.tenant_id = $2)
+		  AND ($3 = '' OR ak.owner_user = $3)
 		ORDER BY ak.id DESC
-	`, appCode, tenantFilter)
+	`, appCode, tenantFilter, ownerFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -727,6 +741,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		LastRequestAt         *time.Time `json:"last_request_at"`
 		TenantID              string     `json:"tenant_id"`
 		KeyAlias              *string    `json:"key_alias"`
+		CreatedAt             *time.Time `json:"created_at"`
 	}
 	keys := make([]key, 0)
 	for rows.Next() {
@@ -738,7 +753,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 			&k.LastUsedAt, &k.Remark,
 			&k.TotalRequests, &k.TotalPromptTokens, &k.TotalCompletionTokens,
 			&k.TotalCostUSD, &k.LastRequestAt,
-			&k.TenantID, &k.KeyAlias); err != nil {
+			&k.TenantID, &k.KeyAlias, &k.CreatedAt); err != nil {
 			warnRowSkip("keys.list", err)
 			continue
 		}
@@ -842,6 +857,30 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	// 2026-11-17 审计修复：**启用**被吊销的密钥原本是「静默失败」。
+	// 事实：请求路径的鉴权谓词是
+	//   AND ak.enabled = TRUE AND COALESCE(ak.status,'active') NOT IN ('revoked','disabled')
+	//   （domains/authentication/verifier.go 的 callVerifyDB）
+	// 而本函数只写 enabled、**不写 status** ⇒ 对 status='revoked' 的密钥
+	// 「启用」把 enabled 置回 TRUE 后，status 仍是 'revoked' ⇒ 认证照样拒绝。
+	// 前端却收到 200 + "updated" 并把徽章显示成「已启用」⇒ 管理员以为修好了，
+	// 密钥实际上仍然不可用（无声的假成功）。
+	// 修法：启用时若 status='revoked' ⇒ 明确 409 拒绝并说明原因；
+	// （'revoked' 语义是「不可撤销」，故不自动改写 status，只是不再假装成功。）
+	if enabled {
+		var status string
+		err := h.db.QueryRow(ctx,
+			`SELECT COALESCE(status, 'active') FROM api_keys WHERE id = $1`, id).Scan(&status)
+		if err != nil {
+			writeLookupErr(w, "key not found", err)
+			return
+		}
+		if status == "revoked" {
+			writeError(w, http.StatusConflict,
+				"cannot enable a revoked key: revoked is a terminal state, please issue a new key instead")
+			return
+		}
+	}
 	if _, err := h.db.Exec(ctx, `UPDATE api_keys SET enabled = $1 WHERE id = $2`, enabled, id); err != nil {
 		writeInternalErr(w, "update failed", err)
 		return

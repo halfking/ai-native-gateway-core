@@ -116,6 +116,14 @@ export default {
     limitsSaved: 'Limits gespeichert',
     error: {
       loadDetailFailed: 'Schlüsseldetails konnten nicht geladen werden. Bitte erneut versuchen.',
+      loadLogsFailed: 'Die Anfrageprotokolle konnten nicht geladen werden. Bitte erneut versuchen.',
+    },
+    logs: {
+      title: 'Letzte Anfragen',
+      viewAll: 'Alle anzeigen',
+      empty: 'Keine Anfragen aufgezeichnet',
+      success: 'Erfolgreich',
+      pending: 'In Bearbeitung',
     },
   },
   applications: {
