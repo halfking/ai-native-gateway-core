@@ -75,9 +75,10 @@ func e2eWire(t *testing.T, body []byte) map[string]any {
 // e2eSeedGatewayURL 把一个 data URI 落盘，返回它的**真实**网关 URL。
 //
 // ★ 为什么必须用**真实落盘路径**而不是手编路径：★ 回内联要真的能从存储里
-//   取回内容（LoadAttachment）⇒ ⇒ 路径必须是内容哈希分片形态 ⇒ ⇒
-//   ★ 手编路径 ⇒ 取回失败 ⇒ 回退保留原 URL ⇒ ⇒ **缺陷会被掩盖成「取不到」**
-//   ⇒ ⇒ 那样这道门就测不出「只内联 image_url」这回事了 ⇒ ⇒ 必须自造真值 ★。
+//
+//	取回内容（LoadAttachment）⇒ ⇒ 路径必须是内容哈希分片形态 ⇒ ⇒
+//	★ 手编路径 ⇒ 取回失败 ⇒ 回退保留原 URL ⇒ ⇒ **缺陷会被掩盖成「取不到」**
+//	⇒ ⇒ 那样这道门就测不出「只内联 image_url」这回事了 ⇒ ⇒ 必须自造真值 ★。
 func e2eSeedGatewayURL(t *testing.T, storage *attachments.Storage, dataURI string, blockIdx int) string {
 	t.Helper()
 	res, err := storage.SaveBase64Image("req_seed", dataURI, 0, blockIdx)
@@ -119,9 +120,10 @@ func e2eBlocks(t *testing.T, w map[string]any, msgIdx int) []map[string]any {
 // e2eTextOf 取第 i 条消息的**全部文本**。
 //
 // ★ 为什么不能直接 `content.(string)`：★ 客户端连着两条 user 消息时，
-//   网关的清洗链会把它们合并 ⇒ 出站 body 的 content 变成**块数组**
-//   ⇒ ★ 直接断言字符串会取到空串 ⇒ ★ **把「断言取不到值」误读成「内容被清空」**
-//   ⇒ ⇒ 两种形态都读（★ 这就是「量具要能区分「没有」和「不是那个形态」」★★）。
+//
+//	网关的清洗链会把它们合并 ⇒ 出站 body 的 content 变成**块数组**
+//	⇒ ★ 直接断言字符串会取到空串 ⇒ ★ **把「断言取不到值」误读成「内容被清空」**
+//	⇒ ⇒ 两种形态都读（★ 这就是「量具要能区分「没有」和「不是那个形态」」★★）。
 func e2eTextOf(t *testing.T, w map[string]any, msgIdx int) string {
 	t.Helper()
 	msgs, ok := w["messages"].([]any)
@@ -159,8 +161,9 @@ func e2eTextOf(t *testing.T, w map[string]any, msgIdx int) string {
 // e2eAllMessagesText 拼起出站 body 里**所有**消息的文本。
 //
 // ★ 为什么不用固定下标：★ 客户端连着两条 user 消息时，网关的清洗链会**合并**
-//   它们 ⇒ ⇒ 出站消息的**条数不固定**（★ 本轮实测：合并成 1 条 ★）⇒ ⇒
-//   断言必须对「全部消息的文本」做，而不是对某一条做（★ 否则就是「假锚点」★）。
+//
+//	它们 ⇒ ⇒ 出站消息的**条数不固定**（★ 本轮实测：合并成 1 条 ★）⇒ ⇒
+//	断言必须对「全部消息的文本」做，而不是对某一条做（★ 否则就是「假锚点」★）。
 func e2eAllMessagesText(t *testing.T, w map[string]any) string {
 	t.Helper()
 	msgs, ok := w["messages"].([]any)
@@ -192,8 +195,9 @@ func e2eBlockField(t *testing.T, block map[string]any, obj, field string) string
 // e2eRunOutbound 跑完整的「客户端 → 网关 → 出站」链路，返回出站 body。
 //
 // ★ 参数与 executor_dispatch.go 的 MM-1/MM-2 段一一对应：
-//   · clientProtocol 决定用哪个提取器（OpenAI / Anthropic 两种 body 形态不同）
-//   · catalogCode 决定附件策略（URL 模式 ⇒ 改写；非 URL 模式 ⇒ 内联）
+//
+//	· clientProtocol 决定用哪个提取器（OpenAI / Anthropic 两种 body 形态不同）
+//	· catalogCode 决定附件策略（URL 模式 ⇒ 改写；非 URL 模式 ⇒ 内联）
 func e2eRunOutbound(t *testing.T, clientProtocol, catalogCode string, clientBody []byte) []byte {
 	t.Helper()
 	return e2eRunOutboundWithStorage(t, clientProtocol, catalogCode, clientBody, e2eStorage(t))
@@ -231,7 +235,7 @@ func e2eRunOutboundWithStorage(t *testing.T, clientProtocol, catalogCode string,
 	} else if attachments.ShouldFetchFallback(catalogCode) {
 		fallback := attachments.NewURLFetchFallback(e2ePublicURL, storage)
 		var n int
-		body, n = fallback.InlineOpenAIBody(body, catalogCode)
+		body, n = fallback.InlineOpenAIBody(body, res.Attachments, catalogCode)
 		t.Logf("转发侧内联（非 URL 模式，%s）：%d 处", catalogCode, n)
 	}
 
@@ -370,6 +374,26 @@ func TestE2EMultimodalOutbound_NonURLCapableUpstream_InlinesAllAttachmentKinds(t
 	if !strings.HasPrefix(vidURL2, "data:") {
 		t.Errorf("video_url.url = %q，期望 data URI —— 视频附件没有内联", vidURL2)
 	}
+
+	// ★★★ MIME 必须是**原始类型**，不能是 application/octet-stream ★★★
+	// ★ 根因链：★ MIME 未登记 ⇒ 落盘成 .bin ⇒ 取回时从扩展名反推 ⇒
+	// ★ 反推出 application/octet-stream ⇒ ⇒ 上游按错类型解析附件 ★。
+	// ★ 现在：★ 落盘命名用**唯一事实源**的映射表（video/mp4 ⇒ .mp4）
+	// ★ ⇒ 取回反推得到 video/mp4 ⇒ ⇒ 出站 data URI 的 MIME 正确 ★。
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"图片", imageURL, "data:image/png;base64,"},
+		{"文档", docData, "data:application/pdf;base64,"},
+		{"视频", vidURL2, "data:video/mp4;base64,"},
+	} {
+		if !strings.HasPrefix(tc.got, tc.want) {
+			t.Errorf("%s 内联后的 MIME 不对：%q\n★ 期望以 %q 开头\n★ ⇒ 上游会按错类型解析附件",
+				tc.name, tc.got, tc.want)
+		}
+	}
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -380,7 +404,8 @@ func TestE2EMultimodalOutbound_NonURLCapableUpstream_InlinesAllAttachmentKinds(t
 // 「全 body 字节级替换 ⇒ 文本消息里出现的同名 URL 也被替换成 base64 载荷」。
 //
 // ★ 后果（两重）：★ ① **内容污染**：用户/模型说的话被改成一大坨 base64；
-//   ★ ② **载荷外泄**：附件内容被塞进本不该出现它的文本字段里。
+//
+//	★ ② **载荷外泄**：附件内容被塞进本不该出现它的文本字段里。
 func TestE2EMultimodalOutbound_ReplacementIsFieldPrecise_NoTextContamination(t *testing.T) {
 	storage := e2eStorage(t)
 	imgURL := e2eSeedGatewayURL(t, storage,

@@ -667,6 +667,82 @@ ARMS += [
         expect_in_output="文本块被改写了",
         group=ATTACH_GROUP,
     ),
+    Arm(
+        name="AT11",
+        desc="缺陷②：MIME 映射表少登记 video/mp4 ⇒ 落盘成 .bin ⇒ 出站 data URI 的 MIME 变成 octet-stream",
+        files=["domains/attachments/mime_types.go"],
+        pkg="./domains/streaming/executors/",
+        test="TestE2EMultimodalOutbound_NonURLCapableUpstream_InlinesAllAttachmentKinds",
+        edits=[
+            (
+                '\t{".mp4", "video/mp4"},\n',
+                '',
+            )
+        ],
+        expect_in_output="内联后的 MIME 不对",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT12",
+        desc="缺陷③：内联回退退回「从文件名反推 MIME」⇒ 历史 .bin 文件的出站 MIME 错",
+        files=["domains/attachments/outbound_fetch_fallback.go"],
+        pkg="./domains/attachments/",
+        test="TestURLFetchFallback_UsesRecordedContentType",
+        edits=[
+            (
+                "\t\t\tif recorded, ok := mimeByPath[relPath]; ok && recorded != \"\" {\n"
+                "\t\t\t\tmime = recorded\n"
+                "\t\t\t}\n",
+                "",
+            )
+        ],
+        expect_in_output="内联后的 MIME 不是落盘记录里的原始类型",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT13",
+        desc="缺陷①：S3 那张 Content-Type 表退回**独立实现** ⇒ 三个消费者对同一文件给出不同类型",
+        files=["domains/attachments/mime_types.go"],
+        pkg="./domains/attachments/",
+        test="TestMimeConsumersShareOneSource",
+        edits=[
+            (
+                "\treturn extToMimeType(ext)\n"
+                "}\n",
+                "\t// ★ MUTANT：★ 旧实现（S3 那张**独立**的表）★\n"
+                "\tlegacy := map[string]string{\n"
+                "\t\t\".jpg\": \"image/jpeg\", \".jpeg\": \"image/jpeg\", \".png\": \"image/png\",\n"
+                "\t\t\".gif\": \"image/gif\", \".webp\": \"image/webp\", \".svg\": \"image/svg+xml\",\n"
+                "\t\t\".pdf\": \"application/pdf\", \".txt\": \"text/plain\", \".json\": \"application/json\",\n"
+                "\t\t\".xml\": \"application/xml\", \".zip\": \"application/zip\", \".mp4\": \"video/mp4\",\n"
+                "\t\t\".mp3\": \"audio/mpeg\",\n"
+                "\t}\n"
+                "\tif ct, ok := legacy[ext]; ok {\n"
+                "\t\treturn ct\n"
+                "\t}\n"
+                "\treturn \"application/octet-stream\"\n"
+                "}\n",
+            )
+        ],
+        expect_in_output="detectContentType",
+        group=ATTACH_GROUP,
+    ),
+    Arm(
+        name="AT14",
+        desc="表设计不变量：规范表里同一个 MIME 挂了两个扩展名 ⇒ 落盘文件名取决于表顺序",
+        files=["domains/attachments/mime_types.go"],
+        pkg="./domains/attachments/",
+        test="TestMimeRoundTrip_IsConsistent",
+        edits=[
+            (
+                '\t{".jpg", "image/jpeg"},\n',
+                '\t{".jpg", "image/jpeg"},\n'
+                '\t{".jpeg", "image/jpeg"},\n',
+            )
+        ],
+        expect_in_output="规范表里 MIME",
+        group=ATTACH_GROUP,
+    ),
 ]
 
 

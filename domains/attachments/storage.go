@@ -511,56 +511,9 @@ func parseDataURI(dataURI string) (contentType, payload string, err error) {
 	return contentType, payload, nil
 }
 
-// mimeTypeToExt 将 MIME 类型转换为文件扩展名。
-func mimeTypeToExt(mimeType string) string {
-	// 移除可能的参数（如 charset）
-	if idx := strings.Index(mimeType, ";"); idx >= 0 {
-		mimeType = mimeType[:idx]
-	}
-	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
-
-	exts := map[string]string{
-		"image/jpeg":       ".jpg",
-		"image/jpg":        ".jpg",
-		"image/png":        ".png",
-		"image/gif":        ".gif",
-		"image/webp":       ".webp",
-		"image/svg+xml":    ".svg",
-		"application/pdf":  ".pdf",
-		"text/plain":       ".txt",
-		"text/html":        ".html",
-		"application/json": ".json",
-		"application/xml":  ".xml",
-	}
-
-	if ext, ok := exts[mimeType]; ok {
-		return ext
-	}
-	return ".bin"
-}
-
-// extToMimeType 将文件扩展名转换为 MIME 类型。
-func extToMimeType(ext string) string {
-	ext = strings.ToLower(ext)
-	mimes := map[string]string{
-		".jpg":  "image/jpeg",
-		".jpeg": "image/jpeg",
-		".png":  "image/png",
-		".gif":  "image/gif",
-		".webp": "image/webp",
-		".svg":  "image/svg+xml",
-		".pdf":  "application/pdf",
-		".txt":  "text/plain",
-		".html": "text/html",
-		".json": "application/json",
-		".xml":  "application/xml",
-	}
-
-	if mime, ok := mimes[ext]; ok {
-		return mime
-	}
-	return "application/octet-stream"
-}
+// ★ MIME ↔ 扩展名的映射已迁到 mime_types.go（唯一事实源）★
+// ★ 此前本文件里另存一份 mimeTypeToExt / extToMimeType ⇒ ⇒ 与
+// ★ detect_content_type.go 的第三份**互相漂移** ⇒ ⇒ 已收口。
 
 // sanitizeRequestID 清理 requestID，移除不安全的文件名字符。
 func sanitizeRequestID(id string) string {

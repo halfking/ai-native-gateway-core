@@ -4146,6 +4146,25 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	survivalEligible := isStream && (durableStream != nil || h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 {
+		// ── 2026-11-16（auto 模式可用性轮）：auto 请求的零候选 ⇒ **网关自己换模型** ──
+		//
+		// 修前：auto 选中的模型此刻没有可路由节点 ⇒ 在**进 dispatch 之前**就
+		// 503 no_candidate ⇒ dispatch 的换模梯子根本没机会跑 ⇒ 客户端只看到
+		// 「原来的模型不可用」。
+		//
+		// magpie 同款规则：auto 组消失时落到还有节点的成员，会话不中断
+		// （internal/provider/group.go:829-837 AutoStandIn）；同请求内失败即换
+		// 下一个候选（internal/gateway/gateway.go:4968-4984）。
+		//
+		// 211 live 验收实测（2026-11-17 00:24）：auto 选到 qwen2.5-7b-instruct，
+		// 该模型零候选 ⇒ HTTP 503 no_candidates —— 本块正是修这一条。
+		if res := h.autoRequestReselect(r.Context(), logCtx, clientModel,
+			clientID.Fingerprint.ClientProfile, tenantID, bodyBytes); res.Switched {
+			h.recordAutoReselect(r, requestID, clientModel, res, len(res.Candidates))
+			applyAutoReselect(&res, &clientModel, &bodyBytes, &candidates, &policy, &requestModality)
+		}
+	}
+	if len(candidates) == 0 {
 		// 2026-07-14: Distinguish "model not recognized anywhere" (400
 		// invalid_model) from "model recognized but no routable provider right
 		// now" (503 no_candidate). Saves a confusing 503 for typos in the

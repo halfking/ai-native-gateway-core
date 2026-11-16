@@ -120,6 +120,21 @@ type RequestLogContext struct {
 	// need to unmarshal the JSONB decision to read it.
 	AutoFallbackModels []string
 
+	// AutoReselectModels is the **wide** zero-candidate reselect ladder:
+	// canonical model names (hottest first) that are plausibly routable
+	// right now, excluding the already-chosen winner.
+	//
+	// It is deliberately separate from AutoFallbackModels:
+	//   - AutoFallbackModels = the dispatch-level model-change ladder
+	//     (tier chain, else the 3-candidate audit view) — it drives a
+	//     *retry on failure*;
+	//   - AutoReselectModels = the wide 48h-hot ladder — it drives a
+	//     *re-selection when the chosen model has NO candidate at all*,
+	//     which happens before dispatch ever runs.
+	//
+	// See autoroute/reselect.go and domains/streaming/auto_route_reselect.go.
+	AutoReselectModels []string
+
 	// v3 (2026-06-19) session-level outbound body fields.
 	// Populated by SessionCompressor.Prepare when it rewrites bodyBytes.
 	// All nil when the session compressor was not active.
@@ -895,6 +910,8 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 		}
 	}
 	c.AutoFallbackModels = orderedAutoFallbackModels(wire.ChosenModel, fallbacks)
+	// 根修 5：宽退路池（进程内字段，不进审计 JSON）。
+	c.AutoReselectModels = orderedAutoFallbackModels(wire.ChosenModel, wire.reselectModels)
 
 	b, err := jsonMarshal(wire)
 	if err == nil {

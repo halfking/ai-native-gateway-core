@@ -399,6 +399,9 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
 		TierFailoverModels: tierFailoverModels,
+		// 根修 5：宽退路池（48h 热度榜 LIMIT 32）。只在 auto 决策里产出，
+		// 不进审计视图 ⇒ auto_decision JSONB / 响应头字节级不变。
+		ReselectCandidates: reselectCandidateNames(ctx, idx, winner.Candidate.CanonicalName, ReselectPoolLimit),
 		EnabledFeatures:    enabledFeatures,
 		FallbackUsed:       fallbackUsed,
 		FilterReasons:      filterReasons,

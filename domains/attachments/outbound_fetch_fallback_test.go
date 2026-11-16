@@ -92,7 +92,7 @@ func TestURLFetchFallbackInlinesGatewayURLsForNonURLProviders(t *testing.T) {
 		},
 	}
 	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
-	out, n := fb.InlineOpenAIBody([]byte(fallbackTestBody), "gemini")
+	out, n := fb.InlineOpenAIBody([]byte(fallbackTestBody), nil, "gemini")
 	assert.Equal(t, 2, n, "both gateway-URL blocks should be inlined")
 
 	var body struct {
@@ -125,7 +125,7 @@ func TestURLFetchFallbackNoOpForURLProviders(t *testing.T) {
 	}
 	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
 	for _, provider := range []string{"openai", "glm", "qwen", "anthropic"} {
-		out, n := fb.InlineOpenAIBody([]byte(fallbackTestBody), provider)
+		out, n := fb.InlineOpenAIBody([]byte(fallbackTestBody), nil, provider)
 		assert.Equal(t, 0, n, "%s should not be inlined", provider)
 		assert.Contains(t, string(out), "https://files.example.com/attachments/2026/08/a1/b2/hash1.png")
 	}
@@ -138,7 +138,7 @@ func TestURLFetchFallbackKeepsURLOnFetchFailure(t *testing.T) {
 		"2026/08/a1/b2/hash1.png": errors.New("disk error"),
 	}}
 	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
-	out, n := fb.InlineOpenAIBody([]byte(fallbackTestBody), "gemini")
+	out, n := fb.InlineOpenAIBody([]byte(fallbackTestBody), nil, "gemini")
 	assert.Equal(t, 0, n)
 	assert.Equal(t, fallbackTestBody, string(out), "body must be returned unchanged")
 }
@@ -153,7 +153,7 @@ func TestURLFetchFallbackKeepsURLOverProviderInlineLimit(t *testing.T) {
 	}
 	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://files.example.com/attachments/2026/08/a1/b2/hash1.png"}}]}]}`
-	out, n := fb.InlineOpenAIBody([]byte(body), "some-unknown-vendor")
+	out, n := fb.InlineOpenAIBody([]byte(body), nil, "some-unknown-vendor")
 	assert.Equal(t, 0, n)
 	assert.Equal(t, body, string(out))
 }
@@ -162,7 +162,7 @@ func TestURLFetchFallbackKeepsURLOverProviderInlineLimit(t *testing.T) {
 func TestURLFetchFallbackNoGatewayURLsIsByteIdentical(t *testing.T) {
 	body := `{"messages":[{"role":"user","content":"plain text"}]}`
 	fb := NewURLFetchFallback("https://files.example.com/attachments", &stubFetcher{})
-	out, n := fb.InlineOpenAIBody([]byte(body), "gemini")
+	out, n := fb.InlineOpenAIBody([]byte(body), nil, "gemini")
 	assert.Equal(t, 0, n)
 	assert.Equal(t, body, string(out))
 }
@@ -180,7 +180,7 @@ func TestURLFetchFallbackRejectsTraversalPaths(t *testing.T) {
 		"..",
 	} {
 		body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://files.example.com/attachments/` + rel + `"}}]}]}`
-		out, n := fb.InlineOpenAIBody([]byte(body), "deepseek")
+		out, n := fb.InlineOpenAIBody([]byte(body), nil, "deepseek")
 		assert.Equal(t, 0, n, "traversal relPath %q must not be inlined", rel)
 		assert.Equal(t, body, string(out), "traversal relPath %q must keep the body unchanged", rel)
 	}
@@ -194,7 +194,7 @@ func TestURLFetchFallbackRejectsEmptyRelPath(t *testing.T) {
 	}
 	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
 	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://files.example.com/attachments/"}}]}]}`
-	out, n := fb.InlineOpenAIBody([]byte(body), "deepseek")
+	out, n := fb.InlineOpenAIBody([]byte(body), nil, "deepseek")
 	assert.Equal(t, 0, n)
 	assert.Equal(t, body, string(out))
 	assert.Empty(t, fetcher.calls)
@@ -213,7 +213,7 @@ func TestURLFetchFallbackDuplicateURLsAllInlined(t *testing.T) {
 		mime:    map[string]string{"2026/08/a1/b2/hash1.png": "image/png"},
 	}
 	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
-	out, n := fb.InlineOpenAIBody([]byte(body), "deepseek")
+	out, n := fb.InlineOpenAIBody([]byte(body), nil, "deepseek")
 	assert.Equal(t, 2, n)
 	assert.NotContains(t, string(out), url)
 	assert.Equal(t, 2, strings.Count(string(out), "data:image/png;base64,"))

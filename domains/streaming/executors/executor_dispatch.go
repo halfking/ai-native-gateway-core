@@ -1065,7 +1065,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		// base64。flag-off（nil）零开销直通。
 		if e.AttachmentURLFetchFallback != nil && !nativeBody {
 			if newBody, n := e.AttachmentURLFetchFallback.InlineOpenAIBody(
-				execParams.BodyBytes, cand.CatalogCode); n > 0 {
+				execParams.BodyBytes, params.AttachmentMetadata, cand.CatalogCode); n > 0 {
 				cp := *execParams
 				cp.BodyBytes = newBody
 				execParams = &cp
