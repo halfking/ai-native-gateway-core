@@ -551,13 +551,36 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 		}
 	})
 
-	t.Run("维度候选不含未落定且按请求数降序", func(t *testing.T) {
+	t.Run("维度候选含未落定桶且与读面同数、按请求数降序", func(t *testing.T) {
 		dims, err := LoadDimensionOptions(ctx, pool, ViewProvider, start, end)
 		if err != nil {
 			t.Fatalf("LoadDimensionOptions: %v", err)
 		}
-		if len(dims.Credentials) != 2 {
-			t.Fatalf("credentials = %+v", dims.Credentials)
+		// ★ 2026-11-17 审计轮：三个 id 维度的「未落定」桶**必须在候选里**
+		// （读面把它们显示成一行，候选里却没有 ⇒ 看得见筛不出）。
+		// 夹具：凭据 NULL 的那行 200 笔（provider 也 NULL）。
+		if len(dims.Credentials) != 3 {
+			t.Fatalf("credentials = %+v（应含两个真实凭据 + 未落定档）", dims.Credentials)
+		}
+		if len(dims.Providers) != 3 {
+			t.Fatalf("providers = %+v（应含两个真实供应商 + 未落定档）", dims.Providers)
+		}
+		// ★ 旧口径那一支（d-1 的 daily_total = 77）**不进**任何维度的候选：
+		// 它没有维度分解，把 77 塞进「未落定」桶会让候选说 277 而筛出来
+		// 只有 200（旧口径的 77 只进总计与按天）。
+		unassigned := map[string]int64{}
+		for _, o := range dims.Credentials {
+			if o.Key == "-1" {
+				unassigned["credential"] = o.Requests
+			}
+		}
+		for _, o := range dims.Providers {
+			if o.Key == "-1" {
+				unassigned["provider"] = o.Requests
+			}
+		}
+		if unassigned["credential"] != 200 || unassigned["provider"] != 200 {
+			t.Fatalf("未落定桶请求数 = %+v，期望 200（不含旧口径那天的 77）", unassigned)
 		}
 		for _, o := range dims.Credentials {
 			if o.Key == "" || o.Requests <= 0 {
@@ -567,18 +590,86 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 		if dims.Credentials[0].Requests < dims.Credentials[1].Requests {
 			t.Fatalf("候选未按请求数降序：%+v", dims.Credentials)
 		}
-		if len(dims.Models) == 0 || len(dims.Tenants) != 2 || len(dims.Persons) != 2 {
-			t.Fatalf("候选维度不齐：models=%d tenants=%d persons=%d",
-				len(dims.Models), len(dims.Tenants), len(dims.Persons))
+		// 人员维度候选是**人员级**（与过滤同粒度：筛 person=alice 会同时
+		// 命中两个租户）⇒ alice 335 / bob 55 两项；读面的人员行则细到
+		// 租户×人员（见下面那条子测）。两侧合计必须相等。
+		if len(dims.Persons) != 2 {
+			t.Fatalf("persons = %d 行, want 2（人员级候选）：%+v", len(dims.Persons), dims.Persons)
+		}
+		var candPersonSum int64
+		for _, o := range dims.Persons {
+			candPersonSum += o.Requests
+		}
+		if candPersonSum != 100+50+25+200+10+5 {
+			t.Fatalf("Σ人员候选 = %d, want %d", candPersonSum, 100+50+25+200+10+5)
+		}
+		if len(dims.Models) == 0 || len(dims.Tenants) != 2 {
+			t.Fatalf("候选维度不齐：models=%d tenants=%d",
+				len(dims.Models), len(dims.Tenants))
 		}
 		// 空模型名（未路由到任何模型的失败行）不进候选——前端没法拿它做筛选。
 		if len(dims.Models) != 2 {
 			t.Fatalf("models = %+v（应只有 gpt-x/gpt-y，空模型名不入候选）", dims.Models)
 		}
-		// 未落定不是可选项：筛选器里没有「provider = 空」这种用法。
+		// 未落定不是空键：它有确定的键（-1），前端据此发 -1 过滤。
 		for _, o := range dims.Providers {
 			if o.Key == "" {
 				t.Fatal("供应商候选出现空键")
+			}
+		}
+	})
+
+	t.Run("三个 id 维度的未落定桶都能被筛出来", func(t *testing.T) {
+		// 读面显示「未落定」行，筛它却 0 行 ⇒ 看得见筛不出（211 真库实测：
+		// credential_id=-1 / api_key_id=-1 都返回 0 行，而读面各有 38,035 /
+		// 16 笔的一行）。
+		neg := int64(UnassignedID)
+		for _, tc := range []struct {
+			name   string
+			filter GrainFilter
+			want   int64
+		}{
+			{"provider", GrainFilter{ProviderID: &neg}, 200},
+			{"credential", GrainFilter{CredentialID: &neg}, 200},
+		} {
+			rep, err := BuildGrainReport(ctx, pool, start, end, ViewProvider, tc.filter, names, false)
+			if err != nil {
+				t.Fatalf("BuildGrainReport(%s): %v", tc.name, err)
+			}
+			if rep.Totals.RequestCount != tc.want {
+				t.Errorf("%s 未落定过滤 = %d 笔，期望 %d（读面有一行却筛不出）",
+					tc.name, rep.Totals.RequestCount, tc.want)
+			}
+		}
+	})
+
+	t.Run("人员行带租户、凭据行带供应商归属", func(t *testing.T) {
+		// ★ 2026-11-17 审计轮：分组集补上归属维度后，行才带得住归属。
+		// 旧写法 (person) / (credential_id) 把归属 GROUPING 折叠成 NULL ⇒
+		// 人员行的租户恒为空、凭据行永远拿不到供应商（导出里
+		// 「凭据名 @ 供应商」那个分支从未执行过）。
+		rep, err := BuildGrainReport(ctx, pool, start, end, ViewProvider, GrainFilter{}, names, false)
+		if err != nil {
+			t.Fatalf("BuildGrainReport: %v", err)
+		}
+		for _, p := range rep.Persons {
+			if p.TenantID == "" {
+				t.Errorf("人员行缺租户归属：%+v", p)
+			}
+		}
+		if len(rep.Persons) != 4 {
+			t.Errorf("persons = %d 行, want 4（跨租户同名人员必须分开）", len(rep.Persons))
+		}
+		for _, c := range rep.Credentials {
+			if c.CredentialID == UnassignedID {
+				// 未落定凭据桶横跨多家供应商 ⇒ 不能挂任意一家。
+				if c.ProviderID != nil {
+					t.Errorf("未落定凭据桶不该挂供应商：%+v", c)
+				}
+				continue
+			}
+			if c.ProviderID == nil {
+				t.Errorf("凭据行缺供应商归属：%+v", c)
 			}
 		}
 	})

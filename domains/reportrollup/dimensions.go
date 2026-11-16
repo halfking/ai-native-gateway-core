@@ -85,10 +85,17 @@ type dimensionColumn struct {
 	nullKey string
 }
 
+// ★ 2026-11-17 审计轮：**三个 id 维度（provider / credential / api_key）统一
+// 用「-1 = 未落定」这一个键**。上一轮只给了 provider 配 nullKey，于是：
+// 候选面把凭据/apikey 的 NULL 行整桶滤掉（真库实测凭据未落定桶 38,035 笔
+// = 全量 30.8%、apikey 未落定桶 16 笔），而读面照样把这两桶映射成 -1 显示
+// 成一行 ⇒ **看得见、筛不出**，且「Σ候选 ≠ 总计」。
+// 读面对三个 id 维度用的是同一套 dimKey/UnassignedID 约定 ⇒ 候选面必须
+// 与之同键，否则就是「同一条数据两处不同键」。
 var dimensionColumns = []dimensionColumn{
 	{"provider", "provider_id", false, "COALESCE(s.provider_id::text, '-1')", "-1"},
-	{"credential", "credential_id", false, "", ""},
-	{"api_key", "api_key_id", false, "", ""},
+	{"credential", "credential_id", false, "COALESCE(s.credential_id::text, '-1')", "-1"},
+	{"api_key", "api_key_id", false, "COALESCE(s.api_key_id::text, '-1')", "-1"},
 	{"model", "raw_model_name", true, "", ""},
 	{"tenant", "tenant_id", true, "", ""},
 	{"person", "person", true, "", ""},
@@ -99,7 +106,20 @@ var dimensionColumns = []dimensionColumn{
 // 单独拆出来是为了让「分支形态」可被测试直接断言（而不是靠整条 SQL 的
 // 字符串里有没有某段字面量）——2026-11-16 审计轮里，未分配桶消失正是
 // 「provider 分支多了个 IS NOT NULL」这一处改动造成的。
-func dimensionBranchSQL(d dimensionColumn, src string) string {
+//
+// ★ 2026-11-17 审计轮：源查询多带一列 legacy_row（FALSE = grain 那一支，
+// TRUE = 旧口径那一支）。旧口径 scope 的维度列为 NULL 有**两种**含义：
+// 「确实没有这个维度」与「这个 scope 根本不分解这个维度」。把后者当成
+// 前者，就会把整天的总量塞进「未落定」桶——真库实测（隔离 PG 真库腿）
+// 凭据未落定桶被虚增成 277（真未落定 200 + 旧口径整天 77），而读面的
+// 未落定行只有 200 ⇒ 「候选说 277、筛出来只有 200」，候选面与读面又对不上。
+//
+// 所以：**旧口径那一支只在「旧 scope 真的分解这个维度」时才并进来**
+// （见 legacyScopeCarries）。旧口径 scope 的维度清单：
+//
+//	daily_total     → 无维度（它只是当天总量）
+//	internal_tenant → 只有租户
+func dimensionBranchSQL(d dimensionColumn, src string, legacy Scope) string {
 	keyExpr := d.keyExpr
 	if keyExpr == "" {
 		keyExpr = fmt.Sprintf("s.%s::text", d.col)
@@ -113,6 +133,14 @@ func dimensionBranchSQL(d dimensionColumn, src string) string {
 			where += fmt.Sprintf(" AND s.%s <> ''", d.col)
 		}
 	}
+	// 旧口径那一支是否并入本维度。
+	if !legacyScopeCarries(legacy, d.dim) {
+		if where == "" {
+			where = " WHERE s.legacy_row = FALSE"
+		} else {
+			where += " AND s.legacy_row = FALSE"
+		}
+	}
 	// 四个动词全部写显式索引：Go 的 fmt 在用过 %[n]s 之后，后续隐式
 	// %s 会**从 n+1 继续数**，于是这里第 4 个 %s 会拿到参数 3（src），
 	// 把整段源查询再拼一遍——真库 42601 才暴露出来。
@@ -120,6 +148,20 @@ func dimensionBranchSQL(d dimensionColumn, src string) string {
 		`SELECT '%[1]s'::text AS dim, %[2]s AS key, SUM(s.request_count)::bigint AS requests
 		   FROM (%[3]s) s%[4]s
 		  GROUP BY 2`, d.dim, keyExpr, src, where)
+}
+
+// legacyScopeCarries 旧口径 scope 实际分解了哪些维度。
+//
+// 只有旧 scope **真的带了该维度列**时，旧口径那一支才算数：daily_total
+// 一行只有当天总量（所有维度列都是 NULL，含义是「这个 scope 不分解它」，
+// 不是「这批请求没落到该维度」）；internal_tenant 带租户维度。
+func legacyScopeCarries(legacy Scope, dim string) bool {
+	switch legacy {
+	case ScopeInternalTenant:
+		return dim == "tenant"
+	default:
+		return false
+	}
 }
 
 // LoadDimensionOptions 拉区间内各维度实际出现过的候选值。
@@ -138,14 +180,17 @@ func LoadDimensionOptions(ctx context.Context, q Querier, view View, start, end 
 	// 两个来源按日期互斥：grain 行全取；旧口径行只取「该日没有 grain 行」的
 	// 日期。排除条件必须**只加在旧口径分支上**——加在整个源上会把 grain 行
 	// 一起删掉，候选直接全空（真库实测踩过）。
+	//
+	// legacy_row 标记这一支来自旧口径（见 dimensionBranchSQL 的注记）：
+	// 旧 scope 不分解的维度不能把旧口径的整天总量算进「未落定」桶。
 	src := `
     SELECT raw_model_name, provider_id, credential_id, api_key_id,
-           tenant_id, person, request_count
+           tenant_id, person, request_count, FALSE AS legacy_row
       FROM report_snapshots
      WHERE scope = $1 AND report_date >= $3 AND report_date <= $4
     UNION ALL
     SELECT raw_model_name, provider_id, credential_id, api_key_id,
-           tenant_id, person, request_count
+           tenant_id, person, request_count, TRUE AS legacy_row
       FROM report_snapshots
      WHERE scope = $2 AND report_date >= $3 AND report_date <= $4
        AND report_date NOT IN (SELECT gd.report_date FROM report_snapshots gd WHERE gd.scope = $5)`
@@ -156,7 +201,7 @@ func LoadDimensionOptions(ctx context.Context, q Querier, view View, start, end 
 	// 数量级。
 	branches := make([]string, 0, len(dimensionColumns))
 	for _, d := range dimensionColumns {
-		branches = append(branches, dimensionBranchSQL(d, src))
+		branches = append(branches, dimensionBranchSQL(d, src, legacyScope))
 	}
 
 	full := "SELECT dim, key, requests FROM (" + unionAll(branches) + ") u"

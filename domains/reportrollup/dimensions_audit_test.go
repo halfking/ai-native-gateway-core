@@ -20,6 +20,7 @@ package reportrollup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -237,7 +238,7 @@ func TestDimensionBranchSQL_ProviderKeepsNullRows(t *testing.T) {
 	if provider.col == "" {
 		t.Fatal("dimensionColumns 里没有 provider 分支")
 	}
-	sql := dimensionBranchSQL(provider, "SELECT 1")
+	sql := dimensionBranchSQL(provider, "SELECT 1", ScopeDailyTotal)
 	if !strings.Contains(sql, "COALESCE(s.provider_id::text, '-1')") {
 		t.Errorf("provider 分支没用 COALESCE 出 '-1' 键：\n%s", sql)
 	}
@@ -246,16 +247,96 @@ func TestDimensionBranchSQL_ProviderKeepsNullRows(t *testing.T) {
 	}
 }
 
-// TestDimensionBranchSQL_OthersExcludeNull 阴性对照：其余维度**仍要**
-// 排除 NULL（否则会多出一行空桶），确保 provider 是特例而非普遍改动。
-func TestDimensionBranchSQL_OthersExcludeNull(t *testing.T) {
+// TestDimensionBranchSQL_IdDimsKeepNullRows 钉住**三个 id 维度**（供应商 /
+// 凭据 / apikey）的分支形态：必须用 COALESCE(..., '-1') 出键，且**不得**
+// 再过滤 NULL 行。
+//
+// ★ 2026-11-17 审计轮把这条从「只有 provider 是特例」改成「三个 id 维度
+// 共用同一个 -1 键」。旧实现只给 provider 配了 nullKey，于是凭据/apikey
+// 的 NULL 行整桶从候选里消失——真库实测凭据未落定桶 38,035 笔（= 全量
+// 30.8%）、apikey 未落定桶 16 笔，而读面把它们都显示成了行 ⇒
+// **看得见、筛不出**，且「Σ候选 ≠ 总计」。
+//
+// 这条是本类问题最隐蔽的一处回归点：旧实现给 provider 分支加了
+// `WHERE s.provider_id IS NOT NULL`，于是「未落定」那一桶在候选里整桶
+// 消失，而报告里明明有一行。
+func TestDimensionBranchSQL_IdDimsKeepNullRows(t *testing.T) {
+	for _, dim := range []string{"provider", "credential", "api_key"} {
+		var d dimensionColumn
+		for _, item := range dimensionColumns {
+			if item.dim == dim {
+				d = item
+			}
+		}
+		if d.col == "" {
+			t.Fatalf("dimensionColumns 里没有 %s 分支", dim)
+		}
+		sql := dimensionBranchSQL(d, "SELECT 1", ScopeDailyTotal)
+		want := fmt.Sprintf("COALESCE(s.%s::text, '-1')", d.col)
+		if !strings.Contains(sql, want) {
+			t.Errorf("%s 分支没用 COALESCE 出 '-1' 键：\n%s", dim, sql)
+		}
+		if strings.Contains(sql, d.col+" IS NOT NULL") {
+			t.Errorf("%s 分支仍在过滤 NULL 行（未落定桶会整桶消失）：\n%s", dim, sql)
+		}
+	}
+}
+
+// TestDimensionBranchSQL_TextDimsExcludeNull 阴性对照：**文本**维度（模型 /
+// 租户 / 用户）仍要排除 NULL 与空串（否则会多出一行空桶）。文本维度没有
+// 「未落定」这个业务桶——它们的空值要么是「没有值」要么是目录外的真实
+// 取值，混进候选只会造出一行没人能解释的空白。
+func TestDimensionBranchSQL_TextDimsExcludeNull(t *testing.T) {
 	for _, d := range dimensionColumns {
-		if d.dim == "provider" {
+		if d.dim == "provider" || d.dim == "credential" || d.dim == "api_key" {
 			continue
 		}
-		sql := dimensionBranchSQL(d, "SELECT 1")
+		sql := dimensionBranchSQL(d, "SELECT 1", ScopeDailyTotal)
 		if !strings.Contains(sql, "IS NOT NULL") {
 			t.Errorf("%s 分支不再排除 NULL：\n%s", d.dim, sql)
+		}
+	}
+}
+
+// TestLoadDimensionOptions_UnassignedIdBuckets 钉住三个 id 维度的「未落定」
+// 桶都在候选里，且请求数正确（候选面与读面必须同键）。
+func TestLoadDimensionOptions_UnassignedIdBuckets(t *testing.T) {
+	mock, closer := newMockPool(t)
+	defer closer()
+
+	expectDimsQuery(mock).WillReturnRows(dimsRows(
+		[3]string{"provider", "-1", "38035"},
+		[3]string{"credential", "-1", "38035"},
+		[3]string{"api_key", "-1", "16"},
+		[3]string{"credential", "7", "85332"},
+	))
+	mock.ExpectQuery("SELECT id::text").WillReturnRows(pgxmock.NewRows([]string{"id"}))
+
+	out, err := LoadDimensionOptions(context.Background(), mock, ViewProvider,
+		auditDay(2026, time.November, 9), auditDay(2026, time.November, 15))
+	if err != nil {
+		t.Fatalf("LoadDimensionOptions: %v", err)
+	}
+	for _, tc := range []struct {
+		dim  string
+		list []DimensionOption
+		want int64
+	}{
+		{"provider", out.Providers, 38035},
+		{"credential", out.Credentials, 38035},
+		{"api_key", out.APIKeys, 16},
+	} {
+		var found bool
+		for _, item := range tc.list {
+			if item.Key == "-1" {
+				found = true
+				if item.Requests != tc.want {
+					t.Errorf("%s 未落定桶请求数 = %d，期望 %d", tc.dim, item.Requests, tc.want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s 候选里没有未落定桶（key=-1）：%+v", tc.dim, tc.list)
 		}
 	}
 }
