@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>/live 阶段树 · 双主题版</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   双主题版 - 明暗切换 + 配色优化
+   ═══════════════════════════════════════════════════════════════ */
+
+/* 暗色主题（默认） */
+:root, [data-theme="dark"]{
+  --kx-bg:#0f141c; 
+  --kx-surface:#1a222d; 
+  --kx-sidebar:#121820;
+  --kx-text:#e8eef7;
+  --kx-text-medium:#b8c5d6;
+  --kx-muted:#8b9bb0;
+  --kx-muted-soft:#6a7888;
+  --kx-border:#2a3544;
+  --kx-border-soft:#1f2938;
+  
+  /* 状态色 - 优化绿色饱和度 */
+  --kx-primary:#5b8cff;
+  --kx-primary-soft:rgba(91,140,255,.08);
+  --kx-success:#42b883;              /* 绿色降低饱和度 */
+  --kx-success-soft:rgba(66,184,131,.08);
+  --kx-danger:#e88388;               /* 红色柔化 */
+  --kx-danger-soft:rgba(232,131,136,.08);
+  --kx-warning:#e0a53a;
+  --kx-warning-soft:rgba(224,165,58,.08);
+  --kx-recv:#2ec5c5;
+  --kx-recv-soft:rgba(46,197,197,.08);
+}
+
+/* 亮色主题 */
+[data-theme="light"]{
+  --kx-bg:#f8f9fa;
+  --kx-surface:#ffffff;
+  --kx-sidebar:#ffffff;
+  --kx-text:#1a202c;
+  --kx-text-medium:#4a5568;
+  --kx-muted:#718096;
+  --kx-muted-soft:#a0aec0;
+  --kx-border:#e2e8f0;
+  --kx-border-soft:#edf2f7;
+  
+  --kx-primary:#3b7eff;
+  --kx-primary-soft:rgba(59,126,255,.1);
+  --kx-success:#38a169;
+  --kx-success-soft:rgba(56,161,105,.1);
+  --kx-danger:#e53e3e;
+  --kx-danger-soft:rgba(229,62,62,.1);
+  --kx-warning:#d69e2e;
+  --kx-warning-soft:rgba(214,158,46,.1);
+  --kx-recv:#0891b2;
+  --kx-recv-soft:rgba(8,145,178,.1);
+}
+
+/* 亮色主题特殊调整 */
+[data-theme="light"] .topbar{
+  box-shadow:0 1px 3px rgba(0,0,0,.05);
+}
+[data-theme="light"] .colhead{
+  box-shadow:0 1px 3px rgba(0,0,0,.06);
+}
+[data-theme="light"] .request-row{
+  box-shadow:0 1px 2px rgba(0,0,0,.04);
+}
+[data-theme="light"] .request-row:hover{
+  box-shadow:0 2px 8px rgba(0,0,0,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--kx-bg);color:var(--kx-text);
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-weight:400;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+
+/* ══ 顶栏 ══ */
+.topbar{
+  display:flex;align-items:center;gap:12px;padding:10px 16px;
+  background:var(--kx-sidebar);border-bottom:1px solid var(--kx-border);
+}
+.topbar h1{font-size:15px;font-weight:500}
+.conn{
+  display:inline-flex;align-items:center;gap:5px;font-size:11px;
+  padding:3px 10px;border-radius:999px;
+  color:var(--kx-success);background:var(--kx-success-soft);
+}
+.spacer{flex:1}
+.btn{
+  font:inherit;font-size:11px;color:var(--kx-text);font-weight:400;
+  background:var(--kx-surface);border:1px solid var(--kx-border);
+  border-radius:6px;padding:5px 11px;cursor:pointer;
+}
+.btn:hover{border-color:var(--kx-primary)}
+.btn.active{
+  background:var(--kx-primary-soft);
+  border-color:var(--kx-primary);
+  color:var(--kx-primary);
+}
+
+/* ══ 过滤栏 - 添加多选下拉组件 ══ */
+.filterbar{
+  display:flex;align-items:center;gap:8px;padding:8px 16px;
+  background:var(--kx-surface);border-bottom:1px solid var(--kx-border);
+  flex-wrap:wrap;
+}
+.filterbar .btn,.filterbar select{
+  font:inherit;font-size:11px;padding:4px 10px;height:26px;font-weight:400;
+  background:var(--kx-bg);color:var(--kx-text);
+  border:1px solid var(--kx-border);border-radius:4px;cursor:pointer;
+}
+.filterbar .btn:hover,.filterbar select:hover{border-color:var(--kx-primary)}
+
+/* 多选下拉框 */
+.multiselect{
+  position:relative;display:inline-block;
+}
+.multiselect .btn{
+  min-width:100px;text-align:left;
+  display:flex;align-items:center;justify-content:space-between;
+  gap:6px;
+}
+.multiselect .btn::after{
+  content:'▾';font-size:10px;color:var(--kx-muted);
+}
+.multiselect .dropdown{
+  position:absolute;top:100%;left:0;margin-top:4px;
+  min-width:180px;max-height:280px;overflow:auto;
+  background:var(--kx-surface);border:1px solid var(--kx-border);
+  border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);
+  z-index:100;display:none;
+}
+.multiselect.is-open .dropdown{display:block}
+.multiselect .dropdown-item{
+  padding:6px 12px;font-size:11px;cursor:pointer;
+  display:flex;align-items:center;gap:8px;
+  transition:background .15s;
+}
+.multiselect .dropdown-item:hover{background:var(--kx-primary-soft)}
+.multiselect .dropdown-item input{cursor:pointer}
+.multiselect .dropdown-item label{cursor:pointer;flex:1}
+.multiselect .badge{
+  display:inline-block;background:var(--kx-primary);
+  color:#fff;font-size:9px;font-weight:600;
+  padding:1px 5px;border-radius:999px;min-width:18px;
+  text-align:center;margin-left:4px;
+}
+
+.filterbar .check-label{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:11px;color:var(--kx-muted);cursor:pointer;font-weight:400;
+}
+.filterbar .check-label input{cursor:pointer}
+.filterbar .stat{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:999px;
+  background:var(--kx-bg);border:1px solid var(--kx-border);
+  font-size:11px;font-weight:400;
+}
+.filterbar .stat b{color:var(--kx-text);font-weight:500}
+.filterbar .sep{color:var(--kx-border);margin:0 4px}
+
+/* ══ 列头 - 标题与图标垂直对齐 ══ */
+.colhead{
+  position:sticky;top:0;z-index:10;height:42px;
+  background:linear-gradient(180deg,rgba(15,20,28,.98),rgba(15,20,28,.94));
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--kx-border);
+  display:flex;align-items:center;padding:0 16px;gap:10px;
+  font-size:10px;color:var(--kx-muted);font-weight:400;
+  box-shadow:0 1px 3px rgba(0,0,0,.15);
+}
+.colhead .time{min-width:70px;font-weight:500;color:var(--kx-text-medium)}
+.colhead .client{min-width:110px;font-weight:500;color:var(--kx-text-medium)}
+.colhead .stage{
+  min-width:60px;text-align:center;
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+}
+.colhead .stage svg{
+  width:16px;height:16px;stroke:var(--kx-primary);opacity:.7;
+}
+.colhead .stage.recv svg{stroke:var(--kx-recv)}
+.colhead .stage-name{color:var(--kx-muted-soft);font-size:9.5px}
+.colhead .sep{color:var(--kx-border);margin:0 6px;font-weight:300}
+.colhead .result{
+  margin-left:auto;min-width:280px;text-align:right;
+  color:var(--kx-muted-soft);font-size:10px;
+}
+
+/* ══ 画布与请求行 ══ */
+.canvas{flex:1;overflow:auto;padding:12px 16px}
+.request-row{
+  position:relative;background:var(--kx-surface);
+  border-radius:6px;padding:10px 16px;margin-bottom:8px;
+  border:1px solid var(--kx-border);cursor:pointer;
+  transition:all .2s;
+}
+/* 紧凑模式 */
+body.compact .request-row{
+  padding:10px 16px;
+}
+/* 完整模式 */
+body.full .request-row{
+  padding:16px 20px;
+  margin-bottom:12px;
+}
+.request-row:hover{
+  border-color:var(--kx-primary);
+  background:linear-gradient(180deg,rgba(91,140,255,.04),transparent);
+}
+.request-row.is-expanded{border-color:var(--kx-primary)}
+
+/* 请求行主内容 */
+.request-main{
+  display:flex;align-items:center;gap:10px;
+}
+
+/* 时间戳 */
+.request-time{
+  min-width:70px;font-size:10px;color:var(--kx-muted-soft);
+  font-variant-numeric:tabular-nums;font-family:ui-monospace,Menlo,monospace;
+}
+
+/* 客户端 */
+.request-client{
+  display:flex;align-items:center;gap:6px;min-width:110px;
+  font-size:12px;font-weight:400;
+}
+.request-client .icon{font-size:16px}
+
+/* 阶段流程 */
+.request-stages{
+  display:flex;align-items:center;gap:10px;position:relative;flex:1;
+}
+.request-stages::after{
+  content:'';position:absolute;left:12px;right:12px;top:12px;
+  height:1px;background:rgba(42,53,68,.5);z-index:0;
+}
+/* 亮色主题：连接线更淡 */
+[data-theme="light"] .request-stages::after{
+  background:rgba(226,232,240,.8);
+}
+
+/* SVG细框图标 - 优化色彩层次 */
+.stage-icon{
+  width:24px;height:24px;position:relative;z-index:1;flex-shrink:0;
+}
+.stage-icon svg{width:24px;height:24px;display:block}
+.stage-icon .num{
+  position:absolute;top:-6px;right:-6px;
+  min-width:14px;height:14px;padding:0 3px;
+  border-radius:999px;background:var(--kx-primary);
+  color:#fff;font-size:9px;font-weight:500;
+  display:none;align-items:center;justify-content:center;
+  border:1.5px solid var(--kx-surface);
+}
+
+/* 状态样式 - 色彩优化 */
+.stage-icon.done svg{
+  stroke:var(--kx-success);
+  fill:var(--kx-success-soft);
+  opacity:.95;
+}
+.stage-icon.done .num{display:flex;background:var(--kx-success)}
+
+.stage-icon.active svg{
+  stroke:var(--kx-primary);
+  fill:var(--kx-primary-soft);
+  opacity:1;
+  animation:pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse{
+  0%,100%{filter:drop-shadow(0 0 0 rgba(91,140,255,0))}
+  50%{filter:drop-shadow(0 0 4px rgba(91,140,255,.4))}
+}
+.stage-icon.active .num{display:flex}
+
+.stage-icon.failed svg{
+  stroke:var(--kx-danger);
+  fill:var(--kx-danger-soft);
+  opacity:.95;
+}
+.stage-icon.failed .num{display:flex;background:var(--kx-danger)}
+
+.stage-icon.skipped svg{
+  stroke:var(--kx-muted-soft);
+  stroke-dasharray:2,2;
+  fill:none;
+  opacity:.25;
+}
+
+.stage-icon.pending svg{
+  stroke:var(--kx-border);
+  stroke-dasharray:2,2;
+  fill:none;
+  opacity:.2;
+}
+
+.stage-icon.recv svg{stroke:var(--kx-recv);opacity:.8}
+.stage-icon.recv.done svg{fill:var(--kx-recv-soft);opacity:.95}
+.stage-icon.recv .num{background:var(--kx-recv)}
+
+/* 分隔符 */
+.stage-divider{
+  width:2px;height:18px;background:var(--kx-border);
+  margin:0 6px;flex-shrink:0;
+}
+
+/* 结果信息 - 色彩层次优化 */
+.request-result{
+  display:flex;align-items:center;gap:10px;
+  margin-left:auto;flex-shrink:0;font-size:11px;
+  color:var(--kx-muted-soft);font-weight:400;
+}
+.request-result .provider{
+  color:var(--kx-text-medium);font-weight:400;
+}
+.request-result .tokens{
+  display:flex;align-items:center;gap:4px;
+  font-variant-numeric:tabular-nums;
+  color:var(--kx-muted);
+}
+.request-result .dur{
+  font-variant-numeric:tabular-nums;
+  font-weight:500;
+  color:var(--kx-text-medium);
+}
+.request-result .status{
+  padding:3px 8px;border-radius:999px;
+  font-size:10px;font-weight:500;margin-left:8px;
+}
+.request-result .status.ok{
+  color:var(--kx-success);
+  background:var(--kx-success-soft);
+  border:1px solid rgba(62,207,142,.2);
+}
+.request-result .status.bad{
+  color:var(--kx-danger);
+  background:var(--kx-danger-soft);
+  border:1px solid rgba(240,113,103,.2);
+}
+.request-result .status.run{
+  color:var(--kx-primary);
+  background:var(--kx-primary-soft);
+  border:1px solid rgba(91,140,255,.2);
+}
+
+/* 详情 */
+.request-detail{
+  display:none;margin-top:12px;padding-top:12px;
+  border-top:1px dashed var(--kx-border);
+}
+.request-row.is-expanded .request-detail{display:block}
+.detail-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;
+  font-size:11px;font-weight:400;
+}
+.detail-item{display:flex;gap:6px}
+.detail-item .k{color:var(--kx-muted);min-width:70px}
+.detail-item .v{color:var(--kx-text);font-weight:400}
+
+/* 详情展开区 - 扩展显示供应商详情和失败来源 */
+.request-detail{
+  display:none;margin-top:12px;padding-top:12px;
+  border-top:1px dashed var(--kx-border);
+}
+.request-row.is-expanded .request-detail{display:block}
+
+.detail-section{
+  margin-bottom:16px;
+}
+.detail-section:last-child{margin-bottom:0}
+.detail-section h4{
+  font-size:10px;color:var(--kx-muted);font-weight:600;
+  text-transform:uppercase;letter-spacing:.5px;
+  margin-bottom:8px;padding-bottom:4px;
+  border-bottom:1px solid var(--kx-border-soft);
+}
+
+.detail-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;
+  font-size:11px;font-weight:400;
+}
+.detail-item{display:flex;gap:6px}
+.detail-item .k{color:var(--kx-muted);min-width:80px}
+.detail-item .v{color:var(--kx-text);font-weight:400}
+
+/* 失败来源标识 */
+.failure-source{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 8px;border-radius:999px;font-size:10px;font-weight:500;
+}
+.failure-source.gateway{
+  background:var(--kx-warning-soft);
+  color:var(--kx-warning);
+  border:1px solid rgba(224,165,58,.3);
+}
+.failure-source.upstream{
+  background:var(--kx-danger-soft);
+  color:var(--kx-danger);
+  border:1px solid rgba(232,131,136,.3);
+}
+
+.hint{text-align:center;padding:40px;color:var(--kx-muted);font-size:12px;font-weight:400}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>实时拓扑 · 双主题版</h1>
+  <span class="conn">实时</span>
+  <span class="spacer"></span>
+  <button class="btn" id="btnMode">📏 紧凑</button>
+  <button class="btn" id="btnTheme">🌙 暗色</button>
+  <button class="btn" id="btnSpeed">速度 4×</button>
+  <button class="btn" id="btnPlay">⏸ 暂停</button>
+  <button class="btn" id="btnClear">清空</button>
+</header>
+
+<div class="filterbar">
+  <div class="multiselect" id="msClient">
+    <button class="btn">全部客户端</button>
+    <div class="dropdown"></div>
+  </div>
+  
+  <div class="multiselect" id="msProvider">
+    <button class="btn">全部供应商</button>
+    <div class="dropdown"></div>
+  </div>
+  
+  <div class="multiselect" id="msModel">
+    <button class="btn">全部模型</button>
+    <div class="dropdown"></div>
+  </div>
+  
+  <div class="multiselect" id="msNode">
+    <button class="btn">全部节点</button>
+    <div class="dropdown"></div>
+  </div>
+  
+  <select id="fStatus">
+    <option value="">全部状态</option>
+    <option value="success">成功</option>
+    <option value="in_progress">进行中</option>
+    <option value="failure">失败</option>
+    <option value="rate_limited">限流</option>
+  </select>
+  
+  <select id="fWindow">
+    <option value="300000">近 5 分钟</option>
+    <option value="1800000">近 30 分钟</option>
+    <option value="7200000">近 2 小时</option>
+  </select>
+  
+  <label class="check-label">
+    <input type="checkbox" id="fProbe" />
+    <span>显示探测请求</span>
+  </label>
+  
+  <label class="check-label">
+    <input type="checkbox" id="fInvalid" />
+    <span>显示无效节点</span>
+  </label>
+  
+  <span class="spacer"></span>
+  
+  <span class="stat">总请求 <b id="statTotal">0</b></span>
+  <span class="sep">·</span>
+  <span class="stat">成功率 <b id="statRate">—</b></span>
+  <span class="sep">·</span>
+  <span class="stat">在途 <b id="statActive">0</b></span>
+</div>
+
+<div class="colhead" id="colhead">
+  <!-- 列头将由JS动态生成 -->
+</div>
+
+<div class="canvas" id="canvas">
+  <div class="hint">点击开始模拟，点击请求行查看详情</div>
+</div>
+
+<script>
+// SVG图标模板（细框线性风格）
+const ICONS = {
+  shield: '<circle cx="12" cy="12" r="9" stroke-width="1.5" fill="none"/><path d="M12 6v6M12 15h.01" stroke-width="1.5" stroke-linecap="round"/>',
+  check: '<polyline points="20 6 9 17 4 12" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  scan: '<circle cx="12" cy="12" r="9" stroke-width="1.5" fill="none"/><circle cx="12" cy="12" r="3" stroke-width="1.5" fill="none"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2" stroke-width="1.5" fill="none"/><path d="M8 11V7a4 4 0 018 0v4" stroke-width="1.5" fill="none" stroke-linecap="round"/>',
+  compress: '<polyline points="4 12 8 8 12 12 16 8 20 12" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  route: '<circle cx="12" cy="12" r="2" stroke-width="1.5"/><circle cx="12" cy="12" r="8" stroke-width="1.5" fill="none" stroke-dasharray="2,2"/>',
+  cloud: '<path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  zap: '<polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  unlock: '<rect x="5" y="11" width="14" height="10" rx="2" stroke-width="1.5" fill="none"/><path d="M8 11V7a4 4 0 014-4 4 4 0 014 4" stroke-width="1.5" fill="none" stroke-linecap="round"/>',
+  money: '<circle cx="12" cy="12" r="9" stroke-width="1.5" fill="none"/><path d="M12 6v12M9 10h6M9 14h6" stroke-width="1.5" stroke-linecap="round"/>',
+  reply: '<polyline points="9 14 4 9 9 4" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 20v-7a4 4 0 00-4-4H4" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+};
+
+// 状态图标
+const GLYPH = {done:'✓', active:'◐', pending:'○', skipped:'⌀', failed:'✕', warn:'⚠', unknown:'⋯'};
+
+function iconSVG(name){
+  return '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">'+ICONS[name]+'</svg>';
+}
+
+// 阶段定义
+const SEND_STAGES = [
+  {key:'auth', icon:'shield', name:'鉴权'},
+  {key:'approval', icon:'check', name:'审批'},
+  {key:'injection', icon:'scan', name:'注入检测'},
+  {key:'sanitize', icon:'lock', name:'脱敏'},
+  {key:'compress', icon:'compress', name:'压缩'},
+  {key:'route', icon:'route', name:'路由'},
+  {key:'provider', icon:'cloud', name:'供应商'},
+];
+
+const RECV_STAGES = [
+  {key:'first_byte', icon:'zap', name:'首字节'},
+  {key:'restore', icon:'unlock', name:'还原'},
+  {key:'billing', icon:'money', name:'计量'},
+  {key:'reply', icon:'reply', name:'回复'},
+];
+
+// 模拟数据
+const CLIENTS = ['Claude Code','Cursor','SDK','curl'];
+const PROVIDERS = ['阿里云','DeepSeek','OpenAI','令牌池'];
+const MODELS = ['gpt-6','claude-opus-5','deepseek-chat','qwen3-max'];
+const NODES = ['node-01','node-02','node-03'];
+
+let bands = [], seq = 0, running = true, speed = 4;
+let total = 0, success = 0, fail = 0;
+const canvas = document.getElementById('canvas');
+
+// 过滤器状态
+const filters = {
+  clients: new Set(),
+  providers: new Set(),
+  models: new Set(),
+  nodes: new Set(),
+  status: '',
+};
+
+// 工具
+const rand = (a,b) => a + Math.random()*(b-a);
+const ri = (a,b) => Math.floor(rand(a,b+1));
+const pick = arr => arr[ri(0,arr.length-1)];
+const esc = s => String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// 初始化多选下拉框
+function initMultiselect(id, items, filterKey) {
+  const ms = document.getElementById(id);
+  const btn = ms.querySelector('.btn');
+  const dropdown = ms.querySelector('.dropdown');
+  
+  // 填充选项
+  dropdown.innerHTML = items.map(item => `
+    <div class="dropdown-item">
+      <input type="checkbox" id="${id}_${item}" value="${item}">
+      <label for="${id}_${item}">${esc(item)}</label>
+    </div>
+  `).join('');
+  
+  // 切换下拉
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.multiselect').forEach(m => {
+      if(m !== ms) m.classList.remove('is-open');
+    });
+    ms.classList.toggle('is-open');
+  };
+  
+  // 选项变更
+  dropdown.querySelectorAll('input').forEach(input => {
+    input.onchange = () => {
+      if(input.checked) {
+        filters[filterKey].add(input.value);
+      } else {
+        filters[filterKey].delete(input.value);
+      }
+      updateFilterButton(id, filterKey);
+      filterBands();
+    };
+  });
+}
+
+function updateFilterButton(id, filterKey) {
+  const ms = document.getElementById(id);
+  const btn = ms.querySelector('.btn');
+  const count = filters[filterKey].size;
+  
+  if(count === 0) {
+    btn.innerHTML = `全部${id.replace('ms','').replace('Client','客户端').replace('Provider','供应商').replace('Model','模型').replace('Node','节点')}`;
+  } else {
+    btn.innerHTML = `已选 <span class="badge">${count}</span>`;
+  }
+}
+
+function filterBands() {
+  bands.forEach(band => {
+    const el = document.getElementById(band.id);
+    if(!el) return;
+    
+    let visible = true;
+    
+    // 客户端过滤
+    if(filters.clients.size > 0 && !filters.clients.has(band.client)) {
+      visible = false;
+    }
+    
+    // 供应商过滤
+    if(filters.providers.size > 0 && !filters.providers.has(band.provider)) {
+      visible = false;
+    }
+    
+    // 模型过滤
+    if(filters.models.size > 0 && !filters.models.has(band.model)) {
+      visible = false;
+    }
+    
+    // 节点过滤
+    if(filters.nodes.size > 0 && !filters.nodes.has(band.node)) {
+      visible = false;
+    }
+    
+    // 状态过滤
+    const status = filters.status;
+    if(status) {
+      if(status === 'success' && band.result !== 'success') visible = false;
+      if(status === 'failure' && band.result !== 'failure') visible = false;
+      if(status === 'in_progress' && band.result) visible = false;
+    }
+    
+    el.style.display = visible ? '' : 'none';
+  });
+}
+
+// 关闭下拉框（点击外部）
+document.addEventListener('click', () => {
+  document.querySelectorAll('.multiselect').forEach(ms => ms.classList.remove('is-open'));
+});
+
+// 初始化列头
+function initColhead(){
+  let html = '<div class="time">时间</div><div class="client">客户端</div>';
+  
+  SEND_STAGES.forEach(st => {
+    html += `
+      <div class="stage">
+        ${iconSVG(st.icon)}
+        <span class="stage-name">${esc(st.name)}</span>
+      </div>
+    `;
+  });
+  
+  html += '<span class="sep">│</span>';
+  
+  RECV_STAGES.forEach(st => {
+    html += `
+      <div class="stage recv">
+        ${iconSVG(st.icon)}
+        <span class="stage-name">${esc(st.name)}</span>
+      </div>
+    `;
+  });
+  
+  html += '<div class="result">供应商 · 模型 · Token · 耗时</div>';
+  
+  document.getElementById('colhead').innerHTML = html;
+}
+
+function spawnRequest() {
+  const id = `req_${(++seq).toString(16).padStart(4,'0')}`;
+  const client = pick(CLIENTS);
+  const provider = pick(PROVIDERS);
+  const node = pick(NODES);
+  const model = pick(MODELS);
+  
+  const band = {
+    id, client, provider, node, model,
+    state: {},
+    result: null,
+    startAt: Date.now(),
+    tokensIn: ri(500,3000),
+    cacheTokens: ri(0,1500),
+    tokensOut: ri(100,1500),
+    failureSource: null,  // 'gateway' 或 'upstream'
+    failureStage: null,   // 失败阶段
+    errorMessage: null,   // 错误消息
+    upstreamLatency: null, // 上游延迟
+    upstreamStatus: null,  // 上游HTTP状态码
+  };
+  
+  SEND_STAGES.forEach(st => band.state[st.key] = {s:'pending', v:'', num:null});
+  RECV_STAGES.forEach(st => band.state[st.key] = {s:'pending', v:'', num:null});
+  
+  bands.unshift(band);
+  total++;
+  renderBand(band);
+  
+  let acc = 0;
+  const at = (fn, d) => { acc += d; setTimeout(fn, acc/speed); };
+  const set = (key, s, v, num) => {
+    if(band.result) return;
+    band.state[key] = {s, v, num};
+    updateBand(band);
+  };
+  const finish = (result, source, stage, msg) => {
+    if(band.result) return;
+    band.result = result;
+    if(result === 'failure') {
+      band.failureSource = source; // 'gateway' 或 'upstream'
+      band.failureStage = stage;
+      band.errorMessage = msg;
+      fail++;
+    } else {
+      success++;
+    }
+    updateBand(band);
+    updateStats();
+  };
+  
+  const failPoint = Math.random() < 0.15 ? pick(['auth','injection','route','upstream']) : null;
+  
+  at(() => set('auth','active','',null), 50);
+  at(() => {
+    if(failPoint==='auth') { 
+      set('auth','failed','限流',429); 
+      finish('failure', 'gateway', 'auth', '请求频率超限，已触发限流');
+      return;
+    }
+    set('auth','done','',12);
+    set('approval','active','',null);
+  }, 80);
+  
+  at(() => {
+    if(Math.random()<0.85) set('approval','skipped','',null);
+    else set('approval','done','',null);
+    set('injection','active','',null);
+  }, 150);
+  
+  at(() => {
+    if(failPoint==='injection') { 
+      set('injection','failed','拦截',null); 
+      finish('failure', 'gateway', 'injection', '检测到注入攻击特征，请求已拦截');
+      return;
+    }
+    set('injection','done','',ri(15,45));
+    set('sanitize','active','',null);
+  }, 120);
+  
+  at(() => {
+    const hits = ri(0,4);
+    if(hits) set('sanitize','done','',hits);
+    else set('sanitize','skipped','',null);
+    set('compress','active','',null);
+  }, 80);
+  
+  at(() => {
+    if(Math.random()<0.55) set('compress','skipped','',null);
+    else set('compress','done','',ri(20,65));
+    set('route','active','',null);
+  }, 200);
+  
+  at(() => {
+    if(failPoint==='route') { 
+      set('route','failed','无路由',null); 
+      finish('failure', 'gateway', 'route', '未找到可用的上游路由');
+      return;
+    }
+    set('route','done','',ri(1,3));
+    set('provider','active','',null);
+  }, 150);
+  
+  at(() => {
+    set('provider','done','',null);
+    set('first_byte','active','',null);
+    band.upstreamLatency = ri(150,600);
+  }, 200);
+  
+  const ttfb = ri(200,800);
+  at(() => {
+    if(failPoint==='upstream') {
+      set('first_byte','failed','超时',null);
+      band.upstreamStatus = 504;
+      finish('failure', 'upstream', 'first_byte', '上游服务响应超时');
+      return;
+    }
+    set('first_byte','done','',ttfb);
+    band.upstreamStatus = 200;
+    set('restore','active','',null);
+  }, ttfb);
+  
+  at(() => {
+    set('restore','done','',null);
+    set('billing','active','',null);
+  }, 50);
+  
+  at(() => {
+    set('billing','done','',band.tokensOut);
+    set('reply','active','',null);
+  }, 80);
+  
+  at(() => {
+    set('reply','done','',null);
+    finish('success', null, null, null);
+  }, rand(300,1000));
+  
+  return band;
+}
+
+function renderBand(band) {
+  const el = document.createElement('div');
+  el.className = 'request-row';
+  el.id = band.id;
+  el.innerHTML = buildBandHTML(band);
+  el.onclick = () => toggleDetail(band.id);
+  canvas.insertBefore(el, canvas.firstChild);
+  
+  const hint = canvas.querySelector('.hint');
+  if(hint) hint.remove();
+  
+  while(canvas.children.length > 25) {
+    const old = bands.pop();
+    document.getElementById(old.id)?.remove();
+  }
+}
+
+function updateBand(band) {
+  const el = document.getElementById(band.id);
+  if(el) {
+    const wasExpanded = el.classList.contains('is-expanded');
+    el.innerHTML = buildBandHTML(band);
+    if(wasExpanded) el.classList.add('is-expanded');
+  }
+}
+
+function toggleDetail(id) {
+  const el = document.getElementById(id);
+  if(el) el.classList.toggle('is-expanded');
+}
+
+function buildBandHTML(band) {
+  const statusClass = band.result==='success' ? 'ok' : (band.result==='failure' ? 'bad' : 'run');
+  const statusText = band.result==='success' ? '✓' : (band.result==='failure' ? '✕' : '◐');
+  const dur = band.result ? ((Date.now()-band.startAt)/1000).toFixed(2)+'s' : '—';
+  
+  // 格式化时间戳：HH:MM:SS
+  const time = new Date(band.startAt);
+  const timeStr = [
+    time.getHours().toString().padStart(2,'0'),
+    time.getMinutes().toString().padStart(2,'0'),
+    time.getSeconds().toString().padStart(2,'0')
+  ].join(':');
+  
+  let html = `
+    <div class="request-main">
+      <div class="request-time">${timeStr}</div>
+      <div class="request-client">
+        <span>${esc(band.client)}</span>
+      </div>
+      
+      <div class="request-stages">
+  `;
+  
+  SEND_STAGES.forEach(st => {
+    const state = band.state[st.key];
+    html += `
+      <div class="stage-icon ${state.s}" title="${st.name}${state.v?' · '+state.v:''}">
+        ${iconSVG(st.icon)}
+        ${state.num ? `<span class="num">${state.num}</span>` : ''}
+      </div>
+    `;
+  });
+  
+  html += `<div class="stage-divider"></div>`;
+  
+  RECV_STAGES.forEach(st => {
+    const state = band.state[st.key];
+    html += `
+      <div class="stage-icon recv ${state.s}" title="${st.name}${state.v?' · '+state.v:''}">
+        ${iconSVG(st.icon)}
+        ${state.num ? `<span class="num">${state.num}</span>` : ''}
+      </div>
+    `;
+  });
+  
+  html += `
+      </div>
+      
+      <div class="request-result">
+        <span class="provider">${esc(band.provider)}·${esc(band.node)}</span>
+        <span class="provider">${esc(band.model)}</span>
+        <span class="tokens">${band.tokensIn}/${band.cacheTokens}/${band.tokensOut}</span>
+        <span class="dur">${dur}</span>
+        <span class="status ${statusClass}">${statusText}</span>
+      </div>
+    </div>
+  `;
+  
+  // 根据显示模式添加不同详情
+  html += displayMode === 'compact' ? buildCompactDetail(band, dur) : buildFullDetail(band, dur);
+  
+  return html;
+}
+
+// 紧凑模式详情（3个区块）
+function buildCompactDetail(band, dur) {
+  return `
+    <div class="request-detail">
+      <div class="detail-section">
+        <h4>基本信息</h4>
+        <div class="detail-grid">
+          <div class="detail-item"><span class="k">请求ID</span><span class="v">${band.id}</span></div>
+          <div class="detail-item"><span class="k">客户端</span><span class="v">${esc(band.client)}</span></div>
+          <div class="detail-item"><span class="k">模型</span><span class="v">${esc(band.model)}</span></div>
+          <div class="detail-item"><span class="k">供应商</span><span class="v">${esc(band.provider)}</span></div>
+          <div class="detail-item"><span class="k">节点</span><span class="v">${esc(band.node)}</span></div>
+          <div class="detail-item"><span class="k">耗时</span><span class="v">${dur}</span></div>
+          ${band.result === 'failure' ? `
+            <div class="detail-item" style="grid-column:span 3">
+              <span class="k">失败</span>
+              <span class="v">
+                <span class="failure-source ${band.failureSource}">
+                  ${band.failureSource === 'gateway' ? '⚠ 网关' : '⚡ 上游'}
+                </span>
+                · ${esc(band.failureStage)} · ${esc(band.errorMessage)}
+              </span>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4>Token统计</h4>
+        <div class="detail-grid">
+          <div class="detail-item"><span class="k">输入</span><span class="v">${band.tokensIn.toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">缓存</span><span class="v">${band.cacheTokens.toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">输出</span><span class="v">${band.tokensOut.toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">命中率</span><span class="v">${band.tokensIn ? Math.round(band.cacheTokens/band.tokensIn*100) : 0}%</span></div>
+          <div class="detail-item"><span class="k">成本</span><span class="v">¥${((band.tokensIn-band.cacheTokens)*0.001 + band.tokensOut*0.002).toFixed(4)}</span></div>
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4>关键阶段</h4>
+        <div class="detail-grid">
+          ${SEND_STAGES.concat(RECV_STAGES).filter(st => {
+            const state = band.state[st.key];
+            return state.s !== 'pending' && state.s !== 'skipped';
+          }).map(st => {
+            const state = band.state[st.key];
+            return `<div class="detail-item"><span class="k">${esc(st.name)}</span><span class="v">${GLYPH[state.s]} ${esc(state.v || '—')}</span></div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// 完整模式详情（5个区块）
+function buildFullDetail(band, dur) {
+  return `
+    <div class="request-detail">
+      <div class="detail-section">
+        <h4>请求概览</h4>
+        <div class="detail-grid">
+          <div class="detail-item"><span class="k">请求ID</span><span class="v">${band.id}</span></div>
+          <div class="detail-item"><span class="k">客户端</span><span class="v">${esc(band.client)}</span></div>
+          <div class="detail-item"><span class="k">总耗时</span><span class="v">${dur}</span></div>
+          <div class="detail-item"><span class="k">模型请求</span><span class="v">${esc(band.model)}</span></div>
+          <div class="detail-item"><span class="k">最终模型</span><span class="v">${esc(band.model)}</span></div>
+          <div class="detail-item"><span class="k">状态</span><span class="v">${band.result === 'success' ? '✓ 成功' : band.result === 'failure' ? '✕ 失败' : '◐ 进行中'}</span></div>
+          ${band.result === 'failure' ? `
+            <div class="detail-item" style="grid-column:span 3">
+              <span class="k">失败来源</span>
+              <span class="v">
+                <span class="failure-source ${band.failureSource}">
+                  ${band.failureSource === 'gateway' ? '⚠ 网关失败' : '⚡ 上游失败'}
+                </span>
+                · 阶段：${esc(band.failureStage)} · ${esc(band.errorMessage)}
+              </span>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4>阶段明细（11个阶段）</h4>
+        <div class="detail-grid">
+          ${SEND_STAGES.map(st => {
+            const state = band.state[st.key];
+            return `<div class="detail-item"><span class="k">${esc(st.name)}</span><span class="v">${GLYPH[state.s]} ${esc(state.v || '—')}</span></div>`;
+          }).join('')}
+          ${RECV_STAGES.map(st => {
+            const state = band.state[st.key];
+            return `<div class="detail-item"><span class="k">${esc(st.name)}</span><span class="v">${GLYPH[state.s]} ${esc(state.v || '—')}</span></div>`;
+          }).join('')}
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4>Token 与成本</h4>
+        <div class="detail-grid">
+          <div class="detail-item"><span class="k">Prompt Tokens</span><span class="v">${band.tokensIn.toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">缓存命中</span><span class="v">${band.cacheTokens.toLocaleString()} (${band.tokensIn ? Math.round(band.cacheTokens/band.tokensIn*100) : 0}%)</span></div>
+          <div class="detail-item"><span class="k">Completion Tokens</span><span class="v">${band.tokensOut.toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">缓存读取</span><span class="v">${band.cacheTokens.toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">缓存写入</span><span class="v">${(band.tokensIn - band.cacheTokens).toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">总Token</span><span class="v">${(band.tokensIn + band.tokensOut).toLocaleString()}</span></div>
+          <div class="detail-item"><span class="k">输入成本</span><span class="v">¥${((band.tokensIn-band.cacheTokens)*0.001).toFixed(4)}</span></div>
+          <div class="detail-item"><span class="k">输出成本</span><span class="v">¥${(band.tokensOut*0.002).toFixed(4)}</span></div>
+          <div class="detail-item"><span class="k">总成本</span><span class="v">¥${((band.tokensIn-band.cacheTokens)*0.001 + band.tokensOut*0.002).toFixed(4)}</span></div>
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4>供应商与路由</h4>
+        <div class="detail-grid">
+          <div class="detail-item"><span class="k">供应商</span><span class="v">${esc(band.provider)}</span></div>
+          <div class="detail-item"><span class="k">节点</span><span class="v">${esc(band.node)}</span></div>
+          <div class="detail-item"><span class="k">凭据</span><span class="v">sk-***${Math.random().toString(36).slice(-4)}</span></div>
+          <div class="detail-item"><span class="k">上游协议</span><span class="v">OpenAI Compatible</span></div>
+          <div class="detail-item"><span class="k">上游延迟</span><span class="v">${band.upstreamLatency ? band.upstreamLatency+'ms' : '—'}</span></div>
+          <div class="detail-item"><span class="k">上游状态</span><span class="v">${band.upstreamStatus ? 'HTTP '+band.upstreamStatus : '—'}</span></div>
+          <div class="detail-item"><span class="k">首字节延迟</span><span class="v">${band.state.first_byte?.num ? band.state.first_byte.num+'ms' : '—'}</span></div>
+          <div class="detail-item"><span class="k">路由候选</span><span class="v">${band.state.route?.num || 1} 个</span></div>
+          <div class="detail-item"><span class="k">选型方式</span><span class="v">智能路由</span></div>
+        </div>
+      </div>
+      
+      <div class="detail-section">
+        <h4>身份与合规</h4>
+        <div class="detail-grid">
+          <div class="detail-item"><span class="k">客户端类型</span><span class="v">${esc(band.client)} · 可信客户端</span></div>
+          <div class="detail-item"><span class="k">注入风险评分</span><span class="v">${band.state.injection?.num || 0} / 100 (安全)</span></div>
+          <div class="detail-item"><span class="k">脱敏命中</span><span class="v">${band.state.sanitize?.num || 0} 处</span></div>
+          <div class="detail-item"><span class="k">审批状态</span><span class="v">${band.state.approval?.s === 'skipped' ? '免审' : '已授权'}</span></div>
+          <div class="detail-item"><span class="k">鉴权耗时</span><span class="v">${band.state.auth?.num || 0}ms</span></div>
+          <div class="detail-item"><span class="k">限流状态</span><span class="v">正常</span></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function updateStats() {
+  document.getElementById('statTotal').textContent = total;
+  document.getElementById('statRate').textContent = total ? Math.round(success/total*100)+'%' : '—';
+  document.getElementById('statActive').textContent = bands.filter(b => !b.result).length;
+}
+
+document.getElementById('btnPlay').onclick = () => {
+  running = !running;
+  document.getElementById('btnPlay').textContent = running ? '⏸ 暂停' : '▶ 继续';
+};
+
+document.getElementById('btnSpeed').onclick = function() {
+  const speeds = [1,4,8,16];
+  const i = speeds.indexOf(speed);
+  speed = speeds[(i+1) % speeds.length];
+  this.textContent = `速度 ${speed}×`;
+};
+
+document.getElementById('btnClear').onclick = () => {
+  bands = [];
+  total = success = fail = 0;
+  canvas.innerHTML = '<div class="hint">点击开始模拟，点击请求行查看详情</div>';
+  updateStats();
+};
+
+// 模式切换（紧凑/完整）
+let displayMode = 'compact'; // 'compact' 或 'full'
+
+document.getElementById('btnMode').onclick = function() {
+  displayMode = displayMode === 'compact' ? 'full' : 'compact';
+  document.body.className = displayMode;
+  this.textContent = displayMode === 'compact' ? '📏 紧凑' : '📐 完整';
+  this.classList.toggle('active', displayMode === 'full');
+  localStorage.setItem('displayMode', displayMode);
+  
+  // 刷新所有请求显示
+  bands.forEach(band => updateBand(band));
+};
+
+// 恢复模式设置
+const savedMode = localStorage.getItem('displayMode');
+if(savedMode) {
+  displayMode = savedMode;
+  document.body.className = displayMode;
+  document.getElementById('btnMode').textContent = displayMode === 'compact' ? '📏 紧凑' : '📐 完整';
+  document.getElementById('btnMode').classList.toggle('active', displayMode === 'full');
+}
+
+// 主题切换
+document.getElementById('btnTheme').onclick = function() {
+  const html = document.documentElement;
+  const currentTheme = html.getAttribute('data-theme') || 'dark';
+  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', newTheme);
+  this.textContent = newTheme === 'dark' ? '🌙 暗色' : '☀ 亮色';
+  localStorage.setItem('theme', newTheme);
+};
+
+// 恢复主题设置
+const savedTheme = localStorage.getItem('theme');
+if(savedTheme) {
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  document.getElementById('btnTheme').textContent = savedTheme === 'dark' ? '🌙 暗色' : '☀ 亮色';
+}
+
+function tick() {
+  if(running && Math.random() < 0.25) {
+    spawnRequest();
+  }
+  setTimeout(tick, 1000/speed);
+}
+
+// 初始化
+initColhead();
+initMultiselect('msClient', CLIENTS, 'clients');
+initMultiselect('msProvider', PROVIDERS, 'providers');
+initMultiselect('msModel', MODELS, 'models');
+initMultiselect('msNode', NODES, 'nodes');
+
+// 状态过滤器
+document.getElementById('fStatus').onchange = function() {
+  filters.status = this.value;
+  filterBands();
+};
+
+updateStats();
+tick();
+
+for(let i=0; i<3; i++) {
+  setTimeout(() => spawnRequest(), i*500);
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LLM Gateway 监控 · 完整版</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   CSS变量 - 双主题支持
+   ═══════════════════════════════════════════════════════════════ */
+:root, [data-theme="dark"]{
+  --kx-bg:#0f141c; 
+  --kx-surface:#1a222d; 
+  --kx-sidebar:#121820;
+  --kx-text:#e8eef7;
+  --kx-text-medium:#b8c5d6;
+  --kx-muted:#8b9bb0;
+  --kx-muted-soft:#6a7888;
+  --kx-border:#2a3544;
+  --kx-border-soft:#1f2938;
+  --kx-primary:#5b8cff;
+  --kx-primary-soft:rgba(91,140,255,.08);
+  --kx-success:#42b883;
+  --kx-success-soft:rgba(66,184,131,.08);
+  --kx-danger:#e88388;
+  --kx-danger-soft:rgba(232,131,136,.08);
+  --kx-warning:#e0a53a;
+  --kx-warning-soft:rgba(224,165,58,.08);
+  --kx-recv:#2ec5c5;
+  --kx-recv-soft:rgba(46,197,197,.08);
+}
+
+[data-theme="light"]{
+  --kx-bg:#f8f9fa;
+  --kx-surface:#ffffff;
+  --kx-sidebar:#ffffff;
+  --kx-text:#1a202c;
+  --kx-text-medium:#4a5568;
+  --kx-muted:#718096;
+  --kx-muted-soft:#a0aec0;
+  --kx-border:#e2e8f0;
+  --kx-border-soft:#edf2f7;
+  --kx-primary:#3b7eff;
+  --kx-primary-soft:rgba(59,126,255,.1);
+  --kx-success:#38a169;
+  --kx-success-soft:rgba(56,161,105,.1);
+  --kx-danger:#e53e3e;
+  --kx-danger-soft:rgba(229,62,62,.1);
+  --kx-warning:#d69e2e;
+  --kx-warning-soft:rgba(214,158,46,.1);
+  --kx-recv:#0891b2;
+  --kx-recv-soft:rgba(8,145,178,.1);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   基础样式
+   ═══════════════════════════════════════════════════════════════ */
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  background:var(--kx-bg);color:var(--kx-text);line-height:1.5;
+  display:flex;flex-direction:column;height:100vh;overflow:hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   顶栏 - 标签导航 + 全局控制
+   ═══════════════════════════════════════════════════════════════ */
+.topbar{
+  display:flex;align-items:center;gap:8px;padding:0 16px;height:48px;
+  background:var(--kx-sidebar);border-bottom:1px solid var(--kx-border);
+}
+
+.tab-nav{
+  display:flex;gap:4px;margin-right:auto;
+}
+
+.tab-btn{
+  padding:8px 16px;font:inherit;font-size:12px;font-weight:400;
+  background:transparent;color:var(--kx-muted);
+  border:none;border-radius:6px 6px 0 0;cursor:pointer;
+  transition:all .2s;position:relative;
+}
+
+.tab-btn:hover{
+  color:var(--kx-text);background:rgba(91,140,255,.05);
+}
+
+.tab-btn.active{
+  color:var(--kx-primary);background:var(--kx-bg);
+}
+
+.tab-btn.active::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;
+  height:2px;background:var(--kx-primary);
+}
+
+.btn{
+  font:inherit;font-size:11px;color:var(--kx-text);font-weight:400;
+  background:var(--kx-surface);border:1px solid var(--kx-border);
+  border-radius:6px;padding:5px 11px;cursor:pointer;height:28px;
+  transition:all .15s;
+}
+
+.btn:hover{border-color:var(--kx-primary)}
+.btn.active{
+  background:var(--kx-primary-soft);
+  border-color:var(--kx-primary);
+  color:var(--kx-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   标签页容器
+   ═══════════════════════════════════════════════════════════════ */
+.tab-container{
+  flex:1;overflow:hidden;position:relative;
+}
+
+.tab-content{
+  display:none;height:100%;overflow:auto;
+}
+
+.tab-content.active{
+  display:flex;flex-direction:column;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   实时拓扑 - 使用原版绝对定位布局
+   ═══════════════════════════════════════════════════════════════ */
+#tab-live{
+  background:var(--kx-bg);
+}
+
+.bands-container{
+  flex:1;overflow:auto;padding:0;
+}
+
+.band{
+  position:relative;border-bottom:1px solid rgba(42,53,68,.7);
+  background:linear-gradient(180deg,rgba(26,34,45,.30),rgba(26,34,45,.08));
+}
+
+.band:hover{
+  background:linear-gradient(180deg,rgba(91,140,255,.08),rgba(91,140,255,.02));
+}
+
+.band svg{
+  position:absolute;left:0;top:0;pointer-events:none;overflow:visible;
+}
+
+/* 接收轨底纹 */
+.recvstrip{
+  position:absolute;left:0;top:0;width:100%;height:100%;
+  background:linear-gradient(90deg,rgba(46,197,197,.055),rgba(46,197,197,.015) 70%,transparent);
+  border-top:1px dashed rgba(46,197,197,.16);
+  border-bottom:1px dashed rgba(46,197,197,.16);
+  pointer-events:none;
+}
+
+/* SVG连线 */
+.band svg line{
+  transition:stroke .3s,opacity .3s;
+}
+
+/* 活动状态的线条动画 */
+@keyframes dash-flow{
+  to{stroke-dashoffset:-20}
+}
+
+.band svg line[stroke-dasharray="7 5"]{
+  animation:dash-flow 1s linear infinite;
+}
+
+/* 节点样式 */
+.node{
+  position:absolute;border-radius:6px;
+  background:var(--kx-surface);border:1px solid var(--kx-border);
+  padding:6px 10px;font-size:11px;
+  transition:all .2s;cursor:pointer;
+}
+
+.node:hover{
+  border-color:var(--kx-primary);
+  box-shadow:0 2px 8px rgba(91,140,255,.15);
+}
+
+/* 节点状态颜色 */
+.node.s-done{border-color:var(--kx-success)}
+.node.s-active{border-color:var(--kx-primary);animation:pulse 1.5s infinite}
+.node.s-failed{border-color:var(--kx-danger)}
+.node.s-skipped{opacity:.5}
+
+@keyframes pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(91,140,255,.4)}
+  50%{box-shadow:0 0 0 4px rgba(91,140,255,0)}
+}
+
+.node .n-top{
+  font-size:10px;color:var(--kx-muted);margin-bottom:2px;
+  display:flex;align-items:center;gap:4px;
+}
+
+.node .n-title{
+  font-weight:500;color:var(--kx-text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+.node .gl{
+  font-style:normal;margin-right:2px;
+}
+
+/* 节点进度条 */
+.node .n-bar{
+  position:absolute;bottom:0;left:0;right:0;height:2px;
+  background:var(--kx-border-soft);overflow:hidden;
+}
+
+.node.s-active .n-bar::after{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:100%;
+  background:var(--kx-primary);
+  animation:progress 1.5s ease-in-out infinite;
+}
+
+@keyframes progress{
+  0%{transform:translateX(-100%)}
+  100%{transform:translateX(100%)}
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   占位内容（后续实现）
+   ═══════════════════════════════════════════════════════════════ */
+#tab-bucket, #tab-users{
+  align-items:center;justify-content:center;
+  color:var(--kx-muted);font-size:14px;
+}
+
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="tab-nav">
+    <button class="tab-btn active" data-tab="live">实时拓扑</button>
+    <button class="tab-btn" data-tab="bucket">Token桶</button>
+    <button class="tab-btn" data-tab="users">用户端</button>
+  </div>
+  
+  <button class="btn" id="btnTheme">🌙 暗色</button>
+  <button class="btn" id="btnMode">📏 紧凑</button>
+  <button class="btn" id="btnSpeed">速度 4×</button>
+  <button class="btn" id="btnPlay">⏸ 暂停</button>
+  <button class="btn" id="btnClear">清空</button>
+</header>
+
+<div class="tab-container">
+  <div class="tab-content active" id="tab-live">
+    <div class="bands-container" id="bandsContainer">
+      <div style="text-align:center;padding:40px;color:var(--kx-muted)">
+        点击开始模拟...
+      </div>
+    </div>
+  </div>
+  
+  <div class="tab-content" id="tab-bucket">
+    Token桶页面 - 待实现
+  </div>
+  
+  <div class="tab-content" id="tab-users">
+    用户端页面 - 待实现
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// 布局常量（原版坐标系统）
+// ═══════════════════════════════════════════════════════════════
+const CLIENT_W=168, NODE_W=104, PROVIDER_W=132, PITCH=112, COL0_X=180;
+const SEND_Y=8, SEND_H=42, RECV_Y=58, RECV_H=28, SUM_Y=92, BAND_H=118;
+const TREE_W = COL0_X + 7*PITCH + PROVIDER_W + 20;
+
+function colX(col){ return col===0 ? 0 : COL0_X + (col-1)*PITCH; }
+function nodeW(key){ return key==='provider'?PROVIDER_W:(key==='client'?CLIENT_W:NODE_W); }
+
+// 阶段定义（添加图标）
+const SEND_STAGES = [
+  {key:'auth',      name:'鉴权/限流', col:1, icon:'🔐'},
+  {key:'approval',  name:'审批',      col:2, icon:'✓'},
+  {key:'injection', name:'注入检测',  col:3, icon:'🛡'},
+  {key:'sanitize',  name:'脱敏',      col:4, icon:'🔒'},
+  {key:'compress',  name:'压缩',      col:5, icon:'📦'},
+  {key:'route',     name:'路由',      col:6, icon:'🔀'},
+  {key:'provider',  name:'供应商',    col:7, icon:'☁', terminal:true},
+];
+
+const RECV_STAGES = [
+  {key:'first_byte', name:'首字节', col:7, icon:'⚡'},
+  {key:'restore',    name:'还原',   col:4, icon:'🔓'},
+  {key:'billing',    name:'计量',   col:2, icon:'💰'},
+  {key:'reply',      name:'回复',   col:1, icon:'↩'},
+];
+
+const GLYPH = {done:'✓', active:'◐', pending:'○', skipped:'⌀', failed:'✕'};
+
+// ═══════════════════════════════════════════════════════════════
+// 模拟数据
+// ═══════════════════════════════════════════════════════════════
+const CLIENTS = ['Claude Code','Cursor','SDK','curl'];
+const PROVIDERS = ['阿里云','DeepSeek','OpenAI','令牌池'];
+const MODELS = ['gpt-6','claude-opus-5','deepseek-chat','qwen3-max'];
+const NODES = ['node-01','node-02','node-03'];
+
+let bands = [], seq = 0, running = true, speed = 4;
+let displayMode = 'full'; // 'compact' 或 'full'
+const bandsEl = document.getElementById('bandsContainer');
+
+const rand = (a,b) => a + Math.random()*(b-a);
+const ri = (a,b) => Math.floor(rand(a,b+1));
+const pick = arr => arr[ri(0,arr.length-1)];
+const esc = s => String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ═══════════════════════════════════════════════════════════════
+// 渲染函数
+// ═══════════════════════════════════════════════════════════════
+
+function nodeHTML(key, name, state, x, y, w, h){
+  const glyph='<i class="gl">'+GLYPH[state.s]+'</i>';
+  const valueText = state.v ? ' · '+esc(state.v) : '';
+  return '<div class="node s-'+state.s+'" data-key="'+key+'" style="left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px">'
+    +'<div class="n-top">'+glyph+esc(name)+valueText+'</div>'
+    +'<div class="n-bar"></div></div>';
+}
+
+// SVG连线段
+function seg(x1,y1,x2,y2,state,recv){
+  if(Math.abs(x2-x1)<1 && Math.abs(y2-y1)<1) return '';
+  const stroke=state==='failed'?'var(--kx-danger)':state==='active'?'var(--kx-primary)':
+    state==='done'?(recv?'var(--kx-recv)':'var(--kx-success)'):
+    state==='warn'?'var(--kx-warning)':'var(--kx-border)';
+  const op=(state==='pending'||state==='skipped')?.4:(state==='done'?.7:1);
+  const dash=(state==='pending'||state==='skipped')?' stroke-dasharray="4 4"':
+             (state==='active'?' stroke-dasharray="7 5"':'');
+  return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+stroke+'" stroke-width="2" opacity="'+op+'"'+dash+' stroke-linecap="round"/>';
+}
+
+function bandInner(band){
+  // 根据模式选择渲染方式
+  if(displayMode === 'compact') {
+    return bandInnerCompact(band);
+  } else {
+    return bandInnerFull(band);
+  }
+}
+
+// 紧凑模式：单行显示
+function bandInnerCompact(band){
+  const time = new Date(band.startAt);
+  const timeStr = [
+    time.getHours().toString().padStart(2,'0'),
+    time.getMinutes().toString().padStart(2,'0'),
+    time.getSeconds().toString().padStart(2,'0')
+  ].join(':');
+  
+  let html = '<div style="display:flex;align-items:center;gap:12px;padding:8px 16px;height:40px">';
+  html += '<span style="font:11px ui-monospace,monospace;color:var(--kx-muted-soft);min-width:60px">'+timeStr+'</span>';
+  html += '<span style="font-size:12px;min-width:100px;font-weight:500">'+esc(band.client)+'</span>';
+  
+  // 阶段图标（使用emoji图标）
+  html += '<div style="display:flex;gap:8px;flex:1;align-items:center">';
+  SEND_STAGES.concat(RECV_STAGES).forEach(st => {
+    const state = band.state[st.key];
+    const statusIcon = GLYPH[state.s];
+    const color = state.s==='done'?'var(--kx-success)':state.s==='active'?'var(--kx-primary)':
+                  state.s==='failed'?'var(--kx-danger)':'var(--kx-muted-soft)';
+    const opacity = (state.s==='pending'||state.s==='skipped') ? 0.3 : 1;
+    const valueText = state.v ? ' '+state.v : '';
+    html += '<span style="color:'+color+';opacity:'+opacity+';font-size:12px;display:flex;align-items:center;gap:2px" title="'+st.name+valueText+'">';
+    html += st.icon;
+    html += '<span style="font-size:10px">'+statusIcon+'</span>';
+    html += '</span>';
+  });
+  html += '</div>';
+  
+  // 路由信息
+  if(band.routeCandidates && band.routeCandidates.length > 0) {
+    html += '<div style="font-size:10px;color:var(--kx-muted);display:flex;gap:4px;align-items:center">';
+    html += '🔀';
+    band.routeCandidates.forEach((c,i) => {
+      if(i>0) html += '→';
+      html += '<span style="'+(c.selected?'color:var(--kx-success);font-weight:500':'')+'">'+esc(c.node)+'</span>';
+    });
+    html += '</div>';
+  }
+  
+  // 结果信息
+  html += '<span style="font-size:11px;color:var(--kx-text-medium);min-width:150px">'+esc(band.provider)+' · '+esc(band.node)+'</span>';
+  html += '<span style="font-size:11px;color:var(--kx-muted);min-width:120px">'+esc(band.model)+'</span>';
+  html += '</div>';
+  
+  return html;
+}
+
+// 完整模式：原版绝对定位布局
+function bandInnerFull(band){
+  let html='<svg class="wires" width="'+TREE_W+'" height="'+BAND_H+'">';
+  
+  // 绘制SVG连线
+  let wires='';
+  
+  // 发送轨连线
+  let prevRight = colX(0)+CLIENT_W;
+  SEND_STAGES.forEach(s => {
+    const st=band.state[s.key]||{s:'pending',v:''};
+    const x=colX(s.col), y=SEND_Y+SEND_H/2;
+    wires += seg(prevRight,y,x,y,st.s,false);
+    prevRight = x+nodeW(s.key);
+  });
+  
+  // 供应商→首字节 垂直连线
+  const px=colX(7)+PROVIDER_W/2, py=SEND_Y+SEND_H, fy=RECV_Y+RECV_H/2;
+  wires += seg(px,py,px,fy,(band.state.first_byte||{s:'pending'}).s,true);
+  
+  // 接收轨连线
+  let prevX=px;
+  ['first_byte','restore','billing','reply'].slice(1).forEach(key => {
+    const s=RECV_STAGES.find(x=>x.key===key);
+    if(!s) return;
+    const st=band.state[key]||{s:'pending',v:''};
+    const x=colX(s.col)+NODE_W/2;
+    wires += seg(prevX,fy,x,fy,st.s,true);
+    prevX=x;
+  });
+  
+  // 回复→客户端 连线
+  const cl=band.state.client||{s:'done',v:''};
+  wires += seg(prevX,fy,colX(0)+CLIENT_W,fy,cl.s,true);
+  wires += seg(colX(0)+CLIENT_W,fy,colX(0)+CLIENT_W,RECV_Y+RECV_H,cl.s,true);
+  
+  html += wires + '</svg>';
+  html+='<div class="recvstrip" style="top:'+(RECV_Y-7)+'px;height:'+(RECV_H+14)+'px"></div>';
+  
+  // 路由候选浮层（如果有多个候选）
+  if(band.routeCandidates && band.routeCandidates.length > 1) {
+    const routeX = colX(6);
+    html += '<div style="position:absolute;left:'+(routeX+NODE_W+4)+'px;top:'+(SEND_Y-2)+'px;'
+      +'background:var(--kx-surface);border:1px solid var(--kx-border);border-radius:4px;'
+      +'padding:4px 8px;font-size:10px;color:var(--kx-muted);white-space:nowrap;z-index:5">';
+    band.routeCandidates.forEach((c,i) => {
+      if(i>0) html += ' → ';
+      const style = c.selected ? 'color:var(--kx-success);font-weight:600' : '';
+      html += '<span style="'+style+'">'+esc(c.node)+'</span>';
+    });
+    html += '</div>';
+  }
+  
+  // 客户端节点
+  const clientX = 6;
+  html += nodeHTML('client', band.client, band.state.client||{s:'done',v:''}, clientX, SEND_Y, CLIENT_W, SEND_H);
+  
+  // 发送轨节点（供应商节点特殊处理）
+  SEND_STAGES.forEach(st => {
+    const x = colX(st.col);
+    if(st.key === 'provider') {
+      // 供应商节点：显示健康度圆圈
+      const state = band.state[st.key] || {s:'pending',v:''};
+      const health = band.providerHealth || 0;
+      const healthColor = health >= 70 ? 'var(--kx-success)' : (health >= 50 ? 'var(--kx-warning)' : 'var(--kx-danger)');
+      
+      html += '<div class="node s-'+state.s+'" data-key="'+st.key+'" style="left:'+x+'px;top:'+SEND_Y+'px;width:'+PROVIDER_W+'px;height:'+SEND_H+'px">';
+      html += '<div class="n-top" style="display:flex;align-items:center;gap:8px">';
+      
+      // 健康度圆圈
+      html += '<svg width="32" height="32" style="flex-shrink:0">';
+      html += '<circle cx="16" cy="16" r="14" fill="none" stroke="var(--kx-border)" stroke-width="2"/>';
+      html += '<circle cx="16" cy="16" r="14" fill="none" stroke="'+healthColor+'" stroke-width="2" '
+        + 'stroke-dasharray="'+(health*0.88)+' 88" transform="rotate(-90 16 16)" stroke-linecap="round"/>';
+      html += '<text x="16" y="20" text-anchor="middle" font-size="10" fill="'+healthColor+'" font-weight="500">'+health+'%</text>';
+      html += '</svg>';
+      
+      // 供应商名称
+      html += '<div style="flex:1;min-width:0">';
+      html += '<div style="font-size:11px;font-weight:500;color:var(--kx-text)">'+esc(band.provider)+'</div>';
+      html += '<div style="font-size:10px;color:var(--kx-muted)">'+esc(band.model)+'</div>';
+      html += '</div>';
+      
+      html += '</div><div class="n-bar"></div></div>';
+    } else {
+      html += nodeHTML(st.key, st.name, band.state[st.key], x, SEND_Y, nodeW(st.key), SEND_H);
+    }
+  });
+  
+  // 接收轨节点
+  RECV_STAGES.forEach(st => {
+    const x = colX(st.col);
+    html += nodeHTML(st.key, st.name, band.state[st.key], x, RECV_Y, NODE_W, RECV_H);
+  });
+  
+  return html;
+}
+
+function renderBand(band){
+  const el=document.createElement('div');
+  el.className='band';
+  
+  // 根据模式设置高度和宽度
+  if(displayMode === 'compact') {
+    el.style.height='40px';
+    el.style.width='100%';
+  } else {
+    el.style.height=BAND_H+'px';
+    el.style.width=TREE_W+'px';
+  }
+  
+  el.innerHTML=bandInner(band);
+  
+  if(bandsEl.children.length && bandsEl.children[0].textContent.includes('点击开始')){
+    bandsEl.innerHTML='';
+  }
+  
+  bandsEl.insertBefore(el, bandsEl.firstChild);
+  band.el=el;
+  
+  while(bandsEl.children.length > 25){
+    const old = bands.pop();
+    old.el?.remove();
+  }
+}
+
+function updateBand(band){
+  if(band.el) band.el.innerHTML = bandInner(band);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 请求模拟
+// ═══════════════════════════════════════════════════════════════
+
+function spawnRequest(){
+  const id = `req_${(++seq).toString(16).padStart(4,'0')}`;
+  const provider = pick(PROVIDERS);
+  const node = pick(NODES);
+  const providerHealth = ri(40, 95); // 供应商资源健康度 40-95%
+  
+  // 生成路由候选（用于路由阶段显示）
+  const numCandidates = ri(1,3);
+  const routeCandidates = [];
+  const allNodes = [...NODES];
+  for(let i=0; i<numCandidates; i++){
+    const candidateNode = allNodes.splice(ri(0,allNodes.length-1),1)[0];
+    routeCandidates.push({
+      node: candidateNode,
+      provider: pick(PROVIDERS),
+      selected: candidateNode === node
+    });
+  }
+  
+  const band = {
+    id,
+    client: pick(CLIENTS),
+    provider,
+    node,
+    model: pick(MODELS),
+    providerHealth, // 添加健康度
+    routeCandidates,
+    state: {client:{s:'done',v:''}},
+    startAt: Date.now()
+  };
+  
+  SEND_STAGES.forEach(st => band.state[st.key] = {s:'pending', v:''});
+  RECV_STAGES.forEach(st => band.state[st.key] = {s:'pending', v:''});
+  
+  bands.unshift(band);
+  renderBand(band);
+  
+  let acc = 0;
+  const at = (fn, d) => { acc += d; setTimeout(fn, acc/speed); };
+  const set = (key, s, v) => {
+    band.state[key] = {s, v};
+    updateBand(band);
+  };
+  
+  at(() => set('auth','active',''), 50);
+  at(() => set('auth','done','12ms'), 100);
+  at(() => set('approval','active',''), 10);
+  at(() => Math.random()<0.8 ? set('approval','skipped','') : set('approval','done',''), 100);
+  at(() => set('injection','active',''), 10);
+  at(() => set('injection','done',ri(15,45)+'分'), 120);
+  at(() => set('sanitize','active',''), 10);
+  at(() => set('sanitize','done',ri(0,3)+'处'), 80);
+  at(() => set('compress','active',''), 10);
+  at(() => set('compress','done','-'+ri(20,60)+'%'), 200);
+  at(() => set('route','active',''), 10);
+  at(() => set('route','done',numCandidates+'候选'), 150);
+  at(() => set('provider','active',''), 10);
+  at(() => set('provider','done',provider+' '+band.providerHealth+'%'), 200);
+  at(() => set('first_byte','active',''), 10);
+  at(() => set('first_byte','done',ri(200,800)+'ms'), rand(200,800));
+  at(() => set('restore','active',''), 10);
+  at(() => set('restore','done',''), 50);
+  at(() => set('billing','active',''), 10);
+  at(() => set('billing','done',ri(1000,5000)+'tok'), 80);
+  at(() => set('reply','active',''), 10);
+  at(() => set('reply','done',''), rand(300,1000));
+}
+
+function tick(){
+  if(running && Math.random()<0.3) spawnRequest();
+  setTimeout(tick, rand(800,2000)/speed);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 交互逻辑
+// ═══════════════════════════════════════════════════════════════
+
+// 标签切换
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(`tab-${tab}`).classList.add('active');
+    btn.classList.add('active');
+  };
+});
+
+// 主题切换
+document.getElementById('btnTheme').onclick = function(){
+  const html = document.documentElement;
+  const theme = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', theme);
+  this.textContent = theme === 'dark' ? '🌙 暗色' : '☀ 亮色';
+  localStorage.setItem('theme', theme);
+};
+
+// 恢复主题
+const savedTheme = localStorage.getItem('theme');
+if(savedTheme){
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  document.getElementById('btnTheme').textContent = savedTheme === 'dark' ? '🌙 暗色' : '☀ 亮色';
+}
+
+// 模式切换（紧凑/完整）
+document.getElementById('btnMode').onclick = function(){
+  displayMode = displayMode === 'compact' ? 'full' : 'compact';
+  this.textContent = displayMode === 'compact' ? '📏 紧凑' : '📐 完整';
+  this.classList.toggle('active', displayMode === 'full');
+  localStorage.setItem('displayMode', displayMode);
+  
+  // 刷新所有band显示
+  bands.forEach(band => {
+    if(band.el) band.el.innerHTML = bandInner(band);
+  });
+};
+
+// 恢复模式
+const savedMode = localStorage.getItem('displayMode');
+if(savedMode){
+  displayMode = savedMode;
+  document.getElementById('btnMode').textContent = displayMode === 'compact' ? '📏 紧凑' : '📐 完整';
+  document.getElementById('btnMode').classList.toggle('active', displayMode === 'full');
+}
+
+// 速度控制
+document.getElementById('btnSpeed').onclick = function(){
+  const speeds = [1,4,8,16];
+  const i = speeds.indexOf(speed);
+  speed = speeds[(i+1) % speeds.length];
+  this.textContent = `速度 ${speed}×`;
+};
+
+// 暂停/继续
+document.getElementById('btnPlay').onclick = function(){
+  running = !running;
+  this.textContent = running ? '⏸ 暂停' : '▶ 继续';
+};
+
+// 清空
+document.getElementById('btnClear').onclick = () => {
+  bands = [];
+  bandsEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--kx-muted)">点击开始模拟...</div>';
+};
+
+// 启动
+tick();
+for(let i=0; i<3; i++) setTimeout(() => spawnRequest(), i*500);
+
+</script>
+</body>
+</html>

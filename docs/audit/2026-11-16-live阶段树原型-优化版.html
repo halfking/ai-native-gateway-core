@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>/live 阶段树 · 优化版（信息精简+图例化）</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   优化版设计方案
+   
+   核心改进：
+   1. 节点极简化：只显示状态图标+关键数值，阶段名移到列头
+   2. 图例化：大量使用符号、图标、色条替代文字
+   3. 默认收起：统计浮窗默认只显示顶栏胶囊，点击展开
+   4. 摘要行紧凑：使用小芯片和符号
+   5. 留白优化：增加关键元素间距，减少次要元素
+   ═══════════════════════════════════════════════════════════════ */
+
+:root{
+  --kx-bg:#0f141c; --kx-bg-accent:rgba(91,140,255,.08);
+  --kx-surface:#1a222d; --kx-surface-soft:rgba(26,34,45,.92); --kx-sidebar:#121820;
+  --kx-text:#e8eef7; --kx-muted:#8b9bb0; --kx-border:#2a3544;
+  --kx-primary:#5b8cff; --kx-primary-hover:#7aa3ff; --kx-primary-soft:rgba(91,140,255,.12);
+  --kx-success:#3ecf8e; --kx-success-soft:rgba(62,207,142,.12);
+  --kx-warning:#e0a53a; --kx-warning-soft:rgba(224,165,58,.12);
+  --kx-danger:#f07167; --kx-danger-soft:rgba(240,113,103,.12);
+  --kx-text-on-primary:#fff;
+  --recv:#2ec5c5; --recv-soft:rgba(46,197,197,.08);
+  --shadow:0 8px 24px rgba(0,0,0,.28);
+  --shadow-sm:0 2px 8px rgba(0,0,0,.2);
+  --radius:8px;
+}
+*{box-sizing:border-box; margin:0; padding:0}
+html,body{height:100%}
+body{
+  background:var(--kx-bg); color:var(--kx-text);
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+
+/* ══ 顶栏 - 极简化 ══ */
+.topbar{
+  display:flex; align-items:center; gap:12px; padding:10px 16px;
+  background:var(--kx-sidebar); border-bottom:1px solid var(--kx-border);
+}
+.topbar h1{font-size:15px; font-weight:650; letter-spacing:.3px}
+.conn{
+  display:inline-flex; align-items:center; gap:5px; font-size:11px;
+  padding:3px 10px; border-radius:999px;
+  color:var(--kx-success); background:var(--kx-success-soft);
+}
+.conn::before{
+  content:''; width:6px; height:6px; border-radius:50%;
+  background:currentColor; animation:pulse 2s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+
+/* 统计胶囊 - 默认形态，信息密度极高 */
+.stat-pill{
+  display:inline-flex; align-items:center; gap:8px; padding:5px 14px;
+  background:var(--kx-surface); border:1px solid var(--kx-border);
+  border-radius:999px; font-size:11px; cursor:pointer;
+  transition:all .2s;
+}
+.stat-pill:hover{border-color:var(--kx-primary); background:var(--kx-primary-soft)}
+.stat-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--kx-primary)}
+.stat-pill .metric{display:inline-flex; align-items:baseline; gap:4px}
+.stat-pill .metric .val{color:var(--kx-text); font-weight:650; font-variant-numeric:tabular-nums}
+.stat-pill .metric .lbl{color:var(--kx-muted); font-size:10px}
+.stat-pill .sep{color:var(--kx-border); margin:0 2px}
+
+.spacer{flex:1}
+.btn{
+  font:inherit; font-size:11px; color:var(--kx-text);
+  background:var(--kx-surface); border:1px solid var(--kx-border);
+  border-radius:6px; padding:5px 11px; cursor:pointer;
+  transition:all .15s;
+}
+.btn:hover{border-color:var(--kx-primary); background:var(--kx-primary-soft)}
+select.btn{appearance:none}
+
+/* ══ 列头 - 悬浮固定，显示阶段名 ══ */
+.colhead{
+  position:sticky; top:0; z-index:10; height:32px;
+  background:linear-gradient(180deg,rgba(15,20,28,.98),rgba(15,20,28,.95));
+  backdrop-filter:blur(8px); border-bottom:1px solid var(--kx-border);
+  display:flex; align-items:center;
+}
+.colhead .col{
+  position:absolute; height:32px; display:flex; align-items:center;
+  justify-content:center; font-size:10px; color:var(--kx-muted);
+  font-weight:600; letter-spacing:.5px; text-transform:uppercase;
+  border-left:1px dashed rgba(42,53,68,.6);
+}
+.colhead .col:first-child{border-left:none}
+
+/* ══ 画布与请求带 ══ */
+.canvas{flex:1; overflow:auto; position:relative}
+.bands{padding:12px 0}
+
+/* 请求带 - 进一步减高到100px */
+.band{
+  position:relative; height:100px; margin:0 0 8px;
+  background:linear-gradient(180deg,rgba(26,34,45,.25),rgba(26,34,45,.05));
+  border-radius:10px; overflow:hidden;
+  animation:bandSlide .4s ease-out;
+  transition:all .2s;
+}
+@keyframes bandSlide{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:none}}
+.band:hover{background:linear-gradient(180deg,rgba(91,140,255,.08),rgba(91,140,255,.02))}
+.band.is-selected{
+  background:var(--kx-bg-accent);
+  box-shadow:inset 3px 0 0 var(--kx-primary);
+}
+
+/* 接收轨底纹 - 淡化 */
+.band .recv-bg{
+  position:absolute; left:0; top:50%; right:0; height:50%;
+  background:linear-gradient(90deg,rgba(46,197,197,.03),transparent 60%);
+  border-top:1px dashed rgba(46,197,197,.12);
+  pointer-events:none;
+}
+
+/* SVG 连线 */
+.band svg{position:absolute; left:0; top:0; pointer-events:none; overflow:visible}
+
+/* 节点 - 极简化：只显示状态符号+关键值 */
+.node{
+  position:absolute; border-radius:7px; border:1.5px solid var(--kx-border);
+  background:var(--kx-surface); display:flex; align-items:center;
+  justify-content:center; cursor:pointer;
+  transition:all .18s; overflow:hidden;
+}
+.node:hover{
+  border-color:var(--kx-primary-hover);
+  box-shadow:0 4px 16px rgba(91,140,255,.2);
+  transform:translateY(-1px);
+}
+
+/* 节点内容：纯符号+数值 */
+.node .content{
+  display:flex; flex-direction:column; align-items:center;
+  gap:3px; padding:4px;
+}
+.node .icon{
+  font-size:16px; line-height:1; font-style:normal;
+  color:var(--kx-muted);
+}
+.node .value{
+  font-size:10.5px; font-weight:650; color:var(--kx-text);
+  font-variant-numeric:tabular-nums; white-space:nowrap;
+}
+
+/* 节点状态色 */
+.node.s-done{border-color:rgba(62,207,142,.5);background:linear-gradient(135deg,var(--kx-success-soft),transparent)}
+.node.s-done .icon{color:var(--kx-success)}
+.node.s-active{
+  border-color:var(--kx-primary);background:var(--kx-primary-soft);
+  box-shadow:0 0 0 2px rgba(91,140,255,.2);
+  animation:nodeGlow 1.5s ease-in-out infinite;
+}
+@keyframes nodeGlow{0%,100%{box-shadow:0 0 0 2px rgba(91,140,255,.2)}50%{box-shadow:0 0 12px 3px rgba(91,140,255,.3)}}
+.node.s-active .icon{color:var(--kx-primary)}
+.node.s-pending{opacity:.35; border-style:dashed}
+.node.s-skipped{
+  opacity:.5;
+  background:repeating-linear-gradient(45deg,rgba(139,155,176,.06) 0 3px,transparent 3px 6px);
+}
+.node.s-failed{
+  border-color:var(--kx-danger);background:var(--kx-danger-soft);
+  animation:nodeFail 1.2s ease-in-out infinite;
+}
+@keyframes nodeFail{0%,100%{box-shadow:0 0 0 0 rgba(240,113,103,.4)}50%{box-shadow:0 0 16px 4px rgba(240,113,103,.6)}}
+.node.s-failed .icon{color:var(--kx-danger)}
+.node.s-warn{border-color:var(--kx-warning);background:var(--kx-warning-soft)}
+.node.s-warn .icon{color:var(--kx-warning)}
+
+/* 特殊节点样式 */
+.node.client{width:140px;height:56px;flex-direction:column;justify-content:center}
+.node.client .content{flex-direction:row;gap:8px}
+.node.client .icon{font-size:18px}
+.node.client .meta{font-size:9px;color:var(--kx-muted);margin-top:2px}
+
+.node.send{width:88px;height:36px}
+.node.recv{width:88px;height:26px;border-color:rgba(46,197,197,.3)}
+.node.recv .content{flex-direction:row;gap:5px;padding:2px 6px}
+.node.recv .icon{font-size:12px;color:var(--recv)}
+.node.recv .value{font-size:9.5px}
+
+.node.provider{width:120px;height:38px}
+.node.provider .badge{
+  position:absolute;top:2px;right:3px;font-size:8px;font-weight:700;
+  padding:1px 5px;border-radius:999px;line-height:14px;
+  background:var(--kx-success-soft);color:var(--kx-success);
+  border:1px solid rgba(62,207,142,.4);
+}
+.node.provider .badge.v-suspected{background:var(--kx-warning-soft);color:var(--kx-warning);border-color:rgba(224,165,58,.4)}
+.node.provider .badge.v-diluted{background:var(--kx-danger-soft);color:var(--kx-danger);border-color:rgba(240,113,103,.4)}
+
+/* 客户端节点固定在左 */
+.client-wrap{
+  position:sticky;left:0;float:left;width:148px;height:100%;
+  z-index:2;pointer-events:none;
+}
+.client-wrap .node{pointer-events:auto}
+
+/* 摘要行 - 超紧凑芯片 */
+.summary{
+  position:absolute;left:148px;bottom:6px;right:12px;
+  display:flex;align-items:center;gap:5px;font-size:9.5px;
+  color:var(--kx-muted);overflow:hidden;
+}
+.summary .badge{
+  display:inline-flex;align-items:center;gap:3px;
+  padding:1px 6px;border-radius:999px;
+  background:rgba(139,155,176,.08);border:1px solid var(--kx-border);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.summary .badge.ok{background:var(--kx-success-soft);color:var(--kx-success);border-color:rgba(62,207,142,.3)}
+.summary .badge.bad{background:var(--kx-danger-soft);color:var(--kx-danger);border-color:rgba(240,113,103,.3)}
+.summary .badge i{font-style:normal;font-size:9px}
+
+/* 静默带 - 极简 */
+.band.idle{
+  height:48px;display:flex;align-items:center;justify-content:center;gap:10px;
+  background:repeating-linear-gradient(135deg,rgba(139,155,176,.03) 0 6px,transparent 6px 12px);
+  transition:height .3s;
+}
+.band.idle .dot{
+  width:8px;height:8px;border-radius:50%;background:var(--kx-muted);
+  animation:pulse 2.5s ease-in-out infinite;
+}
+.band.idle .text{font-size:11px;color:var(--kx-muted)}
+.band.idle.is-long{height:64px}
+.band.idle.is-long .dot{background:var(--kx-warning);animation-duration:1.5s}
+.band.idle.is-long .text{color:var(--kx-warning);font-size:12px;font-weight:600}
+
+/* ══ 浮窗统计 - 默认收起 ══ */
+.hud{
+  position:fixed;right:16px;bottom:16px;z-index:30;
+  width:480px;max-width:calc(100vw - 32px);
+  background:var(--kx-surface);border:1px solid var(--kx-border);
+  border-radius:10px;box-shadow:var(--shadow);
+  display:none;animation:hudIn .25s ease-out;
+}
+@keyframes hudIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.hud.is-open{display:flex;flex-direction:column}
+
+.hud__bar{
+  display:flex;align-items:center;gap:8px;padding:8px 12px;
+  background:linear-gradient(180deg,rgba(91,140,255,.1),transparent);
+  border-bottom:1px solid var(--kx-border);cursor:grab;user-select:none;
+}
+.hud__bar:active{cursor:grabbing}
+.hud__title{font-size:12px;font-weight:650;flex:1}
+.hud__btn{
+  width:22px;height:22px;border-radius:5px;border:1px solid var(--kx-border);
+  background:var(--kx-surface-soft);color:var(--kx-muted);
+  display:inline-flex;align-items:center;justify-content:center;
+  cursor:pointer;font-size:13px;line-height:1;padding:0;
+}
+.hud__btn:hover{color:var(--kx-text);border-color:var(--kx-primary)}
+
+.hud__body{padding:12px;overflow:auto;max-height:520px}
+.hud__sec{
+  background:rgba(15,20,28,.3);border:1px solid var(--kx-border);
+  border-radius:8px;padding:10px;margin-bottom:10px;
+}
+.hud__sec:last-child{margin-bottom:0}
+.hud__head{
+  display:flex;align-items:center;gap:8px;margin-bottom:10px;
+  font-size:11px;font-weight:650;color:var(--kx-text);
+}
+
+/* 图表式仪表 */
+.gauges{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.gauge{
+  position:relative;background:var(--kx-surface);border:1px solid var(--kx-border);
+  border-radius:6px;padding:6px;overflow:hidden;
+}
+.gauge .label{display:block;font-size:9px;color:var(--kx-muted);margin-bottom:4px}
+.gauge .value{
+  display:block;font-size:18px;font-weight:700;color:var(--kx-text);
+  font-variant-numeric:tabular-nums;line-height:1.2;
+}
+.gauge .bar{
+  position:absolute;left:0;bottom:0;height:3px;
+  background:var(--kx-primary);opacity:.7;transition:width .4s;
+}
+.gauge.ok .value{color:var(--kx-success)}
+.gauge.ok .bar{background:var(--kx-success)}
+.gauge.bad .value{color:var(--kx-danger)}
+.gauge.bad .bar{background:var(--kx-danger)}
+
+/* 过滤器 */
+.filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.filters .btn{height:24px;font-size:10.5px;padding:0 9px}
+
+/* ══ 详情抽屉 ══ */
+.drawer{
+  position:fixed;top:0;right:0;width:440px;height:100%;
+  background:var(--kx-surface);border-left:1px solid var(--kx-border);
+  box-shadow:var(--shadow);transform:translateX(100%);
+  transition:transform .25s ease;z-index:40;
+  display:flex;flex-direction:column;
+}
+.drawer.is-open{transform:none}
+.drawer header{
+  display:flex;align-items:center;gap:8px;padding:12px 16px;
+  border-bottom:1px solid var(--kx-border);
+}
+.drawer h3{font-size:13px;flex:1;font-weight:650}
+.drawer .body{flex:1;overflow:auto;padding:16px}
+.drawer .section{margin-bottom:20px}
+.drawer .section h4{
+  font-size:10px;color:var(--kx-muted);font-weight:600;
+  letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px;
+}
+.drawer .kv{display:flex;gap:10px;font-size:11px;padding:4px 0}
+.drawer .kv .k{color:var(--kx-muted);width:90px;flex:none}
+.drawer .kv .v{color:var(--kx-text);font-variant-numeric:tabular-nums}
+
+/* ══ Tooltip ══ */
+.tip{
+  position:fixed;z-index:50;pointer-events:none;display:none;
+  max-width:280px;padding:6px 10px;border-radius:6px;
+  background:rgba(18,24,33,.97);border:1px solid var(--kx-border);
+  box-shadow:var(--shadow-sm);font-size:11px;line-height:1.5;
+  color:var(--kx-text);
+}
+.tip.is-on{display:block}
+
+/* ══ 辅助 ══ */
+.legend-trigger{
+  color:var(--kx-muted);font-size:10px;cursor:help;
+  text-decoration:underline dotted;
+}
+.freeze-hint{
+  position:fixed;left:16px;bottom:16px;z-index:20;
+  display:none;align-items:center;gap:6px;padding:5px 12px;
+  border-radius:999px;background:rgba(224,165,58,.15);
+  border:1px solid rgba(224,165,58,.4);color:var(--kx-warning);
+  font-size:10.5px;box-shadow:var(--shadow-sm);
+}
+.freeze-hint.is-on{display:inline-flex}
+.freeze-hint .dot{width:6px;height:6px;border-radius:50%;background:var(--kx-warning);animation:pulse 1.8s ease-in-out infinite}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<header class="topbar">
+  <h1>实时拓扑</h1>
+  <span class="conn">实时</span>
+  
+  <!-- 统计胶囊 - 默认形态，信息密度极高 -->
+  <div class="stat-pill" id="statPill" title="点击查看详细统计与过滤">
+    <span class="dot"></span>
+    <span class="metric">
+      <span class="val" id="reqCount">0</span>
+      <span class="lbl">请求</span>
+    </span>
+    <span class="sep">·</span>
+    <span class="metric">
+      <span class="val" id="successRate">—</span>
+      <span class="lbl">成功率</span>
+    </span>
+    <span class="sep">·</span>
+    <span class="metric">
+      <span class="val" id="activeCount">0</span>
+      <span class="lbl">在途</span>
+    </span>
+  </div>
+  
+  <span class="spacer"></span>
+  <button class="btn" id="btnSpeed">速度 4×</button>
+  <button class="btn" id="btnPlay">⏸ 暂停</button>
+  <button class="btn" id="btnClear">清空</button>
+  <button class="btn legend-trigger" title="查看图例说明">?</button>
+</header>
+
+<!-- 列头 -->
+<div class="colhead" id="colhead">
+  <div class="col" style="left:0;width:148px">客户端</div>
+  <div class="col" style="left:180px;width:88px">鉴权</div>
+  <div class="col" style="left:280px;width:88px">审批</div>
+  <div class="col" style="left:380px;width:88px">注入</div>
+  <div class="col" style="left:480px;width:88px">脱敏</div>
+  <div class="col" style="left:580px;width:88px">压缩</div>
+  <div class="col" style="left:680px;width:88px">路由</div>
+  <div class="col" style="left:780px;width:120px">供应商</div>
+</div>
+
+<!-- 画布 -->
+<div class="canvas" id="canvas">
+  <div class="bands" id="bands"></div>
+</div>
+
+<!-- 统计浮窗 -->
+<div class="hud" id="hud">
+  <div class="hud__bar" id="hudBar">
+    <span class="hud__title">统计与过滤</span>
+    <button class="hud__btn" id="hudClose">×</button>
+  </div>
+  <div class="hud__body">
+    <div class="hud__sec">
+      <div class="hud__head">
+        <span>实时指标</span>
+        <span class="spacer"></span>
+        <select class="btn" id="interval" style="font-size:10px;height:22px;padding:0 8px">
+          <option value="300000">近5分钟</option>
+          <option value="3600000">近1小时</option>
+          <option value="86400000">当天</option>
+        </select>
+      </div>
+      <div class="gauges">
+        <div class="gauge" id="g1">
+          <span class="label">请求总数</span>
+          <span class="value">0</span>
+          <span class="bar" style="width:0"></span>
+        </div>
+        <div class="gauge ok" id="g2">
+          <span class="label">成功率</span>
+          <span class="value">—</span>
+          <span class="bar" style="width:0"></span>
+        </div>
+        <div class="gauge" id="g3">
+          <span class="label">在途请求</span>
+          <span class="value">0</span>
+          <span class="bar" style="width:0"></span>
+        </div>
+        <div class="gauge" id="g4">
+          <span class="label">失败数</span>
+          <span class="value">0</span>
+          <span class="bar" style="width:0"></span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="hud__sec">
+      <div class="hud__head">过滤</div>
+      <div class="filters">
+        <select class="btn" id="fClient">
+          <option value="">全部客户端</option>
+        </select>
+        <select class="btn" id="fProvider">
+          <option value="">全部供应商</option>
+        </select>
+        <select class="btn" id="fStatus">
+          <option value="">全部状态</option>
+          <option value="success">成功</option>
+          <option value="failure">失败</option>
+          <option value="active">进行中</option>
+        </select>
+        <button class="btn" id="fClear" style="display:none">清除</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 详情抽屉 -->
+<div class="drawer" id="drawer">
+  <header>
+    <h3 id="drawerTitle">请求详情</h3>
+    <button class="btn" id="drawerClose">×</button>
+  </header>
+  <div class="body" id="drawerBody"></div>
+</div>
+
+<!-- Tooltip -->
+<div class="tip" id="tip"></div>
+
+<!-- 冻结提示 -->
+<div class="freeze-hint" id="freezeHint">
+  <span class="dot"></span>
+  <span>列表已冻结</span>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   优化版实现 - 极简信息密度
+   ═══════════════════════════════════════════════════════════════ */
+
+// 阶段定义
+const STAGES = {
+  send: [
+    {key:'auth', name:'鉴权', icon:'🔐', col:1},
+    {key:'approval', name:'审批', icon:'✓', col:2},
+    {key:'injection', name:'注入', icon:'🛡', col:3},
+    {key:'sanitize', name:'脱敏', icon:'🔒', col:4},
+    {key:'compress', name:'压缩', icon:'⚡', col:5},
+    {key:'route', name:'路由', icon:'🎯', col:6},
+    {key:'provider', name:'供应商', icon:'☁', col:7},
+  ],
+  recv: [
+    {key:'first_byte', name:'首字节', icon:'⚡', col:7},
+    {key:'restore', name:'还原', icon:'🔓', col:4},
+    {key:'billing', name:'计量', icon:'💰', col:2},
+    {key:'reply', name:'回复', icon:'✓', col:1},
+  ]
+};
+
+// 模拟数据
+const CLIENTS = [
+  {name:'Claude Code', icon:'💻', proto:'openai'},
+  {name:'Cursor', icon:'⌨', proto:'anthropic'},
+  {name:'SDK', icon:'📦', proto:'openai'},
+  {name:'curl', icon:'$', proto:'openai'},
+];
+const PROVIDERS = [
+  {name:'阿里云', code:'aliyun'},
+  {name:'DeepSeek', code:'deepseek'},
+  {name:'OpenAI', code:'openai'},
+  {name:'令牌池', code:'pool'},
+];
+const MODELS = ['gpt-6','claude-opus-5','deepseek','qwen3','gemini-3'];
+
+// 布局常量 - 极简节点
+const COL_X = [0,180,280,380,480,580,680,780];
+const SEND_Y = 12, SEND_H = 36, RECV_Y = 58, RECV_H = 26;
+
+// 状态
+let bands = [], seq = 0, running = true, speed = 4;
+let total = 0, success = 0, fail = 0;
+const canvas = document.getElementById('canvas');
+const bandsEl = document.getElementById('bands');
+
+// 工具函数
+const rand = (a,b) => a + Math.random()*(b-a);
+const ri = (a,b) => Math.floor(rand(a,b+1));
+const pick = arr => arr[ri(0,arr.length-1)];
+const esc = s => String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// 生成请求
+function spawnRequest() {
+  const id = `req_${(++seq).toString(16).padStart(4,'0')}`;
+  const client = pick(CLIENTS);
+  const provider = pick(PROVIDERS);
+  const model = pick(MODELS);
+  
+  const band = {
+    id, client, provider, model,
+    state: {client: {s:'active', v:client.name}},
+    result: null,
+    startAt: Date.now(),
+    tokensIn: ri(500,3000),
+    tokensOut: ri(100,1500),
+    latency: 0,
+  };
+  
+  // 初始化所有阶段
+  STAGES.send.forEach(st => band.state[st.key] = {s:'pending', v:''});
+  STAGES.recv.forEach(st => band.state[st.key] = {s:'pending', v:''});
+  
+  bands.push(band);
+  total++;
+  renderBand(band);
+  
+  // 模拟阶段进展
+  let acc = 0;
+  const at = (fn, d) => { acc += d; setTimeout(fn, acc/speed); };
+  const set = (key, s, val) => {
+    if(band.result) return;
+    band.state[key] = {s, v:val};
+    updateBand(band);
+  };
+  const finish = (result) => {
+    if(band.result) return;
+    band.result = result;
+    band.latency = Date.now() - band.startAt;
+    if(result==='success') success++; else fail++;
+    band.state.client.s = result==='success' ? 'done' : 'failed';
+    updateBand(band);
+    updateStats();
+  };
+  
+  // 失败概率
+  const failPoint = Math.random() < 0.15 ? pick(['auth','injection','route','upstream']) : null;
+  
+  at(() => set('auth','active',''), 50);
+  at(() => {
+    if(failPoint==='auth') { set('auth','failed','限流'); finish('failure'); return; }
+    set('auth','done','12ms');
+    set('approval','active','');
+  }, 80);
+  
+  at(() => {
+    if(Math.random()<0.9) set('approval','skipped','');
+    else set('approval','done','已授权');
+    set('injection','active','');
+  }, 150);
+  
+  at(() => {
+    if(failPoint==='injection') { set('injection','failed','拦截'); finish('failure'); return; }
+    set('injection','done','安全');
+    set('sanitize','active','');
+  }, 120);
+  
+  at(() => {
+    const hits = ri(0,3);
+    set('sanitize','done', hits ? `${hits}处` : '');
+    set('compress','active','');
+  }, 80);
+  
+  at(() => {
+    if(Math.random()<0.6) set('compress','skipped','');
+    else set('compress','done',`−${ri(20,50)}%`);
+    set('route','active','');
+  }, 200);
+  
+  at(() => {
+    if(failPoint==='route') { set('route','failed','无路由'); finish('failure'); return; }
+    set('route','done',model);
+    set('provider','active','');
+  }, 150);
+  
+  at(() => {
+    set('provider','done',provider.name);
+    set('first_byte','active','');
+  }, 200);
+  
+  const ttfb = rand(200,1000);
+  at(() => {
+    if(failPoint==='upstream') { set('first_byte','failed','超时'); finish('failure'); return; }
+    set('first_byte','done',`${Math.round(ttfb)}ms`);
+    set('restore','active','');
+  }, ttfb);
+  
+  at(() => {
+    set('restore','done','');
+    set('billing','active','');
+  }, 50);
+  
+  at(() => {
+    set('billing','done',`${band.tokensOut}tok`);
+    set('reply','active','');
+  }, 80);
+  
+  at(() => {
+    set('reply','done','OK');
+    finish('success');
+  }, rand(400,1500));
+  
+  return band;
+}
+
+// 渲染带
+function renderBand(band) {
+  const el = document.createElement('div');
+  el.className = 'band';
+  el.id = band.id;
+  el.innerHTML = buildBandHTML(band);
+  el.onclick = (e) => {
+    if(e.target.closest('.node')) showDrawer(band);
+  };
+  bandsEl.insertBefore(el, bandsEl.firstChild);
+  
+  // 限制数量
+  while(bandsEl.children.length > 30) {
+    const old = bands.pop();
+    document.getElementById(old.id)?.remove();
+  }
+}
+
+function updateBand(band) {
+  const el = document.getElementById(band.id);
+  if(el) el.innerHTML = buildBandHTML(band);
+}
+
+// 构建带HTML - 极简节点
+function buildBandHTML(band) {
+  let html = '<svg width="900" height="100">';
+  
+  // 发送轨连线
+  STAGES.send.forEach((st,i) => {
+    if(i < STAGES.send.length-1) {
+      const x1 = COL_X[st.col] + 44;
+      const x2 = COL_X[STAGES.send[i+1].col] + 44;
+      const state = band.state[st.key];
+      const color = state.s==='done' ? '#3ecf8e' : (state.s==='failed' ? '#f07167' : '#2a3544');
+      html += `<line x1="${x1}" y1="${SEND_Y+18}" x2="${x2}" y2="${SEND_Y+18}" stroke="${color}" stroke-width="2" opacity="0.4"/>`;
+    }
+  });
+  
+  // 接收轨连线
+  STAGES.recv.forEach((st,i) => {
+    if(i < STAGES.recv.length-1) {
+      const x1 = COL_X[st.col] + 44;
+      const x2 = COL_X[STAGES.recv[i+1].col] + 44;
+      const color = '#2ec5c5';
+      html += `<line x1="${x1}" y1="${RECV_Y+13}" x2="${x2}" y2="${RECV_Y+13}" stroke="${color}" stroke-width="1.5" opacity="0.25"/>`;
+    }
+  });
+  
+  html += '</svg>';
+  html += '<div class="recv-bg"></div>';
+  
+  // 客户端节点
+  const cs = band.state.client;
+  html += `<div class="client-wrap">
+    <div class="node client s-${cs.s}" style="left:4px;top:22px" data-tip="${esc(band.client.name)} · ${esc(band.model)}">
+      <div class="content">
+        <span class="icon">${band.client.icon}</span>
+        <div>
+          <div class="value">${esc(band.client.name)}</div>
+          <div class="meta">${esc(band.model)}</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  
+  // 发送轨节点
+  STAGES.send.forEach(st => {
+    const state = band.state[st.key];
+    const x = COL_X[st.col];
+    const val = state.v || (state.s==='done' ? '✓' : (state.s==='failed' ? '✕' : ''));
+    html += `<div class="node send s-${state.s}" style="left:${x}px;top:${SEND_Y}px" data-tip="${esc(st.name)} · ${esc(state.v||state.s)}">
+      <div class="content">
+        <span class="icon">${st.icon}</span>
+        ${val ? `<span class="value">${esc(val)}</span>` : ''}
+      </div>
+    </div>`;
+  });
+  
+  // 接收轨节点
+  STAGES.recv.forEach(st => {
+    const state = band.state[st.key];
+    const x = COL_X[st.col];
+    const val = state.v || '';
+    html += `<div class="node recv s-${state.s}" style="left:${x}px;top:${RECV_Y}px" data-tip="${esc(st.name)} · ${esc(state.v||state.s)}">
+      <div class="content">
+        <span class="icon">${st.icon}</span>
+        ${val ? `<span class="value">${esc(val)}</span>` : ''}
+      </div>
+    </div>`;
+  });
+  
+  // 摘要行
+  const dur = band.latency ? `${(band.latency/1000).toFixed(1)}s` : '—';
+  const status = band.result==='success' ? 'ok' : (band.result ? 'bad' : '');
+  html += `<div class="summary">
+    <span class="badge ${status}"><i>${band.result==='success'?'✓':'✕'}</i>${dur}</span>
+    <span class="badge">${band.tokensIn}/${band.tokensOut} tok</span>
+    <span class="badge">¥${(band.tokensIn*0.001 + band.tokensOut*0.002).toFixed(3)}</span>
+  </div>`;
+  
+  return html;
+}
+
+// 更新统计
+function updateStats() {
+  document.getElementById('reqCount').textContent = total;
+  document.getElementById('successRate').textContent = total ? `${Math.round(success/total*100)}%` : '—';
+  document.getElementById('activeCount').textContent = bands.filter(b => !b.result).length;
+  
+  // 浮窗仪表
+  document.querySelector('#g1 .value').textContent = total;
+  document.querySelector('#g1 .bar').style.width = Math.min(100, total*2) + '%';
+  
+  const rate = total ? Math.round(success/total*100) : 0;
+  document.querySelector('#g2 .value').textContent = total ? rate+'%' : '—';
+  document.querySelector('#g2 .bar').style.width = rate + '%';
+  document.querySelector('#g2').className = 'gauge ' + (rate>=95 ? 'ok' : (rate<80 ? 'bad' : ''));
+  
+  const active = bands.filter(b => !b.result).length;
+  document.querySelector('#g3 .value').textContent = active;
+  document.querySelector('#g3 .bar').style.width = Math.min(100, active*10) + '%';
+  
+  document.querySelector('#g4 .value').textContent = fail;
+  document.querySelector('#g4 .bar').style.width = Math.min(100, fail*10) + '%';
+  document.querySelector('#g4').className = 'gauge ' + (fail>5 ? 'bad' : '');
+}
+
+// 显示抽屉
+function showDrawer(band) {
+  const drawer = document.getElementById('drawer');
+  const body = document.getElementById('drawerBody');
+  
+  body.innerHTML = `
+    <div class="section">
+      <h4>基本信息</h4>
+      <div class="kv"><span class="k">请求ID</span><span class="v">${band.id}</span></div>
+      <div class="kv"><span class="k">客户端</span><span class="v">${band.client.name}</span></div>
+      <div class="kv"><span class="k">模型</span><span class="v">${band.model}</span></div>
+      <div class="kv"><span class="k">供应商</span><span class="v">${band.provider.name}</span></div>
+      <div class="kv"><span class="k">状态</span><span class="v">${band.result||'进行中'}</span></div>
+    </div>
+    <div class="section">
+      <h4>性能指标</h4>
+      <div class="kv"><span class="k">总耗时</span><span class="v">${band.latency ? (band.latency/1000).toFixed(2)+'s' : '—'}</span></div>
+      <div class="kv"><span class="k">输入 Token</span><span class="v">${band.tokensIn}</span></div>
+      <div class="kv"><span class="k">输出 Token</span><span class="v">${band.tokensOut}</span></div>
+      <div class="kv"><span class="k">成本</span><span class="v">¥${(band.tokensIn*0.001 + band.tokensOut*0.002).toFixed(4)}</span></div>
+    </div>
+    <div class="section">
+      <h4>阶段详情</h4>
+      ${STAGES.send.map(st => {
+        const state = band.state[st.key];
+        return `<div class="kv"><span class="k">${st.name}</span><span class="v">${state.v||state.s}</span></div>`;
+      }).join('')}
+    </div>
+  `;
+  
+  drawer.classList.add('is-open');
+}
+
+// Tooltip
+let tipTimer;
+document.addEventListener('mousemove', e => {
+  const node = e.target.closest('.node');
+  const tip = document.getElementById('tip');
+  clearTimeout(tipTimer);
+  
+  if(node && node.dataset.tip) {
+    tipTimer = setTimeout(() => {
+      tip.textContent = node.dataset.tip;
+      tip.classList.add('is-on');
+      tip.style.left = e.pageX + 12 + 'px';
+      tip.style.top = e.pageY + 12 + 'px';
+    }, 400);
+  } else {
+    tip.classList.remove('is-on');
+  }
+});
+
+// 事件
+document.getElementById('statPill').onclick = () => {
+  document.getElementById('hud').classList.toggle('is-open');
+};
+document.getElementById('hudClose').onclick = () => {
+  document.getElementById('hud').classList.remove('is-open');
+};
+document.getElementById('drawerClose').onclick = () => {
+  document.getElementById('drawer').classList.remove('is-open');
+};
+
+document.getElementById('btnPlay').onclick = () => {
+  running = !running;
+  document.getElementById('btnPlay').textContent = running ? '⏸ 暂停' : '▶ 继续';
+};
+
+document.getElementById('btnSpeed').onclick = function() {
+  const speeds = [1,4,8,16];
+  const i = speeds.indexOf(speed);
+  speed = speeds[(i+1) % speeds.length];
+  this.textContent = `速度 ${speed}×`;
+};
+
+document.getElementById('btnClear').onclick = () => {
+  bands = [];
+  total = success = fail = 0;
+  bandsEl.innerHTML = '';
+  updateStats();
+};
+
+// 模拟器循环
+function tick() {
+  if(running && Math.random() < 0.3) {
+    spawnRequest();
+  }
+  setTimeout(tick, 1000/speed);
+}
+
+// 启动
+updateStats();
+tick();
+
+// 初始请求
+for(let i=0; i<5; i++) {
+  setTimeout(() => spawnRequest(), i*400);
+}
+</script>
+
+</body>
+</html>

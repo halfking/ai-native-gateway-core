@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>/live 阶段树 · 图标化对齐版</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   图标化对齐版设计
+   
+   核心改进：
+   1. 用图标表达每个环节（shield=鉴权、check=审批等）
+   2. 不同状态用不同图标样式（完成=实心、进行=半圆、跳过=虚线圆）
+   3. 关键数字显示在图标旁边
+   4. 所有阶段严格对齐，跳过的灰掉
+   5. 过滤条件固定在列表顶部
+   ═══════════════════════════════════════════════════════════════ */
+
+:root{
+  --kx-bg:#0f141c; --kx-surface:#1a222d; --kx-sidebar:#121820;
+  --kx-text:#e8eef7; --kx-muted:#8b9bb0; --kx-border:#2a3544;
+  --kx-primary:#5b8cff; --kx-success:#3ecf8e; --kx-warning:#e0a53a; --kx-danger:#f07167;
+  --kx-success-soft:rgba(62,207,142,.12); --kx-danger-soft:rgba(240,113,103,.12);
+  --kx-recv:#2ec5c5;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--kx-bg);color:var(--kx-text);
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+
+/* ══ 顶栏 ══ */
+.topbar{
+  display:flex;align-items:center;gap:12px;padding:10px 16px;
+  background:var(--kx-sidebar);border-bottom:1px solid var(--kx-border);
+}
+.topbar h1{font-size:15px;font-weight:650}
+.conn{
+  display:inline-flex;align-items:center;gap:5px;font-size:11px;
+  padding:3px 10px;border-radius:999px;
+  color:var(--kx-success);background:var(--kx-success-soft);
+}
+.spacer{flex:1}
+.btn{
+  font:inherit;font-size:11px;color:var(--kx-text);
+  background:var(--kx-surface);border:1px solid var(--kx-border);
+  border-radius:6px;padding:5px 11px;cursor:pointer;
+}
+.btn:hover{border-color:var(--kx-primary)}
+
+/* ══ 过滤栏 - 固定在列表顶部 ══ */
+.filterbar{
+  display:flex;align-items:center;gap:8px;padding:8px 16px;
+  background:var(--kx-surface);border-bottom:1px solid var(--kx-border);
+  flex-wrap:wrap;
+}
+.filterbar label{font-size:11px;color:var(--kx-muted)}
+.filterbar select{
+  font:inherit;font-size:11px;padding:4px 8px;
+  background:var(--kx-bg);color:var(--kx-text);
+  border:1px solid var(--kx-border);border-radius:4px;
+}
+.filterbar .stat{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:999px;
+  background:var(--kx-bg);border:1px solid var(--kx-border);
+  font-size:11px;
+}
+.filterbar .stat b{color:var(--kx-text);font-weight:650}
+
+/* ══ 列头 - 显示阶段名和图标 ══ */
+.colhead{
+  position:sticky;top:0;z-index:10;height:40px;
+  background:linear-gradient(180deg,rgba(15,20,28,.98),rgba(15,20,28,.94));
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--kx-border);
+  display:flex;align-items:center;padding:0 16px;
+}
+.colhead .stage{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  font-size:10px;color:var(--kx-muted);text-align:center;
+  min-width:80px;
+}
+.colhead .stage .icon{font-size:14px;color:var(--kx-primary)}
+.colhead .sep{width:1px;height:24px;background:var(--kx-border);margin:0 8px}
+
+/* ══ 画布与请求带 ══ */
+.canvas{flex:1;overflow:auto;padding:12px 16px}
+.band{
+  position:relative;background:var(--kx-surface);
+  border-radius:8px;padding:16px;margin-bottom:12px;
+  border:1px solid var(--kx-border);
+}
+.band:hover{border-color:var(--kx-primary)}
+
+/* 请求带头部：客户端信息 */
+.band-header{
+  display:flex;align-items:center;gap:12px;margin-bottom:12px;
+  padding-bottom:12px;border-bottom:1px dashed var(--kx-border);
+}
+.band-header .client{
+  display:flex;align-items:center;gap:8px;
+  font-size:13px;font-weight:650;
+}
+.band-header .client .icon{font-size:18px}
+.band-header .meta{font-size:11px;color:var(--kx-muted)}
+.band-header .status{
+  margin-left:auto;padding:3px 10px;border-radius:999px;
+  font-size:11px;font-weight:600;
+}
+.band-header .status.ok{color:var(--kx-success);background:var(--kx-success-soft)}
+.band-header .status.bad{color:var(--kx-danger);background:var(--kx-danger-soft)}
+
+/* 阶段流程：对齐的图标+数字 */
+.stages{
+  display:flex;align-items:center;gap:16px;
+  position:relative;
+}
+/* 连接线 */
+.stages::before{
+  content:'';position:absolute;left:40px;right:40px;top:20px;
+  height:2px;background:var(--kx-border);z-index:0;
+}
+
+.stage-node{
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  min-width:80px;position:relative;z-index:1;
+}
+.stage-node .icon-wrap{
+  width:40px;height:40px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  border:2px solid var(--kx-border);
+  background:var(--kx-surface);
+  position:relative;
+  transition:all .2s;
+}
+.stage-node .icon{font-size:18px;color:var(--kx-muted)}
+.stage-node .value{
+  font-size:10px;color:var(--kx-muted);font-weight:600;
+  min-height:14px;
+}
+.stage-node .label{
+  font-size:9px;color:var(--kx-muted);
+  text-align:center;max-width:80px;
+}
+
+/* 状态样式 */
+.stage-node.done .icon-wrap{
+  border-color:var(--kx-success);
+  background:var(--kx-success-soft);
+}
+.stage-node.done .icon{color:var(--kx-success)}
+.stage-node.done .value{color:var(--kx-success)}
+
+.stage-node.active .icon-wrap{
+  border-color:var(--kx-primary);
+  background:rgba(91,140,255,.12);
+  animation:pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(91,140,255,.4)}50%{box-shadow:0 0 0 8px rgba(91,140,255,0)}}
+.stage-node.active .icon{color:var(--kx-primary)}
+.stage-node.active .value{color:var(--kx-primary)}
+
+.stage-node.failed .icon-wrap{
+  border-color:var(--kx-danger);
+  background:var(--kx-danger-soft);
+}
+.stage-node.failed .icon{color:var(--kx-danger)}
+.stage-node.failed .value{color:var(--kx-danger)}
+
+.stage-node.skipped{opacity:.4}
+.stage-node.skipped .icon-wrap{
+  border-style:dashed;
+  background:repeating-linear-gradient(45deg,rgba(139,155,176,.05) 0 4px,transparent 4px 8px);
+}
+
+.stage-node.pending{opacity:.3}
+.stage-node.pending .icon-wrap{border-style:dashed}
+
+/* 数字角标 */
+.stage-node .badge{
+  position:absolute;top:-4px;right:-4px;
+  min-width:18px;height:18px;padding:0 4px;
+  border-radius:999px;background:var(--kx-primary);
+  color:#fff;font-size:10px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+  border:2px solid var(--kx-surface);
+}
+.stage-node.done .badge{background:var(--kx-success)}
+.stage-node.failed .badge{background:var(--kx-danger)}
+
+/* 摘要 */
+.band-footer{
+  margin-top:12px;padding-top:12px;
+  border-top:1px dashed var(--kx-border);
+  display:flex;align-items:center;gap:12px;
+  font-size:11px;color:var(--kx-muted);
+}
+.band-footer .item{display:flex;align-items:center;gap:4px}
+.band-footer .item b{color:var(--kx-text);font-weight:600}
+
+/* ══ 图标字体映射 ══ */
+.icon-shield::before{content:'🛡'}
+.icon-check::before{content:'✓'}
+.icon-scan::before{content:'🔍'}
+.icon-lock::before{content:'🔒'}
+.icon-compress::before{content:'⚡'}
+.icon-route::before{content:'🎯'}
+.icon-cloud::before{content:'☁'}
+.icon-flash::before{content:'⚡'}
+.icon-unlock::before{content:'🔓'}
+.icon-money::before{content:'💰'}
+.icon-reply::before{content:'↩'}
+.icon-client::before{content:'💻'}
+
+/* 响应式 */
+@media (max-width:1200px){
+  .stages{flex-wrap:wrap;gap:12px}
+  .stages::before{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<header class="topbar">
+  <h1>实时拓扑 · 图标对齐版</h1>
+  <span class="conn">实时</span>
+  <span class="spacer"></span>
+  <button class="btn" id="btnSpeed">速度 4×</button>
+  <button class="btn" id="btnPlay">⏸ 暂停</button>
+  <button class="btn" id="btnClear">清空</button>
+</header>
+
+<!-- 过滤栏 - 固定在顶部 -->
+<div class="filterbar">
+  <label>客户端</label>
+  <select id="fClient"><option value="">全部</option></select>
+  
+  <label>供应商</label>
+  <select id="fProvider"><option value="">全部</option></select>
+  
+  <label>状态</label>
+  <select id="fStatus">
+    <option value="">全部</option>
+    <option value="success">成功</option>
+    <option value="failure">失败</option>
+    <option value="active">进行中</option>
+  </select>
+  
+  <span class="spacer"></span>
+  
+  <span class="stat">
+    总请求 <b id="statTotal">0</b>
+  </span>
+  <span class="stat">
+    成功率 <b id="statRate">—</b>
+  </span>
+  <span class="stat">
+    在途 <b id="statActive">0</b>
+  </span>
+</div>
+
+<!-- 列头 - 显示阶段名 -->
+<div class="colhead">
+  <div class="stage">
+    <span class="icon icon-shield"></span>
+    <span>鉴权</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stage">
+    <span class="icon icon-check"></span>
+    <span>审批</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stage">
+    <span class="icon icon-scan"></span>
+    <span>注入检测</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stage">
+    <span class="icon icon-lock"></span>
+    <span>脱敏</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stage">
+    <span class="icon icon-compress"></span>
+    <span>压缩</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stage">
+    <span class="icon icon-route"></span>
+    <span>路由</span>
+  </div>
+  <span class="sep"></span>
+  <div class="stage">
+    <span class="icon icon-cloud"></span>
+    <span>供应商</span>
+  </div>
+</div>
+
+<!-- 画布 -->
+<div class="canvas" id="canvas"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   图标化对齐版实现
+   ═══════════════════════════════════════════════════════════════ */
+
+// 阶段定义（带图标）
+const STAGES = [
+  {key:'auth', name:'鉴权', icon:'shield'},
+  {key:'approval', name:'审批', icon:'check'},
+  {key:'injection', name:'注入检测', icon:'scan'},
+  {key:'sanitize', name:'脱敏', icon:'lock'},
+  {key:'compress', name:'压缩', icon:'compress'},
+  {key:'route', name:'路由', icon:'route'},
+  {key:'provider', name:'供应商', icon:'cloud'},
+];
+
+// 模拟数据
+const CLIENTS = [
+  {name:'Claude Code', icon:'💻'},
+  {name:'Cursor', icon:'⌨'},
+  {name:'SDK', icon:'📦'},
+  {name:'curl', icon:'$'},
+];
+const PROVIDERS = ['阿里云','DeepSeek','OpenAI','令牌池'];
+const MODELS = ['gpt-6','claude-opus-5','deepseek','qwen3'];
+
+// 状态
+let bands = [], seq = 0, running = true, speed = 4;
+let total = 0, success = 0, fail = 0;
+const canvas = document.getElementById('canvas');
+
+// 工具函数
+const rand = (a,b) => a + Math.random()*(b-a);
+const ri = (a,b) => Math.floor(rand(a,b+1));
+const pick = arr => arr[ri(0,arr.length-1)];
+const esc = s => String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// 生成请求
+function spawnRequest() {
+  const id = `req_${(++seq).toString(16).padStart(4,'0')}`;
+  const client = pick(CLIENTS);
+  const provider = pick(PROVIDERS);
+  const model = pick(MODELS);
+  
+  const band = {
+    id, client, provider, model,
+    state: {},
+    result: null,
+    startAt: Date.now(),
+  };
+  
+  // 初始化所有阶段
+  STAGES.forEach(st => band.state[st.key] = {s:'pending', v:'', num:null});
+  
+  bands.unshift(band);
+  total++;
+  renderBand(band);
+  
+  // 模拟阶段进展
+  let acc = 0;
+  const at = (fn, d) => { acc += d; setTimeout(fn, acc/speed); };
+  const set = (key, s, val, num) => {
+    if(band.result) return;
+    band.state[key] = {s, v:val, num};
+    updateBand(band);
+  };
+  const finish = (result) => {
+    if(band.result) return;
+    band.result = result;
+    if(result==='success') success++; else fail++;
+    updateBand(band);
+    updateStats();
+  };
+  
+  // 失败点
+  const failPoint = Math.random() < 0.15 ? pick(['auth','injection','route']) : null;
+  
+  at(() => set('auth','active','校验中'), 50);
+  at(() => {
+    if(failPoint==='auth') { set('auth','failed','限流',429); finish('failure'); return; }
+    set('auth','done','通过',12);
+    set('approval','active','审计中');
+  }, 80);
+  
+  at(() => {
+    if(Math.random()<0.9) set('approval','skipped','免审');
+    else set('approval','done','已授权');
+    set('injection','active','检测中');
+  }, 150);
+  
+  at(() => {
+    if(failPoint==='injection') { set('injection','failed','拦截'); finish('failure'); return; }
+    const score = ri(1,45);
+    set('injection','done','安全',score);
+    set('sanitize','active','脱敏中');
+  }, 120);
+  
+  at(() => {
+    const hits = ri(0,3);
+    if(hits) set('sanitize','done','已处理',hits);
+    else set('sanitize','skipped','无敏感');
+    set('compress','active','评估中');
+  }, 80);
+  
+  at(() => {
+    if(Math.random()<0.6) set('compress','skipped','未达阈值');
+    else { const ratio = ri(20,60); set('compress','done',`−${ratio}%`,ratio); }
+    set('route','active','解析中');
+  }, 200);
+  
+  at(() => {
+    if(failPoint==='route') { set('route','failed','无路由'); finish('failure'); return; }
+    const cand = ri(1,3);
+    set('route','done',model,cand);
+    set('provider','active','转发中');
+  }, 150);
+  
+  at(() => {
+    set('provider','done',provider);
+    finish('success');
+  }, rand(500,2000));
+  
+  return band;
+}
+
+// 渲染带
+function renderBand(band) {
+  const el = document.createElement('div');
+  el.className = 'band';
+  el.id = band.id;
+  el.innerHTML = buildBandHTML(band);
+  canvas.insertBefore(el, canvas.firstChild);
+  
+  // 限制数量
+  while(canvas.children.length > 20) {
+    const old = bands.pop();
+    document.getElementById(old.id)?.remove();
+  }
+}
+
+function updateBand(band) {
+  const el = document.getElementById(band.id);
+  if(el) el.innerHTML = buildBandHTML(band);
+}
+
+// 构建HTML
+function buildBandHTML(band) {
+  const statusClass = band.result==='success' ? 'ok' : (band.result==='failure' ? 'bad' : '');
+  const statusText = band.result==='success' ? '✓ 成功' : (band.result==='failure' ? '✕ 失败' : '◐ 进行中');
+  
+  let html = `
+    <div class="band-header">
+      <div class="client">
+        <span class="icon">${band.client.icon}</span>
+        <span>${esc(band.client.name)}</span>
+      </div>
+      <div class="meta">${esc(band.model)} · ${esc(band.provider)}</div>
+      <div class="status ${statusClass}">${statusText}</div>
+    </div>
+    
+    <div class="stages">
+  `;
+  
+  // 阶段节点
+  STAGES.forEach(st => {
+    const state = band.state[st.key];
+    html += `
+      <div class="stage-node ${state.s}">
+        <div class="icon-wrap">
+          <span class="icon icon-${st.icon}"></span>
+          ${state.num ? `<span class="badge">${state.num}</span>` : ''}
+        </div>
+        <div class="value">${esc(state.v)}</div>
+      </div>
+    `;
+  });
+  
+  html += `</div>`;
+  
+  // 摘要
+  const dur = band.result ? ((Date.now()-band.startAt)/1000).toFixed(1)+'s' : '—';
+  html += `
+    <div class="band-footer">
+      <div class="item">耗时 <b>${dur}</b></div>
+      <div class="item">ID <b>${band.id}</b></div>
+    </div>
+  `;
+  
+  return html;
+}
+
+// 更新统计
+function updateStats() {
+  document.getElementById('statTotal').textContent = total;
+  document.getElementById('statRate').textContent = total ? Math.round(success/total*100)+'%' : '—';
+  document.getElementById('statActive').textContent = bands.filter(b => !b.result).length;
+}
+
+// 事件
+document.getElementById('btnPlay').onclick = () => {
+  running = !running;
+  document.getElementById('btnPlay').textContent = running ? '⏸ 暂停' : '▶ 继续';
+};
+
+document.getElementById('btnSpeed').onclick = function() {
+  const speeds = [1,4,8,16];
+  const i = speeds.indexOf(speed);
+  speed = speeds[(i+1) % speeds.length];
+  this.textContent = `速度 ${speed}×`;
+};
+
+document.getElementById('btnClear').onclick = () => {
+  bands = [];
+  total = success = fail = 0;
+  canvas.innerHTML = '';
+  updateStats();
+};
+
+// 模拟器循环
+function tick() {
+  if(running && Math.random() < 0.3) {
+    spawnRequest();
+  }
+  setTimeout(tick, 1000/speed);
+}
+
+// 启动
+updateStats();
+tick();
+
+// 初始请求
+for(let i=0; i<5; i++) {
+  setTimeout(() => spawnRequest(), i*400);
+}
+</script>
+
+</body>
+</html>
