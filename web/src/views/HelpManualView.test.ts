@@ -115,6 +115,69 @@ const ACTIVATION_CONTRACT = [
   'LLM_GATEWAY_LICENSE_ACTIVATED',
 ]
 
+/**
+ * 排障章节（10.4 请求失败 / 10.5 模型不可访问）的契约锚点。
+ *
+ * ★ 同样只用 ASCII：端点路径、读面视图名、诊断日志标记、CLI 工具名。
+ * ★ 钉的是「可执行细节不许被改写掉」——这些是值班真正要敲的东西。
+ */
+const TROUBLESHOOT_CONTRACT = [
+  // 请求级与候选级读面
+  'request_logs_with_current_month',
+  'candidate_failure_logs_with_current_month',
+  'node_probe_runs',
+  'failure_detail_code',
+  'error_kind',
+  'failure_stage',
+  // 错误信封与响应头
+  'X-Gateway-Last-Kind',
+  'gateway_debug',
+  'invalid_model',
+  'modality_mismatch',
+  'no_candidate',
+  'model_not_found',
+  'routing_client_canceled',
+  'routing_circuit_open',
+  'routing_schema_error',
+  // 零候选归因日志与诊断端点
+  '[candidate_diag] db_empty',
+  'likely_cause',
+  '/api/routing/resolve?model=',
+  '/api/routing/health',
+  '/api/logs/top-problems',
+  '/api/admin/diagnostics/routing-blocked',
+  // 现成排障命令与只读脚本
+  'probe-cred',
+  'verify-model-fetch',
+  'check-credentials',
+  'routing-test-client',
+  'auto-testbench',
+  'q-211-readonly-sql.sh',
+  'api-211-admin-probe.py',
+]
+
+/** 排障章节的小节前缀（10.2 / 10.4 / 10.5 是重点三节）。 */
+const TROUBLESHOOT_SECTION_PREFIXES = ['10.2 ', '10.4 ', '10.5 ']
+
+describe('troubleshooting sections', () => {
+  const blocks = parseMarkdown(manualSource)
+  const h3 = blocks
+    .filter((b): b is Extract<typeof b, { kind: 'heading' }> => b.kind === 'heading' && b.level === 3)
+    .map((b) => b.text)
+
+  it('carries the symptom-lookup and the two focused sections', () => {
+    for (const prefix of TROUBLESHOOT_SECTION_PREFIXES) {
+      expect(h3.filter((t) => t.startsWith(prefix)).length).toBe(1)
+    }
+  })
+
+  it('pins the executable troubleshooting details', () => {
+    for (const needle of TROUBLESHOOT_CONTRACT) {
+      expect(manualSource).toContain(needle)
+    }
+  })
+})
+
 describe('post-install activation and data reset sections', () => {
   const blocks = parseMarkdown(manualSource)
   const h2 = blocks

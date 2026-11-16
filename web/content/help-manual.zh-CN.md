@@ -2,6 +2,8 @@
 
 > 本手册覆盖从下载安装到日常运维的完整链路。所有命令、路径、默认值均取自当前代码库实现，与线上版本保持同步。
 
+> **遇到问题先翻第 10 章。** 「请求失败」和「某个模型调不通」是值班最高频的两类问题：10.2 是症状速查表（现象 → 首查项 → 修正动作），10.4 给分层排查流程（分层 → 归因 → 交叉验证 → 修），10.5 给模型不可访问的定位与修正办法（判定链、10 道闸、根因对照表）。第 11 章是安装激活与数据重置的操作手册。
+
 ## 1. 下载
 
 ### 1.1 获取源码
@@ -421,6 +423,8 @@ curl -s -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" http://127.0.0.1:8
 | 健康状态 | `unknown`、`healthy`、`warning`、`unreachable` | 探活结论 |
 | 熔断状态 | `closed`、`open`、`half_open` | 连续失败触发的熔断器状态 |
 
+> 配额口径提醒：真正卡住路由的配额闸是凭据上的**配额状态一列**（`periodic_exhausted` / `balance_exhausted` / `permanently_exhausted`），由上游的额度与余额响应自动写入；库里另有配额配置表，但当前版本**没有任何代码读它**，往那张表里配窗口不会产生效果。该列也没有枚举约束，写入的值不受数据库校验。
+
 ### 5.4 凭据监控
 
 「模型与路由」组的「凭据监控」页面（`/routing-v2/credentials`）提供全局视图：
@@ -752,14 +756,23 @@ curl -N http://localhost:8781/v1/chat/completions \
 
 ## 10. 常见故障处理
 
+请求失败与「某些模型调不通」是值班最高频的两类问题。本章按 **先分层 → 再看归因 → 最后动手修** 组织：10.2 是症状速查表（先从这里定位），10.4 处理「请求失败」，10.5 处理「模型不可访问」，其余小节是环境、凭据与容量类问题。
+
 ### 10.1 先看这四个入口
 
 | 场景 | 入口 | 用途 |
 | --- | --- | --- |
-| 进程是否存活 | `/healthz` | 快速确认服务在跑 |
-| 依赖是否就绪 | `/readyz` | 数据库或 Redis 不通时返回 503 |
+| 进程是否存活 | `/healthz` | 快速确认服务在跑（永远 200，不因依赖故障失败） |
+| 依赖是否就绪 | `/readyz` | 数据库或 Redis 不通时返回 503（严格门） |
 | 跑的是哪个版本 | `/version` | 确认部署版本与构建序号 |
 | 请求为什么失败 | 「请求日志」页面 | 按请求 ID 或错误码检索单次请求 |
+
+另外两个带管理令牌的入口，排障时很有用：
+
+| 场景 | 入口 | 说明 |
+| --- | --- | --- |
+| 内部状态总览 | `/healthz/full` | 需要管理令牌；含熔断状态、限流器、数据库与 Redis 延迟 |
+| 指标 | `/metrics` | 需要管理令牌；Prometheus 指标 |
 
 命令形式：
 
@@ -767,33 +780,231 @@ curl -N http://localhost:8781/v1/chat/completions \
 curl -s http://127.0.0.1:8781/healthz
 curl -s http://127.0.0.1:8781/readyz
 curl -s http://127.0.0.1:8781/version
+
+# 带管理令牌的两条
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8781/healthz/full
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8781/metrics
 ```
 
-### 10.2 常见错误码与处置
+> `/readyz` **只测数据库与 Redis 连通，不测候选查询**。历史上出现过「readyz 绿、公网 200，但模型请求全失败」的部署带着绿灯上线。**验收必须包含一次真实模型请求。**
+
+### 10.2 症状速查：现象 → 首查项 → 修正动作
+
+| 现象 | 首查项 | 修正动作 |
+| --- | --- | --- |
+| 全部请求 503 `no_candidate` | 网关日志里的 `[candidate_diag] db_empty`（含 `likely_cause` 人话结论） | 按 10.5 的根因表逐项处理 |
+| 某个模型 400 `invalid_model` | `/v1/models?scope=all` 里有没有这个名字 | 名字拼错或用了上游原名 → 加别名或改用目录里的名字 |
+| 某个模型 400 `modality_mismatch` | 该模型的登记模态 | 改登记模态（10.5） |
+| 某个模型 503 `model_not_found` | 错误信封的 `kind` / 响应头 `X-Gateway-Last-Kind` | 按 `kind` 分流（10.3、10.4） |
+| 401 `authentication_error` | 「API Key」页 `/keys` 的密钥状态 | 换密钥；核对租户状态 |
+| 402 `insufficient_quota` | 租户预算 | 管理员给租户加预算 |
+| 429 `rate_limit_*` | 该 API Key 的 RPM / 并发 / 预算设置 | 降客户端并发，或提额；`Retry-After` 退避 |
+| 403 `output_policy_blocked` | 命中的是敏感内容、私网地址还是工具参数 | 调整请求内容或出站策略，**不是路由问题** |
+| 499 `routing_client_canceled` | 客户端超时设置 | 调客户端超时；不是上游故障 |
+| 500 `routing_schema_error` | 网关版本与迁移状态 | 升级到含修复的版本（网关自身 SQL 缺陷） |
+| 503 `routing_circuit_open` | `/api/routing/health` 的熔断凭据 | 先修根因（通常是 SQL 或库），熔断会自愈 |
+| 某模型偶尔失败、成功率低 | `/api/logs/top-problems` 与候选失败日志 | 按 (凭据, 模型) 对定位，必要时下线该对 |
+| 列表里有、却调不通 | `/api/routing/resolve?model=<名>` | 看每个候选的拒绝原因（10.5） |
+| 列表里没有、但别人能调 | 列表默认是特色模型口径 | 用 `?scope=all` 看全量 |
+
+### 10.3 错误码与真实原因
 
 | 错误码 | 状态码 | 含义 | 处置 |
 | --- | --- | --- | --- |
 | `authentication_error` | 401 | 密钥缺失、无效或过期 | 更换密钥；核对租户状态 |
-| `insufficient_quota` | 402 | 预算或额度耗尽 | 管理员补充预算或充值 |
+| `insufficient_quota` | 402 | **租户预算**耗尽 | 管理员补充预算或充值 |
 | `rate_limit_error` | 429 | 超过每分钟请求数限制 | 按 `Retry-After` 退避重试 |
 | `rate_limit_exceeded` | 429 | 超过并发上限 | 降低客户端并发 |
 | `rate_limit_exhausted` | 429 | 上游限流透传 | 退避重试，或增加上游配额 |
 | `key_throttled` | 429 | 密钥因异常用量被封禁 | 联系管理员解封 |
-| `invalid_model` | 400 | 网关不认这个模型名 | 用 `/v1/models` 核对模型名 |
-| `modality_mismatch` | 400 | 模型不支持本次请求的模态 | 换模型或去掉图片等输入 |
+| `invalid_model` | 400 | 这个模型名在目录里根本没有 | 用 `/v1/models?scope=all` 核对（10.5） |
+| `modality_mismatch` | 400 | 模型不支持本次请求的模态 | 换模型或去掉图片等输入；或改登记模态 |
 | `body_too_large` | 400 | 请求体过大 | 精简请求内容 |
 | `output_policy_blocked` | 403 | 命中输出策略 | 按响应中的规则字段调整内容 |
-| `no_candidate` | 503 | 没有可路由的候选 | 按响应中的 `alternatives` 换模型 |
-| `model_not_found` | 503 | 所有候选都失败了 | 读 `kind` 或 `X-Gateway-Last-Kind` 判断真实原因 |
+| `no_candidate` | 503 | 模型存在，但当下没有可路由的候选 | 按 10.5 查凭据/绑定/配额/探针 |
+| `model_not_found` | 503 | 有候选但全部尝试失败 | 读 `kind` 或 `X-Gateway-Last-Kind` 判断真实原因 |
 | `routing_client_canceled` | 499 | 客户端提前断开 | 调整客户端超时，不是上游故障 |
-| `routing_circuit_open` | 503 | 候选查询熔断已打开 | 稍后重试，持续出现则排查数据库 |
+| `routing_circuit_open` | 503 | 候选查询熔断已打开 | 稍后重试；持续出现则排查数据库或网关 SQL |
 | `routing_connection_error` | 503 | 网关到数据库或上游连接失败 | 检查数据库可达性与连接池 |
 | `routing_schema_error` | 500 | 网关自身的 SQL 缺陷 | 核对迁移版本，属于网关缺陷 |
 | `routing_database_error` | 500 | 其他数据库错误 | 读日志原文定位 |
 
-`model_not_found` 这个名称容易误导：它表示所有候选都失败，真正原因在 `error.kind` 里，例如上游过载、并发冲突或配额不足。
+**两套词表要分清。** 一套是 `routing_*` 开头的**路由侧**错误码（网关自己出问题时用），另一套是 `kind`（`transient`、`timeout`、`auth`、`quota`、`model_unavailable`……）——后者是**上游侧**的失败归因，粒度更细，是值班时定位真因的主字段。`model_not_found` 这个名称容易误导：它表示所有候选都失败，真实原因在 `kind` 里，例如上游过载、并发冲突或配额不足。
 
-### 10.3 安装与启动问题
+### 10.4 请求失败：分层排查
+
+**第 0 步 · 分清是哪一层失败的。** 状态码先给出粗判：
+
+| 状态码 | 归属 | 首查 |
+| --- | --- | --- |
+| 400 `invalid_model` / `modality_mismatch` | 客户端请求层（模型名或模态） | 10.5 节 |
+| 401 `authentication_error` | 认证层 | 「API Key」页 `/keys` |
+| 402 `insufficient_quota` | 租户预算层（**不是**上游配额） | 租户额度页 |
+| 403 `output_policy_blocked` | 出站策略层 | 敏感内容 / 私网地址 / 工具参数，不是路由问题 |
+| 429 `rate_limit_*` | 限流层 | 该 API Key 的 RPM、并发、预算设置，或上游透传限流 |
+| 499 `routing_client_canceled` | 客户端自己断开 | 调客户端超时，**不是**上游故障 |
+| 500 `routing_schema_error` / `routing_database_error` | 网关自身（SQL 缺陷 / 数据库） | 本节第 3 步 |
+| 502 / 503 / 504 | 上游或路由层 | 本节第 2 步 |
+| 503 `no_candidate` / `model_not_found` | 路由层 | 10.5 节 |
+
+**第 1 步 · 拿到这次请求的三样东西。**
+
+1. **request_id**：每个协议面的响应都带 `X-Request-Id` 头，它贯穿所有诊断表，是跨表追踪的主键。
+2. **错误信封**：错误响应体形如 `{"error": {"message", "type", "code", "request_id", "kind", "gateway_debug": {...}}}`。`code` 是给客户端的兼容文案，**真实原因是 `kind`**；`gateway_debug` 是**错误响应体里的字段**（不是响应头），含 `stage`、`tried`、`kind`、`retryable`、`attempts`，有时还有 `retry_after`；响应头 `X-Gateway-Last-Kind` 与 `kind` 同源。
+3. **落库归因**：`request_logs_with_current_month` 视图里的 `error_kind`（失败归因主码）、`failure_detail_code`（失败细分码）、`failure_stage`（卡在哪一步）。
+
+```sql
+-- 最近一小时失败的三维分布：主码 × 细分码 × 阶段
+SELECT error_kind, failure_detail_code, failure_stage,
+       count(*)                       AS failures,
+       count(DISTINCT credential_id)  AS credentials,
+       count(DISTINCT outbound_model) AS models,
+       min(ts) AS first_seen, max(ts) AS last_seen
+FROM request_logs_with_current_month
+WHERE ts > now() - interval '1 hour'
+  AND COALESCE(success, FALSE) = FALSE
+GROUP BY 1, 2, 3
+ORDER BY failures DESC;
+```
+
+> 读面说明：`request_logs_with_current_month` 是**会话视图**（热表与历史表两臂），不是旧的 `request_logs` 表；`success` 可能为 NULL，判失败要用 `COALESCE(success, FALSE) = FALSE`。
+
+**第 2 步 · 按 kind 分流。** `kind` 是网关内部的失败归因词表，值班时先看它属哪一类：
+
+| kind | 含义 | 该做什么 |
+| --- | --- | --- |
+| `transient` / `network` / `upstream_down` / `timeout` / `stream_timeout` | 上游或网络抖动 | 客户端可退避重试；连续出现则查该凭据 |
+| `upstream_overloaded` / `concurrent` | 上游过载或并发冲突 | 降并发或换候选 |
+| `rate_limit` / `rate_limit_observed` | 节点被限流 / 上游用 4xx 表达了限流 | 前者退避约 30 秒；后者换兄弟候选，**不要**因此惩罚节点 |
+| `auth` / `auth_revoked` | 上游密钥失效或被撤销 | 轮换密钥；`auth_revoked` 是终态，不再跨凭据转移 |
+| `quota` / `quota_periodic` / `quota_balance` / `quota_permanent` | 上游额度或余额耗尽 | 充值或等恢复窗口；`quota_permanent` 是终态 |
+| `model_unavailable` | 上游确定不提供这个模型，或端点路径配错 | 绑定级处理：下线这一对 (凭据, 模型) |
+| `model_not_found` / `model_deprecated` | 模型本身不可用 | 终态，改模型 |
+| `request_rejected` | 上游用 4xx 拒收请求且无更细归因 | 多半是客户端参数问题；**不要**当成节点不健康 |
+| `context_length_exceeded` | 超上下文窗口 | 网关会尝试裁剪重试一次；仍失败则精简上下文 |
+| `content_filter` / `conversion_error` / `upstream_context_loss` / `tool_call_id_mismatch` / `client_bug` | 内容策略、协议转换、上下文丢失、客户端 bug | 终态，逐个按语义排查 |
+
+**第 3 步 · 交叉验证再动手。** 候选级的失败原因比请求级更细：每次尝试一行、带上游响应体。
+
+```sql
+-- 某模型的逐次候选失败：谁在试、第几次、上游回了什么
+SELECT ts, request_id, credential_id, provider_id, attempt_index,
+       error_kind, upstream_status_code, retryable, per_attempt_latency_ms,
+       left(coalesce(upstream_response_preview, error_message, ''), 300) AS err_preview
+FROM candidate_failure_logs_with_current_month
+WHERE ts > now() - interval '24 hours'
+  AND raw_model_name = 'glm-5.2'      -- ← 换成实际模型名
+ORDER BY ts DESC
+LIMIT 100;
+```
+
+> 两个坑：父表 `candidate_failure_logs` **不含最近 8 小时**（热表 promote 的保留窗口是 8 小时），查「刚刚」必须用 `candidate_failure_logs_with_current_month` 或热表；跨表 join 时 `routing_decision_log.request_id` 是 uuid、其余表是 text，需要 `::text` 转换。
+
+凭据本身通不通，看探针的**双通道**结果（直连上游 vs 经网关）：
+
+```sql
+SELECT started_at, raw_model_name, trigger_kind,
+       direct_ok, direct_http_status, direct_err_code, direct_latency_ms,
+       gateway_ok, gateway_http_status, gateway_err_code, gateway_latency_ms,
+       success, duration_ms
+FROM node_probe_runs
+WHERE credential_id = 7                -- ← 换成实际凭据 ID
+ORDER BY started_at DESC
+LIMIT 20;
+```
+
+`direct_ok=true` 但 `gateway_ok=false` ⇒ **凭据没问题，是网关侧路径坏了**（鉴权、协议转换或路由）；两路都 false ⇒ 上游或凭据问题。
+
+**现成的诊断端点**（都在 `/api` 下，多数要管理员鉴权）：
+
+| 端点 | 回答什么 |
+| --- | --- |
+| `GET /api/logs/top-problems` | 失败热点：失败率最高的凭据与主因 |
+| `GET /api/routing/health` | 哪些凭据熔断中（`circuit_state`、`consecutive_failures`、`cooling_until`） |
+| `GET /api/candidate-failures/stats` | 按 (模型, kind) 聚合的候选失败 |
+| `GET /api/admin/diagnostics/routing-blocked` | 「凭据正常但路由不到」的专项诊断 |
+| `GET /api/admin/probe/dashboard` | 探针健康看板，含真实请求 24 小时成功率 |
+| `GET /api/routing/resolve?model=<模型名>` | 这个模型的候选选择过程与每个候选被拒的原因 |
+
+**现成的排障命令**（都在仓库的 `cmd/` 下）：
+
+```bash
+go run ./cmd/probe-cred -cred 7 -chat glm-5.2            # 用该凭据直连打一发最小请求
+go run ./cmd/verify-model-fetch -provider 14 -json        # 复刻「从供应商读模型」这条路径
+go run ./cmd/check-credentials -json                      # 扫描凭据密文格式（默认 dry-run，-fix 才写库）
+go run ./cmd/routing-test-client -gateway http://127.0.0.1:8781 -api-key $KEY -models glm-5.2 -clients 5
+go run ./cmd/auto-testbench -report reports/auto-testbench # AUTO 路由闭环回归
+```
+
+只读 SQL 与接口探针脚本（**写死了 211**，换机器要改脚本内常量）：
+
+```bash
+scripts/audit/q-211-readonly-sql.sh "SELECT error_kind, count(*) FROM request_logs_with_current_month WHERE ts > now()-interval '1 hour' AND COALESCE(success,FALSE)=FALSE GROUP BY 1"
+ssh 211 'cd <repo>/scripts/audit && python3 api-211-admin-probe.py "/api/routing/resolve?model=glm-5.2" --port 8783'
+```
+
+**修完必须打一次真实模型请求。** `/readyz` 不测候选查询，绿灯不等于模型可用。
+
+### 10.5 某些模型无法访问：定位与修正
+
+「这个模型调不通」有四种完全不同的根因，修法也完全不同。先按判定链分层，再动手。
+
+**判定链分四层，每层都有各自的判别点。**
+
+| 层 | 在做什么 | 判别点 |
+| --- | --- | --- |
+| 1 · 名字解析 | 把客户端的模型名解析成 canonical 名与 raw 名集合 | 解析不到 ⇒ 名字在目录里根本没有 |
+| 2 · 候选查询 | 10 道闸逐一过滤，任一道不过则这一对 (凭据, 模型) 落选 | 有目录但 0 候选 ⇒ 逐闸查 |
+| 3 · 零候选分流 | 0 候选时给出三个不同结论 | **400 与 503 的差别就是这层的产物** |
+| 4 · 执行失败 | 有候选但全部尝试失败 | 真实原因在 `kind` |
+
+**第 3 层的三个结论必须分清——这是最常被误读的地方：**
+
+| 客户端收到 | 真实含义 | 该查什么 |
+| --- | --- | --- |
+| **400 `invalid_model`** | 这个模型名**在目录里根本没有**（既不在供应商模型表、也不在别名表） | 名字拼写；用 `/v1/models?scope=all` 核对 |
+| **400 `modality_mismatch`** | 模型在目录里、绑定也在，但登记的模态服务不了本次请求 | 登记模态 |
+| **503 `no_candidate`** | 模型**是存在的**，只是当下没有能用的凭据 | **不要去改目录**，去查凭据、绑定、配额、探针 |
+
+第 3 层的判别依据是一个「模型是否已知」的判定：它只查「供应商侧模型表」与「别名表」两处，**故意不查 canonical 目录**——否则首次见到的模型会被自动播种进目录，把拼写错误从 400 变成 503。
+
+**第 2 层的 10 道闸**（任一道不过就落选）：
+
+| 闸 | 看什么 | 典型根因 |
+| --- | --- | --- |
+| 名字匹配（5 路） | canonical 名、规范化名、别名、上游原名 | 客户端用了上游原名而目录里没有别名 |
+| canonical 未禁用 | 目录里该模型的状态 | 模型被下线 |
+| 模态接受 | 目录登记的模态 | 登记成 text 却用来发图 |
+| 模态判词 | 核实记录里「读」的结论 | 判词为否 ⇒ 该模态不接单 |
+| 租户 | 供应商归属的租户 | 模型挂在别的租户下 |
+| 凭据状态 | 凭据是否启用 | 被人工停用 |
+| 可路由闸（视图） | 供应商、凭据、绑定、探针四层状态 | 配额耗尽、鉴权失败、熔断、探针判负 |
+| 路由范围 | 凭据只接文本还是只接媒体 | 用错凭据类型 |
+| 探针坏对 | 该 (凭据, 模型) 对是否被探针判死 | 探测失败被确认 |
+| 模型生命周期 | 是否过期下线 | 老模型自然退役 |
+
+**根因 → 修正动作**（修正端点都要求超级管理员，并且要写 `reason` 留审计）：
+
+| 根因 | 修正动作 | 在哪操作 |
+| --- | --- | --- |
+| 模型未登记（`offers_total=0`） | 加 raw→canonical 别名，或重跑模型发现 | 「模型」页 `/models` |
+| 凭据被人工停用 | 清除人工停用标记 | 「凭据监控」页 `/routing-v2/credentials` |
+| 凭据生命周期被置为退役或停用 | 恢复生命周期为 active | 供应商详情的凭据页签 |
+| 凭据配额态耗尽 | **先充值或解封**；紧急复位走专用端点 | 供应商详情页 |
+| 供应商被停用 | 启用供应商 | 供应商详情页 `/providers/:id` |
+| 绑定被人工下线 | 绑定级重新上线（只清人工下线原因，不覆盖自动原因） | 凭据监控页 |
+| 模型级被下线 | 恢复该模型的可用标记 | 供应商详情页 → 模型页签 |
+| 探针判负 | 复位该凭据状态（会清探针结论，**先确认上游确实恢复**） | 凭据监控页 / 探针健康页 |
+| 登记模态不对 | 改该模型的登记模态 | 「模型」页 `/models` |
+| 候选查询熔断 | **先修根因**（通常是网关侧 SQL 缺陷），熔断会自愈 | — |
+
+> 最省事的一条路：零候选时网关会打一条 `[candidate_diag] db_empty` 日志，其中 `likely_cause` 直接给出人话结论（例如「模型已登记（12 offer），但 12 条被凭据配额态滤掉 ⇒ 处置：处置配额（充值/解封）」）。**先看这一行，再动手。**
+
+**一条常见误解要澄清：** `/v1/models` 列表与路由候选**不是同一套过滤**——列表额外排除了隔离级凭据、受保护的绑定与连败凭据，路由侧不查这些；反过来列表也不按请求模态过滤。所以「列表里没有」不等于「路由不通」，「列表里有」也不等于「一定能调通」。另外列表默认只输出特色模型（`featured` 口径），要全量用 `?scope=all`。
+
+**改完怎么验证：** 打一次真实模型请求；再看 `/api/routing/resolve?model=<模型名>` 里候选是否非空。注意候选查询有内存缓存，**直接改数据库不会刷新缓存**，要走管理端写操作才会失效缓存。
+
+### 10.6 安装与启动问题
 
 **数据库连接失败**：首次启动时数据库需要十几秒完成初始化，等待后重试；持续失败时查看数据库容器日志与连接串配置。
 
@@ -805,15 +1016,7 @@ curl -s http://127.0.0.1:8781/version
 
 **凭据解密失败**：加密主密钥已更换或与密文不匹配。恢复原来的 `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY`；若已丢失，需要重新录入上游密钥。
 
-### 10.4 请求失败排查顺序
-
-1. 在「请求日志」页面用请求 ID 找到这次请求，确认落到的供应商与凭据。
-2. 看失败分类：客户端取消、上游故障、限流、策略拦截还是网关自身错误。
-3. 若是上游故障，到「凭据监控」看该凭据的健康与可用性。
-4. 若是限流，检查该密钥的每分钟请求数、并发与预算配置。
-5. 若是模型名问题，用 `/v1/models` 核对可用模型。
-
-### 10.5 凭据侧问题
+### 10.7 凭据侧问题
 
 | 现象 | 排查方向 |
 | --- | --- |
@@ -823,16 +1026,16 @@ curl -s http://127.0.0.1:8781/version
 | 单个模型 404，其余正常 | 该模型的绑定已停用，在供应商详情的模型页签恢复绑定 |
 | 成功率偏低但健康状态正常 | 查看凭据路由记录与错误趋势，定位是哪些模型在失败 |
 
-### 10.6 性能与容量
+### 10.8 性能与容量
 
-- **吞吐不足**：先确认是否被网关自身的限流拦截（看响应码 429 与 `gateway_debug`），再考虑上游配额。
+- **吞吐不足**：先确认是否被网关自身的限流拦截（看响应码 429 与错误响应体里的 `gateway_debug` 字段），再考虑上游配额。
 - **首字节慢**：到「凭据监控」的探测健康页签查看探针延迟，再到「模型与路由」组的路由全景看候选选择过程。
 - **长对话被拒**：网关在请求接近上游上下文上限时会触发压缩；若仍失败，检查该模型的上下文窗口与压缩开关。
 - **存储膨胀**：在「数据运维」组的「数据生命周期」查看热、温、冷、过期四层数据的分布与清理策略。
 
-### 10.7 报障时需要提供的信息
+### 10.9 报障时需要提供的信息
 
-提交问题时请附上：网关版本（`/version` 输出）、部署形态（容器或裸机）、操作系统与版本、数据库与 Redis 版本、复现步骤、期望结果与实际结果、相关时间段的脱敏日志，以及失败请求的 `request_id`。
+提交问题时请附上：网关版本（`/version` 输出）、部署形态（容器或裸机）、操作系统与版本、数据库与 Redis 版本、复现步骤、期望结果与实际结果、相关时间段的脱敏日志，以及失败请求的 `request_id`；连同错误响应体里的 `code`、`kind` 与 `gateway_debug`，以及 `request_logs_with_current_month` 里该请求的 `error_kind` / `failure_detail_code` / `failure_stage`——这三样能让对方不必重新复现。
 
 ## 11. 数据重置
 
