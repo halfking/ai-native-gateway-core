@@ -20,7 +20,14 @@ async function load() {
     const res = await getAdminMarketModelPlatforms(m, 'standard', 300)
     available.value = res.available
     reason.value = res.reason || ''
-    rows.value = res.items || []
+    // 契约 C：名称列表按平台名排序（首列展示 platform_name）。
+    rows.value = [...(res.items || [])].sort((a, b) => {
+      const an = (a.platform_name || a.platform_id || '').trim()
+      const bn = (b.platform_name || b.platform_id || '').trim()
+      if (!an && bn) return 1
+      if (an && !bn) return -1
+      return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' })
+    })
   } catch {
     available.value = false
     reason.value = 'load_failed'
