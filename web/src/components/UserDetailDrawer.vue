@@ -134,7 +134,7 @@ async function handleCreateKey() {
       remark: newKeyForm.value.remark || undefined,
     })
     createdKeyResponse.value = { api_key: response.api_key, key_prefix: response.key_prefix }
-    ElMessage.success(t('users.detail.keyCreated', '密钥创建成功'))
+    ElMessage.success(t('users.detail.keyCreated'))
     // 刷新密钥列表
     await loadKeys()
   } catch (e: unknown) {
@@ -159,12 +159,12 @@ function resetCreateKeyForm() {
 async function handleRevokeKey(key: ApiKey) {
   try {
     await ElMessageBox.confirm(
-      t('users.detail.revokeKeyConfirm', `确定要吊销密钥 ${key.key_prefix}**** 吗？此操作不可恢复。`),
-      t('common.terms.confirm', '确认'),
+      t('users.detail.revokeKeyConfirm', { key: `${key.key_prefix}****` }),
+      t('common.confirm'),
       { type: 'warning' },
     )
     await revokeKey(key.id)
-    ElMessage.success(t('users.detail.keyRevoked', '密钥已吊销'))
+    ElMessage.success(t('users.detail.keyRevoked'))
     await loadKeys()
   } catch (e: unknown) {
     if (e !== 'cancel') {
@@ -177,10 +177,10 @@ async function handleToggleKeyEnabled(key: ApiKey) {
   try {
     if (key.enabled) {
       await disableKey(key.id)
-      ElMessage.success(t('users.detail.keyDisabled', '密钥已禁用'))
+      ElMessage.success(t('users.detail.keyDisabled'))
     } else {
       await enableKey(key.id)
-      ElMessage.success(t('users.detail.keyEnabled', '密钥已启用'))
+      ElMessage.success(t('users.detail.keyEnabled'))
     }
     await loadKeys()
   } catch (e: unknown) {
@@ -309,12 +309,12 @@ const canDrillKeys = computed(() => isSuperAdmin())
           class="udd-tab"
           :class="{ active: activeTab === 'stats' }"
           @click="switchTab('stats')"
-        >{{ t('users.detail.statsTab', '统计') }}</button>
+        >{{ t('users.detail.statsTab') }}</button>
         <button
           class="udd-tab"
           :class="{ active: activeTab === 'keys' }"
           @click="switchTab('keys')"
-        >{{ t('users.detail.keysTab', 'API 密钥') }} <span v-if="keys.length > 0" class="udd-tab-badge">{{ keys.length }}</span></button>
+        >{{ t('users.detail.keysTab') }} <span v-if="keys.length > 0" class="udd-tab-badge">{{ keys.length }}</span></button>
       </div>
 
       <!-- 统计标签页 -->
@@ -454,13 +454,13 @@ const canDrillKeys = computed(() => isSuperAdmin())
       <div v-if="activeTab === 'keys'" class="udd-tab-content">
         <div class="udd-keys-toolbar">
           <button class="btn btn-primary btn-sm" @click="showCreateKey = true">
-            <span style="margin-right: 4px;">+</span> {{ t('users.detail.createKey', '签发密钥') }}
+            <span style="margin-right: 4px;">+</span> {{ t('users.detail.createKey') }}
           </button>
         </div>
 
         <div v-if="keysLoading" class="udd-empty">{{ t('common.feedback.loading', '加载中...') }}</div>
         <div v-else-if="keysError" class="udd-empty udd-error">{{ keysError }}</div>
-        <div v-else-if="keys.length === 0" class="udd-empty">{{ t('users.detail.noKeys', '该用户暂无 API 密钥') }}</div>
+        <div v-else-if="keys.length === 0" class="udd-empty">{{ t('users.detail.noKeys') }}</div>
 
         <div v-else class="udd-keys-list">
           <div v-for="key in keys" :key="key.id" class="udd-key-card">
@@ -477,7 +477,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
                 <button
                   class="btn btn-ghost btn-xs btn-danger"
                   @click="handleRevokeKey(key)"
-                >{{ t('users.detail.revokeKey', '吊销') }}</button>
+                >{{ t('users.detail.revokeKey') }}</button>
               </div>
             </div>
             <div class="udd-key-info">
@@ -500,7 +500,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
                 <span>{{ fmtTokensCompact(key.total_prompt_tokens + key.total_completion_tokens) }}</span>
               </div>
               <div v-if="key.rate_limit_rpm" class="udd-key-row">
-                <span class="udd-key-label">{{ t('users.detail.rateLimit', '速率限制') }}</span>
+                <span class="udd-key-label">{{ t('users.detail.rateLimit') }}</span>
                 <span>{{ key.rate_limit_rpm }} RPM</span>
               </div>
               <div v-if="key.remark" class="udd-key-row">
@@ -516,18 +516,18 @@ const canDrillKeys = computed(() => isSuperAdmin())
           <div v-if="showCreateKey" class="modal-overlay" @click.self="resetCreateKeyForm">
             <div class="modal-dialog">
               <div class="modal-header">
-                <h3>{{ t('users.detail.createKeyTitle', '为用户签发密钥') }}</h3>
+                <h3>{{ t('users.detail.createKeyTitle') }}</h3>
                 <button class="modal-close" @click="resetCreateKeyForm">×</button>
               </div>
               <div class="modal-body">
                 <div v-if="createdKeyResponse" class="udd-key-created">
                   <div class="udd-key-created-icon">✓</div>
-                  <p class="udd-key-created-title">{{ t('users.detail.keyCreatedSuccess', '密钥创建成功') }}</p>
+                  <p class="udd-key-created-title">{{ t('users.detail.keyCreatedSuccess') }}</p>
                   <div class="udd-key-created-secret">
                     <code>{{ createdKeyResponse.api_key }}</code>
                   </div>
-                  <p class="udd-key-created-warn">{{ t('users.detail.keyCreatedWarn', '请妥善保管，关闭后将无法再次查看完整密钥') }}</p>
-                  <button class="btn btn-primary" @click="resetCreateKeyForm">{{ t('common.terms.close', '关闭') }}</button>
+                  <p class="udd-key-created-warn">{{ t('users.detail.keyCreatedWarn') }}</p>
+                  <button class="btn btn-primary" @click="resetCreateKeyForm">{{ t('common.close') }}</button>
                 </div>
 
                 <form v-else @submit.prevent="handleCreateKey">
@@ -542,7 +542,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
                     />
                   </div>
                   <div class="form-group">
-                    <label>{{ t('users.detail.keyAlias', '密钥别名') }}</label>
+                    <label>{{ t('users.detail.keyAlias') }}</label>
                     <input
                       v-model="newKeyForm.key_alias"
                       type="text"
@@ -551,7 +551,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
                     />
                   </div>
                   <div class="form-group">
-                    <label>{{ t('users.detail.budgetUsd', '预算 (USD)') }}</label>
+                    <label>{{ t('users.detail.budgetUsd') }}</label>
                     <input
                       v-model.number="newKeyForm.budget_usd"
                       type="number"
@@ -562,7 +562,7 @@ const canDrillKeys = computed(() => isSuperAdmin())
                     />
                   </div>
                   <div class="form-group">
-                    <label>{{ t('users.detail.rateLimitRpm', '速率限制 (RPM)') }}</label>
+                    <label>{{ t('users.detail.rateLimitRpm') }}</label>
                     <input
                       v-model.number="newKeyForm.rate_limit_rpm"
                       type="number"
@@ -581,9 +581,9 @@ const canDrillKeys = computed(() => isSuperAdmin())
                     ></textarea>
                   </div>
                   <div class="modal-footer">
-                    <button type="button" class="btn btn-ghost" @click="resetCreateKeyForm">{{ t('common.terms.cancel', '取消') }}</button>
+                    <button type="button" class="btn btn-ghost" @click="resetCreateKeyForm">{{ t('common.cancel') }}</button>
                     <button type="submit" class="btn btn-primary" :disabled="createKeySaving">
-                      {{ createKeySaving ? t('common.feedback.submitting', '提交中...') : t('common.terms.create', '创建') }}
+                      {{ createKeySaving ? t('common.feedback.submitting') : t('common.create') }}
                     </button>
                   </div>
                 </form>

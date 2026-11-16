@@ -44,6 +44,7 @@ export default {
     deleteFailed: '削除に失敗しました。再試行してください。',
     operationFailed: '操作を完了できませんでした。再試行してください。',
     loading: '読み込み中…',
+    submitting: '送信中…',
     unknownReason: 'エラーの詳細を取得できませんでした',
     probeLaneHistoricalHint: 'プローブトラフィックの物理分離レーンは未有効です。分離前の履歴プローブ記録を表示しています。',
     saveFailedWithReason: '保存に失敗しました：{reason}。再試行してください。',

@@ -43,6 +43,7 @@ export default {
     deleteFailed: 'تعذّر الحذف. أعد المحاولة.',
     operationFailed: 'تعذّر إتمام العملية. أعد المحاولة.',
     loading: 'جاري التحميل…',
+    submitting: 'جاري الإرسال…',
     unknownReason: 'لم يتم الحصول على تفاصيل الخطأ',
     probeLaneHistoricalHint: 'مسار العزل المادي لحركة استكشاف المسار غير مفعّل؛ هذه سجلات استكشاف تاريخية قبل العزل.',
     saveFailedWithReason: 'فشل الحفظ: {reason}. أعد المحاولة.',
