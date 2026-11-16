@@ -38,6 +38,15 @@ type Index struct {
 	hotCanonicalsTS  time.Time
 	hotCanonicalsTTL time.Duration
 
+	// hotReselectCanonicals caches the **wide** 48h hot ladder used by the
+	// gateway's zero-candidate reselect path (see reselect.go). Same source
+	// table and same TTL discipline as hotCanonicals, but a wider LIMIT:
+	// the decision pool is the hot top-3, and a model picked from a
+	// 3-model pool can be the only one that is routable — which is exactly
+	// when the request needs a wider ladder. Protected by hotCanonicalMu.
+	hotReselectCanonicals   []int
+	hotReselectCanonicalsTS time.Time
+
 	// correctionLoader allows tests and alternate implementations to
 	// override how last-task correction is loaded for RecommendV2.
 	correctionLoader func(context.Context, *pgxpool.Pool, string, int, TaskType) (map[string]float64, error)
@@ -45,6 +54,11 @@ type Index struct {
 	// availabilityFilter allows tests and alternate implementations to
 	// override the live availability check used by RecommendV2.
 	availabilityFilter func(context.Context, *pgxpool.Pool, []Candidate) ([]Candidate, error)
+
+	// hotReselectLoader allows tests and alternate implementations to
+	// override the source of the wide 48h hot ladder used by the gateway's
+	// zero-candidate reselect path (see reselect.go).
+	hotReselectLoader func(context.Context, int) []int
 
 	// affinityStore, when set, supplies the learned task→model affinity used as
 	// the 5th scoring dimension in RecommendV2. nil (or mode=off) degrades to
