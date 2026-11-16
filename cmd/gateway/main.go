@@ -42,7 +42,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/bg/freequotacleanup"
 	"github.com/kaixuan/llm-gateway-go/bg/freequotareset"
@@ -243,6 +242,24 @@ func main() {
 	// version still serves traffic (zero-downtime upgrade).
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		os.Exit(runMigrate(config.Load().DatabaseURL))
+	}
+
+	// --version: print version identity and exit 0.
+	//
+	// ★ 这条契约不是「方便一下」：autoupdate.Installer 在替换二进制前会执行
+	//   `<new-binary> --version` 做校验。旧实现里网关只认 `migrate` 子命令，
+	//   传 --version 会让它**整体启动**（连数据库、抢监听端口），被 5 秒超时
+	//   杀掉 ⇒ 校验恒失败 ⇒ 安装 100% 回滚。自更新链路因此从未真正可用。
+	//
+	//   安装器侧已改为「先结构校验、再尽力语义探测」，但两侧对齐契约才是根治：
+	//   被装的二进制必须能用 --version 自证身份。
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-v", "version":
+			fmt.Printf("llm-gateway-go %s (git %s, build %s, seq %s)\n",
+				Version(), GitCommit(), BuildDate(), BuildNumber())
+			os.Exit(0)
+		}
 	}
 
 	// P0-3 fix: wire the global metrics recorder so the P0-2 / P0-3
@@ -8091,24 +8108,34 @@ func main() {
 		slog.Info("Phase 3: Fault Management API enabled (/api/admin/faults/*)")
 
 		// Phase 4: Auto-update (自动升级)
-		autoupdateStore := autoupdate.NewPgxStore(pool)
-		autoupdateDownloader := autoupdate.NewDownloader("/tmp/downloads")
-		autoupdateInstaller := autoupdate.NewInstaller("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
-		autoupdateRollback := autoupdate.NewRollback("/usr/local/bin/llm-gateway-go", "/var/backups/llm-gateway", "/var/lib/llm-gateway")
-		autoupdateAPI := autoupdate.NewAdminAPI(autoupdateStore, autoupdateDownloader, autoupdateInstaller, autoupdateRollback)
-		// 前端使用 /api/admin/releases，前端期望不含 /autoupdate 前缀
-		autoupdateAPI.RegisterRoutes(adminGroup.Group("/releases"))
-		slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)")
-
-		autoupdateAPI.RegisterRoutes(adminGroup.Group("/autoupdate"))
+		//
+		// ★ 2026-11-16 自更新链路补全：
+		//   旧实现在这里硬编码 /usr/local/bin + /var/backups + /var/lib，
+		//   与本仓真实部署布局（/opt/llm-gateway-go）完全不符；且 AdminAPI 从未
+		//   调用过 downloader/installer ⇒ 「点击安装升级」根本没有入口。
+		//   现在：路径/服务名/迁移命令全部可配置（默认对齐真实部署），
+		//   安装执行器 + 远端版本检索器（自动提醒）一并接线。
+		autoupdateRuntime := setupAutoupdate(pool, adminGroup, currentGatewayVersionProvider())
+		if autoupdateRuntime != nil {
+			autoupdateRuntime.api.RegisterRoutes(adminGroup.Group("/releases"))
+			slog.Info("Phase 4: Auto-update API enabled (/api/admin/releases/*)",
+				"config", describeAutoupdateEnv(loadAutoupdateConfig()))
+			startAutoupdateChecker(context.Background(), autoupdateRuntime)
+		}
 
 		// 2026-07-13: Customer-facing upgrade endpoints. Read-only — actual
 		// upgrade execution stays on /api/admin/releases/*. These allow the
 		// customer's browser to see "an update is available" before login.
-		autoupdateCustomerAPI := autoupdate.NewCustomerAPI(autoupdateStore, currentGatewayVersionProvider(), autoupdate.ChannelStable)
-		customerUpgradeGroup := customerEcho.Group("/api/system/upgrade")
-		customerUpgradeGroup.Use(noAuthCustomerMiddleware())
-		autoupdateCustomerAPI.RegisterRoutes(customerUpgradeGroup)
+		//
+		// ★ 2026-11-16：原先另有 `/api/admin/autoupdate/*` 一套重复注册（同一组
+		//   handler 挂在两个前缀下 = 双真源路由；前端只用 /api/admin/releases）。
+		//   已删除重复注册，保留单一权威路径。
+		if autoupdateRuntime != nil && autoupdateRuntime.customerAPI != nil {
+			customerUpgradeGroup := customerEcho.Group("/api/system/upgrade")
+			customerUpgradeGroup.Use(noAuthCustomerMiddleware())
+			autoupdateRuntime.customerAPI.RegisterRoutes(customerUpgradeGroup)
+			slog.Info("Phase 4: Customer upgrade API enabled (/api/system/upgrade/*)")
+		}
 		slog.Info("Phase 4: Customer upgrade API enabled (/api/system/upgrade/*)")
 
 		// Phase 5: Center Ops (中心运维)

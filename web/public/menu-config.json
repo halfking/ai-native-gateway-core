@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-16T08:14:40.119Z",
+  "exported_at": "2026-11-16T08:36:34.351Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -342,6 +342,15 @@
           "path": "/admin/settings",
           "labelKey": "nav.item.settings",
           "icon": "⚙️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/self-update",
+          "labelKey": "nav.item.selfUpdate",
+          "icon": "⬆️",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

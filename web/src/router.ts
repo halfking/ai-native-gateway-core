@@ -69,6 +69,9 @@ const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const UsageTrendExplorerView = () => import('./views/admin/UsageTrendExplorer.vue')
 // 批 158b：P1 usageEnhanced 孤儿接前端，组合 summary + cost-trend + period-compare + cache-economics + hot-api-keys
 const UsageEnhancedView = () => import('./views/admin/UsageEnhancedView.vue')
+// 2026-11-16：自更新管理页（自动检索最新版本 → 提醒 → 点击安装升级）。
+// 后端契约见 web/src/api/selfUpdate.ts（/api/admin/releases 族，super admin 档）。
+const SelfUpdateView = () => import('./views/admin/SelfUpdateView.vue')
 // 批 158c：P2 boardOperational 独立详细页（独立深链，呈现 background_tasks + selfcheck 全字段）
 // ⚠️ 后端 tenant 隔离未落实（属主拍板），前端仅"呈现已就位数据"，不参与授权判断
 const BoardOperationalView = () => import('./views/BoardOperationalView.vue')
@@ -344,6 +347,7 @@ export const router = createRouter({
     { path: '/admin/storage-and-log-config', component: StorageAndLogConfigView, meta: { requiresSuper: true } }, // 存储与日志配置（批 204：3 段只读摘要；子视图 StorageConfig/FilesystemMaintenance/LogManagement 全在 DataLifecycleView 父视图下）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/plugin-settings', component: PluginSettingsPage, meta: { requiresSuper: true } }, // 插件提供商配置（Native/Casdoor 切换，2026-11-15）
+    { path: '/admin/self-update', component: SelfUpdateView, meta: { requiresSuper: true } }, // 自更新与升级（检索最新版本 → 提醒 → 安装升级，2026-11-16）
     { path: '/operations/sales', component: SalesWorkbenchView, meta: { requiresAuth: true } }, // 报价系统 MVP 工作台（2026-11-05 W1-T2；供给/需求/报价三页签；内部运营面 requiresAuth，写权限应用层闸）
     { path: '/operations/marketing', component: OperationsMarketingView, meta: { requiresPlatformOps: true } }, // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动）；2026-11-12 A-8 权限对齐（定稿 M3-T4）：super-only → platformOps（与 /pricing 同档；服务端仍 superAdmin 闸——platformOps=super_admin@default，中间件无需改动）
     { path: '/operations/market-prices', component: MarketPricesView, meta: { requiresPlatformOps: true } }, // 2026-11-13 A-17 收口 M3-T1：市场价格采集面（平台注册表 958 管理 + 940 同步台账；服务端 superAdmin 闸，与 /operations/marketing 同档）

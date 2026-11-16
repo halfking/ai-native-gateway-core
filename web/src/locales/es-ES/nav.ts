@@ -99,6 +99,7 @@ export default {
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "Product Entry",
     updateActivate: 'Actualizar y activar',
+    selfUpdate: 'Actualización automática',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
     activateActionTip: 'Activar esta instancia',
 

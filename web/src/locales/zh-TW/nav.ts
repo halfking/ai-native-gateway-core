@@ -100,6 +100,7 @@ export default {
     opsVibeCoding: "VibeCoding",
     opsProductEntry: "產品入口",
     updateActivate: '更新與激活',
+    selfUpdate: '自更新與升級',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 
     licenseActivate: '许可激活',

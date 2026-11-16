@@ -19,6 +19,13 @@ const (
 	RuleCPUHigh        = "cpu_high"
 	RuleDiskHigh       = "disk_high"
 	RuleLowSuccessRate = "low_success_rate"
+
+	// RuleUpdateAvailable 是「发现新版本可升级」的告警规则键。
+	//
+	// ★ 它与上面三条遥测告警的语义不同：遥测告警会随指标回落**自动消解**，
+	//   而「有新版」不会自己消失 —— 只有运维真的完成升级（或显式 resolve）
+	//   才算处理完。所以这里走独立入口，不进 autoResolveRuntimeAlerts。
+	RuleUpdateAvailable = "update_available"
 )
 
 // RuntimeAlertEvent is a persisted runtime telemetry alert.
@@ -84,6 +91,58 @@ func (s *PgxStore) ProcessRuntimeAlerts(ctx context.Context, metrics collector.R
 		}
 	}
 	return s.autoResolveRuntimeAlerts(ctx, metrics)
+}
+
+// RaiseUpdateAvailableAlert 写入一条「有新版本可升级」的运行时告警。
+//
+// 返回 (告警 ID, 是否新建, error)。
+//
+// 去重口径：**同一实例只保留一条未处理的「有新版」告警**。
+// 再次发现新版本时更新原行的标题/正文，而不是再插一行 ——
+// 否则每轮检索都会在告警列表里刷出一串同义告警，运维真正要处理的那条
+// 反而被淹没。
+func (s *PgxStore) RaiseUpdateAvailableAlert(ctx context.Context, instanceID, version, notes, severity string) (int64, bool, error) {
+	if severity == "" {
+		severity = "info"
+	}
+	title := "发现新版本 " + version
+	message := "可用版本 " + version
+	if notes != "" {
+		message += "：" + notes
+	}
+
+	var existingID int64
+	err := s.db.QueryRow(ctx, `
+		SELECT id FROM runtime_alert_events
+		WHERE rule_key = $1 AND instance_id = $2
+		  AND status IN ('triggered', 'acknowledged')
+		ORDER BY detected_at DESC
+		LIMIT 1
+	`, RuleUpdateAvailable, instanceID).Scan(&existingID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, err
+	}
+	if err == nil {
+		if _, uerr := s.db.Exec(ctx, `
+			UPDATE runtime_alert_events
+			SET severity = $2, title = $3, message = $4, updated_at = now()
+			WHERE id = $1
+		`, existingID, severity, title, message); uerr != nil {
+			return existingID, false, uerr
+		}
+		return existingID, false, nil
+	}
+
+	var newID int64
+	if err := s.db.QueryRow(ctx, `
+		INSERT INTO runtime_alert_events
+			(rule_key, instance_id, severity, title, message, status, metric_value, detected_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 'triggered', NULL, now(), now())
+		RETURNING id
+	`, RuleUpdateAvailable, instanceID, severity, title, message).Scan(&newID); err != nil {
+		return 0, false, err
+	}
+	return newID, true, nil
 }
 
 func (s *PgxStore) triggerRuntimeAlert(ctx context.Context, instanceID string, c runtimeAlertCandidate) error {

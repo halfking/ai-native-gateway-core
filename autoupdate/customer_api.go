@@ -23,6 +23,9 @@ type CustomerAPI struct {
 	store   Store
 	version VersionProvider
 	channel Channel
+	// checker 可空：配置了远端源时，「检查更新」会真的去远端查一次，
+	// 而不是只读本地 releases 表（本地表是检索器的产物，不是真源）。
+	checker *Checker
 }
 
 // NewCustomerAPI wires the customer-facing upgrade handlers.
@@ -35,6 +38,11 @@ func NewCustomerAPI(store Store, version VersionProvider, channel Channel) *Cust
 		version: version,
 		channel: channel,
 	}
+}
+
+// SetChecker 注入远端检索器。
+func (api *CustomerAPI) SetChecker(checker *Checker) {
+	api.checker = checker
 }
 
 // RegisterRoutes mounts customer-facing handlers under the given Echo group.
@@ -69,7 +77,23 @@ func (api *CustomerAPI) handleStatus(c *echo.Context) error {
 }
 
 func (api *CustomerAPI) handleCheck(c *echo.Context) error {
-	resp := api.buildStatus(c.Request().Context())
+	ctx := c.Request().Context()
+
+	// 有远端源时，「检查更新」= 真的去远端查一次（检索器会把结论写进本地
+	// releases 表，于是 buildStatus 立刻能看到）。没有远端源时退化为读本地表。
+	//
+	// ★ 用 CheckThrottled（带节流）而不是 CheckOnce：这个端点是**无鉴权**的，
+	//   一旦每次调用都出网，就等于给任意调用者一个外呼放大器。
+	if api.checker != nil {
+		result := api.checker.CheckThrottled(ctx)
+		if result.Error != "" {
+			// 检索失败也要把本地已知状态返回出去 —— 前端要显示「检查失败」
+			// 而不是空白，但不能让一次远端抖动把「有更新」的结论吞掉。
+			slog.Warn("upgrade check: remote check failed", "error", result.Error)
+		}
+	}
+
+	resp := api.buildStatus(ctx)
 	return c.JSON(http.StatusOK, UpgradeCheckResponse{
 		UpgradeStatusResponse: resp,
 		CheckedAt:             nowString(),

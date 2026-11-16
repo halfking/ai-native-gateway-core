@@ -14,6 +14,10 @@ type AdminAPI struct {
 	downloader *Downloader
 	installer  *Installer
 	rollback   *Rollback
+	// checker 远端版本检索器（可空：未配置远端源时「立即检查」返回明确说明）。
+	checker *Checker
+	// executor 安装执行器（可空：未配置时安装端点返回明确说明）。
+	executor *Executor
 }
 
 // NewAdminAPI 创建Admin API
@@ -26,6 +30,16 @@ func NewAdminAPI(store Store, downloader *Downloader, installer *Installer, roll
 	}
 }
 
+// SetChecker 注入版本检索器。
+func (a *AdminAPI) SetChecker(checker *Checker) {
+	a.checker = checker
+}
+
+// SetExecutor 注入安装执行器。
+func (a *AdminAPI) SetExecutor(executor *Executor) {
+	a.executor = executor
+}
+
 // RegisterRoutes 注册路由（认证由 Echo 桥接层统一 JWT 中间件处理）
 func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.POST("", a.CreateRelease)
@@ -34,6 +48,11 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.GET("/gray-rules", a.ListGrayRules)
 	g.GET("/upgrade-logs", a.GetUpgradeLogs)
 	g.POST("/rollback", a.RollbackRelease)
+	// ── 自更新执行面（静态路径必须排在 /:version 之前，否则被参数路由吞掉）──
+	g.POST("/check", a.CheckLatest)
+	g.GET("/check-status", a.GetCheckStatus)
+	g.GET("/install-status", a.GetInstallStatus)
+	g.GET("/notifications", a.GetNotifications)
 	g.GET("/:version", a.GetRelease)
 	g.GET("/:version/rollout-status", a.GetRolloutStatus)
 	g.POST("/:version/publish", a.PublishRelease)
@@ -43,6 +62,8 @@ func (a *AdminAPI) RegisterRoutes(g *echo.Group) {
 	g.PATCH("/:version/gray", a.UpdateGrayPhase)
 	g.POST("/:version/gray/pause", a.PauseGrayRelease)
 	g.POST("/:version/gray/resume", a.ResumeGrayRelease)
+	g.POST("/:version/install", a.InstallRelease)
+	g.POST("/:version/source-build", a.SourceBuildRelease)
 }
 
 // CreateRelease 创建发布版本
@@ -387,4 +408,163 @@ func (a *AdminAPI) RollbackRelease(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, result)
+}
+
+// ── 自更新执行面 ────────────────────────────────────────────────────────
+
+// CheckLatest 立即向远端发布源检索最新版本。
+//
+// 这是「手动检查」入口；后台周期检索由 Checker 负责，两者共用同一个 Checker 实例，
+// 所以手动检查产生的提醒与自动检查产生的提醒是同一套记录，不会重复。
+func (a *AdminAPI) CheckLatest(c *echo.Context) error {
+	if a.checker == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "version check is not configured on this node",
+		})
+	}
+	result := a.checker.CheckOnce(c.Request().Context())
+	if result.Error != "" {
+		return c.JSON(http.StatusBadGateway, map[string]interface{}{
+			"error":  "version check failed",
+			"detail": result.Error,
+			"result": result,
+		})
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+// GetCheckStatus 返回最近一次版本检索结论。
+func (a *AdminAPI) GetCheckStatus(c *echo.Context) error {
+	if a.checker == nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"configured": false,
+		})
+	}
+	result := a.checker.LastResult()
+	if result == nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"configured":      true,
+			"checked":         false,
+			"interval_secs":   int64(a.checker.Interval().Seconds()),
+			"current_version": "",
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"configured":    true,
+		"checked":       true,
+		"interval_secs": int64(a.checker.Interval().Seconds()),
+		"result":        result,
+	})
+}
+
+// GetInstallStatus 返回当前/最近一次安装任务快照。
+func (a *AdminAPI) GetInstallStatus(c *echo.Context) error {
+	if a.executor == nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"configured": false,
+		})
+	}
+	job := a.executor.Current()
+	if job == nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"configured": true,
+			"running":    false,
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"configured": true,
+		"running":    !isTerminalStatus(job.Status),
+		"job":        job,
+	})
+}
+
+// GetNotifications 列出「有新版待处理」的提醒。
+//
+// 提醒 = upgrade_logs 里 status=pending 的行（由 Checker 发现新版时生成）。
+func (a *AdminAPI) GetNotifications(c *echo.Context) error {
+	if a.store == nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{"items": []any{}, "total": 0})
+	}
+	instanceID := c.QueryParam("instance_id")
+	offset := 0
+	limit := 50
+	_, _ = fmt.Sscanf(c.QueryParam("offset"), "%d", &offset)
+	_, _ = fmt.Sscanf(c.QueryParam("limit"), "%d", &limit)
+
+	history, historyTotal, err := a.store.GetUpgradeHistory(c.Request().Context(), instanceID, offset, limit)
+	if err != nil {
+		slog.Error("get notifications failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "get notifications failed"})
+	}
+
+	pending := make([]ReleaseStatus, 0, len(history))
+	for _, h := range history {
+		if h.Status == StatusPending {
+			pending = append(pending, h)
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"items":         pending,
+		"total":         len(pending),
+		"history_total": historyTotal,
+	})
+}
+
+// InstallRelease 执行一次「点击安装升级」（下载制品 → 校验 → 替换 → 迁移 → 重启）。
+//
+// 立即返回任务快照；实际安装在后台 goroutine 里跑。
+func (a *AdminAPI) InstallRelease(c *echo.Context) error {
+	if a.executor == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "install executor is not configured on this node",
+		})
+	}
+	version := c.Param("version")
+
+	var req InstallRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	// URL 上的版本是权威，body 里的版本只是冗余。
+	req.Version = version
+	if req.Mode == "" {
+		req.Mode = InstallModeArtifact
+	}
+
+	job, err := a.executor.Start(c.Request().Context(), req)
+	if err != nil {
+		return c.JSON(http.StatusConflict, map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+	return c.JSON(http.StatusAccepted, map[string]interface{}{
+		"job": job,
+	})
+}
+
+// SourceBuildRelease 从本地源码编译出二进制并安装（即「本地自动编译然后启动」）。
+func (a *AdminAPI) SourceBuildRelease(c *echo.Context) error {
+	if a.executor == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "install executor is not configured on this node",
+		})
+	}
+	version := c.Param("version")
+
+	var req InstallRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	req.Version = version
+	req.Mode = InstallModeSource
+
+	job, err := a.executor.Start(c.Request().Context(), req)
+	if err != nil {
+		return c.JSON(http.StatusConflict, map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+	return c.JSON(http.StatusAccepted, map[string]interface{}{
+		"job": job,
+	})
 }

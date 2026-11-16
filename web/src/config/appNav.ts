@@ -228,6 +228,11 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/admin/sanitize-rules', labelKey: 'sanitizeRules.title', icon: '🔒' },
       { path: '/admin/settings', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      // 2026-11-16：自更新与升级（自动检索最新版本 → 提醒 → 点击安装升级）。
+      // 后端是 /api/admin/releases 族（super admin 档）⇒ 菜单项同档 super。
+      // 与「更新与激活」（/customer/update-activate）是两件事：后者是 license 激活，
+      // 前者是本节点自身的二进制升级（会替换二进制并重启服务）。
+      { path: '/admin/self-update', labelKey: 'nav.item.selfUpdate', icon: '⬆️', super: true, hideForTenant: true },
       { path: '/admin/proxy', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },

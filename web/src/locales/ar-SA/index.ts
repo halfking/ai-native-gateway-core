@@ -90,6 +90,7 @@ import routeIncidentDrawer from './routeIncidentDrawer'
 import sales from './sales'
 import publicQuote from './publicQuote'
 import helpManual from './helpManual'
+import selfUpdateView from './selfUpdateView'
 
 export default {
   sanitizeRules,
@@ -101,6 +102,7 @@ export default {
   annotation,
   nav,
   helpManual,
+  selfUpdateView,
   taskProfile,
   autoTuning,
   autoOps,

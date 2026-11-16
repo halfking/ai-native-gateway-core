@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,22 +13,26 @@ import (
 	"time"
 )
 
-// Installer 安装器（备份 + 替换 + 验证）
+// Installer 安装器（备份 + 校验 + 替换 + 版本元数据 + 迁移 + 重启）
 type Installer struct {
 	binPath       string
 	backupDir     string
 	dataDir       string
-	migrationCmd  string // P1: 数据库迁移命令（可选）
+	migrationCmd  string // 数据库迁移命令（可选）
 	migrationArgs []string
-	serviceName   string // 可选：安装完成后重启的 systemd 服务名
+	serviceName   string // 安装完成后重启的 systemd 服务名
+	// minBinarySize 二进制最小字节数。Go 编译出来的网关二进制远大于 1KB；
+	// 用一个明显偏小的阈值挡掉「下到一个 HTML 错误页就当二进制装」的情况。
+	minBinarySize int64
 }
 
 // NewInstaller 创建安装器
 func NewInstaller(binPath, backupDir, dataDir string) *Installer {
 	return &Installer{
-		binPath:   binPath,
-		backupDir: backupDir,
-		dataDir:   dataDir,
+		binPath:       binPath,
+		backupDir:     backupDir,
+		dataDir:       dataDir,
+		minBinarySize: 1 << 20, // 1 MiB
 	}
 }
 
@@ -35,6 +40,31 @@ func NewInstaller(binPath, backupDir, dataDir string) *Installer {
 // after a successful install. Pass an empty string to skip the restart step.
 func (i *Installer) SetServiceName(name string) {
 	i.serviceName = strings.TrimSpace(name)
+}
+
+// SetBinaryPath 覆盖被替换的二进制路径。
+func (i *Installer) SetBinaryPath(path string) {
+	i.binPath = strings.TrimSpace(path)
+}
+
+// SetBackupDir 覆盖备份目录。
+func (i *Installer) SetBackupDir(dir string) {
+	i.backupDir = strings.TrimSpace(dir)
+}
+
+// SetDataDir 覆盖数据目录（VERSION / version.json 所在目录）。
+func (i *Installer) SetDataDir(dir string) {
+	i.dataDir = strings.TrimSpace(dir)
+}
+
+// SetMinBinarySize 覆盖二进制最小字节数（测试用）。
+func (i *Installer) SetMinBinarySize(size int64) {
+	i.minBinarySize = size
+}
+
+// RestartEnabled 报告是否配置了安装后重启。
+func (i *Installer) RestartEnabled() bool {
+	return strings.TrimSpace(i.serviceName) != ""
 }
 
 // InstallResult 安装结果
@@ -47,12 +77,30 @@ type InstallResult struct {
 	DurationMs int64
 }
 
+// InstallOptions 是一次安装的可选参数。
+type InstallOptions struct {
+	// VersionJSON 是新版本的版本元数据（version.json 内容）。
+	// 传 nil 时由安装器按 release 合成。
+	VersionJSON []byte
+	// SkipMigration 跳过数据库迁移（由外部编排迁移时机时使用）。
+	SkipMigration bool
+}
+
 // Install 安装新版本（备份 + 替换）
+//
+// 保留旧签名以兼容既有调用方；新代码用 InstallWithOptions。
 func (i *Installer) Install(ctx context.Context, downloadPath string, release *Release) (*InstallResult, error) {
+	return i.InstallWithOptions(ctx, downloadPath, release, InstallOptions{})
+}
+
+// InstallWithOptions 安装新版本（备份 + 校验 + 替换 + 版本元数据 + 迁移 + 重启）。
+func (i *Installer) InstallWithOptions(ctx context.Context, downloadPath string, release *Release, opts InstallOptions) (*InstallResult, error) {
 	start := time.Now()
 	result := &InstallResult{
 		OldVersion: i.getCurrentVersion(),
-		NewVersion: release.Version,
+	}
+	if release != nil {
+		result.NewVersion = release.Version
 	}
 
 	// 1. 创建备份目录
@@ -63,7 +111,7 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 
 	// 2. 备份当前二进制
 	timestamp := time.Now().Format("20060102_150405")
-	backupPath := filepath.Join(i.backupDir, fmt.Sprintf("llm-gateway-go_%s_%s", result.OldVersion, timestamp))
+	backupPath := filepath.Join(i.backupDir, fmt.Sprintf("llm-gateway-go_%s_%s", sanitizeVersionForFilename(result.OldVersion), timestamp))
 
 	if err := i.copyFile(i.binPath, backupPath); err != nil {
 		result.Error = fmt.Sprintf("backup failed: %v", err)
@@ -87,8 +135,10 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 
 	// 5. 写入版本信息（only on success — a partial install must not
 	//    leave a future restart pointing at an incompatible binary).
-	versionFile := filepath.Join(i.dataDir, "VERSION")
-	if err := os.WriteFile(versionFile, []byte(release.Version+"\n"), 0644); err != nil {
+	//
+	// ★ 版本真源：网关运行时读的是 dataDir/version.json（见 cmd/gateway/version.go），
+	//   VERSION 文件只是历史兼容物。所以两者都写，且 version.json 优先。
+	if err := i.writeVersionFiles(release, opts.VersionJSON); err != nil {
 		result.Error = fmt.Sprintf("write version file: %v", err)
 		if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 			result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
@@ -98,13 +148,13 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 	}
 
 	// 6. 数据库迁移（P1 修复：协调二进制升级与数据库迁移）
-	if i.migrationCmd != "" {
+	if i.migrationCmd != "" && !opts.SkipMigration {
 		if err := i.runMigration(ctx); err != nil {
 			result.Error = fmt.Sprintf("install succeeded but migration failed: %v", err)
 			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 			}
-			_ = os.WriteFile(versionFile, []byte(result.OldVersion+"\n"), 0644)
+			_ = i.restoreVersionFiles(result.OldVersion)
 			result.Success = false
 			result.DurationMs = time.Since(start).Milliseconds()
 			return result, fmt.Errorf("migration failed: %w", err)
@@ -118,7 +168,7 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 			if rbErr := i.copyFile(backupPath, i.binPath); rbErr != nil {
 				result.Error += fmt.Sprintf("; rollback also failed: %v", rbErr)
 			}
-			_ = os.WriteFile(versionFile, []byte(result.OldVersion+"\n"), 0644)
+			_ = i.restoreVersionFiles(result.OldVersion)
 			result.Success = false
 			result.DurationMs = time.Since(start).Milliseconds()
 			return result, fmt.Errorf("service restart failed: %w", err)
@@ -132,29 +182,167 @@ func (i *Installer) Install(ctx context.Context, downloadPath string, release *R
 	return result, nil
 }
 
-// verifyBinary 验证二进制文件
+// verifyBinary 验证新二进制。
+//
+// ★ 顺序很重要：**先做结构校验，再做语义探测**。
+//
+// 旧实现在这里直接跑 `<binary> --version`。但网关二进制只认 `migrate` 子命令，
+// 传 `--version` 会让它**整体启动**（连数据库、抢监听端口），5 秒后被 context
+// 杀掉 ⇒ verify 恒失败 ⇒ 安装 100% 回滚。
+//
+// 现在：
+//  1. 结构校验（可执行位 + 魔数 + 最小体积）—— 确定性、不执行被装文件。
+//  2. 语义探测（`<binary> --version`）—— **尽力而为**：超时/非零退出只记 WARN，
+//     因为不同版本的二进制未必都实现了 --version。
 func (i *Installer) verifyBinary(path string) error {
-	// 检查文件存在
+	if err := i.verifyBinaryStructure(path); err != nil {
+		return err
+	}
+	if err := i.probeBinaryVersion(path); err != nil {
+		slog.Warn("installer: binary version probe failed (continuing — structure check passed)",
+			"path", path, "error", err)
+	}
+	return nil
+}
+
+// verifyBinaryStructure 校验二进制的结构特征（不执行被装文件）。
+func (i *Installer) verifyBinaryStructure(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat: %w", err)
 	}
-
-	// 检查文件大小
-	if info.Size() < 1024 {
-		return fmt.Errorf("file too small: %d bytes", info.Size())
+	if info.IsDir() {
+		return fmt.Errorf("path is a directory")
 	}
+	minSize := i.minBinarySize
+	if minSize <= 0 {
+		minSize = 1 << 20
+	}
+	if info.Size() < minSize {
+		return fmt.Errorf("file too small: %d bytes (expected at least %d)", info.Size(), minSize)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		return fmt.Errorf("file is not executable: mode %s", info.Mode().Perm())
+	}
+	magic, err := readMagic(path, 4)
+	if err != nil {
+		return fmt.Errorf("read magic: %w", err)
+	}
+	if !isExecutableMagic(magic) {
+		return fmt.Errorf("not an executable binary: magic %x", magic)
+	}
+	return nil
+}
 
-	// 尝试执行 --version
+// isExecutableMagic 判断文件头是否为常见可执行格式。
+func isExecutableMagic(magic []byte) bool {
+	if len(magic) < 2 {
+		return false
+	}
+	switch {
+	case magic[0] == 0x7f && magic[1] == 'E': // ELF
+		return true
+	case magic[0] == 0xCF && magic[1] == 0xFA: // Mach-O 64
+		return true
+	case magic[0] == 0xCE && magic[1] == 0xFA: // Mach-O 32
+		return true
+	case magic[0] == 0xCA && magic[1] == 0xFE: // Mach-O universal
+		return true
+	case magic[0] == 'M' && magic[1] == 'Z': // PE
+		return true
+	default:
+		return false
+	}
+}
+
+// readMagic 读取文件头若干字节。
+func readMagic(path string, n int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, n)
+	read, err := f.Read(buf)
+	if err != nil && read == 0 {
+		return nil, err
+	}
+	return buf[:read], nil
+}
+
+// probeBinaryVersion 尽力而为地跑一次 `--version`。
+func (i *Installer) probeBinaryVersion(path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "--version")
-	if err := cmd.Run(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("execute --version: %w", err)
 	}
-
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return fmt.Errorf("--version produced no output")
+	}
 	return nil
+}
+
+// writeVersionFiles 写入版本元数据：version.json（真源）+ VERSION（兼容）。
+func (i *Installer) writeVersionFiles(release *Release, versionJSON []byte) error {
+	newVersion := ""
+	if release != nil {
+		newVersion = release.Version
+	}
+	if newVersion == "" {
+		newVersion = "unknown"
+	}
+
+	payload := versionJSON
+	if len(payload) == 0 {
+		payload = i.synthesizeVersionJSON(newVersion)
+	}
+	if err := os.WriteFile(filepath.Join(i.dataDir, "version.json"), payload, 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(i.dataDir, "VERSION"), []byte(newVersion+"\n"), 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+// restoreVersionFiles 回滚版本元数据（仅回写 VERSION，version.json 保持原值）。
+func (i *Installer) restoreVersionFiles(oldVersion string) error {
+	if oldVersion == "" {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(i.dataDir, "VERSION"), []byte(oldVersion+"\n"), 0644)
+}
+
+// synthesizeVersionJSON 在没有显式元数据时按 release 合成一份 version.json。
+func (i *Installer) synthesizeVersionJSON(version string) []byte {
+	info := map[string]any{
+		"version":    version,
+		"git_tag":    "v0.0.0",
+		"git_sha":    "unknown",
+		"build_seq":  0,
+		"build_date": time.Now().UTC().Format("20060102"),
+		"module":     "llm-gateway-go",
+	}
+	// 保留已有的 git_sha / build_seq，避免把已知信息抹掉。
+	if raw, err := os.ReadFile(filepath.Join(i.dataDir, "version.json")); err == nil {
+		var existing map[string]any
+		if err := json.Unmarshal(raw, &existing); err == nil {
+			for _, key := range []string{"git_tag", "git_sha", "build_seq", "build_date", "module"} {
+				if v, ok := existing[key]; ok {
+					info[key] = v
+				}
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		return []byte("{\n  \"version\": \"" + version + "\"\n}\n")
+	}
+	return append(encoded, '\n')
 }
 
 // replaceBinary 替换二进制文件
@@ -204,14 +392,26 @@ func (i *Installer) copyFile(src, dst string) error {
 	return os.Chmod(dst, srcInfo.Mode())
 }
 
-// getCurrentVersion 获取当前版本
+// getCurrentVersion 获取当前版本。
+//
+// 优先读 version.json（网关运行时的真源），其次读 VERSION 文件（历史兼容）。
 func (i *Installer) getCurrentVersion() string {
-	versionFile := filepath.Join(i.dataDir, "VERSION")
-	data, err := os.ReadFile(versionFile)
-	if err != nil {
-		return "unknown"
+	if raw, err := os.ReadFile(filepath.Join(i.dataDir, "version.json")); err == nil {
+		var info struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(raw, &info); err == nil {
+			if v := strings.TrimSpace(info.Version); v != "" {
+				return v
+			}
+		}
 	}
-	return string(data)
+	if raw, err := os.ReadFile(filepath.Join(i.dataDir, "VERSION")); err == nil {
+		if v := strings.TrimSpace(string(raw)); v != "" {
+			return v
+		}
+	}
+	return "unknown"
 }
 
 // CleanupOldBackups 清理旧备份（保留最近N个）
@@ -235,6 +435,11 @@ func (i *Installer) CleanupOldBackups(keepCount int) error {
 	}
 
 	return nil
+}
+
+// RestartService 显式重启服务（供执行器在响应返回后调用）。
+func (i *Installer) RestartService(ctx context.Context) error {
+	return i.restartService(ctx)
 }
 
 // restartService 重启服务（由 SetServiceName 显式启用）
@@ -282,4 +487,14 @@ func (i *Installer) runMigration(ctx context.Context) error {
 func (i *Installer) SetMigration(cmd string, args ...string) {
 	i.migrationCmd = cmd
 	i.migrationArgs = args
+}
+
+// sanitizeVersionForFilename 把版本号里的路径分隔符换掉，避免备份文件名越界。
+func sanitizeVersionForFilename(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		return "unknown"
+	}
+	replacer := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
+	return replacer.Replace(v)
 }

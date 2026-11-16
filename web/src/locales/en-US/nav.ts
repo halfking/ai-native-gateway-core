@@ -93,6 +93,7 @@ export default {
     helpManual: 'Help Manual',
     chat: 'Chat',
     updateActivate: 'Update & Activate',
+    selfUpdate: 'Self-update and upgrade',
     licenseActivate: 'License Activation',
     // 2026-09-04: activate CTA shown in place of gated ops entries (e.g. Auto Update) when not activated
     activateAction: 'Activate',

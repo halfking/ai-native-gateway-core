@@ -1,0 +1,95 @@
+// selfUpdateView.ts — 自更新管理頁（SelfUpdateView）文案（繁體）。
+//
+// 措辭紀律（與頁面程式同源）：檢查失敗 / 未設定遠端版本來源 / 尚未檢查過，
+// 這三種「結論不可得」的情況一律說「狀態未知」並給出原因，絕不說「已是最新」。
+export default {
+  pageTitle: '自更新與升級',
+  pageSubtitle: '系統自動檢索最新版本、產生提醒，由管理員確認後安裝升級',
+
+  statusCardTitle: '目前版本狀態',
+  statusCardHint: '展示本節點正在執行的版本，以及最近一次遠端版本檢索的結論',
+  currentVersion: '目前版本',
+  latestVersion: '最新可用版本',
+  buildSequence: '建置序號',
+  lastCheckedAt: '最近檢查時間',
+  checkInterval: '檢查間隔',
+  checkIntervalHours: '每 {hours} 小時自動檢查一次',
+  checkIntervalMinutes: '每 {minutes} 分鐘自動檢查一次',
+  checkIntervalSeconds: '每 {seconds} 秒自動檢查一次',
+  checkNow: '立即檢查更新',
+  checking: '檢查中',
+
+  stateNotConfiguredLabel: '未設定遠端版本來源',
+  stateNotConfiguredDetail:
+    '本節點沒有設定遠端版本來源，自動檢索與提醒未啟用，暫時無法判斷是否存在新版本。',
+  stateUnknownLabel: '版本狀態未知',
+  stateUnknownDetail:
+    '本次版本檢查未能得到結論：{reason}。在檢查成功之前，無法判斷是否存在新版本。',
+  stateNeverCheckedDetail:
+    '本節點已設定遠端版本來源，但還沒有執行過版本檢查，暫時無法判斷是否存在新版本。',
+  stateUpToDateLabel: '目前已是最新版本',
+  stateUpToDateDetail: '遠端檢索確認沒有可安裝的新版本。',
+  stateAvailableLabel: '發現新版本',
+  stateAvailableDetail: '遠端檢索確認存在新版本 {version}，可以安裝升級。',
+
+  bannerTitle: '發現新版本',
+  bannerMandatory: '強制更新',
+  bannerOptional: '可選更新',
+  bannerNotesTitle: '版本說明',
+  bannerNoNotes: '該版本沒有附帶發布說明。',
+  installNow: '立即升級',
+
+  confirmInstallTitle: '確認升級到 {version}',
+  confirmInstallBody:
+    '升級會下載新版本二進位、校驗後替換目前二進位，並重啟服務。服務重啟期間請求會短暫中斷。確認繼續？',
+  confirmInstallButton: '確認升級',
+  installStartFailed: '安裝任務未能啟動：{reason}',
+
+  installCardTitle: '安裝進度',
+  installCardHint: '展示最近一次安裝任務的狀態與執行步驟',
+  installCardEmpty: '本節點還沒有安裝任務記錄。',
+  jobVersion: '目標版本',
+  jobMode: '安裝方式',
+  jobModeUnknown: '未知的安裝方式',
+  jobStatus: '任務狀態',
+  jobStatusPending: '等待開始',
+  jobStatusDownloading: '正在下載製品',
+  jobStatusReadyToRestart: '等待重啟服務',
+  jobStatusUpgrading: '正在替換二進位',
+  jobStatusSuccess: '升級成功',
+  jobStatusFailed: '升級失敗',
+  jobStatusRolledBack: '已回滾到舊版本',
+  jobStatusUnknown: '未知狀態',
+  jobStartedAt: '開始時間',
+  jobStepsTitle: '執行步驟',
+  jobStepsEmpty: '任務尚未產生執行步驟。',
+  jobErrorTitle: '失敗原因',
+  jobSuccessNotice: '升級完成，新版本已生效。',
+  jobRestartScheduled: '升級已完成，服務將在稍後重啟。',
+  modeArtifact: '下載製品安裝',
+  modeSource: '本機原始碼編譯安裝',
+
+  notificationsTitle: '升級提醒',
+  notificationsHint: '展示檢索到新版本時生成的提醒記錄',
+  notificationsEmpty: '目前沒有待處理的升級提醒。',
+  notificationsLoadFailed: '讀取提醒列表失敗：{reason}',
+  notificationVersion: '版本號',
+  notificationStatus: '狀態',
+  notificationStartedAt: '提醒時間',
+  notificationCompletedAt: '處理時間',
+  notificationRetryCount: '重試次數',
+  notificationPending: '待處理',
+  notificationHandled: '已處理',
+
+  sourceCardTitle: '從本機原始碼編譯升級',
+  sourceCardHint: '用本機原始碼編譯出二進位並安裝，建構過程不會改動目前工作樹',
+  sourceRefLabel: '原始碼 ref',
+  sourceRefPlaceholder: '留空表示使用目前工作樹',
+  sourceBuildNow: '從原始碼編譯並升級',
+  confirmSourceBuildTitle: '確認從原始碼編譯並升級',
+  confirmSourceBuildBody:
+    '編譯會拉起獨立工作樹、建構二進位並替換目前版本，隨後重啟服務。建構期間會佔用本機 CPU 與磁碟。確認繼續？',
+  confirmSourceBuildButton: '確認編譯升級',
+  sourceBuildNoVersion: '無法確定要安裝的版本號，請先完成一次版本檢查。',
+  sourceBuildFailed: '原始碼編譯任務未能啟動：{reason}',
+}

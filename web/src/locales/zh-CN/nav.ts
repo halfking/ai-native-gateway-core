@@ -94,6 +94,7 @@ export default {
     helpManual: '帮助手册',
     chat: '对话',
     updateActivate: '更新与激活',
+    selfUpdate: '自更新与升级',
     licenseActivate: '许可激活',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案
     activateAction: '激活',
