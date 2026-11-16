@@ -16,9 +16,12 @@ import {
   type KeyUsageSummary,
   type ModelUsageForKey,
   type TrendEntry,
+  getRequestLogs,
+  type RequestLogRow,
 } from '../api'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 
 // ── Route params ──────────────────────────────────────────────────────────
 const route = useRoute()
@@ -41,6 +44,12 @@ const sortedKeyModels = computed(() => sortByName(keyModels.value, undefined, ['
 const keyTrend = ref<TrendEntry[]>([])
 const detailLoading = ref(false)
 const detailError = ref('')
+
+// ── Request logs ───────────────────────────────────────────────────────────
+const recentLogs = ref<RequestLogRow[]>([])
+const logsLoading = ref(false)
+const logsError = ref('')
+const activeRequestId = ref<string | null>(null)
 
 // ── Limit editing ──────────────────────────────────────────────────────────
 const showLimitsEditor = ref(false)

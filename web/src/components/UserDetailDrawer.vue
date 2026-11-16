@@ -149,6 +149,11 @@ function statusBadge(status: string): string {
 const topKeysText = computed(() =>
   (stats.value?.top_keys ?? []).map((k) => `${k.name}×${k.requests}`).join(' · ') || '—',
 )
+function keyHref(keyId: number): string {
+  if (!props.user) return '/tenants'
+  const q = new URLSearchParams({ tab: 'keys', key_id: String(keyId) })
+  return `/tenants/${encodeURIComponent(props.user.tenant_id)}?${q.toString()}`
+}
 const logsHref = computed(() => {
   if (!props.user) return '/request-logs'
   const q = new URLSearchParams({ owner_user: props.user.username, preset: 'd7' })
@@ -297,7 +302,16 @@ const canDrillKeys = computed(() => isSuperAdmin())
             <span class="k">{{ t('users.table.tenant', $t('common.terms.tenant')) }}</span><span class="mono">{{ user.tenant_id }}</span>
             <span class="k">{{ t('users.table.createdAt', $t('common.createdAt')) }}</span><span class="mono">{{ fmtDateTime24h(user.created_at) }}</span>
             <span class="k">{{ t('users.table.lastLogin', '最后登录') }}</span><span class="mono">{{ user.last_login_at ? fmtDateTime24h(user.last_login_at) : '—' }}</span>
-            <span class="k">{{ t('users.detail.hotKeys', '高频密钥') }}</span><span class="mono">{{ topKeysText }}</span>
+            <span class="k">{{ t('users.detail.hotKeys', '高频密钥') }}</span>
+            <span v-if="!stats.top_keys.length">—</span>
+            <span v-else-if="canDrillKeys" class="udd-key-links">
+              <template v-for="(k, i) in stats.top_keys" :key="k.id ?? i">
+                <span v-if="i > 0" class="udd-key-sep"> · </span>
+                <a v-if="k.id" class="udd-link" :href="keyHref(k.id)">{{ k.name }}×{{ k.requests }}</a>
+                <span v-else class="mono">{{ k.name }}×{{ k.requests }}</span>
+              </template>
+            </span>
+            <span v-else class="mono">{{ topKeysText }}</span>
             <span class="k">{{ t('users.detail.keyCount', 'API 密钥') }}</span>
             <span v-if="canDrillKeys"><a class="udd-link" :href="keysHref">{{ stats.key_count ?? 0 }}</a></span>
             <span v-else>{{ stats.key_count ?? 0 }}</span>
@@ -386,6 +400,8 @@ const canDrillKeys = computed(() => isSuperAdmin())
   font-size: 12px;
 }
 .udd-kv .k { color: var(--muted); }
+.udd-key-links { display: inline; }
+.udd-key-sep { color: var(--muted); }
 .udd-links { margin-top: 8px; }
 .udd-link { color: var(--accent); font-size: 12px; }
 .udd-empty {
