@@ -14,6 +14,19 @@ const { t } = useI18n()
 
 type Mode = 'single' | 'multi'
 
+/**
+ * 置顶分组项：调用方（例如对账页）给出的「本区间有请求的模型」。
+ *
+ * 为什么需要这一段（2026-11-16 审计轮）：模型目录（/api/routing/available-models）
+ * 描述的是**能路由的模型**，而对账页关心的是**这个区间里真的跑过的模型**——
+ * 两者的差集恰好是审计要抓的东西（配了却没流量、目录里没有但有流量的 raw 名）。
+ * 所以本组件支持在目录之上再挂一段「有请求的」清单，**按请求数降序置顶**。
+ */
+export interface RequestRankedModel {
+  name: string
+  requests: number
+}
+
 const props = withDefaults(defineProps<{
   modelValue: string | string[]
   mode?: Mode
@@ -25,6 +38,12 @@ const props = withDefaults(defineProps<{
   /** multi 模式下触发器是否用紧凑计数样式（单行「已选 N」，不铺 chips）。
    *  工具栏内联场景用；默认 false 保持原有的 chips 展示。 */
   compact?: boolean
+  /** 置顶分组：本区间有请求的模型（按请求数降序）。给了就在最上面渲染一段。 */
+  requestRanked?: RequestRankedModel[]
+  /** 置顶分组的标题（调用方给本地化文案；空则不渲染该段）。 */
+  requestRankedTitle?: string
+  /** 置顶分组预览条数，超出显示「更多…」。 */
+  requestRankedLimit?: number
 }>(), {
   mode: 'single',
   placeholder: '选择模型…',
@@ -32,6 +51,9 @@ const props = withDefaults(defineProps<{
   vendorPreviewLimit: 8,
   title: '选择模型',
   compact: false,
+  requestRanked: () => [],
+  requestRankedTitle: '',
+  requestRankedLimit: 24,
 })
 
 const emit = defineEmits<{
@@ -66,6 +88,7 @@ let modelsGeneration = 0
 
 const mainOpen = ref(false)
 const vendorOpen = ref<{ vendor: string; versions: AvailableVersion[] } | null>(null)
+const rankedOpen = ref(false)
 const draft = ref<Set<string>>(new Set())
 
 const isMulti = computed(() => props.mode === 'multi')
@@ -212,6 +235,7 @@ function openMain() {
   if (props.disabled) return
   syncDraftFromValue()
   vendorOpen.value = null
+  rankedOpen.value = false
   mainOpen.value = true
   if (!popular.value.length && !vendorGroups.value.length) {
     void refreshModels()
@@ -221,6 +245,7 @@ function openMain() {
 function closeMain() {
   mainOpen.value = false
   vendorOpen.value = null
+  rankedOpen.value = false
 }
 
 function openVendor(group: { vendor: string; versions: AvailableVersion[] }) {
@@ -243,6 +268,7 @@ function emitSingle(name: string) {
 function pickSingle(name: string) {
   emitSingle(name)
   vendorOpen.value = null
+  rankedOpen.value = false
   mainOpen.value = false
 }
 
@@ -284,6 +310,19 @@ function previewVersions(versions: AvailableVersion[]) {
 
 function hasMore(versions: AvailableVersion[]) {
   return versions.length > props.vendorPreviewLimit
+}
+
+// ── 置顶分组（「本区间有请求的模型」）─────────────────────────────────
+const rankedList = computed(() => props.requestRanked ?? [])
+const rankedPreview = computed(() => rankedList.value.slice(0, props.requestRankedLimit))
+const rankedHasMore = computed(() => rankedList.value.length > props.requestRankedLimit)
+
+function openRankedAll() {
+  rankedOpen.value = true
+}
+
+function closeRanked() {
+  rankedOpen.value = false
 }
 
 watch(() => props.modelValue, () => {
@@ -350,6 +389,36 @@ watch(() => props.modelValue, () => {
             <div v-if="loading" class="mp-status">{{ $t('common.feedback.loading') }}</div>
             <div v-else-if="loadErr" class="mp-status mp-err">{{ loadErr }}</div>
             <template v-else>
+              <!-- 置顶分组：本区间有请求的模型（按请求数降序）。
+                   放在目录之前：审计先看「这个区间真跑过什么」，再回目录查细节。 -->
+              <section v-if="rankedList.length && requestRankedTitle" class="mp-section mp-section--ranked">
+                <h4 class="mp-section-title">
+                  {{ requestRankedTitle }}
+                  <span class="mp-count">{{ rankedList.length }}</span>
+                </h4>
+                <div class="mp-grid">
+                  <button
+                    v-for="m in rankedPreview"
+                    :key="'ranked-' + m.name"
+                    type="button"
+                    class="mp-model"
+                    :class="{ chosen: isSelected(m.name) }"
+                    @click="onPick(m.name)"
+                  >
+                    <span class="mp-model-name">{{ m.name }}</span>
+                    <span class="mp-badge">{{ m.requests }}</span>
+                  </button>
+                  <button
+                    v-if="rankedHasMore"
+                    type="button"
+                    class="mp-model mp-more"
+                    @click="openRankedAll"
+                  >
+                    {{ $t('common.button.more') }}… ({{ rankedList.length }})
+                  </button>
+                </div>
+              </section>
+
               <section v-if="popular.length" class="mp-section">
                 <h4 class="mp-section-title">热门模型</h4>
                 <div class="mp-grid">
@@ -405,6 +474,34 @@ watch(() => props.modelValue, () => {
               <button type="button" class="btn btn-ghost btn-sm" @click="cancelMulti">{{ $t('common.button.cancel') }}</button>
               <button type="button" class="btn btn-primary btn-sm" @click="confirmMulti">{{ $t('common.button.confirm') }}</button>
             </div>
+          </footer>
+        </div>
+      </div>
+
+      <!-- 置顶分组的全量图层 -->
+      <div v-if="rankedOpen" class="mp-overlay mp-overlay--nested" @click.self="closeRanked">
+        <div class="mp-dialog mp-dialog--vendor" role="dialog" :aria-label="requestRankedTitle" @click.stop>
+          <header class="mp-header">
+            <h3 class="mp-title">{{ requestRankedTitle }}</h3>
+            <button type="button" class="mp-close" :aria-label="$t('common.close')" @click="closeRanked"><Close /></button>
+          </header>
+          <div class="mp-body">
+            <div class="mp-grid">
+              <button
+                v-for="m in rankedList"
+                :key="'ranked-all-' + m.name"
+                type="button"
+                class="mp-model"
+                :class="{ chosen: isSelected(m.name) }"
+                @click="onPick(m.name)"
+              >
+                <span class="mp-model-name">{{ m.name }}</span>
+                <span class="mp-badge">{{ m.requests }}</span>
+              </button>
+            </div>
+          </div>
+          <footer class="mp-footer mp-footer--compact">
+            <button type="button" class="btn btn-ghost btn-sm" @click="closeRanked">{{ $t('common.button.back') }}</button>
           </footer>
         </div>
       </div>
@@ -534,6 +631,18 @@ watch(() => props.modelValue, () => {
   margin: 0 0 8px; font-size: 12px; font-weight: 600;
   color: var(--muted);letter-spacing: 0.01em;
 }
+
+/* 置顶分组（「本区间有请求的模型」）的标题计数。 */
+.mp-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.mp-section--ranked { padding-bottom: 4px; }
 
 .mp-grid {
   display: flex; flex-wrap: wrap; gap: 8px;

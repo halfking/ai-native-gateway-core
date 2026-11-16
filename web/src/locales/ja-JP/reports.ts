@@ -83,4 +83,8 @@ export default {
   noData: 'この期間の照合記録はまだありません。',
   legacyCoverage: '旧スケジュールのスナップショットしかない日数：',
   legacyCoverageRest: ' — これらの日は合計と日次系列にのみ計上されます。クレデンシャル/ユーザー/API キーの次元はバックフィル後に表示されます（「終了日を再実行」で日ごとに補完）',
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: 'この区間でリクエストがあったモデル',
+  modelPickerTitle: '対帳モデルフィルター',
+  candidatesTruncated: '候補が上限を超えたため {n} 件を省略しました（日付範囲を絞ると表示されます）',
 }

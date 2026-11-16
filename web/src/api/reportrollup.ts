@@ -158,6 +158,14 @@ export interface DimensionOptions {
   models: DimensionOption[]
   tenants: DimensionOption[]
   persons: DimensionOption[]
+  /**
+   * 被硬上限砍掉的候选项数（维度名 → 砍掉几项）。
+   *
+   * 旧实现按 500 项静默截断（真库 30 天就有 527 个模型名），被砍掉的正是请求数
+   * 靠后的长尾——「数据不见了」却没有任何提示。现在后端显式回报，前端据此
+   * 披露，避免「列表变短」被误读成「数据变少了」。
+   */
+  truncated?: Record<string, number>
 }
 
 /** 六维筛选值（零值 / undefined = 不过滤）。 */

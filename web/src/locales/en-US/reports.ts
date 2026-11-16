@@ -88,4 +88,8 @@ export default {
   reasonTotalPrefix: 'Total',
   reasonTotalSuffix: 'failures',
   reasonFilterHint: 'model table filtered by this reason',
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: 'Models with requests in this range',
+  modelPickerTitle: 'Reconciliation model filter',
+  candidatesTruncated: 'Candidate list exceeded the limit; {n} item(s) truncated (narrow the date range to see them)',
 }

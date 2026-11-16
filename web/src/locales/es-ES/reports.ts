@@ -84,4 +84,8 @@ export default {
   legacyCoverage: 'Días cubiertos solo por instantáneas heredadas:',
   legacyCoverageRest:
     ': esos días solo suman en el total y la serie diaria; las dimensiones credencial/usuario/clave API aparecen tras el relleno («Reejecutar último día», día a día)',
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: 'Modelos con solicitudes en este rango',
+  modelPickerTitle: 'Filtro de modelos de conciliación',
+  candidatesTruncated: 'La lista de candidatos superó el límite; se truncaron {n} elemento(s) (acorta el rango de fechas)',
 }
