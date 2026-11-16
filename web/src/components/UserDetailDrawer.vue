@@ -6,11 +6,14 @@
 // 数据面 GET /api/admin/users/{id}/stats（usage_facts × api_keys.owner_user，
 // 与对账快照同源）；账号无用量时 KPI 全零 + 空态文案，基本信息仍完整展示。
 // 启停/重置密码操作不在抽屉内自行执行，emit 回列表页复用既有 handler。
+//
+// 2026-11-17：新增 API Keys 标签页，展示该用户名下密钥 + 创建密钥入口。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { ElMessageBox, ElMessage } from 'element-plus'
 import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { fmtDateTime24h } from '../i18n/useFormat'
-import { getUserStats, type UserStats } from '../api'
+import { getUserStats, type UserStats, getKeys, createKey, revokeKey, disableKey, enableKey, type ApiKey } from '../api'
 import { isSuperAdmin } from '../store'
 import StatCard from './ui/StatCard.vue'
 import AppDrawer from './ui/AppDrawer.vue'
@@ -43,10 +46,26 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+const activeTab = ref<'stats' | 'keys'>('stats')
 const days = ref(30)
 const stats = ref<UserStats | null>(null)
 const loading = ref(false)
 const errorText = ref('')
+
+// ── API Keys 标签页 ─────────────────────────────────────────
+const keys = ref<ApiKey[]>([])
+const keysLoading = ref(false)
+const keysError = ref('')
+const showCreateKey = ref(false)
+const newKeyForm = ref({
+  application_code: 'default',
+  key_alias: '',
+  budget_usd: null as number | null,
+  rate_limit_rpm: null as number | null,
+  remark: '',
+})
+const createKeySaving = ref(false)
+const createdKeyResponse = ref<{ api_key: string; key_prefix: string } | null>(null)
 
 // 代际号防竞态（2026-10-01 第十八轮 ④ 收敛至 useRaceGuard，原内联实现
 // 见 useReconciliationPage.ts 样板）：快速切换 user/days 时旧响应后到不得
@@ -70,12 +89,104 @@ async function load() {
   }
 }
 
+async function loadKeys() {
+  if (!props.user) return
+  keysLoading.value = true
+  keysError.value = ''
+  try {
+    const allKeys = await getKeys()
+    // 只保留该用户名下的密钥
+    keys.value = allKeys.filter(k => k.owner_user === props.user!.username && k.tenant_id === props.user!.tenant_id)
+  } catch (e: unknown) {
+    keysError.value = surfaceError(e, { key: 'users.detail.loadKeysFailed' })
+  } finally {
+    keysLoading.value = false
+  }
+}
+
 watch(
-  () => [props.modelValue, props.user?.id, days.value],
+  () => [props.modelValue, props.user?.id, days.value, activeTab.value],
   ([open]) => {
-    if (open) void load()
+    if (open) {
+      if (activeTab.value === 'stats') void load()
+      if (activeTab.value === 'keys') void loadKeys()
+    }
   },
 )
+
+function switchTab(tab: 'stats' | 'keys') {
+  activeTab.value = tab
+  if (tab === 'stats' && !stats.value) void load()
+  if (tab === 'keys' && keys.value.length === 0) void loadKeys()
+}
+
+async function handleCreateKey() {
+  if (!props.user) return
+  createKeySaving.value = true
+  try {
+    const response = await createKey({
+      application_code: newKeyForm.value.application_code,
+      tenant_id: props.user.tenant_id,
+      key_alias: newKeyForm.value.key_alias || undefined,
+      owner_user: props.user.username,
+      budget_usd: newKeyForm.value.budget_usd ?? undefined,
+      rate_limit_rpm: newKeyForm.value.rate_limit_rpm ?? undefined,
+      remark: newKeyForm.value.remark || undefined,
+    })
+    createdKeyResponse.value = { api_key: response.api_key, key_prefix: response.key_prefix }
+    ElMessage.success(t('users.detail.keyCreated', '密钥创建成功'))
+    // 刷新密钥列表
+    await loadKeys()
+  } catch (e: unknown) {
+    ElMessage.error(surfaceError(e, { key: 'users.detail.createKeyFailed' }))
+  } finally {
+    createKeySaving.value = false
+  }
+}
+
+function resetCreateKeyForm() {
+  showCreateKey.value = false
+  createdKeyResponse.value = null
+  newKeyForm.value = {
+    application_code: 'default',
+    key_alias: '',
+    budget_usd: null,
+    rate_limit_rpm: null,
+    remark: '',
+  }
+}
+
+async function handleRevokeKey(key: ApiKey) {
+  try {
+    await ElMessageBox.confirm(
+      t('users.detail.revokeKeyConfirm', `确定要吊销密钥 ${key.key_prefix}**** 吗？此操作不可恢复。`),
+      t('common.terms.confirm', '确认'),
+      { type: 'warning' },
+    )
+    await revokeKey(key.id)
+    ElMessage.success(t('users.detail.keyRevoked', '密钥已吊销'))
+    await loadKeys()
+  } catch (e: unknown) {
+    if (e !== 'cancel') {
+      ElMessage.error(surfaceError(e, { key: 'users.detail.revokeKeyFailed' }))
+    }
+  }
+}
+
+async function handleToggleKeyEnabled(key: ApiKey) {
+  try {
+    if (key.enabled) {
+      await disableKey(key.id)
+      ElMessage.success(t('users.detail.keyDisabled', '密钥已禁用'))
+    } else {
+      await enableKey(key.id)
+      ElMessage.success(t('users.detail.keyEnabled', '密钥已启用'))
+    }
+    await loadKeys()
+  } catch (e: unknown) {
+    ElMessage.error(surfaceError(e, { key: 'users.detail.toggleKeyFailed' }))
+  }
+}
 
 function onToggleEnabled() {
   if (props.user) emit('toggle-enabled', props.user)
@@ -192,24 +303,40 @@ const canDrillKeys = computed(() => isSuperAdmin())
         </div>
       </div>
 
-      <!-- 时间窗 -->
-      <div class="udd-toolbar">
-        <div class="udd-chips">
-          <button
-            v-for="d in [7, 30, 90]"
-            :key="d"
-            class="udd-chip"
-            :class="{ active: days === d }"
-            type="button"
-            @click="days = d"
-          >{{ t('users.detail.days', '近') }} {{ d }} {{ t('users.detail.daysUnit', $t('common.days')) }}</button>
-        </div>
+      <!-- 标签页导航 -->
+      <div class="udd-tabs">
+        <button
+          class="udd-tab"
+          :class="{ active: activeTab === 'stats' }"
+          @click="switchTab('stats')"
+        >{{ t('users.detail.statsTab', '统计') }}</button>
+        <button
+          class="udd-tab"
+          :class="{ active: activeTab === 'keys' }"
+          @click="switchTab('keys')"
+        >{{ t('users.detail.keysTab', 'API 密钥') }} <span v-if="keys.length > 0" class="udd-tab-badge">{{ keys.length }}</span></button>
       </div>
 
-      <div v-if="loading" class="udd-empty">{{ t('users.detail.loading', $t('common.feedback.loading')) }}</div>
-      <div v-else-if="errorText" class="udd-empty udd-error">{{ errorText }}</div>
+      <!-- 统计标签页 -->
+      <div v-if="activeTab === 'stats'" class="udd-tab-content">
+        <!-- 时间窗 -->
+        <div class="udd-toolbar">
+          <div class="udd-chips">
+            <button
+              v-for="d in [7, 30, 90]"
+              :key="d"
+              class="udd-chip"
+              :class="{ active: days === d }"
+              type="button"
+              @click="days = d"
+            >{{ t('users.detail.days', '近') }} {{ d }} {{ t('users.detail.daysUnit', $t('common.days')) }}</button>
+          </div>
+        </div>
 
-      <template v-else-if="stats">
+        <div v-if="loading" class="udd-empty">{{ t('users.detail.loading', $t('common.feedback.loading')) }}</div>
+        <div v-else-if="errorText" class="udd-empty udd-error">{{ errorText }}</div>
+
+        <template v-else-if="stats">
         <!-- KPI -->
         <div class="udd-kpis">
           <StatCard :label="t('users.detail.kpiRequests', $t('common.terms.requestCount'))" compact>
@@ -321,6 +448,150 @@ const canDrillKeys = computed(() => isSuperAdmin())
           </div>
         </div>
       </template>
+      </div>
+
+      <!-- API Keys 标签页 -->
+      <div v-if="activeTab === 'keys'" class="udd-tab-content">
+        <div class="udd-keys-toolbar">
+          <button class="btn btn-primary btn-sm" @click="showCreateKey = true">
+            <span style="margin-right: 4px;">+</span> {{ t('users.detail.createKey', '签发密钥') }}
+          </button>
+        </div>
+
+        <div v-if="keysLoading" class="udd-empty">{{ t('common.feedback.loading', '加载中...') }}</div>
+        <div v-else-if="keysError" class="udd-empty udd-error">{{ keysError }}</div>
+        <div v-else-if="keys.length === 0" class="udd-empty">{{ t('users.detail.noKeys', '该用户暂无 API 密钥') }}</div>
+
+        <div v-else class="udd-keys-list">
+          <div v-for="key in keys" :key="key.id" class="udd-key-card">
+            <div class="udd-key-header">
+              <div class="udd-key-prefix">
+                <code>{{ key.key_prefix }}****</code>
+                <span v-if="key.key_alias" class="udd-key-alias">{{ key.key_alias }}</span>
+              </div>
+              <div class="udd-key-actions">
+                <button
+                  class="btn btn-ghost btn-xs"
+                  @click="handleToggleKeyEnabled(key)"
+                >{{ key.enabled ? t('common.status.disabled', '禁用') : t('common.status.enabled', '启用') }}</button>
+                <button
+                  class="btn btn-ghost btn-xs btn-danger"
+                  @click="handleRevokeKey(key)"
+                >{{ t('users.detail.revokeKey', '吊销') }}</button>
+              </div>
+            </div>
+            <div class="udd-key-info">
+              <div class="udd-key-row">
+                <span class="udd-key-label">{{ t('common.terms.application', '应用') }}</span>
+                <span class="badge badge-blue">{{ key.application_code }}</span>
+              </div>
+              <div class="udd-key-row">
+                <span class="udd-key-label">{{ t('common.terms.status', '状态') }}</span>
+                <span class="badge" :class="key.enabled ? 'badge-green' : 'badge-red'">
+                  {{ key.enabled ? t('common.status.enabled', '启用') : t('common.status.disabled', '禁用') }}
+                </span>
+              </div>
+              <div class="udd-key-row">
+                <span class="udd-key-label">{{ t('users.detail.requests', '请求数') }}</span>
+                <span>{{ fmtNum(key.total_requests) }}</span>
+              </div>
+              <div class="udd-key-row">
+                <span class="udd-key-label">Token</span>
+                <span>{{ fmtTokensCompact(key.total_prompt_tokens + key.total_completion_tokens) }}</span>
+              </div>
+              <div v-if="key.rate_limit_rpm" class="udd-key-row">
+                <span class="udd-key-label">{{ t('users.detail.rateLimit', '速率限制') }}</span>
+                <span>{{ key.rate_limit_rpm }} RPM</span>
+              </div>
+              <div v-if="key.remark" class="udd-key-row">
+                <span class="udd-key-label">{{ t('common.terms.remark', '备注') }}</span>
+                <span class="udd-key-remark">{{ key.remark }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 创建密钥对话框 -->
+        <teleport to="body">
+          <div v-if="showCreateKey" class="modal-overlay" @click.self="resetCreateKeyForm">
+            <div class="modal-dialog">
+              <div class="modal-header">
+                <h3>{{ t('users.detail.createKeyTitle', '为用户签发密钥') }}</h3>
+                <button class="modal-close" @click="resetCreateKeyForm">×</button>
+              </div>
+              <div class="modal-body">
+                <div v-if="createdKeyResponse" class="udd-key-created">
+                  <div class="udd-key-created-icon">✓</div>
+                  <p class="udd-key-created-title">{{ t('users.detail.keyCreatedSuccess', '密钥创建成功') }}</p>
+                  <div class="udd-key-created-secret">
+                    <code>{{ createdKeyResponse.api_key }}</code>
+                  </div>
+                  <p class="udd-key-created-warn">{{ t('users.detail.keyCreatedWarn', '请妥善保管，关闭后将无法再次查看完整密钥') }}</p>
+                  <button class="btn btn-primary" @click="resetCreateKeyForm">{{ t('common.terms.close', '关闭') }}</button>
+                </div>
+
+                <form v-else @submit.prevent="handleCreateKey">
+                  <div class="form-group">
+                    <label>{{ t('common.terms.application', '应用') }} *</label>
+                    <input
+                      v-model="newKeyForm.application_code"
+                      type="text"
+                      class="form-input"
+                      required
+                      placeholder="default"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>{{ t('users.detail.keyAlias', '密钥别名') }}</label>
+                    <input
+                      v-model="newKeyForm.key_alias"
+                      type="text"
+                      class="form-input"
+                      placeholder="可选，方便识别"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>{{ t('users.detail.budgetUsd', '预算 (USD)') }}</label>
+                    <input
+                      v-model.number="newKeyForm.budget_usd"
+                      type="number"
+                      class="form-input"
+                      min="0"
+                      step="0.01"
+                      placeholder="留空表示无限制"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>{{ t('users.detail.rateLimitRpm', '速率限制 (RPM)') }}</label>
+                    <input
+                      v-model.number="newKeyForm.rate_limit_rpm"
+                      type="number"
+                      class="form-input"
+                      min="0"
+                      placeholder="留空表示无限制"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>{{ t('common.terms.remark', '备注') }}</label>
+                    <textarea
+                      v-model="newKeyForm.remark"
+                      class="form-input"
+                      rows="3"
+                      placeholder="可选"
+                    ></textarea>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost" @click="resetCreateKeyForm">{{ t('common.terms.cancel', '取消') }}</button>
+                    <button type="submit" class="btn btn-primary" :disabled="createKeySaving">
+                      {{ createKeySaving ? t('common.feedback.submitting', '提交中...') : t('common.terms.create', '创建') }}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </teleport>
+      </div>
     </div>
   </AppDrawer>
 </template>
@@ -336,6 +607,51 @@ const canDrillKeys = computed(() => isSuperAdmin())
 .udd-identity { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1; }
 .udd-tenant { font-size: 11px; color: var(--muted); }
 .udd-actions { display: flex; gap: 4px; }
+
+/* 标签页导航 */
+.udd-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.udd-tab {
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+.udd-tab:hover {
+  color: var(--accent);
+}
+.udd-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.udd-tab-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: white;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  margin-left: 4px;
+  font-weight: 600;
+}
+.udd-tab-content {
+  animation: fadeIn 0.2s;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .udd-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .udd-chips { display: inline-flex; gap: 4px; }
 .udd-chip {
@@ -354,6 +670,184 @@ const canDrillKeys = computed(() => isSuperAdmin())
   color: var(--accent);
   font-weight: 600;
 }
+
+/* API Keys 标签页 */
+.udd-keys-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.udd-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.udd-key-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.udd-key-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.udd-key-prefix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.udd-key-prefix code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+.udd-key-alias {
+  color: var(--muted);
+  font-size: 12px;
+}
+.udd-key-actions {
+  display: flex;
+  gap: 4px;
+}
+.udd-key-info {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+.udd-key-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.udd-key-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.udd-key-remark {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* 创建密钥成功提示 */
+.udd-key-created {
+  text-align: center;
+  padding: 20px;
+}
+.udd-key-created-icon {
+  font-size: 48px;
+  color: var(--success);
+  margin-bottom: 16px;
+}
+.udd-key-created-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.udd-key-created-secret {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 16px;
+  word-break: break-all;
+}
+.udd-key-created-secret code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--accent);
+}
+.udd-key-created-warn {
+  color: var(--warning);
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+/* 模态框 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.modal-dialog {
+  background: var(--card);
+  border-radius: 8px;
+  max-width: 500px;
+  width: 90%;
+  max-height: 90vh;
+  overflow: auto;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.modal-close {
+  background: transparent;
+  border: none;
+  font-size: 24px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-close:hover {
+  color: var(--text);
+}
+.modal-body {
+  padding: 20px;
+}
+.form-group {
+  margin-bottom: 16px;
+}
+.form-group label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.form-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.form-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
 .udd-kpis {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
