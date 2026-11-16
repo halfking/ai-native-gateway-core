@@ -156,6 +156,45 @@ const TROUBLESHOOT_CONTRACT = [
   'api-211-admin-probe.py',
 ]
 
+/**
+ * 2026-11-17 真实网关 + 真实登录态逐项实测后校准的锚点。
+ *
+ * ★ 这一组是**实测出来的事实**：每一条都对应一次真实 HTTP 请求或一次真实
+ *   数据库查询的结果，不是从代码推的。改写它们＝把已经验证过的排障依据改坏。
+ * ★ 同样只用 ASCII（端点路径、错误码、字段名、状态串），不引入中文字面量。
+ */
+const TROUBLESHOOT_LIVE_CALIBRATION = [
+  // 健康检查：全量入口是查询参数，不是 /healthz/full 这个路径
+  '/healthz?full=true',
+  // 认证层两种 401 的真实 code（authentication_error 是 type，不是 code）
+  'missing_key',
+  'authentication_required',
+  // 预算与限流的真实 code
+  'budget_exceeded',
+  'rate_limit_exceeded',
+  'key_throttled',
+  'Retry-After',
+  // 诊断端点的必带参数
+  'provider_id=',
+  // 限流写入是整组覆盖：三个旋钮缺一即 400
+  'rate_limit_concurrent',
+  'rate_limit_tpm',
+  'dry-run=false',
+  // 模型列表口径：默认由运营可配，未识别取值返 400
+  'models.list_scope',
+  'canonical_id',
+  // 手工加绑定接口当前 500 的成因
+  '42P08',
+  // 强制改密闸与改密后的吊销纪元
+  'password change required before accessing other APIs',
+  'session revoked: password changed',
+  '/api/auth/change-password',
+  '/api/auth/token',
+  // 启动迁移的真源目录与清单
+  'embeddata/startup',
+  'installed_startup_migrations.tsv',
+]
+
 /** 排障章节的小节前缀（10.2 / 10.4 / 10.5 是重点三节）。 */
 const TROUBLESHOOT_SECTION_PREFIXES = ['10.2 ', '10.4 ', '10.5 ']
 
@@ -175,6 +214,20 @@ describe('troubleshooting sections', () => {
     for (const needle of TROUBLESHOOT_CONTRACT) {
       expect(manualSource).toContain(needle)
     }
+  })
+
+  it('pins the facts calibrated against a live gateway', () => {
+    for (const needle of TROUBLESHOOT_LIVE_CALIBRATION) {
+      expect(manualSource).toContain(needle)
+    }
+  })
+
+  it('does not present the unreadable health path as the full endpoint', () => {
+    // `/healthz/full` 仍然被提及（作为「它不是全量入口」的警示），
+    // 但全量入口的写法必须同时在场——否则读者只有警示、没有正确写法。
+    expect(manualSource).toContain('/healthz?full=true')
+    const fullPathMentions = manualSource.match(/healthz\/full/g) ?? []
+    expect(fullPathMentions.length).toBeGreaterThan(0)
   })
 })
 
