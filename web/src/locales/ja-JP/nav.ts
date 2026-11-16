@@ -11,6 +11,7 @@ export default {
     guide: "接続ガイド",
     chat: "チャット",
     plugins: "プラグイン",
+    advanced: '上級',
     opsplatform: "運用保守センター"
   },
   item: {

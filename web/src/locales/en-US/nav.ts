@@ -14,6 +14,7 @@ export default {
     guide: 'Integration Guide',
     chat: 'Chat',
     plugins: 'Plugins',
+    advanced: 'Advanced',
   },
 
   item: {

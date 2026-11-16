@@ -11,6 +11,7 @@ export default {
     guide: "接入指南",
     chat: "對話",
     plugins: "外掛",
+    advanced: '進階',
     opsplatform: "維運平台"
   },
   item: {

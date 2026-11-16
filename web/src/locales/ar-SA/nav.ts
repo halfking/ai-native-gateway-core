@@ -11,6 +11,7 @@ export default {
     guide: "دليل التكامل",
     chat: "محادثة",
     plugins: "الإضافات",
+    advanced: 'متقدم',
     opsplatform: "مركز العمليات"
   },
   item: {

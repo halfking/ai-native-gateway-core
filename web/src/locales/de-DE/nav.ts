@@ -11,6 +11,7 @@ export default {
     guide: "Onboarding",
     chat: "Chat",
     plugins: "Plugins",
+    advanced: 'Erweitert',
     opsplatform: "Ops-Zentrum"
   },
   item: {

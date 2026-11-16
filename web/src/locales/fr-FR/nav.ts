@@ -11,6 +11,7 @@ export default {
     guide: "Intégration",
     chat: "Chat",
     plugins: "Plugins",
+    advanced: 'Avancé',
     opsplatform: "Centre des opérations"
   },
   item: {
