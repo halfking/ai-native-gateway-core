@@ -379,13 +379,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 契约 A（全屏）：禁止根容器 max-width + margin:0 auto（e081374a / PluginSettings 同款）。 */
 .stage-tree-demo {
   padding: 20px;
-  max-width: 1600px;
-  margin: 0 auto;
+  max-width: none;
+  width: 100%;
   color: var(--kx-text, #e8eef7);
   background: var(--kx-bg, #0f141c);
   min-height: 100vh;
+  box-sizing: border-box;
 }
 
 .demo-header {
