@@ -1,0 +1,128 @@
+{
+  "html": "docs/03-design/02-feature-design/simple-mode-concept.html",
+  "width": 1440,
+  "scale": 2,
+  "themes": {
+    "dark": {
+      "files": [
+        {
+          "file": "dark/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 8467
+        },
+        {
+          "file": "dark/00-cover.png",
+          "label": "封面与导读",
+          "w": 1376,
+          "h": 212
+        },
+        {
+          "file": "dark/01-full-page.png",
+          "label": "整页视图",
+          "w": 1376,
+          "h": 1133
+        },
+        {
+          "file": "dark/02-menu-overview.png",
+          "label": "菜单全貌",
+          "w": 1376,
+          "h": 1207
+        },
+        {
+          "file": "dark/03-entry-mapping.png",
+          "label": "条目归属",
+          "w": 1376,
+          "h": 2899
+        },
+        {
+          "file": "dark/04-expert-menus.png",
+          "label": "专家面菜单",
+          "w": 1376,
+          "h": 1503
+        },
+        {
+          "file": "dark/05-menu-rules.png",
+          "label": "菜单规则",
+          "w": 1376,
+          "h": 1266
+        },
+        {
+          "file": "dark/06-footer.png",
+          "label": "页脚",
+          "w": 1376,
+          "h": 71
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    },
+    "light": {
+      "files": [
+        {
+          "file": "light/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 8467
+        },
+        {
+          "file": "light/00-cover.png",
+          "label": "封面与导读",
+          "w": 1376,
+          "h": 212
+        },
+        {
+          "file": "light/01-full-page.png",
+          "label": "整页视图",
+          "w": 1376,
+          "h": 1133
+        },
+        {
+          "file": "light/02-menu-overview.png",
+          "label": "菜单全貌",
+          "w": 1376,
+          "h": 1207
+        },
+        {
+          "file": "light/03-entry-mapping.png",
+          "label": "条目归属",
+          "w": 1376,
+          "h": 2899
+        },
+        {
+          "file": "light/04-expert-menus.png",
+          "label": "专家面菜单",
+          "w": 1376,
+          "h": 1503
+        },
+        {
+          "file": "light/05-menu-rules.png",
+          "label": "菜单规则",
+          "w": 1376,
+          "h": 1266
+        },
+        {
+          "file": "light/06-footer.png",
+          "label": "页脚",
+          "w": 1376,
+          "h": 71
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    }
+  },
+  "generatedAt": "2026-11-16T16:25:00.104Z"
+}

@@ -1,0 +1,188 @@
+{
+  "html": "docs/03-design/02-feature-design/simple-expert-mode-design.html",
+  "width": 1440,
+  "scale": 2,
+  "themes": {
+    "dark": {
+      "files": [
+        {
+          "file": "dark/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 16491
+        },
+        {
+          "file": "dark/01-conclusion.png",
+          "label": "结论",
+          "w": 936,
+          "h": 609
+        },
+        {
+          "file": "dark/02-evidence.png",
+          "label": "现状盘点",
+          "w": 936,
+          "h": 1950
+        },
+        {
+          "file": "dark/03-axes.png",
+          "label": "三个正交的轴",
+          "w": 936,
+          "h": 753
+        },
+        {
+          "file": "dark/04-principles.png",
+          "label": "五条设计原理",
+          "w": 936,
+          "h": 1204
+        },
+        {
+          "file": "dark/05-mechanism.png",
+          "label": "实现机制",
+          "w": 936,
+          "h": 2707
+        },
+        {
+          "file": "dark/06-surface.png",
+          "label": "前端分层",
+          "w": 936,
+          "h": 1793
+        },
+        {
+          "file": "dark/07-runtime.png",
+          "label": "运行时裁剪",
+          "w": 936,
+          "h": 1326
+        },
+        {
+          "file": "dark/08-features.png",
+          "label": "功能清单",
+          "w": 936,
+          "h": 1395
+        },
+        {
+          "file": "dark/09-flow.png",
+          "label": "使用流程",
+          "w": 936,
+          "h": 1161
+        },
+        {
+          "file": "dark/10-phases.png",
+          "label": "落地分期",
+          "w": 936,
+          "h": 569
+        },
+        {
+          "file": "dark/11-risks.png",
+          "label": "风险与边界",
+          "w": 936,
+          "h": 1081
+        },
+        {
+          "file": "dark/12-appendix.png",
+          "label": "证据索引",
+          "w": 936,
+          "h": 1013
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    },
+    "light": {
+      "files": [
+        {
+          "file": "light/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 16491
+        },
+        {
+          "file": "light/01-conclusion.png",
+          "label": "结论",
+          "w": 936,
+          "h": 609
+        },
+        {
+          "file": "light/02-evidence.png",
+          "label": "现状盘点",
+          "w": 936,
+          "h": 1950
+        },
+        {
+          "file": "light/03-axes.png",
+          "label": "三个正交的轴",
+          "w": 936,
+          "h": 753
+        },
+        {
+          "file": "light/04-principles.png",
+          "label": "五条设计原理",
+          "w": 936,
+          "h": 1204
+        },
+        {
+          "file": "light/05-mechanism.png",
+          "label": "实现机制",
+          "w": 936,
+          "h": 2707
+        },
+        {
+          "file": "light/06-surface.png",
+          "label": "前端分层",
+          "w": 936,
+          "h": 1793
+        },
+        {
+          "file": "light/07-runtime.png",
+          "label": "运行时裁剪",
+          "w": 936,
+          "h": 1326
+        },
+        {
+          "file": "light/08-features.png",
+          "label": "功能清单",
+          "w": 936,
+          "h": 1395
+        },
+        {
+          "file": "light/09-flow.png",
+          "label": "使用流程",
+          "w": 936,
+          "h": 1161
+        },
+        {
+          "file": "light/10-phases.png",
+          "label": "落地分期",
+          "w": 936,
+          "h": 569
+        },
+        {
+          "file": "light/11-risks.png",
+          "label": "风险与边界",
+          "w": 936,
+          "h": 1081
+        },
+        {
+          "file": "light/12-appendix.png",
+          "label": "证据索引",
+          "w": 936,
+          "h": 1013
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    }
+  },
+  "generatedAt": "2026-11-16T16:24:50.817Z"
+}
