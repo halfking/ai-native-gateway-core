@@ -1846,8 +1846,18 @@ func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID in
 		    in_flight_until = NULL,
 		    last_direct_ok = TRUE,
 		    last_gateway_ok = TRUE,
-		    last_err_code = NULL,
-		    last_err_detail = NULL,
+		    -- ★ 2026-11-17（节点状态漂移轮）：手工下线的标记必须保留 ——
+		    -- 兼容视图的「paused AND last_err_code='manual_offline' →
+		    -- unknown」这一支依赖它；清掉就变 healthy_confirmed ⇒ 运维面
+		    -- 看不到「这个节点是人工下线的」。
+		    last_err_code = CASE
+			    WHEN node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'
+			    THEN node_probe_state.last_err_code
+			    ELSE NULL END,
+		    last_err_detail = CASE
+			    WHEN node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'
+			    THEN node_probe_state.last_err_detail
+			    ELSE NULL END,
 		    updated_at = now()
 	`, credentialID, rawModel)
 	if err != nil {
@@ -2910,12 +2920,21 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					last_attempt_at = $4,
 					next_retry_at = now() + interval '30 days',
 					next_retry_seconds = 2592000,
-					paused = FALSE,
+					-- ★ 2026-11-17（节点状态漂移轮）：与队列成功镜像同款 —— 保留
+					-- 运维手工下线（paused=TRUE + last_err_code='manual_offline'），
+					-- 一次在途探测的成功不得撤销人工下线。
+					paused = node_probe_state.paused,
 					last_run_id = NULL,
 					last_direct_ok = TRUE,
 					last_gateway_ok = $3,
-					last_err_code = NULL,
-					last_err_detail = NULL,
+					last_err_code = CASE
+						WHEN node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'
+						THEN node_probe_state.last_err_code
+						ELSE NULL END,
+					last_err_detail = CASE
+						WHEN node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'
+						THEN node_probe_state.last_err_detail
+						ELSE NULL END,
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2

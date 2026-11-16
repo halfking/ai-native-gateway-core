@@ -109,21 +109,17 @@ func policyBlockEvidenceFromMetadata(result *response.InterceptResult) string {
 //   - frame_encode_failed: 帧无法重新编码
 //
 // 这些失败**不应该生成审核单**，因为：
-//   1. 不是内容敏感性问题，管理员放行审核单也改变不了格式错误的事实；
-//   2. 应该引导用户重试（上游可能重新生成正确输出）或报告上游故障。
+//  1. 不是内容敏感性问题，管理员放行审核单也改变不了格式错误的事实；
+//  2. 应该引导用户重试（上游可能重新生成正确输出）或报告上游故障。
 //
 // 2026-11-15 根修轮：rv-2089 实证——tool_json_invalid 被误当成「内容含敏感
 // 信息，等待审核」，而实际是上游中转（apiclaude.cc）的 GLM 工具调用解析器
 // 漏出了原生 XML 标签，管理员放行这个审核单对重试没有任何帮助。
 func isFormatGuard(ruleID string) bool {
-	switch ruleID {
-	case "builtin.guard.tool_json_invalid",
-		"builtin.guard.redact_invalid",
-		"builtin.guard.frame_encode_failed":
-		return true
-	default:
-		return false
-	}
+	// ★ 2026-11-17：名单搬进 errorsx（唯一事实源）——执行层（executor）也需要
+	// 同一份名单来判定「格式守卫 ⇒ 可重试」，而 executors 不能 import
+	// domains/streaming（循环依赖）⇒ 名单必须下沉到低层包。
+	return errorsx.IsFormatGuardRule(ruleID)
 }
 
 // registerPolicyBlockReview 登记一条拦截审核记录，返回审核单号
@@ -280,14 +276,14 @@ func policyBlockClientMessage(rule, reason, field, requestID, reviewID string) s
 	} else {
 		b.WriteString(".")
 	}
-	
+
 	// ★ 2026-11-15：格式类守卫走专用话术 ★
 	if isFormatGuard(rule) {
 		b.WriteString(" 上游返回的内容格式有误（非法 JSON 或编码失败），请重试。" +
 			"若反复出现，可能是上游服务的工具调用格式转换问题，请报告网关管理员检查上游中转。")
 		return b.String()
 	}
-	
+
 	if reviewID != "" {
 		b.WriteString(" 内容含敏感信息，等待审核（审核单 " + reviewID +
 			"）：管理员在网关后台放行后，重试即可获得内容。")

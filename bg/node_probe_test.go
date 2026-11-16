@@ -403,11 +403,28 @@ func TestRunOneSuccessClearsLastDirectOkAndErrCode(t *testing.T) {
 		"consecutive_successes = consecutive_successes + 1",
 		"last_direct_ok = TRUE",
 		"last_gateway_ok = TRUE",
-		"last_err_code = NULL",
-		"last_err_detail = NULL",
 	} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("runOne success branch must write %q; update bg/node_probe.go:runOne success UPDATE block", field)
+		}
+	}
+	// ★ 2026-11-17（节点状态漂移轮）改判：last_err_code/last_err_detail 由
+	// 「字面量 NULL」升级为「默认 NULL + 人工下线例外」（见
+	// node_probe_ladder_regression_test.go 的同款说明）：
+	//   · 正常行仍必须落成 SQL NULL 字面量（healthy-parked 形状）；
+	//   · 人工下线的行（paused=TRUE + last_err_code='manual_offline'）必须
+	//     保住标记，否则运维的「上线」开关（判据 prevReason=='manual_offline'）
+	//     永远不成立 ⇒ 节点再也放不回来。
+	for _, field := range []string{
+		"last_err_code = CASE",
+		"last_err_detail = CASE",
+		"node_probe_state.last_err_code = 'manual_offline'",
+		"ELSE NULL END",
+	} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("runOne success branch must contain %q (park err code/detail as SQL NULL "+
+				"while preserving the manual-offline marker); update bg/node_probe.go:runOne "+
+				"success UPDATE block", field)
 		}
 	}
 }

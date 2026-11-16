@@ -467,6 +467,9 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			logCtx.SetKey(keyInfo)
 			logCtx.SetClientModel(attemptClientModel)
 			logCtx.Body = bodyBytes
+			// 分型：请求数闸（RPM）与 token 预算闸（TPM）落在不同的明细码上，
+			// 否则库里两者都叫 gw_rpm_exceeded。error_kind 不变。详见 rateLimitDetailCode。
+			logCtx.SetFailureDetailOverride(rateLimitDetailCode(rlOutcome))
 			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
 			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)

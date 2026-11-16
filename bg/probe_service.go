@@ -1111,11 +1111,28 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 					last_attempt_at = $4,
 					next_retry_at = now() + interval '30 days',
 					next_retry_seconds = 2592000,
-					paused = FALSE,
+					-- ★ 2026-11-17（节点状态漂移轮）：paused 必须**保留**。
+					-- 运维手工下线写的是 paused=TRUE + last_err_code='manual_offline'
+					-- （admin/credential_monitor.go 的 manual_offline 分支）⇒
+					-- 探针成功把它清成 FALSE ⇒ 该行重新进入 pump 的候选集
+					-- （pumpDueStatesSQL 要求 paused=FALSE）⇒ **运维的下线被一次
+					-- 在途探测任务悄悄撤销**。业务成功腿（node_probe.go 的
+					-- MarkNodeProbeHealthy）早就保留 paused ⇒ 这里对齐同一口径。
+					paused = node_probe_state.paused,
 					last_direct_ok = TRUE,
 					last_gateway_ok = $3,
-					last_err_code = NULL,
-					last_err_detail = NULL,
+					-- 手工下线的标记同样必须保留：兼容视图的
+					-- 「paused AND last_err_code='manual_offline' → unknown」
+					-- 这一支依赖它，清掉就变成 healthy_confirmed ⇒ 运维面
+					-- 看不到「这个节点是人工下线的」。
+					last_err_code = CASE
+						WHEN node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'
+						THEN node_probe_state.last_err_code
+						ELSE NULL END,
+					last_err_detail = CASE
+						WHEN node_probe_state.paused AND node_probe_state.last_err_code = 'manual_offline'
+						THEN node_probe_state.last_err_detail
+						ELSE NULL END,
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2`, credID, model, gw.ok, now)

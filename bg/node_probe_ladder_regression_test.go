@@ -64,12 +64,27 @@ func TestNodeProbeLadderDrivenByDirectRoundOnly(t *testing.T) {
 		t.Fatalf("runOne still hardcodes last_gateway_ok = TRUE in the success branch — " +
 			"a direct-only recovery with a failing gateway round would be invisible")
 	}
-	if !strings.Contains(runOneBody, "last_err_code = NULL") ||
-		!strings.Contains(runOneBody, "last_err_detail = NULL") {
-		t.Fatalf("runOne success branch parks gateway err code/detail into the row " +
-			"(must write last_err_code/last_err_detail as SQL NULL so the row lands in " +
-			"the healthy-parked shape — see nodeProbeHealthyParkedSQL / " +
-			"reconcileStaleNodeProbeStateSQL)")
+	// ★ 2026-11-17（节点状态漂移轮）改判：契约从「字面量 NULL」升级为
+	// 「**默认 NULL，但人工下线的那一行必须保住标记**」。
+	//
+	// 原契约（2026-09-25 对健康节点零探测）要的是「成功臂把 last_err_code/
+	// last_err_detail 写成 SQL NULL 字面量」—— 该 doctrine 不变（仍必须是
+	// 字面量 NULL，不能是未标注类型的 nil 参数：池跑 simple protocol）。
+	//
+	// 新增的那一档：运维手工下线的行（paused=TRUE + last_err_code=
+	// 'manual_offline'）若被成功臂清掉标记 ⇒ ① 兼容视图那一支
+	// 「paused AND last_err_code='manual_offline' → unknown」失效 ⇒ 视图
+	// 显示 healthy_confirmed；② admin/credential_monitor.go 的「上线」开关
+	// 判据是 prevReason=='manual_offline' ⇒ 标记被清后**运维再也把这个
+	// 节点放不回来**。⇒ 成功臂必须对这一行例外。
+	if !strings.Contains(runOneBody, "last_err_code = CASE") ||
+		!strings.Contains(runOneBody, "last_err_detail = CASE") ||
+		!strings.Contains(runOneBody, "node_probe_state.last_err_code = 'manual_offline'") ||
+		!strings.Contains(runOneBody, "ELSE NULL END") {
+		t.Fatalf("runOne success branch must park err code/detail as SQL NULL (healthy-parked " +
+			"shape — see nodeProbeHealthyParkedSQL / reconcileStaleNodeProbeStateSQL) while " +
+			"preserving the manual-offline marker (paused=TRUE + last_err_code=" +
+			"'manual_offline'); update bg/node_probe.go:runOne success UPDATE block")
 	}
 
 	// probe_service.go must obey the same doctrine (2026-09-25): the unified

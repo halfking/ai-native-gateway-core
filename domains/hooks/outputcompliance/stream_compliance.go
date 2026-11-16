@@ -91,11 +91,18 @@ const (
 	GuardRewriteRefusedRuleID = "builtin.guard.rewrite_refused"
 	// GuardRedactInvalidRuleID：脱敏后的工具参数**不再是合法 JSON** ⇒ 不能把坏参数
 	// 交给客户端 ⇒ 阻断。
-	GuardRedactInvalidRuleID = "builtin.guard.redact_invalid"
+	//
+	// ★ 2026-11-17（可重试性审计轮）：三条格式类守卫的**字面量事实源**下沉
+	// 到 errorsx（errorsx.GuardRule*）—— 执行层（domains/streaming/executors）
+	// 需要同一份名单来判定「格式守卫 ⇒ 可换兄弟节点重试」，而 executors 不能
+	// import domains/streaming（循环依赖）⇒ 名单必须有一个所有层都能 import
+	// 的低层出处。这里保留本包常量名（既有调用点零改动），值改为引用
+	// errorsx 的常量 ⇒ 两处不可能再漂移。
+	GuardRedactInvalidRuleID = errorsx.GuardRuleRedactInvalid
 	// GuardCheckFailedRuleID：检查器本身报错 / 返回空结果 ⇒ 判不出合规性 ⇒ 阻断。
 	GuardCheckFailedRuleID = "builtin.guard.check_failed"
 	// GuardFrameEncodeRuleID：帧在改写后**无法重新编码**（JSON 序列化失败）⇒ 阻断。
-	GuardFrameEncodeRuleID = "builtin.guard.frame_encode_failed"
+	GuardFrameEncodeRuleID = errorsx.GuardRuleFrameEncodeFailed
 	// GuardToolJSONInvalidRuleID：**工具参数本身**就不是合法 JSON ⇒ 无法按 JSON
 	// 解析出结构 ⇒ 无法在结构上做脱敏/判定 ⇒ fail-closed 阻断。
 	//
@@ -103,7 +110,7 @@ const (
 	// 前者是「**脱敏之后**结果坏了」（脱敏规则/掩码形态的问题），
 	// 本条是「**脱敏之前**输入就坏了」（上游客户端发了非法 JSON 工具参数）。
 	// ★ 处置方向不同 ⇒ 合成规则名也必须不同，否则审核员会被指向错误的处置面 ★。
-	GuardToolJSONInvalidRuleID = "builtin.guard.tool_json_invalid"
+	GuardToolJSONInvalidRuleID = errorsx.GuardRuleToolJSONInvalid
 )
 
 // defaultMaxCompliancePendingBytes 是待检缓冲上限的出厂值（1 MiB）。

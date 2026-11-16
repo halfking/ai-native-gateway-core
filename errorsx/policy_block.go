@@ -54,10 +54,39 @@ func (e *PolicyBlockError) Error() string {
 }
 
 // PolicyBlockRuleID 从错误链里取出规则 ID；不是策略拦截错误时返回空串。
+//
+// ★ 2026-11-17：同时认 OutputPolicyError（执行层从策略信封里解析出的
+// 具名类型）—— 此前只有流式拦截路径会构造 *PolicyBlockError，非流式路径
+// 只回一个裸 sentinel ⇒ 规则名在非流式面丢失 ⇒ 无法区分格式守卫与
+// 内容策略（见 errorsx/output_policy.go）。
 func PolicyBlockRuleID(err error) string {
 	var pe *PolicyBlockError
 	if errors.As(err, &pe) && pe != nil {
 		return pe.RuleID
 	}
+	var oe *OutputPolicyError
+	if errors.As(err, &oe) && oe != nil {
+		return oe.RuleID
+	}
 	return ""
+}
+
+// PolicyBlockDetail 从错误链里取出策略拦截的四元组（规则 / 原因 / 位置 /
+// 摘要）。两种具名类型都认：*PolicyBlockError（流式拦截路径构造）与
+// *OutputPolicyError（非流式执行层从策略信封解析，见 output_policy.go）。
+//
+// ★ 单一事实源：domains/streaming 侧的 policyBlockErrorDetail /
+// policyBlockPathFromError / policyBlockDigestFromError 三个 helper 统一委派
+// 到这里 —— 此前它们各自只认 *PolicyBlockError ⇒ 非流式面的规则名/位置/
+// 摘要**整段丢失**。
+func PolicyBlockDetail(err error) (rule, reason, path, digest string) {
+	var pe *PolicyBlockError
+	if errors.As(err, &pe) && pe != nil {
+		return pe.RuleID, pe.Reason, pe.Path, pe.Digest
+	}
+	var oe *OutputPolicyError
+	if errors.As(err, &oe) && oe != nil {
+		return oe.RuleID, oe.Reason, oe.Path, oe.Digest
+	}
+	return "", "", "", ""
 }

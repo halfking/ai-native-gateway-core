@@ -160,6 +160,29 @@ type RequestLogContext struct {
 	ErrCode string
 	ErrMsg  string
 
+	// FailureDetailOverride 让**同一类失败的不同成因**在明细码上可区分。
+	//
+	// ★ 为什么需要它（2026-11-17 节点状态漂移审计 D-new）：网关的限流闸有
+	//   **两道**（请求数闸 RPM / token 预算闸 TPM），两者的 error_kind 都是
+	//   "rate_limit_exceeded" ⇒ 明细码都被 mapGatewayErrorToDetail 压成
+	//   "gw_rpm_exceeded" ⇒ 运维从库里**无法区分**「这把 key 请求太多」与
+	//   「这把 key 单个请求太大」，而两者的处置完全不同（提 RPM 配额 vs 提
+	//   TPM 配额 / 让客户端分片）。
+	//
+	// ★ 为什么**不改** error_kind：error_kind 是会话腿 request_status 投影的
+	//   输入（error_kind IN ('rate_limit_exceeded','key_throttled') ⇒
+	//   'rate_limited'，见 db/request_logs_view_schema.go sessionRequestStatusExpr
+	//   与迁移 824）⇒ 改它的取值要连带改视图表达式（Go 镜像体 + 迁移 + embeddata
+	//   副本 + runner 注册四处投递），且会让历史行与新行口径不一致。
+	//   本字段**只**覆盖 failure_detail_code ⇒ error_kind / request_status /
+	//   所有既有计数**零变化**，只有明细码变得可区分。
+	//
+	// ★ 词表单一事实源不变：覆盖值必须由 mapGatewayErrorToDetail 产出
+	//   （见 rateLimitDetailCode）⇒ "gw_tpm_exceeded" 这条臂与前端标签都是
+	//   既有的（前端 locales 的 requests.gwErrorKind.gw_tpm_exceeded），
+	//   本次只是**接线**，不是新增词表。
+	FailureDetailOverride string
+
 	// 2026-07-15: 请求性质维度（侧表 request_context_attrs 消费）。
 	// 这些字段是最佳努力存储，权威 turn_no 用 ROW_NUMBER 派生查询。
 	AttemptNo   int    // 网关 failover 轮次（≥1）
@@ -461,6 +484,16 @@ func (c *RequestLogContext) SetClientModel(model string) {
 	if strings.TrimSpace(model) != "" {
 		c.ClientModel = strings.TrimSpace(model)
 	}
+}
+
+// SetFailureDetailOverride pins the failure_detail_code of the row this
+// context will emit, overriding the code derived from the error kind.
+//
+// Used by the rate-limit surfaces to tell the two gateway gates apart (RPM
+// count vs TPM token budget) without touching error_kind — see the
+// FailureDetailOverride field doc for why error_kind must stay put.
+func (c *RequestLogContext) SetFailureDetailOverride(code string) {
+	c.FailureDetailOverride = strings.TrimSpace(code)
 }
 
 // SetWorkType stores the X-Gw-Work-Type header for _request_logs.work_type.
@@ -1028,6 +1061,11 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 
 	detailCode := mapGatewayErrorToDetail(errCode)
+	if c.FailureDetailOverride != "" {
+		// 限流闸等原因分型：明细码取调用方给定的覆盖值（词表仍由
+		// mapGatewayErrorToDetail 单一持有，见 rateLimitDetailCode）。
+		detailCode = c.FailureDetailOverride
+	}
 	failureStage := classifyFailureStage(errCode)
 
 	var clientRequestIDPtr *string

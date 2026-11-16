@@ -222,6 +222,30 @@ func rateLimitOutcomeKind(o rateLimitOutcome) string {
 	return "passed"
 }
 
+// rateLimitDetailCode 把限流闸的**成因**映射到 request_logs.failure_detail_code。
+//
+// ★ 为什么要分型（2026-11-17 节点状态漂移审计 D-new）：网关的限流闸有**两道**——
+// 请求数闸（RPM）与 token 预算闸（TPM）——两者的 error_kind 同为
+// "rate_limit_exceeded"，于是明细码被 mapGatewayErrorToDetail **压成同一个**
+// "gw_rpm_exceeded"。
+//
+// ★ 211 真库实测（11-14~11-16，489 笔）：被拒时刻该 key 的滚动 60 秒请求数
+// 中位数 4~14、**最小 2**，而这两把 key 的 rate_limit_rpm = 120 ⇒ 撞的**不是**
+// 请求数闸（真因是 token 预算闸）；但库里两者不可区分 ⇒ 运维会去提 RPM 配额
+// （对 token 闸完全无效），这是「请求不稳定」被误判成「上游不行」的一个来源。
+//
+// ★ 词表单一事实源不变：覆盖值全部由 mapGatewayErrorToDetail 产出 ⇒
+// "gw_tpm_exceeded" 这一臂（与前端标签 requests.gwErrorKind.gw_tpm_exceeded）
+// 都是**既有的**，本次只是接线，不是新增词表。
+func rateLimitDetailCode(o rateLimitOutcome) string {
+	switch o.Reason {
+	case "tpm_limit":
+		return mapGatewayErrorToDetail("tpm_limit_exceeded")
+	default:
+		return mapGatewayErrorToDetail("rate_limit_exceeded")
+	}
+}
+
 // applicable. Always writes Retry-After when the request was blocked.
 //
 // Header semantics follow RFC draft-ietf-httpapi-ratelimit-headers:

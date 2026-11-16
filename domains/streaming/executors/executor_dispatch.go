@@ -758,6 +758,30 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 	return out
 }
 
+// forwardCommittedBytes reports whether any client-visible byte already left
+// the gateway for this attempt.
+//
+// ★ 判据与 forwardForDispatch 内部的一致（ClientSemanticBytesVisible 优先，
+// 流式再退到 Capture 的 chunk 计数）—— 同一个「首字节边界」定义，不能两处
+// 各写一套。
+//
+// ★ 用途：格式类守卫（上游输出畸形）允许换兄弟节点重试，但**只限客户端
+// 还没收到任何字节**的情况；已经提交过内容的响应重放会把同一段内容发两遍。
+func forwardCommittedBytes(params *ExecParams) bool {
+	if params == nil {
+		return false
+	}
+	if params.ClientSemanticBytesVisible != nil && params.ClientSemanticBytesVisible.Load() {
+		return true
+	}
+	if params.IsStream && params.Capture != nil {
+		if sent, _ := params.Capture.ChunkCountersSnapshot(); sent > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // forwardForDispatch performs ONE upstream forward attempt for a candidate and
 // returns the dispatch outcome. Mirrors the per-candidate core of the legacy
 // loop (fp slot → circuit → Limiter.AcquireAllNoCredLayer → key rotator →
@@ -810,6 +834,20 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			out.HTTPStatus = http.StatusForbidden
 			if probeConsumed && e.Circuit != nil {
 				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
+			// ★ 2026-11-17（可重试性审计轮）：格式类守卫拦下的是**上游输出
+			// 的格式错**（工具参数不是合法 JSON / 脱敏结果不是合法 JSON /
+			// 帧无法重新编码），不是内容敏感 ⇒ 它既不是策略终态，也不是节点
+			// 故障证据 ⇒ 换一个兄弟节点再问一次是有意义的恢复动作。
+			//
+			// 归责：errorsx.KindRequestRejected ⇒ ActionSwitchNode（跨候选
+			// 故障转移）+ PenaltyNone（不冷却凭据、不计熔断、不扇出探针），
+			// 与「上游拒收但无法归因的 4xx」同族处置。
+			//
+			// ★ 硬边界：**客户端尚未收到任何字节**才可重试。已经提交过内容
+			// 的流式响应重放会把同一段内容发两遍 ⇒ 那种情况必须保持终态。
+			if errorsx.IsFormatGuardBlock(out.Err) && !forwardCommittedBytes(params) {
+				out.ErrorKind = string(errorsx.KindRequestRejected)
 			}
 			return
 		}

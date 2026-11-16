@@ -499,20 +499,14 @@ func policyBlockReasonFromError(err error) string {
 
 // policyBlockPathFromError 从策略拦截错误里取被拦载荷的位置（2026-10-28 审核轮）。
 func policyBlockPathFromError(err error) string {
-	var pbe *errorsx.PolicyBlockError
-	if errors.As(err, &pbe) && pbe != nil {
-		return pbe.Path
-	}
-	return ""
+	_, _, path, _ := errorsx.PolicyBlockDetail(err)
+	return path
 }
 
 // policyBlockDigestFromError 从策略拦截错误里取被拦载荷的摘要（2026-10-28 审核轮）。
 func policyBlockDigestFromError(err error) string {
-	var pbe *errorsx.PolicyBlockError
-	if errors.As(err, &pbe) && pbe != nil {
-		return pbe.Digest
-	}
-	return ""
+	_, _, _, digest := errorsx.PolicyBlockDetail(err)
+	return digest
 }
 
 // writeTrustedTerminal bypasses output interception only for a gateway-owned
@@ -3717,6 +3711,10 @@ func (h *ChatHandler) serveWithExecutor(
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
 			recordGatewayRateLimitRejection(rlOutcome)
+			// 分型：请求数闸（RPM）与 token 预算闸（TPM）落在不同的明细码上，
+			// 否则库里两者都叫 gw_rpm_exceeded ⇒ 运维分不出「请求太多」与
+			// 「请求太大」。error_kind 不变（会话腿口径不动）。见 rateLimitDetailCode。
+			logCtx.SetFailureDetailOverride(rateLimitDetailCode(rlOutcome))
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
@@ -9619,11 +9617,8 @@ func policyBlockMetadataFrom(result *response.InterceptResult) (rule, reason, fi
 // 流式与非流式两条路径都把规则名装在 errorsx.PolicyBlockError 里；错误链
 // 上取不到就是空串（渲染时不出现该键），不影响失败信封的形状。
 func policyBlockErrorDetail(err error) (rule, reason string) {
-	var pbe *errorsx.PolicyBlockError
-	if errors.As(err, &pbe) && pbe != nil {
-		return pbe.RuleID, pbe.Reason
-	}
-	return "", ""
+	rule, reason, _, _ = errorsx.PolicyBlockDetail(err)
+	return rule, reason
 }
 
 // writeOutputPolicyBlockedJSON 写非流式的策略拦截响应。

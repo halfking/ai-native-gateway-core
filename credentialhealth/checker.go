@@ -536,39 +536,142 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 // NOT touch availability_state, on the assumption that the router reads
 // only cmb. That assumption was wrong — v_routable_credential_models.is_routable
 // also requires availability_state='ready' (see 2026-06-22 defect 4).
-func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
-	// 2026-09-08 self-check audit: every surface below now carries a
-	// credential-level manual_disabled guard. Without it the 1-minute tick
-	// could flip a manually-disabled credential (or its bindings) back to
-	// available/ready, overriding operator intent — the routing layer would
-	// only stay correct where it ALSO re-checks manual_disabled downstream,
-	// and the admin UI would show a ready state the operator explicitly
-	// turned off. Bound to lifecycle/status intentionally NOT added here:
-	// degraded/cooling credentials are exactly the population this worker
-	// exists to restore; only human disable intent must block recovery.
-	cmbManualGuard := `EXISTS (
-		SELECT 1 FROM credentials c
-		WHERE c.id = cmb.credential_id
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-	)`
-	cmbTag, err := db.Exec(ctx, `
+// cmbExpiredRecoverySQL 是 RecoverExpired 的 cmb 侧恢复语句（生产同款，
+// 单独成函数是为了让真库钉测能执行**逐字相同**的 SQL）。
+//
+// 2026-09-08 self-check audit: 该语句带凭据级 manual_disabled 守卫 —— 1 分钟
+// tick 不能把人工下线的凭据（及其绑定）翻回 available/ready。刻意**不**绑定
+// lifecycle/status：degraded/cooling 凭据正是这个 worker 存在的意义，只有
+// 人工下线意图才该挡恢复。
+//
+// 2026-11-17（节点状态漂移根修轮）：两处改动，目的只有一个 ——
+// **已恢复的绑定不能再留着「永远清不掉」的冷却地平线**。
+//
+// ① `unavailable_reason <> 'model_probe_broken'` → COALESCE 化。
+//
+//	SQL 三值逻辑：reason 为 NULL 时 `<>` 求值为 NULL ⇒ **整行被排除**。
+//	而 model_offers 镜像恢复（moExpiredRecoverySQL，靠 INSTEAD OF UPDATE
+//	触发器回写）恰恰把 reason 清成 NULL ⇒ **被镜像恢复过的行从此再也进不了
+//	本语句** ⇒ 它的 unavailable_recover_at 永远清不掉 ⇒ 行上留着一个已过期
+//	的冷却地平线（211 实测 2026-11-17：289 行 available=TRUE 却带着已过期的
+//	unavailable_recover_at，分布在 8 个凭据上；其中 265 行来自凭据 99031 的
+//	一次凭据级归因 + 一次只恢复不写 cmb 的镜像恢复）。
+//	⇒ 这是「节点状态漂移」的一条稳定来源，且**随镜像恢复次数单调累积**。
+//
+// ② 去掉 `FROM provider_models pm` 内连接。本语句改的是 cmb 自身，join pm
+//
+//	没有任何语义用途，却把**父行已被删除的孤儿绑定**整类挡在恢复之外：
+//	cmb 侧被内连接挡住，model_offers 侧（视图同样是内连接）也看不到
+//	⇒ **双盲 ⇒ 永久卡在 available=FALSE**
+//	（211 实测：45 行孤儿绑定，其中 32 行 unavailable，reason 全是
+//	auto_credential_quota_permanent ⇒ 靠自动恢复永远救不回来）。
+//
+// 幂等性：清掉 recover_at 后，COALESCE(recover_at, unavailable_at+30s) 变 NULL
+// ⇒ IS NOT NULL 不成立 ⇒ 下一 tick 不再命中 ⇒ **一次性清理，不会自激**。
+//
+// ③ 2026-11-17（F4）：**凭据级归因（`auto_credential_%`）的绑定，只在所属凭据
+//
+//	已经 ready 时才随冷却到期恢复**。
+//	理由：`auto_credential_*` 这个 reason 表达的是「**整个凭据**坏了」
+//	（`domains/credential/writer.go:SetCredentialUnavailable` 对该凭据的**全部**
+//	绑定写同一组值）⇒ 它的恢复条件应当是**凭据级**的，不是绑定级的。
+//	没有这条守卫时会出现：凭据还欠着配额（`availability_state='suspended'`，
+//	`quota_state='periodic_exhausted'`），而它的绑定已被冷却到期恢复成
+//	`available=true` ⇒ **绑定面说可用、凭据面说不可用** ⇒ 又一处面间漂移。
+//	211 实测：凭据 22（2026-11-13 23:13 起 `suspended`，配额窗口到 11-20 06:44）
+//	的 11 条绑定就是这一形态；另有一个凭据已是 `ready`、21 条绑定却仍被
+//	凭据级归因拉黑（⇒ 那 21 条才是真漂移，由本语句恢复）。
+//	口径精确性：守卫**只作用于 `auto_credential_%`**；per-model 归因
+//	（`auto_timeout` / `auto_rate_limit` …）与探针证据（`probe_*`）、
+//	`continuous_failure` 一律维持原语义 ⇒ **不触碰 D2/D3 的判定**。
+func cmbExpiredRecoverySQL() string {
+	return `
 		UPDATE credential_model_bindings cmb
 		SET available              = TRUE,
 		    unavailable_reason     = NULL,
 		    unavailable_at         = NULL,
 		    unavailable_recover_at = NULL,
 		    updated_at             = now()
-		FROM provider_models pm
-		WHERE pm.id = cmb.provider_model_id
-		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-		  AND cmb.unavailable_reason <> 'model_probe_broken'
+		WHERE COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.unavailable_reason, '') <> 'model_probe_broken'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_recover_at,
 		               cmb.unavailable_at + INTERVAL '30 seconds') IS NOT NULL
 		  AND COALESCE(cmb.unavailable_recover_at,
 		               cmb.unavailable_at + INTERVAL '30 seconds') < now()
-		  AND `+cmbManualGuard+`
-	`)
+		  AND (
+		        -- F4：凭据级归因（auto_credential_%）的绑定，其恢复条件是
+		        -- **凭据级**的 ⇒ 凭据还没 ready 就不能把绑定放回来
+		        -- （否则「凭据欠配额、绑定已可用」的面间漂移）。
+		        COALESCE(cmb.unavailable_reason, '') NOT LIKE 'auto_credential_%'
+		     OR EXISTS (
+		          SELECT 1 FROM credentials c2
+		          WHERE c2.id = cmb.credential_id
+		            AND c2.availability_state = 'ready'
+		            AND c2.lifecycle_status = 'active'
+		            AND COALESCE(c2.manual_disabled, FALSE) = FALSE
+		      )
+		  )
+		  AND EXISTS (
+		    SELECT 1 FROM credentials c
+		    WHERE c.id = cmb.credential_id
+		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  )
+	`
+}
+
+// moExpiredRecoverySQL 是 RecoverExpired 的 model_offers 镜像恢复语句。
+//
+// 2026-08-11 fix: 旧谓词用 COALESCE(unavailable_at + 30s, now()+1h) < now()
+// （因 unavailable_at 非空而退化成 unavailable_at + 30s < now()）⇒ 提前 30s
+// 恢复，绕过 cmb 侧的 15min 冷却。现在与 cmb 侧用同一个时间口径。
+//
+// 2026-11-17（节点状态漂移根修轮）：守卫与 cmb 侧对齐 ——
+// `unavailable_reason <> 'model_probe_broken'` → COALESCE 化。
+//
+// ★ 本语句**只恢复 available / reason / unavailable_at 三列**：它写的是
+//
+//	model_offers 视图，靠 INSTEAD OF UPDATE 触发器回写 cmb，而**触发器的 SET
+//	列表里没有 unavailable_recover_at**（211 实测触发器函数体）⇒ **本语句永远
+//	清不掉冷却地平线**（本文件上半段的旧注释早已写下这条事实，当时的处置是
+//	「绕开」而不是修触发器 ⇒ 缺陷被固化）。
+//	⇒ 现在的闭环：cmbExpiredRecoverySQL 的守卫已 COALESCE 化，且**先于**本句
+//	执行 ⇒ 镜像恢复涉及的行一定也命中 cmb 侧语句 ⇒ 地平线在同一 tick 被清。
+//	⇒ 触发器层的根治（给触发器补该列）仍需迁移，另行立项。
+func moExpiredRecoverySQL() string {
+	return `
+		UPDATE model_offers mo
+		SET available          = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at     = NULL
+		WHERE mo.available = FALSE
+		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(mo.unavailable_reason, '') <> 'model_probe_broken'
+		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
+		  AND COALESCE(mo.unavailable_recover_at,
+		               mo.unavailable_at + INTERVAL '30 seconds') < now()
+		  AND (
+		        -- F4：与 cmb 侧同款守卫（凭据级归因需凭据已 ready）⇒
+		        -- 两侧口径必须一致，否则镜像会把 cmb 侧刻意留住的行放回来。
+		        COALESCE(mo.unavailable_reason, '') NOT LIKE 'auto_credential_%'
+		     OR EXISTS (
+		          SELECT 1 FROM credentials c2
+		          WHERE c2.id = mo.credential_id
+		            AND c2.availability_state = 'ready'
+		            AND c2.lifecycle_status = 'active'
+		            AND COALESCE(c2.manual_disabled, FALSE) = FALSE
+		      )
+		  )
+		  AND EXISTS (
+			SELECT 1 FROM credentials c
+			WHERE c.id = mo.credential_id
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  )
+	`
+}
+
+func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
+	cmbTag, err := db.Exec(ctx, cmbExpiredRecoverySQL())
 	if err != nil {
 		return 0, fmt.Errorf("recover expired credential_model_bindings: %w", err)
 	}
@@ -593,23 +696,10 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	// premature 30s recovery also silently re-armed the binding on cmb —
 	// the 15min cooldown was effectively bypassed. The view exposes
 	// unavailable_recover_at, so mirror the same condition the cmb UPDATE uses.
-	moTag, err := db.Exec(ctx, `
-		UPDATE model_offers mo
-		SET available          = TRUE,
-		    unavailable_reason = NULL,
-		    unavailable_at     = NULL
-		WHERE mo.available = FALSE
-		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
-		  AND mo.unavailable_reason <> 'model_probe_broken'
-		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		  AND COALESCE(mo.unavailable_recover_at,
-		               mo.unavailable_at + INTERVAL '30 seconds') < now()
-		  AND EXISTS (
-			SELECT 1 FROM credentials c
-			WHERE c.id = mo.credential_id
-			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		  )
-	`)
+	// 2026-11-17（节点状态漂移根修轮）：守卫已与 cmb 侧对齐（COALESCE 化），
+	// 且 cmb 侧语句**先于**本句执行 ⇒ 镜像恢复涉及的行一定也命中 cmb 侧语句
+	// ⇒ 地平线在同一 tick 被清（详见 moExpiredRecoverySQL 的函数注释）。
+	moTag, err := db.Exec(ctx, moExpiredRecoverySQL())
 	if err != nil {
 		return int(cmbTag.RowsAffected()), fmt.Errorf("recover expired model_offers: %w", err)
 	}
