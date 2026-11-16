@@ -116,6 +116,12 @@ export TEST_ADMIN_500_DSN="$__datasource_dsn"
 export TEST_AUDIT_FRESH_SCHEMA_DB_URL="$__datasource_dsn"
 export TEST_AUDIT_ISOLATED_DB_URL="$__datasource_dsn"
 export TEST_DATABASE_URL="$__datasource_dsn"
+# ★ TEST_DATA_INIT_DSN（2026-11-16 数据初始化轮）：
+#   admin/data_lifecycle_data_init_{realdb,http_realdb}_test.go 认它。
+#   ★ 该腿的 SQL **只读**（COUNT / MIN / MAX / EXPLAIN）⇒ EXPLAIN 不带 ANALYZE
+#     ⇒ 只解析+生成计划，**不执行任何一行** ⇒ 可用通用 DSN（产品库）。
+#   ⚠ 若将来给这条腿加**写**动作 ⇒ 必须改用隔离 DSN（否则会在产品库上落数据）。
+export TEST_DATA_INIT_DSN="$__datasource_dsn"
 export TEST_DB_URL="$__datasource_dsn"
 export TEST_G6_TOOLS_DSN="$__datasource_dsn"
 export TEST_INSTALLER_FRESH_DB_URL="$__datasource_dsn"
