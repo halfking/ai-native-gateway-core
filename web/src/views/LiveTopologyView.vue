@@ -24,7 +24,6 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElOption, ElSelect } from 'element-plus'
 import { useLiveStream } from '../composables/useLiveStream'
 import { redisHealthyRef as redisHealthy, redisErrorRef as redisError, liveDataRevision, setLiveStreamWantProbe } from '../composables/liveStreamStore'
 import { useLiveTopology, type PanelEntry } from '../composables/useLiveTopology'
@@ -35,11 +34,12 @@ import TopologyCanvas from '../components/live-topology/TopologyCanvas.vue'
 import ClientRequestPanel from '../components/live-topology/ClientRequestPanel.vue'
 import ProviderResponsePanel from '../components/live-topology/ProviderResponsePanel.vue'
 import StatsPanel from '../components/live-topology/StatsPanel.vue'
+import LiveTopologyFilterBar from '../components/live-topology/LiveTopologyFilterBar.vue'
 import RoutingDecisionTimeline from '../components/live-topology/RoutingDecisionTimeline.vue'
 import RequestZoomPanel from '../components/live-topology/RequestZoomPanel.vue'
 import type { ParticleSpawn } from '../lib/liveTopologyParticles'
 import type { GatewayModuleKey, TopoNode } from '../types/liveTopology'
-import { DEFAULT_TOPO_FILTERS, TOPO_WINDOW_PRESETS } from '../types/liveTopology'
+import { DEFAULT_TOPO_FILTERS, type TopoFilters } from '../types/liveTopology'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -311,6 +311,11 @@ function clearFilters() {
   topo.filters.value = { ...DEFAULT_TOPO_FILTERS, windowMs: topo.filters.value.windowMs }
 }
 
+/** 共享过滤栏的局部改写（2026-11-16 抽出过滤栏后新增）。 */
+function onFilterPatch(patch: Partial<TopoFilters>) {
+  topo.filters.value = { ...topo.filters.value, ...patch }
+}
+
 const decisions = computed(() => (selectedRequestId.value ? topo.decisionsFor(selectedRequestId.value) : []))
 
 /** 摘要浮层里的路由决策时间线（与左侧 timeline 同一份数据源）。 */
@@ -349,103 +354,29 @@ function onSelectModel(model: string) {
       </span>
       <span v-if="!redisHealthy" class="live-topology__redis">{{ redisError || t('liveTopology.redisDown') }}</span>
 
-      <div class="live-topology__filters">
-        <el-select
-          :model-value="topo.filters.value.clients"
-          multiple
-          collapse-tags
-          clearable
-          class="live-topology__select"
-          :placeholder="t('liveTopology.filter.allClients')"
-          :aria-label="t('liveTopology.filter.client')"
-          data-testid="filter-clients"
-          @update:model-value="(v: string[]) => (topo.filters.value.clients = v ?? [])"
-        >
-          <el-option v-for="opt in topo.options.value.clients" :key="opt.value" :label="`${opt.label} (${opt.count})`" :value="opt.value" />
-        </el-select>
+      <!-- 入口：请求阶段树（live2）—— owner 2026-11-16「加入到系统的实时拓扑页」。
+           放在顶栏与过滤栏同层：过滤条件已经常驻顶层，两个实时页的入口互见。 -->
+      <router-link
+        class="live-topology__stagetree"
+        to="/live2"
+        data-testid="live-stage-tree-link"
+        :title="t('liveStageTree.title')"
+      >
+        {{ t('liveStageTree.title') }}
+      </router-link>
 
-        <el-select
-          :model-value="topo.filters.value.providers"
-          multiple
-          collapse-tags
-          clearable
-          class="live-topology__select"
-          :placeholder="t('liveTopology.filter.allProviders')"
-          :aria-label="t('liveTopology.filter.provider')"
-          data-testid="filter-providers"
-          @update:model-value="(v: string[]) => (topo.filters.value.providers = v ?? [])"
-        >
-          <el-option v-for="opt in topo.options.value.providers" :key="opt.value" :label="`${opt.label} (${opt.count})`" :value="opt.value" />
-        </el-select>
-
-        <el-select
-          :model-value="topo.filters.value.models"
-          multiple
-          collapse-tags
-          clearable
-          class="live-topology__select"
-          :placeholder="t('liveTopology.filter.allModels')"
-          :aria-label="t('liveTopology.filter.model')"
-          data-testid="filter-models"
-          @update:model-value="(v: string[]) => (topo.filters.value.models = v ?? [])"
-        >
-          <el-option v-for="opt in topo.options.value.models" :key="opt.value" :label="`${opt.label} (${opt.count})`" :value="opt.value" />
-        </el-select>
-
-        <el-select
-          :model-value="topo.filters.value.nodes"
-          multiple
-          collapse-tags
-          clearable
-          class="live-topology__select"
-          :placeholder="t('liveTopology.filter.allNodes')"
-          :aria-label="t('liveTopology.filter.node')"
-          data-testid="filter-nodes"
-          @update:model-value="(v: string[]) => (topo.filters.value.nodes = v ?? [])"
-        >
-          <el-option v-for="opt in topo.options.value.nodes" :key="opt.value" :label="`${opt.label} (${opt.count})`" :value="opt.value" />
-        </el-select>
-
-        <select v-model="topo.filters.value.status" :aria-label="t('liveTopology.filter.status')">
-          <option value="">{{ t('liveTopology.filter.allStatuses') }}</option>
-          <option value="success">{{ t('liveTopology.filter.success') }}</option>
-          <option value="in_progress">{{ t('liveTopology.filter.inProgress') }}</option>
-          <option value="failure">{{ t('liveTopology.filter.failure') }}</option>
-          <option value="rate_limited">{{ t('liveTopology.filter.rateLimited') }}</option>
-        </select>
-
-        <select v-model.number="topo.filters.value.windowMs" :aria-label="t('liveTopology.filter.window')">
-          <option v-for="preset in TOPO_WINDOW_PRESETS" :key="preset.value" :value="preset.value">
-            {{ t(preset.labelKey) }}
-          </option>
-        </select>
-
-        <!-- 两个数据开关（owner 2026-10-18：默认不勾 = 默认去除）。 -->
-        <label class="live-topology__toggle" data-testid="toggle-probe">
-          <input v-model="topo.filters.value.showProbe" type="checkbox" />
-          <span>{{ t('liveTopology.filter.showProbe') }}</span>
-        </label>
-        <label class="live-topology__toggle" data-testid="toggle-invalid">
-          <input v-model="topo.filters.value.showInvalidNodes" type="checkbox" />
-          <span>{{ t('liveTopology.filter.showInvalid') }}</span>
-        </label>
-
-        <button v-if="topo.activeFilterCount.value" type="button" class="live-topology__clear" @click="clearFilters">
-          {{ t('liveTopology.filter.clear') }}
-        </button>
-        <!--常驻全屏按钮：与清空过滤同族，放在过滤栏右端（顶栏是三栏整体的一部分） -->
-        <button
-          type="button"
-          class="live-topology__fullscreen"
-          :data-testid="isFullscreen ? 'fullscreen-exit' : 'fullscreen-enter'"
-          :title="isFullscreen ? t('liveTopology.fullscreen.exit') : t('liveTopology.fullscreen.enter')"
-          :aria-label="isFullscreen ? t('liveTopology.fullscreen.exit') : t('liveTopology.fullscreen.enter')"
-          :aria-pressed="isFullscreen"
-          @click="toggleFullscreen"
-        >
-          {{ isFullscreen ? t('liveTopology.fullscreen.exit') : t('liveTopology.fullscreen.enter') }}
-        </button>
-      </div>
+      <!-- 过滤栏（2026-11-16 抽出为共享组件：/live 与 /live2 阶段树共用同一份实现，
+           避免两页过滤口径漂移；data-testid 沿用原值，既有钉测不受影响）。 -->
+      <LiveTopologyFilterBar
+        :filters="topo.filters.value"
+        :options="topo.options.value"
+        :active-filter-count="topo.activeFilterCount.value"
+        show-fullscreen
+        :is-fullscreen="isFullscreen"
+        @patch="onFilterPatch"
+        @clear="clearFilters"
+        @toggle-fullscreen="toggleFullscreen"
+      />
     </header>
 
     <!-- 头部区间统计面板（2026-10-28 owner 口径：所有统计放页面上部）：
@@ -647,88 +578,27 @@ function onSelectModel(model: string) {
   color: var(--kx-warning);
 }
 
-.live-topology__filters {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  /* 独占一行（width:100%）、永不换行；极窄兜底横向滚动（丢滚动好过丢控件）。
-     owner 2026-10-18：筛选条件一行放下，字号更小且各控件大小一致。 */
-  width: 100%;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  font-size: 11px;
-}
-
-.live-topology__select {
-  width: 132px;
-  /* el-select 内部字号统一为 11px，与旁边的原生 select/按钮一致。 */
-  --el-font-size-base: 11px;
-  flex: none;
-}
-
-.live-topology__filters select {
-  max-width: 120px;
-  padding: 0 4px;
-  height: 24px;
-  border: 1px solid var(--kx-border);
-  border-radius: 6px;
-  background: var(--kx-surface);
-  color: var(--kx-text);
-  font-size: 11px;
-  flex: none;
-}
-
-/* 数据开关：与其它控件同高同字号（checkbox + label，一行内不凸起）。 */
-.live-topology__toggle {
+/* 阶段树（live2）入口按钮：与顶栏其它控件同族同高。 */
+.live-topology__stagetree {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
   height: 24px;
-  padding: 0 4px;
+  padding: 0 var(--kx-space-2);
   border: 1px solid var(--kx-border);
-  border-radius: 6px;
-  background: var(--kx-surface);
-  color: var(--kx-text);
-  font-size: 11px;
+  border-radius: var(--kx-radius-sm);
+  background: var(--kx-bg-container);
+  color: var(--kx-text-secondary);
+  font-size: var(--kx-text-2xs);
+  text-decoration: none;
   white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-  flex: none;
 }
 
-.live-topology__toggle input {
-  margin: 0;
-  width: 12px;
-  height: 12px;
-  accent-color: var(--kx-primary);
+.live-topology__stagetree:hover {
+  color: var(--kx-primary);
+  border-color: var(--kx-primary);
 }
 
-.live-topology__clear {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--kx-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--kx-muted);
-  font-size: 11px;
-  cursor: pointer;
-  flex: none;
-}
 
-/*常驻全屏按钮：与「清空过滤」同族同尺寸。 */
-.live-topology__fullscreen {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--kx-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--kx-text);
-  font-size: 11px;
-  cursor: pointer;
-  white-space: nowrap;
-  flex: none;
-}
 
 /*全屏态：:fullscreen 的宽高由 UA钉死(100%);高度交给内部栅格收进视口,
  并补全屏层背景(透明会把两侧留成黑边)。 */

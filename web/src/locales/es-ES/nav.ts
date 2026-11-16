@@ -17,6 +17,7 @@ export default {
     operationsOverview: 'Resumen operativo',
     activateAction: 'Activar',
     liveTopology: 'Topología en vivo',
+    liveStageTree: 'Árbol de etapas',
     overview: "Resumen",
     tenantModels: "Modelos estándar",
     tenantAccount: "Mi cuenta",

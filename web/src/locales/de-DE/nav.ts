@@ -18,6 +18,7 @@ export default {
     activateAction: 'Aktivieren',
     activateActionTip: 'Diese Instanz aktivieren',
     liveTopology: 'Live-Topologie',
+    liveStageTree: 'Anfrage-Stufenbaum',
     overview: "Übersicht",
     tenantModels: "Standardmodelle",
     tenantAccount: "Mein Konto",

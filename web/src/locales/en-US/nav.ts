@@ -19,6 +19,7 @@ export default {
   item: {
     operationsOverview: 'Operations Overview',
     liveTopology: 'Live Topology',
+    liveStageTree: 'Request Stage Tree',
     overview: 'Overview',
     tenantModels: 'Standard Models',
     tenantAccount: 'My Account',

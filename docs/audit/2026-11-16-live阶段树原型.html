@@ -1,0 +1,1969 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>/live 阶段树 · 改版原型（模拟数据）</title>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   色板与 web/src/style.css 的 html[data-theme='dark'] 保持一致
+   ───────────────────────────────────────────────────────────── */
+:root{
+  --kx-bg:#0f141c; --kx-bg-accent:rgba(91,140,255,.12);
+  --kx-surface:#1a222d; --kx-surface-soft:rgba(26,34,45,.92); --kx-sidebar:#121820;
+  --kx-text:#e8eef7; --kx-muted:#8b9bb0; --kx-border:#2a3544;
+  --kx-primary:#5b8cff; --kx-primary-hover:#7aa3ff; --kx-primary-soft:rgba(91,140,255,.16);
+  --kx-success:#3ecf8e; --kx-success-soft:rgba(62,207,142,.14);
+  --kx-warning:#e0a53a; --kx-warning-soft:rgba(224,165,58,.14);
+  --kx-danger:#f07167; --kx-danger-soft:rgba(240,113,103,.14);
+  --kx-text-on-primary:#fff;
+  --recv:#2ec5c5; --recv-soft:rgba(46,197,197,.12);
+  --shadow:0 8px 24px rgba(0,0,0,.28);
+  --radius:8px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--kx-bg); color:var(--kx-text);
+  font:13px/1.45 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+/* ── 顶栏 ───────────────────────────────────────────────── */
+.topbar{
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:8px 12px; background:var(--kx-sidebar); border-bottom:1px solid var(--kx-border);
+}
+.topbar h1{font-size:15px; margin:0; font-weight:650; letter-spacing:.2px}
+.conn{display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:2px 9px; border-radius:999px;
+  color:var(--kx-success); background:var(--kx-success-soft)}
+.conn::before{content:''; width:6px; height:6px; border-radius:50%; background:currentColor; animation:breathe 2.2s ease-in-out infinite}
+.conn.is-paused{color:var(--kx-warning); background:var(--kx-warning-soft)}
+.conn.is-paused::before{animation:none}
+@keyframes breathe{0%,100%{opacity:.45}50%{opacity:1}}
+.stats{display:flex; gap:6px; align-items:center; flex-wrap:wrap}
+.chip{
+  display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:3px 9px;
+  border:1px solid var(--kx-border); border-radius:999px; background:var(--kx-surface); color:var(--kx-muted);
+  cursor:default;
+}
+.chip b{color:var(--kx-text); font-weight:600}
+.chip.is-clickable{cursor:pointer}
+.chip.is-clickable:hover{border-color:var(--kx-primary); color:var(--kx-text)}
+.chip .dot{width:6px;height:6px;border-radius:50%;background:var(--kx-success)}
+.spacer{flex:1}
+button.btn{
+  font:inherit; font-size:11px; color:var(--kx-text); background:var(--kx-surface);
+  border:1px solid var(--kx-border); border-radius:6px; padding:4px 10px; cursor:pointer; white-space:nowrap;
+}
+button.btn:hover{border-color:var(--kx-primary); background:var(--kx-primary-soft)}
+button.btn.is-primary{background:var(--kx-primary); border-color:var(--kx-primary); color:var(--kx-text-on-primary)}
+select.btn{appearance:none; padding-right:8px}
+/* ── 模拟数据横幅 ─────────────────────────────────────── */
+.banner{
+  display:flex; align-items:center; gap:8px; padding:5px 12px; font-size:11.5px;
+  background:var(--kx-warning-soft); color:var(--kx-warning); border-bottom:1px solid rgba(224,165,58,.25);
+}
+.banner b{color:var(--kx-text)}
+/* ── 图例 ─────────────────────────────────────────────── */
+.legend{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:6px 12px; font-size:11px; color:var(--kx-muted);
+  border-bottom:1px solid var(--kx-border); background:var(--kx-surface-soft);
+}
+.legend .lg{display:inline-flex; align-items:center; gap:4px}
+.legend .gl{width:16px;height:16px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:10px;border:1px solid var(--kx-border);color:var(--kx-muted);flex:none}
+.legend .gl.s-done{color:var(--kx-success);border-color:rgba(62,207,142,.45);background:var(--kx-success-soft)}
+.legend .gl.s-active{color:var(--kx-primary);border-color:var(--kx-primary);background:var(--kx-primary-soft)}
+.legend .gl.s-pending{color:var(--kx-muted);border-style:dashed}
+.legend .gl.s-skipped{color:var(--kx-muted);background:repeating-linear-gradient(45deg,rgba(139,155,176,.18) 0 3px,transparent 3px 6px)}
+.legend .gl.s-failed{color:var(--kx-danger);border-color:var(--kx-danger);background:var(--kx-danger-soft)}
+.legend .gl.s-warn{color:var(--kx-warning);border-color:var(--kx-warning);background:var(--kx-warning-soft)}
+.legend .rail{display:inline-flex;align-items:center;gap:5px}
+.legend .rail i{display:inline-block;width:22px;height:0;border-top:2px solid var(--kx-primary)}
+.legend .rail.recv i{border-top-color:var(--recv)}
+/* ── 浮窗 HUD：统计 + 过滤合并为一个可拖动、可三档缩放的浮动层（owner 第 4 轮）──
+   ★ 第 3 轮形态是「顶栏 note + 第二行过滤栏」两块常驻界面；第 4 轮合并为**一个浮窗**：
+     收起＝顶栏页角胶囊；展开＝可拖动、可缩放的浮窗（统计在上、过滤在下）。
+   ★ 三档缩放：小（只仪表 + 核心过滤）/ 中（默认，加口径与一组明细）/ 大（三组明细全展开）。 */
+.hud{
+  position:fixed; right:14px; bottom:14px; z-index:32;
+  width:460px; max-width:calc(100vw - 24px); max-height:calc(100vh - 28px);
+  display:flex; flex-direction:column; overflow:hidden;
+  background:var(--kx-surface); border:1px solid var(--kx-border);
+  border-radius:10px; box-shadow:var(--shadow-md); font-size:11px;
+}
+.hud[hidden]{display:none}
+.hud--s{width:306px}
+.hud--m{width:460px}
+.hud--l{width:680px}
+.hud__bar{
+  display:flex; align-items:center; gap:6px; padding:6px 8px; cursor:grab; user-select:none;
+  background:linear-gradient(180deg,rgba(91,140,255,.12),transparent); border-bottom:1px solid var(--kx-border);
+}
+.hud__bar:active{cursor:grabbing}
+.hud__grip{color:var(--kx-muted); font-size:12px; letter-spacing:-2px}
+.hud__title{font-size:11.5px; font-weight:650; color:var(--kx-text)}
+.hud__sp{flex:1}
+.hud__b{width:20px; height:20px; border-radius:5px; border:1px solid var(--kx-border);
+  background:var(--kx-surface-soft); color:var(--kx-muted); font-size:12px; line-height:1; cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; padding:0}
+.hud__b:hover{color:var(--kx-text); border-color:var(--kx-primary)}
+.hud__body{overflow:auto; padding:8px; display:flex; flex-direction:column; gap:7px}
+.hud__sec{border:1px solid var(--kx-border); border-radius:8px; background:rgba(15,20,28,.4); padding:6px 8px}
+.hud__sechd{display:flex; align-items:center; gap:6px; font-size:10px; color:var(--kx-muted); margin-bottom:5px}
+.hud__sechd b{color:var(--kx-text); font-weight:600; font-size:10.5px}
+.hud__sechd .sp{flex:1}
+/* 仪表组：用图形化小仪表替代大块数字 */
+.gauges{display:grid; grid-template-columns:repeat(4,1fr); gap:5px}
+.gauge{position:relative; overflow:hidden; border:1px solid var(--kx-border); border-radius:6px;
+  padding:3px 6px 4px; background:var(--kx-surface-soft)}
+.gauge i{display:block; font-style:normal; font-size:9px; color:var(--kx-muted); letter-spacing:.2px}
+.gauge b{display:block; font-size:15px; font-weight:650; line-height:1.2; color:var(--kx-text);
+  font-variant-numeric:tabular-nums}
+.gauge .gbar{position:absolute; left:0; bottom:0; height:2px; background:var(--kx-primary); opacity:.75;
+  transition:width .4s ease}
+.gauge.is-ok b{color:var(--kx-success)} .gauge.is-ok .gbar{background:var(--kx-success)}
+.gauge.is-bad b{color:var(--kx-danger)} .gauge.is-bad .gbar{background:var(--kx-danger)}
+.gauge.is-live b{color:var(--kx-primary)}
+.gauge.is-warn b{color:var(--kx-warning)} .gauge.is-warn .gbar{background:var(--kx-warning)}
+/* token 行 */
+.toks{display:flex; flex-wrap:wrap; gap:2px 12px; margin-top:6px; font-size:10px; color:var(--kx-muted)}
+.toks b{color:var(--kx-text); font-weight:600; font-variant-numeric:tabular-nums}
+.sp__note{margin:6px 0 0; font-size:10px; color:var(--kx-muted); line-height:1.45}
+/* 明细组 */
+.sp__group{border-top:1px solid var(--kx-border); padding:3px 0}
+.sp__ghead{display:flex; align-items:center; gap:6px; width:100%; background:none; border:none; color:var(--kx-text);
+  font:inherit; font-size:11px; cursor:pointer; padding:3px 2px; text-align:left}
+.sp__ghead .caret{font-size:9px; color:var(--kx-muted); transition:transform .15s}
+.sp__ghead.is-open .caret{transform:rotate(90deg)}
+.sp__gsum{margin-left:auto; color:var(--kx-muted); font-size:10px}
+.sp__row{display:block; width:100%; background:none; border:none; color:var(--kx-text); font:inherit; font-size:10.5px;
+  cursor:pointer; padding:2px 4px; border-radius:4px; text-align:left; position:relative; overflow:hidden}
+.sp__row:hover{background:var(--kx-primary-soft)}
+.sp__row.is-active{background:var(--kx-primary-soft)}
+.sp__row .nm{display:inline-block; max-width:46%; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; white-space:nowrap}
+.sp__row .fig{font-size:10px; color:var(--kx-muted); margin-left:6px}
+.sp__row .fig b{color:var(--kx-text)}
+.sp__row .share{position:absolute; left:0; bottom:0; height:2px; background:var(--kx-primary); opacity:.55}
+.sp__row .tk{float:right; font-size:9.5px; color:var(--kx-muted)}
+.sp__empty{color:var(--kx-muted); font-size:10.5px; padding:3px 2px}
+/* 缩放档位：按档位裁掉次要区块，而不是整体等比缩小（可读性优先）。
+   ★ 小档**仍保留口径行**——口径是诚实性底线，不随版面取舍。 */
+.hud--s .hud__detail, .hud--s .hud__tok{display:none}
+.hud--s .hud__body{padding:7px}
+.hud--s .gauges{grid-template-columns:repeat(2,1fr)}
+.hud--s .hud__sechd .opt{display:none}
+/* 过滤区（浮窗内） */
+.hud__filters{display:flex; flex-wrap:wrap; align-items:center; gap:5px}
+.filterbar .btn, .filterbar select{height:22px; font-size:10.5px; padding:0 7px; flex:none}
+.ms{position:relative; flex:none}
+.ms__btn{min-width:92px; justify-content:space-between; display:inline-flex; align-items:center; gap:5px}
+.ms__btn::after{content:'▾'; font-size:9px; color:var(--kx-muted)}
+.ms__pop{
+  position:absolute; top:24px; left:0; z-index:6; min-width:180px; max-height:230px; overflow:auto;
+  background:var(--kx-surface); border:1px solid var(--kx-border); border-radius:var(--radius);
+  box-shadow:var(--shadow); padding:4px;
+}
+.ms__item{display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:4px; cursor:pointer; font-size:10.5px}
+.ms__item:hover{background:var(--kx-primary-soft)}
+.ms__item span{flex:1; color:var(--kx-text)}
+.ms__item i{color:var(--kx-muted); font-style:normal; font-size:9.5px}
+.ms__empty{padding:5px; color:var(--kx-muted); font-size:10.5px}
+.ftoggle{display:inline-flex; align-items:center; gap:3px; height:22px; padding:0 4px; color:var(--kx-muted); flex:none; font-size:10.5px}
+.fclear{color:var(--kx-warning)!important; border-color:rgba(224,165,58,.4)!important}
+.filterbar__hint{width:100%; color:var(--kx-muted); font-size:10px; line-height:1.4; padding-top:2px}
+/* 浮窗把手（顶栏胶囊）：显示统计核心读数 + 过滤摘要 */
+.statnote{position:relative; flex:none}
+.statnote__btn{display:inline-flex; align-items:center; gap:6px; height:26px; font-size:11px}
+.statnote__dot{width:6px;height:6px;border-radius:50%;background:var(--kx-primary);flex:none}
+.statnote__readout{color:var(--kx-text); font-variant-numeric:tabular-nums; min-width:150px}
+.statnote__caret{font-size:9px; color:var(--kx-muted)}
+.statnote__flt{color:var(--kx-warning); font-size:10px; font-variant-numeric:tabular-nums}
+.statnote__flt:empty{display:none}
+/* ── 画布 ─────────────────────────────────────────────── */
+.canvas{flex:1; overflow:auto; position:relative; overflow-anchor:none}  /* ★ 关掉浏览器自动锚定：
+   否则「删掉上方内容」时浏览器会自己补 scrollTop，与我们的补偿叠加 ⇒ 视口跳动翻倍 */
+.stagehead{
+  position:sticky; top:0; z-index:6; display:block; height:28px;
+  background:rgba(15,20,28,.95); backdrop-filter:blur(6px); border-bottom:1px solid var(--kx-border);
+}
+.stagehead .cell{position:absolute; top:0; height:28px; display:flex; align-items:center; justify-content:center;
+  gap:5px; font-size:11px; color:var(--kx-muted); border-left:1px dashed rgba(42,53,68,.9)}
+.stagehead .cell b{color:var(--kx-text); font-weight:600; font-size:11px}
+.stagehead .cell .c{font-size:10px; color:var(--kx-primary)}
+.stagehead .cell .c.bad{color:var(--kx-danger)}
+.band{
+  position:relative; border-bottom:1px solid rgba(42,53,68,.7);
+  background:linear-gradient(180deg,rgba(26,34,45,.30),rgba(26,34,45,.08));
+  animation:bandIn .45s ease-out;
+}
+@keyframes bandIn{from{opacity:0; transform:translateY(10px)}to{opacity:1;transform:none}}
+.band.is-selected{background:var(--kx-bg-accent); box-shadow:inset 3px 0 0 var(--kx-primary)}
+.band svg{position:absolute; left:0; top:0; pointer-events:none; overflow:visible}
+/* 接收轨底纹带：把「另一条线」在视觉上独立出来 */
+.band .recvstrip{
+  position:absolute; left:0; top:0; width:100%; height:100%;
+  background:linear-gradient(90deg,rgba(46,197,197,.055),rgba(46,197,197,.015) 70%,transparent);
+  border-top:1px dashed rgba(46,197,197,.16); border-bottom:1px dashed rgba(46,197,197,.16);
+  pointer-events:none;
+}
+.band .recvtag{
+  position:absolute; right:10px; font-size:9.5px; color:var(--recv); opacity:.75; letter-spacing:.4px;
+  pointer-events:none;
+}
+.band .node{
+  position:absolute; border-radius:var(--radius); border:1px solid var(--kx-border);
+  background:var(--kx-surface); padding:3px 7px; display:flex; flex-direction:column; justify-content:center;
+  gap:1px; overflow:hidden; cursor:pointer; transition:border-color .18s, background .18s, box-shadow .18s;
+}
+.band .node:hover{border-color:var(--kx-primary-hover); box-shadow:var(--shadow)}
+/* ★ 紧凑化（第 4 轮）：说明文字不再占行，统一交给 tooltip；
+   节点只剩「状态图标 + 阶段名 + 关键值」两行 + 底部 2px 状态条。 */
+.band .node .n-top{display:flex; align-items:center; gap:4px; font-size:9.5px; color:var(--kx-muted);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2}
+.band .node .n-title{font-size:11.5px; font-weight:650; color:var(--kx-text); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; line-height:1.25; font-variant-numeric:tabular-nums}
+.band .node .n-meta{font-size:9.5px; color:var(--kx-muted); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; line-height:1.25}
+.band .node.send .n-meta, .band .node.recv .n-meta, .band .node.provider .n-meta{display:none}
+.band .node .gl{width:12px;height:12px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:8.5px;border:1px solid var(--kx-border);color:var(--kx-muted);flex:none; font-style:normal}
+/* 底部状态条：把「这个节点到哪了」变成一根可扫的色条 */
+.band .node .n-bar{position:absolute; left:0; bottom:0; height:2px; width:100%; background:var(--kx-border); opacity:.9}
+.band .node.s-done .n-bar{background:var(--kx-success)}
+.band .node.s-active .n-bar{background:var(--kx-primary)}
+.band .node.s-failed .n-bar{background:var(--kx-danger)}
+.band .node.s-warn .n-bar{background:var(--kx-warning)}
+.band .node.s-skipped .n-bar{opacity:.25}
+.band .node.client{width:168px}
+.band .node.client .n-title{font-size:12px}
+/* 客户端列吸左：横向滚动时身份不丢（生产实现的 sticky 语义） */
+.band .clientwrap{position:sticky; left:0; float:left; width:172px; height:100%; z-index:2; pointer-events:none}
+.band .clientwrap .node{pointer-events:auto}
+/* 发送/接收分组：宽屏用 display:contents 保持绝对定位布局，窄屏折叠为芯片流 */
+.band .flow{display:contents}
+.band .rail-lbl{display:none}
+.band .node.send{width:104px;height:42px}
+.band .node.recv{width:104px;height:28px;border-color:rgba(46,197,197,.26)}
+.band .node.recv .n-title{font-size:10.5px; display:flex; align-items:center; gap:4px; justify-content:space-between}
+.band .node.recv .n-top{display:none}
+.band .node.provider{width:132px;height:42px}
+/* ── 第 5 轮：最终匹配模型 / 回复侧指标 / 节点可信度 ───────────────
+   ★ 可信度是 (凭据,模型) **节点级**判定（domains/modelcredibility），
+     不是单条请求的实时属性 ⇒ 挂在供应商节点上做角标，且 tooltip 必须
+     写明「节点级判定 · 最近一次检测 …」；本次响应**没有被实时验证**。 */
+.band .node .autotag{
+  font-size:8px; font-weight:700; letter-spacing:.4px; padding:0 4px; border-radius:3px;
+  color:var(--kx-primary); background:var(--kx-primary-soft); border:1px solid rgba(91,140,255,.42);
+  flex:none; line-height:12px; font-style:normal;
+}
+.band .node .n-cred{
+  position:absolute; top:2px; right:3px; font-size:8.5px; font-weight:700; line-height:12px;
+  padding:0 4px; border-radius:999px; font-style:normal; letter-spacing:.2px;
+  border:1px solid transparent; pointer-events:auto; cursor:help;
+}
+/* ★ 供应商节点的标题行给角标**留位**（实测重叠 29px：角标压住「供应商/令牌池」）。 */
+.band .node.provider .n-top{padding-right:44px}
+/* ★ 特异性必须与基础规则 `.band .node .n-cred`（0,3,0）同级或更高，
+   否则基础规则的 `border:1px solid transparent` 会把结论色的
+   border-color / border-style **全部吃掉**（实测 D19：边框恒透明）。 */
+.band .node .n-cred.v-verified{color:var(--kx-success); background:var(--kx-success-soft); border-color:rgba(62,207,142,.42)}
+.band .node .n-cred.v-suspected{color:var(--kx-warning); background:var(--kx-warning-soft); border-color:rgba(224,165,58,.42)}
+.band .node .n-cred.v-diluted{color:var(--kx-danger); background:var(--kx-danger-soft); border-color:rgba(240,113,103,.42)}
+.band .node .n-cred.v-unknown{color:var(--kx-muted); background:rgba(139,155,176,.12); border-color:var(--kx-border)}
+/* ★ 过期结论：保留结论色但虚化 + 虚线边框（与「证据不足」区分开） */
+.band .node .n-cred.v-stale{opacity:.6; border-style:dashed}
+/* summary 指标 chip（图标化，避免大块文字） */
+.band .summary .chip{
+  display:inline-flex; align-items:center; gap:3px; padding:1px 6px; border-radius:999px;
+  font-size:9.5px; color:var(--kx-muted); background:rgba(139,155,176,.1);
+  border:1px solid var(--kx-border); font-variant-numeric:tabular-nums;
+}
+.band .summary .chip.hit{color:var(--kx-success); background:var(--kx-success-soft); border-color:rgba(62,207,142,.3)}
+.band .summary .chip.model{color:var(--kx-primary); background:var(--kx-primary-soft);
+  border-color:rgba(91,140,255,.38); font-weight:600}
+.band .summary .chip.model .arw{opacity:.65}
+.band .summary .chip.na{color:var(--kx-muted); border-style:dashed}
+.band .summary .chip.bad{color:var(--kx-danger); background:var(--kx-danger-soft);
+  border-color:rgba(240,113,103,.4); font-weight:600}
+/* 详情块：可信度四维子分数条 */
+.bd__dims{display:grid; grid-template-columns:repeat(4,minmax(96px,1fr)); gap:3px 14px; margin-top:4px}
+.bd__dim{display:flex; align-items:center; gap:5px; font-size:10px}
+.bd__dim .dn{color:var(--kx-muted); width:52px; flex:none}
+.bd__dim .dbar{flex:1; height:4px; border-radius:2px; background:var(--kx-border); overflow:hidden}
+.bd__dim .dbar i{display:block; height:100%; background:var(--kx-primary)}
+.bd__dim.na .dv{color:var(--kx-muted)}
+.bd__dim .dv{color:var(--kx-text); width:24px; text-align:right; font-variant-numeric:tabular-nums}
+.bd__note{font-size:9.5px; color:var(--kx-muted); margin-top:3px; line-height:1.5}
+/* 带 hover：整带提亮 + 左侧色条（列表在 hover 期间冻结，见交互段） */
+.band.is-hover{background:linear-gradient(180deg,rgba(91,140,255,.10),rgba(91,140,255,.03))}
+.band.is-hover::before{content:''; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--kx-primary)}
+/* 节点状态 */
+.node.s-done{border-color:rgba(62,207,142,.42)}
+.node.s-done .gl{color:var(--kx-success);border-color:rgba(62,207,142,.5);background:var(--kx-success-soft)}
+.node.s-active{border-color:var(--kx-primary); background:var(--kx-primary-soft); box-shadow:0 0 0 1px rgba(91,140,255,.3)}
+.node.s-active .gl{color:var(--kx-primary);border-color:var(--kx-primary);background:var(--kx-primary-soft)}
+.node.s-pending{opacity:.42; border-style:dashed}
+.node.s-skipped{opacity:.6; background:repeating-linear-gradient(45deg,rgba(139,155,176,.09) 0 4px,transparent 4px 8px)}
+.node.s-skipped .n-title{font-weight:400; color:var(--kx-muted)}
+.node.s-failed{border-color:var(--kx-danger); background:var(--kx-danger-soft)}
+.node.s-failed .gl{color:var(--kx-danger);border-color:var(--kx-danger);background:var(--kx-danger-soft)}
+.node.s-failed .n-title{color:var(--kx-danger)}
+.node.s-warn{border-color:var(--kx-warning); background:var(--kx-warning-soft)}
+.node.s-warn .gl{color:var(--kx-warning);border-color:var(--kx-warning);background:var(--kx-warning-soft)}
+.node.s-warn .n-title{color:var(--kx-warning)}
+.node.s-unknown{border-style:dotted; opacity:.72}
+@keyframes pulseRing{0%{box-shadow:0 0 0 0 rgba(91,140,255,.45)}70%{box-shadow:0 0 0 7px rgba(91,140,255,0)}100%{box-shadow:0 0 0 0 rgba(91,140,255,0)}}
+.node.s-active{animation:pulseRing 1.5s ease-out infinite}
+@keyframes failFlash{0%,100%{box-shadow:0 0 0 0 rgba(240,113,103,0)}50%{box-shadow:0 0 12px 2px rgba(240,113,103,.45)}}
+.node.s-failed{animation:failFlash 1.6s ease-in-out infinite}
+@keyframes flowDash{to{stroke-dashoffset:-24}}
+line.flow{animation:flowDash .9s linear infinite}
+/* 摘要行 */
+.band .summary{
+  position:absolute; left:0; font-size:10px; color:var(--kx-muted);
+  display:flex; align-items:center; gap:6px; white-space:nowrap; overflow:hidden;
+}
+.band .summary .badge{padding:1px 6px;border-radius:999px;font-size:9.5px;border:1px solid transparent}
+.badge.ok{color:var(--kx-success);background:var(--kx-success-soft);border-color:rgba(62,207,142,.3)}
+.badge.bad{color:var(--kx-danger);background:var(--kx-danger-soft);border-color:rgba(240,113,103,.35)}
+.badge.run{color:var(--kx-primary);background:var(--kx-primary-soft);border-color:rgba(91,140,255,.35)}
+.badge.warn{color:var(--kx-warning);background:var(--kx-warning-soft);border-color:rgba(224,165,58,.3)}
+.badge.mute{color:var(--kx-muted);background:rgba(139,155,176,.12);border-color:var(--kx-border)}
+.badge.err{color:var(--kx-danger);background:var(--kx-danger-soft);border-color:rgba(240,113,103,.3);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+/* 静默带 */
+.band.idle{
+  display:flex; align-items:center; gap:12px; padding:0 16px;
+  background:repeating-linear-gradient(135deg,rgba(139,155,176,.05) 0 8px,transparent 8px 16px);
+  transition:height .4s ease;
+}
+.band.idle .idle-dot{width:8px;height:8px;border-radius:50%;background:var(--kx-muted);flex:none;animation:breathe 2.6s ease-in-out infinite}
+.band.idle.is-long .idle-dot{background:var(--kx-warning);animation:breathe 1.4s ease-in-out infinite;box-shadow:0 0 10px rgba(224,165,58,.6)}
+.band.idle .idle-txt{font-size:12px;color:var(--kx-muted)}
+.band.idle.is-long .idle-txt{color:var(--kx-warning);font-size:13px;font-weight:650}
+.band.idle .idle-sub{font-size:11px;color:var(--kx-muted);margin-left:auto}
+/* 新请求提示 */
+.newpill{
+  position:fixed; right:18px; bottom:18px; z-index:20; display:none; align-items:center; gap:6px;
+  padding:7px 13px; border-radius:999px; background:var(--kx-primary); color:#fff; font-size:12px;
+  box-shadow:var(--shadow); cursor:pointer; border:none;
+}
+.newpill.is-on{display:inline-flex}
+/* 抽屉 */
+.drawer{
+  position:fixed; top:0; right:0; width:420px; height:100%; background:var(--kx-surface);
+  border-left:1px solid var(--kx-border); box-shadow:var(--shadow); transform:translateX(100%);
+  transition:transform .22s ease; z-index:30; display:flex; flex-direction:column;
+}
+.drawer.is-open{transform:none}
+.drawer header{padding:10px 14px; border-bottom:1px solid var(--kx-border); display:flex; align-items:center; gap:8px}
+.drawer header h3{margin:0; font-size:13px; flex:1}
+.drawer .body{flex:1; overflow:auto; padding:10px 14px}
+.drawer .act{display:flex; gap:8px; padding:4px 0; border-bottom:1px dashed rgba(42,53,68,.8); font-size:11px}
+.drawer .act .seq{color:var(--kx-muted); width:26px; flex:none; font-family:ui-monospace,Menlo,monospace}
+.drawer .act .name{color:var(--kx-primary); width:126px; flex:none}
+.drawer .act .det{color:var(--kx-muted); word-break:break-all}
+.drawer .kv{display:flex; gap:8px; font-size:11px; padding:3px 0}
+.drawer .kv .k{color:var(--kx-muted); width:96px; flex:none}
+.drawer h4{margin:12px 0 4px; font-size:11px; color:var(--kx-muted); font-weight:600; letter-spacing:.4px}
+/* 插件浮层 */
+.pop{
+  position:fixed; z-index:40; min-width:280px; background:var(--kx-surface); border:1px solid var(--kx-border);
+  border-radius:var(--radius); box-shadow:var(--shadow); padding:10px 12px; font-size:11.5px; display:none;
+}
+.pop.is-open{display:block}
+.pop h4{margin:0 0 6px; font-size:11px; color:var(--kx-muted)}
+.pop ul{margin:0; padding-left:16px; color:var(--kx-text)}
+.pop .mod{display:flex; align-items:center; gap:6px; padding:1px 0}
+.pop .mod .dot{width:6px;height:6px;border-radius:50%;background:var(--kx-success)}
+.pop .mod .dot.off{background:var(--kx-muted);opacity:.5}
+.pop .mod .cnt{margin-left:auto; color:var(--kx-muted)}
+/* ── 窄屏：折叠为单列卡片（类驱动，可手动切换预览）──────────── */
+.layout-narrow .canvas{overflow-y:auto; overflow-x:hidden}
+.layout-narrow .stagehead{display:none}
+.layout-narrow .band{height:auto!important; padding:10px 12px; display:flex; flex-direction:column; gap:8px}
+.layout-narrow .band svg,.layout-narrow .band .recvstrip,.layout-narrow .band .recvtag{display:none}
+.layout-narrow .band .clientwrap{position:static; float:none; width:auto; height:auto; z-index:auto}
+.layout-narrow .band .node{position:static!important; width:auto!important; height:auto!important; min-width:108px; padding:5px 8px}
+.layout-narrow .band .node.client{min-width:160px}
+.layout-narrow .band .node.recv{border-color:rgba(46,197,197,.3)}
+.layout-narrow .band .rail-lbl{display:block; font-size:10px; color:var(--kx-muted); letter-spacing:.5px; width:100%}
+.layout-narrow .band .flow{display:flex; flex-wrap:wrap; gap:4px; align-items:center; width:100%}
+.layout-narrow .band .flow .node::after{content:'→'; margin-left:6px; color:var(--kx-muted); font-weight:400}
+.layout-narrow .band .flow .node:last-child::after{content:''}
+.layout-narrow .band .flow.recv .node::after{content:'←'}
+.layout-narrow .band .flow.recv .node:last-child::after{content:''}
+.layout-narrow .band .summary{position:static; flex-wrap:wrap; margin-top:2px}
+.layout-narrow .banddetail{position:static; width:auto!important; top:auto!important; margin-top:8px; max-height:none; overflow:visible}
+.layout-narrow .bd__cols{grid-template-columns:1fr}
+.layout-narrow .drawer{width:100%}
+/* ── 浮动 tooltip（第 4 轮）：把节点说明文字从版面上移走，改由悬浮给出 ── */
+.tip{
+  position:fixed; z-index:60; pointer-events:none; display:none; max-width:300px;
+  padding:6px 9px; border-radius:7px; background:rgba(18,24,33,.97);
+  border:1px solid var(--kx-border); box-shadow:var(--shadow-md);
+  font-size:11px; color:var(--kx-text); line-height:1.5;
+}
+.tip.is-on{display:block}
+.tip .tip__h{display:flex; align-items:center; gap:5px; font-weight:650; margin-bottom:2px}
+.tip .tip__h .gl{width:12px;height:12px;border-radius:3px;display:inline-flex;align-items:center;
+  justify-content:center;font-size:8.5px;border:1px solid var(--kx-border);font-style:normal}
+.tip .tip__r{display:flex; gap:8px; color:var(--kx-muted)}
+.tip .tip__r b{color:var(--kx-text); font-weight:600; font-variant-numeric:tabular-nums}
+/* ── 请求详情（点击请求带内联展开）───────────────────────────── */
+.banddetail{
+  /* ★ 详情**长在带内部**（不是带的兄弟节点）：带随之长高 ⇒ 光标下的那条原地不动，
+     下方各带被推开；若是兄弟节点，同一屏幕位置第二次点击会命中另一条带（实测缺陷）。 */
+  position:absolute; left:0; top:0; z-index:3; padding:8px 14px 10px 14px;
+  background:linear-gradient(180deg,rgba(91,140,255,.07),rgba(15,20,28,.62));
+  border-bottom:1px solid var(--kx-border); border-left:3px solid var(--kx-primary);
+  animation:bdIn .18s ease-out;
+  /* ★ 第 5 轮：详情内容变多（三节新增）⇒ 改**双栏**并封顶高度，
+     否则单栏堆叠会把带撑到近千 px（实测缺陷 D16）。 */
+  max-height:520px; overflow-y:auto;
+}
+/* 双栏：左＝模型解析链 + 回复侧指标 + 身份可信度；右＝阶段明细 + liveactions */
+.bd__cols{display:grid; grid-template-columns:1fr 1fr; gap:0 22px; align-items:start}
+.bd__col .bd__grid{grid-template-columns:repeat(auto-fill,minmax(228px,1fr))}
+.bd__col h4:first-child{margin-top:0}
+@keyframes bdIn{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+.banddetail h4{margin:0 0 5px; font-size:10px; color:var(--kx-muted); font-weight:600; letter-spacing:.4px;
+  display:flex; align-items:center; gap:8px}
+.banddetail h4 .sp{flex:1}
+.bd__grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:1px 12px}
+.bd__kv{display:flex; gap:6px; font-size:10.5px; line-height:1.55}
+.bd__kv .k{color:var(--kx-muted); width:54px; flex:none}
+.bd__kv .v{color:var(--kx-text); font-variant-numeric:tabular-nums}
+.bd__kv.wide .k{width:104px}
+.bd__acts{margin-top:7px; max-height:132px; overflow:auto; border-top:1px dashed rgba(42,53,68,.9); padding-top:5px}
+.bd__act{display:flex; gap:8px; font-size:10px; padding:1.5px 0; color:var(--kx-muted)}
+.bd__act .seq{color:var(--kx-muted); width:24px; flex:none; font-family:ui-monospace,Menlo,monospace}
+.bd__act .name{color:var(--kx-primary); width:132px; flex:none; font-family:ui-monospace,Menlo,monospace}
+.bd__act .det{word-break:break-all}
+.bd__btns{display:flex; gap:6px; margin-top:7px}
+.bd__btns .btn{height:22px; font-size:10.5px; padding:0 8px}
+/* ── hover 冻结提示：鼠标停在某条请求上时，列表不再自动滚动 ────── */
+.freezehint{
+  position:fixed; left:14px; bottom:14px; z-index:24;
+  display:none; align-items:center; gap:7px; padding:4px 11px; border-radius:999px;
+  background:rgba(224,165,58,.12); border:1px solid rgba(224,165,58,.4);
+  color:var(--kx-warning); font-size:10.5px; box-shadow:var(--shadow);
+}
+.freezehint.is-on{display:inline-flex}
+.freezehint .dot{width:6px;height:6px;border-radius:50%;background:var(--kx-warning);animation:breathe 1.6s ease-in-out infinite}
+@media (prefers-reduced-motion: reduce){
+  *{animation:none!important; transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<!-- ══ 顶栏：标题 + 连接态 + ★统计 note（页角，收起形态）+ 系统状态 + 原型控制 ══ -->
+<header class="topbar">
+  <h1>实时拓扑 · 阶段树</h1>
+  <span class="conn" id="conn">已连接</span>
+
+  <!-- ★ owner 第 3 轮：原 live 的「统计」保留，收缩成页角 note。
+       ★ owner 第 4 轮：**统计与过滤合并为一个浮动层**（可拖动、可三档缩放），
+         顶栏胶囊降级为「浮窗把手」：显示统计核心读数 + 当前过滤摘要，点它开合浮窗。 -->
+  <div class="statnote" id="statnote">
+    <button class="btn statnote__btn" id="statnoteBtn" aria-expanded="false" aria-haspopup="true"
+            title="统计与过滤浮窗（可拖动、可缩放）">
+      <span class="statnote__dot"></span>
+      <span class="statnote__readout" id="statnoteReadout">近 5 分钟 · 0 请求 · — 成功率 · 在途 0</span>
+      <span class="statnote__flt" id="statnoteFlt"></span>
+      <span class="statnote__caret" id="statnoteCaret">▾</span>
+    </button>
+  </div>
+
+  <span class="chip is-clickable" id="pluginChip" title="点击查看已加载模块与插件清单">
+    <span class="dot"></span>已加载 · 模块 <b id="stModules">11</b> · 插件 <b id="stPlugins">4</b> 内置 / <b id="stPluginsExt">3</b> 外部
+  </span>
+
+  <span class="spacer"></span>
+  <button class="btn" id="btnLayout">版面：自动</button>
+  <button class="btn" id="btnPlay">⏸ 暂停</button>
+  <select class="btn" id="speed" aria-label="模拟速度">
+    <option value="1">1×</option>
+    <option value="4" selected>4×</option>
+    <option value="16">16×</option>
+    <option value="60">60×（快进看静默规则）</option>
+  </select>
+  <button class="btn" id="btnIdle">⏸ 模拟全空闲</button>
+  <button class="btn" id="btnFail">⚠ 注入一条失败</button>
+  <button class="btn" id="btnClear">🗑 清空</button>
+  <button class="btn" id="btnFullscreen" title="全屏（对应原页「进入全屏」）">⛶ 全屏</button>
+</header>
+
+<!-- ══ 浮窗 HUD：统计 + 过滤合并为**一个可拖动、可缩放**的浮动层（owner 第 4 轮）══
+     统计在上（4 个小仪表 + token 行 + 口径行 + 三组明细），过滤在下（原 live 全套保留）。
+     标题栏可拖动移动；−/＋ 三档缩放；点空白或 Esc 关闭。 -->
+<div class="hud hud--m" id="hud" hidden>
+  <header class="hud__bar" id="hudBar">
+    <span class="hud__grip" title="拖动移动">⣿</span>
+    <span class="hud__title">统计与过滤</span>
+    <span class="hud__sp"></span>
+    <button class="hud__b" id="hudSmaller" title="缩小">−</button>
+    <button class="hud__b" id="hudBigger" title="放大">＋</button>
+    <button class="hud__b" id="hudClose" title="关闭（Esc）">×</button>
+  </header>
+  <div class="hud__body">
+    <section class="hud__sec">
+      <div class="hud__sechd">
+        <b>统计</b>
+        <span id="hudIntervalLbl">近 5 分钟</span>
+        <span class="sp"></span>
+        <select class="btn" id="spInterval" aria-label="统计区间" style="height:22px;font-size:10.5px">
+          <option value="300000">近 5 分钟</option>
+          <option value="3600000">近 1 小时</option>
+          <option value="86400000">当天</option>
+        </select>
+      </div>
+      <div id="hudStats"></div>
+    </section>
+    <section class="hud__sec">
+      <div class="hud__sechd">
+        <b>过滤</b><span class="sp"></span>
+        <span class="opt" style="font-size:9.5px">点统计明细行＝联动过滤</span>
+      </div>
+      <div class="hud__filters" id="filterbar">
+        <div class="ms" data-dim="clients"><button class="btn ms__btn" type="button">全部客户端</button><div class="ms__pop" hidden></div></div>
+        <div class="ms" data-dim="providers"><button class="btn ms__btn" type="button">全部供应商</button><div class="ms__pop" hidden></div></div>
+        <div class="ms" data-dim="models"><button class="btn ms__btn" type="button">全部模型</button><div class="ms__pop" hidden></div></div>
+        <div class="ms" data-dim="nodes"><button class="btn ms__btn" type="button">全部节点</button><div class="ms__pop" hidden></div></div>
+        <select class="btn" id="fStatus" aria-label="状态过滤">
+          <option value="">全部状态</option>
+          <option value="success">成功</option>
+          <option value="in_progress">进行中</option>
+          <option value="failure">失败</option>
+          <option value="rate_limited">限流</option>
+        </select>
+        <select class="btn" id="fWindow" aria-label="时间窗">
+          <option value="300000">近 5 分钟</option>
+          <option value="1800000">近 30 分钟</option>
+          <option value="7200000">近 2 小时</option>
+        </select>
+        <label class="ftoggle"><input type="checkbox" id="fProbe" /><span>显示探测请求</span></label>
+        <label class="ftoggle"><input type="checkbox" id="fInvalid" /><span>显示无效节点</span></label>
+        <button class="btn fclear" id="fClear" hidden>清除筛选</button>
+        <span class="filterbar__hint" id="filterHint"></span>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 浮动 tooltip：承载被移出版面的说明文字；冻结提示：hover 期间列表不滚动 -->
+<div class="tip" id="tip"></div>
+<div class="freezehint" id="freezeHint"><span class="dot"></span><span id="freezeTxt">列表已冻结（鼠标悬停在请求上）</span></div>
+
+<div class="banner">
+  <span>⚠</span>
+  <span><b>模拟数据</b>：本原型为设计评审用，内置模拟器生成请求与阶段事件，<b>不是生产实时流</b>。
+  生产接入需先补 4 个阶段打点（审批 / 注入检测 / 脱敏 / 还原），详见主档 §6。</span>
+</div>
+
+<div class="legend">
+  <span class="lg"><i class="gl s-done">✓</i>完成</span>
+  <span class="lg"><i class="gl s-active">◐</i>进行中</span>
+  <span class="lg"><i class="gl s-pending">○</i>未到达</span>
+  <span class="lg"><i class="gl s-skipped">⌀</i>跳过</span>
+  <span class="lg"><i class="gl s-failed">✕</i>失败</span>
+  <span class="lg"><i class="gl s-warn">⚠</i>告警</span>
+  <span class="lg"><i class="gl s-unknown">⋯</i>未测量</span>
+  <span class="rail"><i></i>发送轨（左→右）</span>
+  <span class="rail recv"><i></i>接收轨（右→左）</span>
+</div>
+
+<div class="canvas" id="canvas">
+  <div class="stagehead" id="stagehead"></div>
+  <div id="bands"></div>
+</div>
+
+<button class="newpill" id="newPill">↓ 有新请求</button>
+
+<aside class="drawer" id="drawer">
+  <header>
+    <h3 id="drawerTitle">请求明细</h3>
+    <button class="btn" id="drawerClose">✕ 关闭</button>
+  </header>
+  <div class="body" id="drawerBody"></div>
+</aside>
+
+<div class="pop" id="pluginPop"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   /live 阶段树原型 —— 零依赖自包含演示
+   结构：阶段模型 → 布局 → 模拟器 → 渲染 → 交互
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 1. 阶段模型（与主档 §5.2 同源；顺序 = 真实管线顺序）──────── */
+const SEND_STAGES = [
+  {key:'auth',      name:'鉴权/限流',    col:1},
+  {key:'approval',  name:'审批',          col:2},
+  {key:'injection', name:'注入检测',      col:3},
+  {key:'sanitize',  name:'脱敏',          col:4},
+  {key:'compress',  name:'压缩',          col:5},
+  {key:'route',     name:'路由',          col:6},
+  {key:'provider',  name:'供应商/令牌池', col:7, terminal:true},
+];
+const RECV_STAGES = [
+  {key:'first_byte', name:'首字节', col:7},
+  {key:'restore',    name:'还原',   col:4},
+  {key:'billing',    name:'计量',   col:2},
+  {key:'reply',      name:'回复',   col:1},
+];
+const COL_NAME = ['','鉴权','审批','注入','脱敏','压缩','路由','供应商'];
+
+const MODULES = ['缓存','脱敏','模型选择','压缩','路由管理','节点状态','数据会话写入','会话文件存储','任务识别','错误记录','探测任务'];
+const PLUGINS_BUILTIN = [
+  {name:'sanitize_pattern', status:'ready'}, {name:'sensitive_word_input', status:'ready'},
+  {name:'sensitive_word_output', status:'ready'}, {name:'output_compliance', status:'ready'},
+];
+const PLUGINS_EXTERNAL = [
+  {name:'llm-judge@1.4.2', status:'ready'}, {name:'cost-guard@0.9.1', status:'ready'},
+  {name:'trace-exporter@2.0.0', status:'degraded'},
+];
+const MODULE_HITS = {};
+MODULES.forEach(m=>MODULE_HITS[m]=0);
+
+/* ── 2. 布局常量 ───────────────────────────────────────────────────
+   ★ 第 4 轮紧凑化：节点 120×54 → 104×42，带高 150 → 118（≈ -21%），
+     说明文字不再占行（改由 tooltip 承载），版面上只剩「阶段 + 关键值」。 */
+const CLIENT_W=168, NODE_W=104, PROVIDER_W=132, PITCH=112, COL0_X=180;
+const SEND_Y=8, SEND_H=42, RECV_Y=58, RECV_H=28, SUM_Y=92, BAND_H=118;
+const TREE_W = COL0_X + 7*PITCH + PROVIDER_W + 20;
+function colX(col){ return col===0 ? 0 : COL0_X + (col-1)*PITCH; }
+function nodeW(key){ return key==='provider'?PROVIDER_W:(key==='client'?CLIENT_W:NODE_W); }
+
+/* ── 3. 模拟器数据 ───────────────────────────────────────────── */
+const CLIENTS = [
+  {name:'Claude Code',  type:'coding_agent', typeLabel:'编码助手', proto:'openai'},
+  {name:'Cursor',        type:'coding_agent', typeLabel:'编码助手', proto:'anthropic'},
+  {name:'openai-python', type:'sdk',         typeLabel:'SDK',      proto:'openai'},
+  {name:'curl',          type:'cli',         typeLabel:'命令行',   proto:'openai'},
+  {name:'Cherry Studio', type:'app',         typeLabel:'桌面应用', proto:'openai'},
+  {name:'Dify',          type:'app',         typeLabel:'应用平台', proto:'openai'},
+  {name:'n8n',           type:'automation',  typeLabel:'自动化',   proto:'openai'},
+  {name:'Chatbox',       type:'app',         typeLabel:'桌面应用', proto:'gemini'},
+];
+const PROVIDERS = [
+  {code:'aliyun',   name:'阿里云百炼', kind:'provider', kindLabel:'供应商', cred:'cred#128', upProto:'openai'},
+  {code:'deepseek', name:'DeepSeek',   kind:'provider', kindLabel:'供应商', cred:'cred#96',  upProto:'openai'},
+  {code:'tokenpool',name:'共享令牌池', kind:'pool',     kindLabel:'令牌池', cred:'pool#3',   upProto:'openai'},
+  {code:'openai',   name:'OpenAI 官方',kind:'provider', kindLabel:'供应商', cred:'cred#201', upProto:'openai'},
+  {code:'local',    name:'内网直连',   kind:'pool',     kindLabel:'令牌池', cred:'pool#1',   upProto:'anthropic'},
+];
+const MODELS = ['gpt-6-astra','claude-opus-5-5','deepseek-chat','glm-5.3-flash','qwen3-max','gemini-3-pro'];
+/* ★ 第 5 轮：客户端请求名 → 最终匹配模型 的**解析链**。
+   三种进入形态：auto（分类后选型）/ 别名（解析到 canonical）/ 具体名（canonical 直达）。 */
+const ALIASES = {'gpt-6':'gpt-6-astra','claude-opus':'claude-opus-5-5','deepseek':'deepseek-chat',
+                 'qwen':'qwen3-max','gemini':'gemini-3-pro','glm':'glm-5.3-flash'};
+const GLYPH = {done:'✓', active:'◐', pending:'○', skipped:'⌀', failed:'✕', warn:'⚠', unknown:'⋯'};
+
+/* ── 4.1 第 5 轮：模型解析 / 缓存口径 / 节点可信度 ────────────────
+   ★ 这三块的**口径**是本轮的核心：任何一个数都必须说清它是怎么来的、
+     在什么范围内成立；测不出来就写「未测量」，不写 0。 */
+
+/** 客户端请求名 → 最终匹配模型（canonical）。
+ *  ★★ **生产口径修正（2026-11-16 第 5 轮复核）**：
+ *     `preAutoModel`（客户端**原始**请求名）**只进 requestjourney**，不上实时帧；
+ *     handler 在 auto 解析后把 `client_model` **改写成选中的模型**
+ *     （`domains/streaming/handler.go:3516` `preAutoModel := clientModel` → `:3609`
+ *     `resolveRequestJourney(r, tenant, preAutoModel, clientModel)`；
+ *     `admin/live_stream_sse.go:3194-3197` 的注释明确写「不能靠 ClientModel=="auto" 反推」）。
+ *     ⇒ **auto 请求的 client_model == 最终模型**，「客户端要的是 auto」只能由
+ *     `is_auto_request` 表达 ⇒ 原型里不能画「请求 auto」，要画 `auto → 选中模型`。
+ *     ⇒ 别名场景不受影响（别名不改写 body，client_model 保持别名原样）。 */
+function resolveModel(requestedModel){
+  if(requestedModel==='auto'){
+    const final=pick(MODELS);
+    return {requested:requestedModel, isAuto:true, taskType:pick(['chat','reasoning','code','summary']),
+            autoConfidence:rand(0.62,0.97), finalModel:final,
+            clientModel:final,            /* 生产口径：auto 改写后 client_model ＝ 选中模型 */
+            reason:'auto 分类后选型'};
+  }
+  if(ALIASES[requestedModel]){
+    return {requested:requestedModel, isAuto:false, taskType:'', autoConfidence:null,
+            finalModel:ALIASES[requestedModel],
+            clientModel:requestedModel,    /* 别名不改写：client_model 保持别名原样 */
+            reason:'别名解析到 canonical'};
+  }
+  return {requested:requestedModel, isAuto:false, taskType:'', autoConfidence:null,
+          finalModel:requestedModel, clientModel:requestedModel, reason:'canonical 直达'};
+}
+
+/** 节点可信度：(凭据, 模型) **节点级**判定（domains/modelcredibility）。
+ *  ★ 用 (provider, model) 的稳定 hash 派生 ⇒ 同一节点每次显示一致，
+ *    不会像纯随机那样让「同一供应商」在不同请求上跳分。 */
+function credOf(provider, model){
+  const s=provider.code+'|'+model;
+  let h=2166136261;
+  for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619)>>>0; }
+  const pick=h%100;
+  let verdict, score;
+  if(pick<62){ verdict='verified';  score=86+((h>>>7)%13); }   // 86..98
+  else if(pick<80){ verdict='suspected'; score=68+((h>>>9)%17); } // 68..84
+  else if(pick<90){ verdict='diluted'; score=42+((h>>>11)%15); }  // 42..56
+  else { verdict='unknown'; score=null; }                        // 证据不足
+  const dim=(sh,lo,hi)=> score===null ? null : Math.max(lo,Math.min(100,score+((h>>>sh)%hi)-Math.floor(hi/2)));
+  /* ★ 检测时间是**墙钟**（DB 里的真实时间戳），不是模拟器的虚拟时钟。
+     判定有时效：太旧的结论挂到实时视图上会误导 ⇒ 超过 CRED_STALE_DAYS 标「过期」。 */
+  const ageDays=(h>>>21)%21;                                   // 0..20 天前
+  const ts=new Date(Date.now()-ageDays*86400000-((h>>>8)%86400000));
+  const pad=n=>String(n).padStart(2,'0');
+  return {score, verdict,
+          dims:{identity:dim(3,0,100), capability:dim(7,0,100),
+                consistency:dim(11,0,100), reference:dim(15,0,100)},
+          at:ts.getFullYear()+'-'+pad(ts.getMonth()+1)+'-'+pad(ts.getDate())+' '+pad(ts.getHours())+':'+pad(ts.getMinutes()),
+          ageDays, stale:ageDays>CRED_STALE_DAYS};
+}
+const CRED_STALE_DAYS=7;   /* 结论超过 7 天未复测 ⇒ 标「过期」（虚化 + 虚线边框） */
+const CRED_VERDICT_ZH={verified:'已验证', suspected:'存疑', diluted:'渗水', unknown:'证据不足'};
+const CRED_VERDICT_ICON={verified:'✓', suspected:'⚠', diluted:'✕', unknown:'?'};
+const CRED_DIM_ZH={identity:'身份自洽', capability:'能力水位', consistency:'指纹一致', reference:'参考基线'};
+
+/** 缓存命中率：分母口径**取决于上游协议**（domains/streaming/usage.go
+ *  CacheTokenConvention）：
+ *    OpenAI 口径   prompt_tokens ⊇ cached_tokens      ⇒ 分母 = prompt
+ *    Anthropic 口径 input_tokens ∥ cache_read_input_tokens ⇒ 分母 = prompt + cache_read
+ *  ★ 口径不可判定时**不显示百分比**（宁可缺，不给假数）。 */
+function cacheRate(band){
+  if(!band.cacheRead) return null;                 // 没有缓存读 ⇒ 无命中率（不是 0%）
+  if(!band.upProto) return {pct:null, conv:'unknown', why:'上游协议未判定（尚未触达供应商）'};
+  const p = band.upProto==='anthropic'
+    ? band.cacheRead/Math.max(1, band.tokensIn+band.cacheRead)
+    : band.cacheRead/Math.max(1, band.tokensIn);
+  const pct=Math.round(p*100);
+  /* ★ 护栏：OpenAI 口径下 cache ⊆ prompt ⇒ 命中率恒 ≤100%。观测到 >100% 说明
+     **两个口径混用了**（2026-10-06 真库事故同族：并列数被当包含关系）⇒ 报异常，
+     不显示一个假百分比。 */
+  if(band.upProto!=='anthropic' && pct>100){
+    return {pct:null, conv:'subset_openai', why:'口径异常：cache_read '+band.cacheRead+' > prompt '+band.tokensIn
+      +'（OpenAI 口径下 cached ⊆ prompt，出现该值说明两口径混用）', anomaly:true};
+  }
+  return {pct,
+          conv: band.upProto==='anthropic' ? 'cache∥prompt' : 'cache⊆prompt',
+          why: band.upProto==='anthropic'
+            ? 'Anthropic 口径：input_tokens 与 cache_read_input_tokens 并列 ⇒ 分母 = prompt + cache_read'
+            : 'OpenAI 口径：prompt_tokens 已含 cached_tokens ⇒ 分母 = prompt'};
+}
+/** 指纹证据链：上游系统指纹（实测恒空）+ 上游自报模型名 + 分词器签名。 */
+function fingerprintOf(band){
+  return {
+    upstreamFp:'',                       // ★ 上游从不发 X-System-Fingerprint（211 实测非空率 0）
+    upstreamFpNote:'未提供 —— 上游不发 X-System-Fingerprint（211 全量实测非空率 0）',
+    reported: band.reported,             // 上游响应体自报的 model 名
+    tokenSig: band.ptSig,               // 分词器签名（prompt token 计数）
+    passive: band.passiveDev,           // 被动时序指纹（ITT/TTFT/吞吐 vs 基线）
+  };
+}
+
+/* ── 4. 全局状态 ─────────────────────────────────────────────── */
+let SPEED=4, RUNNING=true, IDLE_MODE=false;
+let bands=[], reqSeq=0, actionSeq=0;
+let totalReq=0, failReq=0, okReq=0;
+let lastTrafficAt=0;
+let idleLive=null;            // 当前活跃静默带（§9）
+let hoverFreeze=false, frozenAppended=0, lastHoverBand=null;  // 第4轮：hover 冻结列表滚动
+const canvas=document.getElementById('canvas');
+const bandsEl=document.getElementById('bands');
+const headEl=document.getElementById('stagehead');
+
+const rand=(a,b)=>a+Math.random()*(b-a);
+const ri=(a,b)=>Math.floor(rand(a,b+1));
+const pick=arr=>arr[ri(0,arr.length-1)];
+/* ★ 虚拟时钟：所有模拟时间都走 vTime（随速度倍率推进）——
+   否则「闲置 5 分钟」这条规则在评审时只能真等 5 分钟。 */
+let vTime=0, lastTickReal=performance.now();
+function tickClock(){
+  const r=performance.now(), dt=r-lastTickReal;
+  lastTickReal=r; vTime+=dt*SPEED;
+}
+const now=()=>vTime;
+const fmtDur=ms=>{ if(ms<1000) return Math.round(ms)+'ms';
+  const s=ms/1000; if(s<60) return s.toFixed(1)+'s';
+  const m=Math.floor(s/60), r=Math.round(s%60);
+  if(m<60) return m+'m'+(r?r+'s':''); return Math.floor(m/60)+'h'+(m%60)+'m'; };
+const fmtWait=ms=>{ const s=Math.floor(ms/1000);
+  if(s<60) return s+' 秒';
+  const m=Math.floor(s/60);
+  if(m<60) return m+' 分 '+String(s%60).padStart(2,'0')+' 秒';
+  return Math.floor(m/60)+' 小时 '+String(m%60).padStart(2,'0')+' 分'; };
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const later=(fn,d)=>setTimeout(fn, Math.max(0,d/SPEED));
+
+/* ── 5. 模拟器 ───────────────────────────────────────────────── */
+function spawnRequest(opts={}){
+  const id='req_'+(++reqSeq).toString(16).padStart(6,'0');
+  /* 探测请求 / 无效节点流量：让原页的两个数据开关（显示探测 / 显示无效节点）在原型里**有真实作用** */
+  const isProbe = opts.isProbe!==undefined ? opts.isProbe : Math.random()<0.08;
+  const invalid  = !isProbe && Math.random()<0.05;
+  const client = opts.client || (isProbe
+    ? {name:'bg-probe', type:'internal', typeLabel:'内部探测', proto:'openai'}
+    : pick(CLIENTS));
+  /* ★ 第 5 轮：客户端请求名与最终匹配模型**分开存**——
+     请求名是「客户端要什么」（可能是 auto / 别名），最终模型是「实际用了什么」。 */
+  const clientModel = opts.clientModel || (Math.random()<0.34 ? 'auto'
+      : (Math.random()<0.24 ? pick(Object.keys(ALIASES)) : pick(MODELS)));
+  const rm = resolveModel(clientModel);
+  const model = rm.finalModel;          /* 最终匹配模型（canonical） */
+  const provider = opts.provider||pick(PROVIDERS);
+  const band={
+    kind:'request', id, client, model, provider, startAt:now(),
+    state:{}, actions:[], result:null, failed:null, warn:null,
+    tokensIn:0, tokensOut:0, cost:0, latency:0, ttfb:0, chunks:0,
+    candidates:0, providerName:null, cred:null, curStage:null,
+    isProbe, invalid, queued:false, queueMs:0, cacheRead:0,
+    /* 第 5 轮新增：解析链 / 口径 / 身份证据 */
+    clientModel:rm.clientModel, requestedRaw:rm.requested, isAuto:rm.isAuto, taskType:rm.taskType,
+    autoConfidence:rm.autoConfidence, modelReason:rm.reason,
+    upProto:null, credInfo:null, reported:null, ptSig:null, passiveDev:null,
+    switched:null,
+  };
+  SEND_STAGES.forEach(s=>band.state[s.key]={s:'pending',v:'未到达',d:''});
+  RECV_STAGES.forEach(s=>band.state[s.key]={s:'pending',v:'',d:''});
+  band.state.client={s:'active',v:client.proto,d:clientModel};
+  bands.push(band); lastTrafficAt=now(); onTraffic();
+  renderBand(band); enforceCap();
+
+  const failAt=opts.failAt||null;
+  const act=(action,detail)=>band.actions.push({seq:++actionSeq, action, detail:detail||{}});
+  const set=(k,s,v,d)=>{ band.state[k]={s,v,d:d||''}; band.curStage=k; paint(band); };
+  const stop=()=>!!band.result;
+  /* ★ 因果链式排程：所有阶段用**累计偏移**串行排期 —— 后一个阶段的时间点
+     永远晚于前一个，杜绝「首字节完成早于上游请求」这类时序倒置（第一版原型
+     的真实缺陷：ttfb 在排程瞬间还是 0，回调提前触发并被后续回调覆盖）。 */
+  let acc=0;
+  const at=(fn,d)=>{ acc+=d; later(fn, acc); };
+  const ttfb=rand(180,1600); band.ttfb=ttfb;
+
+  at(()=>{ act('arrive',{client_protocol:client.proto, model:model}); set('auth','active','校验 key',''); }, 10);
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='auth'){ set('auth','failed','限流拒绝','key_concurrent_limit · 429'); band.failed='鉴权/限流';
+      finish(band,'failure','rate_limited'); return; }
+    set('auth','done','已通过','12ms · key 已校验');
+    act('route_resolved',{});
+    set('approval','active','会话审计','');
+  }, rand(25,70));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='approval'){ set('approval','failed','需人工审批','202 · X-Approval-ID'); band.failed='审批';
+      finish(band,'pending_approval'); return; }
+    if(Math.random()<0.88) set('approval','skipped','免审','未命中审计策略');
+    else { set('approval','done','已授权','审批人 admin · 120ms'); act('approval',{decision:'granted'}); }
+    set('injection','active','判定中','');
+  }, rand(90,420));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='injection'){ set('injection','failed','已拦截','score 0.97 · prompt_injection'); band.failed='注入检测';
+      act('injection_scored',{score:'0.97',decision:'block'});
+      finish(band,'failure','prompt_injection_blocked'); return; }
+    const score=rand(0.01,0.45);
+    act('injection_scored',{score:score.toFixed(2)});
+    if(score>0.3){ set('injection','warn','已放行','score '+score.toFixed(2)+' · 观察模式'); band.warn='注入检测'; }
+    else set('injection','done','未命中','score '+score.toFixed(2));
+    set('sanitize','active','脱敏中','');
+  }, rand(40,180));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='sanitize'){ set('sanitize','failed','脱敏器异常','sanitize engine 500'); band.failed='脱敏';
+      finish(band,'failure','sanitize_error'); return; }
+    const hits=ri(0,3);
+    act('sanitize_applied',{hits:String(hits)});
+    if(hits) set('sanitize','done',hits+' 处已遮蔽','占位符已生成');
+    else set('sanitize','done','未命中','无敏感内容');
+    set('compress','active','评估中','');
+  }, rand(10,50));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='compress'){ set('compress','failed','压缩后更差','guard: never_worse 熔断'); band.failed='压缩';
+      finish(band,'failure','compression_guard'); return; }
+    if(Math.random()<0.55){ set('compress','skipped','未达阈值','正文未超限'); }
+    else{
+      const ratio=ri(18,64); band.tokensIn=ri(800,9000);
+      act('compress_applied',{ratio:String(ratio)});
+      set('compress','done','−'+ratio+'%','会话摘要 + tools 回填');
+    }
+    /* 缓存命中属**回复侧**数据（上游 usage 块）⇒ 在计量阶段落，不在压缩阶段。 */
+    set('route','active','候选解析','');
+  }, rand(120,700));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='route'){ set('route','failed','无可路由凭据','quota_exhausted · circuit_open'); band.failed='路由';
+      act('no_route',{blocked_reasons:'quota_exhausted,circuit_open'});
+      finish(band,'failure','no_route'); return; }
+    band.candidates=ri(1,3);
+    act('credential_selected',{tier:'primary',candidates:String(band.candidates)});
+    band.providerName=provider.name; band.cred=provider.cred;
+    band.upProto=provider.upProto;                 /* 上游协议 ⇒ 决定缓存命中率的**分母口径** */
+    band.credInfo=credOf(provider, band.model);    /* 节点级可信度（(凭据,模型) 判定） */
+    band.reported = Math.random()<0.14 ? null : (Math.random()<0.35 ? band.model+'-2026-03-01' : band.model);
+    band.ptSig = 'pt-'+(1000+(provider.code.length*37+band.model.length*13)%900);
+    band.passiveDev = Math.round(rand(-6,9));
+    if(Math.random()<0.22){ band.queued=true; band.queueMs=ri(200,1800); }   // 队列深度统计有真实来源
+    set('route','done',band.model,'N 候选 · tier primary'.replace('N',String(band.candidates)));
+    set('provider','active',provider.name,'转发中 · '+provider.kindLabel);
+  }, rand(80,380));
+
+  at(()=>{
+    if(stop()) return;
+    act('upstream_request',{attempt:'1'});
+    set('first_byte','active','等待首字节','');
+  }, rand(60,400));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='upstream'){ set('first_byte','failed','上游超时','deadline_exceeded · 504'); band.failed='上游调用';
+      act('reply',{status:'504',error_kind:'deadline_exceeded'});
+      finish(band,'failure','upstream_timeout'); return; }
+    set('first_byte','done',Math.round(ttfb)+'ms','TTFB');
+    act('first_byte',{ttfb_ms:String(Math.round(ttfb))});
+    /* ★ 模型切换（重试换模型）：「最后匹配的模型」以**最后一次**为准 ⇒
+       节点上的模型名要跟着改，不能一直显示首次解析结果。 */
+    if(Math.random()<0.12){
+      const alt=pick(MODELS.filter(m=>m!==band.model));
+      if(alt){
+        act('model_switch',{from_model:band.model,to_model:alt,reason:'retry'});
+        band.switched={from:band.model,to:alt};
+        band.model=alt;
+        band.credInfo=credOf(provider, alt);
+        band.state.route.v=alt;
+        band.state.route.d='切换后 · '+band.candidates+' 候选';
+      }
+    }
+    set('provider','done',provider.name,provider.kindLabel+' · 已触达');
+    set('restore','active','回填中','');
+  }, ttfb);
+
+  at(()=>{
+    if(stop()) return;
+    const n=(band.state.sanitize.v||'').indexOf('0')===0?0:ri(1,3);
+    act('restore_applied',{restored:String(n)});
+    if(n) set('restore','done','回填 '+n+' 处','占位符还原为原文');
+    else set('restore','done','无占位符','未改写正文');
+    set('billing','active','计量中','');
+  }, rand(10,40));
+
+  at(()=>{
+    if(stop()) return;
+    band.tokensOut=ri(120,2600);
+    if(!band.tokensIn) band.tokensIn=ri(600,9000);       /* 未压缩时也要有 prompt token 口径 */
+    /* ★ 缓存读写是**回复侧**指标（上游 usage 块归一后的 cache_read/write_tokens）。
+       ★ 口径不变式：OpenAI 口径下 cached_tokens ⊆ prompt_tokens ⇒ cache_read 不得超过
+         prompt（2026-10-06 真库事故的形态正是两个并列数被当成包含关系 ⇒ 负成本 1628 行）。
+         Anthropic 口径下两者并列 ⇒ cache_read 可以大于 prompt。
+         这里按上游协议分别生成，**不让模拟数据造出违反口径的命中率**。 */
+    if(Math.random()<0.34){
+      band.cacheRead = band.upProto==='anthropic'
+        ? ri(200,6000)                                   /* 并列口径：可大于 prompt */
+        : ri(200, Math.max(201, band.tokensIn));         /* 包含口径：恒 ≤ prompt */
+    }
+    if(Math.random()<0.14){ band.cacheWrite=ri(100,2400); }
+    band.cost=(band.tokensIn+band.tokensOut)/1e6*3.2;
+    set('billing','done',Math.round(band.tokensOut)+' tok','¥'+band.cost.toFixed(4));
+    set('reply','active','流式中','');
+  }, rand(10,30));
+
+  at(()=>{
+    if(stop()) return;
+    if(failAt==='cancel'){ set('reply','failed','客户端取消','499 · context canceled'); band.failed='返回';
+      act('reply',{status:'499',error_kind:'client_canceled'});
+      finish(band,'canceled','client_canceled'); return; }
+    band.chunks=ri(6,42);
+    act('reply',{status:'200',latency_ms:String(Math.round((now()-band.startAt)/SPEED))});
+    set('reply','done',band.chunks+' 帧','200 OK');
+    finish(band,'success');
+  }, rand(400,2600));
+
+  return band;
+}
+
+function finish(band, outcome, err){
+  if(band.result) return;            // 终态只允许写一次（防止后续回调覆盖失败）
+  band.result=outcome;
+  band.latency=now()-band.startAt;
+  if(outcome==='success') okReq++; else if(outcome==='failure') failReq++;
+  const cs = outcome==='success'?'done':(outcome==='canceled'?'skipped':'failed');
+  band.state.client={s:cs, v:band.client.proto, d:band.clientModel};
+  band.curStage=null;
+  paint(band); updateStats();
+}
+
+/* ── 6. 渲染 ─────────────────────────────────────────────────── */
+/** 节点：两行紧凑（图标+阶段名 / 关键值）+ 底部 2px 状态条；说明文字只进 tooltip。
+ *  extra：附加角标（目前只有供应商节点挂**节点级可信度**）。 */
+function nodeHTML(key, name, cls, state, x, y, compact, extra, tipOv){
+  const glyph='<i class="gl">'+GLYPH[state.s]+'</i>';
+  const tip=tipOv || (name+' · '+(state.v||'—')+(state.d?' · '+state.d:''));
+  if(compact){   /* 接收轨：单行「图标 + 名称 + 值」 */
+    return '<div class="node '+cls+' s-'+state.s+'" data-key="'+key+'" style="left:'+x+'px;top:'+y+'px"'
+      +' data-tip="'+esc(tip)+'">'
+      +'<div class="n-title">'+glyph+'<span>'+esc(name)+'</span><b>'+esc(state.v||'—')+'</b></div>'
+      +'<div class="n-bar"></div></div>';
+  }
+  return '<div class="node '+cls+' s-'+state.s+'" data-key="'+key+'" style="left:'+x+'px;top:'+y+'px"'
+    +' data-tip="'+esc(tip)+'">'
+    +'<div class="n-top">'+glyph+esc(name)+(extra||'')+'</div>'
+    +'<div class="n-title">'+esc(state.v||'—')+'</div>'
+    +'<div class="n-bar"></div></div>';
+}
+/** 供应商节点的**节点级可信度**角标（(凭据,模型) 判定，非本次响应实时验证）。 */
+function credBadgeHTML(band){
+  const c=band.credInfo;
+  if(!c) return '';
+  /* ★ 角标只留「图标+分数」（unknown 只留 ?）——长文案会把节点标题挤没；
+     完整结论（已验证/存疑/渗水/证据不足）在 tooltip 与详情块里。 */
+  const label=c.verdict==='unknown' ? CRED_VERDICT_ICON.unknown : CRED_VERDICT_ICON[c.verdict]+(c.score==null?'':c.score);
+  const tip='节点可信度（节点级 · (凭据,模型) 判定）· '+(c.score===null?'—':c.score)+' · '+CRED_VERDICT_ZH[c.verdict]
+    +' · 最近一次检测 '+c.at+' · 非本次响应实时验证'
+    +(c.stale?('　⚠ 结论已过期 '+c.ageDays+' 天（> '+CRED_STALE_DAYS+' 天未复测）'):'');
+  return '<i class="n-cred v-'+c.verdict+(c.stale?' v-stale':'')+'" data-tip="'+esc(tip)+'">'+esc(label)+'</i>';
+}
+
+function renderBand(band){
+  const el=document.createElement('div');
+  el.className='band'; el.dataset.id=band.id;
+  el.style.height=BAND_H+'px'; el.style.width=TREE_W+'px';
+  el.innerHTML=bandInner(band);
+  bandsEl.appendChild(el);
+  band.el=el; paint(band); autoFollow();
+  if(hoverFreeze){ frozenAppended++; document.getElementById('freezeTxt').textContent='列表已冻结 · 已追加 '+frozenAppended+' 条新请求（视图不动）'; }
+}
+
+function bandInner(band){
+  const c=band.client, cs=band.state.client||{s:'active',v:'',d:''};
+  let html='<svg class="wires" width="'+TREE_W+'" height="'+BAND_H+'"></svg>';
+  /* 接收轨底纹（视觉上把回程线独立成「另一条线」） */
+  html+='<div class="recvstrip" style="top:'+(RECV_Y-7)+'px;height:'+(RECV_H+14)+'px"></div>';
+  html+='<div class="recvtag" style="top:'+(RECV_Y+RECV_H/2-7)+'px">◀ 接收轨</div>';
+  /* 客户端节点：类型徽标 / 名称 / **模型入口**（auto → 选中模型 / 请求 别名或名）
+     ★ 第 5 轮口径修正：生产上 `client_model` 在 auto 请求下**已被改写成选中模型**
+       （`preAutoModel` 只进 requestjourney，不上实时帧）⇒ auto 场景不能写「请求 auto」，
+       只能写 `auto → 选中模型`；「客户端要的是 auto」由 `AUTO` 徽标 + `is_auto_request` 表达。 */
+  const modelLine = c.proto+' · '+(band.isAuto ? ('auto → '+band.model) : ('请求 '+band.clientModel));
+  html+='<div class="clientwrap">'
+    +'<div class="node client s-'+cs.s+'" data-key="client" style="left:0px;top:'+(SEND_Y-6)+'px;height:'+(RECV_Y+RECV_H-SEND_Y+6)+'px"'
+    +' data-tip="'+esc(c.name+' · '+c.typeLabel+' · '+c.proto
+        +(band.isAuto
+          ? ' · 客户端请求 auto（自动选型）→ 最终匹配模型 '+band.model+' · auto 分类 '+band.taskType
+          : ' · 客户端请求模型：'+band.clientModel+' → 最终匹配模型 '+band.model))+'">'
+    +'<div class="n-top"><i class="gl">'+GLYPH[cs.s]+'</i><span>'+esc(c.typeLabel)+'</span>'
+    +(band.isAuto?'<i class="autotag">AUTO</i>':'')+'</div>'
+    +'<div class="n-title">'+esc(c.name)+'</div>'
+    +'<div class="n-meta">'+esc(modelLine)+'</div>'
+    +'<div class="n-bar"></div></div></div>';
+  /* 发送轨 */
+  html+='<div class="flow send"><span class="rail-lbl">发送 ▶</span>';
+  SEND_STAGES.forEach(s=>{
+    const st=band.state[s.key]||{s:'pending',v:'',d:''};
+    const cls='send'+(s.terminal?' provider':'');
+    /* ★ 路由节点的 v = **最终匹配模型**（canonical）—— 路由才是「决定用哪个模型」的那一步。 */
+    const extra = s.key==='provider' ? credBadgeHTML(band) : '';
+    const tipOv = s.key==='route'
+      ? '路由 · 最终匹配模型 '+band.model+' · '+band.modelReason
+        +(band.isAuto?' · auto 任务类型 '+band.taskType+' · 决策置信度 '+(band.autoConfidence!=null?band.autoConfidence.toFixed(2):'—'):'')
+        +(band.switched?' · 曾从 '+band.switched.from+' 切换':'')
+      : null;
+    html+=nodeHTML(s.key, s.name, cls, st, colX(s.col), SEND_Y, false, extra, tipOv);
+  });
+  html+='</div>';
+  /* 接收轨（DOM 顺序 = 流向：首字节→还原→计量→回复） */
+  html+='<div class="flow recv"><span class="rail-lbl">◀ 接收</span>';
+  RECV_STAGES.forEach(s=>{
+    const st=band.state[s.key]||{s:'pending',v:'',d:''};
+    html+=nodeHTML(s.key, s.name, 'recv', st, colX(s.col), RECV_Y, true);
+  });
+  html+='</div>';
+  html+='<div class="summary" style="left:0px;top:'+SUM_Y+'px">'+summaryHTML(band)+'</div>';
+  return html;
+}
+
+function summaryHTML(band){
+  let out='';
+  const r=band.result;
+  if(!r) out+='<span class="badge run">◐ '+stageName(band.curStage)+'</span>';
+  else if(r==='success') out+='<span class="badge ok">✓ 成功</span>';
+  else if(r==='canceled') out+='<span class="badge mute">⊘ 取消</span>';
+  else if(r==='pending_approval') out+='<span class="badge warn">⏸ 待审批</span>';
+  else out+='<span class="badge bad">✕ 失败</span>';
+  if(band.failed) out+='<span class="badge err">失败于 '+esc(band.failed)+'</span>';
+  if(band.warn) out+='<span class="badge warn">⚠ '+esc(band.warn)+'</span>';
+  /* ★ 第 5 轮：最终匹配模型 —— 客户端请求 → 最终模型。
+     ★ 口径修正：auto 请求的 `client_model` 在生产上**已被改写成选中模型**
+       ⇒ 判定条件不能用 `clientModel !== model`（auto 场景两者相等 ⇒ chip 会消失），
+       必须用 `isAuto || clientModel !== model`。 */
+  if(band.isAuto || band.clientModel!==band.model){
+    const left=band.isAuto ? 'auto·'+(band.taskType||'?') : band.clientModel;
+    const tip=band.isAuto
+      ? ('客户端请求 auto（自动选型）→ 最终匹配模型：'+band.model+' · '+band.modelReason
+         +' · auto 任务类型 '+band.taskType+' · 决策置信度 '+(band.autoConfidence!=null?band.autoConfidence.toFixed(2):'—')
+         +(band.switched?' · 发生过模型切换（'+band.switched.from+' → '+band.switched.to+'）':'')
+         +'　注：生产侧 auto 改写后 client_model 已是选中模型，「客户端要的是 auto」由 is_auto_request 表达')
+      : ('客户端请求模型：'+band.clientModel+' → 最终匹配模型：'+band.model+' · '+band.modelReason
+         +(band.switched?' · 发生过模型切换（'+band.switched.from+' → '+band.switched.to+'）':''));
+    out+='<span class="chip model" data-tip="'+esc(tip)+'">'
+      +'<span class="arw">⇢</span>'+esc(left)+'<span class="arw"> → </span>'+esc(band.model)+'</span>';
+  }
+  if(band.isProbe) out+='<span class="badge mute">探测</span>';
+  if(band.invalid) out+='<span class="badge mute">无效节点</span>';
+  if(band.queued) out+='<span class="badge mute">排队 '+Math.round(band.queueMs)+'ms</span>';
+  out+='<span>⏱ '+fmtDur(band.latency||now()-band.startAt)+'</span>';
+  if(band.tokensOut) out+='<span>⇅ '+band.tokensIn+'→'+band.tokensOut+'</span>';
+  if(band.cost) out+='<span>¥'+band.cost.toFixed(4)+'</span>';
+  if(band.providerName) out+='<span>⚑ '+esc(band.providerName)+(band.cred?' · '+esc(band.cred):'')+'</span>';
+  /* ★ 回复侧指标（第 5 轮）：缓存命中率（**分母口径随上游协议变**）+ 响应帧数。
+     没有缓存读 token ⇒ 显示「—」而不是 0%（上游没报 ≠ 命中率为零）。 */
+  const cr=cacheRate(band);
+  if(cr){
+    out+= cr.anomaly
+      ? '<span class="chip bad" data-tip="'+esc('缓存命中率：**口径异常** —— '+cr.why)+'">⛁ 口径异常</span>'
+      : (cr.pct===null
+      ? '<span class="chip na" data-tip="'+esc('缓存命中率：不可计算 —— '+cr.why)+'">⛁ 缓存 —</span>'
+      : '<span class="chip hit" data-tip="'+esc('缓存命中率 '+cr.pct+'% · 口径 '+cr.conv+' · '+cr.why
+          +' · cache_read '+band.cacheRead+' tok / prompt '+band.tokensIn+' tok')+'">⛁ '+cr.pct+'%</span>');
+  } else if(band.result){
+    out+='<span class="chip na" data-tip="上游未上报 cache_read_token ⇒ 无命中率（不是 0%）">⛁ 缓存 —</span>';
+  }
+  if(band.chunks) out+='<span class="chip" data-tip="'+esc('响应帧数 '+band.chunks+' 帧（stream_chunk_count）· 首字节 '+Math.round(band.ttfb)+'ms')+'">▤ '+band.chunks+' 帧</span>';
+  return out;
+}
+function stageName(key){
+  if(!key) return '—';
+  const s=SEND_STAGES.find(x=>x.key===key)||RECV_STAGES.find(x=>x.key===key);
+  return s? s.name : key;
+}
+
+/* 局部刷新：只改变化节点（禁整带重建） */
+function paint(band){
+  if(!band||!band.el) return;
+  const el=band.el;
+  el.querySelectorAll('.node').forEach(n=>{
+    const key=n.dataset.key, st=band.state[key];
+    if(!st) return;
+    n.className=n.className.replace(/ s-\w+/g,'')+' s-'+st.s;
+    const g=n.querySelector('.gl'); if(g) g.textContent=GLYPH[st.s];
+    const title=n.querySelector('.n-title');
+    if(key==='client'){
+      const meta=n.querySelector('.n-meta');
+      if(meta) meta.textContent=band.client.proto+' · '+(band.isAuto?('auto → '+band.model):('请求 '+band.clientModel));
+    }else if(n.classList.contains('recv')){
+      /* 接收节点单行：值在 n-title 里的 <b> */
+      const v=title&&title.querySelector('b'); if(v) v.textContent=st.v||'—';
+    }else{
+      if(title) title.textContent=st.v||'—';
+    }
+    /* ★ 供应商节点挂**节点级可信度**角标：路由完成才有 credInfo ⇒ 这里补挂。 */
+    if(key==='provider' && band.credInfo){
+      const old=n.querySelector('.n-cred');
+      if(old) old.outerHTML=credBadgeHTML(band);
+      else { const top=n.querySelector('.n-top'); if(top) top.insertAdjacentHTML('beforeend', credBadgeHTML(band)); }
+    }
+    const stageName_=(SEND_STAGES.find(x=>x.key===key)||RECV_STAGES.find(x=>x.key===key)||{name:key}).name;
+    n.dataset.tip = key==='client'
+      ? band.client.name+' · '+band.client.typeLabel+' · '+band.client.proto
+        +(band.isAuto
+          ? ' · 客户端请求 auto（自动选型）→ 最终匹配模型 '+band.model+' · auto 分类 '+band.taskType
+          : ' · 客户端请求模型：'+band.clientModel+' → 最终匹配模型 '+band.model)
+      : key==='route'
+      ? '路由 · 最终匹配模型 '+band.model+' · '+band.modelReason
+        +(band.isAuto?' · auto 任务类型 '+band.taskType+' · 决策置信度 '+(band.autoConfidence!=null?band.autoConfidence.toFixed(2):'—'):'')
+        +(band.switched?' · 曾从 '+band.switched.from+' 切换':'')
+        +' · '+(st.d||'')
+      : stageName_+' · '+(st.v||'—')+(st.d?' · '+st.d:'');
+  });
+  const sum=el.querySelector('.summary'); if(sum) sum.innerHTML=summaryHTML(band);
+  drawWires(band);
+}
+
+/* 连线：发送轨蓝（左→右），接收轨青（右→左） */
+function drawWires(band){
+  const svg=band.el&&band.el.querySelector('svg.wires');
+  if(!svg) return;
+  let w='';
+  let prevRight=colX(0)+CLIENT_W;
+  SEND_STAGES.forEach(s=>{
+    const st=band.state[s.key]||{s:'pending',v:'',d:''};
+    const x=colX(s.col), y=SEND_Y+SEND_H/2;
+    w+=seg(prevRight,y,x,y,st.s,false);
+    prevRight=x+nodeW(s.key);
+  });
+  const rcv=['first_byte','restore','billing','reply'];
+  const px=colX(7)+PROVIDER_W/2, py=SEND_Y+SEND_H, fy=RECV_Y+RECV_H/2;
+  w+=seg(px,py,px,fy,(band.state.first_byte||{}).s,true);
+  let prevX=px;
+  for(let i=1;i<rcv.length;i++){
+    const key=rcv[i], s=RECV_STAGES.find(x=>x.key===key);
+    const st=band.state[key]||{s:'pending',v:'',d:''};
+    const x=colX(s.col)+NODE_W/2;
+    w+=seg(prevX,fy,x,fy,st.s,true);
+    prevX=x;
+  }
+  const cl=band.state.client||{s:'pending',v:'',d:''};
+  w+=seg(prevX,fy,colX(0)+CLIENT_W,fy,cl.s,true);
+  w+=seg(colX(0)+CLIENT_W,fy,colX(0)+CLIENT_W,RECV_Y+RECV_H,cl.s,true);
+  svg.innerHTML=w;
+}
+function seg(x1,y1,x2,y2,state,recv){
+  if(Math.abs(x2-x1)<1) return '';
+  const stroke=state==='failed'?'var(--kx-danger)':state==='active'?'var(--kx-primary)':
+    state==='done'?(recv?'var(--recv)':'var(--kx-primary)'):
+    state==='warn'?'var(--kx-warning)':'var(--kx-border)';
+  const op=(state==='pending'||state==='skipped')?.4:(state==='done'?.7:1);
+  const dash=(state==='pending'||state==='skipped')?' stroke-dasharray="4 4"':
+             (state==='active'?' stroke-dasharray="7 5" class="flow"':'');
+  return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+stroke+'" stroke-width="2" opacity="'+op+'"'+dash+' stroke-linecap="round"/>';
+}
+
+/* ── 7. 列头（只统计发送轨阶段，避免接收轨同列重复计数）──────── */
+function buildStageHead(){
+  let h='';
+  [0,1,2,3,4,5,6,7].forEach(col=>{
+    const x=colX(col), w=col===0?CLIENT_W:(col===7?PROVIDER_W:NODE_W);
+    h+='<div class="cell" style="left:'+x+'px;width:'+w+'px">'
+      +(col===0?'<b>客户端</b>':'<b>'+COL_NAME[col]+'</b>')
+      +'<span class="c" data-col="'+col+'"></span></div>';
+  });
+  headEl.style.width=TREE_W+'px';
+  headEl.innerHTML=h;
+}
+function updateStageHead(){
+  const cnt={};
+  bands.forEach(b=>{
+    if(b.kind!=='request') return;
+    SEND_STAGES.forEach(s=>{
+      const st=b.state[s.key]; if(!st) return;
+      cnt[s.col]=cnt[s.col]||{active:0,fail:0};
+      if(st.s==='active') cnt[s.col].active++;
+      else if(st.s==='failed') cnt[s.col].fail++;
+    });
+  });
+  headEl.querySelectorAll('[data-col]').forEach(el=>{
+    const col=+el.dataset.col, c=cnt[col]||{active:0,fail:0};
+    el.innerHTML=(c.active?'<span class="c">◐'+c.active+'</span>':'')+(c.fail?'<span class="c bad">✕'+c.fail+'</span>':'');
+  });
+}
+
+/* ── 8. 统计与内存上限（≤50）────────────────────────────────── */
+/* ★ owner 修正要求：原 live 的「统计 + 过滤」全部保留；统计**收缩成页角 note**。
+   —— 过滤常驻第二行（原位不变）；统计收进顶栏右端的 note（折叠读数 + 可展开完整面板）。
+   —— 口径纪律照搬原 StatsPanel：总量行永远可见、口径必须写清、点明细行联动过滤。 */
+const filterState = {
+  clients:[], providers:[], models:[], nodes:[],   // 四维多选（同维 OR、跨维 AND）
+  status:'',                                       // 成功 / 进行中 / 失败 / 限流
+  windowMs:5*60*1000,                              // 近窗
+  showProbe:false,                                 // 默认隐藏探测请求
+  showInvalid:false,                               // 默认隐藏无效节点流量
+};
+let statInterval=5*60*1000;                        // 统计区间：5 分钟 / 1 小时 / 当天
+const INTERVALS=[[5*60*1000,'近 5 分钟'],[60*60*1000,'近 1 小时'],[24*60*60*1000,'当天']];
+const DIMS=[
+  {dim:'clients',  label:'客户端', get:b=>b.client.name},
+  {dim:'providers',label:'供应商', get:b=>b.providerName||'—'},
+  {dim:'models',   label:'模型',   get:b=>b.model},
+  {dim:'nodes',    label:'节点',   get:b=>b.cred||'—'},
+];
+
+/** 过滤子集判据（与原 live 的过滤语义一致）。 */
+function bandMatches(b){
+  const f=filterState;
+  if(!f.showProbe && b.isProbe) return false;
+  if(!f.showInvalid && b.invalid) return false;
+  if(f.clients.length   && !f.clients.includes(b.client.name)) return false;
+  if(f.providers.length && !f.providers.includes(b.providerName||'—')) return false;
+  if(f.models.length    && !f.models.includes(b.model)) return false;
+  if(f.nodes.length     && !f.nodes.includes(b.cred||'—')) return false;
+  if(f.status==='success'     && b.result!=='success') return false;
+  if(f.status==='failure'     && b.result!=='failure') return false;
+  if(f.status==='rate_limited'&& b.result!=='failure') return false;
+  if(f.status==='in_progress' && b.result) return false;
+  /* 近窗：树上只保留窗口内的请求（原页 windowMs 预设：5分钟/30分钟/2小时） */
+  if(f.windowMs && (now()-b.startAt) > f.windowMs) return false;
+  return true;
+}
+/** 近窗 + 过滤后的统计（总量行口径）。 */
+function computeStats(){
+  const inWin = bands.filter(b=>b.kind==='request' && (now()-b.startAt)<=statInterval);
+  const vis = inWin.filter(bandMatches);
+  const ok = vis.filter(b=>b.result==='success').length;
+  const fail = vis.filter(b=>b.result==='failure').length;
+  const canceled = vis.filter(b=>b.result==='canceled').length;
+  const groupBy = fn => {
+    const m=new Map();
+    vis.forEach(b=>{ const k=fn(b); const e=m.get(k)||{requests:0,ok:0,tokens:0,fail:0};
+      e.requests++; if(b.result==='success') e.ok++; if(b.result==='failure') e.fail++;
+      e.tokens+=(b.tokensIn||0)+(b.tokensOut||0); m.set(k,e); });
+    return [...m.entries()].map(([k,v])=>({key:k,...v})).sort((a,b)=>b.requests-a.requests);
+  };
+  return {
+    requests:vis.length, ok, fail, canceled,
+    rate: vis.length? Math.round(ok/vis.length*100)+'%':'—',
+    inTok: vis.reduce((s,b)=>s+(b.tokensIn||0),0),
+    outTok: vis.reduce((s,b)=>s+(b.tokensOut||0),0),
+    cache: vis.reduce((s,b)=>s+(b.cacheRead||0),0),
+    inflight: vis.filter(b=>!b.result).length,
+    queue: vis.filter(b=>b.queued).length,
+    /* ★ 第 5 轮：auto 进入量 + 模型切换量（最终匹配模型的来源分布） */
+    autoCount: vis.filter(b=>b.isAuto).length,
+    switchCount: vis.filter(b=>b.switched).length,
+    /* 缓存命中率**聚合**：每条请求按**自己的上游协议口径**算分母后再聚合；
+       未触达供应商的（口径不可判定）单独计数，不混进分母。 */
+    hit: (()=>{ let num=0,den=0,unk=0;
+      vis.forEach(b=>{ if(!b.cacheRead) return;
+        if(!b.upProto){ unk++; return; }
+        num+=b.cacheRead;
+        den += (b.upProto==='anthropic') ? (b.tokensIn+b.cacheRead) : b.tokensIn; });
+      return {pct: den? Math.round(num/den*100):null, unk, num, den}; })(),
+    groups:{ clients:groupBy(b=>b.client.name), providers:groupBy(b=>b.providerName||'—'), models:groupBy(b=>b.model) },
+  };
+}
+const fmtTok = n => n>=1e6 ? (n/1e6).toFixed(1)+'M' : n>=1000 ? (n/1000).toFixed(1)+'k' : String(n);
+const fmtNum = n => n>=10000 ? (n/1000).toFixed(1)+'k' : String(n);
+
+/** 统计 + 过滤浮窗的内容（owner 第 4 轮：统计与过滤合并为一个可缩放浮层）。
+ *  收起态＝顶栏胶囊读数（永远可见：区间标签 + 请求数/成功率/在途）；
+ *  展开态＝浮窗：4 个小仪表（图形化替代大块数字）+ token 行 + 口径行 + 三组明细。 */
+function renderHud(){
+  const s=computeStats();
+  const label=INTERVALS.find(i=>i[0]===statInterval)[1];
+  document.getElementById('statnoteReadout').textContent =
+    label+' · '+s.requests+' 请求 · '+s.rate+' 成功率 · 在途 '+s.inflight;
+  const lbl=document.getElementById('hudIntervalLbl'); if(lbl) lbl.textContent=label;
+  const hud=document.getElementById('hud');
+  if(hud.hidden) return;
+  /* 4 个小仪表：成功率 / 在途 / 失败 / 队列（比例用底条表达，替代大块数字） */
+  const gauge=(n,v,pct,cls)=>'<div class="gauge '+cls+'"><i>'+n+'</i><b>'+v+'</b>'
+    +'<span class="gbar" style="width:'+Math.max(2,Math.min(100,pct))+'%"></span></div>';
+  const gauges=
+      gauge('成功率', s.rate, s.requests? s.ok/s.requests*100:0, 'is-ok')
+    + gauge('在途',   s.inflight, s.requests? s.inflight/s.requests*100:0, 'is-live')
+    + gauge('失败',   s.fail, s.requests? s.fail/s.requests*100:0, 'is-bad')
+    + gauge('队列',   s.queue, s.requests? s.queue/s.requests*100:0, 'is-warn');
+  const toks='<div class="toks hud__tok">'
+    +'<span>请求数 <b>'+s.requests+'</b></span>'
+    +'<span>输入 <b>'+fmtTok(s.inTok)+'</b></span>'
+    +'<span>输出 <b>'+fmtTok(s.outTok)+'</b></span>'
+    +'<span>缓存 <b>'+fmtTok(s.cache)+'</b></span>'
+    +'<span>缓存命中 <b>'+(s.hit.pct===null?'—':s.hit.pct+'%')+'</b></span></div>'
+    /* ★ 第 5 轮：auto 进入 / 模型切换 的来源分布（最终匹配模型是怎么来的） */
+    +'<div class="toks hud__tok">'
+    +'<span>auto 进入 <b>'+s.autoCount+'</b></span>'
+    +'<span>模型切换 <b>'+s.switchCount+'</b></span>'
+    +'<span>别名解析 <b>'+(s.requests-s.autoCount-s.switchCount)+'</b></span></div>';
+  const groupsHtml=[['clients','客户端'],['providers','供应商'],['models','模型']].map(([k,name])=>{
+    const items=s.groups[k]||[];
+    const open=statGroupOpen[k];
+    return '<section class="sp__group">'
+      +'<button class="sp__ghead'+(open?' is-open':'')+'" data-g="'+k+'"><span class="caret">▶</span>'
+      +'<span>'+name+'</span><span class="sp__gsum">'+items.length+' 项 · '+fmtNum(items.reduce((a,b)=>a+b.requests,0))+' 请求</span></button>'
+      +(open? (items.length? items.map(it=>{
+          const pct=s.requests? Math.round(it.requests/s.requests*100):0;
+          return '<button class="sp__row'+(filterState[k].includes(it.key)?' is-active':'')+'" data-dim="'+k+'" data-key="'+esc(it.key)+'">'
+            +'<span class="nm">'+esc(it.key)+'</span>'
+            +'<span class="fig"><b>'+it.requests+'</b> · '+(it.requests?Math.round(it.ok/it.requests*100)+'%':'—')+'</span>'
+            +'<span class="tk">'+fmtTok(it.tokens)+'</span>'
+            +'<span class="share" style="width:'+pct+'%"></span></button>';
+        }).join('') : '<p class="sp__empty">窗口内无数据</p>')
+        : '')
+      +'</section>';
+  }).join('');
+  document.getElementById('hudStats').innerHTML =
+      '<div class="gauges">'+gauges+'</div>'+toks
+    + '<p class="sp__note">口径：5 分钟 / 1 小时＝DB 直查（实时）；当天＝日桶（滞后 ≤1h）。'
+    + '<b>本原型＝内存窗口近似</b>，非生产统计口径。点明细行＝联动过滤。'
+    + '<br>缓存命中率：每条请求按<b>自己的上游协议口径</b>算分母后再聚合（OpenAI 口径 cache⊆prompt；'
+    + 'Anthropic 口径 cache∥prompt）'+(s.hit.unk?('；<b>'+s.hit.unk+' 条</b>未触达供应商、口径不可判定，未计入分母'):'')
+    + '。模型可信度＝(凭据×模型) <b>节点级</b>判定，非本次响应实时验证，且可能已过期（虚化角标）。</p>'
+    + '<div class="hud__detail">'+groupsHtml+'</div>';
+}
+let statGroupOpen={clients:true, providers:false, models:false};
+
+/** 应用过滤到请求带（隐藏而非删除，保持内存口径一致）。 */
+function applyFilters(){
+  let vis=0, tot=0;
+  bands.forEach(b=>{
+    if(b.kind!=='request'){ if(b.el) b.el.style.display=''; return; }
+    tot++;
+    const ok=bandMatches(b);
+    if(ok) vis++;
+    if(b.el) b.el.style.display = ok? '' : 'none';
+  });
+  const active=filterState.clients.length+filterState.providers.length+filterState.models.length
+    +filterState.nodes.length+(filterState.status?1:0)+(filterState.showProbe?0:0);
+  document.getElementById('fClear').hidden = !(filterState.clients.length||filterState.providers.length
+    ||filterState.models.length||filterState.nodes.length||filterState.status);
+  document.getElementById('filterHint').textContent =
+    '可见 '+vis+' / '+tot+' 条'+(active? '（已过滤）':'（无过滤）')+' · 探测请求默认隐藏 · 无效节点默认隐藏';
+  /* 顶栏胶囊上显示过滤摘要（收起态也能看出「当前被过滤了」） */
+  const dimN=filterState.clients.length+filterState.providers.length+filterState.models.length+filterState.nodes.length;
+  const extra=(filterState.status?1:0)+(filterState.showProbe?1:0)+(filterState.showInvalid?1:0);
+  document.getElementById('statnoteFlt').textContent = (dimN||extra)? ('⚑ 过滤 '+(dimN+extra)) : '';
+}
+
+/* 多选下拉（原页 element-plus 多选的等价实现） */
+function mountMulti(dimCfg){
+  const root=document.querySelector('.ms[data-dim="'+dimCfg.dim+'"]');
+  const btn=root.querySelector('.ms__btn'), pop=root.querySelector('.ms__pop');
+  btn.addEventListener('click',e=>{
+    e.stopPropagation();
+    const wasOpen=!pop.hasAttribute('hidden');
+    closeMsPops();
+    if(!wasOpen){ setHudOpen(false); renderMulti(dimCfg); pop.removeAttribute('hidden'); }  /* 互斥：开多选先收浮窗 */
+  });
+  pop.addEventListener('click',e=>{
+    e.stopPropagation();
+    const cb=e.target.closest('input[type=checkbox]');
+    if(!cb) return;
+    const k=cb.dataset.k, list=filterState[dimCfg.dim];
+    const i=list.indexOf(k);
+    if(i>=0) list.splice(i,1); else list.push(k);
+    renderMulti(dimCfg); applyFilters(); renderHud();
+  });
+}
+function renderMulti(dimCfg){
+  const root=document.querySelector('.ms[data-dim="'+dimCfg.dim+'"]');
+  const btn=root.querySelector('.ms__btn'), pop=root.querySelector('.ms__pop');
+  const sel=filterState[dimCfg.dim];
+  const label = sel.length? (dimCfg.label+' ('+sel.length+')') : ('全部'+dimCfg.label);
+  if(btn.textContent!==label) btn.textContent=label;
+  if(pop.hasAttribute('hidden')) return;   // 未展开时不重绘，避免打断交互
+  const m=new Map();
+  bands.forEach(b=>{ if(b.kind!=='request') return; const k=dimCfg.get(b); m.set(k,(m.get(k)||0)+1); });
+  const items=[...m.entries()].sort((a,b)=>b[1]-a[1]);
+  pop.innerHTML = items.length? items.map(([k,c])=>
+    '<label class="ms__item"><input type="checkbox" data-k="'+esc(k)+'"'+(sel.includes(k)?' checked':'')+'>'
+    +'<span>'+esc(k)+'</span><i>'+c+'</i></label>').join('')
+    : '<div class="ms__empty">窗口内暂无数据</div>';
+}
+
+/** 统计与过滤的刷新（每个 tick 调一次）。 */
+let statTick=0;
+function updateStats(){
+  renderHud();
+  applyFilters();
+  DIMS.forEach(renderMulti);
+  /* 展开态面板每 1 秒重绘一次（250ms×4）：既跟得上数据，又不打断鼠标交互 */
+  if(!hud.hidden && (statTick++ % 4 === 0)) {
+    renderHud();
+  }
+}
+const MAX_BANDS=50;
+function enforceCap(){
+  while(bands.length>MAX_BANDS){
+    /* ★ 淘汰策略（第 4 轮修）：
+       ① **正在被 hover 的那条不淘汰** —— 用户正在读它，淘汰等于把内容从手里抽走；
+       ② 淘汰发生在**视口上方**时，补偿 scrollTop —— 否则上方内容被删会把整个视口内容往上拽，
+          表现为「列表自己滚动了」（实测：灌 6 条触发 7 次淘汰 ⇒ scrollTop 跳 -816px）。 */
+    const victim=bands.find(b=>b.kind==='request' && b.el!==lastHoverBand)
+                || bands.find(b=>b.kind==='request');
+    if(!victim) break;
+    let h=0, above=false;
+    if(victim.el){
+      const r=victim.el.getBoundingClientRect();
+      const cv=canvas.getBoundingClientRect();
+      /* 锚点：优先「正在被 hover 的那条」（它必须原地不动），否则取视口顶边 */
+      const anchorTop = lastHoverBand ? lastHoverBand.getBoundingClientRect().top : cv.top;
+      above = r.bottom <= anchorTop;                 /* 被删内容完全在锚点上方 */
+      h=r.height;
+    }
+    bands.splice(bands.indexOf(victim),1);
+    if(victim.el) victim.el.remove();
+    if(victim.detailEl) victim.detailEl.remove();
+    /* ★ 补偿：删掉锚点上方的 h px 内容 ⇒ scrollTop 同步**减** h，
+       锚点在屏幕上原地不动。方向是「减」：内容变短，滚动位置要跟着往上提，
+       否则视口内容被整体上拽（实测 13 条淘汰 ⇒ 悬停那条上移 1534px，跑到屏幕外）。 */
+    if(above) setScrollTop(Math.max(0, canvas.scrollTop - h));
+  }
+}
+
+/* ── 9. 静默带（idle band）—— 主档 §5.6 规则 ────────────────── */
+const IDLE_ONSET_MS=3000, IDLE_LONG_MS=5*60*1000;
+function onTraffic(){
+  if(!idleLive) return;
+  const wait=now()-idleLive.startedAt;
+  if(wait>IDLE_LONG_MS){
+    idleLive.state='recovered'; idleLive.recoveredAt=now();
+    renderIdleBand(idleLive); idleLive=null;      // 长静默保留为历史记录
+  }else{
+    removeIdleBand(idleLive); idleLive=null;      // ≤5 分钟：短暂安静不留痕
+  }
+}
+function removeIdleBand(b){ if(!b) return; if(b.el) b.el.remove();
+  const i=bands.indexOf(b); if(i>=0) bands.splice(i,1); }
+function ensureIdleBand(){
+  if(idleLive) return;                            // 已有活跃静默带 ⇒ 不再新增
+  const b={kind:'idle', id:'idle_'+Date.now(), state:'fresh', startedAt:now()};
+  bands.push(b);
+  const el=document.createElement('div'); el.className='band idle';
+  bandsEl.appendChild(el); b.el=el; idleLive=b; renderIdleBand(b); autoFollow();
+}
+function renderIdleBand(b){
+  if(!b||!b.el) return;
+  const el=b.el;
+  if(b.state==='recovered'){
+    el.className='band idle is-recovered';
+    el.innerHTML='<span class="idle-dot" style="background:var(--kx-success);animation:none"></span>'
+      +'<span class="idle-txt" style="color:var(--kx-success)">曾静默 '+fmtWait(b.recoveredAt-b.startedAt)+' · 已恢复</span>'
+      +'<span class="idle-sub">长静默记录保留（占 50 条内存预算）</span>';
+    return;
+  }
+  const wait=now()-b.startedAt, isLong=wait>IDLE_LONG_MS;
+  let h=34; if(isLong) h=34+Math.min(62,(wait-IDLE_LONG_MS)/60000*12.4);
+  el.style.height=h+'px';
+  el.className='band idle'+(isLong?' is-long':'');
+  el.innerHTML='<span class="idle-dot"></span>'
+    +'<span class="idle-txt">系统静默 · 已等待 '+fmtWait(wait)+'</span>'
+    +'<span class="idle-sub">'+(isLong?'长静默：不再新增静默带，仅更新时长与行高':'≤5 分钟：下次请求到达即清除本行')+'</span>';
+  autoFollow();   // 静默带行高会随等待时长增长，跟随态下把视图拉回底部
+}
+function tickIdle(){
+  const quiet=(now()-lastTrafficAt)>IDLE_ONSET_MS;
+  const anyActive=bands.some(b=>b.kind==='request'&&!b.result);
+  if(quiet&&!anyActive){
+    if(!idleLive) ensureIdleBand(); else renderIdleBand(idleLive);
+  }
+}
+
+/* ── 10. 主循环 ──────────────────────────────────────────────── */
+let spawnTimer=null, tickTimer=null;
+function startTimers(){
+  stopTimers();
+  spawnTimer=setInterval(()=>{
+    if(!RUNNING||IDLE_MODE) return;
+    if(Math.random()<0.4) return;
+    spawnRequest(); totalReq++; updateStats();
+  }, 1400/SPEED);
+  tickTimer=setInterval(()=>{
+    tickClock();
+    tickIdle(); updateStageHead(); updateStats();
+    bands.forEach(b=>{ if(b.kind==='request'&&!b.result){
+      const s=b.el&&b.el.querySelector('.summary'); if(s) s.innerHTML=summaryHTML(b); } });
+  },250);
+}
+function stopTimers(){ if(spawnTimer) clearInterval(spawnTimer); if(tickTimer) clearInterval(tickTimer); }
+
+/* ── 11. 交互 ────────────────────────────────────────────────── */
+/* ★ 自动跟随（需求：「逐个请求往上翻动」）：
+   新请求从底部插入后，视图跟到底部 ⇒ 老请求被向上顶出视野，形成「翻动」。
+   用户主动上滚 ⇒ 暂停跟随（右下角出现「↓ 有新请求」提示），回到底部或点提示 ⇒ 恢复。
+
+   ★ 跟随状态**不能**由 scroll 事件直接猜「是否在底部」：程序化滚动与内容增长
+   （50 条上限淘汰最旧带 ⇒ scrollHeight 变短）会让 scrollTop 短暂「不在底部」，
+   误判成用户上滚 ⇒ 跟随被无故暂停（自测实测到的真实缺陷）。
+   正确判据是**滚动意图**：向上滚（wheel/touch/滚动条上移）⇒ 暂停；回到底部 ⇒ 恢复。 */
+let followBottom = true, lastScrollTop = 0, lastScrollHeight = 0, lastTouchY = null;
+const pill = () => document.getElementById('newPill');
+/* ★ 程序化滚动打标记：滚动事件若与「我们自己设的值」一致 ⇒ 不是用户意图，
+   不得据此改 followBottom（否则内容淘汰/追底会被误判成用户翻页）。 */
+let expectedScroll=null;
+function setScrollTop(v){ expectedScroll=v; canvas.scrollTop=v; }
+function scrollToBottom(){ setScrollTop(canvas.scrollHeight); }
+function isNearBottom(){ return canvas.scrollHeight - canvas.scrollTop - canvas.clientHeight < 40; }
+function syncPill(){ pill().classList.toggle('is-on', !followBottom); }
+canvas.addEventListener('scroll',()=>{
+  const top=canvas.scrollTop, sh=canvas.scrollHeight;
+  if(expectedScroll!==null && Math.abs(top-expectedScroll)<=2){   /* 我们自己滚的 */
+    expectedScroll=null; lastScrollTop=top; lastScrollHeight=sh; return;
+  }
+  expectedScroll=null;
+  const near = sh - top - canvas.clientHeight < 40;
+  const shrunk = sh < lastScrollHeight - 1;              /* 上限淘汰 ⇒ 内容变短，非用户意图 */
+  if(near) followBottom = true;                          /* 回到底部 ⇒ 恢复跟随 */
+  else if(!shrunk && !hoverFreeze && top < lastScrollTop - 2) followBottom = false;  /* 离开底部 ⇒ 暂停 */
+  lastScrollTop = top; lastScrollHeight = sh;
+  syncPill();
+});
+/* 滚轮 / 触摸向上 = 明确的用户上滚意图（比 scroll 事件更早、更准） */
+canvas.addEventListener('wheel',e=>{ if(e.deltaY<0){ followBottom=false; syncPill(); } },{passive:true});
+canvas.addEventListener('touchmove',e=>{
+  if(e.touches && e.touches[0] && lastTouchY!==null && e.touches[0].clientY > lastTouchY){
+    followBottom=false; syncPill();
+  }
+  lastTouchY = e.touches[0] ? e.touches[0].clientY : null;
+},{passive:true});
+pill().onclick = ()=>{ followBottom=true; scrollToBottom(); syncPill(); };
+/* ── 第 4 轮：hover 冻结列表滚动 ──────────────────────────────────
+   owner 要求：「鼠标移到某个请求时，这时整个请求列表不要滚动，新的请求加在后面就可以」。
+   ⇒ 判据是**指针是否停在某条请求上**（不是滚动位置）：
+     停住 ⇒ 冻结自动跟随（新请求照常追加到列表末尾，视图一动不动）；
+     离开 ⇒ 解冻（若此前处于跟随态，则一次性追平到底）。
+   ★ 与「用户上滚暂停」是**两个独立信号**：上滚＝用户想翻历史；hover＝用户正在读这一条。
+     两者都只回答「要不要滚动」，互不覆盖。 */
+function setHoverFreeze(on){
+  if(hoverFreeze===on) return;
+  hoverFreeze=on;
+  document.getElementById('freezeHint').classList.toggle('is-on',on);
+  if(on){
+    frozenAppended=0;
+    document.getElementById('freezeTxt').textContent='列表已冻结（鼠标悬停在请求上）· 新请求只追加';
+  }else{
+    const n=frozenAppended; frozenAppended=0;
+    document.getElementById('freezeTxt').textContent=n>0? ('已追加 '+n+' 条新请求') : '列表已冻结（鼠标悬停在请求上）';
+    if(followBottom) scrollToBottom();          /* 离开后恢复跟随：一次性追平 */
+  }
+}
+bandsEl.addEventListener('pointermove',e=>{
+  const b=e.target.closest('.band');
+  if(b===lastHoverBand) return;
+  if(lastHoverBand) lastHoverBand.classList.remove('is-hover');
+  lastHoverBand=b;
+  if(b) b.classList.add('is-hover');
+  setHoverFreeze(!!b);
+});
+bandsEl.addEventListener('pointerleave',()=>{
+  if(lastHoverBand) lastHoverBand.classList.remove('is-hover');
+  lastHoverBand=null;
+  setHoverFreeze(false);
+});
+/* 浮动 tooltip：承载被移出版面的说明文字（节点 → 阶段/值/说明） */
+const tipEl=document.getElementById('tip');
+bandsEl.addEventListener('pointermove',e=>{
+  const n=e.target.closest('.node');
+  if(!n){ tipEl.classList.remove('is-on'); return; }
+  tipEl.textContent=n.dataset.tip||'';
+  tipEl.classList.add('is-on');
+  const x=Math.min(e.clientX+14, window.innerWidth-320), y=Math.min(e.clientY+16, window.innerHeight-90);
+  tipEl.style.left=Math.max(8,x)+'px'; tipEl.style.top=Math.max(8,y)+'px';
+});
+bandsEl.addEventListener('pointerleave',()=>tipEl.classList.remove('is-on'));
+/** 新带插入后调用：处于跟随态**且未被 hover 冻结**才把视图拉到底部（下一帧执行，等布局完成）。 */
+function autoFollow(){
+  if(!followBottom || hoverFreeze) return;
+  requestAnimationFrame(()=>{ if(followBottom && !hoverFreeze) scrollToBottom(); });
+}
+
+/* 点击请求 ⇒ 内联展开详情（同一带再点收起）；右侧抽屉改为详情块内的入口 */
+bandsEl.addEventListener('click',e=>{
+  const bandEl=e.target.closest('.band');
+  if(!bandEl) return;
+  const band=bands.find(b=>b.id===bandEl.dataset.id);
+  if(!band||band.kind!=='request') return;
+  bandsEl.querySelectorAll('.band.is-selected').forEach(x=>x.classList.remove('is-selected'));
+  bandEl.classList.add('is-selected');
+  toggleBandDetail(band);
+});
+/** 内联详情块：阶段明细 + 模型解析链 + 回复侧指标 + 身份与可信度 + 模拟 liveactions + 抽屉入口。 */
+function bandDetailHTML(band){
+  const stageRows=SEND_STAGES.concat(RECV_STAGES).map(s=>{
+    const st=band.state[s.key]||{s:'pending',v:'',d:''};
+    return '<div class="bd__kv"><span class="k">'+esc(s.name)+'</span><span class="v">'+GLYPH[st.s]+' '
+      +esc(st.v||'—')+(st.d?' · '+esc(st.d):'')+'</span></div>';
+  }).join('');
+  const acts=band.actions.map(a=>'<div class="bd__act"><span class="seq">'+a.seq+'</span><span class="name">'
+    +esc(a.action)+'</span><span class="det">'+esc(JSON.stringify(a.detail))+'</span></div>').join('');
+  const res=band.result? (band.result==='success'?'✓ 成功':(band.result==='canceled'?'⊘ 客户端取消':'✕ 失败')) : '◐ 进行中';
+  /* ── 第 5 轮：模型解析链 ───────────────────────────────────── */
+  const kvWide=(k,v)=>'<div class="bd__kv wide"><span class="k">'+esc(k)+'</span><span class="v">'+esc(v)+'</span></div>';
+  const resolveRows=[
+    ['客户端请求模型', band.clientModel+(band.isAuto?'（★ auto 改写后 ＝ 选中模型）':'')],
+    ['auto 选型', band.isAuto?('是 · 任务类型 '+band.taskType+' · 决策置信度 '+(band.autoConfidence!=null?band.autoConfidence.toFixed(2):'—')):'否'],
+    ['解析方式', band.modelReason],
+    ['最终匹配模型', band.model],
+    band.switched?['模型切换', band.switched.from+' → '+band.switched.to+'（重试换模型，最终以最后一次为准）']:null,
+    ['上游 outbound', band.providerName?band.model+' @ '+band.providerName+'（'+(band.upProto||'?')+' 协议）':'未触达'],
+  ].filter(Boolean).map(([k,v])=>kvWide(k,v)).join('');
+  /* 口径注记**在网格之外**：否则它会变成网格项被压成一格宽。 */
+  const resolveNote = '<div class="bd__note">★ 生产口径：auto 请求的 <code>client_model</code> 在 handler 侧已被改写成<b>选中的模型</b>'
+    + '（<code>preAutoModel</code> 只进 requestjourney、不上实时帧）⇒「客户端要的是 auto」由 '
+    + '<code>is_auto_request</code> 表达，<b>不能靠 client_model=="auto" 反推</b>。</div>';
+  /* ── 第 5 轮：回复侧指标（口径必须写清）───────────────────── */
+  const cr=cacheRate(band), fp=fingerprintOf(band);
+  const replyRows=[
+    kvWide('prompt tokens', band.tokensIn?String(band.tokensIn):'—'),
+    kvWide('completion tokens', band.tokensOut?String(band.tokensOut):'—'),
+    kvWide('缓存读 / 写', (band.cacheRead?band.cacheRead:'—')+' / '+(band.cacheWrite?band.cacheWrite:'—')+' tok'),
+    kvWide('缓存命中率', cr? (cr.anomaly?'口径异常 —— '+cr.why : (cr.pct===null?'不可计算 —— '+cr.why : cr.pct+'%（口径 '+cr.conv+'）')) : '无 —— 上游未上报 cache_read_token（不是 0%）'),
+    kvWide('响应帧数', band.chunks?band.chunks+' 帧（stream_chunk_count）':'—'),
+    kvWide('首字节 / 总延迟', Math.round(band.ttfb)+'ms / '+fmtDur(band.latency||now()-band.startAt)),
+    kvWide('成本', band.cost?'¥'+band.cost.toFixed(6):'—'),
+  ].join('');
+  /* ── 第 5 轮：模型身份与可信度 ────────────────────────────── */
+  const ci=band.credInfo;
+  const identRows=[
+    kvWide('声称模型', band.model),
+    kvWide('上游自报模型', band.reported===null?'上游未返回模型名 —— 无法自证身份'
+        : band.reported+(band.reported===band.model?' · 与声称一致':' · 与声称不一致')),
+    kvWide('上游系统指纹', fp.upstreamFpNote),
+    kvWide('分词器签名', fp.tokenSig?fp.tokenSig+'（prompt token 计数）':'未测'),
+    kvWide('被动时序指纹', (fp.passive!==null&&fp.passive!==undefined)?('ITT/TTFT/吞吐 vs 基线偏差 '+fp.passive+'%'):'未采集'),
+  ].join('');
+  const credGrid = ci ? (
+      kvWide('可信度总分', (ci.score===null?'—（证据不足）':ci.score+' / 100')+' · '+CRED_VERDICT_ZH[ci.verdict])
+    + kvWide('判定时间', ci.at+' · 节点级（凭据 × 模型）· 非本次响应实时验证'
+        +(ci.stale?('　⚠ 结论已过期 '+ci.ageDays+' 天（> '+CRED_STALE_DAYS+' 天未复测）'):''))
+    + '<div class="bd__dims">'+Object.keys(CRED_DIM_ZH).map(k=>{
+        const v=ci.dims[k];
+        return '<div class="bd__dim'+(v===null?' na':'')+'"><span class="dn">'+CRED_DIM_ZH[k]+'</span>'
+          +'<span class="dbar"><i style="width:'+(v===null?0:v)+'%"></i></span>'
+          +'<span class="dv">'+(v===null?'—':v)+'</span></div>';
+      }).join('')+'</div>'
+    ) : kvWide('节点可信度','未判定 —— 尚未路由到具体凭据');
+  /* ★ 说明行**在网格之外**：否则它会变成网格项被压成一格宽。 */
+  const credNote = ci ? '<div class="bd__note">★ 缺失维度不计入（不给假分数）；判定为「证据不足」时写 unknown，不写「已验证」。</div>' : '';
+  return '<h4>请求详情<span class="sp"></span><span style="font-weight:400">'+esc(band.id)+' · '
+    +esc(band.client.name)+' · '+esc(band.client.typeLabel)+' · '
+    +(band.isAuto?('请求 auto → 最终 '+esc(band.model)):('请求 '+esc(band.clientModel)+' → 最终 '+esc(band.model)))+' · '+res+'</span></h4>'
+    +'<div class="bd__cols">'
+    +'<div class="bd__col">'
+    +'<h4>模型解析链（第 5 轮新增）</h4>'
+    +'<div class="bd__grid">'+resolveRows+'</div>'
+    +resolveNote
+    +'<h4 style="margin-top:7px">回复侧指标（第 5 轮新增）</h4>'
+    +'<div class="bd__grid">'+replyRows+'</div>'
+    +'<h4 style="margin-top:7px">模型身份与可信度（第 5 轮新增）</h4>'
+    +'<div class="bd__grid">'+identRows+'</div>'
+    +'<div class="bd__grid" style="margin-top:4px">'+credGrid+'</div>'
+    +credNote
+    +'</div>'
+    +'<div class="bd__col">'
+    +'<h4>阶段明细（发送轨 + 接收轨）</h4>'
+    +'<div class="bd__grid">'+stageRows+'</div>'
+    +'<h4 style="margin-top:7px">模拟 liveactions（request_lifecycle 帧）</h4>'
+    +'<div class="bd__acts">'+(acts||'<div class="bd__act">尚无动作</div>')+'</div>'
+    +'<div class="bd__btns"><button class="btn" data-drawer>⤢ 打开右侧抽屉</button></div>'
+    +'</div>'
+    +'</div>';
+}
+let expandedBand=null;          /* 同时只展开一条（手风琴） */
+function toggleBandDetail(band){
+  if(band.detailEl){                                   /* 收起 */
+    band.detailEl.remove(); band.detailEl=null;
+    band.el.style.height=BAND_H+'px';
+    band.el.classList.remove('is-selected');
+    if(expandedBand===band) expandedBand=null;
+    return;
+  }
+  if(expandedBand && expandedBand!==band) toggleBandDetail(expandedBand);   /* 手风琴：先收上一条 */
+  const el=document.createElement('div');
+  el.className='banddetail';
+  el.style.width=TREE_W+'px';
+  el.style.top=BAND_H+'px';
+  el.innerHTML=bandDetailHTML(band);
+  band.el.appendChild(el);
+  band.detailEl=el;
+  band.el.style.height=(BAND_H+Math.round(el.getBoundingClientRect().height))+'px';
+  band.el.classList.add('is-selected');
+  expandedBand=band;
+  const btn=el.querySelector('[data-drawer]');
+  /* stopPropagation：抽屉按钮的点击不得冒泡到「点击请求＝展开/收起详情」的处理器 */
+  if(btn) btn.onclick=ev=>{ ev.stopPropagation(); openDrawer(band); };
+}
+
+document.getElementById('drawerClose').onclick=()=>document.getElementById('drawer').classList.remove('is-open');
+
+function openDrawer(band){
+  document.getElementById('drawerTitle').textContent=band.id+' · '+band.client.name;
+  const rows=band.actions.map(a=>'<div class="act"><span class="seq">'+a.seq+'</span><span class="name">'+esc(a.action)+'</span><span class="det">'+esc(JSON.stringify(a.detail))+'</span></div>').join('');
+  const stageRows=SEND_STAGES.concat(RECV_STAGES).map(s=>{
+    const st=band.state[s.key]||{s:'pending',v:'',d:''};
+    return '<div class="kv"><span class="k">'+esc(s.name)+'</span><span>'+GLYPH[st.s]+' '+esc(st.v||'—')+(st.d?' · '+esc(st.d):'')+'</span></div>';
+  }).join('');
+  document.getElementById('drawerBody').innerHTML=
+    '<h4>模型解析链</h4>'
+    +'<div class="kv"><span class="k">客户端请求</span><span>'+(band.isAuto?'<b>auto</b>（自动选型）':esc(band.clientModel))+' → 最终 <b>'+esc(band.model)+'</b></span></div>'
+    +'<div class="kv"><span class="k">auto 选型</span><span>'+(band.isAuto?('是 · 任务类型 '+esc(band.taskType)+' · 置信度 '+(band.autoConfidence!=null?band.autoConfidence.toFixed(2):'—')):'否')+'</span></div>'
+    +'<div class="kv"><span class="k">解析方式</span><span>'+esc(band.modelReason)+'</span></div>'
+    +(band.switched?'<div class="kv"><span class="k">模型切换</span><span>'+esc(band.switched.from)+' → '+esc(band.switched.to)+'</span></div>':'')
+    +'<h4>回复侧指标</h4>'
+    +'<div class="kv"><span class="k">token</span><span>prompt '+(band.tokensIn||'—')+' / completion '+(band.tokensOut||'—')
+      +' / 缓存读 '+(band.cacheRead||'—')+' / 缓存写 '+(band.cacheWrite||'—')+'</span></div>'
+    +'<div class="kv"><span class="k">缓存命中率</span><span>'+esc(cacheRate(band)? (cacheRate(band).pct===null?'不可计算（'+cacheRate(band).why+'）':cacheRate(band).pct+'%（'+cacheRate(band).conv+'）') : '无（上游未上报）')+'</span></div>'
+    +'<div class="kv"><span class="k">帧数 / 首字节</span><span>'+(band.chunks?band.chunks+' 帧':'—')+' / '+Math.round(band.ttfb)+'ms</span></div>'
+    +'<h4>身份与可信度</h4>'
+    +'<div class="kv"><span class="k">上游自报</span><span>'+(band.reported===null?'未返回（无法自证身份）':esc(band.reported))+'</span></div>'
+    +'<div class="kv"><span class="k">上游指纹</span><span>未提供（上游不发 X-System-Fingerprint）</span></div>'
+    +'<div class="kv"><span class="k">分词器签名</span><span>'+esc(band.ptSig||'未测')+'</span></div>'
+    +'<div class="kv"><span class="k">节点可信度</span><span>'+esc(band.credInfo
+        ? ((band.credInfo.score===null?'—（证据不足）':band.credInfo.score)+' · '+CRED_VERDICT_ZH[band.credInfo.verdict]
+           +' · 最近检测 '+band.credInfo.at+' · 节点级，非本次响应实时验证'
+           +(band.credInfo.stale?('　⚠ 结论已过期 '+band.credInfo.ageDays+' 天'):''))
+        : '未判定（尚未路由到具体凭据）')+'</span></div>'
+    +'<h4>阶段明细（发送轨 + 接收轨）</h4>'+stageRows
+    +'<h4>模拟 liveactions（request_lifecycle 帧）</h4>'
+    +(rows||'<div class="kv"><span class="det">尚无动作</span></div>')
+    +'<h4>身份与结果</h4>'
+    +'<div class="kv"><span class="k">客户端</span><span>'+esc(band.client.name)+' / '+esc(band.client.typeLabel)+' / '+esc(band.client.proto)+'</span></div>'
+    +'<div class="kv"><span class="k">模型</span><span>'+(band.isAuto?('请求 <b>auto</b> → 最终 '+esc(band.model)):('请求 '+esc(band.clientModel)+' → 最终 '+esc(band.model)))+'</span></div>'
+    +'<div class="kv"><span class="k">供应商</span><span>'+(band.providerName?esc(band.providerName)+' · '+esc(band.cred):'未触达')+'</span></div>'
+    +'<div class="kv"><span class="k">结果</span><span>'+esc(band.result||'进行中')+(band.failed?' · 失败于 '+esc(band.failed):'')+'</span></div>';
+  document.getElementById('drawer').classList.add('is-open');
+}
+
+document.getElementById('pluginChip').onclick=()=>{
+  const pop=document.getElementById('pluginPop');
+  const r=document.getElementById('pluginChip').getBoundingClientRect();
+  pop.style.top=(r.bottom+6)+'px'; pop.style.left=Math.max(12,r.left-120)+'px';
+  pop.innerHTML='<h4>网关核心模块（设计面 11 · 本窗口实际经过）</h4><ul>'
+    +MODULES.map(m=>'<li class="mod"><span class="dot'+(MODULE_HITS[m]?'':' off')+'"></span>'+esc(m)+'<span class="cnt">'+(MODULE_HITS[m]||0)+'</span></li>').join('')
+    +'</ul><h4 style="margin-top:8px">治理插件（运行时 · /api/admin/topology/plugins）</h4><ul>'
+    +PLUGINS_BUILTIN.map(p=>'<li class="mod"><span class="dot"></span>'+esc(p.name)+'<span class="cnt">内置 · '+esc(p.status)+'</span></li>').join('')
+    +PLUGINS_EXTERNAL.map(p=>'<li class="mod"><span class="dot"></span>'+esc(p.name)+'<span class="cnt">外部 · '+esc(p.status)+'</span></li>').join('')
+    +'</ul><h4 style="margin-top:8px">未纳入计数</h4><ul><li>plugin-runtime 六子模块</li><li>authplugin registry</li></ul>';
+  pop.classList.toggle('is-open');
+};
+document.addEventListener('click',e=>{
+  const pop=document.getElementById('pluginPop');
+  /* ★ 用 closest 判定：点击 chip 内部的子元素（数字/文字）也算「点在 chip 上」，
+     否则浮层会被 document 级监听在同一击里立刻关掉（实测缺陷）。 */
+  if(!pop.contains(e.target) && !e.target.closest('#pluginChip')) pop.classList.remove('is-open');
+});
+
+document.getElementById('btnPlay').onclick=e=>{
+  RUNNING=!RUNNING;
+  e.target.textContent=RUNNING?'⏸ 暂停':'▶ 继续';
+  const c=document.getElementById('conn');
+  c.textContent=RUNNING?'已连接':'已暂停'; c.className='conn'+(RUNNING?'':' is-paused');
+};
+document.getElementById('speed').onchange=e=>{ SPEED=+e.target.value; };
+document.getElementById('btnIdle').onclick=e=>{
+  IDLE_MODE=!IDLE_MODE;
+  e.target.textContent=IDLE_MODE?'▶ 恢复流量':'⏸ 模拟全空闲';
+  if(!IDLE_MODE) lastTrafficAt=now();
+};
+document.getElementById('btnFail').onclick=()=>{
+  const k=pick(['auth','approval','injection','sanitize','compress','route','upstream','cancel']);
+  spawnRequest({failAt:k}); totalReq++; updateStats(); autoFollow();
+};
+document.getElementById('btnClear').onclick=()=>{
+  bands.forEach(b=>{ if(b.el) b.el.remove(); if(b.detailEl) b.detailEl.remove(); });
+  bands=[]; idleLive=null; totalReq=0; okReq=0; failReq=0;
+  updateStats(); updateStageHead();
+};
+
+/* ── 12. 浮窗（统计 + 过滤）接线 ────────────────────────────────
+   ★ owner 第 4 轮：统计与过滤合并为**一个浮动层**，可拖动、可三档缩放。
+   ★ 开关仍收敛到单一入口（hidden 与 aria-expanded 同点同步）——
+     上一轮的教训：多处直改 hidden 会让「谁关的」不可指认。 */
+const statnoteBtn=document.getElementById('statnoteBtn');
+const statnoteBox=document.getElementById('statnote');
+const hud=document.getElementById('hud');
+const hudBar=document.getElementById('hudBar');
+let hudZoom=1;                                   /* 0=小 1=中 2=大 */
+const ZOOMS=['hud--s','hud--m','hud--l'];
+
+function setHudOpen(open){
+  hud.hidden=!open;
+  statnoteBtn.setAttribute('aria-expanded', open?'true':'false');
+  const caret=document.getElementById('statnoteCaret');
+  if(caret) caret.textContent=open?'▴':'▾';
+  if(open) renderHud();
+}
+function setHudZoom(z){
+  hudZoom=Math.max(0,Math.min(2,z));
+  hud.classList.remove('hud--s','hud--m','hud--l');
+  hud.classList.add(ZOOMS[hudZoom]);
+  /* 大档自动展开全部明细组（缩放＝看更多，不是只放大字号） */
+  if(hudZoom===2){ statGroupOpen={clients:true,providers:true,models:true}; }
+  renderHud();
+}
+/** 关闭所有多选下拉浮层（浮层互斥：统计面板与多选下拉不同时展开）。 */
+function closeMsPops(){ document.querySelectorAll('.ms__pop').forEach(p=>p.setAttribute('hidden','')); }
+
+statnoteBtn.addEventListener('click',e=>{
+  e.stopPropagation();
+  if(hud.hidden){ closeMsPops(); setHudOpen(true); }
+  else setHudOpen(false);
+});
+document.getElementById('hudClose').addEventListener('click',e=>{ e.stopPropagation(); setHudOpen(false); });
+document.getElementById('hudSmaller').addEventListener('click',e=>{ e.stopPropagation(); setHudZoom(hudZoom-1); });
+document.getElementById('hudBigger').addEventListener('click',e=>{ e.stopPropagation(); setHudZoom(hudZoom+1); });
+/* 拖动移动（标题栏空白处；按钮不触发拖动） */
+hudBar.addEventListener('pointerdown',e=>{
+  if(e.target.closest('.hud__b')) return;
+  const r=hud.getBoundingClientRect();
+  const dx=e.clientX-r.left, dy=e.clientY-r.top;
+  hud.style.right='auto'; hud.style.bottom='auto';
+  hud.style.left=r.left+'px'; hud.style.top=r.top+'px';
+  const move=ev=>{
+    hud.style.left=Math.max(0,Math.min(window.innerWidth-60,ev.clientX-dx))+'px';
+    hud.style.top=Math.max(0,Math.min(window.innerHeight-30,ev.clientY-dy))+'px';
+  };
+  const up=()=>{ window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up); };
+  window.addEventListener('pointermove',move); window.addEventListener('pointerup',up);
+  e.preventDefault();
+});
+hud.addEventListener('click',e=>{
+  e.stopPropagation();
+  const int=e.target.closest('#spInterval');
+  if(int){ statInterval=+int.value; renderHud(); return; }
+  const gh=e.target.closest('.sp__ghead');
+  if(gh){ const g=gh.dataset.g; statGroupOpen[g]=!statGroupOpen[g]; renderHud(); return; }
+  const row=e.target.closest('.sp__row');
+  if(row){                                   // 点明细行＝联动过滤（与原页同语义）
+    const dim=row.dataset.dim, key=row.dataset.key;
+    const list=filterState[dim];
+    const i=list.indexOf(key);
+    if(i>=0) list.splice(i,1); else list.push(key);
+    applyFilters(); renderHud();
+  }
+});
+/* 过滤控件（现在都在浮窗内） */
+document.getElementById('fStatus').addEventListener('change',e=>{ filterState.status=e.target.value; applyFilters(); renderHud(); });
+document.getElementById('fWindow').addEventListener('change',e=>{ filterState.windowMs=+e.target.value; applyFilters(); renderHud(); });
+document.getElementById('fProbe').addEventListener('change',e=>{ filterState.showProbe=e.target.checked; applyFilters(); renderHud(); });
+document.getElementById('fInvalid').addEventListener('change',e=>{ filterState.showInvalid=e.target.checked; applyFilters(); renderHud(); });
+document.getElementById('fClear').addEventListener('click',e=>{
+  e.stopPropagation();
+  filterState.clients=[]; filterState.providers=[]; filterState.models=[]; filterState.nodes=[];
+  filterState.status=''; filterState.showProbe=false; filterState.showInvalid=false;
+  document.getElementById('fStatus').value='';
+  document.getElementById('fProbe').checked=false;
+  document.getElementById('fInvalid').checked=false;
+  applyFilters(); renderHud(); DIMS.forEach(renderMulti);
+});
+/* 点空白处关闭所有浮层：用 composedPath() 判定（对 target 重定向免疫） */
+document.addEventListener('click',e=>{
+  const path=e.composedPath();
+  const inHud=path.includes(hud);
+  const inStatnote=path.includes(statnoteBox);
+  const inMs=path.some(n=>n instanceof Element && n.classList && n.classList.contains('ms'));
+  if(!inHud && !inStatnote && !inMs){ setHudOpen(false); closeMsPops(); }
+});
+/* Escape 关闭当前浮层（可访问性） */
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  setHudOpen(false); closeMsPops();
+  document.getElementById('pluginPop').classList.remove('is-open');
+});
+
+/* 全屏（原页「进入全屏」等价物：原生 Fullscreen API） */
+document.getElementById('btnFullscreen').addEventListener('click',()=>{
+  const el=document.documentElement;
+  if(document.fullscreenElement) void document.exitFullscreen().catch(()=>{});
+  else void el.requestFullscreen().catch(()=>{});
+});
+
+/* ── 13. 启动 ────────────────────────────────────────────────── */
+/* 版面模式：auto（按窗口宽）/ wide / narrow —— 审核时可手动切换两种版面 */
+let layoutMode='auto';
+function applyLayout(){
+  const narrow = layoutMode==='narrow' || (layoutMode==='auto' && window.innerWidth<=1023);
+  document.documentElement.classList.toggle('layout-narrow', narrow);
+}
+window.addEventListener('resize', applyLayout);
+document.getElementById('btnLayout').onclick=e=>{
+  layoutMode = layoutMode==='auto'?'wide':(layoutMode==='wide'?'narrow':'auto');
+  e.target.textContent='版面：'+(layoutMode==='auto'?'自动':(layoutMode==='wide'?'宽屏树':'窄屏卡片'));
+  applyLayout();
+};
+applyLayout();
+
+DIMS.forEach(mountMulti);          // 原页四维多选过滤
+buildStageHead(); updateStats(); startTimers();
+setTimeout(()=>{ spawnRequest(); totalReq++; updateStats(); }, 120);
+setTimeout(()=>{ spawnRequest({failAt:'injection'}); totalReq++; updateStats(); }, 600);
+setTimeout(()=>{ spawnRequest(); totalReq++; updateStats(); }, 1100);
+setTimeout(()=>{ spawnRequest({failAt:'route'}); totalReq++; updateStats(); }, 1600);
+setTimeout(()=>{ spawnRequest(); totalReq++; updateStats(); }, 2100);
+setTimeout(()=>scrollToBottom(), 400);
+</script>
+</body>
+</html>

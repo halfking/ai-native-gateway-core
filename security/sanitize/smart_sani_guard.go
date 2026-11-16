@@ -245,7 +245,9 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		if m.redis != nil && sessionID != "" {
 			release = m.sessionLocks.lock(sanitizeOffsetKey(tenantID, sessionID))
 		}
+		sanitizeStart := time.Now()
 		sanitizedBody, sm, currentMap, messageRefs, generation, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID, r.URL.Path)
+		sanitizeDurMs := time.Since(sanitizeStart).Milliseconds()
 		release()
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: sanitize failed",
@@ -271,6 +273,13 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			// 与 armor middleware.withReplayedBody 保持一致。
 			r.ContentLength = int64(len(sanitizedBody))
 		}
+		// 脱敏命中计数与耗时（**只放计数与耗时**）：阶段树要显示「脱敏命中几处」，
+		// 但映射表里是原始敏感值 ⇒ 不能带出安全包。这里另走一个只含
+		// 计数/耗时的 ctx 载体（与 generation 解耦，无会话请求也带计数）。
+		*r = *r.WithContext(WithSanitizeMutationSummary(r.Context(), SanitizeMutationSummary{
+			Count: len(currentMap),
+			DurMs: sanitizeDurMs,
+		}))
 		if generation != "" {
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
 			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
@@ -2147,6 +2156,43 @@ func SanitizeMapFromContext(ctx context.Context) (SanitizeMap, bool) {
 }
 
 type sanitizeMapCtxKey struct{}
+
+// ── 2026-11-16（/live 阶段树 Phase 1）：脱敏命中计数载体 ─────────────────────
+//
+// 阶段树要显示「脱敏」这一段（命中几处、跑了多久）。但**不能**用 SanitizeMap 来数：
+// 映射表里是**原始敏感值**（placeholder → 原文），把它带出安全包就是带密钥。
+//
+// ⇒ 这里另开一个**只承载计数与耗时**的载体：
+// - 值是 {命中处数, 耗时毫秒}，不是任何原文/映射；
+// - 与 SanitizeMap **解耦**（不依赖 generation != ""，无会话请求也带计数）；
+// - ctx 里只放计数 ⇒ 日志/动作 detail 可以安全引用。
+//
+// 计数语义 = **本次请求**新脱敏的片段数（currentMap 的长度），
+// 不是会话累计（会话累计在 sm 里，那是字典不是计数）。
+type SanitizeMutationSummary struct {
+	// Count 是本次请求新脱敏的片段数（0 = 本次没有敏感内容）。
+	Count int
+	// DurMs 是脱敏处理耗时（毫秒）。未测量时为 -1。
+	DurMs int64
+}
+
+type sanitizeMutationCountCtxKey struct{}
+
+// WithSanitizeMutationSummary 把「本次请求脱敏命中处数 + 耗时」放入 Context。
+// count < 0 视为无测量（不写 0 冒充）。
+func WithSanitizeMutationSummary(ctx context.Context, sum SanitizeMutationSummary) context.Context {
+	if sum.Count < 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, sanitizeMutationCountCtxKey{}, sum)
+}
+
+// SanitizeMutationSummaryFromContext 读取本次请求脱敏命中处数与耗时。
+// 第二个返回值 false = **未测量**（脱敏未启用/未执行）——调用方禁止用 0 冒充。
+func SanitizeMutationSummaryFromContext(ctx context.Context) (SanitizeMutationSummary, bool) {
+	sum, ok := ctx.Value(sanitizeMutationCountCtxKey{}).(SanitizeMutationSummary)
+	return sum, ok
+}
 
 // readBody reads at most the streaming handler's 100 MB cap plus one byte.
 // It restores accepted bytes for the downstream handler. Read failures and

@@ -434,6 +434,18 @@ type LiveRequest struct {
 	TaskType      string `json:"task_type,omitempty"`
 	TokenBand     string `json:"token_band,omitempty"`
 	Compressed    bool   `json:"compressed,omitempty"`
+
+	// 2026-11-16（/live 阶段树 Phase 1）：上游协议。
+	//
+	// ★ 为什么必须上帧：缓存命中率的分母口径**取决于上游协议**
+	//   （domains/streaming/usage.go 的 CacheTokenConvention）：
+	//     · OpenAI 口径   prompt_tokens ⊇ cached_tokens      ⇒ 分母 = prompt
+	//     · Anthropic 口径 input_tokens ∥ cache_read_input_tokens ⇒ 分母 = prompt + cache_read
+	//   没有这个字段，前端只能给一个**混了两种口径的假命中率**
+	//   （2026-10-06 真库事故同族：cache_read 是 prompt 的 25 倍、cost_usd 负数 1628 行）。
+	//
+	// 缺省 = 上游未上报 ⇒ 前端显示「—」而不是 0%。
+	UpstreamProtocol string `json:"upstream_protocol,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -3208,6 +3220,11 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		}
 		if entry.TokenBand != nil {
 			out.TokenBand = strings.TrimSpace(*entry.TokenBand)
+		}
+		// 2026-11-16（/live 阶段树 Phase 1）：上游协议（缓存命中率的**分母口径**
+		// 判据）。缺省保持空 ⇒ 前端显示「—」，禁止用 0% 冒充。
+		if entry.UpstreamProtocol != nil {
+			out.UpstreamProtocol = strings.TrimSpace(*entry.UpstreamProtocol)
 		}
 		// 压缩实际发生判据（环回口径，2026-10-28）：strategy 非空且非
 		// delta_append（增量组装不是压缩）。band 越线但 summary 失败的

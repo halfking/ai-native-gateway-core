@@ -65,6 +65,9 @@ export const NAV_PRIMARY_ITEMS: NavItem[] = [
   // 2026-10-16: live-topology home. Placed before "Overview" — it is a NEW entry;
   // `/` and `/dashboard` stay untouched (the old home page is fully preserved, ADR §7 G7).
   { path: '/live', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, exact: true },
+  // 2026-11-16: 请求阶段树（live2）—— 与 /live 并存一个版本周期。
+  // 入口放在 /live 旁边（同一分组），并由 /live 页顶栏的「阶段树」按钮直达。
+  { path: '/live2', labelKey: 'nav.item.liveStageTree', icon: '🌲', platformOps: true, exact: true },
   { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
 
