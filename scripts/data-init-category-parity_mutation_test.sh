@@ -155,6 +155,9 @@ p.write_text(s)
 '
 
 # ★ 还原核对：源码必须回到变异前的样子（否则变异残留在树上）。
+#   ★ 核对式必须挑**只在变异体里出现**的字符串 ——
+#     「selected.value = []」在组件里本来就有（那是「全不选」的合法实现），
+#     用它做核对会把「已还原」误报成「有残留」（本轮真踩到）。
 echo "--- 还原核对 ---"
 if grep -q "requestRecordsMUTATED" "$REPO_ROOT/$GO_REL"; then
   echo "  x M1 的变异残留在源码里"; FAIL=$((FAIL+1))
@@ -162,8 +165,9 @@ fi
 if grep -q "widgets_mutation" "$REPO_ROOT/$GO_REL"; then
   echo "  x M3 的变异残留在源码里"; FAIL=$((FAIL+1))
 fi
-if grep -q "selected.value = \[\]" "$REPO_ROOT/$VUE_REL"; then
-  echo "  x M2 的变异残留在源码里"; FAIL=$((FAIL+1))
+# ★ M2 的核对式 = 「原始那行必须还在」（变异把它改成了空选中）。
+if ! grep -q "selected.value = categories.value.map(c => c.key)" "$REPO_ROOT/$VUE_REL"; then
+  echo "  x M2 的变异残留在源码里（默认全选那行没回来）"; FAIL=$((FAIL+1))
 fi
 
 echo "--- 工作树状态（由调用方比对） ---"
