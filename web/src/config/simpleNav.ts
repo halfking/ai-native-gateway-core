@@ -35,7 +35,7 @@ export const SIMPLE_DIRECT_PATHS: readonly string[] = [
 export const SIMPLE_GROUP_PATHS: Record<string, readonly string[]> = {
   'models-routing': ['/models', '/providers'],
   'tenant-users': ['/users', '/keys', '/tenants'],
-  'requests-sessions': ['/request-logs', '/usage'],
+  'requests-sessions': ['/request-logs', '/tenant/usage'],
   guide: ['/examples', '/examples#auto-config', '/help'],
 }
 

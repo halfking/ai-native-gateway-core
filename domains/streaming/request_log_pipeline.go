@@ -128,7 +128,8 @@ type RequestLogContext struct {
 	//   - AutoFallbackModels = the dispatch-level model-change ladder
 	//     (tier chain, else the 3-candidate audit view) — it drives a
 	//     *retry on failure*;
-	//   - AutoReselectModels = the wide 48h-hot ladder — it drives a
+	//   - AutoReselectModels = the wide routable ladder (index snapshot ∩
+	//     live availability, NOT the 48h hot list) — it drives a
 	//     *re-selection when the chosen model has NO candidate at all*,
 	//     which happens before dispatch ever runs.
 	//

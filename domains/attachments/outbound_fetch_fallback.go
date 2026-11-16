@@ -135,10 +135,18 @@ func (f *URLFetchFallback) InlineOpenAIBody(body []byte, attachments []Attachmen
 					"path", relPath, "error", err)
 				return ""
 			}
-			// ★ MIME 的真源 = 落盘记录里的原始 ContentType ★
-			// ★（★ 没有记录时才用 fetcher 从扩展名反推出来的值 ★）。
+			// ★ MIME 的真源 = **落盘扩展名**（经 mime_types.go 那张唯一表换算）★
+			// ★（没有记录时才用 fetcher 从扩展名反推出来的值）★。
+			//
+			// ★ 2026-11-17（12h 审计 B2）：此前直接用**记录里的原始 ContentType**
+			//   （那是客户端声明的原始 MIME，可能是别名，如 image/jpg）⇒
+			//   而 URL 出口用的是 extToMimeType(落盘扩展名) = image/jpeg
+			//   ⇒ **同一个文件两个出口两个 MIME** —— 正是 25fbd845f 要消灭的漂移类。
+			//   现在内联出口也走 canonicalMIME（别名→规范 MIME）⇒
+			//   已登记类型：内联 = image/jpeg，URL = image/jpeg ⇒ 按构造一致；
+			//   未登记类型：保留归一后的原值（不退化成 octet-stream）。
 			if recorded, ok := mimeByPath[relPath]; ok && recorded != "" {
-				mime = recorded
+				mime = canonicalMIME(recorded)
 			}
 			if mime == "" {
 				mime = "application/octet-stream"

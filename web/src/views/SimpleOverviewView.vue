@@ -397,7 +397,7 @@ function openDetail(k: ApiKey): void {
       <button class="btn btn-secondary" data-testid="quick-sign-key" @click="openSignKey">
         {{ t('simpleMode.overview.action.signKey') }}
       </button>
-      <button class="btn btn-secondary" data-testid="quick-usage" @click="go('/usage')">
+      <button class="btn btn-secondary" data-testid="quick-usage" @click="go('/tenant/usage')">
         {{ t('simpleMode.overview.action.usage') }}
       </button>
       <button class="btn btn-secondary" data-testid="quick-chat" @click="go('/chat')">

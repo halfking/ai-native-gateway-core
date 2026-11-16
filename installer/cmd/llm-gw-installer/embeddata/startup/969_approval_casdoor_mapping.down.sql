@@ -31,6 +31,15 @@ DROP INDEX IF EXISTS public.idx_casdoor_mapping_session;
 
 DROP TABLE IF EXISTS public.approval_casdoor_mapping;
 
-DELETE FROM public.schema_migrations WHERE version = '969';
+-- ★ 记账行删除：**表不存在时整笔 DELETE 报 42P01 ⇒ 事务回滚 ⇒ 表删不掉**。
+--   ⇒ 用 to_regclass 判据守卫（schema_migrations 不是每个环境都有这张表：
+--   全新安装尚未建账本时，down 仍必须能把对象清干净）。
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+        DELETE FROM public.schema_migrations WHERE version = '969';
+    END IF;
+END
+$$;
 
 COMMIT;

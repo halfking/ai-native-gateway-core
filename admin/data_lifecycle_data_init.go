@@ -795,7 +795,7 @@ func dataInitPerCategoryCounts(order []string, deleted map[string]int64) map[str
 	return out
 }
 
-// dataInitCategoryOrderOf 返回执行结果与类别顺序对齐。
+// alignDataInitResults 返回执行结果与类别顺序对齐。
 func alignDataInitResults(order []string, perCat map[string]int64) []dataInitExecuteCategory {
 	out := make([]dataInitExecuteCategory, 0, len(order))
 	for _, c := range order {
@@ -911,6 +911,16 @@ func dataInitCategoryStats(ctx context.Context, store dataInitStore, actor dataI
 	}
 	if workers > 0 {
 		var wg sync.WaitGroup
+		var producerWG sync.WaitGroup
+		// ★ 2026-11-17（12h 审计 B3）：扇出必须**可取消**。
+		//   此前生产者是无缓冲 `jobCh <- i` 且不监听任何取消信号 ⇒ worker 一旦
+		//   出错提前 return，就没人再读 jobCh ⇒ 生产者**永久阻塞** ⇒
+		//   每次失败的 preview/catalog 泄漏一个 goroutine（还持有 slots）。
+		//   而 wg.Wait() 只等 worker、不等生产者 ⇒ 泄漏不被察觉。
+		//   现在：worker 出错 ⇒ cancelFan() ⇒ 生产者的 select 走 fanCtx.Done()；
+		//   父 ctx 取消同样能带它走；producerWG 让本函数在返回前等它退出。
+		fanCtx, cancelFan := context.WithCancel(ctx)
+		defer cancelFan()
 		errCh := make(chan error, len(slots))
 		jobCh := make(chan int)
 		for w := 0; w < workers; w++ {
@@ -922,9 +932,10 @@ func dataInitCategoryStats(ctx context.Context, store dataInitStore, actor dataI
 					if !s.stat.Exists {
 						continue
 					}
-					rows, bytes, oldest, newest, err := store.TableStat(ctx, s.tbl)
+					rows, bytes, oldest, newest, err := store.TableStat(fanCtx, s.tbl)
 					if err != nil {
 						errCh <- fmt.Errorf("%s: %w", s.tbl.Name, err)
+						cancelFan()
 						return
 					}
 					s.stat.Rows = rows
@@ -933,9 +944,10 @@ func dataInitCategoryStats(ctx context.Context, store dataInitStore, actor dataI
 					s.stat.OldestAt = oldest
 					s.stat.NewestAt = newest
 					if s.hasKeep {
-						kept, err := store.CountWhere(ctx, s.tbl.Name, s.keep.Where, s.keep.Args...)
+						kept, err := store.CountWhere(fanCtx, s.tbl.Name, s.keep.Where, s.keep.Args...)
 						if err != nil {
 							errCh <- fmt.Errorf("%s keep-count: %w", s.tbl.Name, err)
+							cancelFan()
 							return
 						}
 						s.stat.ProtectedRows = kept
@@ -947,13 +959,20 @@ func dataInitCategoryStats(ctx context.Context, store dataInitStore, actor dataI
 				}
 			}()
 		}
+		producerWG.Add(1)
 		go func() {
+			defer producerWG.Done()
 			defer close(jobCh)
 			for i := range slots {
-				jobCh <- i
+				select {
+				case jobCh <- i:
+				case <-fanCtx.Done():
+					return
+				}
 			}
 		}()
 		wg.Wait()
+		producerWG.Wait()
 		close(errCh)
 		for err := range errCh {
 			if err != nil {

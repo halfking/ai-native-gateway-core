@@ -1195,14 +1195,32 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 				updated_at
 			) VALUES ($1, $2, $3, 0, now(), $4, $5, FALSE, NULL, $6, $7, $8, $9, now())
 			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
-				consecutive_failures = $3,
+				-- ★ 2026-11-17（12h 审计 D2）：**人工下线标记不得被失败臂抹掉**。
+				--   本臂是队列模式下的活写点（mirrorNodeProbeState），此前
+				--   last_err_code = $8 无条件覆盖 ⇒ 管理端手工下线的行
+				--   （paused + last_err_code='manual_offline'）一旦有探测失败回写，
+				--   标记就没了 ⇒ v_node_probe_state_compat
+				--   （paused AND last_err_code='manual_offline' → 'unknown'）
+				--   不再命中 ⇒ 节点从「人工下线」翻成 suspicious/broken_confirmed。
+				--   5453fbb1d 只补了 legacy 臂（nodeProbeSubmitUpsertSQL，默认不活），
+				--   活失败臂仍是缺口 ⇒ 这里按同一判据补齐。
+				--   ★ 同时不动计数：与 legacy 臂同口径，避免下线标记被「洗成新周期」。
+				consecutive_failures = CASE
+					WHEN node_probe_state.paused = TRUE AND node_probe_state.last_err_code = 'manual_offline'
+					THEN node_probe_state.consecutive_failures
+					ELSE $3
+				END,
 				consecutive_successes = 0,
 				last_attempt_at = now(),
 				next_retry_at = $4,
 				next_retry_seconds = $5,
 				last_direct_ok = $6,
 				last_gateway_ok = $7,
-				last_err_code = $8,
+				last_err_code = CASE
+					WHEN node_probe_state.paused = TRUE AND node_probe_state.last_err_code = 'manual_offline'
+					THEN node_probe_state.last_err_code
+					ELSE $8
+				END,
 				last_err_detail = $9,
 				in_flight_until = NULL,
 				updated_at = now()`,

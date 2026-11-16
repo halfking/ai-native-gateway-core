@@ -149,7 +149,7 @@ MOCK
   TIER_COUNT=5
   USING_MOCK=true
 else
-  log_error "后端端点返回 $HTTP_CODE，期望 200 或 404"
+  log_error "后端端点返回 ${HTTP_CODE}，期望 200 或 404"
   cat "$TMPDIR/api_response.json" 2>/dev/null || true
   exit 1
 fi

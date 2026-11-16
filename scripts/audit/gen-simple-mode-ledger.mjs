@@ -104,7 +104,7 @@ const V2_DIRECT = ['/dashboard', '/live', '/chat', '/admin/settings'];
 const V2_GROUPS = {
   'models-routing': ['/models', '/providers'],
   'tenant-users': ['/users', '/keys', '/tenants'],
-  'requests-sessions': ['/request-logs', '/usage'],
+  'requests-sessions': ['/request-logs', '/tenant/usage'],
   'guide': ['/examples', '/examples#auto-config', '/help'],
 };
 // 分组 id → 展示用中文名

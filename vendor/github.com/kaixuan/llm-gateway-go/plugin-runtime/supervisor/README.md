@@ -1,5 +1,10 @@
 # Plugin Supervisor 资源限制器
 
+> **在役边界（2026-11-17）**：本目录的 Supervisor / ResourceLimiter 是**子模块实现**。
+> 生产启进程路径走的是**根包** `plugin-runtime` 的 Supervisor（`cmd/gateway` 装配）；
+> config-managed 模式同样委派根包。因此本文档描述的 cgroup / soft-limit **默认不会套到在役插件进程上**，
+> 除非完成「根包 vs 子模块 Supervisor」归并。请勿把本 README 当成生产能力矩阵。
+
 资源限制器为插件进程提供内存和 goroutine 数量的监控与限制，支持软限制（监控告警）和硬限制（强制终止）两种模式。
 
 ## 功能特性

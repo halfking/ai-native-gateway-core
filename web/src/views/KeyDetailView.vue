@@ -598,6 +598,13 @@ onMounted(async () => {
 watch(keyId, async () => {
   await loadKey()
   await loadDetail()
+  // ★ 切密钥时必须重载「最近请求日志」：否则标题/keyInfo 已是新密钥，
+  //   面板却仍显示上一个密钥的请求（loadRecentLogs 此前只在 onMounted 调用）。
+  recentLogs.value = []
+  logsError.value = ''
+  if (keyId.value) {
+    await loadRecentLogs()
+  }
 })
 </script>
 
@@ -997,9 +1004,11 @@ watch(keyId, async () => {
     </template>
 
     <!-- Request log detail drawer -->
+    <!-- ★ 2026-11-17（12h 审计）：去掉 :open —— RequestLogDrawer **没有**声明 open
+         这个 prop ⇒ 它会作为未知属性落成 DOM 上的 open="true" ⇒ 既不生效又是脏标记。
+         抽屉的开关只由 requestId 决定（null ⇒ 关闭）。 -->
     <RequestLogDrawer
       :request-id="activeRequestId"
-      :open="activeRequestId !== null"
       @close="closeLogDetail"
     />
   </div>

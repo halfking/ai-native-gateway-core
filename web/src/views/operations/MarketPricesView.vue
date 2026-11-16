@@ -31,6 +31,7 @@ const platforms = ref<MarketPlatformRow[]>([])
 const platformsAvailable = ref(true)
 const syncRuns = ref<MarketPriceSyncRun[]>([])
 const syncLoadFailed = ref(false)
+const refLoadFailed = ref(false)
 const refResolved = ref(0)
 const refTotal = ref(0)
 const refSyncDate = ref('')
@@ -40,16 +41,27 @@ async function load() {
   try {
     const [reg, sync, overview] = await Promise.all([
       getAdminMarketPlatforms(),
-      getAdminMaasMarketPriceSyncStatus(10).catch(() => ({ items: [] as MarketPriceSyncRun[] })),
-      getAdminMaasMarketPriceOverview('', true, 50).catch(() => ({ items: [], sync: [] as MarketPriceSyncRun[] })),
+      getAdminMaasMarketPriceSyncStatus(10).catch(() => null),
+      // ★ 2026-11-17（12h 审计）：读失败**不等于**空集。
+      //   此前两条 catch 都吞成 {items:[]} ⇒ 参考行/已解析一律渲染成 0，
+      //   看起来像「本来就没有参考数据」⇒ 与 simpleOverviewModel 写明的
+      //   「读不到 ≠ 0」纪律相悖。失败现在单列成 refLoadFailed / syncLoadFailed。
+      //
+      //   ★ onlyResolved 改为 false：服务端 WHERE 是
+      //     `AND ($2 = FALSE OR m.canonical_id IS NOT NULL)`，而 resolved 由
+      //     `CanonicalID != nil` 派生 ⇒ onlyResolved=true 时**每行都 resolved**
+      //     ⇒ 「已解析 N」恒等于「参考行 N」⇒ 徽章是空转的。取全量后徽章才有意义。
+      getAdminMaasMarketPriceOverview('', false, 50).catch(() => null),
     ])
     platforms.value = reg.items || []
     platformsAvailable.value = true
-    syncRuns.value = sync.items || []
-    syncLoadFailed.value = false
-    refTotal.value = (overview.items || []).length
-    refResolved.value = (overview.items || []).filter(i => i.resolved).length
-    refSyncDate.value = overview.sync?.[0]?.run_date || syncRuns.value[0]?.run_date || ''
+    syncLoadFailed.value = sync === null
+    syncRuns.value = sync?.items || []
+    refLoadFailed.value = overview === null
+    const refItems = overview?.items || []
+    refTotal.value = refItems.length
+    refResolved.value = refItems.filter(i => i.resolved).length
+    refSyncDate.value = overview?.sync?.[0]?.run_date || syncRuns.value[0]?.run_date || ''
   } catch {
     platformsAvailable.value = false
     notifyError(t('marketPrices.loadFailed'))
@@ -131,8 +143,12 @@ const platformFields = computed<CardField[]>(() => [
     <!-- ⓪ 定价参考摘要 -->
     <div class="card summary-card">
       <div class="summary-row">
-        <span class="badge badge-gray">{{ t('marketPrices.refTotal', { n: refTotal }) }}</span>
-        <span class="badge badge-green">{{ t('marketPrices.refResolved', { n: refResolved }) }}</span>
+        <!-- ★ 读失败时显示错误徽章，而不是把「读不到」渲染成 0 行 / 0 已解析。 -->
+        <span v-if="refLoadFailed" class="badge badge-red">{{ t('marketPrices.loadFailed') }}</span>
+        <template v-else>
+          <span class="badge badge-gray">{{ t('marketPrices.refTotal', { n: refTotal }) }}</span>
+          <span class="badge badge-green">{{ t('marketPrices.refResolved', { n: refResolved }) }}</span>
+        </template>
         <span v-if="refSyncDate" class="badge badge-blue">{{ t('marketPrices.refSyncAsOf', { date: refSyncDate }) }}</span>
         <button class="btn btn-ghost btn-sm" @click="router.push('/operations/price-compare')">{{ t('marketPrices.refOpenCompare') }}</button>
       </div>

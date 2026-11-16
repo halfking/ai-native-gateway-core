@@ -13,6 +13,8 @@ const items = ref<MarketPriceOverviewRow[]>([])
 const q = ref('')
 const onlyResolved = ref(true)
 const syncDate = ref('')
+// ★ 2026-11-17（12h 审计）：区分「读失败」与「没有数据」。
+const loadFailed = ref(false)
 
 const resolvedCount = computed(() => items.value.filter(v => v.resolved).length)
 
@@ -22,8 +24,13 @@ async function load() {
     const res = await getAdminMaasMarketPriceOverview(q.value, onlyResolved.value, 300)
     items.value = res.items || []
     syncDate.value = res.sync?.[0]?.run_date || ''
+    loadFailed.value = false
   } catch {
+    // ★ 2026-11-17（12h 审计）：读失败**不等于**空集。
+    //   此前 catch 吞成 items=[] ⇒ 接口 500 与「确实没有参考数据」渲染成同一个空态
+    //   ⇒ 运维看不到「这页挂了」。单列 loadFailed，让失败与空集可区分。
     items.value = []
+    loadFailed.value = true
   } finally {
     loading.value = false
   }
@@ -44,6 +51,12 @@ defineExpose({ reload: load })
       <span v-if="syncDate" class="badge badge-gray">{{ t('priceCompare.refSyncAsOf', { date: syncDate, n: resolvedCount }) }}</span>
     </div>
     <div v-if="loading" class="card hint-line">…</div>
+    <!-- ★ 2026-11-17（12h 审计）：读失败与「确实没有数据」必须可区分。
+         此前两者共用同一个空态 ⇒ 接口 500 时用户以为是自己没数据。 -->
+    <div v-else-if="loadFailed" class="card app-empty-state">
+      <p>{{ t('marketPrices.loadFailed') }}</p>
+      <p class="empty-next">{{ t('priceCompare.refEmptyNext') }}</p>
+    </div>
     <div v-else-if="!items.length" class="card app-empty-state">
       <p>{{ t('priceCompare.refEmptyWhy') }}</p>
       <p class="empty-next">{{ t('priceCompare.refEmptyNext') }}</p>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // SimpleKeysView.vue — 简易模式密钥签发视图（L3）
 // 只展示两个必需字段：客户端名称 + 备注
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { createKey, type KeyCreatedResponse } from '../api'
@@ -20,6 +20,17 @@ const error = ref('')
 const success = ref(false)
 const createdKey = ref<KeyCreatedResponse | null>(null)
 const copied = ref(false)
+// ★ 2026-11-17（12h 审计）：复制失败要有**可见**的出口（此前只 console.error ⇒
+//   按钮看起来点了没反应）；定时器要在卸载时清掉（否则卸载后还在写 ref）。
+const copyError = ref('')
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+onUnmounted(() => {
+  if (copyTimer) {
+    clearTimeout(copyTimer)
+    copyTimer = null
+  }
+})
 
 // 自动填充默认值
 const tenantId = getCurrentTenantId()
@@ -61,12 +72,17 @@ async function submit() {
 async function copyKey() {
   if (!createdKey.value?.api_key) return
   
+  copyError.value = ''
   try {
     await navigator.clipboard.writeText(createdKey.value.api_key)
     copied.value = true
-    setTimeout(() => { copied.value = false }, 2000)
+    // ★ 2026-11-17（12h 审计）：定时器**要在卸载时清掉**（否则组件已卸载还在写 ref）。
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copied.value = false }, 2000)
   } catch (err) {
+    // ★ 此前只 console.error ⇒ 按钮看起来「点了没反应」⇒ 用户无从得知失败原因。
     console.error('Failed to copy:', err)
+    copyError.value = t('keys.copyFailed')
   }
 }
 
@@ -102,8 +118,8 @@ function backToAccessList() {
       
       <div class="key-display">
         <code class="api-key">{{ createdKey.api_key }}</code>
-        <button 
-          class="btn-copy" 
+        <button
+          class="btn-copy"
           @click="copyKey"
           :title="t('common.copy')"
         >
@@ -111,6 +127,9 @@ function backToAccessList() {
           <DocumentCopy v-else class="icon-copy" />
         </button>
       </div>
+      <!-- ★ 2026-11-17（12h 审计）：复制失败要有**可见**的出口，
+           否则按钮看起来「点了没反应」，用户无从得知原因。 -->
+      <p v-if="copyError" class="form-error" role="alert">{{ copyError }}</p>
       
       <div class="key-info">
         <div class="info-row">

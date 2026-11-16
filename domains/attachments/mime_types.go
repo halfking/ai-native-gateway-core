@@ -27,9 +27,14 @@ package attachments
 //   ★ 本表取 video/webm（附件场景更常见）⇒ ★ 落盘后无法再区分。
 //   ★ ② 本表**只决定文件名与 Content-Type**，不改变载荷本身。
 //   ★ ③ 历史已落盘的 `.bin` 文件**不会被改名**（改名会破坏内容寻址的去重键）
-//   ★ ⇒ 它们的**对外服务** Content-Type 仍可能是 application/octet-stream；
-//   ★ ⇒ 但**内联出口**改用落盘记录里的原始 ContentType（见 outbound_fetch_fallback.go）
-//   ★ ⇒ 历史文件在内联路径上**也是对的**。
+//   ★ ⇒ 它们的**对外服务** Content-Type 仍是 application/octet-stream；
+//   ★ ⇒ **内联出口现在也按落盘扩展名换算**（见 outbound_fetch_fallback.go）
+//   ★ ⇒ ⇒ 两个出口对历史文件**给出同一个类型**（octet-stream），不再分叉。
+//   ★ ⚠ 这意味着历史文件的内联类型**不是**它当年的原始类型 —— 那份原始 MIME
+//   ★   只保留在落盘记录里，不再是对外类型。
+//   ★   （2026-11-17 12h 审计 B2 订正：此前内联出口用**记录里的原始 ContentType**
+//   ★   ⇒ 别名（image/jpg）与扩展名换算值（image/jpeg）不同 ⇒ 同一文件两个出口
+//   ★   两个 MIME ⇒ 与本文件「三个消费者收敛到一张规范表」的前提相悖。）
 
 import (
 	"path/filepath"
