@@ -84,4 +84,8 @@ export default {
   legacyCoverage: 'Tage nur mit Legacy-Snapshots:',
   legacyCoverageRest:
     ': diese Tage zählen nur in Summe und Tagesreihe; Credential-/Benutzer-/API-Schlüssel-Dimensionen erscheinen nach dem Backfill („Rerun End Day" Tag für Tag)',
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: 'Modelle mit Anfragen in diesem Zeitraum',
+  modelPickerTitle: 'Abgleich-Modellfilter',
+  candidatesTruncated: 'Kandidatenliste überschritt das Limit; {n} Einträge abgeschnitten (Zeitraum eingrenzen)',
 }

@@ -82,4 +82,8 @@ export default {
   reasonTotalPrefix: '合计',
   reasonTotalSuffix: '次失败',
   reasonFilterHint: '已按该原因过滤下方模型表',
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: '本区间有请求的模型',
+  modelPickerTitle: '对账模型筛选',
+  candidatesTruncated: '候选超出上限，已截断 {n} 项（可缩小日期区间查看）',
 }

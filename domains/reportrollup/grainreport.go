@@ -19,6 +19,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,11 +39,21 @@ type GrainFilter struct {
 	TenantID     string
 	Person       string
 	Model        string
+	// ModelNames 是 Model 展开后的 raw 名集合（canonical → 家族）。
+	//
+	// 为什么需要它：路由页的模型选择器发的是 **canonical 名**
+	// （minimax-m2.5），而快照里的维度是 **raw_model_name**
+	// （MiniMax-M2.5 / minimax-m2.5 / auto/minimax-m2.5）。两者字面不等，
+	// 直接精确匹配会让「选了 minimax-m2.5 却一行都没有」——这正是
+	// 审计轮发现的「候选与筛选口径不是同一套名字」。
+	//
+	// 为空时按 Model 精确匹配（未展开的旧行为）；非空时按集合匹配。
+	ModelNames []string
 }
 
 func (f GrainFilter) empty() bool {
 	return f.ProviderID == nil && f.CredentialID == nil && f.APIKeyID == nil &&
-		f.TenantID == "" && f.Person == "" && f.Model == ""
+		f.TenantID == "" && f.Person == "" && f.Model == "" && len(f.ModelNames) == 0
 }
 
 // Names 维度 id → 展示名映射。缺表/查询失败时留空，读面退化为显示 id。
@@ -228,12 +239,27 @@ func grainAggSQL(scopes []string, filter GrainFilter, daily bool, excludeScope S
 		{"api_key_id", filter.APIKeyID != nil},
 		{"tenant_id", filter.TenantID != ""},
 		{"person", filter.Person != ""},
-		{"raw_model_name", filter.Model != ""},
 	} {
 		if !f.on {
 			continue
 		}
+		// provider_id = -1 是「未落定」哨兵（未路由到 provider 的失败行在
+		// 快照里是 NULL，不是 -1）⇒ 该值必须落成 IS NULL 而不是等值，
+		// 否则筛「未分配」永远 0 行——而这一桶在真库占了三成流量。
+		if f.col == "provider_id" && *filter.ProviderID == UnassignedID {
+			where = append(where, "AND provider_id IS NULL")
+			continue
+		}
 		where = append(where, fmt.Sprintf("AND %s = $%d", f.col, idx))
+		idx++
+	}
+	// 模型过滤：展开后的 raw 名集合优先（= ANY），否则退回 Model 精确匹配。
+	switch {
+	case len(filter.ModelNames) > 0:
+		where = append(where, fmt.Sprintf("AND raw_model_name = ANY($%d)", idx))
+		idx++
+	case filter.Model != "":
+		where = append(where, fmt.Sprintf("AND raw_model_name = $%d", idx))
 		idx++
 	}
 	if excludeScope != "" {
@@ -522,13 +548,27 @@ func (a *grainAccumulator) breakdown() map[string]int64 {
 
 // runGrainAgg 执行一次多维聚合并把每一行折叠进对应分组。
 // filterArgCount 返回过滤条件占用的参数个数（占位符 $4 起）。
+//
+// 与 runGrainAgg 的 args 追加顺序**必须一致**——它是占位符连号性的自证
+// 基准（测试用它核对 $1..$N 无空洞）。
+//
+// 两处「不占参数」的特例：
+//   - provider_id = -1（未落定哨兵）落成 IS NULL，不带占位符；
+//   - 模型过滤走 ModelNames 集合（= ANY）时占 1 个参数，与 Model 精确匹配
+//     同为 1 个（二者互斥，取其一）。
 func filterArgCount(f GrainFilter) int {
 	n := 0
-	for _, on := range []bool{f.ProviderID != nil, f.CredentialID != nil, f.APIKeyID != nil,
-		f.TenantID != "", f.Person != "", f.Model != ""} {
+	if f.ProviderID != nil && *f.ProviderID != UnassignedID {
+		n++
+	}
+	for _, on := range []bool{f.CredentialID != nil, f.APIKeyID != nil,
+		f.TenantID != "", f.Person != ""} {
 		if on {
 			n++
 		}
+	}
+	if len(f.ModelNames) > 0 || f.Model != "" {
+		n++
 	}
 	return n
 }
@@ -539,7 +579,9 @@ func runGrainAgg(ctx context.Context, q Querier, scopes []Scope, start, end time
 		names[i] = string(s)
 	}
 	args := []any{names, start, end}
-	if filter.ProviderID != nil {
+	// 参数顺序必须与 grainAggSQL 的占位符顺序**逐个对齐**（$4 起）。
+	// provider_id = -1（未落定哨兵）不占占位符——SQL 侧落成 IS NULL。
+	if filter.ProviderID != nil && *filter.ProviderID != UnassignedID {
 		args = append(args, *filter.ProviderID)
 	}
 	if filter.CredentialID != nil {
@@ -554,7 +596,10 @@ func runGrainAgg(ctx context.Context, q Querier, scopes []Scope, start, end time
 	if filter.Person != "" {
 		args = append(args, filter.Person)
 	}
-	if filter.Model != "" {
+	switch {
+	case len(filter.ModelNames) > 0:
+		args = append(args, filter.ModelNames)
+	case filter.Model != "":
 		args = append(args, filter.Model)
 	}
 	if excludeScope != "" {
@@ -664,6 +709,19 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	grainScope, _, err := GrainScopes(view)
 	if err != nil {
 		return nil, err
+	}
+
+	// 模型过滤值展开：canonical 名 → raw 名集合（见 modelnames.go）。
+	//
+	// 展开失败**不阻断**报表，但必须降级成「只用原值精确匹配」——
+	// 静默丢掉模型过滤会让页面显示全量数据，用户以为筛过了。
+	if filter.Model != "" && len(filter.ModelNames) == 0 {
+		if names, nerr := ResolveModelRawNames(ctx, q, filter.Model); nerr == nil && len(names) > 0 {
+			filter.ModelNames = names
+		} else if nerr != nil {
+			slog.Warn("report rollup: model name expansion failed, falling back to exact match",
+				"model", filter.Model, "error", nerr)
+		}
 	}
 
 	total := &grainAccumulator{}
