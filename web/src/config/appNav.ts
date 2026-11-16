@@ -264,6 +264,10 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/examples', labelKey: 'nav.item.examples', icon: '📝' },
       { path: '/examples#auto-config', labelKey: 'nav.item.autoConfig', icon: '🛠️' },
+      // 2026-11-16：帮助手册（下载/安装/部署/供应商/凭据/租户/用户/API Key/
+      // 客户端调用/常见故障）。正文是 web/content/help-manual.zh-CN.md，
+      // 由 /help 路由渲染。不设角色门 —— 手册对所有登录用户开放。
+      { path: '/help', labelKey: 'nav.item.helpManual', icon: '📖' },
       { path: '/maintain/ops/autoupdate', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', external: true, opsPlatform: true, activateWhenNotActivated: true },
       { path: '/maintain/donate', labelKey: 'nav.item.supportDonate', icon: '💖', external: true },
     ],

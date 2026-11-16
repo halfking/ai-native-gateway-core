@@ -1,4 +1,4 @@
-import request from '../request';
+import { req } from '../_core';
 
 // Plugin configuration types
 export interface PluginConfig {
@@ -55,25 +55,28 @@ export interface UpdatePluginConfigResponse {
 }
 
 // Plugin configuration API
+// 2026-11-16: 原先 import 的是不存在的 `../request`（axios 风格封装，本仓
+// 从未有过该模块）⇒ vue-tsc 报 TS2307，`pnpm build` 的类型检查步骤整条失败。
+// 改为本仓统一的 `req(method, path, body)`（src/api/_core.ts），端点与语义不变。
 export const pluginConfigAPI = {
   /**
    * Get current plugin configuration
    */
   getConfig(): Promise<PluginConfigResponse> {
-    return request.get('/api/admin/plugin-config');
+    return req<PluginConfigResponse>('GET', '/api/admin/plugin-config');
   },
 
   /**
    * Update plugin configuration
    */
   updateConfig(config: UpdatePluginConfigRequest): Promise<UpdatePluginConfigResponse> {
-    return request.put('/api/admin/plugin-config', config);
+    return req<UpdatePluginConfigResponse>('PUT', '/api/admin/plugin-config', config);
   },
 
   /**
    * Get detailed provider status
    */
   getProviderStatus(): Promise<PluginProviderStatusResponse> {
-    return request.get('/api/admin/plugin-providers');
+    return req<PluginProviderStatusResponse>('GET', '/api/admin/plugin-providers');
   },
 };

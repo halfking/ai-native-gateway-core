@@ -89,6 +89,7 @@ export default {
     promptInjection: "Détection d’injection de prompts",
     examples: "Exemples",
     autoConfig: 'Configuration automatique',
+    helpManual: 'Manuel d’aide',
     chat: "Chat",
     opsOverview: "Vue d’ensemble des opérations",
     opsLicenses: "Gestion des licences",

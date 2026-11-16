@@ -19,6 +19,7 @@ const KeysView = () => import('./views/KeysView.vue')
 const KeyDetailView = () => import('./views/KeyDetailView.vue')
 const KeyApplicationsView = () => import('./views/KeyApplicationsView.vue')
 const ExamplesView = () => import('./views/ExamplesView.vue')
+const HelpManualView = () => import('./views/HelpManualView.vue')
 const ChatView = () => import('./views/ChatView.vue')
 const RoutingOverviewView = () => import('./views/RoutingOverviewView.vue')
 const RoutingPolicyView = () => import('./views/RoutingPolicyView.vue')
@@ -356,6 +357,10 @@ export const router = createRouter({
     { path: '/admin/connection-registry', component: ConnectionRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/connection-registry/:credentialId/recovery', name: 'node-health-timeline', component: NodeHealthTimelineView, meta: { requiresSuper: true } },
     { path: '/examples',           component: ExamplesView },
+    // 2026-11-16：帮助手册（下载/安装/部署/供应商/凭据/租户/用户/API Key/
+    // 客户端调用/常见故障）。正文来自 web/content/help-manual.zh-CN.md，
+    // 菜单入口见 appNav.ts 的 guide 组。
+    { path: '/help',               component: HelpManualView, meta: { requiresAuth: true } },
     { path: '/chat',               component: ChatView },
 
     // Local first-boot bootstrap (public; works offline)

@@ -90,6 +90,7 @@ export default {
     promptInjection: 'Prompt Injection Detection',
     examples: 'Examples',
     autoConfig: 'Auto setup',
+    helpManual: 'Help Manual',
     chat: 'Chat',
     updateActivate: 'Update & Activate',
     licenseActivate: 'License Activation',

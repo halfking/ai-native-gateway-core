@@ -88,6 +88,7 @@ import hyper from './hyper'
 import routeIncidentDrawer from './routeIncidentDrawer'
 import sales from './sales'
 import publicQuote from './publicQuote'
+import helpManual from './helpManual'
 
 export default {
   sanitizeRules,
@@ -98,6 +99,7 @@ export default {
   customer,
   annotation,
   nav,
+  helpManual,
   taskProfile,
   autoTuning,
   autoOps,

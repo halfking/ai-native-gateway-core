@@ -156,6 +156,24 @@ describe('guide group migrated items', () => {
     expect(resolved.activateAction).toBe(true)
     expect(resolved.originalPath).toBe('/maintain/ops/autoupdate')
   })
+
+  // 2026-11-16：帮助手册入口（下载/安装/部署/供应商/凭据/租户/用户/API Key/
+  // 客户端调用/常见故障）。对所有登录用户开放 ⇒ 不设角色门。
+  it('contains the 帮助手册 entry pointing to /help', () => {
+    const help = guide.items.find((i) => i.path === '/help')
+    expect(help).toBeTruthy()
+    expect(help!.labelKey).toBe('nav.item.helpManual')
+    expect(help!.super).toBeFalsy()
+    expect(help!.platformOps).toBeFalsy()
+    expect(help!.tenantOnly).toBeFalsy()
+    expect(help!.hideForTenant).toBeFalsy()
+    expect(help!.external).toBeFalsy()
+  })
+
+  it('keeps 帮助手册 inside the guide group (not a new top-level group)', () => {
+    const help = guide.items.find((i) => i.path === '/help')!
+    expect(NAV_GROUPS.some((g) => g.id === 'guide' && g.items.some((i) => i.path === '/help'))).toBe(true)
+  })
 })
 
 describe('V5.1 plugin nav (remote merge)', () => {

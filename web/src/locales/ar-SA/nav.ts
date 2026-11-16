@@ -87,6 +87,7 @@ export default {
     promptInjection: "كشف حقن المطالبات",
     examples: "أمثلة التكامل",
     autoConfig: 'الإعداد التلقائي',
+    helpManual: 'دليل المساعدة',
     chat: "محادثة",
     opsOverview: "نظرة عامة على العمليات",
     opsLicenses: "إدارة التراخيص",

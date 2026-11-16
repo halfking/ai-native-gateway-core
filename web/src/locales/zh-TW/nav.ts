@@ -89,6 +89,7 @@ export default {
     promptInjection: "提示詞注入檢測",
     examples: "接入範例",
     autoConfig: '自動配置',
+    helpManual: '說明手冊',
     chat: "對話",
     opsOverview: "運維總覽",
     opsLicenses: "License 管理",

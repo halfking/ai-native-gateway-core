@@ -555,6 +555,7 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 
 | Category | Document |
 |----------|----------|
+| Help manual | [web/content/help-manual.zh-CN.md](web/content/help-manual.zh-CN.md) — download / install / deploy / provider / credential / tenant / user / API key / client call / troubleshooting; also served in-app at `/help` (menu: 接入指南 → 帮助手册) |
 | Getting started | [docs/getting-started.md](docs/getting-started.md) — deploy in 10 minutes |
 | Architecture diagrams | [docs/architecture-diagrams.md](docs/architecture-diagrams.md) — full Mermaid collection (context / containers / request chain / routing / storage / deployment) |
 | Session lifecycle | [docs/session-lifecycle.md](docs/session-lifecycle.md) — session processing lifecycle, fully diagrammed |

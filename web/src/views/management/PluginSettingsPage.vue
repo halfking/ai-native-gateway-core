@@ -174,18 +174,36 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { defineComponent, h, ref, computed, onMounted, type PropType } from 'vue';
 import { pluginConfigAPI, type PluginConfigResponse, type PluginConfig } from '@/api/modules/plugin-config';
 
 // Component for status badge
-const StatusBadge = ({ status }: { status: { available: boolean; error: string } }) => {
-  return (
-    <span class={`status-badge ${status.available ? 'available' : 'unavailable'}`}>
-      {status.available ? '● 可用' : '● 不可用'}
-      {status.error && <span class="status-error" title={status.error}>!</span>}
-    </span>
-  );
-};
+// 2026-11-16: 此处原先写的是 JSX（`<span class={...}>{...}</span>`）。JSX 在
+// `<script setup lang="ts">` 里不被 SFC 编译链支持 ⇒ vue-tsc 报 TS1005，
+// 且 `pnpm build` 在类型检查这一步整条失败。改为等价的 render function
+// （同样的 class、同样的文案、同样的 title 属性，渲染结果不变）。
+const StatusBadge = defineComponent({
+  name: 'StatusBadge',
+  props: {
+    status: {
+      type: Object as PropType<{ available: boolean; error: string }>,
+      required: true,
+    },
+  },
+  setup(props) {
+    return () =>
+      h(
+        'span',
+        { class: ['status-badge', props.status.available ? 'available' : 'unavailable'] },
+        [
+          props.status.available ? '● 可用' : '● 不可用',
+          props.status.error
+            ? h('span', { class: 'status-error', title: props.status.error }, '!')
+            : null,
+        ],
+      );
+  },
+});
 
 // State
 const loading = ref(true);

@@ -88,6 +88,7 @@ import hyper from './hyper'
 import routeIncidentDrawer from './routeIncidentDrawer'
 import sales from './sales'
 import publicQuote from './publicQuote'
+import helpManual from './helpManual'
 
 export default {
   hyper,
@@ -95,6 +96,7 @@ export default {
   common,
   plugin,
   nav,
+  helpManual,
   taskProfile,
   autoTuning,
   autoOps,

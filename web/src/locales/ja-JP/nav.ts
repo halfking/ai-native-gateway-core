@@ -87,6 +87,7 @@ export default {
     promptInjection: "プロンプトインジェクション検出",
     examples: "接続例",
     autoConfig: '自動設定',
+    helpManual: 'ヘルプマニュアル',
     chat: "チャット",
     opsOverview: "運用概要",
     opsLicenses: "ライセンス管理",

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-15T15:51:56.472Z",
+  "exported_at": "2026-11-16T03:49:03.310Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -564,6 +564,13 @@
           "path": "/examples#auto-config",
           "labelKey": "nav.item.autoConfig",
           "icon": "🛠️",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/help",
+          "labelKey": "nav.item.helpManual",
+          "icon": "📖",
           "tenantScope": "*",
           "pluginScope": "*"
         },

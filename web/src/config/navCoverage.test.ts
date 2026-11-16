@@ -83,6 +83,14 @@ const KNOWN_ORPHANS: Record<string, string> = {
   '/admin/subscription-tiers': '订阅层级（批 200）：P5 跨仓 license-authority 独立服务、nginx 反代 /api/admin/tiers；与控制台菜单是两套导航，不由 appNav 承载',
   '/admin/request-actions/:id': '请求动作时间线（批 203，Redis LIST by request_id）：super_admin 档带参深链页（:id），全仓无站内入口 ⇒ 独立深链，菜单归属待产品确认后挂载',
   '/admin/storage-and-log-config': '存储与日志配置（批 204，3 段只读摘要）：其子视图 StorageConfig / FilesystemMaintenance / LogManagement 全在 DataLifecycleView 父视图下，本路由是独立深链入口',
+  // ── 2026-11-16 登记：随 plugin-architecture 合并进入 router.ts 的插件配置页 ──
+  //   事实（逐条核过）：router.ts:345 注册了 /admin/plugin-settings（super_admin 档，
+  //   视图 PluginSettingsPage，2026-11-15 随「插件提供商配置：Native/Casdoor 切换」
+  //   进入），但 appNav.ts 无对应菜单项、视图内也无站内导航链接 ⇒ 判为孤儿路由。
+  //   该路由由并发会话的 WIP 快照提交 3f7f0dd5c 带入（同一提交还带入了不可编译的
+  //   JSX 片段），属尚未定归属的新功能页 ⇒ 按本组既有 P3 口径登记，
+  //   **不擅自改菜单**（改菜单 = 改产品信息架构，需属主裁决挂到哪个组）。
+  '/admin/plugin-settings': '插件提供商配置（Native/Casdoor 切换）：super_admin 档深链页，由并发会话 WIP 快照 3f7f0dd5c 带入 router.ts:345，尚未挂菜单入口；菜单归属待产品确认后挂载',
 }
 
 /** 扫描器不得腐化：路由数掉到这个量级说明解析正则坏了（沿用 metricguard「声明数<100 即红」）。 */
