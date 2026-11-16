@@ -724,6 +724,7 @@ function isSystemKey(k: ApiKey): boolean {
           v-model="secretDialogOpen"
           :title="t('users.detail.revealKeyTitle')"
           width="520px"
+          style="max-height: 80vh; overflow-y: auto;"
           @closed="closeSecretDialog"
         >
           <p class="udd-secret-warn">{{ t('users.detail.revealKeyWarn') }}</p>
