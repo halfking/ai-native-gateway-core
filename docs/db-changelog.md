@@ -10961,3 +10961,85 @@ apply-db-revision-sequence.sh 显式清单、installed_startup_migrations.tsv (3
 | 967 | `967_prompt_injection_llm_policy_columns.sql` | `4f11c28e70c186f82a7cc0816b20d4f2fa311115d666a041cb05b6ff62b24e9d` | registered（2026-11-16 12h 修订审计轮 P1-2 根修：prompt_injection_policies 补三列 llm_detection_fail_closed/sample_rate/timeout_sec——5a73df106 投影加列未跟迁移 ⇒ getPolicy 42703 ⇒ hook return nil ⇒ **注入检测域整体静默全放行**。ADD COLUMN IF NOT EXISTS ×3 + CHECK（DO $$ 包裹）+ BEGIN/COMMIT + lock_timeout=5s/statement_timeout=60s；单事务无 no-transaction 头。embeddata 双副本逐字节一致 + //go:embed + embeddedSQLFiles + runner.go StartupFiles + tsv 四处登记齐（6d93373f1）；本行与 211 部署通道（apply-db-revision-sequence.sh）登记为 0745 收口轮补齐——此前 sqlguard TestMigrationRegistryStaysContinuous / TestStartupMigrationsStayInEveryDeliveryChannel 双红） |
 | 967 | `967_prompt_injection_llm_policy_columns.down.sql` | `fcf8527520a0b9c819a1afe4407f6c82be8846a3e93b4f3b768cd5f408627783` | registered（2026-11-16 12h 审计轮 0745 收口补登；down = DROP 三列幂等。回滚后果如实登记：新二进制读到 42703 ⇒ getPolicy 自动降级读 detectorPolicySelectColsLegacy（旧投影+三列默认值）+WARN ⇒ 规则层照常工作，检测能力不丢） |
 
+
+## 2026-11-17 — R-76-3 批判审计轮 — candidate_diag 冷却闸补「归因变更立刻放行」（非迁移，纯代码）
+
+> 审计对象：**已落地在 main 的** R-76-3「WARN 洪水分诊降噪」。不是新增功能，
+> 是对已交付物做批判复核后**补上的一个真缺陷**。详细报告：
+> `docs/审计/R76-3-candidate-diag-归因变更被冷却窗吞掉_2026-11-17.md`。
+
+### 一、结论 / 根因
+
+provider 侧的 db_empty 日志冷却闸**键里没有归因**（键 = `event|model|tenant`）
+⇒ 同一 `(model, tenant)` 在 5 分钟冷却窗内归因从 A 变成 B 时，**B 被静默吞掉**；
+而 `provider/candidate_diag_dedup.go` 的注释宣称「模型登记/状态闸被改时
+**会立即以新内容出现**」——**那句话是假的**（归因变了但键没变 ⇒ 要等窗口到期）。
+
+**与 bg 侧不对称**：bg 同族闸 `bg/probe_round_log_dedup.go` 的键是
+`cause|outboundModel|providerID`，**根因在键里**，其注释明写「换根因
+（如 node→protocol）都会立刻放行」，并有判据
+`TestLogProbeRoundRootCauseRootCauseChangeNotGated` 钉住。provider 侧**无对应判据**
+⇒ 缺的语义不会被发现。
+
+**危害不是「日志少了」，是处置方向被误导**：旧归因「模型未登记 ⇒ 去登记模型」，
+新归因「凭据配额耗尽 ⇒ **充值/解封**」；后者是可立即执行的运维动作，被压掉意味着
+运营在最长 5 分钟内仍按旧结论排查。
+
+**严重性如实标注**：不丢指标（`recordCandidateDiagnostic` 在闸**之前**调用 ⇒
+`llmgw_routing_candidate_diagnostics_total` 口径不变）、不改状态机、不改返回结果
+⇒ **P3 级「结论失真 + 处置延迟」**，不是 P1。闸**确实**在生产路径上
+（`provider/client.go:1151`），两侧接线与判据都在位。
+
+### 二、修法（键里放**有界归因类**，不是 `likely_cause` 原文）
+
+★ **不能**把 `likely_cause` 原文塞进键：`EmptyCandidateBreakdown.Summarize()` 把
+offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…」），计数抖动（3↔4）
+会让键**交替出现** ⇒ 每条都是「该键首次」⇒ **洪水反而压不住**。
+
+⇒ 新增 `EmptyCandidateBreakdown.CauseClass()`：与 `Summarize()` **分支顺序严格
+一致**的**有限枚举**（11 值：`not_registered` / `cred_missing` / `cred_status` /
+`cred_manual_disabled` / `cred_lifecycle` / `cred_quota` / `provider_disabled` /
+`unavailable_reason` / `provider_tenant` / `gates_open` / `diag_error`）。
+
+| 文件 | 改动 |
+|---|---|
+| `provider/candidate_empty_diag.go` | 新增 `CauseClass()` + 11 常量 |
+| `provider/candidate_diag_dedup.go` | 键加 `cause`；`allow()` 加参；**订正那段不实注释** |
+| `provider/client.go` | `diagArgs` 两分支各加 `cause_class`；`diagArgsKeyFields` 多返 `cause`；闸取键带上 `cause` |
+| `provider/candidate_diag_dedup_test.go` | 既有 5 条跟签名；键隔离用例增「归因类隔离」断言 |
+| `provider/candidate_diag_dedup_cause_test.go`（新） | 5 条新判据 |
+
+**日志契约变更**：`[candidate_diag] db_empty` 的 args **新增** `cause_class=<枚举>`
+字段（不是改字段；且原文 `likely_cause` 是人读句子、分类可被机器聚合）。
+
+### 三、判据与变异
+
+- **负控（修复前行为性红）**：`TestLogCandidateDiagnosticDbEmptyCauseChangeNotGated`
+  ——「归因变化必须在冷却窗内立刻放行（期望 2 条日志，实得 1 条）」。
+- **变异 MUT-1**（只回退「键里加归因」，保留 `cause_class` 参数与日志字段）：
+  该判据 **🔴** + `TestCandidateDiagLogGateKeyIsolation` **🔴** ⇒ 负载的确实是
+  **键的改动**。还原后 md5 `23c4661c3cb9f7fe29cd3968c7a3f0df` 逐字节一致。
+- **反向对照防恒真**：同归因仍压 / 租户仍隔离 / `CauseClass` 与 `Summarize`
+  逐分支一致 / `CauseClass` 取值有界且**offer 计数抖动不改变分类**。
+- **门读数**：`go build ./...` rc=0；`go vet ./provider/ ./bg/` rc=0；
+  本轮 5 个文件 `gofmt -l` 空；`go test ./provider/ -count=1` **ok 2.049s**；
+  `go test ./bg/ -count=1` **ok 33.987s**。
+
+### 四、审计过程中我自己判错的两处（如实记账）
+
+1. **「provider 侧闸没接线」——错。** `git show … | grep -n … | head -8` 的
+   `head` 把第 1151 行截掉了，据此写下「未接线」。**接线是在的。**
+   ⇒ **「grep + head」在多匹配时会把关键行吃掉，而错误结论读起来毫无异样**。
+2. **「R76-3 分支不存在、从未推过」——错。** `git branch -a --contains 8f8ac0c25`
+   返回空；但 R76-3 落地时被 **rebase 成了新 SHA**，`8f8ac0c25` 是 rebase 前的
+   **悬空对象**。逐文件比对证实：测试文件逐字节相同、两个 .go 仅 gofmt 注释重排。
+   ⇒ **「分支列表里没有」不等于「没落地」**，要查内容。
+
+### 五、遗留
+
+- 归因在 5 分钟内来回抖动（A→B→A）⇒ 两个桶各压一半，`suppressed_repeats`
+  会被拆成两份（符合「每种归因各算各的洪水」语义，但运维读到的 N 是两份）。
+- `entries` map **无淘汰**：键空间有界（11 类 × 模型 × 租户）但只增不减。
+  文件头原写「运行期自然收敛」措辞不准（是"有界"不是"收敛"）。
+- 两侧闸仍是独立实现（本轮**维持不抽公共件**：键语义/冷却时长/并发形态都不同，
+  抽公共件只会把两个口径焊死在一起），只把「归因进键」这条语义对齐。

@@ -105,6 +105,74 @@ func (b EmptyCandidateBreakdown) Summarize() string {
 	}
 }
 
+// CauseClass 是归因的**有界分类**（R-76-3 批判审计补，2026-11-17）。
+//
+// # 为什么要有它
+//
+// db_empty 的日志冷却闸需要「归因变了就立刻放行」。但**不能**把
+// `Summarize()` 的原文塞进键：Summarize() 把 offer **计数**也拼进句子
+// （「模型已登记（3 offer），但 2 条…」），计数抖动（3↔4）会让键交替出现
+// ⇒ 每条都是「该键首次」⇒ **洪水反而压不住**。
+//
+// ⇒ 所以键里放的是**有限枚举**：与 Summarize() 的分支一一对应，
+// 取值集合固定 ⇒ 键空间有界（类数 × 模型数 × 租户数）。
+//
+// ★ 与 Summarize() 的分支顺序**必须一致**：Summarize 先说「模型压根没登记」
+// （那是根因），再说状态闸。分类若与摘要顺序不同，运营会看到
+// 「摘要说配额、分类说未登记」这种自相矛盾的两套结论。
+const (
+	// CauseClassNotRegistered：模型压根没登记（offers_total=0）。
+	CauseClassNotRegistered = "not_registered"
+	// CauseClassCredentialMissing：offer 挂在已删除/缺失的凭据上。
+	CauseClassCredentialMissing = "cred_missing"
+	// CauseClassCredentialStatus：被 credentials.status 闸滤掉。
+	CauseClassCredentialStatus = "cred_status"
+	// CauseClassCredentialManualDisabled：被 credentials.manual_disabled 闸滤掉。
+	CauseClassCredentialManualDisabled = "cred_manual_disabled"
+	// CauseClassCredentialLifecycle：被 credentials.lifecycle_status 闸滤掉。
+	CauseClassCredentialLifecycle = "cred_lifecycle"
+	// CauseClassCredentialQuota：被凭据配额态滤掉。
+	CauseClassCredentialQuota = "cred_quota"
+	// CauseClassProviderDisabled：供应商被停用。
+	CauseClassProviderDisabled = "provider_disabled"
+	// CauseClassUnavailableReason：被 model_offers.unavailable_reason(manual*) 滤掉。
+	CauseClassUnavailableReason = "unavailable_reason"
+	// CauseClassProviderTenant：offer 属于其他租户的供应商。
+	CauseClassProviderTenant = "provider_tenant"
+	// CauseClassGatesOpen：模型已登记且状态闸全开 ⇒ 状态不是原因。
+	CauseClassGatesOpen = "gates_open"
+	// CauseClassDiagError：归因查询本身失败（拿不到 breakdown）。
+	CauseClassDiagError = "diag_error"
+)
+
+// CauseClass 返回归因的**有界分类**。
+//
+// 分支顺序与 Summarize() 严格一致（见该常量块的说明）。
+func (b EmptyCandidateBreakdown) CauseClass() string {
+	switch {
+	case b.OffersTotal == 0:
+		return CauseClassNotRegistered
+	case b.BlockedByCredentialMissing > 0:
+		return CauseClassCredentialMissing
+	case b.BlockedByCredentialStatus > 0:
+		return CauseClassCredentialStatus
+	case b.BlockedByCredentialManualDisabled > 0:
+		return CauseClassCredentialManualDisabled
+	case b.BlockedByCredentialLifecycle > 0:
+		return CauseClassCredentialLifecycle
+	case b.BlockedByCredentialQuota > 0:
+		return CauseClassCredentialQuota
+	case b.BlockedByProviderDisabled > 0:
+		return CauseClassProviderDisabled
+	case b.BlockedByUnavailableReason > 0:
+		return CauseClassUnavailableReason
+	case b.BlockedByProviderTenant > 0:
+		return CauseClassProviderTenant
+	default:
+		return CauseClassGatesOpen
+	}
+}
+
 // emptyCandidateBreakdownSQL 是归因查询。
 //
 // ★★ 闸的集合**逐条对齐** provider/client.go 的候选 SQL（loadCandidatesByModalityDB）：
