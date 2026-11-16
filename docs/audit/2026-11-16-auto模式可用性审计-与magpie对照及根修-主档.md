@@ -54,6 +54,25 @@ F1-F3 修完并部署（`2c425d15`）后，第一轮 live 验收**仍然三协�
 ⇒ 现在退路池改为 **索引快照 ∩ 实时可用过滤**（内容来自「此刻可路由」这个事实本身），
 并加 30 秒进程内缓存（不为每个 auto 请求多打一次库）。
 
+### 1.3 第三轮：把「复刻」换成「同一个视图」（F8）
+
+第三轮 live 验收（版本 `2.234a93`）已经让 auto **选到了有节点的模型**并真的走到了上游
+（`upstream_http_attempt` ⇒ `https://token.sensenova.cn/v1/chat/completions`），
+但仍 503 —— 原因变成**上游侧的 dispatch forward panic** 与**随后两笔又变成零候选**。
+继续对拍后定位到 **F8**：
+
+| # | 现象 | 证据 | 根因 |
+|---|---|---|---|
+| **F8** | 决策面与候选面的「可路由」**口径仍然漂移** | 决策池 **1010** 个模型里 **189 个（19%）**「决策面活、候选面死」；而平台此刻真正可路由的模型有 **863** 个 | 候选面的核心闸是**统一视图** `v_routable_credential_models.is_routable`（manual > auto 优先级的单一裁决），决策面却一直在**自己复刻**一套状态闸 ⇒ 复刻永远追不上视图 |
+
+⇒ **修法不是再补一道闸，而是「别复刻，用同一个视图」**：决策侧过滤 SQL 加
+`EXISTS (SELECT 1 FROM v_routable_credential_models v WHERE … AND v.is_routable = TRUE)`，
+视图没有而候选面另有的三道闸（canonical disabled / model lifecycle / broken_confirmed）继续保留
+⇒ 口径 = **视图 + 三道补闸**。
+★ 实测影响面（211 真库，先量再改）：决策池 1010 → **821**（= 与真实可路由的 863 基本对齐）。
+★ 通用式：**「两个面对同一件事给出两个答案」时，加闸是治标，换成同一个数据源才是治本**——
+本轮在 F6 上补了三道闸才发现「复刻」本身就是错的做法。
+
 ---
 
 ## 二、magpie 的 auto 模式到底强在哪（源码取证）
@@ -384,3 +403,49 @@ M7 handler 不再应用重选结果｜M8 非 auto 请求也被重选｜M9 退路
    `sight` / `offline` / `cut` 三类未覆盖（词表版本差，不影响本轮结论）。
 3. **credential 62 形态暴露的老问题**：绑定级 rest 没吃到"凭据已 suspended 但绑定仍 available"的故障
    （本轮靠换模兜住，不靠 rest 摘除）。绑定与凭据两级状态的同步是独立议题。
+
+---
+
+## 九、部署记录（211）
+
+### 9.1 第一轮（第一轮三根修 F1-F3）
+
+| 项 | 值 |
+|---|---|
+| 版本 | `2.6.0-2c425d15-20261117-211`（build_seq 3065） |
+| 蓝绿 | 活跃 **槽 b @8783**（旧槽 a 已停，可 `docker start` 回滚） |
+| 公网 | 版本身份 OK、`https://llm.itestu.cn/` 200、admin SPA 可达 |
+| WARN | 登录冒烟未执行（未提供 `DD_ADMIN_PASSWORD`）⇒ **登录路径本轮未验证** |
+
+### 9.2 第一轮 live 验收（脚本 `scripts/audit/auto-211-live-verify.py`，211 本机执行）
+
+| 项 | 结果 |
+|---|---|
+| ① `dispatch_v2.allow_model_change` | **True**（闸门在在役实例上已开）✔ 根修 1 生效 |
+| ② 临时 key | 现场签发（id=264）⇒ **验后立即吊销** ✔ |
+| ③ 三协议面 `model="auto"` | chat → `qwen2.5-7b-instruct`、messages → `glm-4.7`、responses → `glm-4.5-air`：**三个都解析成功**（响应头带 `X-Gw-Auto-Decision`）✔ 根修 3 生效（修前 messages/responses 会把 "auto" 当真实模型名 ⇒ 零候选 ⇒ 「模型 auto 不可用」） |
+| ③ 但 HTTP | **三个都 503** ⇒ chat 那笔 `failure_detail_code=no_candidates`、`chosen_credential_id=99023`（哨兵）⇒ **逼出 F4/F5/F6/F7** |
+
+### 9.3 第二轮（第二、三根修 F4/F5/F6 + F7 修正）
+
+| 项 | 值 |
+|---|---|
+| 版本 | `2.6.0-13dd6532-dirty-20261117-211`（build_seq 3069）→ 再一轮 `2d234a93…`（F7 修正） |
+| 蓝绿 | 活跃 **槽 b @8783**（旧槽 a 已停，可回滚） |
+| 公网 | 版本身份 OK、入口 200 |
+| 第二轮 live 验收（第一版） | auto **不再选死模型**（`qwen2.5-7b-instruct` → `kimi-k3`，lifecycle 闸生效 ✔ 根修 6 生效），但仍 503（`gw_no_candidate`），且**重选日志 0 条** ⇒ 逼出 **F7**（热度榜恒空 ⇒ 退路池空） |
+| 第三轮 live 验收 | 见 §9.4 |
+
+### 9.4 第三轮（F7 修正后）的 live 验收结果
+
+见本节后续补写（部署版本 `2d234a93…`）。
+
+### 9.5 211 上的取证口径备忘（供后续轮次复用）
+
+| 用途 | 命令/视图 |
+|---|---|
+| auto 决策内容 | `request_logs_with_current_month.auto_decision`（JSONB，含 `chosen_model` / `candidates_top3` / `fallback_used`） |
+| 候选侧可路由真源 | `v_routable_credential_models.is_routable` + `unavailable_reason`（**候选侧用的是它，不是 `cmb.available`**） |
+| 候选归因 | 容器日志 `[candidate_diag] db_empty` / `cache_empty`（含 `offers_total` 与各闸的拦截计数） |
+| 空结果缓存 | 候选缓存的**空结果 TTL 只有 5 秒**（`candidateEmptyCacheTTL`）⇒ 连续验收请求会落在同一个空窗里，看到 `cache_empty` |
+| 48h 热度榜真源 | `session_turns_hot` / `session_turns` 的 `canonical_id`（**本轮实测 48h 内全 NULL ⇒ 榜恒空**） |

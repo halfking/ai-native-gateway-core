@@ -102,6 +102,30 @@ const availabilityFilterSQLTemplate = `
 		          '2 years'::interval
 		      )
 		  )
+		  -- ★ 根修 6-④：**统一可路由视图闸**（与候选面**同源同口径**）。
+		  --
+		  -- ★★ 为什么前面补了三道闸还不够、必须直接用视图：
+		  --
+		  -- 候选面（provider/client.go 的 candidateQuerySQL）的核心闸是
+		  -- v.is_routable = TRUE —— 它来自**统一视图**
+		  -- v_routable_credential_models（manual > auto 优先级的单一裁决）。
+		  -- 决策面此前是**自己复刻**一套状态闸 ⇒ 两边的口径必然漂移
+		  -- （实测：决策池 1010 个模型里 **189 个（19%）**「决策面活、候选面死」）。
+		  -- ★★ 复刻永远追不上视图 ⇒ **别复刻，用同一个视图**。
+		  --
+		  -- 实测影响面（211 真库，2026-11-17）：决策池 1010 → **821**，
+		  -- 而平台此刻真正可路由的模型有 **863** 个 ⇒ 加闸后决策池与真实
+		  -- 可路由集合基本对齐（821/863）。
+		  --
+		  -- 视图里没有、而候选面另有的三道闸（canonical disabled /
+		  -- model lifecycle / broken_confirmed）仍由下面三条保留 ——
+		  -- 即：**视图口径 + 三道补闸**，两侧一致。
+		  AND EXISTS (
+		    SELECT 1 FROM v_routable_credential_models v
+		    WHERE v.credential_id = cmb.credential_id
+		      AND v.provider_model_id = pm.id
+		      AND v.is_routable = TRUE
+		  )
 		  -- ★ 根修 6-③：broken_confirmed 探针对闸（对齐 provider 候选面）。
 		  -- 探针已连续确认坏掉的 (凭据, 模型) 对，选它必然失败。
 		  /*BROKEN_PAIR_GUARD*/
