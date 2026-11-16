@@ -18,8 +18,22 @@
 //	  （含完整归因 args），重复条合并为「下一条放行时附 suppressed=N」——
 //	  运维仍能在洪水里看到第一次告警与被压掉的量级。
 //
-// ★ 键的选择：`event + model + tenant_id`。同一模型不同租户的归因结论
-// ★ 可能不同（候选 SQL 限定 p.tenant_id）⇒ 按租户分键，不合并。
+// ★ 键的选择：`event + model + tenant_id + cause_class`。同一模型不同租户的
+// ★ 归因结论可能不同（候选 SQL 限定 p.tenant_id）⇒ 按租户分键，不合并。
+//
+// ★★ 2026-11-17 批判审计补：`cause_class` 进键是**必需**的，不是可选优化。
+//
+//	原实现键里没有归因 ⇒ 同一 (model, tenant) 在冷却窗内归因从 A 变成 B 时，
+//	B 被静默吞掉最多 5 分钟。而本文件原注释写着「模型登记/状态闸被改时会
+//	**立即以新内容出现**」——那句话在原实现下是**假的**（状态闸被改 ⇒ 归因变了
+//	⇒ 但键没变 ⇒ 要等冷却窗到期才出现）。
+//	危害不是「日志少了」，而是**处置方向被误导**：旧归因「模型未登记」、
+//	新归因「凭据配额耗尽 ⇒ 充值」，后者是可立即执行的运维动作，被压掉意味着
+//	运营在 5 分钟里仍按旧结论排查。
+//	⇒ 与 bg 侧对齐：`bg/probe_round_log_dedup.go` 的键含 `rootCause`，并有
+//	`TestLogProbeRoundRootCauseRootCauseChangeNotGated` 钉住「根因变化立刻放行」。
+//	⇒ 键里放的是**有界的归因类**（cause_class，有限枚举）而不是 `likely_cause`
+//	原文：Summarize() 把 offer 计数也拼进句子（3↔4 抖动会让键交替 ⇒ 洪水压不住）。
 package provider
 
 import (
@@ -27,9 +41,12 @@ import (
 	"time"
 )
 
-// candidateDiagLogCooldown 是同一 (model, tenant) 的 db_empty 日志冷却窗。
+// candidateDiagLogCooldown 是同一 (model, tenant, cause_class) 的 db_empty 日志冷却窗。
 // 5 分钟：Owner 处置周期以分钟计，窗口内重复打屏无信息增量；窗口外放行
-// 一条以确认归因未漂移（模型登记/状态闸被改时会立即以新内容出现）。
+// 一条以确认归因未漂移。
+//
+// ★ 「未漂移」的检查现在**由 cause_class 进键保证**：归因变了就是新键 ⇒
+// 立刻放行，不必等窗口到期。窗口外放行只是再确认一次「同一归因仍在持续」。
 const candidateDiagLogCooldown = 5 * time.Minute
 
 // candidateDiagLogEntry 是单个键的冷却状态。
@@ -63,11 +80,14 @@ func newCandidateDiagLogGate(cooldown time.Duration) *candidateDiagLogGate {
 //   - allowed=true  ⇒ 放行（首条或冷却窗已过）；suppressed=冷却窗内被压掉的条数，
 //     调用方应把它附进日志 args，然后本方法已将该计数清零。
 //   - allowed=false ⇒ 冷却窗内重复，调用方跳过 slog（指标由调用方先行记录）。
-func (g *candidateDiagLogGate) allow(event, model, tenant string, now time.Time) (bool, int) {
+func (g *candidateDiagLogGate) allow(event, model, tenant, cause string, now time.Time) (bool, int) {
 	if g == nil {
 		return true, 0
 	}
-	key := event + "|" + model + "|" + tenant
+	// ★ cause 进键：归因变了就是新键 ⇒ 立刻放行（见文件头「2026-11-17 批判审计补」）。
+	// cause 为空串时键退化成 `event|model|tenant|`，仍是合法键；此时所有
+	// 未带 cause_class 的调用方共享一个桶——与旧行为相比不更差。
+	key := event + "|" + model + "|" + tenant + "|" + cause
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	e, ok := g.entries[key]

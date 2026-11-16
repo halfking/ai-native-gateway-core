@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>简易模式 · 控制台效果稿 | 开轩网关</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   令牌层：取值逐字取自 web/src/style.css（DESIGN.md §2 的唯一事实源）。
+   本稿是「提案」而非现状截图 ⇒ 图标用手写 SVG 不用 emoji 字形
+   （DESIGN.md §6 图标条）。当前控制台导航仍用 emoji 字形，这条在稿末登记。
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --kx-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', Arial, sans-serif;
+  --kx-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --kx-text-2xs: 11px; --kx-text-xs: 12px; --kx-text-sm: 13px;
+  --kx-text-md: 14px; --kx-text-lg: 16px; --kx-text-xl: 20px;
+  --kx-text-2xl: 24px; --kx-text-3xl: 30px;
+  --kx-space-1: 4px; --kx-space-2: 8px; --kx-space-3: 12px; --kx-space-4: 16px;
+  --kx-space-5: 24px; --kx-space-6: 32px; --kx-space-7: 40px; --kx-space-8: 48px;
+  --radius: 8px; --radius-card: 14px; --radius-lg: 16px;
+  --kx-motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+html[data-theme='dark'] {
+  --kx-bg: #0f141c; --kx-surface: #1a222d; --kx-surface-soft: rgba(26,34,45,.92);
+  --kx-sidebar: #121820; --kx-text: #e8eef7; --kx-muted: #8b9bb0;
+  --kx-border: #2a3544; --kx-primary: #5b8cff; --kx-primary-hover: #7aa3ff;
+  --kx-primary-soft: rgba(91,140,255,.16); --kx-success: #3ecf8e;
+  --kx-success-soft: rgba(62,207,142,.14); --kx-warning: #e0a53a;
+  --kx-warning-soft: rgba(224,165,58,.14); --kx-danger: #f07167;
+  --kx-danger-soft: rgba(240,113,103,.14); --kx-text-on-primary: #ffffff;
+  --kx-shadow-xs: 0 1px 2px rgba(0,0,0,.28);
+  --kx-shadow-sm: 0 8px 24px rgba(0,0,0,.28);
+  --kx-shadow-md: 0 16px 40px rgba(0,0,0,.40);
+  --kx-code-bg: #0a0f16;
+}
+html[data-theme='light'] {
+  --kx-bg: #f4f6f9; --kx-surface: #ffffff; --kx-surface-soft: rgba(255,255,255,.88);
+  --kx-sidebar: #eef2f8; --kx-text: #152033; --kx-muted: #5b6b82;
+  --kx-border: #dce3ee; --kx-primary: #1e4fd6; --kx-primary-hover: #1841b3;
+  --kx-primary-soft: #eaf0ff; --kx-success: #16845b;
+  --kx-success-soft: #e6f7ef; --kx-warning: #b7791f;
+  --kx-warning-soft: #fff7e8; --kx-danger: #c2413b;
+  --kx-danger-soft: #fff1f1; --kx-text-on-primary: #ffffff;
+  --kx-shadow-xs: 0 1px 2px rgba(30,55,100,.06);
+  --kx-shadow-sm: 0 8px 24px rgba(30,55,100,.06);
+  --kx-shadow-md: 0 16px 40px rgba(30,50,90,.10);
+  --kx-code-bg: #eef1f6;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* 裸 svg 的默认盒子是 300×150，图标必须有兜底尺寸；类规则优先级更高，会覆盖这一条 */
+svg { width: 14px; height: 14px; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+body {
+  background: var(--kx-bg); color: var(--kx-text);
+  font-family: var(--kx-font-sans); font-size: var(--kx-text-md);
+  line-height: 1.6; -webkit-font-smoothing: antialiased;
+  padding-bottom: var(--kx-space-9);
+}
+::selection { background: var(--kx-primary-soft); }
+:focus-visible { outline: 2px solid var(--kx-primary); outline-offset: 2px; border-radius: 3px; }
+* { scrollbar-width: thin; scrollbar-color: var(--kx-border) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: var(--kx-border); border-radius: 5px; border: 3px solid var(--kx-bg); }
+*::-webkit-scrollbar-thumb:hover { background: var(--kx-muted); }
+
+/* ── 文档外壳 ───────────────────────────────────────────────── */
+.doc { max-width: 1360px; margin: 0 auto; padding: 0 var(--kx-space-5); }
+.doc-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--kx-space-4); flex-wrap: wrap;
+  padding: var(--kx-space-7) 0 var(--kx-space-5);
+}
+.doc-head h1 { font-size: var(--kx-text-2xl); font-weight: 700; letter-spacing: -.02em; line-height: 1.3; }
+.doc-head .sub { color: var(--kx-muted); font-size: var(--kx-text-sm); margin-top: var(--kx-space-2); max-width: 72ch; }
+.doc-head-actions { display: flex; align-items: center; gap: var(--kx-space-2); }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font-family: inherit; font-size: var(--kx-text-sm); font-weight: 500;
+  padding: 7px 14px; border-radius: var(--radius);
+  background: var(--kx-surface); color: var(--kx-text);
+  border: 1px solid var(--kx-border);
+  transition: border-color .18s var(--kx-motion-ease-out),
+              color .18s var(--kx-motion-ease-out),
+              background .18s var(--kx-motion-ease-out);
+}
+.btn:hover { border-color: var(--kx-primary); color: var(--kx-primary); }
+.btn svg { width: 15px; height: 15px; }
+.btn-primary { background: var(--kx-primary); border-color: var(--kx-primary); color: var(--kx-text-on-primary); }
+.btn-primary:hover { background: var(--kx-primary-hover); border-color: var(--kx-primary-hover); color: var(--kx-text-on-primary); }
+
+.sec { margin-bottom: var(--kx-space-8); }
+.sec-head { display: flex; align-items: baseline; gap: var(--kx-space-3); flex-wrap: wrap; margin-bottom: var(--kx-space-2); }
+.sec-head h2 { font-size: var(--kx-text-xl); font-weight: 600; letter-spacing: -.01em; }
+.sec-head .tagline { font-size: var(--kx-text-sm); color: var(--kx-muted); }
+.sec-desc { font-size: var(--kx-text-sm); color: var(--kx-muted); margin-bottom: var(--kx-space-4); max-width: 78ch; }
+
+.note {
+  border-radius: var(--radius-card); padding: var(--kx-space-4) var(--kx-space-5);
+  font-size: var(--kx-text-sm); line-height: 1.65; margin-bottom: var(--kx-space-4);
+  border: 1px solid transparent;
+}
+.note p { margin: 0 0 var(--kx-space-2); max-width: 76ch; }
+.note p:last-child { margin-bottom: 0; }
+.note-primary { background: var(--kx-primary-soft); border-color: var(--kx-primary); }
+.note-warning { background: var(--kx-warning-soft); border-color: var(--kx-warning); }
+.note-danger  { background: var(--kx-danger-soft);  border-color: var(--kx-danger); }
+.note-muted   { background: var(--kx-surface); border-color: var(--kx-border); }
+.note b { font-weight: 600; }
+
+/* ── 徽标 ───────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: var(--radius); font-size: var(--kx-text-xs); font-weight: 500;
+  line-height: 1.6; white-space: nowrap;
+}
+.badge-primary { background: var(--kx-primary-soft); color: var(--kx-primary); }
+.badge-success { background: var(--kx-success-soft); color: var(--kx-success); }
+.badge-warning { background: var(--kx-warning-soft); color: var(--kx-warning); }
+.badge-danger  { background: var(--kx-danger-soft);  color: var(--kx-danger); }
+.badge-muted   { background: var(--kx-code-bg); color: var(--kx-muted); border: 1px solid var(--kx-border); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot-success { background: var(--kx-success); }
+.dot-warning { background: var(--kx-warning); }
+.dot-danger  { background: var(--kx-danger); }
+.dot-muted   { background: var(--kx-muted); }
+
+/* ═══════════════════════════════════════════════════════════════
+   控制台外壳（照抄 App.vue / AppTopbar.vue / AppNavDrawer.vue 结构）
+   ═══════════════════════════════════════════════════════════════ */
+.console {
+  border: 1px solid var(--kx-border); border-radius: var(--radius-lg);
+  background: var(--kx-bg); overflow: hidden;
+}
+.console-tag {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--kx-space-3); padding: 9px var(--kx-space-4);
+  background: var(--kx-code-bg); border-bottom: 1px solid var(--kx-border);
+  font-size: var(--kx-text-xs); color: var(--kx-muted);
+}
+.console-tag .path { font-family: var(--kx-font-mono); }
+.console-tag .left { display: flex; align-items: center; gap: var(--kx-space-2); }
+
+/* 顶栏 */
+.app-topbar {
+  display: flex; align-items: center; gap: var(--kx-space-5);
+  padding: 0 var(--kx-space-4); height: 52px;
+  background: var(--kx-surface); border-bottom: 1px solid var(--kx-border);
+  position: relative;
+}
+.brand { display: flex; align-items: center; gap: var(--kx-space-2); flex: none; }
+.brand-logo {
+  width: 26px; height: 26px; border-radius: 7px; flex: none;
+  background: var(--kx-primary); color: var(--kx-text-on-primary);
+  display: flex; align-items: center; justify-content: center;
+}
+.brand-logo svg { width: 16px; height: 16px; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+.brand-text .l1 { font-size: var(--kx-text-sm); font-weight: 600; letter-spacing: -.01em; }
+.brand-text .l2 { font-size: var(--kx-text-2xs); color: var(--kx-muted); }
+
+.app-topbar__nav { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow: hidden; }
+.app-topbar__link {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  padding: 6px 11px; border-radius: var(--radius); white-space: nowrap;
+  font-size: var(--kx-text-sm); color: var(--kx-muted); text-decoration: none;
+  border: none; background: none; font-family: inherit;
+  transition: color .18s var(--kx-motion-ease-out),
+              background .18s var(--kx-motion-ease-out);
+}
+.app-topbar__link:hover { color: var(--kx-text); background: var(--kx-code-bg); }
+.app-topbar__link.active { color: var(--kx-primary); background: var(--kx-primary-soft); font-weight: 500; }
+.app-topbar__link svg { width: 14px; height: 14px; }
+.app-topbar__group { position: relative; }
+.app-topbar__group-trigger { position: relative; }
+.app-topbar__group-trigger .chev { width: 11px; height: 11px; opacity: .7; }
+.group-count {
+  font-size: var(--kx-text-2xs); font-variant-numeric: tabular-nums;
+  color: var(--kx-muted); background: var(--kx-code-bg);
+  border: 1px solid var(--kx-border); border-radius: 4px; padding: 0 4px;
+}
+.app-topbar__right { display: flex; align-items: center; gap: var(--kx-space-2); flex: none; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--radius); cursor: pointer;
+  background: none; border: 1px solid transparent; color: var(--kx-muted);
+  transition: color .18s var(--kx-motion-ease-out), border-color .18s var(--kx-motion-ease-out);
+}
+.icon-btn:hover { color: var(--kx-text); border-color: var(--kx-border); }
+.icon-btn svg { width: 16px; height: 16px; }
+.user-chip {
+  display: inline-flex; align-items: center; gap: var(--kx-space-2);
+  padding: 4px 10px 4px 4px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--kx-border); background: var(--kx-code-bg);
+  font-size: var(--kx-text-xs); color: var(--kx-text);
+}
+.avatar {
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  background: var(--kx-primary-soft); color: var(--kx-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--kx-text-2xs); font-weight: 600;
+}
+
+/* 工作模式切换器 */
+.mode-switch {
+  position: relative; flex: none;
+}
+.mode-btn {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font-family: inherit; font-size: var(--kx-text-xs); font-weight: 500;
+  padding: 5px 9px; border-radius: var(--radius);
+  background: var(--kx-primary-soft); color: var(--kx-primary);
+  border: 1px solid var(--kx-primary);
+}
+.mode-btn .chev { width: 11px; height: 11px; }
+.mode-btn.expert { background: var(--kx-code-bg); color: var(--kx-muted); border-color: var(--kx-border); }
+.mode-btn.expert:hover { color: var(--kx-text); border-color: var(--kx-primary); }
+.mode-panel {
+  position: absolute; top: calc(100% + 7px); right: 0; z-index: 20;
+  width: 296px; padding: var(--kx-space-4);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); box-shadow: var(--kx-shadow-md);
+}
+.mode-panel h4 { font-size: var(--kx-text-sm); font-weight: 600; margin-bottom: var(--kx-space-2); }
+.mode-panel p { font-size: var(--kx-text-xs); color: var(--kx-muted); line-height: 1.6; margin-bottom: var(--kx-space-3); }
+.mode-opt {
+  display: flex; align-items: flex-start; gap: var(--kx-space-2);
+  padding: var(--kx-space-2) 0; border-top: 1px solid var(--kx-border);
+}
+.mode-opt .radio {
+  width: 14px; height: 14px; border-radius: 50%; flex: none; margin-top: 3px;
+  border: 1.5px solid var(--kx-border);
+}
+.mode-opt.on .radio { border-color: var(--kx-primary); border-width: 4px; }
+.mode-opt .t { font-size: var(--kx-text-sm); font-weight: 500; }
+.mode-opt .d { font-size: var(--kx-text-xs); color: var(--kx-muted); }
+
+/* 二级下拉 */
+.dropdown {
+  position: absolute; top: calc(100% + 3px); left: 0; z-index: 20;
+  min-width: 268px; padding: var(--kx-space-2);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); box-shadow: var(--kx-shadow-md);
+}
+.dropdown .dd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px var(--kx-space-3) var(--kx-space-2);
+  font-size: var(--kx-text-2xs); color: var(--kx-muted);
+  border-bottom: 1px solid var(--kx-border); margin-bottom: var(--kx-space-1);
+}
+.dropdown a {
+  display: flex; align-items: center; gap: var(--kx-space-2);
+  padding: 6px var(--kx-space-3); border-radius: 6px;
+  font-size: var(--kx-text-sm); color: var(--kx-text); text-decoration: none;
+  transition: background .16s var(--kx-motion-ease-out);
+}
+.dropdown a:hover { background: var(--kx-code-bg); }
+.dropdown a svg { width: 14px; height: 14px; color: var(--kx-muted); flex: none; }
+.dropdown a.advanced { color: var(--kx-muted); }
+.dropdown a.advanced svg { opacity: .75; }
+.dropdown .dd-foot {
+  margin-top: var(--kx-space-1); padding: var(--kx-space-2) var(--kx-space-3) 4px;
+  border-top: 1px solid var(--kx-border); font-size: var(--kx-text-2xs); color: var(--kx-muted);
+}
+
+/* 主区 */
+.main-content { padding: var(--kx-space-5); background: var(--kx-bg); min-height: 520px; }
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--kx-space-4); flex-wrap: wrap; margin-bottom: var(--kx-space-5); }
+.page-header h3 { font-size: var(--kx-text-lg); font-weight: 600; letter-spacing: -.01em; }
+.page-header .desc { font-size: var(--kx-text-sm); color: var(--kx-muted); margin-top: 3px; }
+.page-actions { display: flex; align-items: center; gap: var(--kx-space-2); }
+
+/* 指标条：单一表面分格，不是四张同尺寸卡（DESIGN.md §6 卡片条） */
+.metric-bar {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); overflow: hidden; margin-bottom: var(--kx-space-4);
+}
+.metric-cell { padding: var(--kx-space-4) var(--kx-space-5); border-left: 1px solid var(--kx-border); }
+.metric-cell:first-child { border-left: none; }
+.metric-label { font-size: var(--kx-text-xs); color: var(--kx-muted); font-weight: 500; }
+.metric-value {
+  font-size: var(--kx-text-2xl); font-weight: 650; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; line-height: 1.25; margin-top: 2px;
+}
+.metric-value small { font-size: var(--kx-text-sm); font-weight: 500; color: var(--kx-muted); margin-left: 3px; }
+.metric-context {
+  font-size: var(--kx-text-xs); color: var(--kx-muted); margin-top: 5px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.delta { font-weight: 600; font-variant-numeric: tabular-nums; }
+.delta.up { color: var(--kx-success); }
+.delta.down { color: var(--kx-danger); }
+
+/* 两栏 */
+.cols { display: grid; grid-template-columns: minmax(0,1fr) 306px; gap: var(--kx-space-4); align-items: start; }
+@media (max-width: 1080px) { .cols { grid-template-columns: 1fr; } .metric-bar { grid-template-columns: repeat(2,1fr); } }
+
+.panel {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); overflow: hidden;
+}
+.panel + .panel { margin-top: var(--kx-space-4); }
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--kx-space-3);
+  padding: var(--kx-space-3) var(--kx-space-5); border-bottom: 1px solid var(--kx-border);
+}
+.panel-head h4 { font-size: var(--kx-text-sm); font-weight: 600; }
+.panel-head .more { font-size: var(--kx-text-xs); color: var(--kx-primary); cursor: pointer; font-weight: 500; }
+.panel-body { padding: var(--kx-space-4) var(--kx-space-5); }
+.panel-body.tight { padding: 0; }
+
+/* 表格 */
+table { width: 100%; border-collapse: collapse; font-size: var(--kx-text-sm); }
+thead th {
+  text-align: left; font-size: var(--kx-text-xs); font-weight: 500; color: var(--kx-muted);
+  padding: var(--kx-space-2) var(--kx-space-5); background: var(--kx-surface-soft);
+  border-bottom: 1px solid var(--kx-border); white-space: nowrap;
+}
+tbody td { padding: 9px var(--kx-space-5); border-bottom: 1px solid var(--kx-border); }
+tbody tr:last-child td { border-bottom: none; }
+td.num, th.num { font-variant-numeric: tabular-nums; text-align: right; }
+td .mono { font-family: var(--kx-font-mono); font-size: var(--kx-text-xs); color: var(--kx-muted); }
+td.model { font-weight: 500; }
+
+/* 引导卡 */
+.guide {
+  background: var(--kx-primary-soft); border: 1px solid var(--kx-primary);
+  border-radius: var(--radius-card); padding: var(--kx-space-4) var(--kx-space-5);
+  margin-bottom: var(--kx-space-4);
+}
+.guide-head { display: flex; align-items: center; justify-content: space-between; gap: var(--kx-space-3); margin-bottom: var(--kx-space-3); }
+.guide-head h4 { font-size: var(--kx-text-md); font-weight: 600; }
+.guide-steps { display: flex; align-items: center; gap: var(--kx-space-2); flex-wrap: wrap; }
+.guide-step {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: var(--kx-text-xs); color: var(--kx-text);
+}
+.guide-step .n {
+  width: 18px; height: 18px; border-radius: 50%; flex: none;
+  background: var(--kx-primary); color: var(--kx-text-on-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--kx-text-2xs); font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.guide-step.done .n { background: var(--kx-success); }
+.guide-step.pending { color: var(--kx-muted); }
+.guide-step.pending .n { background: transparent; border: 1px solid var(--kx-border); color: var(--kx-muted); }
+.guide-arrow { color: var(--kx-muted); font-size: var(--kx-text-xs); }
+
+/* 供应商行 */
+.provider-row {
+  display: flex; align-items: center; gap: var(--kx-space-3);
+  padding: 9px 0; border-bottom: 1px solid var(--kx-border);
+}
+.provider-row:last-child { border-bottom: none; }
+.provider-row .nm { font-size: var(--kx-text-sm); font-weight: 500; flex: 1; min-width: 0; }
+.provider-row .nm small { display: block; font-size: var(--kx-text-2xs); color: var(--kx-muted); font-weight: 400; font-family: var(--kx-font-mono); }
+.provider-row .metric { font-size: var(--kx-text-xs); color: var(--kx-muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* 设置页 */
+.settings-grid { display: grid; grid-template-columns: 188px minmax(0,1fr); gap: var(--kx-space-4); align-items: start; }
+@media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
+.cat-list { display: flex; flex-direction: column; gap: 2px; }
+.cat-item {
+  display: flex; align-items: center; gap: var(--kx-space-2); cursor: pointer;
+  padding: 7px var(--kx-space-3); border-radius: var(--radius);
+  font-size: var(--kx-text-sm); color: var(--kx-muted); background: none;
+  border: none; font-family: inherit; text-align: left; width: 100%;
+  transition: color .18s var(--kx-motion-ease-out), background .18s var(--kx-motion-ease-out);
+}
+.cat-item:hover { color: var(--kx-text); background: var(--kx-surface); }
+.cat-item.active { color: var(--kx-primary); background: var(--kx-primary-soft); font-weight: 500; }
+.cat-item svg { width: 14px; height: 14px; flex: none; }
+.cat-item .cnt { margin-left: auto; font-size: var(--kx-text-2xs); color: var(--kx-muted); font-variant-numeric: tabular-nums; }
+.cat-item.advanced .cnt { color: var(--kx-warning); }
+
+.set-row {
+  display: flex; align-items: center; gap: var(--kx-space-4);
+  padding: var(--kx-space-3) 0; border-bottom: 1px solid var(--kx-border);
+}
+.set-row:last-child { border-bottom: none; }
+.set-row .info { flex: 1; min-width: 0; }
+.set-row .info .k { font-size: var(--kx-text-sm); font-weight: 500; font-family: var(--kx-font-mono); }
+.set-row .info .d { font-size: var(--kx-text-xs); color: var(--kx-muted); margin-top: 2px; }
+.set-row .src { font-size: var(--kx-text-2xs); color: var(--kx-muted); white-space: nowrap; }
+.switch {
+  width: 34px; height: 19px; border-radius: 999px; flex: none;
+  background: var(--kx-border); position: relative; cursor: pointer;
+  border: none; padding: 0;
+  transition: background .2s var(--kx-motion-ease-out);
+}
+.switch::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 15px; height: 15px; border-radius: 50%; background: #fff;
+  transition: transform .2s var(--kx-motion-ease-out);
+}
+.switch.on { background: var(--kx-primary); }
+.switch.on::after { transform: translateX(15px); }
+.switch.off-locked { background: var(--kx-warning-soft); box-shadow: inset 0 0 0 1px var(--kx-warning); }
+
+/* 模式卡（设置页顶部） */
+.mode-card {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); padding: var(--kx-space-5); margin-bottom: var(--kx-space-4);
+}
+.mode-card .top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--kx-space-4); flex-wrap: wrap; }
+.mode-card h4 { font-size: var(--kx-text-md); font-weight: 600; }
+.mode-card .desc { font-size: var(--kx-text-sm); color: var(--kx-muted); margin-top: var(--kx-space-2); max-width: 68ch; }
+.seg { display: inline-flex; border: 1px solid var(--kx-border); border-radius: var(--radius); overflow: hidden; flex: none; }
+.seg button {
+  font-family: inherit; font-size: var(--kx-text-sm); font-weight: 500;
+  padding: 7px 16px; border: none; cursor: pointer;
+  background: var(--kx-surface); color: var(--kx-muted);
+  transition: background .18s var(--kx-motion-ease-out), color .18s var(--kx-motion-ease-out);
+}
+.seg button + button { border-left: 1px solid var(--kx-border); }
+.seg button.active { background: var(--kx-primary); color: var(--kx-text-on-primary); }
+.impact-list { margin-top: var(--kx-space-4); display: grid; grid-template-columns: 1fr 1fr; gap: var(--kx-space-4); }
+@media (max-width: 900px) { .impact-list { grid-template-columns: 1fr; } }
+.impact-box { border: 1px solid var(--kx-border); border-radius: var(--radius); padding: var(--kx-space-3) var(--kx-space-4); }
+.impact-box .h { display: flex; align-items: center; gap: 6px; font-size: var(--kx-text-xs); font-weight: 600; margin-bottom: var(--kx-space-2); }
+.impact-box ul { list-style: none; padding: 0; }
+.impact-box li { font-size: var(--kx-text-xs); color: var(--kx-muted); padding: 2px 0; display: flex; gap: 6px; }
+.impact-box li svg { width: 12px; height: 12px; flex: none; margin-top: 3px; }
+
+/* 对照 */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--kx-space-4); }
+@media (max-width: 900px) { .compare { grid-template-columns: 1fr; } }
+.compare-col { border: 1px solid var(--kx-border); border-radius: var(--radius-card); overflow: hidden; background: var(--kx-surface); }
+.compare-head {
+  padding: var(--kx-space-3) var(--kx-space-4); border-bottom: 1px solid var(--kx-border);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--kx-space-2);
+  font-size: var(--kx-text-sm); font-weight: 600; background: var(--kx-surface-soft);
+}
+.compare-body { padding: var(--kx-space-4); }
+.nav-line { display: flex; align-items: center; gap: var(--kx-space-2); padding: 4px 0; font-size: var(--kx-text-sm); }
+.nav-line .grp { font-weight: 500; }
+.nav-line .cnt { margin-left: auto; font-size: var(--kx-text-2xs); color: var(--kx-muted); font-variant-numeric: tabular-nums; }
+.nav-line.folded { color: var(--kx-muted); }
+.nav-line.folded .grp { font-weight: 400; }
+
+.data-table { width: 100%; border-collapse: collapse; font-size: var(--kx-text-sm); }
+.data-table th {
+  text-align: left; font-size: var(--kx-text-xs); color: var(--kx-muted); font-weight: 500;
+  padding: var(--kx-space-2) var(--kx-space-4); border-bottom: 1px solid var(--kx-border);
+}
+.data-table td { padding: 8px var(--kx-space-4); border-bottom: 1px solid var(--kx-border); }
+.data-table tr:last-child td { border-bottom: none; }
+.data-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.arrow-cell { color: var(--kx-primary); font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* 图例 */
+.legend { display: flex; flex-wrap: wrap; gap: var(--kx-space-4); margin-top: var(--kx-space-3); }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: var(--kx-text-xs); color: var(--kx-muted); }
+.legend-item svg { width: 13px; height: 13px; }
+</style>
+</head>
+<body>
+
+<svg style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <defs>
+    <symbol id="i-gateway" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.5" y="6.5" width="19" height="9" rx="2"/><path d="M6 11h3M10 11h.01M13 11h.01M16 11h.01"/><path d="M6 6V4M18 6V4"/>
+    </symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>
+    </symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12h4l2.5-7 5 14L17 12h4"/>
+    </symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6z"/><path d="M12 18v3"/>
+    </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="12" r="4"/><path d="M12 12h9M17 12v3M20 12v2"/>
+    </symbol>
+    <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>
+    </symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/>
+    </symbol>
+    <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 17.5V4.5M9 7h7M9 11h5"/>
+    </symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>
+    </symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 9l6 6 6-6"/>
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12l5 5L20 6"/>
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.5L21 19H3z"/><path d="M12 10v4M12 17h.01"/>
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/>
+    </symbol>
+    <symbol id="i-tree" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="17" cy="12" r="2"/>
+      <path d="M6 7v10"/><path d="M8 12h7"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
+    </symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+    </symbol>
+    <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7" r="3.4"/><path d="M17 4.3a3.4 3.4 0 0 1 0 6.6M22 20v-1.5a4 4 0 0 0-3-3.8"/>
+    </symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>
+    </symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 11V4a1 1 0 0 1 1-1h7l9 9-8 8z"/><circle cx="7.5" cy="7.5" r="1.4"/>
+    </symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l7 3v6c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>
+    </symbol>
+    <symbol id="i-gift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8M12 8v13"/>
+      <path d="M12 8S10.5 4 8 4a2 2 0 0 0 0 4zM12 8s1.5-4 4-4a2 2 0 0 1 0 4z"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="doc">
+
+  <header class="doc-head" id="doc-head">
+    <div>
+      <h1>简易模式 · 控制台效果稿</h1>
+      <p class="sub">
+        这份稿子把《简易模式与专家模式 · 设计方案》里描述的界面画出来。外壳结构照抄 <code>App.vue</code> / <code>AppTopbar.vue</code> / <code>AppNavDrawer.vue</code> 的真实形态：桌面是顶栏加分组标签，悬停下拉展开该组条目，没有常驻侧栏。
+      </p>
+    </div>
+    <div class="doc-head-actions">
+      <button class="btn" id="theme-toggle" type="button">
+        <svg aria-hidden="true" id="theme-icon"><use href="#i-sun"/></svg>
+        <span>切换明暗</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="note note-primary">
+    <p>
+      <b>稿子与方案的关系：</b>方案文档回答「为什么这样分层、机制怎么落地」，这份稿子回答「用户实际看到什么」。两处的口径一致：导航从 <b>63</b> 个入口收到 <b>14</b> 个可见页面，专家面收进折叠组而不是消失，设置页只露 3 个类别。
+    </p>
+    <p>
+      <b>本稿是提案而非现状截图。</b>当前控制台的导航图标用的是 emoji 字形（<code>appNav.ts</code> 里 <code>icon: '🤖'</code> 这样），与 <code>DESIGN.md</code> §6「图标是画出来的」冲突。本稿统一用 SVG，落地时顺带把这批导航图标换掉。
+    </p>
+  </div>
+
+  <!-- ══════════════ 画面一：简易模式 · 总览 ══════════════ -->
+  <section class="sec" id="s1">
+    <div class="sec-head">
+      <h2>简易模式 · 总览</h2>
+      <span class="tagline">顶栏分组从 7 个降到 5 个</span>
+    </div>
+    <p class="sec-desc">
+      顶栏剩五个分组：供应商与模型、密钥与用户、请求、接入指南、专家面收起来的「高级」。对话与系统设置按现有的单项组合并规则落进主链接，50 条专家面收进「高级」分组，展开后才出现。
+    </p>
+
+    <div class="console">
+      <div class="console-tag">
+        <span class="left">
+          <span class="dot dot-success"></span>
+          <span>控制台实页</span>
+          <span class="path">/dashboard</span>
+        </span>
+        <span>工作模式：简易</span>
+      </div>
+
+      <div class="app-topbar">
+        <div class="brand">
+          <div class="brand-logo"><svg aria-hidden="true"><use href="#i-gateway"/></svg></div>
+          <div class="brand-text">
+            <span class="l1">开轩启圭</span>
+            <span class="l2">LLM 网关控制台</span>
+          </div>
+        </div>
+
+        <nav class="app-topbar__nav">
+          <a class="app-topbar__link active" href="#">总览</a>
+          <a class="app-topbar__link" href="#">实时拓扑</a>
+          <a class="app-topbar__link" href="#">对话</a>
+          <a class="app-topbar__link" href="#">系统设置</a>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              供应商与模型
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="dropdown" style="left:-40px">
+              <div class="dd-head"><span>供应商与模型</span><span>2 项</span></div>
+              <a href="#"><svg aria-hidden="true"><use href="#i-plug"/></svg>供应商</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-tag"/></svg>模型与目录</a>
+            </div>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              密钥与用户
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="dropdown" style="left:-60px">
+              <div class="dd-head"><span>密钥与用户</span><span>3 项</span></div>
+              <a href="#"><svg aria-hidden="true"><use href="#i-key"/></svg>API 密钥</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-users"/></svg>用户管理</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-users"/></svg>租户管理</a>
+            </div>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              请求
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="dropdown" style="left:-20px">
+              <div class="dd-head"><span>请求</span><span>2 项</span></div>
+              <a href="#"><svg aria-hidden="true"><use href="#i-list"/></svg>请求日志</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-activity"/></svg>用量统计</a>
+            </div>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              接入指南
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="dropdown" style="left:-30px">
+              <div class="dd-head"><span>接入指南</span><span>3 项</span></div>
+              <a href="#"><svg aria-hidden="true"><use href="#i-doc"/></svg>接入示例</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-globe"/></svg>自动配置</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-book"/></svg>帮助手册</a>
+            </div>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              <svg aria-hidden="true"><use href="#i-layers"/></svg>高级
+              <span class="group-count">50</span>
+            </button>
+            <div class="dropdown" style="left:-20px">
+              <div class="dd-head"><span>高级功能</span><span>50 条</span></div>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-activity"/></svg>路由全景</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-tree"/></svg>请求阶段树</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-plug"/></svg>凭据监控</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-sliders"/></svg>路由调参与标注</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-list"/></svg>队列瀑布图</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-doc"/></svg>审计日志</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-layers"/></svg>模块管理</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-shield"/></svg>提示词注入检测</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-cog"/></svg>脱敏规则</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-refresh"/></svg>自更新与升级</a>
+              <a class="advanced" href="#"><svg aria-hidden="true"><use href="#i-globe"/></svg>运维中心</a>
+              <div class="dd-foot">展开后是专家模式下的完整能力，简易模式同样可用</div>
+            </div>
+          </div>
+        </nav>
+
+        <div class="app-topbar__right">
+          <div class="mode-switch">
+            <button class="mode-btn" type="button">
+              <svg aria-hidden="true" style="width:13px;height:13px"><use href="#i-sliders"/></svg>
+              简易模式
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+          </div>
+          <button class="icon-btn" type="button" aria-label="语言"><svg aria-hidden="true"><use href="#i-globe"/></svg></button>
+          <button class="icon-btn" type="button" aria-label="刷新"><svg aria-hidden="true"><use href="#i-refresh"/></svg></button>
+          <span class="user-chip"><span class="avatar">A</span> admin</span>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <div class="page-header">
+          <div>
+            <h3>总览</h3>
+            <div class="desc">近 24 小时 · 本租户全部 API 密钥</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+        </div>
+
+        <div class="guide">
+          <div class="guide-head">
+            <h4>还差一步就能用</h4>
+            <span class="badge badge-primary">3 步</span>
+          </div>
+          <div class="guide-steps">
+            <span class="guide-step done"><span class="n"><svg aria-hidden="true" style="width:11px;height:11px"><use href="#i-check"/></svg></span>装好网关</span>
+            <span class="guide-arrow">→</span>
+            <span class="guide-step done"><span class="n"><svg aria-hidden="true" style="width:11px;height:11px"><use href="#i-check"/></svg></span>填好上游 Key</span>
+            <span class="guide-arrow">→</span>
+            <span class="guide-step pending"><span class="n">3</span>签发网关密钥</span>
+            <span class="guide-arrow">→</span>
+            <span class="guide-step pending"><span class="n">4</span>改客户端指向</span>
+          </div>
+        </div>
+
+        <div class="metric-bar">
+          <div class="metric-cell">
+            <div class="metric-label">今日请求</div>
+            <div class="metric-value">1,284<small>笔</small></div>
+            <div class="metric-context"><span class="delta up">较昨日 +12%</span><span>口径：全部密钥合计</span></div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-label">成功率</div>
+            <div class="metric-value">99.2<small>%</small></div>
+            <div class="metric-context"><span class="delta down">失败 10 笔</span><span>其中上游超时 7 笔</span></div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-label">Token 用量</div>
+            <div class="metric-value">2.41<small>M</small></div>
+            <div class="metric-context"><span class="delta up">较昨日 +8%</span><span>预估 ¥3.10</span></div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-label">首字延迟</div>
+            <div class="metric-value">420<small>ms</small></div>
+            <div class="metric-context"><span>P95 1.2 s</span><span>3 个上游取最快</span></div>
+          </div>
+        </div>
+
+        <div class="cols">
+          <div>
+            <div class="panel">
+              <div class="panel-head">
+                <h4>最近请求</h4>
+                <span class="more">查看全部</span>
+              </div>
+              <div class="panel-body tight">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>模型</th><th>上游</th><th class="num">耗时</th><th class="num">Token</th><th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td class="model">glm-4-flash</td><td><span class="mono">zhipu</span></td><td class="num">380 ms</td><td class="num">1,204</td><td><span class="badge badge-success"><span class="dot dot-success"></span>成功</span></td></tr>
+                    <tr><td class="model">minimax-m3</td><td><span class="mono">minimax</span></td><td class="num">1,120 ms</td><td class="num">3,890</td><td><span class="badge badge-success"><span class="dot dot-success"></span>成功</span></td></tr>
+                    <tr><td class="model">claude-sonnet-5</td><td><span class="mono">anthropic</span></td><td class="num">—</td><td class="num">0</td><td><span class="badge badge-danger"><span class="dot dot-danger"></span>上游超时</span></td></tr>
+                    <tr><td class="model">glm-4-flash</td><td><span class="mono">zhipu</span></td><td class="num">410 ms</td><td class="num">892</td><td><span class="badge badge-success"><span class="dot dot-success"></span>成功</span></td></tr>
+                    <tr><td class="model">deepseek-v3</td><td><span class="mono">deepseek</span></td><td class="num">2,340 ms</td><td class="num">5,120</td><td><span class="badge badge-warning"><span class="dot dot-warning"></span>重试后成功</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="panel">
+              <div class="panel-head"><h4>上游状态</h4><span class="badge badge-success">3 个可用</span></div>
+              <div class="panel-body">
+                <div class="provider-row">
+                  <span class="dot dot-success"></span>
+                  <span class="nm">智谱 AI<small>open.bigmodel.cn</small></span>
+                  <span class="metric">420 ms</span>
+                </div>
+                <div class="provider-row">
+                  <span class="dot dot-success"></span>
+                  <span class="nm">MiniMax<small>api.minimax.chat</small></span>
+                  <span class="metric">610 ms</span>
+                </div>
+                <div class="provider-row">
+                  <span class="dot dot-warning"></span>
+                  <span class="nm">Anthropic<small>api.anthropic.com</small></span>
+                  <span class="metric">超时 2 次</span>
+                </div>
+                <div class="provider-row">
+                  <span class="dot dot-muted"></span>
+                  <span class="nm">DeepSeek<small>api.deepseek.com</small></span>
+                  <span class="metric">未探活</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><h4>接入客户端</h4></div>
+              <div class="panel-body">
+                <div style="font-size:var(--kx-text-xs);color:var(--kx-muted);margin-bottom:var(--kx-space-2)">把你的客户端指向这里</div>
+                <div style="font-family:var(--kx-font-mono);font-size:var(--kx-text-xs);background:var(--kx-code-bg);border:1px solid var(--kx-border);border-radius:var(--radius);padding:var(--kx-space-2) var(--kx-space-3);color:var(--kx-text)">
+                  http://127.0.0.1:8781/v1
+                </div>
+                <button class="btn btn-primary" type="button" style="margin-top:var(--kx-space-3);width:100%;justify-content:center">
+                  <svg aria-hidden="true"><use href="#i-copy"/></svg>复制带密钥的 curl
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 画面二：专家模式 · 总览 ══════════════ -->
+  <section class="sec" id="s2">
+    <div class="sec-head">
+      <h2>专家模式 · 总览</h2>
+      <span class="tagline">同一套外壳，导航分组全部展开</span>
+    </div>
+    <p class="sec-desc">
+      切到专家模式后顶栏恢复八个分组，下拉里是完整条目。两种模式跑的是同一份代码，差异只在导航与装配。
+    </p>
+
+    <div class="console">
+      <div class="console-tag">
+        <span class="left">
+          <span class="dot dot-muted"></span>
+          <span>控制台实页</span>
+          <span class="path">/dashboard</span>
+        </span>
+        <span>工作模式：专家</span>
+      </div>
+
+      <div class="app-topbar">
+        <div class="brand">
+          <div class="brand-logo"><svg aria-hidden="true"><use href="#i-gateway"/></svg></div>
+          <div class="brand-text">
+            <span class="l1">开轩启圭</span>
+            <span class="l2">LLM 网关控制台</span>
+          </div>
+        </div>
+
+        <nav class="app-topbar__nav">
+          <a class="app-topbar__link active" href="#"><svg aria-hidden="true"><use href="#i-grid"/></svg>总览</a>
+          <a class="app-topbar__link" href="#"><svg aria-hidden="true"><use href="#i-activity"/></svg>实时拓扑</a>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">运营管理<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+          </div>
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">模型与路由<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+            <div class="dropdown" style="left:-30px">
+              <div class="dd-head"><span>模型与路由</span><span>7 项</span></div>
+              <a href="#"><svg aria-hidden="true"><use href="#i-tag"/></svg>模型与目录</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-activity"/></svg>路由全景</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-plug"/></svg>凭据监控</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-sliders"/></svg>AUTO 路由运营</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-plug"/></svg>供应商</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-activity"/></svg>用量趋势分析</a>
+              <a href="#"><svg aria-hidden="true"><use href="#i-gift"/></svg>FreeLLM 免费模型</a>
+            </div>
+          </div>
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">租户用户<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+          </div>
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">请求与会话<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+          </div>
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">数据运维<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+          </div>
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">运维中心<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+          </div>
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">接入指南<svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></button>
+          </div>
+        </nav>
+
+        <div class="app-topbar__right">
+          <div class="mode-switch">
+            <button class="mode-btn expert" type="button">
+              <svg aria-hidden="true" style="width:13px;height:13px"><use href="#i-sliders"/></svg>
+              专家模式
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+          </div>
+          <button class="icon-btn" type="button" aria-label="语言"><svg aria-hidden="true"><use href="#i-globe"/></svg></button>
+          <button class="icon-btn" type="button" aria-label="刷新"><svg aria-hidden="true"><use href="#i-refresh"/></svg></button>
+          <span class="user-chip"><span class="avatar">A</span> admin</span>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <div class="page-header">
+          <div>
+            <h3>总览</h3>
+            <div class="desc">近 24 小时 · 平台视角，含探针、路由决策、对账与运维状态</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-sliders"/></svg>切换时间范围</button>
+          </div>
+        </div>
+
+        <div class="metric-bar" style="grid-template-columns:repeat(4,1fr)">
+          <div class="metric-cell">
+            <div class="metric-label">今日请求</div>
+            <div class="metric-value">1,284<small>笔</small></div>
+            <div class="metric-context"><span class="delta up">较昨日 +12%</span><span>含探针 218 笔</span></div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-label">成功率</div>
+            <div class="metric-value">99.2<small>%</small></div>
+            <div class="metric-context"><span class="delta down">失败 10 笔</span><span>熔断 open 1 次</span></div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-label">Token 用量</div>
+            <div class="metric-value">2.41<small>M</small></div>
+            <div class="metric-context"><span>按模型分 6 档</span><span>已对账</span></div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-label">候选命中率</div>
+            <div class="metric-value">87.3<small>%</small></div>
+            <div class="metric-context"><span>熔断冷却 2 个</span><span>探针在跑</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h4>专家模式下多出来的面板</h4><span class="more">全部 50 条</span></div>
+          <div class="panel-body">
+            <div class="legend">
+              <span class="legend-item"><svg aria-hidden="true"><use href="#i-activity"/></svg>探针健康与节点状态</span>
+              <span class="legend-item"><svg aria-hidden="true"><use href="#i-sliders"/></svg>路由候选与决策审计</span>
+              <span class="legend-item"><svg aria-hidden="true"><use href="#i-list"/></svg>对账报表与用量趋势</span>
+              <span class="legend-item"><svg aria-hidden="true"><use href="#i-layers"/></svg>模块与插件管理</span>
+              <span class="legend-item"><svg aria-hidden="true"><use href="#i-shield"/></svg>安全检测与脱敏规则</span>
+              <span class="legend-item"><svg aria-hidden="true"><use href="#i-cog"/></svg>93 个后台任务与配额</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 画面三：模式切换器 ══════════════ -->
+  <section class="sec" id="s3">
+    <div class="sec-head">
+      <h2>模式切换器</h2>
+      <span class="tagline">顶栏快捷入口，设置页是权威入口</span>
+    </div>
+    <p class="sec-desc">
+      顶栏放一个当前模式指示器，点开能看到两种模式的差别与生效时机，但切换动作本身在系统设置里完成——那里才有完整的影响清单。
+    </p>
+
+    <div class="console" style="max-width:880px">
+      <div class="console-tag">
+        <span class="left"><span class="dot dot-success"></span><span>顶栏展开态</span></span>
+        <span>工作模式</span>
+      </div>
+      <div class="app-topbar" style="justify-content:flex-end;position:relative">
+        <div class="app-topbar__right">
+          <div class="mode-switch">
+            <button class="mode-btn" type="button">
+              <svg aria-hidden="true" style="width:13px;height:13px"><use href="#i-sliders"/></svg>
+              简易模式
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="mode-panel" style="width:320px">
+              <h4>工作模式</h4>
+              <p>一个开关，同时决定控制台露出哪些页面、网关启动哪些子系统、设置项给出什么默认值。</p>
+              <div class="mode-opt on">
+                <span class="radio"></span>
+                <span>
+                  <span class="t">简易模式</span>
+                  <span class="d">当前。14 个可见页面，探针与重型子系统不启动</span>
+                </span>
+              </div>
+              <div class="mode-opt">
+                <span class="radio"></span>
+                <span>
+                  <span class="t">专家模式</span>
+                  <span class="d">导航 63 项，全部子系统启动</span>
+                </span>
+              </div>
+              <div style="margin-top:var(--kx-space-3);padding-top:var(--kx-space-3);border-top:1px solid var(--kx-border);display:flex;flex-direction:column;gap:var(--kx-space-2)">
+                <span class="badge badge-muted">切换不丢数据，专家模式下的设置保留在库中</span>
+                <button class="btn btn-primary" type="button" style="justify-content:center">
+                  <svg aria-hidden="true"><use href="#i-sliders"/></svg>在系统设置中切换
+                </button>
+              </div>
+            </div>
+          </div>
+          <button class="icon-btn" type="button" aria-label="语言"><svg aria-hidden="true"><use href="#i-globe"/></svg></button>
+          <span class="user-chip"><span class="avatar">A</span> admin</span>
+        </div>
+      </div>
+      <div style="height:300px;padding:var(--kx-space-4);display:flex;flex-direction:column;gap:var(--kx-space-3)">
+        <div style="height:10px;width:32%;border-radius:4px;background:var(--kx-code-bg)"></div>
+        <div style="height:10px;width:56%;border-radius:4px;background:var(--kx-code-bg);opacity:.7"></div>
+        <div style="flex:1;border-radius:var(--radius-card);background:var(--kx-code-bg);opacity:.45"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 画面四：设置页 ══════════════ -->
+  <section class="sec" id="s4">
+    <div class="sec-head">
+      <h2>简易模式 · 系统设置</h2>
+      <span class="tagline">24 个类别只露 3 个，其余收进高级区</span>
+    </div>
+    <p class="sec-desc">
+      工作模式开关放在设置页顶部，切换前列出影响清单并区分「立即生效」与「需要重启」。被降级的项带徽标标出来，不藏在没有标记的灰色里。
+    </p>
+
+    <div class="console">
+      <div class="console-tag">
+        <span class="left"><span class="dot dot-success"></span><span>控制台实页</span><span class="path">/admin/settings</span></span>
+        <span>工作模式：简易</span>
+      </div>
+
+      <div class="main-content">
+        <div class="mode-card">
+          <div class="top">
+            <div>
+              <h4>工作模式</h4>
+              <p class="desc">
+                决定控制台露出哪些页面、网关启动哪些子系统、设置项给出什么默认值。切换不会删除任何数据，专家模式下的设置保留在库中，切回去立刻恢复。
+              </p>
+            </div>
+            <div class="seg">
+              <button class="active" type="button">简易</button>
+              <button type="button">专家</button>
+            </div>
+          </div>
+
+          <div class="impact-list">
+            <div class="impact-box">
+              <div class="h"><svg aria-hidden="true" style="width:13px;height:13px"><use href="#i-check"/></svg>立即生效</div>
+              <ul>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>导航从 63 项收到 14 个页面，50 条折叠</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>设置页类别从 24 个收到 3 个</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>设置值改用简易模式预设</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>降级项显示徽标</li>
+              </ul>
+            </div>
+            <div class="impact-box">
+              <div class="h"><svg aria-hidden="true" style="width:13px;height:13px;color:var(--kx-warning)"><use href="#i-alert"/></svg>需要重启网关</div>
+              <ul>
+                <li><svg aria-hidden="true" style="color:var(--kx-warning)"><use href="#i-alert"/></svg>8 套探针停止</li>
+                <li><svg aria-hidden="true" style="color:var(--kx-warning)"><use href="#i-alert"/></svg>93 个后台任务中 78 个停止</li>
+                <li><svg aria-hidden="true" style="color:var(--kx-warning)"><use href="#i-alert"/></svg>熔断语义改写为直连失败即失败</li>
+                <li><svg aria-hidden="true" style="color:var(--kx-warning)"><use href="#i-alert"/></svg>URSM v2 与多层队列不装配</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="cat-list">
+            <button class="cat-item active" type="button"><svg aria-hidden="true"><use href="#i-cog"/></svg>通用<span class="cnt">21</span></button>
+            <button class="cat-item" type="button"><svg aria-hidden="true"><use href="#i-sliders"/></svg>压缩<span class="cnt">29</span></button>
+            <button class="cat-item" type="button"><svg aria-hidden="true"><use href="#i-activity"/></svg>限流<span class="cnt">6</span></button>
+            <button class="cat-item advanced" type="button"><svg aria-hidden="true"><use href="#i-layers"/></svg>高级类别<span class="cnt">21</span></button>
+          </div>
+
+          <div>
+            <div class="panel">
+              <div class="panel-head"><h4>通用</h4><span class="badge badge-muted">21 项</span></div>
+              <div class="panel-body">
+                <div class="set-row">
+                  <div class="info">
+                    <div class="k">audit.enabled</div>
+                    <div class="d">审计日志。简易模式下保留轻量审计，谁用了哪把密钥仍然可查</div>
+                  </div>
+                  <span class="badge badge-warning">已降级</span>
+                  <span class="src">模式预设</span>
+                  <button class="switch on" type="button" aria-label="audit.enabled"></button>
+                </div>
+
+                <div class="set-row">
+                  <div class="info">
+                    <div class="k">prompt_injection.enabled</div>
+                    <div class="d">提示词注入检测。依赖外部判官端点，个人部署没有该端点</div>
+                  </div>
+                  <span class="badge badge-warning">已降级</span>
+                  <span class="src">模式预设</span>
+                  <button class="switch off-locked" type="button" aria-label="prompt_injection.enabled"></button>
+                </div>
+
+                <div class="set-row">
+                  <div class="info">
+                    <div class="k">session_inspector.enabled</div>
+                    <div class="d">会话健康检查。会持续产生告警，个人场景是噪音</div>
+                  </div>
+                  <span class="badge badge-warning">已降级</span>
+                  <span class="src">模式预设</span>
+                  <button class="switch off-locked" type="button" aria-label="session_inspector.enabled"></button>
+                </div>
+
+                <div class="set-row">
+                  <div class="info">
+                    <div class="k">compression.mode</div>
+                    <div class="d">会话压缩策略。简单模式下 smart，够用且省事</div>
+                  </div>
+                  <span class="src">模式预设</span>
+                  <span class="badge badge-muted" style="font-family:var(--kx-font-mono)">smart</span>
+                </div>
+
+                <div class="set-row">
+                  <div class="info">
+                    <div class="k">routing.max_candidates</div>
+                    <div class="d">单请求可达上游候选数。简单模式取 1，不做跨上游竞争</div>
+                  </div>
+                  <span class="src">模式预设</span>
+                  <span class="badge badge-muted" style="font-family:var(--kx-font-mono)">1</span>
+                </div>
+
+                <div class="set-row">
+                  <div class="info">
+                    <div class="k">error_probe.enabled</div>
+                    <div class="d">错误触发的主动探测。改了要重启才生效</div>
+                  </div>
+                  <span class="badge badge-warning">需重启</span>
+                  <span class="src">模式预设</span>
+                  <button class="switch off-locked" type="button" aria-label="error_probe.enabled"></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h4>高级类别</h4>
+                <span class="badge badge-muted">21 个类别 · 407 项设置</span>
+              </div>
+              <div class="panel-body">
+                <p style="font-size:var(--kx-text-xs);color:var(--kx-muted);max-width:70ch">
+                  会话 123 项、模块 94 项、生命周期 36 项、安全 32 项、探针 22 项、模型质量 12 项、对账与报价等。这些设置在专家模式下仍然可用，切到专家模式即可编辑。
+                </p>
+                <button class="btn" type="button" style="margin-top:var(--kx-space-3)">
+                  <svg aria-hidden="true"><use href="#i-layers"/></svg>切到专家模式编辑这 407 项
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 对照 ══════════════ -->
+  <section class="sec" id="s5">
+    <div class="sec-head">
+      <h2>导航对照</h2>
+      <span class="tagline">专家面收进折叠组，不删除</span>
+    </div>
+    <p class="sec-desc">
+      折叠而不是隐藏，有三个理由：与仓内「不擅自改菜单」的约定一致，保留深链可达，个人用户以后变专业了东西还在原地。
+    </p>
+
+    <div class="compare">
+      <div class="compare-col">
+        <div class="compare-head">
+          <span>专家模式</span>
+          <span class="badge badge-muted">8 组 + 顶层 · 63 项</span>
+        </div>
+        <div class="compare-body">
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-muted)"><use href="#i-grid"/></svg><span class="grp">顶层主链接</span><span class="cnt">3</span></div>
+          <div class="nav-line"><span class="grp">运营管理</span><span class="cnt">13</span></div>
+          <div class="nav-line"><span class="grp">模型与路由</span><span class="cnt">7</span></div>
+          <div class="nav-line"><span class="grp">租户用户</span><span class="cnt">5</span></div>
+          <div class="nav-line"><span class="grp">请求与会话</span><span class="cnt">6</span></div>
+          <div class="nav-line"><span class="grp">数据运维</span><span class="cnt">16</span></div>
+          <div class="nav-line"><span class="grp">运维中心</span><span class="cnt">7</span></div>
+          <div class="nav-line"><span class="grp">接入指南</span><span class="cnt">5</span></div>
+          <div class="nav-line"><span class="grp">对话</span><span class="cnt">1</span></div>
+        </div>
+      </div>
+
+      <div class="compare-col">
+        <div class="compare-head">
+          <span>简易模式</span>
+          <span class="badge badge-primary">14 个页面可见 · 50 条折叠</span>
+        </div>
+        <div class="compare-body">
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-grid"/></svg><span class="grp">总览</span><span class="cnt">1</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-activity"/></svg><span class="grp">实时拓扑</span><span class="cnt">1</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-plug"/></svg><span class="grp">供应商与模型</span><span class="cnt">2</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-key"/></svg><span class="grp">密钥与用户</span><span class="cnt">3</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-list"/></svg><span class="grp">请求</span><span class="cnt">2</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-book"/></svg><span class="grp">接入指南</span><span class="cnt">3</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-chat"/></svg><span class="grp">对话</span><span class="cnt">1</span></div>
+          <div class="nav-line"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-primary)"><use href="#i-cog"/></svg><span class="grp">系统设置</span><span class="cnt">1</span></div>
+          <div class="nav-line folded"><svg aria-hidden="true" style="width:14px;height:14px;color:var(--kx-warning)"><use href="#i-layers"/></svg><span class="grp">高级</span><span class="cnt" style="color:var(--kx-warning)">50</span></div>
+          <div style="margin-top:var(--kx-space-3);padding-top:var(--kx-space-3);border-top:1px solid var(--kx-border);font-size:var(--kx-text-xs);color:var(--kx-muted)">
+            折叠项仍可用原路径直接访问，深链不断。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:var(--kx-space-4);border:1px solid var(--kx-border);border-radius:var(--kx-radius,14px);overflow:auto">
+      <table class="data-table">
+        <thead>
+          <tr><th style="width:26%">组</th><th style="width:10%" class="num">专家</th><th style="width:10%" class="num">简易</th><th>简易模式下的处理</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>运维中心</td><td class="num">7</td><td class="num">0</td><td>整组折叠，全是外部维护台与 VibeCoding</td></tr>
+          <tr><td>数据运维</td><td class="num">16</td><td class="num">1</td><td>保留系统设置，其余 15 项折叠</td></tr>
+          <tr><td>运营管理</td><td class="num">13</td><td class="num">0</td><td>整组折叠，报价与销售对个人无意义；租户侧 5 项租户登录时直接露出</td></tr>
+          <tr><td>请求与会话</td><td class="num">6</td><td class="num">1</td><td>保留请求日志；用量统计另起一页</td></tr>
+          <tr><td>模型与路由</td><td class="num">7</td><td class="num">2</td><td>保留模型目录与供应商，路由相关 5 项折叠</td></tr>
+          <tr><td>租户用户</td><td class="num">5</td><td class="num">3</td><td>保留用户、密钥、租户</td></tr>
+          <tr><td>接入指南</td><td class="num">5</td><td class="num">3</td><td>保留接入示例、自动配置、帮助手册</td></tr>
+          <tr><td>对话</td><td class="num">1</td><td class="num">1</td><td>保留</td></tr>
+          <tr><td>顶层主链接</td><td class="num">3</td><td class="num">2</td><td>保留总览、实时拓扑；请求阶段树折叠</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sec-desc" style="margin-top:var(--kx-space-3)">
+      专家面 <span class="num">63</span> 项 = 简易模式露出的 <span class="num">13</span> 个既有入口 + 折叠的 <span class="num">50</span> 条。
+      导航对照里写的 <span class="num">14</span> 个可见页面，另有一个是本次要新建的简化页「用量统计」，它不在 <span class="num">63</span> 项里。
+    </p>
+  </section>
+
+  <!-- ══════════════ 设计决策 ══════════════ -->
+  <section class="sec" id="s6">
+    <div class="sec-head">
+      <h2>稿子里的设计取舍</h2>
+      <span class="tagline">每一条都对应方案里的原则</span>
+    </div>
+
+    <div class="table-wrap" style="border:1px solid var(--kx-border);border-radius:14px;overflow:auto">
+      <table class="data-table">
+        <thead>
+          <tr><th style="width:22%">决定</th><th style="width:30%">做法</th><th>理由</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>专家面折叠不隐藏</td>
+            <td>收进「高级」分组，50 条，展开可见</td>
+            <td>与仓内「不擅自改菜单」约定一致；深链可达；用户以后变专业了东西还在</td>
+          </tr>
+          <tr>
+            <td>用量统计是简易模式新页</td>
+            <td>另起一页「用量统计」，只呈现本租户的 Token 与花费</td>
+            <td>个人用户要知道花了多少钱，但不需要供应商维度拆分、模型分线与对账口径</td>
+          </tr>
+          <tr>
+            <td>系统设置单独成组</td>
+            <td>从「数据运维」组里提出来，顶栏单列</td>
+            <td>工作模式开关在那里，它不该藏在高级折叠组里</td>
+          </tr>
+          <tr>
+            <td>模式指示器在顶栏</td>
+            <td>只显示当前模式，切换动作指向设置页</td>
+            <td>权威入口是设置页（那里有影响清单）；顶栏只做状态可见，不做第二份真相</td>
+          </tr>
+          <tr>
+            <td>降级项带「已降级」徽标</td>
+            <td>开关行内标出，并标「需重启」</td>
+            <td>降级了要说降级了。灰色但无标记等于不可见的强制行为</td>
+          </tr>
+          <tr>
+            <td>指标做成一条分格面</td>
+            <td>4 格共处一个面板，每格带口径</td>
+            <td>指标要有语境，不是四个数字并排</td>
+          </tr>
+          <tr>
+            <td>简易模式保留新手引导</td>
+            <td>总览顶部一条 4 步进度，当前步高亮</td>
+            <td>个人用户第一次打开控制台，应该先看见「还差什么」</td>
+          </tr>
+          <tr>
+            <td>导航图标用 SVG</td>
+            <td>手写线条图标，非 emoji</td>
+            <td>DESIGN.md §6「图标是画出来的」。当前控制台导航仍在用 emoji 字形，落地时一并换掉</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note note-warning" style="margin-top:var(--kx-space-4)">
+      <p>
+        <b>稿子没画的部分：</b>移动端（<code>AppBottomNav</code> 的底部导航在简易模式下的取舍）、供应商凭据页与密钥签发页的具体表单收窄、以及熔断语义改写后错误文案的措辞。这几处需要先定行为再画，不是画完再定。
+      </p>
+    </div>
+  </section>
+
+  <footer id="foot" style="border-top:1px solid var(--kx-border);padding-top:var(--kx-space-5);font-size:var(--kx-text-sm);color:var(--kx-muted)">
+    <p>
+      本稿的界面数据是示例值，用于呈现布局与层级，不代表生产数据。结构照抄 <span style="font-family:var(--kx-font-mono)">App.vue</span> / <span style="font-family:var(--kx-font-mono)">AppTopbar.vue</span> / <span style="font-family:var(--kx-font-mono)">AppNavDrawer.vue</span>，令牌取自 <span style="font-family:var(--kx-font-mono)">web/src/style.css</span>，遵循 <span style="font-family:var(--kx-font-mono)">DESIGN.md</span> 的控制台规范。
+    </p>
+    <p>
+      配套方案文档：<span style="font-family:var(--kx-font-mono)">docs/03-design/02-feature-design/simple-expert-mode-design.html</span>
+    </p>
+    <p>
+      配套整页与菜单概念稿：<a href="simple-mode-concept.html">docs/03-design/02-feature-design/simple-mode-concept.html</a>
+      （顶栏九个位置的展开态、63 个专家面入口的逐条归属）
+    </p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var toggle = document.getElementById('theme-toggle');
+  var icon = document.getElementById('theme-icon');
+  var KEY = 'llmgw_mockup_theme';
+  function apply(theme) {
+    root.setAttribute('data-theme', theme);
+    icon.innerHTML = '<use href="#i-' + (theme === 'dark' ? 'sun' : 'moon') + '"/>';
+    try { localStorage.setItem(KEY, theme); } catch (e) { /* 隐私模式降级 */ }
+  }
+  var saved = null;
+  try { saved = localStorage.getItem(KEY); } catch (e) { /* 忽略 */ }
+  apply(saved === 'light' ? 'light' : 'dark');
+  toggle.addEventListener('click', function () {
+    apply(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+})();
+</script>
+</body>
+</html>

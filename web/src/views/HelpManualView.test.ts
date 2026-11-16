@@ -156,6 +156,45 @@ const TROUBLESHOOT_CONTRACT = [
   'api-211-admin-probe.py',
 ]
 
+/**
+ * 2026-11-17 真实网关 + 真实登录态逐项实测后校准的锚点。
+ *
+ * ★ 这一组是**实测出来的事实**：每一条都对应一次真实 HTTP 请求或一次真实
+ *   数据库查询的结果，不是从代码推的。改写它们＝把已经验证过的排障依据改坏。
+ * ★ 同样只用 ASCII（端点路径、错误码、字段名、状态串），不引入中文字面量。
+ */
+const TROUBLESHOOT_LIVE_CALIBRATION = [
+  // 健康检查：全量入口是查询参数，不是 /healthz/full 这个路径
+  '/healthz?full=true',
+  // 认证层两种 401 的真实 code（authentication_error 是 type，不是 code）
+  'missing_key',
+  'authentication_required',
+  // 预算与限流的真实 code
+  'budget_exceeded',
+  'rate_limit_exceeded',
+  'key_throttled',
+  'Retry-After',
+  // 诊断端点的必带参数
+  'provider_id=',
+  // 限流写入是整组覆盖：三个旋钮缺一即 400
+  'rate_limit_concurrent',
+  'rate_limit_tpm',
+  'dry-run=false',
+  // 模型列表口径：默认由运营可配，未识别取值返 400
+  'models.list_scope',
+  'canonical_id',
+  // 手工加绑定接口当前 500 的成因
+  '42P08',
+  // 强制改密闸与改密后的吊销纪元
+  'password change required before accessing other APIs',
+  'session revoked: password changed',
+  '/api/auth/change-password',
+  '/api/auth/token',
+  // 启动迁移的真源目录与清单
+  'embeddata/startup',
+  'installed_startup_migrations.tsv',
+]
+
 /** 排障章节的小节前缀（10.2 / 10.4 / 10.5 是重点三节）。 */
 const TROUBLESHOOT_SECTION_PREFIXES = ['10.2 ', '10.4 ', '10.5 ']
 
@@ -174,6 +213,223 @@ describe('troubleshooting sections', () => {
   it('pins the executable troubleshooting details', () => {
     for (const needle of TROUBLESHOOT_CONTRACT) {
       expect(manualSource).toContain(needle)
+    }
+  })
+
+  it('pins the facts calibrated against a live gateway', () => {
+    for (const needle of TROUBLESHOOT_LIVE_CALIBRATION) {
+      expect(manualSource).toContain(needle)
+    }
+  })
+
+  it('does not present the unreadable health path as the full endpoint', () => {
+    // `/healthz/full` 仍然被提及（作为「它不是全量入口」的警示），
+    // 但全量入口的写法必须同时在场——否则读者只有警示、没有正确写法。
+    expect(manualSource).toContain('/healthz?full=true')
+    const fullPathMentions = manualSource.match(/healthz\/full/g) ?? []
+    expect(fullPathMentions.length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * 结构守卫：手册不得使用**解析器渲染不出来**的嵌套构造。
+ *
+ * ★ 背景：`web/src/lib/markdown.ts` 的块模型是**平的**——一个块里不能嵌套
+ *   另一个块。具体地：
+ *   - 引用块把**连续**的 `>` 行压成**一段行内文本** ⇒ 引用块里的 ``` 围栏
+ *     不会被当成代码块（围栏标记和代码会一起变成文字），引用块里的有序列表
+ *     会变成一段以 "1. … 2. …" 开头的长句；
+ *   - 表格识别用的是 `line.trim().startsWith('|')` ⇒ **缩进**的表格会被识别，
+ *     但它会**脱离**前面的列表成为兄弟块，把有序列表**劈成两段**；视图用
+ *     `<ol>` 自动编号 ⇒ 后一段从 1 重新开始，"第 3 步" 会显示成 "1."。
+ * ★ 这两类构造在 2026-11-17 那轮实测校准里真实出现过（引用块内的围栏 +
+ *   列表内的缩进表格），而**手测渲染才发现**：解析层的单测全绿、静态门禁
+ *   全绿、文件里也"看着对"。
+ * ★ 断言全用 ASCII（正则与结构），不引入中文字面量。
+ */
+describe('manual source stays inside the flat block model', () => {
+  /** 逐行扫描，跳过代码围栏内部（代码块里的 `|` 不是表格）。 */
+  function scanOutsideFences(source: string): { line: number; text: string }[] {
+    const out: { line: number; text: string }[] = []
+    let inFence = false
+    source.split('\n').forEach((text, idx) => {
+      if (text.trim().startsWith('```')) {
+        inFence = !inFence
+        return
+      }
+      if (!inFence) out.push({ line: idx + 1, text })
+    })
+    return out
+  }
+
+  it('has no fenced code block inside a block quote', () => {
+    const offenders = scanOutsideFences(manualSource)
+      .filter((l) => /^>\s*```/.test(l.text))
+      .map((l) => l.line)
+    expect(offenders, `fence inside a quote at lines: ${offenders.join(',')}`).toEqual([])
+  })
+
+  it('has no list item inside a block quote', () => {
+    const offenders = scanOutsideFences(manualSource)
+      .filter((l) => /^>\s*(\d+\.|[-*])\s/.test(l.text))
+      .map((l) => l.line)
+    expect(offenders, `list inside a quote at lines: ${offenders.join(',')}`).toEqual([])
+  })
+
+  it('has no indented table row (it would split the preceding list)', () => {
+    const offenders = scanOutsideFences(manualSource)
+      .filter((l) => /^\s+\|/.test(l.text))
+      .map((l) => l.line)
+    expect(offenders, `indented table rows at lines: ${offenders.join(',')}`).toEqual([])
+  })
+
+  it('numbers every ordered list segment 1..N (the view renders <ol>, which always numbers 1..N)', () => {
+    // ★ 关键：视图用的是 `<ol>`（v-for 渲染 `<li>`，**没有 start 属性**）
+    //   ⇒ 浏览器渲染出来的编号**恒为 1..N**，与源码里写的数字无关。
+    //   ⇒ 源码写 "9." 的那一行，页面上会显示成 "3." ⇒ 源码在骗读者。
+    //   ⇒ 判据：每一段有序列表的编号必须**从 1 起且连续**。
+    // ★ 为什么"段内连续"也要查：视图把**连续**的列表项拍平成一个 <ol>
+    //   （嵌套的有序子列表同样会被拍平），所以源码里的编号必须整段连续；
+    //   否则"第 3 步"在页面上会变成别的数字。
+    const lines = scanOutsideFences(manualSource).map((l) => l.text)
+    const isListItem = (t: string) => /^\s*([-*+]|\d+\.)\s+/.test(t)
+    const isOrdered = (t: string) => /^\s*\d+\.\s+/.test(t)
+    const offenders: string[] = []
+    let current: number[] = []
+    const flush = () => {
+      current.forEach((n, i) => {
+        if (n !== i + 1) offenders.push(`item ${i + 1} written as ${n}`)
+      })
+      current = []
+    }
+    for (const text of lines) {
+      if (isListItem(text)) {
+        if (isOrdered(text)) {
+          current.push(Number(/^(\d+)\./.exec(text.trim())![1]))
+        } else {
+          flush() // 有序 → 无序：断段
+        }
+        continue
+      }
+      flush() // 任何非列表行结束当前列表段
+    }
+    flush()
+    expect(offenders, 'ordered list numbering must be 1..N within each segment').toEqual([])
+  })
+})
+
+/**
+ * 渲染层守卫：**源码声明的每个块，都必须真的渲染成对应的元素**。
+ *
+ * ★ 为什么源码层守卫不够：源码守卫管的是「写法别越界」，但决定用户看到
+ *   什么的是**渲染后的 DOM**。这轮实测校准里，引用块里的围栏在源码里
+ *   「看着对」，在 DOM 里却是**一段普通文字**（围栏标记和代码一起被压成
+ *   行内文本）—— 静态门禁全绿、解析器单测全绿，只有把渲染结果数一遍
+ *   才看得见。
+ * ★ 口径（避免「同一个解析器自证」的空转）：源码侧的计数**不经过
+ *   parseMarkdown**（自己扫源码），DOM 侧的计数来自挂载后的真实渲染
+ *   ⇒ 两边独立。引用块的前缀在源码侧被剥掉（语义上它仍是表格/围栏/
+ *   列表），在解析器侧却会被引用分支压平 ⇒ 差值正是要抓的缺陷。
+ */
+describe('manual renders every block the source declares', () => {
+  /** 剥掉引用块前缀（"> "）——看的是「这段内容在语义上是什么」。 */
+  function stripQuote(line: string): string {
+    return line.replace(/^\s*(?:>\s*)+/, '')
+  }
+
+  /** 源码里（围栏外）的行。 */
+  function sourceLinesOutsideFences(source: string): string[] {
+    const out: string[] = []
+    let inFence = false
+    for (const raw of source.split('\n')) {
+      if (/^\s*(?:>\s*)*```/.test(raw)) {
+        inFence = !inFence
+        continue
+      }
+      if (!inFence) out.push(raw)
+    }
+    return out
+  }
+
+  /** 源码里的围栏标记数（含嵌在引用块里的）⇒ 每个代码块两枚标记。 */
+  function countFenceMarkers(source: string): number {
+    return source.split('\n').filter((l) => /^\s*(?:>\s*)*```/.test(l)).length
+  }
+
+  /** 源码里的表格块数：表头行 + 下一行是分隔行 ⇒ 一张表。 */
+  function countSourceTables(source: string): number {
+    const lines = source.split('\n')
+    let n = 0
+    for (let i = 0; i < lines.length; i++) {
+      if (!stripQuote(lines[i]).trim().startsWith('|')) continue
+      const cells = stripQuote(lines[i + 1] ?? '')
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .split('|')
+        .map((c) => c.trim())
+      if (cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c))) n++
+    }
+    return n
+  }
+
+  /** 源码里有序列表「段」的数量（连续的有序项算一段）。 */
+  function countSourceOrderedRuns(source: string): number {
+    let runs = 0
+    let inRun = false
+    for (const raw of sourceLinesOutsideFences(source)) {
+      const isOrdered = /^\s*\d+\.\s+/.test(stripQuote(raw))
+      if (isOrdered) {
+        if (!inRun) runs++
+        inRun = true
+      } else {
+        inRun = false
+      }
+    }
+    return runs
+  }
+
+  it('renders one code block per fenced block in the source', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const expected = countFenceMarkers(manualSource) / 2
+    expect(expected).toBeGreaterThan(0)
+    expect(w.findAll('pre.manual-code')).toHaveLength(expected)
+  })
+
+  it('renders one table per table in the source', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const expected = countSourceTables(manualSource)
+    expect(expected).toBeGreaterThan(0)
+    expect(w.findAll('table.manual-table')).toHaveLength(expected)
+  })
+
+  it('renders one ordered list per ordered run in the source', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const expected = countSourceOrderedRuns(manualSource)
+    expect(expected).toBeGreaterThan(0)
+    expect(w.findAll('ol.manual-list-ordered')).toHaveLength(expected)
+  })
+
+  it('never flattens a fence into a quote', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const leaking = w
+      .findAll('blockquote.manual-quote')
+      .filter((q) => q.text().includes('```'))
+      .map((q) => q.text().slice(0, 60))
+    expect(leaking).toEqual([])
+  })
+
+  it('never nests a table or a code block inside a list or a quote', () => {
+    const w = mount(HelpManualView, { global: { plugins: [testI18n] } })
+    const containers = [
+      ...w.findAll('ol.manual-list-ordered'),
+      ...w.findAll('ul.manual-list'),
+      ...w.findAll('blockquote.manual-quote'),
+    ]
+    expect(containers.length).toBeGreaterThan(0)
+    for (const c of containers) {
+      expect(c.find('table.manual-table').exists()).toBe(false)
+      expect(c.find('pre.manual-code').exists()).toBe(false)
     }
   })
 })

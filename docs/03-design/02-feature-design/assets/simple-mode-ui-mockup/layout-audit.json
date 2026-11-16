@@ -1,0 +1,140 @@
+{
+  "html": "docs/03-design/02-feature-design/simple-mode-ui-mockup.html",
+  "width": 1440,
+  "scale": 2,
+  "themes": {
+    "dark": {
+      "files": [
+        {
+          "file": "dark/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 5505
+        },
+        {
+          "file": "dark/00-cover.png",
+          "label": "封面与导读",
+          "w": 1312,
+          "h": 168
+        },
+        {
+          "file": "dark/01-simple-overview.png",
+          "label": "简易模式 · 总览",
+          "w": 1312,
+          "h": 1058
+        },
+        {
+          "file": "dark/02-expert-overview.png",
+          "label": "专家模式 · 总览",
+          "w": 1312,
+          "h": 689
+        },
+        {
+          "file": "dark/03-mode-switch.png",
+          "label": "模式切换器",
+          "w": 1312,
+          "h": 490
+        },
+        {
+          "file": "dark/04-settings.png",
+          "label": "简易模式 · 系统设置",
+          "w": 1312,
+          "h": 1155
+        },
+        {
+          "file": "dark/05-nav-compare.png",
+          "label": "导航对照",
+          "w": 1312,
+          "h": 930
+        },
+        {
+          "file": "dark/06-decisions.png",
+          "label": "稿子里的设计取舍",
+          "w": 1312,
+          "h": 472
+        },
+        {
+          "file": "dark/07-footer.png",
+          "label": "页脚",
+          "w": 1312,
+          "h": 89
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    },
+    "light": {
+      "files": [
+        {
+          "file": "light/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 5505
+        },
+        {
+          "file": "light/00-cover.png",
+          "label": "封面与导读",
+          "w": 1312,
+          "h": 168
+        },
+        {
+          "file": "light/01-simple-overview.png",
+          "label": "简易模式 · 总览",
+          "w": 1312,
+          "h": 1058
+        },
+        {
+          "file": "light/02-expert-overview.png",
+          "label": "专家模式 · 总览",
+          "w": 1312,
+          "h": 689
+        },
+        {
+          "file": "light/03-mode-switch.png",
+          "label": "模式切换器",
+          "w": 1312,
+          "h": 490
+        },
+        {
+          "file": "light/04-settings.png",
+          "label": "简易模式 · 系统设置",
+          "w": 1312,
+          "h": 1155
+        },
+        {
+          "file": "light/05-nav-compare.png",
+          "label": "导航对照",
+          "w": 1312,
+          "h": 930
+        },
+        {
+          "file": "light/06-decisions.png",
+          "label": "稿子里的设计取舍",
+          "w": 1312,
+          "h": 472
+        },
+        {
+          "file": "light/07-footer.png",
+          "label": "页脚",
+          "w": 1312,
+          "h": 89
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    }
+  },
+  "generatedAt": "2026-11-16T16:17:25.354Z"
+}
