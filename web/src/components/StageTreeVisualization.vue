@@ -43,7 +43,6 @@ const emit = defineEmits<{
 
 // Computed properties
 const isCompact = computed(() => props.mode === 'compact');
-const hasFrame = computed(() => props.frame != null);
 
 const allStages = computed(() => {
   if (!props.frame) return [];
@@ -102,8 +101,8 @@ function formatTime(timestamp: string | undefined): string {
       [overallStatusClass]: true,
     }"
   >
-    <!-- Empty state -->
-    <div v-if="!hasFrame" class="stage-tree-empty">
+    <!-- Empty state（用 frame 直判，便于 vue-tsc 收窄可空 props） -->
+    <div v-if="!frame" class="stage-tree-empty">
       <p>暂无请求数据</p>
     </div>
 

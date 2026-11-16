@@ -19,7 +19,17 @@ import {
   type Provider,
   type CatalogEntry,
 } from '../api'
-import { ElMessage, ElCollapse, ElCollapseItem } from 'element-plus'
+import {
+  ElMessage,
+  ElCollapse,
+  ElCollapseItem,
+  ElButton,
+  ElCheckbox,
+  ElDialog,
+  ElInput,
+  ElOption,
+  ElSelect,
+} from 'element-plus'
 import PageHeader from '../components/ui/PageHeader.vue'
 import { useWorkMode } from '../composables/useWorkMode'
 import { fmtDateTimeShort } from '../i18n/useFormat'
@@ -309,6 +319,7 @@ function stateClass(key: ProviderRow['stateKey']): string {
       :title="t('simpleMode.providers.quickAdd')"
       width="540px"
       :close-on-click-modal="false"
+      style="max-height: 80vh; overflow-y: auto;"
     >
       <div class="quick-add-form">
         <p class="hint">{{ t('simpleMode.providers.quickAddHint') }}</p>

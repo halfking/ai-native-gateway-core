@@ -36,21 +36,22 @@ function generateMockFrame(phase: RoutePhase, includeError = false): StageTreeFr
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 5)}`;
   const now = new Date().toISOString();
   
-  const sendStages = [
-    { key: 'auth' as const, name: '鉴权/限流', status: 'done' as StageStatus, duration_ms: 12 },
-    { key: 'approval' as const, name: '审批', status: 'skipped' as StageStatus },
-    { key: 'injection' as const, name: '注入检测', status: 'skipped' as StageStatus },
-    { key: 'sanitize' as const, name: '脱敏', status: 'skipped' as StageStatus },
-    { key: 'compress' as const, name: '压缩', status: 'skipped' as StageStatus },
-    { key: 'route' as const, name: '路由', status: 'done' as StageStatus, duration_ms: 8 },
-    { key: 'provider' as const, name: '供应商/令牌池', status: 'pending' as StageStatus },
+  // 显式 StageNode[]：避免字面量联合收窄后无法写 metadata/duration_ms/error_*。
+  const sendStages: StageNode[] = [
+    { key: 'auth', name: '鉴权/限流', status: 'done', duration_ms: 12 },
+    { key: 'approval', name: '审批', status: 'skipped' },
+    { key: 'injection', name: '注入检测', status: 'skipped' },
+    { key: 'sanitize', name: '脱敏', status: 'skipped' },
+    { key: 'compress', name: '压缩', status: 'skipped' },
+    { key: 'route', name: '路由', status: 'done', duration_ms: 8 },
+    { key: 'provider', name: '供应商/令牌池', status: 'pending' },
   ];
   
-  const recvStages = [
-    { key: 'first_byte' as const, name: '首字节', status: 'pending' as StageStatus },
-    { key: 'restore' as const, name: '还原', status: 'pending' as StageStatus },
-    { key: 'billing' as const, name: '计量', status: 'pending' as StageStatus },
-    { key: 'reply' as const, name: '回复', status: 'pending' as StageStatus },
+  const recvStages: StageNode[] = [
+    { key: 'first_byte', name: '首字节', status: 'pending' },
+    { key: 'restore', name: '还原', status: 'pending' },
+    { key: 'billing', name: '计量', status: 'pending' },
+    { key: 'reply', name: '回复', status: 'pending' },
   ];
   
   // Update stages based on phase
