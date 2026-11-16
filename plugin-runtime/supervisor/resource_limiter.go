@@ -26,6 +26,7 @@ type ResourceLimiter struct {
 	// Process monitoring (macOS fallback)
 	monitorCancel chan struct{}
 	monitorDone   chan struct{}
+	monitorActive bool // Track if monitoring goroutine is running
 	mu            sync.RWMutex
 	lastStats     *ProcessStats
 }
@@ -186,6 +187,9 @@ func (r *ResourceLimiter) AssignProcess(pid int) error {
 
 	case ModeMonitor:
 		// Start process monitoring
+		r.mu.Lock()
+		r.monitorActive = true
+		r.mu.Unlock()
 		go r.monitorProcess(pid)
 		return nil
 
@@ -321,7 +325,11 @@ func (r *ResourceLimiter) GetStats() *ProcessStats {
 // Cleanup removes the cgroup directory and stops monitoring.
 func (r *ResourceLimiter) Cleanup() error {
 	// Stop monitoring if running
-	if r.mode == ModeMonitor {
+	r.mu.Lock()
+	active := r.monitorActive
+	r.mu.Unlock()
+
+	if r.mode == ModeMonitor && active {
 		close(r.monitorCancel)
 		<-r.monitorDone
 	}
