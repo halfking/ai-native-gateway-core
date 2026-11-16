@@ -118,9 +118,18 @@ export TEST_AUDIT_ISOLATED_DB_URL="$__datasource_dsn"
 export TEST_DATABASE_URL="$__datasource_dsn"
 # ★ TEST_DATA_INIT_DSN（2026-11-16 数据初始化轮）：
 #   admin/data_lifecycle_data_init_{realdb,http_realdb}_test.go 认它。
-#   ★ 该腿的 SQL **只读**（COUNT / MIN / MAX / EXPLAIN）⇒ EXPLAIN 不带 ANALYZE
+#   ★ 这两条腿的 SQL **只读**（COUNT / MIN / MAX / EXPLAIN）⇒ EXPLAIN 不带 ANALYZE
 #     ⇒ 只解析+生成计划，**不执行任何一行** ⇒ 可用通用 DSN（产品库）。
-#   ⚠ 若将来给这条腿加**写**动作 ⇒ 必须改用隔离 DSN（否则会在产品库上落数据）。
+#   ⚠ 若将来给**这两条**腿加**写**动作 ⇒ 必须改用隔离 DSN（否则会在产品库上落数据）。
+#
+# ★ 第三条腿（2026-11-16 补「execute 真删行」证据时新增）：
+#   admin/data_lifecycle_data_init_isolated_db_test.go —— **有写动作**（真 DELETE）。
+#   ⇒ 它为什么仍然安全：**隔离不是靠「换一个指向隔离库的 DSN」，而是靠自建**。
+#     它用 internal/testdb.Create 从 base DSN **派生**一个空的一次性库并连上去
+#     （该 helper 自己断言「返回的 DSN 真的落在那个库里」）⇒
+#     全部 INSERT/DELETE 都只打在一次性库上；base DSN 只是「建库的落点」，
+#     **不承载任何一行数据** ⇒ 事实源把它指向产品库也不会在产品库上落一行。
+#   ⇒ 因此它**留在事实源里**（否则这条腿在两个通道里都是死腿）。
 export TEST_DATA_INIT_DSN="$__datasource_dsn"
 export TEST_DB_URL="$__datasource_dsn"
 export TEST_G6_TOOLS_DSN="$__datasource_dsn"

@@ -614,7 +614,15 @@ type dataInitStore interface {
 	// CountWhere 按谓词计数（算受保护行数）。
 	CountWhere(ctx context.Context, table, where string, args ...any) (int64, error)
 	// Apply 执行删除计划 + 审计行（同一事务）。
-	Apply(ctx context.Context, plan *dataInitPlan, actor, action string, audit map[string]any) ([]int64, error)
+	//
+	// ★ 返回值按**类别 key 索引**（不是按位置对齐的切片）——
+	//
+	//	本实现返回计划里**每一个**类别；某个类别的表在本环境一张都不存在时
+	//	它的值是 0（那种场景是**明确支持**的：老部署没迁移到位 ⇒ 跳过不存在的表）。
+	//	按位置对齐则会在这种场景下**整体错位**：该类别**之后**的每个类别
+	//	都会拿到别人的数字（面板上就会显示「探测记录删了 3 行」，
+	//	而那 3 行其实是**凭据**的）。
+	Apply(ctx context.Context, plan *dataInitPlan, actor, action string, audit map[string]any) (map[string]int64, error)
 }
 
 // pgDataInitStore 是基于 *pgxpool.Pool 的实现。
@@ -722,7 +730,7 @@ func (s *pgDataInitStore) CountWhere(ctx context.Context, table, where string, a
 // ★ 审计行与删除同事务 ⇒ 不会出现「删了但没留痕」或「留了痕但没删」。
 // ★ 不存在的表直接跳过（老部署没迁移到位 ⇒ 不该整单失败）。
 // ★ 返回每个类别实际删除的行数（可能与预览值不同：级联 / 并发写入）。
-func (s *pgDataInitStore) Apply(ctx context.Context, plan *dataInitPlan, actor, action string, audit map[string]any) ([]int64, error) {
+func (s *pgDataInitStore) Apply(ctx context.Context, plan *dataInitPlan, actor, action string, audit map[string]any) (map[string]int64, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -733,7 +741,15 @@ func (s *pgDataInitStore) Apply(ctx context.Context, plan *dataInitPlan, actor, 
 
 	// 事务内再确认一次表存在（预览到执行之间可能发生迁移）。
 	perCat := map[string]int64{}
-	order := []string{}
+	// ★ 计划里出现过的类别**全部先占位 0**——
+	//   「本环境没有该类别的任何表」是受支持场景（老部署没迁移到位 ⇒ 跳过不存在的表），
+	//   若这里只登记真正执行过的类别，调用方按位置对齐就会整体错位
+	//   （见 dataInitStore.Apply 的契约注释）。
+	for _, d := range plan.Deletes {
+		if _, ok := perCat[d.Category]; !ok {
+			perCat[d.Category] = 0
+		}
+	}
 	for _, d := range plan.Deletes {
 		var exists bool
 		if err := tx.QueryRow(ctx,
@@ -748,9 +764,6 @@ func (s *pgDataInitStore) Apply(ctx context.Context, plan *dataInitPlan, actor, 
 		if err != nil {
 			return nil, fmt.Errorf("delete %s: %w", d.Table, err)
 		}
-		if _, ok := perCat[d.Category]; !ok {
-			order = append(order, d.Category)
-		}
 		perCat[d.Category] += tag.RowsAffected()
 	}
 
@@ -763,11 +776,23 @@ func (s *pgDataInitStore) Apply(ctx context.Context, plan *dataInitPlan, actor, 
 		return nil, err
 	}
 
-	out := make([]int64, 0, len(order))
-	for _, c := range order {
-		out = append(out, perCat[c])
+	return perCat, nil
+}
+
+// dataInitPerCategoryCounts 把 Apply 的返回值按计划里的类别对齐。
+//
+// ★ 按**类别 key** 取值，**不按位置** ——
+//
+//	Apply 返回计划里**每一个**类别；某个类别在本环境一张表都没有时它的值是 0。
+//	若这里改成按位置取值 ⇒ 那个类别**之后**的每个类别都会拿到别人的数字
+//	（面板上就会显示「探测记录删了 12,345 行」，而那行数其实是路由记录的）。
+//	⇒ 按 key 取值 ⇒ 缺席的类别就是 0，不存在错位这一形态。
+func dataInitPerCategoryCounts(order []string, deleted map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(order))
+	for _, key := range order {
+		out[key] = deleted[key]
 	}
-	return out, nil
+	return out
 }
 
 // dataInitCategoryOrderOf 返回执行结果与类别顺序对齐。
@@ -1087,15 +1112,8 @@ func (h *Handler) handleDataInitExecute(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	perCat := map[string]int64{}
 	order := planCategories(plan)
-	for i, key := range order {
-		if i < len(deleted) {
-			perCat[key] = deleted[i]
-		} else {
-			perCat[key] = 0
-		}
-	}
+	perCat := dataInitPerCategoryCounts(order, deleted)
 
 	var total int64
 	for _, v := range perCat {
