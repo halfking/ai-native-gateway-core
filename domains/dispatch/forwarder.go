@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -511,7 +512,10 @@ func (cf *credForwarder) attempt(qr *QueuedRequest, gov Governor) {
 			slog.Error("dispatch forward panic recovered",
 				"request_id", qr.ID,
 				"credential_id", cf.cred.CredentialID,
-				"panic", recovered)
+				"panic", recovered,
+				// ★ 栈是定位这类 panic 的唯一线索：recover 只记 panic 值的话，
+				// 现场只能看到「nil pointer dereference」而看不到位置。
+				"stack", string(debug.Stack()))
 			out := ForwardOutcome{Err: fmt.Errorf("forward panic: %v", recovered), ErrorKind: "forward_panic"}
 			cf.pipe.emitAttemptFinished(qr, attempt.AttemptID, out)
 			cf.pipe.complete(qr, out)
