@@ -1,0 +1,1604 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>简易模式 v2 · 与 magpie 对比后的修订设计稿 | 开轩网关</title>
+<style>
+:root {
+  --kx-bg: #070b11;
+  --kx-surface: #0d141d;
+  --kx-surface-2: #111a25;
+  --kx-code-bg: #0a0f16;
+  --kx-border: #1e2936;
+  --kx-border-strong: #2c3a4b;
+  --kx-text: #e6edf5;
+  --kx-text-on-primary: #06090e;
+  --kx-muted: #8a9bb0;
+  --kx-primary: #5b8cff;
+  --kx-primary-soft: rgba(91,140,255,.14);
+  --kx-success: #3ecf8e;
+  --kx-success-soft: rgba(62,207,142,.14);
+  --kx-warning: #f0a53e;
+  --kx-warning-soft: rgba(240,165,62,.14);
+  --kx-danger: #f2635f;
+  --kx-danger-soft: rgba(242,99,95,.14);
+  --kx-font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+  --kx-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --kx-text-2xs: 11px;
+  --kx-text-xs: 12px;
+  --kx-text-sm: 13px;
+  --kx-text-md: 14px;
+  --kx-text-lg: 17px;
+  --kx-text-xl: 22px;
+  --kx-text-2xl: 30px;
+  --kx-space-1: 4px;
+  --kx-space-2: 8px;
+  --kx-space-3: 12px;
+  --kx-space-4: 16px;
+  --kx-space-5: 24px;
+  --kx-space-6: 32px;
+  --kx-space-7: 40px;
+  --kx-space-8: 48px;
+  --radius: 8px;
+  --radius-card: 14px;
+  --radius-lg: 16px;
+  --kx-shadow-sm: 0 8px 24px rgba(0,0,0,.28);
+  --kx-shadow-md: 0 16px 40px rgba(0,0,0,.40);
+  --kx-code-bg: #0a0f16;
+  --kx-motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+html[data-theme='light'] {
+  --kx-bg: #f4f6fa;
+  --kx-surface: #ffffff;
+  --kx-surface-2: #f7f9fc;
+  --kx-code-bg: #eef1f6;
+  --kx-border: #dde3ec;
+  --kx-border-strong: #c6d0dd;
+  --kx-text: #131922;
+  --kx-text-on-primary: #ffffff;
+  --kx-muted: #5d6b7e;
+  --kx-primary: #2f6bff;
+  --kx-primary-soft: rgba(47,107,255,.10);
+  --kx-success: #0f9d63;
+  --kx-success-soft: rgba(15,157,99,.12);
+  --kx-warning: #b46a00;
+  --kx-warning-soft: rgba(180,106,0,.12);
+  --kx-danger: #cf3a36;
+  --kx-danger-soft: rgba(207,58,54,.12);
+  --kx-shadow-sm: 0 8px 24px rgba(30,55,100,.06);
+  --kx-shadow-md: 0 16px 40px rgba(30,50,90,.10);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* 裸 svg 的默认盒子是 300×150，图标必须有兜底尺寸；类规则优先级更高，会覆盖这一条 */
+svg { width: 14px; height: 14px; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+body {
+  background: var(--kx-bg);
+  color: var(--kx-text);
+  font-family: var(--kx-font);
+  font-size: var(--kx-text-md);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--kx-primary); text-decoration: none; }
+code, .mono { font-family: var(--kx-font-mono); font-size: .92em; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ═══════ 页面骨架 ═══════ */
+.wrap { max-width: 1440px; margin: 0 auto; padding: 0 var(--kx-space-6) var(--kx-space-8); }
+
+.doc-head { padding: var(--kx-space-7) 0 var(--kx-space-5); }
+.doc-title { font-size: var(--kx-text-2xl); font-weight: 650; letter-spacing: -.02em; line-height: 1.25; }
+.doc-sub {
+  margin-top: var(--kx-space-3);
+  font-size: var(--kx-text-md); color: var(--kx-muted); max-width: 78ch; line-height: 1.75;
+}
+.doc-sub strong { color: var(--kx-text); font-weight: 600; }
+
+.anchor-nav {
+  position: sticky; top: 0; z-index: 60;
+  display: flex; align-items: center; gap: var(--kx-space-1); flex-wrap: wrap;
+  padding: var(--kx-space-3) 0;
+  background: var(--kx-bg);
+  border-bottom: 1px solid var(--kx-border);
+}
+.anchor-nav a {
+  padding: 5px 11px; border-radius: var(--radius);
+  font-size: var(--kx-text-sm); color: var(--kx-muted);
+  transition: color .18s var(--kx-motion-ease-out), background .18s var(--kx-motion-ease-out);
+}
+.anchor-nav a:hover { color: var(--kx-text); background: var(--kx-surface-2); }
+.anchor-nav .spacer { flex: 1; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: var(--radius); cursor: pointer;
+  font-family: inherit; font-size: var(--kx-text-sm); color: var(--kx-text);
+  background: var(--kx-surface-2); border: 1px solid var(--kx-border);
+  transition: border-color .18s var(--kx-motion-ease-out), color .18s var(--kx-motion-ease-out);
+}
+.btn:hover { border-color: var(--kx-border-strong); }
+.btn svg { width: 15px; height: 15px; }
+.btn-primary {
+  background: var(--kx-primary); border-color: var(--kx-primary); color: var(--kx-text-on-primary);
+}
+.btn-primary:hover { border-color: var(--kx-primary); }
+
+.sec { padding: var(--kx-space-8) 0 0; }
+.sec-head { display: flex; align-items: baseline; gap: var(--kx-space-3); flex-wrap: wrap; }
+.sec-head h2 { font-size: var(--kx-text-xl); font-weight: 620; letter-spacing: -.015em; }
+.tagline { font-size: var(--kx-text-sm); color: var(--kx-muted); }
+.sec-desc {
+  margin-top: var(--kx-space-3); margin-bottom: var(--kx-space-5);
+  font-size: var(--kx-text-sm); color: var(--kx-muted); max-width: 92ch; line-height: 1.8;
+}
+.sec-desc strong { color: var(--kx-text); font-weight: 600; }
+
+.note {
+  border-radius: var(--radius-card); padding: var(--kx-space-4) var(--kx-space-5);
+  font-size: var(--kx-text-sm); color: var(--kx-text); line-height: 1.75;
+  border: 1px solid var(--kx-border); background: var(--kx-surface-2);
+  margin-bottom: var(--kx-space-5);
+}
+.note strong { color: var(--kx-primary); font-weight: 600; }
+
+/* ═══════ 控制台外壳 ═══════ */
+.console {
+  border: 1px solid var(--kx-border); border-radius: var(--radius-lg);
+  background: var(--kx-bg); overflow: hidden;
+}
+.console-tag {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--kx-space-3); padding: 9px var(--kx-space-4);
+  background: var(--kx-code-bg); border-bottom: 1px solid var(--kx-border);
+  font-size: var(--kx-text-xs); color: var(--kx-muted);
+}
+.console-tag .path { font-family: var(--kx-font-mono); }
+.console-tag .left { display: flex; align-items: center; gap: var(--kx-space-2); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--kx-muted); flex: none; }
+.dot-success { background: var(--kx-success); }
+.dot-primary { background: var(--kx-primary); }
+.dot-warning { background: var(--kx-warning); }
+
+.app-topbar {
+  display: flex; align-items: center; gap: var(--kx-space-5);
+  padding: 0 var(--kx-space-4); height: 52px;
+  background: var(--kx-surface); border-bottom: 1px solid var(--kx-border);
+  position: relative; z-index: 30;
+}
+.brand { display: flex; align-items: center; gap: var(--kx-space-2); flex: none; }
+.brand-logo {
+  width: 26px; height: 26px; border-radius: 7px; flex: none;
+  background: var(--kx-primary); color: var(--kx-text-on-primary);
+  display: flex; align-items: center; justify-content: center;
+}
+.brand-logo svg { width: 16px; height: 16px; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+.brand-text .l1 { font-size: var(--kx-text-sm); font-weight: 600; letter-spacing: -.01em; }
+.brand-text .l2 { font-size: var(--kx-text-2xs); color: var(--kx-muted); }
+
+.app-topbar__nav { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+.app-topbar__link {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  padding: 6px 11px; border-radius: var(--radius); white-space: nowrap;
+  font-size: var(--kx-text-sm); color: var(--kx-muted); text-decoration: none;
+  border: none; background: none; font-family: inherit;
+  transition: color .18s var(--kx-motion-ease-out), background .18s var(--kx-motion-ease-out);
+}
+.app-topbar__link:hover { color: var(--kx-text); background: var(--kx-code-bg); }
+.app-topbar__link.active { color: var(--kx-primary); background: var(--kx-primary-soft); font-weight: 500; }
+.app-topbar__group { position: relative; }
+.app-topbar__group-trigger { position: relative; }
+.app-topbar__group-trigger .chev { width: 11px; height: 11px; opacity: .7; }
+.group-count {
+  font-size: var(--kx-text-2xs); font-variant-numeric: tabular-nums;
+  color: var(--kx-muted); background: var(--kx-code-bg);
+  border: 1px solid var(--kx-border); border-radius: 4px; padding: 0 4px;
+}
+.app-topbar__right { display: flex; align-items: center; gap: var(--kx-space-2); flex: none; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--radius); cursor: pointer;
+  background: none; border: 1px solid transparent; color: var(--kx-muted);
+  transition: color .18s var(--kx-motion-ease-out), border-color .18s var(--kx-motion-ease-out);
+}
+.icon-btn:hover { color: var(--kx-text); border-color: var(--kx-border); }
+.icon-btn svg { width: 16px; height: 16px; }
+.user-chip {
+  display: inline-flex; align-items: center; gap: var(--kx-space-2);
+  padding: 4px 10px 4px 4px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--kx-border); background: var(--kx-code-bg);
+  font-size: var(--kx-text-xs); color: var(--kx-text);
+}
+.avatar {
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  background: var(--kx-primary-soft); color: var(--kx-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--kx-text-2xs); font-weight: 600;
+}
+
+.mode-switch { position: relative; flex: none; }
+.mode-btn {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font-family: inherit; font-size: var(--kx-text-xs); font-weight: 500;
+  padding: 5px 10px; border-radius: var(--radius);
+  background: var(--kx-primary-soft); color: var(--kx-primary);
+  border: 1px solid var(--kx-primary);
+}
+.mode-btn .chev { width: 11px; height: 11px; }
+.mode-btn svg { width: 13px; height: 13px; flex: none; }
+
+/* ═══════ 菜单面板 ═══════ */
+.dropdown {
+  position: absolute; top: calc(100% + 7px); left: 0; z-index: 40;
+  min-width: 230px; padding: var(--kx-space-2);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); box-shadow: var(--kx-shadow-md);
+}
+.dropdown.right { left: auto; right: 0; }
+.dd-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--kx-space-3);
+  padding: var(--kx-space-2) var(--kx-space-2) var(--kx-space-3);
+  border-bottom: 1px solid var(--kx-border); margin-bottom: var(--kx-space-1);
+}
+.dd-head .t { font-size: var(--kx-text-xs); font-weight: 600; color: var(--kx-text); }
+.dd-head .n { font-size: var(--kx-text-2xs); color: var(--kx-muted); font-variant-numeric: tabular-nums; }
+.dd-item {
+  display: flex; align-items: center; gap: var(--kx-space-3);
+  padding: 7px var(--kx-space-2); border-radius: var(--radius);
+  font-size: var(--kx-text-sm); color: var(--kx-text); text-decoration: none;
+  transition: background .18s var(--kx-motion-ease-out);
+}
+.dd-item:hover { background: var(--kx-surface-2); }
+.dd-item.active { background: var(--kx-primary-soft); color: var(--kx-primary); }
+.dd-icon { width: 15px; height: 15px; flex: none; color: var(--kx-muted); }
+.dd-item.active .dd-icon { color: var(--kx-primary); }
+.dd-item .lb { flex: 1; min-width: 0; }
+.dd-item .sub { display: block; font-size: var(--kx-text-2xs); color: var(--kx-muted); line-height: 1.5; }
+.dd-item .sub .path-mono { font-family: var(--kx-font-mono); }
+.dd-item .ext { font-size: var(--kx-text-2xs); color: var(--kx-muted); }
+.dd-badge {
+  font-size: var(--kx-text-2xs); font-variant-numeric: tabular-nums;
+  padding: 1px 5px; border-radius: 4px; flex: none;
+  background: var(--kx-code-bg); border: 1px solid var(--kx-border); color: var(--kx-muted);
+}
+.dd-sep { height: 1px; background: var(--kx-border); margin: var(--kx-space-2) 0; }
+.dd-group-label {
+  font-size: var(--kx-text-2xs); color: var(--kx-muted);
+  padding: var(--kx-space-3) var(--kx-space-2) var(--kx-space-1);
+}
+
+/* ═══════ 页面主区 ═══════ */
+.page-body { padding: var(--kx-space-5) var(--kx-space-5) var(--kx-space-6); }
+.page-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--kx-space-4); margin-bottom: var(--kx-space-4);
+}
+.page-title { font-size: var(--kx-text-lg); font-weight: 600; }
+.page-sub { font-size: var(--kx-text-xs); color: var(--kx-muted); margin-top: 2px; }
+.page-actions { display: flex; gap: var(--kx-space-2); flex: none; }
+
+.guide {
+  background: var(--kx-primary-soft); border: 1px solid var(--kx-primary);
+  border-radius: var(--radius-card); padding: var(--kx-space-4) var(--kx-space-5);
+  margin-bottom: var(--kx-space-4);
+}
+.guide-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--kx-space-3); }
+.guide-title { font-size: var(--kx-text-sm); font-weight: 600; }
+.guide-steps { display: flex; align-items: center; gap: var(--kx-space-2); flex-wrap: wrap; }
+.gstep { display: inline-flex; align-items: center; gap: 7px; font-size: var(--kx-text-sm); color: var(--kx-muted); }
+.gstep .n {
+  width: 18px; height: 18px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--kx-text-2xs); font-weight: 600; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--kx-border); color: var(--kx-muted); background: var(--kx-code-bg);
+}
+.gstep.done { color: var(--kx-text); }
+.gstep.done .n { background: var(--kx-success); border-color: var(--kx-success); color: var(--kx-text-on-primary); }
+.gstep.now { color: var(--kx-primary); }
+.gstep.now .n { background: var(--kx-primary); border-color: var(--kx-primary); color: var(--kx-text-on-primary); }
+.garrow { color: var(--kx-border-strong); font-size: var(--kx-text-sm); }
+
+.metric-bar {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); overflow: hidden; margin-bottom: var(--kx-space-4);
+}
+.metric-cell { padding: var(--kx-space-4) var(--kx-space-5); border-left: 1px solid var(--kx-border); }
+.metric-cell:first-child { border-left: none; }
+.metric-cell .k { font-size: var(--kx-text-xs); color: var(--kx-muted); }
+.metric-cell .v {
+  font-size: var(--kx-text-2xl); font-weight: 600; line-height: 1.25; margin-top: 2px;
+  font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+}
+.metric-cell .v .u { font-size: var(--kx-text-sm); font-weight: 400; color: var(--kx-muted); margin-left: 3px; }
+.metric-cell .d { font-size: var(--kx-text-xs); color: var(--kx-muted); margin-top: 3px; }
+.metric-cell .d .up { color: var(--kx-success); }
+.metric-cell .d .bad { color: var(--kx-danger); }
+
+.page-cols { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: var(--kx-space-4); align-items: start; }
+.panel {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); overflow: hidden;
+}
+.panel + .panel { margin-top: var(--kx-space-4); }
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--kx-space-3);
+  padding: var(--kx-space-3) var(--kx-space-4); border-bottom: 1px solid var(--kx-border);
+}
+.panel-head .t { font-size: var(--kx-text-sm); font-weight: 600; }
+.panel-head .a { font-size: var(--kx-text-xs); color: var(--kx-primary); cursor: pointer; }
+
+table { width: 100%; border-collapse: collapse; font-size: var(--kx-text-sm); }
+thead th {
+  text-align: left; font-weight: 500; color: var(--kx-muted); font-size: var(--kx-text-xs);
+  padding: var(--kx-space-2) var(--kx-space-4); border-bottom: 1px solid var(--kx-border);
+  background: var(--kx-code-bg);
+}
+tbody td {
+  padding: var(--kx-space-2) var(--kx-space-4);
+  border-bottom: 1px solid var(--kx-border); color: var(--kx-text);
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--kx-surface-2); }
+/* 归属表：四列配平，路径列最宽但不至于空出一大片 */
+#s3 table { table-layout: fixed; }
+#s3 th:nth-child(1), #s3 td:nth-child(1) { width: 19%; }
+#s3 th:nth-child(2), #s3 td:nth-child(2) { width: 34%; }
+#s3 th:nth-child(3), #s3 td:nth-child(3) { width: 23%; }
+#s3 th:nth-child(4), #s3 td:nth-child(4) { width: 24%; }
+td.path, td.mono { font-family: var(--kx-font-mono); font-size: var(--kx-text-xs); color: var(--kx-muted); }
+td.n { font-variant-numeric: tabular-nums; text-align: right; color: var(--kx-muted); }
+th.n { text-align: right; }
+
+.chip {
+  display: inline-block; padding: 1px 7px; border-radius: 5px;
+  font-size: var(--kx-text-2xs); white-space: nowrap;
+  border: 1px solid var(--kx-border); background: var(--kx-code-bg); color: var(--kx-muted);
+}
+.chip-primary { color: var(--kx-primary); border-color: var(--kx-primary); background: var(--kx-primary-soft); }
+.chip-muted { color: var(--kx-muted); }
+.chip-warn { color: var(--kx-warning); border-color: var(--kx-warning); background: var(--kx-warning-soft); }
+.chip-ok { color: var(--kx-success); border-color: var(--kx-success); background: var(--kx-success-soft); }
+
+.up-list { padding: var(--kx-space-2) var(--kx-space-4) var(--kx-space-3); }
+.up-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--kx-space-3);
+  padding: var(--kx-space-3) 0; border-bottom: 1px solid var(--kx-border);
+}
+.up-row:last-child { border-bottom: none; }
+.up-name { font-size: var(--kx-text-sm); display: flex; align-items: center; gap: var(--kx-space-2); }
+.up-name .host { display: block; font-size: var(--kx-text-2xs); color: var(--kx-muted); font-family: var(--kx-font-mono); }
+.up-ms { font-size: var(--kx-text-xs); color: var(--kx-muted); font-variant-numeric: tabular-nums; flex: none; }
+.up-state { font-size: var(--kx-text-xs); flex: none; }
+
+.code-box {
+  background: var(--kx-code-bg); border: 1px solid var(--kx-border);
+  border-radius: var(--radius); padding: var(--kx-space-3);
+  font-family: var(--kx-font-mono); font-size: var(--kx-text-xs); color: var(--kx-text);
+  word-break: break-all;
+}
+
+/* ═══════ 菜单总貌网格 ═══════ */
+.menu-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+  gap: var(--kx-space-4); align-items: start;
+}
+.menu-cell {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); overflow: hidden;
+}
+.menu-cell > .hd {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--kx-space-2);
+  padding: var(--kx-space-3) var(--kx-space-4);
+  background: var(--kx-code-bg); border-bottom: 1px solid var(--kx-border);
+}
+.menu-cell > .hd .t { font-size: var(--kx-text-sm); font-weight: 600; }
+.menu-cell > .hd .n {
+  font-size: var(--kx-text-2xs); color: var(--kx-muted); font-variant-numeric: tabular-nums;
+}
+.menu-cell > .bd { padding: var(--kx-space-2); }
+
+/* ═══════ 规则表 ═══════ */
+.rules { display: grid; gap: var(--kx-space-3); }
+.rule {
+  display: grid; grid-template-columns: 1fr; gap: var(--kx-space-2);
+  padding: var(--kx-space-4) var(--kx-space-5);
+  background: var(--kx-surface); border: 1px solid var(--kx-border); border-radius: var(--radius-card);
+}
+.rule .rt { font-size: var(--kx-text-sm); font-weight: 600; }
+.rule .rb { font-size: var(--kx-text-sm); color: var(--kx-muted); line-height: 1.75; }
+.rule .rc { font-size: var(--kx-text-xs); color: var(--kx-primary); font-family: var(--kx-font-mono); }
+
+.foot {
+  margin-top: var(--kx-space-8); padding-top: var(--kx-space-5);
+  border-top: 1px solid var(--kx-border);
+  font-size: var(--kx-text-xs); color: var(--kx-muted); line-height: 1.9;
+}
+.foot a { color: var(--kx-primary); }
+
+.legend { display: flex; gap: var(--kx-space-4); flex-wrap: wrap; margin-bottom: var(--kx-space-4); }
+.legend .li { display: inline-flex; align-items: center; gap: 6px; font-size: var(--kx-text-xs); color: var(--kx-muted); }
+
+@media (max-width: 1100px) {
+  .page-cols { grid-template-columns: 1fr; }
+  .metric-bar { grid-template-columns: repeat(2, 1fr); }
+  .metric-cell:nth-child(3) { border-left: none; }
+  .metric-cell:nth-child(n+3) { border-top: 1px solid var(--kx-border); }
+}
+
+/* ═══════ v2 新增组件 ═══════ */
+.path { font-family: var(--kx-font-mono); font-size: var(--kx-text-xs); }
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: var(--kx-text-2xs); line-height: 1.6; white-space: nowrap;
+  border: 1px solid var(--kx-border-strong); color: var(--kx-muted);
+}
+.pill.yes { color: var(--kx-success); border-color: var(--kx-success); background: var(--kx-success-soft); }
+.pill.no { color: var(--kx-danger); border-color: var(--kx-danger); background: var(--kx-danger-soft); }
+.pill.part { color: var(--kx-warning); border-color: var(--kx-warning); background: var(--kx-warning-soft); }
+.pill.muted { color: var(--kx-muted); }
+.kpi-inline { font-size: var(--kx-text-xs); color: var(--kx-muted); margin-right: var(--kx-space-2); }
+.kpi-inline .num { color: var(--kx-text); }
+.seg-tabs { display: flex; gap: var(--kx-space-1); border-bottom: 1px solid var(--kx-border); margin-bottom: var(--kx-space-4); }
+.seg-tabs span { padding: 7px 14px; font-size: var(--kx-text-sm); color: var(--kx-muted); border-bottom: 2px solid transparent; }
+.seg-tabs span.on { color: var(--kx-text); border-bottom-color: var(--kx-primary); }
+.client-row td .sub { display: block; font-size: var(--kx-text-2xs); color: var(--kx-muted); font-weight: 400; }
+.sel {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--kx-border-strong); border-radius: var(--kx-radius);
+  padding: 2px 8px; font-size: var(--kx-text-xs); background: var(--kx-surface);
+}
+.sel .chev { width: 11px; height: 11px; color: var(--kx-muted); }
+.fold-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px var(--kx-space-4); border-top: 1px solid var(--kx-border);
+  font-size: var(--kx-text-xs); color: var(--kx-muted);
+}
+.fold-count { font-weight: 600; color: var(--kx-text); }
+.field { display: flex; align-items: center; gap: var(--kx-space-2); margin-bottom: var(--kx-space-2); }
+.field .fl { width: 62px; flex: none; font-size: var(--kx-text-sm); color: var(--kx-muted); }
+.inp {
+  flex: 1; border: 1px solid var(--kx-border-strong); border-radius: var(--kx-radius);
+  padding: 6px 10px; font-size: var(--kx-text-sm); background: var(--kx-surface); color: var(--kx-text);
+}
+.inp.ph { color: var(--kx-muted); }
+.hint { margin-top: var(--kx-space-3); font-size: var(--kx-text-xs); color: var(--kx-muted); line-height: 1.7; }
+.drawer { margin-top: var(--kx-space-3); border-top: 1px dashed var(--kx-border-strong); padding-top: var(--kx-space-3); font-size: var(--kx-text-xs); color: var(--kx-muted); }
+.picker { border: 1px solid var(--kx-border); border-radius: var(--kx-radius); overflow: hidden; }
+.picker-sec { padding: var(--kx-space-3) var(--kx-space-4); border-bottom: 1px solid var(--kx-border); }
+.picker-sec:last-child { border-bottom: none; }
+.picker-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--kx-space-3); margin-bottom: var(--kx-space-2); }
+.picker-head .t { font-size: var(--kx-text-sm); font-weight: 600; }
+.picker-head .n { font-size: var(--kx-text-2xs); color: var(--kx-muted); }
+.picker-items { display: flex; flex-wrap: wrap; gap: var(--kx-space-2); }
+.pick {
+  border: 1px solid var(--kx-border-strong); border-radius: var(--kx-radius);
+  padding: 3px 9px; font-size: var(--kx-text-xs); font-family: var(--kx-font-mono); color: var(--kx-text);
+}
+.pick.on { border-color: var(--kx-primary); color: var(--kx-primary); background: var(--kx-primary-soft); }
+.pick em { font-style: normal; color: var(--kx-muted); margin-left: 5px; }
+.picker-items.muted { color: var(--kx-muted); }
+</style>
+</head>
+<body>
+
+<!-- ══════════════ SVG 图标雪碧图 ══════════════ -->
+<svg style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <defs>
+    <symbol id="i-gateway" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.5" y="6.5" width="19" height="9" rx="2"/><path d="M6 11h3M10 11h.01M13 11h.01M16 11h.01"/><path d="M6 6V4M18 6V4"/>
+    </symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/>
+    </symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12h4l2.5-7 5 14L17 12h4"/>
+    </symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6z"/><path d="M12 18v3"/>
+    </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="12" r="4"/><path d="M12 12h9M17 12v3M20 12v2"/>
+    </symbol>
+    <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>
+    </symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/>
+    </symbol>
+    <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v16H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 17.5V4.5M9 7h7M9 11h5"/>
+    </symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>
+    </symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 9l6 6 6-6"/>
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12l5 5L20 6"/>
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
+    </symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1-1.5H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+    </symbol>
+    <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7" r="3.4"/><path d="M17 4.3a3.4 3.4 0 0 1 0 6.6M22 20v-1.5a4 4 0 0 0-3-3.8"/>
+    </symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>
+    </symbol>
+<div class="wrap">
+
+  <!-- ══════════════ 开篇 ══════════════ -->
+  <header class="doc-head" id="doc-head">
+    <h1 class="doc-title">简易模式 v2 · 与 magpie 对比后的修订设计稿</h1>
+    <p class="doc-sub">
+      这版稿子回答三件事：<strong>我们的 v1 简到了什么程度</strong>、<strong>magpie 在同一件事上强在哪</strong>、
+      <strong>哪些 magpie 的做法我们不能跟</strong>（跟了就丢功能特性）。
+      结论先行：v1 的<strong>导航量级已经追平 magpie</strong>（露出 14 项 : 对方 9 项 + Settings），
+      真正没到位的是三件事——<strong>首页还是仪表盘</strong>、<strong>接一个上游要跨三个表单</strong>、
+      <strong>模型清单对普通用户是静态目录</strong>。
+      ⇒ v2 只改这三处，<strong>专家面 63 个入口一条不删</strong>，功能三档清单一条不改判。
+    </p>
+    <p class="doc-sub">
+      配套材料：对比分析（逐维度证据、借鉴项、不照搬清单）见
+      <span class="mono">simple-mode-v2-magpie-comparison.md</span>；
+      v1 的三份稿见 <span class="mono">simple-expert-mode-design.html</span>（分析）、
+      <span class="mono">simple-mode-ui-mockup.html</span>（效果）、
+      <span class="mono">simple-mode-concept.html</span>（整页与菜单）。
+      本稿的条目台账由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span>
+      从 <span class="mono">web/src/config/appNav.ts</span> 生成，<strong>不手抄</strong>。
+    </p>
+  </header>
+
+  <nav class="anchor-nav">
+    <a href="#s1">v1 的四个问题</a>
+    <a href="#s2">magpie 对比</a>
+    <a href="#s3">借鉴与不照搬</a>
+    <a href="#s4">v2 整页视图</a>
+    <a href="#s5">v2 菜单全貌</a>
+    <a href="#s6">关键页改造</a>
+    <a href="#s7">功能台账</a>
+    <a href="#s8">分期与风险</a>
+    <span class="spacer"></span>
+    <button class="btn" id="theme-toggle" type="button">
+      <svg aria-hidden="true"><use href="#i-sun" id="theme-icon"/></svg>切换明暗
+    </button>
+  </nav>
+
+  <!-- ══════════════ 一、v1 的四个问题 ══════════════ -->
+  <section class="sec" id="s1">
+    <div class="sec-head">
+      <h2>v1 的四个问题</h2>
+      <span class="tagline">先认账：v1 做对了什么，卡在哪</span>
+    </div>
+    <p class="sec-desc">
+      v1 稿已经完成三件硬事：把专家面入口压成「<span class="num">14</span> 露出 + <span class="num">47</span> 折叠」、
+      把功能分成<strong>保留 / 降级 / 隐藏</strong>三档、把「装到能用」拆成 5 步。
+      这三件事 v2 一条不动。卡住的是<strong>首页的信息形态</strong>与<strong>接入的步骤数</strong>。
+    </p>
+
+    <div class="legend">
+      <span class="li"><span class="chip chip-primary">v2 改</span>首页与接入的形状</span>
+      <span class="li"><span class="chip chip-muted">v2 不动</span>v1 的全部纪律</span>
+    </div>
+
+    <div class="panel">
+      <table>
+        <thead>
+          <tr><th style="width:16%">问题</th><th style="width:44%">证据</th><th style="width:40%">v2 的处置</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Q1</strong> 首屏是仪表盘，不是清单</td>
+            <td>v1 概念稿首页同时摆着 <span class="num">8</span> 个并列区块：4 个 KPI 格（今日请求 / 成功率 / Token 用量 / 首字延迟）、
+              引导条、最近请求表、接入客户端面板、上游状态面板、工作模式面板。
+              <br><span class="note">用户心里的对象是「我客户端在用哪个模型、能不能用」；首页回答的却是「网关今天跑了多少」。</span></td>
+            <td>首页换成<strong>接入清单</strong>：一行一个网关密钥/客户端，行内显示 当前模型 / 健康 / 今日请求 / 失败 / 预算。
+              KPI 不删，收成清单页头一行小字。</td>
+          </tr>
+          <tr>
+            <td><strong>Q2</strong> 接一个上游要跨三个表单、两道门</td>
+            <td>新增供应商表单要填 目录代码 / 名称 / 协议 / base URL / 备注（<span class="mono">ProvidersView.vue:1146-1246</span>）
+              → 再加凭据（API Key + 标签，<span class="mono">:1582-1600</span>）→ 再建模型绑定；
+              可达性探测是<strong>提交前的串行门</strong>。</td>
+            <td><strong>两字段快速接入</strong>：选目录 → 贴 Key → 完成。
+              base URL / 协议 / 模型清单由 <span class="mono">provider_catalog</span> 自动填，探活转后台，
+              并发 / 余额 / 标签 / 备注进「更多设置」抽屉。</td>
+          </tr>
+          <tr>
+            <td><strong>Q3</strong> 模型清单对普通用户是静态目录</td>
+            <td>真能力其实有：<span class="mono">discovery/discovery.go:326-347</span> 能按厂商端点拉模型，
+              admin 有「从供应商读取」按钮（<span class="mono">providerDetail.ts:295</span>），
+              <span class="mono">cmd/verify-model-fetch</span> 与它同一条解析路径。
+              <br><span class="note">但这些都在专家面的供应商详情页里，简易模式看不到。</span></td>
+            <td>模型选择器改<strong>三段</strong>：① 该供应商当前提供的 ② 本区间有请求的 ③ 完整目录。
+              ① 走既有 <span class="mono">discovery</span>，不是新数据源；② 沿用 11-16 审计落地的置顶组。</td>
+          </tr>
+          <tr>
+            <td><strong>Q4</strong> 关停 / 零流量对象没有位置</td>
+            <td>11-16 审计刚修完一个真问题：<strong>43 家在册但零流量的供应商此前完全不可见</strong>
+              （<span class="mono">dc263b085</span>，修法＝把在册供应商并进候选、requests=0 排在有请求的之后）。</td>
+            <td>供应商页加<strong>「已关停 / 零流量」折叠带计数</strong>：折叠起来但计数可见，排序契约不变。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:var(--kx-space-6);font-size:var(--kx-text-lg);font-weight:650">v1 做对的八条，v2 一条不动</h3>
+    <div class="rules">
+      <div class="rule">
+        <div class="rt">① 模式是投影，不是第二套实现</div>
+        <div class="rb">两个模式跑同一份代码，差别只在「哪些装配点被调用」和「哪些面板被渲染」。为简易模式另写一套逻辑，几个月后没人说得清哪条是活的。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">② 一个开关，一个真源</div>
+        <div class="rb">模式只有 <span class="mono">gateway.mode</span> 一个注册项；可见性判定只有 <span class="mono">canShowNavItem()</span>
+          （<span class="mono">appNav.ts:299</span>）一处。<span class="rc">禁止在 63 个入口各写一个 if (simple)</span></div>
+      </div>
+      <div class="rule">
+        <div class="rt">③ 显式高于隐式，两种强度分开</div>
+        <div class="rb"><span class="mono">override</span>（模式决定，env 也盖不过）与 <span class="mono">default</span>（数据库 &gt; env &gt; 预设）分开，
+          避免「0=禁用 被实现成 0=全量」那类语义反转。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">④ 降级必须可见</div>
+        <div class="rb">凡是简易模式改了运行时行为，界面必须标「已降级」，并给出详情入口与降级后的实际取值。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">⑤ 专家模式是严格超集，切换不丢数据</div>
+        <div class="rb">不删数据、不重置设置；模式自身的写入面只有一个键 ⇒ 否掉「切模式时批量写 settings_kv」。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">⑥ 折叠，不隐藏</div>
+        <div class="rb">不露面的条目仍然可达、不删除；v2 只是把「折叠」做得更显式（带计数）。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">⑦ 三档功能清单</div>
+        <div class="rb">保留 / 降级 / 隐藏，第三档专门治「不可见的强制行为」——这一档一个都不许省。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">⑧ 接上游只填一个 Key、密钥只填两个字段</div>
+        <div class="rb">v2 把这两条从「纸面承诺」兑现成<strong>真的表单形状</strong>：两字段就是两字段，其余进抽屉。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 二、magpie 对比 ══════════════ -->
+  <section class="sec" id="s2">
+    <div class="sec-head">
+      <h2>magpie 对比</h2>
+      <span class="tagline">同一件事上，谁强在哪</span>
+    </div>
+    <p class="sec-desc">
+      magpie 的源码在本机 <span class="mono">~/workspace/ai/magpie</span>（HEAD <span class="mono">ca3e57f94</span>，含上游 v0.1.3189 合并）。
+      下表的 magpie 列全部回源码核对，<strong>file:行号</strong>写在最后一列，可点回复查。
+      ★ 关键前提：<strong>magpie 是单机、单用户、无租户、无角色、无配额、无审计、无插件市场的个人工具</strong>；
+      它的「简单」有一部分是<strong>砍掉了企业面</strong>换来的，
+      而我们正是多租户网关——<strong>照搬它的 IA 形状可以，照搬它的功能边界不行</strong>。
+    </p>
+
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:13%">维度</th>
+            <th style="width:31%">magpie（怎么做）</th>
+            <th style="width:20%">我们 v1</th>
+            <th style="width:24%">v2 动作</th>
+            <th style="width:12%">处置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>首页形态</strong></td>
+            <td>一张清单：每个客户端一行，行内选模型。文档原话「That is the whole app.」</td>
+            <td>8 区块仪表盘</td>
+            <td>首页＝<strong>接入清单</strong>，行内可改模型，点行展开细节</td>
+            <td><span class="pill yes">采纳形状</span></td>
+          </tr>
+          <tr>
+            <td><strong>接入一个上游</strong></td>
+            <td>preset + key 两步；preset 决定 base API / 协议 / 模型清单，30+ 高级字段收在抽屉里</td>
+            <td>三个表单 + 提交前的探测门</td>
+            <td><strong>两字段快速接入</strong>，默认值自动填，探活转后台，细节进抽屉</td>
+            <td><span class="pill yes">采纳</span></td>
+          </tr>
+          <tr>
+            <td><strong>模型清单来源</strong></td>
+            <td>拿 key 直接问厂商它提供哪些模型；<span class="mono">models.dev</span> 补齐厂商不报的</td>
+            <td>静态目录为主，「从供应商读取」埋在专家面</td>
+            <td>模型选择器<strong>三段</strong>，第一段走既有 <span class="mono">discovery</span></td>
+            <td><span class="pill yes">采纳</span></td>
+          </tr>
+          <tr>
+            <td><strong>每客户端自己的模型清单</strong></td>
+            <td>「Showing 5 / 32 models」可逐个摘出放回，另有「Only models I pick」开关</td>
+            <td>无对应面</td>
+            <td>接入清单行内可选模型（受该密钥的模型权限约束），不做那个开关</td>
+            <td><span class="pill part">采纳思想</span></td>
+          </tr>
+          <tr>
+            <td><strong>关停对象的表达</strong></td>
+            <td>「Turned off」折叠头带计数</td>
+            <td>只折叠，无计数</td>
+            <td>「已关停 / 零流量」折叠 + 计数，零流量排有请求之后</td>
+            <td><span class="pill yes">采纳</span></td>
+          </tr>
+          <tr>
+            <td><strong>账号遮蔽</strong></td>
+            <td>Providers 页一键「Hide accounts」，遮蔽所有页面的邮箱与账号名，便于截图分享</td>
+            <td>无 UI 面</td>
+            <td>上游与凭据页加遮蔽开关，底层复用 11-15 轮那套确定性假名化</td>
+            <td><span class="pill yes">采纳</span></td>
+          </tr>
+          <tr>
+            <td><strong>发现即导入</strong></td>
+            <td>扫到本机已有配置 → 顶部提示条 +「Review and import…」</td>
+            <td>无</td>
+            <td><strong>不照搬</strong>（它改的是客户端配置，我们不该动用户机器上的文件）；改写成「未纳管对象候选清单」</td>
+            <td><span class="pill part">改写</span></td>
+          </tr>
+          <tr>
+            <td><strong>能力门</strong></td>
+            <td><span class="mono">data-feature</span> 按 entitlement 直接控制导航项显隐</td>
+            <td>插件 entitlement 已有，导航按角色 / 租户</td>
+            <td>简易模式的可选块按授权灰显并写明「需授权」，不静默隐藏</td>
+            <td><span class="pill yes">采纳</span></td>
+          </tr>
+          <tr>
+            <td><strong>导航规模</strong></td>
+            <td>4 组 9 项 + Settings</td>
+            <td>4 直链 + 4 组 + 高级 47（露出 14）</td>
+            <td><strong>量级已追平，不再压导航</strong>；v2 把力气花在首页与接入上</td>
+            <td><span class="pill yes">已追平</span></td>
+          </tr>
+          <tr>
+            <td><strong>页内标签</strong></td>
+            <td>Agents 页下挂 Allowances / Usage / Routing 三个页签，不用新页面</td>
+            <td>以独立页面为主</td>
+            <td>接入清单页内挂「用量 / 请求」两个页签，不新增导航项</td>
+            <td><span class="pill part">采纳小项</span></td>
+          </tr>
+          <tr>
+            <td><strong>多租户 / 配额 / 审计 / 插件 / 运维</strong></td>
+            <td><strong>没有</strong>（单机个人工具）</td>
+            <td><strong>有，且是商业价值</strong></td>
+            <td>全部保留；专家面 63 条一条不删，折叠组结构与专家面一致</td>
+            <td><span class="pill no">绝不照搬</span></td>
+          </tr>
+          <tr>
+            <td><strong>配置载体</strong></td>
+            <td>改本机 <span class="mono">settings.json</span> / <span class="mono">config.toml</span>，只动一个键</td>
+            <td>PG + Redis 事实源，模式写入面只有一个键</td>
+            <td>不动</td>
+            <td><span class="pill no">不照搬</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel" style="margin-top:var(--kx-space-4)">
+      <div class="panel-head"><span class="t">magpie 的源码证据（可点回复查）</span><span class="chip chip-muted num">10 条</span></div>
+      <table>
+        <thead><tr><th style="width:26%">事实</th><th style="width:44%">证据</th><th style="width:30%">位置</th></tr></thead>
+        <tbody>
+          <tr><td>导航只有 4 组 9 项 + Settings</td><td>Work(Agents/Sessions/Library) · Models(Providers/Routing/Routing groups/Gateway) · Insights(Usage/Masking) · Extend(Plugins)</td><td class="path">internal/gui/assets/index.html:69-85</td></tr>
+          <tr><td>首页就是 Agents 清单</td><td><span class="mono">&lt;main class="view" id="view-agents"&gt;</span>；文档「That is the whole app.」</td><td class="path">index.html:117；docs/reference.md:7-13</td></tr>
+          <tr><td>供应商＝preset + key</td><td>「Providers with one field. Pick a preset…, paste a key, done.」</td><td class="path">docs/reference.md:56-60</td></tr>
+          <tr><td>preset 决定 base API，细节在抽屉</td><td><span class="mono">baseAPIOf(p)</span> / <span class="mono">hiddenDrawers</span> 一族 30+ 字段</td><td class="path">internal/gui/assets/app.js:9300</td></tr>
+          <tr><td>模型清单来自厂商</td><td>「Real model lists, nothing compiled in.」</td><td class="path">docs/reference.md:62-68</td></tr>
+          <tr><td>每客户端自己的模型清单</td><td>「Showing 5 / 32 models」+「Only models I pick」</td><td class="path">docs/reference.md:70-79</td></tr>
+          <tr><td>关停折叠带计数</td><td><span class="mono">offHead</span> + <span class="mono">offCount</span></td><td class="path">index.html:140</td></tr>
+          <tr><td>一键遮蔽账号</td><td><span class="mono">pvMask</span>「Hide accounts」</td><td class="path">index.html:137</td></tr>
+          <tr><td>发现即导入</td><td><span class="mono">providerDiscovery</span> +「Review and import…」</td><td class="path">index.html:133-136</td></tr>
+          <tr><td>能力门按 entitlement</td><td><span class="mono">data-feature="sessions|library|routing|gateway|usage|redact"</span></td><td class="path">index.html:72-83</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════ 三、借鉴与不照搬 ══════════════ -->
+  <section class="sec" id="s3">
+    <div class="sec-head">
+      <h2>借鉴与不照搬</h2>
+      <span class="tagline">学到什么，以及学到哪一步为止</span>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin-bottom:var(--kx-space-3)">借鉴五条（v2 的全部改动来源）</h3>
+    <div class="rules">
+      <div class="rule">
+        <div class="rt">B1 · 首页清单化：一行一个对象，行内可改关键属性</div>
+        <div class="rb">来源：magpie 首页即 Agents 清单（<span class="mono">index.html:117</span>）。落点：接入清单页，行内显示 当前模型 / 健康 / 今日请求 / 失败 / 预算；点行进详情，不跳页。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">B2 · 默认值替用户做完决定，细节收进抽屉</div>
+        <div class="rb">来源：magpie 的 preset + <span class="mono">hiddenDrawers</span>（<span class="mono">app.js:9300</span>）。落点：快速接入面板复用 <span class="mono">provider_catalog</span>（<span class="mono">base_url_template</span> / <span class="mono">protocol</span> / <span class="mono">models_manifest_json</span>）。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">B3 · 清单来自事实源，不编译进代码</div>
+        <div class="rb">来源：magpie「nothing compiled in」。落点：模型选择器第一段走既有 <span class="mono">discovery</span>；★ <span class="rc">不新造数据源、不新造组件</span>。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">B4 · 关停对象折叠且计数可见</div>
+        <div class="rb">来源：magpie「Turned off + 计数」。落点：供应商页折叠「已关停 / 零流量」，并保持 11-16 审计的排序契约（有请求的在前）。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">B5 · 一键遮蔽 + 能力门灰显</div>
+        <div class="rb">来源：magpie「Hide accounts」与 <span class="mono">data-feature</span>。落点：上游页遮蔽开关；授权不足的可选块灰显并写明原因。</div>
+      </div>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin:var(--kx-space-6) 0 var(--kx-space-3)">不照搬五条（跟了就丢功能特性）</h3>
+    <div class="rules">
+      <div class="rule">
+        <div class="rt">N1 · 不改用户机器上的客户端配置</div>
+        <div class="rb">magpie 直接改 <span class="mono">settings.json</span> / <span class="mono">config.toml</span>。我们是服务端网关，客户端配置不归我们写，也不该写（越权 + 不可回滚）。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">N2 · 不靠删能力换界面干净</div>
+        <div class="rb">租户 / 角色 / 配额 / 审计 / 对账 / 插件 / 运维中心是我们的产品边界与商业价值。<strong>简单必须靠投影与折叠，不能靠删能力</strong>——这是 v1 原则⑤的延续。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">N3 · 首页不只留一个模型选择器</div>
+        <div class="rb">我们的用户还要管预算、限额、密钥与路由，这些不能消失，只能被折叠、被收进抽屉。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">N4 · 不引入文件态配置</div>
+        <div class="rb">本仓事实源是 PG + Redis，多实例；文件态会引入一致性事故（10-30 轮 magpie 对比已列为产品差异）。</div>
+      </div>
+      <div class="rule">
+        <div class="rt">N5 · 不引入进程内 JS 中间件</div>
+        <div class="rb">本仓插件运行时是 supervisor + 进程外（10-24 轮 §不照搬清单）；形态不同不能照搬。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 四、v2 整页视图 ══════════════ -->
+  <section class="sec" id="s4">
+    <div class="sec-head">
+      <h2>v2 整页视图</h2>
+      <span class="tagline">1440 宽的完整首页，未裁切</span>
+    </div>
+    <p class="sec-desc">
+      首页就是那张清单：一行一个网关密钥（也就是一个客户端接入），行内看它现在用哪个模型、能不能用、花了多少。
+      KPI 不删，压缩成页头一行小字。右侧只留两件事：<strong>供应商健不健康</strong>与<strong>两字段接一个新上游</strong>。
+      导航结构与 v1 <strong>完全相同</strong>（4 直链 + 4 组 + 高级），变的只有这一屏。
+    </p>
+
+    <div class="console">
+      <div class="console-tag">
+        <span class="left"><span class="dot dot-success"></span><span>控制台实页</span><span class="path">/dashboard</span></span>
+        <span>工作模式：简易</span>
+      </div>
+
+      <div class="app-topbar">
+        <div class="brand">
+          <span class="brand-logo"><svg aria-hidden="true"><use href="#i-gateway"/></svg></span>
+          <span class="brand-text"><span class="l1">开轩启圭</span><span class="l2">LLM 网关控制台</span></span>
+        </div>
+
+        <nav class="app-topbar__nav">
+          <a class="app-topbar__link active" href="#s4">接入清单</a>
+          <a class="app-topbar__link" href="#s4">实时拓扑</a>
+          <a class="app-topbar__link" href="#s4">对话</a>
+          <a class="app-topbar__link" href="#s4">系统设置</a>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              供应商与模型
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+            <div class="dropdown">
+              <div class="dd-head"><span class="t">供应商与模型</span><span class="n">2 项</span></div>
+              <a class="dd-item" href="#s4">
+                <svg class="dd-icon" aria-hidden="true"><use href="#i-plug"/></svg>
+                <span class="lb">供应商<span class="sub">上游账号、余额与健康状态</span></span>
+              </a>
+              <a class="dd-item" href="#s4">
+                <svg class="dd-icon" aria-hidden="true"><use href="#i-layers"/></svg>
+                <span class="lb">模型与目录<span class="sub">这条链路上能用的模型清单</span></span>
+              </a>
+            </div>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              密钥与用户
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              请求
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              接入指南
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+          </div>
+
+          <div class="app-topbar__group">
+            <button class="app-topbar__link app-topbar__group-trigger" type="button">
+              <svg aria-hidden="true"><use href="#i-sliders"/></svg>高级
+              <span class="group-count num">50</span>
+            </button>
+          </div>
+        </nav>
+
+        <div class="app-topbar__right">
+          <div class="mode-switch">
+            <button class="mode-btn" type="button">
+              <svg aria-hidden="true"><use href="#i-sliders"/></svg>
+              简易模式
+              <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg>
+            </button>
+          </div>
+          <button class="icon-btn" type="button" aria-label="语言"><svg aria-hidden="true"><use href="#i-globe"/></svg></button>
+          <button class="icon-btn" type="button" aria-label="主题"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
+          <span class="user-chip"><span class="avatar">A</span> admin</span>
+        </div>
+      </div>
+
+      <div class="page-body">
+        <div class="page-head">
+          <div>
+            <div class="page-title">接入清单</div>
+            <div class="page-sub">一行一个客户端接入 —— 它现在用哪个模型、能不能用、花了多少</div>
+          </div>
+          <div class="page-actions">
+            <span class="kpi-inline">今日 <span class="num">1,284</span> 笔 · 成功率 <span class="num">99.2%</span> · 预估 <span class="num">¥63.7</span> · 首字 P95 <span class="num">1.2 s</span></span>
+            <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="btn btn-primary" type="button"><svg aria-hidden="true"><use href="#i-plug"/></svg>接一个上游</button>
+          </div>
+        </div>
+
+        <div class="seg-tabs">
+          <span class="on">接入清单</span>
+          <span>用量</span>
+          <span>请求</span>
+        </div>
+
+        <div class="page-cols">
+          <div>
+            <div class="panel">
+              <div class="panel-head">
+                <span class="t">客户端接入</span>
+                <span class="a">签发网关密钥</span>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>客户端 / 密钥</th><th>当前模型</th><th>健康</th><th class="n">今日</th><th class="n">失败</th><th class="n">预算</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr class="client-row">
+                    <td>Claude Code<span class="sub">key: prod-cli</span></td>
+                    <td><span class="sel">claude-sonnet-5 <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></span></td>
+                    <td><span class="chip chip-ok">正常</span></td>
+                    <td class="n">612</td><td class="n">3</td>
+                    <td class="n">¥48.2 / ¥200</td>
+                    <td><a class="a" href="#s4">详情</a></td>
+                  </tr>
+                  <tr class="client-row">
+                    <td>Codex<span class="sub">key: ci-bot</span></td>
+                    <td><span class="sel">gpt-5.1-codex <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></span></td>
+                    <td><span class="chip chip-ok">正常</span></td>
+                    <td class="n">431</td><td class="n">0</td>
+                    <td class="n">¥12.4 / ¥100</td>
+                    <td><a class="a" href="#s4">详情</a></td>
+                  </tr>
+                  <tr class="client-row">
+                    <td>内部脚本<span class="sub">key: nightly</span></td>
+                    <td><span class="sel">glm-4.7 <svg class="chev" aria-hidden="true"><use href="#i-chev-down"/></svg></span></td>
+                    <td><span class="chip chip-warn">上游超时 2 次</span></td>
+                    <td class="n">241</td><td class="n">12</td>
+                    <td class="n">¥3.1 / ¥50</td>
+                    <td><a class="a" href="#s4">详情</a></td>
+                  </tr>
+                  <tr class="client-row">
+                    <td>新接入<span class="sub">key: tmp-test</span></td>
+                    <td><span class="chip chip-muted">未选模型</span></td>
+                    <td><span class="chip chip-muted">未配置</span></td>
+                    <td class="n">0</td><td class="n">0</td>
+                    <td class="n">—</td>
+                    <td><a class="a" href="#s4">选模型</a></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <span class="t">接入客户端</span>
+                <span class="a">接入指南</span>
+              </div>
+              <div style="padding:var(--kx-space-4)">
+                <p style="font-size:var(--kx-text-sm);color:var(--kx-muted);margin-bottom:var(--kx-space-3)">
+                  把客户端的 base_url 指到这里，请求头带上网关密钥。
+                </p>
+                <div class="code-box">http://127.0.0.1:8781/v1</div>
+                <div style="margin-top:var(--kx-space-3)">
+                  <button class="btn btn-primary" type="button"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制带密钥的 curl</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="panel">
+              <div class="panel-head">
+                <span class="t">供应商</span>
+                <span class="chip chip-ok num">3 个可用</span>
+              </div>
+              <div class="up-list">
+                <div class="up-row">
+                  <span class="up-name"><span class="dot dot-success"></span>智谱 AI<span class="host">open.bigmodel.cn</span></span>
+                  <span class="up-ms num">420 ms</span>
+                </div>
+                <div class="up-row">
+                  <span class="up-name"><span class="dot dot-success"></span>MiniMax<span class="host">api.minimax.chat</span></span>
+                  <span class="up-ms num">610 ms</span>
+                </div>
+                <div class="up-row">
+                  <span class="up-name"><span class="dot dot-warning"></span>Anthropic<span class="host">api.anthropic.com</span></span>
+                  <span class="up-state chip chip-warn">超时 2 次</span>
+                </div>
+                <div class="up-row">
+                  <span class="up-name"><span class="dot"></span>DeepSeek<span class="host">api.deepseek.com</span></span>
+                  <span class="up-state chip chip-muted">未探活</span>
+                </div>
+              </div>
+              <div class="fold-foot">
+                <span class="fold-label">已关停 / 零流量</span>
+                <span class="fold-count num">45</span>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span class="t">接一个上游</span><span class="chip chip-muted">两字段</span></div>
+              <div style="padding:var(--kx-space-4)">
+                <div class="field">
+                  <span class="fl">供应商</span>
+                  <span class="inp ph">选择目录，例如「智谱 AI」<svg class="chev" aria-hidden="true" style="float:right;margin-top:2px"><use href="#i-chev-down"/></svg></span>
+                </div>
+                <div class="field">
+                  <span class="fl">API Key</span>
+                  <span class="inp ph">粘贴厂商的 API Key</span>
+                </div>
+                <button class="btn btn-primary" type="button" style="width:100%"><svg aria-hidden="true"><use href="#i-plug"/></svg>添加</button>
+                <p class="hint">
+                  base URL、协议与模型清单由目录自动填好；探活在后台跑，不挡提交。
+                </p>
+                <div class="drawer">
+                  <span class="chev-d">更多设置（并发、余额、标签、备注、绑定级限流）</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span class="t">工作模式</span></div>
+              <div style="padding:var(--kx-space-4);font-size:var(--kx-text-sm);color:var(--kx-muted);line-height:1.8">
+                当前是简易模式：导航露出 <span class="num" style="color:var(--kx-text)">13</span> 项，
+                专家面的 <span class="num" style="color:var(--kx-text)">50</span> 项收在「高级」里，展开可见。
+                <div style="margin-top:var(--kx-space-3)">
+                  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-sliders"/></svg>切到专家模式</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:var(--kx-space-5)">
+      <div class="panel-head"><span class="t">这一屏相对 v1 改了什么</span></div>
+      <table>
+        <thead><tr><th style="width:22%">位置</th><th style="width:30%">v1</th><th style="width:30%">v2</th><th style="width:18%">依据</th></tr></thead>
+        <tbody>
+          <tr><td>主区</td><td>4 个 KPI 格 + 引导条 + 最近请求表 + 2 个侧面板</td><td>接入清单表（4 行）+ 侧栏 2 面板；KPI 收成页头一行小字</td><td><span class="pill yes">B1 首页清单化</span></td></tr>
+          <tr><td>引导</td><td>4 步引导条（装好网关 → 填好上游 Key → 签发密钥 → 改客户端指向）</td><td>并入清单状态：未接上游 / 未选模型 / 未改客户端，三个状态各自指向一处</td><td><span class="pill part">减少并排块</span></td></tr>
+          <tr><td>供应商</td><td>「加供应商」按钮 → 5 字段表单 → 再加凭据 → 再建绑定</td><td>侧栏「接一个上游」：两字段 + 抽屉</td><td><span class="pill yes">B2 默认值 + 抽屉</span></td></tr>
+          <tr><td>关停对象</td><td>不出现</td><td>「已关停 / 零流量 45」折叠头</td><td><span class="pill yes">B4 折叠带计数</span></td></tr>
+          <tr><td>模型</td><td>静态目录</td><td>行内下拉，三段分组</td><td><span class="pill yes">B3 清单来自事实源</span></td></tr>
+          <tr><td>导航</td><td>4 直链 + 4 组 + 高级 50</td><td><strong>结构不变</strong>；露出 13 项（4 直链 + 9 组内），其余 50 项进「高级」</td><td><span class="pill muted">不动</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════ 五、v2 菜单全貌 ══════════════ -->
+  <section class="sec" id="s5">
+    <div class="sec-head">
+      <h2>v2 菜单全貌</h2>
+      <span class="tagline">结构与 v1 相同，量级已追平 magpie</span>
+    </div>
+    <p class="sec-desc">
+      顶栏仍是 9 个位置：<span class="num">4</span> 个直链、<span class="num">4</span> 个分组、一个「高级」折叠组。
+      ★ <strong>v2 不改导航结构</strong>——v1 已经把量级压到 14（magpie 是 9 + Settings），
+      再压只会开始牺牲「找得到」；这轮省下来的力气全部投到首页与接入表单。
+      「高级」展开后是二级分组，<span class="num">50</span> 项按专家面的分组归位，目录结构与专家面一致。
+    </p>
+
+    <div class="menu-grid">
+      <div class="menu-cell">
+        <div class="hd"><span class="t">供应商与模型</span><span class="n">2 项</span></div>
+        <div class="bd">
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-plug"/></svg>
+            <span class="lb">供应商<span class="sub">上游账号、余额与健康状态</span></span>
+          </a>
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-layers"/></svg>
+            <span class="lb">模型与目录<span class="sub">这条链路上能用的模型清单</span></span>
+          </a>
+        </div>
+      </div>
+
+      <div class="menu-cell">
+        <div class="hd"><span class="t">密钥与用户</span><span class="n">3 项</span></div>
+        <div class="bd">
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-users"/></svg>
+            <span class="lb">用户管理<span class="sub">谁能用这个网关</span></span>
+          </a>
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-key"/></svg>
+            <span class="lb">API 密钥<span class="sub">签发与吊销客户端密钥</span></span>
+          </a>
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-gateway"/></svg>
+            <span class="lb">租户管理<span class="sub">按租户分账与限额</span></span>
+          </a>
+        </div>
+      </div>
+
+      <div class="menu-cell">
+        <div class="hd"><span class="t">请求</span><span class="n">2 项</span></div>
+        <div class="bd">
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-list"/></svg>
+            <span class="lb">请求日志<span class="sub">每一笔请求的来龙去脉</span></span>
+          </a>
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-activity"/></svg>
+            <span class="lb">用量统计<span class="sub">本租户的 Token 与花费</span></span>
+            <span class="chip chip-warn">新建简化页</span>
+          </a>
+        </div>
+      </div>
+
+      <div class="menu-cell">
+        <div class="hd"><span class="t">接入指南</span><span class="n">3 项</span></div>
+        <div class="bd">
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-doc"/></svg>
+            <span class="lb">接入示例<span class="sub">复制即用的 curl</span></span>
+          </a>
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+            <span class="lb">自动配置<span class="sub">一条命令改好客户端</span></span>
+          </a>
+          <a class="dd-item" href="#s5">
+            <svg class="dd-icon" aria-hidden="true"><use href="#i-book"/></svg>
+            <span class="lb">帮助手册<span class="sub">出问题先查这里</span></span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:var(--kx-space-4)">
+      <div class="panel-head"><span class="t">导航量级对照</span><span class="chip chip-muted num">同一把尺子</span></div>
+      <table>
+        <thead><tr><th style="width:34%">口径</th><th class="n" style="width:22%">magpie</th><th class="n" style="width:22%">我们 v1</th><th class="n" style="width:22%">我们 v2</th></tr></thead>
+        <tbody>
+          <tr><td>首屏可见的一级入口</td><td class="n">9 + Settings</td><td class="n">9</td><td class="n">9</td></tr>
+          <tr><td>二级页面总数（不折叠）</td><td class="n">9</td><td class="n">14</td><td class="n">14</td></tr>
+          <tr><td>折叠后可到达的专家面页面</td><td class="n">0</td><td class="n">50</td><td class="n">50</td></tr>
+          <tr><td>专家面总条目（一条不删）</td><td class="n">—</td><td class="n">61</td><td class="n">63</td></tr>
+        </tbody>
+      </table>
+      <div style="padding:var(--kx-space-3) var(--kx-space-4);font-size:var(--kx-text-xs);color:var(--kx-muted)">
+        ★ v1 稿写的「61 个入口 / 60 个落地路径」是 2026-11-16 上午的快照；
+        现行 <span class="mono">appNav.ts</span> 是 <span class="num">63</span> 条目 / <span class="num">62</span> 个落地路径
+        （<span class="mono">/live2</span> 加入 +「自动更新」跨两组重复挂载）⇒ v2 按 63 / 62 记。
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 六、关键页改造 ══════════════ -->
+  <section class="sec" id="s6">
+    <div class="sec-head">
+      <h2>关键页改造</h2>
+      <span class="tagline">四处：供应商 / 模型 / 密钥 / 降级</span>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin-bottom:var(--kx-space-3)">6.1 供应商页 · 两字段接入 + 关停折叠 + 遮蔽</h3>
+    <div class="panel">
+      <table>
+        <thead><tr><th style="width:24%">环节</th><th style="width:34%">现状</th><th style="width:42%">v2</th></tr></thead>
+        <tbody>
+          <tr><td>新增供应商</td><td>目录代码 / 名称 / 协议 / base URL / 备注（5 项，<span class="mono">ProvidersView.vue:1146-1246</span>）</td><td>选目录 → 贴 Key；名称按目录默认、协议与 base URL 由 <span class="mono">provider_catalog</span> 自动填</td></tr>
+          <tr><td>加凭据</td><td>API Key + 标签 + 并发 + 余额 + 备注 + 状态（<span class="mono">:1582-1600</span> 与凭据行内联编辑）</td><td>Key 在第一步一起提交；标签默认「默认」；其余进抽屉，<strong>限流类默认展开</strong></td></tr>
+          <tr><td>模型绑定</td><td>再建模型绑定</td><td>后台自动：按 <span class="mono">discovery_strategy</span> 拉清单并建立绑定，失败可手动</td></tr>
+          <tr><td>探活</td><td>提交前的串行门，探测不过不许提交</td><td>提交后后台探活，页面上显示「后台探测中 / 成功 / 失败可重试」</td></tr>
+          <tr><td>关停与零流量</td><td>简易模式不可见</td><td>折叠「已关停 / 零流量 N」，计数可见，零流量排有请求之后</td></tr>
+          <tr><td>账号遮蔽</td><td>无</td><td>页头一键「遮蔽账号」，仅展示层，底层复用日志那套确定性假名化</td></tr>
+        </tbody>
+      </table>
+      <div style="padding:var(--kx-space-3) var(--kx-space-4);font-size:var(--kx-text-xs);color:var(--kx-muted)">
+        ★ <strong>不删任何字段</strong>：并发、余额、标签、备注、绑定级限流全部还在，只是从「首屏必填」变成「抽屉里可改」。
+      </div>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin:var(--kx-space-6) 0 var(--kx-space-3)">6.2 模型选择器 · 三段</h3>
+    <div class="panel">
+      <div class="panel-head"><span class="t">行内「当前模型」下拉展开的样子</span><span class="chip chip-muted">与路由页同一个 ModelPicker</span></div>
+      <div style="padding:var(--kx-space-4)">
+        <div class="picker">
+          <div class="picker-sec">
+            <div class="picker-head"><span class="t">该供应商当前提供的</span><span class="n">来自厂商 /models，后台刷新</span></div>
+            <div class="picker-items">
+              <span class="pick on">glm-4.7</span><span class="pick">glm-4.6</span><span class="pick">glm-4-flash</span>
+            </div>
+          </div>
+          <div class="picker-sec">
+            <div class="picker-head"><span class="t">本区间有请求的</span><span class="n">按请求数降序</span></div>
+            <div class="picker-items">
+              <span class="pick">z-ai/glm-5.3-flash <em class="num">12813</em></span>
+              <span class="pick">minimax-m3 <em class="num">4429</em></span>
+              <span class="pick">glm-4-flash <em class="num">1204</em></span>
+            </div>
+          </div>
+          <div class="picker-sec">
+            <div class="picker-head"><span class="t">完整目录</span><span class="n">全部 527 个模型名</span></div>
+            <div class="picker-items muted">
+              <span class="pick">…</span>
+            </div>
+          </div>
+        </div>
+        <p class="hint">
+          ★ 第一段与第三段是<strong>同一批数据的两种来源</strong>（厂商实时 vs 静态目录），第二段是本区间实际流量；
+          实现上复用路由页的 <span class="mono">ModelPicker</span>，不新造组件、不新造数据源。
+        </p>
+      </div>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin:var(--kx-space-6) 0 var(--kx-space-3)">6.3 网关密钥 · 两字段</h3>
+    <div class="panel">
+      <table>
+        <thead><tr><th style="width:24%">字段</th><th style="width:36%">现状（9 项）</th><th style="width:40%">v2（2 项 + 抽屉）</th></tr></thead>
+        <tbody>
+          <tr><td>别名</td><td>有</td><td><strong>保留，首屏必填</strong></td></tr>
+          <tr><td>预算上限</td><td>有（月度预算）</td><td><strong>保留，首屏必填</strong></td></tr>
+          <tr><td>租户 / 归属用户</td><td>有</td><td>默认当前租户；多租户场景进抽屉</td></tr>
+          <tr><td>应用代码 / RPM / 并发 / TPM / 备注</td><td>有</td><td>进抽屉</td></tr>
+          <tr><td>（v2 新增）</td><td>—</td><td>签发后<strong>直接出现在接入清单的一行</strong>，行内选模型</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin:var(--kx-space-6) 0 var(--kx-space-3)">6.4 降级项 · 可见性规则不变</h3>
+    <div class="panel">
+      <div class="panel-head"><span class="t">设置页 · 折叠区里的降级标记</span></div>
+      <table>
+        <thead><tr><th style="width:26%">能力</th><th style="width:30%">简易模式下的行为</th><th style="width:44%">界面必须写清的三样</th></tr></thead>
+        <tbody>
+          <tr><td>限流</td><td>宽松默认，保留下限</td><td>① 处于降级状态 ② 实际取值 ③ 与专家模式的差异（来源标「模式预设」）</td></tr>
+          <tr><td>熔断</td><td>关闭，或改写为「直连失败即失败」</td><td>同上 + 「探针未启动，熔断不再有恢复信号」</td></tr>
+          <tr><td>输出合规</td><td>保留密钥泄露 / 内部 IP / 越狱响应三项</td><td>「已降级：其余子项关闭」</td></tr>
+          <tr><td>提示词注入检测</td><td>关闭</td><td>「已降级：未启动（依赖外部判官端点）」</td></tr>
+          <tr><td>审计</td><td>保留轻量</td><td>「已降级：全量流水未开启」</td></tr>
+          <tr><td>脱敏</td><td>保留输入脱敏与占位符还原</td><td>「已降级：输出侧规则未启用」</td></tr>
+          <tr><td>会话巡检 / 会话摘要 / 项目归属推断</td><td>关闭</td><td>同上，折叠区顶部给一条汇总</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════ 七、功能台账 ══════════════ -->
+  <section class="sec" id="s7">
+    <div class="sec-head">
+      <h2>功能台账</h2>
+      <span class="tagline">「一条不丢」这句话的证据</span>
+    </div>
+    <p class="sec-desc">
+      三张表：<strong>7.1</strong> v1 的功能三档清单 → v2 处置；
+      <strong>7.2</strong> magpie 有而我们要处置的 5 项；
+      <strong>7.3</strong> 专家面 <span class="num">63</span> 条逐条落点。
+      ★ 7.3 由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从
+      <span class="mono">web/src/config/appNav.ts</span> 生成，<strong>不手抄</strong>；
+      <span class="mono">--check</span> 会比对行数，手抄即红。
+    </p>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin-bottom:var(--kx-space-3)">7.1 v1 三档功能清单 → v2 处置</h3>
+    <div class="panel">
+      <table>
+        <thead><tr><th style="width:14%">档</th><th style="width:46%">能力</th><th style="width:40%">v2 处置</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip chip-ok">保留</span></td><td>数据面三套入向协议（/v1/chat/completions、/v1/responses、/v1/messages、/v1/models）</td><td>不变</td></tr>
+          <tr><td><span class="chip chip-ok">保留</span></td><td>配置供应商 / 凭据 / 模型目录接上游的全部必要面</td><td>不变；<strong>但首屏形状改两字段</strong>（字段一个不减）</td></tr>
+          <tr><td><span class="chip chip-ok">保留</span></td><td>密钥签发（9 字段 → 别名 + 预算上限两项）</td><td>不变；签发后直接进接入清单</td></tr>
+          <tr><td><span class="chip chip-ok">保留</span></td><td>观察总览 / 请求日志 / 用量统计（只呈现本租户）</td><td>不变；总览降为接入清单的页签</td></tr>
+          <tr><td><span class="chip chip-ok">保留</span></td><td>设置：通用 / 压缩 / 限流三类，其余 21 类收进高级区</td><td>不变</td></tr>
+          <tr><td><span class="chip chip-ok">保留</span></td><td>帮助：接入示例 / 帮助手册 / 对话</td><td>不变</td></tr>
+
+          <tr><td><span class="chip chip-warn">降级</span></td><td>限流（宽松默认，保留下限）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>熔断（关闭，或改写为直连失败即失败）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>输出合规（保留三项硬检查）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>提示词注入检测（关闭）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>审计（保留轻量：谁用了哪把 key）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>脱敏（保留输入脱敏与占位符还原）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>会话巡检（关闭）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>会话摘要与全景分析（关闭）</td><td>不变，标记照旧</td></tr>
+          <tr><td><span class="chip chip-warn">降级</span></td><td>项目归属推断（关闭）</td><td>不变，标记照旧</td></tr>
+
+          <tr><td><span class="chip chip-muted">隐藏</span></td><td>13 类子系统（后台 worker 群 / 8 套探针矩阵 / URSM v2 / 多层队列调度 / 插件运行时 / MaaS 计费订阅 / 销售报价 / 审批流与通知 / 目标编排 / 模型质量·可信度·供应商画像 / 对账报表与统计 worker / 路由优化机器学习 / 会话取证归档摘要聚类）</td><td>运行时裁剪清单<strong>一条不动</strong></td></tr>
+          <tr><td><span class="chip chip-muted">隐藏</span></td><td>运维中心整组 / 运营管理平台侧 / 数据运维专家项 / 路由与观测的高级项</td><td>一条不动</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin:var(--kx-space-6) 0 var(--kx-space-3)">7.2 magpie 有而我们要处置的 5 项</h3>
+    <div class="panel">
+      <table>
+        <thead><tr><th style="width:24%">magpie 的做法</th><th style="width:18%">处置</th><th style="width:58%">说明</th></tr></thead>
+        <tbody>
+          <tr><td>首页＝一行一客户端</td><td><span class="pill yes">采纳</span></td><td>落点＝接入清单；对象从「本机客户端」换成「网关密钥 × 客户端」</td></tr>
+          <tr><td>preset + key 一个字段</td><td><span class="pill yes">采纳</span></td><td>复用 <span class="mono">provider_catalog</span>；并发/余额/标签等进抽屉，<strong>不删字段</strong></td></tr>
+          <tr><td>模型清单来自厂商</td><td><span class="pill yes">采纳</span></td><td>复用既有 <span class="mono">discovery</span>；模型选择器第一段</td></tr>
+          <tr><td>关停项折叠 + 计数</td><td><span class="pill yes">采纳</span></td><td>供应商页折叠；并把「零流量」一并纳入（这是我们自己的债）</td></tr>
+          <tr><td>扫本机配置 → 建议导入</td><td><span class="pill part">改写</span></td><td>不扫用户机器；改为「未纳管对象候选清单」（未挂凭据的目录项、0 流量的在册供应商）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:var(--kx-text-lg);font-weight:650;margin:var(--kx-space-6) 0 var(--kx-space-3)">7.3 专家面 63 条 → v2 落点（逐条）</h3>
+    <p class="sec-desc" style="margin-bottom:var(--kx-space-3)">
+      落点只有四种：<strong>顶栏直链</strong>（4）、<strong>组内下拉</strong>（9）、<strong>高级折叠</strong>（50）、<strong>站外链接</strong>（1）。
+      另有一条 <span class="mono">/usage</span> 是 v1 稿声明的<strong>新建简化页</strong>，不在 <span class="mono">appNav.ts</span> 里，故不在下表。
+    </p>
+
+    <div class="legend">
+      <span class="li"><span class="chip chip-primary">顶栏直链</span>点一下就跳页</span>
+      <span class="li"><span class="chip chip-ok">组内下拉</span>收进对应分组</span>
+      <span class="li"><span class="chip chip-muted">高级折叠</span>展开可见</span>
+      <span class="li"><span class="chip chip-warn">站外链接</span>新窗口打开</span>
+    </div>
+
+    <div class="panel">
+      <table>
+        <thead>
+          <tr><th>中文名</th><th>落地路径</th><th>专家分组</th><th>v2 位置</th></tr>
+        </thead>
+        <tbody id="ledger-rows">
+          <tr data-ledger-row><td>实时拓扑</td><td class="path">/live</td><td>顶层主链接</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
+          <tr data-ledger-row><td>请求阶段树</td><td class="path">/live2</td><td>顶层主链接</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>总览</td><td class="path">/dashboard</td><td>顶层主链接</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
+          <tr data-ledger-row><td>标准模型</td><td class="path">/tenant/models</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>套餐与充值</td><td class="path">/tenant/pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>我的消耗</td><td class="path">/tenant/usage</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>月账单</td><td class="path">/tenant/bills</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>我的账户</td><td class="path">/tenant/account</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>运营总览</td><td class="path">/admin/board-operational</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>成本价格</td><td class="path">/pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>定价管理</td><td class="path">/model-pricing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>供应商对账</td><td class="path">/admin/reconciliation</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>报价工作台</td><td class="path">/operations/sales</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>营销管理</td><td class="path">/operations/marketing</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>市场价格采集</td><td class="path">/operations/market-prices</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>价格对比分析</td><td class="path">/operations/price-compare</td><td>运营管理</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>模型与目录</td><td class="path">/models</td><td>模型与路由</td><td><span class="chip chip-ok">供应商与模型</span></td></tr>
+          <tr data-ledger-row><td>路由全景</td><td class="path">/routing-v2</td><td>模型与路由</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>凭据监控</td><td class="path">/routing-v2/credentials</td><td>模型与路由</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>AUTO 路由运营</td><td class="path">/routing-v2/auto-ops</td><td>模型与路由</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>供应商</td><td class="path">/providers</td><td>模型与路由</td><td><span class="chip chip-ok">供应商与模型</span></td></tr>
+          <tr data-ledger-row><td>用量趋势分析</td><td class="path">/admin/usage-trends</td><td>模型与路由</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>FreeLLM 免费模型</td><td class="path">https://freellm.itestu.cn</td><td>模型与路由</td><td><span class="chip chip-warn">站外链接</span> <span class="chip chip-warn">站外</span></td></tr>
+          <tr data-ledger-row><td>租户管理</td><td class="path">/tenants</td><td>租户用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
+          <tr data-ledger-row><td>用户管理</td><td class="path">/users</td><td>租户用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
+          <tr data-ledger-row><td>API 密钥</td><td class="path">/keys</td><td>租户用户</td><td><span class="chip chip-ok">密钥与用户</span></td></tr>
+          <tr data-ledger-row><td>密钥申请</td><td class="path">/key-applications</td><td>租户用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>审计日志</td><td class="path">/audit-logs</td><td>租户用户</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>请求日志</td><td class="path">/request-logs</td><td>请求与会话</td><td><span class="chip chip-ok">请求</span></td></tr>
+          <tr data-ledger-row><td>队列瀑布图</td><td class="path">/dispatch/waterfall</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>轮次列表</td><td class="path">/admin/turns</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>会话分析中心</td><td class="path">/admin/session-analytics/users</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>请求注册表</td><td class="path">/admin/request-registry</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>连接注册台</td><td class="path">/admin/connection-registry</td><td>请求与会话</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>sanitizeRules.title</td><td class="path">/admin/sanitize-rules</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>系统设置</td><td class="path">/admin/settings</td><td>数据运维</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
+          <tr data-ledger-row><td>自更新与升级</td><td class="path">/admin/self-update</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>代理管理</td><td class="path">/admin/proxy</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>数据生命周期</td><td class="path">/admin/data-lifecycle</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>格式异常监控</td><td class="path">/format-anomalies</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>模型完整性监控</td><td class="path">/model-integrity</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>模型可信度</td><td class="path">/model-credibility</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>模块管理</td><td class="path">/admin/modules</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>提示词注入检测</td><td class="path">/admin/prompt-injection</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>压缩管理</td><td class="path">/admin/compression</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>微信机器人</td><td class="path">/admin/modules?module=wechat_bot</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>Agent Registry</td><td class="path">/admin/agents</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>更新与激活</td><td class="path">/customer/update-activate</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>离线激活</td><td class="path">/customer/offline-activation</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>数据采集范围</td><td class="path">/maintain/tenant/telemetry</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>运维总览</td><td class="path">/maintain/ops/overview</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>中心运维</td><td class="path">/maintain/ops/center</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>发布与下载</td><td class="path">/maintain/ops/downloads</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>License 管理</td><td class="path">/maintain/ops/licenses</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>故障管理</td><td class="path">/maintain/ops/faults</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>自动更新</td><td class="path">/maintain/ops/autoupdate</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>VibeCoding</td><td class="path">/ops/vibecoding</td><td>运维中心</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>接入示例</td><td class="path">/examples</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
+          <tr data-ledger-row><td>自动配置</td><td class="path">/examples#auto-config</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
+          <tr data-ledger-row><td>帮助手册</td><td class="path">/help</td><td>接入指南</td><td><span class="chip chip-ok">接入指南</span></td></tr>
+          <tr data-ledger-row><td>自动更新</td><td class="path">/maintain/ops/autoupdate</td><td>接入指南</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>赞助与捐赠</td><td class="path">/maintain/donate</td><td>接入指南</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>对话</td><td class="path">/chat</td><td>对话</td><td><span class="chip chip-primary">顶栏直链</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note" style="margin-top:var(--kx-space-3)">
+      <strong>判定标准（钉死）</strong>：任何一条入口若在这张表里找不到落点，即为设计缺陷，不得发布；
+      表由 <span class="mono">gen-simple-mode-ledger.mjs</span> 生成，
+      <span class="mono">--check</span> 比对行数与真源，手抄即红。
+    </div>
+  </section>
+
+  <!-- ══════════════ 八、分期与风险 ══════════════ -->
+  <section class="sec" id="s8">
+    <div class="sec-head">
+      <h2>分期与风险</h2>
+      <span class="tagline">按风险从低到高</span>
+    </div>
+
+    <div class="panel">
+      <table>
+        <thead><tr><th style="width:10%">期</th><th style="width:34%">范围</th><th style="width:32%">内容</th><th style="width:24%">验收口径</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>一期</strong></td>
+            <td>纯投影，不动运行时</td>
+            <td>① 首页改接入清单（复用 <span class="mono">/dashboard</span> 路径，内容换皮）② 页头 KPI 收成一行小字 ③ 页签（用量 / 请求）④ 关停 / 零流量折叠带计数</td>
+            <td>专家面 63 条落点不变（台账 <span class="mono">--check</span> 绿）；切换模式不丢任何设置</td>
+          </tr>
+          <tr>
+            <td><strong>二期</strong></td>
+            <td>接入表单形状</td>
+            <td>① 两字段快速接入面板（复用 <span class="mono">provider_catalog</span>）② 抽屉式「更多设置」③ 探活转后台并显示状态 ④ 遮蔽账号开关</td>
+            <td>抽屉里的字段<strong>一个不少</strong>（对拍旧表单字段清单）；探测失败可重试且不丢已填内容</td>
+          </tr>
+          <tr>
+            <td><strong>三期</strong></td>
+            <td>模型选择器与模式层</td>
+            <td>① 模型选择器三段（复用路由页 <span class="mono">ModelPicker</span>）② <span class="mono">gateway.mode</span> 注册项与 <span class="mono">canShowNavItem()</span> 单一判定 ③ 三档功能清单落地（保留/降级/隐藏）④ 降级标记</td>
+            <td>切到简易模式后 8 套探针确实不启动（启动期装配点逐条钉测）；降级项在界面可查</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel" style="margin-top:var(--kx-space-4)">
+      <div class="panel-head"><span class="t">风险</span><span class="chip chip-muted num">6 条</span></div>
+      <table>
+        <thead><tr><th style="width:8%">#</th><th style="width:40%">风险</th><th style="width:52%">处置</th></tr></thead>
+        <tbody>
+          <tr><td>G1</td><td>首页换成清单后，「今天花了多少」变弱</td><td>KPI 不删，收成清单页头一行小字 + 点开看明细</td></tr>
+          <tr><td>G2</td><td>「探测失败就拒」改成后台探活，可能让用户以为接好了</td><td>接入完成页显式显示探测状态（进行中 / 成功 / 失败可重试），失败给「查看日志」入口</td></tr>
+          <tr><td>G3</td><td>抽屉可能把关键限额藏起来（并发 / 余额）</td><td>抽屉内<strong>限流类字段默认展开</strong>；抽屉标题显示「已改 N 项」</td></tr>
+          <tr><td>G4</td><td>模型三段选择器与 11-16 审计的「本区间有请求的模型」置顶组可能重复实现</td><td>第一段＝厂商提供的，第二段＝有请求的，<strong>实现上共用路由页同一个 <span class="mono">ModelPicker</span></strong>，不新造组件</td></tr>
+          <tr><td>G5</td><td>63 条台账靠人工维护会漂移（v1 的 61 就是这么漂的）</td><td>台账由 <span class="mono">gen-simple-mode-ledger.mjs</span> 从 <span class="mono">appNav.ts</span> 生成，<strong>不得手抄</strong>；<span class="mono">--check</span> 做行数比对</td></tr>
+          <tr><td>G6</td><td>遮蔽开关与日志脱敏假名化会长成两套</td><td>遮蔽只做展示层，底层复用同一套假名化函数，不新造算法</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════ 九、证据索引 ══════════════ -->
+  <section class="sec" id="s9">
+    <div class="sec-head">
+      <h2>证据索引</h2>
+      <span class="tagline">每条主张都能点回源码</span>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><span class="t">magpie 侧</span><span class="chip chip-muted num">~/workspace/ai/magpie @ ca3e57f94</span></div>
+      <table>
+        <thead><tr><th style="width:38%">主张</th><th style="width:62%">位置</th></tr></thead>
+        <tbody>
+          <tr><td>导航 4 组 9 项 + Settings</td><td class="path">internal/gui/assets/index.html:69-85</td></tr>
+          <tr><td>首页＝Agents 清单；「That is the whole app.」</td><td class="path">index.html:117；docs/reference.md:7-13</td></tr>
+          <tr><td>「Providers with one field.」</td><td class="path">docs/reference.md:56-60</td></tr>
+          <tr><td>preset 决定 base API；30+ 字段在抽屉</td><td class="path">internal/gui/assets/app.js:9300</td></tr>
+          <tr><td>「Real model lists, nothing compiled in.」</td><td class="path">docs/reference.md:62-68</td></tr>
+          <tr><td>每客户端自己的模型清单</td><td class="path">docs/reference.md:70-79</td></tr>
+          <tr><td>「Turned off」折叠 + 计数</td><td class="path">index.html:140</td></tr>
+          <tr><td>一键遮蔽账号</td><td class="path">index.html:137</td></tr>
+          <tr><td>发现即导入</td><td class="path">index.html:133-136</td></tr>
+          <tr><td>能力门 data-feature</td><td class="path">index.html:72-83</td></tr>
+          <tr><td>页内标签</td><td class="path">index.html:110-114</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel" style="margin-top:var(--kx-space-4)">
+      <div class="panel-head"><span class="t">本仓侧</span><span class="chip chip-muted num">llm-gateway-go-5 @ 14d165a7f</span></div>
+      <table>
+        <thead><tr><th style="width:38%">主张</th><th style="width:62%">位置</th></tr></thead>
+        <tbody>
+          <tr><td>专家面 63 条目 / 62 落地路径 / 8 静态组 + 1 插件合成组</td><td class="path">web/src/config/appNav.ts（组定义 :133,163,191,205,229,256,270,284；合成组 :430；顶层 3 项 :66-71）</td></tr>
+          <tr><td>可见性唯一判定处</td><td class="path">web/src/config/appNav.ts:299（canShowNavItem）</td></tr>
+          <tr><td>新增供应商表单 5 项</td><td class="path">web/src/views/ProvidersView.vue:1146-1246</td></tr>
+          <tr><td>新增凭据表单</td><td class="path">web/src/views/ProvidersView.vue:1582-1600</td></tr>
+          <tr><td>preset 底表（base URL / 协议 / 模型清单 / 发现策略）</td><td class="path">sql/objects/tables/provider_catalog.sql:1-40</td></tr>
+          <tr><td>从厂商端点拉模型</td><td class="path">discovery/discovery.go:326-347</td></tr>
+          <tr><td>「从供应商读取」按钮</td><td class="path">web/src/locales/zh-CN/providerDetail.ts:295</td></tr>
+          <tr><td>该按钮与校验工具同一条解析路径</td><td class="path">cmd/verify-model-fetch/main.go:1-6</td></tr>
+          <tr><td>per-key 模型用量与成本</td><td class="path">sql/objects/tables/api_key_model_cost.sql</td></tr>
+          <tr><td>零流量供应商可见性修复（排序契约）</td><td class="path">提交 dc263b085；docs/audit/2026-11-16-对账页供应商与模型数据完整性审计-主档.md</td></tr>
+          <tr><td>v1 三份稿</td><td class="path">docs/03-design/02-feature-design/simple-expert-mode-design.html / simple-mode-ui-mockup.html / simple-mode-concept.html</td></tr>
+          <tr><td>历史 magpie 对比（网关内核域，非 IA）</td><td class="path">docs/research/2026-10-30-magpie四域对比刷新与优化方案.md；docs/research/2026-10-24-magpie-v0.1.1367-能力刷新与网关流程优化（含插件扩展点专题）.md</td></tr>
+          <tr><td>本稿台账生成器</td><td class="path">scripts/audit/gen-simple-mode-ledger.mjs</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="foot" id="foot">
+    <div class="foot-l">
+      <span>简易模式 v2 · 与 magpie 对比后的修订设计稿</span>
+      <span class="muted">2026-11-16 · 结论以本文与配套对比分析为准；条目台账由 appNav.ts 生成</span>
+    </div>
+  </footer>
+</div>
+    <span class="mono">web/src/locales/zh-CN/nav.ts</span>（中文名）、
+    <span class="mono">web/src/components/shell/AppTopbar.vue</span>（顶栏渲染结构）。
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById('theme-toggle');
+  var icon = document.getElementById('theme-icon');
+  function setTheme(t) {
+    root.setAttribute('data-theme', t);
+    icon.setAttribute('href', t === 'dark' ? '#i-sun' : '#i-moon');
+  }
+  var saved = null;
+  try { saved = localStorage.getItem('kx-concept-theme'); } catch (e) {}
+  setTheme(saved || 'dark');
+  btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    setTheme(next);

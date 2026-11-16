@@ -1,0 +1,176 @@
+{
+  "html": "docs/03-design/02-feature-design/simple-mode-concept-v2.html",
+  "width": 1440,
+  "scale": 2,
+  "themes": {
+    "dark": {
+      "files": [
+        {
+          "file": "dark/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 14485
+        },
+        {
+          "file": "dark/00-cover.png",
+          "label": "封面与导读",
+          "w": 1376,
+          "h": 322
+        },
+        {
+          "file": "dark/01-v1-problems.png",
+          "label": "v1 的四个问题",
+          "w": 1376,
+          "h": 1408
+        },
+        {
+          "file": "dark/02-magpie-compare.png",
+          "label": "magpie 对比",
+          "w": 1376,
+          "h": 1479
+        },
+        {
+          "file": "dark/03-borrow-not-copy.png",
+          "label": "借鉴与不照搬",
+          "w": 1376,
+          "h": 1155
+        },
+        {
+          "file": "dark/04-v2-full-page.png",
+          "label": "v2 整页视图",
+          "w": 1376,
+          "h": 1617
+        },
+        {
+          "file": "dark/05-v2-menu.png",
+          "label": "v2 菜单全貌",
+          "w": 1376,
+          "h": 710
+        },
+        {
+          "file": "dark/06-key-pages.png",
+          "label": "关键页改造",
+          "w": 1376,
+          "h": 1641
+        },
+        {
+          "file": "dark/07-ledger.png",
+          "label": "功能台账",
+          "w": 1376,
+          "h": 4021
+        },
+        {
+          "file": "dark/08-phasing-risk.png",
+          "label": "分期与风险",
+          "w": 1376,
+          "h": 656
+        },
+        {
+          "file": "dark/09-evidence.png",
+          "label": "证据索引",
+          "w": 1376,
+          "h": 1229
+        },
+        {
+          "file": "dark/10-footer.png",
+          "label": "页脚",
+          "w": 1376,
+          "h": 48
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    },
+    "light": {
+      "files": [
+        {
+          "file": "light/whole-document.png",
+          "label": "整页长图",
+          "w": 1440,
+          "h": 14485
+        },
+        {
+          "file": "light/00-cover.png",
+          "label": "封面与导读",
+          "w": 1376,
+          "h": 322
+        },
+        {
+          "file": "light/01-v1-problems.png",
+          "label": "v1 的四个问题",
+          "w": 1376,
+          "h": 1408
+        },
+        {
+          "file": "light/02-magpie-compare.png",
+          "label": "magpie 对比",
+          "w": 1376,
+          "h": 1479
+        },
+        {
+          "file": "light/03-borrow-not-copy.png",
+          "label": "借鉴与不照搬",
+          "w": 1376,
+          "h": 1155
+        },
+        {
+          "file": "light/04-v2-full-page.png",
+          "label": "v2 整页视图",
+          "w": 1376,
+          "h": 1617
+        },
+        {
+          "file": "light/05-v2-menu.png",
+          "label": "v2 菜单全貌",
+          "w": 1376,
+          "h": 710
+        },
+        {
+          "file": "light/06-key-pages.png",
+          "label": "关键页改造",
+          "w": 1376,
+          "h": 1641
+        },
+        {
+          "file": "light/07-ledger.png",
+          "label": "功能台账",
+          "w": 1376,
+          "h": 4021
+        },
+        {
+          "file": "light/08-phasing-risk.png",
+          "label": "分期与风险",
+          "w": 1376,
+          "h": 656
+        },
+        {
+          "file": "light/09-evidence.png",
+          "label": "证据索引",
+          "w": 1376,
+          "h": 1229
+        },
+        {
+          "file": "light/10-footer.png",
+          "label": "页脚",
+          "w": 1376,
+          "h": 48
+        }
+      ],
+      "audit": {
+        "clipped": [],
+        "tinyIcon": [],
+        "hugeIcon": [],
+        "danglingUse": [],
+        "hOverflow": [],
+        "microText": []
+      }
+    }
+  },
+  "generatedAt": "2026-11-16T15:44:43.719Z"
+}

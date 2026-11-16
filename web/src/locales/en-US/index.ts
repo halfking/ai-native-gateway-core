@@ -91,6 +91,7 @@ import sales from './sales'
 import publicQuote from './publicQuote'
 import helpManual from './helpManual'
 import selfUpdateView from './selfUpdateView'
+import simpleMode from './simpleMode'
 
 export default {
   hyper,
@@ -185,4 +186,5 @@ export default {
   liveStageTree,
   sales,
   publicQuote,
+  simpleMode,
 }

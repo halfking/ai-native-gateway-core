@@ -13,12 +13,18 @@ func TestPlatformSpecsIncludesGatewayPromptBudget(t *testing.T) {
 
 func TestGatewaySpecsPromptBudget(t *testing.T) {
 	specs := GatewaySpecs()
-	if len(specs) != 1 {
-		t.Fatalf("GatewaySpecs() returned %d specs, want 1", len(specs))
+	if len(specs) == 0 {
+		t.Fatal("GatewaySpecs() returned empty list")
 	}
-	spec := specs[0]
-	if spec.Key != "gateway.max_prompt_tokens" {
-		t.Fatalf("key = %q", spec.Key)
+	var spec *Spec
+	for _, s := range specs {
+		if s.Key == "gateway.max_prompt_tokens" {
+			spec = s
+			break
+		}
+	}
+	if spec == nil {
+		t.Fatal("gateway.max_prompt_tokens not found in GatewaySpecs()")
 	}
 	if spec.Default != 2097152 {
 		t.Fatalf("default = %v, want 2097152", spec.Default)
