@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -470,4 +471,43 @@ func readSourceForTest(funcName string) ([]byte, error) {
 		return data, nil
 	}
 	return []byte(strings.Join(lines[start:], "\n")), nil
+}
+
+// TestManualInsertSQL_CastsTypeLessParamContexts pins the 42P08 fix at the
+// source level (this leg needs **no database**, so it also guards CI).
+//
+// ★ 42P08 的机理（2026-11-17 实测）：`could not determine data type of
+//
+//	parameter $8` —— PostgreSQL 在 **parse 阶段**就要定下每个占位符的类型，
+//	而 `CASE WHEN $n IS NOT NULL …` 这种位置**不提供任何类型上下文**
+//	⇒ 类型推不出来 ⇒ **整条语句**失败（HTTP 500）。
+//
+// ★ 为什么"靠 INSERT 目标列来推断"不够：目标列的强制转换发生在表达式
+//
+//	分析**之后**，参数类型在那时已经定过了。
+//
+// ⇒ 判据：凡出现在「无类型上下文」位置（CASE 条件里的裸参数）的占位符，
+//
+//	**必须**带显式类型转换。
+func TestManualInsertSQL_CastsTypeLessParamContexts(t *testing.T) {
+	s := insertManualCredentialModelSQL
+
+	// 形如 `CASE WHEN $n IS NOT NULL` / `CASE WHEN $n IS NULL` 的位置。
+	re := regexp.MustCompile(`CASE\s+WHEN\s+\$(\d+)(::[A-Za-z_ ]+)?\s+IS\s+(NOT\s+)?NULL`)
+	for _, m := range re.FindAllStringSubmatch(s, -1) {
+		if m[2] == "" {
+			t.Errorf("参数 $%s 出现在无类型上下文的 CASE 条件里且没有显式转换 ⇒ "+
+				"PostgreSQL parse 期会报 42P08（could not determine data type of parameter $%s）",
+				m[1], m[1])
+		}
+	}
+
+	// 钉住本次修复点本身：$8 必须带 ::int（三个出现处）。
+	if n := strings.Count(s, "$8::int"); n != 3 {
+		t.Errorf("$8::int 出现 %d 次，期望 3 次（值处 + 两个 CASE 条件）⇒ "+
+			"42P08 的修复被回退了？", n)
+	}
+	if strings.Contains(s, "$8,") || strings.Contains(s, "$8 IS NOT NULL") {
+		t.Error("仍有裸 $8 出现在无类型上下文的位置 ⇒ 42P08 会复发")
+	}
 }

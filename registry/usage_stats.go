@@ -149,7 +149,7 @@ func (tr *ToolRegistry) GetTopTools(ctx context.Context, tenantID string, limit 
 	query := `
 		SELECT tool_id, tenant_id, SUM(call_count)::bigint as total_calls, SUM(success_count)::bigint as total_success, SUM(error_count)::bigint as total_error
 		FROM tool_usage_stats_with_current_month
-		WHERE usage_date >= CURRENT_DATE - $1
+		WHERE usage_date >= CURRENT_DATE - $1::int
 	`
 	args := []interface{}{days}
 

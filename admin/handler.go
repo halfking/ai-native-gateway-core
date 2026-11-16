@@ -1445,6 +1445,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
+	// T4 审计（2026-10-01 起）：top-problems 报表端点。
+	//
+	// ★ 为什么以前打不开：handler（admin/top_problems.go）与它的单测**都在**，
+	//   但**路由从未注册** ⇒ 请求落到 "/api/logs/" 子树，被按 {id} 解析 ⇒
+	//   404 "request log not found"。⇒ 单测是绿的（它**直接调 handler**，
+	//   绕过了路由表）⇒ 「组件齐全 ≠ 链路能跑」的又一条实例。
+	// ★ 放在这里而不是别处：Go 的 ServeMux 里 "/api/logs/top-problems"
+	//   （精确路径）比 "/api/logs/"（子树）**更具体** ⇒ 精确匹配优先，
+	//   不会被子树抢走。
+	mux.HandleFunc("/api/logs/top-problems", admin(h.handleTopProblems))
 	// 2026-08-25: unified request detail (memory/file → _request_logs → session_turns)
 	mux.HandleFunc("/api/admin/request-detail/", admin(h.handleUnifiedRequestDetail))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）

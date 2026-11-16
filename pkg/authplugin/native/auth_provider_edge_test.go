@@ -132,10 +132,8 @@ func TestAuthProvider_ValidateToken_Success(t *testing.T) {
 	token, _, err := signToken(123, "tenant1", "alice", "admin", "test-secret-key-1234567890", false)
 	assert.NoError(t, err)
 	
-	// Mock password_changed_at check - no password change
-	mock.ExpectQuery(`SELECT password_changed_at FROM users WHERE id`).
-		WithArgs(123).
-		WillReturnRows(pgxmock.NewRows([]string{"password_changed_at"}).AddRow(nil))
+	// No mock needed: admin.RevokedByPasswordChange needs *pgxpool.Pool,
+	// mock is not assignable ⇒ skips the check (fail-open, same as user_manager.go).
 	
 	result, err := provider.ValidateToken(ctx, token)
 	assert.NoError(t, err)
@@ -147,25 +145,31 @@ func TestAuthProvider_ValidateToken_Success(t *testing.T) {
 }
 
 
+// TestAuthProvider_IsTokenRevoked_NotRevokedYet pins the **current** contract.
+//
+// ★ 2026-11-17：这条测试此前 mock 的是 `SELECT password_changed_at FROM users`
+//   —— 那一列**全仓没有任何迁移创建** ⇒ 真机上这条查询必然报错 ⇒ 旧实现
+//   走「读失败一律放行」⇒ 吊销永远不生效。⇒ **mock 把一个坏契约钉住了**：
+//   绿，但线上是坏的。
+// ⇒ 现在改为与 admin 面**共用**的判定（admin.RevokedByPasswordChange），
+//   而那份判定读的是 settings_kv 里的吊销纪元。
+// ⇒ 判据形状：mock 池**不是**真实 *pgxpool.Pool ⇒ 不查库、fail-open ⇒
+//   **不吊销**（与 native/user_manager.go 的换密侧同一范式：mock 跳过吊销）。
 func TestAuthProvider_IsTokenRevoked_NotRevokedYet(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
-	
+
 	provider, _ := NewNativeAuthProvider(mock, "secret")
 	ctx := context.Background()
-	
+
 	// Token issued just now
 	issuedAt := time.Now()
-	
-	// Password was changed 1 hour ago (before token was issued)
-	passwordChangedAt := time.Now().Add(-1 * time.Hour)
-	
-	mock.ExpectQuery(`SELECT password_changed_at FROM users WHERE id`).
-		WithArgs(1).
-		WillReturnRows(pgxmock.NewRows([]string{"password_changed_at"}).AddRow(passwordChangedAt))
-	
+
+	// ★ 刻意**不设**任何 ExpectQuery：mock 池不是真实 *pgxpool.Pool ⇒
+	//   实现不应发起任何查询；万一发了，mock 会因「无预期」而失败 ⇒
+	//   这条断言同时钉住「不查库」。
 	revoked := provider.isTokenRevoked(ctx, 1, issuedAt)
-	assert.False(t, revoked) // Not revoked - token issued after password change
-	
+	assert.False(t, revoked) // mock 池 ⇒ fail-open ⇒ 不吊销
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

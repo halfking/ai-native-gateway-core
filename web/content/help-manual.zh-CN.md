@@ -982,9 +982,25 @@ LIMIT 20;
 | `GET /api/admin/diagnostics/routing-blocked?provider_id=<供应商ID>` | 「凭据正常但路由不到」的专项诊断；**必须带 `provider_id`**，缺失或不合法返 400 `missing or invalid provider_id query parameter` |
 | `GET /api/admin/probe/dashboard` | 探针健康看板，含真实请求 24 小时成功率 |
 | `GET /api/routing/resolve?model=<模型名>` | 这个模型的候选选择过程与每个候选被拒的原因 |
-| `GET /api/logs/top-problems` | **当前不可达（404）**，见下方说明 |
+| `GET /api/logs/top-problems` | 失败热点榜：凭据维度与模型维度各取失败最多的前 N 个 |
 
-**`/api/logs/top-problems` 现在打不开。** 实现（`admin/top_problems.go`）和它的单测都在，但**没有注册路由** ⇒ 请求落到 `/api/logs/{id}` 的通配分支，返 404 `request log not found`（实测确认）。该端点已由仓内审计文档（`docs/全面审计v3/2026-10-01/101-*.md`）登记为「不可达」，补注册即可恢复。想看失败热点，改用这两条等效口径：
+**`/api/logs/top-problems` 的用法。** 这个端点此前**没有注册路由**，请求会落到 `/api/logs/{id}` 通配分支返 404 `request log not found`；现已注册，实测返 200。
+
+| 参数 | 含义 | 默认 |
+| --- | --- | --- |
+| `from` | 起始时间（RFC3339 或 `YYYY-MM-DD HH:MM:SS`） | 24 小时前 |
+| `to` | 结束时间（同上；必须晚于 `from`，否则 400 `to must be after from`） | 现在 |
+| `limit` | 每个维度取前 N 个（1..200，超范围自动夹取） | 20 |
+| `kind` | 只看某一维度：`credential` 或 `model` | 两个都看 |
+
+返回体形如 `{"items": [...], "meta": {"from", "to", "limit", "count"}}`；每个 item 含 `kind`（`credential`/`model`）、`id`、`label`、`request_count`、`failure_count`、`failure_rate`、`top_failure_kind`、`top_failure_detail`。排序按失败数降序，再按失败率、再按请求数。某个维度查询失败时，该维度被跳过，响应里附 `errors` 数组，其余维度照常返回。
+
+★ **两个读数陷阱**：
+
+1. **样本下限 30**：`HAVING COUNT(*) >= 30` ⇒ 请求数不足 30 的模型/凭据**不上榜**（避免失败率没有统计意义）。所以「榜上没它」**不等于**「它没问题」，只等于「样本不够」。
+2. **`<unknown>` 不是模型名**：**入口层失败**（401 鉴权失败、429 限流、ingress 容量拒绝）发生在**模型解析之前** ⇒ 日志里 `client_model` 就是字面量 `<unknown>` ⇒ 模型维度会把这一整桶并成一行。实测：40 次坏 key 请求产生的 48 笔 `authentication_required` 全被并进 `<unknown>`。看到 `<unknown>` 占据榜首，先查**鉴权/限流/入口容量**，不是模型路由问题。
+
+想看更细的失败分布，仍用这两条口径：
 
 ```bash
 # ① 按 (模型, kind) 聚合的候选失败
@@ -1076,7 +1092,9 @@ ssh 211 'cd <repo>/scripts/audit && python3 api-211-admin-probe.py "/api/routing
 
 > **加别名这一步实测有效**：对一个未登记的名字，加完 raw→canonical 别名后，客户端请求从 **400 `invalid_model`** 变成 **503 `no_candidate`**（即「名字认得了，只是还没有能用的凭据」），正好推进到下一层排查。
 >
-> **但「手工加绑定」这条路当前是坏的**：`POST /api/providers/<供应商ID>/credentials/<凭据ID>/models`（以及 `/api/providers/<ID>/models/` 带 `credential_id`）实测返回 **500 `create failed`**，日志里是 `could not determine data type of parameter $8 (SQLSTATE 42P08)`——`modelcatalog/upsert.go` 的 `insertManualCredentialModelSQL` 里 `$8`（`context_window`）的用法让 PostgreSQL 在 Parse 阶段就推断不出类型。写入本身是原子的（不会留下半条绑定），但**该模型名会被顺带播种进 `models_canonical`**。⇒ **优先用「加别名」或「重跑模型发现」来建立绑定**，别依赖手工添加。
+> **「手工加绑定」这条路此前是坏的，现在已修复**：`POST /api/providers/<供应商ID>/credentials/<凭据ID>/models`（以及 `/api/providers/<ID>/models/` 带 `credential_id`）此前实测返回 **500 `create failed`**，日志里是 `could not determine data type of parameter $8 (SQLSTATE 42P08)`——`modelcatalog/upsert.go` 的 `insertManualCredentialModelSQL` 里 `$8`（`context_window`）出现在 `CASE WHEN $8 IS NOT NULL` 这种**没有类型上下文**的位置，PostgreSQL 在 Parse 阶段就推断不出类型，整条语句失败。已修（显式转型），实测返 **201** 并落出绑定行。仍要注意：**该模型名会被顺带播种进 `models_canonical`**，且写入是原子的（不会留下半条绑定）。⇒ 三条建立绑定的路（加别名 / 手工加绑定 / 重跑模型发现）现在都可用，**优先用加别名**：它只改名字映射，不动凭据与绑定。
+>
+> ★ 这类缺陷的排查特征值得记住：**只在"从没被成功调用过的路径"上出现**，且错误是 `SQLSTATE 42P08` 这类 **parse 期**错误 ⇒ 单元测试（尤其是 mock 驱动的）**抓不到**，必须让真实 PostgreSQL 去 parse 那条语句才能发现。
 
 > 最省事的一条路：零候选时网关会打一条 `[candidate_diag] db_empty` 日志，其中 `likely_cause` 直接给出人话结论（例如「模型已登记（12 offer），但 12 条被凭据配额态滤掉 ⇒ 处置：处置配额（充值/解封）」）。**先看这一行，再动手。**
 
@@ -1106,6 +1124,8 @@ ssh 211 'cd <repo>/scripts/audit && python3 api-211-admin-probe.py "/api/routing
 3. **部分迁移带前置断言**：例如 `956_minimax_m31_flash_featured.sql` 要求目标模型**已存在于 `models_canonical` 且 `status='active'`**，否则直接中止并报 `migration 956 aborted: canonical_name=... does not exist or is not active`。而模型目录是由**模型发现**灌入的 ⇒ **全新安装、还没配任何供应商时，目录是空的，启动迁移链会在这一条中止**。这类中止不是文件缺失，而是「前置条件没满足」——先把模型目录补上（跑一次模型发现，或手工登记该模型），再重跑迁移。
 
 **凭据解密失败**：加密主密钥已更换或与密文不匹配。恢复原来的 `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY`；若已丢失，需要重新录入上游密钥。
+
+**探针审计写不进库（全新安装）**：症状是开了系统监控（`LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true`）后，探针结果一条都没落进 `system_probe_runs`，日志里是 `column "total_tokens" of relation "system_probe_runs" does not exist`。根因：该列由 `sql/migrations/domain/346_system_probe_run_tokens.sql` 创建，而**安装器只跑 startup 通道**（`sql/migrations/domain/` 是另一条通道，全新安装不会执行它）⇒ 全新安装的库里这一列不存在，而 `bg/systemmonitor/audit.go` 的写入语句带着它。修法：把该列的 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 补进 startup 通道的迁移（这是**登记在案、尚未落地**的缺口），或在等迁移落地前手工执行那一条 `ALTER TABLE`（幂等）。已按 domain 通道建过库的环境不受影响。
 
 ### 10.7 凭据侧问题
 

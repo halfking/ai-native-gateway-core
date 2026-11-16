@@ -239,9 +239,17 @@ SELECT
     $1, upsert_pm.id, $7, 2, 100, 99, 0.9, 0,
     CASE WHEN cred.plan_type = 'token' THEN 'per_token' ELSE COALESCE(cred.plan_type, 'per_token') END,
     'manual', TRUE,
-    $8,
-    CASE WHEN $8 IS NOT NULL THEN 'manual' ELSE 'catalog' END,
-    CASE WHEN $8 IS NOT NULL THEN NOW() ELSE NULL END
+    -- ★ $8 必须**显式** ::int（2026-11-17 实测修复 42P08）：
+    --   它出现在下面两个 CASE 的 IS NOT NULL 条件里，而那种位置
+    --   **没有任何类型上下文** ⇒ PostgreSQL 在 parse 阶段无法推断它的类型
+    --   ⇒ "could not determine data type of parameter $8" (SQLSTATE 42P08)
+    --   ⇒ **整条手工建模语句失败** ⇒ HTTP 500 "create failed"。
+    --   ⚠️ 只靠 INSERT 目标列（context_window_override 是 integer）是不够的：
+    --   参数类型在表达式分析阶段就要定下来，等不到目标列的强制转换。
+    --   ⇒ 真库 PREPARE 门：modelcatalog/upsert_realdb_test.go
+    $8::int,
+    CASE WHEN $8::int IS NOT NULL THEN 'manual' ELSE 'catalog' END,
+    CASE WHEN $8::int IS NOT NULL THEN NOW() ELSE NULL END
 FROM upsert_pm, cred
 ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
     available = EXCLUDED.available,

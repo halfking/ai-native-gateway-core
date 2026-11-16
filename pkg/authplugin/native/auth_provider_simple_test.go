@@ -162,23 +162,26 @@ func TestAuthProvider_Logout_IsNoOp(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestAuthProvider_IsTokenRevoked_NoRevocationRecord pins the **current**
+// contract: no revocation record ⇒ not revoked.
+//
+// ★ 2026-11-17：旧版 mock 的是 `SELECT password_changed_at FROM users`
+//   —— 那一列**全仓没有任何迁移创建** ⇒ 真机上必然查询报错 ⇒ 旧实现
+//   fail-open ⇒ 吊销永不生效（mock 却把它钉成绿的）。
+// ⇒ 现在走 admin 面的共用判定；mock 池不是真实 *pgxpool.Pool ⇒ 不查库。
 func TestAuthProvider_IsTokenRevoked_NoRevocationRecord(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
-	
+
 	provider, _ := NewNativeAuthProvider(mock, "secret")
 	ctx := context.Background()
-	
-	// Mock no password_changed_at (NULL)
-	mock.ExpectQuery(`SELECT password_changed_at FROM users WHERE id`).
-		WithArgs(1).
-		WillReturnRows(pgxmock.NewRows([]string{"password_changed_at"}).AddRow(nil))
-	
+
+	// ★ 不设任何 ExpectQuery：mock 池 ⇒ 实现不应发起查询（发了我就失败）。
 	// Should return false (not revoked)
 	issuedAt := time.Now()
 	revoked := provider.isTokenRevoked(ctx, 1, issuedAt)
 	assert.False(t, revoked)
-	
+
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

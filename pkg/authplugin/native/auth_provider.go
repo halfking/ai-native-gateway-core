@@ -16,6 +16,9 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 )
 
@@ -176,17 +179,26 @@ func (p *NativeAuthProvider) Logout(_ context.Context, _ string) error {
 }
 
 // isTokenRevoked checks whether the user changed their password after the
-// token was issued. Mirrors admin/auth.go authRevocationProbe.
+// token was issued.
+//
+// ★ 2026-11-17 修正（真实网关 + 全仓 SQL 扫描实测）：此前这里直接查
+//
+//	`users.password_changed_at` —— **全仓没有任何迁移创建这一列**
+//	（吊销纪元实际存在 admin 面的 settings_kv 行里）⇒ 查询必然报错
+//	⇒ 本函数按「读失败一律放行」返回 false ⇒ **改密之后旧 JWT 一直存活
+//	到 TTL** ⇒ 吊销在 native 插件这条路径上形同虚设。
+//	⇒ 症状与"没接吊销"完全一样，且**不会报错**（fail-open 把它吃掉了）。
+//
+// ⇒ 改用与 admin 面**共用**的判定 `admin.RevokedByPasswordChange`：
+//
+//	同一份实现、同一份 5s TTL 缓存、同一把「读失败一律放行」的尺子
+//	⇒ 两边口径不会漂（与 admin/auth_revocation.go 的导出面契约一致）。
+//	范式同 native/user_manager.go 的换密侧：只有拿到真实 *pgxpool.Pool
+//	才查；mock/测试实现跳过 ⇒ 维持 fail-open（不把整个登录面锁死）。
 func (p *NativeAuthProvider) isTokenRevoked(ctx context.Context, userID int, issuedAt time.Time) bool {
-	var passwordChangedAt *time.Time
-	err := p.db.QueryRow(ctx,
-		`SELECT password_changed_at FROM users WHERE id = $1`, userID,
-	).Scan(&passwordChangedAt)
-	if err != nil {
-		return false // can't determine → allow
+	pool, ok := p.db.(*pgxpool.Pool)
+	if !ok {
+		return false // 不是真实池（mock/测试）⇒ fail-open，与 admin 面同尺子
 	}
-	if passwordChangedAt == nil {
-		return false
-	}
-	return passwordChangedAt.After(issuedAt)
+	return admin.RevokedByPasswordChange(ctx, pool, userID, issuedAt)
 }

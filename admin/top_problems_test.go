@@ -58,6 +58,75 @@ func TestHandleTopProblems_LimitClamp(t *testing.T) {
 	}
 }
 
+// TestTopProblemsRouteIsRegistered pins the endpoint's **reachability**.
+//
+// ★ 为什么上面那些单测抓不到这个缺陷：它们**直接调 handler**，
+//
+//	绕过了路由表 ⇒ handler 存在、逻辑正确、单测全绿，而线上 404。
+//	（实测 2026-11-17：/api/logs/top-problems 落到 "/api/logs/" 子树，
+//	被按 {id} 解析 ⇒ 404 "request log not found"。
+//	⇒ 「组件齐全 ≠ 链路能跑」：判定标准是「谁调用了它」。）
+//
+// ★ 这条判据必须**穿过真实 mux**（走真实路由表），否则又是同源自证。
+//
+//	判据形状：拿到 404 ⇒ 路由没注册；拿到 503（nil DB）⇒ 路由通了，
+//	是数据层没配 —— 两者必须区分开。
+func TestTopProblemsRouteIsRegistered(t *testing.T) {
+	h := NewHandler(nil, "test-secret", nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	token, _, err := SignToken(1, "default", "root", "super_admin", "test-secret", false)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/top-problems", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("GET /api/logs/top-problems = 404 (%s) ⇒ 路由未注册，请求落到了 /api/logs/ 子树；"+
+			"请在 RegisterRoutes 里注册 \"/api/logs/top-problems\"", w.Body.String())
+	}
+	// h.db == nil ⇒ handler 自己返回 503 ⇒ 说明路由**已经打到 handler**。
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /api/logs/top-problems: got %d, want 503 (nil db); body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "admin database not configured") {
+		t.Errorf("body should say the db is not configured: %s", w.Body.String())
+	}
+}
+
+// TestTopProblemsRouteNotShadowedByLogsSubtree pins the **precedence**.
+//
+// "/api/logs/top-problems"（精确路径）与 "/api/logs/"（子树）都匹配同一个
+// 请求 ⇒ 必须精确路径胜出，否则子树里的 {id} 解析又会把它吞掉。
+// ⇒ 这条判据锁的是 ServeMux 的优先级，不是 handler 的行为。
+func TestTopProblemsRouteNotShadowedByLogsSubtree(t *testing.T) {
+	h := NewHandler(nil, "test-secret", nil, nil)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	token, _, err := SignToken(1, "default", "root", "super_admin", "test-secret", false)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/top-problems?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "request log not found") {
+		t.Fatalf("the /api/logs/ subtree shadowed the exact route: %s", body)
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503; body=%s", w.Code, body)
+	}
+}
+
 // TestTopProblemsItem_Fields pins the JSON shape that the endpoint returns.
 // Operators and dashboards depend on this field set; renaming anything here
 // is a breaking change.
