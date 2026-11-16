@@ -21,6 +21,37 @@ describe('mergeNav', () => {
   })
 })
 
+// 2026-11-17: /live2 请求阶段树暂时隐藏菜单（路由保留）。
+describe('hidden nav item (live2 stage tree)', () => {
+  const live2 = NAV_PRIMARY_ITEMS.find((i) => i.path === '/live2')!
+
+  it('marks /live2 as hidden while keeping it in the source list', () => {
+    expect(live2).toBeTruthy()
+    expect(live2.hidden).toBe(true)
+  })
+
+  it('canShowNavItem rejects hidden items even for platform ops', () => {
+    expect(
+      canShowNavItem(live2, {
+        isSuperAdmin: true,
+        isPlatformOps: true,
+        isTenantPortal: false,
+      }),
+    ).toBe(false)
+  })
+
+  it('mergeNav drops /live2 from the rendered primary group', () => {
+    const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
+      isSuperAdmin: true,
+      isPlatformOps: true,
+      isTenantPortal: false,
+    })
+    const primary = merged.find((g) => g.id === 'primary')
+    expect(primary?.items.some((i) => i.path === '/live2')).toBe(false)
+    expect(primary?.items.some((i) => i.path === '/live')).toBe(true)
+  })
+})
+
 // 2026-09-04: 供应商菜单用 providerConsole 标记 —— super_admin 或 default
 // 租户 tenant_admin 可见（凭据 API Key 轮换对该角色开放），其余不可见。
 describe('providerConsole nav visibility', () => {

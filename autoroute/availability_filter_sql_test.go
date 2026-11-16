@@ -61,3 +61,26 @@ func TestAvailabilityFilterSQL_PlaceholderRendered(t *testing.T) {
 		t.Error("BROKEN_PAIR_GUARD placeholder was not rendered into the SQL")
 	}
 }
+
+// TestAvailabilityFilterSQL_UsesUnifiedRoutableView pins that the decision
+// side reads the **same** unified view the candidate side reads
+// (v_routable_credential_models) instead of re-implementing the rules.
+//
+// Why this matters: re-implementing the candidate side's gates always drifts
+// (211 evidence: 189 of 1010 pooled models were "alive on the decision side,
+// dead on the candidate side" — 19%). The only stable contract is sharing
+// the view itself.
+//
+// ★ 2026-11-17 24h 审计：本测曾随 F8 闸被 squash 提交无声删除，本轮还原。
+func TestAvailabilityFilterSQL_UsesUnifiedRoutableView(t *testing.T) {
+	sql := availabilityFilterSQL()
+	for _, needle := range []string{
+		"FROM v_routable_credential_models v",
+		"v.is_routable = TRUE",
+		"v.provider_model_id = pm.id",
+	} {
+		if !strings.Contains(sql, needle) {
+			t.Errorf("decision-side SQL must consult the unified routable view (%q)", needle)
+		}
+	}
+}

@@ -80,3 +80,24 @@ func TestBusinessSuccessKeepsManualOfflineMarker(t *testing.T) {
 		}
 	}
 }
+
+// TestSubmitUpsertKeepsManualOfflinePause —— F2 的失败武装臂。
+// 成功镜像已保留 paused；若 Submit 仍无条件 paused=FALSE，运维下线会被
+// 「一次业务失败 Submit」撤销（2026-11-17 探测时效审计 P0）。
+func TestSubmitUpsertKeepsManualOfflinePause(t *testing.T) {
+	sql := nodeProbeSubmitUpsertSQL()
+	for _, marker := range []string{
+		"last_err_code = 'manual_offline'",
+		"THEN TRUE",
+		"THEN node_probe_state.last_err_code",
+		"THEN node_probe_state.next_retry_at",
+	} {
+		if !strings.Contains(sql, marker) {
+			t.Errorf("Submit upsert missing manual_offline guard piece %q", marker)
+		}
+	}
+	// 无条件清 paused 的旧形态：单行 `paused = FALSE,`
+	if strings.Contains(sql, "paused = FALSE,") {
+		t.Error("Submit upsert still unconditionally clears paused — manual_offline 会被业务失败 Submit 撤销")
+	}
+}

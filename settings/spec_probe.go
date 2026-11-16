@@ -160,10 +160,10 @@ func ProbeSpecs() []*Spec {
 			Max:             floatPtr(86400),
 			Default:         900,
 			Description:     "常用模型深探测周期（秒）",
-			DescriptionLong: "ModelProbeRunner 为常用模型运行 chat-ping 深探测的周期。原硬编码 1800（30 分钟）；调小则常用模型自检更频繁。",
+			DescriptionLong: "ModelProbeRunner 为常用模型运行 chat-ping 深探测的周期。原硬编码 1800（30 分钟）；调小则常用模型自检更频繁。★ 2026-11-17：featuredCycleLoop 每轮结束后按当前值重武装 timer ⇒ HotReload=true（此前启动读一次，改设置需重启）。",
 			Unit:            "秒",
 			DangerLevel:     Safe,
-			HotReload:       false, // ticker 启动时读取；修改需重启
+			HotReload:       true,
 		},
 		{
 			Key:             "probe.featured_tenant",

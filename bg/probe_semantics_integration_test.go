@@ -98,8 +98,8 @@ func TestNodeProbeSubmitUpsert_ReArmSemantics(t *testing.T) {
 		t.Fatalf("create node_probe_state: %v", err)
 	}
 
-	// 四类存量行：paused 7 连败 / 梯子中段（未来 next_retry）/
-	// 已过期梯子行 / 健康停放（30 天外）。
+	// 五类存量行：paused 7 连败 / 梯子中段（未来 next_retry）/
+	// 已过期梯子行 / 健康停放（30 天外）/ 运维 manual_offline。
 	seeds := []string{
 		`INSERT INTO node_probe_state (credential_id, raw_model_name, paused, consecutive_failures, last_err_code, next_retry_at, next_retry_seconds, last_direct_ok)
 		 VALUES (1, 'm', TRUE, 7, '429', now() + interval '10 minutes', 600, FALSE)`,
@@ -109,6 +109,10 @@ func TestNodeProbeSubmitUpsert_ReArmSemantics(t *testing.T) {
 		 VALUES (3, 'm', FALSE, 2, '500', now() - interval '1 minute', 5, FALSE)`,
 		`INSERT INTO node_probe_state (credential_id, raw_model_name, paused, consecutive_failures, last_err_code, next_retry_at, next_retry_seconds, last_direct_ok, in_flight_until)
 		 VALUES (4, 'm', FALSE, 0, NULL, now() + interval '30 days', 2592000, TRUE, NULL)`,
+		// 2026-11-17：人工下线不得被 Submit 撤销（与成功镜像 F2 同口径）。
+		// next_retry 放在 +1h：断言「未重武装」时用 now+30m 作下界，不能用 +10m。
+		`INSERT INTO node_probe_state (credential_id, raw_model_name, paused, consecutive_failures, last_err_code, next_retry_at, next_retry_seconds, last_direct_ok)
+		 VALUES (5, 'm', TRUE, 0, 'manual_offline', now() + interval '1 hour', 3600, FALSE)`,
 	}
 	for _, s := range seeds {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -117,7 +121,7 @@ func TestNodeProbeSubmitUpsert_ReArmSemantics(t *testing.T) {
 	}
 
 	upsert := nodeProbeSubmitUpsertSQL()
-	for cred := int64(1); cred <= 4; cred++ {
+	for cred := int64(1); cred <= 5; cred++ {
 		if _, err := pool.Exec(ctx, upsert, cred, "m"); err != nil {
 			t.Fatalf("submit upsert cred %d: %v", cred, err)
 		}
@@ -141,6 +145,7 @@ func TestNodeProbeSubmitUpsert_ReArmSemantics(t *testing.T) {
 		2: {paused: false, cf: 3, wantErrCode: strp("429"), reArmed: false, inFlightNil: false}, // 梯子中段 → 保留（链路推进）
 		3: {paused: false, cf: 2, wantErrCode: strp("500"), reArmed: true, inFlightNil: true},   // 过期梯子行 → 重排期、计数保留
 		4: {paused: false, cf: 0, wantErrCode: nil, reArmed: true, inFlightNil: true},           // 健康停放 → 新失败立即重启（INV-2 分支）
+		5: {paused: true, cf: 0, wantErrCode: strp("manual_offline"), reArmed: false, inFlightNil: true}, // 人工下线 → 标记保留、不重武装
 	} {
 		var r row
 		var errCode *string

@@ -24,7 +24,9 @@ import {
   resolveNavItemActivation,
   type NavGroup,
 } from '../config/appNav'
+import { buildSimpleNav } from '../config/simpleNav'
 import { usePluginNav } from './usePluginNav'
+import { useWorkMode } from './useWorkMode'
 import {
   LOCAL_OPS_MENU,
   onMaintainAvailabilityChange,
@@ -40,6 +42,7 @@ export const navDrawerOpen = ref(false)
 const isActivated = ref(false)
 const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
 let backgroundStarted = false
+let platformModeRefreshStarted = false
 let stopMaintainWatch: (() => void) | null = null
 
 async function checkActivationStatus() {
@@ -75,6 +78,7 @@ function startBackgroundLoading() {
 /** 仅供测试：复位单例背景状态与共享开关。 */
 export function _resetUseAppNavForTests() {
   backgroundStarted = false
+  platformModeRefreshStarted = false
   stopMaintainWatch?.()
   stopMaintainWatch = null
   isActivated.value = false
@@ -114,6 +118,13 @@ export function useAppNav() {
   const route = useRoute()
   startBackgroundLoading()
 
+  // 2026-11-17：拉一次平台默认 gateway.mode，否则本机无覆盖时永远落 expert。
+  const { isSimple, refreshPlatformDefault } = useWorkMode()
+  if (!platformModeRefreshStarted) {
+    platformModeRefreshStarted = true
+    void refreshPlatformDefault()
+  }
+
   const isSuperAdmin = computed(() => checkSuperAdmin())
   const isPlatformOps = computed(() => checkPlatformOps())
   // 2026-09-04: 供应商控制台（super_admin 或 default 租户 tenant_admin）
@@ -128,37 +139,44 @@ export function useAppNav() {
     isActivated: isActivated.value,
   }))
 
-  const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, visibilityOpts.value))
-
-  // 2026-09-02: 在渲染前一次性把每个菜单项解析成最终 path / 是否为激活动作,
-  // 避免模板内反复调用 resolveNavItemActivation。
-  const navPrimaryResolved = computed(() =>
-    navPrimaryItems.value.map((item) => ({
-      item,
-      resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
-    })),
-  )
-
   // V5.1: dynamic plugin nav (plugin-runtime /api/v1/plugin-nav). The merge
   // step runs after the opsPlatform override so a plugin can't displace the
   // maintain nav, but plugin entries land inside the matching static group
   // (e.g. 'requests-sessions') or in a synthetic 'plugins' group if no match.
   const { pluginNav } = usePluginNav()
 
-  const navGroups = computed(() => {
+  const expertPrimary = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, visibilityOpts.value))
+  const expertGroups = computed(() => {
     let local = visibleNavGroups(NAV_GROUPS, visibilityOpts.value)
     local = mergeRemotePluginNav(local, pluginNav.value)
-    const base = opsMenuOverrides.value ? mergeRemoteOps(local, opsMenuOverrides.value) : local
-    // 2026-09-02: 每个 item 都附带上「按激活状态解析后的 path / 是否为激活动作」,
-    // 模板直接读 resolved.path 渲染即可。
-    return base.map((g) => ({
+    return opsMenuOverrides.value ? mergeRemoteOps(local, opsMenuOverrides.value) : local
+  })
+
+  const projected = computed(() => {
+    if (!isSimple.value) {
+      return { direct: expertPrimary.value, groups: expertGroups.value }
+    }
+    return buildSimpleNav(expertPrimary.value, expertGroups.value)
+  })
+
+  // 2026-09-02: 在渲染前一次性把每个菜单项解析成最终 path / 是否为激活动作,
+  // 避免模板内反复调用 resolveNavItemActivation。
+  const navPrimaryResolved = computed(() =>
+    projected.value.direct.map((item) => ({
+      item,
+      resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
+    })),
+  )
+
+  const navGroups = computed(() =>
+    projected.value.groups.map((g) => ({
       ...g,
       items: g.items.map((item) => ({
         item,
         resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
       })),
-    }))
-  })
+    })),
+  )
 
   /**
    * 菜单项标签的**唯一**解析口：优先用 i18n 键（语言包是唯一真值），
