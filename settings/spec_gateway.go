@@ -18,5 +18,18 @@ func GatewaySpecs() []*Spec {
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},
+		{
+			Key:             "gateway.mode",
+			EnvName:         "LLM_GATEWAY_MODE",
+			Type:            TypeString,
+			Scope:           ScopePlatform,
+			Category:        CategoryGeneral,
+			Options:         []string{"simple", "expert"},
+			Default:         "expert",
+			Description:     "管理端工作模式（界面投影层）",
+			DescriptionLong: "控制管理端界面风格：simple（简易模式，首页是接入清单，专家面收在「高级」组）｜expert（专家模式，完整导航与全部页面，当前默认）。只决定前端界面投影，不影响后端子系统装配、路由逻辑、数据结构。升级默认保持 expert，不改变既有用户界面。通过系统配置修改后约 5 秒内热生效。",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
 	}
 }
