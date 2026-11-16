@@ -61,7 +61,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 | **流量治理** | Token 限流（TPM/RPM）+ 语义缓存 + 提示词压缩 + 滑窗算法 |
 | **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
 | **凭据** | 多凭据 + 指纹池 + 自适应探测 + 手动禁用 |
-| **插件运行时** | Supervisor 管理的插件生命周期，支持资源限制（内存/goroutine/CPU）+ 周期性监控 + 平台自适应强制执行（Linux cgroup v2 硬限制 / macOS 软限制）—— 见 [plugin-runtime/supervisor/README.md](plugin-runtime/supervisor/README.md) |
+| **插件运行时** | Supervisor 管理的插件生命周期（安装 / 健康 / 反代 / 静态 SPA）。**生产启进程走根包 `plugin-runtime` Supervisor**；子模块 `plugin-runtime/supervisor` 的 ResourceLimiter（cgroup v2 / macOS 软限制）**不在该路径上**，待 Supervisor 归并后再算生产能力。见 [plugin-runtime/supervisor/README.md](plugin-runtime/supervisor/README.md)。 |
 | **运营与定价** | 模型定价版本化（一模型 × 一套餐模式一价，额效期自动闭前期，订价变化可见）· 营销：套餐 / 加油包 / 优惠码 / 折扣与赠送活动 · 市场行情管线（定时采集 → 单向参考同步 → 零售 vs 市场对比，禁止回流路由）· 统计对账门（迟到行重扫）—— 见 [docs/运营体系方案总结.md](docs/运营体系方案总结.md) |
 | **部署** | 双实例（Docker + k3s NodePort），共享同一 PostgreSQL schema |
 

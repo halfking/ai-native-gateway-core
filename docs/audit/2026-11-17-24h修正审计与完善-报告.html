@@ -71,7 +71,8 @@
       <li><b>简易模式「看起来做了」</b>：组件在仓、接线未入 ⇒ 切换无可见效果（本轮已接顶栏/导航/首页）。</li>
       <li><b>探测不及时</b>：多因叠加；本轮只修 featured 周期热重载。NIM 探的是主 URL、路由走多 endpoint。</li>
       <li><b>部署</b>：三台均用 root SSH 密钥通道完成；211 <code>526cf7d7</code> seq3078 槽 a@8781；245/154 同 sha，登录冒烟 OK。</li>
-      <li><b>慢 SQL</b>：分钟清理 DELETE 是主因；548s ALTER 为部署迁移一次性锁表；现网无多 endpoint 行。</li>
+      <li><b>慢 SQL</b>：分钟清理 DELETE 是主因；续轮已改 <code>retireProbeMinutes</code> LIMIT 2000 批删；548s ALTER 为部署迁移一次性锁表。</li>
+      <li><b>P11 / pep</b>：RecoverExpired 尊重 <code>broken_confirmed</code>；探针 <code>resolveDirectTarget</code> 优先 <code>provider_endpoint_protocols</code>。</li>
       <li><b>966 假红</b>：台账探针用 <code>MAX &lt; last_value</code>，与 <code>setval(MAX,is_called=true)</code> 正确终态冲突 ⇒ 已改读下次 nextval。</li>
       <li><b>NIM 覆盖</b>：catalog 事实——<code>claude-sonnet-5-5</code>/<code>gpt-5.6-luna</code> 在 nvidia 上无 offer；minimax 曾被 <code>node_probe_failed</code>（concurrent）挂死，清态后立刻可路由。</li>
     </ul>

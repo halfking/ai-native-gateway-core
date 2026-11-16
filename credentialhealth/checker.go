@@ -584,7 +584,15 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 //	口径精确性：守卫**只作用于 `auto_credential_%`**；per-model 归因
 //	（`auto_timeout` / `auto_rate_limit` …）与探针证据（`probe_*`）、
 //	`continuous_failure` 一律维持原语义 ⇒ **不触碰 D2/D3 的判定**。
+//
+// ④ 2026-11-17（P11）：冷却到期**不得**翻绿「探针已判 broken_confirmed」的绑定。
+//
+//	F3 放大恢复命中面后，若仍无视探针证据 ⇒ 「探针已死、绑定又绿」漂移加重。
+//	守卫走 probemode.GuardStateTable()（新栈 = v_node_probe_state_compat），
+//	与路由 brokenPairExcludeSQL 同词表。子查询读 provider_models **仅用于
+//	取 raw 名**，不内连接主 FROM —— 孤儿绑定（pm 已删）子查询空 ⇒ 不挡恢复。
 func cmbExpiredRecoverySQL() string {
+	guardTable := probemode.GuardStateTable()
 	return `
 		UPDATE credential_model_bindings cmb
 		SET available              = TRUE,
@@ -617,6 +625,16 @@ func cmbExpiredRecoverySQL() string {
 		    WHERE c.id = cmb.credential_id
 		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM ` + guardTable + ` nps
+		    WHERE nps.credential_id = cmb.credential_id
+		      AND nps.state = 'broken_confirmed'
+		      AND nps.raw_model_name = (
+		            SELECT pm.raw_model_name
+		              FROM provider_models pm
+		             WHERE pm.id = cmb.provider_model_id
+		      )
+		  )
 	`
 }
 
@@ -639,6 +657,7 @@ func cmbExpiredRecoverySQL() string {
 //	执行 ⇒ 镜像恢复涉及的行一定也命中 cmb 侧语句 ⇒ 地平线在同一 tick 被清。
 //	⇒ 触发器层的根治（给触发器补该列）仍需迁移，另行立项。
 func moExpiredRecoverySQL() string {
+	guardTable := probemode.GuardStateTable()
 	return `
 		UPDATE model_offers mo
 		SET available          = TRUE,
@@ -666,6 +685,12 @@ func moExpiredRecoverySQL() string {
 			SELECT 1 FROM credentials c
 			WHERE c.id = mo.credential_id
 			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM ` + guardTable + ` nps
+		    WHERE nps.credential_id = mo.credential_id
+		      AND nps.raw_model_name = mo.raw_model_name
+		      AND nps.state = 'broken_confirmed'
 		  )
 	`
 }

@@ -3532,16 +3532,35 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		// 于是拿 chat 形态去探 ⇒ 上游 400 ⇒ binding 被探死。
 		modality string
 	)
+	// 2026-11-17：base_url 优先取 provider_endpoint_protocols（与路由候选同表），
+	// 无 pep 行时回落 providers.base_url。否则 NIM 等多 endpoint 供应商会出现
+	// 「探针打主 URL、路由打 pep」的状态/流量错位。
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.secret_ciphertext,
 		       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
-		       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id,
+		       COALESCE(pep_pick.base_url, p.base_url),
+		       COALESCE(p.protocol, 'openai-completions'), p.id,
 		       COALESCE(mc.modality, '')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+		LEFT JOIN LATERAL (
+			SELECT pep.base_url
+			  FROM provider_endpoint_protocols pep
+			 WHERE pep.provider_id = p.id
+			   AND pep.enabled = TRUE
+			   AND (
+			         pep.protocol = COALESCE(p.protocol, 'openai-completions')
+			      OR pep.is_primary = TRUE
+			   )
+			 ORDER BY (pep.protocol = COALESCE(p.protocol, 'openai-completions')) DESC,
+			          pep.is_primary DESC,
+			          pep.weight DESC,
+			          pep.id ASC
+			 LIMIT 1
+		) pep_pick ON TRUE
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		  AND c.status IN ('active', 'cooling', 'degraded')
 		  AND c.lifecycle_status = 'active'
@@ -3567,13 +3586,29 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		looseErr = w.db.QueryRow(queryCtx, `
 			SELECT c.secret_ciphertext,
 			       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
-			       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id,
+			       COALESCE(pep_pick.base_url, p.base_url),
+			       COALESCE(p.protocol, 'openai-completions'), p.id,
 			       COALESCE(mc.modality, '')
 			FROM credentials c
 			JOIN providers p ON p.id = c.provider_id
 			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+			LEFT JOIN LATERAL (
+				SELECT pep.base_url
+				  FROM provider_endpoint_protocols pep
+				 WHERE pep.provider_id = p.id
+				   AND pep.enabled = TRUE
+				   AND (
+				         pep.protocol = COALESCE(p.protocol, 'openai-completions')
+				      OR pep.is_primary = TRUE
+				   )
+				 ORDER BY (pep.protocol = COALESCE(p.protocol, 'openai-completions')) DESC,
+				          pep.is_primary DESC,
+				          pep.weight DESC,
+				          pep.id ASC
+				 LIMIT 1
+			) pep_pick ON TRUE
 			WHERE c.id = $1 AND pm.raw_model_name = $2
 			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 			  AND p.enabled = TRUE AND p.manual_disabled = FALSE
