@@ -347,9 +347,7 @@ curl -s -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" http://127.0.0.1:8
 ### 4.2 新增供应商
 
 1. 进入「模型与路由」组的「供应商」页面（`/providers`），点击「添加供应商」。
-2. 选择模式：
-   - **目录模式**：从下拉框选择目录编码，留空显示名时使用目录默认名。
-   - **自定义模式**：勾选「自定义供应商（不在目录中）」，自行填写代码、名称、协议与 Base URL。
+2. 选择模式：**目录模式**（从下拉框选择目录编码，留空显示名时使用目录默认名）或**自定义模式**（勾选「自定义供应商（不在目录中）」，自行填写代码、名称、协议与 Base URL）。
 3. 填写 Base URL 后点击「探测」，系统会检查可达性与协议；探测不通过不允许提交。
 4. 保存。
 
@@ -893,23 +891,25 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8781/metrics
 **第 1 步 · 拿到这次请求的三样东西。**
 
 1. **request_id**：每个协议面的响应都带 `X-Request-Id` 头，它贯穿所有诊断表，是跨表追踪的主键。
-2. **错误信封**：错误响应体形如 `{"error": {"code", "type", "message", "request_id", "kind"?, "gateway_debug"?}}`。`code` 是机器码（查 10.3 的表），`type` 是兼容类型名；**真实原因在 `kind`**——但 `kind` 与 `gateway_debug` **只在特定层出现，不是每个错误都有**。实测（2026-11-17 真实网关）：
-
-   | 场景 | `code` | `kind` | `gateway_debug` |
-   | --- | --- | --- | --- |
-   | 缺 `Authorization` 头 | `missing_key` | 无 | 无 |
-   | 密钥无效 | `authentication_required` | 有 | 有（`stage=ingress`） |
-   | 模型名未知 | `invalid_model` | 无 | 无 |
-   | 零候选 | `no_candidate` | 有 | 无（没试过任何候选，无从调试） |
-   | 全候选失败 | `model_not_found` | 有 | 有（`stage=execution`、`tried=候选数`、`retryable`） |
-   | 网关侧限流 | `rate_limit_exceeded` | 无 | 无 |
-
-   ⇒ **看响应体里没有 `kind` 就别硬找**：这类错误的判据是 `code` 加状态码（限流另看响应头 `Retry-After`）。反过来，**出现了 `gateway_debug` 就说明网关真的尝试过**，里面的 `tried` 是试了几个候选、`stage` 是卡在哪一步（`ingress` 入口 / `execution` 执行）。响应头 `X-Gateway-Last-Kind` 与 `kind` 同源，只在执行层失败时出现。
-
-   > `gateway_debug` 是**错误响应体里的字段**，不是响应头——别在响应头里找它。
+2. **错误信封**：错误响应体形如 `{"error": {"code", "type", "message", "request_id", "kind"?, "gateway_debug"?}}`。`code` 是机器码（查 10.3 的表），`type` 是兼容类型名；**真实原因在 `kind`**——但 `kind` 与 `gateway_debug` **只在特定层出现，不是每个错误都有**。
 3. **落库归因**：`request_logs_with_current_month` 视图里的 `error_kind`（失败归因主码）、`failure_detail_code`（失败细分码）、`failure_stage`（卡在哪一步）。实测取值样例：`invalid_model` / `invalid_model` / `upstream`、`no_candidate` / `gw_no_candidate` / `gateway`、`transient` / `transient` / `upstream`。
 
-   > **请求级和候选级的 `error_kind` 不是同一个词表**，对不上是正常的：同一批上游 500，响应信封的 `kind` 是 `transient`，而候选失败表里的 `error_kind` 是 `upstream_down`。**信封看整体归因，候选表看这一次尝试的具体原因**，两个都要看，别因为不一致就以为查错了表。
+**错误信封各层的字段对照**（2026-11-17 真实网关实测）：
+
+| 场景 | `code` | `kind` | `gateway_debug` |
+| --- | --- | --- | --- |
+| 缺 `Authorization` 头 | `missing_key` | 无 | 无 |
+| 密钥无效 | `authentication_required` | 有 | 有（`stage=ingress`） |
+| 模型名未知 | `invalid_model` | 无 | 无 |
+| 零候选 | `no_candidate` | 有 | 无（没试过任何候选，无从调试） |
+| 全候选失败 | `model_not_found` | 有 | 有（`stage=execution`、`tried=候选数`、`retryable`） |
+| 网关侧限流 | `rate_limit_exceeded` | 无 | 无 |
+
+⇒ **看响应体里没有 `kind` 就别硬找**：这类错误的判据是 `code` 加状态码（限流另看响应头 `Retry-After`）。反过来，**出现了 `gateway_debug` 就说明网关真的尝试过**，里面的 `tried` 是试了几个候选、`stage` 是卡在哪一步（`ingress` 入口 / `execution` 执行）。响应头 `X-Gateway-Last-Kind` 与 `kind` 同源，只在执行层失败时出现。
+
+> `gateway_debug` 是**错误响应体里的字段**，不是响应头——别在响应头里找它。
+
+> **请求级和候选级的 `error_kind` 不是同一个词表**，对不上是正常的：同一批上游 500，响应信封的 `kind` 是 `transient`，而候选失败表里的 `error_kind` 是 `upstream_down`。**信封看整体归因，候选表看这一次尝试的具体原因**，两个都要看，别因为不一致就以为查错了表。
 
 ```sql
 -- 最近一小时失败的三维分布：主码 × 细分码 × 阶段
@@ -984,17 +984,15 @@ LIMIT 20;
 | `GET /api/routing/resolve?model=<模型名>` | 这个模型的候选选择过程与每个候选被拒的原因 |
 | `GET /api/logs/top-problems` | **当前不可达（404）**，见下方说明 |
 
-> **`/api/logs/top-problems` 现在打不开。** 实现（`admin/top_problems.go`）和它的单测都在，但**没有注册路由** ⇒ 请求落到 `/api/logs/{id}` 的通配分支，返 404 `request log not found`（实测确认）。想看失败热点，改用这两条等效口径：
->
-> ```bash
-> # ① 按 (模型, kind) 聚合的候选失败
-> curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8781/api/candidate-failures/stats
->
-> # ② 一小时失败的主码 × 细分码 × 阶段分布
-> psql -c "SELECT error_kind, failure_detail_code, failure_stage, count(*) FROM request_logs_with_current_month WHERE ts > now() - interval '1 hour' AND COALESCE(success, FALSE) = FALSE GROUP BY 1,2,3 ORDER BY 4 DESC"
-> ```
->
-> 该端点已由仓内审计文档（`docs/全面审计v3/2026-10-01/101-*.md`）登记为「不可达」，补注册即可恢复。
+**`/api/logs/top-problems` 现在打不开。** 实现（`admin/top_problems.go`）和它的单测都在，但**没有注册路由** ⇒ 请求落到 `/api/logs/{id}` 的通配分支，返 404 `request log not found`（实测确认）。该端点已由仓内审计文档（`docs/全面审计v3/2026-10-01/101-*.md`）登记为「不可达」，补注册即可恢复。想看失败热点，改用这两条等效口径：
+
+```bash
+# ① 按 (模型, kind) 聚合的候选失败
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8781/api/candidate-failures/stats
+
+# ② 一小时失败的主码 × 细分码 × 阶段分布
+psql -c "SELECT error_kind, failure_detail_code, failure_stage, count(*) FROM request_logs_with_current_month WHERE ts > now() - interval '1 hour' AND COALESCE(success, FALSE) = FALSE GROUP BY 1,2,3 ORDER BY 4 DESC"
+```
 
 **现成的排障命令**（都在仓库的 `cmd/` 下）：
 
@@ -1007,10 +1005,10 @@ go run ./cmd/routing-test-client -gateway http://127.0.0.1:8781 -api-key $KEY -m
 go run ./cmd/auto-testbench -report reports/auto-testbench # AUTO 路由闭环回归
 ```
 
-> **两个容易踩的坑：**
->
-> 1. **`check-credentials` 的 `-fix` 默认仍是演练。** `-dry-run` 的默认值是 `true`，所以 `-fix` 单独用只会打印计划中的 UPDATE、**不写库**；真要写必须显式 `-fix -dry-run=false`。不确定时先只跑 `-json` 看 `will_rewrite`。
-> 2. **这五个命令都要连库**（走 `config.Load()` 读 `DATABASE_URL` / `LLM_GATEWAY_DATABASE_URL`）。没设环境变量会直接 `db connect failed` 退出（exit 2）。`probe-cred` 还要能解密凭据密文，因此 `LLM_GATEWAY_SECRET_KEY` / `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY` 要与网关进程用的一致。
+**两个容易踩的坑：**
+
+1. **`check-credentials` 的 `-fix` 默认仍是演练。** `-dry-run` 的默认值是 `true`，所以 `-fix` 单独用只会打印计划中的 UPDATE、**不写库**；真要写必须显式 `-fix -dry-run=false`。不确定时先只跑 `-json` 看 `will_rewrite`。
+2. **这五个命令都要连库**（走 `config.Load()` 读 `DATABASE_URL` / `LLM_GATEWAY_DATABASE_URL`）。没设环境变量会直接 `db connect failed` 退出（exit 2）。`probe-cred` 还要能解密凭据密文，因此 `LLM_GATEWAY_SECRET_KEY` / `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY` 要与网关进程用的一致。
 
 `check-credentials -json` 的输出里每个凭据一行，含 `format`（密文格式）、`decrypt_ok`、`will_rewrite`（是否会被 `-fix` 重写）、`plaintext_hash`（明文摘要，不含明文）。
 
