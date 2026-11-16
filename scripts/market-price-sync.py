@@ -502,13 +502,15 @@ WITH latest AS (
     ORDER BY o.platform_id, o.raw_model_id, o.price_scope, o.tier, o.region, o.currency, o.unit, o.run_date DESC
 ),
 rows_ AS (
-    SELECT m.canonical_key, p.platform_id, p.is_vendor, p.vendor,
+    SELECT m.canonical_key, p.platform_id, p.name AS platform_name,
+           p.is_vendor, p.vendor,
            o.currency,
            o.input_price::float8  AS native_in,
            o.output_price::float8 AS native_out,
            o.cny_input::float8  AS cny_in,
            o.cny_output::float8 AS cny_out,
-           o.run_date
+           o.run_date,
+           COALESCE(o.source_url, '') AS source_url
     FROM latest l
     JOIN price_observation o ON o.id = l.id
     JOIN platform p ON p.platform_id = o.platform_id
@@ -603,13 +605,28 @@ FROM mapped r
 GROUP BY 1, 2 ORDER BY 1, 2"""
 
     src_rows = psql_tsv(args.source_container, args.source_user, args.source_db, src_sql)
+    # ── 2a) 平台现价明细（970：对齐 salesdecorate Compare 现价模式）──────────
+    # mapped 已含每平台最新观测；此处另取一行集写 market_price_platform_quotes，
+    # 不进 940 聚合恒等式（源=落地+拒绝仍只计 agg 行）。
+    plat_sql = latest_cte + """
+SELECT canonical_key, platform_id, COALESCE(platform_name, ''),
+       is_vendor::text, COALESCE(vendor, ''),
+       COALESCE(currency, ''),
+       native_in::text, native_out::text, cny_in::text, cny_out::text,
+       COALESCE(reg_region, ''), COALESCE(reg_native, ''),
+       run_date::text, COALESCE(source_url, '')
+FROM mapped
+WHERE canonical_key IS NOT NULL AND btrim(canonical_key) <> ''
+  AND (native_in IS NOT NULL OR native_out IS NOT NULL
+       OR cny_in IS NOT NULL OR cny_out IS NOT NULL)"""
+    plat_quote_rows = psql_tsv(args.source_container, args.source_user, args.source_db, plat_sql)
     # source_platforms = 源侧本 scope 出现过的独立平台数（全量，未排除前）
     plat_rows = psql_tsv(args.source_container, args.source_user, args.source_db,
                          "SELECT count(DISTINCT platform_id) FROM price_observation WHERE price_scope = %s"
                          % qstr(args.scope))
     source_platforms = int(plat_rows[0][0]) if plat_rows else 0
-    print("source: %d canonical rows (scope=%s, unit=%s), %d platforms in scope"
-          % (len(src_rows), args.scope, args.unit, source_platforms))
+    print("source: %d canonical rows (scope=%s, unit=%s), %d platforms in scope, %d platform-quote rows"
+          % (len(src_rows), args.scope, args.unit, source_platforms, len(plat_quote_rows)))
 
     # ── 2b) A-17 平台级诊断（unmapped / 我方排除 / 币种冲突，逐平台行数） ────
     unmapped_by_platform, excluded_by_platform, mismatch_by_platform = {}, {}, {}
@@ -691,6 +708,34 @@ GROUP BY 1, 2 ORDER BY 1, 2"""
         landed += 1
         upserts.append(build_upsert_sql(row, d, args.dimension, fx))
 
+    # 970 平台明细：同 dimension 先清空再整批 INSERT（快照语义；只读运营面）。
+    # 目标缺 970 表时 fail-closed 跳过明细写入（聚合 940 仍可落地）。
+    plat_tbl = psql_tsv(args.target_container, args.target_user, args.target_db,
+                        "SELECT to_regclass('public.market_price_platform_quotes') IS NOT NULL")
+    plat_upserts = []
+    if plat_tbl and plat_tbl[0][0] == "t":
+        plat_upserts.append(
+            "DELETE FROM public.market_price_platform_quotes WHERE dimension = %s;"
+            % qstr(args.dimension))
+        for pr in plat_quote_rows:
+            # pr: key,pid,pname,is_vendor,vendor,cur,nin,nout,cin,cout,region,native,run,url
+            is_vendor = "true" if pr[3] in ("t", "true", "True") else "false"
+            plat_upserts.append(
+                "INSERT INTO public.market_price_platform_quotes ("
+                " dimension, canonical_name, platform_id, platform_name, region,"
+                " native_currency, is_vendor, vendor, currency,"
+                " input_per_1m, output_per_1m, cny_in_per_1m, cny_out_per_1m,"
+                " run_date, source_url, updated_at) VALUES ("
+                " %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now());"
+                % (qstr(args.dimension), qstr(pr[0]), qstr(pr[1]), qstr(pr[2]),
+                   qstr(pr[10] or ""), qstr(pr[11] or ""), is_vendor, qstr(pr[4] or ""),
+                   qstr(pr[5] or ""), num(pr[6]), num(pr[7]), num(pr[8]), num(pr[9]),
+                   qstr(pr[12]), qstr(pr[13] or "")))
+        print("platform-quotes: %d rows for dimension=%s" % (len(plat_quote_rows), args.dimension))
+    else:
+        print("WARNING: market_price_platform_quotes missing (970) ⇒ skip platform-quote landing",
+              file=sys.stderr)
+
     # ★ 台账口径（2026-11-10 审计 P2-C）：
     #   source_rows  = 源侧候选全集（len(src_rows)）
     #   landed_rows  = 实际写入 market_price_reference 的行数
@@ -752,7 +797,7 @@ GROUP BY 1, 2 ORDER BY 1, 2"""
         "SET LOCAL lock_timeout = '5s';",
         "SET LOCAL statement_timeout = '10min';",
         anchor,
-    ] + upserts + [
+    ] + upserts + plat_upserts + [
         ambiguity_nullout,
         "UPDATE public.market_price_reference mpr SET canonical_id = mc.id"
         " FROM public.models_canonical mc"

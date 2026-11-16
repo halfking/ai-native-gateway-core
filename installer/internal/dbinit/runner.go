@@ -1883,6 +1883,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     禁新增）⇒ 同样永不建表 ⇒ internal/approval.PgxApprovalStore
 			//     的第一个 INSERT 就42P01 ⇒ **Casdoor 审批链路不可用**（P1）。
 			"969_approval_casdoor_mapping.sql",
+			// ★ 970（2026-11-17 定价参考完善）：market_price_platform_quotes
+			//   ——salesdecorate 按平台现价明细的网关侧只读副本，供运营
+			//   /operations/price-compare 跨平台比价（对齐 Compare 现价模式）。
+			"970_market_price_platform_quotes.sql",
 		},
 	}
 }
