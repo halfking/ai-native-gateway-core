@@ -646,7 +646,17 @@ Built with ❤️ by the AI Native Gateway community
 ## 最近更新
 
 
+### 2026-11-16（24h 同步轮 + Phase 4 生产化 + plugin-architecture 合并）
+
+- **Phase 4 生产化收口**（`57ca336f9`）：4.1 性能（Redis ID 映射缓存 / HTTP 连接池 / 批量导入导出）、4.2 安全（TOTP MFA + 备份码 / Redis 会话管理 / 令牌桶限流）、4.3 可观测（auth/tokens/users/MFA/sessions/rate-limit 指标 + Casdoor/DB/Redis 健康检查 + ring buffer 结构化日志）；新增依赖 `pquerna/otp`、`boombuler/barcode`，约 3,700 行生产代码 + 测试
+- **plugin-architecture / Casdoor 审批落地合并**（`240026a95`）：双层审批架构（native L1 + Casdoor L2）——`internal/approval`（Router/Store/Providers）、`internal/casdoor`（webhook/审批客户端）、`admin` 审批配置处理器、`config/approval.yaml`、迁移 `202611150001_approval_casdoor_mapping.sql`；`01a05457a` 落 P3-10/12/14/16 可编译子集并修 5 处合并期缺陷
+- **12h 审计轮**（`6d93373f1` P1×3+P2×9 根修、`acedf121d`、`d5f67f0d9` 报告推进）：WARN 洪水分诊降噪（`3dea20e7f` db_empty 同键冷却 + 探测判决去重）、routing_errors 分类器补回字串兜底（`c67ed9123` 修 P2 引入的归因回归）、go-redis v9.23 批量读门禁修复（`620bf2502`）、跨平台进程探活（`0408db6ec`）
+- **迁移三通道收口**（`2013466d8`）：967 台账登记 + 966 SHA 改写追认 + 966/967 进 211 部署通道（sqlguard 三红→绿）
+- **24h 同步轮**（`bcbc3d03c`）：远端 4 笔收口并入 Phase 4 之上——自动路由 V2/V3 词表桥 + tier 选择（`0277fbff6`）、格式类守卫收口 + 方案 B 修补器（`517d20873`）、maestro E2E 测试计划与部署交接（`a08490f44`）、24h 综合审计交付文档（`9c66703f1`）；干净工作树 `go build ./...` 验证通过
+- **X-Gw-Agent-Depth header 提取**（`a1adcad07`）：autoroute tier 选择的 agent 深度信号
+
 ### 2026-11-11
+
 
 - chore(version): 版本戳随轮收敛（三台 3011/2963/2962-a3cb8392 部署验证通过；菜单配置随部署再生成） (Mavis Merge Bot, 10 分钟前)
 - docs(audit): 48h 审计第二轮主档回填部署记录——三台 a3cb8392（211=3011 槽b/154=2962 license 修复闭环实证/245=2963）+ 部署面三事实（闸门拦下 web WIP 伪新红/搜索例外过期改判/9527=陈旧短语三台无此监听）+ census 时点裁决（211 链在 956 ⇒ 采集即过期 ⇒ 等链推进后的独立对账轮）+ 245 的 503 归因防误读（旧构建 2h 已有 730×503 同量 ⇒ 既有上游配额族） (Mavis Merge Bot, 11 分钟前)
