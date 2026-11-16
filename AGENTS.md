@@ -1,5 +1,15 @@
 # llm-gateway-go — AGENTS.md（维护者交接）
 
+> **2026-11-16 对账页供应商与模型数据完整性审计轮（goal 会话；主档 `docs/audit/2026-11-16-对账页供应商与模型数据完整性审计-主档.md`，LESSONS §727；零迁移/零路由变更）**：
+> ★★★★ **owner 报障＝「/admin/reconciliation?view=provider 的供应商与模型数据要完整没有丢失、优先显示有请求的；模型选择要用 /routing-v2?tab=resolve 的方式」**⇒ 211 真库取证定案：**读面（报告本身）可信**（总计=Σ各分组恒成立），**错位全在候选面与模型选择器**。
+> ★★★ **F1 未落定桶「看得见、筛不出」**（占全量流量 **30.8%** = 38,035/123,367 笔）：读面把 `provider_id IS NULL` 映射成哨兵 **-1** 显示成一行（`dimKey(nil)→UnassignedID`），候选查询却用 `IS NOT NULL` 把它**整桶滤掉** ⇒ 修＝候选侧同键 `COALESCE(s.provider_id::text,'-1')` + **过滤侧 `provider_id=-1` 落成 `IS NULL`**（原来 `= -1` 永远 0 行）。★ 该桶有业务含义（真库实测 `no_candidate` 探针 5,148/日、`rate_limit_exceeded` 282/日——是**没走到供应商**的流量，不是数据损坏）。
+> ★★★ **F2 零流量供应商完全不可见**：providers 表 69 家（58 enabled）⇒ 候选只有 **18** 家。★ 「开着却一单没有」（配错/被限流/模型没接上）恰是审计最该看的信号，却被「有流量才有候选」规则藏起来 ⇒ 修＝`mergeIdleProviders` 把在册供应商并进候选（requests=0，**排在有请求的之后**——「有请求的优先」是**排序契约**不是过滤契约）。
+> ★★★ **F3 模型候选静默截断**：旧上限 500 且代码注释自记「30 天 527 个模型名」＝已知会砍 ⇒ 修＝上限 5000 + **`Truncated` 字段显式回报**砍了几项 + 前端披露（静默截断最容易被读成「数据正常」）。
+> ★★★★ **F4 最关键：「换组件」本身会制造另一种数据丢失**——路由页给的是 **canonical 名**（minimax-m2.5），对账维度是 **raw 名**（MiniMax-M2.5 / minimax-m2.5 / auto/minimax-m2.5）；区间内 356 个有请求的模型只有 212 个字面等于 canonical，**144 个不在目录里** ⇒ 直接把 `el-select` 换成 `ModelPicker` 会让这 144 个**筛不出**。★ 修法＝**后端把过滤值展开成 raw 名集合**（`domains/reportrollup/modelnames.go`：canonical / model_offers / model_aliases 三条路径，集合**始终含原值**⇒目录外的 `<unknown>` 照常精确命中；查库失败**降级成原值精确匹配**而不是丢掉过滤——丢掉过滤会让页面显示全量而用户以为筛过了）+ **ModelPicker 增量加一段「本区间有请求的模型」置顶分组**（真库实测 1200 个 raw 名里 **1199 个能落 canonical**，落空的 1 个靠这一段兜住；两段缺一不可）。
+> ★ **顺带**：CJK 棘轮门在 HEAD **已是红的**（+37，来源＝并行特性提交的 `PluginSettingsPage.vue` 38 处硬编码中文）⇒ 本轮转 i18n 让计数**降到基线之下**（4517 → 4479，棘轮只许降不许升；先例 `86cc4a24d` 同款处置）⇒ web 套件恢复全绿。
+> ★ **验证**：`go build ./...` / `go vet` / `gofmt` 绿；`go test ./domains/reportrollup/` 绿、`go test ./admin/` 绿（120.3s）；`vue-tsc --noEmit` 绿；`vitest run` **306 文件 / 3098 用例全绿**（修前 i18n 棘轮红）；**变异 8/8 红→还原绿**（M1 provider 分支退回 IS NOT NULL｜M2 `provider=-1` 退回等值｜M3 模型集合退回单值｜M4 去掉零流量供应商合并｜M5 上限退回 500｜M6 展开恒返回原值｜M7 去掉置顶分组｜M8 工具栏退回 el-select）。
+> ★ **通用式**：① **候选面与读面必须同键**（同一条数据两处不同键 ⇒ 看得见筛不出）；② **「有请求的优先」是排序契约**（完整 = 有请求的 + 零流量的都在，优先 = 有请求的排前面）；③ **硬上限必须自带披露**（不披露的截断会被读成「数据正常」）；④ **换组件前先对拍两套名字**（canonical ⇄ raw 不对拍，换组件会把要修的丢失做成另一种丢失）；⑤ **族内缺项降级成精确匹配，不降级成「不筛」**。
+
 > **2026-11-16 12h 修订审计轮（goal 会话；主档 `docs/12小时内修订审计-2026-11-16-0345.md`；P1×3 + P2×12 + P3×17 登记）**：
 > ★★★★ **本轮最重要的发现不是「代码写错了」，而是「主分支当前是红的」**——两条 P1 都是**上一轮自称「P1 根修」的提交本身没生效**：
 > ★★★ **P1-1：966 迁移只登记未投递**（`runner.go` StartupFiles + tsv 都登记了，但 embeddata 副本缺失）⇒ `dbinit.Runner.applySQL` 读不到文件 ⇒ **全新安装/升级在 966 中断**；实测 `cd installer && go test ./internal/dbinit/...` 三条守卫 **在 HEAD 直接 FAIL**（TestStartupFilesExistInEmbeddata / TestStartupManifestFilesExist / TestStartupFilesWithUntransactableStatementsAreMarked）。★ **同型复发**：926 的同款事故 main.go:1329-1334 已自记，966 原样再踩。修＝embeddata 副本 + `//go:embed` + `embeddedSQLFiles` 映射 + `.down.sql`（并补 `SET LOCAL lock_timeout`——它此前既无事务块也无 lock_timeout）。

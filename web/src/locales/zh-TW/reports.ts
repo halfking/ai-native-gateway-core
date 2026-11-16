@@ -83,4 +83,8 @@ export default {
   noData: '這段時間沒有對帳記錄',
   legacyCoverage: '舊口徑快照的天數：',
   legacyCoverageRest: ' 天只計入總計與按天，憑據/使用者/apikey 維度需回填後可見（點「重跑結束日」逐日補算）',
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: '本區間有請求的模型',
+  modelPickerTitle: '對帳模型篩選',
+  candidatesTruncated: '候選超出上限，已截斷 {n} 項（可縮小日期區間查看）',
 }

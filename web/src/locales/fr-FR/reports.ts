@@ -84,4 +84,8 @@ export default {
   legacyCoverage: "Jours couverts uniquement par des instantanés hérités :",
   legacyCoverageRest:
     ": ces jours ne comptent que dans le total et la série journalière ; les dimensions identifiant/utilisateur/clé API apparaissent après remplissage (« Relancer le jour de fin », jour par jour)",
+  // ── 2026-11-16 审计轮：模型选择器改用路由页同款 ModelPicker ──
+  modelsWithRequests: 'Modèles ayant reçu des requêtes sur cette période',
+  modelPickerTitle: 'Filtre de modèle de rapprochement',
+  candidatesTruncated: 'Liste de candidats au-delà de la limite ; {n} élément(s) tronqué(s) (réduisez la période)',
 }

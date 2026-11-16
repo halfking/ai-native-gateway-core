@@ -1,18 +1,18 @@
 <template>
   <div class="plugin-settings-page">
     <div class="page-header">
-      <h1>插件提供商配置</h1>
-      <p class="subtitle">选择认证、用户、租户和审批功能的提供商（Native 本地 PostgreSQL 或 Casdoor）</p>
+      <h1>{{ t('plugin.providerConfig.title') }}</h1>
+      <p class="subtitle">{{ t('plugin.providerConfig.subtitle') }}</p>
     </div>
 
     <div v-if="loading" class="loading-container">
       <div class="loading-spinner"></div>
-      <p>加载配置中...</p>
+      <p>{{ t('plugin.providerConfig.loading') }}</p>
     </div>
 
     <div v-else-if="error" class="error-container">
       <p class="error-message">{{ error }}</p>
-      <button @click="loadConfig" class="retry-button">重试</button>
+      <button @click="loadConfig" class="retry-button">{{ t('plugin.providerConfig.retry') }}</button>
     </div>
 
     <div v-else class="settings-container">
@@ -20,9 +20,9 @@
       <div class="info-box">
         <div class="info-icon">ℹ️</div>
         <div>
-          <strong>当前配置来源:</strong> {{ configSourceText }}
+          <strong>{{ t('plugin.providerConfig.sourceLabel') }}</strong> {{ configSourceText }}
           <br>
-          <small>更改配置后需要重启应用程序才能完全生效</small>
+          <small>{{ t('plugin.providerConfig.restartHint') }}</small>
         </div>
       </div>
 
@@ -31,7 +31,7 @@
         <!-- Auth Provider -->
         <div class="provider-card">
           <div class="card-header">
-            <h3>认证提供商</h3>
+            <h3>{{ t('plugin.providerConfig.authProvider') }}</h3>
             <StatusBadge :status="getProviderStatus('auth_provider')" />
           </div>
           <div class="card-body">
@@ -49,7 +49,7 @@
               </option>
             </select>
             <p class="provider-description">
-              处理用户登录和身份验证
+              {{ t('plugin.providerConfig.authProviderDesc') }}
             </p>
           </div>
         </div>
@@ -57,7 +57,7 @@
         <!-- User Manager -->
         <div class="provider-card">
           <div class="card-header">
-            <h3>用户管理提供商</h3>
+            <h3>{{ t('plugin.providerConfig.userManager') }}</h3>
             <StatusBadge :status="getProviderStatus('user_manager')" />
           </div>
           <div class="card-body">
@@ -75,7 +75,7 @@
               </option>
             </select>
             <p class="provider-description">
-              管理用户账户的创建、更新和删除
+              {{ t('plugin.providerConfig.userManagerDesc') }}
             </p>
           </div>
         </div>
@@ -83,7 +83,7 @@
         <!-- Tenant Manager -->
         <div class="provider-card">
           <div class="card-header">
-            <h3>租户管理提供商</h3>
+            <h3>{{ t('plugin.providerConfig.tenantManager') }}</h3>
             <StatusBadge :status="getProviderStatus('tenant_manager')" />
           </div>
           <div class="card-body">
@@ -101,7 +101,7 @@
               </option>
             </select>
             <p class="provider-description">
-              管理租户/组织的配置和策略
+              {{ t('plugin.providerConfig.tenantManagerDesc') }}
             </p>
           </div>
         </div>
@@ -109,7 +109,7 @@
         <!-- Approval Provider -->
         <div class="provider-card">
           <div class="card-header">
-            <h3>审批流程提供商</h3>
+            <h3>{{ t('plugin.providerConfig.approvalProvider') }}</h3>
             <StatusBadge :status="getProviderStatus('approval_provider')" />
           </div>
           <div class="card-body">
@@ -127,7 +127,7 @@
               </option>
             </select>
             <p class="provider-description">
-              管理审批配置和审批人设置
+              {{ t('plugin.providerConfig.approvalProviderDesc') }}
             </p>
           </div>
         </div>
@@ -140,14 +140,14 @@
           class="apply-button"
           :disabled="!hasChanges || saving"
         >
-          {{ saving ? '保存中...' : '应用配置' }}
+          {{ saving ? t('plugin.providerConfig.saving') : t('plugin.providerConfig.apply') }}
         </button>
         <button 
           @click="resetConfig" 
           class="reset-button"
           :disabled="!hasChanges || saving"
         >
-          重置
+          {{ t('plugin.providerConfig.reset') }}
         </button>
       </div>
 
@@ -155,11 +155,11 @@
       <div v-if="hasChanges" class="warning-box">
         <div class="warning-icon">⚠️</div>
         <div>
-          <strong>重要提示:</strong>
+          <strong>{{ t('plugin.providerConfig.importantNote') }}</strong>
           <ul>
-            <li>更改配置后需要重启应用程序才能完全生效</li>
-            <li>确保目标提供商（如 Casdoor）已正确配置环境变量</li>
-            <li>建议在非高峰时段进行配置更改</li>
+            <li>{{ t('plugin.providerConfig.noteRestart') }}</li>
+            <li>{{ t('plugin.providerConfig.noteEnv') }}</li>
+            <li>{{ t('plugin.providerConfig.noteOffPeak') }}</li>
           </ul>
         </div>
       </div>
@@ -175,7 +175,10 @@
 
 <script setup lang="ts">
 import { defineComponent, h, ref, computed, onMounted, type PropType } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { pluginConfigAPI, type PluginConfigResponse, type PluginConfig } from '@/api/modules/plugin-config';
+
+const { t } = useI18n();
 
 // Component for status badge
 // 2026-11-16: 此处原先写的是 JSX（`<span class={...}>{...}</span>`）。JSX 在
@@ -191,12 +194,15 @@ const StatusBadge = defineComponent({
     },
   },
   setup(props) {
+    const { t } = useI18n();
     return () =>
       h(
         'span',
         { class: ['status-badge', props.status.available ? 'available' : 'unavailable'] },
         [
-          props.status.available ? '● 可用' : '● 不可用',
+          props.status.available
+            ? `● ${t('plugin.providerConfig.available')}`
+            : `● ${t('plugin.providerConfig.unavailable')}`,
           props.status.error
             ? h('span', { class: 'status-error', title: props.status.error }, '!')
             : null,
@@ -242,9 +248,9 @@ const hasChanges = computed(() => {
 
 const configSourceText = computed(() => {
   const source = configSource.value;
-  if (source === 'environment') return '环境变量';
-  if (source === 'database') return '数据库';
-  return '默认配置';
+  if (source === 'environment') return t('plugin.providerConfig.sourceEnv');
+  if (source === 'database') return t('plugin.providerConfig.sourceDb');
+  return t('plugin.providerConfig.sourceDefault');
 });
 
 // Methods
@@ -262,7 +268,7 @@ const loadConfig = async () => {
     configSource.value = response.source;
     
   } catch (err: any) {
-    error.value = err.message || '加载配置失败';
+    error.value = err.message || t('plugin.providerConfig.loadFailed');
   } finally {
     loading.value = false;
   }
@@ -289,7 +295,7 @@ const applyConfig = async () => {
     }
     
   } catch (err: any) {
-    error.value = err.message || '更新配置失败';
+    error.value = err.message || t('plugin.providerConfig.updateFailed');
   } finally {
     saving.value = false;
   }
@@ -308,8 +314,8 @@ const getProviderStatus = (providerType: string) => {
 };
 
 const getProviderDisplayName = (provider: string) => {
-  if (provider === 'native') return 'Native (本地 PostgreSQL)';
-  if (provider === 'casdoor') return 'Casdoor (统一身份认证)';
+  if (provider === 'native') return t('plugin.providerConfig.nativeProvider');
+  if (provider === 'casdoor') return t('plugin.providerConfig.casdoorProvider');
   return provider;
 };
 
