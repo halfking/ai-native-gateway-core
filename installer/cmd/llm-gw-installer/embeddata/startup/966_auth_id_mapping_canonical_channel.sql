@@ -47,7 +47,21 @@
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
-SET LOCAL statement_timeout = '60s';
+-- ★ 超时预算（2026-11-17 补测；门 TestHeavyDDLModernMigrationsDeclareMeasuredBudget）：
+--   本文件含 5 条**非并发 CREATE INDEX** ⇒ 命中「全表扫描类 DDL」判据 ⇒
+--   预算必须按目标环境最大表实测后抬够（761 先例：实测 18.9s ⇒ 抬 10min；
+--   914 反例：拍 120s ⇒ 245 部署中止）。
+--   实测（目标环境 = 211，acc-pg17 / PostgreSQL 17 / arm64 Docker，
+--        2026-11-17 06:5x，psql \timing）：同结构 TEMP 表灌 **100,000 行**
+--        （211 上该表真实行数 = 24 ⇒ 4000 倍余量）后建同形索引：
+--     (external_id, provider) 129.034 ms ｜ (internal_id) 55.325 ms
+--     (username, provider, tenant_id) 137.386 ms ｜ (tenant_id) 92.023 ms
+--     (provider) 39.088 ms   ⇒ 最慢单条 **137.386 ms**
+--   抬到 10min 的理由（不是拍脑袋）：上面是**空载**共享库上的单次测量，
+--   迁移窗口内网关仍在写、ensure 链与索引维护叠加（761 的 18.9s 正是在
+--   这种争用下越过了角色级上限）⇒ 按 761 同一惯例留足余量。
+--   SET LOCAL 只对本事务生效，不污染集群全局。
+SET LOCAL statement_timeout = '10min';
 
 -- External identity mapping table
 -- Maps external provider identities (Casdoor UUIDs, LDAP DNs, etc.) to internal user IDs
@@ -160,5 +174,18 @@ BEGIN
         );
     END IF;
 END $$;
+
+-- ── 记账（≥952 自登记纪律，门 TestMigrationLedgerSelfRegistration）────────
+--   ★ 2026-11-17 补：本文件的 **down** 一直带着
+--     `DELETE FROM public.schema_migrations WHERE version = '966'`，
+--     而 up 侧漏了配对的 INSERT ⇒ 记账链断层（950/951/957/958 同款）：
+--     211 实测（acc-pg17 / llm_gateway）表里 auth_id_mapping **对象在场**，
+--     但 schema_migrations 里 **没有 '966' 这一行** ⇒ 人读台账少记一笔、
+--     审计按台账判「未应用」会得出与事实相反的结论。
+--   ★ 幂等：ON CONFLICT DO UPDATE ⇒ 重放安全（211 上内容变更后由
+--     apply-db-revision-sequence.sh 的指纹通道自动重放一次，补上这笔账）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('966', 'auth_id_mapping: canonical-channel identity mapping table (external_id/provider/username/tenant_id) with updated_at trigger and internal_id sequence alignment; Casdoor provider identity mapping')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

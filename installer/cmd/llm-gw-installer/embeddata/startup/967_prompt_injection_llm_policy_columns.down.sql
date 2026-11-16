@@ -48,6 +48,16 @@ ALTER TABLE public.prompt_injection_policies
 ALTER TABLE public.prompt_injection_policies
     DROP COLUMN IF EXISTS llm_detection_timeout_sec;
 
-DELETE FROM public.schema_migrations WHERE version = '967';
+-- ★ 记账行删除：**表不存在时整笔 DELETE 报 42P01 ⇒ 事务回滚 ⇒ 三列删不掉**。
+--   ⇒ 用 to_regclass 判据守卫（schema_migrations 不是每个环境都有这张表：
+--   全新安装尚未建账本时，down 仍必须能把对象清干净）。
+--   ★ 2026-11-16 12h 审计轮 0820 轮修正（同型缺陷见 966/968/969）。
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+        DELETE FROM public.schema_migrations WHERE version = '967';
+    END IF;
+END
+$$;
 
 COMMIT;

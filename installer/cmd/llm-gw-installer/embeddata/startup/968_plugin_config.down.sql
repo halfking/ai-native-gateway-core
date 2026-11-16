@@ -21,6 +21,15 @@ SET LOCAL statement_timeout = '60s';
 DROP INDEX IF EXISTS public.idx_plugin_config_updated;
 DROP TABLE IF EXISTS public.plugin_config;
 
-DELETE FROM public.schema_migrations WHERE version = '968';
+-- ★ 记账行删除：**表不存在时整笔 DELETE 报 42P01 ⇒ 事务回滚 ⇒ 表删不掉**。
+--   ⇒ 用 to_regclass 判据守卫（schema_migrations 不是每个环境都有这张表：
+--   全新安装尚未建账本时，down 仍必须能把对象清干净）。
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+        DELETE FROM public.schema_migrations WHERE version = '968';
+    END IF;
+END
+$$;
 
 COMMIT;

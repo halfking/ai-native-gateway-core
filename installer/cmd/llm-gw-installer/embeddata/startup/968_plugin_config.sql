@@ -53,7 +53,18 @@
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
-SET LOCAL statement_timeout = '60s';
+-- ★ 超时预算（2026-11-17 补测；门 TestHeavyDDLModernMigrationsDeclareMeasuredBudget）：
+--   本文件含 idx_plugin_config_updated（非并发 CREATE INDEX）⇒ 命中
+--   「全表扫描类 DDL」判据 ⇒ 预算必须按目标环境实测后抬够（761/914 先例）。
+--   实测（目标环境 = 211，acc-pg17 / PostgreSQL 17 / arm64 Docker，
+--        2026-11-17 06:5x，psql \timing）：同结构 TEMP 表灌 **1 行**
+--        （本表按 CHECK 约束是**单例表**，id 恒为 1 ⇒ 行数上界就是 1；
+--         211 上真实行数 = 1）后建同形索引 (updated_at)：
+--     **0.710 ms**
+--   抬到 10min 的理由：与 966/969 同一惯例——单条语句实测值是**空载**共享库
+--   上的量，迁移窗口内网关仍在写、ensure 链与索引维护叠加 ⇒ 留足余量，
+--   避免「索引建到一半被角色级上限杀掉 ⇒ 事务回滚 ⇒ 部署中止」。
+SET LOCAL statement_timeout = '10min';
 
 -- ── 表（幂等）────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.plugin_config (
@@ -89,5 +100,17 @@ COMMENT ON COLUMN public.plugin_config.auth_provider IS 'Authentication provider
 COMMENT ON COLUMN public.plugin_config.user_manager IS 'User management provider: native or casdoor';
 COMMENT ON COLUMN public.plugin_config.tenant_manager IS 'Tenant manager provider: native or casdoor';
 COMMENT ON COLUMN public.plugin_config.approval_provider IS 'Approval workflow provider: native or casdoor';
+
+-- ── 记账（≥952 自登记纪律，门 TestMigrationLedgerSelfRegistration）────────
+--   ★ 2026-11-17 补：down 侧一直带着
+--     `DELETE FROM public.schema_migrations WHERE version = '968'`
+--     （其 down 文件头还自记「回滚不是幂等 no-op，需按部署序列重放 968
+--     才能恢复记账」），而 up 侧漏了配对的 INSERT ⇒ 记账链断层：
+--     211 实测（acc-pg17 / llm_gateway）plugin_config **对象在场**，
+--     但 schema_migrations 里 **没有 '968' 这一行**。
+--   ★ 幂等：ON CONFLICT DO UPDATE ⇒ 重放安全。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('968', 'plugin_config: singleton row persisting plugin provider selection (auth/user_manager/tenant_manager/approval = native|casdoor) edited from the admin console')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

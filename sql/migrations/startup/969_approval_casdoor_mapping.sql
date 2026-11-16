@@ -50,7 +50,21 @@
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
-SET LOCAL statement_timeout = '60s';
+-- ★ 超时预算（2026-11-17 补测；门 TestHeavyDDLModernMigrationsDeclareMeasuredBudget）：
+--   本文件含 4 条**非并发 CREATE INDEX**（其中 1 条是带 WHERE 的部分索引）
+--   ⇒ 命中「全表扫描类 DDL」判据 ⇒ 预算必须按目标环境最大表实测后抬够
+--   （761 先例：实测 18.9s ⇒ 抬 10min；914 反例：拍 120s ⇒ 245 部署中止）。
+--   实测（目标环境 = 211，acc-pg17 / PostgreSQL 17 / arm64 Docker，
+--        2026-11-17 06:5x，psql \timing）：同结构 TEMP 表灌 **1,000,000 行**
+--        （本表一行一条审批请求；211 上真实行数 = 0，审批是人工频次业务
+--         ⇒ 100 万行是长尾上界）后建同形索引：
+--     (session_id) 947.686 ms ｜ (status, created_at DESC) 270.839 ms
+--     (tenant_id, status) **1302.914 ms** ｜ (casdoor_task_id) WHERE NOT NULL
+--     193.415 ms   ⇒ 最慢单条 **1302.914 ms**
+--   抬到 10min 的理由（不是拍脑袋）：上面是**空载**共享库上的单次测量，
+--   迁移窗口内网关仍在写、ensure 链与索引维护叠加（761 的 18.9s 正是在
+--   这种争用下越过了角色级上限）⇒ 按 761 同一惯例留足余量。
+SET LOCAL statement_timeout = '10min';
 
 CREATE TABLE IF NOT EXISTS public.approval_casdoor_mapping (
     request_id      VARCHAR(100) PRIMARY KEY,
@@ -129,5 +143,16 @@ COMMENT ON COLUMN public.approval_casdoor_mapping.casdoor_task_id IS
  'Casdoor platform task ID (null for native approvals)';
 COMMENT ON COLUMN public.approval_casdoor_mapping.provider IS
  'Approval provider: native (L1 fast) or casdoor (L2 complex)';
+
+-- ── 记账（≥952 自登记纪律，门 TestMigrationLedgerSelfRegistration）────────
+--   ★ 2026-11-17 补：down 侧一直带着
+--     `DELETE FROM public.schema_migrations WHERE version = '969'`，
+--     而 up 侧漏了配对的 INSERT ⇒ 记账链断层（950/951/957/958 同款）：
+--     211 实测（acc-pg17 / llm_gateway）approval_casdoor_mapping **对象在场**，
+--     但 schema_migrations 里 **没有 '969' 这一行** ⇒ 人读台账少记一笔。
+--   ★ 幂等：ON CONFLICT DO UPDATE ⇒ 重放安全。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('969', 'approval_casdoor_mapping: local mapping between llm-gateway approval request_id and Casdoor task_id (session_id/status/tenant_id/provider) for the dual-layer approval architecture')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;
