@@ -177,7 +177,7 @@ bash install.sh activate --mode key --license-key sk-xxxxxxxx --master-url https
 | `offline-request` | 生成离线激活请求 | `--license-key` | 加密请求文件（含 instance_id、硬件指纹、设备名） |
 | `offline-import` | 导入离线许可证 | `--license-path`（默认 `license.dat`） | 许可证落到安装目录的 `license.dat` |
 
-**控制台激活向导。** 访问 `http://<网关地址>:8781/bootstrap`（公开路由，未登录也可进），向导固定五步：
+**控制台激活向导。** 入口是首页的「安装激活」链接，或直接访问 `http://<网关地址>:8781/bootstrap`（公开路由，未登录也可进），向导固定五步：
 
 1. **用户协议** — 阅读并同意服务条款与隐私政策。
 2. **设备指纹** — 自动取本机指纹（instance_id、hardware_hash、系统与网络信息），确认与目标机器一致后再往下走。
@@ -892,6 +892,8 @@ models → providers → api_keys → users → tenants
 **第三步：执行。** `POST /api/admin/data-lifecycle/data-init/execute`，请求体 `{"categories": [...], "confirm_token": "<第二步拿到的令牌>"}`。响应给出 `actor`、`total_rows_deleted`、每个类别实际删掉的 `rows_deleted` 与 `executed_at`。
 
 **预览行数与实际删除行数可能不同**——级联删除与并发写入都会造成差异，所以响应里 `target_rows`（预览值）与 `rows_deleted`（实际值）分开给出，不要混为一谈。令牌只有 5 分钟有效期，超时或类别集合变动都会让执行被拒（400），需要重新预览。
+
+**在控制台里怎么点。** 同一套三步在界面上的入口是「数据运维」组 → 「数据生命周期」页（`/admin/data-lifecycle`，该入口仅平台运维可见）里的「数据初始化」面板：勾选要清空的类别 → 点预览 → 看清受影响行数与保留行数 → 确认后执行，界面同样要求带上预览签发的令牌。租户管理员看不到该入口；即便直接调接口，后端也会以 403 拒绝。
 
 ### 11.5 命令行演练
 
