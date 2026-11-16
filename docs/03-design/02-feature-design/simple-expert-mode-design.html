@@ -1,0 +1,1476 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>简易模式与专家模式 · 设计方案 | 开轩网关控制台</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   令牌层。取值来自 web/src/style.css（DESIGN.md §2 指定的唯一事实源）。
+   字体：IBM Plex Sans/Mono 在控制台内自托管；本文件为独立交付物，
+   走同一套系统栈的后半段（Plex 不可用时系统字形承担），
+   不引用任何 CDN —— 内网无外网（PRODUCT.md §Operating Context）。
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --kx-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Noto Sans Arabic',
+    'Geeza Pro', 'Segoe UI Historic', Arial, sans-serif;
+  --kx-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  --kx-text-2xs: 11px; --kx-text-xs: 12px; --kx-text-sm: 13px;
+  --kx-text-md: 14px; --kx-text-lg: 16px; --kx-text-xl: 20px;
+  --kx-text-2xl: 24px; --kx-text-3xl: 30px; --kx-text-4xl: 38px;
+
+  --kx-space-1: 4px; --kx-space-2: 8px; --kx-space-3: 12px; --kx-space-4: 16px;
+  --kx-space-5: 24px; --kx-space-6: 32px; --kx-space-7: 40px;
+  --kx-space-8: 48px; --kx-space-9: 64px;
+
+  --radius: 8px; --radius-card: 14px; --radius-lg: 16px;
+  --kx-motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+html[data-theme='dark'] {
+  --kx-bg: #0f141c; --kx-surface: #1a222d; --kx-surface-soft: rgba(26,34,45,.92);
+  --kx-sidebar: #121820; --kx-text: #e8eef7; --kx-muted: #8b9bb0;
+  --kx-border: #2a3544; --kx-primary: #5b8cff; --kx-primary-hover: #7aa3ff;
+  --kx-primary-soft: rgba(91,140,255,.16); --kx-success: #3ecf8e;
+  --kx-success-soft: rgba(62,207,142,.14); --kx-warning: #e0a53a;
+  --kx-warning-soft: rgba(224,165,58,.14); --kx-danger: #f07167;
+  --kx-danger-soft: rgba(240,113,103,.14); --kx-text-on-primary: #ffffff;
+  --kx-shadow-xs: 0 1px 2px rgba(0,0,0,.28);
+  --kx-shadow-sm: 0 8px 24px rgba(0,0,0,.28);
+  --kx-shadow-md: 0 16px 40px rgba(0,0,0,.40);
+  --kx-shadow-md-left: -12px 0 32px rgba(0,0,0,.40);
+  --kx-code-bg: #0a0f16; --kx-grid-line: rgba(255,255,255,.045);
+}
+html[data-theme='light'] {
+  --kx-bg: #f4f6f9; --kx-surface: #ffffff; --kx-surface-soft: rgba(255,255,255,.88);
+  --kx-sidebar: #eef2f8; --kx-text: #152033; --kx-muted: #5b6b82;
+  --kx-border: #dce3ee; --kx-primary: #1e4fd6; --kx-primary-hover: #1841b3;
+  --kx-primary-soft: #eaf0ff; --kx-success: #16845b;
+  --kx-success-soft: #e6f7ef; --kx-warning: #b7791f;
+  --kx-warning-soft: #fff7e8; --kx-danger: #c2413b;
+  --kx-danger-soft: #fff1f1; --kx-text-on-primary: #ffffff;
+  --kx-shadow-xs: 0 1px 2px rgba(30,55,100,.06);
+  --kx-shadow-sm: 0 8px 24px rgba(30,55,100,.06);
+  --kx-shadow-md: 0 16px 40px rgba(30,50,90,.10);
+  --kx-shadow-md-left: -12px 0 32px rgba(30,50,90,.10);
+  --kx-code-bg: #eef1f6; --kx-grid-line: rgba(20,40,80,.05);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* 裸 svg 的默认盒子是 300×150，图标必须有兜底尺寸；类规则优先级更高，会覆盖这一条 */
+svg { width: 14px; height: 14px; }
+
+html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+body {
+  background: var(--kx-bg); color: var(--kx-text);
+  font-family: var(--kx-font-sans); font-size: var(--kx-text-md);
+  line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--kx-primary-soft); color: var(--kx-text); }
+:focus-visible { outline: 2px solid var(--kx-primary); outline-offset: 2px; border-radius: 3px; }
+
+/* 滚动条 —— 浏览器表面同样带设计（DESIGN.md §6） */
+* { scrollbar-width: thin; scrollbar-color: var(--kx-border) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--kx-border); border-radius: 5px;
+  border: 3px solid var(--kx-bg);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--kx-muted); }
+
+/* ── 顶栏 ─────────────────────────────────────────────────────── */
+.topbar {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--kx-bg); border-bottom: 1px solid var(--kx-border);
+}
+.topbar-inner {
+  max-width: 1240px; margin: 0 auto; padding: var(--kx-space-3) var(--kx-space-5);
+  display: flex; align-items: center; gap: var(--kx-space-4);
+}
+.brand { display: flex; align-items: center; gap: var(--kx-space-2); min-width: 0; }
+.brand svg { width: 20px; height: 20px; color: var(--kx-primary); flex: none; }
+.brand-name {
+  font-size: var(--kx-text-md); font-weight: 600; letter-spacing: -.01em;
+  white-space: nowrap;
+}
+.brand-sep { color: var(--kx-border); }
+.brand-doc {
+  font-size: var(--kx-text-sm); color: var(--kx-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.topbar-spacer { flex: 1; }
+
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: var(--radius);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  color: var(--kx-text); cursor: pointer;
+  transition: background .18s var(--kx-motion-ease-out),
+              border-color .18s var(--kx-motion-ease-out),
+              color .18s var(--kx-motion-ease-out);
+}
+.icon-btn:hover { border-color: var(--kx-primary); color: var(--kx-primary); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+/* ── 布局 ─────────────────────────────────────────────────────── */
+.layout {
+  max-width: 1240px; margin: 0 auto; padding: var(--kx-space-7) var(--kx-space-5)
+  var(--kx-space-9);
+  display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: var(--kx-space-8);
+  align-items: start;
+}
+.toc {
+  position: sticky; top: 72px; max-height: calc(100vh - 96px);
+  overflow-y: auto; padding-right: var(--kx-space-2);
+}
+.toc-title {
+  font-size: var(--kx-text-xs); font-weight: 600; color: var(--kx-muted);
+  margin-bottom: var(--kx-space-3);
+}
+.toc a {
+  display: block; padding: 5px var(--kx-space-3); border-radius: 6px;
+  color: var(--kx-muted); text-decoration: none; font-size: var(--kx-text-sm);
+  border-left: 1px solid transparent;
+  transition: color .18s var(--kx-motion-ease-out),
+              background .18s var(--kx-motion-ease-out);
+}
+.toc a:hover { color: var(--kx-text); background: var(--kx-surface); }
+.toc a.active { color: var(--kx-primary); border-left-color: var(--kx-primary); }
+
+.content { min-width: 0; }
+
+/* 正文行长 65–75 字符（中文约 30–40 字），DESIGN.md §4 */
+.prose p, .prose li { max-width: 68ch; }
+.prose p { margin-bottom: var(--kx-space-4); color: var(--kx-text); }
+.prose ul, .prose ol { margin: 0 0 var(--kx-space-4) var(--kx-space-5); }
+.prose li { margin-bottom: var(--kx-space-2); }
+.prose strong { font-weight: 600; }
+.prose code, .prose td code, .prose li code {
+  font-family: var(--kx-font-mono); font-size: .92em;
+  background: var(--kx-code-bg); padding: 1px 5px; border-radius: 4px;
+  border: 1px solid var(--kx-border); color: var(--kx-text);
+}
+
+/* ── 标题 ─────────────────────────────────────────────────────── */
+section { margin-bottom: var(--kx-space-9); scroll-margin-top: 72px; }
+h1 {
+  font-size: var(--kx-text-3xl); font-weight: 700; letter-spacing: -.02em;
+  line-height: 1.25; margin-bottom: var(--kx-space-4);
+}
+h2 {
+  font-size: var(--kx-text-xl); font-weight: 600; letter-spacing: -.01em;
+  line-height: 1.35; margin-bottom: var(--kx-space-4);
+  padding-bottom: var(--kx-space-3); border-bottom: 1px solid var(--kx-border);
+}
+h3 {
+  font-size: var(--kx-text-lg); font-weight: 600; letter-spacing: -.01em;
+  margin-bottom: var(--kx-space-3); margin-top: var(--kx-space-6);
+}
+h4 {
+  font-size: var(--kx-text-md); font-weight: 600; margin-bottom: var(--kx-space-2);
+  margin-top: var(--kx-space-5);
+}
+.lead {
+  font-size: var(--kx-text-lg); line-height: 1.6; color: var(--kx-muted);
+  max-width: 68ch; margin-bottom: var(--kx-space-6);
+}
+.muted { color: var(--kx-muted); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ── 卡片：1px 描边，不叠阴影（DESIGN.md §5 Material Rules） ── */
+.card {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); padding: var(--kx-space-5);
+}
+.card + .card { margin-top: var(--kx-space-4); }
+.card-title {
+  font-size: var(--kx-text-md); font-weight: 600; margin-bottom: var(--kx-space-2);
+}
+.card-note { font-size: var(--kx-text-sm); color: var(--kx-muted); }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--kx-space-4); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: var(--kx-space-4); }
+@media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+/* ── 徽标：文字 + 软底 + 语义色，三者同进（DESIGN.md §3） ── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: var(--radius);
+  font-size: var(--kx-text-xs); font-weight: 500; line-height: 1.6;
+  white-space: nowrap;
+}
+.badge-primary { background: var(--kx-primary-soft); color: var(--kx-primary); }
+.badge-success { background: var(--kx-success-soft); color: var(--kx-success); }
+.badge-warning { background: var(--kx-warning-soft); color: var(--kx-warning); }
+.badge-danger  { background: var(--kx-danger-soft);  color: var(--kx-danger); }
+.badge-muted   { background: var(--kx-code-bg); color: var(--kx-muted); border: 1px solid var(--kx-border); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot-primary { background: var(--kx-primary); }
+.dot-success { background: var(--kx-success); }
+.dot-warning { background: var(--kx-warning); }
+.dot-danger  { background: var(--kx-danger); }
+.dot-muted   { background: var(--kx-muted); }
+
+/* ── 表格 ─────────────────────────────────────────────────────── */
+.table-wrap {
+  border: 1px solid var(--kx-border); border-radius: var(--radius-card);
+  overflow: auto; background: var(--kx-surface); margin-bottom: var(--kx-space-4);
+}
+table { width: 100%; border-collapse: collapse; font-size: var(--kx-text-sm); }
+thead th {
+  text-align: left; font-weight: 600; font-size: var(--kx-text-xs);
+  color: var(--kx-muted); padding: var(--kx-space-3) var(--kx-space-4);
+  border-bottom: 1px solid var(--kx-border); background: var(--kx-surface-soft);
+  white-space: nowrap;
+}
+tbody td {
+  padding: var(--kx-space-3) var(--kx-space-4);
+  border-bottom: 1px solid var(--kx-border); vertical-align: top;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody td:first-child { color: var(--kx-text); font-weight: 500; }
+td .num, th .num { font-variant-numeric: tabular-nums; }
+td code, td .mono {
+  font-family: var(--kx-font-mono); font-size: .9em; color: var(--kx-muted);
+}
+
+/* ── 代码块 ───────────────────────────────────────────────────── */
+pre {
+  background: var(--kx-code-bg); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); padding: var(--kx-space-4);
+  overflow-x: auto; font-family: var(--kx-font-mono);
+  font-size: var(--kx-text-sm); line-height: 1.6; color: var(--kx-text);
+  margin-bottom: var(--kx-space-4);
+}
+pre code { font-family: inherit; }
+
+/* ── 提示条：语义软填充整体染色（不用彩色侧边条） ── */
+.note {
+  border-radius: var(--radius-card); padding: var(--kx-space-4) var(--kx-space-5);
+  font-size: var(--kx-text-sm); line-height: 1.6; margin-bottom: var(--kx-space-4);
+  border: 1px solid transparent;
+}
+.note-primary { background: var(--kx-primary-soft); border-color: var(--kx-primary); color: var(--kx-text); }
+.note-warning { background: var(--kx-warning-soft); border-color: var(--kx-warning); color: var(--kx-text); }
+.note-danger  { background: var(--kx-danger-soft);  border-color: var(--kx-danger);  color: var(--kx-text); }
+.note-success { background: var(--kx-success-soft); border-color: var(--kx-success); color: var(--kx-text); }
+.note-head {
+  display: flex; align-items: center; gap: var(--kx-space-2);
+  font-weight: 600; margin-bottom: var(--kx-space-2);
+}
+.note-head svg { width: 16px; height: 16px; flex: none; }
+.note p { margin: 0 0 var(--kx-space-2); max-width: 72ch; }
+.note p:last-child { margin-bottom: 0; }
+
+/* ── 步骤卡 ───────────────────────────────────────────────────── */
+.steps { display: grid; gap: var(--kx-space-3); margin-bottom: var(--kx-space-4); }
+.step {
+  display: grid; grid-template-columns: 28px minmax(0,1fr); gap: var(--kx-space-3);
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); padding: var(--kx-space-4);
+}
+.step-n {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--kx-primary-soft); color: var(--kx-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--kx-text-sm); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.step-body h4 { margin: 0 0 var(--kx-space-1); }
+.step-body p { font-size: var(--kx-text-sm); color: var(--kx-muted); margin: 0; max-width: 68ch; }
+.step-body .ev {
+  font-family: var(--kx-font-mono); font-size: var(--kx-text-xs);
+  color: var(--kx-muted); margin-top: var(--kx-space-2);
+  display: block; word-break: break-all;
+}
+
+/* ── 原理卡 ───────────────────────────────────────────────────── */
+.principle {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius-card); padding: var(--kx-space-5);
+  margin-bottom: var(--kx-space-3);
+}
+.principle-head { display: flex; align-items: baseline; gap: var(--kx-space-3); margin-bottom: var(--kx-space-3); }
+.principle-name { font-size: var(--kx-text-lg); font-weight: 600; letter-spacing: -.01em; }
+.principle-body { font-size: var(--kx-text-md); line-height: 1.65; }
+.principle-body p { max-width: 68ch; margin-bottom: var(--kx-space-3); }
+.principle-body p:last-child { margin-bottom: 0; }
+.principle-body ul { margin: 0 0 var(--kx-space-3) var(--kx-space-5); }
+.principle-body li { font-size: var(--kx-text-sm); margin-bottom: var(--kx-space-2); max-width: 68ch; }
+
+/* ── 解析链 ───────────────────────────────────────────────────── */
+.chain {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--kx-space-2);
+  margin-bottom: var(--kx-space-4);
+}
+.chain-node {
+  background: var(--kx-surface); border: 1px solid var(--kx-border);
+  border-radius: var(--radius); padding: var(--kx-space-2) var(--kx-space-3);
+  font-size: var(--kx-text-xs); font-family: var(--kx-font-mono);
+  color: var(--kx-text); white-space: nowrap;
+}
+.chain-node.mode { border-color: var(--kx-primary); color: var(--kx-primary); background: var(--kx-primary-soft); }
+.chain-op { color: var(--kx-muted); font-size: var(--kx-text-xs); font-family: var(--kx-font-mono); }
+
+/* ── 折叠组 ───────────────────────────────────────────────────── */
+details {
+  border: 1px solid var(--kx-border); border-radius: var(--radius-card);
+  background: var(--kx-surface); margin-bottom: var(--kx-space-3);
+}
+details > summary {
+  cursor: pointer; padding: var(--kx-space-4) var(--kx-space-5);
+  font-size: var(--kx-text-sm); font-weight: 500; list-style: none;
+  display: flex; align-items: center; gap: var(--kx-space-2);
+  transition: color .18s var(--kx-motion-ease-out);
+}
+details > summary:hover { color: var(--kx-primary); }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before {
+  content: ''; width: 6px; height: 6px; flex: none;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform .2s var(--kx-motion-ease-out);
+}
+details[open] > summary::before { transform: rotate(45deg); }
+.details-body { padding: 0 var(--kx-space-5) var(--kx-space-5); }
+.details-body p { font-size: var(--kx-text-sm); margin-bottom: var(--kx-space-3); max-width: 68ch; }
+.details-body p:last-child { margin-bottom: 0; }
+
+/* ── 页面底 ───────────────────────────────────────────────────── */
+.footer {
+  border-top: 1px solid var(--kx-border); padding-top: var(--kx-space-5);
+  font-size: var(--kx-text-sm); color: var(--kx-muted);
+}
+.footer p { max-width: 72ch; margin-bottom: var(--kx-space-2); }
+.evidence {
+  font-size: var(--kx-text-xs); color: var(--kx-muted); line-height: 2;
+  word-break: normal; overflow-wrap: anywhere;
+}
+.evidence code {
+  font-family: var(--kx-font-mono); font-size: .95em; color: var(--kx-text);
+  background: var(--kx-code-bg); border: 1px solid var(--kx-border);
+  padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+}
+
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: 1fr; gap: var(--kx-space-6); }
+  .toc {
+    position: static; max-height: none; display: flex; gap: var(--kx-space-1);
+    overflow-x: auto; padding-bottom: var(--kx-space-2);
+    border-bottom: 1px solid var(--kx-border);
+  }
+  .toc-title { display: none; }
+  .toc a { white-space: nowrap; border-left: none; border-bottom: 1px solid transparent; }
+  .toc a.active { border-left: none; border-bottom-color: var(--kx-primary); }
+  h1 { font-size: var(--kx-text-2xl); }
+  .lead { font-size: var(--kx-text-md); }
+}
+</style>
+</head>
+<body>
+
+<svg style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <defs>
+    <symbol id="i-gateway" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.5" y="6.5" width="19" height="9" rx="2"/><path d="M6 11h3M10 11h.01M13 11h.01M16 11h.01"/>
+      <path d="M6 6V4M18 6V4M6 16v2M18 16v2"/>
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.5L21 19H3z"/><path d="M12 10v4M12 17h.01"/>
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l7 3v6c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <svg aria-hidden="true"><use href="#i-gateway"/></svg>
+      <span class="brand-name">开轩网关</span>
+      <span class="brand-sep">/</span>
+      <span class="brand-doc">简易模式与专家模式 · 设计方案</span>
+    </div>
+    <div class="topbar-spacer"></div>
+    <button class="icon-btn" id="theme-toggle" type="button" aria-label="切换明暗主题" title="切换明暗主题">
+      <svg aria-hidden="true" id="theme-icon"><use href="#i-sun"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" id="toc" aria-label="目录">
+    <div class="toc-title">目录</div>
+    <a href="#conclusion">结论</a>
+    <a href="#evidence">现状盘点</a>
+    <a href="#axes">三个正交的轴</a>
+    <a href="#principles">五条设计原理</a>
+    <a href="#mechanism">实现机制</a>
+    <a href="#surface">前端分层</a>
+    <a href="#runtime">运行时裁剪</a>
+    <a href="#features">功能清单</a>
+    <a href="#flow">使用流程</a>
+    <a href="#phases">落地分期</a>
+    <a href="#risks">风险与边界</a>
+    <a href="#appendix">证据索引</a>
+  </nav>
+
+  <main class="content prose">
+
+    <section id="conclusion">
+      <h1>简易模式与专家模式</h1>
+      <p class="lead">
+        当前网关是专家模式：全部能力默认开启、全部面板默认露出。个人用户要在这套默认状态里找到「接上自己的模型、拿一把 key、把客户端指过来」这条最短路径，需要跨过 15 个安装交互点、5 步激活向导、4 种密钥语义和 9 个字段的密钥表单。
+      </p>
+      <p class="lead">
+        方案是加一个注册项 <code>gateway.mode</code>，取值 <code>simple</code> 与 <code>expert</code>，默认 <code>simple</code>。它同时驱动三件事：控制台露出哪些页面、网关启动时装配哪些子系统、设置项给出什么默认值。专家模式是简易模式的严格超集，切换不丢任何数据。
+      </p>
+
+      <div class="card">
+        <div class="card-title">这次要解决的三个问题</div>
+        <div class="grid-3" style="margin-top:var(--kx-space-4)">
+          <div>
+            <span class="badge badge-primary">默认状态过重</span>
+            <p style="font-size:var(--kx-text-sm);margin-top:var(--kx-space-3);margin-bottom:0">
+              <span class="num">463</span> 个设置项、<span class="num">129</span> 个布尔开关（其中 <span class="num">79</span> 项默认开启）、<span class="num">63</span> 个导航入口、<span class="num">93</span> 个后台 worker、<span class="num">8</span> 套探针默认同时运转。个人用户真正要做的只有五件事。
+            </p>
+          </div>
+          <div>
+            <span class="badge badge-warning">界面与运行时不匹配</span>
+            <p style="font-size:var(--kx-text-sm);margin-top:var(--kx-space-3);margin-bottom:0">
+              设置项有 <span class="num">25</span> 个后端类别，前端只暴露 <span class="num">10</span> 个筛选桶且没有关键词搜索；专家面还藏在抽屉和页签里，按菜单分组隐藏会漏网。
+            </p>
+          </div>
+          <div>
+            <span class="badge badge-success">地基已经现成</span>
+            <p style="font-size:var(--kx-text-sm);margin-top:var(--kx-space-3);margin-bottom:0">
+              仓库已有 <code>lite</code> 存储形态（SQLite + 本地目录，注释写明「单机/个人部署」）、<code>security.mode</code> 的 observe/enforce 二态、以及 <code>useDataViewMode</code> 的偏好/生效/可切换三分离范式。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="note note-primary" style="margin-top:var(--kx-space-4)">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-info"/></svg>一条边界</div>
+        <p>
+          简易模式不降低安全强度，也不改变任何协议的语义。它改变的是「谁在什么时候需要看见什么」和「网关在不需要这些能力时要不要启动它们」。<code>security.mode</code> 的 observe/enforce 语义在两个模式下完全一致——安全检测照常运行，只是把判定面板收进高级区。
+        </p>
+      </div>
+    </section>
+
+    <section id="evidence">
+      <h2>现状盘点</h2>
+      <p>
+        下面每个数字都来自本仓库 HEAD（<code>14d165a7f</code>）的实测，不来自文档描述。数字的作用是划定量级，不是精确到个位。
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:22%">维度</th><th style="width:38%">实测体量</th><th>出处</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>设置面</td>
+              <td><span class="num">463</span> 个注册项，<span class="num">129</span> 个布尔开关（<span class="num">79</span> 默认开启），<span class="num">24</span> 个后端类别</td>
+              <td><span class="mono">settings/*.go</span>（括号配平字面量解析，463 键全唯一）</td>
+            </tr>
+            <tr>
+              <td>模块清单</td>
+              <td><span class="num">19</span> 个模块，<span class="num">102</span> 个能力项，<span class="num">132</span> 个配置项</td>
+              <td><span class="mono">admin/modules.go:21-34</span>（清单结构不在 settings 包里）</td>
+            </tr>
+            <tr>
+              <td>设置界面</td>
+              <td><span class="num">10</span> 个筛选桶（后端有 <span class="num">24</span> 个类别），<span class="num">0</span> 个关键词搜索框，逐键保存无批量</td>
+              <td><span class="mono">web/src/views/SettingsView.vue:46-58</span></td>
+            </tr>
+            <tr>
+              <td>控制台</td>
+              <td><span class="num">63</span> 个导航入口（<span class="num">8</span> 个分组 <span class="num">60</span> 项 + 顶层 <span class="num">3</span> 项，落地路径 <span class="num">62</span> 个），<span class="num">118</span> 条生产路由</td>
+              <td><span class="mono">web/src/config/appNav.ts</span>、<span class="mono">router.ts</span></td>
+            </tr>
+            <tr>
+              <td>管理接口</td>
+              <td><span class="num">605</span> 条 <span class="mono">/api/admin*</span> 路径</td>
+              <td><span class="mono">admin/*.go</span></td>
+            </tr>
+            <tr>
+              <td>运行时</td>
+              <td><span class="num">93</span> 个 <span class="mono">bg.New*</span> 装配点，<span class="num">70</span> 个 <span class="mono">domains/</span> 子域</td>
+              <td><span class="mono">cmd/gateway/main.go</span></td>
+            </tr>
+            <tr>
+              <td>数据库</td>
+              <td><span class="num">286</span> 张表定义，<span class="num">4042</span> 个 <span class="mono">.sql</span> 文件</td>
+              <td><span class="mono">sql/objects/tables/</span></td>
+            </tr>
+            <tr>
+              <td>环境变量</td>
+              <td><span class="num">1049</span> 个引用，其中 <span class="num">104</span> 个是内部多机运维变量</td>
+              <td><span class="mono">.env.example</span> + <span class="mono">envs.samples/</span></td>
+            </tr>
+            <tr>
+              <td>安装</td>
+              <td><span class="num">15</span> 个交互输入点（<span class="num">2</span> + 13 步向导）</td>
+              <td><span class="mono">installer/internal/prompt/wizard.go:221-300</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>模块清单是现成的分组单位</h3>
+      <p>
+        需要先纠正一个容易找错位置的点：模块清单结构不在 <span class="mono">settings/</span> 包里。<span class="mono">settings/spec_modules.go</span>（1360 行）只是一份扁平的 <span class="num">94</span> 项模块类设置，真正的清单在 <span class="mono">admin/modules.go:21-34</span> 的 <code>ModuleDefinition</code>。
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:26%">结构字段</th><th style="width:26%">含义</th><th>对模式设计的意义</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>SettingKey</code></td>
+              <td>模块总开关绑定的设置键，<span class="num">16</span> 个模块有值</td>
+              <td>模式预设的天然落点：一个模块一个键，不散落到几十个细粒度旋钮</td>
+            </tr>
+            <tr>
+              <td><code>Capabilities</code></td>
+              <td>能力项清单，共 <span class="num">102</span> 项</td>
+              <td>当前是纯展示文案，与设置注册表无强绑定，需要加一致性门</td>
+            </tr>
+            <tr>
+              <td><code>ConfigKeys</code></td>
+              <td>模块下辖的配置项，共 <span class="num">132</span> 项</td>
+              <td>与设置注册表仅靠这一条弱连接，<span class="num">13</span> 个键悬空</td>
+            </tr>
+            <tr>
+              <td><code>Dependencies</code></td>
+              <td>依赖图，必需依赖开启失败时整体回滚</td>
+              <td>模式切换要复用同一套级联与回滚语义</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        模块开关的既有语义可以直接复用：<code>resolveModuleEnabled</code> 走 <code>EffectiveValue</code>，解析链是数据库 &gt; 环境变量 &gt; 默认值，查不到或出错时一律按开启处理（fail-open）；<code>DangerLevel</code> 达到 <code>Dangerous</code> 的开关需要超级管理员。
+      </p>
+
+      <h3>开关面比直觉大得多</h3>
+      <p>
+        <span class="num">463</span> 项设置里只有 <span class="num">129</span> 项是布尔开关，但其中 <span class="num">79</span> 项默认开启，占布尔总数的 <span class="num">61%</span>。如果按「默认开启的都露出来」做简易模式，一次会抛出 <span class="num">79</span> 个旋钮，必然不可用。
+      </p>
+      <p>
+        同一份数据里还有两条现成的分界线。标记为需要重启才能生效的有 <span class="num">32</span> 项，改了不生效的旋钮放在简易模式里就是骗人，这 <span class="num">32</span> 项应当整体归专家模式。危险等级上，<span class="num">224</span> 项安全加 <span class="num">186</span> 项注意共 <span class="num">410</span> 项，<span class="num">40</span> 项危险加 <span class="num">4</span> 项破坏性共 <span class="num">44</span> 项本来就需要超级管理员才能改——这个既有分权语义与角色体系天然对齐，简易模式不必新造权限位。
+      </p>
+
+      <h3>个人用户今天在哪一步卡住</h3>
+      <p>下列卡点全部可复现，逐条给出了代码位置。它们共同指向同一件事：门槛不在能力，在默认值和顺序。</p>
+
+      <details>
+        <summary>激活是硬前置，且发生在配置任何东西之前</summary>
+        <div class="details-body">
+          <p>
+            <span class="mono">router.ts:409-465</span> 的 <code>shouldRedirectToBootstrap()</code> 在 <code>activated !== true</code> 时把任何路径重定向到 <code>/bootstrap</code>。该向导的 5 步是「用户协议 → 设备指纹 → 激活 License → 注册中心 → 完成」，用户第一次打开页面看到的是协议和指纹，不是「把你的模型接进来」。
+          </p>
+          <p>
+            仓内已有 <code>/activate-quick</code> 端点（<span class="mono">licensing/bootstrap_api.go</span>），中心不可达时签发本地免费许可证，限 1 台设备、10 年有效期。简易模式可以直接用它把三步压成一次点击。
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>管理员密码要从容器日志里捞，捞错就进不去</summary>
+        <div class="details-body">
+          <p>
+            <span class="mono">admin/users.go:226-236</span>：未设 <code>LLM_GATEWAY_SEED_ADMIN_PASSWORD</code> 时生成 <code>Admin_&lt;32位hex&gt;</code>，只以 WARN 打印在启动日志里。落库时 <code>must_change_password=TRUE</code>，登录后除改密外全部 403。
+          </p>
+          <p>
+            紧接着连错 3 次要验证码（<span class="mono">admin/auth_captcha.go:74</span>），每分钟 5 次登录限流（<span class="mono">admin/rate_limit.go:62</span>）。「密码打错 3 次 → 要验证码 → 再试 → 429」是第一次登录最常见的死循环。
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>四种密钥语义在文档里互相打架</summary>
+        <div class="details-body">
+          <p>
+            <code>LLM_GATEWAY_API_KEY</code>（客户端到网关的静态门）、<code>LLM_GATEWAY_ADMIN_API_KEY</code>（控制面）、<code>sk-</code> 开头的租户密钥（客户端到网关）、凭据（网关到上游）—— 方向两两相反，报错信息不区分。
+          </p>
+          <p>帮助手册里已经提醒过「凭据与 API Key 方向相反，不要混用」，说明这个坑是被认知到的，只是没有在流程上消掉。</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>签发一把网关密钥要填 9 个字段</summary>
+        <div class="details-body">
+          <p>
+            <span class="mono">help-manual.zh-CN.md:572-582</span> 列出：租户、应用代码、密钥别名、归属用户、预算上限、每分钟请求数、并发数、每分钟 Token 数、备注。「应用代码」还决定该密钥可用的模型范围与客户端画像。个人用户填不动这些维度。
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>配一个上游要连过两道网络门</summary>
+        <div class="details-body">
+          <p>
+            供应商页「填写 Base URL 后点击探测，系统会检查可达性与协议，探测不通过不允许提交」（<span class="mono">help-manual.zh-CN.md:353</span>），凭据保存后还要自动探活一次（同文件 <span class="mono">:404</span>）。于是「配一个上游」＝填 Base URL → 等探测 → 填 Key → 等探活 → 再建模型绑定。
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>quickstart 镜像里没有管理台前端</summary>
+        <div class="details-body">
+          <p>
+            根 <span class="mono">Dockerfile:76</span> 只 <code>COPY --from=builder /app/bin/llm-gateway</code>，不含 <span class="mono">web/dist</span>；前端产物走 <span class="mono">Dockerfile.web-patch</span> 或部署脚本的 bind-mount。而 <span class="mono">config/config.go:521-530</span> 的 <code>defaultStaticDir()</code> 找的是相对工作目录的 <span class="mono">web/dist</span>。
+          </p>
+          <p>
+            推论：<span class="mono">docker-compose.quickstart.yml</span> 用 <code>build: .</code> 构建出的镜像不含 SPA，README 里的 <code>open http://localhost:8781/admin</code> 在该形态下很可能打开空白。此条为静态推导，未实跑验证。
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>安装器会在用户没同意的情况下改宿主系统</summary>
+        <div class="details-body">
+          <p>
+            <span class="mono">installer/cmd/llm-gw-installer/main.go:2452-2468</span>：检测不到容器引擎就自动安装 Docker。lite 用户如果只想跑一个二进制，这一步需要显式声明。
+          </p>
+        </div>
+      </details>
+    </section>
+
+    <section id="axes">
+      <h2>三个正交的轴</h2>
+      <p>
+        仓库里已经有多个「模式」概念。新的工作模式必须和它们正交，否则「模式」一词在代码和文案里会指向三件不同的事。这是最容易埋雷的地方。
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:18%">轴</th><th style="width:24%">现有实现</th><th style="width:18%">取值</th><th>决定什么</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>存储形态</td>
+              <td><span class="mono">config/storage.go:29-32</span></td>
+              <td><code>full</code> / <code>lite</code></td>
+              <td>数据落在 PostgreSQL + Redis，还是 SQLite + 本地目录。决定基础设施依赖，与界面无关。</td>
+            </tr>
+            <tr>
+              <td>安全检测模式</td>
+              <td><span class="mono">settings/spec_modules.go:594</span> <code>security.mode</code></td>
+              <td><code>observe</code> / <code>enforce</code></td>
+              <td>检测到风险时只记录还是直接拦截。决定判定行为，与界面无关。</td>
+            </tr>
+            <tr>
+              <td>工作模式<span class="badge badge-primary" style="margin-left:8px">新增</span></td>
+              <td><code>gateway.mode</code></td>
+              <td><code>simple</code> / <code>expert</code></td>
+              <td>控制台露出哪些页面、启动时装配哪些子系统、设置项给出什么默认值。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note note-warning">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>命名必须错开</div>
+        <p>
+          <code>security.mode</code> 已经占用「模式」这个词并绑定 observe/enforce 语义。新注册项必须带 <code>gateway.</code> 命名空间，界面文案叫「工作模式」，与「安全检测模式」在同一个设置页里并列展示。文案上任何混用都会让用户误判「改了工作模式，安全检测就变成 observe 了」。
+        </p>
+      </div>
+
+      <h3>为什么三者要拆开</h3>
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-title">单机 + 专家能力</div>
+          <p class="card-note" style="margin-top:var(--kx-space-2)">
+            存储形态 <code>lite</code>，工作模式 <code>expert</code>。一个高级用户不想装 PostgreSQL，但需要完整的路由观测能力。工作模式不该强迫他换存储形态，反之亦然。
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-title">团队 + 精简界面</div>
+          <p class="card-note" style="margin-top:var(--kx-space-2)">
+            存储形态 <code>full</code>，工作模式 <code>simple</code>。一个团队只用核心转发能力，不需要把 605 条管理接口和 93 个 worker 当背景噪音。
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-title">个人 + 最小依赖</div>
+          <p class="card-note" style="margin-top:var(--kx-space-2)">
+            存储形态 <code>lite</code>，工作模式 <code>simple</code>。这是方案的目标形态。简易模式<strong>推荐</strong> lite，但两者不互相强制。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="principles">
+      <h2>五条设计原理</h2>
+
+      <div class="principle">
+        <div class="principle-head"><span class="principle-name">模式是投影，不是第二套实现</span></div>
+        <div class="principle-body">
+          <p>
+            两个模式跑同一份代码。差别只在「哪些装配点被调用」和「哪些面板被渲染」。任何为简易模式单独写一套逻辑的做法，都会让两条路径各自漂移，几个月后没人说得清哪条是活的、哪条在跑。
+          </p>
+          <p>
+            这条决定了实现形态：简易模式不引入新引擎、不引入新进程、不引入第二套配置解析。它是一层投影，投影对象是既有代码。
+          </p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-head"><span class="principle-name">一个开关，一个真源</span></div>
+        <div class="principle-body">
+          <p>
+            模式只有一个注册项 <code>gateway.mode</code>。可见性判定只有一处实现 <code>canShowNavItem()</code>（<span class="mono">web/src/config/appNav.ts:291-300</span>）。运行时裁剪只有一处判定 <code>OperatingMode()</code>。
+          </p>
+          <p>
+            仓库里已经踩过这条的边：<span class="mono">web/src/components/ui/AppBottomNav.vue:30-32</span> 明文写着「不要在这里重新推导可见性——复制一遍过滤逻辑，底栏与侧栏就会在角色变更后不一致」。同理，不允许在 63 个导航入口各写一个 <code>if (simple)</code>。
+          </p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-head"><span class="principle-name">显式高于隐式，两种强度分开</span></div>
+        <div class="principle-body">
+          <p>
+            模式预设分两种强度。<code>override</code> 表示模式决定，数据库和环境变量都盖不过，用于「简易模式必须保证不跑的重型子系统」。<code>default</code> 表示兜底，优先级是数据库 &gt; 环境变量 &gt; 预设值，用于「给专家旋钮一个保守默认」。
+          </p>
+          <p>
+            分开的理由：简易模式要保证「不跑 8 套探针」时，部署环境里的 env 不能把它击穿；而「给路由超时一个宽松默认」时，运维在 env 里写的值必须被尊重。把两种意图塞进同一个优先级，就会出现「<code>0=禁用</code> 被实现成 <code>0=全量</code>」那类语义反转——那比没有开关更危险。
+          </p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-head"><span class="principle-name">降级必须可见</span></div>
+        <div class="principle-body">
+          <p>
+            凡是简易模式改变了运行时行为，界面上必须标出「已降级」，并给出详情入口。这是 <span class="mono">PRODUCT.md</span>「诚实胜过漂亮」的直接要求。
+          </p>
+          <p>
+            仓库里有一个现成的反面样本：<code>output_compliance.enabled</code> 默认关闭，但子项 <code>check_secrets</code>、<code>check_internal_ip</code>、<code>check_jailbreak_response</code> 默认开启（<span class="mono">settings/spec_modules.go:148-179</span>）。把整个输出合规面板藏起来之后，用户看不到但仍在被检查——这是不可见的强制行为。
+          </p>
+        </div>
+      </div>
+
+      <div class="principle">
+        <div class="principle-head"><span class="principle-name">专家模式是严格超集，切换不丢数据</span></div>
+        <div class="principle-body">
+          <p>
+            简易模式不删除任何数据、不重置任何设置。专家模式下的用户偏好留在 <span class="mono">settings_kv</span> 里，切回去立刻恢复。模式自身的写入面只有一个键。
+          </p>
+          <p>
+            这条同时否掉了「切模式时批量写 <span class="mono">settings_kv</span>」的方案：一旦批量落库，就再也分不清哪一行是用户设的、哪一行是模式铺的，回滚也回滚不回来。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="mechanism">
+      <h2>实现机制</h2>
+
+      <h3>解析链插入模式层</h3>
+      <p>
+        现有优先级是「数据库 &gt; 环境变量 &gt; 默认值」，实现在 <span class="mono">settings/spec.go:286</span> 的 <code>EffectiveValue()</code>，返回值里已经带 <code>source</code> 字段（<code>db</code> / <code>env</code> / <code>default</code>）。模式层插在这里：
+      </p>
+
+      <div class="chain">
+        <span class="chain-node">DB 显式值</span>
+        <span class="chain-op">&gt;</span>
+        <span class="chain-node mode">模式预设 override</span>
+        <span class="chain-op">&gt;</span>
+        <span class="chain-node">env</span>
+        <span class="chain-op">&gt;</span>
+        <span class="chain-node mode">模式预设 default</span>
+        <span class="chain-op">&gt;</span>
+        <span class="chain-node">Spec.Default</span>
+      </div>
+
+      <p>
+        <code>source</code> 扩展为第四个取值 <code>mode</code>。这个字段是现成的挂载点：<span class="mono">admin/settings.go:177-193</span> 的 <code>settingsList</code> 已经把 <code>source</code> 透传给前端，前端设置页的「来源」列直接就能显示「模式预设」，不需要新接口。
+      </p>
+
+      <h3>接入点</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:30%">位置</th><th style="width:32%">现状</th><th>改动</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="mono">settings/spec.go:286</span><br><code>EffectiveValue</code></td>
+              <td>三段解析链，<code>source</code> 返回三态</td>
+              <td>插入模式预设层，<code>source</code> 增加 <code>mode</code></td>
+            </tr>
+            <tr>
+              <td><span class="mono">settings/specs.go</span></td>
+              <td><code>PlatformSpecs()</code> 聚合各域设置</td>
+              <td>新增 <code>gateway.mode</code> 注册项（Enum，Options <code>simple</code>/<code>expert</code>，Default <code>simple</code>，HotReload <code>true</code>）</td>
+            </tr>
+            <tr>
+              <td><span class="mono">settings/helpers.go:39</span><br><code>GetPlatformBool/String/Int/...</code></td>
+              <td>全走 <code>EffectiveValue</code></td>
+              <td>不动。读侧零改动，这层投影自动对所有调用点生效</td>
+            </tr>
+            <tr>
+              <td><span class="mono">settings/store_db.go:82</span><br><code>Set</code></td>
+              <td>写库并暂存 <code>prev_value</code> 供回滚</td>
+              <td>不动。模式不写库，预设值永远不落 <span class="mono">settings_kv</span></td>
+            </tr>
+            <tr>
+              <td><span class="mono">admin/settings.go:155</span><br><code>settingsList</code></td>
+              <td>透传 <code>source</code>、<code>danger_level</code>、<code>hot_reload</code></td>
+              <td>不动。新增模式标记字段后由后端填充</td>
+            </tr>
+            <tr>
+              <td><span class="mono">web/src/config/appNav.ts:291</span><br><code>canShowNavItem</code></td>
+              <td>角色 / 租户 / 激活态 / 外部可达性四维</td>
+              <td>加第五维：<code>item.surface === 'advanced' &amp;&amp; mode === 'simple'</code> 时隐藏</td>
+            </tr>
+            <tr>
+              <td><span class="mono">web/src/config/appNav.ts:5</span><br><code>NavItem</code></td>
+              <td>无分级字段</td>
+              <td>新增 <code>surface?: 'basic' | 'advanced'</code></td>
+            </tr>
+            <tr>
+              <td><span class="mono">cmd/gateway/main.go</span> 装配点</td>
+              <td>无模式门控</td>
+              <td>引入 <code>OperatingMode()</code> 判定，逐个装配点决定是否构造</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>预设表形态</h3>
+      <p>
+        预设表是代码里一张显式的表，不是散落的条件判断。每条声明三件事：接管哪个键、给什么值、什么强度。
+      </p>
+      <pre><code>type PresetEntry struct {
+    Value    any
+    Strength Strength // Override | Default
+}
+
+// simplePreset 只接管模块总开关与少数高频项，其余一律不接管。
+var simplePreset = map[string]PresetEntry{
+    // ── 模块总开关（Override：模式决定，env 与数据库都盖不过）──
+    // 会话健康巡检：会持续产生告警，个人场景是噪音；另有 23 个配置项与 5 个依赖
+    "session_inspector.enabled":  {Value: false, Strength: Override},
+    // 提示词注入检测：依赖外部判官端点，个人部署没有
+    "prompt_injection.enabled":   {Value: false, Strength: Override},
+    // 错误触发的主动探测：需重启才生效，且属探针体系
+    "error_probe.enabled":        {Value: false, Strength: Override},
+    // 会话全景分析与审计：面向多租户边界，个人单机用不上
+    "session_analytics.enabled":  {Value: false, Strength: Override},
+    "session_audit.enabled":      {Value: false, Strength: Override},
+    "handoff.enabled":            {Value: false, Strength: Override},
+    "goal.enabled":               {Value: false, Strength: Override},
+
+    // ── 高频项（Default：数据库 > env > 预设，运维显式设置优先）──
+    "compression.mode":           {Value: "smart", Strength: Default},
+    "routing.max_candidates":     {Value: 1, Strength: Default},
+}</code></pre>
+
+      <p>
+        预设表以模块总开关为主，而不是以布尔开关的默认值为主。理由在上面已经给出：按布尔过滤会一次抛出 <span class="num">79</span> 个旋钮，按模块收敛则只有十余项。
+      </p>
+
+      <h3>还有第三层覆盖，模式预设要排在它前面</h3>
+      <p>
+        设置的完整覆盖链不止三层。除了数据库、环境变量与默认值，仓内还有供应商级覆盖表 <span class="mono">provider_settings</span>（<span class="mono">settings/provider_override.go</span>），解析顺序是供应商级 &rarr; 平台级 &rarr; 默认值，带 5 分钟 TTL 缓存与 epoch 失效。
+      </p>
+      <p>
+        模式预设插在平台级之上、供应商级之下。供应商级覆盖由具体供应商决定，粒度比整个平台更细，模式不该盖掉它。
+      </p>
+
+      <h3>两个必须先处理的陷阱</h3>
+
+      <div class="note note-danger">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>陷阱一：迁移会往 settings_kv 播种</div>
+        <p>
+          迁移 <span class="mono">041</span>、<span class="mono">391</span>、<span class="mono">880</span>、<span class="mono">966</span> 会直接往 <span class="mono">settings_kv</span> 写行，例如 <code>sessions_v2.write_timeout_ms</code> = 2000、<code>model_lifecycle.stale_threshold</code> = "2 years"。
+        </p>
+        <p>
+          这意味着「数据库里有行 = 用户显式设置过」这个假设不成立。预设表要么避开这些键，要么给 <span class="mono">settings_kv</span> 加一列 <code>origin</code> 区分 <code>user</code> 与 <code>seed</code>（需要一次迁移）。第一版建议先按键枚举规避，把加列留作独立议题。
+        </p>
+      </div>
+
+      <div class="note note-danger">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>陷阱二：迁移声明了后置条件</div>
+        <p>
+          迁移 <span class="mono">880</span> 带守卫 <code>DO $guard_880$</code>，要求最终值必须 ≥ 2000。模式预设把任何键设到违反已声明后置条件的值，都是让迁移的守卫与运行时互相打架。
+        </p>
+        <p>预设表每一条都要对照对应迁移里的 <code>DO</code> 守卫核一遍，不能只看 Spec 里写的默认值。</p>
+      </div>
+
+      <div class="note note-danger">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>陷阱三：lite 模式下设置注册表几乎是空的</div>
+        <p>
+          <span class="mono">cmd/gateway/storage_mode_init.go:340-345</span>：lite 模式只注册 <code>CategoryStorage</code> 一个族，然后调用 <code>settings.Init(nil)</code>，此时只有环境变量到默认值的解析链。
+        </p>
+        <p>
+          后果是 <code>handoff.*</code> 与 <code>goal.*</code> 这 <span class="num">36</span> 项在 lite 部署下根本不注册，而模块清单仍把这两个模块列为可切换模块，切换必然返回 404。简易模式如果只做「设置项投影」，在 lite 形态下会投影出一堆不存在的键。模式层因此不能假设注册表是完整的，投影必须以模块清单为准，并对未注册的键显式跳过。
+        </p>
+      </div>
+
+      <div class="note note-danger">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>陷阱四：模块清单里有点不动的假开关</div>
+        <p>
+          <code>wechat_bot.enabled</code> 在设置注册表里不存在，切换时 <code>Spec()</code> 返回空，模块开关处理函数直接回 404。该模块声明的 <span class="num">13</span> 个 <code>wechat_bot.*</code> 配置键也全部悬空。<code>memora</code> 与 <code>maintain</code> 两个模块的总开关字段是空字符串，同样落到 404。
+        </p>
+        <p>
+          模块清单与设置注册表之间只有「总开关键」和「配置项键」两条弱连接，没有一致性校验。简易模式如果按模块清单生成界面，就会造出点不动的开关。这一条应当独立成一扇门：清单里的每个 <code>SettingKey</code> 都必须在注册表里存在。
+        </p>
+      </div>
+    </section>
+
+    <section id="surface">
+      <h2>前端分层</h2>
+
+      <h3>折叠，不隐藏</h3>
+      <p>
+        专家面从菜单里彻底消失，还是收进一个「高级」折叠组？选折叠组。理由有三：
+      </p>
+      <ul>
+        <li>与仓内约定一致。<span class="mono">web/src/config/navCoverage.test.ts:79-92</span> 反复强调「不擅自改菜单——改菜单等于改产品信息架构，需属主裁决挂到哪个组」。折叠是加组，不是改路由。</li>
+        <li>保留可发现性。个人用户以后变专业了，东西还在原地，不需要重新找入口。</li>
+        <li>深链不失效。<span class="mono">/routing-v2</span>、<span class="mono">/admin/audit-logs</span> 这类路径被收藏或写进文档时仍然可达。</li>
+      </ul>
+
+      <h3>分组处理方案</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:18%">导航分组</th><th style="width:10%" class="num">项数</th><th style="width:38%">简易模式处理</th><th>保留项</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>运维中心</td>
+              <td class="num">7</td>
+              <td>整组折叠 7 项。全部是外部维护台或 VibeCoding，<code>showOpsPlatform()</code> 已在做运行时探测</td>
+              <td>无</td>
+            </tr>
+            <tr>
+              <td>数据运维</td>
+              <td class="num">16</td>
+              <td>折叠 15 项</td>
+              <td>系统设置（设置页只露通用、压缩、限流三类）</td>
+            </tr>
+            <tr>
+              <td>运营管理</td>
+              <td class="num">13</td>
+              <td>折叠 13 项</td>
+              <td>租户侧 5 项（标准模型、套餐与充值、我的消耗、月账单、我的账户）租户登录时直接露出</td>
+            </tr>
+            <tr>
+              <td>请求与会话</td>
+              <td class="num">6</td>
+              <td>折叠 5 项</td>
+              <td>请求日志</td>
+            </tr>
+            <tr>
+              <td>模型与路由</td>
+              <td class="num">7</td>
+              <td>折叠 5 项</td>
+              <td>模型与目录、供应商</td>
+            </tr>
+            <tr>
+              <td>租户用户</td>
+              <td class="num">5</td>
+              <td>折叠 2 项</td>
+              <td>用户管理、API 密钥、租户管理</td>
+            </tr>
+            <tr>
+              <td>接入指南</td>
+              <td class="num">5</td>
+              <td>折叠 2 项</td>
+              <td>接入示例、自动配置、帮助手册</td>
+            </tr>
+            <tr>
+              <td>对话</td>
+              <td class="num">1</td>
+              <td>保留</td>
+              <td>对话</td>
+            </tr>
+            <tr>
+              <td>顶层主链接</td>
+              <td class="num">3</td>
+              <td>折叠 1 项</td>
+              <td>总览、实时拓扑</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        折叠后简易模式从 <span class="num">63</span> 个入口降到 <span class="num">14</span> 个可见页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），另外 <span class="num">50</span> 条收进一个「高级」折叠组。分组按简易模式重新命名（供应商与模型、密钥与用户、请求、接入指南、对话、设置），专家面的原有分组在折叠组内保持原归属。
+      </p>
+      <p>
+        台账按结构记 <span class="num">63</span> 条，可见性另算：运营管理组里 <span class="num">5</span> 项带 <code>tenantOnly</code>，只在租户登录时露出，default 租户的个人用户在「高级」里看不到它们。逐条归属由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从 <span class="mono">appNav.ts</span> 生成，行数与真源对不齐就是红的。
+      </p>
+
+      <h3>按菜单分组隐藏会漏掉的两处</h3>
+      <div class="note note-warning">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>粒度必须到组件与页签</div>
+        <p>
+          模型 IQ 没有独立路由，它是 <span class="mono">/models</span> 的模型详情抽屉里内嵌的组件（<span class="mono">ModelOfferDetailDrawer.vue:443</span> → <span class="mono">ModelOfferExtrasPanel.vue</span>）。ML 训练也没有独立页面，它是 <span class="mono">/routing-v2/auto-ops</span> 的四个页签之一（人工标注 / 标注统计 / 任务档案 / 调参审批）。
+        </p>
+        <p>
+          按导航分组隐藏，这两处会完整漏网——用户照常能点进去。分层标注必须落到组件和页签粒度。这一条与仓内审计记录的「候选面与读面必须同键」「可见性不等于完整」是同一族问题。
+        </p>
+      </div>
+
+      <h3>四道硬门</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:34%">门</th><th>约束</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="mono">web/src/config/navCoverage.test.ts</span></td>
+              <td>折叠不得让任何路由变成未登记孤儿；白名单 31 条孤儿若因分层被挂上菜单，必须同步删白名单条目；菜单项不得有死链</td>
+            </tr>
+            <tr>
+              <td><span class="mono">web/src/config/navCounts.test.ts</span></td>
+              <td>专家面 <span class="num">63</span> 项 / <span class="num">62</span> 个落地路径 / <span class="num">50</span> 条收进「高级」折叠组，三档口径锁死。<span class="mono">appNav.ts</span> 加一条菜单，或三份方案文档改一个数，门都转红</td>
+            </tr>
+            <tr>
+              <td><span class="mono">web/src/i18n/localeKeyParity*</span></td>
+              <td>8 个语种键数只许降不许升。新增「工作模式」文案必须先降基线或按先例走豁免，否则门直接转红</td>
+            </tr>
+            <tr>
+              <td><span class="mono">web/scripts/design-*.mjs</span></td>
+              <td>抬升、动效、色彩三道设计门。折叠组展开动效必须走 <code>--kx-motion-ease-out</code> 并留 <code>prefers-reduced-motion</code> 路径</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>可复用的现成范式</h3>
+      <p>
+        <span class="mono">web/src/composables/useDataViewMode.ts</span> 已经把「模式」这件事做对过一次：<code>preference</code>（持久化的偏好）、<code>effective</code>（实际生效的）、<code>canSwitch</code>（允许不允许切换）三段分离，硬约束写在 composable 里而不是模板里，<code>setMode()</code> 在不允许时直接 return 且不写存储。
+      </p>
+      <p>
+        工作模式照抄这个形状：存储键用同一命名族（如 <code>llmgw_working_mode</code>），偏好与生效分离，<code>effective</code> 受角色约束——非 super 管理员即使存了 expert 也不给 expert 入口。
+      </p>
+    </section>
+
+    <section id="runtime">
+      <h2>运行时裁剪</h2>
+      <p>
+        裁剪的锚点是 <span class="mono">cmd/gateway/main.go</span> 里的具体装配点，不是目录。<span class="mono">domains/</span> 下 70 个子域多数是被调用的库而不是独立进程，它们没有「关闭」开关，只有「不调用」。
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:26%">子系统</th><th style="width:26%">装配位置</th><th>简易模式处理</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>后台 worker 群</td><td><span class="mono">main.go</span> 内 <span class="num">93</span> 个 <span class="mono">bg.New*</span> 点</td><td>大部分不构造，仅保留清理类与必要的对账</td></tr>
+            <tr><td>探针矩阵</td><td>self_check / node_probe / active_probe / passive_probe / model_probe / credential_probe_v2 / periodic_quota / balance_quota</td><td>8 套全部不启动</td></tr>
+            <tr><td>URSM v2 路由状态机</td><td><span class="mono">domains/ursm/v2</span>，Redis + Lua</td><td>不装配，退化为单候选直发</td></tr>
+            <tr><td>多层队列调度</td><td><span class="mono">domains/dispatch</span></td><td>不装配，模型队列与凭据队列退化为直接转发</td></tr>
+            <tr><td>插件运行时</td><td><span class="mono">plugin-runtime/</span>，<span class="num">47</span> 项</td><td>supervisor / controller / health_loop 不启动</td></tr>
+            <tr><td>MaaS 计费订阅</td><td><span class="mono">main.go:3260</span></td><td>不装配</td></tr>
+            <tr><td>销售报价</td><td><span class="mono">sales/</span></td><td>不装配</td></tr>
+            <tr><td>审批流与通知渠道</td><td><span class="mono">domains/approval</span>、<span class="mono">domains/notification</span></td><td>不装配</td></tr>
+            <tr><td>目标编排</td><td><span class="mono">domains/goal</span> 等，<span class="num">30</span>+ 个 <span class="mono">LLM_GATEWAY_GOAL_*</span> 旋钮</td><td>不装配</td></tr>
+            <tr><td>模型质量 / 可信度 / 供应商画像</td><td><span class="mono">domains/modelquality</span>、<span class="mono">modelcredibility</span>、<span class="mono">providerprofile</span></td><td>不装配。评测方法论本身是专家知识</td></tr>
+            <tr><td>对账报表与统计 worker</td><td><span class="mono">domains/reportrollup</span>、<span class="mono">bg.NewReportRollupWorker</span></td><td>不装配，保留最简用量统计</td></tr>
+            <tr><td>路由优化机器学习</td><td><span class="mono">routingopt/</span>、<span class="mono">ml-training/</span></td><td>不装配。需要独立的 Python 训练栈</td></tr>
+            <tr><td>会话取证、归档、摘要、聚类</td><td><span class="mono">domains/sessionforensics</span> 等</td><td>不装配。这是事后调查工具链，不在请求链路上</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>熔断语义必须一起改写</h3>
+      <div class="note note-danger">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-alert"/></svg>探针关掉，熔断不能原样留着</div>
+        <p>
+          候选熔断打开时，请求会被 park 住等待探测恢复。这条链在生产上造成过 300 秒挂起：候选查询失败 → 熔断打开 → 请求 parked → 客户端超时。
+        </p>
+        <p>
+          简易模式移除了探针，却保留熔断，会出现无探测信号下熔断永不解除或误开。两种可行做法：<strong>一起关掉熔断</strong>，个人场景一两个上游，直连失败直接报错最简单；或者<strong>改写成直连失败即失败</strong>，不去 park。无论选哪个，都要写进钉测，因为熔断语义属于「降级了要说降级了」的范围。
+        </p>
+      </div>
+
+      <h3>开关生效时机</h3>
+      <p>
+        设置项自带 <code>HotReload</code> 字段，而子系统装配是启动期行为。模式切换后有一部分变更立即生效（设置值、面板可见性），另一部分需要重启（装配点）。界面必须按 <code>HotReload</code> 分组明示「哪些立即生效、哪些需要重启」，不能笼统提示一句「已切换」。
+      </p>
+    </section>
+
+    <section id="features">
+      <h2>功能清单</h2>
+      <p>
+        三档而不是两档。有一类东西不能二元处理：它既不在简易模式里露面，运行时又确实在起作用。这类必须单列并明示，否则就是不可见的强制行为。
+      </p>
+
+      <h3><span class="badge badge-success">保留</span>　简易模式里露出、可改</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:22%">域</th><th style="width:38%">功能</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>数据面</td><td><span class="mono">/v1/chat/completions</span>、<span class="mono">/v1/responses</span>、<span class="mono">/v1/messages</span>、<span class="mono">/v1/models</span></td><td>三套入向协议归一已经是产品定位，简易模式不裁</td></tr>
+            <tr><td>配置</td><td>供应商、凭据、模型目录</td><td>接上游的全部必要面</td></tr>
+            <tr><td>密钥</td><td>网关 API 密钥签发（简化表单）</td><td>9 字段收敛到别名 + 预算上限两项</td></tr>
+            <tr><td>观察</td><td>总览、请求日志、用量统计</td><td>用量统计只呈现本租户</td></tr>
+            <tr><td>设置</td><td>通用、压缩、限流三个类别</td><td>其余 21 个类别收进高级区</td></tr>
+            <tr><td>帮助</td><td>接入示例、帮助手册、对话</td><td>帮助手册 2026-11-16 上线，内容与简易模式天然契合</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="badge badge-warning">降级</span>　不露面，运行时保守兜底，界面明示</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:22%">能力</th><th style="width:38%">简易模式下的行为</th><th>为什么要留</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>限流<br><span class="mono">rate_limit.enabled</span></td><td>宽松默认，保留下限</td><td>防滥用兜底不能没有。该开关的破坏等级已是最高，简易模式不放开它</td></tr>
+            <tr><td>熔断</td><td>关闭，或改写为直连失败即失败</td><td>无探针信号时熔断语义不成立</td></tr>
+            <tr><td>输出合规</td><td>保留密钥泄露、内部 IP、越狱响应三项硬检查</td><td>这三项默认开启且成本低，关掉等于给用户去掉保护</td></tr>
+            <tr><td>提示词注入检测<br><span class="mono">prompt_injection.enabled</span></td><td>关闭</td><td>依赖外部判官端点，个人部署没有</td></tr>
+            <tr><td>审计<br><span class="mono">audit.enabled</span></td><td>保留轻量审计（谁用了哪把 key），关掉全量流水</td><td>多租户边界需要，单机个人不需要</td></tr>
+            <tr><td>脱敏</td><td>保留输入脱敏与占位符还原</td><td>2026-11-13 owner 裁决：客户端一级必须还原</td></tr>
+            <tr><td>会话巡检<br><span class="mono">session_inspector.enabled</span></td><td>关闭</td><td>会持续产生告警，个人场景是噪音；该模块另有 23 个配置项与 5 个依赖</td></tr>
+            <tr><td>会话摘要与全景分析</td><td>关闭</td><td>额外的模型调用成本，且面向多租户对比</td></tr>
+            <tr><td>项目归属推断</td><td>关闭</td><td>辅助分析，不在请求链路上</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="badge badge-muted">隐藏</span>　既不露面，运行时也不装配</h3>
+      <p class="muted" style="font-size:var(--kx-text-sm)">
+        上表「运行时裁剪」一节列出的 13 类子系统全部归入此档，外加运维中心整组、运营管理平台侧、数据运维专家项、路由与观测的高级项。
+      </p>
+
+      <div class="note note-primary">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-shield"/></svg>降级项的界面表达</div>
+        <p>
+          降级项在设置页折叠区里要有可见标记。标记内容至少三样：这项能力当前处于降级状态、降级后的实际取值、与专家模式的差异。照 <span class="mono">settingsList</span> 已有的 <code>source</code> 字段显示「模式预设」即可拿到后两项。
+        </p>
+      </div>
+    </section>
+
+    <section id="flow">
+      <h2>使用流程</h2>
+      <p>简易模式的目标是把「装到能用」压缩到五步，每一步都有明确的完成标志。</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-n">1</div>
+          <div class="step-body">
+            <h4>安装</h4>
+            <p>一条命令。引导层只问两个问题：装到哪个目录、要不要连中心。其余全部走默认值，密码类留空即自动生成强随机值。</p>
+            <span class="ev">现状：install.sh 2 个交互 + wizard.go 13 步 + 确认 = 15 个输入点</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">2</div>
+          <div class="step-body">
+            <h4>激活</h4>
+            <p>默认签发本地免费许可证，一步完成，不再进 5 步向导的协议与指纹两关。</p>
+            <span class="ev">/activate-quick：1 台设备、10 年有效期；LLM_GATEWAY_LICENSE_ACTIVATED=1 可兜底跳过</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">3</div>
+          <div class="step-body">
+            <h4>接上游</h4>
+            <p>只填一个上游 API Key。Base URL 从供应商目录选，可达性探测放到后台跑，不阻塞提交。</p>
+            <span class="ev">现状：填 Base URL → 必须探测通过才允许提交 → 填 Key → 自动探活 → 再建模型绑定</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">4</div>
+          <div class="step-body">
+            <h4>拿网关密钥</h4>
+            <p>两个字段：别名、预算上限。其余维度取默认，租户与归属用户走默认租户。</p>
+            <span class="ev">现状：租户 / 应用代码 / 别名 / 归属用户 / 预算 / RPM / 并发 / TPM / 备注，共 9 项</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">5</div>
+          <div class="step-body">
+            <h4>改客户端指向</h4>
+            <p>接入示例页直接给出当前密钥的完整 curl，复制即用。</p>
+            <span class="ev">help-manual.zh-CN.md:661-673 的示例已存在，缺的只是「带当前 key 生成」这一步</span>
+          </div>
+        </div>
+      </div>
+
+      <h3>前后对照</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:18%">阶段</th><th style="width:38%">现状</th><th>简易模式目标</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>安装</td><td><span class="num">15</span> 个交互输入点</td><td><span class="num">2</span> 个：目录、是否连中心</td></tr>
+            <tr><td>激活</td><td><span class="num">5</span> 步向导（协议 / 指纹 / 激活 / 注册中心 / 完成）</td><td><span class="num">1</span> 步：本地免费许可证</td></tr>
+            <tr><td>管理员密码</td><td>随机生成，埋在容器日志里，3 次错要验证码，每分钟 5 次限流</td><td>安装时问一次，或安装完成后直接打到终端</td></tr>
+            <tr><td>密钥概念</td><td><span class="num">4</span> 种</td><td><span class="num">2</span> 种：上游 key、网关 key</td></tr>
+            <tr><td>网关密钥表单</td><td><span class="num">9</span> 个字段</td><td><span class="num">2</span> 个：别名、预算</td></tr>
+            <tr><td>上游接入</td><td>两道网络门串行阻塞</td><td>探测后台跑，不阻塞提交</td></tr>
+            <tr><td>导航入口</td><td><span class="num">63</span> 个</td><td><span class="num">14</span> 个可见页面，专家面进折叠组</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="phases">
+      <h2>落地分期</h2>
+      <p>
+        按「风险从低到高」排。第一期不动运行时，可以独立上线拿到大部分体感收益。
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:6%">期</th><th style="width:22%">范围</th>
+              <th style="width:34%">内容</th><th>验收口径</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="num">1</span></td>
+              <td>表面投影</td>
+              <td>新增 <code>gateway.mode</code> 注册项；<code>canShowNavItem</code> 加第五维；导航折叠组；设置页分组折叠</td>
+              <td>简易模式导航可见页面降到 14，50 条收进高级折叠组；专家模式渲染逐像素不变；<span class="mono">navCoverage.test.ts</span> 绿</td>
+            </tr>
+            <tr>
+              <td><span class="num">2</span></td>
+              <td>设置投影</td>
+              <td>预设表 + <code>EffectiveValue</code> 模式层；<code>source</code> 扩展 <code>mode</code>；降级徽标</td>
+              <td>简易模式只露出白名单内的设置项；每个被降级项都有明示与详情入口</td>
+            </tr>
+            <tr>
+              <td><span class="num">3</span></td>
+              <td>运行时裁剪</td>
+              <td>装配点门控；熔断语义改写；模式切换的生效时机分组提示</td>
+              <td>简易模式启动的 <span class="mono">bg.New*</span> 数量显著下降且有钉测；熔断改写有变异测试</td>
+            </tr>
+            <tr>
+              <td><span class="num">4</span></td>
+              <td>流程简化</td>
+              <td>安装向导两问；bootstrap 压成一步；密钥语义收敛；前端进镜像</td>
+              <td>一台干净机器从零到第一次成功调用，交互点数与步骤数都有明确下降</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note note-success">
+        <div class="note-head"><svg aria-hidden="true"><use href="#i-check"/></svg>第 1 期的性价比</div>
+        <p>
+          第 1 期不碰运行时装配，风险面只有前端导航与设置页渲染，但它已经能把「打开控制台面对 63 个入口」这件事变成「面对 14 个页面加 1 个高级折叠组」。建议先落第 1 期验证用户是否真的需要折叠组这种形态，再决定第 3 期裁掉多少子系统。
+        </p>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>风险与边界</h2>
+
+      <h3>明确不做的四件事</h3>
+      <ul>
+        <li>不改任何协议的语义。三套入向协议归一是产品定位，不因模式而变。</li>
+        <li>不削弱认证强度。<span class="mono">main.go:2760-2768</span> 已经规定 lite 模式在无鉴权配置下拒绝启动，简易模式沿用这条，不放宽。</li>
+        <li>不为简易模式做第二套二进制或第二套配置解析。</li>
+        <li>不悄悄改判定语义。<code>security.mode</code> 的 observe/enforce 在两个模式下含义一致。</li>
+      </ul>
+
+      <h3>五个需要盯的风险</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:26%">风险</th><th style="width:34%">具体形态</th><th>处置</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>探针与熔断失配</td>
+              <td>关掉探针却留着熔断，请求被 park 且无人解除</td>
+              <td>第 3 期把熔断语义一并改写，并写变异测试</td>
+            </tr>
+            <tr>
+              <td>专家面漏网</td>
+              <td>模型 IQ 在抽屉里、机器学习在页签里，按菜单分组隐藏抓不到</td>
+              <td>标注粒度下沉到组件与页签；加一条门扫抽屉与页签内的专家组件</td>
+            </tr>
+            <tr>
+              <td>模式切换半生效</td>
+              <td>设置值立即变，装配要重启，用户以为切完了</td>
+              <td>按 <code>HotReload</code> 分组明示「立即生效 / 需重启」，切换后给出待重启清单</td>
+            </tr>
+            <tr>
+              <td>多语言键数棘轮</td>
+              <td>新增文案使 8 语种键数上升，<span class="mono">localeKeyParity</span> 转红</td>
+              <td>先降基线或走豁免，8 语种键严格同构</td>
+            </tr>
+            <tr>
+              <td>迁移播种撞预设</td>
+              <td>041 / 391 / 880 / 966 写过的键被模式预设盖住</td>
+              <td>预设表避开这些键，或给 <span class="mono">settings_kv</span> 加 <code>origin</code> 列</td>
+            </tr>
+            <tr>
+              <td>lite 下注册表为空</td>
+              <td>lite 只注册存储族，模式投影指向未注册的键</td>
+              <td>投影以模块清单为准，未注册的键显式跳过而不是报错</td>
+            </tr>
+            <tr>
+              <td>假开关</td>
+              <td><code>wechat_bot.enabled</code> 不在注册表，模块开关必回 404</td>
+              <td>加一扇门：模块清单里每个总开关键都必须存在于注册表</td>
+            </tr>
+            <tr>
+              <td>父子开关打架</td>
+              <td>父开关关闭、子项默认开启（输出合规 6 项红act、威胁检测 5 项检查）</td>
+              <td>模式投影以父开关为准做一次隐式收敛，父关则子不呈现</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>与既有设计的接缝</h3>
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-title">设置体系</div>
+          <p class="card-note" style="margin-top:var(--kx-space-2)">
+            复用 <span class="mono">settings.Spec</span> 注册表、<span class="mono">EffectiveValue</span> 解析链、<span class="mono">source</span> 字段、<span class="mono">HotReload</span> 与 <span class="mono">DangerLevel</span>。不新增第二套配置框架。
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-title">存储形态</div>
+          <p class="card-note" style="margin-top:var(--kx-space-2)">
+            复用 <span class="mono">lite</span> 装配（<span class="mono">storage_mode_init.go</span>）与 <span class="mono">liteMode()</span> 判据范式。工作模式是另一根轴，不合并。
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-title">前端模式范式</div>
+          <p class="card-note" style="margin-top:var(--kx-space-2)">
+            复用 <span class="mono">useDataViewMode.ts</span> 的偏好 / 生效 / 可切换三分离，以及 <span class="mono">canShowNavItem</span> 的单一过滤点。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="appendix">
+      <h2>证据索引</h2>
+      <p>方案中每条判断对应的代码位置。行号以本轮合并后的 HEAD（<code>14d165a7f</code>）为准。</p>
+      <div class="card">
+        <p class="evidence">
+          <code>settings/spec.go:90,286</code> — Spec 结构与三段解析链<br>
+          <code>settings/specs.go:5</code> — PlatformSpecs 聚合入口<br>
+          <code>settings/helpers.go:39-141</code> — Get* 读侧全部走 EffectiveValue<br>
+          <code>settings/store_db.go:82</code> — Set 写库并暂存 prev_value<br>
+          <code>settings/provider_override.go</code> — provider_settings 供应商级覆盖层<br>
+          <code>settings/spec_modules.go:14,46,57,148,594,835</code> — 模块总开关与 security.mode<br>
+          <code>settings/feature_switches.go:37</code> — 注册表之外的 env kill-switch 族<br>
+          <code>admin/modules.go:21-34,630,848,979</code> — 19 个模块的清单结构、解析、开关与级联回滚<br>
+          <code>admin/settings.go:24,155,268</code> — settings API 四段式、source 透传、危险级分权<br>
+          <code>config/storage.go:29-32,195-230</code> — full / lite 双形态与校验<br>
+          <code>cmd/gateway/main.go:640,1136,1681,2760,2767</code> — lite 跳过 PG / 禁用 Redis / 注册入口 / 鉴权 fail-closed<br>
+          <code>cmd/gateway/storage_mode_init.go:340-345</code> — lite 只注册存储族<br>
+          <code>cmd/gateway/storage_mode_init.go:60-70</code> — liteMode() 判据陷阱自记<br>
+          <code>web/src/config/appNav.ts:5,119,291</code> — NavItem 字段、导航分组、可见性过滤<br>
+          <code>web/src/config/navCoverage.test.ts:51,79</code> — 孤儿白名单与不改菜单约定<br>
+          <code>web/src/views/SettingsView.vue:46-58</code> — 设置页 10 个类别桶、逐键保存<br>
+          <code>web/src/composables/useDataViewMode.ts:60-96</code> — 偏好 / 生效 / 可切换三分离<br>
+          <code>web/src/router.ts:367,409-465</code> — bootstrap 路由与重定向门<br>
+          <code>web/src/views/bootstrap/BootstrapWizardView.vue:43</code> — 5 步向导定义<br>
+          <code>installer/internal/prompt/wizard.go:221-300</code> — 13 步配置向导<br>
+          <code>installer/cmd/llm-gw-installer/main.go:2452,2594</code> — 自动装 Docker 与 lite 剥服务<br>
+          <code>admin/users.go:210-255</code> — seed admin 与 must_change_password<br>
+          <code>admin/auth_captcha.go:74 / admin/rate_limit.go:62</code> — 验证码阈值与登录限流<br>
+          <code>web/content/help-manual.zh-CN.md:353,404,572,661</code> — 探测门、探活、9 字段、curl 示例<br>
+          <code>.env.example / envs.samples/</code> — 1049 个环境变量引用<br>
+          <code>sql/migrations/startup/041,391,880 + db/migrations/966</code> — settings_kv 播种点<br>
+          <code>PRODUCT.md / DESIGN.md / web/src/style.css</code> — 产品原则、设计系统与令牌取值
+        </p>
+      </div>
+
+      <footer class="footer" style="margin-top:var(--kx-space-6)">
+        <p>本文档是设计方案，不是实现记录。所有数字取自本轮合并后 HEAD 的静态实测，未执行构建与测试。</p>
+        <p>文档遵循 <span class="mono">DESIGN.md</span> 的控制台规范：暗色为主场景，令牌取自 <span class="mono">web/src/style.css</span>，不引用外部字体与 CDN。</p>
+        <p>配套画面稿：<a href="simple-mode-ui-mockup.html">《简易模式 · 控制台效果稿》</a>；配套整页与菜单稿：<a href="simple-mode-concept.html">《简易模式 · 整页与菜单概念稿》</a>。</p>
+      </footer>
+    </section>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var toggle = document.getElementById('theme-toggle');
+  var icon = document.getElementById('theme-icon');
+  var KEY = 'llmgw_doc_theme';
+
+  function apply(theme) {
+    root.setAttribute('data-theme', theme);
+    icon.innerHTML = '<use href="#i-' + (theme === 'dark' ? 'sun' : 'moon') + '"/>';
+    try { localStorage.setItem(KEY, theme); } catch (e) { /* 隐私模式降级为会话内生效 */ }
+  }
+
+  var saved = null;
+  try { saved = localStorage.getItem(KEY); } catch (e) { /* 忽略 */ }
+  apply(saved === 'light' ? 'light' : 'dark');
+
+  toggle.addEventListener('click', function () {
+    apply(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+
+  /* 目录高亮：取当前滚动位置上方最后一个锚点 */
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var targets = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function sync() {
+    var y = window.scrollY + 96;
+    var index = 0;
+    for (var i = 0; i < targets.length; i++) {
+      if (targets[i] && targets[i].getBoundingClientRect().top + window.scrollY <= y) index = i;
+    }
+    links.forEach(function (a, i) { a.classList.toggle('active', i === index); });
+  }
+  var ticking = false;
+  window.addEventListener('scroll', function () {
+    if (ticking) return;
+    ticking = true;
+    window.requestAnimationFrame(function () { sync(); ticking = false; });
+  }, { passive: true });
+  sync();
+})();
+</script>
+</body>
+</html>
