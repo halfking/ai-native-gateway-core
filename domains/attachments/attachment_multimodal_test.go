@@ -141,9 +141,10 @@ func TestIRTransformer_Multimodal_DedupWithinRequest(t *testing.T) {
 // 必须**含附件种类**」。
 //
 // ★ 为什么：★ 去重键若只是载荷本身 ⇒ ★ 同载荷的 image 与 document 会**共用**
-//   同一个 manifest ⇒ ⇒ document 的落盘记录被标成 image ⇒ ⇒ 改写器的类型闸
-//   会把它判成「类型不符」而跳过 ⇒ ⇒ 文档**永远**不会被换成 URL ⇒ ⇒
-//   正好退回本轮修掉的那个缺陷。
+//
+//	同一个 manifest ⇒ ⇒ document 的落盘记录被标成 image ⇒ ⇒ 改写器的类型闸
+//	会把它判成「类型不符」而跳过 ⇒ ⇒ 文档**永远**不会被换成 URL ⇒ ⇒
+//	正好退回本轮修掉的那个缺陷。
 func TestIRTransformer_Multimodal_DedupKeyIncludesKind(t *testing.T) {
 	storage := newTestStorage(t)
 	tr := NewIRTransformer(storage, "https://cdn.example.com/attachments")
@@ -205,9 +206,9 @@ func (e *mmError) Error() string { return e.msg }
 func TestURLFetchFallback_InlinesImageFileAndVideo(t *testing.T) {
 	fetcher := &mmFallbackFetcher{
 		files: map[string][]byte{
-			"a/img.png":  []byte("PNGBYTES"),
-			"a/doc.pdf":  []byte("PDFBYTES"),
-			"a/vid.mp4":  []byte("MP4BYTES"),
+			"a/img.png": []byte("PNGBYTES"),
+			"a/doc.pdf": []byte("PDFBYTES"),
+			"a/vid.mp4": []byte("MP4BYTES"),
 		},
 		mime: map[string]string{
 			"a/img.png": "image/png",
@@ -223,7 +224,7 @@ func TestURLFetchFallback_InlinesImageFileAndVideo(t *testing.T) {
 		{"type":"video_url","video_url":{"url":"https://gw/att/a/vid.mp4"}}
 	]}]}`)
 
-	out, n := f.InlineOpenAIBody(body, "deepseek")
+	out, n := f.InlineOpenAIBody(body, nil, "deepseek")
 	if n != 3 {
 		t.Fatalf("内联处数 = %d，期望 3（图片+文档+视频）", n)
 	}
@@ -262,7 +263,7 @@ func TestURLFetchFallback_DoesNotTouchTextMessages(t *testing.T) {
 		{"role":"user","content":[{"type":"text","text":"这张呢 ` + url + `"},{"type":"image_url","image_url":{"url":"` + url + `"}}]}
 	]}`)
 
-	out, n := f.InlineOpenAIBody(body, "deepseek")
+	out, n := f.InlineOpenAIBody(body, nil, "deepseek")
 	s := string(out)
 	// ★★ 断言顺序：★ 先断「文本没被污染」（★ 语义要点 ★），再断「替换处数」★★
 	// ★ 顺序很重要：★ 处数断言是 t.Fatalf ⇒ ★ 一旦它先触发，后面的语义断言

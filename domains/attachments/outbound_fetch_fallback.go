@@ -54,31 +54,63 @@ func NewURLFetchFallback(baseURL string, fetcher AttachmentContentFetcher) *URLF
 // content and splices in a data URI.
 //
 // ★ 2026-11-11（附件域审计轮）：本函数的实现从「**全 body 字节级替换**」
-//   改成了「**字段精确替换**」，同时修掉两处缺陷：
 //
-//   ★ 缺陷①（只内联 image_url ⇒ 文档/视频在链路上丢失）：★★
-//     旧实现只认 `messages[].content[].image_url.url` ⇒ ⇒ 文档
-//     （file.file_data）与视频（video_url.url）**原样**把网关 URL 发给上游
-//     ⇒ ⇒ 而不支持 URL 的上游**取不到**它 ⇒ ⇒ **附件在链路上丢失**
-//     ⇒ ⇒ 现在走 attachment_fields.go 的**共享字段表** ⇒ ⇒ 三类都内联 ★★
+//	改成了「**字段精确替换**」，同时修掉两处缺陷：
 //
-//   ★ 缺陷②（字节级替换 ⇒ 文本污染 + 载荷外泄）：★★
-//     旧实现用 `bytes.ReplaceAll(out, oldURL, dataURI)` 在**整个 body** 上替换
-//     ⇒ ⇒ 同一个网关 URL 若出现在**文本消息**里（例如用户在聊天里贴了上一轮
-//     的附件链接），也会被替换成 base64 载荷 ⇒ ⇒ **内容污染 + 载荷外泄**
-//     ⇒ ⇒ 现在只改「附件承载字段」⇒ ⇒ 文本**逐字不动** ★★
+//	★ 缺陷①（只内联 image_url ⇒ 文档/视频在链路上丢失）：★★
+//	  旧实现只认 `messages[].content[].image_url.url` ⇒ ⇒ 文档
+//	  （file.file_data）与视频（video_url.url）**原样**把网关 URL 发给上游
+//	  ⇒ ⇒ 而不支持 URL 的上游**取不到**它 ⇒ ⇒ **附件在链路上丢失**
+//	  ⇒ ⇒ 现在走 attachment_fields.go 的**共享字段表** ⇒ ⇒ 三类都内联 ★★
+//
+//	★ 缺陷②（字节级替换 ⇒ 文本污染 + 载荷外泄）：★★
+//	  旧实现用 `bytes.ReplaceAll(out, oldURL, dataURI)` 在**整个 body** 上替换
+//	  ⇒ ⇒ 同一个网关 URL 若出现在**文本消息**里（例如用户在聊天里贴了上一轮
+//	  的附件链接），也会被替换成 base64 载荷 ⇒ ⇒ **内容污染 + 载荷外泄**
+//	  ⇒ ⇒ 现在只改「附件承载字段」⇒ ⇒ 文本**逐字不动** ★★
+//
+//	★ 缺陷③（MIME 取自文件名反推 ⇒ 上游收到错类型）：★★
+//	  LoadAttachment 只能按 relPath 取回内容，MIME 是**从扩展名反推**的
+//	  ⇒ ⇒ 而未登记的 MIME（video/mp4、audio/wav、text/csv…）在落盘时
+//	  ⇒ ⇒ 落成 `.bin` ⇒ ⇒ 反推出来是 application/octet-stream ⇒ ⇒
+//	  ⇒ 出站 data URI 的 MIME **是错的** ⇒ ⇒ 上游按错类型解析附件 ★★
+//	  ⇒ ⇒ 现在 **MIME 优先取落盘记录里的原始 ContentType**（★ 真源 ★）★★
+//
+//	★★★ 收益窗口（如实登记，**别说过头**）：★★★
+//	  落盘记录（logCtx.Attachments）只覆盖「**本次请求**里以 base64 提取过
+//	  的文件」⇒ 而 Extractor **只认 data: 前缀** ⇒ ⇒ 以**网关 URL** 引用的
+//	  文件**从不被记录** ⇒ ⇒ 两边**只在**「同一次请求里既发了 base64 又
+//	  引用了同一内容的 URL」时才重合（★ 内容寻址 ⇒ 路径相同 ⇒ 查得到 ★）
+//	  ⇒ ⇒ 所以这条修法**能**命中，★ 但**不是**「历史文件全都对了」★★
+//	  ⇒ ⇒ 历史 .bin 文件在「记录不可得」时**仍是** octet-stream ⇒ ⇒
+//	  ⇒ ⇒ 真要修它需要**按路径查元数据**（★ 热路径 DB 查询 ⇒ 需另开一轮 ★）★★
 //
 // External URLs and existing data URIs are untouched. Fetch failures and
 // provider inline-size overruns keep the original URL (best-effort, never
 // fails the request). Returns the body (unchanged when nothing applies) and
 // the number of attachment fields inlined.
-func (f *URLFetchFallback) InlineOpenAIBody(body []byte, provider string) ([]byte, int) {
+//
+// ★ 参数说明：★ attachments 是**落盘记录**（★ 与 RewriteOpenAIBody 对称 ★）
+//
+//	⇒ ★ 只用它取 MIME，不用于坐标核对（★ 内联按 URL 前缀定位 ★）。
+func (f *URLFetchFallback) InlineOpenAIBody(body []byte, attachments []AttachmentMetadata, provider string) ([]byte, int) {
 	if f == nil || f.fetcher == nil || len(body) == 0 || !ShouldFetchFallback(provider) {
 		return body, 0
 	}
 
 	prefix := f.baseURL + "/"
 	capability := sessionv2.GetProviderCapability(provider)
+
+	// ★ 落盘记录 ⇒ 原始 ContentType（★ MIME 的真源 ★）⇒ ★ relPath → MIME ★。
+	// ★ ★ 为什么不从扩展名反推：★ 未登记的 MIME 落盘成 .bin ⇒ ⇒ 反推值是
+	// ★ ★ application/octet-stream ⇒ ⇒ 出站 MIME 错 ⇒ ⇒ 上游按错类型解析 ★。
+	mimeByPath := make(map[string]string, len(attachments))
+	for _, att := range attachments {
+		if att.Path == "" || att.ContentType == "" {
+			continue
+		}
+		mimeByPath[att.Path] = att.ContentType
+	}
 
 	// Dedupe fetches per object key; a relPath is fetched at most once even
 	// when the same attachment is referenced by several fields.
@@ -102,6 +134,11 @@ func (f *URLFetchFallback) InlineOpenAIBody(body []byte, provider string) ([]byt
 				slog.Warn("attachments: fetch fallback load failed, keep URL",
 					"path", relPath, "error", err)
 				return ""
+			}
+			// ★ MIME 的真源 = 落盘记录里的原始 ContentType ★
+			// ★（★ 没有记录时才用 fetcher 从扩展名反推出来的值 ★）。
+			if recorded, ok := mimeByPath[relPath]; ok && recorded != "" {
+				mime = recorded
 			}
 			if mime == "" {
 				mime = "application/octet-stream"
