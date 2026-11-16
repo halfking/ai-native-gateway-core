@@ -8,9 +8,17 @@
 //	（MiniMax-M2.5 / minimax-m2.5 / auto/minimax-m2.5，来自 model_offers）。
 //
 // 两者字面不等 ⇒ 直接把 canonical 名塞进 raw_model_name 的等值过滤，
-// 结果是「选了模型却一行都没有」。真库实测：区间内 356 个有请求的模型里
-// 只有 212 个字面等于某个 canonical 名，另外 144 个（含 MiniMax-M2.* 全族
-// 与 `<unknown>`）压根不在目录里——只按 canonical 过滤会把四成流量藏起来。
+// 结果是「选了模型却一行都没有」。真库实测（2026-11-16，211，daily_grain
+// 2026-11-10~11-15 的 356 个有请求的 raw 名）：
+//
+//	字面等于某个 canonical 名（lower() 折叠，与本文件的比较口径一致）= 296 个
+//	字面不等于任何 canonical 名                              = 60 个
+//	  ⇒ 这 60 个承载 17,559 笔 = 全量 123,367 的 14.23% 会被「按 canonical 过滤」漏掉
+//	能解析到 canonical id（三条路径任一命中）                = 355 个
+//	完全无 canonical 归属                                     = 1 个
+//	  = claude-3-7-sonnet-20250219（220 笔）
+//
+// ⇒ 只按 canonical 过滤会把 14.23% 的流量藏起来。
 //
 // 所以过滤前必须**展开**成 raw 名集合：给定名字 → 找到它所属的 canonical
 // → 取该 canonical 的全部 raw 名（model_offers 的字面形态 +

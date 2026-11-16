@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   ElAlert,
   ElButton,
@@ -38,9 +39,28 @@ const AGREEMENT_STORAGE_KEY = `llmgw_op_agreement_activate_${AGREEMENT_VERSION}`
 const PRODUCT_TERMS_STORAGE_KEY = `llmgw_product_terms_${AGREEMENT_VERSION}`
 
 const router = useRouter()
+const { t } = useI18n()
 
 const step = ref(0)
-const steps = ['用户协议', '设备指纹', '激活 License', '注册中心', '完成']
+// ★ 步骤条第 5 步 = 「重置数据」（2026-11-16 追加）：
+//   首次激活这条链上原本**只有**许可与注册，重置数据只在手册里以「若从旧环境
+//   迁过来」的附带说明存在 ⇒ 首启链上根本没有这个操作。
+//   ⇒ 现在它是流程里的一步：默认要重置，重置完再继续接入流量。
+// ★ 新增这一步的文案走 i18n（labelKey）——「硬编码中文只许降不许升」的棘轮门
+//   不允许在 src/** 里新增中文字符串；既有步骤的硬编码文案原样保留。
+const steps: { label?: string; labelKey?: string }[] = [
+  { label: '用户协议' },
+  { label: '设备指纹' },
+  { label: '激活 License' },
+  { label: '注册中心' },
+  { labelKey: 'dataLifecycle.dataInit.wizard.stepLabel' },
+  { label: '完成' },
+]
+
+// ★ 「去重置数据」的落点：数据生命周期页的「数据初始化」页签。
+//   深链参数 tab=data-init 由 DataLifecycleView 解析（认不出的值回落到第一个页签）。
+//   面板默认已全选全部类别 ⇒ 打开即是「准备重置」的姿态 ⇒ 预览 → 确认执行。
+const DATA_INIT_PANEL_URL = '/admin/data-lifecycle?tab=data-init'
 
 const agreementAccepted = ref(!!localStorage.getItem(AGREEMENT_STORAGE_KEY))
 const productTermsAccepted = ref(!!localStorage.getItem(PRODUCT_TERMS_STORAGE_KEY))
@@ -123,6 +143,9 @@ async function loadStatus() {
     }
     if (status.value.activated) {
       markBootstrapActivated()
+      // ★ 「至少到第 4 步」：第 4 步是新增的「重置数据」。
+      //   刚激活完的会话此时正停在第 4 步（注册中心之后）⇒ Math.max 不会把它推走；
+      //   而「已经激活过」的机器由 onMounted 显式落到第 5 步（结束页）。
       step.value = Math.max(step.value, 4)
     }
   } catch (e) {
@@ -412,7 +435,9 @@ onMounted(async () => {
   }
   // 已激活且未点"重新激活"→ 直接到结束页，不要再弹协议。
   if (status.value?.activated) {
-    step.value = 4
+    // ★ 第 5 步 = 结束页（第 4 步是新增的「重置数据」，属**首次激活**这一步：
+    //   已经激活过的机器重进向导时不该再被拽去重置 ⇒ 直接到结束页）。
+    step.value = 5
     return
   }
   // 未同意协议 → 弹窗；已同意 → 进入步骤1（设备指纹）
@@ -440,8 +465,8 @@ onMounted(async () => {
 
     <nav class="wizard-steps" aria-label="激活步骤">
       <div
-        v-for="(label, i) in steps"
-        :key="label"
+        v-for="(stepDef, i) in steps"
+        :key="i"
         class="wizard-steps__item"
         :class="{
           'is-active': step === i,
@@ -449,7 +474,7 @@ onMounted(async () => {
         }"
       >
         <span class="wizard-steps__index">{{ i + 1 }}</span>
-        <span class="wizard-steps__label">{{ label }}</span>
+        <span class="wizard-steps__label">{{ stepDef.labelKey ? t(stepDef.labelKey) : stepDef.label }}</span>
       </div>
     </nav>
 
@@ -595,12 +620,29 @@ onMounted(async () => {
         </template>
         <div class="wizard-actions">
           <button type="button" class="btn btn-secondary btn-no-arrow" :disabled="loading" @click="tryRegisterCenter">重试注册</button>
-          <button type="button" class="btn btn-primary" @click="step = 4">继续</button>
+          <button type="button" class="btn btn-primary" @click="step = 4">{{ t('dataLifecycle.dataInit.wizard.continue') }}</button>
         </div>
       </el-card>
 
-      <!-- Step 4: Done -->
+      <!-- Step 4: 重置数据（首次激活的默认步骤） -->
       <el-card v-else-if="step === 4" shadow="never" class="wizard-card">
+        <template #header>{{ t('dataLifecycle.dataInit.wizard.title') }}</template>
+        <p class="muted mb">{{ t('dataLifecycle.dataInit.wizard.desc') }}</p>
+        <el-alert type="info" :closable="false" show-icon class="mb">
+          {{ t('dataLifecycle.dataInit.wizard.hint') }}
+        </el-alert>
+        <div class="wizard-actions">
+          <a class="btn btn-primary btn-no-arrow" :href="DATA_INIT_PANEL_URL" target="_blank" rel="noopener">
+            {{ t('dataLifecycle.dataInit.wizard.goReset') }}
+          </a>
+          <button type="button" class="btn btn-secondary btn-no-arrow" @click="step = 5">
+            {{ t('dataLifecycle.dataInit.wizard.skip') }}
+          </button>
+        </div>
+      </el-card>
+
+      <!-- Step 5: Done -->
+      <el-card v-else-if="step === 5" shadow="never" class="wizard-card">
         <template #header>激活完成</template>
         <p><strong>本机网关已就绪。</strong></p>
         <p class="muted">

@@ -103,6 +103,7 @@
 
     <!-- 操作区 -->
     <div class="card actions">
+      <p class="default-hint">{{ t('dataLifecycle.dataInit.defaultHint') }}</p>
       <div class="selection">
         <span>
           {{ t('dataLifecycle.dataInit.selectedCount', { count: selected.length }) }}
@@ -110,13 +111,21 @@
             · {{ t('dataLifecycle.dataInit.selectedRows', { rows: formatNumber(selectedTargetRows) }) }}
           </template>
         </span>
-        <button
-          class="btn btn-primary btn-sm"
-          :disabled="busy || !selected.length"
-          @click="preview"
-        >
-          {{ busy ? t('dataLifecycle.loading') : t('dataLifecycle.dataInit.preview') }}
-        </button>
+        <div class="selection-actions">
+          <button class="btn btn-ghost btn-sm" :disabled="busy" @click="selectAll">
+            {{ t('dataLifecycle.dataInit.selectAll') }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="busy" @click="selectNone">
+            {{ t('dataLifecycle.dataInit.selectNone') }}
+          </button>
+          <button
+            class="btn btn-primary btn-sm"
+            :disabled="busy || !selected.length"
+            @click="preview"
+          >
+            {{ busy ? t('dataLifecycle.loading') : t('dataLifecycle.dataInit.preview') }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -247,6 +256,14 @@ const previewResult = ref<DataInitPreviewResponse | null>(null)
 const lastResult = ref<DataInitExecuteResponse | null>(null)
 const confirmPhrase = ref('')
 
+// ★ 「默认要重置数据」的落地方式：**首次激活时默认全选**。
+//   ⇒ 面板一打开就是「准备重置」的姿态：点「预览重置」即可看到将被删除的行数，
+//     不必先手动勾一遍类别。
+//   ★ 只应用一次（defaultSelectionApplied）：之后用户手动改过的选择不会被
+//     「刷新」悄悄覆盖 ⇒ 刷新 ≠ 重置用户的显式意图。
+//   ★ 执行成功后把标志复位 ⇒ 面板回到默认姿态，可以接着做下一轮归零。
+const defaultSelectionApplied = ref(false)
+
 // ★ 确认短语固定为 RESET：短、大写、不会与任何界面文案撞形。
 const CONFIRM_WORD = 'RESET'
 const confirmPhraseMatches = computed(() => confirmPhrase.value.trim() === CONFIRM_WORD)
@@ -308,6 +325,8 @@ async function load() {
     const res: DataInitCatalogResponse = await dataInitCatalog()
     categories.value = res.categories || []
     generatedAt.value = res.generated_at || ''
+    // ★ 首次加载 ⇒ 默认全选（默认要重置数据）；已应用过则保留用户的显式选择。
+    applyDefaultSelection()
     // 预览结果与统计是两次独立读数 ⇒ 统计刷新后旧的预览不再可信 ⇒ 作废。
     previewResult.value = null
     confirmPhrase.value = ''
@@ -318,6 +337,27 @@ async function load() {
   } finally {
     busy.value = false
   }
+}
+
+// applyDefaultSelection 首次激活时把全部类别选上（默认重置姿态）。
+// 只生效一次；执行成功后由 execute() 复位 ⇒ 下一轮归零重新回到默认姿态。
+function applyDefaultSelection() {
+  if (defaultSelectionApplied.value) return
+  defaultSelectionApplied.value = true
+  selected.value = categories.value.map(c => c.key)
+}
+
+function selectAll() {
+  selected.value = categories.value.map(c => c.key)
+  // 选中集合变了 ⇒ 之前的预览令牌绑定的是旧集合 ⇒ 作废。
+  previewResult.value = null
+  confirmPhrase.value = ''
+}
+
+function selectNone() {
+  selected.value = []
+  previewResult.value = null
+  confirmPhrase.value = ''
 }
 
 function toggle(key: string) {
@@ -365,6 +405,8 @@ async function execute() {
     previewResult.value = null
     confirmPhrase.value = ''
     selected.value = []
+    // ★ 执行后复位默认标志 ⇒ load() 会重新全选 ⇒ 面板回到「准备重置」的默认姿态。
+    defaultSelectionApplied.value = false
     await load()
   } catch (e: unknown) {
     loadError.value = surfaceError(e, { key: 'dataLifecycle.dataInit.errors.execute' })
@@ -461,6 +503,8 @@ h3 { margin: 0 0 8px; font-size: 16px; }
 
 .actions .selection { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .actions span { color: var(--muted); font-size: 13px; }
+.selection-actions { display: flex; align-items: center; gap: var(--kx-space-2); flex-wrap: wrap; }
+.default-hint { margin: 0 0 var(--kx-space-3); color: var(--muted); font-size: 12px; line-height: 1.6; }
 
 .preview-summary { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 12px; margin-bottom: 12px; }
 .preview-summary > div { display: flex; flex-direction: column; gap: 2px; }

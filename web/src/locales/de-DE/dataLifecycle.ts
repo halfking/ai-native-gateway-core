@@ -342,6 +342,18 @@ promoteAll: "alles",
 
   // Dateninitialisierung (2026-11-16): Statistik und Zurücksetzen je Kategorie.
   dataInit: {
+    defaultHint: 'Standardmäßig sind alle Kategorien ausgewählt: "Reset-Vorschau" zeigt, wie viele Zeilen gelöscht werden, danach bestätigen Sie die Ausführung. Geschützte Zeilen (Systemschlüssel, Superadministratoren, der Standard-Mandant) werden nie gelöscht.',
+    selectAll: 'Alle auswählen',
+    selectNone: 'Auswahl aufheben',
+    wizard: {
+      stepLabel: 'Daten zurücksetzen',
+      title: 'Lokale Daten zurücksetzen',
+      desc: 'Bei der ersten Aktivierung werden lokale Verlaufsdaten standardmäßig zurückgesetzt, bevor der Datenverkehr beginnt.',
+      hint: 'Das Zurücksetzen führen Sie als Superadministrator unter "Daten-Lifecycle, Dateninitialisierung" aus. Dort sind bereits alle Kategorien ausgewählt; prüfen Sie die Zeilenzahlen über die Reset-Vorschau.',
+      goReset: 'Daten zurücksetzen',
+      skip: 'Neuinstallation, Reset überspringen',
+      continue: 'Weiter',
+    },
     tabLabel: 'Dateninitialisierung',
     title: 'Dateninitialisierung',
     intro: 'Erfahren Sie, wie viele Daten jeder Kategorie auf dieser Instanz vorhanden sind, und setzen Sie sie je Kategorie zurück. Betriebsdaten lassen sich vollständig löschen; Konfigurationsdaten behalten das Systemgerüst (Systemschlüssel, Superadministratoren, der Standard-Mandant), damit durch das Zurücksetzen niemand ausgesperrt wird.',

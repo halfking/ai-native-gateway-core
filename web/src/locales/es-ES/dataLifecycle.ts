@@ -342,6 +342,18 @@ export default {
 
   // Inicialización de datos (2026-11-16): estadísticas y reinicio por categoría.
   dataInit: {
+    defaultHint: 'Todas las categorías están seleccionadas por defecto: "Vista previa del reinicio" muestra cuántas filas se van a borrar, y confirme para ejecutarlo. Las filas protegidas (claves del sistema, superadministradores, el inquilino predeterminado) nunca se borran.',
+    selectAll: 'Seleccionar todo',
+    selectNone: 'Quitar selección',
+    wizard: {
+      stepLabel: 'Reiniciar datos',
+      title: 'Reiniciar los datos locales',
+      desc: 'En la primera activación, el historial local se reinicia a cero por defecto antes de empezar a recibir tráfico.',
+      hint: 'El reinicio lo hace un superadministrador desde "Ciclo de vida de datos, Inicialización de datos". Ese panel ya tiene todas las categorías seleccionadas, así que "Vista previa del reinicio" permite confirmar el número de filas.',
+      goReset: 'Ir a reiniciar datos',
+      skip: 'Entorno nuevo, omitir el reinicio',
+      continue: 'Continuar',
+    },
     tabLabel: 'Inicialización de datos',
     title: 'Inicialización de datos',
     intro: 'Consulta cuánto volumen de datos hay de cada categoría en esta instancia y reinicia por categoría. Los datos de ejecución se pueden vaciar por completo; los datos de configuración conservan la estructura del sistema (claves del sistema, superadministradores, el inquilino predeterminado) para que un reinicio no deje a nadie fuera.',

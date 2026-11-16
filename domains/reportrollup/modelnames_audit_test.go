@@ -9,9 +9,14 @@ package reportrollup
 // 两者字面不等 ⇒ 直接拿 canonical 名去等值过滤，结果是「选了模型却一行都
 // 没有」。
 //
-// 真库覆盖面（211 实测）：区间内 1200 个有请求的 raw 模型名里，**1199 个**
-// 能落到某个 canonical（经 canonical 名 / model_offers / model_aliases 三条
-// 路径），只有 1 个（claude-3-7-sonnet-20250219）真的不在目录里。
+// 真库覆盖面（211 实测，2026-11-16 复核轮重测）：
+//   · 区间内（daily_grain 2026-11-10~11-15）**356** 个有请求的 raw 模型名里，
+//     **355** 个能落到某个 canonical（经 canonical 名 / model_offers / model_aliases
+//     三条路径），只有 1 个（claude-3-7-sonnet-20250219，220 笔）真的无任何归属。
+//   · 目录侧（/api/routing/available-models）：`total_raw` = **1790**，
+//     `unmapped` = **1** 个（同上那个名字）⇒ 1789 个可落 canonical。
+//   · 字面等于某个 canonical 名（lower() 折叠）的只有 **296** 个 ⇒ 只按 canonical
+//     等值过滤会漏掉 60 个名字、17,559 笔 = 全量 14.23%。
 // ⇒ 展开必须「查到就展开，查不到就原样精确匹配」——不能因为目录缺项把用户
 // 筛空。
 
