@@ -465,6 +465,57 @@ Maestro 的 `tapOn` 文本匹配按 DOM 顺序取第一个命中，会打到访�
 而登录弹窗当前**没有渲染验证码输入框** ⇒ 那种状态下 UI 登录流必然失败（后端返 `captcha_required`）。
 先把失败计数清掉（换 IP / 等窗口过期），或改用 §6.3 的 cookie 注入方案。
 
+### 6.5 无口令路径：CDP 预置会话（`maestro/tools/seed-session.mjs`）
+
+§6.1 的 UI 登录要管理员口令；§6.3 的 fetch 注入同样要口令。**没有口令时**
+（CI、临时机器、值班机）还有一条路：用 Chrome DevTools Protocol 预置会话。
+
+它做的事（零依赖，Node ≥ 22 自带 `WebSocket`）：
+
+1. 连浏览器级 CDP（`/json/version` 的 `webSocketDebuggerUrl`）；
+2. `Target.createTarget` + `Target.attachToTarget`（flatten）；
+3. `Network.setCookie`：把一枚 **short-lived JWT** 写成 HttpOnly 的 `llmgw_session`
+   （域/路径/secure 与后端 `setSessionCookieRemember` 对齐）；
+4. `Page.navigate` 到目标站，`Runtime.evaluate` 写 localStorage
+   （`llmgw_work_mode` / `llmgw_user_info`）；
+5. 探测一次 `/api/auth/me` —— **确认注入的 cookie 真被后端认**（不是只写进了浏览器）。
+
+★ JWT 从哪来：用 211 容器里的 `LLM_GATEWAY_SECRET_KEY` **在 211 本机现签**
+（`scripts/audit/api-211-admin-probe.py` 的 `mint_token()`）⇒ **签名密钥不出机器**，
+本地只拿到一枚 30 分钟的会话令牌。
+
+```bash
+# ① 在 211 上现签（密钥不出机器）
+scp scripts/audit/api-211-admin-probe.py 211:/tmp/ && \
+  ssh 211 'python3 -c "
+import importlib.util,sys
+spec=importlib.util.spec_from_file_location(\"p\",\"/tmp/api-211-admin-probe.py\")
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+sys.stdout.write(m.mint_token(ttl=1800))"' > /tmp/llmgw-jwt.txt
+chmod 600 /tmp/llmgw-jwt.txt
+
+# ② 起 Chrome（CDP），再预置会话
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/maestro-local-chrome-profile about:blank &
+node maestro/tools/seed-session.mjs --cdp http://127.0.0.1:9222 \
+  --url https://llm.itestu.cn --token-file /tmp/llmgw-jwt.txt --mode simple
+
+# ③ 跑 flow（复用同一个 Chrome profile ⇒ 会话已在）
+maestro test --driver-host-port 9222 --headless --no-ansi \
+  -e BASE_URL=https://llm.itestu.cn maestro/flows/11-simple-overview.yaml
+```
+
+★ 两种路径的取舍：
+- **有口令** ⇒ 走 §6.1 的 UI 登录（更真实，顺带把登录链路也测了）。
+- **无口令** ⇒ 走 §6.5（CDP 预置），会话有效期 = JWT 的 TTL（建议 30 分钟），
+  跑完 `rm -f /tmp/llmgw-jwt.txt`。
+
+★ 工作模式（简易/专家）是**本机选择**（localStorage `llmgw_work_mode`），
+不是服务端设置 ⇒ 换机器就是另一个模式，CI 上必须显式设置（见
+`maestro/flows/11-simple-overview.yaml` 开头：登录前先复位成 `expert`，
+登录后再切 `simple` 并重新加载 —— SPA 启动时只读一次）。
+
 ---
 
 ## 7. 计时机制：「>2 秒打开的页面」怎么被筛出来

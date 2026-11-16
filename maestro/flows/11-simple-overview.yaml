@@ -2,12 +2,15 @@
 #
 # 覆盖对象：web/src/views/SimpleOverviewView.vue（本轮新增的简易模式总览页）
 #
-# ★ 为什么这个 flow 不用 UI 登录：
-#   · 网关会话是 HttpOnly cookie `llmgw_session` ⇒ 页面 JS 写不进去；
-#   · Maestro 2.11.0 没有 setCookie 命令（本地 jar grep 0 命中）；
-#   · README §6.3 的 fetch('/api/auth/token') 要管理员口令，测试机没有；
-#   ⇒ 登录态由 maestro/tools/seed-session.mjs 用 CDP 预置（见 README §6.5）。
-#     本 flow 假定「浏览器 profile 里已经有 super_admin 会话」。
+# ★ 登录与工作模式：
+#   · 登录走仓内既有资产 _shared/login.yaml（真实 UI 登录，账号口令由
+#     -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+#   · 简易模式是**本机选择**（localStorage `llmgw_work_mode`）⇒ 登录前先把它
+#     复位成 expert：_shared/login.yaml 的收尾断言是「仪表盘」（专家面首页），
+#     若带着 simple 登录，落点会是「总览」⇒ 断言会误红。
+#   · 登录成功后切到 simple 并**重新加载**（工作模式在 SPA 启动时读一次）。
+#   ★ 无口令时的替代路径：maestro/tools/seed-session.mjs 用 CDP 预置
+#     HttpOnly 会话 cookie + localStorage（见 maestro/README.md §6.5）。
 #
 # ★ 断言锚点用 data-testid：Maestro 的 web 驱动把 data-testid 映射成
 #   resource-id（maestro-web.js 的 identifier() 链），所以 `id:` 选择器可直接命中。
@@ -19,7 +22,21 @@ url: ${BASE_URL}
 ---
 - launchApp
 
-# ── ① 简易模式下 /dashboard 必须落在「总览页」而不是旧的接入清单页 ──────────
+# ── 0. 复位工作模式（避免登录断言落在「总览」上）─────────────────────────
+- openLink: ${BASE_URL}/login
+- evalScript: "localStorage.setItem('llmgw_work_mode','expert')"
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── ② 切到简易模式并重新加载 ─────────────────────────────────────────────
+- evalScript: "localStorage.setItem('llmgw_work_mode','simple')"
+
+# ── ③ 简易模式下 /dashboard 必须落在「总览页」而不是旧的接入清单页 ──────────
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
@@ -69,7 +86,9 @@ url: ${BASE_URL}
 - evalScript: "${output.selfcheckFailed = 0}"
 
 # ── ⑤ 统计口径与 /api/admin/dashboard/board 逐字对拍 ─────────────────────
-- evalScript: "${output.board = await fetch('/api/admin/dashboard/board?days=1', {credentials:'same-origin'}).then(r => r.json())}"
+# ★ 用**同步 XHR**取数：evalScript 拿到的返回值直接落在 output.*，
+#   不依赖「evalScript 是否支持 await / promise 展开」的实现细节。
+- evalScript: "${output.board = (() => { const x = new XMLHttpRequest(); x.open('GET','/api/admin/dashboard/board?days=1',false); x.send(); return JSON.parse(x.responseText); })()}"
 - evalScript: "${output.apiRequests = String(output.board?.summary?.total_requests ?? '')}"
 - evalScript: "${output.apiKeys = String(output.board?.summary?.active_api_keys ?? '')}"
 - evalScript: "${output.apiModels = String(output.board?.summary?.active_models ?? '')}"
