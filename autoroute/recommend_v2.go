@@ -682,6 +682,24 @@ func validateCachedChoiceDetailed(ctx context.Context, pool *pgxpool.Pool, crede
 			      AND nps.last_direct_ok = false
 			      AND nps.next_retry_at > now()
 			  )
+			  -- ★ 根修 F9（2026-11-17）：会话缓存验证补统一视图闸。
+			  --
+			  -- 根因：缓存验证的判据比决策面的 availabilityFilterSQL 更宽松
+			  -- ⇒ 会话第一次走决策面（过视图闸）选中模型并缓存，第二次走缓存
+			  -- 验证（绕过视图闸）⇒ 模型后来变 is_routable=f 仍被认为"still fine"。
+			  --
+			  -- 第四轮 211 live 验收现场：auto 选中 qwen2.5-7b-instruct（唯一绑定
+			  -- available=f、视图 is_routable=f），而决策面已在 F8 加了视图闸 ⇒
+			  -- 说明走的是缓存路径、没经过决策面的视图闸。
+			  --
+			  -- 修法：缓存验证的 SQL 补上**同一个视图闸**（与 availabilityFilterSQL
+			  -- 逐条对齐），确保「缓存验证的可用性判据 ≡ 决策面的可用性判据」。
+			  AND EXISTS (
+			    SELECT 1 FROM v_routable_credential_models v
+			    WHERE v.credential_id = cmb.credential_id
+			      AND v.provider_model_id = cmb.provider_model_id
+			      AND v.is_routable = TRUE
+			  )
 		)
 	`, credentialID, canonicalName).Scan(&available)
 	if err != nil {
