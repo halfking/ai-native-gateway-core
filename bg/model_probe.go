@@ -897,13 +897,18 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 // featuredCycleLoop runs Layer 4 deep probe for 常用模型 (featured ∪ usage top-N).
 // Cadence is configurable via probe.featured_cycle_seconds (default 900=15min;
 // was hardcoded 30min). 常用模型自检更频繁，其它模型不走此深探测周期。
+//
+// ★ 2026-11-17 24h 审计：原先只在启动时读一次 interval（settings 标 HotReload=false），
+// 运维把 featured 周期从 15min 调到 5min 也要重启才生效 ⇒ 体感「典型模型探测不及时」。
+// 现改为每轮结束后按当前设置重武装 ticker；settings 侧同步改为 HotReload=true。
 func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
-	interval := time.Duration(settings.GetPlatformInt("probe.featured_cycle_seconds", 900)) * time.Second
-	if interval < time.Minute {
-		interval = time.Minute
+	readInterval := func() time.Duration {
+		interval := time.Duration(settings.GetPlatformInt("probe.featured_cycle_seconds", 900)) * time.Second
+		if interval < time.Minute {
+			interval = time.Minute
+		}
+		return interval
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	// Stagger initial run by 2 minutes so it does not collide with the
 	// 30s CredentialSelfcheckWorker tick. Audit fix #5: cancellation-aware so
 	// Stop() does not block for 2 minutes on shutdown.
@@ -914,10 +919,13 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 	}
 	r.featuredCycle(ctx)
 	for {
+		interval := readInterval()
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			r.featuredCycle(ctx)
 		}
 	}

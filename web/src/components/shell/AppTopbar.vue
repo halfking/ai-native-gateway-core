@@ -14,6 +14,7 @@ import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
 import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
+import WorkModeSwitch from './WorkModeSwitch.vue'
 import { currentTheme, detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from '../../config/brand'
 import { isNavItemActive } from '../../config/appNav'
@@ -299,6 +300,8 @@ function groupActive(id: string): boolean {
           </template>
         </div>
       </div>
+      <!-- 2026-11-17：简易/专家本机切换（只改 UI 投影，不改平台默认） -->
+      <WorkModeSwitch />
       <ThemeToggle />
       <LanguageSelector />
       <UserMenuDropdown
