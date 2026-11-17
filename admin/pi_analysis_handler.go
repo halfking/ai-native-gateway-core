@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
 )
 
@@ -32,17 +32,29 @@ func NewPIAnalysisHandler(
 	}
 }
 
-// Routes 返回路由
-func (h *PIAnalysisHandler) Routes() chi.Router {
-	r := chi.NewRouter()
+// RegisterRoutes 注册路由
+func (h *PIAnalysisHandler) RegisterRoutes(mux *http.ServeMux, prefix string) {
+	mux.HandleFunc(prefix+"/queue", h.GetQueue)
+	mux.HandleFunc(prefix+"/results", h.handleResults)
+	mux.HandleFunc(prefix+"/trigger", h.TriggerAnalysis)
+	mux.HandleFunc(prefix+"/stats", h.GetStats)
+}
+
+func (h *PIAnalysisHandler) handleResults(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/pi-analysis/results")
+	if path == "" || path == "/" {
+		h.GetResults(w, r)
+		return
+	}
 	
-	r.Get("/queue", h.GetQueue)
-	r.Get("/results", h.GetResults)
-	r.Get("/results/{queue_id}", h.GetResult)
-	r.Post("/trigger", h.TriggerAnalysis)
-	r.Get("/stats", h.GetStats)
-	
-	return r
+	// 处理 /results/{queue_id}
+	queueIDStr := strings.TrimPrefix(path, "/")
+	queueID, err := strconv.ParseInt(queueIDStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid queue_id", http.StatusBadRequest)
+		return
+	}
+	h.GetResult(w, r, queueID)
 }
 
 // GetQueue 获取错误队列
@@ -255,14 +267,7 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetResult 获取单个分析结果详情
-func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request) {
-	queueIDStr := chi.URLParam(r, "queue_id")
-	queueID, err := strconv.ParseInt(queueIDStr, 10, 64)
-	if err != nil {
-		http.Error(w, "invalid queue_id", http.StatusBadRequest)
-		return
-	}
-	
+func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, queueID int64) {
 	query := `
 		SELECT 
 			r.id, r.analysis_id, r.queue_id,
@@ -304,7 +309,7 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 		InputText             sql.NullString
 	}
 	
-	err = h.db.QueryRowContext(r.Context(), query, queueID).Scan(
+	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
 		&result.ID, &result.AnalysisID, &result.QueueID,
 		&result.RootCause, &result.ErrorCategory, &result.IsFalsePositive,
 		&result.ConfidenceScore, &result.SuggestedFix,
@@ -331,6 +336,11 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 
 // TriggerAnalysis 手动触发分析
 func (h *PIAnalysisHandler) TriggerAnalysis(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
 	var req struct {
 		BatchSize int `json:"batch_size"`
 	}
