@@ -1183,6 +1183,21 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	reqStart := time.Now()
+	// 2026-11-17（全链路日志审计轮）：对齐 executor_chat.go 的
+	// upstream_call_starting。此前 anthropic 腿只有完成时的
+	// upstream_http_attempt ⇒ 上游挂起（连接不返回）期间日志里
+	// 完全无痕，取证只能靠「没有完成行」反推。
+	slog.Info("upstream_call_starting",
+		"request_id", params.RequestID,
+		"provider_id", cand.ProviderID,
+		"credential_id", cand.CredentialID,
+		"raw_model", cand.RawModel,
+		"client_model", params.Model,
+		"upstream_url", req.URL.String(),
+		"upstream_method", req.Method,
+		"body_bytes", len(bodyBytes),
+		"is_stream", params.IsStream,
+	)
 	var resp *http.Response
 	var uErr *upstreampkg.Error
 	if e.Upstream != nil {

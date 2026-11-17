@@ -66,10 +66,12 @@ func TestLoggingMiddleware_HappyPath(t *testing.T) {
 	})).ServeHTTP(rec, req)
 
 	records := decodeRecords(t, buf)
-	if len(records) != 1 {
-		t.Fatalf("want 1 log record, got %d: %v", len(records), records)
+	// 2026-11-17：/v1/* 现在先发 http_request_start 再发 http_request
+	// ⇒ 两条记录；records[0] 是完成行（emitRequestLog 最后才发）。
+	if len(records) != 2 {
+		t.Fatalf("want 2 log records (start + complete), got %d: %v", len(records), records)
 	}
-	r := records[0]
+	r := records[1]
 	if r["msg"] != "http_request" {
 		t.Errorf("msg = %v, want http_request", r["msg"])
 	}
@@ -155,10 +157,11 @@ func TestLoggingMiddleware_5xxIsError(t *testing.T) {
 	})).ServeHTTP(rec, req)
 
 	records := decodeRecords(t, buf)
-	if len(records) != 1 {
-		t.Fatalf("want 1 record, got %d", len(records))
+	// /v1/embeddings 命中开始行 ⇒ 2 条；完成行在 records[1]。
+	if len(records) != 2 {
+		t.Fatalf("want 2 records (start + complete), got %d", len(records))
 	}
-	r := records[0]
+	r := records[1]
 	if r["level"] != "ERROR" {
 		t.Errorf("level = %v, want ERROR", r["level"])
 	}
@@ -203,10 +206,11 @@ func TestLoggingMiddleware_CompactQuery(t *testing.T) {
 	})).ServeHTTP(rec, req)
 
 	records := decodeRecords(t, buf)
-	if len(records) != 1 {
-		t.Fatalf("want 1 record, got %d", len(records))
+	// /v1/models 命中开始行 ⇒ 2 条；query 只在完成行。
+	if len(records) != 2 {
+		t.Fatalf("want 2 records (start + complete), got %d", len(records))
 	}
-	q := records[0]["query"].(string)
+	q := records[1]["query"].(string)
 	// The cap is 512 BYTES plus the 3-byte "…" suffix. The input
 	// is pure ASCII, so the result is exactly 515 bytes.
 	if len(q) != 515 {
@@ -309,5 +313,71 @@ func TestLoggingMiddleware_PropagatesContext(t *testing.T) {
 
 	if buf.Len() == 0 {
 		t.Fatalf("no log record emitted")
+	}
+}
+
+// TestLoggingMiddleware_RequestStartRecord（2026-11-17 全链路日志审计轮）
+// 钉死两个契约：
+//  1. /v1/* 请求**开始**时先发一条 http_request_start，且带同一
+//     request_id —— 客户端拿 X-Request-Id 回查时，即使请求卡死
+//     （上游挂起、连接不返回）日志里也至少有一行可查；
+//  2. 非 /v1/*（管理面/健康面）不发生开始行 —— 高频轮询不刷屏。
+func TestLoggingMiddleware_RequestStartRecord(t *testing.T) {
+	buf := captureSlog(t)
+	mw := NewLoggingMiddleware()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("hi"))
+	req.Header.Set("X-Request-Id", "start-rid-1")
+	req.ContentLength = 2
+	rec := httptest.NewRecorder()
+	mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 模拟 handler 仍在处理：此刻开始行必须已经落了。
+		records := decodeRecords(t, buf)
+		if len(records) != 1 {
+			t.Fatalf("inside handler: want 1 start record already emitted, got %d", len(records))
+		}
+		if records[0]["msg"] != "http_request_start" {
+			t.Errorf("msg = %v, want http_request_start", records[0]["msg"])
+		}
+		if records[0]["request_id"] != "start-rid-1" {
+			t.Errorf("request_id = %v, want start-rid-1 (must match completion record)", records[0]["request_id"])
+		}
+		if records[0]["path"] != "/v1/chat/completions" {
+			t.Errorf("path = %v", records[0]["path"])
+		}
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	// 完成后共两条：start + complete，request_id 一致。
+	records := decodeRecords(t, buf)
+	if len(records) != 2 {
+		t.Fatalf("want 2 records (start + complete), got %d", len(records))
+	}
+	if records[0]["msg"] != "http_request_start" || records[1]["msg"] != "http_request" {
+		t.Errorf("order wrong: got %v then %v", records[0]["msg"], records[1]["msg"])
+	}
+	if records[0]["request_id"] != records[1]["request_id"] {
+		t.Errorf("request_id mismatch between start and complete records")
+	}
+}
+
+// TestLoggingMiddleware_NoStartRecordOutsideDataPlane 钉非数据面
+// 不发开始行。
+func TestLoggingMiddleware_NoStartRecordOutsideDataPlane(t *testing.T) {
+	buf := captureSlog(t)
+	mw := NewLoggingMiddleware()
+
+	for _, path := range []string{"/api/admin/logs", "/admin/dashboard", "/healthz"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rec, req)
+	}
+	records := decodeRecords(t, buf)
+	for _, r := range records {
+		if r["msg"] == "http_request_start" {
+			t.Errorf("start record must not be emitted for %v", r["path"])
+		}
 	}
 }
