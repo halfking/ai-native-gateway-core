@@ -22,6 +22,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // pricingSuggestionCurrentPrices —— 我方现价（credits）。
@@ -361,39 +363,87 @@ func (s *Service) updatePricingSuggestionBatch(ctx context.Context, batchID int6
 	return err
 }
 
-// ListPricingSuggestionBatches —— 批次留痕读面（审计分析）。
-func (s *Service) ListPricingSuggestionBatches(ctx context.Context, limit int) ([]PricingSuggestionBatchRow, error) {
-	if !s.Enabled() {
-		return nil, errors.New("maas service disabled")
-	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	rows, err := s.pool.Query(ctx, `
+// pricingSuggestionBatchesSQL —— 批次留痕读面的 SQL（★ 生产与真库门共用同一份）。
+//
+// ★ 抽成常量的理由：读面的「列集 / 列序 / 可空性」是**契约**（975 迁移的
+//
+//	表定义），契约一变，扫描目的地必须同步变 ⇒ 两处各写一份 SQL 就会
+//	「SQL 改了、扫描没改」或反之 ⇒ 静默扫错位（这是 F12/F13 同族的坑）。
+const pricingSuggestionBatchesSQL = `
 		SELECT id, created_at, strategy, platform_id, dimension, markup_pct,
 		       operator, dry_run, requested, applied, skipped, detail
 		  FROM public.pricing_suggestion_batches
 		 ORDER BY id DESC
-		 LIMIT $1`, limit)
+		 LIMIT $1`
+
+// pricingSuggestionBatchQuerier —— 批次读面的最小查询面。
+// ★ 连接池（*pgxpool.Pool）与事务（pgx.Tx）都满足它 ⇒ 真库门可以在
+//
+//	**事务内**跑同一份读逻辑（写测试夹具 → 读 → ROLLBACK ⇒ 零残留）。
+type pricingSuggestionBatchQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// pricingSuggestionBatchRowScanner —— 一行批次的最小扫描面。
+// ★ pgx.Rows 与门里的「pgx 真 codec 假件」都满足它 ⇒ 门测的是**生产扫描
+//
+//	函数本身**（而不是门的复制品）⇒ 门有牙。
+type pricingSuggestionBatchRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanPricingSuggestionBatch —— 一行批次 → 结构体（★ 生产与门共用同一份扫描目的地）。
+//
+// ★ markup_pct 是**唯一可空列**（975：`markup_pct numeric(10,4)`，无 NOT NULL）
+//
+//	⇒ 目的地必须是 `**float64`（指针的指针）⇒ pgx 遇 NULL 置 nil。
+//	退化成裸 `float64` ⇒ pgx 报 "cannot scan NULL into *float64"
+//	⇒ 批次读面整体 500（= F12/F13 同族：对所有调用方都炸）。
+//
+// ★ NULL≠0：markup_pct 为 NULL 表示「该策略不含加成率」（copy_platform /
+//
+//	average / min 三个策略），**不是**加成率 0 ⇒ 必须能区分 nil 与 0。
+func scanPricingSuggestionBatch(row pricingSuggestionBatchRowScanner) (PricingSuggestionBatchRow, error) {
+	var r PricingSuggestionBatchRow
+	var created time.Time
+	var detail []byte
+	if err := row.Scan(&r.ID, &created, &r.Strategy, &r.PlatformID, &r.Dimension,
+		&r.MarkupPct, &r.Operator, &r.DryRun, &r.Requested, &r.Applied, &r.Skipped,
+		&detail); err != nil {
+		return r, err
+	}
+	r.CreatedAt = created.UTC().Format(time.RFC3339)
+	if len(detail) > 0 {
+		_ = json.Unmarshal(detail, &r.Detail)
+	}
+	return r, nil
+}
+
+// listPricingSuggestionBatches —— 批次读面本体（★ 生产与真库门共用）。
+func (s *Service) listPricingSuggestionBatches(ctx context.Context, q pricingSuggestionBatchQuerier, limit int) ([]PricingSuggestionBatchRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := q.Query(ctx, pricingSuggestionBatchesSQL, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]PricingSuggestionBatchRow, 0, 16)
 	for rows.Next() {
-		var r PricingSuggestionBatchRow
-		var created time.Time
-		var detail []byte
-		if err := rows.Scan(&r.ID, &created, &r.Strategy, &r.PlatformID, &r.Dimension,
-			&r.MarkupPct, &r.Operator, &r.DryRun, &r.Requested, &r.Applied, &r.Skipped,
-			&detail); err != nil {
+		r, err := scanPricingSuggestionBatch(rows)
+		if err != nil {
 			return nil, err
-		}
-		r.CreatedAt = created.UTC().Format(time.RFC3339)
-		if len(detail) > 0 {
-			_ = json.Unmarshal(detail, &r.Detail)
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ListPricingSuggestionBatches —— 批次留痕读面（审计分析）。
+func (s *Service) ListPricingSuggestionBatches(ctx context.Context, limit int) ([]PricingSuggestionBatchRow, error) {
+	if !s.Enabled() {
+		return nil, errors.New("maas service disabled")
+	}
+	return s.listPricingSuggestionBatches(ctx, s.pool, limit)
 }
