@@ -744,7 +744,7 @@ maestro test \
   maestro/flows/02-overview-live.yaml
 ```
 
-### 8.3 ★ 四个实测踩过的坑（2026-10-28）
+### 8.3 ★ 五个实测踩过的坑（2026-10-28；2026-11-18 补第 5 条）
 
 | # | 坑 | 现象 | 正解 |
 |---|---|---|---|
@@ -752,6 +752,33 @@ maestro test \
 | 2 | **CLI 没有 `--env-file`** | `--env-file` 直接被拒；而且 **shell 环境变量不参与 `${}` 解析** | 只能用 `-e KEY=VALUE` 逐个传；口令从仓根 `.env.local` 读、由 `run-local.sh` 代传（**口令不落仓内任何文件**） |
 | 3 | **不要加 `-p web`** | `-p web` 会把 flow 筛成 0 个设备 ⇒ 「no flows to run」 | 不加 `-p`；改用 `--driver-host-port 9222` 连自起的 CDP Chrome（该选项 help 里没列，但确实被接受） |
 | 4 | **`evalScript` 跑在 Maestro 侧沙箱** | web flow 的 `runScript` 里 `location` / `performance` 都是 `undefined` | 计时只用 `Date.now() - output.t0`（跨导航不丢）；**页面内部时间线要另用 CDP 探针** |
+| 5 | **★ flow 的 `env:` 块会【压过】CLI 的 `-e`** | flow 里写了 `env: BASE_URL: https://llm.kxpms.cn`，同时 `-e BASE_URL=https://override.example` ⇒ 实测 **`-e` 不生效**（`-e` 放 flow 前 / 后都一样） | **不要在 flow 里写变量的默认值** ⇒ 默认值放**调用侧**（`run-local.sh` 已有 `BASE_URL="${BASE_URL:-http://127.0.0.1:8782}"`）；否则本机 mock 跑法会被**静默改成打生产** |
+
+★ 第 5 条是 2026-11-18 用探针 flow 实测出来的（4 个环节逐条验：
+`--help` 只有 `-e` / shell env 不参与解析 / flow `env:` 压过 `-e` / flow `env:` 确实能提供默认值），
+详见 `docs/audit/2026-11-17-live阶段树设计对齐-主档.md` §7.5.18。
+
+★ **只想跑一个 flow（对着 154 生产站）**：
+
+```bash
+BASE_URL=https://llm.kxpms.cn bash maestro/run-local.sh maestro/flows/12-live-stage-tree.yaml
+```
+
+★ **若坚持直接用 `maestro test`，口令必须这样传（`export` 不能省）** ——
+bash 的**前缀赋值 + 同命令引用 = 旧值（常为空）** ⇒ 漏了 `export` 会把空串传给 Maestro
+⇒ 浏览器去开 `https://dashboard/` ⇒ **第 3 步就红，且症状极具误导性**：
+
+```bash
+cd <repo> && set -a && . ./.env.local && set +a && \
+export BASE_URL=https://llm.kxpms.cn \
+       ADMIN_USER="$LLM_GATEWAY_ADMIN_USER" ADMIN_PASSWORD="$LLM_GATEWAY_ADMIN_PASSWORD" && \
+maestro test --headless --no-ansi --screen-size 1440x1400 \
+  -e BASE_URL="$BASE_URL" -e ADMIN_USER="$ADMIN_USER" -e "ADMIN_PASSWORD=$ADMIN_PASSWORD" \
+  maestro/flows/12-live-stage-tree.yaml
+```
+
+★ **一条命令跑完 14 条验收证据**（含上面这条 flow、两层页面内断言、线上身份、bundle 契约串、
+可追溯性、合并试演）：`bash maestro/verify-stage-tree-evidence.sh --with-browser`
 
 ★ `maestro test` **没有 `--dry-run`**（本机 CLI 2.11.0 的 `TestCommand` 里没有这个选项；
 只有一个独立的 `check-syntax` 子命令）。语法校验是**用 YAML 解析器逐个文件解析 + 结构断言**做的：
