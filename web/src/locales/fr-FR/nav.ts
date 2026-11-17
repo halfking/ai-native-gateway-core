@@ -89,6 +89,7 @@ export default {
     sessionConfig: "Configuration des sessions",
     agents: "Registre des agents",
     promptInjection: "Détection d’injection de prompts",
+    piAnalysis: "Analyse des erreurs PI",
     examples: "Exemples",
     autoConfig: 'Configuration automatique',
     helpManual: 'Manuel d’aide',

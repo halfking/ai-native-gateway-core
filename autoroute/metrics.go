@@ -37,6 +37,53 @@ import (
 
 const routingMetricPrefix = "llmgw_autoroute_"
 
+// ★ 2026-11-17 审计轮 P1（F-AUTO-02/F-AUTO-06）：第二层「确认」语义的可观测。
+//
+//	此前第二层的原始答案**任何地方都没有记录** ⇒
+//	「第二层到底答了什么 / 有没有确认第一层」**无法被回答**。
+//	⇒ 两个指标：
+//	  · llmgw_autoroute_llm_confirm_total{task_type,outcome}
+//	    outcome ∈ {confirmed, overturned, below_threshold, fallback_failed}
+//	  · llmgw_autoroute_llm_task_type_total{task_type,quality}
+//	    quality ∈ {exact, alias, fuzzy}
+//	    ⇒ 直接量化「有多少第二层结论是模糊匹配出来的」。
+var (
+	llmConfirmOnce   sync.Once
+	llmConfirmTotal  *prometheus.CounterVec
+	llmTaskTypeTotal *prometheus.CounterVec
+)
+
+func registerLLMConfirmMetrics() {
+	llmConfirmOnce.Do(func() {
+		llmConfirmTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: routingMetricPrefix + "llm_confirm_total",
+			Help: "Second-layer (LLM fallback) verdicts on the auto route, by outcome " +
+				"(confirmed/overturned/below_threshold/fallback_failed).",
+		}, []string{"task_type", "outcome"})
+		llmTaskTypeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: routingMetricPrefix + "llm_task_type_total",
+			Help: "Second-layer task types produced, by match quality (exact/alias/fuzzy). " +
+				"A rising fuzzy share means the second layer is guessing rather than confirming.",
+		}, []string{"task_type", "quality"})
+		prometheus.MustRegister(llmConfirmTotal)
+		prometheus.MustRegister(llmTaskTypeTotal)
+	})
+}
+
+// RecordLLMConfirmMetric 记录一次第二层结论。
+//
+//	进程内 indirection（与 RecordLLMMetricCall 同款）⇒ 测试可替换。
+var RecordLLMConfirmMetric = func(taskType, outcome string) {
+	registerLLMConfirmMetrics()
+	llmConfirmTotal.WithLabelValues(taskType, outcome).Inc()
+}
+
+// RecordLLMTaskTypeMetric 记录第二层产出的任务类型与其匹配质量。
+var RecordLLMTaskTypeMetric = func(taskType, quality string) {
+	registerLLMConfirmMetrics()
+	llmTaskTypeTotal.WithLabelValues(taskType, quality).Inc()
+}
+
 var (
 	routingMetricOnce sync.Once
 

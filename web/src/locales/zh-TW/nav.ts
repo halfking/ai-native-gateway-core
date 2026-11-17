@@ -89,6 +89,7 @@ export default {
     sessionConfig: "會話設定",
     agents: "Agent Registry",
     promptInjection: "提示詞注入檢測",
+    piAnalysis: "PI 錯誤分析",
     examples: "接入範例",
     autoConfig: '自動配置',
     helpManual: '說明手冊',

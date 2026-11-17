@@ -18,7 +18,18 @@
 
 services:
   pg:
-    image: ${MOCK_PG_IMAGE:-pgvector/pgvector:pg17}
+    # The init script is BAKED INTO THE IMAGE (Dockerfile.mock-pg), not
+    # bind-mounted: on macOS Docker Desktop the host bind mount is noexec
+    # and the entrypoint's access(X_OK) check wrongly reports the mounted
+    # file as executable → exec fails with "bad interpreter: Permission
+    # denied" → PG init exits 126 → the whole stack never comes up.
+    # Image-layer files are exec-able; script bytes are unchanged.
+    image: lgw-mock-only-pg:local
+    build:
+      context: .
+      dockerfile: Dockerfile.mock-pg
+      args:
+        PG_BASE_IMAGE: ${MOCK_PG_IMAGE:-pgvector/pgvector:pg17}
     container_name: lgw-mock-only-pg
     environment:
       POSTGRES_USER: mocktest
@@ -27,7 +38,6 @@ services:
     volumes:
       - lgw_mock_only_pg:/var/lib/postgresql/data
       - ../../sql:/sql:ro
-      - ./mock-only-init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
       - ./mock-only-seed.sql:/seed/mock-only-seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mocktest -d llm_gateway_mock"]
@@ -150,6 +160,12 @@ services:
       LLM_GATEWAY_SEED_ADMIN_PASSWORD: "mock-only-admin-password"
       LLM_GATEWAY_CORS_ORIGINS: "*"
       LLM_GATEWAY_STATIC_DIR: "/app/web/dist"
+      # ★ 已激活态：licensing/bootstrap_api.go 的 handleStatus 只在
+      #   LLM_GATEWAY_LICENSE_ACTIVATED=1（或库里设备 active）时回 activated=true
+      #   ⇒ 否则 web/src/router.ts 的 bootstrap 软门把**每一个** SPA 路由重定向到
+      #   /bootstrap 向导 ⇒ Maestro 的 UI 类 flow 断言的落地页文案永远看不到
+      #   （实测：首页渲染成「本地网关安装激活」向导）。
+      LLM_GATEWAY_LICENSE_ACTIVATED: "1"
       LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
       LLM_GATEWAY_BACKUP_DIR: "/tmp/backups"
       LLM_GATEWAY_RAW_LOG_DIR: "/tmp/raw-logs"
@@ -169,6 +185,14 @@ services:
       LLM_GATEWAY_AUTO_TITLE_ENABLED: "false"
       LLM_GATEWAY_AUTO_SUMMARY_ENABLED: "false"
     ports: ["${MOCK_GATEWAY_PORT:-18781}:8781"]
+    # ★ 前端产物（SPA）：仓库的 `Dockerfile` **没有 web 构建阶段**（只编 Go 二进制）
+    #   ⇒ 镜像里不存在 /app/web/dist ⇒ `LLM_GATEWAY_STATIC_DIR` 指向的目录不存在
+    #   ⇒ domains/streaming.NewStaticHandler 返回 nil ⇒ **所有 SPA 路由 404**
+    #   ⇒ Maestro 的 UI 类 flow（01..09）必然全灭（实测：/forbidden 渲染成
+    #   Go 的 "404 page not found"）。
+    #   ⇒ 把宿主机的 web/dist（.gitignore 的本地产物）挂进容器即可。
+    volumes:
+      - ../../web/dist:/app/web/dist:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8781/healthz | grep -q ."]
       interval: 5s

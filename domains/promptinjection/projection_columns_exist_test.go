@@ -73,6 +73,14 @@ var schemaTables = map[string]string{
 	"prompt_injection_rules":    detectorRuleSelectCols,
 	"prompt_injection_policies": detectorPolicySelectCols,
 	"severity_action_matrix":    detectorSeverityActionSelectCols,
+	// ★ 2026-11-17 审计轮 P0（F-PI-01）：判官引擎配置表**必须**进这道门。
+	//
+	//	原实现的引擎查询读的是 model_name / api_key / base_url /
+	//	confidence_threshold —— 四个列在正典表里**都不存在**
+	//	⇒ 每次调用必报 42703 ⇒ 判官层从不产出结论，
+	//	而当时这道门只覆盖三张表 ⇒ 本表**在门的盲区里**。
+	//	⇒ 本表进 coverage 之后，任何「写回库里没有的列」都会当场红。
+	"prompt_injection_llm_engines": detectorLLMEngineSelectCols,
 }
 
 // legacyProjections 是降级读投影（迁移落地前的兜底读面）。

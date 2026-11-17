@@ -391,3 +391,4 @@
 373	974_market_price_identity_and_tier.sql
 374	975_pricing_suggestion_audit.sql
 375	976_market_price_platform_quote_region.sql
+376	977_pi_error_analysis_semantics.sql

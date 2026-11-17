@@ -1933,6 +1933,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   并入 PK（起因：970 首次在生产写入即撞 23505 —— 同一 tier 有 5 个
 			//   region，价差 7 百分点）。
 			"976_market_price_platform_quote_region.sql",
+			// ★ 977（2026-11-17 PI 错误分析语义订正轮）：pi_error_analysis_semantics
+			//   —— 订正 971 留下的四语义缺陷（cleanup 改时间口径 / 统计视图去 JOIN
+			//   膨胀 / error_analysis_results(queue_id) 唯一 / L2 规则 pattern 分组）。
+			//   ★ 必须排在 971 **之后**（它 OR REPLACE 971 建出来的函数与视图）。
+			//   ★ 零建表 / 零列变更 ⇒ 与并行的 Go 侧改动零冲突面。
+			"977_pi_error_analysis_semantics.sql",
 		},
 	}
 }

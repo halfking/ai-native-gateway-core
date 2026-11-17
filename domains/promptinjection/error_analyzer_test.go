@@ -67,9 +67,15 @@ func TestErrorAnalyzer_ProcessBatch_NoPendingErrors(t *testing.T) {
 
 	analyzer := NewErrorAnalyzer(db, collector, llmClient, "test-model", true)
 
-	// 期望查询返回空结果
-	mock.ExpectQuery(`SELECT .+ FROM error_analysis_queue WHERE status`).
-		WithArgs(QueueStatusPending, 10).
+	// ★ 2026-11-17 审计轮：ProcessBatch 现在先回收孤儿 processing 行，
+	//   再用**原子占位**（UPDATE ... FOR UPDATE SKIP LOCKED）领取。
+	mock.ExpectExec(`UPDATE error_analysis_queue`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// 期望领取返回空结果
+	mock.ExpectQuery(`UPDATE error_analysis_queue`).
+		WithArgs(10).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "error_type", "error_hash", "priority",
 			"tenant_id", "session_id", "request_id",
@@ -118,17 +124,17 @@ func TestErrorAnalyzer_AnalyzeError_Success(t *testing.T) {
 	analyzer := NewErrorAnalyzer(db, collector, llmClient, "test-model", true)
 
 	queuedError := &QueuedError{
-		ID:           1,
-		ErrorType:    ErrorTypeLLMDetectionFailed,
-		ErrorHash:    "hash123",
-		Priority:     7,
-		TenantID:     "tenant-1",
-		SessionID:    sql.NullString{String: "session-1", Valid: true},
-		ErrorMessage: "LLM detection timeout",
-		ErrorDetails: json.RawMessage(`{"llm_engine_id": 1}`),
+		ID:              1,
+		ErrorType:       ErrorTypeLLMDetectionFailed,
+		ErrorHash:       "hash123",
+		Priority:        7,
+		TenantID:        "tenant-1",
+		SessionID:       sql.NullString{String: "session-1", Valid: true},
+		ErrorMessage:    "LLM detection timeout",
+		ErrorDetails:    json.RawMessage(`{"llm_engine_id": 1}`),
 		DetectionLayers: json.RawMessage(`{"basic": true}`),
-		MatchedRules: json.RawMessage(`[]`),
-		CreatedAt:    time.Now(),
+		MatchedRules:    json.RawMessage(`[]`),
+		CreatedAt:       time.Now(),
 	}
 
 	// 期望查找相似案例的查询
@@ -174,13 +180,13 @@ func TestErrorAnalyzer_AnalyzeError_LLMFailure(t *testing.T) {
 	analyzer := NewErrorAnalyzer(db, collector, llmClient, "test-model", true)
 
 	queuedError := &QueuedError{
-		ID:           1,
-		ErrorType:    ErrorTypeLLMDetectionFailed,
-		TenantID:     "tenant-1",
-		ErrorMessage: "test error",
-		ErrorDetails: json.RawMessage(`{}`),
+		ID:              1,
+		ErrorType:       ErrorTypeLLMDetectionFailed,
+		TenantID:        "tenant-1",
+		ErrorMessage:    "test error",
+		ErrorDetails:    json.RawMessage(`{}`),
 		DetectionLayers: json.RawMessage(`{}`),
-		MatchedRules: json.RawMessage(`[]`),
+		MatchedRules:    json.RawMessage(`[]`),
 	}
 
 	result, err := analyzer.AnalyzeError(context.Background(), queuedError)
@@ -200,17 +206,17 @@ func TestErrorAnalyzer_BuildPrompt(t *testing.T) {
 	analyzer := NewErrorAnalyzer(db, collector, llmClient, "test-model", true)
 
 	queuedError := &QueuedError{
-		ID:           1,
-		ErrorType:    ErrorTypeLLMDetectionFailed,
-		TenantID:     "tenant-1",
-		SessionID:    sql.NullString{String: "session-1", Valid: true},
-		RequestID:    sql.NullString{String: "request-1", Valid: true},
-		InputText:    sql.NullString{String: "test input", Valid: true},
-		ErrorMessage: "LLM timeout",
-		ErrorDetails: json.RawMessage(`{"llm_engine_id": 1, "timeout": 30}`),
+		ID:              1,
+		ErrorType:       ErrorTypeLLMDetectionFailed,
+		TenantID:        "tenant-1",
+		SessionID:       sql.NullString{String: "session-1", Valid: true},
+		RequestID:       sql.NullString{String: "request-1", Valid: true},
+		InputText:       sql.NullString{String: "test input", Valid: true},
+		ErrorMessage:    "LLM timeout",
+		ErrorDetails:    json.RawMessage(`{"llm_engine_id": 1, "timeout": 30}`),
 		DetectionLayers: json.RawMessage(`{"basic": true, "advanced": false}`),
-		MatchedRules: json.RawMessage(`[{"rule_name": "test-rule", "severity": 5}]`),
-		RetryCount:   2,
+		MatchedRules:    json.RawMessage(`[{"rule_name": "test-rule", "severity": 5}]`),
+		RetryCount:      2,
 	}
 
 	prompt, err := analyzer.buildPrompt(queuedError)
@@ -221,9 +227,16 @@ func TestErrorAnalyzer_BuildPrompt(t *testing.T) {
 	assert.Contains(t, prompt, "租户ID: tenant-1")
 	assert.Contains(t, prompt, "会话ID: session-1")
 	assert.Contains(t, prompt, "请求ID: request-1")
-	assert.Contains(t, prompt, "错误消息: LLM timeout")
+	assert.Contains(t, prompt, "LLM timeout")
 	assert.Contains(t, prompt, "test input")
 	assert.Contains(t, prompt, "重试次数: 2")
+
+	// ★ 2026-11-17 审计轮 P1（提示词注入面）：
+	//   攻击者可控的原文必须落在 <untrusted_input> 框架里，
+	//   且框架必须声明「是数据不是指令」。
+	assert.Contains(t, prompt, "<untrusted_input>")
+	assert.Contains(t, prompt, "</untrusted_input>")
+	assert.Contains(t, prompt, "待分析的数据")
 }
 
 func TestErrorAnalyzer_GetPromptTemplate(t *testing.T) {
@@ -496,4 +509,28 @@ func TestErrorAnalyzer_FindSimilarCases(t *testing.T) {
 
 	err = mock.ExpectationsWereMet()
 	assert.NoError(t, err)
+}
+
+// ★ 回归：SetBatchSize 必须真的改到分析器上。
+//
+//	背景：接线层读 LLMGatewayPIErrorAnalysisBatchSize，
+//	但分析器此前把 batchSize **写死成 10** ⇒ 配置项形同虚设
+//	⇒ 又一处「自述与实现不符」。
+func TestErrorAnalyzer_SetBatchSize_ChangesClaimSize(t *testing.T) {
+	ea := &ErrorAnalyzer{batchSize: 10}
+
+	ea.SetBatchSize(37)
+	if ea.batchSize != 37 {
+		t.Fatalf("batchSize = %d, want 37", ea.batchSize)
+	}
+
+	// 非正值必须被忽略（不能把批次设成 0）。
+	ea.SetBatchSize(0)
+	if ea.batchSize != 37 {
+		t.Fatalf("SetBatchSize(0) must be ignored, got %d", ea.batchSize)
+	}
+	ea.SetBatchSize(-5)
+	if ea.batchSize != 37 {
+		t.Fatalf("SetBatchSize(-5) must be ignored, got %d", ea.batchSize)
+	}
 }

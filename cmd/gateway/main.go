@@ -7694,6 +7694,30 @@ func main() {
 	// postflight. The 4 v1 handlers above stay registered as the
 	// fallback inside v2DispatchHandler; the Pipeline re-routes
 	// through them on a stage error or feature-flag off path.
+	// ★ 2026-11-17 审计轮 P1：PI 智能体**独立于 V2 pipeline** 初始化。
+	//
+	//	原接线把 PI 错误收集器/分析器的构造放在
+	//	`if v2DispatchEnabled { ... }` **里面** ⇒
+	//	V2 pipeline 默认**关** ⇒ 这条链在生产**整条不存在**：
+	//	  · Detector 拿不到 collector（检测失败不入队）；
+	//	  · 管理 API 不注册 ⇒ 已上线的「PI 错误分析」页面**打不开**（404）。
+	//	⇒ 提到 V2 块**外面**：管理面**常驻**（关着时是惰性壳，不落库），
+	//	  而 Detector 的注入仍在 V2 块内做（那里才有 d）。
+	//
+	//	★ 数据面影响为零：采集默认关闭（LLMGatewayPIErrorCollectorEnabled），
+	//	  collector.enabled=false ⇒ Collect 是空操作（不落攻击者原文）。
+	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+		piSQLDB := stdlib.OpenDB(*dbConn.Pool().Config().ConnConfig)
+		defer func() { _ = piSQLDB.Close() }()
+		piCollector, piAnalyzer, _ := initPIAgent(context.Background(), piSQLDB, loadPIAgentConfig())
+		if piCollector != nil {
+			piErrorCollectorGlobal = piCollector
+			piErrorAnalyzerGlobal = piAnalyzer
+			piSQLDBGlobal = piSQLDB
+			setPIAgentComponents(piCollector, piAnalyzer)
+		}
+	}
+
 	var v2SecurityRegistry *security.Registry
 	if v2DispatchEnabled {
 		// Pass the engine in so the Pipeline's sensitive-word plugins scan with
@@ -7717,7 +7741,7 @@ func main() {
 				// 行为不变；detector 初始化失败仅降级（stage 空转），不阻断启动。
 				var piDetector promptinjectionhooks.Detector
 				piSQLDB := stdlib.OpenDB(*pool.Config().ConnConfig)
-				
+
 				if d, derr := promptinjection.NewDetector(piSQLDB); derr != nil {
 					slog.Warn("prompt injection detector init failed; governance_prompt_injection stays no-op",
 						"error", derr)
@@ -7725,57 +7749,15 @@ func main() {
 				} else {
 					piDetector = piDetectorAdapter{core: d}
 					v2Deps.AnalysisSQLDBs = append(v2Deps.AnalysisSQLDBs, piSQLDB) // 随 v2ShutdownPipeline 统一关闭
-					
-					// 2026-11-17: PI 错误收集器和分析器（Phase 1）
-					piErrorCollector := promptinjection.NewErrorCollector(piSQLDB, true)
-					
-					// 创建 LLM 客户端（回环调用网关 API）
-					piLLMClient := promptinjection.NewHTTPLLMClient(
-						"http://localhost:8080", // baseURL
-						os.Getenv("LLM_GATEWAY_PI_ANALYZER_API_KEY"),
-						"claude-3-5-sonnet", // model
-					)
-					
-					// 创建错误分析器
-					piErrorAnalyzer := promptinjection.NewErrorAnalyzer(
-						piSQLDB,
-						piErrorCollector,
-						piLLMClient,
-						"claude-3-5-sonnet",
-						os.Getenv("LLM_GATEWAY_PI_ANALYZER_ENABLED") == "true",
-					)
-					
-					// 将错误收集器注入到 Detector
-					d.SetErrorCollector(piErrorCollector)
-					
-					// 保存到全局变量以便后续注册路由
-					piErrorCollectorGlobal = piErrorCollector
-					piErrorAnalyzerGlobal = piErrorAnalyzer
-					piSQLDBGlobal = piSQLDB
-					
-					// 启动后台分析 Worker（如果启用）
-					if os.Getenv("LLM_GATEWAY_PI_ANALYZER_ENABLED") == "true" {
-						intervalMinutes := 5
-						if envInterval := os.Getenv("LLM_GATEWAY_PI_ANALYZER_INTERVAL_MINUTES"); envInterval != "" {
-							if i, err := strconv.Atoi(envInterval); err == nil && i > 0 {
-								intervalMinutes = i
-							}
-						}
-						
-						go func() {
-							ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
-							defer ticker.Stop()
-							slog.Info("pi_analyzer_worker: started", "interval_minutes", intervalMinutes)
-							
-							for range ticker.C {
-								processed, err := piErrorAnalyzer.ProcessBatch(context.Background())
-								if err != nil {
-									slog.Error("pi_analyzer_worker: batch processing failed", "error", err)
-								} else if processed > 0 {
-									slog.Info("pi_analyzer_worker: batch completed", "processed", processed)
-								}
-							}
-						}()
+
+					// ★ 2026-11-17 审计轮 P1：把**已在 V2 块外构造好的**采集器
+					//   注入 Detector（检测失败现场入队）。
+					//
+					//   ★ 采集/分析的**装配**（opt-in、外部分析端点、队列深度闸、
+					//     批大小）统一在 V2 块外的 initPIAgent 里完成 ——
+					//     否则 V2 关时整条链不存在（管理面 404）。
+					if piErrorCollectorGlobal != nil {
+						d.SetErrorCollector(piErrorCollectorGlobal)
 					}
 				}
 				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, piDetector, nil, nil, fpSlotRedis)
@@ -7956,11 +7938,13 @@ func main() {
 			slog.Info("prompt-injection API registered")
 		}
 		// /api/admin/pi-analysis/* — PI 错误分析管理 API（2026-11-17）
-		if piErrorCollectorGlobal != nil && piErrorAnalyzerGlobal != nil && piSQLDBGlobal != nil {
+		if piErrorCollectorGlobal != nil && piSQLDBGlobal != nil {
 			piAnalysisHandler := admin.NewPIAnalysisHandler(
 				piErrorCollectorGlobal,
 				piErrorAnalyzerGlobal,
 				piSQLDBGlobal,
+				dbConn.Pool(),
+				cfg.SecretKey,
 			)
 			piAnalysisHandler.RegisterRoutes(mux, "/api/admin/pi-analysis")
 			slog.Info("pi-analysis API registered")

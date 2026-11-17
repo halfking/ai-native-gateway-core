@@ -143,6 +143,17 @@ type Decision struct {
 	// One of: "header", "depth", "tenant", "global", "default", "confidence_escalation".
 	// Empty when tier selection is disabled.
 	TierSource string `json:"tier_source,omitempty"`
+
+	// ★ 2026-11-17 审计轮 P1（F-AUTO-02）：第二层「确认」语义的过程内字段。
+	//
+	//	Layer1TaskType：第一层（启发式）判定的任务类型（第二层过门时才有值）。
+	//	Layer2Confirmed：第二层是否**确认**了第一层的任务类型。
+	//
+	//	★ 刻意**不进**审计视图（json:"-"）⇒ 响应头与 auto_decision JSONB
+	//	  字节级不变（与 ReselectCandidates 的同款约定）。
+	//	可观测性走指标 llmgw_autoroute_llm_confirm_total（见 metrics.go）。
+	Layer1TaskType  TaskType `json:"-"`
+	Layer2Confirmed bool     `json:"-"`
 }
 
 // RoutingOptimizer is the P2.2 routing optimization plugin interface.
@@ -786,6 +797,10 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 		RoleFallbackLayer:  roleFallbackLayer,
+		// ★ 2026-11-17 审计轮 P1（F-AUTO-02）：第二层「确认」结论**进程内**保留。
+		//	不进响应头 / 不进 auto_decision JSONB（审计视图字节级不变）。
+		Layer1TaskType:  cls.Layer1TaskType,
+		Layer2Confirmed: cls.Layer2Confirmed,
 	}
 	// R48: role 路由审计字段（flag 开启时；无论是否命中提升都记录观察值）。
 	if d.roleRoutingActive() {
@@ -1131,13 +1146,35 @@ func (d *Decider) classify(ctx context.Context, sigs ClassificationSignals, hint
 	)
 	llmCls, llmErr := d.fallback.Classify(ctx, sigs)
 	if llmErr != nil {
+		// ★ 2026-11-17 审计轮 P2（F-AUTO-07）：**禁用态不该报 WARN**。
+		//
+		//	默认部署没有配 LLMGatewayAutoLLMEndpoint ⇒ DisabledCaller 恒返回
+		//	ErrLLMDisabled ⇒ 原实现对**每个**低置信请求都打
+		//	「escalating to LLM fallback」(Info) + 「LLM fallback failed」(Warn)
+		//	⇒ 一条**看起来像故障**的 WARN 刷屏 ⇒ 运维会误判为事故。
+		//	⇒ 禁用态降到 Debug，并把 outcome 记成 disabled（与指标口径一致）。
+		if errors.Is(llmErr, ErrLLMDisabled) {
+			slog.Debug("autoroute: LLM fallback disabled by configuration; keeping heuristic result",
+				"heuristic_confidence", cls.Confidence,
+				"heuristic_task", cls.Primary,
+			)
+			RecordLLMConfirmMetric(string(cls.Primary), "disabled")
+			return cls, nil
+		}
 		// LLM fallback failed → return heuristic result at low confidence
 		slog.Warn("autoroute: LLM fallback failed", "error", llmErr)
+		RecordLLMConfirmMetric(string(cls.Primary), "fallback_failed")
 		return cls, nil
 	}
-	// R44: fallback 结果低于升级阈值时保留 heuristic winner。LLM 槽恒返
-	// 硬编码 0.85 天然过门，Jev 是第一个能返回任意低置信的占位者——不设门
-	// 的话低置信外部结论会替换本地启发式并经 intentCache 粘住整个会话。
+	// R44: fallback 结果低于升级阈值时保留 heuristic winner。
+	//
+	// ★ 2026-11-17 审计轮 P1（F-AUTO-03）：这道门此前对 LLM 槽**恒不触发**，
+	//
+	//	因为 LLM 槽恒返硬编码 0.85（默认阈值 0.7）⇒
+	//	「任何被解析出来的答案」都能替换本地启发式并经 intentCache 粘住整个会话。
+	//	⇒ 现在第二层的置信度由**匹配质量**决定（exact 0.85 / alias 0.80 /
+	//	  fuzzy 0.55）⇒ 模糊匹配出来的答案（0.55）**过不了门** ⇒
+	//	  保留第一层。这道门第一次成为真正的护栏。
 	if llmCls.Confidence < d.effectiveLLMThreshold() {
 		slog.Info("autoroute: fallback confidence below threshold, keeping heuristic result",
 			"fallback_classifier", llmCls.Classifier,
@@ -1145,8 +1182,37 @@ func (d *Decider) classify(ctx context.Context, sigs ClassificationSignals, hint
 			"threshold", d.effectiveLLMThreshold(),
 			"heuristic_task", cls.Primary,
 		)
+		RecordLLMConfirmMetric(string(cls.Primary), "below_threshold")
 		return cls, nil
 	}
+
+	// ★ 2026-11-17 审计轮 P1（F-AUTO-02）：**确认语义**。
+	//
+	//	第二层现在不只「替换」第一层，而是**对照**第一层给出结论：
+	//	  · 第二层答的任务类型 == 第一层 ⇒ **确认**（confirmed）；
+	//	  · 第二层答的任务类型 != 第一层 ⇒ **推翻**（overturned）。
+	//	两者的第一层结论都被保留（进程内字段）⇒
+	//	「第二层到底确认了没有」这个问题**现在可以被回答**，
+	//	而这正是 PI 智能体被要求承担的职责。
+	confirmed := llmCls.Primary == cls.Primary
+	llmCls.Layer1TaskType = cls.Primary
+	llmCls.Layer1Confidence = cls.Confidence
+	llmCls.Layer2TaskType = llmCls.Primary
+	llmCls.Layer2Confirmed = confirmed
+
+	outcome := "overturned"
+	if confirmed {
+		outcome = "confirmed"
+	}
+	RecordLLMConfirmMetric(string(llmCls.Primary), outcome)
+	slog.Info("autoroute: second layer verdict",
+		"layer1_task", cls.Primary,
+		"layer1_confidence", cls.Confidence,
+		"layer2_task", llmCls.Primary,
+		"layer2_confidence", llmCls.Confidence,
+		"layer2_quality", llmCls.Layer2Quality,
+		"confirmed", confirmed,
+	)
 	return llmCls, nil
 }
 

@@ -2718,6 +2718,20 @@ files=(
   #   起因：970 首次在生产写入即撞 23505（bailian deepseek-v4-flash-0731
   #   同一 tier 有 5 个 region：3.000000 vs 3.208000 CNY，价差 7 百分点）。
   "$ROOT_DIR/sql/migrations/startup/976_market_price_platform_quote_region.sql"
+  # ★ 977（2026-11-17 PI 错误分析语义订正轮）：pi_error_analysis_semantics——
+  #   订正 971 留下的四语义缺陷：① cleanup_old_error_analysis 改**时间口径**
+  #   （去掉 `RETURNING * INTO` 标量与「依赖没人写的 auto_applied/human_verified
+  #   标志位」）；② v_error_analysis_stats 改**先按队列聚合**（去掉 (队列 × 结果)
+  #   的 JOIN 膨胀）；③ error_analysis_results(queue_id) 加唯一索引（**先去重**
+  #   再建索引，否则存量库 23505）；④ L2（advanced）检测规则的 pattern 分组 /
+  #   词界修正（"root cause" / "/root" / "the operating system as a whole
+  #   (see below)" 这类普通文本原本 severity 9/10 命中）。
+  #   ★ 排在 971 **之后**（它 OR REPLACE 971 建出来的函数与视图）。
+  #   ★ 本件幂等（CREATE OR REPLACE / IF NOT EXISTS / ON CONFLICT）⇒ 通道按
+  #     内容指纹重放时不会 42P07/42710。
+  #   ★ 规则表的 UPDATE 带存在性守卫：315（种子）**不在本通道清单里** ⇒ 规则表
+  #     不保证存在 ⇒ 裸 UPDATE 会 42P01 ⇒ 部署 die。
+  "$ROOT_DIR/sql/migrations/startup/977_pi_error_analysis_semantics.sql"
 )
 
 
@@ -2995,6 +3009,15 @@ intentional_function_chains=(
   # tree carried it, but the merge back to main dropped the chain entry while
   # keeping both files — first caught by the fake-psql selftest below.)
   'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
+  # 977（2026-11-17 PI 错误分析语义订正轮）重定义 cleanup_old_error_analysis：
+  # 971 的函数体有两个真缺陷（`RETURNING * INTO` 一个标量 ⇒ 删到 ≥2 行时 PL/pgSQL
+  # 抛「query returned more than one row」⇒ 整个清理事务回滚；删除谓词依赖
+  # **全仓 Go 代码从不写**的 auto_applied / human_verified ⇒ 清理器恒 no-op）⇒
+  # 972 用同一签名（retention_days INTEGER DEFAULT 90）重写为**时间口径**版本。
+  # 链序 = 投递序 971 → 972，**972 必须是最后一项**——它是活库里应有的最终体。
+  # 少这一行，部署会在应用任何文件之前就 abort（exit 5）：一个函数被两个通道文件
+  # 重定义而未登记为有意链。
+  'cleanup_old_error_analysis|971_pi_error_analysis_system.sql|977_pi_error_analysis_semantics.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do
@@ -3446,6 +3469,14 @@ ledger_artifact_probe "972_model_offers_trigger_recover_at.sql" \
 #   ⚠ 用 `|| true` 兜住：观测失败不得连带打死部署（观测不是门）。
 printf 'runtime observation (F3 residual rows, NOT a gate): %s\n' \
   "$(psql_query "SELECT COUNT(*) FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE" 2>/dev/null || echo 'unavailable')"
+# ★ 972 的产物 = queue_id 唯一索引（indisunique）+ 订正后的保留期清理函数
+#   （函数体里**不再有** `RETURNING` ⇒ 971 那个「RETURNING * INTO 标量 ⇒
+#   删到 ≥2 行就抛 query returned more than one row」的缺陷已消除）+ 统计视图。
+#   ★ 不断言 L2 规则的 pattern：规则表由 315 播种，而 315 **不在本通道清单里**
+#     ⇒ 表与那三条规则都不保证存在（972 的 UPDATE 带存在性守卫）⇒ 拿它当
+#     「产物」会让没跑 315 的库在部署时误判失败。
+ledger_artifact_probe "977_pi_error_analysis_semantics.sql" \
+  "to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'idx_error_analysis_results_queue_uniq' AND i.indisunique) AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'cleanup_old_error_analysis' AND position('RETURNING' in p.prosrc) = 0)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
