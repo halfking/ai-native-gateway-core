@@ -131,7 +131,21 @@ if [ -z "${CHROME_BIN}" ]; then
   echo "!! 找不到 Chrome。用 MAESTRO_CHROME_BIN 指定。" >&2
   exit 2
 fi
-CHROME_PROFILE="${MAESTRO_CHROME_PROFILE:-/tmp/maestro-mock-only-chrome-profile}"
+# ★ 2026-11-17（245 部署后验收轮）：**profile 默认每次运行都是新的**。
+#
+#   改动理由（**真因不是它**，见下）：Chrome 的 profile 目录被跨运行复用时，
+#   HTTP 缓存里会留着**上一次部署的旧 bundle** ⇒ 前端改版后，flow 可能读到
+#   **被测对象的旧版本** ⇒ 症状具有欺骗性（看起来像「部署后前端坏了」）。
+#   ⇒ 该隐患**本身成立**，故默认 profile 改为**带时间戳的全新目录**；
+#     需要复现旧行为时用 MAESTRO_CHROME_PROFILE 显式指定固定目录。
+#
+#   ⚠ ★ 但本轮 245 上 flow 01/02/09 的失败**与缓存无关**（已用全新 profile
+#     复跑，失败集合逐项相同）⇒ 真因是 **245 的公网入口把 `/` 与运维域页面
+#     交给了 Maintain 平台**（`/` → 302 → `/maintain/home`；`/ops/licenses`
+#     渲染的是「AI Native 运维中心」的 License 管理页）⇒ 而仓内 flow 的断言
+#     面向的是**网关自带 UI** ⇒ ⇒ 那三个 flow 在 245 上**不适用**（量具边界），
+#     不是产品回归 ⇒ 见审计主档 §8.13。
+CHROME_PROFILE="${MAESTRO_CHROME_PROFILE:-/tmp/maestro-mock-only-chrome-profile-$(date +%Y%m%d-%H%M%S)-$$}"
 if ! curl -s --max-time 3 "http://127.0.0.1:${DRIVER_PORT}/json/version" >/dev/null 2>&1; then
   echo "== 自起 Chrome（CDP :${DRIVER_PORT}）"
   mkdir -p "${CHROME_PROFILE}"
