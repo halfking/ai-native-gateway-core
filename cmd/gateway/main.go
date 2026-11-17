@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -237,6 +238,13 @@ func (a keyVerifierAdapter) VerifyKeyTenant(rawKey string) (string, bool) {
 	}
 	return info.TenantID, true
 }
+
+// 2026-11-17: PI 错误分析组件（全局变量，用于跨作用域注册路由）
+var (
+	piErrorCollectorGlobal *promptinjection.ErrorCollector
+	piErrorAnalyzerGlobal  *promptinjection.ErrorAnalyzer
+	piSQLDBGlobal          *sql.DB
+)
 
 func main() {
 	// migrate subcommand: connect DB, run migrations, exit.
@@ -7709,6 +7717,7 @@ func main() {
 				// 行为不变；detector 初始化失败仅降级（stage 空转），不阻断启动。
 				var piDetector promptinjectionhooks.Detector
 				piSQLDB := stdlib.OpenDB(*pool.Config().ConnConfig)
+				
 				if d, derr := promptinjection.NewDetector(piSQLDB); derr != nil {
 					slog.Warn("prompt injection detector init failed; governance_prompt_injection stays no-op",
 						"error", derr)
@@ -7716,6 +7725,58 @@ func main() {
 				} else {
 					piDetector = piDetectorAdapter{core: d}
 					v2Deps.AnalysisSQLDBs = append(v2Deps.AnalysisSQLDBs, piSQLDB) // 随 v2ShutdownPipeline 统一关闭
+					
+					// 2026-11-17: PI 错误收集器和分析器（Phase 1）
+					piErrorCollector := promptinjection.NewErrorCollector(piSQLDB, true)
+					
+					// 创建 LLM 客户端（回环调用网关 API）
+					piLLMClient := promptinjection.NewHTTPLLMClient(
+						"http://localhost:8080", // baseURL
+						os.Getenv("LLM_GATEWAY_PI_ANALYZER_API_KEY"),
+						"claude-3-5-sonnet", // model
+					)
+					
+					// 创建错误分析器
+					piErrorAnalyzer := promptinjection.NewErrorAnalyzer(
+						piSQLDB,
+						piErrorCollector,
+						piLLMClient,
+						"claude-3-5-sonnet",
+						os.Getenv("LLM_GATEWAY_PI_ANALYZER_ENABLED") == "true",
+					)
+					
+					// 将错误收集器注入到 Detector
+					d.SetErrorCollector(piErrorCollector)
+					
+					// 保存到全局变量以便后续注册路由
+					piErrorCollectorGlobal = piErrorCollector
+					piErrorAnalyzerGlobal = piErrorAnalyzer
+					piSQLDBGlobal = piSQLDB
+					
+					// 启动后台分析 Worker（如果启用）
+					if os.Getenv("LLM_GATEWAY_PI_ANALYZER_ENABLED") == "true" {
+						intervalMinutes := 5
+						if envInterval := os.Getenv("LLM_GATEWAY_PI_ANALYZER_INTERVAL_MINUTES"); envInterval != "" {
+							if i, err := strconv.Atoi(envInterval); err == nil && i > 0 {
+								intervalMinutes = i
+							}
+						}
+						
+						go func() {
+							ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+							defer ticker.Stop()
+							slog.Info("pi_analyzer_worker: started", "interval_minutes", intervalMinutes)
+							
+							for range ticker.C {
+								processed, err := piErrorAnalyzer.ProcessBatch(context.Background())
+								if err != nil {
+									slog.Error("pi_analyzer_worker: batch processing failed", "error", err)
+								} else if processed > 0 {
+									slog.Info("pi_analyzer_worker: batch completed", "processed", processed)
+								}
+							}
+						}()
+					}
 				}
 				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, piDetector, nil, nil, fpSlotRedis)
 			}
@@ -7893,6 +7954,16 @@ func main() {
 		if promptInjectionHandler != nil {
 			promptInjectionHandler.RegisterRoutes(mux)
 			slog.Info("prompt-injection API registered")
+		}
+		// /api/admin/pi-analysis/* — PI 错误分析管理 API（2026-11-17）
+		if piErrorCollectorGlobal != nil && piErrorAnalyzerGlobal != nil && piSQLDBGlobal != nil {
+			piAnalysisHandler := admin.NewPIAnalysisHandler(
+				piErrorCollectorGlobal,
+				piErrorAnalyzerGlobal,
+				piSQLDBGlobal,
+			)
+			piAnalysisHandler.RegisterRoutes(mux, "/api/admin/pi-analysis")
+			slog.Info("pi-analysis API registered")
 		}
 		// /api/admin/output-compliance/* — 策略、关键词、复核队列、反馈、统计。
 		if outputComplianceHandler != nil {
