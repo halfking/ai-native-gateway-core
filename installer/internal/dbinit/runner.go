@@ -1901,6 +1901,24 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     641 远离 maxNum ⇒ 不在三通道覆盖门的近邻窗口（maxNum-19..maxNum）
 			//     ⇒ 两道门都保护不到。971 同时满足 ≥849 与 = maxNum ⇒ 双门接管。
 			"971_pi_error_analysis_system.sql",
+			// ★ 974（2026-11-17 定价对比完善轮）：行情面模型身份对齐 +
+			//   阶梯/缓存价列。market_price_platform_quotes 加 tier /
+			//   model_kind / cache_hit 列、PK 改 tier 感知、清理 940 里
+			//   canonical_id 与网关 canonical 名不一致的遗留行
+			//   （旧口径存的是 salesdecorate 的源 key 名 ⇒ 与评分面
+			//   supplier_market_position 名字空间交集仅 12.5% ⇒ 对账页
+			//   大量「我方价格 vs 市场地板」没有地板可比）。
+			"974_market_price_identity_and_tier.sql",
+			// ★ 975（2026-11-17 定价对比完善轮）：定价建议一键执行的审计
+			//   留痕面。model_price_versions.source 闭集加入
+			//   market_suggestion（**不新增第二套变更历史** —— 期次账仍是
+			//   唯一权威）+ pricing_suggestion_batches 批次级留痕表。
+			"975_pricing_suggestion_audit.sql",
+			// ★ 976（2026-11-17 定价对比完善轮）：970 平台现价明细的**表键粒度**
+			//   对齐源侧观测键 —— 加 source_region 列并把 source_region/currency
+			//   并入 PK（起因：970 首次在生产写入即撞 23505 —— 同一 tier 有 5 个
+			//   region，价差 7 百分点）。
+			"976_market_price_platform_quote_region.sql",
 		},
 	}
 }

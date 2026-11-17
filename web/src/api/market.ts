@@ -103,14 +103,32 @@ export interface MarketPlatformQuoteRow {
   output_per_1m: number | null
   cny_in_per_1m: number | null
   cny_out_per_1m: number | null
+  // ★ 2026-11-17（972）：缓存命中价（真实成本的大头）+ 阶梯 + 模型类别。
+  cache_hit_per_1m: number | null
+  cny_cache_hit_per_1m: number | null
+  tier: string
+  model_kind: string
   run_date: string
   source_url: string
+}
+
+// 模型目录（不指定 model 时返回）：供模型选择器使用。
+export interface MarketPlatformQuoteDirectoryRow {
+  canonical_name: string
+  display_name: string
+  platforms: number
+  vendor_rows: number
+  min_cny_in_per_1m: number | null
+  min_cny_out_per_1m: number | null
+  run_date: string
 }
 
 export interface MarketModelPlatformsResp {
   available: boolean
   reason?: string
   items: MarketPlatformQuoteRow[]
+  directory?: MarketPlatformQuoteDirectoryRow[]
+  is_dir?: boolean
   model?: string
   dimension?: string
 }
@@ -118,4 +136,90 @@ export interface MarketModelPlatformsResp {
 export function getAdminMarketModelPlatforms(model = '', dimension = 'standard', limit = 200) {
   const params = new URLSearchParams({ model, dimension, limit: String(limit) })
   return req<MarketModelPlatformsResp>('GET', `/api/admin/market/model-platforms?${params}`)
+}
+
+// ── 定价建议（2026-11-17 定价对比完善轮）────────────────────────────────
+// ★ 与采集侧红线的分界：**自动**同步禁止回流计费面；这里是**显式**运营动作
+//   （预览 → 一键执行）⇒ 写入零售价并留期次 + 批次留痕，可审计。
+
+export type PricingStrategy = 'copy_platform' | 'average' | 'min' | 'floor_markup'
+
+export interface PricingSuggestionRequest {
+  strategy: PricingStrategy
+  platform_id?: string
+  dimension?: string
+  markup_pct?: number
+  canonical_ids?: number[]
+  min_delta_pct?: number
+  confirm?: boolean
+}
+
+export interface PricingSuggestionRow {
+  canonical_id: number
+  canonical_name: string
+  display_name: string
+  current_credits_in_per_1m: number | null
+  current_credits_out_per_1m: number | null
+  current_cny_in_per_1m: number | null
+  current_cny_out_per_1m: number | null
+  suggested_credits_in_per_1m: number | null
+  suggested_credits_out_per_1m: number | null
+  suggested_cny_in_per_1m: number | null
+  suggested_cny_out_per_1m: number | null
+  delta_pct_in: number | null
+  delta_pct_out: number | null
+  basis: string
+  basis_platforms: number
+  basis_platform_id: string
+  run_date: string
+  applicable: boolean
+  skip_reason: string
+}
+
+export interface PricingSuggestionStats {
+  models: number
+  with_market: number
+  without_market: number
+  changed: number
+  applied: number
+  skipped: number
+}
+
+export interface PricingSuggestionResp {
+  strategy: string
+  platform_id: string
+  dimension: string
+  markup_pct: number | null
+  items: PricingSuggestionRow[]
+  summary: PricingSuggestionStats
+  batch_id: number
+  warnings: string[]
+}
+
+export function postAdminMarketPricingSuggestions(body: PricingSuggestionRequest) {
+  return req<PricingSuggestionResp>('POST', '/api/admin/market/pricing-suggestions', body)
+}
+
+export function postAdminMarketPricingApply(body: PricingSuggestionRequest) {
+  return req<PricingSuggestionResp>('POST', '/api/admin/market/pricing-apply', body)
+}
+
+export interface PricingSuggestionBatchRow {
+  id: number
+  created_at: string
+  strategy: string
+  platform_id: string
+  dimension: string
+  markup_pct: number | null
+  operator: string
+  dry_run: boolean
+  requested: number
+  applied: number
+  skipped: number
+  detail: Record<string, unknown>
+}
+
+export function getAdminMarketPricingBatches(limit = 50) {
+  return req<{ items: PricingSuggestionBatchRow[] }>(
+    'GET', `/api/admin/market/pricing-batches?limit=${limit}`)
 }

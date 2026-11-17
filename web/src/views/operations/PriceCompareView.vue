@@ -16,12 +16,14 @@ import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
 import MarketReferenceTable from './MarketReferenceTable.vue'
 import ModelPlatformCompare from './ModelPlatformCompare.vue'
+import PricingSuggestionPanel from './PricingSuggestionPanel.vue'
 
 const { t } = useI18n()
 const { notifyError } = useActionMessage()
 
 // reference = 五价定价参考；scoring = C1/C2/C3 评分对拍；platforms = 跨平台现价
-const tab = ref<'reference' | 'scoring' | 'platforms'>('reference')
+// suggestion = 定价建议（2026-11-17 定价对比完善轮：按策略给建议 + 一键执行 + 变更历史）
+const tab = ref<'reference' | 'scoring' | 'platforms' | 'suggestion'>('reference')
 
 const loading = ref(false)
 const available = ref(true)
@@ -139,10 +141,12 @@ const compareFields = computed<CardField[]>(() => [
       <button class="btn btn-sm" :class="tab === 'reference' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'reference'">{{ t('priceCompare.tabReference') }}</button>
       <button class="btn btn-sm" :class="tab === 'scoring' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'scoring'">{{ t('priceCompare.tabScoring') }}</button>
       <button class="btn btn-sm" :class="tab === 'platforms' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'platforms'">{{ t('priceCompare.tabPlatforms') }}</button>
+      <button class="btn btn-sm" :class="tab === 'suggestion' ? 'btn-primary' : 'btn-ghost'" @click="tab = 'suggestion'">{{ t('priceCompare.tabSuggestion') }}</button>
     </div>
 
     <MarketReferenceTable v-if="tab === 'reference'" />
     <ModelPlatformCompare v-else-if="tab === 'platforms'" />
+    <PricingSuggestionPanel v-else-if="tab === 'suggestion'" />
 
     <template v-else>
     <!-- ① 覆盖率摘要 -->

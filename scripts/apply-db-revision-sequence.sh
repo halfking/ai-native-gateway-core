@@ -2688,6 +2688,23 @@ files=(
   #     视图函数 CREATE OR REPLACE / 台账自登记 ON CONFLICT）：
   #     本通道按内容指纹重放（sha 变化即重放）⇒ 非幂等件会在重放时炸掉部署。
   "$ROOT_DIR/sql/migrations/startup/971_pi_error_analysis_system.sql"
+  # ★ 974（2026-11-17 定价对比完善轮）：行情面模型身份对齐 + 阶梯/缓存价列。
+#   ★ 编号说明：971 之后 211 台账的 972 已被 model_offers_update_trigger 占用
+#     （台账版本号是**全局共享**的，不是启动迁移独占）⇒ 本轮两条改号到 974/975。
+  #   market_price_platform_quotes 加 tier / model_kind / cache_hit 列、
+  #   PK 改 tier 感知、清理 940 里 canonical_id 与网关名不一致的遗留行
+  #   （旧口径：canonical_name 存的是 salesdecorate 的源 key 名 ⇒ 与评分面
+  #   supplier_market_position 名字空间交集仅 12.5% ⇒ 对账页大量无地板可比）。
+  "$ROOT_DIR/sql/migrations/startup/974_market_price_identity_and_tier.sql"
+  # ★ 975（2026-11-17 定价对比完善轮）：定价建议一键执行的审计留痕面。
+  #   model_price_versions.source 闭集加入 market_suggestion（**不新增第二套
+  #   变更历史** —— 期次账仍是唯一权威）+ pricing_suggestion_batches 批次留痕。
+  "$ROOT_DIR/sql/migrations/startup/975_pricing_suggestion_audit.sql"
+  # ★ 976（2026-11-17 定价对比完善轮）：970 平台现价明细的**表键粒度**
+  #   对齐源侧观测键 —— 加 source_region 列并把 source_region/currency 并入 PK。
+  #   起因：970 首次在生产写入即撞 23505（bailian deepseek-v4-flash-0731
+  #   同一 tier 有 5 个 region：3.000000 vs 3.208000 CNY，价差 7 百分点）。
+  "$ROOT_DIR/sql/migrations/startup/976_market_price_platform_quote_region.sql"
 )
 
 
@@ -2736,6 +2753,16 @@ legacy_content_replays=(
   #     100,000 行实测两条索引 80.285 / 89.610 ms；10min 预算本就已就位）。
   #     重放对本表是零行为变化（CREATE TABLE/INDEX ... IF NOT EXISTS）。
   '970_market_price_platform_quotes.sql|9c99083a1b1bfd99ee360c9346d5034c2a4687edda7951ded4081d3a306304e8'
+  #   · 974：行情面身份对齐（970 表加 tier/model_kind/cache_hit 列 + tier 感知
+  #     PK + 940 遗留身份漂移行清理）。幂等可重放（ADD COLUMN IF NOT EXISTS /
+  #     DROP+ADD CONSTRAINT 带 IF EXISTS / DELETE 带谓词）。
+  '974_market_price_identity_and_tier.sql|f30bbbd9371d3f4b3ba22c5a8d4665564c826efcfb2f98f2753ffa3d004fa03e'
+  #   · 975：定价建议审计（source 闭集扩 market_suggestion + 批次留痕表）。
+  '975_pricing_suggestion_audit.sql|8a147884476af997f91bb9c3aa1cb8e02f43c2b050455fae94450a25685e2784'
+  #   · 976：970 表键粒度对齐源侧观测键（source_region 列 + PK 并入
+  #     source_region/currency）。幂等可重放（ADD COLUMN IF NOT EXISTS /
+  #     DROP+ADD CONSTRAINT 带 IF EXISTS / DELETE 带谓词 / CREATE INDEX IF NOT EXISTS）。
+  '976_market_price_platform_quote_region.sql|5c2964a4b63613dcbf12cf90f657fc5c98ffe6b822689ea373b6c6959ecda1bb'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -3350,6 +3377,17 @@ ledger_artifact_probe "970_market_price_platform_quotes.sql" \
   "to_regclass('public.market_price_platform_quotes') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND tablename='market_price_platform_quotes' AND indexname='idx_mppq_canon')"
 # ★ 971 的产物 = error_analysis_queue / error_analysis_results 两张表 +
 #   统计视图 v_error_analysis_stats + updated_at 触发器 + 保留期清理函数。
+# ★ 974 的产物 = 970 表的 tier/model_kind/cache_hit 列 + tier 感知 PK
+#   + 940 身份漂移遗留行已清（canonical_id 非空但名字与网关名不一致的行数为 0）。
+ledger_artifact_probe "974_market_price_identity_and_tier.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_platform_quotes' AND column_name='tier') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_platform_quotes' AND column_name='cache_hit_per_1m') AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='market_price_platform_quotes' AND c.conname='market_price_platform_quotes_pkey') AND NOT EXISTS (SELECT 1 FROM public.market_price_reference mpr WHERE mpr.canonical_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.models_canonical mc WHERE mc.id = mpr.canonical_id AND lower(mc.canonical_name) = lower(mpr.canonical_name)))"
+# ★ 975 的产物 = 批次留痕表 + source 闭集含 market_suggestion。
+ledger_artifact_probe "975_pricing_suggestion_audit.sql" \
+  "to_regclass('public.pricing_suggestion_batches') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='model_price_versions' AND c.conname='model_price_versions_source_check')"
+# ★ 976 的产物 = 970 表有 source_region 列 + 主键含 source_region/currency
+#   + 辅助索引 idx_mppq_canon_region 存在。
+ledger_artifact_probe "976_market_price_platform_quote_region.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_platform_quotes' AND column_name='source_region') AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND tablename='market_price_platform_quotes' AND indexname='idx_mppq_canon_region') AND (SELECT count(*) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='market_price_platform_quotes' AND c.conname='market_price_platform_quotes_pkey' AND pg_get_constraintdef(c.oid) LIKE '%source_region%' AND pg_get_constraintdef(c.oid) LIKE '%currency%') = 1"
 ledger_artifact_probe "971_pi_error_analysis_system.sql" \
   "to_regclass('public.error_analysis_queue') IS NOT NULL AND to_regclass('public.error_analysis_results') IS NOT NULL AND to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'error_analysis_results' AND t.tgname = 'trigger_error_analysis_results_updated_at' AND NOT t.tgisinternal) AND to_regprocedure('public.cleanup_old_error_analysis(integer)') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.

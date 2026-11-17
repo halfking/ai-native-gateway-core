@@ -387,3 +387,6 @@
 369	969_approval_casdoor_mapping.sql
 370	970_market_price_platform_quotes.sql
 371	971_pi_error_analysis_system.sql
+372	974_market_price_identity_and_tier.sql
+373	975_pricing_suggestion_audit.sql
+374	976_market_price_platform_quote_region.sql
