@@ -131,10 +131,25 @@ export interface MarketModelPlatformsResp {
   is_dir?: boolean
   model?: string
   dimension?: string
+  /** 匹配范围：'' = 只查本模型（精确匹配）；'family' = 额外含同族变体 */
+  scope?: string
 }
 
-export function getAdminMarketModelPlatforms(model = '', dimension = 'standard', limit = 200) {
+/**
+ * 拉取跨平台现价。
+ * ★ scope 语义（2026-11-17 F11 修复）：
+ *   默认（''）**精确匹配**选中模型 —— 此前用子串匹配会把别的模型的价格混进来，
+ *   连「最便宜」标记都会挂到别的模型的行上。
+ *   'family' 是**显式**开启的同族视图，调用方必须显示每行的 canonical_name。
+ */
+export function getAdminMarketModelPlatforms(
+  model = '',
+  dimension = 'standard',
+  limit = 200,
+  scope: '' | 'family' = ''
+) {
   const params = new URLSearchParams({ model, dimension, limit: String(limit) })
+  if (scope) params.set('scope', scope)
   return req<MarketModelPlatformsResp>('GET', `/api/admin/market/model-platforms?${params}`)
 }
 
