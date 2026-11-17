@@ -291,4 +291,14 @@ export default {
       lastMonth: '上月',
     },
   },
+
+  // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
+  //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
+  piAnalysis: {
+    unavailableTitle: 'PI 错误分析当前不可用。',
+    unavailableReason: '后端未注册 /api/admin/pi-analysis/*（缺少数据库连接或 admin 鉴权材料）——这是后端的 fail-closed 行为，不是数据为空。',
+    unavailableNetwork: '无法访问 PI 错误分析接口（网络或服务端异常）。',
+    chainNotWiredTitle: '采集链未接线。',
+    chainNotWiredReason: 'PI 检测链未接线（promptinjection.Detector 未构造，整条检测链在 LLM_GATEWAY_USE_V2_PIPELINE 门控内）⇒ 采集队列恒为空，这不是「没有错误发生」。',
+  },
 }

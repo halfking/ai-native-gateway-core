@@ -319,7 +319,12 @@ func (s *Service) SuggestPricing(ctx context.Context, req PricingSuggestionReque
 		fxRate = 0
 	}
 
-	names := s.pricingSuggestionScope(ctx, req, dim)
+	// ★ 2026-11-18 12h 审计轮根修（P2）：作用域查询的错误必须上抛，不能当
+	//   「作用域为空」继续走（空作用域会让预览返回 200 + 0 个模型）。
+	names, err := s.pricingSuggestionScope(ctx, req, dim)
+	if err != nil {
+		return out, err
+	}
 
 	// 行情事实
 	market, err := s.loadPricingSuggestionMarket(ctx, dim, req, names)

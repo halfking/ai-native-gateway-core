@@ -288,4 +288,14 @@ export default {
       lastMonth: '先月',
     },
   },
+
+  // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
+  //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
+  piAnalysis: {
+    unavailableTitle: 'PI エラー解析は現在利用できません。',
+    unavailableReason: 'バックエンドが /api/admin/pi-analysis/* を登録していません（DB 接続または admin 認証資料の欠落）——これはバックエンドの fail-closed 動作であり、データが空という意味ではありません。',
+    unavailableNetwork: 'PI エラー解析 API に到達できません（ネットワークまたはサーバーエラー）。',
+    chainNotWiredTitle: '収集チェーンが未接続です。',
+    chainNotWiredReason: 'PI 検出チェーンが未接続です（promptinjection.Detector が構築されず、チェーン全体が LLM_GATEWAY_USE_V2_PIPELINE のゲート内にあるため）⇒ 収集キューは常に空です。これは「エラーが発生していない」ことを意味しません。',
+  },
 }

@@ -85,7 +85,14 @@ func NewSyncer(cfg SyncerConfig) *Syncer {
 // Run 跑同步循环，直到 ctx 取消。
 //
 // 循环体：取回 → 聚合 → 替换快照。失败时按 errorBackoff 退避（连续失败
-// 时退避会拉长，见 SyncOnce 的错误处理）。
+// 时退避会拉长，见 Backoff）。
+//
+// ★ 2026-11-18 审计轮 P2：此前这里是**固定 ticker**（time.NewTicker(interval)），
+//
+//	Backoff() 从未被调用 ⇒ 文档承诺的「失败退避」没有实现，
+//	共享域长期不可达时仍按固定间隔反复打满它（Backoff 是死代码）。
+//	⇒ 改成**可重置的 timer**：一次同步失败后等待 max(interval, Backoff())，
+//	  成功一次即回到 interval。
 func (s *Syncer) Run(ctx context.Context) {
 	if s == nil || s.reader == nil || s.cache == nil {
 		return
@@ -93,15 +100,23 @@ func (s *Syncer) Run(ctx context.Context) {
 	// 先立刻同步一次，别让第一个间隔空转。
 	s.SyncOnce(ctx)
 
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(s.interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			s.SyncOnce(ctx)
+		case <-timer.C:
 		}
+
+		wait := s.interval
+		if err := s.SyncOnce(ctx); err != nil {
+			// 失败 ⇒ 按连续失败次数拉长等待（上限 10 分钟）。
+			if backoff := s.Backoff(); backoff > wait {
+				wait = backoff
+			}
+		}
+		timer.Reset(wait)
 	}
 }
 

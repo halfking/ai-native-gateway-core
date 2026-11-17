@@ -274,6 +274,17 @@ type v2DispatchDeps struct {
 	// PromptInjectionHook 延迟绑定（见 BindDetector），注入经本字段到达 hook。
 	PromptInjectionDetector promptinjectionhooks.Detector
 	PromptInjectionHook     *promptinjectionhooks.Hook
+
+	// InterceptEngine 是治理拦截引擎（与 pipeline 里的
+	// governance_interception stage 共用同一个实例）。
+	//
+	// ★ 2026-11-18 审计轮 P0：拦截决策原本**只**由那个 stage 产出，
+	//	而 stage 注册序在 provider_discovery 之后 ⇒ 对真实流量
+	//	（provider_discovery 对真实模型恒失败 ⇒ 管线在此中止）
+	//	**永远到不了决策闸** ⇒ 已写下的 deny verdict 被丢弃。
+	//	⇒ 把它暴露出来，让 dispatch 层在管线中止后**补做一次决策**
+	//	（见 v2DispatchHandler 的「收口决策」）。
+	InterceptEngine *interception.Engine
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
 
@@ -514,6 +525,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		BlockThreshold:    2,
 		SuspendOnCritical: false,
 	})
+	// ★ 2026-11-18 审计轮 P0：把引擎暴露给 dispatch 层，让它在管线
+	//	中止（例如 provider_discovery 对真实模型失败）后**补做一次决策**
+	//	—— 否则中止前已写下的 deny verdict 会被丢弃（决策闸不可达）。
+	deps.InterceptEngine = interceptEngine
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_interception", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{interception.NewInterceptionHook(interceptEngine)},
@@ -968,6 +983,27 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		}
 		env.Metadata["v2_pipeline_latency_ms"] = time.Since(pipeStart).Milliseconds()
 
+		// ★ 2026-11-18 审计轮 P0：治理决策**收口**。
+		//
+		//	拦截决策原本只由 governance_interception stage 产出，而该
+		//	stage 注册序在 provider_discovery 之后 ⇒ 对真实流量
+		//	（provider_discovery 挂在内存 demo 凭据仓上，对任何真实模型
+		//	都报「no healthy provider」⇒ 管线在此中止）**永远到不了
+		//	决策闸** ⇒ 中止前已经写下的 deny verdict（PI 检测、legacy
+		//	security 的 critical threat）被丢弃 ⇒ 拦截形同虚设。
+		//
+		//	⇒ 这里在管线中止后补做一次决策：若 Decision 尚未产出，就用
+		//	  已收集到的 verdicts 产出一次（与 stage 同一个引擎实例、
+		//	  同一套阈值/规则）。
+		if env.Governance == nil || env.Governance.Decision == nil {
+			if deps.InterceptEngine != nil {
+				if _, derr := deps.InterceptEngine.Decide(ctx, env); derr != nil {
+					slog.Warn("v2 dispatch: governance decision failed (falling through)",
+						"request_id", requestID, "error", derr)
+				}
+			}
+		}
+
 		// V4 dispatch gate (PR-V4-05): pipeline 写入的 Decision 在此生效。
 		// Block / Suspend / Terminate → 直接写响应并 short-circuit；
 		// Continue / Mutate → 继续交给 fallback handler。
@@ -1005,6 +1041,38 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				r = r.WithContext(ctx)
 			}
 		}
+
+		// ★ 2026-11-18 审计轮 P0：PI 的拒绝判定必须真正生效。
+		//
+		//	此前 PI hook 的 OnError 只设 env.StatusCode（403/410/202），
+		//	而本文件**从不读它**（全仓只有 cmd/gateway-v2/main.go 读）
+		//	⇒ PI 判定为 reject/block 的请求照样落到下面的 fallback
+		//	  handler 被正常服务 ⇒ 拦截形同虚设。
+		//	⇒ 这里消费 PI 留下的显式判定标记，在落到 fallback **之前**
+		//	  写响应并终止。
+		//
+		//	顺序说明：本闸在**治理决策闸之后**——
+		//	· 治理决策（Decision=Block/Suspend）优先，它覆盖所有来源的
+		//	  deny verdict（含 PI 的），语义更完整（挂起/审批/封禁）；
+		//	· 治理决策为 Continue 时（例如 PI 判 medium 风险 ⇒ severity=1
+		//	  低于 BlockThreshold=2），本闸兜住 PI 自己的拒绝结论。
+		if code, blocked := promptInjectionGate(env); blocked {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(code)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":      "request rejected by prompt injection detection",
+				"request_id": requestID,
+				"verdict":    env.Metadata["prompt_injection_verdict"],
+			})
+			slog.Info("v2 dispatch: prompt injection gate short-circuit",
+				"request_id", requestID,
+				"path", r.URL.Path,
+				"status", code,
+				"verdict", env.Metadata["prompt_injection_verdict"],
+			)
+			return
+		}
+
 		fallback.ServeHTTP(w, r)
 
 		// Postflight: best-effort metrics stamping. We can't append
@@ -1041,6 +1109,37 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			}
 		}
 	})
+}
+
+// promptInjectionGate 读取 PI 检测 hook 留下的拒绝判定。
+//
+// ★ 2026-11-18 审计轮 P0：这是 PI 判定从「hook 内部状态」变成
+//
+//	「客户端可见的 HTTP 状态」的**唯一**出口。
+//
+//	返回 (statusCode, blocked)：
+//	  - blocked=false ⇒ 没有 PI 拒绝判定 ⇒ 调用方继续正常处理；
+//	  - blocked=true  ⇒ 本请求被 PI 判定为拒绝/待审批/会话终止，
+//	    statusCode 是应当回给客户端的状态码（403/410/202）。
+//
+//	判据用**显式标记**（prompt_injection_blocked /
+//	prompt_injection_verdict）而不是 env.StatusCode：
+//	env.StatusCode 是通用字段（其它阶段也可能写），用它做判据等于
+//	依赖「只有 PI 会写它」这个隐含约定。
+func promptInjectionGate(env *domain.PipelineRequest) (int, bool) {
+	if env == nil || env.Metadata == nil {
+		return 0, false
+	}
+	blocked, _ := env.Metadata["prompt_injection_blocked"].(bool)
+	if !blocked {
+		return 0, false
+	}
+	code := env.StatusCode
+	if code == 0 {
+		// 兜底：PI 标记了拒绝但没给状态码 ⇒ 按拒绝处理。
+		code = http.StatusForbidden
+	}
+	return code, true
 }
 
 // setForceCompressionMetadata maps the client opt-in header to the existing

@@ -87,6 +87,7 @@ export default {
   suggestThreshold: 'Umbral mínimo de cambio %',
   suggestPreview: 'Previsualizar sugerencias',
   suggestApplyAll: 'Aplicar a {n} modelos',
+  suggestApplyConfirm: '¿Aplicar cambios de precio a {n} modelos? Esto sobrescribe los precios actuales y no se puede deshacer.',
   suggestLoadFailed: 'No se pudieron cargar las sugerencias de precio.',
   suggestApplyOk: 'Aplicado a {n} modelos (lote #{batch}); se puede localizar en el historial por lote.',
   suggestApplyFailed: 'No se pudieron aplicar las sugerencias de precio.',

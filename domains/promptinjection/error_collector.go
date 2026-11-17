@@ -134,6 +134,19 @@ func (ec *ErrorCollector) CollectAsync(ctx context.Context, collectedErr *Collec
 	}
 }
 
+// Enabled 报告采集功能是否开启。
+//
+// ★ 2026-11-18 审计轮 P1：管理面需要能区分
+//
+//	「采集开着但队列是空的」与「采集**没开**（或**没有生产者**）」——
+//	否则「队列恒空」会被读成「没有错误发生过」。
+func (ec *ErrorCollector) Enabled() bool {
+	if ec == nil {
+		return false
+	}
+	return ec.enabled
+}
+
 // CollectorStats 返回采集器的运行计数（供管理 API 观测）。
 func (ec *ErrorCollector) CollectorStats() map[string]int64 {
 	if ec == nil {

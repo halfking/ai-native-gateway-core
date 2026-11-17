@@ -12,6 +12,24 @@
       </div>
     </div>
 
+    <!--
+      ★ 2026-11-18 审计轮 P2：API 不可用时**如实说明**，不再是一张空表。
+      后端 /api/admin/pi-analysis/* 只在「有 DB + admin 鉴权材料齐备」时
+      注册（fail-closed）⇒ 无 DB / 未配 secret 的部署上这些请求全是 404，
+      而页面此前只 console.error ⇒ 运维看到的是「空队列」，分不清
+      「没数据」与「功能不存在」。
+    -->
+    <div class="unavailable-banner" v-if="unavailable">
+      <strong>{{ t('common.piAnalysis.unavailableTitle') }}</strong>
+      <span>{{ unavailableReason }}</span>
+    </div>
+
+    <!-- Chain-not-wired notice: the queue is empty because there is no producer. -->
+    <div class="chain-note-banner" v-if="!unavailable && chainNotWired">
+      <strong>{{ t('common.piAnalysis.chainNotWiredTitle') }}</strong>
+      <span>{{ t('common.piAnalysis.chainNotWiredReason') }}</span>
+    </div>
+
     <!-- 统计卡片 -->
     <div class="stats-cards" v-if="stats">
       <div class="stat-card">
@@ -259,6 +277,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 // 状态管理
 const activeTab = ref<'queue' | 'results'>('queue')
@@ -285,8 +306,22 @@ const resultsTotal = ref(0)
 async function loadStats() {
   try {
     const response = await fetch('/api/admin/pi-analysis/stats')
+    // ★ 2026-11-18 审计轮 P2：非 2xx 必须**如实**判为「不可用」，
+    // 不能把 404 的响应体当 JSON 解析（解析失败会伪装成网络错误，
+    // 运维看到的提示也会误导）。⇒ 显式带状态码抛错。
+    if (!response.ok) {
+      throw Object.assign(new Error(`pi-analysis stats failed: HTTP ${response.status}`), {
+        status: response.status,
+      })
+    }
     const data = await response.json()
-    
+    unavailable.value = false
+    // ★ 2026-11-18 审计轮 P1：后端把「检测链是否接线」一起返回了。
+    //	没接线时队列**恒为空**（唯一的生产者是 promptinjection.Detector，
+    //	而整条检测链在 LLM_GATEWAY_USE_V2_PIPELINE 门控内，默认关）
+    //	⇒ 必须如实显示，否则运维会把「没有生产者」读成「没有错误发生」。
+    chainNotWired.value = data?.detection_chain_wired === false
+
     // 计算统计信息
     let pending = 0, analyzed = 0, falsePositives = 0, totalDuration = 0, count = 0
     
@@ -305,7 +340,27 @@ async function loadStats() {
     }
   } catch (error) {
     console.error('Failed to load stats:', error)
+    markUnavailable(error)
   }
+}
+
+// ★ 2026-11-18 审计轮 P2：把「API 不可用」与「没有数据」区分开。
+// 后端在无 DB / 无 admin 鉴权材料时**不注册**这批路由（fail-closed），
+// 请求会得到 404 ⇒ 页面必须如实说明，而不是显示一张空表。
+const unavailable = ref(false)
+const unavailableReason = ref('')
+// ★ 2026-11-18 审计轮 P1：后端告知「检测链未接线」时的标记。
+const chainNotWired = ref(false)
+
+function markUnavailable(error: unknown) {
+  const status = (error as { status?: number })?.status
+  if (status === 404 || status === 401 || status === 403) {
+    unavailable.value = true
+    unavailableReason.value = t('common.piAnalysis.unavailableReason')
+    return
+  }
+  unavailable.value = true
+  unavailableReason.value = t('common.piAnalysis.unavailableNetwork')
 }
 
 // 加载队列
@@ -515,6 +570,36 @@ onMounted(() => {
 <style scoped>
 .pi-analysis-view {
   padding: 20px;
+}
+
+/* ★ 2026-11-18 audit round P2: banner shown when the PI analysis API is unavailable. */
+.unavailable-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  border: 1px solid #d97706;
+  background: rgba(217, 119, 6, 0.08);
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ★ 2026-11-18 audit round P1: banner shown when the detection chain is not wired. */
+.chain-note-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  border: 1px solid #6b7280;
+  background: rgba(107, 114, 128, 0.08);
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .header {

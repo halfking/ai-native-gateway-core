@@ -81,8 +81,17 @@ const pi978ExpectedTSVIndex = 377
 // pi978CanonicalRuleNames ＝ canonical 规则集（25 条）的规则名。
 //
 // ★ 21 条来自 364（逐字）＋ 2 条 ensureRulesTable 的 basic ＋ 2 条 977 订正后的。
+//
+// ★ 2026-11-18 12h 审计轮根修（P1）：`tool_abuse_exec` 从「364 的 21 条（逐字）」
+//   这一桶**移出**，改归「977 订正后的」那一桶。
+//   起因：364 的 `tool_abuse_exec` pattern 是 **977 订正前的旧形态**
+//   （`system` + 无界 `.*` ⇒ "the system will call you back" severity 10 命中）。
+//   978 原先「逐字取自 364」⇒ 把 977 刚修掉的假阳性**又种了回去**；
+//   而 978 的登记序在 977 **之后**、全新安装时规则表是空的（315/364 都不在
+//   建库通道里 ⇒ 977 的 UPDATE 命中 0 行）⇒ **每次全新部署都会装上这条假阳性**。
+//   ⇒ 取源改为 977 的订正后字面量（与 privilege_escalation / command_injection 同桶）。
 var pi978CanonicalRuleNames = []string{
-	// 364 的 21 条
+	// 364 的 21 条（★ tool_abuse_exec 已移出 ⇒ 此处实为 20 条）
 	"instruction_override_ignore",
 	"instruction_override_new_rules",
 	"instruction_override_system_prompt",
@@ -95,7 +104,6 @@ var pi978CanonicalRuleNames = []string{
 	"unicode_homoglyph",
 	"unicode_rtl_override",
 	"unicode_zero_width",
-	"tool_abuse_exec",
 	"tool_abuse_import",
 	"tool_abuse_file",
 	"multi_turn_setup",
@@ -107,9 +115,10 @@ var pi978CanonicalRuleNames = []string{
 	// ensureRulesTable 预置的 2 条 basic
 	"role_hijack_ignore_previous",
 	"role_hijack_you_are_now",
-	// 977 订正后的 2 条
+	// 977 订正后的 3 条（★ 2026-11-18 增补 tool_abuse_exec）
 	"privilege_escalation",
 	"command_injection",
+	"tool_abuse_exec",
 }
 
 // pi978RuleRowRe ＝「一条规则行」的可执行面形态：
@@ -253,8 +262,9 @@ func TestMigration978RuleSetIsByteFaithfulToItsSources(t *testing.T) {
 	}
 	exec := pi977StripComments(string(raw))
 
-	// ① 364 的 21 条：**整行**必须逐字一致（零转录误差）。
-	for _, rule := range pi978CanonicalRuleNames[:21] {
+	// ① 364 的 20 条：**整行**必须逐字一致（零转录误差）。
+	//    ★ 2026-11-18：条数由 21 降为 20 —— tool_abuse_exec 移到 ③ 桶（取源 977）。
+	for _, rule := range pi978CanonicalRuleNames[:20] {
 		seedRow := pi978SeedRow(t, pi978Seed364, rule)
 		gotRow := pi978RowOf(t, exec, rule)
 		if gotRow != seedRow {
@@ -271,16 +281,22 @@ func TestMigration978RuleSetIsByteFaithfulToItsSources(t *testing.T) {
 		}
 	}
 
-	// ③ privilege_escalation / command_injection：pattern 必须与 977 的
-	//    UPDATE 字面量**逐字一致**（不许把 977 刚修掉的假阳性种回去）。
+	// ③ privilege_escalation / command_injection / tool_abuse_exec：pattern 必须与
+	//    977 的 UPDATE 字面量**逐字一致**（不许把 977 刚修掉的假阳性种回去）。
 	//
-	// ★ 取源是 **977 那个文件**（不是 978 自己）—— 978 里只有 INSERT，
-	//   UPDATE 字面量的真身在 977 ⇒ 必须回源文件取。
+	//    ★ 取源是 **977 那个文件**（不是 978 自己）—— 978 里只有 INSERT，
+	//      UPDATE 字面量的真身在 977 ⇒ 必须回源文件取。
+	//
+	//    ★ 2026-11-18 12h 审计轮（P1）：tool_abuse_exec 归入本桶。
+	//      起因：978 原先把它逐字取自 364 ⇒ 把 977 刚修掉的 `system`+无界`.*`
+	//      假阳性**又种了回去**；而 978 的登记序在 977 之后、且全新安装时规则表
+	//      是空的（977 的 UPDATE 命中 0 行）⇒ **每次全新部署都装上这条假阳性**
+	//      （存量库上 ON CONFLICT DO NOTHING 不覆盖 ⇒ 不显现 ⇒「存量不红、新装必红」）。
 	m977Raw, err := os.ReadFile(pi978CanonicalDir + "/" + pi977UpFile)
 	if err != nil {
 		t.Fatalf("读 977：%v", err)
 	}
-	for _, rule := range []string{"privilege_escalation", "command_injection"} {
+	for _, rule := range []string{"privilege_escalation", "command_injection", "tool_abuse_exec"} {
 		gotRow := pi978RowOf(t, exec, rule)
 		wantPattern := ""
 		for _, mm := range pi977UpdateRe.FindAllStringSubmatch(string(m977Raw), -1) {

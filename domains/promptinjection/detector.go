@@ -260,7 +260,22 @@ func truncateForDetection(input string, limit int) string {
 }
 
 // Detect 执行检测
+//
+// ★ 2026-11-18 审计轮 P1：Detect **不带 sessionKey** ⇒「连续攻击终止会话」
+//
+//	（TerminateOnRepeat）在这条路径上恒不触发（详见 detect 的注释）。
+//	⇒ 公开入口保留原签名（hook 的最小接口依赖它），内部转调 detect。
 func (d *Detector) Detect(ctx context.Context, tenantID, input string) (*DetectionResult, error) {
+	return d.detect(ctx, tenantID, "", input)
+}
+
+// detect 执行检测（带会话身份）。
+//
+// ★ 2026-11-18 审计轮 P1：sessionKey 必须一路传到「连续攻击终止会话」的
+//	计数查询 —— 写侧（DetectAndLog 的 INSERT）写的是**真实** sessionKey，
+//	而读侧此前恒传 ""（谓词 session_key = ''）⇒ 计数永远命中不到
+//	自己刚写的那一行 ⇒ TerminateOnRepeat 恒不触发（该功能形同虚设）。
+func (d *Detector) detect(ctx context.Context, tenantID, sessionKey, input string) (*DetectionResult, error) {
 	policy, err := d.getPolicy(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get policy: %w", err)
@@ -513,8 +528,17 @@ func (d *Detector) Detect(ctx context.Context, tenantID, input string) (*Detecti
 	if severityAction != nil {
 		result.SessionHealthDelta = severityAction.SessionHealthPenalty
 		if severityAction.TerminateOnRepeat {
-			// 检查是否达到重复阈值
-			repeatCount, _ := d.getRepeatCount(ctx, tenantID, "")
+			// 检查是否达到重复阈值。
+			//
+			// ★ 2026-11-18 审计轮 P1：此前恒传 "" ⇒ 谓词 session_key = ''
+			//	与写侧（DetectAndLog 写入真实 sessionKey）不匹配 ⇒
+			//	计数恒为 0 ⇒ 「连续攻击终止会话」永不触发。
+			//	⇒ 传真实 sessionKey；查不到计数时**留痕**（不静默）。
+			repeatCount, err := d.getRepeatCount(ctx, tenantID, sessionKey)
+			if err != nil {
+				slog.Warn("prompt_injection: repeat count query failed (terminate-on-repeat not evaluated)",
+					"error", err, "tenant_id", tenantID, "session_key", sessionKey)
+			}
 			if repeatCount >= severityAction.RepeatThreshold {
 				result.TerminateSession = true
 				result.ActionTaken = "terminate"
@@ -646,7 +670,10 @@ func probeDetectionsLegacyCols(ctx context.Context, db *sql.DB) bool {
 
 // DetectAndLog 检测并记录到数据库
 func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessionKey, input, clientIP, userAgent string) (*DetectionResult, error) {
-	result, err := d.Detect(ctx, tenantID, input)
+	// ★ 2026-11-18 审计轮 P1：走内部 detect（带 sessionKey）而不是公开的
+	//	Detect（sessionKey 恒空）⇒ 「连续攻击终止会话」的计数谓词与本函数
+	//	自己写入的 session_key 对得上。
+	result, err := d.detect(ctx, tenantID, sessionKey, input)
 	if err != nil {
 		return nil, err
 	}
@@ -1474,8 +1501,13 @@ func (d *Detector) extractEvidence(input string, matches []MatchedRule) string {
 	}
 
 	evidence := matches[0].Evidence
+	// ★ 2026-11-18 审计轮 P2：按**字节**切会切断 UTF-8 多字节字符
+	//	⇒ 产出非法 UTF-8 的证据串 ⇒ 写进 prompt_injection_detections
+	//	的 evidence 列（以及管理面/日志的 JSON 序列化）后整行审计记录
+	//	在读取侧不可用（前端 JSON.parse 失败、Postgres 文本列存下
+	//	半个字符）。⇒ 用仓内既有的 rune-safe 原语 truncateUTF8Bytes。
 	if len(evidence) > 500 {
-		evidence = evidence[:500] + "..."
+		evidence = truncateUTF8Bytes(evidence, 500) + "..."
 	}
 	return evidence
 }
@@ -1511,7 +1543,9 @@ func (d *Detector) createApprovalRequest(ctx context.Context, tenantID, requestI
 	approvalID := fmt.Sprintf("pi-approval-%d", time.Now().UnixNano())
 	inputPreview := input
 	if len(inputPreview) > 200 {
-		inputPreview = inputPreview[:200] + "..."
+		// ★ 2026-11-18 审计轮 P2：同 extractEvidence —— 按字节切会切断
+		//	UTF-8 多字节字符 ⇒ 预览里出现半个字符（审批单上的原文不可信）。
+		inputPreview = truncateUTF8Bytes(inputPreview, 200) + "..."
 	}
 
 	matchedRulesJSON, _ := json.Marshal(result.MatchedRules)
@@ -1880,6 +1914,21 @@ func (e *LLMDetectionEngine) SetEngineResolver(r EngineResolver) {
 		return
 	}
 	e.resolver = r
+}
+
+// SetLLMEngineResolver 把端点解析器注入到 Detector 的 LLM 检测引擎上。
+//
+// ★ 2026-11-18 审计轮 P1：此前 SetEngineResolver **零生产调用方**
+//	⇒ LLMDetectionEngine.resolver 恒 nil ⇒ 判官层每次调用都返回
+//	「endpoint resolver not wired」⇒ **判官层从不产出结论**
+//	（且因 fail_closed 默认 false，只落一条 Warn 就继续用规则分放行）。
+//	⇒ 暴露一个**从 Detector 侧**的注入口（resolver 的实现需要凭据解密
+//	  能力，那在 gateway 侧 ⇒ 由外层注入，见 cmd/gateway 的接线）。
+func (d *Detector) SetLLMEngineResolver(r EngineResolver) {
+	if d == nil {
+		return
+	}
+	d.llmEngine.SetEngineResolver(r)
 }
 
 type LLMDetectionResult struct {
