@@ -24,11 +24,50 @@ export default {
     warned: 'Warning',
     unmeasured: 'Not measured',
   },
+  /** View mode (design round 6: full / compact share one dataset and one filter set). */
+  mode: {
+    label: 'View mode',
+    full: 'Full',
+    compact: 'Compact',
+  },
+  /** Legend (design round 4): the seven state glyphs and the two rails. */
+  legend: {
+    sendRail: 'Send rail (left → right)',
+    recvRail: 'Receive rail (right → left)',
+  },
+  /** Column header (design round 8). */
+  header: {
+    time: 'Time',
+    client: 'Client',
+    flow: 'Stage flow',
+  },
+  /** Human-readable client type badge. */
+  clientType: {
+    coding_agent: 'Coding assistant',
+    sdk: 'SDK client',
+    cli: 'Command line',
+    app: 'Desktop app',
+    automation: 'Automation',
+    bot: 'Bot',
+    api: 'API call',
+    web: 'Web app',
+  },
+  /** Conversation turn (which turn of the same session this is). */
+  session: {
+    first: 'First turn',
+    round: 'Turn {n}',
+  },
+  /** Time window (used when the filter bar has no "all" option). */
+  window: {
+    all: 'All time',
+  },
+  /** "New requests" pill shown when the view is scrolled up. */
+  newPill: 'New requests',
   value: {
     sanitize: '{n} spot(s)',
     route: '{n} candidate(s)',
     meter: '{n} tok',
-    injection: 'score {n} ({d})',
+    injection: 'score {n}',
     compress: {
       yes: 'Compressed',
       no: 'Not compressed',
@@ -40,6 +79,7 @@ export default {
     block: 'Blocked',
     safe: 'Safe',
     warn: 'Matched (warning only)',
+    warnShort: 'matched',
     unknown: 'Not determined',
   },
   return: {
@@ -54,6 +94,8 @@ export default {
     },
     toolsRestore: 'tools restored {n}',
     toolsRestored: 'restored',
+    queue: 'Queued {ms}ms',
+    attempts: '{n} attempts',
     finalModel: 'Final model',
     upstreamModel: 'Upstream model',
     finalModelTip: {
@@ -101,13 +143,104 @@ export default {
   },
   stats: {
     open: 'Expand statistics (full page)',
-    readout: '{total} total | {rate}% success | {inFlight} in flight',
+    readout: '{window} | {total} requests | {rate} success | {inFlight} in flight',
     title: 'Live statistics',
     hint:
-      'Same basis as the live topology page: the last 5 minutes and last 1 hour are read straight from the database, while the current day comes from the daily bucket (lagging by up to 1 hour).',
+      'Main basis: the requests currently visible under the top filter bar (in-memory live window). The collapsible section below is a straight database query — a different yardstick; the two are never mixed.',
     close: 'Close',
+    scope: '{window} | {n} kept in memory',
+    kpi: {
+      title: 'Overview',
+      requests: 'Requests',
+      successRate: 'Success rate',
+      inFlight: 'In flight',
+      failed: 'Failed',
+      avgLatency: 'Average latency',
+      p95Latency: 'P95 latency',
+      totalTokens: 'Total tokens',
+      inputTokens: 'Input tokens',
+      outputTokens: 'Output tokens',
+      cost: 'Total cost',
+      cacheRate: 'Cache hit rate',
+      providers: 'Providers',
+      models: 'Models',
+      clients: 'Clients',
+      credentials: 'Credentials',
+      attempts: 'Outbound attempts',
+    },
+    trend: {
+      title: 'Periodic statistics',
+      hint: 'Bucketed per minute; empty buckets are kept so traffic drops stay visible',
+      empty: 'No requests in the window',
+    },
+    dim: {
+      title: 'Breakdown',
+      hint: 'Same requests as the tree (currently filtered window)',
+      model: 'Model',
+      provider: 'Provider',
+      client: 'Client',
+      credential: 'Credential',
+      status: 'Status',
+      name: 'Name',
+      requests: 'Requests',
+      successRate: 'Success rate',
+      inFlight: 'In flight',
+      tokens: 'Total tokens',
+      cost: 'Cost',
+      cache: 'Cache rate',
+      avgLatency: 'Average latency',
+      empty: 'No requests in the window',
+    },
+    notes: {
+      title: 'Basis',
+      scope: 'The baseline is the requests currently visible under the top filter bar (in-memory live window), not the full database history.',
+      coverage:
+        'Requests that did not report latency, tokens or cost are left out of the totals (never counted as zero); coverage is stated per metric.',
+      cost:
+        'Cost comes from the request frame cost_usd. Fee (charged to the user) and cost (paid upstream) use different units and must not be subtracted.',
+      cache:
+        'The cache hit rate denominator depends on the upstream protocol (OpenAI inclusive, Anthropic parallel). When both conventions appear, no number is shown.',
+      db: 'The collapsible section below is a straight database query (last 5 minutes / 1 hour, daily bucket for today) — not the same yardstick as the in-memory window above.',
+    },
+    db: {
+      title: 'Database basis (full history, straight query)',
+    },
   },
   idle: {
     wait: 'No new request for {ms} ms',
+  },
+  /** Error source and error code (design round 9: error source and type on the far right). */
+  error: {
+    column: 'Error',
+    tag: {
+      gateway: 'GW gateway',
+      provider: 'UP provider',
+      other: 'Other',
+    },
+    source: {
+      gateway: 'Gateway',
+      provider: 'Provider',
+      other: 'Other',
+    },
+    kindLabel: 'Error type: {kind}',
+    codeLabel: 'Error code {code}',
+    stageLabel: 'Failed stage: {stage}',
+    kind: {
+      upstream_timeout: 'Upstream timeout',
+      upstream_rate_limited: 'Upstream rate limited',
+      upstream_quota_permanent: 'Upstream quota permanently exhausted',
+      upstream_error: 'Upstream error',
+      upstream_connection_error: 'Upstream connection failed',
+      upstream_status_5xx: 'Upstream 5xx error',
+      eof_without_done: 'Upstream ended early',
+      probe_timeout: 'Probe timeout',
+      rate_limit: 'Rate limited',
+      rate_limit_exceeded: 'Rate limit exceeded',
+      key_throttled: 'Key throttled',
+      no_route: 'No usable route',
+      model_not_found: 'Model not found',
+      client_cancel: 'Client cancelled',
+      prompt_injection_blocked: 'Prompt injection blocked',
+    },
   },
 }

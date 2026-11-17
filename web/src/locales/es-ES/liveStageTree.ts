@@ -24,11 +24,51 @@ export default {
     warned: 'Con aviso',
     unmeasured: 'Sin medir',
   },
+  /** Modo de vista (vuelta 6: completo / compacto, mismos datos y mismos filtros). */
+  mode: {
+    label: 'Modo de vista',
+    full: 'Completo',
+    compact: 'Compacto',
+  },
+  /** Leyenda (vuelta 4): los siete glifos de estado y las dos vías. */
+  legend: {
+    sendRail: 'Vía de envío (izquierda → derecha)',
+    recvRail: 'Vía de retorno (derecha → izquierda)',
+  },
+  /** Encabezado de columnas (vuelta 8). */
+  header: {
+    time: 'Hora',
+    client: 'Cliente',
+    flow: 'Recorrido de etapas',
+  },
+  /** Etiqueta legible del tipo de cliente. */
+  clientType: {
+    coding_agent: 'Asistente de código',
+    sdk: 'Cliente SDK',
+    cli: 'Línea de comandos',
+    app: 'Aplicación de escritorio',
+    automation: 'Automatización',
+    bot: 'Robot',
+    api: 'Llamada a la API',
+    web: 'Aplicación web',
+  },
+  /** Turno de la conversación (qué turno de la misma sesión es). */
+  session: {
+    first: 'Primer turno',
+    round: 'Turno {n}',
+  },
+  /** Ventana temporal (cuando la barra de filtros no ofrece «todo»). */
+  window: {
+    all: 'Todo el histórico',
+  },
+  /** Pastilla «nuevas solicitudes» al desplazarse hacia arriba. */
+  newPill: 'Nuevas solicitudes',
+
   value: {
     sanitize: '{n} punto(s)',
     route: '{n} candidato(s)',
-    meter: '{n} token',
-    injection: 'puntuación {n} ({d})',
+    meter: '{n} tok',
+    injection: 'puntuación {n}',
     compress: {
       yes: 'Comprimido',
       no: 'Sin comprimir',
@@ -40,6 +80,7 @@ export default {
     block: 'Rechazado',
     safe: 'Seguro',
     warn: 'Coincidencia (solo aviso)',
+    warnShort: 'detectado',
     unknown: 'Sin determinar',
   },
   return: {
@@ -54,6 +95,8 @@ export default {
     },
     toolsRestore: 'tools restaurado {n}',
     toolsRestored: 'restaurado',
+    queue: 'En cola {ms} ms',
+    attempts: '{n} intentos',
     finalModel: 'Modelo final',
     upstreamModel: 'Modelo del upstream',
     finalModelTip: {
@@ -100,14 +143,101 @@ export default {
     },
   },
   stats: {
-    open: 'Desplegar estadísticas (página completa)',
-    readout: '{total} en total | {rate}% correcto | {inFlight} en curso',
+    open: 'Desplegar estadísticas (pantalla completa)',
+    readout: '{window} · {total} solicitudes · {rate} % de éxito · {inFlight} en curso',
     title: 'Estadísticas en vivo',
-    hint:
-      'Misma base que la página de topología en vivo: los últimos 5 minutos y la última hora se leen directamente de la base de datos, y el día en curso procede del agregado diario (con hasta 1 hora de retraso).',
+    hint: 'Base principal: las solicitudes visibles bajo la barra de filtros (ventana en memoria). La sección plegable es una lectura directa de la base de datos: otra referencia, nunca mezclada.',
     close: 'Cerrar',
+    scope: '{window} · {n} conservadas en memoria',
+    kpi: {
+      title: 'Resumen',
+      requests: 'Solicitudes',
+      successRate: 'Tasa de éxito',
+      inFlight: 'En curso',
+      failed: 'Fallidas',
+      avgLatency: 'Latencia media',
+      p95Latency: 'Latencia P95',
+      totalTokens: 'Total de tokens',
+      inputTokens: 'Tokens de entrada',
+      outputTokens: 'Tokens de salida',
+      cost: 'Coste total',
+      cacheRate: 'Tasa de caché',
+      providers: 'Proveedores',
+      models: 'Modelos',
+      clients: 'Clientes',
+      credentials: 'Credenciales',
+      attempts: 'Intentos de salida',
+    },
+    trend: {
+      title: 'Estadísticas por periodo',
+      hint: 'Agrupado por minuto; los intervalos vacíos se conservan, así se ven las caídas de tráfico',
+      empty: 'Sin solicitudes en la ventana',
+    },
+    dim: {
+      title: 'Desglose',
+      hint: 'Las mismas solicitudes que el árbol (ventana filtrada actual)',
+      model: 'Modelo',
+      provider: 'Proveedor',
+      client: 'Cliente',
+      credential: 'Credencial',
+      status: 'Estado',
+      name: 'Nombre',
+      requests: 'Solicitudes',
+      successRate: 'Tasa de éxito',
+      inFlight: 'En curso',
+      tokens: 'Total de tokens',
+      cost: 'Coste',
+      cache: 'Tasa de caché',
+      avgLatency: 'Latencia media',
+      empty: 'Sin solicitudes en la ventana',
+    },
+    notes: {
+      title: 'Base de cálculo',
+      scope: 'La base son las solicitudes visibles bajo la barra de filtros (ventana en memoria), no el histórico completo de la base de datos.',
+      coverage: 'Las solicitudes sin latencia, tokens ni coste declarados quedan fuera de los totales (nunca se cuentan como cero).',
+      cost: 'El coste viene del campo cost_usd del fotograma. La tarifa (cobrada al usuario) y el coste (comprado al proveedor) usan unidades distintas: no se restan.',
+      cache: 'El denominador de la tasa de caché depende del protocolo del proveedor (OpenAI inclusivo, Anthropic paralelo). Si conviven las dos convenciones no se muestra cifra.',
+      db: 'La sección plegable es una lectura directa de la base de datos (últimos 5 minutos / 1 hora, cubo del día): no es la misma referencia que la ventana en memoria.',
+    },
+    db: {
+      title: 'Base de datos (histórico completo, lectura directa)',
+    },
   },
   idle: {
     wait: 'Sin peticiones nuevas durante {ms} ms',
+  },
+  /** Origen y código de error (vuelta 9: origen y tipo de error en el extremo derecho). */
+  error: {
+    column: 'Fallo',
+    tag: {
+      gateway: 'GW pasarela',
+      provider: 'UP proveedor',
+      other: 'Otro',
+    },
+    source: {
+      gateway: 'Pasarela',
+      provider: 'Proveedor',
+      other: 'Otro',
+    },
+    kindLabel: 'Tipo de error: {kind}',
+    codeLabel: 'Código de error {code}',
+    stageLabel: 'Etapa fallida: {stage}',
+    kind: {
+      upstream_timeout: 'Tiempo de espera del proveedor agotado',
+      upstream_rate_limited: 'Proveedor limitado por caudal',
+      upstream_quota_permanent: 'Cuota del proveedor agotada de forma permanente',
+      upstream_error: 'Error del proveedor',
+      upstream_connection_error: 'Fallo de conexión con el proveedor',
+      upstream_status_5xx: 'Error 5xx del proveedor',
+      eof_without_done: 'El proveedor terminó antes de tiempo',
+      probe_timeout: 'Tiempo de espera de sonda agotado',
+      rate_limit: 'Limitado por caudal',
+      rate_limit_exceeded: 'Límite de caudal superado',
+      key_throttled: 'Clave con limitación',
+      no_route: 'Sin ruta utilizable',
+      model_not_found: 'Modelo no encontrado',
+      client_cancel: 'Cancelada por el cliente',
+      prompt_injection_blocked: 'Inyección de prompt bloqueada',
+    },
   },
 }

@@ -2,18 +2,25 @@
 #
 # 覆盖对象：web/src/views/LiveStageTreeView.vue（+ components/live-stage-tree/*）
 #
-# ★ 本 flow 的存在理由（2026-11-17 owner「打开功能」轮）：
+# ★ 本 flow 的存在理由（2026-11-17 owner「打开功能」轮 + 同日「设计对齐」轮）：
 #   /live2 此前**没有任何 Maestro 资产**（`grep -rn live2 maestro/` 零命中）⇒
 #   「路由存在」与「页面能打开、元素在、数据是活的」这三件事**从没被浏览器验过**。
-#   本轮把功能打开（菜单 + /live 顶栏入口恢复）⇒ 入口既然存在，就必须有资产守着它。
+#   打开功能后入口既然存在，就必须有资产守着它；
+#   2026-11-17 的一轮「线上与设计方案不一致」又暴露了另一个事实：
+#   **没有一条断言是「界面 == 设计方案」** ⇒ 线上长成什么样都绿着
+#   （177 行后端心跳、阶段节点只有名字没有值、裸 i18n 键上屏）。
+#   ⇒ 本 flow 负责**可点可见的行为**，页面内 CDP 负责**结构与口径**。
 #
 # ★★★ 断言写法全部受 Maestro 2.11.0 **web 驱动**的实测边界约束
 #     （2026-11-17 在 154 生产站逐条实测；探针脚本 maestro/tools/probe-selectors.mjs）：
 #
 #   ① `text:` 是**全匹配正则**，不是子串包含：
 #      实测 `text: "成功率"`（想用子串）**不命中**（胶囊读数整句更长），
-#      而 `text: ".*条 · 成功率.*"` **命中**（统计胶囊，读数含数字只能用正则）。
+#      而 `text: ".*请求 · .*成功率.*"` **命中**（统计胶囊，读数含数字只能用正则）。
 #      ⇒ 读数会变的元素一律用 `.*….*` 包起来；纯文案用整句。
+#      ★ 胶囊格式本轮改过：旧格式「N 条 · 成功率 X% · 在途 M」已不存在，
+#        现格式（设计第 3 轮口径）＝「近 5 分钟 · N 请求 · X% 成功率 · 在途 M」
+#        —— 读数**带窗口**（不带窗口的总数没有分母）。
 #
 #   ② `id:` **能**选到 `data-testid`（仓内旧记载「只匹配 HTML id」是错的：
 #      实测 `id: stage-tree-canvas` / `id: toggle-probe` 均命中），
@@ -29,10 +36,11 @@
 #      本 flow **必须**用 `--screen-size 1440x1400` 跑（见 maestro/run-stage-tree.sh）。
 #
 # ★ 分工（与 maestro/tools/assert-overview.mjs 同一口径）：
-#   · **本 flow**：入口可见可点、落地页的可见结构、统计浮层能点开。
-#   · **页面内 CDP**（assert-stage-tree.mjs）：页面身份（pathname）、DOM 契约
-#     （data-testid 在不在）、**统计口径对拍**（胶囊读数 vs 实际阶段带条数）、
-#     数据是活的、/live 顶栏入口的精确存在性。
+#   · **本 flow**：入口可见可点、落地页的可见结构、双模式切换、统计浮层能点开。
+#   · **页面内 CDP**（assert-stage-tree.mjs + assert-stage-tree-design.mjs）：
+#     页面身份（pathname）、DOM 契约、**统计口径对拍**、数据是活的、
+#     **版面与设计的逐条对拍**（列头/带同宽、瓦片同一行、完成态不画 ✓、
+#     错误列右缘恒定、树宽 1400…）。
 #     ⇒ 为什么「请求阶段树」不能单独当页面身份：它**同时**是顶栏菜单项与本页 h2
 #       标题 ⇒ 单条 text: 断言分不清「菜单在」还是「页面在」。
 #       本 flow 用「菜单项 + 点进去 + 统计胶囊（/live2 独有形态）+ 浮层标题
@@ -59,7 +67,7 @@ url: ${BASE_URL}
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 
-# ── ② 导航入口存在（**本轮「打开功能」的直接证据**）────────────────────────
+# ── ② 导航入口存在（**「打开功能」的直接证据**）──────────────────────────
 #    专家面（openLink 会清 localStorage ⇒ 工作模式退回专家面）顶栏有三个直链：
 #    实时拓扑 / 请求阶段树 / 总览。此前该入口被 hidden 闸门藏掉 ⇒ 这一条会红。
 - openLink: ${BASE_URL}/dashboard
@@ -68,11 +76,11 @@ url: ${BASE_URL}
     timeout: 20000
 
 # ── ③ 点它 ⇒ 落到 /live2 ──────────────────────────────────────────────────
-- tapOn: "请求阶段树"
 # 统计胶囊是 /live2 独有的形态（/live 的统计面板是「请求数/成功率」两行分列，
-# 没有「n 条 · 成功率 x% · 在途 k」这种合成读数）⇒ 它是落地页的形态锚点。
+# 没有「… 请求 · 成功率 x% · 在途 k」这种合成读数）⇒ 它是落地页的形态锚点。
+- tapOn: "请求阶段树"
 - extendedWaitUntil:
-    visible: ".*条 · 成功率.*"
+    visible: ".*请求 · .*成功率.*"
     timeout: 20000
 
 # ── ④ 过滤条件**常驻顶层**（owner 2026-11-16 定稿：不在画布里，在顶栏）──
@@ -86,8 +94,36 @@ url: ${BASE_URL}
 - assertVisible: "显示探测请求"
 - assertVisible: "显示无效节点"
 
-# ── ⑥ 统计胶囊 ⇒ 点开 ⇒ **全页浮层**（owner 定稿形态）─────────────────────
-- tapOn: ".*条 · 成功率.*"
+# ── ⑥ 图例行（设计第 4 轮：七态 + 两条轨的方向）─────────────────────────
+- assertVisible: "已完成"
+- assertVisible: "进行中"
+- assertVisible: "未到达"
+- assertVisible: "失败"
+- assertVisible: ".*发送轨.*"
+- assertVisible: ".*接收轨.*"
+
+# ── ⑦ 双模式切换（设计第 6 轮：完整 / 紧凑，同一批数据）───────────────────
+# ★ 为什么这里只断言「页面还在 + 列头回来」：
+#   紧凑模式是**单行流水**——瓦片只有图标（无文字）、右侧行内块与最右错误列的
+#   文字都**随数据变** ⇒ 没有一条与数据无关的文案可断言。
+#   ⇒ 紧凑模式的**实质校验**（瓦片同一行 / 完成态不画 ✓ / 错误列右缘恒定 /
+#     树宽 1400 / 不再渲染轨节点块）在页面内工具里做：
+#     maestro/tools/assert-stage-tree-design.mjs。
+- assertVisible: "完整"
+- assertVisible: "紧凑"
+- tapOn: "紧凑"
+# 切到紧凑后数据仍在（胶囊可读 ⇒ 没把树切空）
+- extendedWaitUntil:
+    visible: ".*请求 · .*成功率.*"
+    timeout: 20000
+# 切回完整模式 ⇒ 阶段列头回来（静态文案，可断言）
+- tapOn: "完整"
+- extendedWaitUntil:
+    visible: "鉴权/限流"
+    timeout: 20000
+
+# ── ⑧ 统计胶囊 ⇒ 点开 ⇒ **全页浮层**（owner 定稿形态）─────────────────────
+- tapOn: ".*请求 · .*成功率.*"
 - extendedWaitUntil:
     visible: "实时统计"
     timeout: 20000
@@ -99,12 +135,12 @@ url: ${BASE_URL}
 - assertVisible: "供应商"
 - assertVisible: "模型"
 
-# ── ⑦ 关掉浮层：web 驱动不支持 pressKey: Escape，关闭按钮又是 <button>
+# ── ⑨ 关掉浮层：web 驱动不支持 pressKey: Escape，关闭按钮又是 <button>
 #    （id:/text: 都选不到）⇒ **flow 侧不做**，由 assert-stage-tree.mjs 在
 #    页面内验 Esc 出口与关闭按钮。flow 这里直接离开页面（组件卸载即关闭）。
 - openLink: ${BASE_URL}/live
 
-# ── ⑧ /live 页：本轮恢复的「阶段树」顶栏入口 ─────────────────────────────
+# ── ⑩ /live 页：恢复的「阶段树」顶栏入口 ─────────────────────────────────
 - extendedWaitUntil:
     visible: "实时拓扑"
     timeout: 20000
@@ -114,5 +150,5 @@ url: ${BASE_URL}
 # 点它 ⇒ 落到 /live2（菜单项与页内入口同文案 ⇒ 两者都可直达）
 - tapOn: "请求阶段树"
 - extendedWaitUntil:
-    visible: ".*条 · 成功率.*"
+    visible: ".*请求 · .*成功率.*"
     timeout: 20000

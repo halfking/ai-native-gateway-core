@@ -24,11 +24,51 @@ export default {
     warned: '警告あり',
     unmeasured: '未計測',
   },
+  /** 表示モード（設計第 6 ラウンド：完全 / コンパクト、同一データ・同一フィルタ）。 */
+  mode: {
+    label: '表示モード',
+    full: '完全',
+    compact: 'コンパクト',
+  },
+  /** 凡例（設計第 4 ラウンド）：7 状態の記号と 2 本のレール。 */
+  legend: {
+    sendRail: '送信レール（左→右）',
+    recvRail: '受信レール（右→左）',
+  },
+  /** 列見出し（設計第 8 ラウンド）。 */
+  header: {
+    time: '時刻',
+    client: 'クライアント',
+    flow: 'ステージの流れ',
+  },
+  /** クライアント種別の表示名。 */
+  clientType: {
+    coding_agent: 'コーディングアシスタント',
+    sdk: 'SDK クライアント',
+    cli: 'コマンドライン',
+    app: 'デスクトップアプリ',
+    automation: '自動化',
+    bot: 'ボット',
+    api: 'API 呼び出し',
+    web: 'ウェブアプリ',
+  },
+  /** セッション内のター��番号。 */
+  session: {
+    first: '初回',
+    round: '{n} 回目',
+  },
+  /** 時間範囲（フィルタに「すべて」が無い場合の表示）。 */
+  window: {
+    all: '全期間',
+  },
+  /** 「新しいリクエスト」の追従ボタン。 */
+  newPill: '新しいリクエスト',
+
   value: {
     sanitize: '{n} 件',
     route: '候補 {n} 件',
-    meter: '{n} トークン',
-    injection: 'スコア {n}（{d}）',
+    meter: '{n} tok',
+    injection: 'スコア {n}',
     compress: {
       yes: '圧縮済み',
       no: '圧縮なし',
@@ -40,6 +80,7 @@ export default {
     block: '拒否',
     safe: '無害',
     warn: '検知（警告のみ）',
+    warnShort: '検知',
     unknown: '判定なし',
   },
   return: {
@@ -54,6 +95,8 @@ export default {
     },
     toolsRestore: 'tools 復元 {n}',
     toolsRestored: '復元済み',
+    queue: '待機 {ms}ms',
+    attempts: '{n} 回試行',
     finalModel: '最終モデル',
     upstreamModel: '上流モデル',
     finalModelTip: {
@@ -101,13 +144,100 @@ export default {
   },
   stats: {
     open: '統計を全画面で開く',
-    readout: '{total} 件 · 成功率 {rate}% · 進行中 {inFlight}',
+    readout: '{window} · {total} 件 · 成功率 {rate}% · 進行中 {inFlight}',
     title: 'リアルタイム統計',
-    hint:
-      '統計の基準はリアルタイムトポロジページと同じです: 直近 5 分と直近 1 時間はデータベース直読み、当日は日次集計（最大 1 時間の遅延）です。',
+    hint: '主な基準＝上部フィルタ 現在表示中のリクエスト（メモリ内のライブ窓）。折りたたみ区は DB 直���の別基準で、両者を合算はしません。',
     close: '閉じる',
+    scope: '{window} · メモリ内 {n} 件',
+    kpi: {
+      title: '概要',
+      requests: 'リクエスト数',
+      successRate: '成功比率',
+      inFlight: '進行中',
+      failed: '失敗',
+      avgLatency: '平均レイテンシ',
+      p95Latency: 'P95 レイテンシ',
+      totalTokens: 'token 合計',
+      inputTokens: '入力 token',
+      outputTokens: '出力 token',
+      cost: 'コスト合計',
+      cacheRate: 'キャッシュヒット率',
+      providers: 'プロバイダ数',
+      models: 'モデル数',
+      clients: 'クライアント数',
+      credentials: '認証情報数',
+      attempts: '送信試行',
+    },
+    trend: {
+      title: '周期統計',
+      hint: '1 分バケット。空バケットも残すため、流量の落ち込みがすぐ分かります',
+      empty: '窓内のリクエストはありません',
+    },
+    dim: {
+      title: '分類統計',
+      hint: 'ツリーと同じリクエスト（現在フィルタ中の窓）',
+      model: 'モデル',
+      provider: 'プロバイダ',
+      client: 'クライアント',
+      credential: '認証情報',
+      status: '状態',
+      name: '名前',
+      requests: 'リクエスト数',
+      successRate: '成功比率',
+      inFlight: '進行中',
+      tokens: 'token 合計',
+      cost: 'コスト',
+      cache: 'キャッシュ率',
+      avgLatency: '平均レイテンシ',
+      empty: '窓内のリクエストはありません',
+    },
+    notes: {
+      title: '基準の説明',
+      scope: '集計の母数は上部フィルタで現在表示中のリクエスト（メモリ内のライブ窓）で、DB の全量ではありません。',
+      coverage: 'レイテンシ / token / コストを報告していないリクエストは合計に含めません（0 にはしません）。',
+      cost: 'コストは要求フレームの cost_usd を使います。ユーザー課金（費用）と上流調達（コスト）は単位が違うため、差額にはできません。',
+      cache: 'キャッシュヒット率の分母は上流プロトコルで変わります（OpenAI は包含、Anthropic は並列）。両方式が混在する場合は数値を出しません。',
+      db: '下の折りたたみ区は DB 直参照の基準（直近 5 分 / 1 時間、当日は日バケット）で、上のメモリ窓とは別の物差しです。',
+    },
+    db: {
+      title: 'DB 基準（履歴全量Packages直参照）'.replace('Packages', ''),
+    },
   },
   idle: {
     wait: '{ms} ミリ秒新しいリクエストがありません',
+  },
+  /** エラー発生元とエラー種別（設計第 9 ラウンド：最右列にエラー元と種別）。 */
+  error: {
+    column: 'エラー',
+    tag: {
+      gateway: 'GW ゲートウェイ',
+      provider: 'UP プロバイダ',
+      other: 'その他',
+    },
+    source: {
+      gateway: 'ゲートウェイ',
+      provider: 'プロバイダ',
+      other: 'その他',
+    },
+    kindLabel: 'エラー種別：{kind}',
+    codeLabel: 'エラーコード {code}',
+    stageLabel: '失敗ステージ：{stage}',
+    kind: {
+      upstream_timeout: '上流タイムアウト',
+      upstream_rate_limited: '上流レート制限',
+      upstream_quota_permanent: '上流クォータ恒常不足',
+      upstream_error: '上流エラー',
+      upstream_connection_error: '上流接続失敗',
+      upstream_status_5xx: '上流 5xx エラー',
+      eof_without_done: '上流が早期終了',
+      probe_timeout: 'プローブタイムアウト',
+      rate_limit: 'レート制限',
+      rate_limit_exceeded: 'レート制限超過',
+      key_throttled: 'キーがスロットリング',
+      no_route: '利用可能な経路なし',
+      model_not_found: 'モデルが見つかりません',
+      client_cancel: 'クライアントが中断',
+      prompt_injection_blocked: 'プロンプトインジェクションを遮断',
+    },
   },
 }

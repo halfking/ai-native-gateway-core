@@ -104,6 +104,8 @@ export interface StageNode {
   detail: string
   /** 该段耗时（毫秒）。未测量 = null（禁止用 0 冒充）。 */
   durMs: number | null
+  /** 候选数（只有路由段有；未上报 = null ⇒ 不显示「N 候选」）。 */
+  candidates?: number | null
 }
 
 /** 最终匹配模型的来源（用于如实说明「这个值是从哪来的」）。 */
@@ -153,6 +155,9 @@ export interface CacheRate {
 /** 缓存口径标识。 */
 export type CacheConvention = 'subset_openai' | 'parallel_anthropic' | 'unknown'
 
+/** 错误来源（owner「在最右边显示错误源头及类型」的「源头」那一半）。 */
+export type ErrorSource = 'gateway' | 'provider' | 'other' | ''
+
 /** 单条请求带的全部推导结果（纯函数产物，组件只渲染不改写）。 */
 export interface StageBand {
   /** 请求 id。 */
@@ -191,8 +196,22 @@ export interface StageBand {
   rawModel: string
   /** 失败原因码（error_kind）。 */
   errorKind: string
+  /** 错误来源（网关 / 供应商 / 其它）。空串 = 无失败。 */
+  errorSource: ErrorSource
   /** 失败发生在哪一段（无失败 = null）。 */
   failedStage: StageKey | null
+  /** 出站尝试次数（upstream_request 动作条数）。0 = 还没出站。 */
+  attempts: number
+  /** 排队时长（毫秒）：模型入队 → 选中节点。未测量 = null。 */
+  queueMs: number | null
+  /** 输入 token（未上报 = null）。 */
+  promptTokens: number | null
+  /** 输出 token（未上报 = null）。 */
+  completionTokens: number | null
+  /** 缓存读取 token（未上报 = null）。 */
+  cacheReadTokens: number | null
+  /** 会话 id（同一会话的多轮 ⇒ 「第 N 轮」）。 */
+  sessionId: string
   /** 是否探测请求。 */
   isProbe: boolean
   /** 是否在途（未终态）。 */

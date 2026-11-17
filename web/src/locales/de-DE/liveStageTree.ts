@@ -24,11 +24,51 @@ export default {
     warned: 'Warnung',
     unmeasured: 'Nicht gemessen',
   },
+  /** Anzeigemodus (Runde 6: vollständig / kompakt – gleiche Daten, gleiche Filter). */
+  mode: {
+    label: 'Anzeigemodus',
+    full: 'Vollständig',
+    compact: 'Kompakt',
+  },
+  /** Legende (Runde 4): die sieben Statuszeichen und die beiden Schienen. */
+  legend: {
+    sendRail: 'Sendschiene (links → rechts)',
+    recvRail: 'Empfangsschiene (rechts → links)',
+  },
+  /** Spaltenkopf (Runde 8). */
+  header: {
+    time: 'Zeit',
+    client: 'Aufrufer',
+    flow: 'Phasenablauf',
+  },
+  /** Lesbare Bezeichnung des Client-Typs. */
+  clientType: {
+    coding_agent: 'Coding-Assistent',
+    sdk: 'SDK-Client',
+    cli: 'Kommandozeile',
+    app: 'Desktop-App',
+    automation: 'Automatisierung',
+    bot: 'Chatbot',
+    api: 'API-Aufruf',
+    web: 'Web-App',
+  },
+  /** Gesprächsrunde (die wie viele Runde derselben Sitzung). */
+  session: {
+    first: 'Erste Runde',
+    round: 'Runde {n}',
+  },
+  /** Zeitfenster (falls die Filterleiste keine Option „alle“ hat). */
+  window: {
+    all: 'Gesamter Zeitraum',
+  },
+  /** „Neue Anfragen“-Hinweis beim Scrollen nach oben. */
+  newPill: 'Neue Anfragen',
+
   value: {
     sanitize: '{n} Stelle(n)',
     route: '{n} Kandidat(en)',
-    meter: '{n} Token',
-    injection: 'Score {n} ({d})',
+    meter: '{n} tok',
+    injection: 'Score {n}',
     compress: {
       yes: 'Komprimiert',
       no: 'Nicht komprimiert',
@@ -40,6 +80,7 @@ export default {
     block: 'Abgelehnt',
     safe: 'Sicher',
     warn: 'Treffer (nur Warnung)',
+    warnShort: 'erkannt',
     unknown: 'Nicht bestimmt',
   },
   return: {
@@ -54,6 +95,8 @@ export default {
     },
     toolsRestore: 'tools rückgeführt {n}',
     toolsRestored: 'zurückgeführt',
+    queue: 'In Warteschlange {ms} ms',
+    attempts: '{n} Versuche',
     finalModel: 'Endgültiges Modell',
     upstreamModel: 'Upstream-Modell',
     finalModelTip: {
@@ -100,14 +143,101 @@ export default {
     },
   },
   stats: {
-    open: 'Statistiken aufklappen (ganze Seite)',
-    readout: '{total} gesamt | {rate}% Erfolg | {inFlight} in Arbeit',
+    open: 'Statistik ausklappen (volle Seite)',
+    readout: '{window} · {total} Anfragen · {rate} % Erfolg · {inFlight} unterwegs',
     title: 'Live-Statistik',
-    hint:
-      'Gleiche Basis wie die Live-Topologie-Seite: die letzten 5 Minuten und die letzte Stunde werden direkt aus der Datenbank gelesen, der laufende Tag kommt aus dem Tages-Bucket (bis zu 1 Stunde verzögert).',
+    hint: 'Hauptbasis: die unter der Filterleiste sichtbaren Anfragen (Live-Fenster im Speicher). Der aufklappbare Bereich ist eine direkte Datenbankabfrage – ein anderes Maß, nie vermischt.',
     close: 'Schließen',
+    scope: '{window} · {n} im Speicher',
+    kpi: {
+      title: 'Überblick',
+      requests: 'Anfragen',
+      successRate: 'Erfolgsquote',
+      inFlight: 'Unterwegs',
+      failed: 'Fehlgeschlagen',
+      avgLatency: 'Mittlere Latenz',
+      p95Latency: 'P95-Latenz',
+      totalTokens: 'Token gesamt',
+      inputTokens: 'Eingangs-Token',
+      outputTokens: 'Ausgangs-Token',
+      cost: 'Kosten gesamt',
+      cacheRate: 'Cache-Trefferquote',
+      providers: 'Anbieter',
+      models: 'Modelle',
+      clients: 'Aufrufer',
+      credentials: 'Zugangsdaten',
+      attempts: 'Ausgehende Versuche',
+    },
+    trend: {
+      title: 'Periodenstatistik',
+      hint: 'Pro Minute gebündelt; leere Buckets bleiben erhalten, so sieht man Einbrüche sofort',
+      empty: 'Keine Anfragen im Fenster',
+    },
+    dim: {
+      title: 'Aufschlüsselung',
+      hint: 'Dieselben Anfragen wie im Baum (aktuell gefiltertes Fenster)',
+      model: 'Modell',
+      provider: 'Anbieter',
+      client: 'Aufrufer',
+      credential: 'Zugangsdaten',
+      status: 'Zustand',
+      name: 'Bezeichnung',
+      requests: 'Anfragen',
+      successRate: 'Erfolgsquote',
+      inFlight: 'Unterwegs',
+      tokens: 'Token gesamt',
+      cost: 'Kosten',
+      cache: 'Cache-Quote',
+      avgLatency: 'Mittlere Latenz',
+      empty: 'Keine Anfragen im Fenster',
+    },
+    notes: {
+      title: 'Bezugsgröße',
+      scope: 'Bezugsgröße sind die unter der Filterleiste sichtbaren Anfragen (Live-Fenster im Speicher), nicht die vollständige Datenbankhistorie.',
+      coverage: 'Anfragen ohne gemeldete Latenz, Token oder Kosten gehen nicht in die Summen ein (nie als null gezählt).',
+      cost: 'Die Kosten stammen aus cost_usd des Frames. Gebühr (gegenüber dem Nutzer) und Kosten (Einkauf upstream) haben verschiedene Einheiten und dürfen nicht verrechnet werden.',
+      cache: 'Der Nenner der Cache-Quote hängt vom Upstream-Protokoll ab (OpenAI inklusiv, Anthropic parallel). Bei beiden Konventionen gleichzeitig wird keine Zahl angezeigt.',
+      db: 'Der aufklappbare Bereich ist eine direkte Datenbankabfrage (letzte 5 Minuten / 1 Stunde, Tagesbucket) – ein anderes Maß als das Speicherfenster oben.',
+    },
+    db: {
+      title: 'Datenbankbasis (vollständige Historie, direkte Abfrage)',
+    },
   },
   idle: {
     wait: 'Seit {ms} ms keine neue Anfrage',
+  },
+  /** Fehlerquelle und Fehlercode (Runde 9: Quelle und Typ ganz rechts). */
+  error: {
+    column: 'Fehler',
+    tag: {
+      gateway: 'GW Gateway',
+      provider: 'UP Anbieter',
+      other: 'Sonstiges',
+    },
+    source: {
+      gateway: 'Internes Gateway',
+      provider: 'Anbieter',
+      other: 'Sonstiges',
+    },
+    kindLabel: 'Fehlertyp: {kind}',
+    codeLabel: 'Fehlercode {code}',
+    stageLabel: 'Fehlgeschlagene Phase: {stage}',
+    kind: {
+      upstream_timeout: 'Upstream-Zeitüberschreitung',
+      upstream_rate_limited: 'Upstream-Drosselung',
+      upstream_quota_permanent: 'Upstream-Kontingent dauerhaft erschöpft',
+      upstream_error: 'Upstream-Fehler',
+      upstream_connection_error: 'Upstream-Verbindung fehlgeschlagen',
+      upstream_status_5xx: 'Upstream-5xx-Fehler',
+      eof_without_done: 'Upstream endete vorzeitig',
+      probe_timeout: 'Sonde-Zeitüberschreitung',
+      rate_limit: 'Drosselung',
+      rate_limit_exceeded: 'Drosselgrenze überschritten',
+      key_throttled: 'Schlüssel gedrosselt',
+      no_route: 'Keine nutzbare Route',
+      model_not_found: 'Modell nicht gefunden',
+      client_cancel: 'Vom Client abgebrochen',
+      prompt_injection_blocked: 'Prompt-Injection blockiert',
+    },
   },
 }

@@ -24,11 +24,51 @@ export default {
     warned: 'Avec avertissement',
     unmeasured: 'Non mesurée',
   },
+  /** Mode d'affichage (tour 6 : complet / compact, même jeu de données et mêmes filtres). */
+  mode: {
+    label: "Mode d'affichage",
+    full: 'Complet',
+    compact: 'Dense',
+  },
+  /** Légende (tour 4) : les sept glyphes d'état et les deux rails. */
+  legend: {
+    sendRail: "Rail d'envoi (gauche → droite)",
+    recvRail: 'Rail de retour (droite → gauche)',
+  },
+  /** En-tête de colonnes (tour 8). */
+  header: {
+    time: 'Heure',
+    client: 'Appelant',
+    flow: "Déroulé des étapes",
+  },
+  /** Libellé lisible du type de client. */
+  clientType: {
+    coding_agent: 'Assistant de code',
+    sdk: 'Client SDK',
+    cli: 'Ligne de commande',
+    app: 'Application de bureau',
+    automation: 'Automatisation',
+    bot: 'Robot',
+    api: 'Appel API',
+    web: 'Application web',
+  },
+  /** Rang de la conversation (quel tour de la même session). */
+  session: {
+    first: 'Premier tour',
+    round: 'Tour {n}',
+  },
+  /** Fenêtre temporelle (quand la barre de filtres n'a pas d'option « tout »). */
+  window: {
+    all: 'Tout l’historique',
+  },
+  /** Pastille « nouvelles requêtes » affichée quand la vue défile vers le haut. */
+  newPill: 'Nouvelles requêtes',
+
   value: {
     sanitize: '{n} emplacement(s)',
     route: '{n} candidat(s)',
-    meter: '{n} jeton',
-    injection: 'note {n} ({d})',
+    meter: '{n} tok',
+    injection: 'score {n}',
     compress: {
       yes: 'Compressée',
       no: 'Non compressée',
@@ -40,6 +80,7 @@ export default {
     block: 'Refusée',
     safe: 'Sûr',
     warn: 'Correspondance (avertissement seul)',
+    warnShort: 'détecté',
     unknown: 'Non déterminée',
   },
   return: {
@@ -54,6 +95,8 @@ export default {
     },
     toolsRestore: 'tools restauré {n}',
     toolsRestored: 'restauré',
+    queue: 'En attente {ms} ms',
+    attempts: '{n} tentatives',
     finalModel: 'Modèle final',
     upstreamModel: 'Modèle amont',
     finalModelTip: {
@@ -100,14 +143,101 @@ export default {
     },
   },
   stats: {
-    open: 'Développer les statistiques (page entière)',
-    readout: '{total} au total | {rate}% de réussite | {inFlight} en cours',
+    open: 'Déplier les statistiques (plein écran)',
+    readout: '{window} · {total} requêtes · {rate} % de réussite · {inFlight} en cours',
     title: 'Statistiques en direct',
-    hint:
-      'Même base que la page de topologie en direct : les 5 dernières minutes et la dernière heure sont lues directement en base, et la journée en cours provient de l’agrégat journalier (jusqu’à 1 heure de retard).',
+    hint: "Base principale : les requêtes visibles sous la barre de filtres (fenêtre en mémoire). La section repliable ci-dessous est une lecture directe de la base : une autre référence, jamais mélangée.",
     close: 'Fermer',
+    scope: '{window} · {n} conservées en mémoire',
+    kpi: {
+      title: 'Vue d’ensemble',
+      requests: 'Requêtes',
+      successRate: 'Taux de réussite',
+      inFlight: 'En cours',
+      failed: 'Échecs',
+      avgLatency: 'Latence moyenne',
+      p95Latency: 'Latence P95',
+      totalTokens: 'Total de jetons',
+      inputTokens: 'Jetons en entrée',
+      outputTokens: 'Jetons en sortie',
+      cost: 'Coût total',
+      cacheRate: 'Taux de cache',
+      providers: 'Fournisseurs',
+      models: 'Modèles',
+      clients: 'Appelants',
+      credentials: 'Identifiants',
+      attempts: 'Tentatives sortantes',
+    },
+    trend: {
+      title: 'Statistiques périodiques',
+      hint: 'Regroupement par minute ; les tranches vides sont conservées, les coupures de trafic restent visibles',
+      empty: 'Aucune requête dans la fenêtre',
+    },
+    dim: {
+      title: 'Répartition',
+      hint: 'Mêmes requêtes que l’arbre (fenêtre filtrée en cours)',
+      model: 'Modèle',
+      provider: 'Fournisseur',
+      client: 'Appelant',
+      credential: 'Identifiant',
+      status: 'Statut',
+      name: 'Nom',
+      requests: 'Requêtes',
+      successRate: 'Taux de réussite',
+      inFlight: 'En cours',
+      tokens: 'Total de jetons',
+      cost: 'Coût',
+      cache: 'Taux de cache',
+      avgLatency: 'Latence moyenne',
+      empty: 'Aucune requête dans la fenêtre',
+    },
+    notes: {
+      title: 'Base de calcul',
+      scope: 'La base est l’ensemble des requêtes visibles sous la barre de filtres (fenêtre en mémoire), pas l’historique complet de la base.',
+      coverage: 'Les requêtes sans latence, jetons ni coût déclarés sont exclues des totaux (jamais comptées comme zéro).',
+      cost: 'Le coût vient du champ cost_usd de la trame. Les frais (facturés à l’utilisateur) et le coût (acheté en amont) n’ont pas la même unité : on ne les soustrait pas.',
+      cache: 'Le dénominateur du taux de cache dépend du protocole amont (OpenAI inclusif, Anthropic parallèle). Si les deux conventions coexistent, aucun chiffre n’est affiché.',
+      db: 'La section repliable ci-dessous est une lecture directe de la base (5 dernières minutes / 1 heure, seau du jour), ce n’est pas la même référence que la fenêtre mémoire ci-dessus.',
+    },
+    db: {
+      title: 'Base de données (historique complet, lecture directe)',
+    },
   },
   idle: {
     wait: 'Aucune nouvelle requête depuis {ms} ms',
+  },
+  /** Source et code d’erreur (tour 9 : source et type d’erreur tout à droite). */
+  error: {
+    column: 'Erreur',
+    tag: {
+      gateway: 'GW passerelle',
+      provider: 'UP fournisseur',
+      other: 'Autre',
+    },
+    source: {
+      gateway: 'Passerelle',
+      provider: 'Fournisseur',
+      other: 'Autre',
+    },
+    kindLabel: 'Type d’erreur : {kind}',
+    codeLabel: 'Code d’erreur {code}',
+    stageLabel: 'Étape en échec : {stage}',
+    kind: {
+      upstream_timeout: 'Délai d’attente amont dépassé',
+      upstream_rate_limited: 'Limitation de débit amont',
+      upstream_quota_permanent: 'Quota amont définitivement épuisé',
+      upstream_error: 'Erreur amont',
+      upstream_connection_error: 'Connexion amont impossible',
+      upstream_status_5xx: 'Erreur amont 5xx',
+      eof_without_done: 'Fin amont anticipée',
+      probe_timeout: 'Délai de sonde dépassé',
+      rate_limit: 'Limitation de débit',
+      rate_limit_exceeded: 'Limitation de débit dépassée',
+      key_throttled: 'Clé limitée',
+      no_route: 'Aucune route utilisable',
+      model_not_found: 'Modèle introuvable',
+      client_cancel: 'Annulée par le client',
+      prompt_injection_blocked: 'Injection de prompt bloquée',
+    },
   },
 }

@@ -24,11 +24,51 @@ export default {
     warned: '有警告',
     unmeasured: '未測量',
   },
+  /** 顯示模式（設計第 6 輪：完整 / 緊湊，同一批資料、同一套過濾）。 */
+  mode: {
+    label: '顯示模式',
+    full: '詳細檢視',
+    compact: '緊湊',
+  },
+  /** 圖例（設計第 4 輪）：七態字形 + 兩條軌的方向。 */
+  legend: {
+    sendRail: '發送軌（左→右）',
+    recvRail: '接收軌（右→左）',
+  },
+  /** 欄位表頭（設計第 8 輪）：時間 / 客戶端 / 階段。 */
+  header: {
+    time: '時間',
+    client: '客戶端',
+    flow: '階段流',
+  },
+  /** 客戶端類型的人話標籤。 */
+  clientType: {
+    coding_agent: '編碼助手',
+    sdk: 'SDK 客戶端',
+    cli: '命令列',
+    app: '桌面應用程式',
+    automation: '自動化',
+    bot: '機器人',
+    api: 'API 呼叫',
+    web: '網頁應用程式',
+  },
+  /** 會話輪次（同一會話裡的第幾輪）。 */
+  session: {
+    first: '首輪',
+    round: '第 {n} 輪',
+  },
+  /** 時間窗（過濾列沒有「全部」檔時用得到）。 */
+  window: {
+    all: '全部時間',
+  },
+  /** 「有新請求」貼底提示。 */
+  newPill: '有新請求',
+
   value: {
     sanitize: '{n} 處',
     route: '{n} 個候選',
-    meter: '{n} 個 token',
-    injection: '分數 {n}（{d}）',
+    meter: '{n} tok',
+    injection: '得分 {n}',
     compress: {
       yes: '已壓縮',
       no: '未壓縮',
@@ -40,6 +80,7 @@ export default {
     block: '拒絕',
     safe: '無風險',
     warn: '命中（僅警告）',
+    warnShort: '命中',
     unknown: '無法判定',
   },
   return: {
@@ -54,6 +95,8 @@ export default {
     },
     toolsRestore: 'tools 還原 {n}',
     toolsRestored: '已還原',
+    queue: '排隊 {ms}ms',
+    attempts: '嘗試 {n} 次',
     finalModel: '最終模型',
     upstreamModel: '上游端模型',
     finalModelTip: {
@@ -101,12 +144,100 @@ export default {
   },
   stats: {
     open: '展開統計（全頁）',
-    readout: '{total} 筆 · 成功率 {rate}% · 進行中 {inFlight}',
+    readout: '{window} · {total} 請求 · {rate} 成功率 · 在途 {inFlight}',
     title: '即時統計',
-    hint: '統計口徑與即時拓撲頁一致：近 5 分鐘與近 1 小時為資料庫直查，當天為日桶（滯後不超過 1 小時）。',
+    hint: '主口徑＝頂部過濾列目前可見的請求（記憶體即時視窗）；摺疊區是資料庫直查的另一把尺，兩者不合算。',
     close: '關閉',
+    scope: '{window} · 記憶體內 {n} 筆',
+    kpi: {
+      title: '總覽',
+      requests: '請求數',
+      successRate: '成功比率',
+      inFlight: '在途請求',
+      failed: '失敗',
+      avgLatency: '平均耗時',
+      p95Latency: 'P95 耗時',
+      totalTokens: 'token 合計',
+      inputTokens: '輸入 token',
+      outputTokens: '輸出 token',
+      cost: '成本合計',
+      cacheRate: '快取命中率',
+      providers: '供應商數',
+      models: '模型數',
+      clients: '客戶端數',
+      credentials: '憑證數',
+      attempts: '出站嘗試',
+    },
+    trend: {
+      title: '週期統計',
+      hint: '依分鐘分桶；空桶也保留，斷流一眼看得見',
+      empty: '視窗內沒有請求',
+    },
+    dim: {
+      title: '分類統計',
+      hint: '與樹上的請求同源（目前過濾後的視窗）',
+      model: '模型類別',
+      provider: '供應商',
+      client: '客戶端',
+      credential: '憑證',
+      status: '狀態',
+      name: '名稱',
+      requests: '請求數',
+      successRate: '成功比率',
+      inFlight: '在途請求',
+      tokens: 'token 合計',
+      cost: '花費',
+      cache: '快取率',
+      avgLatency: '平均耗時',
+      empty: '視窗內沒有請求',
+    },
+    notes: {
+      title: '口徑說明',
+      scope: '統計基線＝頂部過濾列目前可見的請求（記憶體即時視窗），不是資料庫全量。',
+      coverage: '未回報的耗時 / token / 成本不計入合計（不按 0 計），覆蓋率見各指標旁的說明。',
+      cost: '成本取請求框架的 cost_usd；費用（對使用者計費）與成本（上游採購）單位不同，不可相減。',
+      cache: '快取命中率的分母隨上游協議變（OpenAI 包含口徑 / Anthropic 並列口徑），兩種口徑同時出現時不給數。',
+      db: '下方摺疊區是資料庫直查口徑（近 5 分鐘 / 1 小時直查、當天日桶），與本頁記憶體視窗不是同一把尺。',
+    },
+    db: {
+      title: '資料庫口徑（歷史全量直查）',
+    },
   },
   idle: {
     wait: '已等待 {ms} 毫秒沒有新請求',
+  },
+  /** 錯誤來源與錯誤碼（設計第 9 輪：最右邊顯示錯誤源頭及類型）。 */
+  error: {
+    column: '錯誤',
+    tag: {
+      gateway: 'GW 網關',
+      provider: 'UP 供應商',
+      other: '其他',
+    },
+    source: {
+      gateway: '網關',
+      provider: '供應商',
+      other: '其他',
+    },
+    kindLabel: '錯誤類型：{kind}',
+    codeLabel: '錯誤碼 {code}',
+    stageLabel: '失敗階段：{stage}',
+    kind: {
+      upstream_timeout: '上游逾時',
+      upstream_rate_limited: '上游流控',
+      upstream_quota_permanent: '上游配額永久不足',
+      upstream_error: '上游錯誤',
+      upstream_connection_error: '上游連線失敗',
+      upstream_status_5xx: '上游 5xx 錯誤',
+      eof_without_done: '上游提前結束',
+      probe_timeout: '探測逾時',
+      rate_limit: '流控',
+      rate_limit_exceeded: '超過流控門檻',
+      key_throttled: '金鑰被流控',
+      no_route: '無可用路由',
+      model_not_found: '查無此模型',
+      client_cancel: '用戶端取消',
+      prompt_injection_blocked: '提示詞注入被攔截',
+    },
   },
 }

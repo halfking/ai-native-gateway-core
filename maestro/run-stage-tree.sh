@@ -39,3 +39,21 @@ maestro test \
   -e ADMIN_USER="$ADMIN_USER" \
   -e "ADMIN_PASSWORD=$ADMIN_PASSWORD" \
   "$ROOT/maestro/flows/12-live-stage-tree.yaml"
+
+# ── 第二层：页面内 CDP 断言（结构 / 口径 / 版面对拍）──────────────────────
+# ★ 为什么是**第二层**而不是并入 flow：Maestro 2.11.0 的 web 驱动
+#   ① evalScript 是 no-op；② `${output.x}` 只在 JVM 侧求值，拿不到 DOM；
+#   ③ 选择器只有 text/id/css，且 id: 只认 HTML id ⇒
+#   「列头与带同宽」「瓦片同一行」「错误列右缘恒定」「胶囊读数 == 实际带数」
+#   这四类断言用 flow 的选择器**做不到**。
+# ⇒ 需要一个已开 CDP 的浏览器与一个登录令牌（都从环境变量/临时文件读，不进仓）。
+#   不给这两个变量就跳过（flow 本身已跑完，不受影响）。
+if [ -n "${STAGE_TREE_CDP:-}" ] && [ -n "${STAGE_TREE_TOKEN_FILE:-}" ]; then
+  echo "▶ 页面内断言（CDP=$STAGE_TREE_CDP）"
+  node "$ROOT/maestro/tools/assert-stage-tree.mjs" \
+    --cdp "$STAGE_TREE_CDP" --url "$BASE_URL" --token-file "$STAGE_TREE_TOKEN_FILE"
+  node "$ROOT/maestro/tools/assert-stage-tree-design.mjs" \
+    --cdp "$STAGE_TREE_CDP" --url "$BASE_URL" --token-file "$STAGE_TREE_TOKEN_FILE"
+else
+  echo "▶ 跳过页面内断言（未给 STAGE_TREE_CDP / STAGE_TREE_TOKEN_FILE）"
+fi

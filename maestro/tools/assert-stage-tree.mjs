@@ -137,17 +137,23 @@ const PAGE_PROBE = `(() => {
   out.facts.inFlight = isInFlight
   out.facts.failure = isFailure
 
-  const readout = tx(capsule).match(/^(\\d+)\\s*条\\s*·\\s*成功率\\s*([^%]*?)%\\s*·\\s*在途\\s*(\\d+)$/)
-  check('胶囊读数可解析', !!readout, tx(capsule))
+  // ★ 胶囊格式（设计第 3 轮口径）：「近 5 分钟 · 14 请求 · 86% 成功率 · 在途 0」
+  //   ⇒ 读数**带窗口**（不只报一个总数：总数不带窗口就没有分母）。
+  //   ⚠️ 成功率有两种形态：有分母时是「86% 成功率」，**不可判定**时是「— 成功率」
+  //     （不冒充 0%）⇒ 正则必须同时吃下这两种，不能只认带 % 的那一种。
+  const readout = tx(capsule).match(/^(.*?)\\s*·\\s*(\\d+)\\s*请求\\s*·\\s*([\\d\\u2014]+)\\s*%?\\s*成功率\\s*·\\s*在途\\s*(\\d+)$/)
+  check('胶囊读数可解析（窗口 · 请求数 · 成功率 · 在途）', !!readout, tx(capsule))
   if (readout) {
-    const total = Number(readout[1])
-    const rateRaw = readout[2].trim()
-    const inFlightRead = Number(readout[3])
+    const total = Number(readout[2])
+    const rateRaw = readout[3].trim()
+    const inFlightRead = Number(readout[4])
+    out.facts.readoutWindow = readout[1]
     out.facts.readoutTotal = total
     out.facts.readoutRate = rateRaw
     out.facts.readoutInFlight = inFlightRead
-    check('胶囊总条数 == 页面阶段带条数', total === bands.length, readout[1] + ' vs ' + bands.length)
-    check('胶囊在途数 == 带内 in_progress 徽章数', inFlightRead === isInFlight, readout[3] + ' vs ' + isInFlight)
+    check('胶囊读数带时间窗（不只报总数）', readout[1].length > 0, readout[1])
+    check('胶囊总条数 == 页面阶段带条数', total === bands.length, readout[2] + ' vs ' + bands.length)
+    check('胶囊在途数 == 带内 in_progress 徽章数', inFlightRead === isInFlight, readout[4] + ' vs ' + isInFlight)
     if (total > 0) {
       const done = bands.length - isFailure - isInFlight
       const expectRate = String(Math.round((done / total) * 100))
