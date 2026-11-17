@@ -57,7 +57,7 @@ M5	internal/ir/client_shape_fix.go	reportClientShapeFix(sourceProtocol, what, "n
 M6	internal/ir/parse_anthropic.go	if inferred, ok := inferRoleFromContentBlocks(irMsg.Content); ok {	if inferred, ok := inferRoleFromContentBlocks(irMsg.Content); ok && false {	TestClientShape_RoleNormalization
 M7	internal/ir/conversation_shape_fix.go	shouldFix := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION") != "false"	shouldFix := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION") == "__never__"	TestClientShape_RoleAlternationDefaultMerged
 M8	internal/ir/parse_openai.go	reportClientShapeFix(ProtocolOpenAIChat, "modalities", "unmarshal_failed_dropped",	reportClientShapeFix(ProtocolOpenAIChat, "modalities", "unmarshal_failed_renamed",	TestClientShape_CompoundFieldMalformed
-M9	internal/ir/parse_openai.go	reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_dropped",	reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_renamed",	TestClientShape_CompoundFieldMalformed
+M9	internal/ir/parse_openai.go	reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_dropped",\n\t\t\t\t\t\tmap[string]any{"value_type": jsonTypeName(stopProbe)})	reportClientShapeFix(ProtocolOpenAIChat, "stop", "unparseable_renamed",\n\t\t\t\t\t\tmap[string]any{"value_type": jsonTypeName(stopProbe)})	TestClientShape_CompoundFieldMalformed
 M10	internal/ir/parse_gemini.go	reportClientShapeFix(ProtocolGeminiGenerate, "contents[].parts[].inlineData", "malformed_part_dropped",	reportClientShapeFix(ProtocolGeminiGenerate, "contents[].parts[].inlineData", "malformed_part_renamed",	TestClientShape_GeminiMalformedParts
 EOF
 

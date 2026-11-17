@@ -33,6 +33,15 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	// 行情价禁止回流路由/计费表（红线）。
 	mux.HandleFunc("/api/admin/maas/market-price-overview", h.superAdmin(h.handleMaasMarketPriceOverview))
 	mux.HandleFunc("/api/admin/maas/market-price-sync-status", h.superAdmin(h.handleMaasMarketPriceSyncStatus))
+	// ★ 2026-11-17（定价对比完善轮）：定价建议 —— 用采集到的 MaaS 行情价
+	//   按策略（复制某平台 / 平均 / 最低 / 地板×加成）生成本地零售价建议，
+	//   运营预览后「一键执行」；写入经 model_price_versions 期次账 + 批次留痕
+	//   ⇒ 价格变更历史唯一、可审计。
+	//   ★ 与采集侧红线的分界：**自动**同步禁止回流计费面；这里是**显式**
+	//     人工动作（confirm=true + superAdmin）⇒ 回流有据可查。
+	mux.HandleFunc("/api/admin/market/pricing-suggestions", h.superAdmin(h.handlePricingSuggestions))
+	mux.HandleFunc("/api/admin/market/pricing-apply", h.superAdmin(h.handlePricingApply))
+	mux.HandleFunc("/api/admin/market/pricing-batches", h.superAdmin(h.handlePricingSuggestionBatches))
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
 	mux.HandleFunc("/api/admin/maas/topup-packages", h.superAdmin(h.handleMaasTopupPackages))
 	mux.HandleFunc("/api/admin/maas/tenants/", h.superAdmin(h.handleMaasTenantAdmin))
