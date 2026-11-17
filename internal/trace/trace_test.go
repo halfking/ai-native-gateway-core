@@ -1,11 +1,13 @@
 package trace
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -242,7 +244,7 @@ func TestEventBuilder_ConcurrentAppendIsGoroutineSafe(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			size := 1000 + i                        // 每个 goroutine 一个唯一值
+			size := 1000 + i                       // 每个 goroutine 一个唯一值
 			sentinel := fmt.Errorf("boom-%02d", i) // 错误文本也唯一
 
 			ev := BodyParse(size, sentinel).Build()
@@ -542,4 +544,58 @@ func fromEnv(k string) string {
 func envPairs() [][2]string {
 	// 实现见 env_helpers.go (单独小文件)
 	return globalEnv
+}
+
+// TestEventBuilder_AppendMirrorsToSlog（2026-11-17 全链路日志审计轮）：
+// Append 在写 recorder 的同时镜像一条 gw_trace_stage slog 记录 ——
+// 滚动日志里按 request_id 搜即可还原阶段序列，不必再开 trace 视图。
+// 契约：success=Debug、failed=Warn；request_id/stage/status 必在；
+// request_complete 不镜像（完成行由 access log 兜底）。
+func TestEventBuilder_AppendMirrorsToSlog(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mr := miniredis.RunT(t)
+	rec := NewRedisRecorder(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+
+	// 成功事件 → Debug 镜像。
+	ReceiveRequest("POST", "/v1/chat/completions", "1.2.3.4").Append(ctx, rec, "rid-mirror-1")
+	// 失败事件 → Warn 镜像。
+	RouteResolve("gpt-x", 0).WithError(errors.New("no candidate")).Append(ctx, rec, "rid-mirror-1")
+	// request_complete 不镜像。
+	RequestComplete(FinalSuccess, "", "", nil).Append(ctx, rec, "rid-mirror-1")
+
+	var stages []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("bad JSON: %v", err)
+		}
+		if m["msg"] == "gw_trace_stage" {
+			stages = append(stages, m)
+		}
+	}
+	if len(stages) != 2 {
+		t.Fatalf("want 2 mirrored stage records (success+failed, no request_complete), got %d: %v", len(stages), stages)
+	}
+	if stages[0]["level"] != "DEBUG" || stages[1]["level"] != "WARN" {
+		t.Errorf("levels = %v/%v, want DEBUG/WARN", stages[0]["level"], stages[1]["level"])
+	}
+	for i, wantStage := range []string{"receive_request", "route_resolve"} {
+		if stages[i]["request_id"] != "rid-mirror-1" {
+			t.Errorf("stage %d request_id = %v", i, stages[i]["request_id"])
+		}
+		if stages[i]["stage"] != wantStage {
+			t.Errorf("stage %d = %v, want %v", i, stages[i]["stage"], wantStage)
+		}
+	}
+	if stages[1]["error"] != "no candidate" {
+		t.Errorf("failed mirror error = %v, want 'no candidate'", stages[1]["error"])
+	}
 }

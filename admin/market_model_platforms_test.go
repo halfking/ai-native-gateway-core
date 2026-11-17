@@ -70,12 +70,12 @@ func TestMarketModelPlatformsScansNullPrices(t *testing.T) {
 		Available bool `json:"available"`
 		IsDir     bool `json:"is_dir"`
 		Items     []struct {
-			InputPer1M     *float64 `json:"input_per_1m"`
-			OutputPer1M    *float64 `json:"output_per_1m"`
-			IsVendor       bool     `json:"is_vendor"`
-			CacheHitPer1M  *float64 `json:"cache_hit_per_1m"`
-			Tier           string   `json:"tier"`
-			ModelKind      string   `json:"model_kind"`
+			InputPer1M    *float64 `json:"input_per_1m"`
+			OutputPer1M   *float64 `json:"output_per_1m"`
+			IsVendor      bool     `json:"is_vendor"`
+			CacheHitPer1M *float64 `json:"cache_hit_per_1m"`
+			Tier          string   `json:"tier"`
+			ModelKind     string   `json:"model_kind"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
@@ -109,7 +109,8 @@ func TestMarketModelPlatformsScansNullPrices(t *testing.T) {
 }
 
 // ★ 2026-11-17：没指定 model ⇒ 返回**模型目录**（而不是全量明细），
-//   并把 is_dir 置 true ⇒ 前端据此渲染模型选择器（不再要求手打 canonical 名）。
+//
+//	并把 is_dir 置 true ⇒ 前端据此渲染模型选择器（不再要求手打 canonical 名）。
 func TestMarketModelPlatformsDirectoryMode(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

@@ -42,6 +42,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/securityevent"
+	"github.com/kaixuan/llm-gateway-go/internal/securitypattern"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -273,6 +274,22 @@ type Handler struct {
 	// 会让"会话记忆在写"被误读成"安全事件也在写"。
 	securityEventSink interface {
 		Stats() securityevent.Stats
+	}
+	// securityPatternSync provides the M2-3 cross-instance pattern sync
+	// stats (pulls / observations / patterns / errors + cache counters).
+	//
+	// ★ 单独一个字段：它是**读面**（会话记忆与安全事件的写面都不属于它），
+	//   并进去会让"会话记忆在写"被误读成"跨实例模式在同步"。
+	//
+	// ★ errors / stale 必须露出来：共享域读不到时快照会停在上一份，
+	//   一个看不见的失败会被读成"别的实例没有新模式"。
+	securityPatternSync interface {
+		Stats() securitypattern.SyncStats
+	}
+	// securityPatternCache provides the M2-3 local pattern snapshot
+	// counters (patterns / fetched_at / stale / annotated / stale_skipped).
+	securityPatternCache interface {
+		Stats() securitypattern.CacheStats
 	}
 	// stateManager (2026-06-30) provides live credential×model state for
 	// the /api/credentials/{id}/test + /state endpoints and feeds the
@@ -972,6 +989,21 @@ func (h *Handler) SetSecurityEventSink(sink interface {
 	Stats() securityevent.Stats
 }) {
 	h.securityEventSink = sink
+}
+
+// SetSecurityPatternSync wires the M2-3 cross-instance pattern sync so the
+// admin UI can display its counters.
+//
+// The sync is best-effort by design: when the shared domain is unreachable
+// the previous snapshot is kept. That must be **visible** — an invisible
+// failure reads exactly like "no other instance has new patterns".
+func (h *Handler) SetSecurityPatternSync(syncer interface {
+	Stats() securitypattern.SyncStats
+}, cache interface {
+	Stats() securitypattern.CacheStats
+}) {
+	h.securityPatternSync = syncer
+	h.securityPatternCache = cache
 }
 
 func (h *Handler) fpSlotsDefaultLimit() int {

@@ -37,6 +37,29 @@ func (a piDetectorAdapter) Detect(ctx context.Context, tenantID, input string) (
 	if err != nil || result == nil {
 		return nil, err
 	}
+	return adaptDetectionResult(result), nil
+}
+
+// DetectAndLog 实现 promptinjectionhooks.AuditingDetector。
+//
+// ★ 2026-11-17 审计轮 P1（F-PI-03）：核心 Detector 的 DetectAndLog
+//
+//	（写 prompt_injection_detections）此前**零生产调用方** ⇒
+//	活路径只走 Detect ⇒ 检测审计表在生产恒空 ⇒
+//	  · 事后无法复核任何一次拦截/漏检；
+//	  · 「连续攻击终止会话」（TerminateOnRepeat，依赖该表计数）永不触发；
+//	  · 策略统计（total_detections / total_blocks）永不更新。
+//	⇒ 本适配器实现审计扩展，hook 检测到该接口时改走 DetectAndLog。
+func (a piDetectorAdapter) DetectAndLog(ctx context.Context, tenantID, requestID, sessionKey, input, clientIP, userAgent string) (*promptinjectionhooks.DetectionResult, error) {
+	result, err := a.core.DetectAndLog(ctx, tenantID, requestID, sessionKey, input, clientIP, userAgent)
+	if err != nil || result == nil {
+		return nil, err
+	}
+	return adaptDetectionResult(result), nil
+}
+
+// adaptDetectionResult 把核心侧 DetectionResult 映射成 hook 侧镜像结构。
+func adaptDetectionResult(result *promptinjection.DetectionResult) *promptinjectionhooks.DetectionResult {
 	return &promptinjectionhooks.DetectionResult{
 		Score:              result.Score,
 		RiskLevel:          result.RiskLevel,
@@ -52,5 +75,5 @@ func (a piDetectorAdapter) Detect(ctx context.Context, tenantID, input string) (
 		LLMReason:          result.LLMReason,
 		SessionHealthDelta: result.SessionHealthDelta,
 		TerminateSession:   result.TerminateSession,
-	}, nil
+	}
 }

@@ -36,9 +36,12 @@ import (
 
 // pricingSuggestionOperator 从请求头取操作者标识（审计用）。
 // ★ 沿用仓内既有范式（provider_credential.go / session_approval.go 同款）：
-//   X-Admin-User 头由 admin 中间件从登录态注入。
+//
+//	X-Admin-User 头由 admin 中间件从登录态注入。
+//
 // ★ 取不到就退化成 "unknown" —— **不猜身份**，但身份缺失本身要能被审计看见
-//   （而不是悄悄记成某个默认账号）。
+//
+//	（而不是悄悄记成某个默认账号）。
 func pricingSuggestionOperator(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("X-Admin-User")); v != "" {
 		return v

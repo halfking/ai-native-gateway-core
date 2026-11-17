@@ -26,6 +26,12 @@ const rows = ref<MarketPlatformQuoteRow[]>([])
 const directory = ref<MarketPlatformQuoteDirectoryRow[]>([])
 const dirLoading = ref(false)
 const dirFailed = ref(false)
+// ★ 匹配范围：'' = 只查本模型（精确匹配）；'family' = 额外含同族变体（显式开启）。
+const scope = ref<'' | 'family'>('')
+
+const selectedModel = computed(() => model.value.trim().toLowerCase())
+// 同族视图下必须显示每行的 canonical_name，否则用户分不清哪行是哪个模型。
+const showModelColumn = computed(() => scope.value === 'family')
 
 async function loadDirectory() {
   dirLoading.value = true
@@ -46,11 +52,16 @@ async function load() {
   if (!m) return
   loading.value = true
   try {
-    const res = await getAdminMarketModelPlatforms(m, 'standard', 300)
+    const res = await getAdminMarketModelPlatforms(m, 'standard', 300, scope.value)
     available.value = res.available
     reason.value = res.reason || ''
     // 契约 C：名称列表按平台名排序（首列展示 platform_name）。
+    // ★ 同族模式下按「是否本模型」优先排序（同族行排在后面），
+    //   否则本模型的行情会被同族的行淹没。
     rows.value = [...(res.items || [])].sort((a, b) => {
+      const aOwn = (a.canonical_name || '').trim().toLowerCase() === selectedModel.value
+      const bOwn = (b.canonical_name || '').trim().toLowerCase() === selectedModel.value
+      if (aOwn !== bOwn) return aOwn ? -1 : 1
       const an = (a.platform_name || a.platform_id || '').trim()
       const bn = (b.platform_name || b.platform_id || '').trim()
       if (!an && bn) return 1
@@ -72,10 +83,13 @@ async function load() {
 onMounted(loadDirectory)
 
 // ★ 最便宜标记：只看**非原厂**行（is_vendor 是基准锚不是竞品）。
+// ★ 且**只在本模型内比较**（F11）：同族变体（glm-5.3-flash 等）的价
+//   不是这个模型的价 ⇒ 绝不能让它抢走「最便宜」标记。
 const cheapestOut = computed(() => {
   let best: number | null = null
   for (const r of rows.value) {
     if (r.is_vendor) continue
+    if (!isSelectedModel(r)) continue
     const v = r.cny_out_per_1m
     if (v === null || v === undefined) continue
     if (best === null || v < best) best = v
@@ -83,8 +97,13 @@ const cheapestOut = computed(() => {
   return best
 })
 
+function isSelectedModel(r: MarketPlatformQuoteRow): boolean {
+  return (r.canonical_name || '').trim().toLowerCase() === selectedModel.value
+}
+
 function isCheapest(r: MarketPlatformQuoteRow): boolean {
   if (r.is_vendor) return false
+  if (!isSelectedModel(r)) return false
   const v = r.cny_out_per_1m
   if (v === null || v === undefined || cheapestOut.value === null) return false
   return v === cheapestOut.value
@@ -93,6 +112,12 @@ function isCheapest(r: MarketPlatformQuoteRow): boolean {
 function pick(d: MarketPlatformQuoteDirectoryRow) {
   model.value = d.canonical_name
   load()
+}
+
+function setScope(next: '' | 'family') {
+  if (scope.value === next) return
+  scope.value = next
+  if (model.value.trim()) load()
 }
 </script>
 
@@ -103,6 +128,18 @@ function pick(d: MarketPlatformQuoteDirectoryRow) {
       <input v-model="model" class="filter-input" type="text" :placeholder="t('priceCompare.platSearch')" @keyup.enter="load" />
       <button class="btn btn-primary btn-sm" @click="load">{{ t('priceCompare.apply') }}</button>
       <button class="btn btn-ghost btn-sm" @click="loadDirectory">{{ t('priceCompare.platReloadDir') }}</button>
+      <!-- ★ 匹配范围（F11）：默认只查本模型；同族变体必须**显式**开启 -->
+      <span class="scope-label">{{ t('priceCompare.platScopeLabel') }}</span>
+      <button
+        class="btn btn-sm"
+        :class="scope === '' ? 'btn-primary' : 'btn-ghost'"
+        @click="setScope('')"
+      >{{ t('priceCompare.platScopeExact') }}</button>
+      <button
+        class="btn btn-sm"
+        :class="scope === 'family' ? 'btn-primary' : 'btn-ghost'"
+        @click="setScope('family')"
+      >{{ t('priceCompare.platScopeFamily') }}</button>
     </div>
 
     <div v-if="dirLoading" class="card hint-line">…</div>
@@ -158,6 +195,7 @@ function pick(d: MarketPlatformQuoteDirectoryRow) {
       <table class="data-table">
         <thead>
           <tr>
+            <th v-if="showModelColumn">{{ t('priceCompare.colModel') }}</th>
             <th>{{ t('priceCompare.colPlatform') }}</th>
             <th>{{ t('priceCompare.colRegion') }}</th>
             <th>{{ t('priceCompare.colCurrency') }}</th>
@@ -175,6 +213,10 @@ function pick(d: MarketPlatformQuoteDirectoryRow) {
             :key="`${r.canonical_name}-${r.platform_id}-${r.tier}`"
             :class="{ 'cheapest-row': isCheapest(r) }"
           >
+            <td v-if="showModelColumn">
+              <div>{{ r.canonical_name }}</div>
+              <code v-if="!isSelectedModel(r)" class="mono-sm family-tag">{{ t('priceCompare.platScopeFamilyTag') }}</code>
+            </td>
             <td>
               <div>{{ r.platform_name || r.platform_id }}</div>
               <code class="mono-sm">{{ r.platform_id }}</code>
@@ -200,8 +242,10 @@ function pick(d: MarketPlatformQuoteDirectoryRow) {
 </template>
 
 <style scoped>
-.filter-card { display: flex; gap: 8px; align-items: center; }
+.filter-card { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .filter-input { flex: 1; max-width: 320px; }
 .cheapest-row { background: rgba(30, 142, 62, 0.08); }
+.scope-label { font-size: 12px; color: var(--text-secondary, #666); }
+.family-tag { color: var(--text-secondary, #666); }
 .hint-line, .empty-next { font-size: 12px; color: var(--text-secondary, #666); }
 </style>

@@ -5,7 +5,7 @@ package maas
 // 与 pricing_suggestion.go 同轮落地：
 //   · 取数：行情事实（970 按平台代表价 + 940 综合地板）+ 我方现价；
 //   · 执行：把建议价写进 model_credit_rates（manual 覆盖）⇒ 期次账自动留痕；
-//   · 批次：pricing_suggestion_batches（973 迁移）记「谁、何时、什么策略、
+//   · 批次：pricing_suggestion_batches（975 迁移）记「谁、何时、什么策略、
 //     改了几个、跳过几个」⇒ 审计面唯一（期次账 = 模型级，批次表 = 批次级）。
 //
 // ★ 执行的红线：
@@ -22,20 +22,69 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // pricingSuggestionCurrentPrices —— 我方现价（credits）。
 type pricingSuggestionCurrentPrices struct {
 	In  *int64
 	Out *int64
+	// InExplicit / OutExplicit：该轴上**这个模型自己**有一档价
+	// （model_credit_rates 里有值），而不是回落到全局基准。
+	//
+	// ★ 为什么要分（211 线上实测，2026-11-17）：
+	//   `pickCreditRateFlagged(manual, val, global)` 在模型**没有存储价**时
+	//   返回全局基准（600 credits × 0.82 折扣 = 492 credits = 0.0492 CNY）
+	//   ⇒ 拿它当「当前零售价」与市场价比，会算出**假偏离**：
+	//   aion-2.0 市场价 5.34 CNY vs 兜底 0.0492 CNY ⇒ delta 10759%。
+	//   ⇒ 全局基准是「所有模型统一兜底」，**不是这个模型的价** ⇒
+	//     现价栏必须显示「—」，幅度不产出，且不能算作「有偏离」。
+	InExplicit  bool
+	OutExplicit bool
+}
+
+// pricingSuggestionCurrentPricesFor —— 把「存储率 + 手工旗标 + 全局基准」
+// 映射成「我方现价 + 是否自有价」（纯函数 ⇒ 可被行为门直接喂数字验证）。
+//
+// ★ 契约（2026-11-17 修正）：
+//
+//	In/Out  = 有效零售价（手工价 > 存储价 > 全局基准），**沿用仓内既有口径**
+//	          （pickCreditRateFlagged，与 maas/rates.go effectiveModelRates 同源）；
+//	InExplicit/OutExplicit = 这个有效价**是不是这个模型自己的价**
+//	          （判据：存储值存在且 > 0 ⇒ 与 pickCreditRate 取存储值的判据**逐字同源**）。
+//	⇒ 两者分离 ⇒ 调用方能区分「模型自己有价」与「只是全局兜底」。
+func pricingSuggestionCurrentPricesFor(
+	manualIn bool, in *int64,
+	manualOut bool, out *int64,
+	globalIn, globalOut int64,
+) pricingSuggestionCurrentPrices {
+	return pricingSuggestionCurrentPrices{
+		In:          pickCreditRateFlagged(manualIn, in, globalIn),
+		Out:         pickCreditRateFlagged(manualOut, out, globalOut),
+		InExplicit:  pricingSuggestionRateIsOwn(in),
+		OutExplicit: pricingSuggestionRateIsOwn(out),
+	}
+}
+
+// pricingSuggestionRateIsOwn —— 这个轴上的价是不是「这个模型自己的价」。
+//
+// ★ 判据必须与 pickCreditRate（maas/market_price_reference.go:247）**逐字同源**：
+//
+//	存储值存在**且 > 0** 才算自有价；存了 0 视作「未设」⇒ 实际取的是全局基准。
+//	⇒ 这里若只用「非 nil」判定，「存了 0 的模型」会被误判成有自有价 ⇒
+//	  现价栏又变回全局基准 ⇒ 假偏离复活（这正是本轮修的那个洞）。
+func pricingSuggestionRateIsOwn(v *int64) bool {
+	return v != nil && *v > 0
 }
 
 // pricingSuggestionScope —— 定价建议的作用域（canonical 名列表）。
 //
 // ★ 口径：
-//   · 指定了 canonical_ids ⇒ 只看这些模型（按 id 解析成名字，解析不到就跳过）；
-//   · 未指定 ⇒ 取该 dimension 下**有 canonical_id 的**行情模型
-//     （canonical_id 非空 = 已与网关身份对齐 ⇒ 才是「可比」的）。
+//
+//	· 指定了 canonical_ids ⇒ 只看这些模型（按 id 解析成名字，解析不到就跳过）；
+//	· 未指定 ⇒ 取该 dimension 下**有 canonical_id 的**行情模型
+//	  （canonical_id 非空 = 已与网关身份对齐 ⇒ 才是「可比」的）。
 func (s *Service) pricingSuggestionScope(ctx context.Context, req PricingSuggestionRequest, dim string) []string {
 	if len(req.CanonicalIDs) > 0 {
 		rows, err := s.pool.Query(ctx,
@@ -169,10 +218,7 @@ func (s *Service) loadPricingSuggestionCurrent(ctx context.Context, names []stri
 		if err := rows.Scan(&name, &in, &outV, &manualIn, &manualOut); err != nil {
 			return nil, err
 		}
-		out[name] = pricingSuggestionCurrentPrices{
-			In:  pickCreditRateFlagged(manualIn, in, global.In),
-			Out: pickCreditRateFlagged(manualOut, outV, global.Out),
-		}
+		out[name] = pricingSuggestionCurrentPricesFor(manualIn, in, manualOut, outV, global.In, global.Out)
 	}
 	return out, rows.Err()
 }
@@ -180,9 +226,12 @@ func (s *Service) loadPricingSuggestionCurrent(ctx context.Context, names []stri
 // ApplyPricingSuggestions —— 「一键执行」：把建议价写进本地零售价。
 //
 // ★ 幂等：同一建议重复执行不会产生重复期次（syncModelPriceVersion 对
-//   「与现行期相同」的写入是 no-op）。
+//
+//	「与现行期相同」的写入是 no-op）。
+//
 // ★ 留痕：① model_credit_rates（manual 覆盖）② model_price_versions 期次
-//   （source=market_suggestion + note 带依据与批次 id）③ pricing_suggestion_batches。
+//
+//	（source=market_suggestion + note 带依据与批次 id）③ pricing_suggestion_batches。
 func (s *Service) ApplyPricingSuggestions(ctx context.Context, req PricingSuggestionRequest) (PricingSuggestionResult, error) {
 	out := PricingSuggestionResult{}
 	if !s.Enabled() {
@@ -214,7 +263,7 @@ func (s *Service) ApplyPricingSuggestions(ctx context.Context, req PricingSugges
 	for _, it := range preview.Items {
 		rec := map[string]any{
 			"canonical_name": it.CanonicalName,
-			"applicable":    it.Applicable,
+			"applicable":     it.Applicable,
 		}
 		if !it.Applicable || it.CanonicalID <= 0 {
 			skipped++
@@ -314,39 +363,87 @@ func (s *Service) updatePricingSuggestionBatch(ctx context.Context, batchID int6
 	return err
 }
 
-// ListPricingSuggestionBatches —— 批次留痕读面（审计分析）。
-func (s *Service) ListPricingSuggestionBatches(ctx context.Context, limit int) ([]PricingSuggestionBatchRow, error) {
-	if !s.Enabled() {
-		return nil, errors.New("maas service disabled")
-	}
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	rows, err := s.pool.Query(ctx, `
+// pricingSuggestionBatchesSQL —— 批次留痕读面的 SQL（★ 生产与真库门共用同一份）。
+//
+// ★ 抽成常量的理由：读面的「列集 / 列序 / 可空性」是**契约**（975 迁移的
+//
+//	表定义），契约一变，扫描目的地必须同步变 ⇒ 两处各写一份 SQL 就会
+//	「SQL 改了、扫描没改」或反之 ⇒ 静默扫错位（这是 F12/F13 同族的坑）。
+const pricingSuggestionBatchesSQL = `
 		SELECT id, created_at, strategy, platform_id, dimension, markup_pct,
 		       operator, dry_run, requested, applied, skipped, detail
 		  FROM public.pricing_suggestion_batches
 		 ORDER BY id DESC
-		 LIMIT $1`, limit)
+		 LIMIT $1`
+
+// pricingSuggestionBatchQuerier —— 批次读面的最小查询面。
+// ★ 连接池（*pgxpool.Pool）与事务（pgx.Tx）都满足它 ⇒ 真库门可以在
+//
+//	**事务内**跑同一份读逻辑（写测试夹具 → 读 → ROLLBACK ⇒ 零残留）。
+type pricingSuggestionBatchQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// pricingSuggestionBatchRowScanner —— 一行批次的最小扫描面。
+// ★ pgx.Rows 与门里的「pgx 真 codec 假件」都满足它 ⇒ 门测的是**生产扫描
+//
+//	函数本身**（而不是门的复制品）⇒ 门有牙。
+type pricingSuggestionBatchRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanPricingSuggestionBatch —— 一行批次 → 结构体（★ 生产与门共用同一份扫描目的地）。
+//
+// ★ markup_pct 是**唯一可空列**（975：`markup_pct numeric(10,4)`，无 NOT NULL）
+//
+//	⇒ 目的地必须是 `**float64`（指针的指针）⇒ pgx 遇 NULL 置 nil。
+//	退化成裸 `float64` ⇒ pgx 报 "cannot scan NULL into *float64"
+//	⇒ 批次读面整体 500（= F12/F13 同族：对所有调用方都炸）。
+//
+// ★ NULL≠0：markup_pct 为 NULL 表示「该策略不含加成率」（copy_platform /
+//
+//	average / min 三个策略），**不是**加成率 0 ⇒ 必须能区分 nil 与 0。
+func scanPricingSuggestionBatch(row pricingSuggestionBatchRowScanner) (PricingSuggestionBatchRow, error) {
+	var r PricingSuggestionBatchRow
+	var created time.Time
+	var detail []byte
+	if err := row.Scan(&r.ID, &created, &r.Strategy, &r.PlatformID, &r.Dimension,
+		&r.MarkupPct, &r.Operator, &r.DryRun, &r.Requested, &r.Applied, &r.Skipped,
+		&detail); err != nil {
+		return r, err
+	}
+	r.CreatedAt = created.UTC().Format(time.RFC3339)
+	if len(detail) > 0 {
+		_ = json.Unmarshal(detail, &r.Detail)
+	}
+	return r, nil
+}
+
+// listPricingSuggestionBatches —— 批次读面本体（★ 生产与真库门共用）。
+func (s *Service) listPricingSuggestionBatches(ctx context.Context, q pricingSuggestionBatchQuerier, limit int) ([]PricingSuggestionBatchRow, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := q.Query(ctx, pricingSuggestionBatchesSQL, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]PricingSuggestionBatchRow, 0, 16)
 	for rows.Next() {
-		var r PricingSuggestionBatchRow
-		var created time.Time
-		var detail []byte
-		if err := rows.Scan(&r.ID, &created, &r.Strategy, &r.PlatformID, &r.Dimension,
-			&r.MarkupPct, &r.Operator, &r.DryRun, &r.Requested, &r.Applied, &r.Skipped,
-			&detail); err != nil {
+		r, err := scanPricingSuggestionBatch(rows)
+		if err != nil {
 			return nil, err
-		}
-		r.CreatedAt = created.UTC().Format(time.RFC3339)
-		if len(detail) > 0 {
-			_ = json.Unmarshal(detail, &r.Detail)
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ListPricingSuggestionBatches —— 批次留痕读面（审计分析）。
+func (s *Service) ListPricingSuggestionBatches(ctx context.Context, limit int) ([]PricingSuggestionBatchRow, error) {
+	if !s.Enabled() {
+		return nil, errors.New("maas service disabled")
+	}
+	return s.listPricingSuggestionBatches(ctx, s.pool, limit)
 }

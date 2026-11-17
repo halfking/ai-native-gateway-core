@@ -1,0 +1,30 @@
+# =====================================================================
+# mock-only PostgreSQL derived image.
+#
+# Why this exists (macOS Docker Desktop):
+#   The postgres entrypoint dispatches /docker-entrypoint-initdb.d/*.sh by
+#   `access(X_OK)`. On Docker Desktop the host bind mount is mounted
+#   noexec AND its access(X_OK) answer disagrees with stat(2) (stat says
+#   0644, access says "executable"), so the entrypoint takes the
+#   "running" branch and execs the mounted file:
+#     /docker-entrypoint-initdb.d/10-init.sh: /bin/bash: bad interpreter: Permission denied
+#   A file baked into the image layer is not noexec, so the very same
+#   script runs unchanged.
+#
+# Contract:
+#   * The script bytes are identical to tests/mock-system-test/mock-only-init.sh
+#     (COPY, no patching) — Linux hosts keep byte-for-byte parity with the
+#     previous bind-mounted layout.
+#   * 0755 so the entrypoint keeps taking the "running" branch (exec), which
+#     is the branch the script was written and validated against (it uses
+#     `exit 1` on FATAL; sourcing it would leak the exit into the
+#     entrypoint shell).
+#   * `bash -n` at build time keeps a syntax error from becoming a runtime
+#     init failure.
+# =====================================================================
+ARG PG_BASE_IMAGE=pgvector/pgvector:pg17
+FROM ${PG_BASE_IMAGE}
+
+COPY mock-only-init.sh /docker-entrypoint-initdb.d/10-init.sh
+RUN chmod 0755 /docker-entrypoint-initdb.d/10-init.sh \
+    && bash -n /docker-entrypoint-initdb.d/10-init.sh

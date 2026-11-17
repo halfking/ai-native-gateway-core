@@ -100,7 +100,18 @@ const marketPriceOverviewSQL = `
 	       m.domestic_min_in_per_1m, m.domestic_min_out_per_1m,
 	       m.domestic_min_platform_id, m.domestic_min_platform_count,
 	       m.fx_rate,
-	       s.s_in, s.s_out, s.s_cur,
+	       -- ★ F12（2026-11-17）：s.* 来自 LEFT JOIN LATERAL ⇒ **模型没有带价绑定时整组为 NULL**
+	       --   （无行 ⇒ 三个 s 列全 NULL）。s_cur 是 SELECT 里**唯一可空的字符串列**
+	       --   （market_price_reference 的其余字符串列都是 NOT NULL，见 schema），
+	       --   而 Go 侧把它扫进 *string ⇒ pgx 报 "cannot scan NULL into *string"
+	       --   ⇒ handleMaasMarketPriceOverview **对任何调用方都 500**（211 生产实证：
+	       --   375 个已解析模型里 353 个（94%）无带价绑定 ⇒ 前 50 行里 41 行 s_cur=NULL）。
+	       --   ⇒ 修复：**SQL 侧** COALESCE 成空串（'' = 币种未知，不是 0）；
+	       --   Go 侧 r.SupplierCur == "CNY" 判据随之不成立 ⇒ 不产出位势比（NULL≠0）。
+	       --   ★ 这不是新洞：14bc988cb 曾对同一列修过（当时的形态是 min(b.currency)），
+	       --   08af89b1f 重写 D6 的 LATERAL 子查询时把 COALESCE 丢了 ⇒ 回归。
+	       --   ★ 列序不变（s_in=22 / s_out=23 / s_cur=24）⇒ Scan 对齐不受影响。
+	       s.s_in, s.s_out, COALESCE(s.s_cur, ''),
 	       r.credits_per_1m_in, r.credits_per_1m_out,
 	       COALESCE(r.manual_in, FALSE), COALESCE(r.manual_out, FALSE),
 	       m.source_run_date::text
@@ -117,7 +128,12 @@ const marketPriceOverviewSQL = `
 	        SELECT min(bb.unit_price_in_per_1m)  AS s_in,
 	               min(bb.unit_price_out_per_1m) AS s_out,
 	               bb.currency                    AS s_cur,
-	               (bb.currency = 'CNY')          AS is_cny
+	               -- ★ F12（2026-11-17）：(bb.currency='CNY') 在 currency 为 NULL 时
+	               --   结果是 **NULL 而不是 FALSE** ⇒ ORDER BY is_cny DESC（Postgres 的
+	               --   DESC 默认 NULLS FIRST）会把「币种未知」的组排在**真 CNY 组前面**
+	               --   ⇒ 明明有 CNY 价却挑出未知币种组。当前库内 NULL 币种绑定为 0
+	               --   （211 生产实测），但这是同一个「NULL 不当真值」族 ⇒ 一并钉死。
+	               COALESCE((bb.currency = 'CNY'), FALSE) AS is_cny
 	        FROM credential_model_bindings bb
 	        JOIN provider_models pm2 ON pm2.id = bb.provider_model_id
 	        WHERE pm2.canonical_id = m.canonical_id

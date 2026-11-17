@@ -91,6 +91,27 @@ const (
 	EventTypeComplianceViolation = "security.compliance_violation.v1"
 )
 
+// 标签常量。
+//
+// ★ 写面与读面必须用**同一套字面量**：读面靠 filters.tags 精确筛选，
+// 写面靠这些标签产生可被筛选的条目。两边各写一份字符串，早晚会漂移。
+// 检索侧（Qdrant）对标签是数组精确匹配（buildQdrantFilter 把每个 tag
+// 变成一条 must 条件）。
+const (
+	// TagSecurity 标记"这是一条安全事件"。读面按它把安全事件从项目里挑出来。
+	TagSecurity = "security"
+	// TagSeverityPrefix + 严重度（如 severity:high）。
+	TagSeverityPrefix = "severity:"
+	// TagActionPrefix + 处置动作（如 action:blocked）。
+	TagActionPrefix = "action:"
+	// TagSourcePrefix + 检测面（如 source:anomaly）。
+	TagSourcePrefix = "source:"
+	// TagTenantPrefix + 租户（如 tenant:kaixuan）。
+	TagTenantPrefix = "tenant:"
+	// TagCodePrefix + 检测码（如 code:pii_leak）。
+	TagCodePrefix = "code:"
+)
+
 // Source 标识检测面（哪个子系统产生的这条结论）。
 type Source string
 
@@ -158,6 +179,38 @@ type Event struct {
 	DetectedAt time.Time `json:"detected_at"`
 	// Metadata 承载各检测面的原始细节（raw_severity / raw_action / 指标 …）。
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// FleetHint 是**跨实例**的威胁模式提示（M2-3）。
+	//
+	// 它回答的是"这个模式别的网关实例也见过吗"：签名 + 观察次数 + 见过它的
+	// 实例列表 + 这份快照的取回时间。
+	//
+	// ★ 它**不参与**任何拦截判定 —— 共享域的内容可能被污染，让它影响
+	// "要不要拦"等于把一个外部系统的可信度接到请求路径上。它只是**观测
+	// 增强**：写进共享域时让这条事件自带全网视角，消费侧可以据此加权、
+	// 告警、排查，但网关自己的处置结论不因它改变。
+	FleetHint *FleetHint `json:"fleet_hint,omitempty"`
+}
+
+// FleetHint 是一条事件所属模式的**全网视角**。
+//
+// 数据来自共享知识项目里的其它实例写入的安全事件（M2-3 的读面）。
+type FleetHint struct {
+	// Signature 是模式签名（事件类型 + 检测码）。
+	Signature string `json:"signature"`
+	// Observations 是**这份快照里**观察到这个模式的事件条数。
+	//
+	// ★ 不是累计计数器：同步是整份替换快照 ⇒ 它反映"共享域里现在有多少
+	//   条这个模式的事件"。写成累计会让人以为它单调增长。
+	Observations int `json:"observations"`
+	// Instances 是见过它的实例 id（去重、排序）。
+	Instances []string `json:"instances,omitempty"`
+	// InstanceCount 是 Instances 的长度（消费侧不必自己数）。
+	InstanceCount int `json:"instance_count"`
+	// FetchedAt 是这份快照的取回时间（UTC）。
+	//
+	// 它让消费侧能判断"这个提示有多旧" —— 共享域不可达时，快照会停在
+	// 上一次成功取回的时刻，而不是看起来永远是新鲜的。
+	FetchedAt time.Time `json:"fetched_at"`
 }
 
 // NewEvent 按统一契约构造一条事件，并补齐事件 id 与时间戳。

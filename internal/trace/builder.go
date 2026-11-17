@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -381,7 +382,38 @@ func (b EventBuilder) Append(ctx context.Context, rec Recorder, requestID string
 	if rec == nil || requestID == "" {
 		return
 	}
-	if err := rec.Append(ctx, requestID, b.Build()); err != nil {
+	ev := b.Build()
+	// 2026-11-17（全链路日志审计轮）：每个 trace 阶段事件同步镜像一条
+	// slog 记录（gw_trace_stage）。此前阶段事件只进 Redis/PG trace 视图，
+	// 滚动日志里看不到「请求走到了哪一阶段」——运维在日志里只搜
+	// request_id 时，收到的是散点（upstream_http_attempt 等），没有阶段
+	// 序列。镜像后日志行与 trace 视图同 key 可对账。镜像只在数据面
+	// 事件（emitTrace 调用点）发生，管理面不受影响；级别按事件状态
+	// 分档：failed=Warn、success=Debug，避免正常流量刷屏。
+	if ev.Stage != "" && ev.Stage != StageRequestComplete {
+		lvl := slog.LevelDebug
+		if ev.Status == StatusFailed || ev.Status == StatusTimeout {
+			lvl = slog.LevelWarn
+		}
+		attrs := make([]any, 0, 8)
+		attrs = append(attrs,
+			"request_id", requestID,
+			"stage", string(ev.Stage),
+			"module", string(ev.Module),
+			"status", string(ev.Status),
+			"duration_ms", ev.DurationMs,
+		)
+		for k, v := range ev.Details {
+			// details 只允许元数据（emitTrace 注释：正文/凭据严禁进入），
+			// 这里原样透传保持与 trace 视图一致。
+			attrs = append(attrs, "detail_"+k, v)
+		}
+		if ev.Error != "" {
+			attrs = append(attrs, "error", ev.Error)
+		}
+		slog.Log(ctx, lvl, "gw_trace_stage", attrs...)
+	}
+	if err := rec.Append(ctx, requestID, ev); err != nil {
 		// recorder 内部已经 slog.Warn,这里 swallow。
 		_ = err
 	}

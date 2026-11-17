@@ -173,6 +173,20 @@ LEFT JOIN LATERAL (
 		var advantage, vsOverseas, vsDomestic sql.NullFloat64
 		var ovrIn, ovrOut, domIn, domOut sql.NullFloat64
 		var vlIn, vlOut, vlCNYIn, vlCNYOut, mprFX sql.NullFloat64
+		// ★ F13（2026-11-17）：mpr 是 LEFT JOIN LATERAL ⇒ **未命中时整组 mpr.* 全 NULL**。
+		//   其中 overseas/domestic 的 platform_id（string）与 platform_count（int）
+		//   扫进裸类型 ⇒ pgx 报 "cannot scan NULL into *string"（dest[24]），
+		//   修掉第 24 列后**下一列（count, int）会接着炸** ⇒ 必须一次改全 4 列
+		//   （修一半比不修更坏：只是把 500 往后推一格）。
+		//   生产实测：前 200 行里 **194 行**没有 mpr 匹配 ⇒ 端点对任何调用方都 500。
+		//   ★ 为什么用 sql.NullString/sql.NullInt64 而不是裸 *string/*int：
+		//   同文件既有的可空数值列已经用 sql.NullFloat64（家族一致）；且
+		//   **pgxmock 的 Scan 语义与真 pgx 不同**（mock 对 NULL 直接忽略、
+		//   对 `**T` 非 NULL 目的地报错）⇒ 用 `*string/*int` 会让既有单测假红、
+		//   而 mock 又**测不出**本缺陷族（真 pgx 才报 NULL→*string 错）。
+		//   sql.NullXxx 在 mock 与真 pgx 下语义一致 ⇒ 门才有牙。
+		var ovID, dmID sql.NullString
+		var ovCnt, dmCnt sql.NullInt64
 		if err := rows.Scan(&it.CredentialID, &it.ModelID, &it.CanonicalName, &it.Currency,
 			&supplierIn, &supplierOut, &it.PriceConfidence,
 			&discountVsVendor, &vendorRefIn, &vendorRefOut,
@@ -180,12 +194,25 @@ LEFT JOIN LATERAL (
 			&marketPosition, &marketRefIn, &marketRefOut,
 			&it.MarketRefID, &it.MarketRefCount, &it.MarketRefUsed,
 			&advantage, &vsOverseas, &vsDomestic, &computedAt,
-			&ovrIn, &ovrOut, &it.OverseasID, &it.OverseasCount,
-			&domIn, &domOut, &it.DomesticID, &it.DomesticCount,
+			&ovrIn, &ovrOut, &ovID, &ovCnt,
+			&domIn, &domOut, &dmID, &dmCnt,
 			&it.VendorListCur,
 			&vlIn, &vlOut, &vlCNYIn, &vlCNYOut, &mprFX); err != nil {
 			writeInternalErr(w, "market compare scan", err)
 			return
+		}
+		// LATERAL 未命中 ⇒ 这四列没有值 ⇒ 保持零值（空串 / 0），**不报错、不编造**。
+		if ovID.Valid {
+			it.OverseasID = ovID.String
+		}
+		if ovCnt.Valid {
+			it.OverseasCount = int(ovCnt.Int64)
+		}
+		if dmID.Valid {
+			it.DomesticID = dmID.String
+		}
+		if dmCnt.Valid {
+			it.DomesticCount = int(dmCnt.Int64)
 		}
 		it.SupplierIn = nullF(supplierIn)
 		it.SupplierOut = nullF(supplierOut)

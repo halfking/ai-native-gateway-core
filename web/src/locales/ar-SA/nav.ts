@@ -87,6 +87,7 @@ export default {
     sessionConfig: "إعدادات الجلسة",
     agents: "سجل الوكلاء",
     promptInjection: "كشف حقن المطالبات",
+    piAnalysis: "تحليل أخطاء PI",
     examples: "أمثلة التكامل",
     autoConfig: 'الإعداد التلقائي',
     helpManual: 'دليل المساعدة',

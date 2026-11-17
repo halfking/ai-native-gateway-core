@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -75,23 +76,33 @@ func installSecurityEventSink(baseURL string) (*securityevent.Sink, context.Canc
 
 // securityEventWriter 造落地面：优先 v2 typed ingest，回退 legacy 入口。
 func securityEventWriter(baseURL, projectID string) (securityevent.Writer, string) {
-	if secret := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MEMORA_JWT_SECRET")); secret != "" {
-		client, err := memora.New(memora.Config{
-			BaseURL:   baseURL,
-			JWTSecret: secret,
-			Issuer:    envOrDefault("LLM_GATEWAY_MEMORA_JWT_ISSUER", memora.DefaultIssuer),
-			Audience:  envOrDefault("LLM_GATEWAY_MEMORA_JWT_AUDIENCE", memora.DefaultAudience),
-			TenantID:  envOrDefault("LLM_GATEWAY_MEMORA_TENANT_ID", memora.DefaultTenantID),
-			ActorID:   envOrDefault("LLM_GATEWAY_MEMORA_ACTOR_ID", "local-ops"),
-			ProjectID: projectID,
-		})
-		if err != nil {
-			slog.Warn("security event sink: memora v2 client unusable, falling back to the legacy channel", "error", err)
-		} else {
-			return securityevent.NewMemoraV2Writer(client), "v2-typed-ingest"
-		}
+	if client, err := newMemoraV2Client(baseURL, projectID); err == nil {
+		return securityevent.NewMemoraV2Writer(client), "v2-typed-ingest"
+	} else {
+		slog.Warn("security event sink: memora v2 client unusable, falling back to the legacy channel", "error", err)
 	}
 
 	client := newMemoraClientFromEnv(baseURL)
 	return securityevent.NewMemoraLegacyWriter(client, os.Getenv("LLM_GATEWAY_MEMORA_SECURITY_USER_ID")), "legacy-add"
+}
+
+// newMemoraV2Client 造 memora 的 v2 客户端（service JWT 身份）。
+//
+// ★ 写面与读面（M2-3）必须用**同一个身份**：memora 的 v2 检索以 actor 作为
+// user_id 谓词，ingest 也以 actor 落库 ⇒ 同一份 tenant_id / actor_id /
+// project_id 才能"读到自己写的东西"。
+func newMemoraV2Client(baseURL, projectID string) (*memora.Client, error) {
+	secret := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MEMORA_JWT_SECRET"))
+	if secret == "" {
+		return nil, fmt.Errorf("memora v2 client: LLM_GATEWAY_MEMORA_JWT_SECRET is not set")
+	}
+	return memora.New(memora.Config{
+		BaseURL:   baseURL,
+		JWTSecret: secret,
+		Issuer:    envOrDefault("LLM_GATEWAY_MEMORA_JWT_ISSUER", memora.DefaultIssuer),
+		Audience:  envOrDefault("LLM_GATEWAY_MEMORA_JWT_AUDIENCE", memora.DefaultAudience),
+		TenantID:  envOrDefault("LLM_GATEWAY_MEMORA_TENANT_ID", memora.DefaultTenantID),
+		ActorID:   envOrDefault("LLM_GATEWAY_MEMORA_ACTOR_ID", "local-ops"),
+		ProjectID: projectID,
+	})
 }

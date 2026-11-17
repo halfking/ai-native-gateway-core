@@ -89,6 +89,7 @@ export default {
     sessionConfig: "Sitzungskonfiguration",
     agents: "Agent-Registry",
     promptInjection: "Prompt-Injection-Erkennung",
+    piAnalysis: "PI-Fehleranalyse",
     examples: "Beispiele",
     autoConfig: 'Automatische Einrichtung',
     helpManual: 'Handbuch',
