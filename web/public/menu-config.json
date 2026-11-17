@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-17T08:59:47.893Z",
+  "exported_at": "2026-11-17T09:54:03.682Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -28,7 +28,6 @@
       "icon": "🌲",
       "platformOps": true,
       "exact": true,
-      "hidden": true,
       "tenantScope": "default",
       "pluginScope": "*"
     },
@@ -424,6 +423,15 @@
           "path": "/admin/prompt-injection",
           "labelKey": "nav.item.promptInjection",
           "icon": "🛡️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/pi-analysis",
+          "labelKey": "nav.item.piAnalysis",
+          "icon": "🔍",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

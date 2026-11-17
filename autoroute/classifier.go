@@ -225,6 +225,28 @@ type Classification struct {
 	// ExternalUsage records metered usage returned by an external classifier.
 	// It is audit metadata only; callers must not treat it as customer billing.
 	ExternalUsage *ExternalClassifierUsage
+
+	// ★ 2026-11-17 审计轮 P1（F-AUTO-02/F-AUTO-06）：第二层的「确认」语义。
+	//
+	//	此前 Decider.classify 只有「替换」语义：第二层一旦过门就把第一层
+	//	的任务类型**整个丢掉**，第一层的结论**不被保留、不被记录** ⇒
+	//	「第二层是否确认了第一层的任务类型」这个问题**无法从任何地方回答**，
+	//	而这恰恰是 PI 智能体被要求承担的那件事
+	//	（「auto 任务的第二层的解析分析，确认任务类型」）。
+	//
+	//	⇒ 现在：第二层的结论**带上第一层的对照**。
+	//	  · Layer1TaskType / Layer1Confidence：第一层（启发式）的结论。
+	//	  · Layer2TaskType / Layer2RawAnswer / Layer2Quality：第二层的结论。
+	//	  · Layer2Confirmed：第二层是否**确认**了第一层的任务类型。
+	//
+	//	★ 这些字段是**进程内**的（不进响应头 / 不进 auto_decision JSONB），
+	//	  以保持审计视图字节级不变（见 Decision.ReselectCandidates 的同款约定）。
+	Layer1TaskType   TaskType
+	Layer1Confidence float64
+	Layer2TaskType   TaskType
+	Layer2RawAnswer  string
+	Layer2Quality    string
+	Layer2Confirmed  bool
 }
 
 // ExternalClassifierUsage is provider-reported usage for a classifier call.

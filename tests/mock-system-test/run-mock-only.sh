@@ -149,7 +149,32 @@ FROM models_canonical mc
 WHERE pm.provider_id BETWEEN 95001 AND 95004
   AND pm.raw_model_name = mc.canonical_name
   AND pm.canonical_id IS DISTINCT FROM mc.id;
+-- ★ mock 栈的 seed 管理员口令是**一次性**的 ⇒ 不该被「首次登录必须改密」门卡住。
+--   admin.EnsureSeedAdmin 无条件写 must_change_password=TRUE（生产正确：首登改密），
+--   而 admin/auth.go 的 errPasswordChangeRequired 会把**其余管理 API 全拒**
+--   ⇒ 浏览器登录后被「修改密码」弹窗接管，供应商/租户/密钥三个详情页全部加载失败
+--   （实测报错：password change required before accessing other APIs）。
+UPDATE users SET must_change_password = FALSE, updated_at = now()
+WHERE username = 'admin' AND must_change_password = TRUE;
 EOSQL
+
+  # ★ mock 栈的种子**不建用户密钥**（api_keys 表是空的）⇒ 密钥详情页 /keys/{id}
+  #   打不开（flow 06 断言「密钥信息」）。
+  #   ⇒ 用**管理 API** 建一把：key_hash 是 HMAC-SHA256(secret, raw)，服务端才有那个
+  #   secret ⇒ SQL 手插算不出来（手插的 hash 验签必失败）。
+  local admin_token key_count
+  admin_token="$(curl -s -X POST -H 'Content-Type: application/json' \
+    -d "{\"username\":\"admin\",\"password\":\"mock-only-admin-password\"}" \
+    --max-time 5 "${GATEWAY_URL}/api/auth/token" 2>/dev/null | jq -r '.access_token // empty' 2>/dev/null || true)"
+  if [[ -n "${admin_token:-}" ]]; then
+    key_count="$(curl -s -H "Authorization: Bearer ${admin_token}" --max-time 5 "${GATEWAY_URL}/api/keys" 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
+    if [[ "${key_count}" == "0" ]]; then
+      curl -s -X POST -H "Authorization: Bearer ${admin_token}" -H 'Content-Type: application/json' \
+        -d '{"application_code":"mock-vendor-alpha","tenant_id":"default","key_alias":"mock-only-key"}' \
+        --max-time 8 "${GATEWAY_URL}/api/keys" >/dev/null 2>&1 || true
+      say "seeded 1 个 mock API key（密钥详情页需要；幂等）"
+    fi
+  fi
 }
 
 run_gates() {

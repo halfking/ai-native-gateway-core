@@ -16,6 +16,15 @@ reports/
 _test/
 _to-be-deprecated/
 
+# ★ 2026-11-17：审计轮的临时工作区（apply-db-revision-sequence_test.sh 的
+#   revision-runtime-* 残留）。实测本机可达 **1731 个目录 / 108MB**
+#   ⇒ docker build 的上下文被撑到 1GB+ ⇒ 网关镜像构建极慢。
+#   ⇒ 这些目录是**可再生的测试产物**（且已被 .gitignore 覆盖），
+#     不该进构建上下文。
+.audit-validation/
+.audit-workspace/
+.audit*/
+
 # OS noise
 .DS_Store
 Thumbs.db

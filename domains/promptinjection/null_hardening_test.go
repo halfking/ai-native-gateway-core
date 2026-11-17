@@ -52,10 +52,16 @@ import (
 //	· prompt_injection_policies.sql   —— enabled/detection_mode/…
 //	· severity_action_matrix.sql      —— observe_action/enforce_action/…
 //
-// ★ description 的默认是 ”（空串）而不是 NULL：**列本身可空**，但本仓
+// ★ description 的默认是**空串**而不是 NULL：**列本身可空**，但本仓
 //
 //	读它时要求「有值」⇒ 用 '' 表达「没有描述」，与 category_new /
 //	action_override 同族处置。
+//
+//	★ 说明：这一行原本写的是「默认是 ''（空串）」，但 Go 1.19+ 的 gofmt
+//	  会把 doc 注释**正文**里的两个单引号转成排版引号（U+201D）⇒
+//	  上一次 gofmt 之后正文里已经变成了 ”，SQL 字面量失真。
+//	  ⇒ 正文改用「空串」表述，精确字面量放在**缩进块**里（gofmt 的
+//	    预排版区域，原样保留）。
 var nullableColumnExpectations = map[string]map[string]string{
 	"prompt_injection_rules": {
 		"category_new":    "category_new::text, ''",
@@ -75,7 +81,7 @@ var nullableColumnExpectations = map[string]map[string]string{
 		"enable_llm_detection":         "enable_llm_detection, true",
 		"enable_canary_detection":      "enable_canary_detection, true",
 		"enable_vector_similarity":     "enable_vector_similarity, false",
-		"content_replacement_strategy": "content_replacement_strategy, 'llm_rewrite'",
+		"content_replacement_strategy": "content_replacement_strategy, 'keyword_remove'",
 		"max_input_length":             "max_input_length, 50000",
 		"auto_learn_enabled":           "auto_learn_enabled, false",
 		"detection_timeout_ms":         "detection_timeout_ms, 5000",

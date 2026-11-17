@@ -21,33 +21,39 @@ describe('mergeNav', () => {
   })
 })
 
-// 2026-11-17: /live2 请求阶段树暂时隐藏菜单（路由保留）。
-describe('hidden nav item (live2 stage tree)', () => {
+// 2026-11-17（owner「打开功能」轮）：/live2 请求阶段树恢复可见。
+//   ★ 上一版（本文件曾经的样子）钉的是「hidden === true」+「mergeNav 丢弃它」
+//     —— 那是一条**会把功能再藏一次**的钉测：owner 已经把功能打开，钉测却还
+//     要求它藏着 ⇒ 谁照着钉测改代码，就会把功能再关回去，而且测试全绿。
+//   ⇒ 现在改成钉「**可见**」：菜单项在真源里、mergeNav 保留它、平台运维可见。
+//     这条钉测的方向必须与 owner 的决定同向，否则它就是「反向锁」。
+describe('visible nav item (live2 stage tree)', () => {
   const live2 = NAV_PRIMARY_ITEMS.find((i) => i.path === '/live2')!
 
-  it('marks /live2 as hidden while keeping it in the source list', () => {
+  it('keeps /live2 in the source list as a normal visible entry', () => {
     expect(live2).toBeTruthy()
-    expect(live2.hidden).toBe(true)
+    // 「hidden 闸门」已整体退役：类型上不再有这个字段，条目上也不再有它。
+    expect((live2 as unknown as Record<string, unknown>).hidden).toBeUndefined()
   })
 
-  it('canShowNavItem rejects hidden items even for platform ops', () => {
+  it('canShowNavItem shows /live2 for platform ops', () => {
     expect(
       canShowNavItem(live2, {
         isSuperAdmin: true,
         isPlatformOps: true,
         isTenantPortal: false,
       }),
-    ).toBe(false)
+    ).toBe(true)
   })
 
-  it('mergeNav drops /live2 from the rendered primary group', () => {
+  it('mergeNav keeps /live2 in the rendered primary group', () => {
     const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
       isSuperAdmin: true,
       isPlatformOps: true,
       isTenantPortal: false,
     })
     const primary = merged.find((g) => g.id === 'primary')
-    expect(primary?.items.some((i) => i.path === '/live2')).toBe(false)
+    expect(primary?.items.some((i) => i.path === '/live2')).toBe(true)
     expect(primary?.items.some((i) => i.path === '/live')).toBe(true)
   })
 })

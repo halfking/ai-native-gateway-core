@@ -16,7 +16,7 @@
  * ⇒ 这道门分四层，每层都从**真源**派生、期望值**硬编码**：
  *   A 真源层   appNav.ts 的规模（条目 / 落地路径 / 分组 / 顶层）
  *   B 落点层   落点规格（概念稿 §2 的四个直链 + 四个下拉）对照真源
- *              ⇒ 露出 14 / 折叠 49 闭合（2026-11-17 F-07 后口径）
+ *              ⇒ 露出 14 / 折叠 50 闭合（2026-11-17 F-07 后口径；PI 轮 /admin/pi-analysis 落地后再 49→50）
  *   C 生成器层 台账生成器与本门同口径（不各说各话）
  *   D 文档层   三份 HTML 里出现的每个菜单口径数字都必须等于锁定值，
  *              且概念稿归属表的**每一行**都要与规格逐条对拍
@@ -49,17 +49,18 @@ const DOC_DIR = join(REPO, 'docs/03-design/02-feature-design')
 // ─────────────────────────────────────────────────────────────
 
 /** 专家面菜单条目总数。 */
-const EXPECTED_ITEMS = 63
+const EXPECTED_ITEMS = 64
 /** 落地路径数。比条目少 1：「自动更新」跨两组重复挂载，算两条目一条路径。 */
-const EXPECTED_PATHS = 62
+const EXPECTED_PATHS = 63
 /** 顶栏分组数。 */
 const EXPECTED_GROUPS = 8
 /** 顶层主链接数（不进分组，直接挂顶栏）。 */
 const EXPECTED_PRIMARY = 3
 /** 简易模式直接露出的既有入口数（4 直链 + 10 分组下拉；2026-11-17 F-07 后「请求」组含 /tenant/usage）。 */
 const EXPECTED_EXPOSED = 14
-/** 收进「高级」折叠组的条数（2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49）。 */
-const EXPECTED_FOLDED = 49
+/** 收进「高级」折叠组的条数（2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49；
+ *  2026-11-17 PI 轮 /admin/pi-analysis 落地后 49→50）。 */
+const EXPECTED_FOLDED = 50
 /** 简易模式可见页面数（13 个既有入口 + 1 个新建简化页 `/usage`）。 */
 const EXPECTED_VISIBLE_PAGES = 14
 
@@ -181,8 +182,8 @@ const EXPERT_GROUP_OF_SIMPLE: Record<string, string> = Object.fromEntries(
   Object.entries(SIMPLE_GROUP_CN).map(([id, name]) => [name, id]),
 )
 
-describe('B 落点：简易模式露出 14 / 折叠 49 闭合', () => {
-  it('直链 4 条 / 组内 10 条 / 高级 49 条', () => {
+describe('B 落点：简易模式露出 14 / 折叠 50 闭合', () => {
+  it('直链 4 条 / 组内 10 条 / 高级 50 条', () => {
     expect(DIRECT_LINKS).toHaveLength(4)
     expect(Object.values(GROUP_ITEMS).flat()).toHaveLength(10)
     expect(exposedCount).toBe(EXPECTED_EXPOSED)
@@ -262,11 +263,12 @@ describe('C 台账生成器与本门同口径', () => {
     expect(data.distinctPaths).toBe(EXPECTED_PATHS)
   })
 
-  it('生成器的「高级折叠 + 站外链接」= 折叠 49（两套分桶法的换算钉在这里）', () => {
-    // 生成器按**打开方式**分桶：高级折叠 48 + 站外链接 1。
-    // 本门按**物理位置**分桶：折叠区 49 条（48 页内 + 1 站外随组收起）。
-    // 同一个 49 的两种切法 ⇒ 换算必须写死，否则两套口径会各说各话。
-    // （2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49。）
+  it('生成器的「高级折叠 + 站外链接」= 折叠 50（两套分桶法的换算钉在这里）', () => {
+    // 生成器按**打开方式**分桶：高级折叠 49 + 站外链接 1。
+    // 本门按**物理位置**分桶：折叠区 50 条（49 页内 + 1 站外随组收起）。
+    // 同一个 50 的两种切法 ⇒ 换算必须写死，否则两套口径会各说各话。
+    // （2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49；
+    //  2026-11-17 PI 轮 /admin/pi-analysis 落地后 49→50。）
     const out = execFileSync(process.execPath, [tool, '--json'], {
       cwd: REPO,
       encoding: 'utf8',
@@ -336,7 +338,7 @@ const DECOMPOSITION_RULE = {
   // 「= 总数」可有可无（文档头不带、页脚带）。
   re: /(\d+)\s*(?:个分组|组)\s*(\d+)\s*项\s*\+\s*顶层\s*(\d+)\s*项(?:\s*=\s*(\d+))?/g,
   groups: EXPECTED_GROUPS,
-  groupItems: 60,
+  groupItems: 61,
   primaryItems: EXPECTED_PRIMARY,
   total: EXPECTED_ITEMS,
 }
@@ -353,7 +355,11 @@ const STALE_PATTERNS: { label: string; re: RegExp }[] = [
   { label: '旧折叠数 47（面板头）', re: /全部\s*47\s*项/g },
   { label: '旧分组规模 8 组 59 项', re: /8\s*组\s*59\s*项/g },
   { label: '旧可见入口数 18', re: /18\s*个左右/g },
-  { label: '旧口径 61 项', re: /61\s*项/g },
+  // ★ 2026-11-17（PI 轮）：重锁到 64 条后，**分组项数本身变成了 61**
+  //   （8 组 61 项 + 顶层 3 项 = 64）⇒ 原来那条「61 项 ⇒ 旧口径」的钝规则
+  //   会把**合法的分解式**判成漂移 ⇒ 收窄成「只认总数形态的 61 项」，
+  //   放过「N 组 61 项」这种合法的分组规模写法。
+  { label: '旧口径 61 项（总数形态）', re: /(?<!组 )61\s*项/g },
 ]
 
 describe('D 文档：三份稿的菜单口径等于锁定值', () => {

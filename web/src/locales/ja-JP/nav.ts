@@ -87,6 +87,7 @@ export default {
     sessionConfig: "セッション設定",
     agents: "エージェントレジストリ",
     promptInjection: "プロンプトインジェクション検出",
+    piAnalysis: "PI エラー分析",
     examples: "接続例",
     autoConfig: '自動設定',
     helpManual: 'ヘルプマニュアル',
