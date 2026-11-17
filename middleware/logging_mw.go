@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/auth"
@@ -72,6 +73,25 @@ func (m *LoggingMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		start := time.Now()
+		// 2026-11-17（全链路日志审计轮）：请求**开始**也留一条记录。
+		// 此前只有完成时的 http_request 记录 ⇒ 客户端拿着 X-Request-Id
+		// 来查「请求到底什么时候到的」时，失败请求只能看到完成行、
+		// 卡死的请求（上游 300s 挂起类）则一行都没有。
+		// 开始行带同一 request_id，与完成行/trace 事件可互相 JOIN。
+		// 只在数据面（/v1/*）开启：管理面/健康面量小但高频轮询，
+		// 开始行只会让日志量翻倍而无取证价值。
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			slog.Log(r.Context(), slog.LevelInfo, "http_request_start",
+				"request_id", r.Header.Get("X-Request-Id"),
+				"client_request_id", r.Header.Get("X-Gw-Client-Request-Id"),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote", r.RemoteAddr,
+				"user_agent", r.UserAgent(),
+				"content_type", r.Header.Get("Content-Type"),
+				"request_bytes", requestBytes(r),
+			)
+		}
 		rw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r)
 		emitRequestLog(rw, r, start)

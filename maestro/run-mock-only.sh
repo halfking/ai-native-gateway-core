@@ -17,9 +17,22 @@ cd "${ROOT}"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:${MOCK_GATEWAY_PORT:-18781}}"
 DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9223}"   # 独立 CDP 口，不与 run-local.sh 的 9222 抢
-REPORT_ROOT="${ROOT}/maestro/reports"
+# 视口：web 驱动默认只有 1024×625，折叠线以下的内容不可见 ⇒ 放大到桌面尺寸
+# （与 maestro/run-simple-overview.sh、maestro/run-stage-tree.sh 同一惯例）。
+SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x1400}"
 ADMIN_USER="${MOCK_ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${MOCK_ADMIN_PASSWORD:-mock-only-admin-password}"
+
+# ★ 必须 export：子进程 `resolve-ids.mjs` 要靠这两个环境变量问**本栈**要动态 ID。
+#   不 export ⇒ 子进程拿不到 BASE_URL ⇒ 回落成 resolve-ids 自己的默认值
+#   http://127.0.0.1:8782（本地开发网关）⇒ 把**别的网关**的 provider/key/tenant id
+#   灌给本栈的 flow ⇒ 三个详情页（供应商/租户/密钥）全部打不开
+#   （实测：invalid provider id / tenant not found / invalid id —— 全是「id 属于别的栈」）。
+#   凭据同理：不 export ⇒ resolve-ids 回落读仓根 .env.local（本地开发口令）⇒ 登录失败。
+export BASE_URL
+export LLM_GATEWAY_ADMIN_USER="${ADMIN_USER}"
+export LLM_GATEWAY_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+REPORT_ROOT="${ROOT}/maestro/reports"
 
 WITH_DEV=0
 FLOWS=()
@@ -91,6 +104,17 @@ if ! curl -sf --max-time 3 "${BASE_URL}/healthz" >/dev/null 2>&1; then
   exit 2
 fi
 
+# ── 前置：把栈状态归一化（gate 会跑 normalize_after_boot）──────────────
+#   为什么必须先跑：mock 栈的 seed 管理员口令是一次性的，网关播种时写了
+#   must_change_password=TRUE ⇒ 浏览器登录后被「修改密码」弹窗接管，
+#   且其余管理 API 被 errPasswordChangeRequired 全拒 ⇒ 供应商/租户/密钥
+#   三个详情页的断言必红（与本仓代码无关，是栈状态问题）。
+if [ -x "${ROOT}/tests/mock-system-test/run-mock-only.sh" ] || [ -f "${ROOT}/tests/mock-system-test/run-mock-only.sh" ]; then
+  echo "== 归一化 mock-only 栈状态（run-mock-only.sh gate）"
+  bash "${ROOT}/tests/mock-system-test/run-mock-only.sh" gate 2>&1 | sed 's/^/   /' || \
+    echo "   （栈门未全绿，仍继续跑 flows —— 失败归因见下面的逐 flow 结果）"
+fi
+
 # ── Chrome（CDP）─────────────────────────────────────────────────────────
 find_chrome() {
   if [ -n "${MAESTRO_CHROME_BIN:-}" ]; then printf '%s' "${MAESTRO_CHROME_BIN}"; return; fi
@@ -154,6 +178,7 @@ for flow in "${FLOWS[@]}"; do
     --driver-host-port "${DRIVER_PORT}" \
     --headless \
     --no-ansi \
+    --screen-size "${SCREEN_SIZE}" \
     --test-output-dir "${OUT}/${name}" \
     -e "BASE_URL=${BASE_URL}" \
     -e "ADMIN_USER=${ADMIN_USER}" \

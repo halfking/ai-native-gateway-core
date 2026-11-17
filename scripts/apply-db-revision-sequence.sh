@@ -2718,6 +2718,35 @@ files=(
   #   起因：970 首次在生产写入即撞 23505（bailian deepseek-v4-flash-0731
   #   同一 tier 有 5 个 region：3.000000 vs 3.208000 CNY，价差 7 百分点）。
   "$ROOT_DIR/sql/migrations/startup/976_market_price_platform_quote_region.sql"
+  # ★ 977（2026-11-17 PI 错误分析语义订正轮）：pi_error_analysis_semantics——
+  #   订正 971 留下的四语义缺陷：① cleanup_old_error_analysis 改**时间口径**
+  #   （去掉 `RETURNING * INTO` 标量与「依赖没人写的 auto_applied/human_verified
+  #   标志位」）；② v_error_analysis_stats 改**先按队列聚合**（去掉 (队列 × 结果)
+  #   的 JOIN 膨胀）；③ error_analysis_results(queue_id) 加唯一索引（**先去重**
+  #   再建索引，否则存量库 23505）；④ L2（advanced）检测规则的 pattern 分组 /
+  #   词界修正（"root cause" / "/root" / "the operating system as a whole
+  #   (see below)" 这类普通文本原本 severity 9/10 命中）。
+  #   ★ 排在 971 **之后**（它 OR REPLACE 971 建出来的函数与视图）。
+  #   ★ 本件幂等（CREATE OR REPLACE / IF NOT EXISTS / ON CONFLICT）⇒ 通道按
+  #     内容指纹重放时不会 42P07/42710。
+  #   ★ 规则表的 UPDATE 带存在性守卫：315（种子）**不在本通道清单里** ⇒ 规则表
+  #     不保证存在 ⇒ 裸 UPDATE 会 42P01 ⇒ 部署 die。
+  "$ROOT_DIR/sql/migrations/startup/977_pi_error_analysis_semantics.sql"
+  # ★ 978（2026-11-17 PI 规则集交付轮）：pi_canonical_rule_set——
+  #   把 PI 检测的 L1/L2 规则集纳入**可投递通道**。
+  #   ★ 背景（245 部署后验收轮实测）：315 / 364 两条种子迁移**既不在安装器链
+  #     （StartupFiles / tsv）也不在本通道的投递面**（都 < 对账地板 412 且都
+  #     不在 scripts/migration-low-version-delivery.list）⇒
+  #     · 全新安装：`prompt_injection_rules` 表由 01-schema 基线建出（空表）
+  #       ⇒ 检测器的 ensureRulesTable（只在「表不存在」时触发）**永不触发**
+  #       ⇒ 规则表**恒空**（mock 全新安装栈实测 0 行）；
+  #     · 存量库：缺 privilege_escalation / command_injection ⇒ 977 的 F4
+  #       对这两条是 no-op。
+  #   ★ 本件幂等（INSERT ... ON CONFLICT (rule_name) DO NOTHING）⇒ 通道按
+  #     内容指纹重放时零冲突；在 245 这类「23 条已在场」的库上是纯 no-op。
+  #   ★ 排在 977 **之后**（它种入的两条用 977 订正后的 pattern ⇒ 次序会改变
+  #     最终值）。
+  "$ROOT_DIR/sql/migrations/startup/978_pi_canonical_rule_set.sql"
 )
 
 
@@ -2995,6 +3024,15 @@ intentional_function_chains=(
   # tree carried it, but the merge back to main dropped the chain entry while
   # keeping both files — first caught by the fake-psql selftest below.)
   'refresh_ursm_snapshot_slot_daily|892_ursm_snapshot_slot_daily.sql|919_ursm_slot_daily_active_minutes.sql|'
+  # 977（2026-11-17 PI 错误分析语义订正轮）重定义 cleanup_old_error_analysis：
+  # 971 的函数体有两个真缺陷（`RETURNING * INTO` 一个标量 ⇒ 删到 ≥2 行时 PL/pgSQL
+  # 抛「query returned more than one row」⇒ 整个清理事务回滚；删除谓词依赖
+  # **全仓 Go 代码从不写**的 auto_applied / human_verified ⇒ 清理器恒 no-op）⇒
+  # 972 用同一签名（retention_days INTEGER DEFAULT 90）重写为**时间口径**版本。
+  # 链序 = 投递序 971 → 972，**972 必须是最后一项**——它是活库里应有的最终体。
+  # 少这一行，部署会在应用任何文件之前就 abort（exit 5）：一个函数被两个通道文件
+  # 重定义而未登记为有意链。
+  'cleanup_old_error_analysis|971_pi_error_analysis_system.sql|977_pi_error_analysis_semantics.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do
@@ -3446,6 +3484,43 @@ ledger_artifact_probe "972_model_offers_trigger_recover_at.sql" \
 #   ⚠ 用 `|| true` 兜住：观测失败不得连带打死部署（观测不是门）。
 printf 'runtime observation (F3 residual rows, NOT a gate): %s\n' \
   "$(psql_query "SELECT COUNT(*) FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE" 2>/dev/null || echo 'unavailable')"
+# ★ 977 的产物 = queue_id 唯一索引（indisunique）+ 订正后的保留期清理函数
+#   （函数体里**不再有** `RETURNING` ⇒ 971 那个「RETURNING * INTO 标量 ⇒
+#   删到 ≥2 行就抛 query returned more than one row」的缺陷已消除）+ 统计视图。
+#   ★ 不断言 L2 规则的 pattern：规则表由 315 播种，而 315 **不在本通道清单里**
+#     ⇒ 表与那三条规则都不保证存在（977 的 UPDATE 带存在性守卫）⇒ 拿它当
+#     「产物」会让没跑 315 的库在部署时误判失败。
+#
+# ★★★ 2026-11-17 245 部署后验收轮修正：**本条探针此前是「毒丸」**
+#   （与本文件上方记的 972 事故**同型**，只是方向相反）。
+#   · 原判据：`position('RETURNING' in p.prosrc) = 0`
+#   · 实测（245 活库，977 已 applied）：**求值为 false** ⇒ 探针判失败 ⇒
+#     走本通道的部署会被**自己的产物探针打死**。
+#   · 根因：`p.prosrc` 是**函数体原文**（**含注释**），而 977 的函数体注释里
+#     写着「不再 RETURNING ⇒ 不再有「多行 ⇒ 抛错」」⇒ **注释里的词命中了**。
+#   · ⚠ 关键：PG 的 `pg_get_functiondef` **同样保留 plpgsql 体的注释**
+#     （实测 RETURNING 在其 646 处命中）⇒ 换 pg_get_functiondef **并不能**躲开。
+#     ⇒ 唯一正确的做法是**先把行注释剥掉再判词**。
+#   · 修法（实测在 245 活库上求值为 true）：
+#     `position('RETURNING' in regexp_replace(p.prosrc, '--[^\n]*', '', 'g')) = 0`
+#     并**补两条正形判据**（断言「用 ROW_COUNT 取行数」确实在场）——
+#     只判「没有 RETURNING」是**弱判据**：函数体若被换成空壳也能过。
+#   ⇒ 通用式：**对「某 token 缺席」的产物探针，必须先剥注释**；
+#     否则「说明为什么改」的注释会把守卫变成毒丸（注释解释得越详细，越致命）。
+ledger_artifact_probe "977_pi_error_analysis_semantics.sql" \
+  "to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'idx_error_analysis_results_queue_uniq' AND i.indisunique) AND EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'cleanup_old_error_analysis' AND position('RETURNING' in regexp_replace(p.prosrc, '--[^\n]*', '', 'g')) = 0 AND pg_get_functiondef(p.oid) LIKE '%GET DIAGNOSTICS v_deleted_results = ROW_COUNT%' AND pg_get_functiondef(p.oid) LIKE '%GET DIAGNOSTICS v_deleted_queue = ROW_COUNT%')"
+# ★ 978 的产物 = **canonical PI 规则集在场**（25 条：364 的 21 + ensureRulesTable
+#   的 2 + privilege_escalation / command_injection）。
+#   ★ 为什么这是「产物」而不是「运行时状态」：种子行是**迁移自己造的静态对象**
+#     （与 972 事故里被误判成产物的「事实表当前有多少行」不同 —— 那是运行中的
+#     二进制会持续改写的数据）。规则行**没有**写路径会增删它们（除本迁移与
+#     364/315 这类种子迁移）⇒ 「25 条在不在场」是产物层判据。
+#   ★ 判据按 rule_name **计数**（不断言 enabled / pattern）⇒ 运维把某条规则
+#     禁用或改了 pattern 都不该被判「产物缺失」⇒ 那是运维行为，不是迁移产物。
+#   ★ 不断言 pattern 内容：pattern 由 977 负责（订正）⇒ pattern 的判据归 977
+#     的门；本探针只判「这套规则集在场」。
+ledger_artifact_probe "978_pi_canonical_rule_set.sql" \
+  "to_regclass('public.prompt_injection_rules') IS NOT NULL AND (SELECT count(*) FROM public.prompt_injection_rules WHERE rule_name IN ('instruction_override_ignore','instruction_override_new_rules','instruction_override_system_prompt','data_exfiltration_http','data_exfiltration_tool','resource_exhaustion_repeat','resource_exhaustion_long','social_engineering_urgency','social_engineering_authority','unicode_homoglyph','unicode_rtl_override','unicode_zero_width','tool_abuse_exec','tool_abuse_import','tool_abuse_file','multi_turn_setup','multi_turn_reference','payload_smuggling_base64','payload_smuggling_markdown','context_manipulation_role','context_manipulation_persona','role_hijack_ignore_previous','role_hijack_you_are_now','privilege_escalation','command_injection')) = 25"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

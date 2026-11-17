@@ -38,6 +38,23 @@ type Detector interface {
 	Detect(ctx context.Context, tenantID, input string) (*DetectionResult, error)
 }
 
+// AuditingDetector 是**可选扩展**：能同时把检测结果写进审计表的检测器。
+//
+// ★ 2026-11-17 审计轮 P1（F-PI-03）：核心 *promptinjection.Detector 有
+//
+//	DetectAndLog（写 prompt_injection_detections），但**零生产调用方**
+//	⇒ 活路径只走 Detect ⇒ 检测审计表在生产**恒空** ⇒
+//	  · 事后无法复核任何一次拦截/漏检；
+//	  · getRepeatCount（读该表计数）恒为 0 ⇒
+//	    **「连续攻击终止会话」（TerminateOnRepeat）永不触发**；
+//	  · updatePolicyStats（total_detections / total_blocks）永不更新
+//	    ⇒ 策略统计页恒 0。
+//	⇒ 本接口作为**可选扩展**：检测器支持时，hook 改走 DetectAndLog；
+//	  不支持时行为与此前完全一致（既有测试桩不受影响）。
+type AuditingDetector interface {
+	DetectAndLog(ctx context.Context, tenantID, requestID, sessionKey, input, clientIP, userAgent string) (*DetectionResult, error)
+}
+
 // Hook 把 prompt injection 检测接入 V4 Pipeline。
 //
 // 在 PhaseGovernance 执行，读 env.Metadata["user_content"] 做检测，
@@ -99,7 +116,7 @@ func (h *Hook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 		env.Metadata = make(map[string]any)
 	}
 	tenant := env.TenantID
-	result, err := h.detector.Detect(ctx, tenant, content)
+	result, err := h.detect(ctx, env, tenant, content)
 	if err != nil {
 		// 检测器故障不应阻断主流程，降级为 verdict=allow + 日志 metadata。
 		env.Metadata["prompt_injection_error"] = err.Error()
@@ -167,6 +184,42 @@ func (h *Hook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 	default:
 		return nil
 	}
+}
+
+// detect 调用检测器；**优先**走可审计的那条路径。
+//
+// ★ 2026-11-17 审计轮 P1（F-PI-03）：审计落库此前零调用方
+// ⇒ 检测结果在生产**不留痕** ⇒ 事后无法复核，
+// 且「连续攻击终止会话」永远不触发。
+//
+//	⇒ 检测器实现了 AuditingDetector 时改走 DetectAndLog。
+func (h *Hook) detect(ctx context.Context, env *domain.PipelineRequest, tenantID, content string) (*DetectionResult, error) {
+	if ad, ok := h.detector.(AuditingDetector); ok {
+		requestID := ""
+		sessionKey := ""
+		clientIP := ""
+		userAgent := ""
+		if env != nil {
+			if env.Envelope != nil {
+				requestID = env.Envelope.RequestID
+				// ★ 审计行要能用于**事件响应**：没有来源 IP 与 UA 的审计记录
+				//   在排查时价值有限（只知道「有人注入了」，不知道「谁」）。
+				//   取不到就留空（列可空），**不编造**。
+				if env.Envelope.Security != nil {
+					clientIP = env.Envelope.Security.ClientID.RealIP
+					userAgent = env.Envelope.Security.ClientID.UserAgent
+				}
+			}
+			sessionKey = env.SessionID
+		}
+		if requestID == "" {
+			// request_id 在 prompt_injection_detections 上是 NOT NULL ⇒
+			// 空串可以满足约束，但**必须非空**，否则整条审计记录写不进去。
+			requestID = "unknown-request"
+		}
+		return ad.DetectAndLog(ctx, tenantID, requestID, sessionKey, content, clientIP, userAgent)
+	}
+	return h.detector.Detect(ctx, tenantID, content)
 }
 
 // OnError 根据动作类型设置不同的 HTTP 状态码。

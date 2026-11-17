@@ -648,6 +648,15 @@ Built with ❤️ by the AI Native Gateway community
 ## 最近更新
 
 
+### 2026-11-17（F3 残留地平线根修 + PI 错误分析系统 + 安全事件契约）
+
+- **F3 残留地平线三轮根修收口**：迁移 972 补 `model_offers_update_trigger` 丢 `unavailable_recover_at` 的根因（`032c76a27`）、三条直写 cmb 恢复路径补齐触发器管不到的半边（`f3a19fa44`）、监控部署基线校准（`c6c5a0f91`）、部署后 80 分钟实测观察窗记录（`d554eb19c`）与假阴性口径作废（`3d0f99426`）
+- **PI 智能体错误自动分析系统 Phase 1 落地**：核心系统（`0e62d88da`）+ 管理页面（`c2c32664f`，`PIAnalysisView.vue` 902 行）+ main.go 集成（`14c7824a7`）+ 并行车迁移 641 → 正典通道 971 收编（`c6827623d`：七点登记 + 幂等 + 双门接管）
+- **安全事件统一契约 + 出网 sink M2-2**（`4e5a709e2`）：`internal/securityevent` 契约/severity/sink/memora 适配 + 576 行测试
+- **价格采集与对比完善**（`28a266c98`）：身份对齐 + 定价建议一键执行 + 变更历史
+- **r1057 signed thinking 误报修复**（`0c2350643`）：只在检测到敏感内容时拒绝
+- **审计面**：12h 修订审计轮（`a9bc2380b`）、guards-ir-conversion 磁盘 harness 登记 + IR mutation exit 修复（`eb9113c66`）、scan_secrets + menu-config 修复（`cd4fe4942`）、接入清单分页化（`f17208901`）与上游健康截断披露修复（`1f051a7b0`）
+
 ### 2026-11-16（24h 同步轮 + Phase 4 生产化 + plugin-architecture 合并）
 
 - **Phase 4 生产化收口**（`57ca336f9`）：4.1 性能（Redis ID 映射缓存 / HTTP 连接池 / 批量导入导出）、4.2 安全（TOTP MFA + 备份码 / Redis 会话管理 / 令牌桶限流）、4.3 可观测（auth/tokens/users/MFA/sessions/rate-limit 指标 + Casdoor/DB/Redis 健康检查 + ring buffer 结构化日志）；新增依赖 `pquerna/otp`、`boombuler/barcode`，约 3,700 行生产代码 + 测试

@@ -131,9 +131,17 @@
 | `maestro/flows/08-admin-data-ops.yaml` | 后台数据 / 用量 / 审计域 | 19 | 是 | 用量三件套、运营与运维总览、订阅层级、轮次、会话、请求注册表、连接注册台、对账、审计。 |
 | `maestro/flows/09-ops-maintain.yaml` | 运维中心外跳 / maintain 兜底 | 6 | 是 | `/ops/*` 全页外跳到 maintain SPA；Maintain 不可用时守卫改写到 `/customer/update-activate`。 |
 | `maestro/flows/90-dev-only.yaml` | 仅 dev 构建存在的路由 | 3 | 否 | router.ts 里 `import.meta.env.DEV` 包裹的三条路由，生产构建不注册 ⇒ 单独成 flow，默认不参与批量跑。 |
+| `maestro/flows/12-live-stage-tree.yaml` | 请求阶段树（`/live2`）+ `/live` 顶栏入口 | 2 | 是 | 阶段树页 + `/live` 页的「请求阶段树」顶栏入口。★ 2026-11-17 新增：`/live2` 此前**零 Maestro 覆盖**（路由在、页面从没被浏览器验过）。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
-合计：**112 条路由 = 111 条在 10 个功能 flow 里 + 1 条 `/login` 在共享登录流里**。
+合计：**112 条路由 = 112 条在 11 个功能 flow 里 + 1 条 `/login` 在共享登录流里**。
+
+> ★ 2026-11-17 订正：此前记的是「111 条在 10 个功能 flow 里」——
+>   实际有**一条路由没被任何 flow 覆盖**：`/live2`（请求阶段树）。路由在 `router.ts`
+>   里、页面也在，但**从没被浏览器打开过** ⇒ 「路由存在」被当成了「功能可用」。
+>   本轮补 `12-live-stage-tree.yaml` 后覆盖数才与路由数对齐。
+>   ★ 通用式：**「清单声称全覆盖」与「真的全覆盖」是两条独立的断言** ——
+>     清单对得上数，不等于每条路由都被浏览器开过（少一条时两边都会自洽地绿）。
 
 > `/` 被访问了两次：**访客态**（在 `01-public-guest`，断言落地页 hero 文案）与**登录态**（在 `02-overview-live`，断言仪表盘标题）。
 > 原因是 `HomeView` 按登录态分叉（`web/src/views/HomeView.vue:1-8`：登录 ⇒ `DashboardView`，未登录 ⇒ `LandingView`），两种渲染结果不同，值得各验一次。
@@ -328,6 +336,41 @@ router.ts 里 `import.meta.env.DEV` 包裹的三条路由，生产构建不注�
 | `/dev/waterfall-preview` | 否（公开） | `90-dev-only.yaml` | 队列瀑布图 · 本地预览 | web/src/views/DispatchWaterfallPreview.vue:47 |
 | `/dev/live-topology-preview` | 否（公开） | `90-dev-only.yaml` | 实时拓扑 | web/src/views/LiveTopologyView.vue:236 → locale liveTopology.title |
 | `/dev/live-request-preview/:requestId` | 否（公开） | `90-dev-only.yaml` | 请求详情 | web/src/views/RequestDetailPage.vue:41 → locale liveTopology.zoom.title |
+
+### 3.11 `12-live-stage-tree.yaml` — 请求阶段树（`/live2`）
+
+★ 2026-11-17 新增（owner「打开功能」轮）。`/live2` 此前**没有任何 Maestro 资产** ——
+路由在 `web/src/router.ts:233`、页面在 `web/src/views/LiveStageTreeView.vue`，
+但**从没被浏览器打开过** ⇒ 「功能开着」这件事只有源码与菜单配置能证明，没有浏览器证据。
+
+| 路由 path | 需要登录 | flow 文件 | 断言点（可见文案） | 源码位置 |
+|---|---|---|---|---|
+| `/live2` | 是 · 任意登录用户 | `12-live-stage-tree.yaml` | 统计胶囊 `.*条 · 成功率.*`、过滤栏「全部客户端/全部供应商/全部模型/全部节点/全部状态」、「显示探测请求」、「显示无效节点」、浮层标题「实时统计」、统计面板「请求数/成功率/客户端/供应商/模型」 | web/src/views/LiveStageTreeView.vue:304（`<template>`）→ locale `liveStageTree.*` |
+| `/live` | 是 · 任意登录用户 | `12-live-stage-tree.yaml` | 页面标题「实时拓扑」+ 顶栏「请求阶段树」入口（`[data-testid="live-stage-tree-link"]`，精确存在性由页面内断言验） | web/src/views/LiveTopologyView.vue:360 → locale `liveStageTree.title` |
+
+★ **这个 flow 的分工**（与 §6.7 同一口径）：
+- **flow 验行为**：入口可见可点、落地页的可见结构、统计浮层能点开；
+- **页面内 CDP**（`maestro/tools/assert-stage-tree.mjs`）验**结构与口径**：
+  页面身份（pathname）、DOM 契约（data-testid 在不在）、**统计口径对拍**
+  （胶囊读数 ↔ 实际阶段带条数/成功/在途徽章数）、数据是活的、SSE 已连接、
+  `/live` 顶栏入口的精确存在性、浮层的 Esc 出口与关闭按钮。
+
+★ 为什么「请求阶段树」这个文案**不能单独**当页面身份判据：
+它**同时**是顶栏菜单项与本页 h2 标题 ⇒ 一条 `text:` 断言分不清「菜单在」还是「页面在」。
+⇒ flow 用「菜单项可见 → 点进去 → 统计胶囊（/live2 独有的合成读数形态）→
+浮层标题『实时统计』」四条组合定位；精确身份（pathname）交给页面内断言。
+
+```bash
+# 跑法（必须带 1440x1400 视口，见 §6.6 ④）
+BASE_URL=https://llm.kxpms.cn ADMIN_USER=admin ADMIN_PASSWORD='***' \
+  bash maestro/run-stage-tree.sh
+
+# 页面内断言（需要一条已签发的 JWT）
+node maestro/tools/assert-stage-tree.mjs \
+  --url https://llm.kxpms.cn --token-file /tmp/llmgw-jwt.txt --page /live2
+node maestro/tools/assert-stage-tree.mjs \
+  --url https://llm.kxpms.cn --token-file /tmp/llmgw-jwt.txt --page /live
+```
 
 ---
 
@@ -528,8 +571,9 @@ maestro test --driver-host-port 9222 --headless --no-ansi \
 | `${output.x = ...}` | 只在 **JVM 侧**求值 ⇒ 拿不到 DOM（`document` 未定义） | 只适合纯算术 |
 | `assertVisible: { css }` | 可用但**极慢**（单条实测 2 分 23 秒） | 少用；能换 `id:` 就换 |
 | `assertNotVisible: { css }` | **直接挂住**（无超时上限） | 不要用 |
-| `assertVisible: { text }` | 可用，**秒级**；但**只匹配可见文本**且是**元素完整文本相等**（**不是子串包含**！实测「下一步该做什么」这种半句匹配不到）；`aria-label` / `title` **不参与**（`tapOn "切到专家模式"` ⇒ Element not found） | 判据一律用**整句**（`text: "工作模式 · 简易模式"`、`text: "今日请求"`） |
-| `assertVisible: { id }` | 可用，秒级，但**只匹配 HTML 的 `id` 属性**，**不匹配 `data-testid`**（实测 `tapOn id: work-mode-switch`（纯 data-testid）⇒ Element not found） | 需要 testid 级精确定位 ⇒ 走 `maestro/tools/assert-overview.mjs`（页面内 CDP） |
+| `assertVisible: { text }` | 可用，**秒级**；但**只匹配可见文本**且是**元素完整文本相等**（**不是子串包含**！实测「下一步该做什么」这种半句匹配不到）；`aria-label` / `title` **不参与**（`tapOn "切到专家模式"` ⇒ Element not found）。★ **2026-11-17 补测：它是「全匹配正则」**（命令 JSON 里字段名就是 `textRegex`）⇒ `.*….*` 可以用来选**读数会变**的元素（实测 `text: ".*条 · 成功率.*"` 命中统计胶囊，而 `text: "成功率"` 这种裸子串不命中） | 判据一律用**整句**（`text: "工作模式 · 简易模式"`、`text: "今日请求"`）；读数会变的元素用 `.*….*` 包起来 |
+| `assertVisible: { id }` | 可用，秒级。★ **2026-11-17 复测定论**：`id:` **能**选到 `data-testid`（实测 `id: stage-tree-canvas`（div）、`id: toggle-probe`（label）均命中）—— 此前「只匹配 HTML `id`」的记载是**错的**；★ 但**`<button>` 命中不了**（实测 `id: stage-stats-open`、`id: work-mode-switch` ⇒ `Element not found: Id matching regex: …`） | 需要 testid 级精确定位 ⇒ `id:` 可用于 div/label/span/article；**按钮**要么用可见文案（`text:`），要么走页面内 CDP |
+| `pressKey: Escape` | **不支持**（实测报 `Keycode ESCAPE is not supported on web`）⇒ 组件的「Esc 出口」在 flow 里**验不了** | 走页面内 CDP（`maestro/tools/assert-stage-tree.mjs` 在页面里派发 `keydown`） |
 | **view hierarchy 只覆盖视口** | 视口固定 **1024×625**（hierarchy 根节点 `bounds = [0,0][1024,625]`）⇒ 折叠线以下的内容**不进树** ⇒ `assertVisible` 对视口外元素**一律判 false**（哪怕它已渲染在 DOM 里） | 视口外的元素先 `scrollUntilVisible`（真滚动：`window.scrollY + innerHeight/2`）→ 再断言 → 再滚回顶部 |
 | `css` + `text` 组合 | **不可用**（实测 FAILED） | 一条断言只用一种 |
 | `--driver-host-port <port>` | 对 web 驱动**无效** | web 驱动自己起 Chrome（独立 profile/端口）⇒ 别传 |
@@ -800,8 +844,12 @@ maestro/
 ├── README.md                  ← 本文件
 ├── .gitignore                 ← 忽略 env.local.yaml 与 reports/
 ├── env.yaml                   ← 环境变量模板（★ 无口令）
+├── run-local.sh               ← 本地逐页入口（默认 BASE_URL=http://127.0.0.1:8782）
+├── run-simple-overview.sh     ← 简易模式总览页入口（--screen-size 1440x1400）
+├── run-stage-tree.sh          ← 请求阶段树入口（--screen-size 1440x1400，2026-11-17 新增）
 ├── flows/
 │   ├── _shared/login.yaml     ← 共享登录流（被 runFlow 调）
+│   ├── _shared/switch-simple-mode.yaml ← 幂等切到简易模式
 │   ├── 01-public-guest.yaml
 │   ├── 02-overview-live.yaml
 │   ├── 03-providers-models.yaml
@@ -811,7 +859,14 @@ maestro/
 │   ├── 07-admin-config.yaml
 │   ├── 08-admin-data-ops.yaml
 │   ├── 09-ops-maintain.yaml
+│   ├── 11-simple-overview.yaml
+│   ├── 12-live-stage-tree.yaml ← 请求阶段树 /live2（2026-11-17 新增）
 │   └── 90-dev-only.yaml
 └── tools/
+    ├── cdp-client.mjs         ← 零依赖 CDP 公共件（connect/evaluate/openPage/waitFor）
+    ├── assert-overview.mjs    ← 简易总览页的页面内数值对拍
+    ├── assert-stage-tree.mjs  ← 请求阶段树的页面内结构/口径对拍（2026-11-17 新增）
+    ├── probe-selectors.mjs    ← 选择器语义实测探针（2026-11-17 新增）
+    ├── seed-session.mjs       ← 无口令路径：CDP 预置登录态
     └── slow-pages.mjs         ← 从运行产物里筛「>2 秒」的页面
 ```

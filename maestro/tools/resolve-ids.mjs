@@ -112,8 +112,19 @@ await take('TENANT_CODE', '/api/admin/tenants', (j) => j?.[0]?.code, 'default')
 values.TENANT_ID = values.TENANT_CODE // 路由参数就是租户 code（TenantDetailView.vue:33）
 
 // ── 供应商 / 密钥 ─────────────────────────────────────────────────────────
-await take('PROVIDER_ID', '/api/providers', (j) => j?.[0]?.id)
-await take('API_KEY_ID', '/api/keys', (j) => j?.[0]?.id)
+// ★ 必须挑**启用中**的那一条，不能拿列表首项：
+//   mock-only 栈的 G2 门会把所有非 mock 供应商**禁用**（压测拓扑要求），
+//   而列表首项往往正是被禁用的一条 ⇒ 详情页直接回「invalid provider id」
+//   （ProviderDetailView 的错误条）⇒ flow 的断言必红，**与代码无关**。
+//   判据：优先 enabled === true 的首项；没有启用项才回落列表首项。
+const pickEnabled = (j, field = 'id') => {
+  const list = Array.isArray(j) ? j : Array.isArray(j?.items) ? j.items : []
+  if (list.length === 0) return undefined
+  const on = list.find((x) => x && x.enabled === true)
+  return (on ?? list[0])?.[field]
+}
+await take('PROVIDER_ID', '/api/providers', (j) => pickEnabled(j, 'id'))
+await take('API_KEY_ID', '/api/keys', (j) => pickEnabled(j, 'id'))
 
 // ── 请求日志 ──────────────────────────────────────────────────────────────
 await take('REQUEST_ID', '/api/logs?limit=5', (j) => j?.items?.[0]?.request_id)

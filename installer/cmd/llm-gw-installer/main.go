@@ -1719,6 +1719,67 @@ var modelOffersTriggerRecoverAt972 []byte
 //go:embed embeddata/startup/972_model_offers_trigger_recover_at.down.sql
 var modelOffersTriggerRecoverAt972Down []byte
 
+// ★ 2026-11-17 审计轮修正（并行列车漏登记）：974 / 975 / 976 三个迁移
+//
+//	它们的 embeddata 副本与 runner.go 的 StartupFiles 条目**都在**，
+//	但 `go:embed` 变量与 embeddedSQLFiles map 条目**都不在**
+//	⇒ installer 的 setupSQLDir（把 SQL 从 map 物化到临时目录）
+//	   **拿不到这三个文件**
+//	⇒ `go test ./installer/cmd/llm-gw-installer/` 直接红
+//	   （stats_migrations_test.go：「StartupFiles entry … is not provided by setupSQLDir」）
+//	⇒ 部署通道会**静默少跑三个迁移**（974 加列 / 975 建审计表 / 976 加列）
+//	   ⇒ 定价对比那条线的 schema 变更根本不会落地。
+//
+//go:embed embeddata/startup/974_market_price_identity_and_tier.sql
+var marketPriceIdentityAndTier974 []byte
+
+//go:embed embeddata/startup/974_market_price_identity_and_tier.down.sql
+var marketPriceIdentityAndTier974Down []byte
+
+//go:embed embeddata/startup/975_pricing_suggestion_audit.sql
+var pricingSuggestionAudit975 []byte
+
+//go:embed embeddata/startup/975_pricing_suggestion_audit.down.sql
+var pricingSuggestionAudit975Down []byte
+
+//go:embed embeddata/startup/976_market_price_platform_quote_region.sql
+var marketPricePlatformQuoteRegion976 []byte
+
+//go:embed embeddata/startup/976_market_price_platform_quote_region.down.sql
+var marketPricePlatformQuoteRegion976Down []byte
+
+// ★ 977（2026-11-17 PI 错误分析语义订正轮）：pi_error_analysis_semantics——
+//
+//	订正 971 留下的四语义缺陷：cleanup_old_error_analysis 改时间口径（去掉
+//	RETURNING * INTO 标量 与「依赖没人写的标志位」）、v_error_analysis_stats
+//	改先按队列聚合（去掉 JOIN 膨胀）、error_analysis_results(queue_id) 加
+//	唯一索引（先去重）、L2 检测规则 pattern 的分组/词界修正。
+//	★ 零建表 / 零列变更 / 零路由变更 ⇒ 与并行的 Go 侧改动零冲突面。
+//
+//go:embed embeddata/startup/977_pi_error_analysis_semantics.sql
+var piErrorAnalysisSemantics977 []byte
+
+//go:embed embeddata/startup/977_pi_error_analysis_semantics.down.sql
+var piErrorAnalysisSemantics977Down []byte
+
+// ★ 978（2026-11-17 PI 规则集交付轮）：pi_canonical_rule_set——
+//
+//	把 PI 检测的 L1/L2 规则集纳入**可投递通道**：315 / 364 两条种子迁移
+//	既不在安装器链（StartupFiles / tsv）也不在存量升级通道的投递面
+//	（都 < 对账地板 412 且不在 low-version-delivery.list）⇒ 全新安装的
+//	`prompt_injection_rules` **恒空**（表由 01-schema 基线建出 ⇒ 检测器的
+//	ensureRulesTable 永不触发）、存量库则缺 privilege_escalation /
+//	command_injection ⇒ 977 的 F4 订正在它们身上是 no-op。
+//	本件幂等补种 canonical 规则集（364 的 21 条 + 2 条 basic + 977 订正后的
+//	两条），令各环境收敛到同一份。
+//	★ 零建表 / 零列变更 / 零路由变更 ⇒ 与并行的 Go 侧改动零冲突面。
+//
+//go:embed embeddata/startup/978_pi_canonical_rule_set.sql
+var piCanonicalRuleSet978 []byte
+
+//go:embed embeddata/startup/978_pi_canonical_rule_set.down.sql
+var piCanonicalRuleSet978Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2308,8 +2369,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/968_plugin_config.down.sql": pluginConfig968Down,
 	// ★ 969（2026-11-16 12h 审计轮 0820）：approval_casdoor_mapping 表——
 	// 原 DDL 在死通道（db/migrations/，README 冻结）⇒ 收编进正典通道。
-	"startup/969_approval_casdoor_mapping.sql":      approvalCasdoorMapping969,
-	"startup/969_approval_casdoor_mapping.down.sql": approvalCasdoorMapping969Down,
+	"startup/969_approval_casdoor_mapping.sql":          approvalCasdoorMapping969,
+	"startup/969_approval_casdoor_mapping.down.sql":     approvalCasdoorMapping969Down,
 	"startup/970_market_price_platform_quotes.sql":      marketPricePlatformQuotes970,
 	"startup/970_market_price_platform_quotes.down.sql": marketPricePlatformQuotes970Down,
 	// ★ 971（2026-11-17 同步并行车 + 部署验证轮）：pi_error_analysis_system——
@@ -2322,6 +2383,23 @@ var embeddedSQLFiles = map[string][]byte{
 	//   + 一次性清存量残留行。
 	"startup/972_model_offers_trigger_recover_at.sql":      modelOffersTriggerRecoverAt972,
 	"startup/972_model_offers_trigger_recover_at.down.sql": modelOffersTriggerRecoverAt972Down,
+	// ★ 2026-11-17 审计轮修正（并行列车漏登记）：974/975/976 的 map 条目。
+	//   缺它们 ⇒ setupSQLDir 少这三个文件 ⇒ 部署通道静默少跑三个迁移。
+	"startup/974_market_price_identity_and_tier.sql":          marketPriceIdentityAndTier974,
+	"startup/974_market_price_identity_and_tier.down.sql":     marketPriceIdentityAndTier974Down,
+	"startup/975_pricing_suggestion_audit.sql":                pricingSuggestionAudit975,
+	"startup/975_pricing_suggestion_audit.down.sql":           pricingSuggestionAudit975Down,
+	"startup/976_market_price_platform_quote_region.sql":      marketPricePlatformQuoteRegion976,
+	"startup/976_market_price_platform_quote_region.down.sql": marketPricePlatformQuoteRegion976Down,
+	// ★ 977（2026-11-17 PI 错误分析语义订正轮）：pi_error_analysis_semantics——
+	//   971 的四语义订正（cleanup 时间口径 / 统计视图去膨胀 / queue_id 唯一 /
+	//   L2 规则 pattern 分组）。
+	"startup/977_pi_error_analysis_semantics.sql":      piErrorAnalysisSemantics977,
+	"startup/977_pi_error_analysis_semantics.down.sql": piErrorAnalysisSemantics977Down,
+	// ★ 978（2026-11-17 PI 规则集交付轮）：pi_canonical_rule_set——
+	//   把 L1/L2 规则集纳入可投递通道（幂等补种 canonical 规则集）。
+	"startup/978_pi_canonical_rule_set.sql":      piCanonicalRuleSet978,
+	"startup/978_pi_canonical_rule_set.down.sql": piCanonicalRuleSet978Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

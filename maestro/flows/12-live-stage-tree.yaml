@@ -1,0 +1,118 @@
+# 12-live-stage-tree.yaml —— 请求阶段树（/live2）逐页验证
+#
+# 覆盖对象：web/src/views/LiveStageTreeView.vue（+ components/live-stage-tree/*）
+#
+# ★ 本 flow 的存在理由（2026-11-17 owner「打开功能」轮）：
+#   /live2 此前**没有任何 Maestro 资产**（`grep -rn live2 maestro/` 零命中）⇒
+#   「路由存在」与「页面能打开、元素在、数据是活的」这三件事**从没被浏览器验过**。
+#   本轮把功能打开（菜单 + /live 顶栏入口恢复）⇒ 入口既然存在，就必须有资产守着它。
+#
+# ★★★ 断言写法全部受 Maestro 2.11.0 **web 驱动**的实测边界约束
+#     （2026-11-17 在 154 生产站逐条实测；探针脚本 maestro/tools/probe-selectors.mjs）：
+#
+#   ① `text:` 是**全匹配正则**，不是子串包含：
+#      实测 `text: "成功率"`（想用子串）**不命中**（胶囊读数整句更长），
+#      而 `text: ".*条 · 成功率.*"` **命中**（统计胶囊，读数含数字只能用正则）。
+#      ⇒ 读数会变的元素一律用 `.*….*` 包起来；纯文案用整句。
+#
+#   ② `id:` **能**选到 `data-testid`（仓内旧记载「只匹配 HTML id」是错的：
+#      实测 `id: stage-tree-canvas` / `id: toggle-probe` 均命中），
+#      **但 `<button>` 命中不了**（实测 `id: stage-stats-open`、
+#      `id: work-mode-switch` ⇒ Element not found）⇒ 按钮交互走 `text:` 或页面内 CDP。
+#
+#   ③ `pressKey: Escape` 在 web 驱动**不支持**
+#      （实测报 "Keycode ESCAPE is not supported on web"）⇒ 统计浮层的 Esc 出口
+#      与关闭按钮（`<button>`，text:/id: 都选不到）由
+#      maestro/tools/assert-stage-tree.mjs 在**页面内**验。
+#
+#   ④ 视口只覆盖 1024×625，view hierarchy 只覆盖视口 ⇒ 断言只挑**首屏可见**的元素；
+#      本 flow **必须**用 `--screen-size 1440x1400` 跑（见 maestro/run-stage-tree.sh）。
+#
+# ★ 分工（与 maestro/tools/assert-overview.mjs 同一口径）：
+#   · **本 flow**：入口可见可点、落地页的可见结构、统计浮层能点开。
+#   · **页面内 CDP**（assert-stage-tree.mjs）：页面身份（pathname）、DOM 契约
+#     （data-testid 在不在）、**统计口径对拍**（胶囊读数 vs 实际阶段带条数）、
+#     数据是活的、/live 顶栏入口的精确存在性。
+#     ⇒ 为什么「请求阶段树」不能单独当页面身份：它**同时**是顶栏菜单项与本页 h2
+#       标题 ⇒ 单条 text: 断言分不清「菜单在」还是「页面在」。
+#       本 flow 用「菜单项 + 点进去 + 统计胶囊（/live2 独有形态）+ 浮层标题
+#       『实时统计』」四条组合定位，精确身份交给页面内断言。
+#
+# ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，账号口令由
+#   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出（否则登录弹窗不出现）────────
+# ★ 两步都 optional：未登录时找不到元素，直接跳过。
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── ② 导航入口存在（**本轮「打开功能」的直接证据**）────────────────────────
+#    专家面（openLink 会清 localStorage ⇒ 工作模式退回专家面）顶栏有三个直链：
+#    实时拓扑 / 请求阶段树 / 总览。此前该入口被 hidden 闸门藏掉 ⇒ 这一条会红。
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible: "请求阶段树"
+    timeout: 20000
+
+# ── ③ 点它 ⇒ 落到 /live2 ──────────────────────────────────────────────────
+- tapOn: "请求阶段树"
+# 统计胶囊是 /live2 独有的形态（/live 的统计面板是「请求数/成功率」两行分列，
+# 没有「n 条 · 成功率 x% · 在途 k」这种合成读数）⇒ 它是落地页的形态锚点。
+- extendedWaitUntil:
+    visible: ".*条 · 成功率.*"
+    timeout: 20000
+
+# ── ④ 过滤条件**常驻顶层**（owner 2026-11-16 定稿：不在画布里，在顶栏）──
+- assertVisible: "全部客户端"
+- assertVisible: "全部供应商"
+- assertVisible: "全部模型"
+- assertVisible: "全部节点"
+- assertVisible: "全部状态"
+
+# ── ⑤ 两个数据开关（默认不勾 = 默认去除）──────────────────────────────────
+- assertVisible: "显示探测请求"
+- assertVisible: "显示无效节点"
+
+# ── ⑥ 统计胶囊 ⇒ 点开 ⇒ **全页浮层**（owner 定稿形态）─────────────────────
+- tapOn: ".*条 · 成功率.*"
+- extendedWaitUntil:
+    visible: "实时统计"
+    timeout: 20000
+# 浮层里是统计面板（口径与 /live 一致的那把尺）
+- assertVisible: "统计"
+- assertVisible: "请求数"
+- assertVisible: "成功率"
+- assertVisible: "客户端"
+- assertVisible: "供应商"
+- assertVisible: "模型"
+
+# ── ⑦ 关掉浮层：web 驱动不支持 pressKey: Escape，关闭按钮又是 <button>
+#    （id:/text: 都选不到）⇒ **flow 侧不做**，由 assert-stage-tree.mjs 在
+#    页面内验 Esc 出口与关闭按钮。flow 这里直接离开页面（组件卸载即关闭）。
+- openLink: ${BASE_URL}/live
+
+# ── ⑧ /live 页：本轮恢复的「阶段树」顶栏入口 ─────────────────────────────
+- extendedWaitUntil:
+    visible: "实时拓扑"
+    timeout: 20000
+# 顶栏有「请求阶段树」入口（与顶栏菜单同名 ⇒ 精确存在性由页面内断言验：
+#    [data-testid="live-stage-tree-link"] 可见且 href=/live2）
+- assertVisible: "请求阶段树"
+# 点它 ⇒ 落到 /live2（菜单项与页内入口同文案 ⇒ 两者都可直达）
+- tapOn: "请求阶段树"
+- extendedWaitUntil:
+    visible: ".*条 · 成功率.*"
+    timeout: 20000

@@ -1933,6 +1933,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   并入 PK（起因：970 首次在生产写入即撞 23505 —— 同一 tier 有 5 个
 			//   region，价差 7 百分点）。
 			"976_market_price_platform_quote_region.sql",
+			// ★ 977（2026-11-17 PI 错误分析语义订正轮）：pi_error_analysis_semantics
+			//   —— 订正 971 留下的四语义缺陷（cleanup 改时间口径 / 统计视图去 JOIN
+			//   膨胀 / error_analysis_results(queue_id) 唯一 / L2 规则 pattern 分组）。
+			//   ★ 必须排在 971 **之后**（它 OR REPLACE 971 建出来的函数与视图）。
+			//   ★ 零建表 / 零列变更 ⇒ 与并行的 Go 侧改动零冲突面。
+			"977_pi_error_analysis_semantics.sql",
+			// ★ 978（2026-11-17 PI 规则集交付轮）：pi_canonical_rule_set
+			//   —— 把 PI 的 L1/L2 规则集纳入**安装器链**（此前 315 / 364 两条
+			//   种子迁移都不在链里 ⇒ 全新安装的 prompt_injection_rules 恒空）。
+			//   ★ 必须排在 977 **之后**（它种入的 privilege_escalation /
+			//     command_injection 用的是 977 订正后的 pattern ⇒ 两件的
+			//     先后次序会改变最终值）。
+			//   ★ 幂等（ON CONFLICT DO NOTHING）⇒ 与存量库重放零冲突。
+			"978_pi_canonical_rule_set.sql",
 		},
 	}
 }
