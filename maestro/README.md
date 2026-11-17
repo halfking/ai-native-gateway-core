@@ -777,8 +777,12 @@ maestro test --headless --no-ansi --screen-size 1440x1400 \
   maestro/flows/12-live-stage-tree.yaml
 ```
 
-★ **一条命令跑完 14 条验收证据**（含上面这条 flow、两层页面内断言、线上身份、bundle 契约串、
-可追溯性、合并试演）：`bash maestro/verify-stage-tree-evidence.sh --with-browser`
+★ **一条命令跑完 15 条验收证据**（含上面这条 flow、两层页面内断言、线上身份、bundle 契约串、
+可追溯性、合并试演、**F1 专项**）：`bash maestro/verify-stage-tree-evidence.sh --with-browser`
+
+★ **「当前在役是哪一版」是动态取的**（脚本自动取 `deploy-154/seq*` 里 seq 最大的 tag）
+⇒ **每次发版后不必改脚本**；★ 若你手写新检查，**不要把 tag 名写死**（写死 ⇒ 永远指向旧发布）。
+★ 采集器的 ⑩ 项在**有冲突**时会输出**冲突文件 + 两侧差异**（不只给退出码）⇒ 红的归因直接可读。
 
 ★ `maestro test` **没有 `--dry-run`**（本机 CLI 2.11.0 的 `TestCommand` 里没有这个选项；
 只有一个独立的 `check-syntax` 子命令）。语法校验是**用 YAML 解析器逐个文件解析 + 结构断言**做的：

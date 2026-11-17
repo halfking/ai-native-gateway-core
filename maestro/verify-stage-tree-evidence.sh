@@ -26,11 +26,33 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_URL="${BASE_URL:-https://llm.kxpms.cn}"
 SSH_HOST="${SSH_HOST:-47.97.111.154}"
 SSH_PORT="${SSH_PORT:-25022}"
-DEPLOY_TREE="${DEPLOY_TREE:-/private/tmp/deploy-frozen-154-stage-parity2}"
-OLD_TREE="${OLD_TREE:-/private/tmp/deploy-frozen-154-stage-parity}"
+DEPLOY_TREE="${DEPLOY_TREE:-/private/tmp/deploy-frozen-154-stage-parity3}"
+OLD_TREE="${OLD_TREE:-/private/tmp/deploy-frozen-154-stage-parity2}"
 BRANCH="${BRANCH:-feat/live-stage-tree-design-parity-20261117}"
 WITH_BROWSER=0
 [ "${1:-}" = "--with-browser" ] && WITH_BROWSER=1
+
+# ── 「当前在役是哪一版」：**动态取**，不写死 ──────────────────────────────────
+# ★ 本项必须放在最前面（③ 与 ⑦ 都要用）：写死 tag 名 ⇒ 每次发版后
+#   「身份三方一致」与「在役部署可追溯」都会指向**上一版** ⇒ 证据链指向历史快照。
+tag_seq_of() { printf '%s' "$1" | sed -n 's/.*seq\([0-9][0-9]*\).*/\1/p'; }
+TAGS_SORTED=""
+for t in $(git -C "$ROOT" tag -l 'deploy-154/seq*' 2>/dev/null); do
+  s="$(tag_seq_of "$t")"
+  [ -n "$s" ] && TAGS_SORTED="${TAGS_SORTED}${s} ${t}"$'\n'
+done
+TAGS_SORTED="$(printf '%s' "$TAGS_SORTED" | sort -rn)"
+TAG_NEW="$(printf '%s' "$TAGS_SORTED" | sed -n '1s/^[0-9]* //p')"
+TAG_OLD="$(printf '%s' "$TAGS_SORTED" | sed -n '2s/^[0-9]* //p')"
+# ★ 标签消息里的字段解析**必须与排版无关**：
+#   本轮新 tag 把 base/cherry-picks/files 写在**同一行**，而老 tag 是一行一个
+#   ⇒ `grep '^base='` 在新 tag 上**匹配不到** ⇒ BASE 取空 ⇒ 改动文件数算成 0、
+#   「零泄漏」判据两侧都解析不出内容 ⇒ **恒定误报成 2 处泄漏**（本轮真踩到）。
+#   ⇒ 统一按「空白切词后取 `key=` 前缀」解析，两种排版都能读。
+tag_field() { # tag_field <tag> <key>
+  git -C "$ROOT" tag -l --format='%(contents)' "$1" 2>/dev/null \
+    | tr ' \t' '\n\n' | sed -n "s/^$2=//p" | head -1 | tr -d '[:space:]'
+}
 
 PASS=0; FAIL=0; SKIP=0
 declare -a ROWS=()
@@ -76,14 +98,26 @@ else
   HZ_VER=""; HZ_SHA=""; HZ_SEQ=""; skip "② 公网 healthz" "HTTP ${HZ_CODE}"
 fi
 
-# ── ③ 身份三方一致（SSH = healthz = 部署树 HEAD）────────────────────────────
+# ── ③ 身份三方一致（SSH = healthz = 部署树 commit）──────────────────────────
 if [ -n "${SSH_VER:-}" ] && [ -n "${HZ_VER:-}" ]; then
-  DEPLOY_HEAD=$(git -C "$ROOT" rev-parse --short "deploy-154/seq3051-8ab0d2e56^{commit}" 2>/dev/null \
-                  || git -C "$DEPLOY_TREE" rev-parse --short HEAD 2>/dev/null || echo "")
-  if [ "$SSH_VER" = "$HZ_VER" ] && [ "$SSH_SHA" = "$HZ_SHA" ] && [ "$SSH_SEQ" = "$HZ_SEQ" ]; then
-    ok "③ 身份三方一致" "SSH = healthz = ${HZ_VER}（部署树 HEAD=${DEPLOY_HEAD}）"
+  DEPLOY_SHA_FULL=$(git -C "$ROOT" rev-parse "${TAG_NEW}^{commit}" 2>/dev/null \
+                    || git -C "$DEPLOY_TREE" rev-parse HEAD 2>/dev/null || echo "")
+  DEPLOY_HEAD=$(printf '%s' "$DEPLOY_SHA_FULL" | cut -c1-8)
+  # ★ 「三方一致」必须**真的三方都相等**：原实现只比了 SSH vs healthz，
+  #   DEPLOY_HEAD 只被打印、**不参与判定** ⇒ 名不副实（本轮实测：写死的旧 tag
+  #   让它打印出上一版的 sha，而正文没有任何一处会发现）。
+  # ★★ 比 sha 要用**前缀**而不是字符串相等：`healthz.git_sha` 是 8 位短 sha，
+  #   而 `git rev-parse --short` 在本仓会取 **9 位**（8 位在此仓不唯一）
+  #   ⇒ 直接比字符串**恒不相等** ⇒ 假红（本轮真踩到）。
+  SHA_MATCH=0
+  case "$DEPLOY_SHA_FULL" in
+    "$HZ_SHA"*) SHA_MATCH=1 ;;
+  esac
+  if [ "$SSH_VER" = "$HZ_VER" ] && [ "$SSH_SHA" = "$HZ_SHA" ] && [ "$SSH_SEQ" = "$HZ_SEQ" ] \
+     && { [ -z "$DEPLOY_SHA_FULL" ] || [ "$SHA_MATCH" = "1" ]; }; then
+    ok "③ 身份三方一致" "SSH = healthz = 部署树 commit ${DEPLOY_HEAD}（tag ${TAG_NEW:-无}）＝ ${HZ_VER}"
   else
-    bad "③ 身份三方一致" "SSH(${SSH_VER}/${SSH_SHA}/${SSH_SEQ}) ≠ healthz(${HZ_VER}/${HZ_SHA}/${HZ_SEQ})"
+    bad "③ 身份三方一致" "SSH(${SSH_VER}/${SSH_SHA}/${SSH_SEQ}) ≠ healthz(${HZ_VER}/${HZ_SHA}/${HZ_SEQ})；部署树 commit=${DEPLOY_SHA_FULL:-?}（前缀匹配=${SHA_MATCH}）"
   fi
 else
   skip "③ 身份三方一致" "缺 SSH 或 healthz 实测值"
@@ -133,64 +167,82 @@ fi
 # ── ⑦ 当前在役部署树可追溯 + 并行车零泄漏 ──────────────────────────────────
 # ★ 用【仓内 durable ref（tag）】而不是 /private/tmp 的部署源目录：
 #   部署源目录会被系统清理 ⇒ 「可追溯」不能只靠它。
-TAG_NEW="deploy-154/seq3051-8ab0d2e56"
-TAG_OLD="deploy-154/seq3050-6840a7be"
-if git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/null 2>&1; then
+# ★★ 「当前在役」与「上一版」由**脚本顶部动态取**（seq 最大的 tag）⇒
+#    每次发版后本检查自动跟随，不需要改脚本。
+# ★★ 「并行车零泄漏」的比对必须**排除 exported_at**：
+#    menu-config.json 的 exported_at 是**构建时戳** ⇒ 每次 build 都变
+#    ⇒ 拿它当「并行车是否泄漏」的判据 ⇒ 恒定误报。
+#    ⇒ 判据＝**内容**（去掉 exported_at 后逐字比对），不是文件哈希。
+# ★ 比对「并行车是否泄漏到本次发布」：只看**内容**，不看构建戳。
+leak_of() { # leak_of <ref> <base> <file> ⇒ 0=未泄漏 / 1=泄漏
+  local A B
+  if [ "$3" = "web/public/menu-config.json" ]; then
+    A=$(git -C "$ROOT" show "$1:$3" 2>/dev/null | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
+    B=$(git -C "$ROOT" show "$2:$3" 2>/dev/null | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
+  else
+    A=$(git -C "$ROOT" rev-parse "$1:$3" 2>/dev/null)
+    B=$(git -C "$ROOT" rev-parse "$2:$3" 2>/dev/null)
+  fi
+  if [ "$A" != "$B" ]; then echo 1; else echo 0; fi
+}
+if [ -n "$TAG_NEW" ] && git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/null 2>&1; then
   DH=$(git -C "$ROOT" rev-parse --short "${TAG_NEW}^{commit}")
   # ★ 基点必须从【标签消息】里取，不能用 `TAG^`：
   #   部署树是 base → cherry1 → cherry2 → cherry3 ⇒ `TAG^` 是【上一笔 cherry-pick】，
   #   不是基点（实测：会拿 10 文件冒充 25 文件）。
-  BASE=$(git -C "$ROOT" tag -l --format='%(contents)' "${TAG_NEW}" 2>/dev/null \
-          | grep -m1 '^base=' | cut -d= -f2 | tr -d '[:space:]')
+  BASE=$(tag_field "${TAG_NEW}" "base")
   [ -z "$BASE" ] && BASE=$(git -C "$ROOT" rev-parse --short "${TAG_NEW}~1" 2>/dev/null)
-  CH=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}" 2>/dev/null | wc -l | tr -d ' ')
+  # ★ 期望文件数写在**标签消息**里（files=N）⇒ 判据随发布单元走，不写死在脚本里。
+  EXP=$(tag_field "${TAG_NEW}" "files")
+  CH=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
   LEAK=0
   for f in admin/pi_analysis_handler.go web/public/menu-config.json; do
-    A=$(git -C "$ROOT" rev-parse "${TAG_NEW}:$f" 2>/dev/null)
-    B=$(git -C "$ROOT" rev-parse "$BASE:$f" 2>/dev/null)
-    [ "$A" != "$B" ] && LEAK=$((LEAK+1))
+    LEAK=$((LEAK + $(leak_of "${TAG_NEW}^{commit}" "$BASE" "$f")))
   done
-  PI=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$LEAK" = "0" ] && [ "$PI" = "0" ] && [ "$CH" = "25" ]; then
-    ok "⑦ 在役部署可追溯 + 零泄漏" "tag ${TAG_NEW}（${DH}，基点 ${BASE:0:8} + ${CH} 文件）并行车 0 泄漏"
+  PI=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}^{commit}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
+  CH_OK=1
+  if [ -n "$EXP" ] && [ "$CH" != "$EXP" ]; then CH_OK=0; fi
+  if [ "$LEAK" = "0" ] && [ "$PI" = "0" ] && [ "$CH_OK" = "1" ]; then
+    ok "⑦ 在役部署可追溯 + 零泄漏" "tag ${TAG_NEW}（${DH}，基点 ${BASE:0:8} + ${CH} 文件${EXP:+（tag 记 files=${EXP}）}）并行车 0 泄漏"
   else
-    bad "⑦ 在役部署可追溯 + 零泄漏" "改动 ${CH} 个文件（期望 25）/ 泄漏 ${LEAK} 处 / promptinjection 差异 ${PI} 处"
+    bad "⑦ 在役部署可追溯 + 零泄漏" "改动 ${CH} 个文件（tag 记 files=${EXP:-未记}）/ 泄漏 ${LEAK} 处 / promptinjection 差异 ${PI} 处"
   fi
 elif [ -d "$DEPLOY_TREE" ]; then
-  skip "⑦ 在役部署可追溯" "无 tag ${TAG_NEW}（仓内无 durable ref）"
+  skip "⑦ 在役部署可追溯" "无 tag ${TAG_NEW:-（仓内无 durable ref）}"
 else
   skip "⑦ 在役部署可追溯" "既无 tag 也无部署源目录"
 fi
 
-# ── ⑧ 取代链：旧部署（3050）仍可追溯，且被新部署严格超集 ────────────────────
-if git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/null 2>&1; then
+# ── ⑧ 上一版部署仍可追溯，且被新版**内容超集** ─────────────────────────────
+if [ -n "$TAG_OLD" ] && git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/null 2>&1; then
   OH=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}^{commit}")
-  OB=$(git -C "$ROOT" tag -l --format='%(contents)' "${TAG_OLD}" 2>/dev/null \
-        | grep -m1 '^base=' | cut -d= -f2 | tr -d '[:space:]')
+  OB=$(tag_field "${TAG_OLD}" "base")
   [ -z "$OB" ] && OB=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}~1" 2>/dev/null)
-  ON=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}" 2>/dev/null | wc -l | tr -d ' ')
+  ON=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
   OLEAK=0
   for f in admin/pi_analysis_handler.go web/public/menu-config.json; do
-    A=$(git -C "$ROOT" rev-parse "${TAG_OLD}:$f" 2>/dev/null)
-    B=$(git -C "$ROOT" rev-parse "$OB:$f" 2>/dev/null)
-    [ "$A" != "$B" ] && OLEAK=$((OLEAK+1))
+    OLEAK=$((OLEAK + $(leak_of "${TAG_OLD}^{commit}" "$OB" "$f")))
   done
-  SUPER=$(git -C "$ROOT" diff --name-only "${TAG_OLD}" "${TAG_NEW}" 2>/dev/null | wc -l | tr -d ' ')
+  SUPER=$(git -C "$ROOT" diff --name-only "${TAG_OLD}^{commit}" "${TAG_NEW}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
   if [ "$OLEAK" = "0" ]; then
-    ok "⑧ 旧部署（3050）可追溯" "tag ${TAG_OLD}（${OH}，基点 ${OB} + ${ON} 文件）并行车 0 泄漏；→3051 差异 ${SUPER} 个文件"
+    ok "⑧ 上一版部署可追溯" "tag ${TAG_OLD}（${OH}，基点 ${OB:0:8} + ${ON} 文件）并行车 0 泄漏；→新版差异 ${SUPER} 个文件"
   else
-    bad "⑧ 旧部署（3050）可追溯" "并行车泄漏 ${OLEAK} 处"
+    bad "⑧ 上一版部署可追溯" "并行车泄漏 ${OLEAK} 处"
   fi
 else
-  skip "⑧ 旧部署（3050）可追溯" "无 tag ${TAG_OLD}"
+  skip "⑧ 上一版部署可追溯" "无 tag ${TAG_OLD:-（仓内无 durable ref）}"
 fi
 
 # ── ⑨ 前端产物三方 sha256（服务器 = 公网 = 本地 dist）────────────────────────
 SERVER_SHA=""
-if [ -n "${SSH_HOST:-}" ]; then
+if [ -n "$SSH_HOST:-}" ] && [ -n "$ASSET" ]; then
+  # ★ 必须量【同一个入口 chunk】（公网 index.html 里引用的那个）：
+  #   前端一次构建会产出**多个** `index-*.js`（主入口 + 若干分包），
+  #   而 `glob` 的「第一个」是按字典序 ⇒ 可能量到**别的 chunk**
+  #   （本轮实测：服务器量到 00d53b52…、公网/本地量到 9477d8eb…
+  #     ⇒ 看着像「服务器产物与公网不一致」，其实是**量错了文件**）。
   SERVER_SHA=$(ssh -o BatchMode=yes -o ConnectTimeout=20 -p "${SSH_PORT}" "root@${SSH_HOST}" \
-    'for f in /opt/llm-gateway-go/current/web/assets/index-*.js; do sha256sum "$f"; done' 2>/dev/null \
-    | awk '{print $1}' | head -1)
+    "sha256sum /opt/llm-gateway-go/current/web${ASSET}" 2>/dev/null | awk '{print $1}' | head -1)
 fi
 ONLINE_SHA=""
 [ -f /tmp/vst-bundle.js ] && ONLINE_SHA=$(shasum -a 256 /tmp/vst-bundle.js 2>/dev/null | cut -d' ' -f1)
@@ -204,12 +256,28 @@ fi
 
 # ── ⑩ 合并试演（对当前 origin/main）零冲突 ──────────────────────────────────
 if git -C "$ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
-  git -C "$ROOT" merge-tree --write-tree origin/main "$BRANCH" >/dev/null 2>&1
-  MT_RC=$?
+  MT_OUT=$(git -C "$ROOT" merge-tree --write-tree origin/main "$BRANCH" 2>&1); MT_RC=$?
   if [ "$MT_RC" = "0" ]; then
     ok "⑩ 合并试演零冲突" "git merge-tree 退出码 0（origin/main=$(git -C "$ROOT" rev-parse --short origin/main)）"
   else
-    bad "⑩ 合并试演零冲突" "git merge-tree 退出码 ${MT_RC}"
+    # ★ 红的**归因**才是结论：只给一个退出码，复核者还得自己重跑一遍才知道冲突在哪。
+    #   ⇒ 这里把**冲突文件**与**两侧差异摘要**一起给出（原样引 git 的三方条目）。
+    MT_TRIPLES=$(printf '%s\n' "$MT_OUT" | awk '
+      $1 ~ /^[0-9]+$/ && NF>=4 {
+        path=$NF; stage=$3; sha=$2;
+        if (stage=="2") b2[path]=sha; else if (stage=="3") b3[path]=sha; else if (stage=="1") b1[path]=sha;
+        seen[path]=1;
+      }
+      END { for (p in seen) printf "%s|%s|%s\n", p, b2[p], b3[p] }' | sort)
+    DETAIL=""
+    while IFS='|' read -r p b2 b3; do
+      [ -z "$p" ] && continue
+      D=$(git -C "$ROOT" diff --no-color "$b2" "$b3" 2>/dev/null | grep -E '^[+-][^+-]' | head -4 | tr '\n' ' ')
+      DETAIL="${DETAIL}${p}[ours<->theirs: ${D:-无内容差异}]; "
+    done <<EOF
+$MT_TRIPLES
+EOF
+    bad "⑩ 合并试演零冲突" "退出码 ${MT_RC}（origin/main=$(git -C "$ROOT" rev-parse --short origin/main)）；冲突与两侧差异：${DETAIL:-（未能解析）}"
   fi
 else
   skip "⑩ 合并试演零冲突" "无 origin/main 引用"
@@ -313,16 +381,66 @@ if [ "$WITH_BROWSER" = "1" ]; then
     else
       skip "⑭ 临时密钥清理" "本轮未创建临时密钥"
     fi
+
+    # ── ⑮ F1 专项：紧凑模式图例字形必须随模式切换（设计规则 15）────────────
+    #   ★ 这一条**曾经是缺陷本体**：瓦片换成了紧凑字形、图例仍是固定数组
+    #     ⇒ 「同一条规定写了两份」⇒ 必然漂移 ⇒ 生产页面出现「图例说 ✓、画面没 ✓」。
+    #   ⇒ 修法是单一真源（web/src/lib/stageTreeGlyphs.ts），此处是**线上实证**：
+    #     紧凑模式图例 done/pending/unmeasured 必须为空串、全页 ✓ 计数必须 = 0；
+    #     同时**完整模式必须仍有 ✓**（对照组）—— 没有对照组，
+    #     「紧凑模式 ✓=0」只能证明「什么都没画」，不能证明「按规则画对了」。
+    F1=$(node "$ROOT/maestro/tools/probe-f1-legend.mjs" --cdp http://127.0.0.1:9222 --url "${BASE_URL}" \
+          --token-file "${STAGE_TREE_TOKEN_FILE:-/tmp/llmgw-jwt.txt}" 2>&1); F1RC=$?
+    F1LINE=$(printf '%s' "$F1" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print("PARSE_FAIL: %s" % e); raise SystemExit(0)
+c = d.get("compact") or {}
+f = d.get("full") or {}
+ct = [x.get("text", "") for x in (c.get("legend") or [])]
+ft = [x.get("text", "") for x in (f.get("legend") or [])]
+cc = c.get("checkCount")
+fc = f.get("checkCount")
+exp = ["", "◐", "", "⌀", "✕", "⚠", ""]
+bad = []
+if len(ct) != 7:
+    bad.append("紧凑图例项数=%d(期望7)" % len(ct))
+else:
+    for i, (got, want) in enumerate(zip(ct, exp)):
+        if got != want:
+            bad.append("紧凑图例[%d]=%r(期望%r)" % (i, got, want))
+if cc != 0:
+    bad.append("紧凑模式全页 ✓ 计数=%r(期望0)" % cc)
+if not ft or ft[0] != "✓":
+    bad.append("完整模式图例 done=%r(期望 ✓ 对照组)" % (ft[0] if ft else None))
+if bad:
+    print("FAIL | " + "; ".join(bad))
+else:
+    print("PASS | 紧凑图例=%s（✓计数=%s）；完整图例 done=%r（✓计数=%s，对照组）" % (ct, cc, ft[0], fc))
+' 2>&1)
+    if [ "$F1RC" != "0" ]; then
+      bad "⑮ F1 紧凑图例字形随模式切换" "探针退出码 ${F1RC}（未评估）：$(printf '%s' "$F1" | head -c 160)"
+    elif [ "${F1LINE#FAIL }" != "$F1LINE" ] || [ "${F1LINE#PARSE_FAIL: }" != "$F1LINE" ]; then
+      bad "⑮ F1 紧凑图例字形随模式切换" "${F1LINE}"
+    elif [ "${F1LINE#PASS }" = "$F1LINE" ]; then
+      skip "⑮ F1 紧凑图例字形随模式切换" "探针输出无法判定：$(printf '%s' "$F1" | head -c 160)"
+    else
+      ok "⑮ F1 紧凑图例字形随模式切换" "${F1LINE#PASS | }"
+    fi
   else
     skip "⑫ 断言（行为层）" "缺 CDP(9222) 或 JWT ⇒ 未评估（不是失败）"
     skip "⑬ 断言（设计层）" "缺 CDP(9222) 或 JWT ⇒ 未评估（不是失败）"
     skip "⑭ 临时密钥清理" "未进入浏览器面"
+    skip "⑮ F1 紧凑图例字形随模式切换" "缺 CDP(9222) 或 JWT ⇒ 未评估（不是失败）"
   fi
 else
   skip "⑪ Maestro flow 12" "未加 --with-browser"
   skip "⑫ 断言（行为层）" "未加 --with-browser"
   skip "⑬ 断言（设计层）" "未加 --with-browser"
   skip "⑭ 临时密钥清理" "未加 --with-browser"
+  skip "⑮ F1 紧凑图例字形随模式切换" "未加 --with-browser"
 fi
 
 # ── 汇总 ─────────────────────────────────────────────────────────────────────
