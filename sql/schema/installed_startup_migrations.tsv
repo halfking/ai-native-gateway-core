@@ -388,3 +388,6 @@
 370	970_market_price_platform_quotes.sql
 371	971_pi_error_analysis_system.sql
 372	972_model_offers_trigger_recover_at.sql
+373	974_market_price_identity_and_tier.sql
+374	975_pricing_suggestion_audit.sql
+375	976_market_price_platform_quote_region.sql
