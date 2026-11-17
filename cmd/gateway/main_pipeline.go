@@ -365,28 +365,22 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-	if deps.Config.EnableSecurity {
-		p.AddStage(&pipeline.PipelineStage{
-			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{
-				legacysec.NewSecurityHook(settings.Global),
-			},
-		})
-	}
-
 	// PR-V4-11: prompt injection hook。
 	// ★ 2026-11-18 根修（245 生产实证）：阶段从 governance 区块（原
-	// governance_security 之后、interception 之前）**前移到 security 之后、
-	// provider_discovery 之前**。管线按**注册序**执行（Phase 只是标签），
-	// 而本管线在 v1 包装路径上的现实是：provider_discovery 挂在
-	// **内存 demo 凭据仓**（newV2DispatchDepsFromMain 种的 gpt-4 假凭据）上，
-	// 对任何真实模型都报「no healthy provider」⇒ 阶段失败 ⇒ wrapper 回落
-	// v1 ⇒ 排在它之后的 governance_prompt_injection **对真实流量永远不可达**
-	// （245 实测：注入载荷命中 security.check 后回落、良性请求命中
-	// provider_discovery 后回落，prompt_injection_detections 恒空）。
-	// PI 检测是**内容驱动**的，不依赖供应商发现 ⇒ 前移后：真实流量先过
-	// PI hook（observe 模式留痕/采集），再由 provider_discovery 失败回落
-	// v1 完成真实路由——检测审计面在 v1 路径即刻可达。
+	// governance_security 之后、interception 之前）**前移到 security 之前**。
+	// 管线按**注册序**执行（Phase 只是标签），而本管线在 v1 包装路径上的
+	// 两个现实决定了位置：
+	//   ① provider_discovery 挂在**内存 demo 凭据仓**（newV2DispatchDepsFromMain
+	//      种的 gpt-4 假凭据）上，对任何真实模型都报「no healthy provider」
+	//      ⇒ 阶段失败 ⇒ wrapper 回落 v1 ⇒ 排在它之后的阶段对真实流量不可达；
+	//   ② security.check（独立 ThreatDetector）对注入载荷返回**阶段错误**
+	//      （critical threat）⇒ 串行模式中断 ⇒ 排在 security 之后的阶段
+	//      对注入载荷也不可达（245 实测：两类请求都到不了 PI hook，
+	//      prompt_injection_detections 恒空）。
+	// PI 检测是**内容驱动**的，不依赖供应商发现；observe 模式下它**不产生
+	// 阶段错误**（warn 继续）⇒ 放在最前：真实流量先过 PI hook（留痕 +
+	// 检测失败入队 Area①），后续阶段照旧（security 拦截/provider_discovery
+	// 失败回落 v1 完成真实路由）。
 	// F-41（2026-11-13）：stage **无条件注册**——构建时刻 deps.PromptInjectionDetector
 	// 恒为 nil（真实现由 SetV2DispatchAnalysisResources 在构建后注入），条件注册使
 	// governance_prompt_injection 永不出现（双重空转第二重）。hook 经
@@ -397,6 +391,15 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{deps.PromptInjectionHook},
 	})
+
+	if deps.Config.EnableSecurity {
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{
+				legacysec.NewSecurityHook(settings.Global),
+			},
+		})
+	}
 
 	if deps.ProviderStore != nil && deps.ProviderProber != nil {
 		p.AddStage(&pipeline.PipelineStage{

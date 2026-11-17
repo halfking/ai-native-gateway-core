@@ -110,11 +110,16 @@ func TestV1ChatRegistrationGuardedByV2Flag(t *testing.T) {
 	}
 }
 
-// TestPromptInjectionStageRegisteredBeforeProviderDiscovery 钶 main_pipeline.go
-// 的阶段注册序：管线按**注册序**执行（Phase 只是标签），而 provider_discovery
-// 挂在内存 demo 凭据仓上、对真实模型恒失败 ⇒ wrapper 回落 v1 ⇒ 排在其后的
-// 阶段对真实流量不可达。PI 检测阶段必须排在 provider_discovery **之前**
-// （245 生产实证：不前移则 prompt_injection_detections 恒空）。
+// TestPromptInjectionStageRegisteredBeforeProviderDiscovery 钉 main_pipeline.go
+// 的阶段注册序：管线按**注册序**执行（Phase 只是标签）。PI 检测阶段必须排在
+// security 与 provider_discovery **两者之前**——
+//
+//	· provider_discovery 挂在内存 demo 凭据仓上、对真实模型恒失败 ⇒
+//	  wrapper 回落 v1 ⇒ 排在其后的阶段对真实流量不可达；
+//	· security.check 对注入载荷返回阶段错误（critical threat）⇒ 串行中断 ⇒
+//	  排在其后的阶段对注入载荷不可达。
+//
+// 两者任一不满足 ⇒ prompt_injection_detections 恒空（245 生产实证）。
 func TestPromptInjectionStageRegisteredBeforeProviderDiscovery(t *testing.T) {
 	src := readMainPipelineSource(t)
 
@@ -122,16 +127,18 @@ func TestPromptInjectionStageRegisteredBeforeProviderDiscovery(t *testing.T) {
 	if piIdx < 0 {
 		t.Fatal("main_pipeline.go: stage 'governance_prompt_injection' registration not found")
 	}
-	pdIdx := strings.Index(src, `Name: "provider_discovery"`)
-	if pdIdx < 0 {
-		t.Fatal("main_pipeline.go: stage 'provider_discovery' registration not found")
-	}
-	if piIdx > pdIdx {
-		t.Fatalf("main_pipeline.go: 'governance_prompt_injection' (offset %d) is registered AFTER "+
-			"'provider_discovery' (offset %d) — the pipeline runs stages in REGISTRATION order and "+
-			"provider_discovery fails against the in-memory demo credential store for every real model "+
-			"(wrapper falls through to v1), so the PI hook would never execute for real traffic",
-			piIdx, pdIdx)
+	for _, earlier := range []string{`Name: "security"`, `Name: "provider_discovery"`} {
+		idx := strings.Index(src, earlier)
+		if idx < 0 {
+			t.Fatalf("main_pipeline.go: stage %s registration not found", earlier)
+		}
+		if piIdx > idx {
+			t.Fatalf("main_pipeline.go: 'governance_prompt_injection' (offset %d) is registered AFTER "+
+				"%s (offset %d) — the pipeline runs stages in REGISTRATION order; security aborts on "+
+				"injection payloads and provider_discovery fails against the in-memory demo credential "+
+				"store for every real model (wrapper falls through to v1), so the PI hook would never "+
+				"execute for real traffic", piIdx, earlier, idx)
+		}
 	}
 }
 
