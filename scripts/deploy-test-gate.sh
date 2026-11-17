@@ -72,9 +72,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── 按 go.mod 的版本要求挑 Go 工具链（2026-11-17 F3 轮新增）────────────
+# ★ 为什么必须独立成库（而不是在门脚本里内联）：判据本身要被**实跑**测到 ⇒
+#   门禁 scripts/ursmcheck/deploy_test_gate_toolchain_gate_test.go 用
+#   **假 go 二进制**（打印不同版本号）真跑本库的挑选逻辑 ⇒ 钉住「按版本挑」。
+if [ -f "$REPO_ROOT/scripts/lib/go-toolchain.sh" ]; then
+  . "$REPO_ROOT/scripts/lib/go-toolchain.sh"
+fi
+
 # ★ 闸门用的 Go 基础镜像（docker 兜底路径用）。
 GO_IMAGE="${DD_TEST_GO_IMAGE:-golang:1.27.4-alpine}"
-# ★ 原生 go 的路径；留空自动探测（PATH → ~/sdk/go → /usr/local/go → homebrew）。
+# ★ 原生 go 的路径；留空自动探测（★ 按 go.mod 的版本要求挑，见 native_ok）。
 NATIVE_GO="${DD_TEST_GO_BIN:-}"
 # ★ go test 自身的测试超时（防单个测试挂死）；docker 侧用秒。
 TEST_TIMEOUT="${DD_TEST_TIMEOUT:-15m}"
@@ -249,21 +257,50 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── 原生 go 探测 ──────────────────────────────────────────────────────
+# ── 原生 go 探测（★ 2026-11-17 修：按 go.mod 的**版本要求**挑，不是按存在性挑）──
+#
+# ★ 旧实现（按存在性挑）是 2026-11-17 一次部署卡在门上的真因：
+#   「第一个存在的 go」⇒ 本机命中 homebrew 的 **go1.27.3**，而 go.mod 要求
+#   **go >= 1.27.4** ⇒ 原生路径被 go.mod **直接拒绝**（"go.mod requires go >= 1.27.4"）
+#   ⇒ 落 docker 兜底 ⇒ 而兜底**没设 CGO_ENABLED=1** ⇒ 8 条 SQLite 测试全红
+#   ⇒ ⇒ **部署卡在门上**，而红的理由（SQLite 驱动不可用）与真因（工具链版本）**毫无关系**。
+#
+# ★ 新判据（scripts/lib/go-toolchain.sh，可独立实跑测）：
+#   · 要求 = go.mod 的 `go X.Y.Z` 指令；
+#   · 候选逐个取 `go version`，**第一个满足要求**的即采用；
+#   · 都不满足 ⇒ **返回 1**（交由 docker 兜底）⇒ 而不是挑一个注定被 go.mod 拒绝的旧版。
 native_ok() {
   if [[ -n "$NATIVE_GO" ]]; then
     [[ -x "$NATIVE_GO" ]] || return 1
-    return 0
-  fi
-  local c
-  for c in "$(command -v go 2>/dev/null)" "$HOME/sdk/go/bin/go" \
-           /usr/local/go/bin/go /opt/homebrew/bin/go; do
-    if [[ -n "$c" && -x "$c" ]]; then
-      NATIVE_GO="$c"
+    # ★ 显式给的也要**核对版本**：给了一个旧版 go ⇒ 原生路径必然被 go.mod 拒绝
+    #   ⇒ 那就等于没给 ⇒ 落到 docker 兜底（而不是让门以「SQLite 驱动不可用」的红失败）。
+    local req_ev ver_ev
+    req_ev="$(llmgw_go_required_version "$REPO_ROOT/go.mod" 2>/dev/null || echo 1.0)"
+    ver_ev="$(llmgw_go_toolchain_version "$NATIVE_GO" 2>/dev/null || true)"
+    if [[ -n "$ver_ev" ]] && llmgw_go_version_ge "$ver_ev" "$req_ev"; then
       return 0
     fi
-  done
-  return 1
+    log "★ DD_TEST_GO_BIN 指定的 go 版本不满足 go.mod（${ver_ev:-未知} < ${req_ev}）⇒ 不用它"
+    NATIVE_GO=""
+    return 1
+  fi
+  if ! declare -F llmgw_go_pick_detail >/dev/null 2>&1; then
+    log "★ scripts/lib/go-toolchain.sh 不在场 ⇒ 无法按版本挑工具链 ⇒ 落 docker 兜底"
+    return 1
+  fi
+  local picked detail
+  detail="$(llmgw_go_pick_detail "$REPO_ROOT/go.mod" \
+      "$(command -v go 2>/dev/null)" "$HOME/sdk/go/bin/go" \
+      /usr/local/go/bin/go /opt/homebrew/bin/go)"
+  picked="$(printf '%s\n' "$detail" | sed -n '1p')"
+  detail="$(printf '%s\n' "$detail" | sed -n '2p')"
+  if [[ -z "$picked" ]]; then
+    log "★ 没有候选 go 满足 go.mod 的版本要求（${detail}）⇒ 落 docker 兜底"
+    return 1
+  fi
+  log "★ 原生 go 候选核对（${detail}）⇒ 选中 ${picked}"
+  NATIVE_GO="$picked"
+  return 0
 }
 
 # modflag_for <tree> <subdir>：树内该子目录有 vendor ⇒ -mod=vendor（主模块
@@ -286,16 +323,30 @@ run_native() {
 }
 
 # ── 跑法二：docker 兜底（GOCACHE 持久命名卷 ⇒ 只有第一次冷） ────────────
+#
+# ★ 2026-11-17 修：**兜底路径必须与生产镜像同款编译配置** ⇒ 开 CGO。
+#   Dockerfile 里明确写着 `CGO_ENABLED=1` + 装 `gcc`/`musl-dev`（因为 lite 存储
+#   模式要 SQLite ⇒ CGO 关掉就没有 sqlite 驱动）⇒ 而兜底路径**没设** ⇒
+#   8 条 `TestLiteRequestLogSink_*` 全红（「当前二进制以 CGO_ENABLED=0 构建，
+#   SQLite 驱动不可用」）⇒ 红的理由与真因（工具链版本）**毫无关系**。
+#   ⇒ 兜底现在也装 gcc/musl-dev 并设 CGO_ENABLED=1（与 Dockerfile 同款）。
+#   ★ 装包失败**不阻断**：照常跑测试，并打印一行明确说明「SQLite 类测试的红是
+#     环境问题，不是代码问题」⇒ 宁可让人看见真话，也不要把环境红伪装成代码红。
 run_docker() {
   local tree="$1" outfile="$2" subdir="$3"; shift 3
   local modflag; modflag="$(modflag_for "$tree" "$subdir")"
-  log "跑法：docker（${GO_IMAGE}；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；容器内超时 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
+  log "跑法：docker（${GO_IMAGE}；CGO_ENABLED=1（与 Dockerfile 同款）；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；容器内超时 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
   docker run --rm \
     -v "$tree":/w -w "/w${subdir:+/$subdir}" \
     -v "$CACHE_VOLUME":/tmp/gocache \
     -e GOFLAGS="$modflag" -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath \
+    -e CGO_ENABLED=1 \
     "$GO_IMAGE" \
-    sh -c "timeout $DOCKER_TIMEOUT_SECS go test -count=1 $*" 2>&1 | tee "$outfile"
+    sh -c "sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories 2>/dev/null || true; \
+           if ! (apk update >/dev/null 2>&1 && apk --no-cache add gcc musl-dev >/dev/null 2>&1); then \
+             echo '[test-gate] ★ 容器内 gcc/musl-dev 安装失败 ⇒ CGO 不可用 ⇒ SQLite 类测试会红（**环境问题，不是代码问题**）' >&2; \
+           fi; \
+           timeout $DOCKER_TIMEOUT_SECS go test -count=1 $*" 2>&1 | tee "$outfile"
 }
 
 # ── 判定原语 ──────────────────────────────────────────────────────────
