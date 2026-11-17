@@ -173,6 +173,9 @@ const PAGE_PROBE = `(() => {
   const tones = rows.map((r) => text(r.querySelector('.badge')))
   out.facts.providerRows = rows.length
   out.facts.providerTones = tones
+  // ★ 注意口径：这里统计的是**可见行**（明细被截断到前 12 行，按严重度排序 ⇒
+  //   「未探活」排在最后、通常被切掉）。**全量口径**在面板的汇总行上
+  //   （可用 / 告警 / 不可达 / 未探活，四个数都算全量供应商）。
   out.facts.providerUnknown = tones.filter((t) => t === '未探活').length
   check('上游健康面板有行', rows.length > 0, '行数=' + rows.length)
   // 分级口径：可用 / 有告警 / 不可达 / 未探活（未探活必须单列一档，不并进「可用」）
