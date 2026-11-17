@@ -11072,3 +11072,9 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 |-----------|------|---------|--------|
 | 977 | `977_pi_error_analysis_semantics.sql` | `e35be3c4ce80129539509f45603910092242cd3f8b54e5b85a487002c07c03dd` | applied+verified |
 
+## 2026-11-17T12:05:19Z — deploy 245 build_seq 3049 (d48b88a5)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 978 | `978_pi_canonical_rule_set.sql` | `5b511005c28c2cfcf609d37be6516d0a78da593d8553fc0d7e7ca23460b51171` | applied+verified |
+
