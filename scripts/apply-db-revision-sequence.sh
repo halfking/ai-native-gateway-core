@@ -2679,6 +2679,15 @@ files=(
   # ★ 970（2026-11-17 定价参考完善）：market_price_platform_quotes——
   #   salesdecorate 按平台现价明细的网关侧只读副本（运营跨平台比价）。
   "$ROOT_DIR/sql/migrations/startup/970_market_price_platform_quotes.sql"
+  # ★ 971（2026-11-17 同步并行车 + 部署验证轮）：pi_error_analysis_system——
+  #   PI 智能体错误自动分析系统 Phase 1 基础设施（error_analysis_queue /
+  #   error_analysis_results / 统计视图 / updated_at 触发器 / 保留期清理函数）。
+  #   ★ 原件落在 sql/migrations/domain/641_pi_error_analysis_system.sql
+  #     —— 死文件区（无执行器接线）⇒ 收编进正典通道并改号 971。
+  #   ★ 本件是**幂等**的（索引 IF NOT EXISTS / 触发器先 DROP IF EXISTS /
+  #     视图函数 CREATE OR REPLACE / 台账自登记 ON CONFLICT）：
+  #     本通道按内容指纹重放（sha 变化即重放）⇒ 非幂等件会在重放时炸掉部署。
+  "$ROOT_DIR/sql/migrations/startup/971_pi_error_analysis_system.sql"
 )
 
 
@@ -3339,6 +3348,10 @@ ledger_artifact_probe "969_approval_casdoor_mapping.sql" \
 # ★ 970 的产物 = market_price_platform_quotes 表 + 双索引。
 ledger_artifact_probe "970_market_price_platform_quotes.sql" \
   "to_regclass('public.market_price_platform_quotes') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND tablename='market_price_platform_quotes' AND indexname='idx_mppq_canon')"
+# ★ 971 的产物 = error_analysis_queue / error_analysis_results 两张表 +
+#   统计视图 v_error_analysis_stats + updated_at 触发器 + 保留期清理函数。
+ledger_artifact_probe "971_pi_error_analysis_system.sql" \
+  "to_regclass('public.error_analysis_queue') IS NOT NULL AND to_regclass('public.error_analysis_results') IS NOT NULL AND to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'error_analysis_results' AND t.tgname = 'trigger_error_analysis_results_updated_at' AND NOT t.tgisinternal) AND to_regprocedure('public.cleanup_old_error_analysis(integer)') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

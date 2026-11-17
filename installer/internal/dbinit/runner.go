@@ -1887,6 +1887,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ——salesdecorate 按平台现价明细的网关侧只读副本，供运营
 			//   /operations/price-compare 跨平台比价（对齐 Compare 现价模式）。
 			"970_market_price_platform_quotes.sql",
+			// ★ 971（2026-11-17 同步并行车 + 部署验证轮）：pi_error_analysis_system
+			//   —— PI 智能体错误自动分析系统 Phase 1 基础设施
+			//   （error_analysis_queue / error_analysis_results / 统计视图 /
+			//    updated_at 触发器 / 保留期清理函数）。
+			//   ★ 原件落在 sql/migrations/domain/641_pi_error_analysis_system.sql
+			//     —— **死文件区**（该目录 95 个文件无一件登记进任何执行器）
+			//     ⇒ 它既不会被安装器应用，也不会被 211 部署通道应用，
+			//     且**逃过了本仓两道投递门**（sqlguard 三通道覆盖门只扫
+			//     sql/migrations/startup/；embed 强制门只管 ≥849 的 canonical 件）
+			//     ⇒ 「没登记」这件事在 CI 里不会变红。
+			//   ★ 改号 971（而非沿用 641）：641 < 849 ⇒ 不在 embed 强制门覆盖内；
+			//     641 远离 maxNum ⇒ 不在三通道覆盖门的近邻窗口（maxNum-19..maxNum）
+			//     ⇒ 两道门都保护不到。971 同时满足 ≥849 与 = maxNum ⇒ 双门接管。
+			"971_pi_error_analysis_system.sql",
 		},
 	}
 }

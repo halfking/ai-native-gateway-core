@@ -1683,6 +1683,24 @@ var marketPricePlatformQuotes970 []byte
 //go:embed embeddata/startup/970_market_price_platform_quotes.down.sql
 var marketPricePlatformQuotes970Down []byte
 
+// ★ 971（2026-11-17 同步并行车 + 部署验证轮）：pi_error_analysis_system——
+//
+//	PI 智能体错误自动分析系统 Phase 1 基础设施：error_analysis_queue
+//	（PI 检测错误队列）+ error_analysis_results（LLM 分析结果）+ 统计视图
+//	+ updated_at 触发器 + 保留期清理函数。
+//
+//	★ 本件原以 641_pi_error_analysis_system.sql 落在 sql/migrations/domain/
+//	  —— **死文件区**（95 个文件无一件登记进任何执行器）⇒ 它逃过了本仓两道
+//	  投递门（sqlguard 三通道覆盖门只扫 startup/；embed 强制门只管 ≥849）。
+//	  ⇒ 收编进正典通道并改号 971（≥849 ⇒ embed 门接管；= maxNum ⇒ 三通道
+//	  覆盖门的近邻窗口接管）⇒ 今后漏登记/漏 embed 会在 CI 里变红。
+//
+//go:embed embeddata/startup/971_pi_error_analysis_system.sql
+var piErrorAnalysisSystem971 []byte
+
+//go:embed embeddata/startup/971_pi_error_analysis_system.down.sql
+var piErrorAnalysisSystem971Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2276,6 +2294,11 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/969_approval_casdoor_mapping.down.sql": approvalCasdoorMapping969Down,
 	"startup/970_market_price_platform_quotes.sql":      marketPricePlatformQuotes970,
 	"startup/970_market_price_platform_quotes.down.sql": marketPricePlatformQuotes970Down,
+	// ★ 971（2026-11-17 同步并行车 + 部署验证轮）：pi_error_analysis_system——
+	//   PI 检测错误队列 + LLM 分析结果（Phase 1 基础设施）。
+	//   ★ 原件在 sql/migrations/domain/（死文件区，无执行器接线）⇒ 收编。
+	"startup/971_pi_error_analysis_system.sql":      piErrorAnalysisSystem971,
+	"startup/971_pi_error_analysis_system.down.sql": piErrorAnalysisSystem971Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
