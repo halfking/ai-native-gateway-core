@@ -33,6 +33,13 @@ cd "${ROOT}"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8782}"
 DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9222}"
+# ★ 视口必须覆写成桌面尺寸（2026-11-18 实测修）：Maestro 2.11.0 的 **web 驱动**
+#   视口固定 1024×625，view hierarchy 只覆盖视口 ⇒ **折叠线以下的内容 `assertVisible` 一律判 false**
+#   ⇒ 本脚本原先没传 `--screen-size` ⇒ 用它跑全量回归会**稳定产出假红**：
+#   实测 `11-simple-overview` 的「上游健康」在 DOM 里（SimpleOverviewView.vue:702 的
+#   panel-title，无 v-if）却判红 ⇒ 覆写视口后同一条 flow **F11_EXIT=0 全绿**。
+#   （与 run-stage-tree.sh 头注、docs/skills/maestro-browser-verification/SKILL.md §六.2 同口径。）
+SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x1400}"
 REPORT_ROOT="${ROOT}/maestro/reports"
 
 # ── 1. 选 flow ────────────────────────────────────────────────────────────────
@@ -62,6 +69,24 @@ if [ "${#FLOWS[@]}" -eq 0 ]; then
     FLOWS+=( maestro/flows/90-dev-only.yaml )
   fi
 fi
+
+# ★ 跑法守卫：`10-mcp-gateway.yaml` **不属于本 SPA 回归集**（2026-11-18 实测修）。
+#   它的头注写明：页面是**自包含 HTML（无前端构建链）**，令牌从 URL 的 `?token=` 读，
+#   跑法是 `bash tests/mcp-gateway-maestro/run.sh` —— 那个脚本会**自起一个带示例上游的
+#   MCP 网关**并给出 `MCP_ADMIN_TOKEN`。
+#   ⇒ 拿本脚本（run-local.sh）去跑它 ⇒ `MCP_ADMIN_TOKEN` 没设 ⇒
+#     `${BASE_URL}/mcp/admin?token=` 打不开 ⇒ **必然假红**（实测：「MCP 网关运营看板」不可见）。
+#   ⇒ 这里**显式剔除**它，而不是把假红算进回归结论。
+RUNNABLE=()
+for flow in "${FLOWS[@]}"; do
+  if [ "$(basename "${flow}")" = "10-mcp-gateway.yaml" ]; then
+    echo "!! 跳过 ${flow}：它需要自带的 MCP 网关（tests/mcp-gateway-maestro/run.sh + MCP_ADMIN_TOKEN），" >&2
+    echo "   不是本 SPA 回归集的一员；直接跑它只会产出假红。" >&2
+    continue
+  fi
+  RUNNABLE+=("${flow}")
+done
+FLOWS=("${RUNNABLE[@]}")
 
 if [ "${LIST_ONLY:-0}" = "1" ]; then
   printf '%s\n' "${FLOWS[@]}"
@@ -184,6 +209,7 @@ for flow in "${FLOWS[@]}"; do
     --driver-host-port "${DRIVER_PORT}" \
     --headless \
     --no-ansi \
+    --screen-size "${SCREEN_SIZE}" \
     --test-output-dir "${OUT}/${name}" \
     -e "BASE_URL=${BASE_URL}" \
     -e "ADMIN_USER=${LLM_GATEWAY_ADMIN_USER}" \
