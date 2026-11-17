@@ -203,7 +203,9 @@ function valueText(s: StageNode): string {
       //   不占一个 i18n 键（占键会逼出「各语种逐字相同」的假缺陷）。
       return `${s.value}ms`
     case 'meter':
-      return t('liveStageTree.value.meter', { n: s.value })
+      // ★ 单位「tok」同样是技术单位缩写（各语种通用），不是可翻译文案 ⇒ 直接内联，
+      //   不占一个 i18n 键（占键会逼出「各语种逐字相同」的假缺陷）—— 与上面「ms」同理。
+      return `${s.value} tok`
     case 'compress':
       return s.value === 'yes'
         ? t('liveStageTree.value.compress.yes')

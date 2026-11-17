@@ -71,7 +71,6 @@ export default {
   value: {
     sanitize: '{n} 处',
     route: '{n} 候选',
-    meter: '{n} tok',
     injection: '得分 {n}',
     compress: {
       yes: '已压缩',

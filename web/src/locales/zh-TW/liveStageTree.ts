@@ -67,8 +67,7 @@ export default {
   value: {
     sanitize: '{n} 處',
     route: '{n} 個候選',
-    meter: '{n} tok',
-    injection: '得分 {n}',
+    injection: '評分 {n}',
     compress: {
       yes: '已壓縮',
       no: '未壓縮',
@@ -80,7 +79,7 @@ export default {
     block: '拒絕',
     safe: '無風險',
     warn: '命中（僅警告）',
-    warnShort: '命中',
+    warnShort: '已命中',
     unknown: '無法判定',
   },
   return: {

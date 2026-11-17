@@ -67,8 +67,7 @@ export default {
   value: {
     sanitize: '{n} emplacement(s)',
     route: '{n} candidat(s)',
-    meter: '{n} tok',
-    injection: 'score {n}',
+    injection: 'note {n}',
     compress: {
       yes: 'Compressée',
       no: 'Non compressée',

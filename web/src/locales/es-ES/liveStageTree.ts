@@ -67,7 +67,6 @@ export default {
   value: {
     sanitize: '{n} punto(s)',
     route: '{n} candidato(s)',
-    meter: '{n} tok',
     injection: 'puntuación {n}',
     compress: {
       yes: 'Comprimido',

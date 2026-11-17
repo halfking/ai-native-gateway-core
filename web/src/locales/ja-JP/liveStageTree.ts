@@ -67,7 +67,6 @@ export default {
   value: {
     sanitize: '{n} 件',
     route: '候補 {n} 件',
-    meter: '{n} tok',
     injection: 'スコア {n}',
     compress: {
       yes: '圧縮済み',

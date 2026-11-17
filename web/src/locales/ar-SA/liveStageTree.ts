@@ -67,7 +67,6 @@ export default {
   value: {
     sanitize: '{n} موضع',
     route: '{n} مرشح',
-    meter: '{n} tok',
     injection: 'الدرجة {n}',
     compress: {
       yes: 'مضغوطة',

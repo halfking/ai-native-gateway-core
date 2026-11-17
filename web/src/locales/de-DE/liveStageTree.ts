@@ -67,7 +67,6 @@ export default {
   value: {
     sanitize: '{n} Stelle(n)',
     route: '{n} Kandidat(en)',
-    meter: '{n} tok',
     injection: 'Score {n}',
     compress: {
       yes: 'Komprimiert',
