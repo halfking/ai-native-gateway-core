@@ -28,8 +28,8 @@ type marketPlatformQuoteRow struct {
 	CNYInPer1M     *float64 `json:"cny_in_per_1m"`
 	CNYOutPer1M    *float64 `json:"cny_out_per_1m"`
 	// ★ 2026-11-17（972 迁移）：缓存命中价（真实成本的大头，此前网关侧无此列）。
-	CacheHitPer1M     *float64 `json:"cache_hit_per_1m"`
-	CNYCacheHitPer1M  *float64 `json:"cny_cache_hit_per_1m"`
+	CacheHitPer1M    *float64 `json:"cache_hit_per_1m"`
+	CNYCacheHitPer1M *float64 `json:"cny_cache_hit_per_1m"`
 	// 阶梯（上下文档位 / Priority / Flex…）：972 起与 PK 同列，阶梯价不再互相覆盖。
 	Tier string `json:"tier"`
 	// 模型类别（文本/对话 / 多模态 / 推理 / 向量…）：供读面筛选。
@@ -42,11 +42,12 @@ type marketPlatformQuoteRow struct {
 // （没有指定 model 时返回）：供前端做模型选择器，不再要求运营手打 canonical 名。
 //
 // ★ 口径（对齐 salesdecorate Compare 的比价目录）：
-//   · 排序 = **可比平台数降序**（平台多的排前面 ⇒ 可比性强的排前面），
-//     同数按模型名；
-//   · 只收「至少 1 个平台有价」的模型；
-//   · 最低价只算**非原厂**行（原厂是基准锚，不是竞品 —— 同 salesdecorate
-//     的极值统计口径）；原厂行数单独给出来。
+//
+//	· 排序 = **可比平台数降序**（平台多的排前面 ⇒ 可比性强的排前面），
+//	  同数按模型名；
+//	· 只收「至少 1 个平台有价」的模型；
+//	· 最低价只算**非原厂**行（原厂是基准锚，不是竞品 —— 同 salesdecorate
+//	  的极值统计口径）；原厂行数单独给出来。
 type marketPlatformQuoteDirectoryRow struct {
 	CanonicalName string   `json:"canonical_name"`
 	DisplayName   string   `json:"display_name"`
@@ -196,11 +197,11 @@ func (h *Handler) handleMarketModelPlatforms(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"available":  true,
-		"items":      out,
-		"model":      model,
-		"dimension":  dim,
-		"directory":  directory,
-		"is_dir":     model == "",
+		"available": true,
+		"items":     out,
+		"model":     model,
+		"dimension": dim,
+		"directory": directory,
+		"is_dir":    model == "",
 	})
 }

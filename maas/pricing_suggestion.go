@@ -24,7 +24,7 @@ package maas
 //     不碰路由权重、也不改任何自动路径；
 //   · 每次写入都经 upsertModelRateSource ⇒ **期次账 model_price_versions
 //     自动留痕**（source=market_suggestion + note 带依据与批次 id）
-//     ⇒ 审计面唯一，不另开第二套历史（973 迁移）。
+//     ⇒ 审计面唯一，不另开第二套历史（975 迁移）。
 //
 // ★ NULL≠0 沿用：没有可比行情（该模型没有任何平台现价 / 缺 CNY 折算列 /
 //   计费币种与汇率口径不成立）⇒ 建议价**不产出**（nil），不是 0，也不猜。
@@ -37,7 +37,7 @@ import (
 	"strings"
 )
 
-// 定价策略闭集（与 973 迁移的 CHECK 同源）。
+// 定价策略闭集（与 975 迁移的 CHECK 同源）。
 const (
 	// PricingStrategyCopyPlatform：复制某个平台的现价（用户显式指定平台）。
 	PricingStrategyCopyPlatform = "copy_platform"
@@ -52,7 +52,7 @@ const (
 	PricingStrategyFloorMarkup = "floor_markup"
 )
 
-// RateSourceMarketSuggestion —— 期次账的来源标签（973 迁移放开的闭集值）。
+// RateSourceMarketSuggestion —— 期次账的来源标签（975 迁移放开的闭集值）。
 const RateSourceMarketSuggestion = "market_suggestion"
 
 // PricingSuggestionRequest —— 定价建议的入参（预览与执行共用同一份口径）。
@@ -77,14 +77,25 @@ type PricingSuggestionRequest struct {
 
 // PricingSuggestionRow —— 一条建议。
 type PricingSuggestionRow struct {
-	CanonicalID   int64   `json:"canonical_id"`
-	CanonicalName string  `json:"canonical_name"`
-	DisplayName   string  `json:"display_name"`
-	// 当前零售价（credits 与 CNY 两套表达；nil = 未设手工价 ⇒ 走全局基准）。
+	CanonicalID   int64  `json:"canonical_id"`
+	CanonicalName string `json:"canonical_name"`
+	DisplayName   string `json:"display_name"`
+	// 当前零售价（credits 与 CNY 两套表达）。
+	//
+	// ★ 口径（2026-11-17 修正）：**只表示「这个模型自己」的零售价**
+	//   （model_credit_rates 有值）；nil = 该模型没有自己的价 ⇒ 前端显示「—」。
+	//   **不再回落全局基准** —— 全局基准是所有模型统一兜底，不是这个模型的价，
+	//   拿它当现价会算出假偏离（211 实测 aion-2.0：兜底 0.0492 CNY vs 市场
+	//   5.34 CNY ⇒ delta 10759%），还会污染「只看明显偏离的」阈值过滤。
 	CurrentCreditsIn  *int64   `json:"current_credits_in_per_1m"`
 	CurrentCreditsOut *int64   `json:"current_credits_out_per_1m"`
 	CurrentCNYIn      *float64 `json:"current_cny_in_per_1m"`
 	CurrentCNYOut     *float64 `json:"current_cny_out_per_1m"`
+	// CurrentBasis：现价来源（审计/前端口径）：
+	//   explicit = 输入输出两轴都有**模型自有价**；
+	//   partial  = 只有一轴有自有价；
+	//   none     = 两轴都没有自有价（现价栏显示「—」，幅度不产出）。
+	CurrentBasis string `json:"current_basis"`
 	// 建议价（nil = 无可比行情 ⇒ 不产出；NULL≠0）。
 	SuggestedCreditsIn  *int64   `json:"suggested_credits_in_per_1m"`
 	SuggestedCreditsOut *int64   `json:"suggested_credits_out_per_1m"`
@@ -94,12 +105,12 @@ type PricingSuggestionRow struct {
 	DeltaPctIn  *float64 `json:"delta_pct_in"`
 	DeltaPctOut *float64 `json:"delta_pct_out"`
 	// 依据（审计面）：策略命中了哪些平台、样本数、行情日期、采用的币种。
-	Basis         string `json:"basis"`
-	BasisPlatforms int   `json:"basis_platforms"`
+	Basis           string `json:"basis"`
+	BasisPlatforms  int    `json:"basis_platforms"`
 	BasisPlatformID string `json:"basis_platform_id"`
-	RunDate       string `json:"run_date"`
+	RunDate         string `json:"run_date"`
 	// Applicable：是否可执行（无建议 / 无变化 ⇒ 不可执行）。
-	Applicable bool `json:"applicable"`
+	Applicable bool   `json:"applicable"`
 	SkipReason string `json:"skip_reason"`
 }
 
@@ -129,18 +140,18 @@ type PricingSuggestionStats struct {
 
 // PricingSuggestionBatchRow —— 批次留痕的一行（审计读面）。
 type PricingSuggestionBatchRow struct {
-	ID          int64          `json:"id"`
-	CreatedAt   string         `json:"created_at"`
-	Strategy    string         `json:"strategy"`
-	PlatformID  string         `json:"platform_id"`
-	Dimension   string         `json:"dimension"`
-	MarkupPct   *float64       `json:"markup_pct"`
-	Operator    string         `json:"operator"`
-	DryRun      bool           `json:"dry_run"`
-	Requested   int            `json:"requested"`
-	Applied     int            `json:"applied"`
-	Skipped     int            `json:"skipped"`
-	Detail      map[string]any `json:"detail"`
+	ID         int64          `json:"id"`
+	CreatedAt  string         `json:"created_at"`
+	Strategy   string         `json:"strategy"`
+	PlatformID string         `json:"platform_id"`
+	Dimension  string         `json:"dimension"`
+	MarkupPct  *float64       `json:"markup_pct"`
+	Operator   string         `json:"operator"`
+	DryRun     bool           `json:"dry_run"`
+	Requested  int            `json:"requested"`
+	Applied    int            `json:"applied"`
+	Skipped    int            `json:"skipped"`
+	Detail     map[string]any `json:"detail"`
 }
 
 // ── 行情侧取数 ─────────────────────────────────────────────────────────
@@ -164,13 +175,16 @@ type pricingSuggestionMarketRow struct {
 
 // pricingSuggestionMarketSQL —— 取数：每个模型的「代表价」按平台聚合。
 //
-// ★ 代表价口径：同一 (模型, 平台) 若有 tier=''（常规价）行就取它；否则取该
-//   平台该模型**最便宜**的一档（阶梯价里常有更低的输入价）。
-//   ⇒ DISTINCT ON (canonical_name, platform_id) + ORDER BY (tier='') DESC,
-//     cny_out NULLS LAST。
+// ★ 代表价口径：同一 (模型, 平台) 若有 tier=”（常规价）行就取它；否则取该
+//
+//	平台该模型**最便宜**的一档（阶梯价里常有更低的输入价）。
+//	⇒ DISTINCT ON (canonical_name, platform_id) + ORDER BY (tier='') DESC,
+//	  cny_out NULLS LAST。
+//
 // ★ 原厂行（is_vendor）：copy_platform 允许（用户显式点名）；
-//   average / min **排除**（原厂是基准锚，不是竞品 —— 与 salesdecorate 的
-//   Compare 极值统计同口径）。
+//
+//	average / min **排除**（原厂是基准锚，不是竞品 —— 与 salesdecorate 的
+//	Compare 极值统计同口径）。
 const pricingSuggestionMarketSQL = `
 WITH rep AS (
     SELECT DISTINCT ON (q.canonical_name, q.platform_id)
@@ -211,7 +225,9 @@ SELECT m.canonical_name, m.canonical_id,
 
 // cnyToCredits 把 CNY/1M 价换算成 credits/1M（取整，至少 1 credit）。
 // ★ 口径：credits = CNY × 100 / cents_per_credit（cents_per_credit = 分/credit）。
-//   ⇒ 反算与 maas/market_price_reference.go 的「credits × cents/100 = CNY」逐字同源。
+//
+//	⇒ 反算与 maas/market_price_reference.go 的「credits × cents/100 = CNY」逐字同源。
+//
 // ★ 至少 1 credit：0 credit 会被当成「免费」⇒ 与 NULL≠0 红线冲突 ⇒ 夹到 1。
 func cnyToCredits(cny *float64, centsPerCredit float64) *int64 {
 	if cny == nil || centsPerCredit <= 0 {
@@ -354,35 +370,28 @@ func (s *Service) SuggestPricing(ctx context.Context, req PricingSuggestionReque
 			it.SkipReason = "没有可比行情（该模型在采集面无现价）"
 		}
 		// 当前零售价（credits + CNY）
+		//
+		// ★ 2026-11-17：**只认「这个模型自己」的价**（model_credit_rates 有值）；
+		//   没有就显示「—」，**不用全局基准冒充**。
+		//   理由（211 线上实测）：全局基准兜底（600×0.82=492 credits=0.0492 CNY）
+		//   与市场价（aion-2.0 = 5.34 CNY）相比会算出 10759% 的**假偏离**，
+		//   还会污染「只看明显偏离的」阈值过滤 ⇒ 现价与幅度都必须按真实价算。
+		curInExplicit, curOutExplicit := false, false
 		if c, ok := current[name]; ok {
-			it.CurrentCreditsIn = c.In
-			it.CurrentCreditsOut = c.Out
-			if settings.CurrencyDisplay == "CNY" {
-				if c.In != nil {
-					v := float64(*c.In) * settings.CentsPerCredit / 100.0
-					it.CurrentCNYIn = &v
-				}
-				if c.Out != nil {
-					v := float64(*c.Out) * settings.CentsPerCredit / 100.0
-					it.CurrentCNYOut = &v
-				}
-			}
+			curInExplicit, curOutExplicit = c.InExplicit, c.OutExplicit
+			pricingSuggestionApplyCurrent(&it, c, settings.CentsPerCredit, settings.CurrencyDisplay)
 		}
 		// 幅度
 		it.DeltaPctIn = pricingDeltaPct(it.CurrentCNYIn, it.SuggestedCNYIn)
 		it.DeltaPctOut = pricingDeltaPct(it.CurrentCNYOut, it.SuggestedCNYOut)
 		// 可执行性
-		switch {
-		case it.SuggestedCreditsIn == nil && it.SuggestedCreditsOut == nil:
-			it.Applicable = false
-			if it.SkipReason == "" {
-				it.SkipReason = "建议价不可产出（缺价或口径不成立）"
-			}
-		case !pricingDeltaMeaningful(it.DeltaPctIn, it.DeltaPctOut, req.MinDeltaPct):
-			it.Applicable = false
-			it.SkipReason = "与当前零售价差异在阈值内（或无变化）"
-		default:
-			it.Applicable = true
+		applicable, reason := pricingSuggestionDecision(
+			it.SuggestedCreditsIn, it.SuggestedCreditsOut,
+			curInExplicit || curOutExplicit,
+			it.DeltaPctIn, it.DeltaPctOut, req.MinDeltaPct)
+		it.Applicable = applicable
+		if !applicable && it.SkipReason == "" {
+			it.SkipReason = reason
 		}
 		items = append(items, it)
 	}
@@ -403,6 +412,84 @@ func (s *Service) SuggestPricing(ctx context.Context, req PricingSuggestionReque
 			fmt.Sprintf("%d 个模型没有可比行情 ⇒ 不产出建议（不是 0 价）", out.Summary.WithoutData))
 	}
 	return out, nil
+}
+
+// pricingSuggestionApplyCurrent —— 把「我方现价」写进建议行（纯函数）。
+//
+// ★ 这是本轮修掉的洞的**落点**：全局基准兜底**不得**进现价栏。
+//
+//	⇒ 只有该模型**自己**有价（c.InExplicit / c.OutExplicit）才写；
+//	  没有 ⇒ 四个现价字段全留 nil ⇒ 前端显示「—」、幅度不产出。
+//	⇒ c.In 里即使带着全局基准值（pickCreditRateFlagged 的兜底结果），
+//	  在 InExplicit=false 时也**不写** ⇒ 假偏离（如 10759%）无法复活。
+//
+// ★ 同时产出 CurrentBasis（现价来源）：explicit / partial / none，
+//
+//	供审计与前端区分「有价」「只有一轴」「没价」。
+func pricingSuggestionApplyCurrent(it *PricingSuggestionRow, c pricingSuggestionCurrentPrices, centsPerCredit float64, currencyDisplay string) {
+	if c.InExplicit && c.In != nil {
+		it.CurrentCreditsIn = c.In
+		if currencyDisplay == "CNY" {
+			v := float64(*c.In) * centsPerCredit / 100.0
+			it.CurrentCNYIn = &v
+		}
+	}
+	if c.OutExplicit && c.Out != nil {
+		it.CurrentCreditsOut = c.Out
+		if currencyDisplay == "CNY" {
+			v := float64(*c.Out) * centsPerCredit / 100.0
+			it.CurrentCNYOut = &v
+		}
+	}
+	switch {
+	case c.InExplicit && c.OutExplicit:
+		it.CurrentBasis = "explicit"
+	case c.InExplicit || c.OutExplicit:
+		it.CurrentBasis = "partial"
+	default:
+		it.CurrentBasis = "none"
+	}
+}
+
+// pricingSuggestionDecision —— 决定一行是否可执行，并给出跳过原因。
+//
+// ★ 纯函数（不碰 DB、不碰全局状态）⇒ 可被行为门直接喂数字验证。
+// ★ 关键语义（2026-11-17 修正）：
+//
+//	hasOwnCurrent = false（该模型**没有自己的**零售价）
+//	  · 阈值 > 0（保守模式）：**不参与** —— 没有偏离可比（现价栏是全局基准，
+//	    拿它比市场价会算出假偏离并污染阈值过滤）；
+//	  · 阈值 = 0：⇒ **可执行** —— 这正是「给还没定价的模型首次定价」的主场景。
+//
+//	hasOwnCurrent = true ⇒ 按幅度与阈值判（幅度缺失 ⇒ 无从比较 ⇒ 跳过）。
+func pricingSuggestionDecision(
+	sugIn, sugOut *int64,
+	hasOwnCurrent bool,
+	deltaIn, deltaOut *float64,
+	minDeltaPct *float64,
+) (applicable bool, skipReason string) {
+	// 建议价都没产出 ⇒ 没什么可执行的。
+	if sugIn == nil && sugOut == nil {
+		return false, "建议价不可产出（缺价或口径不成立）"
+	}
+	threshold := 0.0
+	if minDeltaPct != nil {
+		threshold = *minDeltaPct
+	}
+	if !hasOwnCurrent {
+		if threshold > 0 {
+			return false, "当前无该模型自己的零售价 ⇒ 无偏离可比，保守阈值模式下不参与"
+		}
+		return true, ""
+	}
+	// 有自有价，但一个幅度都算不出来 ⇒ 无从比较。
+	if deltaIn == nil && deltaOut == nil {
+		return false, "无法计算与当前零售价的差异（现价币种口径不成立）"
+	}
+	if !pricingDeltaMeaningful(deltaIn, deltaOut, minDeltaPct) {
+		return false, "与当前零售价差异在阈值内（或无变化）"
+	}
+	return true, ""
 }
 
 // pricingDeltaPct 建议价相对当前价的幅度（%）；任一缺失 ⇒ nil。

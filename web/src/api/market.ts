@@ -158,10 +158,13 @@ export interface PricingSuggestionRow {
   canonical_id: number
   canonical_name: string
   display_name: string
+  /** 当前零售价：**只表示该模型自己的价**；没有则 null（前端显示「—」，不回落全局基准） */
   current_credits_in_per_1m: number | null
   current_credits_out_per_1m: number | null
   current_cny_in_per_1m: number | null
   current_cny_out_per_1m: number | null
+  /** 现价来源：explicit（两轴都有自有价）/ partial（仅一轴）/ none（都没有） */
+  current_basis: string
   suggested_credits_in_per_1m: number | null
   suggested_credits_out_per_1m: number | null
   suggested_cny_in_per_1m: number | null
