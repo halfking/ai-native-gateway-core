@@ -1326,14 +1326,21 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 		deps.analysisCancel()
 		deps.analysisCancel = nil
 	}
-	// Publisher / IntentStore 不由本函数关闭（pool 由 dbConn 管），
-	// 但调用 Close 让实现内部清理（PGPool 之外通常是 no-op）。
-	if deps.Publisher != nil {
-		_ = deps.Publisher.Close()
-	}
+	// ★ 2026-11-18 根修（245 生产实证）：**不再调用 deps.Publisher.Close()**。
+	// 旧代码在这里调 Publisher.Close——但 V2 块构造的 PGPublisher 挂在
+	// **共享主 pool** 上（main.go V2 块 `bus.NewPGPublisher(pool, ...)`），
+	// 其 Close 的唯一副作用就是把主 pool 整个关掉：
+	//   · boot 期出错走 defer 清理（如 panic 展开）时，pgxpool.Close
+	//     （puddle）等待在途连接归还 ⇒ 卡死 ⇒ panic 冻结在 defer 里 ⇒
+	//     进程僵尸化（监听从未绑定、systemd 不拉起）——245 事故实证；
+	//   · 正常停机时也会把主 pool 提前关掉，与本函数旧注释「pool 由
+	//     dbConn 管」的所有权矛盾。
+	// PGPublisher 自身没有 pool 之外的资源需要释放（bus/publisher.go:98）。
+	// 若未来 Publisher 获得真正的自有资源，应让 V2 块传入**独占 pool** 的
+	// 实例，再恢复这里的 Close（并配僵尸化回归钉测）。
 	for _, sqlDB := range deps.AnalysisSQLDBs {
 		if sqlDB != nil {
-			_ = sqlDB.Close()
+			closeAnalysisSQLDBBounded(sqlDB, analysisSQLDBCloseTimeout)
 		}
 	}
 	deps.AnalysisSQLDBs = nil
@@ -1344,6 +1351,34 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	defer cancel()
 	_ = ctx
 	_ = deps.AuditWriter.Close()
+}
+
+// analysisSQLDBCloseTimeout 是关闭 analysis *sql.DB 的有界等待上限。
+//
+// ★ 2026-11-18 根修（245 生产实证）：*sql.DB.Close 会等所有在途连接归还
+// （底层 puddle Pool.Close 卡 WaitGroup.Wait）。boot 期一旦主流程出错走
+// defer 清理（例如 panic 展开），后台任务（PI 检测器规则加载 / 采集器）
+// 仍持有连接 ⇒ 无界等待把「崩溃 + systemd 自动拉起」变成「僵尸进程」：
+// pool 已关、监听从未绑定、进程不退出。有界关闭让清理路径必然返回。
+const analysisSQLDBCloseTimeout = 5 * time.Second
+
+// closeAnalysisSQLDBBounded 有界关闭一个 analysis *sql.DB：超时放弃并留痕
+// （连接随进程退出由 OS 回收；比卡死整个 shutdown 路径代价小得多）。
+func closeAnalysisSQLDBBounded(db *sql.DB, timeout time.Duration) {
+	if db == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = db.Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("v2 pipeline: analysis sqlDB close timed out (in-flight connection held); giving up",
+			"timeout", timeout.String())
+	}
 }
 
 var lookupAnalysisIP = net.LookupIP

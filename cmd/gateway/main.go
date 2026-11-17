@@ -7468,9 +7468,15 @@ func main() {
 	// dispatch unchanged. See cmd/gateway/main_pipeline.go for
 	// the wiring.
 	//
-	// The v1 routes are registered FIRST (so they bind), then the
-	// v2 wrappers are registered LAST (so they win — Go's
-	// http.ServeMux picks the last-registered exact-path match).
+	// The v1 routes are registered in exactly ONE place: when
+	// v2DispatchEnabled is true the plain registrations below are
+	// SKIPPED and only the wrapped handlers are registered by the
+	// v2 block later in this function. ★ 2026-11-18 订正：旧注释声称
+	// 「先注册 v1、再注册 v2 包装，后者获胜」——stdlib http.ServeMux 对
+	// 同一路径的重复注册是 panic（"multiple registrations"），没有
+	// 「后者获胜」语义；该错误认知让 LLM_GATEWAY_USE_V2_PIPELINE 一开
+	// 就 boot panic（245 生产实证：panic 展开 defer 时又卡死在
+	// v2ShutdownPipeline 的连接池 Close，进程僵尸化、监听从未绑定）。
 	v2DispatchEnabled := v2UsePipeline()
 	if v2DispatchEnabled {
 		slog.Info("v2 pipeline: LLM_GATEWAY_USE_V2_PIPELINE=true; 4 v1 endpoints will be Pipeline-wrapped")
@@ -7643,16 +7649,24 @@ func main() {
 		slog.Info("userscript capture endpoint enabled", "path", "/v1/userscript/captures")
 	}
 
-	mux.Handle("/v1/chat/completions", chatRouteHandler)
-	mux.Handle("/v1/completions", chatRouteHandler)
-	mux.Handle("/v1/messages", messagesRouteHandler)
+	// ★ 2026-11-18 根修（V2 开关一开必 panic，245 生产实证）：stdlib
+	// http.ServeMux 对同一路径重复注册会直接 panic（"multiple registrations
+	// for /v1/chat/completions"），**不存在**「后注册者获胜」的语义——
+	// 下方 V2 块（v2DispatchHandler 包装）与这里的裸 v1 注册必须二选一。
+	// V2 开启时这里跳过，由 V2 块统一注册包装版；count_tokens /
+	// handoffs 等派生端点不经过 V2 包装，恒注册。
+	if !v2DispatchEnabled {
+		mux.Handle("/v1/chat/completions", chatRouteHandler)
+		mux.Handle("/v1/completions", chatRouteHandler)
+		mux.Handle("/v1/messages", messagesRouteHandler)
+		mux.Handle("/v1/responses", responsesRouteHandler)
+	}
 	// 2026-09-21: Anthropic Messages token-count endpoint. Claude Code probes
 	// it every context-management cycle; without the route the mux answered a
 	// plain-text 404 that strict clients treat as a session-fatal error. The
 	// handler answers with the same heuristic estimate the streaming bridge
 	// writes into message_start.usage.input_tokens.
 	mux.Handle("/v1/messages/count_tokens", keyConcurrentGate.Wrap(streaming.NewCountTokensHandler(chatHandler)))
-	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", keyConcurrentGate.Wrap(embeddingsHandler))
