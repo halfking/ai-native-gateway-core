@@ -48,7 +48,7 @@ echo "=============================================================="
 echo "工作树        : $WT"
 echo "对齐提交      : $(git rev-parse HEAD)"
 echo "提交标题      : $(git log -1 --format='%s')"
-echo "工作树状态    : $(git status --porcelain | wc -l | tr -d ' ') 个改动（0=干净）"
+echo "工作树状态    : $(git status --porcelain -z | tr -cd '\0' | wc -c | tr -d ' ') 个改动（0=干净）"
 echo "远端          : $(git config --get remote.origin.url)"
 echo "工具链        : $(go version)"
 echo "宿主          : $(uname -srm)"
@@ -79,7 +79,7 @@ step() {
 
 # ── step 1: Checkout（worktree 已就位 ⇒ 核对等价条件）────────────────
 step "Checkout（核对：HEAD == 目标提交 且 工作树干净）" \
-  bash -c 'test "$(git rev-parse HEAD)" = "'"${TARGET_SHA}"'" && test -z "$(git status --porcelain)" && echo "OK: HEAD 与目标提交一致，工作树干净"'
+  bash -c 'test "$(git rev-parse HEAD)" = "'"${TARGET_SHA}"'" && test -z "$(git status --porcelain -z | tr -d "\0")" && echo "OK: HEAD 与目标提交一致，工作树干净"'
 [ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
 
 # ── step 2: Setup Go（工作流 go-version: 1.23）──────────────────────
@@ -135,14 +135,22 @@ step "跨模块回归（追加：IR 工作流未覆盖的包）" \
 [ $FAILED -ne 0 ] && { echo "ABORT: 前序 step 失败"; exit 1; }
 
 # ── 收尾：工作树必须重新变干净（harness 还原的证据）─────────────────
+# ★ 2026-11-17：★ 本块的三处 `git status --porcelain` 【★ -z 化 ★】——
+#   ★ 起因＝tests/git_enumeration_quote_path_contract_test.sh 那道【★ 枚举面
+#   转义契约门 ★】把本脚本三处判为「不带 -z 的枚举面消费点」★★ ★
+#   ★ 而 -z 化【★ 同时修掉了一个真实的读数缺陷 ★】：★ 非 ASCII 路径在
+#   ★ 行式 porcelain 下会被 git 【★ 转义成八进制并加外层双引号 ★】⇒ ★ 显示
+#   ★ 出来的是 `"\\345\\217\\246..."` 而不是真实名 ⇒ ★ 人工核对时【★ 看不懂 ★】
+#   ★ ★ 而计数用【★ NUL 字节数 ★】（`tr -cd '\0' | wc -c`）⇒ ★ 与旧的
+#   ★ `wc -l` 【★ 条目数完全等价 ★】、★ 且【★ 路径里带换行也不会多计 ★】★★ ★
 echo ""
 echo "=============================================================="
 echo " 工作树还原复核（harness 必须把文件改回原样）"
 echo "=============================================================="
-DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
+DIRTY=$(git status --porcelain -z | tr -cd '\0' | wc -c | tr -d ' ')
 echo "结束后工作树改动数： $DIRTY"
 if [ "$DIRTY" -ne 0 ]; then
-  echo "!!! 工作树未还原干净："; git status --porcelain
+  echo "!!! 工作树未还原干净："; git status --porcelain -z | tr '\0' '\n'
   FAILED=1
 else
   echo "OK: 工作树已还原干净（0 改动）"
