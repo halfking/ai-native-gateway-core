@@ -3310,6 +3310,10 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		if responsesProbe && readErr == nil && responsesProbeProtocolEvidence(response) {
 			r.supportsResponses = boolEvidence(true)
 		}
+		// 同协议多 pep：primary 成功后再确认兄弟端点（现网 pep>1=0 ⇒ 空操作）。
+		if r.ok {
+			r = w.confirmSiblingEndpoints(ctx, r, plain, protocol, providerID, baseURL, bodyModel, shape)
+		}
 		return r
 	}
 
@@ -3343,7 +3347,9 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		default:
 			r.errCode = "network_error"
 		}
-
+	}
+	if r.ok {
+		r = w.confirmSiblingEndpoints(ctx, r, plain, protocol, providerID, baseURL, bodyModel, shape)
 	}
 	return r
 }

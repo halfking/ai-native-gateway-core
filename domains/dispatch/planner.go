@@ -204,6 +204,15 @@ func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decisio
 		return Decision{Action: NextActionFailed, Reason: reasonAttemptCap}
 	}
 
+	// ★ 2026-11-17：格式类守卫（redact_invalid / tool_json_invalid /
+	//   frame_encode_failed）可换兄弟节点重试是有意义的恢复动作，但
+	//   网关侧脱敏产物非法 JSON 往往会在**所有**节点上复现 ⇒ 无上限换节点
+	//   会空耗整条候选链。⇒ 格式守卫只允许「首失败 + 一次兄弟切换」
+	//   （AttemptCount>=2 时已试过两个候选），再失败即终态。
+	if errorsx.IsFormatGuardBlock(out.Err) && qr.AttemptCount >= 2 {
+		return Decision{Action: NextActionFailed, Reason: "format_guard_switch_budget"}
+	}
+
 	kind := errorsx.ErrorKind(out.ErrorKind)
 	if kind == "deadline_exceeded" {
 		kind = errorsx.KindTimeout

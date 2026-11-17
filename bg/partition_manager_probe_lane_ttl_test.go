@@ -21,6 +21,7 @@ func TestClampProbeLaneTTLDays(t *testing.T) {
 	cases := []struct {
 		raw, want int
 	}{
+		{7, 7},
 		{14, 14},
 		{1, 1},
 		{90, 90},
@@ -33,10 +34,36 @@ func TestClampProbeLaneTTLDays(t *testing.T) {
 			t.Errorf("clampProbeLaneTTLDays(%d) = %d, want %d", tc.raw, got, tc.want)
 		}
 	}
+	if defaultProbeLaneTTLDays != 7 {
+		t.Errorf("defaultProbeLaneTTLDays = %d, want 7（2026-11-17 从 14 收窄）", defaultProbeLaneTTLDays)
+	}
+}
+
+func TestProbeLaneTTLDeleteIsBatched(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	src, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "partition_manager_probe_lane_ttl.go"))
+	if err != nil {
+		t.Fatalf("read probe lane ttl: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "probeLaneTTLBatch") {
+		t.Error("TTL DELETE 必须有 probeLaneTTLBatch 批大小常量")
+	}
+	if !strings.Contains(body, "LIMIT $2") {
+		t.Error("TTL DELETE 必须 LIMIT 批删（收窄默认窗后一次可能过期数万行）")
+	}
+	for _, table := range []string{"session_turns_probe_hot", "request_stats_probe_minute"} {
+		if !strings.Contains(body, "DELETE FROM "+table+" t") {
+			t.Errorf("batched cleanup must DELETE FROM %s via ctid join", table)
+		}
+	}
 }
 
 func TestClampProbeLaneTTLDays_NeverZero(t *testing.T) {
-	for _, raw := range []int{-1 << 30, -1, 0, 1, 14, 90, 1 << 30} {
+	for _, raw := range []int{-1 << 30, -1, 0, 1, 7, 14, 90, 1 << 30} {
 		if got := clampProbeLaneTTLDays(raw); got < 1 {
 			t.Fatalf("clampProbeLaneTTLDays(%d) = %d, must never be < 1", raw, got)
 		}
