@@ -86,6 +86,11 @@ func NewErrorAnalyzer(
 //	LLMGatewayPIErrorAnalysisBatchSize **完全没有落点**
 //	⇒ 配置写了「单批条数」，实现里没有任何地方用它
 //	⇒ 又一处「自述与实现不符」。
+//
+// ★ 2026-11-17 第57增量：**boot 期专用**（worker.Start 之前调用一次）。
+//
+//	运行期改它 = 与后台 worker 的读并发（data race）+ 永久改后台配置。
+//	请求级批量请走 ProcessBatchN（局部 limit）。
 func (ea *ErrorAnalyzer) SetBatchSize(n int) {
 	if ea == nil || n <= 0 {
 		return
@@ -93,8 +98,30 @@ func (ea *ErrorAnalyzer) SetBatchSize(n int) {
 	ea.batchSize = n
 }
 
-// ProcessBatch 批量处理待分析的错误
+// ProcessBatch 批量处理待分析的错误（用启动时配置的 batchSize）。
 func (ea *ErrorAnalyzer) ProcessBatch(ctx context.Context) (int, error) {
+	return ea.processBatchLimit(ctx, ea.batchSize)
+}
+
+// ProcessBatchN 按**本次调用**的批量上限处理一批（管理 API 手动触发专用）。
+//
+// ★ 2026-11-17 第57增量审计轮 P1：原实现让 handler 调 SetBatchSize 改共享字段 ⇒
+//
+//	① 与后台 worker 的 `ClaimPendingErrors(ctx, ea.batchSize)` 读并发（data race）；
+//	② 每次手动触发**永久改变**后台 worker 的批大小（全局配置被请求参数劫持）。
+//	⇒ 请求级批量走**局部 limit**，共享字段只在启动装配时写一次。
+func (ea *ErrorAnalyzer) ProcessBatchN(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return ea.processBatchLimit(ctx, ea.batchSize)
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	return ea.processBatchLimit(ctx, limit)
+}
+
+// processBatchLimit 是 ProcessBatch / ProcessBatchN 的共同实现。
+func (ea *ErrorAnalyzer) processBatchLimit(ctx context.Context, limit int) (int, error) {
 	if !ea.enabled {
 		return 0, nil
 	}
@@ -116,7 +143,7 @@ func (ea *ErrorAnalyzer) ProcessBatch(ctx context.Context) (int, error) {
 	//   SELECT 到同一行 ⇒ 同一错误被分析两次 ⇒ 重复 LLM 花费，
 	//   且 error_analysis_results 里同一 queue_id 出现两条互斥结论
 	//   （该列**没有唯一约束**）⇒ 运维无法判断哪条是真的。
-	pendingErrors, err := ea.collector.ClaimPendingErrors(ctx, ea.batchSize)
+	pendingErrors, err := ea.collector.ClaimPendingErrors(ctx, limit)
 	if err != nil {
 		return 0, fmt.Errorf("failed to claim pending errors: %w", err)
 	}

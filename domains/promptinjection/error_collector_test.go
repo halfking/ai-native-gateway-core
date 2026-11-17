@@ -668,6 +668,9 @@ func TestErrorCollector_IncrementRetry_IsConditionalOnProcessing(t *testing.T) {
 }
 
 // ★ 回归（P1）：孤儿 processing 行必须能被回收，否则错误被永久吞掉。
+// ★ 第57增量：耗尽重试的孤儿行必须落**终态 failed**（带 completed_at），
+//
+//	原谓词 retry_count < max_retries 把它们整类跳过 ⇒ 永久「处理中」僵尸。
 func TestErrorCollector_ReclaimStaleClaims(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -675,13 +678,38 @@ func TestErrorCollector_ReclaimStaleClaims(t *testing.T) {
 
 	ec := NewErrorCollector(db, true)
 
-	mock.ExpectExec(`UPDATE error_analysis_queue`).
+	mock.ExpectExec(`SET status = 'pending'`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec(`SET status = 'failed'`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	n, err := ec.ReclaimStaleClaims(context.Background(), 10*time.Minute)
 	require.NoError(t, err)
-	assert.Equal(t, int64(3), n)
+	assert.Equal(t, int64(5), n, "reclaim total = requeued + exhausted-to-failed")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// ★ 第57增量钉测：谓词编进匹配正则——任何一侧丢了谓词/写反方向，
+//
+//	sqlmock 匹配不上 ⇒ 期望不满足（红）。
+func TestErrorCollector_ReclaimStaleClaims_ExhaustedPredicate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	ec := NewErrorCollector(db, true)
+
+	mock.ExpectExec(`SET status = 'pending'[\s\S]*retry_count < max_retries`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET status = 'failed'[\s\S]*completed_at[\s\S]*retry_count >= max_retries`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	_, err = ec.ReclaimStaleClaims(context.Background(), 10*time.Minute)
+	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

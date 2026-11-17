@@ -438,12 +438,15 @@ func (h *PIAnalysisHandler) TriggerAnalysis(w http.ResponseWriter, r *http.Reque
 	}
 
 	// ★ batch_size 真的生效（原来只是被解析然后丢掉）。
-	h.analyzer.SetBatchSize(req.BatchSize)
+	//   ★ 2026-11-17 第57增量：改走 ProcessBatchN（局部 limit）——
+	//     原实现 SetBatchSize 改共享字段 ⇒ ① 与后台 worker 读并发（data race）
+	//     ② 每次手动触发永久改变后台 worker 的批大小。
+	batchLimit := req.BatchSize
 
 	// ★ 用 bg.SpawnLoop（自带 panic recover）而不是裸 go func ——
 	//   goroutine 里的 panic 会**终止整个进程**。
 	bg.SpawnLoop(context.Background(), "pi_analysis.manual_trigger", func(ctx context.Context) {
-		processed, err := h.analyzer.ProcessBatch(ctx)
+		processed, err := h.analyzer.ProcessBatchN(ctx, batchLimit)
 		if err != nil {
 			slog.Error("pi_analysis: manual analysis failed", "error", err)
 		} else {

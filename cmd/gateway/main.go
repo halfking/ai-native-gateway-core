@@ -1168,6 +1168,10 @@ func main() {
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
 	// （关闭路径零开销）。
 	var routingOptimizerForShutdown *routingopt.RealOptimizer
+	// piAgentStopForShutdown — 2026-11-17 第57增量：PI collector/worker 的
+	// 停机闭环（先 Stop worker、再 cancel ctx），在 piSQLDB 关闭**之前**执行；
+	// 装配块内赋值，nil = 未装配（关闭路径零开销）。
+	var piAgentStopForShutdown func()
 	// 2026-09-14 R28 #16: lite 模式（storageRt.liteMode()）按策略禁用 Redis——
 	// 主 Config 在上方 env 收口之前已完成解析，cfg.RedisAddr 可能仍残留值，
 	// 此处以 !liteMode() 为准做二次门控（full 热区装配 P3 的 runtime 非 nil
@@ -7733,7 +7737,20 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
 		piSQLDB := stdlib.OpenDB(*dbConn.Pool().Config().ConnConfig)
 		defer func() { _ = piSQLDB.Close() }()
-		piCollector, piAnalyzer, _ := initPIAgent(context.Background(), piSQLDB, loadPIAgentConfig())
+		// ★ 2026-11-17 第57增量 P1：PI 智能体的停机闭环。
+		//   原实现 ctx=context.Background() 且 worker 返回值被丢弃 ⇒
+		//   停机时 collector drain / worker 循环仍在跑，而 piSQLDB 的
+		//   defer Close 已执行 ⇒ 关库后访问 + goroutine 泄漏。
+		//   ⇒ 派生可取消 ctx + 保留 worker，停机段先 Stop 再 cancel
+		//   （piAgentStopForShutdown，在 DB 关闭前执行）。
+		piAgentCtx, piAgentCancel := context.WithCancel(context.Background())
+		piCollector, piAnalyzer, piWorker := initPIAgent(piAgentCtx, piSQLDB, loadPIAgentConfig())
+		piAgentStopForShutdown = func() {
+			if piWorker != nil {
+				piWorker.Stop()
+			}
+			piAgentCancel()
+		}
 		if piCollector != nil {
 			piErrorCollectorGlobal = piCollector
 			piErrorAnalyzerGlobal = piAnalyzer
@@ -9219,6 +9236,11 @@ func main() {
 		}
 		if adminHandler != nil {
 			adminHandler.StopProxyRuntime()
+		}
+		// 2026-11-17 第57增量：先停 PI 智能体（worker + collector ctx），
+		// 再往下关 DB——否则 collector/worker 在 piSQLDB 关闭后仍可能发查询。
+		if piAgentStopForShutdown != nil {
+			piAgentStopForShutdown()
 		}
 		// Stop monitors before closing the database pool they query. The
 

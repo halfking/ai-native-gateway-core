@@ -17,6 +17,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
@@ -28,6 +29,9 @@ type ErrorAnalysisWorker struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	// ★ 2026-11-17 第57增量：Start 幂等守卫。注释此前声称「幂等」但
+	//   实现没有守卫 ⇒ 每次 Start 都再起一条循环（重复 LLM 花费）。
+	started atomic.Bool
 }
 
 // NewErrorAnalysisWorker 创建后台 worker。
@@ -46,9 +50,14 @@ func NewErrorAnalysisWorker(analyzer *ErrorAnalyzer, interval time.Duration) *Er
 
 // Start 启动 worker 循环。
 //
-// ★ 幂等：重复调用只生效一次。
+// ★ 幂等：重复调用只生效一次（第57增量：真正落上守卫——
+//
+//	原实现注释声称幂等但没有 started 位 ⇒ 每次 Start 多起一条循环）。
 func (w *ErrorAnalysisWorker) Start(ctx context.Context) {
 	if w == nil || w.analyzer == nil {
+		return
+	}
+	if !w.started.CompareAndSwap(false, true) {
 		return
 	}
 	slog.Info("pi_error_analysis_worker started", "interval", w.interval)
