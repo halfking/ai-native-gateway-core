@@ -49,11 +49,15 @@ maestro test \
 # ⇒ 需要一个已开 CDP 的浏览器与一个登录令牌（都从环境变量/临时文件读，不进仓）。
 #   不给这两个变量就跳过（flow 本身已跑完，不受影响）。
 if [ -n "${STAGE_TREE_CDP:-}" ] && [ -n "${STAGE_TREE_TOKEN_FILE:-}" ]; then
-  echo "▶ 页面内断言（CDP=$STAGE_TREE_CDP）"
+  # ★ 必须写 ${STAGE_TREE_CDP} 而不是 $STAGE_TREE_CDP：
+  #   后面紧跟中文全角括号时，**UTF-8 locale 下 bash 会把多字节字符算进变量名**
+  #   ⇒ `$STAGE_TREE_CDP）` 取的其实是变量「STAGE_TREE_CDP）」 ⇒ set -u 直接报
+  #   「unbound variable」（本轮实测踩到）。用 ${} 界定才安全。
+  echo "▶ 页面内断言（CDP=${STAGE_TREE_CDP}）"
   node "$ROOT/maestro/tools/assert-stage-tree.mjs" \
-    --cdp "$STAGE_TREE_CDP" --url "$BASE_URL" --token-file "$STAGE_TREE_TOKEN_FILE"
+    --cdp "${STAGE_TREE_CDP}" --url "$BASE_URL" --token-file "${STAGE_TREE_TOKEN_FILE}"
   node "$ROOT/maestro/tools/assert-stage-tree-design.mjs" \
-    --cdp "$STAGE_TREE_CDP" --url "$BASE_URL" --token-file "$STAGE_TREE_TOKEN_FILE"
+    --cdp "${STAGE_TREE_CDP}" --url "$BASE_URL" --token-file "${STAGE_TREE_TOKEN_FILE}"
 else
   echo "▶ 跳过页面内断言（未给 STAGE_TREE_CDP / STAGE_TREE_TOKEN_FILE）"
 fi

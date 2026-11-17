@@ -123,17 +123,22 @@ url: ${BASE_URL}
     timeout: 20000
 
 # ── ⑧ 统计胶囊 ⇒ 点开 ⇒ **全页浮层**（owner 定稿形态）─────────────────────
+# ★ 浮层内容本轮按设计第 17 轮重写 ⇒ 断言也跟着重写：
+#   旧版是「统计面板（请求数/成功率两行分列）」，新版是
+#   **KPI 总览 + 周期统计 + 分类统计 + 口径说明 + 折叠的数据库直查区**。
+#   ⇒ 断言的是**新版浮层的骨架**（标题 / 四个区块标题 / 两个关键指标）。
 - tapOn: ".*请求 · .*成功率.*"
 - extendedWaitUntil:
     visible: "实时统计"
     timeout: 20000
-# 浮层里是统计面板（口径与 /live 一致的那把尺）
-- assertVisible: "统计"
+# 区块骨架（都是与数据无关的静态文案 ⇒ 可断言）
+- assertVisible: "总览"
+- assertVisible: "周期统计"
+- assertVisible: "分类统计"
+- assertVisible: "口径说明"
+# 关键指标（KPI 总览里的两个）
 - assertVisible: "请求数"
 - assertVisible: "成功率"
-- assertVisible: "客户端"
-- assertVisible: "供应商"
-- assertVisible: "模型"
 
 # ── ⑨ 关掉浮层：web 驱动不支持 pressKey: Escape，关闭按钮又是 <button>
 #    （id:/text: 都选不到）⇒ **flow 侧不做**，由 assert-stage-tree.mjs 在

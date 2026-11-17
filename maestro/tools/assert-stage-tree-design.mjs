@@ -255,10 +255,17 @@ async function main() {
       console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
     }
     console.log('  事实：', JSON.stringify(compact.facts, null, 0))
-    for (const c of compact.checks) if (!c.pass) probe.ok = false
 
-    const failed = probe.checks.filter((c) => !c.pass).length
-    console.log(failed === 0 ? '\nRESULT: PASS' : `\nRESULT: FAIL（${failed} 条）`)
+    // ★ 失败计数必须**把两层的检查都算进来**：
+    //   早先只数第一层（probe.checks）⇒ 第二层红了却报「PASS」——
+    //   「断言红」被统计口径吃掉，等于没有断言。
+    const allChecks = [...probe.checks, ...compact.checks]
+    const failed = allChecks.filter((c) => !c.pass).length
+    console.log(
+      failed === 0
+        ? `\nRESULT: PASS（${allChecks.length} 条断言）`
+        : `\nRESULT: FAIL（${failed} / ${allChecks.length} 条）`,
+    )
     ws.close()
     process.exit(failed === 0 ? 0 : 1)
   } catch (err) {
