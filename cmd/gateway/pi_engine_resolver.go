@@ -32,6 +32,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -133,7 +134,18 @@ func (r *piEngineResolver) resolveProviderModelName(
 		providerID, canonicalID,
 	).Scan(&outbound, &raw)
 	if err != nil {
-		// 查不到映射**不是**致命错误：退回 canonical_name，并留痕。
+		// ★ 2026-11-18 审计轮 P2：把「**没有映射**」与「**查询失败**」分开。
+		//
+		//	查不到映射是**设计内的常态**（本文件头即声明「查不到 ⇒ 退回
+		//	canonical_name」），此前与真故障共用一条 slog.Warn ⇒ 告警面
+		//	无法区分「这个 (provider, canonical) 本来就没有映射」与
+		//	「数据库挂了」。
+		if errors.Is(err, sql.ErrNoRows) {
+			slog.Debug("pi judge endpoint: no provider model mapping; falling back to canonical name",
+				"provider_id", providerID, "canonical_id", canonicalID,
+				"canonical_name", canonicalName)
+			return canonicalName
+		}
 		slog.Warn("pi judge endpoint: provider model mapping lookup failed; falling back to canonical name",
 			"error", err, "provider_id", providerID, "canonical_id", canonicalID,
 			"canonical_name", canonicalName)

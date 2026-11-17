@@ -92,10 +92,27 @@ func TestV1ChatRegistrationGuardedByV2Flag(t *testing.T) {
 	}
 
 	for _, reg := range plainRegs {
-		idx := strings.Index(mainGo, reg)
-		if idx < 0 {
+		// ★ 2026-11-18 审计轮 P2：判据从「首次出现」改为「**每一次出现**」。
+		//
+		//	原实现用 strings.Index（只取**首次**）⇒ 守卫块**之外**再注册一条
+		//	同样的裸路由时，本门照样绿 ⇒ 而那正是 3bd889d52 要修的 boot panic
+		//	形态（ServeMux 重复注册 ⇒ stdlib panic，开关一开必炸）。
+		//	⇒ 一门只看首次出现的守卫，会在「第二次注册」这个正是它要防的
+		//	形态上失明。
+		//
+		//	修法：数清出现次数（必须恰好 1），且该唯一出现必须落在守卫块内。
+		offsets := allIndexOffsets(mainGo, reg)
+		if len(offsets) == 0 {
 			t.Fatalf("main.go: plain registration %q not found — registration structure moved; re-evaluate this guard", reg)
 		}
+		if len(offsets) > 1 {
+			t.Fatalf("main.go: plain registration %q appears %d times (offsets %v) — "+
+				"the v2 wrapper also registers this path ⇒ ServeMux would panic at boot when "+
+				"LLM_GATEWAY_USE_V2_PIPELINE=true (or when the extra copy sits outside the "+
+				"`if !v2DispatchEnabled` guard, it double-registers with the v2 wrapper)",
+				reg, len(offsets), offsets)
+		}
+		idx := offsets[0]
 		if idx < guardIdx || idx > guardEnd {
 			t.Fatalf("main.go: plain registration %q at offset %d is OUTSIDE the `if !v2DispatchEnabled` block [%d,%d) — "+
 				"it would double-register with the v2 wrapper and panic at boot when LLM_GATEWAY_USE_V2_PIPELINE=true",
@@ -127,6 +144,13 @@ func TestPromptInjectionStageRegisteredBeforeProviderDiscovery(t *testing.T) {
 	if piIdx < 0 {
 		t.Fatal("main_pipeline.go: stage 'governance_prompt_injection' registration not found")
 	}
+	// ★ 2026-11-18 审计轮 P2：同样的「只看首次出现」失明 ⇒ 事后在后面
+	// 再注册一个同名 stage 不会被本门发现。⇒ 数清出现次数。
+	if offs := allIndexOffsets(src, `Name: "governance_prompt_injection"`); len(offs) != 1 {
+		t.Fatalf("main_pipeline.go: stage 'governance_prompt_injection' is registered %d times (offsets %v) — "+
+			"the stage order this guard asserts is only meaningful for a SINGLE registration",
+			len(offs), offs)
+	}
 	for _, earlier := range []string{`Name: "security"`, `Name: "provider_discovery"`} {
 		idx := strings.Index(src, earlier)
 		if idx < 0 {
@@ -143,6 +167,22 @@ func TestPromptInjectionStageRegisteredBeforeProviderDiscovery(t *testing.T) {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+// allIndexOffsets 返回 needle 在 src 中的**全部**出现偏移。
+//
+// ★ 2026-11-18 审计轮 P2 新增：只取首次出现（strings.Index）的守卫会在
+// 「第二次注册」这个正是它要防的形态上失明 ⇒ 判据必须覆盖每一次出现。
+func allIndexOffsets(src, needle string) []int {
+	var out []int
+	for off := 0; ; {
+		i := strings.Index(src[off:], needle)
+		if i < 0 {
+			return out
+		}
+		out = append(out, off+i)
+		off += i + len(needle)
+	}
+}
 
 func readMainPipelineSource(t *testing.T) string {
 	t.Helper()

@@ -16,6 +16,22 @@
 #	  （本版 Maestro 的 evalScript 不做变量插值，实测）。
 #	★ 失败时抛 LOGIN_HTTP_<status> ⇒ flow 当场红。
 #
+# ★ 2026-11-18 审计轮 P1（假绿门）：本式的成功判据此前只有 `r.ok`
+#   ⇒ **HTTP 200 但没有会话 cookie** 会被判成「登录成功」。
+#   而 /api/auth/token 确实存在这样一条分支：legacy fallback
+#   （admin/auth.go: req.Username=="admin" 且口令匹配 ⇒ 复用/新建 sk-* key）
+#   返回 200 + {"api_key": ...}，**不写会话 cookie**（前端 LoginModal.vue
+#   自己就把这条路当失败处理：login.error.apiKeyUnsupported）。
+#   ⇒ 后果：登录流报绿，但浏览器会话仍未认证 ⇒ 下游 12 个 flow
+#     （02~12 / 90 / 98）全部以未认证态继续跑，失败点被推迟到下游、
+#     失去定位。
+#   ⇒ 修法（两段判据，缺一不可）：
+#     ① 响应体必须含 access_token（否则是 legacy key 分支 ⇒ 抛
+#        LOGIN_NO_ACCESS_TOKEN）；
+#     ② 再探一次 /api/auth/me：401 ⇒ 会话没建立（抛 LOGIN_NO_SESSION）。
+#        （该端点未认证时返回 401 "not authenticated"；503 表示已认证
+#        但无 DB ⇒ 仍算会话建立。）
+#
 # ★ 账号口令不写进仓内任何文件：ADMIN_USER / ADMIN_PASSWORD 由
 #   命令行 -e 注入（flow 经 runFlow env 转发）。
 url: ${BASE_URL}
@@ -37,4 +53,4 @@ url: ${BASE_URL}
 - inputText:
     id: "login-password"
     text: "${ADMIN_PASSWORD}"
-- evalScript: 'const u=document.getElementById("login-username"), p=document.getElementById("login-password"); const r=await fetch("/api/auth/token",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.value,password:p.value})}); if(!r.ok){throw new Error("LOGIN_HTTP_"+r.status);} true'
+- evalScript: 'const u=document.getElementById("login-username"), p=document.getElementById("login-password"); const r=await fetch("/api/auth/token",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.value,password:p.value})}); if(!r.ok){throw new Error("LOGIN_HTTP_"+r.status);} const b=await r.json().catch(function(){return {};}); if(!b.access_token){throw new Error("LOGIN_NO_ACCESS_TOKEN");} const me=await fetch("/api/auth/me",{credentials:"same-origin"}); if(me.status===401){throw new Error("LOGIN_NO_SESSION");} if(!me.ok && me.status!==503){throw new Error("LOGIN_ME_HTTP_"+me.status);} true'

@@ -516,8 +516,12 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
 	})
 
-	// （governance_prompt_injection 已于 2026-11-18 前移到 security 之后、
-	// provider_discovery 之前——见上方注册处的根修注释。）
+	// （governance_prompt_injection 已于 2026-11-18 前移到 security /
+	// provider_discovery **之前**——见上方注册处的根修注释。
+	//
+	// ★ 2026-11-18 审计轮订正：本行此前写的是「前移到 security **之后**」，
+	//   而实际注册已在 security **之前**（6761fba1b 二次前移时只改了注册处
+	//   的注释，没回改这行标记）⇒ 注释与代码矛盾 ⇒ 按代码订正。）
 
 	// V4 interception engine (PR-V4-04): 把 security verdicts 汇总成 Decision，
 	// 写入 env.Governance.Decision。后续 PR 引入 dispatch gate 后接管 HTTP 拦截。
@@ -1471,11 +1475,23 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 
 // analysisSQLDBCloseTimeout 是关闭 analysis *sql.DB 的有界等待上限。
 //
-// ★ 2026-11-18 根修（245 生产实证）：*sql.DB.Close 会等所有在途连接归还
-// （底层 puddle Pool.Close 卡 WaitGroup.Wait）。boot 期一旦主流程出错走
-// defer 清理（例如 panic 展开），后台任务（PI 检测器规则加载 / 采集器）
-// 仍持有连接 ⇒ 无界等待把「崩溃 + systemd 自动拉起」变成「僵尸进程」：
-// pool 已关、监听从未绑定、进程不退出。有界关闭让清理路径必然返回。
+// ★ 2026-11-18 根修（245 生产实证）：boot 期一旦主流程出错走 defer 清理
+// （例如 panic 展开），后台任务（PI 检测器规则加载 / 采集器）仍持有连接 ⇒
+// 无界等待把「崩溃 + systemd 自动拉起」变成「僵尸进程」：pool 已关、
+// 监听从未绑定、进程不退出。有界关闭让清理路径必然返回。
+//
+// ★ 2026-11-18 审计轮订正（假根因）：本注释此前断言「*sql.DB.Close 会等
+//   所有在途连接归还（底层 puddle Pool.Close 卡 WaitGroup.Wait）」——
+//   **这是错的**，且本仓自己的钉测文件已写明相反事实
+//   （cmd/gateway/v2_dispatch_registration_guard_test.go:「stdlib *sql.DB.Close
+//   不等待在途连接归还；这里的有界包装是**纵深防御**」）。
+//   实测：Go 1.27.4 stdlib database/sql.(*DB).Close 只关空闲连接、置 closed、
+//   stop()，**不等在途查询**；本仓走 stdlib.OpenDB → pgx.ConnectConfig
+//   （裸 pgx，**不经 pgxpool/puddle**）。
+//   ⇒ 「僵尸进程」的真实机制在 PGPublisher.Close() → pool.Close()
+//   （domains/analysis/bus/publisher.go）——那一半是对的；
+//   ★ 而这里的 *sql.DB 有界包装是**纵深防御**（未来换驱动实现时兜底），
+//   不是本次根因的必要条件。保留该包装，但不再把它说成根因。
 const analysisSQLDBCloseTimeout = 5 * time.Second
 
 // closeAnalysisSQLDBBounded 有界关闭一个 analysis *sql.DB：超时放弃并留痕

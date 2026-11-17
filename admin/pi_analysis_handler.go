@@ -228,6 +228,14 @@ func (h *PIAnalysisHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 			"created_at":    e.CreatedAt,
 		})
 	}
+	// ★ 2026-11-18 审计轮：rows 循环的**终检**（internal/rowsguard 门）。
+	//   rows.Next() 返回 false 有两种原因：正常读完，或**中途出错**。
+	//   不查 rows.Err() ⇒ 连接中断时会把「读了一半」的队列当成「队列就这些」
+	//   返回 ⇒ 管理面给出**静默截断**的结果（且此后无任何告警）。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "iterate error analysis queue failed", err)
+		return
+	}
 
 	// 获取总数
 	countQuery := `SELECT COUNT(*) FROM error_analysis_queue WHERE 1=1`
@@ -335,6 +343,12 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 			"tenant_id":         r.TenantID,
 			"created_at":        r.CreatedAt,
 		})
+	}
+	// ★ 2026-11-18 审计轮：rows 循环的**终检**（internal/rowsguard 门）。
+	//   不查 rows.Err() ⇒ 连接中断时把「读了一半」的结果当成完整结果返回。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "iterate error analysis results failed", err)
+		return
 	}
 
 	// 获取总数

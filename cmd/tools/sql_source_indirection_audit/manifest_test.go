@@ -30,7 +30,24 @@ import (
 // `documentedSnapshot`（由 `TestDocumentedSnapshotMatchesMeasurement` 钉住，
 // 2026-10-21 / R65 轮更新）：
 //
-//	全仓拼接点 159 处（v1 0 文件/0 处、canonical 65/133、unresolved 14/26、v1arm 0/0）
+//	全仓拼接点 164 处（v1 0 文件/0 处、canonical 66/134、unresolved 15/30、v1arm 0/0）
+//
+//	（2026-11-18 刷新：161 → 164（unresolved 14 → 15 文件 / 27 → 30 处；
+//	  canonical 66/134 与两个 v1 桶**逐字未动**）。
+//	  ★ **不是只改数字** —— 两个时点各跑一次本工具做逐文件逐桶 diff：
+//	  ① credentialhealth/checker.go 1 → 3 处：2026-11-17「节点状态漂移根修轮」把恢复
+//	    语句拆成 cmbExpiredRecoverySQL() / moExpiredRecoverySQL()，两个函数各引入一处
+//	    `+ probemode.GuardStateTable() +` 拼接（原先那处只是随语句搬家）；
+//	  ② autoroute/availability_filter_sql.go **新进桶（1 处）**：2026-11-17「auto 模式
+//	    可用性轮（根修 6）」的决策面可用性过滤，150 行 broken_confirmed 探针对闸
+//	    （`SELECT 1 FROM ` + probemode.GuardStateTable() + ` mps`）⇒ 已补登记判定；
+//	  ③ provider/client.go / db/request_logs_view_schema.go 处数未变，只是行号平移。
+//	  ⚠ **方向判据**：**没有任何一个桶变小** ⇒ 不是「扫描范围被改小 / 解析失败被吞」
+//	    ⇒ 方向 = 变大 =「把看不见变成看得见」⇒ 按门规改数字即可；三处新增拼接点拼进去的
+//	    都是**探针状态表** ⇒ 无 v1 读方。
+//	  ⚠ 顺带订正：这行**此前自己就已过期**（写着 159 / canonical 65 / unresolved 14/26，
+//	    而 2026-11-13 那轮已把下面的 documentedSnapshot 更新到 161）⇒ **注释与快照
+//	    两处会各走各的**，这正是「事实源漂移」家族在本文件里的形态，本轮一并对齐。）
 //
 //	（2026-11-09 T-P1 探测空转根修轮刷新：canonical 63 → 65 文件 / 131 → 133 处。
 //	  头两跳（157→159）是 2026-10-30 与 2026-11-04 两轮加的（见下），本轮只把
@@ -1057,6 +1074,32 @@ var indirectSiteAssessments = map[string]siteAssessment{
 			"252 生产规模实测规划时间中位 ~67 ms vs 两臂形态 ~4 ms）⇒ 两臂形态是**更省**的那一支，" +
 			"不是退化。",
 	},
+
+	// ── 2026-11-18：auto 模式可用性轮（根修 6）新进 unresolved 桶的 1 个文件 ────
+	// 触发：2026-11-17「决策面（autoroute）与候选面（provider）可用性判据对齐」轮
+	// 新增 autoroute/availability_filter_sql.go —— 决策面的实时可用性过滤 SQL。
+	// 该文件的拼接点是 broken_confirmed 探针对闸的表名（probemode.GuardStateTable()），
+	// 与 credentialhealth/checker.go 的两处 guardTable 拼接**同源同形态**。
+	"autoroute/availability_filter_sql.go": {
+		Verdict: verdictNonV1ByInspection,
+		Via: "1 处（150 行，brokenPairGuardSQL，:147-156）：" +
+			"`b.WriteString(\"\\t\\t    SELECT 1 FROM \" + probemode.GuardStateTable() + \" mps\\n\")`。" +
+			"★ 表名在**运行时**决定 —— internal/probemode.GuardStateTable()（:47-52）按探针栈返回 " +
+			"`v_node_probe_state_compat`（新栈）或 `model_probe_state`（legacy 栈）⇒ " +
+			"工具对跨包函数调用判 unresolved。★ **provider 候选面同款闸**（brokenPairExcludeSQL，" +
+			"provider/client.go）用的是同一手法（strings.Builder + 同一个 GuardStateTable）⇒ 同源。" +
+			"★ 该文件其余关系名**全是字面量**（54-135 行的模板）：credential_model_bindings / " +
+			"provider_models / models_canonical / credentials / providers / settings_kv / " +
+			"node_probe_state / v_routable_credential_models。",
+		Consequence: "与 v1 族**无关** ⇒ 退役 v1 对本读点无影响。★ 逐条核过：" +
+			"(a) 唯一动态拼接进来的关系名是**探针状态表**（v_node_probe_state_compat / " +
+			"model_probe_state），不在 v1Tables 里，也不带 v1 臂；" +
+			"(b) 视图 v_routable_credential_models 的定义体（sql/objects/views/" +
+			"v_routable_credential_models.sql）只读 cmb / credentials / providers / provider_models / " +
+			"node_probe_state ⇒ **无 v1 臂**（不是「视图在 DROP 后少行」那一类）。" +
+			"⚠ 另有一条**与 v1 无关**的退役面：若 v_node_probe_state_compat 被撤，" +
+			"决策面的 broken_confirmed 闸会失效（届时须同步 provider 候选面）。",
+	},
 }
 
 // repoRoot 已移到同目录 tmproot_test.go（无 build tag）。
@@ -1660,7 +1703,27 @@ var documentedSnapshot = bucketSnapshot{
 	//   ⚠ 方向 = **新增读点被看见**（变大）⇒ 按门规改数字；无任何桶变小。
 	//   同轮删掉 admin/credential_monitor.go 的陈旧判定（读法上移 ⇒ 工具不再
 	//   报出该文件；清单 80 → 79 与实测文件数对齐）。
-	TotalSites: 161,
+	// ★ 2026-11-18（auto 模式可用性轮 + 节点状态漂移根修轮收口）：161 → 164
+	//   （unresolved 14 → 15 文件 / 27 → 30 处；两个 v1 桶与 canonical 66/134 逐字未动）。
+	//   ★ **不是只改数字** —— 两个时点各跑一次本工具（快照所在的 5b4120b2b 与今天的
+	//   HEAD）做逐文件逐桶 diff，成因逐站点核过：
+	//   ① **credentialhealth/checker.go 1 → 3 处**（+2）—— 2026-11-17「节点状态漂移
+	//   根修轮」把恢复语句从 RecoverExpired 里拆成 cmbExpiredRecoverySQL() /
+	//   moExpiredRecoverySQL() 两个函数，两个函数各引入一处
+	//   `+ probemode.GuardStateTable() +` 拼接（596 / 661 行）⇒ 原先那处 `(...)`
+	//   拼接只是随语句搬家（748 行），不是新增读方。
+	//   ② **autoroute/availability_filter_sql.go 新进桶（1 处）** —— 2026-11-17
+	//   「auto 模式可用性轮（根修 6）」新增的决策面实时可用性过滤，150 行
+	//   `SELECT 1 FROM ` + probemode.GuardStateTable() + ` mps`（broken_confirmed 探针对闸）
+	//   ⇒ 已补登记 indirectSiteAssessments 判定（Via 机制 + 退役后果）。
+	//   ③ provider/client.go（1 处）与 db/request_logs_view_schema.go（6 处）**处数未变**，
+	//   只是行号平移（2897 → 2956、903/904 → 907/908 等）⇒ 不是新增读方。
+	//   ⚠ **方向判据**：v1 0/0、v1 臂 0/0、canonical 66/134 **逐字未动** ⇒
+	//   **没有任何一个桶变小** ⇒ 不是「扫描范围被改小 / 解析失败被吞」
+	//   ⇒ 方向 = **变大** =「把看不见变成看得见」⇒ 按本文件自己的规则改数字即可。
+	//   ★ 三处新增拼接点拼进去的都是**探针状态表**（v_node_probe_state_compat /
+	//   model_probe_state）⇒ 无 v1 读方，退役清单不受影响。
+	TotalSites: 164,
 	V1Files:    0,
 	V1Sites:    0,
 	// ★ v1 臂桶**归零**：不是「推导器坏了」，是**没有任何视图还有 v1 臂**。
@@ -1680,8 +1743,8 @@ var documentedSnapshot = bucketSnapshot{
 	V1ArmSites: 0,
 	CanonFiles: 66,
 	CanonSites: 134,
-	UnresFiles: 14,
-	UnresSites: 27,
+	UnresFiles: 15,
+	UnresSites: 30,
 }
 
 func TestDocumentedSnapshotMatchesMeasurement(t *testing.T) {

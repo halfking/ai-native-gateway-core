@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -543,7 +544,7 @@ func (ec *ErrorCollector) GetPendingErrors(ctx context.Context, limit int) ([]*Q
 		SELECT
 			id, error_type, error_hash, priority,
 			tenant_id, session_id, request_id,
-			input_text, input_hash, error_message,
+			input_text, input_hash, COALESCE(error_message, ''),
 			COALESCE(error_details, 'null'::jsonb),
 			COALESCE(detection_layers, 'null'::jsonb),
 			COALESCE(matched_rules, 'null'::jsonb),
@@ -623,7 +624,7 @@ func (ec *ErrorCollector) ClaimPendingErrors(ctx context.Context, limit int) ([]
 		RETURNING
 			q.id, q.error_type, q.error_hash, q.priority,
 			q.tenant_id, q.session_id, q.request_id,
-			q.input_text, q.input_hash, q.error_message,
+			q.input_text, q.input_hash, COALESCE(q.error_message, ''),
 			COALESCE(q.error_details, 'null'::jsonb),
 			COALESCE(q.detection_layers, 'null'::jsonb),
 			COALESCE(q.matched_rules, 'null'::jsonb),
@@ -679,12 +680,39 @@ func (ec *ErrorCollector) ClaimPendingErrors(ctx context.Context, limit int) ([]
 //	**分析器活着走到那一行**时执行；孤儿行恰恰是没走到的）。
 //	⇒ 补第二条 UPDATE：耗尽的孤儿行直接 failed + completed_at，
 //	统计面不再有永久「处理中」僵尸。
-func (ec *ErrorCollector) ReclaimStaleClaims(ctx context.Context, staleAfter time.Duration) (int64, error) {
+func (ec *ErrorCollector) ReclaimStaleClaims(ctx context.Context, staleAfter time.Duration, excludeIDs ...int64) (int64, error) {
 	if staleAfter <= 0 {
 		return 0, nil
 	}
 
-	query := `
+	// ★ 2026-11-18 审计轮 P1 续修：excludeIDs 是**本进程正在分析**的行。
+	//
+	//	为什么要这个排除项：领取是**整批**打点（ClaimPendingErrors 对整批
+	//	一次 SET started_at = NOW()），而分析是**串行**的 ⇒ 批内第 k 行的
+	//	started_at 已老（批龄），可批还在跑 ⇒ 只要有**另一路**领取
+	//	（后台 worker 与管理 API 的手动触发可并发）在 staleClaimAge 之后
+	//	进来回收，它就会把**正在分析中**的行放回 pending ⇒ 同一错误被重复
+	//	分析（重复 LLM 花费），且 retry_count 累加到 max_retries 后被直接
+	//	标成 failed ⇒ 本来能分析成功的错误最终失败。
+	//
+	//	★ 该竞态在超时旋钮从 60s 放宽到 150s 之后由「罕见形态」变成
+	//	「常态形态」：批内串行时长上限 = batchSize × timeout = 10×150s
+	//	= 1500s，而回收阈值只有 600s。
+	//
+	//	修法：**排除本进程在途的行**（驱动无关的 NOT IN 占位符实现，
+	//	不依赖 pq.Array / pgtype 的数组编码）。
+	excludeClause := ""
+	args := []any{fmt.Sprintf("%d seconds", int(staleAfter.Seconds()))}
+	if len(excludeIDs) > 0 {
+		placeholders := make([]string, 0, len(excludeIDs))
+		for i, id := range excludeIDs {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
+			args = append(args, id)
+		}
+		excludeClause = " AND id NOT IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	query := fmt.Sprintf(`
 		UPDATE error_analysis_queue
 		SET status = 'pending',
 		    started_at = NULL,
@@ -693,16 +721,17 @@ func (ec *ErrorCollector) ReclaimStaleClaims(ctx context.Context, staleAfter tim
 		  AND started_at IS NOT NULL
 		  AND started_at < NOW() - $1::interval
 		  AND retry_count < max_retries
-	`
+		  %s
+	`, excludeClause)
 
-	res, err := ec.db.ExecContext(ctx, query, fmt.Sprintf("%d seconds", int(staleAfter.Seconds())))
+	res, err := ec.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("failed to reclaim stale claims: %w", err)
 	}
 	n, _ := res.RowsAffected()
 
 	// ★ 第57增量：耗尽重试的孤儿行 → 终态 failed（带 completed_at）。
-	exhaustedQuery := `
+	exhaustedQuery := fmt.Sprintf(`
 		UPDATE error_analysis_queue
 		SET status = 'failed',
 		    completed_at = NOW()
@@ -710,8 +739,9 @@ func (ec *ErrorCollector) ReclaimStaleClaims(ctx context.Context, staleAfter tim
 		  AND started_at IS NOT NULL
 		  AND started_at < NOW() - $1::interval
 		  AND retry_count >= max_retries
-	`
-	resExhausted, err := ec.db.ExecContext(ctx, exhaustedQuery, fmt.Sprintf("%d seconds", int(staleAfter.Seconds())))
+		  %s
+	`, excludeClause)
+	resExhausted, err := ec.db.ExecContext(ctx, exhaustedQuery, args...)
 	if err != nil {
 		// 第一条已成功；第二条失败不回滚整体（非事务），但必须让调用方看见。
 		return n, fmt.Errorf("failed to fail exhausted stale claims: %w", err)
@@ -888,6 +918,12 @@ func (ec *ErrorCollector) GetStats(ctx context.Context) (map[string]interface{},
 			"analyzed":      analyzed,
 			"last_error_at": lastErrorAt,
 		})
+	}
+	// ★ 2026-11-18 审计轮：rows 循环的**终检**（internal/rowsguard 门）。
+	//   不查 rows.Err() ⇒ 连接中断时统计数字**静默偏小**（少了没读到的那几类）
+	//   ⇒ 运维读到的「队列积压」是假的。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stats: %w", err)
 	}
 
 	stats["by_type"] = typeStats

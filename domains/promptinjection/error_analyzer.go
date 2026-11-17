@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,16 @@ type ErrorAnalyzer struct {
 	analyzerVersion string
 	batchSize       int
 	enabled         bool
+
+	// ★ 2026-11-18 审计轮 P1：inflight 是**本进程正在分析**的 queue_id 集合。
+	//
+	//	为什么需要它：领取是整批打点、分析是串行 ⇒ 批内第 k 行的批龄已经
+	//	很老；而回收器（ReclaimStaleClaims）只看 started_at 的年龄 ⇒ 只要
+	//	另一路领取（后台 worker 与管理 API 手动触发可并发）在阈值之后进来
+	//	回收，就会把**正在分析中**的行放回 pending ⇒ 重复 LLM 花费 + 终态
+	//	被改成 failed。回收时把本集合排除掉即可根治。
+	inflightMu sync.Mutex
+	inflight   map[int64]struct{}
 }
 
 // LLMClient 抽象 LLM 客户端接口
@@ -75,7 +86,38 @@ func NewErrorAnalyzer(
 		analyzerVersion: "1.0.0",
 		batchSize:       10,
 		enabled:         enabled,
+		inflight:        make(map[int64]struct{}),
 	}
+}
+
+// markInflight 把一批 queue_id 登记为「本进程在途」，返回取消登记的函数。
+func (ea *ErrorAnalyzer) markInflight(ids []int64) func() {
+	ea.inflightMu.Lock()
+	for _, id := range ids {
+		ea.inflight[id] = struct{}{}
+	}
+	ea.inflightMu.Unlock()
+	return func() {
+		ea.inflightMu.Lock()
+		for _, id := range ids {
+			delete(ea.inflight, id)
+		}
+		ea.inflightMu.Unlock()
+	}
+}
+
+// inflightIDs 返回当前在途的 queue_id 快照（供回收器排除）。
+func (ea *ErrorAnalyzer) inflightIDs() []int64 {
+	ea.inflightMu.Lock()
+	defer ea.inflightMu.Unlock()
+	if len(ea.inflight) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(ea.inflight))
+	for id := range ea.inflight {
+		out = append(out, id)
+	}
+	return out
 }
 
 // SetBatchSize 设置单批处理的条数（<=0 时忽略）。
@@ -131,7 +173,12 @@ func (ea *ErrorAnalyzer) processBatchLimit(ctx context.Context, limit int) (int,
 	//   processing ⇒ 既不会被再处理（pending 队列看不见它），
 	//   也不计入任何完成统计 ⇒ 错误被**永久吞掉**。
 	//   ⇒ 每次领取前先把超时的 processing 行放回 pending。
-	if n, err := ea.collector.ReclaimStaleClaims(ctx, staleClaimAge); err != nil {
+	//
+	// ★ 2026-11-18 审计轮 P1 续修：回收时**排除本进程在途的行** ——
+	//   领取是整批打点、分析是串行 ⇒ 批内第 k 行的批龄已经很老；
+	//   若不排除，另一路并发领取会在阈值之后把**正在分析中**的行放回
+	//   pending ⇒ 重复 LLM 花费 + retry_count 累加到上限后被标 failed。
+	if n, err := ea.collector.ReclaimStaleClaims(ctx, staleClaimAge, ea.inflightIDs()...); err != nil {
 		slog.Warn("error_analyzer: failed to reclaim stale claims", "error", err)
 	} else if n > 0 {
 		slog.Info("error_analyzer: reclaimed stale claims", "count", n)
@@ -151,6 +198,14 @@ func (ea *ErrorAnalyzer) processBatchLimit(ctx context.Context, limit int) (int,
 	if len(pendingErrors) == 0 {
 		return 0, nil // 没有待处理的错误
 	}
+
+	// ★ 2026-11-18：登记在途 ⇒ 并发回收不会把正在分析的行放回 pending。
+	claimedIDs := make([]int64, 0, len(pendingErrors))
+	for _, qe := range pendingErrors {
+		claimedIDs = append(claimedIDs, qe.ID)
+	}
+	release := ea.markInflight(claimedIDs)
+	defer release()
 
 	processed := 0
 	for _, queuedError := range pendingErrors {
@@ -200,8 +255,17 @@ func (ea *ErrorAnalyzer) processBatchLimit(ctx context.Context, limit int) (int,
 
 // staleClaimAge 是「processing 超过多久算孤儿」的时间阈值。
 //
-// 依据：一次 LLM 分析的正常耗时上限是客户端超时（默认 60s），
-// 加上排队与重试余量 ⇒ 10 分钟足够宽松，又不会让僵尸行永久卡死。
+// 依据：一次 LLM 分析的正常耗时上限是客户端超时（默认 150s，
+// LLMGatewayPIErrorAnalysisTimeoutSec 可调 5..600s），加上排队与重试余量
+// ⇒ 10 分钟足够宽松，又不会让僵尸行永久卡死。
+//
+// ★ 2026-11-18 审计轮 P1：注意「批龄」不等于「单行龄」——领取是**整批**
+//
+//	一次打点（ClaimPendingErrors 对整批 SET started_at = NOW()），分析是
+//	**串行**的 ⇒ 批内第 k 行的 started_at 已老（批龄），可它可能正在被
+//	分析。因此**光调大这个阈值并不能根治**（批内串行上限 =
+//	batchSize × timeout，旋钮可调到 600s）；真正的根治是回收时排除
+//	**本进程在途的行**（见 ErrorAnalyzer.inflight）。
 const staleClaimAge = 10 * time.Minute
 
 // AnalyzeError 分析单个错误
@@ -775,6 +839,12 @@ func (ea *ErrorAnalyzer) findSimilarCases(ctx context.Context, queuedError *Queu
 			"error_category":    errorCategory,
 			"is_false_positive": isFalsePositive,
 		})
+	}
+	// ★ 2026-11-18 审计轮：rows 循环的**终检**（internal/rowsguard 门）。
+	//   不查 rows.Err() ⇒ 连接中断时把「读了一半」的相似案例当成完整结果
+	//   写进分析结论 ⇒ 结论里混入静默截断的证据。
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate similar cases: %w", err)
 	}
 
 	return cases, nil

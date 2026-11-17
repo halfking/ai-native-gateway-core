@@ -125,7 +125,16 @@ var Writers = map[string]Writer{
 	"model-credibility-worker":    {Stage: "self_check", ViaHTTP: true}, // domains/modelcredibility/probe.go
 	"mock-probe-client":           {Stage: "self_check", ViaHTTP: true}, // internal/mockprobe/client.go
 	"node-probe-worker":           {Stage: "node_probe", ViaHTTP: true}, // bg/node_probe.go
-	"probe-service":               {Stage: "node_probe", ViaHTTP: true}, // bg/active_probe_executor.go
+	// ★ 2026-11-18 登记：兄弟端点探测（sibling endpoint probe）用的**另一个** actor。
+	// bg/node_probe_multi_endpoint.go:143-144 在探测「备用 base_url」时发
+	// `X-LLM-Origin-Stage: node_probe` + `X-LLM-Origin-Actor: node-probe-worker-sibling`
+	// ⇒ 它是**真实写入者**，此前未登记 ⇒ 其行被 stats/board 当成业务流量（板上虚高），
+	// 也被 dashboard 的 actor 兜底路径漏标。
+	// ★ stage 填它**自己声明**的 node_probe（与 node-probe-worker 同族同 stage），
+	// ViaHTTP=true（它走 HTTP 头 ⇒ middleware 的 globalAuthStageActorPairs 必须认这一对，
+	// 否则 claimed stage 会被降级成 business）。
+	"node-probe-worker-sibling": {Stage: "node_probe", ViaHTTP: true}, // bg/node_probe_multi_endpoint.go
+	"probe-service":             {Stage: "node_probe", ViaHTTP: true}, // bg/active_probe_executor.go
 	// ── telemetry 直写者 ──
 	"active-probe-worker": {Stage: "node_probe"}, // bg/active_probe_emitter.go
 }

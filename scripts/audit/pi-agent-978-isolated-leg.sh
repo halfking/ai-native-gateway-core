@@ -39,12 +39,25 @@ pass() { echo "PASS [$1] $2"; }
 fail() { echo "FAIL [$1] $2"; FAIL=1; }
 
 cleanup() {
-  "${PSQL[@]}" -d "$PG_SUPER_DB" -c "DROP DATABASE IF EXISTS \"$DB_NAME\";" >/dev/null 2>&1 || true
+  # ★ 防卡保护（R98/R99 形态，照 scripts/audit/verify_892_local.sh 那一行）：
+  #   ① 先踢掉残留连接（否则 DROP 卡在别的会话上 ⇒ 整个脚本卡死在退出路径上）
+  #   ② statement_timeout='120s'（给 DROP 自己设上限；★ 取 120s 而非 15s：
+  #      实测「terminate 之后 DROP 仍要等被 SIGTERM 的后端收尾」可达 89.37s
+  #      ⇒ 15s 会把【合法】清理砍成失败 ⇒ 失败＝泄漏 ⇒ 与守卫目的正好相反）
+  #   ③ WITH (FORCE)（PG 13+ ⇒ 兜底再踢一次连接）
+  # ★ SET / terminate / DROP 三条【独立 -c】（SET 与 DROP 同 -c ⇒ PG 报
+  #   cannot run inside a transaction block ⇒ 清理直接失败且静默）
+  "${PSQL[@]}" -d "$PG_SUPER_DB" \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$DB_NAME' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+  "${PSQL[@]}" -d "$PG_SUPER_DB" \
+    -c "SET statement_timeout = '120s'" \
+    -c "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE);" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "== 0. 准备隔离库 $DB_NAME =="
-"${PSQL[@]}" -d "$PG_SUPER_DB" -c "DROP DATABASE IF EXISTS \"$DB_NAME\";" >/dev/null 2>&1 || true
+# ★ 删旧库走【同一个】cleanup（★ 避免两份 DROP 实现漂移 ⇒ 也顺带拿到防卡保护）
+cleanup
 "${PSQL[@]}" -d "$PG_SUPER_DB" -c "CREATE DATABASE \"$DB_NAME\";" >/dev/null || {
   echo "FAIL [setup] 建库失败" >&2; exit 1;
 }

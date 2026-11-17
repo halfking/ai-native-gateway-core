@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# requires-bash: 4
 # 生成包含对外定价的 model_pricing 导入SQL
 # 基于确定的档位倍率: Free=1.0×, Basic=1.5×, Standard=1.8×, Premium=2.0×, Enterprise=2.5×
 

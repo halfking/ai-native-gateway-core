@@ -227,20 +227,46 @@ type docEvidence struct {
 // 8487-8492。仅按实际位置平移，语义锚、窗口宽度与判据不变；设计页/认证表 A1 同步。
 // main_pipeline.go 的入口帽修复落定后，启动日志 :1147 → :1156，
 // D09 合成/写回窗口 770-781 → 779-790；语义锚、kind 与窗口宽度不变。
+//
+// ★★ **第二十一次重钉（2026-11-18 并行提交再推移 + PI 阶段重排轮）**：
+//
+//	★ main.go 链体 8527-8546 → **8912-8931**（整体 **+385**）；
+//	  Recovery :8528 → **:8913**、Auth :8543 → **:8928**、
+//	  SecurityHeaders :8546 → **:8931**；Logging 注释 8530-8537 → **8915-8922**、
+//	  maintain 注释 8487-8492 → **8872-8877**。
+//	★ main_pipeline.go：启动日志 :1156 → **:1286**（+130）；
+//	  D09 合成/写回窗口 779-790 → **825-836**（+46，合成点 :787 → :833）。
+//	★ ⇒ 仅按【实际位置】平移，语义锚、kind 与窗口宽度均不变（未放宽任何判据）。
+//	★ ⇒ ★ 归因实测：`git log --oneline b61983481..HEAD -- cmd/gateway/main.go`
+//	  ⇒ 20 个并行提交（b2c43d044 / 3bd889d52 / f9537b469 / e6e23b76b /
+//	  e1f228010 / 14c7824a7 …）净增 620 行；main_pipeline.go 侧是上游把
+//	  governance_prompt_injection 阶段前移/再前移的两个提交（e0a136cda /
+//	  6761fba1b）⇒ 净增 185 行 ⇒ ★★ 「行号会漂」第二十一次被实测证实。
+//
+//	★★ **第二十一次重钉的【同轮二次平移】**：★ 本次重钉的测量窗口内，
+//	**共享工作树里的并行会话正在改 `cmd/gateway/main.go` 与
+//	`cmd/gateway/main_pipeline.go`（未提交：main.go +14/−8、main_pipeline.go
+//	+23/−7）** ⇒ ★ 行号在**测量之后、复跑之前**又各推了 **+6 / +4**
+//	⇒ ★★ ⇒ 同一轮里连推两次（+385 之后又 +6）⇒ ★★ 这就是「行号会漂是常态」
+//	的**活体**样本 ⇒ ★ 判据纪律不变：**按复跑那一刻的现状钉**，并把
+//	「钉在什么时刻」写清楚。★ 本次最终值（2026-11-18 07:40 工作树快照）：
+//	main.go 链体 8918-8937（Recovery :8919、Auth :8934、SecurityHeaders :8937）、
+//	Logging 注释 8921-8928、maintain 注释 8878-8883；
+//	main_pipeline.go 启动日志 :1290、D09 合成/写回窗口 829-840（合成点 :837）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 8527, to: 8546,
+		file: "cmd/gateway/main.go", from: 8918, to: 8937,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8530, to: 8537,
+		file: "cmd/gateway/main.go", from: 8921, to: 8928,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 8487, to: 8492,
+		file: "cmd/gateway/main.go", from: 8878, to: 8883,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
@@ -286,12 +312,12 @@ var requestSurfaceDocEvidence = []docEvidence{
 		why: "v2 开关的读取（默认关、启动时读一次）",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 1156, to: 1156,
+		file: "cmd/gateway/main_pipeline.go", from: 1290, to: 1290,
 		mustContain: "LLM_GATEWAY_USE_V2_PIPELINE=true", kind: evidenceCode,
 		why: "v2 打开时的那条启动日志",
 	},
 	{
-		file: "cmd/gateway/main_pipeline.go", from: 779, to: 790,
+		file: "cmd/gateway/main_pipeline.go", from: 829, to: 840,
 		mustContain: "v2pipe-", kind: evidenceCode,
 		why: "D09 的 v2 request-id 合成与写回（★ 存在 ⇒ 那条差异不是「没实现」）",
 	},
