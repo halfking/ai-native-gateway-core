@@ -67,16 +67,16 @@ func (w *MemoraV2Writer) WriteSecurityEvent(ctx context.Context, event Event) er
 	}
 
 	tags := []string{
-		"security",
-		"severity:" + string(event.Severity),
-		"action:" + string(event.Action),
-		"source:" + string(event.Source),
+		TagSecurity,
+		TagSeverityPrefix + string(event.Severity),
+		TagActionPrefix + string(event.Action),
+		TagSourcePrefix + string(event.Source),
 	}
 	if event.TenantID != "" {
-		tags = append(tags, "tenant:"+event.TenantID)
+		tags = append(tags, TagTenantPrefix+event.TenantID)
 	}
 	if event.Code != "" {
-		tags = append(tags, "code:"+event.Code)
+		tags = append(tags, TagCodePrefix+event.Code)
 	}
 
 	metadata := map[string]any{
@@ -95,6 +95,12 @@ func (w *MemoraV2Writer) WriteSecurityEvent(ctx context.Context, event Event) er
 	}
 	for key, value := range event.Metadata {
 		metadata["raw_"+key] = value
+	}
+	// 跨实例提示写在**顶层**（不是 raw_* 里）：它是契约的一部分，不是
+	// 某个检测面的原始细节。nil ⇒ 不写这个键（空提示会被读成"只有我见过"）。
+	if fleet := FleetHintMap(event.FleetHint); fleet != nil {
+		metadata["fleet_pattern"] = fleet
+		tags = append(tags, FleetHintTags(event.FleetHint)...)
 	}
 
 	result, err := w.client.Ingest(ctx, SourceSystemGateway, []memv2.IngestItem{{
@@ -197,6 +203,9 @@ func (w *MemoraLegacyWriter) WriteSecurityEvent(ctx context.Context, event Event
 	}
 	for key, value := range event.Metadata {
 		info["meta_"+key] = value
+	}
+	if fleet := FleetHintMap(event.FleetHint); fleet != nil {
+		info["fleet_pattern"] = fleet
 	}
 
 	return w.client.AddMessage(ctx, userID, []memory.Message{{

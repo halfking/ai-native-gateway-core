@@ -574,3 +574,117 @@ func TestMemoraV2WriterWithoutClientFails(t *testing.T) {
 		t.Fatal("a writer without a client must fail, not panic")
 	}
 }
+
+// TestMemoraV2WriterSendsTheFleetHint 钉住"跨实例提示写进 metadata 顶层"。
+//
+// ★ 为什么必须是顶层而不是 raw_* 里：raw_* 是**某个检测面的原始细节**
+// 的命名空间，跨实例提示是契约的一部分。混进去会让消费侧分不清
+// "这是检测面自己说的" 与 "这是共享域汇总的"。
+func TestMemoraV2WriterSendsTheFleetHint(t *testing.T) {
+	var got struct {
+		body map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got.body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"accepted":1,"duplicates":0,"failed":[]}}`))
+	}))
+	defer srv.Close()
+
+	client, err := memv2.New(memv2.Config{
+		BaseURL:   srv.URL,
+		JWTSecret: strings.Repeat("s", 40),
+		TenantID:  "default",
+		ActorID:   "local-ops",
+		ProjectID: "proj-a",
+	})
+	if err != nil {
+		t.Fatalf("memv2.New: %v", err)
+	}
+
+	event := NewEvent(EventTypeAnomalyDetected, SourceAnomaly, Scope{
+		TenantID: "tenant-a",
+	}, "attachment_replay_loop", SeverityHigh, ActionBlocked, "同一附件被重复发送", "k1", time.Now(), nil)
+	event.FleetHint = &FleetHint{
+		Signature:     EventTypeAnomalyDetected + "|attachment_replay_loop",
+		Observations:  7,
+		Instances:     []string{"gw-a", "gw-b"},
+		InstanceCount: 2,
+		FetchedAt:     time.Now().UTC(),
+	}
+
+	if err := NewMemoraV2Writer(client).WriteSecurityEvent(context.Background(), event); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	items, _ := got.body["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %v", got.body["items"])
+	}
+	item, _ := items[0].(map[string]any)
+	metadata, _ := item["metadata"].(map[string]any)
+
+	fleet, ok := metadata["fleet_pattern"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata.fleet_pattern is missing: %v", metadata)
+	}
+	if fleet["signature"] != event.FleetHint.Signature {
+		t.Errorf("fleet_pattern.signature = %v, want %q", fleet["signature"], event.FleetHint.Signature)
+	}
+	if fleet["observations"] != float64(7) {
+		t.Errorf("fleet_pattern.observations = %v, want 7", fleet["observations"])
+	}
+	if fleet["instance_count"] != float64(2) {
+		t.Errorf("fleet_pattern.instance_count = %v, want 2", fleet["instance_count"])
+	}
+	if _, ok := metadata["raw_fleet_pattern"]; ok {
+		t.Error("the fleet hint must not land in the raw_* namespace (that one holds detector details)")
+	}
+
+	tags, _ := item["tags"].([]any)
+	if !strings.Contains(fmt.Sprint(tags), "fleet:known") {
+		t.Errorf("tags = %v, want them to carry fleet:known", tags)
+	}
+}
+
+// TestMemoraV2WriterOmitsTheFleetHintWhenAbsent 钉住"没有提示就不写这个键"。
+//
+// 写一个空的提示会被读成"全网只有我见过" —— 那是错的。
+func TestMemoraV2WriterOmitsTheFleetHintWhenAbsent(t *testing.T) {
+	var got struct {
+		body map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &got.body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"accepted":1,"duplicates":0,"failed":[]}}`))
+	}))
+	defer srv.Close()
+
+	client, err := memv2.New(memv2.Config{
+		BaseURL:   srv.URL,
+		JWTSecret: strings.Repeat("s", 40),
+		TenantID:  "default",
+		ActorID:   "local-ops",
+		ProjectID: "proj-a",
+	})
+	if err != nil {
+		t.Fatalf("memv2.New: %v", err)
+	}
+
+	event := NewEvent(EventTypeAnomalyDetected, SourceAnomaly, Scope{
+		TenantID: "tenant-a",
+	}, "attachment_replay_loop", SeverityHigh, ActionBlocked, "msg", "k1", time.Now(), nil)
+
+	if err := NewMemoraV2Writer(client).WriteSecurityEvent(context.Background(), event); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	items, _ := got.body["items"].([]any)
+	item, _ := items[0].(map[string]any)
+	metadata, _ := item["metadata"].(map[string]any)
+	if _, ok := metadata["fleet_pattern"]; ok {
+		t.Error("metadata.fleet_pattern must be absent when there is no hint")
+	}
+}
