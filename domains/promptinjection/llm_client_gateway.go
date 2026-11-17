@@ -70,6 +70,15 @@ func NewGatewayLLMClient(model, endpoint, apiKey, baseURL string) *GatewayLLMCli
 		baseURL:  baseURL,
 		httpClient: &http.Client{
 			Timeout: defaultAnalyzerTimeout,
+			// ★ 2026-11-17 第57增量：**禁跟随重定向**。
+			//
+			//	validateAnalysisEndpoint 只校验**初始 URL**（禁私网/回环、强制
+			//	https）；默认 http.Client 会把带 Authorization 头的请求跟着
+			//	30x 转到**任意主机**（含私网）⇒ 端点校验被绕过 + API key 泄给
+			//	重定向目标。fail-closed：不跟随，3xx 落到非 2xx 错误分支。
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }

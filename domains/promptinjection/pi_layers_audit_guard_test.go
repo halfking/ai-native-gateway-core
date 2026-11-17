@@ -23,6 +23,8 @@ package promptinjection
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -577,5 +579,36 @@ func TestHeuristicRegexCompiles(t *testing.T) {
 		if _, err := regexp.Compile(p); err != nil {
 			t.Errorf("pattern %q must compile: %v", p, err)
 		}
+	}
+}
+
+// ★ 第57增量回归：分析端点**禁跟随重定向**。
+//
+//	validateAnalysisEndpoint 只校验初始 URL（禁私网/回环、强制 https）；
+//	默认 http.Client 会把带 Authorization 的请求跟着 30x 转到任意主机
+//	（含私网）⇒ 端点校验被绕过 + API key 泄给重定向目标。
+//	钉：302 必须报错，且**目标处理器从未被命中**。
+func TestGatewayLLMClient_RefusesRedirects(t *testing.T) {
+	targetHit := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/leak", http.StatusFound)
+	})
+	mux.HandleFunc("/leak", func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewGatewayLLMClient("test-model", "/start", "secret-key", srv.URL)
+	_, _, err := client.Analyze(context.Background(), "prompt")
+
+	if err == nil {
+		t.Fatal("a 302 from the analysis endpoint must be an error, not a follow")
+	}
+	if targetHit {
+		t.Fatal("redirect target was reached — CheckRedirect must block the follow (key leak path)")
 	}
 }

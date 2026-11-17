@@ -643,6 +643,14 @@ func (ec *ErrorCollector) ClaimPendingErrors(ctx context.Context, limit int) ([]
 //	processing ⇒ 既不在 pending 队列里（不会被再处理），也不在 analyzed/failed
 //	（统计视图里是「处理中」僵尸）⇒ **错误被永久吞掉**。
 //	⇒ 每次领取前先回收超时的 processing 行。
+//
+// ★ 2026-11-17 第57增量：**已耗尽重试的孤儿行 → 终态 failed**。
+//
+//	原谓词 `retry_count < max_retries` 把「耗尽重试的 processing 行」整类
+//	跳过 ⇒ 它们永远停在 processing（IncrementRetry 的终态分支只会在
+//	**分析器活着走到那一行**时执行；孤儿行恰恰是没走到的）。
+//	⇒ 补第二条 UPDATE：耗尽的孤儿行直接 failed + completed_at，
+//	统计面不再有永久「处理中」僵尸。
 func (ec *ErrorCollector) ReclaimStaleClaims(ctx context.Context, staleAfter time.Duration) (int64, error) {
 	if staleAfter <= 0 {
 		return 0, nil
@@ -664,7 +672,24 @@ func (ec *ErrorCollector) ReclaimStaleClaims(ctx context.Context, staleAfter tim
 		return 0, fmt.Errorf("failed to reclaim stale claims: %w", err)
 	}
 	n, _ := res.RowsAffected()
-	return n, nil
+
+	// ★ 第57增量：耗尽重试的孤儿行 → 终态 failed（带 completed_at）。
+	exhaustedQuery := `
+		UPDATE error_analysis_queue
+		SET status = 'failed',
+		    completed_at = NOW()
+		WHERE status = 'processing'
+		  AND started_at IS NOT NULL
+		  AND started_at < NOW() - $1::interval
+		  AND retry_count >= max_retries
+	`
+	resExhausted, err := ec.db.ExecContext(ctx, exhaustedQuery, fmt.Sprintf("%d seconds", int(staleAfter.Seconds())))
+	if err != nil {
+		// 第一条已成功；第二条失败不回滚整体（非事务），但必须让调用方看见。
+		return n, fmt.Errorf("failed to fail exhausted stale claims: %w", err)
+	}
+	nExhausted, _ := resExhausted.RowsAffected()
+	return n + nExhausted, nil
 }
 
 // UpdateStatus 更新错误状态

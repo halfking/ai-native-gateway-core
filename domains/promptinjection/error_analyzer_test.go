@@ -69,7 +69,11 @@ func TestErrorAnalyzer_ProcessBatch_NoPendingErrors(t *testing.T) {
 
 	// ★ 2026-11-17 审计轮：ProcessBatch 现在先回收孤儿 processing 行，
 	//   再用**原子占位**（UPDATE ... FOR UPDATE SKIP LOCKED）领取。
-	mock.ExpectExec(`UPDATE error_analysis_queue`).
+	// ★ 第57增量：回收分两条 UPDATE（未耗尽→pending；已耗尽→failed+completed_at）。
+	mock.ExpectExec(`SET status = 'pending'`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET status = 'failed'`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -533,4 +537,47 @@ func TestErrorAnalyzer_SetBatchSize_ChangesClaimSize(t *testing.T) {
 	if ea.batchSize != 37 {
 		t.Fatalf("SetBatchSize(-5) must be ignored, got %d", ea.batchSize)
 	}
+}
+
+// ★ 第57增量回归：请求级批量走 ProcessBatchN（局部 limit），
+//
+//	不得触碰共享 batchSize——原实现（handler 调 SetBatchSize）与后台
+//	worker 的读并发（data race）且永久改后台配置。
+//	钉两件事：① 领取 LIMIT 用的是**请求值**（3）；② 共享 batchSize 仍是 10。
+func TestErrorAnalyzer_ProcessBatchN_UsesLocalLimitNotSharedState(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	collector := NewErrorCollector(db, true)
+	analyzer := NewErrorAnalyzer(db, collector, &MockLLMClient{}, "test-model", true)
+	require.Equal(t, 10, analyzer.batchSize, "default batch size must stay 10")
+
+	// 回收两腿（未耗尽→pending；耗尽→failed）。
+	mock.ExpectExec(`SET status = 'pending'`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET status = 'failed'`).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	// 领取：LIMIT 绑定值必须是**请求的 3**，而不是共享的 10。
+	mock.ExpectQuery(`UPDATE error_analysis_queue`).
+		WithArgs(3).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "error_type", "error_hash", "priority",
+			"tenant_id", "session_id", "request_id",
+			"input_text", "input_hash", "error_message",
+			"error_details", "detection_layers", "matched_rules", "policy_config",
+			"status", "retry_count", "max_retries",
+			"created_at", "started_at", "completed_at", "metadata",
+		}))
+
+	processed, err := analyzer.ProcessBatchN(context.Background(), 3)
+	require.NoError(t, err)
+	assert.Equal(t, 0, processed)
+	assert.NoError(t, mock.ExpectationsWereMet())
+
+	// ② 共享 batchSize 未被请求值污染。
+	assert.Equal(t, 10, analyzer.batchSize,
+		"ProcessBatchN must NOT mutate the shared batch size")
 }
