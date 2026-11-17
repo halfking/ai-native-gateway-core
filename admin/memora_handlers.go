@@ -85,6 +85,39 @@ func (h *Handler) handleMemoraStatus(w http.ResponseWriter, r *http.Request) {
 			"rejected":  st.Rejected,
 		}
 	}
+	// 跨实例威胁模式的读面（M2-3）的计数。
+	//
+	// ★ 单列一块：这是**读面**（会话记忆/安全事件的写面都不属于它）。
+	//
+	// ★ errors 与 stale 必须露出来：共享域读不到时快照会停在上一份，
+	//   一个看不见的失败会被读成"别的实例没有新模式"——而这两种情况的
+	//   运维动作完全不同（前者查网络与凭据，后者什么都不用做）。
+	if h.securityPatternSync != nil {
+		st := h.securityPatternSync.Stats()
+		block := map[string]any{
+			"pulls":          st.Pulls,
+			"observations":   st.Observations,
+			"patterns":       st.Patterns,
+			"errors":         st.Errors,
+			"last_success_at": st.LastSuccessAt,
+		}
+		if st.LastError != "" {
+			block["last_error"] = st.LastError
+			block["last_error_at"] = st.LastErrorAt
+		}
+		if h.securityPatternCache != nil {
+			cache := h.securityPatternCache.Stats()
+			block["cache"] = map[string]any{
+				"patterns":      cache.Patterns,
+				"fetched_at":    cache.FetchedAt,
+				"stale":         cache.Stale,
+				"annotated":     cache.Annotated,
+				"stale_skipped": cache.StaleSkipped,
+				"lookups":       cache.Lookups,
+			}
+		}
+		resp["security_pattern_sync"] = block
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

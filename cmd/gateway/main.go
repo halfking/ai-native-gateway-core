@@ -137,6 +137,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sanitizejudge" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/internal/securityevent"
+	"github.com/kaixuan/llm-gateway-go/internal/securitypattern"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -752,6 +753,13 @@ func main() {
 	// memora。默认关（LLM_GATEWAY_SECURITY_EVENT_SINK=1 才装）。
 	var securityEventSink *securityevent.Sink
 	var securityEventSinkStop context.CancelFunc
+
+	// 跨实例威胁模式（M2-3）：把共享域里别的实例写的安全事件读回来，
+	// 聚成本地模式快照，供请求路径给事件挂"全网视角"。
+	// 默认关（LLM_GATEWAY_SECURITY_PATTERN_SYNC=1 才装）。
+	var securityPatternCache *securitypattern.Cache
+	var securityPatternSyncer *securitypattern.Syncer
+	var securityPatternStop context.CancelFunc
 
 	// ── Gateway → ASM outbox dispatcher (Phase 3, 2026-08-11) ───────
 	// Opt-in: only starts when both ASM_INTERNAL_ENDPOINT and
@@ -2446,6 +2454,16 @@ func main() {
 		// 「配了 memora 但没开安全事件出网」与「完全没配 memora」两种情形
 		// 都得到明确的禁用态（而不是漏装）。
 		securityEventSink, securityEventSinkStop = installSecurityEventSink(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
+
+		// M2-3：跨实例威胁模式的读面。装在 if/else **之外** —— 这样
+		// 「配了 memora 但没开模式同步」与「完全没配 memora」两种情形
+		// 都得到明确的禁用态（而不是漏装）。
+		//
+		// ★ 读面必须与写面同一身份通道（v2 service JWT）：memora 的
+		//   memory 读端点硬过滤 user_id = actor，而 legacy 通道写的事件
+		//   落在 user_id = 租户的命名空间里 ⇒ 读不到。前提不满足时
+		//   installSecurityPatternSync 明确不装并说明原因。
+		securityPatternCache, securityPatternSyncer, securityPatternStop = installSecurityPatternSync(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
 		if dbConn != nil && dbConn.Enabled() {
 			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
@@ -6769,6 +6787,12 @@ func main() {
 		if securityEventSink != nil {
 			adminHandler.SetSecurityEventSink(securityEventSink)
 		}
+		// M2-3：跨实例模式读面的计数同样挂到 memora 状态端点。失败数与
+		// 快照新鲜度必须可见 —— 共享域读不到时快照会停在上一份，看不见的
+		// 失败会被读成"别的实例没有新模式"。
+		if securityPatternSyncer != nil {
+			adminHandler.SetSecurityPatternSync(securityPatternSyncer, securityPatternCache)
+		}
 
 		slog.Info("CHECKPOINT: before autoIndexRefresher check")
 
@@ -7495,9 +7519,9 @@ func main() {
 	// 在 stream retry 之后、memora 预热之前包装异常检测器
 	// 检测附件重发循环、请求频率异常、媒体/文本失衡
 	if anomalyManager != nil {
-		chatRouteHandler = wrapAnomalyDetector(chatRouteHandler, anomalyManager, securityEventSink)
-		messagesRouteHandler = wrapAnomalyDetector(messagesRouteHandler, anomalyManager, securityEventSink)
-		responsesRouteHandler = wrapAnomalyDetector(responsesRouteHandler, anomalyManager, securityEventSink)
+		chatRouteHandler = wrapAnomalyDetector(chatRouteHandler, anomalyManager, securityEventSink, securityPatternCache)
+		messagesRouteHandler = wrapAnomalyDetector(messagesRouteHandler, anomalyManager, securityEventSink, securityPatternCache)
+		responsesRouteHandler = wrapAnomalyDetector(responsesRouteHandler, anomalyManager, securityEventSink, securityPatternCache)
 		slog.Info("anomaly_detector: handlers wrapped",
 			"endpoints", []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"})
 	}
@@ -9246,6 +9270,12 @@ func main() {
 			securityEventSinkStop()
 		}
 
+		// Stop the cross-instance pattern sync (M2-3): the sync loop only
+		// reads from the shared domain; cancelling it is enough.
+		if securityPatternStop != nil {
+			securityPatternStop()
+		}
+
 		// Stop accepting quota tasks and drain the bounded OmniFree worker queue
 		// before the shared database pool is closed.
 		chatHandler.ShutdownOmniFree()
@@ -9637,7 +9667,7 @@ func gatewayEarlyLogLevel() slog.Level {
 //	③ 频率检测降级为观察模式（ObserveOnly）：只 slog+指标，零客户端可见
 //	   拦截/改写；客户端限流统一由按 key RPM 链（checkGatewayRateLimit）
 //	   执法——「各处不同标准的限流」收敛为一个标准。
-func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySink *securityevent.Sink) http.Handler {
+func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySink *securityevent.Sink, patternCache *securitypattern.Cache) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 快速路径：非聊天端点直接放行
 		path := r.URL.Path
@@ -9701,7 +9731,7 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySi
 						"api_key_id", keyInfo.ID,
 						"tenant_id", keyInfo.TenantID,
 						"path", path)
-					publishSecurityEvent(securitySink, a, securityScope, securityevent.ActionObserved, detectedAt)
+					publishSecurityEvent(securitySink, patternCache, a, securityScope, securityevent.ActionObserved, detectedAt)
 					continue
 				}
 				enforce = append(enforce, a)
@@ -9736,10 +9766,10 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySi
 					"path", path)
 
 				// 处置动作如实上报：被拦的那条是 blocked，其余是 flagged。
-				publishSecurityEvent(securitySink, worst, securityScope, securityevent.ActionBlocked, detectedAt)
+				publishSecurityEvent(securitySink, patternCache, worst, securityScope, securityevent.ActionBlocked, detectedAt)
 				for _, a := range enforce {
 					if a != worst {
-						publishSecurityEvent(securitySink, a, securityScope, securityevent.ActionFlagged, detectedAt)
+						publishSecurityEvent(securitySink, patternCache, a, securityScope, securityevent.ActionFlagged, detectedAt)
 					}
 				}
 
@@ -9761,7 +9791,7 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySi
 			r = r.WithContext(ctx)
 
 			for _, a := range enforce {
-				publishSecurityEvent(securitySink, a, securityScope, securityevent.ActionFlagged, detectedAt)
+				publishSecurityEvent(securitySink, patternCache, a, securityScope, securityevent.ActionFlagged, detectedAt)
 			}
 
 			slog.Info("anomaly_warning",
@@ -9780,9 +9810,19 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySi
 //
 // 非阻塞：sink 队列满时会丢事件并计数，**绝不阻塞请求**。写不进去也不影响
 // 请求结果 —— 检测结论已经生效，事件只是它的投影。
-func publishSecurityEvent(sink *securityevent.Sink, result *anomaly.AnomalyResult, scope securityevent.Scope, action securityevent.Action, detectedAt time.Time) {
+//
+// patternCache 是跨实例模式快照（M2-3）：命中时给事件挂上"全网视角"
+// （这个模式别的实例也见过多少次）。它**不改变**事件的严重度、动作或任何
+// 处置结论 —— 共享域的内容可能被污染，让它影响拦截等于把外部系统的
+// 可信度接到请求路径上。
+func publishSecurityEvent(sink *securityevent.Sink, patternCache *securitypattern.Cache, result *anomaly.AnomalyResult, scope securityevent.Scope, action securityevent.Action, detectedAt time.Time) {
 	if sink == nil || result == nil {
 		return
 	}
-	sink.Publish(securityevent.FromAnomaly(*result, scope, action, detectedAt))
+	event := securityevent.FromAnomaly(*result, scope, action, detectedAt)
+	if patternCache != nil {
+		// 命中与否都不影响本函数的返回值与后续动作。
+		patternCache.Annotate(&event)
+	}
+	sink.Publish(event)
 }
