@@ -30,7 +30,8 @@ SEQ="scripts/apply-db-revision-sequence.sh"
 TSV="sql/schema/installed_startup_migrations.tsv"
 SNAP="sql/objects/functions/model_offers_update_trigger.sql"
 
-FILES=("$UP" "$EMB" "$EMBD" "$RUNNER" "$SEQ" "$TSV" "$SNAP")
+FILES=("$UP" "$EMB" "$EMBD" "$RUNNER" "$SEQ" "$TSV" "$SNAP" \
+  "bg/model_probe.go" "modelcatalog/upsert.go" "admin/credential_monitor.go")
 BAK="$(mktemp -d)/mv972"
 for f in "${FILES[@]}"; do
   mkdir -p "$BAK/$(dirname "$f")"
@@ -40,7 +41,11 @@ restore() { for f in "${FILES[@]}"; do cp "$BAK/$f" "$f"; done; }
 trap restore EXIT
 
 GATE_PKG="./internal/sqlguard/"
-GATE_RE="TestM972"
+# ★ 必须同时跑两道门：
+#   ① TestM972…（投递六点位 + 触发器分支顺序）
+#   ② TestCredentialBindingHealthTuple…（全仓写入侧四元组不变式）
+#   ⇒ 少跑一道 ⇒ 该道的变异会「假绿」（实测：M10~M12 因过滤器漏跑而全绿）。
+GATE_RE="TestM972|TestCredentialBindingHealthTupleWritersAreConsistent"
 
 fail=0
 mutated=0
@@ -125,6 +130,27 @@ src = src.replace('''unavailable_recover_at = CASE
 # M8 触发器体里误删 priority 列（静默丢列）
 mutate "M8 触发器体误删 priority 列" "$UP" "
 src = src.replace('        priority = COALESCE(NEW.priority, credential_model_bindings.priority),\n', '')
+"
+
+# M10 直写 cmb 的恢复路径退回「不清 recover_at」（= 视图路径之外的漏网路径）
+mutate "M10 bg/model_probe.go 退回不清 recover_at" "bg/model_probe.go" "
+src = src.replace('''			    unavailable_at     = NULL,
+			    -- ★ 972''', '''			    unavailable_at     = NULL,
+			    -- ★ 972''')
+src = src.replace('''			    unavailable_recover_at = NULL
+			FROM provider_models pm''', '''			FROM provider_models pm''')
+"
+
+# M11 目录批量刷新退回「不清 recover_at」（实测的主要产生源）
+mutate "M11 modelcatalog/upsert.go 退回不清 recover_at" "modelcatalog/upsert.go" "
+import re
+src = re.sub(r'    unavailable_recover_at = CASE\n(?:.*\n)*?    END\n', '', src, count=1)
+"
+
+# M12 手动上线退回「不清 recover_at」
+mutate "M12 admin/credential_monitor.go 退回不清 recover_at" "admin/credential_monitor.go" "
+src = src.replace('''			    unavailable_recover_at = NULL
+			FROM provider_models pm''', '''			FROM provider_models pm''')
 "
 
 restore

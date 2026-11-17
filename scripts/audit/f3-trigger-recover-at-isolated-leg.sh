@@ -213,6 +213,41 @@ assert_eq "cleared" "$(q "SELECT CASE WHEN unavailable_recover_at IS NULL THEN '
   "★ 修复生效：显式 NULL 被送达（mnfCoolingRecoveryMirrorSQL 同型）"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 4b. 直写 cmb 的恢复路径（不经视图 ⇒ 触发器管不到 ⇒ 靠各写入方自己写第四列）
+# ─────────────────────────────────────────────────────────────────────────────
+step "直写 cmb 的恢复路径：四元组齐备 ⇒ 标记被清（对照：旧的三列写法会留残留）"
+# 旧写法（只写三列）⇒ 残留
+q "
+UPDATE credential_model_bindings
+SET available = FALSE, unavailable_reason = 'probe_timeout', unavailable_at = NOW(),
+    unavailable_recover_at = NOW() + INTERVAL '15 minutes'
+WHERE id = 9001;
+" >/dev/null
+q "
+UPDATE credential_model_bindings
+SET available = TRUE, unavailable_reason = NULL, unavailable_at = NULL
+WHERE id = 9001;
+" >/dev/null
+assert_eq "RESIDUE" "$(q "SELECT CASE WHEN unavailable_recover_at IS NULL THEN 'cleared' ELSE 'RESIDUE' END FROM credential_model_bindings WHERE id = 9001;")" \
+  "对照：旧的三列直写写法确实会留下残留（这正是三条直写路径的病根）"
+
+# 新写法（四元组齐备）⇒ 标记被清
+q "
+UPDATE credential_model_bindings
+SET available = FALSE, unavailable_reason = 'probe_timeout', unavailable_at = NOW(),
+    unavailable_recover_at = NOW() + INTERVAL '15 minutes'
+WHERE id = 9001;
+" >/dev/null
+q "
+UPDATE credential_model_bindings
+SET available = TRUE, unavailable_reason = NULL, unavailable_at = NULL,
+    unavailable_recover_at = NULL
+WHERE id = 9001;
+" >/dev/null
+assert_eq "cleared" "$(q "SELECT CASE WHEN unavailable_recover_at IS NULL THEN 'cleared' ELSE 'RESIDUE' END FROM credential_model_bindings WHERE id = 9001;")" \
+  "★ 四元组齐备的直写写法：标记被正确清空"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5. 「置不可用」方向不得回归
 # ─────────────────────────────────────────────────────────────────────────────
 step "回归：「置不可用」方向照旧，且显式重试时刻被尊重"

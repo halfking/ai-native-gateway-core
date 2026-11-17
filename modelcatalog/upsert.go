@@ -144,6 +144,20 @@ ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
              )
         THEN credential_model_bindings.unavailable_at
         ELSE NULL
+    END,
+    -- ★ 972（2026-11-17 F3 残留地平线根修轮）：四元组的第四列必须与上面两列
+    --   **同款同守卫**。目录批量刷新会把不可用的绑定重新置为可用（ELSE TRUE）
+    --   ⇒ 若不同时清掉恢复标记，该行落进矛盾态 available=TRUE ∧ recover_at≠NULL
+    --   ⇒ F3 残留地平线重新开始反弹（实测 37~231 行锯齿，19 轮从未归零）。
+    --   ★ 本条是实测的**主要产生源**（每轮目录刷新都会踩一遍）。
+    unavailable_recover_at = CASE
+        WHEN credential_model_bindings.available = FALSE
+             AND (
+                 credential_model_bindings.unavailable_reason LIKE 'manual%'
+                 OR COALESCE(credential_model_bindings.admin_protected, FALSE) = TRUE
+             )
+        THEN credential_model_bindings.unavailable_recover_at
+        ELSE NULL
     END
     -- Batch/auto refresh must not update admin-protected (manually-added)
     -- bindings at all: skip them entirely so even updated_at is untouched.
@@ -253,6 +267,12 @@ SELECT
 FROM upsert_pm, cred
 ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
     available = EXCLUDED.available,
+    -- ★ 972（2026-11-17 F3 残留地平线根修轮）：四元组的第四列
+    --   （手工加入时若把绑定置为可用 ⇒ 必须清掉待恢复的重试时刻）
+    unavailable_recover_at = CASE
+        WHEN EXCLUDED.available THEN NULL
+        ELSE credential_model_bindings.unavailable_recover_at
+    END,
     admin_protected = TRUE,
     context_window_override = COALESCE(EXCLUDED.context_window_override, credential_model_bindings.context_window_override),
     context_window_source = CASE
