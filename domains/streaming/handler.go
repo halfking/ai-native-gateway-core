@@ -1081,6 +1081,22 @@ func isRetriableError(err error) bool {
 			return true
 		}
 
+		// ★ 2026-11-18 W1-A：熔断把候选打空 ⇒ 仍属可重试。
+		//
+		// ★ 为什么必须显式列出来：修前执行器把熔断耗尽塌成 KindTransient
+		// （见 executors/executor_circuit_open.go 的缺口说明），本函数因而
+		// 对它返回 true。W1-A 把真实 kind 还原成 circuit_open 后，若不同步
+		// 补这一条，goal 重试会**静默失效** ⇒ 临时熔断不再自动恢复。
+		//
+		// 语义依据：熔断是临时状态，冷却结束即恢复；本循环带指数退避
+		// （calculateRetryDelay），重试有意义。与 errorsx 里
+		// EffectiveRetryable(circuit_open)=false 不矛盾 —— 那个口径说的是
+		// 「网关内部不要再重试这个节点」，与「这一轮 goal 还值不值得再试」
+		// 是两件事。
+		if kind == errorsx.KindCircuitOpen {
+			return true
+		}
+
 		// No available model (may recover on retry with different routing)
 		if kind == errorsx.KindModelNotFound {
 			return true
@@ -6167,6 +6183,41 @@ goalRetryLoopDone:
 				}
 				writeErrorJSONWithKindProto(proto, w, http.StatusTooManyRequests, requestID,
 					msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
+			// ★ 2026-11-18 W1-A：熔断把候选打空 ⇒ 给客户端一个**专属**错误码。
+			// 修前本分支没有 KindCircuitOpen 的出口 ⇒ 熔断耗尽与「真无 provider」
+			// 一起落到下面的通用兜底 errCode="model_not_found"（503）⇒ 客户端
+			// 分不清「退避后重试」与「这个模型没节点」，而这两者的处置是相反的。
+			//
+			// ★ 放在通用兜底**之前**：兜底会把 code 改写成 model_not_found。
+			// 放它之后 ⇒ 客户端永远拿不到专属码。
+			if surf, circuitOpen := providerCircuitOpenRejection(execErrTyped, clientModel); circuitOpen {
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark(ProviderCircuitOpenCode, surf.Message, providerID, credentialID,
+					clientStatusForPrewarmed(preStreamPrepared, surf.Status))
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, ProviderCircuitOpenCode, failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				setCircuitOpenHeaders(w, surf.RetryAfter)
+				// ★ retryable 显式为 true：EffectiveRetryable(circuit_open)=false
+				// 的口径是「网关内部不要再重试这个节点」（会撞同一个开路熔断），
+				// 而这里是**客户端**该退避后重试 ⇒ 两者是不同受众，不能混用。
+				if preStreamPrepared {
+					writePrewarmedStreamErrorFull(w, surf.Message, "server_error", surf.Code, string(errorsx.KindCircuitOpen),
+						map[string]any{"retryable": true, "retry_after": surf.RetryAfter})
+					return
+				}
+				writeErrorJSONWithKindProto(proto, w, surf.Status, requestID, surf.Message,
+					"server_error", surf.Code, string(errorsx.KindCircuitOpen),
+					map[string]any{
+						"stage":       "execution",
+						"kind":        string(errorsx.KindCircuitOpen),
+						"tried":       execErrTyped.Tried,
+						"attempts":    execErrTyped.Attempts,
+						"retryable":   true,
+						"retry_after": surf.RetryAfter,
+					})
 				return
 			}
 

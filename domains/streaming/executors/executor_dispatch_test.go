@@ -39,7 +39,12 @@ func TestDispatchErrMapping(t *testing.T) {
 		{"no-route", dispatch.ErrNoRoute, true, errorsx.KindConcurrent},
 		{"overflow", dispatch.ErrOverflow, true, errorsx.KindConcurrent},
 		{"deadline", context.DeadlineExceeded, true, errorsx.KindTimeout},
-		{"forward-sentinel", errDispatchCircuitOpen, true, errorsx.KindTransient},
+		// ★ 2026-11-18 W1-A：熔断哨兵的期望 kind 从 transient 改为
+		// circuit_open。修前 forward 路径的哨兵一律塌成 KindTransient ⇒
+		// 「我们主动熔断」与「上游挂了」在客户端与运维侧都分不开，而两者
+		// 的处置是相反的（退避重试 vs 换节点/上报）。
+		// 详见 executor_circuit_open.go。
+		{"forward-sentinel", errDispatchCircuitOpen, true, errorsx.KindCircuitOpen},
 		{"generic", errors.New("boom"), true, errorsx.KindTransient},
 	}
 	for _, c := range cases {

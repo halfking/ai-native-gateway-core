@@ -1076,6 +1076,13 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 				if reason := extractUpstreamReason(execErr); reason != "" {
 					errMsg = errMsg + " Reason: " + reason
 				}
+			} else if surf, circuitOpen := providerCircuitOpenRejection(ee, clientModel); circuitOpen {
+				// ★ 2026-11-18 W1-A：熔断把候选打空 ⇒ 落库分类与客户端错误码
+				// 都必须是 provider_circuit_open，不能落成误导性的
+				// model_not_found / "all providers unavailable" —— 那是「这个
+				// 模型真没节点」的意思，处置方向正好相反。
+				errCode = surf.Code
+				errMsg = surf.Message
 			} else {
 				errCode = "model_not_found"
 				errMsg = "all providers unavailable"
@@ -1130,6 +1137,23 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 					writeAnthropicStreamError(w, "invalid_request_error", errMsg)
 				} else {
 					writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", errMsg)
+				}
+				return
+			}
+			// ★ 2026-11-18 W1-A：熔断打空 ⇒ 503 + 专属码 provider_circuit_open。
+			// ★ 为什么必须在本面单独接线：修前只有 chat 面有专属出口，本面与
+			// /v1/responses 都落通用兜底 503 "All providers unavailable" ——
+			// 与 2026-11-11「请求形态拒绝」那一轮**完全同型**的漏接。
+			if surf, circuitOpen := providerCircuitOpenRejection(execErr, clientModel); circuitOpen {
+				setCircuitOpenHeaders(w, surf.RetryAfter)
+				if preStreamPrepared {
+					writeAnthropicStreamError(w, "overloaded_error", surf.Message)
+				} else {
+					// Anthropic 信封没有顶层 code 字段（writeAnthropicError 只
+					// 写 type/message）⇒ code 走 extras 注入，保证客户端在
+					// 两种协议下拿到的是同一个判别依据。
+					writeAnthropicError(w, surf.Status, "overloaded_error", surf.Message,
+						map[string]any{"code": surf.Code, "retry_after": surf.RetryAfter})
 				}
 				return
 			}
