@@ -47,7 +47,7 @@ function onSizeChange(e: Event) {
     <div class="pagination-info">
       <span>{{ t('common.pagination.total', { n: total.toLocaleString() }) }}</span>
       <span>{{ t('common.pagination.pageOf', { page, pages }) }}</span>
-      <span class="pagination-divider">·</span>
+      <span class="pagination-divider" v-if="pageSizes.length">·</span>
       <label v-if="pageSizes.length" class="page-size-label" :for="sizeSelectId">
         {{ t('common.pagination.perPage') }}
       </label>

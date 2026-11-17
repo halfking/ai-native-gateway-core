@@ -20,6 +20,9 @@
 //   6. 状态条 data-tone 必须是 ok / warn / blocked 之一
 //   7. 三步接入：不存在，或恰好三步
 //   8. 上游健康分级：各档计数，且「未探活」必须单列一档
+//   9. 接入清单的两个分页列表：都在、行数 ≤ 每页条数、分页栏到位、
+//      「用得最多」的累计请求数单调不增
+//  10. 翻页行为：真的点一次「下一页」⇒ 首行与页码都必须变
 //
 // 用法：
 //   node maestro/tools/assert-overview.mjs \
@@ -233,6 +236,38 @@ const PAGE_PROBE = `(() => {
     '隐藏=' + phHidden + ' 披露元素=' + !!truncEl,
   )
 
+  // ── 11. 接入清单的两个分页列表 ──────────────────────────────────────────
+  // ★ 2026-11-17：接入清单从「整表铺开 118 行」改成「最近在用」+「用得最多」
+  //   两个分页列表（每页 10 条）。这里验三件事：两个列表都在、行数受页长约束、
+  //   「用得最多」的请求数**单调不增**（排序没被页面上别的逻辑打乱）。
+  const recentRows = qa('[data-testid="overview-client-recent"] tbody tr')
+  const busiestRows = qa('[data-testid="overview-client-busiest"] tbody tr')
+  out.facts.recentRows = recentRows.length
+  out.facts.busiestRows = busiestRows.length
+  check(
+    '最近在用列表存在且不超过每页条数',
+    recentRows.length > 0 && recentRows.length <= 10,
+    '行数=' + recentRows.length,
+  )
+  check(
+    '用得最多列表存在且不超过每页条数',
+    busiestRows.length > 0 && busiestRows.length <= 10,
+    '行数=' + busiestRows.length,
+  )
+  const bars = qa('[data-testid="overview-access-list"] .pagination-bar')
+  out.facts.paginationBars = bars.length
+  check('两个列表都带分页栏', bars.length >= 2, '分页栏数=' + bars.length)
+
+  // 「用得最多」：第 2 列是累计请求数（en-US 千分位）⇒ 单调不增
+  const reqs = busiestRows
+    .map((r) => Number(String((r.querySelectorAll('td')[1] || {}).textContent || '').replace(/,/g, '').trim()))
+    .filter((n) => Number.isFinite(n))
+  check(
+    '用得最多按累计请求数单调不增',
+    reqs.length > 0 && reqs.every((v, i) => i === 0 || reqs[i - 1] >= v),
+    JSON.stringify(reqs.slice(0, 10)),
+  )
+
   return out
 })()`
 
@@ -301,6 +336,44 @@ async function main() {
   )
 
   const report = await evaluate(cdp, sessionId, PAGE_PROBE)
+
+  // ── 翻页行为（要真的点一下，不能只断言「分页栏在」）──────────────────────
+  // ★ 用「第 2 个按钮」定位「下一页」：分页栏的按钮顺序恒为 [上一页, 下一页]，
+  //   按中文文案定位会把断言绑死在 zh-CN 语言上（页面语言随会话变）。
+  const before = await evaluate(cdp, sessionId, `(() => {
+    const rows = document.querySelectorAll('[data-testid="overview-client-recent"] tbody tr');
+    const info = document.querySelector('[data-testid="overview-client-recent"] .pagination-info');
+    return {
+      first: rows.length ? rows[0].textContent.trim() : '',
+      count: rows.length,
+      info: info ? info.textContent.replace(/\\s+/g, ' ').trim() : '',
+    };
+  })()`)
+  const clicked = await evaluate(cdp, sessionId, `(() => {
+    const btns = document.querySelectorAll('[data-testid="overview-client-recent"] .pagination-controls button');
+    if (btns.length < 2) return false;
+    btns[1].click();
+    return true;
+  })()`)
+  await new Promise((r) => setTimeout(r, 600))
+  const after = await evaluate(cdp, sessionId, `(() => {
+    const rows = document.querySelectorAll('[data-testid="overview-client-recent"] tbody tr');
+    const info = document.querySelector('[data-testid="overview-client-recent"] .pagination-info');
+    return {
+      first: rows.length ? rows[0].textContent.trim() : '',
+      count: rows.length,
+      info: info ? info.textContent.replace(/\\s+/g, ' ').trim() : '',
+    };
+  })()`)
+  report.facts.pageBefore = before
+  report.facts.pageAfter = after
+  const paged = clicked && after.first !== before.first && after.info !== before.info
+  report.checks.push({
+    name: '分页真的能翻（点「下一页」后首行与页码都变）',
+    pass: paged,
+    detail: `before.first=${before.first.slice(0, 24)} after.first=${after.first.slice(0, 24)} before.info=${before.info} after.info=${after.info}`,
+  })
+  if (!paged) report.ok = false
 
   await cdp.send('Target.closeTarget', { targetId })
 

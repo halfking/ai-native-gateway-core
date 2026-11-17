@@ -129,6 +129,26 @@ describe('simple mode overview view contract', () => {
     ).toEqual([])
   })
 
+  // ── 2026-11-17：抓「接入清单太长」的那条 ──────────────────────────────────
+  //
+  // ★ 事故：接入清单把**在用密钥整表铺开**（线上 118 行在用 + 91 行折叠）⇒
+  //   表格比页面还长，「初级用户一眼看明白」在这一块直接失败。
+  // ⇒ 改成「最近在用」+「用得最多」两个**分页**列表，每页 10 条。
+  it('★ 接入清单必须是两个分页列表（整表铺开 = 一眼看不明白）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    expect(src).toContain('data-testid="overview-client-recent"')
+    expect(src).toContain('data-testid="overview-client-busiest"')
+    expect(src).toContain('CLIENT_PAGE_SIZE = 10')
+    // 分页栏走仓库既有资产，不自己造轮子
+    expect(src).toContain('PaginationBar')
+    // ★ 整表铺开不许回来（这两个 v-for 就是原来那两处）
+    expect(src).not.toContain('v-for="r in activeRows"')
+    expect(src).not.toContain('v-for="r in inactiveRows"')
+    // 排序与分页都在纯函数里（可单测），视图只画表
+    expect(src).toContain('sortClientRows')
+    expect(src).toContain('paginateClientRows')
+  })
+
   // ── 2026-11-17：抓「上游健康明细被静默截断」的那条 ──────────────────────
   //
   // ★ 事故：上游健康明细按严重度排序、只留前 12 行 ⇒ 被切掉的几乎全是「可用」的

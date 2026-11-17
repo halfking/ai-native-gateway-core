@@ -33,13 +33,14 @@
 //   · 上游健康读不到（无权限 / 接口失败）⇒ 面板写「读不到」，
 //     状态条也**不宣称健康**（magpie 的绿点语义：不知道 ≠ 正常）
 //   · 三个数据源互相独立降级 ⇒ 一个失败不拖垮整页
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { getKeys, getProviders, type ApiKey, type Provider } from '../api'
 import { ApiError } from '../api/_core'
 import { fetchDashboardBoard, type BoardPayload } from '../api/board'
 import PageHeader from '../components/ui/PageHeader.vue'
+import PaginationBar from '../components/ui/PaginationBar.vue'
 import StatCard from '../components/ui/StatCard.vue'
 import StatsRow from '../components/ui/StatsRow.vue'
 import { useWorkMode } from '../composables/useWorkMode'
@@ -51,6 +52,10 @@ import {
   deriveOverviewStatus,
   deriveProviderHealth,
   onboardingComplete,
+  paginateClientRows,
+  sortClientRows,
+  type ClientPage,
+  type ClientRow,
   type OverviewIssue,
   type OverviewStat,
   type ProviderHealthRow,
@@ -213,17 +218,23 @@ const statusIssues = computed<OverviewIssue[]>(() => status.value.issues)
 
 // ─── 接入清单 ────────────────────────────────────────────────────────────────
 
-interface AccessRow {
+/**
+ * 接入清单的一行。
+ *
+ * ★ 原型与展示文本分开：排序/分页要用**原始数值**
+ *   （积累请求数、时间戳），绘制要用文本（带千分位/币种）。
+ *   两者混在一起 ⇒ 排序会按「字符串」比（「90」优先于「9」）。
+ */
+interface AccessRow extends ClientRow {
   key: ApiKey
-  name: string
-  stateKey: 'ok' | 'idle' | 'pending' | 'off'
-  spend: string
-  budget: string
-  lastUsed: string
-  requests: string
+  /** 展示用文本（已格式化） */
+  spendText: string
+  budgetText: string
+  lastUsedText: string
+  requestsText: string
 }
 
-/** 在用的密钥排前面，已禁用/未使用的收进折叠（magpie 的 offCount 同款） */
+/** 在用的密钥（已禁用/未使用的收进折叠，magpie 的 offCount 同款） */
 const activeRows = computed<AccessRow[]>(() =>
   keys.value
     .filter((k) => k.enabled && (k.status === 'active' || k.status === 'pending'))
@@ -239,13 +250,81 @@ const inactiveRows = computed<AccessRow[]>(() =>
 function toAccessRow(k: ApiKey): AccessRow {
   return {
     key: k,
+    id: k.id,
     name: k.key_alias || k.application_code || k.key_prefix,
     stateKey: stateOf(k),
-    spend: fmtUsd(k.total_cost_usd),
-    budget: k.budget_usd == null ? '-' : fmtUsd(k.budget_usd),
-    lastUsed: k.last_used_at ? fmtDateTimeShort(k.last_used_at) : t('simpleMode.accessList.neverUsed'),
-    requests: k.total_requests.toLocaleString('en-US'),
+    requests: k.total_requests,
+    spend: k.total_cost_usd,
+    lastUsedAt: k.last_used_at,
+    createdAt: k.created_at ?? null,
+    requestsText: k.total_requests.toLocaleString('en-US'),
+    spendText: fmtUsd(k.total_cost_usd),
+    budgetText: k.budget_usd == null ? '-' : fmtUsd(k.budget_usd),
+    lastUsedText: k.last_used_at ? fmtDateTimeShort(k.last_used_at) : t('simpleMode.accessList.neverUsed'),
   }
+}
+
+// ── 分页：两个分页列表 + 已停用那一折（都用同一套派生逻辑）────────────────
+//
+// ★ 为什么不用 usePagination：那个 composable 的语义是「越界直接忽略」（供服务端分页用），
+//   而我们的数据**全在前端**（一次 /api/keys 拿到全部）⇒ 列表可能缩短
+//   ⇒ 页码越界时必须钳到最后一页（否则渲染出空页）。
+//   钳制在模型层（paginateClientRows）做，视图只负责把钳制后的页码写回 ref。
+
+/** 每页条数（固定：总览页要紧凑，不给初级用户改页尺寸的选项） */
+const CLIENT_PAGE_SIZE = 10
+
+const recentPage = ref(1)
+const busiestPage = ref(1)
+const inactivePage = ref(1)
+
+/** ① 最近在用（按最近一次使用排序） */
+const recentList = computed(() =>
+  paginateClientRows(sortClientRows(activeRows.value, 'recent-used'), recentPage.value, CLIENT_PAGE_SIZE),
+)
+
+/** ② 用得最多（按累计请求数排序） */
+const busiestList = computed(() =>
+  paginateClientRows(sortClientRows(activeRows.value, 'busiest'), busiestPage.value, CLIENT_PAGE_SIZE),
+)
+
+/** ③ 已停用/未使用（折叠里也分页，否则展开就是 91 行） */
+const inactiveList = computed(() =>
+  paginateClientRows(sortClientRows(inactiveRows.value, 'recent-used'), inactivePage.value, CLIENT_PAGE_SIZE),
+)
+
+// 页码钳制回写：数据变短时不至于停在越界页（下一次点「上一页」会无反应）
+watch([recentList, busiestList, inactiveList], ([a, b, c]) => {
+  if (a.page !== recentPage.value) recentPage.value = a.page
+  if (b.page !== busiestPage.value) busiestPage.value = b.page
+  if (c.page !== inactivePage.value) inactivePage.value = c.page
+})
+
+/** 翻页（越界直接忽略，与 PaginationBar 的 disabled 状态一致） */
+function turnPage(target: Ref<number>, page: ClientPage, delta: number): void {
+  const next = page.page + delta
+  if (next < 1 || next > page.pageCount) return
+  target.value = next
+}
+
+/**
+ * 三个列表各自的翻页入口。
+ *
+ * ★ 为什么不在模板里直接传 ref：**模板里的 ref 会自动解包**，
+ *   把 ref 直接传进去的是**数字**而不是 Ref ⇒ `target.value = next`
+ *   写到了一个数字上 ⇒ **翻页静默失效**（实测：点「下一页」后页码不变）。
+ *   ⇒ 翻页入口收进脚本层，模板里只暴露无参的方法（delta）。
+ */
+function turnRecentPage(delta: number): void {
+  turnPage(recentPage, recentList.value, delta)
+}
+
+function turnBusiestPage(delta: number): void {
+  turnPage(busiestPage, busiestList.value, delta)
+}
+
+function turnInactivePage(delta: number): void {
+  turnPage(inactivePage, inactiveList.value, delta)
 }
 
 function stateOf(k: ApiKey): AccessRow['stateKey'] {
@@ -465,38 +544,99 @@ function openDetail(k: ApiKey): void {
           <p class="section-hint">{{ t('simpleMode.accessList.emptyHint') }}</p>
         </div>
         <template v-else>
-          <div v-if="activeRows.length > 0" class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>{{ t('simpleMode.accessList.client') }}</th>
-                  <th style="width:110px">{{ t('common.table.status') }}</th>
-                  <th style="width:110px">{{ t('simpleMode.accessList.requests') }}</th>
-                  <th style="width:170px">{{ t('simpleMode.accessList.spend') }}</th>
-                  <th style="width:160px">{{ t('simpleMode.accessList.lastUsed') }}</th>
-                  <th style="width:90px"></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="r in activeRows" :key="r.key.id">
-                  <td>
-                    <strong>{{ r.name }}</strong>
-                    <span class="section-hint">{{ r.key.key_prefix }}</span>
-                  </td>
-                  <td><span class="badge" :class="stateClass(r.stateKey)">{{ stateLabel(r.stateKey) }}</span></td>
-                  <td>{{ r.requests }}</td>
-                  <td>{{ r.spend }} / {{ r.budget }}</td>
-                  <td>{{ r.lastUsed }}</td>
-                  <td>
-                    <button class="btn btn-ghost btn-sm" @click="openDetail(r.key)">
-                      {{ t('common.button.detail') }}
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <!-- ① 最近在用（按最近一次使用排序）──────────────────────────────── -->
+          <section class="client-list" data-testid="overview-client-recent">
+            <div class="panel-head panel-head--sub">
+              <span class="panel-subtitle">{{ t('simpleMode.overview.clientRecentTitle') }}</span>
+              <span class="section-hint">{{ t('simpleMode.overview.clientRecentHint') }}</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{{ t('simpleMode.accessList.client') }}</th>
+                    <th style="width:110px">{{ t('common.table.status') }}</th>
+                    <th style="width:150px">{{ t('simpleMode.accessList.lastUsed') }}</th>
+                    <th style="width:110px">{{ t('simpleMode.accessList.requests') }}</th>
+                    <th style="width:90px"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in recentList.rows" :key="r.id">
+                    <td>
+                      <strong>{{ r.name }}</strong>
+                      <span class="section-hint">{{ r.key.key_prefix }}</span>
+                    </td>
+                    <td><span class="badge" :class="stateClass(r.stateKey)">{{ stateLabel(r.stateKey) }}</span></td>
+                    <td>{{ r.lastUsedText }}</td>
+                    <td>{{ r.requestsText }}</td>
+                    <td>
+                      <button class="btn btn-ghost btn-sm" @click="openDetail(r.key)">
+                        {{ t('common.button.detail') }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <PaginationBar
+              v-if="recentList.total > 0"
+              :page="recentList.page"
+              :page-size="recentList.pageSize"
+              :total="recentList.total"
+              :page-sizes="[]"
+              @prev="turnRecentPage(-1)"
+              @next="turnRecentPage(1)"
+            />
+          </section>
 
+          <!-- ② 用得最多（按累计请求数排序）-------------------------------- -->
+          <section class="client-list" data-testid="overview-client-busiest">
+            <div class="panel-head panel-head--sub">
+              <span class="panel-subtitle">{{ t('simpleMode.overview.clientBusiestTitle') }}</span>
+              <span class="section-hint">{{ t('simpleMode.overview.clientBusiestHint') }}</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{{ t('simpleMode.accessList.client') }}</th>
+                    <th style="width:110px">{{ t('simpleMode.accessList.requests') }}</th>
+                    <th style="width:170px">{{ t('simpleMode.accessList.spend') }}</th>
+                    <th style="width:110px">{{ t('common.table.status') }}</th>
+                    <th style="width:90px"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in busiestList.rows" :key="r.id">
+                    <td>
+                      <strong>{{ r.name }}</strong>
+                      <span class="section-hint">{{ r.key.key_prefix }}</span>
+                    </td>
+                    <td>{{ r.requestsText }}</td>
+                    <td>{{ r.spendText }} / {{ r.budgetText }}</td>
+                    <td><span class="badge" :class="stateClass(r.stateKey)">{{ stateLabel(r.stateKey) }}</span></td>
+                    <td>
+                      <button class="btn btn-ghost btn-sm" @click="openDetail(r.key)">
+                        {{ t('common.button.detail') }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <PaginationBar
+              v-if="busiestList.total > 0"
+              :page="busiestList.page"
+              :page-size="busiestList.pageSize"
+              :total="busiestList.total"
+              :page-sizes="[]"
+              @prev="turnBusiestPage(-1)"
+              @next="turnBusiestPage(1)"
+            />
+          </section>
+
+          <!-- ③ 已停用 / 未使用（折叠 + 分页）-------------------------------- -->
           <details v-if="inactiveRows.length > 0" class="fold" data-testid="overview-access-fold">
             <summary>
               <span>{{ t('simpleMode.overview.inactiveLabel') }}</span>
@@ -510,20 +650,20 @@ function openDetail(k: ApiKey): void {
                     <th style="width:110px">{{ t('common.table.status') }}</th>
                     <th style="width:110px">{{ t('simpleMode.accessList.requests') }}</th>
                     <th style="width:170px">{{ t('simpleMode.accessList.spend') }}</th>
-                    <th style="width:160px">{{ t('simpleMode.accessList.lastUsed') }}</th>
+                    <th style="width:150px">{{ t('simpleMode.accessList.lastUsed') }}</th>
                     <th style="width:90px"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="r in inactiveRows" :key="r.key.id">
+                  <tr v-for="r in inactiveList.rows" :key="r.id">
                     <td>
                       <strong>{{ r.name }}</strong>
                       <span class="section-hint">{{ r.key.key_prefix }}</span>
                     </td>
                     <td><span class="badge" :class="stateClass(r.stateKey)">{{ stateLabel(r.stateKey) }}</span></td>
-                    <td>{{ r.requests }}</td>
-                    <td>{{ r.spend }} / {{ r.budget }}</td>
-                    <td>{{ r.lastUsed }}</td>
+                    <td>{{ r.requestsText }}</td>
+                    <td>{{ r.spendText }} / {{ r.budgetText }}</td>
+                    <td>{{ r.lastUsedText }}</td>
                     <td>
                       <button class="btn btn-ghost btn-sm" @click="openDetail(r.key)">
                         {{ t('common.button.detail') }}
@@ -533,6 +673,15 @@ function openDetail(k: ApiKey): void {
                 </tbody>
               </table>
             </div>
+            <PaginationBar
+              v-if="inactiveList.total > 0"
+              :page="inactiveList.page"
+              :page-size="inactiveList.pageSize"
+              :total="inactiveList.total"
+              :page-sizes="[]"
+              @prev="turnInactivePage(-1)"
+              @next="turnInactivePage(1)"
+            />
           </details>
 
           <div class="card-toolbar">
@@ -763,6 +912,23 @@ function openDetail(k: ApiKey): void {
 .panel-hint {
   font-size: var(--kx-text-xs);
   color: var(--kx-muted);
+}
+
+/* ── 客户端列表（两个分页列表）────────────────────────────────────────────
+ * 2026-11-17：接入清单原来把在用密钥整表铺开（线上 118 行）⇒ 改成
+ * 「最近在用」+「用得最多」两个分页列表，每页 10 条。 */
+.client-list + .client-list {
+  margin-top: var(--kx-space-4);
+}
+
+.panel-head--sub {
+  margin-bottom: var(--kx-space-2);
+}
+
+.panel-subtitle {
+  font-size: var(--kx-text-sm);
+  font-weight: 600;
+  color: var(--kx-fg);
 }
 
 /* ── 上游健康列表 ────────────────────────────────────────────────────────── */

@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: 'Liste des accès',
-    subtitle: 'Une ligne par connexion client — le modèle utilisé, l\'état, la dépense',
+    subtitle: 'Deux listes paginées, récemment utilisés et les plus utilisés (chiffres cumulés)',
     empty: 'Aucune clé de passerelle émise',
     emptyHint: 'Émettez une clé et le client pourra utiliser cette passerelle',
     client: 'Client / clé',
@@ -81,6 +81,10 @@ export default {
     advancedHint: 'Besoin de plus d\'options ? Passez en mode expert pour le formulaire d\'émission complet.',
   },
   overview: {
+    clientRecentTitle: 'Récemment utilisés',
+    clientRecentHint: 'Triés par dernière utilisation',
+    clientBusiestTitle: 'Les plus utilisés',
+    clientBusiestHint: 'Triés par nombre total de requêtes',
     title: "Vue d'ensemble",
     subtitle: "Si le système fonctionne, ce qu'il a traité aujourd'hui et quoi faire ensuite",
     statusOk: 'Le système fonctionne normalement',

@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: '接続リスト',
-    subtitle: 'クライアント接続を 1 行ずつ — いま使うモデル、動作状況、費用',
+    subtitle: '2 つのページ区切りリスト、最近利用されたものと利用回数が多いもの（数値は累計）',
     empty: 'ゲートウェイキーはまだ発行されていません',
     emptyHint: 'キーを発行すればクライアントはこのゲートウェイを使えます',
     client: 'クライアント / キー',
@@ -81,6 +81,10 @@ export default {
     advancedHint: 'より多くのオプションが必要ですか？完全な発行フォームを使用するには、エキスパートモードに切り替えてください。',
   },
   overview: {
+    clientRecentTitle: '最近利用されたクライアント',
+    clientRecentHint: '最終利用日時の順',
+    clientBusiestTitle: '利用回数が多いクライアント',
+    clientBusiestHint: '累計リクエスト数の順',
     title: '概要',
     subtitle: 'システムが今使えるか、今日どれだけ処理したか、次に何をすべきか',
     statusOk: 'システムは正常に稼働しています',

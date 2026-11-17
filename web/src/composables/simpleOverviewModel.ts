@@ -499,3 +499,127 @@ export function deriveOnboardingSteps(input: OnboardingInput): OnboardingStep[] 
 export function onboardingComplete(steps: OnboardingStep[]): boolean {
   return steps.length > 0 && steps.every((s) => s.done)
 }
+
+// ─── 我的客户端（接入清单）：排序与分页 ──────────────────────────────────────
+//
+// ★ 为什么单独一段（2026-11-17 第五轮）：
+//   接入清单原来把**在用密钥整表铺开**（线上 118 行在用 + 91 行折叠）⇒
+//   「初级用户一眼看明白」这件事在这一块直接失败：表格比页面还长。
+//   ⇒ 改成**两个分页列表**（最新 / 最多），排序与分页都是纯函数、可单测，
+//     视图只负责画表与转发翻页动作。
+//
+// ★ 口径纪律：
+//   · 行里的请求数 / 花费是**累计**口径（/api/keys 的 total_requests /
+//     total_cost_usd）；**今日**口径在总览统计卡那边（board summary）。
+//     两个口径**不混排**：列表行必须带「累计」字样，统计卡带「今日口径」字样。
+//   · 排序**必须确定**：并列时按累计请求数、最后按 id 兜底 ⇒
+//     否则同一份数据翻两页，行的位置会变（用户会以为列表在乱跳）。
+
+/** 客户端列表的一行（纯数据；视图只做格式化） */
+export interface ClientRow {
+  id: number
+  name: string
+  /** 状态口径：ok（在用）/ idle（未使用）/ pending（待生效）/ off（已停用） */
+  stateKey: 'ok' | 'idle' | 'pending' | 'off'
+  /** 累计请求数（/api/keys 的 total_requests） */
+  requests: number
+  /** 累计花费（美元） */
+  spend: number
+  /** 最近一次使用时间 */
+  lastUsedAt: string | null
+  /** 签发时间 */
+  createdAt: string | null
+}
+
+/** 排序口径：最近在用 / 最近签发 / 用得最多 */
+export type ClientSortKey = 'recent-used' | 'recent-created' | 'busiest'
+
+function timeValue(ts: string | null | undefined): number {
+  if (!ts) return Number.NEGATIVE_INFINITY
+  const v = Date.parse(ts)
+  return Number.isNaN(v) ? Number.NEGATIVE_INFINITY : v
+}
+
+/**
+ * 按时间倒序比较两个时间戳（**缺时间排最后**）。
+ *
+ * ★ 缺值必须**显式**判：`缺值 - 有限值` = ±Infinity，`有限值 - 缺值` = ∓Infinity，
+ *   两边都缺时还是 NaN ⇒ 用「差值是否为有限数」来判会把缺值行当成并列
+ *   （实测踩过：从不使用的客户端没有被排到最后，而是被 id 兜底排到了前面）。
+ */
+function compareTimeDesc(a: string | null, b: string | null): number {
+  const av = timeValue(a)
+  const bv = timeValue(b)
+  if (av === bv) return 0
+  if (av === Number.NEGATIVE_INFINITY) return 1
+  if (bv === Number.NEGATIVE_INFINITY) return -1
+  return bv - av
+}
+
+/**
+ * 按指定口径排序客户端行（**不改动入参**，返回新数组）。
+ *
+ * ★ 并列时的次序是契约的一部分：累计请求数降序 → id 升序。
+ *   少了 id 兜底，同一批 0 请求的客户端在两次渲染之间会换位置，
+ *   分页就会「漏行/重行」（用户翻页时看到的行对不上）。
+ */
+export function sortClientRows<T extends ClientRow>(rows: T[], sort: ClientSortKey): T[] {
+  const out = [...rows]
+  out.sort((a, b) => {
+    if (sort === 'busiest') {
+      if (b.requests !== a.requests) return b.requests - a.requests
+    } else if (sort === 'recent-created') {
+      const d = compareTimeDesc(a.createdAt, b.createdAt)
+      if (d !== 0) return d
+    } else {
+      const d = compareTimeDesc(a.lastUsedAt, b.lastUsedAt)
+      if (d !== 0) return d
+    }
+    if (b.requests !== a.requests) return b.requests - a.requests
+    return a.id - b.id
+  })
+  return out
+}
+
+/** 一页客户端行 + 翻页所需的派生状态 */
+export interface ClientPage<T extends ClientRow = ClientRow> {
+  rows: T[]
+  /** 当前页（1 基，已钳制到合法范围） */
+  page: number
+  /** 总页数（至少 1） */
+  pageCount: number
+  /** 总条数 */
+  total: number
+  pageSize: number
+  hasPrev: boolean
+  hasNext: boolean
+}
+
+/**
+ * 客户端分页（纯函数）。
+ *
+ * ★ **钳制**页码：列表变短（例如筛选后）时若还停在第 9 页，
+ *   不钳制就会渲染出**空页**（用户以为「这一页没有数据」）。
+ *   ⇒ 页码越界时落到最后一页；pageSize 非法（<=0 / NaN）时按 1 处理，
+ *     绝不返回 NaN 页数。
+ */
+export function paginateClientRows<T extends ClientRow>(
+  rows: T[],
+  page: number,
+  pageSize: number,
+): ClientPage<T> {
+  const size = Number.isFinite(pageSize) && pageSize >= 1 ? Math.floor(pageSize) : 1
+  const total = rows.length
+  const pageCount = Math.max(1, Math.ceil(total / size))
+  const current = Number.isFinite(page) ? Math.min(Math.max(1, Math.floor(page)), pageCount) : 1
+  const start = (current - 1) * size
+  return {
+    rows: rows.slice(start, start + size),
+    page: current,
+    pageCount,
+    total,
+    pageSize: size,
+    hasPrev: current > 1,
+    hasNext: current < pageCount,
+  }
+}

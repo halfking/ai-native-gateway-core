@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: 'Access list',
-    subtitle: 'One row per client connection — which model it uses, whether it works, what it cost',
+    subtitle: 'Two paginated lists, recently active and most used (numbers are cumulative)',
     empty: 'No gateway key issued yet',
     emptyHint: 'Issue a key and the client can use this gateway',
     client: 'Client / key',
@@ -81,6 +81,10 @@ export default {
     advancedHint: 'Need more options? Switch to expert mode for the full issuance form.',
   },
   overview: {
+    clientRecentTitle: 'Recently active',
+    clientRecentHint: 'Sorted by last use',
+    clientBusiestTitle: 'Most used',
+    clientBusiestHint: 'Sorted by total requests',
     title: 'Overview',
     subtitle: 'Whether the system works now, how much it handled today, and what to do next',
     statusOk: 'The system is running normally',

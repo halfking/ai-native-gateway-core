@@ -9,6 +9,9 @@ import {
   formatPercent,
   formatUsd,
   onboardingComplete,
+  paginateClientRows,
+  sortClientRows,
+  type ClientRow,
   type ProviderLike,
 } from './simpleOverviewModel'
 
@@ -302,5 +305,120 @@ describe('deriveOnboardingSteps', () => {
       keysInUse: 1,
     })
     expect(onboardingComplete(steps)).toBe(true)
+  })
+})
+
+// ─── 接入清单分页轮（2026-11-17）：排序与分页的契约 ────────────────────────
+describe('sortClientRows', () => {
+  const row = (id: number, over: Partial<ClientRow> = {}): ClientRow => ({
+    id,
+    name: `client-${id}`,
+    stateKey: 'ok',
+    requests: 0,
+    spend: 0,
+    lastUsedAt: null,
+    createdAt: null,
+    ...over,
+  })
+
+  it('sorts by the most recent usage and pushes never-used clients to the end', () => {
+    const sorted = sortClientRows(
+      [
+        row(1, { lastUsedAt: '2026-11-10T00:00:00Z' }),
+        row(2, { lastUsedAt: null }),
+        row(3, { lastUsedAt: '2026-11-17T00:00:00Z' }),
+      ],
+      'recent-used',
+    )
+    expect(sorted.map((r) => r.id)).toEqual([3, 1, 2])
+  })
+
+  it('sorts by the most requests', () => {
+    const sorted = sortClientRows(
+      [row(1, { requests: 5 }), row(2, { requests: 90 }), row(3, { requests: 12 })],
+      'busiest',
+    )
+    expect(sorted.map((r) => r.id)).toEqual([2, 3, 1])
+  })
+
+  it('sorts by the sign-up time when that is the chosen lens', () => {
+    const sorted = sortClientRows(
+      [
+        row(1, { createdAt: '2026-11-01T00:00:00Z' }),
+        row(2, { createdAt: '2026-11-16T00:00:00Z' }),
+        row(3, { createdAt: null }),
+      ],
+      'recent-created',
+    )
+    expect(sorted.map((r) => r.id)).toEqual([2, 1, 3])
+  })
+
+  // ★ 契约：并列时次序必须稳定 —— 否则翻页时同一行会在两页之间跳。
+  it('breaks ties deterministically so pages never reshuffle rows', () => {
+    const input = [row(3, { requests: 7 }), row(1, { requests: 7 }), row(2, { requests: 7 })]
+    const a = sortClientRows(input, 'busiest')
+    const b = sortClientRows([...input].reverse(), 'busiest')
+    expect(a.map((r) => r.id)).toEqual([1, 2, 3])
+    expect(b.map((r) => r.id)).toEqual([1, 2, 3])
+  })
+
+  it('never mutates the input array', () => {
+    const input = [row(1, { requests: 1 }), row(2, { requests: 9 })]
+    sortClientRows(input, 'busiest')
+    expect(input.map((r) => r.id)).toEqual([1, 2])
+  })
+})
+
+describe('paginateClientRows', () => {
+  const rows = (n: number): ClientRow[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      name: `client-${i + 1}`,
+      stateKey: 'ok' as const,
+      requests: n - i,
+      spend: 0,
+      lastUsedAt: null,
+      createdAt: null,
+    }))
+
+  it('slices the requested page and reports the paging state', () => {
+    const p = paginateClientRows(rows(25), 2, 10)
+    expect(p.rows.map((r) => r.id)).toEqual([11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    expect(p.page).toBe(2)
+    expect(p.pageCount).toBe(3)
+    expect(p.total).toBe(25)
+    expect(p.hasPrev).toBe(true)
+    expect(p.hasNext).toBe(true)
+  })
+
+  it('marks the first and the last page', () => {
+    const first = paginateClientRows(rows(25), 1, 10)
+    const last = paginateClientRows(rows(25), 3, 10)
+    expect(first.hasPrev).toBe(false)
+    expect(first.hasNext).toBe(true)
+    expect(last.hasPrev).toBe(true)
+    expect(last.hasNext).toBe(false)
+  })
+
+  // ★ 列表变短时（例如数据源刷新后少了几行）页码越界 ⇒ 必须落到最后一页，
+  //   否则会渲染出**空页**，用户会以为「这一页没有数据」。
+  it('clamps an out-of-range page to the last one instead of showing an empty page', () => {
+    const p = paginateClientRows(rows(12), 9, 10)
+    expect(p.page).toBe(2)
+    expect(p.rows.length).toBe(2)
+  })
+
+  it('never produces a NaN page count for an illegal page size', () => {
+    const p = paginateClientRows(rows(3), 1, 0)
+    expect(Number.isFinite(p.pageCount)).toBe(true)
+    expect(p.pageCount).toBe(3)
+    expect(p.pageSize).toBe(1)
+  })
+
+  it('handles an empty list as one empty page', () => {
+    const p = paginateClientRows([], 1, 10)
+    expect(p.rows).toEqual([])
+    expect(p.pageCount).toBe(1)
+    expect(p.hasNext).toBe(false)
   })
 })

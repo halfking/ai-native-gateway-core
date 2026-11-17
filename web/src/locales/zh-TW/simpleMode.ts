@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: '接入清單',
-    subtitle: '一行一個用戶端接入 —— 它現在用哪個模型、能不能用、花了多少',
+    subtitle: '兩個分頁列表：最近在用的與用得最多的（數字為累計口徑）',
     empty: '還沒有簽發閘道金鑰',
     emptyHint: '簽發一把金鑰，用戶端就能用這個閘道了',
     client: '用戶端 / 金鑰',
@@ -81,6 +81,10 @@ export default {
     advancedHint: '需要更多設定？切換到專家模式使用完整簽發表單。',
   },
   overview: {
+    clientRecentTitle: '最近在使用',
+    clientRecentHint: '依最近一次使用排序',
+    clientBusiestTitle: '用得最多',
+    clientBusiestHint: '依累計請求數排序',
     title: '總覽',
     subtitle: '系統現在能不能用、今天跑了多少、下一步該做什麼',
     statusOk: '系統運作正常',

@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: '接入清单',
-    subtitle: '一行一个客户端接入 —— 它现在用哪个模型、能不能用、花了多少',
+    subtitle: '两个分页列表：最近在用的与用得最多的（数字为累计口径）',
     empty: '还没有签发网关密钥',
     emptyHint: '签发一个密钥，客户端就能用这个网关了',
     client: '客户端 / 密钥',
@@ -81,6 +81,10 @@ export default {
     advancedHint: '需要更多配置？切换到专家模式使用完整签发表单。',
   },
   overview: {
+    clientRecentTitle: '最近在用',
+    clientRecentHint: '按最近一次使用排序',
+    clientBusiestTitle: '用得最多',
+    clientBusiestHint: '按累计请求数排序',
     title: '总览',
     subtitle: '系统现在能不能用、今天跑了多少、下一步该做什么',
     statusOk: '系统运行正常',

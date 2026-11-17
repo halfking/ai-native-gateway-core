@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: 'Lista de accesos',
-    subtitle: 'Una fila por conexión de cliente: qué modelo usa, si funciona y cuánto cuesta',
+    subtitle: 'Dos listas paginadas, usados recientemente y los más usados (las cifras son acumuladas)',
     empty: 'Aún no se ha emitido ninguna clave de pasarela',
     emptyHint: 'Emite una clave y el cliente podrá usar esta pasarela',
     client: 'Cliente / clave',
@@ -81,6 +81,10 @@ export default {
     advancedHint: '¿Necesita más opciones? Cambie al modo experto para el formulario de emisión completo.',
   },
   overview: {
+    clientRecentTitle: 'Usados recientemente',
+    clientRecentHint: 'Ordenados por último uso',
+    clientBusiestTitle: 'Los más usados',
+    clientBusiestHint: 'Ordenados por número total de solicitudes',
     title: 'Resumen',
     subtitle: 'Si el sistema funciona ahora, cuánto ha gestionado hoy y qué hacer a continuación',
     statusOk: 'El sistema funciona con normalidad',

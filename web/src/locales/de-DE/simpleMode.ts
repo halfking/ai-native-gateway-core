@@ -12,7 +12,7 @@ export default {
   },
   accessList: {
     title: 'Zugriffsliste',
-    subtitle: 'Eine Zeile je Client-Anbindung — welches Modell, ob es funktioniert, was es kostet',
+    subtitle: 'Zwei paginierte Listen, zuletzt genutzte und am häufigsten genutzte (Zahlen sind kumuliert)',
     empty: 'Noch kein Gateway-Schlüssel ausgestellt',
     emptyHint: 'Schlüssel ausstellen, dann kann der Client dieses Gateway nutzen',
     client: 'Client / Schlüssel',
@@ -81,6 +81,10 @@ export default {
     advancedHint: 'Benötigen Sie mehr Optionen? Wechseln Sie in den Expertenmodus für das vollständige Ausstellungsformular.',
   },
   overview: {
+    clientRecentTitle: 'Zuletzt genutzt',
+    clientRecentHint: 'Nach letzter Nutzung sortiert',
+    clientBusiestTitle: 'Am häufigsten genutzt',
+    clientBusiestHint: 'Nach Gesamtzahl der Anfragen sortiert',
     title: 'Übersicht',
     subtitle: 'Ob das System jetzt läuft, wie viel es heute verarbeitet hat und was als Nächstes zu tun ist',
     statusOk: 'Das System läuft normal',
