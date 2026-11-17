@@ -64,6 +64,16 @@ const DESIGN_PROBE = `(() => {
   const legendGlyphs = legend ? legend.querySelectorAll('.legend__glyph') : []
   out.facts.legendGlyphs = legendGlyphs.length
   check('图例有 7 枚状态字形', legendGlyphs.length === 7, '实际 ' + legendGlyphs.length)
+  // ★★ **对照组**：完整模式下图例的「完成」字形必须是 ✓。
+  //   （2026-11-18 补：此前只数了【元素个数】，从不看字形【内容】 ⇒
+  //     「紧凑模式图例没换字形」这条规则**从未被比对过** ⇒ 假绿。
+  //     对照组 + 下面的紧凑组，构成「两种模式字形不同」的可证伪判据。）
+  const legendText = (cls) => {
+    const el = legend ? legend.querySelector('.legend__glyph.is-' + cls) : null
+    return el ? (el.textContent || '').trim() : null
+  }
+  out.facts.legendDoneGlyph = legendText('done')
+  check('完整模式图例「完成」字形是 ✓（对照组）', legendText('done') === '\u2713', '实际 ' + JSON.stringify(legendText('done')))
 
   const head = q('[data-testid="stage-tree-header"]')
   check('阶段列头存在（设计第 8 轮）', !!head, '')
@@ -142,6 +152,27 @@ const COMPACT_PROBE = `(async () => {
 
   // ① 紧凑模式**不显示阶段列头**（设计原型：body.mode-compact .stagehead{display:none}）
   check('紧凑模式下阶段列头消失', !q('[data-testid="stage-tree-header"]'), '')
+
+  // ①b ★★ **图例字形必须随模式切换**（设计规则 15 / 最终方案说明:61）
+  //   「不要标记勾勾」⇒ 紧凑模式去掉全部 ✓ ⇒ 瓦片角标改用 CGLYPH(done:'')
+  //   ⇒ **图例同步**（原型 syncLegendGlyphs() 真的换掉字形，**不做透明化**：
+  //     透明化会让 ✓ 仍留在 DOM / 无障碍文本里 ⇒ 屏幕阅读器仍读出「完成」）。
+  //   ★ 本轮实测到的线上缺陷 F1：瓦片换了、**图例没换** ⇒ 生产页面「图例与画面对不上」。
+  //   ⇒ 这三条断言是当时**完全缺失**的覆盖（此前只数元素个数、不看内容）。
+  const lg = (cls) => {
+    const el = q('[data-testid="stage-tree-legend"] .legend__glyph.is-' + cls)
+    return el ? (el.textContent || '').trim() : null
+  }
+  out.facts.compactLegendDone = lg('done')
+  out.facts.compactLegendPending = lg('pending')
+  out.facts.compactLegendUnmeasured = lg('unmeasured')
+  check('紧凑模式图例「完成」字形为空', lg('done') === '', '实际 ' + JSON.stringify(lg('done')))
+  check('紧凑模式图例「未到达」字形为空', lg('pending') === '', '实际 ' + JSON.stringify(lg('pending')))
+  check('紧凑模式图例「未测量」字形为空', lg('unmeasured') === '', '实际 ' + JSON.stringify(lg('unmeasured')))
+  // ★ 设计原文的验收口径：紧凑模式 document.body.innerText 中 **✓ 出现 0 次**
+  const tickCount = (document.body.innerText.match(/\u2713/g) || []).length
+  out.facts.compactTickCount = tickCount
+  check('紧凑模式全页 ✓ 计数为 0（设计规则 15 的原文口径）', tickCount === 0, '实际 ' + tickCount + ' 次')
 
   // ② 紧凑模式**不再渲染发送/接收轨节点块**
   //   （实测过的坑：两套节点同时在场会抢同一批网格列 ⇒ 瓦片被挤到第二行、

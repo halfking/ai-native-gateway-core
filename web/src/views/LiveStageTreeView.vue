@@ -432,8 +432,12 @@ onBeforeUnmount(() => {
       />
     </header>
 
-    <!-- 图例行：七态 + 两条轨的方向（设计第 4 轮）。 -->
-    <StageTreeLegend />
+    <!-- 图例行：七态 + 两条轨的方向（设计第 4 轮）。
+         ★ **图例字形必须随模式切换**（设计规则 15 / 原型 `syncLegendGlyphs()`）：
+           紧凑模式下 done/pending/unmeasured 的字形换成空串 ⇒ 「图例与画面对得上」；
+           不做透明化（透明化会让 ✓ 仍留在 DOM / 无障碍文本里）。
+           ⇒ 由 `lib/stageTreeGlyphs.ts` 单一真源供字形，本组件只负责传模式。 -->
+    <StageTreeLegend :compact="mode === 'compact'" />
 
     <!-- 列头：与带共用列宽（stageTreeLayout.ts 是唯一来源）。
          ★ **紧凑模式不显示列头**（设计原型 `body.mode-compact .stagehead{display:none}`）：

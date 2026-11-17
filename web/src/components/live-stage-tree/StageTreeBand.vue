@@ -37,6 +37,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Monitor } from '@element-plus/icons-vue'
 import { RECV_STAGES, SEND_STAGES, type StageKey, type StageNode, type StageState } from '../../types/liveStageTree'
+import { COMPACT_GLYPH, FULL_GLYPH } from '../../lib/stageTreeGlyphs'
 // ★ 阶段图标与紧凑模式字形**复用仓内既有常量**（web/src/types/stageTree.ts）——
 //   那份常量就是设计原型 ICON / CGLYPH 的移植 ⇒ 画面与原型一致，且不重复维护。
 import { STAGE_ICONS } from '@/types/stageTree'
@@ -264,26 +265,13 @@ function compressDetail(s: StageNode): string {
     .join(' · ')
 }
 
-/** 阶段节点的展示字形（七态各有各的形，灰态之间靠这个区分）。 */
+/** 阶段节点的展示字形（七态各有各的形，灰态之间靠这个区分）。
+ *  ★ 字形来自**唯一真源** `lib/stageTreeGlyphs.ts`（与图例共用）——
+ *    完整模式用 FULL_GLYPH；紧凑模式另有 COMPACT_GLYPH（见 compactGlyph）。
+ *    ★ 2026-11-18：本函数原来自己 switch 了一份字形 ⇒ 与图例形成【两份真源】
+ *      ⇒ 同一条规定写两遍必然漂移（线上缺陷 F1 的根因之一）。 */
 function stageGlyph(s: StageNode): string {
-  switch (s.state) {
-    case 'done':
-      return '✓'
-    case 'active':
-      return '◐'
-    case 'failed':
-      return '✕'
-    case 'warned':
-      return '⚠'
-    case 'unmeasured':
-      return '⋯'
-    case 'skipped':
-      return '⌀'
-    case 'pending':
-      return '○'
-    default:
-      return '·'
-  }
+  return FULL_GLYPH[s.state] ?? ''
 }
 
 /** 时间列（HH:MM:SS，本地时区）。 */
@@ -423,16 +411,11 @@ function compactNumber(s: StageNode): string {
 const compactSeq = computed<StageNode[]>(() => [...sendStages.value, ...recvStages.value])
 
 /** 紧凑模式**不画 ✓**（设计第 8 轮：owner「整个紧凑模式不要勾勾」）——
- *  完成态由**颜色**承载，失败/跳过/告警/进行中仍留字形。 */
-const COMPACT_STATE_GLYPH: Readonly<Record<StageState, string>> = {
-  done: '',
-  active: '◐',
-  pending: '',
-  skipped: '⌀',
-  failed: '✕',
-  warned: '⚠',
-  unmeasured: '',
-}
+ *  完成态由**颜色**承载，失败/跳过/告警/进行中仍留字形。
+ *  ★ 字形表来自**唯一真源** `lib/stageTreeGlyphs.ts`（与图例共用）——
+ *    本轮实测的线上缺陷 F1 就是因为「瓦片一套、图例另一套」⇒ 同一条规定写了两份
+ *    ⇒ 必然漂移 ⇒ 生产页面出现「图例说 ✓、画面没 ✓」。 */
+const COMPACT_STATE_GLYPH: Readonly<Record<StageState, string>> = COMPACT_GLYPH
 
 function compactGlyph(state: StageState): string {
   return COMPACT_STATE_GLYPH[state] ?? ''

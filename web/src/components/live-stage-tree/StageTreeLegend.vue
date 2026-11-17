@@ -8,20 +8,27 @@
 //   猜错就把「没数据」读成「系统没做这一步」。
 //   ⇒ 图例把七态的字形 + 两条轨的方向写出来。
 
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { FULL_GLYPH, COMPACT_GLYPH, LEGEND_ORDER } from '../../lib/stageTreeGlyphs'
 
 const { t } = useI18n()
 
-/** 七态图例项（字形与状态一一对应；★ 文案逐字面量 t()）。 */
-const LEGEND: Array<{ state: string; glyph: string }> = [
-  { state: 'done', glyph: '✓' },
-  { state: 'active', glyph: '◐' },
-  { state: 'pending', glyph: '○' },
-  { state: 'skipped', glyph: '⌀' },
-  { state: 'failed', glyph: '✕' },
-  { state: 'warned', glyph: '⚠' },
-  { state: 'unmeasured', glyph: '⋯' },
-]
+const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
+
+/** 七态图例项（字形与状态一一对应；★ 文案逐字面量 t()）。
+ *
+ *  ★★ 字形来自**唯一真源** `lib/stageTreeGlyphs.ts`（设计规则 15）：
+ *   紧凑模式下 done / pending / unmeasured 的字形**换成空串**（不是透明化）——
+ *   透明化会让 ✓ 仍留在 DOM / 无障碍文本里 ⇒ 屏幕阅读器仍读出「完成」，
+ *   而画面上什么都没有 ⇒ **图例与画面对不上**（2026-11-18 实测到的线上缺陷 F1）。
+ *   ⇒ 图例与瓦片共用同一张字形表 ⇒ 同一条规定只有一份 ⇒ 不会再漂移。 */
+const LEGEND = computed(() =>
+  LEGEND_ORDER.map((state) => ({
+    state,
+    glyph: (props.compact ? COMPACT_GLYPH : FULL_GLYPH)[state] ?? '',
+  })),
+)
 
 function stateLabel(state: string): string {
   switch (state) {
