@@ -2688,6 +2688,36 @@ files=(
   #     视图函数 CREATE OR REPLACE / 台账自登记 ON CONFLICT）：
   #     本通道按内容指纹重放（sha 变化即重放）⇒ 非幂等件会在重放时炸掉部署。
   "$ROOT_DIR/sql/migrations/startup/971_pi_error_analysis_system.sql"
+  # ★ 972（2026-11-17 F3 残留地平线根修轮）：model_offers_update_trigger 补
+  #   unavailable_recover_at —— 修「经 model_offers 视图的恢复写入只清
+  #   reason/unavailable_at、把恢复标记留下」这个根因。
+  #   ★ model_offers 是 INSTEAD OF UPDATE 触发器视图，触发器的 SET 清单是**手写的
+  #     一串列名**；211 实测（pg_get_functiondef）清单里有 available /
+  #     unavailable_reason / unavailable_at，**唯独没有 unavailable_recover_at**
+  #     ⇒ 残留地平线在 37~231 行之间反复反弹（2026-11-17 观测 19 轮从未归零）。
+  #   ★ 本件是**幂等**的（CREATE OR REPLACE FUNCTION / UPDATE 幂等（第二遍 0 行）/
+  #     台账自登记 ON CONFLICT DO UPDATE）⇒ 内容指纹重放安全。
+  #   ★ 本件是 files=(...) 数组里**第一个也是唯一**定义 model_offers_update_trigger
+  #     的文件（523/568 均不在本通道数组内）⇒ 不构成「多文件重定义」，
+  #     无需登记进 intentional_function_chains。
+  "$ROOT_DIR/sql/migrations/startup/972_model_offers_trigger_recover_at.sql"
+  # ★ 974（2026-11-17 定价对比完善轮）：行情面模型身份对齐 + 阶梯/缓存价列。
+#   ★ 编号说明：971 之后 211 台账的 972 已被 model_offers_update_trigger 占用
+#     （台账版本号是**全局共享**的，不是启动迁移独占）⇒ 本轮两条改号到 974/975。
+  #   market_price_platform_quotes 加 tier / model_kind / cache_hit 列、
+  #   PK 改 tier 感知、清理 940 里 canonical_id 与网关名不一致的遗留行
+  #   （旧口径：canonical_name 存的是 salesdecorate 的源 key 名 ⇒ 与评分面
+  #   supplier_market_position 名字空间交集仅 12.5% ⇒ 对账页大量无地板可比）。
+  "$ROOT_DIR/sql/migrations/startup/974_market_price_identity_and_tier.sql"
+  # ★ 975（2026-11-17 定价对比完善轮）：定价建议一键执行的审计留痕面。
+  #   model_price_versions.source 闭集加入 market_suggestion（**不新增第二套
+  #   变更历史** —— 期次账仍是唯一权威）+ pricing_suggestion_batches 批次留痕。
+  "$ROOT_DIR/sql/migrations/startup/975_pricing_suggestion_audit.sql"
+  # ★ 976（2026-11-17 定价对比完善轮）：970 平台现价明细的**表键粒度**
+  #   对齐源侧观测键 —— 加 source_region 列并把 source_region/currency 并入 PK。
+  #   起因：970 首次在生产写入即撞 23505（bailian deepseek-v4-flash-0731
+  #   同一 tier 有 5 个 region：3.000000 vs 3.208000 CNY，价差 7 百分点）。
+  "$ROOT_DIR/sql/migrations/startup/976_market_price_platform_quote_region.sql"
 )
 
 
@@ -2736,6 +2766,16 @@ legacy_content_replays=(
   #     100,000 行实测两条索引 80.285 / 89.610 ms；10min 预算本就已就位）。
   #     重放对本表是零行为变化（CREATE TABLE/INDEX ... IF NOT EXISTS）。
   '970_market_price_platform_quotes.sql|9c99083a1b1bfd99ee360c9346d5034c2a4687edda7951ded4081d3a306304e8'
+  #   · 974：行情面身份对齐（970 表加 tier/model_kind/cache_hit 列 + tier 感知
+  #     PK + 940 遗留身份漂移行清理）。幂等可重放（ADD COLUMN IF NOT EXISTS /
+  #     DROP+ADD CONSTRAINT 带 IF EXISTS / DELETE 带谓词）。
+  '974_market_price_identity_and_tier.sql|f30bbbd9371d3f4b3ba22c5a8d4665564c826efcfb2f98f2753ffa3d004fa03e'
+  #   · 975：定价建议审计（source 闭集扩 market_suggestion + 批次留痕表）。
+  '975_pricing_suggestion_audit.sql|8a147884476af997f91bb9c3aa1cb8e02f43c2b050455fae94450a25685e2784'
+  #   · 976：970 表键粒度对齐源侧观测键（source_region 列 + PK 并入
+  #     source_region/currency）。幂等可重放（ADD COLUMN IF NOT EXISTS /
+  #     DROP+ADD CONSTRAINT 带 IF EXISTS / DELETE 带谓词 / CREATE INDEX IF NOT EXISTS）。
+  '976_market_price_platform_quote_region.sql|5c2964a4b63613dcbf12cf90f657fc5c98ffe6b822689ea373b6c6959ecda1bb'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -3350,8 +3390,62 @@ ledger_artifact_probe "970_market_price_platform_quotes.sql" \
   "to_regclass('public.market_price_platform_quotes') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND tablename='market_price_platform_quotes' AND indexname='idx_mppq_canon')"
 # ★ 971 的产物 = error_analysis_queue / error_analysis_results 两张表 +
 #   统计视图 v_error_analysis_stats + updated_at 触发器 + 保留期清理函数。
+# ★ 974 的产物 = 970 表的 tier/model_kind/cache_hit 列 + tier 感知 PK
+#   + 940 身份漂移遗留行已清（canonical_id 非空但名字与网关名不一致的行数为 0）。
+ledger_artifact_probe "974_market_price_identity_and_tier.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_platform_quotes' AND column_name='tier') AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_platform_quotes' AND column_name='cache_hit_per_1m') AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='market_price_platform_quotes' AND c.conname='market_price_platform_quotes_pkey') AND NOT EXISTS (SELECT 1 FROM public.market_price_reference mpr WHERE mpr.canonical_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.models_canonical mc WHERE mc.id = mpr.canonical_id AND lower(mc.canonical_name) = lower(mpr.canonical_name)))"
+# ★ 975 的产物 = 批次留痕表 + source 闭集含 market_suggestion。
+ledger_artifact_probe "975_pricing_suggestion_audit.sql" \
+  "to_regclass('public.pricing_suggestion_batches') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='model_price_versions' AND c.conname='model_price_versions_source_check')"
+# ★ 976 的产物 = 970 表有 source_region 列 + 主键含 source_region/currency
+#   + 辅助索引 idx_mppq_canon_region 存在。
+ledger_artifact_probe "976_market_price_platform_quote_region.sql" \
+  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='market_price_platform_quotes' AND column_name='source_region') AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND tablename='market_price_platform_quotes' AND indexname='idx_mppq_canon_region') AND (SELECT count(*) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid WHERE t.relname='market_price_platform_quotes' AND c.conname='market_price_platform_quotes_pkey' AND pg_get_constraintdef(c.oid) LIKE '%source_region%' AND pg_get_constraintdef(c.oid) LIKE '%currency%') = 1"
 ledger_artifact_probe "971_pi_error_analysis_system.sql" \
   "to_regclass('public.error_analysis_queue') IS NOT NULL AND to_regclass('public.error_analysis_results') IS NOT NULL AND to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'error_analysis_results' AND t.tgname = 'trigger_error_analysis_results_updated_at' AND NOT t.tgisinternal) AND to_regprocedure('public.cleanup_old_error_analysis(integer)') IS NOT NULL"
+# ★ 972 的产物 = ① model_offers_update_trigger 的函数体里出现
+#   unavailable_recover_at 的三分支 CASE（触发器不再丢这一列）。
+#
+# ★★★ 2026-11-17 第三轮修正：**产物探针只查产物，不查运行时状态**。
+#   本条原本还断言第②项「库内不再存在 available=TRUE ∧ unavailable_at IS NULL ∧
+#   recover_at 非 NULL 的矛盾残留行」—— 那一项在 2026-11-17 17:0x 的 211 部署里
+#   **把部署打死了**（实测 FATAL：972 探针判失败 ⇒ 部署中止于「先修库再部署」）。
+#
+#   为什么它是错的（三层，逐层都有实据）：
+#   ① **层级错**：产物探针的契约是「本库是否已有该迁移的**产物**」（表/列/索引/
+#      约束/触发器/函数/种子行）。「事实表当前有多少行」是**运行时状态** ——
+#      任何写路径都能在迁移落地之后重新制造它 ⇒ 它不是迁移的产物，
+#      是**运行中二进制**的行为。
+#   ② **前提错**（我方自己的注释写错了）：原注释断言「cmb 侧直写路径（域内全部 Go
+#      写入方）本就四列一起清 ⇒ 无第二条产生路径」——**第二轮实测证伪**：
+#      modelcatalog/upsert.go / bg/model_probe.go / admin/credential_monitor.go
+#      三条直写路径确实漏清第四列 ⇒ 迁移 972 落地后残留从 0 反弹到 93
+#      （211 实测，主因凭据 99023 占 80 行）⇒ 「迁移后库里没有残留行」这个前提
+#      **只在迁移落地那一瞬间成立**，而探针是在任意时刻被求值的。
+#   ③ **处置无效 ⇒ 毒丸**：探针失败时的处置建议是「重放本序列（迁移幂等）」，
+#      但重放消不掉由**运行中的旧二进制**重新制造的残留 ⇒ ⇒ 探针从「守卫」退化成
+#      「毒丸」：迁移明明在位、产物明明齐备，却被一个与迁移无关的运行时量卡住部署。
+#
+#   ⇒ 正确的分层（2026-11-17 起）：
+#     · **产物层**（本探针）：只断言 ①。迁移体是**单事务**（函数替换 + 存量清理 +
+#       台账登记同在一个 BEGIN…COMMIT）⇒ ① 成立即蕴含「存量清理已随同事务执行过」
+#       （原子性 ⇒ 两者同生共死，不需要两个判据）。
+#     · **写入侧层**（internal/sqlguard/credential_binding_health_tuple_gate_test.go）：
+#       全仓 AST 不变式门 —— 任何把 cmb.available 置 TRUE 的语句（含 UPDATE 与
+#       INSERT…ON CONFLICT 两种形态）都必须处理第四列 ⇒ 「新的矛盾行不会被制造」
+#       由**静态门**保证，不依赖任何运行时探针。
+#     · **运行时层**（scripts/audit/f3-auto-check.sh 监控 +
+#       scripts/audit/f3-postdeploy-verify.sh 部署后验收）：残留归零与「不再反弹」
+#       由**部署后验收**判 ⇒ 归运行时层，不阻塞下一次部署。
+#   ⇒ 同型门（防复发）：internal/sqlguard/migration_artifact_probe_scope_gate_test.go
+#     —— 产物探针不得断言「运行时可变事实表的当前数据状态」。
+ledger_artifact_probe "972_model_offers_trigger_recover_at.sql" \
+  "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'model_offers_update_trigger' AND pg_get_functiondef(p.oid) LIKE '%unavailable_recover_at = CASE%')"
+# ★ 非门禁的运行时观测量（2026-11-17 第三轮加）：F3 残留当前行数。
+#   ⚠ 它**不参与**放行/拦停判定（理由见上）⇒ 只打进部署日志，供人/告警读。
+#   ⚠ 用 `|| true` 兜住：观测失败不得连带打死部署（观测不是门）。
+printf 'runtime observation (F3 residual rows, NOT a gate): %s\n' \
+  "$(psql_query "SELECT COUNT(*) FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE" 2>/dev/null || echo 'unavailable')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

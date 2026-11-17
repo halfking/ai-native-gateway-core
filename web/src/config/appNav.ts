@@ -250,6 +250,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/model-credibility', labelKey: 'nav.item.modelCredibility', icon: '🔎', super: true, hideForTenant: true },
       { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
       { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
+      { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true },
       { path: '/admin/compression', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
       { path: '/admin/modules?module=wechat_bot', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
       { path: '/admin/agents', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },

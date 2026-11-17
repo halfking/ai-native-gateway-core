@@ -1901,6 +1901,38 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     641 远离 maxNum ⇒ 不在三通道覆盖门的近邻窗口（maxNum-19..maxNum）
 			//     ⇒ 两道门都保护不到。971 同时满足 ≥849 与 = maxNum ⇒ 双门接管。
 			"971_pi_error_analysis_system.sql",
+			// ★ 972（2026-11-17 F3 残留地平线根修轮）：model_offers_update_trigger
+			//   补 unavailable_recover_at。
+			//
+			//   ★ 根因：`model_offers` 是 INSTEAD OF UPDATE 触发器视图，触发器的
+			//     SET 清单是**手写的一串列名**；211 实测（pg_get_functiondef）清单里
+			//     有 available / unavailable_reason / unavailable_at，**唯独没有
+			//     unavailable_recover_at** ⇒ 经视图的「置可用」写入只清两列、把恢复
+			//     标记留下 ⇒ 行落进矛盾态 available=TRUE ∧ recover_at≠NULL
+			//     ⇒ 节点状态恢复地平线在 37~231 行之间反复反弹（观测 19 轮从未归零）。
+			//   ★ 仓内早已自述（credentialhealth/checker.go:469-473「writing it here
+			//     would be silently dropped」），但只绕了它没修它。
+			//   ★ 本件同时一次性清掉存量残留行（谓词 = 监控口径本身，
+			//     211 实测 admin_protected 全 0 ⇒ 不改变任何绑定的可路由性）。
+			"972_model_offers_trigger_recover_at.sql",
+			// ★ 974（2026-11-17 定价对比完善轮）：行情面模型身份对齐 +
+			//   阶梯/缓存价列。market_price_platform_quotes 加 tier /
+			//   model_kind / cache_hit 列、PK 改 tier 感知、清理 940 里
+			//   canonical_id 与网关 canonical 名不一致的遗留行
+			//   （旧口径存的是 salesdecorate 的源 key 名 ⇒ 与评分面
+			//   supplier_market_position 名字空间交集仅 12.5% ⇒ 对账页
+			//   大量「我方价格 vs 市场地板」没有地板可比）。
+			"974_market_price_identity_and_tier.sql",
+			// ★ 975（2026-11-17 定价对比完善轮）：定价建议一键执行的审计
+			//   留痕面。model_price_versions.source 闭集加入
+			//   market_suggestion（**不新增第二套变更历史** —— 期次账仍是
+			//   唯一权威）+ pricing_suggestion_batches 批次级留痕表。
+			"975_pricing_suggestion_audit.sql",
+			// ★ 976（2026-11-17 定价对比完善轮）：970 平台现价明细的**表键粒度**
+			//   对齐源侧观测键 —— 加 source_region 列并把 source_region/currency
+			//   并入 PK（起因：970 首次在生产写入即撞 23505 —— 同一 tier 有 5 个
+			//   region，价差 7 百分点）。
+			"976_market_price_platform_quote_region.sql",
 		},
 	}
 }

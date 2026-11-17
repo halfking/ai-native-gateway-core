@@ -396,12 +396,24 @@ def check_end_to_end_ledger(mod):
                     ["anthropic", "overseas", "USD", "false", "true"],
                     ["bge", "domestic", "CNY", "false", "true"],
                     ["x", "domestic", "CNY", "false", "true"]]
+        # ★ 2026-11-17 模型身份对齐：源侧 key 清单（canonical_key + model_kind）。
+        #   必须**排在**下面的聚合查询之前 —— 两者都含 "canonical_key"，
+        #   只按关键词分流会把 17 列的聚合行当 2 列的 key 清单解包 ⇒ 门自己红。
+        if "SELECT m.canonical_key, m.model_kind" in s:
+            return [["gpt-4o", "文本/对话"],
+                    ["claude-opus-4-8", "文本/对话"],
+                    ["bge-m3", "向量/Embedding"],
+                    ["", "文本/对话"]]
+        # ★ 970 平台明细（19 列）：走的是**全部 scope** 的 latest CTE。
+        if "cache_hit::text" in s:
+            return []
         # ★ A-17 平台×币种诊断查询必须先于源查询判定：diag 与 src 共享
         #   latest_cte（都含 price_observation + canonical_key），唯一区分锚是
         #   "FROM mapped r"（diag 独有）。
         if "FROM mapped r" in s:
             return []           # A-17 平台×币种诊断（本批无行）
-        if "FROM price_observation" in s and "canonical_key" in s:
+        # 源侧聚合（2026-11-17 起按 **out_name** 分组）。
+        if "GROUP BY out_name" in s:
             return src_rows
         if "count(DISTINCT platform_id)" in s:
             return [["4"]]
@@ -603,6 +615,444 @@ def check_dual_floors(mod):
     ok("A10 纯国内候选：综合地板=国内原生、无 fx 依赖")
 
 
+# ── A11: 模型身份对齐（2026-11-17 新增）──────────────────────────────────
+def check_identity_alignment(mod):
+    """★ 本轮**根因**门：源侧 canonical_key 带厂商命名空间前缀，而网关 canonical
+    名是裸模型名 ⇒ 旧两趟解析解析率仅 24.3%、参考价与评分面名字交集仅 12.5%
+    ⇒ 对账页「我方价格 vs 市场地板」几乎全空。
+
+    A11a 剥前缀：`openai:-gpt-4o` ⇒ `gpt-4o`；`z.ai:-glm-5.3` ⇒ `glm-5.3`；
+         `baai:bge-m3` ⇒ `bge-m3`；`{}` 噪声尾巴要去掉。
+    A11b **原样精确优先**：网关自己有 Ollama 风格名（`qwen2.5:7b`）⇒ 原样
+         命中时**不得**剥前缀（否则会误命中别的模型）。
+    A11c 归一兜底：`GPT-4O` ⇒ `gpt-4o`。
+    A11d 歧义 fail-closed：归一后命中多个 ⇒ 不猜（None）。
+    """
+    for fn in ("strip_namespace", "resolve_canonical", "is_not_a_model"):
+        if not hasattr(mod, fn):
+            bad("A11 脚本缺少 %s（模型身份对齐缺失 ⇒ 对账页无地板可比）" % fn)
+            return
+
+    cases = [
+        ("openai:-gpt-4o", "gpt-4o"),
+        ("z.ai:-glm-5.3", "glm-5.3"),
+        ("baai:bge-m3", "bge-m3"),
+        ("doubao-seed-2.1-pro{}", "doubao-seed-2.1-pro"),
+        ("plain-name", "plain-name"),
+    ]
+    for src, want in cases:
+        got = mod.strip_namespace(src)
+        if got != want:
+            bad("A11a strip_namespace(%r) = %r（应为 %r）" % (src, got, want))
+            return
+    ok("A11a 剥命名空间前缀：%d 个形态全对（openai:-/z.ai:-/baai:/{} 尾巴）" % len(cases))
+
+    # 网关字典：42=gpt-4o、77=claude-opus-4-8、900=qwen2.5:7b（Ollama 风格）
+    names = {"42": "gpt-4o", "77": "claude-opus-4-8", "900": "qwen2.5:7b"}
+    exact, nrm = {}, {}
+    for cid, n in names.items():
+        exact.setdefault(n.lower(), []).append(cid)
+        nrm.setdefault(mod.normalize(n), []).append(cid)
+
+    cid, gwn, fam = mod.resolve_canonical("openai:-gpt-4o", exact, nrm, names)
+    if cid != "42" or gwn != "gpt-4o" or fam != "resolved":
+        bad("A11b 剥前缀后应解析到 gpt-4o，实得 %r/%r/%r" % (cid, gwn, fam))
+        return
+    ok("A11b 带命名空间的源 key ⇒ 解析到网关 canonical（openai:-gpt-4o → gpt-4o）")
+
+    cid, gwn, fam = mod.resolve_canonical("qwen2.5:7b", exact, nrm, names)
+    if cid != "900" or gwn != "qwen2.5:7b":
+        bad("A11c 原样精确命中必须优先于剥前缀（qwen2.5:7b 被剥成 7b ⇒ 误命中）：%r/%r"
+            % (cid, gwn))
+        return
+    ok("A11c 原样精确优先：Ollama 风格名 qwen2.5:7b 不被剥前缀（不误命中 7b）")
+
+    cid, gwn, fam = mod.resolve_canonical("GPT-4O", exact, nrm, names)
+    if cid != "42" or fam != "resolved":
+        bad("A11d 大小写归一兜底失效：GPT-4O ⇒ %r/%r" % (cid, fam))
+        return
+    ok("A11d 归一兜底：GPT-4O ⇒ gpt-4o")
+
+    dup_exact = {"1": ["a"], "2": ["b"]}
+    dup_nrm = {mod.normalize("gpt-4o"): ["1", "2"]}
+    dup_names = {"1": "gpt-4o", "2": "gpt4o"}
+    cid, gwn, fam = mod.resolve_canonical("gpt-4o", dup_exact, dup_nrm, dup_names)
+    if cid is not None or fam != "ambiguous":
+        bad("A11e 歧义必须 fail-closed（不猜），实得 %r/%r" % (cid, fam))
+        return
+    ok("A11e 歧义 fail-closed：归一命中多个 ⇒ 不解析（台账计数暴露）")
+
+
+# ── A12: 同 canonical 合并（别名收敛）────────────────────────────────────
+def check_merge_keeps_identity(mod):
+    """★ 旧实现把「多个源 key 解析到同一网关 canonical」误判成**歧义**并把
+    canonical_id 全部回退 NULL ⇒ 211 实测 165 个 canonical / 43.3% 观测拿不到
+    可比地板。新实现：**同名合并**（SQL 侧 GROUP BY out_name）⇒ cid 必须保住。
+
+    本门验「合并后的形态」：resolved_map 里同一个 out_name 只对应**一个** cid；
+    plan_rows 走 resolved_map 路径时**不得**把它回退成 NULL。
+    """
+    resolved_map = {"gpt-4o": ("42", "resolved", "文本/对话")}
+    src_rows = [row("gpt-4o", dm_in="1.0", dm_out="2.0", dm_cnt="3", dm_platform="openai")]
+    landable, rejects = mod.plan_rows(src_rows, None, {}, resolved_map)
+    if len(landable) != 1:
+        bad("A12 合并路径产出 %d 行（应为 1）" % len(landable))
+        return
+    if landable[0][17] != "42":
+        bad("A12 合并后 canonical_id 被回退成 %r（应保住 42）"
+            "⇒ 别名收敛把可比地板又弄丢了" % (landable[0][17],))
+        return
+    if landable[0][18] != "resolved":
+        bad("A12 family 应为 resolved，实得 %r" % (landable[0][18],))
+        return
+    ok("A12 合并路径保住 canonical_id（别名收敛不再回退 NULL）")
+
+    # 反向对照：resolved_map 为 None（旧路径）时，resolve 回调仍被使用。
+    resolve = make_resolver({"gpt-4o": ["42"]})
+    landable2, _ = mod.plan_rows(src_rows, resolve, {})
+    if landable2[0][17] != "42":
+        bad("A12 旧路径（resolved_map=None）解析失效：%r" % (landable2[0][17],))
+        return
+    ok("A12 旧路径（resolved_map=None）兼容：resolve 回调仍生效")
+
+
+# ── A13: 非模型拒绝族 ────────────────────────────────────────────────────
+def check_not_a_model_family(mod):
+    """源侧把**上下文阶梯标签 / 图片分辨率档**当成了模型名（211 实测：
+    `128k<token≤256k` / `720p` / `480p`）⇒ 落地只会在对账页造出
+    「市场上有这个模型」的假信号 ⇒ 必须拒绝且**可计数**。
+    """
+    if mod.is_not_a_model("128k<token≤256k", "文本/对话", None) is not True:
+        bad("A13 阶梯标签 `128k<token≤256k` 未被识别为非模型")
+        return
+    if mod.is_not_a_model("720p", "图像生成", None) is not True:
+        bad("A13 分辨率档 `720p`（图像生成）未被识别为非模型")
+        return
+    if mod.is_not_a_model("gpt-4o", "文本/对话", "42") is not False:
+        bad("A13 已解析到网关 canonical 的行被判成非模型 ⇒ 会误删真模型")
+        return
+    if mod.is_not_a_model("qwen3.7-text-embedding-flash", "向量/Embedding", None) is not False:
+        bad("A13 向量/Embedding 未解析行被判非模型 ⇒ 会误删网关在用的模型价格")
+        return
+    ok("A13 非模型判据：阶梯标签/分辨率档拒绝；已解析行与 embedding 行保留")
+
+    # 拒绝计数必须能被台账读到（不静默）。
+    src_rows = [row("720p", dm_in="1.0", dm_out="2.0", dm_cnt="1", dm_platform="x")]
+    landable, rejects = mod.plan_rows(
+        src_rows, make_resolver({}), {},
+        {"720p": (None, "unresolved", "图像生成")})
+    if rejects.get("not_a_model", 0) != 1:
+        bad("A13 not_a_model 拒绝族计数不对：%r" % (rejects,))
+        return
+    if len(landable) != 0:
+        bad("A13 非模型行仍被算作可落地：%r" % (landable,))
+        return
+    ok("A13 非模型行落进 not_a_model 拒绝族（台账可读、恒等式闭合）")
+
+
+# ── A14: 台账指纹与身份读数 ──────────────────────────────────────────────
+def check_ledger_fingerprint(mod):
+    """★ 部署漂移自证：台账 detail 必须带 **脚本自身 sha256** 与身份对齐读数。
+    动机（211 实测）：宿主 cron 跑 /root/market-price-sync.py，它与仓库副本
+    长期漂移 ⇒ 平台现价表恒空而台账看起来一切正常 ⇒ 台账自带指纹即可自证。
+    """
+    if not hasattr(mod, "script_sha256"):
+        bad("A14 脚本缺少 script_sha256（部署漂移无法自证）")
+        return
+    digest = mod.script_sha256()
+    if not digest or len(digest) != 64:
+        bad("A14 script_sha256 返回的不是 sha256 十六进制：%r" % (digest,))
+        return
+    src = open(SCRIPT, encoding="utf-8").read()
+    if '"script_sha256": script_sha256()' not in src:
+        bad("A14 台账 detail 未写入 script_sha256 ⇒ 漂移不可读")
+        return
+    for key in ("identity_resolved_out_names", "identity_namespace_stripped",
+                "identity_merged_groups"):
+        if key not in src:
+            bad("A14 台账 detail 缺身份对齐读数 %s" % key)
+            return
+    ok("A14 台账自带脚本指纹（sha256 %s…）+ 身份对齐读数" % digest[:12])
+
+
+# ── A15: 970 明细的 model_kind 必须与门判同源（canonical 分类优先）────────
+def _split_sql_values(tup):
+    """把 SQL VALUES (...) 里的字面量按 SQL 语义拆开（尊重单引号转义）。
+
+    ★ 为什么不能按 ", " 裸切：tier / model_kind 值里**含逗号**
+      （如 `输入长度[0,32K),输入长度[32K,128K)`）⇒ 裸切会错位 ⇒
+      量出来的「脏值」其实是量具自己的错位（2026-11-17 已踩过一次，
+      曾据此误判「970 model_kind 有脏值」，实为假象）。
+    """
+    out, buf, i, inq = [], "", 0, False
+    while i < len(tup):
+        ch = tup[i]
+        if inq:
+            if ch == "'":
+                if i + 1 < len(tup) and tup[i + 1] == "'":
+                    buf += "'"
+                    i += 2
+                    continue
+                inq = False
+                i += 1
+                continue
+            buf += ch
+            i += 1
+            continue
+        if ch == "'":
+            inq = True
+            i += 1
+            continue
+        if ch == ",":
+            out.append(buf.strip())
+            buf = ""
+            i += 1
+            continue
+        buf += ch
+        i += 1
+    out.append(buf.strip())
+    return out
+
+
+def _platform_quote_model_kind_msgs(mod):
+    """返回失败消息列表（空 = 通过）。
+
+    ★ 抽成「返回 msgs」是为了让**变异臂**能对变异体跑同一套断言
+      （行为门 + 变异臂必须成对，否则门无牙）。
+    """
+    """★ 同一个模型在同一份产物里只能有**一个**类别。
+
+    动机（211 真库实测）：源侧 `price_observation.model_kind`（观测快照）与
+    `model.model_kind`（canonical 分类）在 6341/19181 行**不一致** ⇒ 旧口径下
+    970 明细写的是观测快照值，而「非模型拒绝门」「同名合并取最高可比类别」
+    用的是 canonical 值 ⇒ **决策面与候选面判据不一致**（与 F6 同型：
+    键一样、闸不一样）。
+    ⇒ 970 明细的 model_kind 必须与门判**同源**（canonical 优先）。
+
+    ★ 这条是**行为门**：跑真 main()、抓真生成的 970 INSERT、逐条读列值。
+    """
+    import io
+    import contextlib
+
+    msgs = []
+
+    src_rows = [row("gpt-4o", dm_in="1.0", dm_out="2.0", dm_cnt="3", dm_platform="openai")]
+    # 970 明细行（19 列，列序与脚本注释一致）：
+    #   0 out_name 1 pid 2 pname 3 is_vendor 4 vendor 5 cur 6 nin 7 nout
+    #   8 cin 9 cout 10 region 11 native 12 run 13 url 14 tier
+    #   15 model_kind 16 cache_native 17 cache_cny 18 scope 19 src_region
+    plat_rows = [
+        # ① 源侧给的是**观测快照值**（与 canonical 不同）⇒ 落库必须是 canonical
+        ["gpt-4o", "openai", "OpenAI", "false", "OpenAI", "CNY",
+         "1.0", "2.0", "6.0", "12.0", "domestic", "CNY", "2026-11-17",
+         "https://example.invalid/p", "0<Token≤32K", "观测快照值",
+         "0.5", "3.0", "标准按量", "中国大陆"],
+        # ② 只在非标准 scope 出现的模型（不在 key 清单 ⇒ 不在 resolved_map）
+        #    ⇒ 必须**回落**到源侧 SQL 给的值，不得被写成空
+        ["promo-only-model", "promo", "Promo", "false", "Promo", "CNY",
+         "3.0", "6.0", "18.0", "36.0", "domestic", "CNY", "2026-11-17",
+         "https://example.invalid/q", "", "文本/对话",
+         "", "", "限时优惠", "中国大陆"],
+        # ③ **同模型同平台同 tier 但不同源 region** ⇒ 必须是**两行**
+        #    （211 真库实测：bailian deepseek-v4-flash-0731 忙时档有 5 个 region，
+        #     3.000000 vs 3.208000 CNY）⇒ 静默并成一行＝丢 7% 的价差。
+        ["gpt-4o", "openai", "OpenAI", "false", "OpenAI", "CNY",
+         "1.2", "2.4", "7.2", "14.4", "domestic", "CNY", "2026-11-17",
+         "https://example.invalid/p", "0<Token≤32K", "观测快照值",
+         "0.6", "3.6", "标准按量", "美国"],
+        # ④ **完全同表键**（同模型/平台/tier/region/currency）但价格不同
+        #    （别名收敛的产物）⇒ 必须**折叠成一行**且**取地板口径的最低价**
+        ["gpt-4o", "openai", "OpenAI", "false", "OpenAI", "CNY",
+         "0.9", "1.8", "5.4", "10.8", "domestic", "CNY", "2026-11-16",
+         "https://example.invalid/p2", "0<Token≤32K", "观测快照值",
+         "0.4", "2.7", "标准按量", "中国大陆"],
+    ]
+    captured = {}
+
+    def fake_psql_tsv(container, user, db, sql):
+        s = sql
+        if "to_regclass('public.market_platform_registry')" in s:
+            return [["t"]]
+        if "to_regclass('public.market_price_platform_quotes')" in s:
+            return [["t"]]
+        if "FROM public.market_platform_registry" in s:
+            return [["openai", "domestic", "CNY", "false", "true"],
+                    ["promo", "domestic", "CNY", "false", "true"]]
+        if "SELECT m.canonical_key, m.model_kind" in s:
+            # ★ canonical 分类：gpt-4o 是「文本/对话」；promo-only-model 不在
+            #   标准按量清单里（只有非标准 scope 才有）⇒ 不出现在这里。
+            return [["gpt-4o", "文本/对话"]]
+        if "cache_hit::text" in s:
+            return plat_rows
+        if "FROM mapped r" in s:
+            return []
+        if "GROUP BY out_name" in s:
+            return src_rows
+        if "count(DISTINCT platform_id)" in s:
+            return [["2"]]
+        if "FROM fx_rate" in s:
+            return [["7.2"]]
+        if "FROM models_canonical" in s:
+            return [["42", "gpt-4o"]]
+        if "FROM market_price_reference" in s:
+            return []
+        if "model_credit_rates" in s:
+            return [["100"]]
+        return []
+
+    def fake_psql_exec(container, user, db, sql_script):
+        captured["script"] = sql_script
+        return types.SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    orig_tsv, orig_exec = mod.psql_tsv, mod.psql_exec
+    mod.psql_tsv = fake_psql_tsv
+    mod.psql_exec = fake_psql_exec
+    dump_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "_mps_dump_a15.sql")
+    argv = sys.argv
+    sys.argv = ["market-price-sync.py", "--dump-sql", dump_path]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            mod.main()
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            msgs.append("A15 main() 异常退出：%r" % (exc.code,))
+            return msgs
+    except Exception as exc:  # noqa: BLE001
+        msgs.append("A15 main() 执行异常：%r" % (exc,))
+        return msgs
+    finally:
+        mod.psql_tsv, mod.psql_exec = orig_tsv, orig_exec
+        sys.argv = argv
+
+    try:
+        with open(dump_path, encoding="utf-8") as fh:
+            script = fh.read()
+    except OSError as exc:
+        msgs.append("A15 读不到 dump 出来的目标事务 SQL：%r" % (exc,))
+        return msgs
+    finally:
+        if os.path.exists(dump_path):
+            os.remove(dump_path)
+
+    # 970 INSERT 的 21 列：
+    #   0 dimension 1 canonical_name 2 platform_id 3 platform_name 4 region
+    #   5 native_currency 6 is_vendor 7 vendor 8 currency 9 input_per_1m
+    #   10 output_per_1m 11 cny_in_per_1m 12 cny_out_per_1m 13 run_date
+    #   14 source_url 15 tier 16 model_kind 17 source_region
+    #   18 cache_hit_per_1m 19 cny_cache_hit_per_1m 20 updated_at
+    rows = []
+    for stmt in script.split(";\n"):
+        stmt = stmt.strip()
+        if not stmt.startswith("INSERT INTO public.market_price_platform_quotes"):
+            continue
+        i = stmt.index("VALUES")
+        tup = stmt[i + len("VALUES"):].strip()
+        if not (tup.startswith("(") and tup.endswith(")")):
+            msgs.append("A15 970 INSERT 的 VALUES 形态异常：%s" % tup[:120])
+            return msgs
+        vals = _split_sql_values(tup[1:-1])
+        if len(vals) != 21:
+            msgs.append("A15 970 INSERT 列数 %d ≠ 21 ⇒ 列序错位" % len(vals))
+            return msgs
+        rows.append(vals)
+
+    kinds = {}
+    for vals in rows:
+        kinds.setdefault(vals[1], []).append(vals[16])    # canonical_name -> [model_kind]
+
+    # ① 源侧 4 行 ⇒ 落地 3 行（④ 与 ① 同表键 ⇒ 折叠）
+    if len(rows) != 3:
+        msgs.append("A15 落地行数 %d ≠ 3（源 4 行，同表键折叠 1 行）" % len(rows))
+        return msgs
+    # ② 同模型不同 region ⇒ 两行（不得并成一行）
+    gpt = [v for v in rows if v[1] == "gpt-4o"]
+    if len(gpt) != 2:
+        msgs.append("A15 gpt-4o 落地 %d 行（应为 2：不同 source_region 各一行）"
+                    % len(gpt))
+        return msgs
+    regions = sorted(v[17] for v in gpt)
+    if not any("美国" in v[17] for v in gpt) or not any("中国" in v[17] for v in gpt):
+        msgs.append("A15 gpt-4o 的两个 source_region 丢了：%r" % (regions,))
+        return msgs
+    # ③ 同表键折叠 ⇒ 留**地板口径最低价**那一条（cny_in 5.4 而非 6.0）
+    cn = [v for v in gpt if "中国" in v[17]]
+    if not cn:
+        msgs.append("A15 gpt-4o 的中国大陆那一行不见了")
+        return msgs
+    if cn[0][11] != "5.4":
+        msgs.append("A15 同表键折叠后留的是 %r（应为地板口径最低 cny_in 5.4）"
+                    % (cn[0][11],))
+        return msgs
+    # ④ model_kind 取 canonical 分类
+    for vals in rows:
+        if vals[1] == "gpt-4o" and vals[16] != "文本/对话":
+            msgs.append("A15 gpt-4o 的 model_kind 落库为 %r（应为 canonical 的「文本/对话」）"
+                        "⇒ 970 明细与拒绝门/合并门不是同一套分类" % (vals[16],))
+            return msgs
+    promo = [v for v in rows if v[1] == "promo-only-model"]
+    if not promo:
+        msgs.append("A15 非标准 scope 独有模型没落地")
+        return msgs
+    if promo[0][16] != "文本/对话":
+        msgs.append("A15 非标准 scope 独有模型的 model_kind 落库为 %r"
+                    "（应回落保留源侧值，不得为空）" % (promo[0][16],))
+        return msgs
+
+
+def check_platform_quote_model_kind(mod):
+    """A15 门：跑真 main()、抓真生成的 970 INSERT、逐条读列值。"""
+    msgs = _platform_quote_model_kind_msgs(mod)
+    if msgs:
+        for m in msgs:
+            bad(m)
+        return
+    ok("A15 970 明细 model_kind 取 canonical 分类（不取观测快照值）")
+    ok("A15 不在标准按量清单里的模型回落保留源侧 model_kind")
+    ok("A15 970 表键含 source_region（同模型不同地区不合并）")
+    ok("A15 同表键折叠取地板口径最低价（别名收敛不丢行也不重复）")
+
+
+def check_a15_mutation_arm():
+    """★ 变异臂：把 canonical 优先改回「直接用源侧值」⇒ A15 必须红。
+
+    ★ 为什么必须有这条：文本门抓不到「同一函数被掏空」这类行为变异
+      （本仓 §708① 同型事故）⇒ 行为门必须配一条**证明自己会红**的变异臂。
+    ★ 锚点未命中 ≠ 守卫失效，它意味着变异压根没发生（假阴性）
+      ⇒ 锚点不命中时必须报红，不能静默放过。
+    """
+    src = open(SCRIPT, encoding="utf-8").read()
+    anchor = ('            kind = ""\n'
+              '            rm = resolved_map.get(pr[0])\n'
+              '            if rm is not None:\n'
+              '                kind = rm[2] or ""\n'
+              '            if not kind:\n'
+              '                kind = pr[15] or ""\n')
+    if anchor not in src:
+        bad("A15 变异臂锚点不在脚本里（canonical 优先那段形态变了 ⇒ 门需重新对齐）")
+        return
+    mutated = src.replace(anchor, '            kind = pr[15] or ""  # MUTATED: 退回观测快照值\n', 1)
+    if mutated == src:
+        bad("A15 变异未生效（替换后文本没变）")
+        return
+    tmp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "_mps_mutant_a15_tmp.py")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write(mutated)
+        mmod = load_module(tmp_path, name="mps_mutant_a15")
+        msgs = _platform_quote_model_kind_msgs(mmod)
+        if msgs:
+            ok("A15 变异臂：退回观测快照值 ⇒ 门抓到 %r（有牙）" % (msgs[0][:60],))
+        else:
+            bad("A15 变异臂无效：退回观测快照值后门仍绿 ⇒ 门无牙")
+    except Exception as exc:  # noqa: BLE001
+        bad("A15 变异臂执行异常：%r" % (exc,))
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
 def main():
     if not os.path.exists(SCRIPT):
         print("FATAL: 找不到 %s" % SCRIPT, file=sys.stderr)
@@ -621,6 +1071,12 @@ def main():
     check_end_to_end_ledger(mod)
     check_mutation_arm(mod)
     check_dual_floors(mod)
+    check_identity_alignment(mod)
+    check_merge_keeps_identity(mod)
+    check_not_a_model_family(mod)
+    check_ledger_fingerprint(mod)
+    check_platform_quote_model_kind(mod)
+    check_a15_mutation_arm()
 
     print("\n================ 汇总 ================")
     print("通过 %d / 失败 %d" % (PASS, FAIL))

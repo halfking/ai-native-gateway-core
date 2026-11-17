@@ -65,6 +65,7 @@ const ModelIntegrityView = () => import('./views/ModelIntegrityView.vue')
 const ModelCredibilityView = () => import('./views/ModelCredibilityView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
 const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
+const PIAnalysisView = () => import('./views/admin/PIAnalysisView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
@@ -340,6 +341,7 @@ export const router = createRouter({
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
     { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresSuper: true } },
+    { path: '/admin/pi-analysis', component: PIAnalysisView, meta: { requiresSuper: true } },
     { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },

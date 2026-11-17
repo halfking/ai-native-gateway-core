@@ -90,6 +90,7 @@ export default {
     sessionConfig: 'Session Configuration',
     agents: 'Agent Registry',
     promptInjection: 'Prompt Injection Detection',
+    piAnalysis: 'PI Error Analysis',
     examples: 'Examples',
     autoConfig: 'Auto setup',
     helpManual: 'Help Manual',

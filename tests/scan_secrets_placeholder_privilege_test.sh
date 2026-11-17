@@ -97,20 +97,28 @@ VALUES=( "${DICT_WORDS[@]}" "${SAME_AS_USER[@]}" "${SINGLE_CHAR[@]}" "${EXTRA_PL
 
 # ── 运维脚本侧的已知命中（★ 棘轮：★ 集合必须与现实完全一致 ★）────────
 # ★ 格式：file:line ★ ★ 每一条都是【★ 正当的占位符用法 ★】★★ ★
+# ★ ★ 2026-11-17 校准（★ 上一版起本门在 main 上【★ 恒红 ★】★★ ★）：
+#   · `scripts/setup-test-db.sh:42` —— ★ 一条【★ localhost 的测试库 DSN ★】、
+#     且口令是【★ 同一个本地 docker 测试容器的口令 ★】—— ★ 同一个字面量
+#     在仓内【★ 10 个文件 ★】里出现（★ 含单测与审计文档 ★）⇒ ★ 是公开的
+#     本地测试凭据、★ 不是生产凭据 ★★ ★（★ 走的是白名单的 `localhost` 那条 ★）
+#   · `scripts/ursmcheck/hardcoded_dsn_targets.tsv` 的行号【★ 因该登记册增行
+#     而整体下移 ★】—— ★ 本清单按 `file:line` 记账、★ 故须随增行同步 ★★ ★
 KNOWN_SCRIPT_HITS=(
   "scripts/.mutate-840-throttle.sh:25"
   "scripts/audit/scan_startup_chain.py:20"
   "scripts/omnifree/e2e-verify.sh:46"
+  "scripts/setup-test-db.sh:42"
   "scripts/start-full.sh:40"
   "scripts/test-migration-430.sh:23"
   "scripts/test-migration-430.sh:340"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:8"
+  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:7"
   "scripts/ursmcheck/hardcoded_dsn_targets.tsv:11"
   "scripts/ursmcheck/hardcoded_dsn_targets.tsv:12"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:14"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:15"
   "scripts/ursmcheck/hardcoded_dsn_targets.tsv:16"
-  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:23"
+  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:17"
+  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:18"
+  "scripts/ursmcheck/hardcoded_dsn_targets.tsv:19"
   "scripts/verify-fpslot-fix.sh:299"
 )
 
@@ -440,6 +448,16 @@ RE_VAR='^\$\{[A-Za-z_][A-Za-z0-9_]*(:.*)?\}$'
 RE_ANGLE='^<[^>]+>$'
 RE_IDENT='^[A-Za-z_][A-Za-z0-9_]*$'
 RE_DOTID='^[a-z0-9_]+(\.[a-z0-9_]+)+$'
+# ★ ★ 2026-11-17：★ 本仓【★ 自己的遮蔽标记族 ★】★★ ★
+#   `[REDACTED]` / `[REDACTED:type]` / `[REDACTED:type:n]` / `[REDACTED:type:hex]`
+#   —— internal/logging/standard.go、internal/credentialtext/、security/sanitize/
+#   与 security/multilayer/rule_detector.go 的 generateReplacement()【★ 全用这一族 ★】
+#   ⇒ ★ 它们【★ 是占位符、不是凭据 ★】★★ ★
+#   ⇒ ★ 而本门此前【★ 只认尖括号形态 ★】⇒ ★ 这一族【★ 一律落进「字面量」 ★】★★ ★
+#   ⇒ ★ 后果＝★ 断言⑧【★ 把本仓自己的遮蔽标记当成真凭据 ★】报红 ★★ ★
+#   ⇒ ★ 而它们【★ 之所以进得了豁免面 ★】＝扫描器白名单里那条裸 `REDACTED` ★
+#   （★ 那条白名单是【★ 为「值里含 REDACTED 字样 ★」设计的 ★】、★ 不是为凭据 ★）★★ ★
+RE_MASK='^\[REDACTED(:[A-Za-z0-9_]+){0,2}\]$'
 
 value_shape() { # 值 → 形态
   local v="$1" lv
@@ -447,6 +465,7 @@ value_shape() { # 值 → 形态
   lv="$(printf '%s' "${v}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${v}" =~ ${RE_VAR} ]]; then printf '变量形态'; return 0; fi
   if [[ "${v}" =~ ${RE_ANGLE} ]]; then printf '尖括号形态'; return 0; fi
+  if [[ "${v}" =~ ${RE_MASK} ]]; then printf '遮蔽标记形态'; return 0; fi
   if [[ "${v}" == *"*"* || "${v}" == *"…"* ]]; then printf '掩码形态'; return 0; fi
   case " ${PLACEHOLDER_WORDS} " in *" ${lv} "*) printf '词典占位形态'; return 0;; esac
   if [[ "${v}" =~ ${RE_IDENT} ]]; then printf '标识符形态'; return 0; fi
@@ -458,10 +477,14 @@ value_shape() { # 值 → 形态
 # ★   · DSN 形态：★ 标识符形态【★ 就是字面量 ★】—— ★ 它【★ 不是变量引用 ★】★★ ★
 # ★     （★ 而这正是本轮抓到的那一条：★ `kaixuan` ★）★★ ★
 # ★   · 赋值形态：★ 标识符／点号标识符【★ 是 i18n key ／ 事件名 ★】⇒ ★ 占位符 ★★ ★
+#   · 遮蔽标记形态：★ 【★ 本仓自己的 `[REDACTED:…]` 标记族 ★】⇒ ★ 占位符 ★★ ★
+#     （★ 2026-11-17 补：★ 此前它落进「字面量」⇒ ★ 断言⑧【★ 把本仓自己的
+#       遮蔽标记当成真凭据 ★】报红 ★★ ★ ⇒ ★ 那是【★ 量具的精度缺陷 ★】、
+#       不是凭据泄漏 ★★ ★）
 is_literal_credential() { # 形态 值 位置 → 0=字面量
   local shape="$1" v="$2" where="$3"
   case "${shape}" in
-    变量形态|尖括号形态|掩码形态|词典占位形态) return 1 ;;
+    变量形态|尖括号形态|遮蔽标记形态|掩码形态|词典占位形态) return 1 ;;
     标识符形态|点号标识符形态)
       if [[ "${where}" == "DSN" ]]; then return 0; fi
       return 1 ;;
@@ -517,6 +540,7 @@ KNOWN_EXEMPT_CRED=(
   'cmd/llm-gw-annotator/quickstart.sh	pass	DSN	user:pass@host'
   'cmd/sessionmeta-bench/testdata/sessions_100.jsonl	password	DSN	example\.com'
   'cmd/tools/backfill-modality/main.go	pass	DSN	user:pass@host'
+  'cmd/tools/backfill-release-dates/main.go	pass	DSN	user:pass@host'
   'cmd/tools/migration-456-test/main.go	pass	DSN	user:pass@host'
   'cmd/tools/validate_sessions_v2/main.go	pass	DSN	user:pass@host'
   'config.example.yaml	password	DSN	127\.0\.0\.1'
@@ -526,6 +550,8 @@ KNOWN_EXEMPT_CRED=(
   'pkg/identity-migrate/identity-migrate.go	pass	DSN	user:pass@host'
   'proxy/parser.go	pass	DSN	user:pass@host'
   'proxy/parser.go	password	DSN	:password@'
+  'security/multilayer/rule_detector.go	[REDACTED:API_KEY]	ASSIGN	REDACTED'
+  'security/multilayer/rule_detector.go	[REDACTED:PASSWORD]	ASSIGN	REDACTED'
   'sql/scripts/dump-standard-models.sh	${PGPASSWORD:-}	ASSIGN	127\.0\.0\.1'
   'storage/factory/factory.go	pass	DSN	:pass@'
   'tools/benchreport/main.go	pass	DSN	127\.0\.0\.1'

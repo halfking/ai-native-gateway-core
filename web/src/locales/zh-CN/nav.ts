@@ -91,6 +91,7 @@ export default {
     sessionConfig: '会话配置',
     agents: 'Agent Registry',
     promptInjection: '提示词注入检测',
+    piAnalysis: 'PI 错误分析',
     examples: '接入示例',
     autoConfig: '自动配置',
     helpManual: '帮助手册',

@@ -42,6 +42,9 @@ type Detector struct {
 	//   同样是无锁写。
 	llmCache   map[string]*LLMDetectionResult
 	llmCacheMu sync.RWMutex
+	
+	// 2026-11-17: PI 错误收集器（用于自动分析）
+	errorCollector *ErrorCollector
 }
 
 // Rule 检测规则
@@ -1659,3 +1662,9 @@ func decodeLLMDetectionCandidate(s string) (*LLMDetectionResult, bool) {
 	}
 	return &r, true
 }
+
+// SetErrorCollector 设置错误收集器（用于自动分析）
+func (d *Detector) SetErrorCollector(collector *ErrorCollector) {
+	d.errorCollector = collector
+}
+
