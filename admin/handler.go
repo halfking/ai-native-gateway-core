@@ -16,22 +16,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
-	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
-	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"      //nolint:depguard // attachment download/list routes live in the admin mux
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"    //nolint:depguard // 数据库降级模块
+	"github.com/kaixuan/llm-gateway-go/domains/memory"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility" // model-credibility backend interface (modelCredibilityBackend)
-	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"    // 对账报表读面/导出（2026-09-25）
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"     // model-IQ backend interface (modelQualityBackend)
+	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"     // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
@@ -42,9 +41,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
+	"github.com/kaixuan/llm-gateway-go/internal/securityevent"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/proxy"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
@@ -72,7 +73,7 @@ type topologyStatsDB interface {
 
 // loginDB 是 handleLogin 的读写查询面。刻意保持窄接口（QueryRow + Exec）：
 // db 字段是具体 *pgxpool.Pool，无法在单测里注入 pgxmock，而 handleLogin 的
-//登录路径（registry fallback探测 / users·tenants查询 / admin key落库）
+// 登录路径（registry fallback探测 / users·tenants查询 / admin key落库）
 // 都必须能被单测钉住，所以按 controlledBodyDB 的同款范式开一个窄口。
 // nil ⇒ 用 h.db（生产路径零变化）。
 type loginDB interface {
@@ -81,9 +82,9 @@ type loginDB interface {
 }
 
 type Handler struct {
-	db                   *pgxpool.Pool
-	registry             *authplugin.Registry // Phase 2: plugin registry for auth/user/tenant operations
-	bodyDB               controlledBodyDB
+	db       *pgxpool.Pool
+	registry *authplugin.Registry // Phase 2: plugin registry for auth/user/tenant operations
+	bodyDB   controlledBodyDB
 	// loginDB 是 handleLogin 的窄注入面（2026-11-15 phase3 合并轮）：nil ⇒ h.db。
 	// 单测（auth_handlelogin_integration_test.go）需注入 pgxmock，而 db 是具体
 	// *pgxpool.Pool —— 按 controlledBodyDB 同款范式开窄口。
@@ -93,13 +94,13 @@ type Handler struct {
 	// ⇒ ★ 单测可注入（★ 这个读面的**口径**是本轮的关键：逐单窗口 vs
 	// ★ 整批一个窗口 ★ ⇒ 必须能被测到 ★）。
 	blockReviewCandidateReader blockReviewCandidateReader
-	topologyStatsDB      topologyStatsDB
+	topologyStatsDB            topologyStatsDB
 	// topologyProviderKindsDB（2026-10-28 选路层轮）：provider-kinds 端点的
 	// 注入口，理由与 topologyStatsDB 相同 —— 单测要能注入 pgxmock。
 	topologyProviderKindsDB topologyStatsDB
 	// marketPlatformDB（2026-11-13 A-17 收口 M1-T3）：市场平台注册表读写面
 	// 注入口，同款范式（nil ⇒ 用 h.db）—— market_platforms.go。
-	marketPlatformDB marketPlatformDB
+	marketPlatformDB     marketPlatformDB
 	bodyServiceJWTSecret string
 	secret               string
 	encKey               []byte
@@ -264,6 +265,14 @@ type Handler struct {
 		Stats() memory.Stats
 		Pause()
 		Resume()
+	}
+	// securityEventSink provides the M2-2 security event outbox stats.
+	//
+	// ★ 为什么单独一个字段而不是并进 memoraSink：两者是**不同的写面**
+	// （会话记忆 vs 安全事件），丢弃率与失败率的含义也不同 —— 并在一起
+	// 会让"会话记忆在写"被误读成"安全事件也在写"。
+	securityEventSink interface {
+		Stats() securityevent.Stats
 	}
 	// stateManager (2026-06-30) provides live credential×model state for
 	// the /api/credentials/{id}/test + /state endpoints and feeds the
@@ -950,6 +959,19 @@ func (h *Handler) SetMemoraServices(client interface {
 }) {
 	h.memoraClient = client
 	h.memoraSink = sink
+}
+
+// SetSecurityEventSink wires the security event sink so the admin UI can
+// display its counters (enqueued / dropped / processed / errored).
+//
+// The security event sink is best-effort by design: a full queue drops
+// events instead of blocking the request path. Those drops must be
+// **visible** — an invisible drop is indistinguishable from "no threats
+// happened".
+func (h *Handler) SetSecurityEventSink(sink interface {
+	Stats() securityevent.Stats
+}) {
+	h.securityEventSink = sink
 }
 
 func (h *Handler) fpSlotsDefaultLimit() int {

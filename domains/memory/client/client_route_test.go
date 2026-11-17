@@ -276,3 +276,37 @@ func TestClient_ProjectScopeHeaderIsSent(t *testing.T) {
 		}
 	})
 }
+
+// TestClient_SendsTheIngestAPIKeyHeader 钉住凭据头（2026-11-17 M2-2 实测）。
+//
+// 缺陷：客户端此前只发 `Authorization: Bearer <apiKey>`。而 memora 的
+// legacy 组挂的是 V1AuthWithCredentials（memora/internal/server/server.go:1114），
+// 它的解析顺序（memora/internal/auth/handler.go:529-556）是：
+//
+//	① Authorization: Bearer <token> —— 按 JWT / 共享身份解析；
+//	② X-Session-Token / cookie        —— 会话身份；
+//	③ X-API-Key: <key>                —— **应用 API key（ingest key）**。
+//
+// 网关侧的凭据是 ingest API key（.env.example：LLM_GATEWAY_MEMORA_API_KEY=
+// <env:MEMORA_INGEST_API_KEY>），不是 JWT ⇒ ① 解析失败 → ② 没有 →
+// ③ 请求里根本没有 X-API-Key ⇒ **401 authentication required**。
+//
+// ⇒ 补上 X-API-Key；Authorization 保留（凭据若是 JWT 时那条路仍然通）。
+func TestClient_SendsTheIngestAPIKeyHeader(t *testing.T) {
+	fake := &fakeMemora{body: `{"ok":true}`}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	c := NewClient(ClientConfig{BaseURL: srv.URL, APIKey: "ingest-key-1"})
+	if err := c.AddMessage(context.Background(), "u1",
+		[]memory.Message{{Role: "user", Content: "hello"}}, nil); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	header := fake.last().Header
+	if got := header.Get("X-API-Key"); got != "ingest-key-1" {
+		t.Fatalf("X-API-Key = %q，ingest API key 必须走这个头（memora 的 ③ 号路径）", got)
+	}
+	if got := header.Get("Authorization"); got != "Bearer ingest-key-1" {
+		t.Fatalf("Authorization = %q，必须保留（凭据若是 JWT 时那条路仍然通）", got)
+	}
+}

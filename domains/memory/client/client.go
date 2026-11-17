@@ -215,7 +215,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return err
 	}
 	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		c.setAuthHeaders(req)
 	}
 	c.setProjectHeader(req, c.projectID)
 	resp, err := c.http.Do(req)
@@ -275,7 +275,7 @@ func (c *Client) addMessageOnce(ctx context.Context, userID string, messages []m
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		c.setAuthHeaders(req)
 	}
 	// memora 的 project scope 是 fail-closed 的：缺 project_id 直接 400
 	// （memora/internal/memory/handler.go:335-338）。人工抽取路径把
@@ -457,7 +457,7 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		c.setAuthHeaders(req)
 	}
 	c.setProjectHeader(req, c.projectID)
 	resp, err := c.http.Do(req)
@@ -566,6 +566,34 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 		}
 	}
 	return out, nil
+}
+
+// setAuthHeaders sets the credential headers on a memora request.
+//
+// ★ 为什么**两个头都要发**（2026-11-17 M2-2 实测）：
+//
+// memora 的 /api/* 走 middleware.V1AuthWithCredentials
+// （memora/internal/server/server.go:1114），它的解析顺序是
+// （memora/internal/auth/handler.go:529-556 的 Handler.authenticate）：
+//
+//	① Authorization: Bearer <token> —— 按 **JWT** 解析（3 段式）或
+//	   共享身份签名解析；ingest API key 走不通这条路；
+//	② X-Session-Token / cookie —— 会话身份；
+//	③ X-API-Key: <key> —— **应用 API key**（ingest key 走这条）。
+//
+// 本客户端此前只发 ①（Authorization: Bearer <apiKey>）。而网关侧的凭据是
+// **ingest API key**（.env.example：LLM_GATEWAY_MEMORA_API_KEY=<env:
+// MEMORA_INGEST_API_KEY>），不是 JWT ⇒ ① 解析失败 → ② 没有 → ③ 请求里
+// 根本没有 X-API-Key ⇒ **401 authentication required**。
+//
+// ⇒ 补上 X-API-Key。同时**保留** Authorization：如果哪天凭据换成 JWT，
+// ① 会先命中，两条路都通。
+func (c *Client) setAuthHeaders(req *http.Request) {
+	if req == nil || c.apiKey == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("X-API-Key", c.apiKey)
 }
 
 // setProjectHeader sets memora's X-Project-ID header when a project is known.
