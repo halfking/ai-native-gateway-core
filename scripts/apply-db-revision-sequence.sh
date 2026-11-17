@@ -3366,13 +3366,48 @@ ledger_artifact_probe "970_market_price_platform_quotes.sql" \
 ledger_artifact_probe "971_pi_error_analysis_system.sql" \
   "to_regclass('public.error_analysis_queue') IS NOT NULL AND to_regclass('public.error_analysis_results') IS NOT NULL AND to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'error_analysis_results' AND t.tgname = 'trigger_error_analysis_results_updated_at' AND NOT t.tgisinternal) AND to_regprocedure('public.cleanup_old_error_analysis(integer)') IS NOT NULL"
 # ★ 972 的产物 = ① model_offers_update_trigger 的函数体里出现
-#   unavailable_recover_at 的三分支 CASE（触发器不再丢这一列）
-#   ＋ ② 库内不再存在「available=TRUE ∧ unavailable_at IS NULL ∧
-#   recover_at 非 NULL」的矛盾残留行（存量清理已生效）。
-#   ★ 第②项**恒真**的前提：触发器修好后，经视图的「置可用」写入不再新增该状态；
-#   而 cmb 侧直写路径（域内全部 Go 写入方）本就四列一起清 ⇒ 无第二条产生路径。
+#   unavailable_recover_at 的三分支 CASE（触发器不再丢这一列）。
+#
+# ★★★ 2026-11-17 第三轮修正：**产物探针只查产物，不查运行时状态**。
+#   本条原本还断言第②项「库内不再存在 available=TRUE ∧ unavailable_at IS NULL ∧
+#   recover_at 非 NULL 的矛盾残留行」—— 那一项在 2026-11-17 17:0x 的 211 部署里
+#   **把部署打死了**（实测 FATAL：972 探针判失败 ⇒ 部署中止于「先修库再部署」）。
+#
+#   为什么它是错的（三层，逐层都有实据）：
+#   ① **层级错**：产物探针的契约是「本库是否已有该迁移的**产物**」（表/列/索引/
+#      约束/触发器/函数/种子行）。「事实表当前有多少行」是**运行时状态** ——
+#      任何写路径都能在迁移落地之后重新制造它 ⇒ 它不是迁移的产物，
+#      是**运行中二进制**的行为。
+#   ② **前提错**（我方自己的注释写错了）：原注释断言「cmb 侧直写路径（域内全部 Go
+#      写入方）本就四列一起清 ⇒ 无第二条产生路径」——**第二轮实测证伪**：
+#      modelcatalog/upsert.go / bg/model_probe.go / admin/credential_monitor.go
+#      三条直写路径确实漏清第四列 ⇒ 迁移 972 落地后残留从 0 反弹到 93
+#      （211 实测，主因凭据 99023 占 80 行）⇒ 「迁移后库里没有残留行」这个前提
+#      **只在迁移落地那一瞬间成立**，而探针是在任意时刻被求值的。
+#   ③ **处置无效 ⇒ 毒丸**：探针失败时的处置建议是「重放本序列（迁移幂等）」，
+#      但重放消不掉由**运行中的旧二进制**重新制造的残留 ⇒ ⇒ 探针从「守卫」退化成
+#      「毒丸」：迁移明明在位、产物明明齐备，却被一个与迁移无关的运行时量卡住部署。
+#
+#   ⇒ 正确的分层（2026-11-17 起）：
+#     · **产物层**（本探针）：只断言 ①。迁移体是**单事务**（函数替换 + 存量清理 +
+#       台账登记同在一个 BEGIN…COMMIT）⇒ ① 成立即蕴含「存量清理已随同事务执行过」
+#       （原子性 ⇒ 两者同生共死，不需要两个判据）。
+#     · **写入侧层**（internal/sqlguard/credential_binding_health_tuple_gate_test.go）：
+#       全仓 AST 不变式门 —— 任何把 cmb.available 置 TRUE 的语句（含 UPDATE 与
+#       INSERT…ON CONFLICT 两种形态）都必须处理第四列 ⇒ 「新的矛盾行不会被制造」
+#       由**静态门**保证，不依赖任何运行时探针。
+#     · **运行时层**（scripts/audit/f3-auto-check.sh 监控 +
+#       scripts/audit/f3-postdeploy-verify.sh 部署后验收）：残留归零与「不再反弹」
+#       由**部署后验收**判 ⇒ 归运行时层，不阻塞下一次部署。
+#   ⇒ 同型门（防复发）：internal/sqlguard/migration_artifact_probe_scope_gate_test.go
+#     —— 产物探针不得断言「运行时可变事实表的当前数据状态」。
 ledger_artifact_probe "972_model_offers_trigger_recover_at.sql" \
-  "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'model_offers_update_trigger' AND pg_get_functiondef(p.oid) LIKE '%unavailable_recover_at = CASE%') AND NOT EXISTS (SELECT 1 FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE)"
+  "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'model_offers_update_trigger' AND pg_get_functiondef(p.oid) LIKE '%unavailable_recover_at = CASE%')"
+# ★ 非门禁的运行时观测量（2026-11-17 第三轮加）：F3 残留当前行数。
+#   ⚠ 它**不参与**放行/拦停判定（理由见上）⇒ 只打进部署日志，供人/告警读。
+#   ⚠ 用 `|| true` 兜住：观测失败不得连带打死部署（观测不是门）。
+printf 'runtime observation (F3 residual rows, NOT a gate): %s\n' \
+  "$(psql_query "SELECT COUNT(*) FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE" 2>/dev/null || echo 'unavailable')"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

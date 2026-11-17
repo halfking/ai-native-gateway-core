@@ -16,6 +16,11 @@
 #   M6 删掉 dbinit StartupFiles 条目（= 全新安装不会应用）
 #   M7 正典函数快照退回坏分支顺序（= 下一个照抄正典的人会把 bug 抄回去）
 #   M8 触发器体里误删 priority 列（= 重写时静默丢列）
+#   M10~M12 三条直写 cmb 的恢复路径退回「不清 recover_at」
+#          （= 视图路径之外的漏网路径；第二轮实测的主要产生源是 M11）
+#   M13 产物探针里把「库内当前无残留行」那一半加回去
+#          （= 2026-11-17 17:0x 把 211 部署打死的那一版 ⇒ 作用域门必须红）
+#   M14 删掉 972 的产物探针（= 「台账说已应用但产物不在场」无人对账）
 set -uo pipefail
 
 export GOCACHE="$("$(git rev-parse --show-toplevel)/scripts/lib/gocache.sh" mutate)"
@@ -41,11 +46,13 @@ restore() { for f in "${FILES[@]}"; do cp "$BAK/$f" "$f"; done; }
 trap restore EXIT
 
 GATE_PKG="./internal/sqlguard/"
-# ★ 必须同时跑两道门：
-#   ① TestM972…（投递六点位 + 触发器分支顺序）
+# ★ 必须同时跑三道门：
+#   ① TestM972…（投递六点位 + 触发器分支顺序 + 972 产物探针仍在断言产物）
 #   ② TestCredentialBindingHealthTuple…（全仓写入侧四元组不变式）
-#   ⇒ 少跑一道 ⇒ 该道的变异会「假绿」（实测：M10~M12 因过滤器漏跑而全绿）。
-GATE_RE="TestM972|TestCredentialBindingHealthTupleWritersAreConsistent"
+#   ③ TestArtifactProbesDoNotAssertRuntimeMutableFactState（产物探针作用域）
+#   ⇒ 少跑一道 ⇒ 该道的变异会「假绿」（实测：M10~M12 因过滤器漏跑而全绿；
+#     2026-11-17 第三轮又差点犯同一错：M13/M14 的门不在过滤器里）。
+GATE_RE="TestM972|TestCredentialBindingHealthTupleWritersAreConsistent|TestArtifactProbesDoNotAssertRuntimeMutableFactState"
 
 fail=0
 mutated=0
@@ -65,7 +72,7 @@ open(path, 'w', encoding='utf-8').write(src)
 PY
   if ! go test "$GATE_PKG" -run "$GATE_RE" >/tmp/mv972.log 2>&1; then
     echo "  ✓ 变异被门抓住（红）"
-    grep -E '^\s+migration_972|--- FAIL' /tmp/mv972.log | head -4 | sed 's/^/    /'
+    grep -E -- '--- FAIL|^[[:space:]]+migration_[a-z0-9_]*\.go' /tmp/mv972.log | head -4 | sed 's/^/    /'
   else
     echo "  ✗ 变异未被门抓住（**假绿**）—— 门失效"
     fail=$((fail + 1))
@@ -151,6 +158,36 @@ src = re.sub(r'    unavailable_recover_at = CASE\n(?:.*\n)*?    END\n', '', src,
 mutate "M12 admin/credential_monitor.go 退回不清 recover_at" "admin/credential_monitor.go" "
 src = src.replace('''			    unavailable_recover_at = NULL
 			FROM provider_models pm''', '''			FROM provider_models pm''')
+"
+
+# M13 产物探针里把「库内当前无残留行」那一半加回去
+#     （= 2026-11-17 17:0x 把 211 部署打死的那一版：FATAL「台账 ↔ 产物对账失败」）
+#     ⇒ 作用域门（TestArtifactProbesDoNotAssertRuntimeMutableFactState）必须红。
+mutate "M13 产物探针加回运行时残留判据" "$SEQ" "
+old = \"LIKE '%unavailable_recover_at = CASE%')\" + chr(34)
+new = \"LIKE '%unavailable_recover_at = CASE%') AND NOT EXISTS (SELECT 1 FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE)\" + chr(34)
+assert old in src, 'anchor missing'
+src = src.replace(old, new)
+"
+
+# M14 删掉 972 的产物探针（最省事的假修复：把探针删了，部署就不被判失败）
+#     ⇒ TestM972ArtifactProbeStillAssertsTheArtifact 必须红。
+mutate "M14 删掉 972 的产物探针" "$SEQ" "
+lines = src.split(chr(10))
+out = []
+skip = False
+removed = 0
+for l in lines:
+    if 'ledger_artifact_probe \"972_model_offers_trigger_recover_at.sql\"' in l:
+        skip = True
+        removed += 1
+        continue
+    if skip:
+        skip = False
+        continue
+    out.append(l)
+assert removed == 1, 'anchor missing: removed=%d' % removed
+src = chr(10).join(out)
 "
 
 restore
