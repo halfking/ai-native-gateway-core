@@ -51,12 +51,6 @@ export type NavItem = {
    * 避免未激活用户点进去看不到 license / 升级通道。
    */
   activateWhenNotActivated?: boolean
-  /**
-   * 2026-11-17: 暂时从导航/菜单隐藏，但条目仍保留在真源里（路由与页面不删）。
-   * 口径门（navCounts 63/62/50）仍计这条；渲染层经 canShowNavItem 过滤。
-   * 直达 URL（如 /live2）仍可用，便于审计与回放。
-   */
-  hidden?: boolean
 }
 
 export type NavGroup = {
@@ -74,7 +68,13 @@ export const NAV_PRIMARY_ITEMS: NavItem[] = [
   // 2026-11-16: 请求阶段树（live2）—— 与 /live 并存一个版本周期。
   // 入口放在 /live 旁边（同一分组），并由 /live 页顶栏的「阶段树」按钮直达。
   // 2026-11-17: owner 要求暂时隐藏菜单（路由/页面保留；直达 /live2 仍可用）。
-  { path: '/live2', labelKey: 'nav.item.liveStageTree', icon: '🌲', platformOps: true, exact: true, hidden: true },
+  // 2026-11-17（owner「打开功能」轮）：恢复可见 —— hidden 闸门整体退役。
+  //   ★ 为什么**整条退役**而不是留一个恒 false 的 `hidden: false`：
+  //     「开关本体」只有这一个消费者，留着一个没人用的闸门，下一轮就会有人
+  //     拿它当「以后还能临时藏一下」的正式开关 —— 而 2026-11-17 那次「暂时隐藏」
+  //     正是这么来的（藏了一天 ⇒ 就要再藏 ⇒ 又要恢复）。⇒ 没有第二消费者的
+  //     布尔闸门不是资产，是负债：它把「一次决定」伪装成「一个机制」。
+  { path: '/live2', labelKey: 'nav.item.liveStageTree', icon: '🌲', platformOps: true, exact: true },
   { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
 
@@ -304,7 +304,6 @@ type NavVisibilityOpts = {
 }
 
 export function canShowNavItem(item: NavItem, opts: NavVisibilityOpts): boolean {
-  if (item.hidden) return false
   if (item.opsPlatform && !showOpsPlatform()) return false
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false

@@ -356,7 +356,15 @@ function onSelectModel(model: string) {
 
       <!-- 入口：请求阶段树（live2）—— owner 2026-11-16「加入到系统的实时拓扑页」。
            放在顶栏与过滤栏同层：过滤条件已经常驻顶层，两个实时页的入口互见。
-           2026-11-17：owner 要求暂时隐藏菜单；路由 /live2 保留，顶栏入口先撤。 -->
+           2026-11-17（owner「打开功能」轮）：入口恢复（此前随菜单一并暂时撤下）。 -->
+      <router-link
+        class="live-topology__stagetree"
+        to="/live2"
+        data-testid="live-stage-tree-link"
+        :title="t('liveStageTree.title')"
+      >
+        {{ t('liveStageTree.title') }}
+      </router-link>
 
       <!-- 过滤栏（2026-11-16 抽出为共享组件：/live 与 /live2 阶段树共用同一份实现，
            避免两页过滤口径漂移；data-testid 沿用原值，既有钉测不受影响）。 -->
