@@ -33,6 +33,20 @@ BEGIN
             WHEN NEW.available IS NOT NULL AND NEW.available = TRUE THEN NULL
             ELSE credential_model_bindings.unavailable_at
         END,
+        -- ★ 972（2026-11-17 F3 残留地平线根修轮）：补第四列 unavailable_recover_at。
+        --   此前触发器的 SET 清单里没有这一列 ⇒ 经 model_offers 视图的「置可用」
+        --   写入只清 reason/unavailable_at、把恢复标记留下 ⇒ 行落进矛盾态
+        --   available=TRUE ∧ recover_at≠NULL ⇒ 节点状态恢复地平线（F3 残留）
+        --   在 37~231 行之间反复反弹（2026-11-17 观测 19 轮，从未归零）。
+        --   ★ 分支顺序**不能**照抄上面两列（「显式给值」在前）：INSTEAD OF UPDATE
+        --   的 NEW 行里未被 SET 触碰的列携带旧值 ⇒ 调用方不写 recover_at 时
+        --   NEW 仍是旧的未来时间戳 ⇒ 「显式给值」在前会保留旧标记 ⇒ 缺陷照旧。
+        --   ⇒ 状态语义（available=TRUE ⇒ 无待恢复）必须优先于来源语义。
+        unavailable_recover_at = CASE
+            WHEN NEW.available IS NOT NULL AND NEW.available = TRUE THEN NULL
+            WHEN NEW.unavailable_recover_at IS NOT NULL THEN NEW.unavailable_recover_at
+            ELSE credential_model_bindings.unavailable_recover_at
+        END,
         admin_protected = CASE
             WHEN NEW.admin_protected IS NOT NULL THEN NEW.admin_protected
             ELSE credential_model_bindings.admin_protected

@@ -1701,6 +1701,24 @@ var piErrorAnalysisSystem971 []byte
 //go:embed embeddata/startup/971_pi_error_analysis_system.down.sql
 var piErrorAnalysisSystem971Down []byte
 
+// ★ 972（2026-11-17 F3 残留地平线根修轮）：model_offers_update_trigger 补
+//
+//	unavailable_recover_at —— 修「经 model_offers 视图的恢复写入只清
+//	reason/unavailable_at、把恢复标记留下」这个根因。
+//
+//	★ 该视图是 INSTEAD OF UPDATE 触发器，触发器的 SET 清单是手写的一串列名；
+//	  211 实测（pg_get_functiondef）清单里有 available / unavailable_reason /
+//	  unavailable_at，**唯独没有 unavailable_recover_at** ⇒ 经视图「置可用」的行
+//	  落进矛盾态 available=TRUE ∧ recover_at≠NULL ⇒ 节点状态恢复地平线（F3 残留）
+//	  在 37~231 行之间反复反弹（2026-11-17 观测 19 轮，从未归零）。
+//	★ 仓内早已自述此事（credentialhealth/checker.go:469-473），但只绕了它没修它。
+//
+//go:embed embeddata/startup/972_model_offers_trigger_recover_at.sql
+var modelOffersTriggerRecoverAt972 []byte
+
+//go:embed embeddata/startup/972_model_offers_trigger_recover_at.down.sql
+var modelOffersTriggerRecoverAt972Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2299,6 +2317,11 @@ var embeddedSQLFiles = map[string][]byte{
 	//   ★ 原件在 sql/migrations/domain/（死文件区，无执行器接线）⇒ 收编。
 	"startup/971_pi_error_analysis_system.sql":      piErrorAnalysisSystem971,
 	"startup/971_pi_error_analysis_system.down.sql": piErrorAnalysisSystem971Down,
+	// ★ 972（2026-11-17 F3 残留地平线根修轮）：model_offers_update_trigger 补
+	//   unavailable_recover_at（修经视图恢复写入留下恢复标记 ⇒ 残留地平线反弹的根因）
+	//   + 一次性清存量残留行。
+	"startup/972_model_offers_trigger_recover_at.sql":      modelOffersTriggerRecoverAt972,
+	"startup/972_model_offers_trigger_recover_at.down.sql": modelOffersTriggerRecoverAt972Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

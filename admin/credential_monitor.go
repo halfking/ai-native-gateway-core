@@ -1608,7 +1608,11 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			UPDATE credential_model_bindings cmb
 			SET available = TRUE,
 			    unavailable_reason = NULL,
-			    unavailable_at = NULL
+			    unavailable_at = NULL,
+			    -- ★ 972（2026-11-17 F3 残留地平线根修轮）：四元组的第四列
+			    --   必须一起清（手动上线 ⇒ 没有待恢复的重试时刻）
+			    --   ⇒ 否则该行落进矛盾态 available=TRUE ∧ recover_at≠NULL。
+			    unavailable_recover_at = NULL
 			FROM provider_models pm
 			WHERE cmb.provider_model_id = pm.id
 			  AND cmb.credential_id = $1
