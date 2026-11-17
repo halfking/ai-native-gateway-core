@@ -1029,7 +1029,7 @@ var simplePreset = map[string]PresetEntry{
         </table>
       </div>
       <p>
-        折叠后简易模式从 <span class="num">63</span> 个入口降到 <span class="num">14</span> 个可见页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），另外 <span class="num">50</span> 条收进一个「高级」折叠组。分组按简易模式重新命名（供应商与模型、密钥与用户、请求、接入指南、对话、设置），专家面的原有分组在折叠组内保持原归属。
+        折叠后简易模式从 <span class="num">63</span> 个入口降到 <span class="num">14</span> 个可见页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），另外 <span class="num">49</span> 条收进一个「高级」折叠组。分组按简易模式重新命名（供应商与模型、密钥与用户、请求、接入指南、对话、设置），专家面的原有分组在折叠组内保持原归属。
       </p>
       <p>
         台账按结构记 <span class="num">63</span> 条，可见性另算：运营管理组里 <span class="num">5</span> 项带 <code>tenantOnly</code>，只在租户登录时露出，default 租户的个人用户在「高级」里看不到它们。逐条归属由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从 <span class="mono">appNav.ts</span> 生成，行数与真源对不齐就是红的。
@@ -1059,7 +1059,7 @@ var simplePreset = map[string]PresetEntry{
             </tr>
             <tr>
               <td><span class="mono">web/src/config/navCounts.test.ts</span></td>
-              <td>专家面 <span class="num">63</span> 项 / <span class="num">62</span> 个落地路径 / <span class="num">50</span> 条收进「高级」折叠组，三档口径锁死。<span class="mono">appNav.ts</span> 加一条菜单，或三份方案文档改一个数，门都转红</td>
+              <td>专家面 <span class="num">63</span> 项 / <span class="num">62</span> 个落地路径 / <span class="num">49</span> 条收进「高级」折叠组，三档口径锁死。<span class="mono">appNav.ts</span> 加一条菜单，或三份方案文档改一个数，门都转红</td>
             </tr>
             <tr>
               <td><span class="mono">web/src/i18n/localeKeyParity*</span></td>
@@ -1269,7 +1269,7 @@ var simplePreset = map[string]PresetEntry{
               <td><span class="num">1</span></td>
               <td>表面投影</td>
               <td>新增 <code>gateway.mode</code> 注册项；<code>canShowNavItem</code> 加第五维；导航折叠组；设置页分组折叠</td>
-              <td>简易模式导航可见页面降到 14，50 条收进高级折叠组；专家模式渲染逐像素不变；<span class="mono">navCoverage.test.ts</span> 绿</td>
+              <td>简易模式导航可见页面降到 14，49 条收进高级折叠组；专家模式渲染逐像素不变；<span class="mono">navCoverage.test.ts</span> 绿</td>
             </tr>
             <tr>
               <td><span class="num">2</span></td>

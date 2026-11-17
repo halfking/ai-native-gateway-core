@@ -690,8 +690,11 @@ ARMS += [
         test="TestURLFetchFallback_UsesRecordedContentType",
         edits=[
             (
+                # ★ 2026-11-17 审计：F-14 后内联出口改走 canonicalMIME(recorded)，
+                #   锚点随实现同步；变异语义不变——删掉「用落盘记录 ContentType」分支，
+                #   退回扩展名反推 ⇒ TestURLFetchFallback_UsesRecordedContentType 必红。
                 "\t\t\tif recorded, ok := mimeByPath[relPath]; ok && recorded != \"\" {\n"
-                "\t\t\t\tmime = recorded\n"
+                "\t\t\t\tmime = canonicalMIME(recorded)\n"
                 "\t\t\t}\n",
                 "",
             )

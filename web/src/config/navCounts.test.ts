@@ -16,7 +16,7 @@
  * ⇒ 这道门分四层，每层都从**真源**派生、期望值**硬编码**：
  *   A 真源层   appNav.ts 的规模（条目 / 落地路径 / 分组 / 顶层）
  *   B 落点层   落点规格（概念稿 §2 的四个直链 + 四个下拉）对照真源
- *              ⇒ 露出 13 / 折叠 50 闭合
+ *              ⇒ 露出 14 / 折叠 49 闭合（2026-11-17 F-07 后口径）
  *   C 生成器层 台账生成器与本门同口径（不各说各话）
  *   D 文档层   三份 HTML 里出现的每个菜单口径数字都必须等于锁定值，
  *              且概念稿归属表的**每一行**都要与规格逐条对拍
@@ -56,10 +56,10 @@ const EXPECTED_PATHS = 62
 const EXPECTED_GROUPS = 8
 /** 顶层主链接数（不进分组，直接挂顶栏）。 */
 const EXPECTED_PRIMARY = 3
-/** 简易模式直接露出的既有入口数（4 直链 + 9 分组下拉）。 */
-const EXPECTED_EXPOSED = 13
-/** 收进「高级」折叠组的条数。 */
-const EXPECTED_FOLDED = 50
+/** 简易模式直接露出的既有入口数（4 直链 + 10 分组下拉；2026-11-17 F-07 后「请求」组含 /tenant/usage）。 */
+const EXPECTED_EXPOSED = 14
+/** 收进「高级」折叠组的条数（2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49）。 */
+const EXPECTED_FOLDED = 49
 /** 简易模式可见页面数（13 个既有入口 + 1 个新建简化页 `/usage`）。 */
 const EXPECTED_VISIBLE_PAGES = 14
 
@@ -115,7 +115,10 @@ const DIRECT_LINKS = ['/dashboard', '/live', '/chat', '/admin/settings']
 const GROUP_ITEMS: Record<string, string[]> = {
   供应商与模型: ['/models', '/providers'],
   密钥与用户: ['/users', '/keys', '/tenants'],
-  请求: ['/request-logs'],
+  // ★ 2026-11-17（12h 审计 N1）：F-07 死路径修复后，简易模式「请求」组
+  //   下拉含「租户用量」/tenant/usage（simpleNav.ts:38 与台账生成器已同口径）；
+  //   本门的规格表也必须跟齐，否则两套分桶法各说各话（生成器 49 vs 本门 50）。
+  请求: ['/request-logs', '/tenant/usage'],
   接入指南: ['/examples', '/examples#auto-config', '/help'],
 }
 
@@ -178,10 +181,10 @@ const EXPERT_GROUP_OF_SIMPLE: Record<string, string> = Object.fromEntries(
   Object.entries(SIMPLE_GROUP_CN).map(([id, name]) => [name, id]),
 )
 
-describe('B 落点：简易模式露出 13 / 折叠 50 闭合', () => {
-  it('直链 4 条 / 组内 9 条 / 高级 50 条', () => {
+describe('B 落点：简易模式露出 14 / 折叠 49 闭合', () => {
+  it('直链 4 条 / 组内 10 条 / 高级 49 条', () => {
     expect(DIRECT_LINKS).toHaveLength(4)
-    expect(Object.values(GROUP_ITEMS).flat()).toHaveLength(9)
+    expect(Object.values(GROUP_ITEMS).flat()).toHaveLength(10)
     expect(exposedCount).toBe(EXPECTED_EXPOSED)
     expect(foldedCount).toBe(EXPECTED_FOLDED)
   })
@@ -209,12 +212,21 @@ describe('B 落点：简易模式露出 13 / 折叠 50 闭合', () => {
     // 为什么要有这条：规格把 /models /providers 叫「供应商与模型」，
     // 而真源里它们挂在「模型与路由」组。规格把路径放错分组时，
     // 数量可能照样对得上（13/50 不变）⇒ 只有逐条查它属于哪个专家面分组才抓得到。
+    // ★ 跨组提升白名单（2026-11-17 12h 审计 N1）：简易模式允许把个别条目
+    //   从它的专家面组**提升**到另一简易组（concept-v2「重新归组」语义）。
+    //   首例：/tenant/usage 真源在 operations（运营管理），F-07 死路径修复后
+    //   提升进「请求」组（simpleNav.ts + 台账生成器已同口径）。这里的键是
+    //   「路径 → 它被提升进的简易分组名」，命中即放行，不再要求同组。
+    const CROSS_GROUP_PROMOTIONS: Record<string, string> = {
+      '/tenant/usage': '请求',
+    }
     for (const [name, paths] of Object.entries(GROUP_ITEMS)) {
       const expertId = EXPERT_GROUP_OF_SIMPLE[name]
       expect(expertId, `分组「${name}」没有对应的专家面分组`).toBeTruthy()
       for (const p of paths) {
         const item = sourceItems.find((i) => i.path === p)
         expect(item, `规格里的路径不在真源中：${p}`).toBeTruthy()
+        if (CROSS_GROUP_PROMOTIONS[p] === name) continue
         expect(item!.group, `${p} 在真源里属于「${item!.group}」，规格却把它放在「${name}」`).toBe(
           expertId,
         )
@@ -250,10 +262,11 @@ describe('C 台账生成器与本门同口径', () => {
     expect(data.distinctPaths).toBe(EXPECTED_PATHS)
   })
 
-  it('生成器的「高级折叠 + 站外链接」= 折叠 50（两套分桶法的换算钉在这里）', () => {
-    // 生成器按**打开方式**分桶：高级折叠 49 + 站外链接 1。
-    // 本门按**物理位置**分桶：折叠区 50 条（49 页内 + 1 站外随组收起）。
-    // 同一个 50 的两种切法 ⇒ 换算必须写死，否则两套口径会各说各话。
+  it('生成器的「高级折叠 + 站外链接」= 折叠 49（两套分桶法的换算钉在这里）', () => {
+    // 生成器按**打开方式**分桶：高级折叠 48 + 站外链接 1。
+    // 本门按**物理位置**分桶：折叠区 49 条（48 页内 + 1 站外随组收起）。
+    // 同一个 49 的两种切法 ⇒ 换算必须写死，否则两套口径会各说各话。
+    // （2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49。）
     const out = execFileSync(process.execPath, [tool, '--json'], {
       cwd: REPO,
       encoding: 'utf8',
