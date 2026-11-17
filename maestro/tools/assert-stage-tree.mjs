@@ -36,6 +36,8 @@
 
 import { readFileSync } from 'node:fs'
 import { connect, evaluate, openPage, waitFor } from './cdp-client.mjs'
+// ★ 判定口径单点化（两个断言工具共用一份，见 result.mjs）。
+import { summarize } from './result.mjs'
 
 function parseArgs(argv) {
   const out = { cdp: 'http://127.0.0.1:9222', url: '', tokenFile: '', page: '/live2' }
@@ -251,19 +253,25 @@ async function main() {
     }
     console.log('  事实：', JSON.stringify(probe.facts, null, 0))
 
+    let overlay = null
     if (args.page === '/live2') {
-      const overlay = await evaluate(cdp, sessionId, OVERLAY_PROBE)
+      overlay = await evaluate(cdp, sessionId, OVERLAY_PROBE)
       console.log('== 统计浮层交互 ==')
       for (const c of overlay.checks) {
         console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
       }
-      for (const c of overlay.checks) if (!c.pass) probe.ok = false
     }
 
-    const failed = probe.checks.filter((c) => !c.pass).length
-    console.log(failed === 0 ? '\nRESULT: PASS' : `\nRESULT: FAIL（${failed} 条）`)
+    // ★ 判定口径**单点化**（见 maestro/tools/result.mjs）：
+    //   失败计数必须**把两层的检查都算进来**（2026-11-18 实测修）——
+    //   早先只数第一层（probe.checks），浮层层的红虽被并进 `probe.ok`，
+    //   但 `probe.ok` **从未被读取** ⇒ **浮层断言红时照样报「PASS」**
+    //   ⇒ 「断言红」被统计口径吃掉＝等于没有断言。
+    //   （设计层工具 assert-stage-tree-design.mjs 早已修过同一类缺陷。）
+    const verdict = summarize([...probe.checks, ...(overlay ? overlay.checks : [])])
+    console.log(`\n${verdict.line}`)
     ws.close()
-    process.exit(failed === 0 ? 0 : 1)
+    process.exit(verdict.exitCode)
   } catch (err) {
     console.error('assert-stage-tree failed:', err?.message || err)
     try {

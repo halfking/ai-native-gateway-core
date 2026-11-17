@@ -24,6 +24,8 @@
 
 import { readFileSync } from 'node:fs'
 import { connect, evaluate, openPage, waitFor } from './cdp-client.mjs'
+// ★ 判定口径单点化（两个断言工具共用一份，见 result.mjs）。
+import { summarize } from './result.mjs'
 
 function parseArgs(argv) {
   const out = { cdp: 'http://127.0.0.1:9222', url: '', tokenFile: '' }
@@ -292,27 +294,18 @@ async function main() {
     }
     console.log('  事实：', JSON.stringify(compact.facts, null, 0))
 
-    // ★ 失败计数必须**把两层的检查都算进来**：
-    //   早先只数第一层（probe.checks）⇒ 第二层红了却报「PASS」——
-    //   「断言红」被统计口径吃掉，等于没有断言。
-    //   ⇒ **未评估的项不计入失败**（它们没被评估，不是被评估为失败）。
-    const failed = allChecks.filter((c) => !c.pass && !skippedNames.has(c.name)).length
-    if (skipped.length > 0) {
-      console.log(
-        `\nRESULT: 量具失效（${skipped.length} 条依赖真实请求的断言**未评估**；` +
-          `页面窗口内 0 条真实请求 ⇒ 这不是产品缺陷）`,
-      )
+    // ★ 判定口径**单点化**（见 maestro/tools/result.mjs）：
+    //   失败计数必须**把两层的检查都算进来**（早先只数第一层 ⇒ 第二层红了却报「PASS」——
+    //   「断言红」被统计口径吃掉，等于没有断言）；
+    //   且**未评估的项不计入失败**（它们没被评估，不是被评估为失败），
+    //   「量具失效」用**专属退出码 2** 与「红（1）」区分开。
+    const verdict = summarize(allChecks, { skipped })
+    console.log(`\n${verdict.line}`)
+    if (verdict.exitCode === 2) {
       console.log('  ⇒ 请先造真实流量，再**立刻**重跑本断言（线上实时流是有界滚动窗口）。')
-      ws.close()
-      process.exit(2)
     }
-    console.log(
-      failed === 0
-        ? `\nRESULT: PASS（${allChecks.length} 条断言）`
-        : `\nRESULT: FAIL（${failed} / ${allChecks.length} 条）`,
-    )
     ws.close()
-    process.exit(failed === 0 ? 0 : 1)
+    process.exit(verdict.exitCode)
   } catch (err) {
     console.error('assert-stage-tree-design failed:', err?.message || err)
     try {
