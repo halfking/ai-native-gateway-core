@@ -29,6 +29,7 @@ import {
 import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const { notifySuccess, notifyError } = useActionMessage()
@@ -80,6 +81,16 @@ async function loadBatches() {
 }
 
 async function applyAll() {
+  // ★ 2026-11-18 12h 审计轮根修（P1）：批量改价必须先经**二次确认**。
+  //   原实现直接把 `confirm: true` 硬编码在请求体里 ⇒ 服务端的「二次确认闸」
+  //   （admin/pricing_suggestion.go：`if !req.Confirm { 400 }`）被前端自己
+  //   无条件满足 ⇒ 那道闸形同虚设 ⇒ 误点一次「一键执行（347 个模型）」就直接
+  //   改掉 347 个模型的零售价，**无提示、无撤销**。
+  //   ⇒ 现在走全站统一的 confirmDialog（仓内既有约定，见 DataLifecycleView.vue），
+  //     确认之后才发请求。
+  if (!(await confirmDialog(t('priceCompare.suggestApplyConfirm', { n: applicableRows.value.length })))) {
+    return
+  }
   applying.value = true
   errorMsg.value = ''
   try {

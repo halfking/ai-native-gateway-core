@@ -50,6 +50,15 @@ type Detector struct {
 	//	不落库、不留痕 ⇒ 「错误信息的收集与分析」这条职责链产出为零。
 	//	⇒ 这里挂一个可选的收集器；nil ⇒ 行为与此前完全一致（零风险接线）。
 	errorCollector *ErrorCollector
+
+	// ★ 2026-11-18 根修（245 生产实证）：检测审计写侧的**形状探测结果**。
+	//
+	//	fleet 内 prompt_injection_detections 形状真实分歧：正典库（211 等）
+	//	无 315 四列；245/154 共享库的活表带四列（两列 NOT NULL）⇒
+	//	canonical INSERT 每条都被 NOT NULL 拒掉。boot 期探测一次，
+	//	DetectAndLog 按探测结果选 insertDetectionSQL 或
+	//	insertDetectionSQLLegacyCols。
+	detectionsHasLegacyCols bool
 }
 
 // SetErrorCollector 注入错误收集器。
@@ -190,6 +199,13 @@ func NewDetector(db *sql.DB) (*Detector, error) {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
 
+	// 2026-11-18 根修：检测审计写侧形状探测（见字段注释）。探测本身
+	// 失败按正典形状处理——与探测前的行为完全一致（零风险降级）。
+	d.detectionsHasLegacyCols = probeDetectionsLegacyCols(context.Background(), db)
+	if d.detectionsHasLegacyCols {
+		slog.Info("prompt_injection: detections table has legacy-315 columns; using legacy insert shape")
+	}
+
 	return d, nil
 }
 
@@ -244,7 +260,22 @@ func truncateForDetection(input string, limit int) string {
 }
 
 // Detect 执行检测
+//
+// ★ 2026-11-18 审计轮 P1：Detect **不带 sessionKey** ⇒「连续攻击终止会话」
+//
+//	（TerminateOnRepeat）在这条路径上恒不触发（详见 detect 的注释）。
+//	⇒ 公开入口保留原签名（hook 的最小接口依赖它），内部转调 detect。
 func (d *Detector) Detect(ctx context.Context, tenantID, input string) (*DetectionResult, error) {
+	return d.detect(ctx, tenantID, "", input)
+}
+
+// detect 执行检测（带会话身份）。
+//
+// ★ 2026-11-18 审计轮 P1：sessionKey 必须一路传到「连续攻击终止会话」的
+//	计数查询 —— 写侧（DetectAndLog 的 INSERT）写的是**真实** sessionKey，
+//	而读侧此前恒传 ""（谓词 session_key = ''）⇒ 计数永远命中不到
+//	自己刚写的那一行 ⇒ TerminateOnRepeat 恒不触发（该功能形同虚设）。
+func (d *Detector) detect(ctx context.Context, tenantID, sessionKey, input string) (*DetectionResult, error) {
 	policy, err := d.getPolicy(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get policy: %w", err)
@@ -497,8 +528,17 @@ func (d *Detector) Detect(ctx context.Context, tenantID, input string) (*Detecti
 	if severityAction != nil {
 		result.SessionHealthDelta = severityAction.SessionHealthPenalty
 		if severityAction.TerminateOnRepeat {
-			// 检查是否达到重复阈值
-			repeatCount, _ := d.getRepeatCount(ctx, tenantID, "")
+			// 检查是否达到重复阈值。
+			//
+			// ★ 2026-11-18 审计轮 P1：此前恒传 "" ⇒ 谓词 session_key = ''
+			//	与写侧（DetectAndLog 写入真实 sessionKey）不匹配 ⇒
+			//	计数恒为 0 ⇒ 「连续攻击终止会话」永不触发。
+			//	⇒ 传真实 sessionKey；查不到计数时**留痕**（不静默）。
+			repeatCount, err := d.getRepeatCount(ctx, tenantID, sessionKey)
+			if err != nil {
+				slog.Warn("prompt_injection: repeat count query failed (terminate-on-repeat not evaluated)",
+					"error", err, "tenant_id", tenantID, "session_key", sessionKey)
+			}
 			if repeatCount >= severityAction.RepeatThreshold {
 				result.TerminateSession = true
 				result.ActionTaken = "terminate"
@@ -578,9 +618,62 @@ const insertDetectionSQL = `
 		$14, $15, $16, $17, $18)
 `
 
+// insertDetectionSQLLegacyCols 是**迁移 315 形状**的写侧（2026-11-18 补）。
+//
+// ★ 背景：fleet 内 prompt_injection_detections 的形状**真实分歧**——
+// 211 等库是正典形状（无 315 四列），而 245/154 共享库的活表**带着**
+// detection_score(integer NOT NULL) / matched_rules(jsonb) /
+// matched_rules_count(integer NOT NULL) / detection_layers(jsonb) 四列
+// （245 生产实证：canonical INSERT 报「null value in column detection_score」，
+// 每一条检测审计都被丢弃）。旧注释断言「正典表从未采用该形状」只对
+// 作者核对过的库成立——写侧必须在 boot 期探测列集后二选一（967 的
+// 42703-降级读同款先例，这里是探测选写）。
+const insertDetectionSQLLegacyCols = `
+	INSERT INTO prompt_injection_detections (
+		tenant_id, request_id, session_key, risk_level,
+		rule_name, category,
+		action_taken, blocked, evidence_text, input_hash,
+		client_ip, user_agent, categories,
+		llm_confidence, llm_reason, canary_token_leaked,
+		approval_id, replaced_content,
+		detection_score, matched_rules, matched_rules_count, detection_layers
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		$11, $12,
+		COALESCE(ARRAY(SELECT c::injection_category
+		               FROM unnest($13::text[]) AS c
+		               WHERE c = ANY (enum_range(NULL::injection_category)::text[])),
+		         '{}'::injection_category[]),
+		$14, $15, $16, $17, $18,
+		$19, $20::jsonb, $21, $22::jsonb)
+`
+
+// probeDetectionsLegacyCols 探测 prompt_injection_detections 是否带 315 的
+// 四列（探测失败按「正典形状」处理——保持既有行为）。
+func probeDetectionsLegacyCols(ctx context.Context, db *sql.DB) bool {
+	if db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var n int
+	err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema = current_schema()
+		   AND table_name = 'prompt_injection_detections'
+		   AND column_name IN ('detection_score', 'matched_rules', 'matched_rules_count', 'detection_layers')`).
+		Scan(&n)
+	if err != nil {
+		return false
+	}
+	return n == 4
+}
+
 // DetectAndLog 检测并记录到数据库
 func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessionKey, input, clientIP, userAgent string) (*DetectionResult, error) {
-	result, err := d.Detect(ctx, tenantID, input)
+	// ★ 2026-11-18 审计轮 P1：走内部 detect（带 sessionKey）而不是公开的
+	//	Detect（sessionKey 恒空）⇒ 「连续攻击终止会话」的计数谓词与本函数
+	//	自己写入的 session_key 对得上。
+	result, err := d.detect(ctx, tenantID, sessionKey, input)
 	if err != nil {
 		return nil, err
 	}
@@ -619,14 +712,41 @@ func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessio
 		//   · categories ← 过滤到 injection_category 枚举标签的子集
 		//     （规则的 category 是自由文本，直接塞进枚举数组会整条 INSERT 失败）。
 		topRule, topCategory := topMatchedRule(result.MatchedRules)
-		_, err := d.db.ExecContext(ctx, insertDetectionSQL,
+		// ★ 2026-11-18 根修：按 boot 期探测结果选 INSERT 形状。
+		// 245/154 共享库的活表带 315 四列（detection_score /
+		// matched_rules_count 两列 NOT NULL）⇒ canonical INSERT 每条
+		// 都被「null value in column detection_score」拒掉（生产实证，
+		// 审计恒丢）。legacy 形状把四列补齐：
+		//   detection_score = 分数；matched_rules = 规则名数组(jsonb)；
+		//   matched_rules_count = 命中数；detection_layers = 层命中图(jsonb)。
+		stmt := insertDetectionSQL
+		args := []interface{}{
 			tenantID, requestID, sessionKey, result.Score,
 			topRule, topCategory,
 			result.ActionTaken, result.Blocked, result.Evidence, inputHash,
 			clientIP, userAgent, pq.Array(result.Categories),
 			result.LLMConfidence, result.LLMReason, result.CanaryTokenLeaked,
 			nil, result.ReplacedContent,
-		)
+		}
+		if d.detectionsHasLegacyCols {
+			matchedNames := make([]string, 0, len(result.MatchedRules))
+			for _, mr := range result.MatchedRules {
+				if mr.RuleName != "" {
+					matchedNames = append(matchedNames, mr.RuleName)
+				}
+			}
+			matchedJSON, merr := json.Marshal(matchedNames)
+			if merr != nil {
+				matchedJSON = []byte("[]")
+			}
+			layersJSON, lerr := json.Marshal(result.DetectionLayers)
+			if lerr != nil {
+				layersJSON = []byte("{}")
+			}
+			stmt = insertDetectionSQLLegacyCols
+			args = append(args, result.Score, string(matchedJSON), len(matchedNames), string(layersJSON))
+		}
+		_, err := d.db.ExecContext(ctx, stmt, args...)
 
 		if err != nil {
 			// 2026-10-20：这一行曾经是 slog.Warn —— 审计记录写不进去时
@@ -1381,8 +1501,13 @@ func (d *Detector) extractEvidence(input string, matches []MatchedRule) string {
 	}
 
 	evidence := matches[0].Evidence
+	// ★ 2026-11-18 审计轮 P2：按**字节**切会切断 UTF-8 多字节字符
+	//	⇒ 产出非法 UTF-8 的证据串 ⇒ 写进 prompt_injection_detections
+	//	的 evidence 列（以及管理面/日志的 JSON 序列化）后整行审计记录
+	//	在读取侧不可用（前端 JSON.parse 失败、Postgres 文本列存下
+	//	半个字符）。⇒ 用仓内既有的 rune-safe 原语 truncateUTF8Bytes。
 	if len(evidence) > 500 {
-		evidence = evidence[:500] + "..."
+		evidence = truncateUTF8Bytes(evidence, 500) + "..."
 	}
 	return evidence
 }
@@ -1418,7 +1543,9 @@ func (d *Detector) createApprovalRequest(ctx context.Context, tenantID, requestI
 	approvalID := fmt.Sprintf("pi-approval-%d", time.Now().UnixNano())
 	inputPreview := input
 	if len(inputPreview) > 200 {
-		inputPreview = inputPreview[:200] + "..."
+		// ★ 2026-11-18 审计轮 P2：同 extractEvidence —— 按字节切会切断
+		//	UTF-8 多字节字符 ⇒ 预览里出现半个字符（审批单上的原文不可信）。
+		inputPreview = truncateUTF8Bytes(inputPreview, 200) + "..."
 	}
 
 	matchedRulesJSON, _ := json.Marshal(result.MatchedRules)
@@ -1787,6 +1914,21 @@ func (e *LLMDetectionEngine) SetEngineResolver(r EngineResolver) {
 		return
 	}
 	e.resolver = r
+}
+
+// SetLLMEngineResolver 把端点解析器注入到 Detector 的 LLM 检测引擎上。
+//
+// ★ 2026-11-18 审计轮 P1：此前 SetEngineResolver **零生产调用方**
+//	⇒ LLMDetectionEngine.resolver 恒 nil ⇒ 判官层每次调用都返回
+//	「endpoint resolver not wired」⇒ **判官层从不产出结论**
+//	（且因 fail_closed 默认 false，只落一条 Warn 就继续用规则分放行）。
+//	⇒ 暴露一个**从 Detector 侧**的注入口（resolver 的实现需要凭据解密
+//	  能力，那在 gateway 侧 ⇒ 由外层注入，见 cmd/gateway 的接线）。
+func (d *Detector) SetLLMEngineResolver(r EngineResolver) {
+	if d == nil {
+		return
+	}
+	d.llmEngine.SetEngineResolver(r)
 }
 
 type LLMDetectionResult struct {

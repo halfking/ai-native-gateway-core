@@ -87,6 +87,7 @@ export default {
   suggestThreshold: '最小變動閾值 %',
   suggestPreview: '預覽建議',
   suggestApplyAll: '一鍵執行（{n} 個模型）',
+  suggestApplyConfirm: '確認對 {n} 個模型批次改價？此操作會覆寫現價，且不可復原。',
   suggestLoadFailed: '定價建議載入失敗。',
   suggestApplyOk: '已執行：寫入 {n} 個模型（批次 #{batch}），可在變更歷史裡按批次反查。',
   suggestApplyFailed: '定價建議執行失敗。',

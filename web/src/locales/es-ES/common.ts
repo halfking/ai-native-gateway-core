@@ -286,4 +286,14 @@ export default {
       lastMonth: 'Mes pasado',
     },
   },
+
+  // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
+  //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
+  piAnalysis: {
+    unavailableTitle: 'El análisis de errores de PI no está disponible en este momento.',
+    unavailableReason: 'El backend no registró /api/admin/pi-analysis/* (falta la conexión a la base de datos o el material de autenticación de admin): es el comportamiento fail-closed del backend, no un conjunto de datos vacío.',
+    unavailableNetwork: 'No se puede acceder al endpoint de análisis de errores de PI (error de red o de servidor).',
+    chainNotWiredTitle: 'La cadena de recolección no está conectada.',
+    chainNotWiredReason: 'La cadena de detección de PI no está conectada (promptinjection.Detector nunca se construyó; toda la cadena está tras LLM_GATEWAY_USE_V2_PIPELINE), por lo que la cola de recolección queda permanentemente vacía. Esto no significa que no hayan ocurrido errores.',
+  },
 }

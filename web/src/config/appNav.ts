@@ -27,6 +27,17 @@ export type NavItem = {
    */
   opsPlatform?: boolean
   /**
+   * ★ 2026-11-18 审计轮 P2：依赖运行时可用性探测的菜单项
+   * （当前只有 /admin/pi-analysis）。
+   *
+   * 该页背后的 `/api/admin/pi-analysis/*` 只在「有 DB」且
+   * 「admin 鉴权材料齐备」时才注册（后端 fail-closed）⇒
+   * 无 DB / 无 secret 的部署上点了菜单项就是一个 404 空页。
+   * ⇒ 探测到不可用时**隐藏该菜单项**（不再宣传一个不存在的功能）。
+   * 口径见 config/piAnalysis.ts。
+   */
+  piAnalysis?: boolean
+  /**
    * 2026-07-23: Plugin 模式标记
    * 例如 'ai-session-manager' — 由对应 plugin 的软注入探测控制显示
    * 类似 opsPlatform，但用于非运维类的 plugin（会话管理、聊天等）
@@ -250,7 +261,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/model-credibility', labelKey: 'nav.item.modelCredibility', icon: '🔎', super: true, hideForTenant: true },
       { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
       { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
-      { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true },
+      { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true, piAnalysis: true },
       { path: '/admin/compression', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
       { path: '/admin/modules?module=wechat_bot', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
       { path: '/admin/agents', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
@@ -302,10 +313,17 @@ type NavVisibilityOpts = {
   /** super_admin 或 default 租户 tenant_admin（2026-09-04 供应商控制台） */
   isProviderConsole?: boolean
   isActivated?: boolean
+  /**
+   * ★ 2026-11-18 审计轮 P2：PI 分析（/admin/pi-analysis）运行时可用性。
+   * undefined / true ⇒ 展示；false ⇒ 隐藏（探测到 API 不可用）。
+   * 口径见 config/piAnalysis.ts。
+   */
+  piAnalysisAvailable?: boolean
 }
 
 export function canShowNavItem(item: NavItem, opts: NavVisibilityOpts): boolean {
   if (item.opsPlatform && !showOpsPlatform()) return false
+  if (item.piAnalysis && opts.piAnalysisAvailable === false) return false
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false
   if (item.providerConsole && !opts.isProviderConsole) return false

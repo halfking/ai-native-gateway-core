@@ -51,6 +51,13 @@ type piAgentConfig struct {
 	interval         time.Duration
 	batchSize        int
 	maxDepth         int
+	// timeoutSec 是单次 LLM 分析调用的超时（秒）。
+	//
+	// ★ 2026-11-18 根修（245 生产实证）：defaultAnalyzerTimeout 硬编码
+	// 60s，而 glm-5.3-flash 这类**推理模型**对分析级大提示词（max_tokens
+	// 4000）实测 59s 贴线——生产提示词更大即超时 ⇒ 每条错误重试 3 次
+	// 全灭。默认放宽到 150s，可经 LLMGatewayPIErrorAnalysisTimeoutSec 调。
+	timeoutSec int
 }
 
 // ★ 2026-11-17 审计轮：进程内持有 PI 智能体组件，供管理 API 注册时取用。
@@ -82,6 +89,7 @@ func loadPIAgentConfig() piAgentConfig {
 		interval:         5 * time.Minute,
 		batchSize:        10,
 		maxDepth:         1000,
+		timeoutSec:       150,
 	}
 	if v := strings.TrimSpace(os.Getenv("LLMGatewayPIErrorAnalysisInterval")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -98,6 +106,13 @@ func loadPIAgentConfig() piAgentConfig {
 	if v := strings.TrimSpace(os.Getenv("LLMGatewayPIErrorAnalysisMaxDepth")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.maxDepth = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LLMGatewayPIErrorAnalysisTimeoutSec")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 5 && n <= 600 {
+			cfg.timeoutSec = n
+		} else {
+			slog.Warn("pi_agent: invalid analysis timeout (want 5..600s), using default", "value", v, "default_sec", cfg.timeoutSec)
 		}
 	}
 	return cfg
@@ -180,6 +195,9 @@ func initPIAgent(
 	}
 
 	llmClient := promptinjection.NewGatewayLLMClient(model, "/chat/completions", apiKey, validatedURL)
+	// ★ 2026-11-18 根修：分析超时落到 client（此前 60s 硬编码，推理模型
+	// 大提示词必超时——245 实测 glm-5.3-flash 59s 贴线、生产即灭）。
+	llmClient.SetTimeout(time.Duration(cfg.timeoutSec) * time.Second)
 	analyzer := promptinjection.NewErrorAnalyzer(sqlDB, collector, llmClient, model, true)
 	// ★ 单批条数：真正落到实现（此前配置项形同虚设）。
 	analyzer.SetBatchSize(cfg.batchSize)

@@ -134,6 +134,19 @@ func (ec *ErrorCollector) CollectAsync(ctx context.Context, collectedErr *Collec
 	}
 }
 
+// Enabled 报告采集功能是否开启。
+//
+// ★ 2026-11-18 审计轮 P1：管理面需要能区分
+//
+//	「采集开着但队列是空的」与「采集**没开**（或**没有生产者**）」——
+//	否则「队列恒空」会被读成「没有错误发生过」。
+func (ec *ErrorCollector) Enabled() bool {
+	if ec == nil {
+		return false
+	}
+	return ec.enabled
+}
+
 // CollectorStats 返回采集器的运行计数（供管理 API 观测）。
 func (ec *ErrorCollector) CollectorStats() map[string]int64 {
 	if ec == nil {
@@ -519,14 +532,25 @@ func (ec *ErrorCollector) CollectRuleFalsePositive(
 //
 //	真正干活请用 ClaimPendingErrors（原子占位）。
 func (ec *ErrorCollector) GetPendingErrors(ctx context.Context, limit int) ([]*QueuedError, error) {
+	// ★ 2026-11-18 根修（245 生产实证）：五个 jsonb 列 COALESCE 到
+	// 'null'::jsonb —— QueuedError 的对应字段是 json.RawMessage，而
+	// database/sql 对「NULL → *json.RawMessage」报 Scan error
+	//（converting NULL to []uint8 is unsupported）。生产 Collect 会把
+	// 这些列写满，但**手工入队/历史行/其它写入方**可以留 NULL ⇒ 领取即炸
+	// ⇒ 整批错误卡死在 processing。COALESCE 后 NULL 变合法 JSON null，
+	// 下游 json.Unmarshal 对 RawMessage("null") 的行为是明确的。
 	query := `
 		SELECT
 			id, error_type, error_hash, priority,
 			tenant_id, session_id, request_id,
 			input_text, input_hash, error_message,
-			error_details, detection_layers, matched_rules, policy_config,
+			COALESCE(error_details, 'null'::jsonb),
+			COALESCE(detection_layers, 'null'::jsonb),
+			COALESCE(matched_rules, 'null'::jsonb),
+			COALESCE(policy_config, 'null'::jsonb),
 			status, retry_count, max_retries,
-			created_at, started_at, completed_at, metadata
+			created_at, started_at, completed_at,
+			COALESCE(metadata, 'null'::jsonb)
 		FROM error_analysis_queue
 		WHERE status = $1
 		ORDER BY priority DESC, created_at ASC
@@ -600,9 +624,13 @@ func (ec *ErrorCollector) ClaimPendingErrors(ctx context.Context, limit int) ([]
 			q.id, q.error_type, q.error_hash, q.priority,
 			q.tenant_id, q.session_id, q.request_id,
 			q.input_text, q.input_hash, q.error_message,
-			q.error_details, q.detection_layers, q.matched_rules, q.policy_config,
+			COALESCE(q.error_details, 'null'::jsonb),
+			COALESCE(q.detection_layers, 'null'::jsonb),
+			COALESCE(q.matched_rules, 'null'::jsonb),
+			COALESCE(q.policy_config, 'null'::jsonb),
 			q.status, q.retry_count, q.max_retries,
-			q.created_at, q.started_at, q.completed_at, q.metadata
+			q.created_at, q.started_at, q.completed_at,
+			COALESCE(q.metadata, 'null'::jsonb)
 	`
 
 	rows, err := ec.db.QueryContext(ctx, query, limit)

@@ -1,38 +1,30 @@
 # 共享登录流 —— 所有需要登录的 flow 都用 runFlow 调它。
 #
-# 登录控件（web/src/components/LoginModal.vue）：
-#   #login-username            用户名输入框（LoginModal.vue:140-146）
-#   #login-password            密码输入框（LoginModal.vue:150-156）
-#   .login-modal__actions 里的 <button type="submit">   提交按钮（LoginModal.vue:160-162）
-#   提交按钮的可见文案是「登录」（locale login.submit = '登录'）
+# ★ 2026-11-18 重写为「键入 + 页内 fetch 提交」混合式（245 生产实证）：
 #
-# ★ 为什么提交用 pressKey: Enter 而不是 tapOn: '登录'：
-#   页面上「登录」二字至少出现两处 —— 访客头部按钮
-#   （web/src/App.vue:386 <button class="guest-login-btn">{{ t('login.submit') }}</button>）
-#   和登录弹窗的提交按钮。Maestro 的 tapOn 文本匹配按 DOM 顺序取第一个命中，
-#   会打到访客头部的按钮上（只是再次打开弹窗，不会提交表单）。
-#   焦点停在密码框时按 Enter 会触发 form 的 @submit.prevent="handleLogin"，
-#   是唯一确定能提交的路径。
+#	原「键入 + Enter」路径的两处结构性故障（245 实测，各带字节级证据）：
+#	  ① 口令含 '&' 等特殊字符时，Maestro 键入/插值管道会**吞片段**
+#	    （request_bytes 63/67 漂移 vs 正确 68 ⇒ 401「password does not
+#	    match the users table record」）；
+#	  ② 即使 DOM value 完整（实测可断言出 14 字符），Vue v-model 的
+#	    input 事件消化与 Enter/requestSubmit 之间存在竞态 ⇒ 提交的是
+#	    v-model 里的部分值。
+#	⇒ 本版：inputText 键入（${VAR} 在 text: 里实测可靠、DOM value 完整），
+#	  提交改由 evalScript **从字段读值**直接 fetch /api/auth/token
+#	  （credentials:'same-origin' ⇒ HttpOnly cookie 落袋；README §6.3 的
+#	  正解）——不依赖 v-model、不依赖 Enter、evalScript 里不用 ${}
+#	  （本版 Maestro 的 evalScript 不做变量插值，实测）。
+#	★ 失败时抛 LOGIN_HTTP_<status> ⇒ flow 当场红。
 #
 # ★ 账号口令不写进仓内任何文件：ADMIN_USER / ADMIN_PASSWORD 由
-#   maestro/env.local.yaml（本地生成，已 gitignore）注入。
-#
-# ★ 后端有自适应验证码闸门（admin/auth_captcha.go:474）：连续登录失败达阈值后
-#   强制要求 captcha，而登录弹窗当前没有渲染验证码输入框 ⇒ 那种状态下
-#   本 flow 必然失败。先把失败计数清掉（或改用 README 里的 cookie 注入方案）。
+#   命令行 -e 注入（flow 经 runFlow env 转发）。
 url: ${BASE_URL}
 ---
-- openLink: ${BASE_URL}/login
+- openLink: ${BASE_URL}/?login=1
 - extendedWaitUntil:
     visible:
       id: "login-modal-title"
     timeout: 20000
-# ★ 必须先 eraseText：登录框的**用户名默认预填 "admin"**
-#   （web/src/components/LoginModal.vue:42 `const username = ref('admin')`），
-#   而 Maestro 的 inputText 是**追加**而不是替换 ⇒ 不清空就会得到
-#   "adminadmin" ⇒ 后端回 Invalid credentials ⇒ 弹窗不关 ⇒ flow 失败。
-#   ★ 实测证据（2026-10-28 R176）：不清空时页面里的用户名框内容是
-#   "adminadmin"，后端回 401 "Invalid credentials"。
 - tapOn:
     id: "login-username"
 - eraseText: 20
@@ -45,13 +37,4 @@ url: ${BASE_URL}
 - inputText:
     id: "login-password"
     text: "${ADMIN_PASSWORD}"
-- pressKey: Enter
-- extendedWaitUntil:
-    notVisible:
-      id: "login-modal-title"
-    timeout: 20000
-# 登录成功的硬判据：弹窗关掉后首页应渲染已登录态的仪表盘
-# （web/src/views/DashboardViewV2.vue:97 <h2>{{ t('dashboard.title') }}</h2>）
-- extendedWaitUntil:
-    visible: '仪表盘'
-    timeout: 20000
+- evalScript: 'const u=document.getElementById("login-username"), p=document.getElementById("login-password"); const r=await fetch("/api/auth/token",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.value,password:p.value})}); if(!r.ok){throw new Error("LOGIN_HTTP_"+r.status);} true'

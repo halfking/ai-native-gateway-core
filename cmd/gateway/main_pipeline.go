@@ -274,6 +274,17 @@ type v2DispatchDeps struct {
 	// PromptInjectionHook 延迟绑定（见 BindDetector），注入经本字段到达 hook。
 	PromptInjectionDetector promptinjectionhooks.Detector
 	PromptInjectionHook     *promptinjectionhooks.Hook
+
+	// InterceptEngine 是治理拦截引擎（与 pipeline 里的
+	// governance_interception stage 共用同一个实例）。
+	//
+	// ★ 2026-11-18 审计轮 P0：拦截决策原本**只**由那个 stage 产出，
+	//	而 stage 注册序在 provider_discovery 之后 ⇒ 对真实流量
+	//	（provider_discovery 对真实模型恒失败 ⇒ 管线在此中止）
+	//	**永远到不了决策闸** ⇒ 已写下的 deny verdict 被丢弃。
+	//	⇒ 把它暴露出来，让 dispatch 层在管线中止后**补做一次决策**
+	//	（见 v2DispatchHandler 的「收口决策」）。
+	InterceptEngine *interception.Engine
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
 
@@ -364,6 +375,33 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			Hooks: []pipeline.Hook{observability.NewTracingHook(deps.Tracer)},
 		})
 	}
+
+	// PR-V4-11: prompt injection hook。
+	// ★ 2026-11-18 根修（245 生产实证）：阶段从 governance 区块（原
+	// governance_security 之后、interception 之前）**前移到 security 之前**。
+	// 管线按**注册序**执行（Phase 只是标签），而本管线在 v1 包装路径上的
+	// 两个现实决定了位置：
+	//   ① provider_discovery 挂在**内存 demo 凭据仓**（newV2DispatchDepsFromMain
+	//      种的 gpt-4 假凭据）上，对任何真实模型都报「no healthy provider」
+	//      ⇒ 阶段失败 ⇒ wrapper 回落 v1 ⇒ 排在它之后的阶段对真实流量不可达；
+	//   ② security.check（独立 ThreatDetector）对注入载荷返回**阶段错误**
+	//      （critical threat）⇒ 串行模式中断 ⇒ 排在 security 之后的阶段
+	//      对注入载荷也不可达（245 实测：两类请求都到不了 PI hook，
+	//      prompt_injection_detections 恒空）。
+	// PI 检测是**内容驱动**的，不依赖供应商发现；observe 模式下它**不产生
+	// 阶段错误**（warn 继续）⇒ 放在最前：真实流量先过 PI hook（留痕 +
+	// 检测失败入队 Area①），后续阶段照旧（security 拦截/provider_discovery
+	// 失败回落 v1 完成真实路由）。
+	// F-41（2026-11-13）：stage **无条件注册**——构建时刻 deps.PromptInjectionDetector
+	// 恒为 nil（真实现由 SetV2DispatchAnalysisResources 在构建后注入），条件注册使
+	// governance_prompt_injection 永不出现（双重空转第二重）。hook 经
+	// deps.PromptInjectionHook 延迟绑定；detector 未到场时 Enabled() 恒 false，
+	// 与「未注册」逐请求等价（pipeline.go executeStage 先过 Enabled 过滤）。
+	deps.PromptInjectionHook = promptinjectionhooks.NewHook(deps.PromptInjectionDetector)
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{deps.PromptInjectionHook},
+	})
 
 	if deps.Config.EnableSecurity {
 		p.AddStage(&pipeline.PipelineStage{
@@ -478,18 +516,8 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
 	})
 
-	// PR-V4-11: prompt injection hook。
-	// 放在 governance_security 之后，interception engine 之前，让 Engine 汇总它的 verdict。
-	// F-41（2026-11-13）：stage 改为**无条件注册**——构建时刻 deps.PromptInjectionDetector
-	// 恒为 nil（真实现由 SetV2DispatchAnalysisResources 在构建后注入），条件注册使
-	// governance_prompt_injection 永不出现（双重空转第二重）。hook 经
-	// deps.PromptInjectionHook 延迟绑定；detector 未到场时 Enabled() 恒 false，
-	// 与「未注册」逐请求等价（pipeline.go executeStage 先过 Enabled 过滤）。
-	deps.PromptInjectionHook = promptinjectionhooks.NewHook(deps.PromptInjectionDetector)
-	p.AddStage(&pipeline.PipelineStage{
-		Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
-		Hooks: []pipeline.Hook{deps.PromptInjectionHook},
-	})
+	// （governance_prompt_injection 已于 2026-11-18 前移到 security 之后、
+	// provider_discovery 之前——见上方注册处的根修注释。）
 
 	// V4 interception engine (PR-V4-04): 把 security verdicts 汇总成 Decision，
 	// 写入 env.Governance.Decision。后续 PR 引入 dispatch gate 后接管 HTTP 拦截。
@@ -497,6 +525,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		BlockThreshold:    2,
 		SuspendOnCritical: false,
 	})
+	// ★ 2026-11-18 审计轮 P0：把引擎暴露给 dispatch 层，让它在管线
+	//	中止（例如 provider_discovery 对真实模型失败）后**补做一次决策**
+	//	—— 否则中止前已写下的 deny verdict 会被丢弃（决策闸不可达）。
+	deps.InterceptEngine = interceptEngine
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_interception", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{interception.NewInterceptionHook(interceptEngine)},
@@ -951,6 +983,27 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		}
 		env.Metadata["v2_pipeline_latency_ms"] = time.Since(pipeStart).Milliseconds()
 
+		// ★ 2026-11-18 审计轮 P0：治理决策**收口**。
+		//
+		//	拦截决策原本只由 governance_interception stage 产出，而该
+		//	stage 注册序在 provider_discovery 之后 ⇒ 对真实流量
+		//	（provider_discovery 挂在内存 demo 凭据仓上，对任何真实模型
+		//	都报「no healthy provider」⇒ 管线在此中止）**永远到不了
+		//	决策闸** ⇒ 中止前已经写下的 deny verdict（PI 检测、legacy
+		//	security 的 critical threat）被丢弃 ⇒ 拦截形同虚设。
+		//
+		//	⇒ 这里在管线中止后补做一次决策：若 Decision 尚未产出，就用
+		//	  已收集到的 verdicts 产出一次（与 stage 同一个引擎实例、
+		//	  同一套阈值/规则）。
+		if env.Governance == nil || env.Governance.Decision == nil {
+			if deps.InterceptEngine != nil {
+				if _, derr := deps.InterceptEngine.Decide(ctx, env); derr != nil {
+					slog.Warn("v2 dispatch: governance decision failed (falling through)",
+						"request_id", requestID, "error", derr)
+				}
+			}
+		}
+
 		// V4 dispatch gate (PR-V4-05): pipeline 写入的 Decision 在此生效。
 		// Block / Suspend / Terminate → 直接写响应并 short-circuit；
 		// Continue / Mutate → 继续交给 fallback handler。
@@ -988,6 +1041,38 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				r = r.WithContext(ctx)
 			}
 		}
+
+		// ★ 2026-11-18 审计轮 P0：PI 的拒绝判定必须真正生效。
+		//
+		//	此前 PI hook 的 OnError 只设 env.StatusCode（403/410/202），
+		//	而本文件**从不读它**（全仓只有 cmd/gateway-v2/main.go 读）
+		//	⇒ PI 判定为 reject/block 的请求照样落到下面的 fallback
+		//	  handler 被正常服务 ⇒ 拦截形同虚设。
+		//	⇒ 这里消费 PI 留下的显式判定标记，在落到 fallback **之前**
+		//	  写响应并终止。
+		//
+		//	顺序说明：本闸在**治理决策闸之后**——
+		//	· 治理决策（Decision=Block/Suspend）优先，它覆盖所有来源的
+		//	  deny verdict（含 PI 的），语义更完整（挂起/审批/封禁）；
+		//	· 治理决策为 Continue 时（例如 PI 判 medium 风险 ⇒ severity=1
+		//	  低于 BlockThreshold=2），本闸兜住 PI 自己的拒绝结论。
+		if code, blocked := promptInjectionGate(env); blocked {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(code)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":      "request rejected by prompt injection detection",
+				"request_id": requestID,
+				"verdict":    env.Metadata["prompt_injection_verdict"],
+			})
+			slog.Info("v2 dispatch: prompt injection gate short-circuit",
+				"request_id", requestID,
+				"path", r.URL.Path,
+				"status", code,
+				"verdict", env.Metadata["prompt_injection_verdict"],
+			)
+			return
+		}
+
 		fallback.ServeHTTP(w, r)
 
 		// Postflight: best-effort metrics stamping. We can't append
@@ -1024,6 +1109,37 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			}
 		}
 	})
+}
+
+// promptInjectionGate 读取 PI 检测 hook 留下的拒绝判定。
+//
+// ★ 2026-11-18 审计轮 P0：这是 PI 判定从「hook 内部状态」变成
+//
+//	「客户端可见的 HTTP 状态」的**唯一**出口。
+//
+//	返回 (statusCode, blocked)：
+//	  - blocked=false ⇒ 没有 PI 拒绝判定 ⇒ 调用方继续正常处理；
+//	  - blocked=true  ⇒ 本请求被 PI 判定为拒绝/待审批/会话终止，
+//	    statusCode 是应当回给客户端的状态码（403/410/202）。
+//
+//	判据用**显式标记**（prompt_injection_blocked /
+//	prompt_injection_verdict）而不是 env.StatusCode：
+//	env.StatusCode 是通用字段（其它阶段也可能写），用它做判据等于
+//	依赖「只有 PI 会写它」这个隐含约定。
+func promptInjectionGate(env *domain.PipelineRequest) (int, bool) {
+	if env == nil || env.Metadata == nil {
+		return 0, false
+	}
+	blocked, _ := env.Metadata["prompt_injection_blocked"].(bool)
+	if !blocked {
+		return 0, false
+	}
+	code := env.StatusCode
+	if code == 0 {
+		// 兜底：PI 标记了拒绝但没给状态码 ⇒ 按拒绝处理。
+		code = http.StatusForbidden
+	}
+	return code, true
 }
 
 // setForceCompressionMetadata maps the client opt-in header to the existing
@@ -1326,14 +1442,21 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 		deps.analysisCancel()
 		deps.analysisCancel = nil
 	}
-	// Publisher / IntentStore 不由本函数关闭（pool 由 dbConn 管），
-	// 但调用 Close 让实现内部清理（PGPool 之外通常是 no-op）。
-	if deps.Publisher != nil {
-		_ = deps.Publisher.Close()
-	}
+	// ★ 2026-11-18 根修（245 生产实证）：**不再调用 deps.Publisher.Close()**。
+	// 旧代码在这里调 Publisher.Close——但 V2 块构造的 PGPublisher 挂在
+	// **共享主 pool** 上（main.go V2 块 `bus.NewPGPublisher(pool, ...)`），
+	// 其 Close 的唯一副作用就是把主 pool 整个关掉：
+	//   · boot 期出错走 defer 清理（如 panic 展开）时，pgxpool.Close
+	//     （puddle）等待在途连接归还 ⇒ 卡死 ⇒ panic 冻结在 defer 里 ⇒
+	//     进程僵尸化（监听从未绑定、systemd 不拉起）——245 事故实证；
+	//   · 正常停机时也会把主 pool 提前关掉，与本函数旧注释「pool 由
+	//     dbConn 管」的所有权矛盾。
+	// PGPublisher 自身没有 pool 之外的资源需要释放（bus/publisher.go:98）。
+	// 若未来 Publisher 获得真正的自有资源，应让 V2 块传入**独占 pool** 的
+	// 实例，再恢复这里的 Close（并配僵尸化回归钉测）。
 	for _, sqlDB := range deps.AnalysisSQLDBs {
 		if sqlDB != nil {
-			_ = sqlDB.Close()
+			closeAnalysisSQLDBBounded(sqlDB, analysisSQLDBCloseTimeout)
 		}
 	}
 	deps.AnalysisSQLDBs = nil
@@ -1344,6 +1467,34 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	defer cancel()
 	_ = ctx
 	_ = deps.AuditWriter.Close()
+}
+
+// analysisSQLDBCloseTimeout 是关闭 analysis *sql.DB 的有界等待上限。
+//
+// ★ 2026-11-18 根修（245 生产实证）：*sql.DB.Close 会等所有在途连接归还
+// （底层 puddle Pool.Close 卡 WaitGroup.Wait）。boot 期一旦主流程出错走
+// defer 清理（例如 panic 展开），后台任务（PI 检测器规则加载 / 采集器）
+// 仍持有连接 ⇒ 无界等待把「崩溃 + systemd 自动拉起」变成「僵尸进程」：
+// pool 已关、监听从未绑定、进程不退出。有界关闭让清理路径必然返回。
+const analysisSQLDBCloseTimeout = 5 * time.Second
+
+// closeAnalysisSQLDBBounded 有界关闭一个 analysis *sql.DB：超时放弃并留痕
+// （连接随进程退出由 OS 回收；比卡死整个 shutdown 路径代价小得多）。
+func closeAnalysisSQLDBBounded(db *sql.DB, timeout time.Duration) {
+	if db == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = db.Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("v2 pipeline: analysis sqlDB close timed out (in-flight connection held); giving up",
+			"timeout", timeout.String())
+	}
 }
 
 var lookupAnalysisIP = net.LookupIP

@@ -291,4 +291,14 @@ export default {
       lastMonth: 'الشهر الماضي',
     },
   },
+
+  // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
+  //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
+  piAnalysis: {
+    unavailableTitle: 'تحليل أخطاء PI غير متاح حاليًا.',
+    unavailableReason: 'لم يسجّل الخادم /api/admin/pi-analysis/* (لا يوجد اتصال بقاعدة البيانات أو مواد مصادقة للمشرف) — هذا هو سلوك fail-closed في الخادم، وليس بيانات فارغة.',
+    unavailableNetwork: 'تعذّر الوصول إلى واجهة تحليل أخطاء PI (خطأ في الشبكة أو في الخادم).',
+    chainNotWiredTitle: 'سلسلة الجمع غير موصولة.',
+    chainNotWiredReason: 'سلسلة كشف PI غير موصولة (لم يتم إنشاء promptinjection.Detector؛ السلسلة بالكامل خلف LLM_GATEWAY_USE_V2_PIPELINE) ⇒ يبقى طابور الجمع فارغًا دائمًا. هذا لا يعني أن لا أخطاء قد حدثت.',
+  },
 }

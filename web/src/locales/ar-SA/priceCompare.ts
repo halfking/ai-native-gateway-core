@@ -87,6 +87,7 @@ export default {
   suggestThreshold: 'حد أدنى للتغير %',
   suggestPreview: 'معاينة الاقتراحات',
   suggestApplyAll: 'تطبيق على {n} نموذجاً',
+  suggestApplyConfirm: 'هل تريد تطبيق تغييرات التسعير على {n} نموذجاً؟ سيؤدي ذلك إلى استبدال الأسعار الحالية ولا يمكن التراجع عنه.',
   suggestLoadFailed: 'تعذّر تحميل اقتراحات التسعير.',
   suggestApplyOk: 'تم التطبيق على {n} نموذجاً (دفعة #{batch})؛ يمكن العثور عليه في سجل التغييرات حسب الدفعة.',
   suggestApplyFailed: 'تعذّر تطبيق اقتراحات التسعير.',

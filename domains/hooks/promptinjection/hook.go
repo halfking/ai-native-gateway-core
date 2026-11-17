@@ -223,6 +223,15 @@ func (h *Hook) detect(ctx context.Context, env *domain.PipelineRequest, tenantID
 }
 
 // OnError 根据动作类型设置不同的 HTTP 状态码。
+//
+// ★ 2026-11-18 审计轮 P0：这里设置的 env.StatusCode 是 PI 拒绝判定的
+//
+//	**唯一**信号，而 cmd/gateway 的 v1 包装路径**从不读它**
+//	（只有 cmd/gateway-v2/main.go 读）⇒ PI 判定为「拒绝」的请求
+//	照样被 v1 handler 正常服务 ⇒ 拦截形同虚设。
+//	⇒ 除状态码外，同时写一个**显式**的判定标记
+//	（prompt_injection_verdict / prompt_injection_blocked），
+//	  让 dispatch 层不必依赖「只有 PI 会设 StatusCode」这个隐含约定。
 func (h *Hook) OnError(_ context.Context, env *domain.PipelineRequest, err error) error {
 	if env == nil {
 		return nil
@@ -230,17 +239,26 @@ func (h *Hook) OnError(_ context.Context, env *domain.PipelineRequest, err error
 
 	errMsg := err.Error()
 
+	verdict := "block"
 	switch {
 	case contains(errMsg, "approval required"):
 		// 审批请求返回 202 Accepted
 		env.StatusCode = 202
+		verdict = "approve"
 	case contains(errMsg, "session terminated"):
 		// 会话终止返回 410 Gone
 		env.StatusCode = 410
+		verdict = "terminate"
 	default:
 		// 默认返回 403 Forbidden
 		env.StatusCode = 403
 	}
+
+	if env.Metadata == nil {
+		env.Metadata = make(map[string]any)
+	}
+	env.Metadata["prompt_injection_verdict"] = verdict
+	env.Metadata["prompt_injection_blocked"] = true
 
 	return nil
 }

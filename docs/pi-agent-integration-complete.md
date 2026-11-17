@@ -3,7 +3,11 @@
 ## 1. 已完成的组件
 
 ### 1.1 核心基础设施 ✅
-- **数据库 Schema** (`sql/migrations/domain/641_pi_error_analysis_system.sql`)
+- **数据库 Schema** (`sql/migrations/startup/971_pi_error_analysis_system.sql`)
+  - ★ **订正（2026-11-18 复核）**：原写作 `sql/migrations/domain/641_pi_error_analysis_system.sql` ——
+    该路径是**死文件区**（`sql/migrations/domain/` 无一件登记进 installer StartupFiles / deploy 通道），
+    迁移**永不落地**；且它非幂等（裸 CREATE INDEX / CREATE TRIGGER），重放会 42P07/42710 ⇒ 部署 die。
+    提交 `c6827623d` 已把它收编为正典通道 `971`（七点登记 + 幂等 + 双门接管）⇒ 此处按 971 更正。
   - `error_analysis_queue` - 错误队列
   - `error_analysis_results` - 分析结果
   - 统计视图和自动化函数
@@ -586,7 +590,7 @@ func (h *PIAnalysisHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 ```bash
 # 应用迁移
 psql -h <host> -U <user> -d llm_gateway \
-  -f sql/migrations/domain/641_pi_error_analysis_system.sql
+  -f sql/migrations/startup/971_pi_error_analysis_system.sql
 
 # 验证表创建
 psql -h <host> -U <user> -d llm_gateway -c "\d error_analysis_queue"
