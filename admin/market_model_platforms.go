@@ -58,7 +58,37 @@ type marketPlatformQuoteDirectoryRow struct {
 	RunDate       string   `json:"run_date"`
 }
 
+// marketPlatformQuotesSQL —— 明细（**精确匹配**选中模型）。
+//
+// ★ 2026-11-17（F11 复核修）：此前这里带一条 `canonical_name ILIKE '%' || $2 || '%'`
+//
+//	的「同族便利匹配」⇒ **把别的模型的价格当成该模型的行展示**。
+//	实测（211 线上）：`model=glm-5.3` 返回 43 行，其中只有 **17 行**是 glm-5.3，
+//	另外 26 行是 glm-5.3-flash / zhipu/glm-5.3 / glm-5.3-prime / glm-5.3-fast …
+//	⇒ ① 跨模型价格被当成同一条模型的行情；② 「最便宜」标记会挂到**别的模型**的行上
+//	   （实测 OpenRouter 的 glm-5.3-flash ¥0.2665 抢走了 glm-5.3 自己的地板 ¥0.4668）；
+//	   ③ 平台数被灌水。
+//	⇒ 默认改为**精确匹配**；同族变体改为**显式** scope=family（见下方 SQL）。
 const marketPlatformQuotesSQL = `
+	SELECT canonical_name, platform_id, platform_name, region, native_currency,
+	       is_vendor, vendor, currency,
+	       input_per_1m, output_per_1m, cny_in_per_1m, cny_out_per_1m,
+	       cache_hit_per_1m, cny_cache_hit_per_1m,
+	       tier, model_kind,
+	       run_date::text, source_url
+	FROM market_price_platform_quotes
+	WHERE dimension = $1
+	  AND ($2 = '' OR lower(canonical_name) = lower($2))
+	ORDER BY is_vendor DESC, region, platform_id
+	LIMIT $3
+`
+
+// marketPlatformQuotesFamilySQL —— 明细 + **显式**同族变体（scope=family）。
+//
+// ★ 只有用户主动选「含同族」时才走这条；本模型的行**排前面**，
+//
+//	且前端必须显示每行的 canonical_name（否则又变成"看不出是哪个模型"）。
+const marketPlatformQuotesFamilySQL = `
 	SELECT canonical_name, platform_id, platform_name, region, native_currency,
 	       is_vendor, vendor, currency,
 	       input_per_1m, output_per_1m, cny_in_per_1m, cny_out_per_1m,
@@ -69,7 +99,8 @@ const marketPlatformQuotesSQL = `
 	WHERE dimension = $1
 	  AND ($2 = '' OR lower(canonical_name) = lower($2)
 	       OR canonical_name ILIKE '%' || $2 || '%')
-	ORDER BY is_vendor DESC, region, platform_id
+	ORDER BY (lower(canonical_name) = lower($2)) DESC,
+	         is_vendor DESC, region, platform_id
 	LIMIT $3
 `
 
@@ -92,7 +123,12 @@ const marketPlatformQuoteDirectorySQL = `
 	 LIMIT $2
 `
 
-// handleMarketModelPlatforms GET /api/admin/market/model-platforms?model=&dimension=&limit=
+// handleMarketModelPlatforms GET /api/admin/market/model-platforms?model=&dimension=&limit=&scope=
+//
+// ★ scope=""（默认）⇒ 只返回**选中模型自己**的行情（精确匹配）；
+//
+//	scope="family" ⇒ 额外带同族变体（glm-5.3 ⇒ 含 glm-5.3-flash/-prime/…），
+//	前端此时**必须**显示每行的 canonical_name，否则用户无法分辨哪行是哪个模型。
 func (h *Handler) handleMarketModelPlatforms(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -132,7 +168,18 @@ func (h *Handler) handleMarketModelPlatforms(w http.ResponseWriter, r *http.Requ
 		limit = 1000
 	}
 
-	rows, err := q.Query(ctx, marketPlatformQuotesSQL, dim, model, limit)
+	// ★ scope：默认 ""（**只查本模型，精确匹配**）；"family" ⇒ 额外带同族变体
+	//   （显式开启，且响应回带 scope ⇒ 前端必须显示每行的 canonical_name）。
+	scope := strings.TrimSpace(qs.Get("scope"))
+	if scope != "family" {
+		scope = ""
+	}
+	quotesSQL := marketPlatformQuotesSQL
+	if scope == "family" {
+		quotesSQL = marketPlatformQuotesFamilySQL
+	}
+
+	rows, err := q.Query(ctx, quotesSQL, dim, model, limit)
 	if err != nil {
 		writeInternalErr(w, "internal error (see server logs)", err)
 		return
@@ -203,5 +250,7 @@ func (h *Handler) handleMarketModelPlatforms(w http.ResponseWriter, r *http.Requ
 		"dimension": dim,
 		"directory": directory,
 		"is_dir":    model == "",
+		// scope 回带 ⇒ 前端据此决定是否显示「模型」列（同族行必须可区分）。
+		"scope": scope,
 	})
 }
