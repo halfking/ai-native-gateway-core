@@ -64,10 +64,11 @@ func TestLoggingMiddleware_NonCredentialQueryIsUnchanged(t *testing.T) {
 	})).ServeHTTP(rec, req)
 
 	records := decodeRecords(t, buf)
-	if len(records) != 1 {
-		t.Fatalf("want 1 record, got %d", len(records))
+	// 2026-11-17：/v1/* 请求开始行 + 完成行 = 2 条；query 只在完成行。
+	if len(records) != 2 {
+		t.Fatalf("want 2 records (start + complete), got %d", len(records))
 	}
-	if q := records[0]["query"].(string); q != "model=gpt-4o&limit=10" {
+	if q := records[1]["query"].(string); q != "model=gpt-4o&limit=10" {
 		t.Errorf("query = %q, want %q", q, "model=gpt-4o&limit=10")
 	}
 }

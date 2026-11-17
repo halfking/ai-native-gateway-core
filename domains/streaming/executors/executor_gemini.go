@@ -1033,6 +1033,19 @@ func (e *Executor) executeGemini(
 	}
 
 	reqStart := time.Now()
+	// 2026-11-17（全链路日志审计轮）：对齐 executor_chat.go 的
+	// upstream_call_starting（理由同 anthropic 腿——上游挂起期间无痕）。
+	slog.Info("upstream_call_starting",
+		"request_id", params.RequestID,
+		"provider_id", cand.ProviderID,
+		"credential_id", cand.CredentialID,
+		"raw_model", cand.RawModel,
+		"client_model", params.ClientModel,
+		"upstream_url", req.URL.String(),
+		"upstream_method", req.Method,
+		"body_bytes", len(bodyBytes),
+		"is_stream", params.IsStream,
+	)
 	var resp *http.Response
 	var uErr *upstreampkg.Error
 	if e.Upstream != nil {
