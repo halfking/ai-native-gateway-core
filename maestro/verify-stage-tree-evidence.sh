@@ -78,7 +78,8 @@ fi
 
 # ── ③ 身份三方一致（SSH = healthz = 部署树 HEAD）────────────────────────────
 if [ -n "${SSH_VER:-}" ] && [ -n "${HZ_VER:-}" ]; then
-  DEPLOY_HEAD=$(git -C "$DEPLOY_TREE" rev-parse --short HEAD 2>/dev/null || echo "")
+  DEPLOY_HEAD=$(git -C "$ROOT" rev-parse --short "deploy-154/seq3051-8ab0d2e56^{commit}" 2>/dev/null \
+                  || git -C "$DEPLOY_TREE" rev-parse --short HEAD 2>/dev/null || echo "")
   if [ "$SSH_VER" = "$HZ_VER" ] && [ "$SSH_SHA" = "$HZ_SHA" ] && [ "$SSH_SEQ" = "$HZ_SEQ" ]; then
     ok "③ 身份三方一致" "SSH = healthz = ${HZ_VER}（部署树 HEAD=${DEPLOY_HEAD}）"
   else
@@ -130,44 +131,58 @@ else
 fi
 
 # ── ⑦ 当前在役部署树可追溯 + 并行车零泄漏 ──────────────────────────────────
-if [ -d "$DEPLOY_TREE" ]; then
-  DH=$(git -C "$DEPLOY_TREE" rev-parse --short HEAD 2>/dev/null)
-  BASE=$(git -C "$DEPLOY_TREE" log --oneline -4 2>/dev/null | tail -1 | cut -d' ' -f1)
-  CH=$(git -C "$DEPLOY_TREE" diff --name-only "${BASE}" HEAD 2>/dev/null | wc -l | tr -d ' ')
+# ★ 用【仓内 durable ref（tag）】而不是 /private/tmp 的部署源目录：
+#   部署源目录会被系统清理 ⇒ 「可追溯」不能只靠它。
+TAG_NEW="deploy-154/seq3051-8ab0d2e56"
+TAG_OLD="deploy-154/seq3050-6840a7be"
+if git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/null 2>&1; then
+  DH=$(git -C "$ROOT" rev-parse --short "${TAG_NEW}^{commit}")
+  # ★ 基点必须从【标签消息】里取，不能用 `TAG^`：
+  #   部署树是 base → cherry1 → cherry2 → cherry3 ⇒ `TAG^` 是【上一笔 cherry-pick】，
+  #   不是基点（实测：会拿 10 文件冒充 25 文件）。
+  BASE=$(git -C "$ROOT" tag -l --format='%(contents)' "${TAG_NEW}" 2>/dev/null \
+          | grep -m1 '^base=' | cut -d= -f2 | tr -d '[:space:]')
+  [ -z "$BASE" ] && BASE=$(git -C "$ROOT" rev-parse --short "${TAG_NEW}~1" 2>/dev/null)
+  CH=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}" 2>/dev/null | wc -l | tr -d ' ')
   LEAK=0
   for f in admin/pi_analysis_handler.go web/public/menu-config.json; do
-    A=$(git -C "$DEPLOY_TREE" rev-parse "HEAD:$f" 2>/dev/null)
-    B=$(git -C "$DEPLOY_TREE" rev-parse "${BASE}:$f" 2>/dev/null)
+    A=$(git -C "$ROOT" rev-parse "${TAG_NEW}:$f" 2>/dev/null)
+    B=$(git -C "$ROOT" rev-parse "$BASE:$f" 2>/dev/null)
     [ "$A" != "$B" ] && LEAK=$((LEAK+1))
   done
-  PI=$(git -C "$DEPLOY_TREE" diff --name-only "${BASE}" HEAD -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$LEAK" = "0" ] && [ "$PI" = "0" ]; then
-    ok "⑦ 在役部署树可追溯 + 零泄漏" "HEAD=${DH}（基点 ${BASE:0:8} + ${CH} 文件）并行车 0 泄漏"
+  PI=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$LEAK" = "0" ] && [ "$PI" = "0" ] && [ "$CH" = "25" ]; then
+    ok "⑦ 在役部署可追溯 + 零泄漏" "tag ${TAG_NEW}（${DH}，基点 ${BASE:0:8} + ${CH} 文件）并行车 0 泄漏"
   else
-    bad "⑦ 在役部署树可追溯 + 零泄漏" "泄漏 ${LEAK} 处 / promptinjection 差异 ${PI} 处"
+    bad "⑦ 在役部署可追溯 + 零泄漏" "改动 ${CH} 个文件（期望 25）/ 泄漏 ${LEAK} 处 / promptinjection 差异 ${PI} 处"
   fi
+elif [ -d "$DEPLOY_TREE" ]; then
+  skip "⑦ 在役部署可追溯" "无 tag ${TAG_NEW}（仓内无 durable ref）"
 else
-  skip "⑦ 在役部署树可追溯" "目录不存在：${DEPLOY_TREE}"
+  skip "⑦ 在役部署可追溯" "既无 tag 也无部署源目录"
 fi
 
-# ── ⑧ 取代链：旧部署源（3050）仍可追溯，且被新部署源严格超集 ────────────────
-if [ -d "$OLD_TREE" ]; then
-  OH=$(git -C "$OLD_TREE" rev-parse --short HEAD 2>/dev/null)
-  OB=$(git -C "$OLD_TREE" log --oneline -2 2>/dev/null | tail -1 | cut -d' ' -f1)
-  ON=$(git -C "$OLD_TREE" diff --name-only "${OB}" HEAD 2>/dev/null | wc -l | tr -d ' ')
+# ── ⑧ 取代链：旧部署（3050）仍可追溯，且被新部署严格超集 ────────────────────
+if git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/null 2>&1; then
+  OH=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}^{commit}")
+  OB=$(git -C "$ROOT" tag -l --format='%(contents)' "${TAG_OLD}" 2>/dev/null \
+        | grep -m1 '^base=' | cut -d= -f2 | tr -d '[:space:]')
+  [ -z "$OB" ] && OB=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}~1" 2>/dev/null)
+  ON=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}" 2>/dev/null | wc -l | tr -d ' ')
   OLEAK=0
   for f in admin/pi_analysis_handler.go web/public/menu-config.json; do
-    A=$(git -C "$OLD_TREE" rev-parse "HEAD:$f" 2>/dev/null)
-    B=$(git -C "$OLD_TREE" rev-parse "${OB}:$f" 2>/dev/null)
+    A=$(git -C "$ROOT" rev-parse "${TAG_OLD}:$f" 2>/dev/null)
+    B=$(git -C "$ROOT" rev-parse "$OB:$f" 2>/dev/null)
     [ "$A" != "$B" ] && OLEAK=$((OLEAK+1))
   done
+  SUPER=$(git -C "$ROOT" diff --name-only "${TAG_OLD}" "${TAG_NEW}" 2>/dev/null | wc -l | tr -d ' ')
   if [ "$OLEAK" = "0" ]; then
-    ok "⑧ 旧部署源（3050）可追溯" "HEAD=${OH} = 基点 ${OB:0:8} + ${ON} 文件；并行车 0 泄漏"
+    ok "⑧ 旧部署（3050）可追溯" "tag ${TAG_OLD}（${OH}，基点 ${OB} + ${ON} 文件）并行车 0 泄漏；→3051 差异 ${SUPER} 个文件"
   else
-    bad "⑧ 旧部署源（3050）可追溯" "并行车泄漏 ${OLEAK} 处"
+    bad "⑧ 旧部署（3050）可追溯" "并行车泄漏 ${OLEAK} 处"
   fi
 else
-  skip "⑧ 旧部署源（3050）可追溯" "目录不存在：${OLD_TREE}"
+  skip "⑧ 旧部署（3050）可追溯" "无 tag ${TAG_OLD}"
 fi
 
 # ── ⑨ 前端产物三方 sha256（服务器 = 公网 = 本地 dist）────────────────────────
