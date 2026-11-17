@@ -56,8 +56,21 @@ if [ -n "${STAGE_TREE_CDP:-}" ] && [ -n "${STAGE_TREE_TOKEN_FILE:-}" ]; then
   echo "▶ 页面内断言（CDP=${STAGE_TREE_CDP}）"
   node "$ROOT/maestro/tools/assert-stage-tree.mjs" \
     --cdp "${STAGE_TREE_CDP}" --url "$BASE_URL" --token-file "${STAGE_TREE_TOKEN_FILE}"
+  # ★ 设计层断言有**第三个退出码 2 = 量具失效**（页面窗口内 0 条真实请求 ⇒
+  #   「有带时」的那批版面断言**未评估**，不是产品缺陷）。
+  #   ⇒ 这里**不能**用 set -e 直接崩掉（会丢掉「量具失效」这个关键信息），
+  #     必须显式接住并说人话。
+  set +e
   node "$ROOT/maestro/tools/assert-stage-tree-design.mjs" \
     --cdp "${STAGE_TREE_CDP}" --url "$BASE_URL" --token-file "${STAGE_TREE_TOKEN_FILE}"
+  DESIGN_EXIT=$?
+  set -e
+  if [ "${DESIGN_EXIT}" -eq 2 ]; then
+    echo "⚠ 设计对照断言**量具失效**（退出码 2）：窗口内 0 条真实请求 ⇒ 版面契约未评估。"
+    echo "  ⇒ 先造真实流量，再**立刻**重跑本脚本（线上实时流是有界滚动窗口）。"
+  elif [ "${DESIGN_EXIT}" -ne 0 ]; then
+    echo "✗ 设计对照断言失败（退出码 ${DESIGN_EXIT}）—— 这是**产品问题**，见上方逐条红。"
+  fi
 else
   echo "▶ 跳过页面内断言（未给 STAGE_TREE_CDP / STAGE_TREE_TOKEN_FILE）"
 fi

@@ -18,7 +18,9 @@
 //     --token-file /tmp/llmgw-jwt.txt
 //
 // ★ 安全约束：JWT 只从 --token-file 读（0600 临时文件），**不打印**。
-// 退出码：0 = 全绿；1 = 有断言失败（报告里逐条列出）。
+// 退出码：0 = 全绿；1 = 有断言失败（**产品问题**）；2 = **量具失效**
+//   （页面窗口内 0 条真实请求 ⇒ 依赖「有带」的断言**未评估**，不是产品缺陷；
+//     线上实时流是有界滚动窗口 ⇒ 需先造流量再立刻重跑）。
 
 import { readFileSync } from 'node:fs'
 import { connect, evaluate, openPage, waitFor } from './cdp-client.mjs'
@@ -243,24 +245,67 @@ async function main() {
     await new Promise((r) => setTimeout(r, 6000))
 
     const probe = await evaluate(cdp, sessionId, DESIGN_PROBE)
+    const compact = await evaluate(cdp, sessionId, COMPACT_PROBE)
+
+    // ★★ **量具自检**（2026-11-18 实测踩到）：窗口内 **0 条真实请求**时，
+    //   「有带时」的那批版面断言**根本无法评估**。
+    //   ★ 成因：线上实时流是**有界滚动窗口** —— 生产流量持续进入 ⇒
+    //     合成的验收请求 1~2 分钟就被挤出去（本轮实测：行为层跑完还是 1 条带，
+    //     设计层隔几十秒就变成 0 条 ⇒ 15 条红**全是量具问题**，不是产品缺陷）。
+    //   ★ 纪律：**「没评估到」≠「评估失败」**。把量具失效伪装成 15 条产品红，
+    //     会让复核者把工具问题误判成功能问题（比假绿更危险）。
+    //   ⇒ 口径：依赖「有带」的断言在无带时标成 **○ 未评估**，
+    //     整体报「量具失效」并用**专属退出码 2** —— 调用方据此先造流量再重跑。
+    const BAND_DEPENDENT = new Set([
+      '列头与请求带共用同一套列宽（不错位）',
+      '每条带都有时间列且格式为 HH:MM:SS',
+      '阶段节点显示的是值而不是只有名字',
+      '胶囊读数里的请求数 == 页面带数',
+      '紧凑模式渲染 11 段瓦片',
+      '每条带的 11 段瓦片在**同一行**（不换行）',
+      '瓦片图标渲染且描边生效（非默认黑块）',
+      '紧凑模式完成态**不画 ✓**',
+      '紧凑模式右侧是同一行的摘要块',
+      '瓦片带发送/接收轨标记（轨道短线）',
+      '每条轨的最后一段标了 tail（后面不画短线）',
+      '紧凑模式有最右错误列',
+      '错误列右缘恒定（能竖着扫）',
+      '紧凑树宽 ≥ 1400（错误列贴在树右缘）',
+      '切回完整模式后发送轨节点回来',
+    ])
+    const hasBands = (probe.facts.bands || 0) > 0
+    const allChecks = [...probe.checks, ...compact.checks]
+    const skipped = hasBands ? [] : allChecks.filter((c) => BAND_DEPENDENT.has(c.name))
+    const skippedNames = new Set(skipped.map((c) => c.name))
+
     console.log('== 设计对照断言（/live2）==')
     for (const c of probe.checks) {
-      console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
+      if (skippedNames.has(c.name)) console.log(`  ○ ${c.name}  —— 未评估（窗口内无真实请求）`)
+      else console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
     }
     console.log('  事实：', JSON.stringify(probe.facts, null, 0))
 
-    const compact = await evaluate(cdp, sessionId, COMPACT_PROBE)
     console.log('== 紧凑模式（单行瓦片 + 最右错误列）==')
     for (const c of compact.checks) {
-      console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
+      if (skippedNames.has(c.name)) console.log(`  ○ ${c.name}  —— 未评估（窗口内无真实请求）`)
+      else console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
     }
     console.log('  事实：', JSON.stringify(compact.facts, null, 0))
 
     // ★ 失败计数必须**把两层的检查都算进来**：
     //   早先只数第一层（probe.checks）⇒ 第二层红了却报「PASS」——
     //   「断言红」被统计口径吃掉，等于没有断言。
-    const allChecks = [...probe.checks, ...compact.checks]
-    const failed = allChecks.filter((c) => !c.pass).length
+    //   ⇒ **未评估的项不计入失败**（它们没被评估，不是被评估为失败）。
+    const failed = allChecks.filter((c) => !c.pass && !skippedNames.has(c.name)).length
+    if (skipped.length > 0) {
+      console.log(
+        `\nRESULT: 量具失效（${skipped.length} 条依赖真实请求的断言**未评估**；` +
+          `页面窗口内 0 条真实请求 ⇒ 这不是产品缺陷）`,
+      )
+      console.log('  ⇒ 请先造真实流量，再**立刻**重跑本断言（线上实时流是有界滚动窗口）。')
+      ws.close()
+      process.exit(2)
+    }
     console.log(
       failed === 0
         ? `\nRESULT: PASS（${allChecks.length} 条断言）`
