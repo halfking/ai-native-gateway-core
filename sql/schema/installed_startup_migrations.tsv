@@ -392,3 +392,4 @@
 374	975_pricing_suggestion_audit.sql
 375	976_market_price_platform_quote_region.sql
 376	977_pi_error_analysis_semantics.sql
+377	978_pi_canonical_rule_set.sql
