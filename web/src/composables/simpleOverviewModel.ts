@@ -55,6 +55,13 @@ export interface ProviderHealthSummary {
   unavailable: boolean
   /** 明细行（按严重度排序，最多 usable/warning/unreachable 的那些） */
   rows: ProviderHealthRow[]
+  /**
+   * ★ 明细行被截掉的数量（total - rows.length）。
+   *   **必须披露**：明细按严重度排序且只留前 N 行 ⇒ 被切掉的几乎全是「可用」的
+   *   （线上实测：徽标写「19 个上游可用」，列表里只有 3 行标着「可用」）。
+   *   不披露 ⇒ 用户以为数据对不上（本仓 11-16 审计轮的 F3「硬上限必须自带披露」同型）。
+   */
+  hidden: number
 }
 
 /** 一条状态判据 */
@@ -212,6 +219,7 @@ export function deriveProviderHealth(
       disabled: 0,
       unavailable: true,
       rows: [],
+      hidden: 0,
     }
   }
 
@@ -276,6 +284,7 @@ export function deriveProviderHealth(
     return b.healthyCount - a.healthyCount
   })
 
+  const visibleRows = sorted.slice(0, maxRows)
   return {
     total: providers.length,
     usable,
@@ -284,7 +293,9 @@ export function deriveProviderHealth(
     unknown,
     disabled,
     unavailable: false,
-    rows: sorted.slice(0, maxRows),
+    rows: visibleRows,
+    // 被截掉的那部分（页面必须披露，否则「微标写 19 、列表只有 3 个可用」看起来像数据对不上）
+    hidden: providers.length - visibleRows.length,
   }
 }
 

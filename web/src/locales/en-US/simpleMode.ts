@@ -137,6 +137,7 @@ export default {
     providerUnavailable: 'Upstream status could not be loaded, please retry',
     providerEmpty: 'No upstream connected yet',
     providerSummary: 'Ready {usable}, warning {warning}, unreachable {unreachable}, not probed {unknown}',
+    providerMore: 'Showing the {shown} upstreams that need attention; {hidden} more are not listed',
     topModelsTitle: 'Most used models',
     topModelsEmpty: 'No traffic today yet',
     loadFailed: 'The overview data could not be loaded, please retry',

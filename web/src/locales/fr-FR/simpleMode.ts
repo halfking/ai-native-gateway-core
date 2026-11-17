@@ -137,6 +137,7 @@ export default {
     providerUnavailable: "L'état des sources n'a pas pu être chargé, veuillez réessayer",
     providerEmpty: 'Aucune source connectée pour l’instant',
     providerSummary: 'Disponibles {usable}, avertissement {warning}, injoignables {unreachable}, non vérifiées {unknown}',
+    providerMore: 'Affichage des {shown} sources nécessitant votre attention ; {hidden} autres ne sont pas listées',
     topModelsTitle: 'Modèles les plus utilisés',
     topModelsEmpty: "Pas encore de trafic aujourd'hui",
     loadFailed: "Les données de vue d'ensemble n'ont pas pu être chargées, veuillez réessayer",

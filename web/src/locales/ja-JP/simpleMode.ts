@@ -137,6 +137,7 @@ export default {
     providerUnavailable: '上流の状態を読み込めませんでした。再試行してください',
     providerEmpty: '上流がまだ接続されていません',
     providerSummary: '利用可能 {usable}、警告 {warning}、到達不能 {unreachable}、未確認 {unknown}',
+    providerMore: '要確認の優先度が高い上流 {shown} 件を表示しています。他の {hidden} 件は表示していません',
     topModelsTitle: 'よく使われるモデル',
     topModelsEmpty: '本日のトラフィックはまだありません',
     loadFailed: '概要データを読み込めませんでした。再試行してください',

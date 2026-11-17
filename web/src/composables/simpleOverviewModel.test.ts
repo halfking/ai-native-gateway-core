@@ -114,6 +114,30 @@ describe('deriveProviderHealth', () => {
     ])
     expect(summary.rows.map((r) => r.tone)).toEqual(['danger', 'warn', 'ok'])
   })
+
+  // ★ 截断必须**可数**（2026-11-17 审计轮撞出）：
+  //   明细按严重度排序只留前 N 行 ⇒ 被切掉的几乎全是「可用」的
+  //   （线上：徽标「19 个上游可用」而列表只有 3 行「可用」）。
+  //   不披露 ⇒ 用户以为数据对不上 ⇒ hidden 必须能算出来给页面披露用。
+  it('reports how many providers the detail list leaves out', () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      provider({ id: i + 1, display_name: `ok-${i + 1}` }),
+    )
+    const summary = deriveProviderHealth(many)
+    expect(summary.total).toBe(20)
+    expect(summary.rows.length).toBe(12)
+    expect(summary.hidden).toBe(8)
+  })
+
+  it('reports no hidden providers when the list is not truncated', () => {
+    const summary = deriveProviderHealth([provider({ id: 1, display_name: 'ok' })])
+    expect(summary.hidden).toBe(0)
+  })
+
+  it('reports nothing hidden when the source cannot be read', () => {
+    const summary = deriveProviderHealth(null, { unavailable: true })
+    expect(summary.hidden).toBe(0)
+  })
 })
 
 describe('deriveOverviewStatus', () => {

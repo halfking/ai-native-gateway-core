@@ -137,6 +137,7 @@ export default {
     providerUnavailable: 'Der Status der Gegenstellen konnte nicht geladen werden, bitte erneut versuchen',
     providerEmpty: 'Noch keine Gegenstelle verbunden',
     providerSummary: 'Bereit {usable}, Warnung {warning}, nicht erreichbar {unreachable}, nicht geprüft {unknown}',
+    providerMore: 'Es werden die {shown} Gegenstellen mit dem größten Handlungsbedarf gezeigt; {hidden} weitere sind nicht aufgeführt',
     topModelsTitle: 'Meistgenutzte Modelle',
     topModelsEmpty: 'Heute noch kein Traffic',
     loadFailed: 'Die Übersichtsdaten konnten nicht geladen werden, bitte erneut versuchen',

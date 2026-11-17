@@ -1,0 +1,33 @@
+# _shared/switch-simple-mode.yaml —— 幂等地切到「简易模式」，并断言总览页就位
+#
+# ★ 为什么必须幂等（2026-11-17 实测）：
+#   Maestro web 驱动的 `openLink` 会**清掉 localStorage**（但**保留 cookie**）
+#   ⇒ 每次整页导航后，工作模式（本机选择 `llmgw_work_mode`）都退回专家面。
+#   实测证据：切换到简易模式后 openLink /dashboard，落地的是**专家面仪表盘**
+#   （顶栏「● 专家模式」+ 标题「仪表盘」），而同一页用 CDP 的 `Page.navigate`
+#   导航则保持简易模式 ⇒ 差异在 Maestro 的导航路径，不在产品代码。
+#
+# ★ 于是本子流程按「**先归零到专家面，再切到简易面**」走，两步都幂等：
+#   ① openLink /dashboard；
+#   ② 若当前在简易模式（页面上有可见文本「简易模式」＝ 顶栏切换按钮的当前态
+#      文案），先点它切回专家面；已经是专家面时这一步找不到元素 ⇒ optional 跳过；
+#   ③ 断言专家面首页的独有标题「实时请求流」（此刻一定成立）；
+#   ④ 点「专家模式」切到简易模式；
+#   ⑤ 断言总览页页头的模式 chip「工作模式 · 简易模式」—— **判据与被测对象
+#      不同源**：按钮自己的文案随模式变化，不能既当定位键又当状态。
+#
+# ★ 文本匹配是**元素完整文本相等**（不是子串包含）⇒ 判据必须写成整句。
+url: ${BASE_URL}
+---
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "简易模式"
+    optional: true
+- assertVisible:
+    text: "实时请求流"
+- tapOn:
+    text: "专家模式"
+- extendedWaitUntil:
+    visible:
+      text: "工作模式 · 简易模式"
+    timeout: 30000

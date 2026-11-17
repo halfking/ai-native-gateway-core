@@ -179,6 +179,57 @@ const PAGE_PROBE = `(() => {
   const legalTones = ['可用', '有告警', '不可达', '未探活']
   check('上游健康分级只出现四档', tones.every((t) => legalTones.indexOf(t) >= 0), JSON.stringify([...new Set(tones)]))
 
+  // ── 9. 三个主体面板必须在 DOM 里（**与视口无关**）───────────────────────
+  // ★ 为什么要有这一段：Maestro web 驱动的 view hierarchy **只覆盖视口**
+  //   （默认 1024×625），而本页滚动容器是 .main-body（非 window）
+  //   ⇒ Maestro 滚不动 ⇒ 「面板在不在」这件事在 flow 里只能靠「放大视口」间接证明。
+  //   这里是**直接证据**：DOM 查询不看视口，面板在就是在。
+  const panelSel = {
+    '接入清单': '[data-testid="overview-access-list"]',
+    '上游健康': '[data-testid="overview-provider-health"]',
+    '最常用的模型': '[data-testid="overview-top-models"]',
+  }
+  const panels = {}
+  for (const name of Object.keys(panelSel)) {
+    panels[name] = !!q(panelSel[name])
+    check('面板在 DOM 里：' + name, panels[name], panelSel[name])
+  }
+  out.facts.panels = panels
+
+  // 最常用的模型：要么有行，要么是明确的空态（不能是「面板不见了」）
+  const modelRows = qa('[data-testid="overview-top-models"] .model-row')
+  const modelEmpty = q('[data-testid="overview-top-models"] .empty')
+  out.facts.modelRows = modelRows.length
+  check(
+    '热门模型面板有行或明确空态',
+    modelRows.length > 0 || !!modelEmpty,
+    '行数=' + modelRows.length + ' 空态=' + !!modelEmpty,
+  )
+
+  // ── 10. 上游健康明细的截断必须**披露** ──────────────────────────────────
+  // ★ 线上实测（2026-11-17）：徽标写「19 个上游可用」，而列表里只有 3 行标着
+  //   「可用」—— 因为明细按严重度排序、只留前 12 行，被切掉的几乎全是健康的，
+  //   而截断**没有任何披露** ⇒ 用户只会判定「这页数据坏了」。
+  const ph = q('[data-testid="overview-provider-health"]')
+  const phTotal = Number(ph ? ph.getAttribute('data-total') : NaN)
+  const phShown = Number(ph ? ph.getAttribute('data-shown') : NaN)
+  const phHidden = Number(ph ? ph.getAttribute('data-hidden') : NaN)
+  const truncEl = q('[data-testid="overview-provider-truncated"]')
+  out.facts.providerTotal = phTotal
+  out.facts.providerShown = phShown
+  out.facts.providerHidden = phHidden
+  out.facts.providerTruncatedNote = text(truncEl)
+  check(
+    '上游健康：明细行数 + 隐藏数 = 在册总数',
+    Number.isFinite(phTotal) && phShown + phHidden === phTotal,
+    '总数=' + phTotal + ' 显示=' + phShown + ' 隐藏=' + phHidden,
+  )
+  check(
+    '上游健康：明细被截断时必须有披露文案',
+    phHidden === 0 || !!truncEl,
+    '隐藏=' + phHidden + ' 披露元素=' + !!truncEl,
+  )
+
   return out
 })()`
 

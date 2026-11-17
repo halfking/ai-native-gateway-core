@@ -513,8 +513,62 @@ maestro test --driver-host-port 9222 --headless --no-ansi \
 
 ★ 工作模式（简易/专家）是**本机选择**（localStorage `llmgw_work_mode`），
 不是服务端设置 ⇒ 换机器就是另一个模式，CI 上必须显式设置（见
-`maestro/flows/11-simple-overview.yaml` 开头：登录前先复位成 `expert`，
-登录后再切 `simple` 并重新加载 —— SPA 启动时只读一次）。
+`maestro/flows/11-simple-overview.yaml` 开头：`launchApp` 带 `clearState: true`
+把 cookie 与 localStorage 一起清干净 ⇒ 登录后必定落在专家面，再点顶栏的
+切换按钮（`data-testid="work-mode-switch"`）切到简易模式）。
+
+### 6.6 ★ web 驱动的能力边界（2026-11-17 逐条实测，**写 flow 前必读**）
+
+★ Maestro 2.11.0 的 **web 驱动**（`CdpWebDriver`）与移动端差别很大，下列边界都是
+**实测**出来的（证据见 `docs/audit/2026-11-17-简易总览页优化-主档.md` §7.4）：
+
+| 能力 | 实测 | 怎么用 |
+|---|---|---|
+| `evalScript` | **no-op**：命令报 COMPLETED，页面一字未变 | **不要用**。`javap -p maestro.drivers.CdpWebDriver` 的方法表里根本没有 `evaluateScript` |
+| `${output.x = ...}` | 只在 **JVM 侧**求值 ⇒ 拿不到 DOM（`document` 未定义） | 只适合纯算术 |
+| `assertVisible: { css }` | 可用但**极慢**（单条实测 2 分 23 秒） | 少用；能换 `id:` 就换 |
+| `assertNotVisible: { css }` | **直接挂住**（无超时上限） | 不要用 |
+| `assertVisible: { text }` | 可用，**秒级**；但**只匹配可见文本**且是**元素完整文本相等**（**不是子串包含**！实测「下一步该做什么」这种半句匹配不到）；`aria-label` / `title` **不参与**（`tapOn "切到专家模式"` ⇒ Element not found） | 判据一律用**整句**（`text: "工作模式 · 简易模式"`、`text: "今日请求"`） |
+| `assertVisible: { id }` | 可用，秒级，但**只匹配 HTML 的 `id` 属性**，**不匹配 `data-testid`**（实测 `tapOn id: work-mode-switch`（纯 data-testid）⇒ Element not found） | 需要 testid 级精确定位 ⇒ 走 `maestro/tools/assert-overview.mjs`（页面内 CDP） |
+| **view hierarchy 只覆盖视口** | 视口固定 **1024×625**（hierarchy 根节点 `bounds = [0,0][1024,625]`）⇒ 折叠线以下的内容**不进树** ⇒ `assertVisible` 对视口外元素**一律判 false**（哪怕它已渲染在 DOM 里） | 视口外的元素先 `scrollUntilVisible`（真滚动：`window.scrollY + innerHeight/2`）→ 再断言 → 再滚回顶部 |
+| `css` + `text` 组合 | **不可用**（实测 FAILED） | 一条断言只用一种 |
+| `--driver-host-port <port>` | 对 web 驱动**无效** | web 驱动自己起 Chrome（独立 profile/端口）⇒ 别传 |
+| `--screen-size WxH` | **有效**（Web only），可调视口 | 默认 1024×625；本项目两栏在 `@media (max-width: 1024px)` 下塌成一栏 ⇒ 想测两栏布局就传 `--screen-size 1440x900` |
+
+★ 「报 COMPLETED 但什么都没做」是这里最危险的失败模式：一条**从未执行过**的断言
+看起来通过了。凡是依赖 `${output.*}` 的断言，在 web 驱动下都是**静默空转**。
+
+★ 需要「页面内的数值逐字对拍」（统计口径、请求扇出、精确计数）时，
+  flow 做不了 ⇒ 用 `maestro/tools/assert-overview.mjs`（见 6.7）。
+
+### 6.7 ★ 页面内数值对拍：`maestro/tools/assert-overview.mjs`
+
+★ 为什么单独一个脚本：有些断言**只能在页面内做** —— 例如「总览页上的今日请求
+  必须与 `/api/admin/dashboard/board` 的 `summary.total_requests` **逐字一致**」。
+  在 flow 外面用 curl 对拍会**假红**（两次请求之间流量在涨）；
+  而在页面内用**同一个响应**对拍，口径天然一致。
+
+它做（一次页面内求值）：
+1. 统计卡 / 快捷操作的**精确计数**（flow 没有 count 断言）；
+2. 六张卡的 label 与 value 逐字抓出；
+3. 与 board API 的 `total_requests` / `active_api_keys` / `active_models` **同页同刻**对拍；
+4. 「读不到 ≠ 0」：源不可读时必须是占位符，不是 0；
+5. **不得**出现 per-key 的 `/api/usage/{id}/models` 扇出；
+6. 状态条 `data-tone` ∈ {ok, warn, blocked}、三步接入「不存在或恰好三步」、
+   上游健康四档分级（`可用` / `有告警` / `不可达` / `未探活`，未探活必须单列）。
+
+```bash
+node maestro/tools/assert-overview.mjs \
+  --cdp http://127.0.0.1:9222 \
+  --url https://llm.itestu.cn \
+  --token-file /tmp/llmgw-jwt.txt
+# 退出码 0 = 全绿；1 = 有断言失败（报告里逐条列出）
+```
+
+★ 公共件在 `maestro/tools/cdp-client.mjs`（零依赖，Node ≥ 22 自带 WebSocket）：
+`connect()` / `openPage()` / `evaluate()` / `waitFor()`，`seed-session.mjs` 与
+`assert-overview.mjs` 共用。
+★ 安全约束：JWT 只从 `--token-file` 读（0600），**不打印**；用完删掉那个文件。
 
 ---
 

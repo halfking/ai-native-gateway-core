@@ -137,6 +137,7 @@ export default {
     providerUnavailable: '没能加载出上游状态，请重试',
     providerEmpty: '还没有接任何上游',
     providerSummary: '可用 {usable} · 告警 {warning} · 不可达 {unreachable} · 未探活 {unknown}',
+    providerMore: '只显示最需要关注的 {shown} 个上游，其余 {hidden} 个未展开',
     topModelsTitle: '最常用的模型',
     topModelsEmpty: '今天还没有流量',
     loadFailed: '总览数据没能加载出来，请重试',

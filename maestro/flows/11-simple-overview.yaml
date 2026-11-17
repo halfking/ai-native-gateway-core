@@ -16,45 +16,60 @@
 #   ② `${output.x = ...}` 只在 **Maestro 自己的 JS 引擎（JVM 侧）**求值
 #      ⇒ 能做纯算术（1+1 ✔），碰不到 DOM（document 未定义 ⇒ TypeError）。
 #
-#   ③ 断言选择器：**css / text / id 三选一**，且 **css 与 text 不能组合**
-#      （组合实测 FAILED）。其中：
-#      · `id:` ⇒ 命中 HTML 的 `id` 属性，**也命中 `data-testid`**（web 驱动把
-#        data-testid 映射成 resource-id）⇒ 秒级返回，本 flow 的锚点全用它。
-#      · `text:` ⇒ 只匹配**可见文本**；**aria-label / title 不参与匹配**
-#        （实测 tapOn "切到专家模式" ⇒ Element not found）。
-#      · `css:` ⇒ **极慢**：一条 `assertVisible: {css: ...}` 实测耗时 **2 分 23 秒**，
-#        而 `assertNotVisible: {css: ...}` 直接挂住 ⇒ 本 flow 一条 css 都不用。
+#   ③ 断言选择器只有三种可用，**一条断言只用一种**：
+#      · `text:` ⇒ 秒级，但**只匹配可见文本**、且是**元素完整文本相等**
+#        （**不是子串包含**！实测「下一步该做什么」这种半句匹配不到，
+#        而「工作模式 · 简易模式」「今日请求」这种整句能命中）；
+#        `aria-label` / `title` **不参与**（实测 tapOn "切到专家模式" ⇒ Element not found）。
+#      · `id:` ⇒ 秒级，但**只匹配 HTML 的 `id` 属性**，**不匹配 `data-testid`**
+#        （实测 tapOn id: work-mode-switch（纯 data-testid）⇒ Element not found）。
+#      · `css:` ⇒ 能用但**极慢**（单条实测 2 分 23 秒），且 `assertNotVisible: {css}`
+#        **直接挂住**（无超时上限）⇒ 本 flow 一条 css 都不用。
+#      ⇒ 所以页面锚点一律用**该页独有的可见文案（整句）**；
+#        需要 testid 级精确定位时，走 `maestro/tools/assert-overview.mjs`（页面内 CDP）。
 #
-#   ④ `--driver-host-port 9222` 是**移动端**的设备宿主端口，对 web 驱动无效：
-#      web 驱动自己起 Chrome（独立 profile 与调试端口）。
-#      ⇒ 本 flow **不传**该参数（传了也无效，还会让人误以为在复用某个浏览器）。
+#   ④ `launchApp: { clearState: true }` 会清 cookie（登录弹窗重新出现），
+#      但 **`openLink` 会清 localStorage**（工作模式退回专家面）⇒ 切模式必须
+#      做成**幂等子流程**（见 `_shared/switch-simple-mode.yaml`）。
 #
-# ★ 因此本 flow 的分工：
-#   · **行为与结构**（本 flow）：区块可见、交互、跳转、模式切换、专家面不回归
-#     —— 全部用 id / text 断言，黑盒且可复现。
-#   · **数值口径对拍**（页面内的逐字比较、per-key 扇出计数、精确计数）：
+#   ⑤ `--driver-host-port <port>` 对 web 驱动**无效**（web 驱动自己起 Chrome）
+#      ⇒ 本 flow **不传**该参数。
+#
+#   ⑥ **view hierarchy 只覆盖视口**，而且本页**滚不动**（2026-11-17 r8/r9 实测）：
+#      · web 驱动的视口固定 **1024×625**（hierarchy 根节点 bounds = [0,0][1024,625]），
+#        折叠线以下的内容**不进树** ⇒ `assertVisible` 对视口外元素**一律判 false**
+#        （哪怕它已渲染在 DOM 里）。
+#      · 本应用壳的滚动容器是 **`.main-body`（overflow-y:auto）**，不是 window：
+#        CDP 实测 `window.scrollY` 恒 0、`document.documentElement.scrollHeight`
+#        == 视口高 ⇒ Maestro 的 `scrollVertical()`（滚 window）与 `scrollUntilVisible`
+#        **对本页全是空转**（r9 实跑：scrollUntilVisible 直接 FAILED，
+#        且失败截图与 r8 逐像素同款 ⇒ 页面一像素都没动过）。
+#      ⇒ 本 flow **必须用 `--screen-size 1440x1400` 跑**（桌面视口，见
+#        maestro/run-simple-overview.sh）：两栏并排（`@media (max-width: 1024px)`
+#        才塌成一栏）⇒ 三个面板标题（接入清单 407 / 上游健康 407 /
+#        最常用的模型 981）全部落在初始视口内。
+#      ⇒ 与视口无关的「面板确实存在」由 maestro/tools/assert-overview.mjs
+#        在**页面内**断言（DOM 查询不看视口）。
+#
+# ★ 分工：
+#   · **行为与结构**（本 flow）：区块可见、交互、跳转、模式切换、专家面不回归。
+#   · **数值口径对拍**（页面内的逐字比较、精确计数、per-key 扇出）：
 #     由 maestro/tools/assert-overview.mjs 走 CDP 在**页面内**做
 #     （同一页面、同一时刻、同一份 board API 响应 ⇒ 口径天然一致）。
 #
-# ★ 登录与工作模式：
-#   · 登录走仓内既有资产 _shared/login.yaml（真实 UI 登录，账号口令由
-#     -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
-#   · 工作模式是**本机选择**（localStorage `llmgw_work_mode`）：
-#     `launchApp` 带 `clearState: true` 把 cookie 与 localStorage 一起清干净
-#     ⇒ 登录后必定落在专家面（兜底 expert）。
-#   · 切到简易模式：**点顶栏的真实切换按钮**（data-testid="work-mode-switch"），
-#     判据用**总览页独有的副标题**（「下一步该做什么」），不用按钮自己的文案
-#     （按钮文案随模式变化，aria-label 又不参与文本匹配 ⇒ 都不足以当判据）。
-#   ★ 无口令时的替代路径：maestro/tools/seed-session.mjs 用 CDP 预置
-#     HttpOnly 会话 cookie + localStorage（见 maestro/README.md §6.5）。
+# ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，账号口令由
+#   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
 url: ${BASE_URL}
 ---
-# ── 0. 启动：清空浏览器状态（cookie + localStorage）────────────────────────
-# ★ clearState 是保证「登录后落在专家面」的前提：工作模式是本机选择，
-#   上一次跑的残留（simple）会让 _shared/login.yaml 的收尾断言（「仪表盘」，
-#   专家面首页标题）落到「总览」上而误红。
-- launchApp:
-    clearState: true
+# ── 0. 起点归零：若上一轮留下登录态，先退出（否则登录弹窗不出现）────────
+# ★ 两步都 optional：未登录时找不到元素，直接跳过。
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
 
 # ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
 - runFlow:
@@ -63,44 +78,28 @@ url: ${BASE_URL}
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 
-# ── ② 工作模式：先确认在专家面，再点顶栏的切换按钮切到简易模式 ───────────
-# 专家面首页的独有标题（顶栏「专家模式」按钮的文案在简易面也会出现 ⇒ 不可用）
-- assertVisible:
-    text: "实时请求流"
-- tapOn:
-    id: "work-mode-switch"
-# 切到简易模式 ⇒ 首页投影成总览页 ⇒ 总览页副标题出现（唯一文案）
-- extendedWaitUntil:
-    visible:
-      text: "下一步该做什么"
-    timeout: 30000
+# ── ② 切到简易模式（幂等子流程：先归零到专家面，再切到简易面）──────────
+- runFlow:
+    file: _shared/switch-simple-mode.yaml
 
-# ── ③ 简易模式下 /dashboard 落在「总览页」而不是旧的接入清单页 ────────────
-- openLink: ${BASE_URL}/dashboard
-- extendedWaitUntil:
-    visible:
-      id: "overview-status"
-    timeout: 30000
+# ── ③ 总览页五个区块都在（各自用该区块独有的可见文案）────────────────────
+# ★ 视口边界（2026-11-17 r8/r9 实测撞出，详见文件头 ⑥）：
+#   web 驱动的 view hierarchy **只覆盖视口**，而本页滚动容器是 `.main-body`
+#   （非 window）⇒ Maestro 滚不动 ⇒ **断言视口外的元素没有第二条路**。
+#   ⇒ 本 flow 用 `--screen-size 1440x1400`（桌面视口）跑：两栏并排、
+#     三个面板标题均在初始视口内；「面板确实存在」再由页面内 CDP 断言兜底。
+- assertVisible:
+    text: "今日请求"          # 统计卡
+- assertVisible:
+    text: "接一个上游"        # 常用操作
+- assertVisible:
+    text: "接入清单"          # 我的客户端
+- assertVisible:
+    text: "上游健康"          # 上游健康面板
+- assertVisible:
+    text: "最常用的模型"      # 热门模型面板
 
-# ── ④ 五个区块都在 ────────────────────────────────────────────────────────
-- assertVisible:
-    id: "overview-stats"
-- assertVisible:
-    id: "overview-quick-actions"
-- assertVisible:
-    id: "overview-access-list"
-- assertVisible:
-    id: "overview-provider-health"
-- assertVisible:
-    id: "overview-top-models"
-
-# 旧接入清单页已被总览页取代：那个页面标记不该再出现
-- assertNotVisible:
-    id: "simple-access-list"
-
-# ── ⑤ 统计卡：六张卡的标签都在（口径与专家面一致的那六个）────────────────
-- assertVisible:
-    text: "今日请求"
+# ── ④ 统计卡：六张卡的标签都在（口径与专家面一致的那六个）────────────────
 - assertVisible:
     text: "成功率"
 - assertVisible:
@@ -118,16 +117,13 @@ url: ${BASE_URL}
 - assertNotVisible:
     text: "暂不可用"
 
-# ── ⑥ 状态条：必须有明细（不是空壳）────────────────────────────────────
-# 明细的固定尾部（「{n} 个上游可用」）证明状态条真的渲染出了内容。
-# 结论本身随实况在三种文案间变化 ⇒ data-tone 的取值由 assert-overview.mjs 断言
-# （text 断言拿不到属性）。
-- assertVisible:
-    text: "个上游可用"
+# ── ⑤ 状态条：结论与明细由 assert-overview.mjs 断言 ─────────────────────
+# ★ text 匹配是**元素完整文本相等**（不是子串包含）⇒ 状态条那两句都带数字
+#   （「今日 116 笔请求 · 成功率 95.7% · 19 个上游可用」），文本断言匹配不到。
+#   ⇒ 状态条的结论文案、data-tone 取值、明细是否非空，全部由
+#     maestro/tools/assert-overview.mjs 在**页面内**断言（同页同刻）。
 
-# ── ⑦ 常用操作：四个按钮都在（文案固定）────────────────────────────────
-- assertVisible:
-    text: "接一个上游"
+# ── ⑥ 常用操作：四个按钮都在（文案固定）────────────────────────────────
 - assertVisible:
     text: "签发网关密钥"
 - assertVisible:
@@ -135,7 +131,7 @@ url: ${BASE_URL}
 - assertVisible:
     text: "打开对话"
 
-# ── ⑧ 上游健康面板：面板在 + 分级文案在 ────────────────────────────────
+# ── ⑦ 上游健康面板：分级文案在 ─────────────────────────────────────────
 # ★ 「未探活」必须**单列一档**，不能与「可用」混在一起（四档：可用 / 有告警 /
 #   不可达 / 未探活）。线上此刻未探活为 0 行 ⇒ 该文案可选；
 #   精确分级由 assert-overview.mjs 断言。
@@ -146,74 +142,71 @@ url: ${BASE_URL}
     text: "未探活"
     optional: true
 
-# ── ⑨ 常用操作逐个点：必须真的跳到对应页面 ────────────────────────────────
+# ── ⑧ 常用操作逐个点：必须真的跳到对应页面 ────────────────────────────────
 # ★ 落点路径必须真实存在 —— 2026-11-17 实测撞出过死链：
 #   「查看用量」原先跳 /usage，而该路径**从来没有路由定义**（router.ts 里没有）
 #   ⇒ 点了就是 vue-router 的 no-match 空白页。已改为 /request-logs。
 # ★ 每个落点用**该页独有**的可见文本做判据（不能用导航项同名文案 ——
 #   导航里也有「请求日志」「对话」，用它当判据会误判成「还在原页」）。
 - tapOn:
-    id: "quick-add-provider"
+    text: "接一个上游"
 - extendedWaitUntil:
     visible:
       text: "上游账号、余额与健康状态"
     timeout: 20000
 
-- openLink: ${BASE_URL}/dashboard
-- extendedWaitUntil:
-    visible:
-      id: "overview-quick-actions"
-    timeout: 20000
+- runFlow:
+    file: _shared/switch-simple-mode.yaml
+# ★ 页面上有**两个**「签发网关密钥」按钮（页头主按钮 + 常用操作里的次级按钮），
+#   文案完全相同 ⇒ 只按文案点会点到**页头那个**（r10 实跑的坐标是
+#   bounds=[1303,101][1416,137]，而常用操作行在 y≈355）⇒ 本段的意图是「常用操作逐个点」，
+#   必须点常用操作里那个 ⇒ 用 index 指第二个（0 基数）。
+# ★ 判据用**副标题**（`simpleMode.keys.subtitle`），不用「客户端名称」：
+#   标签元素的完整文本是「客户端名称 *」（带必填星号）⇒ 整句相等匹配不到
+#   （r10 实跑 FAILED，截图证明其实已经落在签发页上 ⇒ 是判据写错，不是跳转错）。
 - tapOn:
-    id: "quick-sign-key"
+    text: "签发网关密钥"
+    index: 1
 - extendedWaitUntil:
     visible:
-      text: "客户端名称"
+      text: "两个字段签发一个密钥，租户与应用自动填充为默认值"
     timeout: 20000
 
-- openLink: ${BASE_URL}/dashboard
-- extendedWaitUntil:
-    visible:
-      id: "overview-quick-actions"
-    timeout: 20000
+- runFlow:
+    file: _shared/switch-simple-mode.yaml
 - tapOn:
-    id: "quick-requests"
+    text: "查看请求"
 - extendedWaitUntil:
     visible:
       text: "自动刷新"
     timeout: 20000
 
-- openLink: ${BASE_URL}/dashboard
-- extendedWaitUntil:
-    visible:
-      id: "overview-quick-actions"
-    timeout: 20000
+- runFlow:
+    file: _shared/switch-simple-mode.yaml
 - tapOn:
-    id: "quick-chat"
+    text: "打开对话"
 - extendedWaitUntil:
     visible:
       text: "+ 新建"
     timeout: 20000
 
-# ── ⑩ 回到总览页 + 刷新按钮可用 ───────────────────────────────────────────
-- openLink: ${BASE_URL}/dashboard
-- extendedWaitUntil:
-    visible:
-      id: "overview-status"
-    timeout: 20000
+# ── ⑨ 回到总览页 + 刷新按钮可用 ───────────────────────────────────────────
+- runFlow:
+    file: _shared/switch-simple-mode.yaml
 - tapOn:
     text: "刷新"
 - extendedWaitUntil:
     visible:
-      id: "overview-status"
+      text: "今日请求"
     timeout: 20000
 - assertVisible:
-    id: "overview-stats"
+    text: "工作模式 · 简易模式"
 
-# ── ⑪ 专家模式不受影响（总览页是简易模式专属） ──────────────────────────
-# ★ 切回专家同样点同一个按钮（testid 稳定），判据用专家面首页的独有标题。
+# ── ⑩ 专家模式不受影响（总览页是简易模式专属） ──────────────────────────
+# ★ 切回专家：点同一个切换按钮（此时按钮文案是「简易模式」），判据用专家面
+#   首页的独有标题。
 - tapOn:
-    id: "work-mode-switch"
+    text: "简易模式"
 - extendedWaitUntil:
     visible:
       text: "实时请求流"
@@ -223,6 +216,8 @@ url: ${BASE_URL}
     visible:
       text: "实时请求流"
     timeout: 20000
-# 专家面不应渲染简易模式的总览页标记
+# 专家面不应渲染简易模式总览页的独有内容
 - assertNotVisible:
-    id: "overview-status"
+    text: "工作模式 · 简易模式"
+- assertNotVisible:
+    text: "今日请求"

@@ -542,7 +542,13 @@ function openDetail(k: ApiKey): void {
       </section>
 
       <div class="overview-side">
-        <section class="card overview-panel" data-testid="overview-provider-health">
+        <section
+          class="card overview-panel"
+          data-testid="overview-provider-health"
+          :data-total="providerHealth.total"
+          :data-shown="providerHealth.rows.length"
+          :data-hidden="providerHealth.hidden"
+        >
           <div class="panel-head">
             <span class="panel-title">{{ t('simpleMode.overview.providerTitle') }}</span>
             <span v-if="!providerHealth.unavailable" class="count-badge">{{ providerHealth.usable }}</span>
@@ -562,6 +568,20 @@ function openDetail(k: ApiKey): void {
                 <span class="provider-count">{{ row.credentialCount }}</span>
               </li>
             </ul>
+            <!-- ★ 明细被截断时必须**披露**（2026-11-17 审计轮撞出）：
+                 徽标写「19 个上游可用」而列表里只有 3 行「可用」——
+                 因为明细按严重度排序、只留前 12 行，被切掉的几乎全是健康的。
+                 不披露 ⇒ 用户以为数据对不上。 -->
+            <div v-if="providerHealth.hidden > 0" class="card-toolbar">
+              <span class="section-hint" data-testid="overview-provider-truncated">
+                {{
+                  t('simpleMode.overview.providerMore', {
+                    shown: providerHealth.rows.length,
+                    hidden: providerHealth.hidden,
+                  })
+                }}
+              </span>
+            </div>
             <div class="card-toolbar">
               <span class="section-hint">
                 {{ t('simpleMode.overview.providerSummary', {

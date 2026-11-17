@@ -137,6 +137,7 @@ export default {
     providerUnavailable: 'No se pudo cargar el estado de los orígenes, inténtelo de nuevo',
     providerEmpty: 'Todavía no hay ningún origen conectado',
     providerSummary: 'Listos {usable}, con advertencia {warning}, inaccesibles {unreachable}, sin comprobar {unknown}',
+    providerMore: 'Se muestran los {shown} orígenes que requieren atención; no se listan {hidden} más',
     topModelsTitle: 'Modelos más usados',
     topModelsEmpty: 'Hoy todavía no hay tráfico',
     loadFailed: 'No se pudieron cargar los datos del resumen, inténtelo de nuevo',

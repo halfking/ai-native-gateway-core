@@ -128,6 +128,22 @@ describe('simple mode overview view contract', () => {
       `总览页跳到了未注册的路由（点了就是空白页）：\n${dead.join('\n')}`,
     ).toEqual([])
   })
+
+  // ── 2026-11-17：抓「上游健康明细被静默截断」的那条 ──────────────────────
+  //
+  // ★ 事故：上游健康明细按严重度排序、只留前 12 行 ⇒ 被切掉的几乎全是「可用」的
+  //   （线上实测：徽标写「19 个上游可用」，列表里只有 3 行标着「可用」）。
+  //   截断本身没披露 ⇒ 用户看到 19 与 3 对不上，只能判定「这页数据坏了」。
+  //   ★ 与本仓 11-16 审计轮的 F3（模型候选静默截断 ⇒ 上限自带披露）同型。
+  it('★ 上游健康明细被截断时必须披露（不披露 = 用户以为数据对不上）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    expect(src).toContain('providerHealth.hidden')
+    expect(src).toContain('data-testid="overview-provider-truncated"')
+    expect(src).toContain('simpleMode.overview.providerMore')
+    // ★ 明细截断数必须由模型层算出来（不能在页面里现算一个跟列表口径不一致的数）
+    const model = await readSource('src/composables/simpleOverviewModel.ts')
+    expect(model).toMatch(/hidden:\s*providers\.length\s*-\s*visibleRows\.length/)
+  })
 })
 
 describe('simple mode providers view contract', () => {

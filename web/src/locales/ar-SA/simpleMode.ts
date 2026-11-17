@@ -137,6 +137,7 @@ export default {
     providerUnavailable: 'تعذّر تحميل حالة المصادر، يرجى المحاولة مرة أخرى',
     providerEmpty: 'لم يتم ربط أي مصدر بعد',
     providerSummary: 'جاهز {usable}، تحذير {warning}، غير قابل للوصول {unreachable}، غير مُفحص {unknown}',
+    providerMore: 'يتم عرض {shown} من المصادر التي تحتاج إلى انتباه، والبقية {hidden} غير معروضة',
     topModelsTitle: 'النماذج الأكثر استخداماً',
     topModelsEmpty: 'لا توجد حركة اليوم بعد',
     loadFailed: 'تعذّر تحميل بيانات النظرة العامة. أعد المحاولة.',
