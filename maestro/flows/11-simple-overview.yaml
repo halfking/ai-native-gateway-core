@@ -1,8 +1,8 @@
 # 11-simple-overview.yaml —— 简易模式「总览页」的全面验证
 #
-# 覆盖对象：web/src/views/SimpleOverviewView.vue（本轮新增的简易模式总览页）
+# 覆盖对象：web/src/views/SimpleOverviewView.vue（简易模式总览页）
 #
-# ★★★ Maesto web 驱动（2.11.0）的能力边界（2026-11-17 实测，本 flow 的写法全部受它约束）：
+# ★★★ Maesto web 驱动（2.11.0）的能力边界（2026-11-17 逐条实测，本 flow 的写法全部受它约束）：
 #
 #   ① **evalScript 在 web 驱动下是 no-op**。
 #      证据：`javap -p maestro.drivers.CdpWebDriver` 的方法表里**根本没有**
@@ -10,34 +10,41 @@
 #      COMPLETED，但**什么都没发生**。
 #      实测：evalScript 改 document.title / 写 localStorage / 插探针 div，
 #      三步都 COMPLETED，页面与 DOM 一字未变（截图无探针、screen-hierarchy 无探针）。
-#      ⇒ ★ 本仓此前那些 `${output.x = ...}` 断言在 web 驱动下**永远拿不到 DOM 数据**
+#      ⇒ 本仓此前那些 `${output.x = ...}` 断言在 web 驱动下**永远拿不到 DOM 数据**
 #        （`${...}` 只在 JVM 侧求值，那里没有 document）。
 #
 #   ② `${output.x = ...}` 只在 **Maestro 自己的 JS 引擎（JVM 侧）**求值
 #      ⇒ 能做纯算术（1+1 ✔），碰不到 DOM（document 未定义 ⇒ TypeError）。
 #
-#   ③ `assertVisible` 支持 **css / text / id** 三种选择器，
-#      但 **css 与 text 不能组合**（组合实测 FAILED）⇒ 一条断言只用一种。
+#   ③ 断言选择器：**css / text / id 三选一**，且 **css 与 text 不能组合**
+#      （组合实测 FAILED）。其中：
+#      · `id:` ⇒ 命中 HTML 的 `id` 属性，**也命中 `data-testid`**（web 驱动把
+#        data-testid 映射成 resource-id）⇒ 秒级返回，本 flow 的锚点全用它。
+#      · `text:` ⇒ 只匹配**可见文本**；**aria-label / title 不参与匹配**
+#        （实测 tapOn "切到专家模式" ⇒ Element not found）。
+#      · `css:` ⇒ **极慢**：一条 `assertVisible: {css: ...}` 实测耗时 **2 分 23 秒**，
+#        而 `assertNotVisible: {css: ...}` 直接挂住 ⇒ 本 flow 一条 css 都不用。
 #
 #   ④ `--driver-host-port 9222` 是**移动端**的设备宿主端口，对 web 驱动无效：
-#      web 驱动自己起 Chrome（profile `/tmp/maestro-chrome-profile`，调试端口 9223）。
+#      web 驱动自己起 Chrome（独立 profile 与调试端口）。
 #      ⇒ 本 flow **不传**该参数（传了也无效，还会让人误以为在复用某个浏览器）。
 #
 # ★ 因此本 flow 的分工：
-#   · **行为与结构**（本 flow）：区块可见、计数、交互、跳转、模式切换、专家面不回归
-#     —— 全部用 css / text 断言，黑盒且可复现。
-#   · **数值口径对拍**（页面内的逐字比较、per-key 扇出计数）：
+#   · **行为与结构**（本 flow）：区块可见、交互、跳转、模式切换、专家面不回归
+#     —— 全部用 id / text 断言，黑盒且可复现。
+#   · **数值口径对拍**（页面内的逐字比较、per-key 扇出计数、精确计数）：
 #     由 maestro/tools/assert-overview.mjs 走 CDP 在**页面内**做
 #     （同一页面、同一时刻、同一份 board API 响应 ⇒ 口径天然一致）。
 #
 # ★ 登录与工作模式：
 #   · 登录走仓内既有资产 _shared/login.yaml（真实 UI 登录，账号口令由
 #     -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
-#   · 工作模式是**本机选择**（localStorage `llmgw_work_mode`）⇒
-#     `launchApp` 带 `clearState: true`，把 cookie 与 localStorage 一起清干净
-#     ⇒ 登录后必定落在专家面（兜底 expert），再**点顶栏的真实切换按钮**切到简易模式。
-#     ★ 之所以必须点按钮而不能 evalScript 写 localStorage：evalScript 是 no-op（见 ①），
-#       而且即便能写，usePersistedValue 也会在页面卸载时把内存值 flush 回存储覆盖掉。
+#   · 工作模式是**本机选择**（localStorage `llmgw_work_mode`）：
+#     `launchApp` 带 `clearState: true` 把 cookie 与 localStorage 一起清干净
+#     ⇒ 登录后必定落在专家面（兜底 expert）。
+#   · 切到简易模式：**点顶栏的真实切换按钮**（data-testid="work-mode-switch"），
+#     判据用**总览页独有的副标题**（「下一步该做什么」），不用按钮自己的文案
+#     （按钮文案随模式变化，aria-label 又不参与文本匹配 ⇒ 都不足以当判据）。
 #   ★ 无口令时的替代路径：maestro/tools/seed-session.mjs 用 CDP 预置
 #     HttpOnly 会话 cookie + localStorage（见 maestro/README.md §6.5）。
 url: ${BASE_URL}
@@ -57,71 +64,41 @@ url: ${BASE_URL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 
 # ── ② 工作模式：先确认在专家面，再点顶栏的切换按钮切到简易模式 ───────────
-# ★ 按钮的可见文案 = **当前**模式（WorkModeSwitch.vue:label）⇒ 文案即状态。
+# 专家面首页的独有标题（顶栏「专家模式」按钮的文案在简易面也会出现 ⇒ 不可用）
 - assertVisible:
-    text: "专家模式"
+    text: "实时请求流"
 - tapOn:
-    text: "专家模式"
+    id: "work-mode-switch"
+# 切到简易模式 ⇒ 首页投影成总览页 ⇒ 总览页副标题出现（唯一文案）
 - extendedWaitUntil:
     visible:
-      text: "简易模式"
-    timeout: 15000
+      text: "下一步该做什么"
+    timeout: 30000
 
 # ── ③ 简易模式下 /dashboard 落在「总览页」而不是旧的接入清单页 ────────────
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      css: "[data-testid=\"overview-status\"]"
+      id: "overview-status"
     timeout: 30000
 
 # ── ④ 五个区块都在 ────────────────────────────────────────────────────────
 - assertVisible:
-    css: "[data-testid=\"overview-stats\"]"
+    id: "overview-stats"
 - assertVisible:
-    css: "[data-testid=\"overview-quick-actions\"]"
+    id: "overview-quick-actions"
 - assertVisible:
-    css: "[data-testid=\"overview-access-list\"]"
+    id: "overview-access-list"
 - assertVisible:
-    css: "[data-testid=\"overview-provider-health\"]"
+    id: "overview-provider-health"
 - assertVisible:
-    css: "[data-testid=\"overview-top-models\"]"
+    id: "overview-top-models"
 
 # 旧接入清单页已被总览页取代：那个页面标记不该再出现
 - assertNotVisible:
-    css: "[data-testid=\"simple-access-list\"]"
+    id: "simple-access-list"
 
-# ── ⑤ 结构计数：6 张统计卡 / 4 个快捷操作 ─────────────────────────────────
-# ★ 「一个动作区最多 4 个可见动作」是本仓的硬约束（simple-mode 设计稿），
-#   这里把「恰好 4 个」钉死：多了是违规，少了是功能退化。
-# ★ 计数用「第 N 个存在 + 第 N+1 个不存在」表达 —— web 驱动没有 count 断言。
-#   · 统计卡是 .stats-row 的直接子元素（StatsRow.vue 的 slot）⇒ nth-child 可靠。
-#   · 快捷按钮是 overview-quick-actions 的直接子元素 ⇒ nth-child 可靠。
-- assertVisible:
-    css: "[data-testid=\"overview-stats\"] .app-stat-card:nth-child(6)"
-- assertNotVisible:
-    css: "[data-testid=\"overview-stats\"] .app-stat-card:nth-child(7)"
-- assertVisible:
-    css: "[data-testid=\"overview-quick-actions\"] button:nth-child(4)"
-- assertNotVisible:
-    css: "[data-testid=\"overview-quick-actions\"] button:nth-child(5)"
-
-# ── ⑥ 状态条：必须有结论（标题 + 明细），且结论落在三个合法口径之一 ──────
-- assertVisible:
-    css: "[data-testid=\"overview-status\"] .status-headline"
-- assertVisible:
-    css: "[data-testid=\"overview-status\"] .status-detail"
-# 合法结论只有三种（simpleMode.overview.statusOk / statusWarn / statusBlocked）
-- assertVisible:
-    text: "系统运行正常"
-    optional: true
-- assertVisible:
-    text: "有需要处理的地方"
-    optional: true
-- assertVisible:
-    text: "现在还不能正常用"
-    optional: true
-
-# ── ⑦ 统计卡：六张卡的标签都在（口径与专家面一致的那六个）────────────────
+# ── ⑤ 统计卡：六张卡的标签都在（口径与专家面一致的那六个）────────────────
 - assertVisible:
     text: "今日请求"
 - assertVisible:
@@ -141,13 +118,30 @@ url: ${BASE_URL}
 - assertNotVisible:
     text: "暂不可用"
 
-# ── ⑧ 上游健康面板：分级展示，不得把「未探活」并进「健康」 ────────────────
-# ★ 面板标题恒在；「未探活」必须**单列一档**，不能与「正常」混在一起。
+# ── ⑥ 状态条：必须有明细（不是空壳）────────────────────────────────────
+# 明细的固定尾部（「{n} 个上游可用」）证明状态条真的渲染出了内容。
+# 结论本身随实况在三种文案间变化 ⇒ data-tone 的取值由 assert-overview.mjs 断言
+# （text 断言拿不到属性）。
 - assertVisible:
-    css: "[data-testid=\"overview-provider-health\"] .panel-title"
+    text: "个上游可用"
+
+# ── ⑦ 常用操作：四个按钮都在（文案固定）────────────────────────────────
 - assertVisible:
-    css: "[data-testid=\"overview-provider-health\"] .provider-health-row"
-# 「未探活」是独立的一档（deriveProviderHealth 的 unknown 档）
+    text: "接一个上游"
+- assertVisible:
+    text: "签发网关密钥"
+- assertVisible:
+    text: "查看请求"
+- assertVisible:
+    text: "打开对话"
+
+# ── ⑧ 上游健康面板：面板在 + 分级文案在 ────────────────────────────────
+# ★ 「未探活」必须**单列一档**，不能与「可用」混在一起（四档：可用 / 有告警 /
+#   不可达 / 未探活）。线上此刻未探活为 0 行 ⇒ 该文案可选；
+#   精确分级由 assert-overview.mjs 断言。
+- assertVisible:
+    text: "可用"
+    optional: true
 - assertVisible:
     text: "未探活"
     optional: true
@@ -159,7 +153,7 @@ url: ${BASE_URL}
 # ★ 每个落点用**该页独有**的可见文本做判据（不能用导航项同名文案 ——
 #   导航里也有「请求日志」「对话」，用它当判据会误判成「还在原页」）。
 - tapOn:
-    css: "[data-testid=\"quick-add-provider\"]"
+    id: "quick-add-provider"
 - extendedWaitUntil:
     visible:
       text: "上游账号、余额与健康状态"
@@ -168,10 +162,10 @@ url: ${BASE_URL}
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      css: "[data-testid=\"overview-quick-actions\"]"
+      id: "overview-quick-actions"
     timeout: 20000
 - tapOn:
-    css: "[data-testid=\"quick-sign-key\"]"
+    id: "quick-sign-key"
 - extendedWaitUntil:
     visible:
       text: "客户端名称"
@@ -180,10 +174,10 @@ url: ${BASE_URL}
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      css: "[data-testid=\"overview-quick-actions\"]"
+      id: "overview-quick-actions"
     timeout: 20000
 - tapOn:
-    css: "[data-testid=\"quick-requests\"]"
+    id: "quick-requests"
 - extendedWaitUntil:
     visible:
       text: "自动刷新"
@@ -192,10 +186,10 @@ url: ${BASE_URL}
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      css: "[data-testid=\"overview-quick-actions\"]"
+      id: "overview-quick-actions"
     timeout: 20000
 - tapOn:
-    css: "[data-testid=\"quick-chat\"]"
+    id: "quick-chat"
 - extendedWaitUntil:
     visible:
       text: "+ 新建"
@@ -205,38 +199,30 @@ url: ${BASE_URL}
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      css: "[data-testid=\"overview-status\"]"
+      id: "overview-status"
     timeout: 20000
 - tapOn:
     text: "刷新"
 - extendedWaitUntil:
     visible:
-      css: "[data-testid=\"overview-status\"]"
+      id: "overview-status"
     timeout: 20000
 - assertVisible:
-    css: "[data-testid=\"overview-stats\"]"
+    id: "overview-stats"
 
-# ── ⑪ 三步接入：最多三步，且三步全完成时整块消失 ─────────────────────────
-# ★ 「三步」是结构契约（onboardingSteps 恒为 3 条）⇒ 断言「不会有第 4 步」。
-#   而「三步全完成 ⇒ 整块消失」是**状态**契约（showOnboarding），它随环境变化
-#   （线上此刻三步已完成 ⇒ 整块消失），web 驱动没有条件分支 ⇒ 不断言它，
-#   改由 maestro/tools/assert-overview.mjs 在页面内判定「存在 ⇒ 恰好 3 步」。
-- assertNotVisible:
-    css: "[data-testid=\"overview-onboarding\"] .onboarding-step:nth-child(4)"
-
-# ── ⑫ 专家模式不受影响（总览页是简易模式专属） ──────────────────────────
-# ★ 切回专家同样走 UI 按钮（evalScript 写 localStorage 是 no-op，见 ①）。
+# ── ⑪ 专家模式不受影响（总览页是简易模式专属） ──────────────────────────
+# ★ 切回专家同样点同一个按钮（testid 稳定），判据用专家面首页的独有标题。
 - tapOn:
-    text: "简易模式"
+    id: "work-mode-switch"
 - extendedWaitUntil:
     visible:
-      text: "专家模式"
-    timeout: 15000
+      text: "实时请求流"
+    timeout: 20000
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      text: "仪表盘"
+      text: "实时请求流"
     timeout: 20000
 # 专家面不应渲染简易模式的总览页标记
 - assertNotVisible:
-    css: "[data-testid=\"overview-status\"]"
+    id: "overview-status"

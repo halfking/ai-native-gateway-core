@@ -9,6 +9,13 @@
 // ★ 本机选择 vs 平台默认：本按钮写的是**本机选择**（localStorage），
 //   平台默认是 settings 里的 `gateway.mode`（super_admin 在设置页改，影响所有人）。
 //   本按钮**不改平台默认** —— 不替别人做决定。
+//
+// ★ 2026-11-17：补 `data-testid="work-mode-switch"`。
+//   为什么需要：这是**全站唯一**的工作模式切换入口，而 Maestro 的 web 驱动
+//   只有「可见文本」能可靠定位它（aria-label 不参与文本匹配；css 断言极慢）。
+//   而可见文本是「专家模式 / 简易模式」——**它随模式变化，既当定位键又当状态**，
+//   断言「点完还是专家模式」会被按钮自身的 aria-label 文本干扰 ⇒ 不可用。
+//   有了稳定 testid，测试才能「点它 → 用总览页的独立特征断言模式真的切了」。
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useWorkMode } from '../../composables/useWorkMode'
@@ -35,6 +42,7 @@ function toggle(): void {
     :title="hint"
     :aria-label="toggleLabel"
     :data-work-mode="mode"
+    data-testid="work-mode-switch"
     @click="toggle"
   >
     <span class="work-mode-switch__dot" aria-hidden="true"></span>
