@@ -2688,6 +2688,19 @@ files=(
   #     视图函数 CREATE OR REPLACE / 台账自登记 ON CONFLICT）：
   #     本通道按内容指纹重放（sha 变化即重放）⇒ 非幂等件会在重放时炸掉部署。
   "$ROOT_DIR/sql/migrations/startup/971_pi_error_analysis_system.sql"
+  # ★ 972（2026-11-17 F3 残留地平线根修轮）：model_offers_update_trigger 补
+  #   unavailable_recover_at —— 修「经 model_offers 视图的恢复写入只清
+  #   reason/unavailable_at、把恢复标记留下」这个根因。
+  #   ★ model_offers 是 INSTEAD OF UPDATE 触发器视图，触发器的 SET 清单是**手写的
+  #     一串列名**；211 实测（pg_get_functiondef）清单里有 available /
+  #     unavailable_reason / unavailable_at，**唯独没有 unavailable_recover_at**
+  #     ⇒ 残留地平线在 37~231 行之间反复反弹（2026-11-17 观测 19 轮从未归零）。
+  #   ★ 本件是**幂等**的（CREATE OR REPLACE FUNCTION / UPDATE 幂等（第二遍 0 行）/
+  #     台账自登记 ON CONFLICT DO UPDATE）⇒ 内容指纹重放安全。
+  #   ★ 本件是 files=(...) 数组里**第一个也是唯一**定义 model_offers_update_trigger
+  #     的文件（523/568 均不在本通道数组内）⇒ 不构成「多文件重定义」，
+  #     无需登记进 intentional_function_chains。
+  "$ROOT_DIR/sql/migrations/startup/972_model_offers_trigger_recover_at.sql"
 )
 
 
@@ -3352,6 +3365,14 @@ ledger_artifact_probe "970_market_price_platform_quotes.sql" \
 #   统计视图 v_error_analysis_stats + updated_at 触发器 + 保留期清理函数。
 ledger_artifact_probe "971_pi_error_analysis_system.sql" \
   "to_regclass('public.error_analysis_queue') IS NOT NULL AND to_regclass('public.error_analysis_results') IS NOT NULL AND to_regclass('public.v_error_analysis_stats') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'error_analysis_results' AND t.tgname = 'trigger_error_analysis_results_updated_at' AND NOT t.tgisinternal) AND to_regprocedure('public.cleanup_old_error_analysis(integer)') IS NOT NULL"
+# ★ 972 的产物 = ① model_offers_update_trigger 的函数体里出现
+#   unavailable_recover_at 的三分支 CASE（触发器不再丢这一列）
+#   ＋ ② 库内不再存在「available=TRUE ∧ unavailable_at IS NULL ∧
+#   recover_at 非 NULL」的矛盾残留行（存量清理已生效）。
+#   ★ 第②项**恒真**的前提：触发器修好后，经视图的「置可用」写入不再新增该状态；
+#   而 cmb 侧直写路径（域内全部 Go 写入方）本就四列一起清 ⇒ 无第二条产生路径。
+ledger_artifact_probe "972_model_offers_trigger_recover_at.sql" \
+  "EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'model_offers_update_trigger' AND pg_get_functiondef(p.oid) LIKE '%unavailable_recover_at = CASE%') AND NOT EXISTS (SELECT 1 FROM public.credential_model_bindings WHERE unavailable_recover_at IS NOT NULL AND unavailable_at IS NULL AND available = TRUE)"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

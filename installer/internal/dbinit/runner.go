@@ -1901,6 +1901,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     641 远离 maxNum ⇒ 不在三通道覆盖门的近邻窗口（maxNum-19..maxNum）
 			//     ⇒ 两道门都保护不到。971 同时满足 ≥849 与 = maxNum ⇒ 双门接管。
 			"971_pi_error_analysis_system.sql",
+			// ★ 972（2026-11-17 F3 残留地平线根修轮）：model_offers_update_trigger
+			//   补 unavailable_recover_at。
+			//
+			//   ★ 根因：`model_offers` 是 INSTEAD OF UPDATE 触发器视图，触发器的
+			//     SET 清单是**手写的一串列名**；211 实测（pg_get_functiondef）清单里
+			//     有 available / unavailable_reason / unavailable_at，**唯独没有
+			//     unavailable_recover_at** ⇒ 经视图的「置可用」写入只清两列、把恢复
+			//     标记留下 ⇒ 行落进矛盾态 available=TRUE ∧ recover_at≠NULL
+			//     ⇒ 节点状态恢复地平线在 37~231 行之间反复反弹（观测 19 轮从未归零）。
+			//   ★ 仓内早已自述（credentialhealth/checker.go:469-473「writing it here
+			//     would be silently dropped」），但只绕了它没修它。
+			//   ★ 本件同时一次性清掉存量残留行（谓词 = 监控口径本身，
+			//     211 实测 admin_protected 全 0 ⇒ 不改变任何绑定的可路由性）。
+			"972_model_offers_trigger_recover_at.sql",
 		},
 	}
 }
