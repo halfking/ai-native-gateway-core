@@ -9,10 +9,12 @@ package bg
 //   「桶已无源数据」的分钟行，**不**处理源流水本身过期。
 //
 // ★ 口径：
-//   · 默认 14 天（方案建议 7–14d；与 model_probe_runs_hot / node_probe_runs
-//     同档，可经 lifecycle.session_turns_probe_hot_ttl_days 热加载）
+//   · 默认 7 天（2026-11-17：从 14d 收窄——211 上 14d≈10 万行/21MB，
+//     retireProbeMinutes 全表相关子查询单次 650–900ms；批删 + 更短 TTL
+//     双管齐下。可经 lifecycle.session_turns_probe_hot_ttl_days 热加载）
 //   · 两表共用同一 TTL（探测分钟表是流水的派生面，源清了派生也应清）
 //   · 下限夹到 1：0/负值若透传会在一个 tick 清空整表
+//   · TTL DELETE 走 LIMIT 批删（收窄瞬间可能一次过期数万行）
 //   · db==nil 时 no-op（与 session_turn_logs TTL 同款）
 //
 // ★ 索引：session_turns_probe_hot 有 idx_*_ts（ts DESC）；
@@ -20,6 +22,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -27,9 +30,13 @@ import (
 )
 
 const (
-	defaultProbeLaneTTLDays = 14
+	defaultProbeLaneTTLDays = 7
 	minProbeLaneTTLDays     = 1
 	maxProbeLaneTTLDays     = 90
+	// probeLaneTTLBatch 是 TTL DELETE 每 tick 上限。
+	// 与 retireProbeMinutesBatch 同量级：积压靠后续 tick 收敛，
+	// 避免收窄默认窗后一个 tick 删半表卡 30s 超时。
+	probeLaneTTLBatch = 2000
 )
 
 // clampProbeLaneTTLDays keeps retention inside [1, 90].
@@ -58,22 +65,42 @@ func (pm *PartitionManager) cleanupOldProbeLaneTables(ctx context.Context) {
 	defer cancel()
 
 	pm.deleteProbeLaneExpired(timeoutCtx, "session_turns_probe_hot",
-		"DELETE FROM session_turns_probe_hot WHERE ts < now() - make_interval(days => $1::int)",
+		`WITH doomed AS (
+			SELECT ctid FROM session_turns_probe_hot
+			 WHERE ts < now() - make_interval(days => $1::int)
+			 ORDER BY ts
+			 LIMIT $2
+		)
+		DELETE FROM session_turns_probe_hot t
+		 USING doomed WHERE t.ctid = doomed.ctid`,
 		retentionDays)
 	pm.deleteProbeLaneExpired(timeoutCtx, "request_stats_probe_minute",
-		"DELETE FROM request_stats_probe_minute WHERE bucket < now() - make_interval(days => $1::int)",
+		`WITH doomed AS (
+			SELECT ctid FROM request_stats_probe_minute
+			 WHERE bucket < now() - make_interval(days => $1::int)
+			 ORDER BY bucket
+			 LIMIT $2
+		)
+		DELETE FROM request_stats_probe_minute t
+		 USING doomed WHERE t.ctid = doomed.ctid`,
 		retentionDays)
 }
 
 func (pm *PartitionManager) deleteProbeLaneExpired(ctx context.Context, table, sql string, retentionDays int) {
-	tag, err := pm.db.Exec(ctx, sql, retentionDays)
+	tag, err := pm.db.Exec(ctx, sql, retentionDays, probeLaneTTLBatch)
 	if err != nil {
 		slog.Error("partition_manager: probe lane TTL cleanup failed",
-			"table", table, "retention_days", retentionDays, "error", err)
+			"table", table, "retention_days", retentionDays,
+			"batch", probeLaneTTLBatch, "error", err)
 		return
 	}
 	if n := tag.RowsAffected(); n > 0 {
 		slog.Info("partition_manager: cleaned probe lane table",
-			"table", table, "deleted_rows", n, "retention_days", retentionDays)
+			"table", table, "deleted_rows", n,
+			"retention_days", retentionDays, "batch", probeLaneTTLBatch)
+		if n >= int64(probeLaneTTLBatch) {
+			slog.Info("partition_manager: probe lane TTL backlog remains",
+				"table", table, "note", fmt.Sprintf("deleted full batch=%d; next tick continues", probeLaneTTLBatch))
+		}
 	}
 }

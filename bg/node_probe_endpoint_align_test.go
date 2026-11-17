@@ -55,3 +55,28 @@ func TestResolveDirectTargetPrefersProviderEndpointProtocols(t *testing.T) {
 		t.Error("resolveDirectTarget 的 pep 选取必须带协议匹配判据 `AND pep.protocol = COALESCE(p.protocol, 'openai-completions')`")
 	}
 }
+
+func TestProbeDirectConfirmsSiblingEndpoints(t *testing.T) {
+	raw, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read node_probe.go: %v", err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, "confirmSiblingEndpoints(") {
+		t.Error("probeDirect 必须在 primary 成功后调用 confirmSiblingEndpoints（多 pep 盲区）")
+	}
+	multi, err := os.ReadFile("node_probe_multi_endpoint.go")
+	if err != nil {
+		t.Fatalf("read node_probe_multi_endpoint.go: %v", err)
+	}
+	mbody := string(multi)
+	if !strings.Contains(mbody, "listMatchedEndpointBaseURLs") {
+		t.Error("必须有 listMatchedEndpointBaseURLs —— 枚举同协议全部 pep，不得 LIMIT 1")
+	}
+	if strings.Contains(mbody, "LIMIT 1") {
+		t.Error("listMatchedEndpointBaseURLs 不得 LIMIT 1（那会回到 primary-only 盲区）")
+	}
+	if !strings.Contains(mbody, "ORDER BY pep.is_primary DESC") {
+		t.Error("兄弟端点枚举必须 primary 优先（与 resolveDirectTarget / endpointselect 同序）")
+	}
+}

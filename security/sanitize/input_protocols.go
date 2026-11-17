@@ -851,13 +851,21 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 		}
 		updated, changed, err = s.sanitizeContent(value, field)
 	}
-	if err != nil || !changed {
+	if err != nil {
 		return raw, false, err
+	}
+	// r1057 (2026-11-17): signed thinking 只有在「有敏感内容且有签名」时才拒绝，
+	// 而不是「只要有签名就拒绝」。设计意图（docs/design/2026-10-01-conversation-
+	// sanitization-cache-plan.md §3）是：签名内容不可改写 ⇒ 检测到敏感值且已
+	// 改写时才与签名冲突。无敏感内容（changed=false）的签名 thinking 应放行。
+	if !changed {
+		return raw, false, nil
 	}
 	if kind == "thinking" {
 		var signature string
 		_ = json.Unmarshal(block["signature"], &signature)
 		if signature != "" {
+			// 已检测到敏感内容且已改写（changed=true），但 thinking 带签名不可改写 ⇒ 拒绝。
 			return nil, false, fmt.Errorf("%w: sensitive signed thinking", errInvalidSanitizeInput)
 		}
 	}

@@ -149,7 +149,8 @@ func (w *StatsMinuteRollup) rollupProbe(ctx context.Context, since, until time.T
 //
 //	做相关子查询 —— 211 实测约 10 万行时单次 650–900ms、每分钟 2 次。
 //	每 tick 最多删 retireProbeMinutesBatch 行，积压靠后续 tick 收敛；
-//	14d TTL（cleanupOldProbeLaneTables）仍是硬天花板。
+//	7d TTL（cleanupOldProbeLaneTables，lifecycle.session_turns_probe_hot_ttl_days）
+//	仍是硬天花板。
 const (
 	retireProbeMinutesBatch = 2000
 )
@@ -179,7 +180,7 @@ const retireProbeMinutesStatement = `
 // ★ 边界声明：本函数只处理「桶已无源数据」的退役。
 //
 //	源流水 / 分钟表本身的 TTL 由 PartitionManager.cleanupOldProbeLaneTables
-//	承担（U1，lifecycle.session_turns_probe_hot_ttl_days，默认 14d）。
+//	承担（U1，lifecycle.session_turns_probe_hot_ttl_days，默认 7d）。
 //	⇒ 探测流量停止后，retire 让无源桶消失；过期源行由 TTL 作业删除。
 func (w *StatsMinuteRollup) retireProbeMinutes(ctx context.Context, since time.Time) error {
 	if w == nil || w.db == nil {
