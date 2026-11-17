@@ -116,6 +116,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers/pluginapi"
 	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
+	"github.com/kaixuan/llm-gateway-go/internal/instanceid"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/kaixuan/llm-gateway-go/internal/largebody"
@@ -134,6 +135,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/registration"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sanitizejudge" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/internal/securityevent"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
@@ -737,6 +739,11 @@ func main() {
 	if dbConn != nil {
 		_, _ = bg.ColumnarInvariantCheck(context.Background(), dbConn.Pool())
 	}
+
+	// 安全事件出网 sink（M2-2）：把网关侧的安全检测结果按统一契约写进
+	// memora。默认关（LLM_GATEWAY_SECURITY_EVENT_SINK=1 才装）。
+	var securityEventSink *securityevent.Sink
+	var securityEventSinkStop context.CancelFunc
 
 	// ── Gateway → ASM outbox dispatcher (Phase 3, 2026-08-11) ───────
 	// Opt-in: only starts when both ASM_INTERNAL_ENDPOINT and
@@ -2426,6 +2433,11 @@ func main() {
 		// ⇒ 装在 if/else **之外**，这样「配了 memora 但没开分析推送」
 		//   与「完全没配 memora」两种情形都得到明确的禁用态（而不是漏装）。
 		installSessionAnalysisPusher(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
+
+		// M2-2：安全事件的出网 sink。装在 if/else **之外** —— 这样
+		// 「配了 memora 但没开安全事件出网」与「完全没配 memora」两种情形
+		// 都得到明确的禁用态（而不是漏装）。
+		securityEventSink, securityEventSinkStop = installSecurityEventSink(os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"))
 		if dbConn != nil && dbConn.Enabled() {
 			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
@@ -6744,6 +6756,11 @@ func main() {
 		if memorySvc != nil {
 			adminHandler.SetMemoraServices(memorySvc.AdminClient(), memorySvc.AdminSink())
 		}
+		// M2-2：安全事件出网 sink 的计数挂到 memora 状态端点。丢弃数必须
+		// 可见 —— 看不见的丢弃与"没有发生过威胁"无法区分。
+		if securityEventSink != nil {
+			adminHandler.SetSecurityEventSink(securityEventSink)
+		}
 
 		slog.Info("CHECKPOINT: before autoIndexRefresher check")
 
@@ -7470,9 +7487,9 @@ func main() {
 	// 在 stream retry 之后、memora 预热之前包装异常检测器
 	// 检测附件重发循环、请求频率异常、媒体/文本失衡
 	if anomalyManager != nil {
-		chatRouteHandler = wrapAnomalyDetector(chatRouteHandler, anomalyManager)
-		messagesRouteHandler = wrapAnomalyDetector(messagesRouteHandler, anomalyManager)
-		responsesRouteHandler = wrapAnomalyDetector(responsesRouteHandler, anomalyManager)
+		chatRouteHandler = wrapAnomalyDetector(chatRouteHandler, anomalyManager, securityEventSink)
+		messagesRouteHandler = wrapAnomalyDetector(messagesRouteHandler, anomalyManager, securityEventSink)
+		responsesRouteHandler = wrapAnomalyDetector(responsesRouteHandler, anomalyManager, securityEventSink)
 		slog.Info("anomaly_detector: handlers wrapped",
 			"endpoints", []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"})
 	}
@@ -9167,6 +9184,13 @@ func main() {
 			outboxDispatcherStop()
 		}
 
+		// Stop the security event sink (M2-2): its workers write to memora
+		// with their own timeout, so cancelling is enough — the queue is
+		// drained by the workers before they exit.
+		if securityEventSinkStop != nil {
+			securityEventSinkStop()
+		}
+
 		// Stop accepting quota tasks and drain the bounded OmniFree worker queue
 		// before the shared database pool is closed.
 		chatHandler.ShutdownOmniFree()
@@ -9558,7 +9582,7 @@ func gatewayEarlyLogLevel() slog.Level {
 //	③ 频率检测降级为观察模式（ObserveOnly）：只 slog+指标，零客户端可见
 //	   拦截/改写；客户端限流统一由按 key RPM 链（checkGatewayRateLimit）
 //	   执法——「各处不同标准的限流」收敛为一个标准。
-func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handler {
+func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySink *securityevent.Sink) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 快速路径：非聊天端点直接放行
 		path := r.URL.Path
@@ -9595,6 +9619,20 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 		anomalies := manager.CheckAll(ctx, req)
 
 		if len(anomalies) > 0 {
+			// 出网用的作用域：检测发生的那一刻能拿到的标识。
+			//
+			// ★ 拿不到就留空，**不要用猜的值填充**：空值在消费侧能读成
+			// 「当时没有」，猜出来的值会污染检索。
+			securityScope := securityevent.Scope{
+				TenantID:   keyInfo.TenantID,
+				ProjectID:  os.Getenv("LLM_GATEWAY_MEMORA_PROJECT_ID"),
+				InstanceID: instanceid.Resolve(),
+				SessionID:  sessionID,
+				RequestID:  strings.TrimSpace(r.Header.Get("X-Request-Id")),
+				APIKeyID:   int64(keyInfo.ID),
+			}
+			detectedAt := time.Now().UTC()
+
 			// 观察面：只记录（含原本会拦截的 high 档——观察模式零执法）。
 			var enforce []*anomaly.AnomalyResult
 			for _, a := range anomalies {
@@ -9608,6 +9646,7 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 						"api_key_id", keyInfo.ID,
 						"tenant_id", keyInfo.TenantID,
 						"path", path)
+					publishSecurityEvent(securitySink, a, securityScope, securityevent.ActionObserved, detectedAt)
 					continue
 				}
 				enforce = append(enforce, a)
@@ -9641,6 +9680,14 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 					"api_key_id", keyInfo.ID,
 					"path", path)
 
+				// 处置动作如实上报：被拦的那条是 blocked，其余是 flagged。
+				publishSecurityEvent(securitySink, worst, securityScope, securityevent.ActionBlocked, detectedAt)
+				for _, a := range enforce {
+					if a != worst {
+						publishSecurityEvent(securitySink, a, securityScope, securityevent.ActionFlagged, detectedAt)
+					}
+				}
+
 				httpStatus := anomaly.GetHTTPStatus(worst.Severity)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Anomaly-Code", worst.Code)
@@ -9658,6 +9705,10 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 			ctx = context.WithValue(ctx, "anomaly_flags", enforce)
 			r = r.WithContext(ctx)
 
+			for _, a := range enforce {
+				publishSecurityEvent(securitySink, a, securityScope, securityevent.ActionFlagged, detectedAt)
+			}
+
 			slog.Info("anomaly_warning",
 				"code", worst.Code,
 				"severity", worst.Severity,
@@ -9668,4 +9719,15 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager) http.Handl
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// publishSecurityEvent 把一条检测结果按统一契约送进出网 sink。
+//
+// 非阻塞：sink 队列满时会丢事件并计数，**绝不阻塞请求**。写不进去也不影响
+// 请求结果 —— 检测结论已经生效，事件只是它的投影。
+func publishSecurityEvent(sink *securityevent.Sink, result *anomaly.AnomalyResult, scope securityevent.Scope, action securityevent.Action, detectedAt time.Time) {
+	if sink == nil || result == nil {
+		return
+	}
+	sink.Publish(securityevent.FromAnomaly(*result, scope, action, detectedAt))
 }

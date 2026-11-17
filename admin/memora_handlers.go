@@ -68,6 +68,23 @@ func (h *Handler) handleMemoraStatus(w http.ResponseWriter, r *http.Request) {
 			resp["sink_paused"] = true
 		}
 	}
+	// 安全事件出网 sink（M2-2）的计数。
+	//
+	// ★ 单列一块，不并进上面的 "sink"：两者是不同的写面（会话记忆 vs 安全
+	// 事件），并在一起会让"会话记忆在写"被误读成"安全事件也在写"。
+	//
+	// ★ dropped 必须露出来：安全事件 sink 的设计是**队列满就丢**（绝不阻塞
+	// 请求热路径），一个看不见的丢弃与"没有发生过威胁"无法区分。
+	if h.securityEventSink != nil {
+		st := h.securityEventSink.Stats()
+		resp["security_event_sink"] = map[string]any{
+			"enqueued":  st.Enqueued,
+			"dropped":   st.Dropped,
+			"processed": st.Processed,
+			"errored":   st.Errored,
+			"rejected":  st.Rejected,
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

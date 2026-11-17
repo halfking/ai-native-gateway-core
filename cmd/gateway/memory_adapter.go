@@ -26,7 +26,19 @@ func newLegacyMemoryServicesFromEnv(baseURL string) *legacyMemoryServices {
 	if baseURL == "" {
 		return nil
 	}
-	client := memclient.NewClient(memclient.ClientConfig{
+	client := newMemoraClientFromEnv(baseURL)
+	sink := memclient.NewSink(client, 2, 2048)
+	return newLegacyMemoryServices(client, sink)
+}
+
+// newMemoraClientFromEnv 按环境变量构造 memora 客户端。
+//
+// 抽出来是因为**两个**消费方要用同一份配置：上下文压缩那条链
+// （newLegacyMemoryServicesFromEnv）与安全事件出网那条链
+// （installSecurityEventSink）。配置口径必须一致 —— 两处各读一遍 env
+// 迟早会漂移成"两个客户端指向不同的 memora"。
+func newMemoraClientFromEnv(baseURL string) *memclient.Client {
+	return memclient.NewClient(memclient.ClientConfig{
 		BaseURL:            baseURL,
 		APIKey:             os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
 		SmartSearchBaseURL: os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL"),
@@ -43,8 +55,6 @@ func newLegacyMemoryServicesFromEnv(baseURL string) *legacyMemoryServices {
 		// info["project_id"]) still win over this default.
 		ProjectID: os.Getenv("LLM_GATEWAY_MEMORA_PROJECT_ID"),
 	})
-	sink := memclient.NewSink(client, 2, 2048)
-	return newLegacyMemoryServices(client, sink)
 }
 
 func (s *legacyMemoryServices) Reader() memory.Reader {

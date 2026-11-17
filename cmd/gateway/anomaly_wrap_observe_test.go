@@ -23,7 +23,9 @@ func newObserveWrapHarness(t *testing.T) (*httptest.ResponseRecorder, *[]*http.R
 		w.WriteHeader(http.StatusOK)
 		downstream = append(downstream, r)
 	})
-	return httptest.NewRecorder(), &downstream, wrapAnomalyDetector(next, mgr)
+	// 第三个参数是安全事件出网 sink（M2-2）。这里传 nil：本组用例只关心
+	// "观察模式零执法"的行为，不关心事件出网（出网有自己的用例）。
+	return httptest.NewRecorder(), &downstream, wrapAnomalyDetector(next, mgr, nil)
 }
 
 func observeKeyInfo(id int) *authentication.KeyInfo {
