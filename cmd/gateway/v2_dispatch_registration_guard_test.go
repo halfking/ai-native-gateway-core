@@ -110,7 +110,41 @@ func TestV1ChatRegistrationGuardedByV2Flag(t *testing.T) {
 	}
 }
 
+// TestPromptInjectionStageRegisteredBeforeProviderDiscovery 钶 main_pipeline.go
+// 的阶段注册序：管线按**注册序**执行（Phase 只是标签），而 provider_discovery
+// 挂在内存 demo 凭据仓上、对真实模型恒失败 ⇒ wrapper 回落 v1 ⇒ 排在其后的
+// 阶段对真实流量不可达。PI 检测阶段必须排在 provider_discovery **之前**
+// （245 生产实证：不前移则 prompt_injection_detections 恒空）。
+func TestPromptInjectionStageRegisteredBeforeProviderDiscovery(t *testing.T) {
+	src := readMainPipelineSource(t)
+
+	piIdx := strings.Index(src, `Name: "governance_prompt_injection"`)
+	if piIdx < 0 {
+		t.Fatal("main_pipeline.go: stage 'governance_prompt_injection' registration not found")
+	}
+	pdIdx := strings.Index(src, `Name: "provider_discovery"`)
+	if pdIdx < 0 {
+		t.Fatal("main_pipeline.go: stage 'provider_discovery' registration not found")
+	}
+	if piIdx > pdIdx {
+		t.Fatalf("main_pipeline.go: 'governance_prompt_injection' (offset %d) is registered AFTER "+
+			"'provider_discovery' (offset %d) — the pipeline runs stages in REGISTRATION order and "+
+			"provider_discovery fails against the in-memory demo credential store for every real model "+
+			"(wrapper falls through to v1), so the PI hook would never execute for real traffic",
+			piIdx, pdIdx)
+	}
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────
+
+func readMainPipelineSource(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("main_pipeline.go")
+	if err != nil {
+		t.Fatalf("read main_pipeline.go: %v", err)
+	}
+	return string(data)
+}
 
 // indexClosingBrace 从 openIdx（指向 `if ... {` 行）出发，按花括号深度
 // 找到配对的 `}`，返回其在源中的字节偏移。

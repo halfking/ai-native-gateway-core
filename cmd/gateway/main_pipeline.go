@@ -374,6 +374,30 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
+	// PR-V4-11: prompt injection hook。
+	// ★ 2026-11-18 根修（245 生产实证）：阶段从 governance 区块（原
+	// governance_security 之后、interception 之前）**前移到 security 之后、
+	// provider_discovery 之前**。管线按**注册序**执行（Phase 只是标签），
+	// 而本管线在 v1 包装路径上的现实是：provider_discovery 挂在
+	// **内存 demo 凭据仓**（newV2DispatchDepsFromMain 种的 gpt-4 假凭据）上，
+	// 对任何真实模型都报「no healthy provider」⇒ 阶段失败 ⇒ wrapper 回落
+	// v1 ⇒ 排在它之后的 governance_prompt_injection **对真实流量永远不可达**
+	// （245 实测：注入载荷命中 security.check 后回落、良性请求命中
+	// provider_discovery 后回落，prompt_injection_detections 恒空）。
+	// PI 检测是**内容驱动**的，不依赖供应商发现 ⇒ 前移后：真实流量先过
+	// PI hook（observe 模式留痕/采集），再由 provider_discovery 失败回落
+	// v1 完成真实路由——检测审计面在 v1 路径即刻可达。
+	// F-41（2026-11-13）：stage **无条件注册**——构建时刻 deps.PromptInjectionDetector
+	// 恒为 nil（真实现由 SetV2DispatchAnalysisResources 在构建后注入），条件注册使
+	// governance_prompt_injection 永不出现（双重空转第二重）。hook 经
+	// deps.PromptInjectionHook 延迟绑定；detector 未到场时 Enabled() 恒 false，
+	// 与「未注册」逐请求等价（pipeline.go executeStage 先过 Enabled 过滤）。
+	deps.PromptInjectionHook = promptinjectionhooks.NewHook(deps.PromptInjectionDetector)
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{deps.PromptInjectionHook},
+	})
+
 	if deps.ProviderStore != nil && deps.ProviderProber != nil {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "provider_discovery", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
@@ -478,18 +502,8 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
 	})
 
-	// PR-V4-11: prompt injection hook。
-	// 放在 governance_security 之后，interception engine 之前，让 Engine 汇总它的 verdict。
-	// F-41（2026-11-13）：stage 改为**无条件注册**——构建时刻 deps.PromptInjectionDetector
-	// 恒为 nil（真实现由 SetV2DispatchAnalysisResources 在构建后注入），条件注册使
-	// governance_prompt_injection 永不出现（双重空转第二重）。hook 经
-	// deps.PromptInjectionHook 延迟绑定；detector 未到场时 Enabled() 恒 false，
-	// 与「未注册」逐请求等价（pipeline.go executeStage 先过 Enabled 过滤）。
-	deps.PromptInjectionHook = promptinjectionhooks.NewHook(deps.PromptInjectionDetector)
-	p.AddStage(&pipeline.PipelineStage{
-		Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
-		Hooks: []pipeline.Hook{deps.PromptInjectionHook},
-	})
+	// （governance_prompt_injection 已于 2026-11-18 前移到 security 之后、
+	// provider_discovery 之前——见上方注册处的根修注释。）
 
 	// V4 interception engine (PR-V4-04): 把 security verdicts 汇总成 Decision，
 	// 写入 env.Governance.Decision。后续 PR 引入 dispatch gate 后接管 HTTP 拦截。
