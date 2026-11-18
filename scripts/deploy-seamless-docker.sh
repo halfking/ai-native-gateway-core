@@ -534,6 +534,10 @@ if [[ -n "$VIA" ]]; then
             LLM_GATEWAY_AUTO_TITLE_ENABLED LLM_GATEWAY_AUTO_SUMMARY_ENABLED \
             LLMGatewayAutoLLMEndpoint LLMGatewayAutoLLMApiKey LLMGatewayAutoLLMModel \
             LLMGatewayAutoLLMTimeout LLMGatewayAutoLLMMaxTokens LLM_GW_TEST_MODE_TOKEN \
+            LLM_GATEWAY_USE_V2_PIPELINE \
+            LLMGatewayPIErrorCollectorEnabled LLMGatewayPIErrorAnalysisEnabled \
+            LLMGatewayPIErrorAnalysisModel LLMGatewayPIErrorAnalysisTimeoutSec \
+            LLM_GATEWAY_ANALYSIS_BASE_URL LLM_GATEWAY_ANALYSIS_API_KEY \
             DD_GOACOS_ADDR DD_GOACOS_IP DD_GOACOS_SERVICE DD_GOACOS_NAMESPACE \
             DD_GOACOS_GROUP DD_GOACOS_ENV DD_REMOTE_LOCK_PATH DD_TEST_GO_BIN; do
     if [[ -n "${!_v+x}" ]]; then _dd_fwd+=" ${_v}='${!_v}'"; fi
@@ -2440,6 +2444,34 @@ dd_autollm_env() {
 }
 # ── AUTOLLM-ENV-BLOCK:END ──
 
+# ── PI-AGENT-ENV-BLOCK:BEGIN ──
+# 2026-11-18 PI 智能体开闸（245 生产实证轮）：V2 pipeline / 错误采集 / LLM
+# 分析三组开关的**跨部署保留**。取值优先级同 AUTOLLM：部署机环境变量 >
+# env 文件上次落下的值 > 不设（全部默认关，与 cmd/gateway/pi_agent_init.go
+# 的 opt-in 语义一致）。⚠ env 文件每次部署重写 ⇒ 不做这个块的话，运维在
+# env 文件里手工加的 PI 行下一次部署即静默丢失（AUTOLLM 注释登记过的
+# 同型故障面）。
+# ★ LLM_GATEWAY_ANALYSIS_BASE_URL 同时被 sessionanalytics 复用（正典约定，
+# cmd/gateway/main_pipeline.go 的 validateAnalysisEndpoint 消费）——非新增语义。
+dd_pi_agent_env() {
+  local env_file="${1:-$ENV_FILE}"
+  local _k
+  for _k in LLM_GATEWAY_USE_V2_PIPELINE \
+            LLMGatewayPIErrorCollectorEnabled LLMGatewayPIErrorAnalysisEnabled \
+            LLMGatewayPIErrorAnalysisModel LLMGatewayPIErrorAnalysisTimeoutSec \
+            LLM_GATEWAY_ANALYSIS_BASE_URL LLM_GATEWAY_ANALYSIS_API_KEY; do
+    if [[ -z "${!_k:-}" && -f "$env_file" ]]; then
+      local _val
+      _val="$(sed -nE "s/^(export )?${_k}=(.*)\$/\\2/p" "$env_file" | tail -1)"
+      _val="$(_dd_unq "$_val")"
+      _val="${_val%\'}"; _val="${_val#\'}"
+      _val="${_val%\"}"; _val="${_val#\"}"
+      printf -v "$_k" '%s' "$_val"
+    fi
+  done
+}
+# ── PI-AGENT-ENV-BLOCK:END ──
+
 # ── IDENTITY-ENV-BLOCK:BEGIN ──
 # 2026-11-03 身份网接入：网关要把「单点登录票据」签给兄弟服务（FreeLLM API），
 # 就必须持有身份网的共享密钥 IDENTITY_SHARED_SECRET —— 没有它，
@@ -2491,6 +2523,8 @@ dd_identity_env() {
 dd_asm_event_env "$ENV_FILE"
 dd_auto_generator_env "$ENV_FILE"
 dd_autollm_env "$ENV_FILE"
+# PI 智能体开关沿用（2026-11-18）：同 AUTOLLM 优先级——部署机 > env 文件上次值。
+dd_pi_agent_env "$ENV_FILE"
 dd_identity_env "$ENV_FILE"
 
 
@@ -2560,6 +2594,14 @@ dd_identity_env "$ENV_FILE"
     [[ -n "${LLMGatewayAutoLLMMaxTokens:-}" ]] && printf 'export LLMGatewayAutoLLMMaxTokens=%q\n' "$LLMGatewayAutoLLMMaxTokens"
   fi
   [[ -n "${LLM_GW_TEST_MODE_TOKEN:-}" ]] && printf 'export LLM_GW_TEST_MODE_TOKEN=%q\n' "$LLM_GW_TEST_MODE_TOKEN"
+  # 2026-11-18 PI 智能体开关：跨部署保留（见 PI-AGENT-ENV-BLOCK 头注）。
+  [[ -n "${LLM_GATEWAY_USE_V2_PIPELINE:-}" ]] && printf 'export LLM_GATEWAY_USE_V2_PIPELINE=%q\n' "$LLM_GATEWAY_USE_V2_PIPELINE"
+  [[ -n "${LLMGatewayPIErrorCollectorEnabled:-}" ]] && printf 'export LLMGatewayPIErrorCollectorEnabled=%q\n' "$LLMGatewayPIErrorCollectorEnabled"
+  [[ -n "${LLMGatewayPIErrorAnalysisEnabled:-}" ]] && printf 'export LLMGatewayPIErrorAnalysisEnabled=%q\n' "$LLMGatewayPIErrorAnalysisEnabled"
+  [[ -n "${LLMGatewayPIErrorAnalysisModel:-}" ]] && printf 'export LLMGatewayPIErrorAnalysisModel=%q\n' "$LLMGatewayPIErrorAnalysisModel"
+  [[ -n "${LLMGatewayPIErrorAnalysisTimeoutSec:-}" ]] && printf 'export LLMGatewayPIErrorAnalysisTimeoutSec=%q\n' "$LLMGatewayPIErrorAnalysisTimeoutSec"
+  [[ -n "${LLM_GATEWAY_ANALYSIS_BASE_URL:-}" ]] && printf 'export LLM_GATEWAY_ANALYSIS_BASE_URL=%q\n' "$LLM_GATEWAY_ANALYSIS_BASE_URL"
+  [[ -n "${LLM_GATEWAY_ANALYSIS_API_KEY:-}" ]] && printf 'export LLM_GATEWAY_ANALYSIS_API_KEY=%q\n' "$LLM_GATEWAY_ANALYSIS_API_KEY"
   # 2026-11-02 探测物理隔离：跨部署保留；默认不写 = 关（与 probelane.PhysicalEnabled 一致）。
   if [[ -n "${LLM_GATEWAY_PROBE_LANE_PHYSICAL:-}" ]]; then
     printf 'export LLM_GATEWAY_PROBE_LANE_PHYSICAL=%q\n' "$LLM_GATEWAY_PROBE_LANE_PHYSICAL"
@@ -2692,6 +2734,32 @@ if [[ -n "${LLM_GW_TEST_MODE_TOKEN:-}" ]]; then
   GW_ENV+=( -e "LLM_GW_TEST_MODE_TOKEN=${LLM_GW_TEST_MODE_TOKEN}" )
   log "X-Gw-Test-Mode mock/auto-only 已启用（token 已配，值不打印）"
 fi
+# ── PI-AGENT-ENV-INJECT:BEGIN ──
+# 2026-11-18 PI 智能体开关注入（值沿用优先级见 PI-AGENT-ENV-BLOCK）。
+# 日志只打「开没开/端点/模型」，密钥不进日志。
+if [[ -n "${LLM_GATEWAY_USE_V2_PIPELINE:-}" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_USE_V2_PIPELINE=${LLM_GATEWAY_USE_V2_PIPELINE}" )
+fi
+if [[ -n "${LLMGatewayPIErrorCollectorEnabled:-}" ]]; then
+  GW_ENV+=( -e "LLMGatewayPIErrorCollectorEnabled=${LLMGatewayPIErrorCollectorEnabled}" )
+fi
+if [[ -n "${LLMGatewayPIErrorAnalysisEnabled:-}" ]]; then
+  GW_ENV+=( -e "LLMGatewayPIErrorAnalysisEnabled=${LLMGatewayPIErrorAnalysisEnabled}" )
+fi
+if [[ -n "${LLMGatewayPIErrorAnalysisModel:-}" ]]; then
+  GW_ENV+=( -e "LLMGatewayPIErrorAnalysisModel=${LLMGatewayPIErrorAnalysisModel}" )
+fi
+if [[ -n "${LLMGatewayPIErrorAnalysisTimeoutSec:-}" ]]; then
+  GW_ENV+=( -e "LLMGatewayPIErrorAnalysisTimeoutSec=${LLMGatewayPIErrorAnalysisTimeoutSec}" )
+fi
+if [[ -n "${LLM_GATEWAY_ANALYSIS_BASE_URL:-}" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_ANALYSIS_BASE_URL=${LLM_GATEWAY_ANALYSIS_BASE_URL}" )
+fi
+if [[ -n "${LLM_GATEWAY_ANALYSIS_API_KEY:-}" ]]; then
+  GW_ENV+=( -e "LLM_GATEWAY_ANALYSIS_API_KEY=${LLM_GATEWAY_ANALYSIS_API_KEY}" )
+fi
+log "PI 智能体开关：v2_pipeline=${LLM_GATEWAY_USE_V2_PIPELINE:-off} collector=${LLMGatewayPIErrorCollectorEnabled:-off} analysis=${LLMGatewayPIErrorAnalysisEnabled:-off} model=${LLMGatewayPIErrorAnalysisModel:-} timeout=${LLMGatewayPIErrorAnalysisTimeoutSec:-default}s endpoint=${LLM_GATEWAY_ANALYSIS_BASE_URL:-none} key=$( [[ -n "${LLM_GATEWAY_ANALYSIS_API_KEY:-}" ]] && echo set || echo none )"
+# ── PI-AGENT-ENV-INJECT:END ──
 # ── AUTOLLM-ENV-INJECT:END ──
 
 # ── 状态目录出容器（2026-10-13，对齐 211 机 DEPLOY-STANDARDS 总纲）──────
