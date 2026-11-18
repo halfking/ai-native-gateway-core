@@ -389,8 +389,18 @@ func (h *PIAnalysisHandler) ApplyFix(w http.ResponseWriter, r *http.Request, que
 
 	records, err := piApplyActions(r.Context(), tx, actions)
 	if err != nil {
-		// 业务性失败（规则不存在 / 行数=0）→ 422；让前端能展示原因。
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		// ★ D13（2026-11-19 审计轮）：区分业务性失败与驱动失败。
+		//
+		//	· 业务性失败（规则不存在 / 行数=0 / 动作未在白名单）⇒ 422 +
+		//	  可读文案，前端能展示原因、能自愈；
+		//	· 驱动失败（pgx 错误：表名/列名/约束名）⇒ 500 + 固定文案，
+		//	  内部错误只进服务端日志，**不得**回显给客户端。
+		var bizErr *piApplyBusinessError
+		if errors.As(err, &bizErr) {
+			http.Error(w, bizErr.msg, http.StatusUnprocessableEntity)
+			return
+		}
+		writeInternalTextErr(w, "apply rule actions failed", err)
 		return
 	}
 
@@ -537,6 +547,21 @@ func (h *PIAnalysisHandler) RevertFix(w http.ResponseWriter, r *http.Request, qu
 	json.NewEncoder(w).Encode(piFixResp{QueueID: queueID, Reverted: true})
 }
 
+// piApplyBusinessError 标记**业务性失败**（可安全回显给客户端）。
+//
+// ★ D13（2026-11-19 审计轮）：apply 的错误路径原本把 piApplyActions 的
+// 返回值原样 `http.Error(w, err.Error(), 422)` 回显。而 piApplyActions 的
+// 错误里**混着驱动失败**（`%w` 包了 pgx 错误 ⇒ 表名/列名/约束名会到达
+// 客户端）。
+//
+// 现在两类错误分流：
+//
+//	· 业务性失败（本类型）⇒ 422 + 可读文案（客户端能据此自愈）；
+//	· 驱动失败 ⇒ 走 writeInternalTextErr（500 + 固定文案 + 服务端日志）。
+type piApplyBusinessError struct{ msg string }
+
+func (e *piApplyBusinessError) Error() string { return e.msg }
+
 // piApplyActions 在事务里逐条应用白名单动作，返回留痕记录。
 // 业务性失败（规则不存在）返回 error ⇒ 调用方回滚整个事务。
 func piApplyActions(ctx context.Context, tx *sql.Tx, actions []RuleFixAction) ([]AppliedActionRecord, error) {
@@ -551,7 +576,7 @@ func piApplyActions(ctx context.Context, tx *sql.Tx, actions []RuleFixAction) ([
 			WHERE rule_name = $1 FOR UPDATE`, act.RuleName,
 		).Scan(&oldEnabled, &oldSeverity, &oldPattern)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("rule %q does not exist (LLM suggestion references unknown rule)", act.RuleName)
+			return nil, &piApplyBusinessError{msg: fmt.Sprintf("rule %q does not exist (LLM suggestion references unknown rule)", act.RuleName)}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("query rule %q failed: %w", act.RuleName, err)
@@ -577,7 +602,7 @@ func piApplyActions(ctx context.Context, tx *sql.Tx, actions []RuleFixAction) ([
 				return nil, fmt.Errorf("disable rule %q failed: %w", act.RuleName, err)
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				return nil, fmt.Errorf("rule %q not found when applying disable", act.RuleName)
+				return nil, &piApplyBusinessError{msg: fmt.Sprintf("rule %q not found when applying disable", act.RuleName)}
 			}
 			rec.New = map[string]interface{}{"enabled": false}
 
@@ -589,7 +614,7 @@ func piApplyActions(ctx context.Context, tx *sql.Tx, actions []RuleFixAction) ([
 				return nil, fmt.Errorf("adjust severity of %q failed: %w", act.RuleName, err)
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				return nil, fmt.Errorf("rule %q not found when adjusting severity", act.RuleName)
+				return nil, &piApplyBusinessError{msg: fmt.Sprintf("rule %q not found when adjusting severity", act.RuleName)}
 			}
 			rec.New = map[string]interface{}{"severity": act.Severity}
 
@@ -601,12 +626,12 @@ func piApplyActions(ctx context.Context, tx *sql.Tx, actions []RuleFixAction) ([
 				return nil, fmt.Errorf("update pattern of %q failed: %w", act.RuleName, err)
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				return nil, fmt.Errorf("rule %q not found when updating pattern", act.RuleName)
+				return nil, &piApplyBusinessError{msg: fmt.Sprintf("rule %q not found when updating pattern", act.RuleName)}
 			}
 			rec.New = map[string]interface{}{"pattern": act.Pattern}
 
 		default:
-			return nil, fmt.Errorf("action %q is not whitelisted", act.Action)
+			return nil, &piApplyBusinessError{msg: fmt.Sprintf("action %q is not whitelisted", act.Action)}
 		}
 		records = append(records, rec)
 	}

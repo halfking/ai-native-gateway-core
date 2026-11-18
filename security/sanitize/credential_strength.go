@@ -1,0 +1,125 @@
+package sanitize
+
+import (
+	"strings"
+)
+
+// ★ D1（2026-11-19 审计轮）签名 thinking 的**分级阻断**判据。
+//
+// 背景：r1058 契约是「签名 thinking 只检测、不改写、原样放行」。签名覆盖
+// thinking 字节 ⇒ 改写在密码学上不可能 ⇒ 能用的补偿控制只剩**拒**。
+// 但「一律拒」会把「一次误报」升级成「整个会话砖化」——r1058 事故本体
+// 就是这么发生的（3049 条生产会话当场砖化，检出值＝英文单词 "token"，
+// 客户端不可自愈：重发的还是同一份会话）。
+//
+// 因此这里做**分级**：
+//
+//	· **强凭据形态**（厂商密钥前缀 / JWT / 长不透明令牌）⇒ 拒整请求（400）。
+//	  这类内容一旦出网到「不验签的上游」（自建 vLLM / Ollama / 内部代理），
+//	  就是明文泄露 —— 而 `signature` 字段完全由客户端控制，客户端可以
+//	  伪造带签名的 thinking 块来绕过脱敏。
+//	· **散文级弱命中**（`password=MySecretPass123` 这类）⇒ 仍原样放行，
+//	  但日志从 WARN 升级为 ERROR 并带规则名 —— 让「被放行的敏感内容」在
+//	  观测面上可见，而不是静默 WARN。
+//
+// ★ 判据刻意取**窄**：宁可漏过「无厂商前缀的裸长串」，也不误伤模型散文。
+//   误伤的代价（会话砖化）远高于漏过一次的代价（一次未脱敏的出网）。
+//   残余风险登记见 docs/12小时内修订审计-2026-11-19-0400.md §二 D1。
+
+// strongCredentialPrefixes 是厂商密钥/令牌的高特异性前缀。
+//
+// 这些形态在自然语言散文里几乎不出现（"sk-" / "ghp_" / "xoxb-" 之类），
+// 因此命中即可判定为「真凭据」，不需要再叠加长度/熵条件。
+var strongCredentialPrefixes = []string{
+	// Anthropic / OpenAI
+	"sk-ant-", "sk-proj-", "sk-or-v1-",
+	// 阿里云
+	"ak-",
+	// GitHub
+	"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+	// GitLab
+	"glpat-",
+	// Slack
+	"xoxb-", "xoxp-", "xoxa-", "xoxr-",
+	// Google
+	"AIza",
+	// PyPI / HuggingFace
+	"npm_", "hf_",
+	// AWS
+	"AKIA", "ASIA",
+}
+
+// strongCredentialCandidate 判断一个命中值是否属于「必须脱敏否则即泄露」的
+// 强凭据形态。
+//
+// 判据族与 detector.go 的 credibleBearerCandidate / credibleSecretCandidate
+// 同源（都是「整串属性」判据，RE2 无法用前瞻断言表达），但**更窄**——
+// 因为这里的结果会决定「拒整个请求」，误判成本是会话砖化。
+func strongCredentialCandidate(value string) bool {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return false
+	}
+	// ① 高特异性厂商前缀。
+	for _, p := range strongCredentialPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	// ② 裸 "sk-"（OpenAI 旧格式）：叠加整体属性，避免误伤 "sk-test" 一类。
+	if strings.HasPrefix(v, "sk-") && len(v) >= 16 && containsASCIIDigit(v) {
+		return true
+	}
+	// ③ JWT 形态（三段点分、≥16 字符）。
+	if len(v) >= 16 && strings.Count(v, ".") >= 2 {
+		return true
+	}
+	// ④ 长不透明令牌（≥24 且含数字）——不透明 bearer 令牌的典型长度。
+	//
+	//   阈值取 24 而不是 16：16 档会误伤「password=<长英文词+数字>」一类
+	//   散文。且必须排除「十六进制簇」形态 —— 模型的思考里出现 commit
+	//   hash / UUID 是常事，那些不是凭据，误判即砖化。
+	if len(v) >= 24 && containsASCIIDigit(v) && !hexishToken(v) {
+		return true
+	}
+	return false
+}
+
+// classifySignedThinkingFragments 把签名 thinking 的检出片段分成
+// 「强凭据」（必须拒）与「散文级弱命中」（放行但记 ERROR）。
+func classifySignedThinkingFragments(fragments []SensitiveFragment) (strong []SensitiveFragment, weak []SensitiveFragment) {
+	for _, f := range fragments {
+		if strongCredentialCandidate(f.Value) {
+			strong = append(strong, f)
+			continue
+		}
+		weak = append(weak, f)
+	}
+	return strong, weak
+}
+
+// containsASCIIDigit 报告字符串里是否含 ASCII 数字。
+func containsASCIIDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// hexishToken 判断字符串是否为「十六进制簇」形态：纯 hex，或 UUID 形态。
+//
+// 模型的思考里出现 commit hash（40 位 hex）或 UUID 是常事，它们长度够、
+// 常带数字，却**不是凭据** —— 把它们判成强凭据等于批量砖化会话。
+func hexishToken(s string) bool {
+	isHex := func(c byte) bool {
+		return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+	}
+	for i := 0; i < len(s); i++ {
+		if !isHex(s[i]) && s[i] != '-' {
+			return false
+		}
+	}
+	return true
+}
