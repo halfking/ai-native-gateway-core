@@ -1,25 +1,54 @@
 # ExtensionPoint Phase 支持扩展完成
 
 **日期**: 2026-11-19  
-**任务**: 扩展 ExtensionPoint 支持到更多 Phase
+**任务**: 扩展 ExtensionPoint 支持到更多 Phase  
+**最新更新**: 2026-11-19 - 新增 PhasePreAuth 和 PhasePostAuth 支持
 
 ---
 
 ## ✅ 新增 Phase 支持
 
-### 已集成的 Phase（总计 7 个）
+### 已集成的 Phase（总计 9 个）
 
 | Pipeline Phase | ExtensionPoint Phase | Stage 位置 | 说明 |
 |---------------|---------------------|-----------|------|
+| `pre_authentication` | `PhasePreAuth` | pre_auth stage | 认证前预处理 ✅ **NEW** |
 | `authentication` | `PhaseAuth` | authentication stage | 认证执行 ✅ |
+| `post_authentication` | `PhasePostAuth` | post_auth stage | 认证后处理 ✅ **NEW** |
 | `pre_routing` | `PhasePreRoute` | client_identity stage | 路由前处理 ✅ |
 | `routing` | `PhaseRoute` | routing stage | 路由决策 ✅ |
 | `post_routing` | `PhasePostRoute` | credential_limit stage | 路由后处理 ✅ |
-| `pre_upstream` | `PhasePreUpstream` | pre_upstream stage | 上游调用前 ✅ **NEW** |
-| `post_upstream` | `PhasePostUpstream` | post_upstream_output_compliance | 上游调用后 ✅ **NEW** |
-| `response` | `PhaseResponse` | response stage | 响应处理 ✅ **NEW** |
+| `pre_upstream` | `PhasePreUpstream` | pre_upstream stage | 上游调用前 ✅ |
+| `post_upstream` | `PhasePostUpstream` | post_upstream_output_compliance | 上游调用后 ✅ |
+| `response` | `PhaseResponse` | response stage | 响应处理 ✅ |
 
-### 新增 Phase 详情
+### 最新 Phase 详情 (2026-11-19)
+
+**PhasePreAuth** (pre_auth)
+- **位置**: `pre_auth` stage（认证之前）
+- **时机**: 认证执行之前，请求预处理阶段
+- **用途**: 
+  - 请求指纹生成（fingerprinting）
+  - 速率限制预检
+  - IP 白名单/黑名单验证
+  - 请求标记和分类
+  - 早期安全检查
+- **Demo 插件**: PreAuthValidatorPlugin
+- **集成方式**: 独立 stage，在 authentication 之前
+- **优先级**: High (priority 5)
+
+**PhasePostAuth** (post_auth)
+- **位置**: `post_auth` stage（认证之后）
+- **时机**: 认证完成后，路由决策之前
+- **用途**: 
+  - 用户上下文增强
+  - 用户偏好加载
+  - 权限/功能标志检查
+  - 会话元数据初始化
+  - 用户级配置注入
+- **Demo 插件**: PostAuthEnricherPlugin
+- **集成方式**: 独立 stage，在 authentication 之后
+- **优先级**: Normal (priority 15)
 
 **PhasePreUpstream** (pre_upstream)
 - **位置**: `pre_upstream` stage（tools 之后）
@@ -57,40 +86,38 @@
 
 ## 🎯 Phase 覆盖情况
 
-### 当前覆盖（7/12）
+### 当前覆盖（9/12 = 75%）
 
 ✅ **已支持**:
+- PhasePreAuth (认证前) **NEW**
 - PhaseAuth (认证)
+- PhasePostAuth (认证后) **NEW**
 - PhasePreRoute (路由前)
 - PhaseRoute (路由)
 - PhasePostRoute (路由后)
-- PhasePreUpstream (上游前) **NEW**
-- PhasePostUpstream (上游后) **NEW**
-- PhaseResponse (响应处理) **NEW**
+- PhasePreUpstream (上游前)
+- PhasePostUpstream (上游后)
+- PhaseResponse (响应处理)
 
 ⏳ **待支持**:
-- PhasePreAuth (认证前)
-- PhasePostAuth (认证后)
 - PhaseUpstream (上游调用)
 - PhasePreResponse (响应前)
 - PhasePostResponse (响应后)
 
 ### 优先级排序
 
-**High Priority** (核心请求路径):
-1. ✅ PhaseAuth - 认证
-2. ✅ PhaseRoute - 路由
-3. ✅ PhasePreUpstream - 上游前（请求修改）**NEW**
-4. ✅ PhasePostUpstream - 响应处理 **NEW**
-5. ✅ PhaseResponse - 响应处理 **NEW**
-
-**Medium Priority** (扩展功能):
-6. ⏳ PhasePreAuth - 请求预处理
-7. ⏳ PhasePostAuth - 认证后处理
-8. ⏳ PhasePreResponse - 响应前处理
-9. ⏳ PhasePostResponse - 响应后处理
+**High Priority** (核心请求路径) - ✅ 全部完成:
+1. ✅ PhasePreAuth - 认证前预处理 **NEW**
+2. ✅ PhaseAuth - 认证
+3. ✅ PhasePostAuth - 认证后处理 **NEW**
+4. ✅ PhaseRoute - 路由
+5. ✅ PhasePreUpstream - 上游前（请求修改）
+6. ✅ PhasePostUpstream - 响应处理
+7. ✅ PhaseResponse - 响应处理
 
 **Low Priority** (特殊场景):
+8. ⏳ PhasePreResponse - 响应前处理
+9. ⏳ PhasePostResponse - 响应后处理
 10. ⏳ PhaseUpstream - 上游调用（通常由 gateway 直接处理）
 
 ---

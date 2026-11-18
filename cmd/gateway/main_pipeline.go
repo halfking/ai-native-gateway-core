@@ -361,6 +361,18 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p.SetHandlerLookup(tbus)
 	go func() { _ = tbus.Dispatcher.Start(context.Background()) }()
 
+	// === Phase: PreAuth (priority 5) ===
+	// 2026-11-19: ExtensionPoint - 认证前预处理阶段
+	// 允许插件在认证之前执行（例如：请求预处理、速率限制预检、请求标记）
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_auth",
+		Phase: pipeline.PhasePreAuthentication,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "pre_auth"),
+		},
+	})
+
 	// === Phase: Authentication (priority 10) ===
 	// 2026-06-29: Enable when LLM_GATEWAY_V2_AUTH=true
 	// Extract API Key from metadata and verify against database.
@@ -384,6 +396,18 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			Hooks: authHooks,
 		})
 	}
+
+	// === Phase: PostAuth (priority 15) ===
+	// 2026-11-19: ExtensionPoint - 认证后处理阶段
+	// 允许插件在认证完成后执行（例如：用户上下文增强、权限检查、会话初始化）
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_auth",
+		Phase: pipeline.PhasePostAuthentication,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "post_auth"),
+		},
+	})
 
 	// === Phase: Client Identity (priority 20) ===
 	// 2026-06-29: Extract client identity hash from request (IP, headers, tenant, API key)

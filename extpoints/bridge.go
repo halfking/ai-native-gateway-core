@@ -248,9 +248,9 @@ func (h *ExtensionPointHook) OnError(ctx context.Context, envelope *domain.Pipel
 // mapPhases 将 domains/pipeline Phase 映射到 extpoints Phase。
 // 
 // 映射规则：
-//   - pre_authentication → PhasePreAuth
+//   - pre_authentication / pre_auth → PhasePreAuth
 //   - authentication → PhaseAuth
-//   - post_authentication → PhasePostAuth
+//   - post_authentication / post_auth → PhasePostAuth
 //   - pre_routing → PhasePreRoute
 //   - routing → PhaseRoute
 //   - post_routing → PhasePostRoute
@@ -265,8 +265,10 @@ func (h *ExtensionPointHook) OnError(ctx context.Context, envelope *domain.Pipel
 func (h *ExtensionPointHook) mapPhases(pipelinePhase string) []Phase {
 	mapping := map[string][]Phase{
 		"pre_authentication":  {PhasePreAuth},
+		"pre_auth":            {PhasePreAuth}, // alias
 		"authentication":      {PhaseAuth},
 		"post_authentication": {PhasePostAuth},
+		"post_auth":           {PhasePostAuth}, // alias
 		"pre_routing":         {PhasePreRoute},
 		"routing":             {PhaseRoute},
 		"post_routing":        {PhasePostRoute},

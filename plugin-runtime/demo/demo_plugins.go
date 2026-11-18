@@ -412,3 +412,170 @@ func (p *RequestModifierPlugin) TransformRequest(ctx *extpoints.ExecutionContext
 func (p *RequestModifierPlugin) GetModifications() map[string]interface{} {
 	return p.modifications
 }
+
+// PreAuthValidatorPlugin is a demo plugin that validates requests before authentication.
+// It runs in PhasePreAuth to perform early validation like rate limiting checks,
+// request fingerprinting, or IP allowlisting.
+type PreAuthValidatorPlugin struct {
+	*extpoints.BaseExtensionPoint
+	validationResults map[string]interface{}
+}
+
+// NewPreAuthValidatorPlugin creates a new pre-auth validator plugin.
+func NewPreAuthValidatorPlugin() *PreAuthValidatorPlugin {
+	return &PreAuthValidatorPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-preauth-validator",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePreAuth,
+			Priority:       extpoints.PriorityHigh, // Run before other pre-auth plugins
+			Timeout:        2 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen, // Don't block on validation failure
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityValidate},
+		}),
+		validationResults: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PreAuthValidatorPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PreAuthValidator] Validating request in phase %s\n", ctx.Phase)
+	
+	// Simulate request validation checks
+	checks := []string{}
+	
+	// Check 1: Request fingerprinting
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	ctx.State["request_fingerprint"] = fmt.Sprintf("fp-%s-%d", ctx.RequestID[:8], ctx.RequestTime.Unix())
+	checks = append(checks, "fingerprint")
+	
+	// Check 2: Rate limit pre-check (simulate)
+	ctx.State["rate_limit_check"] = "passed"
+	checks = append(checks, "rate_limit")
+	
+	// Check 3: IP validation (simulate)
+	ctx.State["ip_validation"] = "passed"
+	checks = append(checks, "ip_validation")
+	
+	// Record validation results
+	p.validationResults["checks_performed"] = checks
+	p.validationResults["timestamp"] = ctx.RequestTime
+	p.validationResults["all_passed"] = true
+	
+	fmt.Printf("[PreAuthValidator] Completed %d validation checks\n", len(checks))
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true, // Modified State with validation results
+		Latency:  2 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"checks_performed": len(checks),
+			"validation_status": "passed",
+		},
+	}, nil
+}
+
+// GetValidationResults returns validation results (for testing).
+func (p *PreAuthValidatorPlugin) GetValidationResults() map[string]interface{} {
+	return p.validationResults
+}
+
+// PostAuthEnricherPlugin is a demo plugin that enriches user context after authentication.
+// It runs in PhasePostAuth to add user-specific configurations, permissions, or session data.
+type PostAuthEnricherPlugin struct {
+	*extpoints.BaseExtensionPoint
+	enrichments map[string]interface{}
+}
+
+// NewPostAuthEnricherPlugin creates a new post-auth enricher plugin.
+func NewPostAuthEnricherPlugin() *PostAuthEnricherPlugin {
+	return &PostAuthEnricherPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-postauth-enricher",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePostAuth,
+			Priority:       extpoints.PriorityNormal,
+			Timeout:        3 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen, // Don't block if enrichment fails
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityEnrichContext},
+		}),
+		enrichments: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PostAuthEnricherPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PostAuthEnricher] Enriching user context in phase %s\n", ctx.Phase)
+	
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	
+	// Extract user ID from authentication phase (if available)
+	userID := "unknown"
+	if uid, ok := ctx.State["user_id"].(string); ok {
+		userID = uid
+	}
+	
+	// Enrich with user-specific data (simulated)
+	enrichmentCount := 0
+	
+	// Enrichment 1: User preferences
+	ctx.State["user_preferences"] = map[string]interface{}{
+		"language": "en-US",
+		"theme":    "dark",
+		"timezone": "America/Los_Angeles",
+	}
+	enrichmentCount++
+	
+	// Enrichment 2: User permissions
+	ctx.State["user_permissions"] = []string{
+		"chat:read",
+		"chat:write",
+		"model:gpt-4",
+		"model:claude-3",
+	}
+	enrichmentCount++
+	
+	// Enrichment 3: Session metadata
+	ctx.State["session_metadata"] = map[string]interface{}{
+		"session_id":   fmt.Sprintf("sess-%s", ctx.RequestID[:12]),
+		"created_at":   ctx.RequestTime,
+		"user_id":      userID,
+		"enriched_by":  "demo-postauth-enricher",
+	}
+	enrichmentCount++
+	
+	// Enrichment 4: Feature flags
+	ctx.State["feature_flags"] = map[string]bool{
+		"streaming_enabled":       true,
+		"tool_calling_enabled":    true,
+		"multimodal_enabled":      false,
+		"function_calling_v2":     true,
+	}
+	enrichmentCount++
+	
+	// Record enrichments
+	p.enrichments["user_id"] = userID
+	p.enrichments["enrichment_count"] = enrichmentCount
+	p.enrichments["timestamp"] = ctx.RequestTime
+	
+	fmt.Printf("[PostAuthEnricher] Applied %d enrichments for user %s\n", enrichmentCount, userID)
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true, // Modified State with enriched data
+		Latency:  3 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"enrichments_applied": enrichmentCount,
+			"user_id":            userID,
+		},
+	}, nil
+}
+
+// GetEnrichments returns applied enrichments (for testing).
+func (p *PostAuthEnricherPlugin) GetEnrichments() map[string]interface{} {
+	return p.enrichments
+}
