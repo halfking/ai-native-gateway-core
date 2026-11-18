@@ -239,17 +239,17 @@ func (h *PIAnalysisHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 	var errors []map[string]interface{}
 	for rows.Next() {
 		var e struct {
-			ID         int64
-			ErrorType  string
-			ErrorHash  string
-			Priority   int
-			TenantID   string
-			SessionID  PiNullString
-			RequestID  PiNullString
+			ID         int64        `json:"id"`
+			ErrorType  string       `json:"error_type"`
+			ErrorHash  string       `json:"error_hash"`
+			Priority   int          `json:"priority"`
+			TenantID   string       `json:"tenant_id"`
+			SessionID  PiNullString `json:"session_id"`
+			RequestID  PiNullString `json:"request_id"`
 			ErrorMsg   string
-			Status     string
-			RetryCount int
-			CreatedAt  string
+			Status     string `json:"status"`
+			RetryCount int    `json:"retry_count"`
+			CreatedAt  string `json:"created_at"`
 		}
 
 		if err := rows.Scan(
@@ -352,18 +352,18 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 	var results []map[string]interface{}
 	for rows.Next() {
 		var r struct {
-			ID              int64
-			AnalysisID      string
-			QueueID         int64
-			RootCause       string
-			ErrorCategory   string
-			IsFalsePositive bool
-			ConfidenceScore float64
-			SeverityLevel   string
-			SuggestedFix    string
-			ErrorType       string
-			TenantID        string
-			CreatedAt       string
+			ID              int64   `json:"id"`
+			AnalysisID      string  `json:"analysis_id"`
+			QueueID         int64   `json:"queue_id"`
+			RootCause       string  `json:"root_cause"`
+			ErrorCategory   string  `json:"error_category"`
+			IsFalsePositive bool    `json:"is_false_positive"`
+			ConfidenceScore float64 `json:"confidence_score"`
+			SeverityLevel   string  `json:"severity_level"`
+			SuggestedFix    string  `json:"suggested_fix"`
+			ErrorType       string  `json:"error_type"`
+			TenantID        string  `json:"tenant_id"`
+			CreatedAt       string  `json:"created_at"`
 		}
 
 		if err := rows.Scan(
@@ -491,7 +491,7 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		PolicyConfig          NullableJSON   `json:"policy_config"`
 		Status                string         `json:"status"`
 		RetryCount            int            `json:"retry_count"`
-		QCreatedAt            string         `json:"created_at"`
+		QCreatedAt            string         `json:"queued_at"`
 		StartedAt             PiNullString   `json:"started_at"`
 		CompletedAt           PiNullString   `json:"completed_at"`
 	}
@@ -563,49 +563,49 @@ func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Reque
 	`
 
 	var result struct {
-		ID                    int64
-		AnalysisID            string
-		QueueID               int64
-		RootCause             string
-		ErrorCategory         string
-		IsFalsePositive       bool
-		ConfidenceScore       float64
-		SuggestedFix          string
-		RuleAdjustment        NullableJSON
-		CodeChanges           NullableJSON
-		SeverityLevel         string
-		ImpactScope           string
-		AffectedUsersEstimate int
-		SimilarCases          NullableJSON
-		PatternFrequency      int
-		AnalysisDurationMs    int
-		LLMTokensUsed         int
-		CreatedAt             string
-		AnalyzerModel         string
-		AnalyzerVersion       sql.NullString
-		AnalysisDetails       NullableJSON
-		LLMResponseRaw        sql.NullString
-		AutoApplied           bool
-		AppliedAt             PiNullString
-		AppliedBy             PiNullString
-		ErrorType             string
-		ErrorHash             string
-		Priority              int
-		TenantID              string
-		SessionID             PiNullString
-		RequestID             PiNullString
-		InputText             PiNullString
-		InputHash             PiNullString
-		ErrorMessage          string
-		ErrorDetails          NullableJSON
-		DetectionLayers       NullableJSON
-		MatchedRules          NullableJSON
-		PolicyConfig          NullableJSON
-		Status                string
-		RetryCount            int
-		QCreatedAt            string
-		StartedAt             PiNullString
-		CompletedAt           PiNullString
+		ID                    int64          `json:"id"`
+		AnalysisID            string         `json:"analysis_id"`
+		QueueID               int64          `json:"queue_id"`
+		RootCause             string         `json:"root_cause"`
+		ErrorCategory         string         `json:"error_category"`
+		IsFalsePositive       bool           `json:"is_false_positive"`
+		ConfidenceScore       float64        `json:"confidence_score"`
+		SuggestedFix          string         `json:"suggested_fix"`
+		RuleAdjustment        NullableJSON   `json:"rule_adjustment"`
+		CodeChanges           NullableJSON   `json:"code_changes"`
+		SeverityLevel         string         `json:"severity_level"`
+		ImpactScope           string         `json:"impact_scope"`
+		AffectedUsersEstimate int            `json:"affected_users_estimate"`
+		SimilarCases          NullableJSON   `json:"similar_cases"`
+		PatternFrequency      int            `json:"pattern_frequency"`
+		AnalysisDurationMs    int            `json:"analysis_duration_ms"`
+		LLMTokensUsed         int            `json:"llm_tokens_used"`
+		CreatedAt             string         `json:"created_at"`
+		AnalyzerModel         string         `json:"analyzer_model"`
+		AnalyzerVersion       sql.NullString `json:"analyzer_version"`
+		AnalysisDetails       NullableJSON   `json:"analysis_details"`
+		LLMResponseRaw        sql.NullString `json:"llm_response_raw"`
+		AutoApplied           bool           `json:"auto_applied"`
+		AppliedAt             PiNullString   `json:"applied_at"`
+		AppliedBy             PiNullString   `json:"applied_by"`
+		ErrorType             string         `json:"error_type"`
+		ErrorHash             string         `json:"error_hash"`
+		Priority              int            `json:"priority"`
+		TenantID              string         `json:"tenant_id"`
+		SessionID             PiNullString   `json:"session_id"`
+		RequestID             PiNullString   `json:"request_id"`
+		InputText             PiNullString   `json:"input_text"`
+		InputHash             PiNullString   `json:"input_hash"`
+		ErrorMessage          string         `json:"error_message"`
+		ErrorDetails          NullableJSON   `json:"error_details"`
+		DetectionLayers       NullableJSON   `json:"detection_layers"`
+		MatchedRules          NullableJSON   `json:"matched_rules"`
+		PolicyConfig          NullableJSON   `json:"policy_config"`
+		Status                string         `json:"status"`
+		RetryCount            int            `json:"retry_count"`
+		QCreatedAt            string         `json:"queued_at"`
+		StartedAt             PiNullString   `json:"started_at"`
+		CompletedAt           PiNullString   `json:"completed_at"`
 	}
 
 	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
