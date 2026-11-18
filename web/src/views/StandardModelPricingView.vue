@@ -2,7 +2,8 @@
 import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import { localeRef } from '../i18n'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   getAdminMaasModelRates,
   updateAdminMaasSettings,
@@ -14,75 +15,28 @@ import {
   batchFillGlobalAdminMaasModelRates,
   getAdminMaasModelPriceHistory,
   getAdminMaasModelPriceChanges,
-  getAdminMaasMarketPriceOverview,
   type AdminMaasModelRate,
   type ModelPriceVersion,
   type MaasAdminSettings,
   type MaasModelRateUpsert,
 } from '../api'
+import { getAdminMarketCompare, type MarketCompareRow } from '../api/market'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
 import { sortByName } from '../utils/sortByName'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
 import ActionOverflowMenu from '../components/ui/ActionOverflowMenu.vue'
+import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
+import type { CardField } from '../components/ui/CardList.vue'
+import ModelPicker from '../components/ModelPicker.vue'
+// 2026-11-19（合并轮）：价格对比面并入本页 —— 四个子区按 tab 懒挂载（v-if），
+// 原价对比页路由 /operations/price-compare 保留为重定向（收藏链接不断）。
+import MarketReferenceTable from './operations/MarketReferenceTable.vue'
+import ModelPlatformCompare from './operations/ModelPlatformCompare.vue'
+import PricingSuggestionPanel from './operations/PricingSuggestionPanel.vue'
 
 const { t } = useI18n()
-
-// 2026-11-10（行情整合轮）：行情行结构。真身 = ../api/maas 的
-// MarketPriceOverviewRow/MarketPriceSyncRun；此处本地 interface 声明
-// （结构逐字同源）——本 SFC 内跨模块 type 导入在 vue-tsc 3.3.7+TS5.9.3
-// 组合下被吞（TS2304 幽灵，本地 interface 实测可见），字段漂移由
-// wiring 测试钉住。
-interface MarketPriceOverviewRow {
-  canonical_name: string
-  canonical_id: number | null
-  display_name: string
-  market_min_in_cny_per_1m: number | null
-  market_min_out_cny_per_1m: number | null
-  market_min_platform_count: number
-  market_min_platform_id: string
-  vendor_list_in_cny_per_1m: number | null
-  vendor_list_out_cny_per_1m: number | null
-  vendor_list_currency: string
-  vendor_list_native_in_per_1m: number | null
-  vendor_list_native_out_per_1m: number | null
-  overseas_min_in_per_1m: number | null
-  overseas_min_out_per_1m: number | null
-  overseas_min_platform_id: string
-  overseas_min_platform_count: number
-  domestic_min_in_per_1m: number | null
-  domestic_min_out_per_1m: number | null
-  domestic_min_platform_id: string
-  domestic_min_platform_count: number
-  fx_rate: number | null
-  vendor_vendor: string
-  supplier_in_per_1m: number | null
-  supplier_out_per_1m: number | null
-  supplier_currency: string
-  retail_credits_in_per_1m: number | null
-  retail_credits_out_per_1m: number | null
-  retail_cny_in_per_1m: number | null
-  retail_cny_out_per_1m: number | null
-  cents_per_credit: number
-  currency_display: string
-  market_position: number | null
-  retail_vs_market: number | null
-  source_run_date: string
-  resolved: boolean
-}
-interface MarketPriceSyncRun {
-  id: number
-  run_date: string
-  source_platforms: number
-  source_rows: number
-  landed_rows: number
-  rejected_rows: number
-  conflicts: Record<string, number>
-  detail: Record<string, unknown>
-  created_at: string
-}
-
 
 type RateField = 'in' | 'out' | 'cache_in' | 'cache_out' | 'image' | 'audio' | 'video'
 
@@ -137,11 +91,18 @@ const {
   getDisplayName: (m) => m.display_name,
   matchExtra: (m, mode) => {
     if (mode === 'custom') return m.is_custom
-    if (mode === 'default') return !m.is_custom
     if (mode === 'partial') return m.is_custom && !isFullyManual(m)
     return true
   },
 })
+// tab 定义（labelKey必须是静态键 —— t() 的键要可被静态抽取器找到）。
+const PAGE_TAB_DEFS: { key: PricingPageTab; labelKey: string }[] = [
+  { key: 'rates', labelKey: 'standardModelPricing.page.title' },
+  { key: 'reference', labelKey: 'priceCompare.tabReference' },
+  { key: 'scoring', labelKey: 'priceCompare.tabScoring' },
+  { key: 'platforms', labelKey: 'priceCompare.tabPlatforms' },
+  { key: 'suggestion', labelKey: 'priceCompare.tabSuggestion' },
+]
 
 // 2026-10-03：标准模型定价表首列是「标准模型」（display_name 为主、canonical_name 为副），
 // 之前完全按后端返回顺序，找某个模型只能翻。
@@ -180,103 +141,147 @@ const showChangesModal = ref(false)
 const changeItems = ref<ModelPriceVersion[]>([])
 const changesLoading = ref(false)
 
-// 2026-11-10（行情整合轮）：市场参考价对比（940 只读面）。
-const showMarketModal = ref(false)
-const marketItems = ref<MarketPriceOverviewRow[]>([])
-const resolvedCount = computed(() => marketItems.value.filter((v) => v.resolved).length)
-const marketSync = ref<MarketPriceSyncRun | null>(null)
-const marketLoading = ref(false)
-const marketQuery = ref('')
-const marketOnlyResolved = ref(false)
+// ── 2026-11-19（合并轮）：页面级 tab。rates=定价管理主体（默认）；
+// reference=定价参考 / scoring=供应评分 / platforms=跨平台现价 /
+// suggestion=定价建议（原 PriceCompareView 四 tab 平移）。
+// ?tab= 深链支持：MarketPricesView「打开对比」按钮带 tab 跳转。
+const route = useRoute()
+const router = useRouter()
+export type PricingPageTab = 'rates' | 'reference' | 'scoring' | 'platforms' | 'suggestion'
+const VALID_PAGE_TABS: PricingPageTab[] = ['rates', 'reference', 'scoring', 'platforms', 'suggestion']
+const pageTab = ref<PricingPageTab>(normalizeTab(route.query.tab))
+watch(() => route.query.tab, (v) => { pageTab.value = normalizeTab(v) })
 
-async function openMarket() {
-  showMarketModal.value = true
-  marketLoading.value = true
+function normalizeTab(v: unknown): PricingPageTab {
+  const s = String(v ?? '')
+  return (VALID_PAGE_TABS as string[]).includes(s) ? (s as PricingPageTab) : 'rates'
+}
+
+function switchPageTab(next: PricingPageTab) {
+  pageTab.value = next
+  // 深链同步：刷新/分享 URL 保持在同一 tab。
+  if (route.query.tab !== next) {
+    router.replace({ query: { ...route.query, tab: next === 'rates' ? undefined : next } }) //深链同步（replace 不入历史栈；rates 是默认 tab ⇒ 不带 query）
+  }
+}
+
+// ── scoring 壳（自 PriceCompareView 平移，逐字保留口径）──────────────
+// C1/C2/C3 评分行（supplier_market_position，评分 job 每日 upsert）
+// + 双地板对拍（market_price_reference 959：overseas=USD 原生 /
+// domestic=CNY 原生）+ 覆盖率摘要（price_confidence 四档计数）。
+// 红线：scoring/地板读数只读对账，不喂路由/计费。
+// NULL≠0：无行情/无价格的格子一律显示「—」，绝不落 0。
+const scoringLoaded = ref(false)
+const scoringLoading = ref(false)
+const scoringAvailable = ref(true)
+const scoringUnavailableReason = ref('')
+const scoreRows = ref<MarketCompareRow[]>([])
+const scoringSummary = ref<Record<string, number>>({})
+const scoreQtext = ref('')
+const scoreConfFilter = ref('')
+
+const SCORING_CONF_CLASSES: Record<string, string> = {
+  trusted: 'badge-green',
+  suspect_symmetric: 'badge-yellow',
+  empty: 'badge-gray',
+  unknown_currency: 'badge-red',
+}
+
+async function loadScoring() {
+  scoringLoading.value = true
   try {
-    const res = await getAdminMaasMarketPriceOverview(marketQuery.value, marketOnlyResolved.value, 300)
-    marketItems.value = res.items || []
-    marketSync.value = (res.sync && res.sync[0]) || null
+    const resp = await getAdminMarketCompare(scoreQtext.value, scoreConfFilter.value, 200)
+    scoringAvailable.value = resp.available
+    scoringUnavailableReason.value = resp.reason || ''
+    scoreRows.value = resp.items || []
+    scoringSummary.value = resp.summary || {}
+    scoringLoaded.value = true
   } catch {
-    marketItems.value = []
-    marketSync.value = null
+    scoringAvailable.value = false
+    notifyError(t('priceCompare.loadFailed'))
   } finally {
-    marketLoading.value = false
+    scoringLoading.value = false
   }
 }
 
-async function searchMarket() {
-  await openMarket()
+function reloadScoring() { loadScoring() }
+
+const scoringBindingsTotal = computed(() =>
+  Object.values(scoringSummary.value).reduce((a, b) => a + b, 0))
+
+function scoringConfCount(k: string) { return scoringSummary.value[k] ?? 0 }
+
+const scoringConfFilters = ['trusted', 'suspect_symmetric', 'empty', 'unknown_currency']
+
+// 静态键映射（t() 的键必须可被静态抽取器找到 ⇒ 不做字符串拼接）。
+const SCORING_CONF_LABEL_KEYS: Record<string, string> = {
+  trusted: 'priceCompare.confTrusted',
+  suspect_symmetric: 'priceCompare.confSuspect',
+  empty: 'priceCompare.confEmpty',
+  unknown_currency: 'priceCompare.confUnknown',
+}
+function scoringConfLabel(k: string) { return t(SCORING_CONF_LABEL_KEYS[k] || k) }
+
+// ---- 三级币种展示（自 PriceCompareView 平移）----
+function fmtScoringNum(v: number | null | undefined, digits = 4): string {
+  if (v === null || v === undefined) return '—'
+  return Number(v).toFixed(digits)
 }
 
-function fmtMarketCNY(v: MarketPriceOverviewRow): string {
-  const parts: string[] = []
-  if (v.market_min_in_cny_per_1m != null) parts.push(`¥${fmtNum(v.market_min_in_cny_per_1m)}`)
-  if (v.market_min_out_cny_per_1m != null) parts.push(`¥${fmtNum(v.market_min_out_cny_per_1m)}`)
-  return parts.length ? parts.join(' / ') : '—'
+// USD 表达：CNY / fx（快照汇率存在时才导出；fx 缺失 ⇒ null ⇒ '—'）。
+function usdFromCNY(cny: number | null | undefined, fx: number | null | undefined): number | null {
+  if (cny === null || cny === undefined) return null
+  if (!fx || fx === 0) return null
+  return cny / fx
 }
 
-function fmtVendorCNY(v: MarketPriceOverviewRow): string {
-  // A-17 三级展示（运营面）：原厂锚先给**原生币**价（事实源，959
-  // vendor_list_currency 裁定），括注快照 fx 折算的 CNY；原生币即 CNY 时
-  // 保持旧形态（不重复括注）。折算列缺失 ⇒ 只给可成立的那一级。
-  const pair = (fmtCell: (x: number) => string, a: number | null, b: number | null): string => {
-    if (a == null && b == null) return ''
-    const cells = [
-      a != null ? fmtCell(a) : null,
-      b != null ? fmtCell(b) : null,
-    ].filter((x) => x != null) as string[]
-    return cells.join(' / ')
-  }
-  const cny = pair((x) => `¥${fmtNum(x)}`, v.vendor_list_in_cny_per_1m, v.vendor_list_out_cny_per_1m)
-  const parts: string[] = []
-  if (v.vendor_list_currency === 'USD') {
-    const native = pair((x) => `$${fmtNum(x)}`, v.vendor_list_native_in_per_1m, v.vendor_list_native_out_per_1m)
-    if (native) parts.push(native)
-    if (cny) parts.push(cny)
-  } else if (cny) {
-    parts.push(cny)
-  }
-  return parts.length ? parts.join('（') + (parts.length > 1 ? '）' : '') : '—'
+// CNY 表达：USD × fx（fx 缺失 ⇒ null）。
+function usdToCNY(usd: number | null | undefined, fx: number | null | undefined): number | null {
+  if (usd === null || usd === undefined) return null
+  if (!fx || fx === 0) return null
+  return usd * fx
 }
 
-function fmtFloors(v: MarketPriceOverviewRow): string {
-  // A-17 双地板并列（overseas USD 原生 / domestic CNY 原生），各自标注平台数；
-  // 某区无观测 ⇒ 「—」（NULL=无观测，不是 0 —— NULL≠0 红线）。
-  const seg = (sign: string, a: number | null, b: number | null, n: number): string => {
-    if (a == null && b == null) return '—'
-    const cells = [
-      a != null ? `${sign}${fmtNum(a)}` : null,
-      b != null ? `${sign}${fmtNum(b)}` : null,
-    ].filter((x) => x != null) as string[]
-    return `${cells.join(' / ') || '—'}（${n}）`
-  }
-  return `${seg('$', v.overseas_min_in_per_1m, v.overseas_min_out_per_1m, v.overseas_min_platform_count)} / ${seg('¥', v.domestic_min_in_per_1m, v.domestic_min_out_per_1m, v.domestic_min_platform_count)}`
+function anchorTiers(row: MarketCompareRow): string {
+  const native = fmtScoringNum(row.vendor_list_native_in_per_1m)
+  const cur = row.vendor_list_currency || '?'
+  const cny = fmtScoringNum(row.vendor_list_cny_in_per_1m)
+  const usd = fmtScoringNum(usdFromCNY(row.vendor_list_cny_in_per_1m, row.mpr_fx_rate))
+  return `${native} ${cur} / ¥${cny} / $${usd}`
 }
 
-function fmtRetailCNY(v: MarketPriceOverviewRow): string {
-  const parts: string[] = []
-  if (v.retail_cny_in_per_1m != null) parts.push(`¥${fmtNum(v.retail_cny_in_per_1m)}`)
-  if (v.retail_cny_out_per_1m != null) parts.push(`¥${fmtNum(v.retail_cny_out_per_1m)}`)
-  return parts.length ? parts.join(' / ') : '—'
+// 双地板三级币：原币（overseas=USD / domestic=CNY 原生）+ CNY + USD（USD/CNY
+// 表达仅在快照 fx 存在时可导出，缺 ⇒ '—'，不猜第二把汇率）。
+function floorTiers(row: MarketCompareRow, side: 'overseas' | 'domestic'): string {
+  const isOvr = side === 'overseas'
+  const inNative = isOvr ? row.overseas_min_in_per_1m : row.domestic_min_in_per_1m
+  const outNative = isOvr ? row.overseas_min_out_per_1m : row.domestic_min_out_per_1m
+  const fx = row.mpr_fx_rate
+  const cny = isOvr ? usdToCNY(inNative, fx) : inNative
+  const usd = isOvr ? inNative : usdFromCNY(inNative, fx)
+  const pid = isOvr ? row.overseas_min_platform_id : row.domestic_min_platform_id
+  const count = isOvr ? row.overseas_min_platform_count : row.domestic_min_platform_count
+  const nativeCur = isOvr ? 'USD' : 'CNY'
+  return `${fmtScoringNum(inNative)}/${fmtScoringNum(outNative)} ${nativeCur} / ¥${fmtScoringNum(cny)} / $${fmtScoringNum(usd)} · ${pid || '—'}(${count})`
 }
 
-function fmtNum(n: number): string {
-  if (n >= 100) return n.toFixed(0)
-  if (n >= 1) return n.toFixed(2)
-  return n.toFixed(4)
+// 平台数 <3 ⇒ 该地板降级为参考值（告警 market_ref_thin_coverage 口径）。
+function floorCount(row: MarketCompareRow, side: 'overseas' | 'domestic'): number {
+  return side === 'overseas' ? row.overseas_min_platform_count : row.domestic_min_platform_count
 }
 
-function fmtRatio(v: number | null): string {
-  if (v == null) return '—'
-  return `${v.toFixed(2)}×`
-}
+const scoringFields = computed<CardField[]>(() => [
+  { key: 'canonical_name', label: t('priceCompare.colModel') },
+  { key: 'currency', label: t('priceCompare.colCurrency') },
+  { key: 'price_confidence', label: t('priceCompare.colConfidence') },
+  { key: 'market_position', label: t('priceCompare.colMarketPosition') },
+  { key: 'computed_at', label: t('priceCompare.colComputedAt') },
+])
 
-function marketDriftClass(v: MarketPriceOverviewRow): string {
-  if (v.retail_vs_market == null) return ''
-  if (v.retail_vs_market > 1.5) return 'badge-red'
-  if (v.retail_vs_market > 1.0) return 'badge-yellow'
-  return 'badge-blue'
-}
+// 懒加载：scoring 首次切入才拉数据（避免进页面即打重端点）。
+watch(pageTab, (next) => {
+  if (next === 'scoring' && !scoringLoaded.value && !scoringLoading.value) loadScoring()
+})
 
 const modeLabelKey: Record<string, string> = {
   pay_as_you_go: 'standardModelPricing.history.modePayAsYouGo',
@@ -807,9 +812,118 @@ onMounted(load)
 
     <div class="bulk-bar">
       <button class="btn btn-ghost btn-sm" @click="openChanges">{{ t('standardModelPricing.history.openChanges') }}</button>
-      <button class="btn btn-ghost btn-sm" @click="openMarket">{{ t('standardModelPricing.market.open') }}</button>
-      <a class="btn btn-ghost btn-sm" href="/operations/price-compare">{{ t('priceCompare.tabReference') }}</a>
     </div>
+    <!-- 2026-11-19（合并轮）：页面级 tab 行 —— 原「价格对比分析」页四 tab 并入；rates=本页定价管理主体。 -->
+    <div class="card tab-row" data-testid="page-tabs">
+      <button v-for="pt in PAGE_TAB_DEFS" :key="pt.key" class="btn btn-sm"
+        :class="pageTab === pt.key ? 'btn-primary' : 'btn-ghost'"
+        :data-testid="`page-tab-${pt.key}`"
+        @click="switchPageTab(pt.key)">{{ t(pt.labelKey) }}</button>
+    </div>
+
+    <template v-if="pageTab !== 'rates'">
+      <MarketReferenceTable v-if="pageTab === 'reference'" />
+      <ModelPlatformCompare v-else-if="pageTab === 'platforms'" />
+      <PricingSuggestionPanel v-else-if="pageTab === 'suggestion'" />
+      <template v-else>
+        <!-- scoring（供应评分）：覆盖率摘要 + 筛选 + 评分行 × 双地板（自 PriceCompareView 平移） -->
+        <div class="card summary-card">
+          <div class="summary-row">
+            <span class="badge badge-gray">{{ t('priceCompare.totalBindings') }}: {{ scoringBindingsTotal }}</span>
+            <span class="badge badge-green">{{ t('priceCompare.confTrusted') }}: {{ scoringConfCount('trusted') }}</span>
+            <span class="badge badge-yellow">{{ t('priceCompare.confSuspect') }}: {{ scoringConfCount('suspect_symmetric') }}</span>
+            <span class="badge badge-gray">{{ t('priceCompare.confEmpty') }}: {{ scoringConfCount('empty') }}</span>
+            <span class="badge badge-red">{{ t('priceCompare.confUnknown') }}: {{ scoringConfCount('unknown_currency') }}</span>
+          </div>
+          <p class="hint-line">{{ t('priceCompare.summaryHint') }}</p>
+        </div>
+        <div class="card filter-card">
+          <div class="model-picker-wrapper">
+            <ModelPicker v-model="scoreQtext" :placeholder="t('priceCompare.searchPlaceholder')" :title="t('priceCompare.colModel')" @update:model-value="reloadScoring" />
+          </div>
+          <select v-model="scoreConfFilter" class="filter-select">
+            <option value="">{{ t('priceCompare.confAll') }}</option>
+            <option v-for="c in scoringConfFilters" :key="c" :value="c">{{ scoringConfLabel(c) }}</option>
+          </select>
+          <button class="btn btn-primary btn-sm" @click="reloadScoring">{{ t('priceCompare.apply') }}</button>
+        </div>
+        <div v-if="!scoringAvailable" class="card table-wrap">
+          <div class="app-empty-state">
+            <p>{{ t('priceCompare.unavailableWhy') }}</p>
+            <p class="empty-next mono-sm">{{ scoringUnavailableReason }}</p>
+            <p class="empty-next">{{ t('priceCompare.unavailableNext') }}</p>
+          </div>
+        </div>
+        <div v-else-if="!scoreRows.length && !scoringLoading" class="card table-wrap">
+          <div class="app-empty-state">
+            <p>{{ t('priceCompare.emptyWhy') }}</p>
+            <p class="empty-next">{{ t('priceCompare.emptyNext') }}</p>
+          </div>
+        </div>
+        <div v-else class="card table-wrap">
+          <div class="table-head-row">
+            <h3 class="section-title">{{ t('priceCompare.tableTitle') }}</h3>
+            <span class="badge badge-gray">{{ scoreRows.length }}</span>
+          </div>
+          <ResponsiveDataView :rows="scoreRows" title-key="canonical_name" :title-format="row => String(row.canonical_name)" :fields="scoringFields" :loading="scoringLoading" :empty="false">
+            <template #table>
+            <table class="data-table">
+            <thead>
+            <tr>
+              <th>{{ t('priceCompare.colModel') }}</th>
+              <th>{{ t('priceCompare.colCredential') }}</th>
+              <th>{{ t('priceCompare.colCurrency') }}</th>
+              <th>{{ t('priceCompare.colSupplier') }}</th>
+              <th>{{ t('priceCompare.colConfidence') }}</th>
+              <th>{{ t('priceCompare.colDiscount') }}</th>
+              <th>{{ t('priceCompare.colMarketPosition') }}</th>
+              <th>{{ t('priceCompare.colRefFloor') }}</th>
+              <th>{{ t('priceCompare.colOverseasFloor') }}</th>
+              <th>{{ t('priceCompare.colDomesticFloor') }}</th>
+              <th>{{ t('priceCompare.colVsOverseas') }}</th>
+              <th>{{ t('priceCompare.colVsDomestic') }}</th>
+              <th>{{ t('priceCompare.colAdvantage') }}</th>
+              <th>{{ t('priceCompare.colAnchor') }}</th>
+              <th>{{ t('priceCompare.colComputedAt') }}</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr v-for="r in scoreRows" :key="`${r.credential_id}-${r.provider_model_id}`">
+              <td><code class="mono-sm">{{ r.canonical_name }}</code></td>
+              <td class="num">{{ r.credential_id }}</td>
+              <td>{{ r.currency }}</td>
+              <td class="num">{{ fmtScoringNum(r.supplier_in_per_1m) }} / {{ fmtScoringNum(r.supplier_out_per_1m) }}</td>
+              <td><span class="badge" :class="SCORING_CONF_CLASSES[r.price_confidence] || 'badge-gray'">{{ r.price_confidence }}</span></td>
+              <td class="num">{{ fmtScoringNum(r.discount_vs_vendor) }}</td>
+              <td class="num">{{ fmtScoringNum(r.market_position) }}</td>
+              <td class="num">{{ fmtScoringNum(r.market_ref_in_per_1m) }} / {{ fmtScoringNum(r.market_ref_out_per_1m) }} <span class="badge badge-gray">{{ r.market_ref_used || '—' }}</span> {{ r.market_ref_platform_id }}({{ r.market_ref_platform_count }})</td>
+              <td class="num tiers-cell" :class="{ 'thin-floor': floorCount(r, 'overseas') < 3 }">{{ floorTiers(r, 'overseas') }}</td>
+              <td class="num tiers-cell" :class="{ 'thin-floor': floorCount(r, 'domestic') < 3 }">{{ floorTiers(r, 'domestic') }}</td>
+              <td class="num">{{ fmtScoringNum(r.market_position_vs_overseas) }}</td>
+              <td class="num">{{ fmtScoringNum(r.market_position_vs_domestic) }}</td>
+              <td class="num">{{ fmtScoringNum(r.market_advantage_score, 2) }}</td>
+              <td class="num tiers-cell">{{ anchorTiers(r) }}</td>
+              <td class="mono-sm">{{ (r.computed_at || '').replace('T', ' ').replace('Z', ' UTC') }}</td>
+            </tr>
+            </tbody>
+            </table>
+            </template>
+            <template #cards="{ row }">
+            <div class="compare-card">
+              <p><b>{{ row.canonical_name }}</b> <span class="badge" :class="SCORING_CONF_CLASSES[row.price_confidence] || 'badge-gray'">{{ row.price_confidence }}</span></p>
+              <p class="hint-line">{{ t('priceCompare.colSupplier') }}: {{ fmtScoringNum(row.supplier_in_per_1m) }} / {{ fmtScoringNum(row.supplier_out_per_1m) }} {{ row.currency }}</p>
+              <p class="hint-line">{{ t('priceCompare.colMarketPosition') }}: {{ fmtScoringNum(row.market_position) }}</p>
+              <p class="hint-line">{{ t('priceCompare.colAnchor') }}: {{ anchorTiers(row) }}</p>
+              <p class="hint-line">{{ t('priceCompare.colOverseasFloor') }}: {{ floorTiers(row, 'overseas') }}</p>
+              <p class="hint-line">{{ t('priceCompare.colDomesticFloor') }}: {{ floorTiers(row, 'domestic') }}</p>
+            </div>
+            </template>
+          </ResponsiveDataView>
+          <p class="hint-line">{{ t('priceCompare.tableHint') }}</p>
+        </div>
+      </template>
+    </template>
+    <template v-else>
 
     <div class="card table-wrap">
       <table class="data-table pricing-table">
@@ -948,60 +1062,6 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="showMarketModal" class="modal-backdrop" @click.self="showMarketModal = false">
-      <div class="modal modal-wide card">
-        <h3 class="section-title">{{ t('standardModelPricing.market.title') }}</h3>
-        <div v-if="marketSync" class="market-sync-line">
-          {{ t('standardModelPricing.market.syncAsOf', { date: marketSync.run_date, rows: marketSync.landed_rows }) }}
-          · {{ t('standardModelPricing.market.resolved', { n: resolvedCount }) }}
-        </div>
-        <div class="market-filter-row">
-          <input v-model="marketQuery" class="input compact" :placeholder="t('standardModelPricing.market.searchPlaceholder')" @keyup.enter="searchMarket" />
-          <label class="market-resolved-toggle">
-            <input v-model="marketOnlyResolved" type="checkbox" @change="searchMarket" />
-            <span>{{ t('standardModelPricing.market.onlyResolved') }}</span>
-          </label>
-          <button class="btn btn-ghost btn-sm" @click="searchMarket">{{ t('standardModelPricing.market.search') }}</button>
-        </div>
-        <div v-if="marketLoading" class="modal-hint">…</div>
-        <p v-else-if="marketItems.length === 0" class="modal-hint">{{ t('standardModelPricing.market.empty') }}</p>
-        <div v-else class="market-table-wrap">
-          <table class="data-table market-table">
-            <thead>
-              <tr>
-                <th>{{ t('standardModelPricing.market.colModel') }}</th>
-                <th>{{ t('standardModelPricing.market.colMarketMin') }}</th>
-                <th>{{ t('standardModelPricing.market.colFloors') }}</th>
-                <th>{{ t('standardModelPricing.market.colVendor') }}</th>
-                <th>{{ t('standardModelPricing.market.colRetail') }}</th>
-                <th>{{ t('standardModelPricing.market.colMarketMinOut') }}</th>
-                <th>{{ t('standardModelPricing.market.colPlatforms') }}</th>
-                <th>{{ t('standardModelPricing.market.colDrift') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="v in marketItems" :key="v.canonical_name">
-                <td>
-                  <div class="model-name">{{ v.display_name || v.canonical_name }}</div>
-                  <code class="mono-sm">{{ v.canonical_name }}</code>
-                  <span v-if="!v.resolved" class="badge badge-gray">{{ t('standardModelPricing.market.unresolved') }}</span>
-                </td>
-                <td class="num">{{ fmtMarketCNY(v) }}</td>
-                <td class="num">{{ fmtFloors(v) }}</td>
-                <td class="num">{{ fmtVendorCNY(v) }}</td>
-                <td class="num">{{ fmtRetailCNY(v) }}</td>
-                <td class="num">{{ fmtNum(v.market_min_out_cny_per_1m ?? 0) }}</td>
-                <td class="num">{{ v.market_min_platform_count }}</td>
-                <td><span class="badge" :class="marketDriftClass(v)">{{ fmtRatio(v.retail_vs_market) }}</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-ghost btn-sm" @click="showMarketModal = false">OK</button>
-        </div>
-      </div>
-    </div>
 
     <div v-if="editRow" class="modal-backdrop" @click.self="closeEdit">
       <div class="modal card">
@@ -1067,10 +1127,11 @@ onMounted(load)
           <button class="btn btn-ghost btn-sm" type="button" @click="closeEdit">{{ t('standardModelPricing.editModal.cancel') }}</button>
           <!-- ★ 第 25 增量：3 个表单级工具收进「更多」（复制价格 / 粘贴 / 填充全局） -->
           <ActionOverflowMenu :items="editModalTools" @select="onEditModalTool" />
-        </div>
-      </div>
-    </div>
-  </div>
+ </div>
+ </div>
+ </div>
+ </template>
+ </div>
 </template>
 
 <style scoped>
@@ -1145,11 +1206,6 @@ onMounted(load)
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .modal-wide { width: min(1100px, 92vw); }
-.market-sync-line { color: var(--kx-text-secondary, #666); font-size: 12px; margin-bottom: 8px; }
-.market-filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-.market-resolved-toggle { display: flex; gap: 4px; align-items: center; font-size: 12px; }
-.market-table-wrap { max-height: 480px; overflow-y: auto; }
-.market-table th, .market-table td { padding: 4px 8px; font-size: 12px; }
 .badge-red { background: #d9302514; color: #d93025; }
 .price-history-list { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
 .price-history-item { padding: 8px 0; border-bottom: 1px solid var(--kx-border); }

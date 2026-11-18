@@ -20,9 +20,37 @@ import {
   ElTabPane, ElTabs, ElTag,
 } from 'element-plus'
 import { useI18n } from 'vue-i18n'
+import { use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import { FunnelChart, PieChart, BarChart } from 'echarts/charts'
+import {
+  TitleComponent,
+  TooltipComponent,
+  LegendComponent,
+  GridComponent,
+} from 'echarts/components'
+import VChart from 'vue-echarts'
 import { isSuperAdmin, store } from '../../store'
 import { QUICK_FILL_FALLBACK, tierQuickFillCredits } from '../../utils/quoteQuickFill'
 import ModelPicker from '../../components/ModelPicker.vue'
+import {
+  createFunnelChartOption,
+  createMarginPieOption,
+  createLostReasonsBarOption,
+  createTriggerDimensionsBarOption,
+} from './salesDashboardCharts'
+
+// ECharts 按需注册组件
+use([
+  CanvasRenderer,
+  FunnelChart,
+  PieChart,
+  BarChart,
+  TitleComponent,
+  TooltipComponent,
+  LegendComponent,
+  GridComponent,
+])
 import {
   closeDemandCard, claimDemandCard, createDemandCard, listDemandCards,
   closeQuote, createQuote, createQuoteShare, decideQuote, getSalesDashboard,
@@ -141,6 +169,20 @@ async function switchTab(name: string | number) {
 }
 
 const funnelOrder = ['draft', 'pending_approval', 'approved', 'sent', 'won', 'lost', 'expired'] as const
+
+// ── 看板图表配置（2026-11-19 优化轮） ──
+const funnelChartOption = computed(() => 
+  dashboard.value ? createFunnelChartOption(dashboard.value, t) : null
+)
+const marginPieOption = computed(() =>
+  dashboard.value ? createMarginPieOption(dashboard.value, t) : null
+)
+const lostReasonsBarOption = computed(() =>
+  dashboard.value ? createLostReasonsBarOption(dashboard.value, t) : null
+)
+const triggerDimensionsBarOption = computed(() =>
+  dashboard.value ? createTriggerDimensionsBarOption(dashboard.value, t) : null
+)
 
 // ── 供给登记（ops 面；最简形态：对选中行补 SLA 文案与联系人） ──
 const annotateTarget = ref<{ credential_id: number; provider_model_id: number; name: string } | null>(null)
@@ -842,10 +884,11 @@ onMounted(reload)
       </el-dialog>
     </div>
 
-    <!-- ── 管理层看板（W2-T2，super-only） ──────────────────────────── -->
+    <!-- ── 管理层看板（W2-T2，super-only；2026-11-19 优化轮：图表可视化） ──────────────────────────── -->
     <div v-else-if="tab === 'dashboard' && canDecide" class="tab-content">
       <el-card v-loading="loading" shadow="never" class="content-card">
         <template v-if="dashboard">
+          <!-- 触发率警报 -->
           <el-alert
             v-if="dashboard.trigger_rate_alert"
             :title="t('sales.dashboardTriggerAlert', { rate: dashboard.trigger_rate_pct.toFixed(0), line: dashboard.trigger_alert_pct })"
@@ -854,37 +897,53 @@ onMounted(reload)
             :closable="false"
             class="dashboard-alert"
           />
-          <div class="dash-funnel">
-            <div v-for="k in funnelOrder" :key="k" class="dash-stat">
-              <div class="dash-stat-num">{{ dashboard.funnel[k] ?? 0 }}</div>
-              <div class="dash-stat-label">{{ t(`sales.funnel_${k}`) }}</div>
+
+          <!-- 销售漏斗可视化 -->
+          <div class="dash-section">
+            <h2 class="dash-section-title">{{ t('sales.dashboardFunnel') }}</h2>
+            <div class="dash-chart-container">
+              <v-chart v-if="funnelChartOption" :option="funnelChartOption" class="chart" autoresize />
             </div>
           </div>
-          <div class="dash-grid">
-            <div class="dash-card">
-              <h3>{{ t('sales.dashboardTriggerRate') }}</h3>
-              <p class="dash-big">{{ dashboard.trigger_rate_pct.toFixed(1) }}%</p>
-              <p class="dash-sub">{{ t('sales.dashboardTriggerDetail', { triggered: dashboard.triggered_quotes, submitted: dashboard.submitted_quotes }) }}</p>
-              <ul class="dash-list">
-                <li v-for="(n, dim) in dashboard.triggers_by_dimension" :key="dim">{{ dim }}: {{ n }}</li>
-                <li v-if="!Object.keys(dashboard.triggers_by_dimension).length">—</li>
-              </ul>
+
+          <!-- 核心指标卡片网格 -->
+          <div class="dash-metrics-grid">
+            <!-- 触发率卡片 -->
+            <div class="dash-metric-card">
+              <div class="metric-header">
+                <h3>{{ t('sales.dashboardTriggerRate') }}</h3>
+              </div>
+              <div class="metric-value">{{ dashboard.trigger_rate_pct.toFixed(1) }}%</div>
+              <div class="metric-detail">
+                {{ t('sales.dashboardTriggerDetail', { triggered: dashboard.triggered_quotes, submitted: dashboard.submitted_quotes }) }}
+              </div>
+              <div class="metric-chart">
+                <v-chart v-if="triggerDimensionsBarOption" :option="triggerDimensionsBarOption" class="chart-small" autoresize />
+              </div>
             </div>
-            <div class="dash-card">
-              <h3>{{ t('sales.dashboardLostReasons') }}</h3>
-              <ul class="dash-list">
-                <li v-for="rc in dashboard.lost_reasons" :key="rc.reason">{{ rc.reason }}: {{ rc.count }}</li>
-                <li v-if="!dashboard.lost_reasons.length">—</li>
-              </ul>
+
+            <!-- 丢单原因分析 -->
+            <div class="dash-metric-card">
+              <div class="metric-header">
+                <h3>{{ t('sales.dashboardLostReasons') }}</h3>
+              </div>
+              <div class="metric-chart">
+                <v-chart v-if="lostReasonsBarOption" :option="lostReasonsBarOption" class="chart-medium" autoresize />
+              </div>
             </div>
-            <div class="dash-card">
-              <h3>{{ t('sales.dashboardMarginBuckets') }}</h3>
-              <ul class="dash-list">
-                <li v-for="(n, b) in dashboard.margin_buckets" :key="b">{{ b }}%: {{ n }}</li>
-                <li v-if="!Object.keys(dashboard.margin_buckets).length">—</li>
-              </ul>
+
+            <!-- 毛利分布 -->
+            <div class="dash-metric-card">
+              <div class="metric-header">
+                <h3>{{ t('sales.dashboardMarginBuckets') }}</h3>
+              </div>
+              <div class="metric-chart">
+                <v-chart v-if="marginPieOption" :option="marginPieOption" class="chart-medium" autoresize />
+              </div>
             </div>
           </div>
+
+          <!-- 底部提示 -->
           <el-alert
             :title="t('sales.dashboardRealizedPending')"
             type="info"
@@ -1028,82 +1087,82 @@ onMounted(reload)
   font-family: var(--kx-font-mono);
 }
 
-/* 看板样式 */
+/* 看板样式（2026-11-19 优化轮：图表可视化） */
 .dashboard-alert {
   margin-bottom: var(--kx-space-4, 16px);
 }
 
-.dash-funnel {
+.dash-section {
+  margin-bottom: var(--kx-space-5, 24px);
+}
+
+.dash-section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 var(--kx-space-3, 12px);
+}
+
+.dash-chart-container {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  padding: var(--kx-space-4, 16px);
+}
+
+.chart {
+  width: 100%;
+  height: 400px;
+}
+
+.dash-metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: var(--kx-space-3, 12px);
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--kx-space-4, 16px);
   margin-bottom: var(--kx-space-4, 16px);
 }
 
-.dash-stat {
-  padding: var(--kx-space-3, 12px) var(--kx-space-4, 16px);
+.dash-metric-card {
   border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
-  text-align: center;
+  padding: var(--kx-space-4, 16px);
   background: var(--card);
-}
-
-.dash-stat-num {
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--text);
-  font-family: var(--kx-font-mono);
-}
-
-.dash-stat-label {
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 4px;
-}
-
-.dash-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--kx-space-3, 12px);
-  margin-bottom: var(--kx-space-4, 16px);
-}
-
-.dash-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius, 8px);
-  padding: var(--kx-space-3, 12px) var(--kx-space-4, 16px);
-  background: var(--card);
-}
-
-.dash-card h3 {
-  font-size: 14px;
-  margin: 0 0 var(--kx-space-2, 8px);
-  font-weight: 600;
-  color: var(--text);
-}
-
-.dash-big {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: var(--text);
-  font-family: var(--kx-font-mono);
-}
-
-.dash-sub {
-  color: var(--muted);
-  font-size: 12px;
-  margin: 0 0 var(--kx-space-2, 8px);
-}
-
-.dash-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  font-size: 13px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--kx-space-3, 12px);
+}
+
+.metric-header h3 {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text);
+  margin: 0;
+}
+
+.metric-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--kx-font-mono);
+}
+
+.metric-detail {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.metric-chart {
+  flex: 1;
+  min-height: 200px;
+}
+
+.chart-small {
+  width: 100%;
+  height: 180px;
+}
+
+.chart-medium {
+  width: 100%;
+  height: 240px;
 }
 </style>

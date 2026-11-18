@@ -150,7 +150,7 @@ const platformFields = computed<CardField[]>(() => [
           <span class="badge badge-green">{{ t('marketPrices.refResolved', { n: refResolved }) }}</span>
         </template>
         <span v-if="refSyncDate" class="badge badge-blue">{{ t('marketPrices.refSyncAsOf', { date: refSyncDate }) }}</span>
-        <button class="btn btn-ghost btn-sm" @click="router.push('/operations/price-compare')">{{ t('marketPrices.refOpenCompare') }}</button>
+        <button class="btn btn-ghost btn-sm" @click="router.push('/model-pricing?tab=reference')">{{ t('marketPrices.refOpenCompare') }}</button>
       </div>
       <p class="hint-line">{{ t('marketPrices.refHint') }}</p>
     </div>

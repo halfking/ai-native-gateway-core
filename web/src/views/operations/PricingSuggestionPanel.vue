@@ -89,6 +89,10 @@ function getCanonicalIds(): number[] {
       ids.push(model.id)
     }
   }
+  // ★ 调试日志：查看转换结果
+  console.log('[PricingSuggestion] Selected models:', selectedModels.value)
+  console.log('[PricingSuggestion] Resolved canonical_ids:', ids)
+  console.log('[PricingSuggestion] Models canonical loaded:', modelsCanonical.value.length)
   return ids
 }
 
@@ -104,7 +108,9 @@ async function preview() {
       min_delta_pct: minDeltaPct.value || undefined,
       canonical_ids: getCanonicalIds(), // ★ 2026-11-19：模型过滤
     }
+    console.log('[PricingSuggestion] Request body:', body)
     result.value = await postAdminMarketPricingSuggestions(body)
+    console.log('[PricingSuggestion] Response items:', result.value?.items?.length || 0)
   } catch {
     errorMsg.value = t('priceCompare.suggestLoadFailed')
     result.value = null

@@ -41,7 +41,7 @@ export default {
     settlementReport: "Abrechnungsbericht",
     usageTrends: "Nutzungstrends",
     pricing: "Kostenpreise",
-    modelPricing: "Preisverwaltung",
+    modelPricing: "Vergleich & Preise",
     freellm: "FreeLLM kostenlose Modelle",
     freePool: "Kostenloser Pool",
     freeDiscovery: "Free-Discovery",
