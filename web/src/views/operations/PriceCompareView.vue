@@ -8,6 +8,7 @@
 // NULL≠0：无行情/无价格的格子一律显示「—」，绝不落 0。
 // 红线锚点：MarketAdvantage 只展示（路由权重默认 0 未接线 —— M3-T3 另立裁决），
 // 本页任何读数都不喂路由/计费。
+// ★ 2026-11-18（价格对比优化轮）：scoring 标签页也使用 ModelPicker 组件。
 import { useI18n } from 'vue-i18n'
 import { ref, computed, onMounted } from 'vue'
 import { getAdminMarketCompare, type MarketCompareRow } from '../../api/market'
@@ -17,6 +18,7 @@ import { useActionMessage } from '../../composables/useActionMessage'
 import MarketReferenceTable from './MarketReferenceTable.vue'
 import ModelPlatformCompare from './ModelPlatformCompare.vue'
 import PricingSuggestionPanel from './PricingSuggestionPanel.vue'
+import ModelPicker from '../../components/ModelPicker.vue'
 
 const { t } = useI18n()
 const { notifyError } = useActionMessage()
@@ -163,7 +165,14 @@ const compareFields = computed<CardField[]>(() => [
 
     <!-- 筛选 -->
     <div class="card filter-card">
-      <input v-model="qtext" class="filter-input" type="text" :placeholder="t('priceCompare.searchPlaceholder')" @keyup.enter="reload" />
+      <div class="model-picker-wrapper">
+        <ModelPicker
+          v-model="qtext"
+          :placeholder="t('priceCompare.searchPlaceholder')"
+          :title="t('priceCompare.colModel')"
+          @update:model-value="reload"
+        />
+      </div>
       <select v-model="confFilter" class="filter-select">
         <option value="">{{ t('priceCompare.confAll') }}</option>
         <option v-for="c in confFilters" :key="c" :value="c">{{ confLabel(c) }}</option>
@@ -257,7 +266,7 @@ const compareFields = computed<CardField[]>(() => [
 .summary-card { display: flex; flex-direction: column; gap: 6px; }
 .summary-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .filter-card { display: flex; gap: 8px; align-items: center; }
-.filter-input { flex: 1; max-width: 280px; }
+.model-picker-wrapper { flex: 1; min-width: 280px; max-width: 400px; }
 .filter-select { max-width: 200px; }
 .tiers-cell { font-size: 11px; white-space: nowrap; }
 .thin-floor { color: #b26a00; }
