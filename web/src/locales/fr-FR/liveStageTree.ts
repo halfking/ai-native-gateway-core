@@ -131,6 +131,8 @@ export default {
   detail: {
     title: 'Détails de la requête',
     hint: 'Cliquez « une ligne de requête » → afficher ses détails ; un second clic la replie.',
+    openDetail: 'Ouvrir la page de détails de la requête',
+    openDetailFor: 'Ouvrir la page de détails de la requête {requestId}',
     sections: {
       resolve: 'Résolution du modèle',
       reply: 'Indicateurs de réponse',

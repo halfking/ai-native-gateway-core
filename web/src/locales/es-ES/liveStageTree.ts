@@ -131,6 +131,8 @@ export default {
   detail: {
     title: 'Detalles de la petición',
     hint: 'Haz clic "una fila de la petición" → mostrar sus detalles; un segundo clic la pliega.',
+    openDetail: 'Abrir la página de detalle de la petición',
+    openDetailFor: 'Abrir la página de detalle de la petición {requestId}',
     sections: {
       resolve: 'Resolución del modelo',
       reply: 'Métricas de respuesta',

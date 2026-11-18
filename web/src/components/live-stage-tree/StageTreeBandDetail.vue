@@ -21,6 +21,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { StageBand } from '../../types/liveStageTree'
 import { glyphFor } from '../../lib/stageTreeGlyphs'
+import { requestDetailPath } from '../../utils/openRequestDetailPage'
 import {
   bandStatus,
   bandStatusLabel,
@@ -54,6 +55,22 @@ const compact = computed(() => props.mode === 'compact')
 
 /** 未测量的统一表示（诚实性纪律：不用 0 冒充）。 */
 const NA = '—'
+
+/**
+ * ★ 「打开请求详情页」链接的目标地址。
+ *
+ * 路径**不另写一份**：取自仓内既有的单一真源
+ * `utils/openRequestDetailPage.ts` 的 `requestDetailPath()`
+ * （与 `openRequestDetailPage()` 同模块 ⇒ 同一套编码 / base / 回退逻辑）。
+ *
+ * ★ 为什么用**真实 `<a>`** 而不是 `<button>` + `window.open`：
+ *   ① `window.open` 可能被**弹窗拦截器**挡掉（返回 false 时用户什么也没发生）；
+ *   ② 真实链接**地址可见、可复制、可右键新标签打开**（中键/⌘点击天然可用）；
+ *   ③ 语义正确 ⇒ 这是「跳到另一个页面」，不是「触发一个动作」。
+ *   （仓内 `openRequestDetailPage()` 的 `window.open` 形态保留给**行**级入口，
+ *     那里没有「链接」的位置。）
+ */
+const detailHref = computed(() => requestDetailPath(props.band.requestId))
 
 function num(v: number | null | undefined): string {
   return v == null ? NA : String(v)
@@ -209,6 +226,22 @@ const sessionRows = computed(() => {
         {{ t('liveStageTree.detail.title') }}
       </span>
       <span class="detail__sub">{{ headLine }}</span>
+      <!-- ★ 「打开这一条请求的单页详情」（RequestDetailFullscreenView）。
+           真实链接：地址可见、可复制、可中键/⌘点击打开；
+           target=_blank ⇒ 新标签打开，/live2 的现场不被顶掉；
+           rel=noopener noreferrer ⇒ 新标签拿不到 opener（安全惯例）。 -->
+      <a
+        v-if="detailHref"
+        class="detail__open"
+        data-testid="stage-detail-open"
+        :href="detailHref"
+        target="_blank"
+        rel="noopener noreferrer"
+        :aria-label="t('liveStageTree.detail.openDetailFor', { requestId: props.band.requestId })"
+      >
+        {{ t('liveStageTree.detail.openDetail') }}
+        <span class="detail__open-icon" aria-hidden="true">↗</span>
+      </a>
     </header>
 
     <div class="detail__cols">
@@ -302,6 +335,38 @@ const sessionRows = computed(() => {
 .detail__sub {
   color: var(--kx-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* ★ 「打开请求详情页」链接：贴右、弱化但可点（不抢详情正文的视线）。 */
+.detail__open {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 7px;
+  border: 1px solid var(--kx-border);
+  border-radius: 999px;
+  color: var(--kx-text);
+  background: transparent;
+  font-size: var(--kx-text-2xs);
+  line-height: 1.6;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.detail__open:hover {
+  border-color: var(--kx-text);
+}
+
+.detail__open:focus-visible {
+  outline: 2px solid var(--kx-primary, currentColor);
+  outline-offset: 1px;
+}
+
+.detail__open-icon {
+  font-size: var(--kx-text-xs);
+  line-height: 1;
 }
 
 .detail__cols {

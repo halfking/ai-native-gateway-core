@@ -131,6 +131,8 @@ export default {
   detail: {
     title: 'Anfragedetails',
     hint: 'Anfragezeile anklicken → Details anzeigen; erneut anklicken → Einklappen',
+    openDetail: 'Detailseite der Anfrage öffnen',
+    openDetailFor: 'Detailseite für Anfrage {requestId} öffnen',
     sections: {
       resolve: 'Modellauflösung',
       reply: 'Antwortmetriken',

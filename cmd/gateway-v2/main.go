@@ -4,10 +4,10 @@
 //
 // 本二进制是**演示/测试专用入口**，禁止用于生产环境。原因：
 //
-//   1. 不支持 streaming（line 534-538 明确拒绝 stream=true）
-//   2. 缺少 KeyConcurrentGate 并发执法（per-key 并发帽不生效）
-//   3. 缺少并发观测（api_key_concurrency_minute 迁移 965 数据不写入）
-//   4. tierDefaults 并发限制为死值（admin 面与文档宣称的动态配置失效）
+//  1. 不支持 streaming（line 534-538 明确拒绝 stream=true）
+//  2. 缺少 KeyConcurrentGate 并发执法（per-key 并发帽不生效）
+//  3. 缺少并发观测（api_key_concurrency_minute 迁移 965 数据不写入）
+//  4. tierDefaults 并发限制为死值（admin 面与文档宣称的动态配置失效）
 //
 // 若需生产部署，必须：
 //   - 集成 streaming.NewKeyConcurrentGate() 及其 Wrap 逻辑
@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -105,6 +106,10 @@ type v2Config struct {
 
 	// Plugin directory (R1.12 P0 integration)
 	PluginsDir string
+
+	// Plugin lifecycle admin token (LLM_GATEWAY_ADMIN_API_KEY)。activate/deactivate
+	// 属状态变更端点，凭 Bearer 鉴权；为空时一律拒绝（fail-closed）。
+	AdminAPIKey string
 }
 
 // loadConfig 加载配置
@@ -136,6 +141,7 @@ func loadConfig() *v2Config {
 		pluginsDir = os.Getenv("PLUGIN_DIR")
 	}
 	cfg.PluginsDir = pluginsDir
+	cfg.AdminAPIKey = getEnv("LLM_GATEWAY_ADMIN_API_KEY", "")
 
 	return cfg
 }
@@ -1076,21 +1082,24 @@ func httpHandler(deps *v2Deps) http.Handler {
 	// Plugin API (R1.12 P0): read-only list/detail/manifests endpoints.
 	// Only register when PluginsDir is configured; otherwise 404.
 	if deps.Config != nil && deps.Config.PluginsDir != "" {
-		registerPluginAPI(mux, deps.Config.PluginsDir)
+		registerPluginAPI(mux, deps.Config.PluginsDir, deps.Config.AdminAPIKey)
 	}
 
 	return mux
 }
 
-// registerPluginAPI wires read-only plugin list/detail/manifests endpoints.
+// registerPluginAPI wires read-only plugin list/detail/manifests endpoints
+// plus auth-guarded lifecycle (activate/deactivate) endpoints.
 // Does not start plugin processes; only exposes manifest metadata for frontend.
-func registerPluginAPI(mux *http.ServeMux, pluginsDir string) {
+func registerPluginAPI(mux *http.ServeMux, pluginsDir, adminToken string) {
 	handler := pluginapi.NewPluginAPIHandler(pluginsDir, nil)
 
 	// GET /api/v1/plugins — list all plugins
 	// GET /api/v1/plugins/ — list (with trailing slash)
 	// GET /api/v1/plugins/manifests — consolidated JSON (Shell compatibility)
 	// GET /api/v1/plugins/{id} — single plugin detail
+	// POST /api/v1/plugins/{id}/activate — enable plugin (Bearer admin token)
+	// POST /api/v1/plugins/{id}/deactivate — disable plugin (Bearer admin token)
 	mux.HandleFunc("/api/v1/plugins", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -1100,11 +1109,26 @@ func registerPluginAPI(mux *http.ServeMux, pluginsDir string) {
 	})
 
 	mux.HandleFunc("/api/v1/plugins/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/plugins/")
+
+		// 生命周期端点（状态变更）先过 fail-closed Bearer 鉴权再分发；
+		// 鉴权失败/未配置 admin token 一律 401（day3-e2e S6 契约）。
+		if r.Method == http.MethodPost {
+			switch {
+			case isPluginLifecyclePath(path, "activate"):
+				requireAdminBearer(adminToken, handler.ActivatePluginHandler)(w, r)
+			case isPluginLifecyclePath(path, "deactivate"):
+				requireAdminBearer(adminToken, handler.DeactivatePluginHandler)(w, r)
+			default:
+				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/plugins/")
 		if path == "" {
 			handler.ListPluginsHandler(w, r)
 			return
@@ -1117,12 +1141,43 @@ func registerPluginAPI(mux *http.ServeMux, pluginsDir string) {
 	})
 
 	slog.Info("plugin API registered", "plugins_dir", pluginsDir,
-		"endpoints", "/api/v1/plugins,/api/v1/plugins/{id},/api/v1/plugins/manifests")
+		"endpoints", "/api/v1/plugins,/api/v1/plugins/{id},/api/v1/plugins/manifests,/api/v1/plugins/{id}/activate,/api/v1/plugins/{id}/deactivate",
+		"lifecycle_auth", "fail-closed")
+}
+
+// isPluginLifecyclePath reports whether path is exactly "<pluginID>/<action>"
+// with a valid single-segment plugin ID (mirrors pluginapi.pluginIDFromPath
+// 的 ID 校验：拒绝 "."/".."/含分隔符，防路径穿越)。
+func isPluginLifecyclePath(path, action string) bool {
+	id, ok := strings.CutSuffix(path, "/"+action)
+	if !ok || id == "" || id == "." || id == ".." ||
+		strings.ContainsAny(id, "/\\") || filepath.Base(id) != id {
+		return false
+	}
+	return true
+}
+
+// requireAdminBearer is a fail-closed middleware: only requests carrying
+// "Authorization: Bearer <adminToken>" pass through. An unset/empty
+// adminToken denies everything — 状态变更端点宁拒勿放。
+// 常量时间比较防 timing attack（与 simpleAPIKeyAuth 同一约定）。
+func requireAdminBearer(adminToken string, next http.HandlerFunc) http.HandlerFunc {
+	expectedSum := sha256.Sum256([]byte(adminToken))
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		gotSum := sha256.Sum256([]byte(token))
+		if adminToken == "" || subtle.ConstantTimeCompare(gotSum[:], expectedSum[:]) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"detail":"authentication required"}}`))
+			return
+		}
+		next(w, r)
+	}
 }
 
 // prometheusTextContentType is the standard Prometheus text exposition format.
 const prometheusTextContentType = "text/plain; version=0.0.4; charset=utf-8"
-
 
 // renderInMemoryMetrics serializes the v2 in-memory observability.Registry
 // (Counters + Histograms) into Prometheus text format and writes it to w.

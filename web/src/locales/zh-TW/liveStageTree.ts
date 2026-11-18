@@ -131,6 +131,8 @@ export default {
   detail: {
     title: '請求詳情',
     hint: '點擊「請求列」展開詳情，再次點擊「請求列」收起',
+    openDetail: '打開請求詳情頁',
+    openDetailFor: '打開請求 {requestId} 的詳情頁',
     sections: {
       resolve: '模型解析',
       reply: '回覆側指標',

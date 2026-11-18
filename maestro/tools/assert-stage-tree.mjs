@@ -232,48 +232,89 @@ const DETAIL_PROBE = `(async () => {
   }
   const ridOf = (el) => ((el.getAttribute('data-testid') || '').replace(/^stage-band-/, ''))
   const bands = qa('article.band')
-  if (!bands.length) {
+  // ★ 只取**带有效请求 id**的带：实时流里有 request_id 为空的帧
+  //   （deriveStageBand: request.request_id ?? ''）⇒ 它的 href 必然为空
+  //   ⇒ 「打开请求详情页」入口按设计**不渲染**（没 id 就没法拼地址）。
+  //   ⇒ 探针若抓到这种带，会把「按设计不渲染」误判成「产品红」。
+  const withId = bands.filter((el) => { const r = ridOf(el); return !!r && r !== 'undefined' })
+  out.facts.bandsWithId = withId.length
+  if (!withId.length) {
     // ★ 三态纪律：窗口内 0 条真实请求 ⇒ 这一层**没评估到**，不是「评估为失败」。
     //   ⇒ 记成 skipped（量具失效，退出码 2）⇒ 复核者不会误读成「产品缺陷」。
-    out.skipped.push('请求详情交互（依赖页面窗口内的真实请求）')
+    out.skipped.push('请求详情交互（窗口内没有带请求 id 的真实请求）')
     return out
   }
   // ★ 每一步都**重新查询**面板节点：Vue 的 v-if 会重建 DOM ⇒ 缓存的旧引用
   //   会在下一次点击后变成 detached 节点（offsetWidth 恒 0）⇒ 断言恒假绿/假红。
   const panelOf = (rid) => q('[data-testid="stage-detail-' + rid + '"]')
-  const isOpen = (rid) => visible(panelOf(rid))
+  const bandOf = (rid) => q('[data-testid="stage-band-' + rid + '"]')
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  // ★ 语义真源：**带自身的 aria-expanded + 详情面板已挂载** ⇒ 「这一条是展开的」。
+  //   不用 visible() 当判据：实时列表会持续滚动，被顶出视口的带即使展开，
+  //   其布局盒也可能测不到 ⇒ visible() 在高负载下会**假红**（2026-11-18 实测）。
+  const isOpen = (rid) => {
+    const b = bandOf(rid)
+    return !!(b && b.getAttribute('aria-expanded') === 'true' && panelOf(rid))
+  }
+  // ★ 交互前把目标**滚进视口**（真实用户也是这么做的）＋**每次重新取节点**：
+  //   实时流会让列表持续增长/滚动 ⇒ 抓在手里的旧引用可能已被重排或移出视口
+  //   ⇒ 点不到 / 点到别的 ⇒ **量具失效，不是产品红**。
+  const clickBand = async (rid) => {
+    let el = bandOf(rid)
+    if (!el) return false
+    try { el.scrollIntoView({ block: 'nearest' }) } catch { /* 滚不动就照旧点 */ }
+    await sleep(80)
+    el = bandOf(rid)
+    if (!el) return false
+    el.click()
+    // ★ Vue 的 DOM 更新是**异步**的（nextTick）⇒ 点击后必须让出一帧。
+    await sleep(220)
+    return true
+  }
   check('页面有请求带（点开详情的前提）', true, '带 ' + bands.length + ' 个')
   check('点开前：详情面板不存在', !q('[data-testid="stage-detail-title"]'), '')
-  const rid1 = ridOf(bands[0])
-  bands[0].click()
-  // ★ Vue 的 DOM 更新是**异步**的（nextTick）⇒ 点击后必须让出一帧。
-  await sleep(200)
+  // ★ 取**最新的两条**（列表最新在下 ⇒ 最底部）：滚动窗口最先丢的是最老的带，
+  //   最新的最不容易在断言途中被滚出 ⇒ 少一类「目标消失」的量具失效。
+  const rid1 = ridOf(withId[withId.length - 1])
+  const rid2 = withId.length > 1 ? ridOf(withId[withId.length - 2]) : null
+  const clicked1 = await clickBand(rid1)
+  if (!clicked1) {
+    out.skipped.push('请求详情交互（目标带在断言前已滚出实时窗口）')
+    return out
+  }
   check('点请求行 ⇒ 详情面板出现', isOpen(rid1), rid1)
   const title = q('[data-testid="stage-detail-title"]')
   out.facts.detailTitle = tx(title)
   check('详情标题为「请求详情」', out.facts.detailTitle === '请求详情', out.facts.detailTitle)
+  // ★ 「打开这一条请求的单页详情」入口（2026-11-18 补）：
+  //   详情面板里必须有一个真链接 ⇒ 指向 /request-detail/<requestId>（单页详情）。
+  const openLink = q('[data-testid="stage-detail-open"]')
+  const openHref = openLink ? openLink.getAttribute('href') : ''
+  check('详情里有「打开请求详情页」入口', !!openLink, openHref)
+  check('入口 href 指向该请求的单页详情', openHref === '/request-detail/' + rid1, openHref)
+  check('入口在新标签打开（target=_blank）', openLink?.getAttribute('target') === '_blank',
+        openLink?.getAttribute('target') || '')
   const sections = ['resolve', 'reply', 'identity', 'stages', 'session']
   const missing = sections.filter((s) => !q('[data-testid="stage-detail-section-' + s + '"]'))
   check('详情五个分区齐备', missing.length === 0, missing.length ? ('缺 ' + missing.join(',')) : '')
   out.facts.detailText = tx(panelOf(rid1)).slice(0, 240)
-  if (bands.length > 1) {
-    const rid2 = ridOf(bands[1])
-    bands[1].click()
-    await sleep(200)
-    check('手风琴：点第二条 ⇒ 第一条收起', !isOpen(rid1), rid1)
-    check('手风琴：第二条展开', isOpen(rid2), rid2)
-    bands[1].click()
-    await sleep(200)
-    check('手风琴：再点第二条 ⇒ 也收起', !isOpen(rid2), rid2)
+  if (rid2) {
+    const clicked2 = await clickBand(rid2)
+    if (!clicked2) {
+      out.skipped.push('手风琴（第二条在断言前已滚出实时窗口）')
+    } else {
+      check('手风琴：点第二条 ⇒ 第一条收起', !isOpen(rid1), rid1)
+      check('手风琴：第二条展开', isOpen(rid2), rid2)
+      await clickBand(rid2)
+      check('手风琴：再点第二条 ⇒ 也收起', !isOpen(rid2), rid2)
+    }
   }
   // ★ 可逆断言必须**先读当前态**再决定点几次（2026-11-18 实测假红即此因）：
   //   上一步的手风琴往返已经把「第一条是否展开」翻过 ⇒ 无脑再点一次等于
   //   「展开」而不是「收起」⇒ 断言必假红 ⇒ **量具自己有 bug，不是产品红**。
-  if (!isOpen(rid1)) { bands[0].click(); await sleep(200) }
+  if (!isOpen(rid1)) await clickBand(rid1)
   const openBefore = isOpen(rid1)
-  bands[0].click()
-  await sleep(200)
+  await clickBand(rid1)
   check('再点同一条 ⇒ 收起（可逆）', openBefore && !isOpen(rid1),
         rid1 + ' / 收起前展开态=' + openBefore)
   return out
@@ -298,6 +339,20 @@ async function main() {
       { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false },
       sessionId,
     )
+    // ★ 必须把**工作模式钉在专家面**（2026-11-18 实测踩到）：
+    //   应用壳有「简易 / 专家」两套导航（`useWorkMode`，localStorage `llmgw_work_mode`，
+    //   缺省取**服务端 platformDefault**）⇒ 平台默认若是「简易」，
+    //   顶栏就**折叠**掉 /live2 入口 ⇒ 「顶栏有指向 /live2 的导航链接」这条断言
+    //   在新开的浏览器会话里**必然假红**（而功能其实完全正常）。
+    //   ⇒ 判据必须**自己钉住被测面**：把模式写死 expert（在文档脚本跑之前写入）。
+    await cdp.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      {
+        source:
+          "try { localStorage.setItem('llmgw_work_mode', 'expert') } catch (e) { /* 隐私模式等 */ }",
+      },
+      sessionId,
+    )
     await cdp.send(
       'Network.setCookie',
       { name: 'llmgw_session', value: token, domain: new URL(args.url).hostname, path: '/' },
@@ -310,8 +365,20 @@ async function main() {
         ? "document.querySelector('.stage-tree') !== null"
         : "document.querySelector('[data-testid=\"live-stage-tree-link\"]') !== null"
     await waitFor(cdp, sessionId, readyExpr, 30000)
-    // SSE 首帧 + 过滤项候选需要一点时间（等 5 秒让实时流落数据）
-    await new Promise((r) => setTimeout(r, 5000))
+    // ★ 不再靠「固定睡 5 秒」等实时流：实测平台默认工作模式切换 + 首帧时延
+    //   会让 5s 不够（SSE 还停在 is-connecting ⇒ 页面里一条带都没有 ⇒ 量具失效）。
+    //   ⇒ 改成**等 SSE 真的连上**（有上限），连上后再留一点沉降时间。
+    try {
+      await waitFor(
+        cdp,
+        sessionId,
+        "(() => { const c = document.querySelector('.stage-tree__conn'); return !!(c && /is-open/.test(c.className)) })()",
+        20000,
+      )
+    } catch {
+      // 超时不算产品红：后面的连接态断言会把它报出来（三态口径）。
+    }
+    await new Promise((r) => setTimeout(r, 1500))
 
     const probe = await evaluate(cdp, sessionId, PAGE_PROBE)
     console.log(`== 页面内断言（${args.page}）==`)
