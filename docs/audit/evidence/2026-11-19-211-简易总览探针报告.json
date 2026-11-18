@@ -1,0 +1,300 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "统计卡恰好 6 张",
+      "pass": true,
+      "detail": "实际 6"
+    },
+    {
+      "name": "常用操作恰好 4 个",
+      "pass": true,
+      "detail": "实际 4"
+    },
+    {
+      "name": "六张卡都有标签与值",
+      "pass": true,
+      "detail": "[\"今日请求\",\"成功率\",\"Token 用量\",\"今日花费\",\"启用密钥\",\"在用模型\"]"
+    },
+    {
+      "name": "今日请求 = board.total_requests（容活流量漂移 ≤50 并披露）",
+      "pass": true,
+      "detail": "UI=6840 API=6840"
+    },
+    {
+      "name": "活跃密钥启用数 = board.active_api_keys",
+      "pass": true,
+      "detail": "UI=120 API=120"
+    },
+    {
+      "name": "可用模型 = board.active_models",
+      "pass": true,
+      "detail": "UI=19 API=19"
+    },
+    {
+      "name": "没有无出处的 0（源可读时）",
+      "pass": true,
+      "detail": "值为 0 的卡：[]"
+    },
+    {
+      "name": "无 per-key /api/usage/{id}/models 扇出",
+      "pass": true,
+      "detail": "实际 0 次"
+    },
+    {
+      "name": "状态条结论合法（ok/warn/blocked）",
+      "pass": true,
+      "detail": "tone=warn"
+    },
+    {
+      "name": "状态条有一句话结论",
+      "pass": true,
+      "detail": "有需要处理的地方"
+    },
+    {
+      "name": "三步接入：不存在或恰好三步",
+      "pass": true,
+      "detail": "存在=false 步数=0"
+    },
+    {
+      "name": "上游健康面板有行",
+      "pass": true,
+      "detail": "行数=12"
+    },
+    {
+      "name": "上游健康分级只出现四档",
+      "pass": true,
+      "detail": "[\"不可达\",\"有告警\",\"可用\"]"
+    },
+    {
+      "name": "面板在 DOM 里：接入清单",
+      "pass": true,
+      "detail": "[data-testid=\"overview-access-list\"]"
+    },
+    {
+      "name": "面板在 DOM 里：上游健康",
+      "pass": true,
+      "detail": "[data-testid=\"overview-provider-health\"]"
+    },
+    {
+      "name": "面板在 DOM 里：最常用的模型",
+      "pass": true,
+      "detail": "[data-testid=\"overview-top-models\"]"
+    },
+    {
+      "name": "热门模型面板有行或明确空态",
+      "pass": true,
+      "detail": "行数=5 空态=false"
+    },
+    {
+      "name": "上游健康：明细行数 + 隐藏数 = 在册总数",
+      "pass": true,
+      "detail": "总数=61 显示=12 隐藏=49"
+    },
+    {
+      "name": "上游健康：明细被截断时必须有披露文案",
+      "pass": true,
+      "detail": "隐藏=49 披露元素=true"
+    },
+    {
+      "name": "最近在用列表存在且不超过每页条数",
+      "pass": true,
+      "detail": "行数=10"
+    },
+    {
+      "name": "用得最多列表存在且不超过每页条数",
+      "pass": true,
+      "detail": "行数=10"
+    },
+    {
+      "name": "两个列表都带分页栏",
+      "pass": true,
+      "detail": "分页栏数=3"
+    },
+    {
+      "name": "用得最多按累计请求数单调不增",
+      "pass": true,
+      "detail": "[471915,201856,138702,97104,82977,80568,52263,45648,23487,13716]"
+    },
+    {
+      "name": "趋势卡在 DOM 里：近 7 日消耗",
+      "pass": true,
+      "detail": "[data-testid=\"overview-trend\"]"
+    },
+    {
+      "name": "趋势源健康时不显示占位符",
+      "pass": true,
+      "detail": "占位符=false"
+    },
+    {
+      "name": "趋势柱数 = 预期日数（≤7）",
+      "pass": true,
+      "detail": "UI=7 预期=7"
+    },
+    {
+      "name": "每日柱值与 board7 trends 逐日相等（请求数口径；今日柱容活流量漂移 ≤50 并披露）",
+      "pass": true,
+      "detail": "7 根柱全对"
+    },
+    {
+      "name": "趋势合计行带 7 天请求总数（容活流量漂移 ≤50 并披露）",
+      "pass": true,
+      "detail": "UI=7 天合计 76,111 笔请求 · 4.1B tokens · $7,562.14 API=76,111"
+    },
+    {
+      "name": "趋势指标切换恰好三枚",
+      "pass": true,
+      "detail": "实际 3"
+    },
+    {
+      "name": "运维 chips 至少两枚（后台任务 + 系统自检）",
+      "pass": true,
+      "detail": "实际 2"
+    },
+    {
+      "name": "issue 按钮数不超过 issue 行数",
+      "pass": true,
+      "detail": "按钮=2 行=2"
+    },
+    {
+      "name": "issue 按钮的 testid 格式合法",
+      "pass": true,
+      "detail": "[\"overview-issue-action-provider_unreachable\",\"overview-issue-action-selfcheck_failed\"]"
+    },
+    {
+      "name": "每条 issue 行都有文案",
+      "pass": true,
+      "detail": "行数=2"
+    },
+    {
+      "name": "热门模型每行都带今日花费列",
+      "pass": true,
+      "detail": "行=5 花费格=5"
+    },
+    {
+      "name": "分页真的能翻（点「下一页」后首行与页码都变）",
+      "pass": true,
+      "detail": "before.first=deploy-smoke-245-2026081 after.first=budget-r1sk-SgWM42B****正 before.info=共 116 条第 1 / 12 页 after.info=共 116 条第 2 / 12 页"
+    }
+  ],
+  "facts": {
+    "statCards": 6,
+    "quickActions": 4,
+    "cards": [
+      {
+        "label": "今日请求",
+        "value": "6,840",
+        "sub": "今日口径"
+      },
+      {
+        "label": "成功率",
+        "value": "92.6%",
+        "sub": "失败 496 笔 · 今日口径"
+      },
+      {
+        "label": "Token 用量",
+        "value": "273.8M",
+        "sub": "今日口径"
+      },
+      {
+        "label": "今日花费",
+        "value": "$1,876.33",
+        "sub": "今日口径"
+      },
+      {
+        "label": "启用密钥",
+        "value": "120 / 219",
+        "sub": "已启用 / 总数"
+      },
+      {
+        "label": "在用模型",
+        "value": "19",
+        "sub": "今日有调用的模型"
+      }
+    ],
+    "boardError": "",
+    "boardSummary": {
+      "active_api_keys": 120,
+      "active_models": 19,
+      "avg_latency_ms": 6808.924122807018,
+      "providers": 11,
+      "success_rate": 0.9261695906432749,
+      "total_completion_tokens": 5307347,
+      "total_cost_usd": 1876.332156979999,
+      "total_credits_charged": 823824,
+      "total_prompt_tokens": 268498677,
+      "total_requests": 6840,
+      "total_tokens": 273806024
+    },
+    "apiHits": 17,
+    "perKeyCalls": 0,
+    "tone": "warn",
+    "headline": "有需要处理的地方",
+    "detail": "今日 6,840 笔请求 · 成功率 92.6% · 18 个上游可用",
+    "issues": [
+      "有上游不可达，请到供应商页处理去处理",
+      "最近一次系统自检没有通过，请到系统自检页查看去处理"
+    ],
+    "onboardingPresent": false,
+    "onboardingSteps": 0,
+    "providerRows": 12,
+    "providerTones": [
+      "不可达",
+      "不可达",
+      "不可达",
+      "不可达",
+      "不可达",
+      "有告警",
+      "有告警",
+      "有告警",
+      "有告警",
+      "有告警",
+      "可用",
+      "可用"
+    ],
+    "providerUnknown": 0,
+    "panels": {
+      "接入清单": true,
+      "上游健康": true,
+      "最常用的模型": true
+    },
+    "modelRows": 5,
+    "providerTotal": 61,
+    "providerShown": 12,
+    "providerHidden": 49,
+    "providerTruncatedNote": "只显示最需要关注的 12 个上游，其余 49 个未展开",
+    "recentRows": 10,
+    "busiestRows": 10,
+    "paginationBars": 3,
+    "trendCols": 7,
+    "trendDegraded": false,
+    "trendEmptyShown": false,
+    "board7Error": "",
+    "trendExpectedDays": [
+      "2026-11-12",
+      "2026-11-13",
+      "2026-11-14",
+      "2026-11-15",
+      "2026-11-16",
+      "2026-11-17",
+      "2026-11-18"
+    ],
+    "trendDrift": 0,
+    "trendTotal": "7 天合计 76,111 笔请求 · 4.1B tokens · $7,562.14",
+    "trendMetricBtns": 3,
+    "opsChips": 2,
+    "issueLis": 2,
+    "issueButtons": 2,
+    "modelCostCells": 5,
+    "pageBefore": {
+      "first": "deploy-smoke-245-20260815-160010sk-jybFTc1****正常2026/11/19 01:05471,915详情",
+      "count": 10,
+      "info": "共 116 条第 1 / 12 页"
+    },
+    "pageAfter": {
+      "first": "budget-r1sk-SgWM42B****正常2026/11/10 03:099详情",
+      "count": 10,
+      "info": "共 116 条第 2 / 12 页"
+    }
+  }
+}
