@@ -1,5 +1,6 @@
 // sales.ts. 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 export default {
+  dashboardFunnel: 'Entonnoir de ventes',
   active: 'Actif',
   annotate: 'Annoter',
   annotateTitle: 'Annotation offre : {name}',

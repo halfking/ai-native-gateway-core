@@ -1,6 +1,7 @@
 // sales.ts — 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 // 命名空间：sales.*（供给池/需求池/报价单三页签）。
 export default {
+  dashboardFunnel: '销售漏斗',
   tabSupply: '供给池',
   tabDemand: '需求池',
   tabQuotes: '报价单',

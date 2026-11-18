@@ -1,6 +1,7 @@
 // common.ts — shared strings reused across every module: buttons, status, feedback, pagination.
 // High-frequency words (cancel/confirm/enabled/disabled/loading) are referenced widely; extracted first.
 export default {
+  noData: 'No data',
   credentialFallback: 'Credential',
   protocol: 'Protocol',
   autoFilled: 'Auto-filled',

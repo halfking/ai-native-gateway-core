@@ -2,6 +2,7 @@
 // common.ts — 全站複用文案：按鈕、狀態、操作回饋、分頁等。
 // 高頻詞（取消/確認/啟用/停用/載入中）在多個模組引用，優先抽取。
 export default {
+  noData: '無資料',
   credentialFallback: '憑證',
   protocol: '協定',
   autoFilled: '自動填入',

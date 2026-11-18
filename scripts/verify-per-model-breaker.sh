@@ -147,7 +147,7 @@ test_scenario_1() {
     if [[ "$STATE" == "open" ]]; then
         log_success "✅ gpt-4 已熔断（circuit_state = open）"
     else
-        log_warning "⚠️  gpt-4 未熔断（circuit_state = $STATE）"
+        log_warning "⚠️  gpt-4 未熔断（circuit_state = ${STATE}）"
     fi
     
     # 测试 gpt-3.5-turbo（应该正常）
