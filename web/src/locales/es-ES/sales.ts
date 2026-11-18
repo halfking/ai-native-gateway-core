@@ -98,4 +98,5 @@ export default {
   funnel_won: 'Ganado',
   funnel_lost: 'Perdido',
   funnel_expired: 'Expirado (derivado)',
+ modelNotInSellable: 'Este modelo no está en la lista de venta',
 }

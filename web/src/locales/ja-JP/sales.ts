@@ -98,4 +98,5 @@ export default {
   funnel_won: '受注',
   funnel_lost: '失注',
   funnel_expired: '期限切れ（派生）',
+ modelNotInSellable: 'このモデルは販売可能リストにありません',
 }

@@ -122,4 +122,7 @@ export default {
   strategyAverage: 'المتوسط عبر المنصات',
   strategyMin: 'الأرخص عبر المنصات',
   strategyFloorMarkup: 'سعر الحد الأدنى × هامش الربح',
+ suggestModelTitle: 'اختيار النموذج',
+ suggestModelPlaceholder: 'اختر النماذج للتسعير (اختيار متعدد)',
+ suggestModelHint: 'دون اختيار يتم تسعير جميع النماذجᴻ وبالاختيار المختارة فقط.',
 }

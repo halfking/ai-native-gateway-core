@@ -56,15 +56,17 @@ export default {
       smart: 'smart - 智慧壓縮',
       adaptive: 'adaptive - 自適應壓縮',
     },
-    modeEnum: {
-      simple: 'simple - 簡易模式',
-      expert: 'expert - 專家模式',
-    },
-    modeDescriptions: {
-      simple: '簡易模式：首頁是接入清單，專家功能收在「進階」組',
-      expert: '專家模式：完整導航與全部頁面（目前預設）',
-    },
   },
+ gateway: {
+ modeEnum: {
+ simple: 'simple - 簡易模式',
+ expert: 'expert - 專家模式',
+ },
+ modeDescriptions: {
+ simple: '簡易模式：首頁是接入清單，專家功能收在「進階」組',
+ expert: '專家模式：完整導航與全部頁面（目前預設）',
+ },
+ },
   docs: {
     compressionModeTitle: '📖 壓縮模式詳解',
     compressionModeContent: `<p><strong>壓縮模式</strong>控制系統如何處理超長對話上下文：</p>

@@ -98,4 +98,5 @@ export default {
   funnel_won: 'مُغلق بنجاح',
   funnel_lost: 'مفقود',
   funnel_expired: 'منتهي (مشتق)',
+ modelNotInSellable: 'هذا النموذج ليس في قائمة المبيعات',
 }
