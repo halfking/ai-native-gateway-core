@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // MarketReferenceTable.vue — 五价定价参考清单（P1/P2/P3/P5）。
+// ★ 2026-11-18（价格对比优化轮）：使用 ModelPicker 组件，选择后自动刷新。
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getAdminMaasMarketPriceOverview, type MarketPriceOverviewRow } from '../../api/maas'
 import {
   fmtDualFloors, fmtMarketNum, fmtMarketRatio, fmtPair, fmtVendorAnchor, marketDriftClass,
 } from '../../utils/marketPriceFormat'
+import ModelPicker from '../../components/ModelPicker.vue'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -42,7 +44,14 @@ defineExpose({ reload: load })
 <template>
   <div class="ref-panel">
     <div class="filter-card card">
-      <input v-model="q" class="filter-input" type="text" :placeholder="t('priceCompare.refSearch')" @keyup.enter="load" />
+      <div class="model-picker-wrapper">
+        <ModelPicker
+          v-model="q"
+          :placeholder="t('priceCompare.refSearch')"
+          :title="t('priceCompare.colModel')"
+          @update:model-value="load"
+        />
+      </div>
       <label class="chk">
         <input v-model="onlyResolved" type="checkbox" @change="load" />
         {{ t('priceCompare.refOnlyResolved') }}
@@ -97,7 +106,7 @@ defineExpose({ reload: load })
 
 <style scoped>
 .filter-card { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.filter-input { flex: 1; max-width: 280px; }
+.model-picker-wrapper { flex: 1; min-width: 280px; max-width: 400px; }
 .chk { font-size: 13px; display: flex; gap: 4px; align-items: center; }
 .tiers { font-size: 11px; white-space: nowrap; }
 .hint-line, .empty-next { font-size: 12px; color: var(--text-secondary, #666); }

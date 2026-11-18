@@ -133,20 +133,27 @@ func (s *Sanitizer) sanitizeInput(ctx context.Context, text string, offset map[S
 // existing is request-local and was loaded under the session allocation lease.
 // Reusing the oldest token for the same type/value keeps replay fingerprints
 // stable without exposing a plaintext reverse index to another cache tier.
+// detectInputFragments runs the input-scope detection without allocating
+// placeholders. The signed-thinking path (input_protocols.go r1058) uses it
+// to decide between pass-through and rewrite before any bookkeeping happens.
+func (s *Sanitizer) detectInputFragments(ctx context.Context, text string) ([]SensitiveFragment, error) {
+	if s == nil {
+		return nil, ErrNilSanitizer
+	}
+	if scoped, ok := s.detector.(interface {
+		DetectScope(context.Context, string, DetectionScope) ([]SensitiveFragment, error)
+	}); ok {
+		return scoped.DetectScope(ctx, text, ScopeInputDeclarations)
+	}
+	return s.detector.Detect(ctx, text)
+}
+
 func (s *Sanitizer) sanitizeInputStable(ctx context.Context, text string, offset map[SensitiveType]int, existing sanitizeReuseIndex) (*SanitizeResult, error) {
 	if s == nil {
 		return nil, ErrNilSanitizer
 	}
 
-	var fragments []SensitiveFragment
-	var err error
-	if scoped, ok := s.detector.(interface {
-		DetectScope(context.Context, string, DetectionScope) ([]SensitiveFragment, error)
-	}); ok {
-		fragments, err = scoped.DetectScope(ctx, text, ScopeInputDeclarations)
-	} else {
-		fragments, err = s.detector.Detect(ctx, text)
-	}
+	fragments, err := s.detectInputFragments(ctx, text)
 	if err != nil {
 		return nil, fmt.Errorf("sanitize: detect failed: %w", err)
 	}

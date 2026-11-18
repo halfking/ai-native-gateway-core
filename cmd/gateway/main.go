@@ -16,6 +16,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -7828,6 +7829,10 @@ func main() {
 					_ = piSQLDB.Close()
 				} else {
 					piDetector = piDetectorAdapter{core: d}
+					// ★ 2026-11-18 PI 分析管理面优化轮：记录在役 detector，
+					//	供管理面「应用修复」改规则后热刷新（RefreshRules
+					//	此前零生产调用方——改库不刷新 ⇒「修了 ≠ 生效」）。
+					piDetectorCoreGlobal = d
 					// ★ 2026-11-18 审计轮 P1：检测链已接线
 					//	（⇒ 采集队列**有生产者**）——管理面据此区分
 					//	「队列为空」与「没有生产者」。
@@ -8044,6 +8049,16 @@ func main() {
 			// ★ 2026-11-18 审计轮 P1：把「检测链是否接线」暴露给管理面，
 			//	否则队列恒空会被读成「没有错误发生」。
 			piAnalysisHandler.SetDetectionChainWired(piDetectionChainWired)
+			// ★ 2026-11-18 PI 分析管理面优化轮：把「应用修复 → 规则热刷新」
+			//	接上（在役 detector 的构造点在 v2 pipeline 段，早于本注册点，
+			//	经 piDetectorCoreGlobal 传递）。未开 v2 pipeline 时为 nil ⇒
+			//	修复仍可应用（落库），刷新跳过并在重启后生效。
+			piAnalysisHandler.SetRuleRefresher(func() error {
+				if piDetectorCoreGlobal == nil {
+					return errors.New("prompt injection detector not wired; rules reload deferred to restart")
+				}
+				return piDetectorCoreGlobal.RefreshRules()
+			})
 			slog.Info("pi-analysis API registered")
 		}
 		// /api/admin/output-compliance/* — 策略、关键词、复核队列、反馈、统计。

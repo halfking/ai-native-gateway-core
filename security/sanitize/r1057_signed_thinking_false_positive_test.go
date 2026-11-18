@@ -48,15 +48,18 @@ func TestR1057SignedThinkingFalsePositive(t *testing.T) {
 			desc:       "Signed thinking with benign content should not be rejected",
 		},
 		{
-			name: "signed thinking with password - should reject",
+			// r1058 (2026-11-18) 契约更新：签名 thinking 检出敏感内容不再拒绝
+			// 整请求（旧契约的 400 会在生产上砖化整个会话，见
+			// r1058_signed_thinking_bearer_test.go）。现在＝原样放行＋WARN 观测。
+			name: "signed thinking with password - should pass through verbatim",
 			blockJSON: `{
 				"type": "thinking",
 				"thinking": "password=MySecretPass123",
 				"signature": "sig_abc123"
 			}`,
-			wantErr:    true,
+			wantErr:    false,
 			wantChange: false,
-			desc:       "Signed thinking with sensitive content should be rejected (cannot rewrite signed content)",
+			desc:       "Signed thinking with sensitive content passes through verbatim (signature cannot be rewritten; rejecting bricks the session)",
 		},
 		{
 			name: "unsigned thinking with password - should sanitize",
@@ -107,8 +110,6 @@ func TestR1057SignedThinkingFalsePositive(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("%s: expected error but got none", tt.desc)
-				} else if !strings.Contains(err.Error(), "sensitive signed thinking") {
-					t.Errorf("%s: got error %q, want sensitive signed thinking error", tt.desc, err.Error())
 				}
 			} else {
 				if err != nil {
@@ -127,6 +128,16 @@ func TestR1057SignedThinkingFalsePositive(t *testing.T) {
 				}
 				if sanitized == nil {
 					t.Errorf("%s: expected sanitized output but got nil", tt.desc)
+				}
+			}
+			// 签名放行路径不得铸造占位符：外发 body 不含它们，会话字典
+			// 也不该被污染（r1058）。
+			if !tt.wantChange && strings.Contains(tt.blockJSON, `"signature": "sig_abc123"`) {
+				if len(sanitizer.mapping) != 0 {
+					t.Errorf("%s: verbatim pass-through must not mint placeholders, got %d", tt.desc, len(sanitizer.mapping))
+				}
+				if len(sanitizer.offset) != 0 {
+					t.Errorf("%s: verbatim pass-through must not advance offsets, got %v", tt.desc, sanitizer.offset)
 				}
 			}
 		})
@@ -172,6 +183,3 @@ func TestR1057SignedThinkingProductionReplay(t *testing.T) {
 		t.Errorf("Production replay: unexpected sanitization: %d placeholders", len(sanitizer.mapping))
 	}
 }
-
-
-

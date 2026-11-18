@@ -48,6 +48,23 @@ type PIAnalysisHandler struct {
 	//	在运行期**不可区分**（运维会读成「没有错误发生过」）。
 	//	⇒ 把这条链路状态暴露到 /stats，让管理面能如实区分。
 	detectionChainWired bool
+
+	// ruleRefresher 在「应用修复」改了 prompt_injection_rules 之后被调用，
+	// 让在役 detector 的内存规则缓存立即刷新。
+	//
+	// ★ 2026-11-18 PI 分析管理面优化轮：detector 把规则缓存在内存里
+	//	（basicRules/advancedRules），改库不刷新 ⇒「修了 ≠ 生效」。
+	//	promptinjection.Detector.RefreshRules 此前**零生产调用方**（死面）
+	//	⇒ 本字段是它的第一个接线点（由 cmd/gateway 装配侧注入）。
+	ruleRefresher func() error
+}
+
+// SetRuleRefresher 注入规则热刷新回调（由装配侧在构造出 detector 后调用）。
+func (h *PIAnalysisHandler) SetRuleRefresher(fn func() error) {
+	if h == nil {
+		return
+	}
+	h.ruleRefresher = fn
 }
 
 // SetDetectionChainWired 记录检测链是否接线（由装配侧注入）。
@@ -98,6 +115,10 @@ func (h *PIAnalysisHandler) RegisterRoutes(mux *http.ServeMux, prefix string) {
 		return AdminMiddleware(fn, h.pool, h.secret)
 	}
 	mux.HandleFunc(prefix+"/queue", wrap(h.GetQueue))
+	// ★ 2026-11-18 PI 分析管理面优化轮：`/queue/{id}` 单条详情（前缀模式）。
+	//	详情页需要 queue 行的**全量上下文**（matched_rules / detection_layers /
+	//	policy_config / error_details / 时间线），列表查询不取这些列。
+	mux.HandleFunc(prefix+"/queue/", wrap(h.handleQueueItem))
 	mux.HandleFunc(prefix+"/results", wrap(h.handleResults))
 	// ★ 2026-11-17 审计轮 P1：详情路由 `/results/{queue_id}` **原先从未注册**。
 	//
@@ -113,6 +134,18 @@ func (h *PIAnalysisHandler) RegisterRoutes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/stats", wrap(h.GetStats))
 }
 
+// handleQueueItem 派发 /queue/{id}（单条队列详情）。
+func (h *PIAnalysisHandler) handleQueueItem(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, h.prefix+"/queue")
+	queueIDStr := strings.TrimPrefix(path, "/")
+	queueID, err := strconv.ParseInt(queueIDStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid queue_id", http.StatusBadRequest)
+		return
+	}
+	h.GetQueueItem(w, r, queueID)
+}
+
 func (h *PIAnalysisHandler) handleResults(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, h.resultsPathPrefix())
 	if path == "" || path == "/" {
@@ -120,14 +153,27 @@ func (h *PIAnalysisHandler) handleResults(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 处理 /results/{queue_id}
-	queueIDStr := strings.TrimPrefix(path, "/")
-	queueID, err := strconv.ParseInt(queueIDStr, 10, 64)
+	// 处理 /results/{queue_id} 与 /results/{queue_id}/apply|revert
+	rest := strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(rest, "/", 2)
+	queueID, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
 		http.Error(w, "invalid queue_id", http.StatusBadRequest)
 		return
 	}
-	h.GetResult(w, r, queueID)
+	if len(parts) == 1 {
+		h.GetResult(w, r, queueID)
+		return
+	}
+	// ★ 2026-11-18 PI 分析管理面优化轮：修复应用/回滚子动作。
+	switch parts[1] {
+	case "apply":
+		h.ApplyFix(w, r, queueID)
+	case "revert":
+		h.RevertFix(w, r, queueID)
+	default:
+		http.Error(w, "unknown sub-action", http.StatusNotFound)
+	}
 }
 
 // resultsPathPrefix 返回结果列表路由的路径前缀。
@@ -364,10 +410,23 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetResult 获取单个分析结果详情
+// GetResult 获取单个分析结果详情。
+//
+// ★ 2026-11-18 PI 分析管理面优化轮：补全「前因后果」的全量材料 ——
+//
+//	原查询只取 22 列（分析侧 + 4 列队列上下文），详情页要讲的
+//	「前因」（命中了什么规则 / 走了哪些检测层 / 当时的策略快照 /
+//	会话与请求归属 / 时间线）一概没取 ⇒ 前端只能展示半张图。
+//	现在取全：queue 侧 14 列（含 error_details / matched_rules /
+//	detection_layers / policy_config / started_at / completed_at /
+//	session_id / request_id / input_hash / priority / retry_count），
+//	results 侧补 analyzer_model / analyzer_version / analysis_details /
+//	llm_response_raw / auto_applied / applied_at / applied_by /
+//	applied_actions（迁移 979 的留痕列，缺席时为 null——
+//	迁移未上线的库上详情仍可读，只是没有留痕）。
 func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, queueID int64) {
 	query := `
-		SELECT 
+		SELECT
 			r.id, r.analysis_id, r.queue_id,
 			r.root_cause, r.error_category, r.is_false_positive,
 			r.confidence_score, r.suggested_fix,
@@ -376,7 +435,15 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 			r.similar_cases, r.pattern_frequency,
 			r.analysis_duration_ms, r.llm_tokens_used,
 			r.created_at,
-			q.error_type, q.error_message, q.tenant_id, q.input_text
+			r.analyzer_model, r.analyzer_version,
+			r.analysis_details, r.llm_response_raw,
+			r.auto_applied, r.applied_at, r.applied_by, r.applied_actions,
+			q.error_type, q.error_hash, q.priority,
+			q.tenant_id, q.session_id, q.request_id,
+			q.input_text, q.input_hash, q.error_message, q.error_details,
+			q.detection_layers, q.matched_rules, q.policy_config,
+			q.status, q.retry_count,
+			q.created_at, q.started_at, q.completed_at
 		FROM error_analysis_results r
 		JOIN error_analysis_queue q ON r.queue_id = q.id
 		WHERE r.queue_id = $1
@@ -391,20 +458,42 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		IsFalsePositive       bool
 		ConfidenceScore       float64
 		SuggestedFix          string
-		RuleAdjustment        json.RawMessage
-		CodeChanges           json.RawMessage
+		RuleAdjustment        NullableJSON
+		CodeChanges           NullableJSON
 		SeverityLevel         string
 		ImpactScope           string
 		AffectedUsersEstimate int
-		SimilarCases          json.RawMessage
+		SimilarCases          NullableJSON
 		PatternFrequency      int
 		AnalysisDurationMs    int
 		LLMTokensUsed         int
 		CreatedAt             string
+		AnalyzerModel         string
+		AnalyzerVersion       sql.NullString
+		AnalysisDetails       NullableJSON
+		LLMResponseRaw        sql.NullString
+		AutoApplied           bool
+		AppliedAt             sql.NullString
+		AppliedBy             sql.NullString
+		AppliedActions        NullableJSON
 		ErrorType             string
-		ErrorMessage          string
+		ErrorHash             string
+		Priority              int
 		TenantID              string
+		SessionID             sql.NullString
+		RequestID             sql.NullString
 		InputText             sql.NullString
+		InputHash             sql.NullString
+		ErrorMessage          string
+		ErrorDetails          NullableJSON
+		DetectionLayers       NullableJSON
+		MatchedRules          NullableJSON
+		PolicyConfig          NullableJSON
+		Status                string
+		RetryCount            int
+		QCreatedAt            string
+		StartedAt             sql.NullString
+		CompletedAt           sql.NullString
 	}
 
 	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
@@ -416,7 +505,127 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		&result.SimilarCases, &result.PatternFrequency,
 		&result.AnalysisDurationMs, &result.LLMTokensUsed,
 		&result.CreatedAt,
-		&result.ErrorType, &result.ErrorMessage, &result.TenantID, &result.InputText,
+		&result.AnalyzerModel, &result.AnalyzerVersion,
+		&result.AnalysisDetails, &result.LLMResponseRaw,
+		&result.AutoApplied, &result.AppliedAt, &result.AppliedBy, &result.AppliedActions,
+		&result.ErrorType, &result.ErrorHash, &result.Priority,
+		&result.TenantID, &result.SessionID, &result.RequestID,
+		&result.InputText, &result.InputHash, &result.ErrorMessage, &result.ErrorDetails,
+		&result.DetectionLayers, &result.MatchedRules, &result.PolicyConfig,
+		&result.Status, &result.RetryCount,
+		&result.QCreatedAt, &result.StartedAt, &result.CompletedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		http.Error(w, "result not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		// ★ 迁移 979 未上线的库：applied_actions 列不存在（42703）⇒
+		//   降级成**不含留痕列**的旧投影重查一次，而不是让详情页 500。
+		//   （与 promptinjection 的 42703 降级读面同款纪律。）
+		if strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "42703") {
+			h.getResultLegacy(w, r, queueID)
+			return
+		}
+		writeInternalTextErr(w, "query analysis result failed", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// getResultLegacy 是 applied_actions 列缺席（迁移 979 未应用）时的降级详情。
+func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Request, queueID int64) {
+	query := `
+		SELECT
+			r.id, r.analysis_id, r.queue_id,
+			r.root_cause, r.error_category, r.is_false_positive,
+			r.confidence_score, r.suggested_fix,
+			r.rule_adjustment, r.code_changes,
+			r.severity_level, r.impact_scope, r.affected_users_estimate,
+			r.similar_cases, r.pattern_frequency,
+			r.analysis_duration_ms, r.llm_tokens_used,
+			r.created_at,
+			r.analyzer_model, r.analyzer_version,
+			r.analysis_details, r.llm_response_raw,
+			r.auto_applied, r.applied_at, r.applied_by,
+			q.error_type, q.error_hash, q.priority,
+			q.tenant_id, q.session_id, q.request_id,
+			q.input_text, q.input_hash, q.error_message, q.error_details,
+			q.detection_layers, q.matched_rules, q.policy_config,
+			q.status, q.retry_count,
+			q.created_at, q.started_at, q.completed_at
+		FROM error_analysis_results r
+		JOIN error_analysis_queue q ON r.queue_id = q.id
+		WHERE r.queue_id = $1
+	`
+
+	var result struct {
+		ID                    int64
+		AnalysisID            string
+		QueueID               int64
+		RootCause             string
+		ErrorCategory         string
+		IsFalsePositive       bool
+		ConfidenceScore       float64
+		SuggestedFix          string
+		RuleAdjustment        NullableJSON
+		CodeChanges           NullableJSON
+		SeverityLevel         string
+		ImpactScope           string
+		AffectedUsersEstimate int
+		SimilarCases          NullableJSON
+		PatternFrequency      int
+		AnalysisDurationMs    int
+		LLMTokensUsed         int
+		CreatedAt             string
+		AnalyzerModel         string
+		AnalyzerVersion       sql.NullString
+		AnalysisDetails       NullableJSON
+		LLMResponseRaw        sql.NullString
+		AutoApplied           bool
+		AppliedAt             sql.NullString
+		AppliedBy             sql.NullString
+		ErrorType             string
+		ErrorHash             string
+		Priority              int
+		TenantID              string
+		SessionID             sql.NullString
+		RequestID             sql.NullString
+		InputText             sql.NullString
+		InputHash             sql.NullString
+		ErrorMessage          string
+		ErrorDetails          NullableJSON
+		DetectionLayers       NullableJSON
+		MatchedRules          NullableJSON
+		PolicyConfig          NullableJSON
+		Status                string
+		RetryCount            int
+		QCreatedAt            string
+		StartedAt             sql.NullString
+		CompletedAt           sql.NullString
+	}
+
+	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
+		&result.ID, &result.AnalysisID, &result.QueueID,
+		&result.RootCause, &result.ErrorCategory, &result.IsFalsePositive,
+		&result.ConfidenceScore, &result.SuggestedFix,
+		&result.RuleAdjustment, &result.CodeChanges,
+		&result.SeverityLevel, &result.ImpactScope, &result.AffectedUsersEstimate,
+		&result.SimilarCases, &result.PatternFrequency,
+		&result.AnalysisDurationMs, &result.LLMTokensUsed,
+		&result.CreatedAt,
+		&result.AnalyzerModel, &result.AnalyzerVersion,
+		&result.AnalysisDetails, &result.LLMResponseRaw,
+		&result.AutoApplied, &result.AppliedAt, &result.AppliedBy,
+		&result.ErrorType, &result.ErrorHash, &result.Priority,
+		&result.TenantID, &result.SessionID, &result.RequestID,
+		&result.InputText, &result.InputHash, &result.ErrorMessage, &result.ErrorDetails,
+		&result.DetectionLayers, &result.MatchedRules, &result.PolicyConfig,
+		&result.Status, &result.RetryCount,
+		&result.QCreatedAt, &result.StartedAt, &result.CompletedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -430,6 +639,72 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// GetQueueItem 获取单条错误队列的全量上下文（详情页的「前因」材料）。
+//
+// ★ 2026-11-18 PI 分析管理面优化轮：列表查询只取 11 列；「点击行看前因」
+//
+//	需要 matched_rules / detection_layers / policy_config / error_details /
+//	input_text / input_hash / 时间线（started_at / completed_at）。
+//	未分析的行（pending/failed）也能看详情 ⇒ 错误一进队列就可追因，
+//	不必等分析完成。
+func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request, queueID int64) {
+	query := `
+		SELECT
+			id, error_type, error_hash, priority,
+			tenant_id, session_id, request_id,
+			input_text, input_hash, error_message, error_details,
+			detection_layers, matched_rules, policy_config,
+			status, retry_count, max_retries,
+			created_at, started_at, completed_at
+		FROM error_analysis_queue
+		WHERE id = $1
+	`
+
+	var item struct {
+		ID              int64
+		ErrorType       string
+		ErrorHash       string
+		Priority        int
+		TenantID        string
+		SessionID       sql.NullString
+		RequestID       sql.NullString
+		InputText       sql.NullString
+		InputHash       sql.NullString
+		ErrorMessage    string
+		ErrorDetails    NullableJSON
+		DetectionLayers NullableJSON
+		MatchedRules    NullableJSON
+		PolicyConfig    NullableJSON
+		Status          string
+		RetryCount      int
+		MaxRetries      int
+		CreatedAt       string
+		StartedAt       sql.NullString
+		CompletedAt     sql.NullString
+	}
+
+	err := h.db.QueryRowContext(r.Context(), query, queueID).Scan(
+		&item.ID, &item.ErrorType, &item.ErrorHash, &item.Priority,
+		&item.TenantID, &item.SessionID, &item.RequestID,
+		&item.InputText, &item.InputHash, &item.ErrorMessage, &item.ErrorDetails,
+		&item.DetectionLayers, &item.MatchedRules, &item.PolicyConfig,
+		&item.Status, &item.RetryCount, &item.MaxRetries,
+		&item.CreatedAt, &item.StartedAt, &item.CompletedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		http.Error(w, "queue item not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeInternalTextErr(w, "query error analysis queue item failed", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
 }
 
 // TriggerAnalysis 手动触发分析

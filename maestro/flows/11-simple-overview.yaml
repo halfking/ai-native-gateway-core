@@ -115,6 +115,9 @@ url: ${BASE_URL}
     text: "下一页"
 
 # ── ⑤ 统计卡：六张卡的标签都在（口径与专家面一致的那六个）────────────────
+# ★ 2026-11-18：标签语义订正 —— active_api_keys 的后端语义是「启用的密钥数」
+#   （COUNT(*) WHERE enabled=TRUE），不是「活跃」；active_models 的语义是
+#   「时间窗内有流量的去重模型数」，不是「可用」⇒ 文案跟着口径改。
 - assertVisible:
     text: "成功率"
 - assertVisible:
@@ -122,9 +125,36 @@ url: ${BASE_URL}
 - assertVisible:
     text: "今日花费"
 - assertVisible:
-    text: "活跃密钥"
+    text: "启用密钥"
 - assertVisible:
-    text: "可用模型"
+    text: "在用模型"
+
+# ── ⑤b 运维状态 chips（2026-11-18 新增：复用专家面 BoardOpsBar）─────────────
+# 后台任务 chip + 系统自检 chip —— 简易模式也要能一眼看到「系统自身在不在干活」
+- assertVisible:
+    text: "后台任务"
+- assertVisible:
+    text: "系统自检"
+
+# ── ⑤c 近 7 日消耗卡（2026-11-18 新增）───────────────────────────────────
+# owner 报障「关心的是整体状况、消耗情况」⇒ 与专家面看板 days=7 同端点同口径，
+# 15min 桶在前端按 UTC 日聚合成柱条；数值对拍由 assert-overview.mjs 做。
+- assertVisible:
+    text: "近 7 日消耗"
+# 指标切换（与专家面看板同一组文案键）
+- assertVisible:
+    text: "请求数"
+- assertVisible:
+    text: "Token"
+- assertVisible:
+    text: "成本 (USD)"
+
+# ── ⑤d issue 行内动作（2026-11-18 新增）─────────────────────────────────
+# 线上此刻有上游告警/自检问题 ⇒ 状态条带 issue 行；有自助动作的 issue 带「去处理」。
+# ★ optional：健康系统没有 issue 行，此时按钮不存在不算红。
+- assertVisible:
+    text: "去处理"
+    optional: true
 
 # ★ 「读不到 ≠ 0」是本轮硬契约：统计源读不到时必须显示占位符「暂不可用」，
 #   而**不是**显示 0。线上此刻数据源可读 ⇒ 页面上不应出现占位符；

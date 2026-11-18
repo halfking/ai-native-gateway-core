@@ -57,6 +57,10 @@ var piAnalysisRoutePaths = []struct {
 	{http.MethodGet, "/api/admin/pi-analysis/queue"},
 	{http.MethodGet, "/api/admin/pi-analysis/results"},
 	{http.MethodGet, "/api/admin/pi-analysis/results/1"},
+	// ★ 2026-11-18 PI 分析管理面优化轮：queue 单条详情 + apply/revert。
+	{http.MethodGet, "/api/admin/pi-analysis/queue/1"},
+	{http.MethodPost, "/api/admin/pi-analysis/results/1/apply"},
+	{http.MethodPost, "/api/admin/pi-analysis/results/1/revert"},
 	{http.MethodPost, "/api/admin/pi-analysis/trigger"},
 	{http.MethodGet, "/api/admin/pi-analysis/stats"},
 }

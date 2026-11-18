@@ -27,7 +27,9 @@ func operationalPatternEntries() []patternEntry {
 		{sType: TypeSecret, regex: regexp.MustCompile(credentialtext.CredentialPairPattern), group: 2, kind: "credential_pair"},
 		{sType: TypeSecret, regex: regexp.MustCompile(credentialValuePattern), group: 1, kind: "credential_declaration"},
 		{sType: TypeAccount, regex: regexp.MustCompile(accountValuePattern), group: 1, kind: "account_declaration"},
-		{sType: TypeSecret, regex: regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/=-]+)`), group: 1},
+		// r1058：与生产 YAML/DB 快照同文的 bearer 规则（bearerShapeSource），
+		// 值捕获组带 credibleBearerCandidate 整串守卫（普通英文词不是凭据）。
+		{sType: TypeSecret, regex: regexp.MustCompile(bearerShapeSource), group: 1, bearerShape: true},
 		{sType: TypeSecret, regex: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)},
 		{sType: TypeSecret, regex: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)},
 		{sType: TypeSecret, regex: regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----.*?(?:-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|$)`)},

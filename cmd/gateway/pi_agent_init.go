@@ -68,6 +68,15 @@ type piAgentConfig struct {
 var (
 	piAgentCollector *promptinjection.ErrorCollector
 	piAgentAnalyzer  *promptinjection.ErrorAnalyzer
+
+	// piDetectorCoreGlobal 是**在役**的 PI 检测器（v2 pipeline 段构造）。
+	//
+	//	★ 2026-11-18 PI 分析管理面优化轮：管理面「应用修复」改了
+	//	  prompt_injection_rules 之后要立即刷新 detector 的内存规则缓存
+	//	  （RefreshRules）⇒ 注册点在 main.go、构造点在 v2 pipeline 段，
+	//	  经此变量传递（与 piErrorCollectorGlobal 同款形态）。
+	//	  未开 v2 pipeline（默认）时恒 nil ⇒ 刷新回调如实报「未接线」。
+	piDetectorCoreGlobal *promptinjection.Detector
 )
 
 // setPIAgentComponents 记录 PI 智能体组件（供管理 API 使用）。
