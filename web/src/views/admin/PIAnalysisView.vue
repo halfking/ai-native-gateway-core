@@ -205,7 +205,8 @@
                 <div class="timeline-step">
                   <div class="timeline-dot done"></div>
                   <div class="timeline-label">{{ t('common.piAnalysis.detail.timelineQueued') }}</div>
-                  <div class="timeline-time">{{ formatTime(activeContext?.created_at || '') }}</div>
+                  <!-- results 详情里队列入队时间叫 queued_at（created_at 属于分析侧）；queue 详情里叫 created_at -->
+                  <div class="timeline-time">{{ formatTime(queuedAt) }}</div>
                 </div>
                 <div class="timeline-bar" :class="{ done: !!activeContext?.started_at }"></div>
                 <div class="timeline-step">
@@ -462,6 +463,10 @@ const reverting = ref(false)
 
 // activeContext：分析结果与队列详情都带前因上下文，优先取 results（较新）。
 const activeContext = computed<any>(() => detailData.value || queueDetail.value)
+
+// queuedAt：入队时间——results 详情序列化为 queued_at，queue 详情是 created_at。
+const queuedAt = computed<string>(() =>
+  (detailData.value?.queued_at as string) || (queueDetail.value?.created_at as string) || '')
 
 // matchedRules：array 或单对象都兼容（后端列是 JSONB，两种形态都见过）。
 const matchedRules = computed<any[]>(() => {
@@ -902,7 +907,11 @@ function formatImpact(impact: string): string {
 }
 
 function formatTime(time: string): string {
-  return new Date(time).toLocaleString('zh-CN')
+  // ★ 详情端点的时间列来自 PG timestamptz 文本形（"2026-11-18 12:34:56.789+00"，
+  //   空格分隔）⇒ new Date() 解析失败显示 Invalid Date；空格换 T 再解析。
+  if (!time) return '—'
+  const d = new Date(time.includes(' ') && !time.includes('T') ? time.replace(' ', 'T') : time)
+  return Number.isNaN(d.getTime()) ? time : d.toLocaleString('zh-CN')
 }
 
 function getErrorTypeClass(type: string): string {

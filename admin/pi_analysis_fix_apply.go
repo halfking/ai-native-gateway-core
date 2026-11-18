@@ -108,6 +108,24 @@ func (n *NullableJSON) UnmarshalJSON(b []byte) error {
 // piFixMaxPatternLen 限制 LLM 建议的 pattern 长度（防把超大正则写进库）。
 const piFixMaxPatternLen = 4096
 
+// PiNullString 是 sql.NullString 的 JSON 友好包装。
+//
+// ★ 为什么需要它：sql.NullString 直接 json.Marshal 输出
+//
+//	{"String":"","Valid":false} 对象 ⇒ 前端拿到对象而不是字符串/null
+//	（详情页 session_id 显示 [object Object]）。NULL ⇒ JSON null。
+type PiNullString struct {
+	sql.NullString
+}
+
+// MarshalJSON outputs the string or null.
+func (n PiNullString) MarshalJSON() ([]byte, error) {
+	if !n.Valid {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.String)
+}
+
 // RuleFixAction 是白名单里的单个可执行动作（归一化后的规范形状）。
 type RuleFixAction struct {
 	Action   string `json:"action"`             // disable_rule | adjust_severity | update_pattern

@@ -117,7 +117,15 @@ const PAGE_PROBE = `(() => {
     const num = (s) => String(s == null ? '' : s).replace(/,/g, '').trim()
     const uiRequests = requestsCard ? num(requestsCard.value) : ''
     const apiRequests = num(summary.total_requests)
-    check('今日请求 = board.total_requests', uiRequests === apiRequests, 'UI=' + uiRequests + ' API=' + apiRequests)
+    // ★ 活流量漂移容差：页面渲染 → 探针 XHR 之间新请求持续落账（211 实测几秒内 +9）。
+    //   UI ≤ API 且差 ≤50 ⇒ 视为同源漂移并披露；取错字段/量纲仍会以数量级爆红。
+    const reqDelta = (Number(apiRequests) || 0) - (Number(uiRequests) || 0)
+    const reqOk = uiRequests === apiRequests || (reqDelta >= 0 && reqDelta <= 50)
+    check(
+      '今日请求 = board.total_requests（容活流量漂移 ≤50 并披露）',
+      reqOk,
+      'UI=' + uiRequests + ' API=' + apiRequests + (uiRequests !== apiRequests ? '（漂移 +' + reqDelta + ' 笔）' : ''),
+    )
 
     // 活跃密钥展示成「启用数 / 总数」⇒ 取斜杠前半
     const uiKeys = keysCard ? num(String(keysCard.value).split('/')[0] || '') : ''
@@ -341,20 +349,54 @@ const PAGE_PROBE = `(() => {
     }))
     const dayLabel = (date) => Number(date.slice(5, 7)) + '/' + Number(date.slice(8, 10))
     let mismatch = ''
+    let drift = 0
+    const todayUtc = new Date().toISOString().slice(0, 10)
     for (let i = 0; i < Math.min(uiDays.length, last7.length); i++) {
       const want = group(last7[i].r)
       const wantLabel = dayLabel(last7[i].date)
       if (uiDays[i].value !== want || uiDays[i].label !== wantLabel) {
+        // ★ 最后一根柱若是「今天」：页面渲染与探针取数之间**活流量在涨**
+        //   （211 实测 3~10 笔/几秒）⇒ 允许 ≤50 笔的正向漂移并**披露漂移量**；
+        //   结构性派生错误（取错字段/换错量纲）仍会以数量级差距在这里爆红。
+        //   历史日（不可变）保持严格相等。
+        const isToday = last7[i].date === todayUtc
+        const uiN = Number(uiDays[i].value.replace(/,/g, ''))
+        const apiN = last7[i].r
+        const d = apiN - uiN
+        if (isToday && uiDays[i].label === wantLabel && Number.isFinite(uiN) && d >= 0 && d <= 50) {
+          drift += d
+          continue
+        }
         mismatch += ' [' + i + '] UI=' + uiDays[i].value + '@' + uiDays[i].label + ' 预期=' + want + '@' + wantLabel
       }
     }
-    check('每日柱值与 board7 trends 逐日相等（请求数口径）', mismatch === '', mismatch || trendCols.length + ' 根柱全对')
+    check(
+      '每日柱值与 board7 trends 逐日相等（请求数口径；今日柱容活流量漂移 ≤50 并披露）',
+      mismatch === '',
+      (mismatch || trendCols.length + ' 根柱全对') + (drift > 0 ? '（今日柱漂移 +' + drift + ' 笔）' : ''),
+    )
+    out.facts.trendDrift = drift
     // 合计行：7 天合计的请求数来自 board7.summary
     const totalEl = text(q('[data-testid="overview-trend-total"]'))
     out.facts.trendTotal = totalEl
     const s7 = (b7 && b7.summary) || null
     if (s7 && s7.total_requests != null) {
-      check('趋势合计行带 7 天请求总数', totalEl.indexOf(group(s7.total_requests)) >= 0, 'UI=' + totalEl + ' API=' + group(s7.total_requests))
+      // 同活流量漂移口径：合计数在页面渲染后只会涨（≤50 笔容差并披露）
+      let totalOk = totalEl.indexOf(group(s7.total_requests)) >= 0
+      let driftNote = ''
+      if (!totalOk && Number.isFinite(s7.total_requests)) {
+        for (let back = 1; back <= 50 && !totalOk; back++) {
+          if (totalEl.indexOf(group(s7.total_requests - back)) >= 0) {
+            totalOk = true
+            driftNote = '（漂移 +' + back + ' 笔）'
+          }
+        }
+      }
+      check(
+        '趋势合计行带 7 天请求总数（容活流量漂移 ≤50 并披露）',
+        totalOk,
+        'UI=' + totalEl + ' API=' + group(s7.total_requests) + driftNote,
+      )
     }
     // 指标切换按钮三枚（复用专家面文案键）
     const metricBtns = qa('[data-testid="overview-trend"] .el-radio-button')

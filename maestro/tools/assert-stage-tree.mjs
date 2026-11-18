@@ -339,6 +339,20 @@ async function main() {
       { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false },
       sessionId,
     )
+    // ★ 必须把**工作模式钉在专家面**（2026-11-18 实测踩到）：
+    //   应用壳有「简易 / 专家」两套导航（`useWorkMode`，localStorage `llmgw_work_mode`，
+    //   缺省取**服务端 platformDefault**）⇒ 平台默认若是「简易」，
+    //   顶栏就**折叠**掉 /live2 入口 ⇒ 「顶栏有指向 /live2 的导航链接」这条断言
+    //   在新开的浏览器会话里**必然假红**（而功能其实完全正常）。
+    //   ⇒ 判据必须**自己钉住被测面**：把模式写死 expert（在文档脚本跑之前写入）。
+    await cdp.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      {
+        source:
+          "try { localStorage.setItem('llmgw_work_mode', 'expert') } catch (e) { /* 隐私模式等 */ }",
+      },
+      sessionId,
+    )
     await cdp.send(
       'Network.setCookie',
       { name: 'llmgw_session', value: token, domain: new URL(args.url).hostname, path: '/' },
@@ -351,8 +365,20 @@ async function main() {
         ? "document.querySelector('.stage-tree') !== null"
         : "document.querySelector('[data-testid=\"live-stage-tree-link\"]') !== null"
     await waitFor(cdp, sessionId, readyExpr, 30000)
-    // SSE 首帧 + 过滤项候选需要一点时间（等 5 秒让实时流落数据）
-    await new Promise((r) => setTimeout(r, 5000))
+    // ★ 不再靠「固定睡 5 秒」等实时流：实测平台默认工作模式切换 + 首帧时延
+    //   会让 5s 不够（SSE 还停在 is-connecting ⇒ 页面里一条带都没有 ⇒ 量具失效）。
+    //   ⇒ 改成**等 SSE 真的连上**（有上限），连上后再留一点沉降时间。
+    try {
+      await waitFor(
+        cdp,
+        sessionId,
+        "(() => { const c = document.querySelector('.stage-tree__conn'); return !!(c && /is-open/.test(c.className)) })()",
+        20000,
+      )
+    } catch {
+      // 超时不算产品红：后面的连接态断言会把它报出来（三态口径）。
+    }
+    await new Promise((r) => setTimeout(r, 1500))
 
     const probe = await evaluate(cdp, sessionId, PAGE_PROBE)
     console.log(`== 页面内断言（${args.page}）==`)

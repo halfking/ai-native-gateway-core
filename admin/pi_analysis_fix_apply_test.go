@@ -385,12 +385,62 @@ func TestGetQueueItem_NullJSONColumnsScan(t *testing.T) {
 		t.Fatalf("want 200 with all-NULL jsonb columns, got %d (body=%q)", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, key := range []string{`"ErrorDetails":null`, `"DetectionLayers":null`, `"MatchedRules":null`, `"PolicyConfig":null`} {
+	for _, key := range []string{`"error_details":null`, `"detection_layers":null`, `"matched_rules":null`, `"policy_config":null`} {
 		if !strings.Contains(body, key) {
 			t.Fatalf("body must serialize null jsonb as %s, body=%s", key, body)
 		}
 	}
+	// ★ sql.NullString 必须序列化成字符串/null，不是 {"String":...,"Valid":...} 对象。
+	for _, bad := range []string{`"String"`, `"Valid"`} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("null-string columns must not leak sql.NullString internals (%s), body=%s", bad, body)
+		}
+	}
+	if !strings.Contains(body, `"session_id":null`) || !strings.Contains(body, `"input_text":"some input"`) {
+		t.Fatalf("null-string columns must serialize as string/null, body=%s", body)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ★ 2026-11-19 活体回归（浏览器探针实测打回）：详情端点的 JSON 字段名
+// 必须是 snake_case —— 首版（含原版 GetResult）无 json tag ⇒ 输出 Go 导出名
+// （"AnalysisID"/"ConfidenceScore"...）⇒ 前端 detailData.analysis_id 全是
+// undefined ⇒ 详情对话框 NaN%/空值。此钉测锁住序列化契约。
+func TestDetailJSONShapeIsSnakeCase(t *testing.T) {
+	h, mock := newPIFixTestHandler(t)
+	rows := sqlmock.NewRows([]string{
+		"id", "error_type", "error_hash", "priority",
+		"tenant_id", "session_id", "request_id",
+		"input_text", "input_hash", "error_message", "error_details",
+		"detection_layers", "matched_rules", "policy_config",
+		"status", "retry_count", "max_retries",
+		"created_at", "started_at", "completed_at",
+	}).AddRow(
+		7, "rule_false_positive", "h", 5,
+		"default", nil, nil,
+		"input", nil, "msg", nil,
+		nil, nil, nil,
+		"pending", 0, 3,
+		"2026-11-19T00:00:00Z", nil, nil,
+	)
+	mock.ExpectQuery("SELECT").WithArgs(int64(7)).WillReturnRows(rows)
+
+	rec := httptest.NewRecorder()
+	h.GetQueueItem(rec, httptest.NewRequest(http.MethodGet, "/x", nil), 7)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, key := range []string{`"error_type"`, `"tenant_id"`, `"matched_rules"`, `"created_at"`, `"retry_count"`} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("queue item JSON must use snake_case, missing %s in %s", key, body)
+		}
+	}
+	for _, bad := range []string{`"ErrorType"`, `"TenantID"`, `"MatchedRules"`, `"CreatedAt"`} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("queue item JSON must not use Go exported names, found %s", bad)
+		}
 	}
 }
