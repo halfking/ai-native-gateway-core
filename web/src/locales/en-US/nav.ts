@@ -50,7 +50,7 @@ export default {
     requestActions: 'Request Actions Timeline',
     storageAndLogConfig: 'Storage & Log Config',
     pricing: 'Cost Pricing',
-    modelPricing: 'Pricing Management',
+    modelPricing: 'Comparison & Pricing',
     freellm: 'FreeLLM',
     freePool: 'Free Resources',
     freeDiscovery: 'Free Discovery',

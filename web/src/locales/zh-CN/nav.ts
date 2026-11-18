@@ -51,7 +51,7 @@ export default {
     requestActions: '请求动作时间线',
     storageAndLogConfig: '存储与日志配置',
     pricing: '成本价格',
-    modelPricing: '定价管理',
+    modelPricing: '比较与定价',
     freellm: 'FreeLLM 免费模型',
     freePool: '免费资源',
     freeDiscovery: '免费发现',

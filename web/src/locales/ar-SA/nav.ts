@@ -39,7 +39,7 @@ export default {
     settlementReport: "تقرير التسوية",
     usageTrends: "اتجاهات الاستخدام",
     pricing: "تكلفة التسعير",
-    modelPricing: "إدارة التسعير",
+    modelPricing: "المقارنة والتسعير",
     freellm: "FreeLLM نماذج مجانية",
     freePool: "الموارد المجانية",
     freeDiscovery: "اكتشاف الموارد المجانية",

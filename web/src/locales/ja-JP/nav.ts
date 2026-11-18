@@ -39,7 +39,7 @@ export default {
     settlementReport: "決算レポート",
     usageTrends: "使用量トレンド",
     pricing: "コスト価格",
-    modelPricing: "価格管理",
+    modelPricing: "比較と料金",
     freellm: "FreeLLM 無料モデル",
     freePool: "無料リソース",
     freeDiscovery: "無料リソース発見",

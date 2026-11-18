@@ -40,7 +40,7 @@ export default {
     settlementReport: "Informe de liquidación",
     usageTrends: "Tendencias de uso",
     pricing: "Precios de coste",
-    modelPricing: "Gestión de precios",
+    modelPricing: "Comparación y precios",
     freellm: "FreeLLM modelos gratuitos",
     freePool: "Pool gratuito",
     freeDiscovery: "Descubrimiento gratuito",
