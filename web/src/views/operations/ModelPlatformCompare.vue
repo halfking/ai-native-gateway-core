@@ -74,6 +74,7 @@ async function load() {
       if (an && !bn) return -1
       return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' })
     })
+    console.log('[ModelPlatformCompare] rows.value assigned:', { length: rows.value.length, available: available.value, loading: loading.value })
   } catch (err) {
     // ★ 2026-11-17（12h 审计）：reason 会被**原样渲染**（<p class="empty-next mono-sm">
     //   {{ reason }}</p>）⇒ 此处塞内部 token 'load_failed' ⇒ 用户在页面上看到
@@ -85,6 +86,7 @@ async function load() {
     rows.value = []
   } finally {
     loading.value = false
+    console.log('[ModelPlatformCompare] load() finished:', { model: model.value, rowsLength: rows.value.length, available: available.value, loading: loading.value })
   }
 }
 
