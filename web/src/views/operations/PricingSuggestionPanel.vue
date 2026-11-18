@@ -16,12 +16,8 @@
 //   自动同步**不回流**计费面；这里是**显式**运营动作 ⇒ 执行按钮必须二次确认。
 // ★ NULL≠0：没有可比行情的建议一律显示「—」并标出原因，不落 0。
 //
-// ★ 2026-11-19 定价建议模型过滤：
-//   · 新增模型选择器（多选模式，复用 ModelPicker 组件）；
-//   · 可选择一个或多个模型进行定价；
-//   · 不选择任何模型时对所有模型定价；
-//   · 避免跨平台现价的模型过滤失误（明确传递 canonical_ids 数组）。
-import { ref, computed, onMounted } from 'vue'
+// ★ 2026-11-19（比较与定价优化轮）：接收全局模型过滤参数，移除本组件的模型选择器。
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   postAdminMarketPricingSuggestions,
@@ -37,7 +33,10 @@ import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
 import { confirmDialog } from '../../composables/useConfirmDialog'
-import ModelPicker from '../../components/ModelPicker.vue'
+
+const props = defineProps<{
+  globalModels?: string[] // 全局模型过滤
+}>()
 
 const { t } = useI18n()
 const { notifySuccess, notifyError } = useActionMessage()
@@ -47,8 +46,6 @@ const platformId = ref('')
 const markupPct = ref<number>(20)
 const minDeltaPct = ref<number>(0)
 const dimension = ref('standard')
-// ★ 2026-11-19：模型选择（多选；空数组 = 所有模型）
-const selectedModels = ref<string[]>([])
 
 const loading = ref(false)
 const applying = ref(false)
@@ -75,22 +72,23 @@ async function loadModelsCanonical() {
   }
 }
 
-// ★ 2026-11-19：模型名称 → canonical_ids 转换
+// ★ 2026-11-19：模型名称 → canonical_ids 转换（使用全局模型过滤）
 // 吸取跨平台现价的教训：明确传递 canonical_ids 数组，而不是依赖字符串匹配
 function getCanonicalIds(): number[] {
-  if (selectedModels.value.length === 0) {
+  // 2026-11-19：使用全局模型过滤
+  if (!props.globalModels || props.globalModels.length === 0) {
     // 空数组 = 所有模型（后端默认行为）
     return []
   }
   const ids: number[] = []
-  const selectedSet = new Set(selectedModels.value.map(m => m.toLowerCase()))
+  const selectedSet = new Set(props.globalModels.map(m => m.toLowerCase()))
   for (const model of modelsCanonical.value) {
     if (selectedSet.has(model.canonical_name.toLowerCase())) {
       ids.push(model.id)
     }
   }
   // ★ 调试日志：查看转换结果
-  console.log('[PricingSuggestion] Selected models:', selectedModels.value)
+  console.log('[PricingSuggestion] Global models:', props.globalModels)
   console.log('[PricingSuggestion] Resolved canonical_ids:', ids)
   console.log('[PricingSuggestion] Models canonical loaded:', modelsCanonical.value.length)
   return ids
@@ -106,7 +104,7 @@ async function preview() {
       dimension: dimension.value,
       markup_pct: strategy.value === 'floor_markup' ? markupPct.value : undefined,
       min_delta_pct: minDeltaPct.value || undefined,
-      canonical_ids: getCanonicalIds(), // ★ 2026-11-19：模型过滤
+      canonical_ids: getCanonicalIds(), // ★ 2026-11-19：使用全局模型过滤
     }
     console.log('[PricingSuggestion] Request body:', body)
     result.value = await postAdminMarketPricingSuggestions(body)
@@ -118,6 +116,12 @@ async function preview() {
     loading.value = false
   }
 }
+
+// 2026-11-19：监听全局模型过滤变化
+watch(() => props.globalModels, () => {
+  // 清空当前结果，等待用户重新预览
+  result.value = null
+}, { deep: true })
 
 async function loadBatches() {
   batchesFailed.value = false
@@ -213,7 +217,7 @@ const suggestionFields = computed<CardField[]>(() => [
 
 <template>
   <div class="suggest-panel">
-    <!-- ① 策略条 -->
+    <!-- ① 策略条（2026-11-19：移除模型选择器，改用全局模型过滤） -->
     <div class="card filter-card">
       <label class="form-row">
         <span>{{ t('priceCompare.suggestStrategy') }}</span>
@@ -245,19 +249,11 @@ const suggestionFields = computed<CardField[]>(() => [
         {{ t('priceCompare.suggestApplyAll', { n: applicableRows.length }) }}
       </button>
     </div>
-
-    <!-- ★ 2026-11-19：模型选择器（多选模式） -->
-    <div class="card filter-card model-filter-card">
-      <div class="model-picker-wrapper">
-        <ModelPicker
-          v-model="selectedModels"
-          mode="multi"
           :placeholder="t('priceCompare.suggestModelPlaceholder')"
           :title="t('priceCompare.suggestModelTitle')"
           compact
         />
       </div>
-      <span class="hint-text">{{ t('priceCompare.suggestModelHint') }}</span>
     </div>
 
     <p v-if="errorMsg" class="action-message error">{{ errorMsg }}</p>
