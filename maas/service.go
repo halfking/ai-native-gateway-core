@@ -1,6 +1,11 @@
 // Package maas implements MaaS (Model-as-a-Service) billing and
 // subscription management.
 //
+// DEPRECATED: This legacy MaaS implementation will be replaced by contract-driven
+// domains (inventory, commercial, trading, ledger) as part of MaaS contract v0.1
+// implementation (see docs/architecture/unified-architecture/PHASE-NEXT-IMPLEMENTATION-PLAN.md).
+// DO NOT extend this code. New features should use contracts/maascontracts types.
+//
 // IMPORTANT — System-global design (round 24 audit, 2026-06-16)
 //
 // Four tables in this package are SYSTEM-GLOBAL (no tenant_id column

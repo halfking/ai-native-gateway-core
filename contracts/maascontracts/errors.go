@@ -1,8 +1,10 @@
 package maascontracts
 
-// Error represents a structured error response from MaaS operations.
+// Error represents a structured error response from MaaS operations per OpenAPI v0.1.
 // It includes a machine-readable error code, human-readable message,
 // retry guidance, and optional trace information for debugging.
+//
+// The error response follows RFC 7807 (application/problem+json) conventions.
 type Error struct {
 	Code      string  `json:"code"`               // Machine-readable error code (see const definitions below)
 	Message   string  `json:"message"`            // Human-readable error description
@@ -15,7 +17,7 @@ func (e *Error) Error() string {
 	return "maascontracts: " + e.Code + ": " + e.Message
 }
 
-// Error code constants defined by contract v0.1.
+// Error code constants defined by OpenAPI contract v0.1.
 // These codes must be stable across versions for client compatibility.
 const (
 	// Idempotency error codes
