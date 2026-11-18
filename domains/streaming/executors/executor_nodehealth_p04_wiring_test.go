@@ -73,7 +73,7 @@ func TestP04Wiring_QuotaResetAlignsCircuitCooling(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 
-	brk := exec.Circuit.Get(9, 31)
+	brk := exec.Circuit.GetPerModel(9, 31, "")
 	if brk == nil {
 		t.Fatal("breaker not created")
 	}
@@ -157,7 +157,7 @@ func TestP04Wiring_ModelScopedRejectionNarrowsFullReducerDecision(t *testing.T) 
 
 	// The full-effect filter must skip breaker creation entirely; no
 	// credential-wide side effect is allowed to observe this model rejection.
-	if brk := exec.Circuit.Get(9, 31); brk != nil {
+	if brk := exec.Circuit.GetPerModel(9, 31, ""); brk != nil {
 		t.Fatalf("breaker = %+v, want nil (model-scoped must not touch credential breaker)", brk.Stats())
 	}
 	if failures := observer.getFailures(); len(failures) != 0 {
@@ -185,7 +185,7 @@ func TestP04Wiring_QuotaWithoutResetKeepsLegacyRecording(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 
-	brk := exec.Circuit.Get(9, 31)
+	brk := exec.Circuit.GetPerModel(9, 31, "")
 	if brk == nil {
 		t.Fatal("breaker not created")
 	}
@@ -214,7 +214,7 @@ func TestP04Wiring_NonQuotaUnaffected(t *testing.T) {
 		p04CircuitDecision(nodehealth.ErrorKindUpstream, strings.Repeat("x", 8))); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	brk := exec.Circuit.Get(9, 31)
+	brk := exec.Circuit.GetPerModel(9, 31, "")
 	if brk == nil || brk.ConsecutiveFailures() != 1 {
 		t.Fatalf("legacy recording broken: breaker=%v consecutive=%d", brk != nil, func() int {
 			if brk == nil {

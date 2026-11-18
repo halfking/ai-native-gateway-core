@@ -87,6 +87,15 @@ type Observation struct {
 	BillingMode string
 	LatencyMs   int
 	ErrorDetail string
+
+	// BreakerScopeModel 是**熔断作用域**的模型分量（offer 身份）。
+	//
+	// ★ P0-a (2026-11-19 审计轮)：它与 Node.Model 刻意**分开**——
+	//   Node.Model 是节点健康状态的键（允许回退到标准化名/请求模型名，
+	//   以保证状态键非空），而熔断作用域必须与请求路径准入所用的
+	//   模型分量**逐字节一致**，否则准入查 A、记账写 B ⇒ 熔断永不跳闸。
+	//   空 ⇒ 整凭据作用域（见 credential.breakerScopeKey）。
+	BreakerScopeModel string
 }
 
 // EffectKind identifies a side effect for an integration adapter. The reducer
@@ -133,7 +142,9 @@ type Decision struct {
 	BillingMode         string
 	LatencyMs           int
 	ErrorDetail         string
-	Effects             []Effect
+	// BreakerScopeModel 见 Observation.BreakerScopeModel（★ P0-a 2026-11-19 审计轮）。
+	BreakerScopeModel string
+	Effects           []Effect
 }
 
 // Adapter applies a decision to the current circuit, credentialstate, URSM,
@@ -297,19 +308,20 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		r.nodes[observation.Node] = state
 	}
 	decision := Decision{
-		Node:           observation.Node,
-		AttemptID:      observation.AttemptID,
-		Phase:          observation.Phase,
-		Outcome:        observation.Outcome,
-		Accepted:       true,
-		PreviousStatus: state.status,
-		Status:         state.status,
-		ErrorKind:      observation.ErrorKind,
-		HTTPStatus:     observation.HTTPStatus,
-		RequestID:      observation.RequestID,
-		BillingMode:    observation.BillingMode,
-		LatencyMs:      observation.LatencyMs,
-		ErrorDetail:    observation.ErrorDetail,
+		Node:              observation.Node,
+		AttemptID:         observation.AttemptID,
+		Phase:             observation.Phase,
+		Outcome:           observation.Outcome,
+		Accepted:          true,
+		PreviousStatus:    state.status,
+		Status:            state.status,
+		ErrorKind:         observation.ErrorKind,
+		HTTPStatus:        observation.HTTPStatus,
+		RequestID:         observation.RequestID,
+		BillingMode:       observation.BillingMode,
+		LatencyMs:         observation.LatencyMs,
+		ErrorDetail:       observation.ErrorDetail,
+		BreakerScopeModel: observation.BreakerScopeModel,
 	}
 
 	switch observation.Outcome {

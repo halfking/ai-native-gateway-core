@@ -93,7 +93,10 @@ func (e *Executor) enrichCandidateCoolUntil(c provider.Candidate) time.Time {
 		return t
 	}
 	if e != nil && e.Circuit != nil {
-		if b := e.Circuit.Get(c.ProviderID, c.CredentialID); b != nil {
+		// ★ P0-a (2026-11-19 审计轮): 读准入所查的同一把 breaker——原实现读
+		// legacy 凭据作用域，而冷却写在 per-model 作用域 ⇒ 探针一永远看不到
+		// 熔断冷却（候选被重新选中）。
+		if b := e.Circuit.GetPerModel(c.ProviderID, c.CredentialID, circuitScopeModel(c)); b != nil {
 			return b.CoolingUntil()
 		}
 	}

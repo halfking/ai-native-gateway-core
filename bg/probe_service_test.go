@@ -155,7 +155,7 @@ func TestProbeServiceDefaultOutcomeHooksRecoverOnDirectSuccess(t *testing.T) {
 	worker := &NodeProbeWorker{
 		stateObserver:            observer,
 		invalidateCandidateCache: func(int) { invalidations++ },
-		recordCircuitSuccess:     func(int, int) { circuitRecoveries++ },
+		recordCircuitSuccess:     func(int, int, string) { circuitRecoveries++ },
 	}
 	service := &ProbeService{worker: worker}
 

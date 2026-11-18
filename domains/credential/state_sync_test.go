@@ -23,11 +23,11 @@ func TestBreakerNotifiesTransitionsToObserver(t *testing.T) {
 	m.SetObserver(collectedObserver(&events))
 
 	// 阈值 2：两次 KindNetwork 确认失败 → closed→open，带冷却截止。
-	m.RecordFailure(1, 9, KindNetwork)
+	m.RecordFailurePerModel(1, 9, "", KindNetwork)
 	if len(events) != 0 {
 		t.Fatalf("below-threshold failure must not transition, got %v", events)
 	}
-	m.RecordFailure(1, 9, KindNetwork)
+	m.RecordFailurePerModel(1, 9, "", KindNetwork)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 open event, got %d: %v", len(events), events)
 	}
@@ -43,7 +43,7 @@ func TestBreakerNotifiesTransitionsToObserver(t *testing.T) {
 	}
 
 	// 探测恢复：冷却截止置为过去 → Allow() 完成 open→half_open 迁移。
-	b := m.Get(1, 9)
+	b := m.GetPerModel(1, 9, "")
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-time.Second)
 	b.mu.Unlock()
@@ -74,8 +74,8 @@ func TestBreakerNotifiesQuarantineAndReset(t *testing.T) {
 	m := NewManager()
 	m.SetObserver(collectedObserver(&events))
 
-	m.RecordFailureWithBillingMode(2, 8, KindQuota, "per_token")
-	m.RecordFailureWithBillingMode(2, 8, KindQuota, "per_token")
+	m.RecordFailureWithBillingMode(2, 8, "", KindQuota, "per_token")
+	m.RecordFailureWithBillingMode(2, 8, "", KindQuota, "per_token")
 	if len(events) != 1 || events[0].To != StateQuarantined {
 		t.Fatalf("expected closed→quarantined, got %v", events)
 	}
@@ -83,7 +83,7 @@ func TestBreakerNotifiesQuarantineAndReset(t *testing.T) {
 		t.Fatalf("quarantine from = %v, want closed", events[0].From)
 	}
 
-	m.Reset(2, 8)
+	m.Reset(2, 8, "")
 	if len(events) != 2 || events[1].From != StateQuarantined || events[1].To != StateClosed {
 		t.Fatalf("expected quarantined→closed on reset, got %v", events)
 	}
@@ -97,10 +97,10 @@ func TestBreakerOpenReentryNotifiesCoolingExtension(t *testing.T) {
 	m := NewManager()
 	m.SetObserver(collectedObserver(&events))
 
-	m.RecordFailure(3, 7, KindNetwork)
-	m.RecordFailure(3, 7, KindNetwork) // → open #1
-	m.RecordFailure(3, 7, KindNetwork) // 已开路：重入顺延
-	m.RecordFailure(3, 7, KindNetwork) // 阈值再次满足
+	m.RecordFailurePerModel(3, 7, "", KindNetwork)
+	m.RecordFailurePerModel(3, 7, "", KindNetwork) // → open #1
+	m.RecordFailurePerModel(3, 7, "", KindNetwork) // 已开路：重入顺延
+	m.RecordFailurePerModel(3, 7, "", KindNetwork) // 阈值再次满足
 	var openEvents []StateChange
 	for _, ev := range events {
 		if ev.To == StateOpen {
@@ -121,13 +121,13 @@ func TestBreakerOpenReentryNotifiesCoolingExtension(t *testing.T) {
 func TestSetObserverRetrofitsExistingBreakers(t *testing.T) {
 	var events []StateChange
 	m := NewManager()
-	m.RecordFailure(4, 6, KindQuota) // 触发 GetOrCreate，此时无观察者
-	m.RecordFailure(4, 6, KindQuota) // → quarantined（事件丢弃，无观察者）
+	m.RecordFailurePerModel(4, 6, "", KindQuota) // 触发 GetOrCreate，此时无观察者
+	m.RecordFailurePerModel(4, 6, "", KindQuota) // → quarantined（事件丢弃，无观察者）
 	if len(events) != 0 {
 		t.Fatalf("no observer yet, got %v", events)
 	}
 	m.SetObserver(collectedObserver(&events))
-	m.Reset(4, 6)
+	m.Reset(4, 6, "")
 	if len(events) != 1 || events[0].From != StateQuarantined || events[0].To != StateClosed {
 		t.Fatalf("retrofitted observer must see reset event, got %v", events)
 	}

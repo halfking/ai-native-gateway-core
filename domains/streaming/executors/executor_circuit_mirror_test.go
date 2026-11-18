@@ -42,9 +42,9 @@ func TestDispatchCircuitAdmissionUsesLiveBreakerNotDBMirror(t *testing.T) {
 			defer upstream.Close()
 			cm := credential.NewManager()
 			if tc.wantBlocked {
-				cm.RecordFailure(36, 63, tc.kind)
-				cm.RecordFailure(36, 63, tc.kind)
-				if cm.PeekAllowed(36, 63) {
+				cm.RecordFailurePerModel(36, 63, "", tc.kind)
+				cm.RecordFailurePerModel(36, 63, "", tc.kind)
+				if cm.PeekAllowed(36, 63, "") {
 					t.Fatal("fixture did not actually open/quarantine the live breaker")
 				}
 			}

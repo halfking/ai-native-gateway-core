@@ -875,7 +875,9 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		}
 		s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, true, "", time.Now())
 		if s.worker.recordCircuitSuccess != nil {
-			s.worker.recordCircuitSuccess(outcome.direct.providerID, outcome.credentialID)
+			// outcome.model 是绑定级模型名（mo.raw_model_name），与请求路径
+			// 准入所用的 offer 身份一致（★ P0-a 2026-11-19 审计轮）。
+			s.worker.recordCircuitSuccess(outcome.direct.providerID, outcome.credentialID, outcome.model)
 		}
 	} else {
 		errCode := "gateway_probe_failed"

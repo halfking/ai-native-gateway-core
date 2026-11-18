@@ -223,8 +223,8 @@ func TestCircuitOpenRetryAfterSeconds_FromBreakerCooling(t *testing.T) {
 	// 冷却窗口对齐到一个明确的未来时刻（openAlignedToQuotaReset 会把
 	// CoolingUntil 设为该 resetAt）。
 	resetAt := time.Now().Add(90 * time.Second)
-	mgr.RecordFailureWithReset(7, 7, credential.KindQuota, resetAt, true)
-	if got := mgr.Get(7, 7).State(); got != credential.StateOpen {
+	mgr.RecordFailureWithReset(7, 7, "", credential.KindQuota, resetAt, true)
+	if got := mgr.GetPerModel(7, 7, "").State(); got != credential.StateOpen {
 		t.Fatalf("breaker state = %v, want open", got)
 	}
 
@@ -244,8 +244,8 @@ func TestCircuitOpenRetryAfterSeconds_EarliestWins(t *testing.T) {
 	// 否则会被夹到同一个值，"取最早"就测不出差别。
 	soon := time.Now().Add(45 * time.Second)
 	late := time.Now().Add(600 * time.Second)
-	mgr.RecordFailureWithReset(1, 1, credential.KindQuota, late, true)
-	mgr.RecordFailureWithReset(2, 2, credential.KindQuota, soon, true)
+	mgr.RecordFailureWithReset(1, 1, "", credential.KindQuota, late, true)
+	mgr.RecordFailureWithReset(2, 2, "", credential.KindQuota, soon, true)
 
 	got := circuitOpenRetryAfterSeconds(mgr, []provider.Candidate{
 		{ProviderID: 1, CredentialID: 1},
@@ -271,10 +271,10 @@ func TestCircuitOpenRetryAfterSeconds_EdgeCases(t *testing.T) {
 		t.Fatalf("retry-after = %d, want 0 for a nil manager", got)
 	}
 	// 闭合态的节点不参与「还要等多久」的计算。
-	mgr.RecordFailure(3, 3, credential.KindTransient)
-	mgr.RecordFailure(3, 3, credential.KindTransient)
-	mgr.RecordSuccess(3, 3)
-	if got := mgr.Get(3, 3).State(); got != credential.StateClosed {
+	mgr.RecordFailurePerModel(3, 3, "", credential.KindTransient)
+	mgr.RecordFailurePerModel(3, 3, "", credential.KindTransient)
+	mgr.RecordSuccessPerModel(3, 3, "")
+	if got := mgr.GetPerModel(3, 3, "").State(); got != credential.StateClosed {
 		t.Fatalf("breaker state = %v, want closed", got)
 	}
 	if got := circuitOpenRetryAfterSeconds(mgr, []provider.Candidate{{ProviderID: 3, CredentialID: 3}}); got != 0 {

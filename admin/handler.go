@@ -427,8 +427,14 @@ type Handler struct {
 	// breaker so emergency repair (force_enable / clear_circuit) takes effect
 	// on the request hot path immediately instead of waiting for the in-memory
 	// OPEN cooling window. nil → in-memory breakers are left untouched.
+	//
+	// ★ P0-a (2026-11-19 审计轮): 补齐 model 分量——熔断器键为
+	// "providerID/credentialID/model"，重置必须落到生产记账所用的那把
+	// breaker 上。修复前只重置 legacy 凭据作用域 ⇒ 管理面「清除熔断」
+	// 返回 200 却毫无效果（per-model breaker 仍是 OPEN）。
+	// model 为空 ⇒ 重置该 (provider, credential) 下的全部模型作用域。
 	circuitResetter interface {
-		Reset(providerID, credentialID int)
+		Reset(providerID, credentialID int, model string)
 	}
 
 	// credStateRecoverer (2026-08-15) marks the legacy credentialstate cache
@@ -917,7 +923,7 @@ func (h *Handler) SetURSMv2(m *v2.Manager) {
 // manager (domains/credential.Manager) so emergency repair can reset a
 // single credential's breaker immediately.
 func (h *Handler) SetCircuitResetter(r interface {
-	Reset(providerID, credentialID int)
+	Reset(providerID, credentialID int, model string)
 }) {
 	h.circuitResetter = r
 }

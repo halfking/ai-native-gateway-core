@@ -70,7 +70,7 @@ func TestNodeProbeSyncInconclusiveDoesNotWriteHealth(t *testing.T) {
 	w.stateSink, w.stateObserver = sink, observer
 	var sideEffects int
 	w.invalidateCandidateCache = func(int) { sideEffects++ }
-	w.recordCircuitSuccess = func(int, int) { sideEffects++ }
+	w.recordCircuitSuccess = func(int, int, string) { sideEffects++ }
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	if w.ProbeSync(ctx, []credentialstate.NoCandidatesCandidate{{CredentialID: 1, RawModel: "test"}}, "tenant-a", "test") {
@@ -127,7 +127,7 @@ func TestNodeProbeRunOneInconclusivePreservesHealth(t *testing.T) {
 	sink, observer := &recordingNodeProbeStateSink{}, &probeStateObserver{}
 	w.stateSink, w.stateObserver = sink, observer
 	w.invalidateCandidateCache = func(int) { t.Error("invalidated candidates") }
-	w.recordCircuitSuccess = func(int, int) { t.Error("closed circuit") }
+	w.recordCircuitSuccess = func(int, int, string) { t.Error("closed circuit") }
 	w.modelQualityTrigger = func(int, string, int) { t.Error("advanced failure ladder") }
 	if err := w.runOne(t.Context(), 1, "test", "request_failure", nodeProbeTrigger{tenantID: "tenant-a"}); err != nil {
 		t.Fatal(err)

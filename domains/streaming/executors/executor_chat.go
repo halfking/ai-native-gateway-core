@@ -2073,7 +2073,7 @@ func (e *Executor) executeOpenAI(
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
 					errKind != errorsx.KindConcurrent {
 					if !errorsx.IsClientBug(errKind) {
-						e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+						e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 					} else {
 						slog.Info("upstream rejected request as client bug",
 							"credential_id", cand.CredentialID,
@@ -2270,7 +2270,7 @@ func (e *Executor) executeOpenAI(
 					recordResponsesCapability(true)
 				}
 				e.reqprobeRecordSuccess(&probe)
-				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 				if e.PostExecutionHook != nil {
 					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
 						CredentialID:   cand.CredentialID,
@@ -2469,17 +2469,17 @@ func (e *Executor) executeOpenAI(
 						// rejected it. Keep this non-resumable, but do not poison the
 						// provider circuit or credential health state.
 					} else if isResumable {
-						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
 						if streamKind == errorsx.KindConcurrent {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
-						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind) {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
-						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
 						e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
 						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
@@ -2490,8 +2490,8 @@ func (e *Executor) executeOpenAI(
 							"chunk_count", streamOutcome.ChunkCount,
 						)
 					} else {
-						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
-						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
+						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind) {
 							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)

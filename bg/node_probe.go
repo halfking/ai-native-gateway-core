@@ -267,7 +267,12 @@ type NodeProbeWorker struct {
 	invalidateCandidateCache func(credentialID int)
 	// recordCircuitSuccess closes the in-memory breaker as soon as the direct
 	// provider probe confirms recovery.
-	recordCircuitSuccess func(providerID, credentialID int)
+	//
+	// ★ P0-a (2026-11-19 审计轮): 补齐 model 分量——熔断器键为
+	// "providerID/credentialID/model"，探针恢复必须关闭准入所查的那把
+	// breaker。修复前写 legacy 凭据作用域，而熔断状态在 per-model 作用域
+	// ⇒ 探针成功也关不掉 breaker。
+	recordCircuitSuccess func(providerID, credentialID int, model string)
 	// modelQualityTrigger (2026-08-11) requests an on-demand model-IQ re-test
 	// for a node whose probe has failed repeatedly (suspicious-action trigger).
 	// nil = disabled. Set via SetModelQualityTrigger.
@@ -523,7 +528,7 @@ func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int))
 }
 
 // SetCircuitRecovery wires the request-path circuit breaker recovery hook.
-func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID int)) {
+func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID int, model string)) {
 	if w != nil {
 		w.recordCircuitSuccess = fn
 	}
@@ -2770,7 +2775,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		w.updateCredentialHealth(ctx, credID)
 		w.updateObservedState(ctx, credID, model, true, "", time.Now())
 		if w.recordCircuitSuccess != nil {
-			w.recordCircuitSuccess(direct.providerID, credID)
+			// model 是绑定级模型名（mo.raw_model_name），与请求路径准入所用的
+			// offer 身份一致 ⇒ 关闭的正是准入所查的那把 breaker。
+			w.recordCircuitSuccess(direct.providerID, credID, model)
 		}
 	}
 	// 2026-07-24 P0 fix: if direct probe returned endpoint_build with

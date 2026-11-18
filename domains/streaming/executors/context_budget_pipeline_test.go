@@ -162,7 +162,7 @@ func TestContextBudgetPipelineLocalRefusalDoesNotPolluteHealth(t *testing.T) {
 			t.Fatalf("local refusal entered health authority: %+v", d)
 		}
 	}
-	if stats := e.Circuit.Get(9201, 92001).Stats(); stats["total_failures"] != int32(0) {
+	if stats := e.Circuit.GetPerModel(9201, 92001, "").Stats(); stats["total_failures"] != int32(0) {
 		t.Fatalf("local refusal polluted breaker: %v", stats)
 	}
 }

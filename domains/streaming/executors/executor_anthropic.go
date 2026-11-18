@@ -1355,7 +1355,7 @@ func (e *Executor) executeAnthropicOnce(
 			resp.StatusCode != 403 && resp.StatusCode != 402 &&
 			errKind != errorsx.KindConcurrent {
 			if !errorsx.IsClientBug(errKind) {
-				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			}
 		} else if errKind == errorsx.KindRateLimit {
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
@@ -1524,7 +1524,7 @@ func (e *Executor) executeAnthropicOnce(
 			)
 
 			if !isResumable {
-				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
+				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
 			}
 			return &ExecuteResult{
 				Response:    resp,
@@ -1540,7 +1540,7 @@ func (e *Executor) executeAnthropicOnce(
 				// bridge's interruption frame. Mirrors executor_chat.go:1482.
 			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind, terminalRendered: outcome.TerminalRendered}
 		}
-		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		return &ExecuteResult{
 			Response:    resp,
 			Candidate:   cand,
@@ -1615,7 +1615,7 @@ func (e *Executor) executeAnthropicOnce(
 	if !params.SuppressSuccessWrite && params.W != nil {
 		e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
 	}
-	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 	return &ExecuteResult{
 		Response:    resp,
 		Candidate:   cand,

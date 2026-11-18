@@ -421,7 +421,7 @@ func TestNativeNormalStreamBlockWritesOneProtocolTerminalAndFailure(t *testing.T
 			if calls != 1 {
 				t.Fatalf("upstream calls=%d, want one", calls)
 			}
-			if breaker := executor.Circuit.Get(11, 22); breaker != nil && breaker.ConsecutiveFailures() != 0 {
+			if breaker := executor.Circuit.GetPerModel(11, 22, ""); breaker != nil && breaker.ConsecutiveFailures() != 0 {
 				t.Fatalf("gateway output-policy block counted as provider failure: consecutive=%d", breaker.ConsecutiveFailures())
 			}
 			failures := 0

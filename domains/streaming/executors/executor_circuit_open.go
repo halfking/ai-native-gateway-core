@@ -84,7 +84,10 @@ func circuitOpenRetryAfterSeconds(mgr *credential.Manager, candidates []provider
 	}
 	var earliest time.Time
 	for _, c := range candidates {
-		b := mgr.Get(c.ProviderID, c.CredentialID)
+		// ★ P0-a (2026-11-19 审计轮): 读准入所查的同一把 breaker——原实现读
+		// legacy 凭据作用域，而熔断状态写在 per-model 作用域 ⇒ 客户端拿不到
+		// 真实冷却剩余（Retry-After 恒为 0 ⇒ 立刻重试再撞一次开路熔断）。
+		b := mgr.GetPerModel(c.ProviderID, c.CredentialID, circuitScopeModel(c))
 		if b == nil {
 			continue
 		}

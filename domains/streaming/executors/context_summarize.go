@@ -487,7 +487,7 @@ func (e *Executor) doCompactionUpstream(
 		return nil, err
 	}
 	// W1 缺口① (2026-11-19): 改为 per-model 粒度
-	if e.Circuit != nil && !e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel) {
+	if e.Circuit != nil && !e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand)) {
 		return nil, fmt.Errorf("compaction: circuit open for credential %d model %s", cand.CredentialID, cand.RawModel)
 	}
 
@@ -499,7 +499,7 @@ func (e *Executor) doCompactionUpstream(
 			// that is never released on this early return — release it so the
 			// breaker is not wedged in HALF_OPEN.
 			if e.Circuit != nil {
-				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			}
 			return nil, fmt.Errorf("compaction: limiter: %w", err)
 		}
@@ -525,7 +525,7 @@ func (e *Executor) doCompactionUpstream(
 		// This path is rare (only on URL/header construction failure) but the
 		// same 5-minute wedge applies. Mirrors the limiter-reject path at 455-457.
 		if e.Circuit != nil {
-			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
 		return nil, err
 	}
@@ -536,11 +536,11 @@ func (e *Executor) doCompactionUpstream(
 	if err != nil {
 		// W1 缺口① (2026-11-19): 改为 per-model 粒度
 		if e.Circuit != nil && !freeCredentialsTolerateTransient(cand.BillingMode, errorsx.KindNetwork) {
-			e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, cand.RawModel, errorsx.KindNetwork)
+			e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), errorsx.KindNetwork)
 		} else if e.Circuit != nil {
 			// 2026-07-03 incident fix: free-cred transient skips RecordFailure,
 			// so release a consumed half-open probe.
-			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
 		return nil, err
 	}
@@ -549,15 +549,15 @@ func (e *Executor) doCompactionUpstream(
 			kind := errorsx.ClassifyErrorWithBody(resp.StatusCode, nil)
 			// W1 缺口① (2026-11-19): 改为 per-model 粒度
 			if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
-				e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, cand.RawModel, kind)
+				e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), kind)
 			} else {
 				// 2026-07-03 incident fix: free-cred transient skips
 				// RecordFailure, so release a consumed half-open probe.
-				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			}
 		} else if resp.StatusCode < 400 {
 			// W1 缺口① (2026-11-19): 改为 per-model 粒度
-			e.Circuit.RecordSuccessPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel)
+			e.Circuit.RecordSuccessPerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		} else {
 			// 2026-08-07 audit fix: 4xx (except 429, handled above) is not
 			// recorded as a failure (ambiguous for compaction: could be
@@ -566,7 +566,7 @@ func (e *Executor) doCompactionUpstream(
 			// released to prevent the breaker wedging in HALF_OPEN until
 			// the 5-minute timeout reclaims it. This completes the 70fe6d81
 			// fix which missed this branch.
-			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
 	}
 	return resp, nil

@@ -3203,6 +3203,26 @@ func candidateRawModel(candidate provider.Candidate) string {
 	return candidate.RawModel
 }
 
+// circuitScopeModel 返回候选的**熔断作用域**模型分量。
+//
+// ★ P0-a (2026-11-19 审计轮）：熔断器键为 "providerID/credentialID/model"，
+// 准入（AllowPerModel）、记账（RecordFailure*/RecordSuccess*）、探针释放
+// （ReleaseProbe）三处必须给出**完全相同**的 model 分量，否则三者会落到
+// 不同的 breaker 上：
+//
+//	· 历史事故一：准入用 cand.RawModel（出站名），记账用
+//	  cand.BindingRawModel()（offer 身份）⇒ 出站名被多 binding 共享时，
+//	  准入查 A、记账写 B ⇒ chat 主链路熔断永不跳闸。
+//	· 历史事故二：探针在 per-model breaker 上消费，释放却走 legacy 凭据键
+//	  ⇒ 探针槽永不释放 ⇒ breaker 永久卡在 HALF_OPEN。
+//
+// 这里统一取 provider.Candidate.BindingRawModel()：offer 身份（优先
+// mo.raw_model_name），provider/client.go 的注释明确「按 RawModel 建键会
+// 合并独立 binding 的健康遥测」。
+func circuitScopeModel(candidate provider.Candidate) string {
+	return candidate.BindingRawModel()
+}
+
 // errModalityResolverUnavailable is returned when a request carries a
 // modality but the configured provider cannot filter candidates by modality.
 //
@@ -3898,7 +3918,7 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	}
 }
 
-func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, credentialID int, kind errorsx.ErrorKind) bool {
+func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, credentialID int, model string, kind errorsx.ErrorKind) bool {
 	if !shouldWriteCredentialState(kind) {
 		return false
 	}
@@ -3922,7 +3942,19 @@ func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, cred
 	if e.Circuit == nil {
 		return true
 	}
-	b := e.Circuit.GetOrCreate(providerID, credentialID)
+	// ★ P0-a (2026-11-19 审计轮): 读准入所查的同一把 breaker——原实现读
+	// legacy 凭据作用域，而熔断状态写在 per-model 作用域 ⇒ 永远读到
+	// CLOSED ⇒ 「需熔断确认才写状态」的门在熔断时形同虚设。
+	b := e.Circuit.GetPerModel(providerID, credentialID, model)
+	if b == nil {
+		slog.Warn("credential state write pending failure confirmation",
+			"credential_id", credentialID,
+			"provider_id", providerID,
+			"kind", kind,
+			"breaker", "absent",
+		)
+		return false
+	}
 	state := b.State()
 	if state == credential.StateOpen || state == credential.StateQuarantined {
 		return true

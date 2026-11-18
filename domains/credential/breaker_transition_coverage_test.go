@@ -56,17 +56,17 @@ func TestOpenBreakerQuarantinesOnPermanentFailure(t *testing.T) {
 	m.SetObserver(collectedObserver(&events))
 
 	// 前提在场：先把 breaker 开路（阈值恒为 2，:74-76）。
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	if got := m.Get(1, 1).State(); got != StateOpen {
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	if got := m.GetPerModel(1, 1, "").State(); got != StateOpen {
 		t.Fatalf("premise broken: breaker should be open, got %s", got)
 	}
 
 	// 配额族（RecoveryPermanent，:131）⇒ 落隔离。
-	m.RecordFailure(1, 1, KindQuota)
-	m.RecordFailure(1, 1, KindQuota)
+	m.RecordFailurePerModel(1, 1, "", KindQuota)
+	m.RecordFailurePerModel(1, 1, "", KindQuota)
 
-	b := m.Get(1, 1)
+	b := m.GetPerModel(1, 1, "")
 	if got := b.State(); got != StateQuarantined {
 		t.Fatalf("open breaker must quarantine on permanent failure, got %s", got)
 	}
@@ -96,15 +96,15 @@ func TestOpenBreakerQuarantinesOnPermanentFailure(t *testing.T) {
 // 隔离态上（需要管理员手工清）。
 func TestOpenBreakerStaysOpenOnRecoverableFailure(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(2, 2, KindTransient)
-	m.RecordFailure(2, 2, KindTransient)
-	if got := m.Get(2, 2).State(); got != StateOpen {
+	m.RecordFailurePerModel(2, 2, "", KindTransient)
+	m.RecordFailurePerModel(2, 2, "", KindTransient)
+	if got := m.GetPerModel(2, 2, "").State(); got != StateOpen {
 		t.Fatalf("premise broken: breaker should be open, got %s", got)
 	}
 
-	m.RecordFailure(2, 2, KindAuth)
+	m.RecordFailurePerModel(2, 2, "", KindAuth)
 
-	if got := m.Get(2, 2).State(); got != StateOpen {
+	if got := m.GetPerModel(2, 2, "").State(); got != StateOpen {
 		t.Fatalf("a recoverable failure must not quarantine an open breaker, got %s", got)
 	}
 }
@@ -125,14 +125,14 @@ func TestQuarantinedBreakerDowngradesToOpenOnQuotaReset(t *testing.T) {
 	m := NewManager()
 	m.SetObserver(collectedObserver(&events))
 
-	m.RecordFailure(3, 3, KindQuota)
-	m.RecordFailure(3, 3, KindQuota)
-	b := m.Get(3, 3)
+	m.RecordFailurePerModel(3, 3, "", KindQuota)
+	m.RecordFailurePerModel(3, 3, "", KindQuota)
+	b := m.GetPerModel(3, 3, "")
 	if got := b.State(); got != StateQuarantined {
 		t.Fatalf("premise broken: breaker should be quarantined, got %s", got)
 	}
 
-	m.RecordFailureWithReset(3, 3, KindQuota, time.Now().Add(45*time.Minute), true)
+	m.RecordFailureWithReset(3, 3, "", KindQuota, time.Now().Add(45*time.Minute), true)
 
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("quarantine must downgrade to open on quota reset evidence, got %s", got)
@@ -187,10 +187,10 @@ func TestQuarantinedBreakerDowngradesToOpenOnQuotaReset(t *testing.T) {
 // 冷却档序号与 open_since 刷新（即状态机内部的顺延语义本身）。
 func TestOpenBreakerReentryExtendsCoolingWindow(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(4, 4, KindTransient)
-	m.RecordFailure(4, 4, KindTransient) // → 第一次开路
+	m.RecordFailurePerModel(4, 4, "", KindTransient)
+	m.RecordFailurePerModel(4, 4, "", KindTransient) // → 第一次开路
 
-	b := m.Get(4, 4)
+	b := m.GetPerModel(4, 4, "")
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("premise broken: breaker should be open, got %s", got)
 	}
@@ -204,7 +204,7 @@ func TestOpenBreakerReentryExtendsCoolingWindow(t *testing.T) {
 	}
 
 	// 已开路再吃一次失败 ⇒ 原地重入（顺延冷却）。
-	m.RecordFailure(4, 4, KindTransient)
+	m.RecordFailurePerModel(4, 4, "", KindTransient)
 
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("re-entry must stay open, got %s", got)
@@ -249,22 +249,22 @@ func TestManagerPeekAllowedSemantics(t *testing.T) {
 	m := NewManager()
 
 	// ④ 命中不存在的 breaker ⇒ true。
-	if !m.PeekAllowed(9, 9) {
+	if !m.PeekAllowed(9, 9, "") {
 		t.Fatal("PeekAllowed on a missing breaker must be true (no breaker = no circuit constraint)")
 	}
 	// 负控：PeekAllowed **不得**创建 breaker（只读预检不许有副作用）。
-	if m.Get(9, 9) != nil {
+	if m.GetPerModel(9, 9, "") != nil {
 		t.Fatal("PeekAllowed must not create a breaker")
 	}
 
 	// ⑤ OPEN 且冷却未到 ⇒ false。
-	m.RecordFailure(5, 5, KindTransient)
-	m.RecordFailure(5, 5, KindTransient)
-	b := m.Get(5, 5)
+	m.RecordFailurePerModel(5, 5, "", KindTransient)
+	m.RecordFailurePerModel(5, 5, "", KindTransient)
+	b := m.GetPerModel(5, 5, "")
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("premise broken: breaker should be open, got %s", got)
 	}
-	if m.PeekAllowed(5, 5) {
+	if m.PeekAllowed(5, 5, "") {
 		t.Fatal("an open breaker inside its cooling window must not be peek-allowed")
 	}
 
@@ -272,7 +272,7 @@ func TestManagerPeekAllowedSemantics(t *testing.T) {
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-time.Second)
 	b.mu.Unlock()
-	if !m.PeekAllowed(5, 5) {
+	if !m.PeekAllowed(5, 5, "") {
 		t.Fatal("an open breaker past its cooling deadline must be peek-allowed")
 	}
 	if got := b.State(); got != StateOpen {
@@ -280,12 +280,12 @@ func TestManagerPeekAllowedSemantics(t *testing.T) {
 	}
 
 	// 隔离态 ⇒ false（不随时间自愈）。
-	m.RecordFailure(6, 6, KindQuota)
-	m.RecordFailure(6, 6, KindQuota)
-	if got := m.Get(6, 6).State(); got != StateQuarantined {
+	m.RecordFailurePerModel(6, 6, "", KindQuota)
+	m.RecordFailurePerModel(6, 6, "", KindQuota)
+	if got := m.GetPerModel(6, 6, "").State(); got != StateQuarantined {
 		t.Fatalf("premise broken: breaker should be quarantined, got %s", got)
 	}
-	if m.PeekAllowed(6, 6) {
+	if m.PeekAllowed(6, 6, "") {
 		t.Fatal("a quarantined breaker must never be peek-allowed")
 	}
 }
@@ -318,10 +318,10 @@ func TestManagerRecordFailureWithBillingModeProfileSelection(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewManager()
-			m.RecordFailureWithBillingMode(7, 7, KindConcurrent, tc.billingMode)
-			m.RecordFailureWithBillingMode(7, 7, KindConcurrent, tc.billingMode)
+			m.RecordFailureWithBillingMode(7, 7, "", KindConcurrent, tc.billingMode)
+			m.RecordFailureWithBillingMode(7, 7, "", KindConcurrent, tc.billingMode)
 
-			b := m.Get(7, 7)
+			b := m.GetPerModel(7, 7, "")
 			if got := b.State(); got != StateOpen {
 				t.Fatalf("premise broken: breaker should be open, got %s", got)
 			}
@@ -345,9 +345,9 @@ func TestManagerRecordFailureWithBillingModeProfileSelection(t *testing.T) {
 // 负控：ok=false ⇒ 回落旧语义（阈值累计 ⇒ 一次不成气候、两次隔离）。
 func TestManagerRecordFailureWithResetWrapper(t *testing.T) {
 	m := NewManager()
-	m.RecordFailureWithReset(8, 8, errorsx.KindQuotaPeriodic, time.Now().Add(10*time.Minute), true)
+	m.RecordFailureWithReset(8, 8, "", errorsx.KindQuotaPeriodic, time.Now().Add(10*time.Minute), true)
 
-	b := m.Get(8, 8)
+	b := m.GetPerModel(8, 8, "")
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("a reset-aligned quota failure must open immediately, got %s", got)
 	}
@@ -358,61 +358,75 @@ func TestManagerRecordFailureWithResetWrapper(t *testing.T) {
 
 	// 负控：ok=false 回落旧语义 ⇒ 单次不成气候。
 	m2 := NewManager()
-	m2.RecordFailureWithReset(9, 9, KindQuota, time.Time{}, false)
-	if got := m2.Get(9, 9).State(); got != StateClosed {
+	m2.RecordFailureWithReset(9, 9, "", KindQuota, time.Time{}, false)
+	if got := m2.GetPerModel(9, 9, "").State(); got != StateClosed {
 		t.Fatalf("premise broken: an unhinted quota failure must stay closed below threshold, got %s", got)
 	}
-	m2.RecordFailureWithReset(9, 9, KindQuota, time.Time{}, false)
-	if got := m2.Get(9, 9).State(); got != StateQuarantined {
+	m2.RecordFailureWithReset(9, 9, "", KindQuota, time.Time{}, false)
+	if got := m2.GetPerModel(9, 9, "").State(); got != StateQuarantined {
 		t.Fatalf("the legacy quota path must still quarantine, got %s", got)
 	}
 }
 
 // TestManagerRecordModelScopedFailureWrapper 钉住 ⑦ 的第二条：Manager 层的
-// RecordModelScopedFailure 包装（:1049-1052）。
+// RecordModelScopedFailure 包装。
 //
-// 三条判据：
+// ★ P0-a (2026-11-19 审计轮)：作用域已从「整凭据」改为
+// 「(provider, credential, model)」——模型级拒收只针对该 (凭据, 模型)
+// 作用域，兄弟模型天然不受影响（旧设计靠"不计数"达成，语义更脆）。
 //
-//	· 模型级拒收**不计数、不迁移**（凭据连坐被移除）
-//	· 包装层**会创建** breaker（内部走 GetOrCreate）——若不存在就返回，
-//	  调用方的失败记录会凭空消失
-//	· 负控：同一条凭据随后吃真实失败**仍能正常跳闸**（计数没被污染）
+// 四条判据：
+//
+//	· 模型级拒收**不计数、不迁移**（该作用域的 breaker 保持 CLOSED）
+//	· 包装层**会创建** breaker——若不存在就返回，调用方的失败记录会凭空消失
+//	· 兄弟模型完全不受影响（连 breaker 都不该被凭空造出来）
+//	· 负控：同一条 (凭据, 模型) 随后吃真实失败**仍能正常跳闸**（计数没被污染）
 func TestManagerRecordModelScopedFailureWrapper(t *testing.T) {
 	m := NewManager()
 	m.RecordModelScopedFailure(10, 10, errorsx.KindModelNotFound, "gpt-5-fake")
 
-	b := m.Get(10, 10)
+	b := m.GetPerModel(10, 10, "gpt-5-fake")
 	if b == nil {
-		t.Fatal("Manager.RecordModelScopedFailure must create the breaker (GetOrCreate)")
+		t.Fatal("Manager.RecordModelScopedFailure must create the breaker (GetOrCreatePerModel)")
 	}
 	if got := b.State(); got != StateClosed {
-		t.Fatalf("a model-scoped rejection must not trip the credential breaker, got %s", got)
+		t.Fatalf("a model-scoped rejection must not trip the breaker, got %s", got)
 	}
 	if got := b.ConsecutiveFailures(); got != 0 {
 		t.Fatalf("a model-scoped rejection must not accumulate consecutive failures, got %d", got)
 	}
-	if !m.Allow(10, 10) {
-		t.Fatal("the credential must stay usable for sibling models")
+	if !m.AllowPerModel(10, 10, "gpt-5-fake") {
+		t.Fatal("the (credential, model) scope must stay usable")
+	}
+	// 兄弟模型完全不受影响（且不应被这次拒收凭空造出 breaker）。
+	if sibling := m.GetPerModel(10, 10, "gpt-4"); sibling != nil {
+		t.Fatal("a sibling model must not even get a breaker from a model-scoped rejection")
+	}
+	if !m.AllowPerModel(10, 10, "gpt-4") {
+		t.Fatal("sibling models must stay usable")
 	}
 
 	// 负控：真实失败仍能正常跳闸（证明模型级拒收没有污染计数）。
-	m.RecordFailure(10, 10, KindTransient)
-	m.RecordFailure(10, 10, KindTransient)
+	m.RecordFailurePerModel(10, 10, "gpt-5-fake", KindTransient)
+	m.RecordFailurePerModel(10, 10, "gpt-5-fake", KindTransient)
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("real failures must still trip the breaker, got %s", got)
 	}
 }
 
 // TestManagerRecordModelScopedFailureReleasesProbe 钉住 ⑦ 的第三条：半开态
-// 下的模型级拒收要**归还探针槽**（:1049-1052 → Breaker.RecordModelScopedFailure
-// :532-545 → ReleaseProbe :351-361）。
+// 下的模型级拒收要**归还探针槽**（Manager.RecordModelScopedFailure →
+// Breaker.RecordModelScopedFailure → ReleaseProbe）。
 //
 // 为什么重要：探针请求打在已死模型上，若不归还槽位，凭据会卡在「探针被占」
 // 的半开态（breaker.go:290-297 记录的那起事故：槽位泄漏 ⇒ 熔断器卡死
 // 数小时，只能重启进程）。
+//
+// ★ P0-a (2026-11-19 审计轮)：探针槽在 (凭据, 模型) 作用域上消费，
+// 归还也必须落在同一作用域——否则归还的是另一把 breaker 的槽位。
 func TestManagerRecordModelScopedFailureReleasesProbe(t *testing.T) {
 	m := NewManager()
-	b := m.GetOrCreate(11, 11)
+	b := m.GetOrCreatePerModel(11, 11, "glm-5.2")
 	b.mu.Lock()
 	b.state.Store(int32(StateHalfOpen))
 	b.halfOpenProbes.Store(1)
@@ -421,7 +435,7 @@ func TestManagerRecordModelScopedFailureReleasesProbe(t *testing.T) {
 
 	m.RecordModelScopedFailure(11, 11, errorsx.KindModelDeprecated, "glm-5.2")
 
-	if !m.Allow(11, 11) {
+	if !m.AllowPerModel(11, 11, "glm-5.2") {
 		t.Fatal("the probe slot must be released so the next request can re-probe")
 	}
 }
@@ -587,7 +601,7 @@ func TestManagerStatsBoundaries(t *testing.T) {
 
 	t.Run("a clean breaker exposes only the always-present fields", func(t *testing.T) {
 		m := NewManager()
-		m.GetOrCreate(16, 16)
+		m.GetOrCreatePerModel(16, 16, "")
 		stats := m.Stats()
 		if len(stats) != 1 {
 			t.Fatalf("expected 1 breaker, got %d", len(stats))
@@ -598,8 +612,10 @@ func TestManagerStatsBoundaries(t *testing.T) {
 				t.Fatalf("stats missing the always-present field %q: %v", key, got)
 			}
 		}
-		if got["key"] != "16/16" {
-			t.Fatalf("stats key = %v, want %q", got["key"], "16/16")
+		// ★ P0-a (2026-11-19 审计轮): 键格式为 "providerID/credentialID/model"。
+		// 这里用的是整凭据（legacy）作用域 ⇒ 第三段固定 "_legacy_"。
+		if got["key"] != "16/16/_legacy_" {
+			t.Fatalf("stats key = %v, want %q", got["key"], "16/16/_legacy_")
 		}
 		if got["state"] != "closed" {
 			t.Fatalf("stats state = %v, want %q", got["state"], "closed")
@@ -613,8 +629,8 @@ func TestManagerStatsBoundaries(t *testing.T) {
 
 	t.Run("an open breaker exposes the failure and cooling fields", func(t *testing.T) {
 		m := NewManager()
-		m.RecordFailure(17, 17, KindTransient)
-		m.RecordFailure(17, 17, KindTransient)
+		m.RecordFailurePerModel(17, 17, "", KindTransient)
+		m.RecordFailurePerModel(17, 17, "", KindTransient)
 		stats := m.Stats()
 		if len(stats) != 1 {
 			t.Fatalf("expected 1 breaker, got %d", len(stats))
@@ -639,9 +655,9 @@ func TestManagerStatsBoundaries(t *testing.T) {
 
 	t.Run("a recovered breaker exposes recovered_at", func(t *testing.T) {
 		m := NewManager()
-		m.RecordFailure(18, 18, KindTransient)
-		m.RecordFailure(18, 18, KindTransient)
-		m.RecordSuccess(18, 18)
+		m.RecordFailurePerModel(18, 18, "", KindTransient)
+		m.RecordFailurePerModel(18, 18, "", KindTransient)
+		m.RecordSuccessPerModel(18, 18, "")
 		stats := m.Stats()
 		if len(stats) != 1 {
 			t.Fatalf("expected 1 breaker, got %d", len(stats))
@@ -696,8 +712,8 @@ func TestStateStringQuarantinedAndUnknown(t *testing.T) {
 
 	// 读面同源：隔离态在 Stats() 里必须显示为 "quarantined"。
 	m := NewManager()
-	m.RecordFailure(19, 19, KindQuota)
-	m.RecordFailure(19, 19, KindQuota)
+	m.RecordFailurePerModel(19, 19, "", KindQuota)
+	m.RecordFailurePerModel(19, 19, "", KindQuota)
 	stats := m.Stats()
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 breaker, got %d", len(stats))

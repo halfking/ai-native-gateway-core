@@ -71,11 +71,11 @@ func TestForwardForDispatch_LogsCircuitOpen(t *testing.T) {
 	db := newRecordingFailureDB(4)
 
 	// Force the breaker into StateOpen for (32, 22) so Allow() returns false.
-	cm.RecordFailure(32, 22, errorsx.KindTransient)
-	cm.RecordFailure(32, 22, errorsx.KindTransient)
-	cm.RecordFailure(32, 22, errorsx.KindTransient)
+	cm.RecordFailurePerModel(32, 22, "", errorsx.KindTransient)
+	cm.RecordFailurePerModel(32, 22, "", errorsx.KindTransient)
+	cm.RecordFailurePerModel(32, 22, "", errorsx.KindTransient)
 	// Sanity: confirm the breaker is now open in-memory.
-	if got := cm.Get(32, 22).State(); got != credential.StateOpen {
+	if got := cm.GetPerModel(32, 22, "").State(); got != credential.StateOpen {
 		t.Fatalf("breaker state = %s, want open (test setup)", got)
 	}
 

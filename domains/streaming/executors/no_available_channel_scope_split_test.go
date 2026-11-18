@@ -157,7 +157,7 @@ func TestApplyNodeHealthDecisionNoAvailableChannel5xxWritesTransientKind(t *test
 	}
 	// 断路器记的也必须是瞬时 kind（它在 defaultPolicies / freeTierPolicies /
 	// transientFamily 三张表里都有档位）。
-	brk := exec.Circuit.Get(1, 7)
+	brk := exec.Circuit.GetPerModel(1, 7, "")
 	if brk == nil {
 		t.Fatal("断路器没有记录这次失败")
 	}
