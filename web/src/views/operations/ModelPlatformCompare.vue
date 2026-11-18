@@ -141,6 +141,7 @@ function setScope(next: '' | 'family') {
           v-model="model"
           :placeholder="t('priceCompare.platSearch')"
           :title="t('priceCompare.colModel')"
+        @update:model-value="load"
         />
       </div>
       <button class="btn btn-ghost btn-sm" @click="loadDirectory">{{ t('priceCompare.platReloadDir') }}</button>
