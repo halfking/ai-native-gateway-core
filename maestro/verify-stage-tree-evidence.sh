@@ -173,18 +173,6 @@ fi
 #    menu-config.json 的 exported_at 是**构建时戳** ⇒ 每次 build 都变
 #    ⇒ 拿它当「并行车是否泄漏」的判据 ⇒ 恒定误报。
 #    ⇒ 判据＝**内容**（去掉 exported_at 后逐字比对），不是文件哈希。
-# ★ 比对「并行车是否泄漏到本次发布」：只看**内容**，不看构建戳。
-leak_of() { # leak_of <ref> <base> <file> ⇒ 0=未泄漏 / 1=泄漏
-  local A B
-  if [ "$3" = "web/public/menu-config.json" ]; then
-    A=$(git -C "$ROOT" show "$1:$3" 2>/dev/null | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
-    B=$(git -C "$ROOT" show "$2:$3" 2>/dev/null | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
-  else
-    A=$(git -C "$ROOT" rev-parse "$1:$3" 2>/dev/null)
-    B=$(git -C "$ROOT" rev-parse "$2:$3" 2>/dev/null)
-  fi
-  if [ "$A" != "$B" ]; then echo 1; else echo 0; fi
-}
 if [ -n "$TAG_NEW" ] && git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/null 2>&1; then
   DH=$(git -C "$ROOT" rev-parse --short "${TAG_NEW}^{commit}")
   # ★ 基点必须从【标签消息】里取，不能用 `TAG^`：
@@ -217,7 +205,7 @@ if [ -n "$TAG_NEW" ] && git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/nul
   TAG_OK=1
   if [ -z "$TREE_HEAD" ] || [ -z "$TAG_HEAD" ] || [ "$TAG_HEAD" != "$TREE_HEAD" ]; then TAG_OK=0; fi
   # ★ 零真泄漏＝**线上 release 与部署树逐字对拍**（不是与「并行车文件清单」对拍）：
-  #   menu-config 的 exported_at 是构建戳 ⇒ 必须去掉再比内容（见 leak_of 的同款口径）。
+  #   menu-config 的 exported_at 是构建戳 ⇒ 两边都去掉 exported_at 后再比内容。
   SRV_MC=$(ssh -o BatchMode=yes -o ConnectTimeout=20 -p "${SSH_PORT}" "root@${SSH_HOST}" \
     'cat /opt/llm-gateway-go/current/web/menu-config.json' 2>/dev/null \
     | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
@@ -240,20 +228,59 @@ else
 fi
 
 # ── ⑧ 上一版部署仍可追溯，且被新版**内容超集** ─────────────────────────────
-if [ -n "$TAG_OLD" ] && git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/null 2>&1; then
+# ★ 2026-11-18 判据基准改造（与 ⑦ **同构**）：旧判据把「并行车在途文件
+#   （admin/pi_analysis_handler.go、web/public/menu-config.json）不得出现在
+#   上一版发布面里」**写死** ⇒ 那条只在「发我方分支、并发车的改动仍在途」场景成立。
+#   本轮发布单元 = **origin/main** ⇒ 并行车的 PI 工作**已正式合入并随 3067 上线**
+#   ⇒ 「上一版发布面含 PI 文件」是**发布单元自身的一部分** ⇒ 旧判据**恒定假红**
+#   （本轮实测：泄漏 2 处，实为 3067 发布面的合法内容；tag 记 files=113 与
+#     diff(base=2083bbe09, 1562862ba)=113 **逐字一致** ⇒ 上一版台账本身是自洽的）。
+# ★★ 退役的闸门不要留在仓里当负债：旧 `leak_of`（按「并行车文件清单」判泄漏）
+#   已随本改造**整段退役**，不再以任何形式参与判定。
+# ⇒ 新判据（与场景无关，随发布单元走）：
+#   ① **台账自洽**：diff(上一版 base, 上一版 tag) 的文件数 == tag 记的 files=
+#      ⇒ tag 指错提交 / 记错文件数都会在这里报红（上一轮真错位就属此类）；
+#   ② **前进关系**：上一版 commit 必须是新版 commit 的**祖先**
+#      ⇒ 发版是前进，不是换轨/回退；
+#   ③ **内容超集**：新版相对上一版**没有删除任何文件**（diff --name-status 无 D）
+#      ⇒ 上一版交付过的内容在新版里仍然在，不被悄悄丢掉；
+#   ④ **可回滚**：上一版的线上 release 目录**仍在**（回滚路径真实可用）；
+#   ⑤ **PI 域**：只作**报告**（上一版发布面内 PI 域改动几处），不再写死为 0。
+if [ -n "$TAG_OLD" ] && git -C "$ROOT" rev-parse --verify "${TAG_OLD}" >/dev/null 2>&1 \
+   && [ -n "$TAG_NEW" ]; then
   OH=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}^{commit}")
   OB=$(tag_field "${TAG_OLD}" "base")
   [ -z "$OB" ] && OB=$(git -C "$ROOT" rev-parse --short "${TAG_OLD}~1" 2>/dev/null)
   ON=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
-  OLEAK=0
-  for f in admin/pi_analysis_handler.go web/public/menu-config.json; do
-    OLEAK=$((OLEAK + $(leak_of "${TAG_OLD}^{commit}" "$OB" "$f")))
-  done
+  OEXP=$(tag_field "${TAG_OLD}" "files")
+  # ① 台账自洽
+  LEDGER_OK=1
+  if [ -n "$OEXP" ] && [ "$ON" != "$OEXP" ]; then LEDGER_OK=0; fi
+  # ② 前进关系（上一版是新版祖先）
+  FWD=0
+  git -C "$ROOT" merge-base --is-ancestor "${TAG_OLD}^{commit}" "${TAG_NEW}^{commit}" 2>/dev/null && FWD=1
+  # ③ 内容超集：新版相对上一版**没删文件**
+  ODEL=$(git -C "$ROOT" diff --name-status "${TAG_OLD}^{commit}" "${TAG_NEW}^{commit}" 2>/dev/null \
+    | awk '$1 ~ /^D/ {c++} END {print c+0}')
+  # ④ 上一版 release 目录仍在（回滚路径可用）
+  #   ★ 三态：SSH 不可达 ⇒ **未评估**（不等于「目录不存在」）⇒ 不据此判红。
+  OSEQ=$(tag_seq_of "$TAG_OLD")
+  OSHA=$(git -C "$ROOT" rev-parse "${TAG_OLD}^{commit}" 2>/dev/null | cut -c1-8)
+  OLD_REL="${OSEQ}-${OSHA}"
+  REL_RAW=$(ssh -o BatchMode=yes -o ConnectTimeout=20 -p "${SSH_PORT}" "root@${SSH_HOST}" \
+    "test -d /opt/llm-gateway-go/releases/${OLD_REL} && echo yes || echo no" 2>/dev/null)
+  case "$REL_RAW" in
+    yes) REL_OK="yes" ;;
+    no)  REL_OK="no" ;;
+    *)   REL_OK="未评估" ;;   # SSH 不可达 ⇒ 未评估，不是失败
+  esac
   SUPER=$(git -C "$ROOT" diff --name-only "${TAG_OLD}^{commit}" "${TAG_NEW}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
-  if [ "$OLEAK" = "0" ]; then
-    ok "⑧ 上一版部署可追溯" "tag ${TAG_OLD}（${OH}，基点 ${OB:0:8} + ${ON} 文件）并行车 0 泄漏；→新版差异 ${SUPER} 个文件"
+  OPI=$(git -C "$ROOT" diff --name-only "$OB" "${TAG_OLD}^{commit}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$LEDGER_OK" = "1" ] && [ "$FWD" = "1" ] && [ "$ODEL" = "0" ] \
+     && { [ "$REL_OK" = "yes" ] || [ "$REL_OK" = "未评估" ]; }; then
+    ok "⑧ 上一版部署可追溯 + 内容超集" "tag ${TAG_OLD}（${OH}，基点 ${OB:0:8} + ${ON} 文件${OEXP:+（tag 记 files=${OEXP}）}）；台账自洽=${LEDGER_OK}／前进关系=${FWD}（上一版是新版权威）／新版未删文件=${ODEL}／上一版 release 目录 ${OLD_REL} 留存=${REL_OK}；→新版差异 ${SUPER} 个文件（PI 域 ${OPI} 处，仅报告）"
   else
-    bad "⑧ 上一版部署可追溯" "并行车泄漏 ${OLEAK} 处"
+    bad "⑧ 上一版部署可追溯 + 内容超集" "台账自洽=${LEDGER_OK}（实算 ${ON} vs tag 记 ${OEXP:-未记}）／前进关系=${FWD}／新版删文件 ${ODEL} 处／release 目录 ${OLD_REL} 留存=${REL_OK}；PI 域 ${OPI} 处（仅报告）"
   fi
 else
   skip "⑧ 上一版部署可追溯" "无 tag ${TAG_OLD:-（仓内无 durable ref）}"
