@@ -346,6 +346,8 @@ describe('AuditLogView：桌面表格零回归', () => {
 
   it('桌面改筛选会带进请求，并回到第 1 页', async () => {
     const w = await factory()
+    // 2026-11-18 FilterBar 全断点默认收拢 ⇒ 操作面板控件前先展开
+    await w.find('.filter-bar__toggle').trigger('click')
     await w.findAll('input.filter-bar__control')[0].setValue('alice')
     await w.find('.filter-bar__search').trigger('click')
     await flushPromises()
@@ -466,6 +468,8 @@ describe('AuditLogView：compact 连续加载路径', () => {
     await flushPromises()
     expect(calls).toHaveLength(1)
 
+    // 2026-11-18 FilterBar 全断点默认收拢 ⇒ 操作面板控件前先展开
+    await w.find('.filter-bar__toggle').trigger('click')
     await w.findAll('input.filter-bar__control')[0].setValue('alice')
     await w.find('.filter-bar__search').trigger('click')
     await flushPromises()

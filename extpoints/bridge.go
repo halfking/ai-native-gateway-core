@@ -30,6 +30,7 @@ package extpoints
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
@@ -86,6 +87,11 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 	// 从 envelope 构建 extpoints.Request
 	req := h.buildRequest(envelope)
 	
+	// 记录开始时间（用于性能监控）
+	hookStart := time.Now()
+	totalPlugins := 0
+	successfulPlugins := 0
+	
 	// 对每个映射的 Phase，执行该 Phase 的插件
 	for _, phase := range extPhases {
 		plugins := h.registry.Get(phase)
@@ -93,20 +99,28 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			continue
 		}
 		
-		// 为这个 Phase 的插件构建 ExecutionContext
-		execCtx := &ExecutionContext{
-			Context:     ctx,
-			Phase:       phase,
-			RequestID:   req.RequestID,
-			RequestTime: time.Now(),
-			State:       make(map[string]interface{}),
-		}
+		slog.Debug("ExtensionPointHook: executing plugins",
+			"phase", phase,
+			"plugin_count", len(plugins),
+			"request_id", req.RequestID,
+		)
+		
+		// 从对象池获取 ExecutionContext（性能优化：减少分配）
+		execCtx := AcquireExecutionContext()
+		defer ReleaseExecutionContext(execCtx)
+		
+		// 初始化 ExecutionContext
+		InitExecutionContext(execCtx, ctx, phase, "", req.RequestID, time.Now())
 		
 		// 按优先级顺序执行插件（registry.Get 已排序）
 		for _, plugin := range plugins {
 			// 确保插件实现了 PhaseExecutor 接口
 			executor, ok := plugin.(PhaseExecutor)
 			if !ok {
+				slog.Warn("ExtensionPointHook: plugin does not implement PhaseExecutor",
+					"plugin_id", plugin.Metadata().PluginID,
+					"phase", phase,
+				)
 				continue
 			}
 			
@@ -116,15 +130,46 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			}
 			
 			execCtx.PluginID = md.PluginID
+			totalPlugins++
 			
 			// 执行插件
+			pluginStart := time.Now()
 			result, err := executor.Execute(execCtx)
+			pluginDuration := time.Since(pluginStart)
 			
-			// fail-open: 插件失败记录但不阻塞请求
-			if err != nil || (result != nil && !result.Success) {
-				// 可以在这里记录错误日志
+			// 记录执行结果
+			if err != nil {
+				// fail-open: 插件失败记录但不阻塞请求
+				slog.Warn("ExtensionPointHook: plugin execution failed (fail-open)",
+					"plugin_id", md.PluginID,
+					"phase", phase,
+					"error", err.Error(),
+					"duration_us", pluginDuration.Microseconds(),
+					"request_id", req.RequestID,
+				)
 				continue
 			}
+			
+			if result != nil && !result.Success {
+				slog.Warn("ExtensionPointHook: plugin returned failure (fail-open)",
+					"plugin_id", md.PluginID,
+					"phase", phase,
+					"error", result.Error,
+					"duration_us", pluginDuration.Microseconds(),
+					"request_id", req.RequestID,
+				)
+				continue
+			}
+			
+			// 成功执行
+			successfulPlugins++
+			slog.Debug("ExtensionPointHook: plugin executed successfully",
+				"plugin_id", md.PluginID,
+				"phase", phase,
+				"duration_us", pluginDuration.Microseconds(),
+				"modified", result != nil && result.Modified,
+				"request_id", req.RequestID,
+			)
 			
 			// 将插件结果同步到 Request.Attributes
 			if result != nil && result.Metadata != nil {
@@ -133,6 +178,19 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 				}
 			}
 		}
+	}
+	
+	// 记录整体执行统计
+	hookDuration := time.Since(hookStart)
+	if totalPlugins > 0 {
+		slog.Info("ExtensionPointHook: execution complete",
+			"pipeline_phase", h.pipelinePhase,
+			"total_plugins", totalPlugins,
+			"successful_plugins", successfulPlugins,
+			"failed_plugins", totalPlugins-successfulPlugins,
+			"duration_us", hookDuration.Microseconds(),
+			"request_id", req.RequestID,
+		)
 	}
 	
 	// 构建虚拟的 Response（用于同步回 envelope）
@@ -188,9 +246,9 @@ func (h *ExtensionPointHook) OnError(ctx context.Context, envelope *domain.Pipel
 // mapPhases 将 domains/pipeline Phase 映射到 extpoints Phase。
 // 
 // 映射规则：
-//   - pre_authentication → PhasePreAuth
+//   - pre_authentication / pre_auth → PhasePreAuth
 //   - authentication → PhaseAuth
-//   - post_authentication → PhasePostAuth
+//   - post_authentication / post_auth → PhasePostAuth
 //   - pre_routing → PhasePreRoute
 //   - routing → PhaseRoute
 //   - post_routing → PhasePostRoute
@@ -205,8 +263,10 @@ func (h *ExtensionPointHook) OnError(ctx context.Context, envelope *domain.Pipel
 func (h *ExtensionPointHook) mapPhases(pipelinePhase string) []Phase {
 	mapping := map[string][]Phase{
 		"pre_authentication":  {PhasePreAuth},
+		"pre_auth":            {PhasePreAuth}, // alias
 		"authentication":      {PhaseAuth},
 		"post_authentication": {PhasePostAuth},
+		"post_auth":           {PhasePostAuth}, // alias
 		"pre_routing":         {PhasePreRoute},
 		"routing":             {PhaseRoute},
 		"post_routing":        {PhasePostRoute},
@@ -235,7 +295,9 @@ func (h *ExtensionPointHook) mapPhases(pipelinePhase string) []Phase {
 // buildRequest 从 PipelineRequest 构建 extpoints.Request。
 func (h *ExtensionPointHook) buildRequest(envelope *domain.PipelineRequest) *Request {
 	req := &Request{
-		Attributes: make(map[string]interface{}),
+		// 预分配 Attributes map：典型请求包含 8-12 个属性
+		// (session_id, model, method, path, remote, agent, api_key_id, provider 等)
+		Attributes: make(map[string]interface{}, 12),
 	}
 	
 	if envelope == nil {
@@ -317,7 +379,9 @@ func (h *ExtensionPointHook) syncResponseToEnvelope(resp *Response, envelope *do
 	}
 	
 	if envelope.Metadata == nil {
-		envelope.Metadata = make(map[string]interface{})
+		// 预分配 Metadata map：典型响应包含原有 metadata + 插件结果
+		// 估算大小：原有 8-12 个 + 插件注入 4-6 个 = ~16 个
+		envelope.Metadata = make(map[string]interface{}, 16)
 	}
 	
 	// 合并 Attributes

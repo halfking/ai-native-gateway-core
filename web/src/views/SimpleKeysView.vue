@@ -246,7 +246,7 @@ function backToAccessList() {
 
 /* 成功卡片 */
 .success-card {
-  background: var(--bg-elevated);
+  background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 24px;
@@ -299,7 +299,7 @@ function backToAccessList() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-elevated);
+  background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
@@ -350,7 +350,7 @@ function backToAccessList() {
 
 /* 表单卡片 */
 .form-card {
-  background: var(--bg-elevated);
+  background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 24px;
@@ -419,7 +419,7 @@ function backToAccessList() {
 /* 自动填充说明 */
 .auto-fill-info {
   padding: 16px;
-  background: var(--bg-elevated);
+  background: var(--surface-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
 }

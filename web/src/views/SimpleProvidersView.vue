@@ -474,7 +474,7 @@ function stateClass(key: ProviderRow['stateKey']): string {
 }
 
 .state-unknown {
-  background: var(--kx-surface-2);
+  background: var(--kx-surface-soft);
   color: var(--kx-muted);
 }
 
@@ -524,7 +524,7 @@ function stateClass(key: ProviderRow['stateKey']): string {
   min-width: 20px;
   height: 20px;
   padding: 0 6px;
-  background: var(--kx-surface-2);
+  background: var(--kx-surface-soft);
   border-radius: 10px;
   font-size: var(--kx-text-xs);
   color: var(--kx-muted);
@@ -567,7 +567,7 @@ function stateClass(key: ProviderRow['stateKey']): string {
 
 .hint {
   padding: var(--kx-space-3);
-  background: var(--kx-surface-2);
+  background: var(--kx-surface-soft);
   border-radius: var(--radius);
   font-size: var(--kx-text-sm);
   color: var(--kx-muted);
