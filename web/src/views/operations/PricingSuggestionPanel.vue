@@ -15,6 +15,12 @@
 // ★ 红线（与采集侧同源、语义不同）：
 //   自动同步**不回流**计费面；这里是**显式**运营动作 ⇒ 执行按钮必须二次确认。
 // ★ NULL≠0：没有可比行情的建议一律显示「—」并标出原因，不落 0。
+//
+// ★ 2026-11-19 定价建议模型过滤：
+//   · 新增模型选择器（多选模式，复用 ModelPicker 组件）；
+//   · 可选择一个或多个模型进行定价；
+//   · 不选择任何模型时对所有模型定价；
+//   · 避免跨平台现价的模型过滤失误（明确传递 canonical_ids 数组）。
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -26,10 +32,12 @@ import {
   type PricingStrategy,
   type PricingSuggestionBatchRow,
 } from '../../api/market'
+import { listModels, type ModelCanonical } from '../../api/models'
 import ResponsiveDataView from '../../components/ui/ResponsiveDataView.vue'
 import type { CardField } from '../../components/ui/CardList.vue'
 import { useActionMessage } from '../../composables/useActionMessage'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import ModelPicker from '../../components/ModelPicker.vue'
 
 const { t } = useI18n()
 const { notifySuccess, notifyError } = useActionMessage()
@@ -39,6 +47,8 @@ const platformId = ref('')
 const markupPct = ref<number>(20)
 const minDeltaPct = ref<number>(0)
 const dimension = ref('standard')
+// ★ 2026-11-19：模型选择（多选；空数组 = 所有模型）
+const selectedModels = ref<string[]>([])
 
 const loading = ref(false)
 const applying = ref(false)
@@ -46,8 +56,41 @@ const result = ref<PricingSuggestionResp | null>(null)
 const errorMsg = ref('')
 const batches = ref<PricingSuggestionBatchRow[]>([])
 const batchesFailed = ref(false)
+// ★ 模型规范表（用于名称→ID映射）
+const modelsCanonical = ref<ModelCanonical[]>([])
+const modelsLoading = ref(false)
 
 const STRATEGIES: PricingStrategy[] = ['copy_platform', 'average', 'min', 'floor_markup']
+
+// ★ 2026-11-19：加载模型规范表（用于名称→ID映射）
+async function loadModelsCanonical() {
+  modelsLoading.value = true
+  try {
+    const res = await listModels({ status: 'active' })
+    modelsCanonical.value = res.items || []
+  } catch {
+    modelsCanonical.value = []
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+// ★ 2026-11-19：模型名称 → canonical_ids 转换
+// 吸取跨平台现价的教训：明确传递 canonical_ids 数组，而不是依赖字符串匹配
+function getCanonicalIds(): number[] {
+  if (selectedModels.value.length === 0) {
+    // 空数组 = 所有模型（后端默认行为）
+    return []
+  }
+  const ids: number[] = []
+  const selectedSet = new Set(selectedModels.value.map(m => m.toLowerCase()))
+  for (const model of modelsCanonical.value) {
+    if (selectedSet.has(model.canonical_name.toLowerCase())) {
+      ids.push(model.id)
+    }
+  }
+  return ids
+}
 
 async function preview() {
   loading.value = true
@@ -59,6 +102,7 @@ async function preview() {
       dimension: dimension.value,
       markup_pct: strategy.value === 'floor_markup' ? markupPct.value : undefined,
       min_delta_pct: minDeltaPct.value || undefined,
+      canonical_ids: getCanonicalIds(), // ★ 2026-11-19：模型过滤
     }
     result.value = await postAdminMarketPricingSuggestions(body)
   } catch {
@@ -100,6 +144,7 @@ async function applyAll() {
       dimension: dimension.value,
       markup_pct: strategy.value === 'floor_markup' ? markupPct.value : undefined,
       min_delta_pct: minDeltaPct.value || undefined,
+      canonical_ids: getCanonicalIds(), // ★ 2026-11-19：模型过滤
       confirm: true,
     }
     const res = await postAdminMarketPricingApply(body)
@@ -114,6 +159,7 @@ async function applyAll() {
 }
 
 onMounted(() => {
+  loadModelsCanonical() // ★ 2026-11-19：先加载模型规范表
   preview()
   loadBatches()
 })
@@ -192,6 +238,20 @@ const suggestionFields = computed<CardField[]>(() => [
       >
         {{ t('priceCompare.suggestApplyAll', { n: applicableRows.length }) }}
       </button>
+    </div>
+
+    <!-- ★ 2026-11-19：模型选择器（多选模式） -->
+    <div class="card filter-card model-filter-card">
+      <div class="model-picker-wrapper">
+        <ModelPicker
+          v-model="selectedModels"
+          mode="multi"
+          :placeholder="t('priceCompare.suggestModelPlaceholder')"
+          :title="t('priceCompare.suggestModelTitle')"
+          compact
+        />
+      </div>
+      <span class="hint-text">{{ t('priceCompare.suggestModelHint') }}</span>
     </div>
 
     <p v-if="errorMsg" class="action-message error">{{ errorMsg }}</p>
@@ -340,4 +400,8 @@ const suggestionFields = computed<CardField[]>(() => [
 .action-message.error { color: #c0392b; }
 .hint-line, .empty-next { font-size: 12px; color: var(--text-secondary); }
 .suggest-card p { margin: 4px 0; }
+/* ★ 2026-11-19：模型选择器样式 */
+.model-filter-card { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.model-picker-wrapper { flex: 1; min-width: 280px; max-width: 500px; }
+.hint-text { font-size: 12px; color: var(--text-secondary); }
 </style>

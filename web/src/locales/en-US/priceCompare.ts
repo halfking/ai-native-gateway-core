@@ -122,4 +122,8 @@ export default {
   strategyAverage: 'Average across platforms',
   strategyMin: 'Lowest across platforms',
   strategyFloorMarkup: 'Floor price × markup',
+  // ★ 2026-11-19: Model filtering for pricing suggestions
+  suggestModelTitle: 'Select Models',
+  suggestModelPlaceholder: 'Select models to price (multiple)',
+  suggestModelHint: 'Leave unselected to price all models; select specific models to price only those.',
 }

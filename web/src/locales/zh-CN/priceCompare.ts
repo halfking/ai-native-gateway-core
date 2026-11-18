@@ -122,4 +122,8 @@ export default {
   strategyAverage: '多平台平均价',
   strategyMin: '多平台最低价',
   strategyFloorMarkup: '地板价 × 加成率',
+  // ★ 2026-11-19：定价建议模型过滤
+  suggestModelTitle: '选择模型',
+  suggestModelPlaceholder: '选择要定价的模型（可多选）',
+  suggestModelHint: '不选择任何模型时，对所有模型定价；选择后只对选中的模型定价。',
 }
