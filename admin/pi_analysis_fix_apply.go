@@ -478,6 +478,8 @@ func (h *PIAnalysisHandler) RevertFix(w http.ResponseWriter, r *http.Request, qu
 	}
 
 	var records []AppliedActionRecord
+	// ★ D14：未能回滚（规则已删除）的规则名清单。
+	var notReverted []string
 	if len(actionsRaw) > 0 && string(actionsRaw) != "null" {
 		if err := json.Unmarshal(actionsRaw, &records); err != nil {
 			writeInternalTextErr(w, "unmarshal applied actions failed", err)
@@ -519,15 +521,39 @@ func (h *PIAnalysisHandler) RevertFix(w http.ResponseWriter, r *http.Request, qu
 		q := fmt.Sprintf("UPDATE prompt_injection_rules SET %s WHERE rule_name = $%d",
 			strings.Join(setClauses, ", "), pos)
 		args = append(args, rec.RuleName)
-		if _, err := tx.ExecContext(r.Context(), q, args...); err != nil {
+		res, err := tx.ExecContext(r.Context(), q, args...)
+		if err != nil {
 			writeInternalTextErr(w, fmt.Sprintf("revert rule %q failed", rec.RuleName), err)
 			return
 		}
+		// ★ D14（2026-11-19 审计轮）：**必须检查 RowsAffected**。
+		//
+		// 原实现不检查 ⇒ 规则已被删除时静默无效（受影响 0 行），但响应
+		// 仍声称「已回滚」⇒ 运维以为回滚成功，实际规则状态未恢复。
+		// 现在：受影响 0 行 ⇒ 记入未回滚清单 ⇒ 整体 422 并回滚事务
+		// （不做半吊子回滚），由客户端/运维决定如何处置。
+		if n, _ := res.RowsAffected(); n == 0 {
+			notReverted = append(notReverted, rec.RuleName)
+		}
 	}
 
+	if len(notReverted) > 0 {
+		// 事务由 defer tx.Rollback 回滚 —— 不做半截回滚。
+		http.Error(w, fmt.Sprintf(
+			"revert aborted: %d rule(s) no longer exist and could not be restored: %s",
+			len(notReverted), strings.Join(notReverted, ", ")),
+			http.StatusUnprocessableEntity)
+		return
+	}
+
+	// ★ D14：回滚成功后**一并清空 applied_actions 旧快照**。
+	// 原实现只清 auto_applied / applied_at / applied_by，旧快照留在行里
+	// ⇒ 「已回滚」与「仍持有快照」并存，数据语义不一致（下次 apply 会用
+	// 新快照覆盖，但中间的窗口里快照描述的是一次已经撤销的变更）。
 	_, err = tx.ExecContext(r.Context(), `
 		UPDATE error_analysis_results
-		SET auto_applied = FALSE, applied_at = NULL, applied_by = NULL
+		SET auto_applied = FALSE, applied_at = NULL, applied_by = NULL,
+		    applied_actions = NULL
 		WHERE queue_id = $1`, queueID)
 	if err != nil {
 		writeInternalTextErr(w, "clear applied marks failed", err)

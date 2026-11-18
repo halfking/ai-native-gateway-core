@@ -1,7 +1,7 @@
 // Package extpoints - bridge.go
 //
 // ExtensionPointHook 是 extpoints.ExecutionEngine 到 domains/pipeline.Hook 的桥接适配器。
-// 
+//
 // 背景（2026-11-19）
 // ----------------
 // Week 2 完成的 ExecutionEngine 实现了 16-Phase ExtensionPoint 架构，
@@ -31,6 +31,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
@@ -41,7 +43,7 @@ import (
 type ExtensionPointHook struct {
 	engine   *ExecutionEngine
 	registry ExtensionPointRegistry
-	
+
 	// phase 是此 Hook 对应的 domains/pipeline Phase
 	// 用于在 Name() 中显示，帮助调试
 	pipelinePhase string
@@ -66,52 +68,52 @@ func (h *ExtensionPointHook) Name() string {
 }
 
 // Execute 实现 pipeline.Hook 接口。
-// 
+//
 // 策略：
-//   1. 映射 domains/pipeline Phase 到 extpoints Phase
-//   2. 从 registry 获取该 Phase 的插件（已按优先级排序）
-//   3. 按顺序执行这些插件（不调用 engine.Execute，避免执行所有 Phase）
-//   4. 将结果同步回 envelope
+//  1. 映射 domains/pipeline Phase 到 extpoints Phase
+//  2. 从 registry 获取该 Phase 的插件（已按优先级排序）
+//  3. 按顺序执行这些插件（不调用 engine.Execute，避免执行所有 Phase）
+//  4. 将结果同步回 envelope
 func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.PipelineRequest) error {
 	if h.registry == nil {
 		return nil
 	}
-	
+
 	// 映射 Phase：domains/pipeline → extpoints
 	extPhases := h.mapPhases(h.pipelinePhase)
 	if len(extPhases) == 0 {
 		// 没有对应的 extpoints Phase，跳过
 		return nil
 	}
-	
+
 	// 从 envelope 构建 extpoints.Request
 	req := h.buildRequest(envelope)
-	
+
 	// 记录开始时间（用于性能监控）
 	hookStart := time.Now()
 	totalPlugins := 0
 	successfulPlugins := 0
-	
+
 	// 对每个映射的 Phase，执行该 Phase 的插件
 	for _, phase := range extPhases {
 		plugins := h.registry.Get(phase)
 		if len(plugins) == 0 {
 			continue
 		}
-		
+
 		slog.Debug("ExtensionPointHook: executing plugins",
 			"phase", phase,
 			"plugin_count", len(plugins),
 			"request_id", req.RequestID,
 		)
-		
+
 		// 从对象池获取 ExecutionContext（性能优化：减少分配）
 		execCtx := AcquireExecutionContext()
 		defer ReleaseExecutionContext(execCtx)
-		
+
 		// 初始化 ExecutionContext
 		InitExecutionContext(execCtx, ctx, phase, "", req.RequestID, time.Now())
-		
+
 		// 按优先级顺序执行插件（registry.Get 已排序）
 		for _, plugin := range plugins {
 			// 确保插件实现了 PhaseExecutor 接口
@@ -123,20 +125,20 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 				)
 				continue
 			}
-			
+
 			md := plugin.Metadata()
 			if md == nil {
 				continue
 			}
-			
+
 			execCtx.PluginID = md.PluginID
 			totalPlugins++
-			
+
 			// 执行插件
 			pluginStart := time.Now()
 			result, err := executor.Execute(execCtx)
 			pluginDuration := time.Since(pluginStart)
-			
+
 			// 记录执行结果
 			if err != nil {
 				// fail-open: 插件失败记录但不阻塞请求
@@ -149,7 +151,7 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 				)
 				continue
 			}
-			
+
 			if result != nil && !result.Success {
 				slog.Warn("ExtensionPointHook: plugin returned failure (fail-open)",
 					"plugin_id", md.PluginID,
@@ -160,7 +162,7 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 				)
 				continue
 			}
-			
+
 			// 成功执行
 			successfulPlugins++
 			slog.Debug("ExtensionPointHook: plugin executed successfully",
@@ -170,7 +172,7 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 				"modified", result != nil && result.Modified,
 				"request_id", req.RequestID,
 			)
-			
+
 			// 将插件结果同步到 Request.Attributes
 			if result != nil && result.Metadata != nil {
 				for k, v := range result.Metadata {
@@ -179,7 +181,7 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			}
 		}
 	}
-	
+
 	// 记录整体执行统计
 	hookDuration := time.Since(hookStart)
 	if totalPlugins > 0 {
@@ -192,21 +194,21 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			"request_id", req.RequestID,
 		)
 	}
-	
+
 	// 构建虚拟的 Response（用于同步回 envelope）
 	resp := &Response{
 		StatusCode: 200,
 		Attributes: req.Attributes,
 	}
-	
+
 	// 同步执行结果回 envelope
 	h.syncResponseToEnvelope(resp, envelope)
-	
+
 	return nil
 }
 
 // Priority 实现 pipeline.Hook 接口。
-// 
+//
 // 策略：返回中等优先级（500），让 ExtensionPoint 插件在标准 Hook 之后执行。
 // 这样可以确保认证、路由等核心逻辑先完成，插件再处理增强功能。
 func (h *ExtensionPointHook) Priority() int {
@@ -214,13 +216,13 @@ func (h *ExtensionPointHook) Priority() int {
 }
 
 // Enabled 实现 pipeline.Hook 接口。
-// 
+//
 // 策略：检查 registry 是否有注册的插件。如果没有插件，返回 false 跳过执行。
 func (h *ExtensionPointHook) Enabled(ctx context.Context, envelope *domain.PipelineRequest) bool {
 	if h.registry == nil {
 		return false
 	}
-	
+
 	// 映射 Phase 并检查是否有插件注册
 	extPhases := h.mapPhases(h.pipelinePhase)
 	for _, phase := range extPhases {
@@ -229,12 +231,12 @@ func (h *ExtensionPointHook) Enabled(ctx context.Context, envelope *domain.Pipel
 			return true
 		}
 	}
-	
+
 	return false
 }
 
 // OnError 实现 pipeline.Hook 接口。
-// 
+//
 // 策略：向上传递错误（不吞掉），让 Pipeline 决定如何处理。
 // 这符合 ExecutionEngine 的 fail-open 策略：单个插件失败不应阻塞请求。
 func (h *ExtensionPointHook) OnError(ctx context.Context, envelope *domain.PipelineRequest, err error) error {
@@ -244,7 +246,7 @@ func (h *ExtensionPointHook) OnError(ctx context.Context, envelope *domain.Pipel
 }
 
 // mapPhases 将 domains/pipeline Phase 映射到 extpoints Phase。
-// 
+//
 // 映射规则：
 //   - pre_authentication / pre_auth → PhasePreAuth
 //   - authentication → PhaseAuth
@@ -276,19 +278,19 @@ func (h *ExtensionPointHook) mapPhases(pipelinePhase string) []Phase {
 		"pre_response":        {PhasePreResponse},
 		"response":            {PhaseResponse},
 		"post_response":       {PhasePostResponse},
-		
+
 		// governance 和 transform 系列无映射
 		"governance":     {},
 		"pre_transform":  {},
 		"transform":      {},
 		"post_transform": {},
 	}
-	
+
 	phases, ok := mapping[pipelinePhase]
 	if !ok {
 		return []Phase{}
 	}
-	
+
 	return phases
 }
 
@@ -299,25 +301,25 @@ func (h *ExtensionPointHook) buildRequest(envelope *domain.PipelineRequest) *Req
 		// (session_id, model, method, path, remote, agent, api_key_id, provider 等)
 		Attributes: make(map[string]interface{}, 12),
 	}
-	
+
 	if envelope == nil {
 		return req
 	}
-	
+
 	// 填充基本字段
 	req.TenantID = envelope.TenantID
-	
+
 	// SessionID stored in Attributes
 	if envelope.SessionID != "" {
 		req.Attributes["session_id"] = envelope.SessionID
 	}
-	
+
 	// RequestID: PipelineRequest doesn't have RequestID field directly,
 	// it's in Envelope.RequestID, but we construct a pseudo-ID from context
 	if envelope.Envelope != nil {
 		req.RequestID = envelope.Envelope.RequestID
 	}
-	
+
 	// 从 Metadata 中提取字段
 	if envelope.Metadata != nil {
 		if method, ok := envelope.Metadata["method"].(string); ok {
@@ -335,13 +337,13 @@ func (h *ExtensionPointHook) buildRequest(envelope *domain.PipelineRequest) *Req
 		if agent, ok := envelope.Metadata["agent"].(string); ok {
 			req.UserAgent = agent
 		}
-		
+
 		// 复制所有 Metadata 到 Attributes
 		for k, v := range envelope.Metadata {
 			req.Attributes[k] = v
 		}
 	}
-	
+
 	// 从 Envelope 中提取 Transport 信息
 	if envelope.Envelope != nil && envelope.Envelope.Transport != nil {
 		if envelope.Envelope.Transport.R != nil {
@@ -354,47 +356,87 @@ func (h *ExtensionPointHook) buildRequest(envelope *domain.PipelineRequest) *Req
 			req.ClientIP = r.RemoteAddr
 		}
 	}
-	
+
 	// 填充认证信息
 	if envelope.APIKey != nil && envelope.APIKey.TenantID != "" {
 		req.TenantID = envelope.APIKey.TenantID
 		// Store key info in attributes
 		req.Attributes["api_key_id"] = envelope.APIKey.ID
 	}
-	
+
 	// 填充路由信息
 	if envelope.SelectedProvider != nil {
 		req.Provider = envelope.SelectedProvider.Name
 	}
-	
+
 	return req
 }
 
+const (
+	// extpointMetaPrefix 是桥接回写 envelope.Metadata 时使用的键前缀。
+	extpointMetaPrefix = "extpoint_"
+
+	// maxEnvelopeMetadataKeys 是 envelope.Metadata 的键数上限（安全网）。
+	//
+	// ★ D10（2026-11-19 审计轮）：旧实现把 Response.Attributes **全量**
+	// 写回，而 buildRequest 又把 envelope.Metadata **全量**拷进
+	// req.Attributes ⇒ 每个阶段都把「上一阶段的全部产物」再加一层前缀
+	// 写回去 ⇒ 键数 S(k+1) = 2·S(k)（12 阶段全启用 ⇒ 元数据 ×4096）。
+	// 现改为差量回写（见 syncResponseToEnvelope），键数随阶段**线性**
+	// 增长；本上限是最后一道安全网。
+	maxEnvelopeMetadataKeys = 256
+)
+
 // syncResponseToEnvelope 将 extpoints.Response 同步回 PipelineRequest。
-// 
-// 策略：将 Response.Attributes 合并到 envelope.Metadata 中，使用前缀 "extpoint_" 避免冲突。
+//
+// 策略：**差量回写** —— 只把「本次真正产生或改变」的属性写回
+// envelope.Metadata，键名加 "extpoint_" 前缀避免与原始 metadata 冲突。
+//
+// ★ D10（2026-11-19 审计轮）：旧实现是全量合并。buildRequest 把 Metadata
+// 全量拷进 req.Attributes，插件再把结果写进同一个 Attributes，Response 又
+// 携带整个 Attributes 回来 ⇒ 全量回写等于「每阶段把全部历史再存一份」
+// ⇒ 键数指数增长。差量回写后：
+//
+//	· 基线值未变的键（原样拷贝进来的那些）⇒ 跳过，不回写；
+//	· 插件本次新增/改变的键 ⇒ 回写，键名加前缀；
+//	· 已是 "extpoint_" 前缀的键 ⇒ **不再二次加前缀**（否则会产生
+//	  "extpoint_extpoint_*" 这类逐层嵌套的垃圾键）。
 func (h *ExtensionPointHook) syncResponseToEnvelope(resp *Response, envelope *domain.PipelineRequest) {
 	if resp == nil || envelope == nil {
 		return
 	}
-	
+
 	if envelope.Metadata == nil {
 		// 预分配 Metadata map：典型响应包含原有 metadata + 插件结果
 		// 估算大小：原有 8-12 个 + 插件注入 4-6 个 = ~16 个
 		envelope.Metadata = make(map[string]interface{}, 16)
 	}
-	
-	// 合并 Attributes
+
+	// 差量回写：只写本次真正产生或改变的键。
 	for k, v := range resp.Attributes {
-		envelope.Metadata["extpoint_"+k] = v
+		// 基线 = 拷进 Attributes 时 Metadata 里的同名键。值没变 ⇒ 本次
+		// 没有产生新信息 ⇒ 不回写（否则每阶段都翻倍）。
+		if prev, ok := envelope.Metadata[k]; ok && reflect.DeepEqual(prev, v) {
+			continue
+		}
+		key := k
+		if !strings.HasPrefix(k, extpointMetaPrefix) {
+			key = extpointMetaPrefix + k
+		}
+		if _, exists := envelope.Metadata[key]; !exists && len(envelope.Metadata) >= maxEnvelopeMetadataKeys {
+			slog.Warn("extpoints: envelope metadata key cap reached, skipping write-back",
+				"key", key, "cap", maxEnvelopeMetadataKeys)
+			continue
+		}
+		envelope.Metadata[key] = v
 	}
-	
+
 	// 同步错误信息（如果有）
 	if resp.Error != nil {
 		envelope.Metadata["extpoint_error"] = resp.Error.Error()
 		envelope.Metadata["extpoint_error_phase"] = string(resp.ErrorPhase)
 	}
-	
+
 	// 同步状态码（如果设置了）
 	if resp.StatusCode > 0 && resp.StatusCode != 200 {
 		envelope.StatusCode = resp.StatusCode
