@@ -392,6 +392,7 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 	worker := requestInputSanitizer{
 		ctx: ctx, sanitizer: m.sanitizer, offset: offset,
 		mapping: make(SanitizeMap), usedCount: make(map[string]int), existing: existing,
+		logger: m.logger,
 	}
 	if err := reserveInputPlaceholders(body, offset); err != nil {
 		return nil, nil, nil, nil, "", err

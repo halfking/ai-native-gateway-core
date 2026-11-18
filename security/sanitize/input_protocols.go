@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 )
@@ -36,6 +39,9 @@ type requestInputSanitizer struct {
 	usedCount    map[string]int
 	existing     sanitizeReuseIndex
 	replacements int
+	// logger 供签名 thinking 观测 WARN 使用；nil 时退回 slog.Default()。
+	// 测试直接构造 worker 时不设也安全。
+	logger *slog.Logger
 }
 
 func (s *requestInputSanitizer) sanitizeEnvelope(body []byte, path string) ([]byte, []compression.SanitizedMessageRef, error) {
@@ -840,6 +846,16 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	if !ok {
 		return raw, false, nil
 	}
+	// r1058 (2026-11-18): 签名 thinking 在改写发生**之前**分流到专用路径。
+	// 旧路径（r1057 遗留）先 sanitizeText 铸占位符、再发现带签名而拒绝整请求
+	// ——副作用有二：① 整请求 400 "Invalid request body" 客户端不可归因、
+	// 不可自愈（ZCode 重发的还是同一份会话），3049 条消息的生产会话当场砖化
+	// （211 request 8c7f0963，检出值＝英文单词 "token"）；② 铸出的占位符已
+	// 写进 worker.mapping（随后提交进会话字典），而外发 body 根本不含它们
+	// ——字典被不存在的占位符污染（r1043 投毒族）。专用路径只做**检测不改写**。
+	if kind == "thinking" && signedThinkingBlock(block) {
+		return s.sanitizeSignedThinkingBlock(raw, block)
+	}
 	var updated json.RawMessage
 	var changed bool
 	var err error
@@ -854,24 +870,82 @@ func (s *requestInputSanitizer) sanitizeContentBlock(raw json.RawMessage) (json.
 	if err != nil {
 		return raw, false, err
 	}
-	// r1057 (2026-11-17): signed thinking 只有在「有敏感内容且有签名」时才拒绝，
-	// 而不是「只要有签名就拒绝」。设计意图（docs/design/2026-10-01-conversation-
-	// sanitization-cache-plan.md §3）是：签名内容不可改写 ⇒ 检测到敏感值且已
-	// 改写时才与签名冲突。无敏感内容（changed=false）的签名 thinking 应放行。
 	if !changed {
 		return raw, false, nil
-	}
-	if kind == "thinking" {
-		var signature string
-		_ = json.Unmarshal(block["signature"], &signature)
-		if signature != "" {
-			// 已检测到敏感内容且已改写（changed=true），但 thinking 带签名不可改写 ⇒ 拒绝。
-			return nil, false, fmt.Errorf("%w: sensitive signed thinking", errInvalidSanitizeInput)
-		}
 	}
 	block[field] = updated
 	out, err := json.Marshal(block)
 	return out, true, err
+}
+
+// signedThinkingBlock reports a thinking block that carries a non-empty
+// signature. Anthropic validates the signature over the thinking text: the
+// bytes cannot be rewritten without invalidating the request upstream.
+func signedThinkingBlock(block map[string]json.RawMessage) bool {
+	var signature string
+	_ = json.Unmarshal(block["signature"], &signature)
+	return signature != ""
+}
+
+// sanitizeSignedThinkingBlock 对带签名的 thinking 块只检测、不改写。
+//
+// r1057（2026-11-17）把「有签名即拒」收窄成「检出敏感且需改写才拒」；
+// r1058（2026-11-18）再收掉最后一档：**不再拒绝，放行原文 + WARN 观测**。
+// 生产实证（211 request 8c7f0963）：检测器在签名 thinking 里把普通英文词
+// 当凭据（"Bearer token 检查" 里的 "token"），拒绝＝把「一次误报」升级成
+// 「整个会话砖化」，且客户端不可自愈（重发的还是同一份会话）。
+//
+// 为什么放行是安全的：
+//   - 正常链路里这段文本是**模型自己上一轮的思考回显**——上游模型已经见过
+//     并签名过这些字节；原样送回不产生新的暴露面；
+//   - Anthropic 协议在服务端验签：客户端伪造「带签名的 thinking」塞私货
+//     会在上游被拒，本路径不构成脱敏旁路（对真正转发给 Anthropic 的上游）；
+//   - 改写在密码学上不可能（签名覆盖 thinking 文本），拒绝只留下「砖会话」
+//     这一种结局——误报债（r1028/r1046/r1058 三轮同族）会让它反复兑现。
+//
+// WARN 只带类型/规则与计数（security 轮纪律：观测日志不含用户原文）。
+// 残余风险登记：不验签的 Anthropic 协议上游会收到原文（见主档 L2）。
+func (s *requestInputSanitizer) sanitizeSignedThinkingBlock(raw json.RawMessage, block map[string]json.RawMessage) (json.RawMessage, bool, error) {
+	restore := s.bindInputField("thinking")
+	defer restore()
+	var text string
+	if err := json.Unmarshal(block["thinking"], &text); err != nil {
+		return nil, false, fmt.Errorf("%w: thinking field must be a string: %v", errInvalidSanitizeInput, err)
+	}
+	fragments, err := s.sanitizer.detectInputFragments(s.ctx, text)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(fragments) == 0 {
+		return raw, false, nil
+	}
+	types := make([]string, 0, len(fragments))
+	rules := map[string]bool{}
+	for _, f := range fragments {
+		types = append(types, string(f.Type))
+		if f.RuleID != "" {
+			rules[f.RuleID] = true
+		}
+	}
+	sort.Strings(types)
+	ruleList := make([]string, 0, len(rules))
+	for id := range rules {
+		ruleList = append(ruleList, id)
+	}
+	sort.Strings(ruleList)
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(s.ctx, "sanitize: signed thinking passed through verbatim (signature cannot be rewritten)",
+		"action", "observe",
+		"hits", len(fragments),
+		"types", strings.Join(types, ","),
+		"rules", strings.Join(ruleList, ","),
+	)
+	// 原样放行：不铸占位符、不动 offset/mapping（外发 body 与会话字典
+	// 都不该看到这次未发生的改写）。
+	return raw, false, nil
 }
 
 func (s *requestInputSanitizer) sanitizeText(raw json.RawMessage, fields ...string) (json.RawMessage, bool, error) {
