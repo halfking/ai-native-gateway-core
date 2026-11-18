@@ -93,7 +93,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="error in queueData" :key="error.id">
+          <tr v-for="error in queueData" :key="error.id" class="clickable-row" @click="openDetail(error.id)">
             <td>{{ error.id }}</td>
             <td>
               <span class="badge" :class="getErrorTypeClass(error.error_type)">
@@ -115,12 +115,8 @@
             <td>{{ error.retry_count }}</td>
             <td>{{ formatTime(error.created_at) }}</td>
             <td>
-              <button 
-                v-if="error.status === 'analyzed'"
-                @click="viewResult(error.id)" 
-                class="btn-link"
-              >
-                查看结果
+              <button class="btn-link">
+                {{ t('common.piAnalysis.detail.rowHint') }}
               </button>
             </td>
           </tr>
@@ -188,87 +184,247 @@
       </div>
     </div>
 
-    <!-- 详情对话框 -->
+    <!-- 详情对话框：前因 / 分析 / 建议 / 操作 四区（2026-11-18 PI 分析管理面优化轮） -->
     <div v-if="showDetailDialog" class="dialog-overlay" @click="closeDetail">
-      <div class="dialog" @click.stop>
+      <div class="dialog detail-dialog" @click.stop>
         <div class="dialog-header">
-          <h2>分析详情</h2>
-          <button @click="closeDetail" class="btn-close">×</button>
+          <h2>#{{ activeDetailId }} · {{ formatErrorType(activeContext?.error_type || '') }}</h2>
+          <button @click="closeDetail" class="btn-close" aria-label="close">×</button>
         </div>
-        <div class="dialog-content" v-if="detailData">
-          <div class="detail-section">
-            <h3>基本信息</h3>
-            <div class="detail-grid">
-              <div class="detail-item">
-                <label>分析ID:</label>
-                <span>{{ detailData.analysis_id }}</span>
+        <div class="dialog-content">
+          <div v-if="detailLoading" class="detail-empty">…</div>
+          <div v-else-if="detailError" class="detail-error">
+            {{ t('common.piAnalysis.detail.loadFailed') }}：{{ detailError }}
+          </div>
+          <template v-else>
+
+            <!-- ── 时间线 ─────────────────────────────────────────── -->
+            <div class="detail-section">
+              <h3>{{ t('common.piAnalysis.detail.timelineTitle') }}</h3>
+              <div class="timeline">
+                <div class="timeline-step">
+                  <div class="timeline-dot done"></div>
+                  <div class="timeline-label">{{ t('common.piAnalysis.detail.timelineQueued') }}</div>
+                  <div class="timeline-time">{{ formatTime(activeContext?.created_at || '') }}</div>
+                </div>
+                <div class="timeline-bar" :class="{ done: !!activeContext?.started_at }"></div>
+                <div class="timeline-step">
+                  <div class="timeline-dot" :class="{ done: !!activeContext?.started_at }"></div>
+                  <div class="timeline-label">{{ t('common.piAnalysis.detail.timelineStarted') }}</div>
+                  <div class="timeline-time">{{ activeContext?.started_at ? formatTime(activeContext.started_at) : '—' }}</div>
+                </div>
+                <div class="timeline-bar" :class="{ done: !!activeContext?.completed_at }"></div>
+                <div class="timeline-step">
+                  <div class="timeline-dot" :class="{ done: !!activeContext?.completed_at }"></div>
+                  <div class="timeline-label">{{ t('common.piAnalysis.detail.timelineCompleted') }}</div>
+                  <div class="timeline-time">{{ activeContext?.completed_at ? formatTime(activeContext.completed_at) : '—' }}</div>
+                </div>
               </div>
-              <div class="detail-item">
-                <label>错误类型:</label>
-                <span>{{ formatErrorType(detailData.error_type) }}</span>
-              </div>
-              <div class="detail-item">
-                <label>租户ID:</label>
-                <span>{{ detailData.tenant_id }}</span>
-              </div>
-              <div class="detail-item">
-                <label>置信度:</label>
-                <span>{{ (detailData.confidence_score * 100).toFixed(0) }}%</span>
+              <div v-if="detailData?.analysis_duration_ms" class="timeline-duration">
+                {{ t('common.piAnalysis.detail.timelineDuration', { ms: detailData.analysis_duration_ms }) }}
               </div>
             </div>
-          </div>
 
-          <div class="detail-section">
-            <h3>根本原因</h3>
-            <p>{{ detailData.root_cause }}</p>
-          </div>
-
-          <div class="detail-section">
-            <h3>错误消息</h3>
-            <pre>{{ detailData.error_message }}</pre>
-          </div>
-
-          <div class="detail-section" v-if="detailData.input_text">
-            <h3>输入文本</h3>
-            <pre>{{ detailData.input_text }}</pre>
-          </div>
-
-          <div class="detail-section">
-            <h3>建议修复</h3>
-            <p>{{ detailData.suggested_fix }}</p>
-          </div>
-
-          <div class="detail-section" v-if="detailData.rule_adjustment">
-            <h3>规则调整建议</h3>
-            <pre>{{ JSON.stringify(detailData.rule_adjustment, null, 2) }}</pre>
-          </div>
-
-          <div class="detail-section" v-if="detailData.code_changes">
-            <h3>代码修改建议</h3>
-            <pre>{{ JSON.stringify(detailData.code_changes, null, 2) }}</pre>
-          </div>
-
-          <div class="detail-section">
-            <h3>性能统计</h3>
-            <div class="detail-grid">
-              <div class="detail-item">
-                <label>分析耗时:</label>
-                <span>{{ detailData.analysis_duration_ms }}ms</span>
+            <!-- ── 前因 · 错误发生时 ───────────────────────────────── -->
+            <div class="detail-section">
+              <h3>{{ t('common.piAnalysis.detail.contextTitle') }}</h3>
+              <div class="detail-grid">
+                <div class="detail-item">
+                  <label>{{ t('common.piAnalysis.detail.priorityLabel') }}:</label>
+                  <span class="priority" :class="getPriorityClass(activeContext?.priority || 0)">{{ activeContext?.priority }}</span>
+                </div>
+                <div class="detail-item">
+                  <label>{{ t('common.piAnalysis.detail.statusLabel') }}:</label>
+                  <span class="status" :class="getStatusClass(activeContext?.status || '')">{{ formatStatus(activeContext?.status || '') }}</span>
+                </div>
+                <div class="detail-item">
+                  <label>{{ t('common.piAnalysis.detail.retryLabel', { cur: activeContext?.retry_count ?? 0, max: activeContext?.max_retries ?? 3 }) }}</label>
+                </div>
+                <div class="detail-item">
+                  <label>{{ t('common.piAnalysis.detail.errorHashLabel') }}:</label>
+                  <code class="hash-code">{{ activeContext?.error_hash }}</code>
+                </div>
+                <div class="detail-item">
+                  <label>{{ t('common.piAnalysis.detail.sessionLabel') }}:</label>
+                  <span>{{ activeContext?.session_id || t('common.piAnalysis.detail.noSession') }}</span>
+                </div>
+                <div class="detail-item">
+                  <label>{{ t('common.piAnalysis.detail.requestLabel') }}:</label>
+                  <span>{{ activeContext?.request_id || t('common.piAnalysis.detail.noSession') }}</span>
+                </div>
               </div>
-              <div class="detail-item">
-                <label>Token 消耗:</label>
-                <span>{{ detailData.llm_tokens_used }}</span>
+
+              <div class="detail-sub">
+                <h4>{{ t('common.piAnalysis.detail.errorMessageTitle') }}</h4>
+                <pre>{{ activeContext?.error_message }}</pre>
               </div>
-              <div class="detail-item">
-                <label>影响范围:</label>
-                <span>{{ formatImpact(detailData.impact_scope) }}</span>
+              <div class="detail-sub" v-if="hasJSON(activeContext?.error_details)">
+                <h4>{{ t('common.piAnalysis.detail.errorDetailsTitle') }}</h4>
+                <pre>{{ prettyJSON(activeContext?.error_details) }}</pre>
               </div>
-              <div class="detail-item">
-                <label>预估受影响用户:</label>
-                <span>{{ detailData.affected_users_estimate }}</span>
+              <div class="detail-sub" v-if="activeContext?.input_text">
+                <h4>{{ t('common.piAnalysis.detail.inputTextTitle') }}</h4>
+                <div class="untrusted-note">{{ t('common.piAnalysis.detail.inputTextWarning') }}</div>
+                <pre class="untrusted-input">{{ activeContext.input_text }}</pre>
+              </div>
+              <div class="detail-sub" v-if="matchedRules.length">
+                <h4>{{ t('common.piAnalysis.detail.matchedRulesTitle') }}</h4>
+                <div class="rule-card" v-for="mr in matchedRules" :key="mr.rule_name">
+                  <div class="rule-card-head">
+                    <span class="badge badge-info">{{ mr.rule_name }}</span>
+                    <span class="severity severity-high">{{ t('common.piAnalysis.detail.matchedRuleSeverity', { sev: mr.severity ?? '?' }) }}</span>
+                  </div>
+                  <pre class="rule-pattern">{{ mr.pattern }}</pre>
+                </div>
+              </div>
+              <div class="detail-sub" v-else>
+                <h4>{{ t('common.piAnalysis.detail.matchedRulesTitle') }}</h4>
+                <p class="muted">{{ t('common.piAnalysis.detail.matchedRulesEmpty') }}</p>
+              </div>
+              <div class="detail-sub" v-if="hasJSON(activeContext?.detection_layers)">
+                <h4>{{ t('common.piAnalysis.detail.detectionLayersTitle') }}</h4>
+                <pre>{{ prettyJSON(activeContext?.detection_layers) }}</pre>
+              </div>
+              <div class="detail-sub" v-if="hasJSON(activeContext?.policy_config)">
+                <h4>{{ t('common.piAnalysis.detail.policyTitle') }}</h4>
+                <pre>{{ prettyJSON(activeContext?.policy_config) }}</pre>
               </div>
             </div>
-          </div>
+
+            <!-- ── 分析 · 结论 ─────────────────────────────────────── -->
+            <div class="detail-section">
+              <h3>{{ t('common.piAnalysis.detail.analysisTitle') }}</h3>
+              <template v-if="detailData">
+                <div class="detail-grid">
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.detail.falsePositiveYes') }}:</label>
+                    <span :class="detailData.is_false_positive ? 'badge-warning' : 'badge-success'">
+                      {{ detailData.is_false_positive ? t('common.piAnalysis.detail.falsePositiveYes') : t('common.piAnalysis.detail.falsePositiveNo') }}
+                    </span>
+                  </div>
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.detail.confidenceLabel') }}:</label>
+                    <span>{{ (detailData.confidence_score * 100).toFixed(0) }}%</span>
+                  </div>
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.detail.severityLabel') }}:</label>
+                    <span class="severity" :class="getSeverityClass(detailData.severity_level)">
+                      {{ formatSeverity(detailData.severity_level) }}
+                    </span>
+                  </div>
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.detail.impactLabel') }}:</label>
+                    <span>{{ formatImpact(detailData.impact_scope) }}</span>
+                  </div>
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.detail.affectedUsersLabel') }}:</label>
+                    <span>{{ detailData.affected_users_estimate }}</span>
+                  </div>
+                  <div class="detail-item">
+                    <label>{{ t('common.piAnalysis.detail.categoryLabel') }}:</label>
+                    <span>{{ detailData.error_category }}</span>
+                  </div>
+                  <div class="detail-item" v-if="detailData.analyzer_model">
+                    <label>{{ t('common.piAnalysis.detail.analyzerLabel') }}:</label>
+                    <span>{{ detailData.analyzer_model }}{{ detailData.analyzer_version ? ` (${detailData.analyzer_version})` : '' }}</span>
+                  </div>
+                  <div class="detail-item" v-if="detailData.pattern_frequency">
+                    {{ t('common.piAnalysis.detail.patternFreqLabel', { n: detailData.pattern_frequency }) }}
+                  </div>
+                </div>
+                <div class="detail-sub">
+                  <h4>{{ t('common.piAnalysis.detail.rootCauseTitle') }}</h4>
+                  <p>{{ detailData.root_cause }}</p>
+                </div>
+                <div class="detail-sub" v-if="hasJSON(detailData.analysis_details)">
+                  <h4>{{ t('common.piAnalysis.detail.analysisDetailsTitle') }}</h4>
+                  <pre>{{ prettyJSON(detailData.analysis_details) }}</pre>
+                </div>
+                <div class="detail-sub" v-if="hasJSON(detailData.similar_cases)">
+                  <h4>{{ t('common.piAnalysis.detail.similarCasesTitle') }}</h4>
+                  <pre>{{ prettyJSON(detailData.similar_cases) }}</pre>
+                </div>
+                <div class="detail-sub" v-if="detailData.llm_response_raw">
+                  <h4>{{ t('common.piAnalysis.detail.rawResponseTitle') }}</h4>
+                  <pre class="collapsible">{{ detailData.llm_response_raw }}</pre>
+                </div>
+              </template>
+              <p v-else class="muted">{{ t('common.piAnalysis.detail.notAnalyzedYet') }}</p>
+            </div>
+
+            <!-- ── 修正建议 ────────────────────────────────────────── -->
+            <div class="detail-section" v-if="detailData">
+              <h3>{{ t('common.piAnalysis.detail.fixTitle') }}</h3>
+              <div class="detail-sub" v-if="detailData.suggested_fix">
+                <h4>{{ t('common.piAnalysis.detail.suggestedFixTitle') }}</h4>
+                <p>{{ detailData.suggested_fix }}</p>
+              </div>
+              <div class="detail-sub">
+                <h4>{{ t('common.piAnalysis.detail.ruleAdjustmentTitle') }}</h4>
+                <template v-if="normalizedActions.length">
+                  <div class="rule-card action-card" v-for="(a, i) in normalizedActions" :key="i">
+                    <div class="rule-card-head">
+                      <span class="badge badge-warning">{{ actionLabel(a.action) }}</span>
+                      <span class="action-target">
+                        {{ t('common.piAnalysis.detail.targetRuleLabel') }}:
+                        <code>{{ a.rule_name }}</code>
+                      </span>
+                    </div>
+                    <div class="action-params" v-if="a.action === 'adjust_severity'">
+                      {{ t('common.piAnalysis.detail.newValueLabel') }}: severity = {{ a.severity }}
+                    </div>
+                    <pre class="rule-pattern" v-if="a.action === 'update_pattern'">{{ a.pattern }}</pre>
+                    <div class="action-reason" v-if="a.reason">{{ t('common.piAnalysis.detail.reasonLabel') }}: {{ a.reason }}</div>
+                  </div>
+                </template>
+                <p v-else class="muted">{{ t('common.piAnalysis.detail.noExecutableAction') }}</p>
+              </div>
+              <div class="detail-sub" v-if="hasJSON(detailData.code_changes)">
+                <h4>{{ t('common.piAnalysis.detail.codeChangesTitle') }}</h4>
+                <pre>{{ prettyJSON(detailData.code_changes) }}</pre>
+              </div>
+            </div>
+
+            <!-- ── 操作区 ──────────────────────────────────────────── -->
+            <div class="detail-section actions-section" v-if="!detailError">
+              <template v-if="!detailData">
+                <button class="btn-primary" :disabled="isTriggering" @click="triggerAnalysis">
+                  {{ t('common.piAnalysis.detail.triggerForThis') }}
+                </button>
+              </template>
+              <template v-else-if="!detailData.auto_applied">
+                <div class="view-only-note" v-if="!canApply && lowConfidenceReason">
+                  {{ lowConfidenceReason }}
+                </div>
+                <button class="btn-primary" :disabled="!canApply || applying" @click="applyFix">
+                  {{ applying ? '…' : t('common.piAnalysis.detail.applyButton') }}
+                </button>
+              </template>
+              <template v-else>
+                <span class="badge badge-success">{{ t('common.piAnalysis.detail.appliedBadge') }}</span>
+                <span class="muted">
+                  {{ t('common.piAnalysis.detail.appliedAtLabel') }}: {{ detailData.applied_at ? formatTime(detailData.applied_at) : '—' }}
+                  · {{ t('common.piAnalysis.detail.appliedByLabel') }}: {{ detailData.applied_by || '—' }}
+                </span>
+                <div class="detail-sub" v-if="appliedRecords.length">
+                  <div class="rule-card" v-for="(rec, i) in appliedRecords" :key="i">
+                    <div class="rule-card-head">
+                      <span class="badge badge-info">{{ actionLabel(rec.action) }}</span>
+                      <code>{{ rec.rule_name }}</code>
+                    </div>
+                    <div class="action-params">
+                      {{ t('common.piAnalysis.detail.oldValueLabel') }}:
+                      <code>{{ JSON.stringify(rec.old) }}</code>
+                    </div>
+                  </div>
+                </div>
+                <button class="btn-secondary danger" :disabled="reverting" @click="revertFix">
+                  {{ t('common.piAnalysis.detail.revertButton') }}
+                </button>
+              </template>
+            </div>
+
+          </template>
         </div>
       </div>
     </div>
@@ -276,7 +432,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
@@ -292,6 +448,158 @@ const stats = ref<any>(null)
 const queueData = ref<any[]>([])
 const resultsData = ref<any[]>([])
 const detailData = ref<any>(null)
+
+// ★ 2026-11-18 PI 分析管理面优化轮：详情四区状态。
+//   detailData = /results/{id} 的全量（含分析结论 + 建议 + 应用状态）；
+//   queueDetail = /queue/{id} 的全量（未分析时的「前因」上下文）。
+//   activeDetailId = 当前打开的 queue id（标题/操作用）。
+const queueDetail = ref<any>(null)
+const activeDetailId = ref<number>(0)
+const detailLoading = ref(false)
+const detailError = ref('')
+const applying = ref(false)
+const reverting = ref(false)
+
+// activeContext：分析结果与队列详情都带前因上下文，优先取 results（较新）。
+const activeContext = computed<any>(() => detailData.value || queueDetail.value)
+
+// matchedRules：array 或单对象都兼容（后端列是 JSONB，两种形态都见过）。
+const matchedRules = computed<any[]>(() => {
+  const raw = activeContext.value?.matched_rules
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'object') return [raw]
+  return []
+})
+
+// normalizedActions：与后端 NormalizeRuleAdjustment 同一形状识别（前端展示用；
+// 真正的应用仍以后端归一化 + 白名单为准——前端这一份只负责「展示将要做什么」）。
+const normalizedActions = computed<any[]>(() => normalizeActions(detailData.value?.rule_adjustment))
+
+const appliedRecords = computed<any[]>(() => {
+  const raw = detailData.value?.applied_actions
+  if (!raw) return []
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+})
+
+const CONFIDENCE_FLOOR = 0.8
+
+const canApply = computed(() =>
+  !!detailData.value &&
+  !detailData.value.auto_applied &&
+  normalizedActions.value.length > 0 &&
+  (detailData.value.confidence_score ?? 0) >= CONFIDENCE_FLOOR,
+)
+
+const lowConfidenceReason = computed(() => {
+  if (!detailData.value) return ''
+  const conf = detailData.value.confidence_score ?? 0
+  if (conf < CONFIDENCE_FLOOR) {
+    return t('common.piAnalysis.detail.viewOnlyLowConfidence', { conf: (conf * 100).toFixed(0) + '%' })
+  }
+  return ''
+})
+
+function normalizeActions(raw: any): any[] {
+  if (!raw) return []
+  let top: any
+  try {
+    top = typeof raw === 'string' ? JSON.parse(raw) : raw
+  } catch {
+    return []
+  }
+  const out: any[] = []
+  const pushOne = (m: Record<string, any>) => {
+    const ruleName = strOf(m, ['rule_name', 'rule', 'name', 'ruleName'])
+    const action = actionOf(strOf(m, ['action', 'type', 'operation']))
+    if (!ruleName || !action) return
+    out.push({
+      action,
+      rule_name: ruleName,
+      severity: numOf(m, ['severity', 'new_severity']),
+      pattern: strOf(m, ['pattern', 'new_pattern']) || undefined,
+      reason: strOf(m, ['reason', 'rationale', 'why']) || undefined,
+    })
+  }
+  if (Array.isArray(top)) {
+    top.forEach((item) => item && typeof item === 'object' && pushOne(item))
+    return out
+  }
+  if (top && typeof top === 'object') {
+    if (top.action) {
+      pushOne(top)
+    }
+    if (Array.isArray(top.disable)) {
+      top.disable.forEach((name: any) => {
+        if (typeof name === 'string' && name.trim()) {
+          out.push({ action: 'disable_rule', rule_name: name.trim() })
+        }
+      })
+    }
+    if (Array.isArray(top.rules)) {
+      top.rules.forEach((m: any) => m && typeof m === 'object' && pushOne(m))
+    }
+  }
+  return out
+}
+
+function strOf(m: Record<string, any>, keys: string[]): string {
+  for (const k of keys) {
+    const v = m?.[k]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return ''
+}
+
+function numOf(m: Record<string, any>, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = m?.[k]
+    if (typeof v === 'number') return v
+    if (typeof v === 'string' && v.trim() && !Number.isNaN(Number(v))) return Number(v)
+  }
+  return undefined
+}
+
+function actionOf(word: string): string {
+  const w = (word || '').toLowerCase()
+  if (['disable_rule', 'disable', 'disabled'].includes(w)) return 'disable_rule'
+  if (['adjust_severity', 'severity', 'set_severity', 'lower_severity', 'reduce_severity'].includes(w)) return 'adjust_severity'
+  if (['update_pattern', 'pattern', 'modify_pattern', 'rewrite_pattern'].includes(w)) return 'update_pattern'
+  return ''
+}
+
+function actionLabel(action: string): string {
+  const keyMap: Record<string, string> = {
+    disable_rule: 'actionDisableRule',
+    adjust_severity: 'actionAdjustSeverity',
+    update_pattern: 'actionUpdatePattern',
+  }
+  const key = keyMap[action]
+  return key ? t(`common.piAnalysis.detail.${key}`) : action
+}
+
+function hasJSON(v: any): boolean {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'string') return v.trim() !== '' && v.trim() !== 'null'
+  if (typeof v === 'object') return Object.keys(v).length > 0
+  return false
+}
+
+function prettyJSON(v: any): string {
+  if (typeof v === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(v), null, 2)
+    } catch {
+      return v
+    }
+  }
+  return JSON.stringify(v, null, 2)
+}
 
 // 分页
 const queueLimit = ref(20)
@@ -400,24 +708,95 @@ async function loadResults() {
   }
 }
 
-// 查看详情
-async function viewDetail(queueId: number) {
+// ★ 详情打开：先试 results（有分析 → 全量四区），404 再落 queue 详情（未分析 → 前因 + 触发分析）。
+async function openDetail(queueId: number) {
+  activeDetailId.value = queueId
+  showDetailDialog.value = true
+  detailLoading.value = true
+  detailError.value = ''
+  detailData.value = null
+  queueDetail.value = null
   try {
-    const response = await fetch(`/api/admin/pi-analysis/results/${queueId}`)
-    detailData.value = await response.json()
-    showDetailDialog.value = true
+    const res = await fetch(`/api/admin/pi-analysis/results/${queueId}`)
+    if (res.status === 404) {
+      const qres = await fetch(`/api/admin/pi-analysis/queue/${queueId}`)
+      if (!qres.ok) {
+        throw Object.assign(new Error(`queue detail: HTTP ${qres.status}`), { status: qres.status })
+      }
+      queueDetail.value = await qres.json()
+    } else if (!res.ok) {
+      throw Object.assign(new Error(`result detail: HTTP ${res.status}`), { status: res.status })
+    } else {
+      detailData.value = await res.json()
+    }
   } catch (error) {
-    console.error('Failed to load detail:', error)
+    detailError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    detailLoading.value = false
   }
 }
 
-function viewResult(queueId: number) {
-  viewDetail(queueId)
+function viewDetail(queueId: number) {
+  openDetail(queueId)
+}
+
+// ★ 应用修复：确认弹窗逐条列出将执行的动作（与后端白名单同一口径）。
+async function applyFix() {
+  if (!detailData.value || !canApply.value) return
+  const list = normalizedActions.value
+    .map((a) => `• ${actionLabel(a.action)} → ${a.rule_name}`)
+    .join('\n')
+  if (!window.confirm(`${t('common.piAnalysis.detail.applyConfirmTitle')}\n${t('common.piAnalysis.detail.applyConfirmBody')}\n${list}`)) {
+    return
+  }
+  applying.value = true
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/results/${activeDetailId.value}/apply`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.text()
+      alert(`${t('common.piAnalysis.detail.applyFailed')}: HTTP ${res.status}\n${body.slice(0, 300)}`)
+      return
+    }
+    alert(t('common.piAnalysis.detail.applySuccess'))
+    await openDetail(activeDetailId.value)
+    refreshData()
+  } catch (error) {
+    alert(`${t('common.piAnalysis.detail.applyFailed')}: ${error}`)
+  } finally {
+    applying.value = false
+  }
+}
+
+// ★ 回滚修复：按留痕的旧值快照逐条恢复。
+async function revertFix() {
+  if (!detailData.value?.auto_applied) return
+  const list = appliedRecords.value.map((r) => `• ${r.rule_name}`).join('\n')
+  if (!window.confirm(`${t('common.piAnalysis.detail.revertConfirmTitle')}\n${t('common.piAnalysis.detail.revertConfirmBody')}\n${list}`)) {
+    return
+  }
+  reverting.value = true
+  try {
+    const res = await fetch(`/api/admin/pi-analysis/results/${activeDetailId.value}/revert`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.text()
+      alert(`${t('common.piAnalysis.detail.revertFailed')}: HTTP ${res.status}\n${body.slice(0, 300)}`)
+      return
+    }
+    alert(t('common.piAnalysis.detail.revertSuccess'))
+    await openDetail(activeDetailId.value)
+    refreshData()
+  } catch (error) {
+    alert(`${t('common.piAnalysis.detail.revertFailed')}: ${error}`)
+  } finally {
+    reverting.value = false
+  }
 }
 
 function closeDetail() {
   showDetailDialog.value = false
   detailData.value = null
+  queueDetail.value = null
+  detailError.value = ''
 }
 
 // 触发分析
@@ -429,10 +808,10 @@ async function triggerAnalysis() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ batch_size: 10 })
     })
-    alert('分析已触发，请稍后刷新查看结果')
+    alert(t('common.piAnalysis.detail.triggerQueued'))
   } catch (error) {
     console.error('Failed to trigger analysis:', error)
-    alert('触发失败: ' + error)
+    alert(`${t('common.piAnalysis.detail.loadFailed')}: ${error}`)
   } finally {
     isTriggering.value = false
   }
@@ -914,6 +1293,172 @@ onMounted(() => {
   max-height: 80vh;
   overflow: auto;
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* ★ 2026-11-18 PI analysis optimization: wider detail dialog + section styles. */
+.detail-dialog {
+  max-width: 960px;
+  width: calc(100vw - 48px);
+}
+
+.detail-empty,
+.detail-error {
+  color: #cf1322;
+  padding: 12px 0;
+}
+
+.muted {
+  color: #8c8c8c;
+  font-size: 13px;
+}
+
+.hash-code {
+  font-size: 12px;
+  background: #f5f5f5;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.detail-sub {
+  margin-top: 14px;
+}
+
+.detail-sub h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #595959;
+}
+
+.timeline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.timeline-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 110px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d9d9d9;
+}
+
+.timeline-dot.done {
+  background: #1890ff;
+}
+
+.timeline-bar {
+  flex: 1;
+  height: 2px;
+  background: #d9d9d9;
+  margin-top: 4px;
+}
+
+.timeline-bar.done {
+  background: #1890ff;
+}
+
+.timeline-label {
+  font-size: 12px;
+  color: #595959;
+}
+
+.timeline-time {
+  font-size: 11px;
+  color: #8c8c8c;
+}
+
+.timeline-duration {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #595959;
+}
+
+.untrusted-note {
+  font-size: 12px;
+  color: #d46b08;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+}
+
+pre.untrusted-input {
+  border: 1px dashed #ffd591;
+}
+
+pre.collapsible {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.rule-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: #fafafa;
+}
+
+.rule-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.rule-pattern {
+  margin: 8px 0 0;
+  background: #f0f0f0;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.action-card {
+  border-color: #ffe58f;
+}
+
+.action-reason {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.actions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid #f0f0f0;
+  padding-top: 16px;
+}
+
+.view-only-note {
+  font-size: 12px;
+  color: #d48806;
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.btn-secondary.danger {
+  color: #cf1322;
+  border-color: #ffa39e;
+}
+
+.clickable-row {
+  cursor: pointer;
 }
 
 .dialog-header {

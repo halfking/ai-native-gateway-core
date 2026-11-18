@@ -1780,6 +1780,18 @@ var piCanonicalRuleSet978 []byte
 //go:embed embeddata/startup/978_pi_canonical_rule_set.down.sql
 var piCanonicalRuleSet978Down []byte
 
+// ★ 979（2026-11-18 PI 分析管理面优化轮）：pi_analysis_applied_actions
+//
+//	—— error_analysis_results 加 applied_actions JSONB（应用修复的动作
+//	明细 + 每条规则旧值快照，供审计与 revert）。971 的 auto_applied /
+//	applied_at / applied_by 三列此前零写入方；本件为「一键应用修复」
+//	补审计留痕面。幂等（ADD COLUMN IF NOT EXISTS）。
+//go:embed embeddata/startup/979_pi_analysis_applied_actions.sql
+var piAnalysisAppliedActions979 []byte
+
+//go:embed embeddata/startup/979_pi_analysis_applied_actions.down.sql
+var piAnalysisAppliedActions979Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2400,6 +2412,9 @@ var embeddedSQLFiles = map[string][]byte{
 	//   把 L1/L2 规则集纳入可投递通道（幂等补种 canonical 规则集）。
 	"startup/978_pi_canonical_rule_set.sql":      piCanonicalRuleSet978,
 	"startup/978_pi_canonical_rule_set.down.sql": piCanonicalRuleSet978Down,
+	// ★ 979（2026-11-18 PI 分析管理面优化轮）：应用修复审计留痕列。
+	"startup/979_pi_analysis_applied_actions.sql":      piAnalysisAppliedActions979,
+	"startup/979_pi_analysis_applied_actions.down.sql": piAnalysisAppliedActions979Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

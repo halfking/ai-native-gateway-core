@@ -1947,6 +1947,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     先后次序会改变最终值）。
 			//   ★ 幂等（ON CONFLICT DO NOTHING）⇒ 与存量库重放零冲突。
 			"978_pi_canonical_rule_set.sql",
+			// ★ 979（2026-11-18 PI 分析管理面优化轮）：pi_analysis_applied_actions
+			//   —— error_analysis_results 加 applied_actions JSONB（应用修复
+			//   的动作明细 + 旧值快照，供审计与 revert）。
+			//   ★ 必须排在 971 **之后**（它加列的目标表由 971 建出；
+			//     表不在场时本件自带守卫跳过 ⇒ 防御性 no-op）。
+			"979_pi_analysis_applied_actions.sql",
 		},
 	}
 }
