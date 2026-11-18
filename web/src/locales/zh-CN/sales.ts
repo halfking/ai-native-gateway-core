@@ -84,6 +84,7 @@ export default {
   rateUnitNote: '零售价单位是 credits/百万 tokens——快填已把供应商成本换算到该轴（系数 c 对应毛利率 1 − 1/c）',
   pickModel: '从可售清单选择模型',
   itemExists: '该模型已在清单中',
+  modelNotInSellable: '该模型不在可售清单中',
   quoteCloseTitle: '报价 #{id} 收口',
   revoke: '撤销',
   dashboardTriggerAlert: '审批触发率 {rate}% 已超告警线 {line}% —— DealHub 自校准信号：红线阈值可能定错',
