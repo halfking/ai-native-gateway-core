@@ -350,6 +350,63 @@ BEGIN
     LIMIT 1;
 END;
 $$ LANGUAGE plpgsql STABLE;
+
+-- Quota tracking schema
+CREATE TABLE IF NOT EXISTS maas_entitlement_quotas (
+    id BIGSERIAL PRIMARY KEY,
+    entitlement_id TEXT NOT NULL REFERENCES maas_entitlements(entitlement_id) ON DELETE CASCADE,
+    model_sku TEXT NOT NULL,
+    allocated_amount TEXT NOT NULL,
+    allocated_unit TEXT NOT NULL,
+    allocated_window TEXT,
+    consumed_amount TEXT NOT NULL DEFAULT '0',
+    consumed_unit TEXT NOT NULL,
+    held_amount TEXT NOT NULL DEFAULT '0',
+    held_unit TEXT NOT NULL,
+    quota_version BIGINT NOT NULL DEFAULT 1,
+    last_reset_at TIMESTAMPTZ,
+    next_reset_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (entitlement_id, model_sku)
+);
+
+CREATE INDEX idx_maas_entitlement_quotas_entitlement ON maas_entitlement_quotas(entitlement_id);
+CREATE INDEX idx_maas_entitlement_quotas_model ON maas_entitlement_quotas(model_sku);
+
+-- Quota helper functions
+CREATE OR REPLACE FUNCTION maas_check_quota_available(
+    p_entitlement_id TEXT,
+    p_model_sku TEXT,
+    p_requested_amount TEXT
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+    v_allocated DECIMAL;
+    v_consumed DECIMAL;
+    v_held DECIMAL;
+    v_requested DECIMAL;
+    v_available DECIMAL;
+BEGIN
+    SELECT 
+        allocated_amount::DECIMAL,
+        consumed_amount::DECIMAL,
+        held_amount::DECIMAL
+    INTO v_allocated, v_consumed, v_held
+    FROM maas_entitlement_quotas
+    WHERE entitlement_id = p_entitlement_id
+      AND model_sku = p_model_sku;
+    
+    IF NOT FOUND THEN
+        RETURN FALSE;
+    END IF;
+    
+    v_requested := p_requested_amount::DECIMAL;
+    v_available := v_allocated - (v_consumed + v_held);
+    
+    RETURN v_requested <= v_available;
+END;
+$$ LANGUAGE plpgsql STABLE;
 `
 
 	_, err := pool.Exec(ctx, baseSchema)

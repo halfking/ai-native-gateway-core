@@ -4,10 +4,10 @@
       <h1>PI 错误分析</h1>
       <div class="actions">
         <button @click="triggerAnalysis" class="btn-primary" :disabled="isTriggering">
-          {{ isTriggering ? '分析中...' : '手动触发分析' }}
+          {{ isTriggering ? t('common.piAnalysis.page.triggering') : t('common.piAnalysis.page.triggerManual') }}
         </button>
         <button @click="refreshData" class="btn-secondary">
-          刷新
+           {{ t('common.piAnalysis.page.refresh') }}
         </button>
       </div>
     </div>
@@ -33,19 +33,19 @@
     <!-- 统计卡片 -->
     <div class="stats-cards" v-if="stats">
       <div class="stat-card">
-        <div class="stat-label">待分析</div>
+        <div class="stat-label">{{ t('common.piAnalysis.page.statPending') }}</div>
         <div class="stat-value">{{ stats.pending || 0 }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">已分析</div>
+        <div class="stat-label">{{ t('common.piAnalysis.page.statAnalyzed') }}</div>
         <div class="stat-value">{{ stats.analyzed || 0 }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">误报率</div>
+        <div class="stat-label">{{ t('common.piAnalysis.page.statFalsePositiveRate') }}</div>
         <div class="stat-value">{{ stats.falsePositiveRate || '0%' }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">平均耗时</div>
+        <div class="stat-label">{{ t('common.piAnalysis.page.statAvgDuration') }}</div>
         <div class="stat-value">{{ stats.avgDuration || '0ms' }}</div>
       </div>
     </div>
@@ -56,13 +56,13 @@
         :class="['tab', { active: activeTab === 'queue' }]"
         @click="activeTab = 'queue'"
       >
-        错误队列
+         {{ t('common.piAnalysis.page.tabQueue') }}
       </button>
       <button 
         :class="['tab', { active: activeTab === 'results' }]"
         @click="activeTab = 'results'"
       >
-        分析结果
+        {{ t('common.piAnalysis.page.tabResults') }}
       </button>
     </div>
 
@@ -70,11 +70,11 @@
     <div v-if="activeTab === 'queue'" class="table-container">
       <div class="filters">
         <select v-model="queueStatus" @change="loadQueue">
-          <option value="">全部状态</option>
-          <option value="pending">待处理</option>
-          <option value="processing">处理中</option>
-          <option value="analyzed">已分析</option>
-          <option value="failed">失败</option>
+          <option value="">{{ t('common.piAnalysis.page.filterAllStatus') }}</option>
+          <option value="pending">{{ t('common.piAnalysis.page.statusPending') }}</option>
+          <option value="processing">{{ t('common.piAnalysis.page.statusProcessing') }}</option>
+          <option value="analyzed">{{ t('common.piAnalysis.page.statusAnalyzed') }}</option>
+          <option value="failed">{{ t('common.piAnalysis.page.statusFailed') }}</option>
         </select>
       </div>
 
@@ -82,14 +82,14 @@
         <thead>
           <tr>
             <th>ID</th>
-            <th>错误类型</th>
-            <th>优先级</th>
-            <th>租户</th>
-            <th>错误消息</th>
-            <th>状态</th>
-            <th>重试次数</th>
-            <th>创建时间</th>
-            <th>操作</th>
+            <th>{{ t('common.piAnalysis.page.colErrorType') }}</th>
+            <th>{{ t('common.piAnalysis.page.colPriority') }}</th>
+            <th>{{ t('common.piAnalysis.page.colTenant') }}</th>
+            <th>{{ t('common.piAnalysis.page.colErrorMessage') }}</th>
+            <th>{{ t('common.piAnalysis.page.colStatus') }}</th>
+            <th>{{ t('common.piAnalysis.page.colRetryCount') }}</th>
+            <th>{{ t('common.piAnalysis.page.colCreatedAt') }}</th>
+            <th>{{ t('common.piAnalysis.page.colActions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -126,7 +126,7 @@
       <div class="pagination">
         <button @click="prevQueuePage" :disabled="queueOffset === 0">上一页</button>
         <span>{{ queueOffset / queueLimit + 1 }} / {{ Math.ceil(queueTotal / queueLimit) }}</span>
-        <button @click="nextQueuePage" :disabled="queueOffset + queueLimit >= queueTotal">下一页</button>
+        <button @click="nextQueuePage" :disabled="queueOffset + queueLimit >= queueTotal">{{ t('common.piAnalysis.page.nextPage') }}</button>
       </div>
     </div>
 
@@ -135,15 +135,15 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th>分析ID</th>
-            <th>错误类型</th>
-            <th>根本原因</th>
-            <th>误报</th>
-            <th>置信度</th>
-            <th>严重程度</th>
-            <th>建议修复</th>
-            <th>创建时间</th>
-            <th>操作</th>
+            <th>{{ t('common.piAnalysis.page.colAnalysisId') }}</th>
+            <th>{{ t('common.piAnalysis.page.colErrorType') }}</th>
+            <th>{{ t('common.piAnalysis.page.colRootCause') }}</th>
+            <th>{{ t('common.piAnalysis.page.colFalsePositive') }}</th>
+            <th>{{ t('common.piAnalysis.page.colConfidence') }}</th>
+            <th>{{ t('common.piAnalysis.page.colSeverity') }}</th>
+            <th>{{ t('common.piAnalysis.page.colSuggestedFix') }}</th>
+            <th>{{ t('common.piAnalysis.page.colCreatedAt') }}</th>
+            <th>{{ t('common.piAnalysis.page.colActions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -157,7 +157,7 @@
             <td class="root-cause">{{ result.root_cause }}</td>
             <td>
               <span :class="result.is_false_positive ? 'badge-warning' : 'badge-success'">
-                {{ result.is_false_positive ? '是' : '否' }}
+                {{ result.is_false_positive ? t('common.piAnalysis.page.yes') : t('common.piAnalysis.page.no') }}
               </span>
             </td>
             <td>{{ (result.confidence_score * 100).toFixed(0) }}%</td>
@@ -170,7 +170,7 @@
             <td>{{ formatTime(result.created_at) }}</td>
             <td>
               <button @click="viewDetail(result.queue_id)" class="btn-link">
-                详情
+                {{ t('common.piAnalysis.page.detailButton') }}
               </button>
             </td>
           </tr>
@@ -180,7 +180,7 @@
       <div class="pagination">
         <button @click="prevResultsPage" :disabled="resultsOffset === 0">上一页</button>
         <span>{{ resultsOffset / resultsLimit + 1 }} / {{ Math.ceil(resultsTotal / resultsLimit) }}</span>
-        <button @click="nextResultsPage" :disabled="resultsOffset + resultsLimit >= resultsTotal">下一页</button>
+        <button @click="nextResultsPage" :disabled="resultsOffset + resultsLimit >= resultsTotal">{{ t('common.piAnalysis.page.nextPage') }}</button>
       </div>
     </div>
 
@@ -864,44 +864,44 @@ function nextResultsPage() {
 // 格式化函数
 function formatErrorType(type: string): string {
   const map: Record<string, string> = {
-    'llm_detection_failed': 'LLM检测失败',
-    'rule_false_positive': '规则误报',
-    'canary_detection_failed': 'Canary检测失败',
-    'vector_match_failed': '向量匹配失败',
-    'heuristic_misfire': '启发式误触发',
-    'policy_load_failed': '策略加载失败',
-    'unexpected_behavior': '意外行为',
-    'performance_issue': '性能问题'
+    'llm_detection_failed': t('common.piAnalysis.page.errorTypeLLMDetectionFailed'),
+    'rule_false_positive': t('common.piAnalysis.page.errorTypeRuleFalsePositive'),
+    'canary_detection_failed': t('common.piAnalysis.page.errorTypeCanaryDetectionFailed'),
+    'vector_match_failed': t('common.piAnalysis.page.errorTypeVectorMatchFailed'),
+    'heuristic_misfire': t('common.piAnalysis.page.errorTypeHeuristicMisfire'),
+    'policy_load_failed': t('common.piAnalysis.page.errorTypePolicyLoadFailed'),
+    'unexpected_behavior': t('common.piAnalysis.page.errorTypeUnexpectedBehavior'),
+    'performance_issue': t('common.piAnalysis.page.errorTypePerformanceIssue')
   }
   return map[type] || type
 }
 
 function formatStatus(status: string): string {
   const map: Record<string, string> = {
-    'pending': '待处理',
-    'processing': '处理中',
-    'analyzed': '已分析',
-    'failed': '失败',
-    'skipped': '已跳过'
+    'pending': t('common.piAnalysis.page.statusPending'),
+    'processing': t('common.piAnalysis.page.statusProcessing'),
+    'analyzed': t('common.piAnalysis.page.statusAnalyzed'),
+    'failed': t('common.piAnalysis.page.statusFailed'),
+    'skipped': t('common.piAnalysis.page.statusSkipped')
   }
   return map[status] || status
 }
 
 function formatSeverity(severity: string): string {
   const map: Record<string, string> = {
-    'low': '低',
-    'medium': '中',
-    'high': '高',
-    'critical': '严重'
+    'low': t('common.piAnalysis.page.severityLow'),
+    'medium': t('common.piAnalysis.page.severityMedium'),
+    'high': t('common.piAnalysis.page.severityHigh'),
+    'critical': t('common.piAnalysis.page.severityCritical')
   }
   return map[severity] || severity
 }
 
 function formatImpact(impact: string): string {
   const map: Record<string, string> = {
-    'session': '会话',
-    'tenant': '租户',
-    'global': '全局'
+    'session': t('common.piAnalysis.page.impactSession'),
+    'tenant': t('common.piAnalysis.page.impactTenant'),
+    'global': t('common.piAnalysis.page.impactGlobal')
   }
   return map[impact] || impact
 }

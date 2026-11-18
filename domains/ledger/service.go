@@ -118,6 +118,62 @@ func (s *Service) UsageHold(
 		}
 	}
 
+	// ========================================================================
+	// QUOTA TRACKING: Check if entitlement has sufficient quota
+	// ========================================================================
+	if req.ModelSKU != nil && *req.ModelSKU != "" {
+		var quotaAvailable bool
+		err = tx.QueryRow(ctx, `
+			SELECT maas_check_quota_available($1, $2, $3)
+		`, req.EntitlementID, *req.ModelSKU, req.Quantity.Amount).Scan(&quotaAvailable)
+		
+		if err != nil {
+			return maascontracts.UsageHoldResponse{}, fmt.Errorf("check quota: %w", err)
+		}
+
+		if !quotaAvailable {
+			return maascontracts.UsageHoldResponse{}, &maascontracts.Error{
+				Code:      "MAAS_QUOTA_EXCEEDED",
+				Message:   fmt.Sprintf("insufficient quota for %s", *req.ModelSKU),
+				Retryable: false,
+			}
+		}
+
+		// Increment held quota
+		_, err = tx.Exec(ctx, `
+			UPDATE maas_entitlement_quotas
+			SET 
+				held_amount = (held_amount::DECIMAL + $1::DECIMAL)::TEXT,
+				quota_version = quota_version + 1,
+				updated_at = NOW()
+			WHERE entitlement_id = $2 AND model_sku = $3
+		`, req.Quantity.Amount, req.EntitlementID, *req.ModelSKU)
+		
+		if err != nil {
+			return maascontracts.UsageHoldResponse{}, fmt.Errorf("increment held quota: %w", err)
+		}
+	}
+
+	if err == pgx.ErrNoRows {
+		return maascontracts.UsageHoldResponse{}, &maascontracts.Error{
+			Code:      "MAAS_ENTITLEMENT_NOT_FOUND",
+			Message:   fmt.Sprintf("entitlement %s not found", req.EntitlementID),
+			Retryable: false,
+		}
+	}
+	if err != nil {
+		return maascontracts.UsageHoldResponse{}, fmt.Errorf("query entitlement: %w", err)
+	}
+
+	// Verify entitlement is active
+	if entitlementStatus != string(maascontracts.EntitlementStatusActive) {
+		return maascontracts.UsageHoldResponse{}, &maascontracts.Error{
+			Code:      "MAAS_ENTITLEMENT_NOT_ACTIVE",
+			Message:   fmt.Sprintf("entitlement status is %s, expected active", entitlementStatus),
+			Retryable: false,
+		}
+	}
+
 	// TODO: Check if entitlement has sufficient quota remaining
 	// This requires tracking consumed vs. allocated quantities
 
@@ -207,13 +263,14 @@ func (s *Service) UsageSettle(
 	var heldAmount, heldUnit string
 	var entitlementID string
 	var holdTenantID string
+	var modelSKU *string
 
 	err = tx.QueryRow(ctx, `
-		SELECT status, quantity_amount, quantity_unit, entitlement_id, tenant_id
+		SELECT status, quantity_amount, quantity_unit, entitlement_id, tenant_id, model_sku
 		FROM maas_usage_holds
 		WHERE usage_hold_id = $1
 		FOR UPDATE
-	`, usageHoldID).Scan(&status, &heldAmount, &heldUnit, &entitlementID, &holdTenantID)
+	`, usageHoldID).Scan(&status, &heldAmount, &heldUnit, &entitlementID, &holdTenantID, &modelSKU)
 
 	if err == pgx.ErrNoRows {
 		return maascontracts.UsageSettleResponse{}, &maascontracts.Error{
@@ -266,6 +323,25 @@ func (s *Service) UsageSettle(
 	if released.LessThan(decimal.Zero) {
 		// Actual usage exceeds hold (rare, but possible in streaming)
 		released = decimal.Zero
+	}
+
+	// ========================================================================
+	// QUOTA SETTLEMENT: Move from held to consumed
+	// ========================================================================
+	if modelSKU != nil && *modelSKU != "" {
+		_, err = tx.Exec(ctx, `
+			UPDATE maas_entitlement_quotas
+			SET 
+				held_amount = (held_amount::DECIMAL - $1::DECIMAL)::TEXT,
+				consumed_amount = (consumed_amount::DECIMAL + $2::DECIMAL)::TEXT,
+				quota_version = quota_version + 1,
+				updated_at = NOW()
+			WHERE entitlement_id = $3 AND model_sku = $4
+		`, heldAmount, req.Actual.Amount, entitlementID, *modelSKU)
+		
+		if err != nil {
+			return maascontracts.UsageSettleResponse{}, fmt.Errorf("settle quota: %w", err)
+		}
 	}
 
 	// Update usage hold status to settled
