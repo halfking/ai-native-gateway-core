@@ -27,7 +27,7 @@ export default {
     summary: '手工 {custom}：全域 {defaults} / {total}',
   },
   table: {
-    colModel: '標準模型',
+    colModel: '模型',
     colStatus: '狀態',
     edit: '定價',
     reset: '恢復',

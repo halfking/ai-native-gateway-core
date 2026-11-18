@@ -69,7 +69,7 @@ export default {
     emailPlaceholder: "Saisir l'e-mail",
     roleLabel: 'Rôle',
     roleTenantAdmin: 'Admin de tenant',
-    roleSuperAdmin: 'Super admin',
+    roleSuperAdmin: 'Superadministrateur',
     cancel: 'Annuler',
     create: 'Créer',
     lastLoginCol: 'Dernière connexion',

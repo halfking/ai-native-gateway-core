@@ -73,7 +73,7 @@ export default {
   colDecision: '決策',
   colDecidedBy: '審批人',
   triggerReasons: '觸發原因',
-  withheldReason: '扣下原因',
+  withheldReason: '扣下的原因',
   withheldVariants: '價格變體（入/出 /1M）',
 
   // ── 2026-11-08 风暴档审计轮（W2 看板/漂移/撤销/弹窗化）──

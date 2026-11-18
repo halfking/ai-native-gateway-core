@@ -1,15 +1,15 @@
 {
   "metric": "referenced keys only; values = runtime truth (vm-evaluated locale modules); untranslated = value byte-identical to en-US; cjk = /[\\u4e00-\\u9fff\\u3400-\\u4dbf]/; sameAsSource = ALL keys, value byte-identical to source locale zh-CN AND that source value contains CJK (conservative: also counts legitimate zh-Hant/zh-JP homographs ⇒ an indicator, not an exact defect count); cjkInNonCjkLocaleAllKeys = ALL keys, values containing CJK in non-CJK locales (catches dynamically-resolved keys the referenced-key population cannot see)",
-  "updated": "2026-11-02",
+  "updated": "2026-11-19",
   "enUSCjk": 0,
   "untranslated": {
-    "ar-SA": 960,
-    "de-DE": 1116,
-    "es-ES": 1022,
-    "fr-FR": 1119,
-    "ja-JP": 699,
+    "ar-SA": 958,
+    "de-DE": 1115,
+    "es-ES": 1015,
+    "fr-FR": 1114,
+    "ja-JP": 697,
     "zh-CN": 168,
-    "zh-TW": 666
+    "zh-TW": 664
   },
   "cjkInNonCjkLocale": {
     "ar-SA": 0,
@@ -23,8 +23,8 @@
     "en-US": 0,
     "es-ES": 0,
     "fr-FR": 0,
-    "ja-JP": 144,
-    "zh-TW": 747
+    "ja-JP": 139,
+    "zh-TW": 745
   },
   "cjkInNonCjkLocaleAllKeys": {
     "ar-SA": 0,
