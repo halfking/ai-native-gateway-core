@@ -600,7 +600,11 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		if deps.OutputComplianceChecker != nil {
 			p.AddStage(&pipeline.PipelineStage{
 				Name: "post_upstream_output_compliance", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
-				Hooks: []pipeline.Hook{outputcompliancehooks.NewHook(deps.OutputComplianceChecker)},
+				Hooks: []pipeline.Hook{
+					outputcompliancehooks.NewHook(deps.OutputComplianceChecker),
+					// ExtensionPoint: PhasePostUpstream 插件
+					extpoints.NewExtensionPointHook(extRegistry, "post_upstream"),
+				},
 			})
 		}
 		p.AddStage(&pipeline.PipelineStage{
