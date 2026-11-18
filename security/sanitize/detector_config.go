@@ -151,6 +151,7 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 			// a deployment may legitimately name its own short-token rule
 			// `api_key`, and that rule means exactly what it says.
 			vendorKeyShape := isVendorKeyShapeRegex(pattern.Regex)
+			bearerShape := isBearerRegex(pattern.Regex)
 			kind, scopes, action, err := patternMetadata(category.name, name, pattern)
 			if err != nil {
 				return nil, err
@@ -160,6 +161,7 @@ func parsePatternConfig(data []byte) ([]patternEntry, error) {
 				regex:          re,
 				group:          pattern.Group,
 				vendorKeyShape: vendorKeyShape,
+				bearerShape:    bearerShape,
 				id:             category.name + "." + name, kind: kind, scopes: scopes, action: action,
 				description: strings.TrimSpace(pattern.Description),
 			})

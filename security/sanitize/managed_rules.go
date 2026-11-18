@@ -181,7 +181,7 @@ func (d *PatternDetector) managedPatterns(ctx context.Context, scope DetectionSc
 		// 清单在**决策点**判定（detector 的 fail-closed 分支 / egress 片段闸），
 		// 而不是把规则改成 mask —— 改 action 会连带改变凭据重叠判定
 		// （`overlap && p.action != "block"`）与其它以 action 为条件的分支。
-		patterns = append(patterns, patternEntry{sType: SensitiveType(r.Type), regex: r.Regex, group: r.Group, id: r.ID, kind: r.Kind, action: r.Action, vendorKeyShape: r.Kind == "vendor_key_shape", exemptions: r.Exemptions, description: r.Description})
+		patterns = append(patterns, patternEntry{sType: SensitiveType(r.Type), regex: r.Regex, group: r.Group, id: r.ID, kind: r.Kind, action: r.Action, vendorKeyShape: r.Kind == "vendor_key_shape", bearerShape: isBearerRegex(r.Regex.String()), exemptions: r.Exemptions, description: r.Description})
 	}
 	return patterns, snapshot
 }

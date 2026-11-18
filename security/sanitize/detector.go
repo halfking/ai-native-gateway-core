@@ -96,7 +96,11 @@ type patternEntry struct {
 	// credibleSecretCandidate. Rules loaded from a YAML config own their
 	// own regex semantics and are never subject to that filter — a config
 	// author writing `KEY-[A-Z]{4}` means it literally.
-	vendorKeyShape   bool
+	vendorKeyShape bool
+	// bearerShape marks the `Bearer <value>` capture rule, whose value group
+	// matches any single word after "Bearer" — including ordinary English
+	// prose. Whole-string qualification lives in credibleBearerCandidate.
+	bearerShape      bool
 	id, kind, action string
 	scopes           []DetectionScope
 	exemptions       []string
@@ -325,6 +329,15 @@ func (d *PatternDetector) DetectScope(ctx context.Context, text string, scope De
 				continue
 			}
 			if p.sType == TypeIDCard && !credibleIDCardCandidate(value) {
+				if snapshot != nil {
+					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
+				}
+				continue
+			}
+			// r1058：`Bearer <词>` 的值捕获组把普通英文词当凭据（判据与
+			// 事故实录见 credibleBearerCandidate）。放在匹配循环内、对所有
+			// 规则来源（YAML 装载 / 已发布 DB 快照）同口径生效。
+			if p.bearerShape && !credibleBearerCandidate(value) {
 				if snapshot != nil {
 					d.observeRule(ctx, p.id, snapshot.Version, scope, "exempted")
 				}
@@ -602,6 +615,40 @@ const vendorKeyShapeSource = `\b(?:sk|ak|key|token|api|bearer)[-_]?[A-Za-z0-9]+(
 
 func isVendorKeyShapeRegex(pattern string) bool {
 	return pattern == vendorKeyShapeSource
+}
+
+// bearerShapeSource is the shipped `secret.bearer` rule. Detection is by
+// pattern text (like vendorKeyShapeSource) so the YAML loader and the
+// published DB snapshot get the same engine-level filter without a DB write.
+const bearerShapeSource = `(?i)\bBearer\s+([A-Za-z0-9._~+/=-]+)`
+
+func isBearerRegex(pattern string) bool {
+	return pattern == bearerShapeSource
+}
+
+// credibleBearerCandidate filters the `Bearer <word>` capture down to things
+// that look like an actual credential.
+//
+// r1058（2026-11-18，211 ZCode 会话砖化）：值捕获组 `[A-Za-z0-9._~+/=-]+`
+// 不区分真凭据与跟在 "Bearer" 后面的普通英文词。生产实证（request
+// 8c7f0963-2b75-4338-889f-552ca82c2f0d，7.66MB / 3049 条消息的会话）：模型
+// 在签名 thinking 里引用代码注释「line 38: `Bearer token` 检查」，单词
+// "token"（就是 LLM token 的本义）被当成凭据值 ⇒ 签名 thinking 不可改写
+// ⇒ 整请求 400 "Invalid request body" ⇒ 会话砖化（retryable=false，客户端
+// 每次重发同一会话）。同一会话的无签名 thinking 里同类误报共 ~49 处
+// （the/a/just/for/in/on/flow/NOW/needed/header/passed/masked/tokens…）。
+//
+// 判据与 credibleSecretCandidate 同构——整串属性，RE2 无法用前瞻断言表达：
+// 真凭据是不透明令牌（base64/JWT/十六进制），必带数字；唯一的无数字例外
+// 是 JWT 形态（≥16 且 ≥2 个点，`a.b.c` 这类散文缩写被长度下限挡住）。
+// 纯字母值（"token" / "authentication" / "authorization"）一律豁免。
+// 已登记代价：无数字、非 JWT、≥16 位的纯字母令牌被漏过（随机 base64 出现
+// 纯字母 16+ 串的概率 ~3.6%，与 vendor 规则的数字要求同一取舍）。
+func credibleBearerCandidate(value string) bool {
+	if strings.ContainsFunc(value, func(r rune) bool { return r >= '0' && r <= '9' }) {
+		return true
+	}
+	return len(value) >= 16 && strings.Count(value, ".") >= 2
 }
 
 // minSecretBodyLen is the floor the pre-244 rule expressed as `{16,}` on the
