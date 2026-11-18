@@ -1107,8 +1107,16 @@ func (m *Manager) Reset(providerID, credentialID int) {
 }
 
 // RecordFailure records a failure on the appropriate breaker.
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 RecordFailurePerModel。
 func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 	b := m.GetOrCreate(providerID, credentialID)
+	b.RecordFailure(kind)
+}
+
+// RecordFailurePerModel records a failure on the per-model breaker.
+// W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐。
+func (m *Manager) RecordFailurePerModel(providerID, credentialID int, model string, kind ErrorKind) {
+	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	b.RecordFailure(kind)
 }
 
@@ -1162,9 +1170,24 @@ func (m *Manager) RecordSuccess(providerID, credentialID int) {
 	b.RecordSuccess()
 }
 
+// RecordSuccessPerModel records a successful request on the per-model breaker.
+// W1 缺口① (2026-11-19): per-model 粒度。
+func (m *Manager) RecordSuccessPerModel(providerID, credentialID int, model string) {
+	b := m.GetOrCreatePerModel(providerID, credentialID, model)
+	b.RecordSuccess()
+}
+
 // Allow checks if a request should be allowed through the credential.
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 AllowPerModel。
 func (m *Manager) Allow(providerID, credentialID int) bool {
 	b := m.GetOrCreate(providerID, credentialID)
+	return b.Allow()
+}
+
+// AllowPerModel checks if a request should be allowed through the per-model breaker.
+// W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐。
+func (m *Manager) AllowPerModel(providerID, credentialID int, model string) bool {
+	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	return b.Allow()
 }
 
