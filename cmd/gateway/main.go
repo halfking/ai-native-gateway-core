@@ -2492,7 +2492,8 @@ func main() {
 		// 查的 circuit_open 永假。DB 面经 128 容量异步队列顺序落库（热路径零
 		// 阻塞），metrics 面直连全局 recorder 的 transitions 计数器。
 		if dbConn != nil && dbConn.Enabled() {
-			circuitSync := credential.NewDBStateSync(dbConn.Pool(), 128)
+			// W1 缺口① (2026-11-19): 传递 cm 用于上卷凭据状态
+			circuitSync := credential.NewDBStateSync(dbConn.Pool(), 128, cm)
 			// SpawnLoop 而非 Go（2026-10-01 审计）：DBStateSync.Run 是纯 select
 			// 消费循环，无 wg.Done/done channel 外部握手（见
 			// domains/credential/state_sync.go Run）——正是 SpawnLoop 的适用形态。

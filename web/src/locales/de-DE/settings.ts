@@ -56,6 +56,14 @@ export default {
       smart: 'smart - Intelligente Komprimierung',
       adaptive: 'adaptive - Adaptive Komprimierung',
     },
+    modeEnum: {
+      simple: 'simple - Einfacher Modus',
+      expert: 'expert - Expertenmodus',
+    },
+    modeDescriptions: {
+      simple: 'Einfacher Modus: Die Startseite ist eine verkürzte Zugriffsliste; Expertenwerkzeuge sind unter „Erweitert“ eingeklappt.',
+      expert: 'Expertenmodus: Vollständige Navigation mit allen Seiten (aktuelle Voreinstellung).',
+    },
   },
   docs: {
     compressionModeTitle: '📖 Komprimierungsmodus im Detail',

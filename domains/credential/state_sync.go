@@ -43,15 +43,17 @@ type DBStateSync struct {
 	db      DBQuerier
 	ch      chan StateChange
 	dropped atomic.Int64
+	manager *Manager // W1 缺口① (2026-11-19): 用于上卷凭据状态
 }
 
 // NewDBStateSync 构造同步 worker。db 为 nil 时 Observe 直返（未启用 DB 的
 // 部署形态，如纯内存测试）。queueSize 为事件缓冲容量。
-func NewDBStateSync(db DBQuerier, queueSize int) *DBStateSync {
+// W1 缺口① (2026-11-19): 增加 manager 参数用于上卷凭据状态。
+func NewDBStateSync(db DBQuerier, queueSize int, manager *Manager) *DBStateSync {
 	if queueSize <= 0 {
 		queueSize = 128
 	}
-	return &DBStateSync{db: db, ch: make(chan StateChange, queueSize)}
+	return &DBStateSync{db: db, ch: make(chan StateChange, queueSize), manager: manager}
 }
 
 // Observe 实现 Manager.SetObserver 的观察者签名。非阻塞：队列满即丢弃。
@@ -123,9 +125,21 @@ func (s *DBStateSync) syncOne(sc StateChange) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	dbState := sc.To.String()
-	if sc.To == StateQuarantined {
-		dbState = StateOpen.String()
+	// W1 缺口① (2026-11-19): 上卷该凭据所有模型的最差状态
+	var dbState string
+	if s.manager != nil {
+		rolledUpState := s.manager.GetCredentialState(sc.CredentialID)
+		dbState = rolledUpState.String()
+		// Quarantined 在 DB 中存储为 "open"（向后兼容）
+		if rolledUpState == StateQuarantined {
+			dbState = StateOpen.String()
+		}
+	} else {
+		// 向后兼容：manager 为 nil 时使用单个 breaker 的状态
+		dbState = sc.To.String()
+		if sc.To == StateQuarantined {
+			dbState = StateOpen.String()
+		}
 	}
 
 	var err error

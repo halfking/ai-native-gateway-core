@@ -56,6 +56,14 @@ export default {
       smart: 'smart - スマート圧縮',
       adaptive: 'adaptive - 適応圧縮',
     },
+    modeEnum: {
+      simple: 'simple - シンプルモード',
+      expert: 'expert - エキスパートモード',
+    },
+    modeDescriptions: {
+      simple: 'シンプルモード：ホームは接続リストのみ、エキスパート機能は「詳細」グループにまとめられています',
+      expert: 'エキスパートモード：完全なナビゲーションと全ページ（現在のデフォルト）',
+    },
   },
   docs: {
     compressionModeTitle: '📖 圧縮モード詳解',

@@ -56,7 +56,8 @@ func TestCircuitStateSyncSpawnLoopRestartsAfterPanic(t *testing.T) {
 	defer func() { workerRestartBackoff, workerRestartMaxBackoff = oldBackoff, oldMax }()
 
 	q := &panicOnceQuerier{}
-	s := credential.NewDBStateSync(q, 8)
+	// W1 缺口① (2026-11-19): 传递 nil manager（测试不需要上卷）
+	s := credential.NewDBStateSync(q, 8, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

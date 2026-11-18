@@ -54,6 +54,14 @@ export default {
       smart: 'smart - Smart compression',
       adaptive: 'adaptive - Adaptive compression',
     },
+    modeEnum: {
+      simple: 'simple - Simple mode',
+      expert: 'expert - Expert mode',
+    },
+    modeDescriptions: {
+      simple: 'Simple mode: the home page is a short access list; expert tools are folded under “Advanced”.',
+      expert: 'Expert mode: full navigation with all pages (current default).',
+    },
   },
   docs: {
     compressionModeTitle: '📖 Compression mode in detail',

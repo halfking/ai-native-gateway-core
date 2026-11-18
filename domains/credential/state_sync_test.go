@@ -188,7 +188,7 @@ func TestDBStateSyncMirrorsTransitions(t *testing.T) {
 			}
 			exec.WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-			s := NewDBStateSync(mockDB, 8)
+			s := NewDBStateSync(mockDB, 8, nil)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go s.Run(ctx)
@@ -214,7 +214,7 @@ func TestDBStateSyncDropsOnFullQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mockDB.Close()
-	s := NewDBStateSync(mockDB, 2)
+	s := NewDBStateSync(mockDB, 2, nil)
 	ev := StateChange{ProviderID: 1, CredentialID: 1, From: StateClosed, To: StateOpen, Kind: KindNetwork}
 	for i := 0; i < 10; i++ {
 		s.Observe(ev) // 无消费者：前 2 条入队，后 8 条丢弃
@@ -240,7 +240,7 @@ func TestDBStateSyncDrainsOnCancel(t *testing.T) {
 	}
 
 	// queueSize 4 容纳 3 条事件；Run 尚未启动，事件先全部入队。
-	s := NewDBStateSync(mockDB, 4)
+	s := NewDBStateSync(mockDB, 4, nil)
 	ev := StateChange{ProviderID: 1, CredentialID: 7, From: StateClosed, To: StateOpen, Kind: KindNetwork}
 	for i := 0; i < 3; i++ {
 		s.Observe(ev)
