@@ -486,8 +486,9 @@ func (e *Executor) doCompactionUpstream(
 	if err := e.checkCandidateContextBudget(budgetParams, cand, "summary", payload); err != nil {
 		return nil, err
 	}
-	if e.Circuit != nil && !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
-		return nil, fmt.Errorf("compaction: circuit open for credential %d", cand.CredentialID)
+	// W1 缺口① (2026-11-19): 改为 per-model 粒度
+	if e.Circuit != nil && !e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel) {
+		return nil, fmt.Errorf("compaction: circuit open for credential %d model %s", cand.CredentialID, cand.RawModel)
 	}
 
 	var releaseLimiter func()
@@ -533,8 +534,9 @@ func (e *Executor) doCompactionUpstream(
 
 	resp, err := e.doCompactionHTTP(req)
 	if err != nil {
+		// W1 缺口① (2026-11-19): 改为 per-model 粒度
 		if e.Circuit != nil && !freeCredentialsTolerateTransient(cand.BillingMode, errorsx.KindNetwork) {
-			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindNetwork)
+			e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, cand.RawModel, errorsx.KindNetwork)
 		} else if e.Circuit != nil {
 			// 2026-07-03 incident fix: free-cred transient skips RecordFailure,
 			// so release a consumed half-open probe.
@@ -545,15 +547,17 @@ func (e *Executor) doCompactionUpstream(
 	if e.Circuit != nil {
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
 			kind := errorsx.ClassifyErrorWithBody(resp.StatusCode, nil)
+			// W1 缺口① (2026-11-19): 改为 per-model 粒度
 			if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
-				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				e.Circuit.RecordFailurePerModel(cand.ProviderID, cand.CredentialID, cand.RawModel, kind)
 			} else {
 				// 2026-07-03 incident fix: free-cred transient skips
 				// RecordFailure, so release a consumed half-open probe.
 				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 			}
 		} else if resp.StatusCode < 400 {
-			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+			// W1 缺口① (2026-11-19): 改为 per-model 粒度
+			e.Circuit.RecordSuccessPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel)
 		} else {
 			// 2026-08-07 audit fix: 4xx (except 429, handled above) is not
 			// recorded as a failure (ambiguous for compaction: could be

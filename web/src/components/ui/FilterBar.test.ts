@@ -1,5 +1,6 @@
 // FilterBar.test.ts — 声明式定义渲染、v-model、chips、搜索/清除事件与
-// <768 折叠行为（mock useBreakpoint）+ 响应式源码断言。
+// 全断点折叠行为（mock useBreakpoint）+ 响应式源码断言。
+// 2026-11-18 筛选收纳轮：折叠口径从「仅 <480」改为「全断点默认收拢」。
 import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -63,19 +64,23 @@ describe('FilterBar', () => {
     bpState.isSmall = false
   })
 
-  it('按 definitions 渲染 search/select/daterange 控件', () => {
+  it('按 definitions 渲染 search/select/daterange 控件（展开面板内）', () => {
     const w = mountBar()
-    expect(w.find('input[type="text"]').exists()).toBe(true)
-    expect(w.find('select').exists()).toBe(true)
-    // 2026-09-30 统一日历轮：daterange 由两个 datetime-local input 收敛为单个
-    // KxDateRangePicker（datetime 精度、instant 即时生效、无预设网格）
-    const picker = w.findComponent(KxDateRangePicker)
-    expect(picker.exists()).toBe(true)
-    expect(picker.props('precision')).toBe('datetime')
-    expect(picker.props('instant')).toBe(true)
-    expect(picker.props('presets')).toEqual([])
-    expect(w.find('.kx-dr-trigger').exists()).toBe(true)
-    expect(w.text()).toContain('关键词')
+    // 全断点默认收拢 ⇒ 先展开再断言控件渲染
+    void w.find('.filter-bar__toggle').trigger('click')
+    return w.vm.$nextTick().then(() => {
+      expect(w.find('input[type="text"]').exists()).toBe(true)
+      expect(w.find('select').exists()).toBe(true)
+      // 2026-09-30 统一日历轮：daterange 由两个 datetime-local input 收敛为单个
+      // KxDateRangePicker（datetime 精度、instant 即时生效、无预设网格）
+      const picker = w.findComponent(KxDateRangePicker)
+      expect(picker.exists()).toBe(true)
+      expect(picker.props('precision')).toBe('datetime')
+      expect(picker.props('instant')).toBe(true)
+      expect(picker.props('presets')).toEqual([])
+      expect(w.find('.kx-dr-trigger').exists()).toBe(true)
+      expect(w.text()).toContain('关键词')
+    })
   })
 
   it('daterange：datetime-local ↔ 组件空格分隔边界互转，apply 一次写回两端键', async () => {
@@ -99,15 +104,17 @@ describe('FilterBar', () => {
     expect(w.find('.active-filter-chip').text()).toContain('时间: 2026-09-01T00:00')
   })
 
-  it('输入更新 v-model:filters（不可变更新）', async () => {
+  it('输入更新 v-model:filters（不可变更新，展开面板后操作）', async () => {
     const w = mountBar()
+    await w.find('.filter-bar__toggle').trigger('click')
     await w.find('input[type="text"]').setValue('gpt-4')
     const events = w.emitted('update:modelValue')!
     expect(events[events.length - 1][0]).toEqual({ keyword: 'gpt-4', status: '', from: '', to: '' })
   })
 
-  it('search 类型提供 suggestions 时渲染 FilterInput 自动补全', () => {
+  it('search 类型提供 suggestions 时渲染 FilterInput 自动补全（展开面板内）', async () => {
     const w = mountBar({ definitions: [{ key: 'kw', type: 'search', suggestions: ['a', 'b'] }] })
+    await w.find('.filter-bar__toggle').trigger('click')
     expect(w.find('.filter-input').exists()).toBe(true)
   })
 
@@ -133,26 +140,42 @@ describe('FilterBar', () => {
     expect((events[events.length - 1][0] as Record<string, string>).keyword).toBe('')
   })
 
-  it('<768（isSmall）：默认折叠为「筛选（N）」，展开后可见面板', async () => {
+  it('全断点默认收拢：折叠头部常驻「筛选（N）」，展开后可见面板（含 <480）', async () => {
     bpState.isMobile = true
     bpState.isSmall = true
+    // 挂载即有条件 ⇒ 自动展开（见下一条用例），这里先手动收拢验证折叠形态
     const w = mountBar({ modelValue: { keyword: 'x', status: 'ok', from: '', to: '' } })
+    expect(w.find('.filter-bar__panel').exists()).toBe(true)
     const toggle = w.find('.filter-bar__toggle')
-    expect(toggle.exists()).toBe(true)
     expect(toggle.text()).toContain('筛选（2）')
+
+    await toggle.trigger('click')
     expect(w.find('.filter-bar__panel').exists()).toBe(false)
+    // 收拢时生效条件 chips 常显（当前范围不失联）
+    expect(w.find('.filter-bar__header-chips').exists()).toBe(true)
+    expect(w.find('.filter-bar__header-chips').text()).toContain('关键词: x')
 
     await toggle.trigger('click')
     expect(w.find('.filter-bar__panel').exists()).toBe(true)
+    // 展开后 chips 移入面板渲染，头部 chips 不再重复
+    expect(w.find('.filter-bar__header-chips').exists()).toBe(false)
+    expect(w.find('.filter-bar__chips').exists()).toBe(true)
   })
 
-  it('>=768：无折叠入口，面板直接可见', () => {
+  it('全断点默认收拢：>=768 桌面同样默认折叠，折叠头部可见', async () => {
     const w = mountBar()
-    expect(w.find('.filter-bar__toggle').exists()).toBe(false)
+    expect(w.find('.filter-bar__toggle').exists()).toBe(true)
+    expect(w.find('.filter-bar__panel').exists()).toBe(false)
+    await w.find('.filter-bar__toggle').trigger('click')
     expect(w.find('.filter-bar__panel').exists()).toBe(true)
   })
 
-  it('响应式源码断言：1024 白名单档纵向堆叠+全宽搜索、isSmall 折叠逻辑', () => {
+  it('挂载时已有生效条件 ⇒ 自动展开一次；手动收拢后再挂载（无条件）保持收拢', () => {
+    const w = mountBar({ modelValue: { keyword: 'x', status: '', from: '', to: '' } })
+    expect(w.find('.filter-bar__panel').exists()).toBe(true)
+  })
+
+  it('响应式源码断言：1024 白名单档纵向堆叠+全宽搜索、全断点折叠逻辑', () => {
     // 2026-09-13 审计修正：堆叠断点收敛到白名单值 1024；769 死规则已移除
     expect(source).toMatch(/@media \(max-width: 1024px\)/)
     const stackBlock = source.split('@media (max-width: 1024px)')[1] ?? ''
@@ -160,7 +183,8 @@ describe('FilterBar', () => {
     expect(stackBlock).toMatch(/\.filter-bar__search\s*{[^}]*width:\s*100%/s)
     expect(source).not.toMatch(/max-width:\s*1023px/)
     expect(source).not.toMatch(/min-width:\s*769px/)
-    expect(source).toContain('isSmall')
+    // 2026-11-18：折叠不再依赖 isSmall（isMobile 仍用于 <1024 堆叠）
     expect(source).toContain('isMobile')
+    expect(source).not.toContain('isSmall')
   })
 })

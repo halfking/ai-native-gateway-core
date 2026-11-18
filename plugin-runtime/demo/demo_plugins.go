@@ -231,3 +231,512 @@ func (p *HealthCheckPlugin) HealthCheck(ctx context.Context) error {
 func (p *HealthCheckPlugin) SetHealthy(healthy bool) {
 	p.healthy = healthy
 }
+
+// ResponseMetricsPlugin is a demo plugin that collects response metrics.
+// It runs in PhasePostUpstream to analyze the response from upstream LLM.
+type ResponseMetricsPlugin struct {
+	*extpoints.BaseExtensionPoint
+	metrics map[string]interface{}
+}
+
+// NewResponseMetricsPlugin creates a new response metrics plugin.
+func NewResponseMetricsPlugin() *ResponseMetricsPlugin {
+	return &ResponseMetricsPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-response-metrics",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePostUpstream,
+			Priority:       extpoints.PriorityNormal,
+			Timeout:        2 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen,
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityMutateResponse},
+		}),
+		metrics: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *ResponseMetricsPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[ResponseMetrics] Collecting metrics in phase %s\n", ctx.Phase)
+	
+	// Extract response info from State (set by upstream call)
+	var responseSize int64
+	var responseTime time.Duration
+	
+	if ctx.State != nil {
+		if size, ok := ctx.State["response_size"].(int64); ok {
+			responseSize = size
+		}
+		if rt, ok := ctx.State["response_time"].(time.Duration); ok {
+			responseTime = rt
+		}
+	}
+	
+	// Record metrics
+	p.metrics["response_size"] = responseSize
+	p.metrics["response_time_ms"] = responseTime.Milliseconds()
+	p.metrics["timestamp"] = ctx.RequestTime
+	
+	fmt.Printf("[ResponseMetrics] Recorded: size=%d bytes, time=%dms\n", 
+		responseSize, responseTime.Milliseconds())
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: false,
+		Latency:  1 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"metrics_collected": len(p.metrics),
+			"response_size":     responseSize,
+			"response_time_ms":  responseTime.Milliseconds(),
+		},
+	}, nil
+}
+
+// InterceptResponse implements ResponseInterceptor interface.
+func (p *ResponseMetricsPlugin) InterceptResponse(ctx *extpoints.ExecutionContext, resp *extpoints.Response) (*extpoints.Response, bool, error) {
+	// Calculate response size
+	responseSize := int64(len(resp.Body))
+	
+	// Record in metrics
+	p.metrics["status_code"] = resp.StatusCode
+	p.metrics["response_size"] = responseSize
+	p.metrics["headers_count"] = len(resp.Headers)
+	
+	// Add metric headers to response
+	if resp.Headers == nil {
+		resp.Headers = make(http.Header)
+	}
+	resp.Headers.Set("X-Response-Size", fmt.Sprintf("%d", responseSize))
+	resp.Headers.Set("X-Plugin-Processed", "demo-response-metrics")
+	
+	fmt.Printf("[ResponseMetrics] Intercepted response: status=%d, size=%d bytes\n", 
+		resp.StatusCode, responseSize)
+	
+	return resp, true, nil
+}
+
+// GetMetrics returns collected metrics (for testing).
+func (p *ResponseMetricsPlugin) GetMetrics() map[string]interface{} {
+	return p.metrics
+}
+
+// RequestModifierPlugin is a demo plugin that modifies requests before upstream call.
+// It runs in PhasePreUpstream to add custom parameters or modify the request.
+type RequestModifierPlugin struct {
+	*extpoints.BaseExtensionPoint
+	modifications map[string]interface{}
+}
+
+// NewRequestModifierPlugin creates a new request modifier plugin.
+func NewRequestModifierPlugin() *RequestModifierPlugin {
+	return &RequestModifierPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-request-modifier",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePreUpstream,
+			Priority:       extpoints.PriorityNormal,
+			Timeout:        2 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen,
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityMutateRequest},
+		}),
+		modifications: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *RequestModifierPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[RequestModifier] Modifying request in phase %s\n", ctx.Phase)
+	
+	// Track modifications
+	modCount := 0
+	
+	// Example: Add custom parameters to State
+	if ctx.State != nil {
+		// Add temperature override
+		ctx.State["temperature_override"] = 0.7
+		modCount++
+		
+		// Add max_tokens
+		ctx.State["max_tokens_override"] = 2000
+		modCount++
+		
+		// Add system prompt prefix
+		ctx.State["system_prompt_prefix"] = "You are a helpful assistant. "
+		modCount++
+	}
+	
+	// Record modifications
+	p.modifications["temperature_override"] = 0.7
+	p.modifications["max_tokens_override"] = 2000
+	p.modifications["modification_count"] = modCount
+	
+	fmt.Printf("[RequestModifier] Applied %d modifications\n", modCount)
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true,
+		Latency:  1 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"modifications_applied": modCount,
+			"temperature_override":  0.7,
+			"max_tokens_override":   2000,
+		},
+	}, nil
+}
+
+// TransformRequest implements RequestTransformer interface.
+func (p *RequestModifierPlugin) TransformRequest(ctx *extpoints.ExecutionContext, req *extpoints.Request) (*extpoints.Request, bool, error) {
+	// Modify request attributes
+	if req.Attributes == nil {
+		req.Attributes = make(map[string]interface{})
+	}
+	
+	// Add custom headers
+	if req.Headers == nil {
+		req.Headers = make(http.Header)
+	}
+	req.Headers.Set("X-Modified-By", "demo-request-modifier")
+	req.Headers.Set("X-Modification-Time", time.Now().Format(time.RFC3339))
+	
+	// Add to attributes
+	req.Attributes["modified_by_plugin"] = "demo-request-modifier"
+	req.Attributes["temperature_override"] = 0.7
+	req.Attributes["max_tokens_override"] = 2000
+	
+	fmt.Printf("[RequestModifier] Transformed request: added custom attributes and headers\n")
+	
+	return req, true, nil
+}
+
+// GetModifications returns applied modifications (for testing).
+func (p *RequestModifierPlugin) GetModifications() map[string]interface{} {
+	return p.modifications
+}
+
+// PreAuthValidatorPlugin is a demo plugin that validates requests before authentication.
+// It runs in PhasePreAuth to perform early validation like rate limiting checks,
+// request fingerprinting, or IP allowlisting.
+type PreAuthValidatorPlugin struct {
+	*extpoints.BaseExtensionPoint
+	validationResults map[string]interface{}
+}
+
+// NewPreAuthValidatorPlugin creates a new pre-auth validator plugin.
+func NewPreAuthValidatorPlugin() *PreAuthValidatorPlugin {
+	return &PreAuthValidatorPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-preauth-validator",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePreAuth,
+			Priority:       extpoints.PriorityHigh, // Run before other pre-auth plugins
+			Timeout:        2 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen, // Don't block on validation failure
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityValidate},
+		}),
+		validationResults: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PreAuthValidatorPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PreAuthValidator] Validating request in phase %s\n", ctx.Phase)
+	
+	// Simulate request validation checks
+	checks := []string{}
+	
+	// Check 1: Request fingerprinting
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	ctx.State["request_fingerprint"] = fmt.Sprintf("fp-%s-%d", ctx.RequestID[:8], ctx.RequestTime.Unix())
+	checks = append(checks, "fingerprint")
+	
+	// Check 2: Rate limit pre-check (simulate)
+	ctx.State["rate_limit_check"] = "passed"
+	checks = append(checks, "rate_limit")
+	
+	// Check 3: IP validation (simulate)
+	ctx.State["ip_validation"] = "passed"
+	checks = append(checks, "ip_validation")
+	
+	// Record validation results
+	p.validationResults["checks_performed"] = checks
+	p.validationResults["timestamp"] = ctx.RequestTime
+	p.validationResults["all_passed"] = true
+	
+	fmt.Printf("[PreAuthValidator] Completed %d validation checks\n", len(checks))
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true, // Modified State with validation results
+		Latency:  2 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"checks_performed": len(checks),
+			"validation_status": "passed",
+		},
+	}, nil
+}
+
+// GetValidationResults returns validation results (for testing).
+func (p *PreAuthValidatorPlugin) GetValidationResults() map[string]interface{} {
+	return p.validationResults
+}
+
+// PostAuthEnricherPlugin is a demo plugin that enriches user context after authentication.
+// It runs in PhasePostAuth to add user-specific configurations, permissions, or session data.
+type PostAuthEnricherPlugin struct {
+	*extpoints.BaseExtensionPoint
+	enrichments map[string]interface{}
+}
+
+// NewPostAuthEnricherPlugin creates a new post-auth enricher plugin.
+func NewPostAuthEnricherPlugin() *PostAuthEnricherPlugin {
+	return &PostAuthEnricherPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-postauth-enricher",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePostAuth,
+			Priority:       extpoints.PriorityNormal,
+			Timeout:        3 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen, // Don't block if enrichment fails
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityEnrichContext},
+		}),
+		enrichments: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PostAuthEnricherPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PostAuthEnricher] Enriching user context in phase %s\n", ctx.Phase)
+	
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	
+	// Extract user ID from authentication phase (if available)
+	userID := "unknown"
+	if uid, ok := ctx.State["user_id"].(string); ok {
+		userID = uid
+	}
+	
+	// Enrich with user-specific data (simulated)
+	enrichmentCount := 0
+	
+	// Enrichment 1: User preferences
+	ctx.State["user_preferences"] = map[string]interface{}{
+		"language": "en-US",
+		"theme":    "dark",
+		"timezone": "America/Los_Angeles",
+	}
+	enrichmentCount++
+	
+	// Enrichment 2: User permissions
+	ctx.State["user_permissions"] = []string{
+		"chat:read",
+		"chat:write",
+		"model:gpt-4",
+		"model:claude-3",
+	}
+	enrichmentCount++
+	
+	// Enrichment 3: Session metadata
+	ctx.State["session_metadata"] = map[string]interface{}{
+		"session_id":   fmt.Sprintf("sess-%s", ctx.RequestID[:12]),
+		"created_at":   ctx.RequestTime,
+		"user_id":      userID,
+		"enriched_by":  "demo-postauth-enricher",
+	}
+	enrichmentCount++
+	
+	// Enrichment 4: Feature flags
+	ctx.State["feature_flags"] = map[string]bool{
+		"streaming_enabled":       true,
+		"tool_calling_enabled":    true,
+		"multimodal_enabled":      false,
+		"function_calling_v2":     true,
+	}
+	enrichmentCount++
+	
+	// Record enrichments
+	p.enrichments["user_id"] = userID
+	p.enrichments["enrichment_count"] = enrichmentCount
+	p.enrichments["timestamp"] = ctx.RequestTime
+	
+	fmt.Printf("[PostAuthEnricher] Applied %d enrichments for user %s\n", enrichmentCount, userID)
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true, // Modified State with enriched data
+		Latency:  3 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"enrichments_applied": enrichmentCount,
+			"user_id":            userID,
+		},
+	}, nil
+}
+
+// GetEnrichments returns applied enrichments (for testing).
+func (p *PostAuthEnricherPlugin) GetEnrichments() map[string]interface{} {
+	return p.enrichments
+}
+
+// PreResponseFilterPlugin is a demo plugin that filters responses before final processing.
+// It runs in PhasePreResponse to perform response validation or transformation.
+type PreResponseFilterPlugin struct {
+	*extpoints.BaseExtensionPoint
+	filterResults map[string]interface{}
+}
+
+// NewPreResponseFilterPlugin creates a new pre-response filter plugin.
+func NewPreResponseFilterPlugin() *PreResponseFilterPlugin {
+	return &PreResponseFilterPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-preresponse-filter",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePreResponse,
+			Priority:       extpoints.PriorityNormal,
+			Timeout:        2 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen,
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityMutateResponse},
+		}),
+		filterResults: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PreResponseFilterPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PreResponseFilter] Filtering response in phase %s\n", ctx.Phase)
+	
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	
+	// 模拟响应过滤检查
+	checks := []string{}
+	
+	// Check 1: 响应大小验证
+	ctx.State["response_size_check"] = "passed"
+	checks = append(checks, "size_validation")
+	
+	// Check 2: 内容类型验证
+	ctx.State["content_type_check"] = "passed"
+	checks = append(checks, "content_type")
+	
+	// Check 3: 敏感信息检查
+	ctx.State["sensitive_info_check"] = "passed"
+	checks = append(checks, "sensitive_info")
+	
+	// 记录过滤结果
+	p.filterResults["checks_performed"] = checks
+	p.filterResults["timestamp"] = ctx.RequestTime
+	p.filterResults["all_passed"] = true
+	
+	fmt.Printf("[PreResponseFilter] Completed %d filter checks\n", len(checks))
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true,
+		Latency:  2 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"checks_performed": len(checks),
+			"filter_status":    "passed",
+		},
+	}, nil
+}
+
+// GetFilterResults returns filter results (for testing).
+func (p *PreResponseFilterPlugin) GetFilterResults() map[string]interface{} {
+	return p.filterResults
+}
+
+// PostResponseAuditorPlugin is a demo plugin that audits responses after processing.
+// It runs in PhasePostResponse to log or analyze final response data.
+type PostResponseAuditorPlugin struct {
+	*extpoints.BaseExtensionPoint
+	auditRecords map[string]interface{}
+}
+
+// NewPostResponseAuditorPlugin creates a new post-response auditor plugin.
+func NewPostResponseAuditorPlugin() *PostResponseAuditorPlugin {
+	return &PostResponseAuditorPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-postresponse-auditor",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePostResponse,
+			Priority:       extpoints.PriorityLow, // 在其他处理之后运行
+			Timeout:        3 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen,
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityAuditLog},
+		}),
+		auditRecords: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PostResponseAuditorPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PostResponseAuditor] Auditing response in phase %s\n", ctx.Phase)
+	
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	
+	// 收集审计数据
+	auditData := map[string]interface{}{
+		"request_id":   ctx.RequestID,
+		"request_time": ctx.RequestTime,
+		"phase":        string(ctx.Phase),
+		"plugin_id":    ctx.PluginID,
+	}
+	
+	// 审计检查项
+	auditChecks := []string{}
+	
+	// Check 1: 响应完整性
+	auditData["response_integrity"] = "verified"
+	auditChecks = append(auditChecks, "integrity")
+	
+	// Check 2: 性能指标
+	auditData["performance_metrics"] = map[string]interface{}{
+		"processing_time_ms": 150,
+		"response_size":      1024,
+	}
+	auditChecks = append(auditChecks, "performance")
+	
+	// Check 3: 合规性标记
+	auditData["compliance_flags"] = []string{
+		"gdpr_compliant",
+		"pii_filtered",
+	}
+	auditChecks = append(auditChecks, "compliance")
+	
+	// Check 4: 质量评分
+	auditData["quality_score"] = 95
+	auditChecks = append(auditChecks, "quality")
+	
+	// 记录到 State
+	ctx.State["audit_data"] = auditData
+	ctx.State["audit_checks"] = auditChecks
+	
+	// 保存审计记录
+	p.auditRecords["request_id"] = ctx.RequestID
+	p.auditRecords["audit_checks"] = auditChecks
+	p.auditRecords["audit_data"] = auditData
+	p.auditRecords["timestamp"] = ctx.RequestTime
+	
+	fmt.Printf("[PostResponseAuditor] Completed %d audit checks\n", len(auditChecks))
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: false, // 审计不修改响应
+		Latency:  3 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"audit_checks_performed": len(auditChecks),
+			"quality_score":          95,
+		},
+	}, nil
+}
+
+// GetAuditRecords returns audit records (for testing).
+func (p *PostResponseAuditorPlugin) GetAuditRecords() map[string]interface{} {
+	return p.auditRecords
+}

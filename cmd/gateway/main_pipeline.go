@@ -361,6 +361,18 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p.SetHandlerLookup(tbus)
 	go func() { _ = tbus.Dispatcher.Start(context.Background()) }()
 
+	// === Phase: PreAuth (priority 5) ===
+	// 2026-11-19: ExtensionPoint - 认证前预处理阶段
+	// 允许插件在认证之前执行（例如：请求预处理、速率限制预检、请求标记）
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_auth",
+		Phase: pipeline.PhasePreAuthentication,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "pre_auth"),
+		},
+	})
+
 	// === Phase: Authentication (priority 10) ===
 	// 2026-06-29: Enable when LLM_GATEWAY_V2_AUTH=true
 	// Extract API Key from metadata and verify against database.
@@ -384,6 +396,18 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			Hooks: authHooks,
 		})
 	}
+
+	// === Phase: PostAuth (priority 15) ===
+	// 2026-11-19: ExtensionPoint - 认证后处理阶段
+	// 允许插件在认证完成后执行（例如：用户上下文增强、权限检查、会话初始化）
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_auth",
+		Phase: pipeline.PhasePostAuthentication,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "post_auth"),
+		},
+	})
 
 	// === Phase: Client Identity (priority 20) ===
 	// 2026-06-29: Extract client identity hash from request (IP, headers, tenant, API key)
@@ -594,13 +618,28 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{tools.NewToolInterceptionHook(tools.NewMetaToolInterceptor(""))},
 	})
 
+	// ExtensionPoint: PhasePreUpstream 插件 (2026-11-19)
+	// 在 upstream LLM 调用之前执行，允许插件修改请求
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_upstream",
+		Phase: pipeline.PhasePreUpstream,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "pre_upstream"),
+		},
+	})
+
 	if deps.Config.EnableStreaming {
 		// PR-V4-11: output compliance hook（可选；deps.OutputComplianceChecker 非 nil 时启用）。
 		// 放在 streaming 之前——这样 redaction 发生在 SSE 切片之前。
 		if deps.OutputComplianceChecker != nil {
 			p.AddStage(&pipeline.PipelineStage{
 				Name: "post_upstream_output_compliance", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
-				Hooks: []pipeline.Hook{outputcompliancehooks.NewHook(deps.OutputComplianceChecker)},
+				Hooks: []pipeline.Hook{
+					outputcompliancehooks.NewHook(deps.OutputComplianceChecker),
+					// ExtensionPoint: PhasePostUpstream 插件
+					extpoints.NewExtensionPointHook(extRegistry, "post_upstream"),
+				},
 			})
 		}
 		p.AddStage(&pipeline.PipelineStage{
@@ -608,6 +647,39 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			Hooks: []pipeline.Hook{streaming.NewStreamHook(streaming.NewSSEStreamer())},
 		})
 	}
+
+	// ExtensionPoint: PhasePreResponse 插件 (2026-11-19)
+	// 在响应处理之前执行，允许插件进行响应预处理
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_response",
+		Phase: pipeline.PhasePreResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "pre_response"),
+		},
+	})
+
+	// ExtensionPoint: PhaseResponse 插件 (2026-11-19)
+	// 在响应返回之前执行，允许插件处理最终响应
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "response",
+		Phase: pipeline.PhaseResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "response"),
+		},
+	})
+
+	// ExtensionPoint: PhasePostResponse 插件 (2026-11-19)
+	// 在审计和缓存之前执行，允许插件进行响应后处理
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_response",
+		Phase: pipeline.PhasePostResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "post_response"),
+		},
+	})
 
 	if deps.Config.EnableAudit && deps.AuditWriter != nil {
 		p.AddStage(&pipeline.PipelineStage{

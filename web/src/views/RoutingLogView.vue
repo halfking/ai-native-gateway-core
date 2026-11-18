@@ -9,6 +9,7 @@ import {
 } from '../api'
 import { parseLocalMinute } from '../utils/datetime'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 
 // RoutingLogView — 路由记录 tab (docs/FEATURE-REQ-credential-heatmap-routing-log.md §5)
@@ -61,6 +62,39 @@ const resultOptions: { value: RoutingLogResult; label: string }[] = [
   { value: 'success', label: '仅成功' },
   { value: 'failed', label: '仅失败' },
 ]
+
+// 2026-11-18 筛选收纳轮：生效条件 chips + 清空回调（默认值不算生效条件）
+const TIME_PRESET_LABELS: Record<TimePreset, string> = {
+  '24h': '最近24小时',
+  today: '今天',
+  '7d': '最近7天',
+  month: '本月',
+  custom: '自定义',
+}
+const logFilterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
+  if (timePreset.value !== '24h') {
+    chips.push({ key: 'time', label: `时间: ${TIME_PRESET_LABELS[timePreset.value]}`, onRemove: () => { timePreset.value = '24h'; resetAndLoad() } })
+  }
+  if (kindFilter.value !== 'all') {
+    chips.push({ key: 'kind', label: `类型: ${kindOptions.find(o => o.value === kindFilter.value)?.label ?? kindFilter.value}`, onRemove: () => { kindFilter.value = 'all'; resetAndLoad() } })
+  }
+  if (resultFilter.value !== 'all') {
+    chips.push({ key: 'result', label: `结果: ${resultOptions.find(o => o.value === resultFilter.value)?.label ?? resultFilter.value}`, onRemove: () => { resultFilter.value = 'all'; resetAndLoad() } })
+  }
+  if (modelInput.value.trim()) {
+    chips.push({ key: 'model', label: `模型: ${modelInput.value.trim()}`, onRemove: () => { modelInput.value = ''; resetAndLoad() } })
+  }
+  return chips
+})
+
+function resetLogFilters() {
+  timePreset.value = '24h'
+  kindFilter.value = 'all'
+  resultFilter.value = 'all'
+  modelInput.value = ''
+  resetAndLoad()
+}
 
 function computeRange(): { start: string; end: string } {
   const now = new Date()
@@ -195,34 +229,38 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
 <template>
   <div class="routing-log">
-    <!-- Toolbar -->
+    <!-- Toolbar（2026-11-18 筛选收纳轮：条件默认收拢进 CollapsibleFilterSection，
+         自动刷新/刷新按钮是页面级操作留在头部常驻） -->
     <div class="log-toolbar">
       <div class="toolbar-row">
-        <span class="label">时间范围</span>
-        <select v-model="timePreset" class="field-input w-preset" @change="resetAndLoad">
-          <option value="24h">最近24小时</option>
-          <option value="today">今天</option>
-          <option value="7d">最近7天</option>
-          <option value="month">本月</option>
-          <option value="custom">自定义</option>
-        </select>
+        <CollapsibleFilterSection :chips="logFilterChips" @reset="resetLogFilters" style="flex:1;border:none;margin:0;background:transparent">
+          <template #actions></template>
+          <span class="label">时间范围</span>
+          <select v-model="timePreset" class="field-input w-preset" @change="resetAndLoad">
+            <option value="24h">最近24小时</option>
+            <option value="today">今天</option>
+            <option value="7d">最近7天</option>
+            <option value="month">本月</option>
+            <option value="custom">自定义</option>
+          </select>
 
-        <span class="label">{{ $t('common.terms.type') }}</span>
-        <select v-model="kindFilter" class="field-input w-kind" @change="resetAndLoad">
-          <option v-for="o in kindOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-        </select>
+          <span class="label">{{ $t('common.terms.type') }}</span>
+          <select v-model="kindFilter" class="field-input w-kind" @change="resetAndLoad">
+            <option v-for="o in kindOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
 
-        <span class="label">{{ $t('common.terms.result') }}</span>
-        <select v-model="resultFilter" class="field-input w-result" @change="resetAndLoad">
-          <option v-for="o in resultOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-        </select>
+          <span class="label">{{ $t('common.terms.result') }}</span>
+          <select v-model="resultFilter" class="field-input w-result" @change="resetAndLoad">
+            <option v-for="o in resultOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
 
-        <input
-          v-model="modelInput"
-          class="field-input model-input"
-          placeholder="按模型过滤 (回车搜索)"
-          @keyup.enter="resetAndLoad"
-        />
+          <input
+            v-model="modelInput"
+            class="field-input model-input"
+            placeholder="按模型过滤 (回车搜索)"
+            @keyup.enter="resetAndLoad"
+          />
+        </CollapsibleFilterSection>
 
         <label class="checkbox-label">
           <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />

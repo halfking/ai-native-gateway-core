@@ -74,59 +74,51 @@
       </div>
     </div>
 
-    <!-- Filter Bar -->
-    <div class="pm-filters">
-      <div class="filter-group">
-        <ModelPicker
-          v-model="filters.search"
-          placeholder="选择模型筛选…"
-          title="成本价格 · 模型筛选"
-          @update:model-value="onFilterChange"
-        />
-      </div>
-      <div class="filter-group">
-        <select v-model="filters.provider_id" @change="onFilterChange" class="filter-select">
-          <option value="">全部供应商</option>
-          <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.display_name }}</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <select v-model="filters.billing_mode" @change="onFilterChange" class="filter-select">
-          <option value="">全部计费</option>
-          <option value="token">Token（每百万）</option>
-          <option value="token_plan">Token 套餐（小米/火山）</option>
-          <option value="code_plan">Code 套餐</option>
-          <option value="per_token">按 Token（旧）</option>
-          <option value="per_request">按次</option>
-          <option value="monthly">包月</option>
-          <option value="free">免费</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <select v-model="filters.currency" @change="onFilterChange" class="filter-select">
-          <option value="">全部币种</option>
-          <option value="CNY">CNY</option>
-          <option value="USD">USD</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <select v-model="filters.pricing_status" @change="onFilterChange" class="filter-select">
-          <option value="">全部定价</option>
-          <option value="priced">已定价</option>
-          <option value="unpriced">未定价</option>
-          <option value="free">免费</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <select v-model="filters.availability" @change="onFilterChange" class="filter-select">
-          <option value="">全部状态</option>
-          <option value="true">可用</option>
-          <option value="false">不可用</option>
-        </select>
-      </div>
-      <button class="btn btn-sm" @click="clearFilters">清空</button>
-      <button v-if="!readOnly" class="btn btn-sm btn-primary" @click="openModelBatchPricing">按模型批量定价</button>
-    </div>
+    <!-- Filter Bar（2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部） -->
+    <CollapsibleFilterSection
+      :chips="filterChips"
+      @reset="clearFilters"
+    >
+      <template #actions>
+        <button v-if="!readOnly" class="btn btn-sm btn-primary" @click="openModelBatchPricing">按模型批量定价</button>
+      </template>
+      <ModelPicker
+        v-model="filters.search"
+        placeholder="选择模型筛选…"
+        title="成本价格 · 模型筛选"
+        @update:model-value="onFilterChange"
+      />
+      <select v-model="filters.provider_id" @change="onFilterChange" class="filter-select">
+        <option value="">全部供应商</option>
+        <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.display_name }}</option>
+      </select>
+      <select v-model="filters.billing_mode" @change="onFilterChange" class="filter-select">
+        <option value="">全部计费</option>
+        <option value="token">Token（每百万）</option>
+        <option value="token_plan">Token 套餐（小米/火山）</option>
+        <option value="code_plan">Code 套餐</option>
+        <option value="per_token">按 Token（旧）</option>
+        <option value="per_request">按次</option>
+        <option value="monthly">包月</option>
+        <option value="free">免费</option>
+      </select>
+      <select v-model="filters.currency" @change="onFilterChange" class="filter-select">
+        <option value="">全部币种</option>
+        <option value="CNY">CNY</option>
+        <option value="USD">USD</option>
+      </select>
+      <select v-model="filters.pricing_status" @change="onFilterChange" class="filter-select">
+        <option value="">全部定价</option>
+        <option value="priced">已定价</option>
+        <option value="unpriced">未定价</option>
+        <option value="free">免费</option>
+      </select>
+      <select v-model="filters.availability" @change="onFilterChange" class="filter-select">
+        <option value="">全部状态</option>
+        <option value="true">可用</option>
+        <option value="false">不可用</option>
+      </select>
+    </CollapsibleFilterSection>
 
     <!-- View Tabs -->
     <div class="pm-tabs">
@@ -497,6 +489,7 @@ import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import { exportFile } from '../utils/exportFile'
 import { readExportBlob, ExportTooLargeError } from '../utils/exportResponse'
 import { formatBytes } from '../utils/format'
@@ -785,6 +778,25 @@ function onFilterChange() {
     fetchTable()
   }
 }
+
+// 2026-11-18 筛选收纳轮：生效条件 chips（头部常驻，收拢时也可见；
+// 单击 chip 移除单项并触发重查，与 clearFilters 同一提交路径）
+const FILTER_META: Array<{ key: keyof typeof filters.value; label: (v: string) => string }> = [
+  { key: 'search', label: (v) => `模型: ${v}` },
+  { key: 'provider_id', label: (v) => `供应商ID: ${v}` },
+  { key: 'billing_mode', label: (v) => `计费: ${v}` },
+  { key: 'currency', label: (v) => `币种: ${v}` },
+  { key: 'pricing_status', label: (v) => `定价: ${v}` },
+  { key: 'availability', label: (v) => `状态: ${v}` },
+]
+const filterChips = computed(() =>
+  FILTER_META.flatMap(({ key, label }) => {
+    const v = filters.value[key]?.trim()
+    return v
+      ? [{ key, label: label(v), onRemove: () => { filters.value[key] = ''; onFilterChange() } }]
+      : []
+  }),
+)
 
 function clearFilters() {
   filters.value = {
@@ -1206,10 +1218,9 @@ onMounted(fetchData)
 .cov-tag { display: inline-block; margin-left: 4px; padding: 1px 4px; border-radius: 3px; font-size: 11px; font-weight: 600; }
 .cov-tag-tp { background: var(--bg-hover); color: var(--warning); }
 
-/* Filters */
-.pm-filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
-.filter-group { flex: 1; min-width: 150px; }
-.filter-input, .filter-select { width: 100%; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px; }
+/* Filters（2026-11-18 收纳轮：pm-filters 外壳由 CollapsibleFilterSection 承担，
+ * 控件尺寸类保留——面板内 select/input 仍用 filter-select/filter-input */
+.filter-select, .filter-input { width: auto; min-width: 120px; max-width: 220px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px; }
 .filter-select { cursor: pointer; }
 
 /* Tabs */

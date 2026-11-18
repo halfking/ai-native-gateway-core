@@ -24,6 +24,7 @@ import {
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import KxDatePicker from '../components/ui/KxDatePicker.vue'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 
 const { t } = useI18n()
 
@@ -34,6 +35,25 @@ const error = ref<string | null>(null)
 const filterActive = ref(true)
 const filterTaskType = ref('')
 const filterProfile = ref('')
+
+// 2026-11-18 筛选收纳轮：生效条件 chips（头部常驻）+ 清空回调。
+// activeOnly 默认 true 是该页默认视角，不重复计入生效条件。
+const filterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
+  if (filterTaskType.value.trim()) {
+    chips.push({ key: 'taskType', label: `${t('routingOverride.filter.taskType')}: ${filterTaskType.value.trim()}`, onRemove: () => { filterTaskType.value = '' } })
+  }
+  if (filterProfile.value) {
+    chips.push({ key: 'profile', label: `${t('routingOverride.filter.profile')}: ${filterProfile.value}`, onRemove: () => { filterProfile.value = '' } })
+  }
+  return chips
+})
+
+function resetFilters() {
+  filterTaskType.value = ''
+  filterProfile.value = ''
+  loadOverrides()
+}
 
 async function loadOverrides() {
   loading.value = true
@@ -219,9 +239,15 @@ onMounted(loadOverrides)
       </div>
     </div>
 
-    <!-- ── Filter bar ────────────────────────────────────── -->
+    <!-- ── Filter bar（2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部；
+         「新建」按钮是页面级操作不是筛选，保留在折叠面板外） ── -->
     <section class="card">
-      <div class="filter-bar">
+      <CollapsibleFilterSection :chips="filterChips" @reset="resetFilters">
+        <template #actions>
+          <button @click="loadOverrides" :disabled="loading">
+            {{ loading ? t('routingOverride.filter.loading') : t('routingOverride.filter.refresh') }}
+          </button>
+        </template>
         <label>
           <input type="checkbox" v-model="filterActive" @change="loadOverrides" />
           {{ t('routingOverride.filter.activeOnly') }}
@@ -238,13 +264,7 @@ onMounted(loadOverrides)
             <option value="cost_first">cost_first</option>
           </select>
         </label>
-        <button @click="loadOverrides" :disabled="loading">
-          {{ loading ? t('routingOverride.filter.loading') : t('routingOverride.filter.refresh') }}
-        </button>
-        <button @click="showCreateForm = !showCreateForm" class="btn-new">
-          {{ showCreateForm ? t('routingOverride.filter.cancel') : t('routingOverride.filter.newOverride') }}
-        </button>
-      </div>
+      </CollapsibleFilterSection>
 
       <p v-if="error" class="error">⚠️ {{ error }}</p>
     </section>

@@ -299,7 +299,7 @@ export function getStageColor(status: StageStatus): string {
     case 'active': return 'var(--kx-primary)';
     case 'failed': return 'var(--kx-danger)';
     case 'warning': return 'var(--kx-warning)';
-    case 'pending': return 'var(--kx-dormant)';
+    case 'pending': return 'var(--kx-muted)';
     case 'skipped': return 'var(--kx-muted)';
     default: return 'var(--kx-muted)';
   }
