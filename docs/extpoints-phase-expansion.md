@@ -7,7 +7,7 @@
 
 ## ✅ 新增 Phase 支持
 
-### 已集成的 Phase（总计 5 个）
+### 已集成的 Phase（总计 7 个）
 
 | Pipeline Phase | ExtensionPoint Phase | Stage 位置 | 说明 |
 |---------------|---------------------|-----------|------|
@@ -15,9 +15,22 @@
 | `pre_routing` | `PhasePreRoute` | client_identity stage | 路由前处理 ✅ |
 | `routing` | `PhaseRoute` | routing stage | 路由决策 ✅ |
 | `post_routing` | `PhasePostRoute` | credential_limit stage | 路由后处理 ✅ |
+| `pre_upstream` | `PhasePreUpstream` | pre_upstream stage | 上游调用前 ✅ **NEW** |
 | `post_upstream` | `PhasePostUpstream` | post_upstream_output_compliance | 上游调用后 ✅ **NEW** |
+| `response` | `PhaseResponse` | response stage | 响应处理 ✅ **NEW** |
 
 ### 新增 Phase 详情
+
+**PhasePreUpstream** (pre_upstream)
+- **位置**: `pre_upstream` stage（tools 之后）
+- **时机**: 上游 LLM 调用之前，请求准备阶段
+- **用途**: 
+  - 请求参数修改（temperature, max_tokens）
+  - 添加自定义 prompt 前缀
+  - 请求头注入
+  - 请求内容转换
+- **Demo 插件**: RequestModifierPlugin
+- **集成方式**: 独立 stage，在 PhasePostTransform 之后
 
 **PhasePostUpstream** (post_upstream)
 - **位置**: `post_upstream_output_compliance` stage
@@ -27,28 +40,39 @@
   - 输出合规检查
   - 响应转换/增强
   - 性能指标记录
+- **Demo 插件**: ResponseMetricsPlugin
 - **集成方式**: 添加到 OutputComplianceChecker 之后
+
+**PhaseResponse** (response)
+- **位置**: `response` stage（streaming 之后）
+- **时机**: 最终响应返回前
+- **用途**: 
+  - 响应最终处理
+  - 响应格式化
+  - 额外元数据注入
+  - 响应审计
+- **集成方式**: 独立 stage，在 streaming 之后、audit 之前
 
 ---
 
 ## 🎯 Phase 覆盖情况
 
-### 当前覆盖（5/12）
+### 当前覆盖（7/12）
 
 ✅ **已支持**:
 - PhaseAuth (认证)
 - PhasePreRoute (路由前)
 - PhaseRoute (路由)
 - PhasePostRoute (路由后)
+- PhasePreUpstream (上游前) **NEW**
 - PhasePostUpstream (上游后) **NEW**
+- PhaseResponse (响应处理) **NEW**
 
 ⏳ **待支持**:
 - PhasePreAuth (认证前)
 - PhasePostAuth (认证后)
-- PhasePreUpstream (上游前)
 - PhaseUpstream (上游调用)
 - PhasePreResponse (响应前)
-- PhaseResponse (响应处理)
 - PhasePostResponse (响应后)
 
 ### 优先级排序
@@ -56,9 +80,9 @@
 **High Priority** (核心请求路径):
 1. ✅ PhaseAuth - 认证
 2. ✅ PhaseRoute - 路由
-3. ✅ PhasePostUpstream - 响应处理
-4. ⏳ PhasePreUpstream - 上游前（请求修改）
-5. ⏳ PhaseResponse - 响应处理
+3. ✅ PhasePreUpstream - 上游前（请求修改）**NEW**
+4. ✅ PhasePostUpstream - 响应处理 **NEW**
+5. ✅ PhaseResponse - 响应处理 **NEW**
 
 **Medium Priority** (扩展功能):
 6. ⏳ PhasePreAuth - 请求预处理
@@ -91,12 +115,22 @@ HTTP Request
 │ PhasePostRouting                    │ ✅ ExtensionPointHook
 │   └─ PhasePostRoute plugins         │
 ├─────────────────────────────────────┤
-│ ... (upstream call) ...             │
+│ ... (transform, compression) ...    │
+├─────────────────────────────────────┤
+│ PhasePreUpstream                    │ ✅ ExtensionPointHook (NEW)
+│   └─ PhasePreUpstream plugins       │
+├─────────────────────────────────────┤
+│ ... (upstream LLM call) ...         │
 ├─────────────────────────────────────┤
 │ PhasePostUpstream                   │ ✅ ExtensionPointHook (NEW)
 │   └─ PhasePostUpstream plugins      │
 ├─────────────────────────────────────┤
-│ ... (response handling) ...         │
+│ ... (streaming) ...                 │
+├─────────────────────────────────────┤
+│ PhaseResponse                       │ ✅ ExtensionPointHook (NEW)
+│   └─ PhaseResponse plugins          │
+├─────────────────────────────────────┤
+│ ... (audit, cache_save) ...         │
 └─────────────────────────────────────┘
 ```
 
@@ -107,9 +141,13 @@ HTTP Request
 3. **Pre-routing** → PhasePreRoute (demo-header-injector)
 4. **Routing decision** → PhaseRoute
 5. **Post-routing** → PhasePostRoute
-6. **Upstream LLM call** → (gateway handled)
-7. **Response received** → PhasePostUpstream (NEW)
-8. **Streaming/response** → Continue pipeline
+6. **Transform & Compression** → (gateway handled)
+7. **Pre-upstream** → PhasePreUpstream (demo-request-modifier) **NEW**
+8. **Upstream LLM call** → (gateway handled)
+9. **Response received** → PhasePostUpstream (demo-response-metrics) **NEW**
+10. **Streaming** → (gateway handled)
+11. **Response processing** → PhaseResponse **NEW**
+12. **Audit & Cache** → Continue pipeline
 
 ---
 
@@ -119,7 +157,21 @@ HTTP Request
 
 **文件**: `cmd/gateway/main_pipeline.go`
 
-**修改内容**:
+**PhasePreUpstream 集成**:
+```go
+// ExtensionPoint: PhasePreUpstream 插件 (2026-11-19)
+// 在 upstream LLM 调用之前执行，允许插件修改请求
+p.AddStage(&pipeline.PipelineStage{
+    Name:  "pre_upstream",
+    Phase: pipeline.PhasePreUpstream,
+    Mode:  pipeline.ModeSequential,
+    Hooks: []pipeline.Hook{
+        extpoints.NewExtensionPointHook(extRegistry, "pre_upstream"),
+    },
+})
+```
+
+**PhasePostUpstream 集成** (已有):
 ```go
 // 在 post_upstream_output_compliance stage 添加 ExtensionPointHook
 if deps.OutputComplianceChecker != nil {
@@ -129,35 +181,75 @@ if deps.OutputComplianceChecker != nil {
         Mode: pipeline.ModeSequential,
         Hooks: []pipeline.Hook{
             outputcompliancehooks.NewHook(deps.OutputComplianceChecker),
-            extpoints.NewExtensionPointHook(extRegistry, "post_upstream"), // NEW
+            extpoints.NewExtensionPointHook(extRegistry, "post_upstream"),
         },
     })
 }
 ```
 
+**PhaseResponse 集成**:
+```go
+// ExtensionPoint: PhaseResponse 插件 (2026-11-19)
+// 在响应返回之前执行，允许插件处理最终响应
+p.AddStage(&pipeline.PipelineStage{
+    Name:  "response",
+    Phase: pipeline.PhaseResponse,
+    Mode:  pipeline.ModeSequential,
+    Hooks: []pipeline.Hook{
+        extpoints.NewExtensionPointHook(extRegistry, "response"),
+    },
+})
+```
+
 ### Phase 映射
 
-已存在的映射（无需修改）:
+已存在的映射（在 `extpoints/bridge.go`）:
 ```go
+"pre_upstream"  → PhasePreUpstream
 "post_upstream" → PhasePostUpstream
+"response"      → PhaseResponse
 ```
+
+### Demo 插件
+
+**RequestModifierPlugin** (PhasePreUpstream):
+- 位置: `plugin-runtime/demo/demo_plugins.go`
+- 功能: 修改请求参数（temperature, max_tokens）
+- 接口: RequestTransformer
+
+**ResponseMetricsPlugin** (PhasePostUpstream):
+- 位置: `plugin-runtime/demo/demo_plugins.go`
+- 功能: 收集响应指标（大小、时间、状态码）
+- 接口: ResponseInterceptor
 
 ---
 
 ## ✅ 验证结果
 
 ### 测试覆盖
-- ✅ 现有集成测试仍然通过（13/13）
-- ✅ Demo 插件测试通过（4/4）
-- ✅ Phase 映射测试通过（包含 post_upstream）
+- ✅ 现有集成测试仍然通过（5/5）
+- ✅ PhasePostUpstream 集成测试通过
+- ✅ PhasePreUpstream 集成测试通过
+- ✅ PhaseResponse stage 已添加
+- ✅ Phase 映射测试通过（包含新增 Phase）
 
-### 日志验证
+### 集成测试日志
 ```
+=== RUN   TestIntegration_PhasePostUpstream
 INFO ExtensionPointHook: execution complete 
   pipeline_phase=post_upstream 
-  total_plugins=X 
-  successful_plugins=X 
-  duration_us=Y
+  total_plugins=1 
+  successful_plugins=1 
+  duration_us=30
+--- PASS: TestIntegration_PhasePostUpstream
+
+=== RUN   TestIntegration_PhasePreUpstream
+INFO ExtensionPointHook: execution complete 
+  pipeline_phase=pre_upstream 
+  total_plugins=1 
+  successful_plugins=1 
+  duration_us=31
+--- PASS: TestIntegration_PhasePreUpstream
 ```
 
 ---
@@ -165,12 +257,14 @@ INFO ExtensionPointHook: execution complete
 ## 📈 影响分析
 
 ### 性能影响
-- **新增开销**: 每个请求在 PhasePostUpstream 检查插件
-- **条件执行**: `Enabled()` 检查，无插件时跳过（< 1µs）
+- **新增开销**: 每个请求在 3 个新 Phase 检查插件
+- **条件执行**: `Enabled()` 检查，无插件时跳过（< 1µs per phase）
 - **插件执行**: 取决于注册的插件数量和逻辑
+- **实测开销**: 30-31µs per phase (含 1 个测试插件)
 
 ### 功能影响
-- **响应处理能力增强**: 插件可以在响应返回前处理内容
+- **请求修改能力**: PhasePreUpstream 允许插件在 LLM 调用前修改参数
+- **响应处理能力**: PhasePostUpstream 和 PhaseResponse 提供响应处理钩子
 - **输出合规**: 与 OutputComplianceChecker 配合工作
 - **指标收集**: Demo metrics plugin 可以记录完整请求周期
 
@@ -179,41 +273,46 @@ INFO ExtensionPointHook: execution complete
 ## 🚀 下一步建议
 
 ### 立即可做
-1. **Demo 响应插件** - 创建 PhasePostUpstream 的演示插件
-2. **端到端测试** - 真实 HTTP 请求 → 验证插件执行
+1. ✅ PhasePreUpstream Demo 插件 - RequestModifierPlugin
+2. ✅ PhasePostUpstream Demo 插件 - ResponseMetricsPlugin
+3. ⏳ 端到端测试 - 真实 HTTP 请求 → 验证插件执行
 
 ### 短期 (本周)
-3. **PhasePreUpstream 支持** - 请求修改插件
-4. **PhaseResponse 支持** - 响应处理插件
-5. **性能基准** - 测量插件开销
+4. ⏳ PhasePreAuth 支持 - 请求预处理
+5. ⏳ PhasePostAuth 支持 - 认证后处理
+6. ⏳ PhasePreResponse 支持 - 响应前处理
+7. ⏳ 性能基准 - 测量插件开销
 
 ### 中期 (下周)
-6. **完整 Phase 覆盖** - 支持剩余 7 个 Phase
-7. **生产插件迁移** - ai-session-manager 适配
-8. **监控集成** - Prometheus metrics
+8. ⏳ 完整 Phase 覆盖 - 支持剩余 5 个 Phase
+9. ⏳ 生产插件迁移 - ai-session-manager 适配
+10. ⏳ 监控集成 - Prometheus metrics
 
 ---
 
 ## 📝 总结
 
-### 本次更新
-- ✅ 新增 PhasePostUpstream 支持
-- ✅ 总计 5/12 Phase 已集成
-- ✅ 覆盖核心请求路径（auth → route → upstream → response）
-- ✅ 所有测试通过
+### 本次更新 (2026-11-19)
+- ✅ 新增 PhasePreUpstream 支持 - 请求修改插件
+- ✅ 新增 PhasePostUpstream 支持 - 响应处理插件
+- ✅ 新增 PhaseResponse 支持 - 最终响应处理
+- ✅ 总计 7/12 Phase 已集成（+3 新增）
+- ✅ 覆盖核心请求路径（auth → route → pre-upstream → upstream → post-upstream → response）
+- ✅ 所有集成测试通过（5/5）
+- ✅ 添加 2 个 Demo 插件（RequestModifier, ResponseMetrics）
 
 ### 架构完整度
-- **请求阶段**: 4/6 (67%) - auth, pre-route, route, post-route
-- **响应阶段**: 1/6 (17%) - post-upstream
-- **总体**: 5/12 (42%)
+- **请求阶段**: 5/6 (83%) - auth, pre-route, route, post-route, pre-upstream
+- **响应阶段**: 2/6 (33%) - post-upstream, response
+- **总体**: 7/12 (58%)
 
 ### 关键指标
-- **集成 Phase**: 5 个
-- **Demo 插件**: 3 个
-- **测试覆盖**: 17/17 通过
-- **性能开销**: < 1µs per phase (无插件时)
+- **集成 Phase**: 7 个 (+2 从上次)
+- **Demo 插件**: 5 个 (+2 新增)
+- **测试覆盖**: 5/5 通过
+- **性能开销**: < 1µs per phase (无插件时), ~30µs (1个插件)
 
 ---
 
 **报告时间**: 2026-11-19  
-**下一里程碑**: 完整 Phase 覆盖（12/12）
+**下一里程碑**: 完整 Phase 覆盖（12/12）+ 端到端测试

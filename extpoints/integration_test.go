@@ -197,14 +197,124 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 	}
 }
 
-// testPlugin 是用于集成测试的简单插件实现。
-type testPlugin struct {
-	metadata    *extpoints.PluginMetadata
-	executed    bool
-	lastContext *extpoints.ExecutionContext
-	onExecute   func()
-	shouldFail  bool
-}
+	// TestIntegration_PhasePostUpstream 验证 PhasePostUpstream 插件集成。
+	func TestIntegration_PhasePostUpstream(t *testing.T) {
+		registry := extpoints.NewExtensionPointRegistry()
+		
+		// 创建 PostUpstream 阶段插件
+		postUpstreamPlugin := &testPlugin{
+			metadata: &extpoints.PluginMetadata{
+				PluginID: "test-post-upstream",
+				Phase:    extpoints.PhasePostUpstream,
+				Priority: extpoints.PriorityNormal,
+			},
+			executed: false,
+		}
+		
+		err := registry.Register(extpoints.PhasePostUpstream, postUpstreamPlugin)
+		if err != nil {
+			t.Fatalf("Failed to register post-upstream plugin: %v", err)
+		}
+		
+		// 创建 Pipeline
+		p := pipeline.NewRequestPipeline()
+		
+		// 添加 PhasePostUpstream Stage
+		p.AddStage(&pipeline.PipelineStage{
+			Name:  "post_upstream_output_compliance",
+			Phase: pipeline.PhasePostUpstream,
+			Mode:  pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{
+				extpoints.NewExtensionPointHook(registry, "post_upstream"),
+			},
+		})
+		
+		// 创建测试请求
+		ctx := context.Background()
+		envelope := &domain.PipelineRequest{
+			TenantID:  "test-tenant",
+			SessionID: "test-session",
+			Metadata: map[string]interface{}{
+				"response_size": int64(1024),
+				"response_time": 100,
+			},
+		}
+		
+		// 执行 Pipeline
+		err = p.Execute(ctx, envelope)
+		if err != nil {
+			t.Errorf("Pipeline execution failed: %v", err)
+		}
+		
+		// 验证插件被执行
+		if !postUpstreamPlugin.executed {
+			t.Error("Expected post-upstream plugin to be executed")
+		}
+	}
+
+	// TestIntegration_PhasePreUpstream 验证 PhasePreUpstream 插件集成。
+	func TestIntegration_PhasePreUpstream(t *testing.T) {
+		registry := extpoints.NewExtensionPointRegistry()
+		
+		// 创建 PreUpstream 阶段插件
+		preUpstreamPlugin := &testPlugin{
+			metadata: &extpoints.PluginMetadata{
+				PluginID: "test-pre-upstream",
+				Phase:    extpoints.PhasePreUpstream,
+				Priority: extpoints.PriorityNormal,
+			},
+			executed: false,
+		}
+		
+		err := registry.Register(extpoints.PhasePreUpstream, preUpstreamPlugin)
+		if err != nil {
+			t.Fatalf("Failed to register pre-upstream plugin: %v", err)
+		}
+		
+		// 创建 Pipeline
+		p := pipeline.NewRequestPipeline()
+		
+		// 添加 PhasePreUpstream Stage
+		p.AddStage(&pipeline.PipelineStage{
+			Name:  "pre_upstream",
+			Phase: pipeline.PhasePreUpstream,
+			Mode:  pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{
+				extpoints.NewExtensionPointHook(registry, "pre_upstream"),
+			},
+		})
+		
+		// 创建测试请求
+		ctx := context.Background()
+		envelope := &domain.PipelineRequest{
+			TenantID:  "test-tenant",
+			SessionID: "test-session",
+			Metadata: map[string]interface{}{
+				"model":       "gpt-4",
+				"temperature": 0.5,
+			},
+		}
+		
+		// 执行 Pipeline
+		err = p.Execute(ctx, envelope)
+		if err != nil {
+			t.Errorf("Pipeline execution failed: %v", err)
+		}
+		
+		// 验证插件被执行
+		if !preUpstreamPlugin.executed {
+			t.Error("Expected pre-upstream plugin to be executed")
+		}
+	}
+	
+	// testPlugin 是用于集成测试的简单插件实现。
+	type testPlugin struct {
+		metadata    *extpoints.PluginMetadata
+		executed    bool
+		lastContext *extpoints.ExecutionContext
+		onExecute   func()
+		shouldFail  bool
+	}
 
 func (p *testPlugin) Metadata() *extpoints.PluginMetadata {
 	return p.metadata

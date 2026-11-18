@@ -594,6 +594,17 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{tools.NewToolInterceptionHook(tools.NewMetaToolInterceptor(""))},
 	})
 
+	// ExtensionPoint: PhasePreUpstream 插件 (2026-11-19)
+	// 在 upstream LLM 调用之前执行，允许插件修改请求
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_upstream",
+		Phase: pipeline.PhasePreUpstream,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "pre_upstream"),
+		},
+	})
+
 	if deps.Config.EnableStreaming {
 		// PR-V4-11: output compliance hook（可选；deps.OutputComplianceChecker 非 nil 时启用）。
 		// 放在 streaming 之前——这样 redaction 发生在 SSE 切片之前。
@@ -612,6 +623,17 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			Hooks: []pipeline.Hook{streaming.NewStreamHook(streaming.NewSSEStreamer())},
 		})
 	}
+
+	// ExtensionPoint: PhaseResponse 插件 (2026-11-19)
+	// 在响应返回之前执行，允许插件处理最终响应
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "response",
+		Phase: pipeline.PhaseResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "response"),
+		},
+	})
 
 	if deps.Config.EnableAudit && deps.AuditWriter != nil {
 		p.AddStage(&pipeline.PipelineStage{
