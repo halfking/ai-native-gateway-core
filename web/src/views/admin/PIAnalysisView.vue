@@ -1,7 +1,7 @@
 <template>
   <div class="pi-analysis-view">
     <div class="header">
-      <h1>PI 错误分析</h1>
+ <h1>{{ t('common.piAnalysis.page.title') }}</h1>
       <div class="actions">
         <button @click="triggerAnalysis" class="btn-primary" :disabled="isTriggering">
           {{ isTriggering ? t('common.piAnalysis.page.triggering') : t('common.piAnalysis.page.triggerManual') }}
@@ -124,7 +124,7 @@
       </table>
 
       <div class="pagination">
-        <button @click="prevQueuePage" :disabled="queueOffset === 0">上一页</button>
+        <button @click="prevQueuePage" :disabled="queueOffset === 0">{{ t('common.piAnalysis.page.prevPage') }}</button>
         <span>{{ queueOffset / queueLimit + 1 }} / {{ Math.ceil(queueTotal / queueLimit) }}</span>
         <button @click="nextQueuePage" :disabled="queueOffset + queueLimit >= queueTotal">{{ t('common.piAnalysis.page.nextPage') }}</button>
       </div>
@@ -178,7 +178,7 @@
       </table>
 
       <div class="pagination">
-        <button @click="prevResultsPage" :disabled="resultsOffset === 0">上一页</button>
+        <button @click="prevResultsPage" :disabled="resultsOffset === 0">{{ t('common.piAnalysis.page.prevPage') }}</button>
         <span>{{ resultsOffset / resultsLimit + 1 }} / {{ Math.ceil(resultsTotal / resultsLimit) }}</span>
         <button @click="nextResultsPage" :disabled="resultsOffset + resultsLimit >= resultsTotal">{{ t('common.piAnalysis.page.nextPage') }}</button>
       </div>
