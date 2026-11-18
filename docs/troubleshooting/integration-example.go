@@ -1,3 +1,8 @@
+//go:build ignore
+
+// 集成示例：仅作文档展示，不参与编译（引用多处未定义符号，package 名与目录
+// 语义不符）。go:build ignore 排除 go build ./...；需要真实可编译示例时请
+// 挪到 examples/ 并补齐依赖。
 package streaming
 
 import (
