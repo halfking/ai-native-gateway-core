@@ -879,16 +879,64 @@ func (ec *ErrorCollector) checkDuplicateTx(ctx context.Context, execer interface
 }
 
 // GetStats 获取错误统计
+//
+// ★ 2026-11-19 一致性根修（owner 报障「列表与统计的数据不一致」，211 实测定案三因）：
+//
+//	① **状态盲区**：旧实现只数 pending/analyzed——failed/processing/skipped
+//	   完全不可见（211 实测：队列 2 条全 failed ⇒ 统计卡全 0，而列表明明有行）。
+//	② **作用域错位**：旧实现 `WHERE created_at > NOW() - INTERVAL '7 days'`，
+//	   而列表（GetQueue）**无时间过滤** ⇒ 超 7 天的错误统计直接消失。
+//	③ **死零**：误报率/平均耗时的数据后端从未提供，前端是硬编码 '0%'/'0ms'。
+//
+//	⇒ 修法＝统计与列表**同表同域**：队列聚合去掉时间过滤（= GetQueue 的域）、
+//	  数全部 5 种状态；结果聚合（误报数/平均耗时）取自 error_analysis_results
+//	  （= GetResults「分析结果」tab 的域）⇒ 四个数字都能与列表逐项对上。
 func (ec *ErrorCollector) GetStats(ctx context.Context) (map[string]interface{}, error) {
+	// ── 队列聚合：全量、全状态（与 GetQueue 列表同表同域）─────────────
+	queueAgg := `
+		SELECT
+			COUNT(*) AS total,
+			COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending,
+			COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing,
+			COUNT(CASE WHEN status = 'analyzed' THEN 1 END) AS analyzed,
+			COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+			COUNT(CASE WHEN status = 'skipped' THEN 1 END) AS skipped
+		FROM error_analysis_queue
+	`
+	var qTotal, qPending, qProcessing, qAnalyzed, qFailed, qSkipped int
+	if err := ec.db.QueryRowContext(ctx, queueAgg).Scan(
+		&qTotal, &qPending, &qProcessing, &qAnalyzed, &qFailed, &qSkipped,
+	); err != nil {
+		return nil, fmt.Errorf("failed to get queue stats: %w", err)
+	}
+
+	// ── 结果聚合：与 GetResults「分析结果」tab 同表同域 ──────────────
+	//   ★ 空表时 AVG 返回 NULL ⇒ 用 NullFloat64 承接（前端显示 —）。
+	resultsAgg := `
+		SELECT
+			COUNT(*) AS results_total,
+			COUNT(CASE WHEN is_false_positive THEN 1 END) AS false_positives,
+			AVG(analysis_duration_ms) AS avg_duration_ms
+		FROM error_analysis_results
+	`
+	var rTotal, rFalsePos int
+	var rAvgDur sql.NullFloat64
+	if err := ec.db.QueryRowContext(ctx, resultsAgg).Scan(
+		&rTotal, &rFalsePos, &rAvgDur,
+	); err != nil {
+		return nil, fmt.Errorf("failed to get results stats: %w", err)
+	}
+
+	// ── 按类型细分：同样全量域（旧 7 天过滤退役）────────────────────
 	query := `
-		SELECT 
+		SELECT
 			error_type,
 			COUNT(*) as total,
 			COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
 			COUNT(CASE WHEN status = 'analyzed' THEN 1 END) as analyzed,
+			COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed,
 			MAX(created_at) as last_error_at
 		FROM error_analysis_queue
-		WHERE created_at > NOW() - INTERVAL '7 days'
 		GROUP BY error_type
 	`
 
@@ -903,10 +951,10 @@ func (ec *ErrorCollector) GetStats(ctx context.Context) (map[string]interface{},
 
 	for rows.Next() {
 		var errorType string
-		var total, pending, analyzed int
+		var total, pending, analyzed, failed int
 		var lastErrorAt time.Time
 
-		err := rows.Scan(&errorType, &total, &pending, &analyzed, &lastErrorAt)
+		err := rows.Scan(&errorType, &total, &pending, &analyzed, &failed, &lastErrorAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan stats: %w", err)
 		}
@@ -916,6 +964,7 @@ func (ec *ErrorCollector) GetStats(ctx context.Context) (map[string]interface{},
 			"total":         total,
 			"pending":       pending,
 			"analyzed":      analyzed,
+			"failed":        failed,
 			"last_error_at": lastErrorAt,
 		})
 	}
@@ -927,6 +976,21 @@ func (ec *ErrorCollector) GetStats(ctx context.Context) (map[string]interface{},
 	}
 
 	stats["by_type"] = typeStats
+	// ★ 2026-11-19：顶层计数（前端直接读，不再自己 by_type 求和——
+	//   求和口径与列表 COUNT 域一致这件事由后端单点保证）。
+	stats["total"] = qTotal
+	stats["pending"] = qPending
+	stats["processing"] = qProcessing
+	stats["analyzed"] = qAnalyzed
+	stats["failed"] = qFailed
+	stats["skipped"] = qSkipped
+	stats["results_total"] = rTotal
+	stats["false_positive_count"] = rFalsePos
+	if rAvgDur.Valid {
+		stats["avg_duration_ms"] = int(rAvgDur.Float64 + 0.5)
+	} else {
+		stats["avg_duration_ms"] = nil
+	}
 	stats["timestamp"] = time.Now()
 
 	return stats, nil

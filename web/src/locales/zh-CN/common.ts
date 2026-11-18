@@ -295,6 +295,16 @@ export default {
   // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
   //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
   piAnalysis: {
+    // ★ 2026-11-19 列表↔统计一致性根修：统计卡标签（收编存量硬编码中文）。
+    stats: {
+      total: '总错误',
+      pending: '待分析',
+      analyzed: '已分析',
+      failed: '失败',
+      falsePositiveRate: '误报率',
+      avgDuration: '平均耗时',
+      subTransient: '处理中 {processing} · 跳过 {skipped}',
+    },
     unavailableTitle: 'PI 错误分析当前不可用。',
     unavailableReason: '后端未注册 /api/admin/pi-analysis/*（缺少数据库连接或 admin 鉴权材料）——这是后端的 fail-closed 行为，不是数据为空。',
     unavailableNetwork: '无法访问 PI 错误分析接口（网络或服务端异常）。',

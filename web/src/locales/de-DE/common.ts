@@ -291,6 +291,16 @@ export default {
   // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
   //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
   piAnalysis: {
+    // â 2026-11-19 Listen-/Statistik-Konsistenz: Statistik-Karten-Labels.
+    stats: {
+      total: 'Fehler gesamt',
+      pending: 'Ausstehend',
+      analyzed: 'Analysiert',
+      failed: 'Fehlgeschlagen',
+      falsePositiveRate: 'Fehlalarmrate',
+      avgDuration: 'Ø Dauer',
+      subTransient: 'in Bearbeitung {processing} · übersprungen {skipped}',
+    },
     unavailableTitle: 'Die PI-Fehleranalyse ist derzeit nicht verfügbar.',
     unavailableReason: 'Das Backend hat /api/admin/pi-analysis/* nicht registriert (fehlende Datenbankverbindung oder fehlendes admin-Authentisierungsmaterial) — das ist das Fail-Closed-Verhalten des Backends, keine leere Datenmenge.',
     unavailableNetwork: 'Der Endpunkt für die PI-Fehleranalyse ist nicht erreichbar (Netzwerk- oder Serverfehler).',

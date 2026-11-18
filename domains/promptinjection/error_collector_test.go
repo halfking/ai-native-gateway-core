@@ -827,3 +827,89 @@ var _ = sql.ErrNoRows
 func intPtr(i int) *int {
 	return &i
 }
+
+// ★ 2026-11-19 一致性根修钉测（owner 报障「列表与统计不一致」，211 实测定案三因）：
+//
+//	① 全量域（无 7 天过滤——与 GetQueue 列表同表同域）；
+//	② 全状态计数（failed/processing/skipped 不再盲区）；
+//	③ 结果聚合（误报数/平均耗时）取自 error_analysis_results（与 GetResults 同域），
+//	   空结果表时 avg_duration_ms 必须是 null 而不是 0。
+func TestErrorCollector_GetStats_FullScopeAllStatuses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ec := NewErrorCollector(db, true)
+
+	// 队列聚合：2 failed + 1 pending + 1 analyzed（含 7 天前的旧行——必须被数到）
+	mock.ExpectQuery("SELECT\\s+COUNT\\(\\*\\) AS total,").WillReturnRows(
+		sqlmock.NewRows([]string{"total", "pending", "processing", "analyzed", "failed", "skipped"}).
+			AddRow(4, 1, 0, 1, 2, 0))
+	// 结果聚合：1 条结果、误报 1、平均耗时 1234ms
+	mock.ExpectQuery("SELECT\\s+COUNT\\(\\*\\) AS results_total,").WillReturnRows(
+		sqlmock.NewRows([]string{"results_total", "false_positives", "avg_duration_ms"}).
+			AddRow(1, 1, 1234.0))
+	// by_type：一行 2025 年的旧 failed 行（旧实现 7 天窗里看不见）
+	mock.ExpectQuery("SELECT\\s+error_type,").WillReturnRows(
+		sqlmock.NewRows([]string{"error_type", "total", "pending", "analyzed", "failed", "last_error_at"}).
+			AddRow("rule_false_positive", 4, 1, 1, 2, time.Now().AddDate(0, -2, 0)))
+
+	stats, err := ec.GetStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+
+	// 顶层计数与列表 COUNT 域逐项相等
+	for key, want := range map[string]int{
+		"total": 4, "pending": 1, "analyzed": 1, "failed": 2,
+		"results_total": 1, "false_positive_count": 1,
+	} {
+		got, _ := stats[key].(int)
+		if got != want {
+			t.Fatalf("stats[%q] = %d, want %d", key, got, want)
+		}
+	}
+	if v, _ := stats["avg_duration_ms"].(int); v != 1234 {
+		t.Fatalf("avg_duration_ms = %v, want 1234", stats["avg_duration_ms"])
+	}
+
+	// by_type 必须包含 7 天外的旧行（旧实现的时间过滤把它丢了 ⇒ 列表有行统计没有）
+	byType, _ := stats["by_type"].([]map[string]interface{})
+	if len(byType) != 1 {
+		t.Fatalf("by_type rows = %d, want 1 (old row must not be filtered out)", len(byType))
+	}
+	if byType[0]["failed"].(int) != 2 {
+		t.Fatalf("by_type[0].failed = %v, want 2", byType[0]["failed"])
+	}
+}
+
+// ★ 空结果表：avg_duration_ms 必须是 null（前端显示 —），不能是假 0ms。
+func TestErrorCollector_GetStats_EmptyResultsTableNilDuration(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ec := NewErrorCollector(db, true)
+
+	mock.ExpectQuery("SELECT\\s+COUNT\\(\\*\\) AS total,").WillReturnRows(
+		sqlmock.NewRows([]string{"total", "pending", "processing", "analyzed", "failed", "skipped"}).
+			AddRow(0, 0, 0, 0, 0, 0))
+	mock.ExpectQuery("SELECT\\s+COUNT\\(\\*\\) AS results_total,").WillReturnRows(
+		sqlmock.NewRows([]string{"results_total", "false_positives", "avg_duration_ms"}).
+			AddRow(0, 0, nil))
+	mock.ExpectQuery("SELECT\\s+error_type,").WillReturnRows(
+		sqlmock.NewRows([]string{"error_type", "total", "pending", "analyzed", "failed", "last_error_at"}))
+
+	stats, err := ec.GetStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if v, ok := stats["avg_duration_ms"]; ok && v != nil {
+		t.Fatalf("avg_duration_ms must be nil on empty results, got %v", v)
+	}
+	if v, _ := stats["total"].(int); v != 0 {
+		t.Fatalf("total = %v, want 0", stats["total"])
+	}
+}
