@@ -48,7 +48,6 @@ export default {
   colVendor: 'Vendor list',
   colRetail: 'Our retail (CNY)',
   colDrift: 'Retail drift',
-  platSearch: 'Canonical model name (e.g. glm-4)…',
   platUnavailableWhy: 'Platform quotes unavailable — migration 970 missing or not synced.',
   platUnavailableNext: 'Next: deploy migration 970 and re-run market-price-sync.py.',
   platNeedModel: 'Enter a model name to load per-platform quotes.',

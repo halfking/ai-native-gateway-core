@@ -48,7 +48,6 @@ export default {
   colVendor: 'مرساة المصنع',
   colRetail: 'تجزئتنا (CNY)',
   colDrift: 'علاوة التجزئة',
-  platSearch: 'أدخل الاسم الرمزي (canonical) للنموذج (مثل glm-4)…',
   platUnavailableWhy: 'جدول أسعار المنصات غير متاح — الترحيل970 غير منشأ أو لم تتم مزامنته بعد.',
   platUnavailableNext: 'التالي: انشر الترحيل970 وأعد تشغيل market-price-sync.py.',
   platNeedModel: 'أدخل اسم النموذج لعرض الأسعار الحالية من كل منصة.',

@@ -8,6 +8,14 @@ export default {
     refresh: '更新',
     refreshLoading: '読み込み中…',
   },
+  // ★ D23（2026-11-19 审计轮）：上游 797b42067 引入 globalModelFilter 时
+  //   只在 en-US / zh-CN 落了值，其余 6 个语种缺失 ⇒ key-parity 门报
+  //   「hard gate violations」。此处按 en-US / zh-CN 的语义补齐。
+  globalModelFilter: {
+    label: '標準モデルを検索',
+    title: 'モデルを選択',
+    placeholder: 'モデルを選択（複数選択可）…',
+  },
   desc: 'テナント側の販売価格 (クレジット/1M トークン)。グローバル基準 × 割引係数が<strong>手動設定されていない</strong>ディメンションに適用されます。「手動」にチェックを入れたフィールドはグローバル変更の影響を受けません。',
   settings: {
     title: 'グローバル基準 (クレジット / 1M トークン)',

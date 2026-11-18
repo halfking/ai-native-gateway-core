@@ -48,7 +48,6 @@ export default {
   colVendor: 'Ancla fabricante',
   colRetail: 'Nuestro retail (CNY)',
   colDrift: 'Prima retail',
-  platSearch: 'Nombre canonical del modelo (p. ej. glm-4)…',
   platUnavailableWhy: 'La tabla de precios de plataforma no está disponible: falta la migración970 o aún no se ha sincronizado.',
   platUnavailableNext: 'Siguiente paso: desplegar la migración970 y volver a ejecutar market-price-sync.py.',
   platNeedModel: 'Introduzca el nombre del modelo para consultar los precios actuales de cada plataforma.',

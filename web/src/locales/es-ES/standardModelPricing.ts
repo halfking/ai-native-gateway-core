@@ -6,6 +6,14 @@ export default {
     refresh: 'Actualizar',
     refreshLoading: 'Cargando…',
   },
+  // ★ D23（2026-11-19 审计轮）：上游 797b42067 引入 globalModelFilter 时
+  //   只在 en-US / zh-CN 落了值，其余 6 个语种缺失 ⇒ key-parity 门报
+  //   「hard gate violations」。此处按 en-US / zh-CN 的语义补齐。
+  globalModelFilter: {
+    label: 'Buscar modelos estándar',
+    title: 'Seleccionar modelos',
+    placeholder: 'Seleccionar modelos (admite selección múltiple)…',
+  },
   desc: 'Precios de venta del lado del inquilino (créditos / 1M tokens). La base global × descuento se aplica a las dimensiones <strong>no manuales</strong>; los campos manuales no se ven afectados por cambios globales.',
   settings: {
     title: 'Base global (créditos / 1M tokens)',

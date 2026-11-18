@@ -39,6 +39,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/modelbudget"                         // Phase 2 P1#3: budget-aware model selection
 	"github.com/kaixuan/llm-gateway-go/domains/modelcredibility"                    // passive timing fingerprint features (2026-11-09)
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1044,6 +1045,29 @@ type chatRequestBody struct {
 	// the OpenAI-compatible metadata extension slot. The admin token gate
 	// is applied by ExtractPreferredCredential at the v2 preflight layer.
 	Metadata json.RawMessage `json:"metadata,omitempty"`
+	// MaxCostPerTask (Phase 2 P1#3, 2026-11-19) is the optional per-task
+	// budget constraint in USD. When present and > 0, triggers model
+	// degradation if the estimated cost exceeds this limit. Injected by
+	// acc-go orchestrator via payloadWithBudget (commit 2cc1eb4f).
+	MaxCostPerTask float64 `json:"max_cost_per_task,omitempty"`
+}
+
+//-----------------------------------------------------------------------------
+
+// estimateInputTokensFromMessages provides a rough estimate of input tokens
+// from the messages JSON. Uses simple character counting (1 token ≈ 4 chars).
+// Phase 2 P1#3 (2026-11-19): used for budget-aware model selection.
+func estimateInputTokensFromMessages(messagesJSON json.RawMessage) int {
+	if len(messagesJSON) == 0 {
+		return 0
+	}
+	// Simple heuristic: 1 token ≈ 4 characters
+	charCount := len(messagesJSON)
+	tokenEstimate := charCount / 4
+	if tokenEstimate < 10 {
+		tokenEstimate = 10 // Minimum estimate for overhead
+	}
+	return tokenEstimate
 }
 
 //-----------------------------------------------------------------------------
@@ -3084,6 +3108,66 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 	// ========== End Format Detection & Auto-Fix ==========
+
+	// ========== Phase 2 P1#3: Budget-aware model selection ==========
+	if reqBody.MaxCostPerTask > 0 {
+		// Estimate tokens for cost calculation
+		inputTokens := estimateInputTokensFromMessages(reqBody.Messages)
+		outputTokens := 1000 // Default estimate; can be refined based on max_tokens if present
+
+		// Initialize estimator (implements PricingSource) and degrader
+		estimator := modelbudget.NewEstimator()
+		degrader := modelbudget.NewDegrader(estimator)
+
+		// Call Select() for budget-aware model selection
+		requestedModel := reqBody.Model
+		if requestedModel == "" {
+			requestedModel = "gpt-4" // Default if not specified
+		}
+
+		decision := degrader.Select(requestedModel, inputTokens, outputTokens, reqBody.MaxCostPerTask)
+
+		// Handle decision
+		if !decision.FitsBudget {
+			// Budget exceeded, return error
+			msg := fmt.Sprintf("no model within budget: requested=%s, budget=$%.4f, estimated_cost=$%.4f",
+				requestedModel, reqBody.MaxCostPerTask, decision.EstimatedCost)
+			slog.Warn("modelbudget: budget exceeded",
+				"requested_model", requestedModel,
+				"budget", reqBody.MaxCostPerTask,
+				"estimated_cost", decision.EstimatedCost,
+				"input_tokens", inputTokens,
+				"output_tokens", outputTokens,
+				"request_id", requestID)
+			logCtx.SetError("budget_exceeded", msg)
+			logCtx.EmitFailure("budget_exceeded", msg, nil, nil)
+			logCtx.MarkLogged()
+			writeJSON(w, http.StatusPaymentRequired, map[string]any{
+				"error": map[string]string{
+					"message": msg,
+					"type":    "insufficient_budget",
+					"code":    "budget_exceeded",
+				},
+			})
+			return
+		}
+
+		if decision.Degraded {
+			// Model was degraded, use selected model
+			slog.Info("modelbudget: model degraded due to budget",
+				"requested_model", requestedModel,
+				"selected_model", decision.Model,
+				"budget", reqBody.MaxCostPerTask,
+				"estimated_cost", decision.EstimatedCost,
+				"reason", decision.Reason,
+				"input_tokens", inputTokens,
+				"output_tokens", outputTokens,
+				"request_id", requestID)
+			reqBody.Model = decision.Model
+			// TODO: Store degradation info for response metadata (P1#3 integration point #7)
+		}
+	}
+	// ========== End Budget-aware model selection ==========
 
 	// 2026-08-25: strip client-facing alias prefix (e.g. "kx-").
 	// Must run before CanonicalizeClientModel so the alias is removed

@@ -1,6 +1,7 @@
 // standardModelPricing.ts — Standard model pricing page (StandardModelPricingView) copy.
 // Namespaces: page / desc / settings / table / editModal / status / feedback.
 // Technical terms kept untranslated: canonical_name, credits_per_1m_in/out/cache_in/cache_out, cents_per_credit, global_discount, CNY/USD.
+// 2026-11-19: Added globalModelFilter (global multi-model filter).
 export default {
   page: {
     title: 'Pricing management',
@@ -8,6 +9,11 @@ export default {
     refreshLoading: 'Loading…',
   },
   desc: '<strong>One row per canonical model</strong>. Users only need to know how much a model costs, not which vendor backs it. The global base × discount applies to <strong>non-manual</strong> dimensions; manual fields are unaffected. Multimodal models (vision / audio / video) are billed per their dedicated token rate.',
+  globalModelFilter: {
+    label: 'Search standard models',
+    title: 'Select models',
+    placeholder: 'Select models (multi-select supported)…',
+  },
   settings: {
     title: 'Global base (credits / 1M tokens)',
     inputToken: 'Input tokens',

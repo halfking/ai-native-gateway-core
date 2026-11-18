@@ -8,6 +8,14 @@ export default {
     refresh: '重新整理',
     refreshLoading: '載入中…',
   },
+  // ★ D23（2026-11-19 审计轮）：上游 797b42067 引入 globalModelFilter 时
+  //   只在 en-US / zh-CN 落了值，其余 6 个语种缺失 ⇒ key-parity 门报
+  //   「hard gate violations」。此处按 en-US / zh-CN 的语义补齐。
+  globalModelFilter: {
+    label: '搜尋標準模型',
+    title: '選擇模型',
+    placeholder: '選擇模型（支援多選）…',
+  },
   desc: '租戶側銷售定價（積分/1M Token）。全域基準 × 折扣係數套用於<strong>未手工定價</strong>的維度；已勾選「手工」的欄位不受全域變更影響。',
   settings: {
     title: '全域基準（積分 / 1M Token）',

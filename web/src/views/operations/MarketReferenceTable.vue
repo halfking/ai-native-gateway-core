@@ -1,18 +1,21 @@
 <script setup lang="ts">
 // MarketReferenceTable.vue — 五价定价参考清单（P1/P2/P3/P5）。
 // ★ 2026-11-18（价格对比优化轮）：使用 ModelPicker 组件，选择后自动刷新。
-import { ref, computed, onMounted } from 'vue'
+// ★ 2026-11-19（比较与定价优化轮）：接收全局模型过滤参数，移除本组件的模型选择器。
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getAdminMaasMarketPriceOverview, type MarketPriceOverviewRow } from '../../api/maas'
 import {
   fmtDualFloors, fmtMarketNum, fmtMarketRatio, fmtPair, fmtVendorAnchor, marketDriftClass,
 } from '../../utils/marketPriceFormat'
-import ModelPicker from '../../components/ModelPicker.vue'
+
+const props = defineProps<{
+  globalModels?: string[] // 全局模型过滤
+}>()
 
 const { t } = useI18n()
 const loading = ref(false)
 const items = ref<MarketPriceOverviewRow[]>([])
-const q = ref('')
 const onlyResolved = ref(true)
 const syncDate = ref('')
 // ★ 2026-11-17（12h 审计）：区分「读失败」与「没有数据」。
@@ -23,8 +26,16 @@ const resolvedCount = computed(() => items.value.filter(v => v.resolved).length)
 async function load() {
   loading.value = true
   try {
-    const res = await getAdminMaasMarketPriceOverview(q.value, onlyResolved.value, 300)
-    items.value = res.items || []
+    // 2026-11-19：使用全局模型过滤（多选时取第一个作为查询参数）
+    const qtext = props.globalModels && props.globalModels.length > 0 ? props.globalModels[0] : ''
+    const res = await getAdminMaasMarketPriceOverview(qtext, onlyResolved.value, 300)
+    let resultItems = res.items || []
+    // 如果有全局模型过滤，前端再过滤结果只保留选中的模型
+    if (props.globalModels && props.globalModels.length > 0) {
+      const modelsSet = new Set(props.globalModels)
+      resultItems = resultItems.filter(item => modelsSet.has(item.canonical_name))
+    }
+    items.value = resultItems
     syncDate.value = res.sync?.[0]?.run_date || ''
     loadFailed.value = false
   } catch {
@@ -38,20 +49,18 @@ async function load() {
   }
 }
 onMounted(load)
+
+// 2026-11-19：监听全局模型过滤变化，自动刷新
+watch(() => props.globalModels, () => {
+  load()
+}, { deep: true })
+
 defineExpose({ reload: load })
 </script>
 
 <template>
   <div class="ref-panel">
     <div class="filter-card card">
-      <div class="model-picker-wrapper">
-        <ModelPicker
-          v-model="q"
-          :placeholder="t('priceCompare.refSearch')"
-          :title="t('priceCompare.colModel')"
-          @update:model-value="load"
-        />
-      </div>
       <label class="chk">
         <input v-model="onlyResolved" type="checkbox" @change="load" />
         {{ t('priceCompare.refOnlyResolved') }}
