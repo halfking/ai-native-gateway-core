@@ -486,8 +486,9 @@ func (e *Executor) doCompactionUpstream(
 	if err := e.checkCandidateContextBudget(budgetParams, cand, "summary", payload); err != nil {
 		return nil, err
 	}
-	if e.Circuit != nil && !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
-		return nil, fmt.Errorf("compaction: circuit open for credential %d", cand.CredentialID)
+	// W1 缺口① (2026-11-19): 改为 per-model 粒度
+	if e.Circuit != nil && !e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel) {
+		return nil, fmt.Errorf("compaction: circuit open for credential %d model %s", cand.CredentialID, cand.RawModel)
 	}
 
 	var releaseLimiter func()

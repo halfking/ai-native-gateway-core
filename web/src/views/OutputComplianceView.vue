@@ -7,6 +7,7 @@ import { req } from '../api/_core'
 import { fmtDateTime24h } from '../i18n/useFormat'
 import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import { CircleCheck } from '@element-plus/icons-vue'
 
 const { t } = useI18n({ useScope: 'global' })
@@ -119,6 +120,26 @@ const { message: configSuccess, error: configError, notifySuccess, notifyError, 
 const filterTenantID = ref('')
 const filterCheckType = ref('')
 const filterHitType = ref('')
+
+// 2026-11-18 筛选收纳轮：生效条件 chips + 清空回调
+const recordFilterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
+  if (filterTenantID.value.trim()) {
+    chips.push({ key: 'tenant', label: `${t('outputCompliance.filter.tenantID')}: ${filterTenantID.value.trim()}`, onRemove: () => { filterTenantID.value = '' } })
+  }
+  if (filterCheckType.value) {
+    const key = `outputCompliance.checkType.${filterCheckType.value}`
+    chips.push({ key: 'checkType', label: `${t('outputCompliance.filter.allCheckTypes').replace(/^[^:]*:/, '').trim() || '类型'}: ${t(key)}`, onRemove: () => { filterCheckType.value = '' } })
+  }
+  return chips
+})
+
+function resetRecordFilters() {
+  filterTenantID.value = ''
+  filterCheckType.value = ''
+  recordsPage.value = 1
+  loadRecords()
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(recordsTotal.value / recordsSize.value)))
 
@@ -376,8 +397,13 @@ onMounted(() => {
 
     <!-- 命中记录标签页 -->
     <div v-if="activeTab === 'records'">
-      <!-- 筛选 -->
-      <div class="filter-bar">
+      <!-- 筛选（2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部） -->
+      <CollapsibleFilterSection :chips="recordFilterChips" @reset="resetRecordFilters">
+        <template #actions>
+          <button class="btn-primary" @click="recordsPage = 1; loadRecords()">
+            {{ t('outputCompliance.search') }}
+          </button>
+        </template>
         <input
           v-model="filterTenantID"
           type="text"
@@ -391,10 +417,7 @@ onMounted(() => {
           <option value="toxicity">{{ t('outputCompliance.checkType.toxicity') }}</option>
           <option value="jailbreak">{{ t('outputCompliance.checkType.jailbreak') }}</option>
         </select>
-        <button class="btn-primary" @click="recordsPage = 1; loadRecords()">
-          {{ t('outputCompliance.search') }}
-        </button>
-      </div>
+      </CollapsibleFilterSection>
 
       <!-- 记录列表 -->
       <div v-if="recordsError" class="error-banner" role="alert">

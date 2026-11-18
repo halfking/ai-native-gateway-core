@@ -23,6 +23,7 @@ import { acceptImportFile, importRejectionMessage, CORRECTIONS_CSV_MAX_BYTES } f
 const CORRECTIONS_CSV_RULE = { maxBytes: CORRECTIONS_CSV_MAX_BYTES, extensions: ['.csv'] } as const
 import { useI18n } from 'vue-i18n'
 import { store } from '../store'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import { localeRef } from '../i18n'
 import { getFirstTurnSamples, createAnnotation, type FirstTurnSample, type FirstTurnParams } from '../api/annotations'
 import { createTaskTypeCorrection, applyTierConfig } from '../api/taskProfile'
@@ -158,6 +159,38 @@ function clearFilters() {
   filterMaxConfidence.value = undefined
   resetPageAndLoad()
 }
+
+// 2026-11-18 筛选收纳轮：生效条件 chips（头部常驻，收拢时也可见）。
+// 日期默认「今天」不算生效条件（同 RequestLogsView 的 h24 口径）。
+const filterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
+  const start = filterStartDate.value
+  const end = filterEndDate.value
+  const today = utcToday()
+  if ((start && start !== today) || (end && end !== today)) {
+    chips.push({ key: 'date', label: `${t('common.dateRange.title')}: ${start || '…'} ~ ${end || '…'}`, onRemove: () => { filterStartDate.value = today; filterEndDate.value = today } })
+  }
+  if (filterTaskType.value) {
+    const opt = taskTypeOptions.value.find(o => o.key === filterTaskType.value)
+    chips.push({ key: 'taskType', label: `${t('annotation.filter.taskType')}: ${opt?.label ?? filterTaskType.value}`, onRemove: () => { filterTaskType.value = '' } })
+  }
+  if (filterModel.value) {
+    chips.push({ key: 'model', label: `${t('annotation.filter.model')}: ${filterModel.value}`, onRemove: () => { filterModel.value = '' } })
+  }
+  if (filterHumanTaskType.value) {
+    chips.push({ key: 'humanTaskType', label: `${t('annotation.filter.humanTaskType')}: ${filterHumanTaskType.value}`, onRemove: () => { filterHumanTaskType.value = '' } })
+  }
+  if (filterAnnotated.value !== undefined) {
+    chips.push({ key: 'annotated', label: `${t('annotation.filter.annotated')}: ${filterAnnotated.value ? t('annotation.filter.annotatedOnly') : t('annotation.filter.unannotatedOnly')}`, onRemove: () => { filterAnnotated.value = undefined } })
+  }
+  if (filterMinConfidence.value !== undefined && filterMinConfidence.value !== null) {
+    chips.push({ key: 'minConfidence', label: `${t('annotation.filter.minConfidence')}: ${filterMinConfidence.value}`, onRemove: () => { filterMinConfidence.value = undefined } })
+  }
+  if (filterMaxConfidence.value !== undefined && filterMaxConfidence.value !== null) {
+    chips.push({ key: 'maxConfidence', label: `${t('annotation.filter.maxConfidence')}: ${filterMaxConfidence.value}`, onRemove: () => { filterMaxConfidence.value = undefined } })
+  }
+  return chips
+})
 
 // ── 标注弹窗状态 ──
 const modalVisible = ref(false)
@@ -355,8 +388,14 @@ onMounted(() => {
     <div v-if="correctionWarning" class="alert alert-warning" role="alert">{{ correctionWarning }}</div>
     <div v-if="exportImportMessage" class="alert alert-info" role="status">{{ exportImportMessage }}</div>
 
-    <!-- Filter Bar -->
-    <div class="compact-filter-bar compact-filter-bar--stacked">
+    <!-- Filter Bar（2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部；
+         查询/重置按钮放头部 actions 随收拢常驻） -->
+    <CollapsibleFilterSection :chips="filterChips" @reset="clearFilters">
+      <template #actions>
+        <button class="btn btn-primary btn-sm" :disabled="loading" @click="resetPageAndLoad">
+          {{ t('annotation.filter.query') }}
+        </button>
+      </template>
       <div class="cf-row">
         <div class="cf-field">
           <span class="cf-label">{{ t('common.dateRange.title') }}</span>
@@ -407,15 +446,7 @@ onMounted(() => {
           <input v-model.number="filterMaxConfidence" type="number" min="0" max="1" step="0.1" class="cf-input" placeholder="1.0" />
         </div>
       </div>
-      <div class="cf-row">
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="resetPageAndLoad">
-          {{ t('annotation.filter.query') }}
-        </button>
-        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="clearFilters">
-          {{ t('annotation.filter.reset') }}
-        </button>
-      </div>
-    </div>
+    </CollapsibleFilterSection>
 
     <!-- Pagination -->
     <PaginationBar

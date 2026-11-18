@@ -5,6 +5,7 @@ import { formatTimeOnly } from '../utils/datetime'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { getDecisions, type RoutingDecision } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 import { useWindowClass } from '../composables/useWindowClass'
 import { createHyperPages } from '../lib/shell/hyper/hyperPages'
@@ -229,6 +230,36 @@ function resetAndLoad() {
   void reload()
 }
 
+// 2026-11-18 筛选收纳轮：生效条件 chips + 清空回调（默认值 30m/全部 不算生效条件）
+const DECISION_TIME_LABELS: Record<number, string> = {
+  10: 'decisionsView.filter.time10m',
+  30: 'decisionsView.filter.time30m',
+  60: 'decisionsView.filter.time1h',
+  360: 'decisionsView.filter.time6h',
+  1440: 'decisionsView.filter.time24h',
+}
+const decisionFilterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
+  if (filterSuccess.value !== '') {
+    const key = filterSuccess.value === 'true' ? 'decisionsView.filter.statusSuccess' : 'decisionsView.filter.statusFailed'
+    chips.push({ key: 'success', label: `${t('decisionsView.filter.status')}: ${t(key)}`, onRemove: () => { filterSuccess.value = ''; resetAndLoad() } })
+  }
+  if (sinceMinutes.value !== 30) {
+    chips.push({ key: 'time', label: `${t('decisionsView.filter.timeRange')}: ${t(DECISION_TIME_LABELS[sinceMinutes.value] ?? `${sinceMinutes.value}m`)}`, onRemove: () => { sinceMinutes.value = 30; resetAndLoad() } })
+  }
+  if (filterModel.value.trim()) {
+    chips.push({ key: 'model', label: `${t('decisionsView.filter.modelLabel')}: ${filterModel.value.trim()}`, onRemove: () => { filterModel.value = ''; resetAndLoad() } })
+  }
+  return chips
+})
+
+function resetDecisionFilters() {
+  filterSuccess.value = ''
+  sinceMinutes.value = 30
+  filterModel.value = ''
+  resetAndLoad()
+}
+
 function cardTitle(row: Record<string, unknown>): string {
   const ts = row.ts
   return ts == null ? '' : fmtTs(String(ts))
@@ -324,7 +355,13 @@ onUnmounted(() => {
       </label>
     </div>
 
-    <div class="compact-filter-bar compact-filter-bar--stacked">
+    <!-- 2026-11-18 筛选收纳轮：条件默认收拢，生效条件 chips 常驻头部；
+         总数徽标/刷新按钮留在头部常驻（高频监控页），limit 是展示密度不是筛选条件 -->
+    <CollapsibleFilterSection :chips="decisionFilterChips" @reset="resetDecisionFilters">
+      <template #actions>
+        <button class="btn btn-ghost btn-sm" :disabled="busy" @click="reload">{{ t('decisionsView.filter.refresh') }}</button>
+        <span class="cf-meta">{{ t('decisionsView.filter.totalCount', { n: total }) }}</span>
+      </template>
       <div class="cf-row">
         <select v-model="filterSuccess" class="cf-select cf-status" :title="t('decisionsView.filter.status')" @change="resetAndLoad">
           <option value="">{{ t('decisionsView.filter.statusAll') }}</option>
@@ -344,8 +381,6 @@ onUnmounted(() => {
           <option :value="100">{{ t('decisionsView.filter.limit100') }}</option>
           <option :value="200">{{ t('decisionsView.filter.limit200') }}</option>
         </select>
-        <button class="btn btn-ghost btn-sm" :disabled="busy" @click="reload">{{ t('decisionsView.filter.refresh') }}</button>
-        <span class="cf-meta">{{ t('decisionsView.filter.totalCount', { n: total }) }}</span>
       </div>
       <div class="cf-row cf-row--secondary">
         <div class="cf-field cf-field--grow">
@@ -360,7 +395,7 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
-    </div>
+    </CollapsibleFilterSection>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
 

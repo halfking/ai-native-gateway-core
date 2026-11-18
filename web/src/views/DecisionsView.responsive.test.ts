@@ -315,15 +315,18 @@ describe('DecisionsView：桌面决策流水表零回归', () => {
     expect(w.find('.drawer-panel').exists()).toBe(false)
   })
 
-  it('筛选栏：状态 3 选项 / 时间窗 5 选项 / 条数 4 选项 / 模型选择器 / 刷新钮', async () => {
-    const w = await factory()
-    const sels = w.findAll('.cf-select')
-    expect(sels[0]!.findAll('option').map((o) => o.text())).toEqual(['全部', '成功', '失败'])
-    expect(sels[1]!.findAll('option').map((o) => o.text())).toEqual(['10分钟', '30分钟', '1小时', '6小时', '24小时'])
-    expect(sels[2]!.findAll('option').map((o) => o.text())).toEqual(['20条', '50条', '100条', '200条'])
-    expect(w.find('.model-picker-stub').exists()).toBe(true)
-    expect(w.find('.cf-row button').text()).toBe('刷新')
-  })
+ it('筛选栏：状态3选项 / 时间窗5选项 / 条数4选项 /模型选择器 /刷新钮（2026-11-18 收纳轮：控件在折叠面板内，先展开）', async () => {
+ const w = await factory()
+ //2026-11-18 CollapsibleFilterSection默认收拢 ⇒面板内控件先展开再断言
+ await w.find('.cfs__toggle').trigger('click')
+ const sels = w.findAll('.cf-select')
+ expect(sels[0]!.findAll('option').map((o) => o.text())).toEqual(['全部', '成功', '失败'])
+ expect(sels[1]!.findAll('option').map((o) => o.text())).toEqual(['10分钟', '30分钟', '1小时', '6小时', '24小时'])
+ expect(sels[2]!.findAll('option').map((o) => o.text())).toEqual(['20条', '50条', '100条', '200条'])
+ expect(w.find('.model-picker-stub').exists()).toBe(true)
+ //刷新钮随头部 actions常驻（收拢时也可见）
+ expect(w.find('.cfs__actions button').text()).toBe('刷新')
+ })
 
   it('上下两个页码条都在；首屏时上页禁用、下页可用（total 51 > limit 50）', async () => {
     const w = await factory()

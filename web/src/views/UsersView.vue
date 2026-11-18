@@ -14,6 +14,7 @@ import type { Tenant, UserUsageSummaryItem } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
 import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 // 2026-09-13 P3：页头/表格容器收敛到 ui 组件（方案 §4.5.2/§4.5.5）
 import PageHeader from '../components/ui/PageHeader.vue'
 import DataTable from '../components/ui/DataTable.vue'
@@ -54,6 +55,35 @@ const filterRole = ref<string>('')
 const filterStatus = ref<string>('')
 const search = ref<string>('')
 const sortBy = ref<'default' | 'requests' | 'credits'>('default')
+
+// 2026-11-18 筛选收纳轮：生效条件 chips（头部常驻，收拢时也可见）
+const filterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
+  if (filterTenant.value) {
+    chips.push({ key: 'tenant', label: `${t('users.filter.byTenant', '租户')}: ${filterTenant.value}`, onRemove: () => { filterTenant.value = '' } })
+  }
+  if (filterRole.value) {
+    chips.push({ key: 'role', label: `${t('users.table.role', '角色')}: ${t(`users.role.${filterRole.value}`)}`, onRemove: () => { filterRole.value = '' } })
+  }
+  if (filterStatus.value) {
+    chips.push({ key: 'status', label: `${t('users.table.status', '状态')}: ${filterStatus.value === 'enabled' ? t('users.status.enabled') : t('users.status.disabled')}`, onRemove: () => { filterStatus.value = '' } })
+  }
+  if (sortBy.value !== 'default') {
+    chips.push({ key: 'sort', label: `${t('users.filter.sortDefault', '排序')}: ${sortBy.value === 'requests' ? t('users.filter.sortRequests', '按近 30 天请求') : t('users.filter.sortCredits', '按近 30 天积分')}`, onRemove: () => { sortBy.value = 'default' } })
+  }
+  if (search.value.trim()) {
+    chips.push({ key: 'search', label: `${t('common.button.search', '搜索')}: ${search.value.trim()}`, onRemove: () => { search.value = '' } })
+  }
+  return chips
+})
+
+function clearAllFilters() {
+  filterTenant.value = ''
+  filterRole.value = ''
+  filterStatus.value = ''
+  sortBy.value = 'default'
+  search.value = ''
+}
 const allTenants = ref<Tenant[]>([])
 const newPwd = ref('')
 const createConfirmPwd = ref('')
@@ -333,7 +363,8 @@ onMounted(() => { load(); loadTenants() })
       <div class="mini-stat"><div class="v">{{ fmtNum(statBar.credits) }}</div><div class="l">{{ t('users.stats.credits30d', '近 30 天积分消耗') }}</div></div>
     </div>
 
-    <div class="filters">
+    <!-- 2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部 -->
+    <CollapsibleFilterSection :chips="filterChips" @reset="clearAllFilters">
       <label>{{ t('users.filter.byTenant', $t('common.terms.tenant')) }}</label>
       <select v-model="filterTenant">
         <option value="">{{ t('users.filter.allTenants') }}</option>
@@ -364,7 +395,7 @@ onMounted(() => { load(); loadTenants() })
         <option value="credits">{{ t('users.filter.sortCredits', '按近 30 天积分') }}</option>
       </select>
       <input v-model="search" class="search-input" :placeholder="t('users.filter.searchPlaceholder', '搜索用户名 / 显示名 / 邮箱…')">
-    </div>
+    </CollapsibleFilterSection>
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 

@@ -964,9 +964,10 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 
 	// ── Circuit breaker (fail-open when the module is disabled) ──
+	// W1 缺口① (2026-11-19): 改为 per-model 粒度，单模型故障不连坐
 	circuitOpen := !settings.IsEnabled("circuit_degradation")
 	if !circuitOpen {
-		probeConsumed = e.Circuit.Allow(cand.ProviderID, cand.CredentialID)
+		probeConsumed = e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel)
 		circuitOpen = !probeConsumed
 	}
 	if circuitOpen && settings.IsEnabled("circuit_degradation") {
@@ -979,8 +980,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			"rejection_type": "circuit_breaker",
 		}
 		// 获取熔断器状态用于诊断
+		// W1 缺口① (2026-11-19): 改为 per-model 查询
 		if e.Circuit != nil {
-			if breaker := e.Circuit.Get(cand.ProviderID, cand.CredentialID); breaker != nil {
+			if breaker := e.Circuit.GetPerModel(cand.ProviderID, cand.RawModel); breaker != nil {
 				extra["circuit_state"] = breaker.State().String()
 				extra["circuit_consecutive_failures"] = breaker.ConsecutiveFailures()
 			}

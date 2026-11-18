@@ -41,6 +41,7 @@ import {
   type OutputCheckSwitch,
 } from "../api/sanitize-rules";
 import PageHeader from "../components/ui/PageHeader.vue";
+import CollapsibleFilterSection from "../components/ui/CollapsibleFilterSection.vue";
 import { fmtDateTime24h } from "../i18n/useFormat";
 const { t } = useI18n();
 const labels = computed<Record<string, string>>(() => ({
@@ -126,6 +127,34 @@ const statusFilter = ref(""),
   linked = ref<number[]>([]);
 const editingMatched = ref(false);
 const expandedEvent = ref<number | null>(null);
+
+// 2026-11-18 筛选收纳轮：生效条件 chips + 清空回调（默认空值不算生效条件）
+const reviewFilterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = [];
+  if (reviewStatusFilter.value) {
+    chips.push({ key: "status", label: `${t("sanitizeRules.status")}: ${labels.value["review_" + reviewStatusFilter.value] ?? reviewStatusFilter.value}`, onRemove: () => { reviewStatusFilter.value = ""; } });
+  }
+  return chips;
+});
+const eventFilterChips = computed(() => {
+  const chips: Array<{ key: string; label: string; onRemove: () => void }> = [];
+  if (statusFilter.value) {
+    chips.push({ key: "status", label: `${t("sanitizeRules.status")}: ${labels.value[statusFilter.value] ?? statusFilter.value}`, onRemove: () => { statusFilter.value = ""; } });
+  }
+  if (actionFilter.value) {
+    chips.push({ key: "action", label: `${t("sanitizeRules.action")}: ${actionFilter.value}`, onRemove: () => { actionFilter.value = ""; } });
+  }
+  return chips;
+});
+function resetReviewFilters() {
+  reviewStatusFilter.value = "";
+  void loadBlockedReviews();
+}
+function resetEventFilters() {
+  statusFilter.value = "";
+  actionFilter.value = "";
+  void loadEvents();
+}
 const chosenVersion = ref<RuleVersion | null>(null),
   rollbackOpen = ref(false),
   rollbackComment = ref("");
@@ -1548,23 +1577,29 @@ onBeforeUnmount(() => {
         </div>
         <p class="muted">{{ t("sanitizeRules.blockedReviewsHint") }}</p>
         <p class="event-note">{{ t("sanitizeRules.blockedReviewsNote") }}</p>
-        <form class="toolbar" @submit.prevent="loadBlockedReviews">
-          <label
-            >{{ t("sanitizeRules.status")
-            }}<select v-model="reviewStatusFilter" data-test="review-status">
-              <option value="">{{ t("sanitizeRules.all") }}</option>
-              <option
-                v-for="status in ['pending', 'approved', 'rejected']"
-                :key="status"
-                :value="status"
-              >
-                {{ labels['review_' + status] }}
-              </option>
-            </select></label
-          ><button class="btn" :disabled="blockedReviewLoading">
-            {{ t("sanitizeRules.filter") }}
-          </button>
-        </form>
+        <!-- 2026-11-18 筛选收纳轮：默认收拢，查询按钮随头部常驻 -->
+        <CollapsibleFilterSection :chips="reviewFilterChips" @reset="resetReviewFilters">
+          <template #actions>
+            <button class="btn" :disabled="blockedReviewLoading" @click="loadBlockedReviews">
+              {{ t("sanitizeRules.filter") }}
+            </button>
+          </template>
+          <form class="toolbar" @submit.prevent="loadBlockedReviews">
+            <label
+              >{{ t("sanitizeRules.status")
+              }}<select v-model="reviewStatusFilter" data-test="review-status">
+                <option value="">{{ t("sanitizeRules.all") }}</option>
+                <option
+                  v-for="status in ['pending', 'approved', 'rejected']"
+                  :key="status"
+                  :value="status"
+                >
+                  {{ labels['review_' + status] }}
+                </option>
+              </select></label
+            >
+          </form>
+        </CollapsibleFilterSection>
         <p v-if="blockedReviewError" role="alert" class="error-banner">
           {{ blockedReviewError }}
         </p>
@@ -1908,45 +1943,51 @@ onBeforeUnmount(() => {
       </section>
       <section v-if="tab === 'events'" :aria-busy="eventLoading">
         <p class="muted">{{ t("sanitizeRules.reviewOnly") }}</p>
-        <form class="toolbar" @submit.prevent="loadEvents">
-          <label
-            >{{ t("sanitizeRules.status")
-            }}<select v-model="statusFilter">
-              <option value="">{{ t("sanitizeRules.all") }}</option>
-              <option
-                v-for="status in [
-                  'pending',
-                  'confirmed_sensitive',
-                  'false_positive',
-                  'ignored',
-                ]"
-                :key="status"
-                :value="status"
-              >
-                {{ labels[status] }}
-              </option>
-            </select></label
-          ><label
-            >{{ t("sanitizeRules.action")
-            }}<select v-model="actionFilter">
-              <option value="">{{ t("sanitizeRules.all") }}</option>
-              <option
-                v-for="action in [
-                  'mask',
-                  'block',
-                  'log',
-                  'exempted',
-                  'pending',
-                ]"
-                :key="action"
-              >
-                {{ action }}
-              </option>
-            </select></label
-          ><button class="btn" :disabled="eventLoading">
-            {{ t("sanitizeRules.filter") }}
-          </button>
-        </form>
+        <!-- 2026-11-18 筛选收纳轮：默认收拢，查询按钮随头部常驻 -->
+        <CollapsibleFilterSection :chips="eventFilterChips" @reset="resetEventFilters">
+          <template #actions>
+            <button class="btn" :disabled="eventLoading" @click="loadEvents">
+              {{ t("sanitizeRules.filter") }}
+            </button>
+          </template>
+          <form class="toolbar" @submit.prevent="loadEvents">
+            <label
+              >{{ t("sanitizeRules.status")
+              }}<select v-model="statusFilter">
+                <option value="">{{ t("sanitizeRules.all") }}</option>
+                <option
+                  v-for="status in [
+                    'pending',
+                    'confirmed_sensitive',
+                    'false_positive',
+                    'ignored',
+                  ]"
+                  :key="status"
+                  :value="status"
+                >
+                  {{ labels[status] }}
+                </option>
+              </select></label
+            ><label
+              >{{ t("sanitizeRules.action")
+              }}<select v-model="actionFilter">
+                <option value="">{{ t("sanitizeRules.all") }}</option>
+                <option
+                  v-for="action in [
+                    'mask',
+                    'block',
+                    'log',
+                    'exempted',
+                    'pending',
+                  ]"
+                  :key="action"
+                >
+                  {{ action }}
+                </option>
+              </select></label
+            >
+          </form>
+        </CollapsibleFilterSection>
         <p v-if="eventError" role="alert" class="error-banner">
           {{ eventError }}
         </p>
