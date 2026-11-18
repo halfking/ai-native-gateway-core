@@ -48,7 +48,6 @@ export default {
   colVendor: '原価',
   colRetail: '自社小売（CNY）',
   colDrift: '小売乖離',
-  platSearch: 'モデルの canonical 名を入力（例: glm-4）…',
   platUnavailableWhy: 'プラットフォーム現価格テーブルが利用できません —— マイグレーション970が未適用または未同期です。',
   platUnavailableNext: '次のステップ：マイグレーション970 をデプロイし、market-price-sync.py を再実行してください。',
   platNeedModel: 'モデル名を入力すると各プラットフォームの現価格を表示します。',

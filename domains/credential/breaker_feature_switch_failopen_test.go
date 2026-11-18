@@ -115,9 +115,9 @@ func TestBreakerSwitchSubprocessBody(t *testing.T) {
 
 	// 前提在场：造一个**开路**的 breaker（熔断本来会拒绝它）。
 	m := NewManager()
-	m.RecordFailure(20, 20, KindTransient)
-	m.RecordFailure(20, 20, KindTransient)
-	b := m.Get(20, 20)
+	m.RecordFailurePerModel(20, 20, "", KindTransient)
+	m.RecordFailurePerModel(20, 20, "", KindTransient)
+	b := m.GetPerModel(20, 20, "")
 	if got := b.State(); got != StateOpen {
 		t.Fatalf("premise broken: breaker should be open, got %s", got)
 	}

@@ -188,13 +188,49 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 // Breaker
 // ---------------------------------------------------------------------------
 
-// Breaker is a single circuit breaker instance, keyed by provider+model.
+// legacyScopeModel 是「整凭据作用域」保留的模型分量标记。
+//
+// ★ P0-a（2026-11-19 审计轮）：熔断器的键空间曾分裂成两套——
+// 准入走 "providerID/model"（丢弃 credentialID ⇒ 跨凭据连坐），
+// 记账走 "providerID/credentialID"，探针释放/重置/上卷又各走各的。
+// 现统一为 "providerID/credentialID/model"（见 breakerScopeKey）。
+// 整凭据作用域（legacy）保留为该三元组的第三段 "_legacy_"，
+// 生产路径**不得**使用（由 breaker_scope_guard_test.go 源码门禁钉死），
+// 仅供库内既有单测与 DB 上卷兼容。
+const legacyScopeModel = "_legacy_"
+
+// breakerScopeKey 是熔断器键的唯一构造点。
+//
+// 三元组 (providerID, credentialID, model) 与 nodehealth.NodeKey
+// 同粒度：凭据隔离（同一 provider 的不同凭据互不连坐），
+// 模型隔离（同一凭据的不同模型互不连坐），
+// 且 credentialID 恒等于该实例真正所属的凭据 ⇒ DB 上卷不会归错凭据。
+//
+// ★ 模型名为空 ⇒ 落到整凭据作用域（legacyScopeModel）。这不是偷懒，
+//
+//	而是**一致性保证**：准入、记账、探针释放三处若模型名各自为空，
+//	仍必须解析到同一把 breaker，否则又会退化成「准入查 A、记账写 B」的
+//	分裂。空的模型名是退化候选（无模型身份），退化为凭据级语义是
+//	保守且安全的方向（宁可粗，不可分裂）。
+//
+// ★ 任何新增 breaker 实例都必须经由本函数构造，禁止在调用点自行拼键。
+func breakerScopeKey(providerID, credentialID int, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = legacyScopeModel
+	}
+	return fmt.Sprintf("%d/%d/%s", providerID, credentialID, model)
+}
+
+// Breaker is a single circuit breaker instance, keyed by
+// (providerID, credentialID, model).
 // W1 缺口① (2026-11-19): 改为 per-model 粒度，单模型故障不连坐其他模型。
+// P0-a (2026-11-19 审计轮): 键补齐 credentialID ⇒ 跨凭据不再连坐。
 type Breaker struct {
-	key            string // "providerID/model" (改前: "providerID/credentialID")
+	key            string // "providerID/credentialID/model"（整凭据作用域第三段为 "_legacy_"）
 	providerID     int
-	credentialID   int    // 保留（用于 DB 上卷汇总）
-	model          string // 🆕 W1①: 模型名（空格已修剪）
+	credentialID   int    // 该实例真正所属的凭据（DB 上卷据此归因）
+	model          string // 模型名（空格已修剪；整凭据作用域为 "_legacy_"）
 	state          atomic.Int32
 	failCount      atomic.Int32
 	consecutive    atomic.Int32
@@ -232,13 +268,20 @@ func NewPerModel(providerID, credentialID int, model string) *Breaker {
 
 // NewPerModelWithPolicy creates a per-model circuit breaker with a custom default policy.
 // If policy is zero-valued, KindTransient policy is used as the default.
+// P0-a (2026-11-19): 键含 credentialID ⇒ 跨凭据隔离。
 func NewPerModelWithPolicy(providerID, credentialID int, model string, defaultPolicy CoolingPolicy) *Breaker {
 	if defaultPolicy.InitialCooling == 0 && defaultPolicy.RecoveryType == 0 {
 		defaultPolicy = defaultPolicies[KindTransient]
 	}
 	model = strings.TrimSpace(model)
+	// ★ P0-a (2026-11-19 审计轮): 模型名为空 ⇒ 整凭据作用域。与
+	// breakerScopeKey 的映射保持一致，避免「键是 legacy、字段却是空串」
+	// 的半吊子状态（字段与键不一致会让诊断信息自相矛盾）。
+	if model == "" {
+		model = legacyScopeModel
+	}
 	return &Breaker{
-		key:           fmt.Sprintf("%d/%s", providerID, model),
+		key:           breakerScopeKey(providerID, credentialID, model),
 		providerID:    providerID,
 		credentialID:  credentialID,
 		model:         model,
@@ -248,22 +291,25 @@ func NewPerModelWithPolicy(providerID, credentialID int, model string, defaultPo
 
 // New creates a new circuit breaker for the given provider/credential.
 // 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 NewPerModel。
+// P0-a (2026-11-19): 键改为三元组，第三段固定 "_legacy_"（整凭据作用域）。
 func New(providerID, credentialID int) *Breaker {
 	return NewWithPolicy(providerID, credentialID, CoolingPolicy{})
 }
 
 // NewWithPolicy creates a circuit breaker with a custom default policy.
 // If policy is zero-valued, KindTransient policy is used as the default.
-// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 NewPerModelWithPolicy。
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 NewPerModelWithPolicy.
+// P0-a (2026-11-19): 该实例归属「整凭据作用域」，model 记为 "_legacy_"；
+// 生产路径一律走 per-model 作用域（三元组键），见 breakerScopeKey。
 func NewWithPolicy(providerID, credentialID int, defaultPolicy CoolingPolicy) *Breaker {
 	if defaultPolicy.InitialCooling == 0 && defaultPolicy.RecoveryType == 0 {
 		defaultPolicy = defaultPolicies[KindTransient]
 	}
 	return &Breaker{
-		key:           fmt.Sprintf("%d/%d", providerID, credentialID),
+		key:           breakerScopeKey(providerID, credentialID, legacyScopeModel),
 		providerID:    providerID,
 		credentialID:  credentialID,
-		model:         "_legacy_", // 兼容标记
+		model:         legacyScopeModel, // 整凭据作用域标记
 		coolingPolicy: defaultPolicy,
 	}
 }
@@ -934,8 +980,12 @@ func (b *Breaker) Stats() map[string]any {
 // Manager — global registry of circuit breakers
 // ---------------------------------------------------------------------------
 
-// Manager manages all circuit breakers keyed by (provider, model).
-// W1 缺口① (2026-11-19): 改为 per-model 索引，单模型故障不连坐。
+// Manager manages all circuit breakers keyed by
+// (provider, credential, model) — see breakerScopeKey.
+//
+// ★ P0-a (2026-11-19 审计轮)：原注释为 "keyed by (provider, model)"，
+// 键空间分裂为两套（"providerID/model" 与 "providerID/credentialID"），
+// 同一张 map 里并存 ⇒ 准入与记账落在不同 breaker 上。
 type Manager struct {
 	mu       sync.RWMutex
 	breakers map[string]*Breaker
@@ -961,35 +1011,15 @@ func (m *Manager) SetObserver(fn func(StateChange)) {
 	m.mu.Unlock()
 }
 
-// GetOrCreate returns the breaker for the given provider/credential.
-// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 GetOrCreatePerModel。
-func (m *Manager) GetOrCreate(providerID, credentialID int) *Breaker {
-	key := fmt.Sprintf("%d/%d", providerID, credentialID)
-
-	m.mu.RLock()
-	b, ok := m.breakers[key]
-	m.mu.RUnlock()
-	if ok {
-		return b
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if b, ok = m.breakers[key]; ok {
-		return b
-	}
-	b = New(providerID, credentialID)
-	b.onChange = m.onChange
-	m.breakers[key] = b
-	return b
-}
-
-// GetOrCreatePerModel returns the breaker for the given provider/model.
-// W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐其他模型。
+// GetOrCreatePerModel returns the breaker for the given provider/credential/model.
+//
+// ★ P0-a (2026-11-19 审计轮)：键由 "providerID/model" 改为
+// "providerID/credentialID/model"——原实现丢弃 credentialID，导致同一
+// provider 下的不同凭据共享同一把 breaker（跨凭据连坐），且该实例的
+// credentialID 取决于「谁先创建」⇒ DB 上卷归错凭据。
 func (m *Manager) GetOrCreatePerModel(providerID, credentialID int, model string) *Breaker {
 	model = strings.TrimSpace(model)
-	key := fmt.Sprintf("%d/%s", providerID, model)
+	key := breakerScopeKey(providerID, credentialID, model)
 
 	m.mu.RLock()
 	b, ok := m.breakers[key]
@@ -1011,20 +1041,16 @@ func (m *Manager) GetOrCreatePerModel(providerID, credentialID int, model string
 	return b
 }
 
-// Get returns the breaker for the given provider/credential, or nil.
-// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 GetPerModel。
-func (m *Manager) Get(providerID, credentialID int) *Breaker {
-	key := fmt.Sprintf("%d/%d", providerID, credentialID)
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.breakers[key]
-}
-
-// GetPerModel returns the breaker for the given provider/model, or nil.
-// W1 缺口① (2026-11-19): 按模型查询。
-func (m *Manager) GetPerModel(providerID int, model string) *Breaker {
+// GetPerModel returns the breaker for the given provider/credential/model, or nil.
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 credentialID——原签名
+// GetPerModel(providerID, model) 无法表达凭据维度，在多凭据同模型的场景下
+// 会取到另一把凭据的 breaker（诊断面板因此显示错误的 circuit_state）。
+//
+// model 为空 ⇒ 整凭据作用域（见 breakerScopeKey）。
+func (m *Manager) GetPerModel(providerID, credentialID int, model string) *Breaker {
 	model = strings.TrimSpace(model)
-	key := fmt.Sprintf("%d/%s", providerID, model)
+	key := breakerScopeKey(providerID, credentialID, model)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.breakers[key]
@@ -1033,6 +1059,12 @@ func (m *Manager) GetPerModel(providerID int, model string) *Breaker {
 // GetCredentialState returns the rolled-up worst state across all models of a credential.
 // W1 缺口① (2026-11-19): DB 上卷逻辑，返回该凭据所有模型的最差状态。
 // 用于向后兼容（DB 镜像 credentials.circuit_state 按凭据存储）。
+//
+// ★ P0-a (2026-11-19 审计轮)：上卷正确性依赖 Breaker.credentialID 归属
+// 真实凭据。修复前 per-model breaker 的键是 "providerID/model"（无
+// credentialID），实例的 credentialID 取决于「谁先创建」⇒ 同 provider
+// 下另一把凭据的 breaker 会被算到本凭据头上（DB 上卷归错凭据）。
+// 现在键含 credentialID，每个实例归属唯一凭据，上卷不再串号。
 func (m *Manager) GetCredentialState(credentialID int) State {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1049,19 +1081,27 @@ func (m *Manager) GetCredentialState(credentialID int) State {
 	return worstState
 }
 
-// GetModelState returns the state of a specific model, or StateClosed if not found.
-// W1 缺口① (2026-11-19): 按模型查询状态。
-func (m *Manager) GetModelState(providerID int, model string) State {
-	if b := m.GetPerModel(providerID, model); b != nil {
+// GetModelState returns the state of a specific provider/credential/model
+// scope, or StateClosed if not found.
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 credentialID（原为
+// GetModelState(providerID, model)）。
+func (m *Manager) GetModelState(providerID, credentialID int, model string) State {
+	if b := m.GetPerModel(providerID, credentialID, model); b != nil {
 		return b.State()
 	}
 	return StateClosed
 }
 
 // ReleaseProbe releases the half-open probe slot for the given
-// provider/credential without recording a result. See Breaker.ReleaseProbe.
-func (m *Manager) ReleaseProbe(providerID, credentialID int) {
-	if b := m.Get(providerID, credentialID); b != nil {
+// provider/credential/model scope without recording a result.
+// See Breaker.ReleaseProbe.
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 model——探针是在 per-model breaker
+// 上消费的，而释放动作此前走 legacy 凭据键 ⇒ 探针槽永不释放，per-model
+// breaker 永久卡在 HALF_OPEN（该凭据再也无法被探活）。
+func (m *Manager) ReleaseProbe(providerID, credentialID int, model string) {
+	if b := m.GetPerModel(providerID, credentialID, model); b != nil {
 		b.ReleaseProbe()
 	}
 }
@@ -1069,8 +1109,10 @@ func (m *Manager) ReleaseProbe(providerID, credentialID int) {
 // PeekAllowed reports whether a request would currently be allowed through
 // WITHOUT consuming the half-open probe slot. Read-only pre-check; the caller
 // must still call Allow() on the real attempt. See Breaker.PeekAllowed.
-func (m *Manager) PeekAllowed(providerID, credentialID int) bool {
-	if b := m.Get(providerID, credentialID); b != nil {
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 model（见 ReleaseProbe）。
+func (m *Manager) PeekAllowed(providerID, credentialID int, model string) bool {
+	if b := m.GetPerModel(providerID, credentialID, model); b != nil {
 		return b.PeekAllowed()
 	}
 	return true
@@ -1097,24 +1139,42 @@ func (m *Manager) ResetAll() {
 	}
 }
 
-// Reset resets the single breaker for the given provider/credential to
+// Reset resets the breaker(s) of the given provider/credential scope to
 // CLOSED state (admin emergency repair — force_enable / clear_circuit).
 // A breaker that was never created has nothing to reset; this is a no-op.
-func (m *Manager) Reset(providerID, credentialID int) {
-	if b := m.Get(providerID, credentialID); b != nil {
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 model。修复前 Reset 只重置
+// legacy 凭据键，而生产记账落在 per-model 键 ⇒ 管理面「清除熔断」返回
+// 200 却毫无效果（per-model breaker 仍是 OPEN，请求继续被拒）。
+//
+// model 为空 ⇒ 重置该 (provider, credential) 下的**全部**模型作用域
+// （整凭据紧急修复，不依赖 DB 的绑定枚举）；model 非空 ⇒ 只重置该模型。
+func (m *Manager) Reset(providerID, credentialID int, model string) {
+	model = strings.TrimSpace(model)
+	if model != "" {
+		if b := m.GetPerModel(providerID, credentialID, model); b != nil {
+			b.Reset()
+		}
+		return
+	}
+	m.mu.RLock()
+	targets := make([]*Breaker, 0, 4)
+	for _, b := range m.breakers {
+		if b.providerID == providerID && b.credentialID == credentialID {
+			targets = append(targets, b)
+		}
+	}
+	m.mu.RUnlock()
+	for _, b := range targets {
 		b.Reset()
 	}
 }
 
-// RecordFailure records a failure on the appropriate breaker.
-// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 RecordFailurePerModel。
-func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
-	b := m.GetOrCreate(providerID, credentialID)
-	b.RecordFailure(kind)
-}
-
 // RecordFailurePerModel records a failure on the per-model breaker.
 // W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐。
+// ★ P0-a (2026-11-19 审计轮): 键补齐 credentialID ⇒ 跨凭据隔离。
+//
+// ★ 模型名为空 ⇒ 整凭据作用域（见 breakerScopeKey）。
 func (m *Manager) RecordFailurePerModel(providerID, credentialID int, model string, kind ErrorKind) {
 	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	b.RecordFailure(kind)
@@ -1131,8 +1191,11 @@ func (m *Manager) RecordFailurePerModel(providerID, credentialID int, model stri
 // the free profile's laxer cooling. On the live paths the empty case is
 // unreachable anyway: every candidate SQL COALESCEs mo.billing_mode to
 // 'per_token' (provider/client.go), so callers always pass a concrete mode.
-func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kind ErrorKind, billingMode string) {
-	b := m.GetOrCreate(providerID, credentialID)
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 model——记账必须落在准入所查的
+// 同一把 breaker 上（见 breakerScopeKey）。
+func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, model string, kind ErrorKind, billingMode string) {
+	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
 		b.MarkFreeTier()
 	}
@@ -1141,51 +1204,55 @@ func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kin
 
 // RecordFailureWithReset is the Manager wrapper for the P0-4 reset-aligned
 // quota cooling (see Breaker.RecordFailureWithReset).
-func (m *Manager) RecordFailureWithReset(providerID, credentialID int, kind ErrorKind, resetAt time.Time, ok bool) {
-	b := m.GetOrCreate(providerID, credentialID)
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 model（见 RecordFailureWithBillingMode）。
+func (m *Manager) RecordFailureWithReset(providerID, credentialID int, model string, kind ErrorKind, resetAt time.Time, ok bool) {
+	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	b.RecordFailureWithReset(kind, resetAt, ok)
 }
 
 // RecordModelScopedFailure is the Manager wrapper for the P0-4 model-level
 // isolation (see Breaker.RecordModelScopedFailure).
+//
+// ★ P0-a (2026-11-19 审计轮)：改记到 per-model 作用域——「模型级拒绝」
+// 的语义正是「这一对 (凭据, 模型) 有问题」，落到 legacy 凭据作用域会
+// 让无关模型被误伤。
 func (m *Manager) RecordModelScopedFailure(providerID, credentialID int, kind ErrorKind, model string) {
-	b := m.GetOrCreate(providerID, credentialID)
+	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	b.RecordModelScopedFailure(kind, model)
 }
 
 // RecoveredAt returns the last recovery instant for the given
-// provider/credential's breaker, or zero time when no breaker exists or it
-// has no recovery evidence. Lock-free single-map read on the routing hot
-// path (P0-A recovery ramp).
-func (m *Manager) RecoveredAt(providerID, credentialID int) time.Time {
-	if b := m.Get(providerID, credentialID); b != nil {
+// provider/credential/model scope's breaker, or zero time when no breaker
+// exists or it has no recovery evidence. Lock-free single-map read on the
+// routing hot path (P0-A recovery ramp).
+//
+// ★ P0-a (2026-11-19 审计轮)：签名补齐 model——恢复期 ramp 必须读准入所查
+// 的同一把 breaker。
+func (m *Manager) RecoveredAt(providerID, credentialID int, model string) time.Time {
+	if b := m.GetPerModel(providerID, credentialID, model); b != nil {
 		return b.RecoveredAt()
 	}
 	return time.Time{}
 }
 
-// RecordSuccess records a success on the appropriate breaker.
-func (m *Manager) RecordSuccess(providerID, credentialID int) {
-	b := m.GetOrCreate(providerID, credentialID)
-	b.RecordSuccess()
-}
-
 // RecordSuccessPerModel records a successful request on the per-model breaker.
 // W1 缺口① (2026-11-19): per-model 粒度。
+// ★ P0-a (2026-11-19 审计轮): 键补齐 credentialID ⇒ 跨凭据隔离。
+//
+// ★ 模型名为空 ⇒ 整凭据作用域（见 breakerScopeKey）。
 func (m *Manager) RecordSuccessPerModel(providerID, credentialID int, model string) {
 	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	b.RecordSuccess()
 }
 
-// Allow checks if a request should be allowed through the credential.
-// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 AllowPerModel。
-func (m *Manager) Allow(providerID, credentialID int) bool {
-	b := m.GetOrCreate(providerID, credentialID)
-	return b.Allow()
-}
-
 // AllowPerModel checks if a request should be allowed through the per-model breaker.
 // W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐。
+// AllowPerModel checks if a request should be allowed through the per-model breaker.
+// W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐。
+// ★ P0-a (2026-11-19 审计轮): 键补齐 credentialID ⇒ 跨凭据隔离。
+//
+// ★ 模型名为空 ⇒ 整凭据作用域（见 breakerScopeKey）。
 func (m *Manager) AllowPerModel(providerID, credentialID int, model string) bool {
 	b := m.GetOrCreatePerModel(providerID, credentialID, model)
 	return b.Allow()

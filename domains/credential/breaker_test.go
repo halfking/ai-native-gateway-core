@@ -345,18 +345,18 @@ func TestConsecutiveFailures(t *testing.T) {
 func TestManagerCreateAndGet(t *testing.T) {
 	m := NewManager()
 
-	b1 := m.GetOrCreate(1, 1)
-	b2 := m.GetOrCreate(1, 1)
+	b1 := m.GetOrCreatePerModel(1, 1, "")
+	b2 := m.GetOrCreatePerModel(1, 1, "")
 	if b1 != b2 {
 		t.Fatal("GetOrCreate should return same instance")
 	}
 
-	b3 := m.Get(1, 1)
+	b3 := m.GetPerModel(1, 1, "")
 	if b3 != b1 {
 		t.Fatal("Get should return same instance")
 	}
 
-	b4 := m.Get(999, 999)
+	b4 := m.GetPerModel(999, 999, "")
 	if b4 != nil {
 		t.Fatal("Get for non-existent should return nil")
 	}
@@ -365,32 +365,32 @@ func TestManagerCreateAndGet(t *testing.T) {
 func TestManagerRecordAndAllow(t *testing.T) {
 	m := NewManager()
 
-	if !m.Allow(1, 1) {
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("should allow initially")
 	}
 
-	m.RecordFailure(1, 1, KindAuth)
-	if !m.Allow(1, 1) {
+	m.RecordFailurePerModel(1, 1, "", KindAuth)
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("should still allow after one unconfirmed auth failure")
 	}
-	m.RecordFailure(1, 1, KindAuth)
-	if m.Allow(1, 1) {
+	m.RecordFailurePerModel(1, 1, "", KindAuth)
+	if m.AllowPerModel(1, 1, "") {
 		t.Fatal("should not allow after auth failure")
 	}
 
-	m.RecordSuccess(1, 1)
-	if !m.Allow(1, 1) {
+	m.RecordSuccessPerModel(1, 1, "")
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("should allow after success")
 	}
 }
 
 func TestManagerStats(t *testing.T) {
 	m := NewManager()
-	m.GetOrCreate(1, 1)
-	m.GetOrCreate(2, 2)
+	m.GetOrCreatePerModel(1, 1, "")
+	m.GetOrCreatePerModel(2, 2, "")
 
-	m.RecordFailure(1, 1, KindAuth)
-	m.RecordFailure(1, 1, KindAuth) // open with 15min cooling (BUG #1 fix)
+	m.RecordFailurePerModel(1, 1, "", KindAuth)
+	m.RecordFailurePerModel(1, 1, "", KindAuth) // open with 15min cooling (BUG #1 fix)
 
 	stats := m.Stats()
 	if len(stats) != 2 {
@@ -419,45 +419,45 @@ func TestManagerStats(t *testing.T) {
 func TestManagerHalfOpenRecoveryViaLiveAPI(t *testing.T) {
 	m := NewManager()
 	for i := 0; i < 3; i++ {
-		m.RecordFailure(1, 1, KindTransient)
+		m.RecordFailurePerModel(1, 1, "", KindTransient)
 	}
 
 	// Should not allow while still cooling
-	if m.Allow(1, 1) {
+	if m.AllowPerModel(1, 1, "") {
 		t.Fatal("should not allow while open")
 	}
 
 	// Manually expire cooling so Allow transitions OPEN → HALF_OPEN
-	b := m.Get(1, 1)
+	b := m.GetPerModel(1, 1, "")
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second)
 	b.mu.Unlock()
 
-	if !m.Allow(1, 1) {
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("should allow the half-open probe after cooling expiry")
 	}
 
 	// A success on the half-open probe closes the breaker
-	m.RecordSuccess(1, 1)
-	if m.Allow(1, 1) != true {
+	m.RecordSuccessPerModel(1, 1, "")
+	if m.AllowPerModel(1, 1, "") != true {
 		t.Fatal("should allow after probe success closes the circuit")
 	}
 }
 
 func TestManagerResetAll(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(1, 1, KindAuth)
-	m.RecordFailure(1, 1, KindAuth)
-	m.RecordFailure(2, 2, KindQuota)
-	m.RecordFailure(2, 2, KindQuota)
+	m.RecordFailurePerModel(1, 1, "", KindAuth)
+	m.RecordFailurePerModel(1, 1, "", KindAuth)
+	m.RecordFailurePerModel(2, 2, "", KindQuota)
+	m.RecordFailurePerModel(2, 2, "", KindQuota)
 
-	if m.Allow(1, 1) || m.Allow(2, 2) {
+	if m.AllowPerModel(1, 1, "") || m.AllowPerModel(2, 2, "") {
 		t.Fatal("both should be blocked")
 	}
 
 	m.ResetAll()
 
-	if !m.Allow(1, 1) || !m.Allow(2, 2) {
+	if !m.AllowPerModel(1, 1, "") || !m.AllowPerModel(2, 2, "") {
 		t.Fatal("both should be allowed after reset")
 	}
 }
@@ -641,44 +641,44 @@ func TestPeekAllowedDoesNotConsumeProbe(t *testing.T) {
 
 func TestManagerReleaseProbe(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	b := m.Get(1, 1)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	b := m.GetPerModel(1, 1, "")
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second)
 	b.mu.Unlock()
 
-	if !m.Allow(1, 1) {
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("should allow probe after cooling expiry")
 	}
-	if m.Allow(1, 1) {
+	if m.AllowPerModel(1, 1, "") {
 		t.Fatal("second Allow() should be rejected while probe in flight")
 	}
 
-	m.ReleaseProbe(1, 1)
-	if !m.Allow(1, 1) {
+	m.ReleaseProbe(1, 1, "")
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("Allow() should succeed after manager-level ReleaseProbe")
 	}
 }
 
 func TestManagerPeekAllowedDoesNotConsumeProbe(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	b := m.Get(1, 1)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	m.RecordFailurePerModel(1, 1, "", KindTransient)
+	b := m.GetPerModel(1, 1, "")
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second)
 	b.mu.Unlock()
 
-	if !m.PeekAllowed(1, 1) {
+	if !m.PeekAllowed(1, 1, "") {
 		t.Fatal("manager PeekAllowed should report allowed after cooling expiry")
 	}
 	if b.State() != StateOpen {
 		t.Fatalf("manager PeekAllowed must not transition state, got %s", b.State())
 	}
-	if !m.Allow(1, 1) {
+	if !m.AllowPerModel(1, 1, "") {
 		t.Fatal("Allow() should still succeed after manager PeekAllowed (probe not consumed)")
 	}
 }
@@ -770,27 +770,27 @@ func TestManagerResetSingleCredential(t *testing.T) {
 
 	// Open two breakers.
 	for i := 0; i < 3; i++ {
-		m.RecordFailure(7, 100, errorsx.KindNetwork)
-		m.RecordFailure(7, 200, errorsx.KindNetwork)
+		m.RecordFailurePerModel(7, 100, "", errorsx.KindNetwork)
+		m.RecordFailurePerModel(7, 200, "", errorsx.KindNetwork)
 	}
-	if m.Get(7, 100).State() != StateOpen || m.Get(7, 200).State() != StateOpen {
+	if m.GetPerModel(7, 100, "").State() != StateOpen || m.GetPerModel(7, 200, "").State() != StateOpen {
 		t.Fatal("precondition: both breakers should be open")
 	}
 
-	m.Reset(7, 100)
+	m.Reset(7, 100, "")
 
-	if got := m.Get(7, 100).State(); got != StateClosed {
+	if got := m.GetPerModel(7, 100, "").State(); got != StateClosed {
 		t.Fatalf("targeted breaker should be closed after Reset, got %s", got)
 	}
-	if got := m.Get(7, 200).State(); got != StateOpen {
+	if got := m.GetPerModel(7, 200, "").State(); got != StateOpen {
 		t.Fatalf("unrelated breaker must stay open, got %s", got)
 	}
-	if !m.Allow(7, 100) {
+	if !m.AllowPerModel(7, 100, "") {
 		t.Fatal("reset breaker should allow requests immediately")
 	}
 
 	// Resetting a never-created breaker is a no-op, not a panic.
-	m.Reset(42, 999)
+	m.Reset(42, 999, "")
 }
 
 // TestFreeTierCoolingProfile (2026-09-15, 245 free-capacity plan): a
@@ -802,9 +802,9 @@ func TestFreeTierCoolingProfile(t *testing.T) {
 	m := NewManager()
 
 	// Paid breaker: KindConcurrent cools 2 minutes (default policy).
-	m.RecordFailure(1, 100, errorsx.KindConcurrent)
-	m.RecordFailure(1, 100, errorsx.KindConcurrent)
-	paid := m.Get(1, 100)
+	m.RecordFailurePerModel(1, 100, "", errorsx.KindConcurrent)
+	m.RecordFailurePerModel(1, 100, "", errorsx.KindConcurrent)
+	paid := m.GetPerModel(1, 100, "")
 	if paid.State() != StateOpen {
 		t.Fatalf("paid breaker should be open after 2 concurrent failures, got %s", paid.State())
 	}
@@ -814,9 +814,9 @@ func TestFreeTierCoolingProfile(t *testing.T) {
 	}
 
 	// Free breaker: same two failures, but cooling is ~5 seconds.
-	m.RecordFailureWithBillingMode(1, 200, errorsx.KindConcurrent, "free")
-	m.RecordFailureWithBillingMode(1, 200, errorsx.KindConcurrent, "free")
-	free := m.Get(1, 200)
+	m.RecordFailureWithBillingMode(1, 200, "", errorsx.KindConcurrent, "free")
+	m.RecordFailureWithBillingMode(1, 200, "", errorsx.KindConcurrent, "free")
+	free := m.GetPerModel(1, 200, "")
 	if !free.IsFreeTier() {
 		t.Fatal("free breaker should be marked as free tier")
 	}
@@ -830,7 +830,7 @@ func TestFreeTierCoolingProfile(t *testing.T) {
 
 	// The free profile only applies to breakers seen with billing_mode=free;
 	// a paid credential must not inherit it.
-	if m.Get(1, 100).IsFreeTier() {
+	if m.GetPerModel(1, 100, "").IsFreeTier() {
 		t.Fatal("paid breaker must not be marked free tier")
 	}
 }
@@ -843,9 +843,9 @@ func TestFreeTierCoolingProfile(t *testing.T) {
 // 5-minute ceiling clamp is pinned in TestEscalatedCoolingBacksOffExponentially.
 func TestFreeTierTransientEscalationOwnsFreeProfile(t *testing.T) {
 	m := NewManager()
-	m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
-	m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
-	free := m.Get(2, 300)
+	m.RecordFailureWithBillingMode(2, 300, "", errorsx.KindTransient, "free")
+	m.RecordFailureWithBillingMode(2, 300, "", errorsx.KindTransient, "free")
+	free := m.GetPerModel(2, 300, "")
 	if free.State() != StateOpen {
 		t.Fatalf("free breaker should be open after repeated transient failures, got %s", free.State())
 	}
@@ -887,7 +887,7 @@ func TestEscalatedCoolingBacksOffExponentially(t *testing.T) {
 
 	// Paid: escalates onto defaultPolicies[KindUpstreamDown] (30s initial,
 	// 30min ceiling): 30s → 60s → 120s …
-	b := m.GetOrCreate(9, 9)
+	b := m.GetOrCreatePerModel(9, 9, "")
 	b.RecordFailure(KindNetwork) // pending confirmation (threshold 2)
 	b.RecordFailure(KindNetwork) // opens, escalation cycle 1
 	b.mu.Lock()
@@ -908,7 +908,7 @@ func TestEscalatedCoolingBacksOffExponentially(t *testing.T) {
 	// Free: escalates onto freeTierPolicies[KindUpstreamDown] (15s initial,
 	// 5min ceiling) — 15s → 30s → …, and the ceiling must actually clamp
 	// instead of cooling 15s flat forever.
-	bf := m.GetOrCreate(8, 8)
+	bf := m.GetOrCreatePerModel(8, 8, "")
 	bf.MarkFreeTier()
 	bf.RecordFailure(KindTimeout)
 	bf.RecordFailure(KindTimeout)

@@ -33,15 +33,21 @@ import (
 type routingFixCircuitStub struct {
 	mu     sync.Mutex
 	called map[[2]int]int // (providerID, credentialID) → count
+	models []string       // 每次 Reset 收到的 model 分量（★ P0-a 2026-11-19 审计轮）
 }
 
-func (s *routingFixCircuitStub) Reset(providerID, credentialID int) {
+// Reset 记录 (providerID, credentialID) 与 model 分量。
+// ★ P0-a (2026-11-19 审计轮): 签名含 model——熔断作用域是
+// "providerID/credentialID/model"，紧急修复必须落到生产记账所用的那把
+// breaker 上。
+func (s *routingFixCircuitStub) Reset(providerID, credentialID int, model string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.called == nil {
 		s.called = map[[2]int]int{}
 	}
 	s.called[[2]int{providerID, credentialID}]++
+	s.models = append(s.models, model)
 }
 
 type routingFixCredStateStub struct {

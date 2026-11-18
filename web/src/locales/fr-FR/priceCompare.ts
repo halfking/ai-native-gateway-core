@@ -48,7 +48,6 @@ export default {
   colVendor: 'Ancre fabricant',
   colRetail: 'Notre détail (CNY)',
   colDrift: 'Prime détail',
-  platSearch: 'Nom canonique du modèle (ex. glm-4)…',
   platUnavailableWhy: 'Table des tarifs de plateforme indisponible — migration 970 absente ou synchro non effectuée.',
   platUnavailableNext: 'Étape suivante : déployer la migration 970 et relancer market-price-sync.py.',
   platNeedModel: 'Saisissez un nom de modèle pour afficher les tarifs de chaque plateforme.',

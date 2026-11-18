@@ -3,15 +3,18 @@
 // Namespaces : page / desc / settings / table / editModal / status / feedback.
 // Termes techniques conservés non traduits : canonical_name, credits_per_1m_in/out/cache_in/cache_out, cents_per_credit, global_discount, CNY/USD.
 export default {
- globalModelFilter: {
- label: "Rechercher des modèles standards",
- title: "Sélectionner un modèle",
- placeholder: "Sélectionner des modèles (multi-sélection)…",
- },
   page: {
     title: 'Gestion de la tarification',
     refresh: 'Actualiser',
     refreshLoading: 'Chargement…',
+  },
+  // ★ D23（2026-11-19 审计轮）：上游 797b42067 引入 globalModelFilter 时
+  //   只在 en-US / zh-CN 落了值，其余 6 个语种缺失 ⇒ key-parity 门报
+  //   「hard gate violations」。此处按 en-US / zh-CN 的语义补齐。
+  globalModelFilter: {
+    label: 'Rechercher des modèles standard',
+    title: 'Sélectionner des modèles',
+    placeholder: 'Sélectionner des modèles (sélection multiple prise en charge)…',
   },
   desc: 'Tarification côté locataire (crédits / 1M tokens). La base globale × remise s\'applique aux dimensions <strong>non manuelles</strong> ; les champs manuels ne sont pas affectés par les modifications globales.',
   settings: {

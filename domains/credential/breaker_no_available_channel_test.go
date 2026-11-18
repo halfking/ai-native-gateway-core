@@ -69,7 +69,7 @@ func TestBreakerNoAvailableChannelRegisteredInAllPolicyTables(t *testing.T) {
 // RecoveryAuto 的平坦档 ⇒ autoRecoveryFailureThreshold = 2）。
 func TestBreakerNoAvailableChannelFreeTierUsesShortenedProfile(t *testing.T) {
 	mgr := NewManager()
-	brk := mgr.GetOrCreate(3, 9)
+	brk := mgr.GetOrCreatePerModel(3, 9, "")
 	if brk == nil {
 		t.Fatal("GetOrCreate 返回 nil")
 	}
@@ -96,7 +96,7 @@ func TestBreakerNoAvailableChannelFreeTierUsesShortenedProfile(t *testing.T) {
 // 真正的漂移）由门 T 的另一半兜住。
 func TestBreakerNoAvailableChannelPaidUsesDefaultProfile(t *testing.T) {
 	mgr := NewManager()
-	brk := mgr.GetOrCreate(4, 11)
+	brk := mgr.GetOrCreatePerModel(4, 11, "")
 	if brk == nil {
 		t.Fatal("GetOrCreate 返回 nil")
 	}

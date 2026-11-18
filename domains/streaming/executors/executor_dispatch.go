@@ -840,7 +840,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			out.ErrorKind = string(errorsx.KindRequestRejected)
 			out.HTTPStatus = http.StatusUnprocessableEntity
 			if probeConsumed && e.Circuit != nil {
-				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			}
 			return
 		}
@@ -850,7 +850,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			out.ErrorKind = string(errorsx.KindContentFilter)
 			out.HTTPStatus = http.StatusForbidden
 			if probeConsumed && e.Circuit != nil {
-				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			}
 			// ★ 2026-11-17（可重试性审计轮）：格式类守卫拦下的是**上游输出
 			// 的格式错**（工具参数不是合法 JSON / 脱敏结果不是合法 JSON /
@@ -912,7 +912,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		defer cancel()
 		decision, applied := e.reduceDispatchForwardOutcome(sideEffectCtx, params, cand, attemptID, out, startedAt, healthEvidence)
 		if probeConsumed && e.Circuit != nil && !dispatchOutcomeConsumesProbe(decision, applied) {
-			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		}
 	}()
 
@@ -965,9 +965,12 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 
 	// ── Circuit breaker (fail-open when the module is disabled) ──
 	// W1 缺口① (2026-11-19): 改为 per-model 粒度，单模型故障不连坐
+	// ★ P0-a (2026-11-19 审计轮): model 分量改用 circuitScopeModel（offer
+	// 身份），与记账/探针释放完全一致；此前这里用 cand.RawModel（出站名），
+	// 而记账用 cand.BindingRawModel() ⇒ 两处落在不同的 breaker 上。
 	circuitOpen := !settings.IsEnabled("circuit_degradation")
 	if !circuitOpen {
-		probeConsumed = e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, cand.RawModel)
+		probeConsumed = e.Circuit.AllowPerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		circuitOpen = !probeConsumed
 	}
 	if circuitOpen && settings.IsEnabled("circuit_degradation") {
@@ -981,8 +984,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 		// 获取熔断器状态用于诊断
 		// W1 缺口① (2026-11-19): 改为 per-model 查询
+		// ★ P0-a (2026-11-19 审计轮): 补齐 credentialID——原签名
+		// GetPerModel(providerID, model) 在多凭据同模型下会取到别的凭据的
+		// breaker，诊断面板因此显示错误的 circuit_state。
 		if e.Circuit != nil {
-			if breaker := e.Circuit.GetPerModel(cand.ProviderID, cand.RawModel); breaker != nil {
+			if breaker := e.Circuit.GetPerModel(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand)); breaker != nil {
 				extra["circuit_state"] = breaker.State().String()
 				extra["circuit_consecutive_failures"] = breaker.ConsecutiveFailures()
 			}
@@ -1013,7 +1019,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	if acquireErr != nil {
 		releaseFpLease(e.FpSlots, fpLease)
 		if probeConsumed && e.Circuit != nil {
-			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 			probeConsumed = false
 		}
 

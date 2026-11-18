@@ -21,7 +21,7 @@ func TestP0CBreakerRecordFailureSkipsPenaltyNone(t *testing.T) {
 		t.Fatalf("PenaltyOf(%s) target = %v, want none", kind, errorsx.PenaltyOf(kind))
 	}
 
-	b := NewManager().GetOrCreate(1, 42)
+	b := NewManager().GetOrCreatePerModel(1, 42, "")
 	for i := 0; i < 5; i++ {
 		b.RecordFailure(ErrorKind(kind))
 	}
@@ -39,7 +39,7 @@ func TestP0CBreakerRecordFailureSkipsPenaltyNone(t *testing.T) {
 
 func TestP0CBreakerRecordFailureStillCoolsTransient(t *testing.T) {
 	// 前提在场配对：同入口对真实故障仍冷却——证明短路不是「恒跳过」。
-	b := NewManager().GetOrCreate(1, 43)
+	b := NewManager().GetOrCreatePerModel(1, 43, "")
 	b.RecordFailure(KindNetwork)
 	b.RecordFailure(KindNetwork)
 	if b.State() == StateClosed && b.ConsecutiveFailures() == 0 {
@@ -49,7 +49,7 @@ func TestP0CBreakerRecordFailureStillCoolsTransient(t *testing.T) {
 
 func TestP0CBreakerRecordFailureSkipsContextLength(t *testing.T) {
 	// PenaltyNone 扩集：context_length 也不冷却（原 IsClientBug 未覆盖）。
-	b := NewManager().GetOrCreate(1, 44)
+	b := NewManager().GetOrCreatePerModel(1, 44, "")
 	for i := 0; i < 5; i++ {
 		b.RecordFailure(ErrorKind(errorsx.KindContextLength))
 	}
@@ -63,7 +63,7 @@ func TestP0CBreakerQuotaResetStillCools(t *testing.T) {
 	if errorsx.PenaltyOf(errorsx.KindQuotaPeriodic).Target == errorsx.PenaltyNone {
 		t.Fatal("quota_periodic must not be PenaltyNone")
 	}
-	b := NewManager().GetOrCreate(1, 45)
+	b := NewManager().GetOrCreatePerModel(1, 45, "")
 	resetAt := time.Now().Add(19 * time.Minute)
 	b.RecordFailureWithReset(errorsx.KindQuotaPeriodic, resetAt, true)
 	until := b.CoolingUntil()

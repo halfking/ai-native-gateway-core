@@ -3,15 +3,18 @@
 // Namespaces: page / desc / settings / table / editModal / status / feedback.
 // Technische Begriffe bleiben unübersetzt: canonical_name, credits_per_1m_in/out/cache_in/cache_out, cents_per_credit, global_discount, CNY/USD.
 export default {
- globalModelFilter: {
- label: "Standardmodelle durchsuchen",
- title: "Modell auswählen",
- placeholder: "Modelle auswählen (Mehrfachauswahl)…",
- },
   page: {
     title: 'Preisverwaltung',
     refresh: 'Aktualisieren',
     refreshLoading: 'Wird geladen…',
+  },
+  // ★ D23（2026-11-19 审计轮）：上游 797b42067 引入 globalModelFilter 时
+  //   只在 en-US / zh-CN 落了值，其余 6 个语种缺失 ⇒ key-parity 门报
+  //   「hard gate violations」。此处按 en-US / zh-CN 的语义补齐。
+  globalModelFilter: {
+    label: 'Standardmodelle durchsuchen',
+    title: 'Modelle auswählen',
+    placeholder: 'Modelle auswählen (Mehrfachauswahl unterstützt)…',
   },
   desc: 'Mandantenseitige Verkaufspreise (Credits / 1M Token). Die globale Basis × Rabatt wird auf <strong>nicht manuelle</strong> Dimensionen angewendet; manuelle Felder sind von globalen Änderungen nicht betroffen.',
   settings: {

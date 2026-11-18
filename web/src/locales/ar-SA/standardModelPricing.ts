@@ -3,15 +3,18 @@
 // فضاء الأسماء: page / desc / settings / table / editModal / status / feedback.
 // المصطلحات التقنية تبقى كما هي: canonical_name، credits_per_1m_in/out/cache_in/cache_out، cents_per_credit، global_discount، CNY/USD.
 export default {
- globalModelFilter: {
- label: "البحث عن النماذج القياسية",
- title: "اختر نموذجًا",
- placeholder: "اختر نماذج (تحديد متعدد)…",
- },
   page: {
     title: 'إدارة التسعير',
     refresh: 'تحديث',
     refreshLoading: 'جاري التحميل…',
+  },
+  // ★ D23（2026-11-19 审计轮）：上游 797b42067 引入 globalModelFilter 时
+  //   只在 en-US / zh-CN 落了值，其余 6 个语种缺失 ⇒ key-parity 门报
+  //   「hard gate violations」。此处按 en-US / zh-CN 的语义补齐。
+  globalModelFilter: {
+    label: 'البحث في النماذج القياسية',
+    title: 'اختيار النماذج',
+    placeholder: 'اختيار النماذج (يدعم التحديد المتعدد)…',
   },
   desc: 'تسعير جانب المستأجر (رصيد/1M رمز). يتم تطبيق المعيار العام × معامل الخصم على الأبعاد <strong>غير المُسعّرة يدويًا</strong>؛ الحقول التي تم تحديد «يدوي» عليها لا تتأثر بالتغييرات العامة.',
   settings: {

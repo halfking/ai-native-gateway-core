@@ -2,7 +2,12 @@ package sales
 
 // DEPRECATED: This quote system will be replaced by domains/commercial/ as part of
 // MaaS contract v0.1 implementation (see docs/architecture/unified-architecture/PHASE-NEXT-IMPLEMENTATION-PLAN.md).
-// DO NOT extend this code. Use feature flag use_maas_v01 for new implementations.
+// DO NOT extend this code. New implementations must go through domains/commercial/.
+//
+// ★ D19（2026-11-19 审计轮）：原注释让读者「用特性开关 use_maas_v01」，
+// 但**全仓没有任何实现/读取点/配置定义**——一句指向不存在开关的话，比
+// 不写更糟（读者会去找一个不存在的开关，并以为"开关关着"是可接受的
+// 现状）。现改为直接指向真实落点。
 //
 // quote.go —— 报价工作台（2026-11-04 实施规划 W1-T2，决议 A/B/C）。
 //

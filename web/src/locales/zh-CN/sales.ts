@@ -2,7 +2,7 @@
 // 命名空间：sales.*（供给池/需求池/报价单三页签）。
 export default {
  //2026-11-19补齐：SalesWorkbenchView 直接引用的漏斗标题
- dashboardFunnel: "销售漏斗",
+ dashboardFunnel: '销售漏斗',
   tabSupply: '供给池',
   tabDemand: '需求池',
   tabQuotes: '报价单',

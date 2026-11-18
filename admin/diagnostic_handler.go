@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,24 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/diagnostics"
 )
+
+// maxDiagnosticLimit 是诊断查询单次返回条数上限。
+//
+// 审计轮 D15：limit 原先只校验 > 0，客户端可传 limit=1000000000
+// 把整张诊断表拉进网关进程内存。诊断表是 append-only 的请求日志，
+// 单会话量级可达数万条 ⇒ 必须有硬上限。
+const maxDiagnosticLimit = 500
+
+// clampDiagnosticLimit 把客户端给的 limit 夹到 [1, maxDiagnosticLimit]。
+func clampDiagnosticLimit(limit int) int {
+	if limit < 1 {
+		return 1
+	}
+	if limit > maxDiagnosticLimit {
+		return maxDiagnosticLimit
+	}
+	return limit
+}
 
 // DiagnosticHandler 诊断日志HTTP处理器
 type DiagnosticHandler struct {
@@ -62,7 +81,11 @@ func (h *DiagnosticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *DiagnosticHandler) GetRequest(w http.ResponseWriter, r *http.Request, requestID string) {
 	log, err := h.logger.Get(r.Context(), requestID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// 审计轮 D2/D13：诊断查询失败不得回显内部错误串
+		// （pgx 错误含表名/列名/约束名）。守卫只扫 500 状态行，
+		// 这里的 404 同样要收口。
+		slog.Error("diagnostic_handler: get request diagnostics failed", "request_id", requestID, "error", err)
+		http.Error(w, "request diagnostics not found", http.StatusNotFound)
 		return
 	}
 
@@ -79,10 +102,11 @@ func (h *DiagnosticHandler) GetSessionRequests(w http.ResponseWriter, r *http.Re
 			limit = l
 		}
 	}
+	limit = clampDiagnosticLimit(limit)
 
 	logs, err := h.logger.ListBySession(r.Context(), sessionID, limit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -122,10 +146,11 @@ func (h *DiagnosticHandler) GetFailures(w http.ResponseWriter, r *http.Request) 
 			limit = l
 		}
 	}
+	limit = clampDiagnosticLimit(limit)
 
 	logs, err := h.logger.ListFailed(r.Context(), startTime, endTime, limit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -188,7 +213,7 @@ func (h *DiagnosticHandler) Query(w http.ResponseWriter, r *http.Request) {
 			limit = l
 		}
 	}
-	filters.Limit = limit
+	filters.Limit = clampDiagnosticLimit(limit)
 	
 	offsetStr := query.Get("offset")
 	if offsetStr != "" {
@@ -199,7 +224,7 @@ func (h *DiagnosticHandler) Query(w http.ResponseWriter, r *http.Request) {
 
 	logs, err := h.logger.QueryByFilters(r.Context(), filters)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 

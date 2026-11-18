@@ -48,7 +48,6 @@ export default {
   colVendor: '原厂锚',
   colRetail: '我方零售（CNY）',
   colDrift: '零售溢价',
-  platSearch: '输入模型 canonical 名（如 glm-4）…',
   platUnavailableWhy: '平台现价表不可用 —— 迁移 970 未上或尚未同步。',
   platUnavailableNext: '下一步：部署迁移 970 并重跑 market-price-sync.py。',
   platNeedModel: '输入模型名后查询各平台现价。',

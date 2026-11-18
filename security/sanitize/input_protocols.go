@@ -887,7 +887,8 @@ func signedThinkingBlock(block map[string]json.RawMessage) bool {
 	return signature != ""
 }
 
-// sanitizeSignedThinkingBlock 对带签名的 thinking 块只检测、不改写。
+// sanitizeSignedThinkingBlock 对带签名的 thinking 块只检测、不改写，
+// 并按「强凭据 / 散文弱命中」**分级**处理（★ D1，2026-11-19 审计轮）。
 //
 // r1057（2026-11-17）把「有签名即拒」收窄成「检出敏感且需改写才拒」；
 // r1058（2026-11-18）再收掉最后一档：**不再拒绝，放行原文 + WARN 观测**。
@@ -895,16 +896,27 @@ func signedThinkingBlock(block map[string]json.RawMessage) bool {
 // 当凭据（"Bearer token 检查" 里的 "token"），拒绝＝把「一次误报」升级成
 // 「整个会话砖化」，且客户端不可自愈（重发的还是同一份会话）。
 //
-// 为什么放行是安全的：
+// ★ D1 分级阻断（本轮落地）：r1058 的「一律放行」留了一个真实缺口——
+//
+//	`signature` 字段**完全由客户端控制**，客户端可以伪造一个带签名的
+//	thinking 块把真凭据夹带出网。对**不验签的上游**（自建 vLLM / Ollama /
+//	内部代理）这条路径等于无条件脱敏旁路。而 Anthropic 官方上游验签 ⇒
+//	「客户端伪造会在上游被拒」的论证只对那部分上游成立。
+//
+//	分级后的行为：
+//	  · 强凭据形态（厂商密钥前缀 / JWT / 长不透明令牌）⇒ **拒整请求(400)**。
+//	    这是唯一能真正关闭旁路的动作（改写不可行、剥块会改变会话语义）。
+//	  · 散文级弱命中 ⇒ 仍原样放行（保持 r1058 的「不砖化会话」结论），
+//	    但日志从 WARN 升级为 ERROR 并带规则名。
+//
+// 为什么放行（弱命中）是安全的：
 //   - 正常链路里这段文本是**模型自己上一轮的思考回显**——上游模型已经见过
 //     并签名过这些字节；原样送回不产生新的暴露面；
-//   - Anthropic 协议在服务端验签：客户端伪造「带签名的 thinking」塞私货
-//     会在上游被拒，本路径不构成脱敏旁路（对真正转发给 Anthropic 的上游）；
 //   - 改写在密码学上不可能（签名覆盖 thinking 文本），拒绝只留下「砖会话」
 //     这一种结局——误报债（r1028/r1046/r1058 三轮同族）会让它反复兑现。
 //
-// WARN 只带类型/规则与计数（security 轮纪律：观测日志不含用户原文）。
-// 残余风险登记：不验签的 Anthropic 协议上游会收到原文（见主档 L2）。
+// 日志与错误串只带类型/规则/计数（security 轮纪律：观测日志与错误响应
+// 均不含用户原文/凭据）。残余风险（窄判据漏过的裸长串）登记在主档 D1。
 func (s *requestInputSanitizer) sanitizeSignedThinkingBlock(raw json.RawMessage, block map[string]json.RawMessage) (json.RawMessage, bool, error) {
 	restore := s.bindInputField("thinking")
 	defer restore()
@@ -937,9 +949,45 @@ func (s *requestInputSanitizer) sanitizeSignedThinkingBlock(raw json.RawMessage,
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.WarnContext(s.ctx, "sanitize: signed thinking passed through verbatim (signature cannot be rewritten)",
+	// ★ D1（2026-11-19 审计轮）分级阻断：
+	//
+	//	· 强凭据形态（厂商密钥 / JWT / 长不透明令牌）⇒ **拒整请求**。
+	//	  `signature` 字段完全由客户端控制，客户端可以伪造带签名的 thinking
+	//	  块把真凭据夹带出网；对不验签的上游（自建 vLLM / Ollama / 内部
+	//	  代理）等于无条件脱敏旁路。
+	//	· 散文级弱命中 ⇒ 仍原样放行（拒＝会话砖化，r1058 事故本体），
+	//	  但日志从 WARN 升级为 ERROR 并带规则名，让「被放行的敏感内容」
+	//	  在观测面上可见。
+	//
+	// 错误串只含固定文案，**不含**任何命中值（security 轮纪律：观测日志
+	// 与错误响应均不含用户原文/凭据）。
+	strong, weak := classifySignedThinkingFragments(fragments)
+	if len(strong) > 0 {
+		strongTypes := make([]string, 0, len(strong))
+		strongRules := map[string]bool{}
+		for _, f := range strong {
+			strongTypes = append(strongTypes, string(f.Type))
+			if f.RuleID != "" {
+				strongRules[f.RuleID] = true
+			}
+		}
+		sort.Strings(strongTypes)
+		strongRuleList := make([]string, 0, len(strongRules))
+		for id := range strongRules {
+			strongRuleList = append(strongRuleList, id)
+		}
+		sort.Strings(strongRuleList)
+		logger.ErrorContext(s.ctx, "sanitize: signed thinking carries credential-shaped content, request rejected",
+			"action", "block",
+			"hits", len(strong),
+			"types", strings.Join(strongTypes, ","),
+			"rules", strings.Join(strongRuleList, ","),
+		)
+		return nil, false, fmt.Errorf("%w: signed thinking carries credential-shaped content", errInvalidSanitizeInput)
+	}
+	logger.ErrorContext(s.ctx, "sanitize: signed thinking passed through verbatim (signature cannot be rewritten)",
 		"action", "observe",
-		"hits", len(fragments),
+		"hits", len(weak),
 		"types", strings.Join(types, ","),
 		"rules", strings.Join(ruleList, ","),
 	)

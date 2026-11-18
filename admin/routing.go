@@ -2039,7 +2039,13 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 	outcome := map[string]any{}
 
 	if h.circuitResetter != nil && providerID > 0 {
-		h.circuitResetter.Reset(providerID, credentialID)
+		// ★ P0-a (2026-11-19 审计轮): 把 model 分量传下去，并让
+		// rawModel 为空时重置该 (provider, credential) 下的**全部**模型
+		// 作用域。修复前只重置 legacy 凭据作用域 ⇒ 生产记账所在的
+		// per-model breaker 仍是 OPEN ⇒ 紧急修复返回 200 但请求继续被拒。
+		//
+		// 不依赖下面的绑定枚举：枚举失败（DB 抖动）时熔断重置仍必须生效。
+		h.circuitResetter.Reset(providerID, credentialID, strings.TrimSpace(rawModel))
 		outcome["in_memory_circuit_reset"] = true
 		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_circuit", "ok").Inc()
 	} else if h.circuitResetter == nil && providerID > 0 {

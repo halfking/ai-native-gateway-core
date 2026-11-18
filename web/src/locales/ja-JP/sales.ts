@@ -1,7 +1,7 @@
 // sales.ts — 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 export default {
  //2026-11-19补齐：SalesWorkbenchView 直接引用的漏斗标题
- dashboardFunnel: "セールスファネル",
+ dashboardFunnel: '営業ファネル',
   active: '有効',
   annotate: '登録',
   annotateTitle: '供給登録：{name}',

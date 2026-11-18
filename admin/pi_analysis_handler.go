@@ -469,9 +469,9 @@ func (h *PIAnalysisHandler) GetResult(w http.ResponseWriter, r *http.Request, qu
 		LLMTokensUsed         int            `json:"llm_tokens_used"`
 		CreatedAt             string         `json:"created_at"`
 		AnalyzerModel         string         `json:"analyzer_model"`
-		AnalyzerVersion       sql.NullString `json:"analyzer_version"`
+		AnalyzerVersion       PiNullString   `json:"analyzer_version"`
 		AnalysisDetails       NullableJSON   `json:"analysis_details"`
-		LLMResponseRaw        sql.NullString `json:"llm_response_raw"`
+		LLMResponseRaw        PiNullString   `json:"llm_response_raw"`
 		AutoApplied           bool           `json:"auto_applied"`
 		AppliedAt             PiNullString   `json:"applied_at"`
 		AppliedBy             PiNullString   `json:"applied_by"`
@@ -582,9 +582,9 @@ func (h *PIAnalysisHandler) getResultLegacy(w http.ResponseWriter, r *http.Reque
 		LLMTokensUsed         int            `json:"llm_tokens_used"`
 		CreatedAt             string         `json:"created_at"`
 		AnalyzerModel         string         `json:"analyzer_model"`
-		AnalyzerVersion       sql.NullString `json:"analyzer_version"`
+		AnalyzerVersion       PiNullString   `json:"analyzer_version"`
 		AnalysisDetails       NullableJSON   `json:"analysis_details"`
-		LLMResponseRaw        sql.NullString `json:"llm_response_raw"`
+		LLMResponseRaw        PiNullString   `json:"llm_response_raw"`
 		AutoApplied           bool           `json:"auto_applied"`
 		AppliedAt             PiNullString   `json:"applied_at"`
 		AppliedBy             PiNullString   `json:"applied_by"`

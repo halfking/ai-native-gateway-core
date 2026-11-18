@@ -187,7 +187,7 @@ func TestConcurrentPerModelAccess(t *testing.T) {
 
 	// 验证所有模型都创建了
 	for _, model := range models {
-		b := mgr.GetPerModel(1, model)
+		b := mgr.GetPerModel(1, 100, model)
 		if b == nil {
 			t.Errorf("model %s was not created", model)
 		}
@@ -290,10 +290,10 @@ func TestPerModelManagerIsolation(t *testing.T) {
 	}
 
 	// 验证键格式
-	if b1.Key() != "1/gpt-4" {
-		t.Errorf("provider 1 key should be '1/gpt-4', got '%s'", b1.Key())
+	if b1.Key() != "1/100/gpt-4" {
+		t.Errorf("provider 1 key should be '1/100/gpt-4', got '%s'", b1.Key())
 	}
-	if b2.Key() != "2/gpt-4" {
-		t.Errorf("provider 2 key should be '2/gpt-4', got '%s'", b2.Key())
+	if b2.Key() != "2/200/gpt-4" {
+		t.Errorf("provider 2 key should be '2/200/gpt-4', got '%s'", b2.Key())
 	}
 }

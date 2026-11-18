@@ -882,7 +882,7 @@ onMounted(load)
         class="btn btn-ghost btn-sm" 
         @click="clearGlobalModels"
       >
-        {{ t('common.clear') }}
+        {{ t('common.button.clear') }}
       </button>
     </div>
 

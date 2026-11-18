@@ -1257,7 +1257,7 @@ func (e *Executor) executeGemini(
 				"resumable", isResumable,
 			)
 			if !isResumable {
-				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
+				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand), streamKind, cand.BillingMode)
 			}
 			return &ExecuteResult{
 				Response:       resp,
@@ -1274,7 +1274,7 @@ func (e *Executor) executeGemini(
 				terminalRendered: outcome.TerminalRendered,
 			}
 		}
-		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 		return &ExecuteResult{
 			Response:       resp,
 			Candidate:      cand,
@@ -1311,7 +1311,7 @@ func (e *Executor) executeGemini(
 			RoutingTracker: params.RoutingTracker,
 		}, nil
 	}
-	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 	return &ExecuteResult{
 		Response:       resp,
 		Candidate:      cand,

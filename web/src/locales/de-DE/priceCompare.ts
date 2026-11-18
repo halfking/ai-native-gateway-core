@@ -48,7 +48,6 @@ export default {
   colVendor: 'Hersteller',
   colRetail: 'Unser VK (CNY)',
   colDrift: 'VK-Abweichung',
-  platSearch: 'Canonical-Modellname eingeben (z. B. glm-4)…',
   platUnavailableWhy: 'Plattform-Preistabelle nicht verfügbar – Migration970 fehlt oder wurde noch nicht synchronisiert.',
   platUnavailableNext: 'Nächster Schritt: Migration970 bereitstellen und market-price-sync.py erneut ausführen.',
   platNeedModel: 'Modellnamen eingeben, um die aktuellen Plattformpreise abzurufen.',

@@ -70,12 +70,17 @@ func TestForwardForDispatch_LogsCircuitOpen(t *testing.T) {
 	defer limiter.Stop()
 	db := newRecordingFailureDB(4)
 
-	// Force the breaker into StateOpen for (32, 22) so Allow() returns false.
-	cm.RecordFailure(32, 22, errorsx.KindTransient)
-	cm.RecordFailure(32, 22, errorsx.KindTransient)
-	cm.RecordFailure(32, 22, errorsx.KindTransient)
+	// Force the breaker into StateOpen for (32, 22, "glm-5.2") so Allow()
+	// returns false.
+	//
+	// ★ P0-a（2026-11-19 审计轮）：作用域模型分量必须与生产准入用的完全
+	// 一致（candidate 的 offer 身份 = "glm-5.2"）——用整凭据作用域造熔断，
+	// 准入就查不到那把 breaker ⇒ 断言会误判成「熔断没生效」。
+	cm.RecordFailurePerModel(32, 22, "glm-5.2", errorsx.KindTransient)
+	cm.RecordFailurePerModel(32, 22, "glm-5.2", errorsx.KindTransient)
+	cm.RecordFailurePerModel(32, 22, "glm-5.2", errorsx.KindTransient)
 	// Sanity: confirm the breaker is now open in-memory.
-	if got := cm.Get(32, 22).State(); got != credential.StateOpen {
+	if got := cm.GetPerModel(32, 22, "glm-5.2").State(); got != credential.StateOpen {
 		t.Fatalf("breaker state = %s, want open (test setup)", got)
 	}
 

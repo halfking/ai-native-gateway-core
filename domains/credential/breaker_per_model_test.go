@@ -34,11 +34,11 @@ func TestPerModelIsolation(t *testing.T) {
 	}
 
 	// 验证键格式
-	if b1.Key() != "1/gpt-4" {
-		t.Fatalf("expected key '1/gpt-4', got '%s'", b1.Key())
+	if b1.Key() != "1/100/gpt-4" {
+		t.Fatalf("expected key '1/100/gpt-4', got '%s'", b1.Key())
 	}
-	if b2.Key() != "1/gpt-3.5-turbo" {
-		t.Fatalf("expected key '1/gpt-3.5-turbo', got '%s'", b2.Key())
+	if b2.Key() != "1/100/gpt-3.5-turbo" {
+		t.Fatalf("expected key '1/100/gpt-3.5-turbo', got '%s'", b2.Key())
 	}
 }
 
@@ -86,7 +86,7 @@ func TestGetModelState(t *testing.T) {
 	mgr := NewManager()
 
 	// 查询不存在的模型，应返回 Closed
-	if state := mgr.GetModelState(1, "nonexistent-model"); state != StateClosed {
+	if state := mgr.GetModelState(1, 100, "nonexistent-model"); state != StateClosed {
 		t.Fatalf("nonexistent model should return closed, got %s", state)
 	}
 
@@ -96,12 +96,12 @@ func TestGetModelState(t *testing.T) {
 	b.RecordFailure(KindUpstreamDown)
 
 	// 查询应返回 Open
-	if state := mgr.GetModelState(1, "gpt-4"); state != StateOpen {
+	if state := mgr.GetModelState(1, 100, "gpt-4"); state != StateOpen {
 		t.Fatalf("gpt-4 should be open, got %s", state)
 	}
 
 	// 查询其他模型，应返回 Closed
-	if state := mgr.GetModelState(1, "gpt-3.5-turbo"); state != StateClosed {
+	if state := mgr.GetModelState(1, 100, "gpt-3.5-turbo"); state != StateClosed {
 		t.Fatalf("gpt-3.5-turbo should be closed, got %s", state)
 	}
 }
@@ -121,8 +121,8 @@ func TestModelNameTrimming(t *testing.T) {
 	}
 
 	// 验证键格式（无空格）
-	if b1.Key() != "1/gpt-4" {
-		t.Fatalf("expected key '1/gpt-4', got '%s'", b1.Key())
+	if b1.Key() != "1/100/gpt-4" {
+		t.Fatalf("expected key '1/100/gpt-4', got '%s'", b1.Key())
 	}
 }
 
@@ -132,7 +132,7 @@ func TestBackwardCompatibility(t *testing.T) {
 	mgr := NewManager()
 
 	// 旧接口仍可用
-	b := mgr.GetOrCreate(1, 100)
+	b := mgr.GetOrCreatePerModel(1, 100, "")
 	if b == nil {
 		t.Fatal("GetOrCreate should return a breaker")
 	}
@@ -143,13 +143,21 @@ func TestBackwardCompatibility(t *testing.T) {
 	}
 
 	// 旧接口键格式（providerID/credentialID）
-	if b.Key() != "1/100" {
-		t.Fatalf("expected legacy key '1/100', got '%s'", b.Key())
+	if b.Key() != "1/100/_legacy_" {
+		t.Fatalf("expected legacy key '1/100/_legacy_', got '%s'", b.Key())
 	}
 }
 
-// TestMultipleCredentialsSameModel 验证不同凭据的同模型独立
-// W1 缺口① (2026-11-19): 当前设计是 per-provider-model，同 provider 同模型共享 breaker
+// TestMultipleCredentialsSameModel 验证不同凭据的同模型互相隔离
+//
+// ★ P0-a (2026-11-19 审计轮)：语义已翻转——旧设计是 per-provider-model，
+// 同 provider 同模型的**所有凭据共享一把 breaker**，于是：
+//
+//	· 一次失败连坐该 provider 下所有凭据（跨凭据熔断）；
+//	· 该实例的 credentialID 取决于「谁先创建」⇒ DB 上卷归错凭据。
+//
+// 现键为 "providerID/credentialID/model"，同模型不同凭据互不影响，
+// 上卷也各自归因。
 func TestMultipleCredentialsSameModel(t *testing.T) {
 	mgr := NewManager()
 
@@ -157,25 +165,25 @@ func TestMultipleCredentialsSameModel(t *testing.T) {
 	b1 := mgr.GetOrCreatePerModel(1, 100, "gpt-4")
 	b2 := mgr.GetOrCreatePerModel(1, 200, "gpt-4")
 
-	// 应为同一个实例（per-provider-model 设计）
-	if b1 != b2 {
-		t.Fatal("same provider+model should return the same breaker (per-provider-model design)")
+	// 必须是**不同**的实例（跨凭据隔离）
+	if b1 == b2 {
+		t.Fatal("same model on different credentials must NOT share a breaker (cross-credential contagion)")
 	}
 
-	// 凭据 100 的 gpt-4 熔断（实际上是 provider 1 的 gpt-4 熔断）
+	// 凭据 100 的 gpt-4 熔断
 	b1.RecordFailure(KindUpstreamDown)
 	b1.RecordFailure(KindUpstreamDown)
 
-	// 验证凭据 100 的上卷态
-	// 注意：由于 breaker 的 credentialID 是第一次创建时的值（100），
-	// GetCredentialState(100) 能找到这个 breaker
+	// 凭据 200 的 gpt-4 不受影响
+	if b2.State() != StateClosed {
+		t.Fatalf("credential 200 gpt-4 should stay closed, got %s", b2.State())
+	}
+
+	// 上卷：只归因到真正出错的凭据 100
 	if state := mgr.GetCredentialState(100); state != StateOpen {
 		t.Fatalf("credential 100 state should be open, got %s", state)
 	}
-
-	// 凭据 200 查询不到状态，因为 breaker.credentialID = 100（第一次创建时的值）
-	// 这是当前 per-provider-model 设计的限制
 	if state := mgr.GetCredentialState(200); state != StateClosed {
-		t.Logf("credential 200 state is closed (breaker.credentialID=%d, not visible to credentialID=200)", b2.credentialID)
+		t.Fatalf("credential 200 state should be closed (no cross-credential attribution), got %s", state)
 	}
 }

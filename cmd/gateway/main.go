@@ -5011,7 +5011,7 @@ func main() {
 				}
 				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				if routingExec != nil && routingExec.Circuit != nil {
-					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccessPerModel)
 				}
 				// 2026-08-11: suspicious-action hook — when a node fails 2+ times
 				// in a row, request an async model-IQ re-test (modelQualityWorker
@@ -5337,7 +5337,7 @@ func main() {
 			}
 			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			if routingExec != nil && routingExec.Circuit != nil {
-				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccessPerModel)
 			}
 			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
 				if modelQualityWorker != nil {

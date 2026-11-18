@@ -47,12 +47,12 @@ func TestP0CApplyNodeHealthJsonWordDoesNotCool(t *testing.T) {
 	if err := adapter.ApplyNodeHealthDecision(context.Background(), d); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	brk := exec.Circuit.Get(9, 31)
+	brk := exec.Circuit.GetPerModel(9, 31, "")
 	if brk == nil {
 		// GetOrCreate 可能未触发——PenaltyNone 短路在 RecordFailure 内，
 		// 也可能从未 GetOrCreate。两种都算不冷却；显式再 Record 验证。
-		exec.recordProtocolCircuitFailure(nil, 9, 31, errorsx.KindClientBug, "paid")
-		brk = exec.Circuit.Get(9, 31)
+		exec.recordProtocolCircuitFailure(nil, 9, 31, "", errorsx.KindClientBug, "paid")
+		brk = exec.Circuit.GetPerModel(9, 31, "")
 	}
 	if brk != nil && brk.State() != credential.StateClosed {
 		t.Fatalf("state=%s after json-word path, want closed", brk.State())
@@ -65,16 +65,16 @@ func TestP0CApplyNodeHealthJsonWordDoesNotCool(t *testing.T) {
 func TestP0CRecordProtocolCircuitFailureSkipsPenaltyNone(t *testing.T) {
 	exec := &Executor{Circuit: credential.NewManager()}
 	for i := 0; i < 5; i++ {
-		exec.recordProtocolCircuitFailure(nil, 3, 7, errorsx.KindClientBug, "paid")
-		exec.recordProtocolCircuitFailure(nil, 3, 7, errorsx.KindContextLength, "paid")
+		exec.recordProtocolCircuitFailure(nil, 3, 7, "", errorsx.KindClientBug, "paid")
+		exec.recordProtocolCircuitFailure(nil, 3, 7, "", errorsx.KindContextLength, "paid")
 	}
-	if brk := exec.Circuit.Get(3, 7); brk != nil && brk.State() != credential.StateClosed {
+	if brk := exec.Circuit.GetPerModel(3, 7, ""); brk != nil && brk.State() != credential.StateClosed {
 		t.Fatalf("PenaltyNone via recordProtocolCircuitFailure cooled breaker: %s", brk.State())
 	}
 	// 前提在场：同入口对 network 仍累计。
-	exec.recordProtocolCircuitFailure(nil, 3, 8, errorsx.KindNetwork, "paid")
-	exec.recordProtocolCircuitFailure(nil, 3, 8, errorsx.KindNetwork, "paid")
-	brk := exec.Circuit.Get(3, 8)
+	exec.recordProtocolCircuitFailure(nil, 3, 8, "", errorsx.KindNetwork, "paid")
+	exec.recordProtocolCircuitFailure(nil, 3, 8, "", errorsx.KindNetwork, "paid")
+	brk := exec.Circuit.GetPerModel(3, 8, "")
 	if brk == nil || (brk.State() == credential.StateClosed && brk.ConsecutiveFailures() == 0) {
 		t.Fatal("network must still record via recordProtocolCircuitFailure (前提在场)")
 	}
@@ -100,7 +100,7 @@ func TestP0CApplyNodeHealthResetsIn19MinAlignsCooling(t *testing.T) {
 	if err := adapter.ApplyNodeHealthDecision(context.Background(), d); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	brk := exec.Circuit.Get(9, 31)
+	brk := exec.Circuit.GetPerModel(9, 31, "")
 	if brk == nil || brk.State() != credential.StateOpen {
 		t.Fatalf("want OPEN after resets-in-19min quota, brk=%v state=%v", brk != nil, func() string {
 			if brk == nil {

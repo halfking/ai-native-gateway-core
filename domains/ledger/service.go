@@ -3,10 +3,10 @@ package ledger
 import (
 	"context"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/maasidem"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/kaixuan/llm-gateway-go/contracts/maascontracts"
@@ -14,12 +14,18 @@ import (
 
 // Service implements the LedgerPort interface for usage tracking and settlement.
 // The ledger maintains an append-only immutable audit trail of usage and corrections.
+//
+// ★ D7 / D9（2026-11-19 审计轮）：pool 由具体类型放宽为窄接口
+// maasidem.Pool —— 跨租户作用域判定（UsageCorrect 是否带 tenant_id
+// 过滤、拒绝路径是否真的不写库）才能在 pgxmock 下做**行为级**钉死，
+// 见 d9_tenant_scope_test.go。*pgxpool.Pool 天然满足该接口，
+// 既有调用方无需改动。
 type Service struct {
-	pool *pgxpool.Pool
+	pool maasidem.Pool
 }
 
 // NewService creates a new ledger service.
-func NewService(pool *pgxpool.Pool) *Service {
+func NewService(pool maasidem.Pool) *Service {
 	return &Service{pool: pool}
 }
 
@@ -172,13 +178,24 @@ func (s *Service) UsageSettle(
 	req maascontracts.UsageSettleRequest,
 ) (maascontracts.UsageSettleResponse, error) {
 	// Check idempotency
-	cachedResp, err := s.checkIdempotency(ctx, auth.TenantID, "UsageSettle", meta.IdempotencyKey)
+	// ★ D8（2026-11-19 审计轮）：幂等键必填。
+	// 契约（contracts/maascontracts/types.go 的 CommandMeta）明写
+	// "Required for all commands"，此前实现零校验 ⇒ 同一 tenant +
+	// command_type 下所有空键命令互相误判为重放。
+	if err := maasidem.RequireKey(meta.IdempotencyKey); err != nil {
+		return maascontracts.UsageSettleResponse{}, err
+	}
+	cachedResp, err := maasidem.Check(ctx, s.pool, auth.TenantID, "UsageSettle", meta.IdempotencyKey)
 	if err != nil {
 		return maascontracts.UsageSettleResponse{}, fmt.Errorf("check idempotency: %w", err)
 	}
 	if cachedResp != nil {
 		var resp maascontracts.UsageSettleResponse
-		// TODO: Unmarshal cached response
+		// ★ D6：真正反序列化缓存响应 —— 重放必须拿到与首次执行一致的
+		// 响应（旧实现返回零值空结构，客户端无法对账）。
+		if err := maasidem.Replay(cachedResp, &resp); err != nil {
+			return maascontracts.UsageSettleResponse{}, fmt.Errorf("replay idempotent response: %w", err)
+		}
 		return resp, nil
 	}
 
@@ -310,7 +327,9 @@ func (s *Service) UsageSettle(
 	}
 
 	// Record idempotency
-	err = s.recordIdempotency(ctx, tx, tenantID, "UsageSettle", meta.IdempotencyKey, req, resp)
+	// ★ D6：真正序列化 request/response 后落库（旧实现固定写
+	// '{}'::jsonb ⇒ payload 从未落库，重放只能解出空结构）。
+	err = maasidem.Record(ctx, tx, tenantID, "UsageSettle", meta.IdempotencyKey, req, resp)
 	if err != nil {
 		return maascontracts.UsageSettleResponse{}, fmt.Errorf("record idempotency: %w", err)
 	}
@@ -332,13 +351,24 @@ func (s *Service) UsageCorrect(
 	req maascontracts.UsageCorrectRequest,
 ) (maascontracts.UsageCorrectResponse, error) {
 	// Check idempotency
-	cachedResp, err := s.checkIdempotency(ctx, auth.TenantID, "UsageCorrect", meta.IdempotencyKey)
+	// ★ D8（2026-11-19 审计轮）：幂等键必填。
+	// 契约（contracts/maascontracts/types.go 的 CommandMeta）明写
+	// "Required for all commands"，此前实现零校验 ⇒ 同一 tenant +
+	// command_type 下所有空键命令互相误判为重放。
+	if err := maasidem.RequireKey(meta.IdempotencyKey); err != nil {
+		return maascontracts.UsageCorrectResponse{}, err
+	}
+	cachedResp, err := maasidem.Check(ctx, s.pool, auth.TenantID, "UsageCorrect", meta.IdempotencyKey)
 	if err != nil {
 		return maascontracts.UsageCorrectResponse{}, fmt.Errorf("check idempotency: %w", err)
 	}
 	if cachedResp != nil {
 		var resp maascontracts.UsageCorrectResponse
-		// TODO: Unmarshal cached response
+		// ★ D6：真正反序列化缓存响应 —— 重放必须拿到与首次执行一致的
+		// 响应（旧实现返回零值空结构，客户端无法对账）。
+		if err := maasidem.Replay(cachedResp, &resp); err != nil {
+			return maascontracts.UsageCorrectResponse{}, fmt.Errorf("replay idempotent response: %w", err)
+		}
 		return resp, nil
 	}
 
@@ -362,19 +392,46 @@ func (s *Service) UsageCorrect(
 	}
 	defer tx.Rollback(ctx)
 
-	// Verify entry exists (we don't lock it, as corrections are append-only)
+	// Verify entry exists **and belongs to this tenant**
+	// (we don't lock it, as corrections are append-only)
+	//
+	// ★ D9（2026-11-19 审计轮）：原查询是
+	//   `SELECT EXISTS(SELECT 1 FROM maas_usage_settlements WHERE entry_id = $1)`
+	// ——**无 tenant_id 过滤** ⇒ A 租户可以对 B 租户的 entry_id 落一条
+	// maas_usage_corrections 冲正行（跨租户冲正）。
+	// 对比同文件 UsageSettle 有 holdTenantID != tenantID 校验 ⇒ 同层内
+	// 自相矛盾。
 	var entryExists bool
 	err = tx.QueryRow(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM maas_usage_settlements WHERE entry_id = $1
+			SELECT 1 FROM maas_usage_settlements
+			WHERE entry_id = $1 AND tenant_id = $2
 		)
-	`, req.EntryID).Scan(&entryExists)
+	`, req.EntryID, tenantID).Scan(&entryExists)
 
 	if err != nil {
 		return maascontracts.UsageCorrectResponse{}, fmt.Errorf("check entry exists: %w", err)
 	}
 
 	if !entryExists {
+		// ★ D9：区分「不存在」与「存在但不属于本租户」——后者是越权尝试，
+		// 不能回显「该 entry 存在」（那本身就是跨租户存在性泄露）。
+		var entryOwnedByOther bool
+		err = tx.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM maas_usage_settlements WHERE entry_id = $1
+			)
+		`, req.EntryID).Scan(&entryOwnedByOther)
+		if err != nil {
+			return maascontracts.UsageCorrectResponse{}, fmt.Errorf("check entry ownership: %w", err)
+		}
+		if entryOwnedByOther {
+			return maascontracts.UsageCorrectResponse{}, &maascontracts.Error{
+				Code:      maascontracts.ErrorUnauthorizedScope,
+				Message:   "ledger entry does not belong to the authenticated tenant",
+				Retryable: false,
+			}
+		}
 		return maascontracts.UsageCorrectResponse{}, &maascontracts.Error{
 			Code:      "MAAS_ENTRY_NOT_FOUND",
 			Message:   fmt.Sprintf("ledger entry %s not found", req.EntryID),
@@ -414,7 +471,9 @@ func (s *Service) UsageCorrect(
 	}
 
 	// Record idempotency
-	err = s.recordIdempotency(ctx, tx, tenantID, "UsageCorrect", meta.IdempotencyKey, req, resp)
+	// ★ D6：真正序列化 request/response 后落库（旧实现固定写
+	// '{}'::jsonb ⇒ payload 从未落库，重放只能解出空结构）。
+	err = maasidem.Record(ctx, tx, tenantID, "UsageCorrect", meta.IdempotencyKey, req, resp)
 	if err != nil {
 		return maascontracts.UsageCorrectResponse{}, fmt.Errorf("record idempotency: %w", err)
 	}
@@ -425,42 +484,6 @@ func (s *Service) UsageCorrect(
 	}
 
 	return resp, nil
-}
-
-// checkIdempotency checks if this command has already been executed.
-func (s *Service) checkIdempotency(ctx context.Context, tenantID, commandType, idempotencyKey string) (interface{}, error) {
-	var responsePayload []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT response_payload
-		FROM maas_idempotency_log
-		WHERE tenant_id = $1 AND command_type = $2 AND idempotency_key = $3
-		AND status = 'success'
-		AND expires_at > NOW()
-	`, tenantID, commandType, idempotencyKey).Scan(&responsePayload)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("query idempotency log: %w", err)
-	}
-
-	return responsePayload, nil
-}
-
-// recordIdempotency records the command execution for future idempotency checks.
-func (s *Service) recordIdempotency(ctx context.Context, tx pgx.Tx, tenantID, commandType, idempotencyKey string, request, response interface{}) error {
-	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
-
-	_, err := tx.Exec(ctx, `
-		INSERT INTO maas_idempotency_log (
-			tenant_id, command_type, idempotency_key,
-			request_payload, response_payload, status, executed_at, expires_at
-		) VALUES ($1, $2, $3, '{}'::jsonb, '{}'::jsonb, 'success', NOW(), $4)
-		ON CONFLICT (tenant_id, command_type, idempotency_key) DO NOTHING
-	`, tenantID, commandType, idempotencyKey, expiresAt)
-
-	return err
 }
 
 // Verify that Service implements LedgerPort interface at compile time.

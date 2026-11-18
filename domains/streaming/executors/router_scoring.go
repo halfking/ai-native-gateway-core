@@ -364,7 +364,7 @@ func calculateCostPenalty(c provider.Candidate) float64 {
 // 打分（cache 折扣价 + 更低 TTFT）。
 //
 // 无信号语义（与 rsr 冷启动同款 fail-open）：nil rate / samples 不足 ⇒ 0
-//（中性，不奖不罚）——命中率数据缺失的候选不能因为「没数据」被压。
+// （中性，不奖不罚）——命中率数据缺失的候选不能因为「没数据」被压。
 // 实测 0 命中（样本充足）≠ 无信号：那是「上游不给这个模型缓存」的证据，
 // 吃满惩罚 1.0。样本下限复用 calculateQualityScore 的 ≥10 惯例。
 func calculateCacheAffinityPenalty(c provider.Candidate) float64 {
@@ -803,7 +803,9 @@ func candidateRecoveredAtUnix(c provider.Candidate, r *Router) int64 {
 		latest = c.RoutedNodeState.RecoveredAt
 	}
 	if r != nil && r.CircuitRecovery != nil {
-		if at := r.CircuitRecovery.RecoveredAt(c.ProviderID, c.CredentialID); !at.IsZero() {
+		// ★ P0-a (2026-11-19 审计轮): model 分量与准入一致（offer 身份），
+		// 否则读到的不是准入所查的那把 breaker 的恢复时刻。
+		if at := r.CircuitRecovery.RecoveredAt(c.ProviderID, c.CredentialID, circuitScopeModel(c)); !at.IsZero() {
 			if sec := at.Unix(); sec > latest {
 				latest = sec
 			}
@@ -813,10 +815,10 @@ func candidateRecoveredAtUnix(c provider.Candidate, r *Router) int64 {
 }
 
 // recoveryPenaltyForCandidate 把「距恢复被验证的时长」归一成 0..1 惩罚
-//（P0-A）：恢复瞬间 = 1.0，ramp 窗口边界线性衰减到 0，窗口外 = 0。
+// （P0-A）：恢复瞬间 = 1.0，ramp 窗口边界线性衰减到 0，窗口外 = 0。
 // 形状同 recencyPenalty（线性衰减），区别只在与地平线的语义：recency 的
 // 地平线是"最近一次请求"，recovery 的是"最近一次恢复"。无恢复证据 = 0
-//（常规候选不受影响）。时钟回拨导致 age<0 时按 1.0 保守处理（刚恢复）。
+// （常规候选不受影响）。时钟回拨导致 age<0 时按 1.0 保守处理（刚恢复）。
 //
 // 顺序（批判审计轮修正）：**信号前置、env 后读**——绝大多数候选无恢复
 // 证据，先查信号即可 0 分配返回；仅对真正处于恢复期的候选才读一次

@@ -5,6 +5,7 @@ export default {
  //2026-11-19补齐：并行会话（销售看板/定价页全局过滤器）直接引用的顶层键
  clear: "Löschen",
  noData: "Keine Daten",
+ //2026-11-19补齐：并行会话（销售看板/定价页全局过滤器）直接引用的顶层键
   credentialFallback: 'Anmeldeinformation',
   protocol: 'Protokoll',
   autoFilled: 'Automatisch ausgefüllt',

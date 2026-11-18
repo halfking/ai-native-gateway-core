@@ -118,15 +118,18 @@ func (e *Executor) reduceDispatchForwardOutcome(
 			CredentialID: int64(cand.CredentialID),
 			Model:        model,
 		},
-		AttemptID:   attemptID,
-		Phase:       nodehealth.PhaseRequest,
-		Outcome:     outcome,
-		ErrorKind:   kind,
-		HTTPStatus:  out.HTTPStatus,
-		RequestID:   requestID,
-		BillingMode: cand.BillingMode,
-		LatencyMs:   latencyMs,
-		ErrorDetail: detail,
+		// ★ P0-a (2026-11-19 审计轮): 熔断作用域分量与请求路径准入完全
+		// 同源（offer 身份），不随 Node.Model 的回退链漂移。
+		BreakerScopeModel: circuitScopeModel(cand),
+		AttemptID:         attemptID,
+		Phase:             nodehealth.PhaseRequest,
+		Outcome:           outcome,
+		ErrorKind:         kind,
+		HTTPStatus:        out.HTTPStatus,
+		RequestID:         requestID,
+		BillingMode:       cand.BillingMode,
+		LatencyMs:         latencyMs,
+		ErrorDetail:       detail,
 	})
 }
 
@@ -211,6 +214,12 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 			// themselves never touch the breaker ("不叠加熔断").
 			if e.Circuit != nil {
 				providerID, credentialID := int(decision.Node.ProviderID), int(decision.Node.CredentialID)
+				// ★ P0-a (2026-11-19 审计轮): 熔断记账必须落在准入所查的
+				// 同一把 breaker 上（provider/credential/model 三元组）。
+				// 此前这里记 legacy 凭据键，而准入查 per-model 键 ⇒ 两把
+				// breaker 各记各的 ⇒ chat 主链路熔断永不跳闸，管理面
+				// circuit_state 恒显 closed。
+				scopeModel := decision.BreakerScopeModel
 				// P0-4 rest 分级：quota 族失败且正文携带重置信号（绝对时刻
 				// /相对时长/欠费词）时，冷却对齐到该时刻而非指数梯——上游
 				// 显式重置时间是硬事实，不随 billing mode 缩短，但 free 标记
@@ -218,22 +227,22 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 				if errorsx.IsQuotaExhaustion(kind) && strings.TrimSpace(decision.ErrorDetail) != "" {
 					if hint := errorsx.GradeQuotaRest([]byte(decision.ErrorDetail), time.Now()); hint.HasReset {
 						if strings.EqualFold(strings.TrimSpace(decision.BillingMode), "free") {
-							if brk := e.Circuit.Get(providerID, credentialID); brk != nil {
+							if brk := e.Circuit.GetPerModel(providerID, credentialID, scopeModel); brk != nil {
 								brk.MarkFreeTier()
 							}
 						}
-						e.Circuit.RecordFailureWithReset(providerID, credentialID, kind, hint.ResetAt, true)
+						e.Circuit.RecordFailureWithReset(providerID, credentialID, scopeModel, kind, hint.ResetAt, true)
 						continue
 					}
 				}
 				// 2026-09-15 (245 free-capacity plan): billing-mode-aware
 				// recording lets free credentials adopt the shortened
 				// freeTierPolicies cooling profile inside the breaker.
-				e.Circuit.RecordFailureWithBillingMode(providerID, credentialID, kind, decision.BillingMode)
+				e.Circuit.RecordFailureWithBillingMode(providerID, credentialID, scopeModel, kind, decision.BillingMode)
 			}
 		case nodehealth.EffectRecoverCircuit:
 			if e.Circuit != nil {
-				e.Circuit.RecordSuccess(int(decision.Node.ProviderID), int(decision.Node.CredentialID))
+				e.Circuit.RecordSuccessPerModel(int(decision.Node.ProviderID), int(decision.Node.CredentialID), decision.BreakerScopeModel)
 			}
 		case nodehealth.EffectRestoreBinding:
 			if state := e.nodeHealthStateWriter(); state != nil && state.Enabled() {
@@ -463,16 +472,24 @@ func (e *Executor) scheduleFlashBlipConfirm(requestCtx context.Context, decision
 	}()
 }
 
-func (e *Executor) recordProtocolCircuitSuccess(params *ExecParams, providerID, credentialID int) {
+// recordProtocolCircuitSuccess 在协议腿成功后关闭对应作用域的熔断器。
+//
+// ★ P0-a (2026-11-19 审计轮)：补齐 model 分量——成功必须记在准入所查的
+// 同一把 breaker 上，否则「准入查 per-model / 记账写 legacy」的分裂会让
+// 熔断器永不闭合。
+func (e *Executor) recordProtocolCircuitSuccess(params *ExecParams, providerID, credentialID int, model string) {
 	if params != nil && params.DispatchAttempt {
 		return
 	}
 	if e.Circuit != nil {
-		e.Circuit.RecordSuccess(providerID, credentialID)
+		e.Circuit.RecordSuccessPerModel(providerID, credentialID, model)
 	}
 }
 
-func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, credentialID int, kind errorsx.ErrorKind, billingMode string) {
+// recordProtocolCircuitFailure 在协议腿失败后记一次熔断失败。
+//
+// ★ P0-a (2026-11-19 审计轮)：补齐 model 分量（见 recordProtocolCircuitSuccess）。
+func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, credentialID int, model string, kind errorsx.ErrorKind, billingMode string) {
 	if kind == errorsx.KindEmptyResponse {
 		// Empty responses are recorded on the tenant/credential/raw-model URSM
 		// node for soft routing penalties. The legacy circuit is only keyed by
@@ -504,7 +521,7 @@ func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, 
 		// freeTierPolicies cooling profile and opened at the paid cadence —
 		// the exact flap the 245 free-capacity plan eliminated on the V2
 		// dispatch path only.
-		e.Circuit.RecordFailureWithBillingMode(providerID, credentialID, kind, billingMode)
+		e.Circuit.RecordFailureWithBillingMode(providerID, credentialID, model, kind, billingMode)
 	}
 }
 

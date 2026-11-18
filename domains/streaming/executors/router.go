@@ -201,8 +201,12 @@ type Router struct {
 	//（breaker 侧信号不参与，NodeState 侧 RoutedNodeState 信号仍可用）。
 	// 两种路由模式（legacy / URSM authoritative）下 executor 都在调
 	// Circuit.RecordSuccess，所以这条信号面在生产两模式下都有写入。
+	//
+	// ★ P0-a (2026-11-19 审计轮)：补齐 model 分量——熔断器键为
+	// "providerID/credentialID/model"，恢复期 ramp 必须读准入所查的同一把
+	// breaker；此前读 legacy 凭据作用域，读到的是另一把 breaker 的恢复时刻。
 	CircuitRecovery interface {
-		RecoveredAt(providerID, credentialID int) time.Time
+		RecoveredAt(providerID, credentialID int, model string) time.Time
 	}
 
 	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分

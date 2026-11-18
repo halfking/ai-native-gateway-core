@@ -344,8 +344,8 @@ func TestDesignIntent_FNVHashIsStable(t *testing.T) {
 
 func TestBreaker_Key(t *testing.T) {
 	b := New(7, 11)
-	if got := b.Key(); got != "7/11" {
-		t.Errorf("expected key \"7/11\", got %q", got)
+	if got := b.Key(); got != "7/11/_legacy_" {
+		t.Errorf("expected key \"7/11/_legacy_\", got %q", got)
 	}
 }
 

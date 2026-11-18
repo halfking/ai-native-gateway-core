@@ -35,9 +35,22 @@ const dirFailed = ref(false)
 // ★ 匹配范围：'' = 只查本模型（精确匹配）；'family' = 额外含同族变体（显式开启）。
 const scope = ref<'' | 'family'>('')
 
-// 2026-11-19：使用全局模型过滤的第一个模型作为当前查询模型
-const currentModel = computed(() => 
-  props.globalModels && props.globalModels.length > 0 ? props.globalModels[0] : ''
+// 2026-11-19：使用全局模型过滤的第一个模型作为当前查询模型。
+//
+// ★ D23（2026-11-19 审计轮）：上游 797b42067 把本组件改成「接收全局模型过滤、
+//   移除本组件的模型选择器」，但**只改了一半**——脚本里删掉了 `model` ref 与
+//   ModelPicker 导入，模板里的 `<ModelPicker v-model="model">` 与其余 `model`
+//   引用却留在原地 ⇒ vue-tsc 报 `Cannot find name 'model'`（上游自己的提交
+//   说明里写「vue-tsc 通过」，与事实不符），且**运行时模板渲染也会炸**。
+//
+// ★ 本地覆盖（pickedModel）的存在理由：目录表的「选择」按钮要能选中一个模型，
+//   而 currentModel 是**只读 computed**（值来自父组件的全局过滤）⇒ 无法赋值。
+//   故用一个本地覆盖 ref 承接该按钮，且**全局过滤一变即失效**（见下方 watch），
+//   避免「本地覆盖」长期遮住父组件的新全局口径。
+const pickedModel = ref('')
+const currentModel = computed(() =>
+  pickedModel.value.trim() ||
+  (props.globalModels && props.globalModels.length > 0 ? props.globalModels[0] : '')
 )
 const selectedModel = computed(() => currentModel.value.trim().toLowerCase())
 // 同族视图下必须显示每行的 canonical_name，否则用户分不清哪行是哪个模型。
@@ -94,6 +107,8 @@ onMounted(loadDirectory)
 
 // ★ 2026-11-19：监听全局模型过滤变化，自动刷新
 watch(() => props.globalModels, () => {
+  // ★ D23：全局过滤变了 ⇒ 放弃本地覆盖，回到「以全局为准」的口径。
+  pickedModel.value = ''
   if (currentModel.value.trim()) {
     load()
   }
@@ -126,9 +141,10 @@ function isCheapest(r: MarketPlatformQuoteRow): boolean {
   return v === cheapestOut.value
 }
 
-function pick(_d: MarketPlatformQuoteDirectoryRow) {
- //2026-11-19：模型由全局过滤决定，pick 仅触发重查
- load()
+function pick(d: MarketPlatformQuoteDirectoryRow) {
+  // ★ D23：currentModel 是只读 computed ⇒ 目录「选择」写入本地覆盖 ref。
+  pickedModel.value = d.canonical_name
+  load()
 }
 
 function setScope(next: '' | 'family') {
@@ -140,7 +156,8 @@ function setScope(next: '' | 'family') {
 
 <template>
   <div class="plat-panel">
-    <!-- ① 模型选择器（使用 ModelPicker 组件，复用 routing-v2 的选择体验） -->
+    <!-- ★ D23：模型选择器已移除（上游 797b42067 的声明意图：改用父组件的全局
+         模型过滤）。目录表的「选择」按钮改为写入本地覆盖 ref（pickedModel）。 -->
     <div class="filter-card card">
       <button class="btn btn-ghost btn-sm" @click="loadDirectory">{{ t('priceCompare.platReloadDir') }}</button>
       <!-- ★ 匹配范围（F11）：默认只查本模型；同族变体必须**显式**开启 -->
@@ -258,7 +275,6 @@ function setScope(next: '' | 'family') {
 
 <style scoped>
 .filter-card { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.model-picker-wrapper { flex: 1; min-width: 280px; max-width: 400px; }
 .cheapest-row { background: rgba(30, 142, 62, 0.08); }
 .scope-label { font-size: 12px; color: var(--text-secondary, #666); }
 .family-tag { color: var(--text-secondary, #666); }
