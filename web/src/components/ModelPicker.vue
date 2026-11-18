@@ -203,7 +203,10 @@ async function refreshModels(force = false) {
   try {
     const data = await loadCached()
     if (generation !== modelsGeneration) return
-    popular.value = data.popular || []
+    // 热门模型按名称字母顺序排列（2026-11-18 优化：便于快速选择）
+    popular.value = (data.popular || []).sort((a, b) =>
+      a.canonical_name.localeCompare(b.canonical_name)
+    )
     vendorGroups.value = buildVendorGroups(data.families)
   } catch (e: unknown) {
     if (generation === modelsGeneration) {

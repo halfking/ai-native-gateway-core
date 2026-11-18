@@ -8,6 +8,8 @@
 //      基准锚不是竞品，同 salesdecorate Compare 的染色口径）。
 //   ③ **缓存命中价 + 阶梯**：972 起平台现价带 cache_hit / tier ⇒ 一并展示
 //      （缓存命中价是真实成本的大头，此前网关侧根本没有这个数）。
+// ★ 2026-11-18（价格对比优化轮）：改用 ModelPicker 组件替代手动输入，
+//      复用 routing-v2 的选择器，热门模型按名称字母顺序排列。
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -16,6 +18,7 @@ import {
   type MarketPlatformQuoteDirectoryRow,
 } from '../../api/market'
 import { fmtMarketNum, fmtPair } from '../../utils/marketPriceFormat'
+import ModelPicker from '../../components/ModelPicker.vue'
 
 const { t } = useI18n()
 const model = ref('')
@@ -123,10 +126,16 @@ function setScope(next: '' | 'family') {
 
 <template>
   <div class="plat-panel">
-    <!-- ① 模型选择器（不再要求手打 canonical 名） -->
+    <!-- ① 模型选择器（使用 ModelPicker 组件，复用 routing-v2 的选择体验） -->
     <div class="filter-card card">
-      <input v-model="model" class="filter-input" type="text" :placeholder="t('priceCompare.platSearch')" @keyup.enter="load" />
-      <button class="btn btn-primary btn-sm" @click="load">{{ t('priceCompare.apply') }}</button>
+      <div class="model-picker-wrapper">
+        <ModelPicker
+          v-model="model"
+          :placeholder="t('priceCompare.platSearch')"
+          :title="t('priceCompare.colModel')"
+          @update:model-value="load"
+        />
+      </div>
       <button class="btn btn-ghost btn-sm" @click="loadDirectory">{{ t('priceCompare.platReloadDir') }}</button>
       <!-- ★ 匹配范围（F11）：默认只查本模型；同族变体必须**显式**开启 -->
       <span class="scope-label">{{ t('priceCompare.platScopeLabel') }}</span>
@@ -243,7 +252,7 @@ function setScope(next: '' | 'family') {
 
 <style scoped>
 .filter-card { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.filter-input { flex: 1; max-width: 320px; }
+.model-picker-wrapper { flex: 1; min-width: 280px; max-width: 400px; }
 .cheapest-row { background: rgba(30, 142, 62, 0.08); }
 .scope-label { font-size: 12px; color: var(--text-secondary, #666); }
 .family-tag { color: var(--text-secondary, #666); }

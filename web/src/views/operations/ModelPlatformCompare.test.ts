@@ -3,9 +3,14 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import ModelPlatformCompare from './ModelPlatformCompare.vue'
 import { testI18n } from '../../test-utils/i18n'
 import { getAdminMarketModelPlatforms } from '../../api/market'
+import { getAvailableModels } from '../../api'
 
 vi.mock('../../api/market', () => ({
   getAdminMarketModelPlatforms: vi.fn(),
+}))
+
+vi.mock('../../api', () => ({
+  getAvailableModels: vi.fn(),
 }))
 
 // ★ 2026-11-17（F11）行为门：明细模式**不得**把别的模型的价格混进来，
@@ -13,11 +18,21 @@ vi.mock('../../api/market', () => ({
 //
 //   线上实测（211）：`model=glm-5.3` 曾返回 43 行，其中只有 17 行是 glm-5.3；
 //   OpenRouter 的 glm-5.3-flash（¥0.2665）曾抢走 glm-5.3 自己的地板（¥0.4668）。
+//
+// ★ 2026-11-18（价格对比优化轮）：改用 ModelPicker 组件，需 mock getAvailableModels。
 vi.mocked(getAdminMarketModelPlatforms).mockResolvedValue({
   available: true,
   items: [],
   directory: [],
   is_dir: true,
+})
+
+vi.mocked(getAvailableModels).mockResolvedValue({
+  popular: [
+    { canonical_name: 'glm-5.3', display_name: 'GLM-5.3', count: 100 },
+    { canonical_name: 'gpt-4o', display_name: 'GPT-4o', count: 200 },
+  ],
+  families: [],
 })
 
 const DIR = [
@@ -118,7 +133,7 @@ describe('ModelPlatformCompare（F11 明细匹配口径）', () => {
     const w = mount(ModelPlatformCompare, { global: { plugins: [testI18n] } })
     await flushPromises()
 
-    // 从目录里选 glm-5.3
+    // 从目录里选 glm-5.3（点击目录表中的选择按钮）
     const pickBtn = w.findAll('tbody').at(0)?.findAll('button').at(0)
     expect(pickBtn).toBeTruthy()
     await pickBtn!.trigger('click')
