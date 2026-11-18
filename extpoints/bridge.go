@@ -105,14 +105,12 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			"request_id", req.RequestID,
 		)
 		
-		// 为这个 Phase 的插件构建 ExecutionContext
-		execCtx := &ExecutionContext{
-			Context:     ctx,
-			Phase:       phase,
-			RequestID:   req.RequestID,
-			RequestTime: time.Now(),
-			State:       make(map[string]interface{}),
-		}
+		// 从对象池获取 ExecutionContext（性能优化：减少分配）
+		execCtx := AcquireExecutionContext()
+		defer ReleaseExecutionContext(execCtx)
+		
+		// 初始化 ExecutionContext
+		InitExecutionContext(execCtx, ctx, phase, "", req.RequestID, time.Now())
 		
 		// 按优先级顺序执行插件（registry.Get 已排序）
 		for _, plugin := range plugins {
@@ -297,7 +295,9 @@ func (h *ExtensionPointHook) mapPhases(pipelinePhase string) []Phase {
 // buildRequest 从 PipelineRequest 构建 extpoints.Request。
 func (h *ExtensionPointHook) buildRequest(envelope *domain.PipelineRequest) *Request {
 	req := &Request{
-		Attributes: make(map[string]interface{}),
+		// 预分配 Attributes map：典型请求包含 8-12 个属性
+		// (session_id, model, method, path, remote, agent, api_key_id, provider 等)
+		Attributes: make(map[string]interface{}, 12),
 	}
 	
 	if envelope == nil {
@@ -379,7 +379,9 @@ func (h *ExtensionPointHook) syncResponseToEnvelope(resp *Response, envelope *do
 	}
 	
 	if envelope.Metadata == nil {
-		envelope.Metadata = make(map[string]interface{})
+		// 预分配 Metadata map：典型响应包含原有 metadata + 插件结果
+		// 估算大小：原有 8-12 个 + 插件注入 4-6 个 = ~16 个
+		envelope.Metadata = make(map[string]interface{}, 16)
 	}
 	
 	// 合并 Attributes

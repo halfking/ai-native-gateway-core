@@ -72,13 +72,11 @@ func TestIntegration_ExtensionPointInPipeline(t *testing.T) {
 		t.Error("Expected plugin to be executed in pipeline")
 	}
 	
-	// 验证插件接收到正确的上下文
-	if plugin.lastContext == nil {
-		t.Error("Plugin did not receive execution context")
-	} else {
-		if plugin.lastContext.RequestID == "" {
-			t.Errorf("Plugin did not receive RequestID, context: %+v", plugin.lastContext)
-		}
+	// 验证插件接收到正确的 RequestID
+	if plugin.lastRequestID == "" {
+		t.Error("Plugin did not receive RequestID")
+	} else if plugin.lastRequestID != "test-request-123" {
+		t.Errorf("Plugin received wrong RequestID: expected test-request-123, got %s", plugin.lastRequestID)
 	}
 }
 
@@ -421,7 +419,7 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 	type testPlugin struct {
 		metadata    *extpoints.PluginMetadata
 		executed    bool
-		lastContext *extpoints.ExecutionContext
+		lastRequestID string // 存储 RequestID 而不是整个 context
 		onExecute   func()
 		shouldFail  bool
 	}
@@ -444,7 +442,8 @@ func (p *testPlugin) HealthCheck(ctx context.Context) error {
 
 func (p *testPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
 	p.executed = true
-	p.lastContext = ctx
+	// 复制 RequestID 而不是存储 context 指针（因为 context 会被归还到池中）
+	p.lastRequestID = ctx.RequestID
 	
 	if p.onExecute != nil {
 		p.onExecute()
