@@ -18,17 +18,51 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/jsoncol"
 	"github.com/lib/pq"
 )
 
+// ruleSet 是一份**不可变**的规则集快照。
+//
+//	basic/advanced 两个切片在发布后**只读**（规则对象本身在构建期就已
+//	编译好 regex，之后不再被改写）⇒ 快照一旦发布即可被任意 goroutine
+//	并发读，无需再加锁。
+//
+//	★ 为什么要把两个切片**打包成一个结构体**再原子发布：
+//	若 basic/advanced 各自独立发布（或各自独立加锁再分别读取），
+//	则一次检测可能拿到**两代规则集**（basic 是新版、advanced 是旧版）
+//	⇒ 单次检测的规则集不自洽。打包后「一次原子读 = 一代规则集」。
+type ruleSet struct {
+	basic    []*Rule
+	advanced []*Rule
+}
+
 // Detector 提示词注入检测器
 type Detector struct {
-	db              *sql.DB
-	basicRules      []*Rule
-	advancedRules   []*Rule
+	db *sql.DB
+
+	// ★ 2026-11-19 P0 根修：规则集**原子发布**（basic/advanced 同代）。
+	//
+	//	此前 basicRules/advancedRules 是两个**裸切片字段**：
+	//	· 写侧 RefreshRules() 先把两个字段置 nil，再由 loadRules()
+	//	  逐条 append 回去（中间隔着一次 DB 往返，tens of ms）
+	//	  ⇒ 该窗口内字段是 nil 或**半成品**；
+	//	· 读侧 detect() 在**请求热路径**上直接读 d.basicRules /
+	//	  d.advancedRules ⇒ 与写侧并发 ⇒ Go 层面的**真实数据竞争**
+	//	  （切片头是 3 个字（ptr/len/cap），非原子写 ⇒ 可撕裂）
+	//	  ⇒ 并且读侧可能看到**空/半成品规则集** ⇒ 提示词注入的
+	//	  basic/advanced 两层被**静默跳过**（安全语义降级）。
+	//
+	//	⇒ 改为：不可变 ruleSet 快照 + atomic.Pointer。
+	//	  · 读侧：一次 Load 拿到 basic/advanced **同一代**的快照
+	//	    （单次检测内规则集自洽；快照取完即释放，不跨检测持锁）；
+	//	  · 写侧：只在**全部读完且无错**后一次 Store（原子换版）；
+	//	    失败 ⇒ 旧规则集**原样保留**（不会因一次 DB 抖动把检测面清空）。
+	rules atomic.Pointer[ruleSet]
+
 	heuristicEngine *HeuristicEngine
 	llmEngine       *LLMDetectionEngine
 	canaryDetector  *CanaryDetector
@@ -320,16 +354,23 @@ func (d *Detector) detect(ctx context.Context, tenantID, sessionKey, input strin
 		Metadata:        make(map[string]interface{}),
 	}
 
+	// ★ 2026-11-19 P0 根修：规则集取**一次**原子快照。
+	//
+	//	basic 与 advanced 必须来自**同一代**规则集 ⇒ 一次 Load 拿全，
+	//	绝不能分两次读（两次读可能跨过一次热刷新 ⇒ 一代新、一代旧）。
+	//	快照取完即释放（不跨检测持锁）⇒ 写侧刷新不被读侧长时间阻塞。
+	rules := d.ruleSnapshot()
+
 	// Layer 1: 基础规则检测
 	if policy.EnableBasicRules {
-		basicMatches := d.detectWithRules(input, d.basicRules)
+		basicMatches := d.detectWithRules(input, rules.basic)
 		result.MatchedRules = append(result.MatchedRules, basicMatches...)
 		result.DetectionLayers["basic"] = true
 	}
 
 	// Layer 2: 高级规则检测
 	if policy.EnableAdvancedRules {
-		advancedMatches := d.detectWithRules(input, d.advancedRules)
+		advancedMatches := d.detectWithRules(input, rules.advanced)
 		result.MatchedRules = append(result.MatchedRules, advancedMatches...)
 		result.DetectionLayers["advanced"] = true
 	}
@@ -893,7 +934,45 @@ const detectorSeverityActionSelectCols = `severity_level, COALESCE(observe_actio
 		COALESCE(affect_session_health, true), COALESCE(session_health_penalty, 10),
 		COALESCE(terminate_session_on_repeat, false), COALESCE(repeat_threshold, 3)`
 
+// ruleSnapshot 返回当前生效的规则集快照。
+//
+//	★ 2026-11-19 P0 根修：一次原子读 ⇒ basic/advanced 必然同代。
+//	  零值 Detector（尚未发布过任何规则集）返回空快照（不 panic）。
+func (d *Detector) ruleSnapshot() ruleSet {
+	if rs := d.rules.Load(); rs != nil {
+		return *rs
+	}
+	return ruleSet{basic: []*Rule{}, advanced: []*Rule{}}
+}
+
+// publishRules 原子发布一份新的规则集（换版）。
+//
+//	★ 2026-11-19 P0 根修：这是**唯一**的规则集写入口。
+//	  · 入参切片在发布后不再被改动（调用方负责交出所有权）；
+//	  · 一次 Store ⇒ 读侧要么看到旧的一代、要么看到新的一代，
+//	    **永远不会**看到 nil 或半成品（此前是先置 nil 再逐条 append）。
+func (d *Detector) publishRules(basic, advanced []*Rule) {
+	if basic == nil {
+		basic = []*Rule{}
+	}
+	if advanced == nil {
+		advanced = []*Rule{}
+	}
+	d.rules.Store(&ruleSet{basic: basic, advanced: advanced})
+}
+
 // loadRules 从数据库加载规则
+//
+// ★ 2026-11-19 P0 根修：规则集**构建与发布分离**。
+//
+//	此前本函数把结果**逐条 append 进 d.basicRules / d.advancedRules**
+//	（且调用方 RefreshRules 会先把两个字段置 nil）⇒ 重建窗口内读侧
+//	看到 nil / 半成品 ⇒ 基础+高级规则层被静默跳过（安全降级）；
+//	且与请求热路径的读构成**真实数据竞争**。
+//
+//	⇒ 现在：全部读到**局部**切片；只有**读完且无错**才一次原子发布。
+//	  失败（查询失败 / Scan 失败 / rows.Err() 非空）⇒ **不发布**
+//	  ⇒ 上一代规则集原样保留（一次 DB 抖动不会把检测面清空）。
 func (d *Detector) loadRules() error {
 	query := `
 		SELECT ` + detectorRuleSelectCols + `
@@ -915,8 +994,9 @@ func (d *Detector) loadRules() error {
 	}
 	defer func() { _ = rows.Close() }()
 
-	d.basicRules = nil
-	d.advancedRules = nil
+	// ★ 构建到**局部**切片：读者看不到中间态。
+	basic := make([]*Rule, 0, 16)
+	advanced := make([]*Rule, 0, 16)
 
 	for rows.Next() {
 		rule := &Rule{}
@@ -940,13 +1020,19 @@ func (d *Detector) loadRules() error {
 		}
 
 		if rule.RuleType == "basic" {
-			d.basicRules = append(d.basicRules, rule)
+			basic = append(basic, rule)
 		} else {
-			d.advancedRules = append(d.advancedRules, rule)
+			advanced = append(advanced, rule)
 		}
 	}
 
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// ★ 全部读完且无错 ⇒ 原子换版（读者此刻起看到新的一代）。
+	d.publishRules(basic, advanced)
+	return nil
 }
 
 // ensureRulesTable 自动创建表
@@ -1649,9 +1735,17 @@ func (d *Detector) learnAttackPattern(ctx context.Context, tenantID, input strin
 }
 
 // RefreshRules 刷新规则缓存
+//
+// ★ 2026-11-19 P0 根修：**不再先置 nil**。
+//
+//	此前本函数先把 d.basicRules / d.advancedRules 置 nil，再调 loadRules()
+//	重新查库并逐条 append ⇒ 重建窗口（DB 往返 tens of ms）内，请求热路径
+//	读到的就是**空规则集** ⇒ basic/advanced 两层规则被**静默跳过**
+//	（提示词注入检测形同关闭）⇒ 且与写侧构成**真实数据竞争**。
+//
+//	⇒ 现在：loadRules 内部构建到局部切片并**原子发布**；
+//	  刷新失败 ⇒ 返回 error 且**旧规则集原样保留**。
 func (d *Detector) RefreshRules() error {
-	d.basicRules = nil
-	d.advancedRules = nil
 	return d.loadRules()
 }
 
