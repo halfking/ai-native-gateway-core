@@ -7,19 +7,22 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/contracts/maascontracts"
 )
 
 // Service implements the EntitlementPort interface for customer entitlement management.
 // Entitlements represent customer rights to consume resources after successful trading.
+//
+// ★ D7 / D9（2026-11-19 审计轮）：pool 由具体类型放宽为窄接口
+// maasidem.Pool —— 幂等与作用域判定才能在 pgxmock 下做行为级钉死。
+// *pgxpool.Pool 天然满足该接口，既有调用方无需改动。
 type Service struct {
-	pool *pgxpool.Pool
+	pool maasidem.Pool
 }
 
 // NewService creates a new trading service.
-func NewService(pool *pgxpool.Pool) *Service {
+func NewService(pool maasidem.Pool) *Service {
 	return &Service{pool: pool}
 }
 

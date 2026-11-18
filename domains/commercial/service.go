@@ -6,20 +6,24 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/kaixuan/llm-gateway-go/contracts/maascontracts"
+	"github.com/kaixuan/llm-gateway-go/internal/maasidem"
 )
 
 // Service implements the QuotePort interface for price estimation.
 // Quoting is a pure function operation with no side effects or state changes.
+//
+// ★ D7（2026-11-19 审计轮）：pool 由具体类型放宽为窄接口 maasidem.Pool
+// —— 「跨租户请求被拒且不产生任何写入」才能在 pgxmock 下做行为级钉死，
+// 见 d7_tenant_scope_test.go。*pgxpool.Pool 天然满足该接口。
 type Service struct {
-	pool *pgxpool.Pool
+	pool maasidem.Pool
 }
 
 // NewService creates a new commercial/quoting service.
-func NewService(pool *pgxpool.Pool) *Service {
+func NewService(pool maasidem.Pool) *Service {
 	return &Service{pool: pool}
 }
 

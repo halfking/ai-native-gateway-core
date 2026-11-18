@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
 	"github.com/kaixuan/llm-gateway-go/contracts/maascontracts"
@@ -15,12 +14,18 @@ import (
 
 // Service implements the LedgerPort interface for usage tracking and settlement.
 // The ledger maintains an append-only immutable audit trail of usage and corrections.
+//
+// ★ D7 / D9（2026-11-19 审计轮）：pool 由具体类型放宽为窄接口
+// maasidem.Pool —— 跨租户作用域判定（UsageCorrect 是否带 tenant_id
+// 过滤、拒绝路径是否真的不写库）才能在 pgxmock 下做**行为级**钉死，
+// 见 d9_tenant_scope_test.go。*pgxpool.Pool 天然满足该接口，
+// 既有调用方无需改动。
 type Service struct {
-	pool *pgxpool.Pool
+	pool maasidem.Pool
 }
 
 // NewService creates a new ledger service.
-func NewService(pool *pgxpool.Pool) *Service {
+func NewService(pool maasidem.Pool) *Service {
 	return &Service{pool: pool}
 }
 
