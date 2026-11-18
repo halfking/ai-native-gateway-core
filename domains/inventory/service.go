@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"github.com/kaixuan/llm-gateway-go/contracts/maascontracts"
 )
@@ -134,6 +135,7 @@ func (s *Service) QuerySellable(
 
 // HoldCreate initiates a new pending reservation hold (soft reserve).
 // The hold reserves inventory for a limited time period until expiration.
+// UPDATED: Now includes anti-overselling logic by checking available inventory.
 func (s *Service) HoldCreate(
 	ctx context.Context,
 	auth maascontracts.AuthContext,
@@ -180,8 +182,54 @@ func (s *Service) HoldCreate(
 	}
 	defer tx.Rollback(ctx)
 
-	// TODO: Check inventory availability (prevent overselling)
-	// This requires querying current inventory and subtracting pending/committed holds
+	// ========================================================================
+	// ANTI-OVERSELLING LOGIC: Check inventory availability
+	// ========================================================================
+	for _, line := range req.Lines {
+		// Get available inventory for this model
+		var availableAmount string
+		err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(sellable_amount::DECIMAL), 0)::TEXT
+			FROM maas_sellable_items si
+			JOIN maas_inventory_snapshots isn ON si.snapshot_id = isn.snapshot_id
+			WHERE si.model_sku = $1
+			  AND NOT isn.stale
+		`, line.ModelSKU).Scan(&availableAmount)
+		
+		if err != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("query available inventory: %w", err)
+		}
+
+		// Calculate already held quantity (pending + committed holds)
+		var heldAmount string
+		err = tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(hl.quantity_amount::DECIMAL), 0)::TEXT
+			FROM maas_hold_lines hl
+			JOIN maas_holds h ON hl.hold_id = h.hold_id
+			WHERE hl.model_sku = $1
+			  AND h.status IN ('pending', 'committed')
+		`, line.ModelSKU).Scan(&heldAmount)
+		
+		if err != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("query held inventory: %w", err)
+		}
+
+		// Check if requested amount + held amount > available
+		available, _ := decimal.NewFromString(availableAmount)
+		held, _ := decimal.NewFromString(heldAmount)
+		requested, _ := decimal.NewFromString(line.Quantity.Amount)
+
+		remaining := available.Sub(held)
+		
+		if requested.GreaterThan(remaining) {
+			return maascontracts.HoldCreateResponse{}, &maascontracts.Error{
+				Code:      "MAAS_INSUFFICIENT_INVENTORY",
+				Message:   fmt.Sprintf("insufficient inventory for %s: requested %s, available %s", 
+					line.ModelSKU, requested.String(), remaining.String()),
+				Retryable: true, // User might retry later when inventory is available
+			}
+		}
+	}
 
 	// Get current inventory revision
 	var inventoryRevision int64
