@@ -25,6 +25,8 @@
 #gen_append	2026-11-14 插件运行时收口：补上游新增列表路由；不虚构探测结果
 #gen_append	2026-10-29 审计轮 —— 补 10 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 702 行逐字保留，含人工改判）
 #gen_append	2026-11-16 数据初始化轮 —— 补 10 条新增路由（★ 本轮 3 条 data-init + 并发会话 plugin/Casdoor 7 条；★ 无探测观测 ⇒ 裁决按静态分级推导；既有 702 行逐字保留，含人工改判）
+#gen_append	2026-10-29 审计轮 —— 补 3 条新增路由（★ 无探测观测 ⇒ 裁决按静态分级推导；既有 714 行逐字保留，含人工改判）
+#gen_append	2026-11-18 12h 审计轮 —— 补 3 条定价路由（/api/admin/market/pricing-suggestions|pricing-apply|pricing-batches，2026-11-17 定价完善轮注册）；★ 无探测观测 ⇒ 裁决按静态分级推导（既有 714 行逐字保留，含人工改判）；★ ★ 其中 pricing-apply 按 handler 源码**改判 class=write**（ApplyPricingSuggestions ⇒ insertPricingSuggestionBatch(dryRun=false) + updatePricingSuggestionBatch + upsert 本地零售价）⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 裁决 not-probed-writes；★ 另两条（pricing-suggestions 纯读 152 行无写调用 / pricing-batches 仅 GET）源码复核维持 read
 /	ANY	cmd/gateway/main.go:7193	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /	ANY	cmd/gateway/main.go:7196	read		200	executed	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /.well-known/oauth-protected-resource	GET	mcp/http.go:46	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
@@ -226,6 +228,9 @@
 /api/admin/market/model-platforms	GET	admin/handler.go:1682	read				not-probed-not-reached	★ 970 按模型跨平台现价读面：GET-only 注册（handler.go:1682）+ handler 内 method guard（market_model_platforms.go）只读；表缺席 ⇒ available:false；未真探测（待部署面）
 /api/admin/market/platforms	GET	admin/handler.go:1677	read				not-probed-not-reached	★ M1-T3 registry 清单读点：GET-only 注册（handler.go:1677）+ handler 内 method guard 只读；静态分级 read 与源码一致；未真探测（待部署面）
 /api/admin/market/platforms/{platformId}	PUT	admin/handler.go:1678	write	400-guard			not-probed-writes	★ 源码确证 write：PUT-only 注册（handler.go:1678）+ UPDATE 落库 + routing_audit_log 审计行（market_platforms.go）⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判 write；真探测待部署面
+/api/admin/market/pricing-apply	ANY	admin/maas_handlers.go:43	write	r.Body			not-probed-writes	★ 源码确证 write：POST-only（admin/pricing_suggestion.go:97 method guard ⇒ 非 POST 405）+ 二次确认闸 confirm=true（:106）+ svc.ApplyPricingSuggestions（maas/pricing_suggestion_data.go:251）⇒ insertPricingSuggestionBatch(dryRun=false)（:372 ⇒ INSERT pricing_suggestion_batches）+ updatePricingSuggestionBatch 回填批次尾（UPDATE）+ upsert 本地零售价 ⇒ 静态分级器判 read 是调用链盲区（R159 §10.2 同族反例）⇒ 按 handler 源码改判 write；真探测待部署面
+/api/admin/market/pricing-batches	ANY	admin/maas_handlers.go:44	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 静态分级 read 与 handler 源码一致（admin/pricing_suggestion.go:134 method guard：仅 GET ⇒ POST 405 method not allowed ⇒ 零副作用）；★ 未在部署面实测 POST ⇒ 无探测观测（bucket 空）
+/api/admin/market/pricing-suggestions	ANY	admin/maas_handlers.go:42	read	r.Body			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 静态分级 read 与 handler 源码一致（admin/pricing_suggestion.go:63 method guard：非 POST ⇒ 405；★ SuggestPricing 全函数体 152 行经扫描【无 INSERT / UPDATE / DELETE / Exec / insertPricingSuggestionBatch】⇒ 纯读，不写任何表）；★ 未在部署面实测 POST ⇒ 无探测观测（bucket 空）
 /api/admin/mobile-node/descriptor	ANY	admin/handler.go:1030	write				not-probed-writes	★ 静态分级：写库
 /api/admin/model-credibility/catalog	ANY	admin/handler.go:1609	read				not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
 /api/admin/model-credibility/detail	ANY	admin/handler.go:1610	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查
