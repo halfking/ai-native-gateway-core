@@ -172,7 +172,7 @@ function setScope(next: '' | 'family') {
       <p>{{ t('priceCompare.platDirFailed') }}</p>
       <p class="empty-next">{{ t('priceCompare.platDirFailedNext') }}</p>
     </div>
-    <div v-else-if="directory.length" class="card table-wrap">
+    <div v-else-if="directory.length && !model.trim()" class="card table-wrap">
       <div class="table-head-row">
         <h3 class="section-title">{{ t('priceCompare.platDirTitle') }}</h3>
         <span class="badge badge-gray">{{ directory.length }}</span>
