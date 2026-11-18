@@ -1,0 +1,50 @@
+PI 分析页 列表↔统计 一致性验证（2026-11-19，修复提交 24d352f17，部署 313041bb@{211,3081,3082}）
+
+== 修复前 211 实测（三重不一致定案）==
+STATS: by_type[total=1+1, pending=0, analyzed=0] → 卡片 待分析0/已分析0/误报率0%/平均耗时0ms
+QUEUE total: 2 (failed: 2)          ← failed 状态在统计里完全不可见
+RESULTS total: 1 false_pos: 0       ← 误报率/平均耗时是前端硬编码死零
+（另有 GetStats WHERE created_at > NOW()-'7 days' 与列表全量域错位）
+
+== 修复后 API 级逐项对拍（三台）==
+=== 211 (313041bb@8783) ===
+PASS stats.total == queue.total  (2 vs 2)
+PASS stats.pending == 列表 pending 行数  (0 vs 0)
+PASS stats.analyzed == 列表 analyzed 行数  (0 vs 0)
+PASS stats.failed == 列表 failed 行数  (2 vs 2)
+PASS Σ状态 == 总数
+PASS stats.results_total == 结果列表 total  (1 vs 1)
+PASS stats.false_positive_count == 结果列表误报行数  (0 vs 0)
+PASS avg_duration_ms 存在（null 或数值）  (88760)
+RESULT: ALL_PASS
+
+=== 245 (313041bb@8782) ===
+PASS stats.total == queue.total  (2 vs 2)
+PASS stats.analyzed == 列表 analyzed 行数  (2 vs 2)
+PASS stats.failed == 列表 failed 行数  (0 vs 0)
+PASS Σ状态 == 总数
+PASS stats.results_total == 结果列表 total  (2 vs 2)
+PASS stats.false_positive_count == 结果列表误报行数  (0 vs 0)
+RESULT: ALL_PASS
+
+=== 154 (313041bb@8782) ===
+PASS stats.total == queue.total  (2 vs 2)
+PASS stats.analyzed == 列表 analyzed 行数  (2 vs 2)
+PASS Σ状态 == 总数
+PASS stats.results_total == 结果列表 total  (2 vs 2)
+RESULT: ALL_PASS
+
+== 浏览器级（211 生产站，CDP 探针）==
+CARDS: [{"label":"总错误","value":"2"},{"label":"待分析","value":"0"},{"label":"已分析","value":"0"},
+        {"label":"失败","value":"2"},{"label":"误报率","value":"0.0%"},{"label":"平均耗时","value":"88760ms"}]
+PASS 六张统计卡渲染
+PASS 无「暂不可用」占位（数据已落定）
+PASS 卡片值 == /stats API 值（total/pending/analyzed/failed）
+PASS 总数卡 == 队列表 total  list 2 vs card 2
+RESULT: ALL_PASS
+
+== 后端钉测 ==
+TestErrorCollector_GetStats_FullScopeAllStatuses（含「by_type 必须含 2 月前旧行」的
+时间过滤负控） / TestErrorCollector_GetStats_EmptyResultsTableNilDuration → 2/2 PASS
+前端 summarizePiAnalysisStats 纯函数钉测 6/6 PASS；全量 vitest 3453 绿（唯一红=
+CJK 棘轮基线门，上游存量，本轮 diff 同树对拍净降 4）
