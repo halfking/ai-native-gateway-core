@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -13,8 +16,23 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
+// security.mode 的两个合法取值（settings spec_modules.go 同一契约）：
+//
+//	observe = 仅记录不拦截（spec 默认值，描述原文「推荐测试期」）
+//	enforce = 高风险请求直接阻断
+const (
+	securityModeObserve = "observe"
+	securityModeEnforce = "enforce"
+)
+
+// securityMode 归一化配置里的 mode 取值（容忍大小写与首尾空白）。
+func securityMode(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
 // SecurityConfig 安全检测引擎配置
 type SecurityConfig struct {
+	Enabled                bool
 	Mode                   string
 	IntentModel            string
 	ThreatModel            string
@@ -97,7 +115,8 @@ func (h *SecurityHook) currentConfig() *SecurityConfig {
 func loadSecurityConfig(reg *settings.Registry) *SecurityConfig {
 	config := &SecurityConfig{
 		// 默认值
-		Mode:                   "observe",
+		Enabled:                true,
+		Mode:                   securityModeObserve,
 		IntentModel:            "gpt-4o-mini",
 		ThreatModel:            "gpt-4o-mini",
 		IntentEnabled:          true,
@@ -121,6 +140,19 @@ func loadSecurityConfig(reg *settings.Registry) *SecurityConfig {
 	}
 
 	// 读取各个配置项
+	//
+	// 2026-11-18（211 生产实证）：security.enabled 此前无任何运行时消费者
+	// —— 211 settings_kv 已写 false，钩子照常拦截 ⇒ 运维关不掉。spec 承诺
+	// 「关闭后跳过所有安全检测」，此处落地该承诺。
+	if sp := reg.Spec("security.enabled"); sp != nil {
+		if v, _, err := reg.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
+			var b bool
+			if json.Unmarshal(v, &b) == nil {
+				config.Enabled = b
+			}
+		}
+	}
+
 	if sp := reg.Spec("security.mode"); sp != nil {
 		if v, _, err := reg.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
 			var s string
@@ -303,11 +335,28 @@ func (h *SecurityHook) Enabled(ctx context.Context, env *domain.PipelineRequest)
 // PR-V4-04 收口：除保留 env.Metadata["security_verdict"] 以兼容既有读取方外，
 // 同时把判定写入 env.EnsureGovernance()，使 domains/interception.Engine
 // 能与 v4 安全插件 verdicts 一同参与决策。
+//
+// 2026-11-18（211 生产实证）：本钩子此前**不读 security.mode**——spec 默认
+// observe（「仅记录不拦截」），实现却无条件 block；叠加同日 P0（b2c43d044）
+// 把 deny verdict 首次真正收口到客户端 ⇒ 规则库里子串级的误报（"dan"、
+// 「忽略/绕过/扮演」、tel+数字 …）第一次以 403 的形式砸到用户脸上。
+// 修复后 observe/enforce 契约生效：只有 enforce 才拦，observe 留痕放行。
 func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
 	// 热加载配置：无锁 atomic Load + TTL 节流刷新（见 currentConfig）
+	config := h.currentConfig()
 	severityThreshold := h.threat.severityThreshold
-	if config := h.currentConfig(); config != nil && h.registry != nil {
-		severityThreshold = config.SeverityThreshold
+	mode := securityModeObserve
+	if config != nil {
+		// security.enabled=false ⇒ 跳过所有安全检测（spec 承诺，见 loadSecurityConfig 注释）
+		if !config.Enabled {
+			return nil
+		}
+		if h.registry != nil && config.SeverityThreshold > 0 {
+			severityThreshold = config.SeverityThreshold
+		}
+		if securityMode(config.Mode) == securityModeEnforce {
+			mode = securityModeEnforce
+		}
 	}
 	intent := h.intent
 	threat := h.threat
@@ -321,7 +370,22 @@ func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest)
 	verdict.Intent = intent.Analyze(content)
 	verdict.Threats = threat.Detect(content)
 
-	if isCriticalAt(verdict.Threats, severityThreshold) {
+	critical := isCriticalAt(verdict.Threats, severityThreshold)
+	if critical {
+		// 拦截/观测留痕：修复前命中判定零日志 ⇒ 4 笔 403 只能靠 body 重放反推
+		// 误报来源。evidence 只含规则形态（正则/关键词），不含用户原文。
+		action := "observe"
+		if mode == securityModeEnforce {
+			action = "block"
+		}
+		slog.Warn("security: threat detected",
+			"action", action,
+			"threshold", severityThreshold,
+			"threats", describeThreats(verdict.Threats),
+		)
+	}
+
+	if critical && mode == securityModeEnforce {
 		verdict.Allow = false
 		verdict.Reason = "critical threat detected"
 	}
@@ -340,6 +404,20 @@ func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest)
 		return errors.New("security: request blocked: " + verdict.Reason)
 	}
 	return nil
+}
+
+// describeThreats 把命中清单压成一行可读日志形态：type(sev):evidence;…
+// evidence 截断到 120 字符（规则形态足够定位，不需要全文）。
+func describeThreats(threats []*Threat) string {
+	parts := make([]string, 0, len(threats))
+	for _, t := range threats {
+		ev := t.Evidence
+		if len(ev) > 120 {
+			ev = ev[:120] + "…"
+		}
+		parts = append(parts, fmt.Sprintf("%s(sev%d):%s", t.Type, t.Severity, ev))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // toGovernanceVerdict 把 v3 私有 Verdict 转写到共享 governance.Verdict。
