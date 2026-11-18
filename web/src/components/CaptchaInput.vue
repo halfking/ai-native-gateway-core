@@ -81,7 +81,7 @@ watch(
     </div>
 
     <p v-if="captcha" class="captcha-hint">
-      {{ t('login.captcha.hint', { seconds: captcha.ttl_seconds }) }}
+      {{ t('login.captcha.hint') }}
     </p>
   </div>
 </template>
