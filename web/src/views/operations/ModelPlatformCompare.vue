@@ -10,7 +10,7 @@
 //      （缓存命中价是真实成本的大头，此前网关侧根本没有这个数）。
 // ★ 2026-11-18（价格对比优化轮）：改用 ModelPicker 组件替代手动输入，
 //      复用 routing-v2 的选择器，热门模型按名称字母顺序排列。
-// ★ 2026-11-19：添加 watch 确保模型选择后自动刷新。
+// ★ 2026-11-19（比较与定价优化轮）：接收全局模型过滤参数，移除本组件的模型选择器。
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -19,10 +19,12 @@ import {
   type MarketPlatformQuoteDirectoryRow,
 } from '../../api/market'
 import { fmtMarketNum, fmtPair } from '../../utils/marketPriceFormat'
-import ModelPicker from '../../components/ModelPicker.vue'
+
+const props = defineProps<{
+  globalModels?: string[] // 全局模型过滤
+}>()
 
 const { t } = useI18n()
-const model = ref('')
 const loading = ref(false)
 const available = ref(true)
 const reason = ref('')
@@ -33,7 +35,11 @@ const dirFailed = ref(false)
 // ★ 匹配范围：'' = 只查本模型（精确匹配）；'family' = 额外含同族变体（显式开启）。
 const scope = ref<'' | 'family'>('')
 
-const selectedModel = computed(() => model.value.trim().toLowerCase())
+// 2026-11-19：使用全局模型过滤的第一个模型作为当前查询模型
+const currentModel = computed(() => 
+  props.globalModels && props.globalModels.length > 0 ? props.globalModels[0] : ''
+)
+const selectedModel = computed(() => currentModel.value.trim().toLowerCase())
 // 同族视图下必须显示每行的 canonical_name，否则用户分不清哪行是哪个模型。
 const showModelColumn = computed(() => scope.value === 'family')
 
@@ -52,7 +58,7 @@ async function loadDirectory() {
 }
 
 async function load() {
-  const m = model.value.trim()
+  const m = currentModel.value.trim()
   if (!m) return
   loading.value = true
   try {
@@ -86,12 +92,12 @@ async function load() {
 
 onMounted(loadDirectory)
 
-// ★ 2026-11-19：监听模型变化，确保选择后自动刷新
-watch(model, (newModel) => {
-  if (newModel.trim()) {
+// ★ 2026-11-19：监听全局模型过滤变化，自动刷新
+watch(() => props.globalModels, () => {
+  if (currentModel.value.trim()) {
     load()
   }
-})
+}, { deep: true, immediate: true })
 
 // ★ 最便宜标记：只看**非原厂**行（is_vendor 是基准锚不是竞品）。
 // ★ 且**只在本模型内比较**（F11）：同族变体（glm-5.3-flash 等）的价

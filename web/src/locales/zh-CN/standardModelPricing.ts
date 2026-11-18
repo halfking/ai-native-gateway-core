@@ -1,6 +1,7 @@
 // standardModelPricing.ts — 标准模型定价管理页 (StandardModelPricingView) 文案。
 // 命名空间：page / desc / settings / table / editModal / status / feedback。
 // 技术术语保持不译：canonical_name、credits_per_1m_in/out/cache_in/cache_out、cents_per_credit、global_discount、CNY/USD。
+// 2026-11-19：新增 globalModelFilter（全局模型多选过滤器）。
 export default {
   page: {
     title: '定价管理',
@@ -8,6 +9,11 @@ export default {
     refreshLoading: '加载中…',
   },
   desc: '<strong>每个标准模型一行</strong>。用户只需知道用这个模型需要花多少成本，无需关心供应商。全局基准 × 折扣系数应用于<strong>未手工定价</strong>的维度；已勾选「手工」的字段不受全局变更影响。多模态模型（vision / audio / video）的 token 单独按其专属费率计费。',
+  globalModelFilter: {
+    label: '搜索标准模型',
+    title: '选择模型',
+    placeholder: '选择模型（支持多选）…',
+  },
   settings: {
     title: '全局基准（积分 / 1M Token）',
     inputToken: '输入 Token',

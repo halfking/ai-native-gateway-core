@@ -165,19 +165,57 @@ function switchPageTab(next: PricingPageTab) {
   }
 }
 
+// ── 2026-11-19（比较与定价优化轮）：全局模型过滤 ──────────────
+// 页面级全局模型多选过滤器（影响 reference/scoring/platforms/suggestion 四个 tab）。
+// 选中模型后，四个区域只显示这些标准模型的数据；rates tab 保持独立的 ModelCatalogFilterBar。
+const globalSelectedModels = ref<string[]>([])
+const globalBaseFolded = ref(false) // 全局基准折叠状态
+
+// 全局模型变化处理：触发子区域数据刷新
+function onGlobalModelsChange(models: string | string[]) {
+  globalSelectedModels.value = Array.isArray(models) ? models : (models ? [models] : [])
+  // 根据当前 tab 触发对应的数据刷新
+  if (pageTab.value === 'scoring') loadScoring()
+  // reference/platforms/suggestion 通过 props 传递，组件内部 watch 自动刷新
+}
+
+function clearGlobalModels() {
+  globalSelectedModels.value = []
+  onGlobalModelsChange([])
+}
+
+// rates tab 厂家过滤（根据全局模型过滤）
+const filteredVendorOptions = computed(() => {
+  if (pageTab.value !== 'rates' || globalSelectedModels.value.length === 0) {
+    return vendorOptions.value
+  }
+  
+  const modelsSet = new Set(globalSelectedModels.value)
+  const vendorsWithData = new Set<string>()
+  
+  models.value.forEach(m => {
+    if (modelsSet.has(m.canonical_name)) {
+      const vendor = m.vendor?.trim() || t('standardModelPricing.otherVendor')
+      vendorsWithData.add(vendor)
+    }
+  })
+  
+  return vendorOptions.value.filter(opt => vendorsWithData.has(opt))
+})
+
 // ── scoring 壳（自 PriceCompareView 平移，逐字保留口径）──────────────
 // C1/C2/C3 评分行（supplier_market_position，评分 job 每日 upsert）
 // + 双地板对拍（market_price_reference 959：overseas=USD 原生 /
 // domestic=CNY 原生）+ 覆盖率摘要（price_confidence 四档计数）。
 // 红线：scoring/地板读数只读对账，不喂路由/计费。
 // NULL≠0：无行情/无价格的格子一律显示「—」，绝不落 0。
+// 2026-11-19：scoring 的模型选择器已移除，改用全局模型过滤（globalSelectedModels）。
 const scoringLoaded = ref(false)
 const scoringLoading = ref(false)
 const scoringAvailable = ref(true)
 const scoringUnavailableReason = ref('')
 const scoreRows = ref<MarketCompareRow[]>([])
 const scoringSummary = ref<Record<string, number>>({})
-const scoreQtext = ref('')
 const scoreConfFilter = ref('')
 
 const SCORING_CONF_CLASSES: Record<string, string> = {
@@ -190,10 +228,18 @@ const SCORING_CONF_CLASSES: Record<string, string> = {
 async function loadScoring() {
   scoringLoading.value = true
   try {
-    const resp = await getAdminMarketCompare(scoreQtext.value, scoreConfFilter.value, 200)
+    // 2026-11-19：使用全局模型过滤（多选时取第一个作为查询参数）
+    const qtext = globalSelectedModels.value.length > 0 ? globalSelectedModels.value[0] : ''
+    const resp = await getAdminMarketCompare(qtext, scoreConfFilter.value, 200)
     scoringAvailable.value = resp.available
     scoringUnavailableReason.value = resp.reason || ''
-    scoreRows.value = resp.items || []
+    // 如果有全局模型过滤，前端再过滤结果只保留选中的模型
+    let items = resp.items || []
+    if (globalSelectedModels.value.length > 0) {
+      const modelsSet = new Set(globalSelectedModels.value)
+      items = items.filter(item => modelsSet.has(item.canonical_name))
+    }
+    scoreRows.value = items
     scoringSummary.value = resp.summary || {}
     scoringLoaded.value = true
   } catch {
@@ -743,65 +789,73 @@ onMounted(load)
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="settingsMsg" class="alert alert-success">{{ settingsMsg }}</div>
 
-    <div v-if="settings" class="card settings-card">
-      <h3 class="section-title">{{ t('standardModelPricing.settings.title') }}</h3>
-      <div class="settings-grid">
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.inputToken') }}</span>
-          <input v-model.number="settings.base_credits_per_1m_in" type="number" min="1" class="input compact" />
-          <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('in')) }) }}</span>
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.outputToken') }}</span>
-          <input v-model.number="settings.base_credits_per_1m_out" type="number" min="1" class="input compact" />
-          <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('out')) }) }}</span>
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.cacheReadToken') }}</span>
-          <input v-model.number="settings.base_credits_per_1m_cache_in" type="number" min="1" class="input compact" />
-          <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('cache_in')) }) }}</span>
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.cacheWriteToken') }}</span>
-          <input v-model.number="settings.base_credits_per_1m_cache_out" type="number" min="1" class="input compact" />
-          <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('cache_out')) }) }}</span>
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.discount') }}</span>
-          <div class="discount-row">
-            <input v-model.number="discountPercent" type="range" min="10" max="100" step="1" class="discount-slider" />
-            <span class="discount-val">{{ discountPercent }}%</span>
-          </div>
-          <span class="field-hint">{{ t('standardModelPricing.settings.discountHint') }}</span>
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.centsPerCredit') }}</span>
-          <input v-model.number="settings.cents_per_credit" type="number" min="0.0001" step="0.0001" class="input compact" />
-        </label>
-        <label class="field">
-          <span class="field-label">{{ t('standardModelPricing.settings.currencyDisplay') }}</span>
-          <select v-model="settings.currency_display" class="input compact">
-            <option value="CNY">CNY</option>
-            <option value="USD">USD</option>
-          </select>
-        </label>
+    <!-- 2026-11-19（比较与定价优化轮）：全局基准折叠 -->
+    <details class="collapsible-section" open>
+      <summary class="section-summary">
+        <h3 class="section-title">{{ t('standardModelPricing.settings.title') }}</h3>
+        <span class="toggle-hint">{{ globalBaseFolded ? '展开' : '收起' }}</span>
+      </summary>
+      <div v-if="settings" class="card settings-card">
+        <div class="settings-grid">
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.inputToken') }}</span>
+            <input v-model.number="settings.base_credits_per_1m_in" type="number" min="1" class="input compact" />
+            <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('in')) }) }}</span>
+          </label>
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.outputToken') }}</span>
+            <input v-model.number="settings.base_credits_per_1m_out" type="number" min="1" class="input compact" />
+            <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('out')) }) }}</span>
+          </label>
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.cacheReadToken') }}</span>
+            <input v-model.number="settings.base_credits_per_1m_cache_in" type="number" min="1" class="input compact" />
+            <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('cache_in')) }) }}</span>
+          </label>
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.cacheWriteToken') }}</span>
+            <input v-model.number="settings.base_credits_per_1m_cache_out" type="number" min="1" class="input compact" />
+            <span class="field-hint">{{ t('standardModelPricing.settings.effective', { value: fmtCredits(effectiveGlobal('cache_out')) }) }}</span>
+          </label>
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.discount') }}</span>
+            <div class="discount-row">
+              <input v-model.number="discountPercent" type="range" min="10" max="100" step="1" class="discount-slider" />
+              <span class="discount-val">{{ discountPercent }}%</span>
+            </div>
+            <span class="field-hint">{{ t('standardModelPricing.settings.discountHint') }}</span>
+          </label>
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.centsPerCredit') }}</span>
+            <input v-model.number="settings.cents_per_credit" type="number" min="0.0001" step="0.0001" class="input compact" />
+          </label>
+          <label class="field">
+            <span class="field-label">{{ t('standardModelPricing.settings.currencyDisplay') }}</span>
+            <select v-model="settings.currency_display" class="input compact">
+              <option value="CNY">CNY</option>
+              <option value="USD">USD</option>
+            </select>
+          </label>
+        </div>
+        <div class="settings-actions">
+          <button class="btn btn-primary btn-sm" :disabled="savingSettings" @click="saveSettings">
+            {{ savingSettings ? t('standardModelPricing.settings.saving') : t('standardModelPricing.settings.save') }}
+          </button>
+          <span class="cf-meta">
+            {{ t('standardModelPricing.filter.summary', { custom: customCount, defaults: defaultCount, total: models.length }) }}
+            <span v-if="multimodalCount > 0" class="multimodal-tag"> · {{ multimodalCount }} 含多模态手工</span>
+          </span>
+        </div>
       </div>
-      <div class="settings-actions">
-        <button class="btn btn-primary btn-sm" :disabled="savingSettings" @click="saveSettings">
-          {{ savingSettings ? t('standardModelPricing.settings.saving') : t('standardModelPricing.settings.save') }}
-        </button>
-        <span class="cf-meta">
-          {{ t('standardModelPricing.filter.summary', { custom: customCount, defaults: defaultCount, total: models.length }) }}
-          <span v-if="multimodalCount > 0" class="multimodal-tag"> · {{ multimodalCount }} 含多模态手工</span>
-        </span>
-      </div>
-    </div>
+    </details>
 
+    <!-- rates tab 使用原有的 ModelCatalogFilterBar -->
     <ModelCatalogFilterBar
+      v-if="pageTab === 'rates'"
       v-model:picked-model="pickedModel"
       v-model:filter-vendor="filterVendor"
       v-model:extra-filter="filterMode"
-      :vendor-options="vendorOptions"
+      :vendor-options="filteredVendorOptions"
       :count="filtered.length"
       picker-title="定价管理 · 模型筛选"
       picker-placeholder="搜索标准模型…"
@@ -810,7 +864,29 @@ onMounted(load)
       @clear="clearCatalogFilters"
     />
 
-    <div class="bulk-bar">
+    <!-- 2026-11-19（比较与定价优化轮）：全局模型多选过滤器（影响 reference/scoring/platforms/suggestion 四个 tab） -->
+    <div v-if="pageTab !== 'rates'" class="card global-model-filter">
+      <div class="filter-label">{{ t('standardModelPricing.globalModelFilter.label') }}</div>
+      <div class="model-picker-wrapper">
+        <ModelPicker
+          v-model="globalSelectedModels"
+          mode="multi"
+          :placeholder="t('standardModelPricing.globalModelFilter.placeholder')"
+          :title="t('standardModelPricing.globalModelFilter.title')"
+          compact
+          @update:model-value="onGlobalModelsChange"
+        />
+      </div>
+      <button 
+        v-if="globalSelectedModels.length > 0" 
+        class="btn btn-ghost btn-sm" 
+        @click="clearGlobalModels"
+      >
+        {{ t('common.clear') }}
+      </button>
+    </div>
+
+    <div v-if="pageTab === 'rates'" class="bulk-bar">
       <button class="btn btn-ghost btn-sm" @click="openChanges">{{ t('standardModelPricing.history.openChanges') }}</button>
     </div>
     <!-- 2026-11-19（合并轮）：页面级 tab 行 —— 原「价格对比分析」页四 tab 并入；rates=本页定价管理主体。 -->
@@ -822,11 +898,12 @@ onMounted(load)
     </div>
 
     <template v-if="pageTab !== 'rates'">
-      <MarketReferenceTable v-if="pageTab === 'reference'" />
-      <ModelPlatformCompare v-else-if="pageTab === 'platforms'" />
-      <PricingSuggestionPanel v-else-if="pageTab === 'suggestion'" />
+      <MarketReferenceTable v-if="pageTab === 'reference'" :global-models="globalSelectedModels" />
+      <ModelPlatformCompare v-else-if="pageTab === 'platforms'" :global-models="globalSelectedModels" />
+      <PricingSuggestionPanel v-else-if="pageTab === 'suggestion'" :global-models="globalSelectedModels" />
       <template v-else>
-        <!-- scoring（供应评分）：覆盖率摘要 + 筛选 + 评分行 × 双地板（自 PriceCompareView 平移） -->
+        <!-- scoring（供应评分）：覆盖率摘要 + 筛选 + 评分行 × 双地板（自 PriceCompareView 平移）
+             2026-11-19：移除本区域的模型选择器，改用全局模型过滤 -->
         <div class="card summary-card">
           <div class="summary-row">
             <span class="badge badge-gray">{{ t('priceCompare.totalBindings') }}: {{ scoringBindingsTotal }}</span>
@@ -838,9 +915,6 @@ onMounted(load)
           <p class="hint-line">{{ t('priceCompare.summaryHint') }}</p>
         </div>
         <div class="card filter-card">
-          <div class="model-picker-wrapper">
-            <ModelPicker v-model="scoreQtext" :placeholder="t('priceCompare.searchPlaceholder')" :title="t('priceCompare.colModel')" @update:model-value="reloadScoring" />
-          </div>
           <select v-model="scoreConfFilter" class="filter-select">
             <option value="">{{ t('priceCompare.confAll') }}</option>
             <option v-for="c in scoringConfFilters" :key="c" :value="c">{{ scoringConfLabel(c) }}</option>
@@ -1137,6 +1211,52 @@ onMounted(load)
 <style scoped>
 .page-desc { color: var(--muted); font-size: 13px; margin: -8px 0 16px; line-height: 1.6; }
 .section-title { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+
+/* 2026-11-19：全局基准折叠样式 */
+.collapsible-section {
+  margin-bottom: 1rem;
+}
+.section-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.75rem 1rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background 0.2s;
+}
+.section-summary:hover {
+  background: var(--hover-bg);
+}
+.section-summary::-webkit-details-marker {
+  display: none;
+}
+.toggle-hint {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* 2026-11-19：全局模型过滤器样式 */
+.global-model-filter {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.filter-label {
+  font-weight: 500;
+  white-space: nowrap;
+  font-size: 14px;
+}
+.model-picker-wrapper {
+  flex: 1;
+  min-width: 300px;
+}
+
 .settings-card { margin-bottom: 16px; }
 .settings-grid {
   display: grid;

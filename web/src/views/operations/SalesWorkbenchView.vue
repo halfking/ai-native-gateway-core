@@ -745,7 +745,7 @@ onMounted(reload)
         <div class="model-picker-section">
           <label class="picker-label">{{ t('sales.pickModel') }}</label>
           <ModelPicker
-            v-model="selectedModel"
+            :model-value="selectedModel"
             mode="single"
             :placeholder="t('sales.pickModel')"
             @update:model-value="onModelSelected"
