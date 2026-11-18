@@ -2747,6 +2747,13 @@ files=(
   #   ★ 排在 977 **之后**（它种入的两条用 977 订正后的 pattern ⇒ 次序会改变
   #     最终值）。
   "$ROOT_DIR/sql/migrations/startup/978_pi_canonical_rule_set.sql"
+  # ★ 979（2026-11-18 PI 分析管理面优化轮）：pi_analysis_applied_actions——
+  #   error_analysis_results 加 applied_actions JSONB（「一键应用修复」的
+  #   动作明细 + 旧值快照，供审计与 revert）。
+  #   ★ 幂等（ADD COLUMN IF NOT EXISTS + 台账 ON CONFLICT DO UPDATE）⇒
+  #     内容指纹重放零冲突；表不在场时自带守卫跳过（防御性 no-op）。
+  #   ★ 排在 971 **之后**（目标表由 971 建出）。
+  "$ROOT_DIR/sql/migrations/startup/979_pi_analysis_applied_actions.sql"
 )
 
 
