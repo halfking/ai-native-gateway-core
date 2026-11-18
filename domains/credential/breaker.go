@@ -188,11 +188,13 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 // Breaker
 // ---------------------------------------------------------------------------
 
-// Breaker is a single circuit breaker instance, keyed by provider+credential.
+// Breaker is a single circuit breaker instance, keyed by provider+model.
+// W1 缺口① (2026-11-19): 改为 per-model 粒度，单模型故障不连坐其他模型。
 type Breaker struct {
-	key            string
+	key            string // "providerID/model" (改前: "providerID/credentialID")
 	providerID     int
-	credentialID   int
+	credentialID   int    // 保留（用于 DB 上卷汇总）
+	model          string // 🆕 W1①: 模型名（空格已修剪）
 	state          atomic.Int32
 	failCount      atomic.Int32
 	consecutive    atomic.Int32
@@ -222,13 +224,37 @@ type Breaker struct {
 	lastErrorKind  ErrorKind
 }
 
+// NewPerModel creates a new circuit breaker for the given provider+model.
+// W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐。
+func NewPerModel(providerID, credentialID int, model string) *Breaker {
+	return NewPerModelWithPolicy(providerID, credentialID, model, CoolingPolicy{})
+}
+
+// NewPerModelWithPolicy creates a per-model circuit breaker with a custom default policy.
+// If policy is zero-valued, KindTransient policy is used as the default.
+func NewPerModelWithPolicy(providerID, credentialID int, model string, defaultPolicy CoolingPolicy) *Breaker {
+	if defaultPolicy.InitialCooling == 0 && defaultPolicy.RecoveryType == 0 {
+		defaultPolicy = defaultPolicies[KindTransient]
+	}
+	model = strings.TrimSpace(model)
+	return &Breaker{
+		key:           fmt.Sprintf("%d/%s", providerID, model),
+		providerID:    providerID,
+		credentialID:  credentialID,
+		model:         model,
+		coolingPolicy: defaultPolicy,
+	}
+}
+
 // New creates a new circuit breaker for the given provider/credential.
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 NewPerModel。
 func New(providerID, credentialID int) *Breaker {
 	return NewWithPolicy(providerID, credentialID, CoolingPolicy{})
 }
 
 // NewWithPolicy creates a circuit breaker with a custom default policy.
 // If policy is zero-valued, KindTransient policy is used as the default.
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 NewPerModelWithPolicy。
 func NewWithPolicy(providerID, credentialID int, defaultPolicy CoolingPolicy) *Breaker {
 	if defaultPolicy.InitialCooling == 0 && defaultPolicy.RecoveryType == 0 {
 		defaultPolicy = defaultPolicies[KindTransient]
@@ -237,6 +263,7 @@ func NewWithPolicy(providerID, credentialID int, defaultPolicy CoolingPolicy) *B
 		key:           fmt.Sprintf("%d/%d", providerID, credentialID),
 		providerID:    providerID,
 		credentialID:  credentialID,
+		model:         "_legacy_", // 兼容标记
 		coolingPolicy: defaultPolicy,
 	}
 }
@@ -907,7 +934,8 @@ func (b *Breaker) Stats() map[string]any {
 // Manager — global registry of circuit breakers
 // ---------------------------------------------------------------------------
 
-// Manager manages all circuit breakers keyed by (provider, credential).
+// Manager manages all circuit breakers keyed by (provider, model).
+// W1 缺口① (2026-11-19): 改为 per-model 索引，单模型故障不连坐。
 type Manager struct {
 	mu       sync.RWMutex
 	breakers map[string]*Breaker
@@ -934,6 +962,7 @@ func (m *Manager) SetObserver(fn func(StateChange)) {
 }
 
 // GetOrCreate returns the breaker for the given provider/credential.
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 GetOrCreatePerModel。
 func (m *Manager) GetOrCreate(providerID, credentialID int) *Breaker {
 	key := fmt.Sprintf("%d/%d", providerID, credentialID)
 
@@ -956,12 +985,77 @@ func (m *Manager) GetOrCreate(providerID, credentialID int) *Breaker {
 	return b
 }
 
+// GetOrCreatePerModel returns the breaker for the given provider/model.
+// W1 缺口① (2026-11-19): per-model 粒度，单模型故障不连坐其他模型。
+func (m *Manager) GetOrCreatePerModel(providerID, credentialID int, model string) *Breaker {
+	model = strings.TrimSpace(model)
+	key := fmt.Sprintf("%d/%s", providerID, model)
+
+	m.mu.RLock()
+	b, ok := m.breakers[key]
+	m.mu.RUnlock()
+	if ok {
+		return b
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 双检锁
+	if b, ok = m.breakers[key]; ok {
+		return b
+	}
+	b = NewPerModel(providerID, credentialID, model)
+	b.onChange = m.onChange
+	m.breakers[key] = b
+	return b
+}
+
 // Get returns the breaker for the given provider/credential, or nil.
+// 🔧 W1①: 兼容旧接口（测试用），生产环境应使用 GetPerModel。
 func (m *Manager) Get(providerID, credentialID int) *Breaker {
 	key := fmt.Sprintf("%d/%d", providerID, credentialID)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.breakers[key]
+}
+
+// GetPerModel returns the breaker for the given provider/model, or nil.
+// W1 缺口① (2026-11-19): 按模型查询。
+func (m *Manager) GetPerModel(providerID int, model string) *Breaker {
+	model = strings.TrimSpace(model)
+	key := fmt.Sprintf("%d/%s", providerID, model)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.breakers[key]
+}
+
+// GetCredentialState returns the rolled-up worst state across all models of a credential.
+// W1 缺口① (2026-11-19): DB 上卷逻辑，返回该凭据所有模型的最差状态。
+// 用于向后兼容（DB 镜像 credentials.circuit_state 按凭据存储）。
+func (m *Manager) GetCredentialState(credentialID int) State {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	worstState := StateClosed
+	for _, b := range m.breakers {
+		if b.credentialID == credentialID {
+			state := b.State()
+			if state > worstState {
+				worstState = state
+			}
+		}
+	}
+	return worstState
+}
+
+// GetModelState returns the state of a specific model, or StateClosed if not found.
+// W1 缺口① (2026-11-19): 按模型查询状态。
+func (m *Manager) GetModelState(providerID int, model string) State {
+	if b := m.GetPerModel(providerID, model); b != nil {
+		return b.State()
+	}
+	return StateClosed
 }
 
 // ReleaseProbe releases the half-open probe slot for the given
