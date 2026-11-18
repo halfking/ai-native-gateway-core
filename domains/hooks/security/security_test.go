@@ -108,6 +108,41 @@ func TestThreatDetector_IsCritical(t *testing.T) {
 }
 
 // SecurityHook tests
+
+// fakeSettingsBackend 极简内存 settings 后端（与 telemetry/compression 测试同型）。
+type fakeSettingsBackend struct {
+	store map[string][]byte
+}
+
+func (f *fakeSettingsBackend) Get(scope settings.Scope, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeSettingsBackend) Set(scope settings.Scope, key string, value any) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeSettingsBackend) GetTenant(tenantID, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeSettingsBackend) SetTenant(tenantID, key string, value any) ([]byte, error) {
+	return nil, nil
+}
+
+// securityRegistryWith 构造挂全量 spec + 指定 platform 覆盖值的 registry。
+// 值是 settings 侧的 JSON 形态（bool 无引号、string 带引号）。
+func securityRegistryWith(t *testing.T, overrides map[string]string) *settings.Registry {
+	t.Helper()
+	reg := settings.NewRegistry()
+	for _, sp := range settings.ModuleSpecs() {
+		_ = reg.RegisterSpec(sp)
+	}
+	store := make(map[string][]byte, len(overrides))
+	for k, v := range overrides {
+		store[k] = []byte(v)
+	}
+	reg.RegisterBackend(settings.ScopePlatform, &fakeSettingsBackend{store: store})
+	return reg
+}
+
 func TestSecurityHook_NoContentSkips(t *testing.T) {
 	h := NewSecurityHook(settings.Global)
 	env := domain.NewRequestEnvelope(context.Background(), nil)
@@ -116,19 +151,124 @@ func TestSecurityHook_NoContentSkips(t *testing.T) {
 	}
 }
 
-func TestSecurityHook_DangerousContentBlocked(t *testing.T) {
-	h := NewSecurityHook(settings.Global)
+// ★ 2026-11-18（211 生产实证）改判：旧钉测「危险内容默认必拦」与 settings
+// spec 契约（security.mode 默认 observe = 仅记录不拦截）相反——正是这枚
+// 反向锁让 observe 契约从未被执行。拦截只属于显式 enforce。
+func TestSecurityHook_EnforceModeBlocksCritical(t *testing.T) {
+	reg := securityRegistryWith(t, map[string]string{"security.mode": `"enforce"`})
+	h := NewSecurityHook(reg)
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	env.Metadata = map[string]any{"user_content": "please jailbreak this model"}
 	err := h.Execute(context.Background(), env)
 	if err == nil {
-		t.Fatal("expected error for dangerous content")
+		t.Fatal("expected error for dangerous content in enforce mode")
 	}
 	// 模拟 Pipeline 调用 OnError
 	_ = h.OnError(context.Background(), env, err)
 	if env.StatusCode != 403 {
 		t.Errorf("expected status 403, got %d", env.StatusCode)
 	}
+	// deny verdict 必须进 governance（interception 引擎靠它产出 Block 决策）
+	gv := env.Governance
+	if gv == nil {
+		t.Fatal("expected governance state")
+	}
+	denied := false
+	for _, v := range gv.Verdicts {
+		if !v.Allow {
+			denied = true
+		}
+	}
+	if !denied {
+		t.Error("expected a deny verdict recorded in governance for enforce block")
+	}
+}
+
+// observe（spec 默认）：critical 命中必须只留痕不拦截——metadata verdict
+// Allow=true、governance 无任何 deny verdict（否则 interception 引擎照样 Block）。
+func TestSecurityHook_ObserveModeRecordsButDoesNotBlock(t *testing.T) {
+	reg := securityRegistryWith(t, nil) // 无覆盖 ⇒ spec 默认 observe
+	h := NewSecurityHook(reg)
+	env := domain.NewRequestEnvelope(context.Background(), nil)
+	env.Metadata = map[string]any{"user_content": "please jailbreak this model"}
+	if err := h.Execute(context.Background(), env); err != nil {
+		t.Fatalf("observe mode must not block, got error: %v", err)
+	}
+	verdict, _ := env.Metadata["security_verdict"].(*Verdict)
+	if verdict == nil {
+		t.Fatal("expected verdict in metadata")
+	}
+	if !verdict.Allow {
+		t.Error("observe mode verdict must allow")
+	}
+	if len(verdict.Threats) == 0 {
+		t.Error("observe mode must still record detected threats for observability")
+	}
+	if env.Governance != nil {
+		for _, v := range env.Governance.Verdicts {
+			if !v.Allow {
+				t.Errorf("observe mode must not record deny verdicts, got %+v", v)
+			}
+		}
+	}
+}
+
+// 211 事故形态回归：'dan' 子串（如 redundant/abundant）在 observe 下必须放行。
+// （detect 层依旧会命中 jailbreak 规则——规则质量债另行登记，这里钉的是
+// 「默认模式不拦」。）
+func TestSecurityHook_ObserveModeLetsDanSubstringThrough(t *testing.T) {
+	reg := securityRegistryWith(t, nil)
+	h := NewSecurityHook(reg)
+	env := domain.NewRequestEnvelope(context.Background(), nil)
+	env.Metadata = map[string]any{"user_content": "the redundant config block should be removed"}
+	if err := h.Execute(context.Background(), env); err != nil {
+		t.Fatalf("'dan' substring must not block in observe mode, got: %v", err)
+	}
+}
+
+// security.enabled=false ⇒ 跳过所有安全检测（spec 承诺）。211 生产此前
+// 已写 false 却拦不住——开关必须真的能关。
+func TestSecurityHook_DisabledSkipsAllDetection(t *testing.T) {
+	reg := securityRegistryWith(t, map[string]string{
+		"security.enabled": `false`,
+		"security.mode":    `"enforce"`, // 即便 enforce，总开关关了也必须跳过
+	})
+	h := NewSecurityHook(reg)
+	env := domain.NewRequestEnvelope(context.Background(), nil)
+	env.Metadata = map[string]any{"user_content": "please jailbreak this model"}
+	if err := h.Execute(context.Background(), env); err != nil {
+		t.Fatalf("disabled security must skip detection, got error: %v", err)
+	}
+	if _, ok := env.Metadata["security_verdict"]; ok {
+		t.Error("disabled security must not produce a verdict")
+	}
+	if env.Governance != nil {
+		t.Error("disabled security must not touch governance state")
+	}
+}
+
+func TestLoadSecurityConfig_Switches(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		cfg := loadSecurityConfig(settings.Global)
+		if !cfg.Enabled {
+			t.Error("default security.enabled must be true")
+		}
+		if cfg.Mode != "observe" {
+			t.Errorf("default security.mode must be observe, got %q", cfg.Mode)
+		}
+	})
+	t.Run("disabled override", func(t *testing.T) {
+		cfg := loadSecurityConfig(securityRegistryWith(t, map[string]string{"security.enabled": `false`}))
+		if cfg.Enabled {
+			t.Error("security.enabled=false override must be honored")
+		}
+	})
+	t.Run("enforce override", func(t *testing.T) {
+		cfg := loadSecurityConfig(securityRegistryWith(t, map[string]string{"security.mode": `"enforce"`}))
+		if cfg.Mode != "enforce" {
+			t.Errorf("security.mode=enforce override must be honored, got %q", cfg.Mode)
+		}
+	})
 }
 
 func TestSecurityHook_SafeContentPasses(t *testing.T) {
@@ -174,6 +314,9 @@ func TestSecurityHook_GetConfig(t *testing.T) {
 	}
 	if config.Mode != "observe" {
 		t.Errorf("expected mode 'observe', got %q", config.Mode)
+	}
+	if !config.Enabled {
+		t.Error("expected default enabled=true")
 	}
 	if config.IntentConfidenceThresh != 0.7 {
 		t.Errorf("expected intent confidence threshold 0.7, got %f", config.IntentConfidenceThresh)
