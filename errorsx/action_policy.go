@@ -417,6 +417,28 @@ func DecideNextAction(ctx DecisionContext) ActionDecision {
 			base.Action = ActionFailTerminal
 			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
 		}
+	case KindContextBudgetExceeded:
+		// 2026-11-19（F7 修复）：网关侧 bucket 预算超限（auto 选了小窗口模型
+		// 处理大上下文请求）⇒ 这是**路由错误**，不是节点故障。
+		//
+		// 本分支的三个「不」与一个「要」——与 KindRequestRejected 同族：
+		//   · 不盲重试同一节点——同一 body + 同一小窗口模型必然再败；
+		//   · 不写任何共享节点健康状态——RecordProviderFailure /
+		//     RecordCredentialFailure / RecordCredentialState 全部保持 false
+		//     ⇒ 凭据不冷却、熔断不计数、绑定不翻红、探针不扇出、连败不累计
+		//     （归责见 errorsx.PenaltyOf → PenaltyNone）；
+		//   · 不终止请求——与 KindContextLength（上游 400/422 真超窗口）不同，
+		//     bucket 预算超限**可以通过换到更大窗口的模型解决**；
+		//   · 要**换模型**（model-change）：兄弟凭据仍是同一模型 ⇒ 候选内换
+		//     凭据解决不了；必须换到更大窗口的模型（如 glm-5.2 → glm-5.3）。
+		//     dispatch 的 tryModelChangeOutcome 会处理「无候选模型」的兜底。
+		//     没有兄弟候选/模型时由下游收尾逻辑降级为 fail-terminal。
+		base.Action = ActionSwitchNode
+		base.ReasonCode = "context_budget_exceeded_switch_model"
+		if ctx.RemainingAttempts <= 0 {
+			base.Action = ActionFailTerminal
+			base.ReasonCode = "no_attempt_budget:" + base.ReasonCode
+		}
 	case KindAuth:
 		base.Action = ActionSwitchNode
 		base.ReasonCode = "credential_auth_failed"

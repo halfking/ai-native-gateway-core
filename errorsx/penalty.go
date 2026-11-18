@@ -101,6 +101,22 @@ func PenaltyOf(kind ErrorKind) Penalty {
 		// circuit_open / fp_slot_saturated 是网关侧状态，再记一次冷却无意义。
 		return Penalty{Target: PenaltyNone}
 
+	// —— 不罚：bucket 预算超限（2026-11-19）——
+	//
+	// ★ KindContextBudgetExceeded 是**网关侧路由错误**（auto 选了小窗口模型
+	//   处理大上下文请求），不是节点故障：
+	//   · 节点本身健康（如果真去调它，它会正常服务小请求）；
+	//   · 这次请求**应该换到更大窗口的模型** ⇒ 模型切换，不是节点惩罚。
+	//
+	// ★ 与 KindContextLength 的区别：
+	//   · KindContextLength：上游 400/422 → 模型**真的**放不下 → terminal；
+	//   · KindContextBudgetExceeded：网关预算检查 → auto 选错 bucket → 换模型。
+	//
+	// ★ 归责 = PenaltyNone：不拉黑绑定、不改凭据状态、不记熔断、不累计连败、
+	//   不扇出探针 —— 与 KindRequestRejected / KindRateLimitObserved 同族。
+	case KindContextBudgetExceeded:
+		return Penalty{Target: PenaltyNone}
+
 	// —— 不罚：上游拒收但无法进一步归因的 4xx（2026-11-02）——
 	//
 	// ★ 这条是本轮事故的**放大器**判据：上游 400 此前落 KindTransient ⇒

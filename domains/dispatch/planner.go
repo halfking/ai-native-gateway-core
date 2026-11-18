@@ -157,6 +157,14 @@ func isCentralPolicyKind(kind errorsx.ErrorKind) bool {
 		errorsx.KindConcurrent, errorsx.KindAuthRevoked, errorsx.KindQuotaPeriodic,
 		errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent, errorsx.KindModelNotFound,
 		errorsx.KindStreamTimeout, errorsx.KindToolCallIdMismatch, errorsx.KindContextLength,
+		// 2026-11-19: context_budget_exceeded 必须登记在这里。
+		//
+		// ★ 同上：不在表里的 kind 会被下面的 `kind = errorsx.KindTransient`
+		//   **重写**——而 KindTransient 正是 2026-11-02 事故的放大器形态。
+		// ★ 本 kind 的语义是「auto 选错 bucket（小窗口模型处理大上下文任务）
+		//   ⇒ 应该换模到更大窗口模型」⇒ 漏登记 ⇒ 被重写成 transient ⇒
+		//   盲重试 + 惩罚节点 ⇒ 修复静默失效。
+		errorsx.KindContextBudgetExceeded,
 		errorsx.KindUnsupportedFeature, errorsx.KindModelDeprecated, errorsx.KindContentFilter,
 		errorsx.KindEmptyResponse, errorsx.KindConversion, errorsx.KindUpstreamContextLoss,
 		errorsx.KindUpstreamOverloaded, errorsx.KindNoAvailableChannel,
