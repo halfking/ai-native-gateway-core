@@ -42,14 +42,89 @@ describe('simple mode overview view contract', () => {
     expect(src).toContain('data-testid="overview-provider-health"')
   })
 
-  it('loads three sources instead of fanning out one request per key', async () => {
+  it('loads four sources instead of fanning out one request per key', async () => {
     const src = await readSource('src/views/SimpleOverviewView.vue')
     expect(src).toContain('fetchDashboardBoard')
     expect(src).toContain('getProviders()')
     expect(src).toContain('getKeys()')
+    // ★ 2026-11-18：趋势卡加了一路 days=7（与专家面看板 7d 预设同端点同口径）
+    expect(src).toContain("fetchDashboardBoard({ days: 7 })")
     // ★ 旧实现对每个密钥发一次 /api/usage/{id}/models（线上 208 个密钥 ⇒ 208 个请求）
     expect(src).not.toContain('getKeyUsageByModel')
     expect(src).not.toMatch(/keys\.value\.map\(/)
+  })
+
+  // ── 2026-11-18：趋势卡与「消耗情况」契约 ──────────────────────────────────
+  //
+  // ★ owner 报障「关心的是整体状况、消耗情况」—— 只有今日一个口径看不出走向。
+  //   修法＝与专家面看板 days=7 同端点，15min 桶在前端按 UTC 日聚合。
+  it('★ 近 7 日消耗卡必须存在且降级诚实（零线 ≠ 没流量被读成零消耗）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    expect(src).toContain('data-testid="overview-trend"')
+    // 聚合/补零/截窗全部在纯函数层（可单测），视图不现算
+    expect(src).toContain('aggregateTrendByDay')
+    expect(src).toContain('fillMissingDays')
+    expect(src).toContain('lastDailyPoints')
+    // 降级路径：请求失败 / degraded_trends / summary 降级 三者都要拦
+    expect(src).toContain('board7Failed')
+    expect(src).toContain('degraded_trends')
+    expect(src).toContain('data-testid="overview-trend-unavailable"')
+    // 复用专家面看板的指标文案键（不新增一份同义词）
+    expect(src).toContain("t('dashboard.board.trendRequests')")
+    expect(src).toContain("t('dashboard.board.trendTokens')")
+    expect(src).toContain("t('dashboard.board.trendCost')")
+  })
+
+  // ── 2026-11-18：系统状态（运维 chips）与 issue 行内动作 ────────────────────
+  it('★ 系统状态复用专家面 BoardOpsBar（同一口径同一交互，不另造一套）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    expect(src).toContain('BoardOpsBar')
+    expect(src).toContain('data-testid="overview-ops"')
+    expect(src).toContain("router.push('/dashboard?tab=selfcheck')")
+  })
+
+  it('★ 每条 issue 的「去处理」落点都必须有真实路由（死链 = 点了就空白）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    const routerSrc = await readSource('src/router.ts')
+
+    const registered = new Set<string>()
+    for (const m of routerSrc.matchAll(/path:\s*'([^']+)'/g)) registered.add(m[1])
+
+    const targets = new Set<string>()
+    // ① router.push / go 的直接字面量（原有口径）
+    for (const m of src.matchAll(/router\.push\('([^']+)'\)|go\('([^']+)'\)/g)) {
+      const hit = m[1] ?? m[2]
+      if (hit) targets.add(hit)
+    }
+    // ② ISSUE_ACTION_ROUTES 映射表里的字面量（2026-11-18：issue 行内动作）
+    const mapBlock = src.slice(src.indexOf('ISSUE_ACTION_ROUTES'), src.indexOf('function issueRoute'))
+    for (const m of mapBlock.matchAll(/'\/[^']+'/g)) targets.add(m[0].slice(1, -1))
+
+    expect(targets.size, '总览页应至少有一个跳转落点').toBeGreaterThan(0)
+
+    // 带 query 的落点（如 /dashboard?tab=selfcheck）按 path 段判注册
+    const dead = [...targets].filter((t) => !registered.has(t.split('?')[0]))
+    expect(
+      dead,
+      `总览页跳到了未注册的路由（点了就是空白页）：\n${dead.join('\n')}`,
+    ).toEqual([])
+  })
+
+  it('★ 成功率卡必须带失败笔数语境（比率没有分母 = 初级用户读不懂）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    expect(src).toContain('statFailures')
+    expect(src).toContain('stat.key === \'successRate\' && stat.failures')
+    // 明细来源与专家面英雄区同口径（pies 优先、summary 兜底）
+    expect(src).toContain('errorsPie')
+    const model = await readSource('src/composables/simpleOverviewModel.ts')
+    expect(model).toContain('deriveFailureCount')
+  })
+
+  it('★ 最常用模型必须带今日花费列（消耗情况：模型排行不能只有请求数）', async () => {
+    const src = await readSource('src/views/SimpleOverviewView.vue')
+    expect(src).toContain('model-cost')
+    expect(src).toContain('fmtUsd(m.cost_usd)')
+    expect(src).toContain('topModelsHint')
   })
 
   it('degrades each source independently', async () => {
@@ -98,35 +173,6 @@ describe('simple mode overview view contract', () => {
     expect(src).toContain('data-testid="overview-access-fold"')
     expect(src).toContain('inactiveRows.length')
     expect(src).toContain('count-badge')
-  })
-
-  // ── 2026-11-17：抓「快捷按钮跳空页」的那条 ──────────────────────────────
-  //
-  // ★ 事故：第 3 个快捷操作原先跳 `/usage`，而 **`/usage` 从来没有路由定义**
-  //   （router.ts 里没有、appNav 真源里也没有）⇒ 用户一点就是 vue-router 的
-  //   no-match 空白页。成因是 simpleNav.ts / 台账生成器两份**同源同错**的清单
-  //   里都列着 '/usage'，互相掩盖到没有任何门能看见。
-  // ★ 这条断言把「本视图的每一个跳转落点都必须在 router.ts 里注册」变成机器可验：
-  //   再写一个不存在的路径 ⇒ 立刻红，而不是等用户点到一个死按钮。
-  it('★ 常用操作的每个落点都必须有真实路由（不存在的路径 = 点了就空白）', async () => {
-    const src = await readSource('src/views/SimpleOverviewView.vue')
-    const routerSrc = await readSource('src/router.ts')
-
-    const registered = new Set<string>()
-    for (const m of routerSrc.matchAll(/path:\s*'([^']+)'/g)) registered.add(m[1])
-
-    const targets = new Set<string>()
-    for (const m of src.matchAll(/router\.push\('([^']+)'\)|go\('([^']+)'\)/g)) {
-      const hit = m[1] ?? m[2]
-      if (hit) targets.add(hit)
-    }
-    expect(targets.size, '总览页应至少有一个跳转落点').toBeGreaterThan(0)
-
-    const dead = [...targets].filter((t) => !registered.has(t))
-    expect(
-      dead,
-      `总览页跳到了未注册的路由（点了就是空白页）：\n${dead.join('\n')}`,
-    ).toEqual([])
   })
 
   // ── 2026-11-17：抓「接入清单太长」的那条 ──────────────────────────────────

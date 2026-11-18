@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  aggregateTrendByDay,
+  deriveFailureCount,
   deriveOnboardingSteps,
   deriveOverviewStats,
   deriveOverviewStatus,
@@ -8,9 +10,12 @@ import {
   formatCount,
   formatPercent,
   formatUsd,
+  fillMissingDays,
+  lastDailyPoints,
   onboardingComplete,
   paginateClientRows,
   sortClientRows,
+  sparkPolylinePoints,
   type ClientRow,
   type ProviderLike,
 } from './simpleOverviewModel'
@@ -420,5 +425,162 @@ describe('paginateClientRows', () => {
     expect(p.rows).toEqual([])
     expect(p.pageCount).toBe(1)
     expect(p.hasNext).toBe(false)
+  })
+})
+
+// ── 2026-11-18 看板化扩展：失败笔数 / 每日趋势聚合 / spark ──────────────────
+
+describe('deriveFailureCount', () => {
+  it('prefers the error pie breakdown over the summary derivation', () => {
+    const n = deriveFailureCount(
+      { total_requests: 4785, success_rate: 0.922 },
+      [{ key: 'rate_limit', requests: 300 }, { key: 'timeout', requests: 73 }],
+    )
+    // 明细之和（373）恰好与推导值同数，但明细优先 —— 它是账，不是推算
+    expect(n).toBe(373)
+  })
+
+  it('falls back to requests × (1 − success_rate) when no pie', () => {
+    expect(deriveFailureCount({ total_requests: 1000, success_rate: 0.96 }, null)).toBe(40)
+    expect(deriveFailureCount({ total_requests: 1000, success_rate: 1 }, [])).toBe(0)
+  })
+
+  it('returns null instead of a fake 0 when nothing is computable', () => {
+    expect(deriveFailureCount(null, null)).toBeNull()
+    expect(deriveFailureCount({ total_requests: 10 }, null)).toBeNull()
+    expect(deriveFailureCount({ total_requests: 10, success_rate: 0.5 }, null)).toBe(5)
+  })
+
+  it('does not silently drop dirty pie rows — falls back to derivation', () => {
+    // 明细里有脏数据 ⇒ 半张表的和比兜底推导更错 ⇒ 走兜底
+    const n = deriveFailureCount(
+      { total_requests: 1000, success_rate: 0.9 },
+      [{ key: 'ok', requests: 30 }, { key: 'bad', requests: Number.NaN }],
+    )
+    expect(n).toBe(100)
+  })
+})
+
+describe('aggregateTrendByDay', () => {
+  const buckets = [
+    { bucket: '2026-11-12T23:45:00Z', requests: 10, tokens: 100, cost_usd: 0.25 },
+    { bucket: '2026-11-12T23:50:00Z', requests: 5, tokens: 50, cost_usd: 0.1 },
+    // 同一天的桶（跨 UTC 日界附近）
+    { bucket: '2026-11-13T00:05:00Z', requests: 7, tokens: 70, cost_usd: 0.2 },
+    { bucket: '2026-11-14T01:00:00Z', requests: 3, tokens: 30, cost_usd: 0.05 },
+  ]
+
+  it('groups buckets by UTC day and sums each metric', () => {
+    const days = aggregateTrendByDay(buckets)
+    expect(days.map((d) => d.date)).toEqual(['2026-11-12', '2026-11-13', '2026-11-14'])
+    expect(days[0]).toEqual({ date: '2026-11-12', requests: 15, tokens: 150, costUsd: 0.35 })
+    expect(days[1].requests).toBe(7)
+    expect(days[2].requests).toBe(3)
+  })
+
+  it('sorts ascending even when the buckets arrive out of order', () => {
+    const days = aggregateTrendByDay([buckets[2], buckets[0], buckets[3], buckets[1]])
+    expect(days.map((d) => d.date)).toEqual(['2026-11-12', '2026-11-13', '2026-11-14'])
+  })
+
+  it('keeps a zero-traffic gap honest: missing days simply have no bucket', () => {
+    // 11-13 没有任何桶 ⇒ 结果里没有那一天（页面把缺口画成 0 高柱）
+    const days = aggregateTrendByDay([buckets[0], buckets[3]])
+    expect(days.map((d) => d.date)).toEqual(['2026-11-12', '2026-11-14'])
+  })
+
+  it('ignores malformed buckets and non-finite values instead of NaN-poisoning', () => {
+    const days = aggregateTrendByDay([
+      { bucket: 'garbage', requests: 9, tokens: 9, cost_usd: 9 },
+      { bucket: '2026-11-15T00:00:00Z', requests: Number.NaN, tokens: 100, cost_usd: 1 },
+      { bucket: '2026-11-15T00:15:00Z', requests: 4, tokens: 100, cost_usd: 1 },
+    ] as never)
+    expect(days).toHaveLength(1)
+    expect(days[0].requests).toBe(4)
+    expect(days[0].tokens).toBe(200)
+  })
+
+  it('returns an empty list for null / empty input', () => {
+    expect(aggregateTrendByDay(null)).toEqual([])
+    expect(aggregateTrendByDay([])).toEqual([])
+  })
+
+  it('lastDailyPoints keeps only the most recent N days', () => {
+    const days = [
+      { date: '2026-11-08', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-09', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-12', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-13', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-14', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-15', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-16', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-17', requests: 1, tokens: 1, costUsd: 1 },
+    ]
+    expect(lastDailyPoints(days, 7)).toHaveLength(7)
+    expect(lastDailyPoints(days, 7)[0].date).toBe('2026-11-09')
+    expect(lastDailyPoints(days, 0)).toEqual([])
+  })
+})
+
+describe('fillMissingDays', () => {
+  it('fills in-window gaps with honest zero points (source healthy ⇒ 0 is real)', () => {
+    const filled = fillMissingDays([
+      { date: '2026-11-12', requests: 15, tokens: 150, costUsd: 0.35 },
+      { date: '2026-11-15', requests: 3, tokens: 30, costUsd: 0.05 },
+    ])
+    expect(filled.map((d) => d.date)).toEqual(['2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'])
+    expect(filled[1]).toEqual({ date: '2026-11-13', requests: 0, tokens: 0, costUsd: 0 })
+  })
+
+  it('never invents days beyond the data span (new 3-day deployment stays 3 columns)', () => {
+    const filled = fillMissingDays([
+      { date: '2026-11-15', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-17', requests: 2, tokens: 2, costUsd: 2 },
+    ])
+    expect(filled.map((d) => d.date)).toEqual(['2026-11-15', '2026-11-16', '2026-11-17'])
+  })
+
+  it('keeps a single point and an empty list untouched', () => {
+    expect(fillMissingDays([{ date: '2026-11-15', requests: 1, tokens: 1, costUsd: 1 }])).toHaveLength(1)
+    expect(fillMissingDays([])).toEqual([])
+  })
+
+  it('crosses month boundaries when filling (UTC day arithmetic)', () => {
+    const filled = fillMissingDays([
+      { date: '2026-10-31', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-02', requests: 1, tokens: 1, costUsd: 1 },
+    ])
+    expect(filled.map((d) => d.date)).toEqual(['2026-10-31', '2026-11-01', '2026-11-02'])
+  })
+
+  it('does not mutate the input array', () => {
+    const input = [
+      { date: '2026-11-12', requests: 1, tokens: 1, costUsd: 1 },
+      { date: '2026-11-14', requests: 2, tokens: 2, costUsd: 2 },
+    ]
+    fillMissingDays(input)
+    expect(input).toHaveLength(2)
+  })
+})
+
+describe('sparkPolylinePoints', () => {
+  it('mirrors the expert-board sparkline: normalized points over the last N buckets', () => {
+    const trends = Array.from({ length: 16 }, (_, i) => ({
+      bucket: `2026-11-17T00:${String(i).padStart(2, '0')}:00Z`,
+      requests: i + 1,
+      tokens: 0,
+      cost_usd: 0,
+    }))
+    const pts = sparkPolylinePoints(trends)
+    expect(pts.split(' ')).toHaveLength(16)
+    // 最大值桶贴近顶部（y 接近 2 而不是贴底）
+    const lastY = Number(pts.split(' ')[15].split(',')[1])
+    expect(lastY).toBeLessThanOrEqual(4)
+  })
+
+  it('returns an empty string when fewer than 2 buckets (nothing to draw)', () => {
+    expect(sparkPolylinePoints([])).toBe('')
+    expect(sparkPolylinePoints(null)).toBe('')
+    expect(sparkPolylinePoints([{ bucket: '2026-11-17T00:00:00Z', requests: 1, tokens: 0, cost_usd: 0 }])).toBe('')
   })
 })
