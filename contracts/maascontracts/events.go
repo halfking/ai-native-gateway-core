@@ -4,6 +4,7 @@ import "time"
 
 // CloudEventEnvelope wraps event data in CloudEvents 1.0 format.
 // All MaaS events follow this standard envelope for async communication.
+// Reference: https://github.com/cloudevents/spec/blob/v1.0/spec.md
 type CloudEventEnvelope struct {
 	SpecVersion     string                 `json:"specversion"`          // CloudEvents version (should be "1.0")
 	Type            string                 `json:"type"`                 // Event type (e.g., "com.maas.reservation.committed")
@@ -16,6 +17,7 @@ type CloudEventEnvelope struct {
 }
 
 // Event type constants for CloudEvents.
+// These align with AsyncAPI contract (referenced in OpenAPI v0.1 documentation).
 const (
 	EventTypeSellableChanged      = "com.maas.sellable.changed"
 	EventTypeReservationPending   = "com.maas.reservation.pending"
@@ -28,35 +30,32 @@ const (
 	EventTypeUsageCorrected       = "com.maas.usage.corrected"
 )
 
-// SellableChangedData represents inventory availability change.
+// SellableChangedData represents inventory availability change event.
 type SellableChangedData struct {
-	SellableID        string    `json:"sellable_id"`
+	ModelSKU          string    `json:"model_sku"`
 	TenantID          string    `json:"tenant_id"`
 	AvailableQuantity Quantity  `json:"available_quantity"`
-	PricePerUnit      Money     `json:"price_per_unit"`
 	ChangedAt         time.Time `json:"changed_at"`
 }
 
-// ReservationPendingData represents a new pending hold created.
+// ReservationPendingData represents a new pending hold created event.
 type ReservationPendingData struct {
 	HoldID    string     `json:"hold_id"`
 	TenantID  string     `json:"tenant_id"`
 	Status    HoldStatus `json:"status"` // Should be "pending"
-	Lines     []HoldLine `json:"lines"`
 	ExpiresAt time.Time  `json:"expires_at"`
 	CreatedAt time.Time  `json:"created_at"`
 }
 
-// ReservationCommittedData represents a hold confirmed to committed state.
+// ReservationCommittedData represents a hold confirmed to committed state event.
 type ReservationCommittedData struct {
 	HoldID      string     `json:"hold_id"`
 	TenantID    string     `json:"tenant_id"`
 	Status      HoldStatus `json:"status"` // Should be "committed"
-	Lines       []HoldLine `json:"lines"`
 	ConfirmedAt time.Time  `json:"confirmed_at"`
 }
 
-// ReservationExpiredData represents a hold expired due to TTL.
+// ReservationExpiredData represents a hold expired due to TTL event.
 type ReservationExpiredData struct {
 	HoldID    string     `json:"hold_id"`
 	TenantID  string     `json:"tenant_id"`
@@ -64,7 +63,7 @@ type ReservationExpiredData struct {
 	ExpiredAt time.Time  `json:"expired_at"`
 }
 
-// ReservationAbortedData represents a hold explicitly released.
+// ReservationAbortedData represents a hold explicitly released event.
 type ReservationAbortedData struct {
 	HoldID     string     `json:"hold_id"`
 	TenantID   string     `json:"tenant_id"`
@@ -73,49 +72,42 @@ type ReservationAbortedData struct {
 	ReleasedAt time.Time  `json:"released_at"`
 }
 
-// EntitlementActivatedData represents customer entitlement activation.
+// EntitlementActivatedData represents customer entitlement activation event.
 type EntitlementActivatedData struct {
-	EntitlementID   string            `json:"entitlement_id"`
-	TenantID        string            `json:"tenant_id"`
-	HoldID          string            `json:"hold_id"`
-	CustomerID      string            `json:"customer_id"`
-	Status          EntitlementStatus `json:"status"` // Should be "active"
-	LegalSignoffRef string            `json:"legal_signoff_ref"`
-	EffectiveAt     time.Time         `json:"effective_at"`
-	ActivatedAt     time.Time         `json:"activated_at"`
+	EntitlementID string            `json:"entitlement_id"`
+	TenantID      string            `json:"tenant_id"`
+	HoldID        string            `json:"hold_id"`
+	Status        EntitlementStatus `json:"status"` // Should be "active"
+	ActivatedAt   time.Time         `json:"activated_at"`
 }
 
-// UsageHoldPlacedData represents usage pre-reservation.
+// UsageHoldPlacedData represents usage pre-reservation event.
 type UsageHoldPlacedData struct {
-	UsageID       string      `json:"usage_id"`
+	UsageHoldID   string      `json:"usage_hold_id"`
 	TenantID      string      `json:"tenant_id"`
 	EntitlementID string      `json:"entitlement_id"`
-	UsageType     string      `json:"usage_type"`
 	Quantity      Quantity    `json:"quantity"`
-	EstimatedCost Money       `json:"estimated_cost"`
 	Status        UsageStatus `json:"status"` // Should be "held"
-	MeasuredAt    time.Time   `json:"measured_at"`
 	HeldAt        time.Time   `json:"held_at"`
 }
 
-// UsageSettledData represents usage settlement to payable charge.
+// UsageSettledData represents usage settlement to payable charge event.
 type UsageSettledData struct {
-	UsageID       string      `json:"usage_id"`
+	UsageHoldID   string      `json:"usage_hold_id"`
 	TenantID      string      `json:"tenant_id"`
 	EntitlementID string      `json:"entitlement_id"`
-	UsageType     string      `json:"usage_type"`
-	FinalCost     Money       `json:"final_cost"`
+	Settled       Quantity    `json:"settled"`
+	Released      Quantity    `json:"released"`
 	Status        UsageStatus `json:"status"` // Should be "settled"
 	SettledAt     time.Time   `json:"settled_at"`
 }
 
-// UsageCorrectedData represents an append-only correction entry.
+// UsageCorrectedData represents an append-only correction entry event.
 type UsageCorrectedData struct {
-	CorrectionID     string    `json:"correction_id"`
-	TenantID         string    `json:"tenant_id"`
-	OriginalUsageID  string    `json:"original_usage_id"`
-	CorrectionType   string    `json:"correction_type"`
-	CorrectionAmount Money     `json:"correction_amount"`
-	Reason           string    `json:"reason"`
-	CorrectedAt      time.Time `json:"corrected_at"`
+	ReversalID  string    `json:"reversal_id"`
+	TenantID    string    `json:"tenant_id"`
+	EntryID     string    `json:"entry_id"`
+	Reversal    Quantity  `json:"reversal"`
+	Reason      *string   `json:"reason,omitempty"`
+	CorrectedAt time.Time `json:"corrected_at"`
 }

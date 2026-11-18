@@ -3,114 +3,118 @@ package maascontracts
 import "time"
 
 // HoldStatus represents the state of a reservation hold in the state machine.
-// State transitions:
-//
-//	pending → committed (via HoldConfirm)
-//	pending → aborted (via HoldRelease or validation failure)
-//	pending → expired (via TTL expiration or HoldExpire)
-//	committed → aborted (via HoldRelease after commit)
+// State transitions per OpenAPI v0.1:
+//   pending → committed (via HoldConfirm)
+//   pending → aborted (via HoldRelease)
+//   pending → expired (via HoldExpire or TTL timeout)
 type HoldStatus string
 
 const (
-	HoldStatusPending   HoldStatus = "pending"   // Initial state, awaiting confirmation
-	HoldStatusCommitted HoldStatus = "committed" // Confirmed hard reserve, ready for entitlement activation
+	HoldStatusPending   HoldStatus = "pending"   // Initial state, soft reserve awaiting confirmation
+	HoldStatusCommitted HoldStatus = "committed" // Confirmed hard reserve, inventory decremented
 	HoldStatusExpired   HoldStatus = "expired"   // TTL exceeded, inventory released
-	HoldStatusAborted   HoldStatus = "aborted"   // Explicitly released or validation failed
+	HoldStatusAborted   HoldStatus = "aborted"   // Explicitly released
 )
 
 // QuerySellableRequest queries the current snapshot of sellable inventory.
 // This is a read-only operation with no side effects.
 type QuerySellableRequest struct {
-	TenantID  string    `json:"tenant_id"`           // Tenant scope filter
-	Labels    *[]string `json:"labels,omitempty"`    // Optional label filters
-	Timestamp *string   `json:"timestamp,omitempty"` // Optional ISO8601 timestamp for point-in-time query
+	TenantID   *string                `json:"tenant_id,omitempty"`  // If present must equal authenticated tenant
+	ModelSKU   string                 `json:"model_sku"`            // Model SKU to query
+	Dimensions *QuerySellableDimensions `json:"dimensions,omitempty"` // Optional dimension filters
+}
+
+// QuerySellableDimensions provides optional filters for sellable queries.
+type QuerySellableDimensions struct {
+	Region     *string `json:"region,omitempty"`     // Regional filter
+	Commitment *string `json:"commitment,omitempty"` // "hard" or "soft"
 }
 
 // QuerySellableResponse returns the current inventory snapshot.
 type QuerySellableResponse struct {
-	Items     []SellableItem `json:"items"`
-	Timestamp time.Time      `json:"timestamp"` // Snapshot timestamp
+	ResourceSnapshotID string         `json:"resource_snapshot_id"` // Snapshot identifier
+	InventoryRevision  int64          `json:"inventory_revision"`   // Optimistic concurrency version
+	ObservedAt         time.Time      `json:"observed_at"`          // Snapshot timestamp
+	Stale              bool           `json:"stale"`                // Whether snapshot is stale (default: false)
+	Items              []SellableItem `json:"items"`                // Available sellable items
 }
 
-// SellableItem represents a sellable resource in the inventory.
+// SellableItem represents a sellable resource in the inventory snapshot.
 type SellableItem struct {
-	SellableID        string   `json:"sellable_id"` // Unique sellable identifier (sel_*)
-	CanonicalName     string   `json:"canonical_name"`
-	DisplayName       string   `json:"display_name"`
-	Unit              string   `json:"unit"` // Unit of measurement
-	AvailableQuantity Quantity `json:"available_quantity"`
-	PricePerUnit      Money    `json:"price_per_unit"`
-	Labels            []string `json:"labels,omitempty"`
-}
-
-// HoldCreateRequest initiates a new reservation hold (pending state).
-// The hold reserves inventory for a limited TTL period.
-type HoldCreateRequest struct {
-	TenantID    string     `json:"tenant_id"`
-	Lines       []HoldLine `json:"lines"`                  // Line items to reserve
-	TTLSeconds  int        `json:"ttl_seconds"`            // Time-to-live in seconds
-	ReferenceID *string    `json:"reference_id,omitempty"` // Optional external reference
-	PurposeNote *string    `json:"purpose_note,omitempty"` // Optional purpose description
-}
-
-// HoldCreateResponse returns the created hold details.
-type HoldCreateResponse struct {
-	HoldID       string     `json:"hold_id"` // Unique hold identifier (hld_*)
-	Status       HoldStatus `json:"status"`  // Should be "pending"
-	Lines        []HoldLine `json:"lines"`
-	ExpiresAt    time.Time  `json:"expires_at"`    // Expiration timestamp (created_at + TTL)
-	FencingToken string     `json:"fencing_token"` // Token for idempotent confirm/release
-	CreatedAt    time.Time  `json:"created_at"`
+	ModelSKU          string   `json:"model_sku"`                    // Model SKU identifier
+	Sellable          Quantity `json:"sellable"`                     // Available quantity with unit and window
+	Unit              string   `json:"unit"`                         // Unit of measurement
+	CapacityAvailable *bool    `json:"capacity_available,omitempty"` // Capacity calendar indicator
+	SharedCapID       *string  `json:"shared_cap_id,omitempty"`      // Shared supplier cap ID
 }
 
 // HoldLine represents a single line item in a reservation hold.
 type HoldLine struct {
-	SellableID     string   `json:"sellable_id"`
-	Quantity       Quantity `json:"quantity"`
-	UnitPrice      Money    `json:"unit_price"` // Locked price at hold time
-	SubtotalAmount Money    `json:"subtotal_amount"`
+	ModelSKU    string   `json:"model_sku"`              // Model SKU to reserve
+	Quantity    Quantity `json:"quantity"`               // Quantity to reserve
+	SharedCapID *string  `json:"shared_cap_id,omitempty"` // Optional shared capacity ID
 }
 
-// HoldConfirmRequest commits a pending hold to a hard reservation.
-// This state transition is irreversible and makes the inventory unavailable
-// for other customers until consumed or explicitly released.
+// HoldCreateRequest initiates a new reservation hold (pending state).
+// The hold reserves inventory for a limited time period until expiration.
+type HoldCreateRequest struct {
+	TenantID           *string    `json:"tenant_id,omitempty"`            // Tenant scope (must match auth)
+	QuoteSnapshotID    *string    `json:"quote_snapshot_id,omitempty"`    // Optional reference to quote
+	ResourceSnapshotID *string    `json:"resource_snapshot_id,omitempty"` // Optional snapshot ID for validation
+	ExpectedVersion    *int64     `json:"expected_version,omitempty"`     // Optional OCC version check
+	Lines              []HoldLine `json:"lines"`                          // Line items to reserve (min 1)
+	ExpiresAt          time.Time  `json:"expires_at"`                     // Hold expiration timestamp
+}
+
+// HoldCreateResponse returns the created hold details.
+type HoldCreateResponse struct {
+	HoldID            string     `json:"hold_id"`            // Unique hold identifier (hld_*)
+	Status            HoldStatus `json:"status"`             // Should be "pending"
+	FencingToken      string     `json:"fencing_token"`      // Token for idempotent confirm/release
+	InventoryRevision int64      `json:"inventory_revision"` // New inventory revision after hold
+	ExpiresAt         time.Time  `json:"expires_at"`         // Hold expiration timestamp
+}
+
+// HoldConfirmRequest commits a pending hold to a hard reservation (committed state).
+// This state transition is irreversible and makes inventory unavailable to others.
 type HoldConfirmRequest struct {
-	HoldID       string `json:"hold_id"`
-	FencingToken string `json:"fencing_token"` // Must match the token from HoldCreate
+	TenantID        *string `json:"tenant_id,omitempty"`          // Tenant scope (must match auth)
+	FencingToken    string  `json:"fencing_token"`                // Must match token from HoldCreate
+	ExpectedVersion *int64  `json:"expected_version,omitempty"`   // Optional OCC version check
+	QuoteSnapshotID *string `json:"quote_snapshot_id,omitempty"`  // Optional quote snapshot reference
 }
 
-// HoldConfirmResponse returns the confirmed hold details.
+// HoldConfirmResponse confirms the hold commitment.
 type HoldConfirmResponse struct {
-	HoldID      string     `json:"hold_id"`
-	Status      HoldStatus `json:"status"` // Should be "committed"
-	ConfirmedAt time.Time  `json:"confirmed_at"`
+	HoldID            string     `json:"hold_id"`            // Hold identifier
+	Status            HoldStatus `json:"status"`             // Should be "committed"
+	InventoryRevision int64      `json:"inventory_revision"` // New inventory revision
+	CommittedAt       *time.Time `json:"committed_at,omitempty"` // Commitment timestamp
 }
 
 // HoldReleaseRequest releases a hold (pending or committed) back to inventory.
-// Committed holds should only be released in exceptional circumstances (e.g., customer cancellation).
+// Committed holds should only be released in exceptional circumstances (e.g., cancellation).
 type HoldReleaseRequest struct {
-	HoldID       string  `json:"hold_id"`
-	FencingToken string  `json:"fencing_token"`
-	Reason       *string `json:"reason,omitempty"` // Optional reason for audit trail
+	TenantID     *string `json:"tenant_id,omitempty"`     // Tenant scope (must match auth)
+	FencingToken *string `json:"fencing_token,omitempty"` // Optional fencing token
+	Reason       *string `json:"reason,omitempty"`        // Optional reason for audit trail
 }
 
 // HoldReleaseResponse confirms the hold release.
 type HoldReleaseResponse struct {
-	HoldID     string     `json:"hold_id"`
-	Status     HoldStatus `json:"status"` // Should be "aborted"
-	ReleasedAt time.Time  `json:"released_at"`
+	HoldID string     `json:"hold_id"` // Hold identifier
+	Status HoldStatus `json:"status"`  // Terminal status: "aborted", "expired", or "committed"
 }
 
-// HoldExpireRequest marks an expired pending hold (system-initiated).
-// This is typically called by a background job when TTL expires.
+// HoldExpireRequest marks an expired hold (system-initiated or client-triggered).
+// The inventory service has authoritative decision on expiration.
 type HoldExpireRequest struct {
-	HoldID    string    `json:"hold_id"`
-	ExpiredAt time.Time `json:"expired_at"`
+	TenantID *string `json:"tenant_id,omitempty"` // Tenant scope (must match auth)
 }
 
 // HoldExpireResponse confirms the hold expiration.
 type HoldExpireResponse struct {
-	HoldID    string     `json:"hold_id"`
-	Status    HoldStatus `json:"status"` // Should be "expired"
-	ExpiredAt time.Time  `json:"expired_at"`
+	HoldID  string     `json:"hold_id"`            // Hold identifier
+	Status  HoldStatus `json:"status"`             // Terminal status after expiration
+	Expired *bool      `json:"expired,omitempty"`  // Whether actually expired
 }

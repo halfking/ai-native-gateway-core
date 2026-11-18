@@ -122,4 +122,7 @@ export default {
   strategyAverage: 'Durchschnitt über Plattformen',
   strategyMin: 'Günstigster über Plattformen',
   strategyFloorMarkup: 'Bodenpreis × Aufschlag',
+ suggestModelTitle: 'Modell auswählen',
+ suggestModelPlaceholder: 'Zu bewertende Modelle auswählen (Mehrfachauswahl möglich)',
+ suggestModelHint: 'Ohne Auswahl werden alle Modelle bewertet; mit Auswahl nur die gewählten.',
 }

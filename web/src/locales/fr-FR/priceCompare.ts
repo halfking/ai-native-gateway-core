@@ -122,4 +122,7 @@ export default {
   strategyAverage: 'Moyenne entre plateformes',
   strategyMin: 'Moins cher entre plateformes',
   strategyFloorMarkup: 'Prix plancher × marge',
+ suggestModelTitle: 'Choisir un modèle',
+ suggestModelPlaceholder: 'Choisir les modèles à tarifer (sélection multiple)',
+ suggestModelHint: 'Sans sélection, tous les modèles sont tarifés ; avec sélection, seuls les modèles choisis.',
 }

@@ -98,4 +98,5 @@ export default {
   funnel_won: '已達成',
   funnel_lost: '已丟單',
   funnel_expired: '已過期（衍生）',
+ modelNotInSellable: '該模型不在可售清單中',
 }

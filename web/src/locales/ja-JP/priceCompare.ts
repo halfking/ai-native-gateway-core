@@ -122,4 +122,7 @@ export default {
   strategyAverage: '複数プラットフォームの平均',
   strategyMin: '複数プラットフォームの最安値',
   strategyFloorMarkup: '下限価格 × マークアップ率',
+ suggestModelTitle: 'モデルを選択',
+ suggestModelPlaceholder: '価格付けするモデルを選択（複数選択可）',
+ suggestModelHint: 'モデルを選択しない場合はすべてのモデルが対象、選択時は選択されたモデルのみ。',
 }

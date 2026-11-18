@@ -56,15 +56,17 @@ export default {
       smart: 'smart - Intelligente Komprimierung',
       adaptive: 'adaptive - Adaptive Komprimierung',
     },
-    modeEnum: {
-      simple: 'simple - Einfacher Modus',
-      expert: 'expert - Expertenmodus',
-    },
-    modeDescriptions: {
-      simple: 'Einfacher Modus: Die Startseite ist eine verkürzte Zugriffsliste; Expertenwerkzeuge sind unter „Erweitert“ eingeklappt.',
-      expert: 'Expertenmodus: Vollständige Navigation mit allen Seiten (aktuelle Voreinstellung).',
-    },
   },
+ gateway: {
+ modeEnum: {
+ simple: 'simple - Einfacher Modus',
+ expert: 'expert - Expertenmodus',
+ },
+ modeDescriptions: {
+ simple: 'Einfacher Modus: Die Startseite ist eine verkürzte Zugriffsliste; Expertenwerkzeuge sind unter „Erweitert“ eingeklappt.',
+ expert: 'Expertenmodus: Vollständige Navigation mit allen Seiten (aktuelle Voreinstellung).',
+ },
+ },
   docs: {
     compressionModeTitle: '📖 Komprimierungsmodus im Detail',
     compressionModeContent: `<p><strong>Komprimierungsmodus</strong> steuert, wie das System mit übergroßen Konversationen umgeht:</p>

@@ -56,15 +56,17 @@ export default {
       smart: 'smart - Compression intelligente',
       adaptive: 'adaptive - Compression adaptative',
     },
-    modeEnum: {
-      simple: 'simple - Mode simple',
-      expert: 'expert - Mode expert',
-    },
-    modeDescriptions: {
-      simple: 'Mode simple : la page d’accueil est une liste d’accès réduite ; les outils experts sont regroupés sous « Avancé ».',
-      expert: 'Mode expert : navigation complète avec toutes les pages (réglage actuel par défaut).',
-    },
   },
+ gateway: {
+ modeEnum: {
+ simple: 'simple - Mode simple',
+ expert: 'expert - Mode expert',
+ },
+ modeDescriptions: {
+ simple: 'Mode simple : la page d’accueil est une liste d’accès réduite ; les outils experts sont regroupés sous « Avancé ».',
+ expert: 'Mode expert : navigation complète avec toutes les pages (réglage actuel par défaut).',
+ },
+ },
   docs: {
     compressionModeTitle: '📖 Mode de compression en détail',
     compressionModeContent: `<p>Le <strong>mode de compression</strong> contrôle la façon dont le système gère les conversations trop longues :</p>
