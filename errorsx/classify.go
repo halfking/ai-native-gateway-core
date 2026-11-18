@@ -136,7 +136,18 @@ const (
 	// path was historically returning the raw 400 because no client-side
 	// trim was applied.
 	KindContextLength      ErrorKind = "context_length_exceeded"
-	KindUnsupportedFeature ErrorKind = "unsupported_feature"
+	// KindContextBudgetExceeded: gateway-side bucket budget exhaustion
+	// (request tokens exceed the selected bucket's context window limit).
+	// Distinct from KindContextLength because:
+	//   1. KindContextLength is an upstream 400/422 that says the model itself
+	//      cannot handle the request → terminal (trim or fail).
+	//   2. KindContextBudgetExceeded is a gateway pre-flight rejection that says
+	//      auto selected the wrong bucket (a small-window model for a large
+	//      request) → recoverable by switching to a larger-window model.
+	// Classification: not terminal, not credential-fatal, allows model-change.
+	// Penalty: PenaltyNone (this is a routing mistake, not a node fault).
+	KindContextBudgetExceeded ErrorKind = "context_budget_exceeded"
+	KindUnsupportedFeature    ErrorKind = "unsupported_feature"
 	// KindModelDeprecated: upstream has permanently removed / end-of-lifed the
 	// requested model. Distinct from KindModelNotFound (where the model name is
 	// simply unknown / typo'd): deprecation is an authoritative upstream
@@ -1038,6 +1049,16 @@ var contentFilterRe = regexp.MustCompile(
 
 func ClassifyError(err error, resp *http.Response) ErrorKind {
 	if err != nil {
+		// 2026-11-19: ContextBudgetError is a gateway-side bucket budget
+		// exhaustion (request exceeds the selected bucket's context window).
+		// It is NOT the same as upstream context_length_exceeded:
+		//   - KindContextLength: upstream 400/422 → model cannot handle → terminal
+		//   - KindContextBudgetExceeded: gateway pre-flight → auto chose wrong bucket → switch model
+		// Check this BEFORE other error classification to ensure bucket mismatches
+		// trigger model-change instead of being terminal.
+		if isContextBudgetError(err) {
+			return KindContextBudgetExceeded
+		}
 		// Check timeout BEFORE cancel: if the error wraps DeadlineExceeded
 		// the upstream DID exceed the deadline; classifying it as Canceled
 		// (when the ctx tree shadows DeadlineExceeded with the parent's
@@ -2166,4 +2187,20 @@ func IsRequestSideError(kind ErrorKind) bool {
 
 func isBrokenPipeMessage(msg string) bool {
 	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "epipe")
+}
+
+// isContextBudgetError reports whether err is a *ContextBudgetError from
+// domains/streaming/executors. This is a gateway-side bucket budget exhaustion
+// (request tokens exceed the selected bucket's context window), distinct from
+// upstream context_length_exceeded (400/422). The former should trigger
+// model-change to a larger-window model; the latter is terminal.
+func isContextBudgetError(err error) bool {
+	// Check by error message to avoid import cycle (errorsx cannot import executors)
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Match "context_budget_exceeded:" prefix (direct error) or wrapped form
+	return strings.HasPrefix(msg, "context_budget_exceeded:") || 
+		strings.Contains(msg, ": context_budget_exceeded:")
 }
