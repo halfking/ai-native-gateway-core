@@ -44,7 +44,7 @@
 #        == 视口高 ⇒ Maestro 的 `scrollVertical()`（滚 window）与 `scrollUntilVisible`
 #        **对本页全是空转**（r9 实跑：scrollUntilVisible 直接 FAILED，
 #        且失败截图与 r8 逐像素同款 ⇒ 页面一像素都没动过）。
-#      ⇒ 本 flow **必须用 `--screen-size 1440x1400` 跑**（桌面视口，见
+#      ⇒ 本 flow **必须用 `--screen-size 1440x2200` 跑**（桌面视口，见
 #        maestro/run-simple-overview.sh）：两栏并排（`@media (max-width: 1024px)`
 #        才塌成一栏）⇒ 三个面板标题（接入清单 407 / 上游健康 407 /
 #        最常用的模型 981）全部落在初始视口内。
@@ -86,7 +86,7 @@ url: ${BASE_URL}
 # ★ 视口边界（2026-11-17 r8/r9 实测撞出，详见文件头 ⑥）：
 #   web 驱动的 view hierarchy **只覆盖视口**，而本页滚动容器是 `.main-body`
 #   （非 window）⇒ Maestro 滚不动 ⇒ **断言视口外的元素没有第二条路**。
-#   ⇒ 本 flow 用 `--screen-size 1440x1400`（桌面视口）跑：两栏并排、
+#   ⇒ 本 flow 用 `--screen-size 1440x2200`（桌面视口）跑：两栏并排、
 #     三个面板标题均在初始视口内；「面板确实存在」再由页面内 CDP 断言兜底。
 - assertVisible:
     text: "今日请求"          # 统计卡

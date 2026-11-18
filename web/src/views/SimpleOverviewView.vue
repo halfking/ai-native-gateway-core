@@ -603,7 +603,7 @@ function openDetail(k: ApiKey): void {
 </script>
 
 <template>
-  <div class="simple-overview">
+  <div class="simple-overview" :data-loading="loading ? '1' : '0'">
     <PageHeader :title="t('simpleMode.overview.title')" :subtitle="t('simpleMode.overview.subtitle')">
       <template #actions>
         <span class="chip">{{ t('simpleMode.mode.label') }} · {{ isSimple ? t('simpleMode.mode.simple') : t('simpleMode.mode.expert') }}</span>
