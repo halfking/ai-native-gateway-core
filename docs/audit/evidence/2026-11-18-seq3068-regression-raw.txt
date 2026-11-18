@@ -1,0 +1,905 @@
+# ── 归档说明（2026-11-18）：Maestro CLI 原样输出（run-local.sh，BASE_URL=https://llm.kxpms.cn）──
+# 摘要见 2026-11-18-seq3068-regression-summary.txt；采集器证据见 2026-11-18-seq3068-collector-verdict.txt
+# ★ 日志里口令是字面量 ${ADMIN_PASSWORD}（未展开）⇒ 无凭据泄漏。
+
+== 动态路由 ID：12 个
+   resolve-ids: 以下变量在本机没有真实数据（已用哨兵值兜底，断言须降级 optional）：
+     · SESSION_ID  ← /api/admin/sessions 没有会话
+     · SESSION_OWNER  ← /api/admin/session-analytics/users 没有可用数据
+     · APPROVAL_ID  ← /api/admin/approvals 没有可用数据
+==================== 01-public-guest ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 01-public-guest
+Launch app "${BASE_URL}"... COMPLETED
+Launch app "${BASE_URL}" with clear state... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/forbidden... COMPLETED
+Assert that "403 - 访问被拒绝" is visible... COMPLETED
+Run ${output.ms__forbidden = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/forbidden... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/... COMPLETED
+Assert that "把公司里所有大模型调用，收进一个能管、能查、能关的入口" is visible... FAILED
+
+Assertion is false: "把公司里所有大模型调用，收进一个能管、能查、能关的入口" is visible
+
+Assertion '"把公司里所有大模型调用，收进一个能管、能查、能关的入口" is visible' failed. Check the UI hierarchy in debug artifacts to verify the element state and properties.
+
+Possible causes:
+- Element selector may be incorrect - check if there are similar elements with slightly different names/properties.
+- Element may be temporarily unavailable due to loading state
+- This could be a real regression that needs to be addressed
+
+==== Debug output (logs & screenshots) ====
+
+/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3/maestro/reports/20261118-140116/01-public-guest/2026-11-18_140118
+--- 01-public-guest: rc=1 FAILED=1 WARNED=1
+==================== 02-overview-live ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 02-overview-live
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/... COMPLETED
+Assert that "仪表盘" is visible... FAILED
+
+Assertion is false: "仪表盘" is visible
+
+Assertion '"仪表盘" is visible' failed. Check the UI hierarchy in debug artifacts to verify the element state and properties.
+
+Possible causes:
+- Element selector may be incorrect - check if there are similar elements with slightly different names/properties.
+- Element may be temporarily unavailable due to loading state
+- This could be a real regression that needs to be addressed
+
+==== Debug output (logs & screenshots) ====
+
+/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3/maestro/reports/20261118-140116/02-overview-live/2026-11-18_140200
+--- 02-overview-live: rc=1 FAILED=1 WARNED=0
+==================== 03-providers-models ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 03-providers-models
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/providers... COMPLETED
+Assert that "供应商管理" is visible... COMPLETED
+Run ${output.ms__providers = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/providers... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/providers/${PROVIDER_ID}... COMPLETED
+Assert that "基础信息" is visible... COMPLETED
+Run ${output.ms__providers_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/providers/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/models... COMPLETED
+Assert that "模型与目录" is visible... COMPLETED
+Run ${output.ms__models = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/models... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/catalog... COMPLETED
+Assert that "模型与目录" is visible... COMPLETED
+Run ${output.ms__catalog = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/catalog... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/model-pricing... COMPLETED
+Assert that "定价管理" is visible... COMPLETED
+Run ${output.ms__model_pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/model-pricing... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/pricing... COMPLETED
+Assert that "成本价格" is visible... COMPLETED
+Run ${output.ms__pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/pricing... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/free-pool... COMPLETED
+Assert that "写入 DB 凭据" is visible... COMPLETED
+Run ${output.ms__free_pool = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/free-pool... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/free-discovery... COMPLETED
+Assert that "免费资源发现" is visible... COMPLETED
+Run ${output.ms__free_discovery = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/free-discovery... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/key-applications... COMPLETED
+Assert that ".*密钥申请.*" is visible... COMPLETED
+Run ${output.ms__key_applications = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/key-applications... COMPLETED
+--- 03-providers-models: rc=0 FAILED=0 WARNED=1
+==================== 04-tenants-portal ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 04-tenants-portal
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenants... COMPLETED
+Assert that "租户管理" is visible... COMPLETED
+Run ${output.ms__tenants = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenants... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenants/${TENANT_ID}... COMPLETED
+Assert that "模型管控" is visible... COMPLETED
+Run ${output.ms__tenants_tenantId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenants/:tenantId... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/users... COMPLETED
+Assert that "用户管理" is visible... COMPLETED
+Run ${output.ms__users = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/users... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenant/models?tenant=${TENANT_CODE}... COMPLETED
+Assert that "标准模型" is visible... COMPLETED
+Run ${output.ms__tenant_models = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenant/models... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenant/account?tenant=${TENANT_CODE}... COMPLETED
+Assert that "订阅额度" is visible... COMPLETED
+Run ${output.ms__tenant_account = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenant/account... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenant/pricing?tenant=${TENANT_CODE}... COMPLETED
+Assert that ".*套餐与充值.*" is visible... COMPLETED
+Run ${output.ms__tenant_pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenant/pricing... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenant/orders/${ORDER_ID}?tenant=${TENANT_CODE}... COMPLETED
+Assert that (Optional) "订单支付" is visible... COMPLETED
+Run ${output.ms__tenant_orders_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenant/orders/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/tenant/usage?tenant=${TENANT_CODE}... COMPLETED
+Assert that "积分消耗" is visible... COMPLETED
+Run ${output.ms__tenant_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/tenant/usage... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/maas/models?tenant=${TENANT_CODE}... COMPLETED
+Assert that "标准模型" is visible... COMPLETED
+Run ${output.ms__maas_models = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/maas/models... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/maas/account?tenant=${TENANT_CODE}... COMPLETED
+Assert that "订阅额度" is visible... COMPLETED
+Run ${output.ms__maas_account = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/maas/account... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/maas/pricing?tenant=${TENANT_CODE}... COMPLETED
+Assert that ".*套餐与充值.*" is visible... COMPLETED
+Run ${output.ms__maas_pricing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/maas/pricing... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/maas/orders/${ORDER_ID}?tenant=${TENANT_CODE}... COMPLETED
+Assert that (Optional) "订单支付" is visible... COMPLETED
+Run ${output.ms__maas_orders_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/maas/orders/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/maas/usage?tenant=${TENANT_CODE}... COMPLETED
+Assert that "积分消耗" is visible... COMPLETED
+Run ${output.ms__maas_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/maas/usage... COMPLETED
+--- 04-tenants-portal: rc=0 FAILED=0 WARNED=3
+==================== 05-routing ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 05-routing
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2... COMPLETED
+Assert that "路由全景" is visible... COMPLETED
+Run ${output.ms__routing_v2 = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/credentials... COMPLETED
+Assert that "凭据监控" is visible... COMPLETED
+Run ${output.ms__routing_v2_credentials = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/credentials... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/probe-health... COMPLETED
+Assert that "探测健康度" is visible... COMPLETED
+Run ${output.ms__probe_health = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/probe-health... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/probe-health/detail?model=${MODEL_NAME}... COMPLETED
+Assert that "${MODEL_NAME}" is visible... COMPLETED
+Run ${output.ms__probe_health_detail = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/probe-health/detail... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/work-types... COMPLETED
+Assert that "工作类型" is visible... COMPLETED
+Run ${output.ms__routing_v2_work_types = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/work-types... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/work-types/settings... COMPLETED
+Assert that "工作类型列表" is visible... COMPLETED
+Run ${output.ms__routing_v2_work_types_settings = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/work-types/settings... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/work-types/${WORK_TYPE_KEY}... COMPLETED
+Assert that "工作类型" is visible... COMPLETED
+Run ${output.ms__routing_v2_work_types_key = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/work-types/:key... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/auto-ops... COMPLETED
+Assert that "AUTO 路由运营" is visible... COMPLETED
+Run ${output.ms__routing_v2_auto_ops = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/auto-ops... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/annotations... COMPLETED
+Assert that ".*标注工作台.*" is visible... COMPLETED
+Run ${output.ms__routing_v2_annotations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/annotations... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/annotations/stats... COMPLETED
+Assert that ".*标注统计.*" is visible... COMPLETED
+Run ${output.ms__routing_v2_annotations_stats = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/annotations/stats... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/task-profile... COMPLETED
+Assert that ".*任务档案.*" is visible... COMPLETED
+Run ${output.ms__routing_v2_task_profile = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/task-profile... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-v2/auto-tuning... COMPLETED
+Assert that ".*调参审批.*" is visible... COMPLETED
+Run ${output.ms__routing_v2_auto_tuning = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-v2/auto-tuning... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-policy... COMPLETED
+Assert that "路由策略" is visible... COMPLETED
+Run ${output.ms__routing_policy = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-policy... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing... COMPLETED
+Assert that "路由全景" is visible... COMPLETED
+Run ${output.ms__routing = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-overview... COMPLETED
+Assert that "模型路由全景" is visible... COMPLETED
+Run ${output.ms__routing_overview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-overview... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing-decisions... COMPLETED
+Assert that "路由决策日志" is visible... COMPLETED
+Run ${output.ms__routing_decisions = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing-decisions... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/correlations... COMPLETED
+Assert that "Auto-Route 关联分析 (Correlations)" is visible... COMPLETED
+Run ${output.ms__correlations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/correlations... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing/overrides... COMPLETED
+Assert that "路由覆盖 (Routing Overrides)" is visible... COMPLETED
+Run ${output.ms__routing_overrides = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing/overrides... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/routing/overrides/audit... COMPLETED
+Assert that "路由覆盖审计" is visible... COMPLETED
+Run ${output.ms__routing_overrides_audit = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/routing/overrides/audit... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/quality-correlations... COMPLETED
+Assert that "质量关联分析" is visible... COMPLETED
+Run ${output.ms__quality_correlations = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/quality-correlations... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/system-monitor... COMPLETED
+Assert that "仪表盘" is visible... COMPLETED
+Run ${output.ms__system_monitor = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/system-monitor... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/dispatch/waterfall... COMPLETED
+Assert that "队列瀑布图" is visible... COMPLETED
+Run ${output.ms__dispatch_waterfall = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/dispatch/waterfall... COMPLETED
+--- 05-routing: rc=0 FAILED=0 WARNED=1
+==================== 06-keys-requests ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 06-keys-requests
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/keys... COMPLETED
+Assert that "API 密钥管理" is visible... COMPLETED
+Run ${output.ms__keys = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/keys... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/keys/${API_KEY_ID}... COMPLETED
+Assert that "密钥信息" is visible... COMPLETED
+Run ${output.ms__keys_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/keys/:id... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/request-logs... COMPLETED
+Assert that "请求日志" is visible... COMPLETED
+Run ${output.ms__request_logs = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/request-logs... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/request-detail/${REQUEST_ID}... COMPLETED
+Assert that "单请求" is visible... COMPLETED
+Run ${output.ms__request_detail_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/request-detail/:requestId... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/users... COMPLETED
+Assert that "用户画像" is visible... COMPLETED
+Run ${output.ms__admin_session_analytics_users = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/session-analytics/users... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/users/${SESSION_OWNER}... COMPLETED
+Assert that (Optional) ".*用户画像详情.*" is visible... COMPLETED
+Run ${output.ms__admin_session_analytics_users_owner = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/session-analytics/users/:owner... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/clients/${CLIENT_ID}... COMPLETED
+Assert that ".*客户端分析.*" is visible... COMPLETED
+Run ${output.ms__admin_session_analytics_clients_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/session-analytics/clients/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/tasks/${TASK_ID}... COMPLETED
+Assert that ".*任务分析.*" is visible... COMPLETED
+Run ${output.ms__admin_session_analytics_tasks_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/session-analytics/tasks/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/filter-options... COMPLETED
+Assert that "会话分析筛选" is visible... COMPLETED
+Run ${output.ms__admin_session_analytics_filter_options = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/session-analytics/filter-options... COMPLETED
+--- 06-keys-requests: rc=0 FAILED=0 WARNED=1
+==================== 07-admin-config ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 07-admin-config
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/settings... COMPLETED
+Assert that "当前值" is visible... COMPLETED
+Run ${output.ms__admin_settings = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/settings... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/modules... COMPLETED
+Assert that "模块管理" is visible... COMPLETED
+Run ${output.ms__admin_modules = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/modules... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/agents... COMPLETED
+Assert that "Agent Registry" is visible... COMPLETED
+Run ${output.ms__admin_agents = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/agents... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/prompt-injection... COMPLETED
+Assert that "提示词注入检测" is visible... COMPLETED
+Run ${output.ms__admin_prompt_injection = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/prompt-injection... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/approval-config... COMPLETED
+Assert that "审批模式" is visible... COMPLETED
+Run ${output.ms__admin_approval_config = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/approval-config... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/approvals... COMPLETED
+Assert that "审批请求" is visible... COMPLETED
+Run ${output.ms__admin_approvals = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/approvals... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/approvals/${APPROVAL_ID}... COMPLETED
+Assert that (Optional) "审批请求详情" is visible... COMPLETED
+Run ${output.ms__admin_approvals_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/approvals/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/sanitize-rules... COMPLETED
+Assert that "敏感信息规则" is visible... COMPLETED
+Run ${output.ms__admin_sanitize_rules = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/sanitize-rules... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/output-compliance... COMPLETED
+Assert that "输出合规" is visible... COMPLETED
+Run ${output.ms__admin_output_compliance = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/output-compliance... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/compression... COMPLETED
+Assert that "压缩概览" is visible... COMPLETED
+Run ${output.ms__admin_compression = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/compression... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/data-lifecycle... COMPLETED
+Assert that "数据生命周期管理" is visible... COMPLETED
+Run ${output.ms__admin_data_lifecycle = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/data-lifecycle... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/data-lifecycle/migration-state... COMPLETED
+Assert that "存储迁移状态" is visible... COMPLETED
+Run ${output.ms__admin_data_lifecycle_migration_state = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/data-lifecycle/migration-state... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/storage-and-log-config... COMPLETED
+Assert that "存储与日志配置" is visible... COMPLETED
+Run ${output.ms__admin_storage_and_log_config = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/storage-and-log-config... COMPLETED
+--- 07-admin-config: rc=0 FAILED=0 WARNED=1
+==================== 08-admin-data-ops ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 08-admin-data-ops
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/usage... COMPLETED
+Assert that "成本对比" is visible... COMPLETED
+Run ${output.ms__admin_usage = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/usage... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/usage-trends... COMPLETED
+Assert that "用量趋势分析" is visible... COMPLETED
+Run ${output.ms__admin_usage_trends = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/usage-trends... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/usage-enhanced... COMPLETED
+Assert that "用量增强分析" is visible... COMPLETED
+Run ${output.ms__admin_usage_enhanced = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/usage-enhanced... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/board-operational... COMPLETED
+Assert that "运营面板" is visible... COMPLETED
+Run ${output.ms__admin_board_operational = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/board-operational... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/ops-overview... COMPLETED
+Assert that "运维总览" is visible... COMPLETED
+Run ${output.ms__admin_ops_overview = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/ops-overview... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/subscription-tiers... COMPLETED
+Assert that "订阅层级" is visible... COMPLETED
+Run ${output.ms__admin_subscription_tiers = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/subscription-tiers... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/turns/filter-options... COMPLETED
+Assert that "轮次筛选选项" is visible... COMPLETED
+Run ${output.ms__admin_turns_filter_options = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/turns/filter-options... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/turns... COMPLETED
+Assert that "会话与轮次" is visible... COMPLETED
+Run ${output.ms__admin_turns = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/turns... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/sessions/${SESSION_ID}... COMPLETED
+Assert that "轮次时间线" is visible... COMPLETED
+Run ${output.ms__admin_sessions_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/sessions/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/request-actions/${REQUEST_ID}... COMPLETED
+Assert that "请求动作时间线" is visible... COMPLETED
+Run ${output.ms__admin_request_actions_id = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/request-actions/:id... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/request-registry... COMPLETED
+Assert that "请求注册表" is visible... COMPLETED
+Run ${output.ms__admin_request_registry = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/request-registry... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/request-registry/journey/${REQUEST_ID}... COMPLETED
+Assert that "请求 Journey 详情" is visible... COMPLETED
+Run ${output.ms__admin_request_registry_journey_requestId = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/request-registry/journey/:requestId... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/connection-registry... COMPLETED
+Assert that "连接注册台" is visible... COMPLETED
+Run ${output.ms__admin_connection_registry = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/connection-registry... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/connection-registry/${CREDENTIAL_ID}/recovery... COMPLETED
+Assert that "节点恢复时间线" is visible... COMPLETED
+Run ${output.ms__admin_connection_registry_credentialId_recovery = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/connection-registry/:credentialId/recovery... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/reconciliation... COMPLETED
+Assert that "供应商对帐" is visible... COMPLETED
+Run ${output.ms__admin_reconciliation = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/reconciliation... WARNED
+
+
+ Warning: Assertion is false: false is true
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/admin/proxy... COMPLETED
+Assert that "代理管理" is visible... COMPLETED
+Run ${output.ms__admin_proxy = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/admin/proxy... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/audit-logs... COMPLETED
+Assert that "审计日志" is visible... COMPLETED
+Run ${output.ms__audit_logs = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/audit-logs... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/format-anomalies... COMPLETED
+Assert that "格式异常监控" is visible... COMPLETED
+Run ${output.ms__format_anomalies = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/format-anomalies... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/model-integrity... COMPLETED
+Assert that "模型完整性监控" is visible... COMPLETED
+Run ${output.ms__model_integrity = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}... COMPLETED
+slow-check:/model-integrity... COMPLETED
+--- 08-admin-data-ops: rc=0 FAILED=0 WARNED=1
+==================== 09-ops-maintain ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 09-ops-maintain
+Launch app "${BASE_URL}"... COMPLETED
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run ${output.t0 = Date.now()}... COMPLETED
+Open ${BASE_URL}/ops/licenses... COMPLETED
+Assert that "更新与激活|运维平台暂时不可用" is visible... FAILED
+
+Assertion is false: "更新与激活|运维平台暂时不可用" is visible
+
+Assertion '"更新与激活|运维平台暂时不可用" is visible' failed. Check the UI hierarchy in debug artifacts to verify the element state and properties.
+
+Possible causes:
+- Element selector may be incorrect - check if there are similar elements with slightly different names/properties.
+- Element may be temporarily unavailable due to loading state
+- This could be a real regression that needs to be addressed
+
+==== Debug output (logs & screenshots) ====
+
+/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3/maestro/reports/20261118-140116/09-ops-maintain/2026-11-18_140800
+--- 09-ops-maintain: rc=1 FAILED=1 WARNED=0
+==================== 11-simple-overview ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 11-simple-overview
+Open ${BASE_URL}/dashboard... COMPLETED
+Tap on (Optional) "系统管理员"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 系统管理员
+Tap on (Optional) "退出登录"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 退出登录
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Run _shared/switch-simple-mode.yaml...
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Tap on (Optional) "简易模式"... WARNED
+  Assert that "实时请求流" is visible... COMPLETED
+  Tap on "专家模式"... COMPLETED
+  Assert that "工作模式 · 简易模式" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml... COMPLETED
+Assert that "今日请求" is visible... COMPLETED
+Assert that "接一个上游" is visible... COMPLETED
+Assert that "接入清单" is visible... COMPLETED
+Assert that "上游健康" is visible... COMPLETED
+Assert that "最常用的模型" is visible... COMPLETED
+Assert that "最近在用" is visible... COMPLETED
+Assert that "用得最多" is visible... COMPLETED
+Assert that "上一页" is visible... COMPLETED
+Assert that "下一页" is visible... COMPLETED
+Assert that "成功率" is visible... COMPLETED
+Assert that "Token 用量" is visible... COMPLETED
+Assert that "今日花费" is visible... COMPLETED
+Assert that "活跃密钥" is visible... COMPLETED
+Assert that "可用模型" is visible... COMPLETED
+Assert that "暂不可用" is not visible... COMPLETED
+Assert that "签发网关密钥" is visible... COMPLETED
+Assert that "查看请求" is visible... COMPLETED
+Assert that "打开对话" is visible... COMPLETED
+Assert that (Optional) "可用" is visible... COMPLETED
+Assert that (Optional) "未探活" is visible... WARNED
+
+
+ Warning: Assertion is false: "未探活" is visible
+Tap on "接一个上游"... COMPLETED
+Assert that "上游账号、余额与健康状态" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml...
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Tap on (Optional) "简易模式"... COMPLETED
+  Assert that "实时请求流" is visible... COMPLETED
+  Tap on "专家模式"... COMPLETED
+  Assert that "工作模式 · 简易模式" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml... COMPLETED
+Tap on "签发网关密钥", Index: 1... COMPLETED
+Assert that "两个字段签发一个密钥，租户与应用自动填充为默认值" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml...
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Tap on (Optional) "简易模式"... COMPLETED
+  Assert that "实时请求流" is visible... COMPLETED
+  Tap on "专家模式"... COMPLETED
+  Assert that "工作模式 · 简易模式" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml... COMPLETED
+Tap on "查看请求"... COMPLETED
+Assert that "自动刷新" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml...
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Tap on (Optional) "简易模式"... COMPLETED
+  Assert that "实时请求流" is visible... COMPLETED
+  Tap on "专家模式"... COMPLETED
+  Assert that "工作模式 · 简易模式" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml... COMPLETED
+Tap on "打开对话"... COMPLETED
+Assert that "+ 新建" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml...
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Tap on (Optional) "简易模式"... COMPLETED
+  Assert that "实时请求流" is visible... COMPLETED
+  Tap on "专家模式"... COMPLETED
+  Assert that "工作模式 · 简易模式" is visible... COMPLETED
+Run _shared/switch-simple-mode.yaml... COMPLETED
+Tap on "刷新"... COMPLETED
+Assert that "今日请求" is visible... COMPLETED
+Assert that "工作模式 · 简易模式" is visible... COMPLETED
+Tap on "简易模式"... COMPLETED
+Assert that "实时请求流" is visible... COMPLETED
+Open ${BASE_URL}/dashboard... COMPLETED
+Assert that "实时请求流" is visible... COMPLETED
+Assert that "工作模式 · 简易模式" is not visible... COMPLETED
+Assert that "今日请求" is not visible... COMPLETED
+--- 11-simple-overview: rc=0 FAILED=0 WARNED=4
+==================== 12-live-stage-tree ====================
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 12-live-stage-tree
+Open ${BASE_URL}/dashboard... COMPLETED
+Tap on (Optional) "系统管理员"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 系统管理员
+Tap on (Optional) "退出登录"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 退出登录
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Open ${BASE_URL}/dashboard... COMPLETED
+Assert that "请求阶段树" is visible... COMPLETED
+Tap on "请求阶段树"... COMPLETED
+Assert that ".*请求 · .*成功率.*" is visible... COMPLETED
+Assert that "全部客户端" is visible... COMPLETED
+Assert that "全部供应商" is visible... COMPLETED
+Assert that "全部模型" is visible... COMPLETED
+Assert that "全部节点" is visible... COMPLETED
+Assert that "全部状态" is visible... COMPLETED
+Assert that "显示探测请求" is visible... COMPLETED
+Assert that "显示无效节点" is visible... COMPLETED
+Assert that "已完成" is visible... COMPLETED
+Assert that "进行中" is visible... COMPLETED
+Assert that "未到达" is visible... COMPLETED
+Assert that "失败" is visible... COMPLETED
+Assert that ".*发送轨.*" is visible... COMPLETED
+Assert that ".*接收轨.*" is visible... COMPLETED
+Assert that "完整" is visible... COMPLETED
+Assert that "紧凑" is visible... COMPLETED
+Tap on "紧凑"... COMPLETED
+Assert that ".*请求 · .*成功率.*" is visible... COMPLETED
+Tap on "完整"... COMPLETED
+Assert that "鉴权/限流" is visible... COMPLETED
+Tap on ".*请求 · .*成功率.*"... COMPLETED
+Assert that "实时统计" is visible... COMPLETED
+Assert that "总览" is visible... COMPLETED
+Assert that "周期统计" is visible... COMPLETED
+Assert that "分类统计" is visible... COMPLETED
+Assert that "口径说明" is visible... COMPLETED
+Assert that "请求数" is visible... COMPLETED
+Assert that "成功率" is visible... COMPLETED
+Open ${BASE_URL}/live... COMPLETED
+Assert that "实时拓扑" is visible... COMPLETED
+Assert that "请求阶段树" is visible... COMPLETED
+Tap on "请求阶段树"... COMPLETED
+Assert that ".*请求 · .*成功率.*" is visible... COMPLETED
+--- 12-live-stage-tree: rc=0 FAILED=0 WARNED=2
+==================== 98-theme-validation ====================
+Running on pocket-test-a35
+ > Flow 98-theme-validation
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... FAILED
+Run _shared/login.yaml... FAILED
+
+Assertion is false: id: login-modal-title is visible
+
+Assertion 'id: login-modal-title is visible' failed. Check the UI hierarchy in debug artifacts to verify the element state and properties.
+
+Possible causes:
+- Element selector may be incorrect - check if there are similar elements with slightly different names/properties.
+- Element may be temporarily unavailable due to loading state
+- This could be a real regression that needs to be addressed
+
+==== Debug output (logs & screenshots) ====
+
+/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3/maestro/reports/20261118-140116/98-theme-validation/2026-11-18_141144
+--- 98-theme-validation: rc=1 FAILED=2 WARNED=0
+
+==== 汇总 ====
+01-public-guest              rc=1   FAILED=1    WARNED=1
+02-overview-live             rc=1   FAILED=1    WARNED=0
+03-providers-models          rc=0   FAILED=0    WARNED=1
+04-tenants-portal            rc=0   FAILED=0    WARNED=3
+05-routing                   rc=0   FAILED=0    WARNED=1
+06-keys-requests             rc=0   FAILED=0    WARNED=1
+07-admin-config              rc=0   FAILED=0    WARNED=1
+08-admin-data-ops            rc=0   FAILED=0    WARNED=1
+09-ops-maintain              rc=1   FAILED=1    WARNED=0
+11-simple-overview           rc=0   FAILED=0    WARNED=4
+12-live-stage-tree           rc=0   FAILED=0    WARNED=2
+98-theme-validation          rc=1   FAILED=2    WARNED=0
+产物目录：/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3/maestro/reports/20261118-140116

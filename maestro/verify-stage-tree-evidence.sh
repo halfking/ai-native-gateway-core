@@ -367,6 +367,15 @@ if [ "$WITH_BROWSER" = "1" ]; then
     #      （实测 bands 4→9、inFlight 4→8）⇒ 两层断言都能评估。
     TK=$(cat "${STAGE_TREE_TOKEN_FILE:-/tmp/llmgw-jwt.txt}")
     KEY_ID=""; KEY=""
+    # ★★ 造流量的**模型**必须选「在 154 上真有候选面」的模型（L20）：
+    #   原写死 `glm-4.5-flash` ⇒ 该模型在 154 上**候选面为空**（实测 503 `no_candidates`）
+    #   ⇒ 那几笔「在途流量」其实**以 503 收尾** ⇒ 阶段树记录的是**失败请求的在途**
+    #   ⇒ 断言虽仍成立，钉的却是「失败请求的在途」⇒ 证据偏弱。
+    #   ⇒ 改用 `auto`（实测 200 真作答）⇒ 造的是**成功流量**。
+    #   ★ 仍可用 `STAGE_TREE_TRAFFIC_MODEL` 覆盖（换机器/换模型面时不必改脚本）。
+    TRAFFIC_MODEL="${STAGE_TREE_TRAFFIC_MODEL:-auto}"
+    TRAFFIC_CODE_DIR="/tmp/vst-traffic-codes"
+    mkdir -p "$TRAFFIC_CODE_DIR"; rm -f "$TRAFFIC_CODE_DIR"/*.code 2>/dev/null
     seed_traffic() {
       APP_CODE="stage-tree-evidence-$(date +%s)-$$-$1"
       KEY_JSON=$(curl -s -m 30 -X POST "${BASE_URL}/api/keys" -H "Authorization: Bearer ${TK}" \
@@ -377,16 +386,27 @@ if [ "$WITH_BROWSER" = "1" ]; then
       [ -z "$KEY_ID" ] && { echo "    造流量：临时密钥创建失败 ⇒ 原文：$(printf '%s' "$KEY_JSON" | head -c 160)"; return 1; }
       curl -s -m 20 -X PATCH "${BASE_URL}/api/keys/${KEY_ID}/approve" -H "Authorization: Bearer ${TK}" -o /dev/null 2>/dev/null
       # 小批量 + 间隔 ⇒ 避开 429（被 429 挡在网关入口 ⇒ 根本没进实时流）
-      printf '    造流量返回码:'
+      printf '    造流量: 模型 %s（在途型，stream+max_tokens=1000）' "${TRAFFIC_MODEL}"
       for i in 1 2 3 4; do
-        ( curl -s -m 45 -N -X POST "${BASE_URL}/v1/chat/completions" -H "Authorization: Bearer ${KEY}" \
+        # ★ 把每笔的 HTTP 码落文件 ⇒ 采集器**自报造流量实况**（造成功流量 vs 造失败流量）
+        ( curl -s -m 60 -N -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/v1/chat/completions" -H "Authorization: Bearer ${KEY}" \
             -H 'Content-Type: application/json' \
-            --data '{"model":"glm-4.5-flash","messages":[{"role":"user","content":"请写一篇 800 字的中文短文，介绍分布式系统的一致性模型"}],"max_tokens":1000,"stream":true}' \
-            >/dev/null 2>&1 ) &
+            --data "{\"model\":\"${TRAFFIC_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"请写一篇 800 字的中文短文，介绍分布式系统的一致性模型\"}],\"max_tokens\":1000,\"stream\":true}" \
+            > "${TRAFFIC_CODE_DIR}/$1-$i.code" 2>/dev/null ) &
         sleep 1
       done
-      echo " （在途型）"
+      echo
       return 0
+    }
+    # 等在途流量收尾（最多 60s）⇒ 拿到每笔的 HTTP 码 ⇒ 「造流量实况」可读
+    wait_traffic_codes() {
+      local n=0 i
+      for i in $(seq 1 60); do
+        n=$(ls -1 "${TRAFFIC_CODE_DIR}"/*.code 2>/dev/null | wc -l | tr -d ' ')
+        [ "$n" -ge 4 ] && break
+        sleep 1
+      done
+      cat "${TRAFFIC_CODE_DIR}"/*.code 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//'
     }
     if [ "${STAGE_TREE_TRAFFIC:-1}" = "1" ]; then
       seed_traffic 1 || true
@@ -409,11 +429,18 @@ if [ "$WITH_BROWSER" = "1" ]; then
         break
       fi
     done
+    # ★ 造流量实况自报：断言跑完后再收尾 ⇒ 拿到每笔的 HTTP 码
+    #   ⇒ 「造成功流量」与「造失败流量」在证据里**看得见**（L20 的真正修法）。
+    TRAFFIC_CODES=""
+    if [ "${STAGE_TREE_TRAFFIC:-1}" = "1" ]; then
+      TRAFFIC_CODES=$(wait_traffic_codes)
+      echo "    造流量实况: 模型 ${TRAFFIC_MODEL} ⇒ HTTP ${TRAFFIC_CODES:-未回读}"
+    fi
     for pair in "⑫ 断言（行为层）|$A1|$A1RC" "⑬ 断言（设计层）|$A2|$A2RC"; do
       NAME="${pair%%|*}"; REST="${pair#*|}"; TXT="${REST%%|*}"; RC="${REST##*|}"
       LINE=$(printf '%s' "$TXT" | grep -E 'RESULT:' | tail -1)
       case "$RC" in
-        0) ok "${NAME}" "${LINE:-PASS}" ;;
+        0) ok "${NAME}" "${LINE:-PASS}${TRAFFIC_CODES:+；造流量 HTTP: ${TRAFFIC_CODES}（模型 ${TRAFFIC_MODEL}）}" ;;
         2) skip "${NAME}" "${LINE:-量具失效} ⇒ 需先造流量再重跑" ;;
         *) bad "${NAME}" "${LINE:-FAIL}（退出码 ${RC}）" ;;
       esac
@@ -425,7 +452,7 @@ if [ "$WITH_BROWSER" = "1" ]; then
       R1=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "${BASE_URL}/api/keys/${KEY_ID}" -H "Authorization: Bearer ${TK}" 2>/dev/null || true)
       R2=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/v1/chat/completions" \
            -H "Authorization: Bearer ${KEY}" -H 'Content-Type: application/json' \
-           --data '{"model":"glm-4.5-flash","messages":[{"role":"user","content":"ok"}],"max_tokens":8}' 2>/dev/null || true)
+           --data "{\"model\":\"${TRAFFIC_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":8}" 2>/dev/null || true)
       if [ "$R1" = "404" ] && [ "$R2" = "401" ]; then
         ok "⑭ 临时密钥清理" "id=${KEY_ID} 已删（回读 ${R1} / 旧密钥 ${R2}）"
       else

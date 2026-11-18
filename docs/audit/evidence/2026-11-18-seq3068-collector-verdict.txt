@@ -1,0 +1,40 @@
+# ── 归档说明（生成于 2026-11-18；本文件＝采集器 stdout 原样归档，未手改）──
+# 目标站点：https://llm.kxpms.cn（154 生产）
+# 线上版本：2.6.1-ef157812-20261118-3068（git_sha=ef157812 / build_seq=3068 / ready=true）
+# 部署树：/private/tmp/deploy-frozen-154-main-1562862b（detached ef1578122 ＝ origin/main@ef1578122）
+# 采集器：maestro/verify-stage-tree-evidence.sh --with-browser
+#         ★ 跑的是【分支版】：⑦⑧ 判据基准改造 ＋ 造流量模型改 auto ＋ 造流量自报 HTTP 码
+#         （临时拷进部署树执行；跑完已 `git checkout --` 还原 ⇒ 部署树与发布物逐字一致）
+# 运行命令：BASE_URL=https://llm.kxpms.cn ADMIN_USER=… ADMIN_PASSWORD=… \
+#           DEPLOY_TREE=/private/tmp/deploy-frozen-154-main-1562862b \
+#           bash maestro/verify-stage-tree-evidence.sh --with-browser
+# 退出码：0 ⇒ RESULT: PASS（15 条）
+# 造流量：模型 auto ⇒ HTTP 200 200 200 200（4 笔全部**成功流量**）
+# 主档：docs/audit/2026-11-18-补发最新main到154-seq3068-主档.md
+
+════ 采集开始（https://llm.kxpms.cn）════
+    造流量: 模型 auto（在途型，stream+max_tokens=1000）
+    断言轮 1: 行为层 rc=0 设计层 rc=2
+    ⇒ 量具失效（窗口内无在途请求）⇒ 再造一轮在途流量重跑
+    造流量: 模型 auto（在途型，stream+max_tokens=1000）
+    断言轮 2: 行为层 rc=0 设计层 rc=0
+    造流量实况: 模型 auto ⇒ HTTP 200200200200
+
+════ 逐条 verdict ════
+  PASS  │ ① SSH 直连 version.json                │ 2.6.1-ef157812-20261118-3068 / ef157812 / seq=3068 → 3068-ef157812
+  PASS  │ ② 公网 healthz                         │ HTTP 200 / 2.6.1-ef157812-20261118-3068 / ef157812 / seq=3068 / ready=True
+  PASS  │ ③ 身份三方一致                     │ SSH = healthz = 部署树 commit ef157812（tag deploy-154/seq3068-ef157812）＝ 2.6.1-ef157812-20261118-3068
+  PASS  │ ④ i18n-audit.mjs                         │ PASS（0 missing keys，rc=0）
+  PASS  │ ⑤ 定向 vitest                          │ 3 文件 / 40 用例全绿（rc=0）
+  PASS  │ ⑥ 线上 bundle 契约串                │ 19/19 全命中（/assets/index-Bngyv0Kc.js）
+  PASS  │ ⑦ 在役部署可追溯 + 零泄漏      │ tag deploy-154/seq3068-ef157812（ef1578122，基点 1562862b + 4 文件（tag 记 files=4））＝ 部署树 HEAD ef157812；线上 release 产物 == 部署树（零泄漏）
+  PASS  │ ⑧ 上一版部署可追溯 + 内容超集 │ tag deploy-154/seq3067-1562862b（1562862ba，基点 2083bbe0 + 113 文件（tag 记 files=113））；台账自洽=1／前进关系=1（上一版是新版权威）／新版未删文件=0／上一版 release 目录 3067-1562862b 留存=yes；→新版差异 4 个文件（PI 域 6 处，仅报告）
+  PASS  │ ⑨ 前端产物三方 sha256              │ 969c997230f8c5d4… （服务器 = 公网 = 本地 dist）
+  PASS  │ ⑩ 合并试演零冲突                  │ git merge-tree 退出码 0（origin/main=3d4583425）
+  PASS  │ ⑪ Maestro flow 12                        │ 退出码 0，51 步全 COMPLETED，0 失败
+  PASS  │ ⑫ 断言（行为层）                  │ RESULT: PASS（22 条）；造流量 HTTP: 200200200200（模型 auto）
+  PASS  │ ⑬ 断言（设计层）                  │ RESULT: PASS（32 条）；造流量 HTTP: 200200200200（模型 auto）
+  PASS  │ ⑭ 临时密钥清理                     │ id=237 已删（回读 404 / 旧密钥 401）
+  PASS  │ ⑮ F1 紧凑图例字形随模式切换   │ 紧凑图例=['', '◐', '', '⌀', '✕', '⚠', '']（✓计数=0）；完整图例 done='✓'（✓计数=36，对照组）
+
+RESULT: PASS（15 条）

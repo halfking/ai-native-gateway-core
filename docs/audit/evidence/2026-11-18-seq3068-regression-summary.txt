@@ -1,0 +1,35 @@
+# ── 归档说明（生成于 2026-11-18；本文件＝对拍脚本输出，未手改）──
+# 目标站点：https://llm.kxpms.cn（154 生产）
+# 线上版本：2.6.1-ef157812-20261118-3068（git_sha=ef157812 / build_seq=3068）
+# 运行树：/Users/niuer/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3（HEAD=ef1578122 ＝ 发布树；
+#         该树带仓根 .env.local ⇒ 回归脚本能取到口令；maestro/ 资产与发布树零差异）
+# 运行命令：BASE_URL=https://llm.kxpms.cn bash maestro/run-local.sh maestro/flows/{01..12,98}.yaml
+# 结论：**绿 8 / 红 4**；红点 01/02/09（L13 生产 nginx 路由）与 98（L17 跑法错）**与 seq 3067 逐条完全一致**
+#       ⇒ **零新增红**（对拍到失败明细层面，不是只比计数）
+# 原始日志：docs/audit/evidence/2026-11-18-seq3068-regression-raw.txt（Maestro CLI 原样输出）
+
+=== 逐条 flow 结果（rc / FAILED / WARNED）===
+  01-public-guest          rc=1 FAILED=1 WARNED=1  ⇒ 红
+  02-overview-live         rc=1 FAILED=1 WARNED=0  ⇒ 红
+  03-providers-models      rc=0 FAILED=0 WARNED=1  ⇒ 绿
+  04-tenants-portal        rc=0 FAILED=0 WARNED=3  ⇒ 绿
+  05-routing               rc=0 FAILED=0 WARNED=1  ⇒ 绿
+  06-keys-requests         rc=0 FAILED=0 WARNED=1  ⇒ 绿
+  07-admin-config          rc=0 FAILED=0 WARNED=1  ⇒ 绿
+  08-admin-data-ops        rc=0 FAILED=0 WARNED=1  ⇒ 绿
+  09-ops-maintain          rc=1 FAILED=1 WARNED=0  ⇒ 红
+  11-simple-overview       rc=0 FAILED=0 WARNED=4  ⇒ 绿
+  12-live-stage-tree       rc=0 FAILED=0 WARNED=2  ⇒ 绿
+  98-theme-validation      rc=1 FAILED=2 WARNED=0  ⇒ 红
+  合计：绿 8 / 红 4
+
+=== 失败断言明细（与 seq 3067 逐条一致 ⇒ 零新增红）===
+  01-public-guest: Assert that "把公司里所有大模型调用，收进一个能管、能查、能关的入口" is visible... FAILED
+  02-overview-live: Assert that "仪表盘" is visible... FAILED
+  09-ops-maintain: Assert that "更新与激活|运维平台暂时不可用" is visible... FAILED
+  98-theme-validation: Assert that id: login-modal-title is visible... FAILED
+  98-theme-validation: Run _shared/login.yaml... FAILED
+
+=== 归因 ===
+  01/02/09 ⇒ L13 既有红（生产 nginx 路由：`/`→302→/maintain/home；`/ops/*` 外跳到可达的 maintain）
+  98       ⇒ L17 跑法错（flow 头写 `appId:`（Android 约定）⇒ 被派到 Android 模拟器）
