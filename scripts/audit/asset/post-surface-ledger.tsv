@@ -503,6 +503,7 @@
 /api/lite/sessions	ANY	admin/handler.go:1471	read		503	error	post-executes-on-empty-body	★ 空 body 就执行（★ 需逐条裁决）
 /api/logs	ANY	admin/handler.go:1399	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/logs/	ANY	admin/handler.go:1400	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
+/api/logs/top-problems	ANY	admin/handler.go:1511	read	400-guard			not-probed-not-reached	★ ★ 分级说只读却没探测到 ⇒ 需查；★ 静态分级 read 与 handler 源码一致（admin/top_problems.go:89 起首行 method guard：非 GET ⇒ 405 method not allowed ⇒ 零副作用）；★ 未在部署面实测 POST ⇒ 无探测观测（bucket 空）
 /api/maas/account	ANY	admin/maas_handlers.go:31	read		405	method-not-registered	post-verified-no-side-effect	★ 可证明零副作用
 /api/maas/bills	ANY	admin/maas_bills_handlers.go:16	read				not-probed-not-reached	★ GET-only（:132）租户月账单列表；未真探测
 /api/maas/bills/export	ANY	admin/maas_bills_handlers.go:17	read				not-probed-not-reached	★ GET-only（:161）CSV 导出；未真探测

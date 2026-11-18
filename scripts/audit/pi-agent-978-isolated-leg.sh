@@ -115,7 +115,7 @@ else
   fail "978/空表" "首次执行失败"
 fi
 n=$("${PSQL[@]}" -d "$DB_NAME" -tAc "SELECT count(*) FROM public.prompt_injection_rules")
-[[ "$n" == "25" ]] && pass "978/空表" "补种后 25 条（实际 $n）" || fail "978/空表" "补种后应为 25 条，实际 $n"
+[[ "$n" == "25" ]] && pass "978/空表" "补种后 25 条（实际 ${n}）" || fail "978/空表" "补种后应为 25 条，实际 $n"
 for r in privilege_escalation command_injection role_hijack_ignore_previous tool_abuse_exec; do
   c=$("${PSQL[@]}" -d "$DB_NAME" -tAc "SELECT count(*) FROM public.prompt_injection_rules WHERE rule_name='$r'")
   [[ "$c" == "1" ]] && pass "978/空表" "规则 $r 在场" || fail "978/空表" "规则 $r 缺失"
@@ -160,7 +160,7 @@ before23=$("${PSQL[@]}" -d "$DB_NAME" -tAc "SELECT md5(string_agg(rule_name||'|'
 
 if apply_mig; then pass "978/存量" "在 23 条形态上执行 RC=0"; else fail "978/存量" "在 23 条形态上执行失败"; fi
 n25=$("${PSQL[@]}" -d "$DB_NAME" -tAc "SELECT count(*) FROM public.prompt_injection_rules")
-[[ "$n25" == "25" ]] && pass "978/存量" "补种后 25 条（实际 $n25）" || fail "978/存量" "补种后应为 25 条，实际 $n25"
+[[ "$n25" == "25" ]] && pass "978/存量" "补种后 25 条（实际 ${n25}）" || fail "978/存量" "补种后应为 25 条，实际 $n25"
 
 # ★ 关键：既有 23 条**不被覆盖**（否则 978 会把 977 的订正倒退回去）
 kept=$("${PSQL[@]}" -d "$DB_NAME" -tAc "SELECT count(*) FROM public.prompt_injection_rules r WHERE r.rule_name IN ('instruction_override_ignore','data_exfiltration_http','unicode_zero_width','tool_abuse_exec','role_hijack_ignore_previous','role_hijack_you_are_now') AND r.pattern = (SELECT s.pattern FROM public.prompt_injection_rules s WHERE s.rule_name = r.rule_name)")
