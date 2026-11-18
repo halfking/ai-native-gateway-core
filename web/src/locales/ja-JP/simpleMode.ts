@@ -103,7 +103,7 @@ export default {
     },
     stat: {
       requests: '本日のリクエスト',
-      successRate: '成功率',
+      successRate: '成功レート',
       tokens: 'トークン使用量',
       cost: '本日の費用',
       activeKeys: '有効なキー',

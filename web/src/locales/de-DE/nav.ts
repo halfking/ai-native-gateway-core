@@ -35,7 +35,7 @@ export default {
     providers: "Anbieter",
     reconciliation: "Anbieterabrechnung",
     salesWorkbench: 'Vertriebswerkbank',
-    operationsMarketing: "Marketing",
+    operationsMarketing: 'Marketingverwaltung',
     marketPrices: "Marktpreise",
     priceCompare: "Preisvergleich",
     settlementReport: "Abrechnungsbericht",

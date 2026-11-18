@@ -35,7 +35,7 @@ export default {
     providers: "Fournisseurs",
     reconciliation: "Réconciliation fournisseurs",
     salesWorkbench: 'Atelier commercial',
-    operationsMarketing: "Marketing",
+    operationsMarketing: 'Gestion marketing',
     marketPrices: "Prix de marché",
     priceCompare: "Comparaison des prix",
     settlementReport: "Rapport de règlement",

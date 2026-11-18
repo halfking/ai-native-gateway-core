@@ -28,7 +28,7 @@ export default {
     more: 'その他',
   },
   status: {
-    healthy: '正常',
+    healthy: '問題なし',
     warning: '警告',
     unknown: '不明',
     enabled: '有効',

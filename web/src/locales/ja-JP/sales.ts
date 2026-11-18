@@ -10,7 +10,7 @@ export default {
   claimedBy: '担当者',
   close: 'クローズ',
   closeTitle: '需要カードのクローズ',
-  colActions: '操作',
+  colActions: 'アクション',
   colBilling: '課金モード',
   colConfidence: '価格信頼度',
   colMargin: 'マージン率',
