@@ -223,6 +223,114 @@ func TestPluginAPIAuth(t *testing.T) {
 	})
 }
 
+// TestPluginLifecycleAuth verifies the fail-closed admin Bearer guard on
+// activate/deactivate（day3-e2e S6 契约：无 token/坏 token 必须 401）。
+func TestPluginLifecycleAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	createMinimalManifest(t, tmpDir, "toggle-plugin", "Toggle Plugin", "1.0.0")
+
+	cfg := &v2Config{
+		Listen:      ":0",
+		PluginsDir:  tmpDir,
+		AdminAPIKey: "admin-secret-token",
+	}
+	deps := newDeps(cfg)
+	handler := authChain(deps, cfg)
+
+	t.Run("activate without token returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/activate", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 without token, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("activate with bad token returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/activate", nil)
+		req.Header.Set("Authorization", "Bearer invalid-token-xyz")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 with bad token, got %d", w.Code)
+		}
+	})
+
+	t.Run("activate with unknown plugin id returns 404 after auth", func(t *testing.T) {
+		// 正确 token 先过鉴权，再在 handler 内做存在性校验（404 而非 401），
+		// 证明鉴权发生在存在性检查之前。
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/nonexistent/activate", nil)
+		req.Header.Set("Authorization", "Bearer admin-secret-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 for unknown plugin after passing auth, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("activate with valid token succeeds", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/activate", nil)
+		req.Header.Set("Authorization", "Bearer admin-secret-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200 with valid token, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("deactivate without token returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/deactivate", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401 without token, got %d", w.Code)
+		}
+	})
+
+	t.Run("deactivate with valid token succeeds", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/deactivate", nil)
+		req.Header.Set("Authorization", "Bearer admin-secret-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200 with valid token, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("unset admin token is fail-closed", func(t *testing.T) {
+		openCfg := &v2Config{Listen: ":0", PluginsDir: tmpDir, AdminAPIKey: ""}
+		openHandler := authChain(newDeps(openCfg), openCfg)
+		for _, action := range []string{"activate", "deactivate"} {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin/"+action, nil)
+			w := httptest.NewRecorder()
+			openHandler.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("expected fail-closed 401 for %s when admin token unset, got %d", action, w.Code)
+			}
+		}
+	})
+
+	t.Run("path traversal id rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/..%2F..%2Fetc/activate", nil)
+		req.Header.Set("Authorization", "Bearer admin-secret-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected 405 for traversal-style id, got %d", w.Code)
+		}
+	})
+
+	t.Run("post to non-lifecycle path still 405", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/toggle-plugin", nil)
+		req.Header.Set("Authorization", "Bearer admin-secret-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected 405 for POST to detail path, got %d", w.Code)
+		}
+	})
+}
+
 // createMinimalManifest creates a minimal valid plugin manifest for testing.
 func createMinimalManifest(t *testing.T, dir, pluginID, displayName, version string) {
 	t.Helper()
