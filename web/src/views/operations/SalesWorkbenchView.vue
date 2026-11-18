@@ -479,7 +479,7 @@ onMounted(reload)
         />
         <el-alert
           v-if="sellable && sellable.withheld_count > 0"
-          :title="t('sales.withheld Notice', { count: sellable.withheld_count })"
+          :title="t('sales.withheldNotice', { count: sellable.withheld_count })"
           type="warning"
           show-icon
           :closable="false"
