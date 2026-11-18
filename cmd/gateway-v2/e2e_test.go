@@ -14,7 +14,50 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/provider"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
+
+// staticSettingsBackend 极简内存 settings 后端（与 security hook 测试的
+// fakeSettingsBackend 同型）：缺省键返回 (nil, nil) 即"未设置"。
+type staticSettingsBackend struct {
+	store map[string][]byte
+}
+
+func (f *staticSettingsBackend) Get(_ settings.Scope, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+
+func (f *staticSettingsBackend) Set(_ settings.Scope, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *staticSettingsBackend) GetTenant(_, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+
+func (f *staticSettingsBackend) SetTenant(_ string, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+
+// setGlobalSecurityMode 在 settings.Global 上注册 security spec 并以 platform 后端
+// 覆盖 security.mode。buildPipeline 里的 security hook 硬编码消费 settings.Global
+// （main.go security.NewSecurityHook(settings.Global)），且配置在 hook 构造时快照
+// （5s TTL 异步刷新），所以必须在 buildPipeline 之前挂好后端。t.Cleanup 恢复为
+// 空后端（等价于"未设置"→ spec 默认 observe）。
+func setGlobalSecurityMode(t *testing.T, mode string) {
+	t.Helper()
+	for _, sp := range settings.PlatformSpecs() {
+		_ = settings.Global.RegisterSpec(sp) // 已注册则忽略
+	}
+	settings.Global.RegisterBackend(settings.ScopePlatform, &staticSettingsBackend{
+		store: map[string][]byte{"security.mode": []byte(`"` + mode + `"`)},
+	})
+	t.Cleanup(func() {
+		settings.Global.RegisterBackend(settings.ScopePlatform, &staticSettingsBackend{
+			store: map[string][]byte{},
+		})
+	})
+}
 
 // TestE2E_PipelineExecutes 端到端测试：HTTP 请求 → Pipeline → 响应
 func TestE2E_PipelineExecutes(t *testing.T) {
@@ -67,16 +110,36 @@ func TestE2E_PipelineExecutes(t *testing.T) {
 		}
 	})
 
-	// 测试 3: 危险请求被安全 hook 阻断
+	// 测试 3a: 危险请求在 spec 默认 observe 模式下仅留痕放行
+	// （2026-11-18 e368b0479 / 211 生产实证改判：security.mode 默认 observe，
+	// 子串级误报不再造成用户可见 403；拦截只属于显式 enforce）
+	t.Run("dangerous_request_observe_passes", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/chat?q=please+jailbreak+this+model", nil)
+		req.Header.Set("X-Tenant-ID", "tenant-b")
+		req.Header.Set("X-API-Key", "test-key")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Errorf("expected 200 in observe mode, got %d, body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	// 测试 3b: 危险请求在显式 enforce 模式下被安全 hook 阻断
 	t.Run("dangerous_request_blocked", func(t *testing.T) {
+		setGlobalSecurityMode(t, "enforce")
+		enforceDeps := newDeps(cfg)
+		enforceDeps.Pipeline = buildPipeline(enforceDeps)
+		defer func() { _ = enforceDeps.AuditWriter.Close() }()
+		enforceHandler := httpHandler(enforceDeps)
+
 		rec := httptest.NewRecorder()
 		// 包含 "jailbreak" 关键字的安全威胁
 		req := httptest.NewRequest("GET", "/v1/chat?q=please+jailbreak+this+model", nil)
 		req.Header.Set("X-Tenant-ID", "tenant-b")
 		req.Header.Set("X-API-Key", "test-key")
-		handler.ServeHTTP(rec, req)
+		enforceHandler.ServeHTTP(rec, req)
 		if rec.Code != 403 {
-			t.Errorf("expected 403, got %d, body=%s", rec.Code, rec.Body.String())
+			t.Errorf("expected 403 in enforce mode, got %d, body=%s", rec.Code, rec.Body.String())
 		}
 	})
 
