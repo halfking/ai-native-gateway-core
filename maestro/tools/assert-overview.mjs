@@ -268,6 +268,129 @@ const PAGE_PROBE = `(() => {
     JSON.stringify(reqs.slice(0, 10)),
   )
 
+  // ── 12. 近 7 日消耗卡（2026-11-18 新增）────────────────────────────────
+  // ★ 数值对拍：UI 的每日柱值必须与**同一时刻** board?days=7 的 trends
+  //   （15min 桶 → UTC 日聚合 → 补零 → 截最近 7 天）逐日相等。
+  //   聚合/补零/截窗逻辑与 web/src/composables/simpleOverviewModel.ts 的
+  //   aggregateTrendByDay / fillMissingDays / lastDailyPoints 同构（纯 JS 复刻）。
+  const trendEl = q('[data-testid="overview-trend"]')
+  check('趋势卡在 DOM 里：近 7 日消耗', !!trendEl, '[data-testid="overview-trend"]')
+  const trendUnavailable = q('[data-testid="overview-trend-unavailable"]')
+  const trendEmpty = q('[data-testid="overview-trend-empty"]')
+  const trendCols = qa('[data-testid="overview-trend-chart"] .trend-col')
+  out.facts.trendCols = trendCols.length
+  out.facts.trendDegraded = !!trendUnavailable
+  out.facts.trendEmptyShown = !!trendEmpty
+
+  let b7 = null
+  let b7Error = ''
+  try {
+    const x = new XMLHttpRequest()
+    x.open('GET', '/api/admin/dashboard/board?days=7', false)
+    x.send()
+    if (x.status >= 200 && x.status < 300) b7 = JSON.parse(x.responseText)
+    else b7Error = 'HTTP ' + x.status
+  } catch (e) {
+    b7Error = (e && e.name) || 'xhr-failed'
+  }
+  out.facts.board7Error = b7Error
+  const b7Degraded =
+    !b7 || b7.degraded_trends === true || (b7.summary && b7.summary.degraded_summary === true)
+
+  if (b7Degraded) {
+    check('趋势源降级时显示占位符（不画零线）', !!trendUnavailable, '占位符=' + !!trendUnavailable)
+    check('趋势源降级时不画柱条', trendCols.length === 0, '柱数=' + trendCols.length)
+  } else {
+    check('趋势源健康时不显示占位符', !trendUnavailable, '占位符=' + !!trendUnavailable)
+    // 复刻聚合：UTC 日分组 → 首末日补零 → 最近 7 天
+    const byDay = {}
+    for (const p of (b7 && b7.trends) || []) {
+      const d = String((p && p.bucket) || '').slice(0, 10)
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(d)) continue
+      const cur = byDay[d] || (byDay[d] = { r: 0, t: 0, c: 0 })
+      if (Number.isFinite(p.requests)) cur.r += p.requests
+      if (Number.isFinite(p.tokens)) cur.t += p.tokens
+      if (Number.isFinite(p.cost_usd)) cur.c += p.cost_usd
+    }
+    const dates = Object.keys(byDay).sort()
+    const filled = []
+    if (dates.length) {
+      let cur = dates[0]
+      let i = 0
+      const last = dates[dates.length - 1]
+      let guard = 0
+      while (cur <= last && guard++ < 400) {
+        if (dates[i] === cur) {
+          filled.push({ date: cur, r: byDay[cur].r, t: byDay[cur].t, c: byDay[cur].c })
+          i++
+        } else {
+          filled.push({ date: cur, r: 0, t: 0, c: 0 })
+        }
+        const ms = Date.parse(cur + 'T00:00:00Z') + 86400000
+        cur = new Date(ms).toISOString().slice(0, 10)
+      }
+    }
+    const last7 = filled.slice(-7)
+    out.facts.trendExpectedDays = last7.map((d) => d.date)
+    check('趋势柱数 = 预期日数（≤7）', trendCols.length === last7.length, 'UI=' + trendCols.length + ' 预期=' + last7.length)
+    // 默认指标 = 请求数 ⇒ 每根柱的值 = formatCount(当日 requests)（千分位分组）
+    const group = (n) => String(Math.trunc(Math.abs(n))).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',')
+    const uiDays = trendCols.map((col) => ({
+      value: text(col.querySelector('.trend-col__value')),
+      label: text(col.querySelector('.trend-col__label')),
+    }))
+    const dayLabel = (date) => Number(date.slice(5, 7)) + '/' + Number(date.slice(8, 10))
+    let mismatch = ''
+    for (let i = 0; i < Math.min(uiDays.length, last7.length); i++) {
+      const want = group(last7[i].r)
+      const wantLabel = dayLabel(last7[i].date)
+      if (uiDays[i].value !== want || uiDays[i].label !== wantLabel) {
+        mismatch += ' [' + i + '] UI=' + uiDays[i].value + '@' + uiDays[i].label + ' 预期=' + want + '@' + wantLabel
+      }
+    }
+    check('每日柱值与 board7 trends 逐日相等（请求数口径）', mismatch === '', mismatch || trendCols.length + ' 根柱全对')
+    // 合计行：7 天合计的请求数来自 board7.summary
+    const totalEl = text(q('[data-testid="overview-trend-total"]'))
+    out.facts.trendTotal = totalEl
+    const s7 = (b7 && b7.summary) || null
+    if (s7 && s7.total_requests != null) {
+      check('趋势合计行带 7 天请求总数', totalEl.indexOf(group(s7.total_requests)) >= 0, 'UI=' + totalEl + ' API=' + group(s7.total_requests))
+    }
+    // 指标切换按钮三枚（复用专家面文案键）
+    const metricBtns = qa('[data-testid="overview-trend"] .el-radio-button')
+    out.facts.trendMetricBtns = metricBtns.length
+    check('趋势指标切换恰好三枚', metricBtns.length === 3, '实际 ' + metricBtns.length)
+  }
+
+  // ── 13. 运维状态 chips（复用专家面 BoardOpsBar）──────────────────────────
+  const opsEl = q('[data-testid="overview-ops"]')
+  const opsChips = qa('[data-testid="overview-ops"] .ops-chip')
+  out.facts.opsChips = opsChips.length
+  if (opsEl) {
+    check('运维 chips 至少两枚（后台任务 + 系统自检）', opsChips.length >= 2, '实际 ' + opsChips.length)
+  }
+
+  // ── 14. issue 行内「去处理」动作 ────────────────────────────────────────
+  const issueLis = qa('[data-testid="overview-status-issues"] li')
+  const issueBtns = qa('[data-testid^="overview-issue-action-"]')
+  out.facts.issueLis = issueLis.length
+  out.facts.issueButtons = issueBtns.length
+  check('issue 按钮数不超过 issue 行数', issueBtns.length <= issueLis.length, '按钮=' + issueBtns.length + ' 行=' + issueLis.length)
+  check('issue 按钮的 testid 格式合法', issueBtns.every((b) => /^overview-issue-action-[a-z_]+$/.test(b.getAttribute('data-testid'))), JSON.stringify(issueBtns.map((b) => b.getAttribute('data-testid'))))
+  // 每条 issue 行都有非空文案
+  check('每条 issue 行都有文案', issueLis.every((li) => text(li).length > 0), '行数=' + issueLis.length)
+
+  // ── 15. 最常用模型的花费列（2026-11-18 新增）────────────────────────────
+  const modelCosts = qa('[data-testid="overview-top-models"] .model-row .model-cost')
+  out.facts.modelCostCells = modelCosts.length
+  if (modelRows.length > 0) {
+    check(
+      '热门模型每行都带今日花费列',
+      modelCosts.length === modelRows.length && modelCosts.every((c) => text(c).length > 0),
+      '行=' + modelRows.length + ' 花费格=' + modelCosts.length,
+    )
+  }
+
   return out
 })()`
 

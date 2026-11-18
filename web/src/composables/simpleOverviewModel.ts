@@ -1,4 +1,4 @@
-// simpleOverviewModel.ts — 简易总览页的**纯派生层**（2026-11-17）
+// simpleOverviewModel.ts — 简易总览页的**纯派生层**（2026-11-17；2026-11-18 看板化扩展）
 //
 // ★ 为什么单独一个文件：总览页要回答「现在能不能用 / 今天跑了多少 / 我该做什么」，
 //   这三问的**判据**必须可被单测钉住，而且**不能**混在模板与 i18n 里。
@@ -7,9 +7,12 @@
 //
 // ★ 口径纪律（与专家面**完全一致**，简易模式不新造任何统计口径）：
 //   · 请求数 / 成功率 / Token / 费用 ⇒ /api/admin/dashboard/board 的 summary
+//   · 近 7 日趋势 ⇒ 同一端点 days=7（专家面看板 7d 预设同款），
+//     trends 桶（15min）在前端聚合成每日 —— 只是换粒度，不换数字
+//   · 失败笔数 ⇒ pies.errors 求和，summary 兜底（专家面 BoardHeroRow.errorCount 同口径）
 //   · 上游健康 ⇒ /api/providers 的 health_status / *_credential_count
 //   · 密钥状态 ⇒ /api/keys 的 status / enabled / last_used_at
-//   三个数据源都是既有端点，**零迁移、零新表**。
+//   全部数据源都是既有端点，**零迁移、零新表、零新口径**。
 //
 // ★ 诚实边界（本文件的核心职责之一）：
 //   「读不到」与「读到了但是 0」必须分得开。deriveOverviewStatus 的
@@ -97,6 +100,15 @@ export interface OverviewStat {
   scope: string | null
   /** 语义色：给 StatCard 的状态点用 */
   tone: 'neutral' | 'success' | 'warning' | 'danger'
+  /**
+   * 2026-11-18：成功率卡的语境行（失败笔数）。
+   * ★ owner 报障「92.2% 看不出今天失败了 373 笔」——比率没有分母语境，
+   *   初级用户不知道 7.8% 意味着多少笔真实失败。
+   *   ⇒ sub 里带「失败 N 笔」（deriveFailureCount 与专家面 BoardHeroRow
+   *     的 errorCount 同口径：pies.errors 优先，summary 兜底）。
+   *   null ⇒ 算不出失败数（页面只显示口径，不显示假 0）。
+   */
+  failures: string | null
 }
 
 /** 接入进度的一步 */
@@ -372,6 +384,11 @@ export interface OverviewStatsInput {
   /** 密钥总数与启用数（来自 /api/keys） */
   keyTotal?: number
   keyEnabled?: number
+  /**
+   * 2026-11-18：错误分布（board.pies.errors，今日口径）。
+   * 给 deriveFailureCount 用 —— 与专家面英雄区同源（ pies 优先、summary 兜底）。
+   */
+  errorsPie?: ErrorPieItem[] | null
 }
 
 /**
@@ -406,30 +423,42 @@ export function deriveOverviewStats(input: OverviewStatsInput): OverviewStat[] {
           ? 'warning'
           : 'danger'
 
+  // 失败笔数挂在成功率卡上（比率 → 绝对笔数的语境；专家面英雄区同口径）
+  const failures =
+    s == null
+      ? null
+      : formatCount(
+          deriveFailureCount(s, input.errorsPie ?? null),
+        )
+
   return [
     {
       key: 'requests',
       value: formatCount(requests),
       scope: requests == null ? null : 'today',
       tone: 'neutral',
+      failures: null,
     },
     {
       key: 'successRate',
       value: formatPercent(successRate),
       scope: successRate == null ? null : 'today',
       tone: successTone,
+      failures,
     },
     {
       key: 'tokens',
       value: formatCompact(tokens),
       scope: tokens == null ? null : 'today',
       tone: 'neutral',
+      failures: null,
     },
     {
       key: 'cost',
       value: formatUsd(cost),
       scope: cost == null ? null : 'today',
       tone: 'neutral',
+      failures: null,
     },
     {
       key: 'activeKeys',
@@ -439,16 +468,184 @@ export function deriveOverviewStats(input: OverviewStatsInput): OverviewStat[] {
           : input.keyTotal != null
             ? `${formatCount(activeKeys)} / ${formatCount(input.keyTotal)}`
             : formatCount(activeKeys),
-      scope: activeKeys == null ? null : 'active',
+      scope: activeKeys == null ? null : 'enabled',
       tone: 'neutral',
+      failures: null,
     },
     {
       key: 'models',
       value: formatCount(models),
-      scope: models == null ? null : 'active',
+      scope: models == null ? null : 'inUse',
       tone: 'neutral',
+      failures: null,
     },
   ]
+}
+
+// ─── 失败笔数（成功率卡的语境；2026-11-18）───────────────────────────────────
+
+/** board.pies.errors 的最小形状 */
+export interface ErrorPieItem {
+  key: string
+  requests: number
+}
+
+/**
+ * 失败请求笔数 —— 与专家面 BoardHeroRow.errorCount **同口径**：
+ * pies.errors 有值 ⇒ 按错误种类求和（那是明细，比推导准）；
+ * 没有明细 ⇒ total_requests × (1 − success_rate) 四舍五入兜底。
+ *
+ * ★ 两者都算不出 ⇒ null（页面不显示「失败 0 笔」这种假 0 ——
+ *   那会把「没算出来」渲染成「一笔都没失败」）。
+ */
+export function deriveFailureCount(
+  summary: OverviewSummaryInput | null | undefined,
+  errorsPie: ErrorPieItem[] | null | undefined,
+): number | null {
+  const pie = errorsPie ?? []
+  if (pie.length > 0) {
+    let total = 0
+    let sawInvalid = false
+    for (const p of pie) {
+      if (typeof p?.requests !== 'number' || !Number.isFinite(p.requests)) {
+        sawInvalid = true
+        continue
+      }
+      total += p.requests
+    }
+    // 明细里有脏数据时不要静默丢掉那一笔 ⇒ 走兜底推导而不是返回半张表的和
+    if (!sawInvalid) return total
+  }
+  const s = summary
+  if (!s) return null
+  if (s.total_requests == null || s.success_rate == null) return null
+  if (!Number.isFinite(s.total_requests) || !Number.isFinite(s.success_rate)) return null
+  return Math.max(0, Math.round(s.total_requests * (1 - s.success_rate)))
+}
+
+// ─── 近 7 日消耗趋势（2026-11-18 新增）───────────────────────────────────────
+//
+// ★ owner 需求＝「关心消耗情况，有点像专家模式看的总监+看板」。
+//   简易总览页原来只有「今日」一个口径 ⇒ 消耗走势完全不可见。
+//   修法＝复用专家面看板的**同一个端点**（/api/admin/dashboard/board?days=7），
+//   把它返回的 trends（15 分钟桶，见 admin/board_time_range.go trendBucketMinutes：
+//   today=5m / 7d=15m / 30d+=1h）在**前端**聚合成「每日」柱条。
+//   不新造口径：桶来自看板缓存载荷，聚合只是把同一份数字换一种粒度展示。
+
+/** board.trends 的最小形状（api/board.ts BoardTrendPoint 的子集） */
+export interface TrendPointLike {
+  bucket: string
+  requests: number
+  tokens: number
+  cost_usd: number
+}
+
+/** 一天的消耗合计（UTC 日 —— 与看板/对账的日窗口径一致） */
+export interface DailyTrendPoint {
+  /** UTC 日期（YYYY-MM-DD） */
+  date: string
+  requests: number
+  tokens: number
+  costUsd: number
+}
+
+/**
+ * 把看板 trends 桶聚合成「每日」点。
+ *
+ * ★ 口径：UTC 日（bucket 是 RFC3339 UTC 时间戳，取前 10 位即 UTC 日期）。
+ *   与专家面看板的时间范围（boardTimeRange / KxDateRange 全走 UTC 日期串）一致，
+ *   不做本地时区换算 —— 否则简易模式的「一天」和专家面/对账的「一天」会对不上。
+ *
+ * ★ 诚实边界：只聚合**实际存在的桶**；某天一个桶都没有 ⇒ 那天不出现在结果里，
+ *   页面画图时把缺口画成 0 高的柱（数据源健康时 0 是真值：那天确实没流量）。
+ *   数据源本身坏了（degraded_trends）由页面用占位符表达，不经这个函数。
+ */
+export function aggregateTrendByDay(trends: TrendPointLike[] | null | undefined): DailyTrendPoint[] {
+  if (!Array.isArray(trends)) return []
+  const byDay = new Map<string, DailyTrendPoint>()
+  for (const p of trends) {
+    if (!p || typeof p.bucket !== 'string' || p.bucket.length < 10) continue
+    const date = p.bucket.slice(0, 10)
+    const cur =
+      byDay.get(date) ??
+      ({ date, requests: 0, tokens: 0, costUsd: 0 } satisfies DailyTrendPoint)
+    if (typeof p.requests === 'number' && Number.isFinite(p.requests)) cur.requests += p.requests
+    if (typeof p.tokens === 'number' && Number.isFinite(p.tokens)) cur.tokens += p.tokens
+    if (typeof p.cost_usd === 'number' && Number.isFinite(p.cost_usd)) cur.costUsd += p.cost_usd
+    byDay.set(date, cur)
+  }
+  // 按日期升序（图表从左到右 = 时间从早到晚；桶本身乱序也能画出正确的图）
+  return [...byDay.values()].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+}
+
+/** 只保留最近 keepDays 个 UTC 日（旧的多余日丢弃 —— 图表固定 7 列） */
+export function lastDailyPoints(points: DailyTrendPoint[], keepDays: number): DailyTrendPoint[] {
+  if (keepDays <= 0) return []
+  return points.slice(-keepDays)
+}
+
+const UTC_DAY_MS = 86_400_000
+/** 防御性上限：补零窗口再离谱也不能画出 400 列（>1 年的跨度是数据 bug，不是图表素材） */
+const FILL_DAYS_CAP = 400
+
+function nextUtcDay(date: string): string {
+  const ms = Date.parse(`${date}T00:00:00Z`)
+  if (!Number.isFinite(ms)) return date
+  return new Date(ms + UTC_DAY_MS).toISOString().slice(0, 10)
+}
+
+/**
+ * 在首日到末日之间补齐缺失的日子（0 点）。
+ *
+ * ★ 数据源健康时，窗口内某天一个桶都没有 ⇒ 那天真的没流量 ⇒ 0 是真值，
+ *   图表把缺口画成 0 高柱比「跳过那一天」诚实（跳过会让横轴看起来连续）。
+ * ★ 只在**已有数据的首末日之间**补：不发明数据范围之外的日子
+ *   （例如新部署 3 天的系统不画 4 根凭空的零柱——那 4 天根本不在观测里）。
+ * ★ 结果仍按日期升序（入参须已升序 —— aggregateTrendByDay 的出参保证）。
+ */
+export function fillMissingDays(points: DailyTrendPoint[]): DailyTrendPoint[] {
+  if (points.length < 2) return [...points]
+  const out: DailyTrendPoint[] = []
+  let cursor = points[0].date
+  let i = 0
+  const last = points[points.length - 1].date
+  while (cursor <= last && out.length < FILL_DAYS_CAP) {
+    if (points[i] && points[i].date === cursor) {
+      out.push(points[i])
+      i++
+    } else {
+      out.push({ date: cursor, requests: 0, tokens: 0, costUsd: 0 })
+    }
+    const next = nextUtcDay(cursor)
+    if (next <= cursor) break // 日期解析失败 ⇒ 防死循环
+    cursor = next
+  }
+  // 尾部没消耗完的点（理论上不会发生，防御性兜底）
+  for (; i < points.length; i++) out.push(points[i])
+  return out
+}
+
+/**
+ * 迷你趋势线（StatCard 的 #spark 槽用）—— 与专家面 BoardHeroRow 的
+ * sparkPoints 同款：最近 N 桶请求数归一化后的 SVG 折线点。
+ * 提成纯函数 ⇒ 可单测（桶数不足 2 ⇒ 空串，页面不画）。
+ */
+export function sparkPolylinePoints(
+  trends: TrendPointLike[] | null | undefined,
+  options?: { buckets?: number; width?: number; height?: number },
+): string {
+  const recent = (trends ?? []).slice(-(options?.buckets ?? 16))
+  if (recent.length < 2) return ''
+  const w = options?.width ?? 72
+  const h = options?.height ?? 26
+  const max = Math.max(...recent.map((p) => p.requests ?? 0), 1)
+  return recent
+    .map((p, i) => {
+      const x = (i / (recent.length - 1)) * w
+      const y = h - ((p.requests ?? 0) / max) * (h - 4) - 2
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(' ')
 }
 
 // ─── 接入进度（引导 checklist）────────────────────────────────────────────────
