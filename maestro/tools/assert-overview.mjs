@@ -446,11 +446,16 @@ async function main() {
     40000,
     500,
   )
-  // 再等三块数据源落定（统计卡拿到值，而不是还空着）
+  // 再等数据源落定：★ 必须等 data-loading="0"（2026-11-19 实测撞出）——
+  //   旧的判据「统计卡值非空」会被**加载中占位符「暂不可用」**满足（它也非空）
+  //   ⇒ 探针抢跑 ⇒ 全部数值断言对着「还没加载完的页面」打 ⇒ 假红。
+  //   视图根元素带 :data-loading（loading=true ⇒ '1'），落定后归 '0'。
   await waitFor(
     cdp,
     sessionId,
     `(() => {
+      const root = document.querySelector('.simple-overview');
+      if (!root || root.getAttribute('data-loading') !== '0') return false;
       const c = document.querySelector('[data-testid="overview-stats"] .app-stat-card .app-stat-card__value');
       return !!(c && c.textContent && c.textContent.trim());
     })()`,

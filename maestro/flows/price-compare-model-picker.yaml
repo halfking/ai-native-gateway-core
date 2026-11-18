@@ -1,0 +1,95 @@
+url: ${BASE_URL}
+---
+# price-compare-model-picker.yaml — 价格对比页模型选择器功能验证
+# 2026-11-18：验证三个标签页的 ModelPicker 组件和自动刷新功能
+#
+# 测试范围：
+# 1. 定价参考：点击搜索框弹出 ModelPicker，选择后自动刷新
+# 2. 定价参考与供应评分：点击搜索框弹出 ModelPicker，选择后自动刷新
+# 3. 跨平台现价：点击搜索框弹出 ModelPicker，选择后自动刷新
+
+- launchApp
+
+# 登录（复用已有登录流程）
+- runFlow:
+    file: _shared/login.yaml
+
+# 导航到价格对比页面
+- tapOn: "运营分析"
+- tapOn: "价格对比"
+- assertVisible: "价格对比"
+
+# ========== 测试 1：定价参考标签页 ==========
+- tapOn: "定价参考"
+- assertVisible: "按模型搜索定价参考"
+
+# 点击搜索框，验证 ModelPicker 弹出
+- tapOn:
+    point: "50%,30%"  # 搜索框大致位置
+- extendedWaitUntil:
+    visible: "热门模型"
+    timeout: 3000
+
+# 选择一个热门模型
+- tapOn: "gpt-4o"
+- extendedWaitUntil:
+    notVisible: "热门模型"
+    timeout: 2000
+
+# 验证列表自动刷新（表格应该出现）
+- assertVisible: "市场最低"
+- assertVisible: "双地板"
+
+# ========== 测试 2：定价参考与供应评分标签页 ==========
+- tapOn: "定价参考与供应评分"
+- assertVisible: "按模型名称搜索"
+
+# 清空之前的选择
+- tapOn:
+    point: "50%,30%"
+- pressKey: Backspace
+- pressKey: Backspace
+- pressKey: Backspace
+- pressKey: Backspace
+- pressKey: Backspace
+
+# 点击搜索框，验证 ModelPicker 弹出
+- tapOn:
+    point: "50%,30%"
+- extendedWaitUntil:
+    visible: "热门模型"
+    timeout: 3000
+
+# 选择另一个模型
+- tapOn: "gpt-4"
+- extendedWaitUntil:
+    notVisible: "热门模型"
+    timeout: 2000
+
+# 验证列表自动刷新
+- assertVisible: "供应商"
+- assertVisible: "市场定位"
+
+# ========== 测试 3：跨平台现价标签页 ==========
+- tapOn: "跨平台现价"
+- assertVisible: "模型选择"
+
+# 点击模型选择框
+- tapOn:
+    point: "50%,28%"
+- extendedWaitUntil:
+    visible: "热门模型"
+    timeout: 3000
+
+# 选择一个模型
+- tapOn: "claude-3.5-sonnet"
+- extendedWaitUntil:
+    notVisible: "热门模型"
+    timeout: 2000
+
+# 验证列表自动刷新（应该显示该模型的平台价格）
+- assertVisible: "平台"
+- assertVisible: "价格"
+
+# 测试完成
+- stopApp

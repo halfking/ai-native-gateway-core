@@ -10,7 +10,8 @@
 //      （缓存命中价是真实成本的大头，此前网关侧根本没有这个数）。
 // ★ 2026-11-18（价格对比优化轮）：改用 ModelPicker 组件替代手动输入，
 //      复用 routing-v2 的选择器，热门模型按名称字母顺序排列。
-import { ref, computed, onMounted } from 'vue'
+// ★ 2026-11-19：添加 watch 确保模型选择后自动刷新。
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   getAdminMarketModelPlatforms,
@@ -52,10 +53,12 @@ async function loadDirectory() {
 
 async function load() {
   const m = model.value.trim()
+  console.log('[ModelPlatformCompare] load() called, model:', m, 'scope:', scope.value)
   if (!m) return
   loading.value = true
   try {
     const res = await getAdminMarketModelPlatforms(m, 'standard', 300, scope.value)
+    console.log('[ModelPlatformCompare] API response:', { available: res.available, items: res.items?.length })
     available.value = res.available
     reason.value = res.reason || ''
     // 契约 C：名称列表按平台名排序（首列展示 platform_name）。
@@ -84,6 +87,15 @@ async function load() {
 }
 
 onMounted(loadDirectory)
+
+// ★ 2026-11-19：监听模型变化，确保选择后自动刷新
+watch(model, (newModel, oldModel) => {
+  console.log('[ModelPlatformCompare] model changed:', { old: oldModel, new: newModel })
+  if (newModel.trim()) {
+    console.log('[ModelPlatformCompare] triggering load()')
+    load()
+  }
+})
 
 // ★ 最便宜标记：只看**非原厂**行（is_vendor 是基准锚不是竞品）。
 // ★ 且**只在本模型内比较**（F11）：同族变体（glm-5.3-flash 等）的价
