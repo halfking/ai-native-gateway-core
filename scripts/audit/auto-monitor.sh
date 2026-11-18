@@ -54,9 +54,10 @@ AUTO_REQUESTS=$(echo "$VERIFY_OUTPUT" | grep "真库最近 auto 请求" -A 10 | 
 log "最近auto请求:"
 log "$AUTO_REQUESTS"
 
-# 5. 提取关键指标
-SUCCESS_COUNT=$(echo "$AUTO_REQUESTS" | grep -c " t |" || echo "0")
-TOTAL_COUNT=$(echo "$AUTO_REQUESTS" | wc -l)
+# 5. 提取关键指标（只统计真实请求行，排除 "ALL PASS" 等非数据行）
+# 真实请求行的特征：包含时间戳格式 "YYYY-MM-DD HH:MM:SS"
+SUCCESS_COUNT=$(echo "$AUTO_REQUESTS" | grep " t |" | wc -l | tr -d ' ')
+TOTAL_COUNT=$(echo "$AUTO_REQUESTS" | grep -E "[0-9]{4}-[0-9]{2}-[0-9]{2}" | wc -l | tr -d ' ')
 
 if [ "$TOTAL_COUNT" -gt 0 ]; then
     SUCCESS_RATE=$((SUCCESS_COUNT * 100 / TOTAL_COUNT))
