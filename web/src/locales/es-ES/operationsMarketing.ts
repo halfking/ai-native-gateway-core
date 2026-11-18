@@ -2,7 +2,7 @@
 export default {
   colRedemptions: "Canjeados / límite",
   priceMinorUnit: "Precio (0,01 CNY)",
-  title: "Marketing",
+  title: 'Gestión de marketing',
   subtitle: "Planes, paquetes extra, cupones y campañas de descuento/regalo",
   tabPlans: "Planes",
   tabTopups: "Paquetes extra",

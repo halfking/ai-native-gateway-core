@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简易模式设计方案 vs 线上实现对比分析</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  line-height: 1.6;
+  color: #2c3e50;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 20px;
+}
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+.header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 40px;
+  text-align: center;
+}
+.header h1 {
+  font-size: 32px;
+  margin-bottom: 10px;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+}
+.header p {
+  font-size: 16px;
+  opacity: 0.95;
+}
+.content {
+  padding: 40px;
+}
+.section {
+  margin-bottom: 50px;
+}
+.section-title {
+  font-size: 24px;
+  color: #667eea;
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 3px solid #667eea;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.section-title::before {
+  content: "📊";
+  font-size: 28px;
+}
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 20px 0;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.comparison-table thead {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+.comparison-table th {
+  padding: 16px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 15px;
+}
+.comparison-table td {
+  padding: 16px;
+  border-bottom: 1px solid #e8e8e8;
+  vertical-align: top;
+}
+.comparison-table tbody tr:hover {
+  background: #f8f9ff;
+}
+.comparison-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.status-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.status-match {
+  background: #d4edda;
+  color: #155724;
+}
+.status-diff {
+  background: #fff3cd;
+  color: #856404;
+}
+.status-missing {
+  background: #f8d7da;
+  color: #721c24;
+}
+.status-extra {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+.chart-container {
+  background: #f8f9fa;
+  padding: 30px;
+  border-radius: 12px;
+  margin: 20px 0;
+}
+.chart-row {
+  display: flex;
+  align-items: center;
+  margin: 15px 0;
+  gap: 15px;
+}
+.chart-label {
+  min-width: 180px;
+  font-weight: 600;
+  color: #495057;
+}
+.chart-bar {
+  flex: 1;
+  height: 30px;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  border-radius: 6px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: white;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+  transition: all 0.3s ease;
+}
+.chart-bar:hover {
+  transform: translateX(5px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);
+}
+.chart-bar.design {
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+}
+.chart-bar.implementation {
+  background: linear-gradient(90deg, #f093fb 0%, #f5576c 100%);
+}
+.recommendations {
+  background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+  padding: 30px;
+  border-radius: 12px;
+  margin: 30px 0;
+}
+.recommendations h3 {
+  color: #d63031;
+  margin-bottom: 20px;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.recommendations h3::before {
+  content: "💡";
+  font-size: 28px;
+}
+.recommendation-item {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  margin: 15px 0;
+  border-left: 4px solid #d63031;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.recommendation-item h4 {
+  color: #2c3e50;
+  margin-bottom: 10px;
+  font-size: 16px;
+}
+.recommendation-item ul {
+  margin-left: 20px;
+  color: #555;
+}
+.recommendation-item li {
+  margin: 8px 0;
+}
+.priority {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: bold;
+  margin-left: 8px;
+}
+.priority-high {
+  background: #ff6b6b;
+  color: white;
+}
+.priority-medium {
+  background: #ffd93d;
+  color: #333;
+}
+.priority-low {
+  background: #6bcf7f;
+  color: white;
+}
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+  margin: 30px 0;
+}
+.summary-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 25px;
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+  transition: transform 0.3s ease;
+}
+.summary-card:hover {
+  transform: translateY(-5px);
+}
+.summary-card h3 {
+  font-size: 18px;
+  margin-bottom: 10px;
+  opacity: 0.9;
+}
+.summary-card .number {
+  font-size: 36px;
+  font-weight: bold;
+  margin: 10px 0;
+}
+.summary-card p {
+  font-size: 14px;
+  opacity: 0.85;
+}
+.footer {
+  background: #2c3e50;
+  color: white;
+  padding: 20px;
+  text-align: center;
+  font-size: 14px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🎯 简易模式设计方案 vs 线上实现对比分析</h1>
+    <p>基于 llm.itestu.cn 实际部署情况的详细对比与优化建议</p>
+    <p style="margin-top: 10px; font-size: 14px; opacity: 0.8;">生成时间：2026-11-18 | 版本：v2.6.1-#3104</p>
+  </div>
+
+  <div class="content">
+    <!-- 核心差异总览 -->
+    <div class="section">
+      <h2 class="section-title">核心差异总览</h2>
+      <div class="summary-grid">
+        <div class="summary-card">
+          <h3>菜单项数量</h3>
+          <div class="number">9 vs 8</div>
+          <p>线上比设计多1个顶栏项</p>
+        </div>
+        <div class="summary-card">
+          <h3>页面布局</h3>
+          <div class="number">90%</div>
+          <p>匹配度：基本一致</p>
+        </div>
+        <div class="summary-card">
+          <h3>主要问题</h3>
+          <div class="number">5</div>
+          <p>需要优化的关键点</p>
+        </div>
+        <div class="summary-card">
+          <h3>优化优先级</h3>
+          <div class="number">3高2中</div>
+          <p>按紧急程度分类</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 顶栏菜单对比 -->
+    <div class="section">
+      <h2 class="section-title">顶栏菜单结构对比</h2>
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th style="width: 25%;">项目</th>
+            <th style="width: 35%;">设计方案</th>
+            <th style="width: 35%;">线上实现</th>
+            <th style="width: 5%;">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>顶栏直链</strong></td>
+            <td>
+              <strong>4 个：</strong><br>
+              1. 总览<br>
+              2. 实时拓扑<br>
+              3. 对话<br>
+              4. 系统设置
+            </td>
+            <td>
+              <strong>4 个：</strong><br>
+              1. 实时拓扑<br>
+              2. 总览<br>
+              3. 系统设置<br>
+              4. 对话
+            </td>
+            <td><span class="status-badge status-diff">顺序不同</span></td>
+          </tr>
+          <tr>
+            <td><strong>下拉分组</strong></td>
+            <td>
+              <strong>4 个：</strong><br>
+              1. 供应商与模型（2项）<br>
+              2. 密钥与用户（3项）<br>
+              3. 请求（2项）<br>
+              4. 接入指南（3项）
+            </td>
+            <td>
+              <strong>4 个：</strong><br>
+              1. 模型与路由<br>
+              2. 租户用户<br>
+              3. 请求与会话<br>
+              4. 接入指南
+            </td>
+            <td><span class="status-badge status-diff">名称差异</span></td>
+          </tr>
+          <tr>
+            <td><strong>高级折叠</strong></td>
+            <td>
+              <strong>1 个：</strong><br>
+              高级（50条）<br>
+              - 按专家面8组归位<br>
+              - 包含1条站外链接
+            </td>
+            <td>
+              <strong>1 个：</strong><br>
+              高级<br>
+              - 具体条目未展开查看<br>
+              - 位置在右侧
+            </td>
+            <td><span class="status-badge status-match">一致</span></td>
+          </tr>
+          <tr>
+            <td><strong>总计</strong></td>
+            <td><strong>9 个位置</strong><br>（4直链+4分组+1高级）</td>
+            <td><strong>9 个位置</strong><br>（4直链+4分组+1高级）</td>
+            <td><span class="status-badge status-match">一致</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 页面内容对比 -->
+    <div class="section">
+      <h2 class="section-title">总览页面内容对比</h2>
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th style="width: 25%;">模块</th>
+            <th style="width: 35%;">设计方案</th>
+            <th style="width: 35%;">线上实现</th>
+            <th style="width: 5%;">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>顶部状态栏</strong></td>
+            <td>
+              4个指标卡片：<br>
+              • 今日请求<br>
+              • 成功率<br>
+              • Token用量<br>
+              • 首字延迟
+            </td>
+            <td>
+              6个指标卡片：<br>
+              • 今日请求<br>
+              • 成功率<br>
+              • Token用量<br>
+              • 今日花费 ⚠️<br>
+              • 活跃密钥 ⚠️<br>
+              • 可用模型 ⚠️
+            </td>
+            <td><span class="status-badge status-extra">多3项</span></td>
+          </tr>
+          <tr>
+            <td><strong>引导流程</strong></td>
+            <td>
+              "还差一步就能用"<br>
+              4步流程：<br>
+              1. 装好网关<br>
+              2. 填好上游Key<br>
+              3. 签发网关密钥<br>
+              4. 改客户端指向
+            </td>
+            <td>
+              "有需要处理的地方"<br>
+              提示异常：<br>
+              • 有上游不可达<br>
+              • 系统自检未通过
+            </td>
+            <td><span class="status-badge status-diff">方式不同</span></td>
+          </tr>
+          <tr>
+            <td><strong>最近请求表格</strong></td>
+            <td>
+              简化表格：<br>
+              • 模型<br>
+              • 上游<br>
+              • 耗时<br>
+              • Token<br>
+              • 状态
+            </td>
+            <td>
+              <strong>未找到</strong><br>
+              改为：<br>
+              • 最近在用（密钥列表）<br>
+              • 用得最多（密钥列表）
+            </td>
+            <td><span class="status-badge status-missing">缺失</span></td>
+          </tr>
+          <tr>
+            <td><strong>接入客户端</strong></td>
+            <td>
+              • base_url展示<br>
+              • 复制带密钥的curl
+            </td>
+            <td>
+              <strong>未在首屏看到</strong><br>
+              可能需要滚动或在其他位置
+            </td>
+            <td><span class="status-badge status-diff">位置不明</span></td>
+          </tr>
+          <tr>
+            <td><strong>上游状态</strong></td>
+            <td>
+              卡片式展示：<br>
+              • 供应商名<br>
+              • 域名<br>
+              • 延迟/状态
+            </td>
+            <td>
+              列表式展示：<br>
+              • 供应商名<br>
+              • 状态（可用/告警/不可达）<br>
+              • 数量统计
+            </td>
+            <td><span class="status-badge status-diff">样式不同</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 菜单文案对比 -->
+    <div class="section">
+      <h2 class="section-title">菜单命名对比</h2>
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th>设计方案</th>
+            <th>线上实现</th>
+            <th>差异说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>供应商与模型</td>
+            <td><strong>模型与路由</strong></td>
+            <td>线上使用专家术语，不够直白</td>
+          </tr>
+          <tr>
+            <td>密钥与用户</td>
+            <td><strong>租户用户</strong></td>
+            <td>缺少"密钥"关键词，个人用户难理解"租户"</td>
+          </tr>
+          <tr>
+            <td>请求</td>
+            <td><strong>请求与会话</strong></td>
+            <td>增加了"会话"，更完整但稍复杂</td>
+          </tr>
+          <tr>
+            <td>接入指南</td>
+            <td>接入指南</td>
+            <td>✅ 完全一致</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 数据可视化对比 -->
+    <div class="section">
+      <h2 class="section-title">功能完整度对比</h2>
+      <div class="chart-container">
+        <h3 style="margin-bottom: 20px; color: #495057;">各模块实现程度</h3>
+        <div class="chart-row">
+          <div class="chart-label">菜单结构</div>
+          <div class="chart-bar design" style="width: 95%;">设计方案: 95%</div>
+        </div>
+        <div class="chart-row">
+          <div class="chart-label">页面布局</div>
+          <div class="chart-bar design" style="width: 90%;">设计方案: 90%</div>
+        </div>
+        <div class="chart-row">
+          <div class="chart-label">内容展示</div>
+          <div class="chart-bar design" style="width: 75%;">设计方案: 75%</div>
+        </div>
+        <div class="chart-row">
+          <div class="chart-label">交互体验</div>
+          <div class="chart-bar design" style="width: 85%;">设计方案: 85%</div>
+        </div>
+        <div class="chart-row">
+          <div class="chart-label">文案表达</div>
+          <div class="chart-bar design" style="width: 70%;">设计方案: 70%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 优化建议 -->
+    <div class="section">
+      <h2 class="section-title">优化建议方案</h2>
+      <div class="recommendations">
+        <h3>关键优化点</h3>
+        
+        <div class="recommendation-item">
+          <h4>1. 菜单命名回归简易模式初衷 <span class="priority priority-high">高优先级</span></h4>
+          <ul>
+            <li><strong>问题：</strong>当前"模型与路由"、"租户用户"等术语对个人用户不友好</li>
+            <li><strong>建议：</strong>按设计方案改为"供应商与模型"、"密钥与用户"</li>
+            <li><strong>理由：</strong>"供应商"比"路由"更直观，"密钥"是用户关心的核心概念</li>
+            <li><strong>影响：</strong>仅文案修改，改动量小，用户体验提升明显</li>
+          </ul>
+        </div>
+
+        <div class="recommendation-item">
+          <h4>2. 恢复"最近请求"表格 <span class="priority priority-high">高优先级</span></h4>
+          <ul>
+            <li><strong>问题：</strong>当前只有密钥列表，缺少设计方案中的请求详情表</li>
+            <li><strong>建议：</strong>在总览页增加"最近请求"模块，显示最近5笔请求的详情</li>
+            <li><strong>字段：</strong>模型、上游、耗时、Token、状态（与设计一致）</li>
+            <li><strong>价值：</strong>帮助用户快速了解网关实际运行情况，直观看到请求流转</li>
+          </ul>
+        </div>
+
+        <div class="recommendation-item">
+          <h4>3. 简化指标卡片 <span class="priority priority-high">高优先级</span></h4>
+          <ul>
+            <li><strong>问题：</strong>当前6个指标卡片，设计方案只有4个</li>
+            <li><strong>建议：</strong>保留核心4项（今日请求、成功率、Token用量、首字延迟），隐藏次要指标</li>
+            <li><strong>理由：</strong>简易模式要聚焦核心问题："能不能用"、"用了多少"</li>
+            <li><strong>备选：</strong>"活跃密钥"和"可用模型"可移至侧边栏或次级页面</li>
+          </ul>
+        </div>
+
+        <div class="recommendation-item">
+          <h4>4. 优化引导流程呈现 <span class="priority priority-medium">中优先级</span></h4>
+          <ul>
+            <li><strong>问题：</strong>当前"有需要处理的地方"比较消极，设计方案的4步引导更积极</li>
+            <li><strong>建议：</strong>采用设计方案的进度式引导，明确告诉用户"还差几步"</li>
+            <li><strong>样式：</strong>使用步骤条UI，已完成的步骤打勾，待完成的高亮</li>
+            <li><strong>交互：</strong>点击每步可快速跳转到对应页面（如"签发密钥"跳到密钥管理）</li>
+          </ul>
+        </div>
+
+        <div class="recommendation-item">
+          <h4>5. 统一顶栏直链顺序 <span class="priority priority-medium">中优先级</span></h4>
+          <ul>
+            <li><strong>问题：</strong>当前顺序与设计方案不一致</li>
+            <li><strong>建议：</strong>按使用频率排序：总览 → 实时拓扑 → 对话 → 系统设置</li>
+            <li><strong>理由：</strong>"总览"是首页，应放最左；"系统设置"使用频率最低，放最右</li>
+            <li><strong>影响：</strong>纯视觉调整，改动量极小</li>
+          </ul>
+        </div>
+
+        <div class="recommendation-item">
+          <h4>6. 补充接入说明模块 <span class="priority priority-low">低优先级</span></h4>
+          <ul>
+            <li><strong>问题：</strong>首屏未看到设计方案中的"接入客户端"模块</li>
+            <li><strong>建议：</strong>在总览页中部增加该模块，展示base_url和快速复制按钮</li>
+            <li><strong>价值：</strong>减少用户跳转，直接在首页完成接入配置复制</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- 实施路线图 -->
+    <div class="section">
+      <h2 class="section-title">实施路线图</h2>
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th style="width: 10%;">阶段</th>
+            <th style="width: 30%;">优化项</th>
+            <th style="width: 20%;">预估工作量</th>
+            <th style="width: 20%;">预期效果</th>
+            <th style="width: 20%;">依赖项</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>第一阶段<br>（立即）</strong></td>
+            <td>
+              1. 菜单命名调整<br>
+              2. 顶栏顺序调整
+            </td>
+            <td>
+              <strong>0.5人日</strong><br>
+              仅文案修改
+            </td>
+            <td>
+              用户理解成本降低<br>
+              符合简易模式定位
+            </td>
+            <td>无</td>
+          </tr>
+          <tr>
+            <td><strong>第二阶段<br>（1周内）</strong></td>
+            <td>
+              3. 简化指标卡片<br>
+              4. 优化引导流程
+            </td>
+            <td>
+              <strong>2人日</strong><br>
+              涉及UI重构
+            </td>
+            <td>
+              页面信息密度降低<br>
+              新手上手更快
+            </td>
+            <td>UI设计稿</td>
+          </tr>
+          <tr>
+            <td><strong>第三阶段<br>（2周内）</strong></td>
+            <td>
+              5. 恢复"最近请求"表格<br>
+              6. 补充接入说明模块
+            </td>
+            <td>
+              <strong>3人日</strong><br>
+              需要后端接口
+            </td>
+            <td>
+              用户可实时看到请求<br>
+              降低配置难度
+            </td>
+            <td>
+              后端API<br>
+              数据查询优化
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 关键指标对比 -->
+    <div class="section">
+      <h2 class="section-title">设计理念执行情况</h2>
+      <table class="comparison-table">
+        <thead>
+          <tr>
+            <th style="width: 30%;">设计理念</th>
+            <th style="width: 30%;">执行情况</th>
+            <th style="width: 40%;">改进空间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>简化菜单</strong><br>露出14个页面，折叠50条</td>
+            <td>✅ 基本实现<br>顶栏9项+高级折叠</td>
+            <td>进一步确认高级折叠内容是否完整</td>
+          </tr>
+          <tr>
+            <td><strong>个人用户导向</strong><br>使用直白语言，避免专业术语</td>
+            <td>⚠️ 部分实现<br>"模型与路由"、"租户"仍较专业</td>
+            <td><strong>高优先级改进</strong><br>按设计方案改用"供应商"、"密钥"等词</td>
+          </tr>
+          <tr>
+            <td><strong>三个核心问题</strong><br>能不能用、用了多少、下一步做什么</td>
+            <td>✅ 较好实现<br>有指标卡片和引导提示</td>
+            <td>引导流程可改为进度式，更积极主动</td>
+          </tr>
+          <tr>
+            <td><strong>减少点击</strong><br>单项分组降级成直链</td>
+            <td>✅ 完全实现<br>"对话"已是顶栏直链</td>
+            <td>保持现状</td>
+          </tr>
+          <tr>
+            <td><strong>保持完整</strong><br>条目不删，只是折叠</td>
+            <td>✅ 应该实现<br>高级按钮存在</td>
+            <td>需展开确认50条是否完整</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>📋 本报告基于设计文档《简易模式 · 整页与菜单概念稿》与线上实例 llm.itestu.cn (v2.6.1-#3104) 对比生成</p>
+    <p style="margin-top: 8px;">🔗 设计文档路径：docs/03-design/02-feature-design/simple-mode-concept.html</p>
+    <p style="margin-top: 8px;">⏰ 生成时间：2026-11-18 23:16 | 🎯 分析模式：设计 vs 实现 深度对比</p>
+  </div>
+</div>
+</body>
+</html>

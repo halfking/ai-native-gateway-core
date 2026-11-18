@@ -10,7 +10,7 @@ export default {
   claimedBy: '担当者',
   close: 'クローズ',
   closeTitle: '需要カードのクローズ',
-  colActions: '操作',
+  colActions: 'アクション',
   colBilling: '課金モード',
   colConfidence: '価格信頼度',
   colMargin: 'マージン率',
@@ -98,4 +98,5 @@ export default {
   funnel_won: '受注',
   funnel_lost: '失注',
   funnel_expired: '期限切れ（派生）',
+ modelNotInSellable: 'このモデルは販売可能リストにありません',
 }

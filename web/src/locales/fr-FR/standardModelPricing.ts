@@ -113,7 +113,7 @@ export default {
     current: "actuel",
     until: "jusqu'au {time}",
     mode: "Mode de facturation",
-    source: "Source",
+    source: 'Source',
     modePayAsYouGo: "À l'usage",
     modeTokenPlan: "Forfait de tokens",
     modeBooster: "Pack supplémentaire",

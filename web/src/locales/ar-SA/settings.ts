@@ -56,15 +56,17 @@ export default {
       smart: 'smart - ضغط ذكي',
       adaptive: 'adaptive - ضغط تكيفي',
     },
-    modeEnum: {
-      simple: 'simple - الوضع البسيط',
-      expert: 'expert - وضع الخبراء',
-    },
-    modeDescriptions: {
-      simple: 'الوضع البسيط: الصفحة الرئيسية قائمة وصول مختصرة، وأدوات الخبراء مطوية ضمن «متقدم».',
-      expert: 'وضع الخبراء: تنقّل كامل مع جميع الصفحات (الافتراضي الحالي).',
-    },
   },
+ gateway: {
+ modeEnum: {
+ simple: 'simple - الوضع البسيط',
+ expert: 'expert - وضع الخبراء',
+ },
+ modeDescriptions: {
+ simple: 'الوضع البسيط: الصفحة الرئيسية قائمة وصول مختصرة، وأدوات الخبراء مطوية ضمن «متقدم».',
+ expert: 'وضع الخبراء: تنقل كامل مع جميع الصفحات (الافتراضي الحالي).',
+ },
+ },
   docs: {
     compressionModeTitle: '📖 شرح مفصل لوضع الضغط',
     compressionModeContent: `<p><strong>وضع الضغط</strong> يتحكم في كيفية معالجة السياق الذي يتجاوز طول المحادثة:</p>

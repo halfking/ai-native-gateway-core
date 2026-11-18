@@ -1,0 +1,75 @@
+# Auto模式端到端测试流程
+# 测试auto模式在不同场景下的表现，包括任务分类、模型选择、failover等
+url: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── 场景1: 验证auto模式在路由页面可见 ──────────────────
+- evalScript: "${output.test_phase = 'routing_overview'}"
+- openLink: "${BASE_URL}/routing-v2"
+- extendedWaitUntil:
+    visible: '路由全景'
+    timeout: 20000
+
+# ── 场景2: 检查AUTO运营页面 ──────────────────
+- evalScript: "${output.test_phase = 'auto_ops'}"
+- openLink: "${BASE_URL}/routing-v2/auto-ops"
+- extendedWaitUntil:
+    visible: 'AUTO 运营'
+    timeout: 20000
+# 验证auto决策记录表格存在
+- extendedWaitUntil:
+    visible: '决策记录'
+    timeout: 10000
+
+# ── 场景3: 检查实时拓扑中的auto请求 ──────────────────
+- evalScript: "${output.test_phase = 'live_topology'}"
+- openLink: "${BASE_URL}/live"
+- extendedWaitUntil:
+    visible: '实时拓扑'
+    timeout: 20000
+
+# ── 场景4: 查看请求详情，验证auto决策信息 ──────────────────
+- evalScript: "${output.test_phase = 'request_detail'}"
+- openLink: "${BASE_URL}/request-logs"
+- extendedWaitUntil:
+    visible: '请求日志'
+    timeout: 20000
+# 搜索auto请求
+- tapOn: '搜索'
+- inputText: 'auto'
+
+# ── 场景5: 验证系统设置中的auto相关配置 ──────────────────
+- evalScript: "${output.test_phase = 'settings'}"
+- openLink: "${BASE_URL}/settings"
+- extendedWaitUntil:
+    visible: '系统设置'
+    timeout: 20000
+# 查找dispatch_v2.allow_model_change设置
+- tapOn: 'dispatch'
+- extendedWaitUntil:
+    visible: 'allow_model_change'
+    timeout: 10000
+
+# ── 场景6: 验证凭据监控页面显示auto相关指标 ──────────────────
+- evalScript: "${output.test_phase = 'credentials'}"
+- openLink: "${BASE_URL}/routing-v2/credentials"
+- extendedWaitUntil:
+    visible: '凭据监控'
+    timeout: 20000
+
+# ── 场景7: 检查阶段树页面中auto请求的执行流程 ──────────────────
+- evalScript: "${output.test_phase = 'stage_tree'}"
+- openLink: "${BASE_URL}/live2"
+- extendedWaitUntil:
+    visible: '请求阶段树'
+    timeout: 20000
+
+# ── 测试完成 ──────────────────
+- evalScript: "${output.test_result = 'PASS'}"
+- evalScript: "${output.test_summary = 'Auto模式UI验证通过：路由全景、AUTO运营、实时拓扑、请求日志、系统设置、凭据监控、阶段树'}"

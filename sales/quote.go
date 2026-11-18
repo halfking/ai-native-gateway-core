@@ -1,5 +1,9 @@
 package sales
 
+// DEPRECATED: This quote system will be replaced by domains/commercial/ as part of
+// MaaS contract v0.1 implementation (see docs/architecture/unified-architecture/PHASE-NEXT-IMPLEMENTATION-PLAN.md).
+// DO NOT extend this code. Use feature flag use_maas_v01 for new implementations.
+//
 // quote.go —— 报价工作台（2026-11-04 实施规划 W1-T2，决议 A/B/C）。
 //
 // 状态机（头表 944，转换表 sales_quote_status_log 隐式定义）：
