@@ -78,12 +78,39 @@ func (s *Service) EstimateQuote(
 	expiresAt := time.Now().UTC().Add(24 * time.Hour)
 
 	// Insert quote record (for audit trail, even though it's non-binding)
+	//
+	// ★ D7（2026-11-19 审计轮）三点修正：
+	//
+	//	① **租户一致性校验**：`req.TenantID` 原先直接覆盖 `auth.TenantID`
+	//	   且**零校验** ⇒ 可为**其它租户**落 maas_quotes 行。对比同层的
+	//	   inventory / ledger / trading 三处都做了校验，唯独 commercial 没有。
+	//	② **双写并入单事务**：quote 行与 quote_lines 行原是两次独立 Exec，
+	//	   第二次失败会留下**孤儿 quote 行**（报价有记录、明细没有）。
+	//	③ 契约（contracts/maascontracts/ports.go）声明 QuotePort 是
+	//	   "pure function operation with no side effects"——但实现要落库
+	//	   留痕。此处按「非绑定报价落库留痕」的**实际语义**实现（契约文字
+	//	   的漂移登记在审计主档 D7），因为「报价快照」是下游库存/结算的锚点，
+	//	   取消落库会让 hold↔quote 的关联失去依据。
 	tenantID := auth.TenantID
 	if req.TenantID != nil && *req.TenantID != "" {
+		if *req.TenantID != auth.TenantID {
+			return maascontracts.EstimateQuoteResponse{}, &maascontracts.Error{
+				Code:      maascontracts.ErrorUnauthorizedScope,
+				Message:   "tenant_id in request does not match authenticated tenant",
+				Retryable: false,
+			}
+		}
 		tenantID = *req.TenantID
 	}
 
-	_, err = s.pool.Exec(ctx, `
+	// ★ D7：两次写并入同一事务 —— 第二次失败时整体回滚，不留孤儿行。
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return maascontracts.EstimateQuoteResponse{}, fmt.Errorf("begin quote transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO maas_quotes (
 			quote_id, tenant_id, quote_snapshot_id, price_version_id,
 			resource_snapshot_id, status, money_amount_minor, money_currency,
@@ -107,7 +134,7 @@ func (s *Service) EstimateQuote(
 	}
 
 	// Insert quote line items (for detailed breakdown)
-	_, err = s.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO maas_quote_lines (
 			quote_id, line_number, model_sku, quantity_amount, quantity_unit,
 			unit_price_minor, subtotal_minor, total_minor, currency,
@@ -128,6 +155,11 @@ func (s *Service) EstimateQuote(
 	)
 	if err != nil {
 		return maascontracts.EstimateQuoteResponse{}, fmt.Errorf("insert quote line: %w", err)
+	}
+
+	// ★ D7：两次写同事务 ⇒ 必须一起提交。
+	if err := tx.Commit(ctx); err != nil {
+		return maascontracts.EstimateQuoteResponse{}, fmt.Errorf("commit quote transaction: %w", err)
 	}
 
 	return maascontracts.EstimateQuoteResponse{

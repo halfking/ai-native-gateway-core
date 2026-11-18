@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/maasidem"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -141,14 +142,24 @@ func (s *Service) HoldCreate(
 	req maascontracts.HoldCreateRequest,
 ) (maascontracts.HoldCreateResponse, error) {
 	// Check idempotency first
-	cachedResp, err := s.checkIdempotency(ctx, auth.TenantID, "HoldCreate", meta.IdempotencyKey)
+	// ★ D8（2026-11-19 审计轮）：幂等键必填。
+	// 契约（contracts/maascontracts/types.go 的 CommandMeta）明写
+	// "Required for all commands"，此前实现零校验 ⇒ 同一 tenant +
+	// command_type 下所有空键命令互相误判为重放。
+	if err := maasidem.RequireKey(meta.IdempotencyKey); err != nil {
+		return maascontracts.HoldCreateResponse{}, err
+	}
+	cachedResp, err := maasidem.Check(ctx, s.pool, auth.TenantID, "HoldCreate", meta.IdempotencyKey)
 	if err != nil {
 		return maascontracts.HoldCreateResponse{}, fmt.Errorf("check idempotency: %w", err)
 	}
 	if cachedResp != nil {
-		// Idempotent replay - return cached response
 		var resp maascontracts.HoldCreateResponse
-		// TODO: Unmarshal cached response from JSONB
+		// ★ D6：真正反序列化缓存响应 —— 重放必须拿到与首次执行一致的
+		// 响应（旧实现返回零值空结构，客户端无法对账）。
+		if err := maasidem.Replay(cachedResp, &resp); err != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("replay idempotent response: %w", err)
+		}
 		return resp, nil
 	}
 
@@ -245,7 +256,9 @@ func (s *Service) HoldCreate(
 	}
 
 	// Record idempotency log
-	err = s.recordIdempotency(ctx, tx, tenantID, "HoldCreate", meta.IdempotencyKey, req, resp)
+	// ★ D6：真正序列化 request/response 后落库（旧实现固定写
+	// '{}'::jsonb ⇒ payload 从未落库，重放只能解出空结构）。
+	err = maasidem.Record(ctx, tx, tenantID, "HoldCreate", meta.IdempotencyKey, req, resp)
 	if err != nil {
 		return maascontracts.HoldCreateResponse{}, fmt.Errorf("record idempotency: %w", err)
 	}
@@ -268,13 +281,24 @@ func (s *Service) HoldConfirm(
 	req maascontracts.HoldConfirmRequest,
 ) (maascontracts.HoldConfirmResponse, error) {
 	// Check idempotency
-	cachedResp, err := s.checkIdempotency(ctx, auth.TenantID, "HoldConfirm", meta.IdempotencyKey)
+	// ★ D8（2026-11-19 审计轮）：幂等键必填。
+	// 契约（contracts/maascontracts/types.go 的 CommandMeta）明写
+	// "Required for all commands"，此前实现零校验 ⇒ 同一 tenant +
+	// command_type 下所有空键命令互相误判为重放。
+	if err := maasidem.RequireKey(meta.IdempotencyKey); err != nil {
+		return maascontracts.HoldConfirmResponse{}, err
+	}
+	cachedResp, err := maasidem.Check(ctx, s.pool, auth.TenantID, "HoldConfirm", meta.IdempotencyKey)
 	if err != nil {
 		return maascontracts.HoldConfirmResponse{}, fmt.Errorf("check idempotency: %w", err)
 	}
 	if cachedResp != nil {
 		var resp maascontracts.HoldConfirmResponse
-		// TODO: Unmarshal cached response
+		// ★ D6：真正反序列化缓存响应 —— 重放必须拿到与首次执行一致的
+		// 响应（旧实现返回零值空结构，客户端无法对账）。
+		if err := maasidem.Replay(cachedResp, &resp); err != nil {
+			return maascontracts.HoldConfirmResponse{}, fmt.Errorf("replay idempotent response: %w", err)
+		}
 		return resp, nil
 	}
 
@@ -358,7 +382,9 @@ func (s *Service) HoldConfirm(
 	}
 
 	// Record idempotency
-	err = s.recordIdempotency(ctx, tx, auth.TenantID, "HoldConfirm", meta.IdempotencyKey, req, resp)
+	// ★ D6：真正序列化 request/response 后落库（旧实现固定写
+	// '{}'::jsonb ⇒ payload 从未落库，重放只能解出空结构）。
+	err = maasidem.Record(ctx, tx, auth.TenantID, "HoldConfirm", meta.IdempotencyKey, req, resp)
 	if err != nil {
 		return maascontracts.HoldConfirmResponse{}, fmt.Errorf("record idempotency: %w", err)
 	}
@@ -381,13 +407,24 @@ func (s *Service) HoldRelease(
 	req maascontracts.HoldReleaseRequest,
 ) (maascontracts.HoldReleaseResponse, error) {
 	// Check idempotency
-	cachedResp, err := s.checkIdempotency(ctx, auth.TenantID, "HoldRelease", meta.IdempotencyKey)
+	// ★ D8（2026-11-19 审计轮）：幂等键必填。
+	// 契约（contracts/maascontracts/types.go 的 CommandMeta）明写
+	// "Required for all commands"，此前实现零校验 ⇒ 同一 tenant +
+	// command_type 下所有空键命令互相误判为重放。
+	if err := maasidem.RequireKey(meta.IdempotencyKey); err != nil {
+		return maascontracts.HoldReleaseResponse{}, err
+	}
+	cachedResp, err := maasidem.Check(ctx, s.pool, auth.TenantID, "HoldRelease", meta.IdempotencyKey)
 	if err != nil {
 		return maascontracts.HoldReleaseResponse{}, fmt.Errorf("check idempotency: %w", err)
 	}
 	if cachedResp != nil {
 		var resp maascontracts.HoldReleaseResponse
-		// TODO: Unmarshal cached response
+		// ★ D6：真正反序列化缓存响应 —— 重放必须拿到与首次执行一致的
+		// 响应（旧实现返回零值空结构，客户端无法对账）。
+		if err := maasidem.Replay(cachedResp, &resp); err != nil {
+			return maascontracts.HoldReleaseResponse{}, fmt.Errorf("replay idempotent response: %w", err)
+		}
 		return resp, nil
 	}
 
@@ -460,7 +497,9 @@ func (s *Service) HoldRelease(
 	}
 
 	// Record idempotency
-	err = s.recordIdempotency(ctx, tx, auth.TenantID, "HoldRelease", meta.IdempotencyKey, req, resp)
+	// ★ D6：真正序列化 request/response 后落库（旧实现固定写
+	// '{}'::jsonb ⇒ payload 从未落库，重放只能解出空结构）。
+	err = maasidem.Record(ctx, tx, auth.TenantID, "HoldRelease", meta.IdempotencyKey, req, resp)
 	if err != nil {
 		return maascontracts.HoldReleaseResponse{}, fmt.Errorf("record idempotency: %w", err)
 	}
@@ -483,13 +522,24 @@ func (s *Service) HoldExpire(
 	req maascontracts.HoldExpireRequest,
 ) (maascontracts.HoldExpireResponse, error) {
 	// Check idempotency
-	cachedResp, err := s.checkIdempotency(ctx, auth.TenantID, "HoldExpire", meta.IdempotencyKey)
+	// ★ D8（2026-11-19 审计轮）：幂等键必填。
+	// 契约（contracts/maascontracts/types.go 的 CommandMeta）明写
+	// "Required for all commands"，此前实现零校验 ⇒ 同一 tenant +
+	// command_type 下所有空键命令互相误判为重放。
+	if err := maasidem.RequireKey(meta.IdempotencyKey); err != nil {
+		return maascontracts.HoldExpireResponse{}, err
+	}
+	cachedResp, err := maasidem.Check(ctx, s.pool, auth.TenantID, "HoldExpire", meta.IdempotencyKey)
 	if err != nil {
 		return maascontracts.HoldExpireResponse{}, fmt.Errorf("check idempotency: %w", err)
 	}
 	if cachedResp != nil {
 		var resp maascontracts.HoldExpireResponse
-		// TODO: Unmarshal cached response
+		// ★ D6：真正反序列化缓存响应 —— 重放必须拿到与首次执行一致的
+		// 响应（旧实现返回零值空结构，客户端无法对账）。
+		if err := maasidem.Replay(cachedResp, &resp); err != nil {
+			return maascontracts.HoldExpireResponse{}, fmt.Errorf("replay idempotent response: %w", err)
+		}
 		return resp, nil
 	}
 
@@ -558,7 +608,9 @@ func (s *Service) HoldExpire(
 		}
 
 		// Record idempotency
-		err = s.recordIdempotency(ctx, tx, auth.TenantID, "HoldExpire", meta.IdempotencyKey, req, resp)
+		// ★ D6：真正序列化 request/response 后落库（旧实现固定写
+		// '{}'::jsonb ⇒ payload 从未落库，重放只能解出空结构）。
+		err = maasidem.Record(ctx, tx, auth.TenantID, "HoldExpire", meta.IdempotencyKey, req, resp)
 		if err != nil {
 			return maascontracts.HoldExpireResponse{}, fmt.Errorf("record idempotency: %w", err)
 		}
@@ -578,46 +630,6 @@ func (s *Service) HoldExpire(
 		Status:  maascontracts.HoldStatusPending,
 		Expired: &notExpired,
 	}, nil
-}
-
-// checkIdempotency checks if this command has already been executed.
-// Returns the cached response if found, nil otherwise.
-func (s *Service) checkIdempotency(ctx context.Context, tenantID, commandType, idempotencyKey string) (interface{}, error) {
-	var responsePayload []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT response_payload
-		FROM maas_idempotency_log
-		WHERE tenant_id = $1 AND command_type = $2 AND idempotency_key = $3
-		AND status = 'success'
-		AND expires_at > NOW()
-	`, tenantID, commandType, idempotencyKey).Scan(&responsePayload)
-
-	if err == pgx.ErrNoRows {
-		return nil, nil // No cached response
-	}
-	if err != nil {
-		return nil, fmt.Errorf("query idempotency log: %w", err)
-	}
-
-	// TODO: Unmarshal response based on command type
-	return responsePayload, nil
-}
-
-// recordIdempotency records the command execution for future idempotency checks.
-func (s *Service) recordIdempotency(ctx context.Context, tx pgx.Tx, tenantID, commandType, idempotencyKey string, request, response interface{}) error {
-	// TODO: Marshal request and response to JSONB
-	// For now, use empty JSONB
-	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour) // 7 days TTL
-
-	_, err := tx.Exec(ctx, `
-		INSERT INTO maas_idempotency_log (
-			tenant_id, command_type, idempotency_key,
-			request_payload, response_payload, status, executed_at, expires_at
-		) VALUES ($1, $2, $3, '{}'::jsonb, '{}'::jsonb, 'success', NOW(), $4)
-		ON CONFLICT (tenant_id, command_type, idempotency_key) DO NOTHING
-	`, tenantID, commandType, idempotencyKey, expiresAt)
-
-	return err
 }
 
 // Verify that Service implements InventoryPort interface at compile time.
