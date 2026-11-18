@@ -416,7 +416,7 @@ const sessionRows = computed(() => {
   color: var(--kx-muted);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1024px) {
   .detail__cols {
     grid-template-columns: minmax(0, 1fr);
   }
