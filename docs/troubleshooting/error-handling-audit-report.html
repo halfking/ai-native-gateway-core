@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Gateway 错误处理审计报告</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1a73e8;
+            border-bottom: 3px solid #1a73e8;
+            padding-bottom: 15px;
+            margin-bottom: 30px;
+            font-size: 2.2em;
+        }
+        h2 {
+            color: #333;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+            border-left: 4px solid #1a73e8;
+            padding-left: 15px;
+        }
+        h3 {
+            color: #555;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        .summary {
+            background: #e8f0fe;
+            padding: 20px;
+            border-radius: 6px;
+            margin: 20px 0;
+            border-left: 4px solid #1a73e8;
+        }
+        .issue {
+            background: #fff3cd;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 6px;
+            border-left: 4px solid #ffc107;
+        }
+        .issue.critical {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+        }
+        .issue.warning {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+        }
+        .recommendation {
+            background: #d4edda;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 6px;
+            border-left: 4px solid #28a745;
+        }
+        .code-block {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #1a73e8;
+            color: white;
+            font-weight: 600;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        .mermaid {
+            background: white;
+            padding: 20px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin: 0 5px;
+        }
+        .status-good {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status-issue {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .status-critical {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        ul, ol {
+            margin: 15px 0 15px 30px;
+        }
+        li {
+            margin: 8px 0;
+        }
+        .flow-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #fafafa;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 LLM Gateway 错误处理审计报告</h1>
+        
+        <div class="summary">
+            <h3>📋 执行摘要</h3>
+            <p><strong>审计目标：</strong>审查LLM网关错误处理逻辑，确保错误信息准确传递给客户端，包括错误发生位置（网关/供应商）和原因，并评估自动路由切换机制。</p>
+            <p><strong>审计日期：</strong>2026-11-18</p>
+            <p><strong>审计范围：</strong>llm-gateway-go-integrate 错误分类、处理、回送及自动恢复机制</p>
+        </div>
+
+        <h2>一、现行错误处理架构</h2>
+        
+        <h3>1.1 整体流程</h3>
+        <div class="mermaid">
+graph TB
+    A[客户端请求] --> B{鉴权层}
+    B -->|失败| E1[writeErrorJSON<br/>401/403]
+    B -->|成功| C{路由层}
+    C -->|配置错误| E2[routing_schema_error<br/>500]
+    C -->|超时| E3[routing_connection_error<br/>503]
+    C -->|客户端取消| E4[routing_client_canceled<br/>499]
+    C -->|成功| D{执行层}
+    D -->|供应商执行| F{供应商响应}
+    F -->|HTTP 200| G[成功返回]
+    F -->|HTTP 4xx| H{错误分类器<br/>ClassifyResponseStatus}
+    F -->|HTTP 5xx| H
+    F -->|网络错误| H
+    H --> I{errorsx.DecideNextAction}
+    I -->|ActionSwitchNode| J[切换到备用节点<br/>重试]
+    I -->|ActionWaitRecovery| K[等待恢复<br/>保持连接]
+    I -->|ActionFailTerminal| L[返回客户端<br/>不重试]
+    J --> D
+    K -.延迟后.-> D
+    L --> M[writeErrorJSON*<br/>回送客户端]
+    
+    style E1 fill:#f8d7da
+    style E2 fill:#f8d7da
+    style E3 fill:#fff3cd
+    style E4 fill:#e8f0fe
+    style H fill:#d4edda
+    style I fill:#d4edda
+        </div>
+
+        <h3>1.2 错误分类体系</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>ErrorKind</th>
+                    <th>含义</th>
+                    <th>HTTP状态</th>
+                    <th>处理动作</th>
+                    <th>是否重试</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>KindTransient</code></td>
+                    <td>临时故障</td>
+                    <td>503</td>
+                    <td>ActionRetrySameNode</td>
+                    <td>✅ 同节点重试</td>
+                </tr>
+                <tr>
+                    <td><code>KindRateLimit</code></td>
+                    <td>节点限流（429）</td>
+                    <td>429</td>
+                    <td>ActionWaitRecovery</td>
+                    <td>✅ 等待后重试</td>
+                </tr>
+                <tr>
+                    <td><code>KindRateLimitObserved</code></td>
+                    <td>上游说限流（400+限流信息）</td>
+                    <td>400</td>
+                    <td>ActionSwitchNode</td>
+                    <td>✅ 换节点</td>
+                </tr>
+                <tr>
+                    <td><code>KindRequestRejected</code></td>
+                    <td>请求侧错误（4xx无明确归因）</td>
+                    <td>400</td>
+                    <td>ActionSwitchNode</td>
+                    <td>✅ 换节点</td>
+                </tr>
+                <tr>
+                    <td><code>KindModelUnavailable</code></td>
+                    <td>模型不可用（裸404）</td>
+                    <td>404</td>
+                    <td>ActionSwitchNode</td>
+                    <td>✅ 跨凭据重试</td>
+                </tr>
+                <tr>
+                    <td><code>KindAuth</code></td>
+                    <td>凭据认证失败</td>
+                    <td>401</td>
+                    <td>ActionSwitchNode</td>
+                    <td>✅ 换凭据</td>
+                </tr>
+                <tr>
+                    <td><code>KindUpstreamDown</code></td>
+                    <td>上游服务不可用</td>
+                    <td>503</td>
+                    <td>ActionWaitRecovery</td>
+                    <td>✅ 等待恢复</td>
+                </tr>
+                <tr>
+                    <td><code>KindModelNotFound</code></td>
+                    <td>模型未找到（终态）</td>
+                    <td>404</td>
+                    <td>ActionFailTerminal</td>
+                    <td>❌ 不重试</td>
+                </tr>
+                <tr>
+                    <td><code>KindContentFilter</code></td>
+                    <td>内容过滤拦截</td>
+                    <td>400</td>
+                    <td>ActionFailTerminal</td>
+                    <td>❌ 不重试</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>二、发现的问题</h2>
+
+        <div class="issue critical">
+            <h3>❌ 问题1：上游错误信息被重写</h3>
+            <p><strong>严重程度：</strong><span class="status-badge status-critical">严重</span></p>
+            <p><strong>位置：</strong><code>handler.go:writeErrorJSON()</code> 及多个调用点</p>
+            <p><strong>问题描述：</strong></p>
+            <ul>
+                <li>网关在多处错误处理点使用了<strong>硬编码的错误消息</strong>，而非透传上游原始信息</li>
+                <li>典型案例：
+                    <div class="code-block">
+writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+    "Authentication service temporarily unavailable", 
+    "server_error", "auth_unavailable")
+                    </div>
+                </li>
+                <li>客户端看到的是网关的通用消息，无法获知上游具体的错误原因</li>
+            </ul>
+            <p><strong>影响：</strong></p>
+            <ul>
+                <li>客户端无法区分是哪个供应商出错</li>
+                <li>无法获取供应商返回的详细错误信息（如配额详情、具体限流原因等）</li>
+                <li>故障排查困难，用户无法判断是自己的问题还是供应商问题</li>
+            </ul>
+        </div>
+
+        <div class="issue critical">
+            <h3>❌ 问题2：错误位置信息缺失</h3>
+            <p><strong>严重程度：</strong><span class="status-badge status-critical">严重</span></p>
+            <p><strong>问题描述：</strong></p>
+            <ul>
+                <li>当前错误响应格式不包含<code>source</code>字段来标识错误来源</li>
+                <li>客户端无法判断错误发生在网关层还是供应商层</li>
+                <li>错误类型<code>error_type</code>和<code>code</code>混合了网关和供应商语义</li>
+            </ul>
+            <p><strong>实例：</strong></p>
+            <div class="code-block">
+// 当前响应格式
+{
+    "error": {
+        "type": "server_error",
+        "message": "Internal routing service error",
+        "code": "routing_database_error"
+    }
+}
+
+// 问题：客户端无法知道这是网关自身的数据库问题，还是供应商的问题
+            </div>
+        </div>
+
+        <div class="issue warning">
+            <h3>⚠️ 问题3：供应商错误信息丢失</h3>
+            <p><strong>严重程度：</strong><span class="status-badge status-issue">中等</span></p>
+            <p><strong>位置：</strong><code>extractUpstreamReason()</code> 函数</p>
+            <p><strong>问题描述：</strong></p>
+            <ul>
+                <li>虽然代码中有<code>extractUpstreamReason()</code>来提取上游错误信息</li>
+                <li>但提取后的信息经过<code>SanitizeErrorText</code>脱敏处理，可能丢失关键信息</li>
+                <li>提取的信息仅限200字符，可能截断重要的上下文</li>
+                <li>在很多错误处理路径中，根本没有调用此函数</li>
+            </ul>
+        </div>
+
+        <div class="issue warning">
+            <h3>⚠️ 问题4：自动路由切换的可观测性不足</h3>
+            <p><strong>严重程度：</strong><span class="status-badge status-issue">中等</span></p>
+            <p><strong>问题描述：</strong></p>
+            <ul>
+                <li>当错误触发<code>ActionSwitchNode</code>时，客户端不知道发生了切换</li>
+                <li>重试次数、已尝试的节点信息未在响应中返回</li>
+                <li>客户端无法判断是首次失败还是已重试多次后的最终失败</li>
+            </ul>
+        </div>
+
+        <h2>三、错误处理流程详细分析</h2>
+
+        <div class="flow-section">
+            <h3>3.1 供应商错误的处理链路</h3>
+            <div class="mermaid">
+sequenceDiagram
+    participant C as 客户端
+    participant G as 网关Handler
+    participant E as Executor
+    participant P as 供应商
+    participant CL as 错误分类器
+
+    C->>G: POST /v1/chat/completions
+    G->>E: 执行请求
+    E->>P: 上游调用
+    P-->>E: HTTP 429 + {"error": {"message": "Rate limit exceeded for model gpt-4", "type": "rate_limit_error"}}
+    E->>CL: ClassifyResponseStatus(429, body)
+    CL-->>E: KindRateLimit
+    E->>E: DecideNextAction(KindRateLimit)
+    Note over E: 返回: ActionWaitRecovery<br/>RecordProviderFailure=true
+    E->>G: 执行失败 + kind + 上游body
+    G->>G: writeErrorJSON(503, "Rate limit exceeded")
+    Note over G: ❌ 问题：使用通用消息<br/>丢失供应商原始错误
+    G-->>C: 503 {"error": {"type": "server_error", "message": "Rate limit exceeded", "code": "rate_limit"}}
+    Note over C: ❌ 客户端不知道：<br/>1. 哪个供应商限流<br/>2. 限流的具体原因<br/>3. 是否会自动重试
+            </div>
+        </div>
+
+        <div class="flow-section">
+            <h3>3.2 路由错误的分类逻辑</h3>
+            <div class="mermaid">
+graph TD
+    A[provider.GetCandidates错误] --> B{classifyRoutingError}
+    B -->|context.Canceled| C[routing_client_canceled<br/>499]
+    B -->|circuit open| D[routing_circuit_open<br/>503]
+    B -->|connection/timeout| E[routing_connection_error<br/>503]
+    B -->|SQL语法错误| F[routing_schema_error<br/>500]
+    B -->|其他| G[routing_database_error<br/>500]
+    
+    C --> H[客户端看到]
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+    
+    H --> I["错误响应：<br/>{error: {<br/>  type: 'server_error',<br/>  message: '通用描述',<br/>  code: '分类码'<br/>}}"]
+    
+    style C fill:#e8f0fe
+    style D fill:#fff3cd
+    style E fill:#fff3cd
+    style F fill:#f8d7da
+    style G fill:#f8d7da
+    style I fill:#ffc107
+            </div>
+            <p><strong>分析：</strong>路由错误的分类较为完善，但仍存在两个问题：</p>
+            <ul>
+                <li>错误消息是静态的，不包含动态的上下文信息（如哪个数据库、哪个表）</li>
+                <li>客户端无法区分是网关内部路由问题还是外部依赖问题</li>
+            </ul>
+        </div>
+
+        <h2>四、解决方案</h2>
+
+        <div class="recommendation">
+            <h3>✅ 方案1：增强错误响应结构</h3>
+            <p><strong>目标：</strong>让客户端能清楚地知道错误来源和详细信息</p>
+            <p><strong>实施：</strong></p>
+            <ol>
+                <li>扩展错误响应格式，添加<code>source</code>字段：
+                    <div class="code-block">
+{
+    "error": {
+        "type": "rate_limit_error",
+        "message": "上游返回的原始错误消息",
+        "code": "rate_limit",
+        "source": "provider",  // 新增：gateway | provider
+        "provider_id": 7,      // 新增：供应商ID
+        "provider_name": "openai",  // 新增：供应商名称
+        "upstream_error": {    // 新增：上游原始错误
+            "type": "rate_limit_error",
+            "message": "Rate limit exceeded for model gpt-4",
+            "code": "rate_limit_exceeded"
+        },
+        "retry_info": {        // 新增：重试信息
+            "retryable": true,
+            "retry_after": 60,
+            "attempts_made": 2,
+            "max_attempts": 3
+        }
+    },
+    "request_id": "req-xxx"
+}
+                    </div>
+                </li>
+                <li>修改<code>writeErrorJSON</code>系列函数，支持传入上游错误信息</li>
+                <li>保留供应商的原始错误响应体（在<code>upstream_error</code>字段中）</li>
+            </ol>
+        </div>
+
+        <div class="recommendation">
+            <h3>✅ 方案2：改进错误信息传递</h3>
+            <p><strong>实施步骤：</strong></p>
+            <ol>
+                <li><strong>修改错误写入函数：</strong>
+                    <div class="code-block">
+// 新函数签名
+func writeErrorJSONWithUpstream(
+    w http.ResponseWriter,
+    status int,
+    requestID string,
+    gatewayMsg string,    // 网关层面的描述
+    errType string,
+    code string,
+    upstreamErr error,     // 上游错误对象
+    providerID *int,       // 供应商ID
+    retryInfo *RetryInfo,  // 重试信息
+) {
+    resp := ErrorResponse{
+        Error: ErrorDetail{
+            Type:    errType,
+            Message: gatewayMsg,
+            Code:    code,
+            Source:  determineSource(upstreamErr, providerID),
+        },
+        RequestID: requestID,
+    }
+    
+    // 如果有上游错误，提取并附加
+    if upstreamErr != nil {
+        if upstreamBody := extractUpstreamBody(upstreamErr); upstreamBody != nil {
+            resp.Error.UpstreamError = upstreamBody
+            resp.Error.ProviderID = providerID
+        }
+    }
+    
+    // 添加重试信息
+    if retryInfo != nil {
+        resp.Error.RetryInfo = retryInfo
+    }
+    
+    // ... 序列化并写入响应
+}
+                    </div>
+                </li>
+                <li><strong>修改执行器错误传递：</strong>确保<code>ExecuteError</code>携带完整的上游响应体</li>
+                <li><strong>修改错误分类器：</strong>在分类时保留上游错误的原始信息</li>
+            </ol>
+        </div>
+
+        <div class="recommendation">
+            <h3>✅ 方案3：增强自动路由切换的可观测性</h3>
+            <p><strong>目标：</strong>让客户端和运维人员都能清楚地看到重试和切换过程</p>
+            <p><strong>实施：</strong></p>
+            <ol>
+                <li><strong>在响应头中添加路由信息：</strong>
+                    <div class="code-block">
+X-Gateway-Attempts: 3              // 已尝试次数
+X-Gateway-Provider-Chain: 7,8,9   // 尝试过的供应商ID链
+X-Gateway-Final-Provider: 9       // 最终响应的供应商
+X-Gateway-Retry-Reason: rate_limit // 触发重试的原因
+                    </div>
+                </li>
+                <li><strong>在错误响应体中包含切换历史：</strong>
+                    <div class="code-block">
+{
+    "error": { ... },
+    "routing_history": [
+        {
+            "provider_id": 7,
+            "provider_name": "openai",
+            "attempt": 1,
+            "error_kind": "rate_limit",
+            "action": "switch_node"
+        },
+        {
+            "provider_id": 8,
+            "provider_name": "anthropic",
+            "attempt": 2,
+            "error_kind": "auth",
+            "action": "switch_node"
+        },
+        {
+            "provider_id": 9,
+            "provider_name": "minimax",
+            "attempt": 3,
+            "error_kind": "terminal",
+            "action": "fail"
+        }
+    ]
+}
+                    </div>
+                </li>
+                <li><strong>添加详细的结构化日志：</strong>记录每次切换的决策依据</li>
+            </ol>
+        </div>
+
+        <div class="recommendation">
+            <h3>✅ 方案4：错误信息脱敏的精细化控制</h3>
+            <p><strong>问题：</strong>当前<code>SanitizeErrorText</code>可能过度脱敏，丢失有用信息</p>
+            <p><strong>解决：</strong></p>
+            <ol>
+                <li>区分<strong>内部日志</strong>和<strong>客户端响应</strong>的脱敏级别</li>
+                <li>对客户端响应：只脱敏凭据、密钥等敏感信息，保留错误类型、限额值等</li>
+                <li>对内部日志：保留完整信息以便排查</li>
+                <li>示例：
+                    <div class="code-block">
+// 原始上游错误
+"Rate limit exceeded: 100 requests per minute. Current usage: 150/100"
+
+// ❌ 过度脱敏（当前）
+"Rate limit exceeded"
+
+// ✅ 适度脱敏（建议）
+"Rate limit exceeded: 100 requests per minute. Current usage: 150/100"
+// 这里没有敏感信息，应完整保留
+                    </div>
+                </li>
+            </ol>
+        </div>
+
+        <h2>五、实施优先级和影响评估</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>方案</th>
+                    <th>优先级</th>
+                    <th>实施复杂度</th>
+                    <th>影响范围</th>
+                    <th>预期收益</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>方案1：增强错误响应结构</td>
+                    <td><span class="status-badge status-critical">P0</span></td>
+                    <td>中</td>
+                    <td>所有客户端</td>
+                    <td>显著提升故障排查效率，减少用户困惑</td>
+                </tr>
+                <tr>
+                    <td>方案2：改进错误信息传递</td>
+                    <td><span class="status-badge status-critical">P0</span></td>
+                    <td>中</td>
+                    <td>网关内部</td>
+                    <td>确保上游错误不被丢失，准确归因</td>
+                </tr>
+                <tr>
+                    <td>方案3：增强路由切换可观测性</td>
+                    <td><span class="status-badge status-issue">P1</span></td>
+                    <td>低</td>
+                    <td>响应头和body</td>
+                    <td>方便运维监控和客户端智能重试</td>
+                </tr>
+                <tr>
+                    <td>方案4：精细化脱敏控制</td>
+                    <td><span class="status-badge status-issue">P1</span></td>
+                    <td>低</td>
+                    <td>错误处理模块</td>
+                    <td>平衡安全和可用性</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>六、自动化路由切换机制评估</h2>
+
+        <div class="summary">
+            <h3>✅ 已有的自动化能力</h3>
+            <ul>
+                <li><strong>错误分类精准：</strong>通过<code>errorsx.DecideNextAction</code>对20+种错误类型做精细化处理</li>
+                <li><strong>智能切换：</strong>
+                    <ul>
+                        <li><code>ActionSwitchNode</code>：自动切换到备用供应商节点</li>
+                        <li><code>ActionWaitRecovery</code>：对可恢复错误等待后重试</li>
+                        <li><code>ActionRetrySameNode</code>：对临时故障在同节点重试</li>
+                    </ul>
+                </li>
+                <li><strong>历史追踪：</strong><code>DecisionHistory</code>机制防止循环重试</li>
+                <li><strong>健康度管理：</strong>节点健康状态驱动路由决策（<code>node_probe_state</code>）</li>
+                <li><strong>熔断保护：</strong>候选查询熔断器（<code>ErrCandidatesCircuitOpen</code>）</li>
+            </ul>
+        </div>
+
+        <div class="issue warning">
+            <h3>⚠️ 需要改进的地方</h3>
+            <ol>
+                <li><strong>缺少客户端可见的切换通知：</strong>
+                    <ul>
+                        <li>当前切换对客户端透明，无法判断是否发生了failover</li>
+                        <li>建议：在响应头添加<code>X-Gateway-Failover: true</code>标记</li>
+                    </ul>
+                </li>
+                <li><strong>重试预算不透明：</strong>
+                    <ul>
+                        <li>客户端不知道还剩多少次重试机会</li>
+                        <li>建议：返回<code>retry_info.attempts_made</code>和<code>max_attempts</code></li>
+                    </ul>
+                </li>
+                <li><strong>缺少手动干预接口：</strong>
+                    <ul>
+                        <li>客户端无法指定"跳过某些供应商"或"优先使用某供应商"</li>
+                        <li>建议：支持请求头<code>X-Gateway-Preferred-Providers</code>和<code>X-Gateway-Exclude-Providers</code></li>
+                    </ul>
+                </li>
+            </ol>
+        </div>
+
+        <h2>七、实施建议和时间规划</h2>
+
+        <h3>阶段一：紧急修复（1-2周）</h3>
+        <ol>
+            <li>修改<code>writeErrorJSON</code>系列函数，添加<code>source</code>和<code>upstream_error</code>字段</li>
+            <li>确保<code>ExecuteError</code>携带完整上游响应体</li>
+            <li>在关键错误路径（鉴权、路由、执行）测试新响应格式</li>
+            <li>更新API文档，说明新的错误响应结构</li>
+        </ol>
+
+        <h3>阶段二：完善增强（2-3周）</h3>
+        <ol>
+            <li>实施<code>routing_history</code>和<code>retry_info</code>字段</li>
+            <li>添加响应头（<code>X-Gateway-*</code>系列）</li>
+            <li>优化脱敏逻辑，确保关键信息不丢失</li>
+            <li>添加监控指标：错误来源分布、重试成功率等</li>
+        </ol>
+
+        <h3>阶段三：高级特性（3-4周）</h3>
+        <ol>
+            <li>支持客户端指定供应商偏好</li>
+            <li>实现错误响应的国际化（i18n）</li>
+            <li>建立错误知识库，提供每种错误的解决建议</li>
+            <li>开发错误可视化仪表板</li>
+        </ol>
+
+        <h2>八、会话诊断日志实现</h2>
+
+        <div class="summary" style="background: #e3f2fd; border-left-color: #2196f3;">
+            <h3>💡 核心价值</h3>
+            <p>为每个请求维护完整的执行历史，包括：</p>
+            <ul>
+                <li>路由决策过程和候选列表</li>
+                <li>每次尝试的详细记录（供应商、耗时、结果）</li>
+                <li>错误分类和处理决策</li>
+                <li>自动切换历史和原因</li>
+            </ul>
+        </div>
+
+        <h3>8.1 数据结构</h3>
+        <div class="code-block">
+type SessionDiagnosticLog struct {
+    RequestID      string                 `json:"request_id"`
+    SessionID      string                 `json:"session_id,omitempty"`
+    ClientModel    string                 `json:"client_model"`
+    TenantID       string                 `json:"tenant_id"`
+    StartTime      time.Time              `json:"start_time"`
+    EndTime        time.Time              `json:"end_time"`
+    FinalStatus    int                    `json:"final_status"`
+    Success        bool                   `json:"success"`
+    
+    // 路由信息
+    RoutingDecision *RoutingDecision      `json:"routing_decision"`
+    
+    // 执行历史
+    Attempts       []*AttemptRecord       `json:"attempts"`
+    
+    // 最终结果
+    FinalError     *ErrorRecord           `json:"final_error,omitempty"`
+    
+    // 统计
+    TotalAttempts  int                    `json:"total_attempts"`
+    Switches       int                    `json:"switches"`
+    Retries        int                    `json:"retries"`
+    TotalDuration  int64                  `json:"total_duration_ms"`
+}
+
+type AttemptRecord struct {
+    AttemptNo      int                    `json:"attempt_no"`
+    Provider       ProviderInfo           `json:"provider"`
+    StartTime      time.Time              `json:"start_time"`
+    EndTime        time.Time              `json:"end_time"`
+    Duration       int64                  `json:"duration_ms"`
+    StatusCode     int                    `json:"status_code"`
+    Success        bool                   `json:"success"`
+    
+    // 错误和决策信息
+    Error          *ErrorRecord           `json:"error,omitempty"`
+    ErrorKind      string                 `json:"error_kind,omitempty"`
+    NextAction     string                 `json:"next_action,omitempty"`
+    ActionReason   string                 `json:"action_reason,omitempty"`
+}
+        </div>
+
+        <h3>8.2 存储方案</h3>
+        <p>新增数据库表：<code>request_diagnostic_logs</code></p>
+        <div class="code-block">
+CREATE TABLE request_diagnostic_logs (
+    id BIGSERIAL PRIMARY KEY,
+    request_id VARCHAR(255) NOT NULL UNIQUE,
+    session_id VARCHAR(255),
+    tenant_id VARCHAR(255),
+    client_model VARCHAR(255),
+    
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP NOT NULL,
+    final_status INT NOT NULL,
+    success BOOLEAN NOT NULL,
+    
+    -- JSON字段存储详细信息
+    routing_decision JSONB,
+    attempts JSONB NOT NULL,
+    final_error JSONB,
+    
+    -- 统计字段（用于快速查询）
+    total_attempts INT NOT NULL,
+    switches INT NOT NULL DEFAULT 0,
+    retries INT NOT NULL DEFAULT 0,
+    total_duration_ms BIGINT NOT NULL,
+    
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 索引优化
+CREATE INDEX idx_diagnostic_request_id ON request_diagnostic_logs(request_id);
+CREATE INDEX idx_diagnostic_session_id ON request_diagnostic_logs(session_id);
+CREATE INDEX idx_diagnostic_start_time ON request_diagnostic_logs(start_time DESC);
+CREATE INDEX idx_diagnostic_success ON request_diagnostic_logs(success);
+
+-- 分区策略：按天分区
+-- 保留策略：保留30天
+        </div>
+
+        <h3>8.3 API接口</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>接口</th>
+                    <th>方法</th>
+                    <th>说明</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>/internal/diagnostics/request/:request_id</code></td>
+                    <td>GET</td>
+                    <td>获取指定请求的完整诊断日志</td>
+                </tr>
+                <tr>
+                    <td><code>/internal/diagnostics/session/:session_id</code></td>
+                    <td>GET</td>
+                    <td>获取指定会话的所有请求日志</td>
+                </tr>
+                <tr>
+                    <td><code>/internal/diagnostics/failures</code></td>
+                    <td>GET</td>
+                    <td>查询失败的请求（时间范围、租户、模型）</td>
+                </tr>
+                <tr>
+                    <td><code>/internal/diagnostics/query</code></td>
+                    <td>GET</td>
+                    <td>高级查询（支持多条件组合）</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>8.4 使用示例</h3>
+        <div class="code-block">
+// 1. 查询指定请求的诊断日志
+GET /internal/diagnostics/request/req-abc-123
+
+响应：
+{
+  "request_id": "req-abc-123",
+  "client_model": "gpt-4",
+  "tenant_id": "tenant-001",
+  "start_time": "2026-11-18T10:30:00Z",
+  "end_time": "2026-11-18T10:30:05Z",
+  "final_status": 503,
+  "success": false,
+  "total_attempts": 3,
+  "switches": 2,
+  "total_duration_ms": 5234,
+  
+  "routing_decision": {
+    "candidates": [
+      {"provider_id": 7, "provider_name": "openai", "model": "gpt-4"},
+      {"provider_id": 8, "provider_name": "anthropic", "model": "claude-3"},
+      {"provider_id": 9, "provider_name": "minimax", "model": "abab6.5"}
+    ],
+    "selected_index": 0
+  },
+  
+  "attempts": [
+    {
+      "attempt_no": 1,
+      "provider": {"provider_id": 7, "provider_name": "openai"},
+      "duration_ms": 1500,
+      "status_code": 429,
+      "success": false,
+      "error_kind": "rate_limit",
+      "next_action": "switch_node",
+      "action_reason": "rate_limit"
+    },
+    {
+      "attempt_no": 2,
+      "provider": {"provider_id": 8, "provider_name": "anthropic"},
+      "duration_ms": 2000,
+      "status_code": 401,
+      "success": false,
+      "error_kind": "auth",
+      "next_action": "switch_node",
+      "action_reason": "credential_auth_failed"
+    },
+    {
+      "attempt_no": 3,
+      "provider": {"provider_id": 9, "provider_name": "minimax"},
+      "duration_ms": 1734,
+      "status_code": 402,
+      "success": false,
+      "error_kind": "quota",
+      "next_action": "fail_terminal",
+      "action_reason": "no_alternate_node:credential_quota_exhausted"
+    }
+  ],
+  
+  "final_error": {
+    "source": "provider",
+    "type": "insufficient_quota",
+    "message": "All available providers exhausted",
+    "code": "no_available_provider"
+  }
+}
+
+// 2. 查询失败的请求
+GET /internal/diagnostics/failures?start_time=2026-11-18T00:00:00Z&limit=50
+
+// 3. 查询指定会话的所有请求
+GET /internal/diagnostics/session/sess-xyz-789?limit=100
+        </div>
+
+        <h3>8.5 故障排查流程</h3>
+        <div class="mermaid">
+graph LR
+    A[客户端报错] --> B[获取request_id]
+    B --> C[查询诊断日志]
+    C --> D{分析失败模式}
+    D -->|所有候选都失败| E[检查每个provider<br/>的失败原因]
+    D -->|循环重试| F[检查历史追踪<br/>机制]
+    D -->|错误分类错误| G[检查分类器<br/>逻辑]
+    E --> H[定位根因]
+    F --> H
+    G --> H
+    H --> I[修复或配置调整]
+    
+    style A fill:#f8d7da
+    style H fill:#d4edda
+    style I fill:#d4edda
+        </div>
+
+        <h2>九、代码改动示例</h2>
+
+        <h3>9.1 修改writeErrorJSON函数</h3>
+        <div class="code-block">
+// 在 handler.go 中添加新的错误写入函数
+
+type UpstreamErrorInfo struct {
+    Type    string                 `json:"type,omitempty"`
+    Message string                 `json:"message,omitempty"`
+    Code    string                 `json:"code,omitempty"`
+    Details map[string]interface{} `json:"details,omitempty"`
+}
+
+type RetryInfo struct {
+    Retryable    bool  `json:"retryable"`
+    RetryAfter   int   `json:"retry_after,omitempty"` // seconds
+    AttemptsMade int   `json:"attempts_made"`
+    MaxAttempts  int   `json:"max_attempts"`
+}
+
+type ErrorResponseEnhanced struct {
+    Error struct {
+        Type          string             `json:"type"`
+        Message       string             `json:"message"`
+        Code          string             `json:"code"`
+        Source        string             `json:"source"` // "gateway" | "provider"
+        ProviderID    *int               `json:"provider_id,omitempty"`
+        ProviderName  string             `json:"provider_name,omitempty"`
+        UpstreamError *UpstreamErrorInfo `json:"upstream_error,omitempty"`
+        RetryInfo     *RetryInfo         `json:"retry_info,omitempty"`
+    } `json:"error"`
+    RequestID string `json:"request_id,omitempty"`
+}
+
+func writeErrorJSONEnhanced(
+    w http.ResponseWriter,
+    status int,
+    requestID string,
+    gatewayMsg string,
+    errType string,
+    code string,
+    source string,
+    upstreamErr *UpstreamErrorInfo,
+    providerID *int,
+    providerName string,
+    retryInfo *RetryInfo,
+) {
+    resp := ErrorResponseEnhanced{RequestID: requestID}
+    resp.Error.Type = errType
+    resp.Error.Message = gatewayMsg
+    resp.Error.Code = code
+    resp.Error.Source = source
+    
+    if upstreamErr != nil {
+        resp.Error.UpstreamError = upstreamErr
+        resp.Error.ProviderID = providerID
+        resp.Error.ProviderName = providerName
+    }
+    
+    if retryInfo != nil {
+        resp.Error.RetryInfo = retryInfo
+    }
+    
+    w.Header().Set("Content-Type", "application/json")
+    if requestID != "" {
+        w.Header().Set("X-Request-Id", requestID)
+    }
+    // 添加路由信息头
+    if retryInfo != nil && retryInfo.AttemptsMade > 1 {
+        w.Header().Set("X-Gateway-Failover", "true")
+        w.Header().Set("X-Gateway-Attempts", fmt.Sprintf("%d", retryInfo.AttemptsMade))
+    }
+    
+    w.WriteHeader(status)
+    json.NewEncoder(w).Encode(resp)
+}
+        </div>
+
+        <h3>9.2 在executor中保留上游错误</h3>
+        <div class="code-block">
+// 在 executors/executor.go 中
+
+func (e *Executor) Execute(ctx context.Context, req *Request) (*Response, error) {
+    // ... 现有逻辑 ...
+    
+    resp, err := e.callUpstream(ctx, candidate, req)
+    if err != nil {
+        // 提取上游错误信息
+        upstreamInfo := extractUpstreamErrorInfo(err, resp)
+        
+        // 分类错误
+        kind := errorsx.ClassifyResponseStatus(resp.StatusCode, resp.Body)
+        
+        // 构造包含完整信息的错误
+        return nil, &ExecuteError{
+            Kind:          kind,
+            Message:       err.Error(),
+            ProviderID:    candidate.ProviderID,
+            ProviderName:  candidate.ProviderName,
+            CredentialID:  candidate.CredentialID,
+            UpstreamError: upstreamInfo,  // 新增字段
+            HTTPStatus:    resp.StatusCode,
+            Body:          resp.Body,
+        }
+    }
+    
+    return resp, nil
+}
+
+func extractUpstreamErrorInfo(err error, resp *http.Response) *UpstreamErrorInfo {
+    if resp == nil || resp.Body == nil {
+        return nil
+    }
+    
+    var body map[string]interface{}
+    if err := json.Unmarshal(resp.Body, &body); err != nil {
+        return nil
+    }
+    
+    info := &UpstreamErrorInfo{}
+    
+    // 尝试多种上游错误格式
+    if errObj, ok := body["error"].(map[string]interface{}); ok {
+        info.Type, _ = errObj["type"].(string)
+        info.Message, _ = errObj["message"].(string)
+        info.Code, _ = errObj["code"].(string)
+        info.Details = errObj
+    } else {
+        info.Message, _ = body["message"].(string)
+        info.Type, _ = body["type"].(string)
+        info.Code, _ = body["code"].(string)
+    }
+    
+    // 脱敏处理
+    info.Message = sanitize.SanitizeErrorText(info.Message)
+    
+    return info
+}
+        </div>
+
+        <h2>十、总结</h2>
+
+        <div class="summary">
+            <h3>核心发现</h3>
+            <ul>
+                <li><strong>✅ 优势：</strong>网关具备完善的错误分类和自动路由切换机制</li>
+                <li><strong>❌ 主要问题：</strong>
+                    <ol>
+                        <li>上游错误信息被网关通用消息覆盖，客户端无法获知详情</li>
+                        <li>错误响应中缺少来源标识（网关 vs 供应商）</li>
+                        <li>自动切换过程对客户端不可见</li>
+                    </ol>
+                </li>
+                <li><strong>🎯 改进方向：</strong>
+                    <ol>
+                        <li>增强错误响应结构，添加<code>source</code>、<code>upstream_error</code>、<code>retry_info</code>字段</li>
+                        <li>修改<code>writeErrorJSON</code>系列函数，确保上游错误不被重写</li>
+                        <li>在响应头中暴露路由切换信息</li>
+                        <li>优化脱敏逻辑，保留关键诊断信息</li>
+                    </ol>
+                </li>
+            </ul>
+        </div>
+
+        <div class="summary" style="background: #d4edda; border-left-color: #28a745;">
+            <h3>✅ 预期效果</h3>
+            <p>实施上述方案后：</p>
+            <ul>
+                <li>客户端可以清楚地判断错误来自网关还是供应商</li>
+                <li>客户端能获取供应商返回的原始错误信息，快速定位问题</li>
+                <li>运维人员可以通过响应头和body快速了解路由切换过程</li>
+                <li>故障排查时间预计减少50%以上</li>
+                <li>用户满意度显著提升</li>
+            </ul>
+        </div>
+
+        <hr style="margin: 40px 0; border: none; border-top: 2px solid #ddd;">
+        
+        <p style="text-align: center; color: #666; font-size: 0.9em;">
+            <strong>审计人：</strong>MiniMax Code AI Assistant<br>
+            <strong>日期：</strong>2026-11-18<br>
+            <strong>工作区：</strong>/Users/xutaohuang/workspace/ai-native-tools/llm-gateway
+        </p>
+    </div>
+
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'default',
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>

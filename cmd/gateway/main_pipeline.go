@@ -125,6 +125,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/extpoints"                                            //nolint:depguard // 2026-11-19: 16-Phase Plugin 架构桥接
 	"github.com/kaixuan/llm-gateway-go/internal/sessionid" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/taskbus"   //nolint:depguard // 03: Hook 双模 taskbus 内核
 	"github.com/kaixuan/llm-gateway-go/security/sensitive" //nolint:depguard // AC敏感词引擎
@@ -320,6 +321,13 @@ type v2DispatchDeps struct {
 	// **真正拦流量的那个注册中心**（与 SensitiveWordEngine 同款共享接线，
 	// 避免再造一份静态清单漂移）。
 	SecurityRegistry *security.Registry
+
+	// ── ExtensionPoint Registry (2026-11-19) ──────────────────────
+	// ExtensionPointRegistry 是 16-Phase Plugin 架构的注册中心。
+	// 在 buildV2DispatchPipeline 内创建，通过 ExtensionPointHook 桥接到
+	// domains/pipeline 架构，使插件能在生产请求流中执行。
+	// 回传给 main.go 供 demo 插件或外部插件注册使用。
+	ExtensionPointRegistry extpoints.ExtensionPointRegistry
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -330,6 +338,20 @@ type v2DispatchDeps struct {
 // metrics duplicate-registration panic).
 func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p := pipeline.NewRequestPipeline()
+
+	// ── ExtensionPoint Registry (2026-11-19) ──────────────────────────────
+	// 创建 16-Phase Plugin 注册表，通过 ExtensionPointHook 桥接到现有 Pipeline。
+	// 插件可以在各个 Phase 注册，ExecutionEngine 按优先级顺序执行它们。
+	// 
+	// 集成策略：
+	//   - 为每个主要 Phase 创建一个 ExtensionPointHook
+	//   - Hook 的 Priority = 500（中等），在标准 Hook 之后执行
+	//   - fail-open 策略：插件失败不阻塞请求
+	//   - registry 回传到 deps，供外部插件注册
+	extRegistry := extpoints.NewExtensionPointRegistry()
+	if deps != nil {
+		deps.ExtensionPointRegistry = extRegistry
+	}
 
 	// 03 taskbus: 注册期 V2 对拍 + cache_save 示范迁（memora 生产零挂载，本波不迁）。
 	tbus := taskbus.NewDemoBus()
@@ -350,11 +372,16 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		// Note: KeyVerifier needs DB connection to verify keys.
 		// In production, pass the DB pool from main.go.
 		// For demo/test: keys are not verified, hook will skip.
+		authHooks := []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)}
+		
+		// ExtensionPoint: 添加 PhaseAuth 插件支持
+		authHooks = append(authHooks, extpoints.NewExtensionPointHook(extRegistry, "authentication"))
+		
 		p.AddStage(&pipeline.PipelineStage{
 			Name:  "authentication",
 			Phase: pipeline.PhaseAuthentication,
 			Mode:  pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
+			Hooks: authHooks,
 		})
 	}
 
@@ -363,7 +390,11 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// and inject into env.Metadata for downstream hooks and audit.
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "client_identity", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
-		Hooks: []pipeline.Hook{identity.NewClientIdentityHook()},
+		Hooks: []pipeline.Hook{
+			identity.NewClientIdentityHook(),
+			// ExtensionPoint: PhasePreRoute 插件
+			extpoints.NewExtensionPointHook(extRegistry, "pre_routing"),
+		},
 	})
 
 	// === Phase: Session Loader (priority 30) ===
@@ -458,21 +489,29 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-	// Routing stage: uses the same routing package as main_v2_pipeline.go
-	// (routing.NewStickyRouter(routing.NewRoundRobinRouter())). The hook
-	// only contributes routing decisions to env.SelectedCredential — the
-	// actual upstream call still goes through chatHandler.
-	if deps.CredentialLimit != nil {
-		sticky := routing.NewStickyRouter(routing.NewRoundRobinRouter())
-		p.AddStage(&pipeline.PipelineStage{
-			Name: "routing", Phase: pipeline.PhaseRouting, Mode: pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{routing.NewRoutingHook(sticky)},
-		})
-		p.AddStage(&pipeline.PipelineStage{
-			Name: "credential_limit", Phase: pipeline.PhasePostRouting, Mode: pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{credential.NewLimiterHook(deps.CredentialLimit)},
-		})
-	}
+		// Routing stage: uses the same routing package as main_v2_pipeline.go
+		// (routing.NewStickyRouter(routing.NewRoundRobinRouter())). The hook
+		// only contributes routing decisions to env.SelectedCredential — the
+		// actual upstream call still goes through chatHandler.
+		if deps.CredentialLimit != nil {
+			sticky := routing.NewStickyRouter(routing.NewRoundRobinRouter())
+			p.AddStage(&pipeline.PipelineStage{
+				Name: "routing", Phase: pipeline.PhaseRouting, Mode: pipeline.ModeSequential,
+				Hooks: []pipeline.Hook{
+					routing.NewRoutingHook(sticky),
+					// ExtensionPoint: PhaseRoute 插件
+					extpoints.NewExtensionPointHook(extRegistry, "routing"),
+				},
+			})
+			p.AddStage(&pipeline.PipelineStage{
+				Name: "credential_limit", Phase: pipeline.PhasePostRouting, Mode: pipeline.ModeSequential,
+				Hooks: []pipeline.Hook{
+					credential.NewLimiterHook(deps.CredentialLimit),
+					// ExtensionPoint: PhasePostRoute 插件
+					extpoints.NewExtensionPointHook(extRegistry, "post_routing"),
+				},
+			})
+		}
 
 	// V4 governance stage (PR-V4-02). PR-V4-03 wires the security plugin
 	// registry here; older SecurityHook in domains/hooks/security still

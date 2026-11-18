@@ -1,0 +1,118 @@
+URL: https://llm.itestu.cn/request-detail/df7aa3f83bbe7c7e9ea4f0b475cdb4d2
+TITLE: AI Native 组织核心网关
+REQUEST_ID 命中: true
+
+AI Native
+组织核心网关
+实时拓扑
+请求阶段树
+总览
+运营管理
+模型与路由
+租户用户
+请求与会话
+数据运维
+接入指南
+对话
+运维中心
+G
+D
+R
+T
+v2.6.1
+·
+#3110
+专家模式
+🇨🇳
+zh-CN
+系统管理员
+df7aa3f83bbe7c7e9ea4f0b475cdb4d2
+in_progress
+session: gw_e65e725a-bb84-4215-afe0-041e766a531e
+file · in_flight
+单请求
+会话轮次
+复制
+导出 MD
+打开会话
+(未命名会话)
+点击「即时总结」生成摘要
+0 turns
+·
+$0.0000
+即时总结
+概览
+对话
+调度瀑布
+路由与重试
+流程 Trace
+压缩脱敏
+附件/媒体
+原始 JSON
+本轮问答
+查看完整对话
+用户
+—
+模型回复
+—
+请求ID
+df7aa3f83bbe7c7e9ea4f0b475cdb4d2
+请求时间
+—
+状态
+in_progress
+延迟
+—ms
+Tenant
+default
+Success
+false
+客户端模型
+glm-5.3-flash
+出站/规范模型
+—
+供应商
+—
+凭据
+—
+Session
+gw_e65e725a-bb84-4215-afe0-041e766a531e
+会话标题
+—
+任务 ID
+default
+End User
+—
+Token
+— / —（总 —）
+Cache
+— / —
+Cost / Credits
+— / —
+finish_reason
+—
+failure
+— · —
+压缩
+— · —
+parent_request
+—
+Agent
+— · —
+快照模型/供应商
+— · —
+Stream
+首包 —ms · chunks —
+亲和
+—
+应用 / Key
+— · —
+附件
+0
+数据源
+本机文件 · 在途
+轮次
+—
+调度瀑布
+路由与重试
+流程 Trace
