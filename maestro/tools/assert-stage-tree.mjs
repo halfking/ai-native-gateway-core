@@ -212,6 +212,57 @@ const OVERLAY_PROBE = `(async () => {
   return out
 })()`
 
+/**
+ * ★ 请求详情交互（2026-11-18 补）：点请求行 ⇒ 展开「请求详情」。
+ *
+ * 设计原型（docs/audit/2026-11-16-live阶段树原型*.html 的 `toggleBandDetail`）
+ * 里点行会展开详情，线上此前**缺了这一段** ⇒ 点行毫无反应。
+ * ⇒ 本探针在**页面内**点真行、读真 DOM（Maestro 的 web 驱动选不中动态
+ *   `data-testid="stage-band-<requestId>"`，且 2026-11-18 实测 `<article>`
+ *   行点击在 flow 里不可靠 ⇒ 交互断言放页面内，与统计浮层同一分工口径）。
+ */
+const DETAIL_PROBE = `(async () => {
+  const q = (s) => document.querySelector(s)
+  const qa = (s) => Array.from(document.querySelectorAll(s))
+  const tx = (el) => ((el && el.textContent) || '').replace(/\\s+/g, ' ').trim()
+  const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length))
+  const out = { checks: [], facts: {} }
+  const check = (name, pass, detail) => {
+    out.checks.push({ name, pass: !!pass, detail: detail === undefined ? '' : String(detail) })
+  }
+  const ridOf = (el) => ((el.getAttribute('data-testid') || '').replace(/^stage-band-/, ''))
+  const bands = qa('article.band')
+  check('页面有请求带（点开详情的前提）', bands.length > 0, '带 ' + bands.length + ' 个')
+  if (!bands.length) return out
+  check('点开前：详情面板不存在', !q('[data-testid="stage-detail-title"]'), '')
+  const rid1 = ridOf(bands[0])
+  bands[0].click()
+  // ★ Vue 的 DOM 更新是**异步**的（nextTick）⇒ 点击后必须让出一帧。
+  await new Promise((r) => setTimeout(r, 200))
+  const panel1 = q('[data-testid="stage-detail-' + rid1 + '"]')
+  check('点请求行 ⇒ 详情面板出现', visible(panel1), rid1)
+  const title = q('[data-testid="stage-detail-title"]')
+  out.facts.detailTitle = tx(title)
+  check('详情标题为「请求详情」', out.facts.detailTitle === '请求详情', out.facts.detailTitle)
+  const sections = ['resolve', 'reply', 'identity', 'stages', 'session']
+  const missing = sections.filter((s) => !q('[data-testid="stage-detail-section-' + s + '"]'))
+  check('详情五个分区齐备', missing.length === 0, missing.length ? ('缺 ' + missing.join(',')) : '')
+  out.facts.detailText = panel1 ? tx(panel1).slice(0, 240) : ''
+  if (bands.length > 1) {
+    const rid2 = ridOf(bands[1])
+    bands[1].click()
+    await new Promise((r) => setTimeout(r, 200))
+    check('手风琴：点第二条 ⇒ 第一条收起', !visible(q('[data-testid="stage-detail-' + rid1 + '"]')), rid1)
+    check('手风琴：第二条展开', visible(q('[data-testid="stage-detail-' + rid2 + '"]')), rid2)
+    bands[1].click()
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  bands[0].click()
+  await new Promise((r) => setTimeout(r, 200))
+  check('再点同一条 ⇒ 收起（可逆）', !visible(q('[data-testid="stage-detail-' + rid1 + '"]')), rid1)
+  return out
+})()`
+
 async function main() {
   const { cdp, ws } = await connect(args.cdp)
   try {
@@ -254,10 +305,17 @@ async function main() {
     console.log('  事实：', JSON.stringify(probe.facts, null, 0))
 
     let overlay = null
+    let detail = null
     if (args.page === '/live2') {
       overlay = await evaluate(cdp, sessionId, OVERLAY_PROBE)
       console.log('== 统计浮层交互 ==')
       for (const c of overlay.checks) {
+        console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
+      }
+      // ★ 请求详情交互（点行 ⇒ 展开）：与浮层同一分工（页面内做，flow 侧选不中动态行）。
+      detail = await evaluate(cdp, sessionId, DETAIL_PROBE)
+      console.log('== 请求详情交互（点请求行 ⇒ 展开详情）==')
+      for (const c of detail.checks) {
         console.log(`  ${c.pass ? '✓' : '✗'} ${c.name}${c.detail ? '  —— ' + c.detail : ''}`)
       }
     }
@@ -268,7 +326,11 @@ async function main() {
     //   但 `probe.ok` **从未被读取** ⇒ **浮层断言红时照样报「PASS」**
     //   ⇒ 「断言红」被统计口径吃掉＝等于没有断言。
     //   （设计层工具 assert-stage-tree-design.mjs 早已修过同一类缺陷。）
-    const verdict = summarize([...probe.checks, ...(overlay ? overlay.checks : [])])
+    const verdict = summarize([
+      ...probe.checks,
+      ...(overlay ? overlay.checks : []),
+      ...(detail ? detail.checks : []),
+    ])
     console.log(`\n${verdict.line}`)
     ws.close()
     process.exit(verdict.exitCode)

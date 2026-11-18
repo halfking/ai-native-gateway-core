@@ -58,7 +58,9 @@ import {
 } from '../lib/liveStageTree'
 import { DEFAULT_TOPO_FILTERS, type TopoFilters } from '../types/liveTopology'
 import LiveTopologyFilterBar from '../components/live-topology/LiveTopologyFilterBar.vue'
+import { bandStatus } from '../lib/liveStageTreeLabels'
 import StageTreeBand from '../components/live-stage-tree/StageTreeBand.vue'
+import StageTreeBandDetail from '../components/live-stage-tree/StageTreeBandDetail.vue'
 import StageTreeLegend from '../components/live-stage-tree/StageTreeLegend.vue'
 import StageTreeStageHeader from '../components/live-stage-tree/StageTreeStageHeader.vue'
 import StageTreeStatsOverlay from '../components/live-stage-tree/StageTreeStatsOverlay.vue'
@@ -77,6 +79,21 @@ const canvasRef = ref<HTMLElement | null>(null)
 const followBottom = ref(true)
 /** 显示模式（完整 / 紧凑）—— 设计第 6 轮。 */
 const mode = ref<'full' | 'compact'>('full')
+
+/**
+ * ★ 展开详情的请求 id（点击请求行 ⇒ 展开「请求详情」）。
+ *
+ * 设计原型（docs/audit/2026-11-16-live阶段树原型*.html 的 `toggleBandDetail`）
+ * 的语义是**手风琴**：同时只展开一条，点第二条时第一条自动收起。
+ * ⇒ 这里只存**一个** id，而不是一个集合 ⇒ 手风琴是**结构上**成立的
+ * （不是靠两条规则去互斥）。
+ */
+const expandedRequestId = ref<string | null>(null)
+
+/** 点击请求行 ⇒ 展开/收起该条的详情（再点一次收起）。 */
+function onToggleDetail(requestId: string): void {
+  expandedRequestId.value = expandedRequestId.value === requestId ? null : requestId
+}
 
 /** 静默带阈值：3 秒无流量出现；5 分钟后只改时长与行高。 */
 const IDLE_ONSET_MS = 3_000
@@ -328,9 +345,8 @@ function credibilityChip(band: StageBand): {
 }
 
 function statusOf(band: StageBand): string {
-  if (band.failedStage) return 'failure'
-  if (band.inFlight) return 'in_progress'
-  return 'success'
+  // ★ 状态推导**单一真源**（请求带与请求详情面板共用一份 ⇒ 不会一处绿一处红）。
+  return bandStatus(band)
 }
 
 function onFilterPatch(patch: Partial<TopoFilters>) {
@@ -421,6 +437,12 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <!-- ★ 可发现性提示：点击任一请求行可展开该请求的详细信息
+           （设计原型的 `toggleBandDetail`；线上此前缺了这一段 ⇒ 点行毫无反应）。 -->
+      <span class="stage-tree__hint" data-testid="stage-detail-hint">
+        {{ t('liveStageTree.detail.hint') }}
+      </span>
+
       <!-- 过滤条件：常驻顶层（owner 2026-11-16）。 -->
       <LiveTopologyFilterBar
         class="stage-tree__filters"
@@ -483,7 +505,21 @@ onBeforeUnmount(() => {
         :queue-ms="band.queueMs"
         :attempts="band.attempts"
         :candidates="band.model.candidates"
-      />
+        :expanded="expandedRequestId === band.requestId"
+        @toggle="onToggleDetail"
+      >
+        <!-- ★ 详情面板（设计原型的 `toggleBandDetail`）：只给**被点开的那一条**填内容。
+             未展开时不渲染 ⇒ 默认态与改造前逐字一致（设计钉测不受影响）。 -->
+        <template v-if="expandedRequestId === band.requestId" #detail>
+          <StageTreeBandDetail
+            :band="band"
+            :mode="mode"
+            :session-round="sessionRounds.get(band.requestId) ?? null"
+            :credibility-label="credibilityChip(band).label"
+            :credibility-tip="credibilityChip(band).tip"
+          />
+        </template>
+      </StageTreeBand>
 
       <!-- 静默带：前端自造（与后端 idle_marker 心跳严格分离）。 -->
       <div
@@ -606,6 +642,13 @@ onBeforeUnmount(() => {
   border: 1px solid var(--kx-border);
   border-radius: var(--kx-radius-sm);
   background: var(--kx-bg-container);
+}
+
+/* ★ 交互提示（点击请求行 ⇒ 展开详情）。弱化处理：不抢标题与过滤条的注意力。 */
+.stage-tree__hint {
+  color: var(--kx-muted);
+  font-size: var(--kx-text-2xs);
+  white-space: nowrap;
 }
 
 .stage-tree__mode {

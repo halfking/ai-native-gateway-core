@@ -38,6 +38,15 @@ import { useI18n } from 'vue-i18n'
 import { Monitor } from '@element-plus/icons-vue'
 import { RECV_STAGES, SEND_STAGES, type StageKey, type StageNode, type StageState } from '../../types/liveStageTree'
 import { COMPACT_GLYPH, FULL_GLYPH } from '../../lib/stageTreeGlyphs'
+// ★ 文案映射**单一真源**（请求带与请求详情面板共用一份 ⇒ 不会漂）。
+import {
+  clientTypeLabel as clientTypeLabelOf,
+  errorKindLabel,
+  stageDetailLabel,
+  stageLabel,
+  stageStateLabel,
+  stageValueLabel,
+} from '../../lib/liveStageTreeLabels'
 // ★ 阶段图标与紧凑模式字形**复用仓内既有常量**（web/src/types/stageTree.ts）——
 //   那份常量就是设计原型 ICON / CGLYPH 的移植 ⇒ 画面与原型一致，且不重复维护。
 import { STAGE_ICONS } from '@/types/stageTree'
@@ -119,9 +128,21 @@ const props = defineProps<{
   attempts: number
   /** 候选数（路由段上报的候选个数）。未上报 = null。 */
   candidates: number | null
+  /** 该带是否已展开详情（点击请求行展开；手风琴：同时只展开一条）。 */
+  expanded: boolean
+}>()
+
+const emit = defineEmits<{
+  /** 点击请求行 ⇒ 请求展开/收起详情（带 requestId 供上层做手风琴）。 */
+  toggle: [requestId: string]
 }>()
 
 const { t } = useI18n()
+
+/** 点击请求行 ⇒ 通知上层展开/收起本条详情（手风琴由上层统一管）。 */
+function onToggle(): void {
+  emit('toggle', props.requestId)
+}
 
 /** 发送轨节点（列 3..9）。 */
 const sendStages = computed(() =>
@@ -139,95 +160,17 @@ const gridColumns = computed(() =>
 
 /** 阶段名（★ 逐字面量 t()：动态键是引用扫描器的盲区，且写错键没有任何门会报）。 */
 function stageName(key: StageKey): string {
-  switch (key) {
-    case 'auth':
-      return t('liveStageTree.stage.auth')
-    case 'sanitize':
-      return t('liveStageTree.stage.sanitize')
-    case 'approval':
-      return t('liveStageTree.stage.approval')
-    case 'injection':
-      return t('liveStageTree.stage.injection')
-    case 'route':
-      return t('liveStageTree.stage.route')
-    case 'compress':
-      return t('liveStageTree.stage.compress')
-    case 'provider':
-      return t('liveStageTree.stage.provider')
-    case 'first_byte':
-      return t('liveStageTree.stage.firstByte')
-    case 'restore':
-      return t('liveStageTree.stage.restore')
-    case 'meter':
-      return t('liveStageTree.stage.meter')
-    case 'reply':
-      return t('liveStageTree.stage.reply')
-    default:
-      return ''
-  }
+  return stageLabel(t, key)
 }
 
 /** 阶段状态文案（逐字面量）。 */
 function stateName(state: string): string {
-  switch (state) {
-    case 'done':
-      return t('liveStageTree.state.done')
-    case 'active':
-      return t('liveStageTree.state.active')
-    case 'failed':
-      return t('liveStageTree.state.failed')
-    case 'warned':
-      return t('liveStageTree.state.warned')
-    case 'unmeasured':
-      return t('liveStageTree.state.unmeasured')
-    case 'skipped':
-      return t('liveStageTree.state.skipped')
-    case 'pending':
-      return t('liveStageTree.state.pending')
-    default:
-      return ''
-  }
+  return stageStateLabel(t, state)
 }
 
 /** 阶段值的中文化（单位随阶段而变；空值不渲染 —— 状态字形已经说明了）。 */
 function valueText(s: StageNode): string {
-  if (!s.value) return ''
-  switch (s.key) {
-    case 'sanitize':
-      return t('liveStageTree.value.sanitize', { n: s.value })
-    case 'route':
-      // ★ 路由格的主值＝**最终匹配模型**（设计：路由才是「决定用哪个模型」的那一步）；
-      //   候选数不挤占主值 ⇒ 走 stage.candidates（tooltip + 摘要行 chip + 紧凑瓦片小数字）。
-      return s.value
-    case 'first_byte':
-      // ★ 单位「ms」是技术单位，不是可翻译文案 ⇒ 直接内联，
-      //   不占一个 i18n 键（占键会逼出「各语种逐字相同」的假缺陷）。
-      return `${s.value}ms`
-    case 'meter':
-      // ★ 单位「tok」同样是技术单位缩写（各语种通用），不是可翻译文案 ⇒ 直接内联，
-      //   不占一个 i18n 键（占键会逼出「各语种逐字相同」的假缺陷）—— 与上面「ms」同理。
-      return `${s.value} tok`
-    case 'compress':
-      return s.value === 'yes'
-        ? t('liveStageTree.value.compress.yes')
-        : t('liveStageTree.value.compress.no')
-    case 'approval':
-      // 判定词逐字本地化（★ 用字面量 t()：动态键无法被引用扫描器解析，
-      // 会被 i18n 门记成「未决调用点」）。
-      if (s.value === 'pass') return t('liveStageTree.decision.pass')
-      if (s.value === 'need_approval') return t('liveStageTree.decision.need_approval')
-      if (s.value === 'block') return t('liveStageTree.decision.block')
-      return s.value
-    case 'injection':
-      // ★ 节点上显示**判定词**（短），得分与完整措辞放 tooltip
-      //   （设计里这一格是「未命中 / 命中」这种短词；得分在紧凑模式的小数字里）。
-      //   v1 是 observe-only ⇒ 命中的判定词是「仅告警」，不是「拒绝」。
-      if (s.detail === 'safe') return t('liveStageTree.decision.safe')
-      if (s.detail === 'warn' || s.detail === 'block') return t('liveStageTree.decision.warnShort')
-      return t('liveStageTree.decision.unknown')
-    default:
-      return s.value
-  }
+  return stageValueLabel(t, s)
 }
 
 /** 阶段节点的 tooltip：状态 · 值 · 补充 · 耗时。 */
@@ -252,17 +195,7 @@ function stageTitle(s: StageNode): string {
 
 /** 压缩节点的补充说明：tools 还原徽标本地化（「tools 回填 n」）。 */
 function compressDetail(s: StageNode): string {
-  return s.detail
-    .split(' · ')
-    .filter(Boolean)
-    .map(part => {
-      if (part.startsWith('tools:')) {
-        return t('liveStageTree.band.toolsRestore', { n: part.slice('tools:'.length) })
-      }
-      if (part === 'restored') return t('liveStageTree.band.toolsRestored')
-      return part
-    })
-    .join(' · ')
+  return stageDetailLabel(t, s)
 }
 
 /** 阶段节点的展示字形（七态各有各的形，灰态之间靠这个区分）。
@@ -284,26 +217,7 @@ const timeText = computed(() => {
 
 /** 客户端类型的人话标签（★ 逐字面量 t()；未知类型回落原始值）。 */
 function clientTypeLabel(): string {
-  switch (props.clientType) {
-    case 'coding_agent':
-      return t('liveStageTree.clientType.coding_agent')
-    case 'sdk':
-      return t('liveStageTree.clientType.sdk')
-    case 'cli':
-      return t('liveStageTree.clientType.cli')
-    case 'app':
-      return t('liveStageTree.clientType.app')
-    case 'automation':
-      return t('liveStageTree.clientType.automation')
-    case 'bot':
-      return t('liveStageTree.clientType.bot')
-    case 'api':
-      return t('liveStageTree.clientType.api')
-    case 'web':
-      return t('liveStageTree.clientType.web')
-    default:
-      return props.clientType || '—'
-  }
+  return clientTypeLabelOf(t, props.clientType)
 }
 
 /**
@@ -342,40 +256,7 @@ const errorSourceName = computed(() => {
 
 /** 错误码的中文释义（★ 逐字面量 t()；未知错误码回落原始码，不编）。 */
 function errorKindText(kind: string): string {
-  switch (kind) {
-    case 'upstream_timeout':
-      return t('liveStageTree.error.kind.upstream_timeout')
-    case 'upstream_rate_limited':
-      return t('liveStageTree.error.kind.upstream_rate_limited')
-    case 'upstream_quota_permanent':
-      return t('liveStageTree.error.kind.upstream_quota_permanent')
-    case 'upstream_error':
-      return t('liveStageTree.error.kind.upstream_error')
-    case 'upstream_connection_error':
-      return t('liveStageTree.error.kind.upstream_connection_error')
-    case 'upstream_status_5xx':
-      return t('liveStageTree.error.kind.upstream_status_5xx')
-    case 'eof_without_done':
-      return t('liveStageTree.error.kind.eof_without_done')
-    case 'probe_timeout':
-      return t('liveStageTree.error.kind.probe_timeout')
-    case 'rate_limit':
-      return t('liveStageTree.error.kind.rate_limit')
-    case 'rate_limit_exceeded':
-      return t('liveStageTree.error.kind.rate_limit_exceeded')
-    case 'key_throttled':
-      return t('liveStageTree.error.kind.key_throttled')
-    case 'no_route':
-      return t('liveStageTree.error.kind.no_route')
-    case 'model_not_found':
-      return t('liveStageTree.error.kind.model_not_found')
-    case 'client_cancel':
-      return t('liveStageTree.error.kind.client_cancel')
-    case 'prompt_injection_blocked':
-      return t('liveStageTree.error.kind.prompt_injection_blocked')
-    default:
-      return kind
-  }
+  return errorKindLabel(t, kind)
 }
 
 /** 错误列 / 错误徽标的 tooltip（来源 + 判据 + 失败阶段）。 */
@@ -460,8 +341,16 @@ function statusLabel(status: string): string {
 <template>
   <article
     class="band"
-    :class="[`is-${props.status}`, `mode-${props.mode}`]"
+    :class="[`is-${props.status}`, `mode-${props.mode}`, { 'is-expanded': props.expanded }]"
     :data-testid="`stage-band-${props.requestId}`"
+    :data-expanded="props.expanded ? '1' : '0'"
+    role="button"
+    tabindex="0"
+    :aria-expanded="props.expanded ? 'true' : 'false'"
+    :aria-label="`${props.requestId} · ${props.clientName}`"
+    @click="onToggle"
+    @keydown.enter.prevent="onToggle"
+    @keydown.space.prevent="onToggle"
   >
     <div
       class="band__grid"
@@ -686,6 +575,11 @@ function statusLabel(status: string): string {
         </div>
       </template>
     </div>
+
+    <!-- ★ 详情面板插槽（设计原型：`toggleBandDetail` 展开的「请求详情」）。
+         由上层（LiveStageTreeView）在**被点开的那一条**上填内容；
+         未展开时不渲染 ⇒ 页面默认态与改造前**逐字一致**（设计钉测不受影响）。 -->
+    <slot name="detail" />
   </article>
 </template>
 
