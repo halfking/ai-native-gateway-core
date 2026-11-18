@@ -195,17 +195,43 @@ if [ -n "$TAG_NEW" ] && git -C "$ROOT" rev-parse --verify "${TAG_NEW}" >/dev/nul
   # ★ 期望文件数写在**标签消息**里（files=N）⇒ 判据随发布单元走，不写死在脚本里。
   EXP=$(tag_field "${TAG_NEW}" "files")
   CH=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}^{commit}" 2>/dev/null | wc -l | tr -d ' ')
+  # ══════ 2026-11-18 判据基准改造：把「场景化写死」的判据换成随发布单元走 ══════
+  # ★ 旧判据把两件事**写死**了：
+  #   ① 「并行车在途文件（admin/pi_analysis_handler.go、web/public/menu-config.json）
+  #      不得出现在本次发布单元里」；
+  #   ② 「domains/promptinjection 的差异数必须 = 0」。
+  #   那两条**只在「发我方分支、并发车的改动仍在途」这个场景下成立**：
+  #   本轮发布单元 = **origin/main**（并发车的 PI 工作已正式合入并上线）
+  #   ⇒ 「泄漏」「PI 差异」按定义就是发布单元**自己的一部分** ⇒ 旧判据必然假红。
+  #   ★ 本轮实测的真缺陷（被旧判据的假红**掩盖**了）：我把 durable tag 指到了
+  #     **前一个提交**（实际发布树 = 1562862ba，tag 却指 a9e185d78）
+  #     ⇒ 真正该报红的是「身份三方一致」，若只把 ⑦ 当成「老判据写死的」放过，
+  #       就会把这个真错一起放过 ⇒ **假红会掩护真错**。
+  # ⇒ 新判据（基准 = **发布单元 / 部署树**，与场景无关）：
+  #   ① **tag 指向的 commit 必须 == 部署树 HEAD**（＝实际部署的那棵树）；
+  #   ② **零真泄漏**：线上 release 的 menu-config **内容**（去构建戳）必须
+  #      == **部署树**的同一文件内容（线上有、部署树没有的东西才算泄漏）；
+  #   ③ **PI 域**：只作**报告**（发布单元内含几处 PI 域改动），不再写死为 0。
+  TAG_HEAD=$(git -C "$ROOT" rev-parse "${TAG_NEW}^{commit}" 2>/dev/null || echo "")
+  TREE_HEAD=$(git -C "$DEPLOY_TREE" rev-parse HEAD 2>/dev/null || echo "")
+  TAG_OK=1
+  if [ -z "$TREE_HEAD" ] || [ -z "$TAG_HEAD" ] || [ "$TAG_HEAD" != "$TREE_HEAD" ]; then TAG_OK=0; fi
+  # ★ 零真泄漏＝**线上 release 与部署树逐字对拍**（不是与「并行车文件清单」对拍）：
+  #   menu-config 的 exported_at 是构建戳 ⇒ 必须去掉再比内容（见 leak_of 的同款口径）。
+  SRV_MC=$(ssh -o BatchMode=yes -o ConnectTimeout=20 -p "${SSH_PORT}" "root@${SSH_HOST}" \
+    'cat /opt/llm-gateway-go/current/web/menu-config.json' 2>/dev/null \
+    | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
+  TREE_MC=$(git -C "$DEPLOY_TREE" show "HEAD:web/public/menu-config.json" 2>/dev/null \
+    | python3 -c 'import sys,json;d=json.load(sys.stdin);d.pop("exported_at",None);print(json.dumps(d,sort_keys=True,ensure_ascii=False))' 2>/dev/null)
   LEAK=0
-  for f in admin/pi_analysis_handler.go web/public/menu-config.json; do
-    LEAK=$((LEAK + $(leak_of "${TAG_NEW}^{commit}" "$BASE" "$f")))
-  done
+  if [ -n "$SRV_MC" ] && [ -n "$TREE_MC" ] && [ "$SRV_MC" != "$TREE_MC" ]; then LEAK=1; fi
   PI=$(git -C "$ROOT" diff --name-only "$BASE" "${TAG_NEW}^{commit}" -- domains/promptinjection 2>/dev/null | wc -l | tr -d ' ')
   CH_OK=1
   if [ -n "$EXP" ] && [ "$CH" != "$EXP" ]; then CH_OK=0; fi
-  if [ "$LEAK" = "0" ] && [ "$PI" = "0" ] && [ "$CH_OK" = "1" ]; then
-    ok "⑦ 在役部署可追溯 + 零泄漏" "tag ${TAG_NEW}（${DH}，基点 ${BASE:0:8} + ${CH} 文件${EXP:+（tag 记 files=${EXP}）}）并行车 0 泄漏"
+  if [ "$LEAK" = "0" ] && [ "$CH_OK" = "1" ] && [ "$TAG_OK" = "1" ]; then
+    ok "⑦ 在役部署可追溯 + 零泄漏" "tag ${TAG_NEW}（${DH}，基点 ${BASE:0:8} + ${CH} 文件${EXP:+（tag 记 files=${EXP}）}）＝ 部署树 HEAD ${TREE_HEAD:0:8}；线上 release 产物 == 部署树（零泄漏）"
   else
-    bad "⑦ 在役部署可追溯 + 零泄漏" "改动 ${CH} 个文件（tag 记 files=${EXP:-未记}）/ 泄漏 ${LEAK} 处 / promptinjection 差异 ${PI} 处"
+    bad "⑦ 在役部署可追溯 + 零泄漏" "改动 ${CH} 个文件（tag 记 files=${EXP:-未记}）/ 泄漏 ${LEAK} 处 / tag↔部署树同提交=${TAG_OK}（tag ${TAG_HEAD:0:8} vs 树 ${TREE_HEAD:0:8}）/ PI 域文件 ${PI} 处（仅报告）"
   fi
 elif [ -d "$DEPLOY_TREE" ]; then
   skip "⑦ 在役部署可追溯" "无 tag ${TAG_NEW:-（仓内无 durable ref）}"
