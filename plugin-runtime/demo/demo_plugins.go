@@ -431,7 +431,7 @@ func NewPreAuthValidatorPlugin() *PreAuthValidatorPlugin {
 			Priority:       extpoints.PriorityHigh, // Run before other pre-auth plugins
 			Timeout:        2 * time.Second,
 			FailurePolicy:  extpoints.FailureOpen, // Don't block on validation failure
-			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityValidate},
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityValidateRequest},
 		}),
 		validationResults: make(map[string]interface{}),
 	}

@@ -144,6 +144,7 @@ const (
 	CapabilityObserveRequest  PluginCapability = "request.observe"
 	CapabilityMutateRequest   PluginCapability = "request.mutate"
 	CapabilityBlockRequest    PluginCapability = "request.block"
+	CapabilityValidateRequest PluginCapability = "request.validate"
 
 	// Response capabilities
 	CapabilityObserveResponse PluginCapability = "response.observe"
@@ -153,6 +154,9 @@ const (
 	// Authentication capabilities
 	CapabilityAuthenticate PluginCapability = "auth.authenticate"
 	CapabilityAuthorize    PluginCapability = "auth.authorize"
+
+	// Context capabilities
+	CapabilityEnrichContext PluginCapability = "context.enrich"
 
 	// Routing capabilities
 	CapabilityRoute       PluginCapability = "route.decide"
