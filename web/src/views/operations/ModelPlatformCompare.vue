@@ -53,10 +53,12 @@ async function loadDirectory() {
 
 async function load() {
   const m = model.value.trim()
+  console.log('[ModelPlatformCompare] load() called, model:', m, 'scope:', scope.value)
   if (!m) return
   loading.value = true
   try {
     const res = await getAdminMarketModelPlatforms(m, 'standard', 300, scope.value)
+    console.log('[ModelPlatformCompare] API response:', { available: res.available, items: res.items?.length })
     available.value = res.available
     reason.value = res.reason || ''
     // 契约 C：名称列表按平台名排序（首列展示 platform_name）。
@@ -87,8 +89,10 @@ async function load() {
 onMounted(loadDirectory)
 
 // ★ 2026-11-19：监听模型变化，确保选择后自动刷新
-watch(model, (newModel) => {
+watch(model, (newModel, oldModel) => {
+  console.log('[ModelPlatformCompare] model changed:', { old: oldModel, new: newModel })
   if (newModel.trim()) {
+    console.log('[ModelPlatformCompare] triggering load()')
     load()
   }
 })
