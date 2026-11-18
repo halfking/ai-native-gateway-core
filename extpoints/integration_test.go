@@ -409,11 +409,119 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 			t.Errorf("Pipeline execution failed: %v", err)
 		}
 		
-		// 验证插件被执行
-		if !postAuthPlugin.executed {
-			t.Error("Expected post-auth plugin to be executed")
-		}
+	// 验证插件被执行
+	if !postAuthPlugin.executed {
+		t.Error("Expected post-auth plugin to be executed")
 	}
+}
+
+// TestIntegration_PhasePreResponse 验证 PhasePreResponse 插件集成。
+func TestIntegration_PhasePreResponse(t *testing.T) {
+	registry := extpoints.NewExtensionPointRegistry()
+	
+	// 创建 PreResponse 阶段插件
+	preResponsePlugin := &testPlugin{
+		metadata: &extpoints.PluginMetadata{
+			PluginID: "test-pre-response",
+			Phase:    extpoints.PhasePreResponse,
+			Priority: extpoints.PriorityNormal,
+		},
+		executed: false,
+	}
+	
+	err := registry.Register(extpoints.PhasePreResponse, preResponsePlugin)
+	if err != nil {
+		t.Fatalf("Failed to register pre-response plugin: %v", err)
+	}
+	
+	// 创建 Pipeline
+	p := pipeline.NewRequestPipeline()
+	
+	// 添加 PhasePreResponse Stage
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_response",
+		Phase: pipeline.PhasePreResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(registry, "pre_response"),
+		},
+	})
+	
+	// 创建测试请求
+	ctx := context.Background()
+	envelope := &domain.PipelineRequest{
+		TenantID:  "test-tenant",
+		SessionID: "test-session",
+		Metadata: map[string]interface{}{
+			"response_ready": true,
+		},
+	}
+	
+	// 执行 Pipeline
+	err = p.Execute(ctx, envelope)
+	if err != nil {
+		t.Errorf("Pipeline execution failed: %v", err)
+	}
+	
+	// 验证插件被执行
+	if !preResponsePlugin.executed {
+		t.Error("Expected pre-response plugin to be executed")
+	}
+}
+
+// TestIntegration_PhasePostResponse 验证 PhasePostResponse 插件集成。
+func TestIntegration_PhasePostResponse(t *testing.T) {
+	registry := extpoints.NewExtensionPointRegistry()
+	
+	// 创建 PostResponse 阶段插件
+	postResponsePlugin := &testPlugin{
+		metadata: &extpoints.PluginMetadata{
+			PluginID: "test-post-response",
+			Phase:    extpoints.PhasePostResponse,
+			Priority: extpoints.PriorityLow,
+		},
+		executed: false,
+	}
+	
+	err := registry.Register(extpoints.PhasePostResponse, postResponsePlugin)
+	if err != nil {
+		t.Fatalf("Failed to register post-response plugin: %v", err)
+	}
+	
+	// 创建 Pipeline
+	p := pipeline.NewRequestPipeline()
+	
+	// 添加 PhasePostResponse Stage
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_response",
+		Phase: pipeline.PhasePostResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(registry, "post_response"),
+		},
+	})
+	
+	// 创建测试请求
+	ctx := context.Background()
+	envelope := &domain.PipelineRequest{
+		TenantID:  "test-tenant",
+		SessionID: "test-session",
+		Metadata: map[string]interface{}{
+			"response_completed": true,
+		},
+	}
+	
+	// 执行 Pipeline
+	err = p.Execute(ctx, envelope)
+	if err != nil {
+		t.Errorf("Pipeline execution failed: %v", err)
+	}
+	
+	// 验证插件被执行
+	if !postResponsePlugin.executed {
+		t.Error("Expected post-response plugin to be executed")
+	}
+}
 	
 	// testPlugin 是用于集成测试的简单插件实现。
 	type testPlugin struct {

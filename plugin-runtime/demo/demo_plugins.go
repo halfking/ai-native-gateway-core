@@ -579,3 +579,164 @@ func (p *PostAuthEnricherPlugin) Execute(ctx *extpoints.ExecutionContext) (*extp
 func (p *PostAuthEnricherPlugin) GetEnrichments() map[string]interface{} {
 	return p.enrichments
 }
+
+// PreResponseFilterPlugin is a demo plugin that filters responses before final processing.
+// It runs in PhasePreResponse to perform response validation or transformation.
+type PreResponseFilterPlugin struct {
+	*extpoints.BaseExtensionPoint
+	filterResults map[string]interface{}
+}
+
+// NewPreResponseFilterPlugin creates a new pre-response filter plugin.
+func NewPreResponseFilterPlugin() *PreResponseFilterPlugin {
+	return &PreResponseFilterPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-preresponse-filter",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePreResponse,
+			Priority:       extpoints.PriorityNormal,
+			Timeout:        2 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen,
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityMutateResponse},
+		}),
+		filterResults: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PreResponseFilterPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PreResponseFilter] Filtering response in phase %s\n", ctx.Phase)
+	
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	
+	// 模拟响应过滤检查
+	checks := []string{}
+	
+	// Check 1: 响应大小验证
+	ctx.State["response_size_check"] = "passed"
+	checks = append(checks, "size_validation")
+	
+	// Check 2: 内容类型验证
+	ctx.State["content_type_check"] = "passed"
+	checks = append(checks, "content_type")
+	
+	// Check 3: 敏感信息检查
+	ctx.State["sensitive_info_check"] = "passed"
+	checks = append(checks, "sensitive_info")
+	
+	// 记录过滤结果
+	p.filterResults["checks_performed"] = checks
+	p.filterResults["timestamp"] = ctx.RequestTime
+	p.filterResults["all_passed"] = true
+	
+	fmt.Printf("[PreResponseFilter] Completed %d filter checks\n", len(checks))
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: true,
+		Latency:  2 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"checks_performed": len(checks),
+			"filter_status":    "passed",
+		},
+	}, nil
+}
+
+// GetFilterResults returns filter results (for testing).
+func (p *PreResponseFilterPlugin) GetFilterResults() map[string]interface{} {
+	return p.filterResults
+}
+
+// PostResponseAuditorPlugin is a demo plugin that audits responses after processing.
+// It runs in PhasePostResponse to log or analyze final response data.
+type PostResponseAuditorPlugin struct {
+	*extpoints.BaseExtensionPoint
+	auditRecords map[string]interface{}
+}
+
+// NewPostResponseAuditorPlugin creates a new post-response auditor plugin.
+func NewPostResponseAuditorPlugin() *PostResponseAuditorPlugin {
+	return &PostResponseAuditorPlugin{
+		BaseExtensionPoint: extpoints.NewBaseExtensionPoint(&extpoints.PluginMetadata{
+			PluginID:       "demo-postresponse-auditor",
+			Version:        "1.0.0",
+			Phase:          extpoints.PhasePostResponse,
+			Priority:       extpoints.PriorityLow, // 在其他处理之后运行
+			Timeout:        3 * time.Second,
+			FailurePolicy:  extpoints.FailureOpen,
+			Capabilities:   []extpoints.PluginCapability{extpoints.CapabilityAuditLog},
+		}),
+		auditRecords: make(map[string]interface{}),
+	}
+}
+
+// Execute implements PhaseExecutor interface.
+func (p *PostResponseAuditorPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
+	fmt.Printf("[PostResponseAuditor] Auditing response in phase %s\n", ctx.Phase)
+	
+	if ctx.State == nil {
+		ctx.State = make(map[string]interface{})
+	}
+	
+	// 收集审计数据
+	auditData := map[string]interface{}{
+		"request_id":   ctx.RequestID,
+		"request_time": ctx.RequestTime,
+		"phase":        string(ctx.Phase),
+		"plugin_id":    ctx.PluginID,
+	}
+	
+	// 审计检查项
+	auditChecks := []string{}
+	
+	// Check 1: 响应完整性
+	auditData["response_integrity"] = "verified"
+	auditChecks = append(auditChecks, "integrity")
+	
+	// Check 2: 性能指标
+	auditData["performance_metrics"] = map[string]interface{}{
+		"processing_time_ms": 150,
+		"response_size":      1024,
+	}
+	auditChecks = append(auditChecks, "performance")
+	
+	// Check 3: 合规性标记
+	auditData["compliance_flags"] = []string{
+		"gdpr_compliant",
+		"pii_filtered",
+	}
+	auditChecks = append(auditChecks, "compliance")
+	
+	// Check 4: 质量评分
+	auditData["quality_score"] = 95
+	auditChecks = append(auditChecks, "quality")
+	
+	// 记录到 State
+	ctx.State["audit_data"] = auditData
+	ctx.State["audit_checks"] = auditChecks
+	
+	// 保存审计记录
+	p.auditRecords["request_id"] = ctx.RequestID
+	p.auditRecords["audit_checks"] = auditChecks
+	p.auditRecords["audit_data"] = auditData
+	p.auditRecords["timestamp"] = ctx.RequestTime
+	
+	fmt.Printf("[PostResponseAuditor] Completed %d audit checks\n", len(auditChecks))
+	
+	return &extpoints.ExecutionResult{
+		Success:  true,
+		Modified: false, // 审计不修改响应
+		Latency:  3 * time.Millisecond,
+		Metadata: map[string]interface{}{
+			"audit_checks_performed": len(auditChecks),
+			"quality_score":          95,
+		},
+	}, nil
+}
+
+// GetAuditRecords returns audit records (for testing).
+func (p *PostResponseAuditorPlugin) GetAuditRecords() map[string]interface{} {
+	return p.auditRecords
+}

@@ -648,6 +648,17 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
+	// ExtensionPoint: PhasePreResponse 插件 (2026-11-19)
+	// 在响应处理之前执行，允许插件进行响应预处理
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_response",
+		Phase: pipeline.PhasePreResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "pre_response"),
+		},
+	})
+
 	// ExtensionPoint: PhaseResponse 插件 (2026-11-19)
 	// 在响应返回之前执行，允许插件处理最终响应
 	p.AddStage(&pipeline.PipelineStage{
@@ -656,6 +667,17 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Mode:  pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{
 			extpoints.NewExtensionPointHook(extRegistry, "response"),
+		},
+	})
+
+	// ExtensionPoint: PhasePostResponse 插件 (2026-11-19)
+	// 在审计和缓存之前执行，允许插件进行响应后处理
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_response",
+		Phase: pipeline.PhasePostResponse,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(extRegistry, "post_response"),
 		},
 	})
 

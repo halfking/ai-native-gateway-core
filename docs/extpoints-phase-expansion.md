@@ -2,53 +2,56 @@
 
 **日期**: 2026-11-19  
 **任务**: 扩展 ExtensionPoint 支持到更多 Phase  
-**最新更新**: 2026-11-19 - 新增 PhasePreAuth 和 PhasePostAuth 支持
+**最新更新**: 2026-11-19 - 新增 PhasePreResponse 和 PhasePostResponse 支持  
+**Phase 覆盖率**: **92% (11/12)** ✅
 
 ---
 
 ## ✅ 新增 Phase 支持
 
-### 已集成的 Phase（总计 9 个）
+### 已集成的 Phase（总计 11 个）
 
 | Pipeline Phase | ExtensionPoint Phase | Stage 位置 | 说明 |
 |---------------|---------------------|-----------|------|
-| `pre_authentication` | `PhasePreAuth` | pre_auth stage | 认证前预处理 ✅ **NEW** |
+| `pre_authentication` | `PhasePreAuth` | pre_auth stage | 认证前预处理 ✅ |
 | `authentication` | `PhaseAuth` | authentication stage | 认证执行 ✅ |
-| `post_authentication` | `PhasePostAuth` | post_auth stage | 认证后处理 ✅ **NEW** |
+| `post_authentication` | `PhasePostAuth` | post_auth stage | 认证后处理 ✅ |
 | `pre_routing` | `PhasePreRoute` | client_identity stage | 路由前处理 ✅ |
 | `routing` | `PhaseRoute` | routing stage | 路由决策 ✅ |
 | `post_routing` | `PhasePostRoute` | credential_limit stage | 路由后处理 ✅ |
 | `pre_upstream` | `PhasePreUpstream` | pre_upstream stage | 上游调用前 ✅ |
 | `post_upstream` | `PhasePostUpstream` | post_upstream_output_compliance | 上游调用后 ✅ |
+| `pre_response` | `PhasePreResponse` | pre_response stage | 响应前处理 ✅ **NEW** |
 | `response` | `PhaseResponse` | response stage | 响应处理 ✅ |
+| `post_response` | `PhasePostResponse` | post_response stage | 响应后处理 ✅ **NEW** |
 
-### 最新 Phase 详情 (2026-11-19)
+### 最新 Phase 详情 (2026-11-19 Wave 2)
 
-**PhasePreAuth** (pre_auth)
-- **位置**: `pre_auth` stage（认证之前）
-- **时机**: 认证执行之前，请求预处理阶段
+**PhasePreResponse** (pre_response)
+- **位置**: `pre_response` stage（streaming 之后）
+- **时机**: 最终响应处理之前
 - **用途**: 
-  - 请求指纹生成（fingerprinting）
-  - 速率限制预检
-  - IP 白名单/黑名单验证
-  - 请求标记和分类
-  - 早期安全检查
-- **Demo 插件**: PreAuthValidatorPlugin
-- **集成方式**: 独立 stage，在 authentication 之前
-- **优先级**: High (priority 5)
+  - 响应内容验证
+  - 响应大小检查
+  - 内容类型验证
+  - 敏感信息过滤
+  - 质量检查
+- **Demo 插件**: PreResponseFilterPlugin
+- **集成方式**: 独立 stage，在 streaming 之后、response 之前
+- **优先级**: Normal
 
-**PhasePostAuth** (post_auth)
-- **位置**: `post_auth` stage（认证之后）
-- **时机**: 认证完成后，路由决策之前
+**PhasePostResponse** (post_response)
+- **位置**: `post_response` stage（response 之后）
+- **时机**: 审计和缓存之前
 - **用途**: 
-  - 用户上下文增强
-  - 用户偏好加载
-  - 权限/功能标志检查
-  - 会话元数据初始化
-  - 用户级配置注入
-- **Demo 插件**: PostAuthEnricherPlugin
-- **集成方式**: 独立 stage，在 authentication 之后
-- **优先级**: Normal (priority 15)
+  - 响应完整性验证
+  - 性能指标收集
+  - 合规性标记
+  - 质量评分
+  - 审计记录
+- **Demo 插件**: PostResponseAuditorPlugin
+- **集成方式**: 独立 stage，在 response 之后、audit 之前
+- **优先级**: Low (在其他处理之后)
 
 **PhasePreUpstream** (pre_upstream)
 - **位置**: `pre_upstream` stage（tools 之后）
