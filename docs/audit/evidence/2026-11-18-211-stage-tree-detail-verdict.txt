@@ -1,0 +1,143 @@
+▶ 输出目录：/tmp/maestro-out-211-stage-tree
+▶ 视口：1440x1400（web 驱动默认 1024×625 看不到折叠线以下，见脚本头注释）
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 12-live-stage-tree
+Open ${BASE_URL}/dashboard... COMPLETED
+Tap on (Optional) "系统管理员"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 系统管理员
+Tap on (Optional) "退出登录"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 退出登录
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Open ${BASE_URL}/dashboard... COMPLETED
+Assert that "请求阶段树" is visible... COMPLETED
+Tap on "请求阶段树"... COMPLETED
+Assert that ".*请求 · .*成功率.*" is visible... COMPLETED
+Assert that "全部客户端" is visible... COMPLETED
+Assert that "全部供应商" is visible... COMPLETED
+Assert that "全部模型" is visible... COMPLETED
+Assert that "全部节点" is visible... COMPLETED
+Assert that "全部状态" is visible... COMPLETED
+Assert that "显示探测请求" is visible... COMPLETED
+Assert that "显示无效节点" is visible... COMPLETED
+Assert that "已完成" is visible... COMPLETED
+Assert that "进行中" is visible... COMPLETED
+Assert that "未到达" is visible... COMPLETED
+Assert that "失败" is visible... COMPLETED
+Assert that ".*发送轨.*" is visible... COMPLETED
+Assert that ".*接收轨.*" is visible... COMPLETED
+Assert that "完整" is visible... COMPLETED
+Assert that "紧凑" is visible... COMPLETED
+Tap on "紧凑"... COMPLETED
+Assert that ".*请求 · .*成功率.*" is visible... COMPLETED
+Tap on "完整"... COMPLETED
+Assert that "鉴权/限流" is visible... COMPLETED
+Tap on ".*请求 · .*成功率.*"... COMPLETED
+Assert that "实时统计" is visible... COMPLETED
+Assert that "总览" is visible... COMPLETED
+Assert that "周期统计" is visible... COMPLETED
+Assert that "分类统计" is visible... COMPLETED
+Assert that "口径说明" is visible... COMPLETED
+Assert that "请求数" is visible... COMPLETED
+Assert that "成功率" is visible... COMPLETED
+Open ${BASE_URL}/live... COMPLETED
+Assert that "实时拓扑" is visible... COMPLETED
+Assert that "请求阶段树" is visible... COMPLETED
+Tap on "请求阶段树"... COMPLETED
+Assert that ".*请求 · .*成功率.*" is visible... COMPLETED
+▶ 页面内断言（CDP=http://127.0.0.1:9222）
+== 页面内断言（/live2）==
+  ✓ 页面路由命中期望值  —— /live2
+  ✓ 顶栏存在指向 /live2 的导航链接  —— 共 1 个
+  ✓ 该导航链接可见（未被隐藏）  —— 可见 1 个
+  ✓ 阶段树根节点存在
+  ✓ 标题为「请求阶段树」  —— 请求阶段树
+  ✓ 连接态节点存在  —— 已连接
+  ✓ SSE 已连接（is-open）  —— stage-tree__conn is-open
+  ✓ 统计胶囊存在
+  ✓ 阶段树画布存在
+  ✓ 过滤栏存在
+  ✓ 过滤栏不在画布内（常驻顶层）  —— 在顶栏
+  ✓ 胶囊读数可解析（窗口 · 请求数 · 成功率 · 在途）  —— 近 5 分钟 · 2 请求 · 0% 成功率 · 在途 1
+  ✓ 胶囊读数带时间窗（不只报总数）  —— 近 5 分钟
+  ✓ 胶囊总条数 == 页面阶段带条数  —— 2 vs 2
+  ✓ 胶囊在途数 == 带内 in_progress 徽章数  —— 1 vs 1
+  ✓ 胶囊成功率 == (总-失败-在途)/总  —— 0 vs 0
+  ✓ 有阶段带时不出现空态  —— 带 2 条
+  ✓ 实时流有数据（阶段带 ≥ 1）或给出诚实空态  —— 带 2 条 / 空态 无
+  事实： {"pathname":"/live2","expected":"/live2","navLive2Links":1,"navLive2Visible":1,"title":"请求阶段树","connClass":"stage-tree__conn is-open","connText":"已连接","capsuleText":"近 5 分钟 · 2 请求 · 0% 成功率 · 在途 1","bands":2,"badges":2,"success":0,"inFlight":1,"failure":1,"readoutWindow":"近 5 分钟","readoutTotal":2,"readoutRate":"0","readoutInFlight":1,"emptyVisible":false,"emptyText":"","dataLive":true}
+== 统计浮层交互 ==
+  ✓ 统计胶囊存在（点开前）
+  ✓ 点开统计胶囊 ⇒ 全页浮层出现
+  ✓ 浮层标题为「实时统计」  —— 实时统计
+  ✓ Esc ⇒ 浮层关闭
+== 请求详情交互（点请求行 ⇒ 展开详情）==
+  ✓ 页面有请求带（点开详情的前提）  —— 带 2 个
+  ✓ 点开前：详情面板不存在
+  ✓ 点请求行 ⇒ 详情面板出现  —— 8857c4501bea1043b94668e78593f7ca
+  ✓ 详情标题为「请求详情」  —— 请求详情
+  ✓ 详情五个分区齐备
+  ✓ 手风琴：点第二条 ⇒ 第一条收起  —— 8857c4501bea1043b94668e78593f7ca
+  ✓ 手风琴：第二条展开  —— 79463ba37475e027459e95b82007e8cb
+  ✓ 手风琴：再点第二条 ⇒ 也收起  —— 79463ba37475e027459e95b82007e8cb
+  ✓ 再点同一条 ⇒ 收起（可逆）  —— 8857c4501bea1043b94668e78593f7ca / 收起前展开态=true
+  详情事实： {"detailTitle":"请求详情","detailText":"请求详情8857c4501bea1043b94668e78593f7ca · go-client · API 调用 · 进行中模型解析请求模型glm-5.3-flash自动选型否解析方式routed最终模型glm-5.3-flash最终模型来源：路由选定的节点动作（解析后的标准模型名）。模型切换—上游出站z-ai/glm-5.3-flash @ NVIDIA NIM · endless回复侧指标输入 token456输出 token—token 合计—缓存读 token—缓存"}
+
+RESULT: PASS（31 条）
+== 设计对照断言（/live2）==
+  ✓ 图例行存在（设计第 4 轮：七态 + 两条轨）  —— ✓已完成◐进行中○未到达⌀不适用✕失败⚠有告警⋯未测量发送轨（左→右）接收轨（右→左）
+  ✓ 图例有 7 枚状态字形  —— 实际 7
+  ✓ 完整模式图例「完成」字形是 ✓（对照组）  —— 实际 "✓"
+  ✓ 阶段列头存在（设计第 8 轮）
+  ✓ 列头有 9 列（时间 + 客户端 + 7 个发送轨阶段）  —— 实际 9
+  ✓ 列头与请求带共用同一套列宽（不错位）  —— 56px 168px 104px 104px 104px 104px 104px 104px 132px 76px vs 56px 168px 104px 104px 104px 104px 104px 104px 132px 76px
+  ✓ 每条带都有时间列且格式为 HH:MM:SS  —— 22:16:25
+  ✓ 有「完整 / 紧凑」双模式切换（设计第 6 轮）
+  ✓ 界面上没有裸 i18n 键
+  ✓ 没有把后端 idle_marker 心跳渲染成请求带  —— 实际 0
+  ✓ 阶段节点显示的是值而不是只有名字  —— 有值节点 12 / 14
+  ✓ 胶囊读数里的请求数 == 页面带数  —— 2 vs 2
+  事实： {"legendGlyphs":7,"legendDoneGlyph":"✓","headCells":9,"bands":2,"headCols":"56px 168px 104px 104px 104px 104px 104px 104px 132px 76px","bandCols":"56px 168px 104px 104px 104px 104px 104px 104px 132px 76px","timeCells":2,"rawI18nKeys":[],"idleBands":0,"sendNodes":14,"valuedSendNodes":12,"capsule":"近 5 分钟 · 2 请求 · 0% 成功率 · 在途 2"}
+== 紧凑模式（单行瓦片 + 最右错误列）==
+  ✓ 紧凑模式下阶段列头消失
+  ✓ 紧凑模式图例「完成」字形为空  —— 实际 ""
+  ✓ 紧凑模式图例「未到达」字形为空  —— 实际 ""
+  ✓ 紧凑模式图例「未测量」字形为空  —— 实际 ""
+  ✓ 紧凑模式全页 ✓ 计数为 0（设计规则 15 的原文口径）  —— 实际 0 次
+  ✓ 紧凑模式不渲染发送轨节点块  —— 节点 0
+  ✓ 紧凑模式不渲染接收轨节点块  —— 节点 0
+  ✓ 紧凑模式渲染 11 段瓦片  —— 瓦片 22 个
+  ✓ 每条带的 11 段瓦片在**同一行**（不换行）  —— 带 2 条 / 换行的带 0 条
+  ✓ 瓦片图标渲染且描边生效（非默认黑块）  —— rgb(22, 132, 91)
+  ✓ 紧凑模式完成态**不画 ✓**  —— 带 ✓ 的完成瓦片 0 / 14
+  ✓ 紧凑模式右侧是同一行的摘要块  —— 块 2 个
+  ✓ 紧凑模式没有另起一行的摘要行
+  ✓ 瓦片带发送/接收轨标记（轨道短线）  —— 带标记 22 个
+  ✓ 每条轨的最后一段标了 tail（后面不画短线）  —— tail 4 个
+  ✓ 紧凑模式有最右错误列  —— 列 2 个
+  ✓ 错误列右缘恒定（能竖着扫）  —— 1412,1412
+  ✓ 紧凑树宽 ≥ 1400（错误列贴在树右缘）  —— 实际 1400
+  ✓ 切回完整模式后发送轨节点回来  —— 节点 14
+  ✓ 切回完整模式后阶段列头回来
+  事实： {"compactLegendDone":"","compactLegendPending":"","compactLegendUnmeasured":"","compactTickCount":0,"sendNodes":0,"recvNodes":0,"tiles":22,"bands":2,"multiRowBands":0,"iconStroke":"rgb(22, 132, 91)","doneTiles":14,"cright":2,"rails":22,"errCols":2,"errColRights":[1412,1412],"gridWidth":1400}
+
+RESULT: PASS（32 条）
