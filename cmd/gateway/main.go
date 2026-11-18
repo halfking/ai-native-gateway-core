@@ -139,6 +139,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/securityevent"
 	"github.com/kaixuan/llm-gateway-go/internal/securitypattern"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
 	"github.com/kaixuan/llm-gateway-go/internal/taskbus"
@@ -245,6 +246,14 @@ var (
 	piErrorCollectorGlobal *promptinjection.ErrorCollector
 	piErrorAnalyzerGlobal  *promptinjection.ErrorAnalyzer
 	piSQLDBGlobal          *sql.DB
+
+	// piDetectionChainWired 报告 PI **检测链**是否接线。
+	//
+	// ★ 2026-11-18 审计轮 P1：采集队列的**唯一生产者**是
+	//	promptinjection.Detector，而检测器只在 LLM_GATEWAY_USE_V2_PIPELINE
+	//	（默认关）开启时才构造 ⇒ 默认形态下队列恒为空，且「空」与
+	//	「没有生产者」不可区分 ⇒ 管理面必须能看到这条链路状态。
+	piDetectionChainWired bool
 )
 
 func main() {
@@ -7468,9 +7477,15 @@ func main() {
 	// dispatch unchanged. See cmd/gateway/main_pipeline.go for
 	// the wiring.
 	//
-	// The v1 routes are registered FIRST (so they bind), then the
-	// v2 wrappers are registered LAST (so they win — Go's
-	// http.ServeMux picks the last-registered exact-path match).
+	// The v1 routes are registered in exactly ONE place: when
+	// v2DispatchEnabled is true the plain registrations below are
+	// SKIPPED and only the wrapped handlers are registered by the
+	// v2 block later in this function. ★ 2026-11-18 订正：旧注释声称
+	// 「先注册 v1、再注册 v2 包装，后者获胜」——stdlib http.ServeMux 对
+	// 同一路径的重复注册是 panic（"multiple registrations"），没有
+	// 「后者获胜」语义；该错误认知让 LLM_GATEWAY_USE_V2_PIPELINE 一开
+	// 就 boot panic（245 生产实证：panic 展开 defer 时又卡死在
+	// v2ShutdownPipeline 的连接池 Close，进程僵尸化、监听从未绑定）。
 	v2DispatchEnabled := v2UsePipeline()
 	if v2DispatchEnabled {
 		slog.Info("v2 pipeline: LLM_GATEWAY_USE_V2_PIPELINE=true; 4 v1 endpoints will be Pipeline-wrapped")
@@ -7643,16 +7658,24 @@ func main() {
 		slog.Info("userscript capture endpoint enabled", "path", "/v1/userscript/captures")
 	}
 
-	mux.Handle("/v1/chat/completions", chatRouteHandler)
-	mux.Handle("/v1/completions", chatRouteHandler)
-	mux.Handle("/v1/messages", messagesRouteHandler)
+	// ★ 2026-11-18 根修（V2 开关一开必 panic，245 生产实证）：stdlib
+	// http.ServeMux 对同一路径重复注册会直接 panic（"multiple registrations
+	// for /v1/chat/completions"），**不存在**「后注册者获胜」的语义——
+	// 下方 V2 块（v2DispatchHandler 包装）与这里的裸 v1 注册必须二选一。
+	// V2 开启时这里跳过，由 V2 块统一注册包装版；count_tokens /
+	// handoffs 等派生端点不经过 V2 包装，恒注册。
+	if !v2DispatchEnabled {
+		mux.Handle("/v1/chat/completions", chatRouteHandler)
+		mux.Handle("/v1/completions", chatRouteHandler)
+		mux.Handle("/v1/messages", messagesRouteHandler)
+		mux.Handle("/v1/responses", responsesRouteHandler)
+	}
 	// 2026-09-21: Anthropic Messages token-count endpoint. Claude Code probes
 	// it every context-management cycle; without the route the mux answered a
 	// plain-text 404 that strict clients treat as a session-fatal error. The
 	// handler answers with the same heuristic estimate the streaming bridge
 	// writes into message_start.usage.input_tokens.
 	mux.Handle("/v1/messages/count_tokens", keyConcurrentGate.Wrap(streaming.NewCountTokensHandler(chatHandler)))
-	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", keyConcurrentGate.Wrap(embeddingsHandler))
@@ -7736,7 +7759,23 @@ func main() {
 	//	  collector.enabled=false ⇒ Collect 是空操作（不落攻击者原文）。
 	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
 		piSQLDB := stdlib.OpenDB(*dbConn.Pool().Config().ConnConfig)
-		defer func() { _ = piSQLDB.Close() }()
+		// ★ 2026-11-18 审计轮 P1：有界关闭。
+		//
+		//	★ 2026-11-18 审计轮订正（假根因）：本注释此前断言
+		//	「*sql.DB.Close 会等所有在途连接归还（底层 puddle Pool.Close
+		//	卡 WaitGroup.Wait）」——**这是错的**：Go 1.27.4 stdlib
+		//	database/sql.(*DB).Close 只关空闲连接，**不等在途查询**；
+		//	本仓走 stdlib.OpenDB → pgx.ConnectConfig（裸 pgx，
+		//	**不经 pgxpool/puddle**）⇒ 这条路径上根本等不到。
+		//	「僵尸进程」的真实机制在 PGPublisher.Close() → pool.Close()
+		//	（domains/analysis/bus/publisher.go）——那一半是对的。
+		//	⇒ 此处的有界包装是**纵深防御**（未来换驱动实现时兜底）：
+		//	boot 期主流程出错走 defer 清理时，后台任务（PI 检测器规则
+		//	加载 / 采集器 worker）仍持连接 ⇒ 有界关闭保证清理路径必然
+		//	返回，不把「崩溃 + systemd 自动拉起」拖成「进程不退出」。
+		//	超时放弃并留痕：连接随进程退出由 OS 回收，
+		//	代价远小于卡死整条 shutdown 路径。
+		defer closeAnalysisSQLDBBounded(piSQLDB, analysisSQLDBCloseTimeout)
 		// ★ 2026-11-17 第57增量 P1：PI 智能体的停机闭环。
 		//   原实现 ctx=context.Background() 且 worker 返回值被丢弃 ⇒
 		//   停机时 collector drain / worker 循环仍在跑，而 piSQLDB 的
@@ -7789,6 +7828,20 @@ func main() {
 					_ = piSQLDB.Close()
 				} else {
 					piDetector = piDetectorAdapter{core: d}
+					// ★ 2026-11-18 审计轮 P1：检测链已接线
+					//	（⇒ 采集队列**有生产者**）——管理面据此区分
+					//	「队列为空」与「没有生产者」。
+					piDetectionChainWired = true
+					// ★ 2026-11-18 审计轮 P1：把**判官端点解析器**接上线。
+					//
+					//	此前 LLMDetectionEngine.SetEngineResolver 零调用方
+					//	⇒ resolver 恒 nil ⇒ 判官层每次调用都返回
+					//	「endpoint resolver not wired」⇒ 判官层从不产出结论
+					//	（且 fail_closed 默认 false ⇒ 只落一条 Warn 就放行）。
+					//	⇒ 注入实现（cmd/gateway/pi_engine_resolver.go）：
+					//	  base_url ← 凭据的 provider；model ← provider_models
+					//	  的出站模型名（退回 canonical_name）；api_key ← 解密凭据。
+					d.SetLLMEngineResolver(newPIEngineResolver(piSQLDB, keyring, fernetKey))
 					v2Deps.AnalysisSQLDBs = append(v2Deps.AnalysisSQLDBs, piSQLDB) // 随 v2ShutdownPipeline 统一关闭
 
 					// ★ 2026-11-17 审计轮 P1：把**已在 V2 块外构造好的**采集器
@@ -7988,6 +8041,9 @@ func main() {
 				cfg.SecretKey,
 			)
 			piAnalysisHandler.RegisterRoutes(mux, "/api/admin/pi-analysis")
+			// ★ 2026-11-18 审计轮 P1：把「检测链是否接线」暴露给管理面，
+			//	否则队列恒空会被读成「没有错误发生」。
+			piAnalysisHandler.SetDetectionChainWired(piDetectionChainWired)
 			slog.Info("pi-analysis API registered")
 		}
 		// /api/admin/output-compliance/* — 策略、关键词、复核队列、反馈、统计。
@@ -9285,9 +9341,17 @@ func main() {
 			outboxDispatcherStop()
 		}
 
-		// Stop the security event sink (M2-2): its workers write to memora
-		// with their own timeout, so cancelling is enough — the queue is
-		// drained by the workers before they exit.
+		// Stop the security event sink (M2-2).
+		//
+		// ★ 2026-11-18 审计轮 P2：原注释断言「cancel 就够了 —— 队列由
+		//	worker 在退出前排空」，**与实现不符**：worker 在 ctx 取消时
+		//	立刻 return ⇒ 队列里已入队的安全事件（攻击现场）全部丢失，
+		//	而 Publish 仍往无人消费的队列里塞 ⇒ 静默丢失。
+		//	⇒ 现在先 Stop（关队列 + 排空 + 等在途写入），**再** cancel
+		//	（顺序反了排空会被 ctx 取消抢先）。
+		if securityEventSink != nil {
+			securityEventSink.Stop(stopCtx)
+		}
 		if securityEventSinkStop != nil {
 			securityEventSinkStop()
 		}
@@ -9711,7 +9775,22 @@ func wrapAnomalyDetector(next http.Handler, manager *anomaly.Manager, securitySi
 		}
 
 		// session id 仅作日志元数据（窗口已按 api key ID 分桶）。
-		sessionID := r.Header.Get("X-Session-Id")
+		//
+		// ★ 2026-11-18：会话身份统一走 internal/sessionid（SSOT），不再直读头。
+		//   旧写法只读 legacy `X-Session-Id` ⇒ **拿不到网关规范的 `X-Gw-Session-Id`**
+		//   ⇒ 与 main_pipeline.go:853（G-ID-1）同一个洞：规范会话 id 整段丢失，
+		//   安全事件的 session scope 挂不上会话谱系（memora 的 TaskID/AgentSessionID）。
+		// ★ 口径与 main_pipeline.go:861 一致：FromHeaders（头表优先级 + 去敏）
+		//   → DeriveGatewayID（裸 id 映射进 gw_ 命名空间 ⇒ 与会话表里的规范 id 同形）。
+		// ★ 为什么**不**用 Resolve：它按 body > header 取值，而**本层不读 body**
+		//   （body 归下游 handler 读）⇒ 这里只能用头表口径。
+		// ★ 行为面：取值只进【日志字段】与【安全事件 scope】；检测器侧
+		//   req.SessionID 无人消费（附件/媒体两个检测器在 Attachments/Messages 为空时
+		//   直接返回 nil；频率检测按 api key ID 分桶）⇒ **不产生任何拦截差异**。
+		sessionID := ""
+		if sid, _ := sessionid.FromHeaders(r.Header); sid != "" {
+			sessionID = sessionid.DeriveGatewayID(sid)
+		}
 
 		// 构造检测请求（轻量级，主要检测频率）
 		req := &anomaly.Request{

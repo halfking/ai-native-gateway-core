@@ -38,6 +38,24 @@ type PIAnalysisHandler struct {
 
 	// prefix 是本 handler 注册时用的路由前缀（RegisterRoutes 写入）。
 	prefix string
+
+	// detectionChainWired 报告**检测链是否接线**（即是否存在生产者）。
+	//
+	// ★ 2026-11-18 审计轮 P1：PI 错误采集的**唯一生产者**是
+	//	promptinjection.Detector（d.collectError），而检测器只在
+	//	LLM_GATEWAY_USE_V2_PIPELINE 开启时才被构造（默认关）
+	//	⇒ 默认形态下采集队列**恒为空**，且「空」与「没有生产者」
+	//	在运行期**不可区分**（运维会读成「没有错误发生过」）。
+	//	⇒ 把这条链路状态暴露到 /stats，让管理面能如实区分。
+	detectionChainWired bool
+}
+
+// SetDetectionChainWired 记录检测链是否接线（由装配侧注入）。
+func (h *PIAnalysisHandler) SetDetectionChainWired(wired bool) {
+	if h == nil {
+		return
+	}
+	h.detectionChainWired = wired
 }
 
 // NewPIAnalysisHandler 创建处理器
@@ -210,6 +228,14 @@ func (h *PIAnalysisHandler) GetQueue(w http.ResponseWriter, r *http.Request) {
 			"created_at":    e.CreatedAt,
 		})
 	}
+	// ★ 2026-11-18 审计轮：rows 循环的**终检**（internal/rowsguard 门）。
+	//   rows.Next() 返回 false 有两种原因：正常读完，或**中途出错**。
+	//   不查 rows.Err() ⇒ 连接中断时会把「读了一半」的队列当成「队列就这些」
+	//   返回 ⇒ 管理面给出**静默截断**的结果（且此后无任何告警）。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "iterate error analysis queue failed", err)
+		return
+	}
 
 	// 获取总数
 	countQuery := `SELECT COUNT(*) FROM error_analysis_queue WHERE 1=1`
@@ -317,6 +343,12 @@ func (h *PIAnalysisHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 			"tenant_id":         r.TenantID,
 			"created_at":        r.CreatedAt,
 		})
+	}
+	// ★ 2026-11-18 审计轮：rows 循环的**终检**（internal/rowsguard 门）。
+	//   不查 rows.Err() ⇒ 连接中断时把「读了一半」的结果当成完整结果返回。
+	if err := rows.Err(); err != nil {
+		writeInternalTextErr(w, "iterate error analysis results failed", err)
+		return
 	}
 
 	// 获取总数
@@ -473,6 +505,26 @@ func (h *PIAnalysisHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeInternalTextErr(w, "query error analysis stats failed", err)
 		return
+	}
+
+	// ★ 2026-11-18 审计轮 P1：把「链路状态」与「队列内容」一起返回。
+	//
+	//	否则「队列为空」有两种完全不同的含义（没有错误发生 / 根本没有
+	//	生产者），管理面无法区分 ⇒ 运维会把「功能没接线」读成
+	//	「系统很健康」。
+	//
+	//	文案**不在后端给**：后端只给稳定的状态码（chain_status），
+	//	展示文案由前端按 i18n 渲染（后端给中文会让非中文界面拿到中文，
+	//	也让文案有两份真值）。
+	if stats == nil {
+		stats = map[string]interface{}{}
+	}
+	stats["collector_enabled"] = h.collector.Enabled()
+	stats["detection_chain_wired"] = h.detectionChainWired
+	if !h.detectionChainWired {
+		stats["chain_status"] = "not_wired"
+	} else {
+		stats["chain_status"] = "wired"
 	}
 
 	w.Header().Set("Content-Type", "application/json")

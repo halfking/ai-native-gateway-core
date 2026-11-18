@@ -50,7 +50,7 @@ Use `scripts/pg-instance-sync.sh` as the dispatcher:
 - Use `pg-instance-schema-additive.sh` as the deterministic gateway migration
   path; prefer `scripts/apply-db-revision-sequence.sh`
 - Treat owner/GRANT or deparse-only CHECK/function whitespace as semantic drift
-- Ask the user for passwords; load them with `envs/loader.sh`
+- Ask the user for passwords; load them with `../../deploy/envs/loader.sh` (deploy workspace, relative to this repo)
 
 ## Tests
 

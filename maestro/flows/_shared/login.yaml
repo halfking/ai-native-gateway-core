@@ -1,57 +1,94 @@
 # 共享登录流 —— 所有需要登录的 flow 都用 runFlow 调它。
 #
-# 登录控件（web/src/components/LoginModal.vue）：
-#   #login-username            用户名输入框（LoginModal.vue:140-146）
-#   #login-password            密码输入框（LoginModal.vue:150-156）
-#   .login-modal__actions 里的 <button type="submit">   提交按钮（LoginModal.vue:160-162）
-#   提交按钮的可见文案是「登录」（locale login.submit = '登录'）
+# ★★★ 本版（2026-11-18 合流轮）**完全不用 evalScript** —— 这不是偏好，是**硬约束**：
+#   `maestro/README.md` §6.6 已写明：web 驱动（`CdpWebDriver`）**没有 evaluateScript 方法**
+#   ⇒ flow 里**不带** `${output.*}` 的 `evalScript` 压根不会发到浏览器（报 COMPLETED、
+#     页面一字未变、**异常也不报**）；**带** `${output.*}` 的那一种只在 **JVM 侧**求值
+#     （没有 document/location/performance/fetch），且**值写出去读不回来**。
+#   ⇒ 结论：**页面上的一切都验不了** ⇒ 任何依赖页面内 JS 的「强判据」都是**假强门**。
+#   本轮实测（web 驱动 / Maestro 2.11.0 / 154 生产站 / 2026-11-18）：
+#     ① 脚本往 document.body 插一个可见 div ⇒ **视口层级里没有它**
+#        （两种浏览器配置都试过：Maestro 自启 Chrome、复用 9222 的 Chrome）；
+#     ② 脚本里**同步** `throw new Error(...)` ⇒ **仍报 COMPLETED / rc=0**（异常被吞）；
+#     ③ `${output.probe = ...}` 能跑完，但把 `${output.probe}` 放进 openLink ⇒
+#        **不插值**（原样当 URL 打开 ⇒ ERR_NAME_NOT_RESOLVED）⇒ 值是只写的。
+#   ⇒ 上游那版「键入 + 页内 fetch 提交」登录流因此**从未真正登录过**，
+#     而它自带的 `throw LOGIN_HTTP_*` / `LOGIN_NO_ACCESS_TOKEN` / `LOGIN_NO_SESSION`
+#     判据**一次都没触发过**（假强门）：flow 报绿 ⇒ 浏览器其实仍是访客
+#     ⇒ 下游断言在访客态上跑（实测症状：`12-live-stage-tree` 红在
+#     「请求阶段树」不可见，落地页是访客营销页）。
 #
-# ★ 为什么提交用 pressKey: Enter 而不是 tapOn: '登录'：
-#   页面上「登录」二字至少出现两处 —— 访客头部按钮
-#   （web/src/App.vue:386 <button class="guest-login-btn">{{ t('login.submit') }}</button>）
-#   和登录弹窗的提交按钮。Maestro 的 tapOn 文本匹配按 DOM 顺序取第一个命中，
-#   会打到访客头部的按钮上（只是再次打开弹窗，不会提交表单）。
-#   焦点停在密码框时按 Enter 会触发 form 的 @submit.prevent="handleLogin"，
-#   是唯一确定能提交的路径。
+# ★ 本版走 **SPA 自己的提交路径**（`LoginModal` 的 `<form @submit.prevent="handleLogin">`）
+#   ⇒ **服务端会话（HttpOnly cookie）与 SPA 内存态同源** ——
+#   这正是「页内 fetch」那一版丢掉的那一半（fetch 只落 cookie，不更新 SPA 状态）。
+#
+# ★ 三段判据（全部是**驱动原生**断言 ⇒ 不会静默空转；缺一段都算红）：
+#   ① 弹窗关闭（`notVisible: id: login-modal-title`）
+#      ⇒ `handleLogin` 走完且成功；失败时弹窗不关（顶部有红色横幅）。
+#   ② 顶栏出现用户菜单名「系统管理员」
+#      ⇒ SPA 内存态已更新（`store.userInfo` 有值 ⇒ `isLoggedIn` 为真 ⇒ 顶栏布局）。
+#      「系统管理员」是**种子账号的 display_name**（`admin/users.go:247`）⇒ 与环境无关；
+#      同一标记已被 `11-simple-overview` / `12-live-stage-tree` 的「起点归零」段复用
+#      （那里用它识别已登录态）⇒ 单一真源，不另立一套。
+#   ③ 重新 `openLink /dashboard` 后用户菜单仍在
+#      ⇒ **服务端会话真的建立了**：web 驱动的 openLink **清 localStorage 但保留 cookie**
+#        （见 `_shared/switch-simple-mode.yaml` 头注）⇒ 重载后只能靠 cookie +
+#        `/api/auth/me` 水合出用户菜单 ⇒ 排除「只有内存态、cookie 没落袋」。
+#        （这正是「HTTP 200 但没有会话 cookie」那个坑的**真判据**，
+#          只是用驱动原生方式实现，不依赖任何页面内 JS。）
+#
+# ★ 键入完整性（本轮实测）：Maestro 的 `inputText` 把口令**逐字**打进了 DOM
+#   （失败现场的层级里 `#login-password` 的文本就是完整的 `Veritrans&9527`）
+#   ⇒ 上游那版「键入/插值吞片段」的判断在**本驱动**不成立。
+#   ⇒ 万一口令真的不对：后端回 401 ⇒ 弹窗不关 + 红色横幅 ⇒ ① 立刻红
+#     （**响亮失败**，不会像 evalScript 那版一样「报绿但没登录」）。
+#
+# ★ 已知坑：后端自适应验证码闸门（`admin/auth_captcha.go`）——连续失败到阈值后
+#   要求 captcha，而验证码要靠看图 ⇒ 这种状态下本 flow 必然红（判据①）。
+#   看到弹窗里多出验证码输入框就是它（README §6.4）。
 #
 # ★ 账号口令不写进仓内任何文件：ADMIN_USER / ADMIN_PASSWORD 由
-#   maestro/env.local.yaml（本地生成，已 gitignore）注入。
-#
-# ★ 后端有自适应验证码闸门（admin/auth_captcha.go:474）：连续登录失败达阈值后
-#   强制要求 captcha，而登录弹窗当前没有渲染验证码输入框 ⇒ 那种状态下
-#   本 flow 必然失败。先把失败计数清掉（或改用 README 里的 cookie 注入方案）。
+#   命令行 -e 注入（flow 经 runFlow env 转发）。
 url: ${BASE_URL}
 ---
-- openLink: ${BASE_URL}/login
+- openLink: ${BASE_URL}/?login=1
 - extendedWaitUntil:
     visible:
       id: "login-modal-title"
     timeout: 20000
 # ★ 必须先 eraseText：登录框的**用户名默认预填 "admin"**
-#   （web/src/components/LoginModal.vue:42 `const username = ref('admin')`），
-#   而 Maestro 的 inputText 是**追加**而不是替换 ⇒ 不清空就会得到
-#   "adminadmin" ⇒ 后端回 Invalid credentials ⇒ 弹窗不关 ⇒ flow 失败。
-#   ★ 实测证据（2026-10-28 R176）：不清空时页面里的用户名框内容是
-#   "adminadmin"，后端回 401 "Invalid credentials"。
+#   （`web/src/components/LoginModal.vue:42` `const username = ref('admin')`），
+#   而 Maestro 的 inputText 是**追加**而不是替换 ⇒ 不清空就会得到 "adminadmin"
+#   ⇒ 后端回 Invalid credentials ⇒ 弹窗不关 ⇒ 判据① 红。
 - tapOn:
-    id: "login-username"
+    id: login-username
 - eraseText: 20
 - inputText:
-    id: "login-username"
+    id: login-username
     text: "${ADMIN_USER}"
 - tapOn:
-    id: "login-password"
+    id: login-password
 - eraseText: 40
 - inputText:
-    id: "login-password"
+    id: login-password
     text: "${ADMIN_PASSWORD}"
+# ★ 提交：焦点停在密码框时按 Enter ⇒ 触发表单的 `@submit.prevent="handleLogin"`。
+#   （不能用 tapOn "登录"：访客头部也有一个「登录」按钮 ⇒ 打到它只会重开弹窗；
+#     见 README §6.2。）
 - pressKey: Enter
+# ── ① 弹窗关闭（handleLogin 成功）────────────────────────────────────────
 - extendedWaitUntil:
     notVisible:
       id: "login-modal-title"
-    timeout: 20000
-# 登录成功的硬判据：弹窗关掉后首页应渲染已登录态的仪表盘
-# （web/src/views/DashboardViewV2.vue:97 <h2>{{ t('dashboard.title') }}</h2>）
+    timeout: 30000
+# ── ② SPA 内存态已更新（顶栏用户菜单）────────────────────────────────────
 - extendedWaitUntil:
-    visible: '仪表盘'
+    visible:
+      text: "系统管理员"
+    timeout: 20000
+# ── ③ 服务端会话已建立（重载后仍能水合 ⇒ cookie 有效）────────────────────
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "系统管理员"
     timeout: 20000

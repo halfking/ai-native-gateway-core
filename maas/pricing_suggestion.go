@@ -319,7 +319,12 @@ func (s *Service) SuggestPricing(ctx context.Context, req PricingSuggestionReque
 		fxRate = 0
 	}
 
-	names := s.pricingSuggestionScope(ctx, req, dim)
+	// ★ 2026-11-18 12h 审计轮根修（P2）：作用域查询的错误必须上抛，不能当
+	//   「作用域为空」继续走（空作用域会让预览返回 200 + 0 个模型）。
+	names, err := s.pricingSuggestionScope(ctx, req, dim)
+	if err != nil {
+		return out, err
+	}
 
 	// 行情事实
 	market, err := s.loadPricingSuggestionMarket(ctx, dim, req, names)
@@ -519,22 +524,41 @@ func pricingDeltaMeaningful(in, out *float64, minDeltaPct *float64) bool {
 }
 
 // validatePricingStrategy 策略入参校验（闭集 + 参数完备性）。
+// PricingRequestError 表示**调用方输入**错误（HTTP 400 这一族）。
+//
+// ★ 2026-11-18 审计轮 P2：此前「输入错」与「服务端/DB 错」都是裸
+// errors.New / fmt.Errorf ⇒ admin 层无法区分 ⇒ 两者都按 400 + err.Error()
+// 回显 ⇒ ① 数据库故障被标成「客户端发了坏请求」（监控会把库故障读成
+// 参数错），② pgx 原始错误串（表名 / SQLSTATE / 42P01）直接吐给客户端。
+// ⇒ 用一个**可判别**的类型把两类错误分开。
+type PricingRequestError struct {
+	Msg string
+}
+
+func (e *PricingRequestError) Error() string { return e.Msg }
+
+// IsPricingRequestError 判定 err 是否属于「调用方输入错误」。
+func IsPricingRequestError(err error) bool {
+	var pre *PricingRequestError
+	return errors.As(err, &pre)
+}
+
 func validatePricingStrategy(req PricingSuggestionRequest) error {
 	switch req.Strategy {
 	case PricingStrategyCopyPlatform:
 		if strings.TrimSpace(req.PlatformID) == "" {
-			return errors.New("copy_platform 策略必须指定 platform_id")
+			return &PricingRequestError{Msg: "copy_platform 策略必须指定 platform_id"}
 		}
 	case PricingStrategyAverage, PricingStrategyMin:
 	case PricingStrategyFloorMarkup:
 		if req.MarkupPct == nil {
-			return errors.New("floor_markup 策略必须指定 markup_pct")
+			return &PricingRequestError{Msg: "floor_markup 策略必须指定 markup_pct"}
 		}
 		if *req.MarkupPct <= -100 {
-			return errors.New("markup_pct 必须大于 -100（否则建议价为负）")
+			return &PricingRequestError{Msg: "markup_pct 必须大于 -100（否则建议价为负）"}
 		}
 	default:
-		return errors.New("未知策略：" + req.Strategy)
+		return &PricingRequestError{Msg: "未知策略：" + req.Strategy}
 	}
 	return nil
 }

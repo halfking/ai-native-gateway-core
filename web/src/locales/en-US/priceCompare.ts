@@ -87,6 +87,7 @@ export default {
   suggestThreshold: 'Min delta threshold %',
   suggestPreview: 'Preview suggestions',
   suggestApplyAll: 'Apply to {n} models',
+  suggestApplyConfirm: 'Apply pricing changes to {n} models? This overwrites current prices and cannot be undone.',
   suggestLoadFailed: 'Failed to load pricing suggestions.',
   suggestApplyOk: 'Applied to {n} models (batch #{batch}); find it in the change history by batch.',
   suggestApplyFailed: 'Failed to apply pricing suggestions.',

@@ -480,6 +480,12 @@ func (e *Executor) executeViaDispatch(
 		// dispatch error would fall through to the generic 502 path.
 		// Still attach T0–T9 so failure _request_logs rows keep queue latency.
 		ee := dispatchErrToExecuteError(err)
+		// W1-A（2026-11-18）：熔断耗尽时把「客户端该等多久」算出来带上。
+		// 数据源是熔断器自己的冷却截止（唯一权威），不是写死的常数 ——
+		// 熔断退避是指数的，写死必然与实际不符。
+		if ee.LastKind == errorsx.KindCircuitOpen {
+			ee.RetryAfterSeconds = circuitOpenRetryAfterSeconds(e.Circuit, candidates)
+		}
 		copyDispatchAttemptMetadata(ee, qr)
 		copyQueueTimestampsToError(ee, qr)
 		return nil, ee
@@ -603,6 +609,16 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 	case errors.Is(err, dispatch.ErrScheduleTooFar):
 		// 定时请求的 due time 超出允许窗口：客户端参数问题，不可重试。
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindClientBug}
+	case dispatchExhaustedByCircuitOpen(err):
+		// ★ 2026-11-18 W1-A：熔断把候选打空 ⇒ 真实 kind 是 circuit_open。
+		// 修前落到下面的 default 分支被**塌成 KindTransient** ⇒ 客户端拿到
+		// 503 + error.code=model_not_found + error.kind=transient，运维在
+		// _request_logs 里也只能按 transient 过滤 ⇒ 「我们主动熔断了」与
+		// 「上游挂了」分不开，而两者的处置是相反的（退避重试 vs 换节点/上报）。
+		//
+		// ★ 判定看的是尝试摘要（每一条尝试都是 circuit_open 才算），
+		// 详见 executor_circuit_open.go 的口径说明。
+		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindCircuitOpen}
 	default:
 		// 2026-09-07 (mock system test §5.3): the exhaustion cause chain
 		// (ExhaustedError.Unwrap) preserves the last concrete upstream error.

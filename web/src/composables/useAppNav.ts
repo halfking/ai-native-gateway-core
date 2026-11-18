@@ -25,6 +25,11 @@ import {
   type NavGroup,
 } from '../config/appNav'
 import { buildSimpleNav } from '../config/simpleNav'
+import {
+  onPIAnalysisAvailabilityChange,
+  probePIAnalysisAvailable,
+  showPIAnalysis,
+} from '../config/piAnalysis'
 import { usePluginNav } from './usePluginNav'
 import { useWorkMode } from './useWorkMode'
 import {
@@ -41,9 +46,15 @@ export const navDrawerOpen = ref(false)
 // —— 模块级共享背景状态（多次 useAppNav() 只加载一次） ——
 const isActivated = ref(false)
 const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
+// ★ 2026-11-18 审计轮 P2：PI 分析（/admin/pi-analysis）的运行时可用性。
+//	该页背后的 API 只在「有 DB + admin 鉴权材料齐备」时才注册（后端
+//	fail-closed）⇒ 无 DB 的部署上菜单项点了就是 404 空页 ⇒ 探测到
+//	不可用就隐藏该项。unknown（未探测）⇒ 展示（避免菜单闪烁）。
+const piAnalysisAvailable = ref<boolean | undefined>(undefined)
 let backgroundStarted = false
 let platformModeRefreshStarted = false
 let stopMaintainWatch: (() => void) | null = null
+let stopPIAnalysisWatch: (() => void) | null = null
 
 async function checkActivationStatus() {
   try {
@@ -73,6 +84,11 @@ function startBackgroundLoading() {
   stopMaintainWatch = onMaintainAvailabilityChange(() => {
     void refreshOpsMenu()
   })
+  // ★ 2026-11-18 审计轮 P2：探测 PI 分析 API 可用性 ⇒ 不可用则隐藏菜单项。
+  void probePIAnalysisAvailable()
+  stopPIAnalysisWatch = onPIAnalysisAvailabilityChange(() => {
+    piAnalysisAvailable.value = showPIAnalysis() ? true : false
+  })
 }
 
 /** 仅供测试：复位单例背景状态与共享开关。 */
@@ -81,8 +97,11 @@ export function _resetUseAppNavForTests() {
   platformModeRefreshStarted = false
   stopMaintainWatch?.()
   stopMaintainWatch = null
+  stopPIAnalysisWatch?.()
+  stopPIAnalysisWatch = null
   isActivated.value = false
   opsMenuOverrides.value = null
+  piAnalysisAvailable.value = undefined
   navDrawerOpen.value = false
 }
 
@@ -137,6 +156,7 @@ export function useAppNav() {
     isTenantPortal: isTenantPortal.value,
     isProviderConsole: isProviderConsole.value,
     isActivated: isActivated.value,
+    piAnalysisAvailable: piAnalysisAvailable.value,
   }))
 
   // V5.1: dynamic plugin nav (plugin-runtime /api/v1/plugin-nav). The merge

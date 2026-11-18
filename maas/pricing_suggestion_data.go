@@ -85,22 +85,34 @@ func pricingSuggestionRateIsOwn(v *int64) bool {
 //	· 指定了 canonical_ids ⇒ 只看这些模型（按 id 解析成名字，解析不到就跳过）；
 //	· 未指定 ⇒ 取该 dimension 下**有 canonical_id 的**行情模型
 //	  （canonical_id 非空 = 已与网关身份对齐 ⇒ 才是「可比」的）。
-func (s *Service) pricingSuggestionScope(ctx context.Context, req PricingSuggestionRequest, dim string) []string {
+//
+// ★ 2026-11-18 12h 审计轮根修（P2）：改为返回 error。
+//   原实现把查询错误与逐行 Scan 错误**一律吞掉**并返回空切片 ⇒
+//   调用方把「查库失败」当成「作用域为空」⇒ 预览返回 200 + 0 个模型 +
+//   summary.models=0（连 WithoutData 告警都不触发）⇒ 运维看到的是
+//   「0 个模型」而不是错误，且执行路径还会再插一条空的批次行。
+//   ⇒ 现在错误上抛；Scan 错误改为**整体上抛**（部分行缺失同样会给出
+//     错误的数量口径，静默丢行比报错更危险）。
+func (s *Service) pricingSuggestionScope(ctx context.Context, req PricingSuggestionRequest, dim string) ([]string, error) {
 	if len(req.CanonicalIDs) > 0 {
 		rows, err := s.pool.Query(ctx,
 			`SELECT canonical_name FROM public.models_canonical WHERE id = ANY($1)`, req.CanonicalIDs)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("查作用域（按 id）失败：%w", err)
 		}
 		defer rows.Close()
 		out := make([]string, 0, len(req.CanonicalIDs))
 		for rows.Next() {
 			var n string
-			if err := rows.Scan(&n); err == nil {
-				out = append(out, n)
+			if err := rows.Scan(&n); err != nil {
+				return nil, fmt.Errorf("读作用域（按 id）失败：%w", err)
 			}
+			out = append(out, n)
 		}
-		return out
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("读作用域（按 id）失败：%w", err)
+		}
+		return out, nil
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT m.canonical_name
@@ -108,17 +120,21 @@ func (s *Service) pricingSuggestionScope(ctx context.Context, req PricingSuggest
 		 WHERE m.dimension = $1 AND m.canonical_id IS NOT NULL
 		 ORDER BY 1`, dim)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("查作用域失败：%w", err)
 	}
 	defer rows.Close()
 	out := make([]string, 0, 512)
 	for rows.Next() {
 		var n string
-		if err := rows.Scan(&n); err == nil {
-			out = append(out, n)
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("读作用域失败：%w", err)
 		}
+		out = append(out, n)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("读作用域失败：%w", err)
+	}
+	return out, nil
 }
 
 // pricingSuggestionMarketSQLv2 —— 行情事实聚合（按策略一次算齐）。
@@ -243,6 +259,14 @@ func (s *Service) ApplyPricingSuggestions(ctx context.Context, req PricingSugges
 	if err := validatePricingStrategy(req); err != nil {
 		return out, err
 	}
+	// ★ 2026-11-18 12h 审计轮根修（P2）：dimension 在批次留痕里必须与**实际计算
+	//   用的口径**一致。SuggestPricing 内部把空 dimension 默认成 "standard"，
+	//   但它按值收 req ⇒ 默认化结果留在函数内、调用方看不到 ⇒ 批次行会写成
+	//   dimension=''（显式空串还会覆盖列默认值 'standard'）⇒ 审计按维度
+	//   过滤/连接批次时这一批"消失"。这里在调用前把默认值补齐。
+	if req.Dimension == "" {
+		req.Dimension = "standard"
+	}
 	// 预览（同一份计算口径 ⇒ 预览与执行不会漂移）
 	preview, err := s.SuggestPricing(ctx, req)
 	if err != nil {
@@ -251,7 +275,14 @@ func (s *Service) ApplyPricingSuggestions(ctx context.Context, req PricingSugges
 	out = preview
 
 	// 批次留痕（先落批次头，再逐个写价 ⇒ 批次 id 能进每行的 note）
-	batchID, err := s.insertPricingSuggestionBatch(ctx, req, len(preview.Items), true)
+	//
+	// ★ 2026-11-18 12h 审计轮根修（P1）：dry_run 实参由 `true` 改为 `false`。
+	//   原实参恒为 true ⇒ **每一次真实执行都留痕成「演练」** ⇒ 审计问
+	//   「这一批到底是试算还是真改价？」得到的答案是错的（对每一批都错）。
+	//   该列的语义是「本批是否只算不写」，而 ApplyPricingSuggestions 的**定义**
+	//   就是「写价」⇒ 语义上必须是 false。
+	//   ⇒ 预览（SuggestPricing）**不写批次行** ⇒ 无需在别处传 true。
+	batchID, err := s.insertPricingSuggestionBatch(ctx, req, len(preview.Items), false)
 	if err != nil {
 		return out, fmt.Errorf("写批次留痕失败：%w", err)
 	}

@@ -461,15 +461,28 @@ flow 里的 URL 用 `${ENV_VAR}` 引用**运行时传入的变量**（通道 = `
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 ```
 
-共享登录流做的事：
+共享登录流做的事（**全程只用驱动原生命令，一条 `evalScript` 都没有** —— 理由见 §6.3 与 §6.6）：
 
-1. `openLink ${BASE_URL}/login`。`LoginView.vue` 会 `router.replace('/?login=1')`（`web/src/views/LoginView.vue:20-29`），
-   `App.vue` 的 watcher 看到 `login=1` 就 `openLogin()`（`web/src/App.vue:244`），于是登录弹窗出现。
-2. 等 `#login-modal-title` 可见 —— 弹窗标题是「登录控制面」（`web/src/components/LoginModal.vue:125`，locale `login.title`）。
-3. 点 `#login-username` 填 `${ADMIN_USER}`，点 `#login-password` 填 `${ADMIN_PASSWORD}`。
-4. **`pressKey: Enter`** 提交（理由见 §6.3）。
-5. 等弹窗消失（`notVisible: id: login-modal-title`），再等「仪表盘」可见 —— 这是登录成功的硬判据
-   （`web/src/views/DashboardViewV2.vue:97` 的 `<h2>{{ t('dashboard.title') }}</h2>`）。
+1. `openLink ${BASE_URL}/?login=1`。`App.vue` 的 watcher 看到 `login=1` 就 `openLogin()`（`web/src/App.vue:244`），
+   于是登录弹窗出现（`/login` 路由也行：`LoginView.vue` 会 `router.replace('/?login=1')`）。
+2. 等 `#login-modal-title` 可见 —— 弹窗标题是「登录控制面」（`web/src/components/LoginModal.vue`，locale `login.title`）。
+3. 点 `#login-username` 填 `${ADMIN_USER}`，点 `#login-password` 填 `${ADMIN_PASSWORD}`
+   （★ 用户名框默认预填 `admin` ⇒ 必须先 `eraseText`，`inputText` 是**追加**）。
+4. **`pressKey: Enter`** 提交（理由见 §6.2）⇒ 走 SPA 自己的 `<form @submit.prevent="handleLogin">`
+   ⇒ **服务端会话（cookie）与 SPA 内存态同源**。
+5. **三段判据**（缺一段都算红；全部是驱动原生断言 ⇒ 不会静默空转）：
+   ① `notVisible: id: login-modal-title` —— 弹窗关闭 ⇒ `handleLogin` 成功
+      （失败时弹窗不关，顶部有红色横幅）；
+   ② `visible: text: "系统管理员"` —— 顶栏用户菜单出现 ⇒ SPA 内存态已更新
+      （`store.userInfo` 有值 ⇒ `isLoggedIn` 为真；「系统管理员」是种子账号的
+      `display_name`，`admin/users.go:247` ⇒ 与环境无关）；
+   ③ `openLink ${BASE_URL}/dashboard` 后 `visible: text: "系统管理员"` 仍在
+      —— **服务端会话真的建立了**：web 驱动的 `openLink` 清 localStorage 但**保留 cookie**
+      （见 `_shared/switch-simple-mode.yaml` 头注）⇒ 重载后只能靠 cookie + `/api/auth/me`
+      水合出用户 ⇒ 排除「只有内存态、cookie 没落袋」。
+
+★ 判据 ③ 就是「HTTP 200 但没有会话 cookie」那个坑的**真判据**；它用驱动原生方式实现，
+  不依赖任何页面内 JS（页面内 JS 在 web 驱动下**根本跑不起来**，见 §6.3/§6.6）。
 
 ### 6.2 为什么提交用 Enter 而不是点「登录」按钮
 
@@ -481,7 +494,13 @@ flow 里的 URL 用 `${ENV_VAR}` 引用**运行时传入的变量**（通道 = `
 Maestro 的 `tapOn` 文本匹配按 DOM 顺序取第一个命中，会打到访客头部那个按钮上 —— 它的行为只是「再次打开弹窗」，**不会提交表单**。
 焦点停在密码框时按 Enter 会触发表单的 `@submit.prevent="handleLogin"`，是当前唯一确定能提交的路径。
 
-### 6.3 备选：Cookie 注入（不用 UI）
+### 6.3 ★ 备选：Cookie 注入 —— **在 web 驱动下不可用**（不要再照抄）
+
+★ **先读这一段再写任何登录流**：web 驱动**没有 `evaluateScript`**（§6.6）⇒ flow 里
+  `evalScript` 的脚本**压根不会发到浏览器**；`${output.*}` 那种形式只在 **JVM 侧**求值
+  （没有 `document`/`fetch`/`location`）⇒ **在 flow 里没有任何办法让页面执行一次 `fetch`**。
+  ⇒ 下面那段曾经流传的「页内 fetch 注入 cookie」配方**是跑不起来的**：
+  它既不会注入 cookie，也不会报错（异常被吞），**flow 照样报绿** ⇒ 浏览器其实还是访客。
 
 后端 `POST /api/auth/token`（`admin/auth.go:951` 注册路由、`admin/auth.go:174` 处理）会：
 
@@ -491,22 +510,29 @@ Maestro 的 `tapOn` 文本匹配按 DOM 顺序取第一个命中，会打到访�
 前端所有 API 调用都带 `credentials: 'same-origin'`（`web/src/api/_core.ts:404`），所以**cookie 就是真正的会话**；
 `jwtToken` 只存在内存里、不落 localStorage（`web/src/store.ts:118`）。
 
-因此「不点 UI 也能拿到登录态」的可靠做法是：在浏览器同源上下文里 `fetch` 一次登录接口，浏览器会自动收下 `Set-Cookie`：
+★ 2026-11-18 实测（154 生产站 / Maestro 2.11.0 web 驱动）：
 
-```yaml
-- evalScript: "await fetch('/api/auth/token', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:'${ADMIN_USER}', password:'${ADMIN_PASSWORD}'})})"
-```
+| 探针 | 结果 |
+|---|---|
+| `evalScript` 往 `document.body` 插一个可见 div | 视口层级里**没有它**（页面一字未变），命令报 COMPLETED |
+| `evalScript` 里**同步** `throw new Error(...)` | **仍报 COMPLETED / rc=0**（异常被吞） |
+| `evalScript: '${output.probe = ...}'` 后 `openLink: ${output.probe}` | **不插值**（原样当 URL 打开 ⇒ `ERR_NAME_NOT_RESOLVED`）⇒ 值是只写的 |
 
-（`fetch` 成功后 cookie 已落袋；`localStorage.llmgw_user_info` 由 `/api/auth/me` 的 hydration 补上，
-`web/src/router.ts:129-147` 的 `isAuthed()` 有 localStorage 兜底。）
-
-★ 前提：这条 `fetch` 必须在**已经打开网关页面**的上下文里执行（同源），不能是 Maestro 的宿主 JS 沙箱。
+★ 可用的两条路：
+  - **有口令** ⇒ §6.1 的 UI 登录（唯一在 web 驱动下真正能建立会话的路径）。
+  - **无口令** ⇒ §6.5 的 CDP 预置会话（`maestro/tools/seed-session.mjs`，
+    用 `Network.setCookie` 直接写 HttpOnly cookie —— **不经页面 JS**，所以不受本节限制）。
 
 ### 6.4 已知坑：自适应验证码
 
-后端有自适应验证码闸门（`admin/auth_captcha.go:474`）：**连续登录失败达到阈值后强制要求 captcha**，
-而登录弹窗当前**没有渲染验证码输入框** ⇒ 那种状态下 UI 登录流必然失败（后端返 `captcha_required`）。
-先把失败计数清掉（换 IP / 等窗口过期），或改用 §6.3 的 cookie 注入方案。
+后端有自适应验证码闸门（`admin/auth_captcha.go:474`）：**连续登录失败达到阈值后强制要求 captcha**。
+★ **2026-11-18 订正**：弹窗**现在会渲染验证码输入框**了（`LoginModal.vue` 的
+  `<CaptchaInput v-if="showCaptcha">`，`showCaptcha` 在服务端回 `captcha_required` /
+  `captcha_invalid` 时置真）—— 旧记载「没有渲染验证码输入框」已过期。
+  ⇒ 但 flow 仍过不去：**验证码要人看图作答**，Maestro 不会看图
+  ⇒ 症状是「登录弹窗里多出一个验证码输入框」，判据①（弹窗关闭）会红。
+  先把失败计数清掉（换 IP / 等窗口过期）；**没有口令时**用 §6.5 的 CDP 预置会话
+  （它绕开 UI 登录，也绕开验证码）。
 
 ### 6.5 无口令路径：CDP 预置会话（`maestro/tools/seed-session.mjs`）
 
@@ -567,8 +593,8 @@ maestro test --driver-host-port 9222 --headless --no-ansi \
 
 | 能力 | 实测 | 怎么用 |
 |---|---|---|
-| `evalScript` | **no-op**：命令报 COMPLETED，页面一字未变 | **不要用**。`javap -p maestro.drivers.CdpWebDriver` 的方法表里根本没有 `evaluateScript` |
-| `${output.x = ...}` | 只在 **JVM 侧**求值 ⇒ 拿不到 DOM（`document` 未定义） | 只适合纯算术 |
+| `evalScript` | **no-op**：命令报 COMPLETED，页面一字未变，**异常也不报** | **不要用**。`javap -p maestro.drivers.CdpWebDriver` 的方法表里根本没有 `evaluateScript`；★ **2026-11-18 复测（154 生产站）**：往 `document.body` 插一个可见 div ⇒ 视口层级里**没有它**（Maestro 自启 Chrome / 复用 9222 的 Chrome 两种配置都一样）；脚本里**同步** `throw new Error(...)` ⇒ **仍报 COMPLETED / rc=0**（异常被吞） |
+| `${output.x = ...}` | 只在 **JVM 侧**求值 ⇒ 拿不到 DOM（`document` 未定义）；★ 且**只写不读**（放进 `openLink` 不插值 ⇒ 原样当 URL 打开） | 只适合纯算术（计时），**不可用于任何页面内判据** |
 | `assertVisible: { css }` | 可用但**极慢**（单条实测 2 分 23 秒） | 少用；能换 `id:` 就换 |
 | `assertNotVisible: { css }` | **直接挂住**（无超时上限） | 不要用 |
 | `assertVisible: { text }` | 可用，**秒级**；但**只匹配可见文本**且是**元素完整文本相等**（**不是子串包含**！实测「下一步该做什么」这种半句匹配不到）；`aria-label` / `title` **不参与**（`tapOn "切到专家模式"` ⇒ Element not found）。★ **2026-11-17 补测：它是「全匹配正则」**（命令 JSON 里字段名就是 `textRegex`）⇒ `.*….*` 可以用来选**读数会变**的元素（实测 `text: ".*条 · 成功率.*"` 命中统计胶囊，而 `text: "成功率"` 这种裸子串不命中） | 判据一律用**整句**（`text: "工作模式 · 简易模式"`、`text: "今日请求"`）；读数会变的元素用 `.*….*` 包起来 |

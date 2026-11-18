@@ -97,7 +97,20 @@ BEGIN
 ('unicode_homoglyph', 'advanced', 'bypass', 'unicode_obfuscation', '[\x{0430}-\x{044F}\x{0410}-\x{041F}]', '检测西里尔字母混淆（拉丁/西里尔视觉相似）', 8, true, ARRAY['unicode', 'homoglyph']),
 ('unicode_rtl_override', 'advanced', 'bypass', 'unicode_obfuscation', '[\x{202E}\x{202D}\x{200F}\x{200E}]', '检测RTL/LTR覆盖字符', 7, true, ARRAY['unicode', 'rtl']),
 ('unicode_zero_width', 'advanced', 'bypass', 'unicode_obfuscation', '[\x{200B}\x{200C}\x{200D}\x{FEFF}\x{2060}]', '检测零宽字符', 7, true, ARRAY['unicode', 'invisible']),
-('tool_abuse_exec', 'advanced', 'bypass', 'tool_abuse', '(?i)(exec|eval|system|subprocess|os\.system|child_process).*(\(|call|invoke)', '尝试执行系统命令', 10, true, ARRAY['tool', 'exec']),
+-- ★ 2026-11-18 12h 审计轮根修（P1）：tool_abuse_exec 的 pattern 用 **977 订正后**
+--   的字面量，而不是 364 的旧形态。
+--   旧形态 `(?i)(exec|eval|system|subprocess|os\.system|child_process).*(\(|call|invoke)`
+--   里 `system` + **无界** `.*` ⇒ 普通叙述句「the system will call you back」即命中
+--   （severity 10）⇒ 合法流量被误判。
+--   ★ 为什么这不是「抄写疏忽」而是**新装必现**的缺陷：
+--     本件（978）登记序在 977（376 → 377）**之后**；全新安装时规则表是空的
+--     （315/364 都不在任何建库通道里 ⇒ 977 的 UPDATE 命中 0 行）⇒
+--     977 的订正**根本没落地** ⇒ 978 再把旧形态种回去 ⇒
+--     **每次全新部署都会把这条假阳性规则装上**。
+--     （存量库上 245 已有该行 ⇒ 978 的 `ON CONFLICT DO NOTHING` 不覆盖 ⇒ 不显现
+--      ⇒ 这正是「存量不红、新装必红」的形状。）
+--   ⇒ 逐字取自 977 的订正后字面量（与 977 F4③ 同一份）：
+('tool_abuse_exec', 'advanced', 'bypass', 'tool_abuse', '(?i)\b(exec|eval)\s*\(|\b(system|shell)\(|os\s*\.\s*system\s*\(|\bshell_exec\s*\(|\b(subprocess|child_process)\b\s*[.(]|\b(call|invoke|execute|run|spawn)\s+(the\s+)?(subprocess|child_process)\b', '尝试执行系统命令', 10, true, ARRAY['tool', 'exec']),
 ('tool_abuse_import', 'advanced', 'bypass', 'tool_abuse', '(?i)(import|require|load|include).*(os|subprocess|sh|shell|sys)', '尝试导入危险模块', 9, true, ARRAY['tool', 'import']),
 ('tool_abuse_file', 'advanced', 'bypass', 'tool_abuse', '(?i)(read|write|delete|modify|access).*(file|filesystem|/etc/|/var/|/tmp/)', '尝试文件系统操作', 9, true, ARRAY['tool', 'file']),
 ('multi_turn_setup', 'advanced', 'bypass', 'multi_turn_attack', '(?i)(in the next|remember this for|when I say|next time I ask).*(message|prompt|turn|request)', '多轮攻击设置阶段', 6, true, ARRAY['multi_turn', 'setup']),

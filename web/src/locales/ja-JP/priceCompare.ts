@@ -87,6 +87,7 @@ export default {
   suggestThreshold: '最小変動しきい値 %',
   suggestPreview: '提案をプレビュー',
   suggestApplyAll: '{n} 件に一括適用',
+  suggestApplyConfirm: '{n} 件のモデルに一括で価格を変更しますか？現在の価格を上書きし、取り消せません。',
   suggestLoadFailed: '価格提案の読み込みに失敗しました。',
   suggestApplyOk: '{n} 件に適用しました（バッチ #{batch}）。変更履歴からバッチで追跡できます。',
   suggestApplyFailed: '価格提案の適用に失敗しました。',

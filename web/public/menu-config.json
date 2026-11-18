@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-17T20:45:08.415Z",
+  "exported_at": "2026-11-17T20:11:53.399Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -434,6 +434,7 @@
           "icon": "🔍",
           "super": true,
           "hideForTenant": true,
+          "piAnalysis": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },

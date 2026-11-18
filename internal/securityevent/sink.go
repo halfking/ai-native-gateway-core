@@ -81,6 +81,15 @@ type Sink struct {
 	wg      sync.WaitGroup
 	mu      sync.RWMutex
 	started bool
+	// closed 标记队列已被关闭（Stop 之后）。
+	//
+	// ★ 2026-11-18 审计轮 P2：Stop 此前**既不关队列也不排空** ——
+	//	worker 在 ctx 取消时立刻退出 ⇒ 队列里已入队的事件**全部丢弃**
+	//	（安全事件是攻击现场，丢了就再也补不回来）；而 Publish 仍会
+	//	往一个没人消费的队列里塞（计数还涨）⇒ 静默丢失。
+	//	⇒ Stop 关闭队列（此后 Publish 明确拒绝并计数），
+	//	  worker 把队列里剩下的事件写完再退出。
+	closed bool
 
 	enqueued  atomic.Uint64
 	dropped   atomic.Uint64
@@ -150,19 +159,35 @@ func (s *Sink) Start(ctx context.Context) {
 
 // Stop 停止 worker 并等待在途写入结束。
 //
-// ctx 取消后不再接新事件；worker 会把队列里剩下的事件写完（带写超时），
-// 然后退出。
+// ★ 2026-11-18 审计轮 P2：Stop 现在**排空队列**。
+//
+//	原实现只等 wg，而 worker 在 Start 的 ctx 被取消时立刻 return
+//	⇒ 队列里已入队的事件全部丢失（攻击现场补不回来），且 Publish
+//	仍往无人消费的队列里塞（静默丢失 + 计数虚高）。
+//	⇒ Stop 关闭队列：worker 读到「队列已空且已关闭」才退出，
+//	  在途与排队的事件都被写出（每次写有独立超时）。
+//	调用方必须**先 Stop 再取消 Start 的 ctx**（否则 ctx 取消会先于
+//	排空生效，队列仍会被丢）—— cmd/gateway 的停机顺序已按此调整。
+//
+// ctx 取消后不再接新事件；ctx 只用于**等待**的时限，不用于丢弃队列。
 func (s *Sink) Stop(ctx context.Context) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	if !s.started {
-		s.mu.Unlock()
+	started := s.started
+	s.started = false
+	if !s.closed {
+		s.closed = true
+		// 关闭队列：worker 排空后退出。此后 Publish 会明确拒绝。
+		close(s.queue)
+	}
+	s.mu.Unlock()
+
+	if !started {
+		// 没启动过 ⇒ 没有 worker 会消费队列；队列已关闭，事件不会被消费。
 		return
 	}
-	s.started = false
-	s.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
@@ -172,6 +197,8 @@ func (s *Sink) Stop(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+		s.logger.Warn("security event sink stop timed out (queue may not be fully drained)",
+			"pending", len(s.queue))
 	}
 }
 
@@ -195,14 +222,27 @@ func (s *Sink) Publish(event Event) bool {
 		s.logger.Warn("security event rejected", "error", err, "event_type", event.EventType, "code", event.Code)
 		return false
 	}
+	// ★ 2026-11-18 审计轮 P2：Stop 之后队列已关闭 ⇒ 再往里发会 panic
+	//	（send on closed channel）。⇒ 用读锁把「查 closed + 入队」与
+	//	Stop 的「关队列」互斥（入队是非阻塞的，读锁持有时间极短）。
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		s.dropped.Add(1)
+		s.logger.Warn("security event dropped (sink stopped)",
+			"event_type", event.EventType, "code", event.Code)
+		return false
+	}
 	select {
 	case s.queue <- event:
 		s.enqueued.Add(1)
+		s.mu.RUnlock()
 		return true
 	default:
 		// 队列满：丢事件并计数。**不阻塞调用方** —— 请求热路径上等一个
 		// 外部系统是不可接受的。
 		s.dropped.Add(1)
+		s.mu.RUnlock()
 		s.logger.Warn("security event dropped (queue full)",
 			"event_type", event.EventType, "code", event.Code, "queue_size", cap(s.queue))
 		return false
@@ -224,14 +264,34 @@ func (s *Sink) Stats() Stats {
 }
 
 // worker 从队列取事件并写出。
+//
+// ★ 2026-11-18 审计轮 P2：worker 现在**排空队列**才退出。
+//
+//	原实现 `case <-ctx.Done(): return` ⇒ ctx 一取消，队列里已入队的
+//	事件全部丢失（攻击现场不可恢复）。⇒ 关闭信号（队列关闭 ⇒ ok=false）
+//	优先于 ctx：先把剩下的写完（每次写有独立超时），再退出。
+//	仍保留 ctx 取消的快速出口（未走 Stop 的兜底路径），避免 goroutine 泄漏。
 func (s *Sink) worker(ctx context.Context) {
 	defer s.wg.Done()
 	for {
+		// 优先排空（队列已关闭时 ok=false ⇒ 退出）。
 		select {
+		case event, ok := <-s.queue:
+			if !ok {
+				return
+			}
+			s.write(ctx, event)
+			continue
+		default:
+		}
+		select {
+		case event, ok := <-s.queue:
+			if !ok {
+				return
+			}
+			s.write(ctx, event)
 		case <-ctx.Done():
 			return
-		case event := <-s.queue:
-			s.write(ctx, event)
 		}
 	}
 }

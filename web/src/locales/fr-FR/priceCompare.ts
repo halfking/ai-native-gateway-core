@@ -87,6 +87,7 @@ export default {
   suggestThreshold: 'Écart minimal %',
   suggestPreview: 'Prévisualiser',
   suggestApplyAll: 'Appliquer à {n} modèles',
+  suggestApplyConfirm: 'Appliquer les changements de prix à {n} modèles ? Cela écrase les prix actuels et est irréversible.',
   suggestLoadFailed: 'Impossible de charger les suggestions de prix.',
   suggestApplyOk: 'Appliqué à {n} modèles (lot #{batch}) ; retrouvable par lot dans l\'historique.',
   suggestApplyFailed: 'Impossible d\'appliquer les suggestions de prix.',

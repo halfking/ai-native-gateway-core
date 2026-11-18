@@ -198,6 +198,34 @@ var allowedDynamicDML = []struct {
 	Count  int
 	Reason string
 }{
+	// ★ 2026-11-18 登记：数据初始化面板（admin 手工触发的一次性重置）的两处 DELETE。
+	// ① 机制：:463 `fmt.Sprintf("DELETE FROM public.%s WHERE NOT (%s)", t.Name, spec.Where)`
+	//    与 :468 `fmt.Sprintf("DELETE FROM public.%s", t.Name)` —— 表名来自**同文件的
+	//    静态注册表** dataInitCategories（dataInitTable.Name），**运行时才决定**
+	//    ⇒ 字面量扫描器看不见，父表归属（Tier 0/1/A）也解析不出来（args[1] 是
+	//    选择器 `t.Name`，不是标识符；±20 行窗口里也没有父表字面量，父表清单在 :139-288）。
+	// ② ★ 这**确实是**父表 DELETE，而且是**故意的**：注册表里的
+	//    session_turn_details / session_bodies / session_turns / sessions 四张都是
+	//    分区父表（partguard.partitionParents），本工具的用途就是清掉**已晋级到月分区**的
+	//    历史行 —— 文件自己的注释已写明（dataInitTable.Name，:103）：
+	//    「分区父表写父表名；DELETE 会覆盖全部分区」。
+	// ③ ⇒ 为什么登记而不改写：这不是**请求路径**的父表写，而是**运维主动清库**动作
+	//    （admin 面板「数据初始化」，带预览 + 令牌绑定的两阶段确认），与本表已登记的
+	//    cmd/tools/validate_sessions_v2/repair.go 同族（同款：一次性手工工具按
+	//    session_id 删 session_bodies / session_turns / sessions 父表，已在
+	//    allowedParentDML 登记，理由同为「非请求路径、R78 待裁决」）。
+	//    ★ 改写成「只删 hot」会让本工具**删不到已晋级的历史行** ⇒ 那是改产品
+	//    （清库工具的用途被掏空），不是修门 ⇒ 按 R78 的口径登记为待裁决例外。
+	// ④ 由哪道行为门把住：admin/data_lifecycle_data_init_test.go 的
+	//    TestBuildDataInitPlan_TableNamesComeFromRegistryOnly（表名**只能**来自静态注册表
+	//    ⇒ 动态目标不是「任意表」，注入面被钉死）、TestBuildDataInitPlan_ForeignKeySafeOrder
+	//    （执行顺序按外键安全）、TestBuildDataInitPlan_KeepsProtectedRows 与
+	//    TestBuildDataInitPlan_KeepArgsAreBoundParameters（保留谓词 + 绑定参数）；
+	//    admin/data_lifecycle_data_init_realdb_test.go 的 TestDataInitDeleteStatements_PlanOnRealDB
+	//    （这些 DELETE 语句在真库上的执行证明）；admin/data_lifecycle_data_init_execute_mapping_test.go
+	//    的三条「每类别行数归属」门。
+	{"admin/data_lifecycle_data_init.go", "DELETE", 2,
+		"数据初始化面板（admin 手工触发的一次性重置）：两处 fmt.Sprintf 动态 DELETE（:463 带保留谓词、:468 整表），表名来自同文件静态注册表 dataInitCategories ⇒ 运行时决定，父表归属静态不可解析。★ 其中 session_turn_details / session_bodies / session_turns / sessions **是分区父表**，本工具**故意**删父表（用途=清掉已晋级到月分区的历史行；dataInitTable.Name 注释自陈「分区父表写父表名；DELETE 会覆盖全部分区」）⇒ 与已登记的 cmd/tools/validate_sessions_v2/repair.go 同族（非请求路径的运维清库、R78 待裁决），改写成只删 hot 会掏空该工具的用途 ⇒ 登记不改写。行为门：admin/data_lifecycle_data_init_test.go（TestBuildDataInitPlan_TableNamesComeFromRegistryOnly / _ForeignKeySafeOrder / _KeepsProtectedRows / _KeepArgsAreBoundParameters）+ data_lifecycle_data_init_realdb_test.go（TestDataInitDeleteStatements_PlanOnRealDB）+ data_lifecycle_data_init_execute_mapping_test.go（三条类别行数归属门）。"},
 	{"bg/partition_manager.go", "DELETE", 2,
 		"两处动态 DELETE：:1415 清理 request_stats_minute 族（普通表），:2572 deleteTerminalRowsBatched（表名由调用方给 ⇒ 归属到父表 stats_event_inbox，已在 allowedParentDML 登记）。两者都不是分区父表的**直接**写，但表名在运行时决定 ⇒ 必须登记。"},
 	{"domains/session/v2/session_aggregator.go", "UPDATE", 1,

@@ -1062,6 +1062,12 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 				if reason := extractUpstreamReason(execErr); reason != "" {
 					errMsg = errMsg + " Reason: " + reason
 				}
+			} else if surf, circuitOpen := providerCircuitOpenRejection(ee, clientModel); circuitOpen {
+				// ★ 2026-11-18 W1-A：熔断把候选打空 ⇒ 落库分类与客户端错误码
+				// 都必须是 provider_circuit_open，不能落成误导性的
+				// model_not_found / "All providers unavailable"。
+				errCode = surf.Code
+				errMsg = surf.Message
 			} else {
 				errCode = "model_not_found"
 				errMsg = "all providers unavailable"
@@ -1114,6 +1120,19 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 					writeResponsesStreamError(w, errMsg, "request_rejected")
 				} else {
 					writeResponsesError(w, http.StatusBadRequest, errMsg, "invalid_request_error", "request_rejected")
+				}
+				return
+			}
+			// ★ 2026-11-18 W1-A：熔断打空 ⇒ 503 + 专属码 provider_circuit_open。
+			// ★ 为什么必须在本面单独接线：修前只有 chat 面有专属出口，本面与
+			// /v1/messages 都落通用兜底 503 "All providers unavailable" ——
+			// 与 2026-11-11「请求形态拒绝」那一轮**完全同型**的漏接。
+			if surf, circuitOpen := providerCircuitOpenRejection(execErr, clientModel); circuitOpen {
+				setCircuitOpenHeaders(w, surf.RetryAfter)
+				if preStreamPrepared {
+					writeResponsesStreamError(w, surf.Message, surf.Code)
+				} else {
+					writeResponsesError(w, surf.Status, surf.Message, "server_error", surf.Code)
 				}
 				return
 			}

@@ -72,7 +72,15 @@ func (h *Handler) handlePricingSuggestions(w http.ResponseWriter, r *http.Reques
 	req.Operator = pricingSuggestionOperator(r)
 	res, err := svc.SuggestPricing(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// ★ 2026-11-18 审计轮 P2：区分「调用方输入错」（400）与「服务端/DB 错」
+		//   （500 + 通用文案，内部错误只进日志）。
+		//   修前一律 writeError(400, err.Error()) ⇒ DB 故障被标成客户端错误，
+		//   且 pgx 原始错误串（表名 / SQLSTATE）直接回显给客户端。
+		if maas.IsPricingRequestError(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeInternalErr(w, "pricing suggestion failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -104,7 +112,12 @@ func (h *Handler) handlePricingApply(w http.ResponseWriter, r *http.Request) {
 	req.Operator = pricingSuggestionOperator(r)
 	res, err := svc.ApplyPricingSuggestions(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// ★ 2026-11-18 审计轮 P2：同族收口 —— 见 handlePricingSuggest 的说明。
+		if maas.IsPricingRequestError(err) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeInternalErr(w, "pricing apply failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)

@@ -87,6 +87,7 @@ export default {
   suggestThreshold: 'Mindestabweichung %',
   suggestPreview: 'Vorschläge ansehen',
   suggestApplyAll: 'Auf {n} Modelle anwenden',
+  suggestApplyConfirm: 'Preise für {n} Modelle ändern? Dies überschreibt die aktuellen Preise und kann nicht rückgängig gemacht werden.',
   suggestLoadFailed: 'Preisvorschläge konnten nicht geladen werden.',
   suggestApplyOk: 'Auf {n} Modelle angewendet (Batch #{batch}); im Änderungsverlauf über den Batch auffindbar.',
   suggestApplyFailed: 'Preisvorschläge konnten nicht angewendet werden.',

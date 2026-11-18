@@ -87,6 +87,7 @@ export default {
   suggestThreshold: '最小变动阈值 %',
   suggestPreview: '预览建议',
   suggestApplyAll: '一键执行（{n} 个模型）',
+  suggestApplyConfirm: '确认对 {n} 个模型批量改价？该操作会覆盖现价，且不可撤销。',
   suggestLoadFailed: '定价建议加载失败。',
   suggestApplyOk: '已执行：写入 {n} 个模型（批次 #{batch}），可在变更历史里按批次反查。',
   suggestApplyFailed: '定价建议执行失败。',
