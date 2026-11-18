@@ -30,23 +30,39 @@
       <span>{{ t('common.piAnalysis.chainNotWiredReason') }}</span>
     </div>
 
-    <!-- 统计卡片 -->
+    <!--
+      统计卡片（2026-11-19 列表↔统计一致性根修）：
+      六张卡全部与列表同域——总数/待分析/已分析/失败来自队列全量（= 错误队列 tab 的域），
+      误报率/平均耗时来自结果表全量（= 分析结果 tab 的域）。
+      总数卡子行披露 处理中/跳过（瞬态态不在卡面单列，但 Σ 全部状态 = 总数 ⇒ 可对账）。
+    -->
     <div class="stats-cards" v-if="stats">
       <div class="stat-card">
-        <div class="stat-label">待分析</div>
-        <div class="stat-value">{{ stats.pending || 0 }}</div>
+        <div class="stat-label">{{ t('common.piAnalysis.stats.total') }}</div>
+        <div class="stat-value">{{ stats.total }}</div>
+        <div class="stat-sub" v-if="stats.processing || stats.skipped">
+          {{ t('common.piAnalysis.stats.subTransient', { processing: stats.processing, skipped: stats.skipped }) }}
+        </div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">已分析</div>
-        <div class="stat-value">{{ stats.analyzed || 0 }}</div>
+        <div class="stat-label">{{ t('common.piAnalysis.stats.pending') }}</div>
+        <div class="stat-value">{{ stats.pending }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">误报率</div>
-        <div class="stat-value">{{ stats.falsePositiveRate || '0%' }}</div>
+        <div class="stat-label">{{ t('common.piAnalysis.stats.analyzed') }}</div>
+        <div class="stat-value">{{ stats.analyzed }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">平均耗时</div>
-        <div class="stat-value">{{ stats.avgDuration || '0ms' }}</div>
+        <div class="stat-label">{{ t('common.piAnalysis.stats.failed') }}</div>
+        <div class="stat-value">{{ stats.failed }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">{{ t('common.piAnalysis.stats.falsePositiveRate') }}</div>
+        <div class="stat-value">{{ stats.falsePositiveRate }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">{{ t('common.piAnalysis.stats.avgDuration') }}</div>
+        <div class="stat-value">{{ stats.avgDuration }}</div>
       </div>
     </div>
 
@@ -435,6 +451,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { summarizePiAnalysisStats } from '@/lib/piAnalysisStats'
 
 const { t } = useI18n()
 
@@ -635,22 +652,9 @@ async function loadStats() {
     //	⇒ 必须如实显示，否则运维会把「没有生产者」读成「没有错误发生」。
     chainNotWired.value = data?.detection_chain_wired === false
 
-    // 计算统计信息
-    let pending = 0, analyzed = 0, falsePositives = 0, totalDuration = 0, count = 0
-    
-    if (data.by_type) {
-      data.by_type.forEach((item: any) => {
-        pending += item.pending || 0
-        analyzed += item.analyzed || 0
-      })
-    }
-    
-    stats.value = {
-      pending,
-      analyzed,
-      falsePositiveRate: analyzed > 0 ? ((falsePositives / analyzed) * 100).toFixed(1) + '%' : '0%',
-      avgDuration: count > 0 ? Math.round(totalDuration / count) + 'ms' : '0ms'
-    }
+    // ★ 2026-11-19 一致性根修：顶层计数直读（后端单点保证与列表 COUNT 域一致），
+    // 误报率/平均耗时来自结果表聚合——不再有死零。
+    stats.value = summarizePiAnalysisStats(data)
   } catch (error) {
     console.error('Failed to load stats:', error)
     markUnavailable(error)
@@ -1040,9 +1044,16 @@ onMounted(() => {
 
 .stats-cards {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 16px;
   margin-bottom: 24px;
+}
+
+/* 总数卡的瞬态子行（处理中/跳过） */
+.stat-sub {
+  font-size: 11px;
+  color: #8c8c8c;
+  margin-top: 6px;
 }
 
 .stat-card {

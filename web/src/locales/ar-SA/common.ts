@@ -295,6 +295,16 @@ export default {
   // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
   //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
   piAnalysis: {
+    // ★ 2026-11-19 جولة إصلاح اتساق القائمة↔الإحصاء: تسميات بطاقات الإحصاء.
+    stats: {
+      total: 'إجمالي الأخطاء',
+      pending: 'في الانتظار',
+      analyzed: 'تم تحليلها',
+      failed: 'فاشلة',
+      falsePositiveRate: 'نسبة الإنذارات الكاذبة',
+      avgDuration: 'متوسط المدة',
+      subTransient: 'قيد المعالجة {processing} · متجاهلة {skipped}',
+    },
     unavailableTitle: 'تحليل أخطاء PI غير متاح حاليًا.',
     unavailableReason: 'لم يسجّل الخادم /api/admin/pi-analysis/* (لا يوجد اتصال بقاعدة البيانات أو مواد مصادقة للمشرف) — هذا هو سلوك fail-closed في الخادم، وليس بيانات فارغة.',
     unavailableNetwork: 'تعذّر الوصول إلى واجهة تحليل أخطاء PI (خطأ في الشبكة أو في الخادم).',
