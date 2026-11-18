@@ -181,8 +181,8 @@ describe('SalesWorkbenchView', () => {
     expect(withheldTable.text()).toContain('canonical_multi_price')
     expect(withheldTable.text()).toContain('0.5 / 1.5')
     expect(withheldTable.text()).toContain('0.8 / 1.6')
-    // 可售表（.sellable-table）只含 model-a 与 model-c（C3 各档如实展示），不含 model-b
-    const sellableTable = w.find('.sellable-table')
+    // 可售表（重构后类名 .main-table）只含 model-a 与 model-c（C3 各档如实展示），不含 model-b
+    const sellableTable = w.find('.main-table')
     expect(sellableTable.exists()).toBe(true)
     const sellableText = sellableTable.text()
     expect(sellableText).toContain('model-a')
