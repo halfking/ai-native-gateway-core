@@ -17,6 +17,10 @@ import (
 // Drive both the ordinary candidate prefilter (without a trusted probe pin)
 // and the production forward path. A stale DB mirror must not win over the
 // live breaker; removing the mirror must not disable real cooling/quarantine.
+// mirrorScopeModel 是 mirror 测试候选的熔断作用域模型分量
+// （与 executor.go 的 circuitScopeModel 同一取值：candidate 的 offer 身份）。
+const mirrorScopeModel = "grok-4.6"
+
 func TestDispatchCircuitAdmissionUsesLiveBreakerNotDBMirror(t *testing.T) {
 	if !settings.IsEnabled("circuit_degradation") {
 		t.Fatal("test requires the real circuit admission gate enabled")
@@ -42,9 +46,14 @@ func TestDispatchCircuitAdmissionUsesLiveBreakerNotDBMirror(t *testing.T) {
 			defer upstream.Close()
 			cm := credential.NewManager()
 			if tc.wantBlocked {
-				cm.RecordFailurePerModel(36, 63, "", tc.kind)
-				cm.RecordFailurePerModel(36, 63, "", tc.kind)
-				if cm.PeekAllowed(36, 63, "") {
+				// ★ P0-a（2026-11-19 审计轮）：熔断作用域是
+				// "providerID/credentialID/model"，model 分量必须与生产准入
+				// 用的完全一致（candidate 的 offer 身份 = "grok-4.6"）。
+				// 这里若用整凭据作用域造熔断，准入就查不到那把 breaker ⇒
+				// 测试会误判成「live breaker 被绕过」。
+				cm.RecordFailurePerModel(36, 63, mirrorScopeModel, tc.kind)
+				cm.RecordFailurePerModel(36, 63, mirrorScopeModel, tc.kind)
+				if cm.PeekAllowed(36, 63, mirrorScopeModel) {
 					t.Fatal("fixture did not actually open/quarantine the live breaker")
 				}
 			}

@@ -162,8 +162,15 @@ func TestContextBudgetPipelineLocalRefusalDoesNotPolluteHealth(t *testing.T) {
 			t.Fatalf("local refusal entered health authority: %+v", d)
 		}
 	}
-	if stats := e.Circuit.GetPerModel(9201, 92001, "").Stats(); stats["total_failures"] != int32(0) {
-		t.Fatalf("local refusal polluted breaker: %v", stats)
+	// ★ P0-a（2026-11-19 审计轮）：「本地拒绝不污染健康」的正确表现是
+	// **根本没有失败计数**——breaker 甚至可以不存在（状态检查路径不再
+	// 凭空创建 breaker）。因此断言必须 nil-safe。
+	//
+	// 作用域模型分量与生产准入一致（candidate 的 offer 身份 = "budget-model"）。
+	if b := e.Circuit.GetPerModel(9201, 92001, "budget-model"); b != nil {
+		if stats := b.Stats(); stats["total_failures"] != int32(0) {
+			t.Fatalf("local refusal polluted breaker: %v", stats)
+		}
 	}
 }
 
