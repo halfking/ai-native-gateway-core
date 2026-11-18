@@ -131,6 +131,8 @@ export default {
   detail: {
     title: 'リクエスト詳細',
     hint: '「リクエスト行」をクリック → 詳細を表示；もう一度「リクエスト行」をクリック → 折りたたみます',
+    openDetail: 'リクエスト詳細ページを開く',
+    openDetailFor: 'リクエスト {requestId} の詳細ページを開く',
     sections: {
       resolve: 'モデル解決',
       reply: '応答側の指標',

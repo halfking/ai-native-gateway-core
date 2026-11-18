@@ -8,7 +8,9 @@
 //   ③ 再点同一条 ⇒ 收起（可逆）；
 //   ④ 诚实性：没上报的值显示「—」，**不拿 0 冒充**（未测量 ≠ 0）；
 //   ⑤ 紧凑模式下详情里**不出现 ✓**（设计规则 15：紧凑模式全页 ✓ 计数 = 0）；
-//   ⑥ 键盘可达（Enter / Space 同样能展开）。
+//   ⑥ 键盘可达（Enter / Space 同样能展开）；
+//   ⑦ 详情里有「打开请求详情页」入口 ⇒ 跳到该请求的**单页详情**
+//      （/request-detail/:requestId，RequestDetailFullscreenView）。
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -231,5 +233,36 @@ describe('live2 请求详情（点击请求行展开）', () => {
     await wrapper.find('[data-testid="stage-band-r-a"]').trigger('keydown.space')
     await flushPromises()
     expect(wrapper.find('[data-testid="stage-detail-r-a"]').exists()).toBe(false)
+  })
+
+  it('★ 详情里有「打开请求详情页」入口 ⇒ href 指向该请求的单页详情', async () => {
+    testApi.setRequests([richFrame('r-a')])
+    const { wrapper } = await mountView()
+    await wrapper.find('[data-testid="stage-band-r-a"]').trigger('click')
+    await flushPromises()
+
+    const link = wrapper.find('[data-testid="stage-detail-open"]')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe('/request-detail/r-a')
+    // 可见文案必须**点名目标**（不是「查看」「更多」这种无目标的词）
+    expect(link.text()).toContain('请求详情页')
+    // 无障碍名要带上请求 id（页面上可能同时有多条带）
+    expect(link.attributes('aria-label')).toContain('r-a')
+  })
+
+  it('★ 该入口是新标签打开（target=_blank + noopener），且**不会**点一下就收起详情', async () => {
+    testApi.setRequests([richFrame('r-a')])
+    const { wrapper } = await mountView()
+    await wrapper.find('[data-testid="stage-band-r-a"]').trigger('click')
+    await flushPromises()
+
+    const link = wrapper.find('[data-testid="stage-detail-open"]')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toContain('noopener')
+
+    // 点链接不得冒泡到请求行（否则详情当场收起，用户点了等于没点）
+    await link.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="stage-detail-r-a"]').exists()).toBe(true)
   })
 })

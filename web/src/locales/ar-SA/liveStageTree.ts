@@ -131,6 +131,8 @@ export default {
   detail: {
     title: 'تفاصيل الطلب',
     hint: 'انقر على "صف الطلب" لعرض تفاصيله؛ نقرة أخرى تطويه.',
+    openDetail: 'فتح صفحة تفاصيل الطلب',
+    openDetailFor: 'فتح صفحة تفاصيل الطلب {requestId}',
     sections: {
       resolve: 'حل النموذج',
       reply: 'مؤشرات الاستجابة',

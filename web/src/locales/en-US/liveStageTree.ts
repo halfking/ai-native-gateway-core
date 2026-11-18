@@ -130,6 +130,8 @@ export default {
   detail: {
     title: 'Request details',
     hint: 'Click "a request row" to show its details; click "the same row" again to collapse',
+    openDetail: 'Open request detail page',
+    openDetailFor: 'Open the detail page for request {requestId}',
     sections: {
       resolve: 'Model resolution',
       reply: 'Response metrics',

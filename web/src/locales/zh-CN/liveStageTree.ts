@@ -135,6 +135,8 @@ export default {
   detail: {
     title: '请求详情',
     hint: '点击「请求行」展开详情，再次点击「请求行」收起',
+    openDetail: '打开请求详情页',
+    openDetailFor: '打开请求 {requestId} 的详情页',
     sections: {
       resolve: '模型解析',
       reply: '回复侧指标',

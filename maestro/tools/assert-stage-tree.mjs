@@ -253,6 +253,14 @@ const DETAIL_PROBE = `(async () => {
   const title = q('[data-testid="stage-detail-title"]')
   out.facts.detailTitle = tx(title)
   check('详情标题为「请求详情」', out.facts.detailTitle === '请求详情', out.facts.detailTitle)
+  // ★ 「打开这一条请求的单页详情」入口（2026-11-18 补）：
+  //   详情面板里必须有一个真链接 ⇒ 指向 /request-detail/<requestId>（单页详情）。
+  const openLink = q('[data-testid="stage-detail-open"]')
+  const openHref = openLink ? openLink.getAttribute('href') : ''
+  check('详情里有「打开请求详情页」入口', !!openLink, openHref)
+  check('入口 href 指向该请求的单页详情', openHref === '/request-detail/' + rid1, openHref)
+  check('入口在新标签打开（target=_blank）', openLink?.getAttribute('target') === '_blank',
+        openLink?.getAttribute('target') || '')
   const sections = ['resolve', 'reply', 'identity', 'stages', 'session']
   const missing = sections.filter((s) => !q('[data-testid="stage-detail-section-' + s + '"]'))
   check('详情五个分区齐备', missing.length === 0, missing.length ? ('缺 ' + missing.join(',')) : '')
