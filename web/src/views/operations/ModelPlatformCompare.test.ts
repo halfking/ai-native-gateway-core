@@ -29,10 +29,12 @@ vi.mocked(getAdminMarketModelPlatforms).mockResolvedValue({
 
 vi.mocked(getAvailableModels).mockResolvedValue({
   popular: [
-    { canonical_name: 'glm-5.3', display_name: 'GLM-5.3', count: 100 },
-    { canonical_name: 'gpt-4o', display_name: 'GPT-4o', count: 200 },
+    { canonical_name: 'glm-5.3', display_name: 'GLM-5.3', source: 'usage', count: 100 },
+    { canonical_name: 'gpt-4o', display_name: 'GPT-4o', source: 'usage', count: 200 },
   ],
   families: [],
+  unmapped: [],
+  total_raw: 0,
 })
 
 const DIR = [
