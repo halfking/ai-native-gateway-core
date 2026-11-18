@@ -353,3 +353,44 @@ func TestRevertFix_RestoresOldValues(t *testing.T) {
 
 // driver.Value 断言帮助（让 WithArgs 的 int64/bool 字面量匹配可读）。
 var _ = driver.Value(nil)
+
+// ★ 2026-11-18 活体回归（211 实测抓到）：GetQueueItem 的可空 JSONB 列
+// （error_details / detection_layers / matched_rules / policy_config）
+// 在真实数据里就是 NULL ⇒ 结构体字段必须是 NullableJSON——用
+// json.RawMessage 会 "unsupported Scan, storing driver.Value type <nil>
+// into type *jsontext.Value" ⇒ 端点 500。此钉测用 sqlmock 造全 NULL
+// 行锁住这个形状（首版正是漏了它才被活体打回）。
+func TestGetQueueItem_NullJSONColumnsScan(t *testing.T) {
+	h, mock := newPIFixTestHandler(t)
+	rows := sqlmock.NewRows([]string{
+		"id", "error_type", "error_hash", "priority",
+		"tenant_id", "session_id", "request_id",
+		"input_text", "input_hash", "error_message", "error_details",
+		"detection_layers", "matched_rules", "policy_config",
+		"status", "retry_count", "max_retries",
+		"created_at", "started_at", "completed_at",
+	}).AddRow(
+		1, "llm_detection_failed", "abc", 5,
+		"default", nil, nil,
+		"some input", nil, "boom", nil,
+		nil, nil, nil,
+		"pending", 0, 3,
+		"2026-11-18T12:00:00Z", nil, nil,
+	)
+	mock.ExpectQuery("SELECT").WithArgs(int64(1)).WillReturnRows(rows)
+
+	rec := httptest.NewRecorder()
+	h.GetQueueItem(rec, httptest.NewRequest(http.MethodGet, "/x", nil), 1)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 with all-NULL jsonb columns, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, key := range []string{`"ErrorDetails":null`, `"DetectionLayers":null`, `"MatchedRules":null`, `"PolicyConfig":null`} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("body must serialize null jsonb as %s, body=%s", key, body)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

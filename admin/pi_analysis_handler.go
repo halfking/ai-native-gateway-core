@@ -673,10 +673,10 @@ func (h *PIAnalysisHandler) GetQueueItem(w http.ResponseWriter, r *http.Request,
 		InputText       sql.NullString
 		InputHash       sql.NullString
 		ErrorMessage    string
-		ErrorDetails    json.RawMessage
-		DetectionLayers json.RawMessage
-		MatchedRules    json.RawMessage
-		PolicyConfig    json.RawMessage
+		ErrorDetails    NullableJSON
+		DetectionLayers NullableJSON
+		MatchedRules    NullableJSON
+		PolicyConfig    NullableJSON
 		Status          string
 		RetryCount      int
 		MaxRetries      int
