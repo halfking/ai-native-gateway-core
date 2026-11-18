@@ -902,7 +902,11 @@ function formatImpact(impact: string): string {
 }
 
 function formatTime(time: string): string {
-  return new Date(time).toLocaleString('zh-CN')
+  // ★ 详情端点的时间列来自 PG timestamptz 文本形（"2026-11-18 12:34:56.789+00"，
+  //   空格分隔）⇒ new Date() 解析失败显示 Invalid Date；空格换 T 再解析。
+  if (!time) return '—'
+  const d = new Date(time.includes(' ') && !time.includes('T') ? time.replace(' ', 'T') : time)
+  return Number.isNaN(d.getTime()) ? time : d.toLocaleString('zh-CN')
 }
 
 function getErrorTypeClass(type: string): string {
