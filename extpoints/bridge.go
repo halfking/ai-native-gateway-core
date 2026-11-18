@@ -30,6 +30,7 @@ package extpoints
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
@@ -86,12 +87,23 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 	// 从 envelope 构建 extpoints.Request
 	req := h.buildRequest(envelope)
 	
+	// 记录开始时间（用于性能监控）
+	hookStart := time.Now()
+	totalPlugins := 0
+	successfulPlugins := 0
+	
 	// 对每个映射的 Phase，执行该 Phase 的插件
 	for _, phase := range extPhases {
 		plugins := h.registry.Get(phase)
 		if len(plugins) == 0 {
 			continue
 		}
+		
+		slog.Debug("ExtensionPointHook: executing plugins",
+			"phase", phase,
+			"plugin_count", len(plugins),
+			"request_id", req.RequestID,
+		)
 		
 		// 为这个 Phase 的插件构建 ExecutionContext
 		execCtx := &ExecutionContext{
@@ -107,6 +119,10 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			// 确保插件实现了 PhaseExecutor 接口
 			executor, ok := plugin.(PhaseExecutor)
 			if !ok {
+				slog.Warn("ExtensionPointHook: plugin does not implement PhaseExecutor",
+					"plugin_id", plugin.Metadata().PluginID,
+					"phase", phase,
+				)
 				continue
 			}
 			
@@ -116,15 +132,46 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 			}
 			
 			execCtx.PluginID = md.PluginID
+			totalPlugins++
 			
 			// 执行插件
+			pluginStart := time.Now()
 			result, err := executor.Execute(execCtx)
+			pluginDuration := time.Since(pluginStart)
 			
-			// fail-open: 插件失败记录但不阻塞请求
-			if err != nil || (result != nil && !result.Success) {
-				// 可以在这里记录错误日志
+			// 记录执行结果
+			if err != nil {
+				// fail-open: 插件失败记录但不阻塞请求
+				slog.Warn("ExtensionPointHook: plugin execution failed (fail-open)",
+					"plugin_id", md.PluginID,
+					"phase", phase,
+					"error", err.Error(),
+					"duration_us", pluginDuration.Microseconds(),
+					"request_id", req.RequestID,
+				)
 				continue
 			}
+			
+			if result != nil && !result.Success {
+				slog.Warn("ExtensionPointHook: plugin returned failure (fail-open)",
+					"plugin_id", md.PluginID,
+					"phase", phase,
+					"error", result.Error,
+					"duration_us", pluginDuration.Microseconds(),
+					"request_id", req.RequestID,
+				)
+				continue
+			}
+			
+			// 成功执行
+			successfulPlugins++
+			slog.Debug("ExtensionPointHook: plugin executed successfully",
+				"plugin_id", md.PluginID,
+				"phase", phase,
+				"duration_us", pluginDuration.Microseconds(),
+				"modified", result != nil && result.Modified,
+				"request_id", req.RequestID,
+			)
 			
 			// 将插件结果同步到 Request.Attributes
 			if result != nil && result.Metadata != nil {
@@ -133,6 +180,19 @@ func (h *ExtensionPointHook) Execute(ctx context.Context, envelope *domain.Pipel
 				}
 			}
 		}
+	}
+	
+	// 记录整体执行统计
+	hookDuration := time.Since(hookStart)
+	if totalPlugins > 0 {
+		slog.Info("ExtensionPointHook: execution complete",
+			"pipeline_phase", h.pipelinePhase,
+			"total_plugins", totalPlugins,
+			"successful_plugins", successfulPlugins,
+			"failed_plugins", totalPlugins-successfulPlugins,
+			"duration_us", hookDuration.Microseconds(),
+			"request_id", req.RequestID,
+		)
 	}
 	
 	// 构建虚拟的 Response（用于同步回 envelope）
