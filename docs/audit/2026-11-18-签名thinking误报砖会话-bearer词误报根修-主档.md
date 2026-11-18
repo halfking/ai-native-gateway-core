@@ -40,14 +40,23 @@
 
 ## 五、部署与活体验证（211）
 
-（部署后填写）
+- **提交与推送**：`c19c80db5`（sanitize 双根修＋r1058 钉测＋主档）→ 并行车先后推 `c80a5ba31`/`568a99433`，我方合并 `7b5006ae3` 后推送 ✅；origin/main 尖端 `568a99433` 同时含本修复与并行车 PI 功能（feat(pi-analysis) 错误详情四区展示）。
+- **部署（两列并行车的协作实录）**：本方冻结树两次启动 `deploy-211.sh`（bash5＋`DD_TEST_GO_BIN`，`git worktree add --detach`）均被**本机部署锁**正确拦下（先：并行车在发其本地树 `56fa787f`@3106；后：并行车在发 `568a99433`@3107）⇒ 最终 211 由并行车部署 **`2.6.1-568a9943-20261118-211`（build_seq 3107，槽 b @8783 接管）**＝origin/main 尖端＝**含本修复**。公网 `llm.itestu.cn/healthz` 同身份 `568a9943` ready ✓。本方两次闸门（sanitize/admin/cmd-gateway/installer 四包＋核心包清单）全绿；部署树＝main 尖端，无回退面。
+- **活体验证（211 本机，密钥不出目标机）**：临时 key 铸造→approve→**重放事故归档 body（7,722,638 字节，仅 max_tokens 128000→2048 收口控费，messages/thinking/签名逐字保留）**→删 key。
+  - **重放①：HTTP 200，75.9s**，SSE `message_start`（model=claude-sonnet-5-5，input 1786 / cache_read 30232）→ `thinking_delta` 真实流式作答（「好的，让我…」）。
+  - **重放②：HTTP 200**（cache_read 30140，上游缓存续接）。
+  - **断言**：`Invalid request body` **absent**（事故响应体形状不再出现）。
+  - **日志侧（5 分钟窗，两笔重放）**：`sanitize_middleware: sanitize failed`＝**0**；`sensitive signed thinking`＝**0**；`signed thinking passed through verbatim` WARN＝**0**（bearer 守卫把 "token" 豁免 ⇒ 这份 body 连 Fix A 的放行路径都没走到）；`upstream_call_starting`/`upstream_http_attempt` ×2 且 **`upstream_status:200`**（事故时零 upstream 尝试）。
+  - **对照锚**：事故同 body 修复前＝400／85 字节／57s／零 upstream（§一）。
+  - **清理双重确认**：临时 key 删除后 GET=**404** ＋ 旧 key 调用=**401**；211 与本地的重放 body/脚本/冻结树已删。
+- **WARN（既有缺口）**：登录冒烟未执行（无 DD_ADMIN_PASSWORD，与本链既有缺口相同）。
 
 ## 六、遗留登记
 
 - **L1（P2）password 规则裸空白分隔符的散文误报**：`secret.password` 的 KEY`\s+`值 分隔形态把相邻英文词当赋值（本会话无签名 thinking 里 ~49 处：the/a/just/for/in/on/flow/NOW/needed/header/passed/masked…）。未签名块被静默改写＝上下文质量债（模型读到 {SENSITIVE:secret:N} 散布在思考里）；修它＝收窄分隔符语义，属规则语义裁决（影响 input+egress 两面真实检出面），单独立项。
 - **L2（P3）签名 thinking 放行路径的残余暴露面**：不验签的 Anthropic 协议上游会收到检出的原文；WARN 观测已就位（`action=observe`），是否对特定 type 升级为 enforce（如真凭据形态）归 owner。
 - **L3（P3）restore 侧 thinking lane 与签名回显的先天冲突**：还原器把 thinking 增量里的占位符还原成真值 ⇒ 客户端持有的 thinking 文本 ≠ 模型签名的字节 ⇒ 下一轮回传必验签失败（上游 400，非本网关拒绝）。本轮 verbatim 放行让这种请求「原样到达上游」并由上游裁决；根修（thinking lane 不还原/回传时逆向重代换）另立项。
-- **L4（P3）57s 的去向**：本请求在 v2 pipeline 里耗 57s 后才落 v1（大 body 的 v2 侧处理与 provider_discovery 的时序），本轮未展开；量级可接受（7.66MB）。
+- **L4（P3）v2 pipeline 的 provider_discovery 看不见健康供应商，v1 看得见**：事故时与重放时**同一形态**（`v2 pipeline: preflight error ... no healthy provider for model claude-sonnet-5-5` → 落 v1 → v1 正常 dispatch 200）。v2 候选可见性与 v1 不同源，本请求因此多耗 ~57s（7.66MB 的 v2 侧处理）；不影响正确性（v1 兜底成功），单独立项排查。
 - **登记不修**：无签名 thinking 的既有改写行为**保持不变**（真检出仍脱敏——本修复只动"带签名"分支与 bearer 误报面）。
 
 ## 七、通用式
