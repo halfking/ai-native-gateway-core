@@ -3,6 +3,14 @@
 // فضاء الأسماء: page / readOnly / summary / coverage / filter / view / tree / table / import / detail / inherit / feedback.
 // المصطلحات التقنية تبقى كما هي: offer_id، unit_price_in_per_1m، unit_price_out_per_1m، billing_mode، cache_read_price_per_1m، cache_write_price_per_1m، routing_tier، token_plan.
 export default {
+ filter: {
+ model: 'النموذج: {v}',
+ providerId: 'معرّف المزوّد: {v}',
+ billingMode: 'الفوترة: {v}',
+ currency: 'العملة: {v}',
+ pricingStatus: 'التسعير: {v}',
+ status: 'الحالة: {v}',
+ },
   page: {
     title: 'تكلفة التسعير',
   },

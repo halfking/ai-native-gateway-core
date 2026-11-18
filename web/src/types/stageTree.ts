@@ -155,59 +155,6 @@ export interface StageTreeFrame {
   updated_at: string;          // ISO 8601
   version: number;             // Increments on each update
 }
-
-/**
- * Stage display names (localized).
- */
-export const STAGE_NAMES: Record<StageKey, string> = {
-  auth: '鉴权/限流',
-  approval: '审批',
-  injection: '注入检测',
-  sanitize: '脱敏',
-  compress: '压缩',
-  route: '路由',
-  provider: '供应商/令牌池',
-  first_byte: '首字节',
-  restore: '还原',
-  billing: '计量',
-  reply: '回复',
-};
-
-/**
- * Stage status display names (localized).
- */
-export const STATUS_NAMES: Record<StageStatus, string> = {
-  pending: '未到达',
-  active: '进行中',
-  done: '完成',
-  failed: '失败',
-  skipped: '跳过',
-  warning: '告警',
-  unknown: '未测量',
-};
-
-/**
- * Phase display names (localized).
- */
-export const PHASE_NAMES: Record<RoutePhase, string> = {
-  started: '已启动',
-  selecting: '选择路由',
-  attempting: '请求上游',
-  responding: '接收响应',
-  fallback: '重试中',
-  done: '已完成',
-  failed: '已失败',
-};
-
-/**
- * Error source display names (localized).
- */
-export const ERROR_SOURCE_NAMES: Record<ErrorSource, string> = {
-  gateway: '网关',
-  provider: '供应商',
-  other: '其它',
-};
-
 /**
  * Status glyphs for compact mode (from design prototype).
  */

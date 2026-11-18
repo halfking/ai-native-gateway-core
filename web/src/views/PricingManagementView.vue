@@ -782,12 +782,12 @@ function onFilterChange() {
 // 2026-11-18 筛选收纳轮：生效条件 chips（头部常驻，收拢时也可见；
 // 单击 chip 移除单项并触发重查，与 clearFilters 同一提交路径）
 const FILTER_META: Array<{ key: keyof typeof filters.value; label: (v: string) => string }> = [
-  { key: 'search', label: (v) => `模型: ${v}` },
-  { key: 'provider_id', label: (v) => `供应商ID: ${v}` },
-  { key: 'billing_mode', label: (v) => `计费: ${v}` },
-  { key: 'currency', label: (v) => `币种: ${v}` },
-  { key: 'pricing_status', label: (v) => `定价: ${v}` },
-  { key: 'availability', label: (v) => `状态: ${v}` },
+ { key: 'search', label: (v) => t('pricingManagement.filter.model', { v }) },
+ { key: 'provider_id', label: (v) => t('pricingManagement.filter.providerId', { v }) },
+ { key: 'billing_mode', label: (v) => t('pricingManagement.filter.billingMode', { v }) },
+ { key: 'currency', label: (v) => t('pricingManagement.filter.currency', { v }) },
+ { key: 'pricing_status', label: (v) => t('pricingManagement.filter.pricingStatus', { v }) },
+ { key: 'availability', label: (v) => t('pricingManagement.filter.status', { v }) },
 ]
 const filterChips = computed(() =>
   FILTER_META.flatMap(({ key, label }) => {

@@ -3,6 +3,11 @@
 // 命名空間：page / desc / settings / table / editModal / status / feedback。
 // 技術術語保持不譯：canonical_name、credits_per_1m_in/out/cache_in/cache_out、cents_per_credit、global_discount、CNY/USD。
 export default {
+ globalModelFilter: {
+ label: "搜尋標準模型",
+ title: "選擇模型",
+ placeholder: "選擇模型（支援多選）…",
+ },
   page: {
     title: '定價管理',
     refresh: '重新整理',
@@ -57,6 +62,10 @@ export default {
     hasMultimodal: '含多模態定價',
   },
   editModal: {
+ copyPrice: '複製價格',
+ paste: '貼上',
+ expand: '展開',
+ collapse: '收合',
     title: '手工定價：{name}',
     hint: '勾選「手工」並填寫積分；未勾選維度繼續跟隨全域基準 × 折扣。',
     fieldSuffix: '：手工定價',

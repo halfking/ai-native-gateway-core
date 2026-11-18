@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: 'テナントID',
     allCheckTypes: "すべての検出タイプ",
+ checkTypeLabel: 'タイプ',
   },
   checkType: {
     pii: 'PII',

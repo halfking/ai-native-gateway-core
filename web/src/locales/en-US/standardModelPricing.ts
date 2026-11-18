@@ -53,6 +53,10 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
+ copyPrice: 'Copy prices',
+ paste: 'Paste',
+ expand: 'Expand',
+ collapse: 'Collapse',
     title: 'Manual pricing: {name}',
     hint: 'Tick "Manual" and fill in credits; unticked dimensions continue to follow global base × discount.',
     fieldSuffix: ': manual pricing',

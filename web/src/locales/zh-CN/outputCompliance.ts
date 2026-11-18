@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: '租户 ID',
     allCheckTypes: '全部检测类型',
+ checkTypeLabel: '类型',
   },
   checkType: {
     pii: 'PII',

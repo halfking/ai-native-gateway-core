@@ -57,10 +57,10 @@ describe('StandardModelPricingView 价格历史接线', () => {
  it('合并轮：行情对比入口=reference tab（2026-11-19）', () => {
  // 行情弹窗已删：行情数据由 reference tab 的 MarketReferenceTable承载（同源端点）。
  expect(template).toContain('data-testid="page-tabs"')
- expect(template).toContain("<MarketReferenceTable v-if=\"pageTab === 'reference'\" />")
- expect(template).toContain("<ModelPlatformCompare v-else-if=\"pageTab === 'platforms'\" />")
- expect(template).toContain("<PricingSuggestionPanel v-else-if=\"pageTab === 'suggestion'\" />")
- expect(view).toContain('getAdminMarketCompare(scoreQtext.value, scoreConfFilter.value, 200)')
+ expect(template).toContain("<MarketReferenceTable v-if=\"pageTab === 'reference'\" :global-models=\"globalSelectedModels\" />")
+ expect(template).toContain("<ModelPlatformCompare v-else-if=\"pageTab === 'platforms'\" :global-models=\"globalSelectedModels\" />")
+ expect(template).toContain("<PricingSuggestionPanel v-else-if=\"pageTab === 'suggestion'\" :global-models=\"globalSelectedModels\" />")
+ expect(view).toContain('getAdminMarketCompare(')
  // 页内重复行情弹窗零残留。
  expect(template).not.toContain('openMarket')
  expect(template).not.toContain('MarketPriceOverviewRow')

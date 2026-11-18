@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: 'Mandanten-ID',
     allCheckTypes: 'Alle Prüfarten',
+ checkTypeLabel: 'Typ',
   },
   checkType: {
     pii: 'PII',

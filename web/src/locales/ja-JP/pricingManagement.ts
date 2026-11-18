@@ -3,6 +3,14 @@
 // 名前空間：page / readOnly / summary / coverage / filter / view / tree / table / import / detail / inherit / feedback。
 // 技術用語は翻訳しません：offer_id、unit_price_in_per_1m、unit_price_out_per_1m、billing_mode、cache_read_price_per_1m、cache_write_price_per_1m、routing_tier、token_plan。
 export default {
+ filter: {
+ model: 'モデル: {v}',
+ providerId: 'プロバイダーID: {v}',
+ billingMode: '課金: {v}',
+ currency: '通貨: {v}',
+ pricingStatus: '価格設定: {v}',
+ status: '状態: {v}',
+ },
   page: {
     title: 'コスト価格',
   },

@@ -149,7 +149,7 @@ const sessionAliasPreviewExamples = computed(() => {
     }, null, 2)
     return {
       key,
-      label: `识别字段 ${key}`,
+ label: t('settings.detail.detectField', { key }),
       mapping: `metadata.${key} -> session_id`,
       body,
     }
@@ -191,9 +191,9 @@ async function save() {
 function getEnumLabel(key: string, value: any): string {
   const labels: Record<string, Record<string, string>> = {
     'compression.mode': {
-      '0': '0 - 关闭 (off)',
-      '1': '1 - 自动阈值 (auto_threshold)',
-      '2': '2 - 4xx时压缩 (on_4xx)',
+ '0': t('settings.compression.enumLabels.off'),
+ '1': t('settings.compression.enumLabels.auto'),
+ '2': t('settings.compression.enumLabels.on4xx'),
     },
     'compression.strategy': {
       'naive': t('settings.compression.strategyEnum.naive'),
@@ -284,17 +284,17 @@ onMounted(() => {
 
       <section class="list-pane">
         <div class="list-header">
-          <span>共 {{ filteredCount }} 个设置</span>
+<span>{{ t('settings.list.count', { n: filteredCount }) }}</span>
         </div>
-        <div v-if="loading" class="loading">加载中…</div>
-        <div v-else-if="!items.length" class="empty">该类别暂无设置</div>
+<div v-if="loading" class="loading">{{ t('common.loading') }}</div>
+<div v-else-if="!items.length" class="empty">{{ t('settings.list.empty') }}</div>
         <table v-else class="settings-table">
           <thead>
             <tr>
-              <th>设置</th>
-              <th>当前值</th>
-              <th>来源</th>
-              <th>危险</th>
+ <th>{{ t('settings.list.colSetting') }}</th>
+ <th>{{ t('settings.list.colCurrentValue') }}</th>
+ <th>{{ t('settings.list.colSource') }}</th>
+ <th>{{ t('settings.list.colDanger') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -329,8 +329,8 @@ onMounted(() => {
         <div v-if="selected.scope === 'tenant'" class="tenant-warning">
           <div class="warning-icon"><Warning /></div>
           <div class="warning-content">
-            <strong>租户级配置</strong>
-            <p>此设置作用于单个租户，无法在系统级设置。请前往<strong>租户管理</strong>页面为特定租户配置此项。</p>
+ <strong>{{ t('settings.detail.tenantScopedTitle') }}</strong>
+ <p>{{ t('settings.detail.tenantScopedBody') }}</p>
           </div>
         </div>
 
@@ -341,24 +341,24 @@ onMounted(() => {
         </div>
 
         <dl class="meta">
-          <dt>类型</dt><dd>{{ selected.type }}</dd>
-          <dt>当前值</dt>
+ <dt>{{ t('settings.detail.type') }}</dt><dd>{{ selected.type }}</dd>
+ <dt>{{ t('settings.detail.currentValue') }}</dt>
           <dd>
             <code class="current-value">{{ JSON.stringify(currentValue) }}</code>
             <span class="src-badge" :class="'src-' + currentSource">{{ currentSource }}</span>
           </dd>
-          <dt>默认值</dt><dd><code>{{ JSON.stringify(selected.default) }}</code></dd>
-          <dt v-if="selected.options">选项</dt>
+ <dt>{{ t('settings.detail.defaultValue') }}</dt><dd><code>{{ JSON.stringify(selected.default) }}</code></dd>
+ <dt v-if="selected.options">{{ t('settings.detail.options') }}</dt>
           <dd v-if="selected.options">
             <code v-for="o in selected.options" :key="o" class="opt-chip">{{ o }}</code>
           </dd>
-          <dt>危险级别</dt><dd>{{ dangerLabel(selected.danger_level) }}</dd>
-          <dt>热重载</dt>
+ <dt>{{ t('settings.detail.dangerLevel') }}</dt><dd>{{ dangerLabel(selected.danger_level) }}</dd>
+ <dt>{{ t('settings.detail.hotReload') }}</dt>
           <dd>
-            <span v-if="selected.hot_reload" class="src-badge src-db">是</span>
-            <span v-else class="src-badge src-default">否（需重启）</span>
+ <span v-if="selected.hot_reload" class="src-badge src-db">{{ t('common.yes') }}</span>
+ <span v-else class="src-badge src-default">{{ t('settings.detail.noRequiresRestart') }}</span>
           </dd>
-          <dt v-if="selected.observability">观察点</dt>
+ <dt v-if="selected.observability">{{ t('settings.detail.observability') }}</dt>
           <dd v-if="selected.observability">
             <a :href="selected.observability" target="_blank" rel="noopener">
               <code>{{ selected.observability }}</code>
@@ -367,7 +367,7 @@ onMounted(() => {
         </dl>
 
         <div v-if="selected.scope !== 'tenant'" class="editor">
-          <label class="editor-label">新值</label>
+ <label class="editor-label">{{ t('settings.editor.newValue') }}</label>
 
           <!-- Boolean type: Switch -->
           <div v-if="selected.type === 'bool'" class="editor-boolean">
@@ -387,14 +387,14 @@ onMounted(() => {
           <!-- Enum type with known options: Select -->
           <div v-else-if="selectedKey === 'compression.mode'" class="editor-select">
             <select v-model="editBuffer" class="select-input">
-              <option value="0">0 - 关闭 (off)</option>
-              <option value="1">1 - 自动阈值 (auto_threshold)</option>
-              <option value="2">2 - 4xx时压缩 (on_4xx) 【推荐】</option>
+ <option value="0">0 - {{ t('settings.compression.enumLabels.off') }}</option>
+ <option value="1">1 - {{ t('settings.compression.enumLabels.auto') }}</option>
+ <option value="2">2 - {{ t('settings.compression.enumLabels.on4xx') }} {{ t('settings.gateway.recommended') }}</option>
             </select>
             <div class="select-hint">
-              <div v-if="editBuffer === '0'" class="hint-item">完全关闭消息压缩功能</div>
-              <div v-else-if="editBuffer === '1'" class="hint-item">当消息长度超过context window阈值时自动压缩</div>
-              <div v-else-if="editBuffer === '2'" class="hint-item">收到4xx错误（如context_length_exceeded）时触发压缩并重试</div>
+ <div v-if="editBuffer === '0'" class="hint-item">{{ t('settings.compression.enumDescriptions.off') }}</div>
+ <div v-else-if="editBuffer === '1'" class="hint-item">{{ t('settings.compression.enumDescriptions.auto') }}</div>
+ <div v-else-if="editBuffer === '2'" class="hint-item">{{ t('settings.compression.enumDescriptions.on4xx') }}</div>
             </div>
           </div>
 
@@ -402,7 +402,7 @@ onMounted(() => {
           <div v-else-if="selectedKey === 'gateway.mode'" class="editor-select">
             <select v-model="editBuffer" class="select-input">
               <option value="simple">{{ t('settings.gateway.modeEnum.simple') }}</option>
-              <option value="expert">{{ t('settings.gateway.modeEnum.expert') }} 【推荐】</option>
+ <option value="expert">{{ t('settings.gateway.modeEnum.expert') }} {{ t('settings.gateway.recommended') }}</option>
             </select>
             <div class="select-hint">
               <div v-if="editBuffer === 'simple'" class="hint-item">{{ t('settings.gateway.modeDescriptions.simple') }}</div>
@@ -431,14 +431,14 @@ onMounted(() => {
                 v-model="tagInput"
                 type="text"
                 class="tag-input"
-                placeholder="输入别名后回车"
+ :placeholder="t('settings.editor.aliasPlaceholder')"
                 @keydown="onSessionAliasKeydown"
                 @blur="addSessionAliasTag"
               />
             </div>
-            <div class="json-hint">将保存为逗号字符串，立即热更新到会话别名提取。</div>
+ <div class="json-hint">{{ t('settings.editor.aliasHint') }}</div>
             <div class="alias-preview">
-              <div class="alias-preview-title">示例请求预览</div>
+ <div class="alias-preview-title">{{ t('settings.editor.aliasPreviewTitle') }}</div>
               <div class="alias-preview-list">
                 <div v-for="example in sessionAliasPreviewExamples" :key="example.key" class="alias-preview-card">
                   <div class="alias-preview-label">{{ example.label }}</div>
@@ -455,7 +455,7 @@ onMounted(() => {
               type="text"
               v-model="editBuffer"
               class="text-input"
-              placeholder="输入字符串值"
+ :placeholder="t('settings.editor.stringPlaceholder')"
             />
           </div>
 
@@ -466,22 +466,22 @@ onMounted(() => {
               rows="4"
               class="editor-textarea"
               spellcheck="false"
-              placeholder="输入JSON格式的值"
+ :placeholder="t('settings.editor.jsonPlaceholder')"
             />
-            <div class="json-hint">复杂类型请使用JSON格式</div>
+ <div class="json-hint">{{ t('settings.editor.jsonHint') }}</div>
           </div>
 
           <div class="editor-actions">
             <button class="btn btn-primary" :disabled="saving" @click="save">
               {{ saving ? t('settings.editor.saving') : t('settings.editor.save') }}
             </button>
-            <button class="btn btn-ghost" @click="rollback">回滚</button>
+ <button class="btn btn-ghost" @click="rollback">{{ t('settings.editor.rollback') }}</button>
           </div>
         </div>
       </aside>
 
       <div v-else class="detail-pane empty-detail">
-        <p>← 从左侧选择一个设置查看详情</p>
+ <p>{{ t('settings.detail.emptyHint') }}</p>
       </div>
     </div>
   </div>

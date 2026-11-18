@@ -3,6 +3,11 @@
 // Namespaces : page / desc / settings / table / editModal / status / feedback.
 // Termes techniques conservés non traduits : canonical_name, credits_per_1m_in/out/cache_in/cache_out, cents_per_credit, global_discount, CNY/USD.
 export default {
+ globalModelFilter: {
+ label: "Rechercher des modèles standards",
+ title: "Sélectionner un modèle",
+ placeholder: "Sélectionner des modèles (multi-sélection)…",
+ },
   page: {
     title: 'Gestion de la tarification',
     refresh: 'Actualiser',
@@ -57,6 +62,10 @@ export default {
     hasMultimodal: "Avec tarification multimodale manuelle",
   },
   editModal: {
+ copyPrice: 'Copier les prix',
+ paste: 'Coller',
+ expand: 'Déplier',
+ collapse: 'Replier',
     title: 'Tarification manuelle: {name}',
     hint: 'Cochez « Manuel » et renseignez les crédits ; les dimensions non cochées continuent de suivre la base globale × remise.',
     fieldSuffix: ': tarification manuelle',

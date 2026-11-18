@@ -3,6 +3,11 @@
 // فضاء الأسماء: page / desc / settings / table / editModal / status / feedback.
 // المصطلحات التقنية تبقى كما هي: canonical_name، credits_per_1m_in/out/cache_in/cache_out، cents_per_credit، global_discount، CNY/USD.
 export default {
+ globalModelFilter: {
+ label: "البحث عن النماذج القياسية",
+ title: "اختر نموذجًا",
+ placeholder: "اختر نماذج (تحديد متعدد)…",
+ },
   page: {
     title: 'إدارة التسعير',
     refresh: 'تحديث',
@@ -57,6 +62,10 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
+ copyPrice: 'نسخ الأسعار',
+ paste: 'لصق',
+ expand: 'توسيع',
+ collapse: 'طي',
     title: 'تسعير يدوي: {name}',
     hint: 'حدد «يدوي» واملأ الرصيد؛ تستمر الأبعاد غير المحددة في اتباع المعيار العام × الخصم.',
     fieldSuffix: ': تسعير يدوي',

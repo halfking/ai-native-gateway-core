@@ -3,6 +3,11 @@
 // 名前空間:page / desc / settings / table / editModal / status / feedback。
 // 技術用語は翻訳しません:canonical_name、credits_per_1m_in/out/cache_in/cache_out、cents_per_credit、global_discount、CNY/USD。
 export default {
+ globalModelFilter: {
+ label: "標準モデルを検索",
+ title: "モデルを選択",
+ placeholder: "モデルを選択（複数選択可）…",
+ },
   page: {
     title: '価格管理',
     refresh: '更新',
@@ -57,6 +62,10 @@ export default {
     hasMultimodal: "マルチモーダルの手動定价を含む",
   },
   editModal: {
+ copyPrice: '価格をコピー',
+ paste: '貼り付け',
+ expand: '展開',
+ collapse: '折りたたむ',
     title: '手動価格：{name}',
     hint: '「手動」にチェックを入れクレジットを入力。未チェックのディメンションはグローバル基準 × 割引に従います。',
     fieldSuffix: '：手動価格',

@@ -3,6 +3,11 @@
 // Namespaces: page / desc / settings / table / editModal / status / feedback.
 // Technische Begriffe bleiben unübersetzt: canonical_name, credits_per_1m_in/out/cache_in/cache_out, cents_per_credit, global_discount, CNY/USD.
 export default {
+ globalModelFilter: {
+ label: "Standardmodelle durchsuchen",
+ title: "Modell auswählen",
+ placeholder: "Modelle auswählen (Mehrfachauswahl)…",
+ },
   page: {
     title: 'Preisverwaltung',
     refresh: 'Aktualisieren',
@@ -57,6 +62,10 @@ export default {
     hasMultimodal: "Mit manuellen Preisen für mehrere Modalitäten",
   },
   editModal: {
+ copyPrice: 'Preise kopieren',
+ paste: 'Einfügen',
+ expand: 'Ausklappen',
+ collapse: 'Einklappen',
     title: 'Manuelle Preisgestaltung: {name}',
     hint: 'Aktivieren Sie „Manuell" und tragen Sie Credits ein; nicht aktivierte Dimensionen folgen weiterhin der globalen Basis × Rabatt.',
     fieldSuffix: ': Manuelle Preisgestaltung',

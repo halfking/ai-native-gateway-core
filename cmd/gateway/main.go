@@ -5530,7 +5530,7 @@ func main() {
 			// C. system_health — 30s windowed success-rate monitor
 			// for the GDRT H badge. Starts with the new probe worker group so
 			// all new probe/self-check workers share the system API key gate.
-			systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
+			systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool(), cm)
 			systemHealthWorker.Start(context.Background())
 			slog.Info("CHECKPOINT: system_health_worker started")
 

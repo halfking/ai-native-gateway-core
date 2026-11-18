@@ -53,6 +53,10 @@ export default {
     hasMultimodal: '含多模态定价',
   },
   editModal: {
+ copyPrice: '复制价格',
+ paste: '粘贴',
+ expand: '展开',
+ collapse: '收起',
     title: '手工定价：{name}',
     hint: '勾选「手工」并填写积分；未勾选维度继续跟随全局基准 × 折扣。',
     fieldSuffix: '：手工定价',

@@ -3,6 +3,14 @@
 // Namespaces: page / readOnly / summary / coverage / filter / view / tree / table / import / detail / inherit / feedback.
 // Technical terms kept untranslated: offer_id, unit_price_in_per_1m, unit_price_out_per_1m, billing_mode, cache_read_price_per_1m, cache_write_price_per_1m, routing_tier, token_plan.
 export default {
+ filter: {
+ model: 'Modell: {v}',
+ providerId: 'Anbieter-ID: {v}',
+ billingMode: 'Abrechnung: {v}',
+ currency: 'Währung: {v}',
+ pricingStatus: 'Preisgestaltung: {v}',
+ status: 'Zustand: {v}',
+ },
   page: {
     title: 'Kostenpreisgestaltung',
   },

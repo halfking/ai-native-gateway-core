@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: 'ID de inquilino',
     allCheckTypes: 'Todos los tipos de comprobación',
+ checkTypeLabel: 'Tipo',
   },
   checkType: {
     pii: 'PII',

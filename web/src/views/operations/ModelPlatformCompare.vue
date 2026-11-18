@@ -126,15 +126,15 @@ function isCheapest(r: MarketPlatformQuoteRow): boolean {
   return v === cheapestOut.value
 }
 
-function pick(d: MarketPlatformQuoteDirectoryRow) {
-  model.value = d.canonical_name
-  load()
+function pick(_d: MarketPlatformQuoteDirectoryRow) {
+ //2026-11-19：模型由全局过滤决定，pick 仅触发重查
+ load()
 }
 
 function setScope(next: '' | 'family') {
   if (scope.value === next) return
   scope.value = next
-  if (model.value.trim()) load()
+  if (currentModel.value.trim()) load()
 }
 </script>
 
@@ -142,14 +142,6 @@ function setScope(next: '' | 'family') {
   <div class="plat-panel">
     <!-- ① 模型选择器（使用 ModelPicker 组件，复用 routing-v2 的选择体验） -->
     <div class="filter-card card">
-      <div class="model-picker-wrapper">
-        <ModelPicker
-          v-model="model"
-          :placeholder="t('priceCompare.platSearch')"
-          :title="t('priceCompare.colModel')"
-        @update:model-value="load"
-        />
-      </div>
       <button class="btn btn-ghost btn-sm" @click="loadDirectory">{{ t('priceCompare.platReloadDir') }}</button>
       <!-- ★ 匹配范围（F11）：默认只查本模型；同族变体必须**显式**开启 -->
       <span class="scope-label">{{ t('priceCompare.platScopeLabel') }}</span>
@@ -170,7 +162,7 @@ function setScope(next: '' | 'family') {
       <p>{{ t('priceCompare.platDirFailed') }}</p>
       <p class="empty-next">{{ t('priceCompare.platDirFailedNext') }}</p>
     </div>
-    <div v-else-if="directory.length && !model.trim()" class="card table-wrap">
+    <div v-else-if="directory.length && !currentModel.trim()" class="card table-wrap">
       <div class="table-head-row">
         <h3 class="section-title">{{ t('priceCompare.platDirTitle') }}</h3>
         <span class="badge badge-gray">{{ directory.length }}</span>
@@ -207,7 +199,7 @@ function setScope(next: '' | 'family') {
       <p class="empty-next">{{ t('priceCompare.platUnavailableNext') }}</p>
     </div>
     <div v-else-if="loading" class="card hint-line">…</div>
-    <div v-else-if="!model.trim()" class="card app-empty-state">
+    <div v-else-if="!currentModel.trim()" class="card app-empty-state">
       <p>{{ t('priceCompare.platNeedModel') }}</p>
     </div>
     <div v-else-if="!rows.length" class="card app-empty-state">
@@ -259,7 +251,7 @@ function setScope(next: '' | 'family') {
           </tr>
         </tbody>
       </table>
-      <p class="hint-line">{{ t('priceCompare.platHint', { n: rows.length, model: rows[0]?.canonical_name || model }) }}</p>
+      <p class="hint-line">{{ t('priceCompare.platHint', { n: rows.length, model: rows[0]?.canonical_name || currentModel }) }}</p>
     </div>
   </div>
 </template>
