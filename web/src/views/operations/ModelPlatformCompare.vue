@@ -74,10 +74,12 @@ async function load() {
       if (an && !bn) return -1
       return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' })
     })
-  } catch {
+  } catch (err) {
     // ★ 2026-11-17（12h 审计）：reason 会被**原样渲染**（<p class="empty-next mono-sm">
     //   {{ reason }}</p>）⇒ 此处塞内部 token 'load_failed' ⇒ 用户在页面上看到
     //   一个英文机器词。改为已本地化的失败文案。
+    // ★ 2026-11-19：添加错误日志以诊断问题
+    console.error('[ModelPlatformCompare] load() error:', err)
     available.value = false
     reason.value = t('marketPrices.loadFailed')
     rows.value = []
