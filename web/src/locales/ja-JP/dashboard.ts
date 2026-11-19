@@ -69,6 +69,7 @@ tabs: {
     probeScopeLabel: '探測トラフィック',
         probeExclude: '探測を除外',
         probeInclude: '探測を含む',
+        probeIncludeBadge: '探測トラフィック込み',
         probeScopeTitle: 'ヒーロー集計の口径：探測を除外＝内部対勘口径、探測を含む＝プロバイダー対勘口径（対外対勘は探測トラフィックを含むため多め）',    modelDistTitle: 'モデル分布',
     modelTop: '期間内 Top {n}',
     colShare: '割合',

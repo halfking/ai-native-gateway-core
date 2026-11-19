@@ -127,7 +127,7 @@ function fmtTokensCompact(n: number | undefined) {
           v-if="props.board?.probe_scope === 'included'"
           class="hero-card__probe-badge"
           data-testid="hero-probe-included-badge"
-        >{{ t('dashboard.board.probeInclude') }}</span>
+        >{{ t('dashboard.board.probeIncludeBadge') }}</span>
       </div>
       <div class="hero-card__value">{{ fmt(summary.total_requests) }}</div>
       <div class="hero-card__sub">

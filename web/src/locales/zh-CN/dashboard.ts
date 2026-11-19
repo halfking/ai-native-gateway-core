@@ -77,6 +77,7 @@ export default {
     probeScopeLabel: '探测流量',
         probeExclude: '不含探测',
         probeInclude: '含探测',
+        probeIncludeBadge: '含探测流量',
         probeScopeTitle: '英雄区汇总口径：不含探测＝内部对账口径；含探测＝供应商对账口径（对外对账因含探测流量会略多）',    modelDistTitle: '模型分布',
     modelTop: '窗口内 Top {n}',
     colShare: '占比',

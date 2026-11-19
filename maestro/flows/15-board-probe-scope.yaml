@@ -1,0 +1,75 @@
+# 15-board-probe-scope.yaml —— 看板「含/不含探测」口径切换的行为验证
+#
+# 覆盖对象：web/src/components/board/BoardFilterBar.vue（探测口径二段选择器）
+#           + BoardHeroRow.vue（含探测徽标）+ useDashboardBoard（include_probes 通道）
+#
+# ★ 数值口径对拍（board==内部/供应商对账==request-logs 的逐字相等）不在本 flow：
+#   那是 scripts 级 API 探针的职责（同窗口同刻对拍，比 DOM 抓数字可靠）；
+#   本 flow 验的是**行为层**：控件在、两种状态能切、徽标随状态出没、页面不破。
+#
+# ★ 写法约束（沿 11-simple-overview 头注的实测边界）：
+#   · 不用 evalScript（web 驱动 no-op）；
+#   · 断言只用 text:/id:，且 text 是**元素完整文本相等**——
+#     徽标文案刻意用了独立键「含探测流量」（≠按钮「含探测」），
+#     就是为了让 assertVisible 有唯一锚点（按钮与徽标不同文案，互不误中）。
+#   · 必须 --screen-size 1440x2200 跑（切换器在下方筛选条，需桌面视口）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录（三段驱动原生判据，见 _shared/login.yaml）──────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── ② 看板 tab 打开，英雄区与切换器在场 ────────────────────────────────────
+- openLink: ${BASE_URL}/dashboard?tab=board
+- extendedWaitUntil:
+    visible: '总请求数'
+    timeout: 25000
+- extendedWaitUntil:
+    visible: '探测流量'
+    timeout: 15000
+- assertVisible:
+    text: '不含探测'
+- assertVisible:
+    text: '含探测'
+# 默认（不含探测）态：徽标不应在场
+- assertNotVisible:
+    text: '含探测流量'
+
+# ── ③ 切到「含探测」：徽标出现，英雄区仍完整 ──────────────────────────────
+- tapOn:
+    text: '含探测'
+- extendedWaitUntil:
+    visible: '含探测流量'
+    timeout: 20000
+- assertVisible:
+    text: '总请求数'
+- assertVisible:
+    text: '总 Token'
+
+# ── ④ 切回「不含探测」：徽标消失 ──────────────────────────────────────────
+- tapOn:
+    text: '不含探测'
+- extendedWaitUntil:
+    notVisible: '含探测流量'
+    timeout: 20000
+
+# ── ⑤ 口径切换后刷新路径仍可用（载荷带 include_probes 重载不破页面）────────
+- tapOn:
+    text: '含探测'
+- extendedWaitUntil:
+    visible: '含探测流量'
+    timeout: 20000
+- assertVisible:
+    text: '总请求数'

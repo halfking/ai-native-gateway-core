@@ -75,6 +75,7 @@ v2: {
     probeScopeLabel: 'حركة الفحص',
         probeExclude: 'بدون فحص',
         probeInclude: 'مع فحص',
+        probeIncludeBadge: 'يشمل حركة الفحص',
         probeScopeTitle: 'معيار الملخص: بدون فحص = التسوية الداخلية؛ مع فحص = تسوية المزوّد (تشمل الفوترة الخارجية حركة الفحص).',    modelDistTitle: 'توزيع النماذج',
     modelTop: 'أفضل {n} في الفترة',
     colShare: 'الحصة',
