@@ -216,14 +216,16 @@ function onSearch() {
     <div class="page-header">
       <h2>{{ t('sessions.userProfile.title') }}</h2>
       <div class="header-actions">
-        <!-- 2026-11-20 数字出处轮：统计口径从右侧抽屉弹出（公式+出处+窗口）。 -->
+        <!-- 2026-11-20 数字出处轮：统计口径从右侧抽屉弹出（公式+出处+窗口）。
+             带文字（与详情页同形态）⇒ Maestro text: 能点中（icon-only 圆钮选不中）。 -->
         <el-button
+          type="link"
           :icon="QuestionFilled"
-          circle
-          :title="t('sessions.userProfile.showHelp')"
           data-testid="user-profile-list-help"
           @click="showHelp = true"
-        />
+        >
+          {{ t('sessions.userProfile.showHelp') }}
+        </el-button>
         <!-- 2026-11-19 时间范围统一轮：时间选择放页面右上角，统一 KxDateRangePicker。 -->
         <KxDateRangePicker
           :model-value="timeRange"

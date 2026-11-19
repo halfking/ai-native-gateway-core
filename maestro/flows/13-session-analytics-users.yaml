@@ -1,0 +1,89 @@
+# 13-session-analytics-users.yaml —— 会话分析中心 /admin/session-analytics/users 逐页验证
+#
+# 覆盖对象：web/src/views/UserProfileListView.vue（数字出处轮 2026-11-20）+ UserProfileView.vue
+#
+# ★ 本 flow 的存在理由：owner 需求＝「统计每个员工在什么时间段用了哪些模型、
+#   各多少 token / 内部成本 / 外部成本；数字要有出处（帮助按钮右侧抽屉：公式+说明）；
+#   逐层下钻（员工→模型/任务→会话）」。本轮给列表页加了「窗口内用量」五列 +
+#   展开行模型明细 + 帮助抽屉 + 出处行 ⇒ 入口既然存在，就必须有资产守着它
+#   （与 12-live-stage-tree 同一理由：路由存在 ≠ 页面能打开、元素在、数字有出处）。
+#
+# ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（12-flow 头注同源）：
+#   ① `text:` 是全匹配正则 ⇒ 读数会变的元素一律 `.*….*`；
+#   ② `id:` 选得到 data-testid 但选不到 <button> ⇒ 按钮交互走 text:
+#      （帮助按钮因此带文字「查看统计说明」，与详情页同形态）；
+#   ③ pressKey Escape 在 web 驱动不支持 ⇒ 抽屉关闭不在此验；
+#   ④ 视口必须 1440x1400（表格列多，1024×625 下横向滚动会吃掉右侧列）。
+#
+# ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
+#   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── ② 落地页身份（/admin/session-analytics/users）─────────────────────────
+# h2 = t('sessions.userProfile.title')＝「用户画像」；列表页独有形态 =
+# 工具栏的**数字出处行**（含 canonical 视图名 request_logs_with_current_month）。
+- openLink: ${BASE_URL}/admin/session-analytics/users
+- extendedWaitUntil:
+    text: ".*request_logs_with_current_month.*"
+    timeout: 25000
+
+# ── ③ 窗口用量五列的列头（静态文案，逐列可断言）───────────────────────────
+- assertVisible: "请求数（窗口内）"
+- assertVisible: "Token（窗口内）"
+- assertVisible: "内部成本（窗口内）"
+- assertVisible: "外部成本（窗口内）"
+- assertVisible: "模型数（窗口内）"
+- assertVisible: "用户标识"
+- assertVisible: "会话数"
+
+# ── ④ 帮助按钮 ⇒ 右侧抽屉（统计公式与出处）────────────────────────────────
+# ★ 抽屉打开的**真判据**是「画像列与用量列的口径区别」——它是抽屉独有段；
+#   「统计窗口」在工具栏出处行里也出现 ⇒ 单独断它会假绿（出处行也在）。
+- tapOn: "查看统计说明"
+- assertVisible: "画像列与用量列的口径区别"
+- assertVisible: "Token 统计公式"
+- assertVisible: "总 Token 数 = 输入 Token + 输出 Token"
+- assertVisible: "成本核算公式"
+- assertVisible: "数据来源"
+
+# ── ⑤ 逐层下钻第一跳：员工行「详情」⇒ /users/{owner} ──────────────────────
+# ④ 打开的抽屉是全屏浮层 ⇒ 不依赖「关抽屉」（web 驱动点不到关闭钮），
+# 用 openLink 重载列表页复位，再点行内「详情」。
+# 列表有多个「详情」⇒ Maestro 点第一个命中 ⇒ 落到某人详情页。
+# 详情页独有形态 = 「热门任务 / 热门终端用户 / 最近会话 / 模型使用明细」四卡。
+- openLink: ${BASE_URL}/admin/session-analytics/users
+- extendedWaitUntil:
+    text: ".*request_logs_with_current_month.*"
+    timeout: 25000
+- tapOn: "详情"
+- extendedWaitUntil:
+    visible: "模型使用明细"
+    timeout: 25000
+- assertVisible: "热门任务"
+- assertVisible: "最近会话"
+- assertVisible: "模型名称"
+- assertVisible: "输入 Token"
+- assertVisible: "输出 Token"
+
+# ── ⑥ 详情页帮助抽屉也在（同一套口径文案：公式/成本/来源/时间范围）────────
+- tapOn: "查看统计说明"
+- assertVisible: "Token 统计公式"
+- assertVisible: "成本核算公式"
+- assertVisible: "数据来源"
+- assertVisible: "时间范围说明"
