@@ -719,6 +719,8 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 查询模型使用统计
+	// 2026-11-19：使用 request_logs_with_current_month（会话族 canonical 视图）
+	// 而不是直接读 request_logs（已退役的 v1 表）。
 	// 注意：cost_display 是内部定价，cost_usd 是外部成本
 	// prompt_tokens + completion_tokens = total_tokens
 	sql := fmt.Sprintf(`
@@ -733,7 +735,7 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 			COALESCE(SUM(rl.cost_usd), 0)::float8 as external_cost_usd,
 			MIN(rl.created_at) as first_used_at,
 			MAX(rl.created_at) as last_used_at
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN providers p ON p.id = rl.provider_id
 		WHERE %s
 		GROUP BY model_name, provider

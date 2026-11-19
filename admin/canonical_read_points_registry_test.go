@@ -728,6 +728,14 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "只在注释里记录「放弃 canonical 视图、全 owner GROUP BY」的决策",
 	},
+	"admin/user_profile.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "用户画像模型使用统计：按 owner + 模型 + 供应商聚合 token 用量和成本",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_display:base", "cost_usd:base", "created_at:base", "outbound_model:base", "owner_user:base", "prompt_tokens:base", "provider_id:detail", "tenant_id:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "用户画像模型使用统计：按 owner + 模型 + 供应商聚合 token 用量和成本；本读点读 client_model:detail,completion_tokens:base,cost_display:base,cost_usd:base,created_at:base,outbound_model:base,owner_user:base,prompt_tokens:base,provider_id:detail,tenant_id:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
+		},
+	},
 	"admin/view_source_columns_contract.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,
