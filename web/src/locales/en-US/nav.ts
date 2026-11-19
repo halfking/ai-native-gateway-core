@@ -6,8 +6,8 @@ export default {
   group: {
     operations: 'Operations',
     tenantPortal: 'My Services',
-    modelsRouting: 'Models & Routing',
-    tenantUsers: 'Tenants & Users',
+    modelsRouting: 'Providers & Models',
+    tenantUsers: 'Keys & Users',
     requestsSessions: 'Requests & Sessions',
     dataOps: 'Data Operations',
     opsplatform: 'Ops Center',

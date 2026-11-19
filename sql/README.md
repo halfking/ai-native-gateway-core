@@ -27,10 +27,11 @@ sql/
 │   └── ...                            # 从 02-seed.sql 拆分
 │
 ├── migrations/                        # 数据库迁移
-│   ├── startup/                       # Go 启动时应用的迁移（125 个）
-│   │   ├── 001_users_table.sql        # 从 db/migrations/ 迁移
-│   │   └── ...
-│   └── domain/                        # 领域迁移（shell 脚本应用，21 个）
+│   ├── startup/                       # 有序 startup 迁移（编号递增；
+│   │   ├── 001_users_table.sql        #   清单以 installer/internal/dbinit
+│   │   └── ...                        #   的 Runner.StartupFiles 为权威，
+│   │                                 #   不要在此写死数量——目录会持续增长）
+│   └── domain/                        # 领域迁移（shell 脚本应用）
 │       ├── 032_session_tenant_binding.sql
 │       └── ...
 │

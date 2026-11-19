@@ -2752,6 +2752,10 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// DB 兜底回放窗取 2h：与前端最大时间窗预设（5m/30m/2h）和 Redis 主队列
+	// TTL（2h）对齐 —— 此前硬编码 1h，Redis 故障降级到 DB 时 2h 窗口的
+	// 回放会悄悄少一半（2026-11-19 过滤条件审计轮）。
+
 	tenantClause := ""
 	args := []any{limit}
 	if !isSuper || tenantID != "" {
@@ -2782,7 +2786,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		LEFT JOIN credentials c ON c.id = rl.credential_id
 		LEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
-		WHERE rl.ts >= NOW() - INTERVAL '1 hour'
+		WHERE rl.ts >= NOW() - INTERVAL '2 hours'
 		  ` + tenantClause + `
 		ORDER BY rl.ts ASC
 		LIMIT $1

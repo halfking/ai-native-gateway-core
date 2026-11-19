@@ -249,12 +249,6 @@ const suggestionFields = computed<CardField[]>(() => [
         {{ t('priceCompare.suggestApplyAll', { n: applicableRows.length }) }}
       </button>
     </div>
-          :placeholder="t('priceCompare.suggestModelPlaceholder')"
-          :title="t('priceCompare.suggestModelTitle')"
-          compact
-        />
-      </div>
-    </div>
 
     <p v-if="errorMsg" class="action-message error">{{ errorMsg }}</p>
 

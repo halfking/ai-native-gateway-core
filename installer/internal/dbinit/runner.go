@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1953,6 +1954,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 必须排在 971 **之后**（它加列的目标表由 971 建出；
 			//     表不在场时本件自带守卫跳过 ⇒ 防御性 no-op）。
 			"979_pi_analysis_applied_actions.sql",
+			// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：pi_analysis_stats_view_alignment
+			//   —— v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats）。
+			//   ★ 必须排在 971/977 **之后**（视图由 971 建、977 订正；不在场时本件守卫跳过）。
+			"980_pi_analysis_stats_view_alignment.sql",
 		},
 	}
 }
@@ -1969,32 +1974,140 @@ func (r *Runner) WaitForPG(timeout int) error {
 	return fmt.Errorf("PostgreSQL 启动超时 (%ds)", timeout)
 }
 
-// InitSchema 应用 3 个 SQL 文件（00-prereqs → 01-schema → 02-seed）
+// ledgerQuery 是已有库探测语句：读 schema_migrations 台账（迁移文件尾部
+// 的自登记 INSERT 维护）。提成常量是为了让「增量模式判据读的是哪张表」
+// 可被测试钉住，防止漂移到别的口径。
+const ledgerQuery = "SELECT version FROM public.schema_migrations"
+
+// InitSchema 应用基线三件（00-prereqs → 01-schema → 02-seed）+ startup 迁移。
+//
+// 已有库走**增量模式**：schema_migrations 台账存在且非空 ⇒ 基线三件是全新
+// 安装的一次性底座（幂等，但整库 DDL 重放代价大），不再重放；startup 迁移
+// 只应用台账未登记的 pending 项 —— 「数据库已在 ⇒ 不重建，只补变更的结构
+// 与数据」。种子（02-seed）本来就全部 ON CONFLICT DO NOTHING，跳过它不会
+// 丢任何新种子：新版本的种子投递按仓内纪律走更高编号的 startup 迁移。
+//
+// 与内部升级通道（apply-db-revision-sequence.sh）的差异要知情：那条通道按
+// content_sha256 指纹判断「内容被加固后重放」；本通道只按 version 跳过 ——
+// 同编号文件的内容加固不会在这里重放（需要内容变更时按仓内纪律出更高编号
+// 的增量迁移，而不是改老文件）。
 func (r *Runner) InitSchema(logger func(string)) error {
-	files := []struct {
-		name string
-		desc string
-	}{
-		{"00-prereqs.sql", "扩展依赖"},
-		{"01-schema.sql", "完整 schema"},
-		{"02-seed.sql", "配置字典数据"},
+	applied, hasLedger, err := r.appliedVersions()
+	if err != nil {
+		return err
+	}
+	incremental := hasLedger && len(applied) > 0
+
+	if incremental {
+		logger("  ▶ 检测到已有数据库（schema_migrations 台账非空）—— 增量模式：跳过基线三件，仅应用 pending 迁移")
+	} else {
+		files := []struct {
+			name string
+			desc string
+		}{
+			{"00-prereqs.sql", "扩展依赖"},
+			{"01-schema.sql", "完整 schema"},
+			{"02-seed.sql", "配置字典数据"},
+		}
+
+		for _, f := range files {
+			logger(fmt.Sprintf("  ▶ 应用 %s (%s) ...", f.name, f.desc))
+			if err := r.applySQL(f.name); err != nil {
+				return fmt.Errorf("应用 %s 失败: %w", f.name, err)
+			}
+			logger(fmt.Sprintf("  ✅ %s 完成", f.name))
+		}
 	}
 
-	for _, f := range files {
-		logger(fmt.Sprintf("  ▶ 应用 %s (%s) ...", f.name, f.desc))
-		if err := r.applySQL(f.name); err != nil {
-			return fmt.Errorf("应用 %s 失败: %w", f.name, err)
-		}
-		logger(fmt.Sprintf("  ✅ %s 完成", f.name))
-	}
+	appliedCount := 0
 	for _, name := range r.StartupFiles {
+		if incremental && !startupPending(name, applied) {
+			continue
+		}
 		logger(fmt.Sprintf("  ▶ 应用 startup migration %s ...", name))
 		if err := r.applySQL(filepath.Join("startup", name)); err != nil {
 			return fmt.Errorf("应用 startup migration %s 失败: %w", name, err)
 		}
 		logger(fmt.Sprintf("  ✅ startup migration %s 完成", name))
+		appliedCount++
+	}
+	if incremental {
+		logger(fmt.Sprintf("  ✅ 增量迁移完成：本次应用 %d 个 startup 迁移（其余已登记项跳过）", appliedCount))
 	}
 	return nil
+}
+
+// appliedVersions 读取目标库的 schema_migrations 台账。
+//
+// 表是否存在用 to_regclass 探测（对不存在的表返回 NULL 而不是报错）——
+// 「全新库」是普通的查询结果，不是要捕获的错误路径；因此本函数不需要
+// 依赖任何 PG 错误码字面量。其余失败（容器不可达/权限）原样上抛 ——
+// 宁可中止安装也不在「不知道库里有什么」的状态下盲跑 DDL。
+func (r *Runner) appliedVersions() (versions map[int]bool, hasLedger bool, err error) {
+	exists, err := r.psqlQuery("SELECT to_regclass('public.schema_migrations')")
+	if err != nil {
+		return nil, false, fmt.Errorf("探测 schema_migrations 台账失败: %w", err)
+	}
+	if strings.TrimSpace(exists) == "" {
+		return nil, false, nil // 全新库：基线尚未铺
+	}
+	out, err := r.psqlQuery(ledgerQuery)
+	if err != nil {
+		return nil, false, fmt.Errorf("读取 schema_migrations 台账失败: %w", err)
+	}
+	versions = make(map[int]bool)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// -t -A 输出纯数字行；混入的非数字行（如 psql 提示）直接忽略，
+		// 不让它们把整个探测打成失败。
+		if v, perr := strconv.Atoi(line); perr == nil {
+			versions[v] = true
+		}
+	}
+	return versions, true, nil
+}
+
+// psqlQuery 在目标库跑一条只读查询，返回 psql 的 stdout（-t -A 纯值形态）。
+func (r *Runner) psqlQuery(query string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "exec", r.CitusContainer,
+		"psql", "-U", r.DBUser, "-d", r.DBName, "-X", "-t", "-A", "-v", "ON_ERROR_STOP=1",
+		"-c", query)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w\n%s", err, truncate(string(out), 300))
+	}
+	return string(out), nil
+}
+
+// startupPending 报告增量模式下该 startup 文件是否需要执行：
+// 台账未登记该文件的 version 前缀 ⇒ pending。解析不出数字前缀的文件
+// （如 head cluster 的 session_turns_hot_bootstrap.sql）恒执行 —— 它们
+// 没有台账行可对照，靠幂等契约兜底，行为与全新安装一致。
+func startupPending(name string, applied map[int]bool) bool {
+	v, ok := migrationVersionOf(name)
+	if !ok {
+		return true
+	}
+	return !applied[v]
+}
+
+// migrationVersionOf 从迁移文件名解析 version 前缀（"978_xxx.sql" → 978）。
+func migrationVersionOf(name string) (int, bool) {
+	base := filepath.Base(name)
+	idx := strings.Index(base, "_")
+	if idx <= 0 {
+		return 0, false
+	}
+	v, err := strconv.Atoi(base[:idx])
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // noTransactionMarker 是逐文件事务豁免标记。

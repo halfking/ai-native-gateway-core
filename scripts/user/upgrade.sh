@@ -882,7 +882,17 @@ cmd_switch() {
     echo "[upgrade] ${INSTALL_ROOT} 为空 — 首次安装，无需备份"
   fi
   service_stop
-  if ! run_priv rsync -a --delete --exclude '.upgrade-*' "${STAGING}/content"/ "$INSTALL_ROOT"/; then
+  # 配置/数据保护：rsync --delete 的语义是「把 INSTALL_ROOT 镜像成包内容」，
+  # 但 .env（安装时生成的密钥/配置）与运行时数据目录都不在发布包里 ——
+  # 不排除会被整体删掉。「更新 ≠ 新安装」：包外用户配置与数据不参与同步，
+  # 只更新发布包自身携带的版本物（bin/config/VERSION/...）。
+  echo "[upgrade] switch 保留包外配置/数据：.env db/ redis/ attachments/ raw-logs/ app/logs/ backups/ reports/"
+  if ! run_priv rsync -a --delete \
+    --exclude '.env' --exclude '.upgrade-*' \
+    --exclude 'db/' --exclude 'redis/' --exclude 'attachments/' \
+    --exclude 'raw-logs/' --exclude 'app/logs/' --exclude 'backups/' \
+    --exclude 'reports/' \
+    "${STAGING}/content"/ "$INSTALL_ROOT"/; then
     echo "[upgrade] rsync FAILED — 安装目录可能处于半更新状态" >&2
     return 1
   fi

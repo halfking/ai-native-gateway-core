@@ -394,3 +394,4 @@
 376	977_pi_error_analysis_semantics.sql
 377	978_pi_canonical_rule_set.sql
 378	979_pi_analysis_applied_actions.sql
+379	980_pi_analysis_stats_view_alignment.sql

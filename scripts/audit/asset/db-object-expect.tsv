@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-11T11:38:52+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 893, "indexes_created": 945, "indexes_dropped_somewhere": 93, "migration_files": 628, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-19T03:00:30+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 918, "indexes_created": 970, "indexes_dropped_somewhere": 93, "migration_files": 649, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 -1	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
@@ -899,3 +899,28 @@
 955	idx_passive_model_fingerprints_updated	passive_model_fingerprints	955_passive_model_fingerprints.sql	tenant_id,updated_at	
 958	idx_market_platform_registry_is_ours	market_platform_registry	958_market_platform_registry.sql	is_ours	
 958	idx_market_platform_registry_region	market_platform_registry	958_market_platform_registry.sql	region	
+965	idx_akcm_key_minute	api_key_concurrency_minute	965_api_key_concurrency_minute.sql	api_key_id,minute_ts	
+966	idx_auth_id_mapping_external	auth_id_mapping	966_auth_id_mapping_canonical_channel.sql	external_id,provider	
+966	idx_auth_id_mapping_internal	auth_id_mapping	966_auth_id_mapping_canonical_channel.sql	internal_id	
+966	idx_auth_id_mapping_provider	auth_id_mapping	966_auth_id_mapping_canonical_channel.sql	provider	
+966	idx_auth_id_mapping_tenant	auth_id_mapping	966_auth_id_mapping_canonical_channel.sql	tenant_id	
+966	idx_auth_id_mapping_username	auth_id_mapping	966_auth_id_mapping_canonical_channel.sql	username,provider,tenant_id	
+968	idx_plugin_config_updated	plugin_config	968_plugin_config.sql	updated_at	
+969	idx_casdoor_mapping_casdoor_task	approval_casdoor_mapping	969_approval_casdoor_mapping.sql	casdoor_task_id	
+969	idx_casdoor_mapping_session	approval_casdoor_mapping	969_approval_casdoor_mapping.sql	session_id	
+969	idx_casdoor_mapping_status	approval_casdoor_mapping	969_approval_casdoor_mapping.sql	status,created_at	
+969	idx_casdoor_mapping_tenant	approval_casdoor_mapping	969_approval_casdoor_mapping.sql	tenant_id,status	
+971	idx_error_analysis_queue_error_hash	error_analysis_queue	971_pi_error_analysis_system.sql	error_hash	
+971	idx_error_analysis_queue_error_type	error_analysis_queue	971_pi_error_analysis_system.sql	error_type,created_at	
+971	idx_error_analysis_queue_status_priority	error_analysis_queue	971_pi_error_analysis_system.sql	status,priority,created_at	
+971	idx_error_analysis_queue_tenant	error_analysis_queue	971_pi_error_analysis_system.sql	tenant_id,created_at	
+971	idx_error_analysis_results_auto_applied	error_analysis_results	971_pi_error_analysis_system.sql	auto_applied,created_at	
+971	idx_error_analysis_results_category	error_analysis_results	971_pi_error_analysis_system.sql	error_category,created_at	
+971	idx_error_analysis_results_false_positive	error_analysis_results	971_pi_error_analysis_system.sql	is_false_positive,created_at	
+971	idx_error_analysis_results_queue	error_analysis_results	971_pi_error_analysis_system.sql	queue_id	
+971	idx_error_analysis_results_severity	error_analysis_results	971_pi_error_analysis_system.sql	severity_level,created_at	
+974	idx_mppq_canon	market_price_platform_quotes	974_market_price_identity_and_tier.sql	canonical_name,dimension	
+974	idx_mppq_platform	market_price_platform_quotes	974_market_price_identity_and_tier.sql	platform_id,run_date	
+975	idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975_pricing_suggestion_audit.sql	created_at	
+976	idx_mppq_canon_region	market_price_platform_quotes	976_market_price_platform_quote_region.sql	canonical_name,dimension,source_region	
+977	idx_error_analysis_results_queue_uniq	error_analysis_results	977_pi_error_analysis_semantics.sql	queue_id	

@@ -916,6 +916,9 @@ dl_write_env() {
     # 历史装配）；未设时写空行，gateway 侧视为未设置，行为与历史完全一致。
     dl_emit_env_line LLM_GATEWAY_STORAGE_MODE "${LLM_GATEWAY_STORAGE_MODE:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_ENABLED "${LLM_GATEWAY_HOTZONE_ENABLED:-}"
+    # 2026-11-19 12h 审计轮补白名单：异常检测开关（cmd/gateway/main.go:1002 读，
+    # 代码默认启用 ⇒ 未设时透传空值保持默认行为不变；显式 false 才禁用）。
+    dl_emit_env_line LLM_GATEWAY_ANOMALY_DETECTOR_ENABLED "${LLM_GATEWAY_ANOMALY_DETECTOR_ENABLED:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_DIR "${LLM_GATEWAY_HOTZONE_DIR:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_RETENTION_HOURS "${LLM_GATEWAY_HOTZONE_RETENTION_HOURS:-}"
     dl_emit_env_line LLM_GATEWAY_HOTZONE_MAX_SIZE_GB "${LLM_GATEWAY_HOTZONE_MAX_SIZE_GB:-}"

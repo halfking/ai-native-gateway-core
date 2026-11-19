@@ -92,6 +92,15 @@ var exemptedDanglingRefs = map[string]string{
 	"prompt_injection_approvals": "★★★ 真悬空引用：全仓无任何 DDL 建它（baseline 0 处 / 迁移链 0 处 / 全仓 .sql 0 命中）" +
 		"⇒ 全新安装的库缺这张表；而 domains/promptinjection/detector.go 有写路径且失败只记 Warn ⇒ 审批请求静默丢失" +
 		"⇒ ★ 生产库上可能存在 ⇒ 需属主裁决（补建 / 同库共用 / 审批流退役）⇒ 本门只负责让它可见",
+
+	// ── 2026-11-19 12h 审计轮定性：Redis（外部系统，非 PG 关系）──
+	//
+	// 两处出现（admin/dashboard_board.go:187 `source`、admin/probe_dashboard.go:2054
+	// `reader`）都是 JSON 响应里的**数据源标签字符串**（告诉前端该批数据来自 Redis
+	// 缓存还是 PG），不是对任何 PG 关系的 SQL 引用 ⇒ 静态提取器把它当成关系名是
+	// 假阳性。全仓 `.sql` 对 `redis` 的引用只有 `redis_hit` / `redis_key` 列与
+	// `idx_stage_events_redis_miss` 索引名（词边界外），不存在名为 `redis` 的表。
+	"redis": "非 PG 关系引用：admin/dashboard_board.go:187 与 admin/probe_dashboard.go:2054 中 `redis` 是 JSON 响应的数据源标签（source/reader 字段值），非 SQL 关系引用 ⇒ 提取器假阳性",
 }
 
 // ★★ 三条判据共用【同一份】扫描结果（sync.Once）⇒
