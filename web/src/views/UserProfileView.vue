@@ -322,7 +322,7 @@ const recentSessionFields = computed<CardField[]>(() => [
       <!-- Cost trend chart -->
       <el-card class="chart-card">
         <template #header>{{ t('sessions.userProfile.costTrend') }}</template>
-        <div class="chart-container" style="height: 300px" />
+        <div ref="costChartRef" class="chart-container" style="height: 300px" />
       </el-card>
 
       <!-- Top tasks -->
