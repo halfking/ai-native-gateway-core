@@ -8,7 +8,7 @@ export default {
     tabSettings: '配置',
     refresh: '刷新',
     chipAuto24h: 'Auto 24h',
-    chipAutoWindow: 'Auto {window}',
+    chipAutoWindow: '自动 {window}',
     chipType: '类型',
     chipSuccessRate: '成功率',
     chipLastSync: '上次同步',

@@ -82,10 +82,27 @@ func ValidateTimezoneExported(name string) error {
 	return validateTimezone(name)
 }
 
+// testHookSnapshot 安全读取测试注入钩子。
+//
+// ★ 为什么必须走锁（2026-11-20 审计轮修复）：
+//
+//	钩子的**写**面（SystemTimezoneLocationForTest）在 tzMu.Lock() 下进行，
+//	而**读**面（SystemTimezoneName / SystemTimezoneLocation）原先是**裸读**
+//	⇒ 写面持写锁、读面不持任何锁 ⇒ Go 内存模型下的**数据竞争**
+//	（`-race` 实测复现：WARNING: DATA RACE at settings/timezone.go:87 vs :200）。
+//
+//	⇒ 纪律：**凡与 tzTestHook 有关的读写，一律经本函数/写面在同一把锁下**。
+//	钩子在锁内**取出后立即释放**再调用（钩子本身是纯函数、不回调本包 ⇒ 无死锁）。
+func testHookSnapshot() func() string {
+	tzMu.RLock()
+	defer tzMu.RUnlock()
+	return tzTestHook
+}
+
 // SystemTimezoneName returns the configured IANA timezone name (with cache + test hook).
 func SystemTimezoneName() string {
-	if tzTestHook != nil {
-		return tzTestHook()
+	if hook := testHookSnapshot(); hook != nil {
+		return hook()
 	}
 	tzMu.RLock()
 	if tzCache != nil && time.Since(tzCacheAt) < systemTimezoneCacheTTL {
@@ -115,8 +132,8 @@ func SystemTimezoneName() string {
 // timezone. Fallback chain: invalid/unknown → DefaultSystemTimezone; default
 // unloadable (tzdata 缺失的极端环境) → UTC。
 func SystemTimezoneLocation() *time.Location {
-	if tzTestHook != nil {
-		if loc, err := time.LoadLocation(tzTestHook()); err == nil {
+	if hook := testHookSnapshot(); hook != nil {
+		if loc, err := time.LoadLocation(hook()); err == nil {
 			return loc
 		}
 		return time.UTC

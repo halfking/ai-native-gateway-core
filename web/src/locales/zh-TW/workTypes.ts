@@ -22,7 +22,7 @@ export default {
     wtNoData: 'No 24h data',
     wtNoDataWindow: '暫無 {window} 資料',
     modelTopTitle: 'Top models (24h)',
-    modelTopWindow: '模型 Top ({window})',
+    modelTopWindow: '熱門模型 Top ({window})',
     modelTopTableModel: 'Model',
     modelTopTableCount: 'Count',
     noDataText: '還沒有模型呼叫次數記錄',

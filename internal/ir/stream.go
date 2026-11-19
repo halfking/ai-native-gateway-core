@@ -3,7 +3,6 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,37 +12,35 @@ import (
 // FlexibleString 是一个可以接受字符串或数字的类型，用于处理不同供应商返回的
 // error.code 字段类型不一致的问题。某些供应商返回数字（如 400），某些返回字符串。
 // 2026-11-20: 修复 211 网关日志中的 JSON 解析错误。
+//
+// ★ 为什么只需要两条分支（2026-11-20 审计轮订正）：
+//
+//	`json.Number` 对**任何** JSON 数字都解析成功（整型与浮点型都是它的合法形态），
+//	实测：`400` → "400"、`400.5` → "400.5"（原实现里 int64 / float64 两个兜底分支
+//	**永远不可达** —— json.Number 已经先一步吃掉了全部数字形态）。
+//	⇒ 原第三条（int64）与第四条（float64）分支是死面，删除后语义不变。
+//
+// ★ 顺序敏感：`json.Number` 也能吃下带引号的数字串（`"400"` → "400"），
+// 所以**字符串分支必须排在前面**，否则带引号的形态会先被 Number 分支接走
+// （结果值相同，但会绕过「字符串原样保留」的语义意图）。
 type FlexibleString string
 
+// UnmarshalJSON 实现 json.Unmarshaler：接受字符串或数字两种形态。
 func (fs *FlexibleString) UnmarshalJSON(data []byte) error {
-	// 尝试解析为字符串
+	// 第一形态：字符串（供应商返回 "code": "400"）。
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		*fs = FlexibleString(s)
 		return nil
 	}
-	
-	// 尝试解析为数字
+
+	// 第二形态：数字（供应商返回 "code": 400）—— json.Number 覆盖整型与浮点型。
 	var n json.Number
 	if err := json.Unmarshal(data, &n); err == nil {
 		*fs = FlexibleString(n.String())
 		return nil
 	}
-	
-	// 如果都失败，尝试解析为整数
-	var i int64
-	if err := json.Unmarshal(data, &i); err == nil {
-		*fs = FlexibleString(strconv.FormatInt(i, 10))
-		return nil
-	}
-	
-	// 如果都失败，尝试解析为浮点数
-	var f float64
-	if err := json.Unmarshal(data, &f); err == nil {
-		*fs = FlexibleString(strconv.FormatFloat(f, 'f', -1, 64))
-		return nil
-	}
-	
+
 	return fmt.Errorf("cannot unmarshal %s into FlexibleString", data)
 }
 
