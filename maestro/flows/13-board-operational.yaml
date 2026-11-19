@@ -34,29 +34,54 @@ url: ${BASE_URL}
     text: '平均延迟|活跃资源'
     optional: true
 
-# ── 验证时间范围选择器 ────────────────────────────────────
+# ── 验证时间范围选择器（KxDateRangePicker） ────────────────────────────────────
+# 2026-11-19：升级为 KxDateRangePicker 组件，需要点击触发器打开面板
 - assertVisible:
-    text: '最近 1 天|最近 7 天|最近 30 天'
+    text: '时间范围|最近'
     optional: true
 
-# ── 测试7天数据视图 ────────────────────────────────────
-- tapOn: '最近 7 天'
+# ── 测试时间范围选择 ────────────────────────────────────
+# 点击时间范围选择器触发器
+- tapOn:
+    text: '最近 7 天|时间范围'
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# 选择"最近 1 天"预设
+- tapOn:
+    text: '最近 1 天'
+    optional: true
 - waitForAnimationToEnd:
     timeout: 3000
 - assertVisible:
     text: '运营概览'
     optional: true
 
-# ── 测试30天数据视图 ────────────────────────────────────
-- tapOn: '最近 30 天'
+# 再次打开选择器，选择"最近 30 天"
+- tapOn:
+    text: '最近 1 天|时间范围'
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    text: '最近 30 天'
+    optional: true
 - waitForAnimationToEnd:
     timeout: 3000
 - assertVisible:
     text: '运营概览'
     optional: true
 
-# ── 测试1天数据视图（返回默认） ────────────────────────────────────
-- tapOn: '最近 1 天'
+# 再次打开选择器，选择"最近 90 天"
+- tapOn:
+    text: '最近 30 天|时间范围'
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    text: '最近 90 天'
+    optional: true
 - waitForAnimationToEnd:
     timeout: 3000
 - assertVisible:
