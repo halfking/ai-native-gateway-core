@@ -7,8 +7,8 @@ export default {
   group: {
     operations: '运营管理',
     tenantPortal: '我的服务',
-    modelsRouting: '模型与路由',
-    tenantUsers: '租户用户',
+    modelsRouting: '供应商与模型',
+    tenantUsers: '密钥与用户',
     requestsSessions: '请求与会话',
     dataOps: '数据运维',
     opsplatform: '运维中心',
