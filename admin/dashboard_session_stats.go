@@ -177,11 +177,11 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 	copy(trendArgs, baseArgs)
 	trendParamIdx := len(baseArgs) + 1
 	if trendWhere == "" {
-		trendWhere = fmt.Sprintf("WHERE ss.first_request_at >= utc_days_ago(%d)", days)
+		trendWhere = fmt.Sprintf("WHERE ss.first_request_at >= cst_days_ago(%d)", days)
 		trendArgs = []interface{}{days}
 		trendParamIdx = 1
 	} else {
-		trendWhere += fmt.Sprintf(" AND ss.first_request_at >= utc_days_ago($%d::INT)", trendParamIdx)
+		trendWhere += fmt.Sprintf(" AND ss.first_request_at >= cst_days_ago($%d::INT)", trendParamIdx)
 		trendArgs = append(trendArgs, days)
 	}
 

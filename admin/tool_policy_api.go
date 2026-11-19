@@ -318,7 +318,7 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at
 		FROM tool_usage_stats
-		WHERE usage_date >= CURRENT_DATE - $1::int
+		WHERE usage_date >= cst_day_start(cst_days_ago($1::int))
 	`
 	args := []interface{}{days}
 
@@ -421,7 +421,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 		       SUM(error_count) as total_error,
 		       AVG(avg_latency_ms)::int as avg_latency
 		FROM tool_usage_stats
-		WHERE usage_date >= CURRENT_DATE - $1::int
+		WHERE usage_date >= cst_day_start(cst_days_ago($1::int))
 	`
 	args := []interface{}{days}
 

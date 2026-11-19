@@ -93,7 +93,7 @@ const promptInjectionStatsSQL = `SELECT COUNT(*) AS total_detections,
 			COALESCE(AVG(llm_confidence), 0)::double precision AS avg_llm_confidence,
 			COUNT(DISTINCT session_key) AS affected_sessions
 		FROM prompt_injection_detections
-		WHERE tenant_id = $1 AND detected_at >= CURRENT_DATE`
+		WHERE tenant_id = $1 AND detected_at >= cst_today()`
 
 // NewPromptInjectionHandler 创建 Handler
 func NewPromptInjectionHandler(pool *pgxpool.Pool, secret string) *PromptInjectionHandler {

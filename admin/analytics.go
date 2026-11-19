@@ -849,7 +849,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		        SELECT ts, task_type, auto_confidence, model, api_key_id, credential_id,
 		               auto_decision, success, latency_ms, tenant_id, request_id, partition_date,
 		               1 AS source_rank FROM session_turns
-		        WHERE partition_date >= CURRENT_DATE - 30
+		        WHERE partition_date >= cst_day_start(cst_days_ago(30))
 		          AND request_id = ANY($1::text[])
 		    ) t
 		    LEFT JOIN LATERAL (

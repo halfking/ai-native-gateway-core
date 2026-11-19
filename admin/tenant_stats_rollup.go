@@ -68,7 +68,7 @@ func (h *Handler) tryTenantStatsFromDailyRollup(w http.ResponseWriter, ctx conte
 			FROM stats_usage_daily
 			WHERE tenant_id = $1
 			  AND dimension_type = 'provider_model'
-			  AND day_utc >= ((timezone('Asia/Shanghai', now()))::date - ($2::int - 1))
+			  AND day_utc >= cst_date(cst_days_ago($2::int - 1))
 		`, code, days).Scan(
 			&s.TotalRequests, &s.TotalTokens, &s.TotalCredits, &s.TotalCost,
 			&s.InputTokens, &s.OutputTokens, &s.CacheRead, &s.CacheWrite,
@@ -92,7 +92,7 @@ func (h *Handler) tryTenantStatsFromDailyRollup(w http.ResponseWriter, ctx conte
 			FROM stats_usage_daily
 			WHERE tenant_id = $1
 			  AND dimension_type = 'provider_model'
-			  AND day_utc >= ((timezone('Asia/Shanghai', now()))::date - ($2::int - 1))
+			  AND day_utc >= cst_date(cst_days_ago($2::int - 1))
 			GROUP BY 1
 			ORDER BY SUM(request_count) DESC, SUM(cost_usd) DESC
 			LIMIT 20
@@ -120,8 +120,8 @@ func (h *Handler) tryTenantStatsFromDailyRollup(w http.ResponseWriter, ctx conte
 		rows, err := h.db.Query(gctx, `
 			WITH days AS (
 				SELECT generate_series(
-					date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($2::int - 1) * INTERVAL '1 day'),
-					date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
+					cst_today() - (($2::int - 1) * INTERVAL '1 day'),
+					cst_today(),
 					INTERVAL '1 day')::date AS d
 			), agg AS (
 				SELECT day_utc AS d,
@@ -134,7 +134,7 @@ func (h *Handler) tryTenantStatsFromDailyRollup(w http.ResponseWriter, ctx conte
 				FROM stats_usage_daily
 				WHERE tenant_id = $1
 				  AND dimension_type = 'provider_model'
-				  AND day_utc >= ((timezone('Asia/Shanghai', now()))::date - ($2::int - 1))
+				  AND day_utc >= cst_date(cst_days_ago($2::int - 1))
 				GROUP BY 1
 			)
 			SELECT to_char(days.d, 'YYYY-MM-DD'),

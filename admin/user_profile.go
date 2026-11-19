@@ -437,7 +437,7 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	trendArgs := make([]interface{}, len(baseArgs))
 	copy(trendArgs, baseArgs)
 	trendParamIdx := len(baseArgs) + 1
-	trendWhere += fmt.Sprintf(" AND ss.first_request_at >= utc_days_ago($%d::INT)", trendParamIdx)
+	trendWhere += fmt.Sprintf(" AND ss.first_request_at >= cst_days_ago($%d::INT)", trendParamIdx)
 	trendArgs = append(trendArgs, days)
 
 	costRows, err := h.db.Query(ctx, fmt.Sprintf(`

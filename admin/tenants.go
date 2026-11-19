@@ -918,11 +918,11 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		dailyRows, err := h.db.Query(gctx, `
 		WITH days AS (
 			SELECT generate_series(
-				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - (($2::int - 1) * INTERVAL '1 day'),
-				date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
+				cst_today() - (($2::int - 1) * INTERVAL '1 day'),
+				cst_today(),
 				INTERVAL '1 day')::date AS d
 		), agg AS (
-			SELECT date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai')::date AS d,
+			SELECT cst_day_start(ts)::date AS d,
 			       COUNT(*)::bigint AS requests,
 			       COUNT(*) FILTER (WHERE success IS TRUE)::bigint AS success,
 			       COUNT(*) FILTER (WHERE success IS NOT TRUE)::bigint AS errors,

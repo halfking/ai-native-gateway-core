@@ -1967,6 +1967,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   （UTC 日边界辅助函数；真库试跑通过；自登记原指向不存在的
 			//   migration_metadata 表已改回 schema_migrations）。
 			"991_stats_timezone_standardization.sql",
+		// ★ 992（2026-11-19 CST业务时区函数轮）：add_cst_timezone_functions
+		//   —— 创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）
+		//   —— 面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐
+		"992_add_cst_timezone_functions.sql",
 			// ★ 981（会话分析基础）**未就绪，不进投递通道**：其物化视图引用
 			//   sessions.owner/total_input_tokens/total_cost/turn_count/title 等
 			//   列在真库（与 01-schema 基线一致）全部不存在——按幻写 schema 写

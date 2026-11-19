@@ -732,7 +732,7 @@ func (h *Handler) fetchSessionInspectorStats(ctx context.Context, tenantID strin
 	recycleRow := h.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM session_dim sd
 		WHERE sd.status = 'closed'
-		  AND sd.closed_at >= CURRENT_DATE
+		  AND sd.closed_at >= cst_today()
 		`+recycleFilter+`
 	`, args...)
 	if err := recycleRow.Scan(&recycled); err != nil {

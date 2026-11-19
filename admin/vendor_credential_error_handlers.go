@@ -411,7 +411,7 @@ func (h *vendorCredentialErrorHandlers) loadVendorQualityScores(ctx context.Cont
 		FROM provider_profile_daily p
 		JOIN credentials c ON c.id = p.credential_id
 		WHERE p.credential_id = $1 AND ($2 = '' OR c.tenant_id = $2)
-		  AND p.profile_date >= CURRENT_DATE - 7
+		  AND p.profile_date >= cst_day_start(cst_days_ago(7))
 		ORDER BY p.profile_date DESC
 	`, id, tenantID)
 	if err != nil {

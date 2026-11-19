@@ -2767,6 +2767,10 @@ files=(
   #   辅助函数；真库试跑通过；自登记已从不存在 的 migration_metadata 表改回
   #   schema_migrations）。
   "$ROOT_DIR/sql/migrations/startup/991_stats_timezone_standardization.sql"
+  # ★ 992（2026-11-19 CST业务时区函数轮）：add_cst_timezone_functions——
+  #   创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）；
+  #   面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐（幂等 CREATE OR REPLACE）。
+  "$ROOT_DIR/sql/migrations/startup/992_add_cst_timezone_functions.sql"
 )
 
 
