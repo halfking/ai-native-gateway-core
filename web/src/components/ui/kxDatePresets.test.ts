@@ -95,3 +95,66 @@ describe('shortRangeLabel / rangeSpanDays', () => {
     expect(rangeSpanDays({ start: '2026-09-27 12:00', end: '2026-09-30 12:01' }, 'datetime')).toBe(4)
   })
 })
+
+// ── 2026-11-19 时间范围统一轮：datetime 精度预设 = 日界窗口（最晚到今天 23:59）──
+describe('makeDateRangePresets (datetime 精度, 日界窗口)', () => {
+  const presets = makeDateRangePresets('datetime')
+  const byId = (id: string) => presets.find(p => p.id === id)!
+
+  it('last7d = 首日 00:00 – 今天 23:59', () => {
+    const r = byId('last7d').resolve()
+    expect(r.end.endsWith('23:59')).toBe(true)
+    expect(r.start.endsWith('00:00')).toBe(true)
+    expect(r.end.slice(0, 10)).toBe(r.start.slice(0, 10) ? r.end.slice(0, 10) : r.end.slice(0, 10))
+    // 首日 = 今天 - 6 天
+    const startDay = Date.parse(r.start.slice(0, 10) + 'T00:00:00Z')
+    const endDay = Date.parse(r.end.slice(0, 10) + 'T00:00:00Z')
+    expect((endDay - startDay) / 86_400_000).toBe(6)
+  })
+
+  it('today = 今天 00:00 – 23:59', () => {
+    const r = byId('today').resolve()
+    expect(r.start.endsWith('00:00')).toBe(true)
+    expect(r.end.endsWith('23:59')).toBe(true)
+    expect(r.start.slice(0, 10)).toBe(r.end.slice(0, 10))
+  })
+
+  it('yesterday = 昨天 00:00 – 23:59', () => {
+    const r = byId('yesterday').resolve()
+    expect(r.start.endsWith('00:00')).toBe(true)
+    expect(r.end.endsWith('23:59')).toBe(true)
+    expect(r.start.slice(0, 10)).toBe(r.end.slice(0, 10))
+  })
+
+  it('thisMonth start = 月初 00:00，end = 今天 23:59', () => {
+    const r = byId('thisMonth').resolve()
+    expect(r.start.endsWith('-01 00:00')).toBe(true)
+    expect(r.end.endsWith('23:59')).toBe(true)
+  })
+
+  it('lastMonth = 上月 1 日 00:00 – 上月末 23:59', () => {
+    const r = byId('lastMonth').resolve()
+    expect(r.start.endsWith('00:00')).toBe(true)
+    expect(r.end.endsWith('23:59')).toBe(true)
+    const startDay = Date.parse(r.start.slice(0, 10) + 'T00:00:00Z')
+    const endDay = Date.parse(r.end.slice(0, 10) + 'T00:00:00Z')
+    expect((endDay - startDay) / 86_400_000).toBeGreaterThanOrEqual(27)
+    expect((endDay - startDay) / 86_400_000).toBeLessThanOrEqual(30)
+  })
+
+  it('last24h 保持滚动时刻（唯一非日界预设）', () => {
+    const r = byId('last24h').resolve()
+    expect(r.end.endsWith('23:59')).toBe(false)
+  })
+})
+
+describe('spanDaysPreset (datetime)', () => {
+  it('span3d datetime = 首日 00:00 – 今天 23:59（3 天窗）', () => {
+    const r = spanDaysPreset(3, 'common.dateRange.preset.last3d', 'datetime').resolve()
+    expect(r.start.endsWith('00:00')).toBe(true)
+    expect(r.end.endsWith('23:59')).toBe(true)
+    const startDay = Date.parse(r.start.slice(0, 10) + 'T00:00:00Z')
+    const endDay = Date.parse(r.end.slice(0, 10) + 'T00:00:00Z')
+    expect((endDay - startDay) / 86_400_000).toBe(2)
+  })
+})

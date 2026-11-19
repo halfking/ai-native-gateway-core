@@ -34,13 +34,43 @@ export function rangeFromSpanDays(days: number): KxDateRange {
   return resolveSpan(n - 1)
 }
 
-/** 天数档位预设。id 稳定为 span{N}d，resolve 与 rangeFromSpanDays 同口径。 */
-export function spanDaysPreset(days: number, labelKey: string): KxDateRangePreset {
+/**
+ * datetime 精度的日界窗口：start=首日 00:00，end=今天 23:59（UTC 日切）。
+ * 2026-11-19 时间范围统一轮（owner 口径「近 N 天最晚到今天结束」）：
+ * 预设不再用「此刻回退」的滚动时刻，统一日界窗口；仅 last24h 保留滚动。
+ * ⚠️ 23:59 不能用 endMs + 59min - 1s 推算（输入毫秒非零会算出 00:58），
+ * 直接以字符串拼接日期前缀。
+ */
+export function dayWindowMinute(daysBack: number): KxDateRange {
+  const today = utcDayStart()
+  return {
+    start: utcMinuteStr(today - daysBack * DAY_MS).slice(0, 11) + '00:00',
+    end: utcMinuteStr(today).slice(0, 11) + '23:59',
+  }
+}
+
+/** datetime 精度的单日窗口（00:00–23:59），供「昨天」这类单日预设。 */
+function singleDayMinute(ms: number): KxDateRange {
+  const prefix = utcMinuteStr(ms).slice(0, 11)
+  return { start: prefix + '00:00', end: prefix + '23:59' }
+}
+
+/** datetime 精度的跨日窗口（首日 00:00 – 末日 23:59），供「上月」这类自然月预设。 */
+function singleDayMinuteSpan(firstMs: number, lastMs: number): KxDateRange {
+  return { start: utcMinuteStr(firstMs).slice(0, 11) + '00:00', end: utcMinuteStr(lastMs).slice(0, 11) + '23:59' }
+}
+
+/**
+ * 天数档位预设。id 稳定为 span{N}d。
+ * precision='datetime' 时输出日界窗口（start=首日 00:00，end=今天 23:59），
+ * 与 makeDateRangePresets 的近 N 天预设同口径（2026-11-19 时间范围统一轮）。
+ */
+export function spanDaysPreset(days: number, labelKey: string, precision: KxDatePrecision = 'date'): KxDateRangePreset {
   const n = Math.max(1, Math.round(days))
   return {
     id: `span${n}d`,
     labelKey,
-    resolve: () => rangeFromSpanDays(n),
+    resolve: () => (precision === 'datetime' ? dayWindowMinute(n - 1) : rangeFromSpanDays(n)),
   }
 }
 
@@ -54,17 +84,17 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
     {
       id: 'today',
       labelKey: 'common.dateRange.preset.today',
-      resolve: () => {
-        const today = utcDayStart()
-        return { start: utcDateStr(today), end: utcDateStr(today) }
-      },
+      resolve: () => (precision === 'datetime'
+        ? dayWindowMinute(0)
+        : { start: utcDateStr(utcDayStart()), end: utcDateStr(utcDayStart()) }),
     },
     {
       id: 'yesterday',
       labelKey: 'common.dateRange.preset.yesterday',
       resolve: () => {
-        const y = utcDayStart() - DAY_MS
-        return { start: utcDateStr(y), end: utcDateStr(y) }
+        if (precision === 'datetime') return singleDayMinute(utcDayStart() - DAY_MS)
+        const y = utcDateStr(utcDayStart() - DAY_MS)
+        return { start: y, end: y }
       },
     },
     {
@@ -81,17 +111,17 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
     {
       id: 'last7d',
       labelKey: 'common.dateRange.preset.last7d',
-      resolve: () => resolveSpan(6),
+      resolve: () => (precision === 'datetime' ? dayWindowMinute(6) : resolveSpan(6)),
     },
     {
       id: 'last14d',
       labelKey: 'common.dateRange.preset.last14d',
-      resolve: () => resolveSpan(13),
+      resolve: () => (precision === 'datetime' ? dayWindowMinute(13) : resolveSpan(13)),
     },
     {
       id: 'last30d',
       labelKey: 'common.dateRange.preset.last30d',
-      resolve: () => resolveSpan(29),
+      resolve: () => (precision === 'datetime' ? dayWindowMinute(29) : resolveSpan(29)),
     },
     {
       id: 'thisMonth',
@@ -99,6 +129,9 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
       resolve: () => {
         const now = new Date()
         const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+        if (precision === 'datetime') {
+          return { start: utcMinuteStr(first).slice(0, 11) + '00:00', end: utcMinuteStr(utcDayStart()).slice(0, 11) + '23:59' }
+        }
         return { start: utcDateStr(first), end: utcDateStr(utcDayStart()) }
       },
     },
@@ -109,6 +142,7 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
         const now = new Date()
         const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)
         const last = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)
+        if (precision === 'datetime') return singleDayMinuteSpan(first, last)
         return { start: utcDateStr(first), end: utcDateStr(last) }
       },
     },
