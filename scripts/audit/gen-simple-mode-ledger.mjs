@@ -24,6 +24,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..', '..');
 const NAV_TS = resolve(ROOT, 'web/src/config/appNav.ts');
 const LOCALE_TS = resolve(ROOT, 'web/src/locales/zh-CN/nav.ts');
+const SANITIZE_LOCALE_TS = resolve(ROOT, 'web/src/locales/zh-CN/sanitizeRules.ts');
 
 const argv = process.argv.slice(2);
 const has = (k) => argv.includes('--' + k);
@@ -51,6 +52,19 @@ function parseLocale(src) {
     let mm;
     while ((mm = kv.exec(body)) !== null) out[block][mm[1]] = mm[3];
   }
+  return out;
+}
+
+// 解析 export default { ... } 形式的翻译文件
+function parseDefaultExport(src) {
+  const out = {};
+  const re = /export\s+default\s*\{([\s\S]*)\};?\s*$/m;
+  const m = re.exec(src);
+  if (!m) return out;
+  const body = m[1];
+  const kv = /(\w+):\s*(['"])(.*?)\2/g;
+  let mm;
+  while ((mm = kv.exec(body)) !== null) out[mm[1]] = mm[3];
   return out;
 }
 
@@ -126,8 +140,8 @@ const V2_GROUP_CN = {
 const GROUP_CN = {
   primary: '顶层主链接',
   operations: '运营管理',
-  'models-routing': '模型与路由',
-  'tenant-users': '租户用户',
+  'models-routing': '供应商与模型',
+  'tenant-users': '密钥与用户',
   'requests-sessions': '请求与会话',
   'data-ops': '数据运维',
   opsplatform: '运维中心',
@@ -147,6 +161,7 @@ function v2Position(path) {
 // ------------------------------------------------------------------ 组装
 
 const locale = parseLocale(readFileSync(LOCALE_TS, 'utf8'));
+const sanitizeLocale = parseDefaultExport(readFileSync(SANITIZE_LOCALE_TS, 'utf8'));
 const items = parseNav(readFileSync(NAV_TS, 'utf8'));
 
 // ★ 2026-11-17 新增硬门：分组清单里的每条 path 都必须在专家面导航真源里存在。
@@ -173,7 +188,9 @@ function labelOf(it) {
   const k = it.labelKey || '';
   if (k.startsWith('nav.item.')) return locale.item[k.slice('nav.item.'.length)] || k;
   if (k.startsWith('nav.group.')) return locale.group[k.slice('nav.group.'.length)] || k;
-  // 少数条目用别处的 key（如 sanitizeRules.title）⇒ 回落到 key 本身，标出来
+  // 少数条目用别处的 key（如 sanitizeRules.title）
+  if (k.startsWith('sanitizeRules.')) return sanitizeLocale[k.slice('sanitizeRules.'.length)] || k;
+  // 其他未知 key 回落到 key 本身
   return k || it.path;
 }
 
@@ -213,7 +230,7 @@ if (has('json')) {
       r.pos.kind === 'external' ? 'chip chip-warn' : 'chip chip-muted';
     const extra = r.pos.kind === 'external' ? ' <span class="chip chip-warn">站外</span>' : '';
     console.log(
-      '          <tr><td>' + r.name + '</td><td class="path">' + r.path + '</td><td>' + r.group +
+      '          <tr data-ledger-row><td>' + r.name + '</td><td class="path">' + r.path + '</td><td>' + r.group +
       '</td><td><span class="' + chip + '">' + r.pos.cn + '</span>' + extra + '</td></tr>'
     );
   }

@@ -73,6 +73,9 @@ export type NavGroup = {
 
 /** Top-level sidebar links (no accordion group). Used for default-tenant platform ops. */
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
+  // 2026-11-19: 简易模式顶栏顺序调整 —— 总览是首页，放最左；实时拓扑次之。
+  // 按使用频率排序：总览（首页） → 实时拓扑 → 阶段树。
+  { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
   // 2026-10-16: live-topology home. Placed before "Overview" — it is a NEW entry;
   // `/` and `/dashboard` stay untouched (the old home page is fully preserved, ADR §7 G7).
   { path: '/live', labelKey: 'nav.item.liveTopology', icon: '🛰', platformOps: true, exact: true },
@@ -86,7 +89,6 @@ export const NAV_PRIMARY_ITEMS: NavItem[] = [
   //     正是这么来的（藏了一天 ⇒ 就要再藏 ⇒ 又要恢复）。⇒ 没有第二消费者的
   //     布尔闸门不是资产，是负债：它把「一次决定」伪装成「一个机制」。
   { path: '/live2', labelKey: 'nav.item.liveStageTree', icon: '🌲', platformOps: true, exact: true },
-  { path: '/dashboard', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
 
 /**
