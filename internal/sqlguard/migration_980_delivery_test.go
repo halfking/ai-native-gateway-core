@@ -23,9 +23,12 @@ func TestMigration980ViewAlignmentDelivered(t *testing.T) {
 	}
 	exec := string(body)
 
-	// ① 视图重写必须是幂等的 CREATE OR REPLACE（可被内容指纹重放）。
-	if !strings.Contains(exec, "CREATE OR REPLACE VIEW public.v_error_analysis_stats") {
-		t.Fatalf("980 没有 CREATE OR REPLACE VIEW ⇒ 重放会 42P07，部署 die")
+	// ① 视图重建必须是幂等的 DROP+CREATE（可被内容指纹重放）。
+	//   ★ 首版用 CREATE OR REPLACE 并对调了 977 的列序 ⇒ 三台部署活体打回
+	//   （"cannot change name of view column"）⇒ DROP+CREATE 才允许任意列序。
+	if !strings.Contains(exec, "DROP VIEW IF EXISTS public.v_error_analysis_stats") ||
+		!strings.Contains(exec, "CREATE VIEW public.v_error_analysis_stats AS") {
+		t.Fatalf("980 缺 DROP VIEW IF EXISTS + CREATE VIEW ⇒ 列序对齐会被 PG 拒（首版活体事故形态）")
 	}
 	// ② 三个新计数列必须在（口径对齐的核心断言）。
 	for _, col := range []string{

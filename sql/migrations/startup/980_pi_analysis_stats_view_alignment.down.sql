@@ -11,7 +11,9 @@ BEGIN
         RETURN;
     END IF;
 
-    CREATE OR REPLACE VIEW public.v_error_analysis_stats AS
+    DROP VIEW IF EXISTS public.v_error_analysis_stats;
+
+    CREATE VIEW public.v_error_analysis_stats AS
     WITH per_queue AS (
         SELECT
             q.id                     AS queue_id,

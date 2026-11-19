@@ -42,12 +42,20 @@ SET LOCAL statement_timeout = '10min';
 
 DO $$
 BEGIN
+    -- ★ 2026-11-19 二修（三台部署活体打回）：CREATE OR REPLACE VIEW 不允许
+    --   改变既有列的位置（977 列序 analyzed_count 在 pending_count 之前，
+    --   首版把顺序对调 ⇒ "cannot change name of view column"）。
+    --   ⇒ 改用 DROP VIEW IF EXISTS + CREATE VIEW：允许任意列序，且仍幂等
+    --   （整个 DO 块在迁移事务内，DROP 与 CREATE 之间失败会整体回滚，
+    --   不会留下无视图的中间态）。
     IF to_regclass('public.v_error_analysis_stats') IS NULL THEN
         RAISE NOTICE '980: public.v_error_analysis_stats 不在场（971 未应用）⇒ 跳过视图口径对齐';
         RETURN;
     END IF;
 
-    CREATE OR REPLACE VIEW public.v_error_analysis_stats AS
+    DROP VIEW IF EXISTS public.v_error_analysis_stats;
+
+    CREATE VIEW public.v_error_analysis_stats AS
     WITH per_queue AS (
         SELECT
             q.id                     AS queue_id,

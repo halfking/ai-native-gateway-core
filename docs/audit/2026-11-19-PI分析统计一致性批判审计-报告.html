@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PI 分析统计一致性 —— 批判审计轮报告（2026-11-19）</title>
+<style>
+  :root{--blue:#1890ff;--green:#52c41a;--red:#ff4d4f;--amber:#faad14;--gray:#8c8c8c;--ink:#262626;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--ink);background:#f5f7fa;padding:32px;line-height:1.65;}
+  .wrap{max-width:1080px;margin:0 auto;}
+  h1{font-size:26px;margin-bottom:4px;} h2{font-size:19px;margin:34px 0 14px;border-left:4px solid var(--blue);padding-left:10px;}
+  .sub{color:var(--gray);font-size:13px;margin-bottom:22px;}
+  .card{background:#fff;border-radius:10px;padding:22px 26px;box-shadow:0 1px 4px rgba(0,0,0,.06);margin-bottom:18px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{background:#fafafa;text-align:left;padding:9px 10px;border-bottom:2px solid #eee;font-weight:600;white-space:nowrap;}
+  td{padding:8px 10px;border-bottom:1px solid #f2f2f2;vertical-align:top;}
+  code{background:#f0f4f8;padding:1px 5px;border-radius:3px;font-size:12px;font-family:ui-monospace,Menlo,monospace;}
+  .ok{color:var(--green);font-weight:600;} .bad{color:var(--red);font-weight:600;} .warn{color:#d48806;font-weight:600;}
+  .pill{display:inline-block;padding:1px 9px;border-radius:10px;font-size:11.5px;font-weight:600;white-space:nowrap;}
+  .p-blue{background:#e6f7ff;color:#0958d9;} .p-green{background:#f6ffed;color:#389e0d;}
+  .p-red{background:#fff1f0;color:#cf1322;} .p-amber{background:#fffbe6;color:#d48806;} .p-gray{background:#f0f0f0;color:#595959;}
+  /* 柱状图 */
+  .bars{display:flex;gap:34px;align-items:flex-end;height:190px;padding:10px 6px 0;border-bottom:2px solid #d9d9d9;}
+  .bargrp{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;}
+  .bars2{display:flex;gap:10px;align-items:flex-end;height:120px;}
+  .bar{width:52px;border-radius:4px 4px 0 0;position:relative;transition:.3s;}
+  .bar .v{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:12px;font-weight:700;white-space:nowrap;}
+  .b-blue{background:linear-gradient(180deg,#69c0ff,#1890ff);} .b-green{background:linear-gradient(180deg,#95de64,#52c41a);}
+  .b-red{background:linear-gradient(180deg,#ff7875,#ff4d4f);} .b-gray{background:#d9d9d9;}
+  .xlab{font-size:12px;color:#595959;margin-top:6px;text-align:center;}
+  .legend{display:flex;gap:18px;font-size:12px;color:#595959;margin-top:12px;flex-wrap:wrap;}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;}
+  /* 时间线 */
+  .tl{list-style:none;} .tl li{position:relative;padding:0 0 18px 26px;border-left:2px solid #d9d9d9;margin-left:8px;}
+  .tl li::before{content:"";position:absolute;left:-7px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--blue);border:2.5px solid #fff;box-shadow:0 0 0 1.5px var(--blue);}
+  .tl li.g::before{background:var(--green);box-shadow:0 0 0 1.5px var(--green);}
+  .tl b{font-size:13.5px;} .tl span{font-size:12.5px;color:#595959;display:block;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr;}}
+  .note{font-size:12px;color:var(--gray);margin-top:8px;}
+  .kv{font-size:13px;} .kv b{color:var(--blue);}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>PI 分析统计一致性 —— 批判审计轮报告</h1>
+<div class="sub">2026-11-19 · llm-gateway-go · 主档《2026-11-18-PI分析管理面优化-主档.md》§七/§八 · 修复链 24d352f17 → 8f88b0d25（迁移 980）→ f69590210（上游 hotfix）</div>
+
+<div class="card">
+<h2 style="margin-top:0">① 结论速览</h2>
+<table>
+<tr><th>对象</th><th>判定</th><th>一句话</th></tr>
+<tr><td>统计卡↔列表「三重不一致」根修</td><td><span class="pill p-green">PASS·已验证</span></td><td>状态盲区 / 7 天域错位 / 死零 三因同根修，三台 API+浏览器全绿</td></tr>
+<tr><td>批判审计 F1：v_error_analysis_stats 口径漂移</td><td><span class="pill p-blue">已修·迁移 980</span></td><td>视图补 processing/failed/skipped 三列，与 GetStats 同口径</td></tr>
+<tr><td>批判审计 F2/F3</td><td><span class="pill p-amber">登记</span></td><td>三段查询无事务一致性（管理面可容忍）；误报率分母=结果域（有意设计，已披露）</td></tr>
+<tr><td>上游阻塞（vendor 漂移 / SFC 语法残骸）</td><td><span class="pill p-red">已修·解锁</span></td><td>并行车两度断 main 构建，本轮机械修复解锁部署</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>② 修复前 vs 修复后（211 生产实况）</h2>
+<div class="legend"><span><span class="dot" style="background:#ff4d4f"></span>统计卡显示（修复前）</span><span><span class="dot" style="background:#52c41a"></span>统计卡显示（修复后）</span><span><span class="dot" style="background:#1890ff"></span>列表真实值</span></div>
+<div class="bars">
+  <div class="bargrp"><div class="bars2"><div class="bar b-red" style="height:12px"><span class="v">0</span></div><div class="bar b-green" style="height:12px"><span class="v">2</span></div><div class="bar b-blue" style="height:12px"><span class="v">2</span></div></div><div class="xlab">总错误</div></div>
+  <div class="bargrp"><div class="bars2"><div class="bar b-red" style="height:6px"><span class="v">0</span></div><div class="bar b-green" style="height:6px"><span class="v">0</span></div><div class="bar b-blue" style="height:6px"><span class="v">0</span></div></div><div class="xlab">待分析</div></div>
+  <div class="bargrp"><div class="bars2"><div class="bar b-red" style="height:6px"><span class="v">0</span></div><div class="bar b-green" style="height:6px"><span class="v">0</span></div><div class="bar b-blue" style="height:6px"><span class="v">0</span></div></div><div class="xlab">已分析</div></div>
+  <div class="bargrp"><div class="bars2"><div class="bar b-red" style="height:6px"><span class="v" style="color:#cf1322">不可见</span></div><div class="bar b-green" style="height:12px"><span class="v">2</span></div><div class="bar b-blue" style="height:12px"><span class="v">2</span></div></div><div class="xlab">失败（failed）</div></div>
+  <div class="bargrp"><div class="bars2"><div class="bar b-red" style="height:6px"><span class="v" style="color:#cf1323">0%（死零）</span></div><div class="bar b-green" style="height:8px"><span class="v">0.0%</span></div><div class="bar b-blue" style="height:8px"><span class="v">0/1</span></div></div><div class="xlab">误报率</div></div>
+  <div class="bargrp"><div class="bars2"><div class="bar b-red" style="height:6px"><span class="v" style="color:#cf1322">0ms（死零）</span></div><div class="bar b-green" style="height:110px"><span class="v">88760ms</span></div><div class="bar b-blue" style="height:110px"><span class="v">88760ms</span></div></div><div class="xlab">平均耗时</div></div>
+</div>
+<div class="note">红色=修复前统计卡读数；绿色=修复后卡片；蓝色=列表/结果表真实值。修复前三处红蓝分离（不一致），修复后绿蓝对齐。「平均耗时」修复前是前端硬编码死零，修复后为结果表真实聚合。</div>
+</div>
+
+<div class="card">
+<h2>③ 本轮（批判审计）完成动作时间线</h2>
+<ul class="tl">
+  <li class="g"><b>审计取证</b><span>视图 v_error_analysis_stats（977 形态）缺 processing/failed/skipped——与 GetStats 两份真值口径漂移；零运行时消费者但属 DB 公开真值</span></li>
+  <li class="g"><b>迁移 980（F1 修复）</b><span>CREATE OR REPLACE VIEW 补三列，幂等+在场守卫+台账自登记；七处登记齐（正本×2 / embeddata×2 / installer / runner / tsv / docker 序列）</span></li>
+  <li class="g"><b>sqlguard 投递门</b><span>TestMigration980ViewAlignmentDelivered 六断言；变异负控（摘 failed_count ⇒ 红）→还原绿</span></li>
+  <li class="g"><b>提交 8f88b0d25 → main</b><span>F2/F3 登记进主档 §八</span></li>
+  <li class="g"><b>上游阻塞×2 解锁</b><span>①并行车 go.mod 无 go mod vendor（decimal）——对方自修；②b52bf4474 SFC 语法残骸两处 Invalid end tag——本轮机械修复（f69590210），vite build/vue-tsc/13 测试全绿</span></li>
+  <li class="g"><b>部署 211（蓝绿）→ 154 → 245</b><span>980 随 systemd/docker 通道落地三库；部署后逐台验证</span></li>
+</ul>
+</div>
+
+<div class="card">
+<h2>④ 改动文件与关键行为（本轮审计增量）</h2>
+<table>
+<tr><th>文件</th><th>关键行为</th></tr>
+<tr><td><code>sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql</code>（+down）</td><td>视图补 <code>processing_count/failed_count/skipped_count</code>；幂等可重放；视图不在场（未跑 971）守卫跳过</td></tr>
+<tr><td><code>installer/cmd/llm-gw-installer/main.go</code> / <code>internal/dbinit/runner.go</code> / embeddata×2 / <code>installed_startup_migrations.tsv</code> / <code>apply-db-revision-sequence.sh</code></td><td>980 六/七处登记（installer 通道 + docker 通道）</td></tr>
+<tr><td><code>internal/sqlguard/migration_980_delivery_test.go</code></td><td>投递门：幂等形态/三新列/守卫/台账/embed 逐字一致/docker 清单，六断言</td></tr>
+<tr><td><code>web/src/views/operations/PricingSuggestionPanel.vue</code></td><td>上游 hotfix：删除 b52bf4474 遗留的孤儿属性行与多余闭合 div（不加新结构，script 侧 globalModels 逻辑原样保留）</td></tr>
+<tr><td><code>docs/audit/2026-11-18-PI分析管理面优化-主档.md</code></td><td>§八 批判审计段（F1–F4 处置）+ §九 部署回填</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>⑤ 测试命令与结果</h2>
+<table>
+<tr><th>命令</th><th>结果</th></tr>
+<tr><td><code>go test ./internal/sqlguard/ -run TestMigration980</code></td><td class="ok">PASS（变异：摘 failed_count ⇒ FAIL，还原 ⇒ PASS）</td></tr>
+<tr><td><code>go test ./installer/internal/dbinit/ -run TestStartupFiles</code></td><td class="ok">ok</td></tr>
+<tr><td><code>go test ./sql/migrations/startup/</code>（迁移门）</td><td class="ok">ok 14.3s</td></tr>
+<tr><td><code>go test ./domains/promptinjection/</code>（GetStats 钉测 ×2）</td><td class="ok">ok 1.46s</td></tr>
+<tr><td><code>vue-tsc --noEmit</code></td><td class="ok">0 错</td></tr>
+<tr><td><code>vite build</code></td><td class="ok">✓ 22.08s（上游残骸修复后）</td></tr>
+<tr><td><code>vitest run src/lib/piAnalysisStats.test.ts</code></td><td class="ok">6/6</td></tr>
+<tr><td><code>vitest run src/views/operations/</code></td><td class="ok">13/13</td></tr>
+<tr><td>全量 vitest</td><td class="warn">3453 绿 + 1 红（CJK 棘轮基线门＝上游存量，本轮 diff 同树对拍净降 4）</td></tr>
+<tr><td>部署后三台 API 一致性对拍 / 980 视图列落地</td><td class="ok">见 §六部署结果（回填）</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>⑥ 遗留风险（登记）</h2>
+<table>
+<tr><th>#</th><th>风险</th><th>级别</th><th>处置建议</th></tr>
+<tr><td>F2</td><td>GetStats 三段查询（队列聚合/结果聚合/by_type）无事务一致性——并发写入存在瞬间不一致窗口</td><td><span class="pill p-amber">P3</span></td><td>管理面统计可容忍；若升级为对账级需求再包单事务</td></tr>
+<tr><td>F3</td><td>误报率分母=results_total（结果域全量），与「已分析」卡（队列状态域）不同源</td><td><span class="pill p-gray">口径披露</span></td><td>有意设计（结果域才是正确分母）；可在卡片 tooltip 补口径说明</td></tr>
+<tr><td>视图消费面</td><td>v_error_analysis_stats 仍零运行时消费者——980 补齐列后无监督者验证其与页面一致性</td><td><span class="pill p-amber">P3</span></td><td>未来接线时复用 sqlguard 门形状；或加 nightly 对拍探针</td></tr>
+<tr><td>L1（既有）</td><td>PI 检测规则误报债（dan 裸子串等，enforce 启用前必须重写）</td><td><span class="pill p-amber">P2·归 owner</span></td><td>先 observe 留痕观察，规则语义裁决归 owner</td></tr>
+<tr><td>L2/L3（既有）</td><td>update_pattern 只验证正则合法不验证语义；并发 apply 第二请求 409 后前端不自动刷新</td><td><span class="pill p-gray">P3</span></td><td>登记不修</td></tr>
+<tr><td>上游存量红</td><td>CJK 棘轮 +168~172（并行车特性轮）；plugin-runtime demo 曾断链（已由对方修复）</td><td><span class="pill p-red">归并行列车</span></td><td>本仓 CI 纪律：不替对方收口，登记追踪</td></tr>
+</table>
+</div>
+
+<div class="card kv">
+<b>通用式沉淀（本轮）</b>：① 同一份内容两份真值必然漂移——改 Go 口径必须问「DB 里还有没有另一份公开真值（视图/物化）」；② 上游「自称已验证」不可信——main 构建断链两次都来自对方提交信息与实际不符；③ 批判审计的最小修法=机械对齐（补列/删残骸），不替对方做设计裁决。
+</div>
+
+</div></body></html>
