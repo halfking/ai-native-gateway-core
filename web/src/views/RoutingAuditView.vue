@@ -12,6 +12,9 @@ import {
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
 import type { CardField, CardTone } from '../components/ui/CardList.vue'
 import { Minus, Plus } from '@element-plus/icons-vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 
 const { t } = useI18n()
 
@@ -23,6 +26,20 @@ const filterActor = ref('')
 const filterOverrideId = ref<number | null>(null)
 const filterDays = ref(7)
 const filterLimit = ref(200)
+
+// 使用 useSpanDaysRange 管理日期范围与天数的双向绑定
+const { presets, rangeValue: dateRange, applyRange } = useSpanDaysRange(filterDays, [
+  { days: 1, labelKey: 'board.timeRange.presets.today' },
+  { days: 7, labelKey: 'board.timeRange.presets.last7Days' },
+  { days: 30, labelKey: 'board.timeRange.presets.last30Days' },
+  { days: 90, labelKey: 'board.timeRange.presets.last90Days' },
+])
+
+// 应用日期范围变更
+function handleApplyRange(range: KxDateRange) {
+  applyRange(range)
+  load()
+}
 
 const expandedId = ref<number | null>(null)
 
@@ -239,14 +256,15 @@ onMounted(load)
           <input v-model.number="filterOverrideId" type="number" min="1"
                  :placeholder="t('routingAudit.filter.overrideIdPlaceholder')" @keyup.enter="load" />
         </label>
-        <label>{{ t('routingAudit.filter.window') }}:
-          <select v-model.number="filterDays" @change="load">
-            <option :value="1">{{ t('routingAudit.filter.days.d1') }}</option>
-            <option :value="7">{{ t('routingAudit.filter.days.d7') }}</option>
-            <option :value="30">{{ t('routingAudit.filter.days.d30') }}</option>
-            <option :value="90">{{ t('routingAudit.filter.days.d90') }}</option>
-          </select>
-        </label>
+        <div class="filter-time-range">
+          <label>{{ t('routingAudit.filter.window') }}:</label>
+          <KxDateRangePicker 
+            :model-value="dateRange"
+            :presets="presets"
+            :max-span-days="365"
+            @apply="handleApplyRange"
+          />
+        </div>
         <label>{{ t('routingAudit.filter.limit') }}:
           <select v-model.number="filterLimit" @change="load">
             <option :value="50">{{ t('routingAudit.filter.limits.l50') }}</option>
@@ -458,6 +476,16 @@ h2 {
   font-size: 13px;
 }
 .filter-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+.filter-time-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-time-range label {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
 .error {
   color: var(--danger);
   font-size: 13px;
