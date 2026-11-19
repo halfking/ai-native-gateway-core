@@ -24,6 +24,8 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 
 // element-plus 的表格在 jsdom 下不需要真实渲染逻辑；桩件只保留「有没有数据」
 // 这一个被断言的点，避免把测试变成 element-plus 的集成测试。
+// 2026-11-19：页面头部引入 KxDateRangePicker（其内部用 ElPopover/ElDatePicker），
+// 桩件补上这两个透传组件，jsdom 不需要真实弹出层。
 vi.mock('element-plus', () => ({
   ElButton: { setup: (_: unknown, { slots }: any) => () => h('button', slots.default?.()) },
   ElCard: { setup: (_: unknown, { slots }: any) => () => h('div', [slots.header?.(), slots.default?.()]) },
@@ -31,6 +33,8 @@ vi.mock('element-plus', () => ({
   ElPagination: { setup: () => () => h('div') },
   ElTable: { setup: (_: unknown, { slots }: any) => () => h('div', { class: 'el-table' }, slots.default?.()) },
   ElTableColumn: { setup: () => () => h('div') },
+  ElPopover: { setup: (_: unknown, { slots }: any) => () => h('div', [slots.default?.(), slots.reference?.()]) },
+  ElDatePicker: { setup: () => () => h('input') },
 }))
 
 const i18n = createI18n({
