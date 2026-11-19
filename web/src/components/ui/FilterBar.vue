@@ -31,6 +31,8 @@ const props = defineProps<{
   modelValue: Record<string, string>
   /** 搜索按钮加载态 */
   loading?: boolean
+  /** 挂载即展开面板（筛选内容外显，2026-11-20 audit-logs 轮）。静态初始值：后续变化不响应。 */
+  defaultOpen?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,7 +47,9 @@ const { isMobile } = useBreakpoint()
 // 2026-11-18：全断点默认收拢（原仅 <480 折叠，桌面平铺占半屏）。
 // 挂载时已有生效条件 ⇒ 自动展开一次（URL 恢复/默认筛选场景能看到控件）；
 // 用户手动收拢后不再自动展开。（activeCount 在下方 chips 之后定义）
-const expanded = ref(false)
+// 2026-11-20：defaultOpen 让筛选少的页面（如 audit-logs）直接外显筛选项；
+// 页面不传时维持收拢，行为逐字不变。
+const expanded = ref(props.defaultOpen ?? false)
 const manualTouched = ref(false)
 function setExpanded(v: boolean) {
   expanded.value = v

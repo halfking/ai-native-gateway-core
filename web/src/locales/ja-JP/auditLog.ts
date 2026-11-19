@@ -17,7 +17,6 @@ export default {
     actorPlaceholder: 'ユーザー名をあいまい検索',
     actionLabel: 'アクション',
     actionPlaceholder: '例: user.* または auth.*',
-    fromLabel: '開始時刻',
   },
   table: {
     headers: {

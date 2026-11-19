@@ -10,6 +10,10 @@ import { getAuditLogs, type AuditLogEntry } from '../api'
 import FilterBar from '../components/ui/FilterBar.vue'
 import type { FilterDefinition } from '../components/ui/filter-types'
 import PaginationBar from '../components/ui/PaginationBar.vue'
+// 2026-11-20 时间范围统一轮：页头时间范围改全站统一 KxDateRangePicker（带预设）
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { makeDateRangePresets } from '../components/ui/kxDatePresets'
 // 2026-10-05 H6 第四条切片：呈现形态与加载方式是**两个独立维度**（规范 03 §1 / 13 §1）。
 //   桌面 → 表格 + 页码（既有表格、徽章、行样式与页码条逐字保留）
 //   compact → 卡片 + 连续加载
@@ -28,16 +32,27 @@ const size = ref(50)
 const loading = ref(false)
 const error = ref('')
 
-const filters = ref<Record<string, string>>({ actor: '', action: '', from: '', to: '' })
+const filters = ref<Record<string, string>>({ actor: '', action: '' })
 
-// FilterBar 声明式定义（label 走 computed 以随语言切换更新）。
-// 2026-09-30 审计 P3-5：新模板 daterange 仅渲染 def.label，fromLabel/toLabel 为
-// 死契约已删除；label 复用既有 fromLabel 词条（不再另立新词条）。
+// 2026-11-20 时间范围统一轮：页头右上角 KxDateRangePicker（全站统一时间范围
+// 组件），默认档「近 7 天」+ today/yesterday/last24h/last7d/last14d/last30d/
+// thisMonth/lastMonth/自定义；上限 365 天（同 RoutingAuditView 口径）。
+// ★ 后端 `/api/admin/audit-logs` 的 from/to 契约不变（RFC3339 UTC）：
+//   预设输出走 UTC 日界（kxDatePresets 口径）→ parseLocalMinute 转 Date →
+//   toISOString 出 ISO；两条加载路径共用 filterBody 单一真源。
+const auditLogMaxSpan = 365
+
+const dateRange = ref<KxDateRange>(makeDateRangePresets('datetime', ['last7d'])[0]!.resolve())
+
 const filterDefs = computed<FilterDefinition[]>(() => [
   { key: 'actor', type: 'search', label: t('auditLog.filter.actorLabel'), placeholder: t('auditLog.filter.actorPlaceholder') },
   { key: 'action', type: 'search', label: t('auditLog.filter.actionLabel'), placeholder: t('auditLog.filter.actionPlaceholder') },
-  { key: 'time', type: 'daterange', fromKey: 'from', toKey: 'to', label: t('auditLog.filter.fromLabel') },
 ])
+
+function onApplyDateRange(range: KxDateRange) {
+  dateRange.value = range
+  resetPageAndLoad()
+}
 
 const detailVisible = ref(false)
 const detailEntry = ref<AuditLogEntry | null>(null)
@@ -53,9 +68,11 @@ function filterBody() {
   return {
     actor: filters.value.actor.trim() || undefined,
     action: filters.value.action.trim() || undefined,
-    // filters 存 datetime-local 的 'YYYY-MM-DDTHH:mm'（无秒非规范格式，补秒解析，P3-3）
-    from: filters.value.from ? parseLocalMinute(filters.value.from).toISOString() : undefined,
-    to: filters.value.to ? parseLocalMinute(filters.value.to).toISOString() : undefined,
+    // dateRange（'YYYY-MM-DD HH:mm' 分钟级，KxDateRangePicker 契约）是无秒
+    // 非规范格式，统一走 parseLocalMinute 补秒解析（P3-3，与 RequestLogsView
+    // onHeaderRangeApply 同一换算口），再 toISOString 成后端契约的 RFC3339 UTC。
+    from: dateRange.value.start ? parseLocalMinute(dateRange.value.start).toISOString() : undefined,
+    to: dateRange.value.end ? parseLocalMinute(dateRange.value.end).toISOString() : undefined,
   }
 }
 
@@ -89,11 +106,6 @@ function changePage(delta: number) {
   if (next < 1 || next > totalPages.value) return
   page.value = next
   load()
-}
-
-function clearFilters() {
-  filters.value = { actor: '', action: '', from: '', to: '' }
-  resetPageAndLoad()
 }
 
 function onPageSizeChange(next: number) {
@@ -299,6 +311,15 @@ onMounted(reload)
     <div class="page-header">
       <h2>{{ t('auditLog.page.title') }}</h2>
       <div class="header-actions">
+        <!-- 2026-11-20 时间范围统一轮：标准 KxDateRangePicker 放页头右上角，
+             预设+自定义即时生效（instant），与普通筛选分开（同 RequestLogsView 先例）。 -->
+        <KxDateRangePicker
+          v-model="dateRange"
+          precision="datetime"
+          :max-span-days="auditLogMaxSpan"
+          instant
+          @apply="onApplyDateRange"
+        />
         <span class="count-chip" aria-live="polite">{{ t('auditLog.page.totalChip', { n: totalCount }) }}</span>
         <button class="btn btn-primary btn-sm" :disabled="busy" @click="reload">
           {{ busy ? t('auditLog.page.refreshing') : t('auditLog.page.refresh') }}
@@ -310,10 +331,13 @@ onMounted(reload)
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
 
+    <!-- 2026-11-20 筛选内容外显轮：default-open 让操作员/动作两个筛选框默认展开可见，
+         收拢开关保留（defaultOpen 仅挂载初值，手动收拢后不再自动展开）。 -->
     <FilterBar
       v-model="filters"
       :definitions="filterDefs"
       :loading="loading"
+      default-open
       @search="resetPageAndLoad"
       @clear="resetPageAndLoad"
     />
