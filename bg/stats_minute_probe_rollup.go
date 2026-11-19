@@ -151,6 +151,18 @@ func (w *StatsMinuteRollup) rollupProbe(ctx context.Context, since, until time.T
 //	每 tick 最多删 retireProbeMinutesBatch 行，积压靠后续 tick 收敛；
 //	7d TTL（cleanupOldProbeLaneTables，lifecycle.session_turns_probe_hot_ttl_days）
 //	仍是硬天花板。
+//
+// ★ 2026-11-19：NOT EXISTS 里的匹配条件从
+//
+//	`date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket`
+//	改写为 sargable 区间 `r.ts >= m.bucket AND r.ts < m.bucket + 1min`。
+//	根因（211 EXPLAIN 实证）：date_trunc 包住 r.ts 使 planner 只能对
+//	session_turns_probe_hot（44.2 万行 / ~289MB）整表 Parallel Seq Scan 建
+//	Hash Right Anti Join，**每次退役跑批都全表扫**，且 LIMIT 2000 救不了
+//	（anti-join 必须先物化全部候选）；慢日志实测 24h 1283 次 / p50 834ms。
+//	等价性已 211 只读探针双证：近 3 天 26,523 组桶三元组两形态集合完全一致
+//	（only_old=0 / only_new=0），且 probe_minute 桶全部分钟对齐（前提）。
+//	改写后可吃 idx_session_turns_probe_hot_tenant_ts (tenant_id, ts) 索引。
 const (
 	retireProbeMinutesBatch = 2000
 )
@@ -162,7 +174,8 @@ const retireProbeMinutesStatement = `
 		 WHERE m.bucket < $1
 		   AND NOT EXISTS (
 			SELECT 1 FROM session_turns_probe_hot r
-			 WHERE date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket
+			 WHERE r.ts >= m.bucket
+			   AND r.ts < m.bucket + interval '1 minute'
 			   AND r.tenant_id = m.tenant_id
 			   AND COALESCE(r.provider_id, 0) = m.provider_id
 		   )

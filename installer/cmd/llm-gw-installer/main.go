@@ -1805,6 +1805,21 @@ var piAnalysisStatsViewAlignment980 []byte
 //go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.down.sql
 var piAnalysisStatsViewAlignment980Down []byte
 
+// ★ 981（2026-11-19 会话分析系统基础设施）：为 sessions 表添加元数据列，创建物化视图。
+//
+//	为会话分析系统创建基础设施：
+//	- sessions 表新增 project/task/task_category/is_probe 四列
+//	- 创建 4 个物化视图：user_session_aggregates, project_task_aggregates,
+//	  agent_usage_aggregates, model_usage_aggregates
+//	- 创建刷新函数：refresh_session_analytics_view(), refresh_all_session_analytics_views()
+//	- 自动标记探测会话并首次数据填充
+//
+//go:embed embeddata/startup/981_session_analytics_foundation.sql
+var sessionAnalyticsFoundation981 []byte
+
+//go:embed embeddata/startup/981_session_analytics_foundation.down.sql
+var sessionAnalyticsFoundation981Down []byte
+
 // ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 //
 //	★ 2026-11-19 文档一致性轮补五点同步——并行车首提交只写了正典，
@@ -2452,6 +2467,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
 	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
 	// ★ 981（2026-11-19 会话分析系统基础轮）：元数据列 + 物化视图。
+	"startup/981_session_analytics_foundation.sql":      sessionAnalyticsFoundation981,
+	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
+	// ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
 	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
 	"startup/992_add_cst_timezone_functions.sql":     cstTimezoneFunctions992,

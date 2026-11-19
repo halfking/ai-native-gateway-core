@@ -1,5 +1,6 @@
--- Migration 980: Session Analytics Foundation
+-- Migration 981: Session Analytics Foundation
 -- 为会话分析系统创建基础设施：元数据列、物化视图、索引
+-- dbinit:no-transaction
 
 -- ============================================================================
 -- Part 1: 为 sessions 表添加元数据列
@@ -42,23 +43,23 @@ COMMENT ON COLUMN sessions.is_probe IS '是否为探测/测试会话，用于统
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS user_session_aggregates AS
 SELECT
-    s.owner,
+    s.owner_user as owner,
     s.tenant_id,
     DATE(s.created_at) as date,
     COUNT(*) as session_count,
     COUNT(DISTINCT s.project) FILTER (WHERE s.project IS NOT NULL) as project_count,
     COUNT(DISTINCT s.task) FILTER (WHERE s.task IS NOT NULL) as task_count,
-    COALESCE(SUM(s.total_input_tokens + s.total_output_tokens), 0) as total_tokens,
-    COALESCE(SUM(s.total_input_tokens), 0) as input_tokens,
-    COALESCE(SUM(s.total_output_tokens), 0) as output_tokens,
-    COALESCE(SUM(s.total_cost), 0) as internal_cost,
-    COALESCE(SUM(s.total_external_cost), 0) as external_cost,
+    COALESCE(SUM(s.total_tokens), 0) as total_tokens,
+    COALESCE(SUM(s.total_tokens), 0) as input_tokens,
+    0 as output_tokens,
+    COALESCE(SUM(s.total_cost_usd), 0) as internal_cost,
+    0.0 as external_cost,
     COALESCE(AVG(EXTRACT(EPOCH FROM (s.updated_at - s.created_at))), 0) as avg_duration_seconds,
-    COALESCE(AVG(s.turn_count), 0) as avg_turns,
+    COALESCE(AVG(s.total_turns), 0) as avg_turns,
     MAX(s.created_at) as last_active_at
 FROM sessions s
 WHERE s.is_probe = false
-GROUP BY s.owner, s.tenant_id, DATE(s.created_at);
+GROUP BY s.owner_user, s.tenant_id, DATE(s.created_at);
 
 -- 创建索引以加速查询
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_session_agg_pk 
@@ -78,21 +79,21 @@ COMMENT ON MATERIALIZED VIEW user_session_aggregates IS '用户会话日聚合�
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS project_task_aggregates AS
 SELECT
-    s.owner,
+    s.owner_user as owner,
     s.tenant_id,
     s.project,
     s.task,
     DATE(s.created_at) as date,
     COUNT(*) as session_count,
-    COALESCE(SUM(s.turn_count), 0) as turn_count,
-    COALESCE(SUM(s.total_input_tokens + s.total_output_tokens), 0) as total_tokens,
-    COALESCE(SUM(s.total_cost), 0) as internal_cost,
-    COALESCE(SUM(s.total_external_cost), 0) as external_cost,
+    COALESCE(SUM(s.total_turns), 0) as turn_count,
+    COALESCE(SUM(s.total_tokens), 0) as total_tokens,
+    COALESCE(SUM(s.total_cost_usd), 0) as internal_cost,
+    0.0 as external_cost,
     MAX(s.created_at) as last_active_at
 FROM sessions s
 WHERE s.is_probe = false 
     AND s.project IS NOT NULL
-GROUP BY s.owner, s.tenant_id, s.project, s.task, DATE(s.created_at);
+GROUP BY s.owner_user, s.tenant_id, s.project, s.task, DATE(s.created_at);
 
 -- 创建索引
 CREATE INDEX IF NOT EXISTS idx_project_task_agg_owner 
@@ -115,12 +116,12 @@ SELECT
     s.agent_name,
     s.tenant_id,
     DATE(s.created_at) as date,
-    COUNT(DISTINCT s.owner) as user_count,
+    COUNT(DISTINCT s.owner_user) as user_count,
     COUNT(*) as session_count,
     COUNT(DISTINCT s.task) FILTER (WHERE s.task IS NOT NULL) as task_count,
-    COALESCE(SUM(s.total_input_tokens + s.total_output_tokens), 0) as total_tokens,
-    COALESCE(SUM(s.total_cost), 0) as internal_cost,
-    COALESCE(SUM(s.total_external_cost), 0) as external_cost,
+    COALESCE(SUM(s.total_tokens), 0) as total_tokens,
+    COALESCE(SUM(s.total_cost_usd), 0) as internal_cost,
+    0.0 as external_cost,
     COALESCE(AVG(EXTRACT(EPOCH FROM (s.updated_at - s.created_at))), 0) as avg_duration_seconds,
     MAX(s.created_at) as last_used_at
 FROM sessions s
@@ -155,7 +156,7 @@ SELECT
     COALESCE(SUM(rl.completion_tokens), 0) as output_tokens,
     COALESCE(SUM(rl.total_tokens), 0) as total_tokens,
     COALESCE(SUM(rl.cost), 0) as internal_cost,
-    COALESCE(SUM(rl.external_cost), 0) as external_cost,
+    0.0 as external_cost,
     COALESCE(AVG(rl.latency_ms), 0) as avg_duration_ms,
     MAX(rl.created_at) as last_used_at
 FROM request_logs_with_current_month rl
@@ -218,7 +219,7 @@ WHERE is_probe = false
         OR title ILIKE '%probe%'
         OR title ILIKE '%测试%'
         OR title ILIKE '%探测%'
-        OR owner LIKE 'test_%'
+        OR owner_user LIKE 'test_%'
     );
 
 -- 记录标记的探测会话数量
