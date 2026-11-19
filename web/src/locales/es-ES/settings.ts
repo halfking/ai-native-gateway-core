@@ -95,6 +95,10 @@ export default {
  expert: 'Modo experto: navegación completa con todas las páginas (valor predeterminado actual).',
  },
  },
+ timezone: {
+    hint: 'La zona horaria determina cómo se agregan y muestran todos los rangos de tiempo (cortes de día, informes, consultas de registros). Predeterminado: UTC+8; se aplica inmediatamente después de guardar.',
+    currentNow: 'Desfase horario actual: {offset}',
+  },
   docs: {
     compressionModeTitle: '📖 Modo de compresión en detalle',
     compressionModeContent: `<p>El <strong>modo de compresión</strong> controla cómo el sistema maneja contextos de conversación demasiado largos:</p>

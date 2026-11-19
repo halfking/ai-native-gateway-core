@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   listSettings,
   getSetting,
@@ -10,6 +10,7 @@ import {
   type SettingSpec,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { fetchSystemTimezone } from '../utils/systemTimezone'
 // ★★ 图标一律用图标库的组件（DESIGN.md §6「图标是画出来的」——不许用 emoji /
 //   Unicode 字形冒充图标系统）。第 29 增量：这一组原本是 11 个 emoji 字形
 //   （📋 🗜 🚦 ⏱ 🔁 🔀 💬 🔐 🔒 ⚡ ⚙️）⇒ **emoji 藏在一个数据数组里** ⇒
@@ -42,6 +43,28 @@ const currentSource = ref<string>('')
 const editBuffer = ref<string>('') // JSON text editor
 const filterCategory = ref<string>('')
 const tagInput = ref('')
+
+// 时区轮（2026-11-20）：system.timezone 专用下拉的候选与当前偏移提示。
+// 候选在选中该键时从 /api/admin/system-timezone 拉取（后端 choices 白名单面）。
+const timezoneChoices = ref<Array<{ name: string; label: string }>>([])
+const timezoneCurrentOffset = ref<string>('')
+async function loadTimezoneChoices() {
+  try {
+    const res = await fetch('/api/admin/system-timezone', { credentials: 'include' })
+    if (!res.ok) return
+    const data = await res.json()
+    if (Array.isArray(data.choices)) timezoneChoices.value = data.choices
+    if (typeof data.utc_offset === 'string') timezoneCurrentOffset.value = data.utc_offset
+  } catch {
+    /* 拉不到候选时退回 string 输入框（v-else-if 的 choices 空数组仍渲染空下拉，
+       补一个兜底：把当前值塞进候选保证可见） */
+  }
+}
+watch(selectedKey, (key) => {
+  if (key === 'system.timezone' && timezoneChoices.value.length === 0) {
+    void loadTimezoneChoices()
+  }
+})
 
 const categories = computed(() => [
   { key: '',                   label: t('settings.category.all'),  icon: Files },
@@ -180,6 +203,11 @@ async function save() {
     await updateSetting(selectedKey.value, { value: parsed })
     await loadList()
     await selectKey(selectedKey.value)
+    // 时区轮（2026-11-20）：保存 system.timezone 后即时刷新全局时区状态，
+    // 显示格式化与日切立刻切换（不等 App.vue 下次启动）。
+    if (selectedKey.value === 'system.timezone') {
+      await fetchSystemTimezone()
+    }
   } catch (e: any) {
     error.value = e.message || t('settings.detail.errors.saveFailed')
   } finally {
@@ -407,6 +435,21 @@ onMounted(() => {
             <div class="select-hint">
               <div v-if="editBuffer === 'simple'" class="hint-item">{{ t('settings.gateway.modeDescriptions.simple') }}</div>
               <div v-else-if="editBuffer === 'expert'" class="hint-item">{{ t('settings.gateway.modeDescriptions.expert') }}</div>
+            </div>
+          </div>
+
+          <!-- system.timezone: 系统时区下拉（2026-11-20 时区轮）。
+               候选来自 /api/admin/system-timezone 的 choices（后端白名单面）；
+               保存后即时刷新全局时区状态，显示/日切立刻切换。 -->
+          <div v-else-if="selectedKey === 'system.timezone'" class="editor-select">
+            <select v-model="editBuffer" class="select-input">
+              <option v-for="c in timezoneChoices" :key="c.name" :value="c.name">
+                {{ c.label }}（{{ c.name }}）
+              </option>
+            </select>
+            <div class="select-hint">
+              <div class="hint-item">{{ t('settings.timezone.hint') }}</div>
+              <div v-if="timezoneCurrentOffset" class="hint-item">{{ t('settings.timezone.currentNow', { offset: timezoneCurrentOffset }) }}</div>
             </div>
           </div>
 

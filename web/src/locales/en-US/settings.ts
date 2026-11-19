@@ -94,6 +94,10 @@ export default {
  expert: 'Expert mode: full navigation with all pages (current default).',
  },
  },
+ timezone: {
+    hint: 'The timezone governs how every time range is aggregated and displayed (day boundaries, reports, log queries). Defaults to UTC+8 and takes effect immediately after saving.',
+    currentNow: 'Current timezone offset: {offset}',
+  },
   docs: {
     compressionModeTitle: '📖 Compression mode in detail',
     compressionModeContent: `<p><strong>Compression mode</strong> controls how the system handles over-long conversation context:</p>

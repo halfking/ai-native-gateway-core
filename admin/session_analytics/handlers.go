@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Handler 会话分析系统的 HTTP 处理器
@@ -295,8 +296,9 @@ func parseUserRankingParamsFromRequest(r *http.Request) (*userRankingParams, err
 }
 
 // isValidDate 验证日期格式 (YYYY-MM-DD)
+// 时区轮（2026-11-20）：走 settings.ParseSystemDate，与解析面同源。
 func isValidDate(dateStr string) bool {
-	_, err := time.Parse("2006-01-02", dateStr)
+	_, err := settings.ParseSystemDate(dateStr)
 	return err == nil
 }
 

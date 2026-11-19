@@ -18,6 +18,7 @@ import AppTopbar from './components/shell/AppTopbar.vue'
 // 也要显示（见 composable 的三态说明）。
 import DataHorizonBanner from './components/shell/DataHorizonBanner.vue'
 import { refreshDataHorizon } from './composables/useDataHorizon'
+import { fetchSystemTimezone } from './utils/systemTimezone'
 // 2026-10-05 部署序号更新提示（docs/UI规范/18 §4 / §10.3 步骤 4）：
 // 桌面侧只接 deploy-seq 检查 + 非阻塞提示条，不接 SW。
 import DeploySeqUpdateBanner from './components/shell/DeploySeqUpdateBanner.vue'
@@ -95,6 +96,10 @@ onMounted(async () => {
   // 拉一次「流量数据地平线」告示。失败**不**阻塞挂载：横幅自己会显示
   // 「无法确认状态」而不是消失 —— 未确认不等于正常。
   void refreshDataHorizon()
+  // 2026-11-20 时区设置轮：拉系统时区（system.timezone）注入全局状态，
+  // datetime.ts 格式化面与 kxDatePresets/boardTimeRange 日切面按它解释。
+  // 失败静默回退浏览器本地时区，不阻塞挂载。
+  void fetchSystemTimezone()
   // 部署序号检查（UI规范 18 §4）：首查延迟晚于首屏落地，检查失败不打断页面。
   // 三态（登录/游客/hydrating）都检查——停在登录页的设备也该收到更新提示。
   deploySeqUpdate.start()

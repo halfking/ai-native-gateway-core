@@ -7,6 +7,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/bg"
 	dbpkg "github.com/kaixuan/llm-gateway-go/db"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // boardTimeRange is the resolved window for dashboard board queries.
@@ -22,7 +23,7 @@ func boardTimeRangeFromRequest(r *http.Request) (boardTimeRange, error) {
 	endStr := queryString(r, "end")
 	if startStr == "" && endStr == "" {
 		days := boardDays(r)
-		return boardPresetTimeRange(days, time.Now().UTC()), nil
+		return boardPresetTimeRange(days, time.Now()), nil
 	}
 	start, end, err := resolveUsageTimeRange(r, 1)
 	if err != nil {
@@ -41,8 +42,9 @@ func boardTimeRangeFromRequest(r *http.Request) (boardTimeRange, error) {
 }
 
 func (tr boardTimeRange) includesTodayUTC() bool {
-	now := time.Now().UTC()
-	todayStart := now.Truncate(24 * time.Hour)
+	// 系统时区「今天」零点；与 boardPresetTimeRange 同口径。
+	now := time.Now()
+	todayStart := settings.SystemDayStart(now)
 	return tr.End.After(todayStart)
 }
 
@@ -125,18 +127,23 @@ func boardLogsWhere(tr boardTimeRange, alias, tenantID string) (where string, ar
 }
 
 func daysToBoardTimeRange(days int) boardTimeRange {
-	return boardPresetTimeRange(days, time.Now().UTC())
+	return boardPresetTimeRange(days, time.Now())
 }
 
-// boardPresetTimeRange maps preset tabs to calendar-aligned UTC windows.
+// boardPresetTimeRange maps preset tabs to calendar-aligned windows.
+//
+// 2026-11-20 时区轮：日切从 UTC 零点改为系统时区（settings.system.timezone，
+// 默认 Asia/Shanghai）零点——「今天/近7天/近30天」的日历日语义跟随系统时区，
+// 与前端 kxDatePresets 的系统时区日切对齐。Start/End 为 UTC 瞬间
+// （与 timestamptz 比较口径一致）。
 func boardPresetTimeRange(days int, now time.Time) boardTimeRange {
 	if days < 1 {
 		days = 1
 	}
-	todayStart := now.Truncate(24 * time.Hour)
+	todayStart := settings.SystemDayStart(now)
 	return boardTimeRange{
-		Start:  todayStart.Add(-time.Duration(days-1) * 24 * time.Hour),
-		End:    now,
+		Start:  todayStart.AddDate(0, 0, -(days - 1)).UTC(),
+		End:    now.UTC(),
 		Days:   days,
 		Custom: false,
 	}

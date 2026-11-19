@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // OverviewSummary 总体统计摘要
@@ -592,12 +594,14 @@ func getModelStats(ctx context.Context, db *sql.DB, tenantID *string, startDate,
 }
 
 // getPreviousPeriod 计算前一个周期的日期范围
+// 时区轮（2026-11-20）：日期串按系统时区解析，使「周期长度」按系统时区
+// 日历日计算（DST 时区下两个日期串的间隔可能与 24h 整数倍不同）。
 func getPreviousPeriod(startDate, endDate string) (string, string, error) {
-	start, err := time.Parse("2006-01-02", startDate)
+	start, err := settings.ParseSystemDate(startDate)
 	if err != nil {
 		return "", "", err
 	}
-	end, err := time.Parse("2006-01-02", endDate)
+	end, err := settings.ParseSystemDate(endDate)
 	if err != nil {
 		return "", "", err
 	}

@@ -108,11 +108,14 @@ func (w *ReportRollupWorker) runRecovered(ctx context.Context, trigger string) {
 			slog.Error("report rollup worker panic recovered", "trigger", trigger, "recover", rec)
 		}
 	}()
-	// 截断到 UTC 午夜：MissingRollupDates 返回的就是午夜日期，skip 比对
-	// 必须同刻度（审计轮实修：未截断的 yesterday 与探测日期永不相等，
-	// 跳过逻辑失效导致昨日被重复聚合——幂等兜底正确性但白跑一趟）。
-	now := time.Now().UTC()
-	yesterday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	// 截断到系统时区（settings.system.timezone，默认 Asia/Shanghai）午夜：
+	// MissingRollupDates 返回的就是午夜日期，skip 比对必须同刻度（审计轮实修：
+	// 未截断的 yesterday 与探测日期永不相等，跳过逻辑失效导致昨日被重复聚合
+	// ——幂等兜底正确性但白跑一趟）。时区轮 2026-11-20：UTC 午夜 → 系统时区
+	// 午夜，「昨日」语义跟随系统时区；RollupDay 内部按收到的 day 的本地
+	// 字段构造 start/end，传系统时区零点即得系统时区日界。
+	now := time.Now()
+	yesterday := settings.SystemDayStart(now).AddDate(0, 0, -1)
 	if _, err := w.RollupDate(ctx, yesterday); err != nil {
 		slog.Warn("report rollup worker run failed", "trigger", trigger, "error", err)
 	}

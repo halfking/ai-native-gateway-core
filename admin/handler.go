@@ -1363,6 +1363,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Tenant endpoints require super_admin (enforced inside the handler).
 	h.registerSettingsRoutes(mux)
 
+	// 2026-11-20 时区设置轮：系统时区读/便捷写
+	//（GET/PUT /api/admin/system-timezone，前端启动读取用于显示与日切对齐）。
+	h.registerTimezoneRoutes(mux)
+
 	// 2026-07-06: session state management endpoints.
 	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))
 	mux.HandleFunc("/api/admin/sessions/", admin(h.handleSessionSubrouter))

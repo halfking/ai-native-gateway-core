@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // appendOwnerFilterForRegular appends an owner_user restriction for regular
@@ -638,15 +639,17 @@ type analyticsFilters struct {
 }
 
 // parseAnalyticsFilters 解析查询参数
+// 时区轮（2026-11-20）：日期串按系统时区零点解析（用户表达的日历日）；
+// 消费方用 dateTo.AddDate(0,0,1) 作排他上界，日历日语义保持。
 func parseAnalyticsFilters(r *http.Request) (*analyticsFilters, error) {
 	q := r.URL.Query()
 
 	// 默认 7 天
-	dateTo := time.Now()
+	dateTo := settings.SystemNow()
 	dateFrom := dateTo.AddDate(0, 0, -7)
 
 	if df := q.Get("date_from"); df != "" {
-		parsed, err := time.Parse("2006-01-02", df)
+		parsed, err := settings.ParseSystemDate(df)
 		if err != nil {
 			return nil, fmt.Errorf("invalid date_from format")
 		}
@@ -654,7 +657,7 @@ func parseAnalyticsFilters(r *http.Request) (*analyticsFilters, error) {
 	}
 
 	if dt := q.Get("date_to"); dt != "" {
-		parsed, err := time.Parse("2006-01-02", dt)
+		parsed, err := settings.ParseSystemDate(dt)
 		if err != nil {
 			return nil, fmt.Errorf("invalid date_to format")
 		}

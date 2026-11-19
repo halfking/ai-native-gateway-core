@@ -96,6 +96,10 @@ export default {
  expert: 'Expertenmodus: Vollständige Navigation mit allen Seiten (aktuelle Voreinstellung).',
  },
  },
+ timezone: {
+    hint: 'Die Zeitzone legt fest, wie alle Zeitbereiche aggregiert und angezeigt werden (Tagesgrenzen, Berichte, Logabfragen). Voreinstellung ist UTC+8; Änderungen greifen sofort nach dem Speichern.',
+    currentNow: 'Aktueller Zeitzonen-Offset: {offset}',
+  },
   docs: {
     compressionModeTitle: '📖 Komprimierungsmodus im Detail',
     compressionModeContent: `<p><strong>Komprimierungsmodus</strong> steuert, wie das System mit übergroßen Konversationen umgeht:</p>

@@ -96,6 +96,10 @@ export default {
  expert: 'Mode expert : navigation complète avec toutes les pages (réglage actuel par défaut).',
  },
  },
+ timezone: {
+    hint: 'Le fuseau horaire détermine comment chaque plage horaire est agrégée et affichée (limites de jour, rapports, requêtes de journaux). Par défaut : UTC+8 ; prend effet immédiatement après enregistrement.',
+    currentNow: 'Décalage horaire actuel : {offset}',
+  },
   docs: {
     compressionModeTitle: '📖 Mode de compression en détail',
     compressionModeContent: `<p>Le <strong>mode de compression</strong> contrôle la façon dont le système gère les conversations trop longues :</p>

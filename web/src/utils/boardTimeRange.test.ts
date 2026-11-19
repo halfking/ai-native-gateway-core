@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { boardRangeElapsedMinutes, usageQueryForBoardRange } from './boardTimeRange'
+import { resetSystemTimezoneForTest, setSystemTimezoneForTest } from './systemTimezone'
+
+// 时区轮（2026-11-20）：日切按系统时区。注入 UTC 与旧断言逐字兼容；
+// 本文件断言对固定时区稳健（日期串随注入时区的日历日），额外 +08 用例
+// 钉「时区真被消费」。跑完复位，避免泄漏到其它测试文件。
+setSystemTimezoneForTest('UTC')
+afterAll(() => resetSystemTimezoneForTest())
 
 const now = Date.parse('2026-09-30T03:00:00Z')
 
@@ -67,6 +74,27 @@ describe('usageQueryForBoardRange', () => {
     }, now)).toEqual({
       start: '2026-09-28',
       end: '2026-09-28',
+      days: 1,
+    })
+  })
+})
+
+describe('系统时区注入（2026-11-20 时区轮）', () => {
+  it('+08 注入：今日窗起点 = +08 零点（UTC 09-29 16:00Z）⇒ elapsed = 11h；UTC 注入 = 3h', () => {
+    const plus8Now = Date.parse('2026-09-30T03:00:00Z')
+    setSystemTimezoneForTest('Asia/Shanghai')
+    expect(boardRangeElapsedMinutes({ preset: 'today', days: 1 }, plus8Now)).toBe(11 * 60)
+    setSystemTimezoneForTest('UTC')
+    expect(boardRangeElapsedMinutes({ preset: 'today', days: 1 }, plus8Now)).toBe(3 * 60)
+  })
+
+  it('+08 注入：usageQueryForBoardRange(today) 在 +08 深夜后日期串进新日', () => {
+    setSystemTimezoneForTest('Asia/Shanghai')
+    // UTC 09-30 20:00 = +08 10-01 04:00 ⇒ 日期串为 10-01。
+    const lateNight = Date.parse('2026-09-30T20:00:00Z')
+    expect(usageQueryForBoardRange({ preset: 'today', days: 1 }, lateNight)).toEqual({
+      start: '2026-10-01',
+      end: '2026-10-01',
       days: 1,
     })
   })
