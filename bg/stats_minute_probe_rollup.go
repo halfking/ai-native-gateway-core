@@ -156,15 +156,36 @@ func (w *StatsMinuteRollup) rollupProbe(ctx context.Context, since, until time.T
 //
 //	`date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' = m.bucket`
 //	改写为 sargable 区间 `r.ts >= m.bucket AND r.ts < m.bucket + 1min`。
-//	根因（211 EXPLAIN 实证）：date_trunc 包住 r.ts 使 planner 只能对
-//	session_turns_probe_hot（44.2 万行 / ~289MB）整表 Parallel Seq Scan 建
-//	Hash Right Anti Join，**每次退役跑批都全表扫**，且 LIMIT 2000 救不了
-//	（anti-join 必须先物化全部候选）；慢日志实测 24h 1283 次 / p50 834ms。
-//	等价性已 211 只读探针双证：近 3 天 26,523 组桶三元组两形态集合完全一致
-//	（only_old=0 / only_new=0），且 probe_minute 桶全部分钟对齐（前提）。
-//	改写后可吃 idx_session_turns_probe_hot_tenant_ts (tenant_id, ts) 索引。
+//	（该轮依据见 git 历史 d3f7ce95e；**此单侧改写后来在生产被证伪，见下。**）
+//
+// ★ 2026-11-20（第 86 轮复验判伪 + 二修，两侧同时有界）：
+//
+//	只把谓词改 sargable **不改变计划**：211 EXPLAIN 实证 planner 在
+//	候选无界时仍选 Seq Scan probe_hot 建 Hash Anti Join（sargable 谓词
+//	沦为 Join Filter）。真实执行 >20s（statement_timeout 20s 实证被掐）
+//	——哈希键 (tenant_id, provider_id) 在 7d 源流水上多重度极高，候选
+//	11.4 万 × 同键碰撞数千 ⇒ Join Filter 空转 348 万行对 + 哈希溢盘
+//	（Batches 8）。b394b197 构建上线后本语句**每个 tick 跑满 2 分钟 ctx
+//	被 cancel**（旧形态同条件 p50 834ms 完成），retire 永不提交 ⇒
+//	rollupDims / resweep / 游标推进全部排在它之后 ⇒ 游标停摆 68min+
+//	且窗口每 tick +1min 膨胀（死亡螺旋）。
+//
+//	二修 = **两侧同时有界，等价性可证**：候选桶 ∈ [since-2h, since)
+//	⇒ 任何可能匹配的源行必 ⊆ [since-2h, since+1min)，r 侧全局窗不排除
+//	任何潜在匹配。效果（211 EXPLAIN ANALYZE，生产数据+当前负载）：
+//	m 侧走 pkey 前缀（759 行）、r 侧走 idx_session_turns_probe_hot_ts
+//	只扫 ~2h 切片（3341 行）、哈希不溢盘 —— **61.6ms**（无界 >20s）。
+//	更老的幽灵桶交由 TTL 硬天花板（cleanupOldProbeLaneTables，两表同
+//	TTL）；补窗封顶见 statsRollupCatchupCap（rollup tick 侧）。
 const (
 	retireProbeMinutesBatch = 2000
+
+	// retireProbeMinutesLookback 是候选桶与 r 侧扫描共用的时间窗（2h）。
+	// 2h ≈ 当前探测桶写入速率（~6 行/min）× 720 行候选 × 同键碰撞，
+	// 任何计划形态下都有界；放宽前先在 211 复测（Join Filter churn 随
+	// 窗口线性增长）。字面量内联在 SQL 里（raw string 不得拼接，
+	// 结构测试按反引号截取整段 SQL）。
+	retireProbeMinutesLookback = "2 hours"
 )
 
 const retireProbeMinutesStatement = `
@@ -172,9 +193,12 @@ const retireProbeMinutesStatement = `
 		SELECT m.ctid
 		  FROM request_stats_probe_minute m
 		 WHERE m.bucket < $1
+		   AND m.bucket >= $1 - interval '2 hours'
 		   AND NOT EXISTS (
 			SELECT 1 FROM session_turns_probe_hot r
-			 WHERE r.ts >= m.bucket
+			 WHERE r.ts >= $1 - interval '2 hours'
+			   AND r.ts < $1 + interval '1 minute'
+			   AND r.ts >= m.bucket
 			   AND r.ts < m.bucket + interval '1 minute'
 			   AND r.tenant_id = m.tenant_id
 			   AND COALESCE(r.provider_id, 0) = m.provider_id
