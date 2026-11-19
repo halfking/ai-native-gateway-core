@@ -184,7 +184,7 @@ const projCard = await js(`(() => {
   const need = ['项目 ID', '会话数', '任务数', 'Token', 'USD 成本', '积分', '最近活跃']
   const rows = card.querySelectorAll('tbody tr').length
   const note = (card.querySelector('.projects-source-note')?.textContent || '').slice(0, 80)
-  const emptyText = card.textContent.includes('还没有项目数据')
+  const emptyText = card.textContent.includes('还没有项目数据') || card.textContent.includes('暂无数据')
   const sample = card.querySelector('tbody tr')?.textContent?.trim().slice(0, 90) || ''
   return JSON.stringify({ ok: true, headers: need.map(h => headers.includes(h)), rows, note, emptyText, sample })
 })()`)

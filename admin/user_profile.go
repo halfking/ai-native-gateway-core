@@ -1287,7 +1287,7 @@ func queryUserProjects(ctx context.Context, db usageQuerier, ownerUser, tenantID
 	querySQL := fmt.Sprintf(`
 		SELECT
 			ss.gw_project_id AS project_id,
-			COUNT(DISTINCT ss.gw_session_id) AS session_count,
+			COUNT(DISTINCT ss.session_key) AS session_count,
 			COUNT(DISTINCT sd.task_id) FILTER (WHERE sd.task_id IS NOT NULL AND sd.task_id::text <> '' AND sd.task_id::text <> 'default') AS task_count,
 			COALESCE(SUM(ss.request_count), 0) AS request_count,
 			COALESCE(SUM(ss.total_tokens), 0) AS total_tokens,
