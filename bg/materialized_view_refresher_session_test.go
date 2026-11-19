@@ -14,8 +14,22 @@ import (
 // 245 实测：视图 06:31:36 填过，16:07 时端点仍在返回它（陈旧 9h37m），
 // 而 session_summaries 一直在写。端点没有新鲜度门 ⇒ 过期被伪装成「就是这个数」。
 
-func TestSessionAnalyticsViews_AreTheThreeFromMigration357(t *testing.T) {
-	want := []string{"session_client_stats", "session_task_stats", "session_client_task_matrix"}
+// TestSessionAnalyticsViews_CoverBothViewFamilies 钉测：清单必须同时覆盖
+// 357 族（3 个）与 981 族（4 个），且无重复、无意外项。
+//
+// ★ 为什么从 "_AreTheThreeFromMigration357" 改名：本清单在 981 轮扩容了
+//   （981 建的 4 个会话分析视图也必须被刷新，见 refresher 里的注释）。
+//   ⇒ 断言从「恰好 3 个」改成「恰好 7 个且分属两族」——
+//   **把「数量写死」改成「集合写死」**：数量是易过期数字，
+//   集合才是判别力所在（多一个少一个都要能看出来）。
+func TestSessionAnalyticsViews_CoverBothViewFamilies(t *testing.T) {
+	want := []string{
+		// 357 族（迁移 357）
+		"session_client_stats", "session_task_stats", "session_client_task_matrix",
+		// 981 族（迁移 981：会话分析 4 个视图）
+		"user_session_aggregates", "project_task_aggregates",
+		"agent_usage_aggregates", "model_usage_aggregates",
+	}
 	if len(SessionAnalyticsViews) != len(want) {
 		t.Fatalf("视图数应为 %d，实际 %d：%v", len(want), len(SessionAnalyticsViews), SessionAnalyticsViews)
 	}
@@ -33,6 +47,11 @@ func TestSessionAnalyticsViews_AreTheThreeFromMigration357(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("清单里有非预期视图 %q", v)
+		}
+	}
+	for _, w := range want {
+		if !seen[w] {
+			t.Fatalf("清单缺少视图 %q —— 它不会被刷新 ⇒ 视图会停在迁移那一刻", w)
 		}
 	}
 }
