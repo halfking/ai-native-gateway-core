@@ -12,6 +12,7 @@ export default {
   credentials: 'Identifiants',
   copy: 'Copier',
   button: {
+    remove: 'Retirer',
     cancel: 'Annuler',
     confirm: 'Confirmer',
     save: 'Enregistrer',

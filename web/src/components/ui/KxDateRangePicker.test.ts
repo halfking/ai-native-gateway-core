@@ -1,8 +1,9 @@
 // KxDateRangePicker.test.ts — 统一时间范围组件契约测试（2026-09-30）。
-// 覆盖：触发器渲染、面板打开、预设回填、应用提交（update:modelValue + apply）、
-// 结束早于开始禁用、maxSpanDays 超限禁用、instant 模式即时提交。
+// 覆盖：触发器渲染、面板打开、预设点击即提交并关闭（2026-11-20）、应用提交（update:modelValue + apply）、
+// 结束早于开始禁用、maxSpanDays 超限禁用（预设与草稿两侧）、instant 模式即时提交。
 // EP 弹层内容走 teleport，这里对 ElPopover/ElDatePicker 打桩后直测面板逻辑。
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import KxDateRangePicker from './KxDateRangePicker.vue'
@@ -92,18 +93,52 @@ describe('KxDateRangePicker', () => {
     expect(w.findAll('.kx-dr-preset')).toHaveLength(7)
   })
 
-  it('预设点击回填草稿，应用后提交并校验映射', async () => {
+  it('预设点击立即提交并关闭面板，无需再点应用（2026-11-20 owner 口径）', async () => {
     const w = mountPicker()
     const presets = w.findAll('.kx-dr-preset')
+    // 先模拟面板展开（stub 回发 update:visible 驱动 v-model:visible）
+    const popover = w.findComponent(ElPopoverStub)
+    await popover.vm.$emit('update:visible', true)
+    await nextTick()
+    expect(popover.props('visible')).toBe(true)
     const last30 = presets.find((b) => b.text() === '近 30 天')!
     await last30.trigger('click')
-    const stubs = w.findAll('.dp-stub')
-    expect((stubs[0].element as HTMLInputElement).value).not.toBe('')
-    await w.get('.kx-dr-apply').trigger('click')
     const apply = w.emitted('apply')!
     expect(apply).toHaveLength(1)
     expect(rangeSpanDays(apply[0][0] as { start: string; end: string })).toBe(30)
     expect(w.emitted('update:modelValue')).toHaveLength(1)
+    // 面板关闭：v-model:visible 同步为 false
+    expect(popover.props('visible')).toBe(false)
+    // 草稿同步回填
+    const stubs = w.findAll('.dp-stub')
+    expect((stubs[0].element as HTMLInputElement).value).not.toBe('')
+  })
+
+  it('maxSpanDays 超限预设：点击不提交不关闭，面板保持展开（P3-2 纪律）', async () => {
+    const w = mountPicker({ maxSpanDays: 7 })
+    const presets = w.findAll('.kx-dr-preset')
+    const popover = w.findComponent(ElPopoverStub)
+    await popover.vm.$emit('update:visible', true)
+    await nextTick()
+    await presets.find((b) => b.text() === '近 30 天')!.trigger('click')
+    expect(w.emitted('apply')).toBeUndefined()
+    expect(w.emitted('update:modelValue')).toBeUndefined()
+    expect(popover.props('visible')).toBe(true)
+    await presets.find((b) => b.text() === '近 7 天')!.trigger('click')
+    expect(w.emitted('apply')).toHaveLength(1)
+    expect(popover.props('visible')).toBe(false)
+  })
+
+  it('自定义起止仍走应用按钮：预设点击后改草稿，需应用生效', async () => {
+    const w = mountPicker()
+    const stubs = w.findAll('.dp-stub')
+    await stubs[0].setValue('2026-09-01')
+    await stubs[1].setValue('2026-09-15')
+    expect(w.emitted('apply')).toBeUndefined()
+    await w.get('.kx-dr-apply').trigger('click')
+    const apply = w.emitted('apply')!
+    expect(apply).toHaveLength(1)
+    expect((apply[0][0] as { start: string }).start).toBe('2026-09-01')
   })
 
   it('结束早于开始：应用禁用并提示', async () => {

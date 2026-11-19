@@ -1,0 +1,73 @@
+=== 211 会话分析端到端验证（现役树 2.6.1-ec52ff55-20261120-211 / 槽 b 8783）===
+生成时间(UTC): 2026-11-19T18:23:07Z
+
+=== 0. 定位活跃槽 ===
+  nginx upstream: 127.0.0.1:8783 
+  ✓ 活跃槽端口 = 8783
+
+=== 1. 迁移 981 在库里的落地态 ===
+  ✓ 物化视图 user_session_aggregates 在场
+  ✓ 物化视图 project_task_aggregates 在场
+  ✓ 物化视图 agent_usage_aggregates 在场
+  ✓ 物化视图 model_usage_aggregates 在场
+  ✓ 函数 session_analytics_is_probe 在场
+  ✓ sessions 四列在场
+
+=== 2. 视图数据量 ===
+  · user_session_aggregates = 95 行
+  ✓ user_session_aggregates 有数据
+  · project_task_aggregates = 109 行
+  ✓ project_task_aggregates 有数据
+  · agent_usage_aggregates = 158 行
+  ✓ agent_usage_aggregates 有数据
+  · model_usage_aggregates = 864 行
+  ✓ model_usage_aggregates 有数据
+
+=== 3. 数据质量（探测流量排除 / 空 owner）===
+  ✓ 人员视图无探测账号
+  ✓ 人员视图无空 owner 假人
+  ✓ 项目/任务视图 task 无 NULL（'' 归一）
+
+=== 4. 取现签 JWT（211 的 super_admin = id=41 admin）===
+  ✓ JWT 已签发（len=289）
+
+=== 5. API 活体（直连 http://127.0.0.1:8783）===
+--- 5.0 版本身份 ---
+    healthz: {"status":"ok","version":"2.6.1-ec52ff55-20261120-211","git_sha":"ec52ff55","build_seq":3151,"build_date":"20261120","ready":true}
+--- 5.1 overview ---
+    HTTP 200
+  ✓ overview 200
+    body: {"summary":{"total_sessions":38139,"total_sessions_growth":4339.930151338766,"avg_tokens":9020275.14,"avg_context_size":8192,"avg_duration_seconds":12957.057970424848,"avg_turns":85.69997280030204,"total_cost":8454.131356,"total_cost_growth":100,"active_users":7,"active_users_growth":75,"active_projects":96,"active_tasks":16,"overall_success_rate":95.9475847562219,"overall_cache_rate":71.25371596604386},"top_models":[{"model":"glm-5.3-flash","count":63783},{"model":"minimax-m3.1-flash","count":3
+  ✓ overview 返回 7 个 top_users（数据到位）
+  ✓ overview 返回 3 个 top_models
+  ✓ overview 返回 7 个 top_projects
+    summary: {"total_sessions": 38139, "total_sessions_growth": 4339.930151338766, "avg_tokens": 9020275.14, "avg_context_size": 8192, "avg_duration_seconds": 12957.057970424848, "avg_turns": 85.69997280030204, "total_cost": 8454.131356, "total_cost_growth": 100, "active_users": 7, "active_users_growth": 75, "active_projects": 96, "active_tasks": 16, "overall_success_rate": 95.9475847562219, "overall_cache_rate": 71.25371596604386}
+  ✓ overview summary 非空
+--- 5.2 users 排行 ---
+    HTTP 200
+  ✓ users 200
+    body: {"total":7,"users":[{"rank":1,"owner":"kaixuan-1","display_name":"kaixuan-1","email":"","session_count":699,"project_count":26,"task_count":0,"total_tokens":11523568324,"total_cost":7480.555024,"last_active_at":"2026-11-19T18:17:52Z","latest_task":""},{"rank":2,"owner":"huangxt","display_name":"huangxt","email":"","session_count":7033,"project_count":38,"task_count":0,"total_tokens":9891011600,"total_cost":972.99837,"last_active_at":"2026-11-19T18:20:11Z","latest_task":""},{"rank":3,"owner":"asm
+  ✓ users 返回 7 条排行
+--- 5.3 匿名访问必须被拒 ---
+  ✓ 匿名访问被拒（HTTP 401）
+
+=== 结果：PASS=23 FAIL=0 ===
+
+=== 部署关键行 ===
+build_seq bumped: 3150 -> 3151 (base=seed/other-slot/floor max, floor=locked)
+[211] 版本元数据种子: version.json（2.6.1-ec52ff55-20261120-211 build_seq=3151）
+[211] readyz OK (database+redis connected, status=ready)
+[211] version: 2.6.1-ec52ff55-20261120-211
+[211] 切流：nginx upstream ns_llm_gateway_upstream 由 127.0.0.1:8781 切到 127.0.0.1:8783
+[211] 公网版本身份 OK（ec52ff55，第 3 次探到）
+[211] 部署完成 @ 192.168.31.211（槽 b 接管）
+[211]   活跃槽  : b → 容器 llm-gateway-211-b @ 127.0.0.1:8783
+
+=== 刷新器本轮结果（7 视图全绿，model_usage 串行 2.3s）===
+{"timestamp":"2026-11-19T18:20:43.547829784Z","msg":"refreshed session analytics view","view":"user_session_aggregates","elapsed":970903056,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}
+{"timestamp":"2026-11-19T18:20:44.410232458Z","msg":"refreshed session analytics view","view":"project_task_aggregates","elapsed":862339036,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}
+{"timestamp":"2026-11-19T18:20:45.258747671Z","msg":"refreshed session analytics view","view":"agent_usage_aggregates","elapsed":848474877,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}
+{"timestamp":"2026-11-19T18:20:47.555653804Z","msg":"refreshed session analytics view","view":"model_usage_aggregates","elapsed":2296866598,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}
+{"timestamp":"2026-11-19T18:20:47.844962647Z","msg":"refreshed session analytics view","view":"session_client_task_matrix","elapsed":289270111,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}
+{"timestamp":"2026-11-19T18:20:48.503760911Z","msg":"refreshed session analytics view","view":"session_task_stats","elapsed":658761105,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}
+{"timestamp":"2026-11-19T18:20:48.936037581Z","msg":"refreshed session analytics view","view":"session_client_stats","elapsed":432238137,"severity_text":"INFO","level":"info","severity_number":9,"service":"llm-gateway","version":"2.6.1-ec52ff55-20261120-211","env":"prod","instance_id":"c40b98503543-1-1795112314"}

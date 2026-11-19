@@ -952,18 +952,67 @@ func (s mvSkipReason) skipped() bool { return s != mvRefreshed }
 // 且实测 max 139.6s 仍在界内 ⇒ 没有证据支持改它）。
 //
 // ★ 签名里的 refreshView( 前缀是既有静态门（bg/materialized_view_refresher_workmem_test.go）
-//   的抽取锚点 —— 那个门断言 work_mem 的 SET/RESET 就在**本函数体内**，
-//   所以这些语句不能被挪进别的函数。
+//
+//	的抽取锚点 —— 那个门断言 work_mem 的 SET/RESET 就在**本函数体内**，
+//	所以这些语句不能被挪进别的函数。
 //
 // ★★ workMem / jitMode 参数（2026-10-29 R175）：会话画像**按族**传入，
-//   与 statementTimeout同一套分族接线方式。理由：
-//   · work_mem：每个族的下界要用它自己那份实测来钉（见 mvRefreshWorkMem
-//     与 sessionViewsWorkMem 的注释）；共用一个值时小族的下界永远没被钉住。
-//   · jit：routing 族的定义查询计划代价 193,601 > jit_above_cost 100000
-//     ⇒ 每次刷新都付91 个函数的编译代价；关掉它**不改变 buffer 足迹**
-//     （A/B 逐项相等）⇒ 纯 CPU 轴的零代价墙钟优化。
-//   ⇒ 三个轴（statement_timeout / work_mem / jit）共用同一处分族接线，
-//   调用点各传自己那份常量，避免「加了参数却仍写死常量」的假修复。
+//
+//	与 statementTimeout同一套分族接线方式。理由：
+//	· work_mem：每个族的下界要用它自己那份实测来钉（见 mvRefreshWorkMem
+//	  与 sessionViewsWorkMem 的注释）；共用一个值时小族的下界永远没被钉住。
+//	· jit：routing 族的定义查询计划代价 193,601 > jit_above_cost 100000
+//	  ⇒ 每次刷新都付91 个函数的编译代价；关掉它**不改变 buffer 足迹**
+//	  （A/B 逐项相等）⇒ 纯 CPU 轴的零代价墙钟优化。
+//	⇒ 三个轴（statement_timeout / work_mem / jit）共用同一处分族接线，
+//	调用点各传自己那份常量，避免「加了参数却仍写死常量」的假修复。
+//
+// 第四个轴：并行度（max_parallel_workers_per_gather）。
+//
+// ★ 为什么需要（2026-11-20 211 实测）：REFRESH MATERIALIZED VIEW CONCURRENTLY
+//
+//	在会话族上会**自己选计划**，而 981 族的 model_usage_aggregates（请求级、
+//	40 万行）是全族最重的一个 ⇒ PG 选并行计划 ⇒ 需要**动态共享内存**（DSM）。
+//	211 的 PG 容器 `/dev/shm` 只有 **64MB**（Docker 默认 ShmSize=67108864）
+//	⇒ 分配 16MB 段失败：
+//	  ERROR: could not resize shared memory segment
+//	         "/PostgreSQL.4193532418" to 16777216 bytes: No space left on device
+//	  (SQLSTATE 53100)
+//	⇒ 该视图**永远刷不上** ⇒ 刷新戳永远不落 ⇒ admin 侧新鲜度门
+//	  （90min 预算）永远判陈旧 ⇒ 端点恒 503 analytics_view_stale。
+//
+// ★ 为什么不靠"失败重试串行"兜底（那更"通用"）：
+//
+//	刷新器对连续失败有**告警**（failureCount ≥ 2 ⇒ alertCallback），
+//	每轮都先失败一次 ⇒ 每轮都踩告警线 ⇒ 假告警比假数据更坏。
+//	⇒ 走**确定性**路线：这几个视图**一开始就串行刷**。
+//
+// ★ 为什么只钉 981 族、不动旧族：
+//
+//	211 实测同轮耗时：981 族 0.41~0.47s、model_usage 串行 2.6s、
+//	旧族 0.29~0.60s ⇒ 本机毫无成本；
+//	但 252 生产上旧族最慢的那条实测 ≥180s（被 kill）⇒ 给旧族关并行
+//	可能把 180s 顶到 600s 语句上限之外 ⇒ **只对新增的 981 族关并行**，
+//	旧族一行不改（零爆炸半径）。
+//
+// ★ 代价（实测 211）：model_usage_aggregates 串行刷新 2.6s。
+//
+// serialRefreshViews 是必须**串行**刷新（不启用并行查询）的视图集合。
+var serialRefreshViews = map[string]bool{
+	// 981 会话分析族（2026-11-19）：最重的 model_usage_aggregates 会选并行计划
+	// ⇒ 在 64MB /dev/shm 的 PG 容器上必然 53100。其余三个即使并行也无压力，
+	// 但同族统一串行更好推理（且实测代价 <1s）。
+	"user_session_aggregates": true,
+	"project_task_aggregates": true,
+	"agent_usage_aggregates":  true,
+	"model_usage_aggregates":  true,
+}
+
+// 第四个轴的接线点：refreshView 里在 jit 之后。
+//
+// ★ 用**按视图查表**而不是再加一个"按族"参数：串行与否在本族内部就不一致
+//
+//	（只有最重的那个需要），按族参数表达不了这个事实。
 func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool, statementTimeout string, workMem string, jitMode string) (mvSkipReason, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
@@ -1036,6 +1085,19 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	defer func() {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET jit")
 	}()
+
+	// 第四个轴：并行度。串行视图关掉并行查询 ⇒ 不再申请动态共享内存（DSM）
+	// ⇒ 绕开 "could not resize shared memory segment ... No space left on device"
+	// （SQLSTATE 53100，PG 容器 /dev/shm 只有 64MB 时的必然结局）。
+	// 见 serialRefreshViews 的注释（211 实测：关并行后该视图 2.6s 刷完）。
+	if serialRefreshViews[viewName] {
+		if _, err := conn.Exec(ctx, "SET max_parallel_workers_per_gather = 0"); err != nil {
+			return mvRefreshed, err
+		}
+		defer func() {
+			_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET max_parallel_workers_per_gather")
+		}()
+	}
 
 	if !useAdvisoryLock {
 		if err := r.execRefresh(ctx, conn, viewName); err != nil {

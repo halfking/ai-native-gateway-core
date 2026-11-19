@@ -133,6 +133,14 @@ func TestAnthropicExecutor_CheckSoftMismatch(t *testing.T) {
 	if mismatched {
 		t.Error("matching models should not be flagged")
 	}
+	// 2026-11-20 last-segment identity (internal/modelname): vendor-prefixed
+	// and case-only echoes are the same model.
+	if mismatched, _ = ae.CheckSoftMismatch("MiniMax-M2.7", "minimaxai/MiniMax-M2.7"); mismatched {
+		t.Error("publisher-prefixed echo is the same model; mismatched should be false")
+	}
+	if mismatched, _ = ae.CheckSoftMismatch("MiniMax-M2.7", "minimaxai/MiniMax-M3"); !mismatched {
+		t.Error("different last segment behind a prefix must stay a mismatch")
+	}
 }
 
 // TestApplyClientAnthropicHeaders verifies the 2026-08-04 fix: the client's

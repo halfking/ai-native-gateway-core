@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // matches executor.go
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelname"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -857,7 +858,9 @@ func (g *GeminiExecutor) CheckSoftMismatch(reqModel, respModel string) (bool, st
 	if reqModel == "" || respModel == "" {
 		return false, ""
 	}
-	if strings.EqualFold(reqModel, respModel) {
+	// 2026-11-20: last-segment identity (internal/modelname) — same ruling
+	// as the integrity detector; vendor prefixes are display routing.
+	if modelname.Consistent(respModel, reqModel) {
 		return false, ""
 	}
 	// Gemini reports "gemini-2.5-flash" where the client may have asked

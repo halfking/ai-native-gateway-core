@@ -213,6 +213,46 @@ export interface UserProfileSummary {
   last_seen_at: string
   end_user_count: number
   models_used?: string[]
+  // 2026-11-20 数字出处轮：选定时间窗口内的用量聚合。
+  // 出处 = request_logs_with_current_month（后端 usage_meta 回传真源）；
+  // internal=SUM(cost_display)（内部核算价），external=SUM(cost_usd)（外部成本）。
+  // undefined = 窗口聚合降级（canonical 视图缺席），与 0 语义分家。
+  window_usage?: UserWindowUsage
+}
+
+// UserWindowUsage 员工在 [window_start, window_end) 的用量聚合（与后端
+// admin.UserWindowUsage 同形）。数字出处随列表响应的 usage_meta 回传。
+export interface UserWindowUsage {
+  request_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  internal_cost_usd: number
+  external_cost_usd: number
+  session_count: number
+  model_count: number
+}
+
+// UserUsageMeta 数字出处块：帮助抽屉与列头提示引用，不在前端硬编码口径。
+export interface UserUsageMeta {
+  source_view: string
+  window_start: string
+  window_end: string
+}
+
+// UserUsageMatrixRow 员工×模型一行（usage-matrix 端点）。
+export interface UserUsageMatrixRow {
+  owner_user: string
+  model_name: string
+  provider: string
+  request_count: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  internal_cost_usd: number
+  external_cost_usd: number
+  first_used_at: string
+  last_used_at: string
 }
 
 export interface UserProfileDetail extends UserProfileSummary {
@@ -234,10 +274,45 @@ export function getUserProfileList(params?: { limit?: number; offset?: number; s
   // degraded / degraded_reason（2026-10-03）：后端在「schema 落后于代码」时
   // 返回 200 + 空列表（session_owners 属可选聚合表，本地库根本没建）。
   // 修复前该响应用户看到的和「真的没有用户」一模一样 —— 页面无从区分。
-  return req<{ users: UserProfileSummary[]; total: number; limit: number; offset: number } & DegradationMarker>(
+  return req<{
+    users: UserProfileSummary[]
+    total: number
+    limit: number
+    offset: number
+    // 2026-11-20 数字出处轮：真实用量窗口 + 出处块（缺省时后端默认近 30 天）。
+    usage_window?: { start: string; end: string }
+    usage_meta?: UserUsageMeta
+  } & DegradationMarker>(
     'GET',
     `/api/admin/session-analytics/users?${q}`,
   )
+}
+
+// getUserUsageMatrix 员工×模型用量矩阵（2026-11-20 数字出处轮）。
+// 「每个员工在什么时间段用了哪些模型、各多少 token / 内部成本 / 外部成本」
+// 的数据端点；owner 缺省返回全可见范围，前端按 owner 分组展开。
+export function getUserUsageMatrix(params?: {
+  start_date?: string
+  end_date?: string
+  owner?: string
+  limit?: number
+}): Promise<{
+  rows: UserUsageMatrixRow[]
+  start_date: string
+  end_date: string
+  usage_meta?: UserUsageMeta
+} & DegradationMarker> {
+  const q = new URLSearchParams()
+  if (params?.start_date) q.set('start_date', params.start_date)
+  if (params?.end_date) q.set('end_date', params.end_date)
+  if (params?.owner) q.set('owner', params.owner)
+  if (params?.limit) q.set('limit', String(params.limit))
+  return req<{
+    rows: UserUsageMatrixRow[]
+    start_date: string
+    end_date: string
+    usage_meta?: UserUsageMeta
+  } & DegradationMarker>('GET', `/api/admin/session-analytics/users/usage-matrix?${q}`)
 }
 
 export function getUserProfile(owner: string, days = 30) {

@@ -5,7 +5,9 @@
 //
 // 契约：
 // - v-model 仅在「应用」时提交（避免半选状态触发请求）；instant 模式供表单场景即时生效。
-// - 预设点击 = 立即回填输入框，仍需应用生效。
+// - 预设点击 = 立即生效（提交 + 关闭面板），无需再点应用（2026-11-20 owner 口径：
+//   今天/昨天/近7天等预设本身就是确定范围，二次确认是多余一步）；
+//   自定义起止仍走「应用」。守卫（maxSpanDays/notAfter）不过时保持展开供调整。
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElDatePicker, ElPopover } from 'element-plus'
@@ -120,9 +122,10 @@ function selectPreset(preset: KxDateRangePreset) {
   const r = preset.resolve()
   draftStart.value = r.start
   draftEnd.value = r.end
-  // instant 模式同样受 canApply 约束（2026-09-30 审计 P3-2）：
-  // presets + maxSpanDays 并存时超限预设不得绕过校验直接提交，面板保持展开供调整。
-  if (props.instant && canApply.value) {
+  // 预设点击即生效（2026-11-20）：提交 + 关闭，不再要求二次点「应用」。
+  // instant 与非 instant 统一走此路径；仍受 canApply 约束（2026-09-30 审计 P3-2）：
+  // presets + maxSpanDays/notAfter 并存时超限预设不得绕过校验直接提交，面板保持展开供调整。
+  if (canApply.value) {
     commit(r)
     panelOpen.value = false
   }

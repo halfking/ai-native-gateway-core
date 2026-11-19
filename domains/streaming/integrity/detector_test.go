@@ -81,6 +81,107 @@ func TestDetector_ModelMismatch_DisabledWhenEmpty(t *testing.T) {
 	}
 }
 
+// 2026-11-20 last-segment identity (internal/modelname): vendor prefixes are
+// display routing and the recorded outbound may be an offer display name, so
+// a response matching EITHER the outbound or client identity is consistent.
+// These are the exact 211 production false-positive classes (3721 real-time
+// events / 14 days, 3691 last-segment-consistent).
+func TestDetector_ModelMismatch_LastSegmentConsistent(t *testing.T) {
+	cases := []struct {
+		name             string
+		clientModel      string
+		outboundModel    string
+		respModel        string
+		wantMismatched   bool
+		wantExpectedName string // ExpectedValue on the event when wantMismatched
+	}{
+		{
+			// owner example: provider requires publisher prefix upstream,
+			// response echoes the bare name.
+			name:          "prefixed outbound vs bare resp",
+			clientModel:   "glm-5.3-flash",
+			outboundModel: "z-ai/glm-5.3-flash",
+			respModel:     "glm-5.3-flash",
+		},
+		{
+			name:          "multi-level prefix",
+			clientModel:   "minimax-m3.1-flash",
+			outboundModel: "a/b/minimax-m3.1-flash",
+			respModel:     "minimax-m3.1-flash",
+		},
+		{
+			// outbound recorded the offer display name while the id actually
+			// sent upstream was the client name (request_logs cross-check):
+			// the resp matching the client identity is consistent.
+			name:          "display-name outbound vs client-named resp",
+			clientModel:   "minimax-m3.1-flash",
+			outboundModel: "MiniMax-M3.1-Flash-Preview",
+			respModel:     "minimax-m3.1-flash",
+		},
+		{
+			name:          "case + prefix",
+			clientModel:   "glm-5.3-flash",
+			outboundModel: "zcode/GLM-5.3-Flash",
+			respModel:     "glm-5.3-flash",
+		},
+		{
+			name:             "genuine substitution behind prefix",
+			clientModel:      "glm-5.3-flash",
+			outboundModel:    "z-ai/glm-5.3-flash",
+			respModel:        "glm-5.2",
+			wantMismatched:   true,
+			wantExpectedName: "z-ai/glm-5.3-flash",
+		},
+		{
+			// A suffix is part of the name: asked for the plain model, got
+			// the preview variant (or vice versa) — still a mismatch.
+			name:             "preview suffix differs",
+			clientModel:      "minimax-m3.1-flash",
+			outboundModel:    "minimax-m3.1-flash",
+			respModel:        "MiniMax-M3.1-Flash-Preview",
+			wantMismatched:   true,
+			wantExpectedName: "minimax-m3.1-flash",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &captureRecorder{}
+			d := NewDetector(rec)
+			d.Observe(context.Background(), Candidate{
+				ClientModel:   tc.clientModel,
+				OutboundModel: tc.outboundModel,
+				RespModel:     tc.respModel,
+			})
+			events := rec.byType(AnomalyModelMismatch)
+			if tc.wantMismatched {
+				if len(events) != 1 {
+					t.Fatalf("expected 1 mismatch, got %d", len(events))
+				}
+				if tc.wantExpectedName != "" && events[0].ExpectedValue != tc.wantExpectedName {
+					t.Fatalf("ExpectedValue = %q, want %q", events[0].ExpectedValue, tc.wantExpectedName)
+				}
+				return
+			}
+			if len(events) != 0 {
+				t.Fatalf("last-segment-consistent echo must not fire; got %d events", len(events))
+			}
+		})
+	}
+}
+
+// Client fallback: outbound empty ⇒ the client name is the trusted reference.
+func TestDetector_ModelMismatch_ClientFallbackLastSegment(t *testing.T) {
+	rec := &captureRecorder{}
+	d := NewDetector(rec)
+	d.Observe(context.Background(), Candidate{
+		ClientModel: "minimaxai/minimax-m3.1-flash",
+		RespModel:   "minimax-m3.1-flash",
+	})
+	if got := rec.byType(AnomalyModelMismatch); len(got) != 0 {
+		t.Fatalf("prefixed client vs bare resp must not fire; got %d", len(got))
+	}
+}
+
 func TestDetector_FinishRefusal(t *testing.T) {
 	rec := &captureRecorder{}
 	d := NewDetector(rec)

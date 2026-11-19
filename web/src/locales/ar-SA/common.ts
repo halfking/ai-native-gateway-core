@@ -11,6 +11,7 @@ export default {
   credentials: 'بيانات الاعتماد',
   copy: 'نسخ',
   button: {
+    remove: 'إزالة',
     cancel: 'إلغاء',
     confirm: 'تأكيد',
     save: 'حفظ',

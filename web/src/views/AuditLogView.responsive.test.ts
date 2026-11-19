@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import AuditLogView from './AuditLogView.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { _resetForTests } from '../composables/useWindowClass'
 import { _resetDataViewModeForTests } from '../composables/useDataViewMode'
 import { useBreakpoint } from '../composables/useBreakpoint'
@@ -128,6 +129,11 @@ const i18n = createI18n({
       common: {
         pagination: { total: '共 {n} 条', pageOf: '第 {page} / {pages} 页', perPage: '每页', previous: '上一页', next: '下一页' },
         button: { search: '查询', clear: '重置', filter: '筛选' },
+        // KxDateRangePicker（2026-11-20 页头时间范围）触发器/面板词条
+        dateRange: {
+          title: '时间范围', custom: '自定义', startDate: '开始日期', endDate: '结束日期', openAria: '选择时间范围',
+          preset: { today: '今天', yesterday: '昨天', last24h: '近 24 小时', last7d: '近 7 天', last14d: '近 14 天', last30d: '近 30 天', thisMonth: '本月', lastMonth: '上月' },
+        },
       },
       auditLog: {
         dash: '—',
@@ -346,8 +352,8 @@ describe('AuditLogView：桌面表格零回归', () => {
 
   it('桌面改筛选会带进请求，并回到第 1 页', async () => {
     const w = await factory()
-    // 2026-11-18 FilterBar 全断点默认收拢 ⇒ 操作面板控件前先展开
-    await w.find('.filter-bar__toggle').trigger('click')
+    // 2026-11-20 筛选外显轮：default-open ⇒ 面板挂载即展开，控件直接可见
+    //（原「先点 toggle 展开」的步骤随收拢默认值一起退役 —— 再点反而会收拢）
     await w.findAll('input.filter-bar__control')[0].setValue('alice')
     await w.find('.filter-bar__search').trigger('click')
     await flushPromises()
@@ -468,8 +474,7 @@ describe('AuditLogView：compact 连续加载路径', () => {
     await flushPromises()
     expect(calls).toHaveLength(1)
 
-    // 2026-11-18 FilterBar 全断点默认收拢 ⇒ 操作面板控件前先展开
-    await w.find('.filter-bar__toggle').trigger('click')
+    // 2026-11-20 筛选外显轮：default-open ⇒ 面板挂载即展开，控件直接可见
     await w.findAll('input.filter-bar__control')[0].setValue('alice')
     await w.find('.filter-bar__search').trigger('click')
     await flushPromises()
@@ -503,7 +508,8 @@ describe('AuditLogView：compact 连续加载路径', () => {
   it('compact 下取第 1 页时刷新钮禁用且显示「刷新中…」', async () => {
     ctrl.defer = true
     const w = await factory()
-    const btn = w.find('.header-actions button')
+    // 2026-11-20：header-actions 里第一个是时间组件触发器，刷新钮按类名取
+    const btn = w.find('.header-actions button.btn-primary')
     expect(btn.attributes('disabled')).toBeDefined()
     expect(btn.text()).toContain('刷新中')
   })
@@ -512,7 +518,7 @@ describe('AuditLogView：compact 连续加载路径', () => {
   it('桌面下刷新钮的忙碌态与 loading 一致（在途时禁用、出「刷新中…」）', async () => {
     ctrl.defer = true
     const w = await factory()
-    const btn = w.find('.header-actions button')
+    const btn = w.find('.header-actions button.btn-primary')
     expect(btn.attributes('disabled')).toBeDefined()
     expect(btn.text()).toContain('刷新中')
   })
@@ -652,5 +658,61 @@ describe('AuditLogView：跨层契约', () => {
   it('页面没有硬编码中文文案（全部走 i18n）', () => {
     const cjk = codeOnly.match(/[一-鿿]/g)
     expect(cjk, `模板里出现了硬编码中文：${cjk?.join('')}`).toBeNull()
+  })
+
+  // ── 2026-11-20 时间范围统一轮 + 筛选外显轮 ────────────────────────────────
+  it('页头时间范围走全站统一 KxDateRangePicker：datetime 精度 + 365 天上限 + 即时生效', () => {
+    // 页头右上角（header-actions 内），带预设/上限/instant
+    expect(codeOnly).toMatch(
+      /<KxDateRangePicker\s+v-model="dateRange"\s+precision="datetime"\s+:max-span-days="auditLogMaxSpan"\s+instant\s+@apply="onApplyDateRange"/,
+    )
+    expect(codeOnly).toContain('const auditLogMaxSpan = 365')
+    // 默认档近 7 天（datetime 精度的日界窗口工厂）
+    expect(codeOnly).toContain("makeDateRangePresets('datetime', ['last7d'])[0]!.resolve()")
+  })
+
+  it('时间范围并入 filterBody 单一真源；filters 只剩 actor/action', () => {
+    // from/to 的 ISO 换算仍在 filterBody（两条路径都拿到），但取值源改为 dateRange
+    const start = codeOnly.indexOf('function filterBody(')
+    const body = codeOnly.slice(start, start + 400)
+    expect(body).toContain('dateRange.value.start')
+    expect(body).toContain('dateRange.value.end')
+    expect(body).not.toContain('filters.value.from')
+    expect(body).not.toContain('filters.value.to')
+    // 初始 filters 不再有 from/to 键（旧 daterange def 已退役）
+    expect(codeOnly).toContain("const filters = ref<Record<string, string>>({ actor: '', action: '' })")
+    expect(codeOnly).not.toContain("{ key: 'time', type: 'daterange'")
+  })
+
+  it('预设变更走 onApplyDateRange：写回 dateRange 并回到第 1 页重取', async () => {
+    const w = await factory()
+    const before = calls.length
+    const picker = w.find('.header-actions .kx-dr-trigger')
+    expect(picker.exists(), '页头应渲染 KxDateRangePicker 触发器').toBe(true)
+    // trigger 上直接展示当前范围的短标签（shortRangeLabel）
+    expect(picker.text()).toMatch(/\d{2}\/\d{2}/)
+    // @apply → dateRange 更新 + resetPageAndLoad（新请求带新的 from/to）
+    const comp = w.findComponent(KxDateRangePicker)
+    comp.vm.$emit('apply', { start: '2026-09-01 00:00', end: '2026-09-07 23:59' })
+    await flushPromises()
+    const last = calls[calls.length - 1] as Record<string, unknown>
+    expect(calls.length).toBeGreaterThan(before)
+    // ★ 期望值不能写死 UTC 字面量：parseLocalMinute 按**本地时区**解析墙上分钟
+    //   （与 RequestLogsView 同链），ISO 随机器时区漂移。判据用独立构造
+    //   （JS 标准 ISO 本地解析）对拍同一语义，任何时区都绿。
+    expect(new Date(last.from as string).getTime()).toBe(new Date('2026-09-01T00:00:00').getTime())
+    expect(new Date(last.to as string).getTime()).toBe(new Date('2026-09-07T23:59:00').getTime())
+  })
+
+  it('筛选面板挂载即展开（default-open 外显），收拢开关保留可手动收拢', async () => {
+    const w = await factory()
+    // 外显：不点 toggle 也能看到 actor 输入框与查询按钮
+    expect(w.find('.filter-bar__panel').exists()).toBe(true)
+    expect(w.find('input.filter-bar__control').exists()).toBe(true)
+    expect(w.find('.filter-bar__search').exists()).toBe(true)
+    // 开关仍渲染（手动收拢能力保留）；收拢后面板消失、chips 仍在头部可见
+    expect(w.find('.filter-bar__toggle').exists()).toBe(true)
+    await w.find('.filter-bar__toggle').trigger('click')
+    expect(w.find('.filter-bar__panel').exists()).toBe(false)
   })
 })

@@ -29,7 +29,30 @@ const (
 	// （写入是整键替换 ⇒ 幂等收敛到真值；retire 臂继续清理不再产出的键）。
 	statsResweepDefaultLag  = 2 * time.Minute
 	statsResweepDefaultSpan = 30 * time.Minute
+
+	// statsRollupCatchupCap 封顶单个 tick 的补窗长度。2026-11-20 211 实证：
+	// retire 挂死令游标停摆 68min+，窗口 = [lastTS, now] 每 tick 自增 1min，
+	// 最终 rollupMain 自身越过 2min tick 预算 ⇒ 游标**永不可推进**（死亡
+	// 螺旋）。封顶后每次成功 tick 至多推进 30min，缺口顺延（下一 tick 从
+	// until 续跑，不清零不丢数据）。30min = resweep span —— 生产已验证
+	// 能装进 tick 预算的最大窗口。
+	statsRollupCatchupCap = 30 * time.Minute
 )
+
+// rollupCatchupBounds caps a catch-up window at statsRollupCatchupCap so a
+// stalled cursor converges instead of facing a window that grows by one
+// minute per failed tick past the tick budget (2026-11-20 production stall).
+// The unprocessed gap is deferred, not skipped: the next tick resumes from
+// `until`.
+func rollupCatchupBounds(lastTS, now time.Time) (since, until time.Time, capped bool) {
+	since = lastTS
+	until = now
+	if now.Sub(lastTS) > statsRollupCatchupCap {
+		until = since.Add(statsRollupCatchupCap)
+		capped = true
+	}
+	return since, until, capped
+}
 
 // statsResweepLag / statsResweepSpan read the resweep knobs. Lag = how long
 // after minute-close we consider terminal writes settled; span = how far
@@ -153,7 +176,12 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	if err := w.rollupWindow(timeoutCtx, lastTS, now); err != nil {
+	since, until, capped := rollupCatchupBounds(lastTS, now)
+	if capped {
+		slog.Warn("stats minute rollup: catch-up window capped",
+			"since", since, "until", until, "deferred_until", now)
+	}
+	if err := w.rollupWindow(timeoutCtx, since, until); err != nil {
 		slog.Warn("stats minute rollup failed", "error", err)
 		return
 	}
@@ -166,12 +194,14 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 		}
 	}
 	// Advancing the cursor only after all projections succeed makes a retry
-	// converge instead of permanently skipping rows.
+	// converge instead of permanently skipping rows. Advance to `until` —
+	// the processed end — so a capped catch-up window re-arms at the cap
+	// boundary instead of re-facing the same oversized window.
 	_, _ = w.db.Exec(timeoutCtx, `
 		UPDATE request_stats_rollup_cursor
 		   SET last_ts = $1, updated_at = now()
 		 WHERE id = 1
-	`, now)
+	`, until)
 }
 
 // statsResweepWindow covers whole settled minutes. The aggregation statements

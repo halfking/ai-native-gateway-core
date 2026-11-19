@@ -11,6 +11,7 @@ export default {
   credentials: 'Credentials',
   copy: 'Copy',
   button: {
+    remove: 'Remove',
     cancel: 'Cancel',
     confirm: 'Confirm',
     save: 'Save',

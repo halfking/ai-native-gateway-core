@@ -17,7 +17,6 @@ export default {
     actorPlaceholder: 'Correspondance partielle sur le nom d\'utilisateur',
     actionLabel: 'Action',
     actionPlaceholder: 'ex. user.* ou auth.*',
-    fromLabel: 'De',
   },
   table: {
     headers: {

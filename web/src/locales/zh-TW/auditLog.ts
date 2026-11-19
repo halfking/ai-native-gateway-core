@@ -17,7 +17,6 @@ export default {
     actorPlaceholder: '模糊匹配使用者名稱',
     actionLabel: '動作',
     actionPlaceholder: '如 user.* 或 auth.*',
-    fromLabel: '起始時間',
   },
   table: {
     headers: {
