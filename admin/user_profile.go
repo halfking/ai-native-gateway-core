@@ -1270,16 +1270,19 @@ type UserProjectRow struct {
 	LastActivityAt time.Time `json:"last_activity_at"`
 }
 
-// queryUserProjects 员工→项目聚合：归属与详情页基础统计同源
-//（session_owners.so.owner_user = owner —— 列表页能看到的员工集合即此口径）；
-// 任务数取 session_dim.task_id（剔除 default/空，与生产演进版 981 视图同表达式）；
+// queryUserProjects 员工→项目聚合：归属 = session_dim 的
+// COALESCE(owner_user, api_key_owner_user) 双源键（与请求级 usage、生产演进版
+// 981 视图同键同 join）。★ 不经 session_owners：252 生产实测其行集是**陈旧
+// 子集**（末次活跃停在 10 月）⇒ 叠加时间窗后恒空（2026-11-20 活体打回：
+// dim 直连同窗有 87,080 行现役数据，session_owners 路径 0 行）。
+// 任务数取 session_dim.task_id（剔除 default/空，与 981 视图同表达式）；
 // 窗口 = ss.first_request_at >= cst_days_ago(days)（与详情页成本趋势同日界函数）。
 // 该查询不触 canonical 请求视图 ⇒ 不进 canonical 读点登记簿（无 mention）。
 func queryUserProjects(ctx context.Context, db usageQuerier, ownerUser, tenantID string, days, limit int) ([]UserProjectRow, error) {
-	where := "so.owner_user = $1"
+	where := "COALESCE(sd.owner_user, sd.api_key_owner_user) = $1"
 	args := []interface{}{ownerUser}
 	if tenantID != "" && tenantID != "default" {
-		where += fmt.Sprintf(" AND so.tenant_id = $%d", len(args)+1)
+		where += fmt.Sprintf(" AND sd.tenant_id = $%d", len(args)+1)
 		args = append(args, tenantID)
 	}
 	where += fmt.Sprintf(" AND ss.first_request_at >= cst_days_ago($%d::INT)", len(args)+1)
@@ -1294,8 +1297,7 @@ func queryUserProjects(ctx context.Context, db usageQuerier, ownerUser, tenantID
 			COALESCE(SUM(ss.total_cost_usd), 0) AS total_cost_usd,
 			COALESCE(SUM(ss.total_credits_charged), 0) AS total_credits_charged,
 			MAX(ss.last_request_at) AS last_activity_at
-		FROM session_owners so
-		INNER JOIN session_summaries ss ON ss.session_key = so.gw_session_id
+		FROM session_summaries ss
 		INNER JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
 		WHERE %s
 			AND ss.gw_project_id IS NOT NULL AND ss.gw_project_id <> ''
@@ -1339,8 +1341,9 @@ func queryUserProjects(ctx context.Context, db usageQuerier, ownerUser, tenantID
 // handleUserOwnerProjects GET /api/admin/session-analytics/users/{owner}/projects
 //
 // 「员工→项目」下钻的数据端点（主档 L1 草图落地）：按 gw_project_id 聚合该
-// 员工在窗口内的会话/任务/token/成本。归属口径与详情页基础统计同源
-//（session_owners.so.owner_user）；窗口/上限与 models 端点同闸（days 1..90，
+// 员工在窗口内的会话/任务/token/成本。归属 = session_dim 双源键
+// COALESCE(owner_user, api_key_owner_user)（252 生产实测 session_owners 行集
+// 陈旧，见 queryUserProjects 注记）；窗口/上限与 models 端点同闸（days 1..90，
 // 缺省 30）。三层隔离复用详情端点的同构逻辑（普通用户只能看自己）。
 func (h *Handler) handleUserOwnerProjects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1413,7 +1416,7 @@ func (h *Handler) handleUserOwnerProjects(w http.ResponseWriter, r *http.Request
 		// 数字出处块：项目卡数字是**会话级**口径（session_summaries×session_owners），
 		// 与请求级 usage 的内外成本不同源——帮助抽屉与卡片注记引用此块。
 		"usage_meta": userUsageMeta{
-			SourceView: "session_summaries × session_owners",
+			SourceView: "session_summaries × session_dim",
 		},
 	})
 }

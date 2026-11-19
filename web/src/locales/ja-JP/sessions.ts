@@ -33,7 +33,7 @@ export default {
     projectCostUsd: 'USD コスト',
     projectCredits: 'クレジット',
     projectsEmpty: 'このユーザーのプロジェクト データはまだありません。',
-    projectsSourceNote: 'セッション単位の集計（session_summaries × session_owners）。コストはセッション単位の USD コストとクレジットで、リクエスト単位の内部/外部コストとはソースが異なります。',
+    projectsSourceNote: 'セッション単位の集計（session_summaries × session_dim）。コストはセッション単位の USD コストとクレジットで、リクエスト単位の内部/外部コストとはソースが異なります。',
     createdAt: "作成日時",
     empty: "ユーザープロファイルデータがありません",
     /**

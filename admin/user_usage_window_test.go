@@ -307,9 +307,10 @@ func TestQueryUserProjectsScansRows(t *testing.T) {
 	}
 	defer mock.Close()
 
-	// 出处钉测：查询打在 session_owners × session_summaries × session_dim
-	//（会话级口径；不触 canonical 请求视图 ⇒ 无登记簿影响）。
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_owners so")).
+	// 出处钉测：查询打在 session_summaries × session_dim（会话级口径；
+	// 不触 canonical 请求视图 ⇒ 无登记簿影响；不经 session_owners——其行集
+	// 在生产是陈旧子集，叠加时间窗恒空，2026-11-20 活体打回）。
+	mock.ExpectQuery(regexp.QuoteMeta("FROM session_summaries ss")).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(mock.NewRows([]string{
 			"project_id", "session_count", "task_count", "request_count",

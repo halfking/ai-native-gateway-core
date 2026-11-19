@@ -33,7 +33,7 @@ export default {
     projectCostUsd: 'USD-Kosten',
     projectCredits: 'Guthaben',
     projectsEmpty: 'Keine Projektdaten für diesen Benutzer.',
-    projectsSourceNote: 'Aggregation auf Sitzungsebene (session_summaries × session_owners); die Kosten sind Sitzungs-USD-Kosten und Credits — eine andere Quelle als die anforderungsbezogenen internen/externen Kosten.',
+    projectsSourceNote: 'Aggregation auf Sitzungsebene (session_summaries × session_dim); die Kosten sind Sitzungs-USD-Kosten und Credits — eine andere Quelle als die anforderungsbezogenen internen/externen Kosten.',
     createdAt: "Erstellt am",
     empty: "Keine Benutzerprofildaten",
     /**

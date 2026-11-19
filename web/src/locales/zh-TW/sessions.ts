@@ -33,7 +33,7 @@ export default {
     projectCostUsd: 'USD 費用',
     projectCredits: '點數',
     projectsEmpty: '該員工還沒有專案資料。',
-    projectsSourceNote: '會話級聚合（session_summaries × session_owners）；成本口徑為會話級 USD 成本與點數，與請求級「內部/外部成本」不同源。',
+    projectsSourceNote: '會話級聚合（session_summaries × session_dim）；成本口徑為會話級 USD 成本與點數，與請求級「內部/外部成本」不同源。',
     createdAt: "建立時間",
     empty: "暫無使用者畫像資料",
     /**

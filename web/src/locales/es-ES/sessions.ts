@@ -33,7 +33,7 @@ export default {
     projectCostUsd: 'Coste USD',
     projectCredits: 'Créditos',
     projectsEmpty: 'Aún no hay datos de proyecto para este usuario.',
-    projectsSourceNote: 'Agregación a nivel de sesión (session_summaries × session_owners); los costes son el coste USD de sesión y los créditos — fuente distinta de los costes interno/externo por solicitud.',
+    projectsSourceNote: 'Agregación a nivel de sesión (session_summaries × session_dim); los costes son el coste USD de sesión y los créditos — fuente distinta de los costes interno/externo por solicitud.',
     createdAt: "Creado el",
     empty: "Sin datos de perfil de usuario",
     /**

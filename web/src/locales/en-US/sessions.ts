@@ -37,7 +37,7 @@ export default {
     projectCostUsd: 'USD cost',
     projectCredits: 'Credits',
     projectsEmpty: 'No project data for this user yet.',
-    projectsSourceNote: 'Session-level aggregation (session_summaries × session_owners); cost figures are session-level USD cost and credits — a different source from the request-level internal/external cost.',
+    projectsSourceNote: 'Session-level aggregation (session_summaries × session_dim); cost figures are session-level USD cost and credits — a different source from the request-level internal/external cost.',
     createdAt: 'Created at',
     empty: 'No user profile data',
     /**

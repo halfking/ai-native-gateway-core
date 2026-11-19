@@ -33,7 +33,7 @@ export default {
     projectCostUsd: 'التكلفة بالدولار',
     projectCredits: 'الاعتمادات',
     projectsEmpty: 'لا توجد بيانات مشاريع لهذا المستخدم بعد.',
-    projectsSourceNote: 'تجميع على مستوى الجلسة (session_summaries × session_owners)؛ التكاليف هي تكلفة الدولار للجلسة والاعتمادات — مصدر مختلف عن التكلفة الداخلية/الخارجية للطلبات.',
+    projectsSourceNote: 'تجميع على مستوى الجلسة (session_summaries × session_dim)؛ التكاليف هي تكلفة الدولار للجلسة والاعتمادات — مصدر مختلف عن التكلفة الداخلية/الخارجية للطلبات.',
     createdAt: "تاريخ الإنشاء",
     empty: "لا توجد بيانات ملف المستخدم",
     /**

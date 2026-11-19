@@ -36,7 +36,7 @@ export default {
     projectCostUsd: 'USD 成本',
     projectCredits: '积分',
     projectsEmpty: '该员工还没有项目数据。',
-    projectsSourceNote: '会话级聚合（session_summaries × session_owners）；成本口径为会话级 USD 成本与积分，与请求级「内部/外部成本」不同源。',
+    projectsSourceNote: '会话级聚合（session_summaries × session_dim）；成本口径为会话级 USD 成本与积分，与请求级「内部/外部成本」不同源。',
     createdAt: '创建时间',
     empty: '暂无用户画像数据',
     /**
