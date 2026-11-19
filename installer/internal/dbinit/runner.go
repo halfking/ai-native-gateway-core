@@ -2039,24 +2039,24 @@ func (r *Runner) InitSchema(logger func(string)) error {
 
 // appliedVersions 读取目标库的 schema_migrations 台账。
 //
-// 表不存在（42P01，全新库尚未铺基线）不视为错误：hasLedger=false，调用方
-// 走全新安装路径。其余失败（容器不可达/权限）原样上抛 —— 宁可中止安装也
-// 不在「不知道库里有什么」的状态下盲跑 DDL。
+// 表是否存在用 to_regclass 探测（对不存在的表返回 NULL 而不是报错）——
+// 「全新库」是普通的查询结果，不是要捕获的错误路径；因此本函数不需要
+// 依赖任何 PG 错误码字面量。其余失败（容器不可达/权限）原样上抛 ——
+// 宁可中止安装也不在「不知道库里有什么」的状态下盲跑 DDL。
 func (r *Runner) appliedVersions() (versions map[int]bool, hasLedger bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "docker", "exec", r.CitusContainer,
-		"psql", "-U", r.DBUser, "-d", r.DBName, "-X", "-t", "-A", "-v", "ON_ERROR_STOP=1",
-		"-c", ledgerQuery)
-	out, err := cmd.CombinedOutput()
+	exists, err := r.psqlQuery("SELECT to_regclass('public.schema_migrations')")
 	if err != nil {
-		if strings.Contains(string(out), "42P01") {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("读取 schema_migrations 台账失败: %w\n%s", err, truncate(string(out), 300))
+		return nil, false, fmt.Errorf("探测 schema_migrations 台账失败: %w", err)
+	}
+	if strings.TrimSpace(exists) == "" {
+		return nil, false, nil // 全新库：基线尚未铺
+	}
+	out, err := r.psqlQuery(ledgerQuery)
+	if err != nil {
+		return nil, false, fmt.Errorf("读取 schema_migrations 台账失败: %w", err)
 	}
 	versions = make(map[int]bool)
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -2068,6 +2068,20 @@ func (r *Runner) appliedVersions() (versions map[int]bool, hasLedger bool, err e
 		}
 	}
 	return versions, true, nil
+}
+
+// psqlQuery 在目标库跑一条只读查询，返回 psql 的 stdout（-t -A 纯值形态）。
+func (r *Runner) psqlQuery(query string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "exec", r.CitusContainer,
+		"psql", "-U", r.DBUser, "-d", r.DBName, "-X", "-t", "-A", "-v", "ON_ERROR_STOP=1",
+		"-c", query)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w\n%s", err, truncate(string(out), 300))
+	}
+	return string(out), nil
 }
 
 // startupPending 报告增量模式下该 startup 文件是否需要执行：

@@ -99,18 +99,20 @@ func statsTenantScope(r *http.Request) string {
 func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request, start, end time.Time, tenant string) {
 	where, args := statsWhere(start, end, tenant, r)
 	where += " AND dimension_type = 'provider_model'"
-	var requests, success, failures, timeouts, limited, prompt, completion, total, credits, latencyCount, latencySum int64
-	var cost float64
+	var requests, success, failures, timeouts, limited, prompt, completion, total, credits, latencyCount, latencySum, ttftCount, ttftSum int64
+	var cost, inputCost, outputCost float64
 	err := h.db.QueryRow(r.Context(), `
 		SELECT COALESCE(SUM(request_count),0)::bigint, COALESCE(SUM(success_count),0)::bigint,
 		       COALESCE(SUM(failure_count),0)::bigint, COALESCE(SUM(timeout_count),0)::bigint,
 		       COALESCE(SUM(rate_limited_count),0)::bigint, COALESCE(SUM(prompt_tokens),0)::bigint,
 		       COALESCE(SUM(completion_tokens),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint,
 		       COALESCE(SUM(credits_charged),0)::bigint, COALESCE(SUM(cost_usd),0)::float8,
-		       COALESCE(SUM(latency_count),0)::bigint, COALESCE(SUM(latency_sum_ms),0)::bigint
+		       COALESCE(SUM(input_cost_usd),0)::float8, COALESCE(SUM(output_cost_usd),0)::float8,
+		       COALESCE(SUM(latency_count),0)::bigint, COALESCE(SUM(latency_sum_ms),0)::bigint,
+		       COALESCE(SUM(ttft_count),0)::bigint, COALESCE(SUM(ttft_sum_ms),0)::bigint
 		FROM stats_usage_daily WHERE `+where, args...).Scan(
 		&requests, &success, &failures, &timeouts, &limited, &prompt, &completion,
-		&total, &credits, &cost, &latencyCount, &latencySum)
+		&total, &credits, &cost, &inputCost, &outputCost, &latencyCount, &latencySum, &ttftCount, &ttftSum)
 	if err != nil {
 		if isMissingStatsRelation(err) {
 			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "STATS_NOT_MIGRATED", "summary": map[string]any{}})
@@ -120,20 +122,52 @@ func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request, sta
 		writeError(w, http.StatusInternalServerError, "stats summary query failed")
 		return
 	}
-	avg := float64(0)
+	avgLatency := float64(0)
 	if latencyCount > 0 {
-		avg = float64(latencySum) / float64(latencyCount)
+		avgLatency = float64(latencySum) / float64(latencyCount)
+	}
+	avgTTFT := float64(0)
+	if ttftCount > 0 {
+		avgTTFT = float64(ttftSum) / float64(ttftCount)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"source": "stats_usage_daily", "as_of": time.Now().UTC().Format(time.RFC3339),
-		"summary": map[string]any{"requests": requests, "success": success, "failures": failures, "timeouts": timeouts, "rate_limited": limited, "prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total, "credits_charged": credits, "cost_usd": cost, "avg_latency_ms": avg},
+		"summary": map[string]any{
+			"requests":          requests,
+			"success":           success,
+			"failures":          failures,
+			"timeouts":          timeouts,
+			"rate_limited":      limited,
+			"prompt_tokens":     prompt,
+			"completion_tokens": completion,
+			"total_tokens":      total,
+			"credits_charged":   credits,
+			"cost_usd":          cost,
+			"input_cost_usd":    inputCost,
+			"output_cost_usd":   outputCost,
+			"avg_latency_ms":    avgLatency,
+			"avg_ttft_ms":       avgTTFT,
+		},
 	})
 }
 
 func (h *Handler) handleStatsTrend(w http.ResponseWriter, r *http.Request, start, end time.Time, tenant string) {
 	where, args := statsWhere(start, end, tenant, r)
 	where += " AND dimension_type = 'provider_model'"
-	rows, err := h.db.Query(r.Context(), `SELECT day_utc, COALESCE(SUM(request_count),0)::bigint, COALESCE(SUM(success_count),0)::bigint, COALESCE(SUM(failure_count),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8, COALESCE(SUM(credits_charged),0)::bigint FROM stats_usage_daily WHERE `+where+` GROUP BY day_utc ORDER BY day_utc`, args...)
+	rows, err := h.db.Query(r.Context(), `
+		SELECT day_utc, 
+		       COALESCE(SUM(request_count),0)::bigint, 
+		       COALESCE(SUM(success_count),0)::bigint, 
+		       COALESCE(SUM(failure_count),0)::bigint, 
+		       COALESCE(SUM(total_tokens),0)::bigint, 
+		       COALESCE(SUM(cost_usd),0)::float8, 
+		       COALESCE(SUM(input_cost_usd),0)::float8,
+		       COALESCE(SUM(output_cost_usd),0)::float8,
+		       COALESCE(SUM(credits_charged),0)::bigint 
+		FROM stats_usage_daily 
+		WHERE `+where+` 
+		GROUP BY day_utc 
+		ORDER BY day_utc`, args...)
 	if err != nil {
 		slog.Error("stats trend query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "stats trend query failed")
@@ -144,12 +178,22 @@ func (h *Handler) handleStatsTrend(w http.ResponseWriter, r *http.Request, start
 	for rows.Next() {
 		var day time.Time
 		var req, ok, fail, tokens, credits int64
-		var cost float64
-		if err := rows.Scan(&day, &req, &ok, &fail, &tokens, &cost, &credits); err != nil {
+		var cost, inputCost, outputCost float64
+		if err := rows.Scan(&day, &req, &ok, &fail, &tokens, &cost, &inputCost, &outputCost, &credits); err != nil {
 			warnRowSkip("stats.trend", err)
 			continue
 		}
-		items = append(items, map[string]any{"bucket": day.Format("2006-01-02"), "requests": req, "success": ok, "failures": fail, "total_tokens": tokens, "cost_usd": cost, "credits_charged": credits})
+		items = append(items, map[string]any{
+			"bucket":           day.Format("2006-01-02"),
+			"requests":         req,
+			"success":          ok,
+			"failures":         fail,
+			"total_tokens":     tokens,
+			"cost_usd":         cost,
+			"input_cost_usd":   inputCost,
+			"output_cost_usd":  outputCost,
+			"credits_charged":  credits,
+		})
 	}
 	if writeAggRowsErr(w, "stats.trend", rows.Err()) {
 		return
