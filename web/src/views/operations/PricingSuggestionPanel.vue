@@ -117,10 +117,12 @@ async function preview() {
   }
 }
 
-// 2026-11-19：监听全局模型过滤变化
+// 2026-11-19：监听全局模型过滤变化，自动重新预览
 watch(() => props.globalModels, () => {
-  // 清空当前结果，等待用户重新预览
-  result.value = null
+  // 如果之前已有结果，自动重新预览
+  if (result.value) {
+    preview()
+  }
 }, { deep: true })
 
 async function loadBatches() {
@@ -168,8 +170,8 @@ async function applyAll() {
   }
 }
 
-onMounted(() => {
-  loadModelsCanonical() // ★ 2026-11-19：先加载模型规范表
+onMounted(async () => {
+  await loadModelsCanonical() // ★ 2026-11-19：先加载模型规范表（等待完成）
   preview()
   loadBatches()
 })
