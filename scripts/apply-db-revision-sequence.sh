@@ -2935,7 +2935,9 @@ intentional_function_chains=(
   # 2026-10-12: 358 (channel-leg registration round) also redefines the
   # trigger body between 563 and 661; the final body stays 661's, matching
   # the scan-leg numeric order production received (572, 563, 358, 661).
-  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|'
+  # 2026-11-19: 990 (stats consistency fixes) also redefines this function;
+  # added to chain to register the intentional redefinition.
+  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|990_stats_consistency_fixes.sql|'
   # 2026-10-12 channel-leg registration: the candidate_failure_logs promote
   # chain as sequenced here is 392 (first partitioned promote) → 628 (v3,
   # carries aggregation_id) → 698 (Asia/Shanghai timezone pin, still carrying
