@@ -75,6 +75,7 @@ v2: {
     probeScopeLabel: 'Testdaten',
         probeExclude: 'Ohne Testdaten',
         probeInclude: 'Mit Testdaten',
+        probeIncludeBadge: 'inkl. Testdaten',
         probeScopeTitle: 'Kaliber der Kennzahlen: ohne Testdaten = interne Abstimmung; mit Testdaten = Anbieter-Abstimmung (die externe Abrechnung enthält Testverkehr).',    modelDistTitle: 'Modellverteilung',
     modelTop: 'Top {n} im Fenster',
     colShare: 'Anteil',

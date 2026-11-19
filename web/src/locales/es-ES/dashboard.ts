@@ -75,6 +75,7 @@ v2: {
     probeScopeLabel: 'Tráfico de prueba',
         probeExclude: 'Sin pruebas',
         probeInclude: 'Con pruebas',
+        probeIncludeBadge: 'incluye tráfico de prueba',
         probeScopeTitle: 'Calibre de los totales: sin pruebas = conciliación interna; con pruebas = conciliación de proveedor (la facturación externa incluye tráfico de prueba).',    modelDistTitle: 'Distribución de modelos',
     modelTop: 'Top {n} del período',
     colShare: 'Cuota',
