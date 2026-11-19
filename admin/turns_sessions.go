@@ -399,6 +399,19 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 // （来自 session_dim sd / session_summaries ss LEFT JOIN）。
 // startArg 为第一个占位符索引（通常为 1）。
 // 返回 WHERE 片段、参数、下一个占位符索引。
+// splitCommaList 解析逗号分隔的多值查询参数（trim + 去空；空串返回空表）。
+// 2026-11-19 时间范围统一轮：turns 的 ?model= 多选（ModelPicker 多选时
+// 前端以逗号拼接）。单值调用方保持原等值谓词，多值走 ANY 数组。
+func splitCommaList(raw string) []string {
+	out := []string{}
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.Time, beforeTS time.Time, beforeSessionID string, startArg int) (string, []any, int) {
 	clauses := []string{}
 	args := make([]any, 0, 10)
@@ -447,10 +460,20 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 	//     （外层只剩 30 行），常见 ⇒ 会话驱动（前 21 个会话立刻凑齐）。
 	//   ⇒ 252 生产实测（事务内建索引 + ROLLBACK）：model 稀有值
 	//     30,008 ms ⇒ **8.0 ms**；provider='14' 358 ms ⇒ **48.6 ms**。
+	// ★ 2026-11-19（时间范围统一轮）：?model= 支持逗号分隔多值（ModelPicker
+	//   多选）。单值保持 `ft.model = $N` 等值谓词（不惊动既有查询计划）；
+	//   多值走 `ft.model = ANY($N)`（仍是等值谓词族，不引入 OR ⇒
+	//   R92 派生表 UNION ALL pull-up 优化不被破坏），参数为 []string。
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
-		clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
-			"t.model", "model", "ft.model = $"+strconv.Itoa(argIdx)))
-		args = append(args, v)
+		if models := splitCommaList(v); len(models) > 1 {
+			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+				"t.model", "model", "ft.model = ANY($"+strconv.Itoa(argIdx)+")"))
+			args = append(args, models)
+		} else {
+			clauses = append(clauses, db.SessionFamilyTurnsSessionExistsSQL(
+				"t.model", "model", "ft.model = $"+strconv.Itoa(argIdx)))
+			args = append(args, v)
+		}
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
@@ -575,9 +598,14 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 
 	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
 		turnFilterActive = true
-		turnClauses = append(turnClauses, fmt.Sprintf("t.model = $%d", argIdx))
-
-		turnArgs = append(turnArgs, v)
+		// ★ 2026-11-19：与会话级口径一致——多值 ANY 数组、单值等值。
+		if models := splitCommaList(v); len(models) > 1 {
+			turnClauses = append(turnClauses, fmt.Sprintf("t.model = ANY($%d)", argIdx))
+			turnArgs = append(turnArgs, models)
+		} else {
+			turnClauses = append(turnClauses, fmt.Sprintf("t.model = $%d", argIdx))
+			turnArgs = append(turnArgs, v)
+		}
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
