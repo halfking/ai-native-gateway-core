@@ -1958,6 +1958,21 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats）。
 			//   ★ 必须排在 971/977 **之后**（视图由 971 建、977 订正；不在场时本件守卫跳过）。
 			"980_pi_analysis_stats_view_alignment.sql",
+			// ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
+			//   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
+			//   stats_consistency_check 视图（幂等；211 真库试跑通过）。
+			//   ★ 2026-11-19 文档一致性轮补五点同步（首提交只写正典）。
+			"990_stats_consistency_fixes.sql",
+			// ★ 991：stats_timezone_standardization——统计 API 时区标准化
+			//   （UTC 日边界辅助函数；真库试跑通过；自登记原指向不存在的
+			//   migration_metadata 表已改回 schema_migrations）。
+			"991_stats_timezone_standardization.sql",
+			// ★ 981（会话分析基础）**未就绪，不进投递通道**：其物化视图引用
+			//   sessions.owner/total_input_tokens/total_cost/turn_count/title 等
+			//   列在真库（与 01-schema 基线一致）全部不存在——按幻写 schema 写
+			//   的迁移，进通道必炸。embeddata 文件保留（map 引用，编译需要），
+			//   待会话分析列车修正列依赖后重新走五点同步。
+			// （981_session_analytics_foundation.sql —— 暂不登记）
 		},
 	}
 }

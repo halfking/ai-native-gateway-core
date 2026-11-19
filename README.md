@@ -251,6 +251,13 @@ bash install.sh            # macOS / Linux / Windows(Git Bash)
 install.bat                # Windows CMD
 ```
 
+> **Update ≠ fresh install**: re-running `install` against a directory that already
+> has an `.env` **reuses it** (existing secrets/keys are preserved, missing entries
+> are generated) and the DB step only applies pending migrations — a schema ledger
+> that is already populated skips the baseline triple. Use `install --fresh-config`
+> to reset config deliberately. See `installer/README.md` for the full
+> update-vs-install contract.
+
 Not sure what your machine can do? Ask it first — nothing is downloaded or written:
 
 ```bash

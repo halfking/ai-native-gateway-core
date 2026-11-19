@@ -1,4 +1,4 @@
--- Migration 980: Session Analytics Foundation
+-- Migration 981: Session Analytics Foundation
 -- 为会话分析系统创建基础设施：元数据列、物化视图、索引
 
 -- ============================================================================
@@ -178,10 +178,15 @@ COMMENT ON MATERIALIZED VIEW model_usage_aggregates IS '模型使用日聚合统
 -- ============================================================================
 
 -- 创建刷新单个物化视图的函数
+-- ★ 不用 REFRESH ... CONCURRENTLY：PostgreSQL 不允许 CONCURRENTLY 在
+--   事务块/函数体内执行（函数体即事务块），原写法每次调用都落进
+--   EXCEPTION 分支被吞成 WARNING——辅助函数静默失效、视图永远刷不动。
+--   需要并发刷新时由外部 psql 直接执行 REFRESH MATERIALIZED VIEW
+--   CONCURRENTLY（四个视图均已建唯一索引，满足 CONCURRENTLY 前提）。
 CREATE OR REPLACE FUNCTION refresh_session_analytics_view(view_name TEXT)
 RETURNS void AS $$
 BEGIN
-    EXECUTE format('REFRESH MATERIALIZED VIEW CONCURRENTLY %I', view_name);
+    EXECUTE format('REFRESH MATERIALIZED VIEW %I', view_name);
     RAISE NOTICE 'Refreshed materialized view: %', view_name;
 EXCEPTION
     WHEN OTHERS THEN
@@ -260,3 +265,10 @@ END $$;
 -- ============================================================================
 -- 完成
 -- ============================================================================
+
+-- ★ 双账本纪律：与 971/977/979/980 同款（schema_migrations 本件自登记；
+--   gateway_db_revision_sequences 由 deploy 通道按内容指纹写）。
+--   ≥952 的迁移必须自登记（960 迁移立的纪律门）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('981', 'session_analytics_foundation: 会话分析系统基础设施（sessions 元数据列 + 4 个物化视图 + 刷新辅助函数 + 探测会话标记）')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;

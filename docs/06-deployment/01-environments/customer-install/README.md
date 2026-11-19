@@ -9,8 +9,8 @@
 
 | 方式 | 推荐入口 | 适用场景 | 当前状态 |
 | --- | --- | --- | --- |
-| 客户 host | `scripts/user/client-deploy.sh --install-mode host`；Linux/macOS 底层为 `install-host.sh` | 不允许 Docker、离线单机、客户自管 init | Linux/macOS `PARTIAL` |
-| 客户 Docker | `scripts/user/client-deploy.sh --install-mode docker` | 单机 Compose 或客户已有外部依赖 | `PARTIAL`，需确认 PG/Redis 契约 |
+| 客户 host | `scripts/user/client-deploy.sh deploy`（2026-11-19 订正：`--install-mode` 已移除）；Linux/macOS 底层为 `install-host.sh` | 不允许 Docker、离线单机、客户自管 init | Linux/macOS `PARTIAL` |
+| 客户 Docker | `scripts/user/client-deploy.sh deploy`（同入口，Docker 形态自动编排） | 单机 Compose 或客户已有外部依赖 | `PARTIAL`，需确认 PG/Redis 契约 |
 | local host | `scripts/local-host-deploy.sh` | 开发/调试 | 不是客户生产路径 |
 | K8s | `deploy/k8s/` | 当前仅测试集群 | `NOT_RELEASE_READY` for production |
 
@@ -61,12 +61,14 @@
 ## 5. 推荐命令
 
 ```bash
-# 客户 host：实际支持 --install-mode 的是 client-deploy.sh
-bash scripts/user/client-deploy.sh --install-mode host deploy
+# 客户 host / 客户 Docker：同一编排入口，按子命令分派
+# （2026-11-19 订正：--install-mode flag 已于 2026-10-03 移除，传它会被判
+#   unknown command；host/docker 形态由平台探测与阶段编排自动决定）
+bash scripts/user/client-deploy.sh deploy
 
-# 客户 Docker：推荐使用完整编排入口
-INSTALL_ROOT=/opt/llm-gateway \
-  bash scripts/user/client-deploy.sh --install-mode docker deploy
+# 需要覆盖安装根/目标版本时用环境变量（见脚本头部 Env 清单）
+INSTALL_ROOT=/opt/llm-gateway VERSION=1.2.0 \
+  bash scripts/user/client-deploy.sh deploy
 
 # 底层 Docker 脚本：必须显式理解 COMPOSE_DIR 语义
 COMPOSE_DIR=/opt/llm-gateway-docker \

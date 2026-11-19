@@ -7,8 +7,8 @@
 
 | 路径 | 目录/入口 | 状态 | 适用环境 | 发布前必须有 |
 | --- | --- | --- | --- | --- |
-| 客户 host | `scripts/user/client-deploy.sh --install-mode host`、`scripts/lifecycle/` | `PARTIAL` | customer-host | artifact/checksum、init、三段 preflight、升级回滚 |
-| 客户 Docker | `scripts/user/client-deploy.sh --install-mode docker` | `PARTIAL` | customer-docker | Compose/PG/Redis 契约、镜像 checksum、回滚证据 |
+| 客户 host | `scripts/user/client-deploy.sh deploy`（host 形态由平台探测自动选择）、`scripts/lifecycle/` | `PARTIAL` | customer-host | artifact/checksum、init、三段 preflight、升级回滚 |
+| 客户 Docker | `scripts/user/client-deploy.sh deploy`（同入口，Docker 形态自动编排） | `PARTIAL` | customer-docker | Compose/PG/Redis 契约、镜像 checksum、回滚证据 |
 | local/dev | `scripts/local-host-deploy*.sh`、`docker-compose.dev-research.yml` | `CURRENT/PARTIAL` | local/dev | 本地测试；不得代替生产验证 |
 | 245/154 | `scripts/deploy*.sh`、`scripts/deploy-lib/` | `CURRENT/PARTIAL` | staging/production target | 目标 contract、migration、readiness、canary、回滚和监控 |
 | K8s test | `deploy/k8s/` | `CURRENT/PARTIAL` | `k8s-test` / `pms-test` | 集群、Secret/PVC、Service、readiness 和 migration 顺序 |

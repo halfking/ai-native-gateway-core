@@ -2758,6 +2758,15 @@ files=(
   #   v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats 新口径；
   #   幂等 CREATE OR REPLACE + 视图不在场守卫跳过）。
   "$ROOT_DIR/sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql"
+  # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
+  #   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
+  #   stats_consistency_check 视图（幂等；211 真库试跑通过）。
+  #   ★ 2026-11-19 文档一致性轮补登记（首提交漏了本清单 ⇒ 211 docker 通道不会投递）。
+  "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
+  # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
+  #   辅助函数；真库试跑通过；自登记已从不存在 的 migration_metadata 表改回
+  #   schema_migrations）。
+  "$ROOT_DIR/sql/migrations/startup/991_stats_timezone_standardization.sql"
 )
 
 

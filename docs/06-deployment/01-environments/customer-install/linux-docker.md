@@ -6,7 +6,7 @@
 
 ```bash
 INSTALL_ROOT=/opt/llm-gateway \
-  bash scripts/user/client-deploy.sh --install-mode docker deploy
+  bash scripts/user/client-deploy.sh deploy
 ```
 
 `install-docker.sh` 是底层/轻量脚本，默认写入 `COMPOSE_DIR="$PWD/llm-gateway-docker"`，不会因为设置 `INSTALL_ROOT` 自动改变目录。使用它时必须显式设置 `COMPOSE_DIR` 并自行确认依赖契约：

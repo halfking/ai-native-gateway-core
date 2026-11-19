@@ -395,3 +395,5 @@
 377	978_pi_canonical_rule_set.sql
 378	979_pi_analysis_applied_actions.sql
 379	980_pi_analysis_stats_view_alignment.sql
+380	990_stats_consistency_fixes.sql
+381	991_stats_timezone_standardization.sql

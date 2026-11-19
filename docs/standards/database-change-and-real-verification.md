@@ -72,6 +72,22 @@
 提交前必须确认：
 
 - 代码、schema、migration、down migration、视图和测试在同一变更集内。
+- **新 startup 迁移必须六处登记面全部同步**（按「部署通道」枚举，不按历史
+  先例抄——211 docker 与 systemd/154 是两套投递面）：
+  1. `sql/migrations/startup/NNN_*.sql`（正典，up + down）；
+  2. `installer/cmd/llm-gw-installer/embeddata/startup/`（镜像副本，逐字节一致，
+     `TestInstallerEmbedStartupMigrationsByteMatchCanonical` 门守）；
+  3. `installer/cmd/llm-gw-installer/main.go`（`//go:embed` var + `embeddedSQLFiles` map）；
+  4. `installer/internal/dbinit/runner.go` 的 `StartupFiles` 有序清单
+     （漏了它 ⇒ installer 全新安装不应用该迁移）；
+  5. `sql/schema/installed_startup_migrations.tsv`（启动链机器可读镜像）；
+  6. `scripts/apply-db-revision-sequence.sh` 的 `files=()` 显式序列清单
+     （211 docker 通道；漏了它 ⇒ 该机器永不投递）。
+  另按双账本纪律在 `docs/db-changelog.md` 登记一行（含内容 SHA 与验证状态），
+  并在迁移文件尾部自登记 `schema_migrations`（≥952 起为纪律门强制）。
+  历史教训：979 首版漏了第 6 处 ⇒ 211 部署后列不存在；990/991/981（2026-11-19）
+  首提交只写了正典或只写了 embeddata ⇒ embed 同步门/启动链门红、迁移在
+  部分通道上不存在。
 - 当前运行版本的 commit、版本号、二进制哈希和目标服务一致。
 - 245/测试环境真实验证通过，失败不得晋级 154。
 - 工作区、staged、untracked、删除文件已完整审计。

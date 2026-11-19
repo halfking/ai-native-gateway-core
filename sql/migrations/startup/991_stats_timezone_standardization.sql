@@ -74,7 +74,8 @@ COMMENT ON FUNCTION utc_days_ago IS
 -- 3. API文档更新：注明时区语义变更
 -- 4. 监控数据变化：对比迁移前后的统计差异（预期中国用户"今日"数据延后8小时）
 
--- 迁移完成标记
-INSERT INTO migration_metadata (version, description, applied_at)
-VALUES (991, 'Add UTC time boundary helper functions for statistics standardization', NOW())
-ON CONFLICT (version) DO NOTHING;
+-- ★ 双账本纪律：≥952 的迁移必须自登记进 schema_migrations（960 立的纪律门）。
+--   原写法 INSERT INTO migration_metadata —— 该表在本库不存在，真跑必炸在最后一步。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('991', 'stats_timezone_standardization: 统计 API 时区标准化（UTC 日边界辅助函数 + _utc 版本函数，保持向后兼容）')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;

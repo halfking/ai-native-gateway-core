@@ -1,4 +1,4 @@
--- Migration 980 Rollback: Session Analytics Foundation
+-- Migration 981 Rollback: Session Analytics Foundation
 -- 回滚会话分析系统的基础设施
 
 -- ============================================================================

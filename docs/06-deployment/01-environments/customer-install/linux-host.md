@@ -5,8 +5,8 @@
 ## 入口
 
 ```bash
-# 推荐：客户编排入口，支持 --install-mode
-bash scripts/user/client-deploy.sh --install-mode host deploy
+# 推荐：客户编排入口（--install-mode 已移除，按子命令分派）
+bash scripts/user/client-deploy.sh deploy
 
 # 底层 host 安装脚本（不接受 --install-mode）
 sudo bash scripts/user/install-host.sh

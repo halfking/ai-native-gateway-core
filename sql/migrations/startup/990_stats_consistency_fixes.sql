@@ -9,6 +9,10 @@
 -- 参考审计报告: docs/STATS_API_AUDIT.md
 
 BEGIN;
+-- ★ 强锁 DDL 预算（与 977/978/979 同口径）：ALTER TABLE 拿不到锁时 5s 快速
+--   失败而不是堵住全库（lock_guard 门要求）；10min statement_timeout 兜底。
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10min';
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- 1. session_summaries 添加积分和 TTFT 字段
@@ -245,5 +249,10 @@ FULL OUTER JOIN session_agg s ON d.day_utc = s.day AND d.tenant_id = s.tenant_id
 ORDER BY day DESC, tenant_id;
 
 COMMENT ON VIEW stats_consistency_check IS '统计数据一致性检查视图 - 对比 stats_usage_daily 和 session_summaries 的数据差异';
+
+-- ★ 双账本纪律：≥952 的迁移必须自登记进 schema_migrations（960 立的纪律门）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('990', 'stats_consistency_fixes: 统计数据一致性修复（session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 + stats_consistency_check 视图）')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

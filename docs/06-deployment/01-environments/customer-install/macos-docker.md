@@ -6,7 +6,7 @@
 
 ```bash
 INSTALL_ROOT="$HOME/Downloads/llm-gateway-files" \
-  bash scripts/user/client-deploy.sh --install-mode docker deploy
+  bash scripts/user/client-deploy.sh deploy
 ```
 
 macOS 使用 Linux 容器。`client-deploy.sh` 是客户编排入口；`install-docker.sh` 是底层脚本，使用时应显式设置 `COMPOSE_DIR`，不能假定 `INSTALL_ROOT` 会被它读取。
