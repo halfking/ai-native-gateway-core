@@ -636,6 +636,7 @@ func TestGeminiExecutor_CheckSoftMismatch(t *testing.T) {
 		{"gemini-2.5-flash", "gemini-2.5-flash", false},
 		{"gemini-2.5-flash", "gemini-2.5-flash-preview-05-15", false},
 		{"gemini-2.5-flash", "gemini-2.5-pro", true},
+		{"gemini-2.5-flash", "models/gemini-2.5-flash", false}, // 2026-11-20 last-segment identity: "models/" prefix is display routing
 		{"gemini-2.5-flash", "", false},
 		{"", "gemini-2.5-pro", false},
 	}

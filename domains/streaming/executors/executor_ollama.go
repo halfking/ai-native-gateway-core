@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelname"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -650,7 +651,9 @@ func (o *OllamaExecutor) CheckSoftMismatch(reqModel, respModel string) (bool, st
 	if reqModel == "" || respModel == "" {
 		return false, ""
 	}
-	if !strings.EqualFold(reqModel, respModel) {
+	// 2026-11-20: last-segment identity (internal/modelname) — same ruling
+	// as the integrity detector; vendor prefixes are display routing.
+	if !modelname.Consistent(respModel, reqModel) {
 		return true, "ollama_response_model_differs_from_request"
 	}
 	return false, ""
