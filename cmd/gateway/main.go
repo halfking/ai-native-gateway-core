@@ -41,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
+	sessionanalytics "github.com/kaixuan/llm-gateway-go/admin/session_analytics"
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -8395,6 +8396,33 @@ func main() {
 		pool := dbConn.Pool()
 		secret := cfg.SecretKey
 		wrapSessionAnalytics = newWrapSessionAnalytics(pool, secret)
+	}
+
+	// ── 会话分析系统（981 物化视图族）───────────────────────────────────
+	//
+	// ★ 这个包此前**从未被任何地方 import** ⇒ RegisterRoutes 从未被调用
+	//   ⇒ /api/admin/session-analytics/{overview,users} 在网关里根本不存在。
+	//   也就是说：Phase 2 的后端代码是**死代码**——单测全绿、代码齐备，
+	//   但线上没有任何一条路径能走到它（仓内教训：单测打不穿"从未接线"）。
+	//   本次把路由真正接到 mux 上。
+	//
+	// ★ 为什么用 stdlib.OpenDB 而不是直接用 pgxpool：本包的查询层用
+	//   database/sql（*sql.DB），与仓内 pi_analysis 线的做法一致
+	//   （piSQLDB := stdlib.OpenDB(*pool.Config().ConnConfig)）。
+	//
+	// ★ 与 Echo 挂载共存：mux.Handle("/api/admin/", e) 是**子树**模式，
+	//   而 /api/admin/session-analytics/overview 是**精确**模式 ⇒ Go 的
+	//   ServeMux 里精确模式优先 ⇒ 请求不会被 Echo 抢走，也不会 panic
+	//   （ServeMux 只禁止**同一**模式重复注册）。
+	if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+		saSQLDB := stdlib.OpenDB(*dbConn.Pool().Config().ConnConfig)
+		defer closeAnalysisSQLDBBounded(saSQLDB, analysisSQLDBCloseTimeout)
+		sessionanalytics.RegisterRoutes(mux, saSQLDB, wrapAdmin)
+		slog.Info("session analytics admin API enabled",
+			"routes", []string{
+				"GET /api/admin/session-analytics/overview",
+				"GET /api/admin/session-analytics/users",
+			})
 	}
 
 	// ── 质量画像更新器（先创建，后续启动和注册 API）───────────────────

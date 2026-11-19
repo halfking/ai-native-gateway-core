@@ -10,6 +10,7 @@ export default {
   rerunFailed: 'Die Neuausführung konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
   // Abdeckung / Leerzustand
   daysCovered: 'Tage mit Snapshots',
+  todayPendingHint: ' (Heutiger Snapshot wird erst am Folgetag erstellt)',
   unaggregatedDay: 'Nicht aggregiert',
   noSnapshots: 'Keine Berichts-Snapshots in diesem Zeitraum (der tägliche Aggregationsjob erzeugt die Vortagesdaten in den frühen Morgenstunden, oder nutzen Sie „Endtag neu ausführen“ zur Nachberechnung)',
   // Zusammenfassungskarten

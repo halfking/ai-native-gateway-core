@@ -36,7 +36,11 @@ func NewServer(
 // RegisterRoutes mounts all contract v0.1 endpoints on the given Echo group.
 // Action-style contract paths (/holds/{id}:confirm) map to REST subpaths
 // (/holds/{id}/confirm) because Echo v5 treats ":x" as a parameter token.
+// Metrics middleware is attached first so every request is observed.
 func (s *Server) RegisterRoutes(g *echo.Group) {
+	g.Use(metricsMiddleware())
+	g.Use(tracingMiddleware())
+
 	// inventory
 	g.POST("/sellable:query", s.handleQuerySellable)
 	g.POST("/holds", s.handleHoldCreate)
@@ -126,6 +130,7 @@ func respondError(c *echo.Context, err error) error {
 
 	var domainErr *maascontracts.Error
 	if errors.As(err, &domainErr) {
+		RecordDomainError(domainErr.Code) // Prometheus: maas_domain_errors_total{code=...}
 		traceID := ""
 		if domainErr.TraceID != nil {
 			traceID = *domainErr.TraceID

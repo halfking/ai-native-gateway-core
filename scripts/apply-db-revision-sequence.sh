@@ -2758,6 +2758,20 @@ files=(
   #   v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats 新口径；
   #   幂等 CREATE OR REPLACE + 视图不在场守卫跳过）。
   "$ROOT_DIR/sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql"
+  # ★ 981（2026-11-19 会话分析系统基础设施）：session_analytics_foundation——
+  #   会话分析 4 个聚合物化视图（user_session_aggregates / project_task_aggregates /
+  #   agent_usage_aggregates / model_usage_aggregates）+ 刷新函数 + 探测判定函数
+  #   session_analytics_is_probe。
+  #   ★ 幂等：ADD COLUMN IF NOT EXISTS / CREATE MATERIALIZED VIEW IF NOT EXISTS /
+  #     CREATE [UNIQUE] INDEX IF NOT EXISTS / CREATE OR REPLACE FUNCTION；
+  #     探测回填是 UPDATE ... WHERE is_probe = false（已标记的不动）。
+  #   ★ 本文件含 REFRESH MATERIALIZED VIEW CONCURRENTLY（PG 不允许在事务块内执行）
+  #     ⇒ 本通道的 psql_stream 本来就是非事务流式执行（-f -，无 --single-transaction）
+  #     ⇒ CONCURRENTLY 合法。
+  #   ★ 底座是 session_summaries / session_dim / sessions（真库实测），
+  #     不是 sessions 裸表；日桶用 (ts AT TIME ZONE 'Asia/Shanghai')::date（CST）。
+  #   ★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。
+  "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
   # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
   #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
   #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
@@ -3569,6 +3583,16 @@ ledger_artifact_probe "977_pi_error_analysis_semantics.sql" \
 #     的门；本探针只判「这套规则集在场」。
 ledger_artifact_probe "978_pi_canonical_rule_set.sql" \
   "to_regclass('public.prompt_injection_rules') IS NOT NULL AND (SELECT count(*) FROM public.prompt_injection_rules WHERE rule_name IN ('instruction_override_ignore','instruction_override_new_rules','instruction_override_system_prompt','data_exfiltration_http','data_exfiltration_tool','resource_exhaustion_repeat','resource_exhaustion_long','social_engineering_urgency','social_engineering_authority','unicode_homoglyph','unicode_rtl_override','unicode_zero_width','tool_abuse_exec','tool_abuse_import','tool_abuse_file','multi_turn_setup','multi_turn_reference','payload_smuggling_base64','payload_smuggling_markdown','context_manipulation_role','context_manipulation_persona','role_hijack_ignore_previous','role_hijack_you_are_now','privilege_escalation','command_injection')) = 25"
+# ★ 981 的产物 = 会话分析 4 个物化视图 + 刷新函数 + 探测判定函数 + sessions 四列。
+#   ★ 断言的是**静态对象在场**（表/列/索引/函数），不断言行数：
+#     行数是运行时状态（源表一直在写），按 972 事故的教训，产物探针只查产物。
+#   ★ 四个视图的**唯一索引**必须在场 —— REFRESH MATERIALIZED VIEW CONCURRENTLY
+#     的硬前提（缺了刷新会失败，而不是退化成普通 REFRESH）。
+#   ★ 唯一索引必须是**纯列**索引：PG 的 findCommittedUniqueIndex 跳过带表达式的索引
+#     ⇒ 表达式索引不算数（这是 981 首跑实测踩到的：表达式唯一索引让 CONCURRENTLY
+#     刷新失败，报 "Create a unique index with no WHERE clause on one or more columns"）。
+ledger_artifact_probe "981_session_analytics_foundation.sql" \
+  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regprocedure('public.refresh_session_analytics_view(text)') IS NOT NULL AND to_regprocedure('public.refresh_all_session_analytics_views()') IS NOT NULL AND to_regprocedure('public.session_analytics_is_probe(text,text,text)') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='sessions' AND column_name IN ('project','task','task_category','is_probe')) = 4 AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

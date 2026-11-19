@@ -72,7 +72,17 @@ export function useReconciliationPage() {
   const kxRange = computed(() => ({ start: range.value[0], end: range.value[1] }))
   const coverageText = computed(() => {
     if (!report.value) return ''
-    return `${t('reports.coveragePrefix')} ${report.value.snapshot_dates.length} ${t('reports.daysCovered')}`
+    const base = `${t('reports.coveragePrefix')} ${report.value.snapshot_dates.length} ${t('reports.daysCovered')}`
+    // 2026-11-20 统一轮：预设改为「近 N 天含今天」后，区间含今天时今日必然
+    // 没有快照（每日凌晨生成前一日）——「近 7 天只覆盖 6 天」不是丢数据，
+    // 说出来，别让覆盖数又被读成口径错。
+    const today = new Date().toISOString().slice(0, 10)
+    const [start, end] = range.value
+    const spanDays = Math.floor((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1
+    if (end >= today && report.value.snapshot_dates.length < spanDays) {
+      return base + t('reports.todayPendingHint')
+    }
+    return base
   })
   const legacyDays = computed(() => report.value?.coverage?.legacy_dates ?? [])
   const reasons = computed(() => topReasons(report.value?.error_breakdown, 8))

@@ -404,6 +404,36 @@ var SessionAnalyticsViews = []string{
 	//
 	// ⇒ 语义不变：三个视图彼此独立，admin 侧的新鲜度门按**端点所需**的
 	//   视图列表逐个判定（admin/session_analytics_*.go），与本清单顺序无关。
+	// ★ 排序纪律（沿用本清单已有的）：**快的先刷，慢的排最后**。
+	//   一轮是串行的 ⇒ 慢视图排前面会把整轮推迟它自己的耗时，
+	//   后面的视图因此被推到离新鲜度预算只剩一点点。
+	//
+	//   实测成本（252 生产 2026-10-22 / 211 真库 2026-11-19）：
+	//     user_session_aggregates      ≈ 0.6s   （981）
+	//     project_task_aggregates      ≈ 0.6s   （981）
+	//     agent_usage_aggregates       ≈ 0.8s   （981）
+	//     model_usage_aggregates       ≈ 3.5s   （981，请求级，最重）
+	//     session_client_task_matrix  7.45~65.4s
+	//     session_task_stats          6.19~151.5s
+	//     session_client_stats        34.28s 且 **≥180.31s（被杀）**
+	//
+	// ★ 981（2026-11-19 会话分析系统基础设施）新增的 4 个视图。
+	//
+	// ★ 为什么必须进这个清单：仓内 2026-10-07 在 245 上实测过「视图建好、
+	//   刷新过一次、之后**没有任何刷新排程**」⇒ 端点从 503 变成 200，返回的是
+	//   9h37m 前的数字，**没有错误也没有提示**（陈旧被伪装成结论）。
+	//   ⇒ 新建物化视图而不接刷新器，等于**主动制造**同一类事故。
+	//
+	// ★ 四个视图都带**纯列**唯一索引
+	//   （idx_user_session_agg_pk / idx_project_task_agg_pk /
+	//   idx_agent_usage_agg_pk / idx_model_usage_agg_pk）⇒ REFRESH
+	//   CONCURRENTLY 的硬前提成立。★ 表达式索引不算数：PG 的
+	//   findCommittedUniqueIndex 会跳过 indexprs 非空的索引
+	//   （981 首跑实测踩到过，报 "Create a unique index with no WHERE clause"）。
+	"user_session_aggregates",
+	"project_task_aggregates",
+	"agent_usage_aggregates",
+	"model_usage_aggregates",
 	"session_client_task_matrix",
 	"session_task_stats",
 	"session_client_stats",

@@ -11,6 +11,7 @@ export default {
   rerunFailed: 'The rerun could not be completed. Please retry.',
   // Coverage / empty state
   daysCovered: 'days of snapshots',
+  todayPendingHint: " (today's snapshot is generated next day)",
   unaggregatedDay: 'Not aggregated',
   noSnapshots: 'No report snapshots in this range (the daily aggregation job generates the previous day in the early morning, or use "Rerun End Day" to backfill)',
   // Summary cards

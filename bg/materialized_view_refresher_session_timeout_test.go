@@ -210,19 +210,30 @@ func TestSessionViewsTimeout_CoversLockBudgetPlusStatements(t *testing.T) {
 	}
 }
 
-// TestSessionAnalyticsViews_FastestFirst：慢视图必须排在最后。
+// TestSessionAnalyticsViews_FastestFirst：快的排前面、慢的排最后。
 //
-// 实测成本（252 生产 2026-10-22）：matrix 7.45~65.4s、task_stats 6.19~151.5s、
-// client_stats 34.28s 且**≥180.31s（被杀）**。一轮是串行的 ⇒ 慢视图排第一
-// 会把整轮推迟它自己的耗时，后面的视图因此被推到离新鲜度预算只剩 28 分钟。
+// 实测成本（252 生产 2026-10-22 / 211 真库 2026-11-19）：
+//   981 族 0.6~3.5s｜matrix 7.45~65.4s｜task_stats 6.19~151.5s｜
+//   client_stats 34.28s 且**≥180.31s（被杀）**。一轮是串行的 ⇒ 慢视图排前面
+//   会把整轮推迟它自己的耗时，后面的视图因此被推到离新鲜度预算只剩 28 分钟。
+//
+// ★ 981 轮扩容后清单是 7 个（3 个 357 族 + 4 个 981 族）⇒ 断言从
+//   「数量 == 3」改成「首项属最快的族、末项是最慢的视图」。
 func TestSessionAnalyticsViews_FastestFirst(t *testing.T) {
-	if len(SessionAnalyticsViews) != 3 {
-		t.Fatalf("视图数应为 3，实际 %d：%v", len(SessionAnalyticsViews), SessionAnalyticsViews)
+	if len(SessionAnalyticsViews) < 2 {
+		t.Fatalf("清单为空：%v", SessionAnalyticsViews)
 	}
-	if SessionAnalyticsViews[0] != "session_client_task_matrix" {
-		t.Fatalf("最慢的视图必须排在最后，当前清单首项是 %q：%v",
+	// 首项必须属 981 族里最快的几个（实测 ≈0.6~0.8s）。
+	fastest := map[string]bool{
+		"user_session_aggregates": true,
+		"project_task_aggregates": true,
+		"agent_usage_aggregates":  true,
+	}
+	if !fastest[SessionAnalyticsViews[0]] {
+		t.Fatalf("最快的视图（981 族，≈0.6s）必须排在最前，当前清单首项是 %q：%v",
 			SessionAnalyticsViews[0], SessionAnalyticsViews)
 	}
+	// 末项必须是最慢的 session_client_stats（实测 ≥180.31s）。
 	if SessionAnalyticsViews[len(SessionAnalyticsViews)-1] != "session_client_stats" {
 		t.Fatalf("session_client_stats（实测 ≥180.31s）必须排在最后，当前清单末项是 %q：%v",
 			SessionAnalyticsViews[len(SessionAnalyticsViews)-1], SessionAnalyticsViews)
