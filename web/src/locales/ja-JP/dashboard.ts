@@ -55,7 +55,6 @@ tabs: {
     providerStatsTitle: 'プロバイダー使用統計',
     providerStatsHint: '時間範囲に連動：任意の行を選んで詳細を表示',
     providerExport: 'Excel エクスポート',
-    heroRangeLabel: 'データ期間',
     filterRange: '期間',
     filterGran: '粒度',
     granAuto: '自動',

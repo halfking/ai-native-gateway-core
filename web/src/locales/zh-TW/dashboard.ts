@@ -55,7 +55,6 @@ tabs: {
     providerStatsTitle: '供應商用量統計',
     providerStatsHint: '隨時間範圍聯動：選擇任意一行查看詳情',
     providerExport: '匯出 Excel',
-    heroRangeLabel: '資料時間範圍',
     filterRange: '時間範圍',
     filterGran: '粒度',
     granAuto: '自動',

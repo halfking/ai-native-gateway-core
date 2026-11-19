@@ -14,6 +14,8 @@ const props = defineProps<{
   rangeValue: KxDateRange | null
   loading?: boolean
   source?: string
+  /** 紧凑形态（2026-11-19 轮）：顶部那份与运维状态行（ops-bar 4px 12px 胶囊）对齐高度用 */
+  compact?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -43,7 +45,7 @@ const sourceKey = computed(() => {
 </script>
 
 <template>
-  <div class="bfb">
+  <div class="bfb" :class="{ 'bfb--compact': props.compact }">
     <div class="bfb__item">
       <span class="bfb__label">{{ t('dashboard.board.filterRange') }}</span>
       <KxDateRangePicker
@@ -91,6 +93,10 @@ const sourceKey = computed(() => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
+}
+/* 顶部实例：与 ops-bar 状态胶囊（4px 12px）同高，两行贴齐不突兀 */
+.bfb--compact {
+  padding: 4px 12px;
 }
 .bfb__item {
   display: inline-flex;

@@ -61,7 +61,6 @@ v2: {
     providerStatsTitle: 'Estadísticas de uso de proveedores',
     providerStatsHint: 'Sigue el rango de tiempo: selecciona cualquier fila para ver los detalles',
     providerExport: 'Exportar Excel',
-    heroRangeLabel: 'Rango de tiempo de los datos',
     filterRange: 'Rango de tiempo',
     filterGran: 'Granularidad',
     granAuto: 'Auto',
