@@ -20,7 +20,7 @@ import (
 type OverviewSummary struct {
 	TotalSessions       int64   `json:"total_sessions"`
 	TotalSessionsGrowth float64 `json:"total_sessions_growth"`
-	AvgTokens           int64   `json:"avg_tokens"`
+	AvgTokens           float64 `json:"avg_tokens"`
 	AvgContextSize      int64   `json:"avg_context_size"`
 	AvgDurationSeconds  float64 `json:"avg_duration_seconds"`
 	AvgTurns            float64 `json:"avg_turns"`
@@ -61,29 +61,29 @@ type TokenTrendPoint struct {
 
 // TopUser 最活跃用户
 type TopUser struct {
-	Owner       string  `json:"owner"`
-	DisplayName string  `json:"display_name"`
-	Email       string  `json:"email"`
-	SessionCount int64  `json:"session_count"`
-	TotalTokens int64  `json:"total_tokens"`
-	TotalCost   float64 `json:"total_cost"`
+	Owner        string  `json:"owner"`
+	DisplayName  string  `json:"display_name"`
+	Email        string  `json:"email"`
+	SessionCount int64   `json:"session_count"`
+	TotalTokens  int64   `json:"total_tokens"`
+	TotalCost    float64 `json:"total_cost"`
 }
 
 // TopProject 最活跃项目
 type TopProject struct {
-	Project      string `json:"project"`
-	SessionCount int64  `json:"session_count"`
-	UserCount    int64  `json:"user_count"`
+	Project      string  `json:"project"`
+	SessionCount int64   `json:"session_count"`
+	UserCount    int64   `json:"user_count"`
 	TotalCost    float64 `json:"total_cost"`
 }
 
 // OverviewResponse 总体统计响应
 type OverviewResponse struct {
-	Summary     OverviewSummary   `json:"summary"`
-	TopModels   []TopModel        `json:"top_models"`
-	Trends      TrendsData        `json:"trends"`
-	TopUsers    []TopUser         `json:"top_users"`
-	TopProjects []TopProject      `json:"top_projects"`
+	Summary     OverviewSummary `json:"summary"`
+	TopModels   []TopModel      `json:"top_models"`
+	Trends      TrendsData      `json:"trends"`
+	TopUsers    []TopUser       `json:"top_users"`
+	TopProjects []TopProject    `json:"top_projects"`
 }
 
 // TrendsData 趋势数据
@@ -168,13 +168,13 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	query := `
 		SELECT
 			COALESCE(SUM(session_count), 0) as total_sessions,
-			COALESCE(AVG(total_tokens::NUMERIC / NULLIF(session_count, 0)), 0) as avg_tokens,
+			ROUND(COALESCE(AVG(total_tokens::NUMERIC / NULLIF(session_count, 0)), 0), 2) as avg_tokens,
 			COALESCE(AVG(avg_duration_seconds), 0) as avg_duration_seconds,
 			COALESCE(AVG(avg_turns), 0) as avg_turns,
 			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost,
 			COALESCE(COUNT(DISTINCT owner), 0) as active_users,
-			COALESCE(COUNT(DISTINCT project_count), 0) as active_projects,
-			COALESCE(COUNT(DISTINCT task_count), 0) as active_tasks
+			COALESCE(SUM(project_count), 0) as active_projects,
+			COALESCE(SUM(task_count), 0) as active_tasks
 		FROM user_session_aggregates
 		WHERE date >= $1 AND date <= $2
 	`
@@ -377,7 +377,7 @@ func getCostTrend(ctx context.Context, db *sql.DB, tenantID *string, startDate, 
 // getTokenTrend 获取 Token 趋势
 func getTokenTrend(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate string) ([]TokenTrendPoint, error) {
 	query := `
-		SELECT date::TEXT, SUM(total_tokens) as total
+		SELECT date::TEXT, SUM(total_tokens)::bigint as total
 		FROM user_session_aggregates
 		WHERE date >= $1 AND date <= $2
 	`
@@ -424,15 +424,16 @@ func getTokenTrend(ctx context.Context, db *sql.DB, tenantID *string, startDate,
 // topUsersSQL 人员排行（总体统计的「最活跃用户」卡片）。
 //
 // ★ owner 取 a.owner（聚合视图自己的列）而不是 u.owner：
-//   users 表**没有 owner 列**（真库实测：id/tenant_id/username/.../email/role），
-//   写成 u.owner 会得到 42703 column does not exist ⇒ 整条查询失败。
+//
+//	users 表**没有 owner 列**（真库实测：id/tenant_id/username/.../email/role），
+//	写成 u.owner 会得到 42703 column does not exist ⇒ 整条查询失败。
 const topUsersSQL = `
 		SELECT
 			a.owner,
 			COALESCE(u.display_name, a.owner) as display_name,
 			COALESCE(u.email, '') as email,
 			SUM(a.session_count) as session_count,
-			SUM(a.total_tokens) as total_tokens,
+			SUM(a.total_tokens)::bigint as total_tokens,
 			SUM(a.internal_cost + a.external_cost) as total_cost
 		FROM user_session_aggregates a
 		LEFT JOIN users u ON a.owner = u.username
@@ -448,7 +449,7 @@ const userRankingSQL = `
 			SUM(a.session_count) as session_count,
 			SUM(a.project_count) as project_count,
 			SUM(a.task_count) as task_count,
-			SUM(a.total_tokens) as total_tokens,
+			SUM(a.total_tokens)::bigint as total_tokens,
 			SUM(a.internal_cost + a.external_cost) as total_cost,
 			MAX(a.last_active_at) as last_active_at
 		FROM user_session_aggregates a
@@ -458,8 +459,9 @@ const userRankingSQL = `
 
 // userRankingByProjectSQL 用户排行（指定项目口径：走 project_task_aggregates）。
 //
-// ★ task 用 '' 表示「无具体任务」（迁移 981 的唯一索引要求列上无 NULL），
-//   所以 COUNT(DISTINCT) 必须用 NULLIF 归一，否则「无任务」会被算成一个任务。
+// ★ task 用 ” 表示「无具体任务」（迁移 981 的唯一索引要求列上无 NULL），
+//
+//	所以 COUNT(DISTINCT) 必须用 NULLIF 归一，否则「无任务」会被算成一个任务。
 const userRankingByProjectSQL = `
 			SELECT
 				p.owner,
@@ -468,7 +470,7 @@ const userRankingByProjectSQL = `
 				SUM(p.session_count) as session_count,
 				COUNT(DISTINCT p.project) as project_count,
 				COUNT(DISTINCT NULLIF(p.task, '')) as task_count,
-				SUM(p.total_tokens) as total_tokens,
+				SUM(p.total_tokens)::bigint as total_tokens,
 				SUM(p.internal_cost + p.external_cost) as total_cost,
 				MAX(p.last_active_at) as last_active_at
 			FROM project_task_aggregates p
@@ -478,7 +480,7 @@ const userRankingByProjectSQL = `
 
 // latestTaskSQL 取某人在区间内最近一次有任务的任务名。
 //
-// ★ 判空用 `<> ''` 而不是 `IS NOT NULL`（task 列是 '' 语义，见上）。
+// ★ 判空用 `<> ”` 而不是 `IS NOT NULL`（task 列是 ” 语义，见上）。
 const latestTaskSQL = `
 		SELECT task
 		FROM project_task_aggregates
