@@ -5,12 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"github.com/kaixuan/llm-gateway-go/internal/maasidem"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/kaixuan/llm-gateway-go/contracts/maascontracts"
+	"github.com/kaixuan/llm-gateway-go/internal/maasidem"
 )
 
 // Service implements the InventoryPort interface for managing inventory and holds.
@@ -194,8 +195,91 @@ func (s *Service) HoldCreate(
 	}
 	defer tx.Rollback(ctx)
 
-	// TODO: Check inventory availability (prevent overselling)
-	// This requires querying current inventory and subtracting pending/committed holds
+	// ★ 超卖防护：在事务内锁定最新快照行，逐行校验
+	// available = Σ sellable − (pending + committed holds) ≥ requested。
+	// FOR UPDATE 使并发 HoldCreate 串行化，杜绝两个事务同时通过校验。
+	// 金额数量用 decimal（与 TEXT 存储的契约类型一致），杜绝浮点误差。
+	for _, line := range req.Lines {
+		requested, derr := decimal.NewFromString(line.Quantity.Amount)
+		if derr != nil {
+			return maascontracts.HoldCreateResponse{}, &maascontracts.Error{
+				Code:      maascontracts.ErrorSellableInsufficient,
+				Message:   fmt.Sprintf("invalid quantity for %s: %s", line.ModelSKU, line.Quantity.Amount),
+				Retryable: false,
+			}
+		}
+		if requested.Sign() <= 0 {
+			return maascontracts.HoldCreateResponse{}, &maascontracts.Error{
+				Code:      maascontracts.ErrorSellableInsufficient,
+				Message:   fmt.Sprintf("quantity must be positive for %s", line.ModelSKU),
+				Retryable: false,
+			}
+		}
+
+		// 锁定最新非过期快照行（FOR UPDATE 串行化并发预留）。
+		var snapshotID string
+		err = tx.QueryRow(ctx, `
+			SELECT snapshot_id
+			FROM maas_inventory_snapshots
+			WHERE NOT stale
+			ORDER BY observed_at DESC
+			LIMIT 1
+			FOR UPDATE
+		`).Scan(&snapshotID)
+		if err == pgx.ErrNoRows {
+			return maascontracts.HoldCreateResponse{}, &maascontracts.Error{
+				Code:      maascontracts.ErrorStaleObservation,
+				Message:   "no inventory snapshot available",
+				Retryable: false,
+			}
+		}
+		if err != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("lock inventory snapshot: %w", err)
+		}
+
+		var availableAmount string
+		err = tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(sellable_amount::DECIMAL), 0)::TEXT
+			FROM maas_sellable_items
+			WHERE snapshot_id = $1 AND model_sku = $2
+		`, snapshotID, line.ModelSKU).Scan(&availableAmount)
+		if err != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("query available inventory: %w", err)
+		}
+
+		// 已被 pending + committed holds 占用的数量。
+		var heldAmount string
+		err = tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(hl.quantity_amount::DECIMAL), 0)::TEXT
+			FROM maas_hold_lines hl
+			JOIN maas_holds h ON hl.hold_id = h.hold_id
+			WHERE hl.model_sku = $1
+			  AND h.status IN ('pending', 'committed')
+			  AND h.expires_at > NOW()
+		`, line.ModelSKU).Scan(&heldAmount)
+		if err != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("query held inventory: %w", err)
+		}
+
+		available, derr := decimal.NewFromString(availableAmount)
+		if derr != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("parse available amount: %w", derr)
+		}
+		held, derr := decimal.NewFromString(heldAmount)
+		if derr != nil {
+			return maascontracts.HoldCreateResponse{}, fmt.Errorf("parse held amount: %w", derr)
+		}
+
+		remaining := available.Sub(held)
+		if requested.GreaterThan(remaining) {
+			return maascontracts.HoldCreateResponse{}, &maascontracts.Error{
+				Code:      maascontracts.ErrorSellableInsufficient,
+				Message: fmt.Sprintf("insufficient inventory for %s: requested %s, available %s",
+					line.ModelSKU, requested.String(), remaining.String()),
+				Retryable: true, // 库存可能随后续释放恢复，客户端可重询后重试
+			}
+		}
+	}
 
 	// Get current inventory revision
 	var inventoryRevision int64
