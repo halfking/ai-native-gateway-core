@@ -168,6 +168,17 @@ func TestRetireProbeMinutesIsBatched(t *testing.T) {
 	if !strings.Contains(sql, "WITH doomed AS") {
 		t.Error("退役 DELETE 必须经 CTE 选 ctid 再删（批删形状）")
 	}
+	// 2026-11-19 211 EXPLAIN 实证：date_trunc 包住 r.ts 会让 planner 对
+	// session_turns_probe_hot（44.2 万行）整表 Seq Scan 建 Hash Anti Join，
+	// 每次跑批全表扫且 LIMIT 救不了（24h 慢日志 1283 次 / p50 834ms）。
+	// NOT EXISTS 必须保持对 r.ts 的 sargable 区间写法，
+	// 才能吃 idx_session_turns_probe_hot_tenant_ts 索引。
+	if strings.Contains(sql, "date_trunc") {
+		t.Error("退役 DELETE 的 NOT EXISTS 不得用 date_trunc 包 r.ts（非 sargable 会整表扫 probe_hot，见 2026-11-19 实证）")
+	}
+	if !strings.Contains(sql, "r.ts >= m.bucket") || !strings.Contains(sql, "r.ts < m.bucket + interval '1 minute'") {
+		t.Error("退役 DELETE 必须用 r.ts 的半开区间匹配 m.bucket（sargable，等价性已 211 双探针验证）")
+	}
 	if !strings.Contains(body, "retireProbeMinutesBatch") {
 		t.Error("必须有 retireProbeMinutesBatch 常量作为批大小")
 	}
