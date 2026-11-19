@@ -61,6 +61,7 @@ v2: {
     providerStatsTitle: 'Anbieter-Nutzungsstatistik',
     providerStatsHint: 'Folgt dem Zeitraum: eine beliebige Zeile wählen, um Details zu sehen.',
     providerExport: 'Excel exportieren',
+    heroRangeLabel: 'Datenzeitraum',
     filterRange: 'Zeitraum',
     filterGran: 'Granularität',
     granAuto: 'Auto',

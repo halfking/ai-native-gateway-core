@@ -63,6 +63,7 @@ export default {
     providerStatsTitle: '供应商用量统计',
     providerStatsHint: '随时间范围联动：选择任意一行查看详情',
     providerExport: '导出 Excel',
+    heroRangeLabel: '数据时间范围',
     filterRange: '时间范围',
     filterGran: '粒度',
     granAuto: '自动',

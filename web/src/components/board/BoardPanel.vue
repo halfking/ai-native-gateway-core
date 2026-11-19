@@ -6,6 +6,7 @@
 // 一律映射为 custom{start,end} 走既有 start/end 查询通道。
 import { inject, computed, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import BoardOpsBar from './BoardOpsBar.vue'
 import BoardHeroRow from './BoardHeroRow.vue'
 import BoardMiniRow from './BoardMiniRow.vue'
@@ -41,6 +42,7 @@ if (!boardState) {
 }
 
 const router = useRouter()
+const { t } = useI18n()
 
 const operational = computed(() => boardState.operational?.value ?? null)
 const board = computed(() => boardState.board.value)
@@ -105,6 +107,15 @@ const trendExplorerQuery = computed(() => {
 <template>
   <div class="board-panel">
     <BoardOpsBar :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
+    <!-- 2026-11-19：总请求数据块（英雄区）上方的数据时间范围。
+         与下方筛选条（模型分布块上方）的 KxDateRangePicker 同源 —— 都取自同一个
+         rangeValue（BoardTimeRange 解析出的日历日），改一处两处同步，不会各说各话。 -->
+    <div v-if="rangeValue" class="board-panel__hero-range" data-testid="board-hero-range">
+      <span class="board-panel__hero-range-label">{{ t('dashboard.board.heroRangeLabel') }}</span>
+      <span class="board-panel__hero-range-dates">{{
+        t('dashboard.board.rangeCustom', { start: rangeValue.start, end: rangeValue.end })
+      }}</span>
+    </div>
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />
     <BoardMiniRow :board="board" :time-range="timeRange" :loading="loading" />
     <BoardProviderSection :board="board" :time-range="timeRange" :time-query="timeQuery" :loading="loading" />
@@ -132,6 +143,28 @@ const trendExplorerQuery = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 英雄区（总请求数据块）上方的时间范围说明行：标签 + 日历日区间，
+   与筛选条 KxDateRangePicker 显示的是同一对日期。 */
+.board-panel__hero-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--card);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.board-panel__hero-range-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.board-panel__hero-range-dates {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
 }
 .board-panel__charts {
   display: grid;
