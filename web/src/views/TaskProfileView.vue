@@ -38,10 +38,10 @@ const exporting = ref(false)
 
 // 使用 useSpanDaysRange 管理日期范围与天数的双向绑定
 const { presets, rangeValue: dateRange, applyRange } = useSpanDaysRange(sinceDays, [
-  { days: 7, labelKey: 'board.timeRange.presets.last7Days' },
-  { days: 14, labelKey: 'board.timeRange.presets.last14Days' },
-  { days: 30, labelKey: 'board.timeRange.presets.last30Days' },
-  { days: 90, labelKey: 'board.timeRange.presets.last90Days' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 14, labelKey: 'common.dateRange.preset.last14d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 
 // 应用日期范围变更

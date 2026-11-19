@@ -31,9 +31,9 @@ let trendChartInstance: echarts.ECharts | null = null
 
 // 统一时间范围选择器（2026-11-19）
 const { presets, rangeValue, applyRange } = useSpanDaysRange(timeRange, [
-  { days: 1, labelKey: 'dashboard.operational.timeRange1d' },
-  { days: 7, labelKey: 'dashboard.operational.timeRange7d' },
-  { days: 30, labelKey: 'dashboard.operational.timeRange30d' },
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 

@@ -29,10 +29,10 @@ const filterLimit = ref(200)
 
 // 使用 useSpanDaysRange 管理日期范围与天数的双向绑定
 const { presets, rangeValue: dateRange, applyRange } = useSpanDaysRange(filterDays, [
-  { days: 1, labelKey: 'board.timeRange.presets.today' },
-  { days: 7, labelKey: 'board.timeRange.presets.last7Days' },
-  { days: 30, labelKey: 'board.timeRange.presets.last30Days' },
-  { days: 90, labelKey: 'board.timeRange.presets.last90Days' },
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 
 // 应用日期范围变更
