@@ -96,14 +96,6 @@ const dashboardStats = computed<DashboardStats>(() => {
   }
 })
 
-const periodLabel = computed(() => {
-  const ov = overview.value
-  if (!ov?.period_start || !ov?.period_end) return ''
-  const dateOptions: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' }
-  return `${formatDateTime(ov.period_start, { options: dateOptions })} → ${formatDateTime(ov.period_end, { options: dateOptions })}`
-})
-
-const trendSummary = computed(() => trend.value?.summary ?? null)
 const pipelineLatency = computed(() => performanceStats.value?.summary ?? null)
 const errorSummary = computed(() => errorStats.value?.summary ?? null)
 
@@ -197,22 +189,9 @@ function openProbeTraffic() {
 
     <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">
       <div class="panel-toolbar">
-        <div class="panel-toolbar__meta">
-          <span v-if="lastUpdated" class="meta-text">
-            {{ t('sessions.stats.lastUpdated') }}: {{ formatDateTime(lastUpdated) }}
-            <span v-if="responseTime"> · {{ responseTime }}ms</span>
-          </span>
-          <span v-if="periodLabel" class="period-banner">
-            {{ t('sessions.stats.periodRange') }}: {{ periodLabel }}
-            <template v-if="trendSummary">
-              · {{ t('sessions.stats.periodNew') }}: {{ trendSummary.total_new.toLocaleString() }}
-              · {{ t('sessions.stats.avgDailyNew') }}: {{ trendSummary.avg_daily_new?.toFixed(1) ?? '—' }}
-            </template>
-          </span>
-          <button type="button" class="probe-link" data-testid="stats-probe-link" @click="openProbeTraffic">
-            {{ t('sessions.stats.probeTrafficLink') }}
-          </button>
-        </div>
+        <!-- 2026-11-20 owner 图批：时间选择器移到左上（原「统计周期」信息块的
+             位置——批「移到之前的位置」）；「统计周期/周期新会话/日均新会话」
+             信息块按图批删除（批「不需要」）。 -->
         <KxDateRangePicker
           :model-value="statsRange"
           :presets="statsDayPresets"
@@ -220,6 +199,15 @@ function openProbeTraffic() {
           :disabled="loading"
           @apply="applyStatsRange"
         />
+        <div class="panel-toolbar__meta">
+          <span v-if="lastUpdated" class="meta-text">
+            {{ t('sessions.stats.lastUpdated') }}: {{ formatDateTime(lastUpdated) }}
+            <span v-if="responseTime"> · {{ responseTime }}ms</span>
+          </span>
+          <button type="button" class="probe-link" data-testid="stats-probe-link" @click="openProbeTraffic">
+            {{ t('sessions.stats.probeTrafficLink') }}
+          </button>
+        </div>
       </div>
 
       <DashboardStatsRow :stats="dashboardStats" :loading="loading" :show-tokens="false" />
@@ -319,8 +307,7 @@ function openProbeTraffic() {
 .session-stats-panel--loading { opacity: 0.85; }
 .panel-toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
 .panel-toolbar__meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.meta-text, .period-banner { font-size: 12px; color: var(--muted, var(--text-secondary)); }
-.period-banner { color: var(--text, var(--text)); }
+.meta-text { font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .probe-link {
   align-self: flex-start;
   margin-top: 4px;

@@ -11,6 +11,7 @@ export default {
   credentials: '凭据',
   copy: '复制',
   button: {
+    remove: '移除',
     cancel: '取消',
     confirm: '确认',
     save: '保存',

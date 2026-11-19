@@ -65,17 +65,19 @@ func TestUserProfileDetailDegradeBranchIsWired(t *testing.T) {
 	body := string(src)
 
 	// 找到详情端点里的降级判定点。
-	idx := strings.Index(body, "IsSchemaBehindError(err)")
+	// 2026-11-20 数字出处轮：user_profile.go 现有 4 处 IsSchemaBehindError
+	// （列表 / 列表窗口用量 / usage-matrix / 详情）——「第二次出现」启发式
+	// 失效 ⇒ 改锚在详情端点函数体上（handleUserAnalyticsDetail 是
+	// /users/{owner} 与 /models 子路由的唯一入口）。
+	fnIdx := strings.Index(body, "func (h *Handler) handleUserAnalyticsDetail(")
+	if fnIdx < 0 {
+		t.Fatal("找不到详情端点函数 handleUserAnalyticsDetail —— 函数名变了请同步本钉测")
+	}
+	idx := strings.Index(body[fnIdx:], "IsSchemaBehindError(err)")
 	if idx < 0 {
 		t.Fatal("详情端点的错误分支没有调 IsSchemaBehindError —— schema 落后时会 500")
 	}
-	// 列表端点也有一个 IsSchemaBehindError；详情端点那个在**第二个**出现处。
-	second := strings.Index(body[idx+1:], "IsSchemaBehindError(err)")
-	if second < 0 {
-		// 只有列表端点接了降级 ⇒ 详情端点漏了（这正是本轮要修的缺陷）。
-		t.Fatal("只有列表端点接了降级；详情端点的错误分支仍会把 schema 落后变成 500")
-	}
-	window := body[idx+1+second : idx+1+second+1200]
+	window := body[fnIdx+idx : fnIdx+idx+1200]
 	for _, needle := range []string{"Degraded:", "DegradedReason", "http.StatusOK"} {
 		if !strings.Contains(window, needle) {
 			t.Errorf("降级分支窗口内缺 %q（必须自报家门 + 回 200）", needle)

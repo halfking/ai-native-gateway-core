@@ -12,6 +12,7 @@ export default {
   credentials: '認証情報',
   copy: 'コピー',
   button: {
+    remove: '削除',
     cancel: 'キャンセル',
     confirm: '確認',
     save: '保存',

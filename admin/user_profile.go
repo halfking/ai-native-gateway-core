@@ -56,6 +56,134 @@ type UserProfileSummary struct {
 	LastSeenAt        time.Time `json:"last_seen_at"`
 	EndUserCount      int       `json:"end_user_count"`
 	ModelsUsed        []string  `json:"models_used"`
+	// WindowUsage 员工在选定时间窗口内的用量聚合（2026-11-20 数字出处轮）。
+	// 出处 = request_logs_with_current_month（会话族 canonical 视图），与
+	// /users/{owner}/models 端点同源同表达式 ⇒ 列表页数字与详情页模型卡
+	// 天然不打架。窗口未选时后端默认近 30 天，真实窗口回传在
+	// usage_window 字段 —— 前端不得自行脑补窗口。
+	// nil = 窗口聚合不可用（canonical 视图缺席降级），与 false 语义分家。
+	WindowUsage *UserWindowUsage `json:"window_usage,omitempty"`
+}
+
+// UserWindowUsage 单个员工在 [start, end) 窗口内的用量聚合。
+// 成本口径与 handleUserModelUsage 逐字一致：
+//
+//	internal_cost_usd = SUM(cost_display)（内部核算价；NULL 回退 cost_usd）
+//	external_cost_usd = SUM(cost_usd)（外部上游成本，USD）
+//	total_tokens      = SUM(prompt_tokens + completion_tokens)
+type UserWindowUsage struct {
+	RequestCount    int64   `json:"request_count"`
+	InputTokens     int64   `json:"input_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	TotalTokens     int64   `json:"total_tokens"`
+	InternalCostUSD float64 `json:"internal_cost_usd"`
+	ExternalCostUSD float64 `json:"external_cost_usd"`
+	SessionCount    int64   `json:"session_count"`
+	ModelCount      int64   `json:"model_count"`
+}
+
+// userUsageMeta 响应内的数字出处块：前端帮助抽屉与列头提示直接引用，
+// 不在页面里硬编码口径文案 ⇒ 口径改动时后端是唯一真源。
+type userUsageMeta struct {
+	SourceView  string `json:"source_view"`
+	WindowStart string `json:"window_start"`
+	WindowEnd   string `json:"window_end"`
+}
+
+// usageWindowBounds 解析列表端点的用量窗口：date_from/date_to（RFC3339 或
+// YYYY-MM-DD），与 date_to 的「当日结束」语义与 handleUserModelUsage 一致；
+// 两者都缺省时回退近 30 天；跨度上限 90 天（与 models 端点同闸）。
+// 返回 (start, end, ok)；ok=false = 调用方传了非法格式（已写 400）。
+func usageWindowBounds(w http.ResponseWriter, r *http.Request, dateFrom, dateTo string) (time.Time, time.Time, bool) {
+	var startTime, endTime time.Time
+	var err error
+	if dateFrom == "" && dateTo == "" {
+		endTime = time.Now()
+		startTime = endTime.AddDate(0, 0, -30)
+		return startTime, endTime, true
+	}
+	if dateFrom != "" {
+		startTime, err = time.Parse(time.RFC3339, dateFrom)
+		if err != nil {
+			startTime, err = time.Parse("2006-01-02", dateFrom)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid date_from format, use ISO 8601 or YYYY-MM-DD")
+				return time.Time{}, time.Time{}, false
+			}
+		}
+	}
+	if dateTo != "" {
+		endTime, err = time.Parse(time.RFC3339, dateTo)
+		if err != nil {
+			endTime, err = time.Parse("2006-01-02", dateTo)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid date_to format, use ISO 8601 or YYYY-MM-DD")
+				return time.Time{}, time.Time{}, false
+			}
+			// YYYY-MM-DD 语义 = 当天结束（含当日全天），与 models 端点一致。
+			endTime = endTime.Add(24 * time.Hour)
+		}
+	} else {
+		endTime = time.Now()
+	}
+	if !startTime.IsZero() && endTime.Sub(startTime) > 90*24*time.Hour {
+		writeError(w, http.StatusBadRequest, "time range cannot exceed 90 days")
+		return time.Time{}, time.Time{}, false
+	}
+	return startTime, endTime, true
+}
+
+// usageAggregatesByOwner 按员工聚合窗口内用量（数字出处 =
+// request_logs_with_current_month）。表达式与 handleUserModelUsage 逐字一致
+// ⇒ 同一员工列表页数字 == 详情页模型卡合计，不需要第二条口径对表。
+func usageAggregatesByOwner(ctx context.Context, db usageQuerier, startTime, endTime time.Time, tenantID, ownerFilter string) (map[string]*UserWindowUsage, error) {
+	where := "rl.owner_user IS NOT NULL AND rl.owner_user <> '' AND rl.ts >= $1 AND rl.ts < $2"
+	args := []interface{}{startTime, endTime}
+	if tenantID != "" {
+		where += fmt.Sprintf(" AND rl.tenant_id = $%d", len(args)+1)
+		args = append(args, tenantID)
+	}
+	if ownerFilter != "" {
+		where += fmt.Sprintf(" AND rl.owner_user = $%d", len(args)+1)
+		args = append(args, ownerFilter)
+	}
+	querySQL := fmt.Sprintf(`
+		SELECT rl.owner_user,
+			COUNT(*) AS request_count,
+			COALESCE(SUM(rl.prompt_tokens), 0) AS input_tokens,
+			COALESCE(SUM(rl.completion_tokens), 0) AS output_tokens,
+			COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) AS total_tokens,
+			COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0) AS internal_cost_usd,
+			COALESCE(SUM(rl.cost_usd), 0) AS external_cost_usd,
+			COUNT(DISTINCT rl.gw_session_id) AS session_count,
+			COUNT(DISTINCT COALESCE(rl.outbound_model, rl.client_model, 'unknown')) AS model_count
+		FROM request_logs_with_current_month rl
+		WHERE %s
+		GROUP BY rl.owner_user
+	`, where)
+	rows, err := db.Query(ctx, querySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]*UserWindowUsage{}
+	for rows.Next() {
+		var owner string
+		var u UserWindowUsage
+		var internal, external sql.NullFloat64
+		if err := rows.Scan(&owner, &u.RequestCount, &u.InputTokens, &u.OutputTokens,
+			&u.TotalTokens, &internal, &external, &u.SessionCount, &u.ModelCount); err != nil {
+			warnRowSkip("userProfile.usageWindow", err)
+			continue
+		}
+		u.InternalCostUSD = internal.Float64
+		u.ExternalCostUSD = external.Float64
+		out[owner] = &u
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // UserProfileDetailResponse 用户画像详情
@@ -165,6 +293,8 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	// 口径落在 so.last_seen_at（会话行最后活跃时刻）：窗口语义 =「该用户在
 	// [date_from, date_to] 内有会话活动」。与列表 first_seen/last_seen 展示列
 	// 同源（session_owners），不引入新表。
+	rawDateFrom := r.URL.Query().Get("date_from")
+	rawDateTo := r.URL.Query().Get("date_to")
 	if v := parseQueryTime(r, "date_from", time.Time{}); !v.IsZero() {
 		paramIdx := len(baseArgs) + 1
 		if baseWhere == "" {
@@ -188,6 +318,30 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	var total int
 	countSQL := fmt.Sprintf("SELECT COUNT(DISTINCT owner_user) FROM session_owners so %s", baseWhere)
 	_ = h.db.QueryRow(ctx, countSQL, baseArgs...).Scan(&total)
+
+	// ── 2026-11-20 数字出处轮：窗口内用量聚合 ──────────────────────────
+	// 窗口 = date_from/date_to（与上面的 last_seen 过滤同参数），缺省近 30 天；
+	// 表达式与 /users/{owner}/models 端点逐字一致 ⇒ 列表页「Token/内部成本/
+	// 外部成本」列与详情页模型卡天然同源。出处块 usage_meta 随响应回传，
+	// 帮助抽屉引用它而不是硬编码口径文案。
+	usageStart, usageEnd, usageOK := usageWindowBounds(w, r, rawDateFrom, rawDateTo)
+	if !usageOK {
+		return
+	}
+	usageTenant := ""
+	if IsTenantAdmin(r) || IsRegularUser(r) {
+		usageTenant = GetTenantID(r)
+	}
+	if IsSuperAdminOrLegacy(r) {
+		if q := queryString(r, "tenant_id"); q != "" {
+			usageTenant = q
+		}
+	}
+	// 普通用户只聚合自己（列表也只看得到自己）。
+	usageOwner := ""
+	if IsRegularUser(r) {
+		usageOwner = GetAuthContext(r).Username
+	}
 
 	// 列表：从 session_owners 聚合每个 owner_user
 	listSQL := fmt.Sprintf(`
@@ -263,11 +417,47 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 		users = []UserProfileSummary{}
 	}
 
+	// 窗口内用量并入每个员工行。canonical 视图缺席时降级（200 + degraded
+	// 标记），不清空列表 —— 身份列来自 session_owners，仍可用。
+	usage, err := usageAggregatesByOwner(ctx, h.db, usageStart, usageEnd, usageTenant, usageOwner)
+	if err != nil {
+		if IsSchemaBehindError(err) {
+			reason := ReportSchemaBehind(slog.Default(), "userProfile.usageWindow", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"users":           users,
+				"total":           total,
+				"limit":           limit,
+				"offset":          offset,
+				"degraded":        true,
+				"degraded_reason": reason,
+			})
+			return
+		}
+		writeInternalErr(w, "usage window query failed", err)
+		return
+	}
+	for i := range users {
+		if u, ok := usage[users[i].OwnerUser]; ok {
+			users[i].WindowUsage = u
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"users":  users,
 		"total":  total,
 		"limit":  limit,
 		"offset": offset,
+		// 真实用量窗口（缺省时为近 30 天）—— 前端展示口径用，不得脑补。
+		"usage_window": map[string]string{
+			"start": usageStart.Format(time.RFC3339),
+			"end":   usageEnd.Format(time.RFC3339),
+		},
+		// 数字出处块：帮助抽屉与列头提示引用；口径改动时后端是唯一真源。
+		"usage_meta": userUsageMeta{
+			SourceView:  "request_logs_with_current_month",
+			WindowStart: usageStart.Format(time.RFC3339),
+			WindowEnd:   usageEnd.Format(time.RFC3339),
+		},
 	})
 }
 
@@ -732,7 +922,12 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// 构建查询
-	whereClause := "rl.owner_user = $1 AND rl.created_at >= $2 AND rl.created_at < $3"
+	// 2026-11-20 修活体 500：canonical 视图 request_logs_with_current_month 的
+	// 时间列是 **ts**（890 全量列面里没有 created_at，252 生产 information_schema
+	// 实测确认）。原写法 rl.created_at 在每次执行都报 42703 ⇒
+	// /users/{owner}/models 恒 500（详情页「模型使用统计」卡恒空）。
+	// IsSchemaBehindError 不认 42703 ⇒ 连降级都不触发，是真 500。
+	whereClause := "rl.owner_user = $1 AND rl.ts >= $2 AND rl.ts < $3"
 	args := []interface{}{ownerUser, startTime, endTime}
 	argIdx := 4
 
@@ -757,8 +952,8 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 			COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) as total_tokens,
 			COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)::float8 as internal_cost_usd,
 			COALESCE(SUM(rl.cost_usd), 0)::float8 as external_cost_usd,
-			MIN(rl.created_at) as first_used_at,
-			MAX(rl.created_at) as last_used_at
+			MIN(rl.ts) as first_used_at,
+			MAX(rl.ts) as last_used_at
 		FROM request_logs_with_current_month rl
 		LEFT JOIN providers p ON p.id = rl.provider_id
 		WHERE %s
@@ -817,5 +1012,229 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 		"models":     models,
 		"start_date": startTime.Format(time.RFC3339),
 		"end_date":   endTime.Format(time.RFC3339),
+	})
+}
+
+// ── 2026-11-20 数字出处轮：员工×模型用量矩阵 ─────────────────────────────
+
+// UserUsageMatrixRow 员工×模型一行。成本口径与 handleUserModelUsage /
+// usageAggregatesByOwner 逐字一致（internal=cost_display 回退 cost_usd，
+// external=cost_usd），模型名表达式 = COALESCE(outbound_model, client_model)。
+type UserUsageMatrixRow struct {
+	OwnerUser       string    `json:"owner_user"`
+	ModelName       string    `json:"model_name"`
+	Provider        string    `json:"provider"`
+	RequestCount    int64     `json:"request_count"`
+	InputTokens     int64     `json:"input_tokens"`
+	OutputTokens    int64     `json:"output_tokens"`
+	TotalTokens     int64     `json:"total_tokens"`
+	InternalCostUSD float64   `json:"internal_cost_usd"`
+	ExternalCostUSD float64   `json:"external_cost_usd"`
+	FirstUsedAt     time.Time `json:"first_used_at"`
+	LastUsedAt      time.Time `json:"last_used_at"`
+}
+
+// usageQuerier 是窗口用量查询所需的最小 DB 面：*pgxpool.Pool 与
+// pgxmock.PgxPoolIface 都满足它 ⇒ 钉测注入 mock 即可覆盖全查询路径，
+// 不必为单测起真库。
+type usageQuerier interface {
+	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
+}
+
+// usageMatrixParams usage-matrix 端点的已解析参数（含三层隔离结果）。
+type usageMatrixParams struct {
+	Start    time.Time
+	End      time.Time
+	TenantID string
+	Owner    string
+	Limit    int
+}
+
+// resolveUsageMatrixParams 解析 + 校验 usage-matrix 的参数与隔离边界。
+// 不触 DB ⇒ 400/403 全部可单测。时间解析语义与 handleUserModelUsage 一致
+// （RFC3339 / YYYY-MM-DD；YYYY-MM-DD 的 end = 当天结束；跨度 ≤90 天；
+// 缺省近 30 天）。三层隔离：普通用户锁定 owner=自己（越权 403）；
+// 租户管理员锁本租户；超管可选 tenant_id。
+func resolveUsageMatrixParams(w http.ResponseWriter, r *http.Request) (usageMatrixParams, bool) {
+	startDate := queryString(r, "start_date")
+	endDate := queryString(r, "end_date")
+	var p usageMatrixParams
+	var err error
+	if startDate == "" && endDate == "" {
+		p.End = time.Now()
+		p.Start = p.End.AddDate(0, 0, -30)
+	} else {
+		if startDate != "" {
+			p.Start, err = time.Parse(time.RFC3339, startDate)
+			if err != nil {
+				p.Start, err = time.Parse("2006-01-02", startDate)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "invalid start_date format, use ISO 8601 or YYYY-MM-DD")
+					return p, false
+				}
+			}
+		} else {
+			p.Start = time.Now().AddDate(0, 0, -90)
+		}
+		if endDate != "" {
+			p.End, err = time.Parse(time.RFC3339, endDate)
+			if err != nil {
+				p.End, err = time.Parse("2006-01-02", endDate)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "invalid end_date format, use ISO 8601 or YYYY-MM-DD")
+					return p, false
+				}
+				p.End = p.End.Add(24 * time.Hour)
+			}
+		} else {
+			p.End = time.Now()
+		}
+	}
+	if p.End.Sub(p.Start) > 90*24*time.Hour {
+		writeError(w, http.StatusBadRequest, "time range cannot exceed 90 days")
+		return p, false
+	}
+
+	p.Limit = queryInt(r, "limit", 500)
+	if p.Limit < 1 || p.Limit > 2000 {
+		p.Limit = 500
+	}
+
+	// 三层隔离（与列表/详情端点同构）。
+	if IsTenantAdmin(r) || IsRegularUser(r) {
+		p.TenantID = GetTenantID(r)
+	}
+	if IsSuperAdminOrLegacy(r) {
+		if q := queryString(r, "tenant_id"); q != "" {
+			p.TenantID = q
+		}
+	}
+	p.Owner = strings.TrimSpace(r.URL.Query().Get("owner"))
+	if IsRegularUser(r) {
+		self := GetAuthContext(r).Username
+		if p.Owner != "" && p.Owner != self {
+			writeError(w, http.StatusForbidden, "you can only view your own usage")
+			return p, false
+		}
+		p.Owner = self
+	}
+	return p, true
+}
+
+// queryUserUsageMatrix 执行员工×模型聚合查询。表达式与 handleUserModelUsage
+// 逐字一致（同一出处，两处查询不各自造口径）。
+func queryUserUsageMatrix(ctx context.Context, db usageQuerier, p usageMatrixParams) ([]UserUsageMatrixRow, error) {
+	where := "rl.owner_user IS NOT NULL AND rl.owner_user <> '' AND rl.ts >= $1 AND rl.ts < $2"
+	args := []interface{}{p.Start, p.End}
+	if p.TenantID != "" {
+		where += fmt.Sprintf(" AND rl.tenant_id = $%d", len(args)+1)
+		args = append(args, p.TenantID)
+	}
+	if p.Owner != "" {
+		where += fmt.Sprintf(" AND rl.owner_user = $%d", len(args)+1)
+		args = append(args, p.Owner)
+	}
+	querySQL := fmt.Sprintf(`
+		SELECT
+			rl.owner_user,
+			COALESCE(rl.outbound_model, rl.client_model, 'unknown') as model_name,
+			COALESCE(p.display_name, rl.provider_id::text, 'unknown') as provider,
+			COUNT(*) as request_count,
+			COALESCE(SUM(rl.prompt_tokens), 0) as input_tokens,
+			COALESCE(SUM(rl.completion_tokens), 0) as output_tokens,
+			COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) as total_tokens,
+			COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)::float8 as internal_cost_usd,
+			COALESCE(SUM(rl.cost_usd), 0)::float8 as external_cost_usd,
+			MIN(rl.ts) as first_used_at,
+			MAX(rl.ts) as last_used_at
+		FROM request_logs_with_current_month rl
+		LEFT JOIN providers p ON p.id = rl.provider_id
+		WHERE %s
+		GROUP BY rl.owner_user, model_name, provider
+		ORDER BY rl.owner_user ASC, external_cost_usd DESC
+		LIMIT $%d
+	`, where, len(args)+1)
+	args = append(args, p.Limit)
+
+	rows, err := db.Query(ctx, querySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	rowsOut := []UserUsageMatrixRow{}
+	for rows.Next() {
+		var item UserUsageMatrixRow
+		var internal, external sql.NullFloat64
+		if err := rows.Scan(
+			&item.OwnerUser, &item.ModelName, &item.Provider,
+			&item.RequestCount, &item.InputTokens, &item.OutputTokens, &item.TotalTokens,
+			&internal, &external,
+			&item.FirstUsedAt, &item.LastUsedAt,
+		); err != nil {
+			warnRowSkip("userUsageMatrix", err)
+			continue
+		}
+		item.InternalCostUSD = internal.Float64
+		item.ExternalCostUSD = external.Float64
+		rowsOut = append(rowsOut, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return rowsOut, nil
+}
+
+// handleUserUsageMatrix GET /api/admin/session-analytics/users/usage-matrix
+//
+// 「每个员工在什么时间段用了哪些模型、各多少 token / 内部成本 / 外部成本」
+// 的数据端点：一行 = (owner_user, model)。列表页展开行按 owner 取本端点；
+// 「分模型看每个员工」由前端对同一份数据透视，不另设第二口径。
+// 三层隔离与列表端点一致（普通用户锁定 owner=自己；租户管理员锁本租户；
+// 超管可选 tenant_id）。参数解析见 resolveUsageMatrixParams；查询见
+// queryUserUsageMatrix（出处块 usage_meta 随响应回传）。
+func (h *Handler) handleUserUsageMatrix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "db not available")
+		return
+	}
+
+	p, ok := resolveUsageMatrixParams(w, r)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	rowsOut, err := queryUserUsageMatrix(ctx, h.db, p)
+	if err != nil {
+		if IsSchemaBehindError(err) {
+			reason := ReportSchemaBehind(slog.Default(), "userUsageMatrix", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"rows":            []UserUsageMatrixRow{},
+				"degraded":        true,
+				"degraded_reason": reason,
+			})
+			return
+		}
+		writeInternalErr(w, "query failed", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":       rowsOut,
+		"start_date": p.Start.Format(time.RFC3339),
+		"end_date":   p.End.Format(time.RFC3339),
+		// 数字出处块：帮助抽屉引用；口径改动时后端是唯一真源。
+		"usage_meta": userUsageMeta{
+			SourceView:  "request_logs_with_current_month",
+			WindowStart: p.Start.Format(time.RFC3339),
+			WindowEnd:   p.End.Format(time.RFC3339),
+		},
 	})
 }
