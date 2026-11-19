@@ -20,6 +20,9 @@ import {
 } from '../api/taskProfile'
 import DataTable from '../components/ui/DataTable.vue'
 import { exportFile } from '../utils/exportFile'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 
 const { t } = useI18n()
 
@@ -32,6 +35,20 @@ const sinceDays = ref(30)
 const applying = ref(false)
 const reloading = ref(false)
 const exporting = ref(false)
+
+// 使用 useSpanDaysRange 管理日期范围与天数的双向绑定
+const { presets, rangeValue: dateRange, applyRange } = useSpanDaysRange(sinceDays, [
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 14, labelKey: 'common.dateRange.preset.last14d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+
+// 应用日期范围变更
+function handleApplyRange(range: KxDateRange) {
+  applyRange(range)
+  load()
+}
 
 type ProfileRow = TaskProfileViewModel['profiles'][number] & {
   rate: number
@@ -164,15 +181,15 @@ onMounted(load)
         </span>
       </div>
       <div class="toolbar-actions">
-        <label class="inline-label">
-          {{ t('taskProfile.action.days') }}
-          <select v-model.number="sinceDays" class="select-sm" @change="load">
-            <option :value="7">7</option>
-            <option :value="14">14</option>
-            <option :value="30">30</option>
-            <option :value="90">90</option>
-          </select>
-        </label>
+        <div class="filter-time-range">
+          <label>{{ t('taskProfile.action.days') }}:</label>
+          <KxDateRangePicker 
+            :model-value="dateRange"
+            :presets="presets"
+            :max-span-days="365"
+            @apply="handleApplyRange"
+          />
+        </div>
         <button class="btn btn-sm" :disabled="loading" @click="load">
           {{ loading ? t('taskProfile.refreshing') : t('taskProfile.refresh') }}
         </button>
@@ -381,5 +398,18 @@ onMounted(load)
 
 .rate-low {
   color: var(--text-muted);
+}
+
+.filter-time-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-time-range label {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 </style>

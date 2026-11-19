@@ -61,6 +61,7 @@ v2: {
     providerStatsTitle: 'إحصاءات استخدام المزوّدين',
     providerStatsHint: 'مرتبط بالنطاق الزمني: اختر أي صف لعرض التفاصيل',
     providerExport: 'تصدير Excel',
+    heroRangeLabel: 'النطاق الزمني للبيانات',
     filterRange: 'النطاق الزمني',
     filterGran: 'الدقة',
     granAuto: 'تلقائي',

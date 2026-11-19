@@ -32,9 +32,11 @@ export default {
     summary: 'Manual {custom}: Global {defaults} / {total}',
     allVendors: 'All vendors',
     allModes: 'All pricing',
+    allPlatforms: 'All platforms',
     count: '{count} models',
     vendorLabel: 'Vendor',
     modeLabel: 'Pricing mode',
+    platformLabel: 'Platform',
     selectedModels: 'Selected models',
   },
   table: {

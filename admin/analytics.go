@@ -61,15 +61,29 @@ func (h *AnalyticsHandlers) RegisterAnalyticsRoutes(mux *http.ServeMux, adminWra
 	mux.HandleFunc("/api/admin/auto-route/analytics/decision/", adminWrap(h.handleDecisionReplay))
 }
 
+// parseAnalyticsWindow resolves the ?window= query parameter shared by the
+// analytics matrix / flow / funnel endpoints.
+//
+// 2026-11-19 时间范围统一轮：在既有 24h / 7d 两档之外接受 Nd 形式
+// （1..90 天，如 window=3d / 14d / 30d / 90d），与全站 KxDateRangePicker
+// 的 span 口径对齐。24h/7d 字面量保留原语义；7d 仍可命中
+// routing_analytics_7d 物化视图（useMaterializedView 只认 "7d" 标签，
+// 其它窗口自动走基表，freshness 优先）。非法值回落 7d（旧行为）。
 func parseAnalyticsWindow(raw string) (string, time.Duration, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
 	case "", "7d":
 		return "7d", 7 * 24 * time.Hour, nil
 	case "24h":
 		return "24h", 24 * time.Hour, nil
-	default:
-		return "", 0, fmt.Errorf("window must be 24h or 7d")
 	}
+	// Nd 形式：1..90 天。"0d"/"91d"/"abc" 一律回落 7d。
+	if len(s) >= 2 && s[len(s)-1] == 'd' {
+		if n, err := strconv.Atoi(s[:len(s)-1]); err == nil && n >= 1 && n <= 90 {
+			return fmt.Sprintf("%dd", n), time.Duration(n) * 24 * time.Hour, nil
+		}
+	}
+	return "", 0, fmt.Errorf("window must be 24h, 7d, or Nd (1-90 days)")
 }
 
 func parseAnalyticsMetric(raw string) (string, error) {

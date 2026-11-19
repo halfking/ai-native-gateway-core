@@ -138,12 +138,12 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
   ['src/views/QualityCorrelationsView.vue', 224, '质量相关性聚合，无单条详情'],
-  // ⚠ 行号锚点：2026-10-27 由 285/308 改为 286/309。
-  //   原因：第 14 增量（空状态 5 分）给 UserProfileView.vue 的 `<script>` 文档块
-  //   加了 1 行说明（讲三张表的空态按统计对象分开）⇒ 其后所有行号整体 +1。
+  // ⚠ 行号锚点：2026-11-19 由 286/309 改为 331/354。
+  //   原因：444865860（用户会话分析增强轮）在 top_tasks 卡片**之前**插入了
+  //   模型使用统计与帮助面板 ⇒ 其后所有行号整体 +45。同日 cf8d7bffe 改 1 行无位移。
   //   与 QualityCorrelationsView（186→223）、ApprovalListView（451→452）同类。
-  ['src/views/UserProfileView.vue', 286, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
-  ['src/views/UserProfileView.vue', 309, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  ['src/views/UserProfileView.vue', 331, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
+  ['src/views/UserProfileView.vue', 354, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 282 改为 283。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。

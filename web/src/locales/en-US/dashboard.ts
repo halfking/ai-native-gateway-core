@@ -66,6 +66,7 @@ export default {
     providerStatsTitle: 'Provider usage stats',
     providerStatsHint: 'Follows the time range: select any row for details',
     providerExport: 'Export Excel',
+    heroRangeLabel: 'Data time range',
     filterRange: 'Time range',
     filterGran: 'Granularity',
     granAuto: 'Auto',

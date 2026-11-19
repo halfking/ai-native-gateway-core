@@ -6,6 +6,7 @@
 // 一律映射为 custom{start,end} 走既有 start/end 查询通道。
 import { inject, computed, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import BoardOpsBar from './BoardOpsBar.vue'
 import BoardHeroRow from './BoardHeroRow.vue'
 import BoardMiniRow from './BoardMiniRow.vue'
@@ -17,6 +18,7 @@ import BoardDistGrid from './BoardDistGrid.vue'
 import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
 import {
   defaultBoardTimeRange,
+  formatBoardRangeLabel,
   resolveBoardRangeMs,
   usageQueryForBoardRange,
   type BoardTimeRange,
@@ -41,6 +43,7 @@ if (!boardState) {
 }
 
 const router = useRouter()
+const { t } = useI18n()
 
 const operational = computed(() => boardState.operational?.value ?? null)
 const board = computed(() => boardState.board.value)
@@ -69,7 +72,17 @@ const rangeValue = computed<KxDateRange | null>(() => {
   return { start: utcDateStr(startMs), end: utcDateStr(endMs - 1) }
 })
 
-/** 应用新范围：能对齐内置预设的对齐（保持 SSE 门控与偏好语义），否则 custom。 */
+/**
+ * 英雄区上方说明行的日期文本：预设名 · 日历日（与筛选条 KxDateRangePicker
+ * 触发器「今天 11/19 – 11/19」同一信息形状）；custom 只有日历日——
+ * formatBoardRangeLabel 对 custom 返回的就是 rangeCustom，拼前缀会得到重复。
+ */
+const heroRangeDates = computed(() => {
+  if (!rangeValue.value) return ''
+  const dates = t('dashboard.board.rangeCustom', { start: rangeValue.value.start, end: rangeValue.value.end })
+  if (timeRange.value.preset === 'custom') return dates
+  return `${formatBoardRangeLabel(timeRange.value, t)} · ${dates}`
+})
 function onApplyRange(range: KxDateRange) {
   const todayMs = resolveBoardRangeMs({ preset: 'today', days: 1 }).startMs
   const spanDays = Math.max(1, Math.round((Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / DAY_MS) + 1)
@@ -105,6 +118,13 @@ const trendExplorerQuery = computed(() => {
 <template>
   <div class="board-panel">
     <BoardOpsBar :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
+    <!-- 2026-11-19：总请求数据块（英雄区）上方的数据时间范围。
+         与下方筛选条（模型分布块上方）的 KxDateRangePicker 同源 —— 都取自同一个
+         rangeValue（BoardTimeRange 解析出的日历日），改一处两处同步，不会各说各话。 -->
+    <div v-if="rangeValue" class="board-panel__hero-range" data-testid="board-hero-range">
+      <span class="board-panel__hero-range-label">{{ t('dashboard.board.heroRangeLabel') }}</span>
+      <span class="board-panel__hero-range-dates">{{ heroRangeDates }}</span>
+    </div>
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />
     <BoardMiniRow :board="board" :time-range="timeRange" :loading="loading" />
     <BoardProviderSection :board="board" :time-range="timeRange" :time-query="timeQuery" :loading="loading" />
@@ -132,6 +152,28 @@ const trendExplorerQuery = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 英雄区（总请求数据块）上方的时间范围说明行：标签 + 日历日区间，
+   与筛选条 KxDateRangePicker 显示的是同一对日期。 */
+.board-panel__hero-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--card);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.board-panel__hero-range-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.board-panel__hero-range-dates {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
 }
 .board-panel__charts {
   display: grid;

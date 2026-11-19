@@ -231,7 +231,11 @@ export function refreshAutoRouteIndex(): Promise<{ refreshed: boolean; refreshed
 // ── Analytics (Phase 2a) ──────────────────────────────
 
 export type AnalyticsMetric = 'count' | 'success_rate' | 'p95_ms' | 'cost_usd'
-export type AnalyticsWindow = '24h' | '7d'
+/**
+ * 2026-11-19 时间范围统一轮：接受 Nd 形式（1..90 天），与后端
+ * parseAnalyticsWindow 对齐；24h/7d 字面量保留（7d 命中物化视图）。
+ */
+export type AnalyticsWindow = '24h' | '7d' | `${number}d`
 
 export type AnalyticsRowDim = 'task_type' | 'work_type'
 

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -245,6 +246,25 @@ func mergeL1TaskTypes(dbCounts map[string]int) []L1TaskTypeMeta {
 	return merged
 }
 
+// parseStatsWindow resolves the ?days= query parameter into a window label
+// and duration. Backward compatible: absent/invalid values fall back to the
+// historical 24h window. Allowed range 1..90 days (matches the UI preset
+// cap; larger spans would scan month-partitioned history and belong on the
+// analytics endpoints instead).
+func parseStatsWindow(raw string) (string, time.Duration) {
+	n := 0
+	if raw != "" {
+		n, _ = strconv.Atoi(strings.TrimSpace(raw))
+	}
+	if n < 1 || n > 90 {
+		n = 24
+	}
+	if n%24 == 0 && n >= 24 {
+		return fmt.Sprintf("%dh", n), time.Duration(n) * time.Hour
+	}
+	return fmt.Sprintf("%dd", n), time.Duration(n) * 24 * time.Hour
+}
+
 func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
@@ -254,8 +274,15 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// 2026-11-19 时间范围统一轮：窗口从固定 24h 参数化为 ?days=N（1..90，
+	// 缺省仍为 24h，旧行为不变）。INTERVAL 不能参数化，n 已被 Atoi+范围
+	// 夹紧为纯整数，拼接无注入面。
+	windowLabel, windowDur := parseStatsWindow(r.URL.Query().Get("days"))
+	windowInterval := fmt.Sprintf("NOW() - INTERVAL '%d hours'", int(windowDur.Hours()))
+
 	out := map[string]interface{}{
-		"window_hours":    24,
+		"window":          windowLabel,
+		"window_hours":    int(windowDur.Hours()),
 		"by_work_type":    map[string]interface{}{},
 		"by_l1_task":      map[string]int{},
 		"total_auto":      0,
@@ -293,7 +320,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(work_type, 'unknown'), COUNT(*)
 		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '24 hours'
+		WHERE ts >= `+windowInterval+`
 		  AND work_type IS NOT NULL AND work_type <> ''
 		  AND (
 		    is_auto_request = TRUE
@@ -331,7 +358,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// composite key. Same fix as the audit handler task_distribution.
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	l1Dist := map[string]int{}
-	// 24 小时窗口查询走 _request_logs_hot（heap 落地热数据，性能最优）
+	// 窗口查询走 canonical 视图（windowInterval 参数化，2026-11-19 时间范围统一轮）
 	// 符合 docs/partition/partition-standards.md 查询规范
 	// R37 fix: wtSyntheticExclude contains '%' (LIKE 'goal-%') — embedding it
 	// in the Sprintf template corrupted the verb stream and the handler's
@@ -340,7 +367,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	rows, err = h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s, COUNT(*)
 		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '24 hours'
+		WHERE ts >= `+windowInterval+`
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND %s)
@@ -373,14 +400,14 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// counted as non-auto. Same fix applied in admin/auto_route.go
 	// handleAudit (2026-06-24).
 	var totalAuto, totalSpec int
-	// 24 小时窗口查询走 _request_logs_hot（heap 落地热数据，性能最优）
+	// 窗口查询走 canonical 视图（windowInterval 参数化，2026-11-19 时间范围统一轮）
 	// 符合 docs/partition/partition-standards.md 查询规范
 	_ = h.db.QueryRow(ctx, `
 		SELECT
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) AND `+wtModelPresent+` THEN 1 ELSE 0 END), 0)
 		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '24 hours'`+wtSyntheticExclude+wtTenantWhere+`
+		WHERE ts >= `+windowInterval+``+wtSyntheticExclude+wtTenantWhere+`
 	`, wtArgs...).Scan(&totalAuto, &totalSpec)
 	out["total_auto"] = totalAuto
 	out["total_specified"] = totalSpec
@@ -426,6 +453,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 			"category":       row.Category,
 			"l1_task_type":   row.L1TaskType,
 			"count_24h":      count,
+			"count_window":   count,
 			"count_direct":   row.CountDirect,
 			"count_l1_proxy": row.CountL1,
 		}
@@ -438,12 +466,12 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Top models 24h (union auto + specified, with client_model fallback).
 	// 2026-06-24: same NULL-safe filter as the other two queries above.
 	topModels := make([]map[string]interface{}, 0)
-	// 24 小时窗口查询走 _request_logs_hot（heap 落地热数据，性能最优）
+	// 窗口查询走 canonical 视图（windowInterval 参数化，2026-11-19 时间范围统一轮）
 	// 符合 docs/partition/partition-standards.md 查询规范
 	rows, err = h.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) AS m, COUNT(*) AS c
 		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '24 hours'
+		WHERE ts >= `+windowInterval+`
 		  AND COALESCE(NULLIF(outbound_model, ''), client_model, canonical_model) IS NOT NULL
 		  AND (
 		    is_auto_request = TRUE

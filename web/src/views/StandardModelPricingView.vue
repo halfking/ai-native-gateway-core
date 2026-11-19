@@ -20,7 +20,7 @@ import {
   type MaasAdminSettings,
   type MaasModelRateUpsert,
 } from '../api'
-import { getAdminMarketCompare, type MarketCompareRow } from '../api/market'
+import { getAdminMarketCompare, getAdminMarketPlatforms, type MarketCompareRow, type MarketPlatformRow } from '../api/market'
 import { sortByName } from '../utils/sortByName'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
@@ -197,6 +197,33 @@ function switchPageTab(next: PricingPageTab) {
 // 页面级全局模型多选过滤器（影响**所有5个tab**）。
 // 选中模型后，所有区域只显示这些标准模型的数据。
 const globalSelectedModels = ref<string[]>([])
+
+// ── 2026-11-19（平台筛选统一轮）：全局平台过滤 ──────────────
+// 页面级全局平台筛选器（影响有平台数据的tab：定价参考、跨平台现价）。
+const globalSelectedPlatform = ref<string>('')
+const platforms = ref<MarketPlatformRow[]>([])
+const platformsLoading = ref(false)
+
+// 加载平台列表
+async function loadPlatforms() {
+  platformsLoading.value = true
+  try {
+    const res = await getAdminMarketPlatforms()
+    platforms.value = res.items || []
+  } catch (err) {
+    console.error('Failed to load platforms:', err)
+    platforms.value = []
+  } finally {
+    platformsLoading.value = false
+  }
+}
+
+// 平台选项（启用的平台，按名称排序）
+const platformOptions = computed(() => {
+  return platforms.value
+    .filter(p => p.enabled)
+    .sort((a, b) => a.platform_name.localeCompare(b.platform_name))
+})
 const globalBaseFolded = ref(false) // 全局基准折叠状态
 
 // 全局模型变化处理：触发子区域数据刷新
@@ -211,6 +238,7 @@ function clearGlobalModels() {
   globalSelectedModels.value = []
   filterVendor.value = ''
   filterMode.value = ''
+  globalSelectedPlatform.value = ''
 }
 
 function removeSelectedModel(model: string) {
@@ -787,7 +815,10 @@ async function batchFillGlobal() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadPlatforms()
+})
 </script>
 
 <template>
@@ -898,9 +929,17 @@ onMounted(load)
           </select>
         </div>
         
+        <div v-if="pageTab !== 'rates'" class="filter-group">
+          <label class="filter-label">{{ t('standardModelPricing.filter.platformLabel') }}</label>
+          <select v-model="globalSelectedPlatform" class="filter-select" :disabled="platformsLoading">
+            <option value="">{{ t('standardModelPricing.filter.allPlatforms') }}</option>
+            <option v-for="p in platformOptions" :key="p.platform_id" :value="p.platform_id">{{ p.platform_name }}</option>
+          </select>
+        </div>
+        
         <div class="filter-actions">
           <button 
-            v-if="globalSelectedModels.length > 0 || filterVendor || filterMode" 
+            v-if="globalSelectedModels.length > 0 || filterVendor || filterMode || globalSelectedPlatform" 
             class="btn btn-ghost btn-sm" 
             @click="clearGlobalModels"
           >
@@ -934,8 +973,8 @@ onMounted(load)
     </div>
 
     <template v-if="pageTab !== 'rates'">
-      <MarketReferenceTable v-if="pageTab === 'reference'" :global-models="globalSelectedModels" />
-      <ModelPlatformCompare v-else-if="pageTab === 'platforms'" :global-models="globalSelectedModels" />
+      <MarketReferenceTable v-if="pageTab === 'reference'" :global-models="globalSelectedModels" :global-platform="globalSelectedPlatform" />
+      <ModelPlatformCompare v-else-if="pageTab === 'platforms'" :global-models="globalSelectedModels" :global-platform="globalSelectedPlatform" />
       <PricingSuggestionPanel v-else-if="pageTab === 'suggestion'" :global-models="globalSelectedModels" />
       <template v-else>
         <!-- scoring（供应评分）：覆盖率摘要 + 筛选 + 评分行 × 双地板（自 PriceCompareView 平移）
