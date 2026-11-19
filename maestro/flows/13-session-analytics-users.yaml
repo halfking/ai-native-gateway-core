@@ -40,7 +40,7 @@ url: ${BASE_URL}
 # 工具栏的**数字出处行**（含 canonical 视图名 request_logs_with_current_month）。
 - openLink: ${BASE_URL}/admin/session-analytics/users
 - extendedWaitUntil:
-    text: ".*request_logs_with_current_month.*"
+    visible: ".*request_logs_with_current_month.*"
     timeout: 25000
 
 # ── ③ 窗口用量五列的列头（静态文案，逐列可断言）───────────────────────────
@@ -69,13 +69,28 @@ url: ${BASE_URL}
 # 详情页独有形态 = 「热门任务 / 热门终端用户 / 最近会话 / 模型使用明细」四卡。
 - openLink: ${BASE_URL}/admin/session-analytics/users
 - extendedWaitUntil:
-    text: ".*request_logs_with_current_month.*"
+    visible: ".*request_logs_with_current_month.*"
     timeout: 25000
-- tapOn: "详情"
-- extendedWaitUntil:
-    visible: "模型使用明细"
-    timeout: 25000
+# ★ 页面有两个「详情」：列头 th（[1279,307]）+ 行内 link 钮（[1294,377]）。
+#   tapOn 默认点第 0 个 = 列头 ⇒ 不跳转（2026-11-20 部署验证实测踩坑）。
+#   index: 1 选第一个数据行的按钮。
+- tapOn:
+    text: "详情"
+    index: 1
+# ★ 详情页四卡纵向排布，「模型使用明细」卡在 y≈2566（视口 1257 之外）⇒
+#   视口外文本属性不进 a11y 层级，直接 assertVisible 必红（2026-11-20 部署验证实测）。
+#   先滚到模型卡再断言（抄 10-mcp-gateway 既有形态）。
+- scrollUntilVisible:
+    element:
+      text: "模型使用明细"
+    direction: DOWN
+    timeout: 20000
 - assertVisible: "热门任务"
+- scrollUntilVisible:
+    element:
+      text: "最近会话"
+    direction: DOWN
+    timeout: 20000
 - assertVisible: "最近会话"
 - assertVisible: "模型名称"
 - assertVisible: "输入 Token"
