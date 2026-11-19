@@ -251,21 +251,26 @@ describe('ReconciliationReport', () => {
     expect(wrapper.text()).toContain(zhCN.reports.reasonFilterHint)
   })
 
-  it('uses T+1 snapshot presets ending yesterday and applies yesterday from that panel', async () => {
+  it('uses site-standard presets with last-N-days ending today (2026-11-20 owner 口径)', async () => {
+    // 旧契约（T+1 止于昨日的自带预设）已被 owner 图批否决：
+    // 「非标准的时间选择组件，并且近7天的日期也不太对」——钉测必须跟着决定翻转，
+    // 否则就是把你锁回旧决定的反向锁。
     getReportSummaryMock.mockResolvedValue({ ...providerReport(), snapshot_dates: [], days: [] })
     const wrapper = await mountView()
     expect(wrapper.find('[data-quick]').exists()).toBe(false)
     const picker = wrapper.getComponent(KxDateRangePicker)
     const ids = (picker.props('presets') as { id: string }[]).map((item) => item.id)
-    expect(ids).toEqual(['yesterday', 'last7d', 'last30d', 'thisMonth', 'lastMonth'])
-    expect(ids).not.toContain('today')
+    expect(ids).toEqual(['today', 'yesterday', 'last7d', 'last14d', 'last30d', 'thisMonth', 'lastMonth'])
     expect(picker.props('maxSpanDays')).toBe(367)
-    expect(picker.props('notAfter')).toBe(snapshotNotAfter())
+    // notAfter = 今天：今天可进区间，未来不可选
+    expect(picker.props('notAfter')).toBe(new Date().toISOString().slice(0, 10))
     const last7 = presetRange('last7d')
     const today = new Date().toISOString().slice(0, 10)
-    expect(last7.end).not.toBe(today)
+    expect(last7.end).toBe(today)
     expect(getReportSummaryMock.mock.calls[0][0]).toEqual(expect.objectContaining({ start: last7.start, end: last7.end }))
     expect(wrapper.text()).toContain(zhCN.reports.noSnapshots)
+    // 区间含今天且快照不足 ⇒ 覆盖行披露「今日快照次日凌晨生成」
+    expect(wrapper.text()).toContain(zhCN.reports.todayPendingHint)
     await applyPreset(wrapper, 'yesterday')
     const yesterday = presetRange('yesterday')
     expect(getReportSummaryMock).toHaveBeenCalledWith(expect.objectContaining({

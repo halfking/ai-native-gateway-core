@@ -188,11 +188,20 @@ onUnmounted(() => {
   cleanupChart()
 })
 
+// 2026-11-20 修「图表永远空白」：与 SessionTrendChart 同病——mount 时数据
+// 未到 ⇒ v-if 未渲染 chartRef ⇒ initChart 空转；数据到位后 watch 只调
+// updateChart（要求已有实例）⇒ 从未初始化。实例缺失且 chartRef 已在时补 init。
+function ensureChartThenUpdate() {
+  nextTick(() => {
+    if (!chartInstance && chartRef.value && !isDestroyed.value) initChart()
+    else updateChart()
+  })
+}
 watch(() => props.distribution, () => {
-  nextTick(() => updateChart())
+  ensureChartThenUpdate()
 }, { deep: true })
 watch(() => props.avgScore, () => {
-  nextTick(() => updateChart())
+  ensureChartThenUpdate()
 })
 </script>
 

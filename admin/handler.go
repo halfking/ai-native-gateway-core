@@ -1332,6 +1332,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// 2026-07-07: P2会话分析 - 用户画像（三层隔离：super_admin/tenant_admin/user）
 	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
+	// 2026-11-20 数字出处轮：员工×模型用量矩阵（一行 = owner×model）。
+	// 精确路径注册在 /users/ 前缀路由之前 —— 列表页展开行与「分模型看每个
+	// 员工」的数据源；成本/模型名表达式与 /users/{owner}/models 逐字一致。
+	mux.HandleFunc("/api/admin/session-analytics/users/usage-matrix", admin(h.handleUserUsageMatrix))
 	mux.HandleFunc("/api/admin/session-analytics/users/", admin(h.handleUserAnalyticsDetail))
 
 	// 2026-09-30 统计 UI 优化轮：/users 页面用户级用量统计

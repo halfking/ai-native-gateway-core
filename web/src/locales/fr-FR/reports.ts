@@ -10,6 +10,7 @@ export default {
   rerunFailed: 'Le recalcul n’a pas pu aboutir. Veuillez réessayer.',
   // Couverture / état vide
   daysCovered: 'jours d’instantanés',
+  todayPendingHint: " (l'instantané du jour est généré le lendemain)",
   unaggregatedDay: 'Non agrégé',
   noSnapshots: 'Aucun instantané de rapport sur cette période (la tâche d’agrégation quotidienne génère les données de la veille tôt le matin, ou utilisez « Recalculer le dernier jour » pour les recalculer)',
   // Cartes de synthèse

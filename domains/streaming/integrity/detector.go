@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/modelname"
 )
 
 // Candidate is the per-request context the detector needs to emit
@@ -112,9 +114,14 @@ func (d *Detector) Observe(ctx context.Context, c Candidate) {
 }
 
 // checkModelMismatch emits a model_mismatch event when the upstream
-// returned a model name that doesn't case-insensitively match the
-// client or outbound model. Severity is high because silent
-// substitution is the highest-trust violation on the integrity menu.
+// returned a model name that is not identity-consistent with the outbound
+// or client model. Consistency compares the LAST '/'-segment
+// case-insensitively and accepts a match against EITHER trusted name
+// (internal/modelname for the full ruling): vendor prefixes are display
+// routing, the recorded outbound may be an offer display name, and the
+// OpenAI non-stream path rewrites the response model to clientModel
+// before this detector runs. Severity is high because silent substitution
+// is the highest-trust violation on the integrity menu.
 func (d *Detector) checkModelMismatch(ctx context.Context, c Candidate) {
 	if c.RespModel == "" {
 		return
@@ -126,7 +133,7 @@ func (d *Detector) checkModelMismatch(ctx context.Context, c Candidate) {
 	if want == "" {
 		return
 	}
-	if strings.EqualFold(want, c.RespModel) {
+	if modelname.Consistent(c.RespModel, c.OutboundModel, c.ClientModel) {
 		return
 	}
 	_ = d.rec.Record(ctx, Event{

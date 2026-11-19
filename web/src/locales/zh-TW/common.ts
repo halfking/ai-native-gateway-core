@@ -12,6 +12,7 @@ export default {
   credentials: '憑證',
   copy: '複製',
   button: {
+    remove: '拿掉',
     cancel: '取消',
     confirm: '確認',
     save: '儲存',

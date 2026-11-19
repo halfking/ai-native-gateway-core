@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/admin"
 )
 
 // Handler 会话分析系统的 HTTP 处理器
@@ -30,11 +32,12 @@ func NewHandler(db *sql.DB) *Handler {
 //   - end_date (必需): 结束日期 (YYYY-MM-DD)
 //
 // 响应:
-//   200: OverviewResponse
-//   400: 参数错误
-//   401: 未授权
-//   403: 权限不足
-//   500: 服务器错误
+//
+//	200: OverviewResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
 func (h *Handler) HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -48,6 +51,12 @@ func (h *Handler) HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 	// 权限检查：只有管理员可以访问
 	if !isAdminFromRequest(r) {
 		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// ★ 陈旧度门：视图在但数据停在上次刷新时，拒绝返回过期数字
+	//   （仓内 245 实测过 9h37m 的陈旧数据被当成结论发出去，见 mv_guard.go）。
+	if !h.requireFreshViews(w, r, "user_session_aggregates", "model_usage_aggregates") {
 		return
 	}
 
@@ -72,7 +81,11 @@ func (h *Handler) HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 
 // HandleGetUserRanking 处理用户排行请求
 //
-// GET /api/admin/session-analytics/users
+// GET /api/admin/session-analytics/user-ranking
+//
+// ★ 路径不是 /users：旧族（2026-07-07 用户画像）已占用该路径且前端在用，
+//
+//	重复注册会让 ServeMux panic ⇒ 整个网关起不来。见 RoutePaths 的注释。
 //
 // 查询参数:
 //   - tenant_id (可选): 租户 ID
@@ -85,11 +98,12 @@ func (h *Handler) HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 //   - offset (可选): 偏移量，默认 0
 //
 // 响应:
-//   200: UserRankingResponse
-//   400: 参数错误
-//   401: 未授权
-//   403: 权限不足
-//   500: 服务器错误
+//
+//	200: UserRankingResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
 func (h *Handler) HandleGetUserRanking(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -103,6 +117,11 @@ func (h *Handler) HandleGetUserRanking(w http.ResponseWriter, r *http.Request) {
 	// 权限检查
 	if !isAdminFromRequest(r) {
 		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// ★ 陈旧度门（同 overview 端点；见 mv_guard.go）。
+	if !h.requireFreshViews(w, r, "user_session_aggregates") {
 		return
 	}
 
@@ -282,50 +301,98 @@ func isValidDate(dateStr string) bool {
 }
 
 // isAdminFromRequest 从请求上下文检查用户是否为管理员
+//
+// ★ 上下文键：仓内的认证中间件 admin.AdminMiddleware 用的是**类型化** context 键
+//
+//	（admin.SetAuthContext / admin.GetAuthContext），不是字符串键。
+//	本函数此前读 r.Context().Value("user_role") ⇒ 永远拿到 nil ⇒ 恒返回 false
+//	⇒ 端点对**任何**人（含真管理员）都返回 403。
+//	⇒ 这里改用 admin.GetAuthContext(r)（唯一真源）。
+//
+// ★ 角色词表：仓内的真实角色只有 super_admin / tenant_admin / admin_key
+//
+//	（真库 users 表实测：tenant_admin 21 个、super_admin 3 个；没有 "admin" 角色）。
+//	本函数此前把 "admin" 当合法角色，是一条**永不命中**的分支。
 func isAdminFromRequest(r *http.Request) bool {
-	// 从上下文获取用户信息
-	userRole := r.Context().Value("user_role")
-	if userRole == nil {
+	auth := admin.GetAuthContext(r)
+	if auth == nil {
 		return false
 	}
-
-	role, ok := userRole.(string)
-	if !ok {
+	switch auth.Role {
+	case "super_admin", "tenant_admin", "admin_key":
+		return true
+	default:
 		return false
 	}
-
-	// 管理员角色：admin, super_admin, tenant_admin
-	return role == "admin" || role == "super_admin" || role == "tenant_admin"
 }
 
 // isSuperAdminFromRequest 从请求上下文检查用户是否为超级管理员
 func isSuperAdminFromRequest(r *http.Request) bool {
-	userRole := r.Context().Value("user_role")
-	if userRole == nil {
+	auth := admin.GetAuthContext(r)
+	if auth == nil {
 		return false
 	}
-
-	role, ok := userRole.(string)
-	if !ok {
-		return false
-	}
-
-	return role == "super_admin"
+	return auth.Role == "super_admin" || auth.Role == "admin_key"
 }
 
 // getUserTenantIDFromRequest 从请求上下文获取用户的租户 ID
 func getUserTenantIDFromRequest(r *http.Request) string {
-	tenantID := r.Context().Value("tenant_id")
-	if tenantID == nil {
+	auth := admin.GetAuthContext(r)
+	if auth == nil {
 		return ""
 	}
+	return auth.TenantID
+}
 
-	tid, ok := tenantID.(string)
-	if !ok {
-		return ""
-	}
+// 路由清单（SSOT）—— 注册与钉测共用**同一份**，杜绝「文档写的」与
+// 「注册的不是」两套路径。
+//
+// ★★ 为什么"人员排行"不能叫 /users（2026-11-20 211 部署事故实证）：
+//
+//	仓内**早就有**一个同名路径，且**前端在用**：
+//	  · admin/handler.go:1334  mux.HandleFunc("/api/admin/session-analytics/users",
+//	                                admin(h.handleUserAnalyticsList))
+//	    —— 2026-07-07 的「P2 会话分析 / 用户画像」端点（读 357 族视图）；
+//	  · web/src/api/admin.ts:239 fetchUserProfiles()、UserProfileListView.vue、
+//	    appNav.ts:237 菜单项都指向它 ⇒ **活的前端契约**，不能占。
+//
+//	而设计文档（docs/design/session-analytics-system.md §API）写的是
+//	`/api/admin/session-analytics/users` = 新系统的「人员排行」
+//	⇒ 照文档抄 ⇒ **同一路径在同一 ServeMux 上注册两次**
+//	⇒ Go 的 ServeMux 直接 panic（"conflicts with pattern"）
+//	⇒ main.go 的 panic 兜底把它变成「启动失败 ⇒ 进程退出(1)」
+//	⇒ 蓝绿候选槽起不来 ⇒ 部署回退 ⇒ 线上永远拿不到新端点。
+//
+//	⇒ 通用式：**URL 契约必须对着仓内真源核，不能照设计文档抄**——
+//	  文档写的是"应该长什么样"，真源才是"现在长什么样"；
+//	  两边不一致时，撞车的是**进程启动**，不是某个 404。
+//
+// ★ 新系统族的命名约定（与旧族并存，互不占用）：
+//
+//	/api/admin/session-analytics/overview      总体统计仪表板
+//	/api/admin/session-analytics/user-ranking  人员排行
+//	/api/admin/session-analytics/agent-ranking 智能体排行（Phase 3）
+//	/api/admin/session-analytics/model-ranking 模型排行（Phase 3）
+//
+//	旧族（2026-07-07，勿动）：
+//	/api/admin/session-analytics/clients|/tasks|/users(+子路径)
+var (
+	// RouteOverview 是总体统计仪表板端点。
+	RouteOverview = "/api/admin/session-analytics/overview"
+	// RouteUserRanking 是人员排行端点。
+	//
+	// ★ 不是 /users —— 见上面 RoutePaths 的注释（旧族已占用且前端在用）。
+	RouteUserRanking = "/api/admin/session-analytics/user-ranking"
+)
 
-	return tid
+// RoutePaths 是本包注册到 ServeMux 上的**完整**路径清单（SSOT）。
+//
+// ★ 用途：cmd/gateway 的路由冲突守卫测试拿它跟"仓内其它已注册路径"
+//
+//	做比对 —— 任何一条撞车都会让**整个网关启动失败**，必须在单测里红。
+var RoutePaths = []string{
+	RouteOverview,
+	RouteUserRanking,
 }
 
 // RegisterRoutes 注册会话分析系统的路由
@@ -334,8 +401,13 @@ func getUserTenantIDFromRequest(r *http.Request) string {
 // 所有路由都需要管理员权限。
 //
 // 路由列表:
-//   - GET /api/admin/session-analytics/overview - 总体统计仪表板
-//   - GET /api/admin/session-analytics/users - 用户排行
+//   - GET /api/admin/session-analytics/overview     - 总体统计仪表板
+//   - GET /api/admin/session-analytics/user-ranking - 人员排行
+//
+// ★ 冲突是**致命**的：同一个 ServeMux 上重复注册同一路径会 panic，
+//
+//	而 main.go 的 panic 兜底会让**整个网关**起不来（211 部署事故）。
+//	⇒ 改路径前先看 RoutePaths 的注释。
 //
 // 中间件要求:
 //   - adminWrap: 认证和权限中间件
@@ -343,15 +415,19 @@ func RegisterRoutes(mux *http.ServeMux, db *sql.DB, adminWrap func(http.HandlerF
 	handler := NewHandler(db)
 
 	// 总体统计
-	mux.HandleFunc("/api/admin/session-analytics/overview", adminWrap(handler.HandleGetOverview))
+	mux.HandleFunc(RouteOverview, adminWrap(handler.HandleGetOverview))
 
-	// 用户排行
-	mux.HandleFunc("/api/admin/session-analytics/users", adminWrap(handler.HandleGetUserRanking))
+	// 人员排行
+	mux.HandleFunc(RouteUserRanking, adminWrap(handler.HandleGetUserRanking))
 }
 
 // ErrorResponse 错误响应
 type ErrorResponse struct {
 	Error string `json:"error"`
+	// Code 是机器可读的错误码（与仓内 admin 包的错误响应同构）：
+	//   analytics_view_stale / analytics_view_missing / ...
+	// ★ 前端按 code 分流（文案兜底走 error 字段），运维按 code 查处置。
+	Code string `json:"code,omitempty"`
 }
 
 // writeError 写入错误响应
@@ -359,6 +435,13 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+}
+
+// writeErrorWithCode 写入带机器可读错误码的错误响应
+func writeErrorWithCode(w http.ResponseWriter, code int, errCode string, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(ErrorResponse{Error: message, Code: errCode})
 }
 
 // writeJSON 写入 JSON 响应

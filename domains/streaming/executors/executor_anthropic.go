@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelname"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/protocolformat"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
@@ -430,7 +431,9 @@ func (a *AnthropicExecutor) CheckSoftMismatch(reqModel, respModel string) (bool,
 	if reqModel == "" || respModel == "" {
 		return false, ""
 	}
-	if !strings.EqualFold(reqModel, respModel) {
+	// 2026-11-20: last-segment identity (internal/modelname) — same ruling
+	// as the integrity detector; vendor prefixes are display routing.
+	if !modelname.Consistent(respModel, reqModel) {
 		return true, "anthropic_response_model_differs_from_request"
 	}
 	return false, ""

@@ -642,8 +642,10 @@ func TestOllamaExecutor_CheckSoftMismatch(t *testing.T) {
 		{"llama3.1", "llama3.1", false},
 		{"llama3.1", "LLAMA3.1", false}, // case-insensitive
 		{"llama3.1", "llama3.2", true},
-		{"", "llama3.1", false}, // empty req is a no-op
-		{"llama3.1", "", false}, // empty resp is a no-op
+		{"llama3.1", "publisher/llama3.1", false}, // 2026-11-20 last-segment identity: vendor prefix is display routing
+		{"llama3.1", "publisher/llama3.2", true},  // last segment must match fully
+		{"", "llama3.1", false},                   // empty req is a no-op
+		{"llama3.1", "", false},                   // empty resp is a no-op
 		{"", "", false},
 	}
 	for _, tc := range cases {

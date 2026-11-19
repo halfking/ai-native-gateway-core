@@ -2758,14 +2758,36 @@ files=(
   #   v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats 新口径；
   #   幂等 CREATE OR REPLACE + 视图不在场守卫跳过）。
   "$ROOT_DIR/sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql"
+  # ★ 981（2026-11-19 会话分析系统基础设施）：session_analytics_foundation——
+  #   会话分析 4 个聚合物化视图（user_session_aggregates / project_task_aggregates /
+  #   agent_usage_aggregates / model_usage_aggregates）+ 刷新函数 + 探测判定函数
+  #   session_analytics_is_probe。
+  #   ★ 幂等：ADD COLUMN IF NOT EXISTS / CREATE MATERIALIZED VIEW IF NOT EXISTS /
+  #     CREATE [UNIQUE] INDEX IF NOT EXISTS / CREATE OR REPLACE FUNCTION；
+  #     探测回填是 UPDATE ... WHERE is_probe = false（已标记的不动）。
+  #   ★ 本文件含 REFRESH MATERIALIZED VIEW CONCURRENTLY（PG 不允许在事务块内执行）
+  #     ⇒ 本通道的 psql_stream 本来就是非事务流式执行（-f -，无 --single-transaction）
+  #     ⇒ CONCURRENTLY 合法。
+  #   ★ 底座是 session_summaries / session_dim / sessions（真库实测），
+  #     不是 sessions 裸表；日桶用 (ts AT TIME ZONE 'Asia/Shanghai')::date（CST）。
+  #   ★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。
+  "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
   # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
-  #   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
-  #   stats_consistency_check 视图（幂等；211 真库试跑通过）。
+  #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
+  #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
+  #   + stats_consistency_check 对账视图 + 重写 update_session_summary()。
+  #   ★ ⚠ 触发器 trg_update_session_summary 已随 v1 族物理退役（890 删表连带
+  #     删触发器；本地库实测 pg_trigger 0 行）⇒ 函数体是**死代码**（无宿主、
+  #     永不执行，CREATE 无害）；session_summaries 聚合的现实唯一写方是 Go 侧
+  #     sessionv2mirror 写入器（不喂积分/TTFT 三列 ⇒ 聚合缺口登记待收口）。
+  #   ★ **必须登记进 intentional_function_chains 的 update_session_summary
+  #     链尾（661 之后）**——clobber 守卫按「通道内最后一次定义 = 终态体」判，
+  #     少这行部署会在应用任何文件之前 abort（exit 5）（962 先例）。
   #   ★ 2026-11-19 文档一致性轮补登记（首提交漏了本清单 ⇒ 211 docker 通道不会投递）。
   "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
   # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
-  #   辅助函数；真库试跑通过；自登记已从不存在 的 migration_metadata 表改回
-  #   schema_migrations）。
+  #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
+  #   不存在的 migration_metadata 表改回 schema_migrations）。
   "$ROOT_DIR/sql/migrations/startup/991_stats_timezone_standardization.sql"
   # ★ 992（2026-11-19 CST业务时区函数轮）：add_cst_timezone_functions——
   #   创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）；
@@ -2829,6 +2851,16 @@ legacy_content_replays=(
   #     source_region/currency）。幂等可重放（ADD COLUMN IF NOT EXISTS /
   #     DROP+ADD CONSTRAINT 带 IF EXISTS / DELETE 带谓词 / CREATE INDEX IF NOT EXISTS）。
   '976_market_price_platform_quote_region.sql|5c2964a4b63613dcbf12cf90f657fc5c98ffe6b822689ea373b6c6959ecda1bb'
+  # 2026-11-19 统计一致性补登轮：990/991 在本清单登记**之前**已被并行车在
+  #   252（共享 PG）手工应用（本地测试环境同：文件直跑 + 台账 ON CONFLICT 补录，
+  #   sha 为 NULL 的遗留记账形态）⇒ 按内容指纹重放通道首跑时按当前内容重放一次
+  #   并开始指纹管理。两件全幂等（ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE /
+  #   台账 ON CONFLICT DO UPDATE）⇒ 重放零行为变化。
+  #   ★ 2026-11-19 合流：正本采纳上游 245 已部署字节（e3ae272c…/eb5fec70…，
+  #   见 db-changelog「deploy 245 build_seq 3134」台账 applied+verified 行）；
+  #   指纹同步为上游正本实测值，遗留记账（NULL sha）按此收口。
+  '990_stats_consistency_fixes.sql|e3ae272caa3e659c20e6cc40b821a275d9bdd1202bafa11a2eb636367a0e9401'
+  '991_stats_timezone_standardization.sql|eb5fec70f9cfb295fe03e224f9a13686490f6251fe396b06068a0f2ddbec8df3'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -2939,8 +2971,12 @@ intentional_function_chains=(
   # 2026-10-12: 358 (channel-leg registration round) also redefines the
   # trigger body between 563 and 661; the final body stays 661's, matching
   # the scan-leg numeric order production received (572, 563, 358, 661).
-  # ★ 2026-11-19：990_stats_consistency_fixes 也重定义本函数（活库最终体），
-  #   进入投递序后追加链尾（链序=投递序；双方同轮各自提交，此处合并注释）。
+  # 2026-11-19 (990 补登轮): 990 redefines the body a final time (adds
+  # total_credits_charged / avg|min|max_ttft_ms feed-through). The trigger
+  # itself is retired (890 physically dropped it with the v1 family), so the
+  # body is dead code, but the clobber guard still requires the chain to end
+  # at the LAST definition in this list — 990 must stay last.
+  # ★ 2026-11-19 合流注记：链尾 990 为双方同轮各自登记（链序=投递序）。
   'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|990_stats_consistency_fixes.sql|'
   # 2026-10-12 channel-leg registration: the candidate_failure_logs promote
   # chain as sequenced here is 392 (first partitioned promote) → 628 (v3,
@@ -3547,6 +3583,16 @@ ledger_artifact_probe "977_pi_error_analysis_semantics.sql" \
 #     的门；本探针只判「这套规则集在场」。
 ledger_artifact_probe "978_pi_canonical_rule_set.sql" \
   "to_regclass('public.prompt_injection_rules') IS NOT NULL AND (SELECT count(*) FROM public.prompt_injection_rules WHERE rule_name IN ('instruction_override_ignore','instruction_override_new_rules','instruction_override_system_prompt','data_exfiltration_http','data_exfiltration_tool','resource_exhaustion_repeat','resource_exhaustion_long','social_engineering_urgency','social_engineering_authority','unicode_homoglyph','unicode_rtl_override','unicode_zero_width','tool_abuse_exec','tool_abuse_import','tool_abuse_file','multi_turn_setup','multi_turn_reference','payload_smuggling_base64','payload_smuggling_markdown','context_manipulation_role','context_manipulation_persona','role_hijack_ignore_previous','role_hijack_you_are_now','privilege_escalation','command_injection')) = 25"
+# ★ 981 的产物 = 会话分析 4 个物化视图 + 刷新函数 + 探测判定函数 + sessions 四列。
+#   ★ 断言的是**静态对象在场**（表/列/索引/函数），不断言行数：
+#     行数是运行时状态（源表一直在写），按 972 事故的教训，产物探针只查产物。
+#   ★ 四个视图的**唯一索引**必须在场 —— REFRESH MATERIALIZED VIEW CONCURRENTLY
+#     的硬前提（缺了刷新会失败，而不是退化成普通 REFRESH）。
+#   ★ 唯一索引必须是**纯列**索引：PG 的 findCommittedUniqueIndex 跳过带表达式的索引
+#     ⇒ 表达式索引不算数（这是 981 首跑实测踩到的：表达式唯一索引让 CONCURRENTLY
+#     刷新失败，报 "Create a unique index with no WHERE clause on one or more columns"）。
+ledger_artifact_probe "981_session_analytics_foundation.sql" \
+  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regprocedure('public.refresh_session_analytics_view(text)') IS NOT NULL AND to_regprocedure('public.refresh_all_session_analytics_views()') IS NOT NULL AND to_regprocedure('public.session_analytics_is_probe(text,text,text)') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='sessions' AND column_name IN ('project','task','task_category','is_probe')) = 4 AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

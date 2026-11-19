@@ -409,12 +409,27 @@ func getTokenTrend(ctx context.Context, db *sql.DB, tenantID *string, startDate,
 	return points, rows.Err()
 }
 
-// getTopUsers 获取最活跃用户
-func getTopUsers(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate string, limit int) ([]TopUser, error) {
-	query := `
+// ── SQL 常量（2026-11-19 抽成具名常量）────────────────────────────────
+//
+// ★ 为什么要抽出来：这些 SQL 里藏着三处**只有在真库才暴露**的缺陷
+//   （users.owner 不存在 / owner 取错表 / task 空串语义），
+//   而内联字符串没法被测试断言 ⇒ 契约钉测（contract_test.go）只能对着
+//   文本检查。抽成常量后，钉测能直接断言 SQL 的形状。
+//
+// ★ 口径真源：4 个物化视图由迁移 981 建（底座 = session_summaries ×
+//   session_dim × sessions / request_logs_with_current_month）；
+//   前三个视图是**会话级**口径，model_usage_aggregates 是**请求级**口径
+//   （缓存率/成功率/延迟只有请求级有）⇒ 两者不可相加。
+
+// topUsersSQL 人员排行（总体统计的「最活跃用户」卡片）。
+//
+// ★ owner 取 a.owner（聚合视图自己的列）而不是 u.owner：
+//   users 表**没有 owner 列**（真库实测：id/tenant_id/username/.../email/role），
+//   写成 u.owner 会得到 42703 column does not exist ⇒ 整条查询失败。
+const topUsersSQL = `
 		SELECT
-			u.owner,
-			COALESCE(u.display_name, u.owner) as display_name,
+			a.owner,
+			COALESCE(u.display_name, a.owner) as display_name,
 			COALESCE(u.email, '') as email,
 			SUM(a.session_count) as session_count,
 			SUM(a.total_tokens) as total_tokens,
@@ -422,14 +437,66 @@ func getTopUsers(ctx context.Context, db *sql.DB, tenantID *string, startDate, e
 		FROM user_session_aggregates a
 		LEFT JOIN users u ON a.owner = u.username
 		WHERE a.date >= $1 AND a.date <= $2
-	`
+`
+
+// userRankingSQL 用户排行（默认口径：全部项目）。
+const userRankingSQL = `
+		SELECT
+			a.owner,
+			COALESCE(u.display_name, a.owner) as display_name,
+			COALESCE(u.email, '') as email,
+			SUM(a.session_count) as session_count,
+			SUM(a.project_count) as project_count,
+			SUM(a.task_count) as task_count,
+			SUM(a.total_tokens) as total_tokens,
+			SUM(a.internal_cost + a.external_cost) as total_cost,
+			MAX(a.last_active_at) as last_active_at
+		FROM user_session_aggregates a
+		LEFT JOIN users u ON a.owner = u.username
+		WHERE a.date >= $1 AND a.date <= $2
+`
+
+// userRankingByProjectSQL 用户排行（指定项目口径：走 project_task_aggregates）。
+//
+// ★ task 用 '' 表示「无具体任务」（迁移 981 的唯一索引要求列上无 NULL），
+//   所以 COUNT(DISTINCT) 必须用 NULLIF 归一，否则「无任务」会被算成一个任务。
+const userRankingByProjectSQL = `
+			SELECT
+				p.owner,
+				COALESCE(u.display_name, p.owner) as display_name,
+				COALESCE(u.email, '') as email,
+				SUM(p.session_count) as session_count,
+				COUNT(DISTINCT p.project) as project_count,
+				COUNT(DISTINCT NULLIF(p.task, '')) as task_count,
+				SUM(p.total_tokens) as total_tokens,
+				SUM(p.internal_cost + p.external_cost) as total_cost,
+				MAX(p.last_active_at) as last_active_at
+			FROM project_task_aggregates p
+			LEFT JOIN users u ON p.owner = u.username
+			WHERE p.date >= $1 AND p.date <= $2
+`
+
+// latestTaskSQL 取某人在区间内最近一次有任务的任务名。
+//
+// ★ 判空用 `<> ''` 而不是 `IS NOT NULL`（task 列是 '' 语义，见上）。
+const latestTaskSQL = `
+		SELECT task
+		FROM project_task_aggregates
+		WHERE owner = $1 AND date >= $2 AND date <= $3 AND task <> ''
+		ORDER BY last_active_at DESC
+		LIMIT 1
+`
+
+// getTopUsers 获取最活跃用户
+func getTopUsers(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate string, limit int) ([]TopUser, error) {
+	query := topUsersSQL
 	args := []interface{}{startDate, endDate}
 	if tenantID != nil {
 		query += " AND a.tenant_id = $3"
 		args = append(args, *tenantID)
 	}
 	query += `
-		GROUP BY u.owner, u.display_name, u.email
+		GROUP BY a.owner, u.display_name, u.email
 		ORDER BY session_count DESC
 		LIMIT $` + fmt.Sprintf("%d", len(args)+1)
 	args = append(args, limit)
@@ -553,22 +620,17 @@ func calculateGrowth(current, previous int64) float64 {
 
 // GetUserRanking 获取用户排行
 func GetUserRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate string, project *string, sortBy string, order string, limit, offset int) (*UserRankingResponse, error) {
+	// aggAlias 是聚合视图的表别名：默认 user_session_aggregates 用 a，
+	// 指定 project 时改查 project_task_aggregates 用 p。
+	// ★ 为什么必须用变量而不是两段硬编码 SQL：owner 列**在 users 表里不存在**
+	//   （真库 users 列：id/tenant_id/username/password_hash/display_name/email/
+	//   role/enabled/...）⇒ 写成 u.owner 会得到 42703 column does not exist，
+	//   整条查询直接失败（首版就是这么写的，单测用 sqlmock 没打穿）。
+	//   owner 的真源是聚合视图自己的列 ⇒ 取 a.owner / p.owner。
+	aggAlias := "a"
+
 	// 构建查询
-	query := `
-		SELECT
-			u.owner,
-			COALESCE(u.display_name, u.owner) as display_name,
-			COALESCE(u.email, '') as email,
-			SUM(a.session_count) as session_count,
-			SUM(a.project_count) as project_count,
-			SUM(a.task_count) as task_count,
-			SUM(a.total_tokens) as total_tokens,
-			SUM(a.internal_cost + a.external_cost) as total_cost,
-			MAX(a.last_active_at) as last_active_at
-		FROM user_session_aggregates a
-		LEFT JOIN users u ON a.owner = u.username
-		WHERE a.date >= $1 AND a.date <= $2
-	`
+	query := userRankingSQL
 	args := []interface{}{startDate, endDate}
 	argIndex := 3
 
@@ -580,21 +642,10 @@ func GetUserRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate
 
 	if project != nil {
 		// 如果指定了项目，需要从 project_task_aggregates 表查询
-		query = `
-			SELECT
-				u.owner,
-				COALESCE(u.display_name, u.owner) as display_name,
-				COALESCE(u.email, '') as email,
-				SUM(p.session_count) as session_count,
-				COUNT(DISTINCT p.project) as project_count,
-				COUNT(DISTINCT p.task) as task_count,
-				SUM(p.total_tokens) as total_tokens,
-				SUM(p.internal_cost + p.external_cost) as total_cost,
-				MAX(p.last_active_at) as last_active_at
-			FROM project_task_aggregates p
-			LEFT JOIN users u ON p.owner = u.username
-			WHERE p.date >= $1 AND p.date <= $2
-			AND p.project = $` + fmt.Sprintf("%d", argIndex)
+		aggAlias = "p"
+		query = userRankingByProjectSQL
+		// ★ 项目过滤条件（$N 的序号随前面的参数个数变化 ⇒ 必须在代码里拼）。
+		query += " AND p.project = $" + fmt.Sprintf("%d", argIndex)
 		args = append(args, *project)
 		argIndex++
 
@@ -605,7 +656,7 @@ func GetUserRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate
 		}
 	}
 
-	query += " GROUP BY u.owner, u.display_name, u.email"
+	query += " GROUP BY " + aggAlias + ".owner, u.display_name, u.email"
 
 	// 排序
 	orderClause := " ORDER BY "
@@ -694,13 +745,11 @@ func GetUserRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate
 
 // getLatestTask 获取用户最新的任务
 func getLatestTask(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (string, error) {
-	query := `
-		SELECT task
-		FROM project_task_aggregates
-		WHERE owner = $1 AND date >= $2 AND date <= $3 AND task IS NOT NULL
-		ORDER BY last_active_at DESC
-		LIMIT 1
-	`
+	// ★ task 列在物化视图里用 ''（不是 NULL）表示「无具体任务」：
+	//   视图的唯一索引必须是纯列索引且列上不能有 NULL（PG 的 REFRESH CONCURRENTLY
+	//   要求），所以迁移把 NULL 归一成了 ''。这里用 <> '' 把「无任务」过滤回去，
+	//   别写成 IS NOT NULL（那会把所有空任务行当成真任务返回）。
+	query := latestTaskSQL
 	var task sql.NullString
 	err := db.QueryRowContext(ctx, query, owner, startDate, endDate).Scan(&task)
 	if err != nil {

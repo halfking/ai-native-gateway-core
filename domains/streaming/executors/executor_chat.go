@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelname"
 	"github.com/kaixuan/llm-gateway-go/internal/nativepair"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramrefusal"
@@ -533,7 +534,13 @@ func (c *ChatExecutor) ExtractUsage(resp *http.Response, body []byte) (inputToke
 }
 
 func (c *ChatExecutor) CheckSoftMismatch(reqModel, respModel string) (bool, string) {
-	if reqModel != respModel && reqModel != "" && respModel != "" {
+	if reqModel == "" || respModel == "" {
+		return false, ""
+	}
+	// 2026-11-20: last-segment identity (internal/modelname) — the old
+	// case-sensitive full-string compare flagged vendor-prefixed echoes
+	// ("z-ai/glm-5.3-flash" vs "glm-5.3-flash") and case-only variants.
+	if !modelname.Consistent(respModel, reqModel) {
 		return true, "openai_protocol_no_silent_fallback"
 	}
 	return false, ""

@@ -17,8 +17,10 @@ import { createI18n } from 'vue-i18n'
 import { h } from 'vue'
 
 const getUserProfileListMock = vi.fn()
+const getUserUsageMatrixMock = vi.fn()
 vi.mock('../api/admin', () => ({
   getUserProfileList: (...a: unknown[]) => getUserProfileListMock(...a),
+  getUserUsageMatrix: (...a: unknown[]) => getUserUsageMatrixMock(...a),
 }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 
@@ -35,6 +37,8 @@ vi.mock('element-plus', () => ({
   ElTableColumn: { setup: () => () => h('div') },
   ElPopover: { setup: (_: unknown, { slots }: any) => () => h('div', [slots.default?.(), slots.reference?.()]) },
   ElDatePicker: { setup: () => () => h('input') },
+  // 2026-11-20 数字出处轮：列表页帮助抽屉（右侧滑出）需要 ElDrawer 桩件。
+  ElDrawer: { setup: (_: unknown, { slots }: any) => () => h('div', [slots.default?.()]) },
 }))
 
 const i18n = createI18n({

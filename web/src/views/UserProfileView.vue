@@ -99,7 +99,7 @@ async function loadModelUsage() {
       modelUsageError.value = result.degraded_reason
     }
   } catch (e: unknown) {
-    modelUsageError.value = e instanceof Error && e.message ? e.message : '模型使用统计加载失败'
+    modelUsageError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.modelUsageLoadFailed')
     modelUsage.value = []
   } finally {
     modelUsageLoading.value = false
@@ -211,6 +211,12 @@ function healthGradeColor(grade?: string): 'success' | 'primary' | 'warning' | '
 /** 成本：美元 4 位小数。桌面三列都是 `$(x ?? 0).toFixed(4)`，缺值按 0。 */
 function fmtUsd4(v: unknown): string {
   return `$${Number(v ?? 0).toFixed(4)}`
+}
+
+/** 2026-11-20 逐层下钻轮：员工 → 任务 → 会话 的任务层入口。 */
+function goTask(taskId: unknown) {
+  const id = taskId == null ? '' : String(taskId)
+  if (id) router.push(`/admin/session-analytics/tasks/${encodeURIComponent(id)}`)
 }
 
 /** 健康等级 → 卡片 tone。与 `healthGradeColor` 同一组判读线，5 档收敛成 3 档。 */
@@ -337,7 +343,15 @@ const recentSessionFields = computed<CardField[]>(() => [
         >
           <template #table>
         <el-table :data="data?.top_tasks ?? []" stripe size="small">
-          <el-table-column prop="task_id" :label="t('sessions.userProfile.taskId')" min-width="200" />
+          <!-- 2026-11-20 逐层下钻轮：热门任务行可点 —— 员工 → 任务 → 会话 的
+               任务层补齐（任务详情页自带该任务下的会话列表与会话跳转）。 -->
+          <el-table-column prop="task_id" :label="t('sessions.userProfile.taskId')" min-width="200">
+            <template #default="scope">
+              <el-button size="small" link type="primary" @click="goTask(scope?.row?.task_id)">
+                {{ scope?.row?.task_id }}
+              </el-button>
+            </template>
+          </el-table-column>
           <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="90" align="right" />
           <el-table-column prop="total_cost" :label="t('sessions.userProfile.totalCost')" width="120" align="right">
             <template #default="scope">${{ (scope?.row?.total_cost ?? 0).toFixed(4) }}</template>
@@ -502,14 +516,16 @@ const recentSessionFields = computed<CardField[]>(() => [
           <h3>{{ t('sessions.userProfile.helpContent.tokenCalculation') }}</h3>
           <p>{{ t('sessions.userProfile.helpContent.tokenDesc') }}</p>
           <div class="formula">
-            总 Token 数 = 输入 Token + 输出 Token
+            {{ t('sessions.userProfile.helpContent.tokenFormula') }}
           </div>
         </section>
 
         <section class="help-section">
           <h3>{{ t('sessions.userProfile.helpContent.costCalculation') }}</h3>
-          <p><strong>内部成本：</strong>{{ t('sessions.userProfile.helpContent.internalCostDesc') }}</p>
-          <p><strong>外部成本：</strong>{{ t('sessions.userProfile.helpContent.externalCostDesc') }}</p>
+          <p><strong>{{ t('sessions.userProfile.internalCost') }}</strong></p>
+          <p>{{ t('sessions.userProfile.helpContent.internalCostDesc') }}</p>
+          <p><strong>{{ t('sessions.userProfile.externalCost') }}</strong></p>
+          <p>{{ t('sessions.userProfile.helpContent.externalCostDesc') }}</p>
         </section>
 
         <section class="help-section">

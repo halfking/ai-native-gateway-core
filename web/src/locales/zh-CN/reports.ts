@@ -8,6 +8,7 @@ export default {
   rerunDone: '重跑完成',
   rerunFailed: '重跑没能完成，请重试',
   daysCovered: '天快照',
+  todayPendingHint: '（今日快照次日凌晨生成）',
   unaggregatedDay: '未聚合',
   noSnapshots:
     '该区间没有报表快照（每日聚合任务在凌晨生成前一日数据，或用「重跑结束日」补算）',
