@@ -1,5 +1,6 @@
 -- Migration 981: Session Analytics Foundation
 -- 为会话分析系统创建基础设施：元数据列、物化视图、索引
+-- dbinit:no-transaction
 
 -- ============================================================================
 -- Part 1: 为 sessions 表添加元数据列
