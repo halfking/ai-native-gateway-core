@@ -33,6 +33,9 @@ export default {
   },
   filter: {
     summary: 'Manuel {custom}: Global {defaults} / {total}',
+    allVendors: 'Tous les fournisseurs',
+    allModes: 'Tous les tarifs',
+    count: '{count} modèles',
   },
   table: {
     colModel: 'Modèle standard',

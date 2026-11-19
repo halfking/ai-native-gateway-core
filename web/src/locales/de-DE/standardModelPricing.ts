@@ -33,6 +33,9 @@ export default {
   },
   filter: {
     summary: 'Manuell {custom}: Global {defaults} / {total}',
+    allVendors: 'Alle Anbieter',
+    allModes: 'Alle Preise',
+    count: '{count} Modelle',
   },
   table: {
     colModel: 'Standardmodell',

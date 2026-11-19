@@ -33,6 +33,9 @@ export default {
   },
   filter: {
     summary: '手動 {custom}：グローバル {defaults} / {total}',
+    allVendors: 'すべてのベンダー',
+    allModes: 'すべての価格設定',
+    count: '{count} モデル',
   },
   table: {
     colModel: '標準モデル',

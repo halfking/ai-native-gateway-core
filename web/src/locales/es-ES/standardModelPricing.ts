@@ -30,7 +30,10 @@ export default {
     effective: 'Efectivo ≈ {value} (incl. descuento)',
   },
   filter: {
-    summary: 'Manuales {custom}: Globales {defaults} / {total}',
+    summary: 'Manual {custom}: Global {defaults} / {total}',
+    allVendors: 'Todos los proveedores',
+    allModes: 'Todos los precios',
+    count: '{count} modelos',
   },
   table: {
     colModel: 'Modelo estándar',

@@ -30,6 +30,9 @@ export default {
   },
   filter: {
     summary: 'Manual {custom}: Global {defaults} / {total}',
+    allVendors: 'All vendors',
+    allModes: 'All pricing',
+    count: '{count} models',
   },
   table: {
     colModel: 'Standard model',

@@ -21,8 +21,6 @@ import {
   type MaasModelRateUpsert,
 } from '../api'
 import { getAdminMarketCompare, type MarketCompareRow } from '../api/market'
-import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
-import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
 import { sortByName } from '../utils/sortByName'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
@@ -77,24 +75,54 @@ const pricingStatusOptions = [
   { value: 'partial', label: t('standardModelPricing.partialOnly') },
 ]
 
-const {
-  pickedModel,
-  filterVendor,
-  extraFilter: filterMode,
-  vendorOptions,
-  filtered,
-  clearFilters: clearCatalogFilters,
-} = useModelCatalogFilters<AdminMaasModelRate>({
-  items: models,
-  getVendor: (m) => m.vendor?.trim() || t('standardModelPricing.otherVendor'),
-  getCanonicalName: (m) => m.canonical_name,
-  getDisplayName: (m) => m.display_name,
-  matchExtra: (m, mode) => {
-    if (mode === 'custom') return m.is_custom
-    if (mode === 'partial') return m.is_custom && !isFullyManual(m)
-    return true
-  },
+// 2026-11-19（模型选择统一轮）：移除 rates tab 独立的 ModelCatalogFilterBar，
+// 改用全局 globalSelectedModels 统一过滤所有 tab。
+// 保留 vendor/mode 筛选器（不再绑定 pickedModel）。
+const filterVendor = ref('')
+const filterMode = ref('')
+
+// 厂商选项（从 models 提取）
+const vendorOptions = computed(() => {
+  const vendors = new Set<string>()
+  models.value.forEach(m => {
+    const v = m.vendor?.trim() || t('standardModelPricing.otherVendor')
+    vendors.add(v)
+  })
+  return Array.from(vendors).sort()
 })
+
+// 筛选逻辑：全局模型 + 厂商 + 模式
+const filtered = computed(() => {
+  let result = models.value
+  
+  // 1. 全局模型过滤
+  if (globalSelectedModels.value.length > 0) {
+    const modelsSet = new Set(globalSelectedModels.value)
+    result = result.filter(m => modelsSet.has(m.canonical_name))
+  }
+  
+  // 2. 厂商过滤
+  if (filterVendor.value) {
+    result = result.filter(m => {
+      const v = m.vendor?.trim() || t('standardModelPricing.otherVendor')
+      return v === filterVendor.value
+    })
+  }
+  
+  // 3. 模式过滤
+  if (filterMode.value === 'custom') {
+    result = result.filter(m => m.is_custom)
+  } else if (filterMode.value === 'partial') {
+    result = result.filter(m => m.is_custom && !isFullyManual(m))
+  }
+  
+  return result
+})
+
+function clearCatalogFilters() {
+  filterVendor.value = ''
+  filterMode.value = ''
+}
 // tab 定义（labelKey必须是静态键 —— t() 的键要可被静态抽取器找到）。
 const PAGE_TAB_DEFS: { key: PricingPageTab; labelKey: string }[] = [
   { key: 'rates', labelKey: 'standardModelPricing.page.title' },
@@ -165,9 +193,9 @@ function switchPageTab(next: PricingPageTab) {
   }
 }
 
-// ── 2026-11-19（比较与定价优化轮）：全局模型过滤 ──────────────
-// 页面级全局模型多选过滤器（影响 reference/scoring/platforms/suggestion 四个 tab）。
-// 选中模型后，四个区域只显示这些标准模型的数据；rates tab 保持独立的 ModelCatalogFilterBar。
+// ── 2026-11-19（模型选择统一轮）：全局模型过滤 ──────────────
+// 页面级全局模型多选过滤器（影响**所有5个tab**）。
+// 选中模型后，所有区域只显示这些标准模型的数据。
 const globalSelectedModels = ref<string[]>([])
 const globalBaseFolded = ref(false) // 全局基准折叠状态
 
@@ -181,27 +209,9 @@ function onGlobalModelsChange(models: string | string[]) {
 
 function clearGlobalModels() {
   globalSelectedModels.value = []
-  onGlobalModelsChange([])
+  filterVendor.value = ''
+  filterMode.value = ''
 }
-
-// rates tab 厂家过滤（根据全局模型过滤）
-const filteredVendorOptions = computed(() => {
-  if (pageTab.value !== 'rates' || globalSelectedModels.value.length === 0) {
-    return vendorOptions.value
-  }
-  
-  const modelsSet = new Set(globalSelectedModels.value)
-  const vendorsWithData = new Set<string>()
-  
-  models.value.forEach(m => {
-    if (modelsSet.has(m.canonical_name)) {
-      const vendor = m.vendor?.trim() || t('standardModelPricing.otherVendor')
-      vendorsWithData.add(vendor)
-    }
-  })
-  
-  return vendorOptions.value.filter(opt => vendorsWithData.has(opt))
-})
 
 // ── scoring 壳（自 PriceCompareView 平移，逐字保留口径）──────────────
 // C1/C2/C3 评分行（supplier_market_position，评分 job 每日 upsert）
@@ -849,23 +859,8 @@ onMounted(load)
       </div>
     </details>
 
-    <!-- rates tab 使用原有的 ModelCatalogFilterBar -->
-    <ModelCatalogFilterBar
-      v-if="pageTab === 'rates'"
-      v-model:picked-model="pickedModel"
-      v-model:filter-vendor="filterVendor"
-      v-model:extra-filter="filterMode"
-      :vendor-options="filteredVendorOptions"
-      :count="filtered.length"
-      picker-title="定价管理 · 模型筛选"
-      picker-placeholder="搜索标准模型…"
-      status-label="全部定价"
-      :status-options="pricingStatusOptions"
-      @clear="clearCatalogFilters"
-    />
-
-    <!-- 2026-11-19（比较与定价优化轮）：全局模型多选过滤器（影响 reference/scoring/platforms/suggestion 四个 tab） -->
-    <div v-if="pageTab !== 'rates'" class="card global-model-filter">
+    <!-- 2026-11-19（模型选择统一轮）：全局模型多选过滤器（影响所有5个tab） -->
+    <div class="card global-model-filter">
       <div class="filter-label">{{ t('standardModelPricing.globalModelFilter.label') }}</div>
       <div class="model-picker-wrapper">
         <ModelPicker
@@ -884,6 +879,26 @@ onMounted(load)
       >
         {{ t('common.button.clear') }}
       </button>
+    </div>
+
+    <!-- rates tab 的厂商/模式筛选 -->
+    <div v-if="pageTab === 'rates'" class="card filter-bar">
+      <select v-model="filterVendor" class="filter-select">
+        <option value="">{{ t('standardModelPricing.filter.allVendors') }}</option>
+        <option v-for="v in vendorOptions" :key="v" :value="v">{{ v }}</option>
+      </select>
+      <select v-model="filterMode" class="filter-select">
+        <option value="">{{ t('standardModelPricing.filter.allModes') }}</option>
+        <option v-for="opt in pricingStatusOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+      </select>
+      <button 
+        v-if="filterVendor || filterMode" 
+        class="btn btn-ghost btn-sm" 
+        @click="clearCatalogFilters"
+      >
+        {{ t('common.button.clear') }}
+      </button>
+      <span class="filter-count">{{ t('standardModelPricing.filter.count', { count: filtered.length }) }}</span>
     </div>
 
     <div v-if="pageTab === 'rates'" class="bulk-bar">
@@ -1255,6 +1270,23 @@ onMounted(load)
 .model-picker-wrapper {
   flex: 1;
   min-width: 300px;
+}
+
+/* 2026-11-19：rates tab 厂商/模式筛选条 */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+.filter-select {
+  min-width: 150px;
+}
+.filter-count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .settings-card { margin-bottom: 16px; }

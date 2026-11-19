@@ -33,6 +33,9 @@ export default {
   },
   filter: {
     summary: 'يدوي {custom}: عام {defaults} / {total}',
+    allVendors: 'جميع الموردين',
+    allModes: 'جميع الأسعار',
+    count: '{count} نموذج',
   },
   table: {
     colModel: 'النموذج القياسي',

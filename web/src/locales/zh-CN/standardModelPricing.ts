@@ -30,6 +30,9 @@ export default {
   },
   filter: {
     summary: '手工 {custom}：全局 {defaults} / {total}',
+    allVendors: '全部厂商',
+    allModes: '全部定价',
+    count: '共 {count} 个模型',
   },
   table: {
     colModel: '标准模型',
