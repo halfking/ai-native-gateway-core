@@ -6,10 +6,10 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-13T00:24:59+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=365 package_up=365 rows=893
+# ★ generated_at=2026-11-19T03:00:56+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=380 package_up=380 rows=918
 # ★ ★★ census_bundled_at=2026-11-08T23:15:30+00:00 census_env_sha256=local:c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d,fresh:9cf37dfbe147cd4f0c775aee54bbc652d8e22bb396cbc296ec8e1ea82a7ccce0,252:b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55,211:550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 79, "reachable-and-present": 423, "unreachable-and-missing": 49}
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 104, "reachable-and-present": 423, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -903,3 +903,28 @@ idx_passive_model_fingerprints_model	passive_model_fingerprints	955	955_passive_
 idx_passive_model_fingerprints_updated	passive_model_fingerprints	955	955_passive_model_fingerprints.sql	yes			reachable-and-legitimately-retired	none	
 idx_market_platform_registry_is_ours	market_platform_registry	958	958_market_platform_registry.sql	yes			reachable-and-legitimately-retired	none	
 idx_market_platform_registry_region	market_platform_registry	958	958_market_platform_registry.sql	yes			reachable-and-legitimately-retired	none	
+idx_akcm_key_minute	api_key_concurrency_minute	965	965_api_key_concurrency_minute.sql	yes			reachable-and-legitimately-retired	none	
+idx_auth_id_mapping_external	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
+idx_auth_id_mapping_internal	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
+idx_auth_id_mapping_provider	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
+idx_auth_id_mapping_tenant	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
+idx_auth_id_mapping_username	auth_id_mapping	966	966_auth_id_mapping_canonical_channel.sql	yes			reachable-and-legitimately-retired	none	
+idx_plugin_config_updated	plugin_config	968	968_plugin_config.sql	yes			reachable-and-legitimately-retired	none	
+idx_casdoor_mapping_casdoor_task	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
+idx_casdoor_mapping_session	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
+idx_casdoor_mapping_status	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
+idx_casdoor_mapping_tenant	approval_casdoor_mapping	969	969_approval_casdoor_mapping.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_queue_error_hash	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_queue_error_type	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_queue_status_priority	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_queue_tenant	error_analysis_queue	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_results_auto_applied	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_results_category	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_results_false_positive	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_results_queue	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_results_severity	error_analysis_results	971	971_pi_error_analysis_system.sql	yes			reachable-and-legitimately-retired	none	
+idx_mppq_canon	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes			reachable-and-legitimately-retired	none	
+idx_mppq_platform	market_price_platform_quotes	974	974_market_price_identity_and_tier.sql	yes			reachable-and-legitimately-retired	none	
+idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975	975_pricing_suggestion_audit.sql	yes			reachable-and-legitimately-retired	none	
+idx_mppq_canon_region	market_price_platform_quotes	976	976_market_price_platform_quote_region.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_analysis_results_queue_uniq	error_analysis_results	977	977_pi_error_analysis_semantics.sql	yes			reachable-and-legitimately-retired	none	

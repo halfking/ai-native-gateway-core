@@ -79,4 +79,10 @@ var partitionParents = []string{
 	// 本身。`bg/partition_825_contract_test.go` 用 9 条变异钉住这个契约。
 	// 补进来是为了让清单与 DDL 一致，并让将来任何一处新增父表写都被本门接住。
 	"ursm_node_snapshot_min",
+	// 2026-11-19 12h 审计轮由 TestPartitionParentsAreExhaustive 反向抓出：
+	// `deploy/sql/migrations/0999_add_request_diagnostic_logs_fixed.sql`
+	// 声明了 `PARTITION BY RANGE (…)`，此前不在本清单里 ⇒ 守卫看不见它上面的
+	// 写操作。写面在 `internal/diagnostics/logger.go`（INSERT + 4 处 SELECT），
+	// 已有 Go 侧写操作 ⇒ 必须登记，将来任何新增写都被本门接住。
+	"request_diagnostic_logs",
 }

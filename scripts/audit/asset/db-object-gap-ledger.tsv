@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-11T19:33:24+00:00
-# ★ expected=893 envs=local,fresh,252,211 gaps_by_env={"211": 49, "252": 56, "fresh": 49, "local": 58} production_gaps=64
+# ★ generated_at=2026-11-19T03:00:43+00:00
+# ★ expected=918 envs=local,fresh,252,211 gaps_by_env={"211": 49, "252": 56, "fresh": 49, "local": 58} production_gaps=64
 -1	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -900,3 +900,28 @@
 955	idx_passive_model_fingerprints_updated	passive_model_fingerprints	retired	retired	retired	retired	complete	none
 958	idx_market_platform_registry_is_ours	market_platform_registry	retired	retired	retired	retired	complete	none
 958	idx_market_platform_registry_region	market_platform_registry	retired	retired	retired	retired	complete	none
+965	idx_akcm_key_minute	api_key_concurrency_minute	retired	retired	retired	retired	complete	none
+966	idx_auth_id_mapping_external	auth_id_mapping	retired	retired	retired	retired	complete	none
+966	idx_auth_id_mapping_internal	auth_id_mapping	retired	retired	retired	retired	complete	none
+966	idx_auth_id_mapping_provider	auth_id_mapping	retired	retired	retired	retired	complete	none
+966	idx_auth_id_mapping_tenant	auth_id_mapping	retired	retired	retired	retired	complete	none
+966	idx_auth_id_mapping_username	auth_id_mapping	retired	retired	retired	retired	complete	none
+968	idx_plugin_config_updated	plugin_config	retired	retired	retired	retired	complete	none
+969	idx_casdoor_mapping_casdoor_task	approval_casdoor_mapping	retired	retired	retired	retired	complete	none
+969	idx_casdoor_mapping_session	approval_casdoor_mapping	retired	retired	retired	retired	complete	none
+969	idx_casdoor_mapping_status	approval_casdoor_mapping	retired	retired	retired	retired	complete	none
+969	idx_casdoor_mapping_tenant	approval_casdoor_mapping	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_queue_error_hash	error_analysis_queue	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_queue_error_type	error_analysis_queue	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_queue_status_priority	error_analysis_queue	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_queue_tenant	error_analysis_queue	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_results_auto_applied	error_analysis_results	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_results_category	error_analysis_results	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_results_false_positive	error_analysis_results	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_results_queue	error_analysis_results	retired	retired	retired	retired	complete	none
+971	idx_error_analysis_results_severity	error_analysis_results	retired	retired	retired	retired	complete	none
+974	idx_mppq_canon	market_price_platform_quotes	retired	retired	retired	retired	complete	none
+974	idx_mppq_platform	market_price_platform_quotes	retired	retired	retired	retired	complete	none
+975	idx_pricing_suggestion_batches_created	pricing_suggestion_batches	retired	retired	retired	retired	complete	none
+976	idx_mppq_canon_region	market_price_platform_quotes	retired	retired	retired	retired	complete	none
+977	idx_error_analysis_results_queue_uniq	error_analysis_results	retired	retired	retired	retired	complete	none

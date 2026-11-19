@@ -11090,3 +11090,10 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 |-----------|------|---------|--------|
 | 978 | `978_pi_canonical_rule_set.sql` | `5b511005c28c2cfcf609d37be6516d0a78da593d8553fc0d7e7ca23460b51171` | applied+verified |
 
+## 2026-11-19T00:00:00Z — 12h 审计轮补登记（54161f0e6）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 979 | `979_pi_analysis_applied_actions.sql` | `5a7a63b62427e0478477ef13f1420467e2b3dceb19abe6f6c52250d26f599a2c` | pending deploy（`error_analysis_results` 补 `applied_actions JSONB`——PI 分析「一键应用修复」审计留痕列；写入方 `admin/pi_analysis_fix_apply.go`；SHA 为文件实测值） |
+| 980 | `980_pi_analysis_stats_view_alignment.sql` | `990fb2b7d1d0843dff15731f59aae51b50782be2448b22269dee6ebc89702a13` | applied+verified（`v_error_analysis_stats` 视图对齐——PI 分析统计↔列表一致性根修；DROP+CREATE 幂等形态（二修 `8f018ac64`）；三库活体验证见 `docs/audit/2026-11-18-PI分析管理面优化-主档.md` §三库验证；SHA 为文件实测值） |
+
