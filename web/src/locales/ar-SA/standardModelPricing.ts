@@ -36,6 +36,9 @@ export default {
     allVendors: 'جميع الموردين',
     allModes: 'جميع الأسعار',
     count: '{count} نموذج',
+    vendorLabel: 'المورد',
+    modeLabel: 'وضع التسعير',
+    selectedModels: 'النماذج المحددة',
   },
   table: {
     colModel: 'النموذج القياسي',

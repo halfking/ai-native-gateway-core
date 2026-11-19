@@ -36,6 +36,9 @@ export default {
     allVendors: 'Alle Anbieter',
     allModes: 'Alle Preise',
     count: '{count} Modelle',
+    vendorLabel: 'Anbieter',
+    modeLabel: 'Preismodus',
+    selectedModels: 'Ausgewählte Modelle',
   },
   table: {
     colModel: 'Standardmodell',

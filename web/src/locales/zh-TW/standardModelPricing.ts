@@ -36,6 +36,9 @@ export default {
     allVendors: '全部廠商',
     allModes: '全部定價',
     count: '共 {count} 個模型',
+    vendorLabel: '廠商',
+    modeLabel: '定價模式',
+    selectedModels: '已選擇的模型',
   },
   table: {
     colModel: '模型',

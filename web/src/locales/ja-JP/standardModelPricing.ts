@@ -36,6 +36,9 @@ export default {
     allVendors: 'すべてのベンダー',
     allModes: 'すべての価格設定',
     count: '{count} モデル',
+    vendorLabel: 'ベンダー',
+    modeLabel: '価格設定モード',
+    selectedModels: '選択されたモデル',
   },
   table: {
     colModel: '標準モデル',

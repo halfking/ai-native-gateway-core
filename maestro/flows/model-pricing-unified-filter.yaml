@@ -1,0 +1,98 @@
+appId: ${APP_ID}
+---
+# model-pricing-unified-filter.yaml — 统一模型选择器功能验证
+# 2026-11-19：验证 /model-pricing 页面统一的全局模型多选过滤器
+#
+# 测试范围：
+# 1. 所有 5 个 tab 共享同一个全局模型选择器
+# 2. 选择模型后，切换 tab 时模型选择状态保持不变
+# 3. 多选模式正常工作
+# 4. 清空按钮正常工作
+# 5. 各 tab 的数据根据选中模型正确过滤
+
+- launchApp
+
+# 登录
+- runFlow:
+    file: _shared/login.yaml
+
+# 导航到定价管理页面（/model-pricing）
+- tapOn: "运营分析"
+- tapOn: "定价管理"
+- assertVisible: "定价管理"
+
+# ========== 测试 1：验证全局模型选择器存在 ==========
+- assertVisible: "搜索标准模型"
+- assertVisible: "选择模型（支持多选）"
+
+# ========== 测试 2：选择一个模型 ==========
+# 点击模型选择器
+- tapOn: "选择模型（支持多选）"
+- extendedWaitUntil:
+    visible: "热门模型"
+    timeout: 3000
+
+# 选择第一个模型（例如 gpt-4o）
+- tapOn: "gpt-4o"
+- extendedWaitUntil:
+    visible: "gpt-4o"
+    timeout: 2000
+
+# ========== 测试 3：切换到定价参考 tab，验证模型选择保持 ==========
+- tapOn: "定价参考"
+- assertVisible: "定价参考"
+# 验证选择的模型仍然显示
+- assertVisible: "gpt-4o"
+
+# ========== 测试 4：再选择一个模型（多选） ==========
+- tapOn: "选择模型（支持多选）"
+- extendedWaitUntil:
+    visible: "热门模型"
+    timeout: 3000
+- tapOn: "claude-3.5-sonnet"
+- extendedWaitUntil:
+    visible: "claude-3.5-sonnet"
+    timeout: 2000
+
+# ========== 测试 5：切换到供应评分 tab，验证两个模型都保持 ==========
+- tapOn: "供应评分"
+- assertVisible: "供应评分"
+- assertVisible: "gpt-4o"
+- assertVisible: "claude-3.5-sonnet"
+
+# ========== 测试 6：切换到跨平台现价 tab ==========
+- tapOn: "跨平台现价"
+- assertVisible: "跨平台现价"
+- assertVisible: "gpt-4o"
+- assertVisible: "claude-3.5-sonnet"
+
+# ========== 测试 7：切换到定价建议 tab ==========
+- tapOn: "定价建议"
+- assertVisible: "定价建议"
+- assertVisible: "gpt-4o"
+- assertVisible: "claude-3.5-sonnet"
+
+# ========== 测试 8：切换回定价管理 tab ==========
+- tapOn: "定价管理"
+- assertVisible: "定价管理"
+- assertVisible: "gpt-4o"
+- assertVisible: "claude-3.5-sonnet"
+
+# ========== 测试 9：清空模型选择 ==========
+- tapOn: "清空"
+- extendedWaitUntil:
+    notVisible: "gpt-4o"
+    timeout: 2000
+- extendedWaitUntil:
+    notVisible: "claude-3.5-sonnet"
+    timeout: 2000
+
+# ========== 测试 10：验证清空后切换 tab，选择仍为空 ==========
+- tapOn: "定价参考"
+- assertVisible: "选择模型（支持多选）"
+# 确认没有选中的模型显示
+- tapOn: "供应评分"
+- assertVisible: "选择模型（支持多选）"
+
+# 测试完成
+- stopApp

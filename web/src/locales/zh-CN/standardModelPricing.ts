@@ -33,6 +33,9 @@ export default {
     allVendors: '全部厂商',
     allModes: '全部定价',
     count: '共 {count} 个模型',
+    vendorLabel: '厂商',
+    modeLabel: '定价模式',
+    selectedModels: '已选择的模型',
   },
   table: {
     colModel: '标准模型',

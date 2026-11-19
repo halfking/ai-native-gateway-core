@@ -213,6 +213,11 @@ function clearGlobalModels() {
   filterMode.value = ''
 }
 
+function removeSelectedModel(model: string) {
+  globalSelectedModels.value = globalSelectedModels.value.filter(m => m !== model)
+  onGlobalModelsChange(globalSelectedModels.value)
+}
+
 // ── scoring 壳（自 PriceCompareView 平移，逐字保留口径）──────────────
 // C1/C2/C3 评分行（supplier_market_position，评分 job 每日 upsert）
 // + 双地板对拍（market_price_reference 959：overseas=USD 原生 /
@@ -859,46 +864,62 @@ onMounted(load)
       </div>
     </details>
 
-    <!-- 2026-11-19（模型选择统一轮）：全局模型多选过滤器（影响所有5个tab） -->
-    <div class="card global-model-filter">
-      <div class="filter-label">{{ t('standardModelPricing.globalModelFilter.label') }}</div>
-      <div class="model-picker-wrapper">
-        <ModelPicker
-          v-model="globalSelectedModels"
-          mode="multi"
-          :placeholder="t('standardModelPricing.globalModelFilter.placeholder')"
-          :title="t('standardModelPricing.globalModelFilter.title')"
-          compact
-          @update:model-value="onGlobalModelsChange"
-        />
+    <!-- 2026-11-19（模型选择统一轮 v2）：筛选器统一在一行，下方显示已选模型清单 -->
+    <div class="card unified-filter-section">
+      <!-- 筛选器行：模型选择器 + rates tab 的厂商/模式筛选 -->
+      <div class="filter-controls">
+        <div class="filter-group">
+          <label class="filter-label">{{ t('standardModelPricing.globalModelFilter.label') }}</label>
+          <div class="model-picker-wrapper">
+            <ModelPicker
+              v-model="globalSelectedModels"
+              mode="multi"
+              :placeholder="t('standardModelPricing.globalModelFilter.placeholder')"
+              :title="t('standardModelPricing.globalModelFilter.title')"
+              compact
+              @update:model-value="onGlobalModelsChange"
+            />
+          </div>
+        </div>
+        
+        <div v-if="pageTab === 'rates'" class="filter-group">
+          <label class="filter-label">{{ t('standardModelPricing.filter.vendorLabel') }}</label>
+          <select v-model="filterVendor" class="filter-select">
+            <option value="">{{ t('standardModelPricing.filter.allVendors') }}</option>
+            <option v-for="v in vendorOptions" :key="v" :value="v">{{ v }}</option>
+          </select>
+        </div>
+        
+        <div v-if="pageTab === 'rates'" class="filter-group">
+          <label class="filter-label">{{ t('standardModelPricing.filter.modeLabel') }}</label>
+          <select v-model="filterMode" class="filter-select">
+            <option value="">{{ t('standardModelPricing.filter.allModes') }}</option>
+            <option v-for="opt in pricingStatusOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </div>
+        
+        <div class="filter-actions">
+          <button 
+            v-if="globalSelectedModels.length > 0 || filterVendor || filterMode" 
+            class="btn btn-ghost btn-sm" 
+            @click="clearGlobalModels"
+          >
+            {{ t('common.button.clear') }}
+          </button>
+          <span v-if="pageTab === 'rates'" class="filter-count">{{ t('standardModelPricing.filter.count', { count: filtered.length }) }}</span>
+        </div>
       </div>
-      <button 
-        v-if="globalSelectedModels.length > 0" 
-        class="btn btn-ghost btn-sm" 
-        @click="clearGlobalModels"
-      >
-        {{ t('common.button.clear') }}
-      </button>
-    </div>
-
-    <!-- rates tab 的厂商/模式筛选 -->
-    <div v-if="pageTab === 'rates'" class="card filter-bar">
-      <select v-model="filterVendor" class="filter-select">
-        <option value="">{{ t('standardModelPricing.filter.allVendors') }}</option>
-        <option v-for="v in vendorOptions" :key="v" :value="v">{{ v }}</option>
-      </select>
-      <select v-model="filterMode" class="filter-select">
-        <option value="">{{ t('standardModelPricing.filter.allModes') }}</option>
-        <option v-for="opt in pricingStatusOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-      </select>
-      <button 
-        v-if="filterVendor || filterMode" 
-        class="btn btn-ghost btn-sm" 
-        @click="clearCatalogFilters"
-      >
-        {{ t('common.button.clear') }}
-      </button>
-      <span class="filter-count">{{ t('standardModelPricing.filter.count', { count: filtered.length }) }}</span>
+      
+      <!-- 已选择的模型清单 -->
+      <div v-if="globalSelectedModels.length > 0" class="selected-models-bar">
+        <span class="selected-label">{{ t('standardModelPricing.filter.selectedModels') }}:</span>
+        <div class="selected-models-list">
+          <span v-for="model in globalSelectedModels" :key="model" class="model-chip">
+            {{ model }}
+            <button class="chip-remove" @click="removeSelectedModel(model)" :title="t('common.button.remove')">×</button>
+          </span>
+        </div>
+      </div>
     </div>
 
     <div v-if="pageTab === 'rates'" class="bulk-bar">
@@ -1254,39 +1275,130 @@ onMounted(load)
   color: var(--text-secondary);
 }
 
-/* 2026-11-19：全局模型过滤器样式 */
-.global-model-filter {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
+/* 2026-11-19 v2：统一筛选区域样式 */
+.unified-filter-section {
   padding: 1rem;
   margin-bottom: 1rem;
 }
-.filter-label {
-  font-weight: 500;
-  white-space: nowrap;
-  font-size: 14px;
+
+.filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1rem;
 }
-.model-picker-wrapper {
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 200px;
+}
+
+.filter-group:first-child {
   flex: 1;
   min-width: 300px;
 }
 
-/* 2026-11-19：rates tab 厂商/模式筛选条 */
-.filter-bar {
+.filter-label {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.model-picker-wrapper {
+  width: 100%;
+}
+
+.filter-select {
+  min-width: 150px;
+  height: 36px;
+}
+
+.filter-actions {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1rem;
-}
-.filter-select {
-  min-width: 150px;
-}
-.filter-count {
   margin-left: auto;
+}
+
+.filter-count {
   font-size: 13px;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 已选择的模型清单 */
+.selected-models-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.selected-label {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.selected-models-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 0.25rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.chip-remove:hover {
+  opacity: 1;
+}
+
+@media (max-width: 768px) {
+  .filter-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .filter-group:first-child {
+    min-width: 100%;
+  }
+  
+  .filter-actions {
+    margin-left: 0;
+    justify-content: space-between;
+  }
 }
 
 .settings-card { margin-bottom: 16px; }

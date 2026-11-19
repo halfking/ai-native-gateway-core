@@ -34,6 +34,9 @@ export default {
     allVendors: 'Todos los proveedores',
     allModes: 'Todos los precios',
     count: '{count} modelos',
+    vendorLabel: 'Proveedor',
+    modeLabel: 'Modo de precios',
+    selectedModels: 'Modelos seleccionados',
   },
   table: {
     colModel: 'Modelo estándar',

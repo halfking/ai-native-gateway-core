@@ -33,6 +33,9 @@ export default {
     allVendors: 'All vendors',
     allModes: 'All pricing',
     count: '{count} models',
+    vendorLabel: 'Vendor',
+    modeLabel: 'Pricing mode',
+    selectedModels: 'Selected models',
   },
   table: {
     colModel: 'Standard model',
