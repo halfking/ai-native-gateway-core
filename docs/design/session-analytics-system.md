@@ -87,7 +87,7 @@
 
 ### 2.2 人员会话排行
 
-**路由**: `/admin/session-analytics/users`
+**路由**: `/admin/session-analytics/user-ranking`
 
 #### 功能说明
 
@@ -130,7 +130,7 @@
 
 ### 2.3 人员详情页
 
-**路由**: `/admin/session-analytics/users/:owner`
+**路由**: `/admin/session-analytics/user-ranking/:owner`
 
 #### 功能说明
 
@@ -227,7 +227,7 @@
 
 ### 2.4 终端（智能体）排行
 
-**路由**: `/admin/session-analytics/agents`
+**路由**: `/admin/session-analytics/agent-ranking`
 
 #### 功能说明
 
@@ -260,7 +260,7 @@
 
 ### 2.5 模型使用排行
 
-**路由**: `/admin/session-analytics/models`
+**路由**: `/admin/session-analytics/model-ranking`
 
 #### 功能说明
 
@@ -432,6 +432,53 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 
 ## 4. API 接口设计
 
+> ### ⚠ 4.0 命名空间约定（2026-11-20 修订，**实现前必读**）
+>
+> 本系统的端点**不能**直接用 `users` / `agents` / `models` 这类裸复数名——
+> **仓内早就有同名路径，且前端在用**：
+>
+> | 既有路径（2026-07-07 旧族，勿动） | 归属 | 前端消费者 |
+> |---|---|---|
+> | `GET /api/admin/session-analytics/clients` | `admin/handler.go:1328` | 客户端维度分析 |
+> | `GET /api/admin/session-analytics/tasks` | `admin/handler.go:1330` | 任务维度分析 |
+> | `GET /api/admin/session-analytics/users` | `admin/handler.go:1334` | **用户画像**（`web/src/api/admin.ts:239` `fetchUserProfiles()`、`UserProfileListView.vue`、菜单 `appNav.ts:237`） |
+> | `GET /api/admin/session-analytics/users/{owner}` | `admin/handler.go:1335` | 用户画像详情 |
+>
+> 前端路由同理：`/admin/session-analytics/users` 已是旧族「用户画像」的列表页
+> （`web/src/router.ts:327-328`）。
+>
+> ### ★ 撞车的后果不是 404，是**进程起不来**
+>
+> Go 的 `net/http.ServeMux` 对**同一路径重复注册**直接 panic
+> （`pattern "..." conflicts with pattern "..."`），
+> 而 `cmd/gateway/main.go` 的 panic 兜底会把启动失败变成**进程退出(1)** ⇒
+> 蓝绿部署的候选槽起不来 ⇒ 部署回退 ⇒ **新端点永远上不了线**。
+>
+> 实测（2026-11-20，211 部署）：首版按本文档原始路径实现 `/users`，
+> 候选槽启动即 panic，部署 120s 就绪探测失败后回退，
+> 容器日志留下 `main: panic during startup`。
+>
+> ### ⇒ 本系统的路径约定
+>
+> | 本系统 | 路径 |
+> |---|---|
+> | 总体统计仪表板 | `GET /api/admin/session-analytics/overview` |
+> | 人员排行 | `GET /api/admin/session-analytics/user-ranking` |
+> | 人员详情 | `GET /api/admin/session-analytics/user-ranking/{owner}` |
+> | 智能体排行 | `GET /api/admin/session-analytics/agent-ranking` |
+> | 模型排行 | `GET /api/admin/session-analytics/model-ranking` |
+>
+> 前端路由同构：`/admin/session-analytics/{overview,user-ranking,user-ranking/:owner,agent-ranking,model-ranking}`。
+>
+> ### ⇒ 守卫（别指望人肉记住）
+>
+> `cmd/gateway/session_analytics_routes_guard_test.go` 会
+> ① 用 `go/ast` 扫出**全仓**已注册的路由字面量，与本系统的路径清单比对；
+> ② 把扫出来的既有路径**真的注册**进同一个 mux（生产同形），
+> 再注册本系统路由 ⇒ **必须不 panic**。
+>
+> ⇒ **新增/改名任何端点，先跑这条测试。**
+
 ### 4.1 总体统计 API
 
 #### `GET /api/admin/session-analytics/overview`
@@ -503,7 +550,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 
 ### 4.2 人员排行 API
 
-#### `GET /api/admin/session-analytics/users`
+#### `GET /api/admin/session-analytics/user-ranking`
 
 **查询参数**：
 - `tenant_id` (可选)
@@ -541,7 +588,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 
 ### 4.3 人员详情 API
 
-#### `GET /api/admin/session-analytics/users/:owner`
+#### `GET /api/admin/session-analytics/user-ranking/:owner`
 
 **查询参数**：
 - `start_date` (必需)
@@ -584,7 +631,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 }
 ```
 
-#### `GET /api/admin/session-analytics/users/:owner/projects`
+#### `GET /api/admin/session-analytics/user-ranking/:owner/projects`
 
 **查询参数**：
 - `start_date` (必需)
@@ -608,7 +655,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 }
 ```
 
-#### `GET /api/admin/session-analytics/users/:owner/projects/:project/tasks`
+#### `GET /api/admin/session-analytics/user-ranking/:owner/projects/:project/tasks`
 
 **查询参数**：
 - `start_date` (必需)
@@ -631,7 +678,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 }
 ```
 
-#### `GET /api/admin/session-analytics/users/:owner/models`
+#### `GET /api/admin/session-analytics/user-ranking/:owner/models`
 
 （已实现，见当前代码）
 
@@ -639,7 +686,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 
 ### 4.4 终端排行 API
 
-#### `GET /api/admin/session-analytics/agents`
+#### `GET /api/admin/session-analytics/agent-ranking`
 
 **查询参数**：
 - `tenant_id` (可选)
@@ -671,7 +718,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY user_session_aggregates;
 
 ### 4.5 模型排行 API
 
-#### `GET /api/admin/session-analytics/models`
+#### `GET /api/admin/session-analytics/model-ranking`
 
 **查询参数**：
 - `tenant_id` (可选)
@@ -743,25 +790,25 @@ web/src/views/admin/session-analytics/
       meta: { title: '总体统计', requiresAuth: true, requiredRole: 'admin' }
     },
     {
-      path: 'users',
+      path: 'user-ranking',
       name: 'UserRanking',
       component: () => import('@/views/admin/session-analytics/UserRankingView.vue'),
       meta: { title: '人员排行', requiresAuth: true, requiredRole: 'admin' }
     },
     {
-      path: 'users/:owner',
+      path: 'user-ranking/:owner',
       name: 'UserDetail',
       component: () => import('@/views/admin/session-analytics/UserDetailView.vue'),
       meta: { title: '人员详情', requiresAuth: true, requiredRole: 'admin' }
     },
     {
-      path: 'agents',
+      path: 'agent-ranking',
       name: 'AgentRanking',
       component: () => import('@/views/admin/session-analytics/AgentRankingView.vue'),
       meta: { title: '终端排行', requiresAuth: true, requiredRole: 'admin' }
     },
     {
-      path: 'models',
+      path: 'model-ranking',
       name: 'ModelRanking',
       component: () => import('@/views/admin/session-analytics/ModelRankingView.vue'),
       meta: { title: '模型排行', requiresAuth: true, requiredRole: 'admin' }
@@ -840,12 +887,12 @@ export const sessionAnalyticsApi = {
     limit?: number
     offset?: number
   }) {
-    return http.get<UserRankingResponse>('/api/admin/session-analytics/users', { params })
+    return http.get<UserRankingResponse>('/api/admin/session-analytics/user-ranking', { params })
   },
   
   // 人员详情
   getUserDetail(owner: string, params: DateRange) {
-    return http.get<UserDetailResponse>(`/api/admin/session-analytics/users/${owner}`, { params })
+    return http.get<UserDetailResponse>(`/api/admin/session-analytics/user-ranking/${owner}`, { params })
   },
   
   // 项目列表
@@ -853,13 +900,13 @@ export const sessionAnalyticsApi = {
     sort_by?: string
     order?: 'asc' | 'desc'
   }) {
-    return http.get<UserProjectsResponse>(`/api/admin/session-analytics/users/${owner}/projects`, { params })
+    return http.get<UserProjectsResponse>(`/api/admin/session-analytics/user-ranking/${owner}/projects`, { params })
   },
   
   // 任务列表
   getProjectTasks(owner: string, project: string, params: DateRange) {
     return http.get<ProjectTasksResponse>(
-      `/api/admin/session-analytics/users/${owner}/projects/${encodeURIComponent(project)}/tasks`,
+      `/api/admin/session-analytics/user-ranking/${owner}/projects/${encodeURIComponent(project)}/tasks`,
       { params }
     )
   },
@@ -870,7 +917,7 @@ export const sessionAnalyticsApi = {
     sort_by?: string
     order?: 'asc' | 'desc'
   }) {
-    return http.get<AgentRankingResponse>('/api/admin/session-analytics/agents', { params })
+    return http.get<AgentRankingResponse>('/api/admin/session-analytics/agent-ranking', { params })
   },
   
   // 模型排行
@@ -879,7 +926,7 @@ export const sessionAnalyticsApi = {
     sort_by?: string
     order?: 'asc' | 'desc'
   }) {
-    return http.get<ModelRankingResponse>('/api/admin/session-analytics/models', { params })
+    return http.get<ModelRankingResponse>('/api/admin/session-analytics/model-ranking', { params })
   }
 }
 ```
