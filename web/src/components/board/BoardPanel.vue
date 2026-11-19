@@ -18,6 +18,7 @@ import BoardDistGrid from './BoardDistGrid.vue'
 import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
 import {
   defaultBoardTimeRange,
+  formatBoardRangeLabel,
   resolveBoardRangeMs,
   usageQueryForBoardRange,
   type BoardTimeRange,
@@ -71,7 +72,17 @@ const rangeValue = computed<KxDateRange | null>(() => {
   return { start: utcDateStr(startMs), end: utcDateStr(endMs - 1) }
 })
 
-/** 应用新范围：能对齐内置预设的对齐（保持 SSE 门控与偏好语义），否则 custom。 */
+/**
+ * 英雄区上方说明行的日期文本：预设名 · 日历日（与筛选条 KxDateRangePicker
+ * 触发器「今天 11/19 – 11/19」同一信息形状）；custom 只有日历日——
+ * formatBoardRangeLabel 对 custom 返回的就是 rangeCustom，拼前缀会得到重复。
+ */
+const heroRangeDates = computed(() => {
+  if (!rangeValue.value) return ''
+  const dates = t('dashboard.board.rangeCustom', { start: rangeValue.value.start, end: rangeValue.value.end })
+  if (timeRange.value.preset === 'custom') return dates
+  return `${formatBoardRangeLabel(timeRange.value, t)} · ${dates}`
+})
 function onApplyRange(range: KxDateRange) {
   const todayMs = resolveBoardRangeMs({ preset: 'today', days: 1 }).startMs
   const spanDays = Math.max(1, Math.round((Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / DAY_MS) + 1)
@@ -112,9 +123,7 @@ const trendExplorerQuery = computed(() => {
          rangeValue（BoardTimeRange 解析出的日历日），改一处两处同步，不会各说各话。 -->
     <div v-if="rangeValue" class="board-panel__hero-range" data-testid="board-hero-range">
       <span class="board-panel__hero-range-label">{{ t('dashboard.board.heroRangeLabel') }}</span>
-      <span class="board-panel__hero-range-dates">{{
-        t('dashboard.board.rangeCustom', { start: rangeValue.start, end: rangeValue.end })
-      }}</span>
+      <span class="board-panel__hero-range-dates">{{ heroRangeDates }}</span>
     </div>
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />
     <BoardMiniRow :board="board" :time-range="timeRange" :loading="loading" />

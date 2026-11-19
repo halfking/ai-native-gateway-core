@@ -52,6 +52,11 @@ const i18n = createI18n({
   messages: {
     'zh-CN': {
       dashboard: {
+        range: {
+          today: '今日',
+          last7d: '近 7 天',
+          last30d: '近 30 天',
+        },
         board: {
           heroRangeLabel: '数据时间范围',
           rangeCustom: '{start} 至 {end}',
@@ -85,13 +90,15 @@ function mountPanel(timeRange: ReturnType<typeof ref<BoardTimeRange>>) {
 }
 
 describe('看板总请求数据块上方的时间范围（与筛选条同源联动）', () => {
-  it('① 渲染在英雄区上方，显示当前范围的日历日', async () => {
+  it('① 渲染在英雄区上方：预设名 + 日历日（与筛选条触发器同形状）', async () => {
     const timeRange = ref<BoardTimeRange>({ preset: '7d', days: 7 })
     const w = mountPanel(timeRange)
     const caption = w.find('.board-panel__hero-range')
     expect(caption.exists()).toBe(true)
     const exp = expectedDates(timeRange.value)
     expect(caption.text()).toContain('数据时间范围')
+    // 预设名（与 KxDateRangePicker 触发器一致）+ 完整日历日
+    expect(caption.text()).toContain('近 7 天')
     expect(caption.text()).toContain(`${exp.start} 至 ${exp.end}`)
     // 位置契约：说明行在英雄区（总请求数据块）之前，而不是别处。
     const html = w.element.innerHTML
@@ -112,9 +119,10 @@ describe('看板总请求数据块上方的时间范围（与筛选条同源联�
 
   it('③ 同源契约：说明行与筛选条 KxDateRangePicker 消费同一个 rangeValue', async () => {
     const src = await readSource()
-    // 说明行用 rangeValue 渲染日期
+    // 说明行由 heroRangeDates（基于 rangeValue）渲染
     expect(src).toContain('data-testid="board-hero-range"')
-    expect(src).toMatch(/rangeCustom', \{ start: rangeValue\.start, end: rangeValue\.end \}/)
+    expect(src).toContain('board-panel__hero-range-dates">{{ heroRangeDates }}')
+    expect(src).toMatch(/const dates = t\('dashboard\.board\.rangeCustom', \{ start: rangeValue\.value\.start, end: rangeValue\.value\.end \}\)/)
     // 筛选条（模型分布块上方）拿到的也是同一个 rangeValue
     expect(src).toContain(':range-value="rangeValue"')
   })
