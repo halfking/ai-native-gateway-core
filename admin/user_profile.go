@@ -161,6 +161,29 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 		baseArgs = append(baseArgs, "%"+search+"%")
 	}
 
+	// 2026-11-19 时间范围统一轮：date_from/date_to 过滤窗口内有活动的用户。
+	// 口径落在 so.last_seen_at（会话行最后活跃时刻）：窗口语义 =「该用户在
+	// [date_from, date_to] 内有会话活动」。与列表 first_seen/last_seen 展示列
+	// 同源（session_owners），不引入新表。
+	if v := parseQueryTime(r, "date_from", time.Time{}); !v.IsZero() {
+		paramIdx := len(baseArgs) + 1
+		if baseWhere == "" {
+			baseWhere = fmt.Sprintf("WHERE so.last_seen_at >= $%d", paramIdx)
+		} else {
+			baseWhere += fmt.Sprintf(" AND so.last_seen_at >= $%d", paramIdx)
+		}
+		baseArgs = append(baseArgs, v)
+	}
+	if v := parseQueryTime(r, "date_to", time.Time{}); !v.IsZero() {
+		paramIdx := len(baseArgs) + 1
+		if baseWhere == "" {
+			baseWhere = fmt.Sprintf("WHERE so.last_seen_at <= $%d", paramIdx)
+		} else {
+			baseWhere += fmt.Sprintf(" AND so.last_seen_at <= $%d", paramIdx)
+		}
+		baseArgs = append(baseArgs, v)
+	}
+
 	// 总数
 	var total int
 	countSQL := fmt.Sprintf("SELECT COUNT(DISTINCT owner_user) FROM session_owners so %s", baseWhere)

@@ -19,10 +19,16 @@ import {
 } from '../api/turns'
 import TurnsFilterBar from '../components/turns/TurnsFilterBar.vue'
 import TurnsSessionCard from '../components/turns/TurnsSessionCard.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { makeDateRangePresets } from '../components/ui/kxDatePresets'
+import type { KxDateRange, KxDateRangePreset } from '../components/ui/kx-date-types'
+import { parseLocalMinute } from '../utils/datetime'
 import {
   buildDisplayGroups,
   buildTurnsParams,
   formatTokens,
+  localDatetime,
+  TURNS_TIME_PRESET_HOURS,
   type TurnsFilterState,
   type TurnsGroupBy,
 } from '../components/turns/turnsListHelpers'
@@ -49,11 +55,77 @@ const requestVersion = ref(0)
 let controller: AbortController | null = null
 
 const filterState = reactive<TurnsFilterState>({
-  search: '', model: '', provider: '', statusCode: '',
+  search: '', model: [], provider: '', statusCode: '',
   projectId: '', taskId: '', client: '', ownerUser: '',
   apiKeyId: '', status: '', tags: [],
   dateFrom: '', dateTo: '', timePreset: 'all',
 })
+
+// ── 2026-11-19 时间范围统一轮：头部（右上角）统一 KxDateRangePicker ──────
+// owner 口径：时间选择放页面右上角、与普通筛选分开，使用全站统一组件
+// （今天/昨天/近24小时/近7天/近14天/近30天/本月/上月/自定义）。内部仍落
+// 既有 timePreset 状态机：能对齐的回预设（h1/h24/d3/d7），其余落 custom
+// （分钟级 ISO 由 localDatetime 表达）。
+const kxPresets: KxDateRangePreset[] = makeDateRangePresets('datetime', [
+  'today', 'yesterday', 'last24h', 'last7d', 'last14d', 'last30d', 'thisMonth', 'lastMonth',
+])
+
+// 近 N 小时滚动窗（本地时区，分钟精度）——旧 h1/h24/d3 预设的展示形态。
+function rollingWindowHour(hours: number): KxDateRange {
+  const end = new Date()
+  const start = new Date(end.getTime() - hours * 3600 * 1000)
+  return { start: localDatetime(start).replace('T', ' '), end: localDatetime(end).replace('T', ' ') }
+}
+
+// timePreset → 头部选择器面板值；null = 时间不限（不传时间参数）。
+const kxRangeValue = computed<KxDateRange | null>(() => {
+  const hours = TURNS_TIME_PRESET_HOURS[filterState.timePreset]
+  if (hours) return rollingWindowHour(hours)
+  if (filterState.timePreset === 'custom') {
+    if (filterState.dateFrom && filterState.dateTo) {
+      return { start: filterState.dateFrom.replace('T', ' '), end: filterState.dateTo.replace('T', ' ') }
+    }
+    return null
+  }
+  if (filterState.timePreset === 'all') return null
+  return null
+})
+
+// 头部选择器 apply：能对齐标准预设的回预设（今天/昨天/近24h/近7天/
+// 近14天/近30天/本月/上月），其余（含旧 h1/h6 滚动窗、自定义分钟级）落
+// custom（dateFrom/dateTo 为 localDatetime）。
+function onHeaderRangeApply(range: KxDateRange) {
+  let matched = ''
+  for (const preset of kxPresets) {
+    const r = preset.resolve()
+    if (r.start === range.start && r.end === range.end) { matched = preset.id; break }
+  }
+  if (matched) {
+    const hoursById: Record<string, string> = { last24h: 'h24' }
+    const asPreset = hoursById[matched]
+    if (asPreset) {
+      filterState.timePreset = asPreset
+      const h = TURNS_TIME_PRESET_HOURS[asPreset] || 0
+      filterState.dateFrom = localDatetime(new Date(Date.now() - h * 3600 * 1000))
+      filterState.dateTo = ''
+    } else {
+      // 日界窗预设（今天/昨天/近N天/本月/上月）转 custom 分钟级表达。
+      filterState.timePreset = 'custom'
+      filterState.dateFrom = range.start.replace(' ', 'T')
+      filterState.dateTo = range.end.replace(' ', 'T')
+    }
+    void load(true)
+    return
+  }
+  // 自定义：校验可解析且 start < end。
+  const s = parseLocalMinute(range.start)
+  const e = parseLocalMinute(range.end)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e <= s) return
+  filterState.timePreset = 'custom'
+  filterState.dateFrom = range.start.replace(' ', 'T')
+  filterState.dateTo = range.end.replace(' ', 'T')
+  void load(true)
+}
 
 const filterOptions = ref<TurnsFilterOptions>({
   projects: [], tasks: [], owners: [], clients: [], tags: [],
@@ -284,7 +356,7 @@ async function runBatch(kind: 'summary' | 'asset') {
 function clearChip(key: string) {
   const map: Record<string, Partial<TurnsFilterState>> = {
     search: { search: '' },
-    model: { model: '' },
+    model: { model: [] },
     time: { timePreset: 'all', dateFrom: '', dateTo: '' },
     provider: { provider: '' },
     statusCode: { statusCode: '' },
@@ -302,7 +374,7 @@ function clearChip(key: string) {
 
 function resetAll() {
   Object.assign(filterState, {
-    search: '', model: '', provider: '', statusCode: '',
+    search: '', model: [], provider: '', statusCode: '',
     projectId: '', taskId: '', client: '', ownerUser: '',
     apiKeyId: '', status: '', tags: [],
     dateFrom: '', dateTo: '', timePreset: 'all',
@@ -323,8 +395,22 @@ onBeforeUnmount(() => controller?.abort())
 <template>
   <div class="turns-list-view">
     <div class="header">
-      <h1>会话与轮次</h1>
-      <p class="subtitle">多维层级浏览，展开查看全部轮次摘要，可重新归纳并沉淀为资产</p>
+      <div class="header-row">
+        <div>
+          <h1>会话与轮次</h1>
+          <p class="subtitle">多维层级浏览，展开查看全部轮次摘要，可重新归纳并沉淀为资产</p>
+        </div>
+        <!-- 2026-11-19 时间范围统一轮：时间选择移到页面右上角，与普通筛选
+             条件分开；统一使用全站 KxDateRangePicker（今天/昨天/近24小时/
+             近7天/近14天/近30天/本月/上月/自定义，滚动窗口最晚到今天结束）。 -->
+        <KxDateRangePicker
+          :model-value="kxRangeValue"
+          :presets="kxPresets"
+          precision="datetime"
+          data-testid="turns-header-range"
+          @apply="onHeaderRangeApply"
+        />
+      </div>
     </div>
 
     <TurnsFilterBar
@@ -434,6 +520,7 @@ onBeforeUnmount(() => controller?.abort())
 <style scoped>
 .turns-list-view { background: var(--bg); min-height: 100vh; min-height: 100dvh; padding: 16px 24px; }
 .header { margin-bottom: 16px; }
+.header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .header h1 { font-size: 24px; font-weight: 600; color: var(--text); margin: 0 0 8px; }
 .subtitle { font-size: 14px; color: var(--text-secondary); margin: 0; }
 .batch-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; background: var(--primary-soft); color: var(--accent); }
