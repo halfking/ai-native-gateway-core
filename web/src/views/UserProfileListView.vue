@@ -5,6 +5,10 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getUserProfileList, type UserProfileSummary } from '../api/admin'
 import { sortByName } from '../utils/sortByName'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { makeDateRangePresets } from '../components/ui/kxDatePresets'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { parseLocalMinute } from '../utils/datetime'
 import {
   emptyDegradation,
   isDegraded,
@@ -25,6 +29,18 @@ const total = ref(0)
 const search = ref('')
 const currentPage = ref(1)
 const pageSize = 20
+
+// ── 2026-11-19 时间范围统一轮：页面右上角统一 KxDateRangePicker ──────────
+// 口径：date_from/date_to 过滤 so.last_seen_at（窗口内有活动的用户）。
+// 预设含今天/昨天/近24小时/近7天/近14天/近30天/本月/上月/自定义。
+const kxPresets = makeDateRangePresets('datetime')
+const timeRange = ref<KxDateRange | null>(null)
+
+function onRangeApply(range: KxDateRange) {
+  timeRange.value = range
+  currentPage.value = 1
+  void load()
+}
 
 // 2026-10-03：两处此前都在骗用户。
 //
@@ -50,10 +66,21 @@ async function load() {
   loadError.value = ''
   degraded.value = emptyDegradation()
   try {
+    // 时间范围 → ISO（Kx 的分钟级串无秒非规范格式，走补秒解析）。
+    let dateFrom: string | undefined
+    let dateTo: string | undefined
+    if (timeRange.value) {
+      const s = parseLocalMinute(timeRange.value.start)
+      const e = parseLocalMinute(timeRange.value.end)
+      if (!Number.isNaN(s.getTime())) dateFrom = s.toISOString()
+      if (!Number.isNaN(e.getTime())) dateTo = e.toISOString()
+    }
     const res = await getUserProfileList({
       limit: pageSize,
       offset: (currentPage.value - 1) * pageSize,
       search: search.value || undefined,
+      date_from: dateFrom,
+      date_to: dateTo,
     })
     users.value = res.users || []
     total.value = res.total
@@ -89,6 +116,14 @@ function onSearch() {
   <div class="user-profile-list">
     <div class="page-header">
       <h2>{{ t('sessions.userProfile.title') }}</h2>
+      <!-- 2026-11-19 时间范围统一轮：时间选择放页面右上角，统一 KxDateRangePicker。 -->
+      <KxDateRangePicker
+        :model-value="timeRange"
+        :presets="kxPresets"
+        precision="datetime"
+        data-testid="user-profile-header-range"
+        @apply="onRangeApply"
+      />
     </div>
 
     <el-card>
@@ -172,7 +207,7 @@ function onSearch() {
 
 <style scoped>
 .user-profile-list { padding: 16px; }
-.page-header { margin-bottom: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .card-header-toolbar { display: flex; align-items: center; gap: 12px; }
 .pagination-wrap { margin-top: 16px; display: flex; justify-content: center; }
 </style>

@@ -223,11 +223,14 @@ export interface UserProfileDetail extends UserProfileSummary {
   health_distribution: { a: number; b: number; c: number; d: number; f: number }
 }
 
-export function getUserProfileList(params?: { limit?: number; offset?: number; search?: string }) {
+export function getUserProfileList(params?: { limit?: number; offset?: number; search?: string; date_from?: string; date_to?: string }) {
   const q = new URLSearchParams()
   if (params?.limit) q.set('limit', String(params.limit))
   if (params?.offset) q.set('offset', String(params.offset))
   if (params?.search) q.set('search', params.search)
+  // 2026-11-19 时间范围统一轮：窗口内有活动的用户（后端过滤 so.last_seen_at）。
+  if (params?.date_from) q.set('date_from', params.date_from)
+  if (params?.date_to) q.set('date_to', params.date_to)
   // degraded / degraded_reason（2026-10-03）：后端在「schema 落后于代码」时
   // 返回 200 + 空列表（session_owners 属可选聚合表，本地库根本没建）。
   // 修复前该响应用户看到的和「真的没有用户」一模一样 —— 页面无从区分。
