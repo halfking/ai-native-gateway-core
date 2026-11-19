@@ -1,0 +1,50 @@
+预设即点即生效轮 — 211 部署 + Maestro 全面验证记录（2026-11-20 02:19–02:57 CST）
+改动主体：KxDateRangePicker 预设点击即提交+关闭面板（a4ce71d67，主提交）
+          13-session-analytics-users flow 三适量具修正（07023b922）
+被测版本：2.6.1-b0547f63-20261120-211 @ build_seq 3152（deploy-211.sh，a 槽 8781 接管，
+          旧槽 b 保留可回滚；公网 /healthz 与容器内 --version 三方一致 b0547f63）
+行为级资产核验：容器 dist assets/index-DyTCyrrj.js 与本地 pnpm build 产物 md5 一致
+          （c39e2a7717d3d451799f698fb85e89bd），内含 kx-dr-preset 面板与新交互编译特征；
+          登录冒烟 /api/auth/token 200（补部署链 DD_ADMIN_PASSWORD 缺口）
+
+一、重点 flow（全绿）
+  06-keys-requests           rc=0  FAILED=0  WARNED=1   [reports/20261120-022815]
+  13-board-operational       rc=0  FAILED=0  WARNED=17  [reports/20261120-022910]
+  13-session-analytics-users rc=0  FAILED=0  WARNED=2   [reports/20261120-024651]
+    ↑ 跑法：MAESTRO_SCREEN_SIZE=1440x3000（详情页四卡纵向 ≈2900px，滚动容器 .main-body
+      非 window ⇒ scrollUntilVisible 空转家族，11-flow 同族先例；必须大视口盖住整页）
+
+二、13-session-analytics-users 三适量具坑（部署验证实测，修法进 07023b922）
+  ① extendedWaitUntil 不支持 text: 键（Unknown Property 直接拒跑）⇒ visible:
+  ② 列表页「详情」双命中：列头 th [1279,307] + 行内 link 钮 [1294,377]
+     ⇒ tapOn 默认点第 0 个=列头，永不导航（layer json 实证）
+     ⇒ 并行车 ae297b75a 产品级修法更优：行按钮改专属文案「画像详情」与列头分离（已合并采纳）
+  ③ 模型使用明细卡 top≈2566 > 视口 ⇒ 视口外文本不进 a11y 层级 ⇒ 断言必红
+     ⇒ scrollUntilVisible 保留 + 大视口跑法
+
+三、全量回归（02:49:30 起，9 条 flow，最新树 340f8e8b5）
+  01-public-guest      rc=1  FAILED=1   （存量：nginx maintain 拓扑族，2026-11-19 同）
+  02-overview-live     rc=0  WARNED=3
+  03-providers-models  rc=1  FAILED=1   （存量：同上族）
+  04-tenants-portal    rc=1  FAILED=2   → 假红：登录弹窗断言撞上一 flow 残留登录态
+                        （cookie 在 ⇒ login-modal-title 不出现）；单跑复核 rc=0
+                        [reports/20261120-025716] —— 量具串扰，非产品红
+  05-routing           rc=0  WARNED=2
+  06-keys-requests     rc=0  WARNED=1
+  07-admin-config      rc=0  WARNED=0
+  08-admin-data-ops    rc=0  WARNED=1
+  09-ops-maintain      rc=1  FAILED=1   （存量：nginx maintain 拓扑族）
+  ⇒ 红集合 {01,03,09} 与 2026-11-19 登记的 211 存量红逐字一致；04 为串扰假红（单跑绿）。
+  ⇒ 零新增产品红。
+
+四、后端活体（部署后）
+  /healthz 公网 = 容器 = 部署树 HEAD 三方一致 b0547f63 seq 3152 ready
+  /api/admin/session-analytics/users 200（total=4，usage_meta.source_view=request_logs_with_current_month）
+  /api/admin/session-analytics/users/deployment-gate/model-usage 200
+
+五、协作事件（同树并行车）
+  02:47 我 commit 07023b922 后 20 秒并行车 commit 808413ee3（board 英雄区）同树叠加；
+  远端 ae297b75a 对同一 ② 坑给出产品级修法（actionGoDetail 8 语种）⇒ 合并采纳其 flow 版本
+  （合并 340f8e8b5 已推，ls-remote 对拍一致）；其验证归档 cd4e81ab8（211 端到端 23/23 绿）。
+
+结论：预设即点即生效改动已在 211 上线并被 Maestro 行为级覆盖；全量回归零新增产品红。
