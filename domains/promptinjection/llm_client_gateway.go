@@ -43,6 +43,14 @@ import (
 	"time"
 )
 
+// 分析器公共常量（原在 llm_client_impl.go；2026-11-18 死面清理随该文件迁入——
+// HTTPLLMClient 是 GatewayLLMClient 的修复前旧拷贝（默认回环端点、无禁重定向/
+// 空内容守卫），零调用方 ⇒ 按退役纪律删除，生产实现以本文件为准）。
+const (
+	defaultAnalyzerTimeout = 60 * time.Second
+	maxResponseBytes       = 2 << 20 // 2MB
+)
+
 // GatewayLLMClient 使用外部分析端点的 LLM 客户端。
 type GatewayLLMClient struct {
 	model    string
