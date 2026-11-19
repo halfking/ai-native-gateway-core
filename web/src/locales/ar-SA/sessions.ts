@@ -25,6 +25,7 @@ export default {
     topEndUsers: "أهم المستخدمين النهائيين",
     recentSessions: "الجلسات الأخيرة",
     actionDetail: "التفاصيل",
+    actionGoDetail: 'الملف الشخصي',
     createdAt: "تاريخ الإنشاء",
     empty: "لا توجد بيانات ملف المستخدم",
     /**

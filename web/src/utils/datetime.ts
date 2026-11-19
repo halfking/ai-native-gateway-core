@@ -18,7 +18,15 @@
  * 所有函数对 null / undefined / 空串返回 `empty`（默认 '—'，仓内主流哨兵）；
  * 对不可解析的字符串原样返回（与 SystemMonitorPanel / RequestJourneyQueues
  * / ProbeHealthDetailView 的既有行为一致），对不可解析的数字/Date 返回 `empty`。
+ *
+ * ★ 时区轮（2026-11-20）：所有格式化默认按**系统时区**（system.timezone
+ * 平台设置，App.vue 启动经 /api/admin/system-timezone 注入；未加载时回退
+ * 浏览器本地时区）渲染——与后端日切/查询边界同源，保证「显示的时间」
+ * 与「查询的时间范围」一致。显式传 locale/options 的调用方行为不变
+ * （options 里有 timeZone 时尊重调用方）。
  */
+
+import { systemTimezone } from './systemTimezone'
 
 export type DateTimeInput = string | number | Date | null | undefined
 
@@ -29,6 +37,12 @@ export interface FormatDateTimeOptions {
   empty?: string
   /** 透传给 Intl.DateTimeFormat 的选项（月/日/时分秒裁剪等）。 */
   options?: Intl.DateTimeFormatOptions
+}
+
+/** 注入系统时区；调用方显式给了 timeZone 时不覆盖。 */
+function withSystemTz(options?: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
+  if (options?.timeZone) return options
+  return { ...options, timeZone: systemTimezone() }
 }
 
 function toDate(value: DateTimeInput): Date | null {
@@ -58,8 +72,9 @@ function formatWith(
   method: 'toLocaleString' | 'toLocaleTimeString',
   opts: FormatDateTimeOptions | undefined,
 ): string {
-  const args: [string | undefined, Intl.DateTimeFormatOptions] | [string | undefined] = opts?.options
-    ? [opts.locale, opts.options]
+  const tzOptions = withSystemTz(opts?.options)
+  const args: [string | undefined, Intl.DateTimeFormatOptions] | [string | undefined] = opts?.options || tzOptions.timeZone
+    ? [opts?.locale, tzOptions]
     : [opts?.locale]
   return d[method](...(args as Parameters<Date['toLocaleString']>))
 }
@@ -91,7 +106,8 @@ export interface CompactDateTimeOptions {
 
 /**
  * 紧凑本地时间 `MM-DD HH:mm[:ss]`（原 CredentialMonitorView 手拼格式）。
- * 时区无关的确定性输出，适合窄空间标签与刷新时间戳。
+ * 窄空间标签与刷新时间戳用。时区轮 2026-11-20：按系统时区取字段
+ * （原实现读浏览器本地字段）；系统时区未加载完成时与旧行为一致。
  */
 export function formatCompactDateTime(
   value: DateTimeInput,
@@ -99,23 +115,66 @@ export function formatCompactDateTime(
 ): string {
   const d = toDate(value)
   if (!d) return opts?.empty ?? '—'
+  const parts = partsInSystemTz(d)
   const pad = (n: number) => String(n).padStart(2, '0')
-  const base = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  return opts?.withSeconds ? `${base}:${pad(d.getSeconds())}` : base
+  const base = `${pad(parts.month)}-${pad(parts.day)} ${pad(parts.hour)}:${pad(parts.minute)}`
+  return opts?.withSeconds ? `${base}:${pad(parts.second)}` : base
 }
 
 /**
  * 排序友好的本地时间 `YYYY-MM-DD HH:mm`（原 CredentialHeatmapView
- * formatFullTime 格式，tooltip / 导出用）。
+ * formatFullTime 格式，tooltip / 导出用）。时区轮 2026-11-20：按系统时区。
  */
 export function formatDateTimeIso(value: DateTimeInput, opts?: { empty?: string }): string {
   const d = toDate(value)
   if (!d) return opts?.empty ?? '—'
+  const parts = partsInSystemTz(d)
   const pad = (n: number) => String(n).padStart(2, '0')
   return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}`
+    `${parts.year}-${pad(parts.month)}-${pad(parts.day)} ` +
+    `${pad(parts.hour)}:${pad(parts.minute)}`
   )
+}
+
+/** 系统时区下的日期时间字段（一次 Intl 往返取全 6 元字段）。 */
+export interface SystemTzParts {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+  second: number
+}
+
+const partsFormatterCache = new Map<string, Intl.DateTimeFormat>()
+
+/** 取系统时区下的日期时间字段。供紧凑格式与日切函数共用。 */
+export function partsInSystemTz(d: Date, timeZone?: string): SystemTzParts {
+  const tz = timeZone ?? systemTimezone()
+  let fmt = partsFormatterCache.get(tz)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+    partsFormatterCache.set(tz, fmt)
+  }
+  const parts = fmt.formatToParts(d)
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0')
+  return {
+    year: get('year'),
+    month: get('month'),
+    day: get('day'),
+    hour: get('hour'),
+    minute: get('minute'),
+    second: get('second'),
+  }
 }
 
 export interface RelativeTimeLabels {

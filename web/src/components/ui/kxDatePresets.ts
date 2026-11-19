@@ -1,30 +1,64 @@
 // kxDatePresets.ts — KxDateRangePicker 默认预设工厂（2026-09-30 统一日历组件轮）。
 // 口径对齐参考图 2：今天 / 昨天 / 近24小时 / 近7天 / 近14天 / 近30天 / 本月 / 上月。
 //
-// 时区口径：与旧 BoardPeriodSelector 一致，按 UTC 日切（后端 board/usage 接口
-// 将 start/end 视为 UTC 日）；datetime 精度的「近24小时」按当前时刻回退 24h。
+// 时区口径：★ 2026-11-20 时区设置轮——「今天/昨天/本月/上月」的日切从 UTC
+// 改为**系统时区**（settings.system.timezone，默认 Asia/Shanghai；后端
+// resolveUsageTimeRange / boardPresetTimeRange 同口径），日期串即系统时区的
+// 日历日。datetime 精度的「近24小时」按当前时刻回退 24h（与日切无关）。
+import { partsInSystemTz } from '@/utils/datetime'
+import { systemTimezone } from '@/utils/systemTimezone'
 import type { KxDatePrecision, KxDateRange, KxDateRangePreset } from './kx-date-types'
 
 const DAY_MS = 86_400_000
 
-function utcDayStart(ms: number = Date.now()): number {
-  const d = new Date(ms)
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+/** 系统时区「当天」零点的毫秒时刻：日期串（partsInSystemTz）→ 正午 → -12h。
+ *  正午永远落在日历日内，无 DST/取模方向歧义（取模公式在正偏移时区会截到 UTC 日界）。 */
+export function systemTzDayStartMs(ms: number = Date.now()): number {
+  return systemTzNoonMs(systemTzDateStr(ms)) - 12 * 3600_000
 }
 
-function utcDateStr(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10)
+/**
+ * 把系统时区日期串转 UTC 毫秒：返回「系统时区挂钟 = 该日 12:00」的瞬间
+ * （正午永远落在日历日内，无 DST 歧义）。供零点推导与跨日窗口用。
+ */
+export function systemTzNoonMs(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map((x) => Number(x))
+  if (!y || !m || !d) return Number.NaN
+  const targetDayUtc = Date.UTC(y, m - 1, d)
+  // ① 先把日历日迭代到目标（从 UTC 正午出发，正午附近不会跨日）。
+  let ms = targetDayUtc + 12 * 3600_000
+  for (let i = 0; i < 3; i++) {
+    const cur = partsInSystemTz(new Date(ms))
+    const dayDiff = (targetDayUtc - Date.UTC(cur.year, cur.month - 1, cur.day)) / DAY_MS
+    if (dayDiff === 0) break
+    ms += dayDiff * DAY_MS
+  }
+  // ② 再把时刻校正到挂钟 12:00：offset = 挂钟字段按 UTC 读 - 真实瞬间。
+  const p = partsInSystemTz(new Date(ms))
+  const wallAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second)
+  return targetDayUtc + 12 * 3600_000 - (wallAsUtc - ms)
 }
 
-function utcMinuteStr(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 16).replace('T', ' ')
+/** 系统时区 YYYY-MM-DD 日期串。 */
+export function systemTzDateStr(ms: number = Date.now()): string {
+  const p = partsInSystemTz(new Date(ms))
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`
+}
+
+/** 系统时区 YYYY-MM-DD HH:mm 分钟串。 */
+export function systemTzMinuteStr(ms: number = Date.now()): string {
+  const p = partsInSystemTz(new Date(ms))
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}`
 }
 
 function resolveSpan(daysBack: number): KxDateRange {
-  const today = utcDayStart()
+  const today = systemTzDateStr()
+  const startMs = systemTzDayStartMs() - daysBack * DAY_MS
   return {
-    start: utcDateStr(today - daysBack * DAY_MS),
-    end: utcDateStr(today),
+    start: systemTzDateStr(startMs),
+    end: today,
   }
 }
 
@@ -35,29 +69,32 @@ export function rangeFromSpanDays(days: number): KxDateRange {
 }
 
 /**
- * datetime 精度的日界窗口：start=首日 00:00，end=今天 23:59（UTC 日切）。
+ * datetime 精度的日界窗口：start=首日 00:00，end=今天 23:59（系统时区日切）。
  * 2026-11-19 时间范围统一轮（owner 口径「近 N 天最晚到今天结束」）：
  * 预设不再用「此刻回退」的滚动时刻，统一日界窗口；仅 last24h 保留滚动。
  * ⚠️ 23:59 不能用 endMs + 59min - 1s 推算（输入毫秒非零会算出 00:58），
- * 直接以字符串拼接日期前缀。
+ * 直接以字符串拼接日期前缀（时区轮后按系统时区日期串拼接）。
  */
 export function dayWindowMinute(daysBack: number): KxDateRange {
-  const today = utcDayStart()
+  const startMs = systemTzDayStartMs() - daysBack * DAY_MS
   return {
-    start: utcMinuteStr(today - daysBack * DAY_MS).slice(0, 11) + '00:00',
-    end: utcMinuteStr(today).slice(0, 11) + '23:59',
+    start: systemTzMinuteStr(startMs).slice(0, 11) + '00:00',
+    end: systemTzMinuteStr(Date.now()).slice(0, 11) + '23:59',
   }
 }
 
 /** datetime 精度的单日窗口（00:00–23:59），供「昨天」这类单日预设。 */
 function singleDayMinute(ms: number): KxDateRange {
-  const prefix = utcMinuteStr(ms).slice(0, 11)
+  const prefix = systemTzMinuteStr(ms).slice(0, 11)
   return { start: prefix + '00:00', end: prefix + '23:59' }
 }
 
 /** datetime 精度的跨日窗口（首日 00:00 – 末日 23:59），供「上月」这类自然月预设。 */
-function singleDayMinuteSpan(firstMs: number, lastMs: number): KxDateRange {
-  return { start: utcMinuteStr(firstMs).slice(0, 11) + '00:00', end: utcMinuteStr(lastMs).slice(0, 11) + '23:59' }
+function singleDayMinuteSpan(firstDateStr: string, lastDateStr: string): KxDateRange {
+  return {
+    start: systemTzMinuteStr(systemTzNoonMs(firstDateStr)).slice(0, 11) + '00:00',
+    end: systemTzMinuteStr(systemTzNoonMs(lastDateStr)).slice(0, 11) + '23:59',
+  }
 }
 
 /**
@@ -86,14 +123,14 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
       labelKey: 'common.dateRange.preset.today',
       resolve: () => (precision === 'datetime'
         ? dayWindowMinute(0)
-        : { start: utcDateStr(utcDayStart()), end: utcDateStr(utcDayStart()) }),
+        : { start: systemTzDateStr(), end: systemTzDateStr() }),
     },
     {
       id: 'yesterday',
       labelKey: 'common.dateRange.preset.yesterday',
       resolve: () => {
-        if (precision === 'datetime') return singleDayMinute(utcDayStart() - DAY_MS)
-        const y = utcDateStr(utcDayStart() - DAY_MS)
+        if (precision === 'datetime') return singleDayMinute(systemTzDayStartMs() - DAY_MS)
+        const y = systemTzDateStr(systemTzDayStartMs() - DAY_MS)
         return { start: y, end: y }
       },
     },
@@ -103,7 +140,7 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
       resolve: () => {
         if (precision === 'datetime') {
           const now = Date.now()
-          return { start: utcMinuteStr(now - DAY_MS), end: utcMinuteStr(now) }
+          return { start: systemTzMinuteStr(now - DAY_MS), end: systemTzMinuteStr(now) }
         }
         return resolveSpan(1)
       },
@@ -127,23 +164,26 @@ export function makeDateRangePresets(precision: KxDatePrecision, only?: string[]
       id: 'thisMonth',
       labelKey: 'common.dateRange.preset.thisMonth',
       resolve: () => {
-        const now = new Date()
-        const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+        // 系统时区的本月 1 日：取今天的系统日历字段，把 day 换成 1。
+        const todayStr = systemTzDateStr()
+        const first = `${todayStr.slice(0, 7)}-01`
         if (precision === 'datetime') {
-          return { start: utcMinuteStr(first).slice(0, 11) + '00:00', end: utcMinuteStr(utcDayStart()).slice(0, 11) + '23:59' }
+          return { start: first + ' 00:00', end: systemTzMinuteStr(Date.now()).slice(0, 11) + '23:59' }
         }
-        return { start: utcDateStr(first), end: utcDateStr(utcDayStart()) }
+        return { start: first, end: todayStr }
       },
     },
     {
       id: 'lastMonth',
       labelKey: 'common.dateRange.preset.lastMonth',
       resolve: () => {
-        const now = new Date()
-        const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)
-        const last = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)
-        if (precision === 'datetime') return singleDayMinuteSpan(first, last)
-        return { start: utcDateStr(first), end: utcDateStr(last) }
+        // 系统时区的上月：从本月 1 日的正午回退一天到上月最后一天，
+        // 再取其年月拼 01 为上月第一天。
+        const firstThis = systemTzNoonMs(`${systemTzDateStr().slice(0, 7)}-01`)
+        const lastPrev = systemTzDateStr(firstThis - DAY_MS)
+        const firstPrev = `${lastPrev.slice(0, 7)}-01`
+        if (precision === 'datetime') return singleDayMinuteSpan(firstPrev, lastPrev)
+        return { start: firstPrev, end: lastPrev }
       },
     },
   ]

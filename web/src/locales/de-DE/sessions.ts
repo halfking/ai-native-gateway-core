@@ -25,6 +25,7 @@ export default {
     topEndUsers: "Top-Endbenutzer",
     recentSessions: "Aktuelle Sitzungen",
     actionDetail: "Detail",
+    actionGoDetail: 'Profil',
     createdAt: "Erstellt am",
     empty: "Keine Benutzerprofildaten",
     /**

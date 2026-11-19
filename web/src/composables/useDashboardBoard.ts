@@ -72,6 +72,30 @@ export function useDashboardBoard() {
   const days = computed(() => timeRange.value.days)
   const liveUpdatesEnabled = computed(() => boardRangeIncludesToday(timeRange.value))
 
+  // 2026-11-20 口径对齐轮：英雄区汇总的探测口径开关（持久化）。
+  // exclude（缺省）= 内部对账口径；include = 供应商对账口径（usage_facts 全量）。
+  // include 模式下关闭 SSE 实时增量：live 流推的是业务终态请求，往「含探测」
+  // 的总数上叠业务增量会让 hero 与对账口径漂移（静默拉大差值），
+  // 轮询静默对账（adoptBoardPayload）会兜住数字。
+  const includeProbes = ref(false)
+  let probeScopePersisted: ReturnType<typeof usePersistedValue<boolean>> | null = null
+  try {
+    probeScopePersisted = usePersistedValue<boolean>(
+      dashboardPreferenceStorageKey('board-probe-scope'),
+      () => false,
+      { immediate: true },
+    )
+    const storedProbe = probeScopePersisted.value.value
+    if (typeof storedProbe === 'boolean') includeProbes.value = storedProbe
+  } catch {
+    probeScopePersisted = null
+  }
+  function persistProbeScope(v: boolean) {
+    includeProbes.value = v
+    if (probeScopePersisted) probeScopePersisted.value.value = v
+  }
+  const liveMergeAllowed = computed(() => liveUpdatesEnabled.value && !includeProbes.value)
+
   const loading = ref(false)
   const error = ref<string | null>(null)
   const board = ref<BoardPayload | null>(null)
@@ -88,7 +112,7 @@ export function useDashboardBoard() {
   const appliedTerminalIds = new Set<string>()
 
   function mergeTerminalRequest(requestId: string, req: Parameters<typeof applyLiveRequestToBoard>[1]) {
-    if (!liveUpdatesEnabled.value) return
+    if (!liveMergeAllowed.value) return
     if (appliedTerminalIds.has(requestId)) return
     if (!board.value) return
     appliedTerminalIds.add(requestId)
@@ -100,7 +124,7 @@ export function useDashboardBoard() {
     const localTotal = local?.summary?.total_requests ?? 0
     const remoteTotal = fresh.summary?.total_requests ?? 0
 
-    if (opts?.silentReconcile && liveUpdatesEnabled.value && local && remoteTotal < localTotal) {
+    if (opts?.silentReconcile && liveMergeAllowed.value && local && remoteTotal < localTotal) {
       board.value = {
         ...fresh,
         summary: local.summary,
@@ -136,6 +160,7 @@ export function useDashboardBoard() {
     if (!silent) loading.value = true
     error.value = null
     const query = toBoardTimeQuery(timeRange.value)
+    if (includeProbes.value) query.include_probes = true
     try {
       const fresh = await fetchDashboardBoard(query, controller.signal)
       if (controller.signal.aborted || generation !== loadGeneration) return
@@ -247,6 +272,16 @@ export function useDashboardBoard() {
     persistTimeRange(normalized)
   }
 
+  /** 切换探测口径后立即重载：英雄区数字要跟上新口径（对拍场景下用户就
+   *  停在这页等两边数字相等）。切换时清掉本地 SSE 增量的痕迹——
+   *  appliedTerminalIds 里记的是业务请求，含探测口径下它们的贡献不成立。 */
+  function setIncludeProbes(next: boolean) {
+    if (includeProbes.value === next) return
+    persistProbeScope(next)
+    appliedTerminalIds.clear()
+    void load()
+  }
+
   watch(liveUpdatesEnabled, (enabled) => {
     if (enabled && refreshActive) {
       void startAutoRefresh()
@@ -265,6 +300,7 @@ export function useDashboardBoard() {
     timeRange,
     days,
     liveUpdatesEnabled,
+    includeProbes,
     loading,
     error,
     board,
@@ -272,6 +308,7 @@ export function useDashboardBoard() {
     load,
     loadOperational,
     setTimeRange,
+    setIncludeProbes,
     startAutoRefresh,
     stopAutoRefresh,
   }

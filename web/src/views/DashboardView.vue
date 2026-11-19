@@ -165,10 +165,12 @@ provide('dashboardBoard', {
   operational: boardState.operational,
   days: boardState.days,
   timeRange: boardState.timeRange,
+  includeProbes: boardState.includeProbes,
   loading: boardState.loading,
   error: boardState.error,
   load: boardState.load,
   setTimeRange: boardState.setTimeRange,
+  setIncludeProbes: boardState.setIncludeProbes,
   startAutoRefresh: boardState.startAutoRefresh,
 })
 

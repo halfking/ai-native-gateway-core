@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { afterEach } from 'vitest'
+import { resetSystemTimezoneForTest, setSystemTimezoneForTest } from './systemTimezone'
+
+afterEach(() => resetSystemTimezoneForTest())
+
 import {
   formatCompactDateTime,
   formatDateTime,
@@ -134,5 +139,32 @@ describe('formatRelativeTime', () => {
   it('无 older 时远期仍走 daysAgo 钳制内', () => {
     const iso = new Date(Date.now() - 100 * 24 * 3600_000).toISOString()
     expect(formatRelativeTime(iso, labels)).toBe('100天前')
+  })
+})
+
+describe('系统时区注入（2026-11-20 时区轮）', () => {
+  it('formatDateTimeIso/CompactDateTime 按注入时区取字段', () => {
+    // UTC 2026-11-20 20:00 = +08 2026-11-21 04:00。
+    const ts = Date.UTC(2026, 10, 20, 20, 0, 0)
+    setSystemTimezoneForTest('Asia/Shanghai')
+    expect(formatDateTimeIso(ts)).toBe('2026-11-21 04:00')
+    expect(formatCompactDateTime(ts)).toBe('11-21 04:00')
+    setSystemTimezoneForTest('UTC')
+    expect(formatDateTimeIso(ts)).toBe('2026-11-20 20:00')
+  })
+
+  it('formatDateTime 默认按系统时区渲染（对拍显式 timeZone）', () => {
+    const ts = Date.UTC(2026, 10, 20, 20, 0, 0)
+    setSystemTimezoneForTest('Asia/Shanghai')
+    const got = formatDateTime(ts, { locale: 'en-US' })
+    const want = new Date(ts).toLocaleString('en-US', { timeZone: 'Asia/Shanghai' })
+    expect(got).toBe(want)
+  })
+
+  it('options 显式给 timeZone 时尊重调用方', () => {
+    const ts = Date.UTC(2026, 10, 20, 20, 0, 0)
+    setSystemTimezoneForTest('Asia/Shanghai')
+    const got = formatDateTime(ts, { locale: 'en-US', options: { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' } })
+    expect(got).toContain('20')
   })
 })

@@ -1,5 +1,11 @@
 export type BoardPeriodPreset = 'today' | '7d' | '30d' | 'custom'
 
+// ★ 时区轮（2026-11-20）：本模块全部日切从 UTC 改为**系统时区**
+// （settings.system.timezone，默认 Asia/Shanghai）——与后端
+// boardPresetTimeRange / resolveUsageTimeRange 同口径。看板「今天」=
+// 系统时区日历日；UTC 回退值仅在后端未响应时生效（fetchSystemTimezone
+// 失败静默，浏览器本地时区兜底）。测试统一注入固定时区后断言。
+
 export interface BoardTimeRange {
   preset: BoardPeriodPreset
   days: number
@@ -11,7 +17,11 @@ export interface BoardTimeQuery {
   days?: number
   start?: string
   end?: string
+  /** 2026-11-20 口径对齐轮：true → 英雄区汇总切供应商对账口径（含探测）。 */
+  include_probes?: boolean
 }
+
+import { systemTzDateStr, systemTzDayStartMs } from '@/components/ui/kxDatePresets'
 
 export function defaultBoardTimeRange(): BoardTimeRange {
   return { preset: 'today', days: 1 }
@@ -29,7 +39,7 @@ export function presetToDays(preset: BoardPeriodPreset): number {
 export function boardRangeIncludesToday(range: BoardTimeRange): boolean {
   if (range.preset !== 'custom') return true
   if (!range.start || !range.end) return false
-  const today = new Date().toISOString().slice(0, 10)
+  const today = systemTzDateStr()
   return range.end >= today
 }
 
@@ -70,25 +80,23 @@ export function toBoardTimeQuery(range: BoardTimeRange): BoardTimeQuery {
   return { days: range.days }
 }
 
-/** 用量接口在只有 days 时，起点是 now-N 天再截到 UTC 零点。
- * days=1 因此从昨天 00:00 起，比看板预设「今天」（当天 00:00 到现在）多一整天。
- * 成本卡要传看板同一对日历日。days 字段留下供展示，usageTimeQs 在有 start/end 时不会把它发给接口。
- * 不改 usage API 的 days 语义，看板汇总接口仍走 toBoardTimeQuery。 */
+/** 用量接口在只有 days 时，起点是系统时区「今天」零点回退 N-1 天（含今天的
+ * N 日历日窗——与后端 resolveUsageTimeRange 的 days 回退语义一致）。
+ * days 字段留下供展示，usageTimeQs 在有 start/end 时不会把它发给接口。 */
 export function usageQueryForBoardRange(range: BoardTimeRange, now = Date.now()): BoardTimeQuery {
   if (range.preset === 'custom' && range.start && range.end) {
     return { start: range.start, end: range.end, days: range.days }
   }
   const { startMs, endMs } = resolveBoardRangeMs(range, now)
-  const start = new Date(startMs).toISOString().slice(0, 10)
-  const end = new Date(Math.max(startMs, endMs - 1)).toISOString().slice(0, 10)
+  const start = systemTzDateStr(startMs)
+  const end = systemTzDateStr(Math.max(startMs, endMs - 1))
   return { start, end, days: range.days }
 }
 
+/** 系统时区「今天」零点的毫秒时刻（回退 N-1 天前）。 */
 export function utcRollingStartMs(days: number, endMs = Date.now()): number {
-  const end = new Date(endMs)
-  end.setUTCHours(0, 0, 0, 0)
-  const start = new Date(end.getTime() - Math.max(0, days - 1) * 86_400_000)
-  return start.getTime()
+  const dayStart = systemTzDayStartMs(endMs)
+  return dayStart - Math.max(0, days - 1) * 86_400_000
 }
 
 export function resolveBoardRangeMs(range: BoardTimeRange, endMs = Date.now()): { startMs: number; endMs: number } {

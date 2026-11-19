@@ -96,6 +96,10 @@ export default {
  expert: 'エキスパートモード：完全なナビゲーションと全ページ（現在のデフォルト）',
  },
  },
+ timezone: {
+    hint: 'タイムゾーンはすべての時間範囲の集計口径と表示（日替わり、レポート、ログ検索）を決定します。既定は UTC+8 で、保存後すぐに反映されます。',
+    currentNow: '現在のタイムゾーンオフセット：{offset}',
+  },
   docs: {
     compressionModeTitle: '📖 圧縮モード詳解',
     compressionModeContent: `<p><strong>圧縮モード</strong>は、過剰な会話コンテキストをシステムが処理する方法を制御します:</p>

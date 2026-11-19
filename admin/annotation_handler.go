@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/annotation"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // nullStringPtr converts a nullable text column to an omitempty-friendly
@@ -622,20 +623,23 @@ func (h *Handler) handleAnnotationFirstTurnSamples(w http.ResponseWriter, r *htt
 }
 
 // resolveFirstTurnDateRange parses the optional YYYY-MM-DD query dates into a
-// half-open UTC range. Empty inputs default to "today" (UTC): [00:00, +1d
-// 00:00). endDay doubles as the inclusive partition_date pruning upper bound.
+// half-open range. Empty inputs default to "today" in the system timezone
+// (settings.system.timezone, default Asia/Shanghai): [00:00, +1d 00:00).
+// endDay doubles as the inclusive partition_date pruning upper bound.
+// 返回值为系统时区日界（SQL 比较 timestamptz 时 PG 会自动换算，语义即
+// 「系统时区的这一天」；partition_date 为 date 类型同样按日界裁剪）。
 func resolveFirstTurnDateRange(startStr, endStr string) (startTS, endTS, startDay, endDay time.Time, err error) {
 	if startStr == "" {
-		startStr = time.Now().UTC().Format("2006-01-02")
+		startStr = settings.SystemNow().Format("2006-01-02")
 	}
 	if endStr == "" {
 		endStr = startStr
 	}
-	startDay, err = time.Parse("2006-01-02", startStr)
+	startDay, err = settings.ParseSystemDate(startStr)
 	if err != nil {
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("invalid start_date: want YYYY-MM-DD")
 	}
-	endDay, err = time.Parse("2006-01-02", endStr)
+	endDay, err = settings.ParseSystemDate(endStr)
 	if err != nil {
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("invalid end_date: want YYYY-MM-DD")
 	}

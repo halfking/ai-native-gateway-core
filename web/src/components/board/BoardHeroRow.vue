@@ -118,7 +118,17 @@ function fmtTokensCompact(n: number | undefined) {
       {{ t('dashboard.v2.summaryDegraded', { view: summary.summary_missing_view || '' }) }}
     </div>
     <div class="hero-card">
-      <div class="hero-card__label">{{ t('dashboard.stat.totalRequests') }}</div>
+      <div class="hero-card__label">
+        {{ t('dashboard.stat.totalRequests') }}
+        <!-- 2026-11-20 口径对齐轮：含探测模式下英雄区数字是供应商对账口径，
+             与下方业务口径的趋势/分布图不同源——徽标把这个差异显式说出来，
+             不让用户对着「英雄区 > 趋势各桶之和」猜原因。 -->
+        <span
+          v-if="props.board?.probe_scope === 'included'"
+          class="hero-card__probe-badge"
+          data-testid="hero-probe-included-badge"
+        >{{ t('dashboard.board.probeIncludeBadge') }}</span>
+      </div>
       <div class="hero-card__value">{{ fmt(summary.total_requests) }}</div>
       <div class="hero-card__sub">
         <span>{{ t('dashboard.stat.successRate') }}
@@ -214,6 +224,18 @@ function fmtTokensCompact(n: number | undefined) {
   font-size: 11px;
   color: var(--text-muted);
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hero-card__probe-badge {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
 }
 .hero-card__value {
   font-size: 24px;

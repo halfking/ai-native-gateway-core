@@ -20,7 +20,9 @@ func (h *Handler) SetBodySizeTracker(tracker *stats.BodySizeTracker) {
 
 func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, days int, providerID int64) (map[string]any, error) {
 	tr := daysToBoardTimeRange(days)
-	summary, fromMinute := h.queryBoardSummary(ctx, tenantFilter, tr)
+	// 缓存重建只服务默认口径（业务）：include_probes 的请求在
+	// handleDashboardBoard 里已绕过缓存，不会走到这里。
+	summary, fromMinute := h.queryBoardSummary(ctx, tenantFilter, tr, false)
 	if !fromMinute {
 		// 2026-10-03：回退失败不再被吞掉。非 42P01 上抛（超时就是超时，
 		// 把它说成「0 请求」是更坏的谎）；42P01 已在载荷里带好 degraded。
