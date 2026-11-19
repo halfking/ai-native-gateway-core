@@ -5,7 +5,7 @@ export default {
 
   stats: {
     total: 'Total des anomalies',
-    unresolved: 'Non résolues',
+    unresolved: 'Non résolus',
     critical: 'Critiques',
     window: 'Fenêtre de stats',
   },
@@ -106,12 +106,13 @@ export default {
   },
   requestTab: {
       stats: {
-          unresolved: 'Non résolus (page)',
+          unresolved: 'Non résolus',
           autoRecovered: 'Auto-récupérés',
           total: 'Total',
       },
       filter: {
           day: 'Date',
+          dayRange: 'Période',
           trigger: 'Type',
           triggerPlaceholder: 'Choisir un type…',
       },

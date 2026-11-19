@@ -16,7 +16,6 @@ export default {
     actorPlaceholder: 'Coincidencia parcial por usuario',
     actionLabel: 'Acción',
     actionPlaceholder: 'p. ej. user.* o auth.*',
-    fromLabel: 'Desde',
   },
   table: {
     headers: {

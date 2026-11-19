@@ -106,12 +106,13 @@ export default {
   },
   requestTab: {
       stats: {
-          unresolved: '未解決（ページ内）',
+          unresolved: '未解決',
           autoRecovered: '自動復旧',
           total: '合計',
       },
       filter: {
           day: '日付',
+          dayRange: '期間',
           trigger: '種別',
           triggerPlaceholder: '種別を選択…',
       },

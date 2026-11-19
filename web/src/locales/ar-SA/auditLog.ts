@@ -17,7 +17,6 @@ export default {
     actorPlaceholder: 'مطابقة جزئية لاسم المستخدم',
     actionLabel: 'الإجراء',
     actionPlaceholder: 'مثال: user.* أو auth.*',
-    fromLabel: 'وقت البدء',
   },
   table: {
     headers: {

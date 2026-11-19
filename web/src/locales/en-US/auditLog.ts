@@ -16,7 +16,6 @@ export default {
     actorPlaceholder: 'Fuzzy match by username',
     actionLabel: 'Action',
     actionPlaceholder: 'e.g. user.* or auth.*',
-    fromLabel: 'From',
   },
   table: {
     headers: {

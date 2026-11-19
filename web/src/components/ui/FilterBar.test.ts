@@ -175,6 +175,24 @@ describe('FilterBar', () => {
     expect(w.find('.filter-bar__panel').exists()).toBe(true)
   })
 
+  // ── 2026-11-20 筛选外显轮：default-open ──────────────────────────────────
+  it('default-open：挂载即展开面板（无条件也外显）；手动收拢后不再自动展开', async () => {
+    // 无任何生效条件也展开 —— 外显是页面显式选择，与「有条件自动展开」是两条路
+    const w = mountBar({ defaultOpen: true })
+    expect(w.find('.filter-bar__panel').exists()).toBe(true)
+    expect(w.find('input[type="text"]').exists()).toBe(true)
+    // 手动收拢仍可用（defaultOpen 仅挂载初值）
+    await w.find('.filter-bar__toggle').trigger('click')
+    expect(w.find('.filter-bar__panel').exists()).toBe(false)
+    // 头部 chips 位渲染（收拢时生效条件仍可见）
+    expect(w.find('.filter-bar__header').exists()).toBe(true)
+  })
+
+  it('不传 defaultOpen 维持收拢默认（既有行为逐字不变）', () => {
+    const w = mountBar()
+    expect(w.find('.filter-bar__panel').exists()).toBe(false)
+  })
+
   it('响应式源码断言：1024 白名单档纵向堆叠+全宽搜索、全断点折叠逻辑', () => {
     // 2026-09-13 审计修正：堆叠断点收敛到白名单值 1024；769 死规则已移除
     expect(source).toMatch(/@media \(max-width: 1024px\)/)

@@ -17,7 +17,6 @@ export default {
     actorPlaceholder: 'Unscharfe Suche nach Benutzername',
     actionLabel: 'Aktion',
     actionPlaceholder: 'z. B. user.* oder auth.*',
-    fromLabel: 'Von',
   },
   table: {
     headers: {

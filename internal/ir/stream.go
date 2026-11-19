@@ -3,11 +3,49 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/tooldialect"
 )
+
+// FlexibleString 是一个可以接受字符串或数字的类型，用于处理不同供应商返回的
+// error.code 字段类型不一致的问题。某些供应商返回数字（如 400），某些返回字符串。
+// 2026-11-20: 修复 211 网关日志中的 JSON 解析错误。
+type FlexibleString string
+
+func (fs *FlexibleString) UnmarshalJSON(data []byte) error {
+	// 尝试解析为字符串
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*fs = FlexibleString(s)
+		return nil
+	}
+	
+	// 尝试解析为数字
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err == nil {
+		*fs = FlexibleString(n.String())
+		return nil
+	}
+	
+	// 如果都失败，尝试解析为整数
+	var i int64
+	if err := json.Unmarshal(data, &i); err == nil {
+		*fs = FlexibleString(strconv.FormatInt(i, 10))
+		return nil
+	}
+	
+	// 如果都失败，尝试解析为浮点数
+	var f float64
+	if err := json.Unmarshal(data, &f); err == nil {
+		*fs = FlexibleString(strconv.FormatFloat(f, 'f', -1, 64))
+		return nil
+	}
+	
+	return fmt.Errorf("cannot unmarshal %s into FlexibleString", data)
+}
 
 // StreamChunk is the unified intermediate representation for streaming chunks.
 // Its field set is the superset of OpenAI SSE chunks and Anthropic SSE events.
@@ -259,9 +297,9 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 		// In-band error frame (OpenAI-compatible providers emit
 		// {"error":{...}} as a data line instead of choices).
 		Error *struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Code    string `json:"code"`
+			Message string         `json:"message"`
+			Type    string         `json:"type"`
+			Code    FlexibleString `json:"code"`
 		} `json:"error"`
 		Usage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -298,7 +336,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			Error: &StreamError{
 				Type:    raw.Error.Type,
 				Message: raw.Error.Message,
-				Code:    raw.Error.Code,
+				Code:    string(raw.Error.Code),
 			},
 		}
 		if chunk.Error.Code == "" {

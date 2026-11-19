@@ -19,8 +19,9 @@ import { isSuperAdmin } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 import ProviderPicker from '../components/ProviderPicker.vue'
 import AnomalyTypePicker, { type AnomalyTypeOption } from '../components/AnomalyTypePicker.vue'
-import KxDatePicker from '../components/ui/KxDatePicker.vue'
-import { refreshRequestAnomalyBadge } from '../composables/useRequestAnomalyBadge'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { refreshRequestAnomalyBadge, useRequestAnomalyBadge } from '../composables/useRequestAnomalyBadge'
 
 const { t } = useI18n()
 
@@ -54,8 +55,29 @@ const reqError = ref<string | null>(null)
 const reqProviderFilter = ref('')
 const reqModelFilter = ref('')
 const reqTriggerFilter = ref('')
-const reqDayFilter = ref('')
+// 2026-11-20 时间范围统一轮：单日 KxDatePicker 收敛为站内标准 KxDateRangePicker。
+// reqDayFrom/reqDayTo 是 YYYY-MM-DD 含首尾范围，直连后端 day_from/day_to 范围条件；
+// 空 = 不过滤日期。
+const reqDayFrom = ref('')
+const reqDayTo = ref('')
 const reqUnresolvedOnly = ref(true)
+
+const reqDayRange = computed<KxDateRange | null>(() =>
+  reqDayFrom.value && reqDayTo.value
+    ? { start: reqDayFrom.value, end: reqDayTo.value }
+    : null,
+)
+
+function onReqDayRangeApply(range: KxDateRange) {
+  // 查询由「查询」按钮触发，这里只同步两端值（与 AnnotationView 同模式）。
+  reqDayFrom.value = range.start
+  reqDayTo.value = range.end
+}
+
+function clearReqDayRange() {
+  reqDayFrom.value = ''
+  reqDayTo.value = ''
+}
 const reqPage = ref(1)
 const reqPageSize = ref(50)
 const reqTotal = ref(0)
@@ -80,8 +102,11 @@ const triggerOptions = computed<AnomalyTypeOption[]>(() => [
 
 const reqTotalPages = computed(() => Math.max(1, Math.ceil(reqTotal.value / reqPageSize.value)))
 const reqOffset = computed(() => (reqPage.value - 1) * reqPageSize.value)
-const reqUnresolvedTotal = computed(() => reqAnomalies.value.filter((a) => !a.resolved).length)
 const reqRecoveredTotal = computed(() => reqAnomalies.value.filter((a) => a.recovered_count > 0).length)
+// 2026-11-20 徽标口径修正轮：统计卡改用徽标 composable 的**全量**计数
+// （此前 reqUnresolvedTotal 只数当前页 50 条 ⇒ 分页即跳数）。
+const { formatCounts: fmtCounts, counts: reqCounts } = useRequestAnomalyBadge()
+const reqUnresolvedTotal = computed(() => reqCounts.value.unresolved)
 
 const anomalyTypeLabels: Record<string, string> = {
   missing_usage_block: t('formatAnomaliesView.anomalyType.missing_usage_block'),
@@ -110,7 +135,9 @@ const severityLabels: Record<string, string> = {
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const offset = computed(() => (page.value - 1) * pageSize.value)
 const totalAnomalies = computed(() => summaries.value.reduce((sum, s) => sum + s.anomaly_count, 0))
-const unresolvedAnomalies = computed(() => summaries.value.reduce((sum, s) => sum + (s.anomaly_count - s.resolved_count), 0))
+// 2026-11-20：未解决数改用 /format-anomalies/count 全量值（此前 summaries 只覆盖
+// 最近 N 小时窗口且 LIMIT 200 ⇒ 老异常不在窗口内时统计卡与列表总数对不上）。
+const unresolvedAnomalies = computed(() => fmtCounts.value.unresolved)
 const criticalAnomalies = computed(() => summaries.value.filter((s) => s.severity === 'critical').reduce((sum, s) => sum + s.anomaly_count, 0))
 
 function severityClass(severity: string) {
@@ -198,7 +225,7 @@ async function markResolved() {
   resolving.value = true
   try {
     await resolveFormatAnomaly(selected.value.id, resolutionNotes.value)
-    await Promise.all([load(), loadSummary()])
+    await Promise.all([load(), loadSummary(), refreshRequestAnomalyBadge()])
     closeDetail()
   } catch (err: any) {
     error.value = err?.message || t('formatAnomaliesView.error.markFailed')
@@ -232,7 +259,8 @@ async function loadReqAnomalies() {
     const resp = await getRequestAnomalies({
       limit: reqPageSize.value,
       offset: reqOffset.value,
-      day: reqDayFilter.value || undefined,
+      day_from: reqDayFrom.value || undefined,
+      day_to: reqDayTo.value || undefined,
       provider: reqProviderFilter.value || undefined,
       model: reqModelFilter.value || undefined,
       trigger: reqTriggerFilter.value || undefined,
@@ -324,7 +352,8 @@ async function batchResolveFiltered() {
   try {
     await batchResolveRequestAnomalies({
       all_unresolved: true,
-      day: reqDayFilter.value || undefined,
+      day_from: reqDayFrom.value || undefined,
+      day_to: reqDayTo.value || undefined,
       provider: reqProviderFilter.value || undefined,
       model: reqModelFilter.value || undefined,
       trigger: reqTriggerFilter.value || undefined,
@@ -350,6 +379,8 @@ onMounted(async () => {
     error.value = t('formatAnomaliesView.error.needSuperAdmin')
     return
   }
+  // 徽标 composable 的双源计数同时喂页面统计卡 ⇒ 打开页面立即刷新。
+  void refreshRequestAnomalyBadge()
   await Promise.all([load(), loadSummary()])
 })
 onUnmounted(() => {
@@ -548,10 +579,25 @@ onUnmounted(() => {
 
       <div class="filters">
         <div class="filter-field">
-          <label for="req-day-filter">{{ t('formatAnomaliesView.requestTab.filter.day') }}</label>
-          <!-- 2026-09-30 统一日历轮：单日过滤换 KxDatePicker。原生 date 与组件契约
-               同为 'YYYY-MM-DD'；原 v-model 无 @change（查询由按钮触发），v-model 直连即可。 -->
-          <KxDatePicker id="req-day-filter" v-model="reqDayFilter" type="date" />
+          <label for="req-day-filter">{{ t('formatAnomaliesView.requestTab.filter.dayRange') }}</label>
+          <!-- 2026-11-20 时间范围统一轮（owner 要求：选择日期更新为站内标准时间范围选择）：
+               单日 KxDatePicker 收敛为 KxDateRangePicker（date 精度 + 标准预设）。
+               查询由「查询」按钮触发；apply 只同步两端值，clear 清空范围。 -->
+          <div class="req-day-range">
+            <KxDateRangePicker
+              :model-value="reqDayRange"
+              precision="date"
+              instant
+              @apply="onReqDayRangeApply"
+            />
+            <!-- 组件无内建清空（clearable=false 双输入）⇒ 页面侧提供清空。 -->
+            <button
+              v-if="reqDayRange"
+              type="button"
+              class="btn btn-link req-day-range__clear"
+              @click="clearReqDayRange"
+            >{{ t('common.terms.clear') }}</button>
+          </div>
         </div>
         <div class="filter-field">
           <label for="req-provider-filter">{{ t('formatAnomaliesView.filter.provider') }}</label>
@@ -821,6 +867,17 @@ onUnmounted(() => {
   color: var(--muted);
   font-size: 11px;
   line-height: 1;
+}
+/* 2026-11-20 时间范围统一轮：KxDateRangePicker + 清空按钮横排。 */
+.req-day-range {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.req-day-range__clear {
+  flex-shrink: 0;
+  padding: 0 4px;
 }
 .input,
 .select,
