@@ -402,7 +402,7 @@ func (h *Handler) HandleSessionAnalyticsStats(w http.ResponseWriter, r *http.Req
 			COALESCE(COUNT(*) FILTER (WHERE ss.quality_score >= 8) * 100.0 / NULLIF(COUNT(*) FILTER (WHERE ss.quality_score IS NOT NULL), 0), 0)
 		FROM session_summaries ss
 		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key
-		WHERE ss.first_request_at >= CURRENT_DATE`
+		WHERE ss.first_request_at >= utc_today()`
 	args := []any{}
 	if tenantID != "" {
 		query += " AND ss.tenant_id = $1"

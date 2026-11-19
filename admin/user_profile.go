@@ -432,11 +432,12 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 3. 成本趋势
+	// 时区标准化：使用UTC日边界（migration 991）
 	trendWhere := baseWhere
 	trendArgs := make([]interface{}, len(baseArgs))
 	copy(trendArgs, baseArgs)
 	trendParamIdx := len(baseArgs) + 1
-	trendWhere += fmt.Sprintf(" AND ss.first_request_at >= CURRENT_DATE - $%d::INT", trendParamIdx)
+	trendWhere += fmt.Sprintf(" AND ss.first_request_at >= utc_days_ago($%d::INT)", trendParamIdx)
 	trendArgs = append(trendArgs, days)
 
 	costRows, err := h.db.Query(ctx, fmt.Sprintf(`

@@ -161,7 +161,7 @@ func (h *Handler) handleUserUsageSummary(w http.ResponseWriter, r *http.Request)
 			       MAX(f.occurred_at) AS last_active
 			FROM usage_facts f
 			JOIN api_keys k ON k.id = f.api_key_id AND k.tenant_id = f.tenant_id
-			WHERE f.occurred_at >= now() - ($1 * INTERVAL '1 day')
+			WHERE f.occurred_at >= utc_days_ago($1)
 			  AND COALESCE(k.owner_user, '') <> ''`+where+`
 			GROUP BY 1, 2
 		) agg
@@ -326,8 +326,9 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	}
 
 	// 事实行统一过滤片：该账号名下密钥 + 租户 + 窗口。
+	// 时区标准化：使用UTC日边界（migration 991）
 	const factFilter = ` f.api_key_id IN (SELECT id FROM api_keys WHERE owner_user = $1 AND tenant_id = $2)
-		AND f.tenant_id = $2 AND f.occurred_at >= now() - ($3 * INTERVAL '1 day')`
+		AND f.tenant_id = $2 AND f.occurred_at >= utc_days_ago($3)`
 
 	// KPI（单行聚合；窗口内无事实行时全部零值）。Scan 错误（超时/连接）
 	// 必须 500，绝不静默降级成「该用户无用量」。

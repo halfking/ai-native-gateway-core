@@ -355,8 +355,9 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 	}
 
 	// 3. 查询每日成本趋势（从session_summaries实时计算）
+	// 时区标准化：使用UTC日边界（migration 991）
 	trendArgs := append(args, days)
-	trendWhereClause := fmt.Sprintf("WHERE COALESCE(client_models[1], 'unknown') = $1 AND DATE(first_request_at) >= CURRENT_DATE - $%d::INT", len(trendArgs))
+	trendWhereClause := fmt.Sprintf("WHERE COALESCE(client_models[1], 'unknown') = $1 AND first_request_at >= utc_days_ago($%d::INT)", len(trendArgs))
 	if tenantID != "" {
 		trendWhereClause += " AND tenant_id = $2"
 	}

@@ -171,16 +171,17 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 
 	// 3. 成本趋势（最近N天）
 	// 防御：如果 session_dim JOIN 失败则降级到 session_summaries
+	// 时区标准化：使用UTC日边界（migration 991）
 	trendWhere := baseWhere
 	trendArgs := make([]interface{}, len(baseArgs))
 	copy(trendArgs, baseArgs)
 	trendParamIdx := len(baseArgs) + 1
 	if trendWhere == "" {
-		trendWhere = fmt.Sprintf("WHERE DATE(ss.first_request_at) >= CURRENT_DATE - INTERVAL '%d days'", days)
+		trendWhere = fmt.Sprintf("WHERE ss.first_request_at >= utc_days_ago(%d)", days)
 		trendArgs = []interface{}{days}
 		trendParamIdx = 1
 	} else {
-		trendWhere += fmt.Sprintf(" AND DATE(ss.first_request_at) >= CURRENT_DATE - $%d::INT", trendParamIdx)
+		trendWhere += fmt.Sprintf(" AND ss.first_request_at >= utc_days_ago($%d::INT)", trendParamIdx)
 		trendArgs = append(trendArgs, days)
 	}
 
