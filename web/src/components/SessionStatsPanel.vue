@@ -21,6 +21,8 @@ import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
 import { ElIcon } from 'element-plus'
+import KxDateRangePicker from './ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 const { t } = useI18n()
 const router = useRouter()
 
@@ -141,9 +143,19 @@ function formatPct(value: number) {
   return `${sign}${value.toFixed(1)}%`
 }
 
-function onDaysClick(next: number) {
-  if (days.value === next) return
-  changeDays(next)
+// 2026-11-19 时间范围统一轮：7/30 两天按钮组 → 全站统一 KxDateRangePicker
+// （1/7/30/90 档 + 自定义区间）。days 与看板 boardDays 双向联动保持不变。
+const { presets: statsDayPresets, rangeValue: statsRange, applyRange: applyStatsSpan } = useSpanDaysRange(days, [
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+// useSpanDaysRange.applyRange 只写 days.value；刷新要走 changeDays（loadAll）。
+function applyStatsRange(range: Parameters<typeof applyStatsSpan>[0]) {
+  const prev = days.value
+  applyStatsSpan(range)
+  if (days.value !== prev) void changeDays(days.value)
 }
 
 function openProbeTraffic() {
@@ -201,14 +213,13 @@ function openProbeTraffic() {
             {{ t('sessions.stats.probeTrafficLink') }}
           </button>
         </div>
-        <div class="days-switch" role="group">
-          <button type="button" class="days-btn" :class="{ 'days-btn--active': days === 7 }" @click="onDaysClick(7)">
-            {{ t('sessions.stats.last7Days') }}
-          </button>
-          <button type="button" class="days-btn" :class="{ 'days-btn--active': days === 30 }" @click="onDaysClick(30)">
-            {{ t('sessions.stats.last30Days') }}
-          </button>
-        </div>
+        <KxDateRangePicker
+          :model-value="statsRange"
+          :presets="statsDayPresets"
+          :max-span-days="90"
+          :disabled="loading"
+          @apply="applyStatsRange"
+        />
       </div>
 
       <DashboardStatsRow :stats="dashboardStats" :loading="loading" :show-tokens="false" />
@@ -321,9 +332,6 @@ function openProbeTraffic() {
   cursor: pointer;
   text-decoration: underline;
 }
-.days-switch { display: inline-flex; border: 1px solid var(--border, var(--border)); border-radius: 6px; overflow: hidden; }
-.days-btn { border: 0; background: transparent; padding: 4px 12px; font-size: 13px; cursor: pointer; color: var(--muted, var(--muted)); }
-.days-btn--active { background: var(--accent, var(--accent)); color: var(--on-primary); }
 .alert { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; margin-bottom: 16px; border-radius: 6px; }
 .alert-danger { background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
 .alert-warn { background: var(--warning-bg, var(--kx-warning-bg, var(--surface-secondary))); border: 1px solid var(--warning-bd, var(--kx-warning-border, var(--border))); color: var(--warning, var(--kx-warning, var(--text))); }
