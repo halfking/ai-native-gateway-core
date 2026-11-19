@@ -11,14 +11,6 @@ import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
 import SessionDrilldownPanel from '../components/session/SessionDrilldownPanel.vue'
 import BoardPanel from '../components/board/BoardPanel.vue'
-import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { makeDateRangePresets } from '../components/ui/kxDatePresets'
-import type { KxDateRange } from '../components/ui/kx-date-types'
-import {
-  defaultBoardTimeRange,
-  resolveBoardRangeMs,
-  type BoardTimeRange,
-} from '../utils/boardTimeRange'
 import SelfCheckPanel from './SelfCheckPanel.vue'
 import type { BoardPayload } from '../api/board'
 import type { ModelUsage, HotApiKeyEntry } from '../api'
@@ -59,52 +51,6 @@ const dashboardTab = inject<{
 }>('dashboardTab')!
 
 const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboardActions')!
-
-// ── 2026-11-19 时间范围统一轮：标题下靠左的时间选择器 ────────────────────
-// owner 口径：仪表盘标题下面、靠左放置，与页面中部 BoardFilterBar 的
-// KxDateRangePicker **同源同事件**——两者都读写同一个 dashboardBoard.timeRange
-// 并走同一条 setTimeRange + load + startAutoRefresh 链路（本组件直接 inject
-// provider，映射逻辑与 BoardPanel.onApplyRange 同款），不另建第二套状态。
-const boardTimeState = inject<{
-  timeRange?: { value: BoardTimeRange }
-  load: () => Promise<void>
-  setTimeRange: (next: BoardTimeRange) => void
-  startAutoRefresh: () => Promise<void>
-}>('dashboardBoard')!
-
-const headerTimeRange = computed<BoardTimeRange>(
-  () => boardTimeState.timeRange?.value ?? defaultBoardTimeRange(),
-)
-
-const headerKxPresets = makeDateRangePresets('date')
-
-const DAY_MS = 86_400_000
-function utcDateStr(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10)
-}
-
-const headerRangeValue = computed<KxDateRange | null>(() => {
-  const { startMs, endMs } = resolveBoardRangeMs(headerTimeRange.value)
-  return { start: utcDateStr(startMs), end: utcDateStr(endMs - 1) }
-})
-
-// 与 BoardPanel.onApplyRange 同款映射：今天/近7天/近30天回 Board 预设，
-// 其余一律 custom{start,end}（Board 后端只认 start/end 日界）。
-async function onHeaderApplyRange(range: KxDateRange) {
-  const todayMs = resolveBoardRangeMs({ preset: 'today', days: 1 }).startMs
-  const spanDays = Math.max(1, Math.round((Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / DAY_MS) + 1)
-  if (range.start === utcDateStr(todayMs) && range.end === utcDateStr(todayMs)) {
-    boardTimeState.setTimeRange({ preset: 'today', days: 1 })
-  } else if (range.start === utcDateStr(todayMs - 6 * DAY_MS) && range.end === utcDateStr(todayMs)) {
-    boardTimeState.setTimeRange({ preset: '7d', days: 7 })
-  } else if (range.start === utcDateStr(todayMs - 29 * DAY_MS) && range.end === utcDateStr(todayMs)) {
-    boardTimeState.setTimeRange({ preset: '30d', days: 30 })
-  } else {
-    boardTimeState.setTimeRange({ preset: 'custom', days: spanDays, start: range.start, end: range.end })
-  }
-  await boardTimeState.load()
-  await boardTimeState.startAutoRefresh()
-}
 
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
 const activeDrawerRequestId = ref<string | null>(null)
@@ -227,18 +173,6 @@ async function onRefresh() {
       </div>
     </div>
 
-    <!-- 2026-11-19 时间范围统一轮：仪表盘标题下面、靠左放置的时间选择器。
-         与页面中部 BoardFilterBar 同源同事件（同一 dashboardBoard.timeRange
-         + setTimeRange/load/startAutoRefresh 链路），任一处改时间另一处同步。 -->
-    <div v-if="activeTab === 'board'" class="dashboard-header-range">
-      <KxDateRangePicker
-        :model-value="headerRangeValue"
-        :presets="headerKxPresets"
-        data-testid="dashboard-header-range"
-        @apply="onHeaderApplyRange"
-      />
-    </div>
-
     <div v-if="error" class="alert alert-danger" role="alert">
       <span class="alert-icon" aria-hidden="true"><Warning /></span>
       <span class="alert-text">{{ error }}</span>
@@ -300,14 +234,6 @@ async function onRefresh() {
   gap: 12px;
   flex-wrap: nowrap;
   min-height: 40px;
-}
-
-/* 2026-11-19 时间范围统一轮：标题下靠左的时间选择器行 */
-.dashboard-header-range {
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-  margin: -6px 0 12px;
 }
 
 .page-header-left {
