@@ -40,7 +40,7 @@ url: ${BASE_URL}
 # 工具栏的**数字出处行**（含 canonical 视图名 request_logs_with_current_month）。
 - openLink: ${BASE_URL}/admin/session-analytics/users
 - extendedWaitUntil:
-    text: ".*request_logs_with_current_month.*"
+    visible: ".*request_logs_with_current_month.*"
     timeout: 25000
 
 # ── ③ 窗口用量五列的列头（静态文案，逐列可断言）───────────────────────────
@@ -65,19 +65,33 @@ url: ${BASE_URL}
 # ── ⑤ 逐层下钻第一跳：员工行「详情」⇒ /users/{owner} ──────────────────────
 # ④ 打开的抽屉是全屏浮层 ⇒ 不依赖「关抽屉」（web 驱动点不到关闭钮），
 # 用 openLink 重载列表页复位，再点行内「详情」。
-# 列表有多个「详情」⇒ Maestro 点第一个命中 ⇒ 落到某人详情页。
-# 详情页独有形态 = 「热门任务 / 热门终端用户 / 最近会话 / 模型使用明细」四卡。
+# ★ 导航判据 = 详情页 h2「用户画像详情」（页面顶端、在视口内）；
+#   tapOn 偶发不触发（Element Plus 固定列 overlay 双份按钮）⇒ repeat 重试兜底。
+#   （2026-11-20 CDP 实证：click 真路径导航正常；首跑失败主因是
+#     「模型使用明细」卡在折叠线下（top≈4999 > 1400 视口）⇒ 断言必须先滚动。）
 - openLink: ${BASE_URL}/admin/session-analytics/users
 - extendedWaitUntil:
-    text: ".*request_logs_with_current_month.*"
+    visible: ".*request_logs_with_current_month.*"
     timeout: 25000
-- tapOn: "详情"
-- extendedWaitUntil:
-    visible: "模型使用明细"
-    timeout: 25000
+- tapOn: "画像详情"
+- repeat:
+    while:
+      notVisible: "用户画像详情"
+    commands:
+      - tapOn: "画像详情"
+    times: 2
+- assertVisible: "用户画像详情"
+# 模型使用明细卡在折叠线下 ⇒ 滚到可见再断言（2026-11-20 首跑实测教训）
+- scrollUntilVisible:
+    element:
+      text: "模型使用明细"
+    timeout: 20000
 - assertVisible: "热门任务"
 - assertVisible: "最近会话"
-- assertVisible: "模型名称"
+- scrollUntilVisible:
+    element:
+      text: "模型名称"
+    timeout: 20000
 - assertVisible: "输入 Token"
 - assertVisible: "输出 Token"
 

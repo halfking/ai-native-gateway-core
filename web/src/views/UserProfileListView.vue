@@ -367,8 +367,10 @@ function onSearch() {
         <el-table-column :label="t('sessions.userProfile.lastSeenAt')" prop="last_seen_at" width="170" />
         <el-table-column :label="t('sessions.userProfile.actionDetail')" width="100" fixed="right">
           <template #default="scope">
+            <!-- ★ 按钮文字必须与列头「详情」不同：Maestro textRegex 按先序命中，
+                 撞上列头（TH）就永远点不到行按钮（2026-11-20 首跑实测）。 -->
             <el-button size="small" type="primary" link @click="goProfile(scope?.row?.owner_user)">
-              {{ t('sessions.userProfile.actionDetail') }}
+              {{ t('sessions.userProfile.actionGoDetail') }}
             </el-button>
           </template>
         </el-table-column>

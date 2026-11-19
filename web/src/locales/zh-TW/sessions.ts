@@ -25,6 +25,7 @@ export default {
     topEndUsers: "熱門終端使用者",
     recentSessions: "最近會話",
     actionDetail: "詳情",
+    actionGoDetail: '畫像詳情',
     createdAt: "建立時間",
     empty: "暫無使用者畫像資料",
     /**

@@ -25,6 +25,7 @@ export default {
     topEndUsers: "人気エンドユーザー",
     recentSessions: "最近のセッション",
     actionDetail: "詳細",
+    actionGoDetail: 'プロフィール',
     createdAt: "作成日時",
     empty: "ユーザープロファイルデータがありません",
     /**
