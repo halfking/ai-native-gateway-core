@@ -124,8 +124,37 @@ func (s *Service) UsageHold(
 		}
 	}
 
-	// TODO: Check if entitlement has sufficient quota remaining
-	// This requires tracking consumed vs. allocated quantities
+	// ★ 配额门控：请求级预占必须先通过 maas_check_quota_available 校验，
+	// 并在事务内原子增加 held_amount。无配额记录或余额不足时拒绝 ——
+	// 无白嫖（串行门闩 L 的核心保证）。
+	if req.ModelSKU != nil && *req.ModelSKU != "" {
+		var quotaAvailable bool
+		err = tx.QueryRow(ctx, `
+			SELECT maas_check_quota_available($1, $2, $3)
+		`, req.EntitlementID, *req.ModelSKU, req.Quantity.Amount).Scan(&quotaAvailable)
+		if err != nil {
+			return maascontracts.UsageHoldResponse{}, fmt.Errorf("check quota: %w", err)
+		}
+		if !quotaAvailable {
+			return maascontracts.UsageHoldResponse{}, &maascontracts.Error{
+				Code:      "MAAS_QUOTA_EXCEEDED",
+				Message:   fmt.Sprintf("insufficient quota for %s", *req.ModelSKU),
+				Retryable: false,
+			}
+		}
+
+		// 原子增加 held 配额（quota_version 递增留审计痕迹）。
+		_, err = tx.Exec(ctx, `
+			UPDATE maas_entitlement_quotas
+			SET held_amount = (held_amount::DECIMAL + $1::DECIMAL)::TEXT,
+			    quota_version = quota_version + 1,
+			    updated_at = NOW()
+			WHERE entitlement_id = $2 AND model_sku = $3
+		`, req.Quantity.Amount, req.EntitlementID, *req.ModelSKU)
+		if err != nil {
+			return maascontracts.UsageHoldResponse{}, fmt.Errorf("increment held quota: %w", err)
+		}
+	}
 
 	// Generate usage hold ID
 	usageHoldID := generateUsageHoldID()
@@ -224,13 +253,14 @@ func (s *Service) UsageSettle(
 	var heldAmount, heldUnit string
 	var entitlementID string
 	var holdTenantID string
+	var modelSKU *string
 
 	err = tx.QueryRow(ctx, `
-		SELECT status, quantity_amount, quantity_unit, entitlement_id, tenant_id
+		SELECT status, quantity_amount, quantity_unit, entitlement_id, tenant_id, model_sku
 		FROM maas_usage_holds
 		WHERE usage_hold_id = $1
 		FOR UPDATE
-	`, usageHoldID).Scan(&status, &heldAmount, &heldUnit, &entitlementID, &holdTenantID)
+	`, usageHoldID).Scan(&status, &heldAmount, &heldUnit, &entitlementID, &holdTenantID, &modelSKU)
 
 	if err == pgx.ErrNoRows {
 		return maascontracts.UsageSettleResponse{}, &maascontracts.Error{
@@ -283,6 +313,23 @@ func (s *Service) UsageSettle(
 	if released.LessThan(decimal.Zero) {
 		// Actual usage exceeds hold (rare, but possible in streaming)
 		released = decimal.Zero
+	}
+
+	// ★ 配额结算：held → consumed 转移，保持账平恒等式
+	// allocated = consumed + held + available。
+	// 原子扣减 held_amount 并累加 consumed_amount（quota_version 递增审计）。
+	if modelSKU != nil && *modelSKU != "" {
+		_, err = tx.Exec(ctx, `
+			UPDATE maas_entitlement_quotas
+			SET held_amount = GREATEST(held_amount::DECIMAL - $1::DECIMAL, 0)::TEXT,
+			    consumed_amount = (consumed_amount::DECIMAL + $2::DECIMAL)::TEXT,
+			    quota_version = quota_version + 1,
+			    updated_at = NOW()
+			WHERE entitlement_id = $3 AND model_sku = $4
+		`, heldAmount, req.Actual.Amount, entitlementID, *modelSKU)
+		if err != nil {
+			return maascontracts.UsageSettleResponse{}, fmt.Errorf("settle quota: %w", err)
+		}
 	}
 
 	// Update usage hold status to settled

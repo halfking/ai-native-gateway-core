@@ -308,9 +308,16 @@ AI Native Gateway 同时支持**完整生产栈**与**单机最小化本地部�
 
 ```bash
 llm-gw-installer doctor      # detect OS / docker / network / ports
-llm-gw-installer install     # one-click install + deploy
+llm-gw-installer install     # one-click install + deploy（已有 .env 时自动保留原配置——更新语义）
+llm-gw-installer upgrade     # 升级管理（--action check / apply / rollback 必填）
 llm-gw-installer uninstall   # uninstall (--purge removes data)
+llm-gw-installer activate    # license 激活
+llm-gw-installer heartbeat   # 许可心跳
 ```
+
+升级通道选择：docker compose 安装走离线包（`upgrade --action apply --offline
+--offline-package <pkg>`）；在线路径仅 systemd 单机布局（compose 安装会被布局
+守卫拒绝）。更新与全新安装的区别详见 `installer/README.md`。
 
 **跨平台编译**
 

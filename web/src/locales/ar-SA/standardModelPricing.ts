@@ -35,6 +35,8 @@ export default {
     summary: 'يدوي {custom}: عام {defaults} / {total}',
     allVendors: 'جميع الموردين',
     allModes: 'جميع الأسعار',
+    allPlatforms: 'جميع المنصات',
+    platformLabel: 'المنصة',
     count: '{count} نموذج',
     vendorLabel: 'المورد',
     modeLabel: 'وضع التسعير',

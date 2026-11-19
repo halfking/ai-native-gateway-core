@@ -290,6 +290,7 @@ export default {
       last24h: 'آخر 24 ساعة',
       last7d: 'آخر 7 أيام',
       last14d: 'آخر 14 يومًا',
+      last3d: 'آخر 3 أيام',
       last30d: 'آخر 30 يومًا',
       thisMonth: 'هذا الشهر',
       lastMonth: 'الشهر الماضي',

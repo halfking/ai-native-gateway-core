@@ -22,6 +22,9 @@ import TenantModelPolicyPanel from '../components/TenantModelPolicyPanel.vue'
 import StatCard from '../components/ui/StatCard.vue'
 import BarCell from '../components/ui/BarCell.vue'
 import SparkBars from '../components/ui/SparkBars.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import { chartColors, createComboChartConfig, useChart } from '../composables/useChart'
 import { useRaceGuard } from '../composables/useRaceGuard'
 import { isPlatformOpsView } from '../store'
@@ -45,6 +48,21 @@ const billingDays = ref(7)
 const billingOwnerUser = ref('')
 const billing = ref<MaasConsumptionDetail | null>(null)
 const billingLoading = ref(false)
+
+// 使用 useSpanDaysRange 管理账单时间范围与天数的双向绑定
+const { presets: billingPresets, rangeValue: billingDateRange, applyRange: applyBillingRange } = useSpanDaysRange(billingDays, [
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+
+// 应用账单日期范围变更
+function handleBillingRangeApply(range: KxDateRange) {
+  applyBillingRange(range)
+  onBillingFilterChange()
+}
+
 const showEdit = ref(false)
 const maasWallet = ref<MaasWallet | null>(null)
 const maasLedger = ref<MaasLedgerEntry[]>([])
@@ -830,13 +848,15 @@ watch(() => route.params.tenantId, loadTenant)
       <!-- Billing Audit Tab -->
       <div v-if="activeTab === 'billing'" class="tab-content">
         <div class="stats-toolbar billing-toolbar">
-          <label>{{ $t('common.terms.timeWindow') }}:</label>
-          <select v-model.number="billingDays" @change="onBillingFilterChange">
-            <option :value="1">近 1 天</option>
-            <option :value="7">近 7 天</option>
-            <option :value="30">近 30 天</option>
-            <option :value="90">近 90 天</option>
-          </select>
+          <div class="filter-time-range">
+            <label>{{ $t('common.terms.timeWindow') }}:</label>
+            <KxDateRangePicker 
+              :model-value="billingDateRange"
+              :presets="billingPresets"
+              :max-span-days="365"
+              @apply="handleBillingRangeApply"
+            />
+          </div>
           <label for="billing-owner-user">{{ $t('common.terms.user') }}:</label>
           <input id="billing-owner-user" v-model="billingOwnerUser" class="billing-user-input" placeholder="按 API Key 所属用户过滤" @keyup.enter="loadBilling" />
           <button class="btn btn-primary btn-sm" :disabled="billingLoading" @click="loadBilling">{{ billingLoading ? $t('common.feedback.loading') : $t('common.terms.query') }}</button>
@@ -1334,5 +1354,19 @@ watch(() => route.params.tenantId, loadTenant)
 @keyframes highlight-fade {
   0% { background-color: color-mix(in srgb, var(--accent) 25%, transparent); }
   100% { background-color: transparent; }
+}
+
+/* ── 2026-11-19 时间选择器统一布局 ── */
+.filter-time-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-time-range label {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 </style>

@@ -169,8 +169,13 @@ goimports -w .
 # 检查更新
 ./installer/llm-gw-installer upgrade --action check
 
-# 在线升级
+# 在线升级（★ 仅 systemd 单机布局；docker compose 安装会被布局守卫拒绝，
+#   走下面的离线包通道）
 ./installer/llm-gw-installer upgrade --action apply
+
+# 离线升级（docker compose 安装的正确通道）
+./installer/llm-gw-installer upgrade --action apply --offline \
+  --offline-package /path/to/llm-gateway-go-vX.Y.Z-upgrade.tar.gz
 
 # 回滚
 ./installer/llm-gw-installer upgrade --action rollback

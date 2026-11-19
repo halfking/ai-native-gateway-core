@@ -50,8 +50,8 @@
 
 ## 4. 部署入口
 
-- 客户 host：`scripts/user/client-deploy.sh --install-mode host` 或 Maintain 分发的 host 脚本；底层服务注册在 `scripts/lifecycle/`。
-- 客户 Docker：推荐 `scripts/user/client-deploy.sh --install-mode docker`；`install-docker.sh` 是底层/轻量脚本。
+- 客户 host：`scripts/user/client-deploy.sh deploy`（2026-11-19 订正：`--install-mode` 已于 2026-10-03 移除，按子命令分派）或 Maintain 分发的 host 脚本；底层服务注册在 `scripts/lifecycle/`。
+- 客户 Docker：推荐 `scripts/user/client-deploy.sh deploy`（同入口）；`install-docker.sh` 是底层/轻量脚本。
 - 本机开发：`scripts/local-host-deploy.sh`、`scripts/local-host-deploy-test.sh`，不等同客户生产安装。
 - 中心 245/154：使用 target/deploy pipeline，必须记录目标、版本、迁移、readiness、回滚和监控证据。
 - K8s 测试：`deploy/k8s/llm-gateway-go-deployment.yaml` 等 manifest，仅适用于声明的测试集群。

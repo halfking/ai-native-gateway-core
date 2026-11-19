@@ -287,6 +287,7 @@ export default {
       last24h: '過去24時間',
       last7d: '過去7日間',
       last14d: '過去14日間',
+      last3d: '直近3日間',
       last30d: '過去30日間',
       thisMonth: '今月',
       lastMonth: '先月',

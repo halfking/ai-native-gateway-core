@@ -31,9 +31,9 @@ let trendChartInstance: echarts.ECharts | null = null
 
 // 统一时间范围选择器（2026-11-19）
 const { presets, rangeValue, applyRange } = useSpanDaysRange(timeRange, [
-  { days: 1, labelKey: 'dashboard.operational.timeRange1d' },
-  { days: 7, labelKey: 'dashboard.operational.timeRange7d' },
-  { days: 30, labelKey: 'dashboard.operational.timeRange30d' },
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 
@@ -456,83 +456,6 @@ onBeforeUnmount(() => {
         </div>
 
         <div ref="trendChartRef" class="bo-trend-chart-container"></div>
-      </section>
-
-      <!-- 5. 系统健康 - 后台任务 -->
-      <section v-if="operationalData?.background_tasks" class="bo-section">
-        <h2 class="bo-section-title">{{ $t('dashboard.operational.systemHealthTasks') }}</h2>
-
-        <div class="bo-cards">
-          <div class="bo-card">
-            <h3 class="bo-card-title">{{ $t('dashboard.operational.modelDiscovery') }}</h3>
-            <div v-if="operationalData.background_tasks?.discovery" class="bo-card-body">
-              <div class="bo-row">
-                <span class="bo-row-label">{{ $t('common.terms.status') }}</span>
-                <span class="bo-row-value" :class="{ 'is-running': operationalData.background_tasks.discovery.running }">
-                  {{ operationalData.background_tasks.discovery.running ? $t('common.status.running') : statusLabel(operationalData.background_tasks.discovery.status) }}
-                </span>
-              </div>
-              <div class="bo-row">
-                <span class="bo-row-label">{{ $t('dashboard.operational.triggerMethod') }}</span>
-                <span class="bo-row-value">{{ operationalData.background_tasks.discovery.trigger ?? '—' }}</span>
-              </div>
-              <div class="bo-row">
-                <span class="bo-row-label">{{ $t('common.terms.startTime') }}</span>
-                <span class="bo-row-value">{{ formatTimestamp(operationalData.background_tasks.discovery.started_at) }}</span>
-              </div>
-              <div class="bo-row">
-                <span class="bo-row-label">{{ $t('common.terms.recentHeartbeat') }}</span>
-                <span class="bo-row-value">{{ formatTimestamp(operationalData.background_tasks.discovery.heartbeat_at) }}</span>
-              </div>
-            </div>
-            <p v-else class="bo-card-empty">{{ $t('dashboard.board.emptyNoResultDiscovery') }}</p>
-            <p v-if="operationalData.background_tasks?.degraded" class="bo-card-degraded">
-              {{ $t('dashboard.operational.degradedReason', { reason: operationalData.background_tasks.degraded_reason ?? '' }) }}
-            </p>
-          </div>
-
-          <div class="bo-card">
-            <h3 class="bo-card-title">{{ $t('dashboard.operational.probeLoop') }}</h3>
-            <div v-if="operationalData.background_tasks?.probe_loop" class="bo-card-body">
-              <div class="bo-row">
-                <span class="bo-row-label">{{ $t('dashboard.operational.checksLast10m') }}</span>
-                <span class="bo-row-value">{{ formatNumber(operationalData.background_tasks.probe_loop.checks_last_10m) }}</span>
-              </div>
-            </div>
-            <p v-else class="bo-card-empty">{{ $t('dashboard.board.emptyNoResultProbe') }}</p>
-            <p v-if="operationalData.background_tasks?.probe_degraded" class="bo-card-degraded">
-              {{ $t('dashboard.operational.degradedProbe') }}
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <!-- 6. 系统健康 - 自检 -->
-      <section v-if="operationalData?.selfcheck" class="bo-section">
-        <h2 class="bo-section-title">{{ $t('dashboard.operational.systemHealthSelfcheck') }}</h2>
-
-        <div class="bo-metrics">
-          <div class="bo-metric">
-            <span class="bo-metric-label">{{ $t('dashboard.operational.totalRuns24h') }}</span>
-            <span class="bo-metric-value">{{ formatNumber(operationalData.selfcheck?.total_runs_24h) }}</span>
-          </div>
-          <div class="bo-metric">
-            <span class="bo-metric-label">{{ $t('common.terms.successRate') }}</span>
-            <span class="bo-metric-value">{{ formatPct(operationalData.selfcheck?.success_rate) }}</span>
-          </div>
-          <div class="bo-metric">
-            <span class="bo-metric-label">{{ $t('dashboard.operational.lastStatus') }}</span>
-            <span class="bo-metric-value">{{ statusLabel(operationalData.selfcheck?.last_status) }}</span>
-          </div>
-          <div class="bo-metric">
-            <span class="bo-metric-label">{{ $t('dashboard.operational.lastRunAt') }}</span>
-            <span class="bo-metric-value">{{ formatTimestamp(operationalData.selfcheck?.last_run_at) }}</span>
-          </div>
-        </div>
-
-        <p v-if="operationalData.selfcheck?.degraded" class="bo-section-degraded">
-          {{ $t('dashboard.operational.degradedSelfcheck', { reason: operationalData.selfcheck.degraded_reason ?? '' }) }}
-        </p>
       </section>
 
       <footer class="bo-footer">

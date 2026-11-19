@@ -26,6 +26,8 @@ import {
 import SixDimScoreBar from '../components/SixDimScoreBar.vue'
 import ModelPicker from '../components/ModelPicker.vue'
 import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
 import { computeSankeyCardHeight, SANKEY_DOM_LEGEND_H, SANKEY_SECTION_HEAD_H } from '../components/analytics/sankeyLayout'
@@ -90,7 +92,18 @@ const audit = ref<AutoRouteAudit>({
 })
 
 // ── Analytics (Phase 2a) ─────────────────────────────
-const analyticsWindow = ref<AnalyticsWindow>('7d')
+// 2026-11-19 时间范围统一轮：窗口从 24h/7d 两档 pills 升级为统一
+// KxDateRangePicker（1..90 天档位 + 自定义区间，最大跨度 90 天）。
+// 后端 parseAnalyticsWindow 接受 Nd(1..90)；7d 档位保留原标签以命中
+// routing_analytics_7d 物化视图，其余窗口自动走基表。
+const analyticsSpanDays = ref(7)
+const { presets: analyticsDayPresets, rangeValue: analyticsRange, applyRange: applyAnalyticsRange } = useSpanDaysRange(analyticsSpanDays, [
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+const analyticsWindow = computed<AnalyticsWindow>(() => `${analyticsSpanDays.value}d` as AnalyticsWindow)
 const analyticsMetric = ref<AnalyticsMetric>('count')
 const analyticsRowDim = ref<AnalyticsRowDim>('task_type')
 const matrixData = ref<AnalyticsMatrix | null>(null)
@@ -249,7 +262,7 @@ function closeCellModal() {
   funnelStages.value = []
 }
 
-watch([analyticsWindow, analyticsMetric, analyticsRowDim], () => {
+watch([analyticsSpanDays, analyticsMetric, analyticsRowDim], () => {
   if (activeTab.value === 'analytics') loadAnalytics()
 })
 
@@ -1060,13 +1073,13 @@ onUnmounted(() => stopPoll())
                   @click="analyticsRowDim = rd"
                 >{{ rd === 'task_type' ? t('routing.l1Task') : t('routing.workTypes') }}</button>
                 <span class="toolbar-divider" />
-                <button
-                  v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
-                  :key="w"
-                  class="profile-pill"
-                  :class="{ active: analyticsWindow === w }"
-                  @click="analyticsWindow = w"
-                >{{ w }}</button>
+                <KxDateRangePicker
+                  :model-value="analyticsRange"
+                  :presets="analyticsDayPresets"
+                  :max-span-days="90"
+                  :disabled="analyticsLoading"
+                  @apply="applyAnalyticsRange"
+                />
                 <span class="toolbar-divider" />
                 <button
                   v-for="m in (['count', 'success_rate', 'p95_ms', 'cost_usd'] as AnalyticsMetric[])"

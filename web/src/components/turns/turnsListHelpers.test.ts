@@ -83,7 +83,7 @@ describe('buildDisplayGroups', () => {
 describe('buildTurnsParams', () => {
   it('includes api_key_id when set', () => {
     const state: TurnsFilterState = {
-      search: '', model: '', provider: '', statusCode: '',
+      search: '', model: [], provider: '', statusCode: '',
       projectId: '', taskId: '', client: '', ownerUser: '',
       apiKeyId: '42', status: 'active', tags: [],
       dateFrom: '', dateTo: '', timePreset: 'all',
@@ -96,7 +96,7 @@ describe('buildTurnsParams', () => {
 
   it('rejects invalid status code', () => {
     const state: TurnsFilterState = {
-      search: '', model: '', provider: '', statusCode: '999',
+      search: '', model: [], provider: '', statusCode: '999',
       projectId: '', taskId: '', client: '', ownerUser: '',
       apiKeyId: '', status: '', tags: [],
       dateFrom: '', dateTo: '', timePreset: 'all',
@@ -110,7 +110,7 @@ describe('buildTurnsParams', () => {
 describe('activeFilterChips', () => {
   it('builds chips for active filters including api_key', () => {
     const chips = activeFilterChips({
-      search: 'hello', model: 'gpt', provider: '', statusCode: '',
+      search: 'hello', model: ['gpt'], provider: '', statusCode: '',
       projectId: '', taskId: 'auto', client: '', ownerUser: '',
       apiKeyId: '7', status: 'closed', tags: ['a'],
       dateFrom: '', dateTo: '', timePreset: 'all',

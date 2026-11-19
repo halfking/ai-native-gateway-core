@@ -99,12 +99,16 @@ export interface WorkTypeStatEntry {
   label: string
   category: string
   l1_task_type: string
+  /** 窗口内请求数（2026-11-19 起随 ?days= 窗口变化；count_24h 为兼容别名） */
   count_24h: number
+  count_window?: number
   count_direct: number
   count_l1_proxy: number
 }
 
 export interface WorkTypeStats {
+  /** 统计窗口标签（"24h" / "7d" / "30d"...；缺省 24h，2026-11-19 参数化） */
+  window?: string
   window_hours: number
   total_auto: number
   by_work_type: Record<string, WorkTypeStatEntry>
@@ -211,8 +215,13 @@ export function putWorkTypeRoutes(key: string, routes: ModelRoute[]): Promise<{ 
   return req('PUT', `/api/admin/work-types/${encodeURIComponent(key)}/routes`, routes)
 }
 
-export function getWorkTypeStats(): Promise<WorkTypeStats> {
-  return req<WorkTypeStats>('GET', '/api/admin/work-types/stats')
+/**
+ * Get work type statistics. `days` 统计窗口（1..90 天），缺省后端回落 24h。
+ * 2026-11-19 时间范围统一轮：与全站 KxDateRangePicker 的 span 口径对齐。
+ */
+export function getWorkTypeStats(days?: number): Promise<WorkTypeStats> {
+  const q = days && days > 0 ? `?days=${Math.round(days)}` : ''
+  return req<WorkTypeStats>('GET', `/api/admin/work-types/stats${q}`)
 }
 
 export function syncWorkTypesFromACC(): Promise<WorkTypeSyncResponse> {

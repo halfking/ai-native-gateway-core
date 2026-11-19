@@ -118,20 +118,6 @@ describe('BoardOperationalView', () => {
     expect(w.text()).toContain('趋势分析')
     expect(w.text()).toContain('共 2 个数据点')
 
-    // 系统健康 - 后台任务
-    expect(w.text()).toContain('系统健康 - 后台任务')
-    expect(w.text()).toContain('模型发现')
-    expect(w.text()).toContain('探针巡检')
-    expect(w.text()).toContain('scheduled')
-    expect(w.text()).toContain('42')
-
-    // 系统健康 - 自检
-    expect(w.text()).toContain('系统健康 - 自检')
-    expect(w.text()).toContain('总运行次数')
-    expect(w.text()).toContain('24')
-    expect(w.text()).toContain('95.8%')
-    expect(w.text()).toContain('成功')
-
     // 页脚提示
     expect(w.text()).toContain('提示：运营面板数据来自服务端缓存')
     expect(w.text()).toContain('数据时间范围：最近 7 天')
@@ -175,23 +161,7 @@ describe('BoardOperationalView', () => {
     expect(w.text()).not.toContain('分布分析')
   })
 
-  it('shows running chip for live discovery + handles missing nested data', async () => {
-    mockedFetchOperational.mockResolvedValueOnce({
-      background_tasks: {
-        discovery: { running: true, status: 'running' },
-        probe_loop: {},
-      },
-      selfcheck: { total_runs_24h: 0 },
-    })
-    mockedFetchBoard.mockResolvedValueOnce(SAMPLE_BOARD)
-    const w = mount(BoardOperationalView, { global: { plugins: [testI18n] } })
-    await flushPromises()
 
-    // running 状态
-    expect(w.text()).toContain('运行中')
-    // 缺字段的安全兜底
-    expect(w.text()).toContain('—')
-  })
 
   it('shows error message on fetch failure and keeps refresh button re-clickable', async () => {
     mockedFetchOperational.mockRejectedValueOnce(new Error('upstream 503'))
@@ -227,16 +197,7 @@ describe('BoardOperationalView', () => {
   })
 
   it('shows degradation warnings when present', async () => {
-    mockedFetchOperational.mockResolvedValueOnce({
-      background_tasks: {
-        degraded: true,
-        degraded_reason: 'discovery unavailable',
-      },
-      selfcheck: {
-        degraded: true,
-        degraded_reason: 'self-check unavailable',
-      },
-    })
+    mockedFetchOperational.mockResolvedValueOnce({})
     mockedFetchBoard.mockResolvedValueOnce({
       ...SAMPLE_BOARD,
       summary: {
@@ -252,7 +213,5 @@ describe('BoardOperationalView', () => {
 
     expect(w.text()).toContain('数据源不可用')
     expect(w.text()).toContain('趋势数据降级')
-    expect(w.text()).toContain('discovery unavailable')
-    expect(w.text()).toContain('self-check unavailable')
   })
 })

@@ -3,10 +3,10 @@ import { computed } from 'vue'
 import { ElOption, ElSelect } from 'element-plus'
 import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../ui/kx-date-types'
+import ModelPicker from '../ModelPicker.vue'
 import type { TurnsFilterOptions } from '../../api/turns'
 import {
   activeFilterChips,
-  localDatetime,
   type TurnsFilterState,
   type TurnsGroupBy,
 } from './turnsListHelpers'
@@ -28,15 +28,6 @@ const emit = defineEmits<{
   clearChip: [string]
 }>()
 
-const timePresets = [
-  { value: 'all', label: '时间不限' },
-  { value: 'h1', label: '最近 1 小时' },
-  { value: 'h24', label: '最近 24 小时' },
-  { value: 'd3', label: '最近 3 天' },
-  { value: 'd7', label: '最近 7 天' },
-  { value: 'custom', label: '自定义时间段' },
-]
-
 const groupModes: { value: TurnsGroupBy; label: string }[] = [
   { value: 'project', label: '按项目' },
   { value: 'owner', label: '按用户' },
@@ -46,12 +37,16 @@ const groupModes: { value: TurnsGroupBy; label: string }[] = [
 ]
 
 const chips = computed(() => activeFilterChips(props.state))
-const showCustomRange = computed(() => props.state.timePreset === 'custom')
+
+// 「更多筛选」计数：排除搜索/模型/时间（它们在基本行，不在高级区）。
 const advancedCount = computed(() => chips.value.filter(c =>
   !['search', 'model', 'time'].includes(c.key)).length)
 
 // 2026-09-30 统一日历轮：custom 分支换 KxDateRangePicker（datetime 精度）。
 // state.dateFrom/dateTo 为 localDatetime 的 'YYYY-MM-DDTHH:mm'，与组件契约仅差分隔符。
+// 2026-11-19 时间范围统一轮：头部已有完整预设选择器，这里只保留 custom 微调入口。
+const showCustomRange = computed(() => props.state.timePreset === 'custom')
+
 const customRangeValue = computed<KxDateRange | null>(() => {
   const from = props.state.dateFrom
   const to = props.state.dateTo
@@ -71,23 +66,6 @@ function onKxRangeApply(range: KxDateRange) {
 function patch(partial: Partial<TurnsFilterState>) {
   emit('update:state', { ...props.state, ...partial })
 }
-
-function onPresetChange(value: string) {
-  if (value === 'custom') {
-    patch({ timePreset: 'custom' })
-    return
-  }
-  if (value === 'all') {
-    patch({ timePreset: 'all', dateFrom: '', dateTo: '' })
-    emit('query')
-    return
-  }
-  const hours: Record<string, number> = { h1: 1, h24: 24, d3: 72, d7: 168 }
-  const h = hours[value] || 0
-  const from = new Date(Date.now() - h * 3600 * 1000)
-  patch({ timePreset: value, dateFrom: localDatetime(from), dateTo: '' })
-  emit('query')
-}
 </script>
 
 <template>
@@ -103,6 +81,9 @@ function onPresetChange(value: string) {
       >{{ mode.label }}</button>
     </div>
 
+    <!-- 2026-11-19 时间范围统一轮：时间选择移至页面右上角（TurnsListView 头部），
+         筛选区不再放时间下拉。主题（搜索）与模型放同一行；模型换全站
+         ModelPicker（multi 模式，后端 ?model=a,b 走 ANY 数组）。 -->
     <div class="filter-row-topic-time">
       <input
         :value="state.search"
@@ -112,13 +93,16 @@ function onPresetChange(value: string) {
         @input="patch({ search: ($event.target as HTMLInputElement).value })"
         @keyup.enter="emit('query')"
       />
-      <select
-        :value="state.timePreset"
-        class="filter-input filter-preset"
-        @change="onPresetChange(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="p in timePresets" :key="p.value" :value="p.value">{{ p.label }}</option>
-      </select>
+      <div class="filter-model-picker">
+        <ModelPicker
+          :model-value="state.model"
+          mode="multi"
+          compact
+          placeholder="模型（可多选）"
+          title="选择模型"
+          @update:model-value="(v: string | string[]) => { patch({ model: Array.isArray(v) ? v : [] }); emit('query') }"
+        />
+      </div>
       <KxDateRangePicker
         v-if="showCustomRange"
         :model-value="customRangeValue"
@@ -130,15 +114,6 @@ function onPresetChange(value: string) {
     </div>
 
     <div class="filter-bar">
-      <el-select
-        :model-value="state.model"
-        filterable allow-create default-first-option clearable
-        placeholder="模型"
-        class="filter-select"
-        @update:model-value="(v: string) => { patch({ model: v || '' }); emit('query') }"
-      >
-        <el-option v-for="v in filterOptions.models" :key="v" :label="v" :value="v" />
-      </el-select>
       <button class="btn btn-primary" type="button" @click="emit('query')">查询</button>
       <button class="btn btn-secondary" type="button" @click="emit('reset')">清空</button>
       <button class="btn btn-secondary" type="button" @click="emit('update:advancedExpanded', !advancedExpanded)">
@@ -208,6 +183,8 @@ function onPresetChange(value: string) {
 .filter-advanced { padding: 8px; border: 1px dashed var(--border); border-radius: 6px; background: var(--surface-secondary); }
 .filter-input { height: 36px; padding: 4px 12px; background: var(--surface-primary); border: 1px solid var(--border); border-radius: 6px; font-size: 14px; min-width: 140px; box-sizing: border-box; }
 .filter-topic { min-width: 260px; flex: 1 1 260px; }
+.filter-model-picker { flex: 0 0 auto; width: 220px; }
+.filter-model-picker :deep(.mp-trigger) { min-height: 36px; }
 .filter-preset { min-width: 130px; flex: 0 0 auto; }
 .filter-date-range { flex: 1 1 320px; max-width: 420px; }
 .filter-date-range :deep(.el-input__wrapper) {

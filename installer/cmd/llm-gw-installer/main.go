@@ -1805,21 +1805,40 @@ var piAnalysisStatsViewAlignment980 []byte
 //go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.down.sql
 var piAnalysisStatsViewAlignment980Down []byte
 
-// ★ 990（2026-11-19 统计一致性审计轮）：stats_consistency_fixes——session_summaries
+// ★ 981（2026-11-19 会话分析系统基础设施）：为 sessions 表添加元数据列，创建物化视图。
 //
-//	积分/TTFT 列 + stats_usage_daily/monthly 成本分解列 + stats_consistency_check
-//	对账视图 + 重写 update_session_summary()（触发器已随 v1 族退役，函数体为
-//	死代码；登记纪律见迁移文件头注释）。
+//	为会话分析系统创建基础设施：
+//	- sessions 表新增 project/task/task_category/is_probe 四列
+//	- 创建 4 个物化视图：user_session_aggregates, project_task_aggregates,
+//	  agent_usage_aggregates, model_usage_aggregates
+//	- 创建刷新函数：refresh_session_analytics_view(), refresh_all_session_analytics_views()
+//	- 自动标记探测会话并首次数据填充
+//
+//go:embed embeddata/startup/981_session_analytics_foundation.sql
+var sessionAnalyticsFoundation981 []byte
+
+//go:embed embeddata/startup/981_session_analytics_foundation.down.sql
+var sessionAnalyticsFoundation981Down []byte
+
+// ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
+//
+//	★ 2026-11-19 文档一致性轮补五点同步——并行车首提交只写了正典，
+//	embeddata/runner/序列清单/tsv 四处全缺（embed 同步门已红）。
 //
 //go:embed embeddata/startup/990_stats_consistency_fixes.sql
 var statsConsistencyFixes990 []byte
 
-// ★ 991（2026-11-19 统计 API 时区标准化轮）：stats_timezone_standardization——
-//
-//	utc_day_start/utc_today/utc_days_ago 三函数 + migration_metadata 登记表自建。
-//
 //go:embed embeddata/startup/991_stats_timezone_standardization.sql
 var statsTimezoneStandardization991 []byte
+
+// ★ 992（2026-11-19 CST 业务时区函数轮）：add_cst_timezone_functions——
+//
+//	cst_* 函数族（Asia/Shanghai UTC+8），与 991 的 utc_* 族并存。
+//	★ 2026-11-19 补五点同步——首提交只写了正典/runner/序列清单，
+//	embeddata/map/tsv/db-changelog 四处缺（embed 同步门红）。
+//
+//go:embed embeddata/startup/992_add_cst_timezone_functions.sql
+var cstTimezoneFunctions992 []byte
 
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
@@ -2447,11 +2466,13 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：视图口径对齐。
 	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
 	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
-	// ★ 990（2026-11-19 统计一致性审计轮）：积分/TTFT/成本分解列 + 对账视图
-	//   + update_session_summary 重写（死代码，通道纪律见迁移文件头）。
-	"startup/990_stats_consistency_fixes.sql": statsConsistencyFixes990,
-	// ★ 991（2026-11-19 统计 API 时区标准化轮）：UTC 日边界函数 + migration_metadata 自建。
+	// ★ 981（2026-11-19 会话分析系统基础轮）：元数据列 + 物化视图。
+	"startup/981_session_analytics_foundation.sql":      sessionAnalyticsFoundation981,
+	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
+	// ★ 990/991（2026-11-19 stats 统计口径轮）：统计一致性修复 + 时区标准化。
+	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
+	"startup/992_add_cst_timezone_functions.sql":     cstTimezoneFunctions992,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

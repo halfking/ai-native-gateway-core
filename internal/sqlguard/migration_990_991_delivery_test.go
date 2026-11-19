@@ -38,7 +38,7 @@ func TestMigration990StatsConsistencyFixesDelivered(t *testing.T) {
 	if !strings.Contains(exec, "CREATE OR REPLACE VIEW stats_consistency_check AS") {
 		t.Fatalf("990 缺 stats_consistency_check 对账视图")
 	}
-	// ③ 锁预算声明（>870 启动迁移纪律）。
+	// ③ 锁预算声明（>870 启动迁移纪律；本件含 ALTER TABLE 强锁 DDL）。
 	if !strings.Contains(exec, "SET LOCAL lock_timeout") {
 		t.Fatalf("990 缺 SET LOCAL lock_timeout ⇒ 部署通道强锁 DDL 无预算护栏")
 	}
@@ -95,15 +95,26 @@ func TestMigration991TimezoneStandardizationDelivered(t *testing.T) {
 			t.Fatalf("991 缺辅助函数: %q", fn)
 		}
 	}
-	// ② migration_metadata 隐含依赖必须自建（首版裸 INSERT 是 42P01 雷：
-	//    全仓此前零建表方，installer 增量模式每次 boot 都会撞）。
-	if !strings.Contains(exec, "CREATE TABLE IF NOT EXISTS migration_metadata") {
-		t.Fatalf("991 缺 migration_metadata 自建 ⇒ 无表库上 42P01（installer 增量模式每次 boot 撞）")
+	// ② 自登记（≥952 纪律）+ 首版 42P01 雷已收口（合并采纳上游字节：
+	//    上游以「删引用」收口——原 INSERT INTO migration_metadata 指向不存在的
+	//    表，改回 schema_migrations 自登记，不建表；我方原加固是建表方案，
+	//    两方案等价消除 42P01，采纳已部署面）。
+	if !strings.Contains(exec, "INSERT INTO public.schema_migrations") {
+		t.Fatalf("991 缺 schema_migrations 自登记（≥952 纪律）")
 	}
-	// ③ 锁预算声明（>870 启动迁移纪律）。
-	if !strings.Contains(exec, "SET lock_timeout") {
-		t.Fatalf("991 缺 SET lock_timeout ⇒ 部署通道无预算护栏")
+	//    防回归：活体 INSERT 不得再指向 migration_metadata（注释提及不算）。
+	for _, line := range strings.Split(exec, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		if strings.Contains(trimmed, "INSERT INTO migration_metadata") {
+			t.Fatalf("991 仍有活体 INSERT INTO migration_metadata ⇒ 无表库上 42P01（installer 增量模式每次 boot 撞）")
+		}
 	}
+	// ③ 锁预算声明：**不适用**（上游字节本件纯函数无强锁 DDL，与 992 同口径；
+	//    合并前我方加固版带 SET lock_timeout，采纳上游后此处不设断言——
+	//    >870 锁预算纪律只对含强锁 DDL 的迁移强制）。
 	// ④ 台账自登记（≥952 纪律）。
 	if !strings.Contains(exec, "VALUES ('991',") {
 		t.Fatalf("991 缺 schema_migrations 自登记（≥952 纪律）")

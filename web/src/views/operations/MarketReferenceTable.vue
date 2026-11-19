@@ -11,6 +11,7 @@ import {
 
 const props = defineProps<{
   globalModels?: string[] // 全局模型过滤
+  globalPlatform?: string // 全局平台过滤
 }>()
 
 const { t } = useI18n()
@@ -35,6 +36,10 @@ async function load() {
       const modelsSet = new Set(props.globalModels)
       resultItems = resultItems.filter(item => modelsSet.has(item.canonical_name))
     }
+    // 如果有全局平台过滤，根据 market_min_platform_id 筛选
+    if (props.globalPlatform) {
+      resultItems = resultItems.filter(item => item.market_min_platform_id === props.globalPlatform)
+    }
     items.value = resultItems
     syncDate.value = res.sync?.[0]?.run_date || ''
     loadFailed.value = false
@@ -50,8 +55,8 @@ async function load() {
 }
 onMounted(load)
 
-// 2026-11-19：监听全局模型过滤变化，自动刷新
-watch(() => props.globalModels, () => {
+// 2026-11-19：监听全局模型过滤和平台过滤变化，自动刷新
+watch(() => [props.globalModels, props.globalPlatform], () => {
   load()
 }, { deep: true })
 

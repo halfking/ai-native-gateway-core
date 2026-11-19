@@ -20,6 +20,8 @@ import { probeModel, type ProbeResult } from '../api'
 import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import ModelPicker from '../components/ModelPicker.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 
 const { t } = useI18n()
 
@@ -50,6 +52,18 @@ const detailKey = computed(() => {
 const isDetailView = computed(() => activeTab.value === 'settings' && !!detailKey.value)
 
 // ── Overview data ─────────────────────────────────────
+// 2026-11-19 时间范围统一轮：统计窗口从固定 24h 参数化（后端 ?days=），
+// 与全站 KxDateRangePicker 同一 span 口径；默认仍 1 天（= 旧行为 24h 窗）。
+const statsDays = ref(1)
+const { presets: dayPresets, rangeValue: statsRange, applyRange: applyStatsRange } = useSpanDaysRange(statsDays, [
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+/** 窗口标签（跟随后端返回；缺省 24h 兼容旧响应） */
+const windowLabel = computed(() => stats.value?.window ?? '24h')
+
 const audit = ref<AutoRouteAudit>({
   total_auto_requests: 0, success_rate: 0,
   task_distribution: {}, profile_distribution: {}, top_chosen_models: [],
@@ -63,7 +77,7 @@ async function loadOverview() {
   try {
     const [a, s, d] = await Promise.all([
       getAutoRouteAudit(),
-      getWorkTypeStats(),
+      getWorkTypeStats(statsDays.value),
       getAutoRouteDecisions(10),
     ])
     audit.value = a
@@ -77,14 +91,17 @@ async function loadOverview() {
   }
 }
 
+// 窗口切换即重拉（时间范围是统计的语义组成部分，不是独立筛选）。
+watch(statsDays, () => { loadOverview() })
+
 const wtStatsEntries = computed(() => {
   if (!stats.value) return []
   return Object.values(stats.value.by_work_type)
-    .sort((a, b) => b.count_24h - a.count_24h)
+    .sort((a, b) => (b.count_window ?? b.count_24h) - (a.count_window ?? a.count_24h))
     .slice(0, 10)
 })
 
-const wtStatsMax = computed(() => Math.max(...wtStatsEntries.value.map(e => e.count_24h), 1))
+const wtStatsMax = computed(() => Math.max(...wtStatsEntries.value.map(e => e.count_window ?? e.count_24h), 1))
 
 function distEntries(d: Record<string, number>): Array<[string, number]> {
   return Object.entries(d).sort((a, b) => b[1] - a[1])
@@ -525,10 +542,21 @@ watch(activeTab, (tab) => {
         <button class="btn btn-sm btn-ghost refresh-btn" @click="activeTab === 'overview' ? loadOverview() : loadSettings()" :title="t('workTypes.topBar.refresh')"><Refresh /></button>
       </div>
       <div class="hero-stats">
-        <span class="chip">{{ t('workTypes.topBar.chipAuto24h') }} <strong>{{ stats?.total_auto ?? audit.total_auto_requests }}</strong></span>
+        <span class="chip">{{ t('workTypes.topBar.chipAutoWindow', { window: windowLabel }) }} <strong>{{ stats?.total_auto ?? audit.total_auto_requests }}</strong></span>
         <span class="chip">{{ t('workTypes.topBar.chipType') }} <strong>{{ workTypes.length || wtStatsEntries.length }}</strong></span>
         <span class="chip">{{ t('workTypes.topBar.chipSuccessRate') }} <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
         <span v-if="syncMeta?.last_synced_at" class="chip">{{ t('workTypes.topBar.chipLastSync') }} <strong>{{ formatDateTime(syncMeta.last_synced_at) }}</strong></span>
+      </div>
+      <!-- 2026-11-19 时间范围统一轮：统计窗口与全站 KxDateRangePicker 同口径 -->
+      <div v-if="activeTab === 'overview'" class="wt-range-bar">
+        <span class="wt-range-label">{{ t('common.dateRange.title') }}</span>
+        <KxDateRangePicker
+          :model-value="statsRange"
+          :presets="dayPresets"
+          :max-span-days="90"
+          :disabled="loading"
+          @apply="applyStatsRange"
+        />
       </div>
     </div>
 
@@ -565,21 +593,21 @@ watch(activeTab, (tab) => {
         <div class="card compact-card">
           <div class="section-head tight">
             <span class="layer-tag l1">WT</span>
-            <h3>{{ t('workTypes.overview.wtDistTitle') }}</h3>
+            <h3>{{ t('workTypes.overview.wtDistWindow', { window: windowLabel }) }}</h3>
           </div>
           <div v-if="loading" class="loading-hint">{{ t('workTypes.loading') }}</div>
           <div v-else-if="wtStatsEntries.length" class="dist-col full">
             <div v-for="e in wtStatsEntries" :key="e.key" class="dist-row clickable" @click="router.push({ path: '/routing-v2', query: { tab: 'analytics', row: 'work_type', filter: e.key } })">
               <span class="dist-label" :title="e.key">{{ e.label }}</span>
-              <div class="dist-bar-bg"><div class="dist-bar-fill accent" :style="{ width: (e.count_24h / wtStatsMax * 100) + '%' }" /></div>
-              <span class="dist-count">{{ e.count_24h }}</span>
+              <div class="dist-bar-bg"><div class="dist-bar-fill accent" :style="{ width: ((e.count_window ?? e.count_24h) / wtStatsMax * 100) + '%' }" /></div>
+              <span class="dist-count">{{ e.count_window ?? e.count_24h }}</span>
             </div>
           </div>
-          <div v-else class="text-muted">{{ t('workTypes.overview.wtNoData') }}</div>
+          <div v-else class="text-muted">{{ t('workTypes.overview.wtNoDataWindow', { window: windowLabel }) }}</div>
         </div>
 
         <div class="card compact-card">
-          <div class="section-head tight"><h3>{{ t('workTypes.overview.modelTopTitle') }}</h3></div>
+          <div class="section-head tight"><h3>{{ t('workTypes.overview.modelTopWindow', { window: windowLabel }) }}</h3></div>
           <table v-if="stats?.top_models?.length" class="dense-table">
             <thead><tr><th>{{ t('workTypes.overview.modelTopTableModel') }}</th><th>{{ t('workTypes.overview.modelTopTableCount') }}</th></tr></thead>
             <tbody>
@@ -982,6 +1010,14 @@ watch(activeTab, (tab) => {
 }
 
 .hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
+.wt-range-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.wt-range-label { font-weight: 600; white-space: nowrap; }
 .chip {
   display: inline-flex; align-items: center; gap: 3px;
   padding: 2px 8px;

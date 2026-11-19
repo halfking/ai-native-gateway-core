@@ -104,7 +104,26 @@ const trendExplorerQuery = computed(() => {
 
 <template>
   <div class="board-panel">
-    <BoardOpsBar :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
+    <!-- 2026-11-20 合并行轮（owner）：筛选条与运维状态（后台任务/系统自检）合成一行
+         ——顶部条隐藏「数据源」徽标，行尾交给 BoardOpsBar 的两枚 chips，
+         压掉独立 ops-bar 行，降低标题区高度。
+         2026-11-19 二轮契约不变：本条与下方（模型分布块上方）的筛选条是同一份
+         BoardTimeRange 状态的两个入口，任一处改范围两处与全部数据同步。 -->
+    <BoardFilterBar
+      compact
+      hide-source
+      :time-range="timeRange"
+      :range-value="rangeValue"
+      :loading="loading"
+      :source="board?.source"
+      @apply-range="onApplyRange"
+      @refresh="boardState.load()"
+      @more="router.push({ path: '/admin/usage-trends', query: trendExplorerQuery })"
+    >
+      <template #ops>
+        <BoardOpsBar :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
+      </template>
+    </BoardFilterBar>
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />
     <BoardMiniRow :board="board" :time-range="timeRange" :loading="loading" />
     <BoardProviderSection :board="board" :time-range="timeRange" :time-query="timeQuery" :loading="loading" />

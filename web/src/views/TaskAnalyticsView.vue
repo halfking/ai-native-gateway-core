@@ -22,8 +22,8 @@ const data = ref<TaskAnalyticsDetail | null>(null)
 const errorMessage = ref<string | null>(null)
 const days = ref(30)
 const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
-  { days: 7, labelKey: 'sessions.stats.last7Days' },
-  { days: 30, labelKey: 'sessions.stats.last30Days' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 

@@ -26,6 +26,9 @@ import {
   type TuningProposalCategory,
 } from '../api/tuning'
 import DataTable from '../components/ui/DataTable.vue'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../components/ui/kx-date-types'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 
 const { t } = useI18n()
 
@@ -51,6 +54,20 @@ const accuracyError = ref('')
 // API encodes a nil Go slice as JSON null. Reading .length on that blanks the page.
 const proposalList = computed(() => proposals.value ?? [])
 const accuracyList = computed(() => accuracyRows.value ?? [])
+
+// 使用 useSpanDaysRange 管理准确度天数与日期范围的双向绑定
+const { presets: accuracyPresets, rangeValue: accuracyDateRange, applyRange: applyAccuracyRange } = useSpanDaysRange(accuracyDays, [
+  { days: 1, labelKey: 'common.dateRange.preset.today' },
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 14, labelKey: 'common.dateRange.preset.last14d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+])
+
+// 应用准确度日期范围变更
+function handleAccuracyRangeApply(range: KxDateRange) {
+  applyAccuracyRange(range)
+  loadAccuracy()
+}
 
 const statusTabs = computed(() => [
   { value: '' as StatusFilter, label: t('autoTuning.filter.statusAll') },
@@ -97,6 +114,18 @@ async function loadAccuracy() {
 const generating = ref(false)
 const generateDays = ref(30)
 const analyzing = ref(false)
+
+// 使用 useSpanDaysRange 管理生成窗口天数与日期范围的双向绑定
+const { presets: generatePresets, rangeValue: generateDateRange, applyRange: applyGenerateRange } = useSpanDaysRange(generateDays, [
+  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
+  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+
+// 应用生成窗口日期范围变更（不自动触发生成，只更新天数）
+function handleGenerateRangeApply(range: KxDateRange) {
+  applyGenerateRange(range)
+}
 
 // P1 回路 C：从人工修正生成提案草稿（读取 → 过闸 → 草稿 → 内联回放 → 待审）。
 async function generate() {
@@ -338,14 +367,15 @@ onMounted(() => {
 
     <div class="section-header">
       <h3>{{ t('autoTuning.accuracy.title') }}</h3>
-      <label class="inline-label">
-        {{ t('autoTuning.accuracy.days') }}
-        <select v-model.number="accuracyDays" class="select-sm" @change="loadAccuracy">
-          <option :value="1">1</option>
-          <option :value="7">7</option>
-          <option :value="30">30</option>
-        </select>
-      </label>
+      <div class="filter-time-range">
+        <label>{{ t('autoTuning.accuracy.days') }}:</label>
+        <KxDateRangePicker 
+          :model-value="accuracyDateRange"
+          :presets="accuracyPresets"
+          :max-span-days="365"
+          @apply="handleAccuracyRangeApply"
+        />
+      </div>
     </div>
 
     <div v-if="accuracyError" class="alert alert-danger" role="alert">{{ accuracyError }}</div>
@@ -553,5 +583,18 @@ onMounted(() => {
 .generated-at {
   font-size: 12px;
   margin-top: 8px;
+}
+
+.filter-time-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-time-range label {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 </style>

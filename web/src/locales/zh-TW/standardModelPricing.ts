@@ -35,9 +35,11 @@ export default {
     summary: '手工 {custom}：全域 {defaults} / {total}',
     allVendors: '全部廠商',
     allModes: '全部定價',
+    allPlatforms: '全部平台',
     count: '共 {count} 個模型',
     vendorLabel: '廠商',
     modeLabel: '定價模式',
+    platformLabel: '平台',
     selectedModels: '已選擇的模型',
   },
   table: {

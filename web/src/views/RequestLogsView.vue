@@ -34,6 +34,7 @@ import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { makeDateRangePresets, spanDaysPreset } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import { Lightning } from '@element-plus/icons-vue'
 const { isSpanning } = useViewportSegments()
@@ -190,26 +191,6 @@ function onTimePresetChange() {
 
 // 2026-08-10: 时间范围预设项（滑动窗口 + 自然日历）。
 // 非 default 租户最多查看 3 天，跨上限的选项（thisWeek/thisMonth/thisYear/d7）禁用。
-interface TimePresetOption {
-  value: TimePreset
-  label: string
-  group: 'window' | 'calendar'
-  disabled?: boolean
-  separator?: boolean
-}
-const timePresetOptions = computed<TimePresetOption[]>(() => [
-  { value: 'h1', label: t('requests.list.filter.timeOptions.h1'), group: 'window' },
-  { value: 'h6', label: t('requests.list.filter.timeOptions.h6'), group: 'window' },
-  { value: 'h24', label: t('requests.list.filter.timeOptions.h24'), group: 'window' },
-  { value: 'd3', label: t('requests.list.filter.timeOptions.d3'), group: 'window' },
-  { value: 'd7', label: t('requests.list.filter.timeOptions.d7'), group: 'window', disabled: !isDefaultTenant() },
-  { value: 'today', label: t('requests.list.filter.timeOptions.today'), group: 'calendar', separator: true },
-  { value: 'thisWeek', label: t('requests.list.filter.timeOptions.thisWeek'), group: 'calendar', disabled: !isDefaultTenant() },
-  { value: 'thisMonth', label: t('requests.list.filter.timeOptions.thisMonth'), group: 'calendar', disabled: !isDefaultTenant() },
-  { value: 'thisYear', label: t('requests.list.filter.timeOptions.thisYear'), group: 'calendar', disabled: !isDefaultTenant() },
-  { value: 'custom', label: t('requests.list.filter.timeOptions.custom'), group: 'calendar' },
-])
-
 // 2026-08-10: 「按模型统计」段是否因选择了单一模型过滤而隐藏。只有
 // 该场景下才隐藏按钮；无模型过滤（含宽时间窗导致 by_model 为空）时
 // 仍保持可见可展开。
@@ -231,13 +212,6 @@ const activeFilterCount = computed(() => {
   if (gwTaskFilter.value.trim() !== '') count++
   return count
 })
-
-// 点击预设 chip 选择时间范围，复用 onTimePresetChange 的租户降级逻辑。
-function selectPreset(value: TimePreset) {
-  if (value === timePreset.value) return
-  timePreset.value = value
-  onTimePresetChange()
-}
 
 // 一键清空全部条件：重置到默认 h24 并重载。
 function clearAllFilters() {
@@ -407,14 +381,110 @@ const customRangeValue = computed<KxDateRange | null>(() => {
   return { start: isoToLocalMinute(s), end: isoToLocalMinute(e) }
 })
 
-function onKxRangeApply(range: KxDateRange) {
-  // isoToLocalMinute 的对偶方向：'YYYY-MM-DD HH:mm' 无秒非规范格式，走补秒解析（P3-3）
+// ── 2026-11-19 时间范围统一轮：右上角统一 KxDateRangePicker ──────────────
+// owner 口径：时间选择放页面右上角、与普通筛选条件分开，并使用全站统一的
+// 时间范围组件（今天/昨天/近24小时/近7天/近14天/近30天/本月/上月/自定义，
+// 预设最晚到今天结束）。内部仍落到既有 TimePreset 状态机上，兼容深链
+// ?preset=/?hours= 与非 default 租户 3 天钳制，不新增数据口径。
+const kxPresets = computed(() => {
+  if (isDefaultTenant()) {
+    return makeDateRangePresets('datetime', ['today', 'yesterday', 'last24h', 'last7d', 'last14d', 'last30d', 'thisMonth', 'lastMonth'])
+  }
+  // 非 default 租户最多 3 天：近 3 天档用 spanDaysPreset（近 7/30 天不可选）。
+  return [
+    ...makeDateRangePresets('datetime', ['today', 'yesterday', 'last24h']),
+    spanDaysPreset(3, 'common.dateRange.preset.last3d', 'datetime'),
+  ]
+})
+
+// 近 N 天滚动窗（含今天）→ 分钟级窗口（本地时区）。
+function rollingWindowMinute(daysBack: number): KxDateRange {
+  const now = new Date()
+  const start = new Date(now.getTime() - daysBack * 24 * 3600 * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return { start: fmt(start), end: fmt(now) }
+}
+
+// TimePreset（含滚动小时窗）→ KxDateRange 面板值；d3 无标准预设 id，用
+// rollingWindowMinute 表达（3 天=近 72h）。custom 未选完时给 24h 兜底窗。
+const kxRangeValue = computed<KxDateRange>(() => {
+  const hours: Partial<Record<TimePreset, number>> = { h1: 1, h6: 6, h24: 24 }
+  if (hours[timePreset.value]) return rollingWindowMinute(hours[timePreset.value]!)
+  if (timePreset.value === 'd3') return rollingWindowMinute(3)
+  if (timePreset.value === 'd7') {
+    return makeDateRangePresets('datetime', ['last7d'])[0].resolve()
+  }
+  if (timePreset.value === 'custom') {
+    return customRangeValue.value ?? rollingWindowMinute(1)
+  }
+  // today/thisWeek/thisMonth/thisYear → 自然日历窗（本地时区，最晚到今天结束）
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const dayKey = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  const today = dayKey(now)
+  const endOfToday = `${today} 23:59`
+  switch (timePreset.value) {
+    case 'today':
+      return { start: `${today} 00:00`, end: endOfToday }
+    case 'thisWeek': {
+      const dow = now.getDay() || 7
+      const monday = new Date(now)
+      monday.setDate(now.getDate() - (dow - 1))
+      return { start: `${dayKey(monday)} 00:00`, end: endOfToday }
+    }
+    case 'thisMonth':
+      return { start: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01 00:00`, end: endOfToday }
+    case 'thisYear':
+      return { start: `${now.getFullYear()}-01-01 00:00`, end: endOfToday }
+    default:
+      return rollingWindowMinute(1)
+  }
+})
+
+// 右上角统一选择器的 apply：把 Kx 范围映射回 TimePreset + customDateRange。
+// 能对齐标准预设的走预设分支（today/h24/d7/thisMonth 有对应 TimePreset），
+// 其余（昨天/近14天/近30天/自定义分钟级）一律落 custom（分钟级 ISO）。
+function onHeaderRangeApply(range: KxDateRange) {
+  const presetById: Record<string, TimePreset> = {
+    today: 'today', last24h: 'h24', last7d: 'd7', thisMonth: 'thisMonth',
+  }
+  let matched = ''
+  for (const preset of kxPresets.value) {
+    const r = preset.resolve()
+    if (r.start === range.start && r.end === range.end) {
+      matched = preset.id
+      break
+    }
+  }
+  const next = presetById[matched]
+  if (next) {
+    timePreset.value = next
+    customDateRange.value = null
+    onTimePresetChange()
+    return
+  }
   const s = parseLocalMinute(range.start)
   const e = parseLocalMinute(range.end)
   if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e <= s) return
+  timePreset.value = 'custom'
   customDateRange.value = [s.toISOString(), e.toISOString()]
-  onCustomRangeChange()
+  normalizeTimePresetForTenant()
+  resetPageAndLoad()
 }
+
+// 当前值命中的标准预设 id（供调试/测试定位当前档位）。
+const matchedHeaderPresetId = computed(() => {
+  const value = kxRangeValue.value
+  for (const preset of kxPresets.value) {
+    const r = preset.resolve()
+    if (r.start === value.start && r.end === value.end) return preset.id
+  }
+  return ''
+})
+void matchedHeaderPresetId
 
 // 一键回到默认 24h
 function resetTimeFilter() {
@@ -1166,6 +1236,15 @@ onMounted(async () => {
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">请求日志</h2>
       <div style="display:flex;gap:8px;align-items:center">
+        <!-- 2026-11-19 时间范围统一轮：时间选择放页面右上角，与普通筛选条件
+             分开；统一使用全站 KxDateRangePicker。 -->
+        <KxDateRangePicker
+          :model-value="kxRangeValue"
+          :presets="kxPresets"
+          :max-span-days="isDefaultTenant() ? 0 : 3"
+          data-testid="request-logs-header-range"
+          @apply="onHeaderRangeApply"
+        />
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
@@ -1394,34 +1473,8 @@ onMounted(async () => {
       </div>
 
       <div v-show="showFilters" style="padding:12px;border-top:1px solid var(--border)">
-        <!-- 时间范围独立行：预设 chips + custom 日期选择器 -->
-        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
-          <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">时间范围</span>
-          <template v-for="opt in timePresetOptions" :key="opt.value">
-            <span v-if="opt.separator" aria-hidden="true" style="width:1px;height:22px;background:var(--border);margin:0 4px"></span>
-            <button
-              v-else
-              class="preset-chip"
-              :class="{ 'preset-chip--active': timePreset === opt.value, 'preset-chip--disabled': opt.disabled }"
-              :disabled="opt.disabled"
-              :title="opt.disabled ? '非 default 租户最多查看最近 3 天' : ''"
-              @click="selectPreset(opt.value)"
-            >
-              {{ opt.label }}
-            </button>
-          </template>
-          <KxDateRangePicker
-            v-if="timePreset === 'custom'"
-            :model-value="customRangeValue"
-            :presets="[]"
-            precision="datetime"
-            :max-span-days="isDefaultTenant() ? 0 : 3"
-            @apply="onKxRangeApply"
-          />
-          <button v-if="timePreset !== 'h24'" class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="重置为24小时" @click="resetTimeFilter">
-            ⟲ 重置
-          </button>
-        </div>
+        <!-- 2026-11-19 时间范围统一轮：时间选择已移至页面右上角
+             （request-logs-header-range），筛选区不再放时间控件。 -->
 
         <!-- 条件流式行：各控件按自然宽度排布，放满自动折行 -->
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -2063,26 +2116,6 @@ onMounted(async () => {
 }
 
 /* 2026-08-10: 时间范围预设 chips */
-.preset-chip {
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color 0.12s var(--kx-motion-ease-out), color 0.12s var(--kx-motion-ease-out), background 0.12s var(--kx-motion-ease-out);
-}
-.preset-chip:hover { border-color: var(--accent); color: var(--accent-h); }
-.preset-chip--active {
-  border-color: var(--accent);
-  color: var(--accent-h);
-  background: var(--info-bg);
-}
-.preset-chip--disabled { opacity: 0.45; cursor: not-allowed; }
-.preset-chip--disabled:hover { border-color: var(--border); color: var(--text); }
 
 /* 2026-08-10: 折叠筛选头部栏按钮去除按住拖拽文本选择 */
 .filter-section .filter-bar .btn { user-select: none; }

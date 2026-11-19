@@ -22,7 +22,9 @@ export interface TurnsDisplayGroup {
 
 export interface TurnsFilterState {
   search: string
-  model: string
+  /** 2026-11-19 时间范围统一轮：模型改 ModelPicker 多选（string[]），
+   *  buildTurnsParams 拼逗号交给后端 ANY 数组。 */
+  model: string[]
   provider: string
   statusCode: string
   projectId: string
@@ -35,6 +37,21 @@ export interface TurnsFilterState {
   dateFrom: string
   dateTo: string
   timePreset: string
+}
+
+/** 滚动窗预设 → 小时数（头部 KxDateRangePicker 与旧状态机共用的口径）。
+ *  all/custom 不在此表：all 表示无时间过滤，custom 走 dateFrom/dateTo。 */
+export const TURNS_TIME_PRESET_HOURS: Record<string, number> = {
+  h1: 1, h24: 24, d3: 72, d7: 168,
+}
+
+/** timePreset → 展示文案（chip 与头部选择器共用）。 */
+export function turnsTimePresetLabel(preset: string): string {
+  const labels: Record<string, string> = {
+    all: '时间不限', custom: '自定义时间',
+    h1: '最近 1 小时', h24: '最近 24 小时', d3: '最近 3 天', d7: '最近 7 天',
+  }
+  return labels[preset] || preset
 }
 
 export const NO_PROJECT = '未分类项目'
@@ -198,7 +215,11 @@ export function buildTurnsParams(
 ): { params: TurnsSessionsParams | null; error: string } {
   const params: TurnsSessionsParams = { limit: 20 }
   if (cursor) params.cursor = cursor
-  if (state.model.trim()) params.model = state.model.trim()
+  // 多模型：逗号拼接（后端 splitCommaList → ANY 数组；单值保持等值谓词）。
+  if (state.model.length) {
+    const models = state.model.map(m => m.trim()).filter(Boolean)
+    if (models.length) params.model = models.join(',')
+  }
   if (state.provider.trim()) params.provider = state.provider.trim()
   if (state.statusCode.trim()) {
     const code = Number(state.statusCode)
@@ -230,9 +251,14 @@ export interface FilterChip {
 export function activeFilterChips(state: TurnsFilterState): FilterChip[] {
   const chips: FilterChip[] = []
   if (state.search) chips.push({ key: 'search', label: `搜索：${state.search}` })
-  if (state.model) chips.push({ key: 'model', label: `模型：${state.model}` })
+  if (state.model.length) chips.push({
+    key: 'model',
+    label: state.model.length > 1
+      ? `模型：${state.model[0]} 等 ${state.model.length} 个`
+      : `模型：${state.model[0]}`,
+  })
   if (state.timePreset && state.timePreset !== 'all') {
-    chips.push({ key: 'time', label: state.timePreset === 'custom' ? '自定义时间' : `时间：${state.timePreset}` })
+    chips.push({ key: 'time', label: `时间：${turnsTimePresetLabel(state.timePreset)}` })
   }
   if (state.provider) chips.push({ key: 'provider', label: `供应商：${state.provider}` })
   if (state.statusCode) chips.push({ key: 'statusCode', label: `状态码：${state.statusCode}` })

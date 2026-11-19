@@ -386,7 +386,7 @@ func (h *Handler) handleTaskAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	// 3. 查询每日成本趋势（从session_summaries + session_dim实时计算）
 	// 时区标准化：使用UTC日边界而非本地CURRENT_DATE（migration 991）
 	trendArgs := []interface{}{taskID, days}
-	trendWhereClause := "WHERE sd.task_id = $1 AND ss.first_request_at >= utc_days_ago($2::INT)"
+	trendWhereClause := "WHERE sd.task_id = $1 AND ss.first_request_at >= cst_days_ago($2::INT)"
 	if tenantID != "" {
 		trendWhereClause += " AND ss.tenant_id = $3"
 		trendArgs = append(trendArgs, tenantID)

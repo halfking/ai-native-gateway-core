@@ -1958,20 +1958,25 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats）。
 			//   ★ 必须排在 971/977 **之后**（视图由 971 建、977 订正；不在场时本件守卫跳过）。
 			"980_pi_analysis_stats_view_alignment.sql",
-			// ★ 990（2026-11-19 统计一致性审计轮）：stats_consistency_fixes
-			//   —— session_summaries 补积分/TTFT 列 + stats_usage_daily/monthly 补
-			//   成本分解列 + stats_consistency_check 对账视图 + 重写
-			//   update_session_summary() 触发器函数体。
-			//   ★ 必须排在 971（建目标表）与 661（触发器函数既有链尾）之后；
-			//     触发器已随 v1 族退役（890）⇒ 函数体为死代码（见文件头注释）。
-			//   ★ 幂等（ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE / 台账
-			//     ON CONFLICT DO UPDATE）⇒ 存量库重放零冲突。
+			// ★ 981（2026-11-19 会话分析系统基础设施）：已修正列依赖，现已就绪。
+			//   为 sessions 表添加 project/task/task_category/is_probe 四列，
+			//   创建 4 个物化视图（user_session_aggregates, project_task_aggregates,
+			//   agent_usage_aggregates, model_usage_aggregates），创建刷新函数。
+			//   列名已修正为真实 schema：owner_user, total_tokens, total_cost_usd, total_turns。
+			"981_session_analytics_foundation.sql",
+			// ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
+			//   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
+			//   stats_consistency_check 视图（幂等；211 真库试跑通过）。
+			//   ★ 2026-11-19 文档一致性轮补五点同步（首提交只写正典）。
 			"990_stats_consistency_fixes.sql",
-			// ★ 991（2026-11-19 统计 API 时区标准化轮）：stats_timezone_standardization
-			//   —— utc_day_start/utc_today/utc_days_ago 三函数 + migration_metadata
-			//   登记表自建（幂等 IF NOT EXISTS）+ schema_migrations 自登记。
-			//   ★ 幂等（CREATE OR REPLACE FUNCTION / ON CONFLICT DO NOTHING）。
+			// ★ 991：stats_timezone_standardization——统计 API 时区标准化
+			//   （UTC 日边界辅助函数；真库试跑通过；自登记原指向不存在的
+			//   migration_metadata 表已改回 schema_migrations）。
 			"991_stats_timezone_standardization.sql",
+			// ★ 992（2026-11-19 CST业务时区函数轮）：add_cst_timezone_functions
+			//   —— 创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）
+			//   —— 面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐
+			"992_add_cst_timezone_functions.sql",
 		},
 	}
 }

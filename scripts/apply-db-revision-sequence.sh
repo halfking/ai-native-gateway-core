@@ -2758,7 +2758,7 @@ files=(
   #   v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats 新口径；
   #   幂等 CREATE OR REPLACE + 视图不在场守卫跳过）。
   "$ROOT_DIR/sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql"
-  # ★ 990（2026-11-19 统计一致性审计轮）：stats_consistency_fixes——
+  # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
   #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
   #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
   #   + stats_consistency_check 对账视图 + 重写 update_session_summary()。
@@ -2769,16 +2769,16 @@ files=(
   #   ★ **必须登记进 intentional_function_chains 的 update_session_summary
   #     链尾（661 之后）**——clobber 守卫按「通道内最后一次定义 = 终态体」判，
   #     少这行部署会在应用任何文件之前 abort（exit 5）（962 先例）。
-  #   ★ 幂等（ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE / 台账
-  #     ON CONFLICT DO UPDATE）⇒ 内容指纹重放零冲突。
+  #   ★ 2026-11-19 文档一致性轮补登记（首提交漏了本清单 ⇒ 211 docker 通道不会投递）。
   "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
-  # ★ 991（2026-11-19 统计 API 时区标准化轮）：stats_timezone_standardization——
-  #   utc_day_start/utc_today/utc_days_ago 三个 UTC 日边界辅助函数
-  #   + migration_metadata 登记表自建（首版裸 INSERT 是 42P01 雷，已守卫化）
-  #   + schema_migrations 自登记（≥952 纪律）。
-  #   ★ 幂等（CREATE OR REPLACE FUNCTION / CREATE TABLE IF NOT EXISTS /
-  #     ON CONFLICT DO NOTHING）⇒ 内容指纹重放零冲突。
+  # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
+  #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
+  #   不存在的 migration_metadata 表改回 schema_migrations）。
   "$ROOT_DIR/sql/migrations/startup/991_stats_timezone_standardization.sql"
+  # ★ 992（2026-11-19 CST业务时区函数轮）：add_cst_timezone_functions——
+  #   创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）；
+  #   面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐（幂等 CREATE OR REPLACE）。
+  "$ROOT_DIR/sql/migrations/startup/992_add_cst_timezone_functions.sql"
 )
 
 
@@ -2841,10 +2841,12 @@ legacy_content_replays=(
   #   252（共享 PG）手工应用（本地测试环境同：文件直跑 + 台账 ON CONFLICT 补录，
   #   sha 为 NULL 的遗留记账形态）⇒ 按内容指纹重放通道首跑时按当前内容重放一次
   #   并开始指纹管理。两件全幂等（ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE /
-  #   CREATE TABLE IF NOT EXISTS / 全部台账写入 ON CONFLICT）⇒ 重放零行为变化；
-  #   991 的 migration_metadata INSERT 对已建表库是 ON CONFLICT DO NOTHING no-op。
-  '990_stats_consistency_fixes.sql|68fc4b7a7bbad84b162ebfdf3899abd0839086e00c800aaf486fbe0f23269e26'
-  '991_stats_timezone_standardization.sql|0b05d6969eeae221cfdadecb129c620ce6100493863c1b44df6eb1a9224f39cb'
+  #   台账 ON CONFLICT DO UPDATE）⇒ 重放零行为变化。
+  #   ★ 2026-11-19 合流：正本采纳上游 245 已部署字节（e3ae272c…/eb5fec70…，
+  #   见 db-changelog「deploy 245 build_seq 3134」台账 applied+verified 行）；
+  #   指纹同步为上游正本实测值，遗留记账（NULL sha）按此收口。
+  '990_stats_consistency_fixes.sql|e3ae272caa3e659c20e6cc40b821a275d9bdd1202bafa11a2eb636367a0e9401'
+  '991_stats_timezone_standardization.sql|eb5fec70f9cfb295fe03e224f9a13686490f6251fe396b06068a0f2ddbec8df3'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -2960,6 +2962,7 @@ intentional_function_chains=(
   # itself is retired (890 physically dropped it with the v1 family), so the
   # body is dead code, but the clobber guard still requires the chain to end
   # at the LAST definition in this list — 990 must stay last.
+  # ★ 2026-11-19 合流注记：链尾 990 为双方同轮各自登记（链序=投递序）。
   'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|990_stats_consistency_fixes.sql|'
   # 2026-10-12 channel-leg registration: the candidate_failure_logs promote
   # chain as sequenced here is 392 (first partitioned promote) → 628 (v3,

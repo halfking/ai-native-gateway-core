@@ -24,7 +24,7 @@
 | `04-runbooks/operations/TODO_COMMUNITY_MODE.md` | md | active | 2026-08-17 |
 | `04-runbooks/operations/TODO_INDEX.md` | md | active | 2026-08-17 |
 | `04-runbooks/operations/TODO_MEMORY_DLQ.md` | md | active | 2026-08-17 |
-| `04-runbooks/operations/UPGRADE.md` | md | active | 2026-08-17 |
+| `04-runbooks/operations/UPGRADE.md` | md | active | 2026-11-19（整体重写：对齐当前 installer CLI 与在线/离线通道设计） |
 | `04-runbooks/ops/154-runbook.md` | md | active | 2026-08-15 |
 | `04-runbooks/ops/session-health-operations.md` | md | active | 2026-07-22 |
 | `04-runbooks/runbooks/ursm-v2-cutover.md` | md | active | 2026-08-17 |

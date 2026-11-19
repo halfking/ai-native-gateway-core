@@ -35,6 +35,8 @@ export default {
     summary: '手動 {custom}：グローバル {defaults} / {total}',
     allVendors: 'すべてのベンダー',
     allModes: 'すべての価格設定',
+    allPlatforms: 'すべてのプラットフォーム',
+    platformLabel: 'プラットフォーム',
     count: '{count} モデル',
     vendorLabel: 'ベンダー',
     modeLabel: '価格設定モード',

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // BoardFilterBar.vue — 看板全局筛选条（2026-09-30 重构轮，对齐效果图）。
 // 时间范围（统一 KxDateRangePicker）+ 粒度（首期只读「自动」）+ 刷新 + 数据源徽标（特有）。
-import { computed } from 'vue'
+import { computed, useSlots } from 'vue'
 import { useI18n } from 'vue-i18n'
 import KxDateRangePicker from '../ui/KxDateRangePicker.vue'
 import { makeDateRangePresets } from '../ui/kxDatePresets'
@@ -14,6 +14,10 @@ const props = defineProps<{
   rangeValue: KxDateRange | null
   loading?: boolean
   source?: string
+  /** 紧凑形态（2026-11-19 轮）：顶部那份与运维状态行（ops-bar 4px 12px 胶囊）对齐高度用 */
+  compact?: boolean
+  /** 隐藏「数据源」徽标（2026-11-20 合并行轮）：顶部那条把行尾位置让给运维 chips */
+  hideSource?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -23,6 +27,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const slots = useSlots()
 
 const presets = computed(() => makeDateRangePresets('date'))
 
@@ -43,7 +48,7 @@ const sourceKey = computed(() => {
 </script>
 
 <template>
-  <div class="bfb">
+  <div class="bfb" :class="{ 'bfb--compact': props.compact }">
     <div class="bfb__item">
       <span class="bfb__label">{{ t('dashboard.board.filterRange') }}</span>
       <KxDateRangePicker
@@ -74,9 +79,14 @@ const sourceKey = computed(() => {
     <button type="button" class="bfb__refresh" :disabled="loading" @click="emit('refresh')">
       ⟳ {{ t('dashboard.refresh') }}
     </button>
-    <span class="bfb__src" :title="t('dashboard.board.sourceTitle')">
+    <span v-if="!hideSource" class="bfb__src" :title="t('dashboard.board.sourceTitle')">
       {{ t('dashboard.board.sourceLabel') }}：<b>{{ sourceKey }}</b>
       <span class="bfb__src-dot" aria-hidden="true"></span>
+    </span>
+    <!-- 2026-11-20 合并行轮：顶部条隐藏数据源徽标后，行尾位置让给运维 chips
+         （后台任务/系统自检），与筛选控件合成一行，压掉独立 ops-bar 那一行。 -->
+    <span v-else-if="slots.ops" class="bfb__ops">
+      <slot name="ops" />
     </span>
   </div>
 </template>
@@ -91,6 +101,43 @@ const sourceKey = computed(() => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
+}
+/* 顶部实例：与 ops-bar 状态胶囊（4px 12px，28px 高）同高——条自身与内部控件
+   （触发器/粒度/刷新/更多/数据源）一起收紧，否则外层收了内层仍把条撑到 40px+。 */
+.bfb--compact {
+  padding: 3px 10px;
+  gap: 10px;
+}
+.bfb--compact :deep(.kx-dr-trigger) {
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.bfb--compact .bfb__label {
+  font-size: 11px;
+}
+.bfb--compact .bfb__gran {
+  padding: 2px 8px;
+}
+.bfb--compact .bfb__gran-auto {
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.bfb--compact .bfb__gran-value {
+  font-size: 10px;
+}
+.bfb--compact .bfb__refresh,
+.bfb--compact .bfb__more {
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.bfb--compact .bfb__src {
+  padding: 2px 8px;
+  font-size: 10px;
+}
+/* 合并行里的运维 chips 同步收紧（ops-chip 默认 4px 12px → 2px 10px），
+   保证单行高度不高于原 ops-bar 行。 */
+.bfb--compact .bfb__ops :deep(.ops-chip) {
+  padding: 2px 10px;
 }
 .bfb__item {
   display: inline-flex;
@@ -176,6 +223,17 @@ const sourceKey = computed(() => {
 }
 .bfb__src b {
   color: var(--text);
+}
+/* 运维 chips 容器：顶替数据源徽标占行尾（margin-left: auto 同位语义）。 */
+.bfb__ops {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.bfb__ops :deep(.ops-bar) {
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 .bfb__src-dot {
   width: 7px;
