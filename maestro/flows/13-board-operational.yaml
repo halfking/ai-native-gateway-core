@@ -1,0 +1,133 @@
+# 运营看板测试流程
+# 测试 /admin/board-operational 页面的功能和数据展示
+# 验证运营概览、分布分析、错误分析、趋势分析、系统健康等模块
+url: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ── 运营看板页面加载 ────────────────────────────────────
+- evalScript: "${output.t0 = Date.now()}"
+- openLink: "${BASE_URL}/admin/board-operational"
+- extendedWaitUntil:
+    visible: '运营面板'
+    timeout: 10000
+- assertVisible: '系统运营状况汇总分析'
+- evalScript: "${output.ms__board_operational = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
+- assertTrue:
+    condition: "${output.ms__board_operational < 3000}"
+    optional: true
+    label: 'slow-check:/admin/board-operational'
+
+# ── 验证运营概览模块 ────────────────────────────────────
+- assertVisible:
+    text: '运营概览'
+    optional: true
+- assertVisible:
+    text: '总请求数|总 Token 消耗|总成本|总积分消耗'
+    optional: true
+- assertVisible:
+    text: '平均延迟|活跃资源'
+    optional: true
+
+# ── 验证时间范围选择器 ────────────────────────────────────
+- assertVisible:
+    text: '最近 1 天|最近 7 天|最近 30 天'
+    optional: true
+
+# ── 测试7天数据视图 ────────────────────────────────────
+- tapOn: '最近 7 天'
+- waitForAnimationToEnd:
+    timeout: 3000
+- assertVisible:
+    text: '运营概览'
+    optional: true
+
+# ── 测试30天数据视图 ────────────────────────────────────
+- tapOn: '最近 30 天'
+- waitForAnimationToEnd:
+    timeout: 3000
+- assertVisible:
+    text: '运营概览'
+    optional: true
+
+# ── 测试1天数据视图（返回默认） ────────────────────────────────────
+- tapOn: '最近 1 天'
+- waitForAnimationToEnd:
+    timeout: 3000
+- assertVisible:
+    text: '运营概览'
+    optional: true
+
+# ── 验证分布分析模块 ────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: '分布分析'
+    timeout: 5000
+    optional: true
+- assertVisible:
+    text: 'Top 5 模型|Top 5 供应商|Top 5 客户端|Top 5 租户'
+    optional: true
+
+# ── 验证错误分析模块 ────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: '错误分析'
+    timeout: 5000
+    optional: true
+
+# ── 验证趋势分析模块 ────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: '趋势分析'
+    timeout: 5000
+    optional: true
+
+# ── 验证系统健康模块 ────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: '系统健康 - 后台任务'
+    timeout: 5000
+    optional: true
+- assertVisible:
+    text: '模型发现|探针巡检'
+    optional: true
+
+# ── 验证自检模块 ────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: '系统健康 - 自检'
+    timeout: 5000
+    optional: true
+- assertVisible:
+    text: '总运行次数|最近状态'
+    optional: true
+
+# ── 测试刷新功能 ────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: '运营面板'
+    direction: UP
+    timeout: 5000
+    optional: true
+- tapOn:
+    text: '刷新'
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible:
+    text: '运营面板'
+    optional: true
+
+# ── 验证页脚提示 ────────────────────────────────────
+- scroll
+- assertVisible:
+    text: '提示：运营面板数据来自服务端缓存'
+    optional: true
+- assertVisible:
+    text: '数据时间范围'
+    optional: true

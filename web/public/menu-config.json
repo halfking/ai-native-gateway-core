@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-18T20:07:44.987Z",
+  "exported_at": "2026-11-19T10:13:18.876Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -14,6 +14,15 @@
   },
   "primary": [
     {
+      "path": "/dashboard",
+      "labelKey": "nav.item.overview",
+      "icon": "📊",
+      "platformOps": true,
+      "exact": true,
+      "tenantScope": "default",
+      "pluginScope": "*"
+    },
+    {
       "path": "/live",
       "labelKey": "nav.item.liveTopology",
       "icon": "🛰",
@@ -26,15 +35,6 @@
       "path": "/live2",
       "labelKey": "nav.item.liveStageTree",
       "icon": "🌲",
-      "platformOps": true,
-      "exact": true,
-      "tenantScope": "default",
-      "pluginScope": "*"
-    },
-    {
-      "path": "/dashboard",
-      "labelKey": "nav.item.overview",
-      "icon": "📊",
       "platformOps": true,
       "exact": true,
       "tenantScope": "default",
