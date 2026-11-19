@@ -10,6 +10,7 @@ export default {
   rerunFailed: '再実行を完了できませんでした。再試行してください。',
   // カバー範囲 / 空状態
   daysCovered: '日分のスナップショット',
+  todayPendingHint: '（本日のスナップショットは翌日生成）',
   unaggregatedDay: '未集計',
   noSnapshots: 'この期間のレポートスナップショットがありません（日次集計ジョブは早朝に前日分を生成します。「最終日を再実行」で再計算もできます）',
   // サマリーカード

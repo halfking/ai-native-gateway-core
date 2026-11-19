@@ -1,57 +1,31 @@
-// snapshotRange.ts — reconciliation date presets on the shared range picker.
-// The panel matches the dashboard picker. Presets stop at yesterday UTC because
-// daily snapshots are not closed for the current day.
+// snapshotRange.ts — reconciliation 的时间预设（2026-11-20 统一轮：改用站内标准预设）。
+//
+// ★ 为什么改：旧实现自带一套「止于昨日」的预设（昨天/近7d/近30d/本月/上月，全部
+//   以 UTC 昨日收尾，并把 notAfter 钉在昨日）——理由是「当日快照凌晨才生成」。
+//   但全站统一组件的标准预设（makeDateRangePresets）按 owner 口径
+//   「近 N 天最晚到今天结束」（kxDatePresets.ts 2026-11-19 注释），
+//   两套形状/日期口径不一致 ⇒ owner 图批「非标准的时间选择组件，并且
+//   近7天的日期也不太对」。
+//
+// ★ 今天的快照确实还没生成：后端 reportRange 只校验 start≤end 且 ≤366 天，
+//   区间含今天时今日无快照由覆盖行披露（useReconciliationPage 的
+//   todayPendingHint），不再用「把今天从预设里抠掉」来掩盖。
 import type { KxDateRange, KxDateRangePreset } from '../ui/kx-date-types'
+import { makeDateRangePresets, rangeFromSpanDays } from '../ui/kxDatePresets'
 
-const DAY_MS = 86_400_000
-
-function utcDayStart(ms: number): number {
-  const d = new Date(ms)
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+/** 预设 = 站内标准 date 精度预设（今天/昨天/近7天/近14天/近30天/本月/上月）。 */
+export function snapshotDatePresets(): KxDateRangePreset[] {
+  return makeDateRangePresets('date')
 }
 
-function utcDateStr(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10)
+/** 初始区间：近 7 天（含今天，与全站口径一致）。 */
+export function defaultSnapshotRange(): [string, string] {
+  const range: KxDateRange = rangeFromSpanDays(7)
+  return [range.start, range.end]
 }
 
-export function snapshotDatePresets(now = Date.now()): KxDateRangePreset[] {
-  const end = utcDayStart(now) - DAY_MS
-  const endStr = utcDateStr(end)
-  const span = (days: number): KxDateRange => ({
-    start: utcDateStr(end - (days - 1) * DAY_MS),
-    end: endStr,
-  })
-  const endDate = new Date(end)
-  const monthStart = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1)
-  const prevStart = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 1, 1)
-  const prevEnd = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 0)
-  return [
-    {
-      id: 'yesterday',
-      labelKey: 'common.dateRange.preset.yesterday',
-      resolve: () => ({ start: endStr, end: endStr }),
-    },
-    { id: 'last7d', labelKey: 'common.dateRange.preset.last7d', resolve: () => span(7) },
-    { id: 'last30d', labelKey: 'common.dateRange.preset.last30d', resolve: () => span(30) },
-    {
-      id: 'thisMonth',
-      labelKey: 'common.dateRange.preset.thisMonth',
-      resolve: () => ({ start: utcDateStr(monthStart), end: endStr }),
-    },
-    {
-      id: 'lastMonth',
-      labelKey: 'common.dateRange.preset.lastMonth',
-      resolve: () => ({ start: utcDateStr(prevStart), end: utcDateStr(prevEnd) }),
-    },
-  ]
-}
-
-export function defaultSnapshotRange(now = Date.now()): [string, string] {
-  const range = snapshotDatePresets(now).find((item) => item.id === 'last7d')?.resolve()
-  return range ? [range.start, range.end] : ['', '']
-}
-
-/** Inclusive latest day a reconciliation query may ask for: UTC yesterday. */
+/** 可选的最晚一天：今天。今天可进区间（数据侧由覆盖行披露）；未来日期不可选。 */
 export function snapshotNotAfter(now = Date.now()): string {
-  return utcDateStr(utcDayStart(now) - DAY_MS)
+  const d = new Date(now)
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString().slice(0, 10)
 }

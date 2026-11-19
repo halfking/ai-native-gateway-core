@@ -10,6 +10,7 @@ export default {
   rerunFailed: 'No se pudo completar el recálculo. Vuelva a intentarlo.',
   // Cobertura / estado vacío
   daysCovered: 'días de instantáneas',
+  todayPendingHint: ' (la instantánea de hoy se genera el día siguiente)',
   unaggregatedDay: 'Sin agregar',
   noSnapshots: 'No hay instantáneas de informes en este intervalo (el trabajo de agregación diaria genera los datos del día anterior de madrugada, o use «Recalcular día final» para recuperarlos)',
   // Tarjetas de resumen
