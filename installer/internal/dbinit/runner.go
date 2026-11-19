@@ -1953,6 +1953,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 必须排在 971 **之后**（它加列的目标表由 971 建出；
 			//     表不在场时本件自带守卫跳过 ⇒ 防御性 no-op）。
 			"979_pi_analysis_applied_actions.sql",
+			// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：pi_analysis_stats_view_alignment
+			//   —— v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats）。
+			//   ★ 必须排在 971/977 **之后**（视图由 971 建、977 订正；不在场时本件守卫跳过）。
+			"980_pi_analysis_stats_view_alignment.sql",
 		},
 	}
 }

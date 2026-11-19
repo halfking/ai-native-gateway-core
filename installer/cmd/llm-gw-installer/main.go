@@ -1792,6 +1792,17 @@ var piAnalysisAppliedActions979 []byte
 //go:embed embeddata/startup/979_pi_analysis_applied_actions.down.sql
 var piAnalysisAppliedActions979Down []byte
 
+// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：pi_analysis_stats_view_alignment
+//
+//	—— v_error_analysis_stats 对齐 GetStats 新口径（补 processing/failed/
+//	skipped 计数）。视图零运行时消费者，但是 DB 公开真值——不对齐则未来
+//	任何读视图的监控/人工查询都会拿到与页面统计卡不同的口径。
+//go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.sql
+var piAnalysisStatsViewAlignment980 []byte
+
+//go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.down.sql
+var piAnalysisStatsViewAlignment980Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2415,6 +2426,9 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 979（2026-11-18 PI 分析管理面优化轮）：应用修复审计留痕列。
 	"startup/979_pi_analysis_applied_actions.sql":      piAnalysisAppliedActions979,
 	"startup/979_pi_analysis_applied_actions.down.sql": piAnalysisAppliedActions979Down,
+	// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：视图口径对齐。
+	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
+	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

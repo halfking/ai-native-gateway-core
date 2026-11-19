@@ -2754,6 +2754,10 @@ files=(
   #     内容指纹重放零冲突；表不在场时自带守卫跳过（防御性 no-op）。
   #   ★ 排在 971 **之后**（目标表由 971 建出）。
   "$ROOT_DIR/sql/migrations/startup/979_pi_analysis_applied_actions.sql"
+  # ★ 980（2026-11-19 PI 统计一致性批判审计轮）：pi_analysis_stats_view_alignment——
+  #   v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats 新口径；
+  #   幂等 CREATE OR REPLACE + 视图不在场守卫跳过）。
+  "$ROOT_DIR/sql/migrations/startup/980_pi_analysis_stats_view_alignment.sql"
 )
 
 
