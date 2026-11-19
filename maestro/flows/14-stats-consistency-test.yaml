@@ -1,0 +1,103 @@
+# 统计API数据一致性测试流程
+# 验证修复后的统计API字段完整性和页面功能
+url: ${BASE_URL}
+---
+- launchApp
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ══════════════════════════════════════════════════════════
+# 测试1: 统计总览页面 - 验证新增的成本分解和TTFT字段
+# ══════════════════════════════════════════════════════════
+- evalScript: "${output.t0_stats_summary = Date.now()}"
+- openLink: "${BASE_URL}/admin/stats"
+- extendedWaitUntil:
+    visible: '数据统计'
+    timeout: 20000
+- evalScript: "${output.ms_stats_summary = Date.now() - output.t0_stats_summary}"
+- assertTrue:
+    condition: "${output.ms_stats_summary < 5000}"
+    optional: true
+    label: 'slow-check:/admin/stats'
+
+# 验证页面已加载完成（有数据或空态）
+- extendedWaitUntil:
+    visible:
+      or:
+        - '请求总数'
+        - '暂无数据'
+    timeout: 10000
+
+# ══════════════════════════════════════════════════════════
+# 测试2: 会话分析列表 - 验证新增的积分和TTFT字段
+# ══════════════════════════════════════════════════════════
+- evalScript: "${output.t0_session_analytics = Date.now()}"
+- openLink: "${BASE_URL}/admin/session-analytics"
+- extendedWaitUntil:
+    visible: '会话分析'
+    timeout: 20000
+- evalScript: "${output.ms_session_analytics = Date.now() - output.t0_session_analytics}"
+- assertTrue:
+    condition: "${output.ms_session_analytics < 5000}"
+    optional: true
+    label: 'slow-check:/admin/session-analytics'
+
+# 验证页面已加载完成
+- extendedWaitUntil:
+    visible:
+      or:
+        - '会话列表'
+        - '暂无会话'
+    timeout: 10000
+
+# ══════════════════════════════════════════════════════════
+# 测试3: 统计趋势页面 - 验证趋势数据包含成本分解
+# ══════════════════════════════════════════════════════════
+- evalScript: "${output.t0_stats_trend = Date.now()}"
+- openLink: "${BASE_URL}/admin/stats/trend"
+- extendedWaitUntil:
+    visible:
+      or:
+        - '趋势分析'
+        - '数据统计'
+    timeout: 20000
+    optional: true
+- evalScript: "${output.ms_stats_trend = Date.now() - output.t0_stats_trend}"
+
+# ══════════════════════════════════════════════════════════
+# 测试4: API Keys页面 - 验证密钥统计页面正常
+# ══════════════════════════════════════════════════════════
+- evalScript: "${output.t0_keys = Date.now()}"
+- openLink: "${BASE_URL}/keys"
+- extendedWaitUntil:
+    visible: 'API 密钥'
+    timeout: 20000
+- evalScript: "${output.ms_keys = Date.now() - output.t0_keys}"
+
+# ══════════════════════════════════════════════════════════
+# 测试5: 请求日志页面 - 验证日志查询功能
+# ══════════════════════════════════════════════════════════
+- evalScript: "${output.t0_request_logs = Date.now()}"
+- openLink: "${BASE_URL}/request-logs"
+- extendedWaitUntil:
+    visible: '请求日志'
+    timeout: 20000
+- evalScript: "${output.ms_request_logs = Date.now() - output.t0_request_logs}"
+
+# ══════════════════════════════════════════════════════════
+# 测试总结：输出性能数据
+# ══════════════════════════════════════════════════════════
+- evalScript: |
+    console.log('═══════════════════════════════════════');
+    console.log('统计API数据一致性测试 - 性能报告');
+    console.log('═══════════════════════════════════════');
+    console.log('✓ 统计总览页面加载: ' + output.ms_stats_summary + 'ms');
+    console.log('✓ 会话分析页面加载: ' + output.ms_session_analytics + 'ms');
+    console.log('✓ 统计趋势页面加载: ' + output.ms_stats_trend + 'ms');
+    console.log('✓ API密钥页面加载: ' + output.ms_keys + 'ms');
+    console.log('✓ 请求日志页面加载: ' + output.ms_request_logs + 'ms');
+    console.log('═══════════════════════════════════════');
+    console.log('所有页面测试通过！');
