@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // UsageEnhancedView — 批 158b（2026-10-17）初版；2026-10-21 契约对齐重写。
+// 2026-11-19: 添加时间范围选择器，统一使用 KxDateRangePicker。
 //
 // 组合 5 个 usage 端点的综合视图（总览 + 成本趋势 + 同期对比 + 缓存经济 +
 // Top API keys）。数据全部由 api/usageEnhanced 组合，字段名与后端响应逐字一致。
@@ -8,7 +9,7 @@
 // period_compare.delta_cost_pct / cache_economics.cache_hit_rate /
 // hot_api_keys[].key_id），于是视图在真实响应上直接抛 TypeError ⇒ 整页白屏。
 // 现在读的每个字段都能在 api/usage.ts 的响应类型里找到出处。
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { surfaceError } from '../../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import { getUsageEnhancedData, type UsageEnhancedData } from '../../api/usageEnhanced'
@@ -18,12 +19,35 @@ import {
   type DegradationState,
 } from '../../composables/useDegradationMarker'
 import { formatNumberLocale } from '../../utils/format'
+import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../../components/ui/kx-date-types'
+import { makeDateRangePresets, rangeSpanDays } from '../../components/ui/kxDatePresets'
 
 const { t } = useI18n()
 
 const loading = ref(false)
 const error = ref('')
 const data = ref<UsageEnhancedData | null>(null)
+
+// 时间范围选择（2026-11-19）
+const dateRange = ref<KxDateRange>(defaultRange())
+const presets = makeDateRangePresets('date', {
+  includeToday: true,
+  includeYesterday: true,
+  includeLast7Days: true,
+  includeLast30Days: true,
+  includeThisMonth: true,
+  includeLastMonth: true,
+})
+
+function defaultRange(): KxDateRange {
+  const today = new Date().toISOString().slice(0, 10)
+  const start = new Date(Date.parse(`${today}T00:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10)
+  return { start, end: today }
+}
+
+// 计算天数（用于 summary 和 hot-keys）
+const days = computed(() => rangeSpanDays(dateRange.value) + 1)
 
 // 降级标记（2026-10-21）
 //
@@ -39,7 +63,12 @@ async function load() {
   // 先清空再重收：本轮若全部降级为 false，旧的那条降级提示必须消失。
   degradation.value = emptyDegradation()
   try {
-    const d = await getUsageEnhancedData({ days: 7, topN: 10 })
+    const d = await getUsageEnhancedData({
+      days: days.value,
+      topN: 10,
+      dateFrom: dateRange.value.start,
+      dateTo: dateRange.value.end,
+    })
     data.value = d
     degradation.value = mergeDegradation(degradation.value, t('dataLifecycle.usageEnhanced.sources.summary'), d.summary)
     degradation.value = mergeDegradation(degradation.value, t('dataLifecycle.usageEnhanced.sources.costTrend'), d.cost_trend)
@@ -56,6 +85,10 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function onDateRangeChange() {
+  void load()
 }
 
 function formatNumber(n: number | undefined | null): string {
@@ -94,9 +127,17 @@ onMounted(() => {
   <div class="usage-enhanced-view">
     <header class="enhanced-header">
       <h1 class="enhanced-title">{{ t('dataLifecycle.pages.usageEnhanced') }}</h1>
-      <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
-        {{ loading ? t('dataLifecycle.usageEnhanced.loading') : t('dataLifecycle.usageEnhanced.refresh') }}
-      </button>
+      <div class="enhanced-actions">
+        <KxDateRangePicker
+          v-model="dateRange"
+          :presets="presets"
+          :max-span-days="90"
+          @change="onDateRangeChange"
+        />
+        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
+          {{ loading ? t('dataLifecycle.usageEnhanced.loading') : t('dataLifecycle.usageEnhanced.refresh') }}
+        </button>
+      </div>
     </header>
 
     <p v-if="error" class="enhanced-error">{{ error }}</p>
@@ -207,10 +248,25 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-3);
+  gap: var(--space-3);
 }
 .enhanced-title {
   font-size: var(--text-xl);
   font-weight: var(--font-semibold);
+}
+.enhanced-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+@media (max-width: 768px) {
+  .enhanced-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .enhanced-actions {
+    flex-direction: column;
+  }
 }
 .enhanced-error {
   color: var(--danger);

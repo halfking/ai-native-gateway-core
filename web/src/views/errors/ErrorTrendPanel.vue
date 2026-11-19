@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // ErrorTrendPanel — 供应商错误趋势面板（R12 候选18 UI 接入）。
+// 2026-11-19: 统一使用 KxDateRangePicker 替代小时选择器。
 // 挂载于凭据监控页 tab（/routing-v2/credentials?tab=error-trend）。
 // 数据来自 GET /api/errors/trend：supplier_error_stats 预聚合优先，
 // 聚合器刚部署/窗口太新时后端自动回退 supplier_errors_unified 实时聚合。
@@ -13,16 +14,39 @@ import {
   type ErrorsTrendResponse,
 } from '../../api/errors-trend'
 import { formatDateTime, formatCompactDateTime } from '../../utils/datetime'
+import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
+import type { KxDateRange } from '../../components/ui/kx-date-types'
+import { makeDateRangePresets, rangeSpanDays } from '../../components/ui/kxDatePresets'
 
 const { t } = useI18n()
 const et = (key: string): string => t(`errorTrend.${key}`)
 
-const hours = ref<ErrorsTrendHours>('24')
+// 时间范围选择（2026-11-19）- 默认今天
+const dateRange = ref<KxDateRange>(defaultRange())
+const presets = makeDateRangePresets('date', {
+  includeToday: true,
+  includeYesterday: true,
+  includeLast7Days: true,
+})
+
 const loading = ref(false)
 const error = ref('')
 const data = ref<ErrorsTrendResponse | null>(null)
 let requestSequence = 0
 let requestController: AbortController | null = null
+
+// 根据日期范围计算小时数
+const hours = computed<ErrorsTrendHours>(() => {
+  const days = rangeSpanDays(dateRange.value) + 1
+  if (days <= 1) return '24'
+  if (days <= 7) return '168'
+  return '168' // 最大7天
+})
+
+function defaultRange(): KxDateRange {
+  const today = new Date().toISOString().slice(0, 10)
+  return { start: today, end: today }
+}
 
 const summary = computed(() => data.value?.summary ?? null)
 const series = computed(() => data.value?.time_series ?? [])
@@ -62,7 +86,11 @@ async function loadData() {
   }
 }
 
-watch(hours, loadData)
+function onDateRangeChange() {
+  void loadData()
+}
+
+watch(() => dateRange.value, loadData)
 onMounted(loadData)
 onBeforeUnmount(() => {
   requestSequence++
@@ -76,11 +104,12 @@ onBeforeUnmount(() => {
     <div class="toolbar">
       <span class="panel-title">{{ et('title') }}</span>
       <div class="toolbar-controls">
-        <select v-model="hours" class="cf-select" :disabled="loading" :title="et('windowTitle')">
-          <option value="1">{{ et('hours1') }}</option>
-          <option value="24">{{ et('hours24') }}</option>
-          <option value="168">{{ et('hours168') }}</option>
-        </select>
+        <KxDateRangePicker
+          v-model="dateRange"
+          :presets="presets"
+          :max-span-days="7"
+          @change="onDateRangeChange"
+        />
         <button type="button" class="refresh-btn" :disabled="loading" @click="loadData">{{ et('refresh') }}</button>
       </div>
     </div>
