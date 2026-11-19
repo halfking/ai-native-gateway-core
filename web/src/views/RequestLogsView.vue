@@ -19,6 +19,7 @@ import {
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
 import { getProviders, getProviderCredentials } from '../api/providers'
 import ModelPicker from '../components/ModelPicker.vue'
+import ProviderPicker from '../components/ProviderPicker.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
 import PaginationBar from '../components/ui/PaginationBar.vue'
@@ -78,7 +79,6 @@ let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
 // 切换 provider 时若当前 credentialFilter 不在派生选项里则清空，避免错位。
 const providerFilter = ref<number | ''>('')
 const credentialFilter = ref<number | ''>('')
-const providerOptions = ref<{ id: number; name: string }[]>([])
 const credentialOptions = ref<{ id: number; providerId: number; label: string }[]>([])
 
 function startAutoRefresh() {
@@ -274,9 +274,8 @@ async function loadCredentialOptions() {
   if (isSuperAdmin()) {
     try {
       const providers = await getProviders()
-      providerOptions.value = providers
-        .map((p) => ({ id: p.id, name: p.display_name || p.catalog_code }))
-        .sort((a, b) => a.name.localeCompare(b.name))
+      // 2026-11-20 供应商选择统一轮：providerOptions（供应商下拉数据）退役——
+      // ProviderPicker 内聚加载；这里 providers 仍要拉：凭据下拉按 provider 分批扇出。
       // 并发拉每个 provider 的 credential 列表。provider 数量一般较小（数十），
       // 这里全量加载与 /providers 页面策略一致。失败时该 provider 的凭据下拉
       // 退化为空，但其它 provider 不受影响。
@@ -313,7 +312,6 @@ async function loadCredentialOptions() {
         })
       }
     } catch {
-      providerOptions.value = []
       credentialOptions.value = []
       filterOptionsError.value = t('requests.list.filter.loadFailed')
     }
@@ -329,17 +327,7 @@ async function loadCredentialOptions() {
       providerId: c.provider_id,
       label: c.label,
     }))
-    const map = new Map<number, string>()
-    for (const c of creds) {
-      if (!map.has(c.provider_id)) {
-        map.set(c.provider_id, c.provider_name)
-      }
-    }
-    providerOptions.value = Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name))
   } catch {
-    providerOptions.value = []
     credentialOptions.value = []
     filterOptionsError.value = t('requests.list.filter.loadFailed')
   }
@@ -1502,10 +1490,14 @@ onMounted(async () => {
             <option value="">{{ t('requests.list.filter.keyAll') }}</option>
             <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
           </select>
-          <select v-model="providerFilter" class="filter-select" style="width:130px" title="按供应商筛选" @change="onProviderFilterChange">
-            <option value="">{{ t('requests.list.filter.providerAll') }}</option>
-            <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
+          <!-- 2026-11-20 供应商选择统一轮：原生 select 换全局 ProviderPicker（id 模式）。
+               切供应商后凭据下拉联动收敛（onProviderFilterChange 语义保留）。 -->
+          <ProviderPicker
+            v-model="providerFilter"
+            value-mode="id"
+            :title="t('requests.list.filter.providerAll')"
+            @update:model-value="onProviderFilterChange"
+          />
           <select v-model="credentialFilter" class="filter-select" style="width:130px" title="按凭据筛选">
             <option value="">{{ t('requests.list.filter.credentialAll') }}</option>
             <option v-for="c in filteredCredentialOptions" :key="c.id" :value="c.id">{{ c.label }}</option>

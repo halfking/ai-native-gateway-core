@@ -57,10 +57,11 @@ import (
 // 而上游一旦开始接受该参数，首轮窗口（base TTL）内就会重新发现。
 //
 // ★ 2026-11-01（12h 审计 P1-3）：退避基数**不能**用 RecoveredCount ——
-//   那是布尔语义（「学过没有」，store 层刻意取 max 而非累加），生产路径
-//   上恒 ≤ 1 ⇒ 拿它当步数基数会让退避**永不生效**（实测：生产写入口
-//   连写 5 次仍为 1 ⇒ 退避窗口恒等于 base）。改用独立的 BackoffCount，
-//   由 store 在「再探测」时推导，见 mergeBackoffCount。
+//
+//	那是布尔语义（「学过没有」，store 层刻意取 max 而非累加），生产路径
+//	上恒 ≤ 1 ⇒ 拿它当步数基数会让退避**永不生效**（实测：生产写入口
+//	连写 5 次仍为 1 ⇒ 退避窗口恒等于 base）。改用独立的 BackoffCount，
+//	由 store 在「再探测」时推导，见 mergeBackoffCount。
 const defaultLearnedTTL = time.Hour
 
 var learnedTTL = sync.OnceValue(func() time.Duration {
@@ -228,7 +229,13 @@ type Counts struct {
 
 // Filter 是 List/ResolveFilter 的查询条件（字段为空表示不过滤）。
 type Filter struct {
-	Day            string
+	Day string
+	// DayFrom/DayTo 是 YYYY-MM-DD 范围（含首尾，按 Record.Day 字符串比较——
+	// 该格式字典序即时间序）。2026-11-20 时间范围统一轮：管理面日期过滤
+	// 全面换 KxDateRangePicker 范围选择 ⇒ 请求错误列表/批量解决/Counts
+	// 都要能按范围过滤。Day 与范围同时给出时取交集（Day 是单日特例）。
+	DayFrom        string
+	DayTo          string
 	ProviderCode   string
 	Model          string // 匹配 client_model 或 outbound_model
 	Trigger        string
@@ -240,6 +247,12 @@ type Filter struct {
 // matches 判断记录是否命中过滤条件（List 与 ResolveFilter 共用）。
 func (f Filter) matches(r Record) bool {
 	if f.Day != "" && r.Day != f.Day {
+		return false
+	}
+	if f.DayFrom != "" && r.Day < f.DayFrom {
+		return false
+	}
+	if f.DayTo != "" && r.Day > f.DayTo {
 		return false
 	}
 	if f.ProviderCode != "" && !strings.EqualFold(r.ProviderCode, f.ProviderCode) {

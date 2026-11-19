@@ -82,3 +82,13 @@ export function resolveFormatAnomaly(id: number, resolution_notes: string) {
     resolution_notes,
   })
 }
+
+/** 徽标计数（2026-11-20）：响应格式异常侧的全量未解决数 + 今日新增。 */
+export interface FormatAnomalyCounts {
+  unresolved: number
+  new_today: number
+}
+
+export function getFormatAnomalyCounts() {
+  return req<FormatAnomalyCounts>('GET', '/api/admin/format-anomalies/count')
+}

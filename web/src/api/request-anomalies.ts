@@ -40,6 +40,9 @@ export interface GetRequestAnomaliesParams {
   limit?: number
   offset?: number
   day?: string
+  /** YYYY-MM-DD 范围（含首尾）。2026-11-20 时间范围统一轮：与 KxDateRangePicker 对接。 */
+  day_from?: string
+  day_to?: string
   provider?: string
   model?: string
   trigger?: string
@@ -58,6 +61,8 @@ export function getRequestAnomalies(params: GetRequestAnomaliesParams = {}) {
   if (params.limit) q.set('limit', String(params.limit))
   if (params.offset) q.set('offset', String(params.offset))
   if (params.day) q.set('day', params.day)
+  if (params.day_from) q.set('day_from', params.day_from)
+  if (params.day_to) q.set('day_to', params.day_to)
   if (params.provider) q.set('provider', params.provider)
   if (params.model) q.set('model', params.model)
   if (params.trigger) q.set('trigger', params.trigger)
@@ -79,9 +84,11 @@ export function resolveRequestAnomaly(id: number, resolution_notes: string) {
 
 export interface BatchResolveRequestAnomaliesBody {
   ids?: number[]
-  /** 按 ids 批量；为 true 时按 day/provider/model/trigger 过滤批量解决全部未解决项 */
+  /** 按 ids 批量；为 true 时按日期范围/provider/model/trigger 过滤批量解决全部未解决项 */
   all_unresolved?: boolean
   day?: string
+  day_from?: string
+  day_to?: string
   provider?: string
   model?: string
   trigger?: string

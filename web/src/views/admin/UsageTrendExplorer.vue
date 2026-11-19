@@ -30,7 +30,8 @@ import {
   type UsageTrendMetric,
   type UsageTrendModelSeries,
 } from '../../api/usage'
-import { getProviders, type Provider } from '../../api/providers'
+import { getProviders } from '../../api/providers'
+import ProviderPicker from '../../components/ProviderPicker.vue'
 import { getTenants, type TenantSummary } from '../../api/tenants'
 import { getKeys, type ApiKey } from '../../api/keys'
 import { isSuperAdmin } from '../../store'
@@ -100,7 +101,6 @@ function defaultRange(): KxDateRange {
 
 // ── 过滤器选项 ──
 
-const providers = ref<Provider[]>([])
 const tenants = ref<TenantSummary[]>([])
 const keys = ref<ApiKey[]>([])
 
@@ -119,11 +119,12 @@ const filterOptionsError = ref('')
 async function loadFilterOptions() {
   const problems: string[] = []
   try {
+    // 2026-11-20 供应商选择统一轮：providers 列表改由 ProviderPicker 内聚加载；
+    // 这里保留 getProviders 探测（失败 ⇒ 筛选条降级提示），keys 仍归本页。
     const [p, k] = await Promise.all([getProviders(), getKeys()])
-    providers.value = p ?? []
+    void p
     keys.value = k ?? []
   } catch {
-    providers.value = []
     keys.value = []
     problems.push(t('usageTrend.filterProviderKeyFailed'))
   }
@@ -349,20 +350,15 @@ onBeforeUnmount(() => {
       <div v-if="filterOptionsError" class="ute__filter-error" role="status">{{ filterOptionsError }}</div>
       <div class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
-        <el-select
+        <!-- 2026-11-20 供应商选择统一轮：el-select 换全局 ProviderPicker（id 模式）。
+             truthy 空值防护（clearable el-select 在不同 EP 版本产出 undefined/''/null）
+             由 ProviderPicker 的 null 契约统一承载。 -->
+        <ProviderPicker
           v-model="providerId"
-          clearable
-          filterable
-          :placeholder="t('usageTrend.filterAll')"
+          value-mode="id"
+          :title="t('usageTrend.filterProvider')"
           class="ute__select"
-        >
-          <el-option
-            v-for="p in providers"
-            :key="p.id"
-            :value="p.id"
-            :label="p.display_name || p.catalog_code"
-          />
-        </el-select>
+        />
       </div>
       <div v-if="showTenantFilter" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterTenant') }}</label>

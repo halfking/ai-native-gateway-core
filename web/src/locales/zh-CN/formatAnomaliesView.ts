@@ -106,12 +106,13 @@ export default {
   },
   requestTab: {
       stats: {
-          unresolved: '未解决（本页）',
+          unresolved: '未解决',
           autoRecovered: '自动恢复成功',
           total: '总数',
       },
       filter: {
           day: '日期',
+          dayRange: '日期范围',
           trigger: '类型',
           triggerPlaceholder: '选择类型…',
       },
