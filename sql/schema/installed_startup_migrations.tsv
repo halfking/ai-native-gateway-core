@@ -397,3 +397,4 @@
 379	980_pi_analysis_stats_view_alignment.sql
 380	990_stats_consistency_fixes.sql
 381	991_stats_timezone_standardization.sql
+382	992_add_cst_timezone_functions.sql

@@ -11099,4 +11099,13 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 981 | `981_session_analytics_foundation.sql` | `83eb1ae961e67754caeb2d7f88f518739795271bd9cea84a99e36a063eff1b30` | **未就绪·已撤出全部投递通道**（真库试跑炸于 `column s.owner does not exist`——物化视图引用 sessions.owner/total_input_tokens/total_cost/turn_count/title，这些列在真库与 01-schema 基线里全部不存在（按幻写 schema 写的）；正典文件已撤、仅 embeddata 保留（map 引用编译需要，内含同轮三处修复：函数内 CONCURRENTLY 静默失效/down 头编号/自登记），待会话分析列车修正列依赖后重走五点同步；原登记：会话分析系统基础设施：sessions 元数据列 project/task/task_category/is_probe + 4 个物化视图（用户/项目/智能体/模型聚合）+ 刷新辅助函数 + 探测会话标记；2026-11-19 文档一致性轮补齐六处登记——首提交仅有 embeddata 与零消费方的 installer/migrations/，正典/runner/序列清单/tsv 四处全缺；同轮修复函数内 REFRESH CONCURRENTLY 静默失效（PG 不允许函数内 CONCURRENTLY，原 EXCEPTION 吞错成永久 no-op）与缺失的自登记尾部；SHA 为补登记后文件实测值） |
 | 990 | `990_stats_consistency_fixes.sql` | `68f7e8e5153fe89b8fbc1b89edb7088d242b1c8a1bbb80fed98bcf00957d895d` | pending deploy（统计数据一致性修复：session_summaries 补积分/TTFT 字段 + stats_usage_daily 补成本分解 + stats_consistency_check 对账视图；幂等（ADD COLUMN IF NOT EXISTS）；2026-11-19 文档一致性轮补五点同步（首提交只写正典）并补缺失的 schema_migrations 自登记；SHA 为补登记后实测值） |
 | 991 | `991_stats_timezone_standardization.sql` | `eb5fec70f9cfb295fe03e224f9a13686490f6251fe396b06068a0f2ddbec8df3` | pending deploy（统计 API 时区标准化：UTC 日边界辅助函数 utc_day_start 等 + _utc 版本函数向后兼容；2026-11-19 文档一致性轮补五点同步并修复自登记——原 INSERT 指向不存在的 migration_metadata 表，真跑必炸在最后一步，已改回 schema_migrations；211 真库事务内试跑+ROLLBACK 通过；SHA 为修复后实测值） |
+| 992 | `992_add_cst_timezone_functions.sql` | `fdbc716a5b8c9e0fb61f1e2d38aa8dc580c042437ed3781783ac5152b3958542` | pending deploy（CST 业务时区函数族：cst_day_start/cst_today/cst_days_ago 等，Asia/Shanghai UTC+8 无夏令时，与 991 的 utc_* 族并存，STABLE/IMMUTABLE + PARALLEL SAFE；纯函数无强锁 DDL；2026-11-19 收口：自登记原指向不存在的 migration_metadata 表（与 991 同型）改回 schema_migrations + 补五点同步（embeddata/map/tsv/db-changelog 首提交全缺，embed 同步门在 origin/main 基线红）；SHA 为订正后实测值） |
+
+## 2026-11-19T15:50:53Z — deploy 245 build_seq 3134 (dc6c5544)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 990 | `990_stats_consistency_fixes.sql` | `e3ae272caa3e659c20e6cc40b821a275d9bdd1202bafa11a2eb636367a0e9401` | applied+verified |
+| 991 | `991_stats_timezone_standardization.sql` | `eb5fec70f9cfb295fe03e224f9a13686490f6251fe396b06068a0f2ddbec8df3` | applied+verified |
+| 992 | `992_add_cst_timezone_functions.sql` | `fdbc716a5b8c9e0fb61f1e2d38aa8dc580c042437ed3781783ac5152b3958542` | applied+verified |
 

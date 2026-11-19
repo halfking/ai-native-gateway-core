@@ -116,7 +116,9 @@ COMMENT ON FUNCTION cst_date IS
 -- 4. 测试验证：跨日边界测试（23:50-00:10），确保数据归属正确
 -- 5. 文档更新：API文档注明时区语义（"北京时间""东8区"）
 
--- 迁移完成标记
-INSERT INTO migration_metadata (version, description, applied_at)
-VALUES (992, 'Add CST (Asia/Shanghai UTC+8) business timezone functions', NOW())
-ON CONFLICT (version) DO NOTHING;
+-- ★ 双账本纪律：≥952 的迁移必须自登记进 schema_migrations（960 立的纪律门）。
+--   原写法 INSERT INTO migration_metadata —— 该表在本库不存在，真跑必炸在最后一步
+--   （与 991 同型缺陷，2026-11-19 文档一致性轮订正）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('992', 'add_cst_timezone_functions: CST 业务时区函数族（cst_day_start/cst_today/cst_days_ago 等，Asia/Shanghai UTC+8，与 991 的 utc_* 族并存）')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
