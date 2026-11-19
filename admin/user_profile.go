@@ -251,6 +251,8 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 // handleUserAnalyticsDetail GET /api/admin/session-analytics/users/:owner
 // 用户画像详情。
 // 三层隔离：super_admin/tenant_admin 可查任意本租户 owner；普通用户强制指向自己。
+// 
+// 路由：如果路径以 /models 结尾，则转发到 handleUserModelUsage
 func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -261,8 +263,15 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 从路径提取 owner_user
+	// 从路径提取 owner_user，并检查是否是 /models 子路由
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/session-analytics/users/")
+	
+	// 检查是否是 /models 端点
+	if strings.HasSuffix(path, "/models") {
+		h.handleUserModelUsage(w, r)
+		return
+	}
+	
 	ownerUser := strings.TrimSpace(path)
 	if ownerUser == "" {
 		writeError(w, http.StatusBadRequest, "owner_user is required")
@@ -584,4 +593,203 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ── User Model Usage Statistics ───────────────────────────────────────
+
+// UserModelUsageItem 用户模型使用统计项
+type UserModelUsageItem struct {
+	ModelName       string    `json:"model_name"`
+	Provider        string    `json:"provider"`
+	RequestCount    int64     `json:"request_count"`
+	TotalTokens     int64     `json:"total_tokens"`
+	InputTokens     int64     `json:"input_tokens"`
+	OutputTokens    int64     `json:"output_tokens"`
+	InternalCostUSD float64   `json:"internal_cost_usd"`
+	ExternalCostUSD float64   `json:"external_cost_usd"`
+	FirstUsedAt     time.Time `json:"first_used_at"`
+	LastUsedAt      time.Time `json:"last_used_at"`
+}
+
+// handleUserModelUsage GET /api/admin/session-analytics/users/:owner/models
+// 查询用户在指定时间范围内的模型使用统计。
+// 权限：继承 handleUserAnalyticsDetail 的三层隔离机制。
+func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "db not available")
+		return
+	}
+
+	// 从路径提取 owner_user
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/session-analytics/users/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[1] != "models" {
+		writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+	ownerUser := strings.TrimSpace(parts[0])
+	if ownerUser == "" {
+		writeError(w, http.StatusBadRequest, "owner_user is required")
+		return
+	}
+
+	// 普通用户只允许看自己
+	if IsRegularUser(r) {
+		myOwner := GetAuthContext(r).Username
+		if myOwner == "" || ownerUser != myOwner {
+			writeError(w, http.StatusForbidden, "you can only view your own profile")
+			return
+		}
+	}
+
+	// 租户范围
+	tenantID := ""
+	if IsTenantAdmin(r) || IsRegularUser(r) {
+		tenantID = GetTenantID(r)
+	}
+	if IsSuperAdminOrLegacy(r) {
+		if q := queryString(r, "tenant_id"); q != "" {
+			tenantID = q
+		}
+	}
+
+	// 时间范围参数
+	startDate := queryString(r, "start_date")
+	endDate := queryString(r, "end_date")
+
+	// 默认最近 30 天
+	var startTime, endTime time.Time
+	if startDate == "" && endDate == "" {
+		endTime = time.Now()
+		startTime = endTime.AddDate(0, 0, -30)
+	} else {
+		var err error
+		if startDate != "" {
+			startTime, err = time.Parse(time.RFC3339, startDate)
+			if err != nil {
+				// 尝试 YYYY-MM-DD 格式
+				startTime, err = time.Parse("2006-01-02", startDate)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "invalid start_date format, use ISO 8601 or YYYY-MM-DD")
+					return
+				}
+			}
+		} else {
+			startTime = time.Now().AddDate(0, 0, -90) // 最多 90 天
+		}
+
+		if endDate != "" {
+			endTime, err = time.Parse(time.RFC3339, endDate)
+			if err != nil {
+				endTime, err = time.Parse("2006-01-02", endDate)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "invalid end_date format, use ISO 8601 or YYYY-MM-DD")
+					return
+				}
+				// 对于 YYYY-MM-DD 格式，设置为当天结束
+				endTime = endTime.Add(24 * time.Hour)
+			}
+		} else {
+			endTime = time.Now()
+		}
+	}
+
+	// 时间范围限制：最多 90 天
+	if endTime.Sub(startTime) > 90*24*time.Hour {
+		writeError(w, http.StatusBadRequest, "time range cannot exceed 90 days")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	// 构建查询
+	whereClause := "rl.owner_user = $1 AND rl.created_at >= $2 AND rl.created_at < $3"
+	args := []interface{}{ownerUser, startTime, endTime}
+	argIdx := 4
+
+	if tenantID != "" {
+		whereClause += fmt.Sprintf(" AND rl.tenant_id = $%d", argIdx)
+		args = append(args, tenantID)
+		argIdx++
+	}
+
+	// 查询模型使用统计
+	// 注意：cost_display 是内部定价，cost_usd 是外部成本
+	// prompt_tokens + completion_tokens = total_tokens
+	sql := fmt.Sprintf(`
+		SELECT 
+			COALESCE(rl.outbound_model, rl.client_model, 'unknown') as model_name,
+			COALESCE(p.display_name, rl.provider_id::text, 'unknown') as provider,
+			COUNT(*) as request_count,
+			COALESCE(SUM(rl.prompt_tokens), 0) as input_tokens,
+			COALESCE(SUM(rl.completion_tokens), 0) as output_tokens,
+			COALESCE(SUM(rl.prompt_tokens + rl.completion_tokens), 0) as total_tokens,
+			COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)::float8 as internal_cost_usd,
+			COALESCE(SUM(rl.cost_usd), 0)::float8 as external_cost_usd,
+			MIN(rl.created_at) as first_used_at,
+			MAX(rl.created_at) as last_used_at
+		FROM request_logs rl
+		LEFT JOIN providers p ON p.id = rl.provider_id
+		WHERE %s
+		GROUP BY model_name, provider
+		ORDER BY external_cost_usd DESC
+		LIMIT 100
+	`, whereClause)
+
+	rows, err := h.db.Query(ctx, sql, args...)
+	if err != nil {
+		// 降级处理：request_logs 可能不存在或查询失败
+		if IsSchemaBehindError(err) {
+			reason := ReportSchemaBehind(slog.Default(), "userModelUsage", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"models":          []UserModelUsageItem{},
+				"degraded":        true,
+				"degraded_reason": reason,
+			})
+			return
+		}
+		writeInternalErr(w, "query failed", err)
+		return
+	}
+	defer rows.Close()
+
+	models := []UserModelUsageItem{}
+	for rows.Next() {
+		var item UserModelUsageItem
+		if err := rows.Scan(
+			&item.ModelName,
+			&item.Provider,
+			&item.RequestCount,
+			&item.InputTokens,
+			&item.OutputTokens,
+			&item.TotalTokens,
+			&item.InternalCostUSD,
+			&item.ExternalCostUSD,
+			&item.FirstUsedAt,
+			&item.LastUsedAt,
+		); err != nil {
+			warnRowSkip("userModelUsage", err)
+			continue
+		}
+		models = append(models, item)
+	}
+
+	if writeAggRowsErr(w, "userModelUsage", rows.Err()) {
+		return
+	}
+
+	if models == nil {
+		models = []UserModelUsageItem{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":     models,
+		"start_date": startTime.Format(time.RFC3339),
+		"end_date":   endTime.Format(time.RFC3339),
+	})
 }

@@ -2,13 +2,15 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getUserProfile, type UserProfileDetail } from '../api/admin'
+import { getUserProfile, getUserModelUsage, type UserProfileDetail, type UserModelUsage } from '../api/admin'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElButton, ElCard, ElCol, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
+// 2026-11-19: 增加 ElDrawer, ElAlert, ElIcon
+import { ElButton, ElCard, ElCol, ElRow, ElTable, ElTableColumn, ElTag, ElDrawer, ElAlert } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import { useWindowClass } from '../composables/useWindowClass'
@@ -31,12 +33,25 @@ const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 
+// 2026-11-19: 模型使用统计
+const modelUsage = ref<UserModelUsage[]>([])
+const modelUsageLoading = ref(false)
+const modelUsageError = ref('')
+const modelUsageDegraded = ref(false)
+const showHelp = ref(false)
+
 const costChartRef = ref<HTMLElement>()
 let costChart: echarts.ECharts | null = null
 
-onMounted(() => void load())
+onMounted(() => {
+  void load()
+  void loadModelUsage()
+})
 
-watch(days, () => void load())
+watch(days, () => {
+  void load()
+  void loadModelUsage()
+})
 
 onUnmounted(() => {
   costChart?.dispose()
@@ -58,6 +73,36 @@ async function load() {
     loadError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.loadFailed')
   } finally {
     loading.value = false
+  }
+}
+
+// 2026-11-19: 加载模型使用统计
+async function loadModelUsage() {
+  modelUsageLoading.value = true
+  modelUsageError.value = ''
+  modelUsageDegraded.value = false
+  try {
+    // 根据 days 计算时间范围
+    const endTime = new Date()
+    const startTime = new Date()
+    startTime.setDate(startTime.getDate() - days.value)
+    
+    const result = await getUserModelUsage(
+      owner.value,
+      startTime.toISOString(),
+      endTime.toISOString()
+    )
+    
+    modelUsage.value = result.models || []
+    modelUsageDegraded.value = result.degraded || false
+    if (result.degraded && result.degraded_reason) {
+      modelUsageError.value = result.degraded_reason
+    }
+  } catch (e: unknown) {
+    modelUsageError.value = e instanceof Error && e.message ? e.message : '模型使用统计加载失败'
+    modelUsage.value = []
+  } finally {
+    modelUsageLoading.value = false
   }
 }
 
@@ -277,7 +322,7 @@ const recentSessionFields = computed<CardField[]>(() => [
       <!-- Cost trend chart -->
       <el-card class="chart-card">
         <template #header>{{ t('sessions.userProfile.costTrend') }}</template>
-        <div class="chart-container" style="height: 300px" />
+        <div ref="costChartRef" class="chart-container" style="height: 300px" />
       </el-card>
 
       <!-- Top tasks -->
@@ -371,7 +416,113 @@ const recentSessionFields = computed<CardField[]>(() => [
           </template>
         </ResponsiveDataView>
       </el-card>
+
+      <!-- Model Usage Statistics (2026-11-19) -->
+      <el-card class="section-card" data-testid="up-model-usage">
+        <template #header>
+          <div class="card-header-with-help">
+            <span>{{ t('sessions.userProfile.modelUsage') }}</span>
+            <el-button
+              type="text"
+              :icon="QuestionFilled"
+              @click="showHelp = true"
+            >
+              {{ t('sessions.userProfile.showHelp') }}
+            </el-button>
+          </div>
+        </template>
+
+        <el-alert
+          v-if="modelUsageDegraded && modelUsageError"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          <strong>数据降级</strong>: {{ modelUsageError }}
+        </el-alert>
+
+        <div v-if="modelUsageError && !modelUsageDegraded" class="alert alert-danger" style="margin-bottom: 12px">
+          {{ modelUsageError }}
+        </div>
+
+        <el-table
+          v-loading="modelUsageLoading"
+          :data="modelUsage"
+          stripe
+          size="small"
+        >
+          <el-table-column prop="model_name" :label="t('sessions.userProfile.modelName')" min-width="180" />
+          <el-table-column prop="provider" :label="t('sessions.userProfile.provider')" width="140" />
+          <el-table-column prop="request_count" :label="t('sessions.userProfile.requests')" width="100" align="right" />
+          <el-table-column prop="total_tokens" :label="t('sessions.userProfile.totalTokens')" width="120" align="right">
+            <template #default="scope">
+              {{ scope.row.total_tokens.toLocaleString() }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="input_tokens" :label="t('sessions.userProfile.inputTokens')" width="120" align="right">
+            <template #default="scope">
+              {{ scope.row.input_tokens.toLocaleString() }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="output_tokens" :label="t('sessions.userProfile.outputTokens')" width="120" align="right">
+            <template #default="scope">
+              {{ scope.row.output_tokens.toLocaleString() }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="internal_cost_usd" :label="t('sessions.userProfile.internalCost')" width="120" align="right">
+            <template #default="scope">
+              ${{ scope.row.internal_cost_usd.toFixed(4) }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="external_cost_usd" :label="t('sessions.userProfile.externalCost')" width="120" align="right">
+            <template #default="scope">
+              ${{ scope.row.external_cost_usd.toFixed(4) }}
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div
+          v-if="!modelUsageLoading && modelUsage.length === 0 && !modelUsageError"
+          class="empty"
+        >
+          当前时间范围内暂无模型使用记录
+        </div>
+      </el-card>
     </div>
+
+    <!-- Help Drawer (2026-11-19) -->
+    <el-drawer
+      v-model="showHelp"
+      :title="t('sessions.userProfile.helpTitle')"
+      size="50%"
+      direction="rtl"
+    >
+      <div class="help-content">
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.tokenCalculation') }}</h3>
+          <p>{{ t('sessions.userProfile.helpContent.tokenDesc') }}</p>
+          <div class="formula">
+            总 Token 数 = 输入 Token + 输出 Token
+          </div>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.costCalculation') }}</h3>
+          <p><strong>内部成本：</strong>{{ t('sessions.userProfile.helpContent.internalCostDesc') }}</p>
+          <p><strong>外部成本：</strong>{{ t('sessions.userProfile.helpContent.externalCostDesc') }}</p>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.dataSource') }}</h3>
+          <p>{{ t('sessions.userProfile.helpContent.dataSourceDesc') }}</p>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.timeRangeNote') }}</h3>
+          <p>{{ t('sessions.userProfile.helpContent.timeRangeDesc') }}</p>
+        </section>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -387,4 +538,61 @@ const recentSessionFields = computed<CardField[]>(() => [
 .chart-container { width: 100%; }
 .session-link { color: var(--el-color-primary); text-decoration: none; }
 .session-link:hover { text-decoration: underline; }
+
+/* 2026-11-19: Model usage statistics styles */
+.card-header-with-help {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.help-content {
+  padding: 0 4px;
+}
+
+.help-section {
+  margin-bottom: 24px;
+}
+
+.help-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--el-text-color-primary);
+}
+
+.help-section p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+  margin-bottom: 8px;
+}
+
+.help-section .formula {
+  background: var(--el-fill-color-light);
+  padding: 12px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 14px;
+  margin-top: 8px;
+}
+
+.empty {
+  text-align: center;
+  padding: 32px;
+  color: var(--el-text-color-secondary);
+}
+
+.alert {
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.alert-danger {
+  background-color: var(--el-color-danger-light-9);
+  border: 1px solid var(--el-color-danger-light-7);
+  color: var(--el-color-danger);
+}
 </style>

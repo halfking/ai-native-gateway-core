@@ -136,6 +136,7 @@ onMounted(() => {
       <!-- 1. 运营概览 - 关键指标 -->
       <section v-if="boardData?.summary" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.overviewDays', { days: timeRange }) }}</h2>
+        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
         
         <div class="bo-metrics-grid">
           <div class="bo-metric-card">
@@ -194,6 +195,7 @@ onMounted(() => {
       <!-- 2. 分布分析 -->
       <section v-if="boardData?.pies" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.distributionTitle') }}</h2>
+        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
         
         <div class="bo-pies-grid">
           <!-- 模型分布 -->
@@ -249,6 +251,7 @@ onMounted(() => {
       <!-- 3. 错误分析 -->
       <section v-if="boardData?.pies?.errors && boardData.pies.errors.length > 0" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.errorAnalysisTitle') }}</h2>
+        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
         
         <div class="bo-error-list">
           <div v-for="item in topItems(boardData.pies.errors, 10)" :key="item.key" class="bo-error-item">
@@ -261,6 +264,7 @@ onMounted(() => {
       <!-- 4. 趋势分析 -->
       <section v-if="boardData?.trends && boardData.trends.length > 0" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.trendAnalysisTitle') }}</h2>
+        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
         
         <div class="bo-trend-summary">
           <p>{{ $t('dashboard.operational.trendDataPoints', { count: boardData.trends.length }) }}</p>
@@ -429,6 +433,17 @@ onMounted(() => {
   margin-bottom: var(--space-3);
   padding-bottom: var(--space-2);
   border-bottom: 2px solid var(--border);
+}
+
+.bo-time-range-hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: calc(var(--space-2) * -1);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  background: var(--bg-surface);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius);
 }
 
 .bo-section-warning,

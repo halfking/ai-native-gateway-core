@@ -42,9 +42,13 @@ type AnalyticsSessionSummary struct {
 	TotalPromptTokens       int64      `json:"total_prompt_tokens"`
 	TotalCompletionTokens   int64      `json:"total_completion_tokens"`
 	TotalTokens             int64      `json:"total_tokens"`
+	TotalCreditsCharged     int64      `json:"total_credits_charged"` // 新增：积分统计
 	AvgLatencyMs            int        `json:"avg_latency_ms"`
 	MinLatencyMs            *int       `json:"min_latency_ms"`
 	MaxLatencyMs            *int       `json:"max_latency_ms"`
+	AvgTTFTMs               *int       `json:"avg_ttft_ms,omitempty"`      // 新增：平均首字延迟
+	MinTTFTMs               *int       `json:"min_ttft_ms,omitempty"`      // 新增：最小首字延迟
+	MaxTTFTMs               *int       `json:"max_ttft_ms,omitempty"`      // 新增：最大首字延迟
 	ModelsUsed              []string   `json:"models_used"`
 	PrimaryModel            *string    `json:"primary_model"`
 	ModelSwitchCount        int        `json:"model_switch_count"`
@@ -179,7 +183,9 @@ const sessionSummarySelectCols = `ss.session_key, ss.tenant_id, sd.task_id, sd.s
 	ss.request_count, ss.success_count, ss.error_count,
 	ss.total_cost_usd, ss.input_cost_usd, ss.output_cost_usd,
 	ss.total_prompt_tokens, ss.total_completion_tokens, ss.total_tokens,
+	ss.total_credits_charged,
 	ss.avg_latency_ms, ss.min_latency_ms, ss.max_latency_ms,
+	ss.avg_ttft_ms, ss.min_ttft_ms, ss.max_ttft_ms,
 	ss.models_used, ss.primary_model, ss.model_switch_count,
 	ss.title, ss.summary, ss.key_topics, ss.user_intent, ss.quality_score,
 	ss.compliance_status, ss.compliance_issues_count,
@@ -197,7 +203,9 @@ func scanSessionSummary(row pgx.Row) (AnalyticsSessionSummary, error) {
 		&s.RequestCount, &s.SuccessCount, &s.ErrorCount,
 		&s.TotalCostUSD, &s.InputCostUSD, &s.OutputCostUSD,
 		&s.TotalPromptTokens, &s.TotalCompletionTokens, &s.TotalTokens,
+		&s.TotalCreditsCharged,
 		&s.AvgLatencyMs, &s.MinLatencyMs, &s.MaxLatencyMs,
+		&s.AvgTTFTMs, &s.MinTTFTMs, &s.MaxTTFTMs,
 		&s.ModelsUsed, &s.PrimaryModel, &s.ModelSwitchCount,
 		&s.Title, &s.Summary, &s.KeyTopics, &s.UserIntent, &s.QualityScore,
 		&s.ComplianceStatus, &s.ComplianceIssuesCount,

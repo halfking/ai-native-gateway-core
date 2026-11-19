@@ -242,6 +242,35 @@ export function getUserProfile(owner: string, days = 30) {
   return req<UserProfileDetail>('GET', `/api/admin/session-analytics/users/${owner}?${params}`)
 }
 
+// ── User Model Usage (2026-11-19) ──
+
+export interface UserModelUsage {
+  model_name: string
+  provider: string
+  request_count: number
+  total_tokens: number
+  input_tokens: number
+  output_tokens: number
+  internal_cost_usd: number
+  external_cost_usd: number
+  first_used_at: string
+  last_used_at: string
+}
+
+export function getUserModelUsage(
+  owner: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<{ models: UserModelUsage[]; start_date: string; end_date: string; degraded?: boolean; degraded_reason?: string }> {
+  const params = new URLSearchParams()
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  return req<{ models: UserModelUsage[]; start_date: string; end_date: string; degraded?: boolean; degraded_reason?: string }>(
+    'GET',
+    `/api/admin/session-analytics/users/${encodeURIComponent(owner)}/models?${params}`,
+  )
+}
+
 // ── User Management ──
 
 export interface UserListItem {
