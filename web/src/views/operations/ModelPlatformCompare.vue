@@ -22,6 +22,7 @@ import { fmtMarketNum, fmtPair } from '../../utils/marketPriceFormat'
 
 const props = defineProps<{
   globalModels?: string[] // 全局模型过滤
+  globalPlatform?: string // 全局平台过滤
 }>()
 
 const { t } = useI18n()
@@ -81,7 +82,7 @@ async function load() {
     // 契约 C：名称列表按平台名排序（首列展示 platform_name）。
     // ★ 同族模式下按「是否本模型」优先排序（同族行排在后面），
     //   否则本模型的行情会被同族的行淹没。
-    rows.value = [...(res.items || [])].sort((a, b) => {
+    let resultItems = [...(res.items || [])].sort((a, b) => {
       const aOwn = (a.canonical_name || '').trim().toLowerCase() === selectedModel.value
       const bOwn = (b.canonical_name || '').trim().toLowerCase() === selectedModel.value
       if (aOwn !== bOwn) return aOwn ? -1 : 1
@@ -91,6 +92,11 @@ async function load() {
       if (an && !bn) return -1
       return an.localeCompare(bn, undefined, { numeric: true, sensitivity: 'base' })
     })
+    // 如果有全局平台过滤，根据 platform_id 筛选
+    if (props.globalPlatform) {
+      resultItems = resultItems.filter(item => item.platform_id === props.globalPlatform)
+    }
+    rows.value = resultItems
   } catch (err) {
     // ★ 2026-11-17（12h 审计）：reason 会被**原样渲染**（<p class="empty-next mono-sm">
     //   {{ reason }}</p>）⇒ 此处塞内部 token 'load_failed' ⇒ 用户在页面上看到
@@ -105,8 +111,8 @@ async function load() {
 
 onMounted(loadDirectory)
 
-// ★ 2026-11-19：监听全局模型过滤变化，自动刷新
-watch(() => props.globalModels, () => {
+// ★ 2026-11-19：监听全局模型过滤和平台过滤变化，自动刷新
+watch(() => [props.globalModels, props.globalPlatform], () => {
   // ★ D23：全局过滤变了 ⇒ 放弃本地覆盖，回到「以全局为准」的口径。
   pickedModel.value = ''
   if (currentModel.value.trim()) {

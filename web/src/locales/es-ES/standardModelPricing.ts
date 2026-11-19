@@ -33,6 +33,8 @@ export default {
     summary: 'Manual {custom}: Global {defaults} / {total}',
     allVendors: 'Todos los proveedores',
     allModes: 'Todos los precios',
+    allPlatforms: 'Todas las plataformas',
+    platformLabel: 'Plataforma',
     count: '{count} modelos',
     vendorLabel: 'Proveedor',
     modeLabel: 'Modo de precios',

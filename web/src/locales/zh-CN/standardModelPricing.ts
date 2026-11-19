@@ -32,9 +32,11 @@ export default {
     summary: '手工 {custom}：全局 {defaults} / {total}',
     allVendors: '全部厂商',
     allModes: '全部定价',
+    allPlatforms: '全部平台',
     count: '共 {count} 个模型',
     vendorLabel: '厂商',
     modeLabel: '定价模式',
+    platformLabel: '平台',
     selectedModels: '已选择的模型',
   },
   table: {
