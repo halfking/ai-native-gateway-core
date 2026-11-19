@@ -65,6 +65,10 @@ export default {
     hasMultimodal: "マルチモーダルの手動定价を含む",
   },
   editModal: {
+ copyPrice: '価格をコピー',
+ paste: '貼り付け',
+ expand: '展開',
+ collapse: '折りたたむ',
     title: '手動価格：{name}',
     hint: '「手動」にチェックを入れクレジットを入力。未チェックのディメンションはグローバル基準 × 割引に従います。',
     fieldSuffix: '：手動価格',

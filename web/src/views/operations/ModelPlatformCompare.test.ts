@@ -132,17 +132,14 @@ describe('ModelPlatformCompare（F11 明细匹配口径）', () => {
 
   it('默认走精确匹配：请求不带 scope，且响应里只有本模型', async () => {
     mockApi('')
-    const w = mount(ModelPlatformCompare, { global: { plugins: [testI18n] } })
+ const w = mount(ModelPlatformCompare, { global: { plugins: [testI18n] }, props: { globalModels: ['glm-5.3'] } })
     await flushPromises()
 
-    // 从目录里选 glm-5.3（点击目录表中的选择按钮）
-    const pickBtn = w.findAll('tbody').at(0)?.findAll('button').at(0)
-    expect(pickBtn).toBeTruthy()
-    await pickBtn!.trigger('click')
-    await flushPromises()
-
-    const call = vi.mocked(getAdminMarketModelPlatforms).mock.calls.at(-1)
-    expect(call?.[0]).toBe('glm-5.3')
+ // ★2026-11-19：模型已由 globalModels prop 注入，watch immediate挂载即自动查询；
+ // 目录表仅在未选模型时渲染，pick按钮交互已不存在。取「带模型」的最后一次调用
+ // （过滤掉 onMounted(loadDirectory) 的空模型目录调用）。
+ const call = vi.mocked(getAdminMarketModelPlatforms).mock.calls.filter((c) => c[0]).at(-1)
+ expect(call?.[0]).toBe('glm-5.3')
     // ★ 默认不得带 scope（scope=family 必须是显式选择）
     expect(call?.[3] ?? '').toBe('')
 
@@ -157,19 +154,20 @@ describe('ModelPlatformCompare（F11 明细匹配口径）', () => {
 
   it('「最便宜」标记只落在本模型行上（同族更便宜的行不得抢走）', async () => {
     mockApi('family')
-    const w = mount(ModelPlatformCompare, { global: { plugins: [testI18n] } })
+ const w = mount(ModelPlatformCompare, { global: { plugins: [testI18n] }, props: { globalModels: ['glm-5.3'] } })
     await flushPromises()
 
-    const pickBtn = w.findAll('tbody').at(0)?.findAll('button').at(0)
-    await pickBtn!.trigger('click')
-    await flushPromises()
-    // 切到「含同族变体」
-    const familyBtn = w.findAll('button').filter((b) => b.text() === '含同族变体').at(0)
-    expect(familyBtn).toBeTruthy()
-    await familyBtn!.trigger('click')
-    await flushPromises()
+ // ★2026-11-19：模型已由 globalModels prop 注入，watch immediate挂载即自动查询；
+ // 目录表仅在未选模型时渲染，pick按钮交互已不存在。取「带模型」的最后一次调用
+ // （过滤掉 onMounted(loadDirectory) 的空模型目录调用）。
+ //切到「含同族变体」（显式选择 ⇒才允许 scope=family）
+ const familyBtn = w.findAll('button').filter((b) => b.text() === '含同族变体').at(0)
+ expect(familyBtn).toBeTruthy()
+ await familyBtn!.trigger('click')
+ await flushPromises()
 
-    const call = vi.mocked(getAdminMarketModelPlatforms).mock.calls.at(-1)
+ const call = vi.mocked(getAdminMarketModelPlatforms).mock.calls.filter((c) => c[0]).at(-1)
+ expect(call?.[0]).toBe('glm-5.3')
     expect(call?.[3]).toBe('family')
 
     // 同族视图必须显示「模型」列（否则分不清哪行是哪个模型）

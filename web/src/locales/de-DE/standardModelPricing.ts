@@ -65,6 +65,10 @@ export default {
     hasMultimodal: "Mit manuellen Preisen für mehrere Modalitäten",
   },
   editModal: {
+ copyPrice: 'Preise kopieren',
+ paste: 'Einfügen',
+ expand: 'Ausklappen',
+ collapse: 'Einklappen',
     title: 'Manuelle Preisgestaltung: {name}',
     hint: 'Aktivieren Sie „Manuell" und tragen Sie Credits ein; nicht aktivierte Dimensionen folgen weiterhin der globalen Basis × Rabatt.',
     fieldSuffix: ': Manuelle Preisgestaltung',

@@ -65,6 +65,10 @@ export default {
     hasMultimodal: '含多模態定價',
   },
   editModal: {
+ copyPrice: '複製價格',
+ paste: '貼上',
+ expand: '展開',
+ collapse: '收合',
     title: '手工定價：{name}',
     hint: '勾選「手工」並填寫積分；未勾選維度繼續跟隨全域基準 × 折扣。',
     fieldSuffix: '：手工定價',

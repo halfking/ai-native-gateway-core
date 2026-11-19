@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: 'Tenant ID',
     allCheckTypes: 'All Check Types',
+ checkTypeLabel: 'Type',
   },
   checkType: {
     pii: 'PII',

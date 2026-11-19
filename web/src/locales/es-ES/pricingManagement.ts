@@ -1,6 +1,14 @@
 // Auto-translated draft (es-ES) · 2026-07-02 · please review
 // pricingManagement.ts — Gestión de precios de coste.
 export default {
+ filter: {
+ model: 'Modelo: {v}',
+ providerId: 'ID de proveedor: {v}',
+ billingMode: 'Facturación: {v}',
+ currency: 'Moneda: {v}',
+ pricingStatus: 'Precios: {v}',
+ status: 'Estado: {v}',
+ },
   page: {
     title: 'Precios de coste',
   },

@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: 'ID de locataire',
     allCheckTypes: 'Tous les types de contrôle',
+ checkTypeLabel: 'Type',
   },
   checkType: {
     pii: 'PII',

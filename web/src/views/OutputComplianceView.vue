@@ -129,7 +129,7 @@ const recordFilterChips = computed(() => {
   }
   if (filterCheckType.value) {
     const key = `outputCompliance.checkType.${filterCheckType.value}`
-    chips.push({ key: 'checkType', label: `${t('outputCompliance.filter.allCheckTypes').replace(/^[^:]*:/, '').trim() || '类型'}: ${t(key)}`, onRemove: () => { filterCheckType.value = '' } })
+    chips.push({ key: 'checkType', label: `${t('outputCompliance.filter.allCheckTypes').replace(/^[^:]*:/, '').trim() || t('outputCompliance.filter.checkTypeLabel')}: ${t(key)}`, onRemove: () => { filterCheckType.value = '' } })
   }
   return chips
 })

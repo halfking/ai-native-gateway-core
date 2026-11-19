@@ -65,6 +65,10 @@ export default {
     hasMultimodal: "Avec tarification multimodale manuelle",
   },
   editModal: {
+ copyPrice: 'Copier les prix',
+ paste: 'Coller',
+ expand: 'Déplier',
+ collapse: 'Replier',
     title: 'Tarification manuelle: {name}',
     hint: 'Cochez « Manuel » et renseignez les crédits ; les dimensions non cochées continuent de suivre la base globale × remise.',
     fieldSuffix: ': tarification manuelle',

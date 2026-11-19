@@ -23,6 +23,7 @@ export default {
   filter: {
     tenantID: 'معرّف المستأجر',
     allCheckTypes: 'كل أنواع الفحص',
+ checkTypeLabel: 'النوع',
   },
   checkType: {
     pii: 'PII',

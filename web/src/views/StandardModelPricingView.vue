@@ -514,8 +514,8 @@ function closeEdit() {
 //   ★ 这三个动作的共同点是「一次改动全部 7 个费率字段」⇒ 它们是**表单级**工具，
 //   不是某个字段的动作 ⇒ 归到一处比平铺在底栏更贴切。
 const editModalTools = computed(() => [
-  { key: 'copy', label: '复制价格' },
-  { key: 'paste', label: '粘贴', disabled: !clipboard.value },
+  { key: 'copy', label: t('standardModelPricing.editModal.copyPrice') },
+  { key: 'paste', label: t('standardModelPricing.editModal.paste'), disabled: !clipboard.value },
   { key: 'fillGlobal', label: t('standardModelPricing.editModal.fillGlobal') },
 ])
 
@@ -793,7 +793,7 @@ onMounted(load)
     <details class="collapsible-section" open>
       <summary class="section-summary">
         <h3 class="section-title">{{ t('standardModelPricing.settings.title') }}</h3>
-        <span class="toggle-hint">{{ globalBaseFolded ? '展开' : '收起' }}</span>
+        <span class="toggle-hint">{{ globalBaseFolded ? t('standardModelPricing.editModal.expand') : t('standardModelPricing.editModal.collapse') }}</span>
       </summary>
       <div v-if="settings" class="card settings-card">
         <div class="settings-grid">
@@ -1222,14 +1222,14 @@ onMounted(load)
   padding: 0.75rem 1rem;
   background: var(--card-bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
   display: flex;
   justify-content: space-between;
   align-items: center;
   transition: background 0.2s;
 }
 .section-summary:hover {
-  background: var(--hover-bg);
+  background: var(--bg-hover);
 }
 .section-summary::-webkit-details-marker {
   display: none;

@@ -63,6 +63,10 @@ export default {
     hasMultimodal: "Incluye precios multimodales manuales",
   },
   editModal: {
+ copyPrice: 'Copiar precios',
+ paste: 'Pegar',
+ expand: 'Expandir',
+ collapse: 'Contraer',
     title: 'Precio manual: {name}',
     hint: 'Marque "Manual" e introduzca los créditos; las dimensiones no marcadas siguen la base global × descuento.',
     fieldSuffix: ': precio manual',

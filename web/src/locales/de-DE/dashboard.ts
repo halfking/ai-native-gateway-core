@@ -150,7 +150,7 @@ v2: {
     title: "Echtzeit-Anfrage-Stream",
     groupByQueue: "Nach Verarbeitungswarteschlange",
     controlsAria: "Steuerung des Echtzeit-Anfrage-Streams",
-    pause: "Pause",
+ pause: "Pausieren",
     resume: "Fortsetzen",
     legendButton: 'Legende',
     legend: {
@@ -183,11 +183,11 @@ v2: {
     modeLargeTitle: 'Großer Modus: Karten mit mehr Anfragedetails',
     // 2026-08-06: Geschäfts- / Probe-Filter + Titel (Abgleich mit zh-CN)
     business: 'Geschäft',
-    probe: 'Probe',
+    probe: 'Sondierung',
     businessTitle: 'Nur echte Geschäftsanfragen anzeigen',
     probeTitle: 'Nur Probe-Anfragen anzeigen',
     cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Verbindungsdetails anzeigen',
-    dimensionCredential: 'Zugangsdaten', dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
+    dimensionCredential: 'Zugangsdaten', dimensionVendor: 'Anbieter', dimensionProvider: 'Diensteanbieter', dimensionModel: 'Modell',
     statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
     statusUnsupported: 'Nicht unterstützt', statusClosed: 'Nicht verbunden',
     queueStreamConnecting: 'Verbindung zum Live-Stream wird aufgebaut. Dieser Bereich aktualisiert sich nach dem Verbinden automatisch…',
@@ -232,12 +232,12 @@ v2: {
 
     idleHoursMinutes: 'Leer {h} Std {m} Min',
 
-    filterStatus: 'Status',
+ filterStatus: 'Zustand',
     filterModel: 'Modell',
-    filterGroup: 'Filter',
+    filterGroup: 'Filtergruppe',
     filterProvider: 'Anbieter',
-    filterVendor: 'Vendor',
-    filterAgent: 'Client',  // 2026-08-06 Abgleich mit zh-CN
+ filterVendor: 'Anbieter',
+ filterAgent: 'Client-Typ', //2026-08-06 Abgleich mit zh-CN
     clearFilters: 'Filter löschen',
     status: {
       in_progress: 'In Bearbeitung',

@@ -130,12 +130,12 @@ export default {
   },
   // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
   guestNavAria: 'Produktnavigation',
-  navDownload: 'Download',
+  navDownload: 'Herunterladen',
   navSetup: 'Installieren und aktivieren',
   navActivate: 'Online aktivieren',
   navLicense: 'Lizenzstatus',
   navAgreement: 'Nutzungsbedingungen',
-  navSupport: 'Support',
+  navSupport: 'Hilfe & Support',
   // 2026-07-21: landing primary CTAs (LandingView.vue L109-119).
   ctaLogin: 'Anmelden',
   ctaDownload: 'Paket herunterladen',

@@ -2,32 +2,20 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import SettingsView from './SettingsView.vue'
+import settingsMessages from '../locales/zh-CN/settings'
+import commonMessages from '../locales/zh-CN/common'
 
 const i18n = createI18n({
-  legacy: false,
-  locale: 'zh-CN',
-  messages: {
-    'zh-CN': {
-      settings: {
-        category: {
-          all: '全部',
-          compression: '压缩',
-        },
-        session: {
-          id_body_keys_label: '请求体会话别名键',
-          id_body_keys_hint: '请求体中查找会话 ID 的字段',
-          id_body_keys_preview: '示例请求预览',
-          id_body_keys_chat_example: 'metadata.chatRoomId -> session_id',
-          save: '保存',
-          saving: '保存中',
-        },
-      },
-      common: {
-        confirm: '确认',
-        cancel: '取消',
-      },
-    },
-  },
+ legacy: false,
+ locale: 'zh-CN',
+ messages: {
+ 'zh-CN': {
+ settings: settingsMessages,
+ common: commonMessages,
+ },
+ },
+ missingWarn: false,
+ fallbackWarn: false,
 })
 
 const listSettingsMock = vi.fn()

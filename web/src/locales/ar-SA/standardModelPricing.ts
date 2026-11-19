@@ -65,6 +65,10 @@ export default {
     hasMultimodal: 'Has manual multimodal pricing',
   },
   editModal: {
+ copyPrice: 'نسخ الأسعار',
+ paste: 'لصق',
+ expand: 'توسيع',
+ collapse: 'طي',
     title: 'تسعير يدوي: {name}',
     hint: 'حدد «يدوي» واملأ الرصيد؛ تستمر الأبعاد غير المحددة في اتباع المعيار العام × الخصم.',
     fieldSuffix: ': تسعير يدوي',

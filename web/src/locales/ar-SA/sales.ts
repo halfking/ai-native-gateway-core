@@ -1,6 +1,7 @@
 // sales.ts — 报价系统 MVP 工作台（SalesWorkbenchView，2026-11-05 W1-T2 前端轮）文案。
 export default {
-  dashboardFunnel: 'مسار المبيعات',
+ //2026-11-19补齐：SalesWorkbenchView 直接引用的漏斗标题
+ dashboardFunnel: 'مسار المبيعات',
   active: 'فعّال',
   annotate: 'تسجيل',
   annotateTitle: 'تسجيل العرض: {name}',

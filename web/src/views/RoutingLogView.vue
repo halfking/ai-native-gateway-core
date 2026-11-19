@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { surfaceError } from '../i18n/errorSurface'
 import {
   getCredentialRoutingLog,
@@ -17,6 +18,7 @@ import type { KxDateRange } from '../components/ui/kx-date-types'
 
 type TimePreset = '24h' | 'today' | '7d' | 'month' | 'custom'
 
+const { t } = useI18n()
 const timePreset = ref<TimePreset>('24h')
 const customTimeStart = ref('')
 const customTimeEnd = ref('')
@@ -50,40 +52,40 @@ const currentPage = ref(0) // 0-based offset page
 
 const expandedKey = ref<string | null>(null)
 
-const kindOptions: { value: RoutingLogKind; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'routing', label: '路由选择' },
-  { value: 'probe', label: '自检测试' },
-  { value: 'state_change', label: '状态变化' },
-]
+const kindOptions = computed<{ value: RoutingLogKind; label: string }[]>(() => [
+ { value: 'all', label: t('routing.shared.log.kindAll') },
+ { value: 'routing', label: t('routing.shared.log.kindRouting') },
+ { value: 'probe', label: t('routing.shared.log.kindProbe') },
+ { value: 'state_change', label: t('routing.shared.log.kindStateChange') },
+])
 
-const resultOptions: { value: RoutingLogResult; label: string }[] = [
-  { value: 'all', label: '全部结果' },
-  { value: 'success', label: '仅成功' },
-  { value: 'failed', label: '仅失败' },
-]
+const resultOptions = computed<{ value: RoutingLogResult; label: string }[]>(() => [
+ { value: 'all', label: t('routing.shared.log.resultAll') },
+ { value: 'success', label: t('routing.shared.log.resultSuccess') },
+ { value: 'failed', label: t('routing.shared.log.resultFailed') },
+])
 
 // 2026-11-18 筛选收纳轮：生效条件 chips + 清空回调（默认值不算生效条件）
-const TIME_PRESET_LABELS: Record<TimePreset, string> = {
-  '24h': '最近24小时',
-  today: '今天',
-  '7d': '最近7天',
-  month: '本月',
-  custom: '自定义',
-}
+const TIME_PRESET_LABELS = computed<Record<TimePreset, string>>(() => ({
+ '24h': t('routing.shared.log.preset24h'),
+ today: t('routing.shared.log.presetToday'),
+ '7d': t('routing.shared.log.preset7d'),
+ month: t('routing.shared.log.presetMonth'),
+ custom: t('routing.shared.log.presetCustom'),
+}))
 const logFilterChips = computed(() => {
   const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
   if (timePreset.value !== '24h') {
-    chips.push({ key: 'time', label: `时间: ${TIME_PRESET_LABELS[timePreset.value]}`, onRemove: () => { timePreset.value = '24h'; resetAndLoad() } })
+    chips.push({ key: 'time', label: t('routing.shared.log.chipTime', { v: TIME_PRESET_LABELS.value[timePreset.value] }), onRemove: () => { timePreset.value = '24h'; resetAndLoad() } })
   }
   if (kindFilter.value !== 'all') {
-    chips.push({ key: 'kind', label: `类型: ${kindOptions.find(o => o.value === kindFilter.value)?.label ?? kindFilter.value}`, onRemove: () => { kindFilter.value = 'all'; resetAndLoad() } })
+    chips.push({ key: 'kind', label: t('routing.shared.log.chipKind', { v: kindOptions.value.find(o => o.value === kindFilter.value)?.label ?? kindFilter.value }), onRemove: () => { kindFilter.value = 'all'; resetAndLoad() } })
   }
   if (resultFilter.value !== 'all') {
-    chips.push({ key: 'result', label: `结果: ${resultOptions.find(o => o.value === resultFilter.value)?.label ?? resultFilter.value}`, onRemove: () => { resultFilter.value = 'all'; resetAndLoad() } })
+    chips.push({ key: 'result', label: t('routing.shared.log.chipResult', { v: resultOptions.value.find(o => o.value === resultFilter.value)?.label ?? resultFilter.value }), onRemove: () => { resultFilter.value = 'all'; resetAndLoad() } })
   }
   if (modelInput.value.trim()) {
-    chips.push({ key: 'model', label: `模型: ${modelInput.value.trim()}`, onRemove: () => { modelInput.value = ''; resetAndLoad() } })
+    chips.push({ key: 'model', label: t('routing.shared.log.chipModel', { v: modelInput.value.trim() }), onRemove: () => { modelInput.value = ''; resetAndLoad() } })
   }
   return chips
 })
@@ -154,11 +156,11 @@ function resetAndLoad() {
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 
-const kindLabels: Record<string, string> = {
-  routing: '路由选择',
-  probe: '自检',
-  state_change: '状态变化',
-}
+const kindLabels = computed<Record<string, string>>(() => ({
+ routing: t('routing.shared.log.kindRoutingShort'),
+ probe: t('routing.shared.log.kindProbeShort'),
+ state_change: t('routing.shared.log.kindStateChangeShort'),
+}))
 
 const kindBadgeClass: Record<string, string> = {
   routing: 'badge-kind-routing',
@@ -166,12 +168,12 @@ const kindBadgeClass: Record<string, string> = {
   state_change: 'badge-kind-state',
 }
 
-const changeLabels: Record<string, string> = {
-  recovered: '恢复 ✓',
-  broke: '故障 ✗',
-  online: '手动上线',
-  offline: '手动下线',
-}
+const changeLabels = computed<Record<string, string>>(() => ({
+ recovered: t('routing.shared.log.changeRecovered'),
+ broke: t('routing.shared.log.changeBroke'),
+ online: t('routing.shared.log.changeOnline'),
+ offline: t('routing.shared.log.changeOffline'),
+}))
 
 const changeClass: Record<string, string> = {
   recovered: 'change-recovered',
@@ -181,9 +183,9 @@ const changeClass: Record<string, string> = {
 }
 
 function statusText(e: RoutingLogEntry): string {
-  if (e.kind === 'state_change') return changeLabels[e.change || ''] || e.status
-  if (e.success) return '成功'
-  return '失败'
+  if (e.kind === 'state_change') return changeLabels.value[e.change || ''] || e.status
+  if (e.success) return t('routing.shared.log.statusSuccess')
+  return t('routing.shared.log.statusFailed')
 }
 
 function statusClass(e: RoutingLogEntry): string {
@@ -235,13 +237,13 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
       <div class="toolbar-row">
         <CollapsibleFilterSection :chips="logFilterChips" @reset="resetLogFilters" style="flex:1;border:none;margin:0;background:transparent">
           <template #actions></template>
-          <span class="label">时间范围</span>
+          <span class="label">{{ t('routing.shared.log.timeRange') }}</span>
           <select v-model="timePreset" class="field-input w-preset" @change="resetAndLoad">
-            <option value="24h">最近24小时</option>
-            <option value="today">今天</option>
-            <option value="7d">最近7天</option>
-            <option value="month">本月</option>
-            <option value="custom">自定义</option>
+            <option value="24h">{{ t('routing.shared.log.preset24h') }}</option>
+            <option value="today">{{ t('routing.shared.log.presetToday') }}</option>
+            <option value="7d">{{ t('routing.shared.log.preset7d') }}</option>
+            <option value="month">{{ t('routing.shared.log.presetMonth') }}</option>
+            <option value="custom">{{ t('routing.shared.log.presetCustom') }}</option>
           </select>
 
           <span class="label">{{ $t('common.terms.type') }}</span>
@@ -257,7 +259,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
           <input
             v-model="modelInput"
             class="field-input model-input"
-            placeholder="按模型过滤 (回车搜索)"
+            :placeholder="t('routing.shared.log.modelPlaceholder')"
             @keyup.enter="resetAndLoad"
           />
         </CollapsibleFilterSection>
@@ -274,7 +276,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
       </div>
 
       <div class="toolbar-row" v-if="timePreset === 'custom'">
-        <span class="label">自定义区间</span>
+        <span class="label">{{ t('routing.shared.log.customRange') }}</span>
         <KxDateRangePicker
           :model-value="customRangeValue"
           :presets="[]"
@@ -290,13 +292,13 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
     <!-- Meta -->
     <div v-if="meta" class="meta-info">
-      共 {{ total }} 条记录 · 查询耗时 {{ meta.duration_ms }}ms
+ {{ t('routing.shared.log.metaTotal', { total, ms: meta.duration_ms }) }}
     </div>
 
     <!-- Loading -->
     <div v-if="loading && !entries.length" class="loading-state">
       <div class="spinner"></div>
-      <p>加载路由记录...</p>
+      <p>{{ t('routing.shared.log.loading') }}</p>
     </div>
 
     <!-- Empty -->
@@ -315,7 +317,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
             <th>{{ $t('common.credentialFallback') }}</th>
             <th class="col-status">{{ $t('common.terms.result') }}</th>
             <th class="col-lat">{{ $t('common.terms.latency') }}</th>
-            <th class="col-err">错误摘要</th>
+            <th class="col-err">{{ t('routing.shared.log.colErrorSummary') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -345,35 +347,35 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
               <td colspan="7">
                 <div class="detail-grid">
                   <div class="detail-item">
-                    <span class="detail-label">完整时间</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailFullTime') }}</span>
                     <span class="mono">{{ e.ts }}</span>
                   </div>
                   <div class="detail-item" v-if="e.kind === 'state_change'">
-                    <span class="detail-label">变化类型</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailChangeType') }}</span>
                     <span>{{ changeLabels[e.change || ''] || e.change }}</span>
                   </div>
                   <div class="detail-item" v-if="e.kind === 'state_change'">
                     <span class="detail-label">{{ $t('common.terms.operator') }}</span>
-                    <span>{{ e.actor || '系统' }}</span>
+                    <span>{{ e.actor || t('routing.shared.log.actorSystem') }}</span>
                   </div>
                   <div class="detail-item">
                     <span class="detail-label">{{ $t('common.terms.source') }}</span>
                     <span>{{ e.source }}</span>
                   </div>
                   <div class="detail-item" v-if="e.tier != null">
-                    <span class="detail-label">候选层级</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailTier') }}</span>
                     <span>Tier {{ e.tier }}</span>
                   </div>
                   <div class="detail-item" v-if="e.status">
-                    <span class="detail-label">状态码</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailStatusCode') }}</span>
                     <span class="mono">{{ e.status }}</span>
                   </div>
                   <div class="detail-item" v-if="e.error_code">
-                    <span class="detail-label">错误类别</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailErrorCategory') }}</span>
                     <span class="mono">{{ e.error_code }}</span>
                   </div>
                   <div class="detail-item detail-full" v-if="e.error_message">
-                    <span class="detail-label">完整错误信息</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailFullError') }}</span>
                     <pre class="error-pre">{{ e.error_message }}</pre>
                   </div>
                   <div class="detail-item" v-if="e.request_id">
@@ -387,7 +389,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
                     <span class="mono">{{ e.http_status }}</span>
                   </div>
                   <div class="detail-item" v-if="e.sticky != null && e.kind === 'routing'">
-                    <span class="detail-label">粘性路由</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailSticky') }}</span>
                     <span>{{ e.sticky ? $t('common.button.yes') : $t('common.button.no') }}</span>
                   </div>
                   <div class="detail-item" v-if="e.outbound_model && e.kind === 'routing'">
@@ -395,7 +397,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
                     <span class="mono">{{ e.outbound_model }}</span>
                   </div>
                   <div class="detail-item detail-full" v-if="e.detail">
-                    <span class="detail-label">详细信息</span>
+                    <span class="detail-label">{{ t('routing.shared.log.detailInfo') }}</span>
                     <pre class="error-pre">{{ e.detail }}</pre>
                   </div>
                 </div>
@@ -411,7 +413,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
       <button class="btn btn-sm" :disabled="currentPage === 0 || loading" @click="currentPage--; loadLog()">
         {{ $t('common.pagination.previous') }}
       </button>
-      <span class="page-info">第 {{ currentPage + 1 }} / {{ totalPages }} 页</span>
+ <span class="page-info">{{ t('routing.shared.log.pageInfo', { cur: currentPage +1, total: totalPages }) }}</span>
       <button class="btn btn-sm" :disabled="(currentPage + 1) * PAGE_SIZE >= total || loading" @click="currentPage++; loadLog()">
         {{ $t('common.pagination.next') }}
       </button>

@@ -1,5 +1,10 @@
 {
-  "metric": "CJK runs after stripping parser-detected comments; src/**/*.{vue,ts,tsx,js,mjs}; excludes src/locales, src/i18n, *.test/spec",
-  "count": 4480,
-  "updated": "2026-11-12"
+ "metric": "CJK runs after stripping parser-detected comments; src/**/*.{vue,ts,tsx,js,mjs}; excludes src/locales, src/i18n, *.test/spec",
+ "count":4369,
+ "updated": "2026-11-19",
+ "lowerReason": "2026-11-1904:30档首次合法下调4480→4328（4活文件 i18n化 +死页删除）；05:53档复量4369——对拍 a65d1b07b树（scripts/tmp_cjk_perfile.mts）证明无任何文件 CJK计数高于基点树（a65d 合计4652 →工作区4369，全部只降不升），4328 是上一档读数偏差，本轮以同实现同口径复量4369 为准。",
+ "lowerHistory": [
+ { "date": "2026-11-19", "from":4480, "to":4328, "reason": "4活文件 i18n化 +死页集群删除" },
+ { "date": "2026-11-19", "from":4328, "to":4369, "reason": "对拍实证无文件增量；按同口径复量回调登记" }
+ ]
 }
