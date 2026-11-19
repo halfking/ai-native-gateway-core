@@ -7,7 +7,7 @@
 // - GET /api/admin/dashboard/board（完整看板数据：summary、pies、trends）
 //
 // 优化：整合运营关键指标、流量分析、成本分析、错误分析、趋势图表
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
 import {
   fetchBoardOperational,
@@ -18,12 +18,16 @@ import {
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import * as echarts from 'echarts'
+import type { EChartsOption } from 'echarts'
 
 const loading = ref(false)
 const error = ref('')
 const operationalData = ref<BoardOperationalPayload | null>(null)
 const boardData = ref<BoardPayload | null>(null)
 const timeRange = ref(7)
+const trendChartRef = ref<HTMLDivElement>()
+let trendChartInstance: echarts.ECharts | null = null
 
 // 统一时间范围选择器（2026-11-19）
 const { presets, rangeValue, applyRange } = useSpanDaysRange(timeRange, [
@@ -48,11 +52,151 @@ async function load() {
     ])
     operationalData.value = opData
     boardData.value = bdData
+    
+    // 初始化趋势图表
+    await nextTick()
+    initTrendChart()
   } catch (e) {
     error.value = surfaceError(e)
   } finally {
     loading.value = false
   }
+}
+
+function initTrendChart() {
+  if (!trendChartRef.value || !boardData.value?.trends || boardData.value.trends.length === 0) {
+    return
+  }
+
+  // 测试环境检查：如果容器没有实际尺寸，跳过初始化
+  const rect = trendChartRef.value.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) {
+    return
+  }
+
+  // 销毁旧实例
+  if (trendChartInstance) {
+    trendChartInstance.dispose()
+  }
+
+  try {
+    // 创建新实例
+    trendChartInstance = echarts.init(trendChartRef.value)
+
+    // 聚合数据：按天汇总
+    const dailyData = aggregateTrendsByDay(boardData.value.trends)
+    
+    const dates = dailyData.map(d => d.date)
+    const requests = dailyData.map(d => d.requests)
+    const successRates = dailyData.map(d => d.successRate)
+    const costs = dailyData.map(d => d.cost)
+
+    const option: EChartsOption = {
+      title: {
+        show: false
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'cross'
+        }
+      },
+      legend: {
+        data: ['请求数', '成功率', '花费(USD)']
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        containLabel: true
+      },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: dates
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: '请求数',
+          position: 'left',
+          axisLabel: {
+            formatter: '{value}'
+          }
+        },
+        {
+          type: 'value',
+          name: '成功率',
+          position: 'right',
+          axisLabel: {
+            formatter: '{value}%'
+          },
+          min: 0,
+          max: 100
+        }
+      ],
+      series: [
+        {
+          name: '请求数',
+          type: 'line',
+          data: requests,
+          smooth: true,
+          areaStyle: {
+            opacity: 0.3
+          }
+        },
+        {
+          name: '成功率',
+          type: 'line',
+          yAxisIndex: 1,
+          data: successRates,
+          smooth: true
+        },
+        {
+          name: '花费(USD)',
+          type: 'line',
+          data: costs,
+          smooth: true
+        }
+      ]
+    }
+
+    trendChartInstance.setOption(option)
+  } catch (err) {
+    // 在测试环境或其他异常情况下静默失败
+    console.warn('Failed to initialize trend chart:', err)
+  }
+}
+
+// 聚合趋势数据：按天汇总
+function aggregateTrendsByDay(trends: any[]) {
+  const dailyMap = new Map<string, { requests: number; success: number; cost: number }>()
+
+  for (const point of trends) {
+    // 提取日期部分 (YYYY-MM-DD)
+    const date = point.bucket.split('T')[0]
+    
+    if (!dailyMap.has(date)) {
+      dailyMap.set(date, { requests: 0, success: 0, cost: 0 })
+    }
+
+    const day = dailyMap.get(date)!
+    day.requests += point.requests || 0
+    day.success += point.success || 0
+    day.cost += point.cost_usd || 0
+  }
+
+  // 转换为数组并排序
+  const result = Array.from(dailyMap.entries())
+    .map(([date, data]) => ({
+      date,
+      requests: data.requests,
+      successRate: data.requests > 0 ? (data.success / data.requests * 100) : 0,
+      cost: data.cost
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  return result
 }
 
 function formatTimestamp(s: string | undefined | null): string {
@@ -120,6 +264,13 @@ function topItems(items: any[] | undefined, n: number = 5) {
 
 onMounted(() => {
   void load()
+})
+
+onBeforeUnmount(() => {
+  if (trendChartInstance) {
+    trendChartInstance.dispose()
+    trendChartInstance = null
+  }
 })
 </script>
 
@@ -291,16 +442,7 @@ onMounted(() => {
           </p>
         </div>
 
-        <div class="bo-trend-chart">
-          <div v-for="(point, idx) in boardData.trends" :key="idx" class="bo-trend-point">
-            <div class="bo-trend-time">{{ point.bucket.split('T')[0] }}</div>
-            <div class="bo-trend-bars">
-              <div class="bo-trend-bar" :style="{ width: (point.requests / (boardData.summary?.total_requests || 1) * 100) + '%' }">
-                {{ formatNumber(point.requests) }}
-              </div>
-            </div>
-          </div>
-        </div>
+        <div ref="trendChartRef" class="bo-trend-chart-container"></div>
       </section>
 
       <!-- 5. 系统健康 - 后台任务 -->
@@ -601,43 +743,12 @@ onMounted(() => {
   color: var(--text-muted);
 }
 
-.bo-trend-chart {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.bo-trend-point {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-}
-
-.bo-trend-time {
-  width: 100px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.bo-trend-bars {
-  flex: 1;
-  height: 24px;
+.bo-trend-chart-container {
+  width: 100%;
+  height: 400px;
   background: var(--bg-surface);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.bo-trend-bar {
-  height: 100%;
-  background: var(--primary);
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-2);
-  color: white;
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-  transition: width 0.3s ease;
+  border-radius: var(--radius);
+  padding: var(--space-3);
 }
 
 /* 后台任务卡片 */
@@ -758,13 +869,8 @@ onMounted(() => {
     justify-content: flex-end;
   }
 
-  .bo-trend-point {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .bo-trend-time {
-    width: auto;
+  .bo-trend-chart-container {
+    height: 300px;
   }
 }
 </style>
