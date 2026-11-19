@@ -145,10 +145,9 @@ describe('BoardOperationalView', () => {
 
     // 默认是 7 天
     expect(mockedFetchBoard).toHaveBeenCalledWith({ days: 7 })
-
-    // KxDateRangePicker 现在使用组件，无法直接设置值
-    // 我们只验证初始加载是正确的
-    expect(w.text()).toContain('数据时间范围')
+    
+    // 页面应该显示时间范围提示
+    expect(w.text()).toContain('数据时间范围：最近 7 天')
   })
 
   it('handles missing board data gracefully', async () => {
@@ -172,7 +171,8 @@ describe('BoardOperationalView', () => {
 
     // 应该显示占位符而不是崩溃
     expect(w.text()).toContain('—')
-    expect(w.text()).toContain('无数据')
+    // 当所有分布数据为空时，分布分析区域应该被隐藏
+    expect(w.text()).not.toContain('分布分析')
   })
 
   it('shows running chip for live discovery + handles missing nested data', async () => {

@@ -257,6 +257,19 @@ const derivedMetrics = computed(() => {
   }
 })
 
+// 检查分布分析区域是否有任何数据
+const hasDistributionData = computed(() => {
+  const pies = boardData.value?.pies
+  if (!pies) return false
+  
+  const hasModels = pies.models && pies.models.length > 0
+  const hasProviders = pies.providers && pies.providers.length > 0
+  const hasClients = pies.clients && pies.clients.length > 0
+  const hasTenants = pies.tenants && pies.tenants.length > 0
+  
+  return hasModels || hasProviders || hasClients || hasTenants
+})
+
 function topItems(items: any[] | undefined, n: number = 5) {
   if (!items || items.length === 0) return []
   return items.slice(0, n)
@@ -362,7 +375,7 @@ onBeforeUnmount(() => {
       </section>
 
       <!-- 2. 分布分析 -->
-      <section v-if="boardData?.pies" class="bo-section">
+      <section v-if="hasDistributionData" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.distributionTitle') }}</h2>
         <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
         
@@ -370,8 +383,8 @@ onBeforeUnmount(() => {
           <!-- 模型分布 -->
           <div class="bo-pie-card">
             <h3 class="bo-pie-title">{{ $t('dashboard.operational.topModels') }}</h3>
-            <div v-if="topItems(boardData.pies.models, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData.pies.models, 5)" :key="item.key" class="bo-pie-item">
+            <div v-if="topItems(boardData?.pies?.models, 5).length > 0" class="bo-pie-list">
+              <div v-for="item in topItems(boardData?.pies?.models, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -382,8 +395,8 @@ onBeforeUnmount(() => {
           <!-- 供应商分布 -->
           <div class="bo-pie-card">
             <h3 class="bo-pie-title">{{ $t('dashboard.operational.topProviders') }}</h3>
-            <div v-if="topItems(boardData.pies.providers, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData.pies.providers, 5)" :key="item.key" class="bo-pie-item">
+            <div v-if="topItems(boardData?.pies?.providers, 5).length > 0" class="bo-pie-list">
+              <div v-for="item in topItems(boardData?.pies?.providers, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -394,8 +407,8 @@ onBeforeUnmount(() => {
           <!-- 客户端分布 -->
           <div class="bo-pie-card">
             <h3 class="bo-pie-title">{{ $t('dashboard.operational.topClients') }}</h3>
-            <div v-if="topItems(boardData.pies.clients, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData.pies.clients, 5)" :key="item.key" class="bo-pie-item">
+            <div v-if="topItems(boardData?.pies?.clients, 5).length > 0" class="bo-pie-list">
+              <div v-for="item in topItems(boardData?.pies?.clients, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -406,8 +419,8 @@ onBeforeUnmount(() => {
           <!-- 租户分布 -->
           <div class="bo-pie-card">
             <h3 class="bo-pie-title">{{ $t('dashboard.operational.topTenants') }}</h3>
-            <div v-if="topItems(boardData.pies.tenants, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData.pies.tenants, 5)" :key="item.key" class="bo-pie-item">
+            <div v-if="topItems(boardData?.pies?.tenants, 5).length > 0" class="bo-pie-list">
+              <div v-for="item in topItems(boardData?.pies?.tenants, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
