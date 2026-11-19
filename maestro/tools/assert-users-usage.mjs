@@ -169,6 +169,37 @@ if (dp.taskLinks > 0) check('热门任务行是可点链接（员工→任务→
 else if (emptyState === true) check('热门任务空态合法（该 owner 无任务记录，不是缺链接）', true, 'links=0 + 空态在场')
 else check('热门任务行是可点链接（员工→任务→会话下钻）', false, `links=${dp.taskLinks} 且无空态`)
 
+// ── 3.5 项目卡（L1 收口：员工→项目层，2026-11-20 二段）────────────────────
+const projApi = await js(`fetch('/api/admin/session-analytics/users/${encodeURIComponent(firstOwner)}/projects?days=30',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
+const projStatus = String(projApi).split(' :: ')[0]
+const projBody = JSON.parse(String(projApi).replace(/^\d+ :: /, ''))
+check('projects 端点 200 且带 usage_meta（会话级出处块）', projStatus === '200' && projBody.usage_meta?.source_view === 'session_summaries × session_owners', `status=${projStatus} source=${projBody.usage_meta?.source_view}`)
+const projRowsApi = (projBody.projects || []).length
+check(`projects 端点返回行（rows=${projRowsApi}；0 = 该 owner 无项目数据，合法）`, projStatus === '200' && projRowsApi >= 0)
+
+const projCard = await js(`(() => {
+  const card = document.querySelector('[data-testid="up-projects"]')
+  if (!card) return JSON.stringify({ ok: false, why: 'NO_CARD' })
+  const headers = [...card.querySelectorAll('th')].map(t => t.textContent.trim())
+  const need = ['项目 ID', '会话数', '任务数', 'Token', 'USD 成本', '积分', '最近活跃']
+  const rows = card.querySelectorAll('tbody tr').length
+  const note = (card.querySelector('.projects-source-note')?.textContent || '').slice(0, 80)
+  const emptyText = card.textContent.includes('还没有项目数据')
+  const sample = card.querySelector('tbody tr')?.textContent?.trim().slice(0, 90) || ''
+  return JSON.stringify({ ok: true, headers: need.map(h => headers.includes(h)), rows, note, emptyText, sample })
+})()`)
+const pc = JSON.parse(projCard)
+if (!pc.ok) {
+  gauge('项目卡真渲染（员工→项目层）', pc.why)
+} else if (pc.rows > 0) {
+  check('项目卡八列表头齐 + 行数据在场', pc.headers.every(Boolean), `rows=${pc.rows} sample=${pc.sample}`)
+  check('项目卡出处注记标明会话级来源', pc.note.includes('session_summaries'), pc.note)
+} else if (pc.emptyText) {
+  check('项目卡空态合法（该 owner 无项目数据，出空态文案而非报错）', true, 'rows=0 + 空态在场')
+} else {
+  check('项目卡真渲染', false, 'rows=0 且无空态文案')
+}
+
 // ── 4. 详情页帮助抽屉（口径段；列表页抽屉已由 flow 13 第一层覆盖）─────────
 
 const drawerDetail = await js(`(async () => {
