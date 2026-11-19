@@ -2935,7 +2935,9 @@ intentional_function_chains=(
   # 2026-10-12: 358 (channel-leg registration round) also redefines the
   # trigger body between 563 and 661; the final body stays 661's, matching
   # the scan-leg numeric order production received (572, 563, 358, 661).
-  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|'
+  # ★ 2026-11-19 文档一致性轮：990_stats_consistency_fixes 进入投递序后追加链尾
+  #   （990 的 CREATE OR REPLACE update_session_summary 是活库最终体，链序=投递序）。
+  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|358_session_ownership.sql|661_session_summary_token_ratio_reassert.sql|990_stats_consistency_fixes.sql|'
   # 2026-10-12 channel-leg registration: the candidate_failure_logs promote
   # chain as sequenced here is 392 (first partitioned promote) → 628 (v3,
   # carries aggregation_id) → 698 (Asia/Shanghai timezone pin, still carrying
