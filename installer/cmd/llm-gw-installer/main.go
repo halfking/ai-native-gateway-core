@@ -1805,6 +1805,20 @@ var piAnalysisStatsViewAlignment980 []byte
 //go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.down.sql
 var piAnalysisStatsViewAlignment980Down []byte
 
+// ★ 981（2026-11-19 会话分析系统基础轮）：session_analytics_foundation
+//
+//	—— 为会话分析系统创建基础设施：
+//	① sessions 表新增元数据列（project/task/task_category/is_probe）
+//	② 4 个物化视图（用户/项目/智能体/模型聚合）
+//	③ 索引优化与刷新辅助函数
+//	④ 初始数据填充（标记探测会话、首次刷新视图）
+//
+//go:embed embeddata/startup/981_session_analytics_foundation.sql
+var sessionAnalyticsFoundation981 []byte
+
+//go:embed embeddata/startup/981_session_analytics_foundation.down.sql
+var sessionAnalyticsFoundation981Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2431,6 +2445,9 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：视图口径对齐。
 	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
 	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
+	// ★ 981（2026-11-19 会话分析系统基础轮）：元数据列 + 物化视图。
+	"startup/981_session_analytics_foundation.sql":      sessionAnalyticsFoundation981,
+	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
