@@ -109,7 +109,9 @@
 <tr><td><code>vitest run src/lib/piAnalysisStats.test.ts</code></td><td class="ok">6/6</td></tr>
 <tr><td><code>vitest run src/views/operations/</code></td><td class="ok">13/13</td></tr>
 <tr><td>全量 vitest</td><td class="warn">3453 绿 + 1 红（CJK 棘轮基线门＝上游存量，本轮 diff 同树对拍净降 4）</td></tr>
-<tr><td>部署后三台 API 一致性对拍 / 980 视图列落地</td><td class="ok">见 §六部署结果（回填）</td></tr>
+<tr><td>211 容器隔离 scratch 库：980 两遍幂等 + 12 列 + 样本数据逐列正确</td><td class="ok">PASS（首版列位错误在此暴露前已被三台部署 fail-closed 拦下）</td></tr>
+<tr><td>三台部署（211 槽a / 154=3085 / 245=3086，均 7ca52d0b）</td><td class="ok">全过；980 三库台账齐、视图 12 列齐</td></tr>
+<tr><td>部署后三台 API 一致性终验（5 断言/台）</td><td class="ok">ALL_PASS ×3</td></tr>
 </table>
 </div>
 
