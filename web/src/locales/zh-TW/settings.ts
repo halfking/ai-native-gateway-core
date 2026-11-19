@@ -96,6 +96,10 @@ export default {
  expert: '專家模式：完整導航與全部頁面（目前預設）',
  },
  },
+ timezone: {
+    hint: '時區決定所有時間範圍的統計口徑與顯示（日切、報表、日誌查詢），預設東8區。儲存後立即生效。',
+    currentNow: '目前生效時區偏移：{offset}',
+  },
   docs: {
     compressionModeTitle: '📖 壓縮模式詳解',
     compressionModeContent: `<p><strong>壓縮模式</strong>控制系統如何處理超長對話上下文：</p>

@@ -15,20 +15,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
 // ─────────────────────────────────────────────────────────────────────────
-// resolveFirstTurnDateRange
+// resolveFirstTurnDateRange（时区轮 2026-11-20：系统时区日切）
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestFirstTurnDateRangeDefaultsToTodayUTC(t *testing.T) {
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	t.Cleanup(func() { settings.SystemTimezoneLocationForTest("") })
 	startTS, endTS, startDay, endDay, err := resolveFirstTurnDateRange("", "")
 	if err != nil {
 		t.Fatalf("empty dates: unexpected error %v", err)
 	}
-	today := time.Now().UTC().Format("2006-01-02")
-	wantDay, _ := time.Parse("2006-01-02", today)
+	// 「今天」按系统时区（+08）的日历日；日界即时区零点。
+	today := settings.SystemNow().Format("2006-01-02")
+	wantDay, _ := settings.ParseSystemDate(today)
 	if !startTS.Equal(wantDay) {
 		t.Errorf("default startTS = %v, want %v", startTS, wantDay)
 	}
@@ -41,12 +45,14 @@ func TestFirstTurnDateRangeDefaultsToTodayUTC(t *testing.T) {
 }
 
 func TestFirstTurnDateRangeExplicit(t *testing.T) {
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	t.Cleanup(func() { settings.SystemTimezoneLocationForTest("") })
 	startTS, endTS, startDay, endDay, err := resolveFirstTurnDateRange("2026-09-01", "2026-09-07")
 	if err != nil {
 		t.Fatalf("explicit dates: unexpected error %v", err)
 	}
-	d1, _ := time.Parse("2006-01-02", "2026-09-01")
-	d7, _ := time.Parse("2006-01-02", "2026-09-07")
+	d1, _ := settings.ParseSystemDate("2026-09-01")
+	d7, _ := settings.ParseSystemDate("2026-09-07")
 	if !startTS.Equal(d1) || !startDay.Equal(d1) {
 		t.Errorf("start = %v/%v, want %v", startTS, startDay, d1)
 	}

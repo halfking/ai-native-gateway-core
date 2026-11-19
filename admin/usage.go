@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
@@ -1449,20 +1451,25 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 // to use in SQL.  Semantics:
 //
 //   - start + end provided  → use them as [start, end).  start is
-//     inclusive at 00:00:00 UTC; end is
-//     exclusive at 00:00:00 UTC of the day
-//     AFTER end (so the end date itself is
+//     inclusive at 00:00:00 **system timezone** (settings.system.timezone,
+//     default Asia/Shanghai)；end is exclusive at 00:00:00 of the day
+//     AFTER end in the same zone (so the end date itself is
 //     included — matches user expectations
-//     from a date picker).
+//     from a date picker). 返回值已换算为 UTC，与 timestamptz
+//     存储口径一致且保持索引可用。
 //   - start alone           → invalid; require end too.
 //   - end alone             → invalid; require start too.
-//   - neither               → fall back to [now - defaultDays, now).
+//   - neither               → fall back to [system-today - (defaultDays-1)
+//     00:00, now)——与 boardPresetTimeRange 的「含今天」日历窗口对齐。
 //
-// All times are returned in UTC.  Bounds-check: the range cannot
-// exceed 366 days so a malicious caller cannot force a full-table
-// scan on a multi-year window.
+// Bounds-check: the range cannot exceed 366 days so a malicious caller
+// cannot force a full-table scan on a multi-year window.
+//
+// 2026-11-20 时区轮：此前 start/end 按 time.Parse（UTC 零点）解释、
+// days 回退按 now-N 截 UTC 零点 ⇒ 东8区用户选「今天」漏掉本地 00:00-08:00。
+// 统一改走 settings.ParseSystemDate / SystemDayStart（系统时区日切）。
 func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Time, err error) {
-	now := time.Now().UTC()
+	now := time.Now()
 	startStr := queryString(r, "start")
 	endStr := queryString(r, "end")
 
@@ -1474,18 +1481,19 @@ func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Ti
 		if days > 366 {
 			days = 366
 		}
-		return now.Add(-time.Duration(days) * 24 * time.Hour).Truncate(24 * time.Hour), now, nil
+		todayStart := settings.SystemDayStart(now)
+		return todayStart.AddDate(0, 0, -(days - 1)), now, nil
 	}
 
 	if startStr == "" || endStr == "" {
 		return time.Time{}, time.Time{}, fmt.Errorf("start and end must both be provided when using a custom range")
 	}
 
-	startDay, err1 := time.Parse("2006-01-02", startStr)
+	startDay, err1 := settings.ParseSystemDate(startStr)
 	if err1 != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date: expected YYYY-MM-DD")
 	}
-	endDay, err2 := time.Parse("2006-01-02", endStr)
+	endDay, err2 := settings.ParseSystemDate(endStr)
 	if err2 != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date: expected YYYY-MM-DD")
 	}
@@ -1497,6 +1505,6 @@ func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Ti
 	}
 
 	// [start, end) — end is exclusive so the picker-selected end date
-	// is fully included.
-	return startDay.UTC(), endDay.Add(24 * time.Hour).UTC(), nil
+	// is fully included. 返回 UTC 瞬间（与 timestamptz 比较口径一致）。
+	return startDay.UTC(), endDay.AddDate(0, 0, 1).UTC(), nil
 }

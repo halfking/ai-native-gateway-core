@@ -4,11 +4,23 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
+// withTestSystemTZ 固定系统时区并注册还原（时区轮 2026-11-20）。
+func withTestSystemTZ(t *testing.T, name string) {
+	t.Helper()
+	settings.SystemTimezoneLocationForTest(name)
+	t.Cleanup(func() { settings.SystemTimezoneLocationForTest("") })
+}
+
 func TestBoardPresetTimeRange(t *testing.T) {
+	withTestSystemTZ(t, "Asia/Shanghai")
+	// UTC 07-15 12:30 = +08 07-15 20:30 ⇒ 系统日切在 +08 的 07-15 00:00
+	// = UTC 07-14 16:00。End 保持传入 now 的 UTC 瞬间。
 	now := time.Date(2026, 7, 15, 12, 30, 0, 0, time.UTC)
-	todayStart := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	todayStart := time.Date(2026, 7, 14, 16, 0, 0, 0, time.UTC)
 
 	cases := []struct {
 		days      int
@@ -35,6 +47,16 @@ func TestBoardPresetTimeRange(t *testing.T) {
 				t.Fatal("preset range must not be custom")
 			}
 		})
+	}
+}
+
+func TestBoardPresetTimeRangeUTCZone(t *testing.T) {
+	// 时区=UTC 时退回旧契约（回归护栏：UTC 部署者日切不变）。
+	withTestSystemTZ(t, "UTC")
+	now := time.Date(2026, 7, 15, 12, 30, 0, 0, time.UTC)
+	tr := boardPresetTimeRange(1, now)
+	if !tr.Start.Equal(time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("Start = %v", tr.Start)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // SessionManagementAPI 提供会话管理的列表、详情、更新等功能
@@ -643,15 +644,17 @@ func parseSessionFilters(r *http.Request) SessionFilters {
 		filters.Tags = strings.Split(tagsStr, ",")
 	}
 
-	// 解析日期范围
+	// 解析日期范围（时区轮 2026-11-20：按系统时区零点解释用户日历日；
+	// toDate 取当日 23:59:59.999999 使 `last_request_at <=` 语义为「含当日」）
 	if fromStr := strings.TrimSpace(q.Get("from_date")); fromStr != "" {
-		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+		if t, err := settings.ParseSystemDate(fromStr); err == nil {
 			filters.FromDate = &t
 		}
 	}
 	if toStr := strings.TrimSpace(q.Get("to_date")); toStr != "" {
-		if t, err := time.Parse("2006-01-02", toStr); err == nil {
-			filters.ToDate = &t
+		if t, err := settings.ParseSystemDate(toStr); err == nil {
+			end := t.AddDate(0, 0, 1).Add(-time.Microsecond)
+			filters.ToDate = &end
 		}
 	}
 

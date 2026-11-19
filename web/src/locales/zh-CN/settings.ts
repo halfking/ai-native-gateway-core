@@ -94,6 +94,10 @@ export default {
       expert: '专家模式：完整导航与全部页面（当前默认）',
     },
   },
+  timezone: {
+    hint: '时区决定所有时间范围的统计口径与显示（日切、报表、日志查询），默认东8区。保存后立即生效。',
+    currentNow: '当前生效时区偏移：{offset}',
+  },
   docs: {
     compressionModeTitle: '📖 压缩模式详解',
     compressionModeContent: `<p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // appendSessionAnalyticsListFilters applies task_id, date_from, and date_to
@@ -62,15 +64,17 @@ func parseSessionListTime(raw string, endOfDay bool) (*time.Time, error) {
 		utc := ts.UTC()
 		return &utc, nil
 	}
-	day, err := time.Parse("2006-01-02", raw)
+	// 时区轮（2026-11-20）：纯日期串按系统时区零点解释（用户表达的日历日），
+	// RFC3339 带时区串按其自带时区换算（上面的分支，语义不变）。
+	day, err := settings.ParseSystemDate(raw)
 	if err != nil {
 		return nil, fmt.Errorf("want RFC3339 or YYYY-MM-DD")
 	}
-	day = day.UTC()
 	if endOfDay {
 		// Microsecond precision matches timestamptz. A nanosecond short of
 		// the next midnight rounds up in Postgres and would include that instant.
-		day = day.Add(24*time.Hour - time.Microsecond)
+		day = day.AddDate(0, 0, 1).Add(-time.Microsecond)
 	}
-	return &day, nil
+	utc := day.UTC()
+	return &utc, nil
 }

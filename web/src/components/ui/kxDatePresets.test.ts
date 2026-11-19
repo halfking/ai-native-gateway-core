@@ -1,7 +1,15 @@
 // kxDatePresets.test.ts — 预设工厂口径测试（2026-09-30 统一日历轮）。
-// 时区口径与旧 BoardPeriodSelector 对齐：UTC 日切。
-import { describe, expect, it, vi } from 'vitest'
+// 时区口径（2026-11-20 时区设置轮）：系统时区日切。测试用
+// setSystemTimezoneForTest 注入 'UTC' ⇒ 与旧 UTC 日切断言逐字兼容，
+// 另补 +08 注入用例钉「时区真被消费」。CI/本机时区无关。
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeDateRangePresets, rangeFromSpanDays, rangeSpanDays, shortRangeLabel, spanDaysPreset } from './kxDatePresets'
+import { setSystemTimezoneForTest } from '@/utils/systemTimezone'
+
+afterEach(() => {
+  setSystemTimezoneForTest('UTC')
+  vi.useRealTimers()
+})
 
 // 固定到 2026-09-30T12:00:00Z（周三）
 const FIXED = Date.UTC(2026, 8, 30, 12, 0, 0)
@@ -157,4 +165,30 @@ describe('spanDaysPreset (datetime)', () => {
     const endDay = Date.parse(r.end.slice(0, 10) + 'T00:00:00Z')
     expect((endDay - startDay) / 86_400_000).toBe(2)
   })
+})
+
+describe('系统时区注入（2026-11-20 时区轮）', () => {
+ it('+08 注入后 today/yesterday日期串按 +08 日历日取值', () => {
+ // UTC2026-11-2020:00 = +082026-11-2104:00 ⇒ today 应为11-21。
+ vi.setSystemTime(Date.UTC(2026,10,20,20,0,0))
+ setSystemTimezoneForTest('Asia/Shanghai')
+ const r = makeDateRangePresets('date').find((p) => p.id === 'today')!.resolve()
+ expect(r).toEqual({ start: '2026-11-21', end: '2026-11-21' })
+ const y = makeDateRangePresets('date').find((p) => p.id === 'yesterday')!.resolve()
+ expect(y).toEqual({ start: '2026-11-20', end: '2026-11-20' })
+ })
+
+ it('UTC 注入时同一时刻 today 为11-20（对照 +08差一日）', () => {
+ vi.setSystemTime(Date.UTC(2026,10,20,20,0,0))
+ setSystemTimezoneForTest('UTC')
+ const r = makeDateRangePresets('date').find((p) => p.id === 'today')!.resolve()
+ expect(r).toEqual({ start: '2026-11-20', end: '2026-11-20' })
+ })
+
+ it('resolveSpan 近7天：+08 注入后首日=+08 日历日的 -6 天', () => {
+ vi.setSystemTime(Date.UTC(2026,10,20,20,0,0))
+ setSystemTimezoneForTest('Asia/Shanghai')
+ const r = rangeFromSpanDays(7)
+ expect(r).toEqual({ start: '2026-11-15', end: '2026-11-21' })
+ })
 })

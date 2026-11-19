@@ -28,6 +28,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // internalPersonScopeKey 把租户编码进 internal_person 的 scope_key。
@@ -159,8 +161,11 @@ const defaultCentsPerCredit = 0.1
 // report_snapshots.report_date 的新读面（仪表盘等）请勿把它解读为
 // "上海日"，口径差异 8 小时。
 func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, error) {
-	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
-	end := start.Add(24 * time.Hour)
+	// 时区轮 2026-11-20：start/end 按 day 自带的时区字段构造（调用方传
+	// settings.SystemDayStart 的产物即系统时区零点 ⇒ 聚合窗口 = 系统时区的
+	// 这个日历日）。传 UTC 午夜时行为与旧版一致。
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	end := start.AddDate(0, 0, 1)
 	stats := RollupStats{Date: start}
 
 	centsPerCredit, err := loadCentsPerCredit(ctx, q)
@@ -746,7 +751,9 @@ func MissingRollupDates(ctx context.Context, q Querier, lookbackDays int, now ti
 	if lookbackDays <= 0 {
 		lookbackDays = 1
 	}
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	// 时区轮 2026-11-20：「今天」按系统时区（settings.system.timezone）日切，
+	// 与 bg worker 的 yesterday 同刻度；探到的日期是系统时区日历日。
+	today := settings.SystemDayStart(now)
 	from := today.AddDate(0, 0, -lookbackDays)
 	rows, err := q.Query(ctx, `
 		SELECT generate_series($1::date, $2::date, '1 day')::date AS d

@@ -93,6 +93,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-11-05: 报价系统 MVP 红线数值（sales/quote.go 读方，
 	// DealHub 三维阈值 + 默认有效期，待裁决建议值）。
 	out = append(out, SalesSpecs()...)
+	// 2026-11-20: 系统时区（system.timezone，默认 Asia/Shanghai）——
+	// 管理面时间范围日切/日期解析的统一口径（admin/settings_timezone.go 读方）。
+	out = append(out, TimezoneSpecs()...)
 	return out
 }
 
