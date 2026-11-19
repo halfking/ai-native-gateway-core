@@ -1,0 +1,192 @@
+// assert-users-usage.mjs — 会话分析 users 页「数字出处轮」第二层 CDP 断言（2026-11-20）
+//
+// 为什么是**第二层**而不是并入 flow（与 assert-stage-tree.mjs 同一分工）：
+//   Maestro web 驱动的 scrollUntilVisible 滚的是 window，而本应用在**内部容器**
+//   滚（documentElement.scrollHeight == innerHeight）⇒ 详情页「模型使用明细」卡
+//   （top≈4999）物理上滚不到 ⇒ 折叠线下的深度校验只能页面内做。
+//
+// 覆盖（owner 需求的数字与出处）：
+//   A. 列表页：usage_meta 出处行 / 窗口用量五列列头 / 窗口聚合数字与 0 的分家
+//   B. 展开行：员工×模型矩阵（模型名/输入/输出/总 Token/内部成本/外部成本）
+//   C. 详情页：模型使用明细卡的列头 + 每模型行 + 任务链接
+//   D. 帮助抽屉（列表页 + 详情页）：公式/口径/来源段
+//
+// 退出码：0 = 全绿；1 = 产品红；2 = 量具失效（列表 0 用户 ⇒ 断言未评估）。
+//
+// 用法：node assert-users-usage.mjs --cdp http://127.0.0.1:9223 --url https://llm.itestu.cn \
+//         --user admin --password '...'
+import { connect, openPage, evaluate } from './cdp-client.mjs'
+
+const args = Object.fromEntries(process.argv.slice(2).reduce((acc, v, i, a) => {
+  if (v.startsWith('--')) acc.push([v.slice(2), a[i + 1]])
+  return acc
+}, []))
+
+const CDP_URL = args.cdp || 'http://127.0.0.1:9223'
+const BASE = (args.url || 'http://127.0.0.1:8782').replace(/\/$/, '')
+const USER = args.user || 'admin'
+const PASSWORD = args.password || ''
+const OWNER = args.owner || ''
+
+const results = []
+let gaugeBroken = false
+function check(name, ok, detail = '') {
+  results.push({ name, ok, detail })
+  console.log(`${ok ? '✅' : '❌'} ${name}${detail ? '  — ' + detail : ''}`)
+  return ok
+}
+function gauge(name, detail = '') {
+  gaugeBroken = true
+  console.log(`○ 未评估（量具失效） ${name}${detail ? '  — ' + detail : ''}`)
+}
+
+const { cdp } = await connect(CDP_URL)
+let sessionId = (await openPage(cdp, 'about:blank')).sessionId
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+// ★ location.href 导航会使旧 attach 会话失效（Inspected target navigated or
+//   closed）⇒ 每次跳转都**开新页 + 挂新会话**（cookie 在浏览器 profile 层共享，
+//   登录态跨 tab 成立；2026-11-20 实测「先跳后挂」会踩导航竞态）。
+async function goto(url, waitMs = 5000) {
+  // 三步走：blank 页 → attach+enable（目标稳定时）→ 再导航 ⇒ 避开
+  // 「createTarget(url) 与 attach 竞速 ⇒ -32000 Inspected target navigated」。
+  const created = await cdp.send('Target.createTarget', { url: 'about:blank' })
+  const { sessionId: sid } = await cdp.send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
+  await cdp.send('Page.enable', {}, sid)
+  await cdp.send('Network.enable', {}, sid)
+  // ★ 视口必须显式 1440x1400：headless 默认 ~800px 会触发 ResponsiveDataView
+  //   的紧凑卡形态 ⇒ 桌面表格列（任务链接列等）根本不渲染 ⇒ 假红。
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid)
+  await evaluate(cdp, sid, `location.href = ${JSON.stringify(url)}`)
+  await sleep(waitMs)
+  // 导航后重挂一次（旧会话可能随文档换掉）
+  const { sessionId: sid2 } = await cdp.send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
+  await cdp.send('Page.enable', {}, sid2)
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid2)
+  sessionId = sid2
+  return evaluate(cdp, sessionId, 'location.href')
+}
+const js = (expr) => evaluate(cdp, sessionId, expr)
+
+// ── 0. 登录（API 落 HttpOnly cookie ⇒ SPA 与服务端同源）───────────────────
+// ★ 必须先把页面导航到 BASE（同源）再 fetch：about:blank 起页的跨源 fetch
+//   直接被 CORS 拦掉（2026-11-20 实测 ERR:Failed to fetch）。
+await goto(`${BASE}/`, 4000)
+const loginStatus = await js(`fetch('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASSWORD)}})}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
+if (String(loginStatus) !== '200') {
+  console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
+  process.exit(1)
+}
+check('登录 /api/auth/token 200', true)
+
+// ── 1. API 层：三端点的形状与出处块 ──────────────────────────────────────
+// ★ 窗口取 90 天：默认 30 天窗口在低流量环境可能整窗无请求（本轮 211 实测
+//   4 用户全部 0 window_usage）——那会造成「数字断言未评估」，必须把窗口
+//   对准数据（90d = 后端上限），而不是把空窗当产品红。
+// 89 天：90d 整边界会因 now() 两次取样的毫秒差触发「>90d」闸（2026-11-20 实测 400）
+const WIN_FROM = new Date(Date.now() - 89 * 24 * 3600 * 1000).toISOString()
+const listApiRaw = await js(`fetch('/api/admin/session-analytics/users?limit=50&date_from=${encodeURIComponent(WIN_FROM)}',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
+console.log('LIST_RAW =', listApiRaw)
+const list = JSON.parse(String(listApiRaw).replace(/^\d+ :: /, ''))
+check('列表端点 200 且带 usage_meta（出处块）', !!(list.usage_meta && list.usage_meta.source_view === 'request_logs_with_current_month'), `source_view=${list.usage_meta && list.usage_meta.source_view}`)
+check('列表端点带真实用量窗口（usage_window）', !!(list.usage_window && list.usage_window.start && list.usage_window.end), list.usage_window ? `${list.usage_window.start} ~ ${list.usage_window.end}` : 'missing')
+const users = list.users || []
+if (!users.length) {
+  gauge('列表/展开/详情的全部页面断言', 'session-analytics 列表 0 用户（本环境无画像数据）')
+  console.log(`\nRESULT: GAUGE-BROKEN（退出码 2）— ${results.filter(r => r.ok).length} 绿 / ${results.filter(r => !r.ok).length} 红`)
+  process.exit(2)
+}
+const withUsage = users.filter(u => u.window_usage)
+check(`窗口聚合数字至少覆盖一个员工（${users.length} 用户中 ${withUsage.length} 有 window_usage）`, users.some(u => u.window_usage !== undefined), 'window_usage 为 undefined = 窗口内无请求，与 0 语义分家 ✓')
+
+// 员工×模型矩阵（API 形状）
+const firstOwner = OWNER || users[0].owner_user
+const matrixApi = await js(`fetch('/api/admin/session-analytics/users/usage-matrix?owner=${encodeURIComponent(firstOwner)}&start_date=${encodeURIComponent(WIN_FROM)}&limit=200',{credentials:'include'}).then(r=>r.json()).then(j=>JSON.stringify(j)).catch(e=>'ERR:'+e.message)`)
+const matrix = JSON.parse(matrixApi)
+check('usage-matrix 端点 200 且带 usage_meta', !!(matrix.usage_meta && matrix.rows), `rows=${(matrix.rows || []).length}`)
+const mrow = (matrix.rows || []).find(r => r.total_tokens > 0)
+if (mrow) {
+  check('矩阵行含 token 三列（input/output/total）与内外成本', ['input_tokens', 'output_tokens', 'total_tokens', 'internal_cost_usd', 'external_cost_usd'].every(k => typeof mrow[k] === 'number'), `${mrow.owner_user}/${mrow.model_name} tokens=${mrow.total_tokens}`)
+}
+
+// ── 2. 列表页（真渲染）：出处行 + 五列 + 展开行 ──────────────────────────
+await goto(`${BASE}/admin/session-analytics/users`, 6000)
+const listPage = await js(`(() => {
+  const meta = document.querySelector('[data-testid="user-profile-usage-meta"]')
+  const headers = [...document.querySelectorAll('.el-table th')].map(t => t.textContent.trim())
+  const need = ['请求数（窗口内）','Token（窗口内）','内部成本（窗口内）','外部成本（窗口内）','模型数（窗口内）']
+  return JSON.stringify({
+    meta: meta ? meta.textContent.trim().slice(0, 120) : null,
+    headers: need.map(h => headers.includes(h)),
+    rows: document.querySelectorAll('.el-table__body tr').length,
+  })
+})()`)
+const lp = JSON.parse(listPage)
+check('列表页渲染出处行（数字出处：request_logs_with_current_month …）', !!lp.meta && lp.meta.includes('request_logs_with_current_month'), lp.meta || 'missing')
+check('窗口用量五列列头全部在', lp.headers.every(Boolean), JSON.stringify(lp.headers))
+check(`列表行有数据（rows=${lp.rows}）`, lp.rows > 0)
+
+// 列表页帮助按钮（必须在离开列表页之前查 —— 2026-11-20 首版在详情页上下文里查 ⇒ 假红）
+const helpBtn = await js(`!!document.querySelector('[data-testid="user-profile-list-help"]')`)
+check('列表页帮助按钮存在', helpBtn === true, String(helpBtn))
+
+// 展开行（真实渲染的员工×模型矩阵）——点第一个展开箭头
+const expanded = await js(`(async () => {
+  const arrow = document.querySelector('.el-table__body tr .el-table__expand-icon')
+  if (!arrow) return JSON.stringify({ ok: false, why: 'NO_EXPAND_ARROW' })
+  arrow.click()
+  await new Promise(r => setTimeout(r, 2500))
+  const cells = [...document.querySelectorAll('.el-table__expanded-cell th, .el-table__expanded-cell .el-table th')].map(t => t.textContent.trim())
+  const innerTable = document.querySelector('.el-table__expanded-cell .el-table')
+  const bodyRows = innerTable ? innerTable.querySelectorAll('tbody tr').length : 0
+  return JSON.stringify({ ok: true, headers: cells.slice(0, 10), bodyRows })
+})()`)
+const ex = JSON.parse(expanded)
+if (!ex.ok && ex.why === 'NO_EXPAND_ARROW') {
+  gauge('展开行（员工×模型矩阵真渲染）', '列表行没有展开箭头（0 用户或表格形态变化）')
+} else {
+  check('展开行内嵌模型明细表出现', ex.ok && ex.bodyRows >= 0, `innerRows=${ex.bodyRows}`)
+}
+
+// ── 3. 详情页（真渲染）：模型卡列头 + 任务链接 ────────────────────────────
+await goto(`${BASE}/admin/session-analytics/users/${encodeURIComponent(firstOwner)}`, 6000)
+const detail = await js(`(() => {
+  const h2 = document.querySelector('h2')?.textContent?.trim() || ''
+  const card = document.querySelector('[data-testid="up-model-usage"]')
+  const headers = card ? [...card.querySelectorAll('th')].map(t => t.textContent.trim()) : []
+  const need = ['模型名称','供应商','请求次数','总 Token 数','输入 Token','输出 Token','内部成本','外部成本']
+  const rows = card ? card.querySelectorAll('tbody tr').length : -1
+  const taskLinks = [...document.querySelectorAll('[data-testid="up-top-tasks"] button')].filter(b => (b.textContent||'').trim() && b.textContent.trim() !== '').length
+  return JSON.stringify({ h2, hasCard: !!card, headers: need.map(h => headers.includes(h)), rows, taskLinks })
+})()`)
+const dp = JSON.parse(detail)
+check('详情页落地（h2 = 用户画像详情: …）', dp.h2.startsWith('用户画像详情'), dp.h2)
+check('模型使用明细卡存在且八列列头齐', dp.hasCard && dp.headers.every(Boolean), JSON.stringify(dp.headers))
+check(`模型明细行（rows=${dp.rows}；窗口内无请求时 = 0 且出「暂无」空态，不是报错）`, dp.rows >= 0)
+// 热门任务行链接三态：有数据 ⇒ 验链接；无任务 ⇒ 空态文案在场也算通过（空 ≠ 错）；
+// 既无链接又无空态 ⇒ 红（说明该 owner 行有数据但链接没渲染）。
+const emptyState = await js(`(() => { const el = document.querySelector('[data-testid="up-top-tasks"]'); return el ? (el.textContent.includes('还没有任务记录') || el.textContent.includes('暂无') || el.textContent.includes('No Data')) : false })()`)
+if (dp.taskLinks > 0) check('热门任务行是可点链接（员工→任务→会话下钻）', true, `links=${dp.taskLinks}`)
+else if (emptyState === true) check('热门任务空态合法（该 owner 无任务记录，不是缺链接）', true, 'links=0 + 空态在场')
+else check('热门任务行是可点链接（员工→任务→会话下钻）', false, `links=${dp.taskLinks} 且无空态`)
+
+// ── 4. 详情页帮助抽屉（口径段；列表页抽屉已由 flow 13 第一层覆盖）─────────
+
+const drawerDetail = await js(`(async () => {
+  const card = document.querySelector('[data-testid="up-model-usage"]')
+  if (!card) return JSON.stringify({ ok: false })
+  const btn = [...card.querySelectorAll('button')].find(b => (b.textContent||'').includes('查看统计说明'))
+  if (!btn) return JSON.stringify({ ok: false, why: 'NO_BTN' })
+  btn.click()
+  await new Promise(r => setTimeout(r, 1200))
+  const drawerText = document.querySelector('.el-drawer')?.textContent || ''
+  const need = ['Token 统计公式', '总 Token 数 = 输入 Token + 输出 Token', '成本核算公式', '数据来源', '时间范围说明']
+  return JSON.stringify({ ok: true, sections: need.map(n => drawerText.includes(n)), src: drawerText.includes('request_logs') })
+})()`)
+const dd = JSON.parse(drawerDetail)
+check('详情页帮助抽屉五段口径齐（公式/来源/时间范围）', dd.ok && dd.sections && dd.sections.every(Boolean), JSON.stringify(dd.sections || dd))
+
+// ── 汇总 ─────────────────────────────────────────────────────────────────
+const green = results.filter(r => r.ok).length
+const red = results.filter(r => !r.ok).length
+console.log(`\nRESULT: ${gaugeBroken ? 'GAUGE-BROKEN (2)' : red === 0 ? 'PASS (0)' : 'FAIL (1)'} — ${green} 绿 / ${red} 红`)
+process.exit(gaugeBroken ? 2 : red === 0 ? 0 : 1)

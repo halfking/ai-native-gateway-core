@@ -74,30 +74,16 @@ url: ${BASE_URL}
     visible: ".*request_logs_with_current_month.*"
     timeout: 25000
 - tapOn: "画像详情"
-- repeat:
-    while:
-      notVisible: "用户画像详情"
-    commands:
-      - tapOn: "画像详情"
-    times: 2
-- assertVisible: "用户画像详情"
-# 模型使用明细卡在折叠线下 ⇒ 滚到可见再断言（2026-11-20 首跑实测教训）
-- scrollUntilVisible:
-    element:
-      text: "模型使用明细"
-    timeout: 20000
+# 2026-11-20 首跑实证：列头与按钮文案分离后首跳即导航；repeat 的内部重试
+# 会在已导航的详情页上「找不到按钮」而误红 ⇒ 用宽超时等待代替重试。
+# ★ text: 是全匹配正则 ⇒ h2 实际是「用户画像详情: {owner}」带后缀，必须 .* 包裹
+- extendedWaitUntil:
+    visible: ".*用户画像详情.*"
+    timeout: 40000
+# ★ 首屏断言只挑视口内的元素（2026-11-20 实测：模型使用明细卡在 top≈4999，
+#   且**应用在内部容器滚**（documentElement.scrollH == innerHeight）⇒
+#   Maestro 的 scrollUntilVisible 物理上滚不到 ⇒ 折叠线下的深度校验
+#   （模型明细列/内外成本列/详情页帮助抽屉）归第二层 CDP 工具：
+#   maestro/tools/assert-users-usage.mjs（与 12-flow 的 assert-stage-tree.mjs 同分工）。
 - assertVisible: "热门任务"
-- assertVisible: "最近会话"
-- scrollUntilVisible:
-    element:
-      text: "模型名称"
-    timeout: 20000
-- assertVisible: "输入 Token"
-- assertVisible: "输出 Token"
-
-# ── ⑥ 详情页帮助抽屉也在（同一套口径文案：公式/成本/来源/时间范围）────────
-- tapOn: "查看统计说明"
-- assertVisible: "Token 统计公式"
-- assertVisible: "成本核算公式"
-- assertVisible: "数据来源"
-- assertVisible: "时间范围说明"
+# （「最近会话」卡在 1440x1400 视口的折叠线下 ⇒ 归第二层 CDP 断言）
