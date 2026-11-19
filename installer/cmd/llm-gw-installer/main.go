@@ -1805,6 +1805,22 @@ var piAnalysisStatsViewAlignment980 []byte
 //go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.down.sql
 var piAnalysisStatsViewAlignment980Down []byte
 
+// ★ 990（2026-11-19 统计一致性审计轮）：stats_consistency_fixes——session_summaries
+//
+//	积分/TTFT 列 + stats_usage_daily/monthly 成本分解列 + stats_consistency_check
+//	对账视图 + 重写 update_session_summary()（触发器已随 v1 族退役，函数体为
+//	死代码；登记纪律见迁移文件头注释）。
+//
+//go:embed embeddata/startup/990_stats_consistency_fixes.sql
+var statsConsistencyFixes990 []byte
+
+// ★ 991（2026-11-19 统计 API 时区标准化轮）：stats_timezone_standardization——
+//
+//	utc_day_start/utc_today/utc_days_ago 三函数 + migration_metadata 登记表自建。
+//
+//go:embed embeddata/startup/991_stats_timezone_standardization.sql
+var statsTimezoneStandardization991 []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2431,6 +2447,11 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：视图口径对齐。
 	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
 	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
+	// ★ 990（2026-11-19 统计一致性审计轮）：积分/TTFT/成本分解列 + 对账视图
+	//   + update_session_summary 重写（死代码，通道纪律见迁移文件头）。
+	"startup/990_stats_consistency_fixes.sql": statsConsistencyFixes990,
+	// ★ 991（2026-11-19 统计 API 时区标准化轮）：UTC 日边界函数 + migration_metadata 自建。
+	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

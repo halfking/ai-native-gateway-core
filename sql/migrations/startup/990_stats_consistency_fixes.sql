@@ -7,8 +7,24 @@
 -- 3. session_summaries 添加 TTFT 统计字段（与 usage_facts 对齐）
 --
 -- 参考审计报告: docs/STATS_API_AUDIT.md
+--
+-- ★ 投递链登记（2026-11-19 补登轮）：本件重定义 update_session_summary()——
+--   ⚠ 该触发器已随 v1 族**物理退役**（890 删表连带删触发器；本地库实测
+--   pg_trigger 0 行）⇒ 函数体是**死代码**（无宿主、永不执行，CREATE 无害）。
+--   session_summaries 聚合列的现实唯一写方是 Go 侧 sessionv2mirror 写入器
+--   （internal/sessionv2mirror/session_summary_dim.go，不喂 total_credits_charged/
+--   avg_ttft_ms 三列 ⇒ **积分/TTFT 聚合仍是缺口**，登记待收口；统计对账请勿
+--   指望本件的触发器路径）。
+--   ★ 因此 apply-db-revision-sequence.sh 的 clobber 守卫要求把本件登记为
+--     update_session_summary 链尾（661 之后）——链的「终态体」语义按通道纪律
+--     = 通道内最后一次定义。
 
 BEGIN;
+
+-- ★ 锁预算声明（>870 启动迁移纪律）：ALTER TABLE 三张统计表拿
+--   ACCESS EXCLUSIVE ⇒ 声明预算，抢不到锁快速失败、不半应用。
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10min';
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- 1. session_summaries 添加积分和 TTFT 字段
@@ -245,5 +261,11 @@ FULL OUTER JOIN session_agg s ON d.day_utc = s.day AND d.tenant_id = s.tenant_id
 ORDER BY day DESC, tenant_id;
 
 COMMENT ON VIEW stats_consistency_check IS '统计数据一致性检查视图 - 对比 stats_usage_daily 和 session_summaries 的数据差异';
+
+-- ★ 双账本纪律：与 971/977/980 同款（schema_migrations 本件自登记；
+--   gateway_db_revision_sequences 由 deploy 通道按内容指纹写）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('990', 'stats_consistency_fixes: session_summaries 积分/TTFT 列 + stats_usage_daily/monthly 成本分解列 + stats_consistency_check 视图')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

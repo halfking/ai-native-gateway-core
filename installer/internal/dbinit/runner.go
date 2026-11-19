@@ -1958,6 +1958,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats）。
 			//   ★ 必须排在 971/977 **之后**（视图由 971 建、977 订正；不在场时本件守卫跳过）。
 			"980_pi_analysis_stats_view_alignment.sql",
+			// ★ 990（2026-11-19 统计一致性审计轮）：stats_consistency_fixes
+			//   —— session_summaries 补积分/TTFT 列 + stats_usage_daily/monthly 补
+			//   成本分解列 + stats_consistency_check 对账视图 + 重写
+			//   update_session_summary() 触发器函数体。
+			//   ★ 必须排在 971（建目标表）与 661（触发器函数既有链尾）之后；
+			//     触发器已随 v1 族退役（890）⇒ 函数体为死代码（见文件头注释）。
+			//   ★ 幂等（ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE / 台账
+			//     ON CONFLICT DO UPDATE）⇒ 存量库重放零冲突。
+			"990_stats_consistency_fixes.sql",
+			// ★ 991（2026-11-19 统计 API 时区标准化轮）：stats_timezone_standardization
+			//   —— utc_day_start/utc_today/utc_days_ago 三函数 + migration_metadata
+			//   登记表自建（幂等 IF NOT EXISTS）+ schema_migrations 自登记。
+			//   ★ 幂等（CREATE OR REPLACE FUNCTION / ON CONFLICT DO NOTHING）。
+			"991_stats_timezone_standardization.sql",
 		},
 	}
 }

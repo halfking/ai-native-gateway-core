@@ -74,7 +74,30 @@ COMMENT ON FUNCTION utc_days_ago IS
 -- 3. API文档更新：注明时区语义变更
 -- 4. 监控数据变化：对比迁移前后的统计差异（预期中国用户"今日"数据延后8小时）
 
--- 迁移完成标记
+-- ★ 锁预算声明（>870 启动迁移纪律，installer/cmd/llm-gw-installer/
+--   startup_ddl_lock_guard_gate_test.go）：本件只有 CREATE OR REPLACE FUNCTION
+--   （无强锁 DDL 动词），预算按惯例 5s/10min 声明，抢不到锁快速失败、不半应用。
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
+
+-- ============================================================================
+-- 台账自登记（≥952 纪律：与 971/977/980 同款——schema_migrations 本件自登记）
+-- ============================================================================
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('991', 'stats_timezone_standardization: utc_day_start/utc_today/utc_days_ago UTC 日边界辅助函数')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
+-- ============================================================================
+-- migration_metadata 登记表自建（隐含依赖收口：全仓此前零建表方——991 首版
+-- 的裸 INSERT 在任何没有这张表的库上 42P01；installer 增量模式每次 boot 都会
+-- 撞这一发。幂等：CREATE TABLE IF NOT EXISTS + INSERT ON CONFLICT DO NOTHING）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS migration_metadata (
+    version     BIGINT PRIMARY KEY,
+    description TEXT,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 INSERT INTO migration_metadata (version, description, applied_at)
 VALUES (991, 'Add UTC time boundary helper functions for statistics standardization', NOW())
 ON CONFLICT (version) DO NOTHING;
