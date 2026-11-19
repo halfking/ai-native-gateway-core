@@ -136,6 +136,7 @@ onMounted(() => {
       <!-- 1. 运营概览 - 关键指标 -->
       <section v-if="boardData?.summary" class="bo-section">
         <h2 class="bo-section-title">{{ $t('dashboard.operational.overviewDays', { days: timeRange }) }}</h2>
+        <p class="bo-time-range-hint">{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
         
         <div class="bo-metrics-grid">
           <div class="bo-metric-card">
@@ -429,6 +430,13 @@ onMounted(() => {
   margin-bottom: var(--space-3);
   padding-bottom: var(--space-2);
   border-bottom: 2px solid var(--border);
+}
+
+.bo-time-range-hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: calc(var(--space-2) * -1);
+  margin-bottom: var(--space-3);
 }
 
 .bo-section-warning,
