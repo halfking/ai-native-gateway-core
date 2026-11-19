@@ -94,9 +94,37 @@ const sourceKey = computed(() => {
   border: 1px solid var(--border);
   border-radius: 12px;
 }
-/* 顶部实例：与 ops-bar 状态胶囊（4px 12px）同高，两行贴齐不突兀 */
+/* 顶部实例：与 ops-bar 状态胶囊（4px 12px，28px 高）同高——条自身与内部控件
+   （触发器/粒度/刷新/更多/数据源）一起收紧，否则外层收了内层仍把条撑到 40px+。 */
 .bfb--compact {
-  padding: 4px 12px;
+  padding: 3px 10px;
+  gap: 10px;
+}
+.bfb--compact :deep(.kx-dr-trigger) {
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.bfb--compact .bfb__label {
+  font-size: 11px;
+}
+.bfb--compact .bfb__gran {
+  padding: 2px 8px;
+}
+.bfb--compact .bfb__gran-auto {
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.bfb--compact .bfb__gran-value {
+  font-size: 10px;
+}
+.bfb--compact .bfb__refresh,
+.bfb--compact .bfb__more {
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.bfb--compact .bfb__src {
+  padding: 2px 8px;
+  font-size: 10px;
 }
 .bfb__item {
   display: inline-flex;
