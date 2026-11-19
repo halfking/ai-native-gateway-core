@@ -28,6 +28,7 @@ export default {
     topEndUsers: '热门终端用户',
     recentSessions: '最近会话',
     actionDetail: '详情',
+    actionGoDetail: '画像详情',
     createdAt: '创建时间',
     empty: '暂无用户画像数据',
     /**

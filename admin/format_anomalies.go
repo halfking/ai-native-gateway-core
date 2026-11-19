@@ -273,9 +273,56 @@ func (h *Handler) handleFormatAnomalySummary(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// FormatAnomalyCounts 徽标计数（2026-11-20）。
+// Unresolved 是**全表**未解决数（tenant RLS 内），不受列表过滤/分页影响——
+// 与 request-anomalies/count 的 Counts.Unresolved 同语义，两个数据源相加
+// 即菜单徽标的总数（useFormatAnomalyBadge 双源合取）。
+type FormatAnomalyCounts struct {
+	Unresolved int `json:"unresolved"`
+	NewToday   int `json:"new_today"`
+}
+
+// handleFormatAnomalyCount GET /api/admin/format-anomalies/count。
+// NewToday 按 detected_at 的**进程本地时区**日界统计，与 reqprobe.Counts
+// 的 new_today（Today() = Local 时区 YYYY-MM-DD）口径一致。
+func (h *Handler) handleFormatAnomalyCount(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	tenantID := EffectiveTenantIDAll(r)
+	// NewToday 的日界与 reqprobe.Today() 同口径：进程本地时区的今天零点。
+	y, m, d := time.Now().Local().Date()
+	dayStart := time.Date(y, m, d, 0, 0, 0, 0, time.Local).UTC()
+	var counts FormatAnomalyCounts
+	if err := withTenantOrAllReadOnlyTx(r.Context(), h.db, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `
+			SELECT
+				COUNT(*) FILTER (WHERE NOT resolved),
+				COUNT(*) FILTER (WHERE NOT resolved AND detected_at >= $1)
+			FROM response_format_anomalies
+		`, dayStart).Scan(&counts.Unresolved, &counts.NewToday)
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "count query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, counts)
+}
+
 func (h *Handler) handleFormatAnomalySubrouter(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/format-anomalies/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
+	// 2026-11-20: /format-anomalies/count —— 响应格式异常的徽标计数端点。
+	// 此前菜单「格式异常监控」徽标只读 request-anomalies/count（请求侧），
+	// 与页面主体的响应格式异常表是两个数据源 ⇒ 数字对不上（owner 报障）。
+	if len(parts) == 1 && parts[0] == "count" {
+		h.handleFormatAnomalyCount(w, r)
+		return
+	}
 	if len(parts) != 2 || parts[1] != "resolve" {
 		http.NotFound(w, r)
 		return

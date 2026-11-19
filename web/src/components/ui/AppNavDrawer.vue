@@ -31,9 +31,10 @@ const props = withDefaults(
 
 const { t } = useI18n()
 const { route, navGroups, navPrimaryResolved, navLabel } = useAppNav()
-// 2026-09-21: 「格式异常监控」未解决请求侧异常徽标（与 AppTopbar 同源）。
-const { counts: requestAnomalyCounts } = useRequestAnomalyBadge()
-const requestAnomalyCount = computed(() => requestAnomalyCounts.value.unresolved)
+// 2026-09-21: 「格式异常监控」徽标（与 AppTopbar 同源）。
+// 2026-11-20 口径修正：两数据源（响应格式异常 + 请求错误）未解决数之和。
+const { totalUnresolved } = useRequestAnomalyBadge()
+const requestAnomalyCount = totalUnresolved
 
 type ResolvedItem = { item: { path: string; label?: string; icon?: string; exact?: boolean; labelKey?: string }, resolved: { path: string; external?: boolean; activateAction?: boolean } }
 type Section = { id: string; flat: boolean; label?: string; labelKey?: string; items: ResolvedItem[] }

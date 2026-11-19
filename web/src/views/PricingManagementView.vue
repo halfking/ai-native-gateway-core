@@ -88,10 +88,15 @@
         title="成本价格 · 模型筛选"
         @update:model-value="onFilterChange"
       />
-      <select v-model="filters.provider_id" @change="onFilterChange" class="filter-select">
-        <option value="">全部供应商</option>
-        <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.display_name }}</option>
-      </select>
+      <!-- 2026-11-20 供应商选择统一轮：原生 select 换全局 ProviderPicker。
+           filters.provider_id 保持 string 契约（''=全部，后端 Atoi 解析），
+           id 模式选中的 number 立即转回 string，查询行为不变。 -->
+      <ProviderPicker
+        :model-value="filters.provider_id === '' ? null : Number(filters.provider_id)"
+        value-mode="id"
+        title="全部供应商"
+        @update:model-value="(v) => { filters.provider_id = v == null ? '' : String(v); onFilterChange() }"
+      />
       <select v-model="filters.billing_mode" @change="onFilterChange" class="filter-select">
         <option value="">全部计费</option>
         <option value="token">Token（每百万）</option>
@@ -489,6 +494,7 @@ import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
+import ProviderPicker from '../components/ProviderPicker.vue'
 import CollapsibleFilterSection from '../components/ui/CollapsibleFilterSection.vue'
 import { exportFile } from '../utils/exportFile'
 import { readExportBlob, ExportTooLargeError } from '../utils/exportResponse'
@@ -547,16 +553,10 @@ interface Family {
   offers: Offer[]
 }
 
-interface Provider {
-  id: number
-  display_name: string
-}
-
 const loading = ref(false)
 const saving = ref(false)
 const families = ref<Family[]>([])
 const summary = ref<any>(null)
-const providers = ref<Provider[]>([])
 const expanded = ref<Record<string, boolean>>({})
 const selectedOffer = ref<Offer | null>(null)
 const editForm = ref<any>({})
@@ -703,8 +703,11 @@ function buildFilterParams() {
 
 async function fetchProviders() {
   try {
+    // 2026-11-20 供应商选择统一轮：providers 列表改由 ProviderPicker 内聚加载；
+    // 保留该请求作为「供应商数据可达性」探测（失败 ⇒ 控制台可见）。
     const res = await fetch('/api/providers', { headers: authHeaders() })
-    providers.value = await res.json()
+    if (!res.ok) throw new Error(`providers probe ${res.status}`)
+    await res.json().catch(() => undefined)
   } catch (e) {
     console.error('Failed to fetch providers', e)
   }

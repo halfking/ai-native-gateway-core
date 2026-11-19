@@ -29,9 +29,10 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 )
 
-// summaryRow 返回一行形状合法的 session_summaries 行（42 列，顺序与
-// sessionSummarySelectCols / scanSessionSummary 严格一致）。任何一列类型
-// 不对都会让 scanSessionSummary 报错，从而让对照用例转红。
+// summaryRow 返回一行形状合法的 session_summaries 行（46 列，顺序与
+// sessionSummarySelectCols / scanSessionSummary 严格一致；2026-11-19 会话
+// 分析轮新增 total_credits_charged 与三个 TTFT 列，fixture 同步扩列）。
+// 任何一列类型不对都会让 scanSessionSummary 报错，从而让对照用例转红。
 func summaryRow(sessionID string) *pgxmock.Rows {
 	now := time.Now().UTC().Truncate(time.Second)
 	cols := []string{
@@ -40,7 +41,9 @@ func summaryRow(sessionID string) *pgxmock.Rows {
 		"request_count", "success_count", "error_count",
 		"total_cost_usd", "input_cost_usd", "output_cost_usd",
 		"total_prompt_tokens", "total_completion_tokens", "total_tokens",
+		"total_credits_charged",
 		"avg_latency_ms", "min_latency_ms", "max_latency_ms",
+		"avg_ttft_ms", "min_ttft_ms", "max_ttft_ms",
 		"models_used", "primary_model", "model_switch_count",
 		"title", "summary", "key_topics", "user_intent", "quality_score",
 		"compliance_status", "compliance_issues_count",
@@ -55,7 +58,9 @@ func summaryRow(sessionID string) *pgxmock.Rows {
 		2, 1, 1,
 		0.02, 0.01, 0.01,
 		int64(100), int64(50), int64(150),
+		int64(0),      // total_credits_charged（与 summary 主体同一来源，降级恒 0）
 		120, nil, nil, // avg_latency_ms int, min/max_latency_ms *int
+		nil, nil, nil, // avg/min/max_ttft_ms *int
 		[]string{"glm-4"}, nil, 1, // primary_model *string, model_switch_count int
 		nil, nil, nil, nil, nil, // title/summary/user_intent *string, key_topics []string, quality_score *int
 		"", 0,

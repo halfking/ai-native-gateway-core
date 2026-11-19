@@ -49,8 +49,16 @@ func (h *Handler) handleRequestAnomalies(w http.ResponseWriter, r *http.Request)
 	if offset < 0 {
 		offset = 0
 	}
+	// 2026-11-20 时间范围统一轮：管理面换 KxDateRangePicker 范围选择。
+	// start/end 是 YYYY-MM-DD 范围（含首尾，reqprobe.matches 按字符串比较）；
+	// 兼容旧 day 单日参数（等价 start=end=day）。
+	dayFrom, dayTo := strings.TrimSpace(queryString(r, "day_from")), strings.TrimSpace(queryString(r, "day_to"))
+	if d := strings.TrimSpace(queryString(r, "day")); d != "" {
+		dayFrom, dayTo = d, d
+	}
 	f := reqprobe.Filter{
-		Day:            strings.TrimSpace(queryString(r, "day")),
+		DayFrom:        dayFrom,
+		DayTo:          dayTo,
 		ProviderCode:   strings.TrimSpace(queryString(r, "provider")),
 		Model:          strings.TrimSpace(queryString(r, "model")),
 		Trigger:        strings.TrimSpace(queryString(r, "trigger")),
@@ -135,6 +143,8 @@ func (h *Handler) handleRequestAnomalyBatchResolve(w http.ResponseWriter, r *htt
 	var body struct {
 		IDs             []int64 `json:"ids"`
 		Day             string  `json:"day"`
+		DayFrom         string  `json:"day_from"`
+		DayTo           string  `json:"day_to"`
 		Provider        string  `json:"provider"`
 		Model           string  `json:"model"`
 		Trigger         string  `json:"trigger"`
@@ -152,8 +162,13 @@ func (h *Handler) handleRequestAnomalyBatchResolve(w http.ResponseWriter, r *htt
 		n, err = h.requestAnomalies.Store().Resolve(r.Context(), body.IDs, body.ResolutionNotes)
 	case body.AllUnresolved:
 		// 按当前过滤条件批量解决（day/provider/model/trigger 可组合）。
+		dayFrom, dayTo := strings.TrimSpace(body.DayFrom), strings.TrimSpace(body.DayTo)
+		if d := strings.TrimSpace(body.Day); d != "" {
+			dayFrom, dayTo = d, d
+		}
 		f := reqprobe.Filter{
-			Day:            strings.TrimSpace(body.Day),
+			DayFrom:        dayFrom,
+			DayTo:          dayTo,
 			ProviderCode:   strings.TrimSpace(body.Provider),
 			Model:          strings.TrimSpace(body.Model),
 			Trigger:        strings.TrimSpace(body.Trigger),

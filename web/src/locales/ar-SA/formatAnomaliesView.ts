@@ -106,12 +106,13 @@ export default {
   },
   requestTab: {
       stats: {
-          unresolved: 'غير محلولة (الصفحة)',
+          unresolved: 'غير محلولة',
           autoRecovered: 'استُعيدت تلقائيًا',
           total: 'الإجمالي',
       },
       filter: {
           day: 'التاريخ',
+          dayRange: 'نطاق التاريخ',
           trigger: 'النوع',
           triggerPlaceholder: 'اختر النوع…',
       },

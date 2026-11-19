@@ -106,12 +106,13 @@ export default {
   },
   requestTab: {
       stats: {
-          unresolved: 'Unresolved (page)',
+          unresolved: 'Unresolved',
           autoRecovered: 'Auto-recovered',
           total: 'Total',
       },
       filter: {
           day: 'Date',
+          dayRange: 'Date range',
           trigger: 'Type',
           triggerPlaceholder: 'Select type…',
       },

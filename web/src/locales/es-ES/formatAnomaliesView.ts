@@ -5,7 +5,7 @@ export default {
 
   stats: {
     total: 'Total de anomalías',
-    unresolved: 'No resueltas',
+    unresolved: 'Sin resolver',
     critical: 'Críticas',
     window: 'Ventana de estadísticas',
   },
@@ -106,12 +106,13 @@ export default {
   },
   requestTab: {
       stats: {
-          unresolved: 'Sin resolver (página)',
+          unresolved: 'Sin resolver',
           autoRecovered: 'Auto-recuperados',
           total: 'Total',
       },
       filter: {
           day: 'Fecha',
+          dayRange: 'Rango de fechas',
           trigger: 'Tipo',
           triggerPlaceholder: 'Seleccionar tipo…',
       },

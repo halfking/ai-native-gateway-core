@@ -67,10 +67,11 @@ onBeforeUnmount(() => {
 // 菜单数据与激活状态解析来自 useAppNav（共享单例，运维中心/插件菜单
 // 的后台加载也由其统一触发，见 composable 内 startBackgroundLoading）。
 const { navGroups, navPrimaryResolved, navLabel } = useAppNav()
-// 2026-09-21: 「格式异常监控」导航徽标——未解决的请求侧异常计数
-// （/format-anomalies 请求错误 tab 数据源），60s 轮询、仅 super_admin。
-const { counts: requestAnomalyCounts } = useRequestAnomalyBadge()
-const requestAnomalyCount = computed(() => requestAnomalyCounts.value.unresolved)
+// 2026-09-21: 「格式异常监控」导航徽标。2026-11-20 口径修正（owner 报障
+// 页面与徽标数字不匹配）：页面有两个数据源（响应格式异常 + 请求错误），
+// 徽标改为两源未解决数之和（与页面统计卡的「未解决」同口径），60s 轮询、仅 super_admin。
+const { totalUnresolved } = useRequestAnomalyBadge()
+const requestAnomalyCount = totalUnresolved
 // <1024 布局决策口径：菜单区替换为汉堡按钮，抽屉导航接管（方案 §4.4）
 const { isMobile } = useBreakpoint()
 
