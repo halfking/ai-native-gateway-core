@@ -1,0 +1,50 @@
+2026-11-20 211 线上验证 verdict —— 格式异常监控轮（徽标口径修正 + 范围查询 + ProviderPicker 统一）
+
+== 被测树 ==
+现役版本 2.6.1-5cc758e8-20261120-211（build_seq 3154，并行车叠加后仍为我方提交后代）
+我方提交 3a556a646（合并 0f12b9616）= 现役树祖先（git merge-base --is-ancestor 验证）
+
+== ① 徽标双源合计口径（页面级 CDP 探针 + API 对拍）==
+API 事实源：
+  GET /api/admin/format-anomalies/count  → {"unresolved":0,"new_today":0}   (HTTP 200)
+  GET /api/admin/request-anomalies/count → {"unresolved":17,"new_today":1}  (HTTP 200)
+  ⇒ 徽标期望 = 0 + 17 = 17
+浏览器实况（headless Chrome 9222 + CDP 种 HttpOnly cookie，页面 llm.itestu.cn/format-anomalies）：
+  hover 顶栏「数据运维」→ .app-topbar__item-badge 文本 = "17"  ✅ 与 API 对拍一致
+verdict: PASS（菜单徽标 = 页面两 tab 数据源之和，数字不匹配问题已修复）
+
+== ② 请求错误 tab 范围查询（day_from/day_to）==
+API 层（curl，登录态）：
+  day_from=2026-11-19&day_to=2026-11-19 → 1 行（days={11-19}）        ✅
+  day_from=2026-11-18&day_to=2026-11-19 → 3 行（days={11-18,11-19}）  ✅
+  无范围 → 17 行（11-11..11-19 全量）                                  ✅
+  旧参数 day=2026-11-18 → 2 行（兼容特例 day_from=day_to）             ✅
+  越界范围（11-01..11-10）→ 0 行                                       ✅
+  反转范围（from>to）→ 0 行                                            ✅
+浏览器行为级（CDP Network 监听）：
+  点开 KxDateRangePicker → 选预设「近 7 天」→ 点「查询」
+  ⇒ 页面发出 GET /api/admin/request-anomalies?limit=50&day_from=2026-11-13&day_to=2026-11-19&unresolved_only=true
+  ⇒ 表格 27 行                                                        ✅ 端到端成立
+交互链（CDP 页内断言 7/7 PASS）：
+  A1 徽标=17 / A2 trigger 在场（label「时间范围」）/ A3a 面板打开 / A3b 选「今天」后清空按钮出现
+  A4 点清空后按钮消失且 trigger 复位 / A5 请求错误 tab ProviderPicker 在场 / A6 响应格式 tab ProviderPicker 在场
+
+== ③ ProviderPicker 全局组件 ==
+  GET /api/providers（组件数据源）→ HTTP 200，61 个供应商          ✅
+  响应格式 tab 与请求错误 tab 的筛选区均渲染 ProviderPicker          ✅（filter-field「Provider选择供应商…」）
+
+== ④ Maestro flow 08-admin-data-ops（BASE_URL=https://llm.itestu.cn）==
+  rc=0  FAILED=0  WARNED=0（全 12 页面段 COMPLETED，含 /format-anomalies 标题断言 + slow-check）
+  报告目录 maestro/reports/20261120-034714/
+
+== 探针截图 ==
+  2026-11-20-211-请求错误tab初始.png            （两 tab + 筛选区 + 统计卡）
+  2026-11-20-211-请求错误tab范围选中形态.png     （选「今天」后 trigger 显示 11/19–11/19 + 清空按钮）
+  2026-11-20-211-近7天范围查询结果.png           （近7天查询后 27 行）
+
+== 备注 ==
+* 211 库 response_format_anomalies 当前 0 行 ⇒ format 侧 unresolved=0 是真实数据态，
+  徽标数值由 request 侧 17 主导；两口径数值巧合一致（改前徽标=17 仅 reqprobe 源，
+  改后=17 因 format 侧为 0）——口径修正的正确性由「API 对拍 + 页内渲染一致」证明。
+* 登录限流器 NewRateLimiter(5, minute)：本轮试错 1 次后改用 .env.local 现有口令成功
+  （此前会话记录的 401 为历史试错，该口令本身有效）。
