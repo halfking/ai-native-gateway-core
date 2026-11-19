@@ -77,12 +77,28 @@ describe('看板英雄区上方的筛选条（owner 图批二轮契约）', () =
     expect(heroBeforeSecond).toBe(true)
   })
 
-  it('② 顶部那份是 compact（与运维状态行对齐高度），底部那份保持默认', () => {
+  it('② 顶部那份是 compact + hide-source（运维 chips 并入行尾），底部保持默认', () => {
     const timeRange = ref<BoardTimeRange>({ preset: 'today', days: 1 })
     const w = mountPanel(timeRange)
     const bars = w.findAllComponents(BoardFilterBar)
     expect(bars[0].props('compact')).toBe(true)
+    expect(bars[0].props('hideSource')).toBe(true)
     expect(bars[1].props('compact')).toBe(false)
+    expect(bars[1].props('hideSource')).toBe(false)
+  })
+
+  it('②b 合并行契约：BoardOpsBar 不再是独立行，嵌在顶部条的 ops 插槽里', async () => {
+    const src = await readSource()
+    // 模板里第一个 BoardOpsBar 出现点必须在 #ops 插槽内（插槽模板在其前），
+    // 且 board-panel 直系子级中没有独立的 <BoardOpsBar 行
+    const opsSlotIdx = src.indexOf('<template #ops>')
+    const opsBarIdx = src.indexOf('<BoardOpsBar')
+    expect(opsSlotIdx).toBeGreaterThanOrEqual(0)
+    expect(opsBarIdx).toBeGreaterThan(opsSlotIdx)
+    // 独立 ops 行的旧写法（BoardOpsBar 作为 BoardPanel 根下第一个元素）不得回魂：
+    // 判据 = BoardOpsBar 出现在 hide-source 之后（在 BoardFilterBar 标签内部）
+    const topBarIdx = src.indexOf('<BoardFilterBar')
+    expect(opsBarIdx).toBeGreaterThan(topBarIdx)
   })
 
   it('③ 连动：两份筛选条同一个 rangeValue / 同一个 apply 通道（改一处两处同步）', async () => {
