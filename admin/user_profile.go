@@ -136,19 +136,21 @@ func usageWindowBounds(w http.ResponseWriter, r *http.Request, dateFrom, dateTo 
 // usageAggregatesByOwner 按员工聚合窗口内用量（数字出处 =
 // request_logs_with_current_month）。表达式与 handleUserModelUsage 逐字一致
 // ⇒ 同一员工列表页数字 == 详情页模型卡合计，不需要第二条口径对表。
+// owner 键 = COALESCE(owner_user, api_key_owner_user)（252 生产实测 owner_user
+// 当前流量全 NULL；与生产演进版 981 视图同键）。
 func usageAggregatesByOwner(ctx context.Context, db usageQuerier, startTime, endTime time.Time, tenantID, ownerFilter string) (map[string]*UserWindowUsage, error) {
-	where := "rl.owner_user IS NOT NULL AND rl.owner_user <> '' AND rl.ts >= $1 AND rl.ts < $2"
+	where := "COALESCE(rl.owner_user, rl.api_key_owner_user) IS NOT NULL AND COALESCE(rl.owner_user, rl.api_key_owner_user) <> '' AND rl.ts >= $1 AND rl.ts < $2"
 	args := []interface{}{startTime, endTime}
 	if tenantID != "" {
 		where += fmt.Sprintf(" AND rl.tenant_id = $%d", len(args)+1)
 		args = append(args, tenantID)
 	}
 	if ownerFilter != "" {
-		where += fmt.Sprintf(" AND rl.owner_user = $%d", len(args)+1)
+		where += fmt.Sprintf(" AND COALESCE(rl.owner_user, rl.api_key_owner_user) = $%d", len(args)+1)
 		args = append(args, ownerFilter)
 	}
 	querySQL := fmt.Sprintf(`
-		SELECT rl.owner_user,
+		SELECT COALESCE(rl.owner_user, rl.api_key_owner_user) AS owner_user,
 			COUNT(*) AS request_count,
 			COALESCE(SUM(rl.prompt_tokens), 0) AS input_tokens,
 			COALESCE(SUM(rl.completion_tokens), 0) AS output_tokens,
@@ -159,7 +161,7 @@ func usageAggregatesByOwner(ctx context.Context, db usageQuerier, startTime, end
 			COUNT(DISTINCT COALESCE(rl.outbound_model, rl.client_model, 'unknown')) AS model_count
 		FROM request_logs_with_current_month rl
 		WHERE %s
-		GROUP BY rl.owner_user
+		GROUP BY COALESCE(rl.owner_user, rl.api_key_owner_user)
 	`, where)
 	rows, err := db.Query(ctx, querySQL, args...)
 	if err != nil {
@@ -927,7 +929,11 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 	// 实测确认）。原写法 rl.created_at 在每次执行都报 42703 ⇒
 	// /users/{owner}/models 恒 500（详情页「模型使用统计」卡恒空）。
 	// IsSchemaBehindError 不认 42703 ⇒ 连降级都不触发，是真 500。
-	whereClause := "rl.owner_user = $1 AND rl.ts >= $2 AND rl.ts < $3"
+	// 2026-11-20 数字出处轮：owner 键 = COALESCE(owner_user, api_key_owner_user)
+	// —— 252 生产实测 owner_user（会话主属主）当前流量全 NULL，真实用户身份在
+	// api_key_owner_user（密钥持有人）上；生产演进版 981 视图同键
+	// （COALESCE(owner_user, api_key_owner_user)）⇒ 三处查询与部署真值一致。
+	whereClause := "COALESCE(rl.owner_user, rl.api_key_owner_user) = $1 AND rl.ts >= $2 AND rl.ts < $3"
 	args := []interface{}{ownerUser, startTime, endTime}
 	argIdx := 4
 
@@ -1124,19 +1130,19 @@ func resolveUsageMatrixParams(w http.ResponseWriter, r *http.Request) (usageMatr
 // queryUserUsageMatrix 执行员工×模型聚合查询。表达式与 handleUserModelUsage
 // 逐字一致（同一出处，两处查询不各自造口径）。
 func queryUserUsageMatrix(ctx context.Context, db usageQuerier, p usageMatrixParams) ([]UserUsageMatrixRow, error) {
-	where := "rl.owner_user IS NOT NULL AND rl.owner_user <> '' AND rl.ts >= $1 AND rl.ts < $2"
+	where := "COALESCE(rl.owner_user, rl.api_key_owner_user) IS NOT NULL AND COALESCE(rl.owner_user, rl.api_key_owner_user) <> '' AND rl.ts >= $1 AND rl.ts < $2"
 	args := []interface{}{p.Start, p.End}
 	if p.TenantID != "" {
 		where += fmt.Sprintf(" AND rl.tenant_id = $%d", len(args)+1)
 		args = append(args, p.TenantID)
 	}
 	if p.Owner != "" {
-		where += fmt.Sprintf(" AND rl.owner_user = $%d", len(args)+1)
+		where += fmt.Sprintf(" AND COALESCE(rl.owner_user, rl.api_key_owner_user) = $%d", len(args)+1)
 		args = append(args, p.Owner)
 	}
 	querySQL := fmt.Sprintf(`
 		SELECT
-			rl.owner_user,
+			COALESCE(rl.owner_user, rl.api_key_owner_user) as owner_user,
 			COALESCE(rl.outbound_model, rl.client_model, 'unknown') as model_name,
 			COALESCE(p.display_name, rl.provider_id::text, 'unknown') as provider,
 			COUNT(*) as request_count,
@@ -1150,8 +1156,8 @@ func queryUserUsageMatrix(ctx context.Context, db usageQuerier, p usageMatrixPar
 		FROM request_logs_with_current_month rl
 		LEFT JOIN providers p ON p.id = rl.provider_id
 		WHERE %s
-		GROUP BY rl.owner_user, model_name, provider
-		ORDER BY rl.owner_user ASC, external_cost_usd DESC
+		GROUP BY COALESCE(rl.owner_user, rl.api_key_owner_user), model_name, provider
+		ORDER BY owner_user ASC, external_cost_usd DESC
 		LIMIT $%d
 	`, where, len(args)+1)
 	args = append(args, p.Limit)
