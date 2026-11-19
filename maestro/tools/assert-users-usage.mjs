@@ -53,11 +53,15 @@ async function goto(url, waitMs = 5000) {
   const { sessionId: sid } = await cdp.send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
   await cdp.send('Page.enable', {}, sid)
   await cdp.send('Network.enable', {}, sid)
+  // ★ 视口必须显式 1440x1400：headless 默认 ~800px 会触发 ResponsiveDataView
+  //   的紧凑卡形态 ⇒ 桌面表格列（任务链接列等）根本不渲染 ⇒ 假红。
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid)
   await evaluate(cdp, sid, `location.href = ${JSON.stringify(url)}`)
   await sleep(waitMs)
   // 导航后重挂一次（旧会话可能随文档换掉）
   const { sessionId: sid2 } = await cdp.send('Target.attachToTarget', { targetId: created.targetId, flatten: true })
   await cdp.send('Page.enable', {}, sid2)
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid2)
   sessionId = sid2
   return evaluate(cdp, sessionId, 'location.href')
 }
