@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -292,5 +293,83 @@ func TestUserProfileModelsSQLUsesTsNotCreatedAt(t *testing.T) {
 	}
 	if !strings.Contains(src, "rl.ts >= $2 AND rl.ts < $3") {
 		t.Fatalf("models 端点窗口过滤形状变了 —— 请同步更新钉测与出处说明")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// queryUserProjects（员工→项目，L1 收口）
+// ─────────────────────────────────────────────────────────────────────────
+
+func TestQueryUserProjectsScansRows(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	// 出处钉测：查询打在 session_owners × session_summaries × session_dim
+	//（会话级口径；不触 canonical 请求视图 ⇒ 无登记簿影响）。
+	mock.ExpectQuery(regexp.QuoteMeta("FROM session_owners so")).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(mock.NewRows([]string{
+			"project_id", "session_count", "task_count", "request_count",
+			"total_tokens", "total_cost_usd", "total_credits_charged", "last_activity_at",
+		}).AddRow("prj-alpha", 12, 3, 45, 9000, 12.5, 300,
+			time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)).
+			AddRow("prj-beta", 2, 0, 5, 100, nil, nil, nil))
+
+	rows, err := queryUserProjects(context.Background(), mock, "alice", "", 30, 100)
+	if err != nil {
+		t.Fatalf("queryUserProjects: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(rows))
+	}
+	if rows[0].ProjectID != "prj-alpha" || rows[0].SessionCount != 12 || rows[0].TaskCount != 3 || rows[0].TotalTokens != 9000 {
+		t.Fatalf("row0 wrong: %+v", rows[0])
+	}
+	if rows[0].TotalCostUSD != 12.5 || rows[0].TotalCredits != 300 {
+		t.Fatalf("row0 costs wrong: %+v", rows[0])
+	}
+	// NULL 成本/时间 → 零值（该行无成本是正常状态，不是 scan 报错）
+	if rows[1].TotalCostUSD != 0 || rows[1].TotalCredits != 0 || !rows[1].LastActivityAt.IsZero() {
+		t.Fatalf("row1 NULL coalesce wrong: %+v", rows[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestUserProjectsHandlerGuards(t *testing.T) {
+	h := &Handler{db: nil}
+
+	rec := httptest.NewRecorder()
+	h.handleUserOwnerProjects(rec, httptest.NewRequest(http.MethodPost, "/api/admin/session-analytics/users/alice/projects", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST should 405, got %d", rec.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	h.handleUserOwnerProjects(rec2, httptest.NewRequest(http.MethodGet, "/api/admin/session-analytics/users/alice/projects", nil))
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil db should 503, got %d", rec2.Code)
+	}
+}
+
+func TestUserProjectsHandlerRegularUserLockedToSelf(t *testing.T) {
+	// 空 owner 路径（/users//projects）→ 400：钉「owner 从 /users/{owner}/projects
+	// 段提取」的路径解析；需要非 nil db（nil-db 503 先于参数检查）⇒ 用惰性连接池
+	//（pgxpool.New 不立即建连，400 发生在任何查询之前 ⇒ 不会真连）。
+	pool, err := pgxpool.New(context.Background(), "postgres://127.0.0.1:1/none?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	h := &Handler{db: pool}
+
+	rec := httptest.NewRecorder()
+	h.handleUserOwnerProjects(rec, httptest.NewRequest(http.MethodGet, "/api/admin/session-analytics/users//projects", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty owner should 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

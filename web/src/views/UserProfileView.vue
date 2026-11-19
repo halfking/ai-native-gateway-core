@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getUserProfile, getUserModelUsage, type UserProfileDetail, type UserModelUsage } from '../api/admin'
+import { getUserProfile, getUserModelUsage, getUserProjects, type UserProfileDetail, type UserModelUsage, type UserProjectRow } from '../api/admin'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
@@ -34,6 +34,11 @@ const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
 ])
 
 // 2026-11-19: 模型使用统计
+// 2026-11-20 逐层下钻轮（L1 收口）：员工→项目卡（会话级口径，见卡片注记）
+const projects = ref<UserProjectRow[]>([])
+const projectsLoading = ref(false)
+const projectsError = ref('')
+const projectsDegraded = ref(false)
 const modelUsage = ref<UserModelUsage[]>([])
 const modelUsageLoading = ref(false)
 const modelUsageError = ref('')
@@ -45,11 +50,14 @@ let costChart: echarts.ECharts | null = null
 
 onMounted(() => {
   void load()
+  void loadProjects()
   void loadModelUsage()
 })
 
 watch(days, () => {
   void load()
+  void loadProjects()
+  void loadModelUsage()
   void loadModelUsage()
 })
 
@@ -73,6 +81,26 @@ async function load() {
     loadError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.loadFailed')
   } finally {
     loading.value = false
+  }
+}
+
+// 2026-11-20 逐层下钻轮：加载员工→项目聚合（days 与页面选择器同窗）
+async function loadProjects() {
+  projectsLoading.value = true
+  projectsError.value = ''
+  projectsDegraded.value = false
+  try {
+    const res = await getUserProjects(owner.value, days.value)
+    projects.value = res.projects || []
+    projectsDegraded.value = res.degraded || false
+    if (res.degraded && res.degraded_reason) {
+      projectsError.value = res.degraded_reason
+    }
+  } catch (e: unknown) {
+    projectsError.value = e instanceof Error && e.message ? e.message : t('sessions.userProfile.loadFailed')
+    projects.value = []
+  } finally {
+    projectsLoading.value = false
   }
 }
 
@@ -234,6 +262,17 @@ function fmtHealth(v: unknown): string | undefined {
 }
 
 /** 热门任务表卡片字段。4 列里除 task_id 外的那 3 个。 */
+/** 项目卡字段（桌面 8 列 ⇒ 卡片同集；2026-11-20 逐层下钻轮）。 */
+const projectFields = computed<CardField[]>(() => [
+  { key: 'session_count', label: t('sessions.userProfile.sessionCount'), type: 'metric', align: 'end' },
+  { key: 'task_count', label: t('sessions.userProfile.projectTasks'), type: 'metric', align: 'end' },
+  { key: 'request_count', label: t('sessions.userProfile.requestCount'), type: 'metric', align: 'end' },
+  { key: 'total_tokens', label: t('sessions.userProfile.projectTokens'), type: 'metric', align: 'end', format: (v) => (Number(v ?? 0)).toLocaleString() },
+  { key: 'total_cost_usd', label: t('sessions.userProfile.projectCostUsd'), type: 'metric', align: 'end', format: (v) => fmtUsd4(v) },
+  { key: 'total_credits_charged', label: t('sessions.userProfile.projectCredits'), type: 'metric', align: 'end', format: (v) => (Number(v ?? 0)).toLocaleString() },
+  { key: 'last_activity_at', label: t('sessions.userProfile.lastSeenAt'), align: 'end' },
+])
+
 const topTaskFields = computed<CardField[]>(() => [
   { key: 'session_count', label: t('sessions.userProfile.sessionCount'), type: 'metric', align: 'end' },
   { key: 'total_cost', label: t('sessions.userProfile.totalCost'), type: 'metric', align: 'end', format: (v) => fmtUsd4(v) },
@@ -329,6 +368,56 @@ const recentSessionFields = computed<CardField[]>(() => [
       <el-card class="chart-card">
         <template #header>{{ t('sessions.userProfile.costTrend') }}</template>
         <div ref="costChartRef" class="chart-container" style="height: 300px" />
+      </el-card>
+
+      <!-- 2026-11-20 逐层下钻轮（L1 收口）：员工→项目卡。
+           ★ 数字出处 = session_summaries × session_owners（**会话级**聚合）：
+             USD 成本 = Σ total_cost_usd，积分 = Σ total_credits_charged——
+             与请求级 usage 列的「内部/外部成本」不同源不同义 ⇒ 不沿用那对标签，
+             卡片注记显式标源（帮助抽屉同口径）。 -->
+      <el-card class="section-card" data-testid="up-projects">
+        <template #header>
+          <span>{{ t('sessions.userProfile.projectsTitle') }}</span>
+          <span class="projects-source-note">{{ t('sessions.userProfile.projectsSourceNote') }}</span>
+        </template>
+        <el-alert
+          v-if="projectsDegraded && projectsError"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          {{ t('dataLifecycle.usageCost.degraded.title') }} {{ projectsError }}
+        </el-alert>
+        <div v-if="projectsError && !projectsDegraded" class="alert alert-danger" style="margin-bottom: 12px">
+          {{ projectsError }}
+        </div>
+        <ResponsiveDataView
+          v-loading="projectsLoading"
+          :rows="projects"
+          title-key="project_id"
+          :fields="projectFields"
+          :empty="isCompact && !projectsError && projects.length === 0"
+          :empty-text="t('sessions.userProfile.projectsEmpty')"
+        >
+          <template #table>
+        <el-table :data="projects" stripe size="small">
+          <el-table-column prop="project_id" :label="t('sessions.userProfile.projectId')" min-width="180" />
+          <el-table-column prop="session_count" :label="t('sessions.userProfile.sessionCount')" width="100" align="right" />
+          <el-table-column prop="task_count" :label="t('sessions.userProfile.projectTasks')" width="100" align="right" />
+          <el-table-column prop="request_count" :label="t('sessions.userProfile.requestCount')" width="100" align="right" />
+          <el-table-column prop="total_tokens" :label="t('sessions.userProfile.projectTokens')" width="130" align="right">
+            <template #default="scope">{{ (scope?.row?.total_tokens ?? 0).toLocaleString() }}</template>
+          </el-table-column>
+          <el-table-column prop="total_cost_usd" :label="t('sessions.userProfile.projectCostUsd')" width="130" align="right">
+            <template #default="scope">${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}</template>
+          </el-table-column>
+          <el-table-column prop="total_credits_charged" :label="t('sessions.userProfile.projectCredits')" width="120" align="right">
+            <template #default="scope">{{ (scope?.row?.total_credits_charged ?? 0).toLocaleString() }}</template>
+          </el-table-column>
+          <el-table-column prop="last_activity_at" :label="t('sessions.userProfile.lastSeenAt')" width="170" />
+        </el-table>
+          </template>
+        </ResponsiveDataView>
       </el-card>
 
       <!-- Top tasks -->
@@ -551,6 +640,7 @@ const recentSessionFields = computed<CardField[]>(() => [
 .stat-value { font-size: 24px; font-weight: 700; }
 .chart-card { margin-bottom: 16px; }
 .section-card { margin-bottom: 16px; }
+.projects-source-note { margin-left: 10px; font-size: 12px; color: var(--el-text-color-secondary, #909399); font-weight: normal; }
 .chart-container { width: 100%; }
 .session-link { color: var(--el-color-primary); text-decoration: none; }
 .session-link:hover { text-decoration: underline; }

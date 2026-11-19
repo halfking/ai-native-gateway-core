@@ -109,6 +109,20 @@ vi.mock('../api/admin', () => ({
     if (ctrl.fail) throw new Error('profile boom')
     return payload()
   }),
+  // ★ 2026-11-20：模型卡（并行车）与项目卡（本轮）各自取数 ⇒ 桩件补齐，
+  //   否则 undefined 被调用抛 TypeError、两卡全走错误分支 ⇒ 地形断言失真。
+  getUserModelUsage: vi.fn(async () => ({ models: [] })),
+  getUserProjects: vi.fn(async () => {
+    if (ctrl.fail) throw new Error('projects boom')
+    if (ctrl.empty) return { projects: [], degraded: false }
+    return {
+      projects: [
+        { project_id: 'prj-alpha', session_count: 12, task_count: 3, request_count: 45, total_tokens: 9000, total_cost_usd: 12.5, total_credits_charged: 300, last_activity_at: '2026-11-15T09:00:00Z' },
+        { project_id: 'prj-beta', session_count: 2, task_count: 0, request_count: 5, total_tokens: 100, total_cost_usd: 0, total_credits_charged: 0, last_activity_at: '2026-11-10T09:00:00Z' },
+      ],
+      degraded: false,
+    }
+  }),
 }))
 
 vi.mock('../components/ui/KxDateRangePicker.vue', () => ({
@@ -234,10 +248,13 @@ describe('UserProfileView：桌面三张表零回归', () => {
     expect(heads('up-recent-sessions')).toEqual(['会话 ID', '请求数', '总成本', '健康等级', '创建时间'])
   })
 
-  it('桌面三张 el-table 都还在，且不是卡片', async () => {
+  it('桌面五张 el-table 都还在，且不渲染卡片条目', async () => {
+    // ★ 2026-11-20 地形演进：3 张 ResponsiveDataView 表 + 模型使用明细卡（并行车
+    //   2026-11-19 直排 el-table）+ 项目卡（本轮 2026-11-20，同 RDRV 形态）⇒ 5 张。
+    //   原「card-list 不存在」断言在 v-show 实现下恒真容器 ⇒ 改钉「无卡片条目」。
     const w = await factory()
-    expect(w.findAll('.el-table')).toHaveLength(3)
-    expect(w.find('[data-testid="card-list"]').exists()).toBe(false)
+    expect(w.findAll('.el-table')).toHaveLength(5)
+    expect(w.findAll('[data-testid="card-list"] .card')).toHaveLength(0)
   })
 
   it('成本列 4 位小数；缺值/0 出 $0.0000（与桌面 `?? 0` 同一口径）', async () => {
@@ -345,12 +362,16 @@ describe('UserProfileView：el-table 地形（D12）', () => {
 describe('UserProfileView：compact 卡片形态', () => {
   beforeEach(() => mockWindowClass('compact'))
 
-  it('三张表各出卡片、不出 el-table', async () => {
+  it('三张表各出卡片、不出 el-table（模型卡除外）', async () => {
     const w = await factory()
     expect(cardsIn(w, 'up-top-tasks')).toHaveLength(4)
     expect(cardsIn(w, 'up-top-end-users')).toHaveLength(2)
     expect(cardsIn(w, 'up-recent-sessions')).toHaveLength(7)
-    expect(w.findAll('.el-table')).toHaveLength(0)
+    // ★ 2026-11-20：模型使用明细卡（并行车）与项目卡（本轮）加入后——
+    //   项目卡已按 RDRV 形态出卡；模型卡是直排 el-table ⇒ compact 下 1 张表
+    //   （该卡的形态归并行车收口，这里如实钉现状防继续漂移）。
+    expect(w.findAll('.el-table')).toHaveLength(1)
+    expect(cardsIn(w, 'up-projects')).toHaveLength(2)
   })
 
   it('compact 下不渲染形态切换钮', async () => {
@@ -440,7 +461,8 @@ describe('UserProfileView：空态归属', () => {
   it('桌面三段全空：不出现我们的 EmptyState（空态留给 Element 自带）', async () => {
     ctrl.empty = true
     const w = await factory()
-    expect(w.findAll('.el-table')).toHaveLength(3)
+    // 2026-11-20：地形 5 张表（见桌面地形用例注记）
+    expect(w.findAll('.el-table')).toHaveLength(5)
     expect(w.find('.app-empty-state').exists()).toBe(false)
   })
 
@@ -448,7 +470,8 @@ describe('UserProfileView：空态归属', () => {
     mockWindowClass('compact')
     ctrl.empty = true
     const w = await factory()
-    expect(w.findAll('.app-empty-state')).toHaveLength(3)
+    // 2026-11-20：项目卡（RDRV）加入 ⇒ compact 空态 3 → 4
+    expect(w.findAll('.app-empty-state')).toHaveLength(4)
     expect(w.findAll('[data-testid="card-list"]')).toHaveLength(0)
   })
 
@@ -461,7 +484,8 @@ describe('UserProfileView：空态归属', () => {
     ctrl.fail = true
     const w = await factory()
     expect(w.find('.empty').exists()).toBe(true)
-    expect(w.findAll('.el-table')).toHaveLength(3)
+    // 2026-11-20：地形 5 张表（见桌面地形用例注记）
+    expect(w.findAll('.el-table')).toHaveLength(5)
     expect(w.findAll('.el-table__body tbody tr')).toHaveLength(0)
   })
 
@@ -495,9 +519,10 @@ describe('UserProfileView：跨层契约', () => {
     expect(CODE_ONLY).not.toContain(':loading=')
   })
 
-  it('三处 :empty 都带 isCompact 前置', () => {
+  it('四处 :empty 都带 isCompact 前置', () => {
+    // 2026-11-20：项目卡（RDRV）加入 ⇒ :empty 3 → 4
     const ones = CODE_ONLY.match(/:empty="[^"]*"/g) ?? []
-    expect(ones).toHaveLength(3)
+    expect(ones).toHaveLength(4)
     for (const e of ones) expect(e).toMatch(/^:empty="isCompact && /)
   })
 
@@ -510,7 +535,7 @@ describe('UserProfileView：跨层契约', () => {
   it('空态按统计对象分键：三张表各自 firstUse', () => {
     const used = new Set([...CODE_ONLY.matchAll(/t\('([^']+)'/g)].map((m) => m[1]))
     for (const k of used) {
-      expect(/^(sessions\.userProfile\.|common\.|hyper\.)/.test(k), `预期词条前缀之外的键：${k}`).toBe(true)
+      expect(/^(sessions\.userProfile\.|common\.|hyper\.|dataLifecycle\.)/.test(k), `预期词条前缀之外的键：${k}`).toBe(true)
     }
     // ★ 第 14 增量：三张表的空态分别点名各自的统计对象（任务 / 终端用户 / 会话）。
     expect(used.has('sessions.userProfile.emptyFirstUseTopTasks'), 'top_tasks 空态点名「任务」').toBe(true)

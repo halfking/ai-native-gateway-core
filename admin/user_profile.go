@@ -486,6 +486,11 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		h.handleUserModelUsage(w, r)
 		return
 	}
+	// 2026-11-20 逐层下钻轮：/projects 子路由（员工→项目→任务→会话 的项目层）
+	if strings.HasSuffix(path, "/projects") {
+		h.handleUserOwnerProjects(w, r)
+		return
+	}
 	
 	ownerUser := strings.TrimSpace(path)
 	if ownerUser == "" {
@@ -1241,6 +1246,174 @@ func (h *Handler) handleUserUsageMatrix(w http.ResponseWriter, r *http.Request) 
 			SourceView:  "request_logs_with_current_month",
 			WindowStart: p.Start.Format(time.RFC3339),
 			WindowEnd:   p.End.Format(time.RFC3339),
+		},
+	})
+}
+
+// ── 2026-11-20 逐层下钻轮（L1 收口）：员工→项目 ─────────────────────────
+
+// UserProjectRow 员工×项目一行。
+//
+// ★ 数字出处 = session_summaries（会话级聚合）× session_owners（归属），
+//   成本口径是**会话级**的：total_cost_usd（USD 成本）与 total_credits_charged
+//   （积分）——与请求级 usage 列的「内部成本=cost_display / 外部成本=cost_usd」
+//   **不同源不同义** ⇒ 前端项目卡不得沿用「内部/外部成本」标签（页面双口径
+//   并存时以列头与帮助抽屉的来源标注为准）。
+type UserProjectRow struct {
+	ProjectID      string    `json:"project_id"`
+	SessionCount   int64     `json:"session_count"`
+	TaskCount      int64     `json:"task_count"`
+	RequestCount   int64     `json:"request_count"`
+	TotalTokens    int64     `json:"total_tokens"`
+	TotalCostUSD   float64   `json:"total_cost_usd"`
+	TotalCredits   float64   `json:"total_credits_charged"`
+	LastActivityAt time.Time `json:"last_activity_at"`
+}
+
+// queryUserProjects 员工→项目聚合：归属与详情页基础统计同源
+//（session_owners.so.owner_user = owner —— 列表页能看到的员工集合即此口径）；
+// 任务数取 session_dim.task_id（剔除 default/空，与生产演进版 981 视图同表达式）；
+// 窗口 = ss.first_request_at >= cst_days_ago(days)（与详情页成本趋势同日界函数）。
+// 该查询不触 canonical 请求视图 ⇒ 不进 canonical 读点登记簿（无 mention）。
+func queryUserProjects(ctx context.Context, db usageQuerier, ownerUser, tenantID string, days, limit int) ([]UserProjectRow, error) {
+	where := "so.owner_user = $1"
+	args := []interface{}{ownerUser}
+	if tenantID != "" && tenantID != "default" {
+		where += fmt.Sprintf(" AND so.tenant_id = $%d", len(args)+1)
+		args = append(args, tenantID)
+	}
+	where += fmt.Sprintf(" AND ss.first_request_at >= cst_days_ago($%d::INT)", len(args)+1)
+	args = append(args, days)
+	querySQL := fmt.Sprintf(`
+		SELECT
+			ss.gw_project_id AS project_id,
+			COUNT(DISTINCT ss.gw_session_id) AS session_count,
+			COUNT(DISTINCT sd.task_id) FILTER (WHERE sd.task_id IS NOT NULL AND sd.task_id::text <> '' AND sd.task_id::text <> 'default') AS task_count,
+			COALESCE(SUM(ss.request_count), 0) AS request_count,
+			COALESCE(SUM(ss.total_tokens), 0) AS total_tokens,
+			COALESCE(SUM(ss.total_cost_usd), 0) AS total_cost_usd,
+			COALESCE(SUM(ss.total_credits_charged), 0) AS total_credits_charged,
+			MAX(ss.last_request_at) AS last_activity_at
+		FROM session_owners so
+		INNER JOIN session_summaries ss ON ss.session_key = so.gw_session_id
+		INNER JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+		WHERE %s
+			AND ss.gw_project_id IS NOT NULL AND ss.gw_project_id <> ''
+		GROUP BY ss.gw_project_id
+		ORDER BY session_count DESC, total_tokens DESC
+		LIMIT $%d
+	`, where, len(args)+1)
+	args = append(args, limit)
+
+	rows, err := db.Query(ctx, querySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []UserProjectRow{}
+	for rows.Next() {
+		var item UserProjectRow
+		var cost, credits sql.NullFloat64
+		var lastAt sql.NullTime
+		if err := rows.Scan(
+			&item.ProjectID, &item.SessionCount, &item.TaskCount, &item.RequestCount,
+			&item.TotalTokens, &cost, &credits, &lastAt,
+		); err != nil {
+			warnRowSkip("userProjects", err)
+			continue
+		}
+		item.TotalCostUSD = cost.Float64
+		item.TotalCredits = credits.Float64
+		if lastAt.Valid {
+			item.LastActivityAt = lastAt.Time
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// handleUserOwnerProjects GET /api/admin/session-analytics/users/{owner}/projects
+//
+// 「员工→项目」下钻的数据端点（主档 L1 草图落地）：按 gw_project_id 聚合该
+// 员工在窗口内的会话/任务/token/成本。归属口径与详情页基础统计同源
+//（session_owners.so.owner_user）；窗口/上限与 models 端点同闸（days 1..90，
+// 缺省 30）。三层隔离复用详情端点的同构逻辑（普通用户只能看自己）。
+func (h *Handler) handleUserOwnerProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "db not available")
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/session-analytics/users/")
+	ownerUser := strings.TrimSuffix(path, "/projects")
+	ownerUser = strings.TrimSpace(ownerUser)
+	if ownerUser == "" {
+		writeError(w, http.StatusBadRequest, "owner_user is required")
+		return
+	}
+
+	// 普通用户只允许看自己（与详情/models 同构）
+	if IsRegularUser(r) {
+		myOwner := GetAuthContext(r).Username
+		if myOwner == "" || ownerUser != myOwner {
+			writeError(w, http.StatusForbidden, "you can only view your own profile")
+			return
+		}
+	}
+
+	tenantID := ""
+	if IsTenantAdmin(r) || IsRegularUser(r) {
+		tenantID = GetTenantID(r)
+	}
+	if IsSuperAdminOrLegacy(r) {
+		if q := queryString(r, "tenant_id"); q != "" {
+			tenantID = q
+		}
+	}
+
+	days := queryInt(r, "days", 30)
+	if days < 1 || days > 90 {
+		days = 30
+	}
+	limit := queryInt(r, "limit", 100)
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	projects, err := queryUserProjects(ctx, h.db, ownerUser, tenantID, days, limit)
+	if err != nil {
+		if IsSchemaBehindError(err) {
+			reason := ReportSchemaBehind(slog.Default(), "userProjects", err)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"projects":        []UserProjectRow{},
+				"degraded":        true,
+				"degraded_reason": reason,
+			})
+			return
+		}
+		writeInternalErr(w, "query failed", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"projects":  projects,
+		"owner_user": ownerUser,
+		"days":      days,
+		// 数字出处块：项目卡数字是**会话级**口径（session_summaries×session_owners），
+		// 与请求级 usage 的内外成本不同源——帮助抽屉与卡片注记引用此块。
+		"usage_meta": userUsageMeta{
+			SourceView: "session_summaries × session_owners",
 		},
 	})
 }
