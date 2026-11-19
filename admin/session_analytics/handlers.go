@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/admin"
 )
 
 // Handler 会话分析系统的 HTTP 处理器
@@ -48,6 +50,12 @@ func (h *Handler) HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 	// 权限检查：只有管理员可以访问
 	if !isAdminFromRequest(r) {
 		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// ★ 陈旧度门：视图在但数据停在上次刷新时，拒绝返回过期数字
+	//   （仓内 245 实测过 9h37m 的陈旧数据被当成结论发出去，见 mv_guard.go）。
+	if !h.requireFreshViews(w, r, "user_session_aggregates", "model_usage_aggregates") {
 		return
 	}
 
@@ -103,6 +111,11 @@ func (h *Handler) HandleGetUserRanking(w http.ResponseWriter, r *http.Request) {
 	// 权限检查
 	if !isAdminFromRequest(r) {
 		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// ★ 陈旧度门（同 overview 端点；见 mv_guard.go）。
+	if !h.requireFreshViews(w, r, "user_session_aggregates") {
 		return
 	}
 
@@ -282,50 +295,45 @@ func isValidDate(dateStr string) bool {
 }
 
 // isAdminFromRequest 从请求上下文检查用户是否为管理员
+//
+// ★ 上下文键：仓内的认证中间件 admin.AdminMiddleware 用的是**类型化** context 键
+//   （admin.SetAuthContext / admin.GetAuthContext），不是字符串键。
+//   本函数此前读 r.Context().Value("user_role") ⇒ 永远拿到 nil ⇒ 恒返回 false
+//   ⇒ 端点对**任何**人（含真管理员）都返回 403。
+//   ⇒ 这里改用 admin.GetAuthContext(r)（唯一真源）。
+//
+// ★ 角色词表：仓内的真实角色只有 super_admin / tenant_admin / admin_key
+//   （真库 users 表实测：tenant_admin 21 个、super_admin 3 个；没有 "admin" 角色）。
+//   本函数此前把 "admin" 当合法角色，是一条**永不命中**的分支。
 func isAdminFromRequest(r *http.Request) bool {
-	// 从上下文获取用户信息
-	userRole := r.Context().Value("user_role")
-	if userRole == nil {
+	auth := admin.GetAuthContext(r)
+	if auth == nil {
 		return false
 	}
-
-	role, ok := userRole.(string)
-	if !ok {
+	switch auth.Role {
+	case "super_admin", "tenant_admin", "admin_key":
+		return true
+	default:
 		return false
 	}
-
-	// 管理员角色：admin, super_admin, tenant_admin
-	return role == "admin" || role == "super_admin" || role == "tenant_admin"
 }
 
 // isSuperAdminFromRequest 从请求上下文检查用户是否为超级管理员
 func isSuperAdminFromRequest(r *http.Request) bool {
-	userRole := r.Context().Value("user_role")
-	if userRole == nil {
+	auth := admin.GetAuthContext(r)
+	if auth == nil {
 		return false
 	}
-
-	role, ok := userRole.(string)
-	if !ok {
-		return false
-	}
-
-	return role == "super_admin"
+	return auth.Role == "super_admin" || auth.Role == "admin_key"
 }
 
 // getUserTenantIDFromRequest 从请求上下文获取用户的租户 ID
 func getUserTenantIDFromRequest(r *http.Request) string {
-	tenantID := r.Context().Value("tenant_id")
-	if tenantID == nil {
+	auth := admin.GetAuthContext(r)
+	if auth == nil {
 		return ""
 	}
-
-	tid, ok := tenantID.(string)
-	if !ok {
-		return ""
-	}
-
-	return tid
+	return auth.TenantID
 }
 
 // RegisterRoutes 注册会话分析系统的路由
@@ -352,6 +360,10 @@ func RegisterRoutes(mux *http.ServeMux, db *sql.DB, adminWrap func(http.HandlerF
 // ErrorResponse 错误响应
 type ErrorResponse struct {
 	Error string `json:"error"`
+	// Code 是机器可读的错误码（与仓内 admin 包的错误响应同构）：
+	//   analytics_view_stale / analytics_view_missing / ...
+	// ★ 前端按 code 分流（文案兜底走 error 字段），运维按 code 查处置。
+	Code string `json:"code,omitempty"`
 }
 
 // writeError 写入错误响应
@@ -359,6 +371,13 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+}
+
+// writeErrorWithCode 写入带机器可读错误码的错误响应
+func writeErrorWithCode(w http.ResponseWriter, code int, errCode string, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(ErrorResponse{Error: message, Code: errCode})
 }
 
 // writeJSON 写入 JSON 响应

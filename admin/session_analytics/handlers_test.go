@@ -1,13 +1,14 @@
 package sessionanalytics
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/kaixuan/llm-gateway-go/admin"
 )
 
 // TestParseOverviewParams 测试总体统计参数解析
@@ -256,23 +257,28 @@ func TestIsAdmin(t *testing.T) {
 		expected bool
 	}{
 		{"super admin", "super_admin", true},
-		{"admin", "admin", true},
+		// ★ 真实角色词表（真库 users 表实测）：super_admin / tenant_admin；
+		//   另有 admin_key（遗留 admin key 认证）。没有 "admin" 这个角色。
+		{"legacy admin key", "admin_key", true},
 		{"tenant admin", "tenant_admin", true},
+		{"plain admin is not a role", "admin", false},
 		{"user", "user", false},
 		{"empty role", "", false},
 		{"nil role", nil, false},
-		{"wrong type", 123, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			ctx := req.Context()
 
+			// ★ 身份注入必须走 admin.SetAuthContext（仓内认证中间件的唯一真源）。
+			//   此前测试用 context.WithValue(ctx, "user_role", ...) —— 与生产
+			//   路径**不同的键** ⇒ 测试绿而生产恒 403（见 handlers.go 的说明）。
+			//   ⇒ 这类"测试自己造了一套假契约"的洞，只有把测试改成走真入口才补得上。
 			if tt.userRole != nil {
-				ctx = context.WithValue(ctx, "user_role", tt.userRole)
+				role, _ := tt.userRole.(string)
+				req = admin.SetAuthContext(req, &admin.AuthContext{Role: role, TenantID: "tenant123"})
 			}
-			req = req.WithContext(ctx)
 
 			result := isAdminFromRequest(req)
 			assert.Equal(t, tt.expected, result)
@@ -288,22 +294,24 @@ func TestIsSuperAdmin(t *testing.T) {
 		expected bool
 	}{
 		{"super admin", "super_admin", true},
-		{"admin", "admin", false},
+		// ★ 角色词表 = 真库的 super_admin / tenant_admin / admin_key（真库 users
+		//   表实测：tenant_admin 21 个、super_admin 3 个，没有 "admin" 角色）。
+		//   此前测试把 "admin" 当成合法角色固化了下来，是一条永不命中的分支。
+		{"legacy admin key", "admin_key", true},
 		{"tenant admin", "tenant_admin", false},
+		{"plain admin is not a role", "admin", false},
 		{"user", "user", false},
 		{"nil role", nil, false},
-		{"wrong type", 123, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			ctx := req.Context()
 
 			if tt.userRole != nil {
-				ctx = context.WithValue(ctx, "user_role", tt.userRole)
+				role, _ := tt.userRole.(string)
+				req = admin.SetAuthContext(req, &admin.AuthContext{Role: role, TenantID: "tenant123"})
 			}
-			req = req.WithContext(ctx)
 
 			result := isSuperAdminFromRequest(req)
 			assert.Equal(t, tt.expected, result)
@@ -327,12 +335,12 @@ func TestGetUserTenantID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			ctx := req.Context()
 
+			// ★ 同上：身份注入走 admin.SetAuthContext（唯一真源）。
 			if tt.tenantID != nil {
-				ctx = context.WithValue(ctx, "tenant_id", tt.tenantID)
+				tid, _ := tt.tenantID.(string)
+				req = admin.SetAuthContext(req, &admin.AuthContext{Role: "super_admin", TenantID: tid})
 			}
-			req = req.WithContext(ctx)
 
 			result := getUserTenantIDFromRequest(req)
 			assert.Equal(t, tt.expected, result)
@@ -345,7 +353,7 @@ func TestHandleGetOverview_Unauthorized(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/overview?start_date=2024-01-01&end_date=2024-01-31", nil)
 	rec := httptest.NewRecorder()
 
-	// 不设置 user_role，模拟未授权用户
+	// 不注入身份 ⇒ 模拟未授权用户
 	handler := &Handler{db: nil}
 	handler.HandleGetOverview(rec, req)
 
@@ -356,9 +364,8 @@ func TestHandleGetOverview_Unauthorized(t *testing.T) {
 func TestHandleGetUserRanking_InvalidParams(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/users", nil) // 缺少必需参数
 	rec := httptest.NewRecorder()
-	
-	ctx := context.WithValue(req.Context(), "user_role", "admin")
-	req = req.WithContext(ctx)
+
+	req = admin.SetAuthContext(req, &admin.AuthContext{Role: "super_admin"})
 
 	handler := &Handler{db: nil}
 	handler.HandleGetUserRanking(rec, req)
