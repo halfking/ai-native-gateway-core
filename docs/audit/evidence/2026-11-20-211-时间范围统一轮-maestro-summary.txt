@@ -1,0 +1,37 @@
+时间范围统一轮 — 211 Maestro 全面验证记录（2026-11-20 00:38–01:07 CST）
+被测环境：https://llm.itestu.cn（211），现役 2.6.1-f932bacc-20261120-211 @ build_seq 3143
+（含本轮全部提交：e8c7629cc ⊆ f932bacc，git merge-base --is-ancestor 对拍通过）
+跑法：BASE_URL=https://llm.itestu.cn bash maestro/run-local.sh maestro/flows/XX.yaml
+
+一、重点 flow（时间范围相关页）
+  06-keys-requests（/request-logs 头部 KxDateRangePicker）  rc=0  FAILED=0  WARNED=2   [reports/20261120-003807]
+  13-board-operational（/admin/board-operational）           rc=0  FAILED=0  WARNED=17  [reports/20261120-004112]
+  13-board-operational 复跑（01:06，部署窗口后干净复核）      rc=0  FAILED=0  WARNED=17  [reports/20261120-010655]
+  14-stats-consistency-test                                  rc=1  存量语法红（Unknown Property: or），基线树同样红，非本轮引入
+    → 该 flow 属主登记：yaml 顶层 or 语法与本地 maestro 版本不兼容
+
+二、时间线说明（两段插花红的全过程归因）
+  00:44 与 00:56 两次 13-board-operational rc=1，失败点均在共享登录步骤
+  （Assert "系统管理员" is visible）。其间 docker ps 实拍 llm-gateway-211-a
+  "Up 12 seconds (health: starting)"——并行车蓝绿部署探测正撞测试窗口。
+  部署窗口结束后 01:06 复跑 rc=0；同窗口内全量回归中所有登录态 flow（04/06/08）均绿。
+  公网 /healthz 与容器内 /app/llm-gateway --version 均确认 f932bacc@3143 现役。
+
+三、全量回归（00:47:52 起，12 条 flow）
+01-public-guest              rc=1   FAILED=1    WARNED=0
+02-overview-live             rc=0   FAILED=0    WARNED=2
+03-providers-models          rc=1   FAILED=1    WARNED=1
+04-tenants-portal            rc=0   FAILED=0    WARNED=1
+05-routing                   rc=0   FAILED=0    WARNED=2
+06-keys-requests             rc=0   FAILED=0    WARNED=1
+07-admin-config              rc=0   FAILED=0    WARNED=0
+08-admin-data-ops            rc=0   FAILED=0    WARNED=1
+09-ops-maintain              rc=1   FAILED=1    WARNED=0
+  红（01/03/09）与 2026-11-19 登记的 211 存量红集合完全一致（nginx maintain 拓扑族等），零新增红。
+
+四、后端活体对照（公网 API，session cookie）
+  turns 多模型三态：model=glm-5.3 单值=2 会话；model=glm-5.3,nonexistent-x 多值=2（并集正确）；双假=0
+  users 时间窗：无过滤 total=4；2024 窗=0；10 月窗=4 且 last_seen 全在窗内
+
+结论：时间范围统一轮 6 页改造 + 部署 211 + Maestro 全面验证全部通过；
+插花红归因为并行车部署窗口，非产品回归；存量红与 2026-11-19 基线逐字一致。
