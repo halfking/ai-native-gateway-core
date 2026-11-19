@@ -440,6 +440,10 @@ onMounted(() => {
   font-size: var(--text-sm);
   margin-top: calc(var(--space-2) * -1);
   margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  background: var(--bg-surface);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius);
 }
 
 .bo-section-warning,
