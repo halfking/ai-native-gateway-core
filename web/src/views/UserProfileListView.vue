@@ -219,7 +219,7 @@ function onSearch() {
         <!-- 2026-11-20 数字出处轮：统计口径从右侧抽屉弹出（公式+出处+窗口）。
              带文字（与详情页同形态）⇒ Maestro text: 能点中（icon-only 圆钮选不中）。 -->
         <el-button
-          type="link"
+          type="text"
           :icon="QuestionFilled"
           data-testid="user-profile-list-help"
           @click="showHelp = true"
