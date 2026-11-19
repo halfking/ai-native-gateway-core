@@ -369,8 +369,6 @@ onMounted(() => {
 <style scoped>
 .board-operational-view {
   padding: var(--space-4);
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 .bo-header {

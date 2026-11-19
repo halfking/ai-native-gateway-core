@@ -321,7 +321,6 @@ v2: {
     actionTrailTitle: 'Journal des actions {count} entrées (développer pour voir)',
     actionTrailEmpty: 'Journal des actions (aucune donnée reçue, développer pour voir)',
   },
-}
   operational: {
     title: 'Tableau de bord opérationnel',
     subtitle: 'Analyse complète de l\'état opérationnel',

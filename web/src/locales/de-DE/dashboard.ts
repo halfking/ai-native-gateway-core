@@ -319,7 +319,6 @@ v2: {
     actionTrailTitle: 'Aktionsverlauf {count} Einträge (zum Aufklappen)',
     actionTrailEmpty: 'Aktionsverlauf (noch keine Übertragung, zum Aufklappen)',
   },
-}
   operational: {
     title: 'Betriebs-Dashboard',
     subtitle: 'Umfassende Betriebsstatusanalyse',

@@ -320,7 +320,6 @@ tabs: {
     actionTrailTitle: '動作軌跡 {count} 條（展開查看）',
     actionTrailEmpty: '動作軌跡（暫無推送，展開查看）',
   },
-}
   operational: {
     title: '運營面板',
     subtitle: '系統運營狀況匯總分析',

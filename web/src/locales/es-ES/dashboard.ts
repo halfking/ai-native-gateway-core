@@ -320,7 +320,6 @@ v2: {
     actionTrailTitle: 'Traza de acciones {count} (expanda para ver)',
     actionTrailEmpty: 'Traza de acciones (aún sin datos recibidos, expanda para ver)',
   },
-}
   operational: {
     title: 'Panel operacional',
     subtitle: 'Análisis integral del estado operacional',

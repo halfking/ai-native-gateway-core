@@ -312,7 +312,6 @@ tabs: {
     actionTrailTitle: 'アクション履歴 {count} 件（展開して表示）',
     actionTrailEmpty: 'アクション履歴（まだプッシュはありません。展開して表示）',
   },
-}
   operational: {
     title: '運用ダッシュボード',
     subtitle: '包括的な運用状況分析',
