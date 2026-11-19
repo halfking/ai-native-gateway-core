@@ -285,6 +285,7 @@ export default {
       last24h: 'Últimas 24 horas',
       last7d: 'Últimos 7 días',
       last14d: 'Últimos 14 días',
+      last3d: 'Últimos 3 días',
       last30d: 'Últimos 30 días',
       thisMonth: 'Este mes',
       lastMonth: 'Mes pasado',

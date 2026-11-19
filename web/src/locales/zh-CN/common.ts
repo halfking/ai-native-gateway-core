@@ -290,6 +290,7 @@ export default {
       last24h: '近 24 小时',
       last7d: '近 7 天',
       last14d: '近 14 天',
+      last3d: '近 3 天',
       last30d: '近 30 天',
       thisMonth: '本月',
       lastMonth: '上月',
