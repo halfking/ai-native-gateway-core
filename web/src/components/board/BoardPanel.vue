@@ -30,9 +30,11 @@ const boardState = inject<{
   operational?: Ref<BoardOperationalPayload | null>
   days: Ref<number>
   timeRange: Ref<BoardTimeRange>
+  includeProbes?: Ref<boolean>
   loading: Ref<boolean>
   load: () => Promise<void>
   setTimeRange: (next: BoardTimeRange) => void
+  setIncludeProbes?: (next: boolean) => void
   startAutoRefresh: () => Promise<void>
 }>('dashboardBoard')
 
@@ -45,6 +47,13 @@ const router = useRouter()
 const operational = computed(() => boardState.operational?.value ?? null)
 const board = computed(() => boardState.board.value)
 const timeRange = computed(() => boardState.timeRange?.value ?? defaultBoardTimeRange())
+// 2026-11-20 口径对齐轮：英雄区「含/不含探测」切换（对拍内部对账 vs 供应商对账）。
+const includeProbes = computed(() => boardState.includeProbes?.value ?? false)
+
+function onProbeScopeChange(next: boolean) {
+  if (!boardState) return
+  boardState.setIncludeProbes?.(next)
+}
 // 用量卡走日历日。看板汇总仍由 useDashboardBoard 用 days 预设，两套不要合成一个数。
 const timeQuery = computed(() => usageQueryForBoardRange(timeRange.value))
 const days = computed(() => boardState.days?.value ?? 1)
@@ -127,14 +136,19 @@ const trendExplorerQuery = computed(() => {
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />
     <BoardMiniRow :board="board" :time-range="timeRange" :loading="loading" />
     <BoardProviderSection :board="board" :time-range="timeRange" :time-query="timeQuery" :loading="loading" />
+    <!-- 2026-11-20 口径对齐轮：探测口径切换放在下方（非紧凑）筛选条——
+         顶部合并行的单行高度契约（2026-11-20 合并行轮）不动，
+         英雄区顶部的「含探测」徽标披露当前口径。 -->
     <BoardFilterBar
       :time-range="timeRange"
       :range-value="rangeValue"
       :loading="loading"
       :source="board?.source"
+      :include-probes="includeProbes"
       @apply-range="onApplyRange"
       @refresh="boardState.load()"
       @more="router.push({ path: '/admin/usage-trends', query: trendExplorerQuery })"
+      @update:include-probes="onProbeScopeChange"
     />
     <div class="board-panel__charts">
       <BoardModelDist :board="board" :loading="loading" />

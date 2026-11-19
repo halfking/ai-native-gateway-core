@@ -42,12 +42,18 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 
 	providerID, _ := strconv.ParseInt(r.URL.Query().Get("provider_id"), 10, 64)
 
+	// 2026-11-20 口径对齐轮：include_probes=1 时英雄区汇总切到供应商对账口径
+	// （usage_facts 全量）。该模式是显式对拍动作，绕过 Redis 看板缓存——
+	// 缓存键只含 scope/days/provider，存的是默认（业务）载荷，混用会把
+	// 两种口径的数字互相污染。
+	includeProbes := queryBool(r, "include_probes")
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	scope := boardScopeForTenant(filterTenant)
 
-	if h.boardCache != nil && !tr.Custom {
+	if h.boardCache != nil && !tr.Custom && !includeProbes {
 		payload, err := h.boardCache.GetOrRebuild(ctx, scope, days, providerID)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "board stats cache: "+err.Error())
@@ -76,7 +82,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Custom range or Redis unavailable — query PostgreSQL directly.
-	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, tr)
+	summary, fromMinute := h.queryBoardSummary(ctx, filterTenant, tr, includeProbes)
 	if !fromMinute {
 		// 2026-10-03：回退失败不再被吞掉。原来这里拿到的是一张
 		// 「全 0 且无任何标记」的 summary，页面看起来就是「这个时段没有流量」。
@@ -118,12 +124,21 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 		"pies":    pies,
 		"trends":  trends,
 		"days":    days,
-		"source": boardSource(fromMinute) + func() string {
+		"source": boardSourceForSummary(summary, fromMinute) + func() string {
 			if tr.Custom {
 				return "_custom_range"
 			}
 			return "_degraded_no_redis"
 		}(),
+	}
+	// 2026-11-20 口径对齐轮：显式披露本载荷的探测口径，前端据此给英雄区
+	// 打「含探测」标记。pies/trends 仍来自分钟表（业务口径），include 模式
+	// 下它们与英雄区不同口径——用 probe_scope 让前端能说明这个差异，
+	// 而不是让用户对着两个对不上的数字猜。
+	if includeProbes {
+		resp["probe_scope"] = "included"
+	} else {
+		resp["probe_scope"] = "excluded"
 	}
 	applyBoardDegradation(resp, piesDegraded, trendsErr)
 	// 2026-07-25: Add body size stats from Redis tracker
@@ -217,6 +232,19 @@ func boardSource(fromMinute bool) string {
 		return "request_stats_minute"
 	}
 	return "request_logs_with_current_month"
+}
+
+// boardSourceForSummary refines the payload-level source label with the
+// summary's actual origin. Since 2026-11-20 the summary normally comes from
+// usage_facts (the reconciliation truth source); the minute/logs labels only
+// apply when usage_facts was unavailable and the legacy chain answered.
+func boardSourceForSummary(summary map[string]any, filled bool) string {
+	if filled {
+		if s, _ := summary["summary_source"].(string); s == "usage_facts" {
+			return "usage_facts"
+		}
+	}
+	return boardSource(filled)
 }
 
 func boardTenantClause(tenantID string, startArg int) (clause string, args []any) {

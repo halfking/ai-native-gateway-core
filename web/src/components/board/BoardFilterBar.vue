@@ -14,6 +14,12 @@ const props = defineProps<{
   rangeValue: KxDateRange | null
   loading?: boolean
   source?: string
+  /**
+   * 2026-11-20 口径对齐轮：英雄区汇总是否含探测流量。
+   * true → 供应商对账口径（usage_facts 全量）；false（缺省）→ 内部对账口径。
+   * undefined = 调用方不提供该控件（保持旧用途兼容）。
+   */
+  includeProbes?: boolean
   /** 紧凑形态（2026-11-19 轮）：顶部那份与运维状态行（ops-bar 4px 12px 胶囊）对齐高度用 */
   compact?: boolean
   /** 隐藏「数据源」徽标（2026-11-20 合并行轮）：顶部那条把行尾位置让给运维 chips */
@@ -22,6 +28,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'apply-range': [value: KxDateRange]
+  'update:includeProbes': [value: boolean]
   refresh: []
   more: []
 }>()
@@ -42,7 +49,16 @@ const sourceKey = computed(() => {
     case 'redis_baseline_delta': return t('dashboard.board.sourceRedis')
     case 'live_sse_delta': return t('dashboard.board.sourceSse')
     case 'postgresql_baseline': return t('dashboard.board.sourcePg')
-    default: return props.source ?? '—'
+    default: {
+      // 2026-11-20：直查路径的新真源（usage_facts[_custom_range|_degraded_no_redis]）
+      // 与旧直查标签（request_stats_minute*）归并到 PG 基线一组——
+      // 徽标讲的是「这份数据从哪类存储来」，不是表名清单。
+      const s = props.source ?? ''
+      if (s.startsWith('usage_facts') || s.startsWith('request_stats_minute')) {
+        return t('dashboard.board.sourcePg')
+      }
+      return s || '—'
+    }
   }
 })
 </script>
@@ -74,6 +90,30 @@ const sourceKey = computed(() => {
       <span class="bfb__gran" :title="t('dashboard.board.granAutoTitle')">
         <b class="bfb__gran-auto">{{ t('dashboard.board.granAuto') }}</b>
         <span class="bfb__gran-value">{{ granularityLabel }}</span>
+      </span>
+    </div>
+    <!-- 2026-11-20 口径对齐轮：英雄区汇总的探测口径切换。
+         不含探测 = 内部对账口径；含探测 = 供应商对账口径（对外对账因含探测流量会多一些）。
+         切的是英雄区汇总的取数口径；分布/趋势图仍为业务口径。 -->
+    <div v-if="includeProbes !== undefined" class="bfb__item">
+      <span class="bfb__label">{{ t('dashboard.board.probeScopeLabel') }}</span>
+      <span class="bfb__probe" :title="t('dashboard.board.probeScopeTitle')" role="group">
+        <button
+          type="button"
+          class="bfb__probe-btn"
+          :class="{ 'bfb__probe-btn--on': !includeProbes }"
+          data-testid="board-probe-exclude"
+          :disabled="loading"
+          @click="emit('update:includeProbes', false)"
+        >{{ t('dashboard.board.probeExclude') }}</button>
+        <button
+          type="button"
+          class="bfb__probe-btn"
+          :class="{ 'bfb__probe-btn--on': includeProbes }"
+          data-testid="board-probe-include"
+          :disabled="loading"
+          @click="emit('update:includeProbes', true)"
+        >{{ t('dashboard.board.probeInclude') }}</button>
       </span>
     </div>
     <button type="button" class="bfb__refresh" :disabled="loading" @click="emit('refresh')">
@@ -169,6 +209,40 @@ const sourceKey = computed(() => {
 .bfb__gran-value {
   font-size: 11px;
   color: var(--text-muted);
+}
+/* 探测口径切换：与粒度胶囊同形的二段选择器。 */
+.bfb__probe {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 2px;
+  gap: 2px;
+}
+.bfb__probe-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 7px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.bfb__probe-btn--on {
+  background: color-mix(in srgb, var(--accent) 16%, var(--card));
+  color: var(--accent);
+}
+.bfb__probe-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.bfb--compact .bfb__probe {
+  padding: 1px;
+}
+.bfb--compact .bfb__probe-btn {
+  padding: 1px 7px;
+  font-size: 10px;
 }
 .bfb__refresh {
   display: inline-flex;

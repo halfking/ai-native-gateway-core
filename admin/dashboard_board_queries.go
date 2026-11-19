@@ -35,7 +35,131 @@ func trendPointsCoverRange(tr boardTimeRange, points []boardTrendPoint) bool {
 	return !earliest.After(tr.Start.Add(boardStatsCoverageSlack(tr)))
 }
 
-func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, bool) {
+// queryBoardSummary returns the board hero numbers (总请求数/Token/费用/积分/
+// 成功率/均延迟) for the window, with the probe toggle.
+//
+// ## 2026-11-20（口径对齐轮）：主源换成 usage_facts（对账级真源）
+//
+// owner 对拍需求：board「包含探测」必须等于 /admin/reconciliation 的供应商
+// 对账、「不包含探测」必须等于内部对账。211 真库 7 天逐日实测（2026-11-20）：
+//
+//	report_snapshots daily_grain    == usage_facts 全量（逐日 0 差）
+//	report_snapshots internal_grain == usage_facts traffic_class='business'（逐日 0 差）
+//
+// 而旧主源 request_stats_minute 在**部署日会漏行**：当天 16:00/18:00 UTC 两个
+// 部署窗口分别 -1/-21 笔、-3.0M tokens（真库对拍）——分钟表写入者
+// bg.StatsMinuteRollup 是「游标 + 30min 有界 resweep」的扫描器，重启/迟到
+// 超过 resweep 窗的终态行永久漏统。usage_facts 由 EventWriter 事务内落库
+// （insertUsageFactTx），无此丢失面。
+//
+// 口径映射（与 reportrollup 的 queryGrainDay / internalTenantDaySQL 同源同谓词）：
+//
+//	includeProbes=false → AND traffic_class='business'（== internal 对账 == /api/logs 默认业务 lane）
+//	includeProbes=true  → 无 class 过滤（== provider 对账全量）
+//
+// usage_facts 只含终态行（success/failure/rate_limited，见 stats/event.go
+// 的过滤），与 board 旧口径的状态集一致；occurred_at 有前导索引（迁移 749）。
+//
+// 回退链保持既有形状：usage_facts 缺（42P01，未迁移环境）或查询失败时，
+// exclude 模式落回旧分钟表口径（本文件下方 queryBoardSummaryMinute）——那是
+// 修复前 board 一直在显示的数字，作为降级值不会比改前更差；include 模式没有
+// 分钟表等价物（分钟表根本不含探测行），直接交给调用方的 logs fallback。
+func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
+	if s, ok := h.queryBoardSummaryFacts(ctx, tenantID, tr, includeProbes); ok {
+		return s, true
+	}
+	if includeProbes {
+		// 分钟表不含探测行，无法近似 include 口径；交给调用方的
+		// fallbackBoardSummary 链（它会自带 degraded 标记）。
+		return nil, false
+	}
+	return h.queryBoardSummaryMinute(ctx, tenantID, tr)
+}
+
+// queryBoardSummaryFacts reads the hero summary from usage_facts.
+//
+// Second return is false when the table is missing (42P01 → caller falls back)
+// or the query failed for another reason (timeout etc. → same fallback: the
+// minute path serves the pre-fix numbers, and a Warn is logged so the degrade
+// is visible in server logs).
+func (h *Handler) queryBoardSummaryFacts(ctx context.Context, tenantID string, tr boardTimeRange, includeProbes bool) (map[string]any, bool) {
+	where := "occurred_at >= $1 AND occurred_at < $2"
+	args := []any{tr.Start, tr.End}
+	if tenantID != "" {
+		where += " AND tenant_id = $3"
+		args = append(args, tenantID)
+	}
+	if !includeProbes {
+		// 与 reportrollup 内部对账同一谓词（grainDaySQL businessOnly 分支）。
+		// 刻意用 traffic_class 而不是 bg.ProbeTrafficExclusionPredicateView：
+		// usage_facts 的 class 在写入时由 origin_stage 派生（stats/event.go
+		// trafficClass），对账快照就是按它分面的——board 想与对账逐字相等，
+		// 就必须用同一列，而不是再按 markers 算一遍（markers 与 stage 的
+		// 判定面不同，混用必然在边缘行上分叉）。
+		where += " AND traffic_class = 'business'"
+	}
+
+	var totalReq, successCnt, promptTok, compTok, credits, latencySum int64
+	var costUSD float64
+	err := h.db.QueryRow(ctx, `
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE status = 'success'),
+			COALESCE(SUM(prompt_tokens), 0),
+			COALESCE(SUM(completion_tokens), 0),
+			COALESCE(SUM(cost_amount), 0),
+			COALESCE(SUM(credits_charged), 0),
+			COALESCE(SUM(latency_ms), 0)
+		FROM usage_facts
+		WHERE `+where, args...).Scan(
+		&totalReq, &successCnt, &promptTok, &compTok, &costUSD, &credits, &latencySum)
+	if err != nil {
+		if !IsMissingRelationError(err) {
+			slog.Warn("board summary (usage_facts) failed, falling back to minute path",
+				"tenant_id", tenantID, "start", tr.Start, "end", tr.End, "error", err)
+		}
+		return nil, false
+	}
+	if totalReq == 0 && !includeProbes {
+		// 空窗口保持旧行为：分钟表还有一次机会（它可能在 usage_facts 尚未
+		// 迁移的环境里有数据），空结果交回旧链路判定。
+		return nil, false
+	}
+
+	var activeKeys, activeModels, providers int
+	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
+
+	successRate := 0.0
+	if totalReq > 0 {
+		successRate = float64(successCnt) / float64(totalReq)
+	}
+	avgLatency := 0.0
+	if totalReq > 0 {
+		avgLatency = float64(latencySum) / float64(totalReq)
+	}
+
+	return map[string]any{
+		"total_requests":          totalReq,
+		"total_prompt_tokens":     promptTok,
+		"total_completion_tokens": compTok,
+		"total_tokens":            promptTok + compTok,
+		"total_cost_usd":          costUSD,
+		"total_credits_charged":   credits,
+		"success_rate":            successRate,
+		"avg_latency_ms":          avgLatency,
+		"active_api_keys":         activeKeys,
+		"active_models":           activeModels,
+		"providers":               providers,
+		"summary_source":          "usage_facts",
+	}, true
+}
+
+// queryBoardSummaryMinute is the pre-2026-11-20 primary path, retained as the
+// degraded fallback for environments where usage_facts is not migrated. It is
+// business-only (probes are excluded by the minute-table writer) and can
+// undercount across gateway restarts (bounded resweep) — both reasons it is no
+// longer the primary. See queryBoardSummary's header comment.
+func (h *Handler) queryBoardSummaryMinute(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, bool) {
 	where, args := boardMinuteWhere(tr, tenantID, 0)
 
 	var totalReq, successCnt, failCnt, promptTok, compTok, totalTok, credits, latencySum int64

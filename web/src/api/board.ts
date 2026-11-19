@@ -49,6 +49,8 @@ export interface BoardSummary {
   degraded_summary?: boolean
   summary_missing_view?: string
   summary_hint?: string
+  /** 2026-11-20：汇总数字的真源（'usage_facts' = 对账级；缺省 = 分钟表/明细回退）。 */
+  summary_source?: string
 }
 
 export interface BoardBackgroundTasks {
@@ -138,6 +140,14 @@ export interface BoardPayload {
   body_stats?: BodySizeStats
   days: number
   source?: 'postgresql_baseline' | 'redis_baseline_delta' | 'live_sse_delta' | string
+  /**
+   * 2026-11-20 口径对齐轮：英雄区汇总的探测口径。
+   * 'excluded'（缺省，兼容旧载荷 undefined）= 内部对账口径（traffic_class='business'）；
+   * 'included' = 供应商对账口径（usage_facts 全量）。
+   * ⚠ include 模式下 pies/trends 仍是业务口径（分钟表），英雄区数字会大于
+   * 趋势图各桶之和——这是有意的：两种口径各自的真源不同。
+   */
+  probe_scope?: 'included' | 'excluded'
   cache_meta?: {
     fold_unit?: string
     scope?: string
@@ -163,6 +173,8 @@ export interface BoardQuery {
   end?: string
   tenant_id?: string
   provider_id?: number
+  /** 2026-11-20：true → 服务端英雄区汇总切到供应商对账口径（绕过 Redis 缓存）。 */
+  include_probes?: boolean
 }
 
 export function fetchDashboardBoard(params: BoardQuery = {}, signal?: AbortSignal): Promise<BoardPayload> {
@@ -175,6 +187,7 @@ export function fetchDashboardBoard(params: BoardQuery = {}, signal?: AbortSigna
   }
   if (params.tenant_id) qs.set('tenant_id', params.tenant_id)
   if (params.provider_id != null) qs.set('provider_id', String(params.provider_id))
+  if (params.include_probes) qs.set('include_probes', '1')
   const q = qs.toString()
   const suffix = q ? `?${q}&include_operational=1` : '?include_operational=1'
   return req<BoardPayload>('GET', `/api/admin/dashboard/board${suffix}`, undefined, { signal })

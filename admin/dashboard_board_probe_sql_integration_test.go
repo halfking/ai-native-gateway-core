@@ -182,7 +182,7 @@ func TestDashboardBoardSummaryExecutesOnRealDatabase(t *testing.T) {
 	t.Run("minute-summary", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		if summary, ok := h.queryBoardSummary(ctx, "", tr); ok {
+		if summary, ok := h.queryBoardSummary(ctx, "", tr, false); ok {
 			total, _ := summary["total_requests"].(int64)
 			t.Logf("minute: total_requests=%d", total)
 		} else {

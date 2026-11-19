@@ -11,6 +11,8 @@ export interface BoardTimeQuery {
   days?: number
   start?: string
   end?: string
+  /** 2026-11-20 口径对齐轮：true → 英雄区汇总切供应商对账口径（含探测）。 */
+  include_probes?: boolean
 }
 
 export function defaultBoardTimeRange(): BoardTimeRange {

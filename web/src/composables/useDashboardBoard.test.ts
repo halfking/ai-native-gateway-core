@@ -20,6 +20,7 @@ vi.mock('./boardLiveMerge', () => ({ applyLiveRequestToBoard: vi.fn() }))
 
 import { useDashboardBoard } from './useDashboardBoard'
 import { dashboardPreferenceStorageKey } from './liveStreamPreferences'
+import { fetchDashboardBoard } from '../api/board'
 
 const legacyTimeRangeStorageKey = 'dashboard_board_time_range_v1'
 
@@ -53,6 +54,43 @@ describe('useDashboardBoard persistence', () => {
     board.setTimeRange({ preset: '7d', days: 99 })
     expect(board.timeRange.value).toEqual({ preset: '7d', days: 7 })
     expect(JSON.parse(localStorage.getItem(dashboardPreferenceStorageKey('board-range')) || '{}')).toEqual({ preset: '7d', days: 7 })
+  })
+})
+
+// 2026-11-20 口径对齐轮：英雄区「含/不含探测」切换。owner 对拍契约：
+// 不含探测 = 内部对账口径（默认，不发明细参数）；含探测 = 供应商对账口径
+// （请求带 include_probes=1）。含探测时 SSE 业务增量不得往全量总数上叠。
+describe('useDashboardBoard probe scope toggle', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('defaults to probe-excluded and omits the param', async () => {
+    const board = useDashboardBoard()
+    expect(board.includeProbes.value).toBe(false)
+
+    await board.load()
+    const call = vi.mocked(fetchDashboardBoard).mock.calls[0]
+    expect(call?.[0]?.include_probes).toBeUndefined()
+  })
+
+  it('setIncludeProbes(true) reloads with include_probes and persists', async () => {
+    const board = useDashboardBoard()
+    board.setIncludeProbes(true)
+    expect(board.includeProbes.value).toBe(true)
+    expect(JSON.parse(localStorage.getItem(dashboardPreferenceStorageKey('board-probe-scope')) || 'null')).toBe(true)
+
+    await vi.waitFor(() => {
+      const calls = vi.mocked(fetchDashboardBoard).mock.calls
+      expect(calls.some((c) => c?.[0]?.include_probes === true)).toBe(true)
+    })
+  })
+
+  it('restores the persisted probe scope', () => {
+    localStorage.setItem(dashboardPreferenceStorageKey('board-probe-scope'), 'true')
+    const board = useDashboardBoard()
+    expect(board.includeProbes.value).toBe(true)
   })
 })
 
