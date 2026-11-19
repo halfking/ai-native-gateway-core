@@ -14,8 +14,26 @@ import (
 )
 
 // ApplyUpdate 应用更新（下载 → 备份 → 替换 → 验证 → 上报）
+//
+// 适用面（重要）：本函数面向 **systemd 单机布局**（二进制在
+// /usr/local/bin/kx-gateway、systemctl restart kx-gateway）。它替换的是
+// 二进制，**不投递 SQL 迁移文件链** —— 新版本的启动迁移靠网关重启时
+// db.Open → ApplyMigrations 的 Go ensure 链自愈；落在 sql/migrations/
+// startup 文件链里的结构变更必须走离线升级包（--offline，包内含
+// migrations/ 并由 OfflineApplier 逐个执行）或重装通道。
 func ApplyUpdate(release *Release, dataDir, masterURL string) error {
 	start := time.Now()
+
+	// 0. 布局守卫：docker compose 安装（installer 的现役产物）没有
+	// /usr/local/bin/kx-gateway，也没有 systemd kx-gateway 服务 —— 在这类
+	// 安装上继续跑只会替换一个没在运行的文件、然后 systemctl 报错。
+	// fail-fast 并指路离线包，比半途失败留下难解释的现场好。
+	for _, marker := range []string{"compose.yml", "docker-compose.yml"} {
+		if _, err := os.Stat(filepath.Join(dataDir, marker)); err == nil {
+			return fmt.Errorf("检测到 %s —— docker compose 安装请使用离线升级包：upgrade --action apply --offline --offline-package <pkg.tar.gz>（在线二进制升级只支持 systemd 单机布局）",
+				filepath.Join(dataDir, marker))
+		}
+	}
 
 	// 1. 确保备份目录存在
 	backupDir := filepath.Join(dataDir, "backups")

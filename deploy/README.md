@@ -49,7 +49,7 @@ migration 先于 binary 切换时，必须证明旧 binary 能读取新 schema�
 
 以下路径保留用于兼容/历史追溯，不是新部署推荐入口：
 
-- `install.sh` 与 `installer/`：旧版 one-click/full-stack installer，使用前先核对当前环境总览。
+- `install.sh` 与 `installer/`：**面向终端用户的一键安装/升级入口**（源码通道 `--channel source` 会在本机构建 installer），与本目录的内部开发机部署通道（`scripts/deploy-*.sh`）互不替代，详见 `installer/README.md`。（2026-11-19 订正：此前此处误标「旧版」——根 README 与 install.sh 均以它为现役入口。）
 - `deploy/one-click/`：历史一键部署文档，端口/仓库/目录语义可能过期。
 - `deploy/DEPLOYMENT_GUIDE.md`：审批通知专项 runbook，不是 Gateway 总部署指南；其中不得保留真实凭据。
 - GLM-5.2 事故 runbook（原根目录 `QUICK-START.md`，2026-09-07 归档至 `docs/archive/process/incidents/2026-09/`）；通用安装指南见 `docs/getting-started.md`。

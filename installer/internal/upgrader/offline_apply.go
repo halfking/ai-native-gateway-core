@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -303,8 +304,52 @@ func forwardMigrationFiles(migrationsDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(sqlFiles)
+	sort.Slice(sqlFiles, func(i, j int) bool {
+		return migrationPathLess(sqlFiles[i], sqlFiles[j])
+	})
 	return sqlFiles, nil
+}
+
+// migrationPathLess 迁移执行序比较：目录字典序优先（legacy/ 先于
+// startup/），同目录内按文件名数字前缀的**数值**升序 —— 纯字典序会在
+// 四位编号出现后把 "1000_x.sql" 排到 "900_x.sql" 之前，导致跨千位
+// 升级包乱序执行（迁移依赖按编号递增设计）。无数字前缀的文件
+// （bootstrap 类，与 dbinit head-cluster 同语义）排在带前缀文件之前。
+// 前缀解析规则与 dbinit 的 migrationVersionOf 一致。
+func migrationPathLess(a, b string) bool {
+	dirA, nameA := filepath.Split(a)
+	dirB, nameB := filepath.Split(b)
+	if dirA != dirB {
+		return dirA < dirB
+	}
+	va, okA := versionPrefix(nameA)
+	vb, okB := versionPrefix(nameB)
+	switch {
+	case okA && okB:
+		if va != vb {
+			return va < vb
+		}
+		return nameA < nameB
+	case okA:
+		return false // a 带前缀、b 无前缀：无前缀（bootstrap）在前
+	case okB:
+		return true
+	default:
+		return nameA < nameB
+	}
+}
+
+// versionPrefix 解析迁移文件名的数字前缀（"978_x.sql" → 978）。
+func versionPrefix(name string) (int, bool) {
+	idx := strings.Index(name, "_")
+	if idx <= 0 {
+		return 0, false
+	}
+	v, err := strconv.Atoi(name[:idx])
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // executeSQLFile 执行单个 SQL 文件

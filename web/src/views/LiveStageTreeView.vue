@@ -49,7 +49,7 @@ import {
   type LiveRequest,
 } from '../composables/liveStreamStore'
 import { applyFilters, filterOptions } from '../lib/liveTopologyFilter'
-import { invalidNodeKeys } from '../lib/liveTopologyGraph'
+import { invalidNodeKeys, providerNodeKeyOf } from '../lib/liveTopologyGraph'
 import {
   cacheRateOf,
   deriveStageBand,
@@ -125,9 +125,21 @@ const filteredRequests = computed<LiveRequest[]>(() =>
   applyFilters(realRequests.value as never, filters.value, now(), hiddenNodes.value) as never[],
 )
 
-/** 过滤项候选（带命中数）—— 同样只取真实请求（心跳的模型不是可选的客户端/模型）。 */
+/** 过滤项候选的数据池：真实请求，再剔除「默认隐藏的无效节点」流量 ——
+ *  与图的默认可见口径一致（applyFilters 默认剔除 hiddenNodes），否则下拉
+ *  会出现「选中后图里空无一物」的死选项。开「显示无效节点」后恢复全量。 */
+const optionRequests = computed<LiveRequest[]>(() => {
+  const hidden = hiddenNodes.value
+  if (!hidden) return realRequests.value
+  return (realRequests.value as never as LiveRequest[]).filter(
+    r => !hidden.has(providerNodeKeyOf(r as never)),
+  )
+})
+
+/** 过滤项候选（带命中数）—— 只取真实请求（心跳的模型不是可选的客户端/模型），
+ *  且与图的默认可见口径一致。 */
 const options = computed(() =>
-  filterOptions(realRequests.value as never, now(), filters.value.windowMs),
+  filterOptions(optionRequests.value as never, now(), filters.value.windowMs),
 )
 
 /** 已生效过滤条件数。 */

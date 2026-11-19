@@ -1786,6 +1786,7 @@ var piCanonicalRuleSet978Down []byte
 //	明细 + 每条规则旧值快照，供审计与 revert）。971 的 auto_applied /
 //	applied_at / applied_by 三列此前零写入方；本件为「一键应用修复」
 //	补审计留痕面。幂等（ADD COLUMN IF NOT EXISTS）。
+//
 //go:embed embeddata/startup/979_pi_analysis_applied_actions.sql
 var piAnalysisAppliedActions979 []byte
 
@@ -1797,6 +1798,7 @@ var piAnalysisAppliedActions979Down []byte
 //	—— v_error_analysis_stats 对齐 GetStats 新口径（补 processing/failed/
 //	skipped 计数）。视图零运行时消费者，但是 DB 公开真值——不对齐则未来
 //	任何读视图的监控/人工查询都会拿到与页面统计卡不同的口径。
+//
 //go:embed embeddata/startup/980_pi_analysis_stats_view_alignment.sql
 var piAnalysisStatsViewAlignment980 []byte
 
@@ -2587,6 +2589,7 @@ func installCmd() *cobra.Command {
 		modeFlag       string
 		masterURLFlag  string
 		skipActivation bool
+		freshConfig    bool
 	)
 
 	cmd := &cobra.Command{
@@ -2601,6 +2604,7 @@ func installCmd() *cobra.Command {
 				Mode:           modeFlag,
 				MasterURL:      masterURLFlag,
 				SkipActivation: skipActivation,
+				FreshConfig:    freshConfig,
 			})
 		},
 	}
@@ -2612,6 +2616,7 @@ func installCmd() *cobra.Command {
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "存储模式: full | lite（空 = 走交互或默认 full）")
 	cmd.Flags().StringVar(&masterURLFlag, "master-url", "https://llm.kxpms.cn", "主控端 URL（license 激活/心跳）")
 	cmd.Flags().BoolVar(&skipActivation, "skip-activation", false, "跳过 install 末尾的自动激活调用（激活逻辑由后续子代理 B 接管）")
+	cmd.Flags().BoolVar(&freshConfig, "fresh-config", false, "放弃既有 .env 重新生成全部配置/密钥（默认检测到已有安装时复用原配置）")
 
 	return cmd
 }
@@ -2624,6 +2629,7 @@ type installOpts struct {
 	Mode           string // "" / "full" / "lite"（空 = 由 wizard 或 config 决定）
 	MasterURL      string // 默认 https://llm.kxpms.cn
 	SkipActivation bool
+	FreshConfig    bool // true = 检测到已有 .env 也重新生成（全新安装语义）
 }
 
 func runInstall(opts installOpts) error {
@@ -2696,6 +2702,21 @@ prereqCheck:
 	logStep("2/9", "配置")
 	imageTag := readAppImageTag()
 	var cfg *prompt.InstallConfig
+	// 2-pre. 已有安装检测：install 不是 update —— 安装目录里已有 .env
+	// （既往安装写下的密钥/配置）时，默认把它作为配置基底，缺什么补什么。
+	// 不复用会导致 POSTGRES/API/JWT/加密密钥全部重新生成；加密密钥一旦轮换，
+	// 既有凭据密文不可解 —— 这是「更新」场景里最坏的静默破坏。
+	// 显式 --fresh-config 放弃旧配置（全新安装语义）。
+	reuseEnv := ""
+	if opts.ConfigFile == "" && !opts.FreshConfig {
+		if _, statErr := os.Stat(filepath.Join(installDir, ".env")); statErr == nil {
+			reuseEnv = filepath.Join(installDir, ".env")
+		}
+	}
+	if reuseEnv != "" {
+		logWarn("  ⚠️  检测到已有安装（" + reuseEnv + " 存在）")
+		logInfo("  ▶ 复用既有配置（更新语义：保留原配置与密钥，缺失项自动补齐；全新安装请先 uninstall 或加 --fresh-config）")
+	}
 	if opts.ConfigFile != "" {
 		// 从配置文件加载（CI 自动化场景）
 		logInfo(fmt.Sprintf("  ▶ 从 %s 加载配置 ...", opts.ConfigFile))
@@ -2704,6 +2725,13 @@ prereqCheck:
 			return fmt.Errorf("加载配置失败: %w", err)
 		}
 		logInfo("  ✅ 配置已加载（缺失的 secrets 已自动生成）")
+	} else if reuseEnv != "" {
+		// 已有安装：以既有 .env 为基底（等价隐式 --config）。
+		cfg, err = prompt.LoadFromEnvFile(reuseEnv, imageTag, installDir)
+		if err != nil {
+			return fmt.Errorf("加载既有配置失败: %w", err)
+		}
+		logInfo("  ✅ 既有配置已加载（缺失的 secrets 已自动生成）")
 	} else if opts.SkipPrompt {
 		// 跳过交互：全部用默认值 + 自动生成 secrets
 		logInfo("  ▶ --skip-prompt 模式：使用默认配置 + 自动生成 secrets")
@@ -2723,6 +2751,13 @@ prereqCheck:
 	cfg.InstallPath = installDir
 
 	// 2a. CLI flag 覆盖（--mode / --master-url / --skip-activation 优先级最高）
+	// 镜像 tag 是「版本物」不是「用户配置」：复用已有 .env 时 APP_IMAGE_TAG
+	// 可能停留在旧版本 —— 环境变量显式给出的新 tag（readAppImageTag 的第一
+	// 优先源）必须覆盖它，否则「更新」会重新拉回旧镜像。
+	if envTag := os.Getenv("APP_IMAGE_TAG"); envTag != "" && cfg.AppImageTag != envTag {
+		logInfo(fmt.Sprintf("  ▶ APP_IMAGE_TAG 环境变量覆盖镜像版本: %s（.env 原值 %s）", envTag, cfg.AppImageTag))
+		cfg.AppImageTag = envTag
+	}
 	if opts.Mode != "" {
 		cfg.StorageMode = prompt.NormalizeStorageMode(opts.Mode)
 		logInfo(fmt.Sprintf("  ▶ --mode 覆盖存储模式: %s", cfg.StorageMode))

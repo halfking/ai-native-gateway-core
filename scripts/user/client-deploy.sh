@@ -737,7 +737,10 @@ seed_database() {
 
   # ─── maintain schema 初始化（2026-08-06 新增）─────────────────────────────
   # 若离线包/版本目录中包含 maintain SQL 快照，先应用 baseline，
-  # 后续网关启动时 migrations.Apply() 会幂等跳过已有的 schema_migrations 行。
+  # 后续网关启动时 db.Open → ApplyMigrations 的 Go ensure 链会幂等补齐启动
+  # 必需的结构（注意：它不读 sql/migrations/startup 的 SQL 文件链，也不读
+  # schema_migrations 台账 —— SQL 文件链由 installer 新装 InitSchema 与
+  # apply-db-revision-sequence.sh 内部升级两条通道投递）。
   apply_maintain_schema_if_available
 }
 

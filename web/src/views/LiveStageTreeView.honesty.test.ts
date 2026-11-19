@@ -17,6 +17,7 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import LiveStageTreeView from './LiveStageTreeView.vue'
+import LiveTopologyFilterBar from '../components/live-topology/LiveTopologyFilterBar.vue'
 import zhCN from '../locales/zh-CN/liveStageTree'
 import zhTopology from '../locales/zh-CN/liveTopology'
 
@@ -294,5 +295,51 @@ describe('live2 阶段树渲染', () => {
     const cred = wrapper.get('[data-testid="stage-band-credibility"]').text()
     expect(cred).toContain('未测量')
     expect(cred).not.toMatch(/\b0\b/)
+  })
+})
+
+describe('live2 过滤选项口径（数据来源 + 与图默认可见口径一致）', () => {
+  it('★ 选项来自时间窗内的真实请求统计，无效节点的流量不进候选（不会出现「选中后图里空无一物」的死选项）', async () => {
+    const { wrapper } = await mountView()
+    testApi.setNodes([
+      { credential_id: 7, provider_code: 'deepseek', health_status: 'healthy' },
+      { credential_id: 8, provider_code: 'moonshot', circuit_state: 'open' },
+    ])
+    const ts = Date.now()
+    testApi.setRequests([
+      {
+        request_id: 'opt-1', ts, status: 'success',
+        credential_id: 7, provider_code: 'deepseek',
+        model: 'deepseek-chat', canonical_name: 'deepseek-chat', agent_name: 'zcode',
+      },
+      {
+        request_id: 'opt-2', ts, status: 'success',
+        credential_id: 8, provider_code: 'moonshot',
+        model: 'kimi-k3', canonical_name: 'kimi-k3', agent_name: 'zcode',
+      },
+    ])
+    await flushPromises()
+    const bar = wrapper.findComponent(LiveTopologyFilterBar)
+    const opts = bar.props('options') as Record<string, Array<{ value: string }>>
+    const nodeValues = (opts.nodes ?? []).map(o => o.value)
+    expect(nodeValues).toContain('cred:7')
+    expect(nodeValues).not.toContain('cred:8')
+    // 无效节点上的整条请求被剔除：moonshot 的唯一流量来自无效节点，
+    // 它在供应商候选里也不出现（图上默认同样看不到它的带）。
+    const providerValues = (opts.providers ?? []).map(o => o.value)
+    expect(providerValues).toContain('deepseek')
+    expect(providerValues).not.toContain('moonshot')
+    const modelValues = (opts.models ?? []).map(o => o.value)
+    expect(modelValues).toContain('deepseek-chat')
+    expect(modelValues).not.toContain('kimi-k3')
+  })
+
+  it('★ 源码结构：options 的数据池是 optionRequests（过 hiddenNodes），不得回退成 realRequests 直连', () => {
+    const src = readSrc('src/views/LiveStageTreeView.vue')
+    expect(src).toContain('const optionRequests = computed')
+    expect(src).toContain('providerNodeKeyOf')
+    expect(src).toMatch(/filterOptions\(optionRequests\.value/)
+    // 防回退：options computed 直接消费 realRequests = 口径又漂回「死选项」。
+    expect(src).not.toMatch(/filterOptions\(realRequests\.value/)
   })
 })

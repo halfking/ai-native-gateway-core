@@ -42,9 +42,38 @@ make cross-compile   # 见下方 Makefile（可选）
 
 ```
 llm-gw-installer doctor      # 检测环境（OS/docker/网络/端口）
-llm-gw-installer install     # 一键安装并部署
+llm-gw-installer install     # 一键安装并部署（检测到已有安装时自动保留原配置，见下节）
+llm-gw-installer upgrade     # 升级管理（--action check / apply / rollback）
 llm-gw-installer uninstall   # 卸载（--purge 彻底清理）
 ```
+
+## 安装（install）与更新（update/upgrade）的区别
+
+更新不是重新安装 —— 两条硬性语义（2026-11-19 过滤条件与源码更新链路审计轮固化）：
+
+1. **保留原有配置与密钥**：`install` 检测到安装目录已有 `.env` 时，默认把它作为
+   配置基底（缺什么补什么，不会重新生成 POSTGRES/API/JWT/加密密钥 —— 加密密钥
+   一旦轮换，既有凭据密文不可解）。需要彻底重置配置时显式加 `--fresh-config`
+   （或先 `uninstall`）。升级通道（`upgrade`）本身不碰 `.env`。
+2. **数据库已在 ⇒ 只补增量**：`install` 的数据库初始化（InitSchema）检测到
+   `schema_migrations` 台账非空时进入增量模式 —— 跳过基线三件
+   （00-prereqs/01-schema/02-seed，它们是全新安装的一次性底座），startup 迁移
+   只应用台账未登记的 pending 项。种子全部 `ON CONFLICT DO NOTHING`，重放与
+   跳过都不会覆盖用户改动；新版本的种子投递按仓内纪律走更高编号的 startup 迁移。
+
+镜像版本是「版本物」不是「用户配置」：复用 `.env` 时若环境变量 `APP_IMAGE_TAG`
+显式给出新 tag，会覆盖 `.env` 里的旧值，避免「更新」拉回旧镜像。
+
+`upgrade` 的两条路径与迁移投递面（重要）：
+
+- `--offline --offline-package <pkg.tar.gz>`（**docker compose 安装的正确通道**）：
+  备份二进制+compose+.env → docker load 镜像 → 逐个执行包内 `migrations/*.sql`
+  （数值序）→ 替换二进制 → 重启 → 健康检查失败自动回滚。
+- 在线（默认，**仅 systemd 单机布局**）：下载二进制 → SHA256 → 备份 → 替换 →
+  `systemctl restart`。检测到 `compose.yml` 时会 fail-fast 并指路离线包。
+  在线路径**不投递 SQL 迁移文件链** —— 新版本的启动迁移靠网关重启时
+  `db.Open → ApplyMigrations` 的 Go ensure 链自愈；落在
+  `sql/migrations/startup` 文件链里的结构变更必须走离线包。
 
 ## 跨平台编译
 

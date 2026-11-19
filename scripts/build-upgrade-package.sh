@@ -81,37 +81,56 @@ if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
 fi
 docker save "$IMAGE_TAG" -o "$WORK/images.tar"
 
-# 3. 复制受控的 startup migration bundle。离线升级器没有
-# schema_migrations checksum ledger，因此不能把整段历史迁移无差别重放。
-echo "[3/5] Copying controlled startup migration bundle..."
+# 3. 组装 startup migration bundle（**动态枚举**，不再手抄清单）。
+#
+# 历史教训：这里曾是一份手抄数组，最后更新停在 654 —— 此后新增的全部迁移
+# （700~980+）都进不了离线升级包，走离线通道的存量库 schema 静默落后且无人
+# 报错。枚举规则与内部升级通道对齐：
+#   - 只收 sql/migrations/startup/ 下的 NNN_*.sql（排除 *.down.sql —— 回滚
+#     脚本是发布产物，不是升级输入；与 installer/internal/upgrader 的
+#     forwardMigrationFiles 同一契约）；
+#   - version >= 412 地板（内部通道 DB_LEDGER_RECONCILE_FROM=412 同款）：
+#     <412 的结构由 01-schema.sql 基线覆盖，且已知非幂等文件（315/364，
+#     与基线互斥定义）都在地板之下，天然排除；
+#   - 离线升级器（OfflineApplier）没有 checksum ledger，靠「每个迁移幂等」
+#     的通道契约全量重放包内文件 —— 与 apply-db-revision-sequence.sh 同一
+#     契约。
+echo "[3/5] Assembling startup migration bundle (dynamic enumeration, floor=412)..."
 mkdir -p "$WORK/migrations/startup"
-startup_migrations=(
-	511_state_transitions_table.sql
-	515_state_transitions_seq_unique.sql
-	521_repair_state_transitions_tenant.sql
-	530_request_journey_contract.sql
-	531_request_journey_tenant_uniqueness.sql
-	536_stats_analytics_foundation.sql
-	537_usage_facts.sql
-	539_stats_reconciliation_tenant.sql
-	540_stats_event_inbox_consumer.sql
-	544_stats_adjustments_alignment.sql
-	545_stats_reconciliation_phantom_resolution.sql
-	546_stats_reconciliation_diffs_unique.sql
-	547_session_project_attribution.sql
-	548_stats_reconciliation_diffs_identity.sql
-	553_approval_resume_claim.sql
-	552_request_journey_durable_outbox.sql
-	618_request_journey_snapshot_receipts.sql
-	646_proxy_management_canonical.sql
-	647_goal_client_signal.sql
-	649_routing_analytics_probe_filter.sql
-	650_auto_route_selection_treatment_attribution.sql
-	651_provider_quality_hot_rollup.sql
-	652_system_monitor_fallback_queue.sql
-	653_archive_credential_model_index_canonical_return.sql
-	654_archive_credential_model_index_detach_drop.sql
-)
+startup_migrations=()
+for f in sql/migrations/startup/[0-9]*.sql; do
+  [[ -f "$f" ]] || continue
+  base="$(basename "$f")"
+  case "$base" in
+    *.down.sql) continue ;;
+  esac
+  ver="${base%%_*}"
+  if ! [[ "$ver" =~ ^[0-9]+$ ]]; then
+    continue
+  fi
+  # 10# 强制十进制：前导零编号（008/018/...）会被 bash 按八进制解析，
+  # "value too great for base" 报错时 -lt 判假 ⇒ 地板失效、老迁移漏进包。
+  if [[ "$((10#$ver))" -lt 412 ]]; then
+    continue
+  fi
+  startup_migrations+=("$base")
+done
+# 防 stagnation 门：清单非空、锚点必须在场（锚点失踪说明枚举路径/glob 失效，
+# 而不是「迁移真的没了」）。
+if [[ "${#startup_migrations[@]}" -lt 20 ]]; then
+  echo "upgrade-package: enumerated only ${#startup_migrations[@]} startup migrations (expected far more) — refusing to build a hollow package" >&2
+  exit 1
+fi
+need_anchor="654_archive_credential_model_index_detach_drop.sql"
+anchor_found=0
+for name in "${startup_migrations[@]}"; do
+  [[ "$name" == "$need_anchor" ]] && { anchor_found=1; break; }
+done
+if [[ "$anchor_found" != "1" ]]; then
+  echo "upgrade-package: floor anchor $need_anchor missing from enumeration" >&2
+  exit 1
+fi
+echo "  bundled ${#startup_migrations[@]} startup migrations (floor 412 → latest)"
 for name in "${startup_migrations[@]}"; do
   source="sql/migrations/startup/$name"
   [[ -f "$source" ]] || { echo "missing required startup migration: $source" >&2; exit 1; }
