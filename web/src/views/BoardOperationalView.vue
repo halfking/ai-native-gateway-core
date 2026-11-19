@@ -20,7 +20,7 @@ const loading = ref(false)
 const error = ref('')
 const operationalData = ref<BoardOperationalPayload | null>(null)
 const boardData = ref<BoardPayload | null>(null)
-const timeRange = ref(7) // 默认7天
+const timeRange = ref(7)
 
 async function load() {
   loading.value = true
@@ -74,7 +74,6 @@ function formatLatency(n: number | undefined | null): string {
   return n.toFixed(0) + 'ms'
 }
 
-// 计算派生指标
 const derivedMetrics = computed(() => {
   const summary = boardData.value?.summary
   if (!summary) return null
@@ -98,7 +97,6 @@ const derivedMetrics = computed(() => {
   }
 })
 
-// 获取前N项
 function topItems(items: any[] | undefined, n: number = 5) {
   if (!items || items.length === 0) return []
   return items.slice(0, n)
@@ -113,14 +111,14 @@ onMounted(() => {
   <div class="board-operational-view">
     <header class="bo-header">
       <div>
-        <h1 class="bo-title">运营面板</h1>
-        <p class="bo-subtitle">系统运营状况汇总分析</p>
+        <h1 class="bo-title">{{ $t('dashboard.operational.title') }}</h1>
+        <p class="bo-subtitle">{{ $t('dashboard.operational.subtitle') }}</p>
       </div>
       <div class="bo-header-actions">
         <select v-model="timeRange" class="bo-time-select" @change="load">
-          <option :value="1">最近 1 天</option>
-          <option :value="7">最近 7 天</option>
-          <option :value="30">最近 30 天</option>
+          <option :value="1">{{ $t('dashboard.operational.timeRange1d') }}</option>
+          <option :value="7">{{ $t('dashboard.operational.timeRange7d') }}</option>
+          <option :value="30">{{ $t('dashboard.operational.timeRange30d') }}</option>
         </select>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
           {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
@@ -137,137 +135,137 @@ onMounted(() => {
     <template v-else-if="operationalData || boardData">
       <!-- 1. 运营概览 - 关键指标 -->
       <section v-if="boardData?.summary" class="bo-section">
-        <h2 class="bo-section-title">运营概览（{{ timeRange }} 天）</h2>
+        <h2 class="bo-section-title">{{ $t('dashboard.operational.overviewDays', { days: timeRange }) }}</h2>
         
         <div class="bo-metrics-grid">
           <div class="bo-metric-card">
-            <div class="bo-metric-label">总请求数</div>
+            <div class="bo-metric-label">{{ $t('dashboard.operational.totalRequests') }}</div>
             <div class="bo-metric-value">{{ formatNumber(boardData.summary.total_requests) }}</div>
             <div v-if="boardData.summary.success_rate != null" class="bo-metric-sub">
-              成功率 {{ formatPct(boardData.summary.success_rate) }}
+              {{ $t('dashboard.operational.successRate') }} {{ formatPct(boardData.summary.success_rate) }}
             </div>
           </div>
 
           <div class="bo-metric-card">
-            <div class="bo-metric-label">总 Token 消耗</div>
+            <div class="bo-metric-label">{{ $t('dashboard.operational.totalTokens') }}</div>
             <div class="bo-metric-value">{{ formatNumber(boardData.summary.total_tokens) }}</div>
             <div v-if="derivedMetrics" class="bo-metric-sub">
-              平均 {{ formatNumber(derivedMetrics.avgTokensPerRequest) }}/请求
+              {{ $t('dashboard.operational.avgPerRequest', { value: formatNumber(derivedMetrics.avgTokensPerRequest) }) }}
             </div>
           </div>
 
           <div class="bo-metric-card">
-            <div class="bo-metric-label">总成本</div>
+            <div class="bo-metric-label">{{ $t('dashboard.operational.totalCost') }}</div>
             <div class="bo-metric-value">{{ formatCost(boardData.summary.total_cost_usd) }}</div>
             <div v-if="derivedMetrics" class="bo-metric-sub">
-              平均 {{ formatCost(derivedMetrics.avgCostPerRequest) }}/请求
+              {{ $t('dashboard.operational.avgPerRequest', { value: formatCost(derivedMetrics.avgCostPerRequest) }) }}
             </div>
           </div>
 
           <div class="bo-metric-card">
-            <div class="bo-metric-label">总积分消耗</div>
+            <div class="bo-metric-label">{{ $t('dashboard.operational.totalCredits') }}</div>
             <div class="bo-metric-value">{{ formatNumber(boardData.summary.total_credits_charged) }}</div>
             <div v-if="derivedMetrics" class="bo-metric-sub">
-              平均 {{ formatNumber(derivedMetrics.avgCreditsPerRequest) }}/请求
+              {{ $t('dashboard.operational.avgPerRequest', { value: formatNumber(derivedMetrics.avgCreditsPerRequest) }) }}
             </div>
           </div>
 
           <div class="bo-metric-card">
-            <div class="bo-metric-label">平均延迟</div>
+            <div class="bo-metric-label">{{ $t('dashboard.operational.avgLatency') }}</div>
             <div class="bo-metric-value">{{ formatLatency(boardData.summary.avg_latency_ms) }}</div>
           </div>
 
           <div class="bo-metric-card">
-            <div class="bo-metric-label">活跃资源</div>
+            <div class="bo-metric-label">{{ $t('dashboard.operational.activeResources') }}</div>
             <div class="bo-metric-value">
-              {{ formatNumber(boardData.summary.active_models) }} 模型
+              {{ $t('dashboard.operational.modelsCount', { count: formatNumber(boardData.summary.active_models) }) }}
             </div>
             <div class="bo-metric-sub">
-              {{ formatNumber(boardData.summary.active_api_keys) }} API Keys
+              {{ $t('dashboard.operational.keysCount', { count: formatNumber(boardData.summary.active_api_keys) }) }}
             </div>
           </div>
         </div>
 
         <p v-if="boardData.summary.degraded_summary" class="bo-section-warning">
-          ⚠️ {{ boardData.summary.summary_hint || '数据降级，请谨慎参考' }}
+          {{ $t('dashboard.operational.degradedSummary', { hint: boardData.summary.summary_hint || '' }) }}
         </p>
       </section>
 
       <!-- 2. 分布分析 -->
       <section v-if="boardData?.pies" class="bo-section">
-        <h2 class="bo-section-title">分布分析</h2>
+        <h2 class="bo-section-title">{{ $t('dashboard.operational.distributionTitle') }}</h2>
         
         <div class="bo-pies-grid">
           <!-- 模型分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">Top 5 模型</h3>
+            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topModels') }}</h3>
             <div v-if="topItems(boardData.pies.models, 5).length > 0" class="bo-pie-list">
               <div v-for="item in topItems(boardData.pies.models, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
-                <span class="bo-pie-value">{{ formatNumber(item.requests) }} 请求</span>
+                <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
             </div>
-            <p v-else class="bo-pie-empty">无数据</p>
+            <p v-else class="bo-pie-empty">{{ $t('dashboard.operational.emptyNoData') }}</p>
           </div>
 
           <!-- 供应商分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">Top 5 供应商</h3>
+            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topProviders') }}</h3>
             <div v-if="topItems(boardData.pies.providers, 5).length > 0" class="bo-pie-list">
               <div v-for="item in topItems(boardData.pies.providers, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
-                <span class="bo-pie-value">{{ formatNumber(item.requests) }} 请求</span>
+                <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
             </div>
-            <p v-else class="bo-pie-empty">无数据</p>
+            <p v-else class="bo-pie-empty">{{ $t('dashboard.operational.emptyNoData') }}</p>
           </div>
 
           <!-- 客户端分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">Top 5 客户端</h3>
+            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topClients') }}</h3>
             <div v-if="topItems(boardData.pies.clients, 5).length > 0" class="bo-pie-list">
               <div v-for="item in topItems(boardData.pies.clients, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
-                <span class="bo-pie-value">{{ formatNumber(item.requests) }} 请求</span>
+                <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
             </div>
-            <p v-else class="bo-pie-empty">无数据</p>
+            <p v-else class="bo-pie-empty">{{ $t('dashboard.operational.emptyNoData') }}</p>
           </div>
 
           <!-- 租户分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">Top 5 租户</h3>
+            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topTenants') }}</h3>
             <div v-if="topItems(boardData.pies.tenants, 5).length > 0" class="bo-pie-list">
               <div v-for="item in topItems(boardData.pies.tenants, 5)" :key="item.key" class="bo-pie-item">
                 <span class="bo-pie-key">{{ item.key }}</span>
-                <span class="bo-pie-value">{{ formatNumber(item.requests) }} 请求</span>
+                <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
             </div>
-            <p v-else class="bo-pie-empty">无数据</p>
+            <p v-else class="bo-pie-empty">{{ $t('dashboard.operational.emptyNoData') }}</p>
           </div>
         </div>
       </section>
 
       <!-- 3. 错误分析 -->
       <section v-if="boardData?.pies?.errors && boardData.pies.errors.length > 0" class="bo-section">
-        <h2 class="bo-section-title">错误分析</h2>
+        <h2 class="bo-section-title">{{ $t('dashboard.operational.errorAnalysisTitle') }}</h2>
         
         <div class="bo-error-list">
           <div v-for="item in topItems(boardData.pies.errors, 10)" :key="item.key" class="bo-error-item">
             <div class="bo-error-key">{{ item.key }}</div>
-            <div class="bo-error-value">{{ formatNumber(item.requests) }} 次</div>
+            <div class="bo-error-value">{{ formatNumber(item.requests) }}</div>
           </div>
         </div>
       </section>
 
       <!-- 4. 趋势分析 -->
       <section v-if="boardData?.trends && boardData.trends.length > 0" class="bo-section">
-        <h2 class="bo-section-title">趋势分析</h2>
+        <h2 class="bo-section-title">{{ $t('dashboard.operational.trendAnalysisTitle') }}</h2>
         
         <div class="bo-trend-summary">
-          <p>共 {{ boardData.trends.length }} 个数据点</p>
+          <p>{{ $t('dashboard.operational.trendDataPoints', { count: boardData.trends.length }) }}</p>
           <p v-if="boardData.degraded_trends" class="bo-section-warning">
-            ⚠️ {{ boardData.degraded_trends_reason || '趋势数据降级' }}
+            {{ $t('dashboard.operational.degradedTrends', { reason: boardData.degraded_trends_reason || '' }) }}
           </p>
         </div>
 
@@ -285,11 +283,11 @@ onMounted(() => {
 
       <!-- 5. 系统健康 - 后台任务 -->
       <section v-if="operationalData?.background_tasks" class="bo-section">
-        <h2 class="bo-section-title">系统健康 - 后台任务</h2>
+        <h2 class="bo-section-title">{{ $t('dashboard.operational.systemHealthTasks') }}</h2>
 
         <div class="bo-cards">
           <div class="bo-card">
-            <h3 class="bo-card-title">模型发现</h3>
+            <h3 class="bo-card-title">{{ $t('dashboard.operational.modelDiscovery') }}</h3>
             <div v-if="operationalData.background_tasks?.discovery" class="bo-card-body">
               <div class="bo-row">
                 <span class="bo-row-label">{{ $t('common.terms.status') }}</span>
@@ -298,7 +296,7 @@ onMounted(() => {
                 </span>
               </div>
               <div class="bo-row">
-                <span class="bo-row-label">触发方式</span>
+                <span class="bo-row-label">{{ $t('dashboard.operational.triggerMethod') }}</span>
                 <span class="bo-row-value">{{ operationalData.background_tasks.discovery.trigger ?? '—' }}</span>
               </div>
               <div class="bo-row">
@@ -312,21 +310,21 @@ onMounted(() => {
             </div>
             <p v-else class="bo-card-empty">{{ $t('dashboard.board.emptyNoResultDiscovery') }}</p>
             <p v-if="operationalData.background_tasks?.degraded" class="bo-card-degraded">
-              降级：{{ operationalData.background_tasks.degraded_reason ?? '原因未知' }}
+              {{ $t('dashboard.operational.degradedReason', { reason: operationalData.background_tasks.degraded_reason ?? '' }) }}
             </p>
           </div>
 
           <div class="bo-card">
-            <h3 class="bo-card-title">探针巡检</h3>
+            <h3 class="bo-card-title">{{ $t('dashboard.operational.probeLoop') }}</h3>
             <div v-if="operationalData.background_tasks?.probe_loop" class="bo-card-body">
               <div class="bo-row">
-                <span class="bo-row-label">10 分钟内检查次数</span>
+                <span class="bo-row-label">{{ $t('dashboard.operational.checksLast10m') }}</span>
                 <span class="bo-row-value">{{ formatNumber(operationalData.background_tasks.probe_loop.checks_last_10m) }}</span>
               </div>
             </div>
             <p v-else class="bo-card-empty">{{ $t('dashboard.board.emptyNoResultProbe') }}</p>
             <p v-if="operationalData.background_tasks?.probe_degraded" class="bo-card-degraded">
-              探针降级
+              {{ $t('dashboard.operational.degradedProbe') }}
             </p>
           </div>
         </div>
@@ -334,11 +332,11 @@ onMounted(() => {
 
       <!-- 6. 系统健康 - 自检 -->
       <section v-if="operationalData?.selfcheck" class="bo-section">
-        <h2 class="bo-section-title">系统健康 - 自检（最近 24 小时）</h2>
+        <h2 class="bo-section-title">{{ $t('dashboard.operational.systemHealthSelfcheck') }}</h2>
 
         <div class="bo-metrics">
           <div class="bo-metric">
-            <span class="bo-metric-label">总运行次数</span>
+            <span class="bo-metric-label">{{ $t('dashboard.operational.totalRuns24h') }}</span>
             <span class="bo-metric-value">{{ formatNumber(operationalData.selfcheck?.total_runs_24h) }}</span>
           </div>
           <div class="bo-metric">
@@ -346,23 +344,23 @@ onMounted(() => {
             <span class="bo-metric-value">{{ formatPct(operationalData.selfcheck?.success_rate) }}</span>
           </div>
           <div class="bo-metric">
-            <span class="bo-metric-label">最近状态</span>
+            <span class="bo-metric-label">{{ $t('dashboard.operational.lastStatus') }}</span>
             <span class="bo-metric-value">{{ statusLabel(operationalData.selfcheck?.last_status) }}</span>
           </div>
           <div class="bo-metric">
-            <span class="bo-metric-label">最近运行</span>
+            <span class="bo-metric-label">{{ $t('dashboard.operational.lastRunAt') }}</span>
             <span class="bo-metric-value">{{ formatTimestamp(operationalData.selfcheck?.last_run_at) }}</span>
           </div>
         </div>
 
         <p v-if="operationalData.selfcheck?.degraded" class="bo-section-degraded">
-          自检数据降级：{{ operationalData.selfcheck.degraded_reason ?? '原因未知' }}
+          {{ $t('dashboard.operational.degradedSelfcheck', { reason: operationalData.selfcheck.degraded_reason ?? '' }) }}
         </p>
       </section>
 
       <footer class="bo-footer">
-        <p>提示：运营面板数据来自服务端缓存（30s TTL），不实时刷新。</p>
-        <p>数据时间范围：最近 {{ timeRange }} 天</p>
+        <p>{{ $t('dashboard.operational.footerHint') }}</p>
+        <p>{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}</p>
       </footer>
     </template>
   </div>
