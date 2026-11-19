@@ -23,11 +23,7 @@ const et = (key: string): string => t(`errorTrend.${key}`)
 
 // 时间范围选择（2026-11-19）- 默认今天
 const dateRange = ref<KxDateRange>(defaultRange())
-const presets = makeDateRangePresets('date', {
-  includeToday: true,
-  includeYesterday: true,
-  includeLast7Days: true,
-})
+const presets = makeDateRangePresets('date', ['today', 'yesterday', 'last7d'])
 
 const loading = ref(false)
 const error = ref('')

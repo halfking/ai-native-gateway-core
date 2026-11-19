@@ -31,14 +31,7 @@ const data = ref<UsageEnhancedData | null>(null)
 
 // 时间范围选择（2026-11-19）
 const dateRange = ref<KxDateRange>(defaultRange())
-const presets = makeDateRangePresets('date', {
-  includeToday: true,
-  includeYesterday: true,
-  includeLast7Days: true,
-  includeLast30Days: true,
-  includeThisMonth: true,
-  includeLastMonth: true,
-})
+const presets = makeDateRangePresets('date', ['today', 'yesterday', 'last7d', 'last30d', 'thisMonth', 'lastMonth'])
 
 function defaultRange(): KxDateRange {
   const today = new Date().toISOString().slice(0, 10)
