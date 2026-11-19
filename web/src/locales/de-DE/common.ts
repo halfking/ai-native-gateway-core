@@ -12,6 +12,7 @@ export default {
   credentials: 'Anmeldedaten',
   copy: 'Kopieren',
   button: {
+    remove: 'Entfernen',
     cancel: 'Abbrechen',
     confirm: 'Bestätigen',
     save: 'Speichern',

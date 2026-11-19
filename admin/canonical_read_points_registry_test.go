@@ -721,6 +721,13 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；本读点读 request_logs_with_current_month ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 		},
 	},
+	"admin/session_analytics/queries.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "会话分析 Phase 2 包（2026-11-20 核定）：RegisterRoutes 全仓零调用方 ⇒ 未接线死代码；扫描器实测读点为空（SQL 经 fmt.Sprintf 组装且视图名只出现在字符串常量里）⇒ 提及但无实读",
+	},
 	"admin/user_usage_stats.go": {
 		Form:         formCommentOrStringOnly,
 		Class:        classNoRead,
@@ -731,9 +738,13 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	"admin/user_profile.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "用户画像模型使用统计：按 owner + 模型 + 供应商聚合 token 用量和成本",
+		Note:  "用户画像三读点：① 列表窗口用量聚合（usageAggregatesByOwner）；② 模型使用统计（handleUserModelUsage，2026-11-20 修 rl.created_at→rl.ts）；③ 员工×模型矩阵（queryUserUsageMatrix）",
 		Points: []canonicalReadPoint{
-			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_display:base", "cost_usd:base", "outbound_model:base", "prompt_tokens:base", "provider_id:detail"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "用户画像模型使用统计（handleUserModelUsage）：按 owner + 模型 + 供应商聚合 token 用量和成本；本读点读 client_model:detail,completion_tokens:base,cost_display:base,cost_usd:base,outbound_model:base,prompt_tokens:base,provider_id:detail ⇒ 引用了 734 details 腿的 client_model + provider_id ⇒ 窄投影须带上 details LEFT JOIN；注：扫描器只识别 SELECT 列，WHERE 列（owner_user/created_at/tenant_id）不登记"},
+			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_display:base", "cost_usd:base", "gw_session_id:expr", "outbound_model:base", "owner_user:detail", "prompt_tokens:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "列表端点窗口用量聚合（usageAggregatesByOwner，2026-11-20 数字出处轮）：owner_user 分组聚合 token/成本/会话数/模型数；gw_session_id 走 COUNT(DISTINCT) 表达式；client_model/owner_user 引用 734 details 腿 ⇒ 窄投影须带 details LEFT JOIN；ts 只在 WHERE（窗口谓词），扫描器只登记 SELECT 列"},
+			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_display:base", "cost_usd:base", "outbound_model:base", "prompt_tokens:base", "provider_id:detail", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "模型使用统计（handleUserModelUsage）：按 owner + 模型 + 供应商聚合；2026-11-20 修活体 500（canonical 视图时间列是 ts 不是 created_at，252 生产 information_schema 实测）⇒ MIN/MAX(rl.ts) 使 ts:base 进入 SELECT 列；client_model/provider_id 引用 734 details 腿 ⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"client_model:detail", "completion_tokens:base", "cost_display:base", "cost_usd:base", "outbound_model:base", "owner_user:detail", "prompt_tokens:base", "provider_id:detail", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "员工×模型用量矩阵（queryUserUsageMatrix，2026-11-20 数字出处轮）：一行 = owner×model，表达式与 handleUserModelUsage 逐字一致（同一出处不造第二口径）；SELECT 含 rl.owner_user 与 MIN/MAX(rl.ts)"},
+			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "usageAggregatesByOwner 的 FROM 持有者（2026-11-20 数字出处轮新增读点）"},
+			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "queryUserUsageMatrix 的 FROM 持有者（2026-11-20 数字出处轮新增读点）"},
 		},
 	},
 	"admin/view_source_columns_contract.go": {
@@ -2560,6 +2571,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"admin/usage.go":                         "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/usage_credits.go":                 "requestLogsFromClause(days) 按天数分臂：≤7 天走会话族热腿原生源，>7 天走 canonical 视图 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/usage_enhanced.go":                "planCostTrend() 按 groupBy 在计费宽表与请求表（canonical 视图）之间选基表 ⇒ 切换层契约；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/user_profile.go":                  "用户画像：① 列表端点窗口内用量聚合（usageAggregatesByOwner）；② 员工×模型矩阵（queryUserUsageMatrix）；③ 模型使用统计（handleUserModelUsage）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/usage_trend_series.go":            "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/work_types.go":                    "工作类型分布（work_type / is_auto_request / ts / canonical_model）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"bg/daily_probe_audit.go":                "探针每日审计（离线诊断面，不在线上读路径上）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

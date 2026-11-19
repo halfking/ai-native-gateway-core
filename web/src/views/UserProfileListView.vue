@@ -1,14 +1,30 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getUserProfileList, type UserProfileSummary } from '../api/admin'
+import {
+  getUserProfileList,
+  getUserUsageMatrix,
+  type UserProfileSummary,
+  type UserUsageMeta,
+  type UserUsageMatrixRow,
+} from '../api/admin'
 import { sortByName } from '../utils/sortByName'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import { makeDateRangePresets } from '../components/ui/kxDatePresets'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import { parseLocalMinute } from '../utils/datetime'
+import { QuestionFilled } from '@element-plus/icons-vue'
+import {
+  ElButton,
+  ElCard,
+  ElDrawer,
+  ElInput,
+  ElPagination,
+  ElTable,
+  ElTableColumn,
+} from 'element-plus'
 import {
   emptyDegradation,
   isDegraded,
@@ -19,7 +35,6 @@ import {
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElButton, ElCard, ElInput, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 const { t } = useI18n()
 const router = useRouter()
 
@@ -31,14 +46,19 @@ const currentPage = ref(1)
 const pageSize = 20
 
 // ── 2026-11-19 时间范围统一轮：页面右上角统一 KxDateRangePicker ──────────
-// 口径：date_from/date_to 过滤 so.last_seen_at（窗口内有活动的用户）。
-// 预设含今天/昨天/近24小时/近7天/近14天/近30天/本月/上月/自定义。
+// 口径：date_from/date_to 双语义 —— ①过滤窗口内有活动的用户（so.last_seen_at）；
+// ②2026-11-20 数字出处轮起，同一窗口驱动「窗口内用量」列与展开行模型明细
+// （request_logs_with_current_month 聚合）。未选窗口时后端默认近 30 天，
+// 真实窗口回传在 usage_window —— 页面展示它，不自行脑补。
 const kxPresets = makeDateRangePresets('datetime')
 const timeRange = ref<KxDateRange | null>(null)
 
 function onRangeApply(range: KxDateRange) {
   timeRange.value = range
   currentPage.value = 1
+  // 窗口变了 ⇒ 展开行缓存全部作废（旧行是旧窗口的数字）。
+  matrixRows.clear()
+  expandedOwners.value = []
   void load()
 }
 
@@ -53,11 +73,41 @@ function onRangeApply(range: KxDateRange) {
 const loadError = ref('')
 const degraded = ref<DegradationState>(emptyDegradation())
 
-// 2026-10-03：首列就是 owner_user，之前完全按后端返回顺序。
-// ⚠ 限制要说清：本页是**服务端分页**（limit/offset 传给后端），所以这里排的是
-// 「当前这一页」而不是全量。跨页的全局有序要后端加 order_by 才能保证 ——
-// 页内有序 ≠ 全局有序，别把前者当成后者写进任何文档。
+// ── 2026-11-20 数字出处轮 ────────────────────────────────────────────────
+// usageMeta 由后端响应回传（source_view / 真实窗口）—— 帮助抽屉与出处行
+// 引用它，不在前端硬编码口径文案 ⇒ 口径改动时后端是唯一真源。
+const usageMeta = ref<UserUsageMeta | null>(null)
+const showHelp = ref(false)
+
+// 展开行：按 owner 惰性拉取员工×模型矩阵；同一窗口内缓存。
+const expandedOwners = ref<string[]>([])
+const matrixRows = reactive(new Map<string, UserUsageMatrixRow[]>())
+const matrixLoading = reactive(new Set<string>())
+const matrixErrors = reactive(new Map<string, string>())
+
 const sortedUsers = computed(() => sortByName(users.value))
+
+// 统计窗口的人类可读串（后端回传的真实窗口，缺省 = 近 30 天）。
+const usageWindowText = computed(() => {
+  const w = usageMeta.value
+  if (!w) return ''
+  const s = new Date(w.window_start)
+  const e = new Date(w.window_end)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return ''
+  const fmt = (d: Date) => {
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+  return `${fmt(s)} ~ ${fmt(e)}`
+})
+
+function formatCost(v: number | undefined | null): string {
+  return `$${(v ?? 0).toFixed(4)}`
+}
+
+function formatTokens(v: number | undefined | null): string {
+  return (v ?? 0).toLocaleString()
+}
 
 onMounted(() => void load())
 
@@ -84,6 +134,7 @@ async function load() {
     })
     users.value = res.users || []
     total.value = res.total
+    usageMeta.value = res.usage_meta ?? null
     if (isDegraded(res)) {
       degraded.value = mergeDegradation(
         degraded.value,
@@ -102,8 +153,56 @@ async function load() {
   }
 }
 
+function currentWindowParams(): { start_date?: string; end_date?: string } {
+  if (usageMeta.value) {
+    return { start_date: usageMeta.value.window_start, end_date: usageMeta.value.window_end }
+  }
+  if (timeRange.value) {
+    const s = parseLocalMinute(timeRange.value.start)
+    const e = parseLocalMinute(timeRange.value.end)
+    return {
+      start_date: Number.isNaN(s.getTime()) ? undefined : s.toISOString(),
+      end_date: Number.isNaN(e.getTime()) ? undefined : e.toISOString(),
+    }
+  }
+  return {}
+}
+
+// Element Plus expand-change 的实参是 (row, expandedRows: 行对象数组)；
+// 以 owner_user（row-key）为键惰性拉取。
+async function onExpandChange(_row: unknown, expanded: unknown) {
+  const rows: UserProfileSummary[] = Array.isArray(expanded) ? (expanded as UserProfileSummary[]) : []
+  const owners = rows.map((r) => r?.owner_user).filter((o): o is string => !!o)
+  expandedOwners.value = owners
+  for (const owner of owners) {
+    if (matrixRows.has(owner) || matrixLoading.has(owner)) continue
+    matrixLoading.add(owner)
+    matrixErrors.delete(owner)
+    try {
+      const res = await getUserUsageMatrix({
+        ...currentWindowParams(),
+        owner,
+        limit: 200,
+      })
+      matrixRows.set(owner, res.rows ?? [])
+    } catch (e) {
+      console.error('usage matrix load failed:', owner, e)
+      matrixErrors.set(owner, surfaceError(e))
+      matrixRows.set(owner, [])
+    } finally {
+      matrixLoading.delete(owner)
+    }
+  }
+}
+
 function goProfile(owner: string) {
   router.push(`/admin/session-analytics/users/${owner}`)
+}
+
+function goTask(owner: string, taskId: string) {
+  // 员工 → 任务 的下钻：任务详情页自带该任务下的会话列表。
+  void owner
+  router.push(`/admin/session-analytics/tasks/${encodeURIComponent(taskId)}`)
 }
 
 function onSearch() {
@@ -116,14 +215,24 @@ function onSearch() {
   <div class="user-profile-list">
     <div class="page-header">
       <h2>{{ t('sessions.userProfile.title') }}</h2>
-      <!-- 2026-11-19 时间范围统一轮：时间选择放页面右上角，统一 KxDateRangePicker。 -->
-      <KxDateRangePicker
-        :model-value="timeRange"
-        :presets="kxPresets"
-        precision="datetime"
-        data-testid="user-profile-header-range"
-        @apply="onRangeApply"
-      />
+      <div class="header-actions">
+        <!-- 2026-11-20 数字出处轮：统计口径从右侧抽屉弹出（公式+出处+窗口）。 -->
+        <el-button
+          :icon="QuestionFilled"
+          circle
+          :title="t('sessions.userProfile.showHelp')"
+          data-testid="user-profile-list-help"
+          @click="showHelp = true"
+        />
+        <!-- 2026-11-19 时间范围统一轮：时间选择放页面右上角，统一 KxDateRangePicker。 -->
+        <KxDateRangePicker
+          :model-value="timeRange"
+          :presets="kxPresets"
+          precision="datetime"
+          data-testid="user-profile-header-range"
+          @apply="onRangeApply"
+        />
+      </div>
     </div>
 
     <el-card>
@@ -137,6 +246,10 @@ function onSearch() {
             @clear="onSearch"
             @keyup.enter="onSearch"
           />
+          <!-- 数字出处行：后端 usage_meta 是唯一真源，缺省（近 30 天）也如实展示。 -->
+          <span v-if="usageMeta" class="usage-meta-line" data-testid="user-profile-usage-meta">
+            {{ t('sessions.userProfile.usageMetaLine', { source: usageMeta.source_view, window: usageWindowText }) }}
+          </span>
         </div>
       </template>
 
@@ -157,10 +270,87 @@ function onSearch() {
 
       <div v-if="loadError" class="alert alert-danger">{{ loadError }}</div>
 
-      <el-table v-loading="loading" :data="sortedUsers" stripe>
+      <el-table
+        v-loading="loading"
+        :data="sortedUsers"
+        stripe
+        :expand-row-keys="expandedOwners"
+        row-key="owner_user"
+        @expand-change="onExpandChange"
+      >
+        <!-- 2026-11-20 数字出处轮：展开行 = 该员工窗口内「用了哪些模型、各多少」。 -->
+        <el-table-column type="expand" width="44">
+          <template #default="scope">
+            <div class="expand-block">
+              <div class="expand-title">{{ t('sessions.userProfile.expandModelsTitle', { owner: scope?.row?.owner_user }) }}</div>
+              <div v-if="matrixLoading.has(scope?.row?.owner_user)" class="expand-hint">
+                {{ t('sessions.userProfile.loading') }}
+              </div>
+              <div v-else-if="matrixErrors.get(scope?.row?.owner_user)" class="alert alert-danger">
+                {{ matrixErrors.get(scope?.row?.owner_user) }}
+              </div>
+              <el-table
+                v-else
+                :data="matrixRows.get(scope?.row?.owner_user) ?? []"
+                size="small"
+                class="expand-table"
+              >
+                <el-table-column :label="t('sessions.userProfile.modelName')" prop="model_name" min-width="180" />
+                <el-table-column :label="t('sessions.userProfile.provider')" prop="provider" min-width="120" />
+                <el-table-column :label="t('sessions.userProfile.usageColRequests')" prop="request_count" width="90" align="right" />
+                <el-table-column :label="t('sessions.userProfile.inputTokens')" prop="input_tokens" width="110" align="right">
+                  <template #default="s">{{ formatTokens(s?.row?.input_tokens) }}</template>
+                </el-table-column>
+                <el-table-column :label="t('sessions.userProfile.outputTokens')" prop="output_tokens" width="110" align="right">
+                  <template #default="s">{{ formatTokens(s?.row?.output_tokens) }}</template>
+                </el-table-column>
+                <el-table-column :label="t('sessions.userProfile.usageColTokens')" prop="total_tokens" width="120" align="right">
+                  <template #default="s">{{ formatTokens(s?.row?.total_tokens) }}</template>
+                </el-table-column>
+                <el-table-column :label="t('sessions.userProfile.usageColInternalCost')" prop="internal_cost_usd" width="120" align="right">
+                  <template #default="s">{{ formatCost(s?.row?.internal_cost_usd) }}</template>
+                </el-table-column>
+                <el-table-column :label="t('sessions.userProfile.usageColExternalCost')" prop="external_cost_usd" width="120" align="right">
+                  <template #default="s">{{ formatCost(s?.row?.external_cost_usd) }}</template>
+                </el-table-column>
+                <el-table-column :label="t('sessions.userProfile.actionDetail')" width="90" fixed="right">
+                  <template #default="s">
+                    <el-button size="small" link type="primary" @click="goProfile(scope?.row?.owner_user)">
+                      {{ t('sessions.userProfile.expandToProfile') }}
+                    </el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <div
+                v-if="!matrixLoading.has(scope?.row?.owner_user)
+                  && !matrixErrors.get(scope?.row?.owner_user)
+                  && (matrixRows.get(scope?.row?.owner_user) ?? []).length === 0"
+                class="expand-hint"
+              >
+                {{ t('sessions.userProfile.expandModelsEmpty') }}
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('sessions.userProfile.ownerUser')" prop="owner_user" min-width="160" />
         <el-table-column :label="t('sessions.userProfile.sessionCount')" prop="session_count" width="100" align="right" />
-        <el-table-column :label="t('sessions.userProfile.requestCount')" prop="total_requests" width="100" align="right" />
+        <!-- 2026-11-20：窗口内用量五列（出处 = request_logs_with_current_month，
+             与详情页模型卡同源同表达式；窗口与口径见右上角帮助抽屉）。 -->
+        <el-table-column :label="t('sessions.userProfile.usageColRequests')" width="100" align="right">
+          <template #default="scope">{{ scope?.row?.window_usage?.request_count ?? '—' }}</template>
+        </el-table-column>
+        <el-table-column :label="t('sessions.userProfile.usageColTokens')" width="130" align="right">
+          <template #default="scope">{{ scope?.row?.window_usage ? formatTokens(scope.row.window_usage.total_tokens) : '—' }}</template>
+        </el-table-column>
+        <el-table-column :label="t('sessions.userProfile.usageColInternalCost')" width="130" align="right">
+          <template #default="scope">{{ scope?.row?.window_usage ? formatCost(scope.row.window_usage.internal_cost_usd) : '—' }}</template>
+        </el-table-column>
+        <el-table-column :label="t('sessions.userProfile.usageColExternalCost')" width="130" align="right">
+          <template #default="scope">{{ scope?.row?.window_usage ? formatCost(scope.row.window_usage.external_cost_usd) : '—' }}</template>
+        </el-table-column>
+        <el-table-column :label="t('sessions.userProfile.usageColModels')" width="100" align="right">
+          <template #default="scope">{{ scope?.row?.window_usage?.model_count ?? '—' }}</template>
+        </el-table-column>
         <el-table-column :label="t('sessions.userProfile.totalCost')" prop="total_cost_usd" width="120" align="right">
           <template #default="scope">
             ${{ (scope?.row?.total_cost_usd ?? 0).toFixed(4) }}
@@ -172,7 +362,6 @@ function onSearch() {
           </template>
         </el-table-column>
         <el-table-column :label="t('sessions.userProfile.endUserCount')" prop="end_user_count" width="110" align="right" />
-        <el-table-column :label="t('sessions.userProfile.firstSeenAt')" prop="first_seen_at" width="170" />
         <el-table-column :label="t('sessions.userProfile.lastSeenAt')" prop="last_seen_at" width="170" />
         <el-table-column :label="t('sessions.userProfile.actionDetail')" width="100" fixed="right">
           <template #default="scope">
@@ -202,12 +391,74 @@ function onSearch() {
         />
       </div>
     </el-card>
+
+    <!-- 2026-11-20 数字出处轮：统计口径帮助抽屉（右侧滑出）。
+         口径文案与列表列一一对应；公式/出处复用详情页 helpContent 键（同口径同文案），
+         列表特有口径用 listHelp 键。 -->
+    <el-drawer
+      v-model="showHelp"
+      :title="t('sessions.userProfile.helpTitle')"
+      size="50%"
+      direction="rtl"
+    >
+      <div class="help-content">
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.listHelp.windowSection') }}</h3>
+          <p>{{ t('sessions.userProfile.listHelp.windowDesc') }}</p>
+          <div v-if="usageMeta" class="formula">{{ usageWindowText }}</div>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.tokenCalculation') }}</h3>
+          <p>{{ t('sessions.userProfile.helpContent.tokenDesc') }}</p>
+          <div class="formula">{{ t('sessions.userProfile.helpContent.tokenFormula') }}</div>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.costCalculation') }}</h3>
+          <p><strong>{{ t('sessions.userProfile.internalCost') }}</strong>{{ t('sessions.userProfile.helpContent.internalCostDesc') }}</p>
+          <p><strong>{{ t('sessions.userProfile.externalCost') }}</strong>{{ t('sessions.userProfile.helpContent.externalCostDesc') }}</p>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.listHelp.identitySection') }}</h3>
+          <p>{{ t('sessions.userProfile.listHelp.identityDesc') }}</p>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.dataSource') }}</h3>
+          <p>{{ t('sessions.userProfile.listHelp.dataSourceDesc') }}</p>
+          <div class="formula">{{ usageMeta?.source_view || 'request_logs_with_current_month' }}</div>
+        </section>
+
+        <section class="help-section">
+          <h3>{{ t('sessions.userProfile.helpContent.timeRangeNote') }}</h3>
+          <p>{{ t('sessions.userProfile.helpContent.timeRangeDesc') }}</p>
+        </section>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <style scoped>
 .user-profile-list { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-.card-header-toolbar { display: flex; align-items: center; gap: 12px; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
+.card-header-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.usage-meta-line { color: var(--el-text-color-secondary, #909399); font-size: 12px; }
 .pagination-wrap { margin-top: 16px; display: flex; justify-content: center; }
+.expand-block { padding: 8px 24px 8px 48px; }
+.expand-title { font-weight: 600; margin-bottom: 8px; }
+.expand-hint { color: var(--el-text-color-secondary, #909399); font-size: 12px; padding: 8px 0; }
+.expand-table { width: 100%; }
+.help-content { display: flex; flex-direction: column; gap: 16px; }
+.help-section h3 { margin: 0 0 6px; font-size: 15px; }
+.help-section p { margin: 0 0 6px; font-size: 13px; line-height: 1.7; }
+.help-section .formula {
+  font-family: monospace;
+  background: var(--el-fill-color-light, #f5f7fa);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
 </style>
