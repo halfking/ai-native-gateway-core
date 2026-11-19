@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// BoardOperationalView — 运营面板（2026-11-19 优化）
+// BoardOperationalView — 运营面板（2026-11-19 优化，时间范围统一）
 // 从运营角度汇总分析系统整体状况，整合多维度数据
 //
 // 端点：
@@ -15,12 +15,28 @@ import {
   type BoardOperationalPayload,
   type BoardPayload,
 } from '../api/board'
+import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
+import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import type { KxDateRange } from '../components/ui/kx-date-types'
 
 const loading = ref(false)
 const error = ref('')
 const operationalData = ref<BoardOperationalPayload | null>(null)
 const boardData = ref<BoardPayload | null>(null)
 const timeRange = ref(7)
+
+// 统一时间范围选择器（2026-11-19）
+const { presets, rangeValue, applyRange } = useSpanDaysRange(timeRange, [
+  { days: 1, labelKey: 'dashboard.operational.timeRange1d' },
+  { days: 7, labelKey: 'dashboard.operational.timeRange7d' },
+  { days: 30, labelKey: 'dashboard.operational.timeRange30d' },
+  { days: 90, labelKey: 'dashboard.range.last90d' },
+])
+
+function onRangeApply(range: KxDateRange) {
+  applyRange(range)
+  void load()
+}
 
 async function load() {
   loading.value = true
@@ -115,11 +131,13 @@ onMounted(() => {
         <p class="bo-subtitle">{{ $t('dashboard.operational.subtitle') }}</p>
       </div>
       <div class="bo-header-actions">
-        <select v-model="timeRange" class="bo-time-select" @change="load">
-          <option :value="1">{{ $t('dashboard.operational.timeRange1d') }}</option>
-          <option :value="7">{{ $t('dashboard.operational.timeRange7d') }}</option>
-          <option :value="30">{{ $t('dashboard.operational.timeRange30d') }}</option>
-        </select>
+        <KxDateRangePicker
+          :model-value="rangeValue"
+          :presets="presets"
+          :max-span-days="365"
+          :disabled="loading"
+          @apply="onRangeApply"
+        />
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
           {{ loading ? $t('common.feedback.loading') : $t('common.button.refresh') }}
         </button>
@@ -398,15 +416,6 @@ onMounted(() => {
   display: flex;
   gap: var(--space-2);
   align-items: center;
-}
-
-.bo-time-select {
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-surface);
-  color: var(--text);
-  font-size: var(--text-sm);
 }
 
 .bo-error {
