@@ -211,7 +211,14 @@ onUnmounted(() => {
 })
 
 watch(() => props.data, () => {
-  nextTick(() => updateChart())
+  nextTick(() => {
+    // 2026-11-20 修「图表永远空白」：mount 时数据未到 ⇒ v-if 没渲染 chartRef ⇒
+    // initChart 空转返回；数据到位后 v-if 才把 chart-inner 挂出来，watch 只调
+    // updateChart（要求已有实例）⇒ 从未初始化 ⇒ 320px 空盒子。这里在实例缺失
+    // 且 chartRef 已在时补 initChart。
+    if (!chartInstance && chartRef.value && !isDestroyed.value) initChart()
+    else updateChart()
+  })
 }, { deep: true })
 </script>
 

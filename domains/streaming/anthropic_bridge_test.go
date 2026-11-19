@@ -748,3 +748,36 @@ func TestStreamAnthropicSSEToOpenAI_BenignEOFFinishReasonCompletes(t *testing.T)
 	assert.Contains(t, wire, `"minimax tail"`)
 	assert.Contains(t, wire, `"finish_reason":"stop"`)
 }
+
+// 2026-11-20 last-segment identity (internal/modelname): message_start's
+// model matching either the client or outbound name (last '/'-segment,
+// case-insensitive) is consistent — vendor prefixes are display routing.
+func TestCheckAnthropicModelMismatch_LastSegment(t *testing.T) {
+	cases := []struct {
+		name          string
+		clientModel   string
+		outboundModel string
+		respModel     string
+		wantFlag      bool
+	}{
+		{"exact match", "claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5", false},
+		{"prefixed outbound vs bare resp", "glm-5.3-flash", "z-ai/glm-5.3-flash", "glm-5.3-flash", false},
+		{"multi-level prefix", "minimax-m3.1-flash", "a/b/minimax-m3.1-flash", "minimax-m3.1-flash", false},
+		{"case + prefix", "glm-5.3-flash", "zcode/GLM-5.3-Flash", "glm-5.3-flash", false},
+		{"display-name outbound vs client-named resp", "minimax-m3.1-flash", "MiniMax-M3.1-Flash-Preview", "minimax-m3.1-flash", false},
+		{"prefixed outbound echo, client name differs", "minimax-m3.1-flash", "z-ai/minimax-m3.1-preview", "minimax-m3.1-preview", false},
+		{"genuine substitution", "glm-5.3-flash", "z-ai/glm-5.3-flash", "glm-5.2", true},
+		{"preview suffix differs", "minimax-m3.1-flash", "minimax-m3.1-flash", "MiniMax-M3.1-Flash-Preview", true},
+		{"empty resp never flags", "glm-5.3-flash", "glm-5.3-flash", "", false},
+		{"both trusted empty never flags", "", "", "glm-5.3-flash", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &audit.StreamCapture{}
+			checkAnthropicModelMismatch(c, tc.clientModel, tc.outboundModel, tc.respModel)
+			if got := c.ModelMismatch; got != tc.wantFlag {
+				t.Fatalf("ModelMismatch = %v, want %v", got, tc.wantFlag)
+			}
+		})
+	}
+}

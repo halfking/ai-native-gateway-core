@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelname"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -717,14 +718,13 @@ func observeAnthropicPayload(c *audit.StreamCapture, payload, clientModel, outbo
 }
 
 func checkAnthropicModelMismatch(c *audit.StreamCapture, clientModel, outboundModel, respModel string) {
-	want := clientModel
-	if want == "" {
-		want = outboundModel
-	}
-	if want == "" || respModel == "" {
+	if respModel == "" || (clientModel == "" && outboundModel == "") {
 		return
 	}
-	if !strings.EqualFold(want, respModel) {
+	// 2026-11-20: last-segment identity (internal/modelname) — same ruling
+	// as the integrity detector: vendor prefixes are display routing and a
+	// match against either the client or outbound name is consistent.
+	if !modelname.Consistent(respModel, clientModel, outboundModel) {
 		c.ModelMismatch = true
 	}
 }

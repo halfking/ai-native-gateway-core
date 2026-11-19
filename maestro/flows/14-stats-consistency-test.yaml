@@ -10,59 +10,54 @@ url: ${BASE_URL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
 
 # ══════════════════════════════════════════════════════════
-# 测试1: 统计总览页面 - 验证新增的成本分解和TTFT字段
+# 测试1: 用量成本页面 - 验证统计页加载与数据/空态
+# （原 /admin/stats 路由已不存在——catch-all 会重定向回首页；
+#   现存等价统计页为 /admin/usage「用量成本」）
 # ══════════════════════════════════════════════════════════
 - evalScript: "${output.t0_stats_summary = Date.now()}"
-- openLink: "${BASE_URL}/admin/stats"
+- openLink: "${BASE_URL}/admin/usage"
 - extendedWaitUntil:
-    visible: '数据统计'
+    visible: '用量成本'
     timeout: 20000
 - evalScript: "${output.ms_stats_summary = Date.now() - output.t0_stats_summary}"
 - assertTrue:
     condition: "${output.ms_stats_summary < 5000}"
     optional: true
-    label: 'slow-check:/admin/stats'
+    label: 'slow-check:/admin/usage'
 
 # 验证页面已加载完成（有数据或空态）
 - extendedWaitUntil:
-    visible:
-      or:
-        - '请求总数'
-        - '暂无数据'
+    visible: '总请求数|暂无数据'
     timeout: 10000
 
 # ══════════════════════════════════════════════════════════
 # 测试2: 会话分析列表 - 验证新增的积分和TTFT字段
+# （原 /admin/session-analytics 本体路由已不存在，现存入口为 /users 子页）
 # ══════════════════════════════════════════════════════════
 - evalScript: "${output.t0_session_analytics = Date.now()}"
-- openLink: "${BASE_URL}/admin/session-analytics"
+- openLink: "${BASE_URL}/admin/session-analytics/users"
 - extendedWaitUntil:
-    visible: '会话分析'
+    visible: '用户画像'
     timeout: 20000
 - evalScript: "${output.ms_session_analytics = Date.now() - output.t0_session_analytics}"
 - assertTrue:
     condition: "${output.ms_session_analytics < 5000}"
     optional: true
-    label: 'slow-check:/admin/session-analytics'
+    label: 'slow-check:/admin/session-analytics/users'
 
 # 验证页面已加载完成
 - extendedWaitUntil:
-    visible:
-      or:
-        - '会话列表'
-        - '暂无会话'
+    visible: '会话列表|暂无会话|用户画像'
     timeout: 10000
 
 # ══════════════════════════════════════════════════════════
-# 测试3: 统计趋势页面 - 验证趋势数据包含成本分解
+# 测试3: 用量趋势页面 - 验证趋势数据包含成本分解
+# （原 /admin/stats/trend 路由已不存在，现存等价页为 /admin/usage-trends）
 # ══════════════════════════════════════════════════════════
 - evalScript: "${output.t0_stats_trend = Date.now()}"
-- openLink: "${BASE_URL}/admin/stats/trend"
+- openLink: "${BASE_URL}/admin/usage-trends"
 - extendedWaitUntil:
-    visible:
-      or:
-        - '趋势分析'
-        - '数据统计'
+    visible: '用量趋势分析|数据统计'
     timeout: 20000
     optional: true
 - evalScript: "${output.ms_stats_trend = Date.now() - output.t0_stats_trend}"
@@ -73,7 +68,7 @@ url: ${BASE_URL}
 - evalScript: "${output.t0_keys = Date.now()}"
 - openLink: "${BASE_URL}/keys"
 - extendedWaitUntil:
-    visible: 'API 密钥'
+    visible: 'API 密钥管理'
     timeout: 20000
 - evalScript: "${output.ms_keys = Date.now() - output.t0_keys}"
 

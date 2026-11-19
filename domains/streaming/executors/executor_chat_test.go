@@ -194,6 +194,23 @@ func TestChatExecutor_CheckSoftMismatch_NotImplemented(t *testing.T) {
 	if mismatched {
 		t.Errorf("OpenAI never silently falls back; mismatched should be false (reason=%q)", reason)
 	}
+	// 2026-11-20 last-segment identity (internal/modelname): vendor-prefixed
+	// and case-only echoes are the same model — the old case-sensitive
+	// full-string compare flagged these (211 production false-positive
+	// classes, 3721 events / 14 days).
+	if mismatched, reason = ce.CheckSoftMismatch("glm-5.3-flash", "z-ai/glm-5.3-flash"); mismatched {
+		t.Errorf("publisher-prefixed echo is the same model; mismatched should be false (reason=%q)", reason)
+	}
+	if mismatched, _ = ce.CheckSoftMismatch("glm-5.3-flash", "GLM-5.3-Flash"); mismatched {
+		t.Error("case-only variant is the same model; mismatched should be false")
+	}
+	if mismatched, _ = ce.CheckSoftMismatch("minimax-m3.1-flash", "a/b/minimax-m3.1-flash"); mismatched {
+		t.Error("multi-level prefixed echo is the same model; mismatched should be false")
+	}
+	// Genuine substitution control: different last segment still fires.
+	if mismatched, _ = ce.CheckSoftMismatch("glm-5.3-flash", "glm-5.2"); !mismatched {
+		t.Error("different model must stay a mismatch")
+	}
 }
 
 // TestExtractResponseModel (2026-07-28) verifies the helper that powers
