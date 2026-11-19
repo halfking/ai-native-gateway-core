@@ -179,6 +179,18 @@ func TestRetireProbeMinutesIsBatched(t *testing.T) {
 	if !strings.Contains(sql, "r.ts >= m.bucket") || !strings.Contains(sql, "r.ts < m.bucket + interval '1 minute'") {
 		t.Error("退役 DELETE 必须用 r.ts 的半开区间匹配 m.bucket（sargable，等价性已 211 双探针验证）")
 	}
+	// 2026-11-20 复验二修：单侧 sargable 在生产被证伪 —— 候选无界（全史
+	// 11.4 万行）时 planner 仍整表扫 probe_hot 建 Hash Anti Join 且哈希
+	// 溢盘，真实执行 >20s，每 tick 跑满 2min ctx 被 cancel，游标停摆
+	// 68min+。必须两侧同时有界：候选侧封 [since-2h, since)，r 侧加全局窗
+	// （等价性可证：候选桶 ∈ [since-2h, since) ⇒ 潜在匹配源行 ⊆
+	// [since-2h, since+1min)）。211 EXPLAIN ANALYZE 实测 61.6ms（无界 >20s）。
+	if !strings.Contains(sql, "m.bucket >= $1 - interval '2 hours'") {
+		t.Error("候选桶必须封到 [since-2h, since)（候选无界 = 2026-11-20 生产停摆根因）")
+	}
+	if !strings.Contains(sql, "r.ts >= $1 - interval '2 hours'") || !strings.Contains(sql, "r.ts < $1 + interval '1 minute'") {
+		t.Error("r 侧必须加全局时间窗（否则哈希构建整表扫 probe_hot 434MB 并溢盘，见 2026-11-20 EXPLAIN ANALYZE 实证）")
+	}
 	if !strings.Contains(body, "retireProbeMinutesBatch") {
 		t.Error("必须有 retireProbeMinutesBatch 常量作为批大小")
 	}
