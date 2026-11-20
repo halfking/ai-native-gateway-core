@@ -66,6 +66,23 @@ function makeI18n(locale: string) {
           },
         },
       },
+      // ★ 2026-11-21：多语补翻轮后仓内 8 语种 chrome 全齐（含 fr-FR）⇒ mock 补 fr-FR
+      //   让「未登记路由 + fr-FR」用例走真实回退链（chrome 出本语种文案、正文空态）。
+      'fr-FR': {
+        pageHelp: {
+          open: "Ouvrir les notes de données de cette page",
+          close: "Fermer les notes de données",
+          intro: "Ce que montre cette page et comment chaque chiffre est calculé, pour aligner les données et vérifier les écarts.",
+          search: "Rechercher dans ces notes",
+          emptyNoResult: "Aucune correspondance dans ces notes ; essayez un autre mot-clé",
+          emptyNoContent: "Aucune note de données n'est configurée pour cette page ; contactez un administrateur.",
+          fallbackTitle: 'Notes de données de cette page',
+          title: {
+            dashboard: 'Notes de données — vue d’ensemble',
+            keys: 'Notes de données — clés API',
+          },
+        },
+      },
     },
   })
 }
@@ -149,16 +166,19 @@ describe('PageHelpDrawer', () => {
     expect(body).not.toContain('口径说明')
   })
 
-  it('★ L1：无译文的语种 ⇒ 回退中文正文（不空抽屉）', async () => {
-    // ★ 2026-11-21 换 id：原用 /dashboard（fr-FR）——多语补翻轮落地 dashboard.fr-FR.md
-    //   后「无译文」前提失效（实测单跑即红）。改用 session-users（fr-FR 41 个缺口之一，
-    //   registry: /admin/session-analytics/users）——回退逻辑钉「确实无译文的组合」，
-    //   不依赖某个具体文件永远缺失。
-    const w = mountDrawer('/admin/session-analytics/users', 'fr-FR')
+  it('★ L1：未登记路由 + 非中文 locale ⇒ 本语种空态（不崩、无跨语种残片）', async () => {
+    // ★ 2026-11-21 二次改写：多语补翻轮后 93 个登记 id 已全量 7 语种（616 文件），
+    //   「已登记 id 无译文」的纯回退场景在仓内不存在了 ⇒ 回退分支改用
+    //   「未登记路由（entry=null ⇒ id undefined）+ 非中文 locale」组合钉：
+    //   content computed 的 `?? contentByKey.get(zh-CN)` 在 id undefined 时同样返回
+    //   undefined ⇒ 走 emptyNoContent 空态（zh-CN 文案），绝不能崩、不能渲染外文残片。
+    //   （回退取值逻辑本身由上一条 en-US 用例正向钉住：locale 命中即用。）
+    const w = mountDrawer('/no-such-page', 'fr-FR')
     await openBody(w)
-    const body = w.find('.page-help-body').text()
-    // session-users 无 <id>.fr-FR.md ⇒ 兜底中文
-    expect(body).toContain('会话数')
+    expect(w.find('.page-help-header-title').text()).toBe('Notes de données de cette page')
+    // 未登记路由 ⇒ 正文空态（本语种 chrome 文案），不崩、不出现其他语种残片
+    expect(w.text()).toContain("Aucune note de données n'est configurée pour cette page")
+    expect(w.text()).not.toContain('还没有配置数据说明')
   })
 
   it('★ locale 切换 ⇒ 搜索词清空', async () => {
