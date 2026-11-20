@@ -15,6 +15,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -466,7 +468,9 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 
 // parsePeriod 解析周期字符串（YYYY-MM）为时间范围
 func parsePeriod(period string) (start, end time.Time, err error) {
-	start, err = time.Parse("2006-01", period)
+	// 时区审计轮（2026-11-21）F4：月份起点按系统时区日历解释（原先 UTC
+	// ⇒ +08 时区下月份窗口整体前移 8 小时，月初 0-8 点的请求被划出窗口）。
+	start, err = settings.ParseSystemDate(period + "-01")
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("expected format YYYY-MM")
 	}

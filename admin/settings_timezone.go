@@ -28,32 +28,41 @@ import (
 
 // timezoneEntry 常见时区候选（前端设置页下拉直接渲染）。表外合法 IANA 名
 // 仍可写入（settings 通道只校验可加载，不做白名单限制）。
-func timezoneEntry(name, label string) map[string]string {
-	return map[string]string{"name": name, "label": label}
+//
+// 时区审计轮（2026-11-21）修复 F3：偏移不再写死在标签里——DST 时区
+// （America/New_York、Australia/Sydney、Europe/London 等）一年内偏移会变，
+// 写死「UTC-5 纽约」半年是错的。改为按**当前时刻**动态计算偏移。
+func timezoneEntry(name, city string) map[string]string {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		loc = time.UTC
+	}
+	_, offsetSec := time.Now().In(loc).Zone()
+	return map[string]string{"name": name, "label": formatOffset(offsetSec) + " " + city}
 }
 
 func systemTimezoneChoices() []map[string]string {
 	return []map[string]string{
-		timezoneEntry("Asia/Shanghai", "UTC+8 北京"),
-		timezoneEntry("Asia/Hong_Kong", "UTC+8 香港"),
-		timezoneEntry("Asia/Taipei", "UTC+8 台北"),
-		timezoneEntry("Asia/Singapore", "UTC+8 新加坡"),
-		timezoneEntry("Asia/Tokyo", "UTC+9 东京"),
-		timezoneEntry("Asia/Seoul", "UTC+9 首尔"),
-		timezoneEntry("Asia/Bangkok", "UTC+7 曼谷"),
-		timezoneEntry("Asia/Kolkata", "UTC+5:30 德里"),
-		timezoneEntry("Asia/Dubai", "UTC+4 迪拜"),
-		timezoneEntry("Europe/Moscow", "UTC+3 莫斯科"),
-		timezoneEntry("Europe/Berlin", "UTC+1 柏林"),
-		timezoneEntry("Europe/Paris", "UTC+1 巴黎"),
-		timezoneEntry("Europe/London", "UTC+0 伦敦"),
+		timezoneEntry("Asia/Shanghai", "北京"),
+		timezoneEntry("Asia/Hong_Kong", "香港"),
+		timezoneEntry("Asia/Taipei", "台北"),
+		timezoneEntry("Asia/Singapore", "新加坡"),
+		timezoneEntry("Asia/Tokyo", "东京"),
+		timezoneEntry("Asia/Seoul", "首尔"),
+		timezoneEntry("Asia/Bangkok", "曼谷"),
+		timezoneEntry("Asia/Kolkata", "德里"),
+		timezoneEntry("Asia/Dubai", "迪拜"),
+		timezoneEntry("Europe/Moscow", "莫斯科"),
+		timezoneEntry("Europe/Berlin", "柏林"),
+		timezoneEntry("Europe/Paris", "巴黎"),
+		timezoneEntry("Europe/London", "伦敦"),
 		timezoneEntry("UTC", "UTC"),
-		timezoneEntry("America/New_York", "UTC-5 纽约"),
-		timezoneEntry("America/Chicago", "UTC-6 芝加哥"),
-		timezoneEntry("America/Denver", "UTC-7 丹佛"),
-		timezoneEntry("America/Los_Angeles", "UTC-8 洛杉矶"),
-		timezoneEntry("Australia/Sydney", "UTC+10 悉尼"),
-		timezoneEntry("Pacific/Auckland", "UTC+12 奥克兰"),
+		timezoneEntry("America/New_York", "纽约"),
+		timezoneEntry("America/Chicago", "芝加哥"),
+		timezoneEntry("America/Denver", "丹佛"),
+		timezoneEntry("America/Los_Angeles", "洛杉矶"),
+		timezoneEntry("Australia/Sydney", "悉尼"),
+		timezoneEntry("Pacific/Auckland", "奥克兰"),
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ── Response types ────────────────────────────────────────────────────
@@ -114,7 +116,9 @@ func usageWindowBounds(w http.ResponseWriter, r *http.Request, dateFrom, dateTo 
 	if dateFrom != "" {
 		startTime, err = time.Parse(time.RFC3339, dateFrom)
 		if err != nil {
-			startTime, err = time.Parse("2006-01-02", dateFrom)
+			// 时区审计轮（2026-11-21）F4：YYYY-MM-DD 按系统时区零点解释
+			//（RFC3339 带偏移的不受影响，仍按串内偏移）。
+			startTime, err = settings.ParseSystemDate(dateFrom)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "invalid date_from format, use ISO 8601 or YYYY-MM-DD")
 				return time.Time{}, time.Time{}, false
@@ -124,7 +128,7 @@ func usageWindowBounds(w http.ResponseWriter, r *http.Request, dateFrom, dateTo 
 	if dateTo != "" {
 		endTime, err = time.Parse(time.RFC3339, dateTo)
 		if err != nil {
-			endTime, err = time.Parse("2006-01-02", dateTo)
+			endTime, err = settings.ParseSystemDate(dateTo)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "invalid date_to format, use ISO 8601 or YYYY-MM-DD")
 				return time.Time{}, time.Time{}, false
@@ -915,8 +919,8 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 		if startDate != "" {
 			startTime, err = time.Parse(time.RFC3339, startDate)
 			if err != nil {
-				// 尝试 YYYY-MM-DD 格式
-				startTime, err = time.Parse("2006-01-02", startDate)
+				// 尝试 YYYY-MM-DD 格式（时区审计轮 F4：按系统时区解释）。
+				startTime, err = settings.ParseSystemDate(startDate)
 				if err != nil {
 					writeError(w, http.StatusBadRequest, "invalid start_date format, use ISO 8601 or YYYY-MM-DD")
 					return
@@ -929,7 +933,7 @@ func (h *Handler) handleUserModelUsage(w http.ResponseWriter, r *http.Request) {
 		if endDate != "" {
 			endTime, err = time.Parse(time.RFC3339, endDate)
 			if err != nil {
-				endTime, err = time.Parse("2006-01-02", endDate)
+				endTime, err = settings.ParseSystemDate(endDate)
 				if err != nil {
 					writeError(w, http.StatusBadRequest, "invalid end_date format, use ISO 8601 or YYYY-MM-DD")
 					return
@@ -1101,7 +1105,7 @@ func resolveUsageMatrixParams(w http.ResponseWriter, r *http.Request) (usageMatr
 		if startDate != "" {
 			p.Start, err = time.Parse(time.RFC3339, startDate)
 			if err != nil {
-				p.Start, err = time.Parse("2006-01-02", startDate)
+				p.Start, err = settings.ParseSystemDate(startDate) // F4：系统时区
 				if err != nil {
 					writeError(w, http.StatusBadRequest, "invalid start_date format, use ISO 8601 or YYYY-MM-DD")
 					return p, false
@@ -1113,7 +1117,7 @@ func resolveUsageMatrixParams(w http.ResponseWriter, r *http.Request) (usageMatr
 		if endDate != "" {
 			p.End, err = time.Parse(time.RFC3339, endDate)
 			if err != nil {
-				p.End, err = time.Parse("2006-01-02", endDate)
+				p.End, err = settings.ParseSystemDate(endDate) // F4：系统时区
 				if err != nil {
 					writeError(w, http.StatusBadRequest, "invalid end_date format, use ISO 8601 or YYYY-MM-DD")
 					return p, false

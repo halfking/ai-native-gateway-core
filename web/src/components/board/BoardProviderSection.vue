@@ -16,6 +16,7 @@ import { getUsageByProvider, downloadProviderUsageExport, type ProviderUsageRow 
 import { getReportSummary } from '../../api/reportrollup'
 import { getProviderCredentials } from '../../api/providers'
 import { resolveBoardRangeMs, type BoardTimeRange, type BoardTimeQuery } from '../../utils/boardTimeRange'
+import { systemTzDateStr } from '../../components/ui/kxDatePresets'
 import { buildProviderCards, fmtUsd, matchProviderPie } from './providerCards'
 
 const props = defineProps<{
@@ -112,8 +113,10 @@ async function loadUsage() {
 async function loadQuality() {
   try {
     const { startMs, endMs } = resolveBoardRangeMs(props.timeRange)
-    const start = new Date(startMs).toISOString().slice(0, 10)
-    const end = new Date(endMs - 1).toISOString().slice(0, 10)
+    // 时区审计轮（2026-11-21）F2：报表日期串改系统时区日历（原先 UTC，
+    // +08 下 quality 报表窗口与看板主体错位一天）。
+    const start = systemTzDateStr(startMs)
+    const end = systemTzDateStr(endMs - 1)
     const report = await getReportSummary({ start, end, view: 'provider' })
     const map = new Map<string, number>()
     for (const row of report.providers ?? []) {
