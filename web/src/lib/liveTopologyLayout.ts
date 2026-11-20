@@ -185,8 +185,10 @@ export function computeGatewayBox(width: number, height: number): GatewayCoreBox
   const x = Math.round(width * GATEWAY_BOX.xRatio)
   const w = Math.round(width * GATEWAY_BOX.wRatio)
   // 高度：比例值，夹在 [可用净空, 内容紧包裹上限] 内；再在净空里垂直居中。
-  // 窄画布四组折 2×2 ⇒ 用更高的帽（GATEWAY_BOX_MAX_H_NARROW）。
-  const maxH = width < GATEWAY_NARROW_W ? GATEWAY_BOX_MAX_H_NARROW : GATEWAY_BOX_MAX_H
+  // ★ 窄帽判据必须用 **box.w**（与组件 is-narrow 同一个量）——211 生产实测
+  //   踩过错位区：画布 950px 时 box.w=855<900 ⇒ 组件切窄版（内容 ~257px），
+  //   而帽按画布宽 950≥900 取 204 ⇒ 17px 溢出。两边各用一个宽度必漂。
+  const maxH = w < GATEWAY_NARROW_W ? GATEWAY_BOX_MAX_H_NARROW : GATEWAY_BOX_MAX_H
   const clientBottom = Math.round(height * ROW_RATIO.client + NODE_H / 2)
   const providerTop = Math.round(height * ROW_RATIO.provider - NODE_H / 2)
   const clearance = Math.max(0, providerTop - clientBottom - 8)

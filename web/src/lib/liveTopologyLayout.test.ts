@@ -524,6 +524,19 @@ describe('computeGatewayBox', () => {
     const wide = computeGatewayBox(1200, 1723)
     expect(wide.h).toBeLessThanOrEqual(204)
   })
+
+  it('★ narrow cap and is-narrow use the SAME quantity (box width, not canvas width)', () => {
+    // 211 生产实测踩过的错位区：画布 ∈ [900, 1000) 时 box.w ∈ [810, 900) ⇒
+    // 组件已切窄版（内容 ~257px）而帽若按画布宽判宽版（204）⇒ 17px 溢出。
+    // 帽判据必须与组件 is-narrow（box.w < 900）同量同值。
+    for (const canvasW of [900, 950, 999]) {
+      const box = computeGatewayBox(canvasW, 1723)
+      if (box.w < 900) expect(box.h, `canvasW=${canvasW} box.w=${box.w} 窄版帽`).toBe(264)
+    }
+    // 画布 1000 ⇒ box.w=900 ⇒ 宽版帽 204（边界同侧）
+    expect(computeGatewayBox(1000, 1723).w).toBe(900)
+    expect(computeGatewayBox(1000, 1723).h).toBeLessThanOrEqual(204)
+  })
 })
 
 describe('bezierPoint', () => {
