@@ -25,11 +25,17 @@
 # ★ 三段判据（全部是**驱动原生**断言 ⇒ 不会静默空转；缺一段都算红）：
 #   ① 弹窗关闭（`notVisible: id: login-modal-title`）
 #      ⇒ `handleLogin` 走完且成功；失败时弹窗不关（顶部有红色横幅）。
-#   ② 顶栏出现用户菜单名「系统管理员」
+#   ② 顶栏出现用户菜单名 ${ADMIN_DISPLAY_NAME}
 #      ⇒ SPA 内存态已更新（`store.userInfo` 有值 ⇒ `isLoggedIn` 为真 ⇒ 顶栏布局）。
-#      「系统管理员」是**种子账号的 display_name**（`admin/users.go:247`）⇒ 与环境无关；
-#      同一标记已被 `11-simple-overview` / `12-live-stage-tree` 的「起点归零」段复用
-#      （那里用它识别已登录态）⇒ 单一真源，不另立一套。
+#      ★ 2026-11-21 参数化：多账号时代（211-user-auth 轮落了 demoadmin/demo），
+#        「系统管理员」只是 **admin 种子账号**的 display_name（`admin/users.go:247`）
+#        ⇒ 用 demoadmin（display_name=「演示管理员」）跑登录，判据②③必红
+#        （211 实测：登录成功、弹窗已关，红在这里 ⇒ 量具红非产品红）。
+#        ⇒ 判据改 ${ADMIN_DISPLAY_NAME}：**默认值放调用侧**（README §「flow env: 压过
+#          -e」的纪律）——各 runner `ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-系统管理员}"`，
+#          非默认账号由调用方 -e 覆盖；调用 flow 一律经 runFlow env 转发该变量。
+#      结构锚点路线（`.user-menu__trigger`）不可行：Maestro web 驱动的 css: 断言
+#        单条实测 2 分 23 秒（README §6 选择器表）⇒ 只能继续用 text: 判据。
 #   ③ 重新 `openLink /dashboard` 后用户菜单仍在
 #      ⇒ **服务端会话真的建立了**：web 驱动的 openLink **清 localStorage 但保留 cookie**
 #        （见 `_shared/switch-simple-mode.yaml` 头注）⇒ 重载后只能靠 cookie +
@@ -47,8 +53,8 @@
 #   要求 captcha，而验证码要靠看图 ⇒ 这种状态下本 flow 必然红（判据①）。
 #   看到弹窗里多出验证码输入框就是它（README §6.4）。
 #
-# ★ 账号口令不写进仓内任何文件：ADMIN_USER / ADMIN_PASSWORD 由
-#   命令行 -e 注入（flow 经 runFlow env 转发）。
+# ★ 账号口令不写进仓内任何文件：ADMIN_USER / ADMIN_PASSWORD / ADMIN_DISPLAY_NAME
+#   由命令行 -e 注入（flow 经 runFlow env 转发）。
 url: ${BASE_URL}
 ---
 - openLink: ${BASE_URL}/?login=1
@@ -84,11 +90,11 @@ url: ${BASE_URL}
 # ── ② SPA 内存态已更新（顶栏用户菜单）────────────────────────────────────
 - extendedWaitUntil:
     visible:
-      text: "系统管理员"
+      text: "${ADMIN_DISPLAY_NAME}"
     timeout: 20000
 # ── ③ 服务端会话已建立（重载后仍能水合 ⇒ cookie 有效）────────────────────
 - openLink: ${BASE_URL}/dashboard
 - extendedWaitUntil:
     visible:
-      text: "系统管理员"
+      text: "${ADMIN_DISPLAY_NAME}"
     timeout: 20000

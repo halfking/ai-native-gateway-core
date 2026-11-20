@@ -22,6 +22,8 @@ DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9223}"   # 独立 CDP 口，不与 run-local
 SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x1400}"
 ADMIN_USER="${MOCK_ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${MOCK_ADMIN_PASSWORD:-mock-only-admin-password}"
+# ★ login.yaml 判据②③的顶栏 display_name（默认值放调用侧）
+ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-系统管理员}"
 
 # ★ 必须 export：子进程 `resolve-ids.mjs` 要靠这两个环境变量问**本栈**要动态 ID。
 #   不 export ⇒ 子进程拿不到 BASE_URL ⇒ 回落成 resolve-ids 自己的默认值
@@ -197,6 +199,7 @@ for flow in "${FLOWS[@]}"; do
     -e "BASE_URL=${BASE_URL}" \
     -e "ADMIN_USER=${ADMIN_USER}" \
     -e "ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
+    -e "ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME}" \
     "${ID_ARGS[@]+"${ID_ARGS[@]}"}" \
     "${flow}" 2>&1 | tee "${OUT}/${name}.log"
   rc=${PIPESTATUS[0]}

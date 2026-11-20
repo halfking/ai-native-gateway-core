@@ -65,6 +65,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ═══ ② 总览页 ═══════════════════════════════════════════════════════════
 # 落定判据＝「会话总数」数据卡（不是加载态占位符）。

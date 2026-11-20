@@ -30,6 +30,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── ② 看板 tab 打开，英雄区与切换器在场 ────────────────────────────────────
 - openLink: ${BASE_URL}/dashboard?tab=board

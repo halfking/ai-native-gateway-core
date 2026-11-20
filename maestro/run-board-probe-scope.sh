@@ -34,4 +34,5 @@ maestro test \
   -e BASE_URL="$BASE_URL" \
   -e ADMIN_USER="$ADMIN_USER" \
   -e "ADMIN_PASSWORD=$ADMIN_PASSWORD" \
+  -e "ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME:-系统管理员}" \
   "$ROOT/maestro/flows/15-board-probe-scope.yaml"

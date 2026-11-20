@@ -34,6 +34,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── ② 落地页身份（/admin/session-analytics/users）─────────────────────────
 # h2 = t('sessions.userProfile.title')＝「用户画像」；列表页独有形态 =

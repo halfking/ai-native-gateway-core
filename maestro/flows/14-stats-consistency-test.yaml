@@ -8,6 +8,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ══════════════════════════════════════════════════════════
 # 测试1: 用量成本页面 - 验证统计页加载与数据/空态

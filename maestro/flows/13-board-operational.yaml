@@ -9,6 +9,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── 运营看板页面加载 ────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"

@@ -8,6 +8,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── 场景1: 验证auto模式在路由页面可见 ──────────────────
 - evalScript: "${output.test_phase = 'routing_overview'}"

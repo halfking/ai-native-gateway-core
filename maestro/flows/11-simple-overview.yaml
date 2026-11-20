@@ -77,6 +77,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── ② 切到简易模式（幂等子流程：先归零到专家面，再切到简易面）──────────
 - runFlow:

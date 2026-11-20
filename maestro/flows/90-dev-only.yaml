@@ -17,6 +17,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── /dev/waterfall-preview ─────────────────────────────────────────────
 - evalScript: "${output.t0 = Date.now()}"

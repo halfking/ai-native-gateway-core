@@ -93,6 +93,10 @@ if [ -z "${ADMIN_USER:-}" ] || [ -z "${ADMIN_PASSWORD:-}" ]; then
 fi
 : "${ADMIN_USER:?需要 ADMIN_USER（环境变量或仓根 .env.local 的 LLM_GATEWAY_ADMIN_USER）}"
 : "${ADMIN_PASSWORD:?需要 ADMIN_PASSWORD（环境变量或仓根 .env.local 的 LLM_GATEWAY_ADMIN_PASSWORD）}"
+# ★ 登录成功标记 = 顶栏 display_name（_shared/login.yaml 判据②③）：多账号时代它与账号绑定，
+#   默认值放调用侧（README 纪律：flow env: 块压过 -e ⇒ 不能写进 flow）；
+#   非默认账号（如 demoadmin=「演示管理员」）由调用方 -e 覆盖。
+ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-系统管理员}"
 
 # ── 3. Chrome（两个独立 profile：Maestro 一个、第二层探针一个）────────────
 find_chrome() {
@@ -218,6 +222,7 @@ maestro test \
   -e "BASE_URL=${BASE_URL}" \
   -e "ADMIN_USER=${ADMIN_USER}" \
   -e "ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
+  -e "ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME}" \
   -e "SESSION_OWNER=${SESSION_OWNER}" \
   "${FLOW}" 2>&1 | tee "${OUT}/16-session-analytics-system.log"
 FLOW_RC=${PIPESTATUS[0]}

@@ -66,6 +66,7 @@ url: ${BASE_URL}
     env:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # ── ② 导航入口存在（**「打开功能」的直接证据**）──────────────────────────
 #    专家面（openLink 会清 localStorage ⇒ 工作模式退回专家面）顶栏有三个直链：

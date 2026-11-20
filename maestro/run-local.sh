@@ -214,6 +214,7 @@ for flow in "${FLOWS[@]}"; do
     -e "BASE_URL=${BASE_URL}" \
     -e "ADMIN_USER=${LLM_GATEWAY_ADMIN_USER}" \
     -e "ADMIN_PASSWORD=${LLM_GATEWAY_ADMIN_PASSWORD}" \
+    -e "ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME:-系统管理员}" \
     "${ID_ARGS[@]}" \
     "${flow}" 2>&1 | tee "${OUT}/${name}.log"
   rc=${PIPESTATUS[0]}
