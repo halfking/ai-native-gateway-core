@@ -609,7 +609,7 @@ onBeforeUnmount(() => {
   align-items: center;
   padding: var(--space-2);
   background: var(--bg);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   font-size: var(--text-sm);
 }
 

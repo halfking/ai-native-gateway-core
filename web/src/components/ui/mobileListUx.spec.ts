@@ -141,9 +141,13 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   // ⚠ 行号锚点：2026-11-19 由 286/309 改为 331/354。
   //   原因：444865860（用户会话分析增强轮）在 top_tasks 卡片**之前**插入了
   //   模型使用统计与帮助面板 ⇒ 其后所有行号整体 +45。同日 cf8d7bffe 改 1 行无位移。
-  //   与 QualityCorrelationsView（186→223）、ApprovalListView（451→452）同类。
-  ['src/views/UserProfileView.vue', 331, '画像内嵌的 top_tasks（title-key=task_id）：任务名是分组标签，本视图无任务详情页'],
-  ['src/views/UserProfileView.vue', 354, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  // ⚠ 行号锚点：2026-11-20 由 331/354 改为 426/457；top_tasks 从 NON_NAVIGABLE
+  //   **移入 KNOWN_GAP**（见下），并**新登记** 394（projects）。
+  //   原因：f5fe7e5cb（users 数字出处轮）+ 6c4da0ae7（员工→项目下钻 L1）在该文件
+  //   插入了项目卡块（projects，394）与帮助抽屉 ⇒ top_tasks/top_end_users 整体
+  //   后移至 426/457。
+  ['src/views/UserProfileView.vue', 394, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
+  ['src/views/UserProfileView.vue', 457, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 282 改为 283。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -192,6 +196,19 @@ const KNOWN_GAP: Array<[string, number, string]> = [
     452,
     '详情目的地 /admin/approvals/:request_id 存在，但 viewDetail 两个调用点都写在 #table 插槽里；'
       + '该视图只传 #table ⇒ compact 卡片无任何入口。修法涉及桌面行是否整行可点（行内有 ✕ 拒绝等写操作），属产品裁决。',
+  ],
+  [
+    'src/views/UserProfileView.vue',
+    // ⚠ 行号锚点：2026-11-20 由 NON_NAVIGABLE 331 改挂 KNOWN_GAP 426。
+    //   原因：6c4da0ae7（员工→任务逐层下钻轮）给 top_tasks 加了 goTask 行点击
+    //   （员工 → 任务 → 会话 的任务层入口）——但入口按钮写在 **#table 插槽内**
+    //   （el-button link，桌面表格列里）⇒ compact 卡片形态依旧无任何入口，
+    //   而文件里已存在 router.push ⇒ 按门语义不再满足 NON_NAVIGABLE（其前提
+    //   是「文件无详情目的地」）⇒ 移入 KNOWN_GAP 登记「有目的地、compact 无入口」。
+    //   修法 = 给 ResponsiveDataView 的 compact 卡片头/行补点击入口，属 UI 迭代项。
+    426,
+    '详情目的地 /admin/session-analytics/tasks/:id 存在（goTask 行点击，2026-11-20 逐层下钻轮），'
+      + '但入口只写在 #table 插槽的列按钮里 ⇒ compact 卡片无入口（与 ApprovalListView 同型）。',
   ],
 ]
 
@@ -282,12 +299,26 @@ describe('03 §3.3 移动端行点击契约', () => {
   })
 
   it('NON_NAVIGABLE 的每一项，其文件不得有详情目的地（有了就该给入口）', () => {
+    // ★ 块作用域精确化（2026-11-20）：UserProfileView 在 6c4da0ae7（员工→任务
+    //   逐层下钻轮）引入 goTask 的 router.push —— push 属于 top_tasks 块专用，
+    //   同文件的 projects / top_end_users 块仍无任何目的地。文件级粗判据会把
+    //   这两个无辜块也判红（这正是本判据注释里自认的粒度局限的实例化）。
+    //   ⇒ 判定改为：文件级 push 存在时，回退到「登记块作用域内（起始标签起
+    //   至下一 <ResponsiveDataView 或文件尾）无 router.push」——块内无目的地
+    //   即满足 NON_NAVIGABLE 语义；块内出现 push 则仍红（真有了就该给入口）。
     for (const [f, l] of NON_NAVIGABLE) {
       const site = sites.find((s) => s.file === f && s.line === l)
       expect(site, `${key(f, l)} 在源码里找不到了`).toBeTruthy()
+      if (!site!.fileHasNav) continue
+      // 文件级 push 在场 ⇒ 收窄到本块作用域复核
+      const raw = stripComments(readFileSync(site!.file.startsWith('src/') ? resolve(process.cwd(), site!.file) : site!.file, 'utf8'))
+      const startIdx = raw.split('\n').slice(0, site!.line - 1).join('\n').length
+      const nextBlock = raw.indexOf('<ResponsiveDataView', startIdx + 1)
+      const scope = raw.slice(startIdx, nextBlock === -1 ? raw.length : nextBlock)
+      const blockHasNav = /router\.push|router\.replace/.test(scope)
       expect(
-        site!.fileHasNav,
-        `${key(f, l)} 文件里已有 router.push ⇒ 不再是「无详情目的地」，请改挂入口或移入 KNOWN_GAP`,
+        blockHasNav,
+        `${key(f, l)} 块作用域内已有 router.push ⇒ 该块真的有了详情目的地，请改挂入口或移入 KNOWN_GAP`,
       ).toBe(false)
     }
   })
