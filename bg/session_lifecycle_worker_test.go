@@ -74,3 +74,28 @@ func readFile(t *testing.T, name string) string {
 	}
 	return string(b)
 }
+
+// ★ 211 活体打回（2026-11-20）：旧 formatSeconds 在 formatDuration 已带单位
+//   的产物上再追加 " seconds" ⇒ "30 minutes seconds" ⇒ SQLSTATE 22007，
+//   idle/absolute 两条扫描全部失败。钉死字面量形态：任何输出都不许含双重单位。
+func TestIntervalSecondsProducesValidIntervalLiteral(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Minute, "1800 seconds"},
+		{168 * time.Hour, "604800 seconds"},
+		{5 * time.Minute, "300 seconds"},
+		{0, "0 seconds"},
+		{-time.Minute, "0 seconds"},
+	}
+	for _, tc := range cases {
+		got := intervalSeconds(tc.d)
+		if got != tc.want {
+			t.Fatalf("intervalSeconds(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+		if strings.Contains(got, "minutes") || strings.Contains(got, "hours") || strings.Contains(got, "days") {
+			t.Fatalf("intervalSeconds(%v) = %q：多单位拼接形态（「30 minutes seconds」活体事故形态）不许回归", tc.d, got)
+		}
+	}
+}
