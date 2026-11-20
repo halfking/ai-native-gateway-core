@@ -451,8 +451,9 @@ func (s *Service) UsageCorrect(
 	var entryExists bool
 	err = tx.QueryRow(ctx, `
 		SELECT EXISTS(
-			SELECT 1 FROM maas_usage_settlements
-			WHERE entry_id = $1 AND tenant_id = $2
+			SELECT 1 FROM maas_usage_settlements st
+			JOIN maas_usage_holds h ON st.usage_hold_id = h.usage_hold_id
+			WHERE st.entry_id = $1 AND h.tenant_id = $2
 		)
 	`, req.EntryID, tenantID).Scan(&entryExists)
 

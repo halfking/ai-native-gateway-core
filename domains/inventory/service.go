@@ -139,6 +139,7 @@ func (s *Service) QuerySellable(
 
 // HoldCreate initiates a new pending reservation hold (soft reserve).
 // The hold reserves inventory for a limited time period until expiration.
+// UPDATED: Now includes anti-overselling logic by checking available inventory.
 func (s *Service) HoldCreate(
 	ctx context.Context,
 	auth maascontracts.AuthContext,

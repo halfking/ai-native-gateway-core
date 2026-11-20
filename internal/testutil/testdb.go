@@ -331,7 +331,14 @@ BEGIN
     RETURN QUERY
     SELECT
         pr.unit_price_minor,
-        (pr.unit_price_minor::DECIMAL * p_quantity::DECIMAL)::TEXT,
+        -- 单位归一:unit_price_minor 以规则 unit 为基准('1m_tokens'=每百万token),
+        -- p_quantity 为原始量;不归一则超收 1e6 倍(2026-11-21 合并验证轮实测抓出)。
+        (pr.unit_price_minor::DECIMAL * p_quantity::DECIMAL
+           / CASE pr.unit
+               WHEN '1m_tokens' THEN 1000000
+               WHEN '1k_tokens' THEN 1000
+               ELSE 1
+             END)::TEXT,
         pr.currency,
         pr.rule_id
     FROM maas_price_rules pr

@@ -297,7 +297,8 @@ export default {
   // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
   //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
   piAnalysis: {
-    // â 2026-11-19 Listen-/Statistik-Konsistenz: Statistik-Karten-Labels.
+    // â
+ 2026-11-19 Listen-/Statistik-Konsistenz: Statistik-Karten-Labels.
     stats: {
       total: 'Fehler gesamt',
       pending: 'Ausstehend',
@@ -306,8 +307,7 @@ export default {
       falsePositiveRate: 'Fehlalarmrate',
       avgDuration: 'Ø Dauer',
       subTransient: 'in Bearbeitung {processing} · übersprungen {skipped}',
-    },
-  page: {
+    },  page: {
    title: 'PI-Fehleranalyse',
    triggering: 'Analyse läuft...',
    triggerManual: 'Analyse manuell starten',
@@ -346,8 +346,7 @@ export default {
    errorTypePolicyLoadFailed: 'Fehler beim Laden der Richtlinie',
    errorTypeUnexpectedBehavior: 'Unerwartetes Verhalten',
    errorTypePerformanceIssue: 'Leistungsproblem',
-   errorTypeOutputGuardBlocked: 'Ausgabewächter-Sperre',
-   statusPending: 'Ausstehend',
+   errorTypeOutputGuardBlocked: 'Ausgabewächter-Sperre',   statusPending: 'Ausstehend',
    statusProcessing: 'In Bearbeitung',
    statusAnalyzed: 'Analysiert',
    statusFailed: 'Fehlgeschlagen',

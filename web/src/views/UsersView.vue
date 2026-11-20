@@ -60,19 +60,19 @@ const sortBy = ref<'default' | 'requests' | 'credits'>('default')
 const filterChips = computed(() => {
   const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
   if (filterTenant.value) {
-    chips.push({ key: 'tenant', label: `${t('users.filter.byTenant', '租户')}: ${filterTenant.value}`, onRemove: () => { filterTenant.value = '' } })
+    chips.push({ key: 'tenant', label: `${t('users.filter.byTenant', )}: ${filterTenant.value}`, onRemove: () => { filterTenant.value = '' } })
   }
   if (filterRole.value) {
-    chips.push({ key: 'role', label: `${t('users.table.role', '角色')}: ${t(`users.role.${filterRole.value}`)}`, onRemove: () => { filterRole.value = '' } })
+    chips.push({ key: 'role', label: `${t('users.table.role', )}: ${t(`users.role.${filterRole.value}`)}`, onRemove: () => { filterRole.value = '' } })
   }
   if (filterStatus.value) {
-    chips.push({ key: 'status', label: `${t('users.table.status', '状态')}: ${filterStatus.value === 'enabled' ? t('users.status.enabled') : t('users.status.disabled')}`, onRemove: () => { filterStatus.value = '' } })
+    chips.push({ key: 'status', label: `${t('users.table.status', )}: ${filterStatus.value === 'enabled' ? t('users.status.enabled') : t('users.status.disabled')}`, onRemove: () => { filterStatus.value = '' } })
   }
   if (sortBy.value !== 'default') {
-    chips.push({ key: 'sort', label: `${t('users.filter.sortDefault', '排序')}: ${sortBy.value === 'requests' ? t('users.filter.sortRequests', '按近 30 天请求') : t('users.filter.sortCredits', '按近 30 天积分')}`, onRemove: () => { sortBy.value = 'default' } })
+    chips.push({ key: 'sort', label: `${t('users.filter.sortDefault', )}: ${sortBy.value === 'requests' ? t('users.filter.sortRequests', ) : t('users.filter.sortCredits', )}`, onRemove: () => { sortBy.value = 'default' } })
   }
   if (search.value.trim()) {
-    chips.push({ key: 'search', label: `${t('common.button.search', '搜索')}: ${search.value.trim()}`, onRemove: () => { search.value = '' } })
+    chips.push({ key: 'search', label: `${t('common.button.search', )}: ${search.value.trim()}`, onRemove: () => { search.value = '' } })
   }
   return chips
 })
@@ -198,15 +198,15 @@ function fmtTokensCompact(n: number | null | undefined): string {
   return String(v)
 }
 function fmtLastActive(iso: string | null | undefined): string {
-  if (!iso) return t('users.usage.never', '从未活跃')
+  if (!iso) return t('users.usage.never', )
   const diff = Date.now() - new Date(iso).getTime()
   const min = Math.floor(diff / 60000)
-  if (min < 1) return t('users.usage.justNow', '刚刚')
-  if (min < 60) return `${min} ${t('users.usage.minAgo', '分钟前')}`
+  if (min < 1) return t('users.usage.justNow', )
+  if (min < 60) return `${min} ${t('users.usage.minAgo', )}`
   const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr} ${t('users.usage.hourAgo', '小时前')}`
+  if (hr < 24) return `${hr} ${t('users.usage.hourAgo', )}`
   const day = Math.floor(hr / 24)
-  return `${day} ${t('users.usage.dayAgo', '天前')}`
+  return `${day} ${t('users.usage.dayAgo', )}`
 }
 
 // Create form
@@ -355,12 +355,12 @@ onMounted(() => { load(); loadTenants() })
 
     <!-- ══ 顶部统计条（2026-09-30 统计 UI 优化轮） ══ -->
     <div class="mini-stats" data-testid="user-stats-bar">
-      <div class="mini-stat"><div class="v">{{ statBar.total }}</div><div class="l">{{ t('users.stats.total', '总用户') }}</div></div>
-      <div class="mini-stat"><div class="v v-ok">{{ statBar.active }}</div><div class="l">{{ t('users.stats.active', '活跃（30 天内有请求）') }}</div></div>
-      <div class="mini-stat"><div class="v">{{ statBar.admins }}</div><div class="l">{{ t('users.stats.admins', '管理员') }}</div></div>
-      <div class="mini-stat"><div class="v v-err">{{ statBar.disabled }}</div><div class="l">{{ t('users.stats.disabled', '已禁用') }}</div></div>
-      <div class="mini-stat"><div class="v">{{ fmtNum(statBar.req) }}</div><div class="l">{{ t('users.stats.requests30d', '近 30 天请求') }}</div></div>
-      <div class="mini-stat"><div class="v">{{ fmtNum(statBar.credits) }}</div><div class="l">{{ t('users.stats.credits30d', '近 30 天积分消耗') }}</div></div>
+      <div class="mini-stat"><div class="v">{{ statBar.total }}</div><div class="l">{{ t('users.stats.total', ) }}</div></div>
+      <div class="mini-stat"><div class="v v-ok">{{ statBar.active }}</div><div class="l">{{ t('users.stats.active', ) }}</div></div>
+      <div class="mini-stat"><div class="v">{{ statBar.admins }}</div><div class="l">{{ t('users.stats.admins', ) }}</div></div>
+      <div class="mini-stat"><div class="v v-err">{{ statBar.disabled }}</div><div class="l">{{ t('users.stats.disabled', ) }}</div></div>
+      <div class="mini-stat"><div class="v">{{ fmtNum(statBar.req) }}</div><div class="l">{{ t('users.stats.requests30d', ) }}</div></div>
+      <div class="mini-stat"><div class="v">{{ fmtNum(statBar.credits) }}</div><div class="l">{{ t('users.stats.credits30d', ) }}</div></div>
     </div>
 
     <!-- 2026-11-18 筛选收纳轮：默认收拢，生效条件 chips 常驻头部 -->
@@ -380,21 +380,21 @@ onMounted(() => { load(); loadTenants() })
         ⚠️ {{ t('users.error.tenantsLoadFailed') }}（{{ tenantsError }}）
       </p>
       <select v-model="filterRole">
-        <option value="">{{ t('users.filter.allRoles', '全部角色') }}</option>
+        <option value="">{{ t('users.filter.allRoles', ) }}</option>
         <option value="tenant_admin">{{ t('users.role.tenant_admin') }}</option>
         <option value="super_admin">{{ t('users.role.super_admin') }}</option>
       </select>
       <select v-model="filterStatus">
-        <option value="">{{ t('users.filter.allStatus', '全部状态') }}</option>
+        <option value="">{{ t('users.filter.allStatus', ) }}</option>
         <option value="enabled">{{ t('users.status.enabled') }}</option>
         <option value="disabled">{{ t('users.status.disabled') }}</option>
       </select>
       <select v-model="sortBy">
-        <option value="default">{{ t('users.filter.sortDefault', '默认排序') }}</option>
-        <option value="requests">{{ t('users.filter.sortRequests', '按近 30 天请求') }}</option>
-        <option value="credits">{{ t('users.filter.sortCredits', '按近 30 天积分') }}</option>
+        <option value="default">{{ t('users.filter.sortDefault', ) }}</option>
+        <option value="requests">{{ t('users.filter.sortRequests', ) }}</option>
+        <option value="credits">{{ t('users.filter.sortCredits', ) }}</option>
       </select>
-      <input v-model="search" class="search-input" :placeholder="t('users.filter.searchPlaceholder', '搜索用户名 / 显示名 / 邮箱…')">
+      <input v-model="search" class="search-input" :placeholder="t('users.filter.searchPlaceholder', )">
     </CollapsibleFilterSection>
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
@@ -410,11 +410,11 @@ onMounted(() => { load(); loadTenants() })
           <th>{{ t('users.table.tenant', $t('common.terms.tenant')) }}</th>
           <th>{{ t('users.table.role', $t('common.terms.role')) }}</th>
           <th>{{ t('users.table.status', $t('common.terms.status')) }}</th>
-          <th class="col-num">{{ t('users.usage.requests30d', '近 30 天请求') }}</th>
+          <th class="col-num">{{ t('users.usage.requests30d', ) }}</th>
           <th class="col-num">Token</th>
-          <th class="col-num">{{ t('users.usage.credits30d', '近 30 天积分') }}</th>
-          <th>{{ t('users.table.lastLogin', '最后登录') }}</th>
-          <th>{{ t('users.usage.lastActive', '最后活跃') }}</th>
+          <th class="col-num">{{ t('users.usage.credits30d', ) }}</th>
+          <th>{{ t('users.table.lastLogin', ) }}</th>
+          <th>{{ t('users.usage.lastActive', ) }}</th>
           <th>{{ t('users.table.actions', $t('common.actions')) }}</th>
         </tr>
       </thead>
@@ -425,7 +425,7 @@ onMounted(() => { load(); loadTenants() })
               <template #name>
                 <strong>{{ u.username }}</strong>
                 <span class="cell-sub">{{ u.display_name || '-' }}</span>
-                <span v-if="u.must_change_password" class="badge badge-yellow">{{ t('users.mustChangePassword.pending', '待改密') }}</span>
+                <span v-if="u.must_change_password" class="badge badge-yellow">{{ t('users.mustChangePassword.pending', ) }}</span>
               </template>
             </BarCell>
           </td>
@@ -454,7 +454,7 @@ onMounted(() => { load(); loadTenants() })
           </td>
         </tr>
         <tr v-if="filteredUsers.length === 0">
-          <td colspan="11" style="text-align:center; padding:32px; color: var(--muted)">{{ t('users.empty', '无匹配用户') }}</td>
+          <td colspan="11" style="text-align:center; padding:32px; color: var(--muted)">{{ t('users.empty', ) }}</td>
         </tr>
       </tbody>
     </table>

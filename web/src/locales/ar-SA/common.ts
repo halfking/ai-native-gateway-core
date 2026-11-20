@@ -310,8 +310,7 @@ export default {
       falsePositiveRate: 'نسبة الإنذارات الكاذبة',
       avgDuration: 'متوسط المدة',
       subTransient: 'قيد المعالجة {processing} · متجاهلة {skipped}',
-    },
-  page: {
+    },  page: {
    title: 'تحليل أخطاء PI',
    triggering: 'جارٍ التحليل...',
    triggerManual: 'بدء التحليل يدويًا',
@@ -350,8 +349,7 @@ export default {
    errorTypePolicyLoadFailed: 'فشل تحميل السياسة',
    errorTypeUnexpectedBehavior: 'سلوك غير متوقع',
    errorTypePerformanceIssue: 'مشكلة في الأداء',
-   errorTypeOutputGuardBlocked: 'حظر حارس المخرجات',
-   statusPending: 'قيد الانتظار',
+   errorTypeOutputGuardBlocked: 'حظر حارس المخرجات',   statusPending: 'قيد الانتظار',
    statusProcessing: 'قيد المعالجة',
    statusAnalyzed: 'تم التحليل',
    statusFailed: 'فشل',

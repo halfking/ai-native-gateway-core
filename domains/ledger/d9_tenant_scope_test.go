@@ -36,7 +36,7 @@ const (
 	d9IdempotencySQL = "FROM maas_idempotency_log"
 	// d9ScopedExistsSQL 是**带 tenant_id 过滤**的存在性检查（D9 修复后的形态）。
 	// 用 ^…$ 锚定 ⇒ 与 d9UnscopedExistsSQL 互斥，不会互相误匹配。
-	d9ScopedExistsSQL = `^SELECT EXISTS\( SELECT 1 FROM maas_usage_settlements WHERE entry_id = \$1 AND tenant_id = \$2 \)$`
+	d9ScopedExistsSQL = `^SELECT EXISTS\( SELECT 1 FROM maas_usage_settlements st JOIN maas_usage_holds h ON st\.usage_hold_id = h\.usage_hold_id WHERE st\.entry_id = \$1 AND h\.tenant_id = \$2 \)$`
 	// d9UnscopedExistsSQL 是「去掉租户过滤后再查一次」的**归属复核**查询。
 	d9UnscopedExistsSQL = `^SELECT EXISTS\( SELECT 1 FROM maas_usage_settlements WHERE entry_id = \$1 \)$`
 )

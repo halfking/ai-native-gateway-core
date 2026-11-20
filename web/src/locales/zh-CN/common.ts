@@ -310,8 +310,7 @@ export default {
       falsePositiveRate: '误报率',
       avgDuration: '平均耗时',
       subTransient: '处理中 {processing} · 跳过 {skipped}',
-    },
-  // ★2026-11-19欠账修正轮：主表格/页头/筛选/字典的文案从视图迁入（此前硬编码59段）。
+    },  // ★2026-11-19欠账修正轮：主表格/页头/筛选/字典的文案从视图迁入（此前硬编码59段）。
   page: {
   title: 'PI错误分析',
   triggering: '分析中...',
@@ -351,8 +350,7 @@ export default {
   errorTypePolicyLoadFailed: '策略加载失败',
   errorTypeUnexpectedBehavior: '意外行为',
   errorTypePerformanceIssue: '性能问题',
-  errorTypeOutputGuardBlocked: '输出守卫拦截',
-  statusPending: '待处理',
+  errorTypeOutputGuardBlocked: '输出守卫拦截',  statusPending: '待处理',
   statusProcessing: '处理中',
   statusAnalyzed: '已分析',
   statusFailed: '失败',

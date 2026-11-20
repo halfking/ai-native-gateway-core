@@ -311,8 +311,7 @@ export default {
       falsePositiveRate: 'False-positive rate',
       avgDuration: 'Avg duration',
       subTransient: 'processing {processing} · skipped {skipped}',
-    },
-  page: {
+    },  page: {
    title: 'PI Error Analysis',
    triggering: 'Analyzing...',
    triggerManual: 'Trigger Analysis',
@@ -351,8 +350,7 @@ export default {
    errorTypePolicyLoadFailed: 'Policy load failed',
    errorTypeUnexpectedBehavior: 'Unexpected behavior',
    errorTypePerformanceIssue: 'Performance issue',
-   errorTypeOutputGuardBlocked: 'Output guard block',
-   statusPending: 'Pending',
+   errorTypeOutputGuardBlocked: 'Output guard block',   statusPending: 'Pending',
    statusProcessing: 'Processing',
    statusAnalyzed: 'Analyzed',
    statusFailed: 'Failed',

@@ -267,7 +267,7 @@ function vendorOptionLabel(v: string) {
       <div
         class="stream-controls"
         role="toolbar"
-        :aria-label="t('dashboard.liveStream.controlsAria', '实时请求流控制栏')"
+        :aria-label="t('dashboard.liveStream.controlsAria', )"
         tabindex="0"
       >
         <!-- 分组切换 -->

@@ -305,8 +305,7 @@ export default {
       falsePositiveRate: 'Tasa de falsos positivos',
       avgDuration: 'Duración media',
       subTransient: 'en proceso {processing} · omitidos {skipped}',
-    },
-  page: {
+    },  page: {
    title: 'Análisis de errores de PI',
    triggering: 'Analizando...',
    triggerManual: 'Activar análisis manual',
@@ -345,8 +344,7 @@ export default {
    errorTypePolicyLoadFailed: 'Fallo al cargar la política',
    errorTypeUnexpectedBehavior: 'Comportamiento inesperado',
    errorTypePerformanceIssue: 'Problema de rendimiento',
-   errorTypeOutputGuardBlocked: 'Bloqueo del guardián de salida',
-   statusPending: 'Pendiente',
+   errorTypeOutputGuardBlocked: 'Bloqueo del guardián de salida',   statusPending: 'Pendiente',
    statusProcessing: 'En proceso',
    statusAnalyzed: 'Analizado',
    statusFailed: 'Fallido',
@@ -358,7 +356,7 @@ export default {
    impactSession: 'Sesión',
    impactTenant: 'Inquilino',
    impactGlobal: 'Mundial',
-  },
+   impactGlobal: 'Global',  },
     unavailableTitle: 'El análisis de errores de PI no está disponible en este momento.',
     unavailableReason: 'El backend no registró /api/admin/pi-analysis/* (falta la conexión a la base de datos o el material de autenticación de admin): es el comportamiento fail-closed del backend, no un conjunto de datos vacío.',
     unavailableNetwork: 'No se puede acceder al endpoint de análisis de errores de PI (error de red o de servidor).',
