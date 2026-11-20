@@ -1,6 +1,6 @@
 # 会话分析系统 5 页 · Maestro 第一层（flow）实跑证据
-# 目标：https://llm.itestu.cn（211 现役 2.6.1-65876d5c-20261120-211，槽 a @8781，git_sha=65876d5c 干净无 -dirty）
-# 采集时间：2026-11-20 11:13:19 +0800
+# 目标：https://llm.itestu.cn（211 现役 2.6.1-f90451e5-20261120-211，槽 a @8781，git_sha=f90451e5 干净无 -dirty）
+# 采集时间：2026-11-20 11:33:32 +0800
 # flow：maestro/flows/16-session-analytics-system.yaml
 # 结论：rc=0 FAILED=0（全绿）
 # ────────────────────────────────────────────
