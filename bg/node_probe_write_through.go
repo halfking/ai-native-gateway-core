@@ -2,9 +2,11 @@ package bg
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // healthyBindingSQL restores one (credential, model) binding after a direct
@@ -112,4 +114,118 @@ func syncHealthyNodeSurfacesAt(ctx context.Context, db *pgxpool.Pool, credential
 	}
 	_, err := db.Exec(ctx, healthyCredentialSQL(), credentialID)
 	return err
+}
+
+// ── 探针的配额族凭据面落账（2026-11-20 节点探测能力轮）──────────────────────
+//
+// ★ 问题（211 生产实测）：apiclaude.cc 对 claude-sonnet-5-5 回
+// HTTP 403 {"code":"INSUFFICIENT_BALANCE"}。业务面把它判成
+// KindQuotaPermanent 并**凭据级落账**（quota_state=permanently_exhausted +
+// availability_state=suspended）⇒ UI 显示「配额耗尽 / 已停用」；
+// 而**探针面**此前只写**绑定面**（cmb.available=FALSE / probe_http_403）⇒
+// **凭据面一个字不写** ⇒ 凭据仍显示 availability_state='ready' +
+// quota_state='ok' ⇒ **「节点正常」**。
+//
+// ⇒ 两面矛盾 ⇒ 用户看到「节点正常但访问不了这个模型」⇒ **状态不匹配**。
+//
+// ★ 修法：探针也写凭据面，**词表与业务面逐字一致**（同一个 kind 字符串做
+// state_reason_code、同一套 quota_state 取值、同一套 availability_state='suspended'）
+// ⇒ 两面对同一个上游裁决给出同一个答案。
+//
+// ★ 守卫（为什么探针可以写共享面）：
+//
+//	① 只写**配额族**（errorsx.PenaltyOf 判它是凭据级判决）；其它族不碰。
+//	② **两次连续**配额族探针失败才落账（调用方校验 attempt ≥ 2）⇒ 一次偶发
+//	   403 不会把整个凭据摘掉（探针是合成流量，比业务流量更不该单次定罪）。
+//	③ lifecycle_status='active' + manual_disabled=FALSE + balance_floor 豁免
+//	   —— 与 healthyCredentialSQL / domains/credential/writer.go 同款守卫。
+//
+// ★ 幂等：同一 kind 重复落账是同值写（quota_state 已是目标值时再写一次也是
+// 同值）⇒ 探针每轮失败都落账不会产生额外扰动。
+func quotaCredentialSQL(kind errorsx.ErrorKind) string {
+	switch kind {
+	case errorsx.KindQuotaPermanent:
+		return `
+		UPDATE credentials
+		SET quota_state             = 'permanently_exhausted',
+		    quota_recover_at        = NULL,
+		    availability_state      = 'suspended',
+		    availability_recover_at = NULL,
+		    state_reason_code       = $1,
+		    state_reason_detail     = $2,
+		    state_updated_at        = now()
+		WHERE id = $3
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  -- 2026-09-13 同款守卫：不夺走 balance_floor guard 摘出的行
+		  -- （那批行的恢复归 BalanceQuotaProbe / BalanceQuotaProbe v2）。
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'`
+	case errorsx.KindQuotaBalance, errorsx.KindQuota:
+		return `
+		UPDATE credentials
+		SET quota_state             = 'balance_exhausted',
+		    quota_recover_at        = NULL,
+		    availability_state      = 'suspended',
+		    availability_recover_at = NULL,
+		    state_reason_code       = $1,
+		    state_reason_detail     = $2,
+		    state_updated_at        = now()
+		WHERE id = $3
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'`
+	case errorsx.KindQuotaPeriodic:
+		// ★ 周期窗口族：重置点来自 errorsx.NextQuotaReset（**同一个** helpers
+		//   业务面 classifyProbeFailure 用的就是它）⇒ 两个面算出的重置点一致。
+		//   ★ 与业务面的差别：业务面用 inferQuotaRecoveryAtNow（detail + Retry-After
+		//   + 窗口启发式），探针侧没有 Retry-After ⇒ 只用正文里的重置提示。
+		return `
+		UPDATE credentials
+		SET quota_state             = 'periodic_exhausted',
+		    quota_recover_at        = $4,
+		    availability_state      = 'suspended',
+		    availability_recover_at = $4,
+		    state_reason_code       = $1,
+		    state_reason_detail     = $2,
+		    state_updated_at        = now()
+		WHERE id = $3
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'`
+	}
+	return ""
+}
+
+// updateCredentialQuotaSurface writes the credential-level quota verdict the
+// node probe observed. It is a no-op for any kind outside the quota family.
+//
+// detail is the upstream error text; it is stored in state_reason_detail so the
+// operator sees WHY the credential was suspended (same shape as the business
+// writer's detail). It also carries the reset hint for the periodic family.
+//
+// The write goes through scheduleExec() — the worker's existing Exec seam —
+// so tests can inject a fake exec instead of a real pool.
+func (w *NodeProbeWorker) updateCredentialQuotaSurface(ctx context.Context, credID int, kind errorsx.ErrorKind, detail string) {
+	if w == nil || credID <= 0 {
+		return
+	}
+	exec := w.scheduleExec()
+	if exec == nil {
+		return
+	}
+	sql := quotaCredentialSQL(kind)
+	if sql == "" {
+		return
+	}
+	args := []any{string(kind), detail, credID}
+	if kind == errorsx.KindQuotaPeriodic {
+		// ★ 重置点用 errorsx.NextQuotaReset（业务面 classifyProbeFailure 用的
+		//   同款 helper）⇒ 两个面算出的重置点一致 ⇒ 探针的配额重置点对齐退避
+		//   （quotaResetAlignedBackoff）也能命中。
+		args = append(args, errorsx.NextQuotaReset(detail, time.Now()))
+	}
+	if _, err := exec.Exec(ctx, sql, args...); err != nil {
+		slog.Warn("node_probe_worker: credential quota surface write failed",
+			"credential_id", credID, "kind", string(kind), "error", err)
+	}
 }

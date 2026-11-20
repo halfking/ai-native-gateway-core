@@ -611,7 +611,15 @@ func cmbExpiredRecoverySQL() string {
 		        -- F4：凭据级归因（auto_credential_%）的绑定，其恢复条件是
 		        -- **凭据级**的 ⇒ 凭据还没 ready 就不能把绑定放回来
 		        -- （否则「凭据欠配额、绑定已可用」的面间漂移）。
-		        COALESCE(cmb.unavailable_reason, '') NOT LIKE 'auto_credential_%'
+		        -- ★ 2026-11-20（节点探测能力轮）：探针的配额族落账
+		        --   （probe_quota_%）同样是**凭据级归因** ⇒ 同款守卫。
+		        --   否则：凭据被配额停用（availability_state='suspended'）、
+		        --   绑定的 6 小时配额冷却到期 ⇒ 绑定被翻绿 ⇒ 又一次
+		        --   「绑定面说可用、凭据面说不可用」的面间漂移。
+		        (
+		          COALESCE(cmb.unavailable_reason, '') NOT LIKE 'auto_credential_%'
+		       AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'probe_quota%'
+		        )
 		     OR EXISTS (
 		          SELECT 1 FROM credentials c2
 		          WHERE c2.id = cmb.credential_id

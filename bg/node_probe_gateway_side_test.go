@@ -163,7 +163,9 @@ func TestRunOneGatewaySideSkipsSharedStateWrites(t *testing.T) {
 	if !strings.Contains(sync, "gateway-side direct probe error (sync)") {
 		t.Errorf("sync path must log the skipped availability update for gateway-side errors")
 	}
-	if !strings.Contains(sync, "w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail, time.Time{})") ||
+	// ★ 2026-11-20（节点探测能力轮）：失败写入多带一个 quotaVerdict 参数
+	//   （配额族的冷却时长/绑定理由由它决定 ⇒ 与探针自己的下一跳同源）。
+	if !strings.Contains(sync, "w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail, time.Time{}, syncVerdict)") ||
 		!strings.Contains(sync, "w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode") {
 		t.Errorf("sync path must keep the genuine-upstream-error write branch")
 	}

@@ -557,6 +557,17 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// featured-multiplier exemption and the audit/queue ReasonCode below.
 	errCode := direct.errCode
 	backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
+	// ★ 2026-11-20（节点探测能力轮）：配额族裁决**不能**走通用梯子 —— 余额已
+	//   耗尽的节点每轮都注定失败（211 实测：凭据 56 的 20 个模型对各连败
+	//   175~489 次，通用梯尾 × 常用模型 50% 折算 = 每 3 小时一轮空打）⇒ 改为
+	//   停放到配额复检 horizon。恢复感知不降级：凭据级配额探针发现充值后触发
+	//   RearmCredentialFailures 把本行拉回 now()，泵 30s 内接管验证。
+	outcomeKind := probeOutcomeKind(direct)
+	quotaFamily := isQuotaProbeKind(outcomeKind)
+	if quotaFamily {
+		verdict, _ := probeQuotaVerdict(direct)
+		backoff = probeBackoffForDirectOutcomeKind(verdict, direct.errCode, direct.rootCause, attempt)
+	}
 	// ★ 2026-11-07 配额重置点对齐：配额用尽且 quota_recover_at 已知在未来
 	//   ⇒ 把下一跳钉在重置点+60s，用尽期内不再每 3~5 分钟空打一次（见
 	//   probe_recovery_policy.go 头注）。提前恢复（充值/提前重置）由凭据级
@@ -579,7 +590,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// protection extends to every protocol-shaped failure (contract mismatch
 	// parked at 6h by probeBackoffForDirectOutcome must not be shortened back
 	// into a churn loop).
-	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) && direct.rootCause != ProbeRootCauseProtocol && !quotaPinned {
+	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) && direct.rootCause != ProbeRootCauseProtocol && !quotaPinned && !quotaFamily {
 		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
 			scaled := time.Duration(float64(backoff) * float64(pct) / 100.0)
 			if scaled < 5*time.Second {
@@ -869,7 +880,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		return
 	}
 	if outcome.direct.ok {
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0, "", outcome.evidenceAt)
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0, "", outcome.evidenceAt, quotaVerdict{})
 		if s.worker.db != nil {
 			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
 		}
@@ -906,9 +917,20 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 			if outcome.direct.errCode != "" && outcome.direct.errCode != "none" {
 				directErrCode = outcome.direct.errCode
 			}
-			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt, outcome.direct.errDetail, time.Time{})
-			_, horizon := unavailableBindingHorizon(directErrCode, outcome.attempt)
+			// ★ 2026-11-20（节点探测能力轮）：配额族裁决要**凭据级**落账，
+			//   否则凭据面仍显示 ready/ok（=「节点正常」）而模型不可路由
+			//   （211 实测：apiclaude 凭据 56 对 claude-sonnet-5-5 回 403
+			//   INSUFFICIENT_BALANCE，业务面停用凭据、探针面只拉黑绑定 ⇒
+			//   两个面给出矛盾的答案）。冷却时长同步走 quotaVerdict 口径，
+			//   与探针自己的下一跳同源（绑定面不再写「5 分钟」假账）。
+			verdict, isQuota := probeQuotaVerdict(outcome.direct)
+			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt, outcome.direct.errDetail, time.Time{}, verdict)
+			_, horizon := unavailableBindingHorizonForKind(directErrCode, verdict, outcome.attempt)
 			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, directErrCode, time.Now().Add(horizon))
+			// ★ 两次连续配额族失败才给凭据定罪（探针是合成流量）。
+			if isQuota && outcome.attempt >= 2 {
+				s.worker.updateCredentialQuotaSurface(ctx, outcome.credentialID, verdict.kind, outcome.direct.errDetail)
+			}
 		}
 	}
 	if s.worker.invalidateCandidateCache != nil {
