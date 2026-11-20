@@ -119,7 +119,10 @@ function fmtTokensCompact(n: number | undefined) {
     </div>
     <div class="hero-card">
       <div class="hero-card__label">
-        {{ t('dashboard.stat.totalRequests') }}
+        <!-- 文案包在自己的 span 里（而不是与徽标 span 混在同一个文本节点）：
+             Maestro 的 text: 断言是「元素完整文本相等」，混排会让文本节点
+             变成 '总请求数␣'（尾随空白）⇒ 精确断言永远失配（2026-11-20 实测踩坑）。 -->
+        <span class="hero-card__label-text">{{ t('dashboard.stat.totalRequests') }}</span>
         <!-- 2026-11-20 口径对齐轮：含探测模式下英雄区数字是供应商对账口径，
              与下方业务口径的趋势/分布图不同源——徽标把这个差异显式说出来，
              不让用户对着「英雄区 > 趋势各桶之和」猜原因。 -->
