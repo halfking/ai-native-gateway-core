@@ -15,9 +15,8 @@ const props = defineProps<{
   loading?: boolean
   source?: string
   /**
-   * 2026-11-20 口径对齐轮：英雄区汇总是否含探测流量。
+   * 2026-11-20 口径对齐轮：英雄区汇总是否含探测流量（两处筛选条共用）。
    * true → 供应商对账口径（usage_facts 全量）；false（缺省）→ 内部对账口径。
-   * undefined = 调用方不提供该控件（保持旧用途兼容）。
    */
   includeProbes?: boolean
   /** 紧凑形态（2026-11-19 轮）：顶部那份与运维状态行（ops-bar 4px 12px 胶囊）对齐高度用 */
@@ -94,8 +93,13 @@ const sourceKey = computed(() => {
     </div>
     <!-- 2026-11-20 口径对齐轮：英雄区汇总的探测口径切换。
          不含探测 = 内部对账口径；含探测 = 供应商对账口径（对外对账因含探测流量会多一些）。
-         切的是英雄区汇总的取数口径；分布/趋势图仍为业务口径。 -->
-    <div v-if="includeProbes !== undefined" class="bfb__item">
+         切的是英雄区汇总的取数口径；分布/趋势图仍为业务口径。
+         ⚠ 两个实例（顶部紧凑条 + 下方筛选条）都渲染本控件——1440 视口实测
+         顶部行仍单行（含 ops chips）；两条是同一份状态的两个入口。
+         ★ 不用 `v-if="includeProbes !== undefined"` 做「调用方可选」：
+           Vue 对声明了 type:Boolean 的 prop，**未传也置 false 而不是
+           undefined**（布尔转型）⇒ 那个门恒真（2026-11-20 线上实测踩坑）。 -->
+    <div class="bfb__item">
       <span class="bfb__label">{{ t('dashboard.board.probeScopeLabel') }}</span>
       <span class="bfb__probe" :title="t('dashboard.board.probeScopeTitle')" role="group">
         <button
