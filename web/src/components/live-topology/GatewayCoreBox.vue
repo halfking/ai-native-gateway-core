@@ -606,6 +606,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   display: flex;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   gap: 7px;
   align-items: stretch;
 }
@@ -641,6 +642,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   border-radius: 10px;
   padding: 3px 7px 5px;
   min-width: 0;
+  min-height: 0;
 }
 
 .gw__grp-t {
@@ -694,6 +696,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   display: flex;
   flex: 1;
   min-width: 0;
+  min-height: 0;
   align-items: stretch;
   gap: 5px;
 }
