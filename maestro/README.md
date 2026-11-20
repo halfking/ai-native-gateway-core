@@ -150,7 +150,7 @@
 | `maestro/flows/14-user-analytics-enhancement.yaml` | 用户分析增强（画像下钻） | 2 | 是 | openLink 步数 2。 |
 | `maestro/flows/14-stats-consistency-test.yaml` | 统计口径一致性 | 5 | 是 | openLink 步数 5。 |
 | `maestro/flows/15-board-probe-scope.yaml` | 看板探测口径筛选 | 2 | 是 | openLink 步数 2。 |
-| `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。 |
+| `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。★ **必须经 `maestro/run-session-analytics.sh` 跑**（它负责喂动态段 owner、钉 zh-CN 界面语言、起全新 Chrome）—— 前置条件见 §4.4。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
 合计：**运行时路由 130 条**（§1.1 口径）。
@@ -429,6 +429,45 @@ maestro --version                                      # 2.11.0
 
 ★ 代价要说清楚：`-e` 的值会出现在**进程 argv** 里 ⇒ 同机其它用户可用 `ps` 看到。
 这是「用 CLI 提供的唯一通道」与「口令不进仓内文件」之间的取舍，本仓选了后者。
+
+### 4.4 ★ 会话分析两层 E2E 的运行前提（2026-11-20 批判式审计补）
+
+`maestro/flows/16-session-analytics-system.yaml` + `maestro/tools/assert-session-analytics.mjs`
+这一对**必须经 `maestro/run-session-analytics.sh` 跑**，不能直接 `maestro test`。
+三个前提（缺一个 ⇒ 结论不可信）：
+
+| 前提 | 为什么 | 做法 |
+|---|---|---|
+| **界面语言 = zh-CN** | 应用 locale 取自 `navigator.language`（`web/src/i18n.ts:82` `defaultLocale()`）且持久化在 `localStorage['llmgw_locale']` ⇒ 浏览器语言一变，**整页文案换语种** ⇒ 断言里的中文判据（数据卡 label / 表头 / 区块标题）要么失效（假红），要么——状态判据失效——**假绿** | runner 起 Chrome 时带 `--lang=zh-CN`；探针再写一次 localStorage 并读回 `<html lang>` 复核（`web/src/i18n.ts:121` 会写它）；钉不住 ⇒ 判**量具失效**（退出码 2），不判产品红 |
+| **全新浏览器 profile** | 复用的浏览器带着上一轮的 cookie / localStorage ⇒ 旧会话 cookie 与旧 `llmgw_locale` 静默生效 ⇒ 数据源降级、断言读到的不是被测状态（AGENTS.md ④-1 的实测坑） | CDP 端口被占用就**顺延换端口**（绝不复用那个浏览器）+ profile 目录带时间戳 |
+| **动态段 `${SESSION_OWNER}` 喂真值** | owner 为空 ⇒ 详情页 URL 变成 `/admin/session-analytics/user-ranking/` ⇒ 断的是「路由不存在」而不是「详情页坏了」⇒ **量具错** | runner 从 `/api/admin/session-analytics/user-ranking` 取首行 owner；窗口内无人 ⇒ 判量具失效（退出码 2） |
+
+★ **退出码三态**（与 `maestro/tools/result.mjs` 一致，**唯一的判定口径真源**）：
+
+| 码 | 含义 | 处置 |
+|---|---|---|
+| 0 | 两层全绿 | 通过 |
+| 1 | 有红（产品问题） | 修产品 |
+| 2 | **量具失效**（窗口内无数据 ⇒ 断言**未评估**） | 换窗口 / 补数据，**不是**产品缺陷 |
+
+★ 通用式：**「没测到」与「测出来不合格」必须是两种不同的退出码** ——
+把它们压平成同一个码，上游就分不清该改产品还是该换环境。
+
+### 4.5 ★ 状态判据用**结构类名**，不用中文文案
+
+会话分析页的状态横幅是 `SaStateBanner`，有稳定的类名：
+
+| 语义 | 结构选择器 | 来源 |
+|---|---|---|
+| 错误横幅 | `.sa-banner--error` | `web/src/views/admin/session-analytics/components/SaStateBanner.vue:25` |
+| 陈旧横幅（503 `analytics_view_stale`） | `.sa-banner--stale` | 同上 |
+| 加载占位 | `.sa-loading` | `SessionAnalyticsOverviewView.vue:34` |
+| 跨单位口径说明 | `.sa-note` | 各视图 `<p class="sa-note">` |
+| 空态 | `.app-empty-state` | `web/src/components/EmptyState.vue:35` |
+
+★ **文案是展示层（随 locale 变），类名是契约层（不会）** ⇒ 状态判据必须用类名。
+★ 反例（本轮真踩过）：旧版探针用 `body.includes('没能加载出来')` 判错误横幅 ——
+换语种后**永远找不到** ⇒ 「无错误横幅」恒真 ⇒ **假绿**。
 
 
 ---

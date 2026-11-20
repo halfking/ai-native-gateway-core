@@ -37,6 +37,17 @@
 #
 # ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
 #   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+#
+# ★★ 运行前提（2026-11-20 批判式审计补）：
+#   ① **必须经 maestro/run-session-analytics.sh 运行**——它负责解析动态段
+#      `${SESSION_OWNER}`（喂真值）、起**全新**的 Chrome（带 `--lang=zh-CN`）、
+#      并把端口/凭据/窗口一起喂进来。直接 `maestro test` 跑本 flow ⇒
+#      动态段为空 ⇒ 详情页 URL 变成 `/admin/session-analytics/user-ranking/`
+#      ⇒ 断的是「路由不存在」而不是「详情页坏了」⇒ **量具错**。
+#   ② 本 flow 的判据是**中文文案**（表头 / 数据卡 label / 区块标题），
+#      而应用 locale 取自 `navigator.language`（`web/src/i18n.ts:82`）且持久化在
+#      `localStorage['llmgw_locale']` ⇒ **浏览器语言不是 zh-CN 时本 flow 必然假红**。
+#      ⇒ runner 用 `--lang=zh-CN` 钉住；换语种 ⇒ 假红（响亮，总好过假绿）。
 url: ${BASE_URL}
 ---
 # ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
