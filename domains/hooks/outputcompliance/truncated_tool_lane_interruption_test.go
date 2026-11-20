@@ -150,3 +150,75 @@ func TestInterruptedStreamRealRuleHitStillBlocks(t *testing.T) {
 		t.Fatalf("rule=%q，期望 test.hard_block", got)
 	}
 }
+
+// incidentResponsesFrames 产出 Responses 协议形态的帧：output_item.added 声明
+// function_call（Bash）+ 一段 function_call_arguments.delta（截断前缀）。
+func incidentResponsesFrames(partialArgs string) [][]byte {
+	added, _ := json.Marshal(map[string]any{
+		"type": "response.output_item.added", "output_index": 0,
+		"item": map[string]any{"type": "function_call", "id": "fc_incident", "name": "Bash", "arguments": ""},
+	})
+	delta, _ := json.Marshal(map[string]any{
+		"type": "response.function_call_arguments.delta", "item_id": "fc_incident", "output_index": 0,
+		"delta": partialArgs,
+	})
+	return [][]byte{
+		[]byte("event: response.output_item.added\ndata: " + string(added) + "\n\n"),
+		[]byte("event: response.function_call_arguments.delta\ndata: " + string(delta) + "\n\n"),
+	}
+}
+
+// 契约 1b（失败终帧族，2026-11-20 L1 收口）：response.failed / response.incomplete
+// 是「响应没写完」的失败终帧 ⇒ 参数 lane 是截断前缀 ⇒ 不判 tool_json_invalid，
+// 失败终帧本身照常转发（客户端要看到真实失败原因）。
+func TestFailedTerminalTruncatedToolLaneReleasesNotBlocks(t *testing.T) {
+	for _, terminalType := range []string{"response.failed", "response.incomplete"} {
+		t.Run(terminalType, func(t *testing.T) {
+			it, meta := incidentInterceptor(t)
+			for _, frame := range incidentResponsesFrames(`{"`) {
+				if _, err := it.processStreamChunk(context.Background(), frame, meta); err != nil {
+					t.Fatalf("frame=%q err=%v", frame, err)
+				}
+			}
+			terminal, _ := json.Marshal(map[string]any{"type": terminalType})
+			result, err := it.processStreamChunk(context.Background(),
+				[]byte("event: "+terminalType+"\ndata: "+string(terminal)+"\n\n"), meta)
+			if err != nil {
+				t.Fatalf("失败终帧不得把截断 lane 判成 tool_json_invalid: %v", err)
+			}
+			if result == nil || result.ShouldBlock {
+				t.Fatalf("失败终帧 + 截断参数必须放行（转发失败终帧）: %+v", result)
+			}
+			wire := result.ModifiedChunk
+			if !strings.Contains(string(wire), terminalType) {
+				t.Fatalf("失败终帧必须照常转发: %q", wire)
+			}
+			if !strings.Contains(string(wire), "function_call_arguments.delta") {
+				t.Fatalf("截断参数帧应随失败终帧一并释放: %q", wire)
+			}
+		})
+	}
+}
+
+// 契约 2b：Responses 协议**正常收尾**（response.completed）+ 截断/非法参数 ⇒
+// 仍按 tool_json_invalid fail-closed（上游写完了还非法才是格式违规）。
+func TestResponsesCompletedMalformedToolJSONStillBlocks(t *testing.T) {
+	it, meta := incidentInterceptor(t)
+	for _, frame := range incidentResponsesFrames(`{"`) {
+		if _, err := it.processStreamChunk(context.Background(), frame, meta); err != nil {
+			t.Fatalf("frame=%q err=%v", frame, err)
+		}
+	}
+	completed, _ := json.Marshal(map[string]any{"type": "response.completed"})
+	result, err := it.processStreamChunk(context.Background(),
+		[]byte("event: response.completed\ndata: "+string(completed)+"\n\n"), meta)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if result == nil || !result.ShouldBlock {
+		t.Fatalf("response.completed 收尾 + 非法参数必须照拦: %+v", result)
+	}
+	if got := result.Metadata["policy_rule"]; got != GuardToolJSONInvalidRuleID {
+		t.Fatalf("policy_rule=%v，期望 %s", got, GuardToolJSONInvalidRuleID)
+	}
+}

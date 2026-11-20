@@ -329,11 +329,12 @@ type complianceStreamState struct {
 	// sanitize 侧的惰性内容工具豁免。chat 形态首增量自带名字（直接进标签），
 	// 不依赖这张表。
 	toolNames map[string]string
-	// terminalSeen 表示本流已处理过**终帧**（message_stop / [DONE] /
-	// response.completed 等，见 isStreamTerminalFrame）。终帧之后的
-	// releaseCheckedFrames 走「正常收尾」语义；没见过终帧就来 release
-	// （FlushStreamPending 路径）＝ 流被中途掐断 ⇒ 参数 lane 的拼接文本
-	// 天然是**截断前缀**，不能按「上游发来的完整参数」判定（2026-11-20
+	// terminalSeen 表示本流已处理过**正常收尾终帧**（message_stop / [DONE] /
+	// response.completed，见 streamTerminalKind）。失败终帧（response.failed /
+	// response.incomplete）刻意**不置位**——响应没写完，与断流同族。置位后的
+	// releaseCheckedFrames 走「正常收尾」语义；没置位就来 release
+	// （FlushStreamPending 路径 / 失败终帧）＝ 流异常终止 ⇒ 参数 lane 的拼接
+	// 文本天然是**截断前缀**，不能按「上游发来的完整参数」判定（2026-11-20
 	// 211 生产事件，见 releaseCheckedFrames 的截断豁免注释）。
 	terminalSeen bool
 }
@@ -453,8 +454,12 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		state.clear()
 		return blockedChunkResult(err), nil
 	}
-	if isStreamTerminalFrame(frame) {
-		state.terminalSeen = true
+	if kind := streamTerminalKind(frame); kind != "" {
+		// ★ 失败终帧（response.failed / response.incomplete）**不算正常收尾**：
+		// 响应没写完 ⇒ 参数 lane 是截断前缀 ⇒ 与断流同族，走截断豁免
+		// （2026-11-20 断流误判轮 L1 的同族收口）。正常收尾的流在终帧处已
+		// inline release 并 clear，这里的置位只对本次 release 生效。
+		state.terminalSeen = kind != "failed"
 		prior, err := it.releaseCheckedFrames(state.checkCtx, state, meta)
 		if err != nil {
 			return blockedChunkResult(err), nil
@@ -683,10 +688,12 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 		// 单，而真因（上游中断）executor 早已记过账。
 		//
 		// ★ 语义边界：tool_json_invalid 的合同是「上游**发完了**的参数不是合法
-		// JSON」（rv-2089 形态：完整流 + 非法参数）。没见过终帧就来 release ＝
-		// 流被中途掐断 ⇒ 拼接文本是**截断前缀**，不是「上游发来的完整参数」
-		// ⇒ 这不是格式违规，是传输中断 ⇒ **不产出策略判决**，放行让既有的
-		// 上游错误终帧呈给客户端。
+		// JSON」（rv-2089 形态：完整流 + 非法参数）。没见过正常收尾终帧就来
+		// release ＝ 流被中途掐断（无终帧 flush）或以失败终帧收尾
+		// （response.failed / response.incomplete ⇒ 响应没写完）⇒ 拼接文本是
+		// **截断前缀**，不是「上游发来的完整参数」⇒ 这不是格式违规，是传输
+		// 中断/响应失败 ⇒ **不产出策略判决**，放行让既有的上游错误终帧呈给
+		// 客户端。
 		//
 		// ★ 豁免面刻意收窄：只豁免「唯一判决就是 tool_json_invalid」的 lane。
 		// 真实规则命中（凭据/外传目的地，含对截断但已可判定的内容）与脱敏
@@ -926,32 +933,48 @@ func (it *OutputComplianceInterceptor) shouldRedact(ctx context.Context, callerO
 }
 
 func isStreamTerminalFrame(frame []byte) bool {
+	return streamTerminalKind(frame) != ""
+}
+
+// streamTerminalKind 返回终帧类别：
+//   - "done"：正常收尾（[DONE] / message_stop / response.completed）——上游
+//     认为**写完了**，lane 拼接文本按「完整参数」判定；
+//   - "failed"：失败终帧（response.failed / response.incomplete）——响应
+//     **没写完**（失败/超预算截断），工具参数天然是截断前缀，语义与断流
+//     同族：不能按「上游发来的完整参数」判 tool_json_invalid（2026-11-20
+//     断流误判轮 L1 登记的同族形态，本轮收口）；
+//   - ""：非终帧。
+func streamTerminalKind(frame []byte) string {
 	data, _, err := sseFrameData(frame)
 	if err != nil {
-		return false
+		return ""
 	}
 	if bytes.Equal(data, []byte("[DONE]")) {
-		return true
+		return "done"
 	}
 	var payload struct {
 		Type string `json:"type"`
 	}
 	if json.Unmarshal(data, &payload) == nil {
 		switch payload.Type {
-		case "message_stop", "response.completed", "response.failed", "response.incomplete":
-			return true
+		case "message_stop", "response.completed":
+			return "done"
+		case "response.failed", "response.incomplete":
+			return "failed"
 		}
 	}
 	for _, line := range bytes.Split(frame, []byte{'\n'}) {
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if bytes.HasPrefix(line, []byte("event:")) {
 			switch strings.TrimSpace(string(line[len("event:"):])) {
-			case "message_stop", "response.completed", "response.failed", "response.incomplete":
-				return true
+			case "message_stop", "response.completed":
+				return "done"
+			case "response.failed", "response.incomplete":
+				return "failed"
 			}
 		}
 	}
-	return false
+	return ""
 }
 
 func (it *OutputComplianceInterceptor) inspectSSEFrame(ctx context.Context, frame []byte, meta *response.StreamMeta, shouldRedact bool, toolNames *map[string]string) (*checkedStreamFrame, error) {
