@@ -158,12 +158,25 @@ if (!localeOk) {
 }
 check('界面语言已钉住为 zh-CN（<html lang>）', true, `html lang="${htmlLang}"`)
 
-const loginStatus = await js(`fetch('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASSWORD)}})}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
-if (String(loginStatus) !== '200') {
-  console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
+// ★ 2026-11-20 增补「种子会话优先」路径（与 seed-session.mjs 的无口令设计同向）：
+//   先探 /api/auth/me —— 已有有效会话（HttpOnly cookie 已种）则不再走口令登录。
+//   背景：自适应 captcha 闸门是**进程内存计数**且全站经 nginx 同源（remote=172.21.0.1），
+//   并行车与测试机共享失败计数 ⇒ 密码轮换窗口期里口令登录可能整体被 captcha 强制。
+//   种子路径不依赖口令，只依赖一枚有效 JWT（exp 7 天）。
+let loginStatus = await js(`fetch('/api/auth/me',{credentials:'include'}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
+if (String(loginStatus) === '200') {
+  check('已有会话 /api/auth/me 200（seed 路径，免口令）', true)
+} else if (PASSWORD) {
+  loginStatus = await js(`fetch('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASSWORD)}})}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
+  if (String(loginStatus) !== '200') {
+    console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
+    process.exit(EXIT_FAIL)
+  }
+  check('登录 /api/auth/token 200', true)
+} else {
+  console.log(`❌ 无已有会话（/api/auth/me → ${loginStatus}）且未提供口令——先跑 seed-session.mjs 或传 --password`)
   process.exit(EXIT_FAIL)
 }
-check('登录 /api/auth/token 200', true)
 
 // ── 1. API 层：7 个端点 ──────────────────────────────────────────────────
 const apiGet = async (path) => {
