@@ -79,23 +79,40 @@ func (b sessionClosedEventBridge) PublishSessionClosed(ctx context.Context, tena
 	if b.pub == nil {
 		return nil
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("session.closed|%s|%s|%d",
-		tenantID, gwSessionID, lastActiveAt.Unix())))
-	evt := analysis.AnalysisEvent{
-		EventID:    hex.EncodeToString(sum[:]),
+	// ★ 两行扇出（EventSessionClosedSummary 常量头注）：legacy session.closed
+	//   行归 clientprofile 画像 worker；session.closed.summary 行归摘要链，
+	//   两类消费者互不抢认领。EventID 后缀保证两行确定性可去重且互不相同。
+	base := fmt.Sprintf("session.closed|%s|%s|%d",
+		tenantID, gwSessionID, lastActiveAt.Unix())
+	sum := sha256.Sum256([]byte(base))
+	payload := map[string]any{
+		"reason":         reason,
+		"idle_for":       idleFor.String(),
+		"last_active_at": lastActiveAt.Format(time.RFC3339),
+		"source":         "session_lifecycle_worker",
+		"schema_version": "session.closed/v1",
+	}
+	profileEvt := analysis.AnalysisEvent{
+		EventID:    hex.EncodeToString(sum[:]) + "-p",
 		Type:       analysis.EventSessionClosed,
 		TenantID:   tenantID,
 		SessionID:  gwSessionID,
 		OccurredAt: time.Now(),
-		Payload: map[string]any{
-			"reason":         reason,
-			"idle_for":       idleFor.String(),
-			"last_active_at": lastActiveAt.Format(time.RFC3339),
-			"source":         "session_lifecycle_worker",
-			"schema_version": "session.closed/v1",
-		},
+		Payload:    payload,
 	}
-	return b.pub.Publish(ctx, evt)
+	if err := b.pub.Publish(ctx, profileEvt); err != nil {
+		return err
+	}
+	summarySum := sha256.Sum256([]byte(base + "|summary"))
+	summaryEvt := analysis.AnalysisEvent{
+		EventID:    hex.EncodeToString(summarySum[:]) + "-s",
+		Type:       analysis.EventSessionClosedSummary,
+		TenantID:   tenantID,
+		SessionID:  gwSessionID,
+		OccurredAt: time.Now(),
+		Payload:    payload,
+	}
+	return b.pub.Publish(ctx, summaryEvt)
 }
 
 // normalizeAnalysisModelAlias 把分析阶段模型的**幻别名**归一为 "auto"。

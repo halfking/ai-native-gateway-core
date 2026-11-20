@@ -31,7 +31,9 @@ func TestSessionSummaryWorker_NameAndSubscribed(t *testing.T) {
 		t.Fatalf("Name = %q", w.Name())
 	}
 	subs := w.SubscribedTypes()
-	if len(subs) != 1 || subs[0] != analysis.EventSessionClosed {
+	// 2026-11-20 闭环审计：摘要链独占 session.closed.summary（与画像 worker
+	// 的 legacy session.closed 互不抢认领，252 探针实录）。
+	if len(subs) != 1 || subs[0] != analysis.EventSessionClosedSummary {
 		t.Fatalf("SubscribedTypes = %v", subs)
 	}
 }

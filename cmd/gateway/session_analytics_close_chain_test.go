@@ -38,12 +38,16 @@ func TestSessionClosedEventBridgeEventShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if len(fake.events) != 1 {
-		t.Fatalf("published %d events, want 1", len(fake.events))
+	// ★ 两行扇出：legacy 行（画像 worker 食物）+ summary 专用行（摘要链食物）。
+	if len(fake.events) != 2 {
+		t.Fatalf("published %d events, want 2（fan-out）", len(fake.events))
 	}
 	evt := fake.events[0]
 	if evt.Type != analysis.EventSessionClosed {
-		t.Fatalf("event type = %q, want %q（类型错 ⇒ 订阅方永远收不到）", evt.Type, analysis.EventSessionClosed)
+		t.Fatalf("row1 type = %q, want %q", evt.Type, analysis.EventSessionClosed)
+	}
+	if fake.events[1].Type != analysis.EventSessionClosedSummary {
+		t.Fatalf("row2 type = %q, want %q（摘要链独占类型）", fake.events[1].Type, analysis.EventSessionClosedSummary)
 	}
 	if evt.TenantID != "tenant-a" || evt.SessionID != "gw-sess-1" {
 		t.Fatalf("tenant/session 键错误: %q/%q（worker 靠它提取 session_key）", evt.TenantID, evt.SessionID)
@@ -62,10 +66,13 @@ func TestSessionClosedEventBridgeEventShape(t *testing.T) {
 	if fake.events[0].EventID == "" || fake.events[0].EventID != fake2.events[0].EventID {
 		t.Fatalf("EventID 不确定（同会话同 lastActive 两次发布 ID 不同）⇒ 多实例去重失效")
 	}
+	if fake.events[0].EventID == fake.events[1].EventID {
+		t.Fatalf("两行扇出产出同 EventID ⇒ 互吞")
+	}
 	// 不同 lastActive ⇒ 不同 ID（同一会话多次开合各自成事件）。
 	_ = bridge2.PublishSessionClosed(context.Background(),
 		"tenant-a", "gw-sess-1", "idle", lastActive.Add(time.Hour), 2*time.Hour)
-	if fake2.events[0].EventID == fake2.events[1].EventID {
+	if fake2.events[2].EventID == fake2.events[0].EventID {
 		t.Fatalf("不同 lastActive 产出同 EventID ⇒ 第二次开合的关闭会被 ON CONFLICT 吃掉")
 	}
 }

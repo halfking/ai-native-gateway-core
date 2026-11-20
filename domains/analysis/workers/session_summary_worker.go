@@ -60,9 +60,16 @@ func (w *SessionSummaryWorker) AddCloseHook(h SessionCloseHook) {
 // Name 实现 analysis.Worker。
 func (w *SessionSummaryWorker) Name() string { return "session_summary_worker" }
 
-// SubscribedTypes 只订阅 session.closed。
+// SubscribedTypes 只订阅摘要链专用扇出类型（EventSessionClosedSummary）。
+//
+// ★ 2026-11-20 闭环审计：不订阅 legacy session.closed——那行归
+//
+//	clientprofile.ProfileWorker（画像「总会话数」），bus 认领模型下一行事件
+//	只有一个消费者，订阅 legacy 会与画像 worker 抢认领（252 活体实录：
+//	探针事件被画像 worker 先认领，摘要未生成）。Handle 仍兼容两种类型
+//	（防御性：未来如有 legacy 发布方，收到也不丢）。
 func (w *SessionSummaryWorker) SubscribedTypes() []analysis.EventType {
-	return []analysis.EventType{analysis.EventSessionClosed}
+	return []analysis.EventType{analysis.EventSessionClosedSummary}
 }
 
 // Handle 提取 session_key 调用 summarizer。
@@ -75,7 +82,7 @@ func (w *SessionSummaryWorker) SubscribedTypes() []analysis.EventType {
 //   - tenant_id 或 session_key 缺失：返回 nil（无法处理）
 //   - GenerateSummary 失败：返回错误，由事件总线记录 attempts 并重试
 func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.AnalysisEvent) error {
-	if evt.Type != analysis.EventSessionClosed {
+	if evt.Type != analysis.EventSessionClosed && evt.Type != analysis.EventSessionClosedSummary {
 		return nil
 	}
 	sessionKey := extractSessionKey(evt)
