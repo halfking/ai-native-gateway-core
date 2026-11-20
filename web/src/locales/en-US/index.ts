@@ -92,6 +92,7 @@ import publicQuote from './publicQuote'
 import helpManual from './helpManual'
 import selfUpdateView from './selfUpdateView'
 import simpleMode from './simpleMode'
+import sessionAnalytics from './sessionAnalytics'
 
 export default {
   hyper,
@@ -187,4 +188,5 @@ export default {
   sales,
   publicQuote,
   simpleMode,
+  sessionAnalytics,
 }
