@@ -152,6 +152,22 @@ export default {
     explicit: '指定模型',
     unmeasured: '內部直連未測量',
   },
+  ribbon: {
+    ingress: '入口處理',
+    routing: '選路 · 壓縮',
+    storage: '儲存轉發（貫穿）',
+    egress: '出口 · 觀測',
+    providerHop: '供應端處理',
+    backToClient: '回用戶端',
+  },
+  frames: {
+    solid: '實線框＝主鏈處理',
+    rail: '粗左軌＝選路決策',
+    storeDash: '斜紋虛線＝儲存轉發',
+    outDash: '虛線框＝旁路觀測',
+    bracket: '括號＝基礎服務（不在鏈上）',
+    count: '數字＝視窗內命中數，紅框＝有失敗',
+  },
   /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
   provider: {
     direct: '直連',

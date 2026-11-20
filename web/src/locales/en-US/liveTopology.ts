@@ -152,6 +152,22 @@ export default {
     explicit: 'Named models',
     unmeasured: 'direct internal unmeasured',
   },
+  ribbon: {
+    ingress: 'Ingress handling',
+    routing: 'Routing · compress',
+    storage: 'Store-and-forward (spanning)',
+    egress: 'Egress · observation',
+    providerHop: 'Provider processing',
+    backToClient: 'Back to client',
+  },
+  frames: {
+    solid: 'Solid frame = pipeline stage',
+    rail: 'Left rail = routing decision',
+    storeDash: 'Hatched = store-and-forward',
+    outDash: 'Dashed = bypass observation',
+    bracket: 'Bracket = infra services (off-chain)',
+    count: 'Number = window hits, red frame = failures',
+  },
   /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
   provider: {
     direct: 'direct',

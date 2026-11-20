@@ -152,6 +152,22 @@ export default {
     explicit: '指定モデル',
     unmeasured: '内部直結は未測定',
   },
+  ribbon: {
+    ingress: '入口処理',
+    routing: 'ルーティング・圧縮',
+    storage: '保存転送（横断）',
+    egress: '出口・観測',
+    providerHop: 'プロバイダー処理',
+    backToClient: 'クライアントへ戻る',
+  },
+  frames: {
+    solid: '実線枠＝主処理',
+    rail: '太左罫線＝ルーティング判断',
+    storeDash: '斜線枠＝保存転送',
+    outDash: '破線枠＝傍観測',
+    bracket: '括弧＝基盤サービス（チェーン外）',
+    count: '数字＝ウィンドウ内ヒット数、赤枠＝失敗あり',
+  },
   /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
   provider: {
     direct: '直結',

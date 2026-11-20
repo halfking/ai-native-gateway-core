@@ -152,6 +152,22 @@ export default {
     explicit: 'Benannte Modelle',
     unmeasured: 'direkt intern nicht gemessen',
   },
+  ribbon: {
+    ingress: 'Eingangsverarbeitung',
+    routing: 'Routing · Komprimierung',
+    storage: 'Speichern & Weiterleiten (durchgehend)',
+    egress: 'Ausgang · Beobachtung',
+    providerHop: 'Provider-Verarbeitung',
+    backToClient: 'Zurück zum Client',
+  },
+  frames: {
+    solid: 'Vollrahmen = Pipeline-Stufe',
+    rail: 'Linksleiste = Routing-Entscheidung',
+    storeDash: 'Schraffur = Speichern & Weiterleiten',
+    outDash: 'Gestrichelt = Nebenbeobachtung',
+    bracket: 'Klammer = Infrastruktur (außerhalb der Kette)',
+    count: 'Zahl = Treffer im Fenster, roter Rahmen = Fehler',
+  },
   /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
   provider: {
     direct: 'direkt',

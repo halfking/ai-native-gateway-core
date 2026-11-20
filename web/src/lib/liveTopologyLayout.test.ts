@@ -86,9 +86,9 @@ describe('computeLayout', () => {
     expect(layout.nodes.map((n) => n.id)).not.toContain('gateway:core')
     expect(layout.gateway.w).toBeGreaterThan(SIZE.width / 2)
     expect(layout.gateway.h).toBeGreaterThan(SIZE.height / 4)
-    // 四条流程带全部落在大方块内部（2026-10-28 选路层轮：in 与 store 之间
-    // 加入 select 扇出带；越界 = 画到框外了）
-    expect(layout.gateway.lanes.map((l) => l.lane)).toEqual(['in', 'select', 'store', 'out'])
+    // 三段（缎带/组区/图例）全部落在大方块内部（2026-11-20 C 方案轮；
+    // 越界 = 画到框外了）
+    expect(layout.gateway.lanes.map((l) => l.lane)).toEqual(['ribbon', 'groups', 'legend'])
     for (const lane of layout.gateway.lanes) {
       expect(lane.x).toBeGreaterThanOrEqual(layout.gateway.x)
       expect(lane.y).toBeGreaterThanOrEqual(layout.gateway.y)
@@ -446,23 +446,19 @@ describe('isEdgeHighlighted', () => {
 })
 
 describe('computeGatewayBox', () => {
-  it('stacks four flow lanes in order: in → select → store → out', () => {
-    // owner 2026-10-18：模块要按处理流程的位置排布 —— 请求链在上、
-    // 存储转发居中、响应链在下；2026-10-28 选路层轮在 in 与 store 之间
-    // 插入 select 扇出带（模型选择三出口）。四带 y 严格递增且带间留隙。
+  it('stacks the three C-plan bands in order: ribbon → groups → legend', () => {
+    // 2026-11-20 C 方案：大方块纵向三段 —— 流程缎带（全程节点）→
+    // 四组瓦片区（主体）→ 外框图例行。三段 y 严格递增且段间不重叠。
     const box = computeGatewayBox(1200, 700)
-    expect(box.lanes.map((l) => l.lane)).toEqual(['in', 'select', 'store', 'out'])
-    const [inLane, selectLane, storeLane, outLane] = box.lanes
-    expect(inLane.y).toBeLessThan(selectLane.y)
-    expect(selectLane.y).toBeLessThan(storeLane.y)
-    expect(storeLane.y).toBeLessThan(outLane.y)
-    expect(selectLane.y).toBeGreaterThanOrEqual(inLane.y + inLane.h)
-    expect(storeLane.y).toBeGreaterThanOrEqual(selectLane.y + selectLane.h)
-    expect(outLane.y).toBeGreaterThanOrEqual(storeLane.y + storeLane.h)
-    // 进站带最宽（4 格 + 插件 chip），选路扇出带最矮（3 张单行出口卡）
-    expect(inLane.h).toBeGreaterThan(storeLane.h)
-    expect(outLane.h).toBeGreaterThan(storeLane.h)
-    expect(inLane.h).toBeGreaterThan(selectLane.h)
+    expect(box.lanes.map((l) => l.lane)).toEqual(['ribbon', 'groups', 'legend'])
+    const [ribbon, groups, legend] = box.lanes
+    expect(ribbon.y).toBeLessThan(groups.y)
+    expect(groups.y).toBeLessThan(legend.y)
+    expect(groups.y).toBeGreaterThanOrEqual(ribbon.y + ribbon.h)
+    expect(legend.y).toBeGreaterThanOrEqual(groups.y + groups.h)
+    // 组区（瓦片+扇出竖排）最高，图例行最矮
+    expect(groups.h).toBeGreaterThan(ribbon.h)
+    expect(groups.h).toBeGreaterThan(legend.h)
   })
 
   it('★ module→lane membership matches the flow position (请求侧/扇出/存储/响应侧 + 基础服务)', () => {
@@ -470,6 +466,8 @@ describe('computeGatewayBox', () => {
     // 2026-10-28 选路层轮：route/nodeState 移出主链进基础服务侧条；
     // ★ 批判式审计修正：压缩排在模型选择**之后**（候选解析先定目标模型，
     // SessionCompressor 才按其上下文窗口做滑窗压缩）。
+    // 2026-11-20 C 方案：in 带四模块拆渲染为 ①入口治理+②选路压缩两组，
+    // 但模块归属（lane='in'）不变 —— 布局/统计口径与视觉分组解耦。
     expect(GATEWAY_IN_MODULES.map((m) => m.key)).toEqual(['cache', 'sanitize', 'modelSelect', 'compress'])
     expect(GATEWAY_INFRA_MODULES.map((m) => m.key)).toEqual(['route', 'nodeState'])
     expect(GATEWAY_STORE_MODULES.map((m) => m.key)).toEqual(['sessionWrite', 'sessionFile'])
@@ -482,13 +480,13 @@ describe('computeGatewayBox', () => {
     expect(JSON.stringify(computeGatewayBox(1200, 700))).toBe(JSON.stringify(computeGatewayBox(1200, 700)))
   })
 
-  it('★ reserves a header band so the title cannot sit on the first lane', () => {
-    // 2026-10-17 轮的真实肉眼缺陷（标题压住第一行模块）在三带版同样要防：
-    // 第一带的 y 必须在标题带（26px）之下。
+  it('★ reserves a header band so the title cannot sit on the first band', () => {
+    // 2026-10-17 轮的真实肉眼缺陷（标题压住第一行模块）同样要防：
+    // 第一段（缎带）的 y 必须在标题带（26px）之下。
     const box = computeGatewayBox(1200, 700)
     const firstLane = box.lanes[0]
     expect(firstLane.y - box.y).toBeGreaterThanOrEqual(24)
-    // 第三带不能溢出大方块底部
+    // 末段（图例）不能溢出大方块底部
     const lastLane = box.lanes[box.lanes.length - 1]
     expect(lastLane.y + lastLane.h).toBeLessThanOrEqual(box.y + box.h)
   })
@@ -507,12 +505,24 @@ describe('computeGatewayBox', () => {
 
   it('★ caps the box height on very tall canvases (no giant empty frame)', () => {
     // 预览页实测画布高 1723px：纯比例会把大方块拉到 1000px+，
-    // 而三条带内容只有 ~200px —— 其余全空白，读图的人只会觉得图坏了。
-    // 高度必须夹在内容紧包裹上限内，且仍在客户端/供应端行之间居中。
+    // 而 C 方案内容只有 ~200px —— 其余全空白，读图的人只会觉得图坏了。
+    // 高度必须夹在内容紧包裹上限内，且仍在客户端/供应端行之间居中
+    // （2026-11-20：帽 320→204；provider 行 0.85→0.80，两行不再贴底）。
     const box = computeGatewayBox(1200, 1723)
-    expect(box.h).toBeLessThanOrEqual(320)
+    expect(box.h).toBeLessThanOrEqual(204)
     expect(box.y).toBeGreaterThan(1723 * 0.075 + 21)
-    expect(box.y + box.h).toBeLessThan(1723 * 0.85 - 21)
+    expect(box.y + box.h).toBeLessThan(1723 * 0.8 - 21)
+  })
+
+  it('★ allows a taller cap on narrow canvases where the four groups wrap 2×2', () => {
+    // 窄画布（<900px）四组折两行 + 瓦片转横排小芯片 —— 帽放宽到 240
+    // （仍矮于四带版 320），且与组件 is-narrow 判据同值
+    // （GATEWAY_NARROW_W 单一真源，两边不许各写一个数）。
+    const narrow = computeGatewayBox(600, 1723)
+    expect(narrow.h).toBeLessThanOrEqual(240)
+    expect(narrow.h).toBeGreaterThan(204)
+    const wide = computeGatewayBox(1200, 1723)
+    expect(wide.h).toBeLessThanOrEqual(204)
   })
 })
 

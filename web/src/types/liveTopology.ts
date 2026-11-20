@@ -75,23 +75,20 @@ export type GatewayModuleKey =
   | 'taskDetect'
 
 /**
- * 网关大方块内的**流程带**：
+ * 网关大方块内的**流程带/分段**（一个联合两种用途，2026-11-20 C 方案起）：
  *
- *   进·请求链（in，主线，L→R）：缓存 → 脱敏 →（插件带）→ 模型选择 → 压缩 → ⬇派发
- *     ★ 顺序与真实管线一致（批判式审计修正 2026-10-28）：会话压缩在
- *     **候选解析之后**才跑（handler.go SessionCompressor.Prepare 注释
- *     "Runs AFTER candidate resolution so we know the target model's context
- *     window"）——早先版本把压缩排在模型选择之前，违反本组件「模块按
- *     处理流程的真实位置排布」的立身原则（owner 2026-10-18）。
- *   选路扇出带（select）：模型选择这一步的三个**出口分解**（auto 按任务 /
- *     内部直连 / 指定模型）——它是模型选择格的明细注解带，不是主链的
- *     串行步骤，所以不带派发箭头、卡间不画箭头。
- *   存储转发带（store）：转发队列（真实 pipeline depth）+ 数据会话写入 ⇄ 会话文件存储
- *   出·响应链（out，R→L）：任务识别 / 错误记录 / 探测任务（旁路族，虚线）
- *   基础服务侧条（不在 lane 里，box 右侧竖条）：路由管理 / 节点状态管理 ——
- *     2026-10-28 owner 口径「路由与节点状态属于基础服务，放一侧，突出核心逻辑」。
+ * ① 模块归属（GatewayModuleDef.lane，组件按带分组渲染）：
+ *   in＝①入口治理+②选路压缩（缓存 → 脱敏 →（插件）→ 模型选择 → 压缩，
+ *     ★ 顺序与真实管线一致：压缩在候选解析之后）；
+ *   select＝②组内扇出竖排的语义标记；store＝③存储转发（队列+写入⇄文件）；
+ *   out＝④出口观测（任务识别/错误记录/探测，旁路族虚线）；
+ *   infra＝右栏基础服务（路由/节点状态 —— owner 2026-10-28「放一侧」，
+ *     2026-11-20 C 方案维持右栏）。
+ * ② 大方块纵向分段（GatewayCoreBox.lanes，布局函数产出几何）：
+ *   ribbon＝流程缎带 / groups＝四组瓦片区 / legend＝外框图例行
+ *   （2026-11-20 C 方案：「分组瓦片」版面）。
  */
-export type GatewayLane = 'in' | 'select' | 'store' | 'out' | 'infra'
+export type GatewayLane = 'in' | 'select' | 'store' | 'out' | 'infra' | 'ribbon' | 'groups' | 'legend'
 
 export interface GatewayModuleDef {
   key: GatewayModuleKey

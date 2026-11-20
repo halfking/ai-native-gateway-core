@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>/live 网关核心布局优化 · 四案对比原型（2026-11-20）</title>
+<style>
+/* ══════════════════════════════════════════════════════════════
+   /live 网关核心布局优化 —— 四案对比原型（评审用静态稿）
+   · 数据 = /dev/live-topology-preview 夹具同源数字（非编造）
+   · 主题 = 产品暗色（kx tokens，style.css dark 块逐字取值）
+   · 图标 = 内联 SVG 线性描边（仓规：不许 Unicode 字形冒充图标）
+   · 交互说明：点选过滤 / 悬停 tooltip / 命中脉冲属实现轮行为，
+     本稿只固化「版面 · 流向 · 外框 · 图标 · 色系 · 字级」。
+   ══════════════════════════════════════════════════════════════ */
+:root {
+  --bg: #0f141c; --surface: #1a222d; --sidebar: #121820;
+  --text: #e8eef7; --muted: #8b9bb0; --border: #2a3544;
+  --primary: #5b8cff; --primary-soft: rgba(91,140,255,.16);
+  --success: #3ecf8e; --success-soft: rgba(62,207,142,.14);
+  --warning: #e0a53a; --warning-soft: rgba(224,165,58,.14);
+  --danger: #f07167;  --danger-soft: rgba(240,113,103,.14);
+  --violet: #9d8cff;  --violet-soft: rgba(157,140,255,.14);
+  --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; }
+svg.ic { width: 13px; height: 13px; flex: none; }
+
+/* ── 顶栏（方案切换） ─────────────────────────────────────── */
+.bar {
+  position: sticky; top: 0; z-index: 99; display: flex; align-items: center; gap: 18px;
+  padding: 10px 20px; background: rgba(15,20,28,.94); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.bar h1 { font-size: 14px; font-weight: 700; letter-spacing: .02em; }
+.bar .sub { color: var(--muted); font-size: 12px; }
+.bar .switch { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.bar .switch label {
+  padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px;
+  font-size: 12px; cursor: pointer; color: var(--muted); user-select: none;
+}
+.bar .switch input { display: none; }
+.bar .switch input:checked + label {
+  color: var(--text); border-color: var(--primary); background: var(--primary-soft); font-weight: 600;
+}
+.bar .allToggle { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* ── 方案区块骨架 ─────────────────────────────────────────── */
+main { padding: 18px 20px 60px; display: flex; flex-direction: column; gap: 26px; align-items: center; }
+section.variant { display: none; width: 100%; max-width: 1380px; }
+section.variant.show { display: block; }
+body.stackall section.variant { display: block; }
+.vhead { display: flex; align-items: baseline; gap: 12px; margin: 0 0 8px; flex-wrap: wrap; }
+.vhead .vid {
+  font-family: var(--mono); font-size: 12px; font-weight: 700; color: #0f141c;
+  background: var(--primary); border-radius: 6px; padding: 2px 8px; letter-spacing: .06em;
+}
+.vhead h2 { font-size: 15px; font-weight: 700; }
+.vhead .m { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.vhead .m b { color: var(--success); font-weight: 600; }
+.vhead .goal { font-size: 12px; color: var(--muted); }
+.vhead .goal::before { content: '定位：'; color: var(--primary); font-weight: 600; }
+
+/* ── 页面级 mock（四个方案共用同一版面骨架） ──────────────── */
+.mock { border: 1px solid var(--border); border-radius: 14px; background: var(--bg); overflow: hidden; }
+.mock__chrome {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  background: var(--sidebar); border-bottom: 1px solid var(--border);
+}
+.mock__chrome .t { font-size: 13px; font-weight: 700; }
+.mock__chrome .pill {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+}
+.mock__chrome .pill b { color: var(--text); font-weight: 600; }
+.mock__chrome .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px var(--success); }
+.mock__chrome .spacer { flex: 1; }
+.mock__chrome .fb {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 8px;
+}
+.mockcanvas { position: relative; height: 620px; }
+.mockcanvas svg.edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.row { position: absolute; left: 24px; right: 24px; display: flex; gap: 12px; justify-content: center; }
+.row--client { top: 26px; }
+.rowlabel {
+  position: absolute; left: 10px; font-size: 11px; color: var(--muted);
+  letter-spacing: .12em; writing-mode: vertical-rl; text-orientation: mixed;
+}
+
+/* ── 行卡片（客户端 / 供应端 / 模型） ─────────────────────── */
+.card {
+  position: relative; background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--border); border-radius: 10px; padding: 5px 10px; min-width: 128px;
+}
+.card .nm { font-size: 12px; font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+.card .sub { font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 1px; }
+.card .hdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.hdot.h { background: var(--success); } .hdot.w { background: var(--warning); } .hdot.d { background: var(--danger); }
+.card--model .nm { font-family: var(--mono); font-weight: 500; font-size: 11px; }
+.card--model .ok { color: var(--success); } .card--model .fail { color: var(--danger); }
+.card--model .direct {
+  font-size: 9px; color: var(--violet); border: 1px solid var(--violet);
+  border-radius: 4px; padding: 0 4px; margin-left: 2px;
+}
+/* 协议 chip（client→gateway 边上） */
+.protochip {
+  position: absolute; transform: translate(-50%, -50%); font-family: var(--mono); font-size: 10px;
+  padding: 1px 7px; border-radius: 999px; background: var(--bg); border: 1px solid currentColor; z-index: 3;
+}
+.protochip.pa { color: var(--primary); } .protochip.ps { color: var(--success); } .protochip.pw { color: var(--warning); }
+
+/* ══════════════════════════════════════════════════════════════
+   ▓▓ 现状（对照基准，忠实复刻 GatewayCoreBox 2026-10-28 版） ▓▓
+   ══════════════════════════════════════════════════════════════ */
+.cur { position: absolute; left: 170px; right: 170px; top: 152px; height: 320px;
+  display: flex; flex-direction: column; border: 1px solid var(--primary); border-radius: 14px;
+  background: linear-gradient(180deg, var(--primary-soft), transparent 40%), rgba(26,34,45,.92); }
+.cur__head { display: flex; gap: 8px; align-items: baseline; padding: 5px 12px 0; height: 26px; }
+.cur__head .t { font-size: 14px; font-weight: 700; letter-spacing: .04em; }
+.cur__head .fi { font-size: 11px; color: var(--primary); }
+.cur__head .fo { font-size: 11px; color: var(--success); margin-left: auto; }
+.cur__body { display: flex; flex: 1; gap: 4px; padding: 0 8px 8px; }
+.cur__lanes { display: flex; flex: 1; flex-direction: column; gap: 5px; min-width: 0; }
+.cur__lane { display: flex; flex: 1; gap: 8px; min-height: 0; }
+.cur__tag { flex: none; width: 18px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; letter-spacing: .14em; writing-mode: vertical-rl; border-radius: 6px; }
+.cur__tag--in { color: var(--primary); background: rgba(91,140,255,.12); }
+.cur__tag--se { color: var(--primary); background: rgba(91,140,255,.08); }
+.cur__tag--st { color: var(--warning); background: rgba(224,165,58,.12); }
+.cur__tag--ou { color: var(--success); background: rgba(62,207,142,.12); }
+.cur__body-lane { display: flex; flex: 1; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.cur__cell { display: flex; flex-direction: column; justify-content: center; gap: 1px; flex: 1 1 0; min-width: 0;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: 9px; background: rgba(26,34,45,.86); text-align: left; }
+.cur__cell .l { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cur__cell .c { font-family: var(--mono); font-size: 11px; color: var(--primary); }
+.cur__cell.br { border-style: dashed; opacity: .82; }
+.cur__cell.br .c { color: var(--muted); }
+.cur__cell.err { border-color: var(--danger); } .cur__cell.err .c { color: var(--danger); }
+.cur__arrow { font-size: 11px; color: var(--muted); flex: none; }
+.cur__exit { color: var(--primary); margin-left: auto; white-space: nowrap; font-size: 11px; }
+.cur__entry { color: var(--success); white-space: nowrap; font-size: 11px; }
+.cur__mode { display: flex; flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center;
+  padding: 2px 8px; border: 1px solid rgba(91,140,255,.25); border-radius: 9px; background: rgba(26,34,45,.86); }
+.cur__mode .l { font-size: 12px; } .cur__mode .c { font-family: var(--mono); font-size: 11px; color: var(--primary); }
+.cur__mode .d { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cur__queue { flex: none; padding: 2px 8px; border-radius: 999px; font-size: 11px; color: var(--warning);
+  border: 1px dashed var(--warning); font-family: var(--mono); white-space: nowrap; }
+.cur__storecell { display: flex; flex-direction: row; align-items: center; gap: 4px; padding: 4px 8px;
+  border: 1px solid rgba(224,165,58,.4); border-radius: 9px; min-width: 108px;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(224,165,58,.07) 6px 12px), rgba(26,34,45,.86); }
+.cur__storecell .l { font-size: 12px; flex: 1; } .cur__storecell .c { font-family: var(--mono); font-size: 11px; color: var(--warning); }
+.cur__storearr { color: var(--warning); font-size: 13px; }
+.cur__plugin { display: inline-flex; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+  border: 1px solid rgba(91,140,255,.45); white-space: nowrap; }
+.cur__plugin.ok { border-color: rgba(62,207,142,.55); color: var(--success); }
+.cur__infra { flex: none; width: 92px; display: flex; flex-direction: column; gap: 4px; padding: 4px 4px 4px 8px;
+  border-left: 1px dashed rgba(139,155,176,.45); }
+.cur__infra .it { font-size: 11px; color: var(--muted); text-align: center; letter-spacing: .1em; }
+.cur__infracell { display: flex; flex-direction: row; align-items: center; gap: 4px; padding: 4px 6px;
+  border: 1px dashed var(--border); border-radius: 9px; }
+.cur__infracell .l { flex: 1; font-size: 11px; } .cur__infracell .c { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.cur__flowline { width: 2px; align-self: stretch; border-radius: 1px;
+  background: repeating-linear-gradient(180deg, rgba(224,165,58,.6) 0 3px, transparent 3px 7px); }
+
+/* ══════════════════════════════════════════════════════════════
+   ▓▓ 方案 A · 对向双轨（入左上 → 右汇于派发；出右下 → 左回客户端） ▓▓
+   ★ 根类名用 gA/gB/gC/gD：单字母 .d 会与 .hdot.d（危险点）撞选择器
+     ——首版 zhipu 红点被 .d{position:absolute;top:172px} 吸走成游离椭圆。
+   ══════════════════════════════════════════════════════════════ */
+.gA { position: absolute; left: 90px; right: 90px; top: 190px; height: 178px;
+  display: flex; flex-direction: column; border: 1px solid var(--primary); border-radius: 14px;
+  background: linear-gradient(180deg, var(--primary-soft), transparent 34%), rgba(26,34,45,.94);
+  padding: 6px 10px 8px; gap: 5px; }
+/* 二轮（owner 反馈）：①左侧「流程速览」竖列（从上到下简要写明）；
+   ②基础服务移到右侧全高侧栏。主体 = 左竖列 + 中双轨 + 右侧栏三列。 */
+.a__cols { display: flex; flex: 1; min-height: 0; gap: 8px; }
+.a__flow { flex: none; width: 92px; display: flex; flex-direction: column; justify-content: space-between;
+  padding: 3px 6px 3px 4px; border-right: 1px dashed rgba(139,155,176,.3); }
+.a__fstep { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.a__fstep i { flex: none; width: 15px; height: 15px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-family: var(--mono); font-size: 9.5px; font-style: normal; color: #0f141c; }
+.a__fstep.fi { color: var(--text); } .a__fstep.fi i { background: var(--primary); }
+.a__fstep.fo { color: var(--text); } .a__fstep.fo i { background: var(--success); }
+.a__fstep.fn i { background: var(--muted); }
+.a__fstep .dr { font-size: 9px; margin-left: 1px; }
+.a__midcol { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.a__side { flex: none; width: 112px; display: flex; flex-direction: column; justify-content: center; gap: 6px;
+  padding: 4px 2px 4px 10px; border-left: 1px dashed rgba(157,140,255,.4); }
+.a__side .cap { font-size: 10px; letter-spacing: .1em; color: var(--violet); text-align: center; }
+.a__head { display: flex; align-items: center; gap: 10px; height: 20px; }
+.a__head .t { font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+.legendchip { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; letter-spacing: .08em;
+  padding: 1px 8px; border-radius: 999px; border: 1px solid; }
+.legendchip.i { color: var(--primary); border-color: rgba(91,140,255,.4); background: rgba(91,140,255,.08); }
+.legendchip.o { color: var(--success); border-color: rgba(62,207,142,.4); background: rgba(62,207,142,.08); }
+.legendchip.s { color: var(--warning); border-color: rgba(224,165,58,.4); background: rgba(224,165,58,.08); }
+.legendchip.n { color: var(--violet); border-color: rgba(157,140,255,.4); background: rgba(157,140,255,.08); }
+.a__head .leg { margin-left: auto; display: flex; gap: 5px; }
+
+/* 轨道：轨道底是一条渐变流向线，芯片坐在线上；入轨底部给垂挂扇出留 20px */
+.a__rail { position: relative; display: flex; align-items: center; gap: 7px; padding: 3px 6px 3px 0; }
+.a__rail--in { padding-bottom: 22px; }
+.a__rail--out, .a__rail--in { padding-right: 54px; }
+/* 模型选择芯片 + 垂挂扇出（锚在芯片正下方，不靠整行缩进对齐） */
+.a__sel { position: relative; display: inline-flex; }
+.a__fan { position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px; white-space: nowrap; z-index: 2; }
+.a__fan .lead { color: var(--muted); font-size: 11px; }
+.a__rail::before { content: ''; position: absolute; left: 92px; right: 66px; top: 50%; height: 2px;
+  border-radius: 1px; opacity: .5; }
+.a__rail--in::before { background: linear-gradient(90deg, transparent, var(--primary) 12%, var(--primary) 88%, transparent);
+  background-size: 14px 2px; background-repeat: repeat-x;
+  -webkit-animation: dash-r 1.1s linear infinite; animation: dash-r 1.1s linear infinite; }
+.a__rail--out::before { background: linear-gradient(90deg, transparent, var(--success) 12%, var(--success) 88%, transparent);
+  background-size: 14px 2px; background-repeat: repeat-x;
+  -webkit-animation: dash-l 1.1s linear infinite; animation: dash-l 1.1s linear infinite; }
+@keyframes dash-r { to { background-position: 14px 0; } }
+@keyframes dash-l { to { background-position: -14px 0; } }
+.a__tag { flex: none; width: 86px; display: flex; align-items: center; gap: 6px; font-size: 11px;
+  font-weight: 600; letter-spacing: .05em; }
+.a__tag i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.a__rail--in .a__tag { color: var(--primary); } .a__rail--in .a__tag i { background: var(--primary); }
+.a__rail--out .a__tag { color: var(--success); } .a__rail--out .a__tag i { background: var(--success); }
+
+/* 主链芯片：图标 + 名称 + 计数 单行 */
+.chip { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px 3px 7px; border-radius: 8px; border: 1px solid var(--border);
+  background: rgba(21,28,38,.96); white-space: nowrap; }
+.chip .nm { font-size: 12px; }
+.chip .ct { font-family: var(--mono); font-size: 11px; color: var(--primary); }
+.chip:hover { border-color: var(--primary); }
+.chip--out .ct { color: var(--success); }
+.chip.br { border-style: dashed; opacity: .85; }
+.chip.err { border-color: var(--danger); }
+.chip.err .ct { color: var(--danger); }
+.chip .ic { color: var(--muted); }
+.chip--in .ic { color: var(--primary); }
+.chip--out .ic { color: var(--success); }
+.chip--store .ic { color: var(--warning); }
+.a__join { flex: none; color: var(--muted); font-size: 11px; z-index: 1; }
+
+/* 派发 / 返回 连接柱（双轨在此与供应端层交换方向；二轮起锚在主体列内，避开右侧栏） */
+.a__conn { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 44px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; z-index: 2; }
+.a__conn .cd { width: 2px; height: 26px; border-radius: 1px;
+  background: repeating-linear-gradient(180deg, var(--primary) 0 3px, transparent 3px 7px);
+  -webkit-animation: flow-d .9s linear infinite; animation: flow-d .9s linear infinite; }
+.a__conn .cu { width: 2px; height: 26px; border-radius: 1px;
+  background: repeating-linear-gradient(180deg, var(--success) 0 3px, transparent 3px 7px);
+  -webkit-animation: flow-u .9s linear infinite; animation: flow-u .9s linear infinite; }
+@keyframes flow-d { to { background-position: 0 7px; } }
+@keyframes flow-u { to { background-position: 0 -7px; } }
+.a__conn .lb { font-size: 10px; letter-spacing: .08em; color: var(--primary); }
+.a__conn .lb.u { color: var(--success); }
+
+/* 扇出药丸（A 垂挂 / B 单行 / C 竖排共用） */
+.fan { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px;
+  border: 1px solid rgba(91,140,255,.3); background: rgba(91,140,255,.07); font-size: 11px; white-space: nowrap; }
+.fan .ct { font-family: var(--mono); color: var(--primary); }
+.fan--v { border-color: rgba(157,140,255,.35); background: rgba(157,140,255,.07); }
+.fan--v .ct { color: var(--violet); }
+.fan .task { color: var(--muted); font-size: 10px; font-family: var(--mono); }
+
+/* 存储桥（中带） */
+.a__mid { display: flex; align-items: center; gap: 8px; padding: 2px 60px 2px 6px; }
+.a__mid .a__tag { color: var(--warning); } .a__mid .a__tag i { background: var(--warning); }
+.storechip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 8px;
+  border: 1px solid rgba(224,165,58,.42); white-space: nowrap;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(224,165,58,.06) 6px 12px), rgba(26,34,45,.9); }
+.storechip .nm { font-size: 11.5px; } .storechip .ct { font-family: var(--mono); font-size: 11px; color: var(--warning); }
+.a__storearr { color: var(--warning); font-size: 12px; }
+.qbadge { font-family: var(--mono); font-size: 10.5px; color: var(--warning); border: 1px dashed var(--warning);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+
+/* 基础服务：括号式外框（左括号 + 标签 + 计数） */
+.brk { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px; white-space: nowrap;
+  border-left: 2px solid var(--violet); border-radius: 0 6px 6px 0; background: rgba(157,140,255,.06); }
+.brk .nm { font-size: 11.5px; color: var(--violet); }
+.brk .ct { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.brk .ic { color: var(--violet); }
+.a__infra { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.a__infratag { font-size: 10px; letter-spacing: .1em; color: var(--violet); opacity: .85; }
+
+/* 插件小签 */
+.plug { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; padding: 1px 8px;
+  border-radius: 999px; border: 1px solid rgba(91,140,255,.45); white-space: nowrap; z-index: 1;
+  background: rgba(21,28,38,.96); }
+.plug.ok { border-color: rgba(62,207,142,.55); color: var(--success); }
+.plug.out { border-color: rgba(62,207,142,.35); color: var(--success); opacity: .9; }
+
+/* ══════════════════════════════════════════════════════════════
+   ▓▓ 方案 B · 环线总线（一条 U 形线：入段→右下行→出段回左） ▓▓
+   ══════════════════════════════════════════════════════════════ */
+.gB { position: absolute; left: 96px; right: 96px; top: 196px; height: 158px;
+  border: 1px solid var(--primary); border-radius: 14px;
+  background: linear-gradient(180deg, var(--primary-soft), transparent 40%), rgba(26,34,45,.94);
+  padding: 5px 12px 6px; }
+.b__head { display: flex; align-items: center; gap: 10px; height: 18px; }
+.b__head .t { font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+.b__head .leg { margin-left: auto; display: flex; gap: 5px; }
+.b__stage { position: relative; height: 130px; margin-top: 2px; }
+.b__stage svg.bus { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 站点：圆徽 + 下方标签 */
+.stn { position: absolute; width: 58px; display: flex; flex-direction: column; align-items: center; gap: 3px; transform: translateX(-50%); }
+.stn__dot { position: relative; width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface); border: 1.5px solid var(--primary); color: var(--primary); z-index: 2; }
+.stn__dot .ic { width: 13px; height: 13px; }
+.stn__dot .bct { position: absolute; top: -7px; right: -9px; font-family: var(--mono); font-size: 9.5px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 0 4px; line-height: 14px; color: var(--primary); }
+.stn__lb { font-size: 10.5px; white-space: nowrap; color: var(--text); }
+.stn--out .stn__dot { border-color: var(--success); color: var(--success); }
+.stn--out .stn__dot .bct { color: var(--success); }
+.stn.br .stn__dot { border-style: dashed; opacity: .85; }
+.stn.br .stn__lb { color: var(--muted); }
+.stn.err .stn__dot { border-color: var(--danger); color: var(--danger); }
+.stn.err .stn__dot .bct { color: var(--danger); border-color: var(--danger); }
+/* B 的扇出：模型选择站下方两行（药丸行 + 任务分布微字行），居中锚在站点下方 */
+.b__fan { position: absolute; display: flex; flex-direction: column; gap: 2px; align-items: center;
+  transform: translateX(-50%); white-space: nowrap; }
+.b__fan .row1 { display: flex; gap: 6px; align-items: center; }
+.b__fan .row2 { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+/* B 的存储支线 */
+.b__store { position: absolute; display: flex; align-items: center; gap: 7px; }
+.b__corner { position: absolute; display: flex; gap: 8px; align-items: center; }
+.b__leg { position: absolute; font-size: 10px; letter-spacing: .1em; color: var(--muted); }
+
+/* ══════════════════════════════════════════════════════════════
+   ▓▓ 方案 C · 分组瓦片（四组不同外框 + 步骤缎带） ▓▓
+   ══════════════════════════════════════════════════════════════ */
+.gC { position: absolute; left: 84px; right: 84px; top: 178px; height: 186px;
+  border: 1px solid var(--primary); border-radius: 14px;
+  background: linear-gradient(180deg, var(--primary-soft), transparent 34%), rgba(26,34,45,.94);
+  padding: 5px 12px 8px; }
+.c__head { display: flex; align-items: center; gap: 10px; height: 20px; }
+.c__head .t { font-size: 13px; font-weight: 700; }
+.c__head .leg { margin-left: auto; display: flex; gap: 5px; }
+/* 步骤缎带 */
+.c__ribbon { display: flex; align-items: center; gap: 4px; height: 24px; margin: 4px 0 11px; }
+.c__step { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; }
+.c__step i { width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 10px; color: #0f141c; font-style: normal; }
+.c__chev { color: var(--muted); font-size: 11px; }
+.c__groups { display: flex; gap: 7px; align-items: stretch; height: 96px; }
+/* 组 1/2：实线圆角框（入·处理），组 2 用左粗导轨 */
+.grp { border-radius: 10px; padding: 4px 6px 5px; display: flex; gap: 5px; align-items: stretch; position: relative; }
+.grp__t { position: absolute; top: -8px; left: 10px; font-size: 10px; letter-spacing: .1em; padding: 0 6px;
+  border-radius: 999px; background: var(--bg); }
+.grp--in { border: 1px solid rgba(91,140,255,.55); background: rgba(91,140,255,.05); }
+.grp--in .grp__t { color: var(--primary); }
+.grp--sel { border: 1px solid rgba(91,140,255,.55); border-left: 3px solid var(--primary); background: rgba(91,140,255,.07); }
+.grp--sel .grp__t { color: var(--primary); }
+.grp--store { border: 1px dashed rgba(224,165,58,.55); background: rgba(224,165,58,.05); }
+.grp--store .grp__t { color: var(--warning); }
+.grp--out { border: 1px dashed rgba(62,207,142,.5); background: rgba(62,207,142,.05); }
+.grp--out .grp__t { color: var(--success); }
+/* 瓦片：图标 + 名 + 计数 竖排小卡 */
+.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 54px; padding: 4px 5px; border-radius: 8px; border: 1px solid var(--border); background: rgba(21,28,38,.95); }
+.tile .ic { width: 14px; height: 14px; color: var(--primary); }
+.tile--store .ic { color: var(--warning); }
+.tile--out .ic { color: var(--success); }
+.tile.br { border-style: dashed; }
+.tile .nm { font-size: 11px; white-space: nowrap; }
+.tile .ct { font-family: var(--mono); font-size: 10.5px; color: var(--primary); }
+.tile--store .ct { color: var(--warning); }
+.tile--out .ct { color: var(--success); }
+.tile.err { border-color: var(--danger); } .tile.err .ct { color: var(--danger); }
+.tile.err .ic { color: var(--danger); }
+/* C 扇出竖排 */
+.c__fanv { display: flex; flex-direction: column; gap: 3px; justify-content: center; }
+/* 二轮（owner 反馈：C 要流程性强）——组间粗箭头 + 组内串行小箭头 + 缎带补全程节点 */
+.c__chev { flex: none; align-self: center; font-size: 15px; font-weight: 700; line-height: 1; padding: 0 1px; }
+.c__tarr { flex: none; align-self: center; font-size: 10px; color: var(--muted); }
+.c__mk { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 1px 7px;
+  border-radius: 999px; border: 1px dashed var(--border); color: var(--muted); white-space: nowrap; }
+.c__mk.am { color: var(--warning); border-color: rgba(224,165,58,.5); }
+.c__mk.gr { color: var(--success); border-color: rgba(62,207,142,.5); }
+.c__mk.bl { color: var(--primary); border-color: rgba(91,140,255,.5); }
+/* C 基础服务：右下角括号组 */
+.c__infra { display: flex; flex-direction: column; gap: 4px; justify-content: flex-end; margin-left: 14px; padding-left: 10px;
+  border-left: 1px dashed rgba(139,155,176,.4); }
+.c__legendrow { display: flex; gap: 10px; margin-top: 5px; align-items: center; }
+.c__lg { font-size: 10px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.c__lg i { width: 12px; height: 8px; border-radius: 3px; display: inline-block; }
+.c__lg .f1 { border: 1px solid rgba(91,140,255,.7); }
+.c__lg .f2 { border: 1px solid rgba(91,140,255,.7); border-left-width: 3px; }
+.c__lg .f3 { border: 1px dashed rgba(224,165,58,.7); }
+.c__lg .f4 { border: 1px dashed rgba(62,207,142,.7); }
+.c__lg .f5 { border-left: 2px solid var(--violet); border-radius: 0 3px 3px 0; }
+
+/* ══════════════════════════════════════════════════════════════
+   ▓▓ 方案 D · 现行结构紧凑化（保持四带骨架，单行芯片化） ▓▓
+   ══════════════════════════════════════════════════════════════ */
+.gD { position: absolute; left: 118px; right: 118px; top: 176px; height: 204px;
+  display: flex; flex-direction: column; border: 1px solid var(--primary); border-radius: 14px;
+  background: linear-gradient(180deg, var(--primary-soft), transparent 36%), rgba(26,34,45,.94);
+  padding: 5px 10px 7px; gap: 4px; }
+/* 二轮（owner 反馈）：存储转发与异步事件右移为「贯穿全局」竖轨；主线只剩 入/选/出 三带 */
+.d__rail { flex: none; width: 168px; display: flex; flex-direction: column; gap: 4px;
+  padding: 2px 4px 2px 12px; border-left: 1px dashed rgba(224,165,58,.45); position: relative; }
+.d__rail::before { content: ''; position: absolute; left: 4px; top: 8px; bottom: 56%; width: 2px;
+  background: repeating-linear-gradient(180deg, rgba(224,165,58,.55) 0 3px, transparent 3px 7px); }
+.d__rail::after { content: ''; position: absolute; left: 4px; top: 48%; bottom: 8px; width: 2px;
+  background: repeating-linear-gradient(180deg, rgba(62,207,142,.5) 0 3px, transparent 3px 7px); }
+.d__railcap { font-size: 10px; letter-spacing: .08em; color: var(--muted); }
+.d__railcap b { color: var(--warning); font-weight: 600; }
+.d__railcap.bg { color: rgba(62,207,142,.85); }
+.d__ritem { display: flex; align-items: center; gap: 6px; padding: 1px 7px; border-radius: 7px;
+  border: 1px solid rgba(224,165,58,.42); font-size: 10.5px; white-space: nowrap;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(224,165,58,.05) 6px 12px), rgba(26,34,45,.92); }
+.d__ritem .nm { flex: 1; }
+.d__ritem .ct { font-family: var(--mono); font-size: 10.5px; color: var(--warning); }
+.d__ritem.ev { border-style: dashed; border-color: rgba(62,207,142,.45);
+  background: rgba(62,207,142,.05); }
+.d__ritem.ev .ct { color: var(--success); }
+.d__ritem.err { border-color: var(--danger); } .d__ritem.err .ct { color: var(--danger); }
+.d__ritem .ic { color: var(--warning); }
+.d__ritem.ev .ic { color: var(--success); }
+.d__head { display: flex; align-items: center; gap: 10px; height: 20px; }
+.d__head .t { font-size: 13px; font-weight: 700; }
+.d__head .leg { margin-left: auto; display: flex; gap: 5px; }
+.d__body { display: flex; flex: 1; gap: 6px; min-height: 0; }
+.d__lanes { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
+.d__lane { display: flex; flex: 1; align-items: center; gap: 6px; border-radius: 8px; padding: 0 6px 0 0; }
+.d__lane--in { background: rgba(91,140,255,.05); border-left: 2px solid var(--primary); }
+.d__lane--se { background: rgba(91,140,255,.035); border-left: 2px solid rgba(91,140,255,.35); }
+.d__lane--st { background: rgba(224,165,58,.05); border-left: 2px solid var(--warning); }
+.d__lane--ou { background: rgba(62,207,142,.05); border-left: 2px solid var(--success); }
+.d__ltag { flex: none; width: 74px; padding-left: 8px; font-size: 11px; font-weight: 600; }
+.d__lane--in .d__ltag { color: var(--primary); } .d__lane--se .d__ltag { color: rgba(91,140,255,.8); }
+.d__lane--st .d__ltag { color: var(--warning); } .d__lane--ou .d__ltag { color: var(--success); }
+.d__infra { flex: none; width: 108px; display: flex; flex-direction: column; gap: 4px; padding-left: 8px;
+  border-left: 1px dashed rgba(157,140,255,.4); justify-content: center; }
+.d__join { color: var(--muted); font-size: 10px; }
+
+/* 尺寸标注条 */
+.vfoot { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.vfoot .k { font-family: var(--mono); font-size: 11px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+.vfoot .k b { color: var(--text); font-weight: 600; }
+.vfoot .k.g b { color: var(--success); }
+
+@media (prefers-reduced-motion: reduce) {
+  .a__rail::before, .a__conn .cd, .a__conn .cu { -webkit-animation: none; animation: none; }
+  svg.edges .flowdot { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ SVG 图标库（线性描边，1.6px；仓规禁 Unicode 字形当图标） ══ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-cache" viewBox="0 0 16 16"><path d="M9 1.5 3.5 9H7l-1 5.5L11.5 7H8l1-5.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sanitize" viewBox="0 0 16 16"><path d="M8 1.5l5.5 1.8v4.4c0 3.5-2.6 5.6-5.5 6.8-2.9-1.2-5.5-3.3-5.5-6.8V3.3L8 1.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5.6 7.8l1.7 1.7 3.1-3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-select" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r=".7" fill="currentColor"/></symbol>
+    <symbol id="i-compress" viewBox="0 0 16 16"><path d="M2.5 8h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M5.2 4.6 8 7.4l2.8-2.8M5.2 11.4 8 8.6l2.8 2.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-write" viewBox="0 0 16 16"><path d="M3 13.2l.9-3.6 6.9-6.9 2.7 2.7-6.9 6.9-3.6.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9.5 4l2.6 2.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-file" viewBox="0 0 16 16"><path d="M2 3.5h4.2l1.6 1.8H14v7.2H2v-9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-task" viewBox="0 0 16 16"><path d="M5.2 2H3.4A1.4 1.4 0 0 0 2 3.4v1.8M10.8 2h1.8A1.4 1.4 0 0 1 14 3.4v1.8M5.2 14H3.4A1.4 1.4 0 0 1 2 12.6v-1.8M10.8 14h1.8a1.4 1.4 0 0 0 1.4-1.4v-1.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
+    <symbol id="i-error" viewBox="0 0 16 16"><path d="M8 2.2 14 13H2l6-10.8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6.6v2.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="11.2" r=".8" fill="currentColor"/></symbol>
+    <symbol id="i-probe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1" fill="currentColor"/><path d="M8 8l3.8-3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-route" viewBox="0 0 16 16"><path d="M2.5 12.5c5.5 0 2.5-9 8-9h2.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M11.2 1.6 13.4 3.5l-2.2 1.9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="2.9" cy="12.5" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-node" viewBox="0 0 16 16"><path d="M1.8 8h3l1.8-4 3.2 8 1.8-4h2.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plugin" viewBox="0 0 16 16"><path d="M6 2v2.6M10 2v2.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4.6h8v2.8a4 4 0 0 1-8 0V4.6zM8 11.4V14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.6a3.4 3.4 0 1 1-3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 2.2v2M13.8 8h-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="bar">
+  <h1>/live 网关核心 · 布局四案对比</h1>
+  <span class="sub">同一份夹具数据 · 暗色主题 · 2026-11-20 评审稿</span>
+  <div class="switch">
+    <input type="radio" name="v" id="r-cur" value="cur"><label for="r-cur">0 现状对照</label>
+    <input type="radio" name="v" id="r-a" value="a" checked><label for="r-a">A 对向双轨</label>
+    <input type="radio" name="v" id="r-b" value="b"><label for="r-b">B 环线总线</label>
+    <input type="radio" name="v" id="r-c" value="c"><label for="r-c">C 分组瓦片</label>
+    <input type="radio" name="v" id="r-d" value="d"><label for="r-d">D 紧凑改良</label>
+  </div>
+  <label class="allToggle"><input type="checkbox" id="allck"> 纵向全览对比</label>
+</header>
+
+<main>
+
+<!-- ════════════════ 0 · 现状对照 ════════════════ -->
+<section class="variant" id="v-cur">
+  <div class="vhead">
+    <span class="vid">现状</span><h2>四带纵排 + 基础服务侧条（2026-10-28 版）</h2>
+    <span class="m">核心区高 <b>320px</b>（GATEWAY_BOX_MAX_H 上限顶格）</span>
+    <span class="goal">对照基准 · 供应端/模型行被压到画布底部</span>
+  </div>
+  <div class="mock">
+    <div class="mock__chrome">
+      <span class="dot"></span><span class="t">实时拓扑</span>
+      <span class="pill">近 5 分钟 · <b>74</b> 请求 · <b>87%</b> 成功率 · <b>2</b> 在途</span>
+      <span class="spacer"></span><span class="fb">窗口</span><span class="fb">供应商</span><span class="fb">客户端</span><span class="fb">模型</span><span class="fb">状态</span>
+    </div>
+    <div class="mockcanvas" data-variant="cur" style="--prov-top: 514px; --model-top: 576px;">
+      <svg class="edges"></svg>
+      <span class="rowlabel" style="top:30px">客户端</span>
+      <div class="row row--client">
+        <div class="card" data-edge="to:gw" data-proto="anthropic:34"><span class="nm">claude-code</span><span class="sub">anthropic · 34</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:21"><span class="nm">codex</span><span class="sub">openai · 21</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:12"><span class="nm">curl</span><span class="sub">openai · 12</span></div>
+        <div class="card" data-edge="to:gw" data-proto="anthropic:7"><span class="nm">zcode</span><span class="sub">anthropic · 7</span></div>
+      </div>
+      <div class="cur">
+        <div class="cur__head"><span class="t">网关核心</span><span class="fi">▼ 进：请求链</span><span class="fo">▲ 出：响应链</span></div>
+        <div class="cur__body">
+          <div class="cur__lanes">
+            <div class="cur__lane">
+              <span class="cur__tag cur__tag--in">进：请求链</span>
+              <div class="cur__body-lane">
+                <div class="cur__cell"><span class="l">缓存</span><span class="c">18</span></div><span class="cur__arrow">→</span>
+                <div class="cur__cell"><span class="l">脱敏</span><span class="c">74</span></div><span class="cur__arrow">→</span>
+                <span class="cur__plugin">内置治理</span><span class="cur__plugin ok">prompt-guard</span><span class="cur__arrow">→</span>
+                <div class="cur__cell"><span class="l">模型选择</span><span class="c">74</span></div><span class="cur__arrow">→</span>
+                <div class="cur__cell"><span class="l">压缩</span><span class="c">12</span></div>
+                <span class="cur__exit">⬇ 派发供应端</span>
+              </div>
+            </div>
+            <div class="cur__lane">
+              <span class="cur__tag cur__tag--se">选：模型去向</span>
+              <div class="cur__body-lane">
+                <div class="cur__mode"><span class="l">auto 按任务选模</span><span class="c">11</span><span class="d">code ×4 · chat ×4 · reasoning ×3</span></div>
+                <div class="cur__mode"><span class="l">内部直连模型</span><span class="c">5</span></div>
+                <div class="cur__mode"><span class="l">指定模型</span><span class="c">58</span></div>
+              </div>
+            </div>
+            <div class="cur__lane">
+              <span class="cur__tag cur__tag--st">存储转发</span>
+              <div class="cur__body-lane">
+                <span class="cur__queue">转发队列 3</span>
+                <span class="cur__flowline" style="height:22px"></span>
+                <div class="cur__storecell"><span class="l">数据会话写入</span><span class="c">74</span></div>
+                <span class="cur__storearr">⇄</span>
+                <div class="cur__storecell"><span class="l">会话数据文件存储</span><span class="c">74</span></div>
+                <span class="cur__flowline" style="height:22px"></span>
+              </div>
+            </div>
+            <div class="cur__lane">
+              <span class="cur__tag cur__tag--ou">出：响应链</span>
+              <div class="cur__body-lane">
+                <span class="cur__entry">供应端返回 ⬆</span>
+                <div class="cur__cell br"><span class="l">任务识别</span><span class="c">26</span></div><span class="cur__arrow">→</span>
+                <div class="cur__cell br err"><span class="l">错误记录</span><span class="c">9</span></div><span class="cur__arrow">→</span>
+                <div class="cur__cell br"><span class="l">探测任务</span><span class="c">6</span></div>
+                <span class="cur__plugin ok" style="margin-left:8px">output-compliance</span>
+              </div>
+            </div>
+          </div>
+          <aside class="cur__infra">
+            <span class="it">基础服务</span>
+            <div class="cur__infracell"><span class="l">路由管理</span><span class="c">74</span></div>
+            <div class="cur__infracell"><span class="l">节点状态管理</span><span class="c">74</span></div>
+          </aside>
+        </div>
+      </div>
+      <span class="rowlabel" style="top:532px">供应端节点</span>
+      <div class="row row--provider" style="top:var(--prov-top)">
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>deepseek · ds-key-a</span><span class="sub">33 req · 820ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>moonshot · mm-key-b</span><span class="sub">22 req · 640ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot w"></i>qianwen · qz-key-c</span><span class="sub">13 req · 2.4s</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot d"></i>zhipu · zs-key-d</span><span class="sub">9 req · 熔断开</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>local-ollama <span style="font-size:9px;color:var(--violet);border:1px solid var(--violet);border-radius:3px;padding:0 3px;margin-left:4px">直连</span></span><span class="sub">5 req · 950ms</span></div>
+      </div>
+      <span class="rowlabel" style="top:592px">模型</span>
+      <div class="row row--model" style="top:var(--model-top)">
+        <div class="card card--model" data-from="0"><span class="nm">deepseek-chat</span><span class="sub"><span class="ok">30 ✓</span></span></div>
+        <div class="card card--model" data-from="1"><span class="nm">moonshot-v1-128k</span><span class="sub"><span class="ok">22 ✓</span></span></div>
+        <div class="card card--model" data-from="2"><span class="nm">qwen-max</span><span class="sub"><span class="ok">13 ✓</span></span></div>
+        <div class="card card--model" data-from="3"><span class="nm">glm-4.5</span><span class="sub"><span class="fail">9 ✕</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3:30b-a3b<span class="direct">直连</span></span><span class="sub"><span class="ok">3 ✓</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3.8:27b-mlx<span class="direct">直连</span></span><span class="sub"><span class="ok">2 ✓</span></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="vfoot">
+    <span class="k">核心区 <b>320px</b></span>
+    <span class="k">供应端行 <b>y=514</b> · 模型行 <b>y=576</b>（两行贴底、净距仅 20px）</span>
+    <span class="k">四带全双行芯片 · 无图标 · 外框仅「实线/虚线」两种</span>
+  </div>
+</section>
+
+<!-- ════════════════ A · 对向双轨 ════════════════ -->
+<section class="variant" id="v-a">
+  <div class="vhead">
+    <span class="vid">A</span><h2>对向双轨 · 左流程速览 + 双轨主体 + 右基础服务栏</h2>
+    <span class="m">核心区高 <b>178px</b>（-142px）</span>
+    <span class="goal">把「入」「出」做成两条对向的车道，存储是中间的桥，环读一次就懂</span>
+  </div>
+  <div class="mock">
+    <div class="mock__chrome">
+      <span class="dot"></span><span class="t">实时拓扑</span>
+      <span class="pill">近 5 分钟 · <b>74</b> 请求 · <b>87%</b> 成功率 · <b>2</b> 在途</span>
+      <span class="spacer"></span><span class="fb">窗口</span><span class="fb">供应商</span><span class="fb">客户端</span><span class="fb">模型</span><span class="fb">状态</span>
+    </div>
+    <div class="mockcanvas" data-variant="a" style="--prov-top: 428px; --model-top: 492px;">
+      <svg class="edges"></svg>
+      <span class="rowlabel" style="top:30px">客户端</span>
+      <div class="row row--client">
+        <div class="card" data-edge="to:gw" data-proto="anthropic:34"><span class="nm">claude-code</span><span class="sub">anthropic · 34</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:21"><span class="nm">codex</span><span class="sub">openai · 21</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:12"><span class="nm">curl</span><span class="sub">openai · 12</span></div>
+        <div class="card" data-edge="to:gw" data-proto="anthropic:7"><span class="nm">zcode</span><span class="sub">anthropic · 7</span></div>
+      </div>
+      <div class="gA">
+        <div class="a__head">
+          <span class="t">网关核心</span>
+          <span class="legendchip i"><svg class="ic"><use href="#i-route"/></svg>入 · 请求链</span>
+          <span class="legendchip s">存 · 转发桥</span>
+          <span class="legendchip o">出 · 响应链</span>
+          <span class="legendchip n">基础服务（右栏）</span>
+        </div>
+        <div class="a__cols">
+          <!-- 左：流程速览（从上到下简要写明整条链路；owner 二轮反馈） -->
+          <div class="a__flow">
+            <span class="a__fstep fi"><i>1</i>客户端请求<span class="dr">↓</span></span>
+            <span class="a__fstep fi"><i>2</i>入站处理<span class="dr">→</span></span>
+            <span class="a__fstep fi"><i>3</i>派发供应端<span class="dr">↓</span></span>
+            <span class="a__fstep fn"><i>4</i>供应端处理<span class="dr">·</span></span>
+            <span class="a__fstep fo"><i>5</i>返回·出站<span class="dr">↑</span></span>
+            <span class="a__fstep fo"><i>6</i>回客户端<span class="dr">↑</span></span>
+          </div>
+          <!-- 中：双轨主体 -->
+          <div class="a__midcol">
+            <!-- 入轨：L→R；「模型选择」芯片带垂挂扇出（锚在其正下方） -->
+            <div class="a__rail a__rail--in">
+              <span class="a__tag"><i></i>入 · 请求链 →</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-cache"/></svg><span class="nm">缓存</span><span class="ct">18</span></span>
+              <span class="a__join">→</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-sanitize"/></svg><span class="nm">脱敏</span><span class="ct">74</span></span>
+              <span class="a__join">→</span>
+              <span class="plug">内置治理</span><span class="plug ok">prompt-guard</span>
+              <span class="a__join">→</span>
+              <span class="a__sel">
+                <span class="chip chip--in"><svg class="ic"><use href="#i-select"/></svg><span class="nm">模型选择</span><span class="ct">74</span></span>
+                <span class="a__fan">
+                  <span class="lead">└ 模型去向</span>
+                  <span class="fan"><svg class="ic" style="color:var(--primary)"><use href="#i-auto"/></svg>auto 按任务<span class="ct">11</span><span class="task">code×4 · chat×4 · reasoning×3</span></span>
+                  <span class="fan fan--v">内部直连<span class="ct">5</span></span>
+                  <span class="fan">指定模型<span class="ct">58</span></span>
+                </span>
+              </span>
+              <span class="a__join">→</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-compress"/></svg><span class="nm">压缩</span><span class="ct">12</span></span>
+            </div>
+            <!-- 存储桥 -->
+            <div class="a__mid">
+              <span class="a__tag"><i></i>存 · 转发桥</span>
+              <span class="qbadge">队列 3</span>
+              <span class="storechip"><svg class="ic" style="color:var(--warning)"><use href="#i-write"/></svg><span class="nm">数据会话写入</span><span class="ct">74</span></span>
+              <span class="a__storearr">⇄</span>
+              <span class="storechip"><svg class="ic" style="color:var(--warning)"><use href="#i-file"/></svg><span class="nm">会话文件存储</span><span class="ct">74</span></span>
+            </div>
+            <!-- 出轨：R→L（视觉从右往左回流） -->
+            <div class="a__rail a__rail--out" style="flex-direction: row-reverse;">
+              <span class="a__tag"><i></i>← 出 · 响应链</span>
+              <span class="chip chip--out"><svg class="ic"><use href="#i-sanitize"/></svg><span class="nm">输出合规</span><span class="ct">74</span></span>
+              <span class="a__join">←</span>
+              <span class="chip chip--out br"><svg class="ic"><use href="#i-task"/></svg><span class="nm">任务识别</span><span class="ct">26</span></span>
+              <span class="a__join">←</span>
+              <span class="chip chip--out br err"><svg class="ic"><use href="#i-error"/></svg><span class="nm">错误记录</span><span class="ct">9</span></span>
+              <span class="a__join">←</span>
+              <span class="chip chip--out br"><svg class="ic"><use href="#i-probe"/></svg><span class="nm">探测任务</span><span class="ct">6</span></span>
+            </div>
+            <!-- 连接柱：与供应端层的方向交换点 -->
+            <div class="a__conn">
+              <span class="lb">派发</span><span class="cd"></span><span class="cu"></span><span class="lb u">返回</span>
+            </div>
+          </div>
+          <!-- 右：基础服务（owner 二轮反馈：放右侧，全高侧栏） -->
+          <aside class="a__side">
+            <span class="cap">基础服务</span>
+            <span class="brk"><svg class="ic"><use href="#i-route"/></svg><span class="nm">路由管理</span><span class="ct">74</span></span>
+            <span class="brk"><svg class="ic"><use href="#i-node"/></svg><span class="nm">节点状态</span><span class="ct">74</span></span>
+          </aside>
+        </div>
+      </div>
+      <span class="rowlabel" style="top:432px">供应端节点</span>
+      <div class="row row--provider" style="top:var(--prov-top)">
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>deepseek · ds-key-a</span><span class="sub">33 req · 820ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>moonshot · mm-key-b</span><span class="sub">22 req · 640ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot w"></i>qianwen · qz-key-c</span><span class="sub">13 req · 2.4s</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot d"></i>zhipu · zs-key-d</span><span class="sub">9 req · 熔断开</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>local-ollama <span style="font-size:9px;color:var(--violet);border:1px solid var(--violet);border-radius:3px;padding:0 3px;margin-left:4px">直连</span></span><span class="sub">5 req · 950ms</span></div>
+      </div>
+      <span class="rowlabel" style="top:496px">模型</span>
+      <div class="row row--model" style="top:var(--model-top)">
+        <div class="card card--model" data-from="0"><span class="nm">deepseek-chat</span><span class="sub"><span class="ok">30 ✓</span></span></div>
+        <div class="card card--model" data-from="1"><span class="nm">moonshot-v1-128k</span><span class="sub"><span class="ok">22 ✓</span></span></div>
+        <div class="card card--model" data-from="2"><span class="nm">qwen-max</span><span class="sub"><span class="ok">13 ✓</span></span></div>
+        <div class="card card--model" data-from="3"><span class="nm">glm-4.5</span><span class="sub"><span class="fail">9 ✕</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3:30b-a3b<span class="direct">直连</span></span><span class="sub"><span class="ok">3 ✓</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3.8:27b-mlx<span class="direct">直连</span></span><span class="sub"><span class="ok">2 ✓</span></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="vfoot">
+    <span class="k">核心区 <b>178px</b>（较现状 <b>-142px</b>）</span>
+    <span class="k g">供应端行 <b>y=428</b> · 模型行 <b>y=492</b>（整体上移 100px，行距 64px）</span>
+    <span class="k">二轮新增：左侧①→⑥流程速览竖列（从上到下写明全程）+ 基础服务右移全高侧栏</span>
+    <span class="k">芯片单行化：图标 + 名称 + 计数 一行读完</span>
+    <span class="k">外框四族：实线（主链）/ 药丸（扇出）/ 斜纹（存储）/ 括号（基础服务）</span>
+  </div>
+</section>
+
+<!-- ════════════════ B · 环线总线 ════════════════ -->
+<section class="variant" id="v-b">
+  <div class="vhead">
+    <span class="vid">B</span><h2>环线总线 · 一条 U 形线把入/出串成一次旅程</h2>
+    <span class="m">核心区高 <b>158px</b>（-162px）</span>
+    <span class="goal">最紧凑 · 流程感最强（眼随线走）· 站点小徽承载图标与计数</span>
+  </div>
+  <div class="mock">
+    <div class="mock__chrome">
+      <span class="dot"></span><span class="t">实时拓扑</span>
+      <span class="pill">近 5 分钟 · <b>74</b> 请求 · <b>87%</b> 成功率 · <b>2</b> 在途</span>
+      <span class="spacer"></span><span class="fb">窗口</span><span class="fb">供应商</span><span class="fb">客户端</span><span class="fb">模型</span><span class="fb">状态</span>
+    </div>
+    <div class="mockcanvas" data-variant="b" style="--prov-top: 396px; --model-top: 462px;">
+      <svg class="edges"></svg>
+      <span class="rowlabel" style="top:30px">客户端</span>
+      <div class="row row--client">
+        <div class="card" data-edge="to:gw" data-proto="anthropic:34"><span class="nm">claude-code</span><span class="sub">anthropic · 34</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:21"><span class="nm">codex</span><span class="sub">openai · 21</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:12"><span class="nm">curl</span><span class="sub">openai · 12</span></div>
+        <div class="card" data-edge="to:gw" data-proto="anthropic:7"><span class="nm">zcode</span><span class="sub">anthropic · 7</span></div>
+      </div>
+      <div class="gB">
+        <div class="b__head">
+          <span class="t">网关核心</span>
+          <span class="legendchip i">入段 →</span>
+          <span class="legendchip s">存储支线</span>
+          <span class="legendchip o">← 出段</span>
+          <span class="legendchip n">基础服务</span>
+        </div>
+        <div class="b__stage">
+          <!-- U 形总线：JS 按 DOM 实测画线（入段蓝 → 右腿下行 → 出段绿回左） -->
+          <svg class="bus"></svg>
+          <!-- 入段站点（上横线） -->
+          <div class="stn" style="left:12%; top:8px"><span class="stn__dot"><svg class="ic"><use href="#i-cache"/></svg><span class="bct">18</span></span><span class="stn__lb">缓存</span></div>
+          <div class="stn" style="left:26%; top:8px"><span class="stn__dot"><svg class="ic"><use href="#i-sanitize"/></svg><span class="bct">74</span></span><span class="stn__lb">脱敏</span></div>
+          <div class="stn" style="left:40%; top:8px"><span class="stn__dot" style="border-radius:8px"><svg class="ic"><use href="#i-plugin"/></svg></span><span class="stn__lb">治理插件</span></div>
+          <div class="stn" style="left:54%; top:8px"><span class="stn__dot"><svg class="ic"><use href="#i-select"/></svg><span class="bct">74</span></span><span class="stn__lb">模型选择</span></div>
+          <div class="stn" style="left:68%; top:8px"><span class="stn__dot"><svg class="ic"><use href="#i-compress"/></svg><span class="bct">12</span></span><span class="stn__lb">压缩</span></div>
+          <!-- 中带左：扇出（模型选择站的出口分解，两行块，锚在站正下方） -->
+          <div class="b__fan" style="left:46%; top:36px">
+            <span class="row1">
+              <span class="lead" style="color:var(--muted);font-size:11px">└ 模型去向</span>
+              <span class="fan" style="padding:0 7px"><svg class="ic" style="color:var(--primary);width:10px;height:10px"><use href="#i-auto"/></svg>auto<span class="ct">11</span></span>
+              <span class="fan fan--v" style="padding:0 7px">直连<span class="ct">5</span></span>
+              <span class="fan" style="padding:0 7px">指定<span class="ct">58</span></span>
+            </span>
+            <span class="row2">auto 任务分布：code ×4 · chat ×4 · reasoning ×3</span>
+          </div>
+          <!-- 中带右：存储支线（amber，自右腿引出） -->
+          <div class="b__store" style="right:6%; top:40px">
+            <span class="qbadge">队列 3</span>
+            <span class="storechip"><svg class="ic" style="color:var(--warning);width:11px;height:11px"><use href="#i-write"/></svg><span class="nm">写入</span><span class="ct">74</span></span>
+            <span class="a__storearr">⇄</span>
+            <span class="storechip"><svg class="ic" style="color:var(--warning);width:11px;height:11px"><use href="#i-file"/></svg><span class="nm">文件存储</span><span class="ct">74</span></span>
+          </div>
+          <!-- 出段站点（下横线，标签在点下方；R→L 视觉序） -->
+          <div class="stn stn--out" style="left:76%; top:78px"><span class="stn__dot"><svg class="ic"><use href="#i-sanitize"/></svg><span class="bct">74</span></span><span class="stn__lb">输出合规</span></div>
+          <div class="stn stn--out br" style="left:58%; top:78px"><span class="stn__dot"><svg class="ic"><use href="#i-task"/></svg><span class="bct">26</span></span><span class="stn__lb">任务识别</span></div>
+          <div class="stn stn--out br err" style="left:42%; top:78px"><span class="stn__dot"><svg class="ic"><use href="#i-error"/></svg><span class="bct">9</span></span><span class="stn__lb">错误记录</span></div>
+          <div class="stn stn--out br" style="left:26%; top:78px"><span class="stn__dot"><svg class="ic"><use href="#i-probe"/></svg><span class="bct">6</span></span><span class="stn__lb">探测任务</span></div>
+          <!-- 方向标注 -->
+          <span class="b__leg" style="right:3.5%; bottom:2px; color:var(--primary)">派发 ↓ 供应端</span>
+          <span class="b__leg" style="left:3.6%; top:6px; color:var(--success)">返回 ↑ 回客户端</span>
+          <!-- 基础服务：左下角括号组 -->
+          <div class="b__corner" style="left:2.6%; bottom:0">
+            <span class="brk"><svg class="ic" style="width:11px;height:11px"><use href="#i-route"/></svg><span class="nm">路由管理</span><span class="ct">74</span></span>
+            <span class="brk"><svg class="ic" style="width:11px;height:11px"><use href="#i-node"/></svg><span class="nm">节点状态</span><span class="ct">74</span></span>
+          </div>
+        </div>
+      </div>
+      <span class="rowlabel" style="top:400px">供应端节点</span>
+      <div class="row row--provider" style="top:var(--prov-top)">
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>deepseek · ds-key-a</span><span class="sub">33 req · 820ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>moonshot · mm-key-b</span><span class="sub">22 req · 640ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot w"></i>qianwen · qz-key-c</span><span class="sub">13 req · 2.4s</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot d"></i>zhipu · zs-key-d</span><span class="sub">9 req · 熔断开</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>local-ollama <span style="font-size:9px;color:var(--violet);border:1px solid var(--violet);border-radius:3px;padding:0 3px;margin-left:4px">直连</span></span><span class="sub">5 req · 950ms</span></div>
+      </div>
+      <span class="rowlabel" style="top:466px">模型</span>
+      <div class="row row--model" style="top:var(--model-top)">
+        <div class="card card--model" data-from="0"><span class="nm">deepseek-chat</span><span class="sub"><span class="ok">30 ✓</span></span></div>
+        <div class="card card--model" data-from="1"><span class="nm">moonshot-v1-128k</span><span class="sub"><span class="ok">22 ✓</span></span></div>
+        <div class="card card--model" data-from="2"><span class="nm">qwen-max</span><span class="sub"><span class="ok">13 ✓</span></span></div>
+        <div class="card card--model" data-from="3"><span class="nm">glm-4.5</span><span class="sub"><span class="fail">9 ✕</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3:30b-a3b<span class="direct">直连</span></span><span class="sub"><span class="ok">3 ✓</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3.8:27b-mlx<span class="direct">直连</span></span><span class="sub"><span class="ok">2 ✓</span></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="vfoot">
+    <span class="k">核心区 <b>158px</b>（较现状 <b>-162px</b>）</span>
+    <span class="k g">供应端行 <b>y=396</b> · 模型行 <b>y=462</b>（上移 132px，行距 66px）</span>
+    <span class="k">一条线 = 一次请求的完整旅程：入段（蓝→）→ 右侧下行派发 → 出段（绿←）回客户端</span>
+    <span class="k">存储是 amber 支线 · 扇出垂挂在「模型选择」站下 · 基础服务括号挂角</span>
+  </div>
+</section>
+
+<!-- ════════════════ C · 分组瓦片 ════════════════ -->
+<section class="variant" id="v-c">
+  <div class="vhead">
+    <span class="vid">C</span><h2>分组瓦片 · 步骤缎带 + 四组异形外框</h2>
+    <span class="m">核心区高 <b>186px</b>（-134px）</span>
+    <span class="goal">二轮流程强化：缎带补全 派发/供应端/返回/回客户端 全程节点 · 组间▸▸·组内串行箭头</span>
+  </div>
+  <div class="mock">
+    <div class="mock__chrome">
+      <span class="dot"></span><span class="t">实时拓扑</span>
+      <span class="pill">近 5 分钟 · <b>74</b> 请求 · <b>87%</b> 成功率 · <b>2</b> 在途</span>
+      <span class="spacer"></span><span class="fb">窗口</span><span class="fb">供应商</span><span class="fb">客户端</span><span class="fb">模型</span><span class="fb">状态</span>
+    </div>
+    <div class="mockcanvas" data-variant="c" style="--prov-top: 432px; --model-top: 498px;">
+      <svg class="edges"></svg>
+      <span class="rowlabel" style="top:30px">客户端</span>
+      <div class="row row--client">
+        <div class="card" data-edge="to:gw" data-proto="anthropic:34"><span class="nm">claude-code</span><span class="sub">anthropic · 34</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:21"><span class="nm">codex</span><span class="sub">openai · 21</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:12"><span class="nm">curl</span><span class="sub">openai · 12</span></div>
+        <div class="card" data-edge="to:gw" data-proto="anthropic:7"><span class="nm">zcode</span><span class="sub">anthropic · 7</span></div>
+      </div>
+      <div class="gC">
+        <div class="c__head">
+          <span class="t">网关核心</span>
+          <span class="legendchip i">① 入口治理</span>
+          <span class="legendchip i">② 选路压缩</span>
+          <span class="legendchip s">③ 存储转发</span>
+          <span class="legendchip o">④ 出口观测</span>
+        </div>
+        <div class="c__ribbon">
+          <span class="c__step" style="color:var(--primary)"><i style="background:var(--primary)">1</i>入口治理</span><span class="c__chev" style="color:var(--primary)">▸</span>
+          <span class="c__step" style="color:var(--primary)"><i style="background:var(--primary)">2</i>选路 · 压缩</span><span class="c__chev" style="color:var(--primary)">▸</span>
+          <span class="c__mk am">③ 存储转发 · 贯穿</span><span class="c__chev" style="color:var(--primary)">▸</span>
+          <span class="c__mk bl">⬇ 派发供应端</span><span class="c__chev">▸</span>
+          <span class="c__mk">供应端处理</span><span class="c__chev" style="color:var(--success)">▸</span>
+          <span class="c__mk gr">⬆ 供应端返回</span><span class="c__chev" style="color:var(--success)">▸</span>
+          <span class="c__step" style="color:var(--success)"><i style="background:var(--success)">4</i>出口 · 观测</span><span class="c__chev" style="color:var(--success)">▸</span>
+          <span class="c__mk gr">↩ 回客户端</span>
+          <span class="c__mk" style="margin-left:auto">└ 基础服务</span>
+        </div>
+        <div class="c__groups">
+          <div class="grp grp--in">
+            <span class="grp__t">① 入口治理</span>
+            <div class="tile"><svg class="ic"><use href="#i-cache"/></svg><span class="nm">缓存</span><span class="ct">18</span></div>
+            <span class="c__tarr">→</span>
+            <div class="tile"><svg class="ic"><use href="#i-sanitize"/></svg><span class="nm">脱敏</span><span class="ct">74</span></div>
+            <span class="c__tarr">→</span>
+            <div class="tile"><svg class="ic"><use href="#i-plugin"/></svg><span class="nm">治理插件</span><span class="ct">2</span></div>
+          </div>
+          <span class="c__chev" style="color:var(--primary); font-size:18px">▸▸</span>
+          <div class="grp grp--sel">
+            <span class="grp__t">② 选路 · 压缩</span>
+            <div class="tile"><svg class="ic"><use href="#i-select"/></svg><span class="nm">模型选择</span><span class="ct">74</span></div>
+            <div class="c__fanv">
+              <span class="fan"><svg class="ic" style="color:var(--primary);width:10px;height:10px"><use href="#i-auto"/></svg>auto<span class="ct">11</span></span>
+              <span class="fan fan--v">直连<span class="ct">5</span></span>
+              <span class="fan">指定<span class="ct">58</span></span>
+            </div>
+            <span class="c__tarr">→</span>
+            <div class="tile"><svg class="ic"><use href="#i-compress"/></svg><span class="nm">压缩</span><span class="ct">12</span></div>
+          </div>
+          <span class="c__chev" style="color:var(--warning); font-size:18px">▸▸</span>
+          <div class="grp grp--store">
+            <span class="grp__t">③ 存储转发 ↕</span>
+            <div class="tile tile--store"><svg class="ic"><use href="#i-queue"/></svg><span class="nm">队列 3</span><span class="ct">排队</span></div>
+            <span class="c__tarr" style="color:var(--warning)">⇄</span>
+            <div class="tile tile--store"><svg class="ic"><use href="#i-write"/></svg><span class="nm">会话写入</span><span class="ct">74</span></div>
+            <span class="c__tarr" style="color:var(--warning)">⇄</span>
+            <div class="tile tile--store"><svg class="ic"><use href="#i-file"/></svg><span class="nm">文件存储</span><span class="ct">74</span></div>
+          </div>
+          <span class="c__chev" style="color:var(--success); font-size:18px">▸▸</span>
+          <div class="grp grp--out">
+            <span class="grp__t">④ 出口 · 观测</span>
+            <div class="tile tile--out"><svg class="ic"><use href="#i-sanitize"/></svg><span class="nm">输出合规</span><span class="ct">74</span></div>
+            <div class="tile tile--out br"><svg class="ic"><use href="#i-task"/></svg><span class="nm">任务识别</span><span class="ct">26</span></div>
+            <div class="tile tile--out br err"><svg class="ic"><use href="#i-error"/></svg><span class="nm">错误记录</span><span class="ct">9</span></div>
+            <div class="tile tile--out br"><svg class="ic"><use href="#i-probe"/></svg><span class="nm">探测任务</span><span class="ct">6</span></div>
+          </div>
+          <div class="c__infra">
+            <span class="brk"><svg class="ic" style="width:11px;height:11px"><use href="#i-route"/></svg><span class="nm">路由管理</span><span class="ct">74</span></span>
+            <span class="brk"><svg class="ic" style="width:11px;height:11px"><use href="#i-node"/></svg><span class="nm">节点状态</span><span class="ct">74</span></span>
+          </div>
+        </div>
+        <div class="c__legendrow">
+          <span class="c__lg"><i class="f1"></i>实线框 = 主链处理</span>
+          <span class="c__lg"><i class="f2"></i>粗左轨 = 含扇出决策</span>
+          <span class="c__lg"><i class="f3"></i>虚线框 = 存储转发</span>
+          <span class="c__lg"><i class="f4"></i>虚线框 = 出口观测（旁路）</span>
+          <span class="c__lg"><i class="f5"></i>括号 = 基础服务（支撑，不在链上）</span>
+          <span class="c__lg" style="margin-left:auto">数字 = 窗口内命中数 · 红框 = 有失败</span>
+        </div>
+      </div>
+      <span class="rowlabel" style="top:436px">供应端节点</span>
+      <div class="row row--provider" style="top:var(--prov-top)">
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>deepseek · ds-key-a</span><span class="sub">33 req · 820ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>moonshot · mm-key-b</span><span class="sub">22 req · 640ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot w"></i>qianwen · qz-key-c</span><span class="sub">13 req · 2.4s</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot d"></i>zhipu · zs-key-d</span><span class="sub">9 req · 熔断开</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>local-ollama <span style="font-size:9px;color:var(--violet);border:1px solid var(--violet);border-radius:3px;padding:0 3px;margin-left:4px">直连</span></span><span class="sub">5 req · 950ms</span></div>
+      </div>
+      <span class="rowlabel" style="top:502px">模型</span>
+      <div class="row row--model" style="top:var(--model-top)">
+        <div class="card card--model" data-from="0"><span class="nm">deepseek-chat</span><span class="sub"><span class="ok">30 ✓</span></span></div>
+        <div class="card card--model" data-from="1"><span class="nm">moonshot-v1-128k</span><span class="sub"><span class="ok">22 ✓</span></span></div>
+        <div class="card card--model" data-from="2"><span class="nm">qwen-max</span><span class="sub"><span class="ok">13 ✓</span></span></div>
+        <div class="card card--model" data-from="3"><span class="nm">glm-4.5</span><span class="sub"><span class="fail">9 ✕</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3:30b-a3b<span class="direct">直连</span></span><span class="sub"><span class="ok">3 ✓</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3.8:27b-mlx<span class="direct">直连</span></span><span class="sub"><span class="ok">2 ✓</span></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="vfoot">
+    <span class="k">核心区 <b>186px</b>（较现状 <b>-134px</b>）</span>
+    <span class="k g">供应端行 <b>y=432</b> · 模型行 <b>y=498</b>（上移 96px，行距 66px）</span>
+    <span class="k">二轮：缎带=完整主轴（①▸②▸③贯穿▸⬇派发▸供应端▸⬆返回▸④▸↩回客户端）；①②组内补串行小箭头（真实串行才画）</span>
+    <span class="k">外框五族各表一义，瓦片 = 图标 + 名 + 计数 三行竖排</span>
+  </div>
+</section>
+
+<!-- ════════════════ D · 紧凑改良 ════════════════ -->
+<section class="variant" id="v-d">
+  <div class="vhead">
+    <span class="vid">D</span><h2>紧凑改良 · 主线三带 + 右侧「存储·异步」贯穿竖轨</h2>
+    <span class="m">核心区高 <b>204px</b>（-116px）</span>
+    <span class="goal">二轮改版：存储转发与异步事件右移贯穿竖轨，主线只剩 入/选/出，更低迁移风险</span>
+  </div>
+  <div class="mock">
+    <div class="mock__chrome">
+      <span class="dot"></span><span class="t">实时拓扑</span>
+      <span class="pill">近 5 分钟 · <b>74</b> 请求 · <b>87%</b> 成功率 · <b>2</b> 在途</span>
+      <span class="spacer"></span><span class="fb">窗口</span><span class="fb">供应商</span><span class="fb">客户端</span><span class="fb">模型</span><span class="fb">状态</span>
+    </div>
+    <div class="mockcanvas" data-variant="d" style="--prov-top: 456px; --model-top: 520px;">
+      <svg class="edges"></svg>
+      <span class="rowlabel" style="top:30px">客户端</span>
+      <div class="row row--client">
+        <div class="card" data-edge="to:gw" data-proto="anthropic:34"><span class="nm">claude-code</span><span class="sub">anthropic · 34</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:21"><span class="nm">codex</span><span class="sub">openai · 21</span></div>
+        <div class="card" data-edge="to:gw" data-proto="openai:12"><span class="nm">curl</span><span class="sub">openai · 12</span></div>
+        <div class="card" data-edge="to:gw" data-proto="anthropic:7"><span class="nm">zcode</span><span class="sub">anthropic · 7</span></div>
+      </div>
+      <div class="gD">
+        <div class="d__head">
+          <span class="t">网关核心</span>
+          <span class="legendchip i">进 · 请求链</span>
+          <span class="legendchip o">出 · 响应链</span>
+          <span class="legendchip s">存储 · 异步（右轨 · 贯穿全局）</span>
+        </div>
+        <div class="d__body">
+          <div class="d__lanes">
+            <div class="d__lane d__lane--in">
+              <span class="d__ltag">进 · 请求链</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-cache"/></svg><span class="nm">缓存</span><span class="ct">18</span></span><span class="d__join">→</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-sanitize"/></svg><span class="nm">脱敏</span><span class="ct">74</span></span><span class="d__join">→</span>
+              <span class="plug">内置治理</span><span class="plug ok">prompt-guard</span><span class="d__join">→</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-select"/></svg><span class="nm">模型选择</span><span class="ct">74</span></span><span class="d__join">→</span>
+              <span class="chip chip--in"><svg class="ic"><use href="#i-compress"/></svg><span class="nm">压缩</span><span class="ct">12</span></span>
+              <span class="d__join" style="margin-left:auto; color:var(--primary)">⬇ 派发供应端</span>
+            </div>
+            <div class="d__lane d__lane--se">
+              <span class="d__ltag">选 · 模型去向</span>
+              <span class="fan"><svg class="ic" style="color:var(--primary);width:10px;height:10px"><use href="#i-auto"/></svg>auto 按任务<span class="ct">11</span><span class="task">code×4 · chat×4 · reasoning×3</span></span>
+              <span class="fan fan--v">内部直连<span class="ct">5</span></span>
+              <span class="fan">指定模型<span class="ct">58</span></span>
+              <span style="margin-left:auto; display:flex; gap:8px;">
+                <span class="brk"><svg class="ic" style="width:11px;height:11px"><use href="#i-route"/></svg><span class="nm">路由管理</span><span class="ct">74</span></span>
+                <span class="brk"><svg class="ic" style="width:11px;height:11px"><use href="#i-node"/></svg><span class="nm">节点状态</span><span class="ct">74</span></span>
+              </span>
+            </div>
+            <div class="d__lane d__lane--ou">
+              <span class="d__ltag">出 · 响应链</span>
+              <span class="d__join" style="color:var(--success)">⬆ 供应端返回</span>
+              <span class="chip chip--out"><svg class="ic"><use href="#i-sanitize"/></svg><span class="nm">输出合规</span><span class="ct">74</span></span>
+              <span class="d__join" style="margin-left:auto; color:var(--success)">↑ 回客户端</span>
+            </div>
+          </div>
+          <!-- 右轨：存储转发 + 异步事件（owner 二轮反馈：移右侧，贯穿全局） -->
+          <aside class="d__rail">
+            <span class="d__railcap">存储 · 转发 · <b>队列 3</b></span>
+            <span class="d__ritem"><svg class="ic"><use href="#i-write"/></svg><span class="nm">数据会话写入</span><span class="ct">74</span></span>
+            <span class="d__ritem"><svg class="ic"><use href="#i-file"/></svg><span class="nm">会话文件存储</span><span class="a__storearr" style="font-size:10px">⇄</span><span class="ct">74</span></span>
+            <span class="d__railcap bg">异步 · 观测事件</span>
+            <span class="d__ritem ev"><svg class="ic"><use href="#i-task"/></svg><span class="nm">任务识别</span><span class="ct">26</span></span>
+            <span class="d__ritem ev err"><svg class="ic"><use href="#i-error"/></svg><span class="nm">错误记录</span><span class="ct">9</span></span>
+            <span class="d__ritem ev"><svg class="ic"><use href="#i-probe"/></svg><span class="nm">探测任务</span><span class="ct">6</span></span>
+          </aside>
+        </div>
+      </div>
+      <span class="rowlabel" style="top:474px">供应端节点</span>
+      <div class="row row--provider" style="top:var(--prov-top)">
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>deepseek · ds-key-a</span><span class="sub">33 req · 820ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>moonshot · mm-key-b</span><span class="sub">22 req · 640ms</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot w"></i>qianwen · qz-key-c</span><span class="sub">13 req · 2.4s</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot d"></i>zhipu · zs-key-d</span><span class="sub">9 req · 熔断开</span></div>
+        <div class="card" data-edge="to:gw"><span class="nm"><i class="hdot h"></i>local-ollama <span style="font-size:9px;color:var(--violet);border:1px solid var(--violet);border-radius:3px;padding:0 3px;margin-left:4px">直连</span></span><span class="sub">5 req · 950ms</span></div>
+      </div>
+      <span class="rowlabel" style="top:538px">模型</span>
+      <div class="row row--model" style="top:var(--model-top)">
+        <div class="card card--model" data-from="0"><span class="nm">deepseek-chat</span><span class="sub"><span class="ok">30 ✓</span></span></div>
+        <div class="card card--model" data-from="1"><span class="nm">moonshot-v1-128k</span><span class="sub"><span class="ok">22 ✓</span></span></div>
+        <div class="card card--model" data-from="2"><span class="nm">qwen-max</span><span class="sub"><span class="ok">13 ✓</span></span></div>
+        <div class="card card--model" data-from="3"><span class="nm">glm-4.5</span><span class="sub"><span class="fail">9 ✕</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3:30b-a3b<span class="direct">直连</span></span><span class="sub"><span class="ok">3 ✓</span></span></div>
+        <div class="card card--model" data-from="4"><span class="nm">qwen3.8:27b-mlx<span class="direct">直连</span></span><span class="sub"><span class="ok">2 ✓</span></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="vfoot">
+    <span class="k">核心区 <b>204px</b>（较现状 <b>-116px</b>）</span>
+    <span class="k g">供应端行 <b>y=456</b> · 模型行 <b>y=520</b>（上移 58px）</span>
+    <span class="k">二轮：存储转发+异步观测右移「贯穿全局」竖轨（amber 斜纹=存储 / 绿虚线=异步事件）；主线三带与现行钉测最兼容</span>
+  </div>
+</section>
+
+</main>
+
+<script>
+/* ── 边与粒子：按 DOM 实测位置连线（与产品 liveTopologyLayout 同思路的锚点散开） ── */
+const SVGNS = 'http://www.w3.org/2000/svg'
+function rel(canvas, el) {
+  const b = canvas.getBoundingClientRect(), r = el.getBoundingClientRect()
+  return { cx: r.left + r.width / 2 - b.left, top: r.top - b.top, bottom: r.bottom - b.top, w: r.width }
+}
+function bez(x1, y1, x2, y2) {
+  const my = (y1 + y2) / 2
+  return `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`
+}
+function edgeWidth(n) { return Math.min(4.6, 0.9 + Math.log10(n + 1) * 1.5) }
+let pid = 0
+function addPath(svg, d, color, w, withDot) {
+  const p = document.createElementNS(SVGNS, 'path')
+  p.setAttribute('d', d); p.setAttribute('fill', 'none')
+  p.setAttribute('stroke', color); p.setAttribute('stroke-opacity', '.45')
+  p.setAttribute('stroke-width', w); p.setAttribute('stroke-linecap', 'round')
+  p.id = 'ep' + (pid++); svg.appendChild(p)
+  if (withDot) {
+    const c = document.createElementNS(SVGNS, 'circle')
+    c.setAttribute('r', '2.6'); c.setAttribute('fill', color); c.setAttribute('class', 'flowdot')
+    const am = document.createElementNS(SVGNS, 'animateMotion')
+    am.setAttribute('dur', (2 + Math.random() * 1.6).toFixed(2) + 's')
+    am.setAttribute('repeatCount', 'indefinite')
+    const mp = document.createElementNS(SVGNS, 'mpath')
+    mp.setAttribute('href', '#' + p.id)
+    am.appendChild(mp); c.appendChild(am); svg.appendChild(c)
+  }
+  return p
+}
+function drawEdges(section) {
+  const canvas = section.querySelector('.mockcanvas')
+  const svg = canvas.querySelector('svg.edges')
+  svg.innerHTML = ''
+  const core = section.querySelector('.cur, .gA, .gB, .gC, .gD')
+  if (!core) return
+  const gw = rel(canvas, core)
+  const clients = [...canvas.querySelectorAll('.row--client .card')]
+  const providers = [...canvas.querySelectorAll('.row--provider .card')]
+  const models = [...canvas.querySelectorAll('.row--model .card')]
+  // client → gw 顶边（协议 chip 放中点）
+  clients.forEach((c, i) => {
+    const r = rel(canvas, c)
+    const [proto, n] = (c.dataset.proto || 'openai:1').split(':')
+    const tx = Math.max(gw.cx - gw.w / 2 + 40, Math.min(gw.cx + gw.w / 2 - 40, r.cx))
+    const p = addPath(svg, bez(r.cx, r.bottom, tx, gw.top), proto === 'anthropic' ? 'var(--primary)' : 'var(--success)', edgeWidth(+n), i % 2 === 0)
+    const chip = document.createElement('span')
+    chip.className = 'protochip ' + (proto === 'anthropic' ? 'pa' : 'ps')
+    chip.textContent = proto + ' ×' + n
+    canvas.appendChild(chip)
+    const bb = p.getBBox()
+    chip.style.left = (bb.x + bb.width * (0.3 + 0.4 * (i % 3))) + 'px'
+    chip.style.top = (bb.y + bb.height / 2) + 'px'
+  })
+  // gw 底边 → provider 顶边
+  providers.forEach((c, i) => {
+    const r = rel(canvas, c)
+    const tx = Math.max(gw.cx - gw.w / 2 + 40, Math.min(gw.cx + gw.w / 2 - 40, r.cx))
+    addPath(svg, bez(tx, gw.bottom, r.cx, r.top), 'var(--primary)', edgeWidth(33 - i * 6), i % 2 === 1)
+  })
+  // provider 底边 → model 顶边（按 data-from 链）
+  const provRects = providers.map((p) => rel(canvas, p))
+  models.forEach((m) => {
+    const r = rel(canvas, m)
+    const src = provRects[+m.dataset.from] ?? provRects[0]
+    addPath(svg, bez(src.cx, src.bottom, r.cx, r.top), 'rgba(139,155,176,.8)', 1.1, false)
+  })
+  // 方案 B：再画核心内部 U 形总线（按站点 DOM 实测，分色分段）
+  const bus = canvas.querySelector('svg.bus')
+  if (bus) {
+    const stage = bus.parentElement
+    const sb = stage.getBoundingClientRect()
+    const relS = (el) => { const r = el.getBoundingClientRect(); return { x: r.left - sb.left, y: r.top - sb.top, w: r.width, h: r.height, cx: r.left + r.width / 2 - sb.left } }
+    const inStns = [...stage.querySelectorAll('.stn')].filter((s) => s.style.top === '8px')
+    const outStns = [...stage.querySelectorAll('.stn')].filter((s) => s.style.top === '78px')
+    const inDot = inStns[0]?.querySelector('.stn__dot')
+    const outDot = outStns[0]?.querySelector('.stn__dot')
+    if (!inDot || !outDot) return
+    const yIn = relS(inDot).y + relS(inDot).h / 2
+    const yOut = relS(outDot).y + relS(outDot).h / 2
+    const leftInX = 10, leftOutX = 30, rightX = sb.width - 30
+    const mk = (dd, col, dashed) => {
+      const p = document.createElementNS(SVGNS, 'path')
+      p.setAttribute('d', dd); p.setAttribute('fill', 'none'); p.setAttribute('stroke', col)
+      p.setAttribute('stroke-width', '2.2'); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke-linejoin', 'round')
+      if (dashed) p.setAttribute('stroke-dasharray', '7 5')
+      bus.appendChild(p); return p
+    }
+    // 入段（蓝）：左外腿自顶部进入 → 上横线 → 右腿下行
+    mk(`M ${leftInX} 2 L ${leftInX} ${yIn} L ${rightX} ${yIn} L ${rightX} ${yOut}`, 'var(--primary)', true)
+    // 出段（绿）：右腿 → 下横线回左 → 左内腿上行回客户端（闭环）
+    mk(`M ${rightX} ${yOut} L ${leftOutX} ${yOut} L ${leftOutX} 2`, 'var(--success)', true)
+    // 派发腿向下出框（蓝，实线短线，指向下方供应端层）
+    mk(`M ${rightX} ${yOut} L ${rightX} ${sb.height - 2}`, 'var(--primary)', false)
+    // 返回腿入口（绿，自下方供应端层进入）
+    mk(`M ${sb.width - 8} ${sb.height - 2} L ${sb.width - 8} ${yOut - 10}`, 'var(--success)', false)
+    // 模型选择站 → 扇出行 的引导短线
+    const selStn = inStns.find((s) => s.textContent.includes('模型选择'))
+    const fanEl = stage.querySelector('.b__fan')
+    if (selStn && fanEl) {
+      const sd = relS(selStn.querySelector('.stn__dot'))
+      const fr = relS(fanEl)
+      mk(`M ${sd.cx} ${sd.y + sd.h} L ${sd.cx} ${fr.y + 2}`, 'rgba(91,140,255,.5)', false)
+    }
+    // 存储支线（amber）：右腿分支点（画换乘点小圆）→ 存储行右缘
+    const storeEl = stage.querySelector('.b__store')
+    if (storeEl) {
+      const sr = relS(storeEl)
+      const yBranch = sr.y + sr.h / 2
+      mk(`M ${rightX} ${yBranch} L ${sr.x + sr.w + 6} ${yBranch} L ${sr.x + sr.w + 6} ${sr.y + 8}`, 'var(--warning)', true)
+      const j = document.createElementNS(SVGNS, 'circle')
+      j.setAttribute('cx', rightX); j.setAttribute('cy', yBranch); j.setAttribute('r', '3.4')
+      j.setAttribute('fill', 'var(--warning)')
+      bus.appendChild(j)
+    }
+  }
+}
+function show(name) {
+  document.querySelectorAll('section.variant').forEach((s) => s.classList.remove('show'))
+  const sec = document.getElementById('v-' + name)
+  if (sec) { sec.classList.add('show'); requestAnimationFrame(() => drawEdges(sec)) }
+}
+document.querySelectorAll('.bar .switch input').forEach((r) => {
+  r.addEventListener('change', () => { document.body.classList.remove('stackall'); show(r.value) })
+})
+document.getElementById('allck').addEventListener('change', (e) => {
+  document.body.classList.toggle('stackall', e.target.checked)
+  document.querySelectorAll('section.variant').forEach(drawEdges)
+})
+window.addEventListener('resize', () => {
+  const vis = document.querySelector('section.variant.show') ?? (document.body.classList.contains('stackall') ? null : null)
+  if (vis) drawEdges(vis)
+  if (document.body.classList.contains('stackall')) document.querySelectorAll('section.variant').forEach(drawEdges)
+})
+show('a')
+</script>
+</body>
+</html>

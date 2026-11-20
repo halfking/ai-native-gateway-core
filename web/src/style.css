@@ -314,6 +314,10 @@ html[data-theme='light'] {
   --kx-warning-soft: #fff7e8;
   --kx-danger: #c2413b;
   --kx-danger-soft: #fff1f1;
+  /* 2026-11-20 /live C 方案轮：第 5 语义色「支撑/基础服务」族（括号外框、
+     内部直连扇出口）。与既有四族（primary/success/warning/danger）平级。 */
+  --kx-violet: #6a4fd6;
+  --kx-violet-soft: #f1eefb;
   --kx-text-on-primary: #ffffff;
   /* 2026-10-27 抬升词汇归一（第 18 增量）：级别只留四支，其余一律走 token。
    * 几何沿用仓库既有主流值（不发明数值）；色相统一为蓝调黑（现状纯黑阴影是 AI 生成痕迹）。
@@ -479,6 +483,8 @@ html[data-theme='dark'] {
   --kx-warning-soft: rgba(224, 165, 58, 0.14);
   --kx-danger: #f07167;
   --kx-danger-soft: rgba(240, 113, 103, 0.14);
+  --kx-violet: #9d8cff;
+  --kx-violet-soft: rgba(157, 140, 255, 0.14);
   --kx-text-on-primary: #ffffff;
   --kx-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.28);
   --kx-shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.28);

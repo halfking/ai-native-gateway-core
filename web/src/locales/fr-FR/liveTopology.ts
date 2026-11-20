@@ -152,6 +152,22 @@ export default {
     explicit: 'Modèles désignés',
     unmeasured: 'interne direct non mesuré',
   },
+  ribbon: {
+    ingress: "Traitement d'entrée",
+    routing: 'Routage · compression',
+    storage: 'Stockage et transfert (transversal)',
+    egress: 'Sortie · observation',
+    providerHop: 'Traitement fournisseur',
+    backToClient: 'Retour au client',
+  },
+  frames: {
+    solid: 'Cadre plein = étape du flux',
+    rail: 'Rail gauche = décision de routage',
+    storeDash: 'Hachures = stockage et transfert',
+    outDash: 'Pointillés = observation en marge',
+    bracket: 'Crochet = services de base (hors chaîne)',
+    count: 'Chiffre = occurrences sur la fenêtre, cadre rouge = échecs',
+  },
   /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
   provider: {
     direct: 'direct',

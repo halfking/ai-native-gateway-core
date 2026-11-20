@@ -1,9 +1,10 @@
-// liveTopologyLayout.ts — 拓扑布局（纯函数，2026-10-17 改版：上→下 + 网关核心整体）
+// liveTopologyLayout.ts — 拓扑布局（纯函数，2026-10-17 改版：上→下 + 网关核心整体；
+// 2026-11-20 C 方案轮：大方块高度帽 320→204、provider 行 0.85→0.80、
+// 内部带模型改「缎带 / 组区 / 图例」三段）
 //
 // 四层自上而下：客户端 → **网关核心大方块** → 供应端节点 → 模型。
-// 网关核心不是一个圆点，而是横跨中段的一个大矩形，内部 3×3 排布九个处理模块
-// （缓存/脱敏/路由/节点状态/会话文件/会话写入/错误记录/探测任务/任务识别），
-// 主链路模块实线、旁路模块虚线（承 GATEWAY_BRANCH_MODULES 的语义）。
+// 网关核心不是一个圆点，而是横跨中段的一个大矩形；主链路模块实线、
+// 旁路模块虚线（承 GATEWAY_BRANCH_MODULES 的语义）。
 //
 // **必须确定性**：同输入同输出 —— 每次刷新节点乱跳，运维没法形成肌肉记忆，
 // 且所有「节点在第几行」的断言失效。抖动来自 id 的稳定哈希，不用 Math.random()。
@@ -12,6 +13,7 @@ import {
   GATEWAY_CORE_ID,
   TOPO_COLUMNS,
   type GatewayCoreBox,
+  type GatewayLane,
   type TopoColumn,
   type TopoEdge,
   type TopoLayout,
@@ -112,21 +114,25 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
 }
 /** 每层中心线的高度占比（自上而下）。网关核心那一层由大方块自己占位。
  *  model 行的占比必须满足 `ratio*480 + NODE_H/2 ≤ 480`（最小画布高度下
- *  卡片不沉出画布）—— 0.965 曾在 h=480 把卡底推到 484。 */
+ *  卡片不沉出画布）—— 0.965 曾在 h=480 把卡底推到 484。
+ *  ★ 2026-11-20 C 方案轮：provider 0.85 → 0.80 —— 大方块变矮让出的中段
+ *    空间直接转化为供应端/模型行的间距（provider↔model 10%→15%），
+ *    两行不再贴底（owner：让节点与模型看得更清楚）。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
   client: 0.075,
   gateway: 0.47, // 大方块中心线（rowY.gateway = box 中心；无卡片，仅标签用）
-  provider: 0.85,
+  provider: 0.8,
   model: 0.95,
 }
 
 /**
- * 网关核心大方块：三带布局（进站链 / 存储转发带 / 出站链）。
+ * 网关核心大方块（2026-11-20 C 方案「分组瓦片」版）：
+ * 标题带 + 流程缎带 + 四组瓦片（主体）+ 外框图例行。
  *
  * 高度是**夹出来的**，不是纯比例：按比例取高在超高画布（预览页实测
- * 1723px）会把大方块拉成 1000px+ 的空框 —— 三条带的内容只有 ~200px，
- * 其余全是空白，读图的人只会觉得「图坏了」。所以：
- *  - 上限 GATEWAY_BOX_MAX_H（内容带高的紧包裹）；
+ * 1723px）会把大方块拉成 1000px+ 的空框 —— 内容只有 ~200px，其余全是
+ * 空白，读图的人只会觉得「图坏了」。所以：
+ *  - 上限 GATEWAY_BOX_MAX_H（内容紧包裹；窄画布四组折 2×2 用更高的帽）；
  *  - 下限不设（小画布按比例走，能多小是多小）；
  *  - 垂直位置在客户端行卡片底边与供应端行卡片顶边之间**居中**。
  *
@@ -136,21 +142,21 @@ const ROW_RATIO: Record<TopoColumn, number> = {
  *  - 按节点卡而不是中心线判 —— 2026-10-17 轮 hRatio=0.42 压了 2px 的教训。
  */
 const GATEWAY_BOX = { xRatio: 0.05, wRatio: 0.9, hRatio: 0.62 }
-/** 大方块高度上限：三条内容带的紧包裹（浏览器实测约 200~260px，留余量）。 */
-const GATEWAY_BOX_MAX_H = 320
+/** 大方块高度上限：C 方案内容紧包裹（缎带 22 + 组区 ~100 + 图例 16 + 边距）。 */
+const GATEWAY_BOX_MAX_H = 204
+/** 窄画布（<900px）四组折 2×2 + 瓦片转横排小芯片（组件按 box.w<900 同步切窄版
+ *  CSS）—— 实测内容 ~190px，帽 240 仍比四带版 320 矮三分之一。 */
+const GATEWAY_BOX_MAX_H_NARROW = 240
+/** 窄/宽帽的分界宽度（与组件 is-narrow 判据同值，两边不许各写一个数）。 */
+export const GATEWAY_NARROW_W = 900
 /**
- * 大方块内部：标题带 + 四条流程带（2026-10-28 选路层轮：在进站链与存储带
- * 之间加入「选路扇出带」—— 模型选择的三个出口 auto/直连/指定；路由与
- * 节点状态移出主链进右侧基础服务竖条，不占带）。带高占比按内容密度分配：
- * 进站链 4 格 + 插件 chip → 最高；选路扇出带 3 张出口卡（单行）→ 最矮；
- * 存储带 2 格 + 队列徽标 → 中；出站链 3 格（旁路）→ 与进站等高。
- * gapPx 是带与带之间的空隙。
+ * 大方块内部纵向三段（2026-11-20 C 方案）：流程缎带 → 四组瓦片区 → 图例行。
+ * 占比按内容密度：组区（瓦片+扇出竖排）最高；缎带单行次之；图例行最矮。
  */
-const GATEWAY_LANES: Array<{ lane: 'in' | 'select' | 'store' | 'out'; ratio: number }> = [
-  { lane: 'in', ratio: 0.3 },
-  { lane: 'select', ratio: 0.16 },
-  { lane: 'store', ratio: 0.2 },
-  { lane: 'out', ratio: 0.34 },
+const GATEWAY_LANES: Array<{ lane: GatewayLane; ratio: number }> = [
+  { lane: 'ribbon', ratio: 0.16 },
+  { lane: 'groups', ratio: 0.7 },
+  { lane: 'legend', ratio: 0.14 },
 ]
 const GATEWAY_BOX_HEADER = 26
 const GATEWAY_LANE_GAP = 6
@@ -172,15 +178,17 @@ function jitter(id: string, salt: number, min: number, max: number): number {
   return min + unit * (max - min)
 }
 
-/** 计算网关核心大方块的几何（内部三条流程带）。 */
+/** 计算网关核心大方块的几何（内部三段：缎带 / 组区 / 图例）。 */
 export function computeGatewayBox(width: number, height: number): GatewayCoreBox {
   const x = Math.round(width * GATEWAY_BOX.xRatio)
   const w = Math.round(width * GATEWAY_BOX.wRatio)
   // 高度：比例值，夹在 [可用净空, 内容紧包裹上限] 内；再在净空里垂直居中。
+  // 窄画布四组折 2×2 ⇒ 用更高的帽（GATEWAY_BOX_MAX_H_NARROW）。
+  const maxH = width < GATEWAY_NARROW_W ? GATEWAY_BOX_MAX_H_NARROW : GATEWAY_BOX_MAX_H
   const clientBottom = Math.round(height * ROW_RATIO.client + NODE_H / 2)
   const providerTop = Math.round(height * ROW_RATIO.provider - NODE_H / 2)
   const clearance = Math.max(0, providerTop - clientBottom - 8)
-  const h = Math.max(120, Math.min(Math.round(height * GATEWAY_BOX.hRatio), clearance, GATEWAY_BOX_MAX_H))
+  const h = Math.max(120, Math.min(Math.round(height * GATEWAY_BOX.hRatio), clearance, maxH))
   const y = Math.round((clientBottom + providerTop) / 2 - h / 2)
   // 三带自标题带之下依次排布；带间留 GATEWAY_LANE_GAP。
   const innerTop = y + GATEWAY_BOX_PAD + GATEWAY_BOX_HEADER

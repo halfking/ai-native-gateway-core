@@ -154,6 +154,24 @@ export default {
     explicit: '指定模型',
     unmeasured: '内部直连未测量',
   },
+  /** 流程缎带（2026-11-20 C 方案：从左到右写明一次请求的完整旅程）。 */
+  ribbon: {
+    ingress: '入口治理',
+    routing: '选路 · 压缩',
+    storage: '存储转发（贯穿）',
+    egress: '出口 · 观测',
+    providerHop: '供应端处理',
+    backToClient: '回客户端',
+  },
+  /** 外框图例（「外框即类型」的说明书）。 */
+  frames: {
+    solid: '实线框＝主链处理',
+    rail: '粗左轨＝选路决策',
+    storeDash: '斜纹虚线＝存储转发',
+    outDash: '虚线框＝旁路观测',
+    bracket: '括号＝基础服务（不在链上）',
+    count: '数字＝窗口内命中数，红框＝有失败',
+  },
   /** 供应端节点的「内部直连」徽标（providers.kind='local'）。 */
   provider: {
     direct: '直连',
