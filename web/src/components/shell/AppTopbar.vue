@@ -15,6 +15,11 @@ import ThemeToggle from '../ThemeToggle.vue'
 import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import WorkModeSwitch from './WorkModeSwitch.vue'
+// 2026-11-20: 页面级帮助（右上角 ? 图标 + 抽屉讲数据口径）。图标随路由解析；
+// 未登记路由不渲染图标（resolvedEntry 为 null）。
+import PageHelpDrawer from '../help/PageHelpDrawer.vue'
+import { resolvePageHelp } from '../../config/pageHelpRegistry'
+import { useWorkMode } from '../../composables/useWorkMode'
 import { currentTheme, detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE_LINE_ONE } from '../../config/brand'
 import { isNavItemActive } from '../../config/appNav'
@@ -74,6 +79,17 @@ const { totalUnresolved } = useRequestAnomalyBadge()
 const requestAnomalyCount = totalUnresolved
 // <1024 布局决策口径：菜单区替换为汉堡按钮，抽屉导航接管（方案 §4.4）
 const { isMobile } = useBreakpoint()
+
+// 2026-11-20: 页面级帮助入口。当前路由有登记内容 ⇒ 图标出现；无 ⇒ 不渲染
+// （登录页/维护页等 public 页本组件不挂载，天然无图标）。
+// 简易模式下 /dashboard 呈现的是 SimpleOverviewView ⇒ 改写成虚拟键
+// /dashboard-simple，让同一 URL 取到简易版帮助正文（专家版正文不动）。
+const { isSimple } = useWorkMode()
+const pageHelpRoutePath = computed(() =>
+  isSimple.value && route.path === '/dashboard' ? '/dashboard-simple' : route.path
+)
+const pageHelpResolved = computed(() => resolvePageHelp(route.path))
+const showPageHelp = computed(() => pageHelpResolved.value !== null)
 
 const openGroupId = ref<string | null>(null)
 const dropdownStyle = ref<Record<string, string>>({})
@@ -291,6 +307,7 @@ function groupActive(id: string): boolean {
     </Teleport>
 
     <div class="app-topbar__actions">
+      <PageHelpDrawer v-if="showPageHelp" :route-path="pageHelpRoutePath" />
       <div class="app-topbar__meta">
         <SystemStatusIndicator />
         <div v-if="props.versionInfo?.version" class="app-topbar__version" :title="props.versionInfo.git_sha">
