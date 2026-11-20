@@ -392,6 +392,14 @@ var (
 // ★ 用途：cmd/gateway 的路由冲突守卫测试拿它跟"仓内其它已注册路径"
 //
 //	做比对 —— 任何一条撞车都会让**整个网关启动失败**，必须在单测里红。
+//
+// ★ 消费者状态（2026-11-20 审计轮登记）：RouteOverview / RouteUserRanking
+//
+//	目前是 **API-only**——web/src 零调用（grep user-ranking|overview 零命中），
+//	前端 users/projects 页走的是旧族 /users 面（admin/handler.go:1334）。
+//	不要因为「没有前端消费者」而把它们当死代码删除（本包曾发生过
+//	「从未被 import 即死代码」误删先例，见 051c0ebc1）；它们是 Phase 3
+//	管理面（overview 看板 / 人员排行页）的预留契约面。
 var RoutePaths = []string{
 	RouteOverview,
 	RouteUserRanking,

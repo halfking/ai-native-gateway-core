@@ -26,20 +26,29 @@ import (
 //
 // 提为包级常量是为了让真库判据能**逐字**跑它
 // （见 user_profile_null_aggregate_test.go），而不是让判据自己抄一份。
+//
+// 2026-11-20 会话分析闭环审计轮：锚表从 session_owners 换到
+// user_session_aggregates（迁移 981 的会话级人员 MV，993 起 owner 键 =
+// COALESCE(s.owner_user, sd.api_key_owner_user) 双源）。根因：session_owners
+// 由 v1 _request_logs 触发器维护（358/563），v1 停写后行集冻结在 2026-10
+// ——它是陈旧子集，活跃 owner 整行缺失、窗口用量被静默丢弃（projects
+// 下钻 3745f26f9 已趟平同款换锚）。换锚后数字与 overview/user-ranking
+// 端点同源同键（981 族 MV），两种页面不再各说各话。
+// first_seen_at 语义订正：MV 按日桶聚合，此处为**日粒度**（桶内无首请求时刻）。
 const userProfileBaseStatsSQL = `
 		SELECT
-			COUNT(DISTINCT so.gw_session_id) AS session_count,
-			COALESCE(SUM(so.request_count), 0) AS total_requests,
-			COALESCE(SUM(so.total_cost_usd), 0) AS total_cost_usd,
-			COALESCE(CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
-				THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
+			COALESCE(SUM(a.session_count), 0)::bigint AS session_count,
+			COALESCE(SUM(a.request_count), 0)::bigint AS total_requests,
+			COALESCE(SUM(a.internal_cost + a.external_cost), 0) AS total_cost_usd,
+			COALESCE(CASE WHEN COALESCE(SUM(a.session_count), 0) > 0
+				THEN SUM(a.internal_cost + a.external_cost) / SUM(a.session_count)
 				ELSE 0 END, 0) AS avg_cost,
-			COALESCE(SUM(so.success_count), 0) AS total_success,
-			COALESCE(SUM(so.error_count), 0) AS total_errors,
-			MIN(so.first_seen_at) AS first_seen_at,
-			MAX(so.last_seen_at) AS last_seen_at,
-			COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count
-		FROM session_owners so
+			COALESCE(SUM(a.success_count), 0)::bigint AS total_success,
+			COALESCE(SUM(a.error_count), 0)::bigint AS total_errors,
+			MIN(a.date)::timestamptz AS first_seen_at,
+			MAX(a.last_active_at) AS last_seen_at,
+			COALESCE(SUM(a.end_user_count), 0)::bigint AS end_user_count
+		FROM user_session_aggregates a
 		WHERE %s
 	`
 
@@ -246,11 +255,15 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	baseWhere := ""
 	baseArgs := []interface{}{}
 
-	// owner_user 为 NULL 的行不构成「用户画像」：它扫进 string 会 500
-	// （pgx 不做隐式 NULL→""），且 COUNT(DISTINCT owner_user) 本就忽略
+	// owner 为 NULL 的行不构成「用户画像」：它扫进 string 会 500
+	// （pgx 不做隐式 NULL→""），且 COUNT(DISTINCT owner) 本就忽略
 	// NULL ⇒ 不过滤会让 total 与列表口径分叉。这里在两处查询统一排掉。
 	// 2026-10-14 全量 API 扫描轮实测抓到（真库 session_owners 含 NULL 属主行）。
-	nullOwnerFilter := "so.owner_user IS NOT NULL"
+	// 2026-11-20 换锚：锚表 session_owners（v1 停写后冻结的陈旧子集）→
+	// user_session_aggregates（981 MV，993 起 owner 键=COALESCE 双源键，
+	// 与 overview/user-ranking/详情/projects 下钻全部同源同键）。
+	// MV 缺席（迁移未应用）时走下方 IsSchemaBehindError 降级，与旧行为同构。
+	nullOwnerFilter := "a.owner IS NOT NULL"
 
 	// 三层隔离
 	if IsRegularUser(r) {
@@ -260,12 +273,12 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusForbidden, "no user identity")
 			return
 		}
-		baseWhere = "WHERE " + nullOwnerFilter + " AND so.owner_user = $1"
+		baseWhere = "WHERE " + nullOwnerFilter + " AND a.owner = $1"
 		baseArgs = append(baseArgs, owner)
 	} else if IsTenantAdmin(r) {
 		tenantID := GetTenantID(r)
 		if tenantID != "" && tenantID != "default" {
-			baseWhere = "WHERE " + nullOwnerFilter + " AND so.tenant_id = $1"
+			baseWhere = "WHERE " + nullOwnerFilter + " AND a.tenant_id = $1"
 			baseArgs = append(baseArgs, tenantID)
 		} else {
 			baseWhere = "WHERE " + nullOwnerFilter
@@ -273,52 +286,51 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	} else {
 		// super_admin/admin_key — 可指定 tenant_id
 		if q := queryString(r, "tenant_id"); q != "" {
-			baseWhere = "WHERE " + nullOwnerFilter + " AND so.tenant_id = $1"
+			baseWhere = "WHERE " + nullOwnerFilter + " AND a.tenant_id = $1"
 			baseArgs = append(baseArgs, q)
 		} else {
 			baseWhere = "WHERE " + nullOwnerFilter
 		}
 	}
 
-	// 搜索（按 owner_user 模糊匹配）
+	// 搜索（按 owner 模糊匹配）
 	if search := strings.TrimSpace(r.URL.Query().Get("search")); search != "" {
 		paramIdx := len(baseArgs) + 1
 		if baseWhere == "" {
-			baseWhere = fmt.Sprintf("WHERE so.owner_user ILIKE $%d", paramIdx)
+			baseWhere = fmt.Sprintf("WHERE a.owner ILIKE $%d", paramIdx)
 		} else {
-			baseWhere += fmt.Sprintf(" AND so.owner_user ILIKE $%d", paramIdx)
+			baseWhere += fmt.Sprintf(" AND a.owner ILIKE $%d", paramIdx)
 		}
 		baseArgs = append(baseArgs, "%"+search+"%")
 	}
 
 	// 2026-11-19 时间范围统一轮：date_from/date_to 过滤窗口内有活动的用户。
-	// 口径落在 so.last_seen_at（会话行最后活跃时刻）：窗口语义 =「该用户在
-	// [date_from, date_to] 内有会话活动」。与列表 first_seen/last_seen 展示列
-	// 同源（session_owners），不引入新表。
+	// 口径落在 a.last_active_at（MV 桶内最后活跃时刻）：窗口语义 =「该用户在
+	// [date_from, date_to] 内有会话活动」。与列表 last_seen 展示列同源，不引入新表。
 	rawDateFrom := r.URL.Query().Get("date_from")
 	rawDateTo := r.URL.Query().Get("date_to")
 	if v := parseQueryTime(r, "date_from", time.Time{}); !v.IsZero() {
 		paramIdx := len(baseArgs) + 1
 		if baseWhere == "" {
-			baseWhere = fmt.Sprintf("WHERE so.last_seen_at >= $%d", paramIdx)
+			baseWhere = fmt.Sprintf("WHERE a.last_active_at >= $%d", paramIdx)
 		} else {
-			baseWhere += fmt.Sprintf(" AND so.last_seen_at >= $%d", paramIdx)
+			baseWhere += fmt.Sprintf(" AND a.last_active_at >= $%d", paramIdx)
 		}
 		baseArgs = append(baseArgs, v)
 	}
 	if v := parseQueryTime(r, "date_to", time.Time{}); !v.IsZero() {
 		paramIdx := len(baseArgs) + 1
 		if baseWhere == "" {
-			baseWhere = fmt.Sprintf("WHERE so.last_seen_at <= $%d", paramIdx)
+			baseWhere = fmt.Sprintf("WHERE a.last_active_at <= $%d", paramIdx)
 		} else {
-			baseWhere += fmt.Sprintf(" AND so.last_seen_at <= $%d", paramIdx)
+			baseWhere += fmt.Sprintf(" AND a.last_active_at <= $%d", paramIdx)
 		}
 		baseArgs = append(baseArgs, v)
 	}
 
 	// 总数
 	var total int
-	countSQL := fmt.Sprintf("SELECT COUNT(DISTINCT owner_user) FROM session_owners so %s", baseWhere)
+	countSQL := fmt.Sprintf("SELECT COUNT(DISTINCT a.owner) FROM user_session_aggregates a %s", baseWhere)
 	_ = h.db.QueryRow(ctx, countSQL, baseArgs...).Scan(&total)
 
 	// ── 2026-11-20 数字出处轮：窗口内用量聚合 ──────────────────────────
@@ -345,22 +357,25 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 		usageOwner = GetAuthContext(r).Username
 	}
 
-	// 列表：从 session_owners 聚合每个 owner_user
+	// 列表：从 user_session_aggregates 聚合每个 owner（2026-11-20 换锚，
+	// 见上方过滤常量处的注释）。成本口径 = internal_cost + external_cost
+	//（session_summaries 的 total_cost_usd + total_credits_charged，与 981
+	// overview/user-ranking 完全同源）。first_seen 为**日粒度**（MV 日桶）。
 	listSQL := fmt.Sprintf(`
-		SELECT so.owner_user,
-			COUNT(DISTINCT so.gw_session_id) AS session_count,
-			SUM(so.request_count) AS total_requests,
-			SUM(so.total_cost_usd) AS total_cost_usd,
-			CASE WHEN COUNT(DISTINCT so.gw_session_id) > 0
-				THEN SUM(so.total_cost_usd) / COUNT(DISTINCT so.gw_session_id)
+		SELECT a.owner,
+			COALESCE(SUM(a.session_count), 0)::bigint AS session_count,
+			COALESCE(SUM(a.request_count), 0)::bigint AS total_requests,
+			COALESCE(SUM(a.internal_cost + a.external_cost), 0) AS total_cost_usd,
+			CASE WHEN COALESCE(SUM(a.session_count), 0) > 0
+				THEN SUM(a.internal_cost + a.external_cost) / SUM(a.session_count)
 				ELSE 0 END AS avg_cost_per_session,
-			COUNT(DISTINCT so.end_user_id) FILTER (WHERE so.end_user_id IS NOT NULL AND so.end_user_id <> '') AS end_user_count,
-			MIN(so.first_seen_at) AS first_seen_at,
-			MAX(so.last_seen_at) AS last_seen_at
-		FROM session_owners so
+			COALESCE(SUM(a.end_user_count), 0)::bigint AS end_user_count,
+			MIN(a.date)::timestamptz AS first_seen_at,
+			MAX(a.last_active_at) AS last_seen_at
+		FROM user_session_aggregates a
 		%s
-		GROUP BY so.owner_user
-		ORDER BY SUM(so.total_cost_usd) DESC
+		GROUP BY a.owner
+		ORDER BY SUM(a.internal_cost + a.external_cost) DESC
 		LIMIT $%d OFFSET $%d
 	`, baseWhere, len(baseArgs)+1, len(baseArgs)+2)
 	args := make([]interface{}, len(baseArgs))
@@ -460,13 +475,21 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 			WindowStart: usageStart.Format(time.RFC3339),
 			WindowEnd:   usageEnd.Format(time.RFC3339),
 		},
+		// 身份/会话聚合列的出处（2026-11-20 换锚）：owner 键为 COALESCE 双源键，
+		// first_seen 为日粒度（MV 日桶）。成本口径 = internal+external，
+		// 与 981 overview/user-ranking 同源。
+		"identity_meta": map[string]string{
+			"source_view": "user_session_aggregates",
+			"owner_key":   "COALESCE(sessions.owner_user, session_dim.api_key_owner_user)",
+			"first_seen":  "day-granularity (MV date bucket)",
+		},
 	})
 }
 
 // handleUserAnalyticsDetail GET /api/admin/session-analytics/users/:owner
 // 用户画像详情。
 // 三层隔离：super_admin/tenant_admin 可查任意本租户 owner；普通用户强制指向自己。
-// 
+//
 // 路由：如果路径以 /models 结尾，则转发到 handleUserModelUsage
 func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -480,7 +503,7 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 
 	// 从路径提取 owner_user，并检查是否是 /models 子路由
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/session-analytics/users/")
-	
+
 	// 检查是否是 /models 端点
 	if strings.HasSuffix(path, "/models") {
 		h.handleUserModelUsage(w, r)
@@ -491,7 +514,7 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		h.handleUserOwnerProjects(w, r)
 		return
 	}
-	
+
 	ownerUser := strings.TrimSpace(path)
 	if ownerUser == "" {
 		writeError(w, http.StatusBadRequest, "owner_user is required")
@@ -528,11 +551,11 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 
 	resp := &UserProfileDetailResponse{}
 
-	// 1. 基础统计（从 session_owners 聚合 + session_summaries 外部 join）
-	baseWhere := "so.owner_user = $1"
+	// 1. 基础统计（2026-11-20 换锚 user_session_aggregates；见包级常量注释）
+	baseWhere := "a.owner = $1"
 	baseArgs := []interface{}{ownerUser}
 	if tenantID != "" && tenantID != "default" {
-		baseWhere += " AND so.tenant_id = $2"
+		baseWhere += " AND a.tenant_id = $2"
 		baseArgs = append(baseArgs, tenantID)
 	}
 
@@ -1255,10 +1278,11 @@ func (h *Handler) handleUserUsageMatrix(w http.ResponseWriter, r *http.Request) 
 // UserProjectRow 员工×项目一行。
 //
 // ★ 数字出处 = session_summaries（会话级聚合）× session_owners（归属），
-//   成本口径是**会话级**的：total_cost_usd（USD 成本）与 total_credits_charged
-//   （积分）——与请求级 usage 列的「内部成本=cost_display / 外部成本=cost_usd」
-//   **不同源不同义** ⇒ 前端项目卡不得沿用「内部/外部成本」标签（页面双口径
-//   并存时以列头与帮助抽屉的来源标注为准）。
+//
+//	成本口径是**会话级**的：total_cost_usd（USD 成本）与 total_credits_charged
+//	（积分）——与请求级 usage 列的「内部成本=cost_display / 外部成本=cost_usd」
+//	**不同源不同义** ⇒ 前端项目卡不得沿用「内部/外部成本」标签（页面双口径
+//	并存时以列头与帮助抽屉的来源标注为准）。
 type UserProjectRow struct {
 	ProjectID      string    `json:"project_id"`
 	SessionCount   int64     `json:"session_count"`
@@ -1410,9 +1434,9 @@ func (h *Handler) handleUserOwnerProjects(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"projects":  projects,
+		"projects":   projects,
 		"owner_user": ownerUser,
-		"days":      days,
+		"days":       days,
 		// 数字出处块：项目卡数字是**会话级**口径（session_summaries×session_owners），
 		// 与请求级 usage 的内外成本不同源——帮助抽屉与卡片注记引用此块。
 		"usage_meta": userUsageMeta{

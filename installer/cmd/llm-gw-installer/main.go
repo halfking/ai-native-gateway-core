@@ -1840,6 +1840,20 @@ var statsTimezoneStandardization991 []byte
 //go:embed embeddata/startup/992_add_cst_timezone_functions.sql
 var cstTimezoneFunctions992 []byte
 
+// ★ 993（2026-11-20 会话分析闭环审计轮）：session_analytics_owner_key_and_close_path——
+//
+//	981 会话级三视图 owner 键统一 COALESCE 双源 + end_user_count 列；
+//	四视图 DROP+CREATE 重建（自愈 252「台账记 applied、视图缺失」）；
+//	session_dim 补 stop_reason 列（关闭路径 42703 根修）。
+//	文件自带 statement_timeout=30min 守卫（视图级 SELECT 在 252 实测
+//	90s~197s，30s 服务端默认会掐断——981 半途而废的机制）。
+//
+//go:embed embeddata/startup/993_session_analytics_owner_key_and_close_path.sql
+var sessionAnalyticsOwnerKey993 []byte
+
+//go:embed embeddata/startup/993_session_analytics_owner_key_and_close_path.down.sql
+var sessionAnalyticsOwnerKey993Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2473,6 +2487,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
 	"startup/992_add_cst_timezone_functions.sql":     cstTimezoneFunctions992,
+	// ★ 993（2026-11-20 会话分析闭环审计轮）：owner 键统一双源 + 视图族重建 + 关闭路径补列。
+	"startup/993_session_analytics_owner_key_and_close_path.sql":      sessionAnalyticsOwnerKey993,
+	"startup/993_session_analytics_owner_key_and_close_path.down.sql": sessionAnalyticsOwnerKey993Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

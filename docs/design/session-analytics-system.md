@@ -1,5 +1,22 @@
 # 会话分析系统设计文档
 
+> ⚠ **现状对齐（2026-11-20 会话分析闭环审计轮，主档 `docs/audit/2026-11-20-会话分析闭环审计与根修-主档.md`）**：
+> 本文是**设计稿**，其中 SQL 示例按设计期幻写 schema 写成（列名/表名与真库不一致——981 重写轮已实证）。
+> 权威真源以实现为准：
+> - 基础设施 = `sql/migrations/startup/981_session_analytics_foundation.sql`（四 MV + 探测判定函数）；
+> - owner 键/重建/关闭路径 = `sql/migrations/startup/993_session_analytics_owner_key_and_close_path.sql`
+>   （owner 键统一 `NULLIF(COALESCE(s.owner_user, sd.api_key_owner_user),'')` 双源、session_dim.stop_reason、
+>   四视图 DROP+CREATE 重建自愈 252 缺失）；
+> - 触发链 = 会话关闭事实判定 `bg/session_lifecycle_worker.go` → `session.closed` 事件
+>   （`cmd/gateway/session_analytics_close_chain.go` 桥接）→ SessionSummaryWorker
+>   （GenerateRollingSummary 提示词合并总结 + 标题同步）→ closeHooks（sessionmeta final + projectattr 归属）；
+>   总闸 settings `session_analytics.enabled`（默认关，热更），摘要层另需 env `LLM_GATEWAY_ANALYSIS_BASE_URL/_API_KEY`；
+> - users/projects 读面 = `admin/user_profile.go`（2026-11-20 起锚 user_session_aggregates 双源键，
+>   与 overview/user-ranking 同源同键）；
+> - overview / user-ranking 端点当前 **API-only**（web 零调用，Phase 3 管理面预留）。
+> 设计稿中与上述不一致的段落以实现为准，暂不逐节重写（重写属文档专项）。
+
+
 ## 1. 概述
 
 ### 1.1 目标

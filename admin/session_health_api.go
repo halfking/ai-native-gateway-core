@@ -445,12 +445,14 @@ func (h *Handler) HandleSessionRecycle(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// 幂等关闭
+	// 2026-11-20 根修：旧语句 SET 了 session_dim 上不存在的 updated_at 列
+	//（904 迁移头部已记录该 42703 ⇒ 管理面手动回收一直 500）。收窄到真实列；
+	// stop_reason 由迁移 993 补建。
 	tag, err := h.db.Exec(ctx, `
 		UPDATE session_dim
 		SET status = 'closed',
 		    closed_at = NOW(),
-		    stop_reason = $2,
-		    updated_at = NOW()
+		    stop_reason = $2
 		WHERE gw_session_id = $1
 		  AND status = 'active'
 		AND ($3 = '' OR tenant_id = $3)

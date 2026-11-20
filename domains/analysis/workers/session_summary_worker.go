@@ -68,14 +68,14 @@ func (w *SessionSummaryWorker) SubscribedTypes() []analysis.EventType {
 // Handle 提取 session_key 调用 summarizer。
 //
 // 容错策略：
-//   - summarizer 为 nil：返回 nil（worker 仅是占位）
+//   - summarizer 为 nil：跳过摘要生成，但**仍执行 closeHooks**（2026-11-20
+//     闭环审计轮：元数据 final 与项目归属是规则层，不依赖 LLM——无分析
+//     端点时整链不应一起瘫痪。此前 summarizer 为 nil 时 worker 直接返回，
+//     会把两个零成本层一起关掉）；
 //   - tenant_id 或 session_key 缺失：返回 nil（无法处理）
 //   - GenerateSummary 失败：返回错误，由事件总线记录 attempts 并重试
 func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.AnalysisEvent) error {
 	if evt.Type != analysis.EventSessionClosed {
-		return nil
-	}
-	if w.summarizer == nil {
 		return nil
 	}
 	sessionKey := extractSessionKey(evt)
@@ -84,6 +84,13 @@ func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.Analysis
 			"event_id", evt.EventID, "tenant_id", evt.TenantID)
 		return nil
 	}
+
+	if w.summarizer == nil {
+		// 无 summarizer：跳过摘要，钩子（元数据 final / 项目归属）照跑。
+		w.runCloseHooks(ctx, evt, sessionKey)
+		return nil
+	}
+
 	w.processed.Add(1)
 	_, err := w.summarizer.GenerateSummary(ctx, evt.TenantID, sessionKey)
 	if err != nil {
@@ -93,6 +100,9 @@ func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.Analysis
 			"tenant_id", evt.TenantID,
 			"session_key", sessionKey,
 			"error", err)
+		// 摘要失败不阻断零成本钩子：元数据/归属/关闭是独立交付物，
+		// 不该陪摘要一起重试（它们幂等，跑一次就落一份 final）。
+		w.runCloseHooks(ctx, evt, sessionKey)
 		return err
 	}
 	w.logger.Info("session_summary_worker: summary generated",
@@ -102,7 +112,12 @@ func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.Analysis
 	)
 
 	// 执行会话关闭扩展钩子（优化建议检测等）。
-	// 任一失败仅记日志，不影响主流程。
+	w.runCloseHooks(ctx, evt, sessionKey)
+	return nil
+}
+
+// runCloseHooks 顺序执行 closeHooks；任一失败仅记日志，不影响后续。
+func (w *SessionSummaryWorker) runCloseHooks(ctx context.Context, evt analysis.AnalysisEvent, sessionKey string) {
 	for _, h := range w.closeHooks {
 		if err := h.OnSessionClosed(ctx, evt.TenantID, sessionKey); err != nil {
 			w.logger.Warn("session_summary_worker: close hook failed",
@@ -112,7 +127,6 @@ func (w *SessionSummaryWorker) Handle(ctx context.Context, evt analysis.Analysis
 				"error", err)
 		}
 	}
-	return nil
 }
 
 // Stats 返回 (processed, failed) 计数。

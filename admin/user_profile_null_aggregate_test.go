@@ -35,17 +35,17 @@ func TestUserProfileStatsSQL_NullAggregatesAreCoalesced(t *testing.T) {
 
 	var exists bool
 	if err := conn.QueryRow(ctx,
-		`SELECT to_regclass('public.session_owners') IS NOT NULL`).Scan(&exists); err != nil {
+		`SELECT to_regclass('public.user_session_aggregates') IS NOT NULL`).Scan(&exists); err != nil {
 		t.Fatalf("probe table: %v", err)
 	}
 	if !exists {
-		t.Skip("session_owners missing in TEST_PG_URL — nothing to verify against")
+		t.Skip("user_session_aggregates missing in TEST_PG_URL — nothing to verify against")
 	}
 
 	// 一个**确定没有行**的 owner。
 	const owner = "audit-no-such-owner-20261020"
 	rows, err := conn.Query(ctx,
-		fmt.Sprintf(userProfileBaseStatsSQL, "so.owner_user = $1"), owner)
+		fmt.Sprintf(userProfileBaseStatsSQL, "a.owner = $1"), owner)
 	if err != nil {
 		t.Fatalf("stats query failed: %v", err)
 	}

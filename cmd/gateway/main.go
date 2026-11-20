@@ -7802,6 +7802,9 @@ func main() {
 	}
 
 	var v2SecurityRegistry *security.Registry
+	// 2026-11-20 会话分析闭环审计轮：V2 块是否已经启动 session.closed 消费循环
+	//（EnableAnalysis env + summarizer 双条件）。独立闭链据此决定补挂还是全启。
+	var v2SumChainStarted bool
 	if v2DispatchEnabled {
 		// Pass the engine in so the Pipeline's sensitive-word plugins scan with
 		// the SAME instance the admin handler reloads. Assigning it to v2Deps
@@ -7864,6 +7867,9 @@ func main() {
 				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, piDetector, nil, nil, fpSlotRedis)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
+			// 2026-11-20 闭环审计轮：记录 V2 侧是否真的启动了 session.closed
+			// 消费循环（独立闭链据此去重，避免双跑）。
+			v2SumChainStarted = v2Deps.Config.EnableAnalysis && v2Deps.SessionSummarizer != nil
 			defer v2ShutdownPipeline(v2Deps)
 			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, chatRouteHandler))
 			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, chatRouteHandler))
@@ -7874,6 +7880,25 @@ func main() {
 			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesRouteHandler))
 			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
 		}
+	}
+
+	// ★ 2026-11-20 会话分析闭环审计轮（P1）：独立启动
+	//   「提示词合并总结 → 元数据 final → 项目归属 → 会话关闭」链。
+	//
+	//   此前整条链寄生在 LLM_GATEWAY_USE_V2_PIPELINE 块内（211 生产实测该
+	//   开关关闭 ⇒ 链不存在），且 session.closed 事件全仓无发布者 ⇒ 三条
+	//   hook 订阅空事件类型，生产空转。修法三件：
+	//   ① 本入口与 V2 管线开关解耦（211 不开 V2 也能跑）；
+	//   ② bg.SessionLifecycleWorker 接活为会话关闭的事实判定器（此前零接线
+	//      且 UPDATE 引用不存在的列 ⇒ 42703，session_dim 全 'active'）；
+	//   ③ 消费循环 → SessionSummaryWorker → GenerateRollingSummary →
+	//      closeHooks（元数据 final + 项目归属）。
+	//   总闸 = settings session_analytics.enabled（默认 false，热更）；V2 已
+	//   启动同款循环时只补挂 lifecycle worker 不双跑。停机走
+	//   StopSessionAnalyticsCloseChain（shutdown 序列）。
+	var sessionLifecycleWorker *bg.SessionLifecycleWorker
+	if dbConn != nil && dbConn.Enabled() {
+		sessionLifecycleWorker = StartSessionAnalyticsCloseChain(dbConn.Pool(), fpSlotRedis, v2SumChainStarted)
 	}
 
 	// 2026-10-18: 实时拓扑「在用插件」清单。v2 管线开启时读治理注册中心；
@@ -9484,6 +9509,8 @@ func main() {
 		if materializedViewRefresher != nil {
 			materializedViewRefresher.Stop()
 		}
+		// 2026-11-20 会话分析闭环审计轮：停机时停闭链（lifecycle worker + 消费循环 ctx）。
+		StopSessionAnalyticsCloseChain(sessionLifecycleWorker)
 		if modelQualityWorker != nil {
 			modelQualityWorker.Stop()
 		}

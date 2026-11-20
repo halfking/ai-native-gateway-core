@@ -125,7 +125,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionsummary"                               //nolint:depguard // session summary worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
-	"github.com/kaixuan/llm-gateway-go/extpoints"                                            //nolint:depguard // 2026-11-19: 16-Phase Plugin 架构桥接
+	"github.com/kaixuan/llm-gateway-go/extpoints"          //nolint:depguard // 2026-11-19: 16-Phase Plugin 架构桥接
 	"github.com/kaixuan/llm-gateway-go/internal/sessionid" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/taskbus"   //nolint:depguard // 03: Hook 双模 taskbus 内核
 	"github.com/kaixuan/llm-gateway-go/security/sensitive" //nolint:depguard // AC敏感词引擎
@@ -285,7 +285,7 @@ type v2DispatchDeps struct {
 	//	**永远到不了决策闸** ⇒ 已写下的 deny verdict 被丢弃。
 	//	⇒ 把它暴露出来，让 dispatch 层在管线中止后**补做一次决策**
 	//	（见 v2DispatchHandler 的「收口决策」）。
-	InterceptEngine *interception.Engine
+	InterceptEngine         *interception.Engine
 	OutputComplianceChecker outputcompliancehooks.Checker
 	SessionSummarizer       workers.SessionSummarizer
 
@@ -342,7 +342,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// ── ExtensionPoint Registry (2026-11-19) ──────────────────────────────
 	// 创建 16-Phase Plugin 注册表，通过 ExtensionPointHook 桥接到现有 Pipeline。
 	// 插件可以在各个 Phase 注册，ExecutionEngine 按优先级顺序执行它们。
-	// 
+	//
 	// 集成策略：
 	//   - 为每个主要 Phase 创建一个 ExtensionPointHook
 	//   - Hook 的 Priority = 500（中等），在标准 Hook 之后执行
@@ -385,10 +385,10 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		// In production, pass the DB pool from main.go.
 		// For demo/test: keys are not verified, hook will skip.
 		authHooks := []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)}
-		
+
 		// ExtensionPoint: 添加 PhaseAuth 插件支持
 		authHooks = append(authHooks, extpoints.NewExtensionPointHook(extRegistry, "authentication"))
-		
+
 		p.AddStage(&pipeline.PipelineStage{
 			Name:  "authentication",
 			Phase: pipeline.PhaseAuthentication,
@@ -513,29 +513,29 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-		// Routing stage: uses the same routing package as main_v2_pipeline.go
-		// (routing.NewStickyRouter(routing.NewRoundRobinRouter())). The hook
-		// only contributes routing decisions to env.SelectedCredential — the
-		// actual upstream call still goes through chatHandler.
-		if deps.CredentialLimit != nil {
-			sticky := routing.NewStickyRouter(routing.NewRoundRobinRouter())
-			p.AddStage(&pipeline.PipelineStage{
-				Name: "routing", Phase: pipeline.PhaseRouting, Mode: pipeline.ModeSequential,
-				Hooks: []pipeline.Hook{
-					routing.NewRoutingHook(sticky),
-					// ExtensionPoint: PhaseRoute 插件
-					extpoints.NewExtensionPointHook(extRegistry, "routing"),
-				},
-			})
-			p.AddStage(&pipeline.PipelineStage{
-				Name: "credential_limit", Phase: pipeline.PhasePostRouting, Mode: pipeline.ModeSequential,
-				Hooks: []pipeline.Hook{
-					credential.NewLimiterHook(deps.CredentialLimit),
-					// ExtensionPoint: PhasePostRoute 插件
-					extpoints.NewExtensionPointHook(extRegistry, "post_routing"),
-				},
-			})
-		}
+	// Routing stage: uses the same routing package as main_v2_pipeline.go
+	// (routing.NewStickyRouter(routing.NewRoundRobinRouter())). The hook
+	// only contributes routing decisions to env.SelectedCredential — the
+	// actual upstream call still goes through chatHandler.
+	if deps.CredentialLimit != nil {
+		sticky := routing.NewStickyRouter(routing.NewRoundRobinRouter())
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "routing", Phase: pipeline.PhaseRouting, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{
+				routing.NewRoutingHook(sticky),
+				// ExtensionPoint: PhaseRoute 插件
+				extpoints.NewExtensionPointHook(extRegistry, "routing"),
+			},
+		})
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "credential_limit", Phase: pipeline.PhasePostRouting, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{
+				credential.NewLimiterHook(deps.CredentialLimit),
+				// ExtensionPoint: PhasePostRoute 插件
+				extpoints.NewExtensionPointHook(extRegistry, "post_routing"),
+			},
+		})
+	}
 
 	// V4 governance stage (PR-V4-02). PR-V4-03 wires the security plugin
 	// registry here; older SecurityHook in domains/hooks/security still
@@ -1592,17 +1592,18 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 // 监听从未绑定、进程不退出。有界关闭让清理路径必然返回。
 //
 // ★ 2026-11-18 审计轮订正（假根因）：本注释此前断言「*sql.DB.Close 会等
-//   所有在途连接归还（底层 puddle Pool.Close 卡 WaitGroup.Wait）」——
-//   **这是错的**，且本仓自己的钉测文件已写明相反事实
-//   （cmd/gateway/v2_dispatch_registration_guard_test.go:「stdlib *sql.DB.Close
-//   不等待在途连接归还；这里的有界包装是**纵深防御**」）。
-//   实测：Go 1.27.4 stdlib database/sql.(*DB).Close 只关空闲连接、置 closed、
-//   stop()，**不等在途查询**；本仓走 stdlib.OpenDB → pgx.ConnectConfig
-//   （裸 pgx，**不经 pgxpool/puddle**）。
-//   ⇒ 「僵尸进程」的真实机制在 PGPublisher.Close() → pool.Close()
-//   （domains/analysis/bus/publisher.go）——那一半是对的；
-//   ★ 而这里的 *sql.DB 有界包装是**纵深防御**（未来换驱动实现时兜底），
-//   不是本次根因的必要条件。保留该包装，但不再把它说成根因。
+//
+//	所有在途连接归还（底层 puddle Pool.Close 卡 WaitGroup.Wait）」——
+//	**这是错的**，且本仓自己的钉测文件已写明相反事实
+//	（cmd/gateway/v2_dispatch_registration_guard_test.go:「stdlib *sql.DB.Close
+//	不等待在途连接归还；这里的有界包装是**纵深防御**」）。
+//	实测：Go 1.27.4 stdlib database/sql.(*DB).Close 只关空闲连接、置 closed、
+//	stop()，**不等在途查询**；本仓走 stdlib.OpenDB → pgx.ConnectConfig
+//	（裸 pgx，**不经 pgxpool/puddle**）。
+//	⇒ 「僵尸进程」的真实机制在 PGPublisher.Close() → pool.Close()
+//	（domains/analysis/bus/publisher.go）——那一半是对的；
+//	★ 而这里的 *sql.DB 有界包装是**纵深防御**（未来换驱动实现时兜底），
+//	不是本次根因的必要条件。保留该包装，但不再把它说成根因。
 const analysisSQLDBCloseTimeout = 5 * time.Second
 
 // closeAnalysisSQLDBBounded 有界关闭一个 analysis *sql.DB：超时放弃并留痕
@@ -1743,44 +1744,35 @@ func SetV2DispatchAnalysisResources(
 	// Phase 4: 会话全景分析引擎注入。
 	// 仅当 session_analytics.enabled 且 pool 可用时构建引擎。
 	// 通过 PhasePostResponse hook 接入请求管道，准实时分析。
+	// 2026-11-20 闭环审计轮：LLM 客户端/stage 配置构造收敛到 newAnalysisLLMClient
+	// （与独立闭链共用）；resolver 换 sessionAnalyticsAutoResolver——此前的
+	// DefaultModelResolver 返回 "summary-fast"/"intent-fast" 等内置别名，
+	// 而全仓不存在这些别名的解析表 ⇒ 别名被原样发往分析端点必失败。
 	if pool != nil && sessionanalytics.NewLLMStageConfig(nil).Enabled() {
-		cfg := sessionanalytics.NewLLMStageConfig(nil)
-		analyticsDB := sessionanalytics.NewPoolDB(pool)
-		var analysisClient *sessionanalytics.OpenAIClient
-		analysisBaseURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_BASE_URL"))
-		analysisAPIKey := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ANALYSIS_API_KEY"))
-		allowInsecureLocal := os.Getenv("LLM_GATEWAY_ANALYSIS_ALLOW_INSECURE_LOCAL") == "true"
-		if analysisBaseURL != "" && analysisAPIKey != "" {
-			validatedURL, validateErr := validateAnalysisEndpoint(analysisBaseURL, allowInsecureLocal)
-			if validateErr != nil {
-				slog.Error("session analytics model client disabled", "error", validateErr)
-			} else {
-				analysisClient = sessionanalytics.NewOpenAIClientWithNetworkPolicy(validatedURL, analysisAPIKey, 30*time.Second, allowInsecureLocal)
-				slog.Info("session analytics model client enabled", "base_url", validatedURL)
-				if deps.SessionSummarizer == nil {
-					// 2026-08-06: pass *pgxpool.Pool directly to NewSummarizer
-					// instead of bridging to *sql.DB. The summarizer now
-					// uses summarystore.Upsert for the write path and
-					// pgxpool for reads — no more sql.DB involvement in
-					// the v2 dispatch path.
-					summaryService := sessionsummary.NewSummarizer(pool, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
-					summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
-					// docs/omni-ref3 A1 (decision: compress+summary cut over
-					// together, default-on, same kill-switch as compression read):
-					// read session messages from public.session_bodies instead of
-					// request_logs. Same platform flag as shouldUseV2, default true,
-					// hot-reloadable to false to revert to V1 reads.
-					if settings.GetPlatformBool("sessions_v2_compression_read", true) {
-						// 24h 审计第二轮 B#4：默认仍走 V2 源；per-turn digest
-						// 层（sessions_summary_per_turn_digest，默认关）开启时
-						// 摘要输入改为逐轮 user+assistant 人读摘要，关闭时该源
-						// 逐字节委托 V2 源，行为不变。
-						summaryService.SetMessageSource(sessionsummary.NewPerTurnDigestSource(pool))
-					}
-					deps.SessionSummarizer = sessionSummaryWorkerAdapter{summarizer: summaryService}
-				}
+		analysisClient, cfg := newAnalysisLLMClient()
+		if analysisClient != nil && deps.SessionSummarizer == nil {
+			// 2026-08-06: pass *pgxpool.Pool directly to NewSummarizer
+			// instead of bridging to *sql.DB. The summarizer now
+			// uses summarystore.Upsert for the write path and
+			// pgxpool for reads — no more sql.DB involvement in
+			// the v2 dispatch path.
+			summaryService := sessionsummary.NewSummarizer(pool, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
+			summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
+			// docs/omni-ref3 A1 (decision: compress+summary cut over
+			// together, default-on, same kill-switch as compression read):
+			// read session messages from public.session_bodies instead of
+			// request_logs. Same platform flag as shouldUseV2, default true,
+			// hot-reloadable to false to revert to V1 reads.
+			if settings.GetPlatformBool("sessions_v2_compression_read", true) {
+				// 24h 审计第二轮 B#4：默认仍走 V2 源；per-turn digest
+				// 层（sessions_summary_per_turn_digest，默认关）开启时
+				// 摘要输入改为逐轮 user+assistant 人读摘要，关闭时该源
+				// 逐字节委托 V2 源，行为不变。
+				summaryService.SetMessageSource(sessionsummary.NewPerTurnDigestSource(pool))
 			}
+			deps.SessionSummarizer = sessionSummaryWorkerAdapter{summarizer: summaryService}
 		}
+		analyticsDB := sessionanalytics.NewPoolDB(pool)
 		engines := &sessionanalysis.Engines{
 			RequestSummarizer: sessionanalytics.NewRequestSummarizer(analyticsDB, cfg, analysisClient, slog.Default()),
 			Tagger:            sessionanalytics.NewSessionTagger(analyticsDB, cfg, slog.Default()),
@@ -1790,6 +1782,14 @@ func SetV2DispatchAnalysisResources(
 
 		// 注入 ClusterRunner（手动触发聚类用）
 		admin.SetClusterRunner(sessionanalytics.NewSessionClusterer(analyticsDB, cfg, analysisClient, slog.Default()))
+
+		// 2026-11-20 闭环审计轮（P1）：ProjectAttrResolver 生产装配。
+		// 此前该字段全仓没有任何赋值点 ⇒ project_attribution.enabled 打开后
+		// 挂载条件（flag && pool && resolver）第三条恒 false，三级项目归属
+		// 推断（rule→inherit→llm）生产不可达。
+		if deps.ProjectAttrResolver == nil {
+			deps.ProjectAttrResolver = projectattr.NewProjectResolver(projectattr.NewPGStoreFromPool(pool))
+		}
 	}
 }
 

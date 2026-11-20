@@ -327,14 +327,10 @@ var allowBatchFieldInSQL = map[string]batchFieldExemption{
 		// 包常量 autoHealBatchSize 编译期非零 ⇒ 形状无关，无谓词。
 		reason: "w.batchSize ← 包常量 autoHealBatchSize（非零，与代码形状无关）",
 	},
-	"session_lifecycle_worker.go:256": {
-		reason:    "w.cleanupBatchSize 默认 500（:148）；WithRecycleConfig 是 test-only 且刻意允许覆盖",
-		mustMatch: regexp.MustCompile(`w\.cleanupBatchSize`),
-	},
-	"session_lifecycle_worker.go:312": {
-		reason:    "w.cleanupBatchSize 默认 500（:148）；同上",
-		mustMatch: regexp.MustCompile(`w\.cleanupBatchSize`),
-	},
+	// 2026-11-20 会话分析闭环审计轮：session_lifecycle_worker 的两处 LIMIT
+	// 实参已改走 effectiveBatchSize() 归一入口（settings 误配 0/负值回落 500）
+	// ⇒ 方法调用是合规形态，不再需要行号豁免（旧行号豁免在本轮编辑后行号
+	// 漂移，属「理由不再成立的过期豁免」——按棘轮自己的纪律整段退役）。
 }
 
 func TestSqlLimitBatchFieldsAreNormalisedSomewhere(t *testing.T) {

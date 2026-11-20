@@ -5,6 +5,8 @@
 --   本目录是**快照**（静态 jsonb lint 的列映射来源），**sql/migrations/startup/ 为权威**。
 --   2026-10-20 补录（审计 D3c）：本表此前在正典目录里没有任何条目，
 --   导致「按正典文件读会话族」的人读出一张不存在的表。
+--   2026-11-20 补录（993 会话分析闭环审计轮）：stop_reason 列由 993 补建
+--   （bg lifecycle worker 与 admin 手动回收的写入目标，此前列不存在 ⇒ 42703）。
 
 CREATE TABLE public.session_dim (
     gw_session_id      character varying NOT NULL,
@@ -15,6 +17,7 @@ CREATE TABLE public.session_dim (
     first_request_at   timestamp with time zone,
     last_active_at     timestamp with time zone,
     closed_at          timestamp with time zone,
+    stop_reason        text,
     created_at         timestamp with time zone NOT NULL,
     project_id         text,
     api_key_id         bigint,

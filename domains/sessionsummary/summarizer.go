@@ -153,6 +153,12 @@ func (s *Summarizer) SetModel(model string) {
 
 // GenerateSummary 生成完整的会话总结（异步调用）
 func (s *Summarizer) GenerateSummary(ctx context.Context, tenantID, sessionKey string) (*SessionSummary, error) {
+	// 0. 防御：GenerateRollingSummary 有 nil 检查（降级本函数后仍会走到这里
+	// 的 Complete 调用），此前无 LLM 时在 nil interface 解引用处 panic。
+	if s.llmClient == nil {
+		return nil, fmt.Errorf("sessionsummary: llm client not configured")
+	}
+
 	// 1. 检查缓存
 	cached, err := s.getCachedSummary(ctx, tenantID, sessionKey)
 	if err == nil && cached != nil {

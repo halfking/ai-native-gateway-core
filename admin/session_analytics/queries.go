@@ -169,14 +169,14 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	var current OverviewSummary
 	query := `
 		SELECT
-			COALESCE(SUM(session_count), 0) as total_sessions,
+			COALESCE(SUM(session_count)::bigint, 0) as total_sessions,
 			ROUND(COALESCE(AVG(total_tokens::NUMERIC / NULLIF(session_count, 0)), 0), 2) as avg_tokens,
 			COALESCE(AVG(avg_duration_seconds), 0) as avg_duration_seconds,
 			COALESCE(AVG(avg_turns), 0) as avg_turns,
 			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost,
 			COALESCE(COUNT(DISTINCT owner), 0) as active_users,
-			COALESCE(SUM(project_count), 0) as active_projects,
-			COALESCE(SUM(task_count), 0) as active_tasks
+			COALESCE(SUM(project_count)::bigint, 0) as active_projects,
+			COALESCE(SUM(task_count)::bigint, 0) as active_tasks
 		FROM user_session_aggregates
 		WHERE date >= $1 AND date <= $2
 	`
@@ -206,7 +206,7 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	var prevUsers int64
 	query = `
 		SELECT
-			COALESCE(SUM(session_count), 0),
+			COALESCE(SUM(session_count)::bigint, 0),
 			COALESCE(SUM(internal_cost + external_cost), 0),
 			COALESCE(COUNT(DISTINCT owner), 0)
 		FROM user_session_aggregates
@@ -309,7 +309,7 @@ func getTrends(ctx context.Context, db *sql.DB, tenantID *string, startDate, end
 // getSessionTrend 获取会话数趋势
 func getSessionTrend(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate string) ([]TrendPoint, error) {
 	query := `
-		SELECT date::TEXT, SUM(session_count) as count
+		SELECT date::TEXT, SUM(session_count)::bigint as count
 		FROM user_session_aggregates
 		WHERE date >= $1 AND date <= $2
 	`
@@ -528,7 +528,7 @@ func getTopProjects(ctx context.Context, db *sql.DB, tenantID *string, startDate
 	query := `
 		SELECT
 			project,
-			SUM(session_count) as session_count,
+			SUM(session_count)::bigint as session_count,
 			COUNT(DISTINCT owner) as user_count,
 			SUM(internal_cost + external_cost) as total_cost
 		FROM project_task_aggregates

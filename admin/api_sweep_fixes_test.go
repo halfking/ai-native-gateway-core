@@ -37,7 +37,9 @@ func TestUserProfileListFiltersNullOwner(t *testing.T) {
 		t.Errorf("nullOwnerFilter 出现 %d 次（期望恰好 6：构造 1 + 分支 5）——"+
 			"有分支丢了 NULL 过滤或多出了无主过滤的裸分支", got)
 	}
-	if !strings.Contains(src, `nullOwnerFilter := "so.owner_user IS NOT NULL"`) {
+	// 2026-11-20 换锚：锚表 session_owners → user_session_aggregates，
+	// owner 列改由 COALESCE 双源键产出（993），判据随实现同层更新。
+	if !strings.Contains(src, `nullOwnerFilter := "a.owner IS NOT NULL"`) {
 		t.Errorf("nullOwnerFilter 的定义形态变了——判据与实现要同层（改实现请同步判据）")
 	}
 }

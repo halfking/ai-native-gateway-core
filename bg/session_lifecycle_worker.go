@@ -20,8 +20,15 @@
 // 接入点：cmd/gateway/main.go 与 cmd/gateway-v2/main.go 在 init bg services 时
 //         构造 + Start。
 
-// UNUSED (R35 audit 2026-09-17): zero production callers, zero test references — registered as
-// cleanup candidate R35-DEBT in docs/audit/2026-09-17-r35-gap-audit-round.md §四. Delete after roadmap confirmation.
+// 2026-11-20 会话分析闭环审计轮接活：本 worker 此前零生产接线（R35 登记为清理候选），
+// 且 applyRecycle 的 UPDATE 引用 session_dim 上不存在的列（stop_reason / updated_at，
+// 904 迁移头部已记录该 42703 根因）⇒ 一旦接线每笔回收必失败。本轮：
+//   - UPDATE 收窄到真实存在的列（stop_reason 由迁移 993 补建，updated_at 删除——
+//     session_dim 没有维护它的触发器，写一个只有两个写入方的 updated_at 是假元数据）；
+//   - 新增 SessionClosedPublisher：soft_close 真正落库的会话（RowsAffected>0）发布
+//     分析域 session.closed 事件，驱动 总结→元数据 final→项目归属 闭链；
+//   - 新增 summaryLookback 护栏：闲置超过该窗口的陈旧会话只关不发事件——消息体
+//     早已过保留期，摘要无从生成，发事件只会制造 5 次重试的死信噪音。
 package bg
 
 import (
@@ -91,6 +98,31 @@ type LifecycleEventPublisher interface {
 	Publish(event LifecycleEvent) error
 }
 
+// DefaultSummaryLookback 是 session.closed 分析事件的发布窗口：只有闲置时长
+// 在该窗口内的会话才发布事件。窗口依据 = 会话消息体保留期（SessionTTL=3d）：
+// 闲置超过保留期的会话消息已不可读，摘要链路只能失败（5 次重试后死信）。
+const DefaultSummaryLookback = 72 * time.Hour
+
+// SessionClosedPublisher 接收分析域 session.closed 事件（bg 包不 import 分析域，
+// 由 cmd/gateway 侧桥接到 analysis 总线）。nil = 不发布。
+type SessionClosedPublisher interface {
+	PublishSessionClosed(ctx context.Context, tenantID, gwSessionID, reason string, lastActiveAt time.Time, idleFor time.Duration) error
+}
+
+// shouldPublishSessionClosed 是「该不该为这笔回收发布 session.closed 分析事件」
+// 的纯判据（抽出以便钉测）：
+//   - 仅 soft_close 且确实翻转了行（rowsAffected>0）——notify_only 没有关闭事实；
+//   - 闲置时长在 lookback 窗口内——超过窗口消息体已过保留期，摘要无从生成。
+func shouldPublishSessionClosed(action string, rowsAffected int64, idleFor, lookback time.Duration) bool {
+	if action != "soft_close" || rowsAffected <= 0 {
+		return false
+	}
+	if lookback <= 0 {
+		return true
+	}
+	return idleFor <= lookback
+}
+
 // LifecycleEvent 是 worker 暴露的最小事件接口。
 // sessioninspector.SessionInspectorRecycleEvent 实现了此接口。
 type LifecycleEvent interface {
@@ -104,6 +136,11 @@ type SessionLifecycleWorker struct {
 	bus    LifecycleEventPublisher
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// closedPublisher（2026-11-20）接收分析域 session.closed 事件；nil = 不发布。
+	closedPublisher SessionClosedPublisher
+	// summaryLookback 限定发布窗口，0 = 不限。默认 DefaultSummaryLookback。
+	summaryLookback time.Duration
 
 	// 可覆盖的配置（测试时使用）
 	idleTimeout         time.Duration
@@ -136,6 +173,28 @@ func WithEventBus(bus LifecycleEventPublisher) SessionLifecycleWorkerOption {
 	}
 }
 
+// WithSessionClosedPublisher 注入分析域 session.closed 发布通道。
+func WithSessionClosedPublisher(p SessionClosedPublisher) SessionLifecycleWorkerOption {
+	return func(w *SessionLifecycleWorker) {
+		w.closedPublisher = p
+	}
+}
+
+// WithSummaryLookback 覆盖 session.closed 发布窗口（测试用；0 = 不限窗口）。
+func WithSummaryLookback(d time.Duration) SessionLifecycleWorkerOption {
+	return func(w *SessionLifecycleWorker) {
+		w.summaryLookback = d
+	}
+}
+
+// WithTenantLimits 覆盖单租户会话上限与驱逐策略（生产从 settings 读取）。
+func WithTenantLimits(maxPerTenant int, evictionPolicy string) SessionLifecycleWorkerOption {
+	return func(w *SessionLifecycleWorker) {
+		w.maxPerTenant = maxPerTenant
+		w.evictionPolicy = evictionPolicy
+	}
+}
+
 // NewSessionLifecycleWorker 构造 worker。
 // 默认配置从 spec 派生，可通过 Option 覆盖。
 func NewSessionLifecycleWorker(db *pgxpool.Pool, opts ...SessionLifecycleWorkerOption) *SessionLifecycleWorker {
@@ -149,6 +208,7 @@ func NewSessionLifecycleWorker(db *pgxpool.Pool, opts ...SessionLifecycleWorkerO
 		recycleAction:       "soft_close",
 		maxPerTenant:        1000,
 		evictionPolicy:      "lru",
+		summaryLookback:     DefaultSummaryLookback,
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -241,6 +301,16 @@ func (w *SessionLifecycleWorker) sweep(ctx context.Context) {
 	}
 }
 
+// effectiveBatchSize 是 cleanupBatchSize 的归一入口（batch_limit_guard 棘轮的
+// 合规形态）：settings 误配 0/负值时回落 500——LIMIT 0 扫零行会让 worker
+// 变成「还在跑但什么都不做」的静默 no-op（棘轮头注的原话）。
+func (w *SessionLifecycleWorker) effectiveBatchSize() int {
+	if w.cleanupBatchSize <= 0 {
+		return 500
+	}
+	return w.cleanupBatchSize
+}
+
 // recycleIdle 处理闲置超时会话。返回本轮处理数。
 func (w *SessionLifecycleWorker) recycleIdle(ctx context.Context) (int, error) {
 	if w.idleTimeout <= 0 {
@@ -255,7 +325,7 @@ func (w *SessionLifecycleWorker) recycleIdle(ctx context.Context) (int, error) {
 		ORDER BY last_active_at ASC
 		LIMIT $2
 	`
-	rows, err := w.db.Query(ctx, query, intervalSeconds(w.idleTimeout), w.cleanupBatchSize)
+	rows, err := w.db.Query(ctx, query, intervalSeconds(w.idleTimeout), w.effectiveBatchSize())
 	if err != nil {
 		return 0, err
 	}
@@ -311,7 +381,7 @@ func (w *SessionLifecycleWorker) recycleAbsolute(ctx context.Context) (int, erro
 		ORDER BY first_request_at ASC
 		LIMIT $2
 	`
-	rows, err := w.db.Query(ctx, query, intervalSeconds(w.absoluteMaxLifetime), w.cleanupBatchSize)
+	rows, err := w.db.Query(ctx, query, intervalSeconds(w.absoluteMaxLifetime), w.effectiveBatchSize())
 	if err != nil {
 		return 0, err
 	}
@@ -491,19 +561,27 @@ func (w *SessionLifecycleWorker) evictOneTenant(ctx context.Context, tenantID st
 // applyRecycle 按 recycle_action 决策（soft_close / notify_only）。
 func (w *SessionLifecycleWorker) applyRecycle(ctx context.Context, sessionID, tenantID, reason string, lastActiveAt time.Time, idleFor time.Duration) error {
 	// 1. 数据库动作（无论 recycle_action 是什么，都先发布事件）
+	rowsAffected := int64(0)
 	if w.recycleAction == "soft_close" {
+		// 2026-11-20 根修：旧语句同时 SET stop_reason / updated_at，而
+		// session_dim 上只有 stop_reason（迁移 993 补建）没有 updated_at
+		// （904 迁移头部已记录该 42703）⇒ 旧语句真库必炸。收窄到真实列。
 		updateQuery := `
 			UPDATE session_dim
 			SET status = 'closed',
 			    closed_at = NOW(),
-			    stop_reason = $2,
-			    updated_at = NOW()
+			    stop_reason = $2
 			WHERE gw_session_id = $1 AND status = 'active'
 		`
-		if _, err := w.db.Exec(ctx, updateQuery, sessionID, reason); err != nil {
+		tag, err := w.db.Exec(ctx, updateQuery, sessionID, reason)
+		if err != nil {
 			return err
 		}
-		sessionLifecycleMetrics.softClosed.Inc()
+		rowsAffected = tag.RowsAffected()
+		// RowsAffected=0 = 已是 closed（幂等重扫），不计入 soft_closed。
+		if rowsAffected > 0 {
+			sessionLifecycleMetrics.softClosed.Inc()
+		}
 	} else {
 		// notify_only：不修改 DB，仅记录
 		sessionLifecycleMetrics.notified.Inc()
@@ -524,6 +602,18 @@ func (w *SessionLifecycleWorker) applyRecycle(ctx context.Context, sessionID, te
 			slog.Warn("session_lifecycle: publish event failed",
 				"gw_session_id", sessionID, "error", err)
 		}
+	}
+
+	// 3. 发布分析域 session.closed（2026-11-20 闭环接线）。
+	// 判据收敛在 shouldPublishSessionClosed：只对「真正翻转了状态且闲置时长
+	// 在消息保留窗口内」的 soft_close 发布，避免死信噪音与重复事件。
+	if shouldPublishSessionClosed(w.recycleAction, rowsAffected, idleFor, w.summaryLookback) && w.closedPublisher != nil {
+		pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := w.closedPublisher.PublishSessionClosed(pubCtx, tenantID, sessionID, reason, lastActiveAt, idleFor); err != nil {
+			slog.Warn("session_lifecycle: publish session.closed failed",
+				"gw_session_id", sessionID, "error", err)
+		}
+		cancel()
 	}
 	return nil
 }

@@ -446,11 +446,17 @@ type MaterializedViewRefresher struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	// Failure tracking for alerting (2026-09-01 P1-B)
-	failureCount       int
-	lastFailureTime    time.Time
-	alertCallback      func(viewName string, consecutiveFailures int, err error)
-	driftAlertCallback func(viewName string, breaches int, maxPct float64, maxAbs int64, summary string)
-	lastDriftAlertTime time.Time
+	failureCount    int
+	lastFailureTime time.Time
+	// sessionFailureCount 追踪 session 视图族（981 四视图 + 357 三视图）的连续
+	// 失败轮数，与 routing 族的 failureCount 分开记账（两个周期节奏不同，共用
+	// 一个计数器会互相清零）。2026-11-20 审计轮补接：此前 refreshSessionViews
+	// 失败只有指标与日志、从不触发 alertCallback —— 而 252 生产恰处
+	// 「981 台账记了 applied、四个视图全缺失」状态，刷新每轮必失败却无告警。
+	sessionFailureCount int
+	alertCallback       func(viewName string, consecutiveFailures int, err error)
+	driftAlertCallback  func(viewName string, breaches int, maxPct float64, maxAbs int64, summary string)
+	lastDriftAlertTime  time.Time
 
 	// refreshMu serializes refresh cycles (2026-09-01 P2 race fix). The
 	// periodic loop and TriggerRefresh (admin tools) can run concurrently;
@@ -787,7 +793,9 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	// 锁只在真正执行 REFRESH 期间持有（实测单轮 14~195s），等一会儿就能拿到。
 	retryDeadline := time.Now().Add(SessionViewLockRetryBudget)
 
-	var failed int
+	var failed, succeeded int
+	var lastErr error
+	failedView := ""
 	for _, view := range SessionAnalyticsViews {
 		start := time.Now()
 		reason, err := retryOnLockHeld(ctx, view, retryDeadline, func() (mvSkipReason, error) {
@@ -797,10 +805,13 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 		case err != nil:
 			// 不 return：三个视图用途独立，单个失败不该作废已刷好的。
 			failed++
+			failedView = view
+			lastErr = err
 			recordMVRefreshFailure(view)
 			slog.Error("failed to refresh session analytics view",
 				"view", view, "error", err, "elapsed", time.Since(start))
 		case !reason.skipped():
+			succeeded++
 			recordMVRefreshSuccess(view, time.Since(start).Seconds())
 			slog.Info("refreshed session analytics view",
 				"view", view, "elapsed", time.Since(start))
@@ -815,6 +826,25 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 			"timeout", SessionViewsTimeout.String(),
 			"views", len(SessionAnalyticsViews), "failed_before_cutoff", failed)
 		recordMVRefreshFailure("session_analytics_cycle")
+	}
+
+	// 2026-11-20 审计轮：session 族补接告警（与 routing 族同构）。
+	// 此前失败只落指标与日志；252 生产「981 台账记 applied、四视图全缺失」
+	// 期间刷新每轮必失败而无任何告警面。三态记账：
+	//   有真实失败（含整轮 ctx 截断）→ 连续失败 +1，连续 2 轮且告警面可用即告警；
+	//   至少一个视图真实刷新成功 → 清零；
+	//   全部 skipped（follower/锁竞争）→ 保持原值（那不是视图故障，也不是修复）。
+	if failed > 0 || ctx.Err() != nil {
+		if ctx.Err() != nil && failedView == "" {
+			failedView = "session_analytics_cycle"
+			lastErr = ctx.Err()
+		}
+		r.sessionFailureCount++
+		if r.sessionFailureCount >= 2 && r.alertCallback != nil && lastErr != nil {
+			r.alertCallback(failedView, r.sessionFailureCount, lastErr)
+		}
+	} else if succeeded > 0 {
+		r.sessionFailureCount = 0
 	}
 }
 
