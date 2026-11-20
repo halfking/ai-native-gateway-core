@@ -76,8 +76,9 @@ func readFile(t *testing.T, name string) string {
 }
 
 // ★ 211 活体打回（2026-11-20）：旧 formatSeconds 在 formatDuration 已带单位
-//   的产物上再追加 " seconds" ⇒ "30 minutes seconds" ⇒ SQLSTATE 22007，
-//   idle/absolute 两条扫描全部失败。钉死字面量形态：任何输出都不许含双重单位。
+//
+//	的产物上再追加 " seconds" ⇒ "30 minutes seconds" ⇒ SQLSTATE 22007，
+//	idle/absolute 两条扫描全部失败。钉死字面量形态：任何输出都不许含双重单位。
 func TestIntervalSecondsProducesValidIntervalLiteral(t *testing.T) {
 	cases := []struct {
 		d    time.Duration

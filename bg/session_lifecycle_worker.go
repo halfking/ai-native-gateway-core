@@ -637,11 +637,12 @@ func (e *recycleEventShim) Timestamp() time.Time { return e.timestamp }
 // intervalSeconds 把 duration 转成 Postgres INTERVAL 字面量（$1::interval）。
 //
 // ★ 2026-11-20 211 活体打回：旧实现 formatDuration 返回「30 minutes」（已带
-//   单位）后 formatSeconds 又追加 " seconds" ⇒ 产出 "30 minutes seconds"
-//   ——SQLSTATE 22007，idle/absolute 两条扫描全部失败（UNUSED 代码从未真跑过
-//   的又一处烂：与 42703 同族，接活前没人执行过这条路径）。
-//   修法：直接输出「N seconds」单一形态——interval 字面量对任意秒数都合法，
-//   不需要分钟/小时/天的多单位拼接。
+//
+//	单位）后 formatSeconds 又追加 " seconds" ⇒ 产出 "30 minutes seconds"
+//	——SQLSTATE 22007，idle/absolute 两条扫描全部失败（UNUSED 代码从未真跑过
+//	的又一处烂：与 42703 同族，接活前没人执行过这条路径）。
+//	修法：直接输出「N seconds」单一形态——interval 字面量对任意秒数都合法，
+//	不需要分钟/小时/天的多单位拼接。
 func intervalSeconds(d time.Duration) string {
 	seconds := int64(d.Seconds())
 	if seconds <= 0 {
