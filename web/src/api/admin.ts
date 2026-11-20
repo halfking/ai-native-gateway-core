@@ -288,6 +288,32 @@ export function getUserProfileList(params?: { limit?: number; offset?: number; s
   )
 }
 
+// UserProjectRow 员工×项目一行（projects 子路由）。★ 会话级口径：
+// total_cost_usd（USD 成本）与 total_credits_charged（积分）来自
+// session_summaries——与请求级 usage 的内部/外部成本**不同源不同义**。
+export interface UserProjectRow {
+  project_id: string
+  session_count: number
+  task_count: number
+  request_count: number
+  total_tokens: number
+  total_cost_usd: number
+  total_credits_charged: number
+  last_activity_at: string
+}
+
+// getUserProjects 员工→项目下钻（2026-11-20 逐层下钻轮 / L1 收口）。
+export function getUserProjects(
+  owner: string,
+  days = 30,
+): Promise<{ projects: UserProjectRow[]; owner_user: string; days: number; usage_meta?: UserUsageMeta } & DegradationMarker> {
+  const params = new URLSearchParams({ days: String(days) })
+  return req<{ projects: UserProjectRow[]; owner_user: string; days: number; usage_meta?: UserUsageMeta } & DegradationMarker>(
+    'GET',
+    `/api/admin/session-analytics/users/${encodeURIComponent(owner)}/projects?${params}`,
+  )
+}
+
 // getUserUsageMatrix 员工×模型用量矩阵（2026-11-20 数字出处轮）。
 // 「每个员工在什么时间段用了哪些模型、各多少 token / 内部成本 / 外部成本」
 // 的数据端点；owner 缺省返回全可见范围，前端按 owner 分组展开。

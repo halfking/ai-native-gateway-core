@@ -1070,6 +1070,41 @@
       "kind": "toggle",
       "subject": "该用户密钥的启停",
       "new": "该用户密钥的启停操作没能完成，请重试"
+    },
+    "sessionAnalytics.error.overviewFailed": {
+      "kind": "load",
+      "subject": "会话总览",
+      "new": "会话总览没能加载出来，请重试"
+    },
+    "sessionAnalytics.error.userRankingFailed": {
+      "kind": "load",
+      "subject": "人员排行",
+      "new": "人员排行没能加载出来，请重试"
+    },
+    "sessionAnalytics.error.userDetailFailed": {
+      "kind": "load",
+      "subject": "人员详情",
+      "new": "人员详情没能加载出来，请重试"
+    },
+    "sessionAnalytics.error.userProjectsFailed": {
+      "kind": "load",
+      "subject": "项目列表",
+      "new": "项目列表没能加载出来，请重试"
+    },
+    "sessionAnalytics.error.projectTasksFailed": {
+      "kind": "load",
+      "subject": "任务列表",
+      "new": "任务列表没能加载出来，请重试"
+    },
+    "sessionAnalytics.error.agentRankingFailed": {
+      "kind": "load",
+      "subject": "智能体排行",
+      "new": "智能体排行没能加载出来，请重试"
+    },
+    "sessionAnalytics.error.modelRankingFailed": {
+      "kind": "load",
+      "subject": "模型排行",
+      "new": "模型排行没能加载出来，请重试"
     }
   },
   "exemptions": {

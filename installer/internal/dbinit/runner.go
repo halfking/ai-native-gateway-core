@@ -1977,6 +1977,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— 创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）
 			//   —— 面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐
 			"992_add_cst_timezone_functions.sql",
+			// ★ 993（2026-11-20 看板对账口径对齐轮 / F4 落实）：report_snapshots_exact_cost_cents
+			//   —— estimated_cost_cents bigint → numeric(24,6)：逐分组取整求和 ≠ 区间一次取整，
+			//   写面同步去 ROUND 存精确分值，对账总费用与看板（usage_facts 一次求和）逐字相等。
+			"993_report_snapshots_exact_cost_cents.sql",
 		},
 	}
 }

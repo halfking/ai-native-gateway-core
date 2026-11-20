@@ -75,8 +75,10 @@ describe('空状态新键的运行时解析（键 → 译文，不是键路径�
   it('登记簿非空（负控前提：门要真的量到东西）', () => {
     // ★★ 「一个键都没量」也是绿的 ⇒ 假绿 ⇒ 必须有非空下限。
     // 2026-10-28 头部统计轮 +1（liveTopology.stats.emptyNoResultWindow，NoResult）。
+    // 2026-11-20 会话分析轮 +8（sessionAnalytics.empty.*：总览/人员排行/人员详情/
+    //   项目/任务/智能体/模型 + 1 条 Filtered 口径的 filteredUserRanking）。
     expect(REGISTERED_KEYS.length).toBeGreaterThan(0)
-    expect(REGISTERED_KEYS.length).toBe(24)
+    expect(REGISTERED_KEYS.length).toBe(32)
   })
 
   for (const locale of LOCALES) {

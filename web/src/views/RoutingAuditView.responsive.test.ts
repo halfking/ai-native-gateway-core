@@ -322,14 +322,20 @@ describe('RoutingAuditView：桌面审计表零回归', () => {
     expect(rows[1]!.find('.btn-expand').exists()).toBe(false)
   })
 
-  it('筛选栏：动作 4 选项 / 时间窗 4 选项 / 条数 4 选项 / 刷新钮', async () => {
+  it('筛选栏：动作 4 选项 / 时间窗=统一 KxDateRangePicker / 条数 4 选项 / 刷新钮', async () => {
     const w = await factory()
     const sels = w.findAll('.filter-bar select')
-    expect(sels).toHaveLength(3)
+    // 2026-11-20 统一时间选择轮（157362a15）：时间窗 <select> 换成 KxDateRangePicker
+    // ⇒ 剩动作 + 条数两个 select。本断言随代码同步（旧断言 3 select 是反向锁）。
+    expect(sels).toHaveLength(2)
     expect(sels[0]!.findAll('option').map((o) => o.text())).toEqual(['(全部)', 'insert', 'update', 'delete'])
-    expect(sels[1]!.findAll('option').map((o) => o.text())).toEqual(['1 天', '7 天', '30 天', '90 天'])
-    expect(sels[2]!.findAll('option').map((o) => o.text())).toEqual(['50', '200', '500', '1000'])
-    expect(w.find('.filter-bar button').text()).toBe('刷新')
+    expect(sels[1]!.findAll('option').map((o) => o.text())).toEqual(['50', '200', '500', '1000'])
+    // 时间窗面：统一组件在场（.filter-time-range 包裹，预设走全站标准键 last7d）
+    expect(w.find('.filter-time-range').exists()).toBe(true)
+    expect(w.find('.filter-time-range').text()).toContain('common.dateRange.preset.last7d')
+    // 刷新钮：picker 触发钮也是 <button> ⇒ 不能再「第一个 button」，按文案语义取
+    const refreshBtn = w.findAll('.filter-bar button').find((b) => b.text() === '刷新')
+    expect(refreshBtn).toBeTruthy()
   })
 
   it('请求失败：错误文案出在筛选卡内，表格不挂载', async () => {

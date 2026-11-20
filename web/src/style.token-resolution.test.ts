@@ -207,11 +207,28 @@ describe('全仓 CSS 令牌解析：var(--x) 必须能取到值', () => {
   })
 
   it('全仓没有「谁都没定义、也没有兜底」的令牌引用', () => {
-    const detail = [...new Set(BROKEN.map((b) => `  ${b.token} ← ${b.file}:${b.line}`))].join('\n')
+    // element-plus 运行时令牌豁免（2026-11-20）：`--el-color-danger(-light-7/-light-9)`
+    // 等由 `element-plus/dist/index.css` 的 :root 块在运行时提供（main.ts:6 引入，
+    // node_modules/element-plus/theme-chalk/el-var.css 实测含全部 --el-* 定义）。
+    // 本门只扫 src/ 看不见库内定义 ⇒ 这些引用是假红；把真红（如 2026-11-20 的
+    // --radius-sm / --accent-bg 无定义）掩没在每次必红的噪声里。豁免集=已知
+    // 运行时前缀 --el-（element-plus 全族）。
+    const RUNTIME_PROVIDED_PREFIX = '--el-'
+    const real = BROKEN.filter((b) => !b.token.startsWith(RUNTIME_PROVIDED_PREFIX))
+    const waived = BROKEN.filter((b) => b.token.startsWith(RUNTIME_PROVIDED_PREFIX))
+    const detail = [...new Set(real.map((b) => `  ${b.token} ← ${b.file}:${b.line}`))].join('\n')
     expect(
-      BROKEN.length,
+      real.length,
       `以下 var() 引用的令牌在全仓都无定义，且没有兜底 ⇒ 该声明会整条失效：\n${detail}`,
     ).toBe(0)
+    // 豁免集护栏：--el-* 在生产依赖里确有定义 ⇒ 若未来 element-plus 移除某令牌，
+    // 这里不会救场；豁免只针对「量具看不见库内定义」这一盲区，不是给任意 --el-*
+    // 引用发通行证——新增 --el-* 引用仍应优先确认库版本里存在（升级时同批复核）。
+    if (waived.length > 0) {
+      // 打到输出便于人工复核豁免面（不判死，仅可见性）。
+      console.info(`[token-resolution] element-plus 运行时令牌豁免 ${waived.length} 处：`,
+        [...new Set(waived.map((b) => `  ${b.token} ← ${b.file}:${b.line}`))].join('\n'))
+    }
   })
 
   it('第二代命名的关键令牌已被定义（钉住这次修复）', () => {

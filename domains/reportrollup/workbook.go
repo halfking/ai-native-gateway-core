@@ -142,7 +142,9 @@ func usageDataRow(view View, key, name, second string, t Totals) []cell {
 		intCell(t.RequestCount), intCell(t.SuccessCount), intCell(t.ErrorCount), numCell(t.ErrorRate),
 		intCell(t.InputTokens), intCell(t.OutputTokens), intCell(t.CacheReadTokens),
 		intCell(t.CacheWriteTokens), intCell(t.TotalTokens),
-		intCell(t.EstimatedCostCents), numCell(centsToUnits(t.EstimatedCostCents)), strCell(t.Currency),
+		// 993（F4 落实）：费用分值是精确小数（numeric(24,6)），导出同样写精确值
+		// ——分列与美元列同源，取整只发生在展示格式层。
+		numCell(t.EstimatedCostCents), numCell(centsToUnitsF(t.EstimatedCostCents)), strCell(t.Currency),
 	)
 	if view == ViewInternal {
 		row = append(row,

@@ -65,7 +65,27 @@ async function goto(url, waitMs = 5000) {
   sessionId = sid2
   return evaluate(cdp, sessionId, 'location.href')
 }
-const js = (expr) => evaluate(cdp, sessionId, expr)
+// ★ SPA 会在登录后自行整页跳转（guest → dashboard）⇒ 任意求值都可能撞
+//   「target navigated or closed」（-32000）⇒ 所有求值走韧性包装：
+//   失效 → 重挂最后的目标（带视口覆盖）→ 重试一次。
+async function reattach() {
+  const targets = await cdp.send('Target.getTargets')
+  const page = targets.targetInfos.filter(t => t.type === 'page').pop()
+  const { sessionId: sid } = await cdp.send('Target.attachToTarget', { targetId: page.targetId, flatten: true })
+  await cdp.send('Page.enable', {}, sid)
+  await cdp.send('Network.enable', {}, sid)
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1400, deviceScaleFactor: 1, mobile: false }, sid)
+  sessionId = sid
+}
+const js = async (expr) => {
+  try {
+    return await evaluate(cdp, sessionId, expr)
+  } catch (e) {
+    if (!/navigated or closed|-32000/.test(String(e?.message))) throw e
+    await reattach()
+    return await evaluate(cdp, sessionId, expr)
+  }
+}
 
 // ── 0. 登录（API 落 HttpOnly cookie ⇒ SPA 与服务端同源）───────────────────
 // ★ 必须先把页面导航到 BASE（同源）再 fetch：about:blank 起页的跨源 fetch
@@ -168,6 +188,38 @@ const emptyState = await js(`(() => { const el = document.querySelector('[data-t
 if (dp.taskLinks > 0) check('热门任务行是可点链接（员工→任务→会话下钻）', true, `links=${dp.taskLinks}`)
 else if (emptyState === true) check('热门任务空态合法（该 owner 无任务记录，不是缺链接）', true, 'links=0 + 空态在场')
 else check('热门任务行是可点链接（员工→任务→会话下钻）', false, `links=${dp.taskLinks} 且无空态`)
+
+// ── 3.5 项目卡（L1 收口：员工→项目层，2026-11-20 二段）────────────────────
+const projApi = await js(`fetch('/api/admin/session-analytics/users/${encodeURIComponent(firstOwner)}/projects?days=30',{credentials:'include'}).then(async r => r.status + ' :: ' + (await r.text())).catch(e=>'ERR:'+e.message)`)
+const projStatus = String(projApi).split(' :: ')[0]
+const projBody = JSON.parse(String(projApi).replace(/^\d+ :: /, ''))
+check('projects 端点 200 且带 usage_meta（会话级出处块）', projStatus === '200' && projBody.usage_meta?.source_view === 'session_summaries × session_dim', `status=${projStatus} source=${projBody.usage_meta?.source_view}`)
+const projRowsApi = (projBody.projects || []).length
+check(`projects 端点返回行（rows=${projRowsApi}；0 = 该 owner 无项目数据，合法）`, projStatus === '200' && projRowsApi >= 0)
+
+const projCard = await js(`(() => {
+  const card = document.querySelector('[data-testid="up-projects"]')
+  if (!card) return JSON.stringify({ ok: false, why: 'NO_CARD' })
+  const headers = [...card.querySelectorAll('th')].map(t => t.textContent.trim())
+  const need = ['项目 ID', '会话数', '任务数', 'Token', 'USD 成本', '积分', '最近活跃']
+  const rows = card.querySelectorAll('tbody tr').length
+  const note = (card.querySelector('.projects-source-note')?.textContent || '').slice(0, 80)
+  // Element 内建空态文案跟浏览器 locale 走（headless 是 en ⇒ 'No Data'）
+  const emptyText = card.textContent.includes('还没有项目数据') || card.textContent.includes('暂无数据') || card.textContent.includes('No Data')
+  const sample = card.querySelector('tbody tr')?.textContent?.trim().slice(0, 90) || ''
+  return JSON.stringify({ ok: true, headers: need.map(h => headers.includes(h)), rows, note, emptyText, sample })
+})()`)
+const pc = JSON.parse(projCard)
+if (!pc.ok) {
+  gauge('项目卡真渲染（员工→项目层）', pc.why)
+} else if (pc.rows > 0) {
+  check('项目卡八列表头齐 + 行数据在场', pc.headers.every(Boolean), `rows=${pc.rows} sample=${pc.sample}`)
+  check('项目卡出处注记标明会话级来源', pc.note.includes('session_summaries'), pc.note)
+} else if (pc.emptyText) {
+  check('项目卡空态合法（该 owner 无项目数据，出空态文案而非报错）', true, 'rows=0 + 空态在场')
+} else {
+  check('项目卡真渲染', false, 'rows=0 且无空态文案')
+}
 
 // ── 4. 详情页帮助抽屉（口径段；列表页抽屉已由 flow 13 第一层覆盖）─────────
 

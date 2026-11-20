@@ -120,7 +120,7 @@ SELECT f.provider_id, f.credential_id, f.api_key_id, f.tenant_id, f.person, f.ra
        COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
        COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
        COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint AS cost_cents,
+       COALESCE(SUM(f.cost_amount) * 100, 0)::numeric(24,6) AS cost_cents,
        COALESCE(MAX(f.cost_currency), 'USD') AS currency,
        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY f.latency_ms)
                 FILTER (WHERE f.status = 'success'), 0)::bigint AS p50_ms,

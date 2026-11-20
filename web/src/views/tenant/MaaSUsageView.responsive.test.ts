@@ -153,10 +153,19 @@ vi.mock('../../i18n', async (importOriginal) => {
 })
 
 /** 时间格式化固定成可断言的串：这样「表格与卡片同源」验的是**同一份函数**，
- *  而不是碰巧在两个地方写出同样的格式。 */
-vi.mock('../../utils/datetime', () => ({
-  formatDateTime: (v: string) => `DT:${v}`,
-}))
+ *  而不是碰巧在两个地方写出同样的格式。
+ *  ★ importOriginal 展开真实模块再覆写（2026-11-20）：本视图经 useSpanDaysRange
+ *  → kxDatePresets 依赖 datetime 的 partsInSystemTz；字段级白名单 mock（只给
+ *  formatDateTime）会让组件链上真实 import 炸
+ *  「No "partsInSystemTz" export is defined on the mock」。展开保住其余真实导出，
+ *  只把 formatDateTime 换成断言桩。 */
+vi.mock('../../utils/datetime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/datetime')>()
+  return {
+    ...actual,
+    formatDateTime: (v: string) => `DT:${v}`,
+  }
+})
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { owner: 'alice' } }),
