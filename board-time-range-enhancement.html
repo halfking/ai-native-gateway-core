@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>看板时间范围显示优化 - 修改说明</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 40px 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        .header p {
+            font-size: 16px;
+            opacity: 0.95;
+        }
+        .content {
+            padding: 40px;
+        }
+        .section {
+            margin-bottom: 40px;
+        }
+        .section h2 {
+            font-size: 24px;
+            color: #667eea;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 20px;
+        }
+        .comparison-item {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 25px;
+            border: 2px solid #e0e0e0;
+        }
+        .comparison-item h3 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #333;
+            display: flex;
+            align-items: center;
+        }
+        .comparison-item h3 .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            margin-left: 10px;
+            font-weight: 600;
+        }
+        .badge-before {
+            background: #ffeaa7;
+            color: #d63031;
+        }
+        .badge-after {
+            background: #81ecec;
+            color: #00b894;
+        }
+        .mockup {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 10px;
+        }
+        .mockup-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #667eea;
+        }
+        .time-range-hint {
+            color: #6c757d;
+            font-size: 14px;
+            margin-bottom: 15px;
+            padding: 8px 12px;
+            background: #f1f3f5;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+        }
+        .time-range-hint.highlight {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .metric-card {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 15px;
+        }
+        .metric-label {
+            font-size: 12px;
+            color: #6c757d;
+            margin-bottom: 5px;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #333;
+        }
+        .change-list {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 15px;
+        }
+        .change-list ul {
+            list-style: none;
+        }
+        .change-list li {
+            padding: 12px 0;
+            padding-left: 30px;
+            position: relative;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .change-list li:last-child {
+            border-bottom: none;
+        }
+        .change-list li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #00b894;
+            font-weight: bold;
+            font-size: 18px;
+        }
+        .code-block {
+            background: #282c34;
+            color: #abb2bf;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 15px;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            line-height: 1.8;
+        }
+        .code-block .added {
+            background: rgba(46, 160, 67, 0.2);
+            color: #7ec699;
+            display: block;
+            margin: 0 -20px;
+            padding: 0 20px;
+        }
+        .code-block .removed {
+            background: rgba(248, 81, 73, 0.2);
+            color: #f97583;
+            display: block;
+            margin: 0 -20px;
+            padding: 0 20px;
+        }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            border-radius: 6px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        .info-box h3 {
+            color: #1976d2;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .info-box p {
+            color: #555;
+            margin-bottom: 8px;
+        }
+        @media (max-width: 768px) {
+            .comparison {
+                grid-template-columns: 1fr;
+            }
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 看板时间范围显示优化</h1>
+            <p>在总请求数据块上方添加时间范围显示，与模型分布块保持一致</p>
+        </div>
+        
+        <div class="content">
+            <div class="section">
+                <h2>📊 修改对比</h2>
+                <div class="comparison">
+                    <div class="comparison-item">
+                        <h3>修改前 <span class="badge badge-before">Before</span></h3>
+                        <div class="mockup">
+                            <div class="mockup-title">运营概览（7 天）</div>
+                            <!-- 没有时间范围提示 -->
+                            <div class="metrics-grid">
+                                <div class="metric-card">
+                                    <div class="metric-label">总请求数</div>
+                                    <div class="metric-value">10,000</div>
+                                </div>
+                                <div class="metric-card">
+                                    <div class="metric-label">总 Token 消耗</div>
+                                    <div class="metric-value">80,000</div>
+                                </div>
+                                <div class="metric-card">
+                                    <div class="metric-label">总花费</div>
+                                    <div class="metric-value">$10.50</div>
+                                </div>
+                            </div>
+                        </div>
+                        <p style="margin-top: 15px; color: #d63031; font-size: 14px;">
+                            ⚠️ 用户可能不清楚这些数据的时间范围
+                        </p>
+                    </div>
+                    
+                    <div class="comparison-item">
+                        <h3>修改后 <span class="badge badge-after">After</span></h3>
+                        <div class="mockup">
+                            <div class="mockup-title">运营概览（7 天）</div>
+                            <div class="time-range-hint highlight">
+                                📅 数据时间范围：最近 7 天
+                            </div>
+                            <div class="metrics-grid">
+                                <div class="metric-card">
+                                    <div class="metric-label">总请求数</div>
+                                    <div class="metric-value">10,000</div>
+                                </div>
+                                <div class="metric-card">
+                                    <div class="metric-label">总 Token 消耗</div>
+                                    <div class="metric-value">80,000</div>
+                                </div>
+                                <div class="metric-card">
+                                    <div class="metric-label">总花费</div>
+                                    <div class="metric-value">$10.50</div>
+                                </div>
+                            </div>
+                        </div>
+                        <p style="margin-top: 15px; color: #00b894; font-size: 14px;">
+                            ✅ 时间范围清晰可见，与时间选择器联动
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>🔧 技术实现</h2>
+                <div class="change-list">
+                    <ul>
+                        <li>在 <code>&lt;h2 class="bo-section-title"&gt;</code> 后添加时间范围提示段落</li>
+                        <li>使用与页面底部相同的国际化文案 <code>dataTimeRange</code></li>
+                        <li>绑定 <code>timeRange</code> 响应式变量，与时间选择器联动</li>
+                        <li>添加 <code>.bo-time-range-hint</code> 样式类，统一视觉风格</li>
+                        <li>所有测试通过，构建成功</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>💻 代码变更</h2>
+                <div class="code-block">
+<span class="added">+        &lt;p class="bo-time-range-hint"&gt;{{ $t('dashboard.operational.dataTimeRange', { days: timeRange }) }}&lt;/p&gt;</span>
+         
+         &lt;div class="bo-metrics-grid"&gt;
+           &lt;div class="bo-metric-card"&gt;
+
+<span style="color: #5c6370;">// 样式部分</span>
+<span class="added">+.bo-time-range-hint {</span>
+<span class="added">+  color: var(--text-muted);</span>
+<span class="added">+  font-size: var(--text-sm);</span>
+<span class="added">+  margin-top: calc(var(--space-2) * -1);</span>
+<span class="added">+  margin-bottom: var(--space-3);</span>
+<span class="added">+}</span>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>✨ 优化效果</h2>
+                <div class="info-box">
+                    <h3>🎯 一致性提升</h3>
+                    <p>• 与模型分布块的时间范围显示方式保持一致</p>
+                    <p>• 使用相同的国际化文案，多语言支持</p>
+                    <p>• 与时间选择器实时联动（1天/7天/30天）</p>
+                </div>
+                
+                <div class="info-box" style="background: #f3e5f5; border-left-color: #9c27b0; margin-top: 15px;">
+                    <h3 style="color: #7b1fa2;">👤 用户体验改善</h3>
+                    <p>• 数据时间范围一目了然，无需滚动到页面底部查看</p>
+                    <p>• 减少用户对数据口径的疑惑</p>
+                    <p>• 提高数据可读性和可信度</p>
+                </div>
+                
+                <div class="info-box" style="background: #e8f5e9; border-left-color: #4caf50; margin-top: 15px;">
+                    <h3 style="color: #2e7d32;">🚀 部署状态</h3>
+                    <p>• ✅ 代码已提交到 main 分支</p>
+                    <p>• ✅ 已推送到远程仓库</p>
+                    <p>• ✅ 所有单元测试通过（7/7）</p>
+                    <p>• ✅ 前端构建成功，无错误</p>
+                    <p>• 📍 提交 SHA: <code>7a68dbee6</code></p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
