@@ -1,12 +1,12 @@
 # 会话分析系统 5 页 · 第二层 CDP 探针实跑证据
-# 目标：https://llm.itestu.cn（211 现役 2.6.1-88eae268-20261120-211，槽 b @8783）
-# 采集时间：2026-11-20 10:11:16 +0800
+# 目标：https://llm.itestu.cn（211 现役 2.6.1-a6a16d21-20261120-211，槽 a @8781，git_sha=a6a16d21 干净无 -dirty）
+# 采集时间：2026-11-20 10:50:12 +0800
 # 探针：maestro/tools/assert-session-analytics.mjs（判定口径走 maestro/tools/result.mjs）
 # 结论：RESULT: PASS（53 条）
 # ────────────────────────────────────────────
 ✅ 登录 /api/auth/token 200
 ✅ 端点① overview 200（陈旧门未触发）  — status=200
-✅ overview 带 summary 15 个指标字段  — total_sessions=14761 active_users=6
+✅ overview 带 summary 15 个指标字段  — total_sessions=14836 active_users=6
 ✅ overview 带 trends 三序列（sessions/tokens/cost）  — sessions=7 tokens=7 cost=7
 ✅ 端点② user-ranking 200  — status=200
 ✅ 端点② user-ranking 带人员行  — rows=6
@@ -26,9 +26,9 @@
 ✅ 总览页：活跃项目表头 [项目, 会话数, 使用人数, 花费]  — 项目 | 会话数 | 使用人数 | 花费
 ✅ 总览页：活跃人员榜有行  — rows=6
 ✅ 对拍基准：已捕获页面自己的 overview 响应  — 同源基准可用
-✅ 对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions  — 页面=14,761 同源响应=14761
+✅ 对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions  — 页面=14,836 同源响应=14836
 ✅ 对拍：总览「活跃人员」卡值 == 页面自身响应 summary.active_users  — 页面=6 同源响应=6
-✅ 对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和  — 页面=7,610.80 美元 同源求和=7610.801535999999
+✅ 对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和  — 页面=7,610.97 美元 同源求和=7610.969130999999
 ✅ 对拍：总览「外部成本（积分）」卡值 == 页面自身响应 trends.cost.external 求和  — 页面=0 积分 同源求和=0
 ✅ 人员排行页：无错误横幅
 ✅ 人员排行页：无陈旧横幅
