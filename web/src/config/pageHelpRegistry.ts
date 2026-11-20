@@ -11,12 +11,21 @@
  * · 新增页面帮助的步骤：① 建 md 文件 ② 在此登记 { match, id, titleKey }。
  *   匹配用「路由 pattern」（vue-router 风格 :param / 通配尾段），注册表按
  *   声明顺序取第一个命中的条目（具体页在前、列表页在后）。
+ *
+ * 豁免清单（2026-11-20 L2 轮登记；未登记 ⇒ 不渲染帮助图标，属有意豁免）：
+ * · 登录/维护等 public 页 —— AppTopbar 本就不挂载，天然无图标；
+ * · redirect 型路由（如 /system-monitor、/maas/*、/routing）—— 落地后才
+ *   有「页面」，帮助登记在目标路由上；
+ * · 纯嵌入/弹层型视图（无独立菜单入口的抽屉、iframe 宿主页）—— 帮助入口
+ *   在宿主页面；
+ * · 后续新增页面若需要帮助：按上面「新增步骤」登记一条即可，钉测会同步
+ *   校验 match 在 router.ts 里真实存在。
  */
 
 export interface PageHelpEntry {
   /** vue-router 路径 pattern；支持 :param 段与通配尾段（a/b/*） */
   match: string
-  /** 内容文件 id（= web/content/page-help/<id>.zh-CN.md） */
+  /** 内容文件 id（= web/content/page-help/<id>.<locale>.md；8 语种，缺译文回退 zh-CN） */
   id: string
   /** 抽屉标题的语言键（i18n；zh-CN 提供中文，其余语种 parity 同步） */
   titleKey: string

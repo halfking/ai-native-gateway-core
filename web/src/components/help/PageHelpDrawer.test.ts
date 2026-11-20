@@ -1,11 +1,14 @@
-// PageHelpDrawer.test.ts —— 页面级帮助抽屉钉测（2026-11-20）
+// PageHelpDrawer.test.ts —— 页面级帮助抽屉钉测（2026-11-20；L1 多语正文轮扩展）
 //
-// 钉住五件事：
+// 钉住七件事：
 //  1. 未打开时只渲染 ？ 图标按钮（不渲染抽屉面板）。
 //  2. 打开后：标题 = titleKey 翻译、正文含 md 里的关键口径词。
 //  3. 关键词过滤：命中保留、不命中显示空态文案。
 //  4. 路由切换（routePath 变化）⇒ 抽屉自动收起 + 搜索词清空。
 //  5. 未登记路由（entry=null）⇒ 显示「本页暂无帮助」空态而非崩。
+//  6. ★ L1 多语正文：locale=en-US ⇒ 渲染 <id>.en-US.md 的英文正文；
+//     无译文的语种 ⇒ 回退中文正文（不空抽屉）。
+//  7. locale 切换 ⇒ 搜索词清空（旧语种关键词对新语种正文必然失配）。
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
@@ -26,37 +29,61 @@ const ElDrawerStub: any = {
   },
 }
 
-const i18n = createI18n({
-  legacy: false,
-  locale: 'zh-CN',
-  globalInjection: true,
-  messages: {
-    'zh-CN': {
-      pageHelp: {
-        open: '打开本页的数据说明',
-        close: '关闭数据说明',
-        intro: '本页讲这一页展示哪些数据、数字怎么算出来的，用于对齐数据、自查偏差原因。',
-        search: '搜索本页说明',
-        emptyNoResult: '本页说明里没有匹配这句话的内容，换个关键词再试',
-        emptyNoContent: '这一页还没有配置数据说明，请联系管理员补充。',
-        fallbackTitle: '本页数据说明',
-        title: {
-          dashboard: '总览页数据说明',
-          keys: '密钥页数据说明',
+/** 每个用例独立 i18n 实例（locale 可变，避免用例间串扰） */
+function makeI18n(locale: string) {
+  return createI18n({
+    legacy: false,
+    locale,
+    globalInjection: true,
+    messages: {
+      'zh-CN': {
+        pageHelp: {
+          open: '打开本页的数据说明',
+          close: '关闭数据说明',
+          intro: '本页讲这一页展示哪些数据、数字怎么算出来的，用于对齐数据、自查偏差原因。',
+          search: '搜索本页说明',
+          emptyNoResult: '本页说明里没有匹配这句话的内容，换个关键词再试',
+          emptyNoContent: '这一页还没有配置数据说明，请联系管理员补充。',
+          fallbackTitle: '本页数据说明',
+          title: {
+            dashboard: '总览页数据说明',
+            keys: '密钥页数据说明',
+          },
+        },
+      },
+      'en-US': {
+        pageHelp: {
+          open: 'Open the data notes for this page',
+          close: 'Close data notes',
+          intro: 'What this page shows and how each number is calculated, for aligning data and checking deviations.',
+          search: 'Search these notes',
+          emptyNoResult: 'No match in these notes; try another keyword',
+          emptyNoContent: 'No data notes configured for this page yet; contact an administrator.',
+          fallbackTitle: 'Data notes',
+          title: {
+            dashboard: 'Overview data notes',
+            keys: 'API keys data notes',
+          },
         },
       },
     },
-  },
-})
+  })
+}
 
-function mountDrawer(routePath: string) {
+function mountDrawer(routePath: string, locale = 'zh-CN') {
   return mount(PageHelpDrawer, {
     props: { routePath },
     global: {
-      plugins: [i18n],
+      plugins: [makeI18n(locale)],
       stubs: { ElDrawer: ElDrawerStub },
     },
   })
+}
+
+/** 打开抽屉并等一轮渲染 */
+async function openBody(w: ReturnType<typeof mountDrawer>) {
+  await w.find('.page-help-trigger').trigger('click')
+  await nextTick()
 }
 
 describe('PageHelpDrawer', () => {
@@ -68,18 +95,16 @@ describe('PageHelpDrawer', () => {
 
   it('点击图标展开抽屉：标题用 titleKey 译文，正文含 md 口径关键词', async () => {
     const w = mountDrawer('/dashboard')
-    await w.find('.page-help-trigger').trigger('click')
-    await nextTick()
+    await openBody(w)
     expect(w.find('.page-help-header-title').text()).toBe('总览页数据说明')
     const body = w.find('.page-help-body').text()
-    // dashboard.zh-CN.md 里的真实口径词（窗口内有流量）
+    // dashboard.zh-CN.md 里的真实口径词
     expect(body).toContain('口径')
   })
 
   it('关键词命中：过滤后仍显示匹配段落；关键词不命中：显示空态句', async () => {
     const w = mountDrawer('/dashboard')
-    await w.find('.page-help-trigger').trigger('click')
-    await nextTick()
+    await openBody(w)
 
     const input = w.find('.page-help-search')
     await input.setValue('一定不存在的词组xyz')
@@ -93,8 +118,7 @@ describe('PageHelpDrawer', () => {
 
   it('routePath 变化 ⇒ 抽屉收起、搜索词清空（重新打开后输入框为空）', async () => {
     const w = mountDrawer('/dashboard')
-    await w.find('.page-help-trigger').trigger('click')
-    await nextTick()
+    await openBody(w)
     expect(w.find('.page-help-body').exists()).toBe(true)
 
     await w.find('.page-help-search').setValue('口径')
@@ -112,9 +136,37 @@ describe('PageHelpDrawer', () => {
 
   it('未登记路由 ⇒ 空态提示而非崩（fallbackTitle 兜底标题）', async () => {
     const w = mountDrawer('/no-such-page')
-    await w.find('.page-help-trigger').trigger('click')
-    await nextTick()
+    await openBody(w)
     expect(w.find('.page-help-header-title').text()).toBe('本页数据说明')
     expect(w.text()).toContain('还没有配置数据说明')
+  })
+
+  it('★ L1：locale=en-US ⇒ 渲染英文正文（dashboard.en-US.md 已落地）', async () => {
+    const w = mountDrawer('/dashboard', 'en-US')
+    await openBody(w)
+    expect(w.find('.page-help-header-title').text()).toBe('Overview data notes')
+    const body = w.find('.page-help-body').text()
+    expect(body).not.toContain('口径说明')
+  })
+
+  it('★ L1：无译文的语种 ⇒ 回退中文正文（不空抽屉）', async () => {
+    const w = mountDrawer('/dashboard', 'fr-FR')
+    await openBody(w)
+    const body = w.find('.page-help-body').text()
+    // fr-FR 无 <id>.fr-FR.md ⇒ 兜底中文
+    expect(body).toContain('口径')
+  })
+
+  it('★ locale 切换 ⇒ 搜索词清空', async () => {
+    const i18n = makeI18n('zh-CN')
+    const w = mount(PageHelpDrawer, {
+      props: { routePath: '/dashboard' },
+      global: { plugins: [i18n], stubs: { ElDrawer: ElDrawerStub } },
+    })
+    await openBody(w)
+    await w.find('.page-help-search').setValue('口径')
+    ;(i18n.global.locale as unknown as { value: string }).value = 'en-US'
+    await nextTick()
+    expect((w.find('.page-help-search').element as HTMLInputElement).value).toBe('')
   })
 })
