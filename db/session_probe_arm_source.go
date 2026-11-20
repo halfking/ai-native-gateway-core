@@ -31,8 +31,14 @@ import "strings"
 //	· 不重复：按 request_id 聚合（usage_facts 一请求可多 revision，GROUP BY 去重）；
 //	  业务车道行不进探测臂（车道互斥），历史 marker 行的费用在业务两臂自带
 //	  （session_turns.cost_usd），探测臂的 usage_facts join 只挂在 probe_hot 行上。
-//	· LEFT JOIN：usage_facts 还没落（写延迟/事件丢失）时费用为 NULL，
-//	  行仍出现（探测臂 COUNT 不依赖费用），SUM 自然跳过 NULL。
+//	· **INNER 语义（2026-11-21 线上实证后从 LEFT 改 INNER）**：211 真库实测
+//	  probe_hot（43,455 行/日）⊇ usage_facts 探测面（14,401 行/日）——差集是
+//	  node_prober 的 0-token 存活探测，它们**不进统计事件流**，也不进对账快照
+//	  （供应商对账 = usage_facts 全量）。owner 的口径是「包含探测 == 供应商
+//	  对账」⇒ 探测臂只保留**有 fact 的行**（INNER）⇒ COUNT/token/cost 三面
+//	  逐字相等；无 fact 的 probe_hot 行不进 request-logs（与改前行为一致：
+//	  它们此前在任何 face 都不可见）。fact 缺行（写延迟边缘）时该行当日
+//	  不出现在包含探测口径里，次日不补（对账口径本就按日锁定）。
 //
 // # 类型契约
 //
@@ -179,7 +185,7 @@ func SessionFamilyProbeArmSourceSQL(tsFrom, tsTo string) string {
 		       t.agent_name, t.quality_flags,
 		       uf.probe_cost, uf.probe_currency, uf.probe_credits
 		FROM public.session_turns_probe_hot t
-		LEFT JOIN (
+		JOIN (
 			SELECT request_id,
 			       SUM(cost_amount) AS probe_cost,
 			       MAX(cost_currency) AS probe_currency,

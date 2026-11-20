@@ -1,0 +1,78 @@
+# 16-request-logs-probe-scope.yaml —— 请求日志页「包含探测」开关的行为验证
+#
+# 覆盖对象：web/src/views/RequestLogsView.vue（筛选条头部探测开关 + 统计概览徽标）
+#           + web/src/api/logs.ts（include_probe 通道）
+#           + admin/logs.go（三臂 UNION：业务两臂 ∪ 探测臂，traffic_lane 披露）
+#
+# ★ 数值口径对拍（request-logs(含探测)==供应商对账 的逐字相等）不在本 flow：
+#   那是 scripts/audit/verify-probe-scope-alignment.py 的职责（同窗口同刻 API
+#   对拍）；本 flow 验**行为层**：控件在场、两种状态能切、徽标随状态出没、
+#   统计概览展开后数字仍渲染、页面不破。
+#
+# ★ 写法约束（沿 15-board-probe-scope 头注的实测边界）：
+#   · 不用 evalScript（web 驱动 no-op）；
+#   · 断言只用 text:，且是**元素完整文本相等**——本页徽标用「含探测」
+#     （requests.list.probeScope.badge），开关 label 用「包含探测」，两者文案
+#     互不为前缀干扰（Maestro text: 是完整相等匹配，不会互误中）。
+#   · 必须 --screen-size 1440x2200 跑（筛选条头部在桌面视口）。
+#   · 登录走 _shared/login.yaml（三段原生判据）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零 ────────────────────────────────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── ② 请求日志页打开：开关在场（默认不含探测）──────────────────────────────
+- openLink: ${BASE_URL}/request-logs
+- extendedWaitUntil:
+    visible: '包含探测'
+    timeout: 25000
+# 默认态徽标不应在场（响应 traffic_lane=business）
+- assertNotVisible:
+    text: '含探测'
+
+# ── ③ 切到「包含探测」：徽标出现 + 统计概览徽标出现 ────────────────────────
+- tapOn:
+    text: '包含探测'
+- extendedWaitUntil:
+    visible: '含探测'
+    timeout: 25000
+
+# ── ④ 展开统计概览：总请求数仍渲染（载荷带 include_probe 重载不破页面）─────
+- tapOn:
+    text: '统计概览'
+- extendedWaitUntil:
+    visible:
+      text: '总请求数'
+    timeout: 25000
+- assertVisible:
+    text: '总 Token'
+
+# ── ⑤ 切回：徽标消失 ──────────────────────────────────────────────────────
+- tapOn:
+    text: '包含探测'
+- extendedWaitUntil:
+    notVisible: '含探测'
+    timeout: 25000
+
+# ── ⑥ 再切回含探测：页面仍完整（二次切换回归）─────────────────────────────
+- tapOn:
+    text: '包含探测'
+- extendedWaitUntil:
+    visible: '含探测'
+    timeout: 25000
+- assertVisible:
+    text: '总请求数'

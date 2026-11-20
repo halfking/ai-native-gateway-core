@@ -41,7 +41,8 @@ func TestProbeArmSQLComposition(t *testing.T) {
 		!strings.Contains(sql, "public.session_turns ") {
 		t.Fatal("three-arm union must keep both business arms")
 	}
-	// 费用 join 口径（逐字）：非业务 class、按 request_id 聚合、复用 ts 窗参数。
+	// 费用 join 口径（逐字）：非业务 class、按 request_id 聚合、复用 ts 窗参数；
+	// INNER 语义（只保有 fact 的探测行 ⇒ == 供应商对账，211 线上实证定案）。
 	for _, want := range []string{
 		"traffic_class <> 'business'",
 		"GROUP BY request_id",

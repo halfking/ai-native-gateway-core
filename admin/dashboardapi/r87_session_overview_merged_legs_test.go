@@ -222,14 +222,24 @@ func TestR87_MergedTrendsKeepEveryMetric(t *testing.T) {
 // 收益全在「同一张大表被扫的次数变少」⇒ 这条门是本轮改动的收益护栏。
 func TestR87_SessionSummariesScanPointsCapped(t *testing.T) {
 	src := r87ReadSource(t)
-	// 2026-11-21 对齐轮：六条 session_summaries 腿各自唯一 FROM 字面量（buildQuery
-	// 闭包内）= 6；turns 腿读 session_turns 族（本文件无 FROM）——旧值 7 含
-	// topClients 降级回退形态的第二个 FROM 字面量，本轮把它折进 buildQuery
-	// 的条件拼接（运行时仍同一条语句一个扫描点），字面量数随之 7→6。
-	const want = 6
+	// 2026-11-21 对齐轮（两次形态变更后的口径）：
+	// ① 探测宇宙对齐：五条 session_summaries 腿改为 buildQuery 闭包，宇宙形态
+	//    与全量回退形态各含一份 FROM 字面量（运行时每次调用只走一支 ⇒ 每个
+	//    调用点仍是一条语句一个扫描点）。
+	// ② 53100 修复：宇宙形态把窗口/租户谓词下推进子查询（FROM (SELECT * FROM
+	//    session_summaries WHERE …) ss）再连接 ⇒ 共享内存有界。
+	// 判据改为「六腿宇宙形态必须都走子查询绑小」（结构断言）+ 字面量上限
+	// （防腿拆回/新增扫描腿：14 = aggregates/prevCost/trends/modelUsage 各 2 形态
+	// + topClients/topTasks 各 3 形态（宇宙/dim 回退/无 dim 回退）；turns 腿读
+	// session_turns 族）。
 	got := strings.Count(src, "FROM session_summaries")
-	if got != want {
-		t.Errorf("session_summaries 扫描点 = %d，期望 %d（合并前是 11）—— 腿被拆回去了，或新增了扫描腿", got, want)
+	const maxLiterals = 14
+	if got > maxLiterals {
+		t.Errorf("session_summaries FROM 字面量 = %d，上限 %d —— 腿被拆回去了，或新增了扫描腿", got, maxLiterals)
+	}
+	bounded := strings.Count(src, "FROM (SELECT * FROM session_summaries WHERE")
+	if bounded != 6 {
+		t.Errorf("子查询绑小的宇宙腿 = %d，期望 6（aggregates/prevCost/trends/modelUsage/topClients/topTasks）—— 53100 修复被拆掉了一条", bounded)
 	}
 }
 
