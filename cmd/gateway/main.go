@@ -7838,6 +7838,16 @@ func main() {
 			slog.Info("output guard PI analysis sink configured",
 				"error_type", promptinjection.ErrorTypeOutputGuardBlocked)
 		}
+
+		// ★ 2026-11-20 错误处理手册轮：与 PI 智能体共用 piSQLDB（同一分析库
+		//   连接面）与 piAgentCtx（停机时随 PI 智能体一起收口，先于 DB 关闭）。
+		//   组件经进程内全局传给管理 API 注册点（worker 默认关：
+		//   error_playbook.enabled=false ⇒ 惰性壳，管理面仍可用）。
+		if pbStore, pbActions, pbEngine, _ := initErrorPlaybook(piAgentCtx, piSQLDB); pbStore != nil {
+			errorPlaybookStoreGlobal = pbStore
+			errorPlaybookActionsGlobal = pbActions
+			errorPlaybookEngineGlobal = pbEngine
+		}
 	}
 
 	var v2SecurityRegistry *security.Registry
@@ -8126,6 +8136,21 @@ func main() {
 				return piDetectorCoreGlobal.RefreshRules()
 			})
 			slog.Info("pi-analysis API registered")
+		}
+		// /api/admin/error-playbook/* — 错误处理手册（2026-11-20）：
+		// 手册 CRUD / 手动执行 / 执行留痕 / 按快照回滚 / 手动分析 / 统计。
+		// 自动化（worker/自动分析/自动执行）由 initErrorPlaybook 装配
+		//（默认关：error_playbook.enabled=false）。
+		if errorPlaybookStoreGlobal != nil {
+			pbHandler := admin.NewErrorPlaybookHandler(
+				errorPlaybookStoreGlobal,
+				errorPlaybookEngineGlobal,
+				errorPlaybookActionsGlobal,
+				dbConn.Pool(),
+				cfg.SecretKey,
+			)
+			pbHandler.RegisterRoutes(mux, "/api/admin/error-playbook")
+			slog.Info("error-playbook API registered")
 		}
 		// /api/admin/output-compliance/* — 策略、关键词、复核队列、反馈、统计。
 		if outputComplianceHandler != nil {

@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-19T03:00:43+00:00
-# ★ expected=918 envs=local,fresh,252,211 gaps_by_env={"211": 49, "252": 56, "fresh": 49, "local": 58} production_gaps=64
+# ★ generated_at=2026-11-20T15:41:08+00:00
+# ★ expected=941 envs=local,fresh,252,211 gaps_by_env={"211": 49, "252": 56, "fresh": 49, "local": 58} production_gaps=64
 -1	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -925,3 +925,26 @@
 975	idx_pricing_suggestion_batches_created	pricing_suggestion_batches	retired	retired	retired	retired	complete	none
 976	idx_mppq_canon_region	market_price_platform_quotes	retired	retired	retired	retired	complete	none
 977	idx_error_analysis_results_queue_uniq	error_analysis_results	retired	retired	retired	retired	complete	none
+981	idx_sessions_is_probe	sessions	retired-by-column-drop	retired-by-column-drop	retired-by-column-drop	retired-by-column-drop	complete	none
+981	idx_sessions_project	sessions	retired-by-column-drop	retired-by-column-drop	retired-by-column-drop	retired-by-column-drop	complete	none
+981	idx_sessions_task_category	sessions	retired-by-column-drop	retired-by-column-drop	retired-by-column-drop	retired-by-column-drop	complete	none
+994	idx_agent_usage_agg_agent	agent_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_agent_usage_agg_pk	agent_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_agent_usage_agg_tenant	agent_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_model_usage_agg_model	model_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_model_usage_agg_pk	model_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_model_usage_agg_provider	model_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_model_usage_agg_tenant	model_usage_aggregates	retired	retired	retired	retired	complete	none
+994	idx_project_task_agg_owner	project_task_aggregates	retired	retired	retired	retired	complete	none
+994	idx_project_task_agg_pk	project_task_aggregates	retired	retired	retired	retired	complete	none
+994	idx_project_task_agg_project	project_task_aggregates	retired	retired	retired	retired	complete	none
+994	idx_project_task_agg_tenant	project_task_aggregates	retired	retired	retired	retired	complete	none
+994	idx_user_session_agg_date	user_session_aggregates	retired	retired	retired	retired	complete	none
+994	idx_user_session_agg_owner	user_session_aggregates	retired	retired	retired	retired	complete	none
+994	idx_user_session_agg_pk	user_session_aggregates	retired	retired	retired	retired	complete	none
+994	idx_user_session_agg_tenant	user_session_aggregates	retired	retired	retired	retired	complete	none
+995	idx_error_playbook_entries_enabled	error_playbook_entries	retired	retired	retired	retired	complete	none
+995	idx_error_playbook_entries_last_hit	error_playbook_entries	retired	retired	retired	retired	complete	none
+995	idx_error_playbook_exec_entry	error_playbook_executions	retired	retired	retired	retired	complete	none
+995	idx_error_playbook_exec_type	error_playbook_executions	retired	retired	retired	retired	complete	none
+995	uq_error_playbook_type_pattern	error_playbook_entries	retired	retired	retired	retired	complete	none

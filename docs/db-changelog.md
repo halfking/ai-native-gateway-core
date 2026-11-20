@@ -11122,3 +11122,10 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 |-----------|------|---------|--------|
 | 994 | `994_session_analytics_owner_key_and_close_path.sql` | `796e3d8480c5c0bb64d5cd9f576ba5ce416acc266a54c45fb4ec405941335626` | applied+verified |
 
+
+
+## 2026-11-21T00:00:00Z — 错误处理手册轮（995 新增）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 995 | `995_error_playbook.sql` | `7d6ddc1d3ab9834b1c90e9b83907bb1aaa3b2525e4cbf019430aed12bc5f70ef` | pending deploy（错误处理手册（Error Handling Playbook）：`error_playbook_entries`（错误类型→预定执行方案；plan_kind 闭集 script/api/prompt；表达式唯一索引 `uq_error_playbook_type_pattern(error_type, COALESCE(match_pattern,''))`；auto_execute 默认 FALSE fail-closed）＋ `error_playbook_executions`（执行留痕 + 每步旧值快照，可按快照回滚）＋ 5 条 seed 条目（全部 prompt 型 + auto_execute=FALSE，源自仓内事故沉淀：auth 误分类先验真 / rate_limit 禁单点 429 升级拉黑 / quota_permanent 周期性区分 / context_budget_exceeded 预算语义 / no_available_channel 熔断态区分结构性缺口）。消费方＝`domains/errorplaybook`（worker 摄取 candidate_failure_logs_hot 错误窗口 → 匹配 → 标准执行；未知错误 PI 智能体 log+上下文分析 → 置信度门 0.80 → 执行一次修正 → 落新条目）＋ `admin/error_playbook_handler.go`（/api/admin/error-playbook/*）。幂等（IF NOT EXISTS + ON CONFLICT DO NOTHING + 自登记）；SET（会话级）超时守卫（docker 流式通道上 SET LOCAL 静默失效——994 实测先例）；零外部依赖不碰任何热表。投递链八面登记齐备：canonical ＋ embeddata 副本×2（逐字节一致）＋ installer main.go go:embed×2/map×2 ＋ dbinit runner.go StartupFiles ＋ installed_startup_migrations.tsv（index 386）＋ docker 通道 files=() 与 ledger_artifact_probe（两表+唯一索引+seed≥5）＋ 期望索引台账（db-object-expect/installer-reachability/gap-ledger 由仓内生成器重生成）＋ sqlguard migration_995_delivery_test。SHA 为文件实测值） |
