@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
@@ -156,6 +157,284 @@ func (h *Handler) HandleGetUserRanking(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// HandleGetUserDetail 处理用户详情请求
+//
+// GET /api/admin/session-analytics/user-ranking/:owner
+//
+// 查询参数:
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//
+// 响应:
+//
+//	200: UserDetailResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetUserDetail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 从 URL 路径提取 owner
+	owner := extractOwnerFromPath(r.URL.Path)
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
+
+	// 获取查询参数
+	params, err := parseUserDetailParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门
+	if !h.requireFreshViews(w, r, "user_session_aggregates") {
+		return
+	}
+
+	// 查询数据
+	resp, err := GetUserDetail(ctx, h.db, owner, params.StartDate, params.EndDate)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get user detail")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetUserProjects 处理用户项目列表请求
+//
+// GET /api/admin/session-analytics/user-ranking/:owner/projects
+//
+// 查询参数:
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//   - sort_by (可选): 排序字段 (sessions|cost|last_active)
+//   - order (可选): 排序方向 (asc|desc)
+//
+// 响应:
+//
+//	200: UserProjectsResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetUserProjects(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 从 URL 路径提取 owner
+	owner := extractOwnerFromPath(r.URL.Path)
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
+
+	// 获取查询参数
+	params, err := parseUserProjectsParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门
+	if !h.requireFreshViews(w, r, "project_task_aggregates") {
+		return
+	}
+
+	// 查询数据
+	resp, err := GetUserProjects(ctx, h.db, owner, params.StartDate, params.EndDate, params.SortBy, params.Order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get user projects")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetProjectTasks 处理项目任务列表请求
+//
+// GET /api/admin/session-analytics/user-ranking/:owner/projects/:project/tasks
+//
+// 查询参数:
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//   - sort_by (可选): 排序字段 (sessions|cost|last_active)
+//
+// 响应:
+//
+//	200: ProjectTasksResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetProjectTasks(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 从 URL 路径提取 owner 和 project
+	owner, project := extractOwnerAndProjectFromPath(r.URL.Path)
+	if owner == "" || project == "" {
+		writeError(w, http.StatusBadRequest, "owner and project are required")
+		return
+	}
+
+	// 获取查询参数
+	params, err := parseProjectTasksParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门
+	if !h.requireFreshViews(w, r, "project_task_aggregates") {
+		return
+	}
+
+	// 查询数据
+	resp, err := GetProjectTasks(ctx, h.db, owner, project, params.StartDate, params.EndDate, params.SortBy)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get project tasks")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetAgentRanking 处理智能体排行请求
+//
+// GET /api/admin/session-analytics/agent-ranking
+//
+// 查询参数:
+//   - tenant_id (可选): 租户 ID
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//   - sort_by (可选): 排序字段 (sessions|users|cost|last_used)
+//   - order (可选): 排序方向 (asc|desc)
+//
+// 响应:
+//
+//	200: AgentRankingResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetAgentRanking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 获取查询参数
+	params, err := parseAgentRankingParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门
+	if !h.requireFreshViews(w, r, "agent_usage_aggregates") {
+		return
+	}
+
+	// 租户隔离
+	tenantID := params.TenantID
+	if !isSuperAdminFromRequest(r) {
+		userTenantID := getUserTenantIDFromRequest(r)
+		if userTenantID != "" {
+			tenantID = &userTenantID
+		}
+	}
+
+	// 查询数据
+	resp, err := GetAgentRanking(ctx, h.db, tenantID, params.StartDate, params.EndDate, params.SortBy, params.Order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get agent ranking")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetModelRanking 处理模型排行请求
+//
+// GET /api/admin/session-analytics/model-ranking
+//
+// 查询参数:
+//   - tenant_id (可选): 租户 ID
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//   - sort_by (可选): 排序字段 (requests|tokens|cost|success_rate|cache_rate|last_used)
+//   - order (可选): 排序方向 (asc|desc)
+//
+// 响应:
+//
+//	200: ModelRankingResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetModelRanking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 获取查询参数
+	params, err := parseModelRankingParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门
+	if !h.requireFreshViews(w, r, "model_usage_aggregates") {
+		return
+	}
+
+	// 租户隔离
+	tenantID := params.TenantID
+	if !isSuperAdminFromRequest(r) {
+		userTenantID := getUserTenantIDFromRequest(r)
+		if userTenantID != "" {
+			tenantID = &userTenantID
+		}
+	}
+
+	// 查询数据
+	resp, err := GetModelRanking(ctx, h.db, tenantID, params.StartDate, params.EndDate, params.SortBy, params.Order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get model ranking")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // overviewParams 总体统计查询参数
 type overviewParams struct {
 	TenantID  *string
@@ -173,6 +452,45 @@ type userRankingParams struct {
 	Order     string
 	Limit     int
 	Offset    int
+}
+
+// userDetailParams 用户详情查询参数
+type userDetailParams struct {
+	StartDate string
+	EndDate   string
+}
+
+// userProjectsParams 用户项目列表查询参数
+type userProjectsParams struct {
+	StartDate string
+	EndDate   string
+	SortBy    string
+	Order     string
+}
+
+// projectTasksParams 项目任务列表查询参数
+type projectTasksParams struct {
+	StartDate string
+	EndDate   string
+	SortBy    string
+}
+
+// agentRankingParams 智能体排行查询参数
+type agentRankingParams struct {
+	TenantID  *string
+	StartDate string
+	EndDate   string
+	SortBy    string
+	Order     string
+}
+
+// modelRankingParams 模型排行查询参数
+type modelRankingParams struct {
+	TenantID  *string
+	StartDate string
+	EndDate   string
+	SortBy    string
+	Order     string
 }
 
 // parseOverviewParamsFromRequest 从 HTTP 请求解析总体统计查询参数
@@ -295,6 +613,281 @@ func parseUserRankingParamsFromRequest(r *http.Request) (*userRankingParams, err
 	return params, nil
 }
 
+// parseUserDetailParamsFromRequest 从 HTTP 请求解析用户详情查询参数
+func parseUserDetailParamsFromRequest(r *http.Request) (*userDetailParams, error) {
+	params := &userDetailParams{}
+	query := r.URL.Query()
+
+	// 开始日期（必需）
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	// 结束日期（必需）
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	return params, nil
+}
+
+// parseUserProjectsParamsFromRequest 从 HTTP 请求解析用户项目列表查询参数
+func parseUserProjectsParamsFromRequest(r *http.Request) (*userProjectsParams, error) {
+	params := &userProjectsParams{
+		SortBy: "sessions",
+		Order:  "desc",
+	}
+	query := r.URL.Query()
+
+	// 开始日期（必需）
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	// 结束日期（必需）
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	// 排序字段（可选）
+	if sortBy := query.Get("sort_by"); sortBy != "" {
+		validSortFields := map[string]bool{
+			"sessions":    true,
+			"cost":        true,
+			"last_active": true,
+		}
+		if !validSortFields[sortBy] {
+			return nil, errorf("invalid sort_by")
+		}
+		params.SortBy = sortBy
+	}
+
+	// 排序方向（可选）
+	if order := query.Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return nil, errorf("invalid order")
+		}
+		params.Order = order
+	}
+
+	return params, nil
+}
+
+// parseProjectTasksParamsFromRequest 从 HTTP 请求解析项目任务列表查询参数
+func parseProjectTasksParamsFromRequest(r *http.Request) (*projectTasksParams, error) {
+	params := &projectTasksParams{
+		SortBy: "sessions",
+	}
+	query := r.URL.Query()
+
+	// 开始日期（必需）
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	// 结束日期（必需）
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	// 排序字段（可选）
+	if sortBy := query.Get("sort_by"); sortBy != "" {
+		validSortFields := map[string]bool{
+			"sessions":    true,
+			"cost":        true,
+			"last_active": true,
+		}
+		if !validSortFields[sortBy] {
+			return nil, errorf("invalid sort_by")
+		}
+		params.SortBy = sortBy
+	}
+
+	return params, nil
+}
+
+// parseAgentRankingParamsFromRequest 从 HTTP 请求解析智能体排行查询参数
+func parseAgentRankingParamsFromRequest(r *http.Request) (*agentRankingParams, error) {
+	params := &agentRankingParams{
+		SortBy: "sessions",
+		Order:  "desc",
+	}
+	query := r.URL.Query()
+
+	// 租户 ID（可选）
+	if tenantID := query.Get("tenant_id"); tenantID != "" {
+		params.TenantID = &tenantID
+	}
+
+	// 开始日期（必需）
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	// 结束日期（必需）
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	// 排序字段（可选）
+	if sortBy := query.Get("sort_by"); sortBy != "" {
+		validSortFields := map[string]bool{
+			"sessions":  true,
+			"users":     true,
+			"cost":      true,
+			"last_used": true,
+		}
+		if !validSortFields[sortBy] {
+			return nil, errorf("invalid sort_by")
+		}
+		params.SortBy = sortBy
+	}
+
+	// 排序方向（可选）
+	if order := query.Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return nil, errorf("invalid order")
+		}
+		params.Order = order
+	}
+
+	return params, nil
+}
+
+// parseModelRankingParamsFromRequest 从 HTTP 请求解析模型排行查询参数
+func parseModelRankingParamsFromRequest(r *http.Request) (*modelRankingParams, error) {
+	params := &modelRankingParams{
+		SortBy: "requests",
+		Order:  "desc",
+	}
+	query := r.URL.Query()
+
+	// 租户 ID（可选）
+	if tenantID := query.Get("tenant_id"); tenantID != "" {
+		params.TenantID = &tenantID
+	}
+
+	// 开始日期（必需）
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	// 结束日期（必需）
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	// 排序字段（可选）
+	if sortBy := query.Get("sort_by"); sortBy != "" {
+		validSortFields := map[string]bool{
+			"requests":     true,
+			"tokens":       true,
+			"cost":         true,
+			"success_rate": true,
+			"cache_rate":   true,
+			"last_used":    true,
+		}
+		if !validSortFields[sortBy] {
+			return nil, errorf("invalid sort_by")
+		}
+		params.SortBy = sortBy
+	}
+
+	// 排序方向（可选）
+	if order := query.Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return nil, errorf("invalid order")
+		}
+		params.Order = order
+	}
+
+	return params, nil
+}
+
+// extractOwnerFromPath 从路径提取 owner
+// 例如: /api/admin/session-analytics/user-ranking/john => "john"
+func extractOwnerFromPath(path string) string {
+	// 路径格式: /api/admin/session-analytics/user-ranking/{owner}[/projects]
+	prefix := "/api/admin/session-analytics/user-ranking/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(rest, "/")
+	if len(parts) > 0 && parts[0] != "" {
+		return parts[0]
+	}
+	return ""
+}
+
+// extractOwnerAndProjectFromPath 从路径提取 owner 和 project
+// 例如: /api/admin/session-analytics/user-ranking/john/projects/myproject/tasks => ("john", "myproject")
+func extractOwnerAndProjectFromPath(path string) (string, string) {
+	// 路径格式: /api/admin/session-analytics/user-ranking/{owner}/projects/{project}/tasks
+	prefix := "/api/admin/session-analytics/user-ranking/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", ""
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(rest, "/")
+	
+	// parts 应该是: [owner, "projects", project, "tasks"]
+	if len(parts) >= 4 && parts[1] == "projects" && parts[3] == "tasks" {
+		return parts[0], parts[2]
+	}
+	return "", ""
+}
+
 // isValidDate 验证日期格式 (YYYY-MM-DD)
 // 时区轮（2026-11-20）：走 settings.ParseSystemDate，与解析面同源。
 func isValidDate(dateStr string) bool {
@@ -385,6 +978,10 @@ var (
 	//
 	// ★ 不是 /users —— 见上面 RoutePaths 的注释（旧族已占用且前端在用）。
 	RouteUserRanking = "/api/admin/session-analytics/user-ranking"
+	// RouteAgentRanking 是智能体排行端点。
+	RouteAgentRanking = "/api/admin/session-analytics/agent-ranking"
+	// RouteModelRanking 是模型排行端点。
+	RouteModelRanking = "/api/admin/session-analytics/model-ranking"
 )
 
 // RoutePaths 是本包注册到 ServeMux 上的**完整**路径清单（SSOT）。
@@ -392,9 +989,15 @@ var (
 // ★ 用途：cmd/gateway 的路由冲突守卫测试拿它跟"仓内其它已注册路径"
 //
 //	做比对 —— 任何一条撞车都会让**整个网关启动失败**，必须在单测里红。
+//
+// ★ 注意：子路径（如 /user-ranking/:owner）不需要在这里列出，
+//
+//	因为它们会被父路径的处理器捕获，不会独立注册。
 var RoutePaths = []string{
 	RouteOverview,
 	RouteUserRanking,
+	RouteAgentRanking,
+	RouteModelRanking,
 }
 
 // RegisterRoutes 注册会话分析系统的路由
@@ -403,8 +1006,13 @@ var RoutePaths = []string{
 // 所有路由都需要管理员权限。
 //
 // 路由列表:
-//   - GET /api/admin/session-analytics/overview     - 总体统计仪表板
-//   - GET /api/admin/session-analytics/user-ranking - 人员排行
+//   - GET /api/admin/session-analytics/overview                              - 总体统计仪表板
+//   - GET /api/admin/session-analytics/user-ranking                          - 人员排行
+//   - GET /api/admin/session-analytics/user-ranking/:owner                   - 人员详情
+//   - GET /api/admin/session-analytics/user-ranking/:owner/projects          - 用户项目列表
+//   - GET /api/admin/session-analytics/user-ranking/:owner/projects/:project/tasks - 项目任务列表
+//   - GET /api/admin/session-analytics/agent-ranking                         - 智能体排行
+//   - GET /api/admin/session-analytics/model-ranking                         - 模型排行
 //
 // ★ 冲突是**致命**的：同一个 ServeMux 上重复注册同一路径会 panic，
 //
@@ -419,8 +1027,47 @@ func RegisterRoutes(mux *http.ServeMux, db *sql.DB, adminWrap func(http.HandlerF
 	// 总体统计
 	mux.HandleFunc(RouteOverview, adminWrap(handler.HandleGetOverview))
 
-	// 人员排行
+	// 人员排行（需要路由分发器处理子路径）
+	mux.HandleFunc(RouteUserRanking+"/", adminWrap(handler.routeUserRanking))
 	mux.HandleFunc(RouteUserRanking, adminWrap(handler.HandleGetUserRanking))
+
+	// 智能体排行
+	mux.HandleFunc(RouteAgentRanking, adminWrap(handler.HandleGetAgentRanking))
+
+	// 模型排行
+	mux.HandleFunc(RouteModelRanking, adminWrap(handler.HandleGetModelRanking))
+}
+
+// routeUserRanking 分发 user-ranking 的子路由
+func (h *Handler) routeUserRanking(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	prefix := RouteUserRanking + "/"
+	
+	if !strings.HasPrefix(path, prefix) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	rest := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(rest, "/")
+
+	// 路径模式:
+	// /:owner                          -> 用户详情
+	// /:owner/projects                 -> 用户项目列表
+	// /:owner/projects/:project/tasks  -> 项目任务列表
+
+	if len(parts) == 1 && parts[0] != "" {
+		// /:owner - 用户详情
+		h.HandleGetUserDetail(w, r)
+	} else if len(parts) == 2 && parts[1] == "projects" {
+		// /:owner/projects - 用户项目列表
+		h.HandleGetUserProjects(w, r)
+	} else if len(parts) == 4 && parts[1] == "projects" && parts[3] == "tasks" {
+		// /:owner/projects/:project/tasks - 项目任务列表
+		h.HandleGetProjectTasks(w, r)
+	} else {
+		writeError(w, http.StatusNotFound, "not found")
+	}
 }
 
 // ErrorResponse 错误响应
