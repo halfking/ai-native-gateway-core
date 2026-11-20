@@ -23,7 +23,7 @@ import {
 import ModelTrendChart from '../../components/analytics/ModelTrendChart.vue'
 import ModelPicker from '../../components/ModelPicker.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
-import { makeDateRangePresets } from '../../components/ui/kxDatePresets'
+import { makeDateRangePresets, systemTzDateStr } from '../../components/ui/kxDatePresets'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
 import {
   getUsageTrendSeries,
@@ -94,8 +94,9 @@ const presets = computed(() => makeDateRangePresets('date'))
 const effectiveRange = computed<KxDateRange>(() => range.value ?? defaultRange())
 
 function defaultRange(): KxDateRange {
-  const today = new Date().toISOString().slice(0, 10)
-  const start = new Date(Date.parse(`${today}T00:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10)
+  // 时区对齐轮（2026-11-20）L-TZ1：改系统时区日历，与后端 ParseSystemDate 口径一致
+  const today = systemTzDateStr()
+  const start = systemTzDateStr(Date.now() - 6 * 86_400_000)
   return { start, end: today }
 }
 

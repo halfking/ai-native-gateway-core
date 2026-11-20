@@ -20,6 +20,7 @@ import { dayDist, modelDist, personDist, providerDist, tenantDist, type Metric }
 import { topReasons } from '../../components/reconciliation/format'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
 import { defaultSnapshotRange } from '../../components/reconciliation/snapshotRange'
+import { systemTzDateStr } from '../../components/ui/kxDatePresets'
 
 function numQuery(value: unknown): number | undefined {
   if (typeof value !== 'string' || value === '') return undefined
@@ -76,7 +77,8 @@ export function useReconciliationPage() {
     // 2026-11-20 统一轮：预设改为「近 N 天含今天」后，区间含今天时今日必然
     // 没有快照（每日凌晨生成前一日）——「近 7 天只覆盖 6 天」不是丢数据，
     // 说出来，别让覆盖数又被读成口径错。
-    const today = new Date().toISOString().slice(0, 10)
+    // 时区对齐轮（2026-11-20）L-TZ1：改系统时区日历，与后端 ParseSystemDate 口径一致
+    const today = systemTzDateStr()
     const [start, end] = range.value
     const spanDays = Math.floor((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1
     if (end >= today && report.value.snapshot_dates.length < spanDays) {

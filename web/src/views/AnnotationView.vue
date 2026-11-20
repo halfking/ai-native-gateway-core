@@ -40,6 +40,7 @@ import PaginationBar from '../components/ui/PaginationBar.vue'
 import AppModal from '../components/ui/AppModal.vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
+import { systemTzDateStr } from '../components/ui/kxDatePresets'
 import ModelPicker from '../components/ModelPicker.vue'
 import AnnotationForm from '../components/AnnotationForm.vue'
 
@@ -54,14 +55,14 @@ const error = ref('')
 // R43: taskprofile 修正写入失败的非阻塞提示（主标注成功但修正未落库时可见）
 const correctionWarning = ref('')
 
-// 默认当天(UTC 日期串,与后端默认口径一致)
-function utcToday(): string {
-  return new Date().toISOString().slice(0, 10)
+// 时区对齐轮（2026-11-20）L-TZ1：改系统时区日历，与后端 ParseSystemDate 口径一致
+function getAnnotationDefaultWindow(): string {
+  return systemTzDateStr()
 }
 
 // Filters
-const filterStartDate = ref(utcToday())
-const filterEndDate = ref(utcToday())
+const filterStartDate = ref(getAnnotationDefaultWindow())
+const filterEndDate = ref(getAnnotationDefaultWindow())
 const filterTaskType = ref('')
 const filterModel = ref('')
 const filterHumanTaskType = ref('')
@@ -149,8 +150,8 @@ function onPageSizeChange(next: number) {
 }
 
 function clearFilters() {
-  filterStartDate.value = utcToday()
-  filterEndDate.value = utcToday()
+  filterStartDate.value = getAnnotationDefaultWindow()
+  filterEndDate.value = getAnnotationDefaultWindow()
   filterTaskType.value = ''
   filterModel.value = ''
   filterHumanTaskType.value = ''
@@ -166,7 +167,7 @@ const filterChips = computed(() => {
   const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
   const start = filterStartDate.value
   const end = filterEndDate.value
-  const today = utcToday()
+  const today = getAnnotationDefaultWindow()
   if ((start && start !== today) || (end && end !== today)) {
     chips.push({ key: 'date', label: `${t('common.dateRange.title')}: ${start || '…'} ~ ${end || '…'}`, onRemove: () => { filterStartDate.value = today; filterEndDate.value = today } })
   }

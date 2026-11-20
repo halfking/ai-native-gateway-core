@@ -16,7 +16,7 @@ import {
 import { formatDateTime, formatCompactDateTime } from '../../utils/datetime'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
-import { makeDateRangePresets, rangeSpanDays } from '../../components/ui/kxDatePresets'
+import { makeDateRangePresets, rangeSpanDays, systemTzDateStr } from '../../components/ui/kxDatePresets'
 
 const { t } = useI18n()
 const et = (key: string): string => t(`errorTrend.${key}`)
@@ -40,7 +40,8 @@ const hours = computed<ErrorsTrendHours>(() => {
 })
 
 function defaultRange(): KxDateRange {
-  const today = new Date().toISOString().slice(0, 10)
+  // 时区对齐轮（2026-11-20）L-TZ1：改系统时区日历，与后端 ParseSystemDate 口径一致
+  const today = systemTzDateStr()
   return { start: today, end: today }
 }
 
