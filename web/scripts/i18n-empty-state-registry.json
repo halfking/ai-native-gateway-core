@@ -117,6 +117,38 @@
     {
       "key": "liveTopology.stats.emptyNoResultWindow",
       "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultOverview",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultUserRanking",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.filteredUserRanking",
+      "kind": "Filtered"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultUserDetail",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultUserProjects",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultProjectTasks",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultAgentRanking",
+      "kind": "NoResult"
+    },
+    {
+      "key": "sessionAnalytics.empty.noResultModelRanking",
+      "kind": "NoResult"
     }
   ]
 }
