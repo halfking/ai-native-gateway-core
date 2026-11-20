@@ -818,3 +818,738 @@ func (s *OverviewSummary) MarshalJSON() ([]byte, error) {
 		Alias: (*Alias)(s),
 	})
 }
+
+// ============================================================================
+// 人员详情相关查询
+// ============================================================================
+
+// UserDetailSummary 人员详情摘要
+type UserDetailSummary struct {
+	SessionCount int64   `json:"session_count"`
+	TaskCount    int64   `json:"task_count"`
+	TotalCost    float64 `json:"total_cost"`
+	Rank         int     `json:"rank"`
+	RankChange   int     `json:"rank_change"`
+}
+
+// UserInfo 用户基本信息
+type UserInfo struct {
+	Owner       string `json:"owner"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+	TenantID    string `json:"tenant_id"`
+}
+
+// UserTrendPoint 用户趋势数据点
+type UserTrendPoint struct {
+	Date  string `json:"date"`
+	Count int64  `json:"count"`
+}
+
+// UserRankTrendPoint 用户排名趋势数据点
+type UserRankTrendPoint struct {
+	Date string `json:"date"`
+	Rank int    `json:"rank"`
+}
+
+// UserDetailTrends 用户详情趋势数据
+type UserDetailTrends struct {
+	Sessions []UserTrendPoint     `json:"sessions"`
+	Tasks    []UserTrendPoint     `json:"tasks"`
+	Cost     []CostTrendPoint     `json:"cost"`
+	Rank     []UserRankTrendPoint `json:"rank"`
+}
+
+// UserDetailResponse 人员详情响应
+type UserDetailResponse struct {
+	User    UserInfo          `json:"user"`
+	Summary UserDetailSummary `json:"summary"`
+	Trends  UserDetailTrends  `json:"trends"`
+}
+
+// UserProject 用户项目
+type UserProject struct {
+	Project      string  `json:"project"`
+	SessionCount int64   `json:"session_count"`
+	TaskCount    int64   `json:"task_count"`
+	TotalTokens  int64   `json:"total_tokens"`
+	TotalCost    float64 `json:"total_cost"`
+	LastActiveAt string  `json:"last_active_at"`
+}
+
+// UserProjectsResponse 用户项目列表响应
+type UserProjectsResponse struct {
+	Projects []UserProject `json:"projects"`
+}
+
+// ProjectTask 项目任务
+type ProjectTask struct {
+	Task         string  `json:"task"`
+	SessionCount int64   `json:"session_count"`
+	RequestCount int64   `json:"request_count"`
+	TotalTokens  int64   `json:"total_tokens"`
+	TotalCost    float64 `json:"total_cost"`
+	LastActiveAt string  `json:"last_active_at"`
+}
+
+// ProjectTasksResponse 项目任务列表响应
+type ProjectTasksResponse struct {
+	Tasks []ProjectTask `json:"tasks"`
+}
+
+// GetUserDetail 获取用户详情
+func GetUserDetail(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserDetailResponse, error) {
+	// 获取用户基本信息
+	userInfo, err := getUserInfo(ctx, db, owner)
+	if err != nil {
+		return nil, fmt.Errorf("get user info: %w", err)
+	}
+
+	// 获取汇总指标
+	summary, err := getUserDetailSummary(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("get summary: %w", err)
+	}
+
+	// 获取趋势数据
+	trends, err := getUserDetailTrends(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("get trends: %w", err)
+	}
+
+	return &UserDetailResponse{
+		User:    *userInfo,
+		Summary: *summary,
+		Trends:  *trends,
+	}, nil
+}
+
+// getUserInfo 获取用户基本信息
+func getUserInfo(ctx context.Context, db *sql.DB, owner string) (*UserInfo, error) {
+	query := `
+		SELECT
+			username as owner,
+			COALESCE(display_name, username) as display_name,
+			COALESCE(email, '') as email,
+			tenant_id
+		FROM users
+		WHERE username = $1
+	`
+
+	var info UserInfo
+	err := db.QueryRowContext(ctx, query, owner).Scan(
+		&info.Owner,
+		&info.DisplayName,
+		&info.Email,
+		&info.TenantID,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 如果用户不在 users 表中，返回基本信息
+			return &UserInfo{
+				Owner:       owner,
+				DisplayName: owner,
+				Email:       "",
+				TenantID:    "",
+			}, nil
+		}
+		return nil, err
+	}
+
+	return &info, nil
+}
+
+// getUserDetailSummary 获取用户详情汇总指标
+func getUserDetailSummary(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserDetailSummary, error) {
+	query := `
+		SELECT
+			COALESCE(SUM(session_count), 0) as session_count,
+			COALESCE(SUM(task_count), 0) as task_count,
+			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost
+		FROM user_session_aggregates
+		WHERE owner = $1 AND date >= $2 AND date <= $3
+	`
+
+	var summary UserDetailSummary
+	err := db.QueryRowContext(ctx, query, owner, startDate, endDate).Scan(
+		&summary.SessionCount,
+		&summary.TaskCount,
+		&summary.TotalCost,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 计算排名（基于总 tokens）
+	rank, rankChange, err := getUserRank(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	summary.Rank = rank
+	summary.RankChange = rankChange
+
+	return &summary, nil
+}
+
+// getUserRank 获取用户排名及变化
+func getUserRank(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (int, int, error) {
+	// 当前周期排名
+	query := `
+		WITH ranked_users AS (
+			SELECT
+				owner,
+				SUM(total_tokens)::bigint as total_tokens,
+				RANK() OVER (ORDER BY SUM(total_tokens) DESC) as rank
+			FROM user_session_aggregates
+			WHERE date >= $1 AND date <= $2
+			GROUP BY owner
+		)
+		SELECT rank FROM ranked_users WHERE owner = $3
+	`
+
+	var currentRank int
+	err := db.QueryRowContext(ctx, query, startDate, endDate, owner).Scan(&currentRank)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+
+	// 前一周期排名（用于计算变化）
+	prevStartDate, prevEndDate, err := getPreviousPeriod(startDate, endDate)
+	if err != nil {
+		return currentRank, 0, nil
+	}
+
+	var prevRank int
+	err = db.QueryRowContext(ctx, query, prevStartDate, prevEndDate, owner).Scan(&prevRank)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return currentRank, 0, nil
+		}
+		return currentRank, 0, nil
+	}
+
+	// 排名变化（负数表示排名上升，正数表示排名下降）
+	rankChange := prevRank - currentRank
+
+	return currentRank, rankChange, nil
+}
+
+// getUserDetailTrends 获取用户详情趋势数据
+func getUserDetailTrends(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserDetailTrends, error) {
+	trends := &UserDetailTrends{}
+
+	// 会话数趋势
+	sessionTrend, err := getUserSessionTrend(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	trends.Sessions = sessionTrend
+
+	// 任务数趋势
+	taskTrend, err := getUserTaskTrend(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	trends.Tasks = taskTrend
+
+	// 成本趋势
+	costTrend, err := getUserCostTrend(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	trends.Cost = costTrend
+
+	// 排名趋势
+	rankTrend, err := getUserRankTrend(ctx, db, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	trends.Rank = rankTrend
+
+	return trends, nil
+}
+
+// getUserSessionTrend 获取用户会话数趋势
+func getUserSessionTrend(ctx context.Context, db *sql.DB, owner, startDate, endDate string) ([]UserTrendPoint, error) {
+	query := `
+		SELECT date::TEXT, SUM(session_count) as count
+		FROM user_session_aggregates
+		WHERE owner = $1 AND date >= $2 AND date <= $3
+		GROUP BY date
+		ORDER BY date
+	`
+
+	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []UserTrendPoint
+	for rows.Next() {
+		var p UserTrendPoint
+		if err := rows.Scan(&p.Date, &p.Count); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+
+	return points, rows.Err()
+}
+
+// getUserTaskTrend 获取用户任务数趋势
+func getUserTaskTrend(ctx context.Context, db *sql.DB, owner, startDate, endDate string) ([]UserTrendPoint, error) {
+	query := `
+		SELECT date::TEXT, SUM(task_count) as count
+		FROM user_session_aggregates
+		WHERE owner = $1 AND date >= $2 AND date <= $3
+		GROUP BY date
+		ORDER BY date
+	`
+
+	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []UserTrendPoint
+	for rows.Next() {
+		var p UserTrendPoint
+		if err := rows.Scan(&p.Date, &p.Count); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+
+	return points, rows.Err()
+}
+
+// getUserCostTrend 获取用户成本趋势
+func getUserCostTrend(ctx context.Context, db *sql.DB, owner, startDate, endDate string) ([]CostTrendPoint, error) {
+	query := `
+		SELECT date::TEXT, SUM(internal_cost) as internal, SUM(external_cost) as external
+		FROM user_session_aggregates
+		WHERE owner = $1 AND date >= $2 AND date <= $3
+		GROUP BY date
+		ORDER BY date
+	`
+
+	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []CostTrendPoint
+	for rows.Next() {
+		var p CostTrendPoint
+		if err := rows.Scan(&p.Date, &p.Internal, &p.External); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+
+	return points, rows.Err()
+}
+
+// getUserRankTrend 获取用户排名趋势
+func getUserRankTrend(ctx context.Context, db *sql.DB, owner, startDate, endDate string) ([]UserRankTrendPoint, error) {
+	query := `
+		WITH daily_ranks AS (
+			SELECT
+				date,
+				owner,
+				RANK() OVER (PARTITION BY date ORDER BY SUM(total_tokens) DESC) as rank
+			FROM user_session_aggregates
+			WHERE date >= $1 AND date <= $2
+			GROUP BY date, owner
+		)
+		SELECT date::TEXT, rank
+		FROM daily_ranks
+		WHERE owner = $3
+		ORDER BY date
+	`
+
+	rows, err := db.QueryContext(ctx, query, startDate, endDate, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []UserRankTrendPoint
+	for rows.Next() {
+		var p UserRankTrendPoint
+		if err := rows.Scan(&p.Date, &p.Rank); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+
+	return points, rows.Err()
+}
+
+// GetUserProjects 获取用户项目列表
+func GetUserProjects(ctx context.Context, db *sql.DB, owner, startDate, endDate, sortBy, order string) (*UserProjectsResponse, error) {
+	query := `
+		SELECT
+			project,
+			SUM(session_count) as session_count,
+			COUNT(DISTINCT NULLIF(task, '')) as task_count,
+			SUM(total_tokens)::bigint as total_tokens,
+			SUM(internal_cost + external_cost) as total_cost,
+			MAX(last_active_at) as last_active_at
+		FROM project_task_aggregates
+		WHERE owner = $1 AND date >= $2 AND date <= $3
+		GROUP BY project
+	`
+
+	// 排序
+	orderClause := " ORDER BY "
+	switch sortBy {
+	case "sessions":
+		orderClause += "session_count"
+	case "cost":
+		orderClause += "total_cost"
+	case "last_active":
+		orderClause += "last_active_at"
+	default:
+		orderClause += "session_count"
+	}
+
+	if order == "asc" {
+		orderClause += " ASC"
+	} else {
+		orderClause += " DESC"
+	}
+
+	query += orderClause
+
+	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []UserProject
+	for rows.Next() {
+		var p UserProject
+		var lastActiveAt sql.NullTime
+		if err := rows.Scan(
+			&p.Project,
+			&p.SessionCount,
+			&p.TaskCount,
+			&p.TotalTokens,
+			&p.TotalCost,
+			&lastActiveAt,
+		); err != nil {
+			return nil, err
+		}
+
+		if lastActiveAt.Valid {
+			p.LastActiveAt = lastActiveAt.Time.Format(time.RFC3339)
+		}
+
+		projects = append(projects, p)
+	}
+
+	return &UserProjectsResponse{
+		Projects: projects,
+	}, rows.Err()
+}
+
+// GetProjectTasks 获取项目任务列表
+func GetProjectTasks(ctx context.Context, db *sql.DB, owner, project, startDate, endDate, sortBy string) (*ProjectTasksResponse, error) {
+	query := `
+		SELECT
+			task,
+			SUM(session_count) as session_count,
+			SUM(turn_count) as request_count,
+			SUM(total_tokens)::bigint as total_tokens,
+			SUM(internal_cost + external_cost) as total_cost,
+			MAX(last_active_at) as last_active_at
+		FROM project_task_aggregates
+		WHERE owner = $1 AND project = $2 AND date >= $3 AND date <= $4
+			AND task <> ''
+		GROUP BY task
+	`
+
+	// 排序
+	orderClause := " ORDER BY "
+	switch sortBy {
+	case "sessions":
+		orderClause += "session_count"
+	case "cost":
+		orderClause += "total_cost"
+	case "last_active":
+		orderClause += "last_active_at"
+	default:
+		orderClause += "session_count"
+	}
+	orderClause += " DESC"
+
+	query += orderClause
+
+	rows, err := db.QueryContext(ctx, query, owner, project, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []ProjectTask
+	for rows.Next() {
+		var t ProjectTask
+		var lastActiveAt sql.NullTime
+		if err := rows.Scan(
+			&t.Task,
+			&t.SessionCount,
+			&t.RequestCount,
+			&t.TotalTokens,
+			&t.TotalCost,
+			&lastActiveAt,
+		); err != nil {
+			return nil, err
+		}
+
+		if lastActiveAt.Valid {
+			t.LastActiveAt = lastActiveAt.Time.Format(time.RFC3339)
+		}
+
+		tasks = append(tasks, t)
+	}
+
+	return &ProjectTasksResponse{
+		Tasks: tasks,
+	}, rows.Err()
+}
+
+// ============================================================================
+// 智能体排行查询
+// ============================================================================
+
+// AgentRanking 智能体排行
+type AgentRanking struct {
+	Rank               int     `json:"rank"`
+	AgentName          string  `json:"agent_name"`
+	UserCount          int64   `json:"user_count"`
+	SessionCount       int64   `json:"session_count"`
+	TaskCount          int64   `json:"task_count"`
+	TotalTokens        int64   `json:"total_tokens"`
+	TotalCost          float64 `json:"total_cost"`
+	AvgDurationSeconds float64 `json:"avg_duration_seconds"`
+	LastUsedAt         string  `json:"last_used_at"`
+}
+
+// AgentRankingResponse 智能体排行响应
+type AgentRankingResponse struct {
+	Agents []AgentRanking `json:"agents"`
+}
+
+// GetAgentRanking 获取智能体排行
+func GetAgentRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate, sortBy, order string) (*AgentRankingResponse, error) {
+	query := `
+		SELECT
+			agent_name,
+			SUM(user_count) as user_count,
+			SUM(session_count) as session_count,
+			SUM(task_count) as task_count,
+			SUM(total_tokens)::bigint as total_tokens,
+			SUM(internal_cost + external_cost) as total_cost,
+			AVG(avg_duration_seconds) as avg_duration_seconds,
+			MAX(last_used_at) as last_used_at
+		FROM agent_usage_aggregates
+		WHERE date >= $1 AND date <= $2
+	`
+	args := []interface{}{startDate, endDate}
+	if tenantID != nil {
+		query += " AND tenant_id = $3"
+		args = append(args, *tenantID)
+	}
+	query += " GROUP BY agent_name"
+
+	// 排序
+	orderClause := " ORDER BY "
+	switch sortBy {
+	case "sessions":
+		orderClause += "session_count"
+	case "users":
+		orderClause += "user_count"
+	case "cost":
+		orderClause += "total_cost"
+	case "last_used":
+		orderClause += "last_used_at"
+	default:
+		orderClause += "session_count"
+	}
+
+	if order == "asc" {
+		orderClause += " ASC"
+	} else {
+		orderClause += " DESC"
+	}
+
+	query += orderClause
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []AgentRanking
+	rank := 1
+	for rows.Next() {
+		var a AgentRanking
+		var lastUsedAt sql.NullTime
+		if err := rows.Scan(
+			&a.AgentName,
+			&a.UserCount,
+			&a.SessionCount,
+			&a.TaskCount,
+			&a.TotalTokens,
+			&a.TotalCost,
+			&a.AvgDurationSeconds,
+			&lastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		a.Rank = rank
+		rank++
+
+		if lastUsedAt.Valid {
+			a.LastUsedAt = lastUsedAt.Time.Format(time.RFC3339)
+		}
+
+		agents = append(agents, a)
+	}
+
+	return &AgentRankingResponse{
+		Agents: agents,
+	}, rows.Err()
+}
+
+// ============================================================================
+// 模型排行查询
+// ============================================================================
+
+// ModelRanking 模型排行
+type ModelRanking struct {
+	Rank          int     `json:"rank"`
+	Model         string  `json:"model"`
+	Provider      string  `json:"provider"`
+	RequestCount  int64   `json:"request_count"`
+	SuccessCount  int64   `json:"success_count"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalTokens   int64   `json:"total_tokens"`
+	CacheHitCount int64   `json:"cache_hit_count"`
+	CacheRate     float64 `json:"cache_rate"`
+	AvgDurationMs float64 `json:"avg_duration_ms"`
+	TotalCost     float64 `json:"total_cost"`
+	UserCount     int64   `json:"user_count"`
+	LastUsedAt    string  `json:"last_used_at"`
+}
+
+// ModelRankingResponse 模型排行响应
+type ModelRankingResponse struct {
+	Models []ModelRanking `json:"models"`
+}
+
+// GetModelRanking 获取模型排行
+func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate, sortBy, order string) (*ModelRankingResponse, error) {
+	query := `
+		SELECT
+			model,
+			provider,
+			SUM(request_count) as request_count,
+			SUM(success_count) as success_count,
+			COALESCE(SUM(success_count)::NUMERIC / NULLIF(SUM(request_count), 0) * 100, 0) as success_rate,
+			SUM(input_tokens + output_tokens) as total_tokens,
+			SUM(cache_hit_count) as cache_hit_count,
+			COALESCE(SUM(cache_hit_count)::NUMERIC / NULLIF(SUM(request_count), 0) * 100, 0) as cache_rate,
+			AVG(avg_duration_ms) as avg_duration_ms,
+			SUM(internal_cost + external_cost) as total_cost,
+			SUM(user_count) as user_count,
+			MAX(last_used_at) as last_used_at
+		FROM model_usage_aggregates
+		WHERE date >= $1 AND date <= $2
+	`
+	args := []interface{}{startDate, endDate}
+	if tenantID != nil {
+		query += " AND tenant_id = $3"
+		args = append(args, *tenantID)
+	}
+	query += " GROUP BY model, provider"
+
+	// 排序
+	orderClause := " ORDER BY "
+	switch sortBy {
+	case "requests":
+		orderClause += "request_count"
+	case "tokens":
+		orderClause += "total_tokens"
+	case "cost":
+		orderClause += "total_cost"
+	case "success_rate":
+		orderClause += "success_rate"
+	case "cache_rate":
+		orderClause += "cache_rate"
+	case "last_used":
+		orderClause += "last_used_at"
+	default:
+		orderClause += "request_count"
+	}
+
+	if order == "asc" {
+		orderClause += " ASC"
+	} else {
+		orderClause += " DESC"
+	}
+
+	query += orderClause
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var models []ModelRanking
+	rank := 1
+	for rows.Next() {
+		var m ModelRanking
+		var lastUsedAt sql.NullTime
+		if err := rows.Scan(
+			&m.Model,
+			&m.Provider,
+			&m.RequestCount,
+			&m.SuccessCount,
+			&m.SuccessRate,
+			&m.TotalTokens,
+			&m.CacheHitCount,
+			&m.CacheRate,
+			&m.AvgDurationMs,
+			&m.TotalCost,
+			&m.UserCount,
+			&lastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		m.Rank = rank
+		rank++
+
+		if lastUsedAt.Valid {
+			m.LastUsedAt = lastUsedAt.Time.Format(time.RFC3339)
+		}
+
+		models = append(models, m)
+	}
+
+	return &ModelRankingResponse{
+		Models: models,
+	}, rows.Err()
+}

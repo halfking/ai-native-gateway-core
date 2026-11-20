@@ -1977,11 +1977,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— 创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）
 			//   —— 面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐
 			"992_add_cst_timezone_functions.sql",
+			// ★ 993（2026-11-20 看板对账口径对齐轮 / F4 落实）：report_snapshots_exact_cost_cents
+			//   —— estimated_cost_cents bigint → numeric(24,6)：逐分组取整求和 ≠ 区间一次取整，
+			//   写面同步去 ROUND 存精确分值，对账总费用与看板（usage_facts 一次求和）逐字相等。
+			"993_report_snapshots_exact_cost_cents.sql",
 			// ★ 994（2026-11-20 会话分析闭环审计轮）：session_analytics_owner_key_and_close_path
 			//   —— 981 会话级三视图 owner 键统一 COALESCE 双源 + end_user_count；
 			//   —— 四视图 DROP+CREATE 重建（自愈 252 台账记 applied 而视图缺失，
 			//      视图级 SELECT 实测 90s~197s，文件自带 statement_timeout=30min 守卫）；
 			//   —— session_dim 补 stop_reason 列（关闭路径 42703 根修，904 头注登记的根因）。
+			//   ★ 编号注记：首落 993 与并行车撞号，重编 994（七面同步）。
 			"994_session_analytics_owner_key_and_close_path.sql",
 		},
 	}

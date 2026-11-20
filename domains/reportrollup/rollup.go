@@ -97,7 +97,7 @@ type Snapshot struct {
 	CacheWriteTokens   int64
 	ErrorKindBreakdown map[string]int64
 	CacheHitRatio      *float64
-	EstimatedCostCents int64
+	EstimatedCostCents float64
 	Currency           string
 	PriceSnapshot      map[string]any
 	ProviderID         *int64
@@ -129,7 +129,7 @@ type Bucket struct {
 	CacheReadTokens    int64
 	CacheWriteTokens   int64
 	ErrorKindBreakdown map[string]int64
-	CostCents          int64
+	CostCents          float64
 	Currency           string
 	CreditsCharged     int64
 	LatencyP50Ms       int64
@@ -287,7 +287,7 @@ SELECT f.provider_id,
        COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
        COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
        COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint AS cost_cents,
+       COALESCE(SUM(f.cost_amount) * 100, 0)::numeric(24,6) AS cost_cents,
        COALESCE(MAX(f.cost_currency), 'USD') AS currency,
        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY f.latency_ms)
                 FILTER (WHERE f.status = 'success'), 0)::bigint AS p50_ms,
@@ -343,7 +343,7 @@ SELECT COUNT(*)::bigint,
        COALESCE(SUM(cache_read_tokens), 0)::bigint,
        COALESCE(SUM(cache_write_tokens), 0)::bigint,
        COALESCE(SUM(credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(cost_amount) * 100), 0)::bigint,
+       COALESCE(SUM(cost_amount) * 100, 0)::numeric(24,6),
        COALESCE(MAX(cost_currency), 'USD'),
        COALESCE((SELECT jsonb_object_agg(kind, n) FROM (
             SELECT COALESCE(NULLIF(error_kind, ''), 'unknown') AS kind, COUNT(*)::bigint AS n
@@ -399,7 +399,7 @@ SELECT f.tenant_id,
        COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
        COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
        COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint,
+       COALESCE(SUM(f.cost_amount) * 100, 0)::numeric(24,6),
        COALESCE(MAX(f.cost_currency), 'USD'),
        COALESCE(errb.breakdown, '{}'::jsonb)
 FROM f
@@ -467,7 +467,7 @@ SELECT f.tenant_id, f.person,
        COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
        COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
        COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint,
+       COALESCE(SUM(f.cost_amount) * 100, 0)::numeric(24,6),
        COALESCE(MAX(f.cost_currency), 'USD'),
        COALESCE(errb.breakdown, '{}'::jsonb)
 FROM f
@@ -530,7 +530,7 @@ SELECT f.tenant_id, f.raw_model_name,
        COALESCE(SUM(f.cache_read_tokens), 0)::bigint,
        COALESCE(SUM(f.cache_write_tokens), 0)::bigint,
        COALESCE(SUM(f.credits_charged), 0)::bigint,
-       COALESCE(ROUND(SUM(f.cost_amount) * 100), 0)::bigint,
+       COALESCE(SUM(f.cost_amount) * 100, 0)::numeric(24,6),
        COALESCE(MAX(f.cost_currency), 'USD'),
        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY f.latency_ms)
                 FILTER (WHERE f.status = 'success'), 0)::bigint,

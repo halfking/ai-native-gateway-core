@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-19T18:13:25.193Z",
+  "exported_at": "2026-11-20T03:07:37.810Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -426,6 +426,38 @@
           "super": true,
           "hideForTenant": true,
           "piAnalysis": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/session-analytics",
+          "labelKey": "nav.item.sessionAnalytics",
+          "icon": "📊",
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/session-analytics/user-ranking",
+          "labelKey": "sessionAnalytics.nav.userRanking",
+          "icon": "👥",
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/session-analytics/agent-ranking",
+          "labelKey": "sessionAnalytics.nav.agentRanking",
+          "icon": "🧑‍💼",
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/session-analytics/model-ranking",
+          "labelKey": "sessionAnalytics.nav.modelRanking",
+          "icon": "🧠",
+          "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },

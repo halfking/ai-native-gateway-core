@@ -297,7 +297,7 @@ func mkSnap(scope Scope, key, date, model string, req, ok int64, br map[string]i
 		RequestCount: req, SuccessCount: ok, ErrorCount: req - ok,
 		InputTokens: req * 100, OutputTokens: req * 50,
 		CacheReadTokens: req * 10, CacheWriteTokens: req,
-		EstimatedCostCents: req * 7, Currency: "USD",
+		EstimatedCostCents: float64(req * 7), Currency: "USD",
 		CreditsCharged: req * 10, ProviderID: pid, TenantID: tenant,
 		PriceSnapshot: map[string]any{},
 	}

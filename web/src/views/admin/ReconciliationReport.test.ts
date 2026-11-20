@@ -7,6 +7,7 @@ import zhCN from '../../locales/zh-CN'
 import ReconciliationReport from './ReconciliationReport.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
 import { snapshotDatePresets, snapshotNotAfter } from '../../components/reconciliation/snapshotRange'
+import { systemTzDateStr } from '../../components/ui/kxDatePresets'
 import type { DimensionOptions, RangeReport } from '../../api/reportrollup'
 
 const getReportSummaryMock = vi.fn()
@@ -263,9 +264,14 @@ describe('ReconciliationReport', () => {
     expect(ids).toEqual(['today', 'yesterday', 'last7d', 'last14d', 'last30d', 'thisMonth', 'lastMonth'])
     expect(picker.props('maxSpanDays')).toBe(367)
     // notAfter = 今天：今天可进区间，未来不可选
-    expect(picker.props('notAfter')).toBe(new Date().toISOString().slice(0, 10))
+    // ★ 判据与生产同源（2026-11-20）：日切已改系统时区（时区设置轮），若测试
+    //   用 UTC 的 toISOString() 抄日期，则每天 0:00–8:00（CST）生产与判据分属
+    //   两个日历日 ⇒ 时间依赖型必红（本轮 08:00 前实测复现）。改引生产同源
+    //   systemTzDateStr() ⇒ 期望值与实现同一时区语义。
+    const today = systemTzDateStr()
+    expect(picker.props('notAfter')).toBe(snapshotNotAfter())
+    expect(snapshotNotAfter()).toBe(today)
     const last7 = presetRange('last7d')
-    const today = new Date().toISOString().slice(0, 10)
     expect(last7.end).toBe(today)
     expect(getReportSummaryMock.mock.calls[0][0]).toEqual(expect.objectContaining({ start: last7.start, end: last7.end }))
     expect(wrapper.text()).toContain(zhCN.reports.noSnapshots)

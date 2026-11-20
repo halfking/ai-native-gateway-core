@@ -2113,7 +2113,7 @@ func (w *NodeProbeWorker) ProbeSync(
 				// 2026-10-13 note below for why it must stay that way.
 				// 2026-11-07: evidence timestamp = direct completion (the
 				// freshness guard must not clobber a newer blacklist).
-				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "", directDone)
+				w.updateBindingAvailability(bookCtx, j.credID, j.model, true, "", 0, "", directDone, quotaVerdict{})
 				w.updateCredentialHealth(bookCtx, j.credID)
 				w.updateObservedState(bookCtx, j.credID, j.model, true, "", time.Now())
 				// 2026-10-13: the 2026-08-24 smart-fallback tentative
@@ -2152,8 +2152,18 @@ func (w *NodeProbeWorker) ProbeSync(
 					// keeps the generic 5-minute cooldown for a first 404 —
 					// the tick/queue paths escalate to the model-not-served
 					// horizon once their attempt counts confirm it.
-					w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail, time.Time{})
-					recoverAt := time.Now().Add(5 * time.Minute)
+					// ★ 2026-11-20（节点探测能力轮）：配额族是**凭据级**判决，
+					//   冷却时长取配额 verdict 的 horizon（与探针自己的下一跳
+					//   同源）⇒ 同步救援路径不再写「5 分钟」而探针 3 小时后
+					//   才动的假账。★ 同步路径**不写凭据配额面**：它不改
+					//   node_probe_state（没有连败上下文）⇒ 无法构成佐证。
+					syncVerdict, syncIsQuota := probeQuotaVerdict(res.direct)
+					w.updateBindingAvailability(bookCtx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail, time.Time{}, syncVerdict)
+					syncHorizon := 5 * time.Minute
+					if syncIsQuota {
+						syncHorizon = syncVerdict.horizon()
+					}
+					recoverAt := time.Now().Add(syncHorizon)
 					w.updateObservedState(bookCtx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 				}
 			}
@@ -2771,7 +2781,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	// sees the restored credential, not the stale cooling state from
 	// the original 5xx or transient failure.
 	if direct.ok {
-		w.updateBindingAvailability(ctx, credID, model, true, "", 0, "", directDone)
+		w.updateBindingAvailability(ctx, credID, model, true, "", 0, "", directDone, quotaVerdict{})
 		w.updateCredentialHealth(ctx, credID)
 		w.updateObservedState(ctx, credID, model, true, "", time.Now())
 		if w.recordCircuitSuccess != nil {
@@ -2877,10 +2887,26 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 				"err_code", direct.errCode,
 				"err_detail", direct.errDetail)
 		} else {
-			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt, direct.errDetail, time.Time{})
-			_, horizon := unavailableBindingHorizon(direct.errCode, attempt)
+			// ★ 2026-11-20（节点探测能力轮）：同一轮失败里**两个面**都要落账。
+			//   ① 绑定面（原有）：cmb.available=FALSE + unavailable_reason。
+			//   ② 凭据面（新增）：配额族裁决必须**凭据级**落账，否则凭据面仍然
+			//      显示 ready/ok（=「节点正常」）而模型不可路由 ⇒ 状态不匹配
+			//      （211 实测：apiclaude 凭据 56 对 claude-sonnet-5-5 回
+			//      403 INSUFFICIENT_BALANCE，业务面判 quota_permanent 并停用
+			//      凭据，探针面却只拉黑绑定 ⇒ 凭据看着正常、模型访问不了）。
+			//   ③ 冷却时长必须与**探针自己的下一跳**同源（quotaVerdict.horizon），
+			//      否则绑定面写着「5 分钟后复检」而探针行 3 小时后才动 ⇒
+			//      复检扫描被探针时钟挡住 ⇒ 实际恢复延迟数小时（更新延迟）。
+			verdict, isQuota := probeQuotaVerdict(direct)
+			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt, direct.errDetail, time.Time{}, verdict)
+			_, horizon := unavailableBindingHorizonForKind(direct.errCode, verdict, attempt)
 			recoverAt := time.Now().Add(horizon)
 			w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
+			// ★ 两次连续配额族失败才给凭据定罪（探针是合成流量，单次 403 不足以
+			//   摘掉整个凭据的所有模型）。
+			if isQuota && attempt >= 2 {
+				w.updateCredentialQuotaSurface(ctx, credID, verdict.kind, direct.errDetail)
+			}
 		}
 	}
 	if w.invalidateCandidateCache != nil {
@@ -3006,6 +3032,15 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// confirmed protocol failures park at the model-not-served recheck
 		// horizon instead of walking the generic ladder.
 		backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
+		// ★ 2026-11-20（节点探测能力轮）：配额族裁决**不能**走通用梯子。
+		//   余额已耗尽的节点，通用梯子每轮都注定失败（211 实测：凭据 56 的
+		//   20 个模型对各连败 175~489 次，每 3 小时一轮空打）⇒ 改为停放到
+		//   配额复检 horizon，恢复交给凭据级配额探针 + RearmCredentialFailures
+		//   事件回拉（提前充值即刻回拉，不降级恢复感知）。
+		//   ★ 与绑定面的冷却时长取自同一个 quotaVerdict ⇒ 两个面同一把尺。
+		if verdict, isQuota := probeQuotaVerdict(direct); isQuota {
+			backoff = probeBackoffForDirectOutcomeKind(verdict, direct.errCode, direct.rootCause, attempt)
+		}
 		if gatewaySide {
 			backoff = nodeProbeGatewaySideRetryDelay
 		} else if d, ok := quotaResetAlignedBackoff(ctx, w.db, credID, direct); ok {
@@ -4018,11 +4053,34 @@ func unavailableBindingHorizon(errCode string, attempt int) (reason string, hori
 	return errCode, 5 * time.Minute
 }
 
+// unavailableBindingHorizonForKind is the verdict-aware sibling of
+// unavailableBindingHorizon.
+//
+// ★ 2026-11-20（节点探测能力轮）：**绑定面的冷却时长必须与探针自己的下一跳
+// 同源**。此前绑定面恒定 5 分钟、而探针行按通用梯子 3 小时后才动 ⇒
+// ① 绑定面写的「5 分钟后复检」是**假账**（实际 3 小时后才会有人复检）；
+// ② 复检扫描（bg/credential_recovery.go recoverExpiredBindings）以探针行的
+// next_retry_at 为准（NOT EXISTS … next_retry_at > now()）⇒ 冷却到期那天
+// **没有人来复检** ⇒ 恢复被推迟数小时（更新延迟）。
+//
+// ⇒ 配额族（重探治不好的判决）统一用 quotaVerdict.horizon()：**两个面同一把尺**。
+func unavailableBindingHorizonForKind(errCode string, v quotaVerdict, attempt int) (reason string, horizon time.Duration) {
+	if isQuotaProbeKind(v.kind) {
+		return string(v.kind), v.horizon()
+	}
+	return unavailableBindingHorizon(errCode, attempt)
+}
+
 // updateBindingAvailability writes the probe verdict onto the shared binding
 // surface. evidenceAt is the SUCCESS evidence timestamp (direct-round
 // completion / business success time) used by healthyBindingSQL's freshness
 // guard; the failure branch ignores it (its own write stamps now()).
-func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int, errDetail string, evidenceAt time.Time) {
+//
+// verdict carries the probe's quota-family verdict (empty = not a quota
+// verdict). ★ 2026-11-20（节点探测能力轮）：失败分支的**冷却时长与绑定理由**
+// 由它决定 —— 配额族用配额停放/重置点 horizon（与探针自己的下一跳同源），
+// 其余族沿用 attempt-aware 的通用 horizon。
+func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int, errDetail string, evidenceAt time.Time, verdict quotaVerdict) {
 	if w == nil || w.db == nil {
 		return
 	}
@@ -4056,6 +4114,14 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 		return
 	}
 	reasonTag, horizon := unavailableBindingHorizon(reason, attempt)
+	// ★ 2026-11-20：配额族覆盖上面的通用 horizon —— 绑定面写的恢复时间必须
+	//   与探针自己的下一跳**同一个数**（否则绑定面写「5 分钟」、探针 3 小时
+	//   后才动 ⇒ 复检扫描被探针时钟挡住 ⇒ 实际恢复延迟数小时）。
+	//   绑定理由同步为 probe_quota_<kind> ⇒ 凭据级归因（与
+	//   auto_credential_% 同族）⇒ credentialhealth 的 F4 守卫认得它。
+	if isQuotaProbeKind(verdict.kind) {
+		reasonTag, horizon = string(verdict.kind), verdict.horizon()
+	}
 	_, _ = w.db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
 		SET available = FALSE,

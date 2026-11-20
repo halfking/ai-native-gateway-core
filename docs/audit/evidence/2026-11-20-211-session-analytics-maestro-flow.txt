@@ -1,0 +1,80 @@
+# 会话分析系统 5 页 · Maestro 第一层（flow）实跑证据
+# 目标：https://llm.itestu.cn（211 现役 2.6.1-f90451e5-20261120-211，槽 a @8781，git_sha=f90451e5 干净无 -dirty）
+# 采集时间：2026-11-20 11:33:32 +0800
+# flow：maestro/flows/16-session-analytics-system.yaml
+# 结论：rc=0 FAILED=0（全绿）
+# ────────────────────────────────────────────
+
+
+Web support is in Beta. We would appreciate your feedback!
+
+ > Flow 16-session-analytics-system
+Open ${BASE_URL}/dashboard... COMPLETED
+Tap on (Optional) "系统管理员"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 系统管理员
+Tap on (Optional) "退出登录"... WARNED
+
+
+ Warning: Element not found: Text matching regex: 退出登录
+Run _shared/login.yaml...
+  Open ${BASE_URL}/?login=1... COMPLETED
+  Assert that id: login-modal-title is visible... COMPLETED
+  Tap on id: login-username... COMPLETED
+  Erase 20 characters... COMPLETED
+  Input text ${ADMIN_USER}... COMPLETED
+  Tap on id: login-password... COMPLETED
+  Erase 40 characters... COMPLETED
+  Input text ${ADMIN_PASSWORD}... COMPLETED
+  Press Enter key... COMPLETED
+  Assert that id: login-modal-title is not visible... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+  Open ${BASE_URL}/dashboard... COMPLETED
+  Assert that "系统管理员" is visible... COMPLETED
+Run _shared/login.yaml... COMPLETED
+Open ${BASE_URL}/admin/session-analytics... COMPLETED
+Assert that "会话总数" is visible... COMPLETED
+Assert that "会话分析" is visible... COMPLETED
+Assert that "统计区间" is visible... COMPLETED
+Assert that "刷新数据" is visible... COMPLETED
+Assert that "会话总数" is visible... COMPLETED
+Assert that "活跃人员" is visible... COMPLETED
+Assert that "活跃项目" is visible... COMPLETED
+Assert that "活跃任务" is visible... COMPLETED
+Assert that "会话趋势" is visible... COMPLETED
+Assert that "Token 趋势" is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/user-ranking... COMPLETED
+Assert that "排名" is visible... COMPLETED
+Assert that "统计区间" is visible... COMPLETED
+Assert that "刷新数据" is visible... COMPLETED
+Assert that "排名" is visible... COMPLETED
+Assert that ".*人员.*" is visible... COMPLETED
+Assert that "邮箱" is visible... COMPLETED
+Assert that "会话数" is visible... COMPLETED
+Assert that "项目数" is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/user-ranking/${SESSION_OWNER}... COMPLETED
+Assert that "当前排名" is visible... COMPLETED
+Assert that "统计区间" is visible... COMPLETED
+Assert that "刷新数据" is visible... COMPLETED
+Assert that "返回人员排行" is visible... COMPLETED
+Assert that "当前排名" is visible... COMPLETED
+Assert that "会话趋势" is visible... COMPLETED
+Assert that "任务趋势" is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/agent-ranking... COMPLETED
+Assert that ".*智能体.*" is visible... COMPLETED
+Assert that "统计区间" is visible... COMPLETED
+Assert that "刷新数据" is visible... COMPLETED
+Assert that "排名" is visible... COMPLETED
+Assert that ".*智能体.*" is visible... COMPLETED
+Assert that "使用人数" is visible... COMPLETED
+Assert that "任务数" is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/model-ranking... COMPLETED
+Assert that "供应商" is visible... COMPLETED
+Assert that "统计区间" is visible... COMPLETED
+Assert that "刷新数据" is visible... COMPLETED
+Assert that "排名" is visible... COMPLETED
+Assert that ".*模型.*" is visible... COMPLETED
+Assert that "供应商" is visible... COMPLETED
+Assert that "请求数" is visible... COMPLETED
+Assert that "成功率" is visible... COMPLETED

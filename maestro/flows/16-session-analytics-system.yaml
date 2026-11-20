@@ -1,0 +1,132 @@
+# 16-session-analytics-system.yaml —— 会话分析系统 5 页逐页验证（2026-11-20 交付轮）
+#
+# 覆盖对象（本轮新增的 5 个页面 + 后端 7 端点）：
+#   /admin/session-analytics                        → SessionAnalyticsOverviewView（总览）
+#   /admin/session-analytics/user-ranking           → SessionAnalyticsUserRankingView（人员排行）
+#   /admin/session-analytics/user-ranking/:owner    → SessionAnalyticsUserDetailView（人员详情）
+#   /admin/session-analytics/agent-ranking          → SessionAnalyticsAgentRankingView（智能体排行）
+#   /admin/session-analytics/model-ranking          → SessionAnalyticsModelRankingView（模型排行）
+#
+# ★ 本 flow 的存在理由：owner 需求＝「为会话分析的 5 个页面补做 Maestro/E2E 真实部署验证」。
+#   此前这 5 页**从未被浏览器打开过**——单元测试覆盖的是 API 形状与组件渲染，
+#   但「页面在真实部署上能不能打开、数据能不能出来、点进去对不对」是**另一条断言**。
+#   （与 12-live-stage-tree / 13-session-analytics-users 同一理由：
+#     路由存在 ≠ 页面能打开；页面能打开 ≠ 数据对得上。）
+#
+# ★ 与上游 13-flow 的分工（两套系统并存，路径不重叠）：
+#   上游 13-flow 管的是 `/admin/session-analytics/users|clients|tasks`（用户画像族，
+#   数据源 request_logs 窗口口径）；
+#   本 flow 管的是 `/admin/session-analytics` 与 `.../user-ranking|agent-ranking|model-ranking`
+#   （本轮交付的聚合分析族，数据源 981 的 4 个聚合物化视图）。
+#   ⇒ 两套路由**并存**（前者 users，后者 user-ranking），不构成路径冲突。
+#
+# ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（13-flow 头注同源）：
+#   ① `text:` 是**全匹配正则** ⇒ 读数会变的元素一律 `.*….*`；
+#   ② `id:` 选得到 data-testid 但选不到 <button> ⇒ 按钮交互走 text:；
+#   ③ pressKey Escape 在 web 驱动不支持；
+#   ④ 视口必须 1440x1400（run-local.sh 传入）⇒ 折叠线以下的内容断言不到；
+#   ⑤ **宽表横向滚动在 DataTable 的内部容器里**（`.app-data-table__scroller`
+#      的 overflow-x:auto）⇒ 右侧列不在视口内 ⇒ 本 flow 只断**左侧列**，
+#      右侧列与折叠线下的内容归第二层 CDP 探针
+#      `maestro/tools/assert-session-analytics.mjs`（与 13-flow 的
+#      `assert-users-usage.mjs` 同一分工）。
+#
+# ★ 「数据已到」的判据：断**数据卡/表头**而不是「页面加载成功」——
+#   「正在加载会话分析数据」是加载态占位符，它非空但不代表数据到了。
+#   本 flow 统一用各页**数据区特有的文案**作为落定判据。
+#
+# ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
+#   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录（三段判据见 _shared/login.yaml 头注）─────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+
+# ═══ ② 总览页 ═══════════════════════════════════════════════════════════
+# 落定判据＝「会话总数」数据卡（不是加载态占位符）。
+# 页面特有元素：统计区间控件 + 刷新数据按钮 + 11 张数据卡 + 3 个趋势段 + 3 个榜单。
+- openLink: ${BASE_URL}/admin/session-analytics
+- extendedWaitUntil:
+    visible: "会话总数"
+    timeout: 30000
+- assertVisible: "会话分析"
+- assertVisible: "统计区间"
+- assertVisible: "刷新数据"
+- assertVisible: "会话总数"
+- assertVisible: "活跃人员"
+- assertVisible: "活跃项目"
+- assertVisible: "活跃任务"
+- assertVisible: "会话趋势"
+- assertVisible: "Token 趋势"
+
+# ═══ ③ 人员排行页 ═══════════════════════════════════════════════════════
+# 落定判据＝「排名」列头（该页独有的表头）。
+# ★ 「人员」表头是**可排序按钮**（`<button class="sa-sort">{{人员}}<span v-if>▲</span></button>`）
+#   ⇒ Vue 的 whitespace:condense 会把文本节点与条件 span 之间的换行折成**一个空格**
+#   ⇒ DOM 文本是「人员 **」**（带尾随空格，实测层级快照原文）⇒ `text:` 全匹配「人员」必红。
+#   ⇒ 可排序表头一律写成 `.*….*`。这是**断言写法**问题，不是产品缺陷
+#   （页面上显示的就是「人员」；尾随空格只存在于 DOM 文本节点里）。
+- openLink: ${BASE_URL}/admin/session-analytics/user-ranking
+- extendedWaitUntil:
+    visible: "排名"
+    timeout: 30000
+- assertVisible: "统计区间"
+- assertVisible: "刷新数据"
+- assertVisible: "排名"
+- assertVisible: ".*人员.*"
+- assertVisible: "邮箱"
+- assertVisible: "会话数"
+- assertVisible: "项目数"
+
+# ═══ ④ 人员详情页（动态段：owner 由真数据解析，见 run-session-analytics.sh）══
+# 落定判据＝「当前排名」数据卡（详情页独有的指标）。
+- openLink: ${BASE_URL}/admin/session-analytics/user-ranking/${SESSION_OWNER}
+- extendedWaitUntil:
+    visible: "当前排名"
+    timeout: 30000
+- assertVisible: "统计区间"
+- assertVisible: "刷新数据"
+- assertVisible: "返回人员排行"
+- assertVisible: "当前排名"
+- assertVisible: "会话趋势"
+- assertVisible: "任务趋势"
+
+# ═══ ⑤ 智能体排行页 ═════════════════════════════════════════════════════
+# 落定判据＝「智能体」列头（该页独有的表头）。
+- openLink: ${BASE_URL}/admin/session-analytics/agent-ranking
+- extendedWaitUntil:
+    visible: ".*智能体.*"
+    timeout: 30000
+- assertVisible: "统计区间"
+- assertVisible: "刷新数据"
+- assertVisible: "排名"
+- assertVisible: ".*智能体.*"
+- assertVisible: "使用人数"
+- assertVisible: "任务数"
+
+# ═══ ⑥ 模型排行页 ═══════════════════════════════════════════════════════
+# 落定判据＝「供应商」列头（该页独有的表头）。
+- openLink: ${BASE_URL}/admin/session-analytics/model-ranking
+- extendedWaitUntil:
+    visible: "供应商"
+    timeout: 30000
+- assertVisible: "统计区间"
+- assertVisible: "刷新数据"
+- assertVisible: "排名"
+- assertVisible: ".*模型.*"
+- assertVisible: "供应商"
+- assertVisible: "请求数"
+- assertVisible: "成功率"

@@ -66,6 +66,15 @@ const ModelCredibilityView = () => import('./views/ModelCredibilityView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
 const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
 const PIAnalysisView = () => import('./views/admin/PIAnalysisView.vue')
+// 会话分析系统（2026-11-20）：后端 admin/session_analytics 的 7 个端点。
+// ★ 权限闸门用 requiresAuth 而非 requiresSuper：后端 isAdminFromRequest 放行
+//   super_admin / tenant_admin / admin_key，且专门为 tenant_admin 做了租户隔离
+//   ⇒ 前端粗粒度闸门不该把 tenant_admin 挡在门外（权限真源在后端）。
+const SessionAnalyticsOverviewView = () => import('./views/admin/session-analytics/SessionAnalyticsOverviewView.vue')
+const SessionAnalyticsUserRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsUserRankingView.vue')
+const SessionAnalyticsUserDetailView = () => import('./views/admin/session-analytics/SessionAnalyticsUserDetailView.vue')
+const SessionAnalyticsAgentRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue')
+const SessionAnalyticsModelRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsModelRankingView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
@@ -341,6 +350,12 @@ export const router = createRouter({
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
     { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresSuper: true } },
     { path: '/admin/pi-analysis', component: PIAnalysisView, meta: { requiresSuper: true } },
+    // 会话分析（2026-11-20）：总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行
+    { path: '/admin/session-analytics', name: 'session-analytics-overview', component: SessionAnalyticsOverviewView, meta: { requiresAuth: true } },
+    { path: '/admin/session-analytics/user-ranking', name: 'session-analytics-user-ranking', component: SessionAnalyticsUserRankingView, meta: { requiresAuth: true } },
+    { path: '/admin/session-analytics/user-ranking/:owner', name: 'session-analytics-user-detail', component: SessionAnalyticsUserDetailView, meta: { requiresAuth: true } },
+    { path: '/admin/session-analytics/agent-ranking', name: 'session-analytics-agent-ranking', component: SessionAnalyticsAgentRankingView, meta: { requiresAuth: true } },
+    { path: '/admin/session-analytics/model-ranking', name: 'session-analytics-model-ranking', component: SessionAnalyticsModelRankingView, meta: { requiresAuth: true } },
     { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },

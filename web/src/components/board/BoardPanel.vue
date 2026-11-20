@@ -125,9 +125,11 @@ const trendExplorerQuery = computed(() => {
       :range-value="rangeValue"
       :loading="loading"
       :source="board?.source"
+      :include-probes="includeProbes"
       @apply-range="onApplyRange"
       @refresh="boardState.load()"
       @more="router.push({ path: '/admin/usage-trends', query: trendExplorerQuery })"
+      @update:include-probes="onProbeScopeChange"
     >
       <template #ops>
         <BoardOpsBar :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
@@ -136,9 +138,8 @@ const trendExplorerQuery = computed(() => {
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />
     <BoardMiniRow :board="board" :time-range="timeRange" :loading="loading" />
     <BoardProviderSection :board="board" :time-range="timeRange" :time-query="timeQuery" :loading="loading" />
-    <!-- 2026-11-20 口径对齐轮：探测口径切换放在下方（非紧凑）筛选条——
-         顶部合并行的单行高度契约（2026-11-20 合并行轮）不动，
-         英雄区顶部的「含探测」徽标披露当前口径。 -->
+    <!-- 2026-11-20 口径对齐轮：探测口径切换两条筛选条都有（同一份状态的两个
+         入口，与 BoardTimeRange 同一纪律）；1440 视口实测顶部行仍单行。 -->
     <BoardFilterBar
       :time-range="timeRange"
       :range-value="rangeValue"

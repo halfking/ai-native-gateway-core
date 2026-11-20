@@ -11,7 +11,7 @@
 //   区间含今天时今日无快照由覆盖行披露（useReconciliationPage 的
 //   todayPendingHint），不再用「把今天从预设里抠掉」来掩盖。
 import type { KxDateRange, KxDateRangePreset } from '../ui/kx-date-types'
-import { makeDateRangePresets, rangeFromSpanDays } from '../ui/kxDatePresets'
+import { makeDateRangePresets, rangeFromSpanDays, systemTzDateStr } from '../ui/kxDatePresets'
 
 /** 预设 = 站内标准 date 精度预设（今天/昨天/近7天/近14天/近30天/本月/上月）。 */
 export function snapshotDatePresets(): KxDateRangePreset[] {
@@ -24,8 +24,11 @@ export function defaultSnapshotRange(): [string, string] {
   return [range.start, range.end]
 }
 
-/** 可选的最晚一天：今天。今天可进区间（数据侧由覆盖行披露）；未来日期不可选。 */
+/** 可选的最晚一天：今天。今天可进区间（数据侧由覆盖行披露）；未来日期不可选。
+ *  ★ 日切口径统一（2026-11-20 时区设置轮补口）：旧实现按 UTC 日历日取「今天」，
+ *  而同文件的预设区间走 kxDatePresets 的系统时区日切 ⇒ CST 0:00–8:00 窗口内
+ *  两者分属两个日历日（notAfter 落后区间端一天，未来一天被误放行）。统一改
+ *  系统时区判据（systemTzDateStr），与本文件其余口径同源。 */
 export function snapshotNotAfter(now = Date.now()): string {
-  const d = new Date(now)
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString().slice(0, 10)
+  return systemTzDateStr(now)
 }

@@ -28,25 +28,35 @@
 
 ### 1.1 实测统计
 
+> ★ **2026-11-20 口径重算（会话分析前端交付轮）**：本表原先记的是
+> 「`router.ts:200-374` 里逐条计数 = 107」——**那个行区间早已失效**
+> （`routes:` 数组现在在 229–435 行），且上游在此期间新增了路由
+> （`/admin/session-analytics/users|clients|tasks|filter-options`、
+> `/operations/{sales,marketing,market-prices,price-compare}`、`/help`、
+> `/public/quote/:token` 等），本轮又新增 5 条（会话分析聚合族）。
+> ⇒ 下表按**当前** `routes:` 数组重算，口径写在「来源」列里，可复核。
+
 | 指标 | 数值 | 来源 |
 |---|---|---|
-| `path:` 条目 | **107** | `web/src/router.ts` `routes:` 数组里逐条计数（`router.ts:200-374`） |
-| `externalMaintainRedirect(...)` 调用 | **5** | `router.ts:354-358`（`/ops/licenses`、`/ops/faults`、`/ops/autoupdate`、`/ops/center`、`/ops`） |
-| **运行时路由总数** | **112** | 107 + 5 |
-| 其中纯 redirect（没有自己的组件，只跳走） | **18** | 18 条都带 `redirect:` 字段（其中 1 条是 catch-all `/:pathMatch(.*)*`） |
-| 其中带命名动态段（`:param`） | **17** | 见 §1.3 |
-| 其中 glob 兜底（`:pathMatch(.*)*`） | **2** | `/maintain/:pathMatch(.*)*`（:351）、`/:pathMatch(.*)*`（:374） |
-| **不需要登录**（`meta.public === true`） | **16** | 含 5 条「重定向到公开页」的路由（见下方口径说明） |
-| **需要登录** | **96** | 112 − 16 |
+| `path:` 条目 | **125** | `web/src/router.ts` 的 `routes:` 数组（行 229–435）**花括号配平**逐条计数。★ 不能用正则数：`redirect: { path: '/x' }` 里的 `path:` 也会被数上（正则会数出 136，虚高 11） |
+| `externalMaintainRedirect(...)` 调用 | **5** | `router.ts`（`/ops/licenses`、`/ops/faults`、`/ops/autoupdate`、`/ops/center`、`/ops`） |
+| **运行时路由总数** | **130** | 125 + 5 |
+| 其中纯 redirect（没有自己的组件，只跳走） | **19** | 数组内带 `redirect:` 的条目（其中 1 条是 catch-all `/:pathMatch(.*)*`） |
+| 其中带命名动态段（`:param`） | **19** | 见 §1.3 |
+| 其中 glob 兜底（`:pathMatch(.*)*`） | **2** | `/maintain/:pathMatch(.*)*`、`/:pathMatch(.*)*` |
+| **不需要登录** | **17** | 12 条 `meta.public === true`（含 3 条 dev-only `/dev/*`）+ 5 条「自身无 `meta`、但重定向到公开页」的路由（见下方口径说明） |
+| **需要登录** | **113** | 130 − 17 |
 
-需要登录的 96 条，按 `router.ts` 的 `beforeEach` 再分档：
+需要登录的 113 条，按 `router.ts` 的 `beforeEach` 再分档：
 
 | 档位 | 条数 | 守卫出处 |
 |---|---|---|
-| 任意登录用户（目标路由无 `meta` 权限位） | 41 | `router.ts:465` `if (!to.meta.public && !isAuthed())` |
-| `requiresSuper`（仅 super_admin） | 43 | `router.ts:476` |
-| `requiresPlatformOps`（super_admin + default 租户） | 10 | `router.ts:492` |
-| `requiresProviderConsole`（super_admin 或 default 租户 tenant_admin） | 2 | `router.ts:481` |
+| 任意登录用户（目标路由无 `meta` 权限位，**或**显式 `requiresAuth`） | **53** | `router.ts` 的 `isAuthed()` 早退（无 meta 的 35 + `requiresAuth` 的 18） |
+| `requiresSuper`（仅 super_admin） | **47** | `router.ts` 的 super 闸 |
+| `requiresPlatformOps`（super_admin + default 租户） | **11** | `router.ts` 的 platformOps 闸 |
+| `requiresProviderConsole`（super_admin 或 default 租户 tenant_admin） | **2** | `router.ts` 的 providerConsole 闸 |
+
+> 53 + 47 + 11 + 2 = **113** ✔ 与「需要登录 113」自洽（可作口径自检）。
 
 > ★ **计数口径（重要，和「直接看 `meta`」会差 5 条）**：
 > vue-router 4 在 `pushWithRedirect()` 里**先**执行 `handleRedirectRecord()`、**后**才跑导航守卫
@@ -60,13 +70,13 @@
 > 「`component: {render: () => null}` + `beforeEnter` 里 `window.location.replace`」的路由记录（`router.ts:117-127`），
 > 所以守卫按**它们自己**的 `meta`（无 ⇒ 需要登录）判，但还会被 `router.ts:488` 的 `startsWith('/ops')` 规则改写。
 >
-> 16 条公开路由清单：`/login`、`/forbidden`、`/`、`/bootstrap`、`/customer/update-activate`、
+> 17 条公开路由清单：`/login`、`/forbidden`、`/`、`/bootstrap`、`/customer/update-activate`、
 > `/customer/site`、`/customer/activate`、`/customer/license`、`/customer/agreement`、`/customer/offline-activation`、
-> `/maintain`、`/maintain/:pathMatch(.*)*`、`/:pathMatch(.*)*`、以及 3 条 dev-only 的 `/dev/*`。
+> `/maintain`、`/maintain/:pathMatch(.*)*`、`/:pathMatch(.*)*`、`/public/quote/:token`、以及 3 条 dev-only 的 `/dev/*`。
 
 ### 1.2 纯 redirect 路由（18 条）
 
-这 18 条**没有自己的组件**，断言点落在它们跳转到的目标页面上（这样「跳对了」和「目标页渲染出来了」是同一条证据）。
+这 19 条**没有自己的组件**，断言点落在它们跳转到的目标页面上（这样「跳对了」和「目标页渲染出来了」是同一条证据）。
 
 | 源路由 | 跳转目标 | router.ts 行 |
 |---|---|---|
@@ -83,13 +93,14 @@
 | `/maas/orders/:id` | `/tenant/orders/:id` | 275 |
 | `/maas/usage` | `/tenant/usage` | 276 |
 | `/routing` | `/routing-v2` | 281 |
+| `/operations/price-compare` | `/model-pricing` | 380（2026-11-19 合并轮：价格对比面并入比较与定价页） |
 | `/customer/site` | `/customer/update-activate` | 343 |
 | `/customer/activate` | `/customer/update-activate` | 344 |
 | `/customer/license` | `/customer/update-activate` | 345 |
 | `/customer/agreement` | `/customer/update-activate` | 346 |
-| `/:pathMatch(.*)*` | `/` | 374 |
+| `/:pathMatch(.*)*` | `/` | 435 |
 
-### 1.3 带命名动态段的路由（17 条）
+### 1.3 带命名动态段的路由（19 条）
 
 每条在 flow 里都用**一个具体的样例 id** 占位，占位值可用环境变量覆盖（对照表见 §5）。
 
@@ -106,6 +117,8 @@
 | `/admin/session-analytics/users/:owner` | `owner` | `/admin/session-analytics/users/${SESSION_OWNER}` |
 | `/admin/session-analytics/clients/:id` | `id` | `/admin/session-analytics/clients/${CLIENT_ID}` |
 | `/admin/session-analytics/tasks/:id` | `id` | `/admin/session-analytics/tasks/${TASK_ID}` |
+| `/admin/session-analytics/user-ranking/:owner` | `owner` | `/admin/session-analytics/user-ranking/${SESSION_OWNER}`（★ 2026-11-20 会话分析前端轮新增；同名的 `${SESSION_OWNER}` 变量由 `run-session-analytics.sh` 从**真数据**解析） |
+| `/public/quote/:token` | `token` | `/public/quote/${QUOTE_TOKEN}` |
 | `/admin/approvals/:id` | `id` | `/admin/approvals/${APPROVAL_ID}` |
 | `/admin/sessions/:id` | `id` | `/admin/sessions/${SESSION_ID}` |
 | `/admin/request-actions/:id` | `id` | `/admin/request-actions/${REQUEST_ID}` |
@@ -132,15 +145,23 @@
 | `maestro/flows/09-ops-maintain.yaml` | 运维中心外跳 / maintain 兜底 | 6 | 是 | `/ops/*` 全页外跳到 maintain SPA；Maintain 不可用时守卫改写到 `/customer/update-activate`。 |
 | `maestro/flows/90-dev-only.yaml` | 仅 dev 构建存在的路由 | 3 | 否 | router.ts 里 `import.meta.env.DEV` 包裹的三条路由，生产构建不注册 ⇒ 单独成 flow，默认不参与批量跑。 |
 | `maestro/flows/12-live-stage-tree.yaml` | 请求阶段树（`/live2`）+ `/live` 顶栏入口 | 2 | 是 | 阶段树页 + `/live` 页的「请求阶段树」顶栏入口。★ 2026-11-17 新增：`/live2` 此前**零 Maestro 覆盖**（路由在、页面从没被浏览器验过）。 |
+| `maestro/flows/13-session-analytics-users.yaml` | 会话分析「用户画像」族（`/admin/session-analytics/users`） | 2 | 是 | ★ 2026-11-20 数字出处轮：用户画像列表页 + 详情页（**上游资产**，与本轮的聚合分析族路径不重叠）。openLink 步数 3。 |
+| `maestro/flows/13-board-operational.yaml` | 运营与运维总览（`/admin/board-operational`） | 1 | 是 | openLink 步数 1。 |
+| `maestro/flows/14-user-analytics-enhancement.yaml` | 用户分析增强（画像下钻） | 2 | 是 | openLink 步数 2。 |
+| `maestro/flows/14-stats-consistency-test.yaml` | 统计口径一致性 | 5 | 是 | openLink 步数 5。 |
+| `maestro/flows/15-board-probe-scope.yaml` | 看板探测口径筛选 | 2 | 是 | openLink 步数 2。 |
+| `maestro/flows/16-session-analytics-system.yaml` | **会话分析系统聚合族**（总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行） | 5 | 是 | ★ 2026-11-20 会话分析前端交付轮新增：本轮 5 个新页面的**第一层**（浏览器真的打开并渲染）。第二层数字对拍在 `maestro/tools/assert-session-analytics.mjs`（两层分工见该 flow 头注）。openLink 步数 6。 |
 | `maestro/flows/_shared/login.yaml` | 共享登录流 | 1（`/login`） | — | 被其它 flow 用 `runFlow` 调 |
 
-合计：**112 条路由 = 112 条在 11 个功能 flow 里 + 1 条 `/login` 在共享登录流里**。
+合计：**运行时路由 130 条**（§1.1 口径）。
 
-> ★ 2026-11-17 订正：此前记的是「111 条在 10 个功能 flow 里」——
->   实际有**一条路由没被任何 flow 覆盖**：`/live2`（请求阶段树）。路由在 `router.ts`
->   里、页面也在，但**从没被浏览器打开过** ⇒ 「路由存在」被当成了「功能可用」。
->   本轮补 `12-live-stage-tree.yaml` 后覆盖数才与路由数对齐。
->   ★ 通用式：**「清单声称全覆盖」与「真的全覆盖」是两条独立的断言** ——
+> ★ **2026-11-20 订正（会话分析前端交付轮）**：原记「**112 条路由 = 112 条在 11 个功能 flow 里**
+>   + 1 条 `/login` 在共享登录流里」——**已不成立**，两个原因：
+>   ① 路由数随上游增长到 **130**（上游新增 8 条 + 本轮 5 条，见 §1.1 的重算表）；
+>   ② `13-` / `14-` / `15-` 三个 flow **此前根本没登记进本表**（连同它们覆盖的路由）。
+> ⇒ 本轮**只承诺**「`16-session-analytics-system.yaml` 覆盖的 5 条被浏览器打开过」；
+>   其余路由的 flow 覆盖情况**未逐条复核**（登记为遗留项，见实施报告 §七）。
+>   ★ 通用式（沿用 2026-11-17 的那条）：**「清单声称全覆盖」与「真的全覆盖」是两条独立的断言** ——
 >     清单对得上数，不等于每条路由都被浏览器开过（少一条时两边都会自洽地绿）。
 
 > `/` 被访问了两次：**访客态**（在 `01-public-guest`，断言落地页 hero 文案）与**登录态**（在 `02-overview-live`，断言仪表盘标题）。

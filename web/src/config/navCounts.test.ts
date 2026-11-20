@@ -49,9 +49,9 @@ const DOC_DIR = join(REPO, 'docs/03-design/02-feature-design')
 // ─────────────────────────────────────────────────────────────
 
 /** 专家面菜单条目总数。 */
-const EXPECTED_ITEMS =63
+const EXPECTED_ITEMS =67
 /** 落地路径数。比条目少 1：「自动更新」跨两组重复挂载，算两条目一条路径。 */
-const EXPECTED_PATHS =62
+const EXPECTED_PATHS =66
 /** 顶栏分组数。 */
 const EXPECTED_GROUPS = 8
 /** 顶层主链接数（不进分组，直接挂顶栏）。 */
@@ -59,8 +59,10 @@ const EXPECTED_PRIMARY = 3
 /** 简易模式直接露出的既有入口数（4 直链 + 10 分组下拉；2026-11-17 F-07 后「请求」组含 /tenant/usage）。 */
 const EXPECTED_EXPOSED = 14
 /** 收进「高级」折叠组的条数（2026-11-17 F-07 把 /tenant/usage 提升进「请求」组后 50→49；
- *  2026-11-17 PI 轮 /admin/pi-analysis 落地后 49→50）。 */
-const EXPECTED_FOLDED =49
+ *  2026-11-17 PI 轮 /admin/pi-analysis 落地后 49→50；
+ *  2026-11-20 会话分析轮 4 项（总览/人员/智能体/模型排行）落地后 50→53）。
+ *  ★ 口径：FOLDED = ITEMS − EXPOSED（落在「高级折叠」桶的条目数）。 */
+const EXPECTED_FOLDED =53
 /** 简易模式可见页面数（13 个既有入口 + 1 个新建简化页 `/usage`）。 */
 const EXPECTED_VISIBLE_PAGES = 14
 
@@ -334,11 +336,11 @@ const COUNT_RULES: { label: string; re: RegExp; expected: number }[] = [
  * 分组规模变了而总数没变，正是上次漂移的形态之一。
  */
 const DECOMPOSITION_RULE = {
-  // 「8 个分组 60 项 + 顶层 3 项」与「8 组 60 项 + 顶层 3 项 = 63」两种写法都要认，
+  // 「8 个分组 64 项 + 顶层 3 项」与「8 组 64 项 + 顶层 3 项 = 67」两种写法都要认，
   // 「= 总数」可有可无（文档头不带、页脚带）。
   re: /(\d+)\s*(?:个分组|组)\s*(\d+)\s*项\s*\+\s*顶层\s*(\d+)\s*项(?:\s*=\s*(\d+))?/g,
   groups: EXPECTED_GROUPS,
- groupItems:60,
+ groupItems:64,
   primaryItems: EXPECTED_PRIMARY,
   total: EXPECTED_ITEMS,
 }

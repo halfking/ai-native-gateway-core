@@ -341,7 +341,7 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 		t.Fatalf("BuildRangeReport provider: %v", err)
 	}
 	if repP.Totals.RequestCount != 6 || repP.Totals.EstimatedCostCents != 1830 {
-		t.Errorf("provider totals = %d req / %d cents, want 6/1830 (5.0+9.5+0.5+0+3.3+0 分×100… 见 seed)",
+		t.Errorf("provider totals = %d req / %v cents, want 6/1830 (5.0+9.5+0.5+0+3.3+0 分×100… 见 seed)",
 			repP.Totals.RequestCount, repP.Totals.EstimatedCostCents)
 	}
 

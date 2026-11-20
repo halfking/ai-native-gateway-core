@@ -2,7 +2,7 @@
 //
 // 这道门守两件事：
 //   ① 手册必须覆盖约定的主题章节（下载/安装/部署/供应商/凭据/租户/用户/
-//      API Key/客户端调用/常见故障/数据重置）—— 少一章即红；
+//      API Key/客户端调用/统计与分析/常见故障/数据重置）—— 少一章即红；
 //   ② 手册页真的把正文渲染出来（标题、目录、代码块、表格），且搜索能筛。
 // 另外单独钉住「安装后的激活」与「数据重置」两节的关键契约（端点、令牌、
 // 保留谓词），避免日后改写手册时把可执行的操作细节删掉。
@@ -14,7 +14,7 @@ import { testI18n } from '../test-utils/i18n'
 import { parseMarkdown } from '../lib/markdown'
 import manualSource from '../../content/help-manual.zh-CN.md?raw'
 
-/** 手册必须覆盖的十个主题（顺序即目录顺序）。 */
+/** 手册必须覆盖的十一个主题（顺序即目录顺序）。 */
 const REQUIRED_CHAPTERS = [
   '1. 下载',
   '2. 安装',
@@ -25,8 +25,9 @@ const REQUIRED_CHAPTERS = [
   '7. 用户管理',
   '8. API Key 设置',
   '9. 客户端调用',
-  '10. 常见故障处理',
-  '11. 数据重置',
+  '10. 统计与分析',
+  '11. 常见故障处理',
+  '12. 数据重置',
 ]
 
 const chapters = parseMarkdown(manualSource)
@@ -34,7 +35,7 @@ const chapters = parseMarkdown(manualSource)
   .map((b) => b.text)
 
 describe('帮助手册正文覆盖度', () => {
-  it('包含约定的十个主题章节', () => {
+  it('包含约定的十一个主题章节', () => {
     for (const chapter of REQUIRED_CHAPTERS) {
       expect(chapters).toContain(chapter)
     }
@@ -74,7 +75,7 @@ describe('帮助手册正文覆盖度', () => {
 })
 
 /**
- * 新增两节的结构钉：post-install activation (2.6) 与 data reset (ch. 11)。
+ * 新增两节的结构钉：post-install activation (2.6) 与 data reset (ch. 12)。
  *
  * ★ 断言一律用 ASCII 锚点（端点路径 / 标题前缀 / 计数），**不写中文字面量**：
  *   src/** 的硬编码中文计数是「只许降不许升」的棘轮门（hardcoded_cjk），
@@ -82,7 +83,7 @@ describe('帮助手册正文覆盖度', () => {
  *   章节存在性用「前缀 + 计数」钉，操作契约用「端点路径 / 关键字」钉。
  */
 const ACTIVATION_SECTION_PREFIX = '2.6'
-const DATA_RESET_CHAPTER_PREFIX = '11.'
+const DATA_RESET_CHAPTER_PREFIX = '12.'
 const DATA_RESET_MIN_SECTIONS = 7
 
 /** 数据重置三步端点 + 令牌 + 保留谓词 + 审计留痕（全部 ASCII）。 */
@@ -116,7 +117,7 @@ const ACTIVATION_CONTRACT = [
 ]
 
 /**
- * 排障章节（10.4 请求失败 / 10.5 模型不可访问）的契约锚点。
+ * 排障章节（11.4 请求失败 / 11.5 模型不可访问）的契约锚点。
  *
  * ★ 同样只用 ASCII：端点路径、读面视图名、诊断日志标记、CLI 工具名。
  * ★ 钉的是「可执行细节不许被改写掉」——这些是值班真正要敲的东西。
@@ -195,8 +196,8 @@ const TROUBLESHOOT_LIVE_CALIBRATION = [
   'installed_startup_migrations.tsv',
 ]
 
-/** 排障章节的小节前缀（10.2 / 10.4 / 10.5 是重点三节）。 */
-const TROUBLESHOOT_SECTION_PREFIXES = ['10.2 ', '10.4 ', '10.5 ']
+/** 排障章节的小节前缀（11.2 / 11.4 / 11.5 是重点三节）。 */
+const TROUBLESHOOT_SECTION_PREFIXES = ['11.2 ', '11.4 ', '11.5 ']
 
 describe('troubleshooting sections', () => {
   const blocks = parseMarkdown(manualSource)
@@ -440,7 +441,7 @@ describe('post-install activation and data reset sections', () => {
     .filter((b): b is Extract<typeof b, { kind: 'heading' }> => b.kind === 'heading' && b.level === 2)
     .map((b) => b.text)
 
-  /** 第 11 章下的 h3 小节数（遇到下一个 h2 即停）。 */
+  /** 第 12 章下的 h3 小节数（遇到下一个 h2 即停）。 */
   function sectionCountUnder(chapterPrefix: string): number {
     let inside = false
     let count = 0
