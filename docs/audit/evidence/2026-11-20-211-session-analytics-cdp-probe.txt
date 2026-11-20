@@ -1,12 +1,12 @@
 # 会话分析系统 5 页 · 第二层 CDP 探针实跑证据
-# 目标：https://llm.itestu.cn（211 现役 2.6.1-a6a16d21-20261120-211，槽 a @8781，git_sha=a6a16d21 干净无 -dirty）
-# 采集时间：2026-11-20 10:50:12 +0800
+# 目标：https://llm.itestu.cn（211 现役 2.6.1-65876d5c-20261120-211，槽 a @8781，git_sha=65876d5c 干净无 -dirty）
+# 采集时间：2026-11-20 11:13:19 +0800
 # 探针：maestro/tools/assert-session-analytics.mjs（判定口径走 maestro/tools/result.mjs）
 # 结论：RESULT: PASS（53 条）
 # ────────────────────────────────────────────
 ✅ 登录 /api/auth/token 200
 ✅ 端点① overview 200（陈旧门未触发）  — status=200
-✅ overview 带 summary 15 个指标字段  — total_sessions=14836 active_users=6
+✅ overview 带 summary 15 个指标字段  — total_sessions=14864 active_users=6
 ✅ overview 带 trends 三序列（sessions/tokens/cost）  — sessions=7 tokens=7 cost=7
 ✅ 端点② user-ranking 200  — status=200
 ✅ 端点② user-ranking 带人员行  — rows=6
@@ -26,16 +26,16 @@
 ✅ 总览页：活跃项目表头 [项目, 会话数, 使用人数, 花费]  — 项目 | 会话数 | 使用人数 | 花费
 ✅ 总览页：活跃人员榜有行  — rows=6
 ✅ 对拍基准：已捕获页面自己的 overview 响应  — 同源基准可用
-✅ 对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions  — 页面=14,836 同源响应=14836
+✅ 对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions  — 页面=14,910 同源响应=14910
 ✅ 对拍：总览「活跃人员」卡值 == 页面自身响应 summary.active_users  — 页面=6 同源响应=6
-✅ 对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和  — 页面=7,610.97 美元 同源求和=7610.969130999999
+✅ 对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和  — 页面=7,611.80 美元 同源求和=7611.800572999999
 ✅ 对拍：总览「外部成本（积分）」卡值 == 页面自身响应 trends.cost.external 求和  — 页面=0 积分 同源求和=0
 ✅ 人员排行页：无错误横幅
 ✅ 人员排行页：无陈旧横幅
 ✅ 人员排行页：11 列表头齐全（含右侧列「查看详情」）  — 11 列全在
 ✅ 人员排行页：有数据行  — rows=6
 ✅ 对拍：排行首行「人员」== 页面自身响应 users[0]  — 页面="kaixuan-1" 同源响应="kaixuan-1"
-✅ 对拍：排行首行「会话数」== 页面自身响应 users[0].session_count  — 页面=245 同源响应=245
+✅ 对拍：排行首行「会话数」== 页面自身响应 users[0].session_count  — 页面=246 同源响应=246
 ✅ 人员详情页：无错误横幅
 ✅ 人员详情页：无陈旧横幅
 ✅ 人员详情页：4 张数据卡齐全  — 4 张全在
@@ -44,7 +44,7 @@
 ✅ 人员详情页：项目列表表头齐全  — 项目|会话数|任务数|Token 数|花费|最近活跃
 ✅ 人员详情页：点项目行 ⇒ 切到「任务列表」tab  — tabs=项目列表 / 任务列表(active) project=hermes
 ✅ 人员详情页：任务层无数据时显示该层空态（不渲染表）  — emptyText=true tables=0
-✅ 对拍：详情「会话数」卡值 == 页面自身响应 summary.session_count  — 页面=245 同源响应=245
+✅ 对拍：详情「会话数」卡值 == 页面自身响应 summary.session_count  — 页面=246 同源响应=246
 ✅ 对拍：详情「当前排名」卡值 == 页面自身响应 summary.rank  — 页面=1 同源响应=1
 ✅ 智能体排行页：无错误横幅
 ✅ 智能体排行页：无陈旧横幅
