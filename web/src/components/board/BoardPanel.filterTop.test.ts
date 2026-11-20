@@ -10,7 +10,7 @@
 //
 // ★ 本守卫钉三件事：位置（顶部条在英雄区之前）/ 双条同源（同一个 rangeValue 与
 //   apply 通道）/ 纯文字行不得回魂（含 i18n 键）。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { ref, nextTick } from 'vue'
@@ -20,6 +20,13 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import BoardPanel from './BoardPanel.vue'
 import BoardFilterBar from './BoardFilterBar.vue'
 import { resolveBoardRangeMs, type BoardTimeRange } from '../../utils/boardTimeRange'
+import { resetSystemTimezoneForTest, setSystemTimezoneForTest } from '../../utils/systemTimezone'
+
+// 时区审计轮（2026-11-21）F2 后：boardTimeRange 按**系统时区**解析日期串，
+// 而下方断言用 toISOString()（UTC 刻度）构造期望值 ⇒ 非 UTC 运行环境必红。
+// 钉死 UTC 运行时区，让断言刻度与实现刻度一致（boardTimeRange.test.ts 同先例）。
+beforeAll(() => setSystemTimezoneForTest('UTC'))
+afterAll(() => resetSystemTimezoneForTest())
 
 const SRC_CANDIDATES = [
   resolve(process.cwd(), 'web/src/components/board/BoardPanel.vue'),
