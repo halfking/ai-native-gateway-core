@@ -32,6 +32,7 @@ import AutoTuningView from './AutoTuningView.vue'
 import { getAnnotationStats, getFirstTurnSamples } from '../api/annotations'
 import { getTuningProposals } from '../api/tuning'
 import { getTaskProfile, getTaskTypeCorrectionStats } from '../api/taskProfile'
+import { systemTzDateStr } from '../components/ui/kxDatePresets'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -61,7 +62,8 @@ const suggestedTiers = ref<number | null>(null)
 
 async function loadKpi() {
   kpiLoading.value = true
-  const today = new Date().toISOString().slice(0, 10)
+  // 时区对齐轮（2026-11-20）L-TZ1：改系统时区日历，与后端 ParseSystemDate 口径一致
+  const today = systemTzDateStr()
   const jobs: Promise<unknown>[] = [
     // 今日待标注：first-turn 样本今日未标注计数（size:1 只要 total）。
     getFirstTurnSamples({ page: 1, size: 1, start_date: today, end_date: today, annotated: false })

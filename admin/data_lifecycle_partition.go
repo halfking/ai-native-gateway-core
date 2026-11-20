@@ -548,6 +548,13 @@ func (h *Handler) executeArchivePartition(ctx context.Context, req archivePartit
 
 // Helper function to parse PostgreSQL partition bounds
 // Example: "FOR VALUES FROM ('2026-04-01') TO ('2026-05-01')"
+//
+// 时区对齐轮（2026-11-20）L-TZ3：保持 UTC 解析，理由与 bg/partition_manager.go
+// 的 partitionTZ 注释同族——此函数解析的是**物理分区边界**（PG pg_class 元数据），
+// 用于运维诊断与数据生命周期管理。分区边界由 partition_manager 按固定 +08 日历
+// 创建（partitionTZ），改成可变系统时区会让「同一日期串在不同时期指向不同分区」
+// ⇒ 历史行定位错位。本函数返回的 time.Time 只用于 StartDate/EndDate 字段显示，
+// 不参与统计窗口语义，属独立口径。统计/查询日切请用 settings.SystemDayStart。
 func parsePartitionBounds(bounds string) (time.Time, time.Time, error) {
 	// Simple parsing - assumes format "FOR VALUES FROM ('YYYY-MM-DD') TO ('YYYY-MM-DD')"
 	var startStr, endStr string

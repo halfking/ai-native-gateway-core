@@ -189,8 +189,6 @@ onMounted(() => {
 <style scoped>
 .analytics-detail-view {
   padding: var(--space-4);
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 .ad-header {

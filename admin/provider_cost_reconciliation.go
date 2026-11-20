@@ -135,6 +135,9 @@ func (h *ProviderCostReconciliationHandler) handleList(w http.ResponseWriter, r 
 	now := time.Now()
 	if v := r.URL.Query().Get("month"); v != "" {
 		// 显式月份：只取年/月，**丢弃时刻与时区**。
+		// 时区对齐轮（2026-11-20）L-TZ2：对账月窗口保持 UTC 解析，理由：
+		//   ① monthKey 只消费 Year()/Month()，时区不影响输出（见 monthKey 注释）；
+		//   ② 对账域语义是「日历月」（与上游账单对齐），属独立口径，不跟统计时区。
 		parsed, err := time.Parse("2006-01", v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "month must be in YYYY-MM format")

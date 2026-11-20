@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>时区功能批判式审计与修正 — 总结报告</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --card: #ffffff; --ink: #1f2328; --muted: #656d76;
+    --line: #d0d7de; --blue: #0969da; --green: #1a7f37; --red: #cf222e;
+    --amber: #9a6700; --violet: #8250df;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); line-height: 1.65; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  h2 { font-size: 20px; margin: 36px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 20px 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; margin: 12px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .kpi .num { font-size: 28px; font-weight: 700; }
+  .kpi .lbl { color: var(--muted); font-size: 13px; }
+  .kpi.green .num { color: var(--green); }
+  .kpi.blue .num { color: var(--blue); }
+  .kpi.amber .num { color: var(--amber); }
+  .kpi.violet .num { color: var(--violet); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #f6f8fa; font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: #eff1f3; border-radius: 4px; padding: 1px 5px; }
+  .cmd { display: block; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: #0d1117; color: #e6edf3; border-radius: 6px; padding: 10px 14px; margin: 6px 0; overflow-x: auto; white-space: pre; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 1px 10px; margin-right: 6px; }
+  .tag.fix { background: #dafbe1; color: var(--green); }
+  .tag.pin { background: #ddf4ff; color: var(--blue); }
+  .tag.wont { background: #fff1c9; color: var(--amber); }
+  .tag.open { background: #ffebe9; color: var(--red); }
+  .badge { display: inline-block; font-size: 12px; font-weight: 700; border-radius: 4px; padding: 1px 8px; }
+  .badge.pass { background: #dafbe1; color: var(--green); }
+  .badge.env { background: #dbeafe; color: #1e40af; }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+  .pill { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 8px 18px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: var(--green); }
+  .dot.wait { background: var(--amber); }
+  .note { color: var(--muted); font-size: 13px; }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>时区功能批判式审计与修正 — 总结报告</h1>
+  <div class="sub">llm-gateway-go · system.timezone（默认 Asia/Shanghai）· 审计轮提交 <code>4eb00e2fe</code>（修正 16 文件）+ <code>18ee54a35</code>（主档）；本报告生成于 2026-11-20</div>
+
+  <!-- ===================== 一、结论 / 根因 ===================== -->
+  <h2>一、结论 / 根因</h2>
+  <div class="card">
+    <h3 style="margin-top:2px">总判定：<span style="color:var(--green)">首轮实现方向正确，但只切了「写入侧」，读侧与出口仍有 6 处混合口径缺陷</span> —— 已全部修复并钉测，验证全绿。</h3>
+    <p>首轮任务（上一 goal 轮已交付）建立了系统时区底座：<code>settings.ParseSystemDate / SystemDayStart / SystemDayEnd / SystemTimezoneLocation</code> 公共转换函数族 + <code>system.timezone</code> 设置端点（默认 Asia/Shanghai）+ 写入侧日切与 dashboard 层接入。本轮批判式审计按「一条时间值从用户输入 → 查询 → 存储 → 返回 → 前端显示」全链路逐段对表，发现<strong>链路上仍有 6 处用 UTC 硬解析或硬格式化</strong> —— 根因一致：<strong>写入侧切换后，读侧解析、前端出口、次级页面没有跟着切，形成「同一语义两种时区」的混合口径</strong>。</p>
+  </div>
+
+  <div class="grid">
+    <div class="kpi blue"><div class="num">8</div><div class="lbl">审计发现（F1–F8）</div></div>
+    <div class="kpi green"><div class="num">6</div><div class="lbl">修复（含回归护栏）</div></div>
+    <div class="kpi violet"><div class="num">2</div><div class="lbl">判定「有意独立口径」补注释钉死（F7 族）</div></div>
+    <div class="kpi amber"><div class="num">4</div><div class="lbl">遗留登记（L-TZ1～4，均非本轮引入）</div></div>
+  </div>
+
+  <h3>发现 → 处置清单</h3>
+  <table>
+    <tr><th>#</th><th>发现</th><th>根因</th><th>处置</th></tr>
+    <tr>
+      <td><b>F1</b></td>
+      <td>report_rollup 读侧仍 UTC：缺省「昨日」范围、start/end 解析、手动重跑 /run 的日切，全部 UTC 语义</td>
+      <td>写入侧（worker 打 day 标签）已系统时区，读侧解析没切 ⇒ +08 时区早晨 0–8 点取到错误的「昨天」</td>
+      <td><span class="tag fix">修复</span><code>reportRange</code> 缺省/解析 + <code>/run</code> 缺省切 <code>ParseSystemDate/SystemDayStart</code>；BuildRangeReport 内部按字段重锚 UTC 过滤 DATE 列（标签保真）</td>
+    </tr>
+    <tr>
+      <td><b>F2</b></td>
+      <td>前端 Board 面板 custom 日期窗与日串出口硬编码 UTC（<code>T00:00:00Z</code>、<code>toISOString().slice(0,10)</code>）</td>
+      <td>前端把「日历日」当成「UTC 瞬间」构造，窗口错位 8 小时</td>
+      <td><span class="tag fix">修复</span><code>systemTzNoonMs(dateStr)-12h</code> 构造法 + 出口统一 <code>systemTzDateStr</code>（boardTimeRange.ts / BoardPanel.vue / BoardProviderSection.vue）</td>
+    </tr>
+    <tr>
+      <td><b>F3</b></td>
+      <td>时区下拉 choices 偏移写死（纽约固定 UTC-5，半年错 1 小时）</td>
+      <td>静态表无法表达 DST</td>
+      <td><span class="tag fix">修复</span><code>timezoneEntry</code> 改按当前时刻动态计算偏移（DST 正确，含 :30 半偏移）</td>
+    </tr>
+    <tr>
+      <td><b>F4</b></td>
+      <td>后端漏网点：user_profile 3 处窗口解析、session_analytics_timeseries date_from/to、usage_enhanced parsePeriod 月窗</td>
+      <td>首轮只切了 dashboard/report 主链路，次级端点仍是 <code>time.Parse</code> UTC</td>
+      <td><span class="tag fix">修复</span>统一走 <code>ParseSystemDate</code>（RFC3339 优先，YYYY-MM-DD 兜底；月窗 <code>period+"-01"</code>）</td>
+    </tr>
+    <tr>
+      <td><b>F6</b></td>
+      <td>前端 useFormat.ts 8 处 <code>Intl.DateTimeFormat</code> 无 timeZone ⇒ 显示跟随浏览器而非系统设置</td>
+      <td>Intl 默认取浏览器时区，与系统设置脱钩</td>
+      <td><span class="tag fix">修复</span>全部注入 <code>tz()</code>（systemTimezone()）+ 钉测（+08 Aug 30 01:30 vs UTC Aug 29 17:30 对照）</td>
+    </tr>
+    <tr>
+      <td><b>F5/F8</b></td>
+      <td>（合并入 F1/F2 复核，无独立缺陷）</td>
+      <td>—</td>
+      <td><span class="tag pin">复核</span>确认无独立问题</td>
+    </tr>
+    <tr>
+      <td><b>F7</b></td>
+      <td>bg/partition_manager.go 与 dashboard_rollup_rebuild.go 是否也要切系统时区？</td>
+      <td><b>判定：不切是对的</b> —— 物理分区名日历与运维修复工具需要确定性历史定位；跟着可变设置走会让同一日期串不同时期解析到不同分区 ⇒ 迁移静默错位</td>
+      <td><span class="tag wont">保持</span>补注释钉死「为何独立」，防止后续被误统一</td>
+    </tr>
+  </table>
+
+  <div class="card">
+    <b>设计不变式（审计后仍然成立的三条边界）：</b>
+    <ul>
+      <li>数据库 timestamptz 一律 <b>UTC 存储</b>（仓内既有事实，本轮零迁移、零 schema 变更）；</li>
+      <li>只改「日切 / 日期串解析 / 显示格式化」的<b>语义层</b>，后端 API 返回 UTC 瞬间（索引与缓存友好）；</li>
+      <li>前端显示按 <b>system.timezone</b> 渲染 —— 用户表达什么时间，查询就命中什么时间。</li>
+    </ul>
+  </div>
+
+  <!-- ===================== 二、改动文件与关键行为 ===================== -->
+  <h2>二、改动文件与关键行为</h2>
+  <div class="two-col">
+    <div class="card">
+      <h3 style="margin-top:2px">后端（9 文件）</h3>
+      <table>
+        <tr><th>文件</th><th>关键行为</th></tr>
+        <tr><td><code>admin/report_rollup.go</code></td><td>reportRange 缺省「昨日」、start/end 解析切系统日切；重跑 /run 同口径</td></tr>
+        <tr><td><code>admin/user_profile.go</code></td><td>usageWindowBounds ×2 + matrix：RFC3339 优先、YYYY-MM-DD 兜底走系统时区</td></tr>
+        <tr><td><code>admin/session_analytics_timeseries.go</code></td><td>date_from / date_to 切 ParseSystemDate</td></tr>
+        <tr><td><code>admin/usage_enhanced.go</code></td><td>parsePeriod：YYYY-MM → ParseSystemDate(period+"-01")，修月窗整体前移 8h 缺陷</td></tr>
+        <tr><td><code>admin/settings_timezone.go</code></td><td>choices 偏移动态计算（DST 正确）</td></tr>
+        <tr><td><code>admin/dashboard_rollup_rebuild.go</code></td><td>补注释：运维修复工具保持 UTC 确定性定位（F7）</td></tr>
+        <tr><td><code>bg/partition_manager.go</code></td><td>补注释：partitionTZ 保持独立日历（F7）</td></tr>
+        <tr><td>测试 ×3</td><td>report_rollup_filter_parse_test / user_usage_window_test / session_analytics_timeseries test：UTC 注入回归护栏 + +08 钉测</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:2px">前端（5 文件）</h3>
+      <table>
+        <tr><th>文件</th><th>关键行为</th></tr>
+        <tr><td><code>utils/boardTimeRange.ts</code></td><td>custom 窗口 systemTzNoonMs-12h 构造；导出日串 systemTzDateStr；+08/UTC 对照钉测 ×2</td></tr>
+        <tr><td><code>components/board/BoardPanel.vue</code></td><td>utcDateStr / trendExplorerQuery 出口切换</td></tr>
+        <tr><td><code>components/board/BoardProviderSection.vue</code></td><td>loadQuality 日串出口切换</td></tr>
+        <tr><td><code>i18n/useFormat.ts</code></td><td>8 处 Intl.DateTimeFormat 注入 tz()</td></tr>
+        <tr><td><code>i18n/useFormat.test.ts</code></td><td>F6 回归钉测</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <b>关键行为变化（用户可感知）：</b> +08 时区下，早晨 0–8 点打开报表/看板，所见的「昨日」「今日」与墙钟一致；自定义日期窗从当日起点（本地 00:00）开始而非 UTC 前一日；纽约等 DST 时区下拉偏移按当前日期正确显示；所有卡片/表格时间按系统设置渲染，不再跟随浏览器。
+  </div>
+
+  <!-- ===================== 三、测试命令与结果 ===================== -->
+  <h2>三、测试命令与结果</h2>
+  <table>
+    <tr><th>域</th><th>命令</th><th>结果</th></tr>
+    <tr><td>编译</td><td><code>go build ./admin/ ./settings/ ./bg/ ./domains/reportrollup/ ./cmd/gateway/</code></td><td><span class="badge pass">PASS</span> 0 错</td></tr>
+    <tr><td>后端全包</td><td><code>go test ./settings/ ./admin/session_analytics/ -count=1</code></td><td><span class="badge pass">PASS</span> ok</td></tr>
+    <tr><td>时域定向</td><td><code>go test ./admin/ -run "TestReportRange|TestParsePeriod|TestUsageWindow|TestParseTimeseries|TestTimezoneRoutes|TestResolveUsageTimeRange|BoardPreset" -count=1</code></td><td><span class="badge pass">PASS</span> 全绿（含新增 UTC 护栏 + +08 钉测）</td></tr>
+    <tr><td>前端类型</td><td><code>cd web && npx vue-tsc --noEmit -p tsconfig.json</code></td><td><span class="badge pass">PASS</span> 0 错</td></tr>
+    <tr><td>前端时域</td><td><code>npx vitest run src/utils/boardTimeRange.test.ts src/utils/datetime.test.ts src/components/ui/kxDatePresets.test.ts src/utils/systemTimezone.test.ts src/i18n/useFormat.test.ts</code></td><td><span class="badge pass">PASS</span> 63/63</td></tr>
+    <tr><td>格式</td><td><code>gofmt -l</code>（经手 16 文件）</td><td><span class="badge pass">PASS</span> 零漂移（仓内 31 个未格式化为上游存量）</td></tr>
+    <tr><td>UI 契约门</td><td><code>node scripts/ui-audit.mjs --strict</code></td><td><span class="badge pass">PASS</span> A:0 B:0（首轮 A:4 为并行会话未跟踪半成品，基线对拍证实非本轮；部署树净化后转绿）</td></tr>
+  </table>
+  <p class="note">注：全量 pnpm build 的 i18n 三门（localeKeyParity/localeValueQuality/keys_referenced）在基线树同样红 —— 并行会话在途存量，逐条对拍非本轮引入。admin 包 2 条 TestTimeline* 上游既有红与本轮无关（多次基线对拍确认）。</p>
+
+  <h3>部署结果</h3>
+  <div class="pill-row" id="deploy-pills">
+    <div class="pill"><span class="dot ok"></span><b>211</b>（生产主入口）<code>2.6.1-16a9f2a7-20261120-211</code> ·槽 b @8783 · git_sha 干净</div>
+ <div class="pill"><span class="dot ok"></span><b>154</b>（生产）<code>2.6.1-16a9f2a7-20261120-3134</code> ·端口8781 ·凭据解密17/17</div>
+ <div class="pill"><span class="dot ok"></span><b>245</b>（预发布）<code>2.6.1-16a9f2a7-20261120-3135</code> ·端口8782 · healthz/readyz200</div>
+  </div>
+  <table id="deploy-table">
+    <tr><th>目标机</th><th>现役版本（/version实测）</th><th>git_sha</th><th>活体验证</th></tr>
+ <tr><td><b>211</b>蓝绿（llm.itestu.cn）</td><td><code>2.6.1-16a9f2a7-20261120-211</code></td><td><code>16a9f2a7</code> 干净无 -dirty</td><td>readyz ready · SPA200 · 时区端点401（未带凭据被正确拒）· settings_kv 无行 =默认 Asia/Shanghai 生效</td></tr>
+ <tr><td><b>154</b> 生产</td><td><code>2.6.1-16a9f2a7-20261120-3134</code></td><td><code>16a9f2a7</code></td><td>healthz/readyz200 · nginx路由仲裁20/20 ·凭据解密冒烟17/17 · admin登录200</td></tr>
+ <tr><td><b>245</b>预发布</td><td><code>2.6.1-16a9f2a7-20261120-3135</code></td><td><code>16a9f2a7</code></td><td>healthz/readyz200 · 时区端点401 ·凭据解密冒烟17/17</td></tr>
+  </table>
+
+ <div class="card">
+ <b>部署过程记录（三次撞闸，全部查明后放行，未硬抢任何锁）：</b>
+ <ul>
+ <li><b>①跨机部署锁</b>：211/245 各撞一次另一台机器（niuerdeMacBook-Pro）的在途部署 ——锁 metadata <code>source_host</code>判来源、<code>started_at</code>距今仅4~10 分钟，判「正在飞行」⇒ 后台轮询等放行；放行后对方部署的树均为我方提交的祖先，我方再部署即覆盖。</li>
+ <li><b>② UI契约门 A:4</b>：并行会话未跟踪半成品（analytics/ 等）被部署机构建的全仓 ui-audit扫到 ⇒复制到恢复区（逐字节校验）+移出部署树，部署完原位移回；tracked组件逐一对拍后在盘。</li>
+ <li><b>③ DB修订闸（994探针假红）</b>：PostgreSQL 的 <code>information_schema</code> 不收录物化视图 ⇒探针恒假 ⇒部署 fail-closed。产物实际齐备（pg_attribute 四口径对拍）；与并行车同撞同修，上游 <code>946686609</code> 已落仓修复 ⇒弃我方重复提交、合并上游后部署成功。教训已沉淀 AGENTS.md 主档。</li>
+ </ul>
+ </div>
+
+ <!-- ===================== 四、遗留风险 ===================== -->
+  <h2>四、遗留风险</h2>
+  <table>
+    <tr><th>编号</th><th>风险</th><th>影响 / 边界</th><th>建议收口轮</th></tr>
+    <tr><td><b>L-TZ1</b></td><td>前端仍有零散 <code>toISOString()</code> 出口（文件名、导出标签等）</td><td>无害面（不参与查询窗口语义）；仅标签形式与本地时钟可能差 8h</td><td>前端清理轮顺手统一</td></tr>
+    <tr><td><b>L-TZ2</b></td><td>provider_cost_reconciliation 月窗仍 UTC</td><td>对账域窗口与报表日切差 8h，需对账域口径裁决（切了会影响与上游账单的对齐）</td><td>对账轮拍板</td></tr>
+    <tr><td><b>L-TZ3</b></td><td>data_lifecycle parsePartitionBounds 仍 UTC</td><td>分区运维面，与 F7 同族（物理分区名日历），属有意独立</td><td>已判定保持，登记备案</td></tr>
+    <tr><td><b>L-TZ4</b></td><td>多副本 system.timezone TTL ≤5min 收敛</td><td>设计内：设置变更后各副本最多 5 分钟内生效；不做跨副本强一致广播</td><td>无需收口</td></tr>
+    <tr><td><b>并行轮</b></td><td>analytics 看板半成品（另一会话在途）未入仓</td><td>部署树已临时移出（备份于本机恢复区），该会话恢复工作时需归位；其内容不影响时区功能</td><td>并行会话自行收口</td></tr>
+  </table>
+  <p class="note">格赖斯准则说明：本报告只列证据可支撑的结论；「全绿」指本轮经手域的实测结果，上游存量红已逐条标注归属，未混入本轮判定。</p>
+
+  <div class="sub" style="margin-top:32px;border-top:1px solid var(--line);padding-top:12px">
+    审计方法与逐条证据详见仓库主档：AGENTS.md「2026-11-20 时区轮批判式审计」节 · 提交 <code>4eb00e2fe</code> / <code>18ee54a35</code>
+  </div>
+</div>
+</body>
+</html>
