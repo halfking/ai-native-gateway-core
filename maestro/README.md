@@ -74,7 +74,7 @@
 > `/customer/site`、`/customer/activate`、`/customer/license`、`/customer/agreement`、`/customer/offline-activation`、
 > `/maintain`、`/maintain/:pathMatch(.*)*`、`/:pathMatch(.*)*`、`/public/quote/:token`、以及 3 条 dev-only 的 `/dev/*`。
 
-### 1.2 纯 redirect 路由（18 条）
+### 1.2 纯 redirect 路由（19 条）
 
 这 19 条**没有自己的组件**，断言点落在它们跳转到的目标页面上（这样「跳对了」和「目标页渲染出来了」是同一条证据）。
 
