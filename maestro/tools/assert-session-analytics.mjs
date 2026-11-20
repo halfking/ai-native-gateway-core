@@ -223,7 +223,6 @@ const PAGE_PROBE = `(() => {
     hasStale: body.includes('聚合数据正在刷新'),
     isLoading: body.includes('正在加载会话分析数据'),
     hasCostNote: body.includes('花费一列是内部成本'),
-    navHref: !!document.querySelector('a[href="/admin/session-analytics"]'),
     title: document.querySelector('h1')?.textContent?.trim() || document.title,
   })
 })()`
