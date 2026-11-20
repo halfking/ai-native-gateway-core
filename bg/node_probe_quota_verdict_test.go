@@ -239,6 +239,33 @@ func TestQuotaCredentialSQLVocabulary(t *testing.T) {
 			}
 		}
 	})
+	// ★ 2026-11-20 批判式审计轮：严重度棘轮必须与业务面 writer 逐字同款 ——
+	//   较轻的配额裁决不降级较重的既有落账。缺它时，同一凭据不同模型的
+	//   探针裁决会互相覆盖（permanent 被迟到一步的 balance/periodic 体
+	//   翻回较轻态），与「两面同一把尺」的原则自相矛盾。
+	t.Run("严重度棘轮：较轻裁决不降级较重落账", func(t *testing.T) {
+		sql := quotaCredentialSQL(errorsx.KindQuotaBalance)
+		if !strings.Contains(sql, "AND quota_state NOT IN ('permanently_exhausted')") {
+			t.Fatalf("quotaCredentialSQL(KindQuotaBalance) must keep the severity ratchet (NOT IN permanently_exhausted):\n%s", sql)
+		}
+		for _, kind := range []errorsx.ErrorKind{errorsx.KindQuotaBalance, errorsx.KindQuota} {
+			if s := quotaCredentialSQL(kind); !strings.Contains(s, "AND quota_state NOT IN ('permanently_exhausted')") {
+				t.Fatalf("quotaCredentialSQL(%q) must keep the severity ratchet:\n%s", kind, s)
+			}
+		}
+		sqlP := quotaCredentialSQL(errorsx.KindQuotaPeriodic)
+		if !strings.Contains(sqlP, "AND quota_state NOT IN ('balance_exhausted', 'permanently_exhausted')") {
+			t.Fatalf("quotaCredentialSQL(KindQuotaPeriodic) must keep the severity ratchet (NOT IN balance/permanent):\n%s", sqlP)
+		}
+		// 与业务面 writer 的守卫逐字对表（domains/credential/writer.go）。
+		wsrc := readWriterSource(t)
+		if !strings.Contains(wsrc, "AND quota_state NOT IN ('permanently_exhausted')") {
+			t.Fatalf("business writer's balance arm lost its severity ratchet — probe side and business side must stay in lockstep")
+		}
+		if !strings.Contains(wsrc, "AND quota_state NOT IN ('balance_exhausted', 'permanently_exhausted')") {
+			t.Fatalf("business writer's periodic arm lost its severity ratchet — probe side and business side must stay in lockstep")
+		}
+	})
 }
 
 // TestUpdateCredentialQuotaSurfaceWritesThroughExec pins that the probe
@@ -492,6 +519,18 @@ func readCredentialHealthSource(t *testing.T) string {
 	b, err := os.ReadFile("../credentialhealth/checker.go")
 	if err != nil {
 		t.Fatalf("read credentialhealth/checker.go: %v", err)
+	}
+	return string(b)
+}
+
+// readWriterSource reads the business-side quota writer source — the probe
+// side's SQL vocabulary must stay in lockstep with it (severity ratchets and
+// all).
+func readWriterSource(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("../domains/credential/writer.go")
+	if err != nil {
+		t.Fatalf("read domains/credential/writer.go: %v", err)
 	}
 	return string(b)
 }

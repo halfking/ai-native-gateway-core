@@ -142,6 +142,12 @@ func syncHealthyNodeSurfacesAt(ctx context.Context, db *pgxpool.Pool, credential
 //
 // ★ 幂等：同一 kind 重复落账是同值写（quota_state 已是目标值时再写一次也是
 // 同值）⇒ 探针每轮失败都落账不会产生额外扰动。
+//
+// ★ 严重度棘轮（2026-11-20 批判式审计轮补齐）：balance/periodic 臂带与业务面
+// writer 同款的 quota_state NOT IN (...) 守卫 —— permanent > balance > periodic，
+// 较轻的裁决**不降级**较重的既有落账（业务面 writer 三臂的原文守卫）。缺它时
+// 同一凭据不同模型的探针裁决会互相覆盖，且 periodic 会给 permanent 行写进
+// 未来的 quota_recover_at（把「充值类事件恢复」偷换成「到点自动翻绿」）。
 func quotaCredentialSQL(kind errorsx.ErrorKind) string {
 	switch kind {
 	case errorsx.KindQuotaPermanent:
@@ -173,7 +179,13 @@ func quotaCredentialSQL(kind errorsx.ErrorKind) string {
 		WHERE id = $3
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
-		  AND COALESCE(state_reason_code, '') <> 'balance_floor'`
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'
+		  -- ★ 2026-11-20 批判式审计轮：严重度棘轮（与业务面 writer 的
+		  --   KindQuota/KindQuotaBalance 臂逐字同款）—— 已经 permanent 的凭据
+		  --   不被较轻的 balance 裁决降级。缺这条时：模型 A 判 permanent、
+		  --   模型 B 的探针迟一步回 balance 体 ⇒ permanent 被覆盖成
+		  --   balance_exhausted ⇒ 「永久耗尽」凭据重新进入余额复检集合。
+		  AND quota_state NOT IN ('permanently_exhausted')`
 	case errorsx.KindQuotaPeriodic:
 		// ★ 周期窗口族：重置点来自 errorsx.NextQuotaReset（**同一个** helpers
 		//   业务面 classifyProbeFailure 用的就是它）⇒ 两个面算出的重置点一致。
@@ -191,7 +203,13 @@ func quotaCredentialSQL(kind errorsx.ErrorKind) string {
 		WHERE id = $3
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
-		  AND COALESCE(state_reason_code, '') <> 'balance_floor'`
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'
+		  -- ★ 2026-11-20 批判式审计轮：严重度棘轮（与业务面 writer 的
+		  --   KindQuotaPeriodic 臂逐字同款）—— 已经 balance/permanent 用尽的
+		  --   凭据不被带重置点的 periodic 裁决降级。缺这条时：permanent 行
+		  --   会被写进一个未来的 quota_recover_at ⇒ 恢复语义从「充值类事件」
+		  --   被改成「到点自动翻绿」。
+		  AND quota_state NOT IN ('balance_exhausted', 'permanently_exhausted')`
 	}
 	return ""
 }
