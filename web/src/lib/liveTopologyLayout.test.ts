@@ -515,11 +515,11 @@ describe('computeGatewayBox', () => {
   })
 
   it('★ allows a taller cap on narrow canvases where the four groups wrap 2×2', () => {
-    // 窄画布（<900px）四组整行横排芯片 —— 帽放宽到 264（211 生产实测最重组
-    // 折 3 行 ≈ 257px；夹具页 ~190px 是下限不是帽的依据），仍矮于四带版 320；
+    // 窄画布（<900px）四组整行横排芯片 + 插件独立成行 —— 帽 288（内容 ≈276
+    // 按生产真数据形态定），仍矮于四带版 320；
     // 且与组件 is-narrow 判据同值（GATEWAY_NARROW_W 单一真源）。
     const narrow = computeGatewayBox(600, 1723)
-    expect(narrow.h).toBeLessThanOrEqual(264)
+    expect(narrow.h).toBeLessThanOrEqual(288)
     expect(narrow.h).toBeGreaterThan(204)
     const wide = computeGatewayBox(1200, 1723)
     expect(wide.h).toBeLessThanOrEqual(204)
@@ -531,7 +531,7 @@ describe('computeGatewayBox', () => {
     // 帽判据必须与组件 is-narrow（box.w < 900）同量同值。
     for (const canvasW of [900, 950, 999]) {
       const box = computeGatewayBox(canvasW, 1723)
-      if (box.w < 900) expect(box.h, `canvasW=${canvasW} box.w=${box.w} 窄版帽`).toBe(264)
+      if (box.w < 900) expect(box.h, `canvasW=${canvasW} box.w=${box.w} 窄版帽`).toBe(288)
     }
     // 画布 1000 ⇒ box.w=900 ⇒ 宽版帽 204（边界同侧）
     expect(computeGatewayBox(1000, 1723).w).toBe(900)

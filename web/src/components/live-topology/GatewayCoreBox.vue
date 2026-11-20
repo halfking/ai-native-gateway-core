@@ -249,6 +249,29 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
       <span class="gw__rmark is-infra">└ {{ infraTitle }}</span>
     </nav>
 
+    <!-- 窄版插件整行（真插件名长且数量不定，塞进组行会数据依赖地折行；
+         独立成行 ⇒ 组行恒单行，高度确定）。宽版仍在组内。 -->
+    <div v-if="isNarrow && (inPlugins.length || outPlugins.length)" class="gw__plugrow">
+      <span v-if="inPlugins.length" class="gw__plugins" data-testid="gw-plugins-in">
+        <span
+          v-for="p in inPlugins"
+          :key="p.id"
+          class="gw__plugin"
+          :class="`is-${p.status}`"
+          :title="`${p.name} · ${p.status}`"
+        >{{ p.name }}</span>
+      </span>
+      <span v-if="outPlugins.length" class="gw__plugins" data-testid="gw-plugins-out">
+        <span
+          v-for="p in outPlugins"
+          :key="p.id"
+          class="gw__plugin"
+          :class="`is-${p.status}`"
+          :title="`${p.name} · ${p.status}`"
+        >{{ p.name }}</span>
+      </span>
+    </div>
+
     <!-- 主体：左四组（流程顺序），右基础服务栏（owner 口径：放一侧）。 -->
     <div class="gw__body">
       <div class="gw__groups">
@@ -271,8 +294,8 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
                 <span class="gw__cell-count">{{ cell.count }}</span>
               </button>
             </template>
-            <!-- 输入插件挂在脱敏之后（输入侧治理件在请求进上游前检查） -->
-            <template v-if="inPlugins.length">
+            <!-- 输入插件挂在脱敏之后（输入侧治理件在请求进上游前检查；窄版上移独立行） -->
+            <template v-if="inPlugins.length && !isNarrow">
               <span class="gw__tarr" aria-hidden="true">→</span>
               <span class="gw__plugins" data-testid="gw-plugins-in">
                 <span
@@ -382,7 +405,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
         <div class="gw__grp gw__grp--out" data-testid="gw-lane-out">
           <span class="gw__grp-t is-out">{{ t('liveTopology.ribbon.egress') }}</span>
           <div class="gw__grp-cells">
-            <span v-if="outPlugins.length" class="gw__plugins" data-testid="gw-plugins-out">
+            <span v-if="outPlugins.length && !isNarrow" class="gw__plugins" data-testid="gw-plugins-out">
               <span
                 v-for="p in outPlugins"
                 :key="p.id"
@@ -1034,6 +1057,20 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   }
 }
 
+/* ── 窄版插件整行：真插件名长且数量不定，独立成行（可折≤2行），组行保恒单行 ── */
+.gw__plugrow {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  margin: 0 8px 2px;
+  max-height: 46px;
+  overflow: hidden;
+}
+
+.gw__plugrow .gw__plugins {
+  max-width: 100%;
+}
+
 /* ── 窄画布（box.w < 900）：四组折 2×2、瓦片转横排小芯片、图例/粗箭头让位 ──
    实测 1440 视口下三栏网格的画布仅 ~820px ⇒ 窄版是常态而非兜底：
    横排芯片把组高压到 ~46px，两行组 + 头 + 缎带 ≈ 190px（帽 240）。 */
@@ -1061,9 +1098,31 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
 }
 
 .gw.is-narrow .gw__grp-cells {
-  flex-wrap: wrap;
+  /* ★ 组行恒单行（nowrap + 收缩 + 标签省略）：高度不随生产数据折行漂移 */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
+  overflow: hidden;
+}
+
+.gw.is-narrow .gw__fan {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.gw.is-narrow .gw__mode {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.gw.is-narrow .gw__mode.is-multi {
+  flex-wrap: nowrap;
+}
+
+.gw.is-narrow .gw__mode-detail {
+  flex-basis: auto;
+  max-width: 120px;
 }
 
 /* 瓦片转横排小芯片：图标 + 名 + 计数 一行（纵向瓦片在 700px 里放不下四组）；
@@ -1087,19 +1146,6 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
 .gw.is-narrow .gw__cell--tile .gw__ic {
   width: 12px;
   height: 12px;
-}
-
-/* 扇出竖排转横排 wrap（auto 卡仍可折行带任务分布） */
-.gw.is-narrow .gw__fan {
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-}
-
-.gw.is-narrow .gw__mode-detail {
-  flex-basis: auto;
-  max-width: 200px;
 }
 
 .gw.is-narrow .gw__body {

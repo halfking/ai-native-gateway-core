@@ -145,10 +145,10 @@ const GATEWAY_BOX = { xRatio: 0.05, wRatio: 0.9, hRatio: 0.62 }
 /** 大方块高度上限：C 方案内容紧包裹（缎带 22 + 组区 ~100 + 图例 16 + 边距）。 */
 const GATEWAY_BOX_MAX_H = 204
 /** 窄画布（<900px）四组整行横排芯片（组件按 box.w<900 同步切窄版 CSS）。
- *  帽按**生产实测**定：211 真数据（插件名 sensitive_word_input…、会话数据
- *  文件存储）最重组折 3 行 ≈ 257px ⇒ 帽 264（夹具页无插件时 ~190px
- *  属下限，不是帽的依据）；仍比四带版 320 矮 ~56px。 */
-const GATEWAY_BOX_MAX_H_NARROW = 264
+ *  帽按**生产实测**定：211 真数据插件名长且数量不定 ⇒ 窄版插件独立成行
+ *  （≤2 行）+ 组行恒单行 ⇒ 内容 ≈ 头24+缎带26+插件行≤46+4×36+基础服务26
+ *  ≈ 276 ⇒ 帽 288 留余量；仍比四带版 320 矮 32px+。 */
+const GATEWAY_BOX_MAX_H_NARROW = 288
 /** 窄/宽帽的分界宽度（与组件 is-narrow 判据同值，两边不许各写一个数）。 */
 export const GATEWAY_NARROW_W = 900
 /**
