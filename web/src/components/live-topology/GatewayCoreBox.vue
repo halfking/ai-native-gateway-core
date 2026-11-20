@@ -1066,13 +1066,22 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   gap: 4px;
 }
 
-/* 瓦片转横排小芯片：图标 + 名 + 计数 一行（纵向瓦片在 700px 里放不下四组） */
+/* 瓦片转横排小芯片：图标 + 名 + 计数 一行（纵向瓦片在 700px 里放不下四组）；
+   标签窄版做省略号（211 实测真插件名/长模块名会把组折到 3 行） */
 .gw.is-narrow .gw__cell--tile {
   flex: 0 1 auto;
   flex-direction: row;
   align-items: center;
   gap: 5px;
   padding: 2px 7px;
+}
+
+.gw.is-narrow .gw__cell--tile .gw__cell-label {
+  white-space: nowrap;
+  max-width: 108px;
+  text-overflow: ellipsis;
+  display: block;
+  -webkit-line-clamp: unset;
 }
 
 .gw.is-narrow .gw__cell--tile .gw__ic {

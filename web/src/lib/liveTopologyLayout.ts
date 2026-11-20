@@ -144,9 +144,11 @@ const ROW_RATIO: Record<TopoColumn, number> = {
 const GATEWAY_BOX = { xRatio: 0.05, wRatio: 0.9, hRatio: 0.62 }
 /** 大方块高度上限：C 方案内容紧包裹（缎带 22 + 组区 ~100 + 图例 16 + 边距）。 */
 const GATEWAY_BOX_MAX_H = 204
-/** 窄画布（<900px）四组折 2×2 + 瓦片转横排小芯片（组件按 box.w<900 同步切窄版
- *  CSS）—— 实测内容 ~190px，帽 240 仍比四带版 320 矮三分之一。 */
-const GATEWAY_BOX_MAX_H_NARROW = 240
+/** 窄画布（<900px）四组整行横排芯片（组件按 box.w<900 同步切窄版 CSS）。
+ *  帽按**生产实测**定：211 真数据（插件名 sensitive_word_input…、会话数据
+ *  文件存储）最重组折 3 行 ≈ 257px ⇒ 帽 264（夹具页无插件时 ~190px
+ *  属下限，不是帽的依据）；仍比四带版 320 矮 ~56px。 */
+const GATEWAY_BOX_MAX_H_NARROW = 264
 /** 窄/宽帽的分界宽度（与组件 is-narrow 判据同值，两边不许各写一个数）。 */
 export const GATEWAY_NARROW_W = 900
 /**
