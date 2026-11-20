@@ -1,0 +1,25 @@
+=== 2026-11-21 211 会话分析系统两层 E2E 全绿证据（统计标准化轮收尾） ===
+
+[版本身份链]
+  部署链当日演进：42321b4c(3178, 并行车) -> 0a081292(3179) -> 4e6e1466-dirty(3180, 并行车 L1 修复) -> e5781643(3181, 并行车) -> e5781643(3182, 同树重发)
+  E2E 跑前身份：2.6.1-e5781643-20261121-211 seq 3181
+  E2E 跑后身份：2.6.1-e5781643-20261121-211 seq 3182（git_sha 相同、仅 seq 重发 ⇒ 内容稳定，未跨树切换）
+  现役树包含关系：git merge-base --is-ancestor 实测 e5781643 ⊇ {f2dcff6f8, 2489bba0a, aabacfdc3, df708bdcb}（本轮 4 笔全部在内）
+
+[第一层 Maestro flow：maestro/flows/16-session-analytics-system.yaml]
+  COMPLETED 步数： 60
+  FAILED 步数： 0
+flow rc=0 FAILED=0
+probe rc=0
+
+[第二层 CDP 探针：maestro/tools/assert-session-analytics.mjs]
+RESULT: PASS（58 条）
+  关键对拍（同源逐字）：会话总数 17,317==17317；活跃人员 6==6；内部成本(美元) 7,681.83==7681.827…；外部成本(积分) 0==0；排行首行 kaixuan-1==users[0]；模型首行 minimax-m3.1-flash==models[0]（14,230==14230）
+
+[登录凭据] demoadmin/Demo@admin123（super_admin，来自并行车落仓文档 docs/211-user-auth-final-verification.md）；API POST /api/auth/token 200（user_id=47），全程零 captcha（进程内失败计数随蓝绿新进程清零）
+
+[本轮量具修正] _shared/login.yaml 判据②③「系统管理员」→ ${ADMIN_DISPLAY_NAME}：多账号时代判据与 admin 种子账号 display_name 耦合，demoadmin(display_name=演示管理员) 登录必红（第一轮实测 flow FAILED=2，红点全在判据②）⇒ 参数化 + 默认值放调用侧（run-local.sh / run-mock-only.sh / run-board-probe-scope.sh / run-session-analytics.sh 四 runner + 19 个调用 flow 转发行）。修后同一需求重跑两层全绿。
+
+[10.7 统计术语总表线上活性] 公网 HelpManualView chunk（assets/HelpManualView-BbogbqHF.js）grep 实测命中「统计术语总表（供查阅）」⇒ aabacfdc3 内容已上线（入口 chunk 无命中系懒加载分包，正文在路由 chunk）
+
+[产物] maestro/reports/20261121-004326/（flow log + 探针 txt + summary）；本证据归档于 docs/audit/evidence/
