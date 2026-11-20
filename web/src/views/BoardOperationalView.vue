@@ -7,8 +7,11 @@
 // - GET /api/admin/dashboard/board（完整看板数据：summary、pies、trends）
 //
 // 优化：整合运营关键指标、流量分析、成本分析、错误分析、趋势图表
+// 2026-11-20: 增加"更多"按钮和详情页导航
 import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import { surfaceError } from '../i18n/errorSurface'
+import { ANALYTICS_REGISTRY } from '../config/analyticsRegistry'
 import {
   fetchBoardOperational,
   fetchDashboardBoard,
@@ -21,6 +24,7 @@ import type { KxDateRange } from '../components/ui/kx-date-types'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
+const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const operationalData = ref<BoardOperationalPayload | null>(null)
@@ -275,6 +279,28 @@ function topItems(items: any[] | undefined, n: number = 5) {
   return items.slice(0, n)
 }
 
+// 导航函数 (2026-11-20)
+function navigateToList(dimension: 'model' | 'provider' | 'client' | 'tenant') {
+  const registry = ANALYTICS_REGISTRY[dimension]
+  router.push({
+    path: registry.listPath,
+    query: { days: timeRange.value }
+  })
+}
+
+function navigateToDetail(dimension: 'model' | 'provider' | 'client' | 'tenant', itemKey: string) {
+  const registry = ANALYTICS_REGISTRY[dimension]
+  router.push({
+    path: registry.detailPath(itemKey),
+    query: { days: timeRange.value }
+  })
+}
+
+// 检查是否有更多项(超过5个)
+function hasMore(items: any[] | undefined): boolean {
+  return items ? items.length > 5 : false
+}
+
 onMounted(() => {
   void load()
 })
@@ -382,9 +408,23 @@ onBeforeUnmount(() => {
         <div class="bo-pies-grid">
           <!-- 模型分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topModels') }}</h3>
+            <div class="bo-pie-header">
+              <h3 class="bo-pie-title">{{ $t('dashboard.operational.topModels') }}</h3>
+              <button
+                v-if="hasMore(boardData?.pies?.models)"
+                class="bo-more-btn"
+                @click="navigateToList('model')"
+              >
+                {{ $t('board.operational.more') }} →
+              </button>
+            </div>
             <div v-if="topItems(boardData?.pies?.models, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData?.pies?.models, 5)" :key="item.key" class="bo-pie-item">
+              <div
+                v-for="item in topItems(boardData?.pies?.models, 5)"
+                :key="item.key"
+                class="bo-pie-item bo-pie-item-clickable"
+                @click="navigateToDetail('model', item.key)"
+              >
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -394,9 +434,23 @@ onBeforeUnmount(() => {
 
           <!-- 供应商分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topProviders') }}</h3>
+            <div class="bo-pie-header">
+              <h3 class="bo-pie-title">{{ $t('dashboard.operational.topProviders') }}</h3>
+              <button
+                v-if="hasMore(boardData?.pies?.providers)"
+                class="bo-more-btn"
+                @click="navigateToList('provider')"
+              >
+                {{ $t('board.operational.more') }} →
+              </button>
+            </div>
             <div v-if="topItems(boardData?.pies?.providers, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData?.pies?.providers, 5)" :key="item.key" class="bo-pie-item">
+              <div
+                v-for="item in topItems(boardData?.pies?.providers, 5)"
+                :key="item.key"
+                class="bo-pie-item bo-pie-item-clickable"
+                @click="navigateToDetail('provider', item.key)"
+              >
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -406,9 +460,23 @@ onBeforeUnmount(() => {
 
           <!-- 客户端分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topClients') }}</h3>
+            <div class="bo-pie-header">
+              <h3 class="bo-pie-title">{{ $t('dashboard.operational.topClients') }}</h3>
+              <button
+                v-if="hasMore(boardData?.pies?.clients)"
+                class="bo-more-btn"
+                @click="navigateToList('client')"
+              >
+                {{ $t('board.operational.more') }} →
+              </button>
+            </div>
             <div v-if="topItems(boardData?.pies?.clients, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData?.pies?.clients, 5)" :key="item.key" class="bo-pie-item">
+              <div
+                v-for="item in topItems(boardData?.pies?.clients, 5)"
+                :key="item.key"
+                class="bo-pie-item bo-pie-item-clickable"
+                @click="navigateToDetail('client', item.key)"
+              >
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -418,9 +486,23 @@ onBeforeUnmount(() => {
 
           <!-- 租户分布 -->
           <div class="bo-pie-card">
-            <h3 class="bo-pie-title">{{ $t('dashboard.operational.topTenants') }}</h3>
+            <div class="bo-pie-header">
+              <h3 class="bo-pie-title">{{ $t('dashboard.operational.topTenants') }}</h3>
+              <button
+                v-if="hasMore(boardData?.pies?.tenants)"
+                class="bo-more-btn"
+                @click="navigateToList('tenant')"
+              >
+                {{ $t('board.operational.more') }} →
+              </button>
+            </div>
             <div v-if="topItems(boardData?.pies?.tenants, 5).length > 0" class="bo-pie-list">
-              <div v-for="item in topItems(boardData?.pies?.tenants, 5)" :key="item.key" class="bo-pie-item">
+              <div
+                v-for="item in topItems(boardData?.pies?.tenants, 5)"
+                :key="item.key"
+                class="bo-pie-item bo-pie-item-clickable"
+                @click="navigateToDetail('tenant', item.key)"
+              >
                 <span class="bo-pie-key">{{ item.key }}</span>
                 <span class="bo-pie-value">{{ $t('dashboard.operational.requestsCount', { count: formatNumber(item.requests) }) }}</span>
               </div>
@@ -590,11 +672,35 @@ onBeforeUnmount(() => {
   padding: var(--space-3);
 }
 
+.bo-pie-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
 .bo-pie-title {
   font-size: var(--text-md);
   font-weight: var(--font-semibold);
-  margin-bottom: var(--space-2);
   color: var(--text);
+  margin: 0;
+}
+
+.bo-more-btn {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--primary);
+  background: transparent;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-weight: var(--font-medium);
+}
+
+.bo-more-btn:hover {
+  background: var(--primary);
+  color: white;
 }
 
 .bo-pie-list {
@@ -611,6 +717,24 @@ onBeforeUnmount(() => {
   background: var(--bg);
   border-radius: var(--radius);
   font-size: var(--text-sm);
+}
+
+.bo-pie-item-clickable {
+  cursor: pointer;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.bo-pie-item-clickable:hover {
+  background: var(--bg-hover);
+  transform: translateX(2px);
+}
+
+.bo-pie-item-clickable .bo-pie-key {
+  color: var(--primary);
+}
+
+.bo-pie-item-clickable:hover .bo-pie-key {
+  text-decoration: underline;
 }
 
 .bo-pie-key {

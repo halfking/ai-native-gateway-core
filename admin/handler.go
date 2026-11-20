@@ -1261,6 +1261,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
 	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
+	// 2026-11-20: 分析详情端点 —— 为运营看板详情分析系统提供后端支持
+	// 支持4个维度: model/provider/client/tenant
+	// 权限: superAdmin / admin_key (与 /dashboard/board 保持一致)
+	mux.HandleFunc("/api/admin/analytics/{dimension}/{identifier}", admin(h.handleAnalyticsDetail))
 	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
 	// 2026-10-16: 实时拓扑首页左栏「供应商当天请求/token 统计」只读投影。

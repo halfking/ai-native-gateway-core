@@ -210,3 +210,98 @@ export function fetchBoardErrorDrill(params: {
   if (params.tenant_id) qs.set('tenant_id', params.tenant_id)
   return req('GET', `/api/admin/dashboard/board/error-drill?${qs}`)
 }
+
+/**
+ * 分析详情数据结构 (2026-11-20)
+ * 
+ * 用于展示单个对象（模型/供应商/客户端/租户）的完整统计分析
+ */
+export interface AnalyticsTrendPoint {
+  bucket: string              // ISO 8601 timestamp
+  requests: number
+  success: number
+  errors: number
+  tokens: number
+  cost_usd: number
+  credits: number
+  avg_latency_ms: number
+}
+
+export interface AnalyticsSummary {
+  total_requests: number
+  success_count: number
+  success_rate: number
+  error_count: number
+  total_tokens: number
+  total_prompt_tokens?: number
+  total_completion_tokens?: number
+  total_cost_usd: number
+  total_credits: number
+  avg_latency_ms: number
+  p95_latency_ms?: number
+  p99_latency_ms?: number
+}
+
+export interface AnalyticsCrossAnalysis {
+  by_model?: BoardPieItem[]
+  by_provider?: BoardPieItem[]
+  by_client?: BoardPieItem[]
+  by_tenant?: BoardPieItem[]
+  by_error?: BoardPieItem[]
+  by_status?: BoardPieItem[]
+}
+
+export interface AnalyticsDetailPayload {
+  dimension: 'model' | 'provider' | 'client' | 'tenant'
+  identifier: string
+  display_name?: string
+  time_range: {
+    start: string
+    end: string
+    days: number
+  }
+  summary: AnalyticsSummary
+  trends: AnalyticsTrendPoint[]
+  cross_analysis: AnalyticsCrossAnalysis
+  
+  // 降级标记
+  degraded?: boolean
+  degraded_reason?: string
+  degraded_trends?: boolean
+  degraded_cross?: string[]  // 降级的交叉分析维度
+}
+
+export interface AnalyticsQuery {
+  days?: number
+  start?: string
+  end?: string
+  tenant_id?: string
+}
+
+/**
+ * 获取分析详情数据
+ */
+export function fetchAnalyticsDetail(
+  dimension: 'model' | 'provider' | 'client' | 'tenant',
+  identifier: string,
+  params: AnalyticsQuery = {},
+  signal?: AbortSignal
+): Promise<AnalyticsDetailPayload> {
+  const qs = new URLSearchParams()
+  
+  if (params.start && params.end) {
+    qs.set('start', params.start)
+    qs.set('end', params.end)
+  } else if (params.days != null) {
+    qs.set('days', String(params.days))
+  }
+  
+  if (params.tenant_id) {
+    qs.set('tenant_id', params.tenant_id)
+  }
+  
+  const query = qs.toString()
+  const url = `/api/admin/analytics/${dimension}/${encodeURIComponent(identifier)}${query ? '?' + query : ''}`
+  
+  return req<AnalyticsDetailPayload>('GET', url, undefined, { signal })
+}
