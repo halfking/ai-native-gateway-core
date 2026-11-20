@@ -1,0 +1,197 @@
+# 用户认证验证测试 —— 验证 admin、demoadmin、demo 三个用户的登录功能
+#
+# 目标：
+#   1. 验证 admin 用户密码已修改为 Veritrans&9527
+#   2. 验证 demoadmin 用户（super_admin）可以成功登录
+#   3. 验证 demo 用户（tenant_admin）可以成功登录
+#
+# 使用方法：
+#   maestro test maestro/flows/13-user-auth-verification.yaml \
+#     -e BASE_URL=https://llm.itestu.cn \
+#     --format junit \
+#     --output results.xml
+#
+url: ${BASE_URL}
+---
+# ========================================================================
+# 测试 1: admin 用户登录（super_admin 角色）
+# ========================================================================
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+
+# 输入 admin 用户凭据
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "admin"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Veritrans&9527"
+- pressKey: Enter
+
+# 验证登录成功 - 弹窗关闭
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+
+# 验证用户菜单显示"系统管理员"
+- extendedWaitUntil:
+    visible:
+      text: "系统管理员"
+    timeout: 20000
+
+# 验证服务端会话有效（重载后仍能访问）
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "系统管理员"
+    timeout: 20000
+
+# 退出登录（点击用户菜单）
+- tapOn:
+    text: "系统管理员"
+- extendedWaitUntil:
+    visible:
+      text: "退出登录"
+    timeout: 5000
+- tapOn:
+    text: "退出登录"
+- extendedWaitUntil:
+    visible:
+      text: "登录"
+    timeout: 10000
+
+# ========================================================================
+# 测试 2: demoadmin 用户登录（super_admin 角色）
+# ========================================================================
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+
+# 输入 demoadmin 用户凭据
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "demoadmin"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Demo@admin123"
+- pressKey: Enter
+
+# 验证登录成功 - 弹窗关闭
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+
+# 验证用户菜单显示"演示管理员"
+- extendedWaitUntil:
+    visible:
+      text: "演示管理员"
+    timeout: 20000
+
+# 验证服务端会话有效
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "演示管理员"
+    timeout: 20000
+
+# 验证 super_admin 可以访问管理员功能（检查侧边栏）
+- extendedWaitUntil:
+    visible:
+      text: "系统设置"
+    timeout: 10000
+
+# 退出登录
+- tapOn:
+    text: "演示管理员"
+- extendedWaitUntil:
+    visible:
+      text: "退出登录"
+    timeout: 5000
+- tapOn:
+    text: "退出登录"
+- extendedWaitUntil:
+    visible:
+      text: "登录"
+    timeout: 10000
+
+# ========================================================================
+# 测试 3: demo 用户登录（tenant_admin 角色）
+# ========================================================================
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+
+# 输入 demo 用户凭据
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "demo"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Demo@user123"
+- pressKey: Enter
+
+# 验证登录成功 - 弹窗关闭
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+
+# 验证用户菜单显示"演示用户"
+- extendedWaitUntil:
+    visible:
+      text: "演示用户"
+    timeout: 20000
+
+# 验证服务端会话有效
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "演示用户"
+    timeout: 20000
+
+# 验证 tenant_admin 可以访问基本功能（仪表盘）
+- extendedWaitUntil:
+    visible:
+      text: "总览"
+    timeout: 10000
+
+# 最终退出登录
+- tapOn:
+    text: "演示用户"
+- extendedWaitUntil:
+    visible:
+      text: "退出登录"
+    timeout: 5000
+- tapOn:
+    text: "退出登录"
+- extendedWaitUntil:
+    visible:
+      text: "登录"
+    timeout: 10000

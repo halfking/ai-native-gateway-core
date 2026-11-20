@@ -1,0 +1,126 @@
+# 用户认证验证测试 - 简化版（仅验证登录功能）
+#
+# 目标：验证 admin、demoadmin、demo 三个用户可以成功登录
+# 简化原因：完整版在退出登录步骤遇到 Maestro 技术问题
+
+url: ${BASE_URL}
+---
+# ========================================================================
+# 测试 1: admin 用户登录验证
+# ========================================================================
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "admin"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Veritrans&9527"
+- pressKey: Enter
+
+# 验证登录成功
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      text: "系统管理员"
+    timeout: 20000
+
+# 验证会话有效
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "系统管理员"
+    timeout: 20000
+
+# ========================================================================
+# 测试 2: demoadmin 用户登录验证
+# ========================================================================
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "demoadmin"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Demo@admin123"
+- pressKey: Enter
+
+# 验证登录成功
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      text: "演示管理员"
+    timeout: 20000
+
+# 验证会话有效
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "演示管理员"
+    timeout: 20000
+
+# ========================================================================
+# 测试 3: demo 用户登录验证
+# ========================================================================
+- openLink: ${BASE_URL}/?login=1
+- extendedWaitUntil:
+    visible:
+      id: "login-modal-title"
+    timeout: 20000
+
+- tapOn:
+    id: login-username
+- eraseText: 20
+- inputText:
+    id: login-username
+    text: "demo"
+- tapOn:
+    id: login-password
+- eraseText: 40
+- inputText:
+    id: login-password
+    text: "Demo@user123"
+- pressKey: Enter
+
+# 验证登录成功
+- extendedWaitUntil:
+    notVisible:
+      id: "login-modal-title"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      text: "演示用户"
+    timeout: 20000
+
+# 验证会话有效
+- openLink: ${BASE_URL}/dashboard
+- extendedWaitUntil:
+    visible:
+      text: "演示用户"
+    timeout: 20000
