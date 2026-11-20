@@ -87,12 +87,13 @@ func pricingSuggestionRateIsOwn(v *int64) bool {
 //	  （canonical_id 非空 = 已与网关身份对齐 ⇒ 才是「可比」的）。
 //
 // ★ 2026-11-18 12h 审计轮根修（P2）：改为返回 error。
-//   原实现把查询错误与逐行 Scan 错误**一律吞掉**并返回空切片 ⇒
-//   调用方把「查库失败」当成「作用域为空」⇒ 预览返回 200 + 0 个模型 +
-//   summary.models=0（连 WithoutData 告警都不触发）⇒ 运维看到的是
-//   「0 个模型」而不是错误，且执行路径还会再插一条空的批次行。
-//   ⇒ 现在错误上抛；Scan 错误改为**整体上抛**（部分行缺失同样会给出
-//     错误的数量口径，静默丢行比报错更危险）。
+//
+//	原实现把查询错误与逐行 Scan 错误**一律吞掉**并返回空切片 ⇒
+//	调用方把「查库失败」当成「作用域为空」⇒ 预览返回 200 + 0 个模型 +
+//	summary.models=0（连 WithoutData 告警都不触发）⇒ 运维看到的是
+//	「0 个模型」而不是错误，且执行路径还会再插一条空的批次行。
+//	⇒ 现在错误上抛；Scan 错误改为**整体上抛**（部分行缺失同样会给出
+//	  错误的数量口径，静默丢行比报错更危险）。
 func (s *Service) pricingSuggestionScope(ctx context.Context, req PricingSuggestionRequest, dim string) ([]string, error) {
 	if len(req.CanonicalIDs) > 0 {
 		rows, err := s.pool.Query(ctx,

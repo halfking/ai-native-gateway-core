@@ -273,7 +273,7 @@ func (s *Service) HoldCreate(
 		remaining := available.Sub(held)
 		if requested.GreaterThan(remaining) {
 			return maascontracts.HoldCreateResponse{}, &maascontracts.Error{
-				Code:      maascontracts.ErrorSellableInsufficient,
+				Code: maascontracts.ErrorSellableInsufficient,
 				Message: fmt.Sprintf("insufficient inventory for %s: requested %s, available %s",
 					line.ModelSKU, requested.String(), remaining.String()),
 				Retryable: true, // 库存可能随后续释放恢复，客户端可重询后重试

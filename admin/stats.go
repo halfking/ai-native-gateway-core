@@ -184,15 +184,15 @@ func (h *Handler) handleStatsTrend(w http.ResponseWriter, r *http.Request, start
 			continue
 		}
 		items = append(items, map[string]any{
-			"bucket":           day.Format("2006-01-02"),
-			"requests":         req,
-			"success":          ok,
-			"failures":         fail,
-			"total_tokens":     tokens,
-			"cost_usd":         cost,
-			"input_cost_usd":   inputCost,
-			"output_cost_usd":  outputCost,
-			"credits_charged":  credits,
+			"bucket":          day.Format("2006-01-02"),
+			"requests":        req,
+			"success":         ok,
+			"failures":        fail,
+			"total_tokens":    tokens,
+			"cost_usd":        cost,
+			"input_cost_usd":  inputCost,
+			"output_cost_usd": outputCost,
+			"credits_charged": credits,
 		})
 	}
 	if writeAggRowsErr(w, "stats.trend", rows.Err()) {

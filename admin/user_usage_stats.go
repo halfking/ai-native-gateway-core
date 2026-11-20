@@ -212,7 +212,7 @@ type userStatsKpi struct {
 
 // userStatsBucket — Top 模型/应用/密钥行。
 type userStatsBucket struct {
-	ID       *int64  `json:"id,omitempty"`       // API Key ID (仅 top_keys 有值，供前端跳转)
+	ID       *int64  `json:"id,omitempty"` // API Key ID (仅 top_keys 有值，供前端跳转)
 	Name     string  `json:"name"`
 	Requests int64   `json:"requests"`
 	Tokens   int64   `json:"tokens"`
@@ -400,9 +400,9 @@ func (h *Handler) handleUserStats(w http.ResponseWriter, r *http.Request, id int
 	// Top 模型 / 应用 / 密钥（各 5 行）。
 	// TopKeys 按 api_key_id 分组并返回 ID，供前端跳转；TopModels/TopApps 只返回名称。
 	bucketQueries := []struct {
-		target  *[]userStatsBucket
-		sql     string
-		withID  bool
+		target *[]userStatsBucket
+		sql    string
+		withID bool
 	}{
 		{&resp.TopModels, `
 			SELECT COALESCE(NULLIF(f.raw_model_name, ''), '<unknown>'),

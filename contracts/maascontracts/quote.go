@@ -14,11 +14,11 @@ const (
 // This is a pure function operation with no side effects or state changes.
 // Per contract v0.1: EstimateQuote MUST NOT create an inventory hold.
 type EstimateQuoteRequest struct {
-	TenantID           *string  `json:"tenant_id,omitempty"`            // Tenant scope (must match auth)
-	ModelSKU           string   `json:"model_sku"`                      // Model SKU to quote
-	Quantity           Quantity `json:"quantity"`                       // Quantity to quote
-	ResourceSnapshotID string   `json:"resource_snapshot_id"`           // Required snapshot ID for consistency
-	PriceVersionID     *string  `json:"price_version_id,omitempty"`     // Optional price version reference
+	TenantID           *string  `json:"tenant_id,omitempty"`        // Tenant scope (must match auth)
+	ModelSKU           string   `json:"model_sku"`                  // Model SKU to quote
+	Quantity           Quantity `json:"quantity"`                   // Quantity to quote
+	ResourceSnapshotID string   `json:"resource_snapshot_id"`       // Required snapshot ID for consistency
+	PriceVersionID     *string  `json:"price_version_id,omitempty"` // Optional price version reference
 }
 
 // EstimateQuoteResponse returns the non-binding price quote.

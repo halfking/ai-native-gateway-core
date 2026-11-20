@@ -46,9 +46,9 @@ type AnalyticsSessionSummary struct {
 	AvgLatencyMs            int        `json:"avg_latency_ms"`
 	MinLatencyMs            *int       `json:"min_latency_ms"`
 	MaxLatencyMs            *int       `json:"max_latency_ms"`
-	AvgTTFTMs               *int       `json:"avg_ttft_ms,omitempty"`      // 新增：平均首字延迟
-	MinTTFTMs               *int       `json:"min_ttft_ms,omitempty"`      // 新增：最小首字延迟
-	MaxTTFTMs               *int       `json:"max_ttft_ms,omitempty"`      // 新增：最大首字延迟
+	AvgTTFTMs               *int       `json:"avg_ttft_ms,omitempty"` // 新增：平均首字延迟
+	MinTTFTMs               *int       `json:"min_ttft_ms,omitempty"` // 新增：最小首字延迟
+	MaxTTFTMs               *int       `json:"max_ttft_ms,omitempty"` // 新增：最大首字延迟
 	ModelsUsed              []string   `json:"models_used"`
 	PrimaryModel            *string    `json:"primary_model"`
 	ModelSwitchCount        int        `json:"model_switch_count"`

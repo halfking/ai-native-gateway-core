@@ -1,5 +1,5 @@
 // Package extpoints defines extension point interfaces for the plugin system.
-// 
+//
 // The 16-Phase Pipeline provides a structured execution model where plugins can
 // hook into specific phases of request processing. Each phase represents a distinct
 // point in the request/response lifecycle.
@@ -15,9 +15,9 @@ type Phase string
 
 const (
 	// Authentication & Authorization Phases
-	PhasePreAuth  Phase = "pre_auth"   // Before authentication
-	PhaseAuth     Phase = "auth"       // Authentication execution
-	PhasePostAuth Phase = "post_auth"  // After authentication
+	PhasePreAuth  Phase = "pre_auth"  // Before authentication
+	PhaseAuth     Phase = "auth"      // Authentication execution
+	PhasePostAuth Phase = "post_auth" // After authentication
 
 	// Routing Phases
 	PhasePreRoute  Phase = "pre_route"  // Before routing decision
@@ -163,9 +163,9 @@ const (
 	CapabilityLoadBalance PluginCapability = "route.load_balance"
 
 	// Logging capabilities
-	CapabilityAuditLog  PluginCapability = "log.audit"
-	CapabilityMetrics   PluginCapability = "log.metrics"
-	CapabilityTracing   PluginCapability = "log.tracing"
+	CapabilityAuditLog PluginCapability = "log.audit"
+	CapabilityMetrics  PluginCapability = "log.metrics"
+	CapabilityTracing  PluginCapability = "log.tracing"
 
 	// Error handling
 	CapabilityErrorHandle PluginCapability = "error.handle"
@@ -183,9 +183,9 @@ type PluginMetadata struct {
 	Capabilities []PluginCapability
 
 	// Execution constraints
-	Timeout         time.Duration
-	MaxConcurrency  int
-	FailurePolicy   FailurePolicy
+	Timeout        time.Duration
+	MaxConcurrency int
+	FailurePolicy  FailurePolicy
 
 	// Scope filters (empty means all)
 	TenantScope []string // Only execute for these tenants

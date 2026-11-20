@@ -212,11 +212,11 @@ func TestPhaseMapping(t *testing.T) {
 		{"pre_response", []Phase{PhasePreResponse}},
 		{"response", []Phase{PhaseResponse}},
 		{"post_response", []Phase{PhasePostResponse}},
-		{"governance", []Phase{}},      // 无映射
-		{"pre_transform", []Phase{}},   // 无映射
-		{"transform", []Phase{}},       // 无映射
-		{"post_transform", []Phase{}},  // 无映射
-		{"unknown_phase", []Phase{}},   // 无映射
+		{"governance", []Phase{}},     // 无映射
+		{"pre_transform", []Phase{}},  // 无映射
+		{"transform", []Phase{}},      // 无映射
+		{"post_transform", []Phase{}}, // 无映射
+		{"unknown_phase", []Phase{}},  // 无映射
 	}
 
 	for _, tt := range tests {
@@ -269,7 +269,7 @@ func TestExtensionPointHookExecute_MultiplePlugins(t *testing.T) {
 	if plugin2.execs != 1 {
 		t.Errorf("Expected plugin2 to be executed once, got %d", plugin2.execs)
 	}
-	
+
 	// 注意：由于 engine.Execute 按优先级顺序执行，
 	// plugin2（PriorityHigh=100）应该在 plugin1（PriorityLow=900）之前执行
 }

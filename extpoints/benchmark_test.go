@@ -9,8 +9,9 @@
 //   - 插件优先级排序开销
 //
 // 运行方式：
-//   go test -bench=. -benchmem ./extpoints
-//   go test -bench=BenchmarkExtensionPointHook -benchtime=10s ./extpoints
+//
+//	go test -bench=. -benchmem ./extpoints
+//	go test -bench=BenchmarkExtensionPointHook -benchtime=10s ./extpoints
 package extpoints
 
 import (
@@ -28,7 +29,7 @@ import (
 func BenchmarkExtensionPointHook_NoPlugins(b *testing.B) {
 	registry := NewExtensionPointRegistry()
 	hook := NewExtensionPointHook(registry, "authentication")
-	
+
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "bench-tenant",
@@ -46,7 +47,7 @@ func BenchmarkExtensionPointHook_NoPlugins(b *testing.B) {
 // 期望结果：< 10 µs/op（包含插件逻辑）
 func BenchmarkExtensionPointHook_SinglePlugin(b *testing.B) {
 	registry := NewExtensionPointRegistry()
-	
+
 	// 注册一个轻量级测试插件
 	plugin := &benchPlugin{
 		metadata: &PluginMetadata{
@@ -56,9 +57,9 @@ func BenchmarkExtensionPointHook_SinglePlugin(b *testing.B) {
 		},
 	}
 	registry.Register(PhaseAuth, plugin)
-	
+
 	hook := NewExtensionPointHook(registry, "authentication")
-	
+
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "bench-tenant",
@@ -76,7 +77,7 @@ func BenchmarkExtensionPointHook_SinglePlugin(b *testing.B) {
 // 测试场景：5 个插件按优先级顺序执行
 func BenchmarkExtensionPointHook_MultiplePlugins(b *testing.B) {
 	registry := NewExtensionPointRegistry()
-	
+
 	// 注册 5 个不同优先级的插件
 	priorities := []Priority{
 		PriorityHighest,
@@ -85,7 +86,7 @@ func BenchmarkExtensionPointHook_MultiplePlugins(b *testing.B) {
 		PriorityLow,
 		PriorityLowest,
 	}
-	
+
 	for i, priority := range priorities {
 		plugin := &benchPlugin{
 			metadata: &PluginMetadata{
@@ -96,9 +97,9 @@ func BenchmarkExtensionPointHook_MultiplePlugins(b *testing.B) {
 		}
 		registry.Register(PhaseAuth, plugin)
 	}
-	
+
 	hook := NewExtensionPointHook(registry, "authentication")
-	
+
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "bench-tenant",
@@ -116,7 +117,7 @@ func BenchmarkExtensionPointHook_MultiplePlugins(b *testing.B) {
 // 测试场景：4 个 Phase，每个 Phase 1 个插件
 func BenchmarkExtensionPointHook_Pipeline(b *testing.B) {
 	registry := NewExtensionPointRegistry()
-	
+
 	// 注册 4 个 Phase 的插件
 	phases := []Phase{PhaseAuth, PhasePreRoute, PhaseRoute, PhasePostRoute}
 	for _, phase := range phases {
@@ -129,10 +130,10 @@ func BenchmarkExtensionPointHook_Pipeline(b *testing.B) {
 		}
 		registry.Register(phase, plugin)
 	}
-	
+
 	// 构建 Pipeline
 	p := pipeline.NewRequestPipeline()
-	
+
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "authentication",
 		Phase: pipeline.PhaseAuthentication,
@@ -141,7 +142,7 @@ func BenchmarkExtensionPointHook_Pipeline(b *testing.B) {
 			NewExtensionPointHook(registry, "authentication"),
 		},
 	})
-	
+
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "pre_routing",
 		Phase: pipeline.PhasePreRouting,
@@ -150,7 +151,7 @@ func BenchmarkExtensionPointHook_Pipeline(b *testing.B) {
 			NewExtensionPointHook(registry, "pre_routing"),
 		},
 	})
-	
+
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "routing",
 		Phase: pipeline.PhaseRouting,
@@ -159,7 +160,7 @@ func BenchmarkExtensionPointHook_Pipeline(b *testing.B) {
 			NewExtensionPointHook(registry, "routing"),
 		},
 	})
-	
+
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "post_routing",
 		Phase: pipeline.PhasePostRouting,
@@ -168,7 +169,7 @@ func BenchmarkExtensionPointHook_Pipeline(b *testing.B) {
 			NewExtensionPointHook(registry, "post_routing"),
 		},
 	})
-	
+
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "bench-tenant",
@@ -192,7 +193,7 @@ func BenchmarkPluginExecution_Direct(b *testing.B) {
 			Priority: PriorityNormal,
 		},
 	}
-	
+
 	ctx := &ExecutionContext{
 		Context:   context.Background(),
 		Phase:     PhaseAuth,
@@ -212,7 +213,7 @@ func BenchmarkPluginExecution_Direct(b *testing.B) {
 // 测试场景：从含有 10 个插件的 Phase 中获取插件列表
 func BenchmarkRegistry_Get(b *testing.B) {
 	registry := NewExtensionPointRegistry()
-	
+
 	// 注册 10 个插件
 	for i := 0; i < 10; i++ {
 		plugin := &benchPlugin{
@@ -245,7 +246,7 @@ func BenchmarkRegistry_Register(b *testing.B) {
 			},
 		}
 		b.StartTimer()
-		
+
 		_ = registry.Register(PhaseAuth, plugin)
 	}
 }
@@ -254,7 +255,7 @@ func BenchmarkRegistry_Register(b *testing.B) {
 func BenchmarkEnabled_Check(b *testing.B) {
 	registry := NewExtensionPointRegistry()
 	hook := NewExtensionPointHook(registry, "authentication")
-	
+
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "bench-tenant",
@@ -272,9 +273,9 @@ type benchPlugin struct {
 	metadata *PluginMetadata
 }
 
-func (p *benchPlugin) Metadata() *PluginMetadata { return p.metadata }
-func (p *benchPlugin) Initialize(ctx context.Context) error { return nil }
-func (p *benchPlugin) Shutdown(ctx context.Context) error   { return nil }
+func (p *benchPlugin) Metadata() *PluginMetadata             { return p.metadata }
+func (p *benchPlugin) Initialize(ctx context.Context) error  { return nil }
+func (p *benchPlugin) Shutdown(ctx context.Context) error    { return nil }
 func (p *benchPlugin) HealthCheck(ctx context.Context) error { return nil }
 
 func (p *benchPlugin) Execute(ctx *ExecutionContext) (*ExecutionResult, error) {
@@ -283,7 +284,7 @@ func (p *benchPlugin) Execute(ctx *ExecutionContext) (*ExecutionResult, error) {
 		ctx.State["executed"] = true
 		ctx.State["plugin_id"] = p.metadata.PluginID
 	}
-	
+
 	return &ExecutionResult{
 		Success: true,
 		Latency: time.Microsecond,

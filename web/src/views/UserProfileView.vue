@@ -697,8 +697,11 @@ const recentSessionFields = computed<CardField[]>(() => [
 }
 
 .alert-danger {
-  background-color: var(--el-color-danger-light-9);
-  border: 1px solid var(--el-color-danger-light-7);
-  color: var(--el-color-danger);
+  /* ★ EP 语义令牌在本仓无定义（style.css 用 --danger 族，element-plus 按需注入
+   *   不含 light-7/9 变体）⇒ 无兜底的 var() 整条声明失效（令牌门红）。
+   *   值取 EP 官方 light-9/light-7/danger 十六进制，视觉不变（2026-11-20 审计轮）。 */
+  background-color: var(--el-color-danger-light-9, #fef0f0);
+  border: 1px solid var(--el-color-danger-light-7, #fde2e2);
+  color: var(--el-color-danger, #f56c6c);
 }
 </style>

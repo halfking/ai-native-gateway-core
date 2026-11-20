@@ -135,8 +135,9 @@ func TestRefreshCallSites_PassTheRightFamilyTimeout(t *testing.T) {
 // 分族语句上限。
 //
 // ★ 这是最承重的一条：语句上限是 600s，而轮内 ctx 若只有 600s 或更小，
-//   ctx 会先掐断 ⇒ 抬钉子等于白抬（而且失败形态从「被杀」变成「整轮被砍」，
-//   后两个视图根本没刷新 —— 比原来更难发现）。
+//
+//	ctx 会先掐断 ⇒ 抬钉子等于白抬（而且失败形态从「被杀」变成「整轮被砍」，
+//	后两个视图根本没刷新 —— 比原来更难发现）。
 func TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout(t *testing.T) {
 	pin, err := time.ParseDuration(sessionViewsStatementTimeout)
 	if err != nil {
@@ -165,13 +166,16 @@ func TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout(t *testing.T) {
 //	               + 各视图的语句耗时
 //
 // ⇒ 「ctx(15min=900s) > 语句上限(600s)」成立，**并不**代表 ctx 装得下一轮：
+//
 //	240s(锁) + 600s(client_stats) + 182.33s(task_stats) + 65.40s(matrix)
 //	= 1087.7s > 900s
+//
 // ⇒ 也就是说，**抬到 600s 之后，ctx 仍可能是先掐断的那道闸**——
 // 而 ctx 掐断的表现（后几个视图根本没刷新 + 半轮状态）正是本文件头部
 // 注释里说的「比整体失败更难发现」的那种形态。
 //
 // ⇒ 这道门把**完整**的不变量钉成机器可复核的判据：
+//
 //	SessionViewsTimeout ≥ SessionViewLockRetryBudget
 //	                     + sessionViewsStatementTimeout
 //	                     + sessionViewsOtherViewsBudget
@@ -213,12 +217,14 @@ func TestSessionViewsTimeout_CoversLockBudgetPlusStatements(t *testing.T) {
 // TestSessionAnalyticsViews_FastestFirst：快的排前面、慢的排最后。
 //
 // 实测成本（252 生产 2026-10-22 / 211 真库 2026-11-19）：
-//   981 族 0.6~3.5s｜matrix 7.45~65.4s｜task_stats 6.19~151.5s｜
-//   client_stats 34.28s 且**≥180.31s（被杀）**。一轮是串行的 ⇒ 慢视图排前面
-//   会把整轮推迟它自己的耗时，后面的视图因此被推到离新鲜度预算只剩 28 分钟。
+//
+//	981 族 0.6~3.5s｜matrix 7.45~65.4s｜task_stats 6.19~151.5s｜
+//	client_stats 34.28s 且**≥180.31s（被杀）**。一轮是串行的 ⇒ 慢视图排前面
+//	会把整轮推迟它自己的耗时，后面的视图因此被推到离新鲜度预算只剩 28 分钟。
 //
 // ★ 981 轮扩容后清单是 7 个（3 个 357 族 + 4 个 981 族）⇒ 断言从
-//   「数量 == 3」改成「首项属最快的族、末项是最慢的视图」。
+//
+//	「数量 == 3」改成「首项属最快的族、末项是最慢的视图」。
 func TestSessionAnalyticsViews_FastestFirst(t *testing.T) {
 	if len(SessionAnalyticsViews) < 2 {
 		t.Fatalf("清单为空：%v", SessionAnalyticsViews)
@@ -328,8 +334,9 @@ func TestSessionViewsTickWait_KeepsAGapAfterTheStartupRound(t *testing.T) {
 // TestNoSecondAdvisoryLockKey：守「没有第二把 advisory 锁」。
 //
 // ★ 这是一条**反向**判据。历史上有人想过后给 session 族单开一把锁键，本文件
-//   明确否掉过：那会让 routing 与 session 的 REFRESH 并发跑，而 session 一轮
-//   已经占掉集群 62%~75% 的 WAL。⇒ 相位错开是零并发的解法，必须保持唯一解。
+//
+//	明确否掉过：那会让 routing 与 session 的 REFRESH 并发跑，而 session 一轮
+//	已经占掉集群 62%~75% 的 WAL。⇒ 相位错开是零并发的解法，必须保持唯一解。
 func TestNoSecondAdvisoryLockKey(t *testing.T) {
 	src := mvRefresherSourceForTest(t)
 

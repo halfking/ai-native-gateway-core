@@ -47,10 +47,10 @@ func ReleaseExecutionContext(ctx *ExecutionContext) {
 	if ctx == nil {
 		return
 	}
-	
+
 	// 重置所有字段
 	ctx.Reset()
-	
+
 	// 归还到池中
 	executionContextPool.Put(ctx)
 }
@@ -60,16 +60,16 @@ func ReleaseExecutionContext(ctx *ExecutionContext) {
 func (ctx *ExecutionContext) Reset() {
 	// 清空 Context（设为 nil，下次使用时重新设置）
 	ctx.Context = nil
-	
+
 	// 清空 Phase 和 PluginID
 	ctx.Phase = ""
 	ctx.PluginID = ""
-	
+
 	// 清空请求元数据
 	ctx.RequestID = ""
 	ctx.RequestTime = time.Time{}
 	ctx.Timeout = 0
-	
+
 	// 清空 State map
 	// 策略：如果 map 过大（>16 个键），重新分配；否则清空复用
 	if len(ctx.State) > 16 {

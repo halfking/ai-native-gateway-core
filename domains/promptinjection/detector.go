@@ -306,6 +306,7 @@ func (d *Detector) Detect(ctx context.Context, tenantID, input string) (*Detecti
 // detect 执行检测（带会话身份）。
 //
 // ★ 2026-11-18 审计轮 P1：sessionKey 必须一路传到「连续攻击终止会话」的
+//
 //	计数查询 —— 写侧（DetectAndLog 的 INSERT）写的是**真实** sessionKey，
 //	而读侧此前恒传 ""（谓词 session_key = ''）⇒ 计数永远命中不到
 //	自己刚写的那一行 ⇒ TerminateOnRepeat 恒不触发（该功能形同虚设）。
@@ -2013,6 +2014,7 @@ func (e *LLMDetectionEngine) SetEngineResolver(r EngineResolver) {
 // SetLLMEngineResolver 把端点解析器注入到 Detector 的 LLM 检测引擎上。
 //
 // ★ 2026-11-18 审计轮 P1：此前 SetEngineResolver **零生产调用方**
+//
 //	⇒ LLMDetectionEngine.resolver 恒 nil ⇒ 判官层每次调用都返回
 //	「endpoint resolver not wired」⇒ **判官层从不产出结论**
 //	（且因 fail_closed 默认 false，只落一条 Warn 就继续用规则分放行）。

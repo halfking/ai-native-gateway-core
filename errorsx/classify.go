@@ -13,10 +13,10 @@ import (
 type ErrorKind string
 
 const (
-	KindTransient    ErrorKind = "transient"
-	KindTimeout      ErrorKind = "timeout"
-	KindNetwork      ErrorKind = "network"
-	KindRateLimit    ErrorKind = "rate_limit"
+	KindTransient ErrorKind = "transient"
+	KindTimeout   ErrorKind = "timeout"
+	KindNetwork   ErrorKind = "network"
+	KindRateLimit ErrorKind = "rate_limit"
 	// KindRateLimitObserved（2026-11-10，审计 F50）覆盖「上游用**请求侧
 	// 状态码**回了一个**限流形态**的正文」——即
 	//
@@ -50,9 +50,9 @@ const (
 	//   兜底，绝不落到 transient 那条放大器链上）。
 	KindRateLimitObserved ErrorKind = "rate_limit_observed"
 	KindAuth              ErrorKind = "auth"
-	KindQuota        ErrorKind = "quota"
-	KindUpstreamDown ErrorKind = "upstream_down"
-	KindCanceled     ErrorKind = "canceled"
+	KindQuota             ErrorKind = "quota"
+	KindUpstreamDown      ErrorKind = "upstream_down"
+	KindCanceled          ErrorKind = "canceled"
 	// KindClientBug (2026-07-28 §5.6) covers client-side mistakes that
 	// look like a KindCanceled from the upstream's perspective but
 	// originate from the caller's protocol (e.g. echoing a stale
@@ -135,7 +135,7 @@ const (
 	// silently slide-window trim a too-long conversation, but the proxy
 	// path was historically returning the raw 400 because no client-side
 	// trim was applied.
-	KindContextLength      ErrorKind = "context_length_exceeded"
+	KindContextLength ErrorKind = "context_length_exceeded"
 	// KindContextBudgetExceeded: gateway-side bucket budget exhaustion
 	// (request tokens exceed the selected bucket's context window limit).
 	// Distinct from KindContextLength because:
@@ -671,7 +671,8 @@ var noActiveQuotaRe = regexp.MustCompile(`(?i)\bno\s+active\s+(limited\s+)?quota
 // ⇒ 归 KindModelUnavailable（绑定级，同裸 404 的处置：只冷却这一对，
 // 保留跨凭据故障转移），不归凭据级 KindAuth。
 // ★ 必须「无权访问」+「分组」**成对**出现：裸「无权访问」（账号级拒绝）
-//   不在本模式内——账号级 403 保持 KindAuth 凭据级处置不放宽。
+//
+//	不在本模式内——账号级 403 保持 KindAuth 凭据级处置不放宽。
 var bindingGroupAccessRe = regexp.MustCompile(`无权访问.{0,40}分组`)
 
 // IsBindingGroupAccessDenied 是 bindingGroupAccessRe 的导出面：bg 探针侧
@@ -885,23 +886,28 @@ var degradedFunctionRe = regexp.MustCompile(`(?i)degraded function cannot be inv
 // 上游用**请求侧状态码**（400/404/413/414/422）回了一个「限流形态」的正文。
 //
 // ★ 为什么**不直接复用** concurrentOverloadRe：并发/过载族里混着
-//   "slow down|try again later|backoff" 与 "稍后重试" 这类**泛化**措辞
-//   ⇒ 一个 400 + "internal error, please try again later" 也会被它命中
-//   ⇒ 归因会从「请求被拒」漂移成「限流」⇒ **误报**。
-//   本条只认**限流语义本体**的措辞 ⇒ 误报率压到最低。
+//
+//	"slow down|try again later|backoff" 与 "稍后重试" 这类**泛化**措辞
+//	⇒ 一个 400 + "internal error, please try again later" 也会被它命中
+//	⇒ 归因会从「请求被拒」漂移成「限流」⇒ **误报**。
+//	本条只认**限流语义本体**的措辞 ⇒ 误报率压到最低。
 //
 // ── 为什么**不用** `\b` ────────────────────────────────────────────────
 //
 // ★ 本仓已被 BSD libc 的 regcomp 咬过一次：`\b` 在 BSD libc 里**不是**
-//   词边界 ⇒ 白名单里凡是用 `\b` 的模式在 macOS 上语义漂移
-//   （scripts/scan-secrets.config:63-65 的做法：`(^|[^A-Za-z0-9_])…`
-//   `([^A-Za-z0-9_]|$)`）。
+//
+//	词边界 ⇒ 白名单里凡是用 `\b` 的模式在 macOS 上语义漂移
+//	（scripts/scan-secrets.config:63-65 的做法：`(^|[^A-Za-z0-9_])…`
+//	`([^A-Za-z0-9_]|$)`）。
+//
 // ⇒ 本条一律用**显式边界**：左边界要求「行首或非单词字符」，右边界要求
-//   「非单词字符或行尾」⇒ 在 glibc / BSD libc 上语义一致。
+//
+//	「非单词字符或行尾」⇒ 在 glibc / BSD libc 上语义一致。
 //
 // ★ 其余写法也刻意保持**两个引擎都认**：不用 `(?:…)`（POSIX ERE 没有
-//   非捕获组）、不用 `\s`（用显式字符类）、字符类里的 `-` 一律放**首位**
-//   （`[- _]` 而不是 `[ _-]`：后者在 POSIX ERE 里会被读成**区间**）。
+//
+//	非捕获组）、不用 `\s`（用显式字符类）、字符类里的 `-` 一律放**首位**
+//	（`[- _]` 而不是 `[ _-]`：后者在 POSIX ERE 里会被读成**区间**）。
 var rateLimitBodyRe = regexp.MustCompile(
 	`(?i)(^|[^A-Za-z0-9_])(` +
 		// ① 限流语义本体（OpenAI / Anthropic / 各类中转的常见措辞）
@@ -2201,6 +2207,6 @@ func isContextBudgetError(err error) bool {
 	}
 	msg := err.Error()
 	// Match "context_budget_exceeded:" prefix (direct error) or wrapped form
-	return strings.HasPrefix(msg, "context_budget_exceeded:") || 
+	return strings.HasPrefix(msg, "context_budget_exceeded:") ||
 		strings.Contains(msg, ": context_budget_exceeded:")
 }

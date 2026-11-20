@@ -30,6 +30,10 @@ import (
 )
 
 const (
+	// defaultProbeLaneTTLDays 是 settings 键 lifecycle.session_turns_probe_hot_ttl_days
+	// spec 缺失/未装载时的 fallback。★ 必须与 settings/spec_lifecycle.go 同键的
+	// spec Default 保持一致（2026-11-17 b6ee9e543 有意从 14 收窄到 7——
+	// 那次只改了本侧与钉测，spec 侧漏改，由 2026-11-20 审计轮补齐到 7）。
 	defaultProbeLaneTTLDays = 7
 	minProbeLaneTTLDays     = 1
 	maxProbeLaneTTLDays     = 90

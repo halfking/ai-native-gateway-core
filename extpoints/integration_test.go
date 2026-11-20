@@ -12,14 +12,14 @@ import (
 // TestIntegration_ExtensionPointInPipeline 验证 ExtensionPointHook 在真实 Pipeline 中的集成。
 //
 // 这个测试模拟了 cmd/gateway/main_pipeline.go 中的集成场景：
-//   1. 创建一个 ExtensionPointRegistry
-//   2. 注册一个测试插件
-//   3. 创建 ExtensionPointHook 并添加到 Pipeline
-//   4. 执行 Pipeline 并验证插件被调用
+//  1. 创建一个 ExtensionPointRegistry
+//  2. 注册一个测试插件
+//  3. 创建 ExtensionPointHook 并添加到 Pipeline
+//  4. 执行 Pipeline 并验证插件被调用
 func TestIntegration_ExtensionPointInPipeline(t *testing.T) {
 	// Step 1: 创建注册表并注册插件
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	// 创建一个简单的测试插件
 	plugin := &testPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -29,24 +29,24 @@ func TestIntegration_ExtensionPointInPipeline(t *testing.T) {
 		},
 		executed: false,
 	}
-	
+
 	err := registry.Register(extpoints.PhaseAuth, plugin)
 	if err != nil {
 		t.Fatalf("Failed to register plugin: %v", err)
 	}
-	
+
 	// Step 2: 创建 Pipeline 并添加 ExtensionPointHook
 	p := pipeline.NewRequestPipeline()
-	
+
 	authHook := extpoints.NewExtensionPointHook(registry, "authentication")
-	
+
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "authentication",
 		Phase: pipeline.PhaseAuthentication,
 		Mode:  pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{authHook},
 	})
-	
+
 	// Step 3: 创建测试请求并执行 Pipeline
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
@@ -61,17 +61,17 @@ func TestIntegration_ExtensionPointInPipeline(t *testing.T) {
 			RequestID: "test-request-123",
 		},
 	}
-	
+
 	err = p.Execute(ctx, envelope)
 	if err != nil {
 		t.Errorf("Pipeline execution failed: %v", err)
 	}
-	
+
 	// Step 4: 验证插件被执行了
 	if !plugin.executed {
 		t.Error("Expected plugin to be executed in pipeline")
 	}
-	
+
 	// 验证插件接收到正确的 RequestID
 	if plugin.lastRequestID == "" {
 		t.Error("Plugin did not receive RequestID")
@@ -83,9 +83,9 @@ func TestIntegration_ExtensionPointInPipeline(t *testing.T) {
 // TestIntegration_MultiplePhases 验证多个 Phase 的插件按顺序执行。
 func TestIntegration_MultiplePhases(t *testing.T) {
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	executionOrder := []string{}
-	
+
 	// 注册 Auth 阶段插件
 	authPlugin := &testPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -98,7 +98,7 @@ func TestIntegration_MultiplePhases(t *testing.T) {
 		},
 	}
 	registry.Register(extpoints.PhaseAuth, authPlugin)
-	
+
 	// 注册 PreRoute 阶段插件
 	preRoutePlugin := &testPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -111,10 +111,10 @@ func TestIntegration_MultiplePhases(t *testing.T) {
 		},
 	}
 	registry.Register(extpoints.PhasePreRoute, preRoutePlugin)
-	
+
 	// 创建 Pipeline
 	p := pipeline.NewRequestPipeline()
-	
+
 	// 添加 Auth Stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "authentication",
@@ -122,7 +122,7 @@ func TestIntegration_MultiplePhases(t *testing.T) {
 		Mode:  pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{extpoints.NewExtensionPointHook(registry, "authentication")},
 	})
-	
+
 	// 添加 PreRouting Stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "pre_routing",
@@ -130,28 +130,28 @@ func TestIntegration_MultiplePhases(t *testing.T) {
 		Mode:  pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{extpoints.NewExtensionPointHook(registry, "pre_routing")},
 	})
-	
+
 	// 执行 Pipeline
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "test-tenant",
 		Metadata: make(map[string]interface{}),
 	}
-	
+
 	err := p.Execute(ctx, envelope)
 	if err != nil {
 		t.Errorf("Pipeline execution failed: %v", err)
 	}
-	
+
 	// 验证执行顺序
 	if len(executionOrder) != 2 {
 		t.Fatalf("Expected 2 plugins to execute, got %d", len(executionOrder))
 	}
-	
+
 	if executionOrder[0] != "auth" {
 		t.Errorf("Expected first execution to be 'auth', got '%s'", executionOrder[0])
 	}
-	
+
 	if executionOrder[1] != "pre-route" {
 		t.Errorf("Expected second execution to be 'pre-route', got '%s'", executionOrder[1])
 	}
@@ -160,7 +160,7 @@ func TestIntegration_MultiplePhases(t *testing.T) {
 // TestIntegration_PluginFailureDoesNotBlockPipeline 验证插件失败不阻塞 Pipeline（fail-open）。
 func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	// 创建一个会失败的插件
 	failingPlugin := &testPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -171,7 +171,7 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 		shouldFail: true,
 	}
 	registry.Register(extpoints.PhaseAuth, failingPlugin)
-	
+
 	// 创建 Pipeline
 	p := pipeline.NewRequestPipeline()
 	p.AddStage(&pipeline.PipelineStage{
@@ -180,14 +180,14 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 		Mode:  pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{extpoints.NewExtensionPointHook(registry, "authentication")},
 	})
-	
+
 	// 执行 Pipeline - 应该成功（fail-open）
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
 		TenantID: "test-tenant",
 		Metadata: make(map[string]interface{}),
 	}
-	
+
 	err := p.Execute(ctx, envelope)
 	// fail-open: 插件失败不应导致 Pipeline 失败
 	if err != nil {
@@ -195,220 +195,220 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 	}
 }
 
-	// TestIntegration_PhasePostUpstream 验证 PhasePostUpstream 插件集成。
-	func TestIntegration_PhasePostUpstream(t *testing.T) {
-		registry := extpoints.NewExtensionPointRegistry()
-		
-		// 创建 PostUpstream 阶段插件
-		postUpstreamPlugin := &testPlugin{
-			metadata: &extpoints.PluginMetadata{
-				PluginID: "test-post-upstream",
-				Phase:    extpoints.PhasePostUpstream,
-				Priority: extpoints.PriorityNormal,
-			},
-			executed: false,
-		}
-		
-		err := registry.Register(extpoints.PhasePostUpstream, postUpstreamPlugin)
-		if err != nil {
-			t.Fatalf("Failed to register post-upstream plugin: %v", err)
-		}
-		
-		// 创建 Pipeline
-		p := pipeline.NewRequestPipeline()
-		
-		// 添加 PhasePostUpstream Stage
-		p.AddStage(&pipeline.PipelineStage{
-			Name:  "post_upstream_output_compliance",
-			Phase: pipeline.PhasePostUpstream,
-			Mode:  pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{
-				extpoints.NewExtensionPointHook(registry, "post_upstream"),
-			},
-		})
-		
-		// 创建测试请求
-		ctx := context.Background()
-		envelope := &domain.PipelineRequest{
-			TenantID:  "test-tenant",
-			SessionID: "test-session",
-			Metadata: map[string]interface{}{
-				"response_size": int64(1024),
-				"response_time": 100,
-			},
-		}
-		
-		// 执行 Pipeline
-		err = p.Execute(ctx, envelope)
-		if err != nil {
-			t.Errorf("Pipeline execution failed: %v", err)
-		}
-		
-		// 验证插件被执行
-		if !postUpstreamPlugin.executed {
-			t.Error("Expected post-upstream plugin to be executed")
-		}
+// TestIntegration_PhasePostUpstream 验证 PhasePostUpstream 插件集成。
+func TestIntegration_PhasePostUpstream(t *testing.T) {
+	registry := extpoints.NewExtensionPointRegistry()
+
+	// 创建 PostUpstream 阶段插件
+	postUpstreamPlugin := &testPlugin{
+		metadata: &extpoints.PluginMetadata{
+			PluginID: "test-post-upstream",
+			Phase:    extpoints.PhasePostUpstream,
+			Priority: extpoints.PriorityNormal,
+		},
+		executed: false,
 	}
 
-	// TestIntegration_PhasePreUpstream 验证 PhasePreUpstream 插件集成。
-	func TestIntegration_PhasePreUpstream(t *testing.T) {
-		registry := extpoints.NewExtensionPointRegistry()
-		
-		// 创建 PreUpstream 阶段插件
-		preUpstreamPlugin := &testPlugin{
-			metadata: &extpoints.PluginMetadata{
-				PluginID: "test-pre-upstream",
-				Phase:    extpoints.PhasePreUpstream,
-				Priority: extpoints.PriorityNormal,
-			},
-			executed: false,
-		}
-		
-		err := registry.Register(extpoints.PhasePreUpstream, preUpstreamPlugin)
-		if err != nil {
-			t.Fatalf("Failed to register pre-upstream plugin: %v", err)
-		}
-		
-		// 创建 Pipeline
-		p := pipeline.NewRequestPipeline()
-		
-		// 添加 PhasePreUpstream Stage
-		p.AddStage(&pipeline.PipelineStage{
-			Name:  "pre_upstream",
-			Phase: pipeline.PhasePreUpstream,
-			Mode:  pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{
-				extpoints.NewExtensionPointHook(registry, "pre_upstream"),
-			},
-		})
-		
-		// 创建测试请求
-		ctx := context.Background()
-		envelope := &domain.PipelineRequest{
-			TenantID:  "test-tenant",
-			SessionID: "test-session",
-			Metadata: map[string]interface{}{
-				"model":       "gpt-4",
-				"temperature": 0.5,
-			},
-		}
-		
-		// 执行 Pipeline
-		err = p.Execute(ctx, envelope)
-		if err != nil {
-			t.Errorf("Pipeline execution failed: %v", err)
-		}
-		
-		// 验证插件被执行
-		if !preUpstreamPlugin.executed {
-			t.Error("Expected pre-upstream plugin to be executed")
-		}
+	err := registry.Register(extpoints.PhasePostUpstream, postUpstreamPlugin)
+	if err != nil {
+		t.Fatalf("Failed to register post-upstream plugin: %v", err)
 	}
 
-	// TestIntegration_PhasePreAuth 验证 PhasePreAuth 插件集成。
-	func TestIntegration_PhasePreAuth(t *testing.T) {
-		registry := extpoints.NewExtensionPointRegistry()
-		
-		// 创建 PreAuth 阶段插件
-		preAuthPlugin := &testPlugin{
-			metadata: &extpoints.PluginMetadata{
-				PluginID: "test-pre-auth",
-				Phase:    extpoints.PhasePreAuth,
-				Priority: extpoints.PriorityHigh,
-			},
-			executed: false,
-		}
-		
-		err := registry.Register(extpoints.PhasePreAuth, preAuthPlugin)
-		if err != nil {
-			t.Fatalf("Failed to register pre-auth plugin: %v", err)
-		}
-		
-		// 创建 Pipeline
-		p := pipeline.NewRequestPipeline()
-		
-		// 添加 PhasePreAuth Stage (使用 pipeline.PhasePreAuthentication)
-		p.AddStage(&pipeline.PipelineStage{
-			Name:  "pre_auth",
-			Phase: pipeline.PhasePreAuthentication,
-			Mode:  pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{
-				extpoints.NewExtensionPointHook(registry, "pre_auth"),
-			},
-		})
-		
-		// 创建测试请求
-		ctx := context.Background()
-		envelope := &domain.PipelineRequest{
-			TenantID:  "test-tenant",
-			SessionID: "test-session",
-			Metadata: map[string]interface{}{
-				"client_ip": "192.168.1.1",
-				"user_agent": "test-agent",
-			},
-		}
-		
-		// 执行 Pipeline
-		err = p.Execute(ctx, envelope)
-		if err != nil {
-			t.Errorf("Pipeline execution failed: %v", err)
-		}
-		
-		// 验证插件被执行
-		if !preAuthPlugin.executed {
-			t.Error("Expected pre-auth plugin to be executed")
-		}
+	// 创建 Pipeline
+	p := pipeline.NewRequestPipeline()
+
+	// 添加 PhasePostUpstream Stage
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_upstream_output_compliance",
+		Phase: pipeline.PhasePostUpstream,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(registry, "post_upstream"),
+		},
+	})
+
+	// 创建测试请求
+	ctx := context.Background()
+	envelope := &domain.PipelineRequest{
+		TenantID:  "test-tenant",
+		SessionID: "test-session",
+		Metadata: map[string]interface{}{
+			"response_size": int64(1024),
+			"response_time": 100,
+		},
 	}
 
-	// TestIntegration_PhasePostAuth 验证 PhasePostAuth 插件集成。
-	func TestIntegration_PhasePostAuth(t *testing.T) {
-		registry := extpoints.NewExtensionPointRegistry()
-		
-		// 创建 PostAuth 阶段插件
-		postAuthPlugin := &testPlugin{
-			metadata: &extpoints.PluginMetadata{
-				PluginID: "test-post-auth",
-				Phase:    extpoints.PhasePostAuth,
-				Priority: extpoints.PriorityNormal,
-			},
-			executed: false,
-		}
-		
-		err := registry.Register(extpoints.PhasePostAuth, postAuthPlugin)
-		if err != nil {
-			t.Fatalf("Failed to register post-auth plugin: %v", err)
-		}
-		
-		// 创建 Pipeline
-		p := pipeline.NewRequestPipeline()
-		
-		// 添加 PhasePostAuth Stage (使用 pipeline.PhasePostAuthentication)
-		p.AddStage(&pipeline.PipelineStage{
-			Name:  "post_auth",
-			Phase: pipeline.PhasePostAuthentication,
-			Mode:  pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{
-				extpoints.NewExtensionPointHook(registry, "post_auth"),
-			},
-		})
-		
-		// 创建测试请求
-		ctx := context.Background()
-		envelope := &domain.PipelineRequest{
-			TenantID:  "test-tenant",
-			SessionID: "test-session",
-			Metadata: map[string]interface{}{
-				"user_id": "test-user-123",
-				"authenticated": true,
-			},
-		}
-		
-		// 执行 Pipeline
-		err = p.Execute(ctx, envelope)
-		if err != nil {
-			t.Errorf("Pipeline execution failed: %v", err)
-		}
-		
+	// 执行 Pipeline
+	err = p.Execute(ctx, envelope)
+	if err != nil {
+		t.Errorf("Pipeline execution failed: %v", err)
+	}
+
+	// 验证插件被执行
+	if !postUpstreamPlugin.executed {
+		t.Error("Expected post-upstream plugin to be executed")
+	}
+}
+
+// TestIntegration_PhasePreUpstream 验证 PhasePreUpstream 插件集成。
+func TestIntegration_PhasePreUpstream(t *testing.T) {
+	registry := extpoints.NewExtensionPointRegistry()
+
+	// 创建 PreUpstream 阶段插件
+	preUpstreamPlugin := &testPlugin{
+		metadata: &extpoints.PluginMetadata{
+			PluginID: "test-pre-upstream",
+			Phase:    extpoints.PhasePreUpstream,
+			Priority: extpoints.PriorityNormal,
+		},
+		executed: false,
+	}
+
+	err := registry.Register(extpoints.PhasePreUpstream, preUpstreamPlugin)
+	if err != nil {
+		t.Fatalf("Failed to register pre-upstream plugin: %v", err)
+	}
+
+	// 创建 Pipeline
+	p := pipeline.NewRequestPipeline()
+
+	// 添加 PhasePreUpstream Stage
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_upstream",
+		Phase: pipeline.PhasePreUpstream,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(registry, "pre_upstream"),
+		},
+	})
+
+	// 创建测试请求
+	ctx := context.Background()
+	envelope := &domain.PipelineRequest{
+		TenantID:  "test-tenant",
+		SessionID: "test-session",
+		Metadata: map[string]interface{}{
+			"model":       "gpt-4",
+			"temperature": 0.5,
+		},
+	}
+
+	// 执行 Pipeline
+	err = p.Execute(ctx, envelope)
+	if err != nil {
+		t.Errorf("Pipeline execution failed: %v", err)
+	}
+
+	// 验证插件被执行
+	if !preUpstreamPlugin.executed {
+		t.Error("Expected pre-upstream plugin to be executed")
+	}
+}
+
+// TestIntegration_PhasePreAuth 验证 PhasePreAuth 插件集成。
+func TestIntegration_PhasePreAuth(t *testing.T) {
+	registry := extpoints.NewExtensionPointRegistry()
+
+	// 创建 PreAuth 阶段插件
+	preAuthPlugin := &testPlugin{
+		metadata: &extpoints.PluginMetadata{
+			PluginID: "test-pre-auth",
+			Phase:    extpoints.PhasePreAuth,
+			Priority: extpoints.PriorityHigh,
+		},
+		executed: false,
+	}
+
+	err := registry.Register(extpoints.PhasePreAuth, preAuthPlugin)
+	if err != nil {
+		t.Fatalf("Failed to register pre-auth plugin: %v", err)
+	}
+
+	// 创建 Pipeline
+	p := pipeline.NewRequestPipeline()
+
+	// 添加 PhasePreAuth Stage (使用 pipeline.PhasePreAuthentication)
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "pre_auth",
+		Phase: pipeline.PhasePreAuthentication,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(registry, "pre_auth"),
+		},
+	})
+
+	// 创建测试请求
+	ctx := context.Background()
+	envelope := &domain.PipelineRequest{
+		TenantID:  "test-tenant",
+		SessionID: "test-session",
+		Metadata: map[string]interface{}{
+			"client_ip":  "192.168.1.1",
+			"user_agent": "test-agent",
+		},
+	}
+
+	// 执行 Pipeline
+	err = p.Execute(ctx, envelope)
+	if err != nil {
+		t.Errorf("Pipeline execution failed: %v", err)
+	}
+
+	// 验证插件被执行
+	if !preAuthPlugin.executed {
+		t.Error("Expected pre-auth plugin to be executed")
+	}
+}
+
+// TestIntegration_PhasePostAuth 验证 PhasePostAuth 插件集成。
+func TestIntegration_PhasePostAuth(t *testing.T) {
+	registry := extpoints.NewExtensionPointRegistry()
+
+	// 创建 PostAuth 阶段插件
+	postAuthPlugin := &testPlugin{
+		metadata: &extpoints.PluginMetadata{
+			PluginID: "test-post-auth",
+			Phase:    extpoints.PhasePostAuth,
+			Priority: extpoints.PriorityNormal,
+		},
+		executed: false,
+	}
+
+	err := registry.Register(extpoints.PhasePostAuth, postAuthPlugin)
+	if err != nil {
+		t.Fatalf("Failed to register post-auth plugin: %v", err)
+	}
+
+	// 创建 Pipeline
+	p := pipeline.NewRequestPipeline()
+
+	// 添加 PhasePostAuth Stage (使用 pipeline.PhasePostAuthentication)
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "post_auth",
+		Phase: pipeline.PhasePostAuthentication,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			extpoints.NewExtensionPointHook(registry, "post_auth"),
+		},
+	})
+
+	// 创建测试请求
+	ctx := context.Background()
+	envelope := &domain.PipelineRequest{
+		TenantID:  "test-tenant",
+		SessionID: "test-session",
+		Metadata: map[string]interface{}{
+			"user_id":       "test-user-123",
+			"authenticated": true,
+		},
+	}
+
+	// 执行 Pipeline
+	err = p.Execute(ctx, envelope)
+	if err != nil {
+		t.Errorf("Pipeline execution failed: %v", err)
+	}
+
 	// 验证插件被执行
 	if !postAuthPlugin.executed {
 		t.Error("Expected post-auth plugin to be executed")
@@ -418,7 +418,7 @@ func TestIntegration_PluginFailureDoesNotBlockPipeline(t *testing.T) {
 // TestIntegration_PhasePreResponse 验证 PhasePreResponse 插件集成。
 func TestIntegration_PhasePreResponse(t *testing.T) {
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	// 创建 PreResponse 阶段插件
 	preResponsePlugin := &testPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -428,15 +428,15 @@ func TestIntegration_PhasePreResponse(t *testing.T) {
 		},
 		executed: false,
 	}
-	
+
 	err := registry.Register(extpoints.PhasePreResponse, preResponsePlugin)
 	if err != nil {
 		t.Fatalf("Failed to register pre-response plugin: %v", err)
 	}
-	
+
 	// 创建 Pipeline
 	p := pipeline.NewRequestPipeline()
-	
+
 	// 添加 PhasePreResponse Stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "pre_response",
@@ -446,7 +446,7 @@ func TestIntegration_PhasePreResponse(t *testing.T) {
 			extpoints.NewExtensionPointHook(registry, "pre_response"),
 		},
 	})
-	
+
 	// 创建测试请求
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
@@ -456,13 +456,13 @@ func TestIntegration_PhasePreResponse(t *testing.T) {
 			"response_ready": true,
 		},
 	}
-	
+
 	// 执行 Pipeline
 	err = p.Execute(ctx, envelope)
 	if err != nil {
 		t.Errorf("Pipeline execution failed: %v", err)
 	}
-	
+
 	// 验证插件被执行
 	if !preResponsePlugin.executed {
 		t.Error("Expected pre-response plugin to be executed")
@@ -472,7 +472,7 @@ func TestIntegration_PhasePreResponse(t *testing.T) {
 // TestIntegration_PhasePostResponse 验证 PhasePostResponse 插件集成。
 func TestIntegration_PhasePostResponse(t *testing.T) {
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	// 创建 PostResponse 阶段插件
 	postResponsePlugin := &testPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -482,15 +482,15 @@ func TestIntegration_PhasePostResponse(t *testing.T) {
 		},
 		executed: false,
 	}
-	
+
 	err := registry.Register(extpoints.PhasePostResponse, postResponsePlugin)
 	if err != nil {
 		t.Fatalf("Failed to register post-response plugin: %v", err)
 	}
-	
+
 	// 创建 Pipeline
 	p := pipeline.NewRequestPipeline()
-	
+
 	// 添加 PhasePostResponse Stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "post_response",
@@ -500,7 +500,7 @@ func TestIntegration_PhasePostResponse(t *testing.T) {
 			extpoints.NewExtensionPointHook(registry, "post_response"),
 		},
 	})
-	
+
 	// 创建测试请求
 	ctx := context.Background()
 	envelope := &domain.PipelineRequest{
@@ -510,27 +510,27 @@ func TestIntegration_PhasePostResponse(t *testing.T) {
 			"response_completed": true,
 		},
 	}
-	
+
 	// 执行 Pipeline
 	err = p.Execute(ctx, envelope)
 	if err != nil {
 		t.Errorf("Pipeline execution failed: %v", err)
 	}
-	
+
 	// 验证插件被执行
 	if !postResponsePlugin.executed {
 		t.Error("Expected post-response plugin to be executed")
 	}
 }
-	
-	// testPlugin 是用于集成测试的简单插件实现。
-	type testPlugin struct {
-		metadata    *extpoints.PluginMetadata
-		executed    bool
-		lastRequestID string // 存储 RequestID 而不是整个 context
-		onExecute   func()
-		shouldFail  bool
-	}
+
+// testPlugin 是用于集成测试的简单插件实现。
+type testPlugin struct {
+	metadata      *extpoints.PluginMetadata
+	executed      bool
+	lastRequestID string // 存储 RequestID 而不是整个 context
+	onExecute     func()
+	shouldFail    bool
+}
 
 func (p *testPlugin) Metadata() *extpoints.PluginMetadata {
 	return p.metadata
@@ -552,18 +552,18 @@ func (p *testPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.Execut
 	p.executed = true
 	// 复制 RequestID 而不是存储 context 指针（因为 context 会被归还到池中）
 	p.lastRequestID = ctx.RequestID
-	
+
 	if p.onExecute != nil {
 		p.onExecute()
 	}
-	
+
 	if p.shouldFail {
 		return &extpoints.ExecutionResult{
 			Success: false,
 			Error:   context.Canceled,
 		}, context.Canceled
 	}
-	
+
 	return &extpoints.ExecutionResult{
 		Success: true,
 	}, nil

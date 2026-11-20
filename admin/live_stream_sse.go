@@ -141,14 +141,14 @@ type LiveStreamEnvelope struct {
 	// frames (主从关系建立/更新： title/summary/sensitive_check/compression).
 	// Optional — empty on every other envelope type.
 	ParentRequestID string `json:"parent_request_id,omitempty"`
-	
+
 	// RouteTrace (2026-11-11) carries the routing decision chain for a request.
 	// Type="route_trace" identifies this variant. Incremental updates are sent
 	// as routing progresses (selecting → attempting → responding → done/failed).
 	// Wire-safe: no sensitive data (credentials, internal IDs). Optional — nil
 	// on envelopes that don't carry routing trace data. Older clients ignore it.
 	RouteTrace *RouteTrace `json:"route_trace,omitempty"`
-	
+
 	// StageTree (2026-11-16) carries the complete pipeline stage visualization
 	// for a request. Type="stage_tree" identifies this variant. Sent incrementally
 	// as the request progresses through pipeline stages (auth → provider → reply).
@@ -665,7 +665,7 @@ type LiveStreamSSEHub struct {
 	// avoid an import cycle. nil disables node pushes.
 	nodeStatusMu       sync.RWMutex
 	nodeStatusProvider func() []LiveNodeStatus
-	
+
 	// routeTraceStore (2026-11-11) tracks active route traces for dynamic
 	// routing visualization. Cleaned up periodically to bound memory usage.
 	routeTraceStore *RouteTraceStore
@@ -827,8 +827,8 @@ func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEH
 		// live_stream_async.go 的 recordQueueCapacity。done chan 由各自
 		// worker 启动时创建 (startActionWorker / startRecordDrainer),
 		// Run 未调用时保持 nil, Stop 的 join 据此跳过。
-		actionTrigger: make(chan struct{}, 1),
-		recordQueue:   make(chan LiveRequest, recordQueueCapacity),
+		actionTrigger:   make(chan struct{}, 1),
+		recordQueue:     make(chan LiveRequest, recordQueueCapacity),
 		routeTraceStore: NewRouteTraceStore(), // 2026-11-11: dynamic routing visualization
 	}
 	// 查询缝默认指向真实 DB 实现; 构造完成后再挂, 避免构造期内自引用。

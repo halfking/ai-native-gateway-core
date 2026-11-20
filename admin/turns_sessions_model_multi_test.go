@@ -12,6 +12,7 @@ import (
 //   - 缺省/单值：保持 `ft.model = $N`（等值谓词，不惊动既有查询计划）；
 //   - 多值（含空白容忍）：`ft.model = ANY($N)`，参数为 []string；
 //   - 会话级与轮次级（loadTurnsForSessions）两处口径一致。
+//
 // ★ 形状门 + 参数门都要钉：只有形状没有参数类型，ANY 数组串错层照样过编译。
 func TestTurnsSessionsModelMultiValueWhere(t *testing.T) {
 	cases := []struct {

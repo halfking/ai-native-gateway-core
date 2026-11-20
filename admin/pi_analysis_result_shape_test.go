@@ -41,23 +41,23 @@ func TestGetResultJSONShapeIsSnakeCase(t *testing.T) {
 		"queued_at", "started_at", "completed_at",
 	}
 	rows := sqlmock.NewRows(cols).AddRow(
-		int64(1), "analysis-1", int64(1),                    // id, analysis_id, queue_id
-		"root", "category", false,                           // root_cause, error_category, is_false_positive
-		0.9, "fix",                                          // confidence_score, suggested_fix
-		nil, nil,                                            // rule_adjustment, code_changes
-		"high", "global", 3,                                 // severity_level, impact_scope, affected_users_estimate
-		nil, 1,                                              // similar_cases, pattern_frequency
-		10, 20,                                              // analysis_duration_ms, llm_tokens_used
-		"2026-11-19T00:00:00Z",                              // created_at
-		"model-x", nil,                                      // analyzer_model, analyzer_version (NULL!)
-		nil, nil,                                            // analysis_details, llm_response_raw (NULL!)
-		false, nil, nil, nil,                                // auto_applied, applied_at, applied_by, applied_actions
-		"rule_fp", "hash", 5,                                // error_type, error_hash, priority
-		"default", nil, nil,                                 // tenant_id, session_id, request_id
-		"input", nil, "msg", nil,                            // input_text, input_hash, error_message, error_details
-		nil, nil, nil,                                       // detection_layers, matched_rules, policy_config
-		"pending", 0,                                        // status, retry_count
-		"2026-11-19T00:00:00Z", nil, nil,                    // queued_at, started_at, completed_at
+		int64(1), "analysis-1", int64(1), // id, analysis_id, queue_id
+		"root", "category", false, // root_cause, error_category, is_false_positive
+		0.9, "fix", // confidence_score, suggested_fix
+		nil, nil, // rule_adjustment, code_changes
+		"high", "global", 3, // severity_level, impact_scope, affected_users_estimate
+		nil, 1, // similar_cases, pattern_frequency
+		10, 20, // analysis_duration_ms, llm_tokens_used
+		"2026-11-19T00:00:00Z", // created_at
+		"model-x", nil,         // analyzer_model, analyzer_version (NULL!)
+		nil, nil, // analysis_details, llm_response_raw (NULL!)
+		false, nil, nil, nil, // auto_applied, applied_at, applied_by, applied_actions
+		"rule_fp", "hash", 5, // error_type, error_hash, priority
+		"default", nil, nil, // tenant_id, session_id, request_id
+		"input", nil, "msg", nil, // input_text, input_hash, error_message, error_details
+		nil, nil, nil, // detection_layers, matched_rules, policy_config
+		"pending", 0, // status, retry_count
+		"2026-11-19T00:00:00Z", nil, nil, // queued_at, started_at, completed_at
 	)
 	mock.ExpectQuery("SELECT").WithArgs(int64(1)).WillReturnRows(rows)
 

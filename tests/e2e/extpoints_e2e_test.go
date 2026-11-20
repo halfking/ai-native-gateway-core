@@ -31,23 +31,23 @@ import (
 // TestExtensionPoint_E2E_MultiPhaseExecution 验证多个 Phase 的插件在真实 HTTP 请求中按顺序执行。
 //
 // 测试流程：
-//   1. 注册 demo 插件到 4 个 Phase（Auth, PreRoute, PreUpstream, PostUpstream）
-//   2. 构建完整 Pipeline（模拟生产环境）
-//   3. 创建 HTTP handler 包装 Pipeline
-//   4. 发送 HTTP POST 请求
-//   5. 验证所有插件被执行且元数据正确同步
+//  1. 注册 demo 插件到 4 个 Phase（Auth, PreRoute, PreUpstream, PostUpstream）
+//  2. 构建完整 Pipeline（模拟生产环境）
+//  3. 创建 HTTP handler 包装 Pipeline
+//  4. 发送 HTTP POST 请求
+//  5. 验证所有插件被执行且元数据正确同步
 func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 	t.Parallel()
 
 	// Step 1: 创建 ExtensionPoint Registry 并注册 demo 插件
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	// 注册 4 个 Phase 的插件（模拟生产场景）
 	authPlugin := demo.NewAuthenticationPlugin()
 	headerPlugin := demo.NewHeaderInjectorPlugin()
 	requestModPlugin := demo.NewRequestModifierPlugin()
 	responseMetricsPlugin := demo.NewResponseMetricsPlugin()
-	
+
 	if err := registry.Register(extpoints.PhaseAuth, authPlugin); err != nil {
 		t.Fatalf("Failed to register auth plugin: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 
 	// Step 2: 构建 Pipeline（模拟生产配置）
 	p := pipeline.NewRequestPipeline()
-	
+
 	// Authentication stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "authentication",
@@ -73,7 +73,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 			extpoints.NewExtensionPointHook(registry, "authentication"),
 		},
 	})
-	
+
 	// Pre-routing stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "pre_routing",
@@ -83,7 +83,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 			extpoints.NewExtensionPointHook(registry, "pre_routing"),
 		},
 	})
-	
+
 	// Routing stage (空 hook，仅占位)
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "routing",
@@ -93,7 +93,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 			&passthroughHook{name: "routing"},
 		},
 	})
-	
+
 	// Pre-upstream stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "pre_upstream",
@@ -103,7 +103,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 			extpoints.NewExtensionPointHook(registry, "pre_upstream"),
 		},
 	})
-	
+
 	// Upstream stage (模拟 LLM 调用)
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "upstream",
@@ -113,7 +113,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 			&mockUpstreamHook{},
 		},
 	})
-	
+
 	// Post-upstream stage
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "post_upstream",
@@ -126,7 +126,7 @@ func TestExtensionPoint_E2E_MultiPhaseExecution(t *testing.T) {
 
 	// Step 3: 创建 HTTP handler
 	handler := createPipelineHandler(p)
-	
+
 	// Step 4: 创建测试服务器
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -183,7 +183,7 @@ func TestExtensionPoint_E2E_PluginFailure(t *testing.T) {
 	t.Parallel()
 
 	registry := extpoints.NewExtensionPointRegistry()
-	
+
 	// 注册一个会失败的插件
 	failingPlugin := &failingTestPlugin{
 		metadata: &extpoints.PluginMetadata{
@@ -192,7 +192,7 @@ func TestExtensionPoint_E2E_PluginFailure(t *testing.T) {
 			Priority: extpoints.PriorityNormal,
 		},
 	}
-	
+
 	if err := registry.Register(extpoints.PhaseAuth, failingPlugin); err != nil {
 		t.Fatalf("Failed to register failing plugin: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestExtensionPoint_E2E_PluginFailure(t *testing.T) {
 			extpoints.NewExtensionPointHook(registry, "authentication"),
 		},
 	})
-	
+
 	// Upstream stage (返回成功)
 	p.AddStage(&pipeline.PipelineStage{
 		Name:  "upstream",
@@ -262,9 +262,9 @@ func createPipelineHandler(p *pipeline.RequestPipeline) http.HandlerFunc {
 
 		// 构建响应（包含插件元数据）
 		response := map[string]interface{}{
-			"id":      "chatcmpl-test-e2e",
-			"model":   "gpt-4",
-			"choices": []map[string]interface{}{},
+			"id":       "chatcmpl-test-e2e",
+			"model":    "gpt-4",
+			"choices":  []map[string]interface{}{},
 			"metadata": envelope.Metadata, // 包含插件同步的元数据
 		}
 
@@ -287,10 +287,10 @@ type passthroughHook struct {
 	name string
 }
 
-func (h *passthroughHook) Name() string                                                  { return h.name }
+func (h *passthroughHook) Name() string                                                   { return h.name }
 func (h *passthroughHook) Execute(ctx context.Context, env *domain.PipelineRequest) error { return nil }
-func (h *passthroughHook) Priority() int                                                 { return 500 }
-func (h *passthroughHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool { return true }
+func (h *passthroughHook) Priority() int                                                  { return 500 }
+func (h *passthroughHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool  { return true }
 func (h *passthroughHook) OnError(ctx context.Context, env *domain.PipelineRequest, err error) error {
 	return nil
 }
@@ -308,8 +308,10 @@ func (h *mockUpstreamHook) Execute(ctx context.Context, env *domain.PipelineRequ
 	env.Metadata["response_time"] = 100 * time.Millisecond
 	return nil
 }
-func (h *mockUpstreamHook) Priority() int                                                 { return 500 }
-func (h *mockUpstreamHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool { return true }
+func (h *mockUpstreamHook) Priority() int { return 500 }
+func (h *mockUpstreamHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool {
+	return true
+}
 func (h *mockUpstreamHook) OnError(ctx context.Context, env *domain.PipelineRequest, err error) error {
 	return nil
 }
@@ -319,9 +321,9 @@ type failingTestPlugin struct {
 	metadata *extpoints.PluginMetadata
 }
 
-func (p *failingTestPlugin) Metadata() *extpoints.PluginMetadata { return p.metadata }
-func (p *failingTestPlugin) Initialize(ctx context.Context) error { return nil }
-func (p *failingTestPlugin) Shutdown(ctx context.Context) error   { return nil }
+func (p *failingTestPlugin) Metadata() *extpoints.PluginMetadata   { return p.metadata }
+func (p *failingTestPlugin) Initialize(ctx context.Context) error  { return nil }
+func (p *failingTestPlugin) Shutdown(ctx context.Context) error    { return nil }
 func (p *failingTestPlugin) HealthCheck(ctx context.Context) error { return nil }
 func (p *failingTestPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.ExecutionResult, error) {
 	return &extpoints.ExecutionResult{

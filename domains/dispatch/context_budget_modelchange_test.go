@@ -49,7 +49,7 @@ func TestContextBudgetExceededTriggersModelChange(t *testing.T) {
 	}
 
 	decision := PlanAfterFailure(qr, out, Config{})
-	
+
 	// Should NOT be NextActionFailed (which would prevent model-change)
 	if decision.Action == NextActionFailed {
 		t.Errorf("PlanAfterFailure returned NextActionFailed for context_budget_exceeded, should allow continuation to model-change")
@@ -92,7 +92,7 @@ func TestContextLengthStillTerminalInPlanner(t *testing.T) {
 	}
 
 	decision := PlanAfterFailure(qr, out, Config{})
-	
+
 	// Should be NextActionFailed (terminal)
 	if decision.Action != NextActionFailed {
 		t.Errorf("PlanAfterFailure(KindContextLength) = %v, want NextActionFailed (terminal)", decision.Action)

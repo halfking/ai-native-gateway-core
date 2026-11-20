@@ -74,10 +74,10 @@ type DemoAuthPlugin struct {
 // NewDemoAuthPlugin 创建一个认证演示插件。
 func NewDemoAuthPlugin() *DemoAuthPlugin {
 	metadata := &extpoints.PluginMetadata{
-		PluginID:   "demo-auth-logger",
-		Version:    "1.0.0",
-		Phase:      extpoints.PhaseAuth,
-		Priority:   extpoints.PriorityNormal,
+		PluginID: "demo-auth-logger",
+		Version:  "1.0.0",
+		Phase:    extpoints.PhaseAuth,
+		Priority: extpoints.PriorityNormal,
 		Capabilities: []extpoints.PluginCapability{
 			extpoints.CapabilityObserveRequest,
 			extpoints.CapabilityAuditLog,
@@ -95,7 +95,7 @@ func (p *DemoAuthPlugin) Execute(ctx *extpoints.ExecutionContext) (*extpoints.Ex
 
 	// 从 State 中读取请求信息（由 ExecutionEngine 填充）
 	requestID := ctx.RequestID
-	
+
 	// 记录认证事件
 	slog.Info("demo auth plugin executed",
 		"plugin_id", p.Metadata().PluginID,
@@ -129,10 +129,10 @@ type DemoHeaderPlugin struct {
 // NewDemoHeaderPlugin 创建一个 header 注入演示插件。
 func NewDemoHeaderPlugin() *DemoHeaderPlugin {
 	metadata := &extpoints.PluginMetadata{
-		PluginID:   "demo-header-injector",
-		Version:    "1.0.0",
-		Phase:      extpoints.PhasePreRoute,
-		Priority:   extpoints.PriorityNormal,
+		PluginID: "demo-header-injector",
+		Version:  "1.0.0",
+		Phase:    extpoints.PhasePreRoute,
+		Priority: extpoints.PriorityNormal,
 		Capabilities: []extpoints.PluginCapability{
 			extpoints.CapabilityMutateRequest,
 		},
@@ -184,10 +184,10 @@ type DemoMetricsPlugin struct {
 // NewDemoMetricsPlugin 创建一个指标记录演示插件。
 func NewDemoMetricsPlugin() *DemoMetricsPlugin {
 	metadata := &extpoints.PluginMetadata{
-		PluginID:   "demo-metrics-recorder",
-		Version:    "1.0.0",
-		Phase:      extpoints.PhasePostResponse,
-		Priority:   extpoints.PriorityNormal,
+		PluginID: "demo-metrics-recorder",
+		Version:  "1.0.0",
+		Phase:    extpoints.PhasePostResponse,
+		Priority: extpoints.PriorityNormal,
 		Capabilities: []extpoints.PluginCapability{
 			extpoints.CapabilityMetrics,
 		},

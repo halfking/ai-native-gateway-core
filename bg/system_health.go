@@ -52,10 +52,10 @@ type SystemHealthStatus struct {
 // CircuitBreakerSummary is the circuit breaker state summary (W1-G4, 2026-11-19).
 // It aggregates the current state of all circuit breakers in the gateway.
 type CircuitBreakerSummary struct {
-	OpenCount        int       `json:"open_count"`        // Number of breakers in OPEN state
-	HalfOpenCount    int       `json:"half_open_count"`   // Number of breakers in HALF_OPEN state
-	QuarantinedCount int       `json:"quarantined_count"` // Number of breakers in QUARANTINED state
-	TotalBreakers    int       `json:"total_breakers"`    // Total number of circuit breakers
+	OpenCount        int       `json:"open_count"`                // Number of breakers in OPEN state
+	HalfOpenCount    int       `json:"half_open_count"`           // Number of breakers in HALF_OPEN state
+	QuarantinedCount int       `json:"quarantined_count"`         // Number of breakers in QUARANTINED state
+	TotalBreakers    int       `json:"total_breakers"`            // Total number of circuit breakers
 	LastTransition   time.Time `json:"last_transition,omitempty"` // Most recent state transition (if any)
 }
 
@@ -146,13 +146,13 @@ func (w *SystemHealthWorker) tick(ctx context.Context) {
 	if successRate != nil {
 		sr = *successRate
 	}
-	
+
 	// W1-G4 (2026-11-19): Aggregate circuit breaker state
 	var cbSummary *CircuitBreakerSummary
 	if w.circuitManager != nil {
 		cbSummary = aggregateCircuitStats(w.circuitManager.Stats())
 	}
-	
+
 	w.lastStatus.Store(SystemHealthStatus{
 		Status:         status,
 		SuccessRate:    sr,
@@ -183,11 +183,11 @@ func aggregateCircuitStats(stats []map[string]any) *CircuitBreakerSummary {
 	if len(stats) == 0 {
 		return nil
 	}
-	
+
 	summary := &CircuitBreakerSummary{
 		TotalBreakers: len(stats),
 	}
-	
+
 	var lastTransition time.Time
 	for _, stat := range stats {
 		// State is a string: "closed", "open", "half_open", "quarantined"
@@ -200,16 +200,16 @@ func aggregateCircuitStats(stats []map[string]any) *CircuitBreakerSummary {
 		case "quarantined":
 			summary.QuarantinedCount++
 		}
-		
+
 		// Find the most recent state transition across all breakers
 		if t, ok := stat["last_transition"].(time.Time); ok && t.After(lastTransition) {
 			lastTransition = t
 		}
 	}
-	
+
 	if !lastTransition.IsZero() {
 		summary.LastTransition = lastTransition
 	}
-	
+
 	return summary
 }

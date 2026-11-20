@@ -83,13 +83,14 @@ const pi978ExpectedTSVIndex = 377
 // ★ 21 条来自 364（逐字）＋ 2 条 ensureRulesTable 的 basic ＋ 2 条 977 订正后的。
 //
 // ★ 2026-11-18 12h 审计轮根修（P1）：`tool_abuse_exec` 从「364 的 21 条（逐字）」
-//   这一桶**移出**，改归「977 订正后的」那一桶。
-//   起因：364 的 `tool_abuse_exec` pattern 是 **977 订正前的旧形态**
-//   （`system` + 无界 `.*` ⇒ "the system will call you back" severity 10 命中）。
-//   978 原先「逐字取自 364」⇒ 把 977 刚修掉的假阳性**又种了回去**；
-//   而 978 的登记序在 977 **之后**、全新安装时规则表是空的（315/364 都不在
-//   建库通道里 ⇒ 977 的 UPDATE 命中 0 行）⇒ **每次全新部署都会装上这条假阳性**。
-//   ⇒ 取源改为 977 的订正后字面量（与 privilege_escalation / command_injection 同桶）。
+//
+//	这一桶**移出**，改归「977 订正后的」那一桶。
+//	起因：364 的 `tool_abuse_exec` pattern 是 **977 订正前的旧形态**
+//	（`system` + 无界 `.*` ⇒ "the system will call you back" severity 10 命中）。
+//	978 原先「逐字取自 364」⇒ 把 977 刚修掉的假阳性**又种了回去**；
+//	而 978 的登记序在 977 **之后**、全新安装时规则表是空的（315/364 都不在
+//	建库通道里 ⇒ 977 的 UPDATE 命中 0 行）⇒ **每次全新部署都会装上这条假阳性**。
+//	⇒ 取源改为 977 的订正后字面量（与 privilege_escalation / command_injection 同桶）。
 var pi978CanonicalRuleNames = []string{
 	// 364 的 21 条（★ tool_abuse_exec 已移出 ⇒ 此处实为 20 条）
 	"instruction_override_ignore",

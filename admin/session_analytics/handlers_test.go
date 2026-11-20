@@ -75,7 +75,7 @@ func TestParseOverviewParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			
+
 			// 设置查询参数
 			q := url.Values{}
 			for k, v := range tt.queryParams {
@@ -196,7 +196,7 @@ func TestParseUserRankingParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			
+
 			// 设置查询参数
 			q := url.Values{}
 			for k, v := range tt.queryParams {
