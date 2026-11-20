@@ -35,8 +35,9 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, v, i, a) => {
 
 const CDP_URL = args.cdp || 'http://127.0.0.1:9223'
 const BASE = (args.url || 'http://127.0.0.1:8782').replace(/\/$/, '')
-const USER = args.user || 'admin'
-const PASSWORD = args.password || ''
+const USER = args.user || process.env.ADMIN_USER || 'admin'
+// ★ 口令优先走环境变量（命令行参数会出现在 `ps` 输出里 ⇒ 同机其它用户可见）
+const PASSWORD = args.password || process.env.ADMIN_PASSWORD || ''
 
 // 窗口与页面默认口径一致（web/src/api/sessionAnalytics.ts 的 defaultDateRange(7)）。
 // ★ 窗口取 **7 天**而不是更长：断言要证明的是「页面显示的数就是接口返回的数」，
@@ -133,6 +134,30 @@ const js = async (expr) => {
 
 // ── 0. 登录（API 落 HttpOnly cookie ⇒ SPA 与服务端同源）───────────────────
 await goto(`${BASE}/`, 4000)
+
+// ── 0a. 钉住界面语言（zh-CN）——★ 不钉住则整套断言可能**静默假绿** ─────
+// ★ 根因：应用 locale 取自 `navigator.language`（`web/src/i18n.ts:82` `defaultLocale()`）
+//   且**持久化**在 `localStorage['llmgw_locale']` ⇒ 浏览器语言一变，整页文案就换语种。
+//   ⇒ 本探针的落定判据（数据卡 label / 表头 / 区块标题）全是**中文文案**，
+//     换语种后要么找不到（假红），要么——更糟——**状态判据找不到错误横幅 ⇒「无错误」假绿**。
+// ⇒ 处置：① 显式写 localStorage 再重载；② 读回 `<html lang>`（`web/src/i18n.ts:121` 会写它）复核；
+//   ③ 钉不住 ⇒ 判**量具失效**（退出码 2），**不判产品红**（红的是环境，不是页面）。
+const localePinned = await js(`(() => {
+  try { localStorage.setItem('llmgw_locale', 'zh-CN') } catch (e) { return 'SET_FAIL:' + e.message }
+  return 'OK'
+})()`)
+await goto(`${BASE}/`, 4000)
+const htmlLang = String(await js('document.documentElement.lang || ""'))
+const localeOk = /^zh/i.test(htmlLang)
+if (!localeOk) {
+  check(`界面语言已钉住为 zh-CN（<html lang>）`, false, `html lang="${htmlLang}"（localStorage 写入=${localePinned}）`)
+  skipped.push({ name: '5 个页面的页面层断言与全部对拍', detail: `界面语言不是 zh-CN（${htmlLang}）⇒ 文案判据不可用 ⇒ 页面层未评估` })
+  const early = summarize(checks, { skipped })
+  console.log(`\n${early.line}`)
+  process.exit(early.exitCode)
+}
+check('界面语言已钉住为 zh-CN（<html lang>）', true, `html lang="${htmlLang}"`)
+
 const loginStatus = await js(`fetch('/api/auth/token',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({username:${JSON.stringify(USER)},password:${JSON.stringify(PASSWORD)}})}).then(r=>r.status).catch(e=>'ERR:'+e.message)`)
 if (String(loginStatus) !== '200') {
   console.log(`❌ 登录失败（/api/auth/token → ${loginStatus}）——令牌/口令/端点任一不成立`)
@@ -150,20 +175,24 @@ const apiGet = async (path) => {
 }
 
 const ov = await apiGet(`/api/admin/session-analytics/overview?${RANGE}`)
-check('端点① overview 200（陈旧门未触发）', ov.status === 200, `status=${ov.status}${ov.status !== 200 ? ' body=' + String(ov.raw).slice(0, 160) : ''}`)
 if (ov.status !== 200) {
-  check('端点① overview 200（陈旧门未触发）', false, `status=${ov.status}`)
+  check('端点① overview 200（陈旧门未触发）', false, `status=${ov.status}${String(ov.raw).slice(0, 160)}`)
   skipped.push({ name: '5 个页面的页面层断言与全部对拍', detail: `overview 不通（status=${ov.status}）⇒ 页面层未评估` })
   const early = summarize(checks, { skipped })
   console.log(`\n${early.line}`)
   process.exit(early.exitCode)
 }
+check('端点① overview 200（陈旧门未触发）', true, 'status=200')
 const S = ov.body.summary || {}
-check('overview 带 summary 15 个指标字段',
-  ['total_sessions', 'avg_tokens', 'avg_duration_seconds', 'avg_turns', 'total_cost',
-    'active_users', 'active_projects', 'active_tasks', 'overall_success_rate', 'overall_cache_rate']
-    .every(k => typeof S[k] === 'number'),
-  `total_sessions=${S.total_sessions} active_users=${S.active_users}`)
+// ★ 断言覆盖 OverviewSummary 的**全部 14 个字段**（`admin/session_analytics/queries.go:22`）。
+//   旧版名字写「15 个」而实际只查 10 个 ⇒ 标签与断言不符、契约覆盖不足（门禁绿 ≠ 断言到位）。
+const SUMMARY_FIELDS = ['total_sessions', 'total_sessions_growth', 'avg_tokens', 'avg_context_size',
+  'avg_duration_seconds', 'avg_turns', 'total_cost', 'total_cost_growth', 'active_users',
+  'active_users_growth', 'active_projects', 'active_tasks', 'overall_success_rate', 'overall_cache_rate']
+const missingSummary = SUMMARY_FIELDS.filter(k => typeof S[k] !== 'number')
+check(`overview 带 summary 全部 ${SUMMARY_FIELDS.length} 个指标字段`,
+  missingSummary.length === 0,
+  missingSummary.length ? '缺 ' + missingSummary.join('/') : `total_sessions=${S.total_sessions} active_users=${S.active_users}`)
 check('overview 带 trends 三序列（sessions/tokens/cost）',
   !!(ov.body.trends && ov.body.trends.sessions && ov.body.trends.tokens && ov.body.trends.cost),
   `sessions=${(ov.body.trends?.sessions || []).length} tokens=${(ov.body.trends?.tokens || []).length} cost=${(ov.body.trends?.cost || []).length}`)
@@ -204,6 +233,14 @@ if (!users.length || !agents.length || !models.length) {
 
 // ── 页面层工具 ────────────────────────────────────────────────────────────
 // 页面内一次性采集：数据卡 label→value、表格表头与行数、区块标题、错误/陈旧横幅。
+// ★ 状态判据一律用**结构类名**、不用中文文案（2026-11-20 批判式审计修正）：
+//   · 错误横幅 = `SaStateBanner` 的 `.sa-banner--error`
+//   · 陈旧横幅 = `SaStateBanner` 的 `.sa-banner--stale`
+//   · 加载占位 = `.sa-loading`
+//   · 口径说明 = `.sa-note`
+//   · 空态     = `EmptyState` 的 `.app-empty-state`
+//   ⇒ 文案只是**展示层**，会随 locale 变；类名是**契约层**，不会。
+//     （旧版按 `body.includes('没能加载出来')` 判错误 ⇒ 换语种后找不到 ⇒ 假绿。）
 const PAGE_PROBE = `(() => {
   const cards = {}
   for (const c of document.querySelectorAll('.stat-card')) {
@@ -216,20 +253,32 @@ const PAGE_PROBE = `(() => {
     rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
   }))
   const titles = [...document.querySelectorAll('.sa-section__title')].map(h => h.textContent.trim())
-  const body = document.body.innerText || ''
   return JSON.stringify({
     cards, tables, titles,
-    hasError: body.includes('没能加载出来'),
-    hasStale: body.includes('聚合数据正在刷新'),
-    isLoading: body.includes('正在加载会话分析数据'),
-    hasCostNote: body.includes('花费一列是内部成本'),
+    hasError: !!document.querySelector('.sa-banner--error'),
+    hasStale: !!document.querySelector('.sa-banner--stale'),
+    isLoading: !!document.querySelector('.sa-loading'),
+    hasCostNote: !!document.querySelector('.sa-note'),
+    hasEmptyState: !!document.querySelector('.app-empty-state'),
     title: document.querySelector('h1')?.textContent?.trim() || document.title,
   })
 })()`
 
-const num = (s) => Number(String(s).replace(/[^\d.\-]/g, ''))
-/** 对拍基准：优先用「页面自己收到的那份响应」，捕获失败才回落到探针另取的值。 */
-const apiOf = (fragment, fallback) => capturedApi(fragment) || fallback
+// ★ 数字解析：空串 / 破折号 / 非数字 ⇒ **null**（不是 0）。
+//   旧版 `Number('')` = 0 ⇒ 页面显示「—」时会被当成 0，与接口的 0 **假绿**。
+const num = (s) => {
+  const t = String(s ?? '').replace(/[^\d.\-]/g, '')
+  if (!t || t === '-' || t === '.') return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
+}
+/** 同源基准：**只接受「页面自己收到的那份响应」**；捕获不到 ⇒ null（不回落到探针另取的值）。**
+ *   ★ 旧版 `apiOf(fragment, fallback)` 会把「捕获失败」悄悄换成探针另取的那份
+ *     ⇒ 对拍从「同源、同时刻、严格相等」退化成「跨时刻相等」（活流量下必然假红/假绿），
+ *     而那条「基准已捕获」守卫因为拿了 fallback 而**永远为真** ⇒ 守卫是空的。
+ *   ⇒ 现在：捕获不到 ⇒ 该页对拍判**量具失效**（未评估），不假装对拍过。
+ */
+const sameSource = (fragment) => capturedApi(fragment)
 const loadPage = async (url) => {
   await goto(`${BASE}${url}`, 7000)
   // 等数据落定：数据卡或表格行出现（不是加载态占位符）
@@ -299,23 +348,31 @@ const loadPage = async (url) => {
   check('总览页：活跃人员榜有行', !!topUsers && topUsers.rows.length > 0, topUsers ? `rows=${topUsers.rows.length}` : '')
   // ★ 对拍：页面渲染值 == API 返回值
   // ★ 对拍基准＝**页面自己收到的 overview 响应**（同源、同时刻 ⇒ 严格相等）
-  const ovCap = apiOf('/overview?', ov.body)
-  const Sc = (ovCap && ovCap.summary) || {}
-  const trendsCap = (ovCap && ovCap.trends) || ov.body.trends
-  check('对拍基准：已捕获页面自己的 overview 响应', !!ovCap && !!(ovCap && ovCap.summary),
-    ovCap ? '同源基准可用' : '未捕获到（回落到探针另取值）')
-  check('对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions',
-    num(p.cards['会话总数']) === Sc.total_sessions, `页面=${p.cards['会话总数']} 同源响应=${Sc.total_sessions}`)
-  check('对拍：总览「活跃人员」卡值 == 页面自身响应 summary.active_users',
-    num(p.cards['活跃人员']) === Sc.active_users, `页面=${p.cards['活跃人员']} 同源响应=${Sc.active_users}`)
-  const trendInternal = (trendsCap.cost || []).reduce((a, b) => a + Number(b.internal || 0), 0)
-  const trendExternal = (trendsCap.cost || []).reduce((a, b) => a + Number(b.external || 0), 0)
-  check('对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和',
-    Math.abs(num(p.cards['内部成本（美元）']) - trendInternal) < 0.01,
-    `页面=${p.cards['内部成本（美元）']} 同源求和=${trendInternal}`)
-  check('对拍：总览「外部成本（积分）」卡值 == 页面自身响应 trends.cost.external 求和',
-    Math.abs(num(p.cards['外部成本（积分）']) - trendExternal) < 0.01,
-    `页面=${p.cards['外部成本（积分）']} 同源求和=${trendExternal}`)
+  // ★ 捕获不到 ⇒ 判「未评估」而不是拿探针另取的值凑（那会让同源退化成跨时刻）。
+  const ovCap = sameSource('/overview?')
+  const ovBaselineOk = !!(ovCap && ovCap.summary)
+  check('对拍基准：已捕获页面自己的 overview 响应', ovBaselineOk,
+    ovBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
+  if (!ovBaselineOk) {
+    gauge('对拍：总览「会话总数」/「活跃人员」/「内部成本」/「外部成本」', '同源基准未捕获')
+  } else {
+    const Sc = ovCap.summary || {}
+    const trendsCap = ovCap.trends || ov.body.trends
+    check('对拍：总览「会话总数」卡值 == 页面自身响应 summary.total_sessions',
+      num(p.cards['会话总数']) !== null && num(p.cards['会话总数']) === Sc.total_sessions,
+      `页面=${p.cards['会话总数']} 同源响应=${Sc.total_sessions}`)
+    check('对拍：总览「活跃人员」卡值 == 页面自身响应 summary.active_users',
+      num(p.cards['活跃人员']) !== null && num(p.cards['活跃人员']) === Sc.active_users,
+      `页面=${p.cards['活跃人员']} 同源响应=${Sc.active_users}`)
+    const trendInternal = (trendsCap.cost || []).reduce((a, b) => a + Number(b.internal || 0), 0)
+    const trendExternal = (trendsCap.cost || []).reduce((a, b) => a + Number(b.external || 0), 0)
+    check('对拍：总览「内部成本（美元）」卡值 == 页面自身响应 trends.cost.internal 求和',
+      num(p.cards['内部成本（美元）']) !== null && Math.abs(num(p.cards['内部成本（美元）']) - trendInternal) < 0.01,
+      `页面=${p.cards['内部成本（美元）']} 同源求和=${trendInternal}`)
+    check('对拍：总览「外部成本（积分）」卡值 == 页面自身响应 trends.cost.external 求和',
+      num(p.cards['外部成本（积分）']) !== null && Math.abs(num(p.cards['外部成本（积分）']) - trendExternal) < 0.01,
+      `页面=${p.cards['外部成本（积分）']} 同源求和=${trendExternal}`)
+  }
 }
 
 // ── 3. 人员排行页 ─────────────────────────────────────────────────────────
@@ -328,22 +385,31 @@ const loadPage = async (url) => {
   check('人员排行页：11 列表头齐全（含右侧列「查看详情」）', !!t && need.every(h => t.headers.includes(h)),
     t ? (need.filter(h => !t.headers.includes(h)).length ? '缺 ' + need.filter(h => !t.headers.includes(h)).join('/') : '11 列全在') : '未找到表')
   check('人员排行页：有数据行', !!t && t.rows.length > 0, t ? `rows=${t.rows.length}` : '')
-  const urCap = apiOf('/user-ranking?', ur.body)
-  const usersCap = (urCap && urCap.users) || users
-  if (t && t.rows.length && usersCap.length) {
+  const urCap = sameSource('/user-ranking?')
+  const urBaselineOk = !!(urCap && Array.isArray(urCap.users) && urCap.users.length)
+  check('对拍基准：已捕获页面自己的 user-ranking 响应', urBaselineOk,
+    urBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
+  const usersCap = (urCap && urCap.users) || []
+  if (!urBaselineOk) {
+    gauge('对拍：排行首行「人员」/「会话数」', '同源基准未捕获')
+  } else if (t && t.rows.length) {
     const api0 = usersCap[0]
     const expectName = api0.display_name || api0.owner
     check('对拍：排行首行「人员」== 页面自身响应 users[0]',
       t.rows[0][t.headers.indexOf('人员')] === expectName,
       `页面="${t.rows[0][t.headers.indexOf('人员')]}" 同源响应="${expectName}"`)
     check('对拍：排行首行「会话数」== 页面自身响应 users[0].session_count',
-      num(t.rows[0][t.headers.indexOf('会话数')]) === Number(api0.session_count),
+      num(t.rows[0][t.headers.indexOf('会话数')]) !== null && num(t.rows[0][t.headers.indexOf('会话数')]) === Number(api0.session_count),
       `页面=${t.rows[0][t.headers.indexOf('会话数')]} 同源响应=${api0.session_count}`)
   }
 }
 
 // ── 4. 人员详情页 ─────────────────────────────────────────────────────────
-{
+// ★ 动态段 owner 为空时**不能**去断详情页：URL 会变成 `/user-ranking/`
+//   ⇒ 命中的是「没有那个路由」而不是「详情页坏了」⇒ 那是**量具错**，不是产品红。
+if (!owner) {
+  gauge('人员详情页：页面层与对拍', `窗口内没有人员行 ⇒ 动态段无真值（owner=''）⇒ 未评估`)
+} else {
   const p = await loadPage(`/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}`)
   check('人员详情页：无错误横幅', !p.hasError)
   check('人员详情页：无陈旧横幅', !p.hasStale)
@@ -363,15 +429,16 @@ const loadPage = async (url) => {
   //   （后者会把设计当成缺陷）。
   // ★★ 而且任务层**可能真的没有数据**（211 实测：sessions.task 全空 ⇒ task_count=0）
   //   ⇒ DataTable 渲染的是 EmptyState、**不渲染 table** ⇒ 「表头齐全」在空数据下必然红。
-  //   ⇒ 判据改成**互斥二选一**：有表 ⇒ 表头齐全且有行；无表 ⇒ 必须出现该层的空态文案。
+  //   ⇒ 判据改成**互斥二选一**：有表 ⇒ 表头齐全且有行；无表 ⇒ 必须出现该层的空态。
   //   （这是产品该有的行为；把「空态」当红＝把数据态当缺陷。）
+  //   ★ 空态判据用**结构类名** `.app-empty-state`（`web/src/components/EmptyState.vue`），
+  //     不用中文文案（文案随 locale 变 ⇒ 换语种后找不到 ⇒ 假红）。
   const drill = JSON.parse(await js(`(async () => {
     const btn = document.querySelector('table.sa-table tbody tr td button.sa-link')
     if (!btn) return JSON.stringify({ ok: false, why: 'NO_PROJECT_ROW' })
     const project = btn.textContent.trim()
     btn.click()
     await new Promise(r => setTimeout(r, 3500))
-    const body = document.body.innerText || ''
     const tables = [...document.querySelectorAll('table.sa-table')].map(t => ({
       headers: [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()),
       rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
@@ -379,7 +446,7 @@ const loadPage = async (url) => {
     const tabs = [...document.querySelectorAll('.sa-tab')].map(b => (b.textContent||'').trim() + (b.classList.contains('sa-tab--active') ? '(active)' : ''))
     return JSON.stringify({
       ok: true, project, tables, tabs,
-      emptyText: body.includes('这个项目在所选区间内没有任务记录'),
+      hasEmptyState: !!document.querySelector('.app-empty-state'),
       projectsGone: !document.querySelector('table.sa-table'),
     })
   })()`))
@@ -394,18 +461,25 @@ const loadPage = async (url) => {
       check('人员详情页：任务列表表头齐全且有行', taskTable.rows.length > 0,
         `rows=${taskTable.rows.length} headers=${taskTable.headers.join('|')}`)
     } else {
-      check('人员详情页：任务层无数据时显示该层空态（不渲染表）', drill.emptyText === true,
-        `emptyText=${drill.emptyText} tables=${drill.tables.length}`)
+      check('人员详情页：任务层无数据时显示该层空态（不渲染表）', drill.hasEmptyState === true,
+        `hasEmptyState=${drill.hasEmptyState} tables=${drill.tables.length}`)
     }
   }
-  const udCap = apiOf(`/user-ranking/${owner}?`, ud.body)
-  const Dc = (udCap && udCap.summary) || {}
-  check('对拍：详情「会话数」卡值 == 页面自身响应 summary.session_count',
-    num(p.cards['会话数']) === Number(Dc.session_count),
-    `页面=${p.cards['会话数']} 同源响应=${Dc.session_count}`)
-  check('对拍：详情「当前排名」卡值 == 页面自身响应 summary.rank',
-    num(p.cards['当前排名']) === Number(Dc.rank),
-    `页面=${p.cards['当前排名']} 同源响应=${Dc.rank}`)
+  const udCap = sameSource(`/user-ranking/${owner}?`)
+  const udBaselineOk = !!(udCap && udCap.summary)
+  check('对拍基准：已捕获页面自己的 user-detail 响应', udBaselineOk,
+    udBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
+  if (!udBaselineOk) {
+    gauge('对拍：详情「会话数」/「当前排名」', '同源基准未捕获')
+  } else {
+    const Dc = udCap.summary || {}
+    check('对拍：详情「会话数」卡值 == 页面自身响应 summary.session_count',
+      num(p.cards['会话数']) !== null && num(p.cards['会话数']) === Number(Dc.session_count),
+      `页面=${p.cards['会话数']} 同源响应=${Dc.session_count}`)
+    check('对拍：详情「当前排名」卡值 == 页面自身响应 summary.rank',
+      num(p.cards['当前排名']) !== null && num(p.cards['当前排名']) === Number(Dc.rank),
+      `页面=${p.cards['当前排名']} 同源响应=${Dc.rank}`)
+  }
 }
 
 // ── 5. 智能体排行页 ───────────────────────────────────────────────────────
@@ -418,9 +492,14 @@ const loadPage = async (url) => {
   check('智能体排行页：9 列表头齐全', !!t && need.every(h => t.headers.includes(h)),
     t ? (need.filter(h => !t.headers.includes(h)).length ? '缺 ' + need.filter(h => !t.headers.includes(h)).join('/') : '9 列全在') : '未找到表')
   check('智能体排行页：有数据行', !!t && t.rows.length > 0, t ? `rows=${t.rows.length}` : '')
-  const arCap = apiOf('/agent-ranking?', ar.body)
-  const agentsCap = (arCap && arCap.agents) || agents
-  if (t && t.rows.length && agentsCap.length) {
+  const arCap = sameSource('/agent-ranking?')
+  const arBaselineOk = !!(arCap && Array.isArray(arCap.agents) && arCap.agents.length)
+  check('对拍基准：已捕获页面自己的 agent-ranking 响应', arBaselineOk,
+    arBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
+  if (!arBaselineOk) {
+    gauge('对拍：智能体首行', '同源基准未捕获')
+  } else if (t && t.rows.length) {
+    const agentsCap = arCap.agents
     check('对拍：智能体首行 == 页面自身响应 agents[0].agent_name',
       t.rows[0][t.headers.indexOf('智能体')] === agentsCap[0].agent_name,
       `页面="${t.rows[0][t.headers.indexOf('智能体')]}" 同源响应="${agentsCap[0].agent_name}"`)
@@ -437,14 +516,19 @@ const loadPage = async (url) => {
   check('模型排行页：11 列表头齐全', !!t && need.every(h => t.headers.includes(h)),
     t ? (need.filter(h => !t.headers.includes(h)).length ? '缺 ' + need.filter(h => !t.headers.includes(h)).join('/') : '11 列全在') : '未找到表')
   check('模型排行页：有数据行', !!t && t.rows.length > 0, t ? `rows=${t.rows.length}` : '')
-  const mrCap = apiOf('/model-ranking?', mr.body)
-  const modelsCap = (mrCap && mrCap.models) || models
-  if (t && t.rows.length && modelsCap.length) {
+  const mrCap = sameSource('/model-ranking?')
+  const mrBaselineOk = !!(mrCap && Array.isArray(mrCap.models) && mrCap.models.length)
+  check('对拍基准：已捕获页面自己的 model-ranking 响应', mrBaselineOk,
+    mrBaselineOk ? '同源基准可用' : '未捕获 ⇒ 下面的对拍未评估')
+  if (!mrBaselineOk) {
+    gauge('对拍：模型首行/「请求数」', '同源基准未捕获')
+  } else if (t && t.rows.length) {
+    const modelsCap = mrCap.models
     check('对拍：模型首行 == 页面自身响应 models[0].model',
       t.rows[0][t.headers.indexOf('模型')] === modelsCap[0].model,
       `页面="${t.rows[0][t.headers.indexOf('模型')]}" 同源响应="${modelsCap[0].model}"`)
     check('对拍：模型首行「请求数」== 页面自身响应 models[0].request_count',
-      num(t.rows[0][t.headers.indexOf('请求数')]) === Number(modelsCap[0].request_count),
+      num(t.rows[0][t.headers.indexOf('请求数')]) !== null && num(t.rows[0][t.headers.indexOf('请求数')]) === Number(modelsCap[0].request_count),
       `页面=${t.rows[0][t.headers.indexOf('请求数')]} 同源响应=${modelsCap[0].request_count}`)
   }
 }

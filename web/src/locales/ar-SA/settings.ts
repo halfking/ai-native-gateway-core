@@ -100,6 +100,43 @@ export default {
     hint: 'تحدد المنطقة الزمنية كيفية تجميع وعرض جميع النطاقات الزمنية (حدود اليوم والتقارير والاستعلامات عن السجلات). الافتراضي UTC+8 ويُفعَّل فور الحفظ.',
     currentNow: 'الإزاحة الزمنية الحالية: {offset}',
   },
+  search: {
+    placeholder: 'البحث في الإعدادات: المفتاح / الوصف / الفئة…',
+  },
+  basicConfig: {
+    toggle: 'الإعدادات الأساسية',
+    hotReload: 'تفعيل فوري',
+    group: {
+      identity: 'الهوية والمظهر',
+      storage: 'التخزين',
+      schedules: 'المهام الدورية',
+    },
+    entry: {
+      displayName: 'اسم عرض البوابة',
+      skin: 'المظهر الافتراضي',
+      timezone: 'المنطقة الزمنية للنظام',
+      gatewayMode: 'وضع التشغيل',
+      attachmentUrl: 'عنوان URL العام للمرفقات',
+      attachmentDir: 'مجلد تخزين المرفقات',
+      rollupHour: 'ساعة التجميع (UTC)',
+    },
+    skin: {
+      auto: 'اتباع النظام',
+      light: 'فاتح',
+      dark: 'داكن',
+    },
+    infraTitle: 'البنية التحتية (للقراءة فقط)',
+    infraHint: 'حالة التشغيل من إعدادات البيئة عند الإقلاع. تتطلب التغييرات إعادة تشغيل الخدمة؛ بيانات الاعتماد لا تُعرض في هذه الصفحة إطلاقًا.',
+    infraNotConfigured: 'غير مُهيأ',
+    infraNotSet: 'غير محدد',
+    infra: {
+      instance: 'معرّف النسخة',
+      redis: '‏Redis (ذاكرة مؤقتة)‎',
+      database: 'قاعدة البيانات',
+      cacheDir: 'مجلد الذاكرة المؤقتة (env)',
+      attachmentDir: 'مجلد المرفقات (env)',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 شرح مفصل لوضع الضغط',
     compressionModeContent: `<p><strong>وضع الضغط</strong> يتحكم في كيفية معالجة السياق الذي يتجاوز طول المحادثة:</p>

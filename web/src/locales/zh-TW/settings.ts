@@ -100,6 +100,43 @@ export default {
     hint: '時區決定所有時間範圍的統計口徑與顯示（日切、報表、日誌查詢），預設東8區。儲存後立即生效。',
     currentNow: '目前生效時區偏移：{offset}',
   },
+  search: {
+    placeholder: '搜尋設定：鍵名 / 說明 / 分類…',
+  },
+  basicConfig: {
+    toggle: '基礎設定',
+    hotReload: '熱生效',
+    group: {
+      identity: '識別與外觀',
+      storage: '儲存',
+      schedules: '週期任務',
+    },
+    entry: {
+      displayName: '閘道顯示名稱',
+      skin: '預設外觀主題',
+      timezone: '系統時區',
+      gatewayMode: '執行模式',
+      attachmentUrl: '附件公開存取網域',
+      attachmentDir: '附件儲存目錄',
+      rollupHour: '對帳彙整鐘點（UTC）',
+    },
+    skin: {
+      auto: '跟隨系統',
+      light: '淺色',
+      dark: '深色主題',
+    },
+    infraTitle: '基礎設施（唯讀）',
+    infraHint: '以下為啟動期環境設定的執行實況，變更需重啟服務後生效；憑證類資訊不在頁面顯示。',
+    infraNotConfigured: '未設定',
+    infraNotSet: '未設定',
+    infra: {
+      instance: '實例識別碼',
+      redis: 'Redis 快取服務',
+      database: '資料庫',
+      cacheDir: '快取目錄（env）',
+      attachmentDir: '附件目錄（env）',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 壓縮模式詳解',
     compressionModeContent: `<p><strong>壓縮模式</strong>控制系統如何處理超長對話上下文：</p>

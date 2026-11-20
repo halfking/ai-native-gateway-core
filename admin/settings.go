@@ -322,6 +322,9 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		// 调用方）——CachedPlatform* 读者（如 proxy.default_banned_regions
 		// overlay）在 admin 改键后立即生效，不等 ≤5s TTL。
 		settings.InvalidatePlatformValue(key)
+		// 基础设置轮（2026-11-20）：附件公开 URL 前缀——把**手上的 raw 值**
+		// 直接发布进进程指针（写后读竞态消灭；applyRuntimeSetting 内部
+		// 已接同一发布函数，这里不再重复）。
 	}
 
 	// Audit.
@@ -439,6 +442,17 @@ func (h *Handler) settingsRollback(w http.ResponseWriter, r *http.Request, key s
 func applyRuntimeSetting(key string, raw json.RawMessage) {
 	var enabled bool
 	if err := json.Unmarshal(raw, &enabled); err != nil {
+		// bool 之外的类型（string 等）走各自的分支。
+		switch key {
+		case settings.AttachmentPublicBaseURLKey:
+			// 基础设置轮（2026-11-20）：附件公开 URL 前缀即时热应用——
+			// 把 raw 值直接发布进进程指针（写后读竞态消灭，rollback/PUT
+			// 同构；区别于 ≤5s TTL 的消费方窗口）。
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				settings.PublishAttachmentPublicBaseURL(s)
+			}
+		}
 		return
 	}
 	switch key {

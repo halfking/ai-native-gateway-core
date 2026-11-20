@@ -100,6 +100,43 @@ export default {
     hint: 'Le fuseau horaire détermine comment chaque plage horaire est agrégée et affichée (limites de jour, rapports, requêtes de journaux). Par défaut : UTC+8 ; prend effet immédiatement après enregistrement.',
     currentNow: 'Décalage horaire actuel : {offset}',
   },
+  search: {
+    placeholder: 'Rechercher un paramètre : clé / description / catégorie…',
+  },
+  basicConfig: {
+    toggle: 'Réglages de base',
+    hotReload: 'Rechargement à chaud',
+    group: {
+      identity: 'Identité & apparence',
+      storage: 'Stockage',
+      schedules: 'Tâches planifiées',
+    },
+    entry: {
+      displayName: 'Nom d’affichage de la passerelle',
+      skin: 'Thème par défaut',
+      timezone: 'Fuseau horaire système',
+      gatewayMode: 'Mode de fonctionnement',
+      attachmentUrl: 'URL publique des pièces jointes',
+      attachmentDir: 'Répertoire de stockage des pièces jointes',
+      rollupHour: 'Heure d’agrégation (UTC)',
+    },
+    skin: {
+      auto: 'Suivre le système',
+      light: 'Clair',
+      dark: 'Sombre',
+    },
+    infraTitle: 'Infrastructure (lecture seule)',
+    infraHint: 'État d’exécution issu de la configuration d’environnement au démarrage. Toute modification exige un redémarrage du service ; les informations d’identification ne sont jamais affichées sur cette page.',
+    infraNotConfigured: 'Non configuré',
+    infraNotSet: 'Non défini',
+    infra: {
+      instance: 'Identifiant d’instance',
+      redis: 'Redis (cache)',
+      database: 'Base de données',
+      cacheDir: 'Répertoire de cache (env)',
+      attachmentDir: 'Répertoire des pièces jointes (env)',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 Mode de compression en détail',
     compressionModeContent: `<p>Le <strong>mode de compression</strong> contrôle la façon dont le système gère les conversations trop longues :</p>

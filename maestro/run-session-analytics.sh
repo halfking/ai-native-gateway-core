@@ -20,10 +20,16 @@
 #   BASE_URL              管理后台地址（默认 https://llm.itestu.cn）
 #   ADMIN_USER/ADMIN_PASSWORD  登录凭据（缺省从仓根 .env.local 读；
 #                         211 的口令在仓内既有资产 scripts/maestro-simple-expert-mode-test.sh）
-#   MAESTRO_DRIVER_PORT   Maestro 用的 CDP 端口（默认 9222）
-#   SA_CDP_PORT           第二层探针用的 CDP 端口（默认 9223）
+#   MAESTRO_DRIVER_PORT   Maestro 用的 CDP 端口（默认 9222；**被占用则顺延**，绝不复用那个浏览器）
+#   SA_CDP_PORT           第二层探针用的 CDP 端口（默认 9223；同上）
 #   MAESTRO_SCREEN_SIZE   视口（默认 1440x1400；web 驱动固定 1024x625 ⇒ 必须覆写）
 #   FLOW                  指定 flow（默认 maestro/flows/16-session-analytics-system.yaml）
+#
+# ★ 每次运行都是**干净起点**（2026-11-20 批判式审计修正）：
+#   · 端口占用 ⇒ 换端口，不复用 ⇒ 不继承旧浏览器的 cookie / localStorage
+#   · profile 目录带时间戳 ⇒ 每轮全新
+#   · Chrome 带 `--lang=zh-CN` ⇒ 应用 locale（取自 navigator.language）被钉住，
+#     断言里的中文判据（数据卡 label / 表头）不会因语种变化而静默失效
 #
 # 产物：
 #   maestro/reports/<时间戳>/16-session-analytics-system.log   Maestro CLI 输出
@@ -31,10 +37,13 @@
 #   maestro/reports/<时间戳>/summary.txt                       两层汇总
 #
 # 退出码：0 = 两层全绿；1 = 有红；2 = 量具失效（窗口内无数据）。
+# ★ 三态口径来自 `maestro/tools/result.mjs`（仓内判定口径的唯一真源）：
+#   旧版本脚本把两层压平成「非 0 就 exit 1」⇒ **量具失效（2）永远出不来**
+#   ⇒ 与仓内唯一真源的三态语义脱节（AGENTS.md ⑰：工具不得自己写一份退出码）。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT}"
+cd "${ROOT}" || exit 2
 
 BASE_URL="${BASE_URL:-https://llm.itestu.cn}"
 DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9222}"
@@ -100,27 +109,70 @@ find_chrome() {
 CHROME_BIN="$(find_chrome)"
 [ -n "${CHROME_BIN}" ] || { echo "!! 找不到 Chrome。" >&2; exit 2; }
 
-start_chrome() {
-  local port="$1" profile="$2"
-  curl -s --max-time 3 "http://127.0.0.1:${port}/json/version" >/dev/null 2>&1 && return 0
-  mkdir -p "${profile}"
-  nohup "${CHROME_BIN}" --headless=new --remote-debugging-port="${port}" \
-    --user-data-dir="${profile}" --no-first-run --no-default-browser-check \
-    --disable-gpu --window-size=1440,1400 about:blank \
-    >"${REPORT_ROOT}.chrome-${port}.log" 2>&1 &
-  for _ in $(seq 1 30); do
-    curl -s --max-time 2 "http://127.0.0.1:${port}/json/version" >/dev/null 2>&1 && return 0
-    sleep 1
+# ★ 回收：本脚本起的 Chrome 跑完就杀 ⇒ 不留遗留浏览器占端口、不留旧 cookie 罐。
+#   （实测踩过：9222 上挂着上一轮的常驻 Chrome ⇒ 端口被占 ⇒ 逼得端口顺延，
+#     也正是「复用旧浏览器」那个坑的温床。）
+CHROME_PIDS=()
+cleanup() {
+  local pid
+  for pid in "${CHROME_PIDS[@]:-}"; do
+    [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
   done
-  echo "!! Chrome(:${port}) 起不来（看 ${REPORT_ROOT}.chrome-${port}.log）" >&2
+}
+trap cleanup EXIT INT TERM
+
+# ★ 端口空闲探测（不用 /dev/tcp：macOS bash 3.2 的 /dev/tcp 在部分环境下不可用，
+#   这里统一走 curl —— 端口被 CDP 占用即可见）。
+port_busy() {
+  curl -s --max-time 2 "http://127.0.0.1:$1/json/version" >/dev/null 2>&1
+}
+# ★ **端口被占用就换端口，绝不复用那个浏览器**。
+#   理由（AGENTS.md ④-1 的实测坑）：复用的浏览器会带着**上一轮的 cookie / localStorage**
+#   ⇒ 旧的 `llmgw_locale`（界面语言）与旧会话 cookie 会静默生效
+#   ⇒ 页面数据源降级、断言读到的不是被测状态。
+#   ⇒ 换端口 + 全新 profile 才是「干净起点」。
+# ★ `exclude` 参数**必须**用：两层要两个**互不相同**的浏览器。
+#   （实测踩过：先给第一层顺延到 9223，第二层再探测时 9223 的 Chrome 还没起来
+#     ⇒ 两层拿到了**同一个**端口 ⇒ 共用一个 profile ⇒ 设计失效。）
+pick_free_port() {
+  local base="$1" exclude="${2:-}" p
+  for p in $(seq "$base" $((base + 20))); do
+    [ -n "${exclude}" ] && [ "${p}" = "${exclude}" ] && continue
+    if ! port_busy "$p"; then printf '%s' "$p"; return 0; fi
+  done
   return 1
 }
 
-# ★ 用**全新 profile**：AGENTS.md 记过一个坑——遗留 Chrome 的旧 cookie 会与新 cookie
-#   同名共存 ⇒ 服务端读到旧会话 ⇒ 页面数据源静默降级。
-#   这里的两个 profile 都是本轮专用目录，不复用历史站点的 cookie 罐。
-start_chrome "${DRIVER_PORT}" "/tmp/sa-maestro-chrome-${DRIVER_PORT}" || exit 2
-start_chrome "${SA_CDP_PORT}" "/tmp/sa-probe-chrome-${SA_CDP_PORT}" || exit 2
+STAMP="$(date +%Y%m%d-%H%M%S)"
+DRIVER_PORT="$(pick_free_port "${DRIVER_PORT}")" || { echo "!! ${DRIVER_PORT} 起的 20 个端口都被占用。" >&2; exit 2; }
+
+start_chrome() {
+  local port="$1" profile="$2"
+  # ★ profile 目录带时间戳 ⇒ 每轮全新 ⇒ 不继承任何 cookie / localStorage。
+  mkdir -p "${profile}"
+  # ★ `--lang=zh-CN`：应用 locale 取自 `navigator.language`（`web/src/i18n.ts:82`），
+  #   且持久化在 `localStorage['llmgw_locale']` ⇒ 浏览器语言一变，整页文案就换语种
+  #   ⇒ 断言的中文判据（数据卡 label / 表头 / 区块标题）会**静默失效**。
+  #   这里从浏览器侧钉死语言，探针侧再读回 `<html lang>` 复核（双保险）。
+  nohup "${CHROME_BIN}" --headless=new --remote-debugging-port="${port}" \
+    --user-data-dir="${profile}" --no-first-run --no-default-browser-check \
+    --disable-gpu --lang=zh-CN --window-size=1440,1400 about:blank \
+    >"${REPORT_ROOT}/.chrome-${port}.log" 2>&1 &
+  CHROME_PIDS+=("$!")
+  for _ in $(seq 1 30); do
+    port_busy "${port}" && return 0
+    sleep 1
+  done
+  echo "!! Chrome(:${port}) 起不来（看 ${REPORT_ROOT}/.chrome-${port}.log）" >&2
+  return 1
+}
+
+# ── 先起第一层的 Chrome，再挑第二层的端口 ────────────────────────────────
+# ★ 顺序有讲究：先起第一层 ⇒ 第二层探测端口时第一层已占位 ⇒ 不会撞同一个端口。
+start_chrome "${DRIVER_PORT}" "/tmp/sa-maestro-chrome-${STAMP}-${DRIVER_PORT}" || exit 2
+SA_CDP_PORT="$(pick_free_port "${SA_CDP_PORT}" "${DRIVER_PORT}")" || { echo "!! ${SA_CDP_PORT} 起的 20 个端口都被占用。" >&2; exit 2; }
+start_chrome "${SA_CDP_PORT}" "/tmp/sa-probe-chrome-${STAMP}-${SA_CDP_PORT}" || exit 2
+echo "== CDP 端口：Maestro=${DRIVER_PORT} 探针=${SA_CDP_PORT}（占用则顺延，保证是**全新且互不相同**的两个浏览器）"
 
 # ── 4. 解析动态段 owner（人员详情页的真实 owner）─────────────────────────
 # ★ 动态段必须喂真值：不喂真值 ⇒ 打开 "/admin/session-analytics/user-ranking/"
@@ -151,7 +203,7 @@ fi
 echo "== 动态段 owner = ${SESSION_OWNER}（窗口 ${START_DATE}~${END_DATE}）"
 
 # ── 5. 第一层：Maestro flow ─────────────────────────────────────────────
-STAMP="$(date +%Y%m%d-%H%M%S)"
+# （STAMP 已在上面算好——端口分配要靠它做每轮唯一的 profile 名）
 OUT="${REPORT_ROOT}/${STAMP}"
 mkdir -p "${OUT}"
 SUMMARY="${OUT}/summary.txt"
@@ -173,11 +225,12 @@ FLOW_FAILED="$(grep -c 'FAILED' "${OUT}/16-session-analytics-system.log" || true
 
 # ── 6. 第二层：CDP 探针 ─────────────────────────────────────────────────
 echo "== 第二层：CDP 探针（assert-session-analytics.mjs）"
+# ★ 口令走**环境变量**而不是命令行参数（`--password` 会出现在 `ps` 输出里 ⇒ 同机可见）
+ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
 node "${ROOT}/maestro/tools/assert-session-analytics.mjs" \
   --cdp "http://127.0.0.1:${SA_CDP_PORT}" \
   --url "${BASE_URL}" \
   --user "${ADMIN_USER}" \
-  --password "${ADMIN_PASSWORD}" \
   --start-date "${START_DATE}" \
   --end-date "${END_DATE}" \
   2>&1 | tee "${OUT}/assert-session-analytics.txt"
@@ -189,7 +242,23 @@ echo "---- 汇总 ----"
 cat "${SUMMARY}"
 echo "产物目录：${OUT}"
 
-if [ "${FLOW_RC}" -ne 0 ] || [ "${PROBE_RC}" -ne 0 ]; then
+# ── 判定：★ 三态口径（0=绿 / 1=红 / 2=量具失效），与 maestro/tools/result.mjs 一致 ──
+# ★ 旧版是「任一层非 0 ⇒ exit 1」⇒ 量具失效（2）被压平成红 ⇒ 上游拿到的信号是错的
+#   （「没测到」被当成「不合格」）。现在按层语义合并：
+#   · 第一层红（Maestro 步骤失败）⇒ **产品红**（第一层没有「量具失效」这一态）
+#   · 第二层 rc=2 ⇒ 量具失效（窗口内无数据 ⇒ 断言未评估）
+#   · 第二层 rc=1 ⇒ 产品红
+if [ "${FLOW_RC}" -ne 0 ]; then
+  echo "VERDICT: FAIL（第一层 flow 红：rc=${FLOW_RC} FAILED=${FLOW_FAILED}）"
   exit 1
 fi
+if [ "${PROBE_RC}" -eq 2 ]; then
+  echo "VERDICT: 量具失效（第二层探针 rc=2：窗口内无数据 ⇒ 断言未评估，**这不是产品缺陷**）"
+  exit 2
+fi
+if [ "${PROBE_RC}" -ne 0 ]; then
+  echo "VERDICT: FAIL（第二层探针红：rc=${PROBE_RC}）"
+  exit 1
+fi
+echo "VERDICT: PASS（两层全绿）"
 exit 0

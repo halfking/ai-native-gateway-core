@@ -100,6 +100,43 @@ export default {
     hint: 'タイムゾーンはすべての時間範囲の集計口径と表示（日替わり、レポート、ログ検索）を決定します。既定は UTC+8 で、保存後すぐに反映されます。',
     currentNow: '現在のタイムゾーンオフセット：{offset}',
   },
+  search: {
+    placeholder: '設定を検索：キー / 説明 / カテゴリ…',
+  },
+  basicConfig: {
+    toggle: '基本設定',
+    hotReload: 'ホット反映',
+    group: {
+      identity: '識別と外観',
+      storage: 'ストレージ',
+      schedules: '定期タスク',
+    },
+    entry: {
+      displayName: 'ゲートウェイ表示名',
+      skin: '既定のスキン',
+      timezone: 'システムタイムゾーン',
+      gatewayMode: '動作モード',
+      attachmentUrl: '添付ファイル公開 URL',
+      attachmentDir: '添付ファイル保存ディレクトリ',
+      rollupHour: '集計時刻（UTC）',
+    },
+    skin: {
+      auto: 'システムに従う',
+      light: 'ライト',
+      dark: 'ダーク',
+    },
+    infraTitle: 'インフラ情報（読み取り専用）',
+    infraHint: '以下は起動時の環境設定による稼働状況です。変更にはサービス再起動が必要です。認証情報はこのページに表示されません。',
+    infraNotConfigured: '未設定',
+    infraNotSet: '未設定',
+    infra: {
+      instance: 'インスタンス ID',
+      redis: 'Redis キャッシュ',
+      database: 'データベース',
+      cacheDir: 'キャッシュディレクトリ（env）',
+      attachmentDir: '添付ディレクトリ（env）',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 圧縮モード詳解',
     compressionModeContent: `<p><strong>圧縮モード</strong>は、過剰な会話コンテキストをシステムが処理する方法を制御します:</p>

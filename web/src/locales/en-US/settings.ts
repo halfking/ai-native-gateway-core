@@ -98,6 +98,43 @@ export default {
     hint: 'The timezone governs how every time range is aggregated and displayed (day boundaries, reports, log queries). Defaults to UTC+8 and takes effect immediately after saving.',
     currentNow: 'Current timezone offset: {offset}',
   },
+  search: {
+    placeholder: 'Search settings: key / description / category…',
+  },
+  basicConfig: {
+    toggle: 'Basic settings',
+    hotReload: 'Hot reload',
+    group: {
+      identity: 'Identity & appearance',
+      storage: 'Storage',
+      schedules: 'Scheduled jobs',
+    },
+    entry: {
+      displayName: 'Gateway display name',
+      skin: 'Default skin',
+      timezone: 'System timezone',
+      gatewayMode: 'Operating mode',
+      attachmentUrl: 'Attachment public URL',
+      attachmentDir: 'Attachment storage directory',
+      rollupHour: 'Rollup hour (UTC)',
+    },
+    skin: {
+      auto: 'Follow system',
+      light: 'Light',
+      dark: 'Dark',
+    },
+    infraTitle: 'Infrastructure (read-only)',
+    infraHint: 'Runtime facts from startup environment configuration. Changes require a service restart; credentials are never shown on this page.',
+    infraNotConfigured: 'Not configured',
+    infraNotSet: 'Not set',
+    infra: {
+      instance: 'Instance ID',
+      redis: 'Redis',
+      database: 'Database',
+      cacheDir: 'Cache dir (env)',
+      attachmentDir: 'Attachment dir (env)',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 Compression mode in detail',
     compressionModeContent: `<p><strong>Compression mode</strong> controls how the system handles over-long conversation context:</p>

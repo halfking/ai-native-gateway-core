@@ -98,6 +98,43 @@ export default {
     hint: '时区决定所有时间范围的统计口径与显示（日切、报表、日志查询），默认东8区。保存后立即生效。',
     currentNow: '当前生效时区偏移：{offset}',
   },
+  search: {
+    placeholder: '搜索设置：键名 / 描述 / 分类…',
+  },
+  basicConfig: {
+    toggle: '基础设置',
+    hotReload: '热生效',
+    group: {
+      identity: '标识与外观',
+      storage: '存储',
+      schedules: '周期任务',
+    },
+    entry: {
+      displayName: '网关个性名称',
+      skin: '默认皮肤',
+      timezone: '系统时区',
+      gatewayMode: '运行模式',
+      attachmentUrl: '附件公开访问域名',
+      attachmentDir: '附件存储目录',
+      rollupHour: '对帐聚合钟点（UTC）',
+    },
+    skin: {
+      auto: '跟随系统',
+      light: '浅色',
+      dark: '深色',
+    },
+    infraTitle: '基础设施（只读）',
+    infraHint: '以下为启动期环境配置的运行实况，修改需重启服务后生效；凭据类信息不在页面展示。',
+    infraNotConfigured: '未配置',
+    infraNotSet: '未设置',
+    infra: {
+      instance: '实例标识',
+      redis: 'Redis 缓存服务',
+      database: '数据库',
+      cacheDir: '缓存目录（env）',
+      attachmentDir: '附件目录（env）',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 压缩模式详解',
     compressionModeContent: `<p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>

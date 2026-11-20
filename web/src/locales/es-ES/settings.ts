@@ -99,6 +99,43 @@ export default {
     hint: 'La zona horaria determina cómo se agregan y muestran todos los rangos de tiempo (cortes de día, informes, consultas de registros). Predeterminado: UTC+8; se aplica inmediatamente después de guardar.',
     currentNow: 'Desfase horario actual: {offset}',
   },
+  search: {
+    placeholder: 'Buscar ajustes: clave / descripción / categoría…',
+  },
+  basicConfig: {
+    toggle: 'Ajustes básicos',
+    hotReload: 'Recarga en caliente',
+    group: {
+      identity: 'Identidad y apariencia',
+      storage: 'Almacenamiento',
+      schedules: 'Tareas programadas',
+    },
+    entry: {
+      displayName: 'Nombre visible de la pasarela',
+      skin: 'Tema predeterminado',
+      timezone: 'Zona horaria del sistema',
+      gatewayMode: 'Modo de funcionamiento',
+      attachmentUrl: 'URL pública de adjuntos',
+      attachmentDir: 'Directorio de almacenamiento de adjuntos',
+      rollupHour: 'Hora de agregación (UTC)',
+    },
+    skin: {
+      auto: 'Según el sistema',
+      light: 'Claro',
+      dark: 'Oscuro',
+    },
+    infraTitle: 'Infraestructura (solo lectura)',
+    infraHint: 'Estado de ejecución procedente de la configuración de entorno en el arranque. Los cambios requieren reiniciar el servicio; las credenciales nunca se muestran en esta página.',
+    infraNotConfigured: 'Sin configurar',
+    infraNotSet: 'Sin establecer',
+    infra: {
+      instance: 'Identificador de instancia',
+      redis: 'Redis (caché)',
+      database: 'Base de datos',
+      cacheDir: 'Directorio de caché (env)',
+      attachmentDir: 'Directorio de adjuntos (env)',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 Modo de compresión en detalle',
     compressionModeContent: `<p>El <strong>modo de compresión</strong> controla cómo el sistema maneja contextos de conversación demasiado largos:</p>

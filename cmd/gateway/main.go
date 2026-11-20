@@ -3705,6 +3705,14 @@ func main() {
 				"auth_mode", attachmentCfg.AuthMode,
 				"public_url", attachmentCfg.PublicURL)
 
+			// 基础设置轮（2026-11-20）：附件公开 URL 前缀的启动期播种。
+			// 优先级：settings_kv（DB 可改）> env > 默认 "/api/attachments"。
+			// 此后 admin 改键经 applyRuntimeSetting 即时发布（热加载）。
+			settings.SeedAttachmentPublicBaseURLFromRegistry()
+			slog.Info("attachment public url base seeded from settings chain",
+				"key", settings.AttachmentPublicBaseURLKey,
+				"effective", settings.AttachmentPublicBaseURL())
+
 			// 如果配置了 API Key 认证，注入 KeyVerifier
 			if attachmentCfg.AuthMode == attachments.AuthModeAPIKey {
 				if keyVerifier != nil && keyVerifier.Enabled() {
