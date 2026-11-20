@@ -35,3 +35,15 @@ ALTER TABLE public.report_snapshots
     ALTER COLUMN estimated_cost_cents TYPE numeric(24,6);
 
 COMMIT;
+
+-- ============================================================================
+-- 自登记（≥952 双账本纪律，960 立门）
+-- ★ 2026-11-20 会话分析闭环审计轮合并补登记：上列车漏写自登记行 ⇒ 211 上
+--   DDL 已生效（estimated_cost_cents 实测 numeric）而 schema_migrations 无行，
+--   下次启动会被 runner 判为 pending 重放（本迁移重放安全：ALTER TYPE
+--   numeric→numeric 即时、表 ~1k 行/日）；补行让重放同时落账，154/245 首投
+--   即走正规记账。
+-- ============================================================================
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('993', 'report_snapshots_exact_cost_cents: estimated_cost_cents bigint → numeric(24,6)，写面去 ROUND 存精确分值（对账总费用与看板逐字相等）')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
