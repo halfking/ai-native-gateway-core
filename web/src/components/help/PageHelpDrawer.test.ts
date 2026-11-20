@@ -150,11 +150,15 @@ describe('PageHelpDrawer', () => {
   })
 
   it('★ L1：无译文的语种 ⇒ 回退中文正文（不空抽屉）', async () => {
-    const w = mountDrawer('/dashboard', 'fr-FR')
+    // ★ 2026-11-21 换 id：原用 /dashboard（fr-FR）——多语补翻轮落地 dashboard.fr-FR.md
+    //   后「无译文」前提失效（实测单跑即红）。改用 session-users（fr-FR 41 个缺口之一，
+    //   registry: /admin/session-analytics/users）——回退逻辑钉「确实无译文的组合」，
+    //   不依赖某个具体文件永远缺失。
+    const w = mountDrawer('/admin/session-analytics/users', 'fr-FR')
     await openBody(w)
     const body = w.find('.page-help-body').text()
-    // fr-FR 无 <id>.fr-FR.md ⇒ 兜底中文
-    expect(body).toContain('口径')
+    // session-users 无 <id>.fr-FR.md ⇒ 兜底中文
+    expect(body).toContain('会话数')
   })
 
   it('★ locale 切换 ⇒ 搜索词清空', async () => {
