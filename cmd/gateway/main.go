@@ -7806,6 +7806,37 @@ func main() {
 			piErrorAnalyzerGlobal = piAnalyzer
 			piSQLDBGlobal = piSQLDB
 			setPIAgentComponents(piCollector, piAnalyzer)
+			// ★ 2026-11-20 PI 接入轮：输出守卫格式类拦截（tool_json_invalid /
+			// redact_invalid / frame_encode_failed）投给 PI 智能体动态分析——
+			// 这类事件此前只有 WARN 日志，零持久化零分析。collector 自带总开关
+			// /深度闸/24h 去重（CollectAsync 非阻塞、满即丢），拦截反馈路径
+			// 不受影响。分析模板见 error_analyzer.getOutputGuardBlockedTemplate
+			//（归因 + 分受众继续建议；apply 面对这类事件恒 view-only）。
+			piCollectorForSink := piCollector
+			streaming.SetOutputGuardPISink(func(ctx context.Context, ev streaming.OutputGuardPIEvent) {
+				tenant := ev.TenantID
+				if tenant == "" {
+					tenant = "default"
+				}
+				piCollectorForSink.CollectAsync(ctx, &promptinjection.CollectedError{
+					ErrorType:    promptinjection.ErrorTypeOutputGuardBlocked,
+					TenantID:     tenant,
+					SessionID:    ev.SessionID,
+					RequestID:    ev.RequestID,
+					InputText:    ev.Evidence,
+					ErrorMessage: ev.Reason,
+					ErrorDetails: map[string]interface{}{
+						"rule":        ev.Rule,
+						"field":       ev.Field,
+						"digest":      ev.Digest,
+						"client_type": ev.ClientType,
+						"degraded":    ev.Degraded,
+					},
+					Priority: 5,
+				})
+			})
+			slog.Info("output guard PI analysis sink configured",
+				"error_type", promptinjection.ErrorTypeOutputGuardBlocked)
 		}
 	}
 

@@ -428,6 +428,8 @@ func (ea *ErrorAnalyzer) getPromptTemplate(errorType string) PromptTemplate {
 		return ea.getCanaryDetectionFailedTemplate()
 	case ErrorTypeVectorMatchFailed:
 		return ea.getVectorMatchFailedTemplate()
+	case ErrorTypeOutputGuardBlocked:
+		return ea.getOutputGuardBlockedTemplate()
 	default:
 		return ea.getGenericTemplate()
 	}
@@ -523,6 +525,56 @@ func (ea *ErrorAnalyzer) getVectorMatchFailedTemplate() PromptTemplate {
 请以 JSON 格式返回分析结果。`,
 
 		UserPrompt: `请分析向量匹配失败的原因，并提供修复建议。`,
+	}
+}
+
+// getOutputGuardBlockedTemplate 输出守卫格式类拦截模板（2026-11-20 PI 接入轮）。
+//
+// 背景：LLM 网关的输出合规守卫会对「上游输出的格式缺陷」fail-closed 拦断整条
+// 响应（builtin.guard.tool_json_invalid / redact_invalid / frame_encode_failed）。
+// 这类拦截不是内容敏感命中：管理员放行审核单改变不了上游格式错误的事实，
+// 正确的恢复是重试 / 换节点 / 修上游中转。历史实证（错误详情里可能看到）：
+//   - 上游断流截断：工具参数只发了一半（如 2 字节前缀 `{"`）被当完整参数判非法；
+//   - 中转格式转换 bug：GLM 原生 <arg_value> 标记漏进工具参数；
+//   - 脱敏改写破坏 JSON：掩码替换后不再是合法 JSON。
+//
+// 分析任务：归因（哪一方的问题：上游 / 中转 / 网关守卫）+ **给出继续的建议
+// 与操作**（客户端侧怎么继续、运维侧要查什么）。
+//
+// ★ rule_adjustment 对这类事件**必须返回 null**：动作白名单
+// （disable_rule/adjust_severity/update_pattern）指向 prompt_injection_rules 表，
+// 与输出守卫规则是两张表——apply 面对这类事件有类型闸恒 view-only（见
+// admin/pi_analysis_fix_apply.go），LLM 不应产出指向错误规则表的建议。
+func (ea *ErrorAnalyzer) getOutputGuardBlockedTemplate() PromptTemplate {
+	return PromptTemplate{
+		SystemPrompt: `你是 LLM 网关输出合规系统的分析专家。一次「格式类守卫拦截」事件进入了分析队列——守卫拦断了一次模型响应，原因是上游输出的格式缺陷（不是敏感内容命中）。
+
+你的任务：归因 + 给出继续的建议和操作。
+
+归因时按优先级考虑：
+1. 上游传输中断/截断：错误详情里若提到 stream lane / 断流 / 截断前缀 / 参数只有几个字节，多半是上游流被中途掐断，守卫把残缺参数当完整参数判定——这不是任何一方的「格式 bug」，恢复动作是重试。
+2. 上游/中转的格式转换缺陷：参数里出现原生标记（如 XML 标签）、明显被截断的 JSON 尾巴、或同一字段拼接了两份内容——这是上游或中转服务的工具调用格式转换问题。
+3. 网关守卫误判：参数本身是合法的、或截断本不应判终态——这是网关侧缺陷，应报告网关管理员并给出网关版本/请求 ID。
+4. 脱敏改写破坏 JSON（rule=builtin.guard.redact_invalid）：掩码替换使参数失去 JSON 合法性。
+
+「继续的建议和操作」必须分两个受众写进 suggested_fix：
+- 客户端/用户侧：多数情况可直接重试（守卫对格式类拦截会换节点重试，未成功才终态呈现）；反复出现时改用其它模型。
+- 运维侧：核对 request_id 对应的请求日志（模型/供应商/中转）；若归因上游中转，联系上游或更换中转；若疑似守卫误判，收集 request_id 与规则名报告网关管理员。
+
+请以 JSON 格式返回分析结果，包含以下字段：
+- root_cause: 根本原因（一句话中文）
+- error_category: 归因分类，从 upstream_interrupted / upstream_format_defect / gateway_guard_misjudge / redaction_side_effect / unknown 中选一
+- is_false_positive: 守卫是否误判（boolean；截断类不算误判，算事件形态）
+- confidence_score: 置信度（0.0-1.0）
+- suggested_fix: 继续的建议与操作（分「客户端侧」「运维侧」两段中文）
+- rule_adjustment: 必须为 null（本类事件不产生规则变更建议）
+- code_changes: null 或空对象
+- severity_level: low/medium/high/critical（单次拦截=low；同型反复出现=medium 及以上）
+- impact_scope: session/tenant/global
+- affected_users_estimate: 预估受影响用户数（整数）
+- analysis_details: 详细分析（JSON 对象，含归因依据）`,
+
+		UserPrompt: `请分析上述输出守卫格式类拦截事件：给出归因分类、置信度、分受众的继续建议与操作。rule_adjustment 必须为 null。请返回完整的 JSON 分析结果。`,
 	}
 }
 

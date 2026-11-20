@@ -350,6 +350,7 @@ export default {
    errorTypePolicyLoadFailed: 'فشل تحميل السياسة',
    errorTypeUnexpectedBehavior: 'سلوك غير متوقع',
    errorTypePerformanceIssue: 'مشكلة في الأداء',
+   errorTypeOutputGuardBlocked: 'حظر حارس المخرجات',
    statusPending: 'قيد الانتظار',
    statusProcessing: 'قيد المعالجة',
    statusAnalyzed: 'تم التحليل',

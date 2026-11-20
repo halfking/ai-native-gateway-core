@@ -346,6 +346,7 @@ export default {
    errorTypePolicyLoadFailed: 'Fehler beim Laden der Richtlinie',
    errorTypeUnexpectedBehavior: 'Unerwartetes Verhalten',
    errorTypePerformanceIssue: 'Leistungsproblem',
+   errorTypeOutputGuardBlocked: 'Ausgabewächter-Sperre',
    statusPending: 'Ausstehend',
    statusProcessing: 'In Bearbeitung',
    statusAnalyzed: 'Analysiert',

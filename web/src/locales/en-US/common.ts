@@ -351,6 +351,7 @@ export default {
    errorTypePolicyLoadFailed: 'Policy load failed',
    errorTypeUnexpectedBehavior: 'Unexpected behavior',
    errorTypePerformanceIssue: 'Performance issue',
+   errorTypeOutputGuardBlocked: 'Output guard block',
    statusPending: 'Pending',
    statusProcessing: 'Processing',
    statusAnalyzed: 'Analyzed',

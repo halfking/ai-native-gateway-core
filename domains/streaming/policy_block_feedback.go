@@ -142,6 +142,15 @@ func isFormatGuard(ruleID string) bool {
 // 问题，管理员放行审核单改变不了上游输出格式错误的事实 ⇒ 直接返回空串，
 // message 走「请重试」的引导话术（见 policyBlockClientMessage）。
 func registerPolicyBlockReview(in PolicyBlockReviewInput) string {
+	// ★ 2026-11-20 PI 接入轮：格式类守卫不生成审核单（2026-11-15 收口），
+	// 但**入队 PI 智能体动态分析**——这类拦截此前只有一条 WARN 日志，零持久
+	// 化、零分析 ⇒ 管理面既看不到「为什么拦」，也拿不到「接下来怎么办」的
+	// 建议。入队后走既有 PI 分析管线（worker → LLM → error_analysis_results），
+	// 分析模板会给出归因分类 + 分受众（客户端侧/运维侧）的继续建议与操作。
+	//
+	// 内容类命中**不入队**：它们已有审核单 + 影子判官（maybeShadowJudge）
+	// 两条轨道，再入队等于同一事件双份 LLM 分析。
+	maybeEnqueueOutputGuardPIAnalysis(in)
 	// ★ 2026-11-15：格式类守卫不生成审核单 ★
 	if isFormatGuard(in.Rule) {
 		return ""
@@ -179,6 +188,70 @@ func SetShadowJudge(j sanitizejudge.Judge) {
 		return
 	}
 	shadowJudge = j
+}
+
+// OutputGuardPIEvent 是一次「输出守卫格式类拦截」投给 PI 智能体分析的事件。
+//
+// 与 PolicyBlockReviewInput 同源（由 registerPolicyBlockReview 的统一出口
+// 派生），单独成型是为了把「PI 分析要的字段」与「审核单要的字段」解耦——
+// 两边各自演化时不会互相拉扯。
+type OutputGuardPIEvent struct {
+	TenantID   string
+	ClientType string
+	SessionID  string
+	RequestID  string
+	Rule       string
+	Reason     string
+	Field      string
+	Digest     string
+	Evidence   string
+	Degraded   bool
+}
+
+// outputGuardPISink 是事件投递口（boot 时由 cmd/gateway 装配，测试可替换；
+// nil ⇒ no-op）。SetShadowJudge 同款装配形态。适配器负责转成 PI 队列的
+// CollectedError（cmd/gateway），本包不 import promptinjection——依赖方向
+// 保持「装配层指向两个域」，域与域之间零新增依赖。
+//
+// ★ 契约：sink 必须非阻塞（PI 侧 CollectAsync 本就是 chan 发送 + 满即丢），
+// 拦截反馈路径不等它。
+var outputGuardPISink func(context.Context, OutputGuardPIEvent)
+
+// SetOutputGuardPISink 装配输出守卫拦截事件的 PI 分析投递口（nil 恢复占位）。
+func SetOutputGuardPISink(sink func(context.Context, OutputGuardPIEvent)) {
+	outputGuardPISink = sink
+}
+
+// maybeEnqueueOutputGuardPIAnalysis 在「格式类守卫拦截 + 投递口在场」时把
+// 事件交给 PI 智能体。collector 侧自带总开关/深度闸/24h 去重（error_hash），
+// 这里不做二次开关判断；证据（Evidence）是有界摘录，随事件进分析上下文。
+func maybeEnqueueOutputGuardPIAnalysis(in PolicyBlockReviewInput) {
+	if !isFormatGuard(in.Rule) {
+		return
+	}
+	sink := outputGuardPISink
+	if sink == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Warn("output guard PI enqueue panicked", "request_id", in.RequestID, "rule", in.Rule, "panic", r)
+		}
+	}()
+	sink(ctx, OutputGuardPIEvent{
+		TenantID:   in.TenantID,
+		ClientType: in.ClientType,
+		SessionID:  in.SessionID,
+		RequestID:  in.RequestID,
+		Rule:       in.Rule,
+		Reason:     in.Reason,
+		Field:      in.Field,
+		Digest:     in.Digest,
+		Evidence:   in.Evidence,
+		Degraded:   in.Degraded,
+	})
 }
 
 // maybeShadowJudge 在「判官装配 + settings 开关 + 内容类命中 + 有摘录」四者

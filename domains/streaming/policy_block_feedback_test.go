@@ -24,6 +24,7 @@ package streaming
 //  C5 /v1/responses 与 /v1/messages 的错误写者带旁键（extras 通道）。
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -300,8 +301,8 @@ func TestDegradedReviewRegistrationCarriesFlag(t *testing.T) {
 
 	registerPolicyBlockReview(PolicyBlockReviewInput{
 		TenantID: "tenant-deg", ClientType: "zcode", RequestID: "req-deg-1",
-		Rule: "builtin.guard.capacity_exceeded",
-		Reason: "output policy guard pending capacity exceeded (1048576 bytes held, cap 1048576)",
+		Rule:     "builtin.guard.capacity_exceeded",
+		Reason:   "output policy guard pending capacity exceeded (1048576 bytes held, cap 1048576)",
 		Degraded: true,
 	})
 	pending := sanitizerules.ListBlockReviews(sanitizerules.BlockReviewPending, "tenant-deg", 10)
@@ -336,7 +337,7 @@ func TestDegradedReviewRegistrationCarriesFlag(t *testing.T) {
 func TestFormatGuard_NoReviewTicket(t *testing.T) {
 	sanitizerules.ResetBlockReviews()
 	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
-	
+
 	formatGuards := []string{
 		"builtin.guard.tool_json_invalid",
 		"builtin.guard.redact_invalid",
@@ -426,7 +427,7 @@ func TestFormatGuard_ClientMessage(t *testing.T) {
 func TestFormatGuard_vs_ContentBlock(t *testing.T) {
 	sanitizerules.ResetBlockReviews()
 	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
-	
+
 	// 内容类规则必须生成审核单
 	reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
 		TenantID:   "tenant-content",
@@ -458,5 +459,65 @@ func TestFormatGuard_vs_ContentBlock(t *testing.T) {
 	// 内容类规则不得走格式错误话术
 	if strings.Contains(msg, "格式有误") {
 		t.Errorf("内容类规则不得提示「格式有误」:\n%s", msg)
+	}
+}
+
+// TestOutputGuardPISink_FormatGuardFires_ContentRuleDoesNot 钉住 PI 投递口的
+// 触发边界（2026-11-20 PI 接入轮）：
+//   - 格式类守卫（tool_json_invalid 等）⇒ 事件投给 PI 智能体（这类拦截此前
+//     只有 WARN 日志，零持久化零分析）；
+//   - 内容类命中 ⇒ **不投**（已有审核单 + 影子判官两条轨道，再投等于同一
+//     事件双份 LLM 分析）；
+//   - 投递口未装配（nil）⇒ no-op，不影响审核单路径。
+func TestOutputGuardPISink_FormatGuardFires_ContentRuleDoesNot(t *testing.T) {
+	sanitizerules.ResetBlockReviews()
+	t.Cleanup(func() { sanitizerules.ResetBlockReviews() })
+
+	var got []OutputGuardPIEvent
+	SetOutputGuardPISink(func(_ context.Context, ev OutputGuardPIEvent) {
+		got = append(got, ev)
+	})
+	t.Cleanup(func() { SetOutputGuardPISink(nil) })
+
+	// 格式类守卫：入队 + 无审核单。
+	reviewID := registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-pi", ClientType: "zcode", SessionID: "sess-1",
+		RequestID: "req-pi-1", Rule: "builtin.guard.tool_json_invalid",
+		Reason: "output policy blocked stream lane (rule builtin.guard.tool_json_invalid) at $",
+		Field:  "$", Evidence: `{"`,
+	})
+	if reviewID != "" {
+		t.Fatalf("格式类守卫不得生成审核单，实际 %s", reviewID)
+	}
+	if len(got) != 1 {
+		t.Fatalf("格式类守卫必须投递恰好 1 个 PI 事件，实际 %d", len(got))
+	}
+	if got[0].Rule != "builtin.guard.tool_json_invalid" || got[0].RequestID != "req-pi-1" || got[0].Evidence != `{"` {
+		t.Fatalf("PI 事件字段残缺: %+v", got[0])
+	}
+
+	// 内容类命中：审核单照常，但不投 PI（避免双份 LLM 分析）。
+	reviewID = registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-pi", ClientType: "zcode", SessionID: "sess-1",
+		RequestID: "req-pi-2", Rule: "builtin.egress_sink",
+		Reason: "egress destination", Field: "$.command", Evidence: "curl http://evil.example",
+	})
+	if reviewID == "" {
+		t.Fatal("内容类命中必须照常生成审核单")
+	}
+	if len(got) != 1 {
+		t.Fatalf("内容类命中不得追加 PI 事件（防双份分析），实际 %d", len(got))
+	}
+
+	// 投递口未装配：no-op，不 panic、不影响审核单。
+	SetOutputGuardPISink(nil)
+	reviewID = registerPolicyBlockReview(PolicyBlockReviewInput{
+		TenantID: "tenant-pi", ClientType: "zcode",
+		RequestID: "req-pi-3", Rule: "builtin.guard.redact_invalid",
+		Reason: "output policy produced invalid JSON for redacted tool arguments",
+		Field:  "$", Evidence: `{"a":`,
+	})
+	if reviewID != "" {
+		t.Fatalf("格式类守卫不得生成审核单（sink 缺席不影响该合同），实际 %s", reviewID)
 	}
 }

@@ -42,6 +42,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/promptinjection"
 )
 
 // piFixConfidenceFloor 是应用修复的置信度硬门。
@@ -356,6 +358,28 @@ func (h *PIAnalysisHandler) ApplyFix(w http.ResponseWriter, r *http.Request, que
 	}
 	if alreadyApplied {
 		http.Error(w, "fix already applied (revert first to re-apply)", http.StatusConflict)
+		return
+	}
+
+	// ── 1b. 类型闸：输出守卫格式类拦截恒 view-only（2026-11-20 PI 接入轮）──
+	// 这类事件的分析目标是**归因 + 继续的建议与操作**，不是规则变更：动作
+	// 白名单（disable_rule/adjust_severity/update_pattern）指向
+	// prompt_injection_rules 表，与输出守卫规则（errorsx.GuardRule*，合成
+	// 规则名）是两张表——即便 LLM 幻觉出动作，apply 也不该执行。
+	var queueErrorType string
+	if err := h.db.QueryRowContext(r.Context(),
+		`SELECT error_type FROM error_analysis_queue WHERE id = $1`, queueID,
+	).Scan(&queueErrorType); errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "queue item not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		writeInternalTextErr(w, "query queue item failed", err)
+		return
+	}
+	if queueErrorType == promptinjection.ErrorTypeOutputGuardBlocked {
+		http.Error(w,
+			"output_guard_blocked events are view-only: suggestions are attribution and continuation guidance, not rule changes",
+			http.StatusUnprocessableEntity)
 		return
 	}
 

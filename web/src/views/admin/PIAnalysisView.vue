@@ -875,7 +875,8 @@ function formatErrorType(type: string): string {
     'heuristic_misfire': t('common.piAnalysis.page.errorTypeHeuristicMisfire'),
     'policy_load_failed': t('common.piAnalysis.page.errorTypePolicyLoadFailed'),
     'unexpected_behavior': t('common.piAnalysis.page.errorTypeUnexpectedBehavior'),
-    'performance_issue': t('common.piAnalysis.page.errorTypePerformanceIssue')
+    'performance_issue': t('common.piAnalysis.page.errorTypePerformanceIssue'),
+    'output_guard_blocked': t('common.piAnalysis.page.errorTypeOutputGuardBlocked')
   }
   return map[type] || type
 }

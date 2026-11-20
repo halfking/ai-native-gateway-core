@@ -354,6 +354,7 @@ export default {
    errorTypePolicyLoadFailed: 'Échec du chargement de la stratégie',
    errorTypeUnexpectedBehavior: 'Comportement inattendu',
    errorTypePerformanceIssue: 'Problème de performance',
+   errorTypeOutputGuardBlocked: 'Blocage du garde de sortie',
    statusPending: 'En attente',
    statusProcessing: 'En cours',
    statusAnalyzed: 'Analysé',

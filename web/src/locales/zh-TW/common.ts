@@ -351,6 +351,7 @@ export default {
    errorTypePolicyLoadFailed: '策略載入失敗',
    errorTypeUnexpectedBehavior: '非預期行為',
    errorTypePerformanceIssue: '效能問題',
+   errorTypeOutputGuardBlocked: '輸出守衛攔截',
    statusPending: '待處理',
    statusProcessing: '處理中',
    statusAnalyzed: '已完成分析',

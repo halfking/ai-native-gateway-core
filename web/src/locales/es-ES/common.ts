@@ -345,6 +345,7 @@ export default {
    errorTypePolicyLoadFailed: 'Fallo al cargar la política',
    errorTypeUnexpectedBehavior: 'Comportamiento inesperado',
    errorTypePerformanceIssue: 'Problema de rendimiento',
+   errorTypeOutputGuardBlocked: 'Bloqueo del guardián de salida',
    statusPending: 'Pendiente',
    statusProcessing: 'En proceso',
    statusAnalyzed: 'Analizado',

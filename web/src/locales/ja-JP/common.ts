@@ -347,6 +347,7 @@ export default {
    errorTypePolicyLoadFailed: 'ポリシー読込失敗',
    errorTypeUnexpectedBehavior: '予期しない動作',
    errorTypePerformanceIssue: 'パフォーマンス問題',
+   errorTypeOutputGuardBlocked: '出力ガード遮断',
    statusPending: '未処理',
    statusProcessing: '処理中',
    statusAnalyzed: '分析済み',

@@ -174,6 +174,16 @@ const (
 	ErrorTypePolicyLoadFailed      = "policy_load_failed"      // 策略加载失败
 	ErrorTypeUnexpectedBehavior    = "unexpected_behavior"     // 意外行为
 	ErrorTypePerformanceIssue      = "performance_issue"       // 性能问题
+	// ErrorTypeOutputGuardBlocked：输出合规守卫的格式类拦截（2026-11-20 PI
+	// 接入轮）。**生产者是 domains/streaming 的策略拦截反馈出口**（经
+	// SetOutputGuardPISink 注入），不是 PI 检测器自身——这是第一个「把其它
+	// 子系统的失败喂给 PI 智能体」的源（此前生产者只有 Detector 的 6 个失败
+	// 分支）。这类拦截拦的是上游输出格式（工具参数非法 JSON / 脱敏破坏 JSON /
+	// 帧编码失败），不是敏感内容 ⇒ 分析目标是归因（上游断流截断？中转格式
+	// 转换 bug？守卫误判？）+ 给出继续的建议与操作；**apply 面对这类事件
+	// 恒 view-only**（其建议不指向 prompt_injection_rules，见
+	// admin/pi_analysis_fix_apply.go 的类型闸）。
+	ErrorTypeOutputGuardBlocked = "output_guard_blocked" // 输出守卫格式类拦截
 )
 
 // ErrorQueueStatus 队列状态

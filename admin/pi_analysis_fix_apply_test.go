@@ -169,6 +169,10 @@ func TestApplyFix_EmptyAdjustmentRejected(t *testing.T) {
 		AddRow(nil, 0.95, true, false)
 	mock.ExpectQuery("SELECT rule_adjustment, confidence_score").
 		WithArgs(int64(1)).WillReturnRows(rows)
+	// ★ 2026-11-20 类型闸：apply 先查队列项 error_type（view-only 判定）。
+	mock.ExpectQuery("SELECT error_type FROM error_analysis_queue").
+		WithArgs(int64(1)).WillReturnRows(
+		sqlmock.NewRows([]string{"error_type"}).AddRow("llm_detection_failed"))
 
 	rec := piFixRequest(t, http.MethodPost, "/x")
 	h.ApplyFix(rec, httptest.NewRequest(http.MethodPost, "/x", nil), 1)
@@ -184,6 +188,10 @@ func TestApplyFix_LowConfidenceRejected(t *testing.T) {
 		AddRow([]byte(adj), 0.42, true, false)
 	mock.ExpectQuery("SELECT rule_adjustment, confidence_score").
 		WithArgs(int64(1)).WillReturnRows(rows)
+	// ★ 2026-11-20 类型闸：apply 先查队列项 error_type（view-only 判定）。
+	mock.ExpectQuery("SELECT error_type FROM error_analysis_queue").
+		WithArgs(int64(1)).WillReturnRows(
+		sqlmock.NewRows([]string{"error_type"}).AddRow("llm_detection_failed"))
 
 	rec := httptest.NewRecorder()
 	h.ApplyFix(rec, httptest.NewRequest(http.MethodPost, "/x", nil), 1)
@@ -229,6 +237,10 @@ func TestApplyFix_HallucinatedRuleNameRejected(t *testing.T) {
 		AddRow([]byte(adj), 0.95, true, false)
 	mock.ExpectQuery("SELECT rule_adjustment, confidence_score").
 		WithArgs(int64(1)).WillReturnRows(resRows)
+	// ★ 2026-11-20 类型闸：apply 先查队列项 error_type（view-only 判定）。
+	mock.ExpectQuery("SELECT error_type FROM error_analysis_queue").
+		WithArgs(int64(1)).WillReturnRows(
+		sqlmock.NewRows([]string{"error_type"}).AddRow("llm_detection_failed"))
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT enabled, severity, pattern FROM prompt_injection_rules").
 		WithArgs("ghost_rule").WillReturnError(sql.ErrNoRows)
@@ -254,6 +266,10 @@ func TestApplyFix_SuccessPathRefreshesRules(t *testing.T) {
 		AddRow([]byte(adj), 0.95, true, false)
 	mock.ExpectQuery("SELECT rule_adjustment, confidence_score").
 		WithArgs(int64(1)).WillReturnRows(resRows)
+	// ★ 2026-11-20 类型闸：apply 先查队列项 error_type（view-only 判定）。
+	mock.ExpectQuery("SELECT error_type FROM error_analysis_queue").
+		WithArgs(int64(1)).WillReturnRows(
+		sqlmock.NewRows([]string{"error_type"}).AddRow("llm_detection_failed"))
 
 	mock.ExpectBegin()
 	ruleRows := sqlmock.NewRows([]string{"enabled", "severity", "pattern"}).
@@ -442,5 +458,34 @@ func TestDetailJSONShapeIsSnakeCase(t *testing.T) {
 		if strings.Contains(body, bad) {
 			t.Fatalf("queue item JSON must not use Go exported names, found %s", bad)
 		}
+	}
+}
+
+// TestApplyFix_OutputGuardBlockedIsViewOnly 钉住类型闸（2026-11-20 PI 接入轮）：
+// 输出守卫格式类拦截（output_guard_blocked）的分析结论是**归因 + 继续建议**，
+// 不是规则变更——即便 LLM 幻觉出合法白名单动作 + 置信度达标，apply 也必须
+// 422 view-only（动作白名单指向 prompt_injection_rules，与输出守卫规则是
+// 两张表）。
+func TestApplyFix_OutputGuardBlockedIsViewOnly(t *testing.T) {
+	h, mock := newPIFixTestHandler(t)
+	adj := `{"action":"disable_rule","rule_name":"builtin.guard.tool_json_invalid"}`
+	rows := sqlmock.NewRows([]string{"rule_adjustment", "confidence_score", "is_false_positive", "auto_applied"}).
+		AddRow([]byte(adj), 0.95, true, false)
+	mock.ExpectQuery("SELECT rule_adjustment, confidence_score").
+		WithArgs(int64(7)).WillReturnRows(rows)
+	mock.ExpectQuery("SELECT error_type FROM error_analysis_queue").
+		WithArgs(int64(7)).WillReturnRows(
+		sqlmock.NewRows([]string{"error_type"}).AddRow("output_guard_blocked"))
+
+	rec := httptest.NewRecorder()
+	h.ApplyFix(rec, httptest.NewRequest(http.MethodPost, "/x", nil), 7)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422 view-only for output_guard_blocked, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "view-only") {
+		t.Fatalf("body must say view-only, got %q", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

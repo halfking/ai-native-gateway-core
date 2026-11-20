@@ -41,12 +41,18 @@ type PIAnalysisHandler struct {
 
 	// detectionChainWired 报告**检测链是否接线**（即是否存在生产者）。
 	//
-	// ★ 2026-11-18 审计轮 P1：PI 错误采集的**唯一生产者**是
+	// ★ 2026-11-18 审计轮 P1：PI 错误采集的生产者原本**只有**
 	//	promptinjection.Detector（d.collectError），而检测器只在
 	//	LLM_GATEWAY_USE_V2_PIPELINE 开启时才被构造（默认关）
 	//	⇒ 默认形态下采集队列**恒为空**，且「空」与「没有生产者」
 	//	在运行期**不可区分**（运维会读成「没有错误发生过」）。
 	//	⇒ 把这条链路状态暴露到 /stats，让管理面能如实区分。
+	//
+	// ★ 2026-11-20 PI 接入轮：生产者不再只有检测器——输出守卫格式类拦截
+	//	（output_guard_blocked，经 streaming.SetOutputGuardPISink 注入的
+	//	投递口）也会入队，且这条源**不依赖 v2 pipeline**（装配在
+	//	piErrorCollectorGlobal 初始化处）。chain_status 只反映检测器接线，
+	//	不代表队列无生产者；队列详情/统计按 error_type 如实展示。
 	detectionChainWired bool
 
 	// ruleRefresher 在「应用修复」改了 prompt_injection_rules 之后被调用，

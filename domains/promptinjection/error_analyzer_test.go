@@ -260,6 +260,7 @@ func TestErrorAnalyzer_GetPromptTemplate(t *testing.T) {
 		{"Rule False Positive", ErrorTypeRuleFalsePositive},
 		{"Canary Detection Failed", ErrorTypeCanaryDetectionFailed},
 		{"Vector Match Failed", ErrorTypeVectorMatchFailed},
+		{"Output Guard Blocked", ErrorTypeOutputGuardBlocked},
 		{"Generic", "unknown_type"},
 	}
 
@@ -580,4 +581,22 @@ func TestErrorAnalyzer_ProcessBatchN_UsesLocalLimitNotSharedState(t *testing.T) 
 	// ② 共享 batchSize 未被请求值污染。
 	assert.Equal(t, 10, analyzer.batchSize,
 		"ProcessBatchN must NOT mutate the shared batch size")
+}
+
+// TestErrorAnalyzer_OutputGuardBlockedTemplate 契约钉测（2026-11-20 PI 接入轮）：
+// 输出守卫格式类拦截的分析模板必须①面向归因分类 ②要求分受众的继续建议与
+// 操作 ③禁止 rule_adjustment（动作白名单指向 prompt_injection_rules，与
+// 输出守卫规则是两张表；apply 面对这类事件恒 view-only）。
+func TestErrorAnalyzer_OutputGuardBlockedTemplate(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	analyzer := NewErrorAnalyzer(db, NewErrorCollector(db, true), &MockLLMClient{}, "test-model", true)
+	tpl := analyzer.getPromptTemplate(ErrorTypeOutputGuardBlocked)
+	for _, want := range []string{"error_category", "upstream_interrupted", "gateway_guard_misjudge", "suggested_fix", "rule_adjustment"} {
+		assert.Contains(t, tpl.SystemPrompt, want)
+	}
+	assert.Contains(t, tpl.SystemPrompt, "必须为 null")
+	assert.NotEmpty(t, tpl.UserPrompt)
 }

@@ -351,6 +351,7 @@ export default {
   errorTypePolicyLoadFailed: '策略加载失败',
   errorTypeUnexpectedBehavior: '意外行为',
   errorTypePerformanceIssue: '性能问题',
+  errorTypeOutputGuardBlocked: '输出守卫拦截',
   statusPending: '待处理',
   statusProcessing: '处理中',
   statusAnalyzed: '已分析',
