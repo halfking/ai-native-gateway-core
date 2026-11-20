@@ -26,8 +26,14 @@ type OverviewSummary struct {
 	AvgContextSize      int64   `json:"avg_context_size"`
 	AvgDurationSeconds  float64 `json:"avg_duration_seconds"`
 	AvgTurns            float64 `json:"avg_turns"`
+	// TotalCost 保留用于向后兼容和排序，但注意这是 internal_cost(美元) + external_cost(积分) 的跨单位相加
+	// 建议使用 InternalCost 和 ExternalCost 分别处理
 	TotalCost           float64 `json:"total_cost"`
 	TotalCostGrowth     float64 `json:"total_cost_growth"`
+	InternalCost        float64 `json:"internal_cost"`        // 内部成本（美元）
+	InternalCostGrowth  float64 `json:"internal_cost_growth"` // 内部成本增长率
+	ExternalCost        float64 `json:"external_cost"`        // 外部成本（积分）
+	ExternalCostGrowth  float64 `json:"external_cost_growth"` // 外部成本增长率
 	ActiveUsers         int64   `json:"active_users"`
 	ActiveUsersGrowth   float64 `json:"active_users_growth"`
 	ActiveProjects      int64   `json:"active_projects"`
@@ -68,7 +74,9 @@ type TopUser struct {
 	Email        string  `json:"email"`
 	SessionCount int64   `json:"session_count"`
 	TotalTokens  int64   `json:"total_tokens"`
-	TotalCost    float64 `json:"total_cost"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
 }
 
 // TopProject 最活跃项目
@@ -76,7 +84,9 @@ type TopProject struct {
 	Project      string  `json:"project"`
 	SessionCount int64   `json:"session_count"`
 	UserCount    int64   `json:"user_count"`
-	TotalCost    float64 `json:"total_cost"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
 }
 
 // OverviewResponse 总体统计响应
@@ -105,7 +115,9 @@ type UserRanking struct {
 	ProjectCount int64   `json:"project_count"`
 	TaskCount    int64   `json:"task_count"`
 	TotalTokens  int64   `json:"total_tokens"`
-	TotalCost    float64 `json:"total_cost"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
 	LastActiveAt string  `json:"last_active_at"`
 	LatestTask   string  `json:"latest_task"`
 }
@@ -174,6 +186,8 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 			COALESCE(AVG(avg_duration_seconds), 0) as avg_duration_seconds,
 			COALESCE(AVG(avg_turns), 0) as avg_turns,
 			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost,
+			COALESCE(SUM(internal_cost), 0) as internal_cost,
+			COALESCE(SUM(external_cost), 0) as external_cost,
 			COALESCE(COUNT(DISTINCT owner), 0) as active_users,
 			COALESCE(SUM(project_count)::bigint, 0) as active_projects,
 			COALESCE(SUM(task_count)::bigint, 0) as active_tasks
@@ -192,6 +206,8 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 		&current.AvgDurationSeconds,
 		&current.AvgTurns,
 		&current.TotalCost,
+		&current.InternalCost,
+		&current.ExternalCost,
 		&current.ActiveUsers,
 		&current.ActiveProjects,
 		&current.ActiveTasks,
@@ -203,11 +219,15 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	// 前一周期统计（用于计算增长率）
 	var prevTotal int64
 	var prevCost float64
+	var prevInternalCost float64
+	var prevExternalCost float64
 	var prevUsers int64
 	query = `
 		SELECT
 			COALESCE(SUM(session_count)::bigint, 0),
 			COALESCE(SUM(internal_cost + external_cost), 0),
+			COALESCE(SUM(internal_cost), 0),
+			COALESCE(SUM(external_cost), 0),
 			COALESCE(COUNT(DISTINCT owner), 0)
 		FROM user_session_aggregates
 		WHERE date >= $1 AND date <= $2
@@ -218,7 +238,7 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 		args = append(args, *tenantID)
 	}
 
-	err = db.QueryRowContext(ctx, query, args...).Scan(&prevTotal, &prevCost, &prevUsers)
+	err = db.QueryRowContext(ctx, query, args...).Scan(&prevTotal, &prevCost, &prevInternalCost, &prevExternalCost, &prevUsers)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
@@ -226,6 +246,8 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	// 计算增长率
 	current.TotalSessionsGrowth = calculateGrowth(current.TotalSessions, prevTotal)
 	current.TotalCostGrowth = calculateGrowth(int64(current.TotalCost*100), int64(prevCost*100))
+	current.InternalCostGrowth = calculateGrowth(int64(current.InternalCost*100), int64(prevInternalCost*100))
+	current.ExternalCostGrowth = calculateGrowth(int64(current.ExternalCost*100), int64(prevExternalCost*100))
 	current.ActiveUsersGrowth = calculateGrowth(current.ActiveUsers, prevUsers)
 
 	// 查询模型成功率和缓存率
@@ -530,7 +552,9 @@ func getTopProjects(ctx context.Context, db *sql.DB, tenantID *string, startDate
 			project,
 			SUM(session_count)::bigint as session_count,
 			COUNT(DISTINCT owner) as user_count,
-			SUM(internal_cost + external_cost) as total_cost
+			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost
 		FROM project_task_aggregates
 		WHERE date >= $1 AND date <= $2
 	`
@@ -554,7 +578,7 @@ func getTopProjects(ctx context.Context, db *sql.DB, tenantID *string, startDate
 	var projects []TopProject
 	for rows.Next() {
 		var p TopProject
-		if err := rows.Scan(&p.Project, &p.SessionCount, &p.UserCount, &p.TotalCost); err != nil {
+		if err := rows.Scan(&p.Project, &p.SessionCount, &p.UserCount, &p.TotalCost, &p.InternalCost, &p.ExternalCost); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -827,7 +851,9 @@ func (s *OverviewSummary) MarshalJSON() ([]byte, error) {
 type UserDetailSummary struct {
 	SessionCount int64   `json:"session_count"`
 	TaskCount    int64   `json:"task_count"`
-	TotalCost    float64 `json:"total_cost"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
 	Rank         int     `json:"rank"`
 	RankChange   int     `json:"rank_change"`
 }
@@ -873,7 +899,9 @@ type UserProject struct {
 	SessionCount int64   `json:"session_count"`
 	TaskCount    int64   `json:"task_count"`
 	TotalTokens  int64   `json:"total_tokens"`
-	TotalCost    float64 `json:"total_cost"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
 	LastActiveAt string  `json:"last_active_at"`
 }
 
@@ -888,7 +916,9 @@ type ProjectTask struct {
 	SessionCount int64   `json:"session_count"`
 	RequestCount int64   `json:"request_count"`
 	TotalTokens  int64   `json:"total_tokens"`
-	TotalCost    float64 `json:"total_cost"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
 	LastActiveAt string  `json:"last_active_at"`
 }
 
@@ -965,7 +995,9 @@ func getUserDetailSummary(ctx context.Context, db *sql.DB, owner, startDate, end
 		SELECT
 			COALESCE(SUM(session_count), 0) as session_count,
 			COALESCE(SUM(task_count), 0) as task_count,
-			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost
+			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost,
+			COALESCE(SUM(internal_cost), 0) as internal_cost,
+			COALESCE(SUM(external_cost), 0) as external_cost
 		FROM user_session_aggregates
 		WHERE owner = $1 AND date >= $2 AND date <= $3
 	`
@@ -975,6 +1007,8 @@ func getUserDetailSummary(ctx context.Context, db *sql.DB, owner, startDate, end
 		&summary.SessionCount,
 		&summary.TaskCount,
 		&summary.TotalCost,
+		&summary.InternalCost,
+		&summary.ExternalCost,
 	)
 	if err != nil {
 		return nil, err
@@ -1201,6 +1235,8 @@ func GetUserProjects(ctx context.Context, db *sql.DB, owner, startDate, endDate,
 			COUNT(DISTINCT NULLIF(task, '')) as task_count,
 			SUM(total_tokens)::bigint as total_tokens,
 			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost,
 			MAX(last_active_at) as last_active_at
 		FROM project_task_aggregates
 		WHERE owner = $1 AND date >= $2 AND date <= $3
@@ -1244,6 +1280,8 @@ func GetUserProjects(ctx context.Context, db *sql.DB, owner, startDate, endDate,
 			&p.TaskCount,
 			&p.TotalTokens,
 			&p.TotalCost,
+			&p.InternalCost,
+			&p.ExternalCost,
 			&lastActiveAt,
 		); err != nil {
 			return nil, err
@@ -1270,6 +1308,8 @@ func GetProjectTasks(ctx context.Context, db *sql.DB, owner, project, startDate,
 			SUM(turn_count) as request_count,
 			SUM(total_tokens)::bigint as total_tokens,
 			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost,
 			MAX(last_active_at) as last_active_at
 		FROM project_task_aggregates
 		WHERE owner = $1 AND project = $2 AND date >= $3 AND date <= $4
@@ -1309,6 +1349,8 @@ func GetProjectTasks(ctx context.Context, db *sql.DB, owner, project, startDate,
 			&t.RequestCount,
 			&t.TotalTokens,
 			&t.TotalCost,
+			&t.InternalCost,
+			&t.ExternalCost,
 			&lastActiveAt,
 		); err != nil {
 			return nil, err
@@ -1338,7 +1380,9 @@ type AgentRanking struct {
 	SessionCount       int64   `json:"session_count"`
 	TaskCount          int64   `json:"task_count"`
 	TotalTokens        int64   `json:"total_tokens"`
-	TotalCost          float64 `json:"total_cost"`
+	TotalCost          float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost       float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost       float64 `json:"external_cost"` // 外部成本（积分）
 	AvgDurationSeconds float64 `json:"avg_duration_seconds"`
 	LastUsedAt         string  `json:"last_used_at"`
 }
@@ -1358,6 +1402,8 @@ func GetAgentRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 			SUM(task_count) as task_count,
 			SUM(total_tokens)::bigint as total_tokens,
 			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost,
 			AVG(avg_duration_seconds) as avg_duration_seconds,
 			MAX(last_used_at) as last_used_at
 		FROM agent_usage_aggregates
@@ -1411,6 +1457,8 @@ func GetAgentRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 			&a.TaskCount,
 			&a.TotalTokens,
 			&a.TotalCost,
+			&a.InternalCost,
+			&a.ExternalCost,
 			&a.AvgDurationSeconds,
 			&lastUsedAt,
 		); err != nil {
@@ -1448,7 +1496,9 @@ type ModelRanking struct {
 	CacheHitCount int64   `json:"cache_hit_count"`
 	CacheRate     float64 `json:"cache_rate"`
 	AvgDurationMs float64 `json:"avg_duration_ms"`
-	TotalCost     float64 `json:"total_cost"`
+	TotalCost     float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost  float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost  float64 `json:"external_cost"` // 外部成本（积分）
 	UserCount     int64   `json:"user_count"`
 	LastUsedAt    string  `json:"last_used_at"`
 }
@@ -1472,6 +1522,8 @@ func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 			COALESCE(SUM(cache_hit_count)::NUMERIC / NULLIF(SUM(request_count), 0) * 100, 0) as cache_rate,
 			AVG(avg_duration_ms) as avg_duration_ms,
 			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost,
 			SUM(user_count) as user_count,
 			MAX(last_used_at) as last_used_at
 		FROM model_usage_aggregates
@@ -1533,6 +1585,8 @@ func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 			&m.CacheRate,
 			&m.AvgDurationMs,
 			&m.TotalCost,
+			&m.InternalCost,
+			&m.ExternalCost,
 			&m.UserCount,
 			&lastUsedAt,
 		); err != nil {
