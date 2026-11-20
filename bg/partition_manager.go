@@ -28,6 +28,14 @@ func settingsGetPlatformInt(key string, fallback int) int {
 const DefaultPromoteInterval = 1 * time.Hour
 
 // partitionTZ is the partition-boundary calendar (687/694/699 convention):
+//
+// ★★ 时区审计轮（2026-11-21）判定：**有意不跟随 system.timezone**。
+// 本时区决定**物理分区名**（partition_YYYYMMDD 后缀解析 1237 行）与
+// 分区边界（418-423 行）。分区名是持久化的物理结构：改成可变设置会让
+// 「同一日期串在不同时期解析到不同分区」⇒ 数据迁移/清理按分区名定位时
+// 静默错位。生产分区按 +08 创建（687 轮起），沿用 FixedZone 保持既有
+// 分区名连续。若未来确需按业务时区重划分区，那是一次显式的分区重建
+// 迁移，不是改一个设置值。管理面「统计/查询日切」请用 settings.SystemDayStart。
 // month bounds are Asia/Shanghai calendar months. FixedZone follows the
 // domains/streaming precedent — Shanghai has no DST, and a fixed offset
 // avoids a runtime tzdata dependency in minimal containers.

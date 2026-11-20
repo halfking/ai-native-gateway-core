@@ -12,6 +12,19 @@
 
 import { computed } from 'vue'
 import { localeRef } from './index'
+import { systemTimezone } from '../utils/systemTimezone'
+
+// 时区审计轮（2026-11-21）F6：本文件全部 Intl.DateTimeFormat 注入系统时区
+// （原先缺省 = 浏览器本地时区 ⇒ +08 服务器管理 +08 用户时，显示的「日」
+// 与统计日切可能差一天）。调用方显式传 timeZone 的场景不受影响（本文件
+// 无一处显式传）。回退链：systemTimezone() 未加载时回退浏览器本地时区，
+// 与旧行为兼容。
+
+/** 选项注入系统时区（不覆盖显式 timeZone——本文件无显式传参，防御性保留）。 */
+function tz(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
+  if (options.timeZone) return options
+  return { ...options, timeZone: systemTimezone() }
+}
 
 export function useFormat() {
   const currentLocale = computed(() => localeRef.value || 'en')
@@ -33,14 +46,14 @@ export function useFormat() {
     const date = value instanceof Date ? value : new Date(value)
     if (Number.isNaN(date.getTime())) return '—'
     try {
-      return new Intl.DateTimeFormat(currentLocale.value, {
+      return new Intl.DateTimeFormat(currentLocale.value, tz({
         year: 'numeric',
         month: 'short',
         day: '2-digit',
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
-      }).format(date)
+      })).format(date)
     } catch {
       return date.toISOString()
     }
@@ -57,7 +70,7 @@ export function useFormat() {
     const date = value instanceof Date ? value : new Date(value)
     if (Number.isNaN(date.getTime())) return '—'
     try {
-      return new Intl.DateTimeFormat(currentLocale.value, {
+      return new Intl.DateTimeFormat(currentLocale.value, tz({
         year: 'numeric',
         month: 'short',
         day: '2-digit',
@@ -65,7 +78,7 @@ export function useFormat() {
         minute: '2-digit',
         second: '2-digit',
         hour12: false,
-      }).format(date)
+      })).format(date)
     } catch {
       return date.toISOString()
     }
@@ -76,11 +89,11 @@ export function useFormat() {
     const date = value instanceof Date ? value : new Date(value)
     if (Number.isNaN(date.getTime())) return '—'
     try {
-      return new Intl.DateTimeFormat(currentLocale.value, {
+      return new Intl.DateTimeFormat(currentLocale.value, tz({
         year: 'numeric',
         month: 'short',
         day: '2-digit',
-      }).format(date)
+      })).format(date)
     } catch {
       return date.toISOString().slice(0, 10)
     }
@@ -111,10 +124,10 @@ export function fmtDateTimeShort(iso?: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   try {
-    return new Intl.DateTimeFormat(localeRef.value || 'en', {
+    return new Intl.DateTimeFormat(localeRef.value || 'en', tz({
       dateStyle: 'short',
       timeStyle: 'short',
-    }).format(d)
+    })).format(d)
   } catch {
     return d.toISOString()
   }
@@ -125,9 +138,9 @@ export function fmtDateTime24h(iso?: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   try {
-    return new Intl.DateTimeFormat(localeRef.value || 'en', {
+    return new Intl.DateTimeFormat(localeRef.value || 'en', tz({
       hour12: false,
-    }).format(d)
+    })).format(d)
   } catch {
     return d.toISOString()
   }
@@ -138,11 +151,11 @@ export function fmtDateShort(iso?: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   try {
-    return new Intl.DateTimeFormat(localeRef.value || 'en', {
+    return new Intl.DateTimeFormat(localeRef.value || 'en', tz({
       year: 'numeric',
       month: 'short',
       day: 'numeric',
-    }).format(d)
+    })).format(d)
   } catch {
     return d.toISOString().slice(0, 10)
   }
@@ -153,12 +166,12 @@ export function fmtDateCompact(iso?: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   try {
-    return new Intl.DateTimeFormat(localeRef.value || 'en', {
+    return new Intl.DateTimeFormat(localeRef.value || 'en', tz({
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
-    }).format(d)
+    })).format(d)
   } catch {
     return d.toISOString()
   }
@@ -169,14 +182,14 @@ export function fmtDateMedium(iso?: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   try {
-    return new Intl.DateTimeFormat(localeRef.value || 'en', {
+    return new Intl.DateTimeFormat(localeRef.value || 'en', tz({
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-    }).format(d)
+    })).format(d)
   } catch {
     return d.toISOString()
   }

@@ -96,6 +96,10 @@ func PlatformSpecs() []*Spec {
 	// 2026-11-20: 系统时区（system.timezone，默认 Asia/Shanghai）——
 	// 管理面时间范围日切/日期解析的统一口径（admin/settings_timezone.go 读方）。
 	out = append(out, TimezoneSpecs()...)
+	// 2026-11-20: 基础设置轮 —— 系统级公共配置三键
+	//（gateway.display_name / system.skin / storage.attachment_public_base_url），
+	// admin basic-config 聚合端点 + settingsPut 即时热应用（读方见 system_config.go）。
+	out = append(out, SystemConfigSpecs()...)
 	return out
 }
 

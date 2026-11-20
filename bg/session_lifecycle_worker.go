@@ -634,31 +634,21 @@ type recycleEventShim struct {
 func (e *recycleEventShim) Type() string         { return "session_inspector.recycle" }
 func (e *recycleEventShim) Timestamp() time.Time { return e.timestamp }
 
-// intervalSeconds 把 duration 转成 Postgres INTERVAL 字符串（秒）。
+// intervalSeconds 把 duration 转成 Postgres INTERVAL 字面量（$1::interval）。
+//
+// ★ 2026-11-20 211 活体打回：旧实现 formatDuration 返回「30 minutes」（已带
+//
+//	单位）后 formatSeconds 又追加 " seconds" ⇒ 产出 "30 minutes seconds"
+//	——SQLSTATE 22007，idle/absolute 两条扫描全部失败（UNUSED 代码从未真跑过
+//	的又一处烂：与 42703 同族，接活前没人执行过这条路径）。
+//	修法：直接输出「N seconds」单一形态——interval 字面量对任意秒数都合法，
+//	不需要分钟/小时/天的多单位拼接。
 func intervalSeconds(d time.Duration) string {
-	// 使用 $1::interval 语法，传入秒数
-	return formatSeconds(int64(d.Seconds()))
-}
-
-func formatSeconds(s int64) string {
-	if s <= 0 {
+	seconds := int64(d.Seconds())
+	if seconds <= 0 {
 		return "0 seconds"
 	}
-	// 直接返回秒数字符串（pgx 接受 $1::interval 形式）
-	return formatDuration(s) + " seconds"
-}
-
-func formatDuration(s int64) string {
-	if s < 60 {
-		return durationItoa(s)
-	}
-	if s < 3600 {
-		return durationItoa(s/60) + " minutes"
-	}
-	if s < 86400 {
-		return durationItoa(s/3600) + " hours"
-	}
-	return durationItoa(s/86400) + " days"
+	return durationItoa(seconds) + " seconds"
 }
 
 // durationItoa 是带负号支持的整型→字符串转换（避免与 bg 包内其他 itoa 重名）。

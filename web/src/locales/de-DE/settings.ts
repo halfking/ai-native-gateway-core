@@ -100,6 +100,43 @@ export default {
     hint: 'Die Zeitzone legt fest, wie alle Zeitbereiche aggregiert und angezeigt werden (Tagesgrenzen, Berichte, Logabfragen). Voreinstellung ist UTC+8; Änderungen greifen sofort nach dem Speichern.',
     currentNow: 'Aktueller Zeitzonen-Offset: {offset}',
   },
+  search: {
+    placeholder: 'Einstellungen suchen: Schlüssel / Beschreibung / Kategorie…',
+  },
+  basicConfig: {
+    toggle: 'Grundeinstellungen',
+    hotReload: 'Hot-Reload',
+    group: {
+      identity: 'Identität & Erscheinungsbild',
+      storage: 'Speicher',
+      schedules: 'Geplante Aufgaben',
+    },
+    entry: {
+      displayName: 'Gateway-Anzeigename',
+      skin: 'Standard-Skin',
+      timezone: 'Systemzeitzone',
+      gatewayMode: 'Betriebsmodus',
+      attachmentUrl: 'Öffentliche Anhang-URL',
+      attachmentDir: 'Anhang-Speicherverzeichnis',
+      rollupHour: 'Aggregationsstunde (UTC)',
+    },
+    skin: {
+      auto: 'System folgen',
+      light: 'Hell',
+      dark: 'Dunkel',
+    },
+    infraTitle: 'Infrastruktur (schreibgeschützt)',
+    infraHint: 'Laufzeitwerte aus der Startumgebung. Änderungen erfordern einen Dienstneustart; Zugangsdaten werden auf dieser Seite niemals angezeigt.',
+    infraNotConfigured: 'Nicht konfiguriert',
+    infraNotSet: 'Nicht gesetzt',
+    infra: {
+      instance: 'Instanz-ID',
+      redis: 'Redis (Cache)',
+      database: 'Datenbank',
+      cacheDir: 'Cache-Verzeichnis (env)',
+      attachmentDir: 'Anhang-Verzeichnis (env)',
+    },
+  },
   docs: {
     compressionModeTitle: '📖 Komprimierungsmodus im Detail',
     compressionModeContent: `<p><strong>Komprimierungsmodus</strong> steuert, wie das System mit übergroßen Konversationen umgeht:</p>

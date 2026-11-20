@@ -68,8 +68,13 @@ async function onTimeRangeChange(next: BoardTimeRange) {
 
 // ── BoardTimeRange ↔ KxDateRange 映射 ──
 
+// 时区审计轮（2026-11-21）F2：日期串出口改系统时区日历（原先 toISOString
+// 硬编码 UTC ⇒ +08 下面板显示与深链带出的 start/end 全是 UTC 日历，与后端
+// 新解析口径错位一天）。导入处统一走 systemTzDateStr。
+import { systemTzDateStr as boardDateStr } from '@/components/ui/kxDatePresets'
+
 function utcDateStr(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10)
+  return boardDateStr(ms)
 }
 
 /** 当前 BoardTimeRange → 面板展示值。 */
@@ -105,8 +110,8 @@ function scrollToDist() {
 const trendExplorerQuery = computed(() => {
   const { startMs, endMs } = resolveBoardRangeMs(timeRange.value)
   return {
-    start: new Date(startMs).toISOString().slice(0, 10),
-    end: new Date(Math.max(startMs, endMs - 1)).toISOString().slice(0, 10),
+    start: boardDateStr(startMs),
+    end: boardDateStr(Math.max(startMs, endMs - 1)),
   }
 })
 </script>

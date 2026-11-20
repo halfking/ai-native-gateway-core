@@ -151,10 +151,11 @@ type Handler struct {
 	// liteSessions 为 lite(sqlite) 存储模式的会话读面（R28-S-2）；nil=非 lite 模式。
 	liteSessions LiteSessionsReader
 	proxyStore   proxy.Store
-	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
-	// "force re-check after recharge" endpoint. nil → the route is
-	// still registered (URL stays stable across deployments); the
-	// handler returns 503 when this is nil.
+	// balanceQuotaProbe (2026-08-23 hzx-2 audit) was intended to back an admin
+	// "force re-check after recharge" endpoint, but that endpoint was never
+	// implemented (2026-11-20 L6 audit). The field has a setter
+	// (SetBalanceQuotaProbe) but zero HTTP route consumers. Recharge detection
+	// currently relies on the 2-minute background tick or manual SQL.
 	balanceQuotaProbe *bg.BalanceQuotaProbe
 	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
@@ -850,9 +851,11 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 // without the manual-trigger endpoint if the worker isn't running.
 func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
 
-// SetBalanceQuotaProbe wires the balance/permanent quota probe worker
-// so the admin force-probe endpoint (POST /api/admin/probe/force/{id})
-// can dispatch immediate re-checks. Pass nil to disable the endpoint.
+// SetBalanceQuotaProbe wires the balance/permanent quota probe worker.
+// ⚠️ 2026-11-20 L6: the endpoint POST /api/admin/probe/force/{id} mentioned
+// in earlier versions of this comment was never implemented — this field has
+// a setter but zero HTTP consumers. Recharge detection currently relies on the
+// 2-minute background tick or manual SQL (RearmCredentialFailures).
 func (h *Handler) SetBalanceQuotaProbe(b *bg.BalanceQuotaProbe) { h.balanceQuotaProbe = b }
 
 // SetModelQualityBackend wires the model-quality worker for the on-demand
@@ -1366,6 +1369,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-11-20 时区设置轮：系统时区读/便捷写
 	//（GET/PUT /api/admin/system-timezone，前端启动读取用于显示与日切对齐）。
 	h.registerTimezoneRoutes(mux)
+
+	// 2026-11-20 基础设置轮：系统级公共配置聚合面
+	//（GET /api/admin/basic-config，分组键清单 + 只读基础设施实况）。
+	h.registerBasicConfigRoutes(mux)
 
 	// 2026-07-06: session state management endpoints.
 	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))

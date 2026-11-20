@@ -79,3 +79,39 @@ export function getTenantSetting(tenantID: string, key: string) {
   return req<{ spec: SettingSpec; value: any; source: string }>(
     'GET', `/api/admin/tenant-settings/${encodeURIComponent(tenantID)}/${key}`)
 }
+
+// ── 基础设置（2026-11-20 基础设置轮）──────────────────────────────────
+// GET /api/admin/basic-config：系统级公共配置的分组聚合面。
+// 写通道不另造：保存仍走 updateSetting（校验+审计+权限门+热应用都在那条路）。
+
+export interface BasicSettingEntry {
+  key: string
+  group: 'identity' | 'storage' | 'schedules'
+  type: string
+  options?: string[]
+  default: any
+  editable: boolean
+  value: any
+  source: string
+  hot_reload: boolean
+  danger_level: number
+  description: string
+}
+
+export interface BasicInfraFacts {
+  instance_id: string
+  redis: { configured: boolean; addr: string; db: string }
+  database: { configured: boolean; source: string; host?: string; database?: string; user?: string }
+  attachment_dir_env: string
+  cache_dir_env: string
+  reload_hint: string
+}
+
+export interface BasicConfigResp {
+  groups: Array<{ id: string; items: BasicSettingEntry[] }>
+  infra: BasicInfraFacts
+}
+
+export function getBasicConfig() {
+  return req<BasicConfigResp>('GET', '/api/admin/basic-config')
+}

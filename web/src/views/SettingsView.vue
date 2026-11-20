@@ -6,8 +6,12 @@ import {
   getSetting,
   updateSetting,
   rollbackSetting,
+  getBasicConfig,
   type SettingItem,
   type SettingSpec,
+  type BasicConfigResp,
+  type BasicSettingEntry,
+  type BasicInfraFacts,
 } from '../api'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { fetchSystemTimezone } from '../utils/systemTimezone'
@@ -22,7 +26,9 @@ import {
   Coin,
   Files,
   Lock,
+  Monitor,
   RefreshRight,
+  Search,
   Setting,
   Share,
   Timer,
@@ -43,6 +49,117 @@ const currentSource = ref<string>('')
 const editBuffer = ref<string>('') // JSON text editor
 const filterCategory = ref<string>('')
 const tagInput = ref('')
+
+// ── 基础设置轮（2026-11-20）───────────────────────────────────────────
+// ① 跨分类搜索：键名 / 描述 / 类别名逐条包含匹配（前端本地过滤，
+//    list 结果本身就是全量注册面，不需要后端再开搜索参数）。
+const searchText = ref('')
+const filteredItems = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  if (!q) return items.value
+  return items.value.filter((it) => {
+    const catLabel = categoryLabel(it.category)
+    return (
+      it.key.toLowerCase().includes(q) ||
+      (it.description || '').toLowerCase().includes(q) ||
+      (catLabel && catLabel.toLowerCase().includes(q))
+    )
+  })
+})
+function categoryLabel(category: string): string {
+  const c = categories.value.find((x) => x.key === category)
+  return c ? c.label : ''
+}
+
+// ② 基础设置面板：GET /api/admin/basic-config 的分组聚合展示，
+//    保存仍走既有 updateSetting 通道（校验+审计+热应用不复制）。
+const showBasicConfig = ref(false)
+const basicConfig = ref<BasicConfigResp | null>(null)
+const basicLoading = ref(false)
+const basicBuffers = ref<Record<string, string>>({})
+const basicSavingKey = ref<string>('')
+
+async function toggleBasicConfig() {
+  showBasicConfig.value = !showBasicConfig.value
+  if (showBasicConfig.value && !basicConfig.value) {
+    await loadBasicConfig()
+  }
+}
+
+async function loadBasicConfig() {
+  basicLoading.value = true
+  try {
+    basicConfig.value = await getBasicConfig()
+    // 为每个可编辑键初始化编辑缓冲（值 → 字符串形态）。
+    const buffers: Record<string, string> = {}
+    for (const g of basicConfig.value.groups) {
+      for (const it of g.items) {
+        buffers[it.key] = basicValueToString(it)
+      }
+    }
+    basicBuffers.value = buffers
+  } catch (e: any) {
+    error.value = e.message || t('settings.detail.errors.loadListFailed')
+  } finally {
+    basicLoading.value = false
+  }
+}
+
+function basicValueToString(it: BasicSettingEntry): string {
+  const v = it.value ?? it.default
+  if (v === null || v === undefined) return ''
+  return String(v)
+}
+
+async function saveBasicSetting(entry: BasicSettingEntry) {
+  const raw = basicBuffers.value[entry.key]
+  if (raw === undefined) return
+  // 按类型解析（与右侧详情编辑器 save() 同构的解析语义）。
+  let parsed: any
+  if (entry.type === 'int') {
+    parsed = Number(raw)
+    if (isNaN(parsed)) {
+      error.value = t('settings.detail.errors.invalidNumber')
+      return
+    }
+  } else if (entry.type === 'float') {
+    parsed = Number(raw)
+    if (isNaN(parsed)) {
+      error.value = t('settings.detail.errors.invalidNumber')
+      return
+    }
+  } else {
+    parsed = raw
+  }
+  basicSavingKey.value = entry.key
+  error.value = null
+  try {
+    await updateSetting(entry.key, { value: parsed })
+    // 重拉面板拿到新 source/value；同时刷新左侧列表的现值列。
+    await Promise.all([loadBasicConfig(), loadList()])
+  } catch (e: any) {
+    error.value = e.message || t('settings.detail.errors.saveFailed')
+  } finally {
+    basicSavingKey.value = ''
+  }
+}
+
+// 只读基础设施实况的格式化值（redis 口令后端本就不回传；目录 env 空则示「未设置」）。
+function infraValue(key: keyof BasicInfraFacts): string {
+  const infra = basicConfig.value?.infra
+  if (!infra) return '—'
+  if (key === 'redis') {
+    const r = infra.redis
+    return r.configured ? `${r.addr}${r.db ? ' db=' + r.db : ''}` : t('settings.basicConfig.infraNotConfigured')
+  }
+  if (key === 'database') {
+    const d = infra.database
+    if (!d.configured) return t('settings.basicConfig.infraNotConfigured')
+    return d.host ? `${d.host}/${d.database || ''}` : d.source
+  }
+  const raw = infra[key]
+  return (typeof raw === 'string' && raw) ? raw : t('settings.basicConfig.infraNotSet')
+}
 
 // 时区轮（2026-11-20）：system.timezone 专用下拉的候选与当前偏移提示。
 // 候选在选中该键时从 /api/admin/system-timezone 拉取（后端 choices 白名单面）。
@@ -79,6 +196,51 @@ const categories = computed(() => [
   { key: 'circuit_breaker',    label: t('settings.category.circuitBreaker'),  icon: Warning },
   { key: 'general',            label: t('settings.category.general'),  icon: Setting },
 ])
+
+const basicGroups = computed(() => basicConfig.value?.groups ?? [])
+
+// 基础设置分组卡片的展示标题（i18n）。
+function basicGroupTitle(id: string): string {
+  const map: Record<string, string> = {
+    identity: t('settings.basicConfig.group.identity'),
+    storage: t('settings.basicConfig.group.storage'),
+    schedules: t('settings.basicConfig.group.schedules'),
+  }
+  return map[id] || id
+}
+
+// 基础设置条目的展示标签（i18n；兜底用键名本身）。
+function basicEntryLabel(key: string): string {
+  const map: Record<string, string> = {
+    'gateway.display_name': t('settings.basicConfig.entry.displayName'),
+    'system.skin': t('settings.basicConfig.entry.skin'),
+    'system.timezone': t('settings.basicConfig.entry.timezone'),
+    'gateway.mode': t('settings.basicConfig.entry.gatewayMode'),
+    'storage.attachment_public_base_url': t('settings.basicConfig.entry.attachmentUrl'),
+    'storage.attachment_dir_override': t('settings.basicConfig.entry.attachmentDir'),
+    'reports.daily_rollup.hour': t('settings.basicConfig.entry.rollupHour'),
+  }
+  return map[key] || key
+}
+
+// 皮肤候选的展示标签。
+function skinLabel(v: string): string {
+  const map: Record<string, string> = {
+    auto: t('settings.basicConfig.skin.auto'),
+    light: t('settings.basicConfig.skin.light'),
+    dark: t('settings.basicConfig.skin.dark'),
+  }
+  return map[v] || v
+}
+
+// 运行模式候选的展示标签。
+function gatewayModeLabel(v: string): string {
+  const map: Record<string, string> = {
+    simple: t('settings.gateway.modeEnum.simple'),
+    expert: t('settings.gateway.modeEnum.expert'),
+  }
+  return map[v] || v
+}
 
 function dangerLabel(level: number): string {
   return ['', t('settings.dangerLevel.note'), t('settings.dangerLevel.warn'), t('settings.dangerLevel.danger')][level] || ''
@@ -285,10 +447,11 @@ async function rollback() {
 
 function switchCategory(key: string) {
   filterCategory.value = key
+  showBasicConfig.value = false
   loadList()
 }
 
-const filteredCount = computed(() => items.value.length)
+const filteredCount = computed(() => filteredItems.value.length)
 
 onMounted(() => {
   loadList()
@@ -298,6 +461,124 @@ onMounted(() => {
 <template>
   <div class="settings-view">
     <div v-if="error" class="error-banner">{{ error }}</div>
+
+    <!-- 顶部工具条：跨分类搜索 + 基础设置开关（2026-11-20 基础设置轮） -->
+    <div class="settings-toolbar">
+      <div class="search-box">
+        <span class="search-icon"><Search /></span>
+        <input
+          v-model="searchText"
+          type="text"
+          class="search-input"
+          :placeholder="t('settings.search.placeholder')"
+        />
+        <button v-if="searchText" type="button" class="search-clear" @click="searchText = ''">x</button>
+      </div>
+      <button
+        class="btn basic-toggle"
+        :class="{ active: showBasicConfig }"
+        @click="toggleBasicConfig"
+      >
+        <span class="basic-toggle-icon"><Monitor /></span>
+        <span>{{ t('settings.basicConfig.toggle') }}</span>
+      </button>
+    </div>
+
+    <!-- 基础设置面板：系统级公共配置分组卡片 + 只读基础设施实况 -->
+    <section v-if="showBasicConfig" class="basic-config-panel">
+      <div v-if="basicLoading" class="loading">{{ t('common.loading') }}</div>
+      <template v-else-if="basicConfig">
+        <div class="basic-groups">
+          <div v-for="g in basicGroups" :key="g.id" class="basic-group-card">
+            <h4 class="basic-group-title">{{ basicGroupTitle(g.id) }}</h4>
+            <div v-for="it in g.items" :key="it.key" class="basic-entry">
+              <div class="basic-entry-main">
+                <div class="basic-entry-label">
+                  {{ basicEntryLabel(it.key) }}
+                  <code class="basic-entry-key">{{ it.key }}</code>
+                  <span class="src-badge" :class="'src-' + it.source">{{ it.source || '—' }}</span>
+                  <span v-if="it.hot_reload" class="basic-hot-badge">{{ t('settings.basicConfig.hotReload') }}</span>
+                </div>
+                <div class="basic-entry-desc">{{ it.description }}</div>
+              </div>
+              <div class="basic-entry-editor">
+                <!-- enum → 下拉 -->
+                <select
+                  v-if="it.options && it.options.length"
+                  v-model="basicBuffers[it.key]"
+                  class="select-input basic-editor-input"
+                >
+                  <option v-for="o in it.options" :key="o" :value="o">
+                    {{ it.key === 'system.skin' ? skinLabel(o) : (it.key === 'gateway.mode' ? gatewayModeLabel(o) : o) }}
+                  </option>
+                </select>
+                <!-- system.timezone → 复用既有候选下拉 -->
+                <select
+                  v-else-if="it.key === 'system.timezone'"
+                  v-model="basicBuffers[it.key]"
+                  class="select-input basic-editor-input"
+                >
+                  <option v-for="c in timezoneChoices" :key="c.name" :value="c.name">
+                    {{ c.label }}（{{ c.name }}）
+                  </option>
+                </select>
+                <!-- int/float → 数字输入 -->
+                <input
+                  v-else-if="it.type === 'int' || it.type === 'float'"
+                  v-model="basicBuffers[it.key]"
+                  type="number"
+                  class="number-input basic-editor-input"
+                  :step="it.type === 'float' ? '0.01' : '1'"
+                />
+                <!-- 其余 → 文本输入 -->
+                <input
+                  v-else
+                  v-model="basicBuffers[it.key]"
+                  type="text"
+                  class="text-input basic-editor-input"
+                />
+                <button
+                  class="btn btn-primary basic-save-btn"
+                  :disabled="basicSavingKey === it.key || basicBuffers[it.key] === basicValueToString(it)"
+                  @click="saveBasicSetting(it)"
+                >
+                  {{ basicSavingKey === it.key ? t('settings.editor.saving') : t('settings.editor.save') }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 只读基础设施实况：redis / 数据库 / 实例 / 目录 env（修改需重启） -->
+        <div class="basic-infra-card">
+          <h4 class="basic-group-title">{{ t('settings.basicConfig.infraTitle') }}</h4>
+          <p class="basic-infra-hint">{{ t('settings.basicConfig.infraHint') }}</p>
+          <div class="basic-infra-grid">
+            <div class="basic-infra-item">
+              <span class="basic-infra-label">{{ t('settings.basicConfig.infra.instance') }}</span>
+              <code>{{ infraValue('instance_id') }}</code>
+            </div>
+            <div class="basic-infra-item">
+              <span class="basic-infra-label">{{ t('settings.basicConfig.infra.redis') }}</span>
+              <code>{{ infraValue('redis') }}</code>
+            </div>
+            <div class="basic-infra-item">
+              <span class="basic-infra-label">{{ t('settings.basicConfig.infra.database') }}</span>
+              <code>{{ infraValue('database') }}</code>
+            </div>
+            <div class="basic-infra-item">
+              <span class="basic-infra-label">{{ t('settings.basicConfig.infra.cacheDir') }}</span>
+              <code>{{ infraValue('cache_dir_env') }}</code>
+            </div>
+            <div class="basic-infra-item">
+              <span class="basic-infra-label">{{ t('settings.basicConfig.infra.attachmentDir') }}</span>
+              <code>{{ infraValue('attachment_dir_env') }}</code>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
     <div class="layout">
       <aside class="category-bar">
         <button
@@ -315,7 +596,7 @@ onMounted(() => {
 <span>{{ t('settings.list.count', { n: filteredCount }) }}</span>
         </div>
 <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
-<div v-else-if="!items.length" class="empty">{{ t('settings.list.empty') }}</div>
+<div v-else-if="!filteredItems.length" class="empty">{{ t('settings.list.empty') }}</div>
         <table v-else class="settings-table">
           <thead>
             <tr>
@@ -327,7 +608,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr
-              v-for="it in items" :key="it.key"
+              v-for="it in filteredItems" :key="it.key"
               :class="{ active: selectedKey === it.key }"
               @click="selectKey(it.key)"
             >
@@ -545,6 +826,185 @@ onMounted(() => {
   border-radius: 6px;
   margin-bottom: 12px;
 }
+
+/* === 基础设置轮（2026-11-20）：工具条 + 基础设置面板 === */
+.settings-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.search-box {
+  position: relative;
+  flex: 1;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+}
+.search-icon {
+  position: absolute;
+  left: 10px;
+  display: flex;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.search-input {
+  width: 100%;
+  padding: 8px 32px 8px 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.search-clear {
+  position: absolute;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+}
+.search-clear:hover {
+  color: var(--text-primary);
+}
+.basic-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.basic-toggle:hover {
+  background: var(--bg-hover);
+}
+.basic-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent-h);
+}
+.basic-toggle-icon {
+  display: flex;
+}
+
+.basic-config-panel {
+  margin-bottom: 12px;
+}
+.basic-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+.basic-group-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+.basic-group-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.basic-entry {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.basic-entry:first-of-type {
+  border-top: 0;
+}
+.basic-entry-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.basic-entry-key {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.basic-entry-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.basic-entry-editor {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+.basic-editor-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+.basic-save-btn {
+  white-space: nowrap;
+}
+.basic-hot-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.basic-infra-card {
+  margin-top: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+.basic-infra-hint {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.basic-infra-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+.basic-infra-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border-radius: 6px;
+  min-width: 0;
+}
+.basic-infra-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.basic-infra-item code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+/* 搜索态下右侧详情面板仍可用：grid 三栏不变，只有列表行被过滤 */
 
 .layout {
   display: grid;
@@ -1079,6 +1539,13 @@ onMounted(() => {
   .category-bar {
     flex-direction: row;
     overflow-x: auto;
+  }
+  .settings-toolbar {
+    flex-wrap: wrap;
+  }
+  .basic-groups,
+  .basic-infra-grid {
+    grid-template-columns: 1fr;
   }
 }
 

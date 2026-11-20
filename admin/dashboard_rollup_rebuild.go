@@ -95,6 +95,13 @@ func statsRebuildRange(fromRaw, toRaw string) (time.Time, time.Time, error) {
 	now := time.Now().UTC()
 	// 结束日取「今天」：当日分钟仍在被实时累加器写入，重算到今天为止即可，
 	// 更早的存量才是需要修的。
+	//
+	// ★★ 时区审计轮（2026-11-21）判定：本端点**有意保持 UTC 日历**——它是
+	// 运维修复工具（手工重算 dashboard_daily_stats 的指定日期行），「日期串
+	// = UTC 日历日」与 stats 表的历史写入口径（原 UTC 轮产物）对齐；切系统
+	// 时区会让「重算 2026-11-20」悄悄改写另一行。修复工具要的是**确定性的
+	// 历史行定位**，不是统计窗口语义。管理面统计查询的日切已按
+	// settings.SystemDayStart 走（boardTimeRange/resolveUsageTimeRange）。
 	toDay := now
 	fromDay := now.AddDate(0, 0, -6)
 
