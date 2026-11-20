@@ -1367,6 +1367,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	//（GET/PUT /api/admin/system-timezone，前端启动读取用于显示与日切对齐）。
 	h.registerTimezoneRoutes(mux)
 
+	// 2026-11-20 基础设置轮：系统级公共配置聚合面
+	//（GET /api/admin/basic-config，分组键清单 + 只读基础设施实况）。
+	h.registerBasicConfigRoutes(mux)
+
 	// 2026-07-06: session state management endpoints.
 	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))
 	mux.HandleFunc("/api/admin/sessions/", admin(h.handleSessionSubrouter))
