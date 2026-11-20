@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // appendTimeseriesFilters appends the standard tenant + model + provider +
@@ -493,12 +495,13 @@ func parseTimeseriesFilters(r *http.Request) (*timeseriesFilters, error) {
 		return nil, fmt.Errorf("date_from and date_to are required")
 	}
 
-	dateFrom, err := time.Parse("2006-01-02", dateFromStr)
+	// 时区审计轮（2026-11-21）F4：日期串按系统时区解释（原先 UTC）。
+	dateFrom, err := settings.ParseSystemDate(dateFromStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid date_from format: %w", err)
 	}
 
-	dateTo, err := time.Parse("2006-01-02", dateToStr)
+	dateTo, err := settings.ParseSystemDate(dateToStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid date_to format: %w", err)
 	}

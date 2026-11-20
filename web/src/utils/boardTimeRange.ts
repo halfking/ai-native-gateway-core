@@ -21,7 +21,7 @@ export interface BoardTimeQuery {
   include_probes?: boolean
 }
 
-import { systemTzDateStr, systemTzDayStartMs } from '@/components/ui/kxDatePresets'
+import { systemTzDateStr, systemTzDayStartMs, systemTzNoonMs } from '@/components/ui/kxDatePresets'
 
 export function defaultBoardTimeRange(): BoardTimeRange {
   return { preset: 'today', days: 1 }
@@ -101,9 +101,13 @@ export function utcRollingStartMs(days: number, endMs = Date.now()): number {
 
 export function resolveBoardRangeMs(range: BoardTimeRange, endMs = Date.now()): { startMs: number; endMs: number } {
   if (range.preset === 'custom' && range.start && range.end) {
+    // 时区审计轮（2026-11-21）F2：custom 的日期串按系统时区日切解释
+    //（原先 Date.parse('T00:00:00Z') 硬编码 UTC ⇒ +08 下整个窗口后移
+    // 8 小时，起点漏当天 0-8 点、终点多含次日 0-8 点）。后端
+    // resolveUsageTimeRange 对同一串按系统时区解析 ⇒ 两侧必须同刻度。
     return {
-      startMs: Date.parse(`${range.start}T00:00:00Z`),
-      endMs: Date.parse(`${range.end}T00:00:00Z`) + 86_400_000,
+      startMs: systemTzNoonMs(range.start) - 12 * 3_600_000,
+      endMs: systemTzNoonMs(range.end) - 12 * 3_600_000 + 86_400_000,
     }
   }
   return { startMs: utcRollingStartMs(range.days || 1, endMs), endMs }

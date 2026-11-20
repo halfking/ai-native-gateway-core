@@ -23,6 +23,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pashagolub/pgxmock/v4"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -43,6 +45,9 @@ func TestUsageWindowBoundsDefault30d(t *testing.T) {
 func TestUsageWindowBoundsExplicitFormats(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	// 时区审计轮 F4：YYYY-MM-DD 按系统时区解释。UTC 注入时与旧契约逐字一致。
+	settings.SystemTimezoneLocationForTest("UTC")
+	defer settings.SystemTimezoneLocationForTest("")
 	start, end, ok := usageWindowBounds(rr, req, "2026-11-01", "2026-11-03")
 	if !ok {
 		t.Fatalf("YYYY-MM-DD should parse")
@@ -54,6 +59,26 @@ func TestUsageWindowBoundsExplicitFormats(t *testing.T) {
 	// end = date_to + 24h（当日结束，与 handleUserModelUsage 同语义）。
 	if !end.Equal(d1.Add(72 * time.Hour)) {
 		t.Fatalf("end = %v, want date_to+24h=%v", end, d1.Add(72*time.Hour))
+	}
+}
+
+// TestUsageWindowBoundsSystemTimezone —— F4 回归钉：+08 注入下同一日期串
+// 的窗口边界整体前移 8 小时（2026-11-01 → 2026-10-31T16:00Z 起）。
+func TestUsageWindowBoundsSystemTimezone(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	defer settings.SystemTimezoneLocationForTest("")
+	start, end, ok := usageWindowBounds(rr, req, "2026-11-01", "2026-11-03")
+	if !ok {
+		t.Fatalf("YYYY-MM-DD should parse")
+	}
+	wantStart := time.Date(2026, 10, 31, 16, 0, 0, 0, time.UTC)
+	if !start.UTC().Equal(wantStart) {
+		t.Fatalf("start = %v, want %v (+08 零点)", start.UTC(), wantStart)
+	}
+	if d := end.Sub(start); d != 72*time.Hour {
+		t.Fatalf("窗口长度 = %v, want 72h", d)
 	}
 }
 

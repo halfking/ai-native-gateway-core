@@ -93,6 +93,7 @@ import helpManual from './helpManual'
 import selfUpdateView from './selfUpdateView'
 import simpleMode from './simpleMode'
 import sessionAnalytics from './sessionAnalytics'
+import pageHelp from './pageHelp'
 
 export default {
   hyper,
@@ -189,4 +190,5 @@ export default {
   publicQuote,
   simpleMode,
   sessionAnalytics,
+  pageHelp,
 }

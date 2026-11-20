@@ -14,6 +14,9 @@ package admin
 import (
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func TestReportViewFilter_UnassignedSentinelParsed(t *testing.T) {
@@ -93,7 +96,7 @@ func TestReportViewFilter_EmptyValueMeansNoFilter(t *testing.T) {
 }
 
 func TestReportRange_DefaultsAndBounds(t *testing.T) {
-	// 缺省 = 昨日往前 7 天（UTC）。
+	// 缺省 = 昨日往前 7 天（系统时区日历日）。
 	r := httptest.NewRequest("GET", "/api/admin/report-rollup/summary", nil)
 	start, end, err := reportRange(r)
 	if err != nil {
@@ -113,5 +116,53 @@ func TestReportRange_DefaultsAndBounds(t *testing.T) {
 		"/api/admin/report-rollup/summary?start=2020-01-01&end=2026-11-10", nil)
 	if _, _, err := reportRange(r3); err == nil {
 		t.Error("超长区间没有报错")
+	}
+}
+
+// TestReportRange_SystemTimezoneCalendarLabel —— 时区审计轮（2026-11-21）
+// F1 回归钉：日期串必须按**系统时区**解释成日历标签（BuildRangeReport 内部
+// 再按字段重锚 UTC 过滤 DATE 列，子日时刻无意义）。UTC 注入时 +08 与 UTC
+// 零点重合；换 +08 注入后同一个日期串的 UTC 瞬间应前移 8 小时。
+func TestReportRange_SystemTimezoneCalendarLabel(t *testing.T) {
+	settings.SystemTimezoneLocationForTest("UTC")
+	defer settings.SystemTimezoneLocationForTest("")
+
+	rUTC := httptest.NewRequest("GET",
+		"/api/admin/report-rollup/summary?start=2026-06-01&end=2026-06-03", nil)
+	startUTC, _, err := reportRange(rUTC)
+	if err != nil {
+		t.Fatalf("reportRange(UTC): %v", err)
+	}
+	if got := startUTC.Format("2006-01-02"); got != "2026-06-01" {
+		t.Errorf("UTC 标签漂移：start=%s，期望 2026-06-01", got)
+	}
+
+	// 注入 +08：同一日期串 → UTC 瞬间 = 2026-05-31T16:00Z（+08 零点）。
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	rCST := httptest.NewRequest("GET",
+		"/api/admin/report-rollup/summary?start=2026-06-01&end=2026-06-03", nil)
+	startCST, _, err := reportRange(rCST)
+	if err != nil {
+		t.Fatalf("reportRange(+08): %v", err)
+	}
+	if want := "2026-05-31T16:00:00Z"; startCST.UTC().Format(time.RFC3339) != want {
+		t.Errorf("+08 下的 2026-06-01 应解释为 %s，实际 %s", want, startCST.UTC().Format(time.RFC3339))
+	}
+	if got := startCST.Format("2006-01-02"); got != "2026-06-01" {
+		t.Errorf("+08 日历标签漂移：start=%s，期望 2026-06-01", got)
+	}
+	if startCST.Equal(startUTC) {
+		t.Error("+08 与 UTC 注入产出同一瞬间 ⇒ 系统时区注入通道未生效")
+	}
+
+	// 缺省「昨日」按系统时区日切：+08 注入下用一个固定 now 不可控（reportRange
+	// 内部取 time.Now()），这里只验证区间长度语义不变（6 天）。
+	rDef := httptest.NewRequest("GET", "/api/admin/report-rollup/summary", nil)
+	s, e, err := reportRange(rDef)
+	if err != nil {
+		t.Fatalf("reportRange(default): %v", err)
+	}
+	if d := e.Sub(s); d != 6*24*60*60*1e9 {
+		t.Errorf("缺省区间长度 = %v，期望 6 天", d)
 	}
 }

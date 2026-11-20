@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // readNoJIT 在一个**事务**里跑对帐读面，并事务级关掉 PG 的 JIT。
@@ -117,21 +118,27 @@ func (h *Handler) handleReportRollup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// reportRange 解析区间参数（YYYY-MM-DD 闭区间，UTC）。缺省 = 昨日往前 7 天
-// （今日快照尚不存在——聚合语义是 T+1 凌晨出昨日报表）。
+// reportRange 解析区间参数（YYYY-MM-DD 闭区间，系统时区日历标签）。缺省 =
+// 系统时区昨日往前 7 天（今日快照尚不存在——聚合语义是 T+1 凌晨出昨日报表）。
+//
+// 时区审计轮（2026-11-21）修复 F1：写入侧 worker（bg/report_rollup_worker）
+// 的 day 标签早已按系统时区日切，读侧缺省还停在 UTC yesterday ⇒ +08 时区
+// 每天 0-8 点「昨天」标签落后一天（缺最新一天/多含一天）。改 ParseSystemDate
+// 后 BuildRangeReport 仍按字段重锚 UTC（report_date 是 DATE 列，子日时刻
+// 无意义），日历标签保真、SQL 边界安全。
 func reportRange(r *http.Request) (time.Time, time.Time, error) {
-	yesterday := time.Now().UTC().AddDate(0, 0, -1)
+	yesterday := settings.SystemDayStart(time.Now()).AddDate(0, 0, -1)
 	end := yesterday
 	start := yesterday.AddDate(0, 0, -6)
 	if raw := r.URL.Query().Get("start"); raw != "" {
-		parsed, err := time.ParseInLocation("2006-01-02", raw, time.UTC)
+		parsed, err := settings.ParseSystemDate(raw)
 		if err != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("invalid start (want YYYY-MM-DD): %w", err)
 		}
 		start = parsed
 	}
 	if raw := r.URL.Query().Get("end"); raw != "" {
-		parsed, err := time.ParseInLocation("2006-01-02", raw, time.UTC)
+		parsed, err := settings.ParseSystemDate(raw)
 		if err != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("invalid end (want YYYY-MM-DD): %w", err)
 		}
@@ -458,9 +465,12 @@ func (h *Handler) handleReportRollupRun(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	day := time.Now().UTC().AddDate(0, 0, -1)
+	// 时区审计轮（2026-11-21）F1：缺省「昨日」与日期串解析切系统时区，
+	// 与 worker 写入侧的 day 标签同刻度（+08 早晨 0-8 点 UTC yesterday
+	// 会取错一天，重算出来的是前天的报表）。
+	day := settings.SystemDayStart(time.Now()).AddDate(0, 0, -1)
 	if req.Date != "" {
-		parsed, err := time.ParseInLocation("2006-01-02", req.Date, time.UTC)
+		parsed, err := settings.ParseSystemDate(req.Date)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid date (want YYYY-MM-DD)")
 			return

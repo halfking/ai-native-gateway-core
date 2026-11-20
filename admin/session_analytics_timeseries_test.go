@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // TestParseTimeseriesFilters_Success 验证过滤器解析成功
@@ -23,6 +25,10 @@ func TestParseTimeseriesFilters_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/admin/session-analytics/activity?date_from=2026-07-01&date_to=2026-07-07&granularity=day", nil)
 
+	// date_from 应为系统时区下 2026-07-01 的零点（时区审计轮 F4：原先 UTC）。
+	// UTC 注入护栏：注入 UTC 时与旧契约逐字一致（2026-07-01T00:00Z）。
+	settings.SystemTimezoneLocationForTest("UTC")
+	defer settings.SystemTimezoneLocationForTest("")
 	filters, err := parseTimeseriesFilters(req)
 	if err != nil {
 		t.Fatalf("parseTimeseriesFilters failed: %v", err)
@@ -32,10 +38,19 @@ func TestParseTimeseriesFilters_Success(t *testing.T) {
 		t.Errorf("expected granularity=day, got %s", filters.granularity)
 	}
 
-	// date_from 应为 2026-07-01 00:00:00 UTC
 	expectedFrom := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	if !filters.dateFrom.Equal(expectedFrom) {
 		t.Errorf("expected date_from=%v, got %v", expectedFrom, filters.dateFrom)
+	}
+	// +08 注入：同一日期串的零点前移 8 小时（2026-06-30T16:00Z）。
+	settings.SystemTimezoneLocationForTest("Asia/Shanghai")
+	filters2, err := parseTimeseriesFilters(req)
+	if err != nil {
+		t.Fatalf("parseTimeseriesFilters(+08) failed: %v", err)
+	}
+	wantCST := time.Date(2026, 6, 30, 16, 0, 0, 0, time.UTC)
+	if !filters2.dateFrom.UTC().Equal(wantCST) {
+		t.Errorf("+08 date_from = %v, want %v", filters2.dateFrom.UTC(), wantCST)
 	}
 }
 

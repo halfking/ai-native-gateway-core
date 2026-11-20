@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest'
-import { boardRangeElapsedMinutes, usageQueryForBoardRange } from './boardTimeRange'
+import { boardRangeElapsedMinutes, resolveBoardRangeMs, usageQueryForBoardRange } from './boardTimeRange'
 import { resetSystemTimezoneForTest, setSystemTimezoneForTest } from './systemTimezone'
 
 // 时区轮（2026-11-20）：日切按系统时区。注入 UTC 与旧断言逐字兼容；
@@ -97,5 +97,28 @@ describe('系统时区注入（2026-11-20 时区轮）', () => {
       end: '2026-10-01',
       days: 1,
     })
+  })
+})
+
+describe('custom 窗口系统时区（2026-11-21 时区审计轮 F2）', () => {
+  it('+08 注入：custom 2026-09-28..09-28 = +08 零点起 24h（非 UTC 零点）', () => {
+    setSystemTimezoneForTest('Asia/Shanghai')
+    const { startMs, endMs } = resolveBoardRangeMs(
+      { preset: 'custom', days: 1, start: '2026-09-28', end: '2026-09-28' },
+      now,
+    )
+    // +08 09-28 零点 = 09-27T16:00Z；终点 = 09-28T16:00Z。
+    expect(startMs).toBe(Date.parse('2026-09-27T16:00:00Z'))
+    expect(endMs).toBe(Date.parse('2026-09-28T16:00:00Z'))
+  })
+
+  it('UTC 注入护栏：custom 同串 = UTC 零点起（与旧契约逐字一致）', () => {
+    setSystemTimezoneForTest('UTC')
+    const { startMs, endMs } = resolveBoardRangeMs(
+      { preset: 'custom', days: 1, start: '2026-09-28', end: '2026-09-28' },
+      now,
+    )
+    expect(startMs).toBe(Date.parse('2026-09-28T00:00:00Z'))
+    expect(endMs).toBe(Date.parse('2026-09-29T00:00:00Z'))
   })
 })
