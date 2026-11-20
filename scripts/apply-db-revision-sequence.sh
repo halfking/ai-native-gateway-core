@@ -3609,8 +3609,15 @@ ledger_artifact_probe "981_session_analytics_foundation.sql" \
 #   + session_dim.stop_reason 列 + user_session_aggregates 含 end_user_count 列。
 #   ★ 不断言 owner 键形状：键表达式是内容语义（运维手工改视图属越权面），产物
 #     探针只判「对象在场」，与 978 的 rule_name 计数纪律同款。
+# ★★ 2026-11-20 审计修正：**MV 的列不能用 information_schema 查**——
+#   `information_schema.columns` 只收 relkind ∈ {'r','v'}，**物化视图（relkind='m'）不在里面**
+#   ⇒ 对 MV 取列名恒得 0 行 ⇒ 本探针恒假 ⇒ 台账一旦有 994 行，
+#   **任何机器的后续部署都会在「台账 ↔ 产物对账」这一步必然失败**（211 实测踩到：
+#   部署 FATAL「994 本轮按指纹认账但其产物缺失」，而实际产物齐全）。
+#   ⇒ MV 的列一律走 pg_catalog（pg_attribute + pg_class + pg_namespace）。
+#   （`session_dim` 是**表** ⇒ information_schema 正确，保持不动。）
 ledger_artifact_probe "994_session_analytics_owner_key_and_close_path.sql" \
-  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_dim' AND column_name='stop_reason') = 1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='user_session_aggregates' AND column_name='end_user_count') = 1"
+  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_dim' AND column_name='stop_reason') = 1 AND (SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'user_session_aggregates' AND a.attname = 'end_user_count' AND a.attnum > 0 AND NOT a.attisdropped) = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
