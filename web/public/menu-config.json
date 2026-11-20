@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-20T15:10:26.002Z",
+  "exported_at": "2026-11-20T15:43:22.148Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -431,7 +431,7 @@
         },
         {
           "path": "/admin/session-analytics",
-          "labelKey": "nav.item.sessionAnalytics",
+          "labelKey": "sessionAnalytics.nav.analyticsCenter",
           "icon": "📊",
           "hideForTenant": true,
           "tenantScope": "default",
