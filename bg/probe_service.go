@@ -931,6 +931,12 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 			if isQuota && outcome.attempt >= 2 {
 				s.worker.updateCredentialQuotaSurface(ctx, outcome.credentialID, verdict.kind, outcome.direct.errDetail)
 			}
+			// ★ 2026-11-20 L1 收口：鉴权族也写凭据面（availability_state='auth_failed' +
+			//   15 分钟恢复窗口），同样要求两次连续失败。
+			kind := probeOutcomeKind(outcome.direct)
+			if isAuthProbeKind(kind) && outcome.attempt >= 2 {
+				s.worker.updateCredentialAuthSurface(ctx, outcome.credentialID, kind, outcome.direct.errDetail)
+			}
 		}
 	}
 	if s.worker.invalidateCandidateCache != nil {

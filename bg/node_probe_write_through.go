@@ -247,3 +247,66 @@ func (w *NodeProbeWorker) updateCredentialQuotaSurface(ctx context.Context, cred
 			"credential_id", credID, "kind", string(kind), "error", err)
 	}
 }
+
+// ── 探针的鉴权族凭据面落账（2026-11-20 L1 收口）────────────────────────────
+//
+// ★ 问题：403 无配额体（纯鉴权 403）⇒ errorsx 判 KindAuth ⇒ 探针仍不写凭据面
+//   ⇒ 凭据面显示 ready/ok（「节点正常」）⇒ 与配额族同族形态未治。
+//
+// ★ 语义差异（鉴权 vs 配额）：
+//   · 配额族：quota_state + availability_state='suspended' + 无 recover_at（permanent）
+//     或长 horizon（balance 6h）或重置点（periodic）⇒ 充值类事件恢复；
+//   · 鉴权族：availability_state='auth_failed' + 15 分钟 recover_at（业务面
+//     writer.go:336-347）⇒ key 轮换 / 权限修复后可恢复，不是真正的"永久"。
+//
+// ★ 修法：探针侧接入 auth_failed 语义（与业务面同词表），15 分钟恢复窗口。
+//
+// ★ 守卫：同配额族——lifecycle_status='active' + manual_disabled=FALSE +
+//   balance_floor 豁免 + 两次连续（attempt ≥ 2，调用方校验）。
+//
+// ★ 边界：只写 KindAuth / KindAuthRevoked；其它 kind（包括空 kind）不碰。
+func authCredentialSQL(kind errorsx.ErrorKind) string {
+	switch kind {
+	case errorsx.KindAuth, errorsx.KindAuthRevoked:
+		// ★ 与业务面 writer.go:338-347 同词表：availability_state='auth_failed' +
+		//   15 分钟恢复窗口 + state_reason_code=kind + state_reason_detail=上游错误。
+		// ★ 守卫：NOT IN ('suspended') 与业务面逐字一致（业务面 writer.go:346）
+		//   —— auth_failed 不降级 suspended（配额/余额耗尽比鉴权失败更严重）。
+		return `
+		UPDATE credentials
+		SET availability_state      = 'auth_failed',
+		    availability_recover_at = now() + interval '15 minutes',
+		    state_reason_code       = $1,
+		    state_reason_detail     = $2,
+		    state_updated_at        = now()
+		WHERE id = $3
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'
+		  AND availability_state NOT IN ('suspended')`
+	}
+	return ""
+}
+
+// updateCredentialAuthSurface writes the credential-level auth verdict the
+// node probe observed. It is a no-op for any kind outside the auth family.
+//
+// The write goes through scheduleExec() so tests can inject a fake exec.
+func (w *NodeProbeWorker) updateCredentialAuthSurface(ctx context.Context, credID int, kind errorsx.ErrorKind, detail string) {
+	if w == nil || credID <= 0 {
+		return
+	}
+	exec := w.scheduleExec()
+	if exec == nil {
+		return
+	}
+	sql := authCredentialSQL(kind)
+	if sql == "" {
+		return
+	}
+	args := []any{string(kind), detail, credID}
+	if _, err := exec.Exec(ctx, sql, args...); err != nil {
+		slog.Warn("node_probe_worker: credential auth surface write failed",
+			"credential_id", credID, "kind", string(kind), "error", err)
+	}
+}

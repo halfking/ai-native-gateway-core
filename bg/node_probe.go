@@ -2907,6 +2907,12 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			if isQuota && attempt >= 2 {
 				w.updateCredentialQuotaSurface(ctx, credID, verdict.kind, direct.errDetail)
 			}
+			// ★ 2026-11-20 L1 收口：鉴权族也写凭据面（availability_state='auth_failed' +
+			//   15 分钟恢复窗口），同样要求两次连续失败。
+			kind := probeOutcomeKind(direct)
+			if isAuthProbeKind(kind) && attempt >= 2 {
+				w.updateCredentialAuthSurface(ctx, credID, kind, direct.errDetail)
+			}
 		}
 	}
 	if w.invalidateCandidateCache != nil {

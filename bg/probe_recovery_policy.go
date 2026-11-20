@@ -297,6 +297,20 @@ func isQuotaProbeKind(kind errorsx.ErrorKind) bool {
 	return false
 }
 
+// isAuthProbeKind reports whether a kind belongs to the auth family — the
+// family errorsx.PenaltyOf punishes at the CREDENTIAL level (PenaltyCredential
+// + Fuse + Permanent) but with a 15-minute recovery window (not truly permanent).
+//
+// ★ 2026-11-20 L1 收口：鉴权族写凭据面（availability_state='auth_failed' +
+//   15 分钟恢复窗口），与配额族分开（配额族写 quota_state + suspended）。
+func isAuthProbeKind(kind errorsx.ErrorKind) bool {
+	switch kind {
+	case errorsx.KindAuth, errorsx.KindAuthRevoked:
+		return true
+	}
+	return false
+}
+
 // probeOutcomeKind classifies one finished probe round (direct round evidence:
 // HTTP status + upstream body + the probe's own err code).
 func probeOutcomeKind(r nodeProbeRoundResult) errorsx.ErrorKind {
