@@ -2,6 +2,7 @@
 export default {
   title: 'Sitzungsanalyse',
   nav: {
+    analyticsCenter: 'Sitzungsanalyse-Zentrum',
     overview: 'Übersicht',
     userRanking: 'Personenrangliste',
     userDetail: 'Personendetails',

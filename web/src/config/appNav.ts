@@ -263,15 +263,15 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
       { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true, piAnalysis: true },
       // 2026-11-20：会话分析系统（后端 admin/session_analytics 的 7 个端点）。
-      // ★ `nav.item.sessionAnalytics` 这个键 8 个语种**早已存在**却零引用 ——
-      //   navCoverage 门（config/navCoverage.test.ts）早就把它点名为「可交付未交付」：
-      //   路由存在、文案存在，却没有菜单入口，只能手敲 URL。本次接活消掉该死键。
+      // 2026-11-20 L9 收口：聚合族独立标签键 sessionAnalytics.nav.analyticsCenter，
+      // 避免与 /admin/session-analytics/users（用户画像族，仍用 nav.item.sessionAnalytics）
+      // 共用同一标签导致顶栏两个同名「会话分析中心」。
       // ★ 后端角色闸门放行 super_admin / tenant_admin / admin_key（且 tenant_admin
       //   有租户隔离）⇒ 菜单项**不设 super**，只 hideForTenant（租户门户隐藏），
       //   与 router 的 requiresAuth 对齐；真正的权限真源在后端。
       // ★ 详情页（/user-ranking/:owner）不单独挂菜单：由 navCovers 的前缀匹配
       //   被「人员排行」项覆盖，且入口在排行表里。
-      { path: '/admin/session-analytics', labelKey: 'nav.item.sessionAnalytics', icon: '📊', hideForTenant: true },
+      { path: '/admin/session-analytics', labelKey: 'sessionAnalytics.nav.analyticsCenter', icon: '📊', hideForTenant: true },
       { path: '/admin/session-analytics/user-ranking', labelKey: 'sessionAnalytics.nav.userRanking', icon: '👥', hideForTenant: true },
       { path: '/admin/session-analytics/agent-ranking', labelKey: 'sessionAnalytics.nav.agentRanking', icon: '🧑‍💼', hideForTenant: true },
       { path: '/admin/session-analytics/model-ranking', labelKey: 'sessionAnalytics.nav.modelRanking', icon: '🧠', hideForTenant: true },

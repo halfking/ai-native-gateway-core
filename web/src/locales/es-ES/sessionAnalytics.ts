@@ -2,6 +2,7 @@
 export default {
   title: 'Análisis de sesiones',
   nav: {
+    analyticsCenter: 'Centro de análisis de sesiones',
     overview: 'Resumen',
     userRanking: 'Clasificación de personas',
     userDetail: 'Detalle de la persona',

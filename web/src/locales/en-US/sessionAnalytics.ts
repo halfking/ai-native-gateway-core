@@ -5,6 +5,7 @@
 export default {
   title: 'Session analytics',
   nav: {
+    analyticsCenter: 'Session Analytics Center',
     overview: 'Overview',
     userRanking: 'People ranking',
     userDetail: 'Person detail',

@@ -2,6 +2,7 @@
 export default {
   title: '會話分析',
   nav: {
+    analyticsCenter: '會話分析中心',
     overview: '總覽',
     userRanking: '人員排行榜',
     userDetail: '人員詳細',

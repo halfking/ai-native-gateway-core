@@ -3,6 +3,7 @@
 export default {
   title: 'تحليل الجلسات',
   nav: {
+    analyticsCenter: 'مركز تحليل الجلسات',
     overview: 'نظرة عامة',
     userRanking: 'ترتيب الأشخاص',
     userDetail: 'تفاصيل الشخص',

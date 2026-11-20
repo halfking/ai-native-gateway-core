@@ -5,6 +5,7 @@
 export default {
   title: '会话分析',
   nav: {
+    analyticsCenter: '会话分析中心',
     overview: '总览',
     userRanking: '人员排行',
     userDetail: '人员详情',

@@ -2,6 +2,7 @@
 export default {
   title: 'セッション分析',
   nav: {
+    analyticsCenter: 'セッション分析センター',
     overview: '概要',
     userRanking: 'ユーザーランキング',
     userDetail: 'ユーザー詳細',

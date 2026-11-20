@@ -2,7 +2,8 @@
 export default {
   title: 'Analyse des sessions',
   nav: {
-    overview: 'Vue d’ensemble',
+    analyticsCenter: "Centre d'analyse des sessions",
+    overview: "Vue d'ensemble",
     userRanking: 'Classement des personnes',
     userDetail: 'Détail de la personne',
     agentRanking: 'Classement des agents',
