@@ -1,5 +1,5 @@
 -- 993 回滚：恢复 981 canonical 形态（owner 键 = NULLIF(s.owner_user,'') 单源），
--- 删除 993 新增的 session_dim.stop_reason 列与 end_user_count 聚合列。
+-- 删除 994 新增的 session_dim.stop_reason 列与 end_user_count 聚合列。
 --
 -- ⚠ 回滚语义注意：本 down 以「981 canonical 视图在场」为前提重建单源版视图。
 --   在 252（154/245 共享 PG）上 981 的视图从未建成——对此库跑本 down 会把
@@ -187,4 +187,4 @@ CREATE INDEX IF NOT EXISTS idx_model_usage_agg_provider
 CREATE INDEX IF NOT EXISTS idx_model_usage_agg_tenant
     ON public.model_usage_aggregates(tenant_id, date DESC);
 
-DELETE FROM public.schema_migrations WHERE version = '993';
+DELETE FROM public.schema_migrations WHERE version = '994';

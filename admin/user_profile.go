@@ -28,7 +28,7 @@ import (
 // （见 user_profile_null_aggregate_test.go），而不是让判据自己抄一份。
 //
 // 2026-11-20 会话分析闭环审计轮：锚表从 session_owners 换到
-// user_session_aggregates（迁移 981 的会话级人员 MV，993 起 owner 键 =
+// user_session_aggregates（迁移 981 的会话级人员 MV，994 起 owner 键 =
 // COALESCE(s.owner_user, sd.api_key_owner_user) 双源）。根因：session_owners
 // 由 v1 _request_logs 触发器维护（358/563），v1 停写后行集冻结在 2026-10
 // ——它是陈旧子集，活跃 owner 整行缺失、窗口用量被静默丢弃（projects
@@ -260,7 +260,7 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 	// NULL ⇒ 不过滤会让 total 与列表口径分叉。这里在两处查询统一排掉。
 	// 2026-10-14 全量 API 扫描轮实测抓到（真库 session_owners 含 NULL 属主行）。
 	// 2026-11-20 换锚：锚表 session_owners（v1 停写后冻结的陈旧子集）→
-	// user_session_aggregates（981 MV，993 起 owner 键=COALESCE 双源键，
+	// user_session_aggregates（981 MV，994 起 owner 键=COALESCE 双源键，
 	// 与 overview/user-ranking/详情/projects 下钻全部同源同键）。
 	// MV 缺席（迁移未应用）时走下方 IsSchemaBehindError 降级，与旧行为同构。
 	nullOwnerFilter := "a.owner IS NOT NULL"

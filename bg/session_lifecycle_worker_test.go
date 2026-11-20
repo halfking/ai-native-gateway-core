@@ -31,7 +31,7 @@ func TestLifecycleApplyRecycleSQLUsesExistingColumns(t *testing.T) {
 		t.Fatalf("session_dim 没有 updated_at 列（904 头注登记的 42703 根因）——不许再写回 UPDATE")
 	}
 	if !strings.Contains(src, "stop_reason = $2") {
-		t.Fatalf("stop_reason 写入丢失：关闭原因元数据是本轮交付物（迁移 993 补建该列）")
+		t.Fatalf("stop_reason 写入丢失：关闭原因元数据是本轮交付物（迁移 994 补建该列）")
 	}
 	if !strings.Contains(src, "WHERE gw_session_id = $1 AND status = 'active'") {
 		t.Fatalf("幂等守卫（status='active'）丢失 ⇒ 重复扫描会重复发布事件")

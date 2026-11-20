@@ -4,7 +4,7 @@
 > 本文是**设计稿**，其中 SQL 示例按设计期幻写 schema 写成（列名/表名与真库不一致——981 重写轮已实证）。
 > 权威真源以实现为准：
 > - 基础设施 = `sql/migrations/startup/981_session_analytics_foundation.sql`（四 MV + 探测判定函数）；
-> - owner 键/重建/关闭路径 = `sql/migrations/startup/993_session_analytics_owner_key_and_close_path.sql`
+> - owner 键/重建/关闭路径 = `sql/migrations/startup/994_session_analytics_owner_key_and_close_path.sql`
 >   （owner 键统一 `NULLIF(COALESCE(s.owner_user, sd.api_key_owner_user),'')` 双源、session_dim.stop_reason、
 >   四视图 DROP+CREATE 重建自愈 252 缺失）；
 > - 触发链 = 会话关闭事实判定 `bg/session_lifecycle_worker.go` → `session.closed` 事件

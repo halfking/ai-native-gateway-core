@@ -23,7 +23,7 @@
 // 2026-11-20 会话分析闭环审计轮接活：本 worker 此前零生产接线（R35 登记为清理候选），
 // 且 applyRecycle 的 UPDATE 引用 session_dim 上不存在的列（stop_reason / updated_at，
 // 904 迁移头部已记录该 42703 根因）⇒ 一旦接线每笔回收必失败。本轮：
-//   - UPDATE 收窄到真实存在的列（stop_reason 由迁移 993 补建，updated_at 删除——
+//   - UPDATE 收窄到真实存在的列（stop_reason 由迁移 994 补建，updated_at 删除——
 //     session_dim 没有维护它的触发器，写一个只有两个写入方的 updated_at 是假元数据）；
 //   - 新增 SessionClosedPublisher：soft_close 真正落库的会话（RowsAffected>0）发布
 //     分析域 session.closed 事件，驱动 总结→元数据 final→项目归属 闭链；
@@ -564,7 +564,7 @@ func (w *SessionLifecycleWorker) applyRecycle(ctx context.Context, sessionID, te
 	rowsAffected := int64(0)
 	if w.recycleAction == "soft_close" {
 		// 2026-11-20 根修：旧语句同时 SET stop_reason / updated_at，而
-		// session_dim 上只有 stop_reason（迁移 993 补建）没有 updated_at
+		// session_dim 上只有 stop_reason（迁移 994 补建）没有 updated_at
 		// （904 迁移头部已记录该 42703）⇒ 旧语句真库必炸。收窄到真实列。
 		updateQuery := `
 			UPDATE session_dim

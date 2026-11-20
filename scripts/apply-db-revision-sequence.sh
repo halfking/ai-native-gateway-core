@@ -2793,12 +2793,12 @@ files=(
   #   创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）；
   #   面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐（幂等 CREATE OR REPLACE）。
   "$ROOT_DIR/sql/migrations/startup/992_add_cst_timezone_functions.sql"
-  # ★ 993（2026-11-20 会话分析闭环审计轮）：session_analytics_owner_key_and_close_path——
+  # ★ 994（2026-11-20 会话分析闭环审计轮）：session_analytics_owner_key_and_close_path——
   #   981 会话级三视图 owner 键统一 COALESCE 双源 + end_user_count 列；四视图
   #   DROP+CREATE 重建（自愈 252 台账记 applied 而视图缺失）；session_dim 补
   #   stop_reason 列。★ 文件自带 statement_timeout=30min 守卫（视图级 SELECT
   #   在 252 实测 90s~197s，服务端默认 30s 会掐断——981 半途而废的机制）。
-  "$ROOT_DIR/sql/migrations/startup/993_session_analytics_owner_key_and_close_path.sql"
+  "$ROOT_DIR/sql/migrations/startup/994_session_analytics_owner_key_and_close_path.sql"
 )
 
 
@@ -3599,11 +3599,11 @@ ledger_artifact_probe "978_pi_canonical_rule_set.sql" \
 #     刷新失败，报 "Create a unique index with no WHERE clause on one or more columns"）。
 ledger_artifact_probe "981_session_analytics_foundation.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regprocedure('public.refresh_session_analytics_view(text)') IS NOT NULL AND to_regprocedure('public.refresh_all_session_analytics_views()') IS NOT NULL AND to_regprocedure('public.session_analytics_is_probe(text,text,text)') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='sessions' AND column_name IN ('project','task','task_category','is_probe')) = 4 AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4"
-# ★ 993 的产物 = 四视图在场（重建后）+ 唯一索引仍为 4（REFRESH CONCURRENTLY 硬前提）
+# ★ 994 的产物 = 四视图在场（重建后）+ 唯一索引仍为 4（REFRESH CONCURRENTLY 硬前提）
 #   + session_dim.stop_reason 列 + user_session_aggregates 含 end_user_count 列。
 #   ★ 不断言 owner 键形状：键表达式是内容语义（运维手工改视图属越权面），产物
 #     探针只判「对象在场」，与 978 的 rule_name 计数纪律同款。
-ledger_artifact_probe "993_session_analytics_owner_key_and_close_path.sql" \
+ledger_artifact_probe "994_session_analytics_owner_key_and_close_path.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_dim' AND column_name='stop_reason') = 1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='user_session_aggregates' AND column_name='end_user_count') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"

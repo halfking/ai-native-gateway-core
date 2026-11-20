@@ -1,4 +1,4 @@
--- ★ 993（2026-11-20 会话分析闭环审计轮）：owner 键统一双源 + 981 视图族重建
+-- ★ 994（2026-11-20 会话分析闭环审计轮）：owner 键统一双源 + 981 视图族重建
 --   + session_dim 关闭路径补列。
 --
 -- ── 为什么要有本迁移（三件事，逐件证据）────────────────────────────────
@@ -48,7 +48,7 @@ SET statement_timeout = '30min';
 ALTER TABLE public.session_dim ADD COLUMN IF NOT EXISTS stop_reason text;
 
 COMMENT ON COLUMN public.session_dim.stop_reason IS
-    '会话关闭原因（idle/absolute_lifetime/evicted/manual_admin/...；由 bg session lifecycle worker 与 admin 手动回收写入；迁移 993 补建——此前两处写入方引用不存在的列致 42703）';
+    '会话关闭原因（idle/absolute_lifetime/evicted/manual_admin/...；由 bg session lifecycle worker 与 admin 手动回收写入；迁移 994 补建——此前两处写入方引用不存在的列致 42703）';
 
 -- ============================================================================
 -- Part 2: 三个会话级视图重建（owner 键 = COALESCE 双源键）
@@ -100,7 +100,7 @@ GROUP BY NULLIF(COALESCE(s.owner_user, sd.api_key_owner_user), ''), ss.tenant_id
          (ss.first_request_at AT TIME ZONE 'Asia/Shanghai')::date;
 
 COMMENT ON MATERIALIZED VIEW public.user_session_aggregates IS
-    '人员维度会话日聚合（会话级口径；源 session_summaries × sessions × session_dim；owner 键=COALESCE 双源（993）；已排除探测流量；end_user_count 为 993 新增）';
+    '人员维度会话日聚合（会话级口径；源 session_summaries × sessions × session_dim；owner 键=COALESCE 双源（994）；已排除探测流量；end_user_count 为 994 新增）';
 
 DROP MATERIALIZED VIEW IF EXISTS public.project_task_aggregates;
 
@@ -155,7 +155,7 @@ GROUP BY NULLIF(COALESCE(s.owner_user, sd.api_key_owner_user), ''), ss.tenant_id
          (ss.first_request_at AT TIME ZONE 'Asia/Shanghai')::date;
 
 COMMENT ON MATERIALIZED VIEW public.project_task_aggregates IS
-    '项目+任务维度会话日聚合（会话级口径；源同上；owner 键=COALESCE 双源（993）；task '''' 归一论证见 981）';
+    '项目+任务维度会话日聚合（会话级口径；源同上；owner 键=COALESCE 双源（994）；task '''' 归一论证见 981）';
 
 DROP MATERIALIZED VIEW IF EXISTS public.agent_usage_aggregates;
 
@@ -190,7 +190,7 @@ GROUP BY NULLIF(s.agent_name, ''), ss.tenant_id,
          (ss.first_request_at AT TIME ZONE 'Asia/Shanghai')::date;
 
 COMMENT ON MATERIALIZED VIEW public.agent_usage_aggregates IS
-    '智能体维度会话日聚合（会话级口径；源同上；user_count 键=COALESCE 双源（993））';
+    '智能体维度会话日聚合（会话级口径；源同上；user_count 键=COALESCE 双源（994））';
 
 -- ============================================================================
 -- Part 3: model_usage_aggregates 重建（定义与 981 逐字同族——自愈 252 缺失）
@@ -228,7 +228,7 @@ GROUP BY COALESCE(NULLIF(rl.client_model, ''), NULLIF(rl.outbound_model, ''), 'u
          (rl.ts AT TIME ZONE 'Asia/Shanghai')::date;
 
 COMMENT ON MATERIALIZED VIEW public.model_usage_aggregates IS
-    '模型维度请求日聚合（请求级口径；源 request_logs_with_current_month × providers；993 仅重建以自愈缺失，不改口径）';
+    '模型维度请求日聚合（请求级口径；源 request_logs_with_current_month × providers；994 仅重建以自愈缺失，不改口径）';
 
 -- ============================================================================
 -- Part 4: 索引（DROP MV 时索引随视图一起消失，这里全部重建）
@@ -272,5 +272,5 @@ CREATE INDEX IF NOT EXISTS idx_model_usage_agg_tenant
 -- Part 5: 自登记（≥952 双账本纪律）
 -- ============================================================================
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('993', 'session_analytics_owner_key_and_close_path: 981 会话级三视图 owner 键统一 COALESCE 双源 + end_user_count 列；四视图 DROP+CREATE 重建（自愈 252 台账记 applied 而视图缺失）；session_dim 补 stop_reason 列')
+VALUES ('994', 'session_analytics_owner_key_and_close_path: 981 会话级三视图 owner 键统一 COALESCE 双源 + end_user_count 列；四视图 DROP+CREATE 重建（自愈 252 台账记 applied 而视图缺失）；session_dim 补 stop_reason 列')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
