@@ -86,6 +86,10 @@ var degradeMarkerOutOfScope = map[string]string{
 	"domains/ursm/v2/persist/retention_partition.go": "后台分区 DROP 的 42P01 返回 errPartitionGoneAlready，" +
 		"不是 HTTP 200 空载荷；调用方显式跳过已被对端删除的分区且不虚记回收。" +
 		"由 TestSnapshotRetentionDoesNotCountPartitionAlreadyGone 与 TestSnapshotRetentionRealDropErrorStillDegrades 正反把守",
+	"domains/errorplaybook/store.go": "错误处理手册（2026-11-20）：42P01 ⇒ 哨兵 ErrNotProvisioned ⇒ " +
+		"管理面写 503 +「playbook tables not provisioned (migration 995 not applied)」明确提示，" +
+		"worker 记 WARN 跳过本轮 —— 与「200+空载荷」降级完全相反：表未建时**绝不假装有数据**。" +
+		"由 admin/error_playbook_handler.go 的 writeStoreErr 分流与 domains/errorplaybook 真库契约测试把守",
 	"admin/aggregate_read_guard.go":     "内部读守卫，不直接产出页面载荷（writeAggRowsErr/writeLookupErr 写 503 + analytics_view_missing，不是 200+空）",
 	"admin/dashboard_board_aux.go":      "运维 chip 查询：三处 _= 已于 2026-10-03 改为记录错误并恒发 degraded；经 TestBoardOpsQueriesReportDegradation 把守",
 	"admin/dashboard_board_fallback.go": "饼图逐维度降级账本（boardPieDegradation），经 TestBoardPieDegradationLedger + TestBoardPiesDegradationReachesPayload 把守",

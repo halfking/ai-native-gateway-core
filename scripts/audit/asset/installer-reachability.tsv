@@ -6,10 +6,10 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-19T03:00:56+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=380 package_up=380 rows=918
+# ★ generated_at=2026-11-20T15:40:58+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=387 package_up=387 rows=941
 # ★ ★★ census_bundled_at=2026-11-08T23:15:30+00:00 census_env_sha256=local:c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d,fresh:9cf37dfbe147cd4f0c775aee54bbc652d8e22bb396cbc296ec8e1ea82a7ccce0,252:b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55,211:550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 104, "reachable-and-present": 423, "unreachable-and-missing": 49}
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 127, "reachable-and-present": 423, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -928,3 +928,26 @@ idx_mppq_platform	market_price_platform_quotes	974	974_market_price_identity_and
 idx_pricing_suggestion_batches_created	pricing_suggestion_batches	975	975_pricing_suggestion_audit.sql	yes			reachable-and-legitimately-retired	none	
 idx_mppq_canon_region	market_price_platform_quotes	976	976_market_price_platform_quote_region.sql	yes			reachable-and-legitimately-retired	none	
 idx_error_analysis_results_queue_uniq	error_analysis_results	977	977_pi_error_analysis_semantics.sql	yes			reachable-and-legitimately-retired	none	
+idx_sessions_is_probe	sessions	981	981_session_analytics_foundation.sql	yes			reachable-and-legitimately-retired	none	
+idx_sessions_project	sessions	981	981_session_analytics_foundation.sql	yes			reachable-and-legitimately-retired	none	
+idx_sessions_task_category	sessions	981	981_session_analytics_foundation.sql	yes			reachable-and-legitimately-retired	none	
+idx_agent_usage_agg_agent	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_agent_usage_agg_pk	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_agent_usage_agg_tenant	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_model_usage_agg_model	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_model_usage_agg_pk	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_model_usage_agg_provider	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_model_usage_agg_tenant	model_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_project_task_agg_owner	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_project_task_agg_pk	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_project_task_agg_project	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_project_task_agg_tenant	project_task_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_user_session_agg_date	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_user_session_agg_owner	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_user_session_agg_pk	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_user_session_agg_tenant	user_session_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_playbook_entries_enabled	error_playbook_entries	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_playbook_entries_last_hit	error_playbook_entries	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_playbook_exec_entry	error_playbook_executions	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
+idx_error_playbook_exec_type	error_playbook_executions	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	
+uq_error_playbook_type_pattern	error_playbook_entries	995	995_error_playbook.sql	yes			reachable-and-legitimately-retired	none	

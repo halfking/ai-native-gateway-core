@@ -2805,6 +2805,12 @@ files=(
   #   stop_reason 列。★ 文件自带 statement_timeout=30min 守卫（视图级 SELECT
   #   在 252 实测 90s~197s，服务端默认 30s 会掐断——981 半途而废的机制）。
   "$ROOT_DIR/sql/migrations/startup/994_session_analytics_owner_key_and_close_path.sql"
+  # ★ 995（2026-11-20 错误处理手册轮）：error_playbook——「错误类型 → 预定
+  #   执行方案」手册两表（entries + executions）+ 5 条种子条目。
+  #   ★ 幂等（CREATE TABLE IF NOT EXISTS + 表达式唯一索引 +
+  #     种子 ON CONFLICT DO NOTHING）⇒ 内容指纹重放零冲突。
+  #   ★ 零外部依赖 ⇒ 位置只受编号序约束（排在 994 之后）。
+  "$ROOT_DIR/sql/migrations/startup/995_error_playbook.sql"
 )
 
 
@@ -3618,6 +3624,13 @@ ledger_artifact_probe "981_session_analytics_foundation.sql" \
 #   （`session_dim` 是**表** ⇒ information_schema 正确，保持不动。）
 ledger_artifact_probe "994_session_analytics_owner_key_and_close_path.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_dim' AND column_name='stop_reason') = 1 AND (SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'user_session_aggregates' AND a.attname = 'end_user_count' AND a.attnum > 0 AND NOT a.attisdropped) = 1"
+# ★ 995 的产物 = 两张手册表 + 表达式唯一索引 + 种子条目（5 条）。
+#   种子计数是**内容探针**（不是运行时状态）：种子的写入方只有本迁移
+#   （ON CONFLICT DO NOTHING 幂等）⇒ 行数只会 ≥5 不会少 ⇒ 探针稳定。
+#   两张表都是**表** ⇒ information_schema 口径正确（994 的 pg_catalog 教训
+#   只针对物化视图）。
+ledger_artifact_probe "995_error_playbook.sql" \
+  "to_regclass('public.error_playbook_entries') IS NOT NULL AND to_regclass('public.error_playbook_executions') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='error_playbook_entries' AND indexname='uq_error_playbook_type_pattern') = 1 AND (SELECT count(*) FROM public.error_playbook_entries WHERE source='seed') >= 5"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

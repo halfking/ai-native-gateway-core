@@ -1988,6 +1988,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— session_dim 补 stop_reason 列（关闭路径 42703 根修，904 头注登记的根因）。
 			//   ★ 编号注记：首落 993 与并行车撞号，重编 994（七面同步）。
 			"994_session_analytics_owner_key_and_close_path.sql",
+			// ★ 995（2026-11-20 错误处理手册轮）：error_playbook
+			//   ——「错误类型 → 预定执行方案」手册两表（entries + executions）
+			//     + 5 条种子条目（prompt 型、auto_execute=false）。
+			//   ★ 幂等（CREATE TABLE IF NOT EXISTS + 表达式唯一索引 +
+			//     种子 ON CONFLICT DO NOTHING）⇒ 内容指纹重放零冲突。
+			//   ★ 零外部依赖（不引用其他迁移的产物）⇒ 位置只受编号序约束。
+			"995_error_playbook.sql",
 		},
 	}
 }
