@@ -9,6 +9,10 @@ export default {
     agentRanking: 'Clasificación de agentes',
     modelRanking: 'Clasificación de modelos',
   },
+  hint: {
+    modelTrend: 'Ver las curvas de solicitudes/tokens/coste de este modelo para la misma ventana en Tendencias de uso',
+  },
+
   range: {
     label: 'Periodo de informe',
     start: 'Fecha de inicio',

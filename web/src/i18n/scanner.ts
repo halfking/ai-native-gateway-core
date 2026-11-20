@@ -110,7 +110,16 @@ function loadModuleFile(locale: string, moduleName: string, localesDir: string):
   const absPath = join(localesDir, locale, `${moduleName}.ts`)
   if (!existsSync(absPath)) return {}
   const src = readFileSync(absPath, 'utf8')
-  const code = src.replace(/^export default /m, 'module.exports = ')
+  // 2026-11-21 量具修复：locale 模块可能带**具名导出**（如 zh-CN/dashboard.ts 的
+  // `export const boardOperational = …`）。vm 沙箱吃的是普通 JS，`export const`
+  // 原样进 eval 会抛 Unexpected token ⇒ **整个模块静默变 {}** ⇒ 该命名空间的
+  // 全部键被判「该语种缺失」（假红的另一根因——量具错，不是文案缺）。
+  // 具名导出不是 locale 树（index.ts 的具名 import 不进 loadLocale 合并面），
+  // 剥掉声明即可让 default 树正常求值。
+  const code = src
+    .replace(/^export default /m, 'module.exports = ')
+    .replace(/^export (?:const|let|var)\s+\w+\s*=/gm, 'const __named_export =')
+    .replace(/^export\s+\{[^}]*\}\s*;?\s*$/gm, '')
   return evalAsCjs(code, absPath)
 }
 
@@ -121,7 +130,10 @@ export function loadLocale(locale: string, localesDir: string): Record<string, u
   const indexPath = join(localesDir, locale, 'index.ts')
   if (!existsSync(indexPath)) return {}
   const src = readFileSync(indexPath, 'utf8')
-  const importRe = /^\s*import\s+(\w+)\s+from\s+['"]\.\/(\w+)['"]\s*$/gm
+  // 2026-11-21 量具修复：`import dashboard, { boardOperational } from './dashboard'`
+  // 这种「default + 具名」组合导入此前不匹配 ⇒ dashboard 绑定整个丢失 ⇒
+  // zh-CN 的 dashboard.* 命名空间对扫描器不存在（~331 键假红的第二根因）。
+  const importRe = /^\s*import\s+(\w+)\s*(?:,\s*\{[^}]*\})?\s*from\s+['"]\.\/(\w+)['"]\s*$/gm
   const modules = new Map<string, Record<string, unknown>>()
   let m: RegExpExecArray | null
   while ((m = importRe.exec(src)) !== null) {

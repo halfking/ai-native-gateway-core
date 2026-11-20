@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/analytics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -28,18 +29,18 @@ type OverviewSummary struct {
 	AvgTurns            float64 `json:"avg_turns"`
 	// TotalCost 保留用于向后兼容和排序，但注意这是 internal_cost(美元) + external_cost(积分) 的跨单位相加
 	// 建议使用 InternalCost 和 ExternalCost 分别处理
-	TotalCost           float64 `json:"total_cost"`
-	TotalCostGrowth     float64 `json:"total_cost_growth"`
-	InternalCost        float64 `json:"internal_cost"`        // 内部成本（美元）
-	InternalCostGrowth  float64 `json:"internal_cost_growth"` // 内部成本增长率
-	ExternalCost        float64 `json:"external_cost"`        // 外部成本（积分）
-	ExternalCostGrowth  float64 `json:"external_cost_growth"` // 外部成本增长率
-	ActiveUsers         int64   `json:"active_users"`
-	ActiveUsersGrowth   float64 `json:"active_users_growth"`
-	ActiveProjects      int64   `json:"active_projects"`
-	ActiveTasks         int64   `json:"active_tasks"`
-	OverallSuccessRate  float64 `json:"overall_success_rate"`
-	OverallCacheRate    float64 `json:"overall_cache_rate"`
+	TotalCost          float64 `json:"total_cost"`
+	TotalCostGrowth    float64 `json:"total_cost_growth"`
+	InternalCost       float64 `json:"internal_cost"`        // 内部成本（美元）
+	InternalCostGrowth float64 `json:"internal_cost_growth"` // 内部成本增长率
+	ExternalCost       float64 `json:"external_cost"`        // 外部成本（积分）
+	ExternalCostGrowth float64 `json:"external_cost_growth"` // 外部成本增长率
+	ActiveUsers        int64   `json:"active_users"`
+	ActiveUsersGrowth  float64 `json:"active_users_growth"`
+	ActiveProjects     int64   `json:"active_projects"`
+	ActiveTasks        int64   `json:"active_tasks"`
+	OverallSuccessRate float64 `json:"overall_success_rate"`
+	OverallCacheRate   float64 `json:"overall_cache_rate"`
 }
 
 // TopModel 最常用模型
@@ -178,42 +179,25 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	}
 
 	// 当前周期统计
+	// 2026-11-21 对齐轮（rebase 采纳 4e6e14667 的成本分列 + 增长率；SQL 真源
+	// 迁到 domains/analytics.QueryOverviewSummary——/dashboard 对齐指标行调用
+	// 同一份实现 ⇒ 两面构造相等）。
 	var current OverviewSummary
-	query := `
-		SELECT
-			COALESCE(SUM(session_count)::bigint, 0) as total_sessions,
-			ROUND(COALESCE(AVG(total_tokens::NUMERIC / NULLIF(session_count, 0)), 0), 2) as avg_tokens,
-			COALESCE(AVG(avg_duration_seconds), 0) as avg_duration_seconds,
-			COALESCE(AVG(avg_turns), 0) as avg_turns,
-			COALESCE(SUM(internal_cost + external_cost), 0) as total_cost,
-			COALESCE(SUM(internal_cost), 0) as internal_cost,
-			COALESCE(SUM(external_cost), 0) as external_cost,
-			COALESCE(COUNT(DISTINCT owner), 0) as active_users,
-			COALESCE(SUM(project_count)::bigint, 0) as active_projects,
-			COALESCE(SUM(task_count)::bigint, 0) as active_tasks
-		FROM user_session_aggregates
-		WHERE date >= $1 AND date <= $2
-	`
-	args := []interface{}{startDate, endDate}
-	if tenantID != nil {
-		query += " AND tenant_id = $3"
-		args = append(args, *tenantID)
-	}
-
-	err = db.QueryRowContext(ctx, query, args...).Scan(
-		&current.TotalSessions,
-		&current.AvgTokens,
-		&current.AvgDurationSeconds,
-		&current.AvgTurns,
-		&current.TotalCost,
-		&current.InternalCost,
-		&current.ExternalCost,
-		&current.ActiveUsers,
-		&current.ActiveProjects,
-		&current.ActiveTasks,
-	)
+	row, err := analytics.QueryOverviewSummary(ctx, db, tenantID, startDate, endDate)
 	if err != nil {
 		return nil, err
+	}
+	current = OverviewSummary{
+		TotalSessions:      row.TotalSessions,
+		AvgTokens:          row.AvgTokens,
+		AvgDurationSeconds: row.AvgDurationSeconds,
+		AvgTurns:           row.AvgTurns,
+		TotalCost:          row.TotalCost,
+		InternalCost:       row.InternalCostUSD,
+		ExternalCost:       row.ExternalCredits,
+		ActiveUsers:        row.ActiveUsers,
+		ActiveProjects:     row.ActiveProjects,
+		ActiveTasks:        row.ActiveTasks,
 	}
 
 	// 前一周期统计（用于计算增长率）
@@ -222,7 +206,7 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 	var prevInternalCost float64
 	var prevExternalCost float64
 	var prevUsers int64
-	query = `
+	query := `
 		SELECT
 			COALESCE(SUM(session_count)::bigint, 0),
 			COALESCE(SUM(internal_cost + external_cost), 0),
@@ -232,7 +216,7 @@ func getOverviewSummary(ctx context.Context, db *sql.DB, tenantID *string, start
 		FROM user_session_aggregates
 		WHERE date >= $1 AND date <= $2
 	`
-	args = []interface{}{prevStartDate, prevEndDate}
+	args := []interface{}{prevStartDate, prevEndDate}
 	if tenantID != nil {
 		query += " AND tenant_id = $3"
 		args = append(args, *tenantID)
@@ -609,11 +593,13 @@ func getModelStats(ctx context.Context, db *sql.DB, tenantID *string, startDate,
 		SuccessRate float64
 		CacheRate   float64
 	}
-	err := db.QueryRowContext(ctx, query, args...).Scan(&stats.SuccessRate, &stats.CacheRate)
-	if err != nil && err != sql.ErrNoRows {
+	// 2026-11-21 对齐轮：SQL 迁到 domains/analytics.QueryModelStats 单一真源。
+	row, err := analytics.QueryModelStats(ctx, db, tenantID, startDate, endDate)
+	if err != nil {
 		return nil, err
 	}
-
+	stats.SuccessRate = row.SuccessRatePct
+	stats.CacheRate = row.CacheRatePct
 	return &stats, nil
 }
 

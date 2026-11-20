@@ -113,36 +113,36 @@ func TestR87_MergedAggregatesKeepEveryMetric(t *testing.T) {
 
 	needles := []string{
 		// 窗口与租户口径（原四条腿逐字相同）
-		"first_request_at >= NOW() - INTERVAL '%d days'",
-		"tenant_id = $%d",
+		"ss.first_request_at >= NOW() - INTERVAL '%d days'",
+		"ss.tenant_id = $%d",
 		"FROM session_summaries",
 		// 腿 1：总会话数
 		"COUNT(*) as total",
-		"COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active",
-		"COUNT(*) FILTER (WHERE first_request_at >= NOW() - INTERVAL '24 hours') as new_24h",
-		"COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_24h",
+		"COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active",
+		"COUNT(*) FILTER (WHERE ss.first_request_at >= NOW() - INTERVAL '24 hours') as new_24h",
+		"COUNT(*) FILTER (WHERE ss.last_request_at < NOW() - INTERVAL '24 hours' AND ss.first_request_at < NOW() - INTERVAL '24 hours') as closed_24h",
 		// 腿 2：健康分布
-		"COUNT(*) FILTER (WHERE health_grade = 'A') as health_a",
-		"COUNT(*) FILTER (WHERE health_grade = 'B') as health_b",
-		"COUNT(*) FILTER (WHERE health_grade = 'C') as health_c",
-		"COUNT(*) FILTER (WHERE health_grade = 'D') as health_d",
-		"COUNT(*) FILTER (WHERE health_grade = 'F') as health_f",
-		"COALESCE(AVG(health_score), 0) as avg_score",
+		"COUNT(*) FILTER (WHERE ss.health_grade = 'A') as health_a",
+		"COUNT(*) FILTER (WHERE ss.health_grade = 'B') as health_b",
+		"COUNT(*) FILTER (WHERE ss.health_grade = 'C') as health_c",
+		"COUNT(*) FILTER (WHERE ss.health_grade = 'D') as health_d",
+		"COUNT(*) FILTER (WHERE ss.health_grade = 'F') as health_f",
+		"COALESCE(AVG(ss.health_score), 0) as avg_score",
 		// 腿 3：合规统计
-		"COUNT(*) FILTER (WHERE compliance_status = 'compliant' OR compliance_status IS NULL) as compliant",
-		"COUNT(*) FILTER (WHERE compliance_status = 'warning') as warning",
-		"COUNT(*) FILTER (WHERE compliance_status = 'violation') as violation",
-		"COUNT(*) FILTER (WHERE prompt_injection_detected = true) as prompt_injection",
-		"COUNT(*) FILTER (WHERE pii_detected = true) as pii",
-		"COUNT(*) FILTER (WHERE toxic_output_detected = true) as toxic",
+		"COUNT(*) FILTER (WHERE ss.compliance_status = 'compliant' OR ss.compliance_status IS NULL) as compliant",
+		"COUNT(*) FILTER (WHERE ss.compliance_status = 'warning') as warning",
+		"COUNT(*) FILTER (WHERE ss.compliance_status = 'violation') as violation",
+		"COUNT(*) FILTER (WHERE ss.prompt_injection_detected = true) as prompt_injection",
+		"COUNT(*) FILTER (WHERE ss.pii_detected = true) as pii",
+		"COUNT(*) FILTER (WHERE ss.toxic_output_detected = true) as toxic",
 		// 腿 4：成本统计
-		"COALESCE(SUM(total_cost_usd), 0) as total_cost",
-		"COALESCE(AVG(total_cost_usd), 0) as avg_cost",
-		"COALESCE(MAX(total_cost_usd), 0) as max_cost",
-		"COALESCE(SUM(input_cost_usd), 0) as input_cost",
-		"COALESCE(SUM(output_cost_usd), 0) as output_cost",
-		"COALESCE(SUM(request_count), 0) as total_requests",
-		"COALESCE(AVG(avg_latency_ms), 0) as avg_latency",
+		"COALESCE(SUM(ss.total_cost_usd), 0) as total_cost",
+		"COALESCE(AVG(ss.total_cost_usd), 0) as avg_cost",
+		"COALESCE(MAX(ss.total_cost_usd), 0) as max_cost",
+		"COALESCE(SUM(ss.input_cost_usd), 0) as input_cost",
+		"COALESCE(SUM(ss.output_cost_usd), 0) as output_cost",
+		"COALESCE(SUM(ss.request_count), 0) as total_requests",
+		"COALESCE(AVG(ss.avg_latency_ms), 0) as avg_latency",
 	}
 	for _, needle := range needles {
 		if !strings.Contains(body, needle) {
@@ -196,18 +196,18 @@ func TestR87_MergedTrendsKeepEveryMetric(t *testing.T) {
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) querySessionTrends(")
 
 	needles := []string{
-		"DATE(first_request_at)::text as date",
-		"COALESCE(SUM(total_cost_usd), 0) as cost",
+		"DATE(ss.first_request_at)::text as date",
+		"COALESCE(SUM(ss.total_cost_usd), 0) as cost",
 		"COUNT(*) as sessions",
-		"COALESCE(SUM(request_count), 0) as requests",
-		"COUNT(*) FILTER (WHERE first_request_at >= NOW() - INTERVAL '%d days') as new_sessions",
-		"COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active_count",
-		"COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_count",
+		"COALESCE(SUM(ss.request_count), 0) as requests",
+		"COUNT(*) FILTER (WHERE ss.first_request_at >= NOW() - INTERVAL '%d days') as new_sessions",
+		"COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active_count",
+		"COUNT(*) FILTER (WHERE ss.last_request_at < NOW() - INTERVAL '24 hours' AND ss.first_request_at < NOW() - INTERVAL '24 hours') as closed_count",
 		"FROM session_summaries",
-		"GROUP BY DATE(first_request_at)",
+		"GROUP BY DATE(ss.first_request_at)",
 		"ORDER BY date",
-		"first_request_at >= NOW() - INTERVAL '%d days'",
-		"tenant_id = $%d",
+		"ss.first_request_at >= NOW() - INTERVAL '%d days'",
+		"ss.tenant_id = $%d",
 	}
 	for _, needle := range needles {
 		if !strings.Contains(body, needle) {
@@ -222,7 +222,11 @@ func TestR87_MergedTrendsKeepEveryMetric(t *testing.T) {
 // 收益全在「同一张大表被扫的次数变少」⇒ 这条门是本轮改动的收益护栏。
 func TestR87_SessionSummariesScanPointsCapped(t *testing.T) {
 	src := r87ReadSource(t)
-	const want = 7
+	// 2026-11-21 对齐轮：六条 session_summaries 腿各自唯一 FROM 字面量（buildQuery
+	// 闭包内）= 6；turns 腿读 session_turns 族（本文件无 FROM）——旧值 7 含
+	// topClients 降级回退形态的第二个 FROM 字面量，本轮把它折进 buildQuery
+	// 的条件拼接（运行时仍同一条语句一个扫描点），字面量数随之 7→6。
+	const want = 6
 	got := strings.Count(src, "FROM session_summaries")
 	if got != want {
 		t.Errorf("session_summaries 扫描点 = %d，期望 %d（合并前是 11）—— 腿被拆回去了，或新增了扫描腿", got, want)
@@ -235,8 +239,9 @@ func TestR87_OverviewRunsSevenConcurrentLegs(t *testing.T) {
 	src := r87ReadSource(t)
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) HandleSessionOverview(")
 	got := strings.Count(body, "g.Go(func() error {")
-	if got != 7 {
-		t.Errorf("HandleSessionOverview 的并行段数 = %d，期望 7（R87 六段 + turns 对拍）", got)
+	// 2026-11-21 对齐轮：新增对齐指标行腿（soft-fail，读物化视图）⇒ 8 段。
+	if got != 8 {
+		t.Errorf("HandleSessionOverview 的并行段数 = %d，期望 8（R87 六段 + turns 对拍 + aligned 对齐行）", got)
 	}
 	if !strings.Contains(body, "queryBusinessTurnsCount") {
 		t.Error("缺少 turns 对拍腿 queryBusinessTurnsCount")

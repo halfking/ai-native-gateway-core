@@ -72,6 +72,12 @@ export default {
       totalCreditsTitle: 'Somme des crédits facturés sur toutes les lignes correspondant au filtre courant',
       scopeAll: 'Toutes les lignes correspondantes: indépendant de la pagination',
     },
+    // 2026-11-21 statistics alignment round: probe-scope toggle (same semantics as board include_probes).
+    probeScope: {
+      label: 'Inclure les sondes',
+      badge: 'avec sondes',
+      hint: 'Une fois activé, la liste et les totaux incluent le trafic des sondes (même périmètre que le rapprochement fournisseur) ; le coût des lignes de sondes provient de la table de faits du rapprochement et reste vide tant qu\'il n\'est pas enregistré',
+    },
   },
   errorKind: {
     model_not_found: 'Modèle introuvable',

@@ -134,7 +134,15 @@
               </thead>
               <tbody>
                 <tr v-for="m in topModels" :key="m.model">
-                  <td>{{ m.model }}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class="sa-model-trend-link"
+                      data-testid="sa-model-trend-link"
+                      :title="t('sessionAnalytics.hint.modelTrend')"
+                      @click="openModelTrend(m.model)"
+                    >{{ m.model }}</button>
+                  </td>
                   <td>{{ fmt(m.count) }}</td>
                 </tr>
               </tbody>
@@ -221,7 +229,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
 import StatsRow from '../../../components/ui/StatsRow.vue'
 import StatCard from '../../../components/ui/StatCard.vue'
@@ -243,9 +251,21 @@ import {
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const { loading, error, stale, run } = useSessionAnalyticsLoader()
 
-const range = ref<KxDateRange>(rangeFromSpanDays(7))
+// 2026-11-21 对齐轮：支持 URL query 深链（start_date/end_date）——看板对齐行
+// 的「打开会话分析」按钮按同一窗口落地，跨页对拍不用手动重选日期。
+function rangeFromQuery(): KxDateRange | null {
+  const sd = typeof route.query.start_date === 'string' ? route.query.start_date : ''
+  const ed = typeof route.query.end_date === 'string' ? route.query.end_date : ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(sd) && /^\d{4}-\d{2}-\d{2}$/.test(ed) && sd <= ed) {
+    return { start: sd, end: ed }
+  }
+  return null
+}
+const initialRange = rangeFromQuery()
+const range = ref<KxDateRange>(initialRange ?? rangeFromSpanDays(7))
 const draftRange = ref<KxDateRange>(range.value)
 
 const data = ref<SessionAnalyticsOverview | null>(null)
@@ -257,6 +277,15 @@ const presets = computed<KxDateRangePreset[]>(() => [
 
 const summary = computed(() => data.value?.summary ?? null)
 const topModels = computed<OverviewTopModel[]>(() => data.value?.top_models ?? [])
+
+// 2026-11-21 统计口径对齐轮：top 模型直达 /admin/usage-trends 并自动带上
+// 当前日期窗口（usage-trends 深链参数 start/end/model——跨页对拍与钻取）。
+function openModelTrend(model: string) {
+  void router.push({
+    path: '/admin/usage-trends',
+    query: { model, start: range.value.start, end: range.value.end },
+  })
+}
 const topUsers = computed<OverviewTopUser[]>(() => data.value?.top_users ?? [])
 const topProjects = computed<OverviewTopProject[]>(() => data.value?.top_projects ?? [])
 
@@ -412,5 +441,19 @@ onMounted(load)
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* 2026-11-21 对齐轮：模型名 → usage-trends 深链 */
+.sa-model-trend-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.sa-model-trend-link:hover {
+  text-decoration: underline;
 }
 </style>

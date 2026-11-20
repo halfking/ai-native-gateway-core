@@ -135,6 +135,30 @@
 | **失败** | Failed/Error | 非成功状态 | `success = false` | 含超时、限流、错误 |
 | **未落定** | Unassigned | 维度字段为 NULL | `column IS NULL` | 未匹配到具体值 |
 
+### 3.6 探测口径（Probe Scope Terms）——2026-11-21 统计口径对齐轮新增
+
+跨页对齐的**第一根轴**：同一个「总请求数」在不同页面上是两个不同的集合，
+术语必须把「数的是哪个宇宙」说清楚，而不是让用户猜。
+
+| 标准术语 | 英文 | 行集定义 | 对齐面 | 标准参数名 |
+|------|------|----------|--------|------------|
+| **不含探测（业务口径）** | business lane / exclude probes | `usage_facts.traffic_class='business'` == 会话族业务 lane（stage 探针排除） | 内部对账（internal_grain）；board 英雄区缺省；request-logs 缺省；live2 主车道 | `include_probes` 缺省 |
+| **包含探测（全量口径）** | include probes | `usage_facts` 全量 == 业务两臂 ∪ 探测臂（session_turns_hot ∪ session_turns ∪ session_turns_probe_hot） | 供应商对账（daily_grain）；board `include_probes=1`；request-logs `include_probe=1` | `include_probes=1` |
+| **探测臂** | probe arm | `session_turns_probe_hot`（迁移 928 物理隔离的窄表）按 118 列 canonical 投影展开，费用经 usage_facts 按 request_id 聚合挂回 | request-logs 包含探测模式 | — |
+
+**规则**：
+1. **对账级真源只有一份**：要与对账逐字相等，就读对账快照的同源表（usage_facts），
+   不要在与对账不同的表上「再算一遍同样的数」（两套谓词边缘行必分叉）。
+2. **探测口径必须显式披露**：响应回传 `probe_scope`（board/session-overview）、
+   `traffic_lane`（request-logs），前端徽标跟随响应值而非本地开关。
+3. **会话级宇宙**：`/dashboard` 会话统计与 `/admin/session-analytics` 共用
+   981/994 会话宇宙（sessions×session_dim join + owner 双源键非空 + is_probe +
+   session_analytics_is_probe 三维判定）——谓词片段取自
+   `domains/analytics.SessionUniverseJoin/SessionUniverseWhere`（迁移侧契约门对拍），
+   禁止手抄第二份。
+4. **探测行的费用边界**：探测臂行费用取自 usage_facts（与供应商对账同源）；
+   未落账行费用为 NULL（COUNT 不受影响，SUM 自然跳过）。
+
 ---
 
 ## 四、页面级统计审计（Page-Level Statistics Audit）
@@ -368,6 +392,16 @@
 ---
 
 ## 七、可复用统计处理模块（Reusable Statistical Modules）
+
+### 7.0 已落地的模块（2026-11-21 对齐轮起为**实现**而非提案）
+
+| 模块 | 位置 | 内容 | 消费方 |
+|------|------|------|--------|
+| 会话宇宙片段 | `domains/analytics/session_probe_scope.go` | `SessionUniverseJoin` / `SessionUniverseWhere`（与 994 物化视图逐字同构，契约门 `session_probe_scope_contract_test.go` 对拍迁移 SQL）；`ShanghaiCalendarRangeUtc`（与物化视图日桶同尺的 +08 日历窗） | `/api/admin/dashboard/session-overview` |
+| 对齐指标单一真源 | `domains/analytics/aligned_source.go` | `QueryOverviewSummary` / `QueryModelStats`（从 admin/session_analytics 逐字迁来的物化视图查询） | `/admin/session-analytics` 总览 + `/api/admin/dashboard/session-overview` 对齐指标行 ⇒ **两面构造相等** |
+| 请求级探测臂 | `db/session_probe_arm_source.go` | `SessionFamilyProbeArmSourceSQL` / `SessionFamilyTurnsSourceWindowedAllSQL`（三臂 UNION；契约门 `session_probe_arm_source_contract_test.go`） | `/api/logs` 包含探测模式 |
+| 成本计算器 | `domains/analytics/cost.go` | CostCalculator（单位纪律守卫） | （见完成报告） |
+| 派生指标计算器 | `domains/analytics/derived.go` | DerivedMetrics（成功率/分位/增长率等纯函数） | （见完成报告） |
 
 ### 7.1 时间窗口聚合（Time Window Aggregator）
 

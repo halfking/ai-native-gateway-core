@@ -12,6 +12,10 @@ export default {
     agentRanking: 'Agent ranking',
     modelRanking: 'Model ranking',
   },
+  hint: {
+    modelTrend: 'View this model\'s request/token/cost curves for the same window in Usage Trends',
+  },
+
   range: {
     label: 'Reporting window',
     start: 'Start date',

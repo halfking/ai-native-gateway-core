@@ -204,6 +204,13 @@ export interface RequestLogsResponse {
   source?: 'history'
   /** 与 source=history 同发；显式别名，避免把 lane=probe 误读成「当前」。 */
   lane?: 'probe_history'
+  /**
+   * 2026-11-21 统计口径对齐轮：当前行的探测口径显式回传。
+   * `business`=不含探测（默认，== 内部对账）；`all`=包含探测（业务 ∪
+   * 探测臂，== usage_facts 全量 == 供应商对账）；`probe_history`=历史探测。
+   * 前端徽标披露与跨面对拍都认这个字段。
+   */
+  traffic_lane?: 'business' | 'all' | 'probe_history'
 }
 
 export interface SessionSummaryMeta {

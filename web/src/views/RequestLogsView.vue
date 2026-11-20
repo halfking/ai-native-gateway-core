@@ -67,6 +67,30 @@ const gwSessionFilter = ref('')
 const gwTaskFilter = ref('')
 const summaryDrawerOpen = ref(false)
 
+// 2026-11-21 统计口径对齐轮：包含探测开关（与 board 的 include_probes 同语义、
+// 同命名、同持久化偏好形状）。
+//   默认关 = 业务口径（不含探测）== 内部对账 == board 缺省英雄区；
+//   开启 = 业务 ∪ 探测臂 == usage_facts 全量 == 供应商对账 == board「含探测」。
+// 持久化偏好 `llmgw_logs_probe_scope`（board 用 `board-probe-scope`，键名跟随
+// 各页既有约定，不共享一个值——两页口径可独立切换）。
+const LOGS_PROBE_SCOPE_KEY = 'llmgw_logs_probe_scope'
+const includeProbe = ref(false)
+const trafficLane = ref<'business' | 'all' | 'probe_history' | ''>('')
+try {
+  includeProbe.value = localStorage.getItem(LOGS_PROBE_SCOPE_KEY) === 'included'
+} catch {
+  /* localStorage 不可用（隐私模式等）⇒ 保持默认业务口径 */
+}
+watch(includeProbe, v => {
+  try {
+    if (v) localStorage.setItem(LOGS_PROBE_SCOPE_KEY, 'included')
+    else localStorage.removeItem(LOGS_PROBE_SCOPE_KEY)
+  } catch {
+    /* 同上 */
+  }
+  resetPageAndLoad()
+})
+
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
@@ -951,6 +975,7 @@ async function load() {
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       gw_session_id: gwSessionFilter.value.trim() || undefined,
       gw_task_id: gwTaskFilter.value.trim() || undefined,
+      include_probe: includeProbe.value || undefined,
       chrono: traceMode.value || undefined,
       page: page.value,
       page_size: pageSize.value,
@@ -958,6 +983,9 @@ async function load() {
     rows.value = resp.items
     total.value = resp.count
     aggregate.value = resp.aggregate ?? null
+    // 服务端显式回传当前探测口径（2026-11-21 对齐轮）：徽标披露认响应值，
+    // 不认本地开关状态（两者只在正常链路一致；降级/参数被吞时以响应为准）。
+    trafficLane.value = resp.traffic_lane ?? ''
   } catch (e: unknown) {
     error.value = surfaceError(e)
   } finally {
@@ -1284,6 +1312,12 @@ onMounted(async () => {
             <span class="badge badge-blue" style="font-size:11px;padding:2px 4px;white-space:nowrap">
               {{ formatStatNumber(aggregate.total_requests) }} 请求
             </span>
+            <span
+              v-if="trafficLane === 'all'"
+              data-testid="logs-stats-probe-badge"
+              class="badge badge-blue"
+              style="font-size:11px;padding:2px 4px;white-space:nowrap"
+            >{{ t('requests.list.probeScope.badge') }}</span>
           </span>
           <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap">{{ showOverviewStats ? '收拢 ▲' : '展开 ▼' }}</span>
         </div>
@@ -1454,6 +1488,30 @@ onMounted(async () => {
           <span v-if="activeFilterCount > 0" class="badge badge-blue" style="font-size:11px;padding:2px 4px;white-space:nowrap">{{ activeFilterCount }} 项生效</span>
         </span>
         <span style="flex:1"></span>
+        <!-- 2026-11-21 统计口径对齐轮：包含探测开关。默认业务口径（不含探测，
+             == 内部对账）；开启后行集 = 业务 ∪ 探测臂（== 供应商对账，与
+             board 英雄区「含探测」同一口径）。徽标在折叠态也可见 ⇒ 口径披露
+             不依赖展开筛选区。 -->
+        <label
+          class="logs-probe-scope"
+          data-testid="logs-probe-scope"
+          style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;white-space:nowrap;user-select:none"
+          :title="t('requests.list.probeScope.hint')"
+        >
+          <input
+            v-model="includeProbe"
+            type="checkbox"
+            data-testid="logs-probe-scope-input"
+            style="accent-color:var(--primary);margin:0"
+          >
+          <span style="color:var(--text-secondary)">{{ t('requests.list.probeScope.label') }}</span>
+          <span
+            v-if="includeProbe"
+            data-testid="logs-probe-scope-badge"
+            class="badge badge-blue"
+            style="font-size:11px;padding:2px 4px;white-space:nowrap"
+          >{{ t('requests.list.probeScope.badge') }}</span>
+        </label>
         <span style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
         <button class="btn btn-primary btn-sm" style="cursor:pointer;white-space:nowrap" @click.stop="resetPageAndLoad">🔍 查询</button>
         <button class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="清空全部条件" @click.stop="clearAllFilters">⟲ 清空条件</button>

@@ -70,6 +70,11 @@ export interface QueryParams {
   sort_dir?: 'asc' | 'desc'
   search?: string
   refresh?: boolean
+  /** 2026-11-21 对齐轮：会话统计探测口径（缺省排除探测，与会话分析同宇宙）。 */
+  include_probes?: boolean
+  /** 上海日历日窗口（可选；与会话分析 start_date/end_date 同解析口径）。 */
+  start_date?: string
+  end_date?: string
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -82,6 +87,29 @@ export interface SessionOverviewData {
   active_sessions: number
   new_sessions_24h: number
   closed_sessions_24h: number
+
+  // 2026-11-21 统计口径对齐轮新增
+  /** excluded | included | degraded_included —— 会话宇宙探测口径披露。 */
+  probe_scope?: 'excluded' | 'included' | 'degraded_included'
+  /** rolling_days | calendar —— 窗口语义披露。 */
+  window_mode?: 'rolling_days' | 'calendar'
+  /** 与 /admin/session-analytics 总览页同一实现的对齐指标行（物化视图缺失时缺席）。 */
+  aligned?: {
+    start_date: string
+    end_date: string
+    total_sessions: number
+    avg_tokens: number
+    avg_turns: number
+    avg_duration_seconds: number
+    active_users: number
+    active_projects: number
+    active_tasks: number
+    internal_cost_usd: number
+    external_credits: number
+    success_rate_pct: number
+    cache_rate_pct: number
+  }
+  aligned_source?: 'user_session_aggregates' | 'unavailable'
 
   // 健康度分布
   health_distribution: {

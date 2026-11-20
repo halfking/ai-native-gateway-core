@@ -73,6 +73,12 @@ export default {
       totalCreditsTitle: '現在のフィルタ条件に一致する全行のクレジット合計',
       scopeAll: '全一致行：ページネーションと無関係',
     },
+    // 2026-11-21 statistics alignment round: probe-scope toggle (same semantics as board include_probes).
+    probeScope: {
+      label: 'プローブを含む',
+      badge: 'プローブ含む',
+      hint: '有効にすると一覧と統計にプローブトラフィックが含まれます（サプライヤー照合と同じ集計）。プローブ行の費用は照合ファクトテーブルから取得し、未記録の行は空になります',
+    },
   },
   errorKind: {
     model_not_found: 'モデル未検出',

@@ -9,6 +9,10 @@ export default {
     agentRanking: 'エージェントランキング',
     modelRanking: 'モデルランキング',
   },
+  hint: {
+    modelTrend: '使用量トレンドで同じ期間のこのモデルのリクエスト/トークン/コスト曲線を見る',
+  },
+
   range: {
     label: '集計期間',
     start: '開始日',

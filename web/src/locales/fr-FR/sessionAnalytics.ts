@@ -9,6 +9,10 @@ export default {
     agentRanking: 'Classement des agents',
     modelRanking: 'Classement des modèles',
   },
+  hint: {
+    modelTrend: 'Voir les courbes requêtes/jetons/coût de ce modèle pour la même fenêtre dans Tendances d\'utilisation',
+  },
+
   range: {
     label: 'Période de rapport',
     start: 'Date de début',

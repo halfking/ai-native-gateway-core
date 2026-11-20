@@ -48,6 +48,12 @@ export default {
       totalCreditsTitle: 'Sum of credits charged across all rows matching the current filter',
       scopeAll: 'All matching rows: independent of pagination',
     },
+    // 2026-11-21 statistics alignment round: probe-scope toggle (same semantics as board include_probes).
+    probeScope: {
+      label: 'Include probes',
+      badge: 'with probes',
+      hint: 'When enabled, the list and totals include probe traffic (same caliber as the supplier reconciliation); probe-row costs come from the reconciliation fact table and stay empty until recorded',
+    },
     trace: {
       sessionSummaryHint: 'Only available when a session ID filter is active',
       // 2026-08-06: detail drawer "Session summary" button label + tooltip.

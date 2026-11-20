@@ -629,7 +629,8 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// include_probe=1 / lane=all 显式全量；lane=probe|probe_history 仅业务表
 	// 历史探测（U4：与 /api/admin/probe/lane/requests 的「当前」语义分层）。
 	lane := strings.ToLower(strings.TrimSpace(queryString(r, "lane")))
-	if pred := resolveLogsTrafficLanePredicate(lane, queryBool(r, "include_probe"), "rl"); pred != "" {
+	includeProbe := queryBool(r, "include_probe")
+	if pred := resolveLogsTrafficLanePredicate(lane, includeProbe, "rl"); pred != "" {
 		clauses = append(clauses, pred)
 	}
 
@@ -664,6 +665,22 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
 	logsFrom := logsSourceFromSQLWindowed("$1", "$2")
+
+	// 2026-11-21 统计口径对齐轮：包含探测模式（include_probe=1 / lane=all）的
+	// 行集从「业务两臂摘掉 stage 过滤」升级为「业务两臂 ∪ 探测臂」。
+	//
+	// 为什么必须换源而不是只摘过滤：迁移 928 物理隔离后，当前探测落在
+	// session_turns_probe_hot（窄表），业务两臂里根本没有它 ⇒ 摘过滤后的
+	// 「全量」对隔离后的探测仍然是盲的，总请求永远小于供应商对账。
+	// 探测臂（db.SessionFamilyProbeArmSourceSQL）把 probe_hot 按同一份 118 列
+	// canonical 投影展开，并按 request_id 挂上 usage_facts 的探测费用（与供应商
+	// 对账同源）⇒ 包含探测的总请求/总token/总费用对齐 board include_probes
+	// 口径（usage_facts 全量 == 供应商对账全量）。业务两臂在本模式下不加
+	// stage 过滤（lane=all 原语义，隔离前的历史 marker 行照样在场）。
+	// $3/$4 复用列表的 ts 窗口参数（探测臂 ts 谓词 + usage_facts occurred_at 界）。
+	if includeProbe || lane == "all" {
+		logsFrom = dbpkg.SessionFamilyTurnsSourceWindowedAllSQL("$1", "$2", "$3", "$4") + " rl"
+	}
 
 	// 2026-10-20（复核轮 §5.12）：COUNT 与 SUM 合并为**一次**聚合。
 	//
@@ -880,6 +897,17 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if isLogsProbeHistoryLane(lane) {
 		resp["source"] = "history"
 		resp["lane"] = "probe_history"
+	}
+	// 2026-11-21 统计口径对齐轮：traffic_lane 显式回传当前探测口径
+	// （business=不含探测（默认，== 内部对账）；all=包含探测（== 供应商对账）；
+	// probe_history=历史探测）。前端徽标与跨面对拍都认这个字段。
+	switch {
+	case isLogsProbeHistoryLane(lane):
+		resp["traffic_lane"] = "probe_history"
+	case includeProbe || lane == "all":
+		resp["traffic_lane"] = "all"
+	default:
+		resp["traffic_lane"] = "business"
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

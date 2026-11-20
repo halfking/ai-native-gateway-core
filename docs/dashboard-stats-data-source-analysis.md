@@ -4,6 +4,34 @@
 **分析范围**: https://llm.itestu.cn/dashboard?tab=stats 中所有统计元素  
 **目标**: 整理数据来源，确认统计数据标准对齐
 
+> **2026-11-21 统计口径对齐轮更新**（数据关系表单同步）：
+>
+> 1. **会话宇宙对齐**：stats tab 的 `/api/admin/dashboard/session-overview`
+>    缺省套上与 `/admin/session-analytics` 物化视图（981/994）**同一**的会话宇宙
+>    （sessions×session_dim join + owner 双源键 + is_probe +
+>    session_analytics_is_probe；片段 `domains/analytics.SessionUniverseJoin/
+>    SessionUniverseWhere`，迁移侧契约门对拍）。此前直读 session_summaries 时
+>    ~80% 为探测/自检会话（981 实测）——这是「两边对不上」的第一大项。
+>    `include_probes=1` 回历史全量宇宙；响应回传 `probe_scope`
+>    （excluded/included/degraded_included，降级可见）。
+> 2. **对齐指标行（两级更新策略并存）**：响应新增 `aligned` 块——读
+>    `user_session_aggregates`/`model_usage_aggregates` 物化视图（15 分钟一刷，
+>    缓存面），SQL 与会话分析总览页**同一实现**（`domains/analytics/aligned_source.go`
+>    单一真源）⇒ 与 `/admin/session-analytics` 数字构造相等；面板自有腿
+>    （session_summaries 直读）仍是即时查询面（新鲜值）。窗口=上海日历日
+>    `[start,end]`（days 预设自动折算；显式 start_date/end_date 透传；响应
+>    `window_mode` + `aligned.start_date/end_date` 披露）。物化视图未就绪时
+>    `aligned_source=unavailable`，对齐行缺席（比假绿诚实）。
+> 3. **top 数据跨页深链**：stats tab 模型行与 session-analytics 总览 top 模型行
+>    → `/admin/usage-trends?model=X&start=S&end=E`（usage-trends 原生支持深链
+>    参数）；对齐行「打开会话分析」→ `/admin/session-analytics?start_date=&end_date=`
+>    （总览页现支持该 query 初始化区间）。
+> 4. **request-logs 包含探测**：`/api/logs` 行集升级为「业务两臂 ∪ 探测臂」
+>    （`db.SessionFamilyTurnsSourceWindowedAllSQL`；探测臂 =
+>    session_turns_probe_hot 118 列投影 + usage_facts 费用按 request_id 挂回）⇒
+>    包含探测的总请求/总token/总费用对齐 board `include_probes=1`（== 供应商对账）；
+>    缺省业务 lane == 内部对账。响应回传 `traffic_lane`（business/all/probe_history）。
+
 ---
 
 ## 一、页面概览

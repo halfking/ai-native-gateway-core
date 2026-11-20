@@ -70,6 +70,12 @@ export default {
       totalCreditsTitle: 'Suma de los créditos cobrados en todas las filas que coinciden con el filtro actual',
       scopeAll: 'Todas las filas coincidentes: independiente de la paginación',
     },
+    // 2026-11-21 statistics alignment round: probe-scope toggle (same semantics as board include_probes).
+    probeScope: {
+      label: 'Incluir sondeos',
+      badge: 'con sondeos',
+      hint: 'Al activarlo, la lista y los totales incluyen tráfico de sondeos (mismo criterio que la conciliación del proveedor); el coste de las filas de sondeo proviene de la tabla de hechos de conciliación y queda vacío hasta registrarse',
+    },
   },
   errorKind: {
     model_not_found: 'Modelo no encontrado',

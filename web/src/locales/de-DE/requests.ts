@@ -72,6 +72,12 @@ export default {
       totalCreditsTitle: 'Summe der abgebuchten Credits über alle zum aktuellen Filter passenden Zeilen',
       scopeAll: 'Alle passenden Zeilen: unabhängig von der Paginierung',
     },
+    // 2026-11-21 statistics alignment round: probe-scope toggle (same semantics as board include_probes).
+    probeScope: {
+      label: 'Testabfragen einbeziehen',
+      badge: 'mit Testabfragen',
+      hint: 'Wenn aktiviert, enthalten Liste und Summen auch Testabfrage-Traffic (gleiche Abgrenzung wie die Lieferantenabstimmung); Kosten von Testabfrage-Zeilen stammen aus der Abstimmungsfaktentabelle und bleiben bis zur Erfassung leer',
+    },
   },
   errorKind: {
     model_not_found: 'Modell nicht gefunden',

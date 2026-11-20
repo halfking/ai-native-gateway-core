@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+	"sync/atomic"
 )
 
 // dashboardStatsStageError carries which parallel stats stage failed so the
@@ -68,6 +69,22 @@ type SessionOverviewResponse struct {
 	// TurnsAlignment 对拍 session_summaries.request_count 合计与业务 turns 行数。
 	// degraded=true 时前端必须显式提示，不得当假绿 KPI。
 	TurnsAlignment *TurnsAlignment `json:"turns_alignment,omitempty"`
+
+	// ── 2026-11-21 统计口径对齐轮新增 ──
+	// ProbeScope 披露当前会话宇宙口径：excluded=已排除探测（缺省，与
+	// /admin/session-analytics 同宇宙）；included=include_probes=1 全量宇宙
+	// （历史行为）；degraded_included=宇宙依赖缺失（sessions/session_dim/
+	// 判定函数未迁移）自动降级为全量——降级可见，不是静默。
+	ProbeScope string `json:"probe_scope"`
+	// WindowMode 披露窗口语义：rolling_days=NOW()-N 天（面板自有腿的历史
+	// 语义）；calendar=上海日历日 [start,end)（与物化视图日桶同尺）。
+	WindowMode string `json:"window_mode"`
+	// Aligned 是与 /admin/session-analytics 总览页同一实现（domains/analytics
+	// 单一真源）的对齐指标行；物化视图缺失时缺席（aligned_source=unavailable）。
+	Aligned *AlignedBlock `json:"aligned,omitempty"`
+	// AlignedSource 披露对齐块来源：user_session_aggregates=物化视图快照
+	// （15 分钟一刷）；unavailable=缓存面未就绪（对齐行缺席）。
+	AlignedSource string `json:"aligned_source,omitempty"`
 
 	// 时间戳
 	GeneratedAt time.Time `json:"generated_at"`
@@ -187,6 +204,22 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 		return
 	}
 
+	// 2026-11-21 统计口径对齐轮：窗口与探测口径解析（见 session_overview_alignment.go
+	// 的三层对齐说明）。日期对非法 → 400（参数错不是服务端故障）。
+	degradedFlag := &atomic.Bool{}
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
+	win.degraded = degradedFlag
+	// 对齐指标行的窗口：显式 start_date/end_date 透传；days 预设折算成上海
+	// 日历日（与会话分析总览页预设同一折算 ⇒ 同一预设两边窗口一致）。
+	alignedStart, alignedEnd := win.startDate, win.endDate
+	if alignedStart == "" {
+		alignedStart, alignedEnd = shanghaiPresetRange(params.Days)
+	}
+
 	ctx, cancel := GetRequestContext(r, 30*time.Second)
 	defer cancel()
 
@@ -199,6 +232,8 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	// 合并口径不变的四条标量腿（总会话/健康/合规/成本 → 1 次扫描）与两条趋势腿
 	// （成本趋势/会话趋势 → 1 次扫描）⇒ 9 段降到 6 段，session_summaries 扫描 6→3 次。
 	// 2026-11-02：再加 turns 对拍腿（读 session_turns 族，不扫 session_summaries）⇒ 7 段。
+	// 2026-11-21：再加对齐指标行腿（读物化视图 domains/analytics 单一真源，
+	// soft-fail：缓存面未就绪时对齐块缺席）⇒ 8 段。
 	// **墙钟仍由两条 join 腿（top clients / top tasks）决定** —— 它们各自要把
 	// 90 万行的 session_dim 整表哈希，SQL 层候选已被实测否证（见审计档）。
 	// 错误语义保持：哪段死都带段名报 500（dashboardStatsStageError，
@@ -213,11 +248,13 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 		sessTrend    []SessionTrendPoint
 		turnsCount   int64
 		turnsCountOK bool
+		aligned      *AlignedBlock
+		alignedErr   error
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		var err error
-		if aggregates, err = h.querySessionSummaryAggregates(gctx, params); err != nil {
+		if aggregates, err = h.querySessionSummaryAggregates(gctx, params, win); err != nil {
 			return dashboardStatsStageError{"session summary aggregates", err}
 		}
 		return nil
@@ -225,36 +262,47 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	g.Go(func() error {
 		// 上一周期成本：窗口与「成本统计」腿不同（2×days ~ days），无法并进同一次扫描。
 		// 原实现在成本腿内部顺带查，**错误被忽略**（不阻断整段）⇒ 这里保持同一语义。
-		prevCost = h.queryPrevPeriodCost(gctx, params)
+		prevCost = h.queryPrevPeriodCost(gctx, params, win)
 		return nil
 	})
 	g.Go(func() error {
 		var err error
-		if modelUsage, err = h.queryModelUsage(gctx, params); err != nil {
+		if modelUsage, err = h.queryModelUsage(gctx, params, win); err != nil {
 			return dashboardStatsStageError{"model usage", err}
 		}
 		return nil
 	})
 	g.Go(func() error {
 		var err error
-		if topClients, err = h.queryTopClients(gctx, params, 5); err != nil {
+		if topClients, err = h.queryTopClients(gctx, params, win, 5); err != nil {
 			return dashboardStatsStageError{"top clients", err}
 		}
 		return nil
 	})
 	g.Go(func() error {
 		var err error
-		if topTasks, err = h.queryTopTasks(gctx, params, 5); err != nil {
+		if topTasks, err = h.queryTopTasks(gctx, params, win, 5); err != nil {
 			return dashboardStatsStageError{"top tasks", err}
 		}
 		return nil
 	})
 	g.Go(func() error {
 		var err error
-		costTrend, sessTrend, err = h.querySessionTrends(gctx, params)
+		costTrend, sessTrend, err = h.querySessionTrends(gctx, params, win)
 		if err != nil {
 			return dashboardStatsStageError{"session trends", err}
 		}
+		return nil
+	})
+	// 对齐指标行腿（2026-11-21）：soft-fail —— 物化视图缺失/超时都不拖垮面板，
+	// aligned 块缺席 + aligned_source=unavailable（缺席比假绿诚实）。
+	g.Go(func() error {
+		a, err := h.queryAlignedSnapshot(gctx, params.TenantID, alignedStart, alignedEnd)
+		if err != nil {
+			alignedErr = err
+			return nil
+		}
+		aligned = a
 		return nil
 	})
 	// Turns 对拍腿：失败不拖垮整段 overview（KPI 仍可用），但前端会看到
@@ -298,6 +346,23 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 	now := time.Now()
 	periodEnd := now
 	periodStart := now.AddDate(0, 0, -params.Days)
+	// 2026-11-21 对齐轮：calendar 模式下 period 边界反映真实窗口（上海日历
+	// 折 UTC 界），前端跨面对拍直接可用。
+	if win.calendar {
+		periodStart, periodEnd = win.startUTC, win.endUTC
+	}
+	// probe_scope：degraded_included（宇宙依赖缺失自动降级）> included（显式
+	// 全量）> excluded（缺省，与会话分析同宇宙）。
+	probeScope := "excluded"
+	if degradedFlag.Load() {
+		probeScope = "degraded_included"
+	} else if win.includeProbes {
+		probeScope = "included"
+	}
+	windowMode := "rolling_days"
+	if win.calendar {
+		windowMode = "calendar"
+	}
 
 	resp := SessionOverviewResponse{
 		TotalSessions:      totalStats.Total,
@@ -313,9 +378,17 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 		CostTrend:          costTrend,
 		SessionTrend:       sessionTrend,
 		TurnsAlignment:     alignment,
+		ProbeScope:         probeScope,
+		WindowMode:         windowMode,
+		Aligned:            aligned,
 		GeneratedAt:        now,
 		PeriodStart:        periodStart,
 		PeriodEnd:          periodEnd,
+	}
+	if aligned != nil {
+		resp.AlignedSource = "user_session_aggregates"
+	} else if alignedErr != nil {
+		resp.AlignedSource = "unavailable"
 	}
 
 	metadata := &Metadata{
@@ -366,49 +439,80 @@ type sessionSummaryAggregates struct {
 //
 // 口径等价性：WHERE 与每条聚合表达式都从原实现逐字搬来；健康分布与合规统计各自的
 // COUNT(*) 与「总会话数」的 COUNT(*) 同源（同表同窗）⇒ 直接复用同一个 total。
-func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Context, params QueryParams) (*sessionSummaryAggregates, error) {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
+//
+// 2026-11-21 对齐轮：缺省套上与 981/994 物化视图同一的会话宇宙（sessions +
+// session_dim join + owner 非空 + is_probe + session_analytics_is_probe；片段
+// 取自 domains/analytics，迁移侧有契约门对拍）⇒ 面板 KPI 与会话分析同一宇宙。
+// include_probes=1 回到旧全量宇宙（历史行为）。宇宙依赖缺失（未迁移环境）⇒
+// 全量宇宙降级重试 + 标记 degraded（响应 probe_scope=degraded_included）。
+func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Context, params QueryParams, win sessionWindow) (*sessionSummaryAggregates, error) {
+	buildQuery := func(withUniverse bool) (string, []interface{}) {
+		where := []string{}
+		args := []interface{}{}
+		argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		if params.TenantID != "" {
+			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			args = append(args, params.TenantID)
+			argIdx++
+		}
+		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		if withUniverse {
+			if u := universeWhere(win.includeProbes); u != "" {
+				where = append(where, u)
+			}
+		}
+		whereClause := "WHERE " + joinStrings(where, " AND ")
+		fromClause := "FROM session_summaries ss"
+		if withUniverse {
+			fromClause += "\n" + universeJoin(win.includeProbes)
+		}
 
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
+		query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as total,
-			COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active,
-			COUNT(*) FILTER (WHERE first_request_at >= NOW() - INTERVAL '24 hours') as new_24h,
-			COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_24h,
-			COUNT(*) FILTER (WHERE health_grade = 'A') as health_a,
-			COUNT(*) FILTER (WHERE health_grade = 'B') as health_b,
-			COUNT(*) FILTER (WHERE health_grade = 'C') as health_c,
-			COUNT(*) FILTER (WHERE health_grade = 'D') as health_d,
-			COUNT(*) FILTER (WHERE health_grade = 'F') as health_f,
-			COALESCE(AVG(health_score), 0) as avg_score,
-			COUNT(*) FILTER (WHERE compliance_status = 'compliant' OR compliance_status IS NULL) as compliant,
-			COUNT(*) FILTER (WHERE compliance_status = 'warning') as warning,
-			COUNT(*) FILTER (WHERE compliance_status = 'violation') as violation,
-			COUNT(*) FILTER (WHERE prompt_injection_detected = true) as prompt_injection,
-			COUNT(*) FILTER (WHERE pii_detected = true) as pii,
-			COUNT(*) FILTER (WHERE toxic_output_detected = true) as toxic,
-			COALESCE(SUM(total_cost_usd), 0) as total_cost,
-			COALESCE(AVG(total_cost_usd), 0) as avg_cost,
-			COALESCE(MAX(total_cost_usd), 0) as max_cost,
-			COALESCE(SUM(input_cost_usd), 0) as input_cost,
-			COALESCE(SUM(output_cost_usd), 0) as output_cost,
-			COALESCE(SUM(request_count), 0) as total_requests,
-			COALESCE(AVG(avg_latency_ms), 0) as avg_latency
-		FROM session_summaries
+			COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active,
+			COUNT(*) FILTER (WHERE ss.first_request_at >= NOW() - INTERVAL '24 hours') as new_24h,
+			COUNT(*) FILTER (WHERE ss.last_request_at < NOW() - INTERVAL '24 hours' AND ss.first_request_at < NOW() - INTERVAL '24 hours') as closed_24h,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'A') as health_a,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'B') as health_b,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'C') as health_c,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'D') as health_d,
+			COUNT(*) FILTER (WHERE ss.health_grade = 'F') as health_f,
+			COALESCE(AVG(ss.health_score), 0) as avg_score,
+			COUNT(*) FILTER (WHERE ss.compliance_status = 'compliant' OR ss.compliance_status IS NULL) as compliant,
+			COUNT(*) FILTER (WHERE ss.compliance_status = 'warning') as warning,
+			COUNT(*) FILTER (WHERE ss.compliance_status = 'violation') as violation,
+			COUNT(*) FILTER (WHERE ss.prompt_injection_detected = true) as prompt_injection,
+			COUNT(*) FILTER (WHERE ss.pii_detected = true) as pii,
+			COUNT(*) FILTER (WHERE ss.toxic_output_detected = true) as toxic,
+			COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
+			COALESCE(AVG(ss.total_cost_usd), 0) as avg_cost,
+			COALESCE(MAX(ss.total_cost_usd), 0) as max_cost,
+			COALESCE(SUM(ss.input_cost_usd), 0) as input_cost,
+			COALESCE(SUM(ss.output_cost_usd), 0) as output_cost,
+			COALESCE(SUM(ss.request_count), 0) as total_requests,
+			COALESCE(AVG(ss.avg_latency_ms), 0) as avg_latency
+		`+fromClause+`
 		%s
 	`, whereClause)
+		return query, args
+	}
 
+	// 缺省带宇宙；依赖缺失 → 全量降级重试（与 board 降级链同形状）。
+	includeProbes := win.includeProbes
+	query, args := buildQuery(!includeProbes)
+	agg, err := h.scanSessionSummaryAggregates(ctx, query, args)
+	if err != nil && isUniverseUnavailableErr(err) {
+		win.markDegraded()
+		query, args = buildQuery(false)
+		agg, err = h.scanSessionSummaryAggregates(ctx, query, args)
+	}
+	return agg, err
+}
+
+// scanSessionSummaryAggregates 执行聚合扫描（列序 = 上面 SELECT 的固定顺序）。
+func (h *SessionOverviewHandler) scanSessionSummaryAggregates(ctx context.Context, query string, args []interface{}) (*sessionSummaryAggregates, error) {
 	agg := &sessionSummaryAggregates{
 		total:      &totalStatsInternal{},
 		health:     &HealthDistribution{},
@@ -467,72 +571,123 @@ func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Conte
 // 与当前周期窗口不同（2×days ~ days）⇒ 无法并进同一次扫描，保持独立一条。
 // 错误按原实现语义**忽略**（原代码 `_ = h.db.QueryRow(...).Scan(&prevTotalCost)`），
 // 失败时返回 0 ⇒ 调用方不计算增长率。
-func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params QueryParams) float64 {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
+//
+// 2026-11-21 对齐轮：随 querySessionSummaryAggregates 同步套会话宇宙（缺省）；
+// calendar 模式下「上一周期」= [start-窗口长, start)（与 days 滚动窗的
+// 2×days~days 语义等长对齐）。降级语义同主腿。
+func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params QueryParams, win sessionWindow) float64 {
+	buildQuery := func(withUniverse bool) (string, []interface{}) {
+		where := []string{}
+		args := []interface{}{}
+		argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
-		SELECT COALESCE(SUM(total_cost_usd), 0)
-		FROM session_summaries
+		if params.TenantID != "" {
+			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			args = append(args, params.TenantID)
+			argIdx++
+		}
+		if win.calendar {
+			// 上一周期 = [start-窗口长, start)：窗口长按 [start,end) 实长对齐。
+			span := win.endUTC.Sub(win.startUTC)
+			prevStart := win.startUTC.Add(-span)
+			where = append(where, fmt.Sprintf("ss.first_request_at >= $%d AND ss.first_request_at < $%d", argIdx, argIdx+1))
+			args = append(args, prevStart, win.startUTC)
+			argIdx += 2
+		} else {
+			where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days' AND ss.first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
+		}
+		if withUniverse {
+			if u := universeWhere(win.includeProbes); u != "" {
+				where = append(where, u)
+			}
+		}
+		whereClause := "WHERE " + joinStrings(where, " AND ")
+		fromClause := "FROM session_summaries ss"
+		if withUniverse {
+			fromClause += "\n" + universeJoin(win.includeProbes)
+		}
+		query := fmt.Sprintf(`
+		SELECT COALESCE(SUM(ss.total_cost_usd), 0)
+		`+fromClause+`
 		%s
 	`, whereClause)
+		return query, args
+	}
 
+	includeProbes := win.includeProbes
+	query, args := buildQuery(!includeProbes)
 	var prevTotalCost float64
-	_ = h.db.QueryRow(ctx, query, args...).Scan(&prevTotalCost)
+	if err := h.db.QueryRow(ctx, query, args...).Scan(&prevTotalCost); err != nil && isUniverseUnavailableErr(err) {
+		win.markDegraded()
+		query, args = buildQuery(false)
+		_ = h.db.QueryRow(ctx, query, args...).Scan(&prevTotalCost)
+	}
 	return prevTotalCost
 }
 
-func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params QueryParams) ([]ModelUsageItem, error) {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
+// 2026-11-21 对齐轮：子查询随主腿套会话宇宙（缺省排除探测）——模型榜里
+// self-check/deployment-gate 的模型不再霸榜，与 session-analytics top_models
+// （request 级视图）口径方向一致。降级语义同主腿。
+func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params QueryParams, win sessionWindow) ([]ModelUsageItem, error) {
+	buildQuery := func(withUniverse bool) (string, []interface{}) {
+		where := []string{}
+		args := []interface{}{}
+		argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
+		if params.TenantID != "" {
+			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			args = append(args, params.TenantID)
+			argIdx++
+		}
+		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		if withUniverse {
+			if u := universeWhere(win.includeProbes); u != "" {
+				where = append(where, u)
+			}
+		}
+		innerWhere := "WHERE " + joinStrings(where, " AND ")
+		innerFrom := "FROM session_summaries ss"
+		if withUniverse {
+			innerFrom += "\n" + universeJoin(win.includeProbes)
+		}
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	whereClause := "WHERE " + joinStrings(where, " AND ")
-
-	query := fmt.Sprintf(`
+		query := fmt.Sprintf(`
 		SELECT
 			model,
 			COUNT(*) as session_count,
 			COALESCE(SUM(request_count), 0) as request_count,
 			COALESCE(SUM(total_cost_usd), 0) as total_cost,
 			COALESCE(AVG(avg_latency_ms), 0) as avg_latency,
-			CASE WHEN SUM(request_count) > 0 
-			     THEN SUM(success_count)::FLOAT / SUM(request_count) 
+			CASE WHEN SUM(request_count) > 0
+			     THEN SUM(success_count)::FLOAT / SUM(request_count)
 			     ELSE 0 END as success_rate
 		FROM (
-			SELECT 
-				unnest(models_used) as model,
-				tenant_id,
-				first_request_at,
-				request_count,
-				total_cost_usd,
-				avg_latency_ms,
-				success_count
-			FROM session_summaries
+			SELECT
+				unnest(ss.models_used) as model,
+				ss.tenant_id,
+				ss.first_request_at,
+				ss.request_count,
+				ss.total_cost_usd,
+				ss.avg_latency_ms,
+				ss.success_count
+			`+innerFrom+`
+			%s
 		) t
-		%s
 		GROUP BY model
 		ORDER BY total_cost DESC
 		LIMIT 10
-	`, whereClause)
+	`, innerWhere)
+		return query, args
+	}
 
+	includeProbes := win.includeProbes
+	query, args := buildQuery(!includeProbes)
 	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil && isUniverseUnavailableErr(err) {
+		win.markDegraded()
+		query, args = buildQuery(false)
+		rows, err = h.db.Query(ctx, query, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -562,48 +717,70 @@ func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params Que
 	return items, nil
 }
 
-func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params QueryParams, limit int) ([]ClientRankItem, error) {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
+func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params QueryParams, win sessionWindow, limit int) ([]ClientRankItem, error) {
+	// 2026-11-21 对齐轮：缺省把「session_dim 回退连接」升级为会话宇宙连接
+	// （sessions 内连接 + session_dim 带 tenant 左连接 + owner/is_probe 判定，
+	// 片段取自 domains/analytics）⇒ 客户端榜与面板其余腿同宇宙。降级链保持
+	// 既有形状：宇宙依赖缺 → 全量宇宙；session_dim 缺 → 无 dim 回退。
+	buildQuery := func(withUniverse, withDim bool) (string, []interface{}) {
+		where := []string{}
+		args := []interface{}{}
+		argIdx := 1
 
-	where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	whereClause := "WHERE " + joinStrings(where, " AND ")
+		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		if params.TenantID != "" {
+			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			args = append(args, params.TenantID)
+			argIdx++
+		}
+		if withUniverse {
+			if u := universeWhere(win.includeProbes); u != "" {
+				where = append(where, u)
+			}
+		}
+		whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+		fromClause := "FROM session_summaries ss"
+		if withUniverse {
+			fromClause += "\n" + universeJoin(win.includeProbes)
+		} else if withDim {
+			fromClause += "\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key"
+		}
+
+		var clientExpr string
+		if withDim {
+			clientExpr = "COALESCE(NULLIF(TRIM(sd.client_id), ''), NULLIF(ss.client_models[1], ''), 'unknown')"
+		} else {
+			clientExpr = "COALESCE(NULLIF(ss.client_models[1], ''), 'unknown')"
+		}
+
+		query := fmt.Sprintf(`
 		SELECT
-			COALESCE(NULLIF(TRIM(sd.client_id), ''), NULLIF(ss.client_models[1], ''), 'unknown') as client_id,
+			`+clientExpr+` as client_id,
 			COUNT(*) as session_count,
 			COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
 			MAX(ss.last_request_at) as last_activity
-		FROM session_summaries ss
-		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key
+		`+fromClause+`
 		%s
-		GROUP BY COALESCE(NULLIF(TRIM(sd.client_id), ''), NULLIF(ss.client_models[1], ''), 'unknown')
+		GROUP BY `+clientExpr+`
 		ORDER BY total_cost DESC
 		LIMIT $%d
 	`, whereClause, argIdx)
-	args = append(args, limit)
+		args = append(args, limit)
+		return query, args
+	}
 
+	universe := !win.includeProbes
+	query, args := buildQuery(universe, true)
 	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil && isUniverseUnavailableErr(err) {
+		win.markDegraded()
+		universe = false
+		query, args = buildQuery(false, true)
+		rows, err = h.db.Query(ctx, query, args...)
+	}
 	if err != nil && isMissingSessionDim(err) {
-		query = fmt.Sprintf(`
-			SELECT
-				COALESCE(NULLIF(ss.client_models[1], ''), 'unknown') as client_id,
-				COUNT(*) as session_count,
-				COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
-				MAX(ss.last_request_at) as last_activity
-			FROM session_summaries ss
-			%s
-			GROUP BY COALESCE(NULLIF(ss.client_models[1], ''), 'unknown')
-			ORDER BY total_cost DESC
-			LIMIT $%d
-		`, whereClause, argIdx)
+		query, args = buildQuery(false, false)
 		rows, err = h.db.Query(ctx, query, args...)
 	}
 	if err != nil {
@@ -625,35 +802,64 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 	return items, nil
 }
 
-func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params QueryParams, limit int) ([]TaskRankItem, error) {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
+func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params QueryParams, win sessionWindow, limit int) ([]TaskRankItem, error) {
+	// 2026-11-21 对齐轮：与 queryTopClients 同形升级（宇宙连接 + 降级链）。
+	buildQuery := func(withUniverse, withDim bool) (string, []interface{}) {
+		where := []string{}
+		args := []interface{}{}
+		argIdx := 1
 
-	where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	whereClause := "WHERE " + joinStrings(where, " AND ")
+		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		if params.TenantID != "" {
+			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			args = append(args, params.TenantID)
+			argIdx++
+		}
+		if withUniverse {
+			if u := universeWhere(win.includeProbes); u != "" {
+				where = append(where, u)
+			}
+		}
+		whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+		fromClause := "FROM session_summaries ss"
+		if withUniverse {
+			fromClause += "\n" + universeJoin(win.includeProbes)
+		} else if withDim {
+			fromClause += "\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key"
+		}
+		var taskExpr string
+		if withDim {
+			taskExpr = "COALESCE(NULLIF(TRIM(sd.task_id), ''), 'unknown')"
+		} else {
+			taskExpr = "'unknown'"
+		}
+
+		query := fmt.Sprintf(`
 		SELECT
-			COALESCE(NULLIF(TRIM(sd.task_id), ''), 'unknown') as task_id,
+			`+taskExpr+` as task_id,
 			COUNT(*) as session_count,
 			COALESCE(SUM(ss.total_cost_usd), 0) as total_cost,
 			MAX(ss.last_request_at) as last_activity
-		FROM session_summaries ss
-		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key
+		`+fromClause+`
 		%s
-		GROUP BY COALESCE(NULLIF(TRIM(sd.task_id), ''), 'unknown')
+		GROUP BY `+taskExpr+`
 		ORDER BY session_count DESC
 		LIMIT $%d
 	`, whereClause, argIdx)
-	args = append(args, limit)
+		args = append(args, limit)
+		return query, args
+	}
 
+	universe := !win.includeProbes
+	query, args := buildQuery(universe, true)
 	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil && isUniverseUnavailableErr(err) {
+		win.markDegraded()
+		universe = false
+		query, args = buildQuery(false, true)
+		rows, err = h.db.Query(ctx, query, args...)
+	}
 	if err != nil && isMissingSessionDim(err) {
 		return []TaskRankItem{}, nil
 	}
@@ -682,36 +888,56 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 // ORDER BY 相同 ⇒ **一次扫描同时产出两个切片，行数与顺序逐行一致**。
 // 聚合表达式逐条从原实现搬来（含原会话趋势里那个恒真的 FILTER，它在原 WHERE 下
 // 必然为真，但保留原样以确保结果与旧实现逐值相同）。
-func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params QueryParams) ([]CostTrendPoint, []SessionTrendPoint, error) {
-	where := []string{}
-	args := []interface{}{}
-	argIdx := 1
+func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params QueryParams, win sessionWindow) ([]CostTrendPoint, []SessionTrendPoint, error) {
+	// 2026-11-21 对齐轮：随主腿套会话宇宙（缺省排除探测）⇒ 趋势与 KPI 同宇宙。
+	buildQuery := func(withUniverse bool) (string, []interface{}) {
+		where := []string{}
+		args := []interface{}{}
+		argIdx := 1
 
-	if params.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
-		args = append(args, params.TenantID)
-		argIdx++
-	}
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
-	whereClause := "WHERE " + joinStrings(where, " AND ")
+		if params.TenantID != "" {
+			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			args = append(args, params.TenantID)
+			argIdx++
+		}
+		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		if withUniverse {
+			if u := universeWhere(win.includeProbes); u != "" {
+				where = append(where, u)
+			}
+		}
+		whereClause := "WHERE " + joinStrings(where, " AND ")
+		fromClause := "FROM session_summaries ss"
+		if withUniverse {
+			fromClause += "\n" + universeJoin(win.includeProbes)
+		}
 
-	// DATE(...) is OID 1082 binary; pgx v5 refuses *string ⇒ cast to text.
-	query := fmt.Sprintf(`
+		// DATE(...) is OID 1082 binary; pgx v5 refuses *string ⇒ cast to text.
+		query := fmt.Sprintf(`
 		SELECT
-			DATE(first_request_at)::text as date,
-			COALESCE(SUM(total_cost_usd), 0) as cost,
+			DATE(ss.first_request_at)::text as date,
+			COALESCE(SUM(ss.total_cost_usd), 0) as cost,
 			COUNT(*) as sessions,
-			COALESCE(SUM(request_count), 0) as requests,
-			COUNT(*) FILTER (WHERE first_request_at >= NOW() - INTERVAL '%d days') as new_sessions,
-			COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active_count,
-			COUNT(*) FILTER (WHERE last_request_at < NOW() - INTERVAL '24 hours' AND first_request_at < NOW() - INTERVAL '24 hours') as closed_count
-		FROM session_summaries
+			COALESCE(SUM(ss.request_count), 0) as requests,
+			COUNT(*) FILTER (WHERE ss.first_request_at >= NOW() - INTERVAL '%d days') as new_sessions,
+			COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active_count,
+			COUNT(*) FILTER (WHERE ss.last_request_at < NOW() - INTERVAL '24 hours' AND ss.first_request_at < NOW() - INTERVAL '24 hours') as closed_count
+		`+fromClause+`
 		%s
-		GROUP BY DATE(first_request_at)
+		GROUP BY DATE(ss.first_request_at)
 		ORDER BY date
 	`, params.Days, whereClause)
+		return query, args
+	}
 
+	universe := !win.includeProbes
+	query, args := buildQuery(universe)
 	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil && isUniverseUnavailableErr(err) {
+		win.markDegraded()
+		query, args = buildQuery(false)
+		rows, err = h.db.Query(ctx, query, args...)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

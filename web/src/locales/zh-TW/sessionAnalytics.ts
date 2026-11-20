@@ -9,6 +9,11 @@ export default {
     agentRanking: '智慧體排行榜',
     modelRanking: '模型排名',
   },
+  hint: {
+    // 2026-11-21 對齊輪：top 模型 → usage-trends 深鏈提示
+    modelTrend: '在用量趨勢中檢視該模型同視窗的請求/token/費用曲線',
+  },
+
   range: {
     label: '統計區間',
     start: '開始日期',

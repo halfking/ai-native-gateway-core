@@ -73,6 +73,12 @@ export default {
       totalCreditsTitle: '當前過濾條件下全量命中列的積分合計',
       scopeAll: '全量命中列：與分頁無關',
     },
+    // 2026-11-21 統計口徑對齊輪：包含探測開關（與 board 的 include_probes 同語義同命名）。
+    probeScope: {
+      label: '包含探測',
+      badge: '含探測',
+      hint: '開啟後列表與統計包含探測流量（與供應商對帳同口徑）；探測行的費用取自對帳事實表，未落帳的行費用為空',
+    },
   },
   errorKind: {
     model_not_found: '模型未找到',

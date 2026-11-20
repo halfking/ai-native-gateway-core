@@ -2,7 +2,10 @@
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
-defineProps<{
+// 2026-11-21 统计口径对齐轮：top 分类数据打通独立统计页——模型行直达
+// /admin/usage-trends 并自动带上同一窗口条件（usage-trends 深链参数：
+// start/end/model，缺省 metric=requests）。
+const props = defineProps<{
   topClients: Array<{ client_id: string; session_count: number; total_cost: number; avg_health?: number | null }>
   topTasks: Array<{ task_id: string; session_count: number; total_cost: number; avg_health?: number | null }>
   modelUsage?: Array<{
@@ -13,10 +16,22 @@ defineProps<{
     success_rate: number
     avg_latency_ms: number
   }>
+  /** 趋势窗口（YYYY-MM-DD 日历日），模型行跳 usage-trends 时自动带上。 */
+  trendWindow?: { start: string; end: string }
 }>()
 
 const { t } = useI18n()
 const router = useRouter()
+
+function openModelTrend(model: string) {
+  const w = props.trendWindow
+  const query: Record<string, string> = { model }
+  if (w?.start && w?.end) {
+    query.start = w.start
+    query.end = w.end
+  }
+  void router.push({ path: '/admin/usage-trends', query })
+}
 
 function formatUsd(value: number) {
   return `$${value.toFixed(4)}`
@@ -54,7 +69,15 @@ function openTask(id: string) {
           </thead>
           <tbody>
             <tr v-for="row in modelUsage" :key="row.model">
-              <td>{{ row.model }}</td>
+              <td>
+                <button
+                  type="button"
+                  class="model-trend-link"
+                  data-testid="stats-model-trend-link"
+                  :title="t('sessions.stats.modelTrendHint')"
+                  @click="openModelTrend(row.model)"
+                >{{ row.model }}</button>
+              </td>
               <td class="num">{{ row.session_count }}</td>
               <td class="num">{{ row.request_count }}</td>
               <td class="num">{{ formatUsd(row.total_cost ?? 0) }}</td>
@@ -154,4 +177,18 @@ function openTask(id: string) {
 .health-pill--warning { background: var(--warning-bg); }
 .health-pill--danger { background: var(--danger-bg); }
 .model-card { margin-bottom: 16px; }
+
+/* 2026-11-21 对齐轮：模型名 → usage-trends 深链 */
+.model-trend-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.model-trend-link:hover {
+  text-decoration: underline;
+}
 </style>

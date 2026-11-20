@@ -7,7 +7,7 @@
 //   - 缓存和刷新策略
 //   - 加载状态管理
 
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, type Ref } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import {
@@ -34,6 +34,12 @@ export interface UseDashboardOptions {
   refreshInterval?: number       // 刷新间隔（毫秒）
   defaultDays?: number           // 默认时间范围
   onError?: (error: Error) => void
+  /**
+   * 2026-11-21 统计口径对齐轮：常驻附加查询参数（如 include_probes）。
+   * 每次加载（含自动刷新/页面可见性刷新）都合并进 queryParams——常驻口径
+   * 不能依赖调用方每次手动传参，否则自动刷新会把它丢掉。
+   */
+  extraParams?: Ref<QueryParams>
 }
 
 export function useDashboard(options: UseDashboardOptions = {}) {
@@ -45,6 +51,8 @@ export function useDashboard(options: UseDashboardOptions = {}) {
   const autoRefresh = options.autoRefresh ?? false
   const refreshInterval = options.refreshInterval ?? 5 * 60 * 1000  // 默认 5 分钟
   const defaultDays = options.defaultDays ?? 7
+  // 常驻附加参数（Ref 展开为快照，merge 时取当次值）。
+  const extraParams = options.extraParams
 
   // ════════════════════════════════════════════════════════════
   // 状态
@@ -103,6 +111,7 @@ export function useDashboard(options: UseDashboardOptions = {}) {
     try {
       const queryParams = {
         days: days.value,
+        ...(extraParams?.value ?? {}),
         ...params,
       }
 
@@ -190,7 +199,7 @@ export function useDashboard(options: UseDashboardOptions = {}) {
     loading.value = true
     error.value = null
     try {
-      const result = await fetchSessionOverview({ days: days.value, ...params })
+      const result = await fetchSessionOverview({ days: days.value, ...(extraParams?.value ?? {}), ...params })
       overview.value = result.data
       lastUpdated.value = new Date()
     } catch (e: unknown) {

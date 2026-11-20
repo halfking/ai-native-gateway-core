@@ -9,6 +9,10 @@ export default {
     agentRanking: 'Agentenrangliste',
     modelRanking: 'Modellrangliste',
   },
+  hint: {
+    modelTrend: 'Verlauf dieses Modells (Anfragen/Token/Kosten) für denselben Zeitraum in den Nutzungstrends ansehen',
+  },
+
   range: {
     label: 'Berichtszeitraum',
     start: 'Startdatum',

@@ -49,6 +49,12 @@ export default {
       totalCreditsTitle: '当前过滤条件下全量命中行的积分合计',
       scopeAll: '全量命中行：与分页无关',
     },
+    // 2026-11-21 统计口径对齐轮：包含探测开关（与 board 的 include_probes 同语义同命名）。
+    probeScope: {
+      label: '包含探测',
+      badge: '含探测',
+      hint: '开启后列表与统计包含探测流量（与供应商对账同口径）；探测行的费用取自对账事实表，未落账的行费用为空',
+    },
     trace: {
       sessionSummaryHint: '仅在会话 ID 筛选下可用',
       // 2026-08-06: 详情抽屉里「会话总结」按钮的标题与跳转提示。
