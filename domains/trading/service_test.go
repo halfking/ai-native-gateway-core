@@ -124,7 +124,7 @@ func TestActivateEntitlement_HoldNotCommitted(t *testing.T) {
 	_, err = tradingSvc.ActivateEntitlement(ctx, auth, activateMeta, activateReq)
 
 	require.Error(t, err)
-	
+
 	maasErr, ok := err.(*maascontracts.Error)
 	require.True(t, ok)
 	assert.Equal(t, maascontracts.ErrorReserveNotCommitted, maasErr.Code)

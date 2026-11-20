@@ -199,7 +199,7 @@ func (h *Handler) queryAnalyticsTrends(
 	for rows.Next() {
 		var point AnalyticsTrendPoint
 		var bucket interface{}
-		
+
 		err := rows.Scan(
 			&bucket,
 			&point.Requests,
@@ -240,7 +240,7 @@ func (h *Handler) queryAnalyticsCrossAnalysis(
 
 	// 对于每个其他维度,执行 GROUP BY 查询
 	dimensions := []string{"model", "provider", "client", "tenant"}
-	
+
 	for _, crossDim := range dimensions {
 		// 跳过当前维度
 		if crossDim == dimension {
@@ -302,7 +302,7 @@ func (h *Handler) queryCrossDimension(
 	}
 
 	groupCol := getDimensionColumn(groupDimension)
-	
+
 	query := fmt.Sprintf(`
 		SELECT
 			%s AS key,

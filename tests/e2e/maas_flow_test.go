@@ -39,7 +39,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 1: Query Available Inventory
 	// ========================================================================
 	t.Log("Step 1: QuerySellable")
-	
+
 	queryReq := maascontracts.QuerySellableRequest{
 		ModelSKU: "gpt-4",
 		TenantID: &auth.TenantID,
@@ -48,7 +48,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	queryResp, err := inventorySvc.QuerySellable(ctx, auth, queryReq)
 	require.NoError(t, err)
 	require.NotEmpty(t, queryResp.Items, "No inventory available")
-	
+
 	t.Logf("  ✓ Found %d sellable items", len(queryResp.Items))
 	t.Logf("  ✓ Snapshot: %s, Revision: %d", queryResp.ResourceSnapshotID, queryResp.InventoryRevision)
 
@@ -56,7 +56,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 2: Get Price Quote
 	// ========================================================================
 	t.Log("Step 2: EstimateQuote")
-	
+
 	priceVersionID := "prv_2026_11_initial"
 	window := "monthly"
 	quoteReq := maascontracts.EstimateQuoteRequest{
@@ -70,7 +70,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	quoteResp, err := commercialSvc.EstimateQuote(ctx, auth, quoteReq)
 	require.NoError(t, err)
 	assert.False(t, quoteResp.HoldCreated, "Contract violation: Quote created a hold")
-	
+
 	t.Logf("  ✓ Quote: %s, Price: %s %s", quoteResp.QuoteID, quoteResp.Money.AmountMinor, quoteResp.Money.Currency)
 	t.Logf("  ✓ HoldCreated: %v (must be false)", quoteResp.HoldCreated)
 
@@ -78,7 +78,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 3: Create Hold (Pending Reservation)
 	// ========================================================================
 	t.Log("Step 3: HoldCreate")
-	
+
 	holdCreateMeta := maascontracts.CommandMeta{
 		IdempotencyKey: "idem_e2e_hold_create",
 	}
@@ -99,7 +99,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	holdCreateResp, err := inventorySvc.HoldCreate(ctx, auth, holdCreateMeta, holdCreateReq)
 	require.NoError(t, err)
 	assert.Equal(t, maascontracts.HoldStatusPending, holdCreateResp.Status)
-	
+
 	t.Logf("  ✓ Hold: %s, Status: %s", holdCreateResp.HoldID, holdCreateResp.Status)
 	t.Logf("  ✓ Fencing Token: %s", holdCreateResp.FencingToken)
 	t.Logf("  ✓ Expires: %s", holdCreateResp.ExpiresAt)
@@ -108,7 +108,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 4: Confirm Hold (Committed Reservation)
 	// ========================================================================
 	t.Log("Step 4: HoldConfirm")
-	
+
 	holdConfirmMeta := maascontracts.CommandMeta{
 		IdempotencyKey: "idem_e2e_hold_confirm",
 	}
@@ -122,7 +122,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	holdConfirmResp, err := inventorySvc.HoldConfirm(ctx, auth, holdConfirmMeta, holdCreateResp.HoldID, holdConfirmReq)
 	require.NoError(t, err)
 	assert.Equal(t, maascontracts.HoldStatusCommitted, holdConfirmResp.Status)
-	
+
 	t.Logf("  ✓ Hold: %s, Status: %s", holdConfirmResp.HoldID, holdConfirmResp.Status)
 	t.Logf("  ✓ Committed At: %s", holdConfirmResp.CommittedAt)
 
@@ -130,7 +130,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 5: Activate Entitlement
 	// ========================================================================
 	t.Log("Step 5: ActivateEntitlement")
-	
+
 	activateMeta := maascontracts.CommandMeta{
 		IdempotencyKey: "idem_e2e_activate",
 	}
@@ -147,7 +147,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	activateResp, err := tradingSvc.ActivateEntitlement(ctx, auth, activateMeta, activateReq)
 	require.NoError(t, err)
 	assert.Equal(t, maascontracts.EntitlementStatusActive, activateResp.Status)
-	
+
 	t.Logf("  ✓ Entitlement: %s, Status: %s", activateResp.EntitlementID, activateResp.Status)
 	t.Logf("  ✓ Activated At: %s", activateResp.ActivatedAt)
 
@@ -155,7 +155,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 6: Usage Hold (Request-level)
 	// ========================================================================
 	t.Log("Step 6: UsageHold")
-	
+
 	usageHoldMeta := maascontracts.CommandMeta{
 		IdempotencyKey: "idem_e2e_usage_hold",
 	}
@@ -172,14 +172,14 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	usageHoldResp, err := ledgerSvc.UsageHold(ctx, auth, usageHoldMeta, usageHoldReq)
 	require.NoError(t, err)
 	assert.Equal(t, maascontracts.UsageStatusHeld, usageHoldResp.Status)
-	
+
 	t.Logf("  ✓ Usage Hold: %s, Status: %s", usageHoldResp.UsageHoldID, usageHoldResp.Status)
 
 	// ========================================================================
 	// Step 7: Usage Settle (Actual Consumption)
 	// ========================================================================
 	t.Log("Step 7: UsageSettle")
-	
+
 	usageSettleMeta := maascontracts.CommandMeta{
 		IdempotencyKey: "idem_e2e_usage_settle",
 	}
@@ -193,7 +193,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	usageSettleResp, err := ledgerSvc.UsageSettle(ctx, auth, usageSettleMeta, usageHoldResp.UsageHoldID, usageSettleReq)
 	require.NoError(t, err)
 	assert.Equal(t, maascontracts.UsageStatusSettled, usageSettleResp.Status)
-	
+
 	t.Logf("  ✓ Usage Settled: %s", usageSettleResp.UsageHoldID)
 	t.Logf("  ✓ Settled: %s %s", usageSettleResp.Settled.Amount, usageSettleResp.Settled.Unit)
 	t.Logf("  ✓ Released: %s %s", usageSettleResp.Released.Amount, usageSettleResp.Released.Unit)
@@ -203,11 +203,11 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Step 8: Verify Balance
 	// ========================================================================
 	t.Log("Step 8: Verify Balance")
-	
+
 	held := parseDecimal("10000")
 	settled := parseDecimal(usageSettleResp.Settled.Amount)
 	released := parseDecimal(usageSettleResp.Released.Amount)
-	
+
 	assert.Equal(t, held, settled+released, "Balance check failed: held != settled + released")
 	t.Logf("  ✓ Balance verified: %g = %g + %g", held, settled, released)
 

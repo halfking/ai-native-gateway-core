@@ -83,7 +83,9 @@ var degradeHelpers = []string{
 // 关键设计：这里**登记计数而不是登记「已覆盖」**。下一轮从确切数字起步，
 // 而不是从零开始重新搜索 —— 未知边界的范围，比已知的更大。
 var degradeMarkerOutOfScope = map[string]string{
-	"domains/ursm/v2/persist/retention_partition.go": "后台分区 DROP 的 42P01 返回 errPartitionGoneAlready，" +
+	"admin/dashboardapi/session_overview_alignment.go": "会话统计宇宙判定器（2026-11-21 窗口新增），不是响应站点：" +
+		"isUniverseUnavailableErr 识别 42P01/42883 后由调用方（session_overview.go 6 处）" +
+		"win.markDegraded() 落 degraded 契约再全量降级重试 —— 标记在调用方，本文件只有判定词。", "domains/ursm/v2/persist/retention_partition.go": "后台分区 DROP 的 42P01 返回 errPartitionGoneAlready，" +
 		"不是 HTTP 200 空载荷；调用方显式跳过已被对端删除的分区且不虚记回收。" +
 		"由 TestSnapshotRetentionDoesNotCountPartitionAlreadyGone 与 TestSnapshotRetentionRealDropErrorStillDegrades 正反把守",
 	"domains/errorplaybook/store.go": "错误处理手册（2026-11-20）：42P01 ⇒ 哨兵 ErrNotProvisioned ⇒ " +

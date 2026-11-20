@@ -427,7 +427,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           :rows="data?.top_tasks ?? []"
           title-key="task_id"
           :fields="topTaskFields"
-          :empty="isCompact && (data?.top_tasks.length ?? 0) === 0"
+          :empty="isCompact && (data?.top_tasks?.length ?? 0) === 0"
           :empty-text="t('sessions.userProfile.emptyFirstUseTopTasks')"
         >
           <template #table>
@@ -458,7 +458,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           :rows="data?.top_end_users ?? []"
           title-key="end_user_id"
           :fields="topEndUserFields"
-          :empty="isCompact && (data?.top_end_users.length ?? 0) === 0"
+          :empty="isCompact && (data?.top_end_users?.length ?? 0) === 0"
           :empty-text="t('sessions.userProfile.emptyFirstUseTopEndUsers')"
         >
           <template #table>
@@ -481,7 +481,7 @@ const recentSessionFields = computed<CardField[]>(() => [
           :rows="data?.recent_sessions ?? []"
           title-key="session_id"
           :fields="recentSessionFields"
-          :empty="isCompact && (data?.recent_sessions.length ?? 0) === 0"
+          :empty="isCompact && (data?.recent_sessions?.length ?? 0) === 0"
           :empty-text="t('sessions.userProfile.emptyFirstUseRecentSessions')"
         >
           <template #table>

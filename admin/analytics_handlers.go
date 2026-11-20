@@ -19,14 +19,14 @@ import (
 
 // AnalyticsDetailPayload 分析详情完整数据
 type AnalyticsDetailPayload struct {
-	Dimension   string                    `json:"dimension"`
-	Identifier  string                    `json:"identifier"`
-	DisplayName string                    `json:"display_name,omitempty"`
-	TimeRange   AnalyticsTimeRange        `json:"time_range"`
-	Summary     AnalyticsSummary          `json:"summary"`
-	Trends      []AnalyticsTrendPoint     `json:"trends"`
-	CrossAnalysis AnalyticsCrossAnalysis  `json:"cross_analysis"`
-	
+	Dimension     string                 `json:"dimension"`
+	Identifier    string                 `json:"identifier"`
+	DisplayName   string                 `json:"display_name,omitempty"`
+	TimeRange     AnalyticsTimeRange     `json:"time_range"`
+	Summary       AnalyticsSummary       `json:"summary"`
+	Trends        []AnalyticsTrendPoint  `json:"trends"`
+	CrossAnalysis AnalyticsCrossAnalysis `json:"cross_analysis"`
+
 	// 降级标记
 	Degraded       bool     `json:"degraded,omitempty"`
 	DegradedReason string   `json:"degraded_reason,omitempty"`
@@ -43,18 +43,18 @@ type AnalyticsTimeRange struct {
 
 // AnalyticsSummary 核心指标汇总
 type AnalyticsSummary struct {
-	TotalRequests       int64   `json:"total_requests"`
-	SuccessCount        int64   `json:"success_count"`
-	SuccessRate         float64 `json:"success_rate"`
-	ErrorCount          int64   `json:"error_count"`
-	TotalTokens         int64   `json:"total_tokens"`
-	TotalPromptTokens   int64   `json:"total_prompt_tokens,omitempty"`
-	TotalCompletionTokens int64 `json:"total_completion_tokens,omitempty"`
-	TotalCostUSD        float64 `json:"total_cost_usd"`
-	TotalCredits        float64 `json:"total_credits"`
-	AvgLatencyMS        float64 `json:"avg_latency_ms"`
-	P95LatencyMS        float64 `json:"p95_latency_ms,omitempty"`
-	P99LatencyMS        float64 `json:"p99_latency_ms,omitempty"`
+	TotalRequests         int64   `json:"total_requests"`
+	SuccessCount          int64   `json:"success_count"`
+	SuccessRate           float64 `json:"success_rate"`
+	ErrorCount            int64   `json:"error_count"`
+	TotalTokens           int64   `json:"total_tokens"`
+	TotalPromptTokens     int64   `json:"total_prompt_tokens,omitempty"`
+	TotalCompletionTokens int64   `json:"total_completion_tokens,omitempty"`
+	TotalCostUSD          float64 `json:"total_cost_usd"`
+	TotalCredits          float64 `json:"total_credits"`
+	AvgLatencyMS          float64 `json:"avg_latency_ms"`
+	P95LatencyMS          float64 `json:"p95_latency_ms,omitempty"`
+	P99LatencyMS          float64 `json:"p99_latency_ms,omitempty"`
 }
 
 // AnalyticsTrendPoint 趋势数据点
@@ -93,7 +93,7 @@ type AnalyticsCrossAnalysis struct {
 // 权限: superAdmin / admin_key
 func (h *Handler) handleAnalyticsDetail(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
+
 	// 从路径中获取参数
 	dimension := r.PathValue("dimension")
 	identifier := r.PathValue("identifier")
@@ -167,24 +167,24 @@ func isValidDimension(dimension string) bool {
 // parseAnalyticsTimeRange 解析时间范围参数
 func parseAnalyticsTimeRange(r *http.Request) (boardTimeRange, error) {
 	q := r.URL.Query()
-	
+
 	// 优先使用 start/end
 	if startStr := q.Get("start"); startStr != "" {
 		endStr := q.Get("end")
 		if endStr == "" {
 			endStr = time.Now().Format(time.RFC3339)
 		}
-		
+
 		start, err := time.Parse(time.RFC3339, startStr)
 		if err != nil {
 			return boardTimeRange{}, err
 		}
-		
+
 		end, err := time.Parse(time.RFC3339, endStr)
 		if err != nil {
 			return boardTimeRange{}, err
 		}
-		
+
 		days := int(end.Sub(start).Hours() / 24)
 		return boardTimeRange{
 			Start: start,
@@ -192,21 +192,21 @@ func parseAnalyticsTimeRange(r *http.Request) (boardTimeRange, error) {
 			Days:  days,
 		}, nil
 	}
-	
+
 	// 使用 days 参数
 	daysStr := q.Get("days")
 	if daysStr == "" {
 		daysStr = "7"
 	}
-	
+
 	days, err := strconv.Atoi(daysStr)
 	if err != nil || days < 1 || days > 365 {
 		days = 7
 	}
-	
+
 	end := time.Now()
 	start := end.Add(-time.Duration(days) * 24 * time.Hour)
-	
+
 	return boardTimeRange{
 		Start: start,
 		End:   end,

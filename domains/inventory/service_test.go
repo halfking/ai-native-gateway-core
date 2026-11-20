@@ -53,7 +53,7 @@ func TestHoldCreate_Success(t *testing.T) {
 	assert.Greater(t, resp.InventoryRevision, int64(0))
 	assert.Equal(t, expiresAt.Unix(), resp.ExpiresAt.Unix())
 
-	t.Logf("Hold created: %s, Status: %s, Fencing Token: %s", 
+	t.Logf("Hold created: %s, Status: %s, Fencing Token: %s",
 		resp.HoldID, resp.Status, "[REDACTED]")
 }
 
@@ -201,7 +201,7 @@ func TestHoldConfirm_FencingTokenMismatch(t *testing.T) {
 	_, err = svc.HoldConfirm(ctx, auth, confirmMeta, createResp.HoldID, confirmReq)
 
 	require.Error(t, err)
-	
+
 	// Should return ErrorHoldFenceMismatch
 	maasErr, ok := err.(*maascontracts.Error)
 	require.True(t, ok, "error should be *maascontracts.Error")

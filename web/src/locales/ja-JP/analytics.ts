@@ -1,0 +1,73 @@
+// analytics.ts — 運営ボード詳細分析の文案（トップレベル analytics 名前空間）。
+// 2026-11-21 監査ラウンド：コンポーネントは t('analytics.*') を参照。語彙は
+// sessionAnalytics の既存訳（モデル/プロバイダー/成功率）を踏襲。
+export default {
+  dimension: {
+    model: 'モデル',
+    provider: 'プロバイダー',
+    client: 'クライアント',
+    tenant: 'テナント',
+  },
+  list: {
+    title: '完全なリスト',
+    models: 'モデルの完全なリスト',
+    providers: 'プロバイダーの完全なリスト',
+    clients: 'クライアントの完全なリスト',
+    tenants: 'テナントの完全なリスト',
+    subtitle: '直近 {days} 日間のデータ',
+    empty: 'この期間のデータはありません',
+    total: '全 {count} 件',
+    column: {
+      name: '名前',
+      requests: 'リクエスト数',
+      tokens: 'トークン',
+      cost: 'コスト',
+      credits: 'ポイント',
+    },
+  },
+  detail: {
+    title: '詳細分析',
+    subtitle: '直近 {days} 日間のデータ',
+    summary: '主要指標',
+    trends: 'トレンド分析',
+    crossAnalysis: 'クロス分析',
+    crossAnalysisHint: '表の行をクリックすると該当対象の詳細分析を表示します',
+    degraded: 'データ降格',
+    degradedTrends: 'トレンドデータ降格',
+  },
+  summary: {
+    totalRequests: '総リクエスト数',
+    successRate: '成功割合',
+    totalTokens: '総トークン',
+    totalCost: '総コスト',
+    totalCredits: '総ポイント',
+    avgLatency: '平均レイテンシ',
+    success: '件成功',
+    errors: '件失敗',
+    prompt: '入力',
+    completion: '出力',
+    avgPerRequest: '平均 {value}/リクエスト',
+  },
+  trend: {
+    empty: 'この期間のトレンドデータはありません',
+  },
+  cross: {
+    byModel: 'モデル別分布',
+    byProvider: 'プロバイダー別分布',
+    byClient: 'クライアント別分布',
+    byTenant: 'テナント別分布',
+    byError: 'エラー種別別分布',
+    byStatus: 'ステータス別分布',
+    empty: '利用可能なクロス分析データがありません',
+    noData: 'このディメンションのデータはまだありません',
+    degraded: 'データ降格',
+    showingTop: '上位 {count} 件を表示（全 {total} 件）',
+    column: {
+      name: '名前',
+      requests: 'リクエスト数',
+      tokens: 'トークン',
+      cost: 'コスト',
+      credits: 'ポイント',
+    },
+  },
+}

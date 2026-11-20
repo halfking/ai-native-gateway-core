@@ -49,7 +49,7 @@ func TestSplitCost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			breakdown := calc.SplitCost(tt.internalCents, tt.externalCredits)
-			
+
 			if breakdown.InternalCostUSD != tt.wantInternal {
 				t.Errorf("InternalCostUSD = %.2f, want %.2f", breakdown.InternalCostUSD, tt.wantInternal)
 			}
@@ -103,7 +103,7 @@ func TestDistributeTailDifference(t *testing.T) {
 	t.Run("zero total", func(t *testing.T) {
 		groups := map[string]int64{"A": 10, "B": 20}
 		result := calc.DistributeTailDifference(0, groups)
-		
+
 		var sum int64
 		for _, cost := range result {
 			sum += cost
@@ -120,7 +120,7 @@ func TestDistributeTailDifference(t *testing.T) {
 			"provider_2": 30000,
 			"provider_3": 20000,
 		}
-		
+
 		total := int64(20127900) // 201279.00 分
 		result := calc.DistributeTailDifference(total, groups)
 
@@ -128,7 +128,7 @@ func TestDistributeTailDifference(t *testing.T) {
 		for _, cost := range result {
 			sum += cost
 		}
-		
+
 		if sum != total {
 			t.Errorf("sum = %d, want %d (diff: %d)", sum, total, total-sum)
 		}

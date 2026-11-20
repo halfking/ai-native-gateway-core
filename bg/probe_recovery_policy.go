@@ -302,7 +302,8 @@ func isQuotaProbeKind(kind errorsx.ErrorKind) bool {
 // + Fuse + Permanent) but with a 15-minute recovery window (not truly permanent).
 //
 // ★ 2026-11-20 L1 收口：鉴权族写凭据面（availability_state='auth_failed' +
-//   15 分钟恢复窗口），与配额族分开（配额族写 quota_state + suspended）。
+//
+//	15 分钟恢复窗口），与配额族分开（配额族写 quota_state + suspended）。
 func isAuthProbeKind(kind errorsx.ErrorKind) bool {
 	switch kind {
 	case errorsx.KindAuth, errorsx.KindAuthRevoked:

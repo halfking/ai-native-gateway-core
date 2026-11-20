@@ -16,10 +16,10 @@ func NewCostCalculator() *CostCalculator {
 
 // CostBreakdown 成本分解结构
 type CostBreakdown struct {
-	InternalCostUSD  float64 // 内部成本（美元）
-	ExternalCredits  int64   // 外部成本（积分）
-	HasInternalCost  bool    // 是否有内部成本
-	HasExternalCost  bool    // 是否有外部成本
+	InternalCostUSD float64 // 内部成本（美元）
+	ExternalCredits int64   // 外部成本（积分）
+	HasInternalCost bool    // 是否有内部成本
+	HasExternalCost bool    // 是否有外部成本
 }
 
 // CalculateInternalCost 计算内部成本（返回 USD）
@@ -39,10 +39,10 @@ func (c *CostCalculator) CalculateExternalCost(credits int64) int64 {
 // SplitCost 将成本分解为内部和外部
 func (c *CostCalculator) SplitCost(internalCents int64, externalCredits int64) CostBreakdown {
 	return CostBreakdown{
-		InternalCostUSD:  c.CalculateInternalCost(internalCents),
-		ExternalCredits:  externalCredits,
-		HasInternalCost:  internalCents > 0,
-		HasExternalCost:  externalCredits > 0,
+		InternalCostUSD: c.CalculateInternalCost(internalCents),
+		ExternalCredits: externalCredits,
+		HasInternalCost: internalCents > 0,
+		HasExternalCost: externalCredits > 0,
 	}
 }
 
@@ -74,7 +74,7 @@ func (c *CostCalculator) DistributeTailDifference(totalCents int64, groups map[s
 		// 按比例计算应分配的成本
 		proportion := float64(count) / float64(totalRequests)
 		groupCost := int64(math.Floor(proportion * float64(totalCents)))
-		
+
 		result[group] = groupCost
 		allocated += groupCost
 

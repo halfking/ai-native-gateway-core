@@ -49,6 +49,7 @@ const readSrc = (rel: string) => readFileSync(join(srcRoot, rel), 'utf8')
  * 「什么都豁免」的废纸，门对已修复项失去约束。
  */
 const KNOWN_ORPHANS: Record<string, string> = {
+  '/admin/analytics/:dimension/:id': '2026-11-21 审计轮登记：运营看板详情分析页（822c9cc78），仅由运营看板列表行点击深链进入（AnalyticsCrossTable 行点击 / board.operational.more），不是菜单入口，故不挂 appNav',
  '/operations/price-compare': '2026-11-19 合并轮：重定向到 /model-pricing（原价格对比分析页并入，收藏链接兼容），无 component；不占菜单项',
   '/forbidden': '403 页面，仅由路由守卫在无权限时跳转进入，不应出现在菜单',
   '/routing': '纯 redirect 路由（→ /routing-v2?tab=resolve），无 component；供旧书签兼容，不占菜单项',

@@ -102,7 +102,7 @@ func TestEstimateQuote_WithPercentageDiscount(t *testing.T) {
 	// With 10% discount: 45000 * 0.9 = 40500 cents
 	// Note: applyModifiers is not yet fully implemented, so this might not match exactly
 	t.Logf("Quote amount (with discount): %s cents", resp.Money.AmountMinor)
-	
+
 	// The amount should be less than or equal to base price
 	basePrice := parseDecimal("45000")
 	actualPrice := parseDecimal(resp.Money.AmountMinor)
@@ -130,7 +130,7 @@ func TestEstimateQuote_NoPriceRule(t *testing.T) {
 	_, err := svc.EstimateQuote(ctx, auth, req)
 
 	require.Error(t, err)
-	
+
 	maasErr, ok := err.(*maascontracts.Error)
 	require.True(t, ok)
 	assert.Equal(t, "MAAS_PRICE_RULE_NOT_FOUND", maasErr.Code)

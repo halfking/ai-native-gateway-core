@@ -244,7 +244,7 @@ onMounted(() => {
 .ad-dimension-badge {
   display: inline-block;
   padding: var(--space-1) var(--space-2);
-  background: var(--primary-bg);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
   color: var(--primary);
   border-radius: var(--radius);
   font-size: var(--text-xs);

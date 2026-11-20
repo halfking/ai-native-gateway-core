@@ -251,18 +251,21 @@ func (w *NodeProbeWorker) updateCredentialQuotaSurface(ctx context.Context, cred
 // ── 探针的鉴权族凭据面落账（2026-11-20 L1 收口）────────────────────────────
 //
 // ★ 问题：403 无配额体（纯鉴权 403）⇒ errorsx 判 KindAuth ⇒ 探针仍不写凭据面
-//   ⇒ 凭据面显示 ready/ok（「节点正常」）⇒ 与配额族同族形态未治。
+//
+//	⇒ 凭据面显示 ready/ok（「节点正常」）⇒ 与配额族同族形态未治。
 //
 // ★ 语义差异（鉴权 vs 配额）：
-//   · 配额族：quota_state + availability_state='suspended' + 无 recover_at（permanent）
-//     或长 horizon（balance 6h）或重置点（periodic）⇒ 充值类事件恢复；
-//   · 鉴权族：availability_state='auth_failed' + 15 分钟 recover_at（业务面
-//     writer.go:336-347）⇒ key 轮换 / 权限修复后可恢复，不是真正的"永久"。
+//
+//	· 配额族：quota_state + availability_state='suspended' + 无 recover_at（permanent）
+//	  或长 horizon（balance 6h）或重置点（periodic）⇒ 充值类事件恢复；
+//	· 鉴权族：availability_state='auth_failed' + 15 分钟 recover_at（业务面
+//	  writer.go:336-347）⇒ key 轮换 / 权限修复后可恢复，不是真正的"永久"。
 //
 // ★ 修法：探针侧接入 auth_failed 语义（与业务面同词表），15 分钟恢复窗口。
 //
 // ★ 守卫：同配额族——lifecycle_status='active' + manual_disabled=FALSE +
-//   balance_floor 豁免 + 两次连续（attempt ≥ 2，调用方校验）。
+//
+//	balance_floor 豁免 + 两次连续（attempt ≥ 2，调用方校验）。
 //
 // ★ 边界：只写 KindAuth / KindAuthRevoked；其它 kind（包括空 kind）不碰。
 func authCredentialSQL(kind errorsx.ErrorKind) string {

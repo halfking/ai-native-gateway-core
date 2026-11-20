@@ -17,7 +17,9 @@ import credentialMonitor from './credentialMonitor'
 import annotation from './annotation'
 import providers from './providers'
 import landing from './landing'
-import dashboard, { boardOperational } from './dashboard'
+import analytics from './analytics'
+import board from './board'
+import dashboard from './dashboard'
 import liveTopology from './liveTopology'
 import liveStageTree from './liveStageTree'
 import providerDetail from './providerDetail'
@@ -118,9 +120,8 @@ export default {
   providers,
   landing,
   dashboard,
-  board: {
-    operational: boardOperational,
-  },
+  board,
+  analytics,
   providerDetail,
   providerDetailPage,
   tenants,

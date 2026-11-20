@@ -127,4 +127,24 @@ func TestMigration995ErrorPlaybookDelivered(t *testing.T) {
 	if !strings.Contains(string(manifest), "995_error_playbook.sql") {
 		t.Fatalf("installed_startup_migrations.tsv 缺 995 行")
 	}
+
+	// ⑩ 离线升级通道副本（installer/migrations/，offline_apply.go 消费）。
+	// 2026-11-21 审计轮补齐：993/994 均有此面，995 缺 ⇒ 离线升级包不会应用
+	// 该迁移（子审计 E 发现，与 994 的 migration_994_delivery_test 同款钉法）。
+	offlineUp, err := os.ReadFile(filepath.Join("..", "..", "installer", "migrations",
+		"995_error_playbook", "up.sql"))
+	if err != nil {
+		t.Fatalf("读 995 installer/migrations 副本失败: %v", err)
+	}
+	if string(offlineUp) != string(exec) {
+		t.Fatalf("995 正本与 installer/migrations 副本不一致")
+	}
+	offlineDown, err := os.ReadFile(filepath.Join("..", "..", "installer", "migrations",
+		"995_error_playbook", "down.sql"))
+	if err != nil {
+		t.Fatalf("读 995 installer/migrations down 副本失败: %v", err)
+	}
+	if string(offlineDown) != string(downBody) {
+		t.Fatalf("995 down 正本与 installer/migrations 副本不一致")
+	}
 }

@@ -1,0 +1,73 @@
+// analytics.ts — Operational board detail analytics texts (top-level analytics namespace).
+// 2026-11-21 audit round: components reference t('analytics.*') at top level;
+// these keys previously lived only under dashboard.analytics in zh-CN (wrong namespace).
+export default {
+  dimension: {
+    model: 'Model',
+    provider: 'Provider',
+    client: 'Client',
+    tenant: 'Tenant',
+  },
+  list: {
+    title: 'Full list',
+    models: 'Full model list',
+    providers: 'Full provider list',
+    clients: 'Full client list',
+    tenants: 'Full tenant list',
+    subtitle: 'Last {days} days',
+    empty: 'No data in this time range',
+    total: '{count} items total',
+    column: {
+      name: 'Name',
+      requests: 'Requests',
+      tokens: 'Tokens',
+      cost: 'Cost',
+      credits: 'Credits',
+    },
+  },
+  detail: {
+    title: 'Detail analysis',
+    subtitle: 'Last {days} days',
+    summary: 'Key metrics',
+    trends: 'Trend analysis',
+    crossAnalysis: 'Cross analysis',
+    crossAnalysisHint: 'Click a table row for the detailed analysis of that item',
+    degraded: 'Data degraded',
+    degradedTrends: 'Trend data degraded',
+  },
+  summary: {
+    totalRequests: 'Total requests',
+    successRate: 'Success rate',
+    totalTokens: 'Total tokens',
+    totalCost: 'Total cost',
+    totalCredits: 'Total credits',
+    avgLatency: 'Avg latency',
+    success: 'succeeded',
+    errors: 'failed',
+    prompt: 'Input',
+    completion: 'Output',
+    avgPerRequest: 'Avg {value}/request',
+  },
+  trend: {
+    empty: 'No trend data in this time range',
+  },
+  cross: {
+    byModel: 'By model',
+    byProvider: 'By provider',
+    byClient: 'By client',
+    byTenant: 'By tenant',
+    byError: 'By error type',
+    byStatus: 'By status',
+    empty: 'No cross-analysis data available',
+    noData: 'No data for this dimension',
+    degraded: 'Data degraded',
+    showingTop: 'Showing top {count} of {total}',
+    column: {
+      name: 'Name',
+      requests: 'Requests',
+      tokens: 'Tokens',
+      cost: 'Cost',
+      credits: 'Credits',
+    },
+  },
+}

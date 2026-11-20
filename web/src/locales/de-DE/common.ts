@@ -297,8 +297,7 @@ export default {
   // ★ 2026-11-18 审计轮 P1/P2：PI 错误分析页的「不可用 / 采集链未接线」文案。
   //   后端只给稳定状态码（chain_status），展示文案在这里按语种渲染。
   piAnalysis: {
-    // â
- 2026-11-19 Listen-/Statistik-Konsistenz: Statistik-Karten-Labels.
+    // ★ 2026-11-19 Listen-/Statistik-Konsistenz: Statistik-Karten-Labels.
     stats: {
       total: 'Fehler gesamt',
       pending: 'Ausstehend',

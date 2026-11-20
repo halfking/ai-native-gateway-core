@@ -37,6 +37,12 @@ func d13NewHandler(t *testing.T, ruleErr error) (*PIAnalysisHandler, sqlmock.Sql
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"rule_adjustment", "confidence_score", "is_false_positive", "auto_applied"}).
 			AddRow([]byte(`{"action":"disable_rule","rule_name":"rule_a","reason":"llm suggestion"}`), 0.95, false, false))
+	// 1b. 类型闸（2026-11-20 PI 接入轮新增）：apply 前先读队列项的
+	// error_type（output_guard_blocked 恒 view-only）。钉测路径给一个
+	// 非 view-only 的类型让流程走到规则查询。
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT error_type FROM error_analysis_queue WHERE id = $1`)).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"error_type"}).AddRow("rule_false_positive"))
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(d13QueryRuleSQL)).
 		WithArgs("rule_a").

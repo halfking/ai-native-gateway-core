@@ -19,14 +19,14 @@ import (
 // setupEntitlementWithQuota creates a test entitlement with quota
 func setupEntitlementWithQuota(t *testing.T, ctx context.Context, db *testutil.TestDatabase, tenantID string) string {
 	t.Helper()
-	
+
 	inventorySvc := inventory.NewService(db.Pool)
 	tradingSvc := trading.NewService(db.Pool)
-	
+
 	auth := maascontracts.AuthContext{
 		TenantID: tenantID,
 	}
-	
+
 	// Create and confirm a hold
 	window := "monthly"
 	holdResp, err := inventorySvc.HoldCreate(ctx, auth, maascontracts.CommandMeta{
@@ -39,14 +39,14 @@ func setupEntitlementWithQuota(t *testing.T, ctx context.Context, db *testutil.T
 		ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
 	})
 	require.NoError(t, err)
-	
+
 	confirmResp, err := inventorySvc.HoldConfirm(ctx, auth, maascontracts.CommandMeta{
 		IdempotencyKey: fmt.Sprintf("idem_ledger_confirm_%s", tenantID),
 	}, holdResp.HoldID, maascontracts.HoldConfirmRequest{
 		FencingToken: holdResp.FencingToken,
 	})
 	require.NoError(t, err)
-	
+
 	// Activate entitlement
 	activateResp, err := tradingSvc.ActivateEntitlement(ctx, auth, maascontracts.CommandMeta{
 		IdempotencyKey: fmt.Sprintf("idem_ledger_activate_%s", tenantID),
@@ -54,7 +54,7 @@ func setupEntitlementWithQuota(t *testing.T, ctx context.Context, db *testutil.T
 		HoldID: confirmResp.HoldID,
 	})
 	require.NoError(t, err)
-	
+
 	// Create quota record
 	_, err = db.Pool.Exec(ctx, `
 		INSERT INTO maas_entitlement_quotas (
@@ -65,7 +65,7 @@ func setupEntitlementWithQuota(t *testing.T, ctx context.Context, db *testutil.T
 		ON CONFLICT (entitlement_id, model_sku) DO NOTHING
 	`, activateResp.EntitlementID, "gpt-4", "1000000", "token", "token", "token")
 	require.NoError(t, err)
-	
+
 	return activateResp.EntitlementID
 }
 
@@ -140,7 +140,7 @@ func TestUsageHold_QuotaExceeded(t *testing.T) {
 	}, req)
 
 	require.Error(t, err)
-	
+
 	maasErr, ok := err.(*maascontracts.Error)
 	require.True(t, ok)
 	assert.Equal(t, "MAAS_QUOTA_EXCEEDED", maasErr.Code)
@@ -208,7 +208,7 @@ func TestUsageSettle_Success_WithQuotaTracking(t *testing.T) {
 		WHERE entitlement_id = $1 AND model_sku = $2
 	`, entitlementID, modelSKU).Scan(&heldAfter, &consumedAfter)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, "0", heldAfter, "Held amount should be 0 after settle")
 	assert.Equal(t, "8500", consumedAfter, "Consumed should equal settled amount")
 
@@ -296,7 +296,7 @@ func TestUsageSettle_AlreadySettled(t *testing.T) {
 	})
 
 	require.Error(t, err)
-	
+
 	maasErr, ok := err.(*maascontracts.Error)
 	require.True(t, ok)
 	assert.Equal(t, maascontracts.ErrorUsageAlreadySettled, maasErr.Code)

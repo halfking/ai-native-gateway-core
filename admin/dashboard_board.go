@@ -153,7 +153,7 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 	if tr.Custom {
 		resp["range_start"] = tr.Start.Format("2006-01-02")
 		resp["range_end"] = tr.End.Add(-24 * time.Hour).Format("2006-01-02")
-		resp["includes_today"] = tr.includesTodayUTC()
+		resp["includes_today"] = tr.includesTodaySystemTz()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

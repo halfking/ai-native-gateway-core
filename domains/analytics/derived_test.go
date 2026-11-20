@@ -169,7 +169,7 @@ func TestGrowthRate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := calc.GrowthRate(tt.oldValue, tt.newValue)
 			if !floatEqual(got, tt.want, 0.0001) {
-				t.Errorf("GrowthRate(%.2f, %.2f) = %.4f, want %.4f", 
+				t.Errorf("GrowthRate(%.2f, %.2f) = %.4f, want %.4f",
 					tt.oldValue, tt.newValue, got, tt.want)
 			}
 		})

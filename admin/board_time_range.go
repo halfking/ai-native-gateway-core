@@ -41,7 +41,7 @@ func boardTimeRangeFromRequest(r *http.Request) (boardTimeRange, error) {
 	}, nil
 }
 
-func (tr boardTimeRange) includesTodayUTC() bool {
+func (tr boardTimeRange) includesTodaySystemTz() bool {
 	// 系统时区「今天」零点；与 boardPresetTimeRange 同口径。
 	now := time.Now()
 	todayStart := settings.SystemDayStart(now)
