@@ -5,6 +5,16 @@ export const enUS = {
     subtitle: 'Mobile Ops',
   },
   nav: {
+    // ★ 2026-11-20 菜单整理轮：抽屉分组标题 —— 键集与取值跟 zh-CN 的 nav.group
+    //   一一对应（值沿用 PC 端 en-US nav.ts；primary 为移动端首组）。
+    group: {
+      primary: 'Overview & Live',
+      operations: 'Operations',
+      modelsRouting: 'Providers & Models',
+      tenantUsers: 'Keys & Users',
+      requestsSessions: 'Requests & Sessions',
+      dataOps: 'Data Operations',
+    },
     sanitizeRules: 'Sanitize rules',
     maasRates: 'MaaS credit rates',
     maasOrders: 'MaaS Orders',

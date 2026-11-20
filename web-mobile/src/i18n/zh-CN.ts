@@ -5,6 +5,18 @@ export const zhCN = {
     subtitle: '移动运维',
   },
   nav: {
+    // ★ 2026-11-20 菜单整理轮：抽屉分组标题。键名与取值**沿用 PC 端**
+    //   web/src/locales/*/nav.ts 的 nav.group.*（operations/modelsRouting/
+    //   tenantUsers/requestsSessions/dataOps 五组同名同值，两端同一套分类学）；
+    //   primary 是移动端自己的首组（PC 的顶层无组席：总览/实时拓扑/阶段树）。
+    group: {
+      primary: '总览与实时',
+      operations: '运营管理',
+      modelsRouting: '供应商与模型',
+      tenantUsers: '密钥与用户',
+      requestsSessions: '请求与会话',
+      dataOps: '数据运维',
+    },
     sanitizeRules: '脱敏规则',
     maasRates: 'MaaS 积分价',
     maasOrders: 'MaaS 订单',

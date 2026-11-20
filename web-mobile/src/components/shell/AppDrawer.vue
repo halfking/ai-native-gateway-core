@@ -4,7 +4,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useHyperOverlay } from '@/hyper'
-import { DRAWER_NAV, isNavItemActive, navItemsFor } from '@/config/appNav'
+import { DRAWER_GROUPS, DRAWER_NAV, isNavItemActive, navItemsFor } from '@/config/appNav'
 import { useAuthStore } from '@/stores/auth'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 import { t } from '@/i18n'
@@ -27,19 +27,35 @@ const panelRef = ref<HTMLElement | null>(null)
  *   打开时才注册 ⇒ 那一席若照常显示，super_admin 点进去必然 404 ⇒
  *   ⇒ `capabilities.enabled` 为空集时（未加载/取失败，fail-closed）
  *   ⇒ 带 `requiresCapability` 的席**一律不显示**。
+ *
+ * ★ 2026-11-20 菜单整理轮：过滤在**组内**逐组做（与 PC 端 visibleNavGroups
+ *   同口径），空组整组隐藏。扁平 drawerItems 只剩搜索在用。
  */
+const visibleGroups = computed(() =>
+  DRAWER_GROUPS.map((g) => ({
+    id: g.id,
+    labelKey: g.labelKey,
+    items: navItemsFor(g.items, auth.role, capabilities.enabled),
+  })).filter((g) => g.items.length > 0),
+)
+
 const drawerItems = computed(() => navItemsFor(DRAWER_NAV, auth.role, capabilities.enabled))
 
 /**
- * ★ 2026-10-15：抽屉搜索。DRAWER_NAV 已 85 席（还会继续涨），深页要滚
- *   4~5 屏才能点到 —— 真机验收轮实测这是可达性硬伤（且自动化的滚动精度
- *   模型在底缘橡皮筋下不可达，见 client 仓 CURRENT-STATE 31.8）。
+ * ★ 2026-10-15：抽屉搜索。DRAWER_NAV 已 89 席，深页要滚 4~5 屏才能点到 ——
+ *   真机验收轮实测这是可达性硬伤（且自动化的滚动精度模型在底缘橡皮筋下
+ *   不可达，见 client 仓 CURRENT-STATE 31.8）。
  *   匹配面：本地化标题（t(titleKey)，中文/英文输入都生效）+ key + 路径。
  *   大小写不敏感子串；空串 = 不过滤（与改前行为逐项一致）。
  *   权限门控在 drawerItems 层已收口，搜索只在**可见席**里筛 ——
  *   tenant_admin 搜 "integrity" 依然搜不出越权入口（spec 钉了这条）。
+ *
+ * ★ 2026-11-20 菜单整理轮：搜索态**平铺**（组头隐藏），非搜索态走分组手风琴
+ *   —— 搜索是「我知道要什么」的路径，平铺最短；组是「我大概知道在哪」的
+ *   路径，结构与 PC 端同一套分类学。
  */
 const searchQuery = ref('')
+const searching = computed(() => searchQuery.value.trim().length > 0)
 const filteredItems = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return drawerItems.value
@@ -48,6 +64,22 @@ const filteredItems = computed(() => {
     return title.includes(q) || item.key.toLowerCase().includes(q) || item.to.toLowerCase().includes(q)
   })
 })
+
+/**
+ * 分组展开态。默认**全收起** —— 与 PC 端 topbar 分组（点组名才展开子项）
+ * 同一交互成本；89 席全铺开的 4~5 屏滚动正是 2026-10-15 记录的可达性硬伤。
+ *
+ * ★ 状态在 script 里、组件实例常驻（App.vue 只切 modelValue），DOM 子树随
+ *   `v-if` 销毁重建但 ref 存活 ⇒ 本次会话里重新打开抽屉，仍停在上次展开的组。
+ */
+const expandedGroups = ref<ReadonlySet<string>>(new Set())
+
+function toggleGroup(id: string): void {
+  const next = new Set(expandedGroups.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedGroups.value = next
+}
 
 const overlay = useHyperOverlay({
   presentation: 'modal',
@@ -132,20 +164,61 @@ onBeforeUnmount(() => overlay.release())
           </div>
 
           <nav class="drawer__nav">
-            <p v-if="filteredItems.length === 0" class="drawer__search-empty">
+            <p v-if="searching && filteredItems.length === 0" class="drawer__search-empty">
               {{ t('nav.searchNoResults') }}
             </p>
-            <RouterLink
-              v-for="item in filteredItems"
-              :key="item.key"
-              :to="item.to"
-              class="drawer__link"
-              :class="{ 'drawer__link--active': isNavItemActive(item, route.path) }"
-              @click="onNavClick(item.to)"
-            >
-              <AppIcon :name="item.icon" :size="20" />
-              <span>{{ t(item.titleKey) }}</span>
-            </RouterLink>
+            <!-- 搜索态：平铺命中席（跨组），组头隐藏 —— 搜索是「我知道要什么」的最短路径。 -->
+            <template v-if="searching">
+              <RouterLink
+                v-for="item in filteredItems"
+                :key="item.key"
+                :to="item.to"
+                class="drawer__link"
+                :class="{ 'drawer__link--active': isNavItemActive(item, route.path) }"
+                @click="onNavClick(item.to)"
+              >
+                <AppIcon :name="item.icon" :size="20" />
+                <span>{{ t(item.titleKey) }}</span>
+              </RouterLink>
+            </template>
+            <!-- 浏览态：分组手风琴（默认全收起；空组整组隐藏）。展开态与 PC 端
+                 topbar 分组（点组名 → 展开子项）同一交互成本。 -->
+            <template v-else>
+              <section
+                v-for="group in visibleGroups"
+                :key="group.id"
+                class="drawer__group"
+              >
+                <button
+                  type="button"
+                  class="drawer__group-toggle"
+                  :aria-expanded="expandedGroups.has(group.id)"
+                  @click="toggleGroup(group.id)"
+                >
+                  <span class="drawer__group-label">{{ t(group.labelKey) }}</span>
+                  <span class="drawer__group-count">{{ group.items.length }}</span>
+                  <AppIcon
+                    name="chevron-down"
+                    :size="16"
+                    class="drawer__group-chevron"
+                    :class="{ 'drawer__group-chevron--open': expandedGroups.has(group.id) }"
+                  />
+                </button>
+                <div v-show="expandedGroups.has(group.id)" class="drawer__group-body">
+                  <RouterLink
+                    v-for="item in group.items"
+                    :key="item.key"
+                    :to="item.to"
+                    class="drawer__link"
+                    :class="{ 'drawer__link--active': isNavItemActive(item, route.path) }"
+                    @click="onNavClick(item.to)"
+                  >
+                    <AppIcon :name="item.icon" :size="20" />
+                    <span>{{ t(item.titleKey) }}</span>
+                  </RouterLink>
+                </div>
+              </section>
+            </template>
           </nav>
 
           <div class="drawer__footer">
@@ -271,6 +344,75 @@ onBeforeUnmount(() => overlay.release())
   color: var(--kx-primary);
 }
 
+/* ── 分组手风琴（2026-11-20 菜单整理轮）────────────────────────────────
+   组头 = 可点按钮（≥48px 触控，与 .drawer__link 同标准）；组体用 v-show
+   （display:none）收放 —— 席仍在 DOM 里，路由激活态与权限语义不随收放变化。 */
+.drawer__group {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer__group + .drawer__group {
+  margin-top: var(--app-space-2);
+  border-top: 1px solid var(--app-border-subtle);
+  padding-top: var(--app-space-1);
+}
+
+.drawer__group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-2);
+  width: 100%;
+  min-height: 48px;
+  padding: 0 var(--app-space-2);
+  border: none;
+  border-radius: var(--app-radius);
+  background: transparent;
+  color: var(--app-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drawer__group-toggle:active {
+  background: var(--app-surface-muted, transparent);
+}
+
+.drawer__group-toggle:focus-visible {
+  outline: 2px solid var(--kx-primary);
+  outline-offset: 1px;
+}
+
+.drawer__group-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.drawer__group-count {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer__group-chevron {
+  color: var(--app-text-muted);
+  transition: transform 160ms ease;
+}
+
+.drawer__group-chevron--open {
+  transform: rotate(180deg);
+}
+
+.drawer__group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: var(--app-space-3);
+}
+
 .drawer__footer {
   margin-top: auto;
   border-top: 1px solid var(--app-border-subtle);
@@ -305,6 +447,9 @@ onBeforeUnmount(() => overlay.release())
   .drawer-enter-from .drawer__panel,
   .drawer-leave-to .drawer__panel {
     transform: none;
+  }
+  .drawer__group-chevron {
+    transition: none;
   }
 }
 </style>

@@ -471,7 +471,15 @@ describe('⑤ ★★★★★★ 剥注释不许毁代码；席档位与视图�
   const WEB = process.cwd()
 
   function seatEntries(navCode: string): Map<string, { key: string; role: string | null }> {
-    const seg = navCode.slice(navCode.indexOf('export const DRAWER_NAV'))
+    // ★ 2026-11-20 菜单整理轮：席的本体从 DRAWER_NAV 挪进了 DRAWER_GROUPS（分组
+    //   SSOT），扁平 DRAWER_NAV 改为派生、且 export 在各组**之后** —— 原来锚
+    //   `export const DRAWER_NAV` 的写法会把整段席位区切掉 ⇒ 普查报 0（假「全没
+    //   有」正是本 describe 头注警告的那个静默失效形态）。⇒ 锚改成「两个 export
+    //   里**先出现**的那个」，旧布局（席直接在 DRAWER_NAV 里）与新布局都成立。
+    const anchors = ['export const DRAWER_GROUPS', 'export const DRAWER_NAV']
+      .map((m) => navCode.indexOf(m))
+      .filter((i) => i >= 0)
+    const seg = navCode.slice(Math.min(...anchors))
     const out = new Map<string, { key: string; role: string | null }>()
     for (const m of seg.matchAll(/\{\s*key:\s*'([^']+)',([\s\S]{0,320}?)\n?\s*\}/g)) {
       const to = m[2]!.match(/to:\s*'([^']+)'/)

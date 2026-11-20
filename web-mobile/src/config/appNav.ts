@@ -1,4 +1,13 @@
 // 导航 SSOT（UI规范 02 §4 + 17 §2 席位映射）。
+//
+// ★ 2026-11-20 菜单整理轮：抽屉 89 席此前是一张**无分组的平铺清单**（搜索是唯一
+//   的导航手段，深页要滚 4~5 屏），本轮按 **PC 端 NAV_GROUPS 的分类学**（web/src/
+//   config/appNav.ts）重组为 6 组（DRAWER_GROUPS）。★ 三条不变量：
+//   ① 席本身**一席不增一席不减**（逐席对拍见 docs/audit/2026-11-20-移动端菜单PC对齐整理-主档.md）；
+//   ② 权限档（requiresRole / requiresCapability）**逐字不变** —— 分组是展示层，
+//     权限语义仍只挂在席上，AppDrawer.spec.ts 的 superAdmin 白名单原样成立；
+//   ③ 扁平 `DRAWER_NAV` 由各组依序**派生**，routeAllowedFor / isRootRoute /
+//     hyper-wiring 等既有消费面**不感知分组**。
 import type { IconName } from '@/components/common/AppIcon.vue'
 
 export interface NavItem {
@@ -52,677 +61,781 @@ export const BOTTOM_NAV: readonly NavItem[] = [
   { key: 'keys', to: '/keys', icon: 'key', titleKey: 'nav.keys' },
 ] as const
 
-/** 抽屉二级导航。 */
-export const DRAWER_NAV: readonly NavItem[] = [
-  { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
-  { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
-  { key: 'users', to: '/users', icon: 'user', titleKey: 'nav.users', requiresRole: 'admin' },
-  { key: 'reconciliation', to: '/reconciliation', icon: 'chart', titleKey: 'nav.reconciliation', requiresRole: 'super_admin', requiresCapability: 'cost_reconciliation' },
-  // ★ 2026-10-14 第一百一十一批：对账报表（区间多维汇总 + 筛选栏候选）。
-  //   `admin/handler.go:1086` `h.superAdmin(h.handleReportRollup)` ⇒ **要** super_admin。
-  //   ⚠️ ★★ 与上面那张 `reconciliation` 席是**两个不同功能**，标题必须能区分：
-  //     · reconciliation → CostReconciliationView → @/api/costReconciliation（费用对账）
-  //     · report-rollup  → ReportRollupView       → @/api/reportRollup（对账报表）
-  //     两张席都叫「对账」⇒ 靠 nav 标题区分，接线时别接错模块。
+export interface NavGroup {
+  /**
+   * 组 id —— 与 PC 端 NAV_GROUPS 的 id **同名**（operations / models-routing /
+   * tenant-users / requests-sessions / data-ops），两端同一套分类学；
+   * `primary` 是移动端自己的首组（对应 PC 的 NAV_PRIMARY_ITEMS 顶层席：
+   * 总览 / 实时拓扑 / 阶段树 —— 移动端对位的是看板与实时页）。
+   */
+  id: string
+  /** i18n 组标题键（nav.group.*），与 PC 端 locales 各语种 nav.ts 的同名键。 */
+  labelKey: string
+  items: NavItem[]
+}
+
+/**
+ * 抽屉二级导航 —— 按 PC 端菜单的分类学分组（2026-11-20 菜单整理轮）。
+ *
+ * ★ 组的裁剪口径：PC 端 8 组里 `opsplatform`（maintain 外链族）/ `guide` /
+ *   `chat` 移动端**无对应席**，不设空组；`tenantPortal` 已在 PC 侧退役（A-13）。
+ *   ⇒ 移动端 6 组 = PC 的 5 个在役组 + primary。
+ */
+export const DRAWER_GROUPS: readonly NavGroup[] = [
+  // ── 总览与实时（PC NAV_PRIMARY_ITEMS 的移动对位）────────────────────────
+  // PC 顶层无组席 = 总览(/dashboard) / 实时拓扑(/live) / 阶段树(/live2)；
+  // 移动端对位的是看板读面与实时页（阶段树无移动席，不收）。
   {
-    key: 'report-rollup',
-    to: '/report-rollup',
-    icon: 'chart',
-    titleKey: 'nav.reportRollup',
-    requiresRole: 'super_admin',
+    id: 'primary',
+    labelKey: 'nav.group.primary',
+    items: [
+      // 看板读面（dashboard 九条）。★ admin 档（handler.go:1052-1069 全部 `admin(...)`）
+      // ⇒ **不设** requiresRole。
+      // ★ 与「模型与路由」组的 /auto-route（super_admin 档）相反 —— 这是本仓最容易
+      //   照抄错的一处：两条都叫「路由/看板面」，权限档却完全相反。
+      { key: 'dashboard-ops', to: '/dashboard-ops', icon: 'grid', titleKey: 'nav.dashboardOps' },
+      // ★ 实时页（2026-10-29）。三条腿全部 `admin(...)` 注册：
+      //   topology/providers-today（admin/handler.go:1145）· models-today（:1156）·
+      //   clients-today（:1160）· live-stream/stats（admin/handler.go:1092）
+      //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+      //   journey queues 是 `requestJourneyWrapAdmin`（cmd/gateway/main.go:7376）
+      //   = AdminMiddleware 只认证不检角色；数据作用域在后端收口：queues 非
+      //   super_admin 只看本租户（admin/request_journey.go:41-44 scope=all 才要
+      //   超管，本页不传）；topology 三组由 statsTenantScope 一族按租户过滤；
+      //   live-stream hub 逐帧租户过滤（live_stream_sse.go HandleLiveStream）。
+      //   桌面同功能是 /live（superAdmin 门是**桌面**nav 的 platformOps 标记，
+      //   而桌面路由只要求登录 —— 移动端按可执行注册（admin 档）放行 admin。
+      { key: 'live', to: '/live', icon: 'play', titleKey: 'nav.live' },
+    ],
   },
-  // ★ 2026-10-14 第一百一十二批：单请求调度轨迹。
-  //   ★★ **admin 档，不是 superAdmin**（可执行注册处 `cmd/gateway/main.go:7143-7144`
-  //   传的是 `requestJourneyWrapAdmin` → `admin.AdminMiddleware`，后者**不检查 role**）
-  //   ⇒ **不设** `requiresRole`（tenant_admin 也够用）
-  //   ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
-  //   ⚠️ 这与批 109/110/111 连续三批相反，接线时别照抄那一套。
-  //   ★ 但**租户隔离是真做了**的（`admin/journal_handlers.go:59-67`：
-  //   「角色 × 路径租户」二维，越权返 **404 而非 403**）⇒ 前端无需段落级门控。
-  { key: 'dispatch-journal', to: '/dispatch-journal', icon: 'search', titleKey: 'nav.dispatchJournal' },
-  // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
-  // 不占底栏（02 §4 底栏 ≤5 席已满），与「告警/用量」同级。admin 档。
-  { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
-  // 2026-10-06：供应商维度可见性（谁挂了/谁没绑模型/谁被手动停用）。admin 档。
-  { key: 'providers', to: '/providers', icon: 'globe', titleKey: 'nav.providers' },
-  // 2026-10-06：模型完整性异常。表现为「请求失败/结果诡异」但不落在节点健康上
-  // ——移动端此前完全没这个面，排查只能开电脑。
-  // ★ requiresRole: 后端整段 h.superAdmin（handler.go:924-925），tenant_admin 403。
-  { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity', requiresRole: 'super_admin' },
-  // 2026-10-06：请求日志。回答「刚才那次到底发生了什么」——排障起点。admin 档。
-  { key: 'logs', to: '/logs', icon: 'clock', titleKey: 'nav.logs' },
-  // ── 运维排障线（2026-10-07）────────────────────────────────────────────
-  // 这三条构成排障闭环：链路（发生了什么）→ 详情（为什么）→ 流水 / 瀑布（凭据侧与时间侧佐证）。
-  // 全部走 AdminMiddleware（只认证不判角色）⇒ tenant_admin 可用，
-  // 所以 requiresRole **一律不设** —— 按 appNav.ts 末尾的口径，
-  // 只有 super_admin 档端点才需要在这里挡（对比 /integrity）。
-  { key: 'journey', to: '/journey', icon: 'search', titleKey: 'nav.journey' },
-  { key: 'routing-log', to: '/routing-log', icon: 'expand', titleKey: 'nav.routingLog' },
-  { key: 'waterfall', to: '/waterfall', icon: 'play', titleKey: 'nav.waterfall' },
-  { key: 'turns', to: '/turns', icon: 'clock', titleKey: 'nav.turns' },
-  // ★ 排障线里**唯一**的 superAdmin 档：handler.go:1381
-  //   `RegisterAutoRouteRoutes(mux, h.superAdmin)`，auth.go:353-357 对非超管 403。
-  //   ⇒ 这里必须挡。理由与 /integrity 同：「按 role 分档渲染，不是一律显示再吃后端 403」。
-  { key: 'routing-audit', to: '/routing-audit', icon: 'check', titleKey: 'nav.routingAudit', requiresRole: 'super_admin' },
-  // ── 凭据监控线（2026-10-07）────────────────────────────────────────────
-  // 补 NodesView 答不了的那一问：「哪个模型 × 哪个凭据的组合在坏」。
-  // /node-health/:id 是热力图的下钻，不占导航席（从热力图卡片进入）。
-  { key: 'heatmap', to: '/heatmap', icon: 'cube', titleKey: 'nav.heatmap' },
-  // 探测面：展示 node_probe_state 判定的**过程**（排到第几次、下次何时重试、
-  // 供应商直连延时）。adminWrap 档 ⇒ tenant_admin 可用，不设 requiresRole。
-  { key: 'probe', to: '/probe', icon: 'refresh', titleKey: 'nav.probe' },
-  // 路由覆盖规则：与 /routing-audit 配对（那一页答「谁改的」，这一页答
-  // 「现在生效的是什么」）。★ 整条 auto-route 线是 superAdmin
-  //（handler.go:1381 RegisterAutoRouteRoutes(mux, h.superAdmin)），必挡。
-  { key: 'overrides', to: '/overrides', icon: 'expand', titleKey: 'nav.overrides', requiresRole: 'super_admin' },
-  // ★ 实时页（2026-10-29）。三条腿全部 `admin(...)` 注册：
-  //   topology/providers-today（admin/handler.go:1145）· models-today（:1156）·
-  //   clients-today（:1160）· live-stream/stats（admin/handler.go:1092）
-  //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
-  //   journey queues 是 `requestJourneyWrapAdmin`（cmd/gateway/main.go:7376）
-  //   = AdminMiddleware 只认证不检角色；数据作用域在后端收口：queues 非
-  //   super_admin 只看本租户（admin/request_journey.go:41-44 scope=all 才要
-  //   超管，本页不传）；topology 三组由 statsTenantScope 一族按租户过滤；
-  //   live-stream hub 逐帧租户过滤（live_stream_sse.go HandleLiveStream）。
-  //   桌面同功能是 /live（superAdmin 门是**桌面**nav 的 platformOps 标记，
-  //   而桌面路由只要求登录 —— 移动端按可执行注册（admin 档）放行 admin。
-  { key: 'live', to: '/live', icon: 'play', titleKey: 'nav.live' },
-  // ── 自动调优面（2026-10-07）────────────────────────────────────────────
-  // 与 /overrides 配对闭环：那页答「现在生效的规则是什么」，这两页答
-  // 「规则对不对、该怎么调」。
-  // ★ 两条都是 superAdmin 档：funnel 走 handler.go:1430 的 h.superAdmin，
-  //   proposals 走 handler.go:1381 的 h.superAdmin（auto_route.go:116 的
-  //   adminWrap 是它传进去的）。tenant_admin 必 403 ⇒ 这里必须挡。
-  { key: 'funnel', to: '/funnel', icon: 'chart', titleKey: 'nav.funnel', requiresRole: 'super_admin' },
-  { key: 'proposals', to: '/proposals', icon: 'check', titleKey: 'nav.proposals', requiresRole: 'super_admin' },
-  // 自动路由读面：/proposals 答「系统认为该怎么调」，本页答「现在跑得怎么样、
-  // 花了多少钱」—— 建议与效果之间缺的就是这一页。
-  // ★ superAdmin 档：整条 auto-route 线由 handler.go:1381 / :1430 的
-  //   h.superAdmin 挂载（形参名 adminWrap 是假名，值在调用处才定）⇒ 必挡。
-  { key: 'auto-route', to: '/auto-route', icon: 'chart', titleKey: 'nav.autoRoute', requiresRole: 'super_admin' },
-  // 全局横向对比面：/funnel 是单模型纵深，这两条是全体模型的横向对比。
-  // ★ superAdmin 档：analytics.go:55-58 的 matrix/flow，
-  //   而 RegisterAnalyticsRoutes 由 handler.go:1430 用 h.superAdmin 挂载。
-  { key: 'matrix', to: '/matrix', icon: 'grid', titleKey: 'nav.matrix', requiresRole: 'super_admin' },
-  { key: 'flow', to: '/flow', icon: 'share', titleKey: 'nav.flow', requiresRole: 'super_admin' },
-  // 探测系统健康 + 队列快照：答「整个探测系统健康吗、有没有卡住」，
-  // 与 /probe（「具体哪个任务/供应商在跑」）配对。
-  // ★ admin 档（wrapAdmin）⇒ 不设 requiresRole，对比上面四条超管线。
-  { key: 'probe-health', to: '/probe-health', icon: 'refresh', titleKey: 'nav.probeHealth' },
-  // 模型级健康：答「哪个模型整体在坏」。与 /heatmap（模型×凭据）、
-  // /probe（任务级 + 节点队列）构成从粗到细的完整粒度。admin 档。
-  { key: 'probe-model', to: '/probe-model', icon: 'cube', titleKey: 'nav.probeModel' },
-  // 时间线回答「**它是什么时候开始坏的**」，是 /probe-model 的快照的另一半。
-  { key: 'timeline', to: '/timeline', icon: 'clock', titleKey: 'nav.timeline' },
-  // Redis 缓存快照回答「探测说它健康，路由为什么没选它」。admin 档。
-  { key: 'cache-state', to: '/cache-state', icon: 'globe', titleKey: 'nav.cache' },
-  // ★ superAdmin 档：auto-route 整线由 h.superAdmin 挂载（handler.go:1430），
-  //   tenant_admin 进去必然 403 ⇒ 抽屉层就要挡住。
+  // ── 运营管理（PC operations）────────────────────────────────────────────
+  // 移动端的费用/用量/结算/MaaS/订阅观察面。PC 该组另含定价、报价工作台、
+  // 营销管理、市场价格采集等**运营工具**页 —— 移动端无对应席，不收。
   {
-    key: 'task-index',
-    to: '/task-index',
-    icon: 'chart',
-    titleKey: 'nav.taskIndex',
-    requiresRole: 'super_admin',
+    id: 'operations',
+    labelKey: 'nav.group.operations',
+    items: [
+      { key: 'usage', to: '/usage', icon: 'chart', titleKey: 'nav.usage' },
+      // ★ 用量成本增强（2026-10-14 第一百二十二批）——
+      //   ★★★★ 权限档**第一类**（有租户维度）：三个端点都按租户过滤
+      //   ⇒ 各租户互相隔离，不是过度限制。
+      //   ★ 但**必须**设 `requiresRole: 'admin'`（不能像同族的 trend-series 那样不设）：
+      //   `h.admin` 无角色下限 + `supportedRole` 接受 `user`
+      //   ⇒ 服务端会把「全部租户的合计」发给普通 user。
+      //   ⇒ `navItemsFor` 的 'admin' 档放行 admin 三档、挡掉 user
+      //   ⇒ ★★ 在后端补上门之前，**这是唯一挡住普通 user 的东西**。
+      {
+        key: 'usage-enhanced',
+        to: '/usage-enhanced',
+        icon: 'chart',
+        titleKey: 'nav.usageEnhanced',
+        requiresRole: 'admin',
+      },
+      // 用量趋势线。**admin 档**（admin/handler.go:1267 的 `h.admin(h.HandleUsageAdmin)`
+      //   前缀子路由，分派 admin/usage.go:60-64）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+      // ★ 本族的租户口径是本仓第四种：`statsTenantScope`（admin/stats.go:87-97）对非
+      //   super_admin 强制用 auth.TenantID 并**忽略 tenant_id 参数** ⇒ tenant_admin 天然隔离，
+      //   与批 104（硬编码 tenant）与批 106（有列不接线）相反 ⇒ 不需要段落级门控。
+      { key: 'usage-trend-series', to: '/usage-trend-series', icon: 'chart', titleKey: 'nav.usageTrendSeries' },
+      {
+        key: 'reconciliation',
+        to: '/reconciliation',
+        icon: 'chart',
+        titleKey: 'nav.reconciliation',
+        requiresRole: 'super_admin',
+        requiresCapability: 'cost_reconciliation',
+      },
+      // ★ 2026-10-14 第一百一十一批：对账报表（区间多维汇总 + 筛选栏候选）。
+      //   `admin/handler.go:1086` `h.superAdmin(h.handleReportRollup)` ⇒ **要** super_admin。
+      //   ⚠️ ★★ 与上面那张 `reconciliation` 席是**两个不同功能**，标题必须能区分：
+      //     · reconciliation → CostReconciliationView → @/api/costReconciliation（费用对账）
+      //     · report-rollup  → ReportRollupView       → @/api/reportRollup（对账报表）
+      //     两张席都叫「对账」⇒ 靠 nav 标题区分，接线时别接错模块。
+      {
+        key: 'report-rollup',
+        to: '/report-rollup',
+        icon: 'chart',
+        titleKey: 'nav.reportRollup',
+        requiresRole: 'super_admin',
+      },
+      // MaaS 本租户钱包。admin 档 ⇒ 不设 requiresRole。
+      { key: 'maas-wallet', to: '/maas-wallet', icon: 'user', titleKey: 'nav.maasWallet' },
+      // MaaS 租户目录与价目。**admin 档**（/api/maas/** 是 h.admin(...)）⇒ 不设 requiresRole。
+      { key: 'maas-catalog', to: '/maas-catalog', icon: 'cube', titleKey: 'nav.maasCatalog' },
+      // MaaS 积分价。**superAdmin 档**（admin/maas_handlers.go:14-24 全部 h.superAdmin）⇒ 须设 requiresRole。
+      {
+        key: 'maas-rates',
+        to: '/maas-rates',
+        icon: 'key',
+        titleKey: 'nav.maasRates',
+        requiresRole: 'super_admin',
+      },
+      // MaaS 订单。**superAdmin 档**（admin/maas_handlers.go:14-24）⇒ 须设 requiresRole。
+      // ★ 订单详情页 /maas-orders/:id 不占席，只有列表页进 DRAWER_NAV。
+      {
+        key: 'maas-orders',
+        to: '/maas-orders',
+        icon: 'grid',
+        titleKey: 'nav.maasOrders',
+        requiresRole: 'super_admin',
+      },
+      // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
+      {
+        key: 'maas-tenant-ops',
+        to: '/maas-tenant-ops',
+        icon: 'user',
+        titleKey: 'nav.maasTenantOps',
+        requiresRole: 'super_admin',
+      },
+      // MaaS 配置面。**superAdmin 档** ⇒ 须设。
+      {
+        key: 'maas-admin-catalog',
+        to: '/maas-admin-catalog',
+        icon: 'key',
+        titleKey: 'nav.maasAdminCatalog',
+        requiresRole: 'super_admin',
+      },
+      // ★ 订阅档（2026-10-14 第一百二十批）——
+      //   ★★★★ 权限档**第四类**，与前三席都不同：
+      //   它**同样没有租户维度**（读全局 `subscription_tiers`），
+      //   **但**中间件 `requireSuperAdmin`（`main_jwt_middleware.go:65-73`）逐字
+      //   `if role != "super_admin" { 403 }` ⇒ **真门**。
+      // ⇒ 前四席的超管限制分别是「后端不一致/载荷含别人的数据/全局事实」三种理由，
+      //   本席的理由是「**服务端自己就是那道门**」⇒ 不必再为它补第四种过度限制论证。
+      // ⚠️ 第三种注册机制：它在 echo group 上（`main.go:7027` → `licensing.RegisterModuleRoutes`），
+      //   **不在** `admin/handler.go` 的 mux 里 ⇒ 只 grep mux 会误判成死端点。
+      {
+        key: 'subscription-tiers',
+        to: '/subscription-tiers',
+        icon: 'grid',
+        titleKey: 'nav.subscriptionTiers',
+        requiresRole: 'super_admin',
+      },
+    ],
   },
-  // 会话审计清单 + 逐轮明细。admin 档（wrapAdmin）⇒ tenant_admin 可用，不设 requiresRole。
-  { key: 'session-audit', to: '/session-audit', icon: 'grid', titleKey: 'nav.sessionAudit' },
-  // 活跃会话（游标分页）。★ superAdmin 后端不加租户过滤 ⇒ 页内按角色说明作用域。
-  { key: 'sessions-online', to: '/sessions-online', icon: 'play', titleKey: 'nav.onlineSessions' },
-  // 系统监控：答「监控器这层自己在不在干活」。admin 档（adminWrap）⇒ 不设 requiresRole。
-  { key: 'system-monitor', to: '/system-monitor', icon: 'cpu', titleKey: 'nav.sysmon' },
-  // 数据生命周期：分区清单 + 体积榜。admin 档（admin()）⇒ 不设 requiresRole。
-  { key: 'data-lifecycle', to: '/data-lifecycle', icon: 'grid', titleKey: 'nav.lifecycle' },
-  // 路由优化器：准确率 + 激活参数 + 5 分钟明细。admin 档（admin(...)）⇒ 不设 requiresRole。
-  { key: 'routing-opt', to: '/routing-opt', icon: 'cpu', titleKey: 'nav.routingOpt' },
-  // 待处理响应：有没有卡住的请求。admin 档（admin(...)）⇒ 不设 requiresRole。
-  { key: 'pending-responses', to: '/pending-responses', icon: 'play', titleKey: 'nav.pending' },
-  // 请求侧异常：上游在拒绝我们的什么请求。**superAdmin 档**（h.superAdmin）
-  // ⇒ tenant_admin 403，必须设 requiresRole 并同步 AppDrawer.spec.ts 白名单。
-  // 输出合规命中与复核。admin 档（AdminMiddleware）⇒ 不设 requiresRole。
-  { key: 'compliance-hits', to: '/compliance-hits', icon: 'alert', titleKey: 'nav.compliance' },
-  // 输出合规策略与词库。admin 档 ⇒ 不设 requiresRole。
-  { key: 'compliance-policy', to: '/compliance-policy', icon: 'key', titleKey: 'nav.compliancePolicy' },
-  // 提示词注入现象面。admin 档（AdminMiddleware）⇒ 不设 requiresRole。
-  { key: 'injection', to: '/injection', icon: 'alert', titleKey: 'nav.injection' },
-  // 提示词注入配置面。admin 档 ⇒ 不设 requiresRole。
-  { key: 'injection-config', to: '/injection-config', icon: 'key', titleKey: 'nav.injectionConfig' },
-  // MaaS 积分价。**superAdmin 档**（admin/maas_handlers.go:14-24 全部 h.superAdmin）⇒ 须设 requiresRole。
+  // ── 供应商与模型（PC models-routing）───────────────────────────────────
+  // 路由/供应商/自动调优闭环/标注与任务档案/凭据监控与探测/模型完整性。
+  // PC 该组的 /models（模型与目录）在移动端是底栏席，不进抽屉。
   {
-    key: 'maas-rates',
-    to: '/maas-rates',
-    icon: 'key',
-    titleKey: 'nav.maasRates',
-    requiresRole: 'super_admin',
+    id: 'models-routing',
+    labelKey: 'nav.group.modelsRouting',
+    items: [
+      // 2026-10-06：供应商维度可见性（谁挂了/谁没绑模型/谁被手动停用）。admin 档。
+      { key: 'providers', to: '/providers', icon: 'globe', titleKey: 'nav.providers' },
+      // 2026-10-06：路由检查（只读 explain）从 desktopOnly 收进移动端，抽屉席位。
+      // 不占底栏（02 §4 底栏 ≤5 席已满）。admin 档。
+      { key: 'routing', to: '/routing', icon: 'search', titleKey: 'nav.routing' },
+      // ★ 排障线里**唯一**的 superAdmin 档：handler.go:1381
+      //   `RegisterAutoRouteRoutes(mux, h.superAdmin)`，auth.go:353-357 对非超管 403。
+      //   ⇒ 这里必须挡。理由与 /integrity 同：「按 role 分档渲染，不是一律显示再吃后端 403」。
+      { key: 'routing-audit', to: '/routing-audit', icon: 'check', titleKey: 'nav.routingAudit', requiresRole: 'super_admin' },
+      // 路由覆盖规则：与 /routing-audit 配对（那一页答「谁改的」，这一页答
+      // 「现在生效的是什么」）。★ 整条 auto-route 线是 superAdmin
+      //（handler.go:1381 RegisterAutoRouteRoutes(mux, h.superAdmin)），必挡。
+      { key: 'overrides', to: '/overrides', icon: 'expand', titleKey: 'nav.overrides', requiresRole: 'super_admin' },
+      // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
+      //
+      // 2026-10-08 第一百零一批：路由策略配置面（**superAdmin 档**）。
+      // ★ 同族**三档一档**（`admin/handler.go:1200 :1201 :1215` 是 h.superAdmin，
+      //   而 `:1216` 的 featured-models 是 admin）⇒ 席设 super_admin。
+      // ⇒ ★ 后果：featured-models 在移动端被顺带收严成 superAdmin（前端严于后端）。
+      //   这是刻意的取舍 —— 同一页混档会让「谁能看哪块」不可解释。记在视图文件头。
+      //   （★ 原文件里这段注释曾漂在 errors-trend 席上方 —— 本轮整理归位。）
+      {
+        key: 'routing-policy',
+        to: '/routing-policy',
+        icon: 'chart',
+        titleKey: 'nav.routingPolicy',
+        requiresRole: 'super_admin',
+      },
+      // 路由优化器：准确率 + 激活参数 + 5 分钟明细。admin 档（admin(...)）⇒ 不设 requiresRole。
+      { key: 'routing-opt', to: '/routing-opt', icon: 'cpu', titleKey: 'nav.routingOpt' },
+      // ── 自动调优面（2026-10-07）──────────────────────────────────────────
+      // 与 /overrides 配对闭环：那页答「现在生效的规则是什么」，这两页答
+      // 「规则对不对、该怎么调」。
+      // ★ 两条都是 superAdmin 档：funnel 走 handler.go:1430 的 h.superAdmin，
+      //   proposals 走 handler.go:1381 的 h.superAdmin（auto_route.go:116 的
+      //   adminWrap 是它传进去的）。tenant_admin 必 403 ⇒ 这里必须挡。
+      { key: 'funnel', to: '/funnel', icon: 'chart', titleKey: 'nav.funnel', requiresRole: 'super_admin' },
+      { key: 'proposals', to: '/proposals', icon: 'check', titleKey: 'nav.proposals', requiresRole: 'super_admin' },
+      // 自动路由读面：/proposals 答「系统认为该怎么调」，本页答「现在跑得怎么样、
+      // 花了多少钱」—— 建议与效果之间缺的就是这一页。
+      // ★ superAdmin 档：整条 auto-route 线由 handler.go:1381 / :1430 的
+      //   h.superAdmin 挂载（形参名 adminWrap 是假名，值在调用处才定）⇒ 必挡。
+      { key: 'auto-route', to: '/auto-route', icon: 'chart', titleKey: 'nav.autoRoute', requiresRole: 'super_admin' },
+      // 全局横向对比面：/funnel 是单模型纵深，这两条是全体模型的横向对比。
+      // ★ superAdmin 档：analytics.go:55-58 的 matrix/flow，
+      //   而 RegisterAnalyticsRoutes 由 handler.go:1430 用 h.superAdmin 挂载。
+      { key: 'matrix', to: '/matrix', icon: 'grid', titleKey: 'nav.matrix', requiresRole: 'super_admin' },
+      { key: 'flow', to: '/flow', icon: 'share', titleKey: 'nav.flow', requiresRole: 'super_admin' },
+      // ★ superAdmin 档：auto-route 整线由 h.superAdmin 挂载（handler.go:1430），
+      //   tenant_admin 进去必然 403 ⇒ 抽屉层就要挡住。
+      {
+        key: 'task-index',
+        to: '/task-index',
+        icon: 'chart',
+        titleKey: 'nav.taskIndex',
+        requiresRole: 'super_admin',
+      },
+      // 人工标注工作台。★ admin 档（handler.go:1386/1389/1390 全是 admin(...)）
+      // ⇒ **不设** requiresRole。
+      // ★ PC 端 2026-10-02 整合轮把「人工标注/标注统计/任务档案/路由调参」收编进
+      //   /routing-v2/auto-ops（AUTO 路由闭环统一工作台）⇒ 移动端这几个观察席
+      //   归入本组同一族。
+      { key: 'annotations', to: '/annotations', icon: 'check', titleKey: 'nav.annotations' },
+      // 2026-10-08 第一百批：任务类型档案 + 人工修正反馈闭环。
+      // ★ admin 档（`admin/handler.go:1488` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
+      //   ⇒ **不设** requiresRole（与凭据×模型状态那席相反 —— 权限按席判，不按组判）。
+      // ★ 这一席同时接上批 98/99 的两个 API 模块 —— 它们此前**没有任何 UI 引用**，
+      //   全仓 94 个 API 模块里有 32 个是这种「做完了但用户点不到」的孤儿。
+      // ⚠️★ 同族的三个 POST（apply-tier-config / reload / import）**都有写副作用**，本页一律不碰。
+      // ⚠️★ 无需同步 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 那一席只列 super_admin 档的 key。
+      {
+        key: 'task-profile',
+        to: '/task-profile',
+        icon: 'grid',
+        titleKey: 'nav.taskProfile',
+      },
+      // 工作类型配置面。★ **整族 h.superAdmin**（`admin/handler.go:1434`
+      //   `wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)`，四条 GET 全挂这一个中间件）
+      //   ⇒ 须设 requiresRole。
+      // ★ 与批 90 的 settings **同前缀邻域但档位相反** —— 别照抄那一席。
+      {
+        key: 'work-types',
+        to: '/work-types',
+        icon: 'cpu',
+        titleKey: 'nav.workTypes',
+        requiresRole: 'super_admin',
+      },
+      // ── 凭据监控线（2026-10-07）──────────────────────────────────────────
+      // 补 NodesView 答不了的那一问：「哪个模型 × 哪个凭据的组合在坏」。
+      // /node-health/:id 是热力图的下钻，不占导航席（从热力图卡片进入）。
+      // ★ PC 端把 probe-health 折进凭据监控页签 ⇒ 移动端探测族全归本组。
+      { key: 'heatmap', to: '/heatmap', icon: 'cube', titleKey: 'nav.heatmap' },
+      // 探测面：展示 node_probe_state 判定的**过程**（排到第几次、下次何时重试、
+      // 供应商直连延时）。adminWrap 档 ⇒ tenant_admin 可用，不设 requiresRole。
+      { key: 'probe', to: '/probe', icon: 'refresh', titleKey: 'nav.probe' },
+      // 凭据探测三态队列。**admin 档**（admin/probe_dashboard.go:1907 的
+      //   `adminWrap(h.handleProbeTaskRoute)`）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+      // ★ 该路由是**方法多路复用**（GET/POST/DELETE 同一条），本页只发 GET。
+      { key: 'probe-queue', to: '/probe-queue', icon: 'clock', titleKey: 'nav.probeQueue' },
+      // 探测系统健康 + 队列快照：答「整个探测系统健康吗、有没有卡住」，
+      // 与 /probe（「具体哪个任务/供应商在跑」）配对。
+      // ★ admin 档（wrapAdmin）⇒ 不设 requiresRole，对比超管档的 auto-route 线。
+      { key: 'probe-health', to: '/probe-health', icon: 'refresh', titleKey: 'nav.probeHealth' },
+      // 模型级健康：答「哪个模型整体在坏」。与 /heatmap（模型×凭据）、
+      // /probe（任务级 + 节点队列）构成从粗到细的完整粒度。admin 档。
+      { key: 'probe-model', to: '/probe-model', icon: 'cube', titleKey: 'nav.probeModel' },
+      // 时间线回答「**它是什么时候开始坏的**」，是 /probe-model 的快照的另一半。
+      { key: 'timeline', to: '/timeline', icon: 'clock', titleKey: 'nav.timeline' },
+      // Redis 缓存快照回答「探测说它健康，路由为什么没选它」。admin 档。
+      { key: 'cache-state', to: '/cache-state', icon: 'globe', titleKey: 'nav.cache' },
+      // 凭据 × 模型实时状态。**这一条是 superAdmin 档**
+      // （`registerStateRoutes` 里 `wrap := h.superAdmin`，credential_state_handlers.go:175）
+      // ⇒ 抽屉席**必须**设 requiresRole: 'super_admin'（与前几批 admin 档页面相反）。
+      // ★ 加这一席时必须同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
+      // ★★ 同族三个 POST（单测/批测/按模型测）都**真的触发一次探测** ⇒ 本页一律不碰。
+      {
+        key: 'credential-model-state',
+        to: '/credential-model-state',
+        icon: 'cpu',
+        titleKey: 'nav.credModelState',
+        requiresRole: 'super_admin',
+      },
+      // ⚠️⚠️ 但本席要设 **`requiresRole: 'admin'`**，不是缺省 —— 这是本仓**第二个**
+      //   该档席（第一个是 `users`），推导见 `api/errorsTrend.ts` 文件头：
+      //   `AdminMiddleware` 不检 role + `getErrorsTrend` 自己也不检 +
+      //   `EffectiveTenantIDAll` 对**非 tenant_admin 一律返空串**（= 查全租户）
+      //   ⇒ effective role 为 `user` 的主体能读到**全租户**。
+      //   ⇒ 缺省会命中 `navItemsFor` 的默认分支 `return true`，等于把那个口子做成一键入口。
+      //   ⇒ `'super_admin'` 也**不行**：那会连 `tenant_admin` 的本租户数据一起挡掉。
+      // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（那是 tenant_admin 掉的那批）。
+      //
+      // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）——
+      //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
+      //   ⇒ 是 **admin 档**，`tenant_admin` 本该可用（后端 R49-C1 已把它收口到本租户）。
+      {
+        key: 'errors-trend',
+        to: '/errors-trend',
+        icon: 'chart',
+        titleKey: 'nav.errorsTrend',
+        requiresRole: 'admin',
+      },
+      // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）——
+      //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
+      //   ⇒ 是 **admin 档**，与上面 errors-trend **同档同处置**。
+      // ⚠️ 同样要设 `requiresRole: 'admin'` 而不是缺省：这一族的租户键是
+      //   **手写内联**的 `tenantID := ""; if IsTenantAdmin(r) { … }`
+      //   （admin/credential_monitor.go:1532-1535），与 `EffectiveTenantIDAll` 语义相同
+      //   但**不叫那个名字** ⇒ ★★ grep `EffectiveTenantID` 找不到这一处。
+      // ⇒ 缺省会让 effective role 为 `user` 的主体读到全租户模型状态历史。
+      // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（tenant_admin 要能看到）。
+      {
+        key: 'model-history',
+        to: '/model-history',
+        icon: 'server',
+        titleKey: 'nav.modelHistory',
+        requiresRole: 'admin',
+      },
+      // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）——
+      //   与 errors-trend / model-history **同注册处**，但**处置相反**。
+      // ⚠️⚠️ 这里设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
+      //   ★★ **2026-10-26 订正**：本段原写的理由（「后端两条腿都只有 credential_id、
+      //   没有租户维度 ⇒ 跨租户可读」）已被后端补洞覆盖 —— audit #153 +
+      //   12h-audit 20261017（2026-10-16/17）给 `handleSlidingWindow`
+      //   （`admin/credential_monitor.go:753-863`）加了 `tenantID` / `IsTenantAdmin`、
+      //   两条 SQL 腿的 `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`），
+      //   以及角色门（`:765-768`，`role=user` ⇒ 403）；Redis 快腿对 tenant_admin
+      //   直接跳过（`:809`，Redis 键没有 tenant tag）。
+      //   ⇒ 所以 `'admin'` 档**现在**是安全的；仍写 `'super_admin'` 是**过度限制**
+      //     （收紧一档不必跟着放开），**不是漏洞**。
+      // ⇒ ★ 它仍**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
+      {
+        key: 'sliding-window',
+        to: '/sliding-window',
+        icon: 'chart',
+        titleKey: 'nav.slidingWindow',
+        requiresRole: 'super_admin',
+      },
+      // 2026-10-06：模型完整性异常。表现为「请求失败/结果诡异」但不落在节点健康上
+      // ——移动端此前完全没这个面，排查只能开电脑。
+      // ★ requiresRole: 后端整段 h.superAdmin（handler.go:924-925），tenant_admin 403。
+      { key: 'integrity', to: '/integrity', icon: 'alert', titleKey: 'nav.integrity', requiresRole: 'super_admin' },
+      // ★ 2026-10-14 第一百一十批：指纹漂移。`admin/handler.go:942-943` 两条都是
+      //   `h.superAdmin`（整个 `/api/admin/model-integrity/` 前缀都是 superAdmin 档）
+      //   ⇒ 这一席**要** `requiresRole: 'super_admin'`。
+      //   ★ 读路径租户语义（批 157 后）：super_admin/admin_key 经
+      //     `withTenantOrAllReadOnlyTx` 的空-tenant 分支跨全部租户；
+      //     tenant_admin 则被收窄到本租户（`admin/model_integrity.go:165`
+      //     等四个读 helper）。菜单仍**要** `requiresRole: 'super_admin'`
+      //     ⇒ 视图内无需段落级门控。
+      //   ⚠️ 与 `integrity`（同前缀的 summary/events/resolve 那一面）是**两张席**：
+      //     同一个前缀上既有 admin 面也有 superAdmin 面 ⇒ 权限**不得**按前缀判。
+      {
+        key: 'model-integrity-drift',
+        to: '/model-integrity-drift',
+        icon: 'alert',
+        titleKey: 'nav.modelIntegrityDrift',
+        requiresRole: 'super_admin',
+      },
+      // ★ 模型智商（2026-10-14 第一百一十六批）——
+      //   注册 `admin/handler.go:1492-1495`，**四条全部** `h.superAdmin(...)`。
+      // ⇒ 本族**必须**设 `requiresRole: 'super_admin'`，
+      //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+      // ⚠️ 与批 113/114 那两族**相反**：那两族走 `AdminMiddleware` 只认证不检 role，
+      //   所以用 `'admin'`；本族走 `SuperAdminMiddleware`（auth.go:376-409）
+      //   **逐字比对 claims.Role** ⇒ 档位本身是真门。
+      // ★★ 但「抽屉隐藏 ≠ 路由拦截」：`meta.requiresRole` 全仓无人消费，
+      //   守卫只查 `requiresAuth` 与登录态 ⇒ 深链照样打开 ⇒ 视图内还要兜一层。
+      {
+        key: 'model-iq',
+        to: '/model-iq',
+        icon: 'chart',
+        titleKey: 'nav.modelIQ',
+        requiresRole: 'super_admin',
+      },
+      // 租户模型策略（superAdmin 档）：admin/handler.go:926-927 两条注册都是
+      // h.superAdmin，而 handleTenantModelPolicies 只有这一个调用点
+      // ⇒ 整棵子树（含 check 与 audit）都是 superAdmin 硬门槛。
+      // ★ 后端文件头把 check 标成 `(admin)`，那是过时的。
+      {
+        key: 'model-policies',
+        to: '/model-policies',
+        icon: 'cube',
+        titleKey: 'nav.modelPolicies',
+        requiresRole: 'super_admin',
+      },
+      // 租户模型策略审计。★ 无 OFFSET 无游标 ⇒ 页面刻意不放翻页控件。
+      {
+        key: 'model-policy-audit',
+        to: '/model-policy-audit',
+        icon: 'clock',
+        titleKey: 'nav.modelPolicyAudit',
+        requiresRole: 'super_admin',
+      },
+    ],
   },
-  // 租户名录。**superAdmin 档**（admin/handler.go:926-927）⇒ 须设。
-  // ★ 这族 handler 内部还额外放行 `admin_key` 角色，中间件那道 requiresRole
-  //   没有建模 ⇒ 移动端无法只用角色字符串判权限，只能靠后端的 403。
+  // ── 密钥与用户（PC tenant-users）───────────────────────────────────────
+  // PC 该组的 /keys 在移动端是底栏席，不进抽屉；审批三面是租户治理面，随组。
   {
-    key: 'tenants',
-    to: '/tenants',
-    icon: 'user',
-    titleKey: 'nav.tenants',
-    requiresRole: 'super_admin',
+    id: 'tenant-users',
+    labelKey: 'nav.group.tenantUsers',
+    items: [
+      { key: 'users', to: '/users', icon: 'user', titleKey: 'nav.users', requiresRole: 'admin' },
+      // 租户名录。**superAdmin 档**（admin/handler.go:926-927）⇒ 须设。
+      // ★ 这族 handler 内部还额外放行 `admin_key` 角色，中间件那道 requiresRole
+      //   没有建模 ⇒ 移动端无法只用角色字符串判权限，只能靠后端的 403。
+      {
+        key: 'tenants',
+        to: '/tenants',
+        icon: 'user',
+        titleKey: 'nav.tenants',
+        requiresRole: 'super_admin',
+      },
+      // 租户审批配置。★ **admin 档**（wrapAdmin = admin.AdminMiddleware）⇒ tenant_admin 可用
+      // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+      {
+        key: 'approval-config',
+        to: '/approval-config',
+        icon: 'check',
+        titleKey: 'nav.approvalConfig',
+      },
+      // 审批队列（运行中的审批实例）。★ **admin 档**（main.go:7384-7385 两条
+      // 都是 wrapAdmin）⇒ tenant_admin 可用 ⇒ **故意不设** requiresRole；
+      // 设成 super_admin 必须让判据红。
+      // ★ 不碰 /api/v1/approvals/* 的 approve/reject/resume（真的改审批状态）。
+      {
+        key: 'approval-queue',
+        to: '/approval-queue',
+        icon: 'clock',
+        titleKey: 'nav.approvalQueue',
+      },
+      // 审批人与规则。同样 admin 档，同样**故意不设** requiresRole。
+      {
+        key: 'approval-rules',
+        to: '/approval-rules',
+        icon: 'grid',
+        titleKey: 'nav.approvalRules',
+      },
+    ],
   },
-  // 工作类型配置面。★ **整族 h.superAdmin**（`admin/handler.go:1434`
-  //   `wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)`，四条 GET 全挂这一个中间件）
-  //   ⇒ 须设 requiresRole。
-  // ★ 与批 90 的 settings **同前缀邻域但档位相反** —— 别照抄那一席。
+  // ── 请求与会话（PC requests-sessions）─────────────────────────────────
+  // 请求日志/链路/瀑布/调度轨迹（排障线）+ 会话族（审计/在线/上下文/分析）
+  // + 请求注册台。PC 该组的会话聚合观测 = /admin/session-analytics/users，
+  // 移动端对位是 /session-analytics（会话分析面）。
   {
-    key: 'work-types',
-    to: '/work-types',
-    icon: 'cpu',
-    titleKey: 'nav.workTypes',
-    requiresRole: 'super_admin',
+    id: 'requests-sessions',
+    labelKey: 'nav.group.requestsSessions',
+    items: [
+      // 2026-10-06：请求日志。回答「刚才那次到底发生了什么」——排障起点。admin 档。
+      { key: 'logs', to: '/logs', icon: 'clock', titleKey: 'nav.logs' },
+      // ── 运维排障线（2026-10-07）──────────────────────────────────────────
+      // 这三条构成排障闭环：链路（发生了什么）→ 详情（为什么）→ 流水 / 瀑布（凭据侧与时间侧佐证）。
+      // 全部走 AdminMiddleware（只认证不判角色）⇒ tenant_admin 可用，
+      // 所以 requiresRole **一律不设** —— 按 appNav.ts 末尾的口径，
+      // 只有 super_admin 档端点才需要在这里挡（对比 /integrity）。
+      { key: 'journey', to: '/journey', icon: 'search', titleKey: 'nav.journey' },
+      { key: 'routing-log', to: '/routing-log', icon: 'expand', titleKey: 'nav.routingLog' },
+      { key: 'waterfall', to: '/waterfall', icon: 'play', titleKey: 'nav.waterfall' },
+      { key: 'turns', to: '/turns', icon: 'clock', titleKey: 'nav.turns' },
+      // 2026-10-14 第一百一十二批：单请求调度轨迹。
+      //   ★★ **admin 档，不是 superAdmin**（可执行注册处 `cmd/gateway/main.go:7143-7144`
+      //   传的是 `requestJourneyWrapAdmin` → `admin.AdminMiddleware`，后者**不检查 role**）
+      //   ⇒ **不设** `requiresRole`（tenant_admin 也够用）
+      //   ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
+      //   ⚠️ 这与批 109/110/111 连续三批相反，接线时别照抄那一套。
+      //   ★ 但**租户隔离是真做了**的（`admin/journal_handlers.go:59-67`：
+      //   「角色 × 路径租户」二维，越权返 **404 而非 403**）⇒ 前端无需段落级门控。
+      { key: 'dispatch-journal', to: '/dispatch-journal', icon: 'search', titleKey: 'nav.dispatchJournal' },
+      // ★ 请求动作时间线（2026-10-14 第一百一十八批）——
+      //   注册 `admin/handler.go:1045` 的 `admin(...)` ⇒ 后端 tenant_admin **能**读，
+      //   但该端点**完全没有租户维度**（只按 URL 里的 `request_id` 精确匹配），
+      //   而读**同一个** store 的 `/api/admin/live-stream` **有**租户过滤
+      //   ⇒ 后端不一致 ⇒ 归第三类，只能**过度限制**到 super_admin。
+      // ⇒ 本席**必须**设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的排序白名单。
+      // ⚠️ 与批 115 `sliding-window` 同形态：`credential_id` 是全局主键、`request_id` 是
+      //   全局随机 id，两边都是「拿到那个标识就能读到明细」。
+      {
+        key: 'request-actions',
+        to: '/request-actions',
+        icon: 'search',
+        titleKey: 'nav.requestActions',
+        requiresRole: 'super_admin',
+      },
+      // 请求侧异常：上游在拒绝我们的什么请求。**superAdmin 档**（h.superAdmin）
+      // ⇒ tenant_admin 403，必须设 requiresRole 并同步 AppDrawer.spec.ts 白名单。
+      //（★ 原文件里这段注释曾漂在 compliance-hits 席上方 —— 本轮整理归位。）
+      {
+        key: 'request-anomalies',
+        to: '/request-anomalies',
+        icon: 'alert',
+        titleKey: 'nav.anomalies',
+        requiresRole: 'super_admin',
+      },
+      // 待处理响应：有没有卡住的请求。admin 档（admin(...)）⇒ 不设 requiresRole。
+      { key: 'pending-responses', to: '/pending-responses', icon: 'play', titleKey: 'nav.pending' },
+      // 会话审计清单 + 逐轮明细。admin 档（wrapAdmin）⇒ tenant_admin 可用，不设 requiresRole。
+      { key: 'session-audit', to: '/session-audit', icon: 'grid', titleKey: 'nav.sessionAudit' },
+      // 活跃会话（游标分页）。★ superAdmin 后端不加租户过滤 ⇒ 页内按角色说明作用域。
+      { key: 'sessions-online', to: '/sessions-online', icon: 'play', titleKey: 'nav.onlineSessions' },
+      // 会话上下文读面。两条只读**全是 h.admin(...)**（handler.go:1296）
+      // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+      // ★ API 前缀是 `/api/system/…`（不是 `/api/admin/`）—— 命名空间与抽屉路径不一致。
+      // ★ `titles/batch` 只读语义却只能 POST；四个写端点本页一律不碰。
+      {
+        key: 'session-context',
+        to: '/session-context',
+        icon: 'grid',
+        titleKey: 'nav.sessionContext',
+      },
+      // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
+      { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
+      // ★ 轮次列表的筛选候选值（2026-10-15 第一百二十七批）——
+      //   `admin/handler.go:1299` 的 `admin(...)` ⇒ **服务端没有角色下限**
+      //   （`admin := h.admin` → AdminMiddleware，supportedRole 接受 "user"）。
+      //   ★ 'admin' 档两条独立理由：
+      //     （甲）需要：载荷是**租户级聚合清单**（全租户用过的模型/供应商/客户端/负责人/标签），
+      //           不是某个用户自己的数据；
+      //     （乙）不过度限制：每个维度都拼了 tenantWhere ⇒ 租户内数据。
+      //   ★★ 模块头原写「admin 档 ⇒ 抽屉席不设 requiresRole」——**第四个**写下这句错的模块
+      //     （批 121/122/123 已因同一句话返工）。
+      //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
+      {
+        key: 'turns-filter-options',
+        to: '/turns-filter-options',
+        // ★ IconName 里**没有** `filter`（类型门会红）⇒ 用 `search`（筛选语义最贴）。
+        icon: 'search',
+        titleKey: 'nav.turnsFilterOptions',
+        requiresRole: 'admin',
+      },
+      // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。
+      //   GET /api/admin/session-analytics/filter-options
+      // ⚠️ 与兄弟席 `turns-filter-options` **可见范围方向相反**，两席不能互相套用：
+      //   · 兄弟：super_admin 也只看**自己租户**（永远拼 tenantWhere）；
+      //   · 本席：`effectiveScopeTenant`（`admin/session_tenant.go:180`）对 super_admin
+      //     返回**空串** ⇒ `if tenantID != ""` 不成立 ⇒ ★★ **super_admin 看的是全部租户的聚合**，
+      //     且这个端点**没有** `?tenant=` 收窄手段。
+      //   ⇒ 视图里对这一档必须显式写明，否则用户会以为「这就是我这个租户的清单」。
+      //
+      // 权限 `requiresRole: 'admin'`：
+      //   （甲）需要 admin：载荷是租户级聚合清单（这个租户所有人跑过的模型/提供商）。
+      //   （乙）不过度限制：除 super_admin 外两条查询都拼了 `AND tenant_id = $1`
+      //        （`session_analytics_top.go:206-209`、`:219-222`）⇒ 租户内数据。
+      // ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
+      {
+        key: 'session-analytics-filter-options',
+        to: '/session-analytics-filter-options',
+        // ★ IconName 里**没有** `funnel`（`AppIcon.vue:8-36` 全名单 27 个，
+        //   `funnel` 只是 AppDrawer.spec.ts:152 里的一个普通字符串字面量，不是图标名）
+        //   ⇒ 用 `search`（筛选语义最贴，与兄弟席一致）。
+        icon: 'search',
+        titleKey: 'nav.sessionAnalyticsFilterOptions',
+        requiresRole: 'admin',
+      },
+      // 流式连接注册台（live + 注销审计）。**admin 档**
+      // （admin/handler.go:1024-1025 两条都是 `admin(...)`）⇒ tenant_admin 可用
+      // ⇒ **不设** requiresRole。
+      // ⚠️ 桌面把这条路由标成 `requiresSuper: true`（web/src/router.ts:284）/
+      //   `super: true`（web/src/config/appNav.ts:195）—— **前端比后端严**，
+      //   按纪律以可执行的注册为准。
+      // ★ 数据源是**进程内**状态（domains/streaming.ConnectionRegistry），不是数据库
+      //   ⇒ 本族**没有跨租户查询**（对比批 104/106 那两个真正跨租户的族）。
+      { key: 'connection-registry', to: '/connection-registry', icon: 'server', titleKey: 'nav.connectionRegistry' },
+      // ★ 流量数据地平线（2026-10-14 第一百一十九批；2026-10-15 第 129 批随 r1033 改名）——
+      //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
+      // ⚠️ 与批 115/117/118 三席**相反**，而它们并没错：本族没有租户维度，
+      //   但载荷是**平台级全局事实**（六个键无一带租户）
+      //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
+      // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
+      // ⚠️ 第 129 批：席名/路径随端点改名（`/v1-data-horizon` → `/data-horizon`）。
+      { key: 'data-horizon', to: '/data-horizon', icon: 'clock', titleKey: 'nav.dataHorizon' },
+    ],
   },
-  // 系统自检面。⚠️ 后端六条全是 `admin(...)`（admin/self_check_handlers.go:60-68），
-  //   **席本身不设 requiresRole**；但页面内部对**跨租户的三段**
-  //   （runs / stats / models —— self_check_runs 有 tenant_id 列却从不引用）
-  //   另按 super_admin 门控，settings 与 trigger/availability 保持 admin 档。
-  { key: 'self-check', to: '/self-check', icon: 'check', titleKey: 'nav.selfCheck' },
-  // 凭据探测三态队列。**admin 档**（admin/probe_dashboard.go:1907 的
-  //   `adminWrap(h.handleProbeTaskRoute)`）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
-  // ★ 该路由是**方法多路复用**（GET/POST/DELETE 同一条），本页只发 GET。
-  { key: 'probe-queue', to: '/probe-queue', icon: 'clock', titleKey: 'nav.probeQueue' },
-  // 流式连接注册台（live + 注销审计）。**admin 档**
-  // （admin/handler.go:1024-1025 两条都是 `admin(...)`）⇒ tenant_admin 可用
-  // ⇒ **不设** requiresRole。
-  // ⚠️ 桌面把这条路由标成 `requiresSuper: true`（web/src/router.ts:284）/
-  //   `super: true`（web/src/config/appNav.ts:195）—— **前端比后端严**，
-  //   按纪律以可执行的注册为准。
-  // ★ 数据源是**进程内**状态（domains/streaming.ConnectionRegistry），不是数据库
-  //   ⇒ 本族**没有跨租户查询**（对比批 104/106 那两个真正跨租户的族）。
-  { key: 'connection-registry', to: '/connection-registry', icon: 'server', titleKey: 'nav.connectionRegistry' },
-  // 用量趋势线。**admin 档**（admin/handler.go:1267 的 `h.admin(h.HandleUsageAdmin)`
-  //   前缀子路由，分派 admin/usage.go:60-64）⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
-  // ★ 本族的租户口径是本仓第四种：`statsTenantScope`（admin/stats.go:87-97）对非
-  //   super_admin 强制用 auth.TenantID 并**忽略 tenant_id 参数** ⇒ tenant_admin 天然隔离，
-  //   与批 104（硬编码 tenant）与批 106（有列不接线）相反 ⇒ 不需要段落级门控。
-  { key: 'usage-trend-series', to: '/usage-trend-series', icon: 'chart', titleKey: 'nav.usageTrendSeries' },
-  // 响应格式异常（明细 + 按小时汇总）。★★ **superAdmin 档**
-  //   （admin/handler.go:913-914 两条都是 `h.superAdmin`）⇒ 抽屉席**须设** requiresRole，
-  //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
-  // ★★ 本族是本仓第六次「不隔离」（withAllTenantReadOnlyTx，
-  //   admin/format_anomalies.go:106/:143/:213）：两张表都有 tenant_id 列、
-  //   list 会 SELECT 出来，但 WHERE 从不过滤。
-  //   ★ 与批 104/106 的处置**相反**：那两族是 admin 档 + 不隔离
-  //     ⇒ tenant_admin 能读到跨租户 ⇒ 必须在视图内按段落门控；
-  //     本族是 superAdmin 档 ⇒ **档位本身就挡住了** ⇒ 无需任何段落级门控。
-  { key: 'format-anomalies', to: '/format-anomalies', icon: 'alert', titleKey: 'nav.formatAnomalies', requiresRole: 'super_admin' },
-  // ★ 2026-10-14 第一百一十批：指纹漂移。`admin/handler.go:942-943` 两条都是
-  //   `h.superAdmin`（整个 `/api/admin/model-integrity/` 前缀都是 superAdmin 档）
-  //   ⇒ 这一席**要** `requiresRole: 'super_admin'`。
-  //   ★ 读路径租户语义（批 157 后）：super_admin/admin_key 经
-  //     `withTenantOrAllReadOnlyTx` 的空-tenant 分支跨全部租户；
-  //     tenant_admin 则被收窄到本租户（`admin/model_integrity.go:165`
-  //     等四个读 helper）。菜单仍**要** `requiresRole: 'super_admin'`
-  //     ⇒ 视图内无需段落级门控。
-  //   ⚠️ 与 `integrity`（同前缀的 summary/events/resolve 那一面）是**两张席**：
-  //     同一个前缀上既有 admin 面也有 superAdmin 面 ⇒ 权限**不得**按前缀判。
+  // ── 数据运维（PC data-ops）─────────────────────────────────────────────
+  // 安全治理（脱敏/注入/合规）+ 数据生命周期与存储 + 日志运维 + 平台设置/
+  // 模块/自检。PC 该组另有 settings/self-update/proxy 等平台工具页（移动端
+  // 无对应席）与 maintain 外链（归运维平台组，移动端无）。
   {
-    key: 'model-integrity-drift',
-    to: '/model-integrity-drift',
-    icon: 'alert',
-    titleKey: 'nav.modelIntegrityDrift',
-    requiresRole: 'super_admin',
+    id: 'data-ops',
+    labelKey: 'nav.group.dataOps',
+    items: [
+      { key: 'alerts', to: '/alerts', icon: 'alert', titleKey: 'nav.alerts' },
+      // ★ 运维总览（2026-10-14 第一百一十七批）——
+      //   注册 `admin/handler.go:1091` 的 `admin(...)`，而 `AdminMiddleware`
+      //   （`admin/auth.go:85-140`）**只认证不检 role** ⇒ 后端 tenant_admin **能**读。
+      // ★★★★ 但 `handleOpsOverview` 自己不检 role，而 11 条子查询**全是全局表**
+      //   （取租户键的代码不存在）⇒ 归第三类：**完全没有租户维度** ⇒ 过度限制。
+      // ⇒ 本席**必须**设 `requiresRole: 'super_admin'`，并同步
+      //   `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+      // ⚠️ 这一族与批 113/114 那两席（'admin' 档）的**成因相反**：那一族服务端**有**租户维度，
+      //   只是租户键可能返空串；本族是**一个租户键都没有**。
+      // ⚠️ 前端严于后端是兜底不是修复：后端这一族**没有门**。
+      // ★ PC 端「运维总览」在运维平台组（/maintain/ops/overview，maintain 外链族）；
+      //   移动端没有 maintain 面 ⇒ 本席归数据运维组（部署机队/离线请求是运维事实）。
+      {
+        key: 'ops-overview',
+        to: '/ops-overview',
+        icon: 'cpu',
+        titleKey: 'nav.opsOverview',
+        requiresRole: 'super_admin',
+      },
+      // 脱敏规则：租户管理员可读本租户事件；其余三区在视图内按服务端档位挡。
+      { key: 'sanitize-rules', to: '/sanitize-rules', icon: 'check', titleKey: 'nav.sanitizeRules', requiresRole: 'admin' },
+      // 提示词注入现象面。admin 档（AdminMiddleware）⇒ 不设 requiresRole。
+      { key: 'injection', to: '/injection', icon: 'alert', titleKey: 'nav.injection' },
+      // 提示词注入配置面。admin 档 ⇒ 不设 requiresRole。
+      { key: 'injection-config', to: '/injection-config', icon: 'key', titleKey: 'nav.injectionConfig' },
+      // 输出合规命中与复核。admin 档（AdminMiddleware）⇒ 不设 requiresRole。
+      //（★ 原文件里 request-anomalies 的权限注释曾漂在本席上方 —— 本轮整理归位。）
+      { key: 'compliance-hits', to: '/compliance-hits', icon: 'alert', titleKey: 'nav.compliance' },
+      // 输出合规策略与词库。admin 档 ⇒ 不设 requiresRole。
+      { key: 'compliance-policy', to: '/compliance-policy', icon: 'key', titleKey: 'nav.compliancePolicy' },
+      // 响应格式异常（明细 + 按小时汇总）。★★ **superAdmin 档**
+      //   （admin/handler.go:913-914 两条都是 `h.superAdmin`）⇒ 抽屉席**须设** requiresRole，
+      //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
+      // ★★ 本族是本仓第六次「不隔离」（withAllTenantReadOnlyTx，
+      //   admin/format_anomalies.go:106/:143/:213）：两张表都有 tenant_id 列、
+      //   list 会 SELECT 出来，但 WHERE 从不过滤。
+      //   ★ 与批 104/106 的处置**相反**：那两族是 admin 档 + 不隔离
+      //     ⇒ tenant_admin 能读到跨租户 ⇒ 必须在视图内按段落门控；
+      //     本族是 superAdmin 档 ⇒ **档位本身就挡住了** ⇒ 无需任何段落级门控。
+      { key: 'format-anomalies', to: '/format-anomalies', icon: 'alert', titleKey: 'nav.formatAnomalies', requiresRole: 'super_admin' },
+      // 压缩可观测（stats/sessions，2026-10-08）。admin 档 ⇒ **不设** requiresRole。
+      // 与 /data-flow 配对：那页答「记录怎么分布」，本页答「压缩实际压了多少」。
+      // ⚠️ 本页压缩率是 **0-1 比例**，data-flow 的是 **0-100 百分数**，两者不可并列。
+      {
+        key: 'compression',
+        to: '/compression',
+        icon: 'cube',
+        titleKey: 'nav.compression',
+      },
+      // 数据生命周期**记录级**（stats/metrics/jobs/blobs/top，2026-10-08）。
+      // 与 /data-lifecycle 按「答什么」划界：那页答「表级存储与保留」（分区 + 体积榜），
+      // 本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」。粒度不同，不合并。
+      // ★ 四条注册（handler.go:960/962/979/994）全部是 `admin(...)`
+      //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
+      // ⚠️ 但本页的 `metrics` 是**全表口径**（SQL 无 WHERE，data_lifecycle_metrics.go:63），
+      //   而文件头注释写着「super-admin only」—— **与注册矛盾，以注册为准**。
+      {
+        key: 'data-flow',
+        to: '/data-flow',
+        icon: 'chart',
+        titleKey: 'nav.dataFlow',
+      },
+      // 数据生命周期：分区清单 + 体积榜。admin 档（admin()）⇒ 不设 requiresRole。
+      { key: 'data-lifecycle', to: '/data-lifecycle', icon: 'grid', titleKey: 'nav.lifecycle' },
+      // ★ 存储总览（2026-10-14 第一百二十三批）——
+      //   ★★★ 'admin' 档，**两条独立理由**（与批 122 同源但结论不同）：
+      //   （甲）**不过度限制**：载荷是**纯平台基础设施事实**（零 tenant 命中）⇒ 无理由上 super_admin；
+      //   （乙）**但需要 admin**：服务端**没有角色下限**（`admin := h.admin` → AdminMiddleware
+      //         + supportedRole 接受 "user"）⇒ 本机磁盘用量没理由给普通用户看。
+      //   ★ 连续三批（121/122/123）都栽在同一句「admin 档 ⇒ 不设 requiresRole」上，
+      //     根因是同一个：「admin 档」这个标签**掩盖了服务端没有角色下限**。
+      {
+        key: 'data-lifecycle-storage',
+        to: '/data-lifecycle-storage',
+        icon: 'grid',
+        titleKey: 'nav.dataLifecycleStorage',
+        requiresRole: 'admin',
+      },
+      // ★ 存储与日志配置（2026-10-14 第一百二十四批）——
+      //   `h.superAdmin` ⇒ 服务端**真门** ⇒ 抽屉席必须设 super_admin 并进 AppDrawer 白名单。
+      //   ★ 第九十三批写这个模块时，模块头**一开始就把权限结论写对了**
+      //     （它顺手看了相邻那一行 `storage/migration-state` 是 admin 档，
+      //     并写下「绝不能按 /api/admin/storage/ 前缀推权限」）——
+      //     本批要改的只是那几处**漂了 21 行的行号**，
+      //     结论一个字都不用改（这在九批里是第一次）。
+      {
+        key: 'storage-log-config',
+        to: '/storage-log-config',
+        icon: 'grid',
+        titleKey: 'nav.storageAndLogConfig',
+        requiresRole: 'super_admin',
+      },
+      // ★ 附件目录迁移进度（2026-10-15 第一百二十五批）——
+      //   `admin/handler.go:1132` 的 `admin(...)` ⇒ **服务端没有角色下限**
+      //   （`admin := h.admin` → AdminMiddleware，`pkg/identity` 的 supportedRole 接受 "user"）
+      //   ⇒ 与**上一席只隔一行**的 `storage-log-config`（`:1129` h.superAdmin，真门）
+      //      **档位正好相反** ⇒ 绝不能按 `/api/admin/storage/` 前缀推权限。
+      //   ★ 'admin' 档的两条独立理由：零租户维度（不过度限制）＋ 需要角色下限（不挡 user）。
+      //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单（那是 tenant_admin 掉的）。
+      {
+        key: 'storage-migration-state',
+        to: '/storage-migration-state',
+        icon: 'grid',
+        titleKey: 'nav.storageMigrationState',
+        requiresRole: 'admin',
+      },
+      // 附件留存清单。**admin 档**（handler.go:998-1008 六条全是 admin(...)）
+      // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+      // ★ 同一前缀下混着两条 superAdmin（cleanup/execute、filesystem/cleanup），本页两个都不碰。
+      {
+        key: 'attachments',
+        to: '/attachments',
+        icon: 'copy',
+        titleKey: 'nav.attachments',
+      },
+      // 日志运维面。★ admin 档（handler.go:959/1115/1116 三条都是 admin(...)）
+      // ⇒ **不设** requiresRole。
+      // ⚠️ 同前缀下 config / archive / cleanup 是 h.superAdmin ——
+      //   那是**前缀级的巧合**，不是整族的档位；按前缀判权限会判错。
+      // 图标用 clock（时间轴语义）：IconName 里没有 file，类型门会红。
+      { key: 'log-ops', to: '/log-ops', icon: 'clock', titleKey: 'nav.logOps' },
+      // 日志管理读面。四条只读**全是 admin 档**（handler.go:959,1115,1116,1119）
+      // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+      // ★ 同一前缀下混着三条 superAdmin（config/archive/cleanup）⇒ 不能按前缀判权限。
+      {
+        key: 'log-admin',
+        to: '/log-admin',
+        icon: 'clock',
+        titleKey: 'nav.logAdmin',
+      },
+      // 功能模块面。**admin 档**（`admin/modules.go:1129-1134` 的两条 `h.admin(...)`
+      //   —— 注册在 modules.go 自己里，**不在** handler.go）
+      // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+      // ★ 详情页 `/modules/:key` **不占抽屉席**（不设 ROOT_PATHS，返回钮行为与列表页不同）。
+      {
+        key: 'modules',
+        to: '/modules',
+        icon: 'cube',
+        titleKey: 'nav.modules',
+      },
+      // 免费资源自动发现读面。六条只读**全是 h.admin(...)**（handler.go:1302-1313）
+      // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
+      // ★★ 第七条 scan-scheduler/status 是 **h.superAdmin(...)**（handler.go:1316）
+      //   —— 它**不占**抽屉席（否则 admin 档页面被 superAdmin 门挡住），
+      //   由本页面内单独探测并单列 403 态。
+      // ★★★★★★ 同一个 handler、同一条路径**按方法分档**：GET=admin、
+      //   POST/PUT/PATCH/DELETE=superAdmin（RequireSuperAdminForWrite）。
+      //   ⇒ 又一条「不能按路径或前缀判权限」的证据。
+      // ★ 五个写端点（建模板/改模板/删模板/scan/import/import-orbi）本页一律不碰。
+      {
+        key: 'free-discovery',
+        to: '/free-discovery',
+        icon: 'search',
+        titleKey: 'nav.freeDiscovery',
+      },
+      // ★ 平台设置（2026-10-14 第一百二十一批）——
+      //   ★★★★ 第三类（过度限制），但**理由与批 115/117/118 三席都不同**，且更硬：
+      //   ① 那三席是「载荷含别人的数据」；本族**注册处包的是一个 router**，
+      //      `h.admin` 只是 `AdminMiddleware`（handler.go:894 → auth.go:85，只认证不检 role），
+      //      `settingsGet` / `settingsHistory` **全文零 role 检查**
+      //      ⇒ 按注册处读会读出「admin 档」，那是**错的**（模块头 (1) 已订正）。
+      //   ② 过度限制的**两条独立理由**：
+      //      · history 传 `tid=""` 且 `operator_user`/`operator_role` 是恒在键
+      //        ⇒ tenant_admin 能读到**别的操作者**的身份；
+      //      · `POST {key}/rollback` **完全没有 DangerLevel 门**，而 PUT 有
+      //        ⇒ 能 PUT 不了的档能直接 rollback（**后端缺陷，本批不动后端**）。
+      // ⇒ 前端严于后端是**兜底不是修复**：真正该补的是服务端那道门。
+      {
+        key: 'platform-settings',
+        to: '/platform-settings',
+        icon: 'grid',
+        titleKey: 'nav.platformSettings',
+        requiresRole: 'super_admin',
+      },
+      // 系统监控：答「监控器这层自己在不在干活」。admin 档（adminWrap）⇒ 不设 requiresRole。
+      { key: 'system-monitor', to: '/system-monitor', icon: 'cpu', titleKey: 'nav.sysmon' },
+      // 系统自检面。⚠️ 后端六条全是 `admin(...)`（admin/self_check_handlers.go:60-68），
+      //   **席本身不设 requiresRole**；但页面内部对**跨租户的三段**
+      //   （runs / stats / models —— self_check_runs 有 tenant_id 列却从不引用）
+      //   另按 super_admin 门控，settings 与 trigger/availability 保持 admin 档。
+      { key: 'self-check', to: '/self-check', icon: 'check', titleKey: 'nav.selfCheck' },
+    ],
   },
-  // MaaS 租户运维面。**superAdmin 档**（/api/admin/maas/tenants/** 全 superAdmin）⇒ 须设。
-  {
-    key: 'maas-tenant-ops',
-    to: '/maas-tenant-ops',
-    icon: 'user',
-    titleKey: 'nav.maasTenantOps',
-    requiresRole: 'super_admin',
-  },
-  // MaaS 配置面。**superAdmin 档** ⇒ 须设。
-  {
-    key: 'maas-admin-catalog',
-    to: '/maas-admin-catalog',
-    icon: 'key',
-    titleKey: 'nav.maasAdminCatalog',
-    requiresRole: 'super_admin',
-  },
-  // MaaS 订单。**superAdmin 档**（admin/maas_handlers.go:14-24）⇒ 须设 requiresRole。
-  // ★ 订单详情页 /maas-orders/:id 不占席，只有列表页进 DRAWER_NAV。
-  {
-    key: 'maas-orders',
-    to: '/maas-orders',
-    icon: 'grid',
-    titleKey: 'nav.maasOrders',
-    requiresRole: 'super_admin',
-  },
-  // MaaS 租户目录与价目。**admin 档**（/api/maas/** 是 h.admin(...)）⇒ 不设 requiresRole。
-  { key: 'maas-catalog', to: '/maas-catalog', icon: 'cube', titleKey: 'nav.maasCatalog' },
-  // MaaS 本租户钱包。admin 档 ⇒ 不设 requiresRole。
-  { key: 'maas-wallet', to: '/maas-wallet', icon: 'user', titleKey: 'nav.maasWallet' },
-  // 会话分析面。admin 档（admin/handler.go:1091-1094 全是 admin(...)）⇒ 不设 requiresRole。
-  { key: 'session-analytics', to: '/session-analytics', icon: 'chart', titleKey: 'nav.sessionAnalytics' },
-  // 看板读面（dashboard 九条）。★ admin 档（handler.go:1052-1069 全部 `admin(...)`）
-  // ⇒ **不设** requiresRole。
-  // ★ 与上面 /auto-route 的 super_admin 档相反 —— 这是本仓最容易照抄错的一处：
-  //   两条都叫「路由/看板面」，权限档却完全相反。
-  { key: 'dashboard-ops', to: '/dashboard-ops', icon: 'grid', titleKey: 'nav.dashboardOps' },
-  // 日志运维面。★ admin 档（handler.go:959/1115/1116 三条都是 admin(...)）
-  // ⇒ **不设** requiresRole。
-  // ⚠️ 同前缀下 config / archive / cleanup 是 h.superAdmin ——
-  //   那是**前缀级的巧合**，不是整族的档位；按前缀判权限会判错。
-  // 图标用 clock（时间轴语义）：IconName 里没有 file，类型门会红。
-  { key: 'log-ops', to: '/log-ops', icon: 'clock', titleKey: 'nav.logOps' },
-  // 人工标注工作台。★ admin 档（handler.go:1386/1389/1390 全是 admin(...)）
-  // ⇒ **不设** requiresRole。
-  { key: 'annotations', to: '/annotations', icon: 'check', titleKey: 'nav.annotations' },
-  {
-    key: 'request-anomalies',
-    to: '/request-anomalies',
-    icon: 'alert',
-    titleKey: 'nav.anomalies',
-    requiresRole: 'super_admin',
-  },
-  // 租户模型策略（superAdmin 档）：admin/handler.go:926-927 两条注册都是
-  // h.superAdmin，而 handleTenantModelPolicies 只有这一个调用点
-  // ⇒ 整棵子树（含 check 与 audit）都是 superAdmin 硬门槛。
-  // ★ 后端文件头把 check 标成 `(admin)`，那是过时的。
-  {
-    key: 'model-policies',
-    to: '/model-policies',
-    icon: 'cube',
-    titleKey: 'nav.modelPolicies',
-    requiresRole: 'super_admin',
-  },
-  // 租户模型策略审计。★ 无 OFFSET 无游标 ⇒ 页面刻意不放翻页控件。
-  {
-    key: 'model-policy-audit',
-    to: '/model-policy-audit',
-    icon: 'clock',
-    titleKey: 'nav.modelPolicyAudit',
-    requiresRole: 'super_admin',
-  },
-  // 租户审批配置。★ **admin 档**（wrapAdmin = admin.AdminMiddleware）⇒ tenant_admin 可用
-  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
-  {
-    key: 'approval-config',
-    to: '/approval-config',
-    icon: 'check',
-    titleKey: 'nav.approvalConfig',
-  },
-  // 审批队列（运行中的审批实例）。★ **admin 档**（main.go:7384-7385 两条
-  // 都是 wrapAdmin）⇒ tenant_admin 可用 ⇒ **故意不设** requiresRole；
-  // 设成 super_admin 必须让判据红。
-  // ★ 不碰 /api/v1/approvals/* 的 approve/reject/resume（真的改审批状态）。
-  {
-    key: 'approval-queue',
-    to: '/approval-queue',
-    icon: 'clock',
-    titleKey: 'nav.approvalQueue',
-  },
-  // 审批人与规则。同样 admin 档，同样**故意不设** requiresRole。
-  {
-    key: 'approval-rules',
-    to: '/approval-rules',
-    icon: 'grid',
-    titleKey: 'nav.approvalRules',
-  },
-  // 附件留存清单。**admin 档**（handler.go:998-1008 六条全是 admin(...)）
-  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
-  // ★ 同一前缀下混着两条 superAdmin（cleanup/execute、filesystem/cleanup），本页两个都不碰。
-  {
-    key: 'attachments',
-    to: '/attachments',
-    icon: 'copy',
-    titleKey: 'nav.attachments',
-  },
-  // 功能模块面。**admin 档**（`admin/modules.go:1129-1134` 的两条 `h.admin(...)`
-  //   —— 注册在 modules.go 自己里，**不在** handler.go）
-  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
-  // ★ 详情页 `/modules/:key` **不占抽屉席**（不设 ROOT_PATHS，返回钮行为与列表页不同）。
-  {
-    key: 'modules',
-    to: '/modules',
-    icon: 'cube',
-    titleKey: 'nav.modules',
-  },
-  // 日志管理读面。四条只读**全是 admin 档**（handler.go:959,1115,1116,1119）
-  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
-  // ★ 同一前缀下混着三条 superAdmin（config/archive/cleanup）⇒ 不能按前缀判权限。
-  {
-    key: 'log-admin',
-    to: '/log-admin',
-    icon: 'clock',
-    titleKey: 'nav.logAdmin',
-  },
-  // 会话上下文读面。两条只读**全是 h.admin(...)**（handler.go:1296）
-  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
-  // ★ API 前缀是 `/api/system/…`（不是 `/api/admin/`）—— 命名空间与抽屉路径不一致。
-  // ★ `titles/batch` 只读语义却只能 POST；四个写端点本页一律不碰。
-  {
-    key: 'session-context',
-    to: '/session-context',
-    icon: 'grid',
-    titleKey: 'nav.sessionContext',
-  },
-  // 免费资源自动发现读面。六条只读**全是 h.admin(...)**（handler.go:1302-1313）
-  // ⇒ **故意不设** requiresRole；设成 super_admin 必须让判据红。
-  // ★★ 第七条 scan-scheduler/status 是 **h.superAdmin(...)**（handler.go:1316）
-  //   —— 它**不占**抽屉席（否则 admin 档页面被 superAdmin 门挡住），
-  //   由本页面内单独探测并单列 403 态。
-  // ★★★★★★ 同一个 handler、同一条路径**按方法分档**：GET=admin、
-  //   POST/PUT/PATCH/DELETE=superAdmin（RequireSuperAdminForWrite）。
-  //   ⇒ 又一条「不能按路径或前缀判权限」的证据。
-  // ★ 五个写端点（建模板/改模板/删模板/scan/import/import-orbi）本页一律不碰。
-  {
-    key: 'free-discovery',
-    to: '/free-discovery',
-    icon: 'search',
-    titleKey: 'nav.freeDiscovery',
-  },
-  // 压缩可观测（stats/sessions，2026-10-08）。admin 档 ⇒ **不设** requiresRole。
-  // 与 /data-flow 配对：那页答「记录怎么分布」，本页答「压缩实际压了多少」。
-  // ⚠️ 本页压缩率是 **0-1 比例**，data-flow 的是 **0-100 百分数**，两者不可并列。
-  {
-    key: 'compression',
-    to: '/compression',
-    icon: 'cube',
-    titleKey: 'nav.compression',
-  },
-// 数据生命周期**记录级**（stats/metrics/jobs/blobs/top，2026-10-08）。
-  // 与 /data-lifecycle 按「答什么」划界：那页答「表级存储与保留」（分区 + 体积榜），
-  // 本页答「记录怎么分布 / 有没有在清理 / 大字段占多少」。粒度不同，不合并。
-  // ★ 四条注册（handler.go:960/962/979/994）全部是 `admin(...)`
-  //   ⇒ tenant_admin 可用 ⇒ **不设** requiresRole。
-  // ⚠️ 但本页的 `metrics` 是**全表口径**（SQL 无 WHERE，data_lifecycle_metrics.go:63），
-  //   而文件头注释写着「super-admin only」—— **与注册矛盾，以注册为准**。
-  {
-    key: 'data-flow',
-    to: '/data-flow',
-    icon: 'chart',
-    titleKey: 'nav.dataFlow',
-  },
-  // 凭据 × 模型实时状态。**这一条是 superAdmin 档**
-  // （`registerStateRoutes` 里 `wrap := h.superAdmin`，credential_state_handlers.go:175）
-  // ⇒ 抽屉席**必须**设 requiresRole: 'super_admin'（与前几批 admin 档页面相反）。
-  // ★ 加这一席时必须同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
-  // ★★ 同族三个 POST（单测/批测/按模型测）都**真的触发一次探测** ⇒ 本页一律不碰。
-  {
-    key: 'credential-model-state',
-    to: '/credential-model-state',
-    icon: 'cpu',
-    titleKey: 'nav.credModelState',
-    requiresRole: 'super_admin',
-  },
-  // 2026-10-08 第一百批：任务类型档案 + 人工修正反馈闭环。
-  // ★ admin 档（`admin/handler.go:1488` 用 `admin` 挂载 `RegisterTaskProfileRoutes`）
-  //   ⇒ **不设** requiresRole（与上面那席相反）。
-  // ★ 这一席同时接上批 98/99 的两个 API 模块 —— 它们此前**没有任何 UI 引用**，
-  //   全仓 94 个 API 模块里有 32 个是这种「做完了但用户点不到」的孤儿。
-  // ⚠️★ 同族的三个 POST（apply-tier-config / reload / import）**都有写副作用**，本页一律不碰。
-  // ⚠️★ 无需同步 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 那一席只列 super_admin 档的 key。
-  {
-    key: 'task-profile',
-    to: '/task-profile',
-    icon: 'grid',
-    titleKey: 'nav.taskProfile',
-  },
-  // 2026-10-08 第一百零一批：路由策略配置面（**superAdmin 档**）。
-  // ★ 同族**三档一档**（`admin/handler.go:1200 :1201 :1215` 是 h.superAdmin，
-  //   而 `:1216` 的 featured-models 是 admin）⇒ 席设 super_admin。
-  // ⇒ ★ 后果：featured-models 在移动端被顺带收严成 superAdmin（前端严于后端）。
-  //   这是刻意的取舍 —— 同一页混档会让「谁能看哪块」不可解释。记在视图文件头。
-  // ★★ 供应商错误趋势（2026-10-14 第一百一十三批）——
-  //   注册 `admin/handler.go:1270` `admin(h.errorsTrendHandlers.getErrorsTrend)`
-  //   ⇒ 是 **admin 档**，`tenant_admin` 本该可用（后端 R49-C1 已把它收口到本租户）。
-  // ⚠️⚠️ 但本席要设 **`requiresRole: 'admin'`**，不是缺省 —— 这是本仓**第二个**
-  //   该档席（第一个是 `users`），推导见 `api/errorsTrend.ts` 文件头：
-  //   `AdminMiddleware` 不检 role + `getErrorsTrend` 自己也不检 +
-  //   `EffectiveTenantIDAll` 对**非 tenant_admin 一律返空串**（= 查全租户）
-  //   ⇒ effective role 为 `user` 的主体能读到**全租户**。
-  //   ⇒ 缺省会命中 `navItemsFor` 的默认分支 `return true`，等于把那个口子做成一键入口。
-  //   ⇒ `'super_admin'` 也**不行**：那会连 `tenant_admin` 的本租户数据一起挡掉。
-  // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（那是 tenant_admin 掉的那批）。
-  {
-    key: 'errors-trend',
-    to: '/errors-trend',
-    icon: 'chart',
-    titleKey: 'nav.errorsTrend',
-    requiresRole: 'admin',
-  },
-  // ★★ 凭据模型状态变更历史（2026-10-14 第一百一十四批）——
-  //   挂载 `admin/handler.go:1475` `monitorH.RegisterMonitorRoutes(mux, h.admin)`
-  //   ⇒ 是 **admin 档**，与上面 errors-trend **同档同处置**。
-  // ⚠️ 同样要设 `requiresRole: 'admin'` 而不是缺省：这一族的租户键是
-  //   **手写内联**的 `tenantID := ""; if IsTenantAdmin(r) { … }`
-  //   （admin/credential_monitor.go:1532-1535），与 `EffectiveTenantIDAll` 语义相同
-  //   但**不叫那个名字** ⇒ ★★ grep `EffectiveTenantID` 找不到这一处。
-  // ⇒ 缺省会让 effective role 为 `user` 的主体读到全租户模型状态历史。
-  // ⚠️ 它**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（tenant_admin 要能看到）。
-  {
-    key: 'model-history',
-    to: '/model-history',
-    icon: 'server',
-    titleKey: 'nav.modelHistory',
-    requiresRole: 'admin',
-  },
-  // ★★ 凭据模型滑窗调用明细（2026-10-14 第一百一十五批）——
-  //   与 errors-trend / model-history **同注册处**，但**处置相反**。
-  // ⚠️⚠️ 这里设 **`requiresRole: 'super_admin'`** 而不是 `'admin'`：
-  //   ★★ **2026-10-26 订正**：本段原写的理由（「后端两条腿都只有 credential_id、
-  //   没有租户维度 ⇒ 跨租户可读」）已被后端补洞覆盖 —— audit #153 +
-  //   12h-audit 20261017（2026-10-16/17）给 `handleSlidingWindow`
-  //   （`admin/credential_monitor.go:753-863`）加了 `tenantID` / `IsTenantAdmin`、
-  //   两条 SQL 腿的 `AND ($5 = '' OR tenant_id = $5)`（`:905` / `:950`），
-  //   以及角色门（`:765-768`，`role=user` ⇒ 403）；Redis 快腿对 tenant_admin
-  //   直接跳过（`:809`，Redis 键没有 tenant tag）。
-  //   ⇒ 所以 `'admin'` 档**现在**是安全的；仍写 `'super_admin'` 是**过度限制**
-  //     （收紧一档不必跟着放开），**不是漏洞**。
-  // ⇒ ★ 它仍**必须**进 `AppDrawer.spec.ts` 的 superAdmin 白名单（与上面两席相反）。
-  {
-    key: 'sliding-window',
-    to: '/sliding-window',
-    icon: 'chart',
-    titleKey: 'nav.slidingWindow',
-    requiresRole: 'super_admin',
-  },
-  // ★ 模型智商（2026-10-14 第一百一十六批）——
-  //   注册 `admin/handler.go:1492-1495`，**四条全部** `h.superAdmin(...)`。
-  // ⇒ 本族**必须**设 `requiresRole: 'super_admin'`，
-  //   并同步 `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
-  // ⚠️ 与批 113/114 那两族**相反**：那两族走 `AdminMiddleware` 只认证不检 role，
-  //   所以用 `'admin'`；本族走 `SuperAdminMiddleware`（auth.go:376-409）
-  //   **逐字比对 claims.Role** ⇒ 档位本身是真门。
-  // ★★ 但「抽屉隐藏 ≠ 路由拦截」：`meta.requiresRole` 全仓无人消费，
-  //   守卫只查 `requiresAuth` 与登录态 ⇒ 深链照样打开 ⇒ 视图内还要兜一层。
-  {
-    key: 'model-iq',
-    to: '/model-iq',
-    icon: 'chart',
-    titleKey: 'nav.modelIQ',
-    requiresRole: 'super_admin',
-  },
-  // ★ 运维总览（2026-10-14 第一百一十七批）——
-  //   注册 `admin/handler.go:1091` 的 `admin(...)`，而 `AdminMiddleware`
-  //   （`admin/auth.go:85-140`）**只认证不检 role** ⇒ 后端 tenant_admin **能**读。
-  // ★★★★ 但 `handleOpsOverview` 自己不检 role，而 11 条子查询**全是全局表**
-  //   （取租户键的代码不存在）⇒ 归第三类：**完全没有租户维度** ⇒ 过度限制。
-  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'`，并同步
-  //   `src/components/shell/AppDrawer.spec.ts` 的排序白名单。
-  // ⚠️ 这一族与批 113/114 那两席（'admin' 档）的**成因相反**：那一族服务端**有**租户维度，
-  //   只是租户键可能返空串；本族是**一个租户键都没有**。
-  // ⚠️ 前端严于后端是兜底不是修复：后端这一族**没有门**。
-  {
-    key: 'ops-overview',
-    to: '/ops-overview',
-    icon: 'cpu',
-    titleKey: 'nav.opsOverview',
-    requiresRole: 'super_admin',
-  },
-  // ★ 请求动作时间线（2026-10-14 第一百一十八批）——
-  //   注册 `admin/handler.go:1045` 的 `admin(...)` ⇒ 后端 tenant_admin **能**读，
-  //   但该端点**完全没有租户维度**（只按 URL 里的 `request_id` 精确匹配），
-  //   而读**同一个** store 的 `/api/admin/live-stream` **有**租户过滤
-  //   ⇒ 后端不一致 ⇒ 归第三类，只能**过度限制**到 super_admin。
-  // ⇒ 本席**必须**设 `requiresRole: 'super_admin'` 并同步 `AppDrawer.spec.ts` 的排序白名单。
-  // ⚠️ 与批 115 `sliding-window` 同形态：`credential_id` 是全局主键、`request_id` 是
-  //   全局随机 id，两边都是「拿到那个标识就能读到明细」。
-  {
-    key: 'request-actions',
-    to: '/request-actions',
-    icon: 'search',
-    titleKey: 'nav.requestActions',
-    requiresRole: 'super_admin',
-  },
-  // ★ 流量数据地平线（2026-10-14 第一百一十九批；2026-10-15 第 129 批随 r1033 改名）——
-  //   注册 `admin/handler.go:1109` 的 `admin(...)` ⇒ **admin 档**（不设 requiresRole）。
-  // ⚠️ 与批 115/117/118 三席**相反**，而它们并没错：本族没有租户维度，
-  //   但载荷是**平台级全局事实**（六个键无一带租户）
-  //   ⇒ 过度限制的判据是「载荷里有没有别人的东西」，不是「有没有 tenant 条件」。
-  // ⇒ 且**不得**进 `AppDrawer.spec.ts` 的 superAdmin 白名单 —— 加进去那条立刻红。
-  // ⚠️ 第 129 批：席名/路径随端点改名（`/v1-data-horizon` → `/data-horizon`）。
-  { key: 'data-horizon', to: '/data-horizon', icon: 'clock', titleKey: 'nav.dataHorizon' },
-  // ★ 订阅档（2026-10-14 第一百二十批）——
-  //   ★★★★ 权限档**第四类**，与前三席都不同：
-  //   它**同样没有租户维度**（读全局 `subscription_tiers`），
-  //   **但**中间件 `requireSuperAdmin`（`main_jwt_middleware.go:65-73`）逐字
-  //   `if role != "super_admin" { 403 }` ⇒ **真门**。
-  // ⇒ 前四席的超管限制分别是「后端不一致/载荷含别人的数据/全局事实」三种理由，
-  //   本席的理由是「**服务端自己就是那道门**」⇒ 不必再为它补第四种过度限制论证。
-  // ⚠️ 第三种注册机制：它在 echo group 上（`main.go:7027` → `licensing.RegisterModuleRoutes`），
-  //   **不在** `admin/handler.go` 的 mux 里 ⇒ 只 grep mux 会误判成死端点。
-  {
-    key: 'subscription-tiers',
-    to: '/subscription-tiers',
-    icon: 'grid',
-    titleKey: 'nav.subscriptionTiers',
-    requiresRole: 'super_admin',
-  },
-  // ★ 平台设置（2026-10-14 第一百二十一批）——
-  //   ★★★★ 第三类（过度限制），但**理由与批 115/117/118 三席都不同**，且更硬：
-  //   ① 那三席是「载荷含别人的数据」；本族**注册处包的是一个 router**，
-  //      `h.admin` 只是 `AdminMiddleware`（handler.go:894 → auth.go:85，只认证不检 role），
-  //      `settingsGet` / `settingsHistory` **全文零 role 检查**
-  //      ⇒ 按注册处读会读出「admin 档」，那是**错的**（模块头 (1) 已订正）。
-  //   ② 过度限制的**两条独立理由**：
-  //      · history 传 `tid=""` 且 `operator_user`/`operator_role` 是恒在键
-  //        ⇒ tenant_admin 能读到**别的操作者**的身份；
-  //      · `POST {key}/rollback` **完全没有 DangerLevel 门**，而 PUT 有
-  //        ⇒ 能 PUT 不了的档能直接 rollback（**后端缺陷，本批不动后端**）。
-  // ⇒ 前端严于后端是**兜底不是修复**：真正该补的是服务端那道门。
-  {
-    key: 'platform-settings',
-    to: '/platform-settings',
-    icon: 'grid',
-    titleKey: 'nav.platformSettings',
-    requiresRole: 'super_admin',
-  },
-  // ★ 用量成本增强（2026-10-14 第一百二十二批）——
-  //   ★★★★ 权限档**第一类**（有租户维度）：三个端点都按租户过滤
-  //   ⇒ 各租户互相隔离，不是过度限制。
-  //   ★ 但**必须**设 `requiresRole: 'admin'`（不能像同族的 trend-series 那样不设）：
-  //   `h.admin` 无角色下限 + `supportedRole` 接受 `user`
-  //   ⇒ 服务端会把「全部租户的合计」发给普通 user。
-  //   ⇒ `navItemsFor` 的 'admin' 档放行 admin 三档、挡掉 user
-  //   ⇒ ★★ 在后端补上门之前，**这是唯一挡住普通 user 的东西**。
-  {
-    key: 'usage-enhanced',
-    to: '/usage-enhanced',
-    icon: 'chart',
-    titleKey: 'nav.usageEnhanced',
-    requiresRole: 'admin',
-  },
-  // ★ 存储总览（2026-10-14 第一百二十三批）——
-  //   ★★★ 'admin' 档，**两条独立理由**（与批 122 同源但结论不同）：
-  //   （甲）**不过度限制**：载荷是**纯平台基础设施事实**（零 tenant 命中）⇒ 无理由上 super_admin；
-  //   （乙）**但需要 admin**：服务端**没有角色下限**（`admin := h.admin` → AdminMiddleware
-  //         + supportedRole 接受 "user"）⇒ 本机磁盘用量没理由给普通用户看。
-  //   ★ 连续三批（121/122/123）都栽在同一句「admin 档 ⇒ 不设 requiresRole」上，
-  //     根因是同一个：「admin 档」这个标签**掩盖了服务端没有角色下限**。
-  {
-    key: 'data-lifecycle-storage',
-    to: '/data-lifecycle-storage',
-    icon: 'grid',
-    titleKey: 'nav.dataLifecycleStorage',
-    requiresRole: 'admin',
-  },
-  // ★ 存储与日志配置（2026-10-14 第一百二十四批）——
-  //   `h.superAdmin` ⇒ 服务端**真门** ⇒ 抽屉席必须设 super_admin 并进 AppDrawer 白名单。
-  //   ★ 第九十三批写这个模块时，模块头**一开始就把权限结论写对了**
-  //     （它顺手看了相邻那一行 `storage/migration-state` 是 admin 档，
-  //     并写下「绝不能按 /api/admin/storage/ 前缀推权限」）——
-  //     本批要改的只是那几处**漂了 21 行的行号**，
-  //     结论一个字都不用改（这在九批里是第一次）。
-  {
-    key: 'storage-log-config',
-    to: '/storage-log-config',
-    icon: 'grid',
-    titleKey: 'nav.storageAndLogConfig',
-    requiresRole: 'super_admin',
-  },
-  // ★ 附件目录迁移进度（2026-10-15 第一百二十五批）——
-  //   `admin/handler.go:1132` 的 `admin(...)` ⇒ **服务端没有角色下限**
-  //   （`admin := h.admin` → AdminMiddleware，`pkg/identity` 的 supportedRole 接受 "user"）
-  //   ⇒ 与**上一席只隔一行**的 `storage-log-config`（`:1129` h.superAdmin，真门）
-  //      **档位正好相反** ⇒ 绝不能按 `/api/admin/storage/` 前缀推权限。
-  //   ★ 'admin' 档的两条独立理由：零租户维度（不过度限制）＋ 需要角色下限（不挡 user）。
-  //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单（那是 tenant_admin 掉的）。
-  {
-    key: 'storage-migration-state',
-    to: '/storage-migration-state',
-    icon: 'grid',
-    titleKey: 'nav.storageMigrationState',
-    requiresRole: 'admin',
-  },
-  // ★ 轮次列表的筛选候选值（2026-10-15 第一百二十七批）——
-  //   `admin/handler.go:1299` 的 `admin(...)` ⇒ **服务端没有角色下限**
-  //   （`admin := h.admin` → AdminMiddleware，supportedRole 接受 "user"）。
-  //   ★ 'admin' 档两条独立理由：
-  //     （甲）需要：载荷是**租户级聚合清单**（全租户用过的模型/供应商/客户端/负责人/标签），
-  //           不是某个用户自己的数据；
-  //     （乙）不过度限制：每个维度都拼了 tenantWhere ⇒ 租户内数据。
-  //   ★★ 模块头原写「admin 档 ⇒ 抽屉席不设 requiresRole」——**第四个**写下这句错的模块
-  //     （批 121/122/123 已因同一句话返工）。
-  //   ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
-  {
-    key: 'turns-filter-options',
-    to: '/turns-filter-options',
-    // ★ IconName 里**没有** `filter`（类型门会红）⇒ 用 `search`（筛选语义最贴）。
-    icon: 'search',
-    titleKey: 'nav.turnsFilterOptions',
-    requiresRole: 'admin',
-  },
-  // ★ 会话分析筛选项（2026-10-15，第一百二十八批）。
-  //   GET /api/admin/session-analytics/filter-options
-  // ⚠️ 与兄弟席 `turns-filter-options` **可见范围方向相反**，两席不能互相套用：
-  //   · 兄弟：super_admin 也只看**自己租户**（永远拼 tenantWhere）；
-  //   · 本席：`effectiveScopeTenant`（`admin/session_tenant.go:180`）对 super_admin
-  //     返回**空串** ⇒ `if tenantID != ""` 不成立 ⇒ ★★ **super_admin 看的是全部租户的聚合**，
-  //     且这个端点**没有** `?tenant=` 收窄手段。
-  //   ⇒ 视图里对这一档必须显式写明，否则用户会以为「这就是我这个租户的清单」。
-  //
-  // 权限 `requiresRole: 'admin'`：
-  //   （甲）需要 admin：载荷是租户级聚合清单（这个租户所有人跑过的模型/提供商）。
-  //   （乙）不过度限制：除 super_admin 外两条查询都拼了 `AND tenant_id = $1`
-  //        （`session_analytics_top.go:206-209`、`:219-222`）⇒ 租户内数据。
-  // ⚠️ 'admin' 档**不得**进 AppDrawer.spec.ts 的 superAdmin 白名单。
-  {
-    key: 'session-analytics-filter-options',
-    to: '/session-analytics-filter-options',
-    // ★ IconName 里**没有** `funnel`（`AppIcon.vue:8-36` 全名单 27 个，
-    //   `funnel` 只是 AppDrawer.spec.ts:152 里的一个普通字符串字面量，不是图标名）
-    //   ⇒ 用 `search`（筛选语义最贴，与兄弟席一致）。
-    icon: 'search',
-    titleKey: 'nav.sessionAnalyticsFilterOptions',
-    requiresRole: 'admin',
-  },
-  // 脱敏规则：租户管理员可读本租户事件；其余三区在视图内按服务端档位挡。
-  { key: 'sanitize-rules', to: '/sanitize-rules', icon: 'check', titleKey: 'nav.sanitizeRules', requiresRole: 'admin' },
-  // ★ 加这一席**必须**同步 `src/components/shell/AppDrawer.spec.ts` 的白名单。
-  {
-    key: 'routing-policy',
-    to: '/routing-policy',
-    icon: 'chart',
-    titleKey: 'nav.routingPolicy',
-    requiresRole: 'super_admin',
-  },
-] as const
+]
+
+/**
+ * 抽屉的扁平视图 = 各组依序拼接。席集与整理前**逐席一致**（一席不增一席不减），
+ * 只是组归属与遍历顺序变化。routeAllowedFor / isRootRoute / AppDrawer.spec 穷举
+ * 等**不感知分组**的消费面全部走这一份 —— 权限语义仍只挂在席上，与组归属无关。
+ *
+ * ★ 这里**不写** `as const`：`as const` 会把各组的 `items` 冻成 readonly 元组，
+ *   而 `NavGroup.items` 是可变 `NavItem[]` ⇒ 赋值必红（readonly 数组不可赋给
+ *   可变数组）。上下文类型 `readonly NavGroup[]` 已经给了足够的字面量检查
+ *   （icon 名不在 IconName 联合里照样红）。
+ */
+export const DRAWER_NAV: readonly NavItem[] = DRAWER_GROUPS.flatMap((g) => g.items)
 
 const ROOT_PATHS = new Set<string>([...BOTTOM_NAV, ...DRAWER_NAV].map((n) => n.to))
 
@@ -770,7 +883,11 @@ export function navItemsFor(
  *
  * ★ 2026-10-21（R72f）：同时消费 `requiresCapability` ⇒ ⇒ 功能没装配时，
  *   **直接访问该路由也进不去**（不只是抽屉里不显示）⇒ ⇒ 与抽屉口径同源、
- *   同 fail-closed。 */
+ *   同 fail-closed。
+ *
+ * ★ 2026-11-20 菜单整理轮：DRAWER_NAV 改由 DRAWER_GROUPS 派生后，本函数的
+ *   「按 to 精确查一项」语义依赖一个**不变量 —— 席的 `to` 在全部组里唯一**。
+ *   该不变量由 `AppDrawer.spec.ts` 的配置不变量钉测看守。 */
 export function routeAllowedFor(
   path: string,
   role: string | null | undefined,

@@ -3,7 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import AppDrawer from './AppDrawer.vue'
-import { DRAWER_NAV, BOTTOM_NAV, navItemsFor, isNavItemActive } from '@/config/appNav'
+import { DRAWER_GROUPS, DRAWER_NAV, BOTTOM_NAV, navItemsFor, isNavItemActive } from '@/config/appNav'
 import { useAuthStore } from '@/stores/auth'
 import { useCapabilitiesStore } from '@/stores/capabilities'
 
@@ -37,7 +37,29 @@ vi.mock('@/hyper', async (importOriginal) => {
 
 let mounted: Array<{ unmount(): void }> = []
 
-async function mountDrawerAs(role: string, startPath = '/', enabledCapabilities: readonly string[] = []) {
+/**
+ * ★ 2026-11-20 菜单整理轮：抽屉改分组手风琴，默认**全收起**。
+ *   既有判据的强度依赖「席真的渲染出来了」（按 href 找链接、穷举点击收起），
+ *   挂载后先把全部组展开，让原有断言继续量「画出来的每一席」；
+ *   收起态本身由「AppDrawer 分组」describe 单独钉，不给默认路径掺水。
+ */
+async function expandAllGroups(): Promise<void> {
+  const toggles = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.drawer__group-toggle'))
+  for (const b of toggles) {
+    if (b.getAttribute('aria-expanded') !== 'true') {
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    }
+  }
+  await flushPromises()
+  await flushPromises()
+}
+
+async function mountDrawerAs(
+  role: string,
+  startPath = '/',
+  enabledCapabilities: readonly string[] = [],
+  expandGroups = true,
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().userInfo = {
@@ -72,6 +94,7 @@ async function mountDrawerAs(role: string, startPath = '/', enabledCapabilities:
   mounted.push(w)
   await flushPromises()
   await flushPromises()
+  if (expandGroups) await expandAllGroups()
   return Object.assign(w, { __router: router })
 }
 
@@ -618,4 +641,178 @@ describe('AppDrawer 导航后收起', () => {
   //   变的是「多慢算失败」这条与机器负载有关的判据。
   //   ⇒ 若哪天导航项继续暴涨，这里要跟着调，而不是回退成默认 20s。
   120_000)
+})
+
+/**
+ * 分组手风琴（2026-11-20 菜单整理轮）—— 抽屉从 89 席平铺改为按 **PC 端
+ * NAV_GROUPS 分类学**的 6 组手风琴。钉三件事：
+ * ① 浏览态默认全收起（组头在场、席不在 DOM）—— 这是本轮的默认形态；
+ * ② 点组头展开/再点收起，aria-expanded 与 DOM 同步（可点性是断言的地基）；
+ * ③ 搜索态平铺跨组（既有搜索行为不变，组头隐藏）。
+ */
+describe('AppDrawer 分组（2026-11-20：从 PC 菜单口径整理）', () => {
+  beforeEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+    vi.resetAllMocks()
+  })
+  afterEach(() => {
+    for (const w of mounted) {
+      try { w.unmount() } catch { /* ignore */ }
+    }
+    mounted = []
+    document.body.innerHTML = ''
+  })
+
+  async function groupToggles(): Promise<HTMLButtonElement[]> {
+    return Array.from(document.body.querySelectorAll<HTMLButtonElement>('.drawer__group-toggle'))
+  }
+
+  async function drawerLinks(): Promise<string[]> {
+    return Array.from(document.body.querySelectorAll('nav.drawer__nav a.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+  }
+
+  async function typeSearch(text: string): Promise<void> {
+    const input = document.body.querySelector('input.drawer__search-input') as HTMLInputElement | null
+    if (!input) throw new Error('drawer search input not found in body')
+    input.value = text
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    await flushPromises()
+  }
+
+  it('★ 浏览态默认全收起：组头在场、每组席体隐藏（v-show=display:none）、aria-expanded=false', async () => {
+    // ⚠️ 组体用 v-show ⇒ 收起时席仍在 DOM（display:none），不是不在 DOM ——
+    //   「收起」断言必须锚 display，不能锚元素存在性（那是 v-if 的语义）。
+    await mountDrawerAs('super_admin', '/', [], false)
+    const toggles = await groupToggles()
+    expect(toggles.length).toBe(DRAWER_GROUPS.length)
+    for (const b of toggles) expect(b.getAttribute('aria-expanded')).toBe('false')
+    const bodies = Array.from(document.body.querySelectorAll<HTMLElement>('.drawer__group-body'))
+    expect(bodies.length).toBe(DRAWER_GROUPS.length)
+    for (const b of bodies) expect(b.style.display).toBe('none')
+    // 权限门控仍发生在渲染之前 ⇒ 收起态下被挡的席**真的不在** DOM（与 v-show 无关）。
+    // ★ 换角色前必须先卸掉上一个抽屉 —— Teleport 挂在 body 上，不卸会跨挂载累积
+    //   （本文件 navItemsFor describe 的 body 清理注释就是这一课）。
+    const superDrawer = mounted.at(-1)
+    expect(superDrawer, '前一步的 super_admin 抽屉应在 mounted 里').toBeTruthy()
+    superDrawer!.unmount()
+    document.body.innerHTML = ''
+    mounted = []
+    await mountDrawerAs('tenant_admin', '/', [], false)
+    const hrefs = Array.from(document.body.querySelectorAll('a.drawer__link'))
+      .map((a) => a.getAttribute('href') ?? '')
+    expect(hrefs.some((h) => h.includes('/integrity'))).toBe(false)
+  })
+
+  it('★ 点组头展开该组、再点收起：aria-expanded 与 display 同步翻转（v-show 收放）', async () => {
+    // 测试环境 locale=en-US ⇒ 组标题断言用 en 文案（zh 文案同一 key，真机同代码路径）。
+    await mountDrawerAs('super_admin', '/', [], false)
+    const toggle = (await groupToggles()).find((b) => b.textContent?.includes('Requests & Sessions'))
+    expect(toggle, '六个组里应有「请求与会话」组头').toBeTruthy()
+    const body = toggle!.parentElement!.querySelector('.drawer__group-body') as HTMLElement
+    expect(body).toBeTruthy()
+    expect(body.style.display).toBe('none')
+    toggle!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(toggle!.getAttribute('aria-expanded')).toBe('true')
+    expect(body.style.display).not.toBe('none')
+    expect(body.querySelectorAll('a.drawer__link').length).toBeGreaterThan(0)
+    // 再点收起：席仍在 DOM（v-show）—— 激活态与权限语义不随收放变化
+    toggle!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(toggle!.getAttribute('aria-expanded')).toBe('false')
+    expect(body.style.display).toBe('none')
+    expect(body.querySelectorAll('a.drawer__link').length).toBeGreaterThan(0)
+  })
+
+  it('★ 组头计数 === 展开后该组实际席数（每组逐个对拍，不抽样），合计 = 全部可见席', async () => {
+    // reconciliation 席带 requiresCapability ⇒ 显式开能力位，让它也在场。
+    await mountDrawerAs('super_admin', '/', ['cost_reconciliation'], false)
+    // 展开全部组（★ 只点一轮 —— 再点会把刚展开的组收回去）。
+    for (const b of await groupToggles()) {
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    }
+    await flushPromises()
+    const sections = Array.from(document.body.querySelectorAll('.drawer__group'))
+    expect(sections.length).toBe(DRAWER_GROUPS.length)
+    let total = 0
+    for (const section of sections) {
+      const claimed = Number(section.querySelector('.drawer__group-count')!.textContent!.trim())
+      const actual = section.querySelectorAll('a.drawer__link').length
+      expect(claimed, '组头计数必须与实际渲染的席数一致').toBe(actual)
+      expect(actual).toBeGreaterThan(0)
+      total += actual
+    }
+    expect(total).toBe(DRAWER_NAV.length)
+  })
+
+  it('★ 搜索态平铺跨组：组头消失、命中席直接渲染；清空搜索回分组态', async () => {
+    await mountDrawerAs('super_admin')
+    expect((await groupToggles()).length).toBeGreaterThan(0)
+    await typeSearch('compress')
+    expect((await groupToggles()).length).toBe(0)
+    const links = await drawerLinks()
+    expect(links.some((h) => h.includes('/compression'))).toBe(true)
+    await typeSearch('')
+    expect((await groupToggles()).length).toBe(DRAWER_GROUPS.length)
+  })
+})
+
+/**
+ * 配置不变量（2026-11-20 菜单整理轮）—— DRAWER_GROUPS 是新的分组 SSOT，
+ * 扁平 DRAWER_NAV 是派生面；这里钉住两者之间的关系与整理轮的边界。
+ */
+describe('DRAWER_GROUPS 配置不变量', () => {
+  it('★ 扁平 DRAWER_NAV === 各组依序拼接（无丢席、无重复席、顺序即组序）', () => {
+    const flat = DRAWER_GROUPS.flatMap((g) => g.items)
+    expect(flat).toEqual(DRAWER_NAV)
+    const keys = flat.map((i) => i.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('★ 89 席 / 6 组（整理轮守门数字：增减席必须是对接新面的轮次，不许重构轮悄悄改）', () => {
+    expect(DRAWER_NAV.length).toBe(89)
+    expect(DRAWER_GROUPS.length).toBe(6)
+  })
+
+  it('★ 组 id 与 PC 端 NAV_GROUPS 同名同序（跨端同一套分类学；primary 为移动端首组）', () => {
+    // PC 端在役组序：operations → models-routing → tenant-users → requests-sessions
+    // → data-ops（opsplatform/guide/chat 移动端无对应席，不设空组）。
+    expect(DRAWER_GROUPS.map((g) => g.id)).toEqual([
+      'primary',
+      'operations',
+      'models-routing',
+      'tenant-users',
+      'requests-sessions',
+      'data-ops',
+    ])
+  })
+
+  it('★ 席的 to 在 BOTTOM_NAV + DRAWER_NAV 全集里唯一（routeAllowedFor 按 to 精确查一项依赖它）', () => {
+    const tos = [...BOTTOM_NAV, ...DRAWER_NAV].map((i) => i.to)
+    expect(new Set(tos).size).toBe(tos.length)
+  })
+
+  it('★ 每个组的标题键都能解析出文案（i18n 缺键会回退成键名本身）', async () => {
+    const { t } = await import('@/i18n')
+    for (const g of DRAWER_GROUPS) {
+      expect(t(g.labelKey), `组标题键 ${g.labelKey} 未落词典`).not.toBe(g.labelKey)
+      expect(t(g.labelKey).length).toBeGreaterThan(0)
+    }
+  })
+
+  it('★ 每席恰好属于一组：组内过滤后并集 === navItemsFor(扁平)（组不改变权限口径）', () => {
+    // 能力位给全集 ⇒ super_admin 的全量口径；逐 key 对拍组内外两侧。
+    const capNames = new Set(
+      DRAWER_NAV.map((i) => i.requiresCapability).filter((c): c is string => typeof c === 'string'),
+    )
+    const flatKeys = navItemsFor(DRAWER_NAV, 'super_admin', capNames).map((i) => i.key)
+    const groupKeys = DRAWER_GROUPS.flatMap((g) => navItemsFor(g.items, 'super_admin', capNames)).map((i) => i.key)
+    expect(groupKeys).toEqual(flatKeys)
+  })
 })
