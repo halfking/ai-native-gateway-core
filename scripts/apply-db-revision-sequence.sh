@@ -2793,6 +2793,12 @@ files=(
   #   创建 CST（Asia/Shanghai UTC+8）业务函数族（cst_today/cst_days_ago/cst_day_start/cst_date）；
   #   面向用户的统计API使用CST函数，与用户认知的"今天""昨天"对齐（幂等 CREATE OR REPLACE）。
   "$ROOT_DIR/sql/migrations/startup/992_add_cst_timezone_functions.sql"
+  # ★ 993（2026-11-20 看板对账口径对齐轮 / F4 落实）：report_snapshots_exact_cost_cents——
+  #   estimated_cost_cents bigint → numeric(24,6)。逐分组取整求和 ≠ 区间一次取整
+  #   （每天差 ≤3¢，211 实测定量）；写面同步去 ROUND 存精确分值，读面展示一次取整
+  #   ⇒ 对账页总费用与看板（usage_facts 一次求和）逐字相等。
+  #   ★ 表极小（~1k 行/日），ALTER TYPE 即时；历史快照由部署后回填（/run 重跑）。
+  "$ROOT_DIR/sql/migrations/startup/993_report_snapshots_exact_cost_cents.sql"
 )
 
 

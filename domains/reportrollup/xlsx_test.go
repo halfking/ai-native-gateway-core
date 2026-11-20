@@ -193,7 +193,7 @@ func TestFoldProviderBuckets(t *testing.T) {
 		t.Errorf("token sums wrong: %+v", f)
 	}
 	if f.CostCents != 110 || f.CreditsCharged != 40 {
-		t.Errorf("cost/credits = %d/%d, want 110/40", f.CostCents, f.CreditsCharged)
+		t.Errorf("cost/credits = %v/%d, want 110/40", f.CostCents, f.CreditsCharged)
 	}
 	if f.ErrorKindBreakdown["timeout"] != 1 || f.ErrorKindBreakdown["rate_limited"] != 2 {
 		t.Errorf("breakdown merge wrong: %v", f.ErrorKindBreakdown)

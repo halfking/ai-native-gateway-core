@@ -48,7 +48,7 @@ type Totals struct {
 	CacheReadTokens    int64   `json:"cache_read_tokens"`
 	CacheWriteTokens   int64   `json:"cache_write_tokens"`
 	TotalTokens        int64   `json:"total_tokens"`
-	EstimatedCostCents int64   `json:"estimated_cost_cents"`
+	EstimatedCostCents float64 `json:"estimated_cost_cents"`
 	Currency           string  `json:"currency"`
 	CreditsCharged     int64   `json:"credits_charged"`
 	// InternalCostCents 内部金额（分）= Σ(credits × 快照冻结的

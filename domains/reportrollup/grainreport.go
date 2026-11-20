@@ -450,7 +450,7 @@ type grainScanRow struct {
 	outputTokens  int64
 	cacheRead     int64
 	cacheWrite    int64
-	costCents     int64
+	costCents     float64
 	currency      string
 	credits       int64
 	internalCent  float64
@@ -534,7 +534,8 @@ type grainAccumulator struct {
 	requestCount, successCount int64
 	inputTokens, outputTokens  int64
 	cacheRead, cacheWrite      int64
-	costCents, credits         int64
+	costCents                  float64
+	credits                    int64
 	internalCents              float64
 	currency                   string
 	p50w, p95w, w              float64
