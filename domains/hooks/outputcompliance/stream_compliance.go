@@ -329,6 +329,13 @@ type complianceStreamState struct {
 	// sanitize 侧的惰性内容工具豁免。chat 形态首增量自带名字（直接进标签），
 	// 不依赖这张表。
 	toolNames map[string]string
+	// terminalSeen 表示本流已处理过**终帧**（message_stop / [DONE] /
+	// response.completed 等，见 isStreamTerminalFrame）。终帧之后的
+	// releaseCheckedFrames 走「正常收尾」语义；没见过终帧就来 release
+	// （FlushStreamPending 路径）＝ 流被中途掐断 ⇒ 参数 lane 的拼接文本
+	// 天然是**截断前缀**，不能按「上游发来的完整参数」判定（2026-11-20
+	// 211 生产事件，见 releaseCheckedFrames 的截断豁免注释）。
+	terminalSeen bool
 }
 
 // pendingCap 返回本流的待检缓冲上限（零值 ⇒ 取当前 env 默认）。
@@ -447,6 +454,7 @@ func (it *OutputComplianceInterceptor) processStreamChunk(ctx context.Context, f
 		return blockedChunkResult(err), nil
 	}
 	if isStreamTerminalFrame(frame) {
+		state.terminalSeen = true
 		prior, err := it.releaseCheckedFrames(state.checkCtx, state, meta)
 		if err != nil {
 			return blockedChunkResult(err), nil
@@ -665,6 +673,38 @@ func (it *OutputComplianceInterceptor) releaseCheckedFrames(ctx context.Context,
 				Evidence: boundedPolicyEvidence(original),
 			}
 		}
+		// ★ 2026-11-20 211 生产事件（request d2b7d79a… / trace 20e262a1…，
+		// glm-5.3-flash via apiclaude.cc）：上游在工具参数增量发到一半时断流
+		// （executor 已按 upstream_down 分类记账），finish() 的
+		// FlushStreamPending 把只累积到 2 字节的截断前缀（`{"`）当「完整工具
+		// 参数」判 json.Valid ⇒ tool_json_invalid fail-closed ⇒ ① 客户端可见
+		// 终帧被换成 output_policy_blocked（retryable=false + 「报告网关管理
+		// 员」），把本该呈现的上游断流错误顶掉；② 审核面收到一张「策略拦截」
+		// 单，而真因（上游中断）executor 早已记过账。
+		//
+		// ★ 语义边界：tool_json_invalid 的合同是「上游**发完了**的参数不是合法
+		// JSON」（rv-2089 形态：完整流 + 非法参数）。没见过终帧就来 release ＝
+		// 流被中途掐断 ⇒ 拼接文本是**截断前缀**，不是「上游发来的完整参数」
+		// ⇒ 这不是格式违规，是传输中断 ⇒ **不产出策略判决**，放行让既有的
+		// 上游错误终帧呈给客户端。
+		//
+		// ★ 豁免面刻意收窄：只豁免「唯一判决就是 tool_json_invalid」的 lane。
+		// 真实规则命中（凭据/外传目的地，含对截断但已可判定的内容）与脱敏
+		// 改写仍按原合同执行；终帧路径（terminalSeen）不豁免——完整收尾的流
+		// 发非法参数仍是上游格式违规，照拦。
+		if result.Blocked && !state.terminalSeen && issuesAllToolJSONInvalid(result.Issues) {
+			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionAllow, metrics.OutputGatePathStreamLane).Inc()
+			slog.Warn("output_compliance: released truncated tool lane on interrupted stream",
+				"request_id", meta.RequestID,
+				"session_id", meta.SessionID,
+				"tenant_id", meta.TenantID,
+				"lane", lane,
+				"label", label,
+				"lane_bytes", len(original),
+				"rule_id", GuardToolJSONInvalidRuleID,
+			)
+			continue
+		}
 		if result.Blocked || state.redact && result.ToolShapeRedactionRequired {
 			metrics.OutputGateDecisionsTotal.WithLabelValues(metrics.OutputGateNameCompliance, metrics.OutputGateActionBlock, metrics.OutputGatePathStreamLane).Inc()
 			// r1028 (2026-10-14, 154 incident): the lane block used to be
@@ -776,6 +816,22 @@ func isToolArgumentLane(lane string) bool {
 	return isJSONToolArgumentLane(lane) || strings.Contains(lane, ".tool_use.input") ||
 		(strings.HasPrefix(lane, "responses.") && (strings.HasSuffix(lane, ".input") ||
 			strings.HasSuffix(lane, ".custom_input") || strings.HasSuffix(lane, ".custom_input.snapshot")))
+}
+
+// issuesAllToolJSONInvalid 报告这组 issues 是否**只有** tool_json_invalid
+// （参数拼接文本不是合法 JSON 的守卫判决，sanitize 侧恒产一条；见
+// output_sensitive.go CheckField 的同名分支）。真实内容规则命中
+// （credential / egress 等）不得触发截断豁免，故要求逐条判定。
+func issuesAllToolJSONInvalid(issues []outputcompliance.ComplianceIssue) bool {
+	if len(issues) == 0 {
+		return false
+	}
+	for _, issue := range issues {
+		if issue.Subtype != "tool_json_invalid" {
+			return false
+		}
+	}
+	return true
 }
 
 func isTrustedSSEHeartbeat(frame []byte) bool {
