@@ -239,7 +239,7 @@
     <thead><tr><th>机器</th><th>形态</th><th>现役版本</th><th>git_sha</th><th>验证</th></tr></thead>
     <tbody>
       <tr><td><strong>211</strong></td><td>Docker 蓝绿（槽 a @8781，旧槽 b @8783 可回滚）</td><td class="mono">2.6.1-f251bdfa-20261120-211</td><td class="mono">f251bdfa</td><td><span class="tag green">两层 E2E</span> flow rc=0 FAILED=0 + <span class="tag green">PASS 58 条</span></td></tr>
-      <tr><td><strong>154</strong></td><td>systemd（经 252 跳板，网关 @8781）</td><td class="mono">2.6.1-1cd16735-20261120-3147</td><td class="mono">1cd16735</td><td><span class="tag green">端点全 200</span> 4 个会话分析端点 + healthz/readyz/凭据冒烟</td></tr>
+      <tr><td><strong>154</strong></td><td>systemd（经 252 跳板，网关 @8781）</td><td class="mono">2.6.1-16a9f2a7-20261120-3149</td><td class="mono">16a9f2a7</td><td><span class="tag green">端点全 200</span> 我方部署（1cd16735/3147）后<strong>被并行车代发</strong>；运行时内容与我方 tip 一致（我方提交不改运行时）</td></tr>
       <tr><td><strong>245</strong></td><td>systemd（网关 @8782，与 154 共享 252 PG）</td><td class="mono">2.6.1-1cd16735-20261120-3148</td><td class="mono">1cd16735</td><td><span class="tag green">端点全 200</span> 同上</td></tr>
     </tbody>
   </table>
@@ -280,7 +280,7 @@
   <div class="kv">
     <dt>审计基线</dt><dd>origin/main @ 16a9f2a71（AST 复算）</dd>
     <dt>落仓 tip</dt><dd>见 git log origin/main（本轮 5 笔）</dd>
-    <dt>现役身份</dt><dd>211 f251bdfa / 154 1cd16735 / 245 1cd16735</dd>
+    <dt>现役身份</dt><dd>211 f251bdfa / 154 16a9f2a7（并行车代发）/ 245 1cd16735</dd>
     <dt>证据</dt><dd>docs/audit/evidence/2026-11-20-211-session-analytics-{maestro-flow,cdp-probe}.txt</dd>
     <dt>主档</dt><dd>docs/audit/2026-11-20-会话分析系统前端实施报告.md §7.8 / §7.9 / §7.10</dd>
   </div>
