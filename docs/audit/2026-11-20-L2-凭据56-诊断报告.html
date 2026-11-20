@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L2 诊断报告：凭据 56 cycleAll 跳过根因分析</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            border-left: 4px solid #3498db;
+            padding-left: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 2px;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border: 1px solid #ddd;
+        }
+        th {
+            background: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background: #f2f2f2;
+        }
+        .code-block {
+            background: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            overflow-x: auto;
+            font-family: "Courier New", monospace;
+            font-size: 14px;
+        }
+        .highlight {
+            background: #fff3cd;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        .finding {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .conclusion {
+            background: #fff9e6;
+            border: 2px solid #ffc107;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .metadata {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .contradiction {
+            background: #ffebee;
+            border-left: 4px solid #f44336;
+            padding: 15px;
+            margin: 15px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 L2 诊断报告：凭据 56 cycleAll 跳过根因分析</h1>
+        
+        <div class="metadata">
+            <strong>诊断时间</strong>: 2026-11-20 23:14:45<br>
+            <strong>诊断对象</strong>: 凭据 56 (provider_id=33370, code=apichina)<br>
+            <strong>问题描述</strong>: 主档记录 last_probe_at 停在 2026-11-13，7 天未更新<br>
+            <strong>诊断方法</strong>: 直接查询生产数据库，对照 cycleAll 源码逐条验证
+        </div>
+
+        <h2>一、凭据基本状态</h2>
+        
+        <table>
+            <tr>
+                <th>字段</th>
+                <th>值</th>
+                <th>状态</th>
+            </tr>
+            <tr>
+                <td>id</td>
+                <td>56</td>
+                <td><span class="status info">-</span></td>
+            </tr>
+            <tr>
+                <td>status</td>
+                <td>active</td>
+                <td><span class="status success">✓ 正常</span></td>
+            </tr>
+            <tr>
+                <td>lifecycle_status</td>
+                <td>active</td>
+                <td><span class="status success">✓ 正常</span></td>
+            </tr>
+            <tr>
+                <td>manual_disabled</td>
+                <td>false</td>
+                <td><span class="status success">✓ 未禁用</span></td>
+            </tr>
+            <tr>
+                <td>quota_state</td>
+                <td>ok</td>
+                <td><span class="status success">✓ 配额正常</span></td>
+            </tr>
+            <tr>
+                <td>availability_state</td>
+                <td>ready</td>
+                <td><span class="status success">✓ 可用</span></td>
+            </tr>
+            <tr>
+                <td>availability_recover_at</td>
+                <td>NULL</td>
+                <td><span class="status success">✓ 无恢复等待</span></td>
+            </tr>
+            <tr>
+                <td>default_probe_model</td>
+                <td>deepseek-v4.1-flash</td>
+                <td><span class="status success">✓ 已配置</span></td>
+            </tr>
+            <tr>
+                <td>last_probe_at</td>
+                <td><strong class="highlight">2026-11-20 15:24:46</strong></td>
+                <td><span class="status warning">⚠ 今天更新过！</span></td>
+            </tr>
+            <tr>
+                <td>last_used_at</td>
+                <td>NULL</td>
+                <td><span class="status info">无流量</span></td>
+            </tr>
+            <tr>
+                <td>health_status</td>
+                <td>healthy</td>
+                <td><span class="status success">✓ 健康</span></td>
+            </tr>
+            <tr>
+                <td>last_probe_success</td>
+                <td>true</td>
+                <td><span class="status success">✓ 成功</span></td>
+            </tr>
+            <tr>
+                <td>probe_consecutive_failures</td>
+                <td>0</td>
+                <td><span class="status success">✓ 无失败</span></td>
+            </tr>
+            <tr>
+                <td>provider_enabled</td>
+                <td>true</td>
+                <td><span class="status success">✓ 启用</span></td>
+            </tr>
+            <tr>
+                <td>provider_manual_disabled</td>
+                <td>false</td>
+                <td><span class="status success">✓ 未禁用</span></td>
+            </tr>
+        </table>
+
+        <div class="finding">
+            <strong>🔑 关键发现 1</strong>: <code>last_probe_at = 2026-11-20 15:24:46</code><br>
+            凭据在 <strong>今天（11-20）下午 3:24</strong> 还在被探测，与主档记录的「7 天未更新」<strong>直接矛盾</strong>！
+        </div>
+
+        <h2>二、cycleAll WHERE 条件验证</h2>
+
+        <p>对照源码 <code>bg/credential_probe_v2.go:439-469</code> 的 WHERE 子句：</p>
+
+        <table>
+            <tr>
+                <th>条件</th>
+                <th>实际值</th>
+                <th>结果</th>
+            </tr>
+            <tr>
+                <td><code>c.status = 'active'</code></td>
+                <td>active</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>c.lifecycle_status = 'active'</code></td>
+                <td>active</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>manual_disabled = FALSE</code></td>
+                <td>false</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>provider.manual_disabled = FALSE</code></td>
+                <td>false</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>provider.enabled = TRUE</code></td>
+                <td>true</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')</code></td>
+                <td>ok</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>availability_state <> 'suspended'</code></td>
+                <td>ready</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>availability_recover_at IS NULL OR <= now()</code></td>
+                <td>NULL</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+            <tr>
+                <td><code>default_probe_model <> ''</code></td>
+                <td>deepseek-v4.1-flash</td>
+                <td><span class="status success">✅ PASS</span></td>
+            </tr>
+        </table>
+
+        <div class="finding">
+            <strong>✅ 结论</strong>: 凭据 56 <strong>通过所有 cycleAll WHERE 条件</strong>，不会在 SQL 层被过滤掉。
+        </div>
+
+        <h2>三、skipProbeOnRecentTrafficSuccess 分析</h2>
+
+        <p>该函数在 <code>bg/credential_probe_v2.go:504</code> 被调用，有两个分支：</p>
+
+        <h3>分支 A：近期流量 + 健康 + 上次探测成功</h3>
+        <div class="code-block">
+COALESCE(c.last_used_at, epoch) > now() - 30min
+AND c.health_status IN ('healthy', 'unknown')
+AND COALESCE(c.last_probe_success, TRUE)
+        </div>
+
+        <table>
+            <tr>
+                <th>条件</th>
+                <th>实际值</th>
+                <th>匹配</th>
+            </tr>
+            <tr>
+                <td>近期流量（30分钟内）</td>
+                <td>last_used_at = NULL → epoch = 1970</td>
+                <td><span class="status error">❌ 不匹配</span></td>
+            </tr>
+            <tr>
+                <td>健康状态</td>
+                <td>healthy ∈ {healthy, unknown}</td>
+                <td><span class="status success">✅ 匹配</span></td>
+            </tr>
+            <tr>
+                <td>上次探测成功</td>
+                <td>true</td>
+                <td><span class="status success">✅ 匹配</span></td>
+            </tr>
+        </table>
+
+        <p><strong>分支 A 结论</strong>: <span class="status error">❌ 不匹配</span>（因为无近期流量）</p>
+
+        <h3>分支 B：健康 + 上次探测失败 + 无近期模型失败</h3>
+        <div class="code-block">
+c.health_status = 'healthy'
+AND COALESCE(c.last_probe_success, FALSE)  ← 要求为 FALSE
+AND NOT EXISTS (近期 30 分钟的模型失败记录)
+        </div>
+
+        <table>
+            <tr>
+                <th>条件</th>
+                <th>实际值</th>
+                <th>匹配</th>
+            </tr>
+            <tr>
+                <td>健康状态</td>
+                <td>healthy</td>
+                <td><span class="status success">✅ 匹配</span></td>
+            </tr>
+            <tr>
+                <td>上次探测失败（要求 = FALSE）</td>
+                <td>last_probe_success = <strong>true</strong></td>
+                <td><span class="status error">❌ 不匹配</span></td>
+            </tr>
+        </table>
+
+        <p><strong>分支 B 结论</strong>: <span class="status error">❌ 不匹配</span>（last_probe_success = true，不符合 = FALSE 的要求）</p>
+
+        <h2>四、模型绑定失败记录</h2>
+
+        <p>查询发现 <strong>10 条近期模型失败记录</strong>（30 分钟内）：</p>
+
+        <table>
+            <tr>
+                <th>模型</th>
+                <th>失败时间</th>
+                <th>原因</th>
+                <th>距今</th>
+            </tr>
+            <tr>
+                <td>claude-haiku-5-5</td>
+                <td>2026-11-20 23:14:32</td>
+                <td>probe_http_503</td>
+                <td>13 秒前</td>
+            </tr>
+            <tr>
+                <td>claude-sonnet-4-5-20250929</td>
+                <td>2026-11-20 23:10:24</td>
+                <td>probe_http_503</td>
+                <td>4 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-sonnet-5-5</td>
+                <td>2026-11-20 23:07:13</td>
+                <td>probe_http_503</td>
+                <td>7 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-sonnet-4-6</td>
+                <td>2026-11-20 23:06:23</td>
+                <td>probe_http_503</td>
+                <td>8 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-fable-5-2</td>
+                <td>2026-11-20 23:04:36</td>
+                <td>probe_http_503</td>
+                <td>10 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-fable-5-1</td>
+                <td>2026-11-20 23:04:33</td>
+                <td>probe_http_503</td>
+                <td>10 分钟前</td>
+            </tr>
+            <tr>
+                <td>deepseek-v4-flash</td>
+                <td>2026-11-20 23:03:40</td>
+                <td>probe_http_503</td>
+                <td>11 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-opus-5-5</td>
+                <td>2026-11-20 22:57:43</td>
+                <td>probe_http_503</td>
+                <td>17 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-mythos-5-2</td>
+                <td>2026-11-20 22:57:37</td>
+                <td>probe_http_503</td>
+                <td>17 分钟前</td>
+            </tr>
+            <tr>
+                <td>claude-haiku-4-5-20251001</td>
+                <td>2026-11-20 22:56:56</td>
+                <td>probe_http_503</td>
+                <td>18 分钟前</td>
+            </tr>
+        </table>
+
+        <div class="finding">
+            <strong>🔑 关键发现 2</strong>: 存在 <strong>10 条近期模型失败记录</strong>，最近的在 <strong>13 秒前</strong>！<br>
+            这证明 <strong>探针正在活跃运行</strong>，凭据并未被完全跳过。
+        </div>
+
+        <h2>五、三个假设的验证结果</h2>
+
+        <table>
+            <tr>
+                <th>假设</th>
+                <th>验证结果</th>
+                <th>状态</th>
+            </tr>
+            <tr>
+                <td>① <code>availability_recover_at</code> 在未来</td>
+                <td>实际值为 NULL</td>
+                <td><span class="status error">❌ 排除</span></td>
+            </tr>
+            <tr>
+                <td>② <code>default_probe_model</code> 为空</td>
+                <td>实际值为 deepseek-v4.1-flash</td>
+                <td><span class="status error">❌ 排除</span></td>
+            </tr>
+            <tr>
+                <td>③ <code>skipProbeOnRecentTrafficSuccess</code> 分支 A 触发</td>
+                <td>last_used_at = NULL，无近期流量</td>
+                <td><span class="status error">❌ 排除</span></td>
+            </tr>
+        </table>
+
+        <h2>六、最终结论</h2>
+
+        <div class="conclusion">
+            <h3>🎯 根因定位</h3>
+            
+            <p><strong>核心矛盾</strong>：</p>
+            <ul>
+                <li><strong>主档记录</strong>: last_probe_at 停在 2026-11-13（7 天未更新）</li>
+                <li><strong>数据库实际</strong>: last_probe_at = 2026-11-20 15:24:46（今天下午还在更新）</li>
+            </ul>
+
+            <p><strong>逻辑验证</strong>：</p>
+            <ul>
+                <li>✅ 通过所有 cycleAll WHERE 条件</li>
+                <li>❌ skipProbeOnRecentTrafficSuccess 两个分支均<strong>不匹配</strong></li>
+                <li>✅ 理论上<strong>不应该被跳过</strong></li>
+            </ul>
+
+            <p><strong>实际证据</strong>：</p>
+            <ul>
+                <li>✅ <code>last_probe_at = 2026-11-20 15:24:46</code> → 今天仍在探测</li>
+                <li>✅ 存在 <strong>10 条近期模型失败记录</strong>（最近 13 秒前）</li>
+                <li>✅ 探针<strong>正在活跃运行</strong></li>
+            </ul>
+        </div>
+
+        <div class="contradiction">
+            <h3>⚠️ 主档记录矛盾分析</h3>
+            
+            <p><strong>可能原因</strong>：</p>
+            <ol>
+                <li><strong>观测环境不同</strong>：主档观测的是不同的数据库实例（211/245/154？）</li>
+                <li><strong>观测时间点过早</strong>：主档观测时间在今天 15:24 之前，数据已更新但主档未刷新</li>
+                <li><strong>缓存/副本陈旧</strong>：主档读取了陈旧的缓存或数据库副本</li>
+                <li><strong>观测方法有误</strong>：主档可能查询了错误的字段或使用了错误的 credential_id</li>
+            </ol>
+        </div>
+
+        <h2>七、进一步排查建议</h2>
+
+        <ol>
+            <li>
+                <strong>确认主档观测环境</strong>
+                <ul>
+                    <li>检查主档连接的数据库实例（211/245/154？）</li>
+                    <li>确认观测时间点（是否在今天 15:24 之前？）</li>
+                    <li>验证查询的 SQL 和参数</li>
+                </ul>
+            </li>
+            <li>
+                <strong>查看探针日志</strong>
+                <div class="code-block">
+ssh 211 "docker logs llm-gateway-211-a 2>&1 | grep 'credential.*56' | tail -50"
+                </div>
+            </li>
+            <li>
+                <strong>检查 cycleAll 执行日志</strong>
+                <ul>
+                    <li>在 <code>bg/credential_probe_v2.go</code> 中添加日志</li>
+                    <li>记录每个凭据的跳过原因</li>
+                    <li>验证 skipProbeOnRecentTrafficSuccess 的实际匹配情况</li>
+                </ul>
+            </li>
+            <li>
+                <strong>验证数据一致性</strong>
+                <ul>
+                    <li>在 211/245/154 三台服务器上同时查询凭据 56</li>
+                    <li>对比 <code>last_probe_at</code> 值</li>
+                    <li>确认是否存在数据同步延迟</li>
+                </ul>
+            </li>
+        </ol>
+
+        <h2>八、相关文件</h2>
+
+        <ul>
+            <li><code>docs/audit/2026-11-20-L2-诊断SQL.sql</code> - 完整诊断 SQL 脚本</li>
+            <li><code>docs/audit/2026-11-20-L2-凭据56-cycleAll跳过诊断.md</code> - 诊断需求文档</li>
+            <li><code>docs/audit/2026-11-20-L2-凭据56-诊断结果.md</code> - 本诊断报告（Markdown 版本）</li>
+            <li><code>bg/credential_probe_v2.go</code> - cycleAll 实现源码</li>
+        </ul>
+
+        <div style="margin-top: 40px; padding-top: 20px; border-top: 2px solid #ddd; color: #666; font-size: 14px;">
+            <p><strong>诊断执行</strong>: 2026-11-20 23:14:45</p>
+            <p><strong>数据库</strong>: acc-pg17 (172.21.0.9) / llm_gateway</p>
+            <p><strong>提交</strong>: d66c6eb1d</p>
+        </div>
+    </div>
+</body>
+</html>
