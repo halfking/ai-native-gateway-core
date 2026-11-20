@@ -234,6 +234,172 @@ func probeBackoffForDirectOutcome(errCode string, rootCause ProbeRootCause, atte
 	return ProbeBackoffForErrCode(errCode, attempt)
 }
 
+// ── 配额族裁决的探针侧识别（2026-11-20 节点探测能力轮）──────────────────────
+//
+// 问题（211 生产实测，2026-11-20 09:44）：apiclaude.cc 对 claude-sonnet-5-5 回
+// HTTP 403 {"code":"INSUFFICIENT_BALANCE"}。**同一个上游裁决，两面给出矛盾的答案**：
+//
+//	★ 业务面（domains/credential/writer.go）：errorsx.ClassifyErrorWithBody
+//	  ⇒ KindQuotaPermanent ⇒ 凭据级落账（quota_state=permanently_exhausted +
+//	  availability_state=suspended + state_reason_code='quota_permanent'）
+//	  ⇒ **UI 显示「配额耗尽 / 已停用」**；
+//	★ 探针面（classifyProbeErrCode）：只看 err **code**（"http_403"）⇒ ""（无策略）
+//	  ⇒ **凭据面一个字都不写**（凭据仍显示 ready / ok ⇒ 「节点正常」）
+//	  ⇒ 只有绑定面落账（probe_http_403）⇒ **模型不可路由**。
+//
+// ⇒ 合成用户侧看到的形态：**「节点正常」+「模型访问不了」**。
+//
+// ★ 而 errorsx.PenaltyOf(KindQuotaPermanent) = {PenaltyCredential, Fuse: true,
+//
+//	Permanent: true} ⇒ **配额族是【凭据级】判决**（errorsx/automatic_probe_policy.go
+//	也把它标成 Scope=AutomaticProbeCredential）⇒ ★ 探针把它当【模型级】通用故障
+//	处理（通用梯子 + 只写绑定面）本身就是**越权**：既让凭据面说谎，又让模型级
+//	梯子对一个余额已耗尽的节点反复空打（211 实测：凭据 56 的 20 个模型对各
+//	连败 175~489 次，next_retry 3h 一轮 ⇒ 每 3 小时 20 次注定失败的请求）。
+//
+// 修法：★ 探针的分类必须**看上游响应体**，与业务面用同一把尺子
+// （errorsx.ClassifyErrorWithBody）——★ 不是新增一套词表，是**接上已有的那把**。
+//
+// ★ 边界（刻意不扩大）：本臂只接管**配额族**。
+//
+//	· 403 无配额体（纯鉴权 403）⇒ errorsx 判 auth ⇒ **不是配额族** ⇒ 探针保持
+//	  今天的通用梯子、也不写凭据配额面（鉴权族要单独设计，见主档登记项）。
+//	· 配额族的四个成员（KindQuota / KindQuotaPeriodic / KindQuotaBalance /
+//	  KindQuotaPermanent）全部接上：其中周期族的重置点用 errorsx.NextQuotaReset
+//	  ——**与凭据级探针（bg/credential_probe_v2.go classifyProbeFailure）同一个
+//	  helper** ⇒ 两个面算出的重置点一致 ⇒ 探针的配额重置点对齐退避也能命中。
+func classifyProbeOutcomeKind(errCode string, httpStatus int, responseBody string) errorsx.ErrorKind {
+	kind := classifyProbeErrCode(errCode)
+	if isQuotaProbeKind(kind) {
+		return kind
+	}
+	// ★ 只有「上游用这些状态码承载配额裁决」才值得花一次正则（复用
+	// quotaProbeHTTPStatuses 这张既有表：402 / 403 / 429）。
+	if !quotaProbeHTTPStatuses[httpStatus] {
+		return kind
+	}
+	bodyKind := errorsx.ClassifyErrorWithBody(httpStatus, []byte(responseBody))
+	if isQuotaProbeKind(bodyKind) {
+		return bodyKind
+	}
+	return kind
+}
+
+// isQuotaProbeKind reports whether a kind belongs to the quota family — the
+// family errorsx.PenaltyOf punishes at the CREDENTIAL level (PenaltyCredential
+// + Fuse) and errorsx.AutomaticProbePolicyFor scopes to AutomaticProbeCredential.
+func isQuotaProbeKind(kind errorsx.ErrorKind) bool {
+	switch kind {
+	case errorsx.KindQuota, errorsx.KindQuotaPeriodic,
+		errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent:
+		return true
+	}
+	return false
+}
+
+// probeOutcomeKind classifies one finished probe round (direct round evidence:
+// HTTP status + upstream body + the probe's own err code).
+func probeOutcomeKind(r nodeProbeRoundResult) errorsx.ErrorKind {
+	if r.ok {
+		return ""
+	}
+	return classifyProbeOutcomeKind(r.errCode, r.httpStatus, r.responseBody)
+}
+
+// quotaVerdict is the probe's quota-family verdict in one place: the kind plus
+// the reset point (periodic family only).
+//
+// ★ 为什么要有这个结构：**冷却时长必须是【一个】数**。绑定面（unavailable_
+// recover_at）与探针面（next_retry_at）此前是两个独立算出来的数 ⇒ 绑定面
+// 写「5 分钟」、探针面 3 小时后才动 ⇒ 复检扫描以探针面为准 ⇒ 冷却到期那天
+// **没有人来复检** ⇒ 恢复被推迟数小时（更新延迟）。
+//
+// ⇒ 本轮把两个面都从 quotaVerdict 取数：
+//
+//	· permanent / balance（无重置点）⇒ 配额停放 horizon（默认 6h）；
+//	· periodic（有重置点）           ⇒ 重置点 + 60s（与
+//	  quotaResetAlignedBackoff 的配额重置点对齐退避**同一个数**）。
+type quotaVerdict struct {
+	kind      errorsx.ErrorKind
+	recoverAt *time.Time
+}
+
+// probeQuotaDetail returns the upstream text used for classification and for
+// the reset-point lookup. errDetail carries the full upstream error line
+// ("upstream returned HTTP 403: {json}"); responseBody is the sanitized
+// preview (≤512 bytes) kept as a fallback.
+func probeQuotaDetail(r nodeProbeRoundResult) string {
+	if r.errDetail != "" {
+		return r.errDetail
+	}
+	return r.responseBody
+}
+
+// probeQuotaVerdict classifies a failed direct round and resolves the reset
+// point for the periodic family. ok=false ⇒ the round is not a quota verdict.
+func probeQuotaVerdict(r nodeProbeRoundResult) (quotaVerdict, bool) {
+	if r.ok {
+		return quotaVerdict{}, false
+	}
+	kind := probeOutcomeKind(r)
+	if !isQuotaProbeKind(kind) {
+		return quotaVerdict{}, false
+	}
+	v := quotaVerdict{kind: kind}
+	if kind == errorsx.KindQuotaPeriodic {
+		// ★ 与凭据级探针（bg/credential_probe_v2.go classifyProbeFailure）
+		//   **同一个** helper ⇒ 两个面算出的重置点一致。
+		t := errorsx.NextQuotaReset(probeQuotaDetail(r), time.Now())
+		v.recoverAt = &t
+	}
+	return v, true
+}
+
+// horizon returns the ONE cooldown horizon shared by the binding surface
+// (unavailable_recover_at) and the probe's own next retry (next_retry_at).
+func (v quotaVerdict) horizon() time.Duration {
+	if v.recoverAt != nil {
+		d := time.Until(*v.recoverAt) + quotaResetPinAfter
+		if d > 0 {
+			return d
+		}
+	}
+	return quotaExhaustedRecheck()
+}
+
+// quotaExhaustedRecheckInterval is the horizon a quota-exhausted pair is
+// parked at. A balance/quota verdict cannot be healed by re-probing — only a
+// recharge (or a window reset) can — so the pair row must NOT walk the generic
+// ladder (which cost 211 cred 56 ~20 pairs × 175~489 consecutive failures).
+// Recovery is not delayed: the credential-level quota probe detects the
+// recharge and fires RearmCredentialFailures, which pulls the row back to now().
+//
+// The value matches the model-not-served park horizon on purpose — both are
+// "re-probing cannot fix it, wait for an external event" verdicts.
+const quotaExhaustedRecheckInterval = 6 * time.Hour
+
+// quotaExhaustedRecheck is the operator-tunable form of
+// quotaExhaustedRecheckInterval (probe.quota_exhausted_recheck_seconds).
+func quotaExhaustedRecheck() time.Duration {
+	sec := settings.GetPlatformInt("probe.quota_exhausted_recheck_seconds", int(quotaExhaustedRecheckInterval/time.Second))
+	if sec <= 0 {
+		return quotaExhaustedRecheckInterval
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// probeBackoffForDirectOutcomeKind is the verdict-aware sibling of
+// probeBackoffForDirectOutcome: a quota-family verdict parks at the quota
+// horizon instead of the generic ladder. The quota-reset pin
+// (quotaResetAlignedBackoff) still overrides afterwards when a reset point is
+// known — the pin is *earlier* than the park, never later.
+func probeBackoffForDirectOutcomeKind(v quotaVerdict, errCode string, rootCause ProbeRootCause, attempt int) time.Duration {
+	if isQuotaProbeKind(v.kind) {
+		return v.horizon()
+	}
+	return probeBackoffForDirectOutcome(errCode, rootCause, attempt)
+}
+
 func classifyProbeErrCode(code string) errorsx.ErrorKind {
 	c := strings.ToLower(strings.TrimSpace(code))
 	switch c {
