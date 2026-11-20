@@ -241,8 +241,6 @@ onMounted(() => {
 <style scoped>
 .list-view {
   padding: var(--space-4);
-  max-width: 1400px;
-  margin: 0 auto;
 }
 
 .list-header {
