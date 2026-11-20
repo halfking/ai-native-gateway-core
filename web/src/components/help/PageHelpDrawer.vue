@@ -6,15 +6,11 @@
 //
 // 结构：
 // · 图标由 AppTopbar 渲染（依赖当前 route）；本组件只负责抽屉本体。
-// · 内容 = web/content/page-help/<id>.zh-CN.md，经 lib/markdown.ts 解析成
-//   结构化块树后用 Vue 模板渲染（复用 HelpManualView 的管线，绝不产出
-//   raw HTML ⇒ 无注入面）。
-// · 每个语种只带中文正文一份（与 help-manual.zh-CN.md 同先例）：抽屉 chrome
-//   （标题/关闭/说明）走 i18n 8 语种；正文当前仅中文，8 语种站点可读，
-//   多语正文留待后续轮次（登记遗留）。
-//
-// 无匹配内容时（未登记页面 / 登记了但 md 缺失）显示「本页暂无帮助」，
-// 绝不渲染空抽屉。
+// · 内容 = web/content/page-help/<id>.<locale>.md（8 语种齐全，2026-11-20 L1 轮
+//   补齐），经 lib/markdown.ts 解析成结构化块树后用 Vue 模板渲染（复用
+//   HelpManualView 的管线，绝不产出 raw HTML ⇒ 无注入面）。
+// · 语种解析：当前 locale 命中即用；缺译文 ⇒ 回退中文正文（宁可看中文，
+//   不给空抽屉）——与 chrome（i18n 8 语种，永远有）解耦。
 
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -45,22 +41,29 @@ const modules = import.meta.glob('../../../content/page-help/*.md', {
   import: 'default',
 }) as Record<string, string>
 
-/** 从模块路径提取内容 id：../../content/page-help/keys.zh-CN.md → keys */
-function idOf(path: string): string {
+/** 从模块路径提取内容键：<id>.<locale>.md → "<id>.<locale>"（id 与语种整体作键，
+ *  取值时按当前 locale 优先、zh-CN 兜底逐级降级） */
+function keyOf(path: string): string {
   const base = path.split('/').pop() ?? ''
-  return base.replace(/\.md$/, '').replace(/\.zh-CN$/, '')
+  return base.replace(/\.md$/, '')
 }
 
-const contentById = new Map<string, string>()
+const contentByKey = new Map<string, string>()
 for (const [path, raw] of Object.entries(modules)) {
-  contentById.set(idOf(path), raw)
+  contentByKey.set(keyOf(path), raw)
 }
 
-const hasContent = computed(() => entry.value !== null && contentById.has(entry.value.id))
+/** 当前抽屉正文：locale 命中即用；无译文回退中文（不空抽屉） */
+const content = computed<string | undefined>(() => {
+  const id = entry.value?.id
+  if (!id) return undefined
+  return contentByKey.get(`${id}.${locale.value}`) ?? contentByKey.get(`${id}.zh-CN`)
+})
+
+const hasContent = computed(() => entry.value !== null && content.value !== undefined)
 
 const blocks = computed<ManualBlock[]>(() => {
-  if (!entry.value) return []
-  const raw = contentById.get(entry.value.id)
+  const raw = content.value
   return raw ? parseMarkdown(raw) : []
 })
 
@@ -108,8 +111,14 @@ watch(
   },
 )
 
-// locale 切换时内容不变（正文仅中文一份），无需响应。
-void locale
+// 切语种时正文跟随 locale computed 自动重解析；搜索词不残留（关键词是
+// 当前语种文本的子串 ⇒ 语种变了旧词必然失配 ⇒ 一并清空）。
+watch(
+  () => locale.value,
+  () => {
+    keyword.value = ''
+  },
+)
 </script>
 
 <template>
