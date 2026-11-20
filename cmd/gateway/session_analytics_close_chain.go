@@ -98,6 +98,25 @@ func (b sessionClosedEventBridge) PublishSessionClosed(ctx context.Context, tena
 	return b.pub.Publish(ctx, evt)
 }
 
+// normalizeAnalysisModelAlias 把分析阶段模型的**幻别名**归一为 "auto"。
+//
+// ★ 2026-11-20 211/154 活体打回：stage_config.ModelFor 的 settings 未命中路径
+//
+//	直接回落 stage.defaultModel()（"summary-fast"/"intent-fast"/"embedding-fast"），
+//	而 EffectiveValue 对未设置的键不合成 spec 默认值 ⇒ "auto" 透传 resolver
+//	根本没机会生效 ⇒ 幻别名被原样发往分析端点（154 派发日志实录：
+//	model=summary-fast + provider=0 + 上游 400）。本函数在**调用点**兜底：
+//	已知幻别名一律改写为 "auto"（分析端点=网关自地址，原生支持 auto 路由），
+//	显式配置的真实模型名逐字透传。
+func normalizeAnalysisModelAlias(model string) string {
+	switch model {
+	case "summary-fast", "intent-fast", "embedding-fast":
+		return "auto"
+	default:
+		return model
+	}
+}
+
 // newAnalysisLLMClient 构造分析端点客户端 + stage 配置（auto 透传 resolver）。
 // 返回 (nil, nil) 的条件：settings 总闸关 / env 缺失 / 端点校验失败。
 // V2 块（SetV2DispatchAnalysisResources）与独立闭链共用这一个入口。
@@ -132,7 +151,7 @@ func buildSessionSummarizer(pool *pgxpool.Pool, redisClient *redis.Client) worke
 		return nil
 	}
 	summaryService := sessionsummary.NewSummarizer(pool, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
-	summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
+	summaryService.SetModel(normalizeAnalysisModelAlias(cfg.ModelFor(sessionanalytics.StageSummary)))
 	// docs/omni-ref3 A1：读 session_bodies（V2 源，默认开）；per-turn digest
 	// 层开启时摘要输入改为逐轮人读摘要。
 	if settings.GetPlatformBool("sessions_v2_compression_read", true) {

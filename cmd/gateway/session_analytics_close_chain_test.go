@@ -76,3 +76,23 @@ func TestSessionAnalyticsAutoResolverPassesThrough(t *testing.T) {
 		t.Fatalf("auto 应透传为字面 \"auto\"（网关自路由），got %q", got)
 	}
 }
+
+// ★ 211/154 活体打回（2026-11-20）：ModelFor 的 settings 未命中路径回落幻别名
+//
+//	（"summary-fast" 等），auto 透传 resolver 被绕过 ⇒ 幻别名原样发往分析端点
+//	⇒ 154 派发日志实录 model=summary-fast + provider=0 + 上游 400。
+func TestNormalizeAnalysisModelAlias(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"summary-fast", "auto"},
+		{"intent-fast", "auto"},
+		{"embedding-fast", "auto"},
+		{"auto", "auto"},
+		{"glm-4.5-flash", "glm-4.5-flash"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := normalizeAnalysisModelAlias(tc.in); got != tc.want {
+			t.Fatalf("normalizeAnalysisModelAlias(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

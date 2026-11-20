@@ -1757,7 +1757,7 @@ func SetV2DispatchAnalysisResources(
 			// pgxpool for reads — no more sql.DB involvement in
 			// the v2 dispatch path.
 			summaryService := sessionsummary.NewSummarizer(pool, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
-			summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
+			summaryService.SetModel(normalizeAnalysisModelAlias(cfg.ModelFor(sessionanalytics.StageSummary)))
 			// docs/omni-ref3 A1 (decision: compress+summary cut over
 			// together, default-on, same kill-switch as compression read):
 			// read session messages from public.session_bodies instead of
