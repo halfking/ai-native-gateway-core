@@ -10,12 +10,17 @@
 
 [版本身份链]
   部署前现役：2.6.1-e3bc0026-20261121-211 seq 3187（槽 b / 8783）
-  本轮部署：5b4d28ca → 211 蓝绿，DEPLOY_EXIT=0，槽 a 接管 8781，
-            nginx upstream 8783 → 8781 已 reload，旧槽 b 停机保留可回滚
-  现役身份：2.6.1-5b4d28ca-20261121-211，git_sha=5b4d28ca（**干净无 -dirty**）
-  E2E 跑前身份：git_sha=5b4d28ca seq 3188
-  E2E 跑后身份：git_sha=5b4d28ca seq 3189（git_sha 相同、仅 seq 重发 ⇒ 内容稳定，未跨树切换）
-  并行车同期同树重发一次（seq 3188→3189，目标同为 5b4d28ca）⇒ 审计链未跨树
+  本轮部署①（seq 3188）：5b4d28ca → 211 蓝绿，槽 a 接管 8781，
+            nginx upstream 8783 → 8781 已 reload
+  本轮部署②（我方 run6，seq 3189；日志 /tmp/deploy211-run6.log，DEPLOY_EXIT=0）：
+            **同一 commit 5b4d28ca 投到另一槽**——run6 日志原文
+            「切流：nginx upstream 由 127.0.0.1:8781 切到 127.0.0.1:8783」（第 1428 行）
+            「部署完成（槽 b 接管）」「活跃槽: b → 容器 llm-gateway-211-b @ 127.0.0.1:8783」
+            （第 1437/1438 行）；版本元数据种子 2.6.1-5b4d28ca-20261121-211 build_seq=3189
+            ⇒ 同一 commit 两槽各跑一次（seq 3188 / 3189）⇒
+ E2E「跑前 3188 / 跑后 3189」是**同树换槽重发**，不是跨树切换
+              （git_sha 全程 5b4d28ca，内容稳定）
+  现役身份（①②之后）：2.6.1-5b4d28ca-20261121-211，git_sha=5b4d28ca（**干净无 -dirty**）
 
 [第一层 Maestro flow：maestro/flows/16-session-analytics-system.yaml]
   flow rc=0 FAILED=0
@@ -67,6 +72,34 @@
     一条针对性的行为断言可以反证「我的改动在不在现役树里」**——
     它测的是**产物**而不是提交图，比 git merge-base 更硬。
 
+[现役树复验（2026-11-21 23:44–23:47，并行车多次部署推进之后）]
+  ★ 上面「收尾复核」那轮的现役 23b9d32b-dirty seq 3190 **已被再次部署取代**；
+    现役现在是可验证身份 ⇒ 下面这轮把「行为级反证」升级为「git 层 + 行为层双证」
+  现役身份：2.6.1-b59c6dde-20261121-211 seq 3192，git_sha=b59c6dde（**干净无 -dirty**）
+            槽 a 容器 llm-gateway-211-a 启动于 2026-11-21T15:37:12Z（= 23:37:12 +0800），
+            采样时仍 running/healthy；nginx upstream → 127.0.0.1:8781；
+            槽 b 容器 llm-gateway-211-b（23:29:48 启动）已 exited ⇒ 8783 不可达
+  git 层包含关系（**可验证**，与 dirty 身份那轮的根本差别）：
+            8238f6a3d ⊆ b59c6dde ✅（git merge-base --is-ancestor 通过）
+            5b4d28ca ⊆ b59c6dde ✅（同一判定通过）⇒ 本轮改动在现役树内，git 层直接可证
+  E2E 窗口（23:44–23:47）全程落在槽 a 同一进程生命周期内（23:37:12 启动 → 采样时仍 running）
+            ⇒ 跑前/跑后同一身份，未跨树切换
+  实跑结果（maestro/reports/20261121-234456/）：
+            flow rc=0 FAILED=0（16-session-analytics-system.log，60 步全 COMPLETED）
+            第二层 assert-session-analytics.mjs → RESULT: PASS（58 条）
+            第三层 assert-filter-button.mjs → RESULT: PASS（20 条）
+  第三层 20 条在现役树上的实测要点：
+            · 3 个排行页 .sa-btn--primary 文本实测 === 「应用筛选」；旧文案「应用区间」读不到
+            · 点击后按新排序发起请求 order=asc（改动前 order=desc）
+            · 请求的 start_date / end_date 未被按钮改动（2026-11-15 / 2026-11-21）
+            · 区间控件显示值点击前后不变（before="11/15 – 11/21" after="11/15 – 11/21"）
+  第二层 58 条同源对拍（现役树）：会话总数 18,265==18265；活跃人员 6==6；
+            内部成本(美元) 6,460.47==6460.467…；外部成本(积分) 0==0；
+            排行首行 kaixuan-1==users[0]（会话数 153==153）；智能体首行 pi==agents[0]；
+            模型首行 minimax-m3.1-flash==models[0]（16,138==16138）
+  ⇒ 通用式：现役身份一旦**从 dirty 变成可验证 commit**，就该把上一轮「行为级反证」
+    升级为「git merge-base + 行为断言」双证——前者证明**在树里**，后者证明**在跑**。
+
 [本轮提交面（审计用）]
   8238f6a3d  文案修复主提交（运行时）：3 个视图 + 8 语种 locale
   5b4d28ca  部署目标 tip（运行时，含 8238f6a3d）⇒ 本轮生产部署与验证的身份
@@ -74,3 +107,6 @@
              （凭据变量名映射修复 + 第三层接入 + 三态判定合并）、
              maestro/tools/assert-filter-button.mjs（新增第三层探针）、本证据文件
   ⇒ 097cb9595 只含 maestro/ 与 docs/audit/evidence/ ⇒ 不构成运行时变更 ⇒ **无需重新部署**
+  证据订正（本文件）  docs(evidence): 订正部署槽位记录 + 补现役树复验段
+                      ⇒ 纯文档、零运行时改动 ⇒ 无需重新部署
+                      ⇒ 该笔 hash 会被 rebase 改写，**以 `git log origin/main` 为准**
