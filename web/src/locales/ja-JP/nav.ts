@@ -88,6 +88,7 @@ export default {
     agents: "エージェントレジストリ",
     promptInjection: "プロンプトインジェクション検出",
     piAnalysis: "PI エラー分析",
+    errorPlaybook: 'エラー処理プレイブック',
     examples: "接続例",
     autoConfig: '自動設定',
     helpManual: 'ヘルプマニュアル',

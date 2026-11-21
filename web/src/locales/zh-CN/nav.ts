@@ -92,6 +92,7 @@ export default {
     agents: 'Agent Registry',
     promptInjection: '提示词注入检测',
     piAnalysis: 'PI 错误分析',
+    errorPlaybook: '错误处理手册',
     examples: '接入示例',
     autoConfig: '自动配置',
     helpManual: '帮助手册',

@@ -513,9 +513,9 @@ th.n { text-align: right; }
     <p class="doc-sub">
       这份稿子把「个人用户第一次打开控制台会看到什么」画成整页尺寸的界面，外加顶栏每一个菜单展开后的样子。
       菜单文案与落地路径取自 <span class="mono">web/src/config/appNav.ts</span> 与 <span class="mono">web/src/locales/zh-CN/nav.ts</span>，
-      专家面一共 <span class="num">67</span> 个入口（8 个分组 <span class="num">64</span>项 +顶层 <span class="num">3</span>项），落在 <span class="num">66</span> 个落地路径上。
+      专家面一共 <span class="num">68</span> 个入口（8 个分组 <span class="num">65</span>项 +顶层 <span class="num">3</span>项），落在 <span class="num">67</span> 个落地路径上。
       简易模式露出 <span class="num">14</span> 个页面（<span class="num">13</span> 个既有入口 + <span class="num">1</span> 个新建简化页），
-      专家面其余 <span class="num">53</span> 条收进一个「高级」折叠组，条目本身一个不删。
+      专家面其余 <span class="num">54</span> 条收进一个「高级」折叠组，条目本身一个不删。
     </p>
   </header>
 
@@ -740,7 +740,7 @@ th.n { text-align: right; }
               <div class="panel-head"><span class="t">工作模式</span></div>
               <div style="padding:var(--kx-space-4);font-size:var(--kx-text-sm);color:var(--kx-muted);line-height:1.8">
                 当前是简易模式：导航露出 <span class="num" style="color:var(--kx-text)">14</span> 项，
-                专家面的 <span class="num" style="color:var(--kx-text)">53</span> 条收在「高级」里，展开可见。
+                专家面的 <span class="num" style="color:var(--kx-text)">54</span> 条收在「高级」里，展开可见。
                 <div style="margin-top:var(--kx-space-3)">
                   <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-sliders"/></svg>切到专家模式</button>
                 </div>
@@ -761,7 +761,7 @@ th.n { text-align: right; }
     <p class="sec-desc">
       顶栏一共 <span class="num">9</span> 个位置：四个直链、四个分组、一个「高级」折叠组。
       四个分组的下拉面板都很窄，两三项，面板宽度按条目数收敛，不留大片空白。
-      「高级」展开后是二级分组，53 条按专家面的分组归位，用户在里面看到的目录结构和专家面一致 —— 52 项页内条目，加上 FreeLLM 免费模型那 1 条站外链接。（2026-11-17：/tenant/usage 由折叠区提升进「请求」组下拉，本数由五十改为四十九；同日 PI 错误分析入口 /admin/pi-analysis 落地，本数由四十九改为五十。）
+      「高级」展开后是二级分组，54 条按专家面的分组归位，用户在里面看到的目录结构和专家面一致 —— 53 项页内条目，加上 FreeLLM 免费模型那 1 条站外链接。（2026-11-17：/tenant/usage 由折叠区提升进「请求」组下拉，本数由五十改为四十九；同日 PI 错误分析入口 /admin/pi-analysis 落地，本数由四十九改为五十。）
     </p>
 
     <div class="menu-grid">
@@ -832,7 +832,7 @@ th.n { text-align: right; }
       <div class="menu-cell" style="grid-column:1 / -1">
         <div class="hd">
           <span class="t">高级</span>
-          <span class="n">53 条 ·展开后按专家面分组归位；条目名称见「专家面菜单」一节</span>
+          <span class="n">54 条 ·展开后按专家面分组归位；条目名称见「专家面菜单」一节</span>
         </div>
         <div class="bd" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--kx-space-2)">
           <div>
@@ -936,16 +936,16 @@ th.n { text-align: right; }
   <section class="sec" id="s3">
     <div class="sec-head">
       <h2>条目归属</h2>
-      <span class="tagline">67 个专家面入口逐条去了哪里</span>
+      <span class="tagline">68 个专家面入口逐条去了哪里</span>
     </div>
     <p class="sec-desc">
       每一行都是 <span class="mono">appNav.ts</span> 里真实存在的条目，中文名取自 <span class="mono">zh-CN/nav.ts</span>。
-      专家面 <span class="num">67</span> 个入口落在 <span class="num">66</span> 个落地路径上，
+      专家面 <span class="num">68</span> 个入口落在 <span class="num">67</span> 个落地路径上，
       「自动更新」同时挂在运维中心和接入指南两个分组下，表里出现两行、各带所属分组。
       最后一列写它在简易模式里的位置：<span class="num">4</span> 项提到顶栏，<span class="num">9</span> 项收进四个分组，
-      <span class="num">53</span> 项进「高级」，<span class="num">1</span> 条走站外链接 —— 那条站外链接住在「模型与路由」组里，
+      <span class="num">54</span> 项进「高级」，<span class="num">1</span> 条走站外链接 —— 那条站外链接住在「模型与路由」组里，
       随该组一起折叠、点开走新窗口，所以「高级」面板实际是 <span class="num">53</span> 条。没有任何一个入口被删掉。
-      这张表由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从真源生成，行数与真源对不齐就是红的；<span class="num">67</span>项 / <span class="num">66</span> 个落地路径 / <span class="num">53</span> 条收进「高级」折叠组这三档口径，由 <span class="mono">web/src/config/navCounts.test.ts</span> 锁死，真源或三份文档任一侧变了都转红。
+      这张表由 <span class="mono">scripts/audit/gen-simple-mode-ledger.mjs</span> 从真源生成，行数与真源对不齐就是红的；<span class="num">68</span>项 / <span class="num">67</span> 个落地路径 / <span class="num">54</span> 条收进「高级」折叠组这三档口径，由 <span class="mono">web/src/config/navCounts.test.ts</span> 锁死，真源或三份文档任一侧变了都转红。
     </p>
 
     <div class="legend">
@@ -1005,6 +1005,7 @@ th.n { text-align: right; }
           <tr data-ledger-row><td>模块管理</td><td class="path">/admin/modules</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
           <tr data-ledger-row><td>提示词注入检测</td><td class="path">/admin/prompt-injection</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
           <tr data-ledger-row><td>PI 错误分析</td><td class="path">/admin/pi-analysis</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
+          <tr data-ledger-row><td>错误处理手册</td><td class="path">/admin/error-playbook</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
           <tr data-ledger-row><td>压缩管理</td><td class="path">/admin/compression</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
           <tr data-ledger-row><td>微信机器人</td><td class="path">/admin/modules?module=wechat_bot</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
           <tr data-ledger-row><td>Agent Registry</td><td class="path">/admin/agents</td><td>数据运维</td><td><span class="chip chip-muted">高级折叠</span></td></tr>
@@ -1217,12 +1218,12 @@ th.n { text-align: right; }
       </div>
       <div class="rule">
         <span class="rt">折叠不隐藏，深链仍然可达</span>
-        <span class="rb">53 条进「高级」折叠组，展开可见，URL 不变。仓库里已有「不擅自改菜单」的硬门与 31 条孤儿白名单，折叠不触碰它。</span>
+        <span class="rb">54 条进「高级」折叠组，展开可见，URL 不变。仓库里已有「不擅自改菜单」的硬门与 31 条孤儿白名单，折叠不触碰它。</span>
         <span class="rc">web/src/config/navCoverage.test.ts:51,79</span>
       </div>
       <div class="rule">
         <span class="rt">同一路径出现两次要在界面上标出来</span>
-        <span class="rb">「自动更新」同时挂在运维中心和接入指南两个分组下，各算一个入口，共67项。简易模式折叠后它仍出现两次，菜单里标注重复，用户不会被绕晕。</span>
+        <span class="rb">「自动更新」同时挂在运维中心和接入指南两个分组下，各算一个入口，共68项。简易模式折叠后它仍出现两次，菜单里标注重复，用户不会被绕晕。</span>
         <span class="rc">web/src/config/appNav.ts（opsplatform 与 guide 组各一项）</span>
       </div>
       <div class="rule">
@@ -1237,7 +1238,7 @@ th.n { text-align: right; }
     配套文档：<a href="simple-expert-mode-design.html">《简易模式与专家模式 · 设计方案》</a>讲分层原理与落地机制，
     <a href="simple-mode-ui-mockup.html">《简易模式 · 控制台效果稿》</a>讲总览页与设置页的画面细节。
     本稿补上整页形态与顶栏菜单的完整目录。<br>
-    菜单数据来源：<span class="mono">web/src/config/appNav.ts</span>（8 组64项 +顶层3项 =67，落地路径66 个）、
+    菜单数据来源：<span class="mono">web/src/config/appNav.ts</span>（8 组65项 +顶层3项 =68，落地路径67 个）、
     <span class="mono">web/src/locales/zh-CN/nav.ts</span>（中文名）、
     <span class="mono">web/src/components/shell/AppTopbar.vue</span>（顶栏渲染结构）。
   </footer>

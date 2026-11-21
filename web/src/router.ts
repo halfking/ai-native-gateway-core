@@ -66,6 +66,9 @@ const ModelCredibilityView = () => import('./views/ModelCredibilityView.vue')
 const ModulesView = () => import('./views/ModulesView.vue')
 const PromptInjectionSettingsView = () => import('./views/PromptInjectionSettingsView.vue')
 const PIAnalysisView = () => import('./views/admin/PIAnalysisView.vue')
+// 错误处理手册（2026-11-21）：列表 + 条目详情
+const ErrorPlaybookListView = () => import('./views/admin/error-playbook/ErrorPlaybookListView.vue')
+const ErrorPlaybookDetailView = () => import('./views/admin/error-playbook/ErrorPlaybookDetailView.vue')
 // 会话分析系统（2026-11-20）：后端 admin/session_analytics 的 7 个端点。
 // ★ 权限闸门用 requiresAuth 而非 requiresSuper：后端 isAdminFromRequest 放行
 //   super_admin / tenant_admin / admin_key，且专门为 tenant_admin 做了租户隔离
@@ -354,6 +357,11 @@ export const router = createRouter({
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
     { path: '/admin/prompt-injection', component: PromptInjectionSettingsView, meta: { requiresSuper: true } },
     { path: '/admin/pi-analysis', component: PIAnalysisView, meta: { requiresSuper: true } },
+    // 错误处理手册（2026-11-21）：列表 + 条目详情（执行留痕/快照回滚/方案编辑）。
+    // ★ 权限档与 pi-analysis 同族（管理面处置工具）：requiresSuper 只是体验层，
+    //   真源在后端 AdminMiddleware（鉴权材料齐备才注册路由，fail-closed）。
+    { path: '/admin/error-playbook', name: 'error-playbook-list', component: ErrorPlaybookListView, meta: { requiresSuper: true } },
+    { path: '/admin/error-playbook/:id', name: 'error-playbook-detail', component: ErrorPlaybookDetailView, meta: { requiresSuper: true } },
     // 会话分析（2026-11-20）：总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行
     { path: '/admin/session-analytics', name: 'session-analytics-overview', component: SessionAnalyticsOverviewView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/user-ranking', name: 'session-analytics-user-ranking', component: SessionAnalyticsUserRankingView, meta: { requiresAuth: true } },

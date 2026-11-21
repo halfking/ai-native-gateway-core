@@ -1,0 +1,156 @@
+// errorPlaybook.ts — Fehlerhandbuch-Texte (de-DE).
+//
+// ★ Werte müssen sich wörtlich von en-US unterscheiden; Schlüsselmenge und
+//   Platzhalter-Signatur identisch zu zh-CN.
+export default {
+  title: 'Fehler-Handbuch',
+  subtitle:
+    'Bekannte Fehler laufen nach ihrem festgelegten Standardplan; unbekannte Fehler analysiert der PI-Agent und legt sie im Handbuch ab',
+  nav: {
+    detail: 'Eintragsdetails',
+  },
+  stats: {
+    totalEntries: 'Handbucheinträge',
+    enabledEntries: 'Aktivierte Einträge',
+    autoExecuteEntries: 'Einträge mit Auto-Ausführung',
+    executions24h: 'Ausführungen (24 Std.)',
+    executionsTotal: 'Ausführungsnachweise gesamt',
+    pendingUnknown: 'Unbekannte Fehler, die auf Analyse warten',
+    engineState: 'Handbuch-Automatisierung',
+    engineOn: 'verbunden',
+    engineOff: 'nicht verbunden',
+    llmOn: 'Analysekanal verfügbar',
+    llmOff: 'Analysekanal nicht verfügbar',
+  },
+  filter: {
+    query: 'Titel oder Fehlertyp suchen',
+    source: 'Eintragsquelle',
+    enabled: 'Aktivierungsstatus',
+    all: 'Alle',
+    enabledOnly: 'Nur aktivierte',
+    disabledOnly: 'Nur deaktivierte',
+    apply: 'Filter anwenden',
+  },
+  col: {
+    title: 'Titel',
+    errorType: 'Fehlertyp',
+    matchPattern: 'Übereinstimmungsmuster',
+    planKind: 'Planform',
+    source: 'Quelle',
+    enabled: 'Aktiv',
+    autoExecute: 'Auto-Ausführung',
+    confidence: 'Vertrauen',
+    hits: 'Treffer',
+    successRate: 'Erfolg/Fehlschlag',
+    lastStatus: 'Letzter Ausführungsstatus',
+    lastExecutedAt: 'Zuletzt ausgeführt',
+    duration: 'Dauer',
+  },
+  kind: {
+    script: 'Skript-Schritte',
+    api: 'Admin-API-Aufruf',
+    prompt: 'KI-Prompt',
+  },
+  source: {
+    seed: 'Destilliere Historie',
+    manual: 'Manueller Eintrag',
+    pi_analysis: 'PI-Agent',
+    refinement: 'Nachschärfung nach Fehlschlag',
+  },
+  status: {
+    succeeded: 'Erfolgreich',
+    failed: 'Fehlgeschlagen',
+    skipped: 'Übersprungen',
+    awaiting_approval: 'Wartet auf Freigabe',
+    no_action: 'Keine Maßnahme nötig',
+  },
+  trigger: {
+    standard: 'Standardmodus',
+    auto_analyze: 'Automatische Analyse',
+    manual: 'Manuell ausgeführt',
+    refinement: 'Automatische Nachschärfung',
+  },
+  action: {
+    refresh: 'Daten aktualisieren',
+    retry: 'Neu laden',
+    reset: 'Filter zurücksetzen',
+    create: 'Neuer Eintrag',
+    save: 'Eintrag speichern',
+    savePlan: 'Planänderungen speichern',
+    cancel: 'Abbrechen',
+    delete: 'Eintrag löschen',
+    execute: 'Jetzt ausführen',
+    revert: 'Aus Snapshots zurückrollen',
+    viewDetail: 'Details ansehen',
+    back: 'Zurück zum Handbuch',
+    confirmDelete: 'Löschen bestätigen',
+  },
+  form: {
+    errorType: 'Fehlertyp (Pflichtfeld)',
+    errorTypeHint: 'z. B. auth, rate_limit, context_budget_exceeded',
+    matchPattern: 'Übereinstimmungsmuster (optionale Regex)',
+    matchPatternHint:
+      'Leer lassen für einen Eintrag auf Typ-Ebene; höchstens 1024 Zeichen',
+    title: 'Titel',
+    description: 'Beschreibung',
+    rootCause: 'Grundursache',
+    plan: 'Ausführungsplan',
+    planKind: 'Planform',
+    prompt: 'Prompt-Text',
+    promptHint:
+      'Die vollständige Anweisung für den PI-Agenten oder die Operationskraft, bis zu 16KB',
+    expect: 'Erwartetes Ergebnis',
+    expectAnalysis: 'Analyse (nur lesend)',
+    expectProposal: 'Vorschlag (ausführbar)',
+    method: 'HTTP-Methode',
+    path: 'Admin-Pfad',
+    pathHint:
+      'Muss mit /api/admin/ beginnen; nur im geschlossenen Satz registrierte Routen sind ausführbar',
+    body: 'Anfragekörper (optionales JSON)',
+    timeout: 'Zeitlimit (ms, ≤60000)',
+    stepsHint:
+      'Höchstens 8 Schritte; jede Aktion muss eine Primitive aus der Whitelist sein',
+    addStep: 'Schritt hinzufügen',
+    removeStep: 'Entfernen',
+    stepAction: 'Aktion',
+    stepParams: 'Parameter (JSON)',
+    stepNote: 'Notiz (optional)',
+    invalidJsonStep: 'Die Parameter von Schritt {n} sind kein gültiges JSON',
+    invalidJsonBody: 'Der Anfragekörper ist kein gültiges JSON',
+    stepsRequired: 'Ein Skriptplan braucht mindestens einen Schritt',
+    entryEnabled: 'Eintrag aktivieren',
+    entryAutoExecute: 'Auto-Ausführung erlauben',
+    message: 'Fehlermeldungsprobe (optional)',
+    confirmDeleteText:
+      'Nach dem Löschen fällt der Fehlertyp {type} zurück in den Analysefluss für unbekannte Fehler. Diesen Eintrag wirklich löschen?',
+  },
+  exec: {
+    timeline: 'Zeitleiste der Ausführungsnachweise',
+    hasSnapshot: 'Mit Altwert-Snapshot, zurückrollbar',
+  },
+  banner: {
+    validationTitle: 'Speichern abgelehnt (fachliche Prüfung nicht bestanden)',
+    saveOkTitle: 'Änderungen gespeichert',
+  },
+  empty: {
+    firstUseEntries:
+      'Das Handbuch enthält noch keine Einträge. Legen Sie mit „Neuer Eintrag“ die erste Standardmaßnahme ab.',
+    noResultEntries:
+      'Unter den aktuellen Bedingungen gibt es keine Handbucheinträge. Passen Sie die Filter an oder legen Sie einen an.',
+    filteredEntries:
+      'Keine Einträge passen zu den aktuellen Filtern. Filter zurücksetzen zeigt alle Einträge.',
+    noResultExecutions:
+      'Dieser Eintrag hat noch keine Ausführungsnachweise. Ein manueller Lauf erzeugt einen Datensatz.',
+  },
+  error: {
+    listFailed: 'Die Handbuchliste konnte nicht geladen werden. Bitte erneut versuchen.',
+    detailFailed: 'Die Eintragsdetails konnten nicht geladen werden. Bitte erneut versuchen.',
+    statsFailed: 'Die Handbuchstatistik konnte nicht geladen werden. Bitte erneut versuchen.',
+    executeFailed: 'Der manuelle Lauf konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    execListFailed:
+      'Die Ausführungsnachweise konnten nicht geladen werden. Bitte erneut versuchen.',
+    revertFailed:
+      'Das Zurückrollen aus Snapshots konnte nicht abgeschlossen werden. Bitte erneut versuchen.',
+    deleteFailed: 'Der Eintrag konnte nicht gelöscht werden. Bitte erneut versuchen.',
+  },
+}

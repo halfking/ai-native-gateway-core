@@ -89,6 +89,7 @@ export default {
     agents: "Registro de agentes",
     promptInjection: "Detección de inyección de prompts",
     piAnalysis: "Análisis de errores de PI",
+    errorPlaybook: 'Manual de errores',
     examples: "Ejemplos",
     autoConfig: 'Configuración automática',
     helpManual: 'Manual de ayuda',

@@ -1,0 +1,155 @@
+// errorPlaybook.ts — Textos del manual de errores (es-ES).
+//
+// ★ Los valores deben diferir literalmente de en-US; conjunto de claves y
+//   firma de placeholders idénticos a zh-CN.
+export default {
+  title: 'Manual de errores',
+  subtitle:
+    'Los errores conocidos ejecutan su plan estándar predefinido; los desconocidos los analiza el agente PI y quedan archivados en el manual',
+  nav: {
+    detail: 'Detalle de la entrada',
+  },
+  stats: {
+    totalEntries: 'Entradas del manual',
+    enabledEntries: 'Entradas activadas',
+    autoExecuteEntries: 'Entradas con autoejecución',
+    executions24h: 'Ejecuciones (24 h)',
+    executionsTotal: 'Rastros de ejecución totales',
+    pendingUnknown: 'Errores desconocidos pendientes de análisis',
+    engineState: 'Automatización del manual',
+    engineOn: 'conectada',
+    engineOff: 'sin conectar',
+    llmOn: 'Canal de análisis disponible',
+    llmOff: 'Canal de análisis no disponible',
+  },
+  filter: {
+    query: 'Buscar título o tipo de error',
+    source: 'Origen de la entrada',
+    enabled: 'Estado de activación',
+    all: 'Todos',
+    enabledOnly: 'Solo activadas',
+    disabledOnly: 'Solo desactivadas',
+    apply: 'Aplicar filtros',
+  },
+  col: {
+    title: 'Título',
+    errorType: 'Tipo de error',
+    matchPattern: 'Patrón de coincidencia',
+    planKind: 'Forma del plan',
+    source: 'Origen',
+    enabled: 'Activada',
+    autoExecute: 'Autoejecución',
+    confidence: 'Confianza',
+    hits: 'Aciertos',
+    successRate: 'Éxitos/Fallos',
+    lastStatus: 'Último estado de ejecución',
+    lastExecutedAt: 'Última ejecución',
+    duration: 'Duración',
+  },
+  kind: {
+    script: 'Pasos de script',
+    api: 'Llamada de API de administración',
+    prompt: 'Prompt de IA',
+  },
+  source: {
+    seed: 'Historia destilada',
+    manual: 'Alta manual',
+    pi_analysis: 'Agente PI',
+    refinement: 'Reafinado tras fallo',
+  },
+  status: {
+    succeeded: 'Con éxito',
+    failed: 'Con fallo',
+    skipped: 'Omitido',
+    awaiting_approval: 'Pendiente de aprobación',
+    no_action: 'Sin acción necesaria',
+  },
+  trigger: {
+    standard: 'Modo estándar',
+    auto_analyze: 'Análisis automático',
+    manual: 'Ejecución manual',
+    refinement: 'Reafinado automático',
+  },
+  action: {
+    refresh: 'Actualizar datos',
+    retry: 'Volver a cargar',
+    reset: 'Limpiar filtros',
+    create: 'Nueva entrada',
+    save: 'Guardar entrada',
+    savePlan: 'Guardar cambios del plan',
+    cancel: 'Cancelar',
+    delete: 'Eliminar entrada',
+    execute: 'Ejecutar ahora',
+    revert: 'Restaurar desde instantáneas',
+    viewDetail: 'Ver detalle',
+    back: 'Volver al manual',
+    confirmDelete: 'Confirmar eliminación',
+  },
+  form: {
+    errorType: 'Tipo de error (obligatorio)',
+    errorTypeHint: 'p. ej. auth, rate_limit, context_budget_exceeded',
+    matchPattern: 'Patrón de coincidencia (regex opcional)',
+    matchPatternHint:
+      'Vacío para una entrada a nivel de tipo; máximo 1024 caracteres',
+    title: 'Título',
+    description: 'Descripción',
+    rootCause: 'Causa raíz',
+    plan: 'Plan de ejecución',
+    planKind: 'Forma del plan',
+    prompt: 'Cuerpo del prompt',
+    promptHint:
+      'La instrucción completa que se entrega al agente PI o a operaciones, hasta 16 KB',
+    expect: 'Resultado esperado',
+    expectAnalysis: 'Análisis (solo lectura)',
+    expectProposal: 'Propuesta (ejecutable)',
+    method: 'Método HTTP',
+    path: 'Ruta de administración',
+    pathHint:
+      'Debe empezar por /api/admin/; solo pueden ejecutarse rutas registradas en el conjunto cerrado',
+    body: 'Cuerpo de la petición (JSON opcional)',
+    timeout: 'Tiempo de espera (ms, ≤60000)',
+    stepsHint:
+      '8 pasos como máximo; cada acción debe ser una primitiva de la lista blanca',
+    addStep: 'Añadir paso',
+    removeStep: 'Quitar',
+    stepAction: 'Acción',
+    stepParams: 'Parámetros (JSON)',
+    stepNote: 'Nota (opcional)',
+    invalidJsonStep: 'Los parámetros del paso {n} no son un JSON válido',
+    invalidJsonBody: 'El cuerpo de la petición no es un JSON válido',
+    stepsRequired: 'Un plan de script necesita al menos un paso',
+    entryEnabled: 'Activar entrada',
+    entryAutoExecute: 'Permitir autoejecución',
+    message: 'Muestra del mensaje de error (opcional)',
+    confirmDeleteText:
+      'Tras eliminarla, el tipo de error {type} vuelve al flujo de análisis de errores desconocidos. ¿Eliminar esta entrada?',
+  },
+  exec: {
+    timeline: 'Cronología de rastros de ejecución',
+    hasSnapshot: 'Con instantánea del valor anterior, restaurable',
+  },
+  banner: {
+    validationTitle: 'Guardado rechazado (validación de negocio no superada)',
+    saveOkTitle: 'Cambios guardados',
+  },
+  empty: {
+    firstUseEntries:
+      'El manual todavía no tiene entradas. Usa «Nueva entrada» para destilar tu primera disposición estándar.',
+    noResultEntries:
+      'No hay entradas del manual en las condiciones actuales. Ajusta los filtros o crea una.',
+    filteredEntries:
+      'Ninguna entrada coincide con los filtros actuales. Limpia los filtros para verlas todas.',
+    noResultExecutions:
+      'Esta entrada aún no tiene rastros de ejecución. Una ejecución manual generará un registro.',
+  },
+  error: {
+    listFailed: 'La lista del manual no se pudo cargar. Inténtalo de nuevo.',
+    detailFailed: 'El detalle de la entrada no se pudo cargar. Inténtalo de nuevo.',
+    statsFailed: 'Las estadísticas del manual no se pudieron cargar. Inténtalo de nuevo.',
+    executeFailed: 'La ejecución manual no se pudo completar. Inténtalo de nuevo.',
+    execListFailed: 'Los rastros de ejecución no se pudieron cargar. Inténtalo de nuevo.',
+    revertFailed:
+      'La restauración desde instantáneas no se pudo completar. Inténtalo de nuevo.',
+    deleteFailed: 'La entrada no se pudo eliminar. Inténtalo de nuevo.',
+  },
+}

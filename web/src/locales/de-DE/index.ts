@@ -95,6 +95,7 @@ import helpManual from './helpManual'
 import selfUpdateView from './selfUpdateView'
 import simpleMode from './simpleMode'
 import sessionAnalytics from './sessionAnalytics'
+import errorPlaybook from './errorPlaybook'
 import pageHelp from './pageHelp'
 
 export default {
@@ -193,5 +194,6 @@ export default {
   publicQuote,
   simpleMode,
   sessionAnalytics,
+  errorPlaybook,
   pageHelp,
 }

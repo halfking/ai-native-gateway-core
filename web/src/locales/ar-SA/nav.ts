@@ -88,6 +88,7 @@ export default {
     agents: "سجل الوكلاء",
     promptInjection: "كشف حقن المطالبات",
     piAnalysis: "تحليل أخطاء PI",
+    errorPlaybook: 'دفتر الأخطاء',
     examples: "أمثلة التكامل",
     autoConfig: 'الإعداد التلقائي',
     helpManual: 'دليل المساعدة',

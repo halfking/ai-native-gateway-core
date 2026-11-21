@@ -78,7 +78,7 @@ describe('空状态新键的运行时解析（键 → 译文，不是键路径�
     // 2026-11-20 会话分析轮 +8（sessionAnalytics.empty.*：总览/人员排行/人员详情/
     //   项目/任务/智能体/模型 + 1 条 Filtered 口径的 filteredUserRanking）。
     expect(REGISTERED_KEYS.length).toBeGreaterThan(0)
-    expect(REGISTERED_KEYS.length).toBe(32)
+    expect(REGISTERED_KEYS.length).toBe(36)
   })
 
   for (const locale of LOCALES) {

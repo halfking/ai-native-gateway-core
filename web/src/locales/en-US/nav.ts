@@ -91,6 +91,7 @@ export default {
     agents: 'Agent Registry',
     promptInjection: 'Prompt Injection Detection',
     piAnalysis: 'PI Error Analysis',
+    errorPlaybook: 'Error Playbook',
     examples: 'Examples',
     autoConfig: 'Auto setup',
     helpManual: 'Help Manual',

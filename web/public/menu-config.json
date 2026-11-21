@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-20T16:01:55.963Z",
+  "exported_at": "2026-11-21T16:00:13.061Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -426,6 +426,15 @@
           "super": true,
           "hideForTenant": true,
           "piAnalysis": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/error-playbook",
+          "labelKey": "nav.item.errorPlaybook",
+          "icon": "📕",
+          "super": true,
+          "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },

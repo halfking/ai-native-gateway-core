@@ -149,6 +149,22 @@
     {
       "key": "sessionAnalytics.empty.noResultModelRanking",
       "kind": "NoResult"
+    },
+    {
+      "key": "errorPlaybook.empty.firstUseEntries",
+      "kind": "FirstUse"
+    },
+    {
+      "key": "errorPlaybook.empty.noResultEntries",
+      "kind": "NoResult"
+    },
+    {
+      "key": "errorPlaybook.empty.filteredEntries",
+      "kind": "Filtered"
+    },
+    {
+      "key": "errorPlaybook.empty.noResultExecutions",
+      "kind": "NoResult"
     }
   ]
 }

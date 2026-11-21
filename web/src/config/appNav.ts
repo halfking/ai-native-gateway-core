@@ -262,6 +262,11 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/modules', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
       { path: '/admin/prompt-injection', labelKey: 'nav.item.promptInjection', icon: '🛡️', super: true, hideForTenant: true },
       { path: '/admin/pi-analysis', labelKey: 'nav.item.piAnalysis', icon: '🔍', super: true, hideForTenant: true, piAnalysis: true },
+      // 2026-11-21：错误处理手册（后端 admin/error_playbook_handler.go + domains/errorplaybook）。
+      // 已知错误按预定方案标准执行、未知错误 PI 分析后落手册；本入口提供
+      // 条目 CRUD、三形态方案编辑、执行留痕时间线与按快照回滚。
+      // 权限档与 pi-analysis 同族（管理面处置工具）⇒ super + hideForTenant。
+      { path: '/admin/error-playbook', labelKey: 'nav.item.errorPlaybook', icon: '📕', super: true, hideForTenant: true },
       // 2026-11-20：会话分析系统（后端 admin/session_analytics 的 7 个端点）。
       // 2026-11-20 L9 收口：聚合族独立标签键 sessionAnalytics.nav.analyticsCenter，
       // 避免与 /admin/session-analytics/users（用户画像族，仍用 nav.item.sessionAnalytics）

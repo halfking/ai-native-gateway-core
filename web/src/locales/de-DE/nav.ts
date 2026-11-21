@@ -90,6 +90,7 @@ export default {
     agents: "Agent-Registry",
     promptInjection: "Prompt-Injection-Erkennung",
     piAnalysis: "PI-Fehleranalyse",
+    errorPlaybook: 'Fehler-Handbuch',
     examples: "Beispiele",
     autoConfig: 'Automatische Einrichtung',
     helpManual: 'Handbuch',

@@ -1,0 +1,23 @@
+错误处理手册活体验证（任务2）—— 211 现役 2.6.1-4ad901323-20261121-211 (seq 3191)
+995 交付提交 3643a6408 IS ancestor of 4ad901323（git merge-base --is-ancestor 实测）
+时间: 2026-11-21 (goal 会话), 凭据 demoadmin/super_admin（docs/211-user-auth-final-verification.md 三组最终凭据），全程零 captcha
+
+[1] GET  /api/admin/error-playbook/stats          无token → 401 {"error":{"detail":"authentication required"}}
+[2] POST /api/auth/token                          → 200 (demoadmin, super_admin)
+[3] GET  /api/admin/error-playbook/stats          → 200 {"engine_wired":true,"llm_wired":true,"provisioned":true,
+        "total_entries":5,"enabled_entries":5,"auto_execute_entries":0,
+        "entries_by_source":{"seed":5},"entries_by_plan_kind":{"prompt":5},"executions":{"total":0}}
+[4] GET  /api/admin/error-playbook/entries        → 200 total=5, seed 5/5 全 prompt 型:
+        1 auth / 2 rate_limit / 3 quota_permanent / 4 context_budget_exceeded / 5 no_available_channel
+[5] POST /api/admin/error-playbook/entries        无error_type → 422 "error_type is required"
+[6] POST /api/admin/error-playbook/entries        api方案未登记路由 → 422
+        "api plan route POST /api/admin/definitely-not-a-route is not registered as an executable internal route"
+        （= 审计轮 F4 归一化期 fail-fast 的活体证明）
+[7] POST /api/admin/error-playbook/analyze        无error_type → 422 "error_type is required"
+[8] GET  /api/admin/error-playbook/entries/999999 → 404 "not found"
+[9] GET  /api/admin/error-playbook/executions     → 200 {"executions":[],"total":0}
+[10]GET  /api/admin/error-playbook/executions/999999 → 404 "not found"
+[11]POST /api/admin/error-playbook/executions/999999/revert → 404（engine 已接线，走 store 查无此行）
+
+量具坑（本轮实录）：/api/auth/token 响应键是 access_token 不是 token——
+首脚本用 .token 取值得 "Bearer undefined"，全批 401 假红；换 access_token 后全绿。
