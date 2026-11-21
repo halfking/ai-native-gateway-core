@@ -76,13 +76,15 @@ url: ${BASE_URL}
 
 # ═══ ④ 详情页（点第 1 行「查看详情」→ seed id=1 auth）══════════════════════
 # 落定判据＝「执行留痕时间线」区块标题（详情页独有）。
+# ★ 表头单元格的文本也是「查看详情」⇒ tapOn index 0 会点到表头（不可点）⇒
+#   详情页永远打不开 ⇒ 假红。改点第 1 行种子标题（「鉴权类失败」在表里唯一）。
 - tapOn:
-    text: "查看详情"
-    index: 0
+    text: ".*鉴权类失败.*"
 - extendedWaitUntil:
     visible: "执行留痕时间线"
     timeout: 30000
-- assertVisible: "错误处理手册"
+# ★ 详情页 H1 = 条目自身标题（不是「错误处理手册」）——见 ErrorPlaybookDetailView
+#   的 PageHeader :title；此处断方案形态徽标而不是页面标题。
 - assertVisible: "AI 提示词"
 - assertVisible: "历史沉淀"
 - assertVisible: "执行方案"

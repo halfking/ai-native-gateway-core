@@ -1,0 +1,43 @@
+错误处理手册下一轮（任务 1-4）交付证据 —— 2026-11-22（goal 会话）
+════════════════════════════════════════════════════════════════
+现役身份：211 = 2.6.1-0c347464-20261122-211（build_seq 3194，git_sha 干净无 -dirty，ready=true）
+部署链：seq 3193 = 98221b41（任务1 前端）→ seq 3194 = 0c347464（任务3 闭集扩容），两次蓝绿 DEPLOY_EXIT=0
+
+[任务1 前端管理页] 提交 98221b41d（rebase 后）
+- /admin/error-playbook 列表（统计卡 SQL 聚合/筛选/契约C 名称排序/新建对话框三形态）
+  + /admin/error-playbook/:id 详情（徽标/PlanEditor 三形态/文本字段与方案成对保存契约/
+  开关/手动执行/删除/执行留痕时间线/按快照回滚）
+- 8 语种 errorPlaybook.* + nav.item.errorPlaybook；契约门 checklist 全绿：
+  navCounts 76/76（67→68/66→67/53→54/64→65 + 三份方案稿数字 + 归属表+1 行）
+  空态键登记 +4（32→36）；vue-tsc 0；全量 vitest 3562 绿（2 红归因上游）；
+  build 21.76s；ui/html-table/element/responsive strict 全过；CJK 棘轮 4316≤4369
+  i18n 棘轮增量归零（OK 内联不占键 + 15 处撞值改写）
+
+[任务2 活体验证] 证据 2026-11-21-error-playbook-live-verify-211.txt（部署前，4ad901323 上）
+- 7 端点 401/200/422/404 门控原文全过 + 种子 5/5 在库（全 prompt 型）
+- 量具坑：/api/auth/token 响应键是 access_token 不是 token（首脚本 Bearer undefined 假红）
+
+[任务3 闭集扩容] 提交 0c3474646
+- 闭集 1→4 条：credentials/force-recover（单一真源=admin.Handler.ForceRecoverCredential 抽取）/
+  auto-route/refresh / model-credibility/trigger / 既有 pi-analysis/trigger
+- 安全边界：变更类 POST ⇒ 0.80 置信度门（钉测 Mutating）；不产快照（幂等重算/状态机自收敛，
+  时点回滚=TOCTOU）；依赖缺项 ⇒ 路由不登记 ⇒ 归一化 fail-fast；NewPlanInvalid 导出构造器
+- 钉测 4 组全绿；go build ./... 绿；admin 全包 4 红为上游 a2cb60f5b 存量（纯净树对拍同红）
+- 活体（seq 3194 上）：引用 force-recover 的 api 方案条目 → 200 归一化放行（id=6）；
+  未登记路由 → 422 fail-fast 原文；探针条目 DELETE 清理后 total=5 零残留
+
+[任务4 灰度开启] 211 settings_kv 三件（PUT 200 + 回读 db 来源）：
+- error_playbook.enabled = true
+- error_playbook.kind_threshold = 5
+- error_playbook.auto_execute = false
+- 观察：automation-3094bae8（每 2h :23，maestro/tools/observe-error-playbook.mjs 只读采样
+  /stats+/executions → JSONL；48h 收口 exit3 → CronPauseSelf）
+- 灰度锚点：2026-11-22T01:00+08:00 起 48h
+
+[两层 E2E（seq 3194 现役上）]
+- 第一层 flow 17-error-playbook.yaml：F17_EXIT=0，52 步全 COMPLETED
+- 第二层 assert-error-playbook.mjs：RESULT: PASS（18 条）（数字对拍=页面自己收到的那份响应）
+- 量具错实录（3 处，全部非产品红）：①顶栏分组菜单 Teleport+v-if 未展开不在 DOM ⇒
+  菜单判据改部署 bundle 链；②列表表头与行动作列同名「查看详情」⇒ tapOn index 0 点到表头
+  ⇒ 改点种子标题；③详情页 H1=条目标题≠「错误处理手册」⇒ 删该断言。
+  另：menu-config.json 在鉴权面后（带 cookie+Bearer 均 401）⇒ 登记待查（非本轮面）。

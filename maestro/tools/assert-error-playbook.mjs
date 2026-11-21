@@ -37,7 +37,8 @@ function skip(name, reason) {
 }
 
 // ── 登录 + 打开列表页（真浏览器会话；cookie 由 SPA 登录种下）────────────────
-const cdp = await connect(CDP_URL)
+const conn = await connect(CDP_URL)
+const cdp = conn.cdp
 const page = await openPage(cdp, `${BASE}/`)
 
 // 钉语种（与 runner --lang=zh-CN 双保险；探针侧读回 <html lang> 复核）
@@ -82,8 +83,9 @@ const api = await evaluate(cdp, page.sessionId, `(async () => {
   const entries = e.ok ? await e.json() : null
   return { statsStatus: s.status, entriesStatus: e.status, stats, entries }
 })()`)
-let apiData = null
-try { apiData = JSON.parse(api) } catch { apiData = null }
+// evaluate(returnByValue:true) 直接回 JS 值：对象直接用，字符串才 parse（双形态兼容）
+let apiData = typeof api === 'string' ? null : api
+if (apiData === null) { try { apiData = JSON.parse(api) } catch { apiData = null } }
 
 if (!apiData || apiData.statsStatus !== 200 || apiData.entriesStatus !== 200) {
   skip('API 层采样', `stats=${apiData?.statsStatus} entries=${apiData?.entriesStatus}（登录态或路由不可用）`)
@@ -108,11 +110,10 @@ if (!apiData || apiData.statsStatus !== 200 || apiData.entriesStatus !== 200) {
       .map((el) => (el.textContent || '').trim())
     const headers = [...document.querySelectorAll('.ep-table th')].map((th) => (th.textContent || '').trim())
     const rows = document.querySelectorAll('.ep-table tbody tr').length
-    const menuLink = !!document.querySelector('a[href*="error-playbook"], [data-nav*="error-playbook"]')
-    return { bodyText: bodyText.slice(0, 4000), statCards, headers, rows, menuLink }
+    return { bodyText: bodyText.slice(0, 4000), statCards, headers, rows }
   })()`)
-  let domData = null
-  try { domData = JSON.parse(dom) } catch { domData = null }
+  let domData = typeof dom === 'string' ? null : dom
+  if (domData === null) { try { domData = JSON.parse(dom) } catch { domData = null } }
   if (!domData) {
     skip('DOM 层采样', '页面 JSON 解析失败')
   } else {
@@ -131,7 +132,28 @@ if (!apiData || apiData.statsStatus !== 200 || apiData.entriesStatus !== 200) {
     `headers=${JSON.stringify(domData.headers)}`)
     check('行数 == entries 返回条数', domData.rows === (apiData.entries.entries ?? []).length,
       `dom=${domData.rows} api=${(apiData.entries.entries ?? []).length}`)
-    check('菜单入口存在（/admin/error-playbook）', domData.menuLink)
+
+  }
+}
+
+// ── 入口层：部署 bundle 含该入口（appNav → 编译产物，随构建上线）──────────
+// ★ 顶栏分组菜单是 Teleport + v-if ⇒ 未展开时 <a> 根本不在 DOM（16-flow ⑯-②）⇒
+//   DOM 查询必然假红。菜单接入的活体证据改为部署产物级：入口 HTML 引用的
+//   entry chunk 里含 /admin/error-playbook 路由与 nav 标签键。
+{
+  const bm = await evaluate(cdp, page.sessionId, `(async () => {
+    const idx = await (await fetch('/', { credentials: 'include' })).text()
+    const m = idx.match(/assets\\/index-[^"']+\\.js/)
+    if (!m) return { status: 'no-bundle-ref' }
+    const r = await fetch('/' + m[0])
+    const txt = await r.text()
+    return { status: 'ok', bundle: m[0], hasRoute: txt.includes('/admin/error-playbook'), hasNavKey: txt.includes('errorPlaybook') }
+  })()`)
+  const bmv = typeof bm === 'string' ? null : bm
+  if (bmv && bmv.status === 'ok') {
+    check('菜单入口在部署 bundle（/admin/error-playbook）', bmv.hasRoute === true, `bundle=${bmv.bundle}`)
+  } else {
+    skip('菜单入口在部署 bundle（/admin/error-playbook）', JSON.stringify(bmv))
   }
 }
 
@@ -155,8 +177,8 @@ const detail = await evaluate(cdp, page.sessionId, `(async () => {
     entryType: (t.match(/auth/) || [''])[0],
   }
 })()`)
-let det = null
-try { det = JSON.parse(detail) } catch { det = null }
+let det = typeof detail === 'string' ? null : detail
+if (det === null) { try { det = JSON.parse(detail) } catch { det = null } }
 if (!det) {
   skip('详情页 DOM', '页面 JSON 解析失败')
 } else {
@@ -187,8 +209,8 @@ if (apiData) {
     const g3 = await fetch('/api/admin/error-playbook/entries/999999', { credentials: 'same-origin', headers: auth })
     return { s1: g1.status, t1: g1t, s2: g2.status, t2: g2t, s3: g3.status }
   })()`)
-  let g = null
-  try { g = JSON.parse(gate) } catch { g = null }
+  let g = typeof gate === 'string' ? null : gate
+  if (g === null) { try { g = JSON.parse(gate) } catch { g = null } }
   if (!g) {
     skip('门控原文验证', 'JSON 解析失败')
   } else {
@@ -200,7 +222,7 @@ if (apiData) {
   }
 }
 
-await cdp.close?.()
+try { conn.ws.close() } catch { /* 页面收尾失败不影响判定 */ }
 const out = summarize(checks, { skipped })
 console.log(out.line)
 process.exit(out.exitCode)
