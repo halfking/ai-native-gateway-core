@@ -1,0 +1,100 @@
+# 17-error-playbook.yaml —— 错误处理手册管理页活体验证（2026-11-21 交付轮）
+#
+# 覆盖对象：
+#   /admin/error-playbook        → ErrorPlaybookListView（统计卡 + 筛选 + 条目表 + 新建对话框）
+#   /admin/error-playbook/:id    → ErrorPlaybookDetailView（徽标 + 三形态方案编辑 + 执行留痕时间线）
+#
+# ★ 与 16-flow 同一存在理由：路由存在 ≠ 页面能打开；页面能打开 ≠ 数据对得上。
+#   种子条目（迁移 995 的 5 条 prompt 型）在 211 上恒在 ⇒ 本 flow 的动态段为零，
+#   详情页直接点第 1 行（seed id=1 auth）即可，不需要 runner 解析真值。
+#
+# ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（16-flow 头注同源）：
+#   ① 可排序表头（标题列是 .ep-sort 按钮）DOM 文本带尾随空格 ⇒ 一律 `.*….*`；
+#   ② 数据落定判据锚「数据区特有文案」（统计卡 label / 时间线标题），
+#     不锚加载态占位符（占位符也是非空）；
+#   ③ 中文文案判据强依赖 zh-CN 界面语言（locale 取自 navigator.language
+#     且持久化在 localStorage）⇒ 换语种跑本 flow 必然假红（响亮，总好过假绿）。
+#
+# ★ 运行：bash maestro/run-local.sh maestro/flows/17-error-playbook.yaml
+#   （BASE_URL 需指向目标机公网域名；凭据从仓根 .env.local 读。）
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "系统管理员"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录（三段判据见 _shared/login.yaml 头注）─────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ═══ ② 列表页 ═══════════════════════════════════════════════════════════
+# 落定判据＝「手册条目」统计卡（SQL 聚合口径，页面独有；不是加载态占位符）。
+- openLink: ${BASE_URL}/admin/error-playbook
+- extendedWaitUntil:
+    visible: "手册条目"
+    timeout: 30000
+- assertVisible: "错误处理手册"
+- assertVisible: "启用中条目"
+- assertVisible: "自动执行条目"
+- assertVisible: "手册自动化"
+- assertVisible: "搜索标题或错误类型"
+- assertVisible: "条目来源"
+- assertVisible: "应用筛选"
+- assertVisible: "新建条目"
+- assertVisible: ".*标题.*"
+- assertVisible: "错误类型"
+- assertVisible: "方案形态"
+- assertVisible: "最近执行状态"
+# 种子行（迁移 995 的 5 条）至少一条在表里：
+- assertVisible: ".*鉴权类失败.*"
+- assertVisible: ".*查看详情.*"
+
+# ═══ ③ 新建对话框（打开 → 断三形态编辑器默认形态 → 取消）══════════════════
+- tapOn: "新建条目"
+- extendedWaitUntil:
+    visible: "错误类型（必填）"
+    timeout: 15000
+- assertVisible: "匹配模式（可选正则）"
+- assertVisible: "脚本步骤"
+- assertVisible: "管理面 API"
+- assertVisible: "AI 提示词"
+- assertVisible: "提示词正文"
+- assertVisible: "期望产物"
+- tapOn: "取消"
+- extendedWaitUntil:
+    visible: "新建条目"
+    timeout: 15000
+
+# ═══ ④ 详情页（点第 1 行「查看详情」→ seed id=1 auth）══════════════════════
+# 落定判据＝「执行留痕时间线」区块标题（详情页独有）。
+- tapOn:
+    text: "查看详情"
+    index: 0
+- extendedWaitUntil:
+    visible: "执行留痕时间线"
+    timeout: 30000
+- assertVisible: "错误处理手册"
+- assertVisible: "AI 提示词"
+- assertVisible: "历史沉淀"
+- assertVisible: "执行方案"
+- assertVisible: "提示词正文"
+- assertVisible: "手动执行"
+- assertVisible: "保存方案修改"
+- assertVisible: "返回手册列表"
+# 时间线空态（seed 尚无执行留痕；若曾手动执行过 ⇒ 该断言以 WARNED 语义弱化不了
+# ⇒ 改为断时间线标题本身已在上方落定，此处不再断空态文案，避免历史数据假红）
+
+# ═══ ⑤ 返回列表（导航闭环）═══════════════════════════════════════════════
+- tapOn: "返回手册列表"
+- extendedWaitUntil:
+    visible: "手册条目"
+    timeout: 30000
