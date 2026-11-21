@@ -49,7 +49,7 @@
         </select>
       </label>
       <button class="sa-btn sa-btn--primary" type="button" @click="applyFilters">
-        {{ t('sessionAnalytics.range.apply') }}
+        {{ t('sessionAnalytics.filter.apply') }}
       </button>
     </div>
 

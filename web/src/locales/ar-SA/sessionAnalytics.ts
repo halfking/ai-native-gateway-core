@@ -20,7 +20,6 @@ export default {
     end: 'تاريخ النهاية',
     preset7: 'آخر 7 أيام',
     preset30: 'آخر 30 يومًا',
-    apply: 'تطبيق النافذة',
   },
   action: {
     refresh: 'إعادة تحميل البيانات',
@@ -89,6 +88,7 @@ export default {
     project: 'التصفية حسب المشروع',
     sortBy: 'الترتيب حسب',
     order: 'اتجاه الترتيب',
+    apply: 'تطبيق عوامل التصفية',
   },
   sort: {
     sessions: 'الجلسات',

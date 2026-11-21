@@ -19,7 +19,6 @@ export default {
     end: 'Enddatum',
     preset7: 'Letzte 7 Tage',
     preset30: 'Letzte 30 Tage',
-    apply: 'Zeitraum anwenden',
   },
   action: {
     refresh: 'Daten neu laden',
@@ -88,6 +87,7 @@ export default {
     project: 'Nach Projekt filtern',
     sortBy: 'Sortierung nach',
     order: 'Reihenfolge',
+    apply: 'Filter anwenden',
   },
   sort: {
     sessions: 'Sitzungen',

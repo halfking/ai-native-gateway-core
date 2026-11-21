@@ -19,7 +19,6 @@ export default {
     end: 'Date de fin',
     preset7: '7 derniers jours',
     preset30: '30 derniers jours',
-    apply: 'Appliquer la période',
   },
   action: {
     refresh: 'Recharger les données',
@@ -88,6 +87,7 @@ export default {
     project: 'Filtrer par projet',
     sortBy: 'Trier par',
     order: 'Ordre de tri',
+    apply: 'Appliquer les filtres',
   },
   sort: {
     sessions: 'Nombre de sessions',

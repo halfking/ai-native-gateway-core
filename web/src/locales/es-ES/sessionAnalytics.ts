@@ -19,7 +19,6 @@ export default {
     end: 'Fecha de fin',
     preset7: 'Últimos 7 días',
     preset30: 'Últimos 30 días',
-    apply: 'Aplicar el periodo',
   },
   action: {
     refresh: 'Recargar los datos',
@@ -88,6 +87,7 @@ export default {
     project: 'Filtrar por proyecto',
     sortBy: 'Ordenar por',
     order: 'Dirección de orden',
+    apply: 'Aplicar filtros',
   },
   sort: {
     sessions: 'Sesiones',

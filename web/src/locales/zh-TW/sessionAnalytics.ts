@@ -20,7 +20,6 @@ export default {
     end: '結束日期',
     preset7: '最近 7 日',
     preset30: '最近 30 日',
-    apply: '套用區間',
   },
   action: {
     refresh: '重新整理資料',
@@ -89,6 +88,7 @@ export default {
     project: '依專案篩選',
     sortBy: '排序依據',
     order: '排序方式',
+    apply: '套用篩選',
   },
   sort: {
     sessions: '會話數',

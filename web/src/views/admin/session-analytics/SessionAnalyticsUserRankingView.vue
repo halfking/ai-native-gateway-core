@@ -58,7 +58,7 @@
         </select>
       </label>
       <button class="sa-btn sa-btn--primary" type="button" @click="applyFilters">
-        {{ t('sessionAnalytics.range.apply') }}
+        {{ t('sessionAnalytics.filter.apply') }}
       </button>
       <button v-if="hasFilters" class="sa-btn" type="button" @click="clearFilters">
         {{ t('sessionAnalytics.action.reset') }}

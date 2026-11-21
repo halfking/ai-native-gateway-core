@@ -19,7 +19,6 @@ export default {
     end: '終了日',
     preset7: '直近 7 日間',
     preset30: '直近 30 日間',
-    apply: '期間を適用',
   },
   action: {
     refresh: 'データを更新',
@@ -88,6 +87,7 @@ export default {
     project: 'プロジェクトで絞り込み',
     sortBy: '並べ替えの基準',
     order: '並べ替えの方向',
+    apply: 'フィルタを適用',
   },
   sort: {
     sessions: 'セッション数',

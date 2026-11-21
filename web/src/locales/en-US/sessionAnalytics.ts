@@ -22,7 +22,6 @@ export default {
     end: 'End date',
     preset7: 'Last 7 days',
     preset30: 'Last 30 days',
-    apply: 'Apply window',
   },
   action: {
     refresh: 'Reload data',
@@ -91,6 +90,7 @@ export default {
     project: 'Filter by project',
     sortBy: 'Sort by',
     order: 'Sort order',
+    apply: 'Apply filters',
   },
   sort: {
     sessions: 'Sessions',

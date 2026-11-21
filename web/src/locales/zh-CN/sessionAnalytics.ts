@@ -23,7 +23,6 @@ export default {
     end: '结束日期',
     preset7: '最近 7 天',
     preset30: '最近 30 天',
-    apply: '应用区间',
   },
   action: {
     refresh: '刷新数据',
@@ -92,6 +91,7 @@ export default {
     project: '按项目筛选',
     sortBy: '排序依据',
     order: '排序方向',
+    apply: '应用筛选',
   },
   sort: {
     sessions: '会话数',
