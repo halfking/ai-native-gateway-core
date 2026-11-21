@@ -334,6 +334,40 @@ const sourceLabel = computed(() => {
   }
 })
 
+// 导航到请求日志页面，带上对应的筛选条件
+function navigateToRequests(dimension: string, value: string) {
+  const query: Record<string, string> = {
+    start: effectiveRange.value.start,
+    end: effectiveRange.value.end,
+  }
+  
+  // 根据维度类型设置对应的筛选参数
+  switch (dimension) {
+    case 'model':
+      query.model = value
+      break
+    case 'client':
+      query.client_model = value
+      break
+    case 'user':
+      query.end_user_id = value
+      break
+    case 'apikey':
+      // API Key 名称格式是 "prefix...alias/owner"，需要提取前缀
+      const prefix = value.split('...')[0]
+      query.api_key_prefix = prefix
+      break
+    case 'project':
+      query.application_code = value
+      break
+    case 'task':
+      query.task_type = value
+      break
+  }
+  
+  router.push({ path: '/admin/request-logs', query })
+}
+
 onMounted(() => {
   void loadFilterOptions()
   void loadSeries()
@@ -496,7 +530,7 @@ onBeforeUnmount(() => {
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_models.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
-            <div v-for="(item, idx) in rankings.top_models" :key="idx" class="ute__ranking-item">
+            <div v-for="(item, idx) in rankings.top_models" :key="idx" class="ute__ranking-item ute__ranking-item--clickable" @click="navigateToRequests('model', item.name)">
               <div class="ute__ranking-rank">{{ idx + 1 }}</div>
               <div class="ute__ranking-info">
                 <div class="ute__ranking-name">{{ item.name }}</div>
@@ -506,6 +540,7 @@ onBeforeUnmount(() => {
                   成本: ${{ item.total_cost_usd.toFixed(4) }}
                 </div>
               </div>
+              <div class="ute__ranking-arrow">→</div>
             </div>
           </div>
         </div>
@@ -516,7 +551,7 @@ onBeforeUnmount(() => {
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_clients.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
-            <div v-for="(item, idx) in rankings.top_clients" :key="idx" class="ute__ranking-item">
+            <div v-for="(item, idx) in rankings.top_clients" :key="idx" class="ute__ranking-item ute__ranking-item--clickable" @click="navigateToRequests('client', item.name)">
               <div class="ute__ranking-rank">{{ idx + 1 }}</div>
               <div class="ute__ranking-info">
                 <div class="ute__ranking-name">{{ item.name }}</div>
@@ -526,6 +561,7 @@ onBeforeUnmount(() => {
                   成本: ${{ item.total_cost_usd.toFixed(4) }}
                 </div>
               </div>
+              <div class="ute__ranking-arrow">→</div>
             </div>
           </div>
         </div>
@@ -536,7 +572,7 @@ onBeforeUnmount(() => {
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_users.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
-            <div v-for="(item, idx) in rankings.top_users" :key="idx" class="ute__ranking-item">
+            <div v-for="(item, idx) in rankings.top_users" :key="idx" class="ute__ranking-item ute__ranking-item--clickable" @click="navigateToRequests('user', item.name)">
               <div class="ute__ranking-rank">{{ idx + 1 }}</div>
               <div class="ute__ranking-info">
                 <div class="ute__ranking-name">{{ item.name }}</div>
@@ -556,7 +592,7 @@ onBeforeUnmount(() => {
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_api_keys.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
-            <div v-for="(item, idx) in rankings.top_api_keys" :key="idx" class="ute__ranking-item">
+            <div v-for="(item, idx) in rankings.top_api_keys" :key="idx" class="ute__ranking-item ute__ranking-item--clickable" @click="navigateToRequests('apikey', item.name)">
               <div class="ute__ranking-rank">{{ idx + 1 }}</div>
               <div class="ute__ranking-info">
                 <div class="ute__ranking-name">{{ item.name }}</div>
@@ -576,7 +612,7 @@ onBeforeUnmount(() => {
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_projects.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
-            <div v-for="(item, idx) in rankings.top_projects" :key="idx" class="ute__ranking-item">
+            <div v-for="(item, idx) in rankings.top_projects" :key="idx" class="ute__ranking-item ute__ranking-item--clickable" @click="navigateToRequests('project', item.name)">
               <div class="ute__ranking-rank">{{ idx + 1 }}</div>
               <div class="ute__ranking-info">
                 <div class="ute__ranking-name">{{ item.name }}</div>
@@ -596,7 +632,7 @@ onBeforeUnmount(() => {
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_tasks.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
-            <div v-for="(item, idx) in rankings.top_tasks" :key="idx" class="ute__ranking-item">
+            <div v-for="(item, idx) in rankings.top_tasks" :key="idx" class="ute__ranking-item ute__ranking-item--clickable" @click="navigateToRequests('task', item.name)">
               <div class="ute__ranking-rank">{{ idx + 1 }}</div>
               <div class="ute__ranking-info">
                 <div class="ute__ranking-name">{{ item.name }}</div>
@@ -829,6 +865,13 @@ export default { name: 'UsageTrendExplorer' }
   background: var(--card);
   transition: background 0.2s;
 }
+.ute__ranking-item--clickable {
+  cursor: pointer;
+}
+.ute__ranking-item--clickable:hover {
+  background: var(--hover-bg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
 .ute__ranking-item:hover {
   background: var(--hover-bg);
 }
@@ -861,6 +904,18 @@ export default { name: 'UsageTrendExplorer' }
 .ute__ranking-stats {
   font-size: 11px;
   color: var(--text-muted);
+}
+.ute__ranking-arrow {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 16px;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.ute__ranking-item--clickable:hover .ute__ranking-arrow {
+  opacity: 1;
+  transform: translateX(4px);
 }
 @media (max-width: 768px) {
   .ute__rankings-grid {
