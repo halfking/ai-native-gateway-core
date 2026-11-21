@@ -53,7 +53,7 @@ url: ${BASE_URL}
 
 # ── ④ 展开统计概览：总请求数仍渲染（载荷带 include_probe 重载不破页面）─────
 - tapOn:
-    text: '统计概览'
+    text: '📊 统计概览'
 - extendedWaitUntil:
     visible:
       text: '总请求数'
