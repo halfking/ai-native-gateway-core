@@ -233,6 +233,9 @@ onMounted(() => {
       
       <div class="list-footer">
         <p>{{ $t('analytics.list.total', { count: sortedItems.length }) }}</p>
+        <!-- 2026-11-21 审计轮 D-6 披露：后端 queryDimPie SQL LIMIT 25（dashboard_board_queries.go:567），
+             列表页复用 board.pies 载荷 ⇒ 实为 Top 25 截断面而非完整清单；>25 个维度的部署上第 26 名起静默不可见。 -->
+        <p class="list-truncated-note">{{ $t('analytics.list.truncated') }}</p>
       </div>
     </div>
   </div>
@@ -382,6 +385,14 @@ onMounted(() => {
   font-size: var(--text-sm);
   color: var(--text-muted);
   text-align: right;
+}
+
+/* 2026-11-21 审计轮 D-6：Top 25 截断面披露行 */
+.list-truncated-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs, 12px);
+  color: var(--text-muted);
+  text-align: left;
 }
 
 @media (max-width: 768px) {

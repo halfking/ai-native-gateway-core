@@ -16,6 +16,7 @@ export default {
     subtitle: 'Données des {days} derniers jours',
     empty: 'Aucune donnée sur cette période',
     total: '{count} éléments au total',
+    truncated: 'La source de données renvoie au maximum 25 éléments par dimension (Top 25) ; les éléments au-delà ne figurent pas dans cette liste',
     column: {
       name: 'Nom',
       requests: 'Requêtes',

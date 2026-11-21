@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	auth := maascontracts.AuthContext{
 		TenantID: "ten_test_e2e",
 		Scopes:   []string{"maas.*"},
-		TraceID:  ptrString("trace_e2e_001"),
+		TraceID:  "trace_e2e_001", // string 类型（contracts.AuthContext.TraceID string，原 ptrString 编译不过）
 	}
 
 	// ========================================================================
@@ -215,10 +216,6 @@ func TestE2E_CompletePurchaseAndConsumptionFlow(t *testing.T) {
 	// Complete!
 	// ========================================================================
 	t.Log("✅ End-to-end flow completed successfully")
-}
-
-func ptrString(s string) *string {
-	return &s
 }
 
 func parseDecimal(s string) float64 {

@@ -18,6 +18,7 @@ export default {
     subtitle: '最近 {days} 天資料',
     empty: '此時間範圍內沒有資料',
     total: '共 {count} 項',
+    truncated: '資料來源每維度最多回傳 25 項（Top 25），超出部分不在本列表',
     column: {
       name: '名稱',
       requests: '請求數',

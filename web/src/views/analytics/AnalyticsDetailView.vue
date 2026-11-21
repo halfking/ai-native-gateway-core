@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // AnalyticsDetailView — 分析详情主容器 (2026-11-20)
 // 参数化复用: 通过 route.params 区分维度和对象
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { surfaceError } from '../../i18n/errorSurface'
 import { fetchAnalyticsDetail, type AnalyticsDetailPayload } from '../../api/board'
@@ -22,6 +22,16 @@ const data = ref<AnalyticsDetailPayload | null>(null)
 // 从路由获取维度和标识符
 const dimension = computed(() => route.params.dimension as AnalyticsDimension)
 const identifier = computed(() => route.params.id as string)
+
+// 2026-11-21 审计轮 D-7：非法 dimension（手滑/外链 /admin/analytics/foo/bar）
+// 原样直达模板 `ANALYTICS_REGISTRY[dimension].titleKey` ⇒ 渲染期 TypeError 整页崩。
+// 守卫：registry 不存在时回到列表页（优雅降级），而非让模板抛错。
+const registry = computed(() => ANALYTICS_REGISTRY[dimension.value])
+watchEffect(() => {
+  if (!registry.value) {
+    void router.replace({ path: '/admin/board-operational' })
+  }
+})
 
 // 时间范围
 const timeRange = ref(Number(route.query.days) || 7)
@@ -123,7 +133,8 @@ onMounted(() => {
             </span>
           </div>
           <h1 class="ad-title">
-            <span class="ad-dimension-badge">{{ $t(ANALYTICS_REGISTRY[dimension].titleKey) }}</span>
+            <!-- 2026-11-21 审计轮 D-7：registry 可选链守卫（非法 dimension 由 watchEffect 重定向，渲染期不再抛 TypeError） -->
+            <span v-if="registry" class="ad-dimension-badge">{{ $t(registry.titleKey) }}</span>
             {{ pageTitle }}
           </h1>
           <p class="ad-subtitle">{{ $t('analytics.detail.subtitle', { days: timeRange }) }}</p>

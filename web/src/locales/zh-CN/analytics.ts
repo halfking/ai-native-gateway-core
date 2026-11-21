@@ -18,6 +18,7 @@ export default {
     subtitle: '最近 {days} 天数据',
     empty: '当前时间范围内没有数据',
     total: '共 {count} 项',
+    truncated: '数据源每维度最多返回 25 项（Top 25），超出部分不在本列表',
     column: {
       name: '名称',
       requests: '请求数',

@@ -17,6 +17,7 @@ export default {
     subtitle: 'Last {days} days',
     empty: 'No data in this time range',
     total: '{count} items total',
+    truncated: 'Data source returns at most 25 items per dimension (Top 25); items beyond that are not listed here',
     column: {
       name: 'Name',
       requests: 'Requests',

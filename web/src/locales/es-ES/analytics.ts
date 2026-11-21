@@ -16,6 +16,7 @@ export default {
     subtitle: 'Datos de los últimos {days} días',
     empty: 'No hay datos en este intervalo de tiempo',
     total: '{count} elementos en total',
+    truncated: 'La fuente de datos devuelve como máximo 25 elementos por dimensión (Top 25); los elementos adicionales no aparecen en esta lista',
     column: {
       name: 'Nombre',
       requests: 'Solicitudes',

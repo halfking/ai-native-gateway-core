@@ -17,6 +17,7 @@ export default {
     subtitle: '直近 {days} 日間のデータ',
     empty: 'この期間のデータはありません',
     total: '全 {count} 件',
+    truncated: 'データソースは次元ごとに最大 25 件（Top 25）を返します。それ以降は本リストに表示されません',
     column: {
       name: '名前',
       requests: 'リクエスト数',

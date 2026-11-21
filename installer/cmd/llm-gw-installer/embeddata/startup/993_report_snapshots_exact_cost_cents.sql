@@ -29,7 +29,11 @@
 --   · DEFAULT 0 / NOT NULL 语义不变；
 --   · Go 读面（reportrollup）同步改为 float64 扫描，JSON 键与语义不变
 --     （值从整数分变为精确小数分，前端 /100 + toFixed(2) 无需改动）。
+--   · lock_timeout=5s：ALTER TABLE 持 ACCESS EXCLUSIVE，等锁上限防堵全库
+--     （981 实测先例；2026-11-21 审计轮按 lock-guard 门要求补——门禁红先于窗口）。
 BEGIN;
+
+SET lock_timeout = '5s';
 
 ALTER TABLE public.report_snapshots
     ALTER COLUMN estimated_cost_cents TYPE numeric(24,6);

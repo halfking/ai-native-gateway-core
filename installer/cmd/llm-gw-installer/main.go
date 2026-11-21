@@ -1840,6 +1840,18 @@ var statsTimezoneStandardization991 []byte
 //go:embed embeddata/startup/992_add_cst_timezone_functions.sql
 var cstTimezoneFunctions992 []byte
 
+// ★ 993（2026-11-20 看板对账口径对齐轮 / F4 落实；2026-11-21 审计轮补齐接线）：
+// report_snapshots_exact_cost_cents——estimated_cost_cents bigint → numeric(24,6)。
+// embeddata 文件自窗口起就在（runner/tsv/docker 通道五面齐），但 go:embed/var/map
+// 三面缺失 ⇒ 离线安装包拿不到 993（新装环境 estimated_cost_cents 保持 bigint，
+// 与 4e6e14667 起按 numeric(24,6) 工作的写面/读面错位）。
+//
+//go:embed embeddata/startup/993_report_snapshots_exact_cost_cents.sql
+var reportSnapshotsExactCostCents993 []byte
+
+//go:embed embeddata/startup/993_report_snapshots_exact_cost_cents.down.sql
+var reportSnapshotsExactCostCents993Down []byte
+
 // ★ 994（2026-11-20 会话分析闭环审计轮）：session_analytics_owner_key_and_close_path——
 //
 //	981 会话级三视图 owner 键统一 COALESCE 双源 + end_user_count 列；
@@ -2499,6 +2511,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/990_stats_consistency_fixes.sql":        statsConsistencyFixes990,
 	"startup/991_stats_timezone_standardization.sql": statsTimezoneStandardization991,
 	"startup/992_add_cst_timezone_functions.sql":     cstTimezoneFunctions992,
+	// ★ 993（2026-11-21 审计轮补齐）：report_snapshots_exact_cost_cents。
+	"startup/993_report_snapshots_exact_cost_cents.sql":      reportSnapshotsExactCostCents993,
+	"startup/993_report_snapshots_exact_cost_cents.down.sql": reportSnapshotsExactCostCents993Down,
 	// ★ 994（2026-11-20 会话分析闭环审计轮）：owner 键统一双源 + 视图族重建 + 关闭路径补列。
 	"startup/994_session_analytics_owner_key_and_close_path.sql":      sessionAnalyticsOwnerKey994,
 	"startup/994_session_analytics_owner_key_and_close_path.down.sql": sessionAnalyticsOwnerKey994Down,

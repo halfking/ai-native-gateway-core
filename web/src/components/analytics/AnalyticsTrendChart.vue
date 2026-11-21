@@ -27,6 +27,13 @@ function initChart() {
 
   // 销毁旧实例
   if (chartInstance) {
+    // 2026-11-21 审计轮 D-8：re-init 路径必须先 disconnect 旧 observer——
+    // 旧 observer observe 的是同一个 DOM 节点，闭包引用模块级 chartInstance，
+    // 不 disconnect 会累积 N 个 observer 驱动新实例重复 resize（有界泄漏）。
+    const prevObserver = (chartInstance as any).__resizeObserver
+    if (prevObserver) {
+      prevObserver.disconnect()
+    }
     chartInstance.dispose()
   }
 

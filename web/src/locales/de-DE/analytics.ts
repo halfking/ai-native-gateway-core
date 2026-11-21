@@ -16,6 +16,7 @@ export default {
     subtitle: 'Daten der letzten {days} Tage',
     empty: 'Keine Daten in diesem Zeitraum',
     total: 'Insgesamt {count} Einträge',
+    truncated: 'Die Datenquelle liefert pro Dimension maximal 25 Einträge (Top 25); darüber hinausgehende Einträge sind hier nicht aufgeführt',
     column: {
       name: 'Bezeichnung',
       requests: 'Anfragen',
