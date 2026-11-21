@@ -11,7 +11,16 @@
 //   ⇒ 本探针用 CDP 直接驱动页面，逐页做 DOM 级断言 + 数字对拍。
 //
 // 覆盖：
-//   A. API 层：7 个端点的状态码与关键字段（并断言**陈旧门未触发**）
+//   A. API 层：9 个端点的状态码与关键字段（并断言**陈旧门未触发**）
+//      ① /api/admin/session-analytics/overview
+//      ② /api/admin/session-analytics/user-ranking
+//      ③ /api/admin/session-analytics/user-ranking/:owner
+//      ④ /api/admin/session-analytics/user-ranking/:owner/projects
+//      ⑤ /api/admin/session-analytics/user-ranking/:owner/projects/:project/tasks
+//      ⑥ /api/admin/session-analytics/agent-ranking
+//      ⑦ /api/admin/session-analytics/model-ranking
+//      ⑧ /api/admin/session-analytics/user-ranking/:owner/models（2026-11-21 新增）
+//      ⑨ /api/admin/session-analytics/user-ranking/:owner/api-keys（2026-11-21 新增）
 //   B. 页面层：5 个页面的数据卡 / 区块标题 / 全部表头（含右侧列）/ 行数
 //   C. 对拍层：页面渲染数字 == API 返回数字（会话总数、活跃人员、排行首行、详情卡）
 //   D. 入口层：菜单里有指向 /admin/session-analytics 的链接（菜单接入的活体证据）
@@ -239,6 +248,14 @@ const agents = (ar.body && ar.body.agents) || []
 const mr = await apiGet(`/api/admin/session-analytics/model-ranking?${RANGE}`)
 check('端点⑦ model-ranking 200', mr.status === 200, `status=${mr.status}`)
 const models = (mr.body && mr.body.models) || []
+
+const um = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}/models?${RANGE}`)
+check(`端点⑧ user-ranking/:owner/models 200（owner=${owner}）`, um.status === 200, `status=${um.status}`)
+const userModels = (um.body && um.body.models) || []
+
+const uak = await apiGet(`/api/admin/session-analytics/user-ranking/${encodeURIComponent(owner)}/api-keys?${RANGE}`)
+check(`端点⑨ user-ranking/:owner/api-keys 200（owner=${owner}）`, uak.status === 200, `status=${uak.status}`)
+const userApiKeys = (uak.body && uak.body.api_keys) || []
 
 if (!users.length || !agents.length || !models.length) {
   gauge('5 个页面的表格行断言', `窗口 ${START}~${END} 内 users=${users.length} agents=${agents.length} models=${models.length}`)
@@ -492,6 +509,85 @@ if (!owner) {
     check('对拍：详情「当前排名」卡值 == 页面自身响应 summary.rank',
       num(p.cards['当前排名']) !== null && num(p.cards['当前排名']) === Number(Dc.rank),
       `页面=${p.cards['当前排名']} 同源响应=${Dc.rank}`)
+  }
+
+  // ── 4.1 人员详情页 - 模型用量 tab ────────────────────────────────────
+  const modelsTab = JSON.parse(await js(`(async () => {
+    const tab = [...document.querySelectorAll('.sa-tab')].find(b => (b.textContent||'').includes('模型用量'))
+    if (!tab) return JSON.stringify({ ok: false, why: 'NO_MODELS_TAB' })
+    tab.click()
+    await new Promise(r => setTimeout(r, 2500))
+    const tables = [...document.querySelectorAll('table.sa-table')].map(t => ({
+      headers: [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()),
+      rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
+    }))
+    return JSON.stringify({
+      ok: true, tables,
+      hasEmptyState: !!document.querySelector('.app-empty-state'),
+    })
+  })()`))
+  if (!modelsTab.ok) {
+    gauge('人员详情页：模型用量 tab', modelsTab.why || '找不到模型用量 tab')
+  } else {
+    const modelsTable = modelsTab.tables.find(t => t.headers.includes('模型'))
+    const needHeaders = ['模型', '请求数', 'Token 总数', '成功率', '缓存率', '平均响应时间']
+    if (modelsTable) {
+      check('人员详情页：模型用量表头齐全', needHeaders.every(h => modelsTable.headers.includes(h)),
+        needHeaders.filter(h => !modelsTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !modelsTable.headers.includes(h)).join('/') : '6 列全在')
+      check('人员详情页：模型用量有行或显示空态', modelsTable.rows.length > 0 || modelsTab.hasEmptyState,
+        `rows=${modelsTable.rows.length} hasEmptyState=${modelsTab.hasEmptyState}`)
+    } else {
+      check('人员详情页：模型用量无数据时显示空态', modelsTab.hasEmptyState === true,
+        `hasEmptyState=${modelsTab.hasEmptyState} tables=${modelsTab.tables.length}`)
+    }
+    const modelsCap = sameSource(`/user-ranking/${owner}/models?`)
+    check('对拍基准：已捕获页面自己的 models 响应', !!modelsCap,
+      modelsCap ? '同源基准可用' : '未捕获')
+    if (modelsCap && modelsCap.models && modelsCap.models.length > 0 && modelsTable && modelsTable.rows.length > 0) {
+      check('对拍：模型用量首行「模型」== 页面自身响应 models[0].model',
+        modelsTable.rows[0][modelsTable.headers.indexOf('模型')] === modelsCap.models[0].model,
+        `页面="${modelsTable.rows[0][modelsTable.headers.indexOf('模型')]}" 同源响应="${modelsCap.models[0].model}"`)
+    }
+  }
+
+  // ── 4.2 人员详情页 - API Key 统计 tab ──────────────────────────────
+  const apiKeysTab = JSON.parse(await js(`(async () => {
+    const tab = [...document.querySelectorAll('.sa-tab')].find(b => (b.textContent||'').includes('API Key'))
+    if (!tab) return JSON.stringify({ ok: false, why: 'NO_APIKEYS_TAB' })
+    tab.click()
+    await new Promise(r => setTimeout(r, 2500))
+    const tables = [...document.querySelectorAll('table.sa-table')].map(t => ({
+      headers: [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()),
+      rows: [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())),
+    }))
+    return JSON.stringify({
+      ok: true, tables,
+      hasEmptyState: !!document.querySelector('.app-empty-state'),
+    })
+  })()`))
+  if (!apiKeysTab.ok) {
+    gauge('人员详情页：API Key 统计 tab', apiKeysTab.why || '找不到 API Key 统计 tab')
+  } else {
+    const apiKeysTable = apiKeysTab.tables.find(t => t.headers.includes('密钥别名'))
+    const needHeaders = ['密钥别名', '密钥 ID', '请求数', 'Token 总数', '项目数', '主要项目']
+    if (apiKeysTable) {
+      check('人员详情页：API Key 统计表头齐全', needHeaders.every(h => apiKeysTable.headers.includes(h)),
+        needHeaders.filter(h => !apiKeysTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !apiKeysTable.headers.includes(h)).join('/') : '6 列全在')
+      check('人员详情页：API Key 统计有行或显示空态', apiKeysTable.rows.length > 0 || apiKeysTab.hasEmptyState,
+        `rows=${apiKeysTable.rows.length} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+    } else {
+      check('人员详情页：API Key 统计无数据时显示空态', apiKeysTab.hasEmptyState === true,
+        `hasEmptyState=${apiKeysTab.hasEmptyState} tables=${apiKeysTab.tables.length}`)
+    }
+    const apiKeysCap = sameSource(`/user-ranking/${owner}/api-keys?`)
+    check('对拍基准：已捕获页面自己的 api-keys 响应', !!apiKeysCap,
+      apiKeysCap ? '同源基准可用' : '未捕获')
+    if (apiKeysCap && apiKeysCap.api_keys && apiKeysCap.api_keys.length > 0 && apiKeysTable && apiKeysTable.rows.length > 0) {
+      const expectKeyId = String(apiKeysCap.api_keys[0].key_id)
+      check('对拍：API Key 首行「密钥 ID」== 页面自身响应 api_keys[0].key_id',
+        apiKeysTable.rows[0][apiKeysTable.headers.indexOf('密钥 ID')] === expectKeyId,
+        `页面="${apiKeysTable.rows[0][apiKeysTable.headers.indexOf('密钥 ID')]}" 同源响应="${expectKeyId}"`)
+    }
   }
 }
 

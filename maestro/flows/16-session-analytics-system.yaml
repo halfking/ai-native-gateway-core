@@ -116,6 +116,32 @@ url: ${BASE_URL}
 - assertVisible: "会话趋势"
 - assertVisible: "任务趋势"
 
+# ── ④.1 用户详情页 - 模型用量 tab ──────────────────────────────────────
+# 新增功能：点击「模型用量」tab，验证表头和数据加载
+- tapOn: "模型用量"
+- extendedWaitUntil:
+    visible: ".*模型.*"
+    timeout: 10000
+- assertVisible: ".*模型.*"
+- assertVisible: "请求数"
+- assertVisible: "Token 总数"
+- assertVisible: "成功率"
+- assertVisible: "缓存率"
+- assertVisible: "平均响应时间"
+
+# ── ④.2 用户详情页 - API Key 统计 tab ────────────────────────────────
+# 新增功能：点击「API Key 统计」tab，验证表头和数据加载
+- tapOn: "API Key 统计"
+- extendedWaitUntil:
+    visible: "密钥别名"
+    timeout: 10000
+- assertVisible: "密钥别名"
+- assertVisible: "密钥 ID"
+- assertVisible: "请求数"
+- assertVisible: "Token 总数"
+- assertVisible: "项目数"
+- assertVisible: "主要项目"
+
 # ═══ ⑤ 智能体排行页 ═════════════════════════════════════════════════════
 # 落定判据＝「智能体」列头（该页独有的表头）。
 - openLink: ${BASE_URL}/admin/session-analytics/agent-ranking
