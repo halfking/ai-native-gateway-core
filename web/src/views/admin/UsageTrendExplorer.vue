@@ -190,7 +190,20 @@ async function loadRankings() {
   rankingsError.value = null
   try {
     const resp = await getTopRankings(timeQuery.value)
-    rankings.value = resp
+    // 降级载荷兜底（2026-11-22 第 62 增量审计轮 D-P1）：canonical 视图缺失时
+    // 后端返回 TopRankingsResponse{ degraded: true }——只带标记、不带六臂数组
+    // ⇒ 模板 `rankings.top_models.length` 直取 undefined 会打崩整页渲染
+    // （5 条 unhandled rejection 的根因）。六臂一律空数组兜底，降级用横幅表达。
+    rankings.value = {
+      top_models: resp.top_models ?? [],
+      top_clients: resp.top_clients ?? [],
+      top_users: resp.top_users ?? [],
+      top_api_keys: resp.top_api_keys ?? [],
+      top_projects: resp.top_projects ?? [],
+      top_tasks: resp.top_tasks ?? [],
+      degraded: resp.degraded,
+      degraded_reason: resp.degraded_reason,
+    }
   } catch (err) {
     rankingsError.value = surfaceError(err)
   } finally {
@@ -545,6 +558,7 @@ onBeforeUnmount(() => {
     <div v-if="rankings" class="ute__rankings">
       <h3 class="ute__rankings-title">Top 5 用量排行</h3>
       <div v-if="rankingsError" class="ute__err">加载排行失败：{{ rankingsError }}</div>
+      <div v-else-if="rankings?.degraded" class="ute__degraded">部分维度数据暂不可用（数据源降级{{ rankings.degraded_reason ? '：' + rankings.degraded_reason : '' }}）</div>
       <div class="ute__rankings-grid">
         <!-- Top 模型 -->
         <div class="ute__ranking-card">
@@ -816,6 +830,14 @@ export default { name: 'UsageTrendExplorer' }
   color: var(--danger);
   padding-top: 4px;
 }
+/* 降级 ≠ 失败（61 轮通用式⑥：两个动作同时给用户等于两个都没意义）——
+   降级横幅用弱化中性色，不与错误横幅混用同一视觉语义。 */
+.ute__degraded {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding-top: 4px;
+}
 .ute__err-hint {
   font-size: 11px;
   color: var(--text-muted);
@@ -848,6 +870,11 @@ export default { name: 'UsageTrendExplorer' }
   .ute__table {
     max-height: none;
     flex: 0 0 auto;
+  }
+  /* 「一文件一断点」门（gates.spec）：768 规则并入上方唯一断点块
+     —— 原 :966 处的第二条 @media 768（Top5 网格单列）已按门合并至此。 */
+  .ute__rankings-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -909,11 +936,11 @@ export default { name: 'UsageTrendExplorer' }
   cursor: pointer;
 }
 .ute__ranking-item--clickable:hover {
-  background: var(--hover-bg);
+  background: var(--bg-hover);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 .ute__ranking-item:hover {
-  background: var(--hover-bg);
+  background: var(--bg-hover);
 }
 .ute__ranking-rank {
   flex-shrink: 0;
@@ -962,10 +989,5 @@ export default { name: 'UsageTrendExplorer' }
 .ute__ranking-item--clickable:hover .ute__ranking-arrow {
   opacity: 1;
   transform: translateX(4px);
-}
-@media (max-width: 768px) {
-  .ute__rankings-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

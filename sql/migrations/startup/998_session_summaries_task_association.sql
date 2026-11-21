@@ -105,4 +105,11 @@ COMMENT ON COLUMN public.session_summaries.canonical_session_key IS
 COMMENT ON COLUMN public.session_summaries.has_layered_summary IS 
     '是否已生成分层总结 (仅长会话需要)';
 
+-- 台账自登记（≥952 双账本纪律：迁移必须自己把行写进 public.schema_migrations
+-- —— 995/996 同款；缺此段 ⇒ 任何通道应用后运行时台账无行 ⇒ 连续性门/漂移报告假红。
+-- 2026-11-22 第 62 增量审计轮补：0f545826a 落地时三迁移均漏此面）
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('998', 'session_summaries task-association columns: task_id, similar_session_keys, is_duplicate, canonical_session_key, has_layered_summary')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;

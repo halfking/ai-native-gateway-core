@@ -2701,11 +2701,31 @@ type tenantBudgetChecker interface {
 //	音频面：只有 HTTP 响应 ⇒ 传 nil。
 type tenantBudgetRejectHook func(errCode, errMsg string, clientStatus int)
 
+// tenantBudgetEnvelope 让每个数据面用自己的协议信封写租户预算拒绝响应。
+//
+//	背景（2026-11-22 第 62 增量审计轮 P2-1）：共用判定体原先写死 OpenAI
+//	chat 信封（writeErrorJSON*），而 /v1/messages 面其余全部拒绝一律走
+//	writeAnthropicError（Anthropic 信封）、/v1/responses 面走
+//	writeResponsesError ⇒ hard 模式下 messages/responses 用户的
+//	429/503 会被各自的 SDK 当协议错误解析。
+//	nil ⇒ OpenAI chat 形（chat / 音频面历史默认，行为零变化）。
+type tenantBudgetEnvelope func(w http.ResponseWriter, status int, requestID, errType, errMsg, errCode string)
+
+// writeTenantBudgetRejection 写租户预算拒绝响应：面信封优先（messages=Anthropic
+// 形 / responses=responses 形），nil 回退 OpenAI chat 形（历史默认）。
+func writeTenantBudgetRejection(w http.ResponseWriter, envelope tenantBudgetEnvelope, status int, requestID, errType, errMsg, errCode string) {
+	if envelope != nil {
+		envelope(w, status, requestID, errType, errMsg, errCode)
+		return
+	}
+	writeErrorJSON(w, status, requestID, errMsg, errType, errCode)
+}
+
 // applyTenantMonthlyBudgetGate 是租户月度预算闸的**共用**判定体
 // （chat / messages / responses / 音频四面共用同一份语义，避免各面各写一份漂移）。
 //
 //	返回 true = 放行；false = 已写出拒绝响应，调用方必须立即 return。
-func applyTenantMonthlyBudgetGate(ctx context.Context, w http.ResponseWriter, checker tenantBudgetChecker, keyInfo *authentication.KeyInfo, requestID string, onReject tenantBudgetRejectHook) bool {
+func applyTenantMonthlyBudgetGate(ctx context.Context, w http.ResponseWriter, checker tenantBudgetChecker, keyInfo *authentication.KeyInfo, requestID string, onReject tenantBudgetRejectHook, envelope tenantBudgetEnvelope) bool {
 	if checker == nil || keyInfo == nil || keyInfo.TenantID == "" || keyInfo.TenantID == "default" || keyInfo.IsInternal {
 		return true
 	}
@@ -2723,8 +2743,8 @@ func applyTenantMonthlyBudgetGate(ctx context.Context, w http.ResponseWriter, ch
 			if onReject != nil {
 				onReject("tenant_budget_unavailable", "tenant budget check unavailable", http.StatusServiceUnavailable)
 			}
-			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
-				"Tenant budget check temporarily unavailable", "server_error", "tenant_budget_unavailable")
+			writeTenantBudgetRejection(w, envelope, http.StatusServiceUnavailable, requestID, "server_error",
+				"Tenant budget check temporarily unavailable", "tenant_budget_unavailable")
 			return false
 		}
 		// 预算行没读到（适用性未知）或 warn 模式故障：门默认不承重
@@ -2742,7 +2762,8 @@ func applyTenantMonthlyBudgetGate(ctx context.Context, w http.ResponseWriter, ch
 		if onReject != nil {
 			onReject("tenant_budget_exceeded", "tenant monthly budget exceeded (hard mode)", http.StatusTooManyRequests)
 		}
-		writeErrorJSONCtx(ctx, w, http.StatusTooManyRequests, requestID, "insufficient_quota", i18n.MsgTenantBudgetExceeded, nil)
+		writeTenantBudgetRejection(w, envelope, http.StatusTooManyRequests, requestID, "insufficient_quota",
+			i18n.T(ctx, i18n.MsgTenantBudgetExceeded, nil), i18n.MsgTenantBudgetExceeded)
 		return false
 	}
 	// warn 模式：只告警不拦截（存量行为零变化）。
@@ -2771,11 +2792,11 @@ func applyTenantMonthlyBudgetGate(ctx context.Context, w http.ResponseWriter, ch
 //	仓内已有同型判定：docs/全面审计v3/2026-11-21/04-主档.md「modelbudget
 //	闸门只进 serveWithExecutor 一面」。
 //	⇒ 抽成共用判定体，四面共用同一闸。
-func (h *ChatHandler) enforceTenantMonthlyBudget(ctx context.Context, w http.ResponseWriter, keyInfo *authentication.KeyInfo, requestID string, onReject tenantBudgetRejectHook) bool {
+func (h *ChatHandler) enforceTenantMonthlyBudget(ctx context.Context, w http.ResponseWriter, keyInfo *authentication.KeyInfo, requestID string, onReject tenantBudgetRejectHook, envelope tenantBudgetEnvelope) bool {
 	if h.maasSvc == nil {
 		return true
 	}
-	return applyTenantMonthlyBudgetGate(ctx, w, h.maasSvc, keyInfo, requestID, onReject)
+	return applyTenantMonthlyBudgetGate(ctx, w, h.maasSvc, keyInfo, requestID, onReject, envelope)
 }
 
 // serveWithExecutor is the main chat-completions / completions pipeline.
@@ -2993,7 +3014,7 @@ func (h *ChatHandler) serveWithExecutor(
 	//	⇒ 抽成方法，三面共用。
 	if !h.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 		captureAndEmitFailure(errCode, errMsg, nil, nil, clientStatus)
-	}) {
+	}, nil) {
 		return
 	}
 

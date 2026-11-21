@@ -269,6 +269,15 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		if !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 			attemptErrCode = errCode
 			attemptErrMsg = errMsg
+		}, func(w http.ResponseWriter, status int, reqID, errType, errMsg, errCode string) {
+			// 本面拒绝一律 writeResponsesError（responses.go:1861 起）；429 的
+			// errType 用本面 429 惯例 rate_limit_exceeded（responses.go:491），
+			// code 保留 tenant_budget_* 可区分性；503 用 server_error。
+			respType := errType
+			if status == http.StatusTooManyRequests {
+				respType = "rate_limit_exceeded"
+			}
+			writeResponsesError(w, status, errMsg, respType, errCode)
 		}) {
 			return
 		}

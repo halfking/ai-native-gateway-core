@@ -23,7 +23,7 @@ func fullDeps() PlaybookDeps {
 		ForceRecoverCredential: func(ctx context.Context, credID int64) ([]string, error) {
 			return []string{"fake-recover-step"}, nil
 		},
-		IndexRefresh: &fakeRefresher{},
+		IndexRefresh:    &fakeRefresher{},
 		CredibilityScan: &fakeCredibilityScanner{},
 	}
 }

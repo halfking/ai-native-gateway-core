@@ -140,4 +140,11 @@ BEGIN
     END IF;
 END $$;
 
+-- 台账自登记（≥952 双账本纪律：迁移必须自己把行写进 public.schema_migrations
+-- —— 995/996 同款；缺此段 ⇒ 任何通道应用后运行时台账无行 ⇒ 连续性门/漂移报告假红。
+-- 2026-11-22 第 62 增量审计轮补：0f545826a 落地时三迁移均漏此面）
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('999', 'session summary layers table for layered summarization output')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;

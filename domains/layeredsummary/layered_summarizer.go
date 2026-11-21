@@ -23,23 +23,23 @@ const (
 
 // SummaryLayer 表示一层总结
 type SummaryLayer struct {
-	ID              int64
-	TenantID        string
-	GwSessionID     string
-	LayerType       LayerType
-	LayerSequence   int
-	FromTurn        *int
-	ToTurn          *int
-	FromRequestID   *string
-	ToRequestID     *string
-	Summary         string
-	KeyPoints       []string
-	ParentLayerIDs  []int64
-	TurnCount       *int
-	MessageCount    *int
-	TokenCount      *int
-	CreatedAt       time.Time
-	ContentHash     string
+	ID             int64
+	TenantID       string
+	GwSessionID    string
+	LayerType      LayerType
+	LayerSequence  int
+	FromTurn       *int
+	ToTurn         *int
+	FromRequestID  *string
+	ToRequestID    *string
+	Summary        string
+	KeyPoints      []string
+	ParentLayerIDs []int64
+	TurnCount      *int
+	MessageCount   *int
+	TokenCount     *int
+	CreatedAt      time.Time
+	ContentHash    string
 }
 
 // LayeredSummarizer 分层总结器
@@ -48,10 +48,10 @@ type LayeredSummarizer struct {
 	llm  LLMClient
 
 	// 配置
-	windowSize   int // 窗口大小 (轮数)
-	segmentSize  int // 段落大小 (轮数)
-	maxWindows   int // 最多保留窗口数
-	overlapSize  int // 窗口重叠大小
+	windowSize  int // 窗口大小 (轮数)
+	segmentSize int // 段落大小 (轮数)
+	maxWindows  int // 最多保留窗口数
+	overlapSize int // 窗口重叠大小
 }
 
 // LLMClient 定义 LLM 调用接口
@@ -62,12 +62,12 @@ type LLMClient interface {
 // NewLayeredSummarizer 创建分层总结器
 func NewLayeredSummarizer(pool *pgxpool.Pool, llm LLMClient) *LayeredSummarizer {
 	return &LayeredSummarizer{
-		pool:         pool,
-		llm:          llm,
-		windowSize:   10,
-		segmentSize:  50,
-		maxWindows:   5,
-		overlapSize:  3,
+		pool:        pool,
+		llm:         llm,
+		windowSize:  10,
+		segmentSize: 50,
+		maxWindows:  5,
+		overlapSize: 3,
 	}
 }
 

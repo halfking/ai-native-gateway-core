@@ -69,10 +69,10 @@ func TestTenantBudgetGate_RealDB(t *testing.T) {
 			t.Fatalf("seed tenant_budgets %s: %v", tenant, err)
 		}
 	}
-	seedBudget(tenantWarn, 100, BudgetEnforcementWarn)   // 花费 300 cents（150 credits × 2）⇒ 超
-	seedBudget(tenantHard, 100, BudgetEnforcementHard)   // 同上 ⇒ 超且 hard
+	seedBudget(tenantWarn, 100, BudgetEnforcementWarn) // 花费 300 cents（150 credits × 2）⇒ 超
+	seedBudget(tenantHard, 100, BudgetEnforcementHard) // 同上 ⇒ 超且 hard
 	seedBudget(tenantHardUnder, 10000, BudgetEnforcementHard)
-	seedBudget(tenantUnset, 0, BudgetEnforcementWarn)    // 0 = 不设预算
+	seedBudget(tenantUnset, 0, BudgetEnforcementWarn) // 0 = 不设预算
 	t.Cleanup(func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()

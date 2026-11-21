@@ -71,14 +71,18 @@ describe('computeLayout', () => {
     expect(JSON.stringify(a.gateway)).toBe(JSON.stringify(b.gateway))
   })
 
-  it('flows top to bottom: client above provider above model', () => {
+  it('flows top to bottom: client above model above provider（2026-11-21 拓扑顺序优化：模型前置）', () => {
+    // ★ 契约换向（62 增量审计轮 D-P1-2）：2026-11-21/22 四笔链（633185705 →
+    //   23b9d32b7 → 两笔调距）把视觉顺序有意改为「先看用什么模型，再看通过
+    //   哪个节点」（ROW_RATIO 注释记录 owner 理由：client 0.075 / model 0.82 /
+    //   provider 0.94）—— 钉测随新契约改钉，防止再次「契约换了钉测没跟」。
     const layout = computeLayout({ nodes: NODES, edges: EDGES, ...SIZE })
     const y = new Map(layout.nodes.map((n) => [n.id, n.y + n.h / 2]))
-    expect(y.get('client:a')!).toBeLessThan(y.get('cred:1')!)
-    expect(y.get('cred:1')!).toBeLessThan(y.get('model:x')!)
-    // 每一层的中心线也必须单调递增
-    expect(layout.rowY.client).toBeLessThan(layout.rowY.provider)
-    expect(layout.rowY.provider).toBeLessThan(layout.rowY.model)
+    expect(y.get('client:a')!).toBeLessThan(y.get('model:x')!)
+    expect(y.get('model:x')!).toBeLessThan(y.get('cred:1')!)
+    // 每一层的中心线也必须单调递增（新契约：client → model → provider）
+    expect(layout.rowY.client).toBeLessThan(layout.rowY.model)
+    expect(layout.rowY.model).toBeLessThan(layout.rowY.provider)
   })
 
   it('carries the gateway core as one big box instead of a single small node', () => {

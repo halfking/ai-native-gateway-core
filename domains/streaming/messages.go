@@ -251,6 +251,15 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 			if !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
 				attemptErrCode = errCode
 				attemptErrMsg = errMsg
+			}, func(w http.ResponseWriter, status int, reqID, errType, errMsg, errCode string) {
+				// 本面其余全部拒绝一律 writeAnthropicError（messages.go:1981 起）；
+				// 429 用 rate_limit_error（本面 429 惯例 messages.go:497），503 用 api_error
+				// —— 与 SDK 的信封解析对齐，hard 预算拒绝不再被当协议错误。
+				anthropicType := "api_error"
+				if status == http.StatusTooManyRequests {
+					anthropicType = "rate_limit_error"
+				}
+				writeAnthropicError(w, status, anthropicType, errMsg)
 			}) {
 				return
 			}

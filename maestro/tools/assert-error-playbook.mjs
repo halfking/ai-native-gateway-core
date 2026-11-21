@@ -78,7 +78,9 @@ const api = await evaluate(cdp, page.sessionId, `(async () => {
   const tok = localStorage.getItem('llmgw_token')
   if (tok) auth['Authorization'] = 'Bearer ' + tok
   const s = await fetch('/api/admin/error-playbook/stats', { credentials: 'same-origin', headers: auth })
-  const e = await fetch('/api/admin/error-playbook/entries?limit=100', { credentials: 'same-origin', headers: auth })
+  // limit 必须与页面 pageSize 同源（ErrorPlaybookListView.vue pageSize=50）：
+  // 探针取 100、页面显 50 ⇒ 条目 >50 后「页面首行 == 接口首行」对拍必假红（C-P2-2）。
+  const e = await fetch('/api/admin/error-playbook/entries?limit=50', { credentials: 'same-origin', headers: auth })
   const stats = s.ok ? await s.json() : null
   const entries = e.ok ? await e.json() : null
   return { statsStatus: s.status, entriesStatus: e.status, stats, entries }

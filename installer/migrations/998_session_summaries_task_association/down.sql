@@ -26,4 +26,7 @@ ALTER TABLE public.session_summaries
     DROP COLUMN IF EXISTS canonical_session_key,
     DROP COLUMN IF EXISTS has_layered_summary;
 
+-- 台账回退（与 up 的自登记对偶 —— 995/996 同款；down 只退自己引入的行）
+DELETE FROM public.schema_migrations WHERE version = '998';
+
 COMMIT;

@@ -38,13 +38,13 @@ func NewSimilarityDetector(pool *pgxpool.Pool, embedding EmbeddingClient, thresh
 
 // SessionInfo 会话信息
 type SessionInfo struct {
-	SessionKey  string
-	Title       string
-	Summary     string
-	KeyTopics   []string
-	Tags        []string
-	TaskID      string
-	CreatedAt   string
+	SessionKey string
+	Title      string
+	Summary    string
+	KeyTopics  []string
+	Tags       []string
+	TaskID     string
+	CreatedAt  string
 }
 
 // SimilarSession 相似会话

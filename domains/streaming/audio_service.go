@@ -1339,7 +1339,7 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 	//	（chargeTranscription → ChargeRequestMultimodalWithMultiplier）
 	//	⇒ 必须过租户级闸，否则 hard 模式的月预算上限可被音频面绕过。
 	//	⇒ 与 chat / messages / responses 共用同一判定体（四面同源）。
-	if !applyTenantMonthlyBudgetGate(r.Context(), w, s.tenantBudgetGate, keyInfo, requestID, nil) {
+	if !applyTenantMonthlyBudgetGate(r.Context(), w, s.tenantBudgetGate, keyInfo, requestID, nil, nil) {
 		return nil, false
 	}
 	return keyInfo, true

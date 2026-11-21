@@ -46,10 +46,11 @@ func (e *TenantBudgetExceededError) Error() string {
 
 // TenantBudgetCheckError wraps a failed gate evaluation. Mode tells the
 // caller whether the budget CONFIG was already known when the failure hit:
-//   Mode == hard ⇒ 门适用性已确认，检查失败 =「不知道超没超」⇒ 调用方可
-//                  fail-closed（与 api key 预算门 R89-133 同纪律）；
-//   Mode == ""   ⇒ 预算行本身都没读到（适用性未知）⇒ 只能放行 + 响亮记日志
-//                  （fail-closed 需要知道门对谁生效，否则误伤全量租户）。
+//
+//	Mode == hard ⇒ 门适用性已确认，检查失败 =「不知道超没超」⇒ 调用方可
+//	               fail-closed（与 api key 预算门 R89-133 同纪律）；
+//	Mode == ""   ⇒ 预算行本身都没读到（适用性未知）⇒ 只能放行 + 响亮记日志
+//	               （fail-closed 需要知道门对谁生效，否则误伤全量租户）。
 type TenantBudgetCheckError struct {
 	Mode string // BudgetEnforcementHard 或 ""（行未读到）
 	Err  error
@@ -83,7 +84,7 @@ type MonthlyBudgetVerdict struct {
 //   - verdict.EnforcementMode == hard 且 verdict.Over ⇒ 调用方拦 429；
 //
 // DB 故障 ⇒ (_, *TenantBudgetCheckError)：Mode==hard 时调用方 fail-closed
-//（与 api key 预算门 R89-133 同纪律 —— 「不知道超没超」≠「没超」）；
+// （与 api key 预算门 R89-133 同纪律 —— 「不知道超没超」≠「没超」）；
 // Mode==""（预算行没读到，适用性未知）与 warn 模式的故障由调用方吞掉
 // + 响亮记日志（本门默认不承重，故障不得改变放行行为）。
 //

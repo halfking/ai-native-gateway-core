@@ -113,13 +113,13 @@ func deduplicatePreservingOrder(strs []string) []string {
 func buildSynonymMap() map[string]string {
 	return map[string]string{
 		// 编程语言
-		"golang":     "go",
-		"py":         "python",
-		"js":         "javascript",
-		"ts":         "typescript",
-		"cpp":        "c++",
-		"csharp":     "c#",
-		
+		"golang": "go",
+		"py":     "python",
+		"js":     "javascript",
+		"ts":     "typescript",
+		"cpp":    "c++",
+		"csharp": "c#",
+
 		// 框架和工具
 		"react-js":   "react",
 		"vue-js":     "vue",
@@ -127,28 +127,28 @@ func buildSynonymMap() map[string]string {
 		"pg":         "postgres",
 		"psql":       "postgres",
 		"k8s":        "kubernetes",
-		
+
 		// 任务类型
-		"bug-fix":    "bugfix",
-		"bug":        "bugfix",
-		"feat":       "feature",
-		"refactor":   "refactoring",
-		
+		"bug-fix":  "bugfix",
+		"bug":      "bugfix",
+		"feat":     "feature",
+		"refactor": "refactoring",
+
 		// 常见词汇
-		"db":         "database",
-		"api":        "api",
-		"frontend":   "frontend",
-		"backend":    "backend",
-		"fullstack":  "full-stack",
-		
+		"db":        "database",
+		"api":       "api",
+		"frontend":  "frontend",
+		"backend":   "backend",
+		"fullstack": "full-stack",
+
 		// 中文同义词
-		"调试":       "debugging",
-		"优化":       "optimization",
-		"重构":       "refactoring",
-		"测试":       "testing",
-		"部署":       "deployment",
-		"修复":       "bugfix",
-		"新功能":     "feature",
+		"调试":  "debugging",
+		"优化":  "optimization",
+		"重构":  "refactoring",
+		"测试":  "testing",
+		"部署":  "deployment",
+		"修复":  "bugfix",
+		"新功能": "feature",
 	}
 }
 
@@ -161,7 +161,7 @@ func buildStopWords() map[string]bool {
 		"is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
 		"do", "does", "did", "will", "would", "could", "should", "may", "might",
 		"this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
-		
+
 		// 中文停用词
 		"的", "了", "和", "是", "在", "有", "个", "着", "这", "那", "就", "都", "而",
 		"及", "与", "等", "对", "中", "也", "要", "不", "还", "可以", "进行", "一个",

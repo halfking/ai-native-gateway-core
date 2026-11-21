@@ -54,7 +54,9 @@ type PlaybookDeps struct {
 	ForceRecoverCredential func(ctx context.Context, credID int64) ([]string, error)
 	// IndexRefresh：credential_model_index 立即刷新（bg.AutoIndexRefresher；
 	// 零参，幂等重算）。
-	IndexRefresh interface{ RefreshOnce(ctx context.Context) error }
+	IndexRefresh interface {
+		RefreshOnce(ctx context.Context) error
+	}
 	// CredibilityScan：模型可信度扫描（bg.ModelCredibilityWorker；
 	// body: {"credential_id":1,"raw_model_name":"x"} 单点 或 {"all":true} 全量）。
 	CredibilityScan interface {

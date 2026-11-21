@@ -8,7 +8,9 @@
 #   BASE_URL         目标站点（默认 https://llm.itestu.cn）
 #   ADMIN_USER       管理员账号（默认 demoadmin）
 #   ADMIN_PASSWORD   管理员密码（默认 Demo@admin123）
-#   ADMIN_DISPLAY_NAME 管理员显示名（默认 演示管理员）
+#   ADMIN_DISPLAY_NAME 管理员显示名（默认 系统管理员 —— 与家族 runner 对齐：
+#     种子账号 display_name 的家族标准见 _shared/login.yaml；「演示管理员」
+#     是 demoadmin 的 display_name，与共享登录流判据②③的家族默认不一致）
 
 set -euo pipefail
 
@@ -21,7 +23,7 @@ cd "$SCRIPT_DIR/.."
 BASE_URL="${BASE_URL:-https://llm.itestu.cn}"
 ADMIN_USER="${ADMIN_USER:-demoadmin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-Demo@admin123}"
-ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-演示管理员}"
+ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-系统管理员}"
 
 REPORT_ROOT="$SCRIPT_DIR/reports"
 mkdir -p "$REPORT_ROOT"

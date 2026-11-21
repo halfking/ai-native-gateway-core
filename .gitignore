@@ -495,3 +495,7 @@ tests/mcp-gateway-maestro/reports/
 
 # 临时 PostgreSQL 检查目录（本地调试产物，不入库）
 tmp_pgcheck/
+
+# 48h 灰度观察采样器活体产物（R-OPS2/C-P2-1：写进工作树会把部署版本身份顶成 -dirty）
+docs/audit/evidence/*48h-observations*.jsonl
+docs/audit/evidence/*48h-final-summary*.md
