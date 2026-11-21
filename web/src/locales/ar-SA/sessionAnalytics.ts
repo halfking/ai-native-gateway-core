@@ -60,6 +60,8 @@ export default {
     topProjects: 'المشاريع الأكثر نشاطًا',
     projects: 'قائمة المشاريع',
     tasks: 'قائمة المهام',
+    models: 'استخدام النموذج',
+    apiKeys: 'استخدام مفتاح API',
   },
   col: {
     rank: 'الترتيب',
@@ -83,6 +85,11 @@ export default {
     lastActive: 'آخر نشاط',
     latestTask: 'آخر مهمة',
     lastUsed: 'آخر استخدام',
+    keyAlias: 'اسم مستعار للمفتاح',
+    keyID: 'معرف المفتاح',
+    projectCount: 'المشاريع',
+    topProject: 'المشروع الرئيسي',
+    avgResponseTime: 'متوسط وقت الاستجابة',
   },
   filter: {
     project: 'التصفية حسب المشروع',

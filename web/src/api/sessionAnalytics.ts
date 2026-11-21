@@ -456,3 +456,85 @@ export function getModelRanking(
     options,
   )
 }
+
+// ============= 用户模型用量 (2026-11-22) =============
+
+export interface UserModelUsage {
+  model: string
+  request_count: number
+  total_tokens: number
+  total_cost: number
+  internal_cost: number
+  external_cost: number
+  success_rate: number
+  cache_hit_rate: number
+  avg_response_time_ms: number
+  last_used_at: string
+}
+
+export interface UserModelUsageResponse {
+  models: UserModelUsage[]
+}
+
+export interface UserModelUsageQuery {
+  start_date: string
+  end_date: string
+}
+
+/** GET /api/admin/session-analytics/user-ranking/:owner/models */
+export function getUserModelUsage(
+  owner: string,
+  params: UserModelUsageQuery,
+  options?: RequestOptions,
+): Promise<UserModelUsageResponse> {
+  return req<UserModelUsageResponse>(
+    'GET',
+    `${BASE}/user-ranking/${encodeURIComponent(owner)}/models${query({
+      start_date: params.start_date,
+      end_date: params.end_date,
+    })}`,
+    undefined,
+    options,
+  )
+}
+
+// ============= 用户API Key用量 (2026-11-22) =============
+
+export interface UserAPIKeyUsage {
+  key_id: number
+  key_alias: string
+  request_count: number
+  total_tokens: number
+  total_cost: number
+  internal_cost: number
+  external_cost: number
+  last_used_at: string
+  project_count: number
+  top_project: string
+}
+
+export interface UserAPIKeyUsageResponse {
+  keys: UserAPIKeyUsage[]
+}
+
+export interface UserAPIKeyUsageQuery {
+  start_date: string
+  end_date: string
+}
+
+/** GET /api/admin/session-analytics/user-ranking/:owner/api-keys */
+export function getUserAPIKeyUsage(
+  owner: string,
+  params: UserAPIKeyUsageQuery,
+  options?: RequestOptions,
+): Promise<UserAPIKeyUsageResponse> {
+  return req<UserAPIKeyUsageResponse>(
+    'GET',
+    `${BASE}/user-ranking/${encodeURIComponent(owner)}/api-keys${query({
+      start_date: params.start_date,
+      end_date: params.end_date,
+    })}`,
+    undefined,
+    options,
+  )
+}

@@ -63,6 +63,8 @@ export default {
     topProjects: '活跃项目',
     projects: '项目列表',
     tasks: '任务列表',
+    models: '模型用量',
+    apiKeys: 'API Key用量',
   },
   col: {
     rank: '排名',
@@ -86,6 +88,11 @@ export default {
     lastActive: '最近活跃',
     latestTask: '最近任务',
     lastUsed: '最近使用',
+    keyAlias: 'Key别名',
+    keyID: 'Key ID',
+    projectCount: '关联项目数',
+    topProject: '主要项目',
+    avgResponseTime: '平均响应时间',
   },
   filter: {
     project: '按项目筛选',

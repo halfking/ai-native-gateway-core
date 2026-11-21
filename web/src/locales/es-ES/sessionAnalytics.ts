@@ -59,6 +59,8 @@ export default {
     topProjects: 'Proyectos más activos',
     projects: 'Lista de proyectos',
     tasks: 'Lista de tareas',
+    models: 'Uso del modelo',
+    apiKeys: 'Uso de clave API',
   },
   col: {
     rank: 'Posición',
@@ -82,6 +84,11 @@ export default {
     lastActive: 'Última actividad',
     latestTask: 'Última tarea',
     lastUsed: 'Último uso',
+    keyAlias: 'Alias de clave',
+    keyID: 'ID de clave',
+    projectCount: 'Proyectos',
+    topProject: 'Proyecto principal',
+    avgResponseTime: 'Tiempo de respuesta promedio',
   },
   filter: {
     project: 'Filtrar por proyecto',
