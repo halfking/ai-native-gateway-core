@@ -42,6 +42,9 @@ type EntryStore interface {
 	UpdatePlanFromRefinement(ctx context.Context, entryID int64, plan Plan, title, rootCause string, confidence float64) error
 	ListRefineCandidates(ctx context.Context, olderThan time.Duration, limit int) ([]Entry, error)
 	LastFailedExecution(ctx context.Context, entryID int64) (Execution, bool, error)
+	// PruneExecutions 删除超过保留期的执行留痕（worker 每 24h 调一次；
+	// 返回删除行数）。
+	PruneExecutions(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
 // SQLStore 是 EntryStore 的 SQL 实现。
@@ -261,71 +264,51 @@ type ListFilter struct {
 //
 //	id > 0 ⇒ 更新（含 plan/enabled/auto_execute 等）；id == 0 ⇒ 按
 //	(error_type, match_pattern) 唯一键插入，已存在 ⇒ 更新同一行。
+//
+// UpsertManualEntry 手工录入/更新条目（管理面 POST/PUT）。
+//
+//	★ 审计轮（2026-11-21）原子化：原实现「先查后插/改」两步在并发创建
+//	（两个管理员同时录同一 error_type+pattern）下会撞表达式唯一键 23505
+//	⇒ 500。现在单条 INSERT ... ON CONFLICT ... DO UPDATE（对齐唯一键表达式）
+//	⇒ 竞态消失；已存在 ⇒ 原地更新（manual 语义）。created_by 只在新建时
+//	生效（DO UPDATE 不碰它）⇒ 修订者身份走 updated_by 语义由留痕承担。
 func (s *SQLStore) UpsertManualEntry(ctx context.Context, in AnalysisEntryInput) (Entry, error) {
 	payload, err := MarshalPlan(in.Plan)
 	if err != nil {
 		return Entry{}, fmt.Errorf("marshal plan failed: %w", err)
 	}
-	var matchPattern interface{}
-	if strings.TrimSpace(in.MatchPattern) != "" {
-		matchPattern = strings.TrimSpace(in.MatchPattern)
-	}
 	createdBy := strings.TrimSpace(in.CreatedBy)
 	if createdBy == "" {
 		createdBy = "system"
 	}
-
-	// 先按唯一键找行。
-	var existingID int64
-	patternKey := ""
-	if matchPattern != nil {
-		patternKey = matchPattern.(string)
-	}
+	var id int64
 	err = s.db.QueryRowContext(ctx, `
-		SELECT id FROM error_playbook_entries
-		WHERE error_type = $1 AND COALESCE(match_pattern, '') = $2`,
-		in.ErrorType, patternKey).Scan(&existingID)
-	switch {
-	case err == sql.ErrNoRows:
-		existingID = 0
-	case err != nil:
+		INSERT INTO error_playbook_entries
+			(error_type, match_pattern, title, description, root_cause, plan_kind, plan_payload,
+			 confidence, source, enabled, auto_execute, created_by)
+		VALUES ($1, NULLIF($2,''), $3, $4, $5, $6, $7::jsonb, $8, 'manual', $9, $10, $11)
+		ON CONFLICT (error_type, COALESCE(match_pattern, '')) DO UPDATE SET
+			title = EXCLUDED.title,
+			description = EXCLUDED.description,
+			root_cause = EXCLUDED.root_cause,
+			plan_kind = EXCLUDED.plan_kind,
+			plan_payload = EXCLUDED.plan_payload,
+			confidence = EXCLUDED.confidence,
+			source = 'manual',
+			enabled = EXCLUDED.enabled,
+			auto_execute = EXCLUDED.auto_execute,
+			updated_at = NOW()
+		RETURNING id`,
+		in.ErrorType, strings.TrimSpace(in.MatchPattern), in.Title, in.Description, in.RootCause,
+		in.Plan.Kind, payload, in.Confidence, in.Enabled, in.AutoExecute, createdBy,
+	).Scan(&id)
+	if err != nil {
 		if isNotProvisioned(err) {
 			return Entry{}, ErrNotProvisioned
 		}
-		return Entry{}, fmt.Errorf("lookup playbook entry failed: %w", err)
+		return Entry{}, fmt.Errorf("upsert manual playbook entry failed: %w", err)
 	}
-
-	if existingID > 0 {
-		_, err = s.db.ExecContext(ctx, `
-			UPDATE error_playbook_entries SET
-				title = $2, description = $3, root_cause = $4,
-				plan_kind = $5, plan_payload = $6::jsonb, confidence = $7,
-				source = 'manual', enabled = $8, auto_execute = $9,
-				updated_at = NOW()
-			WHERE id = $1`,
-			existingID, in.Title, in.Description, in.RootCause,
-			in.Plan.Kind, payload, in.Confidence, in.Enabled, in.AutoExecute)
-		if err != nil {
-			return Entry{}, fmt.Errorf("update playbook entry failed: %w", err)
-		}
-	} else {
-		err = s.db.QueryRowContext(ctx, `
-			INSERT INTO error_playbook_entries
-				(error_type, match_pattern, title, description, root_cause, plan_kind, plan_payload,
-				 confidence, source, enabled, auto_execute, created_by)
-			VALUES ($1, NULLIF($2,''), $3, $4, $5, $6, $7::jsonb, $8, 'manual', $9, $10, $11)
-			RETURNING id`,
-			in.ErrorType, patternKey, in.Title, in.Description, in.RootCause,
-			in.Plan.Kind, payload, in.Confidence, in.Enabled, in.AutoExecute, createdBy,
-		).Scan(&existingID)
-		if err != nil {
-			if isNotProvisioned(err) {
-				return Entry{}, ErrNotProvisioned
-			}
-			return Entry{}, fmt.Errorf("insert playbook entry failed: %w", err)
-		}
-	}
-	return s.GetByID(ctx, existingID)
+	return s.GetByID(ctx, id)
 }
 
 // DeleteEntry 删除条目（执行留痕按 FK ON DELETE SET NULL 保留）。
@@ -494,19 +477,42 @@ func (s *SQLStore) UpdatePlanFromRefinement(ctx context.Context, entryID int64, 
 	if err != nil {
 		return fmt.Errorf("marshal plan failed: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	var errorType string
+	err = s.db.QueryRowContext(ctx, `
 		UPDATE error_playbook_entries SET
 			title = NULLIF($2,'')::text, root_cause = $3, plan_kind = $4, plan_payload = $5::jsonb,
 			confidence = $6, source = 'refinement', refinement_count = refinement_count + 1,
 			updated_at = NOW()
-		WHERE id = $1`, entryID, title, rootCause, plan.Kind, payload, confidence)
+		WHERE id = $1
+		RETURNING error_type`, entryID, title, rootCause, plan.Kind, payload, confidence,
+	).Scan(&errorType)
 	if err != nil {
 		return fmt.Errorf("update refinement failed: %w", err)
+	}
+	// ★ 提炼标记行（审计轮 2026-11-21）：不走 RecordExecution ⇒ 不碰
+	//   执行计数与 last_status；ListRefineCandidates 以它为「失败之后
+	//   已提炼」的判据（updated_at 被触发器顶成 NOW()，时间戳比较在
+	//   真库恒失效——真库契约测试实测抓出）。
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO error_playbook_executions
+			(entry_id, error_type, trigger_source, status, steps, executed_by)
+		VALUES ($1, $2, 'refinement', 'succeeded', $3::jsonb, 'error_playbook:refine')`,
+		entryID, errorType, []byte(`{"note":"plan refined after failed execution"}`))
+	if err != nil {
+		return fmt.Errorf("record refinement marker failed: %w", err)
 	}
 	return nil
 }
 
 // ListRefineCandidates implements EntryStore：标准执行失败且过了冷静期的条目。
+//
+//	★ 审计轮（2026-11-21）守卫判据＝**提炼标记行**（trigger_source=
+//	'refinement' 的执行留痕，时间晚于 last_executed_at ⇒ 已提炼过）。
+//	不能比 updated_at：该列被 updated_at 触发器在任何 UPDATE 时顶成
+//	NOW()、与 last_executed_at 恒相等 ⇒ 时间戳比较在真库恒失效
+//	（真库契约测试实测抓出首版设计的假绿）。
+//	否则 last_status 恒为 failed（提炼不执行）⇒ 同一失败在每个 worker
+//	重启后被重复提炼一次（内存 dedup 只在进程内生效）。
 func (s *SQLStore) ListRefineCandidates(ctx context.Context, olderThan time.Duration, limit int) ([]Entry, error) {
 	if limit <= 0 || limit > 5 {
 		limit = 5
@@ -518,6 +524,12 @@ func (s *SQLStore) ListRefineCandidates(ctx context.Context, olderThan time.Dura
 		  AND last_status = 'failed'
 		  AND last_executed_at IS NOT NULL
 		  AND last_executed_at < NOW() - make_interval(secs => $1)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM error_playbook_executions re
+		      WHERE re.entry_id = error_playbook_entries.id
+		        AND re.trigger_source = 'refinement'
+		        AND re.created_at > error_playbook_entries.last_executed_at
+		  )
 		ORDER BY last_executed_at ASC
 		LIMIT $2`, int(olderThan.Seconds()), limit)
 	if err != nil {
@@ -569,6 +581,26 @@ func (s *SQLStore) LastFailedExecution(ctx context.Context, entryID int64) (Exec
 	rec.Steps = json.RawMessage(steps)
 	rec.Context = json.RawMessage(execCtx)
 	return rec, true, nil
+}
+
+// PruneExecutions implements EntryStore：删除超保留期的执行留痕。
+//
+//	★ RowsAffected 纪律：返回真实删除行数（0 = 无可删，不是错误）。
+//	表不在场（ErrNotProvisioned）⇒ 上抛，worker 按「跳过本轮」处理。
+func (s *SQLStore) PruneExecutions(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM error_playbook_executions
+		WHERE created_at < NOW() - make_interval(secs => $1)`, int(olderThan.Seconds()))
+	if err != nil {
+		if isNotProvisioned(err) {
+			return 0, ErrNotProvisioned
+		}
+		return 0, fmt.Errorf("prune playbook executions failed: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // GetExecution 取单条执行留痕（管理面详情 + revert）。
@@ -680,6 +712,73 @@ func (s *SQLStore) ListExecutions(ctx context.Context, entryID int64, status, er
 type ExecutionStats struct {
 	Last24h map[string]int64 `json:"last_24h"`
 	Total   int64            `json:"total"`
+}
+
+// EntrySummaryStats 是条目侧统计（SQL 聚合，不受列表 LIMIT 截断）。
+//
+//	★ 审计轮（2026-11-21）：原 /stats 走 ListEntries(Limit 200) 逐行累加
+//	⇒ 条目超过 200 时统计静默欠数。现在 GROUP BY 直出。
+type EntrySummaryStats struct {
+	Total       int64            `json:"total_entries"`
+	Enabled     int64            `json:"enabled_entries"`
+	AutoExecute int64            `json:"auto_execute_entries"`
+	BySource    map[string]int64 `json:"entries_by_source"`
+	ByPlanKind  map[string]int64 `json:"entries_by_plan_kind"`
+}
+
+// EntrySummary 条目侧统计（管理面 /stats）。
+func (s *SQLStore) EntrySummary(ctx context.Context) (EntrySummaryStats, error) {
+	out := EntrySummaryStats{
+		BySource:   map[string]int64{},
+		ByPlanKind: map[string]int64{},
+	}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COUNT(*) FILTER (WHERE enabled),
+		       COUNT(*) FILTER (WHERE auto_execute)
+		FROM error_playbook_entries`).
+		Scan(&out.Total, &out.Enabled, &out.AutoExecute)
+	if err != nil {
+		if isNotProvisioned(err) {
+			return out, ErrNotProvisioned
+		}
+		return out, fmt.Errorf("summarize playbook entries failed: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT source, COUNT(*) FROM error_playbook_entries GROUP BY source`)
+	if err != nil {
+		return out, fmt.Errorf("group entries by source failed: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var src string
+		var n int64
+		if err := rows.Scan(&src, &n); err != nil {
+			return out, fmt.Errorf("scan source stats failed: %w", err)
+		}
+		out.BySource[src] = n
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("iterate source stats failed: %w", err)
+	}
+
+	kindRows, err := s.db.QueryContext(ctx, `SELECT plan_kind, COUNT(*) FROM error_playbook_entries GROUP BY plan_kind`)
+	if err != nil {
+		return out, fmt.Errorf("group entries by plan_kind failed: %w", err)
+	}
+	defer kindRows.Close()
+	for kindRows.Next() {
+		var kind string
+		var n int64
+		if err := kindRows.Scan(&kind, &n); err != nil {
+			return out, fmt.Errorf("scan plan_kind stats failed: %w", err)
+		}
+		out.ByPlanKind[kind] = n
+	}
+	if err := kindRows.Err(); err != nil {
+		return out, fmt.Errorf("iterate plan_kind stats failed: %w", err)
+	}
+	return out, nil
 }
 
 // ExecutionSummary 手册侧统计（管理面 /stats）。
