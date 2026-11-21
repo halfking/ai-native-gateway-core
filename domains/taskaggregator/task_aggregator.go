@@ -107,12 +107,13 @@ func (a *TaskAggregator) getTaskSessions(
 	query := `
 		SELECT session_key, title, summary, key_topics, tags,
 		       COALESCE((
-		           SELECT COUNT(*) FROM request_logs 
-		           WHERE gw_session_id = ss.session_key AND tenant_id = ss.tenant_id
+		           SELECT COUNT(*) FROM request_logs_with_current_month rl
+		           WHERE rl.gw_session_id = ss.session_key AND rl.tenant_id = ss.tenant_id
 		       ), 0) as request_count,
 		       COALESCE((
-		           SELECT SUM(internal_cost_usd + external_cost_usd) FROM request_logs 
-		           WHERE gw_session_id = ss.session_key AND tenant_id = ss.tenant_id
+		           SELECT SUM(COALESCE(rl.cost_display, 0) + COALESCE(rl.cost_usd, 0))
+		           FROM request_logs_with_current_month rl
+		           WHERE rl.gw_session_id = ss.session_key AND rl.tenant_id = ss.tenant_id
 		       ), 0) as cost_usd,
 		       created_at
 		FROM session_summaries ss
@@ -178,11 +179,11 @@ func (a *TaskAggregator) buildTaskSummary(sessions []SessionSummary) string {
 
 // TaskStats 任务统计信息
 type TaskStats struct {
-	SessionCount     int
-	TotalRequests    int
-	TotalCostUSD     float64
-	FirstActivityAt  time.Time
-	LastActivityAt   time.Time
+	SessionCount    int
+	TotalRequests   int
+	TotalCostUSD    float64
+	FirstActivityAt time.Time
+	LastActivityAt  time.Time
 }
 
 // calculateTaskStats 计算任务统计信息

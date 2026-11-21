@@ -22,12 +22,30 @@ type audioMaasCharger interface {
 	ChargeRequestMultimodalWithMultiplier(ctx context.Context, tenantID, ownerUser, requestID, canonicalName string, usage maas.TokenUsage, rateMultiplier float64) (int64, float64, error)
 }
 
+// audioTenantBudgetGate 是 AudioService 可选接入的租户月度预算闸
+// （938 enforcement_mode，迁移 996）。
+//
+//	★ 2026-11-22 审计轮修正（P0）：音频面**同样产生 MaaS 花费**
+//	（chargeTranscription → ChargeRequestMultimodalWithMultiplier →
+//	maas_credit_consumption_buckets），但原先**不经过**租户级预算闸
+//	⇒ hard 模式的月预算上限可被音频面绕过。
+//	⇒ *maas.Service 同时满足本接口 ⇒ 既有 SetMaas 接线**自动**生效；
+//	测试桩不实现本接口 ⇒ nil-safe 跳过（不改变既有测试语义）。
+type audioTenantBudgetGate interface {
+	CheckMonthlyBudget(ctx context.Context, tenantID string) (*maas.MonthlyBudgetVerdict, error)
+}
+
 // SetMaas wires optional tenant-credit charging for audio endpoints.
 func (s *AudioService) SetMaas(svc audioMaasCharger) {
 	if s == nil {
 		return
 	}
 	s.maas = svc
+	// 租户级预算闸（938 enforcement_mode）：同一 concrete Service 同时满足
+	// audioTenantBudgetGate 时一并接入（审计轮 2026-11-22 P0 修正）。
+	if g, ok := svc.(audioTenantBudgetGate); ok {
+		s.tenantBudgetGate = g
+	}
 }
 
 // chargeTranscription credits the tenant for a successful ASR call and

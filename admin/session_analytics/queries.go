@@ -1598,16 +1598,16 @@ func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 
 // UserModelUsage 用户模型使用情况
 type UserModelUsage struct {
-	Model            string  `json:"model"`
-	RequestCount     int64   `json:"request_count"`
-	TotalTokens      int64   `json:"total_tokens"`
-	TotalCost        float64 `json:"total_cost"`
-	InternalCost     float64 `json:"internal_cost"`
-	ExternalCost     float64 `json:"external_cost"`
-	SuccessRate      float64 `json:"success_rate"`
-	CacheHitRate     float64 `json:"cache_hit_rate"`
+	Model             string  `json:"model"`
+	RequestCount      int64   `json:"request_count"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalCost         float64 `json:"total_cost"`
+	InternalCost      float64 `json:"internal_cost"`
+	ExternalCost      float64 `json:"external_cost"`
+	SuccessRate       float64 `json:"success_rate"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
 	AvgResponseTimeMs float64 `json:"avg_response_time_ms"`
-	LastUsedAt       string  `json:"last_used_at"`
+	LastUsedAt        string  `json:"last_used_at"`
 }
 
 // UserModelUsageResponse 用户模型使用列表响应
@@ -1616,35 +1616,37 @@ type UserModelUsageResponse struct {
 }
 
 // GetUserModelUsage 获取用户的模型使用情况
+//
+//	★ 2026-11-22 审计轮修正（P0-1）：本函数原先读 `request_logs` 表 +
+//	`JOIN models` / `LEFT JOIN keys`，而这三者**在当前库里都不存在**：
+//	① 迁移 860 把 v1 物理表改名 `_request_logs`，迁移 890 把它 DROP
+//	   ⇒ `FROM request_logs` 运行期 42P01（整句失败，不是那条臂失败）；
+//	② 真库里**没有 `models` 表**（真实表是 `models_canonical`；仓内
+//	   `models` 只是 CTE）⇒ `relation "models" does not exist`；
+//	③ 真库里**没有 `keys` 表**（真实表是 `api_keys`）。
+//	⇒ 改读 canonical 会话族视图 `request_logs_with_current_month`
+//	（890 之后是 session_turns_hot ∪ session_turns 两臂 ⇒ 已切当前真源），
+//	列契约与同包既有的 queryUserUsageMatrix 一致。
+//
+//	口径对齐：
+//	- owner 键用**双源** COALESCE(owner_user, api_key_owner_user)（迁移 994 口径）；
+//	- 时间窗用 `ts`（不是 v1 的 created_at）+ settings.SystemDayRangeUtc
+//	  （系统时区日界 ⇒ 与仓内其余会话族读面同源）；
+//	- 成本：internal = SUM(cost_display)（缺失回落 cost_usd）、external = SUM(cost_usd)；
+//	- 延迟用 latency_ms（v1 的 response_time 不存在）；
+//	- 请求数用 COUNT(*)（canonical 视图的 id 列是 NULL 填充 ⇒ COUNT(DISTINCT id) 恒 0）。
 func GetUserModelUsage(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserModelUsageResponse, error) {
-	query := `
-		SELECT 
-			m.model,
-			COUNT(DISTINCT r.id) as request_count,
-			COALESCE(SUM(r.prompt_tokens + r.completion_tokens), 0) as total_tokens,
-			COALESCE(SUM(r.internal_cost), 0) + COALESCE(SUM(r.external_cost), 0) as total_cost,
-			COALESCE(SUM(r.internal_cost), 0) as internal_cost,
-			COALESCE(SUM(r.external_cost), 0) as external_cost,
-			COALESCE(AVG(CASE WHEN r.status = 'success' THEN 1.0 ELSE 0.0 END), 0) as success_rate,
-			COALESCE(AVG(CASE WHEN r.cache_read_tokens > 0 THEN 1.0 ELSE 0.0 END), 0) as cache_hit_rate,
-			COALESCE(AVG(r.response_time), 0) as avg_response_time_ms,
-			MAX(r.created_at) as last_used_at
-		FROM request_logs r
-		JOIN models m ON r.model_id = m.id
-		WHERE r.owner = $1
-			AND DATE(r.created_at) >= $2
-			AND DATE(r.created_at) <= $3
-		GROUP BY m.model
-		ORDER BY request_count DESC
-	`
-
-	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	startUTC, endUTC, err := settings.SystemDayRangeUtc(startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date range: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, userModelUsageSQL, owner, startUTC, endUTC)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var models []UserModelUsage
+	models := []UserModelUsage{}
 	for rows.Next() {
 		var m UserModelUsage
 		var lastUsedAt sql.NullTime
@@ -1676,20 +1678,45 @@ func GetUserModelUsage(ctx context.Context, db *sql.DB, owner, startDate, endDat
 	}, rows.Err()
 }
 
+// userModelUsageSQL 是用户模型用量聚合（抽成包级常量 ⇒ 可进 contract_test.go
+// 的「SQL 列存在性」钉测表，堵住「函数内联字符串 ⇒ 门看不见」的缺口）。
+//
+//	★ 列契约已对着 canonical 视图投影逐列核对（见 GetUserModelUsage 的注释）。
+//	⚠ success_rate / cache_hit_rate 单位＝**0~1 比率**（前端 percent() 再 ×100）；
+//	  与同族 GetModelRanking 的 0~100 百分比口径**不同**（登记项，见审计报告 P2-7）。
+const userModelUsageSQL = `
+		SELECT
+			COALESCE(rl.outbound_model, rl.client_model, 'unknown') AS model,
+			COUNT(*) AS request_count,
+			COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
+			(COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)
+				+ COALESCE(SUM(rl.cost_usd), 0))::float8 AS total_cost,
+			COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)::float8 AS internal_cost,
+			COALESCE(SUM(rl.cost_usd), 0)::float8 AS external_cost,
+			COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0) AS success_rate,
+			COALESCE(AVG(CASE WHEN rl.cache_read_tokens > 0 THEN 1.0 ELSE 0.0 END), 0) AS cache_hit_rate,
+			COALESCE(AVG(rl.latency_ms), 0)::float8 AS avg_response_time_ms,
+			MAX(rl.ts) AS last_used_at
+		FROM request_logs_with_current_month rl
+		WHERE COALESCE(rl.owner_user, rl.api_key_owner_user) = $1
+			AND rl.ts >= $2 AND rl.ts < $3
+		GROUP BY 1
+		ORDER BY request_count DESC, total_cost DESC`
+
 // ============= 用户API Key用量 (2026-11-22) =============
 
 // UserAPIKeyUsage 用户API Key使用情况
 type UserAPIKeyUsage struct {
-	KeyID          int64   `json:"key_id"`
-	KeyAlias       string  `json:"key_alias"`
-	RequestCount   int64   `json:"request_count"`
-	TotalTokens    int64   `json:"total_tokens"`
-	TotalCost      float64 `json:"total_cost"`
-	InternalCost   float64 `json:"internal_cost"`
-	ExternalCost   float64 `json:"external_cost"`
-	LastUsedAt     string  `json:"last_used_at"`
-	ProjectCount   int64   `json:"project_count"`
-	TopProject     string  `json:"top_project"`
+	KeyID        int64   `json:"key_id"`
+	KeyAlias     string  `json:"key_alias"`
+	RequestCount int64   `json:"request_count"`
+	TotalTokens  int64   `json:"total_tokens"`
+	TotalCost    float64 `json:"total_cost"`
+	InternalCost float64 `json:"internal_cost"`
+	ExternalCost float64 `json:"external_cost"`
+	LastUsedAt   string  `json:"last_used_at"`
+	ProjectCount int64   `json:"project_count"`
+	TopProject   string  `json:"top_project"`
 }
 
 // UserAPIKeyUsageResponse 用户API Key使用列表响应
@@ -1698,59 +1725,31 @@ type UserAPIKeyUsageResponse struct {
 }
 
 // GetUserAPIKeyUsage 获取用户的API Key使用情况
+//
+//	★ 2026-11-22 审计轮修正（P0-1）：本函数原先读 `request_logs` 表 +
+//	`LEFT JOIN keys`，而这两者**在当前库里都不存在**（860 改名 / 890 DROP；
+//	真库无 `keys` 表，真实表是 `api_keys`）⇒ 端点必 500。
+//	⇒ 改读 canonical 会话族视图 `request_logs_with_current_month`：
+//	- key 取 rl.api_key_id，别名取 rl.key_alias（视图自带，734 details 腿）；
+//	- 项目归属：v1 的请求级 `project` 列在 v2 已不存在 ⇒ 改由
+//	  **会话族**取（session_dim.project_id，按 gw_session_id 一对一）；
+//	  先把 (key_id, gw_session_id) 去重再 JOIN，避免请求行 × 会话行放大
+//	  （放大会让 COUNT(*) 与 SUM(cost) 虚高）。
+//	★ P0-2（容器键）：响应容器键保持 `api_keys`（与 b5eb7d812 一致），
+//	  但**前端两处仍读 `keys`** ⇒ 已同步改 web/src/api/sessionAnalytics.ts
+//	  与 SessionAnalyticsUserDetailView.vue 为 `api_keys`。
 func GetUserAPIKeyUsage(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserAPIKeyUsageResponse, error) {
-	query := `
-		WITH key_stats AS (
-			SELECT 
-				r.key_id,
-				COUNT(DISTINCT r.id) as request_count,
-				COALESCE(SUM(r.prompt_tokens + r.completion_tokens), 0) as total_tokens,
-				COALESCE(SUM(r.internal_cost), 0) + COALESCE(SUM(r.external_cost), 0) as total_cost,
-				COALESCE(SUM(r.internal_cost), 0) as internal_cost,
-				COALESCE(SUM(r.external_cost), 0) as external_cost,
-				MAX(r.created_at) as last_used_at,
-				COUNT(DISTINCT r.project) as project_count,
-				(
-					SELECT project 
-					FROM request_logs r2 
-					WHERE r2.key_id = r.key_id 
-						AND r2.owner = r.owner
-						AND DATE(r2.created_at) >= $2
-						AND DATE(r2.created_at) <= $3
-					GROUP BY project 
-					ORDER BY COUNT(*) DESC 
-					LIMIT 1
-				) as top_project
-			FROM request_logs r
-			WHERE r.owner = $1
-				AND DATE(r.created_at) >= $2
-				AND DATE(r.created_at) <= $3
-				AND r.key_id IS NOT NULL
-			GROUP BY r.key_id
-		)
-		SELECT 
-			ks.key_id,
-			COALESCE(k.key_alias, '') as key_alias,
-			ks.request_count,
-			ks.total_tokens,
-			ks.total_cost,
-			ks.internal_cost,
-			ks.external_cost,
-			ks.last_used_at,
-			ks.project_count,
-			COALESCE(ks.top_project, '') as top_project
-		FROM key_stats ks
-		LEFT JOIN keys k ON ks.key_id = k.id
-		ORDER BY ks.request_count DESC
-	`
-
-	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	startUTC, endUTC, err := settings.SystemDayRangeUtc(startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date range: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, userAPIKeyUsageSQL, owner, startUTC, endUTC)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var keys []UserAPIKeyUsage
+	keys := []UserAPIKeyUsage{}
 	for rows.Next() {
 		var k UserAPIKeyUsage
 		var lastUsedAt sql.NullTime
@@ -1781,3 +1780,66 @@ func GetUserAPIKeyUsage(ctx context.Context, db *sql.DB, owner, startDate, endDa
 		APIKeys: keys,
 	}, rows.Err()
 }
+
+// userAPIKeyUsageSQL 是用户 API Key 用量聚合（包级常量 ⇒ 可进 contract_test.go
+// 的「SQL 列存在性」钉测表）。
+const userAPIKeyUsageSQL = `
+		WITH key_stats AS (
+			SELECT
+				rl.api_key_id AS key_id,
+				COUNT(*) AS request_count,
+				COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
+				(COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)
+					+ COALESCE(SUM(rl.cost_usd), 0))::float8 AS total_cost,
+				COALESCE(SUM(rl.cost_display), SUM(rl.cost_usd), 0)::float8 AS internal_cost,
+				COALESCE(SUM(rl.cost_usd), 0)::float8 AS external_cost,
+				MAX(rl.ts) AS last_used_at
+			FROM request_logs_with_current_month rl
+			WHERE COALESCE(rl.owner_user, rl.api_key_owner_user) = $1
+				AND rl.ts >= $2 AND rl.ts < $3
+				AND rl.api_key_id IS NOT NULL
+			GROUP BY rl.api_key_id
+		),
+		key_sessions AS (
+			SELECT DISTINCT rl.api_key_id AS key_id, rl.gw_session_id
+			FROM request_logs_with_current_month rl
+			WHERE COALESCE(rl.owner_user, rl.api_key_owner_user) = $1
+				AND rl.ts >= $2 AND rl.ts < $3
+				AND rl.api_key_id IS NOT NULL
+				AND rl.gw_session_id IS NOT NULL
+		),
+		proj_counts AS (
+			SELECT ks.key_id, sd.project_id, COUNT(*) AS session_cnt
+			FROM key_sessions ks
+			JOIN session_dim sd ON sd.gw_session_id = ks.gw_session_id
+			WHERE sd.project_id IS NOT NULL AND sd.project_id <> ''
+			GROUP BY ks.key_id, sd.project_id
+		),
+		proj AS (
+			SELECT
+				key_id,
+				COUNT(*)::bigint AS project_count,
+				(ARRAY_AGG(project_id ORDER BY session_cnt DESC, project_id))[1] AS top_project
+			FROM proj_counts
+			GROUP BY key_id
+		)
+		SELECT
+			ks.key_id,
+			COALESCE(rl_alias.key_alias, '') AS key_alias,
+			ks.request_count,
+			ks.total_tokens,
+			ks.total_cost,
+			ks.internal_cost,
+			ks.external_cost,
+			ks.last_used_at,
+			COALESCE(p.project_count, 0) AS project_count,
+			COALESCE(p.top_project, '') AS top_project
+		FROM key_stats ks
+		LEFT JOIN proj p ON p.key_id = ks.key_id
+		LEFT JOIN LATERAL (
+			SELECT key_alias FROM request_logs_with_current_month a
+			WHERE a.api_key_id = ks.key_id
+			ORDER BY a.ts DESC
+			LIMIT 1
+		) rl_alias ON TRUE
+		ORDER BY ks.request_count DESC`

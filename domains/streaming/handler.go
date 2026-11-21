@@ -2687,6 +2687,97 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	h.serveFallback(w, r)
 }
 
+// tenantBudgetChecker 是租户月度预算闸需要的最小面。
+//
+//	*maas.Service 满足它（CheckMonthlyBudget）；测试桩可不实现 ⇒ nil-safe 跳过。
+type tenantBudgetChecker interface {
+	CheckMonthlyBudget(ctx context.Context, tenantID string) (*maas.MonthlyBudgetVerdict, error)
+}
+
+// tenantBudgetRejectHook 让每个数据面把自己的「拒绝出口」接进共用判定体：
+//
+//	chat 面：写 _request_logs 失败行（captureAndEmitFailure）；
+//	messages / responses 面：写 attempt 错误码（attemptErrCode/attemptErrMsg）；
+//	音频面：只有 HTTP 响应 ⇒ 传 nil。
+type tenantBudgetRejectHook func(errCode, errMsg string, clientStatus int)
+
+// applyTenantMonthlyBudgetGate 是租户月度预算闸的**共用**判定体
+// （chat / messages / responses / 音频四面共用同一份语义，避免各面各写一份漂移）。
+//
+//	返回 true = 放行；false = 已写出拒绝响应，调用方必须立即 return。
+func applyTenantMonthlyBudgetGate(ctx context.Context, w http.ResponseWriter, checker tenantBudgetChecker, keyInfo *authentication.KeyInfo, requestID string, onReject tenantBudgetRejectHook) bool {
+	if checker == nil || keyInfo == nil || keyInfo.TenantID == "" || keyInfo.TenantID == "default" || keyInfo.IsInternal {
+		return true
+	}
+	verdict, err := checker.CheckMonthlyBudget(ctx, keyInfo.TenantID)
+	if err != nil {
+		var checkErr *maas.TenantBudgetCheckError
+		if errors.As(err, &checkErr) && checkErr.Mode == maas.BudgetEnforcementHard {
+			// 门适用性已确认（hard）但花费查不出来 =「不知道超没超」
+			// ≠「没超」⇒ fail-closed 503，与 api key 预算门 R89-133
+			// 同纪律（budget_failclosed_test.go 钉死的语义）。
+			slog.Error("tenant budget check failed in hard mode, failing closed",
+				"request_id", requestID,
+				"tenant_id", keyInfo.TenantID,
+				"error", err)
+			if onReject != nil {
+				onReject("tenant_budget_unavailable", "tenant budget check unavailable", http.StatusServiceUnavailable)
+			}
+			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+				"Tenant budget check temporarily unavailable", "server_error", "tenant_budget_unavailable")
+			return false
+		}
+		// 预算行没读到（适用性未知）或 warn 模式故障：门默认不承重
+		//（938 A-15 欠费默认放行），放行 + 响亮记日志。
+		slog.Warn("tenant budget check failed; failing open (non-hard or applicability unknown)",
+			"request_id", requestID,
+			"tenant_id", keyInfo.TenantID,
+			"error", err)
+		return true
+	}
+	if verdict == nil || !verdict.Over {
+		return true
+	}
+	if verdict.EnforcementMode == maas.BudgetEnforcementHard {
+		if onReject != nil {
+			onReject("tenant_budget_exceeded", "tenant monthly budget exceeded (hard mode)", http.StatusTooManyRequests)
+		}
+		writeErrorJSONCtx(ctx, w, http.StatusTooManyRequests, requestID, "insufficient_quota", i18n.MsgTenantBudgetExceeded, nil)
+		return false
+	}
+	// warn 模式：只告警不拦截（存量行为零变化）。
+	slog.Warn("tenant monthly budget exceeded (warn mode, not blocking)",
+		"tenant_id", keyInfo.TenantID,
+		"spent_cents", verdict.SpentCents,
+		"budget_cents", verdict.MonthlyBudgetCents)
+	return true
+}
+
+// enforceTenantMonthlyBudget 是租户月度预算闸（938 enforcement_mode，迁移 996）的
+// chat 面入口。
+//
+//	W1-Q1（2026-11-21 青岛联通方案）：warn（默认）= 仅告警零变化；
+//	hard = 当月花费达 monthly_budget_cents ⇒ 429 tenant_budget_exceeded。
+//	豁免与 MaaS credits pre-check 同口径：default 租户（管理面/平台自身
+//	所在租户）+ 内部回环 key（IsInternal，探针旁路）。花费口径与
+//	maas_monthly_bills 同源（sumPeriodConsumption × cents_per_credit）
+//	—— 门与账单不能打架。
+//
+//	★ 2026-11-22 审计轮修正（P0）：门原先**只**落在 chat 面
+//	（serveWithExecutor 内），而 /v1/messages、/v1/responses、音频三面
+//	**同样产生 MaaS 花费**（同一 emitTelemetry → ChargeRequestMultimodal →
+//	maas_credit_consumption_buckets）却**不经过**门
+//	⇒ hard 模式的月预算上限可被整面绕过（账单口径正确、门口径失效）。
+//	仓内已有同型判定：docs/全面审计v3/2026-11-21/04-主档.md「modelbudget
+//	闸门只进 serveWithExecutor 一面」。
+//	⇒ 抽成共用判定体，四面共用同一闸。
+func (h *ChatHandler) enforceTenantMonthlyBudget(ctx context.Context, w http.ResponseWriter, keyInfo *authentication.KeyInfo, requestID string, onReject tenantBudgetRejectHook) bool {
+	if h.maasSvc == nil {
+		return true
+	}
+	return applyTenantMonthlyBudgetGate(ctx, w, h.maasSvc, keyInfo, requestID, onReject)
+}
+
 // serveWithExecutor is the main chat-completions / completions pipeline.
 // It receives pointers to the safety-net attempt state from ServeHTTP
 // so that any exit path can populate them and the deferred logger in
@@ -2897,47 +2988,13 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// ── Tenant monthly budget gate (938 enforcement_mode, migration 996) ──
-	// W1-Q1（2026-11-21 青岛联通方案）：warn（默认）= 仅告警零变化；
-	// hard = 当月花费达 monthly_budget_cents ⇒ 429 tenant_budget_exceeded。
-	// 豁免与 MaaS credits pre-check 同口径：default 租户（管理面/平台自身
-	// 所在租户）+ 内部回环 key（IsInternal，探针旁路）。花费口径与
-	// maas_monthly_bills 同源（sumPeriodConsumption × cents_per_credit）
-	// —— 门与账单不能打架。
-	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
-		verdict, err := h.maasSvc.CheckMonthlyBudget(r.Context(), keyInfo.TenantID)
-		if err != nil {
-			var checkErr *maas.TenantBudgetCheckError
-			if errors.As(err, &checkErr) && checkErr.Mode == maas.BudgetEnforcementHard {
-				// 门适用性已确认（hard）但花费查不出来 =「不知道超没超」
-				// ≠「没超」⇒ fail-closed 503，与 api key 预算门 R89-133
-				// 同纪律（budget_failclosed_test.go 钉死的语义）。
-				slog.Error("tenant budget check failed in hard mode, failing closed",
-					"request_id", requestID,
-					"tenant_id", keyInfo.TenantID,
-					"error", err)
-				captureAndEmitFailure("tenant_budget_unavailable", "tenant budget check unavailable", nil, nil, http.StatusServiceUnavailable)
-				writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
-					"Tenant budget check temporarily unavailable", "server_error", "tenant_budget_unavailable")
-				return
-			}
-			// 预算行没读到（适用性未知）或 warn 模式故障：门默认不承重
-			//（938 A-15 欠费默认放行），放行 + 响亮记日志。
-			slog.Warn("tenant budget check failed; failing open (non-hard or applicability unknown)",
-				"request_id", requestID,
-				"tenant_id", keyInfo.TenantID,
-				"error", err)
-		} else if verdict != nil && verdict.Over {
-			if verdict.EnforcementMode == maas.BudgetEnforcementHard {
-				captureAndEmitFailure("tenant_budget_exceeded", "tenant monthly budget exceeded (hard mode)", nil, nil, http.StatusTooManyRequests)
-				writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "insufficient_quota", i18n.MsgTenantBudgetExceeded, nil)
-				return
-			}
-			// warn 模式：只告警不拦截（存量行为零变化）。
-			slog.Warn("tenant monthly budget exceeded (warn mode, not blocking)",
-				"tenant_id", keyInfo.TenantID,
-				"spent_cents", verdict.SpentCents,
-				"budget_cents", verdict.MonthlyBudgetCents)
-		}
+	//	★ 2026-11-22 审计轮修正（P0，见 enforceTenantMonthlyBudget）：
+	//	门原先只落在 chat 面 ⇒ /v1/messages、/v1/responses、音频三面绕过。
+	//	⇒ 抽成方法，三面共用。
+	if !h.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
+		captureAndEmitFailure(errCode, errMsg, nil, nil, clientStatus)
+	}) {
+		return
 	}
 
 	// ── Inject API Key info into context for session middleware ─────────

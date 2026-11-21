@@ -142,6 +142,8 @@ export default {
       'Aucun agent n’a été utilisé sur cette période. Essayez une autre période de rapport.',
     noResultModelRanking:
       'Aucun modèle n’a été appelé sur cette période. Essayez une autre période de rapport.',
+  noResultUserModels: 'Cette personne n\'a aucun enregistrement d\'utilisation des modèles sur la période sélectionnée ; essayez une autre période.',
+  noResultUserAPIKeys: 'Cette personne n\'a aucun enregistrement d\'utilisation de clés API sur la période sélectionnée ; essayez une autre période.',
   },
   error: {
     overviewFailed: 'La vue d’ensemble des sessions n’a pas pu être chargée. Veuillez réessayer.',
@@ -151,5 +153,7 @@ export default {
     projectTasksFailed: 'La liste des tâches n’a pas pu être chargée. Veuillez réessayer.',
     agentRankingFailed: 'Le classement des agents n’a pas pu être chargé. Veuillez réessayer.',
     modelRankingFailed: 'Le classement des modèles n’a pas pu être chargé. Veuillez réessayer.',
+  userModelsFailed: 'Impossible de charger l\'utilisation des modèles. Veuillez réessayer.',
+  userAPIKeysFailed: 'Impossible de charger l\'utilisation des clés API. Veuillez réessayer.',
   },
 }

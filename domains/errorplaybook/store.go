@@ -480,7 +480,7 @@ func (s *SQLStore) UpdatePlanFromRefinement(ctx context.Context, entryID int64, 
 	var errorType string
 	err = s.db.QueryRowContext(ctx, `
 		UPDATE error_playbook_entries SET
-			title = NULLIF($2,'')::text, root_cause = $3, plan_kind = $4, plan_payload = $5::jsonb,
+			title = COALESCE(NULLIF($2,'')::text, title), root_cause = $3, plan_kind = $4, plan_payload = $5::jsonb,
 			confidence = $6, source = 'refinement', refinement_count = refinement_count + 1,
 			updated_at = NOW()
 		WHERE id = $1

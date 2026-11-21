@@ -511,7 +511,7 @@ async function loadAPIKeys(): Promise<void> {
     }),
     'sessionAnalytics.error.userAPIKeysFailed',
   )
-  apiKeys.value = res?.keys ?? []
+  apiKeys.value = res?.api_keys ?? []
 }
 
 function selectProject(project: string): void {

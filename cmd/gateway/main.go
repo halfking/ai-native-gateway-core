@@ -7846,7 +7846,23 @@ func main() {
 		// ★ 任务 3（2026-11-21）：call_admin_api 闭集扩容——三条高频处置路由
 		//   的依赖全部来自 main 作用域已有组件（缺项 ⇒ 路由不进闭集 ⇒
 		//   归一化期 fail-fast）。变更类 POST ⇒ PI 自动执行过 0.80 置信度门。
-		pbDeps := PlaybookDeps{IndexRefresh: autoIndexRefresher, CredibilityScan: modelCredibilityWorker}
+		// ★ 2026-11-22 审计轮修正（P1-6）：**typed-nil 接口陷阱**。
+		//	此前 `PlaybookDeps{IndexRefresh: autoIndexRefresher, CredibilityScan: modelCredibilityWorker}`
+		//	把**可能为 nil 的具体指针**直接装进接口字段 ⇒ 即使指针是 nil，
+		//	接口值也**非 nil** ⇒ `deps.X != nil` 判定为真 ⇒
+		//	① 依赖缺项时路由**照样**进闭集（与「缺项 ⇒ 不进闭集 ⇒ 归一化期
+		//	   fail-fast」的宣称**相反**）；
+		//	② CredibilityScan 命中 nil 接收者时 `w.db` 取字段会 **panic**；
+		//	③ IndexRefresh 命中 nil 接收者时 RefreshOnce 返回 (false, nil) ⇒
+		//	   路由回 200「索引已刷新」——**什么都没刷却报成功**。
+		//	⇒ 装配期显式判空后再装接口。
+		pbDeps := PlaybookDeps{}
+		if autoIndexRefresher != nil {
+			pbDeps.IndexRefresh = autoIndexRefresher
+		}
+		if modelCredibilityWorker != nil {
+			pbDeps.CredibilityScan = modelCredibilityWorker
+		}
 		if adminHandler != nil {
 			pbDeps.ForceRecoverCredential = adminHandler.ForceRecoverCredential
 		}

@@ -10,7 +10,8 @@
 
 \set ON_ERROR_STOP on
 BEGIN;
-
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
 -- 删除触发器
 DROP TRIGGER IF EXISTS trigger_tasks_updated_at ON public.tasks;
 DROP FUNCTION IF EXISTS public.update_tasks_updated_at();

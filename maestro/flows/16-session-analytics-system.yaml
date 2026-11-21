@@ -131,7 +131,7 @@ url: ${BASE_URL}
 
 # ── ④.2 用户详情页 - API Key 统计 tab ────────────────────────────────
 # 新增功能：点击「API Key 统计」tab，验证表头和数据加载
-- tapOn: "API Key 统计"
+- tapOn: "API Key用量"
 - extendedWaitUntil:
     visible: "密钥别名"
     timeout: 10000

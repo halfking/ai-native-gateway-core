@@ -527,10 +527,10 @@ if (!owner) {
     })
   })()`))
   if (!modelsTab.ok) {
-    gauge('人员详情页：模型用量 tab', modelsTab.why || '找不到模型用量 tab')
+    check('人员详情页：模型用量 tab 存在', false, modelsTab.why || '找不到模型用量 tab')
   } else {
     const modelsTable = modelsTab.tables.find(t => t.headers.includes('模型'))
-    const needHeaders = ['模型', '请求数', 'Token 总数', '成功率', '缓存率', '平均响应时间']
+    const needHeaders = ['模型', '请求数', 'Token 数', '成功率', '缓存命中率', '平均响应时间']
     if (modelsTable) {
       check('人员详情页：模型用量表头齐全', needHeaders.every(h => modelsTable.headers.includes(h)),
         needHeaders.filter(h => !modelsTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !modelsTable.headers.includes(h)).join('/') : '6 列全在')
@@ -566,10 +566,10 @@ if (!owner) {
     })
   })()`))
   if (!apiKeysTab.ok) {
-    gauge('人员详情页：API Key 统计 tab', apiKeysTab.why || '找不到 API Key 统计 tab')
+    check('人员详情页：API Key 用量 tab 存在', false, apiKeysTab.why || '找不到 API Key 用量 tab')
   } else {
-    const apiKeysTable = apiKeysTab.tables.find(t => t.headers.includes('密钥别名'))
-    const needHeaders = ['密钥别名', '密钥 ID', '请求数', 'Token 总数', '项目数', '主要项目']
+    const apiKeysTable = apiKeysTab.tables.find(t => t.headers.includes('Key别名'))
+    const needHeaders = ['Key别名', 'Key ID', '请求数', 'Token 数', '关联项目数', '主要项目']
     if (apiKeysTable) {
       check('人员详情页：API Key 统计表头齐全', needHeaders.every(h => apiKeysTable.headers.includes(h)),
         needHeaders.filter(h => !apiKeysTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !apiKeysTable.headers.includes(h)).join('/') : '6 列全在')
@@ -585,8 +585,8 @@ if (!owner) {
     if (apiKeysCap && apiKeysCap.api_keys && apiKeysCap.api_keys.length > 0 && apiKeysTable && apiKeysTable.rows.length > 0) {
       const expectKeyId = String(apiKeysCap.api_keys[0].key_id)
       check('对拍：API Key 首行「密钥 ID」== 页面自身响应 api_keys[0].key_id',
-        apiKeysTable.rows[0][apiKeysTable.headers.indexOf('密钥 ID')] === expectKeyId,
-        `页面="${apiKeysTable.rows[0][apiKeysTable.headers.indexOf('密钥 ID')]}" 同源响应="${expectKeyId}"`)
+        apiKeysTable.rows[0][apiKeysTable.headers.indexOf('Key ID')] === expectKeyId,
+        `页面="${apiKeysTable.rows[0][apiKeysTable.headers.indexOf('Key ID')]}" 同源响应="${expectKeyId}"`)
     }
   }
 }

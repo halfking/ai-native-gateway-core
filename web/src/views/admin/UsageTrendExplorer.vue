@@ -23,7 +23,7 @@ import {
 import ModelTrendChart from '../../components/analytics/ModelTrendChart.vue'
 import ModelPicker from '../../components/ModelPicker.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
-import { makeDateRangePresets, systemTzDateStr } from '../../components/ui/kxDatePresets'
+import { makeDateRangePresets, systemTzDateStr, systemTzNoonMs } from '../../components/ui/kxDatePresets'
 import type { KxDateRange } from '../../components/ui/kx-date-types'
 import {
   getUsageTrendSeries,
@@ -334,13 +334,29 @@ const sourceLabel = computed(() => {
   }
 })
 
+// 2026-11-22 审计轮修正（P1-6）：此前推的路径是 '/admin/request-logs'，
+// 而真路由是 '/request-logs'（web/src/router.ts）⇒ router.ts 的
+// '/:pathMatch(.*)*' 兜底把它重定向到 '/' ⇒ 6 个「查看全部」按钮全部跳首页。
+// 时间参数同理：RequestLogsView 只读 preset / hours / from+to，
+// 此前推的 start/end **不被任何代码读取** ⇒ 时间范围丢失。
+// ⇒ 改推真路由 + preset=custom + from/to（系统时区日界，ISO 瞬间）。
+function requestLogsRangeQuery(): Record<string, string> {
+  const { start, end } = effectiveRange.value
+  const DAY_MS = 86_400_000
+  // systemTzNoonMs 给的是该日正午的挂钟瞬间；减半天即当日 00:00 的瞬间。
+  const startMs = systemTzNoonMs(start) - 12 * 3600_000
+  const endMs = systemTzNoonMs(end) - 12 * 3600_000 + DAY_MS - 1
+  return {
+    preset: 'custom',
+    from: new Date(startMs).toISOString(),
+    to: new Date(endMs).toISOString(),
+  }
+}
+
 // 导航到请求日志页面，带上对应的筛选条件
 function navigateToRequests(dimension: string, value: string) {
-  const query: Record<string, string> = {
-    start: effectiveRange.value.start,
-    end: effectiveRange.value.end,
-  }
-  
+  const query: Record<string, string> = requestLogsRangeQuery()
+
   // 根据维度类型设置对应的筛选参数
   switch (dimension) {
     case 'model':
@@ -364,19 +380,14 @@ function navigateToRequests(dimension: string, value: string) {
       query.task_type = value
       break
   }
-  
-  router.push({ path: '/admin/request-logs', query })
+
+  router.push({ path: '/request-logs', query })
 }
 
 // 导航到请求日志页面，不带具体值过滤（查看全部该维度的请求）
 function navigateToRequestsAll(dimension: string) {
-  const query: Record<string, string> = {
-    start: effectiveRange.value.start,
-    end: effectiveRange.value.end,
-  }
-  
   // 只带时间范围，不带具体维度值，让用户在请求日志页面查看完整列表
-  router.push({ path: '/admin/request-logs', query })
+  router.push({ path: '/request-logs', query: requestLogsRangeQuery() })
 }
 
 onMounted(() => {

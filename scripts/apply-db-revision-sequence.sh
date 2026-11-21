@@ -2818,6 +2818,9 @@ files=(
   #   ★ 新迁移而非改 938 字节：938 已 applied+verified（245 部署）
   #     ⇒ 改字节走 content replay 连锁 break（914/928 教训，同 929/930 处置）。
   "$ROOT_DIR/sql/migrations/startup/996_tenant_budget_enforcement_mode.sql"
+  "$ROOT_DIR/sql/migrations/startup/997_tasks_dimension_table.sql"
+  "$ROOT_DIR/sql/migrations/startup/998_session_summaries_task_association.sql"
+  "$ROOT_DIR/sql/migrations/startup/999_session_summary_layers.sql"
 )
 
 
@@ -3644,6 +3647,12 @@ ledger_artifact_probe "995_error_playbook.sql" \
 #     pg_catalog 教训只针对物化视图）。
 ledger_artifact_probe "996_tenant_budget_enforcement_mode.sql" \
   "to_regclass('public.tenant_budgets') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='tenant_budgets' AND column_name='enforcement_mode' AND column_default LIKE '%warn%') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='tenant_budgets_enforcement_mode_check' AND conrelid='public.tenant_budgets'::regclass) = 1"
+ledger_artifact_probe "997_tasks_dimension_table.sql" \
+  "to_regclass('public.tasks') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='tasks' AND indexname='idx_tasks_tenant_status') = 1"
+ledger_artifact_probe "998_session_summaries_task_association.sql" \
+  "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name IN ('task_id','is_duplicate','canonical_session_key','similar_session_keys')) = 4"
+ledger_artifact_probe "999_session_summary_layers.sql" \
+  "to_regclass('public.session_summary_layers') IS NOT NULL"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

@@ -143,6 +143,8 @@ export default {
       'この期間にはまだエージェントが一度も使われていません。別の集計期間でお試しください。',
     noResultModelRanking:
       'この期間にはまだモデルが一度も呼び出されていません。別の集計期間でお試しください。',
+  noResultUserModels: 'この期間にはこの人のモデル使用記録がありません。別の期間をお試しください。',
+  noResultUserAPIKeys: 'この期間にはこの人の API キー使用記録がありません。別の期間をお試しください。',
   },
   error: {
     overviewFailed: 'セッション総覧の読み込みに失敗しました。再試行してください。',
@@ -152,5 +154,7 @@ export default {
     projectTasksFailed: 'タスク一覧の読み込みに失敗しました。再試行してください。',
     agentRankingFailed: 'エージェントランキングの読み込みに失敗しました。再試行してください。',
     modelRankingFailed: 'モデルランキングの読み込みに失敗しました。再試行してください。',
+  userModelsFailed: 'モデル使用量を読み込めませんでした。再試行してください。',
+  userAPIKeysFailed: 'API キーの使用量を読み込めませんでした。再試行してください。',
   },
 }

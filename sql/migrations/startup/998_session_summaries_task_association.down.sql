@@ -10,7 +10,8 @@
 
 \set ON_ERROR_STOP on
 BEGIN;
-
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
 -- 删除索引
 DROP INDEX IF EXISTS public.idx_session_summaries_task;
 DROP INDEX IF EXISTS public.idx_session_summaries_canonical;

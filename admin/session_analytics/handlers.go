@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -880,7 +881,7 @@ func extractOwnerAndProjectFromPath(path string) (string, string) {
 	}
 	rest := strings.TrimPrefix(path, prefix)
 	parts := strings.Split(rest, "/")
-	
+
 	// parts 应该是: [owner, "projects", project, "tasks"]
 	if len(parts) >= 4 && parts[1] == "projects" && parts[3] == "tasks" {
 		return parts[0], parts[2]
@@ -995,10 +996,11 @@ var (
 //	因为它们会被父路径的处理器捕获，不会独立注册。
 //
 // ★ 消费者状态（2026-11-20 审计轮登记，合并 origin/main 后复核）：RouteOverview
-//   / RouteUserRanking 此前 web/src 零调用（API-only）。并行车随后落地了
-//   session-analytics 前端页族——消费状态以 web/src 实 grep 为准，本注释
-//   只钉「不要因无消费者而误删」（本包曾有「从未被 import 即死代码」误删
-//   先例，见 051c0ebc1）。
+//
+//	/ RouteUserRanking 此前 web/src 零调用（API-only）。并行车随后落地了
+//	session-analytics 前端页族——消费状态以 web/src 实 grep 为准，本注释
+//	只钉「不要因无消费者而误删」（本包曾有「从未被 import 即死代码」误删
+//	先例，见 051c0ebc1）。
 var RoutePaths = []string{
 	RouteOverview,
 	RouteUserRanking,
@@ -1048,7 +1050,7 @@ func RegisterRoutes(mux *http.ServeMux, db *sql.DB, adminWrap func(http.HandlerF
 func (h *Handler) routeUserRanking(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	prefix := RouteUserRanking + "/"
-	
+
 	if !strings.HasPrefix(path, prefix) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -1176,6 +1178,10 @@ func (h *Handler) HandleGetUserModelUsage(w http.ResponseWriter, r *http.Request
 	// 查询数据
 	resp, err := GetUserModelUsage(ctx, h.db, owner, params.StartDate, params.EndDate)
 	if err != nil {
+		// ★ 2026-11-22 审计轮修正（P2-9）：此前 err 被丢弃、只回一句固定文案
+		//	⇒ 线上 500 没有 SQLSTATE / relation 名，运维无法自助定位。
+		//	仍不回显 err.Error() 给客户端（仓内错误文案纪律）。
+		slog.Error("sessionAnalytics: user model usage failed", "owner", owner, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get user model usage")
 		return
 	}
@@ -1224,6 +1230,8 @@ func (h *Handler) HandleGetUserAPIKeyUsage(w http.ResponseWriter, r *http.Reques
 	// 查询数据
 	resp, err := GetUserAPIKeyUsage(ctx, h.db, owner, params.StartDate, params.EndDate)
 	if err != nil {
+		// ★ 2026-11-22 审计轮修正（P2-9）：同 GetUserModelUsage —— err 必须落日志。
+		slog.Error("sessionAnalytics: user api key usage failed", "owner", owner, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get user api key usage")
 		return
 	}

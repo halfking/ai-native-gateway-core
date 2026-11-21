@@ -259,6 +259,19 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 		bindRequestJourney(r, ki.TenantID, attemptClientModel)
 		// SP-02: state machine — auth succeeded.
 		rt.Emit(state.EventAuthed)
+
+		// ── 租户月度预算闸（938 enforcement_mode，迁移 996）────────────
+		//	★ 2026-11-22 审计轮修正（P0）：/v1/responses 面**同样产生
+		//	MaaS 花费**，但原先**不经过**租户级预算闸（闸只落在 chat 面）
+		//	⇒ hard 模式可被整面绕过。
+		//	⇒ 与 chat 面共用同一个闸（domains/streaming/handler.go
+		//	enforceTenantMonthlyBudget）。
+		if !h.chatHandler.enforceTenantMonthlyBudget(r.Context(), w, keyInfo, requestID, func(errCode, errMsg string, clientStatus int) {
+			attemptErrCode = errCode
+			attemptErrMsg = errMsg
+		}) {
+			return
+		}
 	}
 
 	bodyBytes, err := readRequestBodyRestore(r, maxBodySize)

@@ -332,6 +332,32 @@ func (b *BuiltinActions) executeDisablePIRule(ctx context.Context, params map[st
 	return snapshot, fmt.Sprintf("rule %q disabled (was enabled, severity %d)", ruleName, severity), nil
 }
 
+// apiPlanTimeoutMS 归一化 api 方案里的 timeout_ms。
+//
+//	★ 2026-11-22 审计轮修正（P2-8）：params 里的数值有两种来源——
+//	① 归一化期 normalizeAPIShape 产出的 **int**；
+//	② 方案从库里读回后经 JSON 往返的 **float64**。
+//	此前只认 float64 ⇒ 内存路径（自动分析的首修）永远用默认 10s。
+func apiPlanTimeoutMS(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case float32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	default:
+		return 0, false
+	}
+}
+
 // executeCallAdminAPI 调用登记在册的内部管理端点。
 func (b *BuiltinActions) executeCallAdminAPI(ctx context.Context, params map[string]interface{}) (json.RawMessage, string, error) {
 	method := strings.ToUpper(strings.TrimSpace(strFrom(params, "method")))
@@ -381,9 +407,15 @@ func (b *BuiltinActions) executeCallAdminAPI(ctx context.Context, params map[str
 	}
 
 	// 超时闸（params.timeout_ms，默认 10s，封顶 60s）。
+	//
+	//	★ 2026-11-22 审计轮修正（P2-8）：此前只认 float64，而
+	//	normalizeAPIShape 归一化时把 timeout_ms 以 **int** 放进 params
+	//	⇒ 内存路径（AnalyzeUnknown 归一化后立即执行首修）永远落回默认 10s，
+	//	方案里声明的超时（最大 60s）不生效。
+	//	⇒ 两种数值类型都认（JSON 往返回来的是 float64，归一化产出的是 int）。
 	timeout := 10 * time.Second
-	if v, ok := params["timeout_ms"].(float64); ok && v > 0 {
-		timeout = time.Duration(v) * time.Millisecond
+	if ms, ok := apiPlanTimeoutMS(params["timeout_ms"]); ok && ms > 0 {
+		timeout = time.Duration(ms) * time.Millisecond
 		if timeout > 60*time.Second {
 			timeout = 60 * time.Second
 		}

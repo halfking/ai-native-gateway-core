@@ -25,7 +25,8 @@
 
 \set ON_ERROR_STOP on
 BEGIN;
-
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
 -- ============================================================
 -- 1. 扩展 session_summaries 表
 -- ============================================================

@@ -144,6 +144,8 @@ export default {
       '這個區間內還沒有智慧體被使用過，請換一個統計區間再試試。',
     noResultModelRanking:
       '這個區間內還沒有模型被呼叫過，請換一個統計區間再試試。',
+  noResultUserModels: '這位人員在所選區間內沒有模型用量記錄，換一個統計區間再看看。',
+  noResultUserAPIKeys: '這位人員在所選區間內沒有 API Key 使用記錄，換一個統計區間再看看。',
   },
   error: {
     overviewFailed: '會話總覽沒能載入出來，請重試',
@@ -153,5 +155,7 @@ export default {
     projectTasksFailed: '任務列表沒能載入出來，請重試',
     agentRankingFailed: '智慧體排行榜沒能載入出來，請重試',
     modelRankingFailed: '模型排名沒能載入出來，請重試',
+  userModelsFailed: '模型用量沒能載入出來，請重試',
+  userAPIKeysFailed: 'API Key 用量沒能載入出來，請重試',
   },
 }

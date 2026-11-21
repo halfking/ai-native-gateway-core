@@ -111,6 +111,10 @@ type AudioService struct {
 	failureLogger *executors.CandidateFailureWriter
 	// maas 可选：成功转写后按时长扣租户积分（2026-10-08 Phase B）。
 	maas audioMaasCharger
+	// tenantBudgetGate 可选：租户月度预算闸（938 enforcement_mode，迁移 996）。
+	// ★ 2026-11-22 审计轮修正（P0）：音频面同样产生 MaaS 花费 ⇒ 必须过租户级
+	// 预算闸，否则 hard 模式可被音频面绕过。SetMaas 时自动接入。
+	tenantBudgetGate audioTenantBudgetGate
 	// usageLog 可选：把 audio_seconds / credits 写入 _request_logs_hot。
 	usageLog AudioUsageLogger
 }
@@ -1328,6 +1332,14 @@ func (s *AudioService) authenticate(w http.ResponseWriter, r *http.Request, requ
 			"key_id", keyInfo.ID,
 			"error", err)
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "Budget check temporarily unavailable", "server_error", "budget_unavailable")
+		return nil, false
+	}
+	// ── 租户月度预算闸（938 enforcement_mode，迁移 996）────────────────
+	//	★ 2026-11-22 审计轮修正（P0）：音频面**同样产生 MaaS 花费**
+	//	（chargeTranscription → ChargeRequestMultimodalWithMultiplier）
+	//	⇒ 必须过租户级闸，否则 hard 模式的月预算上限可被音频面绕过。
+	//	⇒ 与 chat / messages / responses 共用同一判定体（四面同源）。
+	if !applyTenantMonthlyBudgetGate(r.Context(), w, s.tenantBudgetGate, keyInfo, requestID, nil) {
 		return nil, false
 	}
 	return keyInfo, true

@@ -2002,6 +2002,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 新迁移而非改 938 字节：938 已 applied+verified（245 部署）
 			//     ⇒ 改字节走 content replay 连锁 break（914/928 教训）。
 			"996_tenant_budget_enforcement_mode.sql",
+			"997_tasks_dimension_table.sql",
+			"998_session_summaries_task_association.sql",
+			"999_session_summary_layers.sql",
 		},
 	}
 }

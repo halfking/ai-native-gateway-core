@@ -514,7 +514,7 @@ export interface UserAPIKeyUsage {
 }
 
 export interface UserAPIKeyUsageResponse {
-  keys: UserAPIKeyUsage[]
+  api_keys: UserAPIKeyUsage[]
 }
 
 export interface UserAPIKeyUsageQuery {

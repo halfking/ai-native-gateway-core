@@ -142,6 +142,8 @@ export default {
       'In diesem Zeitraum wurde kein Agent eingesetzt. Wählen Sie einen anderen Berichtszeitraum.',
     noResultModelRanking:
       'In diesem Zeitraum wurde kein Modell aufgerufen. Wählen Sie einen anderen Berichtszeitraum.',
+  noResultUserModels: 'Für diese Person gibt es im gewählten Zeitraum keine Modellnutzungsdaten; versuchen Sie einen anderen Zeitraum.',
+  noResultUserAPIKeys: 'Für diese Person gibt es im gewählten Zeitraum keine API-Key-Nutzungsdaten; versuchen Sie einen anderen Zeitraum.',
   },
   error: {
     overviewFailed: 'Die Sitzungsübersicht konnte nicht geladen werden. Bitte erneut versuchen.',
@@ -151,5 +153,7 @@ export default {
     projectTasksFailed: 'Die Aufgabenliste konnte nicht geladen werden. Bitte erneut versuchen.',
     agentRankingFailed: 'Die Agentenrangliste konnte nicht geladen werden. Bitte erneut versuchen.',
     modelRankingFailed: 'Die Modellrangliste konnte nicht geladen werden. Bitte erneut versuchen.',
+  userModelsFailed: 'Die Modellnutzung konnte nicht geladen werden. Bitte erneut versuchen.',
+  userAPIKeysFailed: 'Die API-Key-Nutzung konnte nicht geladen werden. Bitte erneut versuchen.',
   },
 }

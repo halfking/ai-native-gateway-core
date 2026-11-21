@@ -108,19 +108,26 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	}
 
 	// ⑧ installer go:embed + embeddedSQLFiles map 双登记。
+	//
+	//	★ 2026-11-22 审计轮修正：此前用**逐字**（含精确空格）匹配 map 行
+	//	⇒ gofmt 对齐 map 字面量时（新增 997/998/999 三条同级条目会把整块
+	//	重新对齐）本断言会被**空格差异**打红 —— 门与「登记有没有做」无关，
+	//	却因为排版变化而红。
+	//	⇒ 改成「折叠连续空白后逐字比」，语义仍是「这一对 key→value 登记在册」，
+	//	但不再受 gofmt 排版影响。
 	mainGo := filepath.Join("..", "..", "installer", "cmd", "llm-gw-installer", "main.go")
 	mainSrc, err := os.ReadFile(mainGo)
 	if err != nil {
 		t.Fatalf("读 installer main.go 失败: %v", err)
 	}
-	main := string(mainSrc)
+	main := collapseSpaces(string(mainSrc))
 	for _, frag := range []string{
 		"//go:embed embeddata/startup/" + tbem1000File,
 		"//go:embed embeddata/startup/996_tenant_budget_enforcement_mode.down.sql",
-		`"startup/996_tenant_budget_enforcement_mode.sql":      tenantBudgetEnforcementMode996`,
-		`"startup/996_tenant_budget_enforcement_mode.down.sql": tenantBudgetEnforcementMode996Down`,
+		`"startup/996_tenant_budget_enforcement_mode.sql": tenantBudgetEnforcementMode996,`,
+		`"startup/996_tenant_budget_enforcement_mode.down.sql": tenantBudgetEnforcementMode996Down,`,
 	} {
-		if !strings.Contains(main, frag) {
+		if !strings.Contains(main, collapseSpaces(frag)) {
 			t.Fatalf("installer main.go 缺 1000 登记: %s", frag)
 		}
 	}
@@ -180,4 +187,23 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if string(offlineDown) != downExec {
 		t.Fatalf("1000 down 正本与 installer/migrations 副本不一致")
 	}
+}
+
+// collapseSpaces 把连续空白折叠成单个空格 —— 用于「登记在册」这类
+// **语义**断言，使它不受 gofmt 排版（map 字面量对齐）影响。
+func collapseSpaces(s string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if !prevSpace {
+				b.WriteRune(' ')
+			}
+			prevSpace = true
+			continue
+		}
+		prevSpace = false
+		b.WriteRune(r)
+	}
+	return b.String()
 }

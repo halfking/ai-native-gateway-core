@@ -142,6 +142,8 @@ export default {
       'No se ha usado ningún agente en este periodo. Pruebe con otro periodo de informe.',
     noResultModelRanking:
       'No se ha llamado a ningún modelo en este periodo. Pruebe con otro periodo de informe.',
+  noResultUserModels: 'Esta persona no tiene registros de uso de modelos en el intervalo seleccionado; prueba con otro intervalo.',
+  noResultUserAPIKeys: 'Esta persona no tiene registros de uso de claves API en el intervalo seleccionado; prueba con otro intervalo.',
   },
   error: {
     overviewFailed: 'No se ha podido cargar la vista general de sesiones. Vuelva a intentarlo.',
@@ -151,5 +153,7 @@ export default {
     projectTasksFailed: 'No se ha podido cargar la lista de tareas. Vuelva a intentarlo.',
     agentRankingFailed: 'No se ha podido cargar la clasificación de agentes. Vuelva a intentarlo.',
     modelRankingFailed: 'No se ha podido cargar la clasificación de modelos. Vuelva a intentarlo.',
+  userModelsFailed: 'No se pudo cargar el uso de modelos. Inténtalo de nuevo.',
+  userAPIKeysFailed: 'No se pudo cargar el uso de claves API. Inténtalo de nuevo.',
   },
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/lib/pq"
 )
 
 // ErrorSource 是错误事件的摄取面（生产实现查 candidate_failure_logs_hot）。
@@ -56,10 +57,23 @@ func NewWorker(engine *Engine, source ErrorSource, cfgFn func() Config, interval
 }
 
 // Start 启动循环（幂等：worker 由装配侧调用一次）。
+//
+//	★ 2026-11-22 审计轮修正（P1-3）：此前 `w.runOnce(ctx)` 的**返回值被丢弃**，
+//	而 bg.SpawnLoop 的监督只在 panic 时接管错误 ⇒ 摄取 SQL 每轮失败
+//	（22P02 / 数组 Scan）时**日志里一行都没有**，`/stats` 的 last_run_at
+//	也停在旧值 ⇒ 「灰度已开启却看不出来」。
+//	⇒ 现在每轮失败都记 Error 级日志。
 func (w *Worker) Start(ctx context.Context) {
 	bg.SpawnLoop(ctx, "error_playbook.worker", func(ctx context.Context) {
-		w.runOnce(ctx)
-		time.Sleep(w.interval)
+		if err := w.runOnce(ctx); err != nil {
+			slog.Error("error_playbook: worker round failed", "error", err)
+		}
+		// sleep 尊重 ctx 取消（P3-16）：停机时最多滞留一个 interval（上限 1 小时）。
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(w.interval):
+		}
 	})
 }
 
@@ -84,7 +98,10 @@ func (w *Worker) runOnce(ctx context.Context) error {
 
 	now := w.engine.nowFn()
 	until := now.Add(-2 * time.Second) // 避开在途写入的边界行
-	events, watermark, err := w.source.FetchWindow(ctx, w.watermark, until)
+	//	★ 2026-11-22 审计轮修正（P1-4）：水位线改由**已处理**分组自行推进，
+	//	故这里不再采用 FetchWindow 返回的 maxTS（它覆盖全部 20 个分组 ⇒
+	//	会把「本轮被 cap 挡下、未处理」的分组也一并消费掉 ⇒ 静默永久丢弃）。
+	events, _, err := w.source.FetchWindow(ctx, w.watermark, until)
 	if err != nil {
 		if errors.Is(err, ErrNotProvisioned) {
 			if !w.warnedNotProvisioned {
@@ -99,13 +116,23 @@ func (w *Worker) runOnce(ctx context.Context) error {
 
 	limit := maxInt(cfg.MaxEventsPerRound, 1)
 	processed := 0
+	// ★ 2026-11-22 审计轮修正（P1-4）：水位线**只按已处理分组推进**。
+	//	此前水位线取的是 FetchWindow 对**全部** 20 个分组的 maxTS，而本轮只处理
+	//	前 `limit`（默认 10）个 ⇒ 第 11~20 名分组的事件落在新水位线之前，
+	//	**永不重读、无人处理、无留痕**（错误类型被静默永久丢弃）。
+	//	⇒ 水位线改为「已处理分组的 lastTS 最大值」。
+	processedWatermark := w.watermark
 	for _, ev := range events {
 		if processed >= limit {
-			slog.Info("error_playbook: round event cap reached", "cap", limit, "total", len(events))
+			slog.Info("error_playbook: round event cap reached",
+				"cap", limit, "total", len(events), "deferred", len(events)-processed)
 			break
 		}
 		res := w.engine.HandleEvent(ctx, cfg, ev)
 		processed++
+		if ev.LastSeen.After(processedWatermark) {
+			processedWatermark = ev.LastSeen
+		}
 		if res.Err != nil {
 			if errors.Is(res.Err, ErrNotProvisioned) {
 				w.warnedNotProvisioned = true
@@ -149,8 +176,19 @@ func (w *Worker) runOnce(ctx context.Context) error {
 		w.lastPrune = time.Now()
 	}
 
-	if watermark.After(w.watermark) {
-		w.watermark = watermark
+	// ── 水位线推进 ───────────────────────────────────────────────────
+	//	★ 2026-11-22 审计轮修正（P1-4）：推进量取**已处理**分组的最晚 ts，
+	//	不再取 FetchWindow 对全部 20 个分组算出的 maxTS。
+	//	「被 cap 挡在门外、因此没处理」的分组其事件因此仍落在水位线之前
+	//	⇒ 下一轮会被重新读到（配合 SQL 侧按 lastTS 升序取 ⇒ 被推迟的
+	//	分组总是「更新」的那些 ⇒ 不会被水位线越过 ⇒ 不再被静默永久丢弃）。
+	//	窗口内无事件时推进到 until：否则窗口只会单调变宽、每轮重复全量扫描。
+	nextWatermark := processedWatermark
+	if processed == 0 && len(events) == 0 {
+		nextWatermark = until
+	}
+	if nextWatermark.After(w.watermark) {
+		w.watermark = nextWatermark
 	}
 	w.engine.MarkRun(now)
 	return nil
@@ -178,6 +216,19 @@ func NewSQLSource(db *sql.DB) *SQLSource {
 //
 //	按 error_kind 聚合：次数、首末时间、最多 3 条消息样本、供应商/模型
 //	样本（DISTINCT 数组切片）。LIMIT 20 防单轮把极端错误风暴全部吞进来。
+//
+//	★ 2026-11-22 审计轮修正两处**致命**缺陷（此前摄取链在生产上从未跑通一帧）：
+//	① `COALESCE(provider_id, '')` —— candidate_failure_logs_hot.provider_id 是
+//	   **INT NOT NULL**（sql/migrations/startup/037_candidate_failure_logs.sql:28），
+//	   PG 把 '' 强转 integer ⇒ 运行期 `22P02 invalid input syntax for type integer: ""`。
+//	   ⇒ 改为 `provider_id::text`（该列 NOT NULL，COALESCE 本就无意义）。
+//	② 三个数组列（text[]，OID 1009）用 `rows.Scan(&[]string)` 承装 ——
+//	   生产用 pgx v5 stdlib 驱动（cmd/gateway/main.go 的 stdlib.OpenDB），
+//	   该驱动对未特判的 OID 走 `default: var d string` 分支，把数组当**字符串**返回，
+//	   database/sql 再塞进 *[]string ⇒ `unsupported Scan, storing driver.Value
+//	   type string into type *[]string`。
+//	   ⇒ 改用 `pq.Array(&x)`（仓内既有依赖与用法，见 domains/hooks/goal/store.go）。
+//	   ⚠ 两个缺陷必须**一起**修：单修 ① 仍会在 ② 上失败。
 func (s *SQLSource) FetchWindow(ctx context.Context, since, until time.Time) ([]Event, time.Time, error) {
 	if s.db == nil {
 		return nil, since, fmt.Errorf("error source: database not configured")
@@ -188,14 +239,14 @@ func (s *SQLSource) FetchWindow(ctx context.Context, since, until time.Time) ([]
 			COUNT(*) AS cnt,
 			MIN(ts),
 			MAX(ts),
-			(array_agg(error_message ORDER BY ts DESC))[1:3] AS samples,
-			(array_agg(DISTINCT COALESCE(provider_id, '')))[1:3] AS providers,
+			(array_agg(COALESCE(error_message, '') ORDER BY ts DESC))[1:3] AS samples,
+			(array_agg(DISTINCT provider_id::text))[1:3] AS providers,
 			(array_agg(DISTINCT COALESCE(raw_model_name, '')))[1:3] AS models
 		FROM candidate_failure_logs_hot
 		WHERE ts > $1 AND ts <= $2
 		  AND error_kind IS NOT NULL AND error_kind <> ''
 		GROUP BY error_kind
-		ORDER BY cnt DESC
+		ORDER BY MAX(ts) ASC
 		LIMIT 20`, since, until)
 	if err != nil {
 		if isNotProvisioned(err) {
@@ -217,7 +268,7 @@ func (s *SQLSource) FetchWindow(ctx context.Context, since, until time.Time) ([]
 			providers []string
 			models    []string
 		)
-		if err := rows.Scan(&kind, &cnt, &firstTS, &lastTS, &samples, &providers, &models); err != nil {
+		if err := rows.Scan(&kind, &cnt, &firstTS, &lastTS, pq.Array(&samples), pq.Array(&providers), pq.Array(&models)); err != nil {
 			return nil, since, fmt.Errorf("scan failure window row failed: %w", err)
 		}
 		ev := Event{

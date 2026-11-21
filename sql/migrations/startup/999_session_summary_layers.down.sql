@@ -10,7 +10,8 @@
 
 \set ON_ERROR_STOP on
 BEGIN;
-
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
 -- 删除表
 DROP TABLE IF EXISTS public.session_summary_layers CASCADE;
 

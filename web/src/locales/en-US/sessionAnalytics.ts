@@ -136,6 +136,8 @@ export default {
     filteredUserRanking:
       'No session records match the current filters. Clearing the project filter shows everyone.',
     noResultUserDetail: 'This person has no session records in the selected window. Try another window.',
+    noResultUserModels: 'This person has no model usage records in the selected range; try a different range.',
+    noResultUserAPIKeys: 'This person has no API key usage records in the selected range; try a different range.',
     noResultUserProjects:
       'This person has no project records in the selected window. Try another window.',
     noResultProjectTasks: 'This project has no task records in the selected window. Try another window.',
@@ -146,6 +148,8 @@ export default {
     overviewFailed: 'The session overview could not be loaded. Please try again.',
     userRankingFailed: 'The people ranking could not be loaded. Please try again.',
     userDetailFailed: 'This person detail could not be loaded. Please try again.',
+    userModelsFailed: 'Failed to load model usage. Please try again.',
+    userAPIKeysFailed: 'Failed to load API key usage. Please try again.',
     userProjectsFailed: 'The project list could not be loaded. Please try again.',
     projectTasksFailed: 'The task list could not be loaded. Please try again.',
     agentRankingFailed: 'The agent ranking could not be loaded. Please try again.',

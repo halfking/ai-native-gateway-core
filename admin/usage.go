@@ -1596,10 +1596,22 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	if entries, err := queryTopN("models", "rl.outbound_model"); err == nil {
 		response.TopModels = entries
 	} else if IsMissingRelationError(err) {
-		response.Degraded = true
-		response.DegradedReason = "request_logs view not available"
+		// ★ 2026-11-22 审计轮修正（降级标记门 TestDegradePayloadsCarryMarker 红）：
+		//	canonical 视图缺失 ⇒ 载荷必须带 degraded 标记，否则调用方无法区分
+		//	「算不出来」与「真的没有数据」。
+		//	⚠ 形状必须是**结构体字面量**（"Degraded: true"）：仓内的降级标记门
+		//	（admin/degrade_marker_test.go 的 markerPatterns）只认构造期写法，
+		//	不认事后赋值 `response.Degraded = true` ⇒ 事后赋值会被门判「未标记」。
+		//	⇒ 这里直接写出降级载荷并返回（同一视图缺失时其余 5 个维度同样算不出来）。
+		writeJSON(w, http.StatusOK, TopRankingsResponse{
+			Degraded:       true,
+			DegradedReason: "request_logs view not available",
+		})
+		return
 	} else {
 		slog.Warn("usageTopRankings: top models query failed", "error", err)
+		response.Degraded = true
+		response.DegradedReason = "top models ranking unavailable"
 	}
 
 	// Top 客户端
@@ -1607,6 +1619,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		response.TopClients = entries
 	} else {
 		slog.Warn("usageTopRankings: top clients query failed", "error", err)
+		response.Degraded = true
+		response.DegradedReason = "top clients ranking unavailable"
 	}
 
 	// Top 用户
@@ -1614,6 +1628,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		response.TopUsers = entries
 	} else {
 		slog.Warn("usageTopRankings: top users query failed", "error", err)
+		response.Degraded = true
+		response.DegradedReason = "top users ranking unavailable"
 	}
 
 	// Top API Keys (需要关联 api_keys 表获取前缀)
@@ -1647,6 +1663,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		slog.Warn("usageTopRankings: top api keys query failed", "error", err)
+		response.Degraded = true
+		response.DegradedReason = "top api keys ranking unavailable"
 	}
 
 	// Top 项目（application）
@@ -1654,6 +1672,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		response.TopProjects = entries
 	} else {
 		slog.Warn("usageTopRankings: top projects query failed", "error", err)
+		response.Degraded = true
+		response.DegradedReason = "top projects ranking unavailable"
 	}
 
 	// Top 任务（task_type）
@@ -1661,6 +1681,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		response.TopTasks = entries
 	} else {
 		slog.Warn("usageTopRankings: top tasks query failed", "error", err)
+		response.Degraded = true
+		response.DegradedReason = "top tasks ranking unavailable"
 	}
 
 	writeJSON(w, http.StatusOK, response)

@@ -1891,6 +1891,24 @@ var tenantBudgetEnforcementMode996 []byte
 //go:embed embeddata/startup/996_tenant_budget_enforcement_mode.down.sql
 var tenantBudgetEnforcementMode996Down []byte
 
+//go:embed embeddata/startup/997_tasks_dimension_table.sql
+var tasksDimensionTable997 []byte
+
+//go:embed embeddata/startup/997_tasks_dimension_table.down.sql
+var tasksDimensionTable997Down []byte
+
+//go:embed embeddata/startup/998_session_summaries_task_association.sql
+var sessionSummariesTaskAssociation998 []byte
+
+//go:embed embeddata/startup/998_session_summaries_task_association.down.sql
+var sessionSummariesTaskAssociation998Down []byte
+
+//go:embed embeddata/startup/999_session_summary_layers.sql
+var sessionSummaryLayers999 []byte
+
+//go:embed embeddata/startup/999_session_summary_layers.down.sql
+var sessionSummaryLayers999Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2534,8 +2552,14 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/995_error_playbook.sql":      errorPlaybook995,
 	"startup/995_error_playbook.down.sql": errorPlaybook995Down,
 	// ★ 996（2026-11-21 青岛联通方案 W1-Q1）：tenant_budgets enforcement_mode。
-	"startup/996_tenant_budget_enforcement_mode.sql":      tenantBudgetEnforcementMode996,
-	"startup/996_tenant_budget_enforcement_mode.down.sql": tenantBudgetEnforcementMode996Down,
+	"startup/996_tenant_budget_enforcement_mode.sql":          tenantBudgetEnforcementMode996,
+	"startup/996_tenant_budget_enforcement_mode.down.sql":     tenantBudgetEnforcementMode996Down,
+	"startup/997_tasks_dimension_table.sql":                   tasksDimensionTable997,
+	"startup/997_tasks_dimension_table.down.sql":              tasksDimensionTable997Down,
+	"startup/998_session_summaries_task_association.sql":      sessionSummariesTaskAssociation998,
+	"startup/998_session_summaries_task_association.down.sql": sessionSummariesTaskAssociation998Down,
+	"startup/999_session_summary_layers.sql":                  sessionSummaryLayers999,
+	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

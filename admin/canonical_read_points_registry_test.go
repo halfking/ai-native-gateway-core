@@ -689,10 +689,18 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 	"admin/usage.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
-		Note:  "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶",
+		Note:  "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；④ Top5 排行（models/clients/users/projects/tasks）；⑤ Top API Keys 排行",
 		Points: []canonicalReadPoint{
 			{Kind: "read", Columns: []string{"api_key_id:expr", "failure_detail_code:base", "failure_stage:base", "provider_id:detail", "request_status:expr", "success:base", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；本读点读 api_key_id:expr,failure_detail_code:base,failure_stage:base,provider_id:detail,request_status:expr,success:base,ts:base ⇒ 引用了 734 details 腿的列 ⇒ 窄投影须带上 details LEFT JOIN"},
 			{Kind: "read", Columns: []string{"api_key_id:expr", "failure_detail_code:base", "failure_stage:base", "request_status:expr", "success:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "用量面：① 失败数；② 失败钻取；③ 5 分钟分桶；本读点读 api_key_id:expr,failure_detail_code:base,failure_stage:base,request_status:expr,success:base ⇒ 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
+			// ★ 2026-11-22 审计轮补登（12bb2da01 / 615bfee40 引入 Top5 排行时漏登 ⇒
+			//   登记簿条数与扫描实测对不上：登记 2 条 / 实测 4 条）。
+			//   ⚠ 维度列是**变量插值**（fmt.Sprintf 的 %s ⇒ outbound_model /
+			//     client_model / end_user_id / application_code / task_type），
+			//     扫描器只看得到字面量列 ⇒ 登记里必须**手工补记**这层语义：
+			//     其中 client_model 走 734 details 腿 ⇒ 分类取 needs-details-leg。
+			{Kind: "read", Columns: []string{"cost_usd:base", "total_tokens:expr"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "用量面：④ Top5 排行（models/clients/users/projects/tasks 共用一条 SQL，维度列由 Go 变量插值 ⇒ 扫描器看不见）；本读点读 cost_usd:base,total_tokens:expr ⇒ total_tokens 是视图里的 CASE 表达式列；★ 维度列可能取 client_model（734 details 腿）⇒ 窄投影须带上 details LEFT JOIN"},
+			{Kind: "read", Columns: []string{"api_key_id:expr", "cost_usd:base", "total_tokens:expr"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "用量面：⑤ Top API Keys 排行（LEFT JOIN api_keys 取 key_prefix/key_alias）；本读点读 api_key_id:expr,cost_usd:base,total_tokens:expr ⇒ api_key_id/total_tokens 是视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式"},
 		},
 	},
 	"admin/usage_credits.go": {
@@ -721,12 +729,22 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 			{Kind: "holder", Columns: nil, Holder: "request_logs_with_current_month", Class: classSwitchArm, Exempt: true, ExemptReason: exemptSwitchLayerContract, Note: "usageTrendSource() 三臂切换（api_key 过滤 ⇒ canonical 视图明细面；provider 过滤 ⇒ minute 汇总；默认 ⇒ dim 汇总）；另两处是按该返回值 dispatch 的 case 标签 ⇒ 同一处切换层；本读点读 request_logs_with_current_month ⇒ 源由切换层决定 ⇒ 调用点改不动"},
 		},
 	},
+	"domains/taskaggregator/task_aggregator.go": {
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsExpressionReplication,
+		Note:  "任务聚合器（会话总结 × 请求数/成本）：★ 2026-11-22 审计轮改判——原先读已退役的 v1 request_logs（860 改名 / 890 DROP ⇒ 运行期 42P01），已按迁移 5f64031cb 的「读面切会话族」形态切到 canonical 视图。",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"cost_display:base", "cost_usd:base", "gw_session_id:expr", "tenant_id:base"}, Holder: "", Class: classNeedsExpressionReplication, Exempt: false, ExemptReason: "", Note: "会话总结列表的请求数与成本子查询（ListSessionSummariesByTask）；本读点读 cost_display:base,cost_usd:base,gw_session_id:expr,tenant_id:base ⇒ gw_session_id 引用了视图里的 CASE 表达式列 ⇒ 窄投影须复刻那份表达式；★ 该文件经 canonical 视图读时无法表达分区下界（视图语义＝本月）"},
+		},
+	},
 	"admin/session_analytics/queries.go": {
-		Form:         formCommentOrStringOnly,
-		Class:        classNoRead,
-		Exempt:       true,
-		ExemptReason: exemptNoReadPoint,
-		Note:         "会话分析 Phase 2 包（2026-11-20 核定）：RegisterRoutes 全仓零调用方 ⇒ 未接线死代码；扫描器实测读点为空（SQL 经 fmt.Sprintf 组装且视图名只出现在字符串常量里）⇒ 提及但无实读",
+		Form:  formDirectLiteralSQL,
+		Class: classNeedsDetailsLeg,
+		Note:  "会话分析 Phase 2 包（2026-11-20 核定）：RegisterRoutes 全仓零调用方 ⇒ 未接线死代码。★ 2026-11-22 审计轮改判：12h 窗口内新增的 GetUserModelUsage / GetUserAPIKeyUsage 两条 SQL（1621daffe）已切到 canonical 会话族视图（原先读已退役的 v1 request_logs ⇒ 42P01），本文件由「提及但无实读」变为**实读 canonical 视图** ⇒ 形态登记随之改判、豁免撤销。",
+		Points: []canonicalReadPoint{
+			{Kind: "read", Columns: []string{"api_key_owner_user:detail", "cache_read_tokens:base", "client_model:detail", "cost_display:base", "cost_usd:base", "latency_ms:base", "outbound_model:base", "owner_user:detail", "success:base", "total_tokens:expr", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "用户模型用量聚合（GetUserModelUsage，2026-11-22 审计轮改判）：owner 键双源 COALESCE(owner_user, api_key_owner_user)；模型名 COALESCE(outbound_model, client_model, 'unknown')；client_model/owner_user/api_key_owner_user 引用 734 details 腿 ⇒ 窄投影须带 details LEFT JOIN；ts 只在 WHERE（窗口谓词），扫描器只登记 SELECT 列"},
+			{Kind: "read", Columns: []string{"api_key_id:expr", "api_key_owner_user:detail", "cost_display:base", "cost_usd:base", "gw_session_id:expr", "owner_user:detail", "total_tokens:expr", "ts:base"}, Holder: "", Class: classNeedsDetailsLeg, Exempt: false, ExemptReason: "", Note: "用户 API Key 用量聚合（GetUserAPIKeyUsage，2026-11-22 审计轮改判）：key 取 api_key_id；项目归属经 (key_id, gw_session_id) 去重后 JOIN session_dim 取 project_id（先去重避免请求行×会话行放大）；owner_user/api_key_owner_user 引用 734 details 腿 ⇒ 窄投影须带 details LEFT JOIN"},
+		},
 	},
 	"admin/user_usage_stats.go": {
 		Form:         formCommentOrStringOnly,
@@ -2562,6 +2580,7 @@ var canonicalTimeWindowedReadPoints = map[string]string{
 	"admin/provider_models.go":               "供应商模型面：① COUNT(*) 统计（不取列）；② 明细；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/route_incidents.go":               "路由事故面；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/session_analytics_breakdown.go":   "会话分析维度下钻：① 按模型；② 按供应商；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
+	"admin/session_analytics/queries.go":     "会话分析用户详情页：① 用户模型用量聚合（GetUserModelUsage）；② 用户 API Key 用量聚合（GetUserAPIKeyUsage）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/session_analytics_timeseries.go":  "会话分析时间序列：① 会话/请求/成本；② 成本拆分；③ 延迟分位；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/swim_lane_init.go":                "泳道初始化；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",
 	"admin/tenants.go":                       "租户统计（tenant_id / tokens / cost / credits_charged）；★ 该文件有 ts 范围谓词且【直接读 canonical 视图】⇒ ⇒ 经该视图读时【无法】表达分区下界 ⇒ ⇒ 受本缺陷影响",

@@ -31,7 +31,7 @@ func (l *SQLLogContext) Gather(ctx context.Context, errorType string) (string, e
 	var b strings.Builder
 
 	rows, err := l.db.QueryContext(ctx, `
-		SELECT COALESCE(provider_id, ''), COALESCE(raw_model_name, ''),
+		SELECT provider_id::text, COALESCE(raw_model_name, ''),
 		       COALESCE(extracted_upstream_status_code, upstream_status_code, 0),
 		       COUNT(*)
 		FROM candidate_failure_logs_hot
