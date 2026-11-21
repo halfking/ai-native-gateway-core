@@ -368,6 +368,17 @@ function navigateToRequests(dimension: string, value: string) {
   router.push({ path: '/admin/request-logs', query })
 }
 
+// 导航到请求日志页面，不带具体值过滤（查看全部该维度的请求）
+function navigateToRequestsAll(dimension: string) {
+  const query: Record<string, string> = {
+    start: effectiveRange.value.start,
+    end: effectiveRange.value.end,
+  }
+  
+  // 只带时间范围，不带具体维度值，让用户在请求日志页面查看完整列表
+  router.push({ path: '/admin/request-logs', query })
+}
+
 onMounted(() => {
   void loadFilterOptions()
   void loadSeries()
@@ -543,6 +554,9 @@ onBeforeUnmount(() => {
               <div class="ute__ranking-arrow">→</div>
             </div>
           </div>
+          <div v-if="!rankingsLoading && rankings.top_models.length > 0" class="ute__ranking-more">
+            <el-button size="small" text @click="navigateToRequestsAll('model')">查看全部模型</el-button>
+          </div>
         </div>
 
         <!-- Top 客户端 -->
@@ -564,6 +578,9 @@ onBeforeUnmount(() => {
               <div class="ute__ranking-arrow">→</div>
             </div>
           </div>
+          <div v-if="!rankingsLoading && rankings.top_clients.length > 0" class="ute__ranking-more">
+            <el-button size="small" text @click="navigateToRequestsAll('client')">查看全部客户端</el-button>
+          </div>
         </div>
 
         <!-- Top 用户 -->
@@ -583,6 +600,9 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+          <div v-if="!rankingsLoading && rankings.top_users.length > 0" class="ute__ranking-more">
+            <el-button size="small" text @click="navigateToRequestsAll('user')">查看全部用户</el-button>
+          </div>
           </div>
         </div>
 
@@ -603,6 +623,9 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+          <div v-if="!rankingsLoading && rankings.top_api_keys.length > 0" class="ute__ranking-more">
+            <el-button size="small" text @click="navigateToRequestsAll('apikey')">查看全部API Keys</el-button>
+          </div>
           </div>
         </div>
 
@@ -623,6 +646,9 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+          <div v-if="!rankingsLoading && rankings.top_projects.length > 0" class="ute__ranking-more">
+            <el-button size="small" text @click="navigateToRequestsAll('project')">查看全部项目</el-button>
+          </div>
           </div>
         </div>
 
@@ -643,6 +669,9 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+          <div v-if="!rankingsLoading && rankings.top_tasks.length > 0" class="ute__ranking-more">
+            <el-button size="small" text @click="navigateToRequestsAll('task')">查看全部任务</el-button>
+          </div>
           </div>
         </div>
       </div>
@@ -904,6 +933,12 @@ export default { name: 'UsageTrendExplorer' }
 .ute__ranking-stats {
   font-size: 11px;
   color: var(--text-muted);
+}
+.ute__ranking-more {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  text-align: center;
 }
 .ute__ranking-arrow {
   flex-shrink: 0;
