@@ -197,6 +197,15 @@ func universeWhere(includeProbes bool) string {
 // isUniverseUnavailableErr 判定「宇宙 join 的依赖缺失」（sessions/session_dim
 // 表不存在 42P01，或 session_analytics_is_probe 函数不存在 42883——未迁移
 // 环境）。这类失败走全量宇宙降级重试，不是 500。
+// qualifySs 把裸列名的窗口/租户谓词换成 ss. 限定形态——用于「FROM
+// session_summaries ss + 额外 JOIN」的分支（裸列与 dim 表的 first_request_at/
+// tenant_id 同名 ⇒ 42702 ambiguous）。子查询绑小形态（单表）保持裸列。
+func qualifySs(where string) string {
+	return strings.ReplaceAll(
+		strings.ReplaceAll(where, "tenant_id =", "ss.tenant_id ="),
+		"first_request_at", "ss.first_request_at")
+}
+
 func isUniverseUnavailableErr(err error) bool {
 	if err == nil {
 		return false

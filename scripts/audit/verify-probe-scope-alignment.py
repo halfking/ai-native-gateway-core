@@ -145,6 +145,12 @@ def main() -> None:
         sa = get(port, "/api/admin/session-analytics/overview?" + urllib.parse.urlencode({
             "start_date": day, "end_date": day,
         }), token)
+        # dashboardapi 家族用 writeSuccessJSON 的 {success,data,metadata} 信封；
+        # 兼容两种形状（裸 payload / 信封）。
+        if "data" in so and isinstance(so.get("data"), dict):
+            so = so["data"]
+        if "summary" not in sa and isinstance(sa.get("data"), dict):
+            sa = sa["data"]
         al = so.get("aligned") or {}
         sa_sum = sa.get("summary") or {}
         print(f"  probe_scope={so.get('probe_scope')} window_mode={so.get('window_mode')} "
@@ -165,6 +171,8 @@ def main() -> None:
         so_in = get(port, "/api/admin/dashboard/session-overview?" + urllib.parse.urlencode({
             "start_date": day, "end_date": day, "include_probes": 1,
         }), token)
+        if "data" in so_in and isinstance(so_in.get("data"), dict):
+            so_in = so_in["data"]
         print(f"  [INFO] 会话宇宙：excluded={so.get('total_sessions')} "
               f"included={so_in.get('total_sessions')} "
               f"probe_scope={so_in.get('probe_scope')}")

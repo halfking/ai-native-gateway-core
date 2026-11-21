@@ -738,7 +738,7 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 			}
 			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
 		} else if withDim {
-			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + innerWhere
+			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + qualifySs(innerWhere)
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
@@ -820,7 +820,7 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 			}
 			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
 		} else if withDim {
-			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + innerWhere
+			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + qualifySs(innerWhere)
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
