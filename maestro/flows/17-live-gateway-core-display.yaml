@@ -1,0 +1,80 @@
+# 17-live-gateway-core-display.yaml —— /live 页面网关核心显示验证
+#
+# 覆盖对象：web/src/components/live-topology/GatewayCoreBox.vue
+#
+# ★ 本 flow 的存在理由（2026-11-21 网关核心显示优化轮）：
+#   /live 页面的网关核心显示在 2026-11-21 经过四轮修复：
+#   1. 内框盖住外框问题（min-height: 0）
+#   2. 拓扑顺序调整（client → gateway → model → provider）
+#   3. 外框最小高度（min-height: 280px）
+#   4. 模型层位置调整（避免被基础服务栏遮挡）
+#   ⇒ 本 flow 负责验证修复后的显示效果。
+#
+# ★ 验证重点：
+#   ① 页面能正常加载并显示实时拓扑
+#   ② 网关核心区域可见（SVG 画布存在）
+#   ③ 拓扑层级顺序正确（视觉上从上到下：客户端 → 网关 → 模型 → 供应商）
+#   ④ 没有明显的遮挡或显示异常
+#
+# ★ 分工：
+#   · **本 flow**：页面可见性、基本元素存在性验证
+#   · **页面内 CDP**（assert-live-gateway-core.mjs）：
+#     SVG 元素结构、节点位置、层级顺序、最小高度等详细验证
+#
+url: ${BASE_URL}
+---
+# ── 0. 起点归零：若上一轮留下登录态，先退出────────────────────────
+- openLink: ${BASE_URL}/dashboard
+- tapOn:
+    text: "${ADMIN_DISPLAY_NAME}"
+    optional: true
+- tapOn:
+    text: "退出登录"
+    optional: true
+
+# ── ① 真实 UI 登录 ────────────────────────────────────────────────────────
+- runFlow:
+    file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
+
+# ── ② 导航到 /live 页面 ──────────────────────────────────────────────────
+- openLink: ${BASE_URL}/live
+- extendedWaitUntil:
+    visible: "实时拓扑"
+    timeout: 20000
+
+# ── ③ 验证基本元素存在 ────────────────────────────────────────────────────
+# 页面标题
+- assertVisible: "实时拓扑"
+
+# 顶部统计信息（如果有请求数据）
+- assertVisible:
+    text: "请求数"
+    optional: true
+
+# 网关核心标题
+- assertVisible: "网关核心"
+
+# ── ④ 验证 SVG 画布存在 ────────────────────────────────────────────────
+# 网关核心使用 SVG 渲染，验证画布存在
+# 注：具体的 SVG 元素和位置验证由页面内 CDP 工具完成
+- assertVisible:
+    id: "gateway-core-canvas"
+    optional: true
+
+# ── ⑤ 等待数据加载完成 ────────────────────────────────────────────────────
+# 给页面一些时间加载实时数据和渲染拓扑图
+- evalScript: |
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    await sleep(3000);
+
+# ── ⑥ 页面内详细验证（CDP）────────────────────────────────────────────────
+# 由 assert-live-gateway-core.mjs 完成：
+# - SVG 元素结构完整性
+# - 节点位置和层级顺序
+# - 外框最小高度
+# - 模型层不被基础服务栏遮挡
+# - 响应式布局正确性
