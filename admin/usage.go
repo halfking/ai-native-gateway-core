@@ -67,6 +67,9 @@ func (h *Handler) HandleUsageAdmin(w http.ResponseWriter, r *http.Request) {
 		h.usageTrendSeries(w, r)
 	case "trend-models":
 		h.usageTrendModels(w, r)
+	case "top-rankings":
+		// 2026-11-21：Top5 用量排行（模型/客户端/用户/API Key/项目/任务）
+		h.usageTopRankings(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "endpoint not found")
 	}
@@ -1507,4 +1510,158 @@ func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Ti
 	// [start, end) — end is exclusive so the picker-selected end date
 	// is fully included. 返回 UTC 瞬间（与 timestamptz 比较口径一致）。
 	return startDay.UTC(), endDay.AddDate(0, 0, 1).UTC(), nil
+}
+
+// usageTopRankings 返回多维度的 Top5 用量排行（模型/客户端/用户/API Key/项目/任务）
+func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 7)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), usageAggregateTimeout)
+	defer cancel()
+
+	tid := EffectiveTenantIDAll(r)
+
+	type RankingEntry struct {
+		Name         string  `json:"name"`
+		RequestCount int     `json:"request_count"`
+		TotalTokens  int     `json:"total_tokens"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+
+	type TopRankingsResponse struct {
+		TopModels      []RankingEntry `json:"top_models"`
+		TopClients     []RankingEntry `json:"top_clients"`
+		TopUsers       []RankingEntry `json:"top_users"`
+		TopAPIKeys     []RankingEntry `json:"top_api_keys"`
+		TopProjects    []RankingEntry `json:"top_projects"`
+		TopTasks       []RankingEntry `json:"top_tasks"`
+		Degraded       bool           `json:"degraded,omitempty"`
+		DegradedReason string         `json:"degraded_reason,omitempty"`
+	}
+
+	response := TopRankingsResponse{
+		TopModels:   make([]RankingEntry, 0),
+		TopClients:  make([]RankingEntry, 0),
+		TopUsers:    make([]RankingEntry, 0),
+		TopAPIKeys:  make([]RankingEntry, 0),
+		TopProjects: make([]RankingEntry, 0),
+		TopTasks:    make([]RankingEntry, 0),
+	}
+
+	// 通用查询函数
+	queryTopN := func(dimension string, column string) ([]RankingEntry, error) {
+		whereClause := "WHERE rl.ts >= $1 AND rl.ts < $2"
+		args := []any{startTime, endTime}
+		if tid != "" {
+			whereClause += " AND rl.tenant_id = $3"
+			args = append(args, tid)
+		}
+
+		query := fmt.Sprintf(`
+			SELECT
+				COALESCE(%s, 'unknown') AS name,
+				COUNT(*) AS request_count,
+				COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
+				COALESCE(SUM(rl.cost_usd), 0.0) AS total_cost_usd
+			FROM request_logs rl
+			%s
+			GROUP BY %s
+			ORDER BY total_cost_usd DESC, total_tokens DESC, request_count DESC
+			LIMIT 5
+		`, column, whereClause, column)
+
+		rows, err := h.db.Query(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		entries := make([]RankingEntry, 0)
+		for rows.Next() {
+			var entry RankingEntry
+			if err := rows.Scan(&entry.Name, &entry.RequestCount, &entry.TotalTokens, &entry.TotalCostUSD); err != nil {
+				warnRowSkip("usageTopRankings:"+dimension, err)
+				continue
+			}
+			entries = append(entries, entry)
+		}
+		return entries, rows.Err()
+	}
+
+	// Top 模型
+	if entries, err := queryTopN("models", "rl.outbound_model"); err == nil {
+		response.TopModels = entries
+	} else if IsMissingRelationError(err) {
+		response.Degraded = true
+		response.DegradedReason = "request_logs view not available"
+	} else {
+		slog.Warn("usageTopRankings: top models query failed", "error", err)
+	}
+
+	// Top 客户端
+	if entries, err := queryTopN("clients", "rl.client_model"); err == nil {
+		response.TopClients = entries
+	} else {
+		slog.Warn("usageTopRankings: top clients query failed", "error", err)
+	}
+
+	// Top 用户
+	if entries, err := queryTopN("users", "rl.end_user_id"); err == nil {
+		response.TopUsers = entries
+	} else {
+		slog.Warn("usageTopRankings: top users query failed", "error", err)
+	}
+
+	// Top API Keys (需要关联 api_keys 表获取前缀)
+	apiKeyQuery := `
+		SELECT
+			COALESCE(ak.key_prefix || '...' || COALESCE(ak.key_alias, ak.owner_user, ''), 'unknown') AS name,
+			COUNT(*) AS request_count,
+			COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
+			COALESCE(SUM(rl.cost_usd), 0.0) AS total_cost_usd
+		FROM request_logs rl
+		LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
+	`
+	whereClause := "WHERE rl.ts >= $1 AND rl.ts < $2 AND rl.api_key_id IS NOT NULL"
+	args := []any{startTime, endTime}
+	if tid != "" {
+		whereClause += " AND rl.tenant_id = $3"
+		args = append(args, tid)
+	}
+	apiKeyQuery += whereClause + `
+		GROUP BY ak.key_prefix, ak.key_alias, ak.owner_user
+		ORDER BY total_cost_usd DESC, total_tokens DESC, request_count DESC
+		LIMIT 5
+	`
+	if rows, err := h.db.Query(ctx, apiKeyQuery, args...); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var entry RankingEntry
+			if err := rows.Scan(&entry.Name, &entry.RequestCount, &entry.TotalTokens, &entry.TotalCostUSD); err == nil {
+				response.TopAPIKeys = append(response.TopAPIKeys, entry)
+			}
+		}
+	} else {
+		slog.Warn("usageTopRankings: top api keys query failed", "error", err)
+	}
+
+	// Top 项目（application）
+	if entries, err := queryTopN("projects", "rl.application_code"); err == nil {
+		response.TopProjects = entries
+	} else {
+		slog.Warn("usageTopRankings: top projects query failed", "error", err)
+	}
+
+	// Top 任务（task_type）
+	if entries, err := queryTopN("tasks", "rl.task_type"); err == nil {
+		response.TopTasks = entries
+	} else {
+		slog.Warn("usageTopRankings: top tasks query failed", "error", err)
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
