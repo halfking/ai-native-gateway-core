@@ -248,11 +248,42 @@ test(session-analytics): 扩展E2E测试覆盖用户详情页新增tab
 - 更新覆盖范围：从7个端点扩展到9个端点
 ```
 
+### 修复提交 (b5eb7d812)
+```
+fix(session-analytics): 修正UserAPIKeyUsageResponse的JSON字段名
+
+- 将Keys改为APIKeys以匹配前端期望的api_keys字段
+- 修正GetUserAPIKeyUsage返回时的字段名
+```
+
+## 问题与修复
+
+### 问题：E2E测试发现端点返回500错误
+
+**现象**：
+- CDP探针测试显示端点⑧⑨返回500状态码
+- 前端请求返回 `{"error":"failed to get user model usage"}`
+
+**根因**：
+- `UserAPIKeyUsageResponse` 结构体的JSON标签定义为 `Keys` 
+- 但实际返回时使用的字段名是 `APIKeys`（匹配前端期望的 `api_keys`）
+- 结构体定义与返回语句不一致导致序列化失败
+
+**修复**：
+1. 修改结构体定义：`Keys` → `APIKeys`，JSON标签为 `api_keys`
+2. 修改返回语句：`Keys: keys` → `APIKeys: keys`
+3. 重新编译、部署、测试
+
+**教训**：
+- JSON字段名必须在结构体定义和返回语句中保持一致
+- 首次部署前应该用curl直接测试API端点，而不是只依赖编译通过
+
 ## 遗留事项
 
-1. E2E测试结果待确认（测试正在运行）
-2. 生产环境部署待安排（目前仅211测试环境）
-3. 监控指标待观察（成功率/缓存率/响应时间在真实数据下的表现）
+1. ✅ 已修复：JSON字段名不一致问题
+2. 🔄 E2E测试重新运行中（修复后）
+3. 生产环境部署待安排（目前仅211测试环境）
+4. 监控指标待观察（成功率/缓存率/响应时间在真实数据下的表现）
 
 ## 参考文档
 
