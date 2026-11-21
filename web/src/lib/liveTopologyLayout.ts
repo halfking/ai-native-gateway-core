@@ -121,12 +121,14 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
  *  ★ 2026-11-21 拓扑顺序优化：交换 model 与 provider 位置，模型前置(0.8)，
  *    供应商节点后置(0.95)，更符合用户视角(先看用什么模型，再看通过哪个节点)。
  *  ★ 2026-11-21 模型层避免遮挡：调整模型层到0.72，给模型节点更多空间，
- *    避免被基础服务栏遮挡。provider保持0.88，确保整体布局平衡。 */
+ *    避免被基础服务栏遮挡。provider保持0.88，确保整体布局平衡。
+ *  ★ 2026-11-22 进一步优化模型层位置：下移到0.78，增加与网关核心的间距，
+ *    彻底避免遮挡问题。provider下移到0.92，保持合理间距。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
   client: 0.075,
   gateway: 0.47, // 大方块中心线(rowY.gateway = box 中心；无卡片，仅标签用)
-  model: 0.72,    // 模型层上移，避免被基础服务栏遮挡
-  provider: 0.88, // 供应商节点，保持合理间距
+  model: 0.78,    // 模型层进一步下移，确保与网关核心有足够间距
+  provider: 0.92, // 供应商节点相应下移，保持整体平衡
 }
 
 /**
