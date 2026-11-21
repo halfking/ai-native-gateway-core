@@ -51,6 +51,11 @@ SA_CDP_PORT="${SA_CDP_PORT:-9223}"
 SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x1400}"
 FLOW="${FLOW:-maestro/flows/16-session-analytics-system.yaml}"
 REPORT_ROOT="${ROOT}/maestro/reports"
+# ★ Chrome 日志写进 reports/ **内部** ⇒ 目录必须先建：新鲜 worktree/新 checkout 里
+#   maestro/reports/ 不存在 ⇒ nohup 重定向失败 ⇒ Chrome 压根没起 ⇒ 假报「Chrome 起不来」
+#   （2026-11-21 实测坑；run-local/run-mock-only 的 chrome.log 在 maestro/ 下兄弟路径、
+#     run-users-usage 落 /dev/null ⇒ 那三处无此缺口。）
+mkdir -p "${REPORT_ROOT}"
 
 # ── 1. JDK ────────────────────────────────────────────────────────────────
 find_jdk() {
