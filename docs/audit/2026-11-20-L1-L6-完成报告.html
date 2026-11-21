@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>L1-L6 审计与修正完成报告 - 2026-11-20</title>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; 
+            line-height: 1.6; 
+            max-width: 1200px; 
+            margin: 40px auto; 
+            padding: 20px; 
+            background: #f5f5f5;
+        }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; border-left: 4px solid #3498db; padding-left: 10px; }
+        h3 { color: #555; margin-top: 20px; }
+        .summary-box { 
+            background: #e8f4f8; 
+            border-left: 4px solid #3498db; 
+            padding: 15px; 
+            margin: 20px 0; 
+            border-radius: 4px;
+        }
+        .success { color: #27ae60; font-weight: bold; }
+        .warning { color: #f39c12; font-weight: bold; }
+        .pending { color: #3498db; font-weight: bold; }
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin: 20px 0; 
+            background: white;
+        }
+        th, td { 
+            padding: 12px; 
+            text-align: left; 
+            border: 1px solid #ddd; 
+        }
+        th { 
+            background: #3498db; 
+            color: white; 
+            font-weight: 600;
+        }
+        tr:nth-child(even) { background: #f9f9f9; }
+        code { 
+            background: #f4f4f4; 
+            padding: 2px 6px; 
+            border-radius: 3px; 
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .code-block { 
+            background: #2c3e50; 
+            color: #ecf0f1; 
+            padding: 15px; 
+            border-radius: 4px; 
+            overflow-x: auto; 
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .metric { 
+            display: inline-block; 
+            background: #3498db; 
+            color: white; 
+            padding: 5px 12px; 
+            border-radius: 20px; 
+            margin: 5px;
+            font-size: 0.9em;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        .status-done { background: #d4edda; color: #155724; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-skip { background: #e2e3e5; color: #383d41; }
+        ul { padding-left: 25px; }
+        li { margin: 8px 0; }
+        .audit-result {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 节点探测能力轮 L1-L6 审计与修正完成报告</h1>
+        
+        <div class="summary-box">
+            <h3>执行摘要</h3>
+            <p><strong>执行日期</strong>：2026-11-20</p>
+            <p><strong>执行范围</strong>：L1（鉴权族凭据面落账）、L2（cycleAll 跳过诊断）、L3（通用式）、L5（审计根因）、L6（注释修正）</p>
+            <p><strong>交付成果</strong>：
+                <span class="metric">3 个提交</span>
+                <span class="metric">8 个文件</span>
+                <span class="metric">594 行代码/文档</span>
+                <span class="metric">批判式审计通过</span>
+            </p>
+            <p><strong>部署状态</strong>：<span class="pending">🔄 211 部署进行中</span></p>
+        </div>
+
+        <h2>一、完成任务清单</h2>
+        
+        <table>
+            <tr>
+                <th style="width:8%">项目</th>
+                <th style="width:10%">优先级</th>
+                <th style="width:35%">任务</th>
+                <th style="width:15%">状态</th>
+                <th style="width:32%">交付</th>
+            </tr>
+            <tr>
+                <td><strong>L1</strong></td>
+                <td><span class="warning">P2</span></td>
+                <td>鉴权族（403 无配额体）凭据面落账</td>
+                <td><span class="status-badge status-done">✅ 已完成</span></td>
+                <td>5 文件 +287 行<br>commit <code>8c6b5677f</code></td>
+            </tr>
+            <tr>
+                <td><strong>L2</strong></td>
+                <td><span class="warning">P2</span></td>
+                <td>凭据 56 cycleAll 跳过原因排查</td>
+                <td><span class="status-badge status-done">✅ 已完成</span></td>
+                <td>诊断文档 + SQL（2 文件 +306 行）<br>commit <code>85c8a5391</code></td>
+            </tr>
+            <tr>
+                <td><strong>L3</strong></td>
+                <td>P3</td>
+                <td>通用式沉淀：两个面各算时间必有一假；同一裁决须同一把分类尺</td>
+                <td><span class="status-badge status-skip">📋 方法论</span></td>
+                <td>已在主档完成</td>
+            </tr>
+            <tr>
+                <td><strong>L5</strong></td>
+                <td>P3</td>
+                <td>复制业务面 SQL 词表时守卫未整臂复制（审计轮根因）</td>
+                <td><span class="status-badge status-skip">📋 已修</span></td>
+                <td>批判式审计轮已收口<br>（严重度棘轮守卫已补齐）</td>
+            </tr>
+            <tr>
+                <td><strong>L6</strong></td>
+                <td><span class="warning">P2</span></td>
+                <td>balanceQuotaProbe 字段有 setter、零 HTTP 消费方（注释修正）</td>
+                <td><span class="status-badge status-done">✅ 已完成</span></td>
+                <td>1 文件注释修正<br>commit <code>c57ed0950</code></td>
+            </tr>
+        </table>
+
+        <h2>二、L1 核心修正：鉴权族凭据面落账</h2>
+        
+        <h3>2.1 问题根因</h3>
+        <div class="audit-result">
+            <strong>症状</strong>：纯鉴权 403（无配额体）时，探针只写绑定面，不写凭据面<br>
+            <strong>结果</strong>：凭据面显示 <code>availability_state='ready'</code> / <code>quota_state='ok'</code>（"节点正常"）<br>
+            <strong>实际</strong>：绑定面 <code>available=FALSE</code> / <code>probe_http_403</code>（模型不可路由）<br>
+            <strong>问题</strong>：<span class="warning">状态不匹配 —— 凭据面与绑定面给出矛盾的答案</span>
+        </div>
+        
+        <h3>2.2 修正方案</h3>
+        <ul>
+            <li><strong>新增鉴权族识别</strong>：<code>isAuthProbeKind()</code> 识别 <code>KindAuth</code> / <code>KindAuthRevoked</code></li>
+            <li><strong>新增凭据面 SQL</strong>：<code>authCredentialSQL()</code>
+                <ul>
+                    <li><code>availability_state='auth_failed'</code>（与业务面同词表）</li>
+                    <li>15 分钟恢复窗口（<code>now() + interval '15 minutes'</code>）</li>
+                    <li>守卫：<code>lifecycle_status='active'</code> + <code>manual_disabled=FALSE</code> + <code>balance_floor</code> 豁免 + <code>NOT IN ('suspended')</code> 严重度棘轮</li>
+                </ul>
+            </li>
+            <li><strong>新增写入函数</strong>：<code>updateCredentialAuthSurface()</code>（通过 scheduleExec 写入，测试可注入 fake exec）</li>
+            <li><strong>探针路径接入</strong>：两条失败路径都调用（需 <code>attempt >= 2</code> 两次连续失败）
+                <ul>
+                    <li>Legacy tick：<code>node_probe.go:2914</code></li>
+                    <li>统一队列：<code>probe_service.go:938</code></li>
+                    <li>同步救援 ProbeSync：<strong>不写凭据面</strong>（无连败上下文，符合设计）</li>
+                </ul>
+            </li>
+            <li><strong>测试覆盖</strong>：198 行 / 4 个测试函数</li>
+        </ul>
+
+        <h3>2.3 改动文件与关键行</h3>
+        <table>
+            <tr>
+                <th style="width:40%">文件</th>
+                <th style="width:15%">改动</th>
+                <th style="width:45%">关键逻辑</th>
+            </tr>
+            <tr>
+                <td><code>bg/probe_recovery_policy.go</code></td>
+                <td>+14 行</td>
+                <td><code>isAuthProbeKind(kind)</code> 识别函数</td>
+            </tr>
+            <tr>
+                <td><code>bg/node_probe_write_through.go</code></td>
+                <td>+63 行</td>
+                <td><code>authCredentialSQL(kind)</code><br><code>updateCredentialAuthSurface(...)</code></td>
+            </tr>
+            <tr>
+                <td><code>bg/node_probe.go</code></td>
+                <td>+6 行</td>
+                <td>行 2914：legacy tick 路径写入</td>
+            </tr>
+            <tr>
+                <td><code>bg/probe_service.go</code></td>
+                <td>+6 行</td>
+                <td>行 938：统一队列路径写入</td>
+            </tr>
+            <tr>
+                <td><code>bg/node_probe_auth_verdict_test.go</code></td>
+                <td>新增 198 行</td>
+                <td>4 个测试：识别/SQL 词表/写入/路径覆盖</td>
+            </tr>
+        </table>
+
+        <h3>2.4 批判式审计结果</h3>
+        <div class="code-block">
+审计项 A1：鉴权族 SQL 与业务面对表 ✅
+  对比：业务面 vs 探针侧
+    - availability_state='auth_failed' ✅ 一致
+    - 15 分钟恢复窗口 ✅ 一致（业务面 Go 算、探针侧 SQL 算）
+    - NOT IN ('suspended') 守卫 ✅ 一致
+    - manual_disabled/balance_floor 守卫：探针侧多两个（防御性编程，更严格）✅
+  
+  评估：核心词表一致，探针侧守卫更严格但合理
+
+审计项 A2：两条探针路径覆盖 ✅
+  ✅ legacy tick (node_probe.go:2914)
+  ✅ 统一队列 (probe_service.go:938)
+  ✅ ProbeSync 正确排除（无连败上下文，不应写凭据面）
+
+审计项 A3：测试覆盖 ✅
+  ✅ 鉴权族识别（KindAuth / KindAuthRevoked）
+  ✅ SQL 词表验证（6 个断言：auth_failed / 15min / reason / 守卫 × 3）
+  ✅ 写入验证（鉴权族 vs 非鉴权族）
+  ✅ 路径覆盖（lint 检查两个文件都调用）
+
+审计项 A4：与配额族一致性 ✅
+  | 特性 | 配额族 | 鉴权族 | 一致性 |
+  |------|--------|--------|--------|
+  | 两次连续失败才定罪 | ✅ | ✅ | ✅ |
+  | 守卫（lifecycle/manual/balance_floor） | ✅ | ✅ | ✅ |
+  | 严重度棘轮 | ✅ | N/A（单一状态）| ✅ |
+  | ProbeSync 不写凭据面 | ✅ | ✅ | ✅ |
+
+最终裁决：<span class="success">✅ L1 实现质量合格，无需修正，可直接部署</span>
+        </div>
+
+        <h2>三、测试验证</h2>
+        
+        <h3>3.1 单元测试</h3>
+        <div class="code-block">
+$ go test ./bg -run "Auth|Quota"
+ok  	github.com/kaixuan/llm-gateway-go/bg	0.091s
+
+$ go test -v ./bg -run TestAuthCredentialSQLVocabulary
+=== RUN   TestAuthCredentialSQLVocabulary
+=== RUN   TestAuthCredentialSQLVocabulary/KindAuth_⇒_auth_failed_+_15min
+=== RUN   TestAuthCredentialSQLVocabulary/KindAuthRevoked_⇒_同款_SQL
+=== RUN   TestAuthCredentialSQLVocabulary/非鉴权族_⇒_空_SQL
+--- PASS: TestAuthCredentialSQLVocabulary (0.00s)
+    --- PASS: TestAuthCredentialSQLVocabulary/KindAuth_⇒_auth_failed_+_15min (0.00s)
+    --- PASS: TestAuthCredentialSQLVocabulary/KindAuthRevoked_⇒_同款_SQL (0.00s)
+    --- PASS: TestAuthCredentialSQLVocabulary/非鉴权族_⇒_空_SQL (0.00s)
+PASS
+
+$ go test -v ./bg -run TestProbePathsWriteCredentialAuthSurface
+=== RUN   TestProbePathsWriteCredentialAuthSurface
+--- PASS: TestProbePathsWriteCredentialAuthSurface (0.00s)
+PASS
+        </div>
+
+        <h3>3.2 编译验证</h3>
+        <div class="code-block">
+$ go build ./bg/... ./admin/... ./cmd/gateway/
+exit code: 0 ✅
+        </div>
+
+        <h3>3.3 部署测试门</h3>
+        <div class="code-block">
+[test-gate] 要跑的包：./admin/ ./domains/sanitizerules/ ./domains/hooks/outputcompliance/ ./security/sanitize/
+ok  	github.com/kaixuan/llm-gateway-go/admin	118.840s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sanitizerules	1.789s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance	0.127s
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	18.057s
+
+[test-gate] ★ 闸门通过：全绿 ★
+        </div>
+
+        <h2>四、部署状态</h2>
+        
+        <table>
+            <tr>
+                <th>环境</th>
+                <th>地址</th>
+                <th>状态</th>
+                <th>备注</th>
+            </tr>
+            <tr>
+                <td><strong>211</strong></td>
+                <td>211.itestu.cn:8781</td>
+                <td><span class="pending">🔄 部署进行中</span></td>
+                <td>测试门通过，前端构建中，蓝绿切换</td>
+            </tr>
+            <tr>
+                <td><strong>245</strong></td>
+                <td>245</td>
+                <td><span class="status-badge status-pending">⏳ 待部署</span></td>
+                <td>211 成功后执行</td>
+            </tr>
+            <tr>
+                <td><strong>154</strong></td>
+                <td>154</td>
+                <td><span class="status-badge status-pending">⏳ 待部署</span></td>
+                <td>211 成功后执行</td>
+            </tr>
+        </table>
+
+        <p><em>部署完成后需要验证：</em></p>
+        <ol>
+            <li>版本身份：<code>curl -s http://211.itestu.cn:8781/version | jq '.git_sha'</code></li>
+            <li>入口可达性：<code>curl -s http://211.itestu.cn:8781/</code></li>
+            <li>功能验证（需 psql）：查询 <code>availability_state='auth_failed'</code> 的凭据</li>
+        </ol>
+
+        <h2>五、L2 诊断准备</h2>
+        
+        <h3>5.1 问题陈述</h3>
+        <p>凭据级探针 v2 的 cycleAll 为何跳过凭据 56（last_probe_at 停在 2026-11-13，7 天没跑过）？</p>
+        
+        <h3>5.2 交付内容</h3>
+        <ul>
+            <li><strong>诊断文档</strong>（6KB）：<code>docs/audit/2026-11-20-L2-凭据56-cycleAll跳过诊断.md</code>
+                <ul>
+                    <li>cycleAll 完整过滤条件（9 个 SQL WHERE + 1 个行内跳过）</li>
+                    <li>skipProbeOnRecentTrafficSuccess 两分支逻辑</li>
+                    <li>诊断步骤与预期结果解读</li>
+                    <li>已知线索与推测方向（3 条）</li>
+                </ul>
+            </li>
+            <li><strong>诊断 SQL</strong>（5.8KB）：<code>docs/audit/2026-11-20-L2-诊断SQL.sql</code>
+                <ul>
+                    <li>凭据 56 完整状态快照</li>
+                    <li>9 个 WHERE 条件逐条验证</li>
+                    <li>skipProbeOnRecentTrafficSuccess 判定</li>
+                    <li>组合条件失败原因定位</li>
+                    <li>绑定面状态（辅助信息）</li>
+                </ul>
+            </li>
+        </ul>
+
+        <h3>5.3 推测方向</h3>
+        <ol>
+            <li><code>availability_recover_at</code> 是否有未来时间（条件 ⑧）</li>
+            <li><code>default_probe_model</code> 是否为空（条件 ⑨）</li>
+            <li><code>skipProbeOnRecentTrafficSuccess</code> 分支 A（需真实成功流量，但绑定面全红）</li>
+        </ol>
+
+        <h3>5.4 后续动作</h3>
+        <p>在 211 生产环境运行诊断 SQL：</p>
+        <div class="code-block">
+psql -h 211 -f docs/audit/2026-11-20-L2-诊断SQL.sql > /tmp/cred56-diagnosis.txt
+        </div>
+
+        <h2>六、遗留风险与后续动作</h2>
+        
+        <h3>6.1 遗留项目（非缺陷）</h3>
+        <table>
+            <tr>
+                <th style="width:15%">项目</th>
+                <th style="width:12%">优先级</th>
+                <th style="width:43%">说明</th>
+                <th style="width:30%">处置</th>
+            </tr>
+            <tr>
+                <td>L2 后续</td>
+                <td><span class="warning">P2</span></td>
+                <td>凭据 56 cycleAll 跳过原因需在生产环境运行诊断 SQL 定位</td>
+                <td>诊断文档与 SQL 已准备完成</td>
+            </tr>
+            <tr>
+                <td>E1</td>
+                <td>P4</td>
+                <td>鉴权族严重度棘轮（若未来新增 auth_revoked 等多状态时可参考配额族）</td>
+                <td>当前无需求，可选优化</td>
+            </tr>
+            <tr>
+                <td>E2</td>
+                <td>P5</td>
+                <td>时间计算位置不统一（配额族 Go 算 vs 鉴权族 SQL 算）</td>
+                <td>纯风格问题，结果一致无影响</td>
+            </tr>
+        </table>
+
+        <h3>6.2 观察项</h3>
+        <ul>
+            <li><strong>原报障对</strong>（凭据 56 / claude-sonnet-5-5）：上游裁决在修复后翻成 503「无可用账号」，非回归</li>
+            <li><strong>配额族路径活体验证</strong>：由凭据 75 活体证明（主档已记录）</li>
+            <li><strong>211 现役树</strong>：经 git 对象验证含全部本轮提交</li>
+        </ul>
+
+        <h3>6.3 下一步行动清单</h3>
+        <ol>
+            <li><span class="pending">🔄 进行中</span> <strong>211 部署完成</strong>：等待前端构建 + Docker 构建 + 蓝绿切换</li>
+            <li><span class="status-badge status-pending">⏳ 待执行</span> <strong>211 部署验证</strong>：版本身份、入口可达性、基础功能</li>
+            <li><span class="status-badge status-pending">⏳ 待执行</span> <strong>245/154 部署</strong>：211 成功后执行</li>
+            <li><span class="status-badge status-pending">⏳ 待执行</span> <strong>L2 生产诊断</strong>：在 211 上运行诊断 SQL，定位凭据 56 跳过原因</li>
+            <li><span class="status-badge status-pending">⏳ 待执行</span> <strong>24 小时观察窗口</strong>：监控鉴权族凭据的 auth_failed 写入情况</li>
+        </ol>
+
+        <h2>七、提交记录</h2>
+        
+        <table>
+            <tr>
+                <th style="width:15%">Commit</th>
+                <th style="width:45%">说明</th>
+                <th style="width:40%">文件与行数</th>
+            </tr>
+            <tr>
+                <td><code>8c6b5677f</code></td>
+                <td>L1 收口：鉴权族（403 无配额体）凭据面落账</td>
+                <td>5 个文件，+287 行<br>批判式审计通过</td>
+            </tr>
+            <tr>
+                <td><code>c57ed0950</code></td>
+                <td>L6 收口：修正 balanceQuotaProbe 字段注释，说明端点从未实现</td>
+                <td>1 个文件，注释修正（2 处）</td>
+            </tr>
+            <tr>
+                <td><code>85c8a5391</code></td>
+                <td>L2 排查准备：凭据 56 cycleAll 跳过诊断文档与 SQL</td>
+                <td>2 个文件，+306 行<br>诊断文档 + SQL 脚本</td>
+            </tr>
+        </table>
+
+        <h2>八、关键文档位置</h2>
+        
+        <h3>8.1 源码</h3>
+        <ul>
+            <li><code>bg/probe_recovery_policy.go</code>（+14 行）</li>
+            <li><code>bg/node_probe_write_through.go</code>（+63 行）</li>
+            <li><code>bg/node_probe.go</code>（+6 行）</li>
+            <li><code>bg/probe_service.go</code>（+6 行）</li>
+            <li><code>bg/node_probe_auth_verdict_test.go</code>（新增 198 行）</li>
+            <li><code>admin/handler.go</code>（注释修正）</li>
+        </ul>
+
+        <h3>8.2 文档</h3>
+        <ul>
+            <li><code>docs/audit/2026-11-20-L2-凭据56-cycleAll跳过诊断.md</code>（诊断指南）</li>
+            <li><code>docs/audit/2026-11-20-L2-诊断SQL.sql</code>（诊断脚本）</li>
+            <li><code>docs/audit/2026-11-20-节点探测配额族落账与路由状态同源-主档.md</code>（上一轮主档）</li>
+        </ul>
+
+        <h3>8.3 临时文件</h3>
+        <ul>
+            <li><code>/tmp/audit_summary.md</code>（批判式审计报告）</li>
+            <li><code>/tmp/verify-211-deployment.sh</code>（部署验证脚本）</li>
+            <li><code>/tmp/handoff_next.md</code>（交接文档）</li>
+            <li><code>/tmp/deploy-211-*.log</code>（部署日志）</li>
+        </ul>
+
+        <hr style="margin: 40px 0;">
+        
+        <div style="background: #f8f9fa; padding: 20px; border-radius: 4px; margin-top: 30px;">
+            <h3 style="margin-top: 0;">总结</h3>
+            <p><strong>代码实现</strong>：<span class="success">✅ 完成</span>（3 提交 / 8 文件 / 594 行）</p>
+            <p><strong>批判式审计</strong>：<span class="success">✅ 通过</span>（4 项审计全部通过）</p>
+            <p><strong>单元测试</strong>：<span class="success">✅ 全绿</span>（4 个测试函数 / 198 行）</p>
+            <p><strong>测试门</strong>：<span class="success">✅ 通过</span>（4 个包全绿）</p>
+            <p><strong>部署</strong>：<span class="pending">🔄 进行中</span>（211 测试门通过，前端构建中）</p>
+        </div>
+        
+        <p style="text-align: center; color: #7f8c8d; font-size: 0.9em; margin-top: 30px;">
+            报告生成时间：2026-11-20 14:05<br>
+            执行人：MiniMax Code (Kiro) | 审计方法：批判式审计 | 遵循原则：格赖斯合作原则（数量、质量、关联、方式）
+        </p>
+    </div>
+</body>
+</html>
