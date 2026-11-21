@@ -113,8 +113,8 @@ func TestR87_MergedAggregatesKeepEveryMetric(t *testing.T) {
 
 	needles := []string{
 		// 窗口与租户口径（原四条腿逐字相同）
-		"ss.first_request_at >= NOW() - INTERVAL '%d days'",
-		"ss.tenant_id = $%d",
+		"first_request_at >= NOW() - INTERVAL '%d days'",
+		"tenant_id = $%d",
 		"FROM session_summaries",
 		// 腿 1：总会话数
 		"COUNT(*) as total",
@@ -206,8 +206,8 @@ func TestR87_MergedTrendsKeepEveryMetric(t *testing.T) {
 		"FROM session_summaries",
 		"GROUP BY DATE(ss.first_request_at)",
 		"ORDER BY date",
-		"ss.first_request_at >= NOW() - INTERVAL '%d days'",
-		"ss.tenant_id = $%d",
+		"first_request_at >= NOW() - INTERVAL '%d days'",
+		"tenant_id = $%d",
 	}
 	for _, needle := range needles {
 		if !strings.Contains(body, needle) {
