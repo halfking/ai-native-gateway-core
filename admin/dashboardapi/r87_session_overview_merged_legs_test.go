@@ -249,9 +249,12 @@ func TestR87_OverviewRunsSevenConcurrentLegs(t *testing.T) {
 	src := r87ReadSource(t)
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) HandleSessionOverview(")
 	got := strings.Count(body, "g.Go(func() error {")
-	// 2026-11-21 对齐轮：新增对齐指标行腿（soft-fail，读物化视图）⇒ 8 段。
-	if got != 8 {
-		t.Errorf("HandleSessionOverview 的并行段数 = %d，期望 8（R87 六段 + turns 对拍 + aligned 对齐行）", got)
+	// 2026-11-21 对齐轮：新增对齐指标行腿（soft-fail，读物化视图）；五条
+	// session_summaries 腿合并为**一个串行 goroutine**（/dev/shm 64M 下的
+	// 并发哈希内存闸，见 session_overview.go 串行化注释）⇒ 4 段：
+	// [五腿串行块] + [aligned] + [turns] + …实际 g.Go 计数 = 3。
+	if got != 3 {
+		t.Errorf("HandleSessionOverview 的并行段数 = %d，期望 3（五腿串行块 + aligned 对齐行 + turns 对拍）—— /dev/shm 闸下的编排被拆回并发了", got)
 	}
 	if !strings.Contains(body, "queryBusinessTurnsCount") {
 		t.Error("缺少 turns 对拍腿 queryBusinessTurnsCount")
