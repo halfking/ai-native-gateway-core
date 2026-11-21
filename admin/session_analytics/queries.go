@@ -1593,3 +1593,191 @@ func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 		Models: models,
 	}, rows.Err()
 }
+
+// ============= 用户模型用量 (2026-11-22) =============
+
+// UserModelUsage 用户模型使用情况
+type UserModelUsage struct {
+	Model            string  `json:"model"`
+	RequestCount     int64   `json:"request_count"`
+	TotalTokens      int64   `json:"total_tokens"`
+	TotalCost        float64 `json:"total_cost"`
+	InternalCost     float64 `json:"internal_cost"`
+	ExternalCost     float64 `json:"external_cost"`
+	SuccessRate      float64 `json:"success_rate"`
+	CacheHitRate     float64 `json:"cache_hit_rate"`
+	AvgResponseTimeMs float64 `json:"avg_response_time_ms"`
+	LastUsedAt       string  `json:"last_used_at"`
+}
+
+// UserModelUsageResponse 用户模型使用列表响应
+type UserModelUsageResponse struct {
+	Models []UserModelUsage `json:"models"`
+}
+
+// GetUserModelUsage 获取用户的模型使用情况
+func GetUserModelUsage(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserModelUsageResponse, error) {
+	query := `
+		SELECT 
+			m.model,
+			COUNT(DISTINCT r.id) as request_count,
+			COALESCE(SUM(r.prompt_tokens + r.completion_tokens), 0) as total_tokens,
+			COALESCE(SUM(r.internal_cost), 0) + COALESCE(SUM(r.external_cost), 0) as total_cost,
+			COALESCE(SUM(r.internal_cost), 0) as internal_cost,
+			COALESCE(SUM(r.external_cost), 0) as external_cost,
+			COALESCE(AVG(CASE WHEN r.status = 'success' THEN 1.0 ELSE 0.0 END), 0) as success_rate,
+			COALESCE(AVG(CASE WHEN r.cache_read_tokens > 0 THEN 1.0 ELSE 0.0 END), 0) as cache_hit_rate,
+			COALESCE(AVG(r.response_time), 0) as avg_response_time_ms,
+			MAX(r.created_at) as last_used_at
+		FROM request_logs r
+		JOIN models m ON r.model_id = m.id
+		WHERE r.owner = $1
+			AND DATE(r.created_at) >= $2
+			AND DATE(r.created_at) <= $3
+		GROUP BY m.model
+		ORDER BY request_count DESC
+	`
+
+	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var models []UserModelUsage
+	for rows.Next() {
+		var m UserModelUsage
+		var lastUsedAt sql.NullTime
+
+		if err := rows.Scan(
+			&m.Model,
+			&m.RequestCount,
+			&m.TotalTokens,
+			&m.TotalCost,
+			&m.InternalCost,
+			&m.ExternalCost,
+			&m.SuccessRate,
+			&m.CacheHitRate,
+			&m.AvgResponseTimeMs,
+			&lastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		if lastUsedAt.Valid {
+			m.LastUsedAt = lastUsedAt.Time.Format(time.RFC3339)
+		}
+
+		models = append(models, m)
+	}
+
+	return &UserModelUsageResponse{
+		Models: models,
+	}, rows.Err()
+}
+
+// ============= 用户API Key用量 (2026-11-22) =============
+
+// UserAPIKeyUsage 用户API Key使用情况
+type UserAPIKeyUsage struct {
+	KeyID          int64   `json:"key_id"`
+	KeyAlias       string  `json:"key_alias"`
+	RequestCount   int64   `json:"request_count"`
+	TotalTokens    int64   `json:"total_tokens"`
+	TotalCost      float64 `json:"total_cost"`
+	InternalCost   float64 `json:"internal_cost"`
+	ExternalCost   float64 `json:"external_cost"`
+	LastUsedAt     string  `json:"last_used_at"`
+	ProjectCount   int64   `json:"project_count"`
+	TopProject     string  `json:"top_project"`
+}
+
+// UserAPIKeyUsageResponse 用户API Key使用列表响应
+type UserAPIKeyUsageResponse struct {
+	Keys []UserAPIKeyUsage `json:"keys"`
+}
+
+// GetUserAPIKeyUsage 获取用户的API Key使用情况
+func GetUserAPIKeyUsage(ctx context.Context, db *sql.DB, owner, startDate, endDate string) (*UserAPIKeyUsageResponse, error) {
+	query := `
+		WITH key_stats AS (
+			SELECT 
+				r.key_id,
+				COUNT(DISTINCT r.id) as request_count,
+				COALESCE(SUM(r.prompt_tokens + r.completion_tokens), 0) as total_tokens,
+				COALESCE(SUM(r.internal_cost), 0) + COALESCE(SUM(r.external_cost), 0) as total_cost,
+				COALESCE(SUM(r.internal_cost), 0) as internal_cost,
+				COALESCE(SUM(r.external_cost), 0) as external_cost,
+				MAX(r.created_at) as last_used_at,
+				COUNT(DISTINCT r.project) as project_count,
+				(
+					SELECT project 
+					FROM request_logs r2 
+					WHERE r2.key_id = r.key_id 
+						AND r2.owner = r.owner
+						AND DATE(r2.created_at) >= $2
+						AND DATE(r2.created_at) <= $3
+					GROUP BY project 
+					ORDER BY COUNT(*) DESC 
+					LIMIT 1
+				) as top_project
+			FROM request_logs r
+			WHERE r.owner = $1
+				AND DATE(r.created_at) >= $2
+				AND DATE(r.created_at) <= $3
+				AND r.key_id IS NOT NULL
+			GROUP BY r.key_id
+		)
+		SELECT 
+			ks.key_id,
+			COALESCE(k.key_alias, '') as key_alias,
+			ks.request_count,
+			ks.total_tokens,
+			ks.total_cost,
+			ks.internal_cost,
+			ks.external_cost,
+			ks.last_used_at,
+			ks.project_count,
+			COALESCE(ks.top_project, '') as top_project
+		FROM key_stats ks
+		LEFT JOIN keys k ON ks.key_id = k.id
+		ORDER BY ks.request_count DESC
+	`
+
+	rows, err := db.QueryContext(ctx, query, owner, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []UserAPIKeyUsage
+	for rows.Next() {
+		var k UserAPIKeyUsage
+		var lastUsedAt sql.NullTime
+
+		if err := rows.Scan(
+			&k.KeyID,
+			&k.KeyAlias,
+			&k.RequestCount,
+			&k.TotalTokens,
+			&k.TotalCost,
+			&k.InternalCost,
+			&k.ExternalCost,
+			&lastUsedAt,
+			&k.ProjectCount,
+			&k.TopProject,
+		); err != nil {
+			return nil, err
+		}
+
+		if lastUsedAt.Valid {
+			k.LastUsedAt = lastUsedAt.Time.Format(time.RFC3339)
+		}
+
+		keys = append(keys, k)
+	}
+
+	return &UserAPIKeyUsageResponse{
+		Keys: keys,
+	}, rows.Err()
+}

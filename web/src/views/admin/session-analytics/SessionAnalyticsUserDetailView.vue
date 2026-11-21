@@ -126,6 +126,22 @@
         >
           {{ t('sessionAnalytics.section.tasks') }}
         </button>
+        <button
+          class="sa-tab"
+          :class="{ 'sa-tab--active': tab === 'models' }"
+          type="button"
+          @click="tab = 'models'"
+        >
+          {{ t('sessionAnalytics.section.models') }}
+        </button>
+        <button
+          class="sa-tab"
+          :class="{ 'sa-tab--active': tab === 'apiKeys' }"
+          type="button"
+          @click="tab = 'apiKeys'"
+        >
+          {{ t('sessionAnalytics.section.apiKeys') }}
+        </button>
       </div>
 
       <section v-if="tab === 'projects'" class="sa-section">
@@ -171,7 +187,7 @@
         </DataTable>
       </section>
 
-      <section v-else class="sa-section">
+      <section v-else-if="tab === 'tasks'" class="sa-section">
         <DataTable
           :loading="tasksLoading"
           :empty="!tasksLoading && tasks.length === 0"
@@ -209,6 +225,78 @@
           </table>
         </DataTable>
       </section>
+
+      <section v-else-if="tab === 'models'" class="sa-section">
+        <DataTable
+          :loading="modelsLoading"
+          :empty="!modelsLoading && models.length === 0"
+          :empty-text="t('sessionAnalytics.empty.noResultUserModels')"
+          min-width="900px"
+        >
+          <table class="sa-table">
+            <thead>
+              <tr>
+                <th>{{ t('sessionAnalytics.col.model') }}</th>
+                <th>{{ t('sessionAnalytics.col.requests') }}</th>
+                <th>{{ t('sessionAnalytics.col.tokens') }}</th>
+                <th>{{ t('sessionAnalytics.col.cost') }}</th>
+                <th>{{ t('sessionAnalytics.col.successRate') }}</th>
+                <th>{{ t('sessionAnalytics.col.cacheRate') }}</th>
+                <th>{{ t('sessionAnalytics.col.avgResponseTime') }}</th>
+                <th>{{ t('sessionAnalytics.col.lastUsed') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in models" :key="m.model">
+                <td>{{ m.model }}</td>
+                <td>{{ fmt(m.request_count) }}</td>
+                <td>{{ fmt(m.total_tokens) }}</td>
+                <td>{{ money(m.total_cost) }}</td>
+                <td>{{ percent(m.success_rate) }}</td>
+                <td>{{ percent(m.cache_hit_rate) }}</td>
+                <td>{{ fmt(Math.round(m.avg_response_time_ms)) }} ms</td>
+                <td>{{ formatTime(m.last_used_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </DataTable>
+      </section>
+
+      <section v-else-if="tab === 'apiKeys'" class="sa-section">
+        <DataTable
+          :loading="apiKeysLoading"
+          :empty="!apiKeysLoading && apiKeys.length === 0"
+          :empty-text="t('sessionAnalytics.empty.noResultUserAPIKeys')"
+          min-width="900px"
+        >
+          <table class="sa-table">
+            <thead>
+              <tr>
+                <th>{{ t('sessionAnalytics.col.keyAlias') }}</th>
+                <th>{{ t('sessionAnalytics.col.keyID') }}</th>
+                <th>{{ t('sessionAnalytics.col.requests') }}</th>
+                <th>{{ t('sessionAnalytics.col.tokens') }}</th>
+                <th>{{ t('sessionAnalytics.col.cost') }}</th>
+                <th>{{ t('sessionAnalytics.col.projectCount') }}</th>
+                <th>{{ t('sessionAnalytics.col.topProject') }}</th>
+                <th>{{ t('sessionAnalytics.col.lastUsed') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="k in apiKeys" :key="k.key_id">
+                <td>{{ k.key_alias || '-' }}</td>
+                <td>{{ k.key_id }}</td>
+                <td>{{ fmt(k.request_count) }}</td>
+                <td>{{ fmt(k.total_tokens) }}</td>
+                <td>{{ money(k.total_cost) }}</td>
+                <td>{{ fmt(k.project_count) }}</td>
+                <td>{{ k.top_project || '-' }}</td>
+                <td>{{ formatTime(k.last_used_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </DataTable>
+      </section>
     </template>
   </div>
 </template>
@@ -241,9 +329,13 @@ import {
   getProjectTasks,
   getUserDetail,
   getUserProjects,
+  getUserModelUsage,
+  getUserAPIKeyUsage,
   type ProjectTaskRow,
   type UserDetailResponse,
   type UserProjectRow,
+  type UserModelUsage,
+  type UserAPIKeyUsage,
 } from '../../../api/sessionAnalytics'
 
 const { t } = useI18n()
@@ -253,12 +345,16 @@ const router = useRouter()
 const detailLoader = useSessionAnalyticsLoader()
 const projectsLoader = useSessionAnalyticsLoader()
 const tasksLoader = useSessionAnalyticsLoader()
+const modelsLoader = useSessionAnalyticsLoader()
+const apiKeysLoader = useSessionAnalyticsLoader()
 
 const loading = computed(() => detailLoader.loading.value)
 const error = computed(() => detailLoader.error.value)
 const stale = computed(() => detailLoader.stale.value)
 const projectsLoading = computed(() => projectsLoader.loading.value)
 const tasksLoading = computed(() => tasksLoader.loading.value)
+const modelsLoading = computed(() => modelsLoader.loading.value)
+const apiKeysLoading = computed(() => apiKeysLoader.loading.value)
 
 const range = ref<KxDateRange>(rangeFromSpanDays(7))
 const draftRange = ref<KxDateRange>(range.value)
@@ -266,8 +362,10 @@ const draftRange = ref<KxDateRange>(range.value)
 const detail = ref<UserDetailResponse | null>(null)
 const projects = ref<UserProjectRow[]>([])
 const tasks = ref<ProjectTaskRow[]>([])
+const models = ref<UserModelUsage[]>([])
+const apiKeys = ref<UserAPIKeyUsage[]>([])
 const selectedProject = ref('')
-const tab = ref<'projects' | 'tasks'>('projects')
+const tab = ref<'projects' | 'tasks' | 'models' | 'apiKeys'>('projects')
 
 /**
  * 项目表 / 任务表的名称列本地排序：none（默认，服务端按会话数排）→ asc → desc → none。
@@ -341,6 +439,11 @@ function money(v: number | null | undefined): string {
   })
 }
 
+function percent(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return (v * 100).toFixed(1) + '%'
+}
+
 function formatTime(value: string): string {
   if (!value) return '—'
   const d = new Date(value)
@@ -387,6 +490,30 @@ async function loadTasks(): Promise<void> {
   tasks.value = res?.tasks ?? []
 }
 
+async function loadModels(): Promise<void> {
+  if (!owner.value) return
+  const res = await modelsLoader.run(
+    () => getUserModelUsage(owner.value, {
+      start_date: range.value.start,
+      end_date: range.value.end,
+    }),
+    'sessionAnalytics.error.userModelsFailed',
+  )
+  models.value = res?.models ?? []
+}
+
+async function loadAPIKeys(): Promise<void> {
+  if (!owner.value) return
+  const res = await apiKeysLoader.run(
+    () => getUserAPIKeyUsage(owner.value, {
+      start_date: range.value.start,
+      end_date: range.value.end,
+    }),
+    'sessionAnalytics.error.userAPIKeysFailed',
+  )
+  apiKeys.value = res?.keys ?? []
+}
+
 function selectProject(project: string): void {
   selectedProject.value = project
   tab.value = 'tasks'
@@ -398,6 +525,8 @@ function onApplyRange(next: KxDateRange): void {
   void load()
   void loadProjects()
   if (selectedProject.value) void loadTasks()
+  if (tab.value === 'models') void loadModels()
+  if (tab.value === 'apiKeys') void loadAPIKeys()
 }
 
 function goBack(): void {
@@ -408,10 +537,21 @@ watch(owner, () => {
   detail.value = null
   projects.value = []
   tasks.value = []
+  models.value = []
+  apiKeys.value = []
   selectedProject.value = ''
   tab.value = 'projects'
   void load()
   void loadProjects()
+})
+
+// 2026-11-22: 添加tab切换监听，自动加载对应数据
+watch(tab, (newTab) => {
+  if (newTab === 'models' && models.value.length === 0) {
+    void loadModels()
+  } else if (newTab === 'apiKeys' && apiKeys.value.length === 0) {
+    void loadAPIKeys()
+  }
 })
 
 onMounted(() => {

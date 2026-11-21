@@ -59,6 +59,8 @@ export default {
     topProjects: '利用の多いプロジェクト',
     projects: 'プロジェクト一覧',
     tasks: 'タスク一覧',
+    models: 'モデル使用量',
+    apiKeys: 'API Key使用量',
   },
   col: {
     rank: '順位',
@@ -82,6 +84,11 @@ export default {
     lastActive: '最終利用日時',
     latestTask: '最新のタスク',
     lastUsed: '最終利用日',
+    keyAlias: 'Keyエイリアス',
+    keyID: 'Key ID',
+    projectCount: 'プロジェクト数',
+    topProject: '主要プロジェクト',
+    avgResponseTime: '平均応答時間',
   },
   filter: {
     project: 'プロジェクトで絞り込み',

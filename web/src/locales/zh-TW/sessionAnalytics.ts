@@ -60,6 +60,8 @@ export default {
     topProjects: '活躍專案',
     projects: '專案列表',
     tasks: '任務列表',
+    models: '模型用量',
+    apiKeys: 'API Key用量',
   },
   col: {
     rank: '名次',
@@ -83,6 +85,11 @@ export default {
     lastActive: '最後活躍時間',
     latestTask: '最新任務',
     lastUsed: '最後使用',
+    keyAlias: 'Key別名',
+    keyID: 'Key ID',
+    projectCount: '關聯專案數',
+    topProject: '主要專案',
+    avgResponseTime: '平均回應時間',
   },
   filter: {
     project: '依專案篩選',

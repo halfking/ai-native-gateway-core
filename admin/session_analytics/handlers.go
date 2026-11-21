@@ -1061,6 +1061,8 @@ func (h *Handler) routeUserRanking(w http.ResponseWriter, r *http.Request) {
 	// /:owner                          -> 用户详情
 	// /:owner/projects                 -> 用户项目列表
 	// /:owner/projects/:project/tasks  -> 项目任务列表
+	// /:owner/models                   -> 用户模型用量
+	// /:owner/api-keys                 -> 用户 API Key 用量
 
 	if len(parts) == 1 && parts[0] != "" {
 		// /:owner - 用户详情
@@ -1068,6 +1070,12 @@ func (h *Handler) routeUserRanking(w http.ResponseWriter, r *http.Request) {
 	} else if len(parts) == 2 && parts[1] == "projects" {
 		// /:owner/projects - 用户项目列表
 		h.HandleGetUserProjects(w, r)
+	} else if len(parts) == 2 && parts[1] == "models" {
+		// /:owner/models - 用户模型用量
+		h.HandleGetUserModelUsage(w, r)
+	} else if len(parts) == 2 && parts[1] == "api-keys" {
+		// /:owner/api-keys - 用户 API Key 用量
+		h.HandleGetUserAPIKeyUsage(w, r)
 	} else if len(parts) == 4 && parts[1] == "projects" && parts[3] == "tasks" {
 		// /:owner/projects/:project/tasks - 项目任务列表
 		h.HandleGetProjectTasks(w, r)
@@ -1126,3 +1134,99 @@ func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, c
 
 // 默认查询超时时间
 const defaultQueryTimeout = 30 * time.Second
+
+// HandleGetUserModelUsage 处理用户模型用量请求
+//
+// GET /api/admin/session-analytics/user-ranking/:owner/models
+//
+// 查询参数:
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//
+// 响应:
+//
+//	200: UserModelUsageResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetUserModelUsage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 从 URL 路径提取 owner
+	owner := extractOwnerFromPath(r.URL.Path)
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
+
+	// 获取查询参数
+	params, err := parseUserDetailParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 查询数据
+	resp, err := GetUserModelUsage(ctx, h.db, owner, params.StartDate, params.EndDate)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get user model usage")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetUserAPIKeyUsage 处理用户 API Key 用量请求
+//
+// GET /api/admin/session-analytics/user-ranking/:owner/api-keys
+//
+// 查询参数:
+//   - start_date (必需): 开始日期
+//   - end_date (必需): 结束日期
+//
+// 响应:
+//
+//	200: UserAPIKeyUsageResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetUserAPIKeyUsage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// 从 URL 路径提取 owner
+	owner := extractOwnerFromPath(r.URL.Path)
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner is required")
+		return
+	}
+
+	// 获取查询参数
+	params, err := parseUserDetailParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 查询数据
+	resp, err := GetUserAPIKeyUsage(ctx, h.db, owner, params.StartDate, params.EndDate)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get user api key usage")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
