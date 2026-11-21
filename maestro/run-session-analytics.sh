@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# maestro/run-session-analytics.sh —— 会话分析系统 5 页的**实跑入口**（Maestro flow + CDP 探针）
+# maestro/run-session-analytics.sh —— 会话分析系统的**实跑入口**（Maestro flow + 两层 CDP 探针）
 #
 # ┌──────────────────────────────────────────────────────────────────────────┐
-# │ ★ 为什么是「两层」：                                                   │
+# │ ★ 为什么是「三层」：                                                   │
 # │   第一层 maestro/flows/16-session-analytics-system.yaml                  │
 # │     ⇒ 证明「浏览器真的把这 5 个页面打开并渲染了」（元素在视口内、登录态成立）│
 # │   第二层 maestro/tools/assert-session-analytics.mjs                      │
 # │     ⇒ 证明「数字是对的」（宽表右侧列在内部滚动容器里、折叠线以下的内容   │
 # │       Maestro 物理上够不着 ⇒ 只能页面内做 DOM 级断言 + 与 API 逐字对拍）│
-# │   两层都绿才算「这 5 页在真实部署上可用」；只跑一层都会给出半个真相。     │
+# │   第三层 maestro/tools/assert-filter-button.mjs                          │
+# │     ⇒ 证明「按钮的文案与行为一致」（3 个排行页的 .sa-btn--primary：文案是│
+# │       「应用筛选」、点击后按新排序发请求、且**区间显示值不变** ⇒ 它不是  │
+# │       区间开关；8238f6a3d 的键迁移修的正是这个语义错配）                 │
+# │   三层都绿才算「这 5 页在真实部署上可用」；只跑一层都会给出半个真相。     │
 # └──────────────────────────────────────────────────────────────────────────┘
 #
 # 用法：
@@ -34,12 +38,14 @@
 # 产物：
 #   maestro/reports/<时间戳>/16-session-analytics-system.log   Maestro CLI 输出
 #   maestro/reports/<时间戳>/assert-session-analytics.txt      第二层探针输出
+#   maestro/reports/<时间戳>/assert-filter-button.txt          第三层探针输出
 #   maestro/reports/<时间戳>/summary.txt                       两层汇总
 #
-# 退出码：0 = 两层全绿；1 = 有红；2 = 量具失效（窗口内无数据）。
+# 退出码：0 = 三层全绿；1 = 有红；2 = 量具失效（窗口内无数据）。
 # ★ 三态口径来自 `maestro/tools/result.mjs`（仓内判定口径的唯一真源）：
-#   旧版本脚本把两层压平成「非 0 就 exit 1」⇒ **量具失效（2）永远出不来**
+#   旧版本脚本把各层压平成「非 0 就 exit 1」⇒ **量具失效（2）永远出不来**
 #   ⇒ 与仓内唯一真源的三态语义脱节（AGENTS.md ⑰：工具不得自己写一份退出码）。
+#   合并优先级：**红 > 量具失效 > 绿**（红＝测了且不合格；量具失效＝没测到）。
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -95,6 +101,17 @@ if [ -z "${ADMIN_USER:-}" ] || [ -z "${ADMIN_PASSWORD:-}" ]; then
     set +a
     break
   done
+fi
+# ★ 变量名映射（2026-11-21 实测修复）：.env.local 里用的是**部署环境变量名**
+#   LLM_GATEWAY_ADMIN_USER / LLM_GATEWAY_ADMIN_PASSWORD，而本 runner 认的是
+#   ADMIN_USER / ADMIN_PASSWORD ⇒ 上面 source 成功也不会产生 ADMIN_* ⇒
+#   凭据判定处必然退出 1（注释写着「缺省从仓根 .env.local 读」，实现没做到）。
+#   优先级：显式传入的 ADMIN_* > .env.local 的 LLM_GATEWAY_ADMIN_*（谁先谁优先）。
+ADMIN_USER="${ADMIN_USER:-${LLM_GATEWAY_ADMIN_USER:-}}"
+_pw_cur=ADMIN_PASSWORD
+_pw_src=LLM_GATEWAY_ADMIN_PASSWORD
+if [ -z "${!_pw_cur:-}" ]; then
+  ADMIN_PASSWORD="${!_pw_src:-}"
 fi
 : "${ADMIN_USER:?需要 ADMIN_USER（环境变量或仓根 .env.local 的 LLM_GATEWAY_ADMIN_USER）}"
 : "${ADMIN_PASSWORD:?需要 ADMIN_PASSWORD（环境变量或仓根 .env.local 的 LLM_GATEWAY_ADMIN_PASSWORD）}"
@@ -246,6 +263,23 @@ node "${ROOT}/maestro/tools/assert-session-analytics.mjs" \
   2>&1 | tee "${OUT}/assert-session-analytics.txt"
 PROBE_RC=${PIPESTATUS[0]}
 
+# ── 7. 第三层：CDP 探针（排序筛选按钮的语义断言）─────────────────────────
+# ★ 为什么复用第二层的 Chrome（SA_CDP_PORT）：两个探针各自 Target.createTarget
+#   开新 tab ⇒ 互不干扰；省掉第三个浏览器实例（起三个 Chrome 的内存与端口风险都不值）。
+# ★ 覆盖对象：3 个排行页筛选栏的 .sa-btn--primary —— 文案（应用筛选）+ 行为
+#   （点击后按新排序发请求、且**区间显示值不变** ⇒ 它不是区间开关）。
+#   这正是 8238f6a3d 键迁移的交付物；既有两层都不覆盖它 ⇒ 单独立一条。
+echo "== 第三层：CDP 探针（assert-filter-button.mjs）"
+ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+node "${ROOT}/maestro/tools/assert-filter-button.mjs" \
+  --cdp "http://127.0.0.1:${SA_CDP_PORT}" \
+  --url "${BASE_URL}" \
+  --start-date "${START_DATE}" \
+  --end-date "${END_DATE}" \
+  2>&1 | tee "${OUT}/assert-filter-button.txt"
+FILTER_RC=${PIPESTATUS[0]}
+
+printf 'filter rc=%s\n' "${FILTER_RC}" >>"${SUMMARY}"
 printf 'flow rc=%s FAILED=%s\n' "${FLOW_RC}" "${FLOW_FAILED}" >>"${SUMMARY}"
 printf 'probe rc=%s\n' "${PROBE_RC}" >>"${SUMMARY}"
 echo "---- 汇总 ----"
@@ -255,20 +289,25 @@ echo "产物目录：${OUT}"
 # ── 判定：★ 三态口径（0=绿 / 1=红 / 2=量具失效），与 maestro/tools/result.mjs 一致 ──
 # ★ 旧版是「任一层非 0 ⇒ exit 1」⇒ 量具失效（2）被压平成红 ⇒ 上游拿到的信号是错的
 #   （「没测到」被当成「不合格」）。现在按层语义合并：
-#   · 第一层红（Maestro 步骤失败）⇒ **产品红**（第一层没有「量具失效」这一态）
-#   · 第二层 rc=2 ⇒ 量具失效（窗口内无数据 ⇒ 断言未评估）
-#   · 第二层 rc=1 ⇒ 产品红
+#   · 任一层 rc=1 ⇒ **产品红**（已评估且不合格）
+#   · 无红、但有层 rc=2 ⇒ 量具失效（窗口内无数据 ⇒ 断言未评估）
+#   · 全 0 ⇒ 绿
+#   ⇒ 优先级：**红 > 量具失效 > 绿**（红＝测了且不合格；量具失效＝没测到）
 if [ "${FLOW_RC}" -ne 0 ]; then
   echo "VERDICT: FAIL（第一层 flow 红：rc=${FLOW_RC} FAILED=${FLOW_FAILED}）"
   exit 1
 fi
-if [ "${PROBE_RC}" -eq 2 ]; then
-  echo "VERDICT: 量具失效（第二层探针 rc=2：窗口内无数据 ⇒ 断言未评估，**这不是产品缺陷**）"
-  exit 2
-fi
-if [ "${PROBE_RC}" -ne 0 ]; then
+if [ "${PROBE_RC}" -eq 1 ]; then
   echo "VERDICT: FAIL（第二层探针红：rc=${PROBE_RC}）"
   exit 1
 fi
-echo "VERDICT: PASS（两层全绿）"
+if [ "${FILTER_RC}" -eq 1 ]; then
+  echo "VERDICT: FAIL（第三层探针红：rc=${FILTER_RC}）"
+  exit 1
+fi
+if [ "${PROBE_RC}" -eq 2 ] || [ "${FILTER_RC}" -eq 2 ]; then
+  echo "VERDICT: 量具失效（探针 rc=2：断言未评估，**这不是产品缺陷**）"
+  exit 2
+fi
+echo "VERDICT: PASS（三层全绿）"
 exit 0
