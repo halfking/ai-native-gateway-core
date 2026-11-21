@@ -1567,7 +1567,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 				COUNT(*) AS request_count,
 				COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
 				COALESCE(SUM(rl.cost_usd), 0.0) AS total_cost_usd
-			FROM request_logs rl
+			FROM request_logs_with_current_month rl
 			%s
 			GROUP BY %s
 			ORDER BY total_cost_usd DESC, total_tokens DESC, request_count DESC
@@ -1623,7 +1623,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 			COUNT(*) AS request_count,
 			COALESCE(SUM(rl.total_tokens), 0) AS total_tokens,
 			COALESCE(SUM(rl.cost_usd), 0.0) AS total_cost_usd
-		FROM request_logs rl
+		FROM request_logs_with_current_month rl
 		LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 	`
 	whereClause := "WHERE rl.ts >= $1 AND rl.ts < $2 AND rl.api_key_id IS NOT NULL"
