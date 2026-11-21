@@ -55,3 +55,22 @@
   默认值放调用侧 ⇒ 用 demoadmin（display_name=演示管理员）时须由调用方 -e 覆盖。
 
 [产物] maestro/reports/20261121-133737/（两层）、maestro/reports/20261121-134259/（三层复验）
+
+[收尾复核] E2E 全绿之后，现役被并行车再次切走
+  现役身份：2.6.1-23b9d32b-dirty-20261121-211 seq 3190（git_sha 带 **-dirty**）
+  ★ 该 commit 不在本地任何 ref（并行车用自己的**未推送脏树**部署）⇒ **git 层无法验证包含关系**
+    （git cat-file / merge-base --is-ancestor 均报「Not a valid object name」）
+  ⇒ 改用**行为级证据反证**：在该身份下重跑第三层探针 ⇒ RESULT: PASS（20 条）全绿，
+    按钮文案实测仍是「应用筛选」（若该树不含 8238f6a3d，按钮会显示旧文案「应用区间」）
+    ⇒ 行为证据证明本轮运行时改动**在现役树内** ⇒ 审计链不因 dirty 身份而断裂。
+  ⇒ 通用式：**当现役身份不可验证（dirty / 未推送 / 对象不在本地 ref）时，
+    一条针对性的行为断言可以反证「我的改动在不在现役树里」**——
+    它测的是**产物**而不是提交图，比 git merge-base 更硬。
+
+[本轮提交面（审计用）]
+  8238f6a3d  文案修复主提交（运行时）：3 个视图 + 8 语种 locale
+  5b4d28ca  部署目标 tip（运行时，含 8238f6a3d）⇒ 本轮生产部署与验证的身份
+  097cb9595  测试资产提交（**无运行时改动**）：maestro/run-session-analytics.sh
+             （凭据变量名映射修复 + 第三层接入 + 三态判定合并）、
+             maestro/tools/assert-filter-button.mjs（新增第三层探针）、本证据文件
+  ⇒ 097cb9595 只含 maestro/ 与 docs/audit/evidence/ ⇒ 不构成运行时变更 ⇒ **无需重新部署**
