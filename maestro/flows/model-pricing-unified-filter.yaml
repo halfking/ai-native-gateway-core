@@ -15,6 +15,10 @@ appId: ${APP_ID}
 # 登录
 - runFlow:
     file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # 导航到定价管理页面（/model-pricing）
 - tapOn: "运营分析"

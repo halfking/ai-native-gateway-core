@@ -252,44 +252,35 @@ func (h *SessionOverviewHandler) HandleSessionOverview(w http.ResponseWriter, r 
 		alignedErr   error
 	)
 	g, gctx := errgroup.WithContext(ctx)
+	// 2026-11-21 线上实证（211 三跑）：五条 session_summaries 腿**串行**执行。
+	//
+	// 为什么放弃并行：acc-pg17 的 /dev/shm 只有 64M（docker 默认）。宇宙连接的
+	// LEFT JOIN session_dim（~90 万行）每份哈希要吃数 MB 共享内存段；并行 2 腿
+	// （改造前只有 topClients/topTasks join dim）没事，本轮 6 腿全 join ⇒ 并发
+	// 共享内存需求 > 64M ⇒ SQLSTATE 53100「could not resize shared memory」
+	// ⇒ 整个端点 500。子查询绑小（4b8658b7）只减小 probe 侧，build 侧（dim）
+	// 不变 ⇒ 串行化后任一时刻至多一份哈希在途（与 994 物化视图刷新器同形，
+	// 刷新器串行跑同一 join 一直健康）。串行的墙钟 = 五腿之和（窗口绑小后
+	// 每腿秒级，30s ctx 预算内；端点带 60s 客户端缓存）。
+	// 错误语义保持：每腿失败带段名（dashboardStatsStageError），第一错即返回。
 	g.Go(func() error {
 		var err error
 		if aggregates, err = h.querySessionSummaryAggregates(gctx, params, win); err != nil {
 			return dashboardStatsStageError{"session summary aggregates", err}
 		}
-		return nil
-	})
-	g.Go(func() error {
 		// 上一周期成本：窗口与「成本统计」腿不同（2×days ~ days），无法并进同一次扫描。
 		// 原实现在成本腿内部顺带查，**错误被忽略**（不阻断整段）⇒ 这里保持同一语义。
 		prevCost = h.queryPrevPeriodCost(gctx, params, win)
-		return nil
-	})
-	g.Go(func() error {
-		var err error
 		if modelUsage, err = h.queryModelUsage(gctx, params, win); err != nil {
 			return dashboardStatsStageError{"model usage", err}
 		}
-		return nil
-	})
-	g.Go(func() error {
-		var err error
 		if topClients, err = h.queryTopClients(gctx, params, win, 5); err != nil {
 			return dashboardStatsStageError{"top clients", err}
 		}
-		return nil
-	})
-	g.Go(func() error {
-		var err error
 		if topTasks, err = h.queryTopTasks(gctx, params, win, 5); err != nil {
 			return dashboardStatsStageError{"top tasks", err}
 		}
-		return nil
-	})
-	g.Go(func() error {
-		var err error
-		costTrend, sessTrend, err = h.querySessionTrends(gctx, params, win)
-		if err != nil {
+		if costTrend, sessTrend, err = h.querySessionTrends(gctx, params, win); err != nil {
 			return dashboardStatsStageError{"session trends", err}
 		}
 		return nil

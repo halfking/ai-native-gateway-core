@@ -13,6 +13,10 @@ url: ${BASE_URL}
 # 登录（复用已有登录流程）
 - runFlow:
     file: _shared/login.yaml
+    env:
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
 # 导航到价格对比页面
 - tapOn: "运营分析"
