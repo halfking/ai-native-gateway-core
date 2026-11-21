@@ -402,3 +402,6 @@
 384	993_report_snapshots_exact_cost_cents.sql
 385	994_session_analytics_owner_key_and_close_path.sql
 386	995_error_playbook.sql
+387	997_tasks_dimension_table.sql
+388	998_session_summaries_task_association.sql
+389	999_session_summary_layers.sql
