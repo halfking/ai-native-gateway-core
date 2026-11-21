@@ -1694,7 +1694,7 @@ type UserAPIKeyUsage struct {
 
 // UserAPIKeyUsageResponse 用户API Key使用列表响应
 type UserAPIKeyUsageResponse struct {
-	Keys []UserAPIKeyUsage `json:"keys"`
+	APIKeys []UserAPIKeyUsage `json:"api_keys"`
 }
 
 // GetUserAPIKeyUsage 获取用户的API Key使用情况
@@ -1778,6 +1778,6 @@ func GetUserAPIKeyUsage(ctx context.Context, db *sql.DB, owner, startDate, endDa
 	}
 
 	return &UserAPIKeyUsageResponse{
-		Keys: keys,
+		APIKeys: keys,
 	}, rows.Err()
 }
