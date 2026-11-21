@@ -511,3 +511,28 @@ export function getUsageTrendSeries(q: UsageTrendFilterQuery, signal?: AbortSign
 export function getUsageTrendModels(q: UsageTrendFilterQuery, signal?: AbortSignal) {
   return req<UsageTrendModelsResponse>('GET', `/api/admin/usage/trend-models?${usageTrendQs(q)}`, undefined, { signal })
 }
+
+// ── Top Rankings (2026-11-21) ─────────────────────────────────────────
+
+export interface RankingEntry {
+  name: string
+  request_count: number
+  total_tokens: number
+  total_cost_usd: number
+}
+
+export interface TopRankingsResponse {
+  top_models: RankingEntry[]
+  top_clients: RankingEntry[]
+  top_users: RankingEntry[]
+  top_api_keys: RankingEntry[]
+  top_projects: RankingEntry[]
+  top_tasks: RankingEntry[]
+  degraded?: boolean
+  degraded_reason?: string
+}
+
+export function getTopRankings(time: BoardTimeQuery) {
+  const qs = usageTimeQs(time)
+  return req<TopRankingsResponse>('GET', `/api/admin/usage/top-rankings?${qs}`)
+}

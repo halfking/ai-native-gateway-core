@@ -29,6 +29,8 @@ import {
   getUsageTrendSeries,
   type UsageTrendMetric,
   type UsageTrendModelSeries,
+  getTopRankings,
+  type TopRankingsResponse,
 } from '../../api/usage'
 import { getProviders } from '../../api/providers'
 import ProviderPicker from '../../components/ProviderPicker.vue'
@@ -148,6 +150,11 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const source = ref('')
 
+// Top5 排行数据
+const rankings = ref<TopRankingsResponse | null>(null)
+const rankingsLoading = ref(false)
+const rankingsError = ref<string | null>(null)
+
 const timeQuery = computed(() => ({ start: effectiveRange.value.start, end: effectiveRange.value.end }))
 
 let seriesToken = 0
@@ -178,10 +185,24 @@ async function loadSeries() {
   }
 }
 
+async function loadRankings() {
+  rankingsLoading.value = true
+  rankingsError.value = null
+  try {
+    const resp = await getTopRankings(timeQuery.value)
+    rankings.value = resp
+  } catch (err) {
+    rankingsError.value = surfaceError(err)
+  } finally {
+    rankingsLoading.value = false
+  }
+}
+
 watch(
   [effectiveRange, providerId, tenantId, apiKeyId, models],
   () => {
     void loadSeries()
+    void loadRankings()
     syncQuery()
   },
 )
@@ -316,6 +337,7 @@ const sourceLabel = computed(() => {
 onMounted(() => {
   void loadFilterOptions()
   void loadSeries()
+  void loadRankings()
   applyRefreshTimer()
 })
 
@@ -461,6 +483,133 @@ onBeforeUnmount(() => {
           <template #default="{ row }">{{ sharePct(row) }}</template>
         </el-table-column>
       </el-table>
+    </div>
+
+    <!-- Top5 用量排行 -->
+    <div v-if="rankings" class="ute__rankings">
+      <h3 class="ute__rankings-title">Top 5 用量排行</h3>
+      <div v-if="rankingsError" class="ute__err">加载排行失败：{{ rankingsError }}</div>
+      <div class="ute__rankings-grid">
+        <!-- Top 模型 -->
+        <div class="ute__ranking-card">
+          <h4 class="ute__ranking-header">Top 5 模型</h4>
+          <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
+          <div v-else-if="rankings.top_models.length === 0" class="ute__ranking-empty">暂无数据</div>
+          <div v-else class="ute__ranking-list">
+            <div v-for="(item, idx) in rankings.top_models" :key="idx" class="ute__ranking-item">
+              <div class="ute__ranking-rank">{{ idx + 1 }}</div>
+              <div class="ute__ranking-info">
+                <div class="ute__ranking-name">{{ item.name }}</div>
+                <div class="ute__ranking-stats">
+                  请求: {{ compactTickValue(item.request_count) }} · 
+                  Token: {{ compactTickValue(item.total_tokens) }} · 
+                  成本: ${{ item.total_cost_usd.toFixed(4) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top 客户端 -->
+        <div class="ute__ranking-card">
+          <h4 class="ute__ranking-header">Top 5 客户端</h4>
+          <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
+          <div v-else-if="rankings.top_clients.length === 0" class="ute__ranking-empty">暂无数据</div>
+          <div v-else class="ute__ranking-list">
+            <div v-for="(item, idx) in rankings.top_clients" :key="idx" class="ute__ranking-item">
+              <div class="ute__ranking-rank">{{ idx + 1 }}</div>
+              <div class="ute__ranking-info">
+                <div class="ute__ranking-name">{{ item.name }}</div>
+                <div class="ute__ranking-stats">
+                  请求: {{ compactTickValue(item.request_count) }} · 
+                  Token: {{ compactTickValue(item.total_tokens) }} · 
+                  成本: ${{ item.total_cost_usd.toFixed(4) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top 用户 -->
+        <div class="ute__ranking-card">
+          <h4 class="ute__ranking-header">Top 5 用户</h4>
+          <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
+          <div v-else-if="rankings.top_users.length === 0" class="ute__ranking-empty">暂无数据</div>
+          <div v-else class="ute__ranking-list">
+            <div v-for="(item, idx) in rankings.top_users" :key="idx" class="ute__ranking-item">
+              <div class="ute__ranking-rank">{{ idx + 1 }}</div>
+              <div class="ute__ranking-info">
+                <div class="ute__ranking-name">{{ item.name }}</div>
+                <div class="ute__ranking-stats">
+                  请求: {{ compactTickValue(item.request_count) }} · 
+                  Token: {{ compactTickValue(item.total_tokens) }} · 
+                  成本: ${{ item.total_cost_usd.toFixed(4) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top API Keys -->
+        <div class="ute__ranking-card">
+          <h4 class="ute__ranking-header">Top 5 API Keys</h4>
+          <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
+          <div v-else-if="rankings.top_api_keys.length === 0" class="ute__ranking-empty">暂无数据</div>
+          <div v-else class="ute__ranking-list">
+            <div v-for="(item, idx) in rankings.top_api_keys" :key="idx" class="ute__ranking-item">
+              <div class="ute__ranking-rank">{{ idx + 1 }}</div>
+              <div class="ute__ranking-info">
+                <div class="ute__ranking-name">{{ item.name }}</div>
+                <div class="ute__ranking-stats">
+                  请求: {{ compactTickValue(item.request_count) }} · 
+                  Token: {{ compactTickValue(item.total_tokens) }} · 
+                  成本: ${{ item.total_cost_usd.toFixed(4) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top 项目 -->
+        <div class="ute__ranking-card">
+          <h4 class="ute__ranking-header">Top 5 项目</h4>
+          <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
+          <div v-else-if="rankings.top_projects.length === 0" class="ute__ranking-empty">暂无数据</div>
+          <div v-else class="ute__ranking-list">
+            <div v-for="(item, idx) in rankings.top_projects" :key="idx" class="ute__ranking-item">
+              <div class="ute__ranking-rank">{{ idx + 1 }}</div>
+              <div class="ute__ranking-info">
+                <div class="ute__ranking-name">{{ item.name }}</div>
+                <div class="ute__ranking-stats">
+                  请求: {{ compactTickValue(item.request_count) }} · 
+                  Token: {{ compactTickValue(item.total_tokens) }} · 
+                  成本: ${{ item.total_cost_usd.toFixed(4) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top 任务 -->
+        <div class="ute__ranking-card">
+          <h4 class="ute__ranking-header">Top 5 任务</h4>
+          <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
+          <div v-else-if="rankings.top_tasks.length === 0" class="ute__ranking-empty">暂无数据</div>
+          <div v-else class="ute__ranking-list">
+            <div v-for="(item, idx) in rankings.top_tasks" :key="idx" class="ute__ranking-item">
+              <div class="ute__ranking-rank">{{ idx + 1 }}</div>
+              <div class="ute__ranking-info">
+                <div class="ute__ranking-name">{{ item.name }}</div>
+                <div class="ute__ranking-stats">
+                  请求: {{ compactTickValue(item.request_count) }} · 
+                  Token: {{ compactTickValue(item.total_tokens) }} · 
+                  成本: ${{ item.total_cost_usd.toFixed(4) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -623,6 +772,99 @@ export default { name: 'UsageTrendExplorer' }
   .ute__table {
     max-height: none;
     flex: 0 0 auto;
+  }
+}
+
+/* Top5 排行样式 */
+.ute__rankings {
+  flex-shrink: 0;
+  padding: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.ute__rankings-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 16px;
+  color: var(--text);
+}
+.ute__rankings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+.ute__ranking-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.ute__ranking-header {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: var(--text);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.ute__ranking-loading,
+.ute__ranking-empty {
+  text-align: center;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.ute__ranking-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ute__ranking-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--card);
+  transition: background 0.2s;
+}
+.ute__ranking-item:hover {
+  background: var(--hover-bg);
+}
+.ute__ranking-rank {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: white;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ute__ranking-info {
+  flex: 1;
+  min-width: 0;
+}
+.ute__ranking-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ute__ranking-stats {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+@media (max-width: 768px) {
+  .ute__rankings-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
