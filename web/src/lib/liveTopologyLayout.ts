@@ -112,17 +112,19 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
   }
   return plainFallback ?? { visible: 1, cardW: Math.max(1, Math.min(NODE_W, inner)), foldable: false }
 }
-/** 每层中心线的高度占比（自上而下）。网关核心那一层由大方块自己占位。
- *  model 行的占比必须满足 `ratio*480 + NODE_H/2 ≤ 480`（最小画布高度下
- *  卡片不沉出画布）—— 0.965 曾在 h=480 把卡底推到 484。
+/** 每层中心线的高度占比(自上而下)。网关核心那一层由大方块自己占位。
+ *  model 行的占比必须满足 `ratio*480 + NODE_H/2 ≤ 480`(最小画布高度下
+ *  卡片不沉出画布)—— 0.965 曾在 h=480 把卡底推到 484。
  *  ★ 2026-11-20 C 方案轮：provider 0.85 → 0.80 —— 大方块变矮让出的中段
- *    空间直接转化为供应端/模型行的间距（provider↔model 10%→15%），
- *    两行不再贴底（owner：让节点与模型看得更清楚）。 */
+ *    空间直接转化为供应端/模型行的间距(provider↔model 10%→15%),
+ *    两行不再贴底(owner：让节点与模型看得更清楚)。
+ *  ★ 2026-11-21 拓扑顺序优化：交换 model 与 provider 位置，模型前置(0.8)，
+ *    供应商节点后置(0.95)，更符合用户视角(先看用什么模型，再看通过哪个节点)。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
   client: 0.075,
-  gateway: 0.47, // 大方块中心线（rowY.gateway = box 中心；无卡片，仅标签用）
-  provider: 0.8,
-  model: 0.95,
+  gateway: 0.47, // 大方块中心线(rowY.gateway = box 中心；无卡片，仅标签用)
+  model: 0.8,    // 模型前置
+  provider: 0.95, // 供应商节点后置
 }
 
 /**

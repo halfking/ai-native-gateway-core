@@ -23,6 +23,7 @@
 
 import { computed, onBeforeUnmount, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { GATEWAY_NARROW_W } from '../../lib/liveTopologyLayout'
 import {
   GATEWAY_BRANCH_MODULES,
   GATEWAY_INFRA_MODULES,
@@ -183,8 +184,10 @@ const outPlugins = computed(() => (props.plugins ?? []).filter((p) => p.directio
 
 const showQueue = computed(() => typeof props.queueDepth === 'number' && props.queueDepth >= 0)
 
-/** 窄画布（box.w < 900）：四组折成 2×2、缎带图例让位（布局侧同步放宽高度帽）。 */
-const isNarrow = computed(() => props.box.w < 900)
+/** 窄画布（box.w < GATEWAY_NARROW_W）：四组折成 2×2、缎带图例让位（布局侧同步放宽高度帽）。
+ *  2026-11-21 审计轮 R-FE1 单点化：原先组件内写死 900 字面量 ⇒ 改 liveTopologyLayout
+ *  常量后组件仍按旧值切窄版（42321b4ce 同型 17px 溢出无门禁拦截的第四处漂移点）。 */
+const isNarrow = computed(() => props.box.w < GATEWAY_NARROW_W)
 
 /** 模块格「刚处理过请求」脉冲（2026-10-28 live 页动效轮）：窗口内命中数
  *  **增加**的那一格闪一次（470ms 渐隐）—— 「这个模块正在干活」在图上
@@ -477,6 +480,8 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
      用户不会认为点它是「点空白」⇒ 过滤被误清。TopologyCanvas 在本组件
      根上挂了 @click.stop：表面/头部/格子的点击到此为止，不再冒泡。 */
   overflow: hidden;
+  /* 2026-11-21 外框高度优化：设置最小高度,避免内容拥挤 */
+  min-height: 280px;
 }
 
 .gw__head {
@@ -1074,7 +1079,7 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
   max-width: 100%;
 }
 
-/* ── 窄画布（box.w < 900）：四组折 2×2、瓦片转横排小芯片、图例/粗箭头让位 ──
+/* ── 窄画布（box.w < GATEWAY_NARROW_W=900）：四组折 2×2、瓦片转横排小芯片、图例/粗箭头让位 ──
    实测 1440 视口下三栏网格的画布仅 ~820px ⇒ 窄版是常态而非兜底：
    横排芯片把组高压到 ~46px，两行组 + 头 + 缎带 ≈ 190px（帽 240）。 */
 .gw.is-narrow .gw__chev {
