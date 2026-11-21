@@ -3110,6 +3110,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// ========== End Format Detection & Auto-Fix ==========
 
 	// ========== Phase 2 P1#3: Budget-aware model selection ==========
+	println("MB-DEBUG hit, MaxCostPerTask=", reqBody.MaxCostPerTask)
 	if reqBody.MaxCostPerTask > 0 {
 		// Estimate tokens for cost calculation
 		inputTokens := estimateInputTokensFromMessages(reqBody.Messages)
@@ -3124,6 +3125,10 @@ func (h *ChatHandler) serveWithExecutor(
 		if requestedModel == "" {
 			requestedModel = "gpt-4" // Default if not specified
 		}
+
+		// 预算决策观测头(WriteHeader 前设置,随响应透出;P1#4 e2e 断言面)。
+		// 完整 response metadata 集成点 #7 仍 TODO(见下)。
+		w.Header().Set("X-Gw-Budget-Requested", requestedModel)
 
 		decision := degrader.Select(requestedModel, inputTokens, outputTokens, reqBody.MaxCostPerTask)
 
@@ -3164,6 +3169,19 @@ func (h *ChatHandler) serveWithExecutor(
 				"output_tokens", outputTokens,
 				"request_id", requestID)
 			reqBody.Model = decision.Model
+			// ★ P1#4 e2e 实测抓出(2026-11-21):swap 只改 reqBody 不回写 bodyBytes
+			// ⇒ 上游收到原始贵模型,降级仅在路由/日志面生效 = 计费与实际执行不一致。
+			// 与 tools 扩展分支(:3787)同惯用法 re-marshal;D5 模型级回退走
+			// rewriteBodyWithModel 是第二装配点,这里走 reqBody 全量重渲。
+			if nb, merr := json.Marshal(reqBody); merr == nil {
+				bodyBytes = nb
+			} else {
+				slog.Error("modelbudget: failed to re-marshal body after degradation",
+					"request_id", requestID, "error", merr)
+			}
+			w.Header().Set("X-Gw-Budget-Degraded", "true")
+			w.Header().Set("X-Gw-Budget-Selected", decision.Model)
+			w.Header().Set("X-Gw-Budget-Estimated-Cost", strconv.FormatFloat(decision.EstimatedCost, 'f', -1, 64))
 			// TODO: Store degradation info for response metadata (P1#3 integration point #7)
 		}
 	}
