@@ -1,0 +1,39 @@
+active port: 8781
+
+=== 2026-11-19 (UTC 全天 / session 上海日历日) ===
+  traffic_lane: biz=business all=all
+  [PASS] A1 board(默认).total_requests == 内部对账.request_count: got=14306 want=14306
+  [PASS] A3 request-logs(业务).total_requests == 内部对账.request_count: got=14306 want=14306
+  [PASS] D1 request-logs(含探测).total_requests == 供应商对账.request_count: got=28707 want=28707
+  [PASS] D2 request-logs(含探测).tokens(pt+ct) == 供应商对账 tokens: got=825991966 want=825991966
+  [PASS] D3 request-logs(含探测).cost ≈ 供应商对账 cost_cents/100: got=793.0 want=793.0
+  [PASS] D4a request-logs(业务).traffic_lane == business: got=business want=business
+  [PASS] D4b request-logs(含探测).traffic_lane == all: got=all want=all
+  [INFO] request-logs 探测流量(请求) = 14401
+  probe_scope=excluded window_mode=calendar aligned_source=user_session_aggregates
+  [PASS] E1 aligned.total_sessions == session-analytics.total_sessions: got=4877 want=4877
+  [PASS] E2 aligned.active_users == session-analytics.active_users: got=5 want=5
+  [PASS] E3 aligned.internal_cost_usd == session-analytics.internal_cost: got=273.75 want=273.75
+  [PASS] E4 aligned.external_credits == session-analytics.external_cost: got=0 want=0
+  [PASS] E5a session-overview(缺省).probe_scope == excluded: got=excluded want=excluded
+  [INFO] 会话宇宙：excluded=18742 included=33970 probe_scope=included
+
+=== 2026-11-20 (UTC 全天 / session 上海日历日) ===
+  traffic_lane: biz=business all=all
+  [PASS] A1 board(默认).total_requests == 内部对账.request_count: got=9615 want=9615
+  [PASS] A3 request-logs(业务).total_requests == 内部对账.request_count: got=9615 want=9615
+  [PASS] D1 request-logs(含探测).total_requests == 供应商对账.request_count: got=22960 want=22960
+  [PASS] D2 request-logs(含探测).tokens(pt+ct) == 供应商对账 tokens: got=439908692 want=439908692
+  [PASS] D3 request-logs(含探测).cost ≈ 供应商对账 cost_cents/100: got=678.33 want=678.33
+  [PASS] D4a request-logs(业务).traffic_lane == business: got=business want=business
+  [PASS] D4b request-logs(含探测).traffic_lane == all: got=all want=all
+  [INFO] request-logs 探测流量(请求) = 13345
+  probe_scope=excluded window_mode=calendar aligned_source=user_session_aggregates
+  [PASS] E1 aligned.total_sessions == session-analytics.total_sessions: got=3136 want=3136
+  [PASS] E2 aligned.active_users == session-analytics.active_users: got=5 want=5
+  [PASS] E3 aligned.internal_cost_usd == session-analytics.internal_cost: got=99.46 want=99.46
+  [PASS] E4 aligned.external_credits == session-analytics.external_cost: got=0 want=0
+  [PASS] E5a session-overview(缺省).probe_scope == excluded: got=excluded want=excluded
+  [INFO] 会话宇宙：excluded=18742 included=33970 probe_scope=included
+
+==== ALL PASS ====

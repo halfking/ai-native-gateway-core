@@ -22,6 +22,7 @@ type fakeStore struct {
 	hits        map[int64]int
 	upserts     []AnalysisEntryInput
 	refinements map[int64]int
+	prunes      []time.Duration
 }
 
 func newFakeStore(entries ...Entry) *fakeStore {
@@ -97,11 +98,17 @@ func (f *fakeStore) LastFailedExecution(ctx context.Context, entryID int64) (Exe
 	return Execution{}, false, nil
 }
 
+func (f *fakeStore) PruneExecutions(ctx context.Context, olderThan time.Duration) (int64, error) {
+	f.prunes = append(f.prunes, olderThan)
+	return 0, nil
+}
+
 type fakeRegistry struct {
-	executed  []string
-	snapshots []json.RawMessage
-	reverted  []json.RawMessage
-	failOn    string
+	executed   []string
+	snapshots  []json.RawMessage
+	reverted   []json.RawMessage
+	failOn     string
+	failRevert bool
 }
 
 func (f *fakeRegistry) Has(action string) bool {
@@ -128,6 +135,9 @@ func (f *fakeRegistry) Execute(ctx context.Context, action string, params map[st
 
 func (f *fakeRegistry) Revert(ctx context.Context, action string, params map[string]interface{}, snapshot json.RawMessage) (string, error) {
 	f.reverted = append(f.reverted, snapshot)
+	if f.failRevert {
+		return "", errors.New("injected revert failure")
+	}
 	return "reverted:" + action, nil
 }
 
@@ -422,6 +432,75 @@ func TestRevertExecutionUsesSnapshots(t *testing.T) {
 	}
 }
 
+func TestExecuteEntryAutoRollbackOnStepFailure(t *testing.T) {
+	// ★ 审计轮 F1 钉测：多步变更方案在第 2 步失败 ⇒ 第 1 步的变更必须
+	//   就地回滚（快照逆序），且留痕里能看到回滚记录与人工回滚提示。
+	store := newFakeStore(enabledEntry(1, "quota_permanent",
+		Plan{Kind: PlanKindScript, Steps: []PlanStep{
+			{Action: ActionSetSettingsKV, Params: map[string]interface{}{"key": "security.mode", "value": "observe"}},
+			{Action: ActionDisablePIRule, Params: map[string]interface{}{"rule_name": "ghost_rule"}},
+		}}, true, nil))
+	reg := &fakeRegistry{failOn: ActionDisablePIRule}
+	engine := NewEngine(store, reg, nil, nil)
+
+	rec, err := engine.ExecuteEntry(context.Background(), &store.entries[0],
+		Event{ErrorType: "quota_permanent", Occurrences: 1}, TriggerManual)
+	if err == nil {
+		t.Fatal("step failure must surface")
+	}
+	if rec.Status != StatusFailed {
+		t.Fatalf("status=failed expected, got %q", rec.Status)
+	}
+	if len(reg.reverted) != 1 {
+		t.Fatalf("completed mutating step must be auto-reverted: reverted=%d", len(reg.reverted))
+	}
+	if !strings.Contains(string(rec.Steps), "#revert") {
+		t.Fatalf("rollback must be recorded in steps: %s", string(rec.Steps))
+	}
+}
+
+func TestExecuteEntryRevertFailureSurfacesManualHint(t *testing.T) {
+	// 回滚本身失败 ⇒ 原失败不被掩盖，且 errorMessage 必须给出人工回滚指引。
+	store := newFakeStore(enabledEntry(1, "quota_permanent",
+		Plan{Kind: PlanKindScript, Steps: []PlanStep{
+			{Action: ActionSetSettingsKV, Params: map[string]interface{}{"key": "security.mode", "value": "observe"}},
+			{Action: ActionDisablePIRule, Params: map[string]interface{}{"rule_name": "ghost_rule"}},
+		}}, true, nil))
+	reg := &fakeRegistry{failOn: ActionDisablePIRule, failRevert: true}
+	engine := NewEngine(store, reg, nil, nil)
+
+	rec, err := engine.ExecuteEntry(context.Background(), &store.entries[0],
+		Event{ErrorType: "quota_permanent", Occurrences: 1}, TriggerManual)
+	if err == nil || rec.Status != StatusFailed {
+		t.Fatalf("expected failed execution, err=%v status=%q", err, rec.Status)
+	}
+	if !strings.Contains(rec.ErrorMessage, "injected failure: disable_pi_rule") {
+		t.Fatalf("original failure must not be masked: %q", rec.ErrorMessage)
+	}
+	if !strings.Contains(rec.ErrorMessage, "/executions/{id}/revert") {
+		t.Fatalf("manual revert hint missing: %q", rec.ErrorMessage)
+	}
+}
+
+func TestExecuteEntryFailureWithoutSnapshotNoRollbackNoise(t *testing.T) {
+	// 只读步骤失败（record_note 不产生快照）⇒ 没有可回滚对象 ⇒ 留痕里
+	// 不该出现 #revert 噪音。
+	store := newFakeStore(enabledEntry(1, "k",
+		Plan{Kind: PlanKindScript, Steps: []PlanStep{
+			{Action: ActionRecordNote, Params: map[string]interface{}{"message": "x"}},
+		}}, true, nil))
+	reg := &fakeRegistry{failOn: ActionRecordNote}
+	engine := NewEngine(store, reg, nil, nil)
+	rec, err := engine.ExecuteEntry(context.Background(), &store.entries[0],
+		Event{ErrorType: "k", Occurrences: 1}, TriggerManual)
+	if err == nil || rec.Status != StatusFailed {
+		t.Fatalf("injected failure must fail: err=%v status=%q", err, rec.Status)
+	}
+	if len(reg.reverted) != 0 || strings.Contains(string(rec.Steps), "#revert") {
+		t.Fatalf("snapshot-less steps must not produce rollback noise: %s", string(rec.Steps))
+	}
+}
+
 // ── worker 摄取 ─────────────────────────────────────────────────────
 
 type fakeSource struct{ events []Event }
@@ -442,6 +521,27 @@ func TestWorkerRunOnceProcessesWindow(t *testing.T) {
 	}
 	if store.hits[1] != 1 {
 		t.Fatalf("window event not handled: %v", store.hits)
+	}
+	// ★ 审计轮 F6 钉测：首轮会触发一次执行留痕清理（保留期 30 天）。
+	if len(store.prunes) != 1 || store.prunes[0] != playbookRetention {
+		t.Fatalf("retention prune not invoked: %v", store.prunes)
+	}
+}
+
+func TestWorkerRefinePassSkippedWithoutLLM(t *testing.T) {
+	// ★ 审计轮 F3 钉测：LLM 未配置 ⇒ 提炼段整段跳过（不再每轮空转刷 WARN）。
+	last := time.Now().Add(-3 * time.Hour)
+	entry := enabledEntry(1, "quota_permanent", Plan{Kind: PlanKindPrompt, Prompt: "旧指引"}, false, nil)
+	entry.LastStatus = StatusFailed
+	entry.LastExecutedAt = &last
+	store := newFakeStore(entry)
+	engine := NewEngine(store, &fakeRegistry{}, nil, nil) // 无 LLM
+	w := NewWorker(engine, fakeSource{events: []Event{}}, func() Config { return cfgAuto() }, time.Minute)
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce failed: %v", err)
+	}
+	if store.refinements[1] != 0 {
+		t.Fatal("refine pass must be skipped without LLM")
 	}
 }
 

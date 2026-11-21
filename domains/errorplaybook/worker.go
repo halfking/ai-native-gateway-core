@@ -33,6 +33,8 @@ type Worker struct {
 
 	// watermark 初始 = 启动前 15 分钟（重启后有一个小回看窗口，不丢事件）。
 	watermark time.Time
+	// lastPrune 是上次留痕清理时刻（24h 节流；零值 ⇒ 首轮即清一次）。
+	lastPrune time.Time
 	// warnedNotProvisioned 防止表未建时每轮刷 WARN。
 	warnedNotProvisioned bool
 	// warnedDisabled 防止关闭态每轮刷 Info。
@@ -115,7 +117,10 @@ func (w *Worker) runOnce(ctx context.Context) error {
 	}
 
 	// ── 自动完善：标准执行失败的条目带失败上下文重新提炼 ──────────
-	if cfg.Enabled && cfg.AutoAnalyze {
+	//	★ 审计轮（2026-11-21）补 HasLLM 守卫：RefineEntry 的内存 dedup 只在
+	//	提炼**成功**后才置位 ⇒ LLM 未配置时（提炼必失败、dedup 永不置位）
+	//	每个失败条目每轮都会空转一次并刷 WARN。提炼前提是有 LLM。
+	if cfg.Enabled && cfg.AutoAnalyze && w.engine.HasLLM() {
 		candidates, err := w.engine.store.ListRefineCandidates(ctx, cfg.RefineCooldown, 5)
 		if err != nil && !errors.Is(err, ErrNotProvisioned) {
 			slog.Warn("error_playbook: list refine candidates failed", "error", err)
@@ -129,12 +134,32 @@ func (w *Worker) runOnce(ctx context.Context) error {
 		}
 	}
 
+	// ── 执行留痕保留期清理（审计轮 2026-11-21 新增）────────────────
+	//	命中/跳过/待确认都会落一行留痕，错误风暴下表会持续增长 ⇒ 每 24h
+	//	清一次超过保留期（默认 30 天）的旧行。清理失败只 WARN（下轮再试），
+	//	绝不影响本轮的错误处理。
+	if cfg.Enabled && time.Since(w.lastPrune) >= 24*time.Hour {
+		if n, err := w.engine.store.PruneExecutions(ctx, playbookRetention); err != nil {
+			if !errors.Is(err, ErrNotProvisioned) {
+				slog.Warn("error_playbook: prune executions failed", "error", err)
+			}
+		} else if n > 0 {
+			slog.Info("error_playbook: pruned old executions", "rows", n, "retention", playbookRetention.String())
+		}
+		w.lastPrune = time.Now()
+	}
+
 	if watermark.After(w.watermark) {
 		w.watermark = watermark
 	}
 	w.engine.MarkRun(now)
 	return nil
 }
+
+// playbookRetention 是执行留痕的保留期（审计轮 2026-11-21：30 天，
+// 覆盖「事故复盘窗口」；错误风暴下 awaiting_approval/skipped 每轮各一行，
+// 无保留期 ⇒ 表无限增长）。
+const playbookRetention = 30 * 24 * time.Hour
 
 // SQLSource 是 ErrorSource 的 SQL 实现（candidate_failure_logs_hot）。
 //

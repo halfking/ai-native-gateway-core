@@ -31,6 +31,17 @@ func planInvalid(format string, args ...interface{}) error {
 	return &ErrPlanInvalid{msg: fmt.Sprintf(format, args...)}
 }
 
+// RouteChecker 是 ActionRegistry 的**可选**扩展：报告某 (method, path)
+// 是否已登记为可执行的内部路由。
+//
+//	★ 审计轮（2026-11-21）引入：api 形态方案在**归一化期**就 fail-fast
+//	（此前要到执行期才发现路由未登记 ⇒ 条目每次标准执行必失败 ⇒ 失败
+//	进提炼循环空转）。LLM 提案引用未登记路由时，归一化即拒绝 ⇒
+//	AnalyzeUnknown 走 prompt 兜底（手册仍落库，不再制造执行循环）。
+type RouteChecker interface {
+	HasRoute(method, path string) bool
+}
+
 // NormalizePlan 把自由形状的方案 payload 归一化并校验。
 //
 //	kind 为空时尝试从 payload 推断（{"kind": "..."} 或 {"steps": [...]}）。
@@ -66,6 +77,13 @@ func NormalizePlan(kind string, raw json.RawMessage, registry ActionRegistry) (P
 		api, err := normalizeAPIShape(top)
 		if err != nil {
 			return Plan{}, err
+		}
+		// ★ 路由 fail-fast（审计轮 2026-11-21）：registry 支持路由查询时，
+		//   未登记的 (method, path) 在归一化期即拒绝（执行期才发现会制造
+		//   「失败 → 提炼 → 再失败」循环）。
+		if rc, ok := registry.(RouteChecker); ok && !rc.HasRoute(api.Method, api.Path) {
+			return Plan{}, planInvalid("api plan route %s %s is not registered as an executable internal route",
+				api.Method, api.Path)
 		}
 		plan = api
 

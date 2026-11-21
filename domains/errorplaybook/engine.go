@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -309,8 +310,21 @@ func (e *Engine) ExecuteEntry(ctx context.Context, entry *Entry, ev Event, trigg
 			steps = append(steps, slogStep)
 		}
 		if failed {
+			// ★ 审计轮（2026-11-21）补：失败自动回滚（best-effort）。
+			//   PI ApplyFix 是事务内 all-or-nothing；本执行器的动作各有独立
+			//   副作用（写 settings_kv / 禁规则），不在同一事务 ⇒ 多步方案
+			//   在第 N 步失败时，前 N-1 步的变更必须就地回滚，否则「执行
+			//   失败」与「生产状态已变」并存。回滚按快照逆序逐条执行；
+			//   回滚失败不掩盖原失败（errorMessage 追加提示，人工可再走
+			//   /executions/{id}/revert）。
+			reverted, revertErrs := e.rollbackCompletedSteps(ctx, steps)
+			steps = append(steps, reverted...)
 			rec.Status = StatusFailed
 			rec.ErrorMessage = failErr.Error()
+			if len(revertErrs) > 0 {
+				rec.ErrorMessage += "；自动回滚部分失败（" + strings.Join(revertErrs, "; ") +
+					"），请按执行留痕快照走 /executions/{id}/revert 人工回滚"
+			}
 		} else {
 			rec.Status = StatusSucceeded
 		}
@@ -329,6 +343,35 @@ func (e *Engine) ExecuteEntry(ctx context.Context, entry *Entry, ev Event, trigg
 		recErr := e.store.RecordExecution(ctx, rec)
 		return rec, recErr
 	}
+}
+
+// rollbackCompletedSteps 按快照逆序回滚已完成步骤（失败自动回滚的执行体）。
+//
+//	返回回滚留痕（追加进执行 steps）与失败清单（人工回滚提示用）。
+//	★ 无快照的步骤（record_note / 只读 api）不产生回滚条目——它们没有
+//	生产副作用，回滚它们只会制造噪音。
+func (e *Engine) rollbackCompletedSteps(ctx context.Context, steps []StepLog) ([]StepLog, []string) {
+	var (
+		rolled   []StepLog
+		failures []string
+	)
+	for i := len(steps) - 1; i >= 0; i-- {
+		st := steps[i]
+		if st.Status != "ok" || len(st.Snapshot) == 0 || string(st.Snapshot) == "null" {
+			continue
+		}
+		rb := StepLog{Step: st.Step, Action: st.Action + "#revert", Status: "ok"}
+		result, err := e.actions.Revert(ctx, st.Action, nil, st.Snapshot)
+		if err != nil {
+			rb.Status = "failed"
+			rb.Error = err.Error()
+			failures = append(failures, fmt.Sprintf("step %d(%s): %v", st.Step, st.Action, err))
+		} else {
+			rb.Result = result
+		}
+		rolled = append(rolled, rb)
+	}
+	return rolled, failures
 }
 
 // executePromptPlan 跑一段 AI 执行提示词（把错误上下文与日志摘要交给 LLM）。

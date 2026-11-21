@@ -475,36 +475,21 @@ func (h *ErrorPlaybookHandler) handleAnalyze(w http.ResponseWriter, r *http.Requ
 
 // handleStats 手册统计（条目分布 + 执行分布 + 链路状态）。
 func (h *ErrorPlaybookHandler) handleStats(w http.ResponseWriter, r *http.Request) {
-	all := true
-	entries, _, err := h.store.ListEntries(r.Context(), errorplaybook.ListFilter{Enabled: &all, Limit: 200})
-	bySource := map[string]int64{}
-	byKind := map[string]int64{}
-	enabledCount := int64(0)
-	autoExecCount := int64(0)
-	if err == nil {
-		for _, e := range entries {
-			bySource[e.Source]++
-			byKind[e.PlanKind]++
-			if e.Enabled {
-				enabledCount++
-			}
-			if e.AutoExecute {
-				autoExecCount++
-			}
-		}
-	}
+	// ★ 审计轮（2026-11-21）：条目统计改 SQL 聚合（EntrySummary）——
+	//   原实现走 ListEntries(Limit 200) 逐行累加 ⇒ 条目 >200 时静默欠数。
+	entrySummary, entryErr := h.store.EntrySummary(r.Context())
 	execSummary, execErr := h.store.ExecutionSummary(r.Context())
 
 	stats := map[string]interface{}{
-		"entries_by_plan_kind": byKind,
-		"enabled_entries":      enabledCount,
-		"auto_execute_entries": autoExecCount,
-		"engine_wired":         h.engine != nil,
-		"llm_wired":            h.engine != nil && h.engine.HasLLM(),
+		"engine_wired": h.engine != nil,
+		"llm_wired":    h.engine != nil && h.engine.HasLLM(),
 	}
-	if err == nil {
-		stats["entries_by_source"] = bySource
-		stats["entries_listed"] = len(entries)
+	if entryErr == nil {
+		stats["total_entries"] = entrySummary.Total
+		stats["enabled_entries"] = entrySummary.Enabled
+		stats["auto_execute_entries"] = entrySummary.AutoExecute
+		stats["entries_by_source"] = entrySummary.BySource
+		stats["entries_by_plan_kind"] = entrySummary.ByPlanKind
 	}
 	if execErr == nil {
 		stats["executions"] = execSummary
@@ -515,10 +500,10 @@ func (h *ErrorPlaybookHandler) handleStats(w http.ResponseWriter, r *http.Reques
 			stats["last_run_at"] = t
 		}
 	}
-	if err != nil && !errors.Is(err, errorplaybook.ErrNotProvisioned) {
+	if entryErr != nil && !errors.Is(entryErr, errorplaybook.ErrNotProvisioned) {
 		stats["entries_error"] = "query failed (see server log)"
 	}
-	if errors.Is(execErr, errorplaybook.ErrNotProvisioned) || errors.Is(err, errorplaybook.ErrNotProvisioned) {
+	if errors.Is(execErr, errorplaybook.ErrNotProvisioned) || errors.Is(entryErr, errorplaybook.ErrNotProvisioned) {
 		stats["provisioned"] = false
 	} else {
 		stats["provisioned"] = true

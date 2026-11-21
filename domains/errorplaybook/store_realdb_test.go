@@ -191,6 +191,112 @@ func TestRealDBPlaybookStoreContract(t *testing.T) {
 	if pat.ID == entry.ID {
 		t.Fatal("type-level and pattern entries must be distinct rows")
 	}
+
+	// ⑧ 审计轮 F2：提炼守卫——失败条目在提炼后不再是候选（提炼标记行
+	//   判据；updated_at 触发器使时间戳比较在真库恒失效——首版守卫被
+	//   本测试当场打回）。★ 时序注记：步骤 ⑥ 的提炼已写过一条 NOW() 的
+	//   标记 ⇒ 本段先清掉它再建模「失败在前、未提炼」的初始态。
+	if _, err := db.ExecContext(ctx, `
+		DELETE FROM error_playbook_executions
+		WHERE entry_id = $1 AND trigger_source = 'refinement'`, entry.ID); err != nil {
+		t.Fatalf("clear old refinement markers: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE error_playbook_entries SET last_status='failed',
+		       last_executed_at = NOW() - interval '3 hours'
+		WHERE id = $1`, entry.ID); err != nil {
+		t.Fatalf("backdate failure state: %v", err)
+	}
+	cands, err := store.ListRefineCandidates(ctx, 2*time.Hour, 5)
+	if err != nil {
+		t.Fatalf("list refine candidates: %v", err)
+	}
+	found := false
+	for _, c := range cands {
+		if c.ID == entry.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("failed entry must be a refine candidate before refinement")
+	}
+	if err := store.UpdatePlanFromRefinement(ctx, entry.ID, Plan{Kind: PlanKindPrompt, Prompt: "v2"}, "t", "rc", 0.9); err != nil {
+		t.Fatalf("refine: %v", err)
+	}
+	cands2, err := store.ListRefineCandidates(ctx, 2*time.Hour, 5)
+	if err != nil {
+		t.Fatalf("list refine candidates after refinement: %v", err)
+	}
+	for _, c := range cands2 {
+		if c.ID == entry.ID {
+			t.Fatal("refined entry must NOT remain a refine candidate (audit F2 guard)")
+		}
+	}
+	// 再次失败（真实次序：失败时间晚于旧提炼标记 ⇒ 重新成为候选）。
+	//   模拟方式：把标记回拨到失败之前（真实场景里 BumpExecutionCounters
+	//   会把 last_executed_at 推到 NOW()，自然晚于旧标记）。
+	if _, err := db.ExecContext(ctx, `
+		UPDATE error_playbook_entries SET last_status='failed',
+		       last_executed_at = NOW() - interval '3 hours'
+		WHERE id = $1`, entry.ID); err != nil {
+		t.Fatalf("re-fail state: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE error_playbook_executions SET created_at = NOW() - interval '4 hours'
+		WHERE entry_id = $1 AND trigger_source = 'refinement'`, entry.ID); err != nil {
+		t.Fatalf("backdate refinement marker: %v", err)
+	}
+	cands3, err := store.ListRefineCandidates(ctx, 2*time.Hour, 5)
+	if err != nil {
+		t.Fatalf("list refine candidates after re-failure: %v", err)
+	}
+	found = false
+	for _, c := range cands3 {
+		if c.ID == entry.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("re-failed entry (failure later than refinement marker) must re-qualify as candidate")
+	}
+
+	// ⑨ 审计轮 F6：PruneExecutions 只删超保留期的行。
+	var oldExecID int64
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO error_playbook_executions
+			(entry_id, error_type, trigger_source, status, executed_by, created_at)
+		VALUES ($1, 'pb_realdb_test_kind', 'manual', 'succeeded', 'realdb_test', NOW() - interval '60 days')
+		RETURNING id`, entry.ID).Scan(&oldExecID); err != nil {
+		t.Fatalf("insert old execution: %v", err)
+	}
+	var freshExecID int64
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO error_playbook_executions
+			(entry_id, error_type, trigger_source, status, executed_by)
+		VALUES ($1, 'pb_realdb_test_kind', 'manual', 'succeeded', 'realdb_test')
+		RETURNING id`, entry.ID).Scan(&freshExecID); err != nil {
+		t.Fatalf("insert fresh execution: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(),
+			`DELETE FROM error_playbook_executions WHERE executed_by='realdb_test'`)
+	})
+	deleted, err := store.PruneExecutions(ctx, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	var aliveOld, aliveFresh int
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM error_playbook_executions WHERE id=$1`, oldExecID).Scan(&aliveOld)
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM error_playbook_executions WHERE id=$1`, freshExecID).Scan(&aliveFresh)
+	if aliveOld != 0 {
+		t.Fatal("60-day-old execution must be pruned")
+	}
+	if aliveFresh != 1 {
+		t.Fatal("fresh execution must survive pruning")
+	}
+	if deleted < 1 {
+		t.Fatalf("prune must report deleted rows, got %d", deleted)
+	}
 }
 
 // jsonUnmarshalSteps 解执行留痕（真库 JSONB → []byte → 结构）。

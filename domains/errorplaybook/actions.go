@@ -126,6 +126,23 @@ func (b *BuiltinActions) Names() []string {
 	return []string{ActionRecordNote, ActionSetSettingsKV, ActionDisablePIRule, ActionCallAdminAPI}
 }
 
+// HasRoute implements RouteChecker：报告 (method, path) 是否已登记。
+//
+//	★ 供 NormalizePlan 的 api 形态做归一化期 fail-fast（执行期才发现
+//	未登记路由 ⇒ 「失败 → 提炼 → 再失败」循环）。
+func (b *BuiltinActions) HasRoute(method, path string) bool {
+	key := routeKey(method, path)
+	if _, ok := b.extraRoutes[key]; ok {
+		return true
+	}
+	for _, r := range b.builtinRoutes() {
+		if routeKey(r.Method, r.Path) == key {
+			return true
+		}
+	}
+	return false
+}
+
 // Execute implements ActionRegistry.
 func (b *BuiltinActions) Execute(ctx context.Context, action string, params map[string]interface{}, ev *Event) (json.RawMessage, string, error) {
 	switch action {

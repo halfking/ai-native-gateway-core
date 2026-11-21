@@ -1,0 +1,7 @@
+16-request-logs-probe-scope  rc=0   FAILED=0    WARNED=2
+15-board-probe-scope         rc=0   FAILED=0    WARNED=2
+11-simple-overview           rc=0   FAILED=0    WARNED=4
+12-live-stage-tree           rc=0   FAILED=0    WARNED=2
+13-board-operational         rc=0   FAILED=0    WARNED=17
+14-stats-consistency-test    rc=0   FAILED=0    WARNED=0
+zz-aligned-row-probe         rc=0   FAILED=0    WARNED=0

@@ -1,0 +1,76 @@
+=== 2026-11-21 211 会话分析「应用筛选」按钮语义修复 + 三层 E2E 全绿证据 ===
+
+[本轮交付] 会话分析 3 个排行页（人员 / 智能体 / 模型）筛选栏 primary 按钮的**语义错配**：
+  旧：按钮自称「应用区间」（i18n 键 sessionAnalytics.range.apply），实际 @click=applyFilters
+      ⇒ applyFilters 应用的是 project 筛选 + 排序（sort_by / order），与时间区间无关
+      ⇒ 区间控件在页头 PageHeader 里，离这个按钮很远 ⇒ 用户找不到区间与它的关系
+  新：键**迁移**到 sessionAnalytics.filter.apply，8 语种值同步改为「应用筛选」语义
+      （迁移而非「新增+保留」⇒ range.apply 在 8 语种里根本不存在 ⇒ 无死键 / 无悬空键，键总数不变）
+  提交：8238f6a3d（文案修复主提交）→ 部署目标 tip 5b4d28ca
+
+[版本身份链]
+  部署前现役：2.6.1-e3bc0026-20261121-211 seq 3187（槽 b / 8783）
+  本轮部署：5b4d28ca → 211 蓝绿，DEPLOY_EXIT=0，槽 a 接管 8781，
+            nginx upstream 8783 → 8781 已 reload，旧槽 b 停机保留可回滚
+  现役身份：2.6.1-5b4d28ca-20261121-211，git_sha=5b4d28ca（**干净无 -dirty**）
+  E2E 跑前身份：git_sha=5b4d28ca seq 3188
+  E2E 跑后身份：git_sha=5b4d28ca seq 3189（git_sha 相同、仅 seq 重发 ⇒ 内容稳定，未跨树切换）
+  并行车同期同树重发一次（seq 3188→3189，目标同为 5b4d28ca）⇒ 审计链未跨树
+
+[第一层 Maestro flow：maestro/flows/16-session-analytics-system.yaml]
+  flow rc=0 FAILED=0
+[第二层 CDP 探针：maestro/tools/assert-session-analytics.mjs]
+  RESULT: PASS（58 条）
+  关键对拍（同源逐字）：会话总数 18,244==18244；活跃人员 6==6；内部成本(美元) 6,450.21==6450.212…；
+  外部成本(积分) 0==0；排行首行 kaixuan-1==users[0]；模型首行 minimax-m3.1-flash==models[0]（16,138==16138）
+[第三层 CDP 探针：maestro/tools/assert-filter-button.mjs（本轮新增）】
+  RESULT: PASS（20 条）
+  · 3 个排行页 .sa-btn--primary 文本实测 === 「应用筛选」；旧文案「应用区间」在页面上读不到
+  · 点击后按新排序发起请求：/api/admin/session-analytics/{user,agent,model}-ranking?…order=asc（改动前 order=desc）
+  · 请求的 start_date / end_date 未被按钮改动（2026-11-15 / 2026-11-21）
+  · 区间控件显示值点击前后不变（before="11/15 – 11/21" after="11/15 – 11/21"）⇒ 它**不是**区间开关
+  ⇒ 这 20 条是 8238f6a3d 键迁移在生产上的**直接行为级证据**（既有两层都不覆盖该按钮）
+
+[本轮量具修正①] maestro/run-session-analytics.sh 的凭据变量名映射缺口
+  脚本注释声称「缺省从仓根 .env.local 读」，实现也 source 了 .env.local，
+  但 .env.local 的键是 LLM_GATEWAY_ADMIN_USER / LLM_GATEWAY_ADMIN_PASSWORD，
+  而脚本认 ADMIN_USER / ADMIN_PASSWORD ⇒ source 成功也不会产生 ADMIN_* ⇒
+  凭据判定处必然 exit 1（实测裸跑报「行 99: 需要 ADMIN_USER」）。
+  同型检查：run-local.sh / run-mock-only.sh / run-board-probe-scope.sh 均自洽 ⇒ 仅本 runner 有缺口。
+  修法：source 后做变量名映射（显式 ADMIN_* 优先于 .env.local 的 LLM_GATEWAY_ADMIN_*）；
+  修后**裸跑 runner**（不 export 任何凭据）即可跑通三层 ⇒ 修复端到端生效。
+
+[本轮量具修正②] 第三层探针接入 runner
+  复用第二层的 Chrome（SA_CDP_PORT）：两个探针各自 Target.createTarget 开新 tab ⇒ 互不干扰，
+  且省掉第三个浏览器实例（起三个 Chrome 的内存与端口风险都不值）。
+  判定合并改为「红 > 量具失效 > 绿」三态，与 maestro/tools/result.mjs（仓内唯一真源）同口径。
+
+[踩坑记录] ★ **运行中的脚本不能改**：bash 是逐行流式读取脚本文件的，
+  中途改写文件内容（哪怕只加几行注释）会让后续字节偏移错乱 ⇒
+  实测报出行 233 `$'\200─────': 未找到命令`，并把已跑完的 flow 又跑了一遍 ⇒ 该轮结果作废重跑。
+  ⇒ 通用式：改脚本前先确认没有同名脚本在跑；「跑完再改」比「边跑边改」便宜一个数量级。
+
+[登录凭据] admin（super_admin，user_id=41，display_name=系统管理员），口令取自仓外 ../llm-gateway-go/.env.local
+  （runner 修好后可自行读取，命令行不出现明文）——★ 多账号时代判据②③已参数化为 ${ADMIN_DISPLAY_NAME}，
+  默认值放调用侧 ⇒ 用 demoadmin（display_name=演示管理员）时须由调用方 -e 覆盖。
+
+[产物] maestro/reports/20261121-133737/（两层）、maestro/reports/20261121-134259/（三层复验）
+
+[收尾复核] E2E 全绿之后，现役被并行车再次切走
+  现役身份：2.6.1-23b9d32b-dirty-20261121-211 seq 3190（git_sha 带 **-dirty**）
+  ★ 该 commit 不在本地任何 ref（并行车用自己的**未推送脏树**部署）⇒ **git 层无法验证包含关系**
+    （git cat-file / merge-base --is-ancestor 均报「Not a valid object name」）
+  ⇒ 改用**行为级证据反证**：在该身份下重跑第三层探针 ⇒ RESULT: PASS（20 条）全绿，
+    按钮文案实测仍是「应用筛选」（若该树不含 8238f6a3d，按钮会显示旧文案「应用区间」）
+    ⇒ 行为证据证明本轮运行时改动**在现役树内** ⇒ 审计链不因 dirty 身份而断裂。
+  ⇒ 通用式：**当现役身份不可验证（dirty / 未推送 / 对象不在本地 ref）时，
+    一条针对性的行为断言可以反证「我的改动在不在现役树里」**——
+    它测的是**产物**而不是提交图，比 git merge-base 更硬。
+
+[本轮提交面（审计用）]
+  8238f6a3d  文案修复主提交（运行时）：3 个视图 + 8 语种 locale
+  5b4d28ca  部署目标 tip（运行时，含 8238f6a3d）⇒ 本轮生产部署与验证的身份
+  097cb9595  测试资产提交（**无运行时改动**）：maestro/run-session-analytics.sh
+             （凭据变量名映射修复 + 第三层接入 + 三态判定合并）、
+             maestro/tools/assert-filter-button.mjs（新增第三层探针）、本证据文件
+  ⇒ 097cb9595 只含 maestro/ 与 docs/audit/evidence/ ⇒ 不构成运行时变更 ⇒ **无需重新部署**

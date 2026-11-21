@@ -182,6 +182,28 @@ func TestCallAdminAPIRejectsUnregisteredRoute(t *testing.T) {
 	}
 }
 
+func TestNormalizePlanAPIRouteFailFast(t *testing.T) {
+	// ★ 审计轮 F4 钉测：api 形态方案引用未登记路由 ⇒ **归一化期即拒绝**
+	// （执行期才发现会制造「失败 → 提炼 → 再失败」循环）。
+	b := NewBuiltinActions(nil, nil)
+	_, err := NormalizePlan(PlanKindAPI, mustJSON(t, map[string]interface{}{
+		"method": "POST", "path": "/api/admin/credentials/wipe",
+	}), b)
+	if err == nil || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("unregistered route must be rejected at normalize time, got: %v", err)
+	}
+	// 已登记路由（内置 pi-analysis/trigger）⇒ 通过。
+	plan, err := NormalizePlan(PlanKindAPI, mustJSON(t, map[string]interface{}{
+		"method": "POST", "path": "/api/admin/pi-analysis/trigger",
+	}), b)
+	if err != nil {
+		t.Fatalf("registered route must pass: %v", err)
+	}
+	if len(plan.Steps) != 1 {
+		t.Fatalf("unexpected plan: %+v", plan)
+	}
+}
+
 func TestCallAdminAPIRegisteredRoute(t *testing.T) {
 	called := false
 	b := NewBuiltinActions(nil, []AdminRoute{{
