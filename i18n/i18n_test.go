@@ -49,6 +49,7 @@ var allMessageKeys = []string{
 	MsgRateLimitExceeded,
 	MsgBudgetExhausted,
 	MsgInsufficientCredits,
+	MsgTenantBudgetExceeded,
 	MsgSessionForbidden,
 	MsgSessionAssignFailed,
 	MsgBlocked,

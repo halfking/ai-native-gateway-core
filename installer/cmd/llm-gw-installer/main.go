@@ -1878,6 +1878,19 @@ var errorPlaybook995 []byte
 //go:embed embeddata/startup/995_error_playbook.down.sql
 var errorPlaybook995Down []byte
 
+// ★ 996（2026-11-21 青岛联通方案 W1-Q1）：tenant_budgets enforcement_mode ——
+//
+//	租户月度预算硬拦截开关。warn（默认）=仅告警不拦截（存量行为零变化）；
+//	hard=当月花费（credits×cents_per_credit，与 maas_monthly_bills 同源）
+//	达 monthly_budget_cents ⇒ 网关 429 tenant_budget_exceeded
+//	（default 租户与内部 key 豁免）。幂等加列 + 闭集 CHECK DO 块。
+//
+//go:embed embeddata/startup/996_tenant_budget_enforcement_mode.sql
+var tenantBudgetEnforcementMode996 []byte
+
+//go:embed embeddata/startup/996_tenant_budget_enforcement_mode.down.sql
+var tenantBudgetEnforcementMode996Down []byte
+
 // ★ 960（2026-11-12 批判复审轮）：迁移记账连续性修复 —— 950/951/957/958 四个
 //
 //	迁移文件缺 schema_migrations 自登记行 ⇒ 211/245/252 记账链三处断层；
@@ -2520,6 +2533,9 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 995（2026-11-20 错误处理手册轮）：error_playbook 两表 + 种子条目。
 	"startup/995_error_playbook.sql":      errorPlaybook995,
 	"startup/995_error_playbook.down.sql": errorPlaybook995Down,
+	// ★ 996（2026-11-21 青岛联通方案 W1-Q1）：tenant_budgets enforcement_mode。
+	"startup/996_tenant_budget_enforcement_mode.sql":      tenantBudgetEnforcementMode996,
+	"startup/996_tenant_budget_enforcement_mode.down.sql": tenantBudgetEnforcementMode996Down,
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,

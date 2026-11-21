@@ -17,6 +17,9 @@
   "insufficient_credits": {
     "other": "額度不足，請訂閱或購買儲值包。"
   },
+  "tenant_budget_exceeded": {
+    "other": "本租戶月度預算已達上限。在預算上調或新帳月開始前，請求將被攔截。"
+  },
   "SESSION_FORBIDDEN": {
     "other": "該工作階段不屬於此 API 金鑰"
   },

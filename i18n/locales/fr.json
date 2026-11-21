@@ -17,6 +17,9 @@
   "insufficient_credits": {
     "other": "Crédits insuffisants. Veuillez vous abonner ou acheter un forfait de recharge."
   },
+  "tenant_budget_exceeded": {
+    "other": "Le budget mensuel de ce tenant est épuisé. Les requêtes sont bloquées jusqu'à ce que le budget soit augmenté ou qu'un nouveau mois de facturation commence."
+  },
   "SESSION_FORBIDDEN": {
     "other": "cette session n'appartient pas à cette clé API"
   },

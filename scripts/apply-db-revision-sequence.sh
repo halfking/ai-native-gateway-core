@@ -2811,6 +2811,13 @@ files=(
   #     种子 ON CONFLICT DO NOTHING）⇒ 内容指纹重放零冲突。
   #   ★ 零外部依赖 ⇒ 位置只受编号序约束（排在 994 之后）。
   "$ROOT_DIR/sql/migrations/startup/995_error_playbook.sql"
+  # ★ 996（2026-11-21 青岛联通方案 W1-Q1）：tenant_budgets enforcement_mode ——
+  #   租户月度预算硬拦截开关（warn 默认仅告警零变化；hard 达限网关
+  #   429 tenant_budget_exceeded，default 租户与内部 key 豁免）。
+  #   ★ 幂等（ADD COLUMN IF NOT EXISTS + 闭集 CHECK DO 块）⇒ 内容指纹重放零冲突。
+  #   ★ 新迁移而非改 938 字节：938 已 applied+verified（245 部署）
+  #     ⇒ 改字节走 content replay 连锁 break（914/928 教训，同 929/930 处置）。
+  "$ROOT_DIR/sql/migrations/startup/996_tenant_budget_enforcement_mode.sql"
 )
 
 
@@ -3631,6 +3638,12 @@ ledger_artifact_probe "994_session_analytics_owner_key_and_close_path.sql" \
 #   只针对物化视图）。
 ledger_artifact_probe "995_error_playbook.sql" \
   "to_regclass('public.error_playbook_entries') IS NOT NULL AND to_regclass('public.error_playbook_executions') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='error_playbook_entries' AND indexname='uq_error_playbook_type_pattern') = 1 AND (SELECT count(*) FROM public.error_playbook_entries WHERE source='seed') >= 5"
+# ★ 1000 的产物 = enforcement_mode 列 + 闭集 CHECK（表是 938 的产物 ⇒ 本探针
+#   只点本迁移引入的部分；pg_constraint 口径对 CHECK 约束稳定）。
+#   ★ 列默认值探针用 information_schema（列是普通列 ⇒ 口径正确，994 的
+#     pg_catalog 教训只针对物化视图）。
+ledger_artifact_probe "996_tenant_budget_enforcement_mode.sql" \
+  "to_regclass('public.tenant_budgets') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='tenant_budgets' AND column_name='enforcement_mode' AND column_default LIKE '%warn%') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='tenant_budgets_enforcement_mode_check' AND conrelid='public.tenant_budgets'::regclass) = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

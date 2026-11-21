@@ -184,7 +184,10 @@ type TenantBudget struct {
 	BalanceAlertThreshold float64        `json:"balance_alert_threshold"`
 	QuotaAlertThreshold   float64        `json:"quota_alert_threshold"`
 	NotifyChannels        map[string]any `json:"notify_channels"`
-	UpdatedAt             string         `json:"updated_at,omitempty"`
+	// 2026-11-21（迁移 996，W1-Q1）：执行模式。warn=仅告警不拦截（默认，
+	// 存量行为零变化）；hard=达限网关 429 tenant_budget_exceeded。
+	EnforcementMode string `json:"enforcement_mode"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 // GetTenantBudget reads the tenant's budget row; missing row = zero budget
@@ -197,10 +200,10 @@ func (s *Service) GetTenantBudget(ctx context.Context, tenantID string) (TenantB
 	var channels []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT monthly_budget_cents, balance_alert_threshold::float8,
-		       quota_alert_threshold::float8, notify_channels, updated_at::text
+		       quota_alert_threshold::float8, notify_channels, enforcement_mode, updated_at::text
 		FROM tenant_budgets WHERE tenant_id = $1
 	`, tenantID).Scan(&out.MonthlyBudgetCents, &out.BalanceAlertThreshold,
-		&out.QuotaAlertThreshold, &channels, &out.UpdatedAt)
+		&out.QuotaAlertThreshold, &channels, &out.EnforcementMode, &out.UpdatedAt)
 	if err != nil {
 		// ★ 用 errors.Is 判「无行」：本仓 maas 包内的既有口径一律如此
 		//   （bills.go / coupons.go / orders.go / service.go）。原先这里
@@ -220,7 +223,8 @@ func (s *Service) GetTenantBudget(ctx context.Context, tenantID string) (TenantB
 
 // UpsertTenantBudget creates/updates the tenant's own budget row (938).
 // RLS 是租户隔离载体，但本路径仍以应用层 tenant_id 参数为单一来源。
-func (s *Service) UpsertTenantBudget(ctx context.Context, tenantID string, monthlyBudgetCents int64, balanceAlert, quotaAlert float64, notifyChannels map[string]any) (TenantBudget, error) {
+// enforcementMode ∈ {warn, hard}（迁移 996 闭集；空串 = 保持/落默认 warn）。
+func (s *Service) UpsertTenantBudget(ctx context.Context, tenantID string, monthlyBudgetCents int64, balanceAlert, quotaAlert float64, notifyChannels map[string]any, enforcementMode string) (TenantBudget, error) {
 	if !s.Enabled() {
 		return TenantBudget{}, fmt.Errorf("maas service not enabled")
 	}
@@ -233,6 +237,14 @@ func (s *Service) UpsertTenantBudget(ctx context.Context, tenantID string, month
 	if balanceAlert < 0 || balanceAlert > 1 || quotaAlert < 0 || quotaAlert > 1 {
 		return TenantBudget{}, fmt.Errorf("alert thresholds must be within [0,1]")
 	}
+	switch enforcementMode {
+	case "", BudgetEnforcementWarn, BudgetEnforcementHard:
+	default:
+		return TenantBudget{}, fmt.Errorf("enforcement_mode must be one of: warn, hard")
+	}
+	if enforcementMode == "" {
+		enforcementMode = BudgetEnforcementWarn
+	}
 	if notifyChannels == nil {
 		notifyChannels = map[string]any{}
 	}
@@ -241,15 +253,16 @@ func (s *Service) UpsertTenantBudget(ctx context.Context, tenantID string, month
 		return TenantBudget{}, err
 	}
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO tenant_budgets (tenant_id, monthly_budget_cents, balance_alert_threshold, quota_alert_threshold, notify_channels)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO tenant_budgets (tenant_id, monthly_budget_cents, balance_alert_threshold, quota_alert_threshold, notify_channels, enforcement_mode)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (tenant_id) DO UPDATE
 		   SET monthly_budget_cents = EXCLUDED.monthly_budget_cents,
 		       balance_alert_threshold = EXCLUDED.balance_alert_threshold,
 		       quota_alert_threshold = EXCLUDED.quota_alert_threshold,
 		       notify_channels = EXCLUDED.notify_channels,
+		       enforcement_mode = EXCLUDED.enforcement_mode,
 		       updated_at = now()
-	`, tenantID, monthlyBudgetCents, balanceAlert, quotaAlert, channels); err != nil {
+	`, tenantID, monthlyBudgetCents, balanceAlert, quotaAlert, channels, enforcementMode); err != nil {
 		return TenantBudget{}, err
 	}
 	return s.GetTenantBudget(ctx, tenantID)

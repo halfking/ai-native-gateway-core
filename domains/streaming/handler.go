@@ -2896,6 +2896,50 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
+	// ── Tenant monthly budget gate (938 enforcement_mode, migration 996) ──
+	// W1-Q1（2026-11-21 青岛联通方案）：warn（默认）= 仅告警零变化；
+	// hard = 当月花费达 monthly_budget_cents ⇒ 429 tenant_budget_exceeded。
+	// 豁免与 MaaS credits pre-check 同口径：default 租户（管理面/平台自身
+	// 所在租户）+ 内部回环 key（IsInternal，探针旁路）。花费口径与
+	// maas_monthly_bills 同源（sumPeriodConsumption × cents_per_credit）
+	// —— 门与账单不能打架。
+	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" && !keyInfo.IsInternal {
+		verdict, err := h.maasSvc.CheckMonthlyBudget(r.Context(), keyInfo.TenantID)
+		if err != nil {
+			var checkErr *maas.TenantBudgetCheckError
+			if errors.As(err, &checkErr) && checkErr.Mode == maas.BudgetEnforcementHard {
+				// 门适用性已确认（hard）但花费查不出来 =「不知道超没超」
+				// ≠「没超」⇒ fail-closed 503，与 api key 预算门 R89-133
+				// 同纪律（budget_failclosed_test.go 钉死的语义）。
+				slog.Error("tenant budget check failed in hard mode, failing closed",
+					"request_id", requestID,
+					"tenant_id", keyInfo.TenantID,
+					"error", err)
+				captureAndEmitFailure("tenant_budget_unavailable", "tenant budget check unavailable", nil, nil, http.StatusServiceUnavailable)
+				writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+					"Tenant budget check temporarily unavailable", "server_error", "tenant_budget_unavailable")
+				return
+			}
+			// 预算行没读到（适用性未知）或 warn 模式故障：门默认不承重
+			//（938 A-15 欠费默认放行），放行 + 响亮记日志。
+			slog.Warn("tenant budget check failed; failing open (non-hard or applicability unknown)",
+				"request_id", requestID,
+				"tenant_id", keyInfo.TenantID,
+				"error", err)
+		} else if verdict != nil && verdict.Over {
+			if verdict.EnforcementMode == maas.BudgetEnforcementHard {
+				captureAndEmitFailure("tenant_budget_exceeded", "tenant monthly budget exceeded (hard mode)", nil, nil, http.StatusTooManyRequests)
+				writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "insufficient_quota", i18n.MsgTenantBudgetExceeded, nil)
+				return
+			}
+			// warn 模式：只告警不拦截（存量行为零变化）。
+			slog.Warn("tenant monthly budget exceeded (warn mode, not blocking)",
+				"tenant_id", keyInfo.TenantID,
+				"spent_cents", verdict.SpentCents,
+				"budget_cents", verdict.MonthlyBudgetCents)
+		}
+	}
+
 	// ── Inject API Key info into context for session middleware ─────────
 	ctx := r.Context()
 	if keyInfo != nil {

@@ -1995,6 +1995,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     种子 ON CONFLICT DO NOTHING）⇒ 内容指纹重放零冲突。
 			//   ★ 零外部依赖（不引用其他迁移的产物）⇒ 位置只受编号序约束。
 			"995_error_playbook.sql",
+			// ★ 996（2026-11-21 青岛联通方案 W1-Q1）：tenant_budgets
+			//   enforcement_mode —— 租户月度预算硬拦截开关（warn 默认仅告警；
+			//   hard 达限网关 429 tenant_budget_exceeded，default 租户与
+			//   内部 key 豁免）。幂等加列 + 闭集 CHECK DO 块。
+			//   ★ 新迁移而非改 938 字节：938 已 applied+verified（245 部署）
+			//     ⇒ 改字节走 content replay 连锁 break（914/928 教训）。
+			"996_tenant_budget_enforcement_mode.sql",
 		},
 	}
 }

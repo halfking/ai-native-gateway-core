@@ -17,6 +17,9 @@
   "insufficient_credits": {
     "other": "Créditos insuficientes. Suscríbase o compre un paquete de recarga."
   },
+  "tenant_budget_exceeded": {
+    "other": "Se ha alcanzado el presupuesto mensual de este tenant. Las solicitudes se bloquean hasta que se aumente el presupuesto o comience un nuevo mes de facturación."
+  },
   "SESSION_FORBIDDEN": {
     "other": "la sesión no pertenece a esta clave de API"
   },

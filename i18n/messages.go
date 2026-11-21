@@ -24,6 +24,8 @@ const (
 	MsgRateLimitExceeded   = "rate_limit_exceeded"  // "Rate limit exceeded"
 	MsgBudgetExhausted     = "budget_exhausted"     // "Budget exhausted. Contact admin to top up."
 	MsgInsufficientCredits = "insufficient_credits" // "Insufficient credits..."
+	// 2026-11-21（W1-Q1，迁移 1000）：租户月度预算 hard 模式达限。
+	MsgTenantBudgetExceeded = "tenant_budget_exceeded" // "Monthly budget for this tenant has been reached. Requests are blocked in hard enforcement mode."
 
 	// Session errors.
 	MsgSessionForbidden        = "SESSION_FORBIDDEN"         // "session not owned by this API key"

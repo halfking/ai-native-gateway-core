@@ -192,6 +192,7 @@ func (h *Handler) handleMaasMyBudget(w http.ResponseWriter, r *http.Request) {
 			BalanceAlertThreshold *float64       `json:"balance_alert_threshold"`
 			QuotaAlertThreshold   *float64       `json:"quota_alert_threshold"`
 			NotifyChannels        map[string]any `json:"notify_channels"`
+			EnforcementMode       *string        `json:"enforcement_mode"`
 		}
 		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
@@ -218,7 +219,16 @@ func (h *Handler) handleMaasMyBudget(w http.ResponseWriter, r *http.Request) {
 		if body.NotifyChannels != nil {
 			channels = body.NotifyChannels
 		}
-		budget, err := svc.UpsertTenantBudget(r.Context(), tenantID, budgetCents, balanceAlert, quotaAlert, channels)
+		// 2026-11-21（迁移 1000，W1-Q1）：执行模式闭集 {warn, hard}；
+		// 未传 = 保持现值（首配落默认 warn —— 服务端同口径）。
+		enforcementMode := cur.EnforcementMode
+		if enforcementMode == "" {
+			enforcementMode = maas.BudgetEnforcementWarn
+		}
+		if body.EnforcementMode != nil {
+			enforcementMode = *body.EnforcementMode
+		}
+		budget, err := svc.UpsertTenantBudget(r.Context(), tenantID, budgetCents, balanceAlert, quotaAlert, channels, enforcementMode)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

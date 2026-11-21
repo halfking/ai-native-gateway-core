@@ -17,6 +17,9 @@
   "insufficient_credits": {
     "other": "Guthaben unzureichend. Bitte abonnieren Sie oder kaufen Sie ein Aufladepaket."
   },
+  "tenant_budget_exceeded": {
+    "other": "Das monatliche Budget dieses Tenants ist erschöpft. Anfragen werden blockiert, bis das Budget erhöht wird oder ein neuer Abrechnungsmonat beginnt."
+  },
   "SESSION_FORBIDDEN": {
     "other": "Diese Sitzung gehört nicht zu diesem API-Schlüssel"
   },

@@ -17,6 +17,9 @@
   "insufficient_credits": {
     "other": "Insufficient credits. Please subscribe or purchase a top-up package."
   },
+  "tenant_budget_exceeded": {
+    "other": "Monthly budget for this tenant has been reached. Requests are blocked until the budget is increased or a new billing month begins."
+  },
   "SESSION_FORBIDDEN": {
     "other": "session not owned by this API key"
   },
