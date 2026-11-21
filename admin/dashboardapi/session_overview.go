@@ -452,11 +452,11 @@ func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Conte
 		argIdx := 1
 
 		if params.TenantID != "" {
-			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 		// ★ 2026-11-21 线上实证（211 首跑 500：SQLSTATE 53100 /dev/shm 耗尽）：
 		// 宇宙 join 直接挂在全表 ss（86 万行）上时，errgroup 多腿并发各建一份
 		// 大哈希 ⇒ PG 并行共享内存超限。⇒ 把窗口/租户谓词**下推进子查询**先绑小
@@ -587,7 +587,7 @@ func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params
 		argIdx := 1
 
 		if params.TenantID != "" {
-			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
 			argIdx++
 		}
@@ -595,11 +595,11 @@ func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params
 			// 上一周期 = [start-窗口长, start)：窗口长按 [start,end) 实长对齐。
 			span := win.endUTC.Sub(win.startUTC)
 			prevStart := win.startUTC.Add(-span)
-			where = append(where, fmt.Sprintf("ss.first_request_at >= $%d AND ss.first_request_at < $%d", argIdx, argIdx+1))
+			where = append(where, fmt.Sprintf("first_request_at >= $%d AND first_request_at < $%d", argIdx, argIdx+1))
 			args = append(args, prevStart, win.startUTC)
 			argIdx += 2
 		} else {
-			where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days' AND ss.first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
+			where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
 		}
 		// 与主腿同法：窗口/租户下推进子查询绑小 ss；宇宙合取留外层（53100 修复）。
 		innerWhere := joinStrings(where, " AND ")
@@ -640,11 +640,11 @@ func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params Que
 		argIdx := 1
 
 		if params.TenantID != "" {
-			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var innerFrom string
@@ -680,7 +680,7 @@ func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params Que
 		GROUP BY model
 		ORDER BY total_cost DESC
 		LIMIT 10
-	` + innerFrom
+	`
 		return query, args
 	}
 
@@ -731,9 +731,9 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 		args := []interface{}{}
 		argIdx := 1
 
-		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 		if params.TenantID != "" {
-			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
 			argIdx++
 		}
@@ -747,7 +747,7 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 			}
 			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
 		} else if withDim {
-			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere + "\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key"
+			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + innerWhere
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
@@ -813,9 +813,9 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 		args := []interface{}{}
 		argIdx := 1
 
-		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 		if params.TenantID != "" {
-			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
 			argIdx++
 		}
@@ -829,7 +829,7 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 			}
 			fromClause = "FROM (SELECT * FROM session_summaries WHERE " + innerWhere + ") ss\n" + universeJoin(win.includeProbes) + outerWhere
 		} else if withDim {
-			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere + "\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key"
+			fromClause = "FROM session_summaries ss\n\t\tLEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key\nWHERE " + innerWhere
 		} else {
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
@@ -900,11 +900,11 @@ func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params 
 		argIdx := 1
 
 		if params.TenantID != "" {
-			where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		where = append(where, fmt.Sprintf("ss.first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
