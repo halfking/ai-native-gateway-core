@@ -1101,16 +1101,19 @@ const infraTitle = computed(() => t('liveTopology.gateway.infra'))
 }
 
 .gw.is-narrow .gw__grp-cells {
-  /* ★ 组行恒单行（nowrap + 收缩 + 标签省略）：高度不随生产数据折行漂移 */
-  flex-wrap: nowrap;
+  /* ★ 窄屏优化（2026-11-21）：允许适度换行，避免内容截断 */
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  overflow: hidden;
+  max-height: 80px; /* 限制最多约2行，避免过度膨胀 */
+  overflow: hidden; /* 超出部分隐藏(极端情况) */
 }
 
 .gw.is-narrow .gw__fan {
   flex-direction: row;
-  flex-wrap: nowrap;
+  flex-wrap: wrap; /* 允许扇出卡片换行 */
+  gap: 3px;
+  max-height: 60px; /* 限制扇出区域高度 */
   overflow: hidden;
 }
 

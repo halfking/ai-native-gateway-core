@@ -11,7 +11,9 @@
 
 export type TopoColumn = 'client' | 'gateway' | 'provider' | 'model'
 
-export const TOPO_COLUMNS: readonly TopoColumn[] = ['client', 'gateway', 'provider', 'model'] as const
+// 拓扑列顺序: 客户端 → 网关核心 → 模型 → 供应端节点
+// (2026-11-21 优化: 模型前置，更符合用户视角 - 先关心用什么模型，再关心通过哪个节点)
+export const TOPO_COLUMNS: readonly TopoColumn[] = ['client', 'gateway', 'model', 'provider'] as const
 
 /** 节点健康态。`unknown` 与 `down` 必须分开：没有数据 ≠ 故障。 */
 export type TopoHealth = 'healthy' | 'warning' | 'down' | 'unknown'
