@@ -7843,7 +7843,14 @@ func main() {
 		//   连接面）与 piAgentCtx（停机时随 PI 智能体一起收口，先于 DB 关闭）。
 		//   组件经进程内全局传给管理 API 注册点（worker 默认关：
 		//   error_playbook.enabled=false ⇒ 惰性壳，管理面仍可用）。
-		if pbStore, pbActions, pbEngine, _ := initErrorPlaybook(piAgentCtx, piSQLDB); pbStore != nil {
+		// ★ 任务 3（2026-11-21）：call_admin_api 闭集扩容——三条高频处置路由
+		//   的依赖全部来自 main 作用域已有组件（缺项 ⇒ 路由不进闭集 ⇒
+		//   归一化期 fail-fast）。变更类 POST ⇒ PI 自动执行过 0.80 置信度门。
+		pbDeps := PlaybookDeps{IndexRefresh: autoIndexRefresher, CredibilityScan: modelCredibilityWorker}
+		if adminHandler != nil {
+			pbDeps.ForceRecoverCredential = adminHandler.ForceRecoverCredential
+		}
+		if pbStore, pbActions, pbEngine, _ := initErrorPlaybook(piAgentCtx, piSQLDB, pbDeps); pbStore != nil {
 			errorPlaybookStoreGlobal = pbStore
 			errorPlaybookActionsGlobal = pbActions
 			errorPlaybookEngineGlobal = pbEngine

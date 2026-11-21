@@ -31,6 +31,13 @@ func planInvalid(format string, args ...interface{}) error {
 	return &ErrPlanInvalid{msg: fmt.Sprintf(format, args...)}
 }
 
+// NewPlanInvalid 是 ErrPlanInvalid 的**导出**构造器（跨包使用）：
+// 装配侧闭集路由（call_admin_api 的扩展路由实现）的参数闸需要返回
+// 业务性失败 ⇒ 执行留痕/管理面把它按 422 门控原文处理，而不是 500。
+func NewPlanInvalid(format string, args ...interface{}) *ErrPlanInvalid {
+	return &ErrPlanInvalid{msg: fmt.Sprintf(format, args...)}
+}
+
 // RouteChecker 是 ActionRegistry 的**可选**扩展：报告某 (method, path)
 // 是否已登记为可执行的内部路由。
 //

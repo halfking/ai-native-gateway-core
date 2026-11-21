@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -226,21 +227,23 @@ func analyzeDiag(d *diagCredential, minutes int) (analysis, recommendation strin
 	}
 }
 
-// handleForceRecoverSingle 单凭据立即恢复
-// POST /api/admin/diagnostics/credential/force-recover?id={credID}
-func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
+// ForceRecoverCredential 是「单凭据立即恢复」的**单一真源**实现。
+//
+//	★ 2026-11-21 错误处理手册轮抽出：此前逻辑只活在 HTTP handler 里，
+//	  错误处理手册的 call_admin_api 闭集要调同一套恢复链（credentials /
+//	  bindings / probe_state / node_probe_state + 路由缓存失效 + 进程内
+//	  key 缓存/熔断复位），再抄一份就是「同一条规定写两份」的漂移温床。
+//
+//	返回值 steps 是人类可读的步骤摘要（执行留痕用）；错误分两类：
+//	  ErrForceRecoverNotFound = 凭据不存在 / 非 active（调用方可安全回显）。
+//	★ 有意**不产旧值快照**：恢复类动作是幂等的「状态机重置」，运行时
+//	  会再收敛；按时点快照回滚反而会把后来 legitimately 变化的运行态
+//	  打回旧值（TOCTOU）⇒ 本动作声明为不可回滚（留痕照记）。
+func (h *Handler) ForceRecoverCredential(ctx context.Context, credID int64) ([]string, error) {
+	if h.db == nil {
+		return nil, fmt.Errorf("admin handler has no db (not wired in this process)")
 	}
-	credID, err := strconv.Atoi(r.URL.Query().Get("id"))
-	if err != nil || credID <= 0 {
-		writeError(w, http.StatusBadRequest, "missing or invalid id query parameter")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
+	var steps []string
 
 	// 1. 清 credential。R16 (2026-09-12): guard lifecycle_status — archived /
 	// disabled credentials must not be resurrected by a diagnostic click.
@@ -256,13 +259,13 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		WHERE id = $1 AND lifecycle_status = 'active'
 	`, credID)
 	if err != nil {
-		writeInternalErr(w, "credential update failed", err)
-		return
+		return steps, fmt.Errorf("credential update failed: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "credential not found or not active")
-		return
+		return steps, ErrForceRecoverNotFound
 	}
+	steps = append(steps, fmt.Sprintf("credentials[%d] availability_state=ready, circuit closed", credID))
+
 	// 2. 清该 credential 的所有 binding
 	if _, err := h.db.Exec(ctx, `
 		UPDATE credential_model_bindings SET
@@ -273,9 +276,10 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    updated_at = now()
 		WHERE credential_id = $1
 	`, credID); err != nil {
-		writeInternalErr(w, "binding update failed", err)
-		return
+		return steps, fmt.Errorf("binding update failed: %w", err)
 	}
+	steps = append(steps, "credential_model_bindings reset available=true")
+
 	// 3. 清 model_probe_state 中 recovering 状态
 	if _, err := h.db.Exec(ctx, `
 		UPDATE model_probe_state SET
@@ -286,9 +290,10 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    last_state_change_at = now()
 		WHERE credential_id = $1 AND state IN ('recovering', 'unknown', 'suspicious')
 	`, credID); err != nil {
-		writeInternalErr(w, "probe state update failed", err)
-		return
+		return steps, fmt.Errorf("probe state update failed: %w", err)
 	}
+	steps = append(steps, "model_probe_state recovering/unknown/suspicious -> healthy_confirmed")
+
 	// 3.5 R36 (2026-09-17 audit): the reset must clear BOTH probe systems —
 	// v_routable gates on node_probe_state (node_probe_failed), so resetting
 	// only the legacy table left the binding blocked despite "修复成功".
@@ -307,18 +312,21 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    updated_at        = now()
 		WHERE credential_id = $1 AND last_direct_ok = FALSE
 	`, credID); err != nil {
-		writeInternalErr(w, "node probe state update failed", err)
-		return
+		return steps, fmt.Errorf("node probe state update failed: %w", err)
 	}
+	steps = append(steps, "node_probe_state last_direct_ok=false rows cleared")
+
 	// 4. invalidate routing caches (触发路由器重载)
-	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
+	invalidateRoutingCaches(ctx, h.db, "credentials", int(credID))
+	steps = append(steps, "routing caches invalidated")
 
 	// R16 (2026-09-12): also drop the in-process key cache / key-rotator
 	// health so the "已重置" promise is true immediately instead of waiting
 	// ≤5min for the in-memory circuit + fpslot state to converge
 	// (mirrors applyForceEnable's recovery chain).
-	provider.InvalidateCredentialKeyCache(credID)
-	provider.ResetKeyRotatorForCredential(credID)
+	provider.InvalidateCredentialKeyCache(int(credID))
+	provider.ResetKeyRotatorForCredential(int(credID))
+	steps = append(steps, "in-process key cache / key rotator reset")
 
 	// R21 (2026-09-13) audit P2: the comment above claimed to mirror
 	// applyForceEnable's recovery chain but skipped resetInMemoryNodeState —
@@ -326,7 +334,39 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 	// up to ~5 min after a "successful" recovery click.
 	var providerID int
 	if err := h.db.QueryRow(ctx, `SELECT provider_id FROM credentials WHERE id = $1`, credID).Scan(&providerID); err == nil {
-		h.resetInMemoryNodeState(ctx, credID, providerID, "", true)
+		h.resetInMemoryNodeState(ctx, int(credID), providerID, "", true)
+		steps = append(steps, "in-memory node circuit state reset")
+	}
+	return steps, nil
+}
+
+// ErrForceRecoverNotFound：凭据不存在或非 active（lifecycle_status 守卫）。
+var ErrForceRecoverNotFound = errors.New("credential not found or not active")
+
+// handleForceRecoverSingle 单凭据立即恢复
+// POST /api/admin/diagnostics/credential/force-recover?id={credID}
+func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	credID, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || credID <= 0 {
+		writeError(w, http.StatusBadRequest, "missing or invalid id query parameter")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	steps, err := h.ForceRecoverCredential(ctx, int64(credID))
+	if err != nil {
+		if errors.Is(err, ErrForceRecoverNotFound) {
+			writeError(w, http.StatusNotFound, "credential not found or not active")
+			return
+		}
+		writeInternalErr(w, "force-recover failed", err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -334,6 +374,7 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		"credential_id":         credID,
 		"timestamp":             time.Now().UTC().Format(time.RFC3339),
 		"message":               "凭据已强制恢复，credential / binding / probe_state 已重置",
+		"steps":                 steps,
 		"key_cache_invalidated": true,
 		"key_rotator_reset":     true,
 	})
