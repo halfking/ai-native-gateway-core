@@ -168,6 +168,33 @@ if [[ -z "$GOV_SW_RAW" ]]; then
   log "★ 取不到治理链开关（★ security.enabled / security.mode）⇒ ★ 本次读数不能据此下「无攻击」结论"
 fi
 
+# ── ④c PI 分歧「形态 b」可达性诊断（★ 策略是数据、★ 会变 ⇒ 必须可复跑）───
+#
+# ★ ★ 为什么需要这一节（★ 本轮查实）：★ 「形态 b」（★ 放行侧分歧＝有人认为该拦、
+#   ★ 却没人拦）★ 在**当前**生产策略下**不可达** ⇒ ★ 所以「零分歧」**不是**
+#   「观测点失效」，★ 而是**策略使然** ⇒ ★ ⇒ ★ 若有人改了策略/阈值，
+#   ★ 形态 b 就会**变可达** ⇒ ★ 那时观测点才会第一次吐出东西 ⇒ ★
+#   ★ 所以这里做的是「★ **可达性**判定」⇒ ★ **让『不可达』本身也可观测**。
+#
+# ★ 判定链（★ 全部来自代码 + 线上策略，★ 不是推测）：
+#   ① enhanced 的动作：★ `decideAction` 优先用 `severity_action_matrix`
+#      （★ observe 模式取 observe_action、★ enforce 模式取 enforce_action）
+#      ⇒ ★ 否则才用策略表里的 score_threshold_* / action_on_*。
+#   ② enhanced 的 deny：★ `Blocked = (ActionTaken == "block" || "reject")`
+#      ⇒ ★ `replace` / `terminate` / `warn` / `log` **都不算 deny**。
+#   ③ severity 映射：★ medium=1、★ high=2、★ critical=3（★ 插件适配层）。
+#   ④ 链子拦不拦：★ `BlockThreshold`（★ 生产装配 2、★ boost=0）⇒ severity ≥ 阈值才拦。
+#   ⇒ ★ **形态 b ⇔ 存在某个 risk_level：★ deny 且 severity < BlockThreshold**。
+PI_REACH_RAW="$(ssh "$HOST" "docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -At -F':' -c \"select 'policy:'||tenant_id||':'||COALESCE(detection_mode,'observe')||':'||COALESCE(score_threshold_warn,6)||':'||COALESCE(score_threshold_block,10) from prompt_injection_policies where tenant_id='default' union all select 'matrix:'||severity_level||':'||COALESCE(observe_action::text,'log')||':'||COALESCE(enforce_action::text,'block') from severity_action_matrix\"" 2>/dev/null </dev/null | tr -d '\r')"
+# ★ BlockThreshold 从**本地源码**取（★ 不写死 ⇒ 改代码不用改脚本）：
+#   ★ `cmd/gateway/main_pipeline.go` 里的 `interception.NewEngine(interception.EngineConfig{...})`
+ENGINE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)/cmd/gateway/main_pipeline.go"
+BLOCK_THRESHOLD="$(grep -oE 'BlockThreshold:[[:space:]]*[0-9]+' "$ENGINE_SRC" 2>/dev/null | head -1 | grep -oE '[0-9]+')"
+if [[ -z "$BLOCK_THRESHOLD" ]]; then
+  BLOCK_THRESHOLD=2
+  log "★ 读不到源码里的 BlockThreshold（★ 引擎源码不在脚本旁）⇒ ★ 按 2 假定 ⇒ ★ 判定仅供参考"
+fi
+
 # ── ⑤ 聚合（★ 交本地 python3 解析 JSON 行、★ 只出计数）─────────────────
 export INTERCEPT_RAW="$RAW"
 export INTERCEPT_RAW_DIV="$RAW_DIV"
@@ -178,6 +205,8 @@ export INTERCEPT_CONTAINER="$CONTAINER"
 export INTERCEPT_WINDOW="$WINDOW"
 export INTERCEPT_STARTED="${COVERAGE_START:-}"
 export INTERCEPT_GOV_SW="$GOV_SW_RAW"
+export INTERCEPT_PI_REACH="$PI_REACH_RAW"
+export INTERCEPT_BLOCK_THRESHOLD="$BLOCK_THRESHOLD"
 
 python3 - <<'PY'
 import json
@@ -211,6 +240,47 @@ if "security.enabled" in gov:
         gov_enabled = True
     elif lv in ("false", "f", "0"):
         gov_enabled = False
+
+# ── PI 分歧「形态 b」可达性（★ 策略是数据、★ 会变 ⇒ 必须可复跑判定）──────
+reach_raw = os.environ.get("INTERCEPT_PI_REACH", "")
+try:
+    block_threshold = int(os.environ.get("INTERCEPT_BLOCK_THRESHOLD", "2") or "2")
+except Exception:
+    block_threshold = 2
+pi_mode = ""
+pi_thresholds = ""
+matrix = {}
+for line in reach_raw.splitlines():
+    line = line.strip()
+    if not line or ":" not in line:
+        continue
+    parts = line.split(":")
+    if parts[0] == "policy" and len(parts) >= 5:
+        pi_mode = parts[2].strip()
+        pi_thresholds = "warn=%s block=%s" % (parts[3].strip(), parts[4].strip())
+    elif parts[0] == "matrix" and len(parts) >= 4:
+        matrix[parts[1].strip().lower()] = (parts[2].strip(), parts[3].strip())
+
+# ★ severity 映射（★ 插件适配层 prompt_injection_enhanced.go）
+SEV = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+# ★ enhanced 的 deny 判据（★ detector.go：Blocked = action in {block, reject}）
+DENY_ACTIONS = ("block", "reject")
+
+reach_rows = []
+reach_b = False
+for lvl in ("medium", "high", "critical"):
+    if lvl not in matrix:
+        continue
+    obs_act, enf_act = matrix[lvl]
+    # ★ observe ⇒ observe_action；★ enforce ⇒ enforce_action
+    act = enf_act if pi_mode == "enforce" else obs_act
+    deny = act in DENY_ACTIONS
+    sev = SEV.get(lvl, 0)
+    blocked_by_chain = deny and sev >= block_threshold
+    is_b = deny and sev < block_threshold
+    if is_b:
+        reach_b = True
+    reach_rows.append((lvl, act, sev, deny, blocked_by_chain, is_b))
 
 plugins = Counter()
 reasons = Counter()
@@ -334,6 +404,14 @@ if as_json:
         "evidence_leak_lines": 0,
         "governance_switches": gov,
         "governance_chain_enabled": gov_enabled,
+        "pi_policy_mode": pi_mode,
+        "pi_block_threshold": block_threshold,
+        "pi_divergence_shape_b_reachable": reach_b,
+        "pi_divergence_shape_b_rows": [
+            {"risk_level": r[0], "action": r[1], "severity": r[2],
+             "deny": r[3], "chain_blocks": r[4], "shape_b": r[5]}
+            for r in reach_rows
+        ],
     }, ensure_ascii=False, indent=2))
 else:
     print("=== 治理链拦截构成（%s / %s / 窗口 %s）===" % (host, container, window))
@@ -396,6 +474,26 @@ else:
             print("  %s" % t)
         if len(stamps) > 50:
             print("  …… 另有 %d 条未列" % (len(stamps) - 50))
+    print("")
+    print("-- PI 分歧「形态 b」可达性（★ 「零分歧」是策略使然、★ 还是观测点失效）--")
+    if not reach_rows:
+        print("  （取不到策略/动作矩阵 ⇒ ★ 本次不给可达性结论）")
+    else:
+        print("  ★ enhanced 判定模式: %s（★ %s）★ BlockThreshold=%d" %
+              (pi_mode or "(未知)", pi_thresholds or "阈值未知", block_threshold))
+        for lvl, act, sev, deny, blocked_by_chain, is_b in reach_rows:
+            print("  %-8s action=%-8s severity=%d  deny=%-3s 链子会拦=%-3s %s" %
+                  (lvl, act, sev, "是" if deny else "否",
+                   "是" if blocked_by_chain else "否",
+                   "★★ 形态 b（deny 但低于阈值 ⇒ 放行）" if is_b else ""))
+        if reach_b:
+            print("  ⇒ ★★ 形态 b **当前可达**：★ 存在『有人判该拦、★ 链子却不拦』的等级")
+        else:
+            print("  ⇒ ★ 形态 b **当前不可达**：★ enhanced 在当前模式下要么不 deny、"
+                  "要么 deny 的 severity ≥ 阈值（★ 会被拦）")
+            print("  ⇒ ★★ 所以『形态 b 零分歧』是**策略使然**、★ 不是观测点失效")
+            print("  ⇒ ★ 触发条件（★ 任一成立即变可达）：★ ① medium 的 observe/enforce 动作"
+                  "被配成 block/reject；★ ② detection_mode 切 enforce 且 BlockThreshold 提到 >2")
     print("")
     print("-- PI 家族判决分歧（N8：★ 两套注入判定口径相反的观测）--")
     print("  [形态 a｜拦截侧：★ 从既有 decision_verdicts 解析]")
