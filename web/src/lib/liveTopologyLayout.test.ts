@@ -11,6 +11,8 @@
 //     被静默丢弃（图上只剩 provider→model 一段，owner 报告「连线没有」）。
 
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import {
   bezierPoint,
   computeGatewayBox,
@@ -60,6 +62,32 @@ const EDGES = [
 ]
 
 const SIZE = { width: 1200, height: 700 }
+
+/**
+ * ★★ 画布容器的**实际最小高度**（★ 真源＝画布组件的 CSS `min-height`）。
+ *
+ * ★ 为什么测试要从 CSS 读，而不是写死一个数：★ `computeLayout` 拿到的高度是
+ *   **容器实测高度**（`size.value.height`）⇒ ★ 而容器的 CSS `min-height` 决定了
+ *   它**不可能比这更矮** ⇒ ⇒ **比它矮的高度是不可达场景**。
+ * ★ 2026-11-23 上游 `618a61325` 把画布 min-height 480 → **620px**（适配新的
+ *   从上往下布局：「最小所需高度 ≈ 620px」）⇒ ⇒ 本断言原先写死扫描的 480
+ *   **已不可达** ⇒ ⇒ 布局在 480 下溢出 12px ⇒ ⇒ 断言红了 ⇒ ⇒ **但那不是
+ *   生产会出现的画面**（容器至少 620px 高）。
+ * ★★ ⇒ 扫描高度**从真源派生**，不写死 ⇒ 上游再调画布高度，这条自动跟随，
+ *   ★★ 而**真正会发生的溢出**（≥ 画布最小高度时）仍然照红不误。
+ */
+const CANVAS_MIN_HEIGHT = (() => {
+  const src = readFileSync(
+    resolve(process.cwd(), 'src/components/live-topology/TopologyCanvas.vue'),
+    'utf8',
+  )
+  const m = src.match(/min-height:\s*(\d+)px/)
+  if (!m) throw new Error('解析不出画布的 CSS min-height（真源丢失 ⇒ 判据不可信）')
+  return Number(m[1])
+})()
+
+/** 可达画布高度：★ 从画布 CSS 下限起（★ 低于它的都是不可达场景）。 */
+const REACHABLE_HEIGHTS = [CANVAS_MIN_HEIGHT, 700, 900, 1200]
 
 describe('computeLayout', () => {
   it('is deterministic across repeated calls and input ordering', () => {
@@ -164,7 +192,11 @@ describe('computeLayout', () => {
     // ★ 关键：**必须扫多个画布高度**。净空随高度变化（比例量 vs 固定像素量），
     // 旧值 hRatio=0.42 在 height=700 恰好「正好相接」（等号能过），
     // 只测这一个高度就是假绿 —— 它在 height=620 下压 2px、height=800 下留 2.6px。
-    for (const height of [480, 620, 700, 900, 1200]) {
+    // ★★ 扫描高度**从画布 CSS min-height 派生**（★ 见 CANVAS_MIN_HEIGHT 的注释）：
+    // ★★ 低于画布下限的高度**不可达**（容器实测高度 ≥ CSS min-height）⇒
+    // ★★ 断它＝断一个不存在的画面 ⇒ ★★ 上游 618a61325 把画布提到 620px 后，
+    // ★★ 原来写死的 480 已被剔除 ⇒ ★★ 而**真正会发生的溢出仍照红不误**。
+    for (const height of REACHABLE_HEIGHTS) {
       const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height })
       const inLayer = (column: string) => layout.nodes.filter((n) => n.column === column)
       const clientCards = inLayer('client')
@@ -180,9 +212,22 @@ describe('computeLayout', () => {
       for (const n of layout.nodes) {
         expect(n.x).toBeGreaterThanOrEqual(0)
         expect(n.x + n.w).toBeLessThanOrEqual(layout.width)
-        expect(n.y + n.h).toBeLessThanOrEqual(layout.height)
+        expect(n.y + n.h, `h=${height} 节点卡越出画布底边`).toBeLessThanOrEqual(layout.height)
       }
     }
+  })
+
+  it('★ 画布的 CSS min-height 不得低于布局的兜底下限（★ 否则「被兜底抬高的布局」比容器还高 ⇒ 溢出被裁）', () => {
+    // ★ 关系判据（★ 不写死数值）：★ `MIN_LAYOUT_HEIGHT` 是布局的**兜底**
+    //   （把更小的输入抬到该高度再排布）⇒ ★ 若容器实际高度可能低于它 ⇒ ★
+    //   排出来的内容比容器还高 ⇒ ★ 溢出被裁（★ 与 `MIN_LAYOUT_WIDTH` 注释里
+    //   写明的同一条原则：**下限大于容器不是信息，是丢信息**）⇒ ★ ⇒
+    //   ⇒ 容器的 CSS 下限必须 ≥ 布局兜底下限。
+    expect(
+      CANVAS_MIN_HEIGHT,
+      '★ 画布 CSS min-height 必须 ≥ 布局兜底下限 MIN_LAYOUT_HEIGHT'
+        + '⇒ 否则容器可能矮于布局兜底 ⇒ 排布内容溢出被裁',
+    ).toBeGreaterThanOrEqual(MIN_LAYOUT_HEIGHT)
   })
 
   it('orders each column by traffic descending', () => {
