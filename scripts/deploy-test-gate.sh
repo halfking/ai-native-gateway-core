@@ -186,6 +186,33 @@ if [[ "${DD_SKIP_TEST_GATE:-0}" == "1" ]]; then
   exit 0
 fi
 
+# ── 迁移改动 ⇒ 额外选中迁移包（★ 2026-11-23 补）──────────────────────────
+#
+# ★ 为什么必须有（★ 缺口是实测出来的、★ 不是推演）：
+#
+#	闸门按【改动的 .go 文件】选包（★ 上面的 while 循环）⇒ ★ **纯 .sql 改动**
+#	（★ 典型形态：给某条迁移加一行 `SET`、改一条注释）**一个包都不触发**
+#	⇒ ★ 而迁移族的门全住在 ./sql/migrations/startup（★ 177 个测试文件）：
+#	   ★ 「canonical ≡ embeddata 副本逐字节一致」「物化视图别名列闭合」
+#	   ★ 「迁移预算」「自登记」「DDL 形态」…… ⇒ ★ 它们**永远不被跑**。
+#
+#	★ 实测（211 seq 3230 前后）：★ 并行车给迁移 994 加
+#	`SET max_parallel_workers_per_gather = 0`（★ 修 DSM 扩容撞 /dev/shm 上限）
+#	时**只改了 canonical** ⇒ ★ embeddata 副本没跟 ⇒ ★ 新装通道仍会撞 DSM 地雷
+#	⇒ ★ 「副本身份门」当时是**红的**、★ ★ 但没有任何一步在部署里看见它
+#	⇒ ⇒ ★ 闸门选的包与「这次改动真正该被谁看」之间**存在盲区**。
+#
+# ⇒ 修法：★ 改动触及**迁移 SQL 或 embeddata 副本**时，★ 额外选中 ./sql/migrations/startup。
+# ⇒ ★ 抽成函数是**为了让判据可测**：★ scripts/deploygate 的守卫会把这段函数
+#   **原样抽出来**在 bash 里跑（★ 对照臂：去掉规则 ⇒ 判据变红）。
+dd_migration_gate_packages() {
+  local changed="${1:-}"
+  printf '%s\n' "$changed" | grep -E \
+    '^(sql/migrations/startup/.*\.sql|installer/.*/embeddata/startup/.*\.sql)$' \
+    >/dev/null 2>&1 && printf './sql/migrations/startup\n'
+  return 0
+}
+
 # ── 选包：改动触及的目录（只留有 _test.go 的） ──────────────────────────
 changed_files="$({
   git diff --name-only -z HEAD 2>/dev/null || true
@@ -202,6 +229,11 @@ if [[ -n "$changed_files" ]]; then
       packages+=("./$dir")
     fi
   done <<< "$dirs"
+  # ★ 迁移改动 ⇒ 额外选中迁移包（★ 2026-11-23 补，★ 见下「为什么」）
+  while IFS= read -r extra; do
+    [[ -n "$extra" ]] || continue
+    packages+=("$extra")
+  done < <(dd_migration_gate_packages "$changed_files")
 fi
 
 if [[ ${#packages[@]} -eq 0 ]]; then
