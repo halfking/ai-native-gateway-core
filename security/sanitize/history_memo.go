@@ -108,6 +108,20 @@ const (
 	sharedMemoSlowOp = 5 * time.Millisecond
 )
 
+// breakerState 是共享层熔断器的状态。
+//
+// ★ 为什么显式枚举，而不是靠 openUntil 推断：「冷却期已过、探测未放」与
+// 「闭合」在时间上无法区分（两者 openUntil 都可能是过去的时刻）⇒ 没有
+// 独立状态就**放不出「半开只放一个探测」这道闸**（这正是 2026-11-23
+// 12 小时审计轮查出的缺陷：probing 只写不读）。
+type breakerState int
+
+const (
+	breakerClosed   breakerState = iota // 正常：直接用共享层
+	breakerOpen                         // 熔断打开：冷却期内一律绕过共享层
+	breakerHalfOpen                     // 半开：只放一个探测，其余快速失败
+)
+
 // HistoryMemoStats 是缓存的运行计数（观测/管理面用）。
 type HistoryMemoStats struct {
 	LocalHits    uint64
@@ -137,9 +151,10 @@ type TieredVerdictMemo struct {
 
 	// 熔断状态。临界区里只有几个字段的读写，不含任何后端调用。
 	breakerMu sync.Mutex
-	openUntil time.Time // 零值 ⇒ 闭合
-	failures  int       // 连续失败/变慢的次数
-	probing   bool      // 冷却期满后放出去的那个探测尚未返回
+	state     breakerState // 闭合 / 打开 / 半开
+	openUntil time.Time    // state==breakerOpen 时有意义：冷却到什么时候
+	failures  int          // 连续失败/变慢的次数
+	probing   bool         // 半开态：那个探测已放出去且尚未返回
 
 	// 写入保护状态（只在写路径上用，单独一把小锁）。
 	guardMu      sync.Mutex
@@ -199,7 +214,8 @@ func (m *TieredVerdictMemo) Lookup(ctx context.Context, key [32]byte) (bool, boo
 	// Misses 的口径 = 「两层都没答上来、必须真的算一次」的次数 ⇒
 	// 命中率 = (LocalHits + SharedHits) / (LocalHits + SharedHits + Misses)
 	// 直接就是「省掉了多少次守卫计算」。
-	if !m.sharedReady() {
+	allow, _ := m.sharedReady()
+	if !allow {
 		m.misses.Add(1)
 		return false, false
 	}
@@ -235,8 +251,18 @@ func (m *TieredVerdictMemo) Store(ctx context.Context, key [32]byte, safe bool) 
 	if m.shared == nil || m.ttl <= 0 {
 		return
 	}
-	if !m.sharedReady() || !m.sharedWritable() {
+	allow, probe := m.sharedReady()
+	if !allow {
 		m.sharedSkips.Add(1)
+		return
+	}
+	if !m.sharedWritable() {
+		m.sharedSkips.Add(1)
+		// ★ 拿到了半开探测位却在打后端**之前**放弃（预算/水位线挡下）
+		// ⇒ 必须把名额还回去，否则半开态永远卡在「探测在途」。
+		if probe {
+			m.releaseProbe()
+		}
 		return
 	}
 	val := "0"
@@ -256,22 +282,60 @@ func (m *TieredVerdictMemo) Store(ctx context.Context, key [32]byte, safe bool) 
 	m.sharedWrites.Add(1)
 }
 
-// sharedReady 报告现在是否可以触共享层。熔断打开期间返回 false；冷却期满后
-// 半开——把闭合状态恢复并放**一个**探测出去（probing）。
-func (m *TieredVerdictMemo) sharedReady() bool {
+// sharedReady 报告现在是否可以触共享层。
+//
+// 返回值有两个含义：allow=false ⇒ **不要**触共享层（熔断打开中，或半开态
+// 已有探测在途）；allow=true 且 probe=true ⇒ **你就是**那个半开探测（调用
+// 方必须在操作结束后让探测位归位）。
+//
+// ★ 熔断打开期间返回 false（绕过共享层，本地层照常判定）；冷却期满后进入
+// **半开**：只放**一个**探测出去，其余并发调用**立即**返回 false ——
+// 这正是熔断器「半开只放一个探测」的语义：半开期若放行一片请求，等于把
+// 刚缓过来的后端重新打垮一遍。
+//
+// ★ 2026-11-23（12 小时内变更审计轮）修正：旧实现里 probing 只写不读，
+// 且冷却期满时把 openUntil 清零（⇒ 下一个调用直接看到「闭合」）。
+// 本仓实测：16 个 goroutine 并发打同一个半开熔断器 ⇒ **16 个全部进了
+// 下游**（审计轮报的是 3 个；差异来自它的并发编排，结论一致：闸没生效）。
+// 仓内原有钉测之所以假绿，是因为它只走了**串行**路径。
+// 现在半开是**显式状态**，探测位是一把**互斥名额**。
+func (m *TieredVerdictMemo) sharedReady() (allow bool, probe bool) {
 	if m.shared == nil || m.ttl <= 0 {
-		return false
+		return false, false
 	}
 	m.breakerMu.Lock()
 	defer m.breakerMu.Unlock()
-	if m.openUntil.IsZero() {
-		return true
+	switch m.state {
+	case breakerClosed:
+		return true, false
+	case breakerOpen:
+		if m.now().Before(m.openUntil) {
+			return false, false
+		}
+		// 冷却期满 ⇒ 进半开：此刻**还没有**探测在途。
+		m.state = breakerHalfOpen
+		m.openUntil, m.failures, m.probing = time.Time{}, 0, false
 	}
-	if m.now().Before(m.openUntil) {
-		return false
+	// 半开：只放一个探测；已有探测在途 ⇒ 其余调用按「熔断中」快速失败
+	//（不触后端，也不等探测返回）。
+	if m.probing {
+		return false, false
 	}
-	m.openUntil, m.failures, m.probing = time.Time{}, 0, true
-	return true
+	m.probing = true
+	return true, true
+}
+
+// releaseProbe 放回一个**没被用上**的探测位。
+//
+// ★ 为什么需要它：半开态的探测位是「一个在途探测」的名额。若拿到名额的
+// 那个调用在真正打后端**之前**就放弃（例如写入预算已满 ⇒ 不写共享层），
+// 名额不还回去 ⇒ 半开态永远卡在「探测在途」⇒ 共享层被永久绕过。
+func (m *TieredVerdictMemo) releaseProbe() {
+	m.breakerMu.Lock()
+	defer m.breakerMu.Unlock()
+	if m.state == breakerHalfOpen && m.probing {
+		m.probing = false
+	}
 }
 
 // sharedFailed 记一次失败（出错，或慢到超过 sharedMemoSlowOp）。连续达到阈值
@@ -280,9 +344,12 @@ func (m *TieredVerdictMemo) sharedFailed(start time.Time) {
 	m.breakerMu.Lock()
 	defer m.breakerMu.Unlock()
 	m.failures++
-	if !m.probing && m.failures < sharedMemoFailThreshold {
+	// 闭合态：连续失败达到阈值才开；半开态：能到后端的只有那个探测 ⇒
+	// 它的失败**立即**重开。
+	if m.state != breakerHalfOpen && m.failures < sharedMemoFailThreshold {
 		return
 	}
+	m.state = breakerOpen
 	m.openUntil = m.now().Add(sharedMemoCooldown)
 	m.failures, m.probing = 0, false
 	m.breakerOpens.Add(1)
@@ -297,43 +364,66 @@ func (m *TieredVerdictMemo) sharedDone(start time.Time) {
 		return
 	}
 	m.breakerMu.Lock()
+	defer m.breakerMu.Unlock()
+	if m.state == breakerHalfOpen {
+		// 半开探测成功 ⇒ 闭合（探测位同时归位）。
+		m.state = breakerClosed
+		m.openUntil = time.Time{}
+	}
 	m.failures, m.probing = 0, false
-	m.breakerMu.Unlock()
 }
 
 // sharedWritable 实现共享层的自我保护：每小时写入预算 + 每 30 秒一次的
 // 内存水位线检查。任一触线 ⇒ 停写（读不受影响），下一个窗口/下一次检查
 // 自动恢复。
+//
+// ★ 2026-11-23（12 小时内变更审计轮）：内存水位线探针（UsedMemory 是一次
+// Redis 往返）原先在**持有 guardMu** 的情况下做 IO —— 一次后端卡顿会把
+// 所有写路径串行堵住（每条都等一次超时），恰好是这层自我保护想防的那种
+// 放大。现在探针挪到锁外：探针只打一次（memCheckedAt 在锁内推进 ⇒ 并发
+// 调用不会重复探），判定与写入计数仍在锁内完成（纯内存，计数原子）。
 func (m *TieredVerdictMemo) sharedWritable() bool {
+	now := m.now()
+
+	// ── 1. 内存水位线探针（要打后端 ⇒ 锁外做）───────────────────────────
+	m.guardMu.Lock()
+	probe := now.Sub(m.memCheckedAt) >= sharedMemoMemCheckInterval
+	if probe {
+		m.memCheckedAt = now
+	}
+	m.guardMu.Unlock()
+	if probe {
+		ctx, cancel := context.WithTimeout(context.Background(), sharedMemoOpTimeout)
+		used, err := m.shared.UsedMemory(ctx)
+		cancel()
+		m.guardMu.Lock()
+		switch {
+		case err != nil:
+			// 读不到水位：保守起见按未触线处理（TTL 与写入预算仍在兜底）。
+			slog.Debug("sanitize: history verdict shared cache memory probe failed", "error", err)
+		case used > m.maxUsed:
+			if !m.memOver {
+				slog.Warn("sanitize: history verdict shared cache over memory watermark; writes paused",
+					"used_bytes", used, "max_bytes", m.maxUsed, "recheck", sharedMemoMemCheckInterval.String())
+			}
+			m.memOver = true
+		case m.memOver:
+			slog.Info("sanitize: history verdict shared cache under memory watermark; writes resumed", "used_bytes", used)
+			m.memOver = false
+		}
+		m.guardMu.Unlock()
+	}
+
+	// ── 2. 写入预算 + 水位线判定（纯内存 ⇒ 锁内完成，计数原子）──────────
 	m.guardMu.Lock()
 	defer m.guardMu.Unlock()
-	now := m.now()
 	if now.Sub(m.windowStart) >= sharedMemoWriteWindow {
 		m.windowStart, m.windowWrites = now, 0
 	}
 	if m.windowWrites >= m.maxWrites {
 		return false
 	}
-	if now.Sub(m.memCheckedAt) >= sharedMemoMemCheckInterval {
-		m.memCheckedAt = now
-		ctx, cancel := context.WithTimeout(context.Background(), sharedMemoOpTimeout)
-		used, err := m.shared.UsedMemory(ctx)
-		cancel()
-		if err != nil {
-			// 读不到水位：保守起见按未触线处理（TTL 与写入预算仍在兜底）。
-			slog.Debug("sanitize: history verdict shared cache memory probe failed", "error", err)
-		} else if used > m.maxUsed {
-			if !m.memOver {
-				slog.Warn("sanitize: history verdict shared cache over memory watermark; writes paused",
-					"used_bytes", used, "max_bytes", m.maxUsed, "recheck", sharedMemoMemCheckInterval.String())
-			}
-			m.memOver = true
-			return false
-		} else if m.memOver {
-			slog.Info("sanitize: history verdict shared cache under memory watermark; writes resumed", "used_bytes", used)
-			m.memOver = false
-		}
-	} else if m.memOver {
+	if m.memOver {
 		return false
 	}
 	m.windowWrites++
@@ -361,14 +451,19 @@ func encodeVerdictKey(key [32]byte) string {
 //
 // 为什么是 FIFO 而不是 LRU：agent 会话是追加式的——一条消息要么在接下来的
 // 每一轮都被复用，要么再也不出现，「最近用过」和「最早进来」对命中率的
-// 影响几乎一样，而 FIFO 不需要在读路径上改任何状态（读只需一把读锁）。
+// 影响几乎一样，而 FIFO 不需要在读路径上改任何状态（读只需一把互斥锁）。
+//
+// ★ 2026-11-23（12 小时内变更审计轮）更正注释：这里**不是读锁**，而是
+// 每片一条**独占互斥锁**（verdictShard.mu 是 sync.Mutex）。读路径的临界区
+// 只有一次 map 查找，RWMutex 的额外开销换不到收益 ⇒ 保留 Mutex，并把注释
+// 改成与实现一致。
 type localVerdictMemo struct {
 	shards [verdictMemoShards]verdictShard
 	hits   atomic.Uint64
 }
 
 type verdictShard struct {
-	mu   sync.Mutex
+	mu   sync.Mutex // 独占互斥锁（不是读锁）：临界区只有一次 map 查找
 	vals map[[32]byte]bool
 	ring [][32]byte
 	// next 是环写满之后的淘汰游标。
