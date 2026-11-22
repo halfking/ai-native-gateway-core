@@ -180,7 +180,8 @@ async function loadSeries() {
     source.value = resp.source ?? ''
   } catch (err) {
     if (token !== seriesToken) return
-    series.value = []
+    // 修复：请求失败时不清空已有数据，避免图表在排行榜加载时被清空
+    // series.value = []
     error.value = surfaceError(err)
   } finally {
     if (token === seriesToken) loading.value = false
