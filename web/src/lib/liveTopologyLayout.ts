@@ -152,7 +152,7 @@ const CLIENT_ROW_RATIO = 0.075
  * ② 为网关核心大方块与模型层之间留出更充足的视觉呼吸空间；
  * ③ 在最小画布 480px 下需相应调整栅格行下限以适配更大间距。
  */
-export const ROW_GAP = 320
+export const ROW_GAP = 160
 
 
 /** 画布底边到供应端卡片底边的留白（像素）。 */
