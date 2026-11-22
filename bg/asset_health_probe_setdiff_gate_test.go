@@ -20,7 +20,8 @@ import (
 // 新逻辑：查询失败 ⇒ 跳过该 kind，一个字都不改。
 //
 // ★ 这条门是「失败语义优先于数据」：门断言的不是「标了 0 行」，
-//   而是「失败时**没有调用**任何标记方法」——后者才是真正的保证。
+//
+//	而是「失败时**没有调用**任何标记方法」——后者才是真正的保证。
 func TestProbeSkipsDownMarkingWhenLiveSourceQueryFails(t *testing.T) {
 	all := []apihub.Asset{
 		asset(1, "t1", apihub.HealthUnknown),
@@ -65,7 +66,8 @@ func (failingSyncer) MCPServers(context.Context) ([]apihub.Asset, error) {
 // 判据是**反的**：正常跑完（提前 break，offset < 上界）时条件成立 ⇒ 每轮都喊；
 // 真撞上界（offset 恰好 == 上界）时条件不成立 ⇒ 反而不喊。
 // ⇒ 211 上那条 WARN 从来不是「表太大」，而是判据写反了
-//   （2026-11-23 实测：default 租户只有 1420 行资产）。
+//
+//	（2026-11-23 实测：default 租户只有 1420 行资产）。
 //
 // 现在整个分页 + 上界告警都被集合差取代 ⇒ 这条门钉住「旧形态不得复活」。
 func TestProbeNoLongerCarriesPaginationCeilingWarning(t *testing.T) {

@@ -110,8 +110,9 @@ func (s *probeStore) ListTenants(context.Context) ([]string, error) { return s.t
 //	   AND NOT (ref_id = ANY($3))
 //
 // ★ 关键：它**不受任何页数上界约束** —— 扫全量 s.all。
-//   旧实现（探针分页 20 页 × 500 行）只看得见前 10000 行，
-//   超过的行静默漏检 —— 新门就是钉住这条不再发生。
+//
+//	旧实现（探针分页 20 页 × 500 行）只看得见前 10000 行，
+//	超过的行静默漏检 —— 新门就是钉住这条不再发生。
 func (s *probeStore) MarkMissingDown(_ context.Context, tenantID string, k apihub.Kind, liveRefIDs []int64) (int64, error) {
 	live := make(map[int64]bool, len(liveRefIDs))
 	for _, id := range liveRefIDs {
@@ -325,8 +326,9 @@ func TestProbeFirstRunStillMarksUnseenAssets(t *testing.T) {
 // 于是「有没有上界」这个问题本身消失了：不再有分页，就没有「只看前 N 行」。
 //
 // ★ 这条门用 **10,050 行**（超过旧实现的 20 页 × 500 行 = 10000 行上界）
-//   来钉住这一点：旧实现在这里会漏掉 50 行（而且**静默**——它那条上界告警
-//   的判据还是反的，见门 10）。新实现必须一行不漏。
+//
+//	来钉住这一点：旧实现在这里会漏掉 50 行（而且**静默**——它那条上界告警
+//	的判据还是反的，见门 10）。新实现必须一行不漏。
 func TestProbeCoversAllAssetsBeyondOldPaginationCeiling(t *testing.T) {
 	const n = 10050
 	all := make([]apihub.Asset, 0, n)

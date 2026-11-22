@@ -986,8 +986,9 @@ func (s *pgStore) MarkHealth(ctx context.Context, tenantID string, k Kind, refID
 //	③ 逐行 MarkHealth = 每次几百条 UPDATE（实测 default 租户 44 条/轮）。
 //
 // ★ 「空数组 ⇒ 全部置 down」是**有意的**：源表真的空了 ⇒ 所有资产都该 down。
-//   调用方必须自己保证「源表查询失败」不会被当成「源表为空」传进来
-//   （bg 侧的做法：查询失败就跳过该 kind，不做任何标记）。
+//
+//	调用方必须自己保证「源表查询失败」不会被当成「源表为空」传进来
+//	（bg 侧的做法：查询失败就跳过该 kind，不做任何标记）。
 const markMissingDownSQL = `
 UPDATE public.assets
    SET health_state = 'down'
