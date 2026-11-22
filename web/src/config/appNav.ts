@@ -1,7 +1,7 @@
 /** Sidebar navigation — grouped menus with role / tenant visibility flags. */
 
 import { showOpsPlatform } from './edition'
-import { isHiddenNavGroup, isHiddenNavPath } from './navHidden'
+import { isHiddenNavPath } from './navHidden'
 
 export type NavItem = {
   path: string
@@ -361,9 +361,6 @@ export function visibleNavItems(items: NavItem[], opts: NavVisibilityOpts): NavI
 
 export function visibleNavGroups(groups: NavGroup[], opts: NavVisibilityOpts): NavGroup[] {
   return groups
-    // ★ 2026-11-23 owner 指令：整组隐藏（「接入指南」）。真源条目保留，
-    //   路由与页面不删，直链仍可访问；口径门按真源计数，不受影响。
-    .filter((g) => !isHiddenNavGroup(g.id))
     .map((g) => ({
       ...g,
       items: g.items.filter((item) => canShowNavItem(item, opts)),
