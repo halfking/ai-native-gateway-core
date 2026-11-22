@@ -17,6 +17,9 @@ export default {
   sourceDetail: 'تفاصيل الطلبات',
   // 2026-10-02 التحديد المتعدد/مسح الكل/التحديث التلقائي
   clearAll: 'مسح الكل',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: 'إلغاء التثبيت',
+  pinnedUnresolved: 'المزوّد غير موجود — لم يتم تطبيق الفلتر',
   autoRefresh: 'تحديث تلقائي',
   autoRefreshOff: 'إيقاف',
   autoRefresh30s: '30 ثانية',

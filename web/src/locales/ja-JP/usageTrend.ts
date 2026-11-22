@@ -17,6 +17,9 @@ export default {
   sourceDetail: 'リクエスト明細',
   // 2026-10-02 複数選択/全消去/自動更新
   clearAll: 'すべてクリア',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: '固定を解除',
+  pinnedUnresolved: 'このプロバイダーが見つからないため、フィルターは適用されていません',
   autoRefresh: '自動更新',
   autoRefreshOff: 'オフ',
   autoRefresh30s: '30秒',

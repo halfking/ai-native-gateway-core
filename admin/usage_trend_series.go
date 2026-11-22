@@ -49,7 +49,16 @@ const usageTrendOthersKey = "__others__"
 const usageTrendMaxModels = 20
 
 // 与 bg/stats_minute_rollup.go 的 model 维度同式；detail 档 SQL 中多处引用必须一致。
-const usageTrendModelExpr = `COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '__unknown__')`
+//
+// ★ 2026-11-23 深链钉住轮：模型口径表达式按**表别名**生成（明细排行用 rl、
+// 趋势序列用 r）⇒ 两处口径共用同一份模板，改一处不会漏另一处
+// （★ 之前两份各写一遍，改了一边忘了另一边就是「卡片 14,674 / 点进去 0 条」）。
+const usageTrendModelExprTemplate = `COALESCE(NULLIF(%s.outbound_model, ''), NULLIF(%s.client_model, ''), '__unknown__')`
+
+var usageTrendModelExpr = fmt.Sprintf(usageTrendModelExprTemplate, "r", "r")
+
+// usageTrendModelExprRL 是同口径的 rl 别名版本（top-rankings 明细查询用）。
+var usageTrendModelExprRL = fmt.Sprintf(usageTrendModelExprTemplate, "rl", "rl")
 
 type usageTrendPoint struct {
 	Bucket   string  `json:"bucket"`

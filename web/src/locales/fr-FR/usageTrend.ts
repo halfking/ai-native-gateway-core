@@ -17,6 +17,9 @@ export default {
   sourceDetail: 'Détail des requêtes',
   // 2026-10-02 multi-sélection / tout effacer / actualisation auto
   clearAll: 'Tout effacer',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: 'Détacher',
+  pinnedUnresolved: 'Fournisseur introuvable — filtre non appliqué',
   autoRefresh: 'Actualisation auto',
   autoRefreshOff: 'Désactivée',
   autoRefresh30s: '30 s',
