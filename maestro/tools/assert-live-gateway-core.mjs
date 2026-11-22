@@ -232,11 +232,21 @@ check(`模型↔供应商净间距 ≥ ${MIN_GAP}px（全部视口）`,
   `最小实测 ${Math.round(Math.min(...measurements.map(m => m.gap)))}px`)
 const gaps = measurements.map(m => m.gap)
 const spread = Math.max(...gaps) - Math.min(...gaps)
-check(`净间距在各视口间**恒定**（极差 ≤ ${MAX_SPREAD}px ⇒ 证明是固定像素、不是随高度缩放的比例）`,
-  spread <= MAX_SPREAD,
+// ★ 判据订正（2026-11-23 修复前基线实测后）：原判据「各视口间距极差 ≤20px」
+//   在**修复前也绿**（实测 30/30/35/30，极差 5px）⇒ **无区分力 = 假绿判据**。
+//   原因：画布高度被钉在 480/503px ⇒ 比例方案的差也几乎不变 ⇒ 「相对恒定」
+//   区分不了「固定像素」与「小画布上的比例」。
+//   ⇒ 真正能区分的是**绝对值区间**：固定像素 ROW_GAP=72（±jitter ⇒ 64~80）；
+//     比例方案在画布 480 时是 30px（<60）、画布 560 时是 44px（<60）、
+//     画布更大时又会 >88 ⇒ 两种情况都能被区间卡住。
+const GAP_LO = TARGET_GAP          // 60：低于此 ⇒ 比例方案被压扁 / 未修复
+const GAP_HI = 92                  // 92：高于此 ⇒ 间距随画布放大 ⇒ 不是固定像素
+check(`净间距落在**固定区间** [${GAP_LO}, ${GAP_HI}]px（固定像素 ROW_GAP=72±jitter）`,
+  gaps.every(g => g >= GAP_LO && g <= GAP_HI),
   `实测 ${gaps.map(g => Math.round(g) + 'px').join(' / ')}（极差 ${Math.round(spread)}px）`)
-check(`净间距 ≥ ${TARGET_GAP}px（固定间距 ROW_GAP=72 扣抖动后的下限）`,
-  gaps.every(g => g >= TARGET_GAP), `最小实测 ${Math.round(Math.min(...gaps))}px`)
+check(`净间距在各视口间**恒定**（极差 ≤ ${MAX_SPREAD}px）`,
+  spread <= MAX_SPREAD,
+  `极差 ${Math.round(spread)}px`)
 check('所有节点都在画布内（无底部溢出/裁剪）',
   measurements.every(m => !m.overflow),
   measurements.map(m => `${m.vp.height}px:${m.overflow ? '溢出' : 'OK'}`).join(' '))
