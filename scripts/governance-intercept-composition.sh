@@ -150,6 +150,24 @@ if [[ "$WITH_RATE" -eq 1 ]]; then
   [[ -z "$REQ_TOTAL" ]] && log "★ 取请求总数失败 ⇒ 本次只报绝对数、★ 不报拦截率"
 fi
 
+# ── ④b 治理链期望状态（★ 「零拦截」的**前置条件**）─────────────────────────
+#
+# ★ ★ 为什么必须读（★ 本轮实测踩到、★ 而且它会让读数**静默失真**）：
+#   ★ 「窗口内零拦截」有**两种**截然不同的含义：
+#   ① 真的没有攻击；② ★ **治理链那一段根本没在跑**
+#   （★ `security.enabled=false` ⇒ ★ `domains/security.SecurityHook` 的
+#   ★ `Enabled()` 恒 false ⇒ ★ `prompt_injection` / 敏感词 / 策略合规 /
+#   ★ 工具风险 / 数据外泄 **五个插件一个都不裁决** ⇒ ★ 请求一路放行）。
+#   ⇒ ★ 不读这个开关就报「零拦截」⇒ ★ **读者会把「链被关了」读成「没有攻击」**。
+# ★ ★ 而且这是**当次实查**、★ 不是常量：★ 生产配置会变（★ 本轮实测
+#   `security.enabled` 与我早前记录的快照**相反**）⇒ ★ 报告里的配置快照会过期。
+GOV_SW_RAW="$(ssh "$HOST" "docker exec -i acc-pg17 psql -U acc_super -d llm_gateway -At -F'|' -c \"select key, value::text from settings_kv where key in ('security.enabled','security.mode') order by key\"" 2>/dev/null </dev/null | tr -d '\r')"
+# ★ ★ 只去 CR（★ **不能** `tr -d '[:space:]'`：★ 那会把**换行**也删掉
+#   ⇒ ★ 两行粘成一行 ⇒ ★ key 解析成「security.enabled=truesecurity.mode」⇒ ★ 读数失真）。
+if [[ -z "$GOV_SW_RAW" ]]; then
+  log "★ 取不到治理链开关（★ security.enabled / security.mode）⇒ ★ 本次读数不能据此下「无攻击」结论"
+fi
+
 # ── ⑤ 聚合（★ 交本地 python3 解析 JSON 行、★ 只出计数）─────────────────
 export INTERCEPT_RAW="$RAW"
 export INTERCEPT_RAW_DIV="$RAW_DIV"
@@ -159,6 +177,7 @@ export INTERCEPT_HOST="$HOST"
 export INTERCEPT_CONTAINER="$CONTAINER"
 export INTERCEPT_WINDOW="$WINDOW"
 export INTERCEPT_STARTED="${COVERAGE_START:-}"
+export INTERCEPT_GOV_SW="$GOV_SW_RAW"
 
 python3 - <<'PY'
 import json
@@ -173,6 +192,25 @@ host = os.environ.get("INTERCEPT_HOST", "")
 container = os.environ.get("INTERCEPT_CONTAINER", "")
 window = os.environ.get("INTERCEPT_WINDOW", "")
 started = os.environ.get("INTERCEPT_STARTED", "")
+gov_raw = os.environ.get("INTERCEPT_GOV_SW", "")
+
+# ── 治理链期望状态（★ 「零拦截」的前置条件）───────────────────────────────
+gov = {}
+for line in gov_raw.splitlines():
+    line = line.strip()
+    if not line or "|" not in line:
+        continue
+    k, v = line.split("|", 1)
+    k = k.strip()
+    if k:
+        gov[k] = v.strip()
+gov_enabled = None
+if "security.enabled" in gov:
+    lv = gov["security.enabled"].strip().strip('"').lower()
+    if lv in ("true", "t", "1"):
+        gov_enabled = True
+    elif lv in ("false", "f", "0"):
+        gov_enabled = False
 
 plugins = Counter()
 reasons = Counter()
@@ -189,6 +227,13 @@ for line in raw.splitlines():
     try:
         d = json.loads(line)
     except Exception:
+        bad_lines += 1
+        continue
+    # ★ ★ 非 JSON 对象行（★ 例如 `42`、★ `"x"`、★ `[1]`）⇒ ★ **不是 dict**
+    #   ⇒ ★ `d.get` 会抛 AttributeError ⇒ ★ 整个脚本崩掉。
+    #   ⇒ ★ `docker logs` 里混进非 JSON 行是**常态**（★ 多行日志、★ 裸行）
+    #   ⇒ ★ 这里必须挡一层（★ 计入「不可解析行」⇒ ★ 读数会偏低、★ 但脚本活着）。
+    if not isinstance(d, dict):
         bad_lines += 1
         continue
     total += 1
@@ -220,6 +265,8 @@ for line in raw.splitlines():
         d = json.loads(line)
     except Exception:
         continue
+    if not isinstance(d, dict):
+        continue
     vtxt = d.get("decision_verdicts", "") or ""
     if not vtxt:
         continue
@@ -249,6 +296,8 @@ for line in raw_div.splitlines():
     try:
         d = json.loads(line)
     except Exception:
+        continue
+    if not isinstance(d, dict):
         continue
     div_total += 1
     denied = d.get("pi_divergence_denied", "") or "(空)"
@@ -283,6 +332,8 @@ if as_json:
         "pi_divergence_timestamps": div_stamps,
         "unparsable_lines": bad_lines,
         "evidence_leak_lines": 0,
+        "governance_switches": gov,
+        "governance_chain_enabled": gov_enabled,
     }, ensure_ascii=False, indent=2))
 else:
     print("=== 治理链拦截构成（%s / %s / 窗口 %s）===" % (host, container, window))
@@ -293,6 +344,22 @@ else:
     else:
         print("日志覆盖起点: 未知（★ 取不到容器启动时刻 ⇒ 本次不出拦截率）")
     print("拦截次数: %d" % total)
+    # ★ 治理链期望状态（★ 零拦截的**前置条件**：★ 链被关 ⇒ 零拦截 ≠ 无攻击）
+    print("")
+    print("-- 治理链期望状态（★ 「零拦截」的前置条件）--")
+    if gov:
+        for k in sorted(gov):
+            print("  %s=%s" % (k, gov[k]))
+    else:
+        print("  （取不到 ⇒ ★ 本次读数**不能**据此下「无攻击」结论）")
+    if gov_enabled is False:
+        print("  ★★★ 警示：★ security.enabled=false ⇒ ★ 治理链 security.plugins 阶段")
+        print("       （★ prompt_injection / 敏感词 / 策略合规 / 工具风险 / 数据外泄）")
+        print("       **整段被跳过** ⇒ ★ 本次「零拦截」**不可**解读为「没有攻击」")
+    elif gov_enabled is True:
+        print("  ★ 链是开着的（★ security.enabled=true）⇒ ★ 零拦截可按「无命中」读")
+    else:
+        print("  ★ 开关状态未知 ⇒ ★ 零拦截**不可**解读为「没有攻击」")
     if rate is not None:
         print("同期请求总数: %s" % req_total)
         print("拦截率（上界口径）: %.6f%%" % rate)
@@ -348,13 +415,16 @@ else:
     else:
         print("    （窗口内零分歧）")
     print("")
-    print("★ ★ 读数须知（三条，★ 别把这张表当结论）：")
+    print("★ ★ 读数须知（四条，★ 别把这张表当结论）：")
     print("   ① 拦截率是**上界**：★ 分子里可能混着**人工探针**（★ 探针也是真实请求）")
     print("      ⇒ ★ 真拦截率**只能**用【无探针窗口】或剔除探针后重算；")
     print("   ② 分子覆盖期 = 容器启动至今（★ 容器一重启，★ 更早的日志就没了）")
     print("      ⇒ ★ 窗口写着 7d、实际可能只覆盖了 10 分钟（★ 上面的『覆盖起点』说了算）；")
     print("   ③ 理由文本是**形态化**的（★ 不含用户原文）★ 但仍可能含**插件自己的措辞**")
     print("      ⇒ ★ 报表外发前请自行过一遍。")
+    print("   ④ ★ **零拦截 ≠ 没有攻击**：★ 先看上面的『治理链期望状态』")
+    print("      ⇒ ★ `security.enabled=false` ⇒ ★ 治理链那一段**整段不跑**")
+    print("      ⇒ ★ 零拦截只说明『链开着但没命中』；★ 链被关时它**什么都不能说明**。")
     print("")
     print("★ 泄露体检: 通过（★ 0 处 matched_pattern / input_sample / evidence）")
 PY
