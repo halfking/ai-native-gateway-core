@@ -158,7 +158,6 @@ export default {
     errorsEmpty: 'Keine Fehler in diesem Zeitraum verzeichnet',
     errorRate: 'Fehlerrate',
     totalErrors: 'Fehler gesamt',
-    lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",
     avgCostPerSession: "Avg cost / session",

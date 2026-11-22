@@ -103,11 +103,11 @@ Matching each gap to its cause:
 2. **Then align the entity**: compare requests with requests and cost with cost; never compare a session count with a request count.
 3. **Look for degradation markers**: when a card shows "degraded / untrustworthy / not computed", those zeros do not mean "no traffic".
 4. **Check the probe switch**: the board's "exclude probes / include probes" toggle only switches the hero summary; the distribution charts and the trend chart always use the business caliber.
-5. **"Today" may fail**: on the Session & Statistics tab the "Today" preset can exceed the 30-second database budget under load and report an error — that is a failure, not a zero.
+5. **"Today" used to fail (fixed 2026-11-23)**: the "Today" preset of Session & Statistics reproducibly hit the 30-second timeout because the join index was missing on the database side (index added 2026-11-23: the query went from 121.8 s to 0.19 s). If the page shows that error again, the index has gone missing again — ask the on-call engineer to check that `idx_session_dim_session_key` is in place.
 
 ## Known limitations (measured 2026-11-23)
 
-1. The "Today" preset of Session & Statistics times out at 30 seconds on the production database (an index issue in the session-universe join — the smaller the window, the more likely the plan degrades); "Last 7 days" and "Last 30 days" work.
+1. **Session-side cost and request count are inflated (double counting, not yet fixed)**: the cost and request count of Session & Statistics come from the session-summary aggregation, but `sessions` is a **day-partitioned session history** (the same session gets a new row every day) and the statistics join does not de-duplicate per session ⇒ the same session is counted several times. Measured on the production database on 2026-11-23 (same 7-day window): the session-side cost comes out about **61 %** and the request count about **36 %** above the values de-duplicated per session (the most expensive session was counted 3 times). **The Board numbers (request level) are not affected** ⇒ when comparing cost, use the Board, or de-duplicate the session-side numbers first.
 2. The session-side aggregation also sums duplicate rows of the session table, so its request count and cost are higher than they should be.
 3. The board credits card does not change with the time range (see above).
 4. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).

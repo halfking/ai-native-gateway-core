@@ -43,13 +43,15 @@ describe('会话统计图表初始化竞态（数据晚到必须补 init）', ()
   })
 })
 
-describe('会话统计工具栏布局（owner 图批：选择器左上 + 删统计周期块）', () => {
-  it('③ KxDateRangePicker 在 panel-toolbar 里排在 meta 之前（左侧）', async () => {
+describe('会话统计工具栏布局（owner 图批：选择器左上 + 删统计周期块 + 紧凑轮）', () => {
+  it('③ KxDateRangePicker 在 panel-toolbar 的起始组内（左侧）', async () => {
     const src = await read('SessionStatsPanel.vue')
     const pickerIdx = src.indexOf('<KxDateRangePicker')
-    const metaIdx = src.indexOf('class="panel-toolbar__meta"')
+    const startIdx = src.indexOf('class="panel-toolbar__start"')
     expect(pickerIdx).toBeGreaterThanOrEqual(0)
-    expect(metaIdx).toBeGreaterThan(pickerIdx)
+    expect(startIdx).toBeGreaterThanOrEqual(0)
+    // 选择器必须落在起始组**内部**（start 组标签在它之前，其闭合标签在它之后）
+    expect(pickerIdx).toBeGreaterThan(startIdx)
   })
 
   it('④ 「统计周期/周期新会话/日均新会话」信息块与死代码不得回魂', async () => {
@@ -58,5 +60,37 @@ describe('会话统计工具栏布局（owner 图批：选择器左上 + 删统�
     expect(src).not.toContain('periodLabel')
     expect(src).not.toContain('trendSummary')
     expect(src).not.toContain('sessions.stats.periodRange')
+  })
+
+  // 2026-11-23 owner 图批（紧凑轮）：右侧「最后更新 · Nms」与「查看探测流量」
+  // 批「不需要，请移除」⇒ 这两个元素不得回魂（回魂＝右侧又长出一块，与
+  // 「让页面更紧凑」的诉求相反，且是主人明确划掉的）。
+  it('⑤ 工具栏右侧「最后更新 / 查看探测流量」不得回魂', async () => {
+    const src = await read('SessionStatsPanel.vue')
+    expect(src).not.toContain('sessions.stats.lastUpdated')
+    expect(src).not.toContain('stats-probe-link')
+    expect(src).not.toContain('openProbeTraffic')
+    // 8 语种里那个失去引用的键也必须删干净（否则 i18n 死键棘轮门变红）
+    for (const loc of ['zh-CN', 'zh-TW', 'en-US', 'ja-JP', 'de-DE', 'fr-FR', 'es-ES', 'ar-SA']) {
+      const localeSrc = await readFile(
+        resolve(process.cwd(), `web/src/locales/${loc}/sessions.ts`),
+        'utf8',
+      ).catch(() => readFile(resolve(process.cwd(), `src/locales/${loc}/sessions.ts`), 'utf8'))
+      expect(localeSrc).not.toContain('lastUpdated')
+    }
+  })
+
+  // 「包含探测」开关必须紧贴时间范围选择的**右边**（原先被 space-between
+  // 顶到页面中间，离控件很远——主人图批「放到时间范围选择的右边」）。
+  it('⑥ 「包含探测」开关紧跟时间范围选择器（同组、其后）', async () => {
+    const src = await read('SessionStatsPanel.vue')
+    const pickerIdx = src.indexOf('<KxDateRangePicker')
+    const probeIdx = src.indexOf('class="session-probe-scope"')
+    expect(pickerIdx).toBeGreaterThanOrEqual(0)
+    expect(probeIdx).toBeGreaterThan(pickerIdx)
+    // 两者必须在同一个起始组容器里（组起点在选择器之前）
+    const startIdx = src.indexOf('class="panel-toolbar__start"')
+    expect(startIdx).toBeGreaterThanOrEqual(0)
+    expect(startIdx).toBeLessThan(pickerIdx)
   })
 })
