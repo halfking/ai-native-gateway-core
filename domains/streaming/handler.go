@@ -4477,10 +4477,15 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		if !survivalEligible {
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			// 2026-11-22（211 事故）：零候选若是因为「模型登记了、候选全被状态闸
+			// 挡住」（上游余额耗尽 / 运维停用…），必须把**原因**告诉客户端——
+			// 「没有可用的供应商」读起来是「等一会儿」，而真相是重试没用。
+			// 诊断失败或解释不了（闸全开）⇒ cause 为空 ⇒ 文案与信封逐字不变。
+			noCandCause := h.diagnoseNoCandidateCause(r.Context(), clientModel, tenantID)
 			// writeNoCandidateWithAlternatives renders http.StatusServiceUnavailable
 			// on every arm (legacy / anthropic / with-alternatives).
 			logCtx.failAndMark("no_candidate",
-				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil,
+				noCandCause.logMessage(clientModel), nil, nil,
 				http.StatusServiceUnavailable)
 			markLogged()
 			// 2026-08-09: the requested model has no routable node, but other
@@ -4491,7 +4496,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// v_routable_credential_models.is_routable — the same gate the router
 			// uses — so a suggested model is genuinely reachable right now.
 			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo, requestModality)
-			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
+			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts, noCandCause)
 			return
 		}
 		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
@@ -10054,44 +10059,99 @@ func writeErrorJSONWithKind(w http.ResponseWriter, status int, requestID, msg, e
 // before startPreStreamKeepalive commits HTTP 200, so both the status code and
 // the body shape are still ours to choose, for streaming and non-streaming
 // requests alike.
+//
+// 2026-11-22（211 事故）：cause 是这笔零候选的**客户端可见归因**。非空时
+// 文案换成「带原因 + 重试没用」的那句（本地化），并在错误对象顶层加两个
+// 旁键 `cause`（有界令牌，多因用 "+" 连接）与 `retryable: false`——三个
+// 分支（无替代 / Anthropic / 带替代）位置一致。cause 为空时信封**与改动
+// 之前一致**（不多任何键）。
 func writeNoCandidateWithAlternatives(
 	ctx context.Context,
 	w http.ResponseWriter,
 	r *http.Request,
 	requestID, clientModel string,
 	alts ModelAlternativesResult,
+	cause noCandidateCause,
 ) {
 	msg := i18n.T(ctx, i18n.MsgNoCandidate, map[string]any{"Model": clientModel})
+	if !cause.empty() {
+		msg = cause.Message
+	}
 
 	if len(alts.Alternatives) == 0 {
-		// Nothing to offer: keep the exact legacy response.
-		writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusServiceUnavailable,
-			requestID, msg, "server_error", "no_candidate", "no_candidate", nil)
+		if cause.empty() {
+			// Nothing to offer, nothing to explain: keep the exact legacy response.
+			writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusServiceUnavailable,
+				requestID, msg, "server_error", "no_candidate", "no_candidate", nil)
+			return
+		}
+		writeNoCandidateWithCause(protocolOfRequest(r), w, requestID, msg, cause)
 		return
 	}
 
 	if protocolOfRequest(r) == "anthropic" {
 		writeErrorAnthropicWithAlternatives(w, http.StatusServiceUnavailable,
-			requestID, msg, "no_candidate", alts)
+			requestID, msg, "no_candidate", alts, cause)
 		return
 	}
 
+	errObj := map[string]any{
+		"message":      msg,
+		"type":         "server_error",
+		"code":         "no_candidate",
+		"kind":         "no_candidate",
+		"request_id":   requestID,
+		"alternatives": alts,
+	}
+	mergeCauseExtras(errObj, cause)
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
 	//nolint:errcheck // HTTP write error non-recoverable
-	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message":      msg,
-			"type":         "server_error",
-			"code":         "no_candidate",
-			"kind":         "no_candidate",
-			"request_id":   requestID,
-			"alternatives": alts,
-		},
-	})
+	json.NewEncoder(w).Encode(map[string]any{"error": errObj})
+}
+
+// mergeCauseExtras 把归因旁键并入错误对象顶层。cause 为空时不动作。
+func mergeCauseExtras(errObj map[string]any, cause noCandidateCause) {
+	for k, v := range cause.extras() {
+		errObj[k] = v
+	}
+}
+
+// writeNoCandidateWithCause 是「无替代模型 + 有归因」的 no_candidate 信封：
+// 键集合与既有的 writeErrorJSONWithKind / writeErrorAnthropic 相同，只多出
+// 归因旁键（顶层）。HTTP 状态与错误 type 不变（503；Anthropic 侧仍按
+// anthropicErrorType 映射）——本轮只让**句子与旁键**说真话，不改状态码
+// 契约（改状态码会影响 SDK 的自动重试与监控口径，属待裁决项）。
+func writeNoCandidateWithCause(proto string, w http.ResponseWriter, requestID, msg string, cause noCandidateCause) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	var body map[string]any
+	if proto == "anthropic" {
+		errObj := map[string]any{
+			"type":    anthropicErrorType("server_error", "no_candidate"),
+			"message": msg,
+		}
+		mergeCauseExtras(errObj, cause)
+		body = map[string]any{"type": "error", "error": errObj}
+	} else {
+		errObj := map[string]any{
+			"message":    msg,
+			"type":       "server_error",
+			"code":       "no_candidate",
+			"kind":       "no_candidate",
+			"request_id": requestID,
+		}
+		mergeCauseExtras(errObj, cause)
+		body = map[string]any{"error": errObj}
+	}
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(body)
 }
 
 // diagnoseModalityMismatch decides whether the request's modality — rather
@@ -10400,7 +10460,16 @@ func writeErrorAnthropicWithAlternatives(
 	status int,
 	requestID, msg, code string,
 	alts ModelAlternativesResult,
+	cause noCandidateCause,
 ) {
+	errObj := map[string]any{
+		"type":         anthropicErrorType("server_error", code),
+		"message":      msg,
+		"alternatives": alts,
+	}
+	// 2026-11-22：有归因时把 cause / retryable 并到 error 对象顶层（与另外
+	// 两个分支同位）；无归因时信封不变。
+	mergeCauseExtras(errObj, cause)
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-Id", requestID)
@@ -10408,12 +10477,8 @@ func writeErrorAnthropicWithAlternatives(
 	w.WriteHeader(status)
 	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
-		"type": "error",
-		"error": map[string]any{
-			"type":         anthropicErrorType("server_error", code),
-			"message":      msg,
-			"alternatives": alts,
-		},
+		"type":  "error",
+		"error": errObj,
 	})
 }
 
@@ -10462,6 +10527,13 @@ func anthropicErrorType(errType, code string) string {
 		return "permission_error"
 	case "not_found", "model_not_found", "model_deprecated":
 		return "not_found_error"
+	// 2026-11-22：入口拒绝按状态码给 type（见 ingressErrorType）——请求体超限
+	// 与请求超时在 Anthropic 的类型集里各有其名，不能再顶着
+	// invalid_request_error 出去。
+	case "prompt_too_large":
+		return "request_too_large"
+	case "request_timeout":
+		return "request_timeout"
 	case "overloaded_error", "provider_error":
 		return "overloaded_error"
 	}
@@ -10472,6 +10544,10 @@ func anthropicErrorType(errType, code string) string {
 		return "permission_error"
 	case "rate_limit_error":
 		return "rate_limit_error"
+	case "request_too_large":
+		return "request_too_large"
+	case "request_timeout":
+		return "request_timeout"
 	case "invalid_request_error":
 		return "invalid_request_error"
 	}

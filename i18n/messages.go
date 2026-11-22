@@ -55,6 +55,38 @@ const (
 	// two need different remediation (wait / switch model vs. drop the
 	// attachments / switch model), so they must not share a sentence.
 	MsgModalityMismatch = "modality_mismatch" // "Model '{{.Model}}' does not accept {{.Modality}} input. This request contains {{.Modality}} content, but the model is registered as {{.RegisteredModality}}-only. Send a text-only request to this model, or route the request to a model that supports {{.Modality}}."
+	// MsgNoCandidateBlocked: the model IS registered, but every candidate for
+	// it is blocked by a gateway state gate (upstream quota/balance exhausted,
+	// provider or credential disabled by the operator, …). {{.Causes}} is the
+	// localised, semicolon-joined list built from the provider.EmptyCandidate*
+	// cause phrases below.
+	//
+	// ★ Why it must not reuse MsgNoCandidate (2026-11-22, 211 incident):
+	// "No available provider" describes a momentary state, so the client's
+	// rational reaction is to retry — and the Anthropic envelope's
+	// overloaded_error says exactly that. But a credential whose upstream
+	// account is out of balance stays blocked until someone tops it up:
+	// the owner saw "this model always fails" for an hour with no hint that
+	// the cause was upstream balance. The sentence has to carry the cause
+	// and say plainly that retrying will not help.
+	MsgNoCandidateBlocked = "no_candidate_blocked" // "No available provider for model '{{.Model}}': every candidate for it is blocked ({{.Causes}}). Retrying the same request will not help — switch to another model, or contact the gateway operator."
+	// Cause phrases for MsgNoCandidateBlocked. Bounded set, one per
+	// provider.ClientCause* token; deliberately carry no counts (how many
+	// upstream credentials a model has is operator-side information).
+	MsgNoCandidateCauseQuota             = "no_candidate_cause_quota"              // "upstream account quota or balance exhausted"
+	MsgNoCandidateCauseDisabled          = "no_candidate_cause_disabled"           // "provider or credential disabled by the gateway operator"
+	MsgNoCandidateCauseCredentialMissing = "no_candidate_cause_credential_missing" // "credential records missing"
+	MsgNoCandidateCauseOtherTenant       = "no_candidate_cause_other_tenant"       // "providers belong to another tenant"
+	MsgNoCandidateCauseNotRegistered     = "no_candidate_cause_not_registered"     // "model not registered"
+	// Ingress (LargeIngress) rejections — 2026-11-22, 211 incident. The client
+	// used to get a bare English sentence that named neither the request body
+	// size nor whether a retry could help ("request preprocessing exceeded its
+	// time limit"). These carry the facts ({{.Size}} / {{.Budget}} / {{.Limit}})
+	// and the remediation; the stable English sentence still goes to the
+	// request log (see ingressRejection).
+	MsgIngressPreprocessTimeout     = "ingress_preprocess_timeout"
+	MsgIngressContextBudgetExceeded = "ingress_context_budget_exceeded"
+	MsgIngressPromptTooLarge        = "ingress_prompt_too_large"
 	// MsgModelDeprecated: upstream provider has permanently end-of-lifed the
 	// requested model (HTTP 410 Gone). The handler appends the upstream's own
 	// EOL reason so the client knows which model was removed.

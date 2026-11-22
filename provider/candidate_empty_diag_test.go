@@ -304,3 +304,53 @@ func TestCauseClassAgreesWithSummarizeMultiGate(t *testing.T) {
 		}
 	}
 }
+
+// sonnet55Diag 是 211 实测的 [candidate_diag] 计数（claude-sonnet-5-5 全量 503
+// 那一小时）：配额 8、供应商停用 5、offer 人工下线 2、凭据人工停用 1。
+var sonnet55Diag = EmptyCandidateBreakdown{
+	OffersTotal:                       11,
+	BlockedByCredentialManualDisabled: 1,
+	BlockedByCredentialQuota:          8,
+	BlockedByProviderDisabled:         5,
+	BlockedByUnavailableReason:        2,
+}
+
+// TestEmptyCandidateBreakdownClientCauses —— 客户端可见归因令牌：有界闭集、
+// 按主因优先、按类别去重；解释不了时为空（调用方不得编原因）。
+func TestEmptyCandidateBreakdownClientCauses(t *testing.T) {
+	cases := []struct {
+		name string
+		b    EmptyCandidateBreakdown
+		want []string
+	}{
+		{"未登记", EmptyCandidateBreakdown{}, []string{ClientCauseNotRegistered}},
+		{"211 sonnet-5-5 形态：配额为主因，停用类合成一个", sonnet55Diag, []string{ClientCauseQuota, ClientCauseDisabled}},
+		{"停用类多闸 + 其它租户", EmptyCandidateBreakdown{
+			OffersTotal: 6, BlockedByCredentialStatus: 1, BlockedByCredentialManualDisabled: 1,
+			BlockedByCredentialLifecycle: 1, BlockedByProviderDisabled: 1, BlockedByUnavailableReason: 1,
+			BlockedByProviderTenant: 1,
+		}, []string{ClientCauseDisabled, ClientCauseOtherTenant}},
+		{"仅凭据缺失", EmptyCandidateBreakdown{OffersTotal: 2, BlockedByCredentialMissing: 1}, []string{ClientCauseCredentialMissing}},
+		{"闸全开 ⇒ 空", EmptyCandidateBreakdown{OffersTotal: 5}, []string{}},
+	}
+	allowed := map[string]bool{
+		ClientCauseQuota: true, ClientCauseDisabled: true, ClientCauseCredentialMissing: true,
+		ClientCauseOtherTenant: true, ClientCauseNotRegistered: true,
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.b.ClientCauses()
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("ClientCauses = %v, want %v", got, tc.want)
+			}
+			for _, c := range got {
+				if !allowed[c] {
+					t.Errorf("令牌 %q 不在客户端可见闭集内", c)
+				}
+				if strings.ContainsAny(c, "0123456789") {
+					t.Errorf("令牌 %q 含数字 —— 客户端可见归因不得带 offer 计数", c)
+				}
+			}
+		})
+	}
+}

@@ -50,6 +50,33 @@
   "modality_mismatch": {
     "other": "El modelo «{{.Model}}» no acepta entrada de {{.Modality}}. Esta solicitud contiene contenido de {{.Modality}}, pero el modelo está registrado solo como {{.RegisteredModality}}. Envíe una solicitud solo de texto a este modelo o dirija la solicitud a un modelo compatible con {{.Modality}}."
   },
+  "no_candidate_blocked": {
+    "other": "No hay un proveedor disponible para el modelo «{{.Model}}»: todos sus candidatos están bloqueados ({{.Causes}}). Reintentar la misma solicitud no ayudará; cambie a otro modelo o contacte con el administrador del gateway."
+  },
+  "no_candidate_cause_quota": {
+    "other": "cuota o saldo de la cuenta upstream agotados"
+  },
+  "no_candidate_cause_disabled": {
+    "other": "proveedor o credencial deshabilitados por el administrador del gateway"
+  },
+  "no_candidate_cause_credential_missing": {
+    "other": "faltan registros de credenciales"
+  },
+  "no_candidate_cause_other_tenant": {
+    "other": "los proveedores pertenecen a otro inquilino"
+  },
+  "no_candidate_cause_not_registered": {
+    "other": "modelo no registrado"
+  },
+  "ingress_preprocess_timeout": {
+    "other": "El gateway no pudo terminar el preprocesamiento de esta solicitud en {{.Budget}} (cuerpo de la solicitud: {{.Size}}). Es un límite de capacidad del gateway, no un rechazo de su entrada; puede reintentarlo más tarde. Si sigue agotando el tiempo, el historial de la conversación es demasiado grande para prepararlo a tiempo: inicie una sesión nueva o recorte el historial."
+  },
+  "ingress_context_budget_exceeded": {
+    "other": "La parte de esta solicitud que debe mantenerse intacta (prompt del sistema, última tarea del usuario y su cadena de herramientas activa) no cabe en el contexto limitado del gateway ({{.Limit}}) y no se puede reducir automáticamente. Divida la última tarea o sus resultados de herramientas, o inicie una sesión nueva; reintentar la misma solicitud volverá a fallar."
+  },
+  "ingress_prompt_too_large": {
+    "other": "El cuerpo de la solicitud ocupa {{.Size}} y supera el límite del gateway de {{.Limit}}. Reduzca el historial de la conversación."
+  },
   "modality_vision": {
     "other": "imagen"
   },

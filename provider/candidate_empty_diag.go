@@ -293,6 +293,70 @@ SELECT
     COUNT(*) FILTER (WHERE NOT credential_missing AND unavailable_reason LIKE 'manual%%')::int AS blocked_by_unavailable_reason
 FROM matched`
 
+// 客户端可见的「候选为空」原因令牌。**有界**、**不含 offer 计数**——计数是
+// 运营侧信息（有多少条上游凭据），只进日志与管理面；给客户端的是「哪一类
+// 原因 + 该怎么办」。
+const (
+	// ClientCauseQuota：候选全被凭据配额态挡住（上游额度/余额耗尽）。
+	ClientCauseQuota = "upstream_quota_exhausted"
+	// ClientCauseDisabled：候选全被运维开关挡住（供应商/凭据人工停用、生命周期
+	// 停用、遗留 v1 status、offer 人工下线）。
+	ClientCauseDisabled = "provider_disabled"
+	// ClientCauseCredentialMissing：候选挂在已删除/缺失的凭据上。
+	ClientCauseCredentialMissing = "credential_missing"
+	// ClientCauseOtherTenant：候选的供应商属于其它租户。
+	ClientCauseOtherTenant = "provider_not_in_tenant"
+	// ClientCauseNotRegistered：模型未登记。
+	ClientCauseNotRegistered = "model_not_registered"
+)
+
+func clientCauseFor(class string) string {
+	switch class {
+	case CauseClassCredentialQuota:
+		return ClientCauseQuota
+	case CauseClassCredentialStatus, CauseClassCredentialManualDisabled,
+		CauseClassCredentialLifecycle, CauseClassProviderDisabled, CauseClassUnavailableReason:
+		return ClientCauseDisabled
+	case CauseClassCredentialMissing:
+		return ClientCauseCredentialMissing
+	case CauseClassProviderTenant:
+		return ClientCauseOtherTenant
+	case CauseClassNotRegistered:
+		return ClientCauseNotRegistered
+	}
+	return ""
+}
+
+// ClientCauses 把归因压成**客户端可见**的原因令牌：按主因优先、去重。
+//
+// 返回空切片表示「状态闸解释不了这次空」（闸全开 / 归因查询没跑成）⇒ 调用方
+// 必须维持通用文案，不得编一个原因。
+//
+// ★ 为什么要给客户端（2026-11-22 211 事故）：claude-sonnet-5-5 的 7 条候选
+// 全部余额耗尽时，客户端每笔拿到的都是 "No available provider for model
+// 'claude-sonnet-5-5'" + overloaded_error——读起来是「过载了，等等再试」，
+// 实际是上游没余额、重试一百次也一样。owner 原话：这类的错误要如实地
+// 返回给客户端，不要让人迷惑。
+func (b EmptyCandidateBreakdown) ClientCauses() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 2)
+	add := func(class string) {
+		c := clientCauseFor(class)
+		if c != "" && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	if b.OffersTotal == 0 {
+		add(CauseClassNotRegistered)
+		return out
+	}
+	for _, g := range b.rankedGates() {
+		add(g.class)
+	}
+	return out
+}
+
 // diagnoseEmptyCandidates 给出「候选为空」的归因。
 //
 // ★ 只在**已经判空**的路径调用 ⇒ 成功路径零开销。
@@ -312,6 +376,13 @@ func (c *Client) diagnoseEmptyCandidates(ctx context.Context, model, tenantID st
 		return EmptyCandidateBreakdown{}, err
 	}
 	return b, nil
+}
+
+// DiagnoseEmptyCandidates 是 diagnoseEmptyCandidates 的导出面：给协议
+// handler 在「候选为空」出口做一次客户端可见的归因（见 ClientCauses）。
+// 它是一次只读旁路查询——调用方必须吞掉错误并退回通用文案。
+func (c *Client) DiagnoseEmptyCandidates(ctx context.Context, model, tenantID string) (EmptyCandidateBreakdown, error) {
+	return c.diagnoseEmptyCandidates(ctx, model, tenantID)
 }
 
 // emptyCandidateScanTargets 返回与 emptyCandidateBreakdownSQL 终端 SELECT

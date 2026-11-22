@@ -714,13 +714,22 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		}
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
-		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
+		// 2026-11-22（211 事故）：零候选若是因为「模型登记了、候选全被状态闸挡住」
+		// （上游余额耗尽 / 运维停用…），必须把**原因**告诉客户端——「没有可用的
+		// 供应商」读起来是「等一会儿再试」，而真相是重试没用。诊断失败或解释
+		// 不了（闸全开）⇒ cause 为空 ⇒ 文案与信封逐字不变。
+		noCandCause := h.chatHandler.diagnoseNoCandidateCause(r.Context(), clientModel, tenantID)
+		attemptErrMsg = noCandCause.logMessage(clientModel)
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
 		releaseDurableBeforeSurvival(durableStream, "no_candidate")
-		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", attemptErrMsg)
+		clientMsg := attemptErrMsg
+		if !noCandCause.empty() {
+			clientMsg = noCandCause.Message
+		}
+		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", clientMsg, noCandCause.extras())
 		return
 	}
 	if len(candidates) == 0 {

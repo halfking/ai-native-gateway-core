@@ -704,13 +704,20 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 			}
 			// This is the real no_candidate case - no database error, just no matching providers
 			attemptErrCode = "no_candidate"
-			attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
+			// 2026-11-22（211 事故）：候选被状态闸挡空时把**原因**告诉客户端
+			// （与 /v1/messages、/v1/chat/completions 同一诊断、同一文案）。
+			noCandCause := h.chatHandler.diagnoseNoCandidateCause(r.Context(), clientModel, tenantID)
+			attemptErrMsg = noCandCause.logMessage(clientModel)
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 			*attemptLogged = true
 			releaseDurableBeforeSurvival(durableStream, "no_candidate")
-			writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
+			clientMsg := attemptErrMsg
+			if !noCandCause.empty() {
+				clientMsg = noCandCause.Message
+			}
+			writeResponsesError(w, http.StatusServiceUnavailable, clientMsg, "server_error", "no_candidate", noCandCause.extras())
 			return
 		}
 		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)

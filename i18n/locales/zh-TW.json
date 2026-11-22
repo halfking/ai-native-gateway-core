@@ -50,6 +50,33 @@
   "modality_mismatch": {
     "other": "模型「{{.Model}}」不接受{{.Modality}}輸入。本次請求含有{{.Modality}}內容，而該模型僅登記為{{.RegisteredModality}}。請改用純文字請求呼叫此模型，或將該請求轉給支援{{.Modality}}的模型。"
   },
+  "no_candidate_blocked": {
+    "other": "沒有可用於模型「{{.Model}}」的供應商：它的全部候選節點都被擋住（{{.Causes}}）。原樣重試沒有用——請改用其它模型，或聯絡網關管理員。"
+  },
+  "no_candidate_cause_quota": {
+    "other": "上游帳戶額度或餘額已用盡"
+  },
+  "no_candidate_cause_disabled": {
+    "other": "供應商或憑據已被網關管理員停用"
+  },
+  "no_candidate_cause_credential_missing": {
+    "other": "憑據記錄缺失"
+  },
+  "no_candidate_cause_other_tenant": {
+    "other": "供應商屬於其它租戶"
+  },
+  "no_candidate_cause_not_registered": {
+    "other": "模型未登記"
+  },
+  "ingress_preprocess_timeout": {
+    "other": "網關未能在 {{.Budget}} 內預處理完這個請求（請求體 {{.Size}}）。這是網關側的處理能力限制，並不是拒絕了你的輸入——可以稍後重試。如果反覆逾時，表示會話歷史大到無法在時限內準備好：請新開會話或精簡歷史。"
+  },
+  "ingress_context_budget_exceeded": {
+    "other": "這個請求裡必須原樣保留的部分（系統提示詞、最後一條使用者任務及其進行中的工具呼叫鏈）放不進網關 {{.Limit}} 的有界上下文，且無法自動縮減。請拆分最後一條任務或它的工具結果，或新開會話——原樣重試會再次失敗。"
+  },
+  "ingress_prompt_too_large": {
+    "other": "請求體 {{.Size}} 超過了網關上限 {{.Limit}}。請精簡會話歷史。"
+  },
   "modality_vision": {
     "other": "圖片"
   },

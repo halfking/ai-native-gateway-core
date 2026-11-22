@@ -50,6 +50,33 @@
   "modality_mismatch": {
     "other": "模型“{{.Model}}”不接受{{.Modality}}输入。本次请求含有{{.Modality}}内容，而该模型仅登记为{{.RegisteredModality}}。请改用纯文本请求调用此模型，或把该请求转给支持{{.Modality}}的模型。"
   },
+  "no_candidate_blocked": {
+    "other": "没有可用于模型“{{.Model}}”的供应商：它的全部候选节点都被挡住（{{.Causes}}）。原样重试没有用——请改用其它模型，或联系网关管理员。"
+  },
+  "no_candidate_cause_quota": {
+    "other": "上游账户额度或余额已耗尽"
+  },
+  "no_candidate_cause_disabled": {
+    "other": "供应商或凭据已被网关管理员停用"
+  },
+  "no_candidate_cause_credential_missing": {
+    "other": "凭据记录缺失"
+  },
+  "no_candidate_cause_other_tenant": {
+    "other": "供应商属于其它租户"
+  },
+  "no_candidate_cause_not_registered": {
+    "other": "模型未登记"
+  },
+  "ingress_preprocess_timeout": {
+    "other": "网关未能在 {{.Budget}} 内预处理完这个请求（请求体 {{.Size}}）。这是网关侧的处理能力限制，并不是拒绝了你的输入——可以稍后重试。如果反复超时，说明会话历史大到无法在时限内准备好：请新开会话或精简历史。"
+  },
+  "ingress_context_budget_exceeded": {
+    "other": "这个请求里必须原样保留的部分（系统提示词、最后一条用户任务及其进行中的工具调用链）放不进网关 {{.Limit}} 的有界上下文，且无法自动缩减。请拆分最后一条任务或它的工具结果，或新开会话——原样重试会再次失败。"
+  },
+  "ingress_prompt_too_large": {
+    "other": "请求体 {{.Size}} 超过了网关上限 {{.Limit}}。请精简会话历史。"
+  },
   "modality_vision": {
     "other": "图片"
   },

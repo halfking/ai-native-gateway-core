@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/contextbudget"
 	"github.com/kaixuan/llm-gateway-go/internal/largebody"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
@@ -92,7 +94,12 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		if r.ContentLength > largebody.LimitBytes {
-			g.reject(w, r, 413, "prompt_too_large", "request exceeds 100000000 bytes")
+			g.reject(w, r, 413, "prompt_too_large", "request exceeds 100000000 bytes", ingressRejection{
+				clientMessage: i18n.T(r.Context(), i18n.MsgIngressPromptTooLarge, map[string]any{
+					"Size": humanByteSize(r.ContentLength), "Limit": humanByteSize(largebody.LimitBytes),
+				}),
+				extra: map[string]any{"body_bytes": r.ContentLength, "limit_bytes": int64(largebody.LimitBytes)},
+			})
 			return
 		}
 		if encoding := r.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
@@ -130,10 +137,10 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 		}
 		defer original.Close()
 		r = g.handler.prepareHistoryGuard(r)
-		prepCtx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		prepCtx, cancel := context.WithTimeout(r.Context(), largeIngressPrepBudget)
 		defer cancel()
 		controller := http.NewResponseController(w)
-		_ = controller.SetReadDeadline(time.Now().Add(120 * time.Second))
+		_ = controller.SetReadDeadline(time.Now().Add(largeIngressPrepBudget))
 		stop := context.AfterFunc(prepCtx, func() {
 			if controller.SetReadDeadline(time.Now()) != nil {
 				_ = original.Close()
@@ -151,11 +158,17 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 		sid := "gw_staging_" + uuid.NewString()
 		ref, err := g.store.Capture(prepCtx, largebody.Identity{TenantID: tenantID, SessionID: sid}, io.MultiReader(bytes.NewReader(prefix), original))
 		if err != nil {
-			status, code := 503, "session_archive_unavailable"
+			status, code, logMessage := 503, "session_archive_unavailable", "request could not be archived within the input limit"
+			rej := ingressRejection{extra: map[string]any{"limit_bytes": int64(largebody.LimitBytes)}}
 			if errors.Is(err, largebody.ErrTooLarge) {
+				// 归档阶段才发现超限（没有 Content-Length 的分块上传）：说清是
+				// 请求体超限、上限多少，而不是笼统的「could not be archived」。
 				status, code = 413, "prompt_too_large"
+				rej.clientMessage = i18n.T(r.Context(), i18n.MsgIngressPromptTooLarge, map[string]any{
+					"Size": ">" + humanByteSize(largebody.LimitBytes), "Limit": humanByteSize(largebody.LimitBytes),
+				})
 			}
-			g.reject(w, r, status, code, "request could not be archived within the input limit")
+			g.reject(w, r, status, code, logMessage, rej)
 			return
 		}
 		body := prefix
@@ -167,20 +180,43 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 			body, report, err = sessioncontext.Reduce(prepCtx, g.store, ref, g.config.ContextBytes)
 			if err != nil {
 				status, code := 422, "context_budget_exceeded"
-				message := "request cannot produce a valid bounded context; split the protected input"
+				// logMessage 进请求日志/遥测：**稳定英文**（排障与看板按它检索）。
+				logMessage := "request cannot produce a valid bounded context; split the protected input"
+				// ★ 2026-11-22（211 事故，owner：「这类的错误要如实地返回给客户端，不要
+				// 让人迷惑」）：给客户端的句子此前就是上面这句笼统英文——超时只说
+				// 「exceeded its time limit」，既不说请求体多大、也不说重试有没有用。
+				// 现在客户端拿到的是**事实**（请求体大小、时限、上限）+ **该怎么办**
+				// （本地化），事实数据同时以旁键给机器（body_bytes /
+				// preprocess_budget_seconds）。状态码与 retryable 语义不变
+				//（超时＝网关侧处理能力，503 可重试；放不下＝输入问题，422
+				// 不可重试——large_sanitize_test 钉的合同）。
+				rej := ingressRejection{
+					clientMessage: i18n.T(r.Context(), i18n.MsgIngressContextBudgetExceeded, map[string]any{
+						"Limit": humanByteSize(int64(g.config.ContextBytes)),
+					}),
+					extra: map[string]any{"body_bytes": ref.Size},
+				}
 				if errors.Is(err, context.DeadlineExceeded) {
 					status, code = 503, "request_processing_timeout"
-					message = "request preprocessing exceeded its time limit"
+					logMessage = "request preprocessing exceeded its time limit"
+					rej.clientMessage = i18n.T(r.Context(), i18n.MsgIngressPreprocessTimeout, map[string]any{
+						"Budget": prepBudgetLabel(), "Size": humanByteSize(ref.Size),
+					})
+					rej.extra["preprocess_budget_seconds"] = int64(largeIngressPrepBudget / time.Second)
+					if report.Messages > 0 {
+						rej.extra["messages"] = report.Messages
+					}
 				} else if errors.Is(err, context.Canceled) {
 					status, code = 408, "request_canceled"
-					message = "request preprocessing was canceled"
+					logMessage, rej.clientMessage = "request preprocessing was canceled", ""
 				} else if errors.Is(err, sanitize.ErrRuleBlocked) {
 					status, code = 403, "sensitive_policy_blocked"
-					message = "request blocked by sensitive information policy"
+					logMessage, rej.clientMessage = "request blocked by sensitive information policy", ""
 				} else if errors.Is(err, largebody.ErrInvalidJSON) || errors.Is(err, largebody.ErrStructureLimit) {
 					status, code = 400, "invalid_request"
+					logMessage, rej.clientMessage = "request body is not a valid JSON request", ""
 				}
-				g.reject(w, r, status, code, message)
+				g.reject(w, r, status, code, logMessage, rej)
 				return
 			}
 		}
@@ -310,7 +346,128 @@ func (g *LargeIngress) resolveArchiveSession(w http.ResponseWriter, r *http.Requ
 	return sid, body, nil
 }
 
-func (g *LargeIngress) reject(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+// largeIngressPrepBudget 是入口预处理（读体 + 归档 + 归约 + 会话绑定）的时限。
+// 行为（超时取消）与给客户端看的文案（「{{.Budget}}」）共用这一个真源。
+const largeIngressPrepBudget = 120 * time.Second
+
+// ingressRejection 是入口拒绝里「只给客户端、不进日志」的那一部分。
+//
+// ★ 为什么分两份：reject 的 message 同时进请求日志与遥测——那是排障和看板的
+// 检索锚点，必须是**稳定英文**；给客户端的句子要按请求语言本地化、要带
+// 请求体大小等事实。两者混成一个变量，要么日志跟着客户端语言漂，要么
+// 客户端永远只能看英文。
+type ingressRejection struct {
+	// clientMessage 是客户端可见的本地化句子；空 ⇒ 用日志那句。
+	clientMessage string
+	// extra 并入错误信封旁键（覆盖同名默认值）；事实数据，如 body_bytes。
+	extra map[string]any
+}
+
+// ingressErrorType 按状态码给出口径一致的错误 type。
+//
+// ★ 2026-11-22：此前入口拒绝**一律**标 `invalid_request_error`——503 预处理
+// 超时、413 请求体超限、429 入口满载、401 鉴权失败全都顶着「请求不合法」
+// 的名义出去（211 事故的 A 测试实录：503 + invalid_request_error +「exceeded
+// its time limit」）。type 是客户端分类的第一信号，必须跟状态码说的是同一
+// 件事。
+func ingressErrorType(status int) string {
+	switch {
+	case status == http.StatusUnauthorized:
+		return "authentication_error"
+	case status == http.StatusForbidden:
+		return "permission_error"
+	case status == http.StatusRequestTimeout:
+		return "request_timeout"
+	case status == http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case status == http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case status >= 500:
+		return "server_error"
+	}
+	return "invalid_request_error"
+}
+
+// ingressClientFacing 从日志句子与可选覆盖里算出「客户端看到什么」。纯函数：
+// 日志句子（logMessage）原样留给日志侧，这里不碰；没有覆盖时客户端看到
+// 的就是日志那句，旁键只有既有的 stage / retryable。
+func ingressClientFacing(logMessage string, status int, rej []ingressRejection) (clientMessage string, extras map[string]any) {
+	clientMessage = logMessage
+	extras = map[string]any{"stage": "ingress", "retryable": status == 429 || status == 503}
+	for _, rj := range rej {
+		if rj.clientMessage != "" {
+			clientMessage = rj.clientMessage
+		}
+		for k, v := range rj.extra {
+			extras[k] = v
+		}
+	}
+	return clientMessage, extras
+}
+
+// writeIngressError 写入口拒绝的信封。
+//
+// OpenAI 面：与共享的 writeErrorJSONWithKind 同形（message / type / code /
+// kind / request_id + gateway_debug）。
+//
+// Anthropic 面：type / message + **code** + gateway_debug。★ 共享的
+// writeErrorAnthropic 只拿 code 推导 type、并不输出 code——Anthropic 协议的
+// 客户端（ZCode 就是）此前拿不到机器可读的错误码，只能读句子猜。
+func writeIngressError(proto string, w http.ResponseWriter, status int, requestID, msg, code string, debug map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(status)
+	errType := ingressErrorType(status)
+	var body map[string]any
+	if proto == "anthropic" {
+		errObj := map[string]any{
+			"type":    anthropicErrorType(errType, code),
+			"message": msg,
+			"code":    code,
+		}
+		if debug != nil {
+			errObj["gateway_debug"] = debug
+		}
+		body = map[string]any{"type": "error", "error": errObj}
+	} else {
+		errObj := map[string]any{
+			"message":    msg,
+			"type":       errType,
+			"code":       code,
+			"kind":       code,
+			"request_id": requestID,
+		}
+		if debug != nil {
+			errObj["gateway_debug"] = debug
+		}
+		body = map[string]any{"error": errObj}
+	}
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(body)
+}
+
+// humanByteSize 把字节数写成「7.4 MiB (7757461 bytes)」——量级给人看、精确值
+// 给排障对账。
+func humanByteSize(n int64) string {
+	switch {
+	case n < 1<<10:
+		return fmt.Sprintf("%d bytes", n)
+	case n < 1<<20:
+		return fmt.Sprintf("%.1f KiB (%d bytes)", float64(n)/(1<<10), n)
+	default:
+		return fmt.Sprintf("%.1f MiB (%d bytes)", float64(n)/(1<<20), n)
+	}
+}
+
+func prepBudgetLabel() string {
+	return fmt.Sprintf("%ds", int64(largeIngressPrepBudget/time.Second))
+}
+
+// reject 写出入口拒绝响应。message 进日志/遥测（稳定英文）；客户端看到的
+// 句子与旁键由可选的 rej 覆盖（见 ingressRejection）。
+func (g *LargeIngress) reject(w http.ResponseWriter, r *http.Request, status int, code, message string, rej ...ingressRejection) {
 	// The normal handler is bypassed on ingress rejection. Record metadata only;
 	// a failed auth/upload must never trigger another read of the network body.
 	rid := r.Header.Get("X-Request-Id")
@@ -340,12 +497,14 @@ func (g *LargeIngress) reject(w http.ResponseWriter, r *http.Request, status int
 		logCtx.failAndMark(code, message, nil, nil, status)
 	}
 
+	clientMessage, extras := ingressClientFacing(message, status, rej)
+
 	write := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := extractGeminiPath(r.URL.Path); ok {
-			writeGeminiError(w, status, message)
+			writeGeminiError(w, status, clientMessage)
 			return
 		}
-		writeErrorJSONWithKindProto(protocolOfRequest(r), w, status, r.Header.Get("X-Request-Id"), message, "invalid_request_error", code, code, map[string]any{"stage": "ingress", "retryable": status == 429 || status == 503})
+		writeIngressError(protocolOfRequest(r), w, status, r.Header.Get("X-Request-Id"), clientMessage, code, extras)
 	})
 	if ref, ok := LargeRequestArchive(r.Context()); ok {
 		g.serveArchivedResponse(write, w, r, ref)

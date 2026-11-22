@@ -50,6 +50,33 @@
   "modality_mismatch": {
     "other": "Le modèle « {{.Model}} » n'accepte pas les entrées de type {{.Modality}}. Cette requête contient du contenu {{.Modality}}, mais le modèle est enregistré uniquement comme {{.RegisteredModality}}. Envoyez une requête textuelle à ce modèle, ou dirigez la requête vers un modèle prenant en charge {{.Modality}}."
   },
+  "no_candidate_blocked": {
+    "other": "Aucun fournisseur disponible pour le modèle « {{.Model}} » : tous ses candidats sont bloqués ({{.Causes}}). Réessayer la même requête ne servira à rien — utilisez un autre modèle ou contactez l'administrateur de la passerelle."
+  },
+  "no_candidate_cause_quota": {
+    "other": "quota ou solde du compte amont épuisé"
+  },
+  "no_candidate_cause_disabled": {
+    "other": "fournisseur ou identifiant désactivé par l'administrateur de la passerelle"
+  },
+  "no_candidate_cause_credential_missing": {
+    "other": "enregistrements d'identifiants manquants"
+  },
+  "no_candidate_cause_other_tenant": {
+    "other": "les fournisseurs appartiennent à un autre tenant"
+  },
+  "no_candidate_cause_not_registered": {
+    "other": "modèle non enregistré"
+  },
+  "ingress_preprocess_timeout": {
+    "other": "La passerelle n'a pas pu terminer le prétraitement de cette requête en {{.Budget}} (corps de la requête : {{.Size}}). Il s'agit d'une limite de capacité côté passerelle et non d'un rejet de votre saisie — vous pouvez réessayer plus tard. Si le délai est encore dépassé, l'historique de la conversation est trop volumineux pour être préparé à temps : ouvrez une nouvelle session ou réduisez l'historique."
+  },
+  "ingress_context_budget_exceeded": {
+    "other": "La partie de cette requête qui doit rester intacte (invite système, dernière tâche utilisateur et sa chaîne d'outils active) ne tient pas dans le contexte borné de la passerelle ({{.Limit}}) et ne peut pas être réduite automatiquement. Scindez la dernière tâche ou ses résultats d'outils, ou ouvrez une nouvelle session — réessayer la même requête échouera de nouveau."
+  },
+  "ingress_prompt_too_large": {
+    "other": "Le corps de la requête fait {{.Size}} et dépasse la limite de la passerelle ({{.Limit}}). Réduisez l'historique de la conversation."
+  },
   "modality_vision": {
     "other": "image"
   },

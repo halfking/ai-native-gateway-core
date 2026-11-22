@@ -50,6 +50,33 @@
   "modality_mismatch": {
     "other": "Modell „{{.Model}}“ akzeptiert keine {{.Modality}}-Eingaben. Diese Anfrage enthält {{.Modality}}-Inhalte, das Modell ist jedoch nur als {{.RegisteredModality}} registriert. Senden Sie eine reine Textanfrage an dieses Modell oder leiten Sie die Anfrage an ein Modell weiter, das {{.Modality}} unterstützt."
   },
+  "no_candidate_blocked": {
+    "other": "Kein verfügbarer Provider für Modell „{{.Model}}“: Alle Kandidaten sind blockiert ({{.Causes}}). Erneutes Senden derselben Anfrage hilft nicht — wechseln Sie zu einem anderen Modell oder wenden Sie sich an den Gateway-Administrator."
+  },
+  "no_candidate_cause_quota": {
+    "other": "Kontingent oder Guthaben des Upstream-Kontos aufgebraucht"
+  },
+  "no_candidate_cause_disabled": {
+    "other": "Provider oder Zugangsdaten vom Gateway-Administrator deaktiviert"
+  },
+  "no_candidate_cause_credential_missing": {
+    "other": "Zugangsdaten-Einträge fehlen"
+  },
+  "no_candidate_cause_other_tenant": {
+    "other": "Provider gehören zu einem anderen Mandanten"
+  },
+  "no_candidate_cause_not_registered": {
+    "other": "Modell nicht registriert"
+  },
+  "ingress_preprocess_timeout": {
+    "other": "Das Gateway konnte diese Anfrage nicht innerhalb von {{.Budget}} vorverarbeiten (Anfragetext: {{.Size}}). Das ist eine Kapazitätsgrenze auf Gateway-Seite und keine Ablehnung Ihrer Eingabe — Sie können es später erneut versuchen. Wiederholt sich der Zeitablauf, ist der Gesprächsverlauf zu groß, um rechtzeitig aufbereitet zu werden: Starten Sie eine neue Sitzung oder kürzen Sie den Verlauf."
+  },
+  "ingress_context_budget_exceeded": {
+    "other": "Der Teil dieser Anfrage, der intakt bleiben muss (Systemprompt, neueste Benutzeraufgabe und ihre aktive Werkzeugkette), passt nicht in den begrenzten Kontext des Gateways ({{.Limit}}) und kann nicht automatisch gekürzt werden. Teilen Sie die neueste Aufgabe oder ihre Werkzeugergebnisse auf oder starten Sie eine neue Sitzung — dieselbe Anfrage schlägt erneut fehl."
+  },
+  "ingress_prompt_too_large": {
+    "other": "Der Anfragetext ist {{.Size}} groß und überschreitet das Gateway-Limit von {{.Limit}}. Kürzen Sie den Gesprächsverlauf."
+  },
   "modality_vision": {
     "other": "Bild"
   },

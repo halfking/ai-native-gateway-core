@@ -162,7 +162,8 @@ func TestWriteNoCandidateWithAlternatives_OmitsEmptyList(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
 	writeNoCandidateWithAlternatives(context.Background(), w, r, "req-1", "gpt-5.6-luna",
-		ModelAlternativesResult{RequestedModel: "gpt-5.6-luna", Alternatives: nil})
+		ModelAlternativesResult{RequestedModel: "gpt-5.6-luna", Alternatives: nil},
+		noCandidateCause{})
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", w.Code)
@@ -202,7 +203,7 @@ func TestWriteNoCandidateWithAlternatives_OpenAIEnvelope(t *testing.T) {
 				Featured:      true,
 				Reason:        "task_match",
 			}},
-		})
+		}, noCandidateCause{})
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", w.Code)
@@ -258,7 +259,7 @@ func TestWriteNoCandidateWithAlternatives_AnthropicEnvelope(t *testing.T) {
 		ModelAlternativesResult{
 			RequestedModel: "claude-opus-4-8",
 			Alternatives:   []ModelAlternative{{Model: "claude-sonnet-4-6", Reason: "featured"}},
-		})
+		}, noCandidateCause{})
 
 	var body struct {
 		Type  string `json:"type"`

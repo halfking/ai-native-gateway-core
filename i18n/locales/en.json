@@ -50,6 +50,33 @@
   "modality_mismatch": {
     "other": "Model '{{.Model}}' does not accept {{.Modality}} input. This request contains {{.Modality}} content, but the model is registered as {{.RegisteredModality}}-only. Send a text-only request to this model, or route the request to a model that supports {{.Modality}}."
   },
+  "no_candidate_blocked": {
+    "other": "No available provider for model '{{.Model}}': every candidate for it is blocked ({{.Causes}}). Retrying the same request will not help — switch to another model, or contact the gateway operator."
+  },
+  "no_candidate_cause_quota": {
+    "other": "upstream account quota or balance exhausted"
+  },
+  "no_candidate_cause_disabled": {
+    "other": "provider or credential disabled by the gateway operator"
+  },
+  "no_candidate_cause_credential_missing": {
+    "other": "credential records missing"
+  },
+  "no_candidate_cause_other_tenant": {
+    "other": "providers belong to another tenant"
+  },
+  "no_candidate_cause_not_registered": {
+    "other": "model not registered"
+  },
+  "ingress_preprocess_timeout": {
+    "other": "The gateway could not finish preprocessing this request within {{.Budget}} (request body: {{.Size}}). This is a gateway-side capacity limit, not a rejection of your input — you may retry later. If it keeps timing out, the conversation history is too large to prepare in time: start a new session or trim the history."
+  },
+  "ingress_context_budget_exceeded": {
+    "other": "The part of this request that must stay intact (system prompt, latest user task and its active tool chain) does not fit the gateway's bounded context of {{.Limit}} and cannot be reduced automatically. Split the latest task or its tool results, or start a new session — retrying the same request will fail again."
+  },
+  "ingress_prompt_too_large": {
+    "other": "Request body is {{.Size}}, above the gateway limit of {{.Limit}}. Reduce the conversation history."
+  },
   "modality_vision": {
     "other": "image"
   },

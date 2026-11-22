@@ -56,6 +56,17 @@ var allMessageKeys = []string{
 	MsgContentFilter,
 	MsgContentFilterHint,
 	MsgNoCandidate,
+	// 2026-11-22：候选为空的**客户端可见归因**（主句 + 5 个原因短语）。
+	MsgNoCandidateBlocked,
+	MsgNoCandidateCauseQuota,
+	MsgNoCandidateCauseDisabled,
+	MsgNoCandidateCauseCredentialMissing,
+	MsgNoCandidateCauseOtherTenant,
+	MsgNoCandidateCauseNotRegistered,
+	// 2026-11-22：入口拒绝（大请求体）的客户端可见文案。
+	MsgIngressPreprocessTimeout,
+	MsgIngressContextBudgetExceeded,
+	MsgIngressPromptTooLarge,
 	MsgInvalidModel,
 	MsgUnsupportedFeature,
 	MsgModelDeprecated,
