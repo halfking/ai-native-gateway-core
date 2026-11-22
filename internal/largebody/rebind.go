@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"path/filepath"
+	"strings"
 )
 
 // Fixed stripes serialize rebinds across Store handles without retaining an
@@ -133,8 +134,48 @@ func (s *Store) cleanupReboundSource(source Ref) {
 	}
 	if err := s.root.Remove(source.RelativePath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		slog.Warn("largebody: rebind source RAW cleanup deferred", "request_id", source.RequestID, "error", err)
+		s.syncDir(dir)
+		return
 	}
-	if err := s.syncDir(dir); err != nil {
+	// 2026-11-23：暂存身份的目录链一并删掉。
+	//
+	// 暂存身份是每请求一个 uuid（gw_staging_<uuid>）；rebind 之后里面的两个
+	// 文件都没了，只剩四层空目录。此前从不清理 ⇒ 每个大请求永久留下
+	// `gw_staging_<uuid>/large-v1/requests/<reqid>/`（211 实测一个晚上 1800+
+	// 个；`find` 扫整棵归档树要跑好几分钟）。
+	//
+	// 边界：
+	//   - 只对暂存身份做。它的目录是这一个请求私有的，没有并发使用者；
+	//     非暂存身份的会话目录可能有并发的 Capture，不动它（只同步）。
+	//   - 只删暂存身份自己的四层（<reqid> ← requests ← large-v1 ←
+	//     gw_staging_<uuid>），到此为止。分片目录（会话 id 前两位）与租户目录
+	//     是所有会话共享的——即使此刻恰好是空的也不碰：并发的 Capture 正在
+	//     往里建目录时把它们删掉，那一次 Capture 就失败了。
+	//   - os.Root.Remove 只删得动**空**目录 ⇒ 链上任何一层还有别的东西
+	//     （比如暂存会话目录里多出一个文件）就在那一层停下，不可能误删数据。
+	if !strings.HasPrefix(source.SessionID, StagingSessionPrefix) {
+		s.syncDir(dir)
+		return
+	}
+	cur := dir
+	for level := 0; level < stagingChainLevels; level++ {
+		if err := s.root.Remove(cur); err != nil {
+			break // 非空（或已不存在）⇒ 停在这一层
+		}
+		cur = filepath.Dir(cur)
+	}
+	if err := s.syncDir(cur); err != nil {
 		slog.Warn("largebody: rebind source directory sync deferred", "request_id", source.RequestID, "error", err)
 	}
 }
+
+const (
+	// StagingSessionPrefix 是暂存身份的会话 id 前缀：大请求先以一个每请求唯一
+	// 的 uuid 落盘（调用方生成），解析出真实会话之后再 Rebind 过去。
+	StagingSessionPrefix = "gw_staging_"
+
+	// stagingChainLevels 是暂存目录链的层数——与 requestDir 的布局对应：
+	// <reqid> ← requests ← large-v1 ← <会话目录>。改 requestDir 的布局要同步改它
+	//（TestRebindRemovesStagingChainOnly 有钉测）。
+	stagingChainLevels = 4
+)

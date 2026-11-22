@@ -1247,16 +1247,19 @@ type requestKeyVerifier interface {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit     *credential.Manager
-	limiter     *credential.Limiter
-	matrix      *transformation.Matrix
-	pools       *pool.PoolManager
-	resolver    *resolve.Resolver
-	auditor     audit.Sink
-	client      *upstreampkg.Client
-	normalizer  *Normalizer
-	executor    *executors.Executor
-	adminAPIKey string
+	circuit  *credential.Manager
+	limiter  *credential.Limiter
+	matrix   *transformation.Matrix
+	pools    *pool.PoolManager
+	resolver *resolve.Resolver
+	auditor  audit.Sink
+	// historyGuardConcurrencySafe：当前装配的历史守卫可并发调用 ⇒ 归约器逐条
+	// 并行（见 history_guard.go）。默认 false（串行），由装配方显式打开。
+	historyGuardConcurrencySafe bool
+	client                      *upstreampkg.Client
+	normalizer                  *Normalizer
+	executor                    *executors.Executor
+	adminAPIKey                 string
 	// executorOverrideForTest（2026-11-11 · claude-fable-5-2 事故轮第三层）：
 	// 测试专用注入点。生产恒为 nil ⇒ 走 h.executor.Execute 的真实路径。
 	//
