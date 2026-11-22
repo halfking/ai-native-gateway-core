@@ -698,6 +698,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	// 其它租户的密钥元数据（owner_user / 前缀 / 用量 / 备注）下发到客户端。
 	// 服务端过滤同时修掉「无谓下载全表」的性能问题。
 	ownerFilter := queryString(r, "owner")
+	includeRevoked := includeRevokedKeys(r)
 	// tenant_admin callers may only ever see their own tenant's keys.
 	if IsTenantAdmin(r) {
 		tenantFilter = GetTenantID(r)
@@ -719,8 +720,9 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		WHERE ($1 = '' OR app.code = $1)
 		  AND ($2 = '' OR ak.tenant_id = $2)
 		  AND ($3 = '' OR ak.owner_user = $3)
+		  AND ($4 OR COALESCE(ak.status, 'active') <> 'revoked')
 		ORDER BY ak.id DESC
-	`, appCode, tenantFilter, ownerFilter)
+	`, appCode, tenantFilter, ownerFilter, includeRevoked)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

@@ -123,12 +123,14 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
  *  ★ 2026-11-21 模型层避免遮挡：调整模型层到0.72，给模型节点更多空间，
  *    避免被基础服务栏遮挡。provider保持0.88，确保整体布局平衡。
  *  ★ 2026-11-22 进一步优化模型层位置：第一次下移到0.78，第二次下移到0.82，
- *    持续增加与网关核心的间距。provider下移到0.94，确保底部留有空间。 */
+ *    持续增加与网关核心的间距。provider下移到0.94，确保底部留有空间。
+ *  ★ 2026-11-22 第七轮优化：根据用户反馈仍有重叠，将model下移到0.86，
+ *    provider下移到0.96，进一步增大间距。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
   client: 0.075,
   gateway: 0.47, // 大方块中心线(rowY.gateway = box 中心；无卡片，仅标签用)
-  model: 0.82,    // 模型层再次下移，确保彻底避免遮挡
-  provider: 0.94, // 供应商节点下移，保持整体平衡
+  model: 0.86,    // 模型层持续下移，彻底解决遮挡
+  provider: 0.96, // 供应商节点接近底部，保持平衡
 }
 
 /**

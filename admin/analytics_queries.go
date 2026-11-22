@@ -38,19 +38,19 @@ func (h *Handler) queryAnalyticsSummary(
 	}
 
 	// 只统计终态行 (success/failure/rate_limited)
-	where += " AND final_status IN ('success', 'failure', 'rate_limited')"
+	where += " AND status IN ('success', 'failure', 'rate_limited')"
 
 	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) AS total_requests,
-			SUM(CASE WHEN final_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-			SUM(CASE WHEN final_status IN ('failure', 'rate_limited') THEN 1 ELSE 0 END) AS error_count,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+			SUM(CASE WHEN status IN ('failure', 'rate_limited') THEN 1 ELSE 0 END) AS error_count,
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
 			COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
 			COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
 			COALESCE(SUM(credits_charged), 0) AS total_credits,
-			COALESCE(AVG(CASE WHEN final_status = 'success' THEN latency_ms END), 0) AS avg_latency_ms
+			COALESCE(AVG(CASE WHEN status = 'success' THEN latency_ms END), 0) AS avg_latency_ms
 		FROM usage_facts
 		WHERE %s
 	`, where)
@@ -359,7 +359,7 @@ func (h *Handler) queryCrossErrors(
 		argIdx++
 	}
 
-	where += " AND final_status IN ('failure', 'rate_limited')"
+	where += " AND status IN ('failure', 'rate_limited')"
 
 	query := fmt.Sprintf(`
 		SELECT

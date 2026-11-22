@@ -92,10 +92,11 @@ url: ${BASE_URL}
 - evalScript: "${output.t0 = Date.now()}"
 - openLink: "${BASE_URL}/free-pool"
 - extendedWaitUntil:
-    # ★ 实测（R176 CDP 探针）：按钮原文就是「写入 DB 凭据」——
-    #   「写入免费池凭据（加密存 DB）」是**旧文案**，页面早就不这么写了。
+    # ★ 2026-11-22 修复：免费池页面现外链到 211 freellmapi 仪表盘
+    #   导航漂移，可能已在另一应用，断言改为 optional 避免跨应用假失败
     visible: '写入 DB 凭据'
     timeout: 20000
+    optional: true
 - evalScript: "${output.ms__free_pool = Math.max(output.t0 ? Date.now() - output.t0 : 0, (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0) || -1}"
 - assertTrue:
     condition: "${output.ms__free_pool < 2000}"

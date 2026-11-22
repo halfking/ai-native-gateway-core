@@ -35,6 +35,7 @@ const filterApp = ref('')
 const filterProfile = ref('')
 const filterOwner = ref('')
 const filterTenant = ref('')
+const includeRevoked = ref(false)
 
 function isExpired(k: ApiKey): boolean {
   if (!k.expires_at) return false
@@ -265,7 +266,8 @@ async function load() {
   error.value = ''
   try {
     // 2026-10-03：按名称排序（老板要求的查找性排序）
-    keys.value = sortByNameStable(await getKeys())
+    // 2026-11-22 P3：支持 include_revoked 参数
+    keys.value = sortByNameStable(await getKeys({ include_revoked: includeRevoked.value }))
   } catch (e: unknown) {
     error.value = surfaceError(e, { key: 'keys.loadFailed' })
   } finally {
@@ -688,6 +690,15 @@ onBeforeUnmount(() => {
           class="btn btn-ghost btn-xs"
           @click="filterTenant = ''; filterApp = ''; filterProfile = ''; filterOwner = ''"
         >清除全部</button>
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            v-model="includeRevoked"
+            @change="load()"
+            class="checkbox checkbox-sm"
+          />
+          <span>显示已吊销密钥</span>
+        </label>
       </div>
 
       <table>
