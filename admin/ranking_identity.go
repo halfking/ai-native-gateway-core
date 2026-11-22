@@ -34,13 +34,40 @@ package admin
 // · 排行侧与过滤侧**都**从这里取，改一处必须想到另一处（静态门
 //   `logs_ranking_dimension_filters_test.go` 钉住这件事）。
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // dimensionIdentityExpr 返回普通维度的身份表达式：空串/NULL ⇒ 'unknown'。
 //
 // ★ 返回值**不含 '%'** ⇒ 可以安全地作为 fmt.Sprintf 的参数位传进去。
 func dimensionIdentityExpr(col string) string {
-	return fmt.Sprintf("COALESCE(NULLIF(rl.%s, ''), 'unknown')", col)
+	return dimensionIdentityExprAs("rl", col)
+}
+
+// dimensionIdentityExprAs 是带**表别名**的普通维度身份表达式。
+//
+// ★ 为什么需要别名参数（2026-11-23 用量趋势深链轮）：
+//
+//	同一份「身份口径」要在**两种读面**上复用：
+//	  · 排行/日志侧读 `request_logs_with_current_month`（别名 rl）；
+//	  · 用量趋势明细档读**会话族原生源**（别名 r，见
+//	    db.SessionFamilyTurnsSourceSQL）—— 同一批列、同一套口径。
+//	⇒ 两边各写一份表达式 = 两边会漂移 ⇒ ★ 改成「同一份 + 别名参数」。
+//
+// ★ rl 形态的输出**逐字不变**（dimensionIdentityExpr 仍返回 rl 形态）
+// ⇒ 既有门（logs_ranking_dimension_filters_test.go）与既有调用点不受影响。
+func dimensionIdentityExprAs(alias, col string) string {
+	return fmt.Sprintf("COALESCE(NULLIF(%s.%s, ''), 'unknown')", alias, col)
+}
+
+// dimensionIdentityExprFor 按别名取普通维度身份表达式（rl 走既有常量形态）。
+func dimensionIdentityExprFor(alias, col string) string {
+	if alias == "rl" {
+		return dimensionIdentityExpr(col)
+	}
+	return dimensionIdentityExprAs(alias, col)
 }
 
 // userIdentityExpr —— 请求行的「用户身份」表达式。
@@ -95,3 +122,27 @@ const userIdentityExpr = `COALESCE(
 	),
 	'unknown'
 )`
+
+// userIdentityExprAs 是带**表别名**的用户身份表达式。
+//
+// ★ 单一真相：上面的常量是**唯一**的手写副本，别名版由它机械替换得到
+//
+//	（strings.ReplaceAll(userIdentityExpr, "rl.", alias+".")）
+//
+//	⇒ 不存在「两份表达式各自演化」的漂移风险（那正是本文件要消灭的病）。
+//
+// ★ 为什么需要别名（2026-11-23 用量趋势深链轮）：用量趋势明细档读的是
+//
+//	会话族原生源（别名 r），日志/排行侧读 canonical 视图（别名 rl）
+//	⇒ 同一套用户身份口径要能在两个 FROM 源上复用。
+//
+// ⚠ 替换的前提：表达式里除 `rl.` 外没有别的 `rl.` 字样
+//
+//	（现状成立：整段只出现 rl.end_user_id）⇒ 若将来在表达式里加了别的
+//	`rl.` 引用，必须同步把这里改成显式模板。
+func userIdentityExprAs(alias string) string {
+	if alias == "rl" {
+		return userIdentityExpr
+	}
+	return strings.ReplaceAll(userIdentityExpr, "rl.", alias+".")
+}

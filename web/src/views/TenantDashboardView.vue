@@ -465,6 +465,7 @@ onUnmounted(() => {
             :model-value="rangeValue"
             :presets="dayPresets"
             :max-span-days="30"
+            :presets-only="true"
             @apply="onRangeApply"
           />
         <button class="btn btn-refresh" @click="load" :disabled="loading" :title="t('tenants.dashboard.refresh')">

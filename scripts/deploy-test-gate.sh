@@ -186,6 +186,57 @@ if [[ "${DD_SKIP_TEST_GATE:-0}" == "1" ]]; then
   exit 0
 fi
 
+# ── 守卫域映射：改动文件 ⇒ 该被谁看（★ 2026-11-23 N10 根因收口）────────────
+#
+# ★ 为什么必须有（★ 缺口是实测出来的、★ 不是推演）：
+#
+#	闸门按【改动的 .go 文件】选包 ⇒ ★ **纯 .sql / 纯 .sh 改动一个包都不触发**。
+#	★ 而**门不住 .go 文件里**：
+#	   ★ 「canonical ≡ embeddata 副本逐字节一致」「物化视图别名列闭合」
+#	   ★ 「迁移预算」「自登记」「DDL 形态」…… ⇒ ★ 全住在 ./sql/migrations/startup
+#	     （★ 178 个测试文件、★ **全是 _test.go** ⇒ ★ .go 规则**永远选不到**）；
+#	   ★ 「部署脚本不得用相对 $(dirname "$0") 解析同目录脚本」⇒ ★ 住在
+#	     ./scripts/deploygate（★ **也只有 _test.go** ⇒ ★ 同样选不到）。
+#
+#	★ 实测（211 seq 3230 前后）：★ **一天内两次**漏改 embeddata 副本
+#	  （★ `761e641ed` D2 去重改写、★ `d587edc47` 加关并行 SET）⇒ ★ 两次「副本身份门」
+#	  都是**红的**、★ ★ 却没有任何一步在部署里看见它
+#	  ⇒ ⇒ 闸门选的包与「这次改动真正该被谁看」之间存在**盲区**。
+#
+#	★ ★ 还有第二层盲区（★ 同源）：★ 部署脚本门住在 ./scripts/deploygate，
+#	  ★ 而该目录**只有 _test.go** ⇒ ★ **改 scripts/deploy-*.sh 时它也永远不被跑**
+#	  ⇒ ★ 并行车那道「相对路径」门（★ 2026-11-23 刚补的）同样**从未在部署里跑过**。
+#
+# ⇒ 修法：★ 把「改动文件的种类」映射到「该被谁看」显式写成表（★ 下面那张表），
+#   ★ 选包时按表补选。★ 判据抽成函数是**为了让判据可测**：
+#   ★ scripts/deploygate 的守卫会把这段函数**原样抽出来**在 bash 里跑
+#   （★ 对照臂：规则换成永不匹配 ⇒ 判据必须变红）。
+#
+# ★ 表的格式：★ "<正则>|<门包>"，★ 一行一条。★ 正则是 **ERE**（grep -E 口径）。
+# ★ ★ 每条规则都必须有**仓内真实文件**命中（★ 否则是死规则）⇒ ★ 由守卫当场抓住。
+DD_GUARDED_DOMAINS=(
+  # ★ 迁移 SQL ⇒ 迁移族门（★ 副本一致 / 列闭合 / 预算 / 自登记 / DDL 形态）
+  "^sql/migrations/startup/.*\.sql$|./sql/migrations/startup"
+  # ★ embeddata 副本 ⇒ 同上（★ 副本一致性正是「副本 vs canonical」）
+  "^installer/cmd/llm-gw-installer/embeddata/startup/.*\.sql$|./sql/migrations/startup"
+  # ★ 部署脚本 ⇒ 部署脚本门（★ 相对路径 / 顶层展开闭合）
+  "^scripts/deploy-[^/]*\.sh$|./scripts/deploygate"
+)
+
+# dd_guard_domain_packages <changed_files>：★ 改动文件 ⇒ 该被谁看的门包。
+#
+# ★ 判据面：**所有**非 .go 的改动（★ .go 改动由上面的目录规则负责）。
+dd_guard_domain_packages() {
+  local changed="${1:-}" line re pkg
+  while IFS='|' read -r re pkg; do
+    [[ -n "$re" && -n "$pkg" ]] || continue
+    if printf '%s\n' "$changed" | grep -E "$re" >/dev/null 2>&1; then
+      printf '%s\n' "$pkg"
+    fi
+  done < <(printf '%s\n' "${DD_GUARDED_DOMAINS[@]}")
+  return 0
+}
+
 # ── 选包：改动触及的目录（只留有 _test.go 的） ──────────────────────────
 changed_files="$({
   git diff --name-only -z HEAD 2>/dev/null || true
@@ -202,11 +253,22 @@ if [[ -n "$changed_files" ]]; then
       packages+=("./$dir")
     fi
   done <<< "$dirs"
+  # ★ 非 .go 改动 ⇒ 按守卫域映射补选（★ 2026-11-23 N10，★ 见上「为什么」）
+  while IFS= read -r extra; do
+    [[ -n "$extra" ]] || continue
+    packages+=("$extra")
+  done < <(dd_guard_domain_packages "$changed_files")
 fi
 
 if [[ ${#packages[@]} -eq 0 ]]; then
   log "★ diff 没有触及带测试的包 ⇒ 回落核心包清单 ★"
   packages=("${FALLBACK_PACKAGES[@]}")
+else
+  # ★ 去重：★ .go 规则与守卫域映射**可能选中同一个包**（★ 例如改了
+  # scripts/deploygate 里的 .go 又改了 scripts/deploy-*.sh）⇒ ★ 清单里出现
+  # 重复项 ⇒ ★ 日志读起来像「跑了两遍」⇒ ★ 这里排掉（★ go test 本身会去重，
+  # ★ 但清单是给人看的、★ 也要给覆盖断言用）。
+  mapfile -t packages < <(printf '%s\n' "${packages[@]}" | sort -u)
 fi
 
 log "要跑的包：${packages[*]}"
@@ -401,15 +463,25 @@ assert_full_coverage() {
 # 用法：run_tree <tree> <outfile> <native|docker>   （native|docker 由调用方
 # 已定的跑法决定；当前树与基线树共用。）
 run_tree() {
-  local tree="$1" outfile="$2" mode="$3" box sub
+  local tree="$1" outfile="$2" mode="$3" box sub p d
   : > "$outfile"
   for box in "" "${nested_modules[@]}"; do
     sub="$box"
     local -a pkgs=()
     if [[ -z "$box" ]]; then
-      pkgs=("${packages[@]}")
+      # ★ 2026-11-23 N10：★ **该树里没有的门包要跳过**（★ 不用跳过）。
+      # ★ 场景：★ 基线树 = `git merge-base HEAD origin/main` ⇒ ★ 若某个门包是
+      # ★   本轮才新建的，★ 基线树里**没有它** ⇒ ★ `go test ./该包` 会报
+      # ★   「包不存在」而**不产出包级结果行** ⇒ ★ assert_full_coverage 判
+      # ★   「读数不全」⇒ ★ **把基线跑判死**（★ 基线红只是告警、★ 不该变成拦路）。
+      for p in "${packages[@]}"; do
+        d="${p#./}"; d="${d%/}"
+        [[ -d "$tree/$d" ]] || continue
+        pkgs+=("$p")
+      done
       [[ ${#pkgs[@]} -eq 0 ]] && continue
     else
+      [[ -d "$tree/$box" ]] || continue
       read -r -a pkgs <<< "${nested_pkgs[$box]}"
     fi
     if [[ "$mode" == native ]]; then

@@ -14,7 +14,7 @@ import type { CardField, CardTone } from '../components/ui/CardList.vue'
 import { Minus, Plus } from '@element-plus/icons-vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
 import type { KxDateRange } from '../components/ui/kx-date-types'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 
 const { t } = useI18n()
 
@@ -24,11 +24,11 @@ const error = ref<string | null>(null)
 const filterAction = ref<'' | 'insert' | 'update' | 'delete'>('')
 const filterActor = ref('')
 const filterOverrideId = ref<number | null>(null)
-const filterDays = ref(7)
 const filterLimit = ref(200)
 
-// 使用 useSpanDaysRange 管理日期范围与天数的双向绑定
-const { presets, rangeValue: dateRange, applyRange } = useSpanDaysRange(filterDays, [
+// ★ 2026-11-23 时间范围静默改写收口轮：改用 useRangeDays（预设走 days 快路、自定义透传 start/end）
+const days = ref(7)
+const { presets, rangeValue: dateRange, applyRange, customRange } = useRangeDays(days, [
   { days: 1, labelKey: 'common.dateRange.preset.today' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
@@ -47,13 +47,19 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const r = await getRoutingAudit({
+    const params: Parameters<typeof getRoutingAudit>[0] = {
       action: filterAction.value,
       actor: filterActor.value || undefined,
       override_id: filterOverrideId.value ?? undefined,
-      days: filterDays.value,
       limit: filterLimit.value,
-    })
+    }
+    if (customRange.value) {
+      params.start_date = customRange.value.start
+      params.end_date = customRange.value.end
+    } else {
+      params.days = days.value
+    }
+    const r = await getRoutingAudit(params)
     // 防御：后端若吐 `null`（Go nil 切片）而不是 `[]`，模板的 `entries.length`
     // 会抛 TypeError 整页白屏。数组字段一律 ?? []，不让一个 null 决定整页生死。
     entries.value = Array.isArray(r.entries) ? r.entries : []

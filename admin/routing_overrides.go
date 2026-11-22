@@ -350,14 +350,11 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 	actor := r.URL.Query().Get("actor")
 	overrideIDStr := r.URL.Query().Get("override_id")
 
-	days := 7
-	if d := r.URL.Query().Get("days"); d != "" {
-		v, err := strconv.Atoi(d)
-		if err != nil || v <= 0 || v > 90 {
-			writeJSONErr(w, http.StatusBadRequest, "days must be 1-90")
-			return
-		}
-		days = v
+	// ★ 2026-11-23 时间范围静默改写收口轮：改用 parseStatsTimeRange 支持真实区间
+	tr, err := parseStatsTimeRange(r, 7)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	limit := 200
@@ -373,8 +370,10 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 	q := `SELECT id, ts, action, override_id, task_type, profile, mode,
 	             model_chosen, reason, expires_at, old_expires_at, actor
 	      FROM routing_overrides_audit
-	      WHERE ts >= NOW() - INTERVAL '1 day' * $1`
-	args := []any{days}
+	      WHERE `
+	predicate, predicateArgs := tr.sqlPredicate("ts", 1)
+	q += predicate
+	args := predicateArgs
 	if action != "" {
 		args = append(args, action)
 		q += fmt.Sprintf(" AND action = $%d", len(args))
@@ -425,7 +424,7 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 			"action":      action,
 			"actor":       actor,
 			"override_id": overrideIDStr,
-			"days":        strconv.Itoa(days),
+			"window":      tr.label(),
 		},
 	})
 }

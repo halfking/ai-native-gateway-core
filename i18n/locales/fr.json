@@ -74,6 +74,9 @@
   "ingress_context_budget_exceeded": {
     "other": "La partie de cette requête qui doit rester intacte (invite système, dernière tâche utilisateur et sa chaîne d'outils active) ne tient pas dans le contexte borné de la passerelle ({{.Limit}}) et ne peut pas être réduite automatiquement. Scindez la dernière tâche ou ses résultats d'outils, ou ouvrez une nouvelle session — réessayer la même requête échouera de nouveau."
   },
+  "ingress_single_message_too_large": {
+    "other": "Votre dernier message (y compris le contenu multimédia tel que les images ou les vidéos) dépasse le budget de contexte de la passerelle de {{.Limit}}. Pour continuer : (1) compressez l'image/vidéo (par exemple, convertissez PNG en JPG, réduisez la résolution) ; (2) utilisez une référence URL au lieu de télécharger directement le fichier ; ou (3) divisez le contenu en plusieurs messages. Note : Cette limite garantit des temps de réponse rapides — un seul message ne peut pas consommer tout le budget."
+  },
   "ingress_prompt_too_large": {
     "other": "Le corps de la requête fait {{.Size}} et dépasse la limite de la passerelle ({{.Limit}}). Réduisez l'historique de la conversation."
   },

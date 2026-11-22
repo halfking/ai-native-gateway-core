@@ -373,6 +373,7 @@ onMounted(() => {
           :model-value="accuracyDateRange"
           :presets="accuracyPresets"
           :max-span-days="365"
+          :presets-only="true"
           @apply="handleAccuracyRangeApply"
         />
       </div>

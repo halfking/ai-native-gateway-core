@@ -32,7 +32,6 @@ import (
 	"context"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -78,14 +77,11 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 		return
 	}
 
-	days := 7
-	if d := r.URL.Query().Get("days"); d != "" {
-		v, err := strconv.Atoi(d)
-		if err != nil || v <= 0 || v > 90 {
-			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_days_out_of_range")
-			return
-		}
-		days = v
+	// ★ 2026-11-23 时间范围静默改写收口轮：改用 parseStatsTimeRange 支持真实区间
+	tr, err := parseStatsTimeRange(r, 7)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	by := r.URL.Query().Get("by")
@@ -106,8 +102,11 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 
 	// Build the breakdown query based on `by`.
 	breakdownQuery, _ := buildBreakdownQuery(by)
-	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	breakdownArgs := []any{days}
+	// ★ 替换时间谓词
+	predicate, predicateArgs := tr.sqlPredicate("rl.ts", 1)
+	breakdownQuery = strings.Replace(breakdownQuery, "AND rl.ts >= NOW() - INTERVAL '1 day' * $1", "AND "+predicate, 1)
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, len(predicateArgs)+1)
+	breakdownArgs := predicateArgs
 	if tenantFrag != "" {
 		breakdownQuery = strings.Replace(breakdownQuery, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
 		breakdownArgs = append(breakdownArgs, tenantArgs...)
@@ -149,11 +148,11 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 	// by Pearson correlation. Skip if total samples < 30.
 	insights := []QualityCorrelationInsight{}
 	if totalSamples(breakdown) >= 30 {
-		insights = computeAllInsights(r.Context(), h.db, r, days)
+		insights = computeAllInsights(r.Context(), h.db, r, tr)
 	}
 
 	writeJSON(w, http.StatusOK, QualityCorrelationResponse{
-		WindowDays:  days,
+		WindowDays:  tr.Days,
 		By:          by,
 		Breakdown:   breakdown,
 		Insights:    insights,
@@ -275,7 +274,7 @@ func totalSamples(rows []QualityCorrelationRow) int {
 // correlation. Each query returns (bucket, samples, success, quality)
 // and the function uses bucket-index as X and avg_quality as Y
 // (weighted by samples). The result is sorted by |r| desc.
-func computeAllInsights(ctx context.Context, db pgxQueryer, r *http.Request, days int) []QualityCorrelationInsight {
+func computeAllInsights(ctx context.Context, db pgxQueryer, r *http.Request, tr statsTimeRange) []QualityCorrelationInsight {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -287,8 +286,11 @@ func computeAllInsights(ctx context.Context, db pgxQueryer, r *http.Request, day
 		if err != nil {
 			continue
 		}
-		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-		qArgs := []any{days}
+		// ★ 替换时间谓词
+		predicate, predicateArgs := tr.sqlPredicate("rl.ts", 1)
+		q = strings.Replace(q, "AND rl.ts >= NOW() - INTERVAL '1 day' * $1", "AND "+predicate, 1)
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, len(predicateArgs)+1)
+		qArgs := predicateArgs
 		if tenantFrag != "" {
 			q = strings.Replace(q, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
 			qArgs = append(qArgs, tenantArgs...)

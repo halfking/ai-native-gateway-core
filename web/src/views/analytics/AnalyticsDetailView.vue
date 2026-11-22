@@ -146,6 +146,7 @@ onMounted(() => {
           :presets="presets"
           :max-span-days="365"
           :disabled="loading"
+          :presets-only="true"
           @apply="onRangeApply"
         />
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">

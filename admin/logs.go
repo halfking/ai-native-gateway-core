@@ -479,29 +479,80 @@ func buildModelFilterClause(v string, argIdx int) (clause string, args []any) {
 //
 // 两条腿共用**同一个** $n（argIdx）⇒ 只绑一个参数。
 func buildEndUserFilterClause(v string, argIdx int) (clause string, args []any) {
+	return buildEndUserFilterClauseAs("rl", v, argIdx)
+}
+
+// buildEndUserFilterClauseAs 是带**表别名**的 end_user_id 谓词。
+//
+// ★ 别名形如 rl（canonical 视图）/ r（会话族原生源）——两套读面共用同一口径。
+func buildEndUserFilterClauseAs(alias, v string, argIdx int) (clause string, args []any) {
 	// ★ 表达式走**参数位**（%s）而不是拼进格式串 ⇒ 表达式里的 '%' 不会被
 	//   当成格式动词。
 	clause = fmt.Sprintf(`(
-		rl.end_user_id = $%d
+		%s.end_user_id = $%d
 		OR %s = $%d
-	)`, argIdx, userIdentityExpr, argIdx)
+	)`, alias, argIdx, userIdentityExprAs(alias), argIdx)
 	args = []any{v}
 	return clause, args
 }
 
-// buildRankingDimensionFilterClauses 构造**排行榜六维度**（除 model 外）的过滤子句。
+// rankingDimensionFilters 是**五个排行维度**（除 model 外）的过滤值。
+//
+// ★ 抽成结构体（2026-11-23 用量趋势深链轮）：过滤值有两个来源
+//
+//	—— 日志端点从 *http.Request 读、用量趋势端点从 usageTrendFilters 读
+//	⇒ 但**谓词的形状必须只有一份**（否则「日志页过滤」与「用量趋势过滤」
+//	会各写一份、各自漂移）。
+type rankingDimensionFilters struct {
+	clientModel     string
+	endUserID       string
+	apiKeyPrefix    string
+	applicationCode string
+	taskType        string
+}
+
+// empty —— 五维是否**一个都没设**。
+//
+// ★ 用处（用量趋势端点）：五维只在**明细档**（会话族原生源）才有这些列 ⇒
+//
+//	设了任意一维就必须换读面，否则筛选要么报错、要么被静默忽略。
+func (f rankingDimensionFilters) empty() bool {
+	return f.clientModel == "" && f.endUserID == "" && f.apiKeyPrefix == "" &&
+		f.applicationCode == "" && f.taskType == ""
+}
+
+// rankingDimensionFiltersFromRequest 从请求 query 读五维过滤值。
+func rankingDimensionFiltersFromRequest(r *http.Request) rankingDimensionFilters {
+	return rankingDimensionFilters{
+		clientModel:     strings.TrimSpace(queryString(r, "client_model")),
+		endUserID:       strings.TrimSpace(queryString(r, "end_user_id")),
+		apiKeyPrefix:    strings.TrimSpace(queryString(r, "api_key_prefix")),
+		applicationCode: strings.TrimSpace(queryString(r, "application_code")),
+		taskType:        strings.TrimSpace(queryString(r, "task_type")),
+	}
+}
+
+// buildRankingDimensionClausesFor —— 五维谓词的**唯一渲染处**（按表别名）。
+//
+// ★ alias 说明：
+//
+//	· "rl" = canonical 视图 request_logs_with_current_month（排行/日志侧）
+//	· "r"  = 会话族原生源（用量趋势明细档，见 db.SessionFamilyTurnsSourceSQL）
+//	⇒ 同一套身份口径在两个 FROM 源上复用 ⇒ 排行卡片上的名字 == 点进去的过滤值。
 //
 // # 为什么要抽成纯函数
 //
 //	① 让真库行为门能**直接调生产代码**拿到谓词，而不是在测试里重抄一遍 SQL
 //	   —— 后者测的是「测试自己写的 SQL」，产品坏了测试照样绿（假绿）。
 //	② 六维口径集中在一处：改一处不会漏另一处。
+//	③ ★ 过滤值有两个来源（日志端点的 request / 用量趋势端点的 filters 结构体）
+//	   ⇒ 谓词的**形状**必须只有一份（★ 2026-11-23 用量趋势深链轮）。
 //
 // # 各维度的匹配口径（每条都对着现网真实数据形态定，不是拍脑袋）
 //
-//	client_model      与排行侧共用 dimensionIdentityExpr("client_model")
+//	client_model      与排行侧共用 dimensionIdentityExprFor(alias, "client_model")
 //	                  ⇒ 空串/NULL 归 'unknown'（排行侧也显示 'unknown'）⇒ 两侧一致。
-//	end_user_id       与排行侧共用 userIdentityExpr ⇒ 见 buildEndUserFilterClause。
+//	end_user_id       与排行侧共用 userIdentityExprAs(alias) ⇒ 见 buildEndUserFilterClauseAs。
 //	api_key_prefix    ★ **前缀**匹配而非等值匹配。排行侧 name 是
 //	                  `ak.key_prefix || '...' || alias`，前端取 '...' 之前那段；
 //	                  而 rl.api_key_prefix 存的是**掩码值**，且掩码长度可变
@@ -509,8 +560,8 @@ func buildEndUserFilterClause(v string, argIdx int) (clause string, args []any) 
 //	                  'sk-pi-autollm-21***'）⇒ 等值匹配对这类 key **命中 0 行**。
 //	                  用 starts_with（不是 LIKE）：LIKE 把 '%'/'_' 当通配符，
 //	                  语义不是「前缀」；PG 17 有 starts_with，语义精确。
-//	application_code  与排行侧共用 dimensionIdentityExpr("application_code")。
-//	task_type         与排行侧共用 dimensionIdentityExpr("task_type")
+//	application_code  与排行侧共用 dimensionIdentityExprFor(alias, "application_code")。
+//	task_type         与排行侧共用 dimensionIdentityExprFor(alias, "task_type")
 //	                  ⇒ ★ 实测现网 task_type 的**最大一组原值就是空串**
 //	                    （66,638 行）⇒ 排行卡片第一行原本渲染成**空白**、
 //	                    点击过去过滤值为空被后端忽略 ⇒ 落点是**未筛选的全量**
@@ -523,35 +574,44 @@ func buildEndUserFilterClause(v string, argIdx int) (clause string, args []any) 
 //	⇒ native 源（列表路径实际用的 FROM 源）投影得到 ⇒ 不会「column does not exist」。
 //
 // 返回值里的 nextArgIdx 让调用方继续往后排占位符。
-func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []string, args []any, nextArgIdx int) {
+func buildRankingDimensionClausesFor(f rankingDimensionFilters, alias string, argIdx int) (clauses []string, args []any, nextArgIdx int) {
 	nextArgIdx = argIdx
-	if v := strings.TrimSpace(queryString(r, "client_model")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExpr("client_model"), nextArgIdx))
+	if v := f.clientModel; v != "" {
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExprFor(alias, "client_model"), nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}
-	if v := strings.TrimSpace(queryString(r, "end_user_id")); v != "" {
-		clause, uargs := buildEndUserFilterClause(v, nextArgIdx)
+	if v := f.endUserID; v != "" {
+		clause, uargs := buildEndUserFilterClauseAs(alias, v, nextArgIdx)
 		clauses = append(clauses, clause)
 		args = append(args, uargs...)
 		nextArgIdx += len(uargs)
 	}
-	if v := strings.TrimSpace(queryString(r, "api_key_prefix")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("starts_with(rl.api_key_prefix, $%d)", nextArgIdx))
+	if v := f.apiKeyPrefix; v != "" {
+		clauses = append(clauses, fmt.Sprintf("starts_with(%s.api_key_prefix, $%d)", alias, nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}
-	if v := strings.TrimSpace(queryString(r, "application_code")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExpr("application_code"), nextArgIdx))
+	if v := f.applicationCode; v != "" {
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExprFor(alias, "application_code"), nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}
-	if v := strings.TrimSpace(queryString(r, "task_type")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExpr("task_type"), nextArgIdx))
+	if v := f.taskType; v != "" {
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExprFor(alias, "task_type"), nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}
 	return clauses, args, nextArgIdx
+}
+
+// buildRankingDimensionFilterClauses 构造**排行榜六维度**（除 model 外）的过滤子句。
+//
+// ★ 这是日志端点（listLogs）的入口：从 request 读值 + rl 别名渲染。
+//
+//	谓词形状全部委托给 buildRankingDimensionClausesFor（★ 单一真相）。
+func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []string, args []any, nextArgIdx int) {
+	return buildRankingDimensionClausesFor(rankingDimensionFiltersFromRequest(r), "rl", argIdx)
 }
 
 // listLogsSerialPlanSQL 在 listLogs 的只读事务里把本 handler 三条语句

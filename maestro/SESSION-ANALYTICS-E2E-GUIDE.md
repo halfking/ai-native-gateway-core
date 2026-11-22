@@ -12,7 +12,7 @@
 修改以下任一项时，**必须**复跑 E2E：
 
 ### 前端页面/组件
-- `web/src/views/admin/session-analytics/SessionAnalyticsOverviewView.vue`（总览）
+- `web/src/views/admin/session-analytics/SessionAnalyticsUsersView.vue`（总览落点；`/admin/session-analytics` 已改为 redirect 到 `/admin/session-analytics/users`，原 `SessionAnalyticsOverviewView.vue` 已删除）
 - `web/src/views/admin/session-analytics/SessionAnalyticsUserRankingView.vue`（人员排行）
 - `web/src/views/admin/session-analytics/SessionAnalyticsUserDetailView.vue`（人员详情）
 - `web/src/views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue`（智能体排行）
@@ -20,7 +20,7 @@
 - `web/src/views/admin/session-analytics/components/`（共享组件）
 
 ### 后端接口
-- `admin/session_analytics/handlers.go`（7 个端点）
+- `admin/session_analytics/handlers.go`（11 个 handler；`RoutePaths` 登记 6 条：overview / user-ranking / agent-ranking / model-ranking / provider-ranking / task-ranking）
 - `admin/session_analytics/queries.go`（查询逻辑）
 
 ### 数据库
@@ -89,12 +89,12 @@ node maestro/tools/assert-session-analytics.mjs \
 ### 成功输出示例
 
 ```
-RESULT: PASS（58 条）
-  ✓ 总览页：16 项断言
-  ✓ 人员排行：12 项断言
-  ✓ 人员详情：14 项断言
-  ✓ 智能体排行：8 项断言
-  ✓ 模型排行：8 项断言
+RESULT: PASS（64 条）
+  ✓ 重定向落点：10 项断言
+  ✓ 人员排行：10 项断言
+  ✓ 人员详情：26 项断言
+  ✓ 智能体排行：9 项断言
+  ✓ 模型排行：9 项断言
 ```
 
 ### 常见失败原因

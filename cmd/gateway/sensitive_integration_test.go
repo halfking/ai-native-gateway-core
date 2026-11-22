@@ -38,7 +38,7 @@ func TestSensitiveWordPlugin_PassThrough(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordInputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{
 		TransformedRequest: []byte("今天天气不错，适合出去散步。"),
 	}
@@ -61,7 +61,7 @@ func TestSensitiveWordPlugin_BlockP0(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordInputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{
 		TransformedRequest: []byte("这个视频包含色情内容"),
 	}
@@ -87,7 +87,7 @@ func TestSensitiveWordPlugin_BlockP1(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordInputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{
 		TransformedRequest: []byte("法轮功相关内容"),
 	}
@@ -106,7 +106,7 @@ func TestSensitiveWordPlugin_OutputBlock(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordOutputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{
 		TransformedRequest: []byte("正常请求"),
 		UpstreamResponse:   []byte("AI 生成了赌博相关内容"),
@@ -126,7 +126,7 @@ func TestSensitiveWordPlugin_OutputPass(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordOutputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{
 		TransformedRequest: []byte("正常的请求"),
 		UpstreamResponse:   []byte("正常的AI响应"),
@@ -142,7 +142,7 @@ func TestSensitiveWordPlugin_Evidence(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordInputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{
 		TransformedRequest: []byte("涉及色情和暴力的内容"),
 	}
@@ -167,7 +167,7 @@ func TestSensitiveWordPlugin_EmptyBody(t *testing.T) {
 	reg := domainssec.NewRegistry()
 	reg.MustRegister(sensitive.NewSensitiveWordInputPlugin(engine))
 
-	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{})
+	hook := domainssec.NewSecurityHook(reg, domainssec.Scope{}, nil)
 	env := &domain.PipelineRequest{}
 	err := hook.Execute(context.Background(), env)
 	if err != nil {

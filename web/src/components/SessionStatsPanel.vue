@@ -56,9 +56,9 @@ const props = withDefaults(defineProps<{ showStandardsHelp?: boolean }>(), {
 })
 
 // 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
-// 「会话与统计」是会话级口径（一个会话一条、取会话累计值）、窗口是滚动
-// N 天；「看板」是请求级口径、窗口是日历日 ⇒ 两页数字本来就不该相等。
-// 这枚按钮打开《看板与会话统计的统计标准》正文（含逐项对照表）。
+// ⚠️ 2026-11-23 已知问题(待修复): 当前会话统计只统计"首次请求在窗口内"的会话,
+// 导致漏算了窗口外开始但窗口内仍活跃的会话(约13%费用)。正确做法是统计
+// "窗口内所有请求"的费用,应与看板一致。详见: docs/audit/2026-11-23-数据一致性核实-发现关键问题.md
 const statsStandardsHelpId = 'dashboard-stats-standards'
 
 const boardState = inject<{
@@ -78,12 +78,6 @@ const includeProbes = ref(false)
 try {
   includeProbes.value = localStorage.getItem(SESSION_PROBE_SCOPE_KEY) === 'included'
 } catch { /* localStorage 不可用 ⇒ 保持缺省业务宇宙 */ }
-watch(includeProbes, (v) => {
-  try {
-    if (v) localStorage.setItem(SESSION_PROBE_SCOPE_KEY, 'included')
-    else localStorage.removeItem(SESSION_PROBE_SCOPE_KEY)
-  } catch { /* 同上 */ }
-})
 
 const {
   loading,
@@ -101,6 +95,19 @@ const {
   // 与看板同源：有 board days 时用它，否则默认 7（不再静默 30）
   defaultDays: boardDays.value ?? 7,
   extraParams: computed(() => ({ include_probes: includeProbes.value || undefined })),
+})
+
+// ★ 2026-11-23（L7 修复）：口径开关变化**必须触发重载**。
+// 原实现里这个 watch 只写 localStorage、不重载 ⇒ 勾选「包含探测」后页面继续
+// 显示旧口径的数字，看起来就像「include_probes 参数没生效」（实际参数已进
+// URL，但请求根本没重新发）。watch 放在 useDashboard 之后：refresh 由它解构
+// 出来，提前声明会踩 TS 的 block-scoped-before-declaration。
+watch(includeProbes, (v) => {
+  try {
+    if (v) localStorage.setItem(SESSION_PROBE_SCOPE_KEY, 'included')
+    else localStorage.removeItem(SESSION_PROBE_SCOPE_KEY)
+  } catch { /* 同上 */ }
+  void refresh()
 })
 
 watch(
@@ -269,6 +276,16 @@ defineExpose({
       data-testid="stats-probe-degraded"
     >
       {{ t('sessions.stats.probeScopeDegraded') }}
+    </div>
+
+    <!-- 2026-11-23 统计口径说明：告知用户当前统计方法及其局限性 -->
+    <div class="alert alert-info" role="status" data-testid="stats-scope-info">
+      <strong>统计说明：</strong>本页面统计"首次请求在近{{ days }}天内"的会话的全部请求和费用。
+      <br>
+      <small style="opacity: 0.9;">
+        注意：窗口外开始但窗口内仍活跃的会话暂未包含，导致费用可能低于"看板"页面（看板统计窗口内所有请求）。
+        若需查看窗口内的完整费用数据，请查看"看板"页面。
+      </small>
     </div>
 
     <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">

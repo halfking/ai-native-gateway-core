@@ -4,7 +4,7 @@ import { surfaceError } from '../i18n/errorSurface'
 import { formatDateTime, formatTimeOnly, parseLocalMinute } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
@@ -290,9 +290,33 @@ const deepLinkChips = computed(() => {
   return out
 })
 
+// ★ 深链维度在 **URL** 里（它来自「从用量趋势排行卡片跳过来」的入口上下文），
+//   而 onMounted 会从 route.query 把它读回来 ⇒ ⇒ 清除时**必须同步改 URL**，
+//   否则「chip 清掉了、一刷新筛选又回来」，而且复制出去的链接仍带着筛选。
+//   ⇒ 本函数只摘掉排行维度那几项，其余 query（时间范围等）原样保留。
+function stripDeepLinkFromQuery(keys: string[]) {
+  // ★ route.query 的类型（LocationQuery）与 router.replace 收的
+  //   LocationQueryRaw 不同构（前者允许多值数组）⇒ 显式转换，不用裸 cast。
+  const next: LocationQueryRaw = {}
+  for (const [k, v] of Object.entries(route.query)) {
+    if (Array.isArray(v)) next[k] = v.map((item) => (item === null ? null : item))
+    else next[k] = v
+  }
+  let changed = false
+  for (const key of keys) {
+    if (key in next) {
+      delete next[key]
+      changed = true
+    }
+  }
+  if (!changed) return
+  void router.replace({ path: route.path, query: next })
+}
+
 function clearDeepLinkFilter(key: string) {
   if (!(key in deepLinkFilters.value)) return
   deepLinkFilters.value[key] = ''
+  stripDeepLinkFromQuery([key])
   resetPageAndLoad()
 }
 
@@ -318,7 +342,10 @@ function clearAllFilters() {
   gwSessionFilter.value = ''
   gwTaskFilter.value = ''
   // ★ 排行深链维度也要能一键清掉（否则用户只能手改 URL）。
-  for (const key of Object.keys(deepLinkFilters.value)) deepLinkFilters.value[key] = ''
+  //   ★ 同时把 URL 里的这五项也摘掉——否则刷新页面会被 route.query 重新套上。
+  const deepKeys = Object.keys(deepLinkFilters.value)
+  for (const key of deepKeys) deepLinkFilters.value[key] = ''
+  stripDeepLinkFromQuery(deepKeys)
   resetTimeFilter()
 }
 

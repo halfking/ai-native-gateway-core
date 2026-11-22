@@ -133,6 +133,41 @@ func NewRedisLimiter(rdb *redis.Client) *RedisLimiter {
 	}
 }
 
+// NewRedisLimiterPreferEnvOrClient creates a limiter with a **three-step** source
+// choice (2026-11-23):
+//
+//	① RATE_LIMIT_REDIS_URL / REDIS_URL set ⇒ use that (★ an operator's explicit
+//	   intent wins, incl. pointing the limiter at a **dedicated** Redis db).
+//	② else a shared client is handed in ⇒ use it (★ see below).
+//	③ else ⇒ NewRedisLimiterFromEnv() ⇒ in-memory + the usual WARN.
+//
+// ★ Why step ② exists（★ 211 production finding, §七 WARN #2 of the
+// 2026-11-23 config-optimisation report）:
+// the gateway's Redis is assembled from **Config**（LLM_GATEWAY_REDIS_ADDR 等）★
+// but NewRedisLimiterFromEnv only looks at RATE_LIMIT_REDIS_URL / REDIS_URL
+// ⇒ ★ the two never meet ⇒ ★ **the limiter silently degraded to in-process**。
+// ★ Consequence on a **blue/green double-slot** deployment：★ every instance
+// keeps its own counters ⇒ ★ **the RPM/TPM quota is multiplied by the instance
+// count** ⇒ ★ **the cost guard is diluted**。
+// ★ Reusing the gateway's already-assembled client is safe because the limiter's
+// key space is namespaced: **rl:rpm:<keyID> / rl:tpm:<keyID>** ⇒ ★ it never
+// collides with the session/URSM key spaces.
+//
+// ★ Degradation is unchanged:★ a nil shared client ⇒ step ③ ⇒ in-memory.
+func NewRedisLimiterPreferEnvOrClient(shared *redis.Client) *RedisLimiter {
+	if strings.TrimSpace(os.Getenv("RATE_LIMIT_REDIS_URL")) != "" ||
+		strings.TrimSpace(os.Getenv("REDIS_URL")) != "" {
+		// ★ 运维显式指定 ⇒ 优先（★ 可能是「限流单独用某个 db」的意图）。
+		return NewRedisLimiterFromEnv()
+	}
+	if shared != nil {
+		slog.Info("rate limiter: using shared gateway redis client",
+			"note", "RATE_LIMIT_REDIS_URL not set; quotas are now shared across gateway instances")
+		return NewRedisLimiter(shared)
+	}
+	return NewRedisLimiterFromEnv()
+}
+
 // NewRedisLimiterFromEnv creates a limiter using the RATE_LIMIT_REDIS_URL
 // environment variable (e.g. "redis://localhost:6379/0").  Falls back to
 // in-memory if the variable is empty.

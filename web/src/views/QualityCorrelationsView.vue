@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { surfaceError } from '../i18n/errorSurface'
 import { useI18n } from 'vue-i18n'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import { useWindowClass } from '../composables/useWindowClass'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
@@ -19,9 +19,10 @@ const { isCompact } = useWindowClass()
 const resp = ref<QualityCorrelationResponse | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
-const days = ref(7)
 const by = ref<'prompt_length' | 'tools' | 'images' | 'code_block'>('prompt_length')
-const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+// ★ 2026-11-23 时间范围静默改写收口轮：改用 useRangeDays（预设走 days 快路、自定义透传 start/end）
+const days = ref(7)
+const { presets: dayPresets, rangeValue, applyRange, customRange } = useRangeDays(days, [
   { days: 1, labelKey: 'qualityCorrelations.filter.days.d1' },
   { days: 7, labelKey: 'qualityCorrelations.filter.days.d7' },
   { days: 30, labelKey: 'qualityCorrelations.filter.days.d30' },
@@ -72,11 +73,17 @@ async function load() {
   loading.value = true
   error.value = null
   try {
+    const params: Parameters<typeof getQualityCorrelations>[0] = {
+      by: by.value,
+    }
+    if (customRange.value) {
+      params.start_date = customRange.value.start
+      params.end_date = customRange.value.end
+    } else {
+      params.days = days.value
+    }
     resp.value = normalizeQualityCorrelations(
-      await getQualityCorrelations({
-        days: days.value,
-        by: by.value,
-      }),
+      await getQualityCorrelations(params),
     )
   } catch (e: unknown) {
     error.value = surfaceError(e)

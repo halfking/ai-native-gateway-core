@@ -7382,6 +7382,20 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if v, ok := m["cache_write_tokens"].(int); ok && v > 0 {
 			reqLog.CacheWriteTokens = &v
 		}
+		// P2-B (2026-11-23): 从 capture 读取多模态 token 并赋值到 telemetry。
+		// 接通 IR → usage → capture → telemetry 链，修复 ir/response.go:454-513 记录的断链。
+		if v, ok := m["reasoning_tokens"].(int); ok && v > 0 {
+			reqLog.ReasoningTokens = &v
+		}
+		if v, ok := m["image_tokens"].(int); ok && v > 0 {
+			reqLog.ImageTokens = &v
+		}
+		if v, ok := m["audio_tokens"].(int); ok && v > 0 {
+			reqLog.AudioTokens = &v
+		}
+		if v, ok := m["video_tokens"].(int); ok && v > 0 {
+			reqLog.VideoTokens = &v
+		}
 		// 2026-10-27 缓存监测轮：TTL 写入分档只进监测面（台账列是读写总量），
 		// 有分档时打一条结构化 INFO 供运维检索。
 		if sv, ok := m["cache_write_ttl_short_tokens"].(int); ok && sv > 0 {

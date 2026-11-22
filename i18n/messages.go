@@ -86,6 +86,10 @@ const (
 	// request log (see ingressRejection).
 	MsgIngressPreprocessTimeout     = "ingress_preprocess_timeout"
 	MsgIngressContextBudgetExceeded = "ingress_context_budget_exceeded"
+	// MsgIngressSingleMessageTooLarge: P1-C (2026-11-23) 单条受保护消息超过上下文预算。
+	// 与 MsgIngressContextBudgetExceeded 的区别：后者可能是多条累加，前者是单条即超限。
+	// 针对性文案可指导用户压缩媒体/分块/使用 URL 引用。
+	MsgIngressSingleMessageTooLarge = "ingress_single_message_too_large"
 	MsgIngressPromptTooLarge        = "ingress_prompt_too_large"
 	// MsgModelDeprecated: upstream provider has permanently end-of-lifed the
 	// requested model (HTTP 410 Gone). The handler appends the upstream's own

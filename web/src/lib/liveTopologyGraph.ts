@@ -307,9 +307,8 @@ export function buildTopology(input: BuildTopologyInput): TopoGraph {
     }
 
     bumpEdge(clientId, GATEWAY_CORE_ID, req)
-    if (providerId) bumpEdge(GATEWAY_CORE_ID, providerId, req)
-    if (providerId) bumpEdge(providerId, modelId, req)
-    else bumpEdge(GATEWAY_CORE_ID, modelId, req)
+    bumpEdge(GATEWAY_CORE_ID, modelId, req)
+    if (providerId) bumpEdge(modelId, providerId, req)
   }
 
   // node_update 的实时健康与在途数覆盖到 provider 列（node_update 可能先于/晚于请求到达）。

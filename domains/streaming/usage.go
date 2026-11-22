@@ -29,6 +29,10 @@ type UsageData struct {
 	ReasoningTokens  *int
 	CacheMissTokens  *int
 	ProviderTokens   *int
+	// P2-B (2026-11-23): 多模态 token 计数，接通 IR → usage → capture → telemetry 链。
+	ImageTokens *int
+	AudioTokens *int
+	VideoTokens *int
 	// 缓存写入的 TTL 分档（2026-10-27 缓存监测轮）。厂商映射：
 	// Anthropic 嵌套 usage.cache_creation.{ephemeral_5m→Short, ephemeral_1h→Long}；
 	// OpenAI Responses usage.cache_write_tokens_details.{ttl_30m→Short, ttl_12h→Long}。
@@ -160,6 +164,37 @@ func ExtractUsageFromChunk(payload string) UsageData {
 				result.ReasoningTokens = &v
 				break
 			}
+		}
+	}
+
+	// P2-B (2026-11-23): 多模态 token 计数（image/audio/video）从 prompt_tokens_details 提取。
+	// OpenAI usage 结构：prompt_tokens_details.{cached_tokens, image_tokens, audio_tokens, video_tokens}。
+	// 接通 IR → usage → capture → telemetry 链，修复 ir/response.go:454-513 记录的断链。
+	if detail, err := objVal(usage, "prompt_tokens_details"); err == nil {
+		if v, err := intValue(detail, "image_tokens"); err == nil && v > 0 {
+			result.ImageTokens = &v
+		}
+		if v, err := intValue(detail, "audio_tokens"); err == nil && v > 0 {
+			result.AudioTokens = &v
+		}
+		if v, err := intValue(detail, "video_tokens"); err == nil && v > 0 {
+			result.VideoTokens = &v
+		}
+	}
+	// Fallback: 尝试从顶层字段读取（部分厂商可能直接在 usage 顶层）
+	if result.ImageTokens == nil {
+		if v, err := intValue(usage, "image_tokens"); err == nil && v > 0 {
+			result.ImageTokens = &v
+		}
+	}
+	if result.AudioTokens == nil {
+		if v, err := intValue(usage, "audio_tokens"); err == nil && v > 0 {
+			result.AudioTokens = &v
+		}
+	}
+	if result.VideoTokens == nil {
+		if v, err := intValue(usage, "video_tokens"); err == nil && v > 0 {
+			result.VideoTokens = &v
 		}
 	}
 

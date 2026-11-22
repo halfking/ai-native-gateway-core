@@ -74,6 +74,9 @@
   "ingress_context_budget_exceeded": {
     "other": "The part of this request that must stay intact (system prompt, latest user task and its active tool chain) does not fit the gateway's bounded context of {{.Limit}} and cannot be reduced automatically. Split the latest task or its tool results, or start a new session — retrying the same request will fail again."
   },
+  "ingress_single_message_too_large": {
+    "other": "Your latest message (including media content such as images or videos) exceeds the gateway's context budget of {{.Limit}}. To proceed: (1) compress the image/video (e.g., convert PNG to JPG, reduce resolution); (2) use a URL reference instead of uploading the file directly; or (3) split the content into multiple messages. Note: This limit ensures fast response times — a single message cannot consume the entire budget."
+  },
   "ingress_prompt_too_large": {
     "other": "Request body is {{.Size}}, above the gateway limit of {{.Limit}}. Reduce the conversation history."
   },

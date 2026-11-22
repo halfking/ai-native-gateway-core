@@ -39,8 +39,21 @@
 -- 快速失败可重试。statement_timeout=30min：共享 PG 服务端默认 30s 会掐断
 -- 视图级 SELECT（本迁移的核心语句实测 90s~197s）——这正是 981 在 252
 -- 半途而废的机制，不设守卫等于把同一颗雷原样再埋一次。
+--
+-- ★ 2026-11-23：补 max_parallel_workers_per_gather=0（211 实测撞过）
+-- 本迁移 Part 3 的 model_usage_aggregates 重建是对
+-- request_logs_with_current_month 的大聚合 ⇒ PG 会选并行计划 ⇒ 并行 worker
+-- 要 resize DSM 共享内存段（8MB/worker）。211 的 PG 容器 /dev/shm 只有 64MB，
+-- 且长期滞留 DSM 孤儿段（实测常态水位 35~43MB）⇒ 并行 worker 一 resize 就报
+-- `could not resize shared memory segment … No space left on device`
+-- （SQLSTATE 53100），本迁移直接 FATAL，且**DROP MATERIALIZED VIEW 已经执行**
+-- ⇒ 生产上 model_usage_aggregates 视图被 DROP 后重建失败，视图缺失
+-- （请求级读面挂）。这不是偶发：该地雷已在 request-logs 轮登记为 L1。
+-- 关并行 ⇒ 该视图走串行计划，不再申请 DSM（代价：重建慢一点，可接受——
+-- 视图是预聚合，不在请求路径上）。
 SET lock_timeout = '5s';
 SET statement_timeout = '30min';
+SET max_parallel_workers_per_gather = 0;
 
 -- ============================================================================
 -- Part 1: session_dim.stop_reason（关闭路径元数据）
@@ -86,7 +99,12 @@ SELECT
     )                                              AS end_user_count,
     NOW()                                          AS refreshed_at
 FROM session_summaries ss
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd
@@ -130,7 +148,12 @@ SELECT
     MAX(ss.last_request_at)                        AS last_active_at,
     NOW()                                          AS refreshed_at
 FROM session_summaries ss
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd
@@ -176,7 +199,12 @@ SELECT
     MAX(ss.last_request_at)                        AS last_used_at,
     NOW()                                          AS refreshed_at
 FROM session_summaries ss
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title, agent_name
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd

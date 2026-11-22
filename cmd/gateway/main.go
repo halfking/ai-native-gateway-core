@@ -2765,7 +2765,23 @@ func main() {
 		}
 	}
 	if keyVerifier.Enabled() {
-		slidingRL := ratelimit.NewRedisLimiterFromEnv()
+		// ★ 2026-11-23（211 配置优化 · §七 WARN #2）：★ 限流器的 Redis 来源改成
+		// **三级选择**（★ 见 ratelimit.NewRedisLimiterPreferEnvOrClient）：
+		//	① RATE_LIMIT_REDIS_URL / REDIS_URL（★ 运维显式指定，★ 优先）；
+		//	② **网关已经装配好的 Redis 客户端**（★ redisClientForCache）；
+		//	③ 都没有 ⇒ in-process（★ 既有降级）。
+		//
+		// ★ 为什么必须给 ②：★ 部署的 Redis 走 **Config 装配路径**
+		// （★ LLM_GATEWAY_REDIS_ADDR 等），★ 而限流器原先只认
+		// RATE_LIMIT_REDIS_URL / REDIS_URL ⇒ ★ **两者从不对上** ⇒ ★ 限流器一直
+		// 静默退化成 **in-process** ⇒ ★ 211 是蓝绿双槽 ⇒ ★ 每个实例各有一份
+		// 计数 ⇒ ★ **RPM/TPM 配额被放大到实例数倍** ⇒ ★ **成本保护被稀释**。
+		// ★ key 空间独立（rl:rpm:* / rl:tpm:*）⇒ ★ 与 session/URSM 不撞。
+		var sharedRLClient *redis.Client
+		if redisClientForCache != nil {
+			sharedRLClient = redisClientForCache.Client()
+		}
+		slidingRL := ratelimit.NewRedisLimiterPreferEnvOrClient(sharedRLClient)
 		chatHandler.SetAuth(keyVerifier, slidingRL)
 		// 2026-10-11: /v1/models 此前从未接上 KeyVerifier，而 AuthMiddleware 对
 		// sk-* 故意放行（Rule 20 §2），于是任意 sk- 开头的字符串都能拉到全量

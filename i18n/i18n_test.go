@@ -66,6 +66,7 @@ var allMessageKeys = []string{
 	// 2026-11-22：入口拒绝（大请求体）的客户端可见文案。
 	MsgIngressPreprocessTimeout,
 	MsgIngressContextBudgetExceeded,
+	MsgIngressSingleMessageTooLarge, // P1-C (2026-11-23)
 	MsgIngressPromptTooLarge,
 	MsgInvalidModel,
 	MsgUnsupportedFeature,

@@ -122,7 +122,11 @@ describe('buildTopology', () => {
     expect(byId.get('cred:7')?.metric.inFlight).toBe(2)
     expect(byId.get('gateway:core')?.metric.success).toBe(1)
     expect(graph.edges.map((e) => e.id).sort()).toEqual(
-      ['client:claude-code->gateway:core', 'cred:7->model:glm-4.5', 'gateway:core->cred:7'].sort(),
+      // ★ 2026-11-23：连线方向按上游 `6d18b6e88`「修复拓扑图连线方向」改为
+      //   **客户端 → 网关核心 → 模型 → 供应商**（★ 此前是「供应商 → 模型」）。
+      //   ★ 上游改了实现但**没同步这条期望** ⇒ ⇒ 该门在 origin/main 上即红
+      //   ⇒ ⇒ 本轮机械对齐上游已声明的意图（★ 不改实现）。
+      ['client:claude-code->gateway:core', 'gateway:core->model:glm-4.5', 'model:glm-4.5->cred:7'].sort(),
     )
   })
 
