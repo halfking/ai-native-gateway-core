@@ -1,0 +1,30 @@
+# armor_judge_exclusion_sites.tsv — 「安全通过率」统计面登记册
+#
+# WHAT THIS FILE IS
+#   一份「已知的 armor_judgments 统计面」的显式登记册。一行一条：
+#
+#       <相对仓根的路径>	<一行说明>
+#
+# WHY
+#   未配置判官时，生产写进 armor_judgments 的行是
+#   judge_model='unconfigured'（旧实现是 'mock'）/ score=0 / decision='safe'
+#   ⇒ 与真实判官给出的「安全」在表里长得一样
+#   ⇒ 任何按 decision='safe' 统计「安全通过率」的面
+#   ⇒ 都会把「根本没判过」算成「判过且安全」。
+#
+#   211 实测（2026-11-23 当次）：394,714 条判定
+#   ⇒ judge_model='mock' 392,870 条 + 'unconfigured' 1,844 条（仍在新增）
+#   ⇒ 没有任何一条来自真实判官。
+#
+# HOW IT IS USED（棘轮）
+#   守卫 security/armor/armor_judge_exclusion_gate_test.go：
+#   · 仓内出现「读 armor_judgments 且按 decision 统计、却没有排除 judge_model」
+#     的语句 ⇒ 门红（除非它登记在这里）。
+#   · 登记在这里的每一行 ⇒ 必须**仍然带**排除（否则门红）。
+#   ⇒ 本表只增不减地记录「已经人工确认过口径」的统计面。
+#
+# CURRENT STATE
+#   **空** ⇒ 仓内目前**没有任何**「安全通过率」统计面（admin 与 web 前端均无引用）
+#   ⇒ 门现在量的是「零站点」⇒ 即「还没人踩这个坑」。
+#   ⇒ 将来谁写这个面板时，门会当场红，除非他带上
+#   judge_model <> 'unconfigured' AND judge_model <> 'mock'。
