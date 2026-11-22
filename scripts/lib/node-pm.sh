@@ -85,7 +85,14 @@ pm_install() {
     echo "[node-pm] 安装前端依赖（${pm}，目录 ${dir}）"
     case "$pm" in
         pnpm)
-            (cd "$dir" && pnpm install --frozen-lockfile)
+            # ★ 2026-11-23 修：非 TTY 环境（部署脚本 / CI）下，pnpm 若判定需要
+            #   **删除已存在的 node_modules**（lockfile 变更 / modules 目录与本树
+            #   store 不匹配）就会先问「确认删除？」⇒ 没有 TTY ⇒ 中止并报
+            #   ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY ⇒ 部署被拒。
+            #   （实测触发形态：部署机侧 web/node_modules 是**上一轮留下的真实目录**，
+            #     或是指向别处的**软链**——两种都会被 pnpm 判为「不匹配」。）
+            #   pnpm 官方解法：CI=true（等价于非交互模式，直接删装不询问）。
+            (cd "$dir" && CI=true pnpm install --frozen-lockfile)
             ;;
         npm)
             if [ -f "$dir/package-lock.json" ]; then
