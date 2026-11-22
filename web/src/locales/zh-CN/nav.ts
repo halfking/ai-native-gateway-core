@@ -80,6 +80,7 @@ export default {
     modelCredibility: '模型可信度',
     modules: '模块管理',
     sessionAnalytics: '会话分析中心',
+    sessionAnalyticsUsers: '用户会话分析',
     sessionAnalyticsFilterOptions: '会话分析筛选',
     sessionPlugin: '会话运营（插件）',
     approvalCenter: '统一审批中心',

@@ -2,6 +2,7 @@
 // sessionAnalytics.ts — نصوص تحليل الجلسات.
 export default {
   title: 'تحليل الجلسات',
+  topUsersTitle: 'أفضل 10 مستخدمين نشطين',
   nav: {
     analyticsCenter: 'مركز تحليل الجلسات',
     overview: 'نظرة عامة',
@@ -27,6 +28,7 @@ export default {
     reset: 'مسح عوامل التصفية',
     back: 'العودة إلى ترتيب الأشخاص',
     viewDetail: 'عرض التفاصيل',
+    viewAllUsers: 'عرض جميع المستخدمين',
   },
   metric: {
     totalSessions: 'إجمالي الجلسات',

@@ -4,6 +4,7 @@
 // the same placeholder set per key.
 export default {
   title: 'Session analytics',
+  topUsersTitle: 'Top 10 Active Users',
   nav: {
     analyticsCenter: 'Session Analytics Center',
     overview: 'Overview',
@@ -29,6 +30,7 @@ export default {
     reset: 'Clear filters',
     back: 'Back to people ranking',
     viewDetail: 'View details',
+    viewAllUsers: 'View all users',
   },
   metric: {
     totalSessions: 'Total sessions',

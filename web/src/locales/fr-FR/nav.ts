@@ -70,6 +70,7 @@ export default {
     modelCredibility: "Fiabilité des modèles",
     modules: "Gestion des modules",
     sessionAnalytics: "Centre d'analyse des sessions",
+    sessionAnalyticsUsers: 'Analyse des sessions utilisateur',
     sessionAnalyticsFilterOptions: "Filtres d’analyse de sessions",
     usageEnhanced: 'Analyse d’utilisation avancée',
     boardOperational: 'Tableau opérationnel',

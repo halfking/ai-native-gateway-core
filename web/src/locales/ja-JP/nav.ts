@@ -68,6 +68,7 @@ export default {
     modelCredibility: "モデルの信頼性",
     modules: "モジュール管理",
     sessionAnalytics: "セッション分析センター",
+    sessionAnalyticsUsers: 'ユーザーセッション分析',
     sessionAnalyticsFilterOptions: "セッション分析フィルター",
     usageEnhanced: '使用量の詳細分析',
     boardOperational: '運用ボード',

@@ -1,6 +1,7 @@
 // sessionAnalytics.ts — Textos del análisis de sesiones (es-ES).
 export default {
   title: 'Análisis de sesiones',
+  topUsersTitle: 'Top 10 Usuarios Activos',
   nav: {
     analyticsCenter: 'Centro de análisis de sesiones',
     overview: 'Resumen',
@@ -26,6 +27,7 @@ export default {
     reset: 'Borrar los filtros',
     back: 'Volver a la clasificación de personas',
     viewDetail: 'Ver detalles',
+    viewAllUsers: 'Ver todos los usuarios',
   },
   metric: {
     totalSessions: 'Total de sesiones',

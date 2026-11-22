@@ -68,6 +68,7 @@ export default {
     modelCredibility: "موثوقية النماذج",
     modules: "إدارة الوحدات",
     sessionAnalytics: "مركز تحليل الجلسات",
+    sessionAnalyticsUsers: 'تحليل جلسات المستخدم',
     sessionAnalyticsFilterOptions: "مرشحات تحليل الجلسات",
     usageEnhanced: 'تحليلات الاستخدام المطوّر',
     boardOperational: 'لوحة التشغيل',

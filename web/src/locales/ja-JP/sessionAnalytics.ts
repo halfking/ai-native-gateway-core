@@ -1,6 +1,7 @@
 // sessionAnalytics.ts — セッション分析画面の文案。
 export default {
   title: 'セッション分析',
+  topUsersTitle: 'Top10 アクティブユーザー',
   nav: {
     analyticsCenter: 'セッション分析センター',
     overview: '概要',
@@ -26,6 +27,7 @@ export default {
     reset: '絞り込みを解除',
     back: '人員ランキングへ戻る',
     viewDetail: '詳細を表示',
+    viewAllUsers: 'すべてのユーザーを表示',
   },
   metric: {
     totalSessions: 'セッション総数',

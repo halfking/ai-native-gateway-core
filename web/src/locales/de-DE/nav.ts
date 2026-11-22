@@ -70,6 +70,7 @@ export default {
     modelCredibility: "Modellglaubwürdigkeit",
     modules: "Modulverwaltung",
     sessionAnalytics: "Sitzungsanalyse-Zentrum",
+    sessionAnalyticsUsers: 'Benutzersitzungsanalyse',
     sessionAnalyticsFilterOptions: "Sitzungsanalyse-Filter",
     usageEnhanced: 'Erweiterte Nutzungsanalyse',
     boardOperational: 'Betriebsübersicht',

@@ -70,6 +70,7 @@ export default {
     modelCredibility: "模型可信度",
     modules: "模組管理",
     sessionAnalytics: "會話分析中心",
+    sessionAnalyticsUsers: '用戶會話分析',
     sessionAnalyticsFilterOptions: "會話分析篩選",
     usageEnhanced: '用量增強分析',
     boardOperational: '營運面板',

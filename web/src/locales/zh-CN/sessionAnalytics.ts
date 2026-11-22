@@ -4,6 +4,7 @@
 // ★ 8 语种必须逐字同构：键集合相同、占位符集合相同。
 export default {
   title: '会话分析',
+  topUsersTitle: 'Top10 活跃用户',
   nav: {
     analyticsCenter: '会话分析中心',
     overview: '总览',
@@ -30,6 +31,7 @@ export default {
     reset: '清空筛选',
     back: '返回人员排行',
     viewDetail: '查看详情',
+    viewAllUsers: '查看所有用户',
   },
   metric: {
     totalSessions: '会话总数',

@@ -1,6 +1,7 @@
 // sessionAnalytics.ts — Texte der Sitzungsanalyse (de-DE).
 export default {
   title: 'Sitzungsanalyse',
+  topUsersTitle: 'Top 10 Aktive Benutzer',
   nav: {
     analyticsCenter: 'Sitzungsanalyse-Zentrum',
     overview: 'Übersicht',
@@ -26,6 +27,7 @@ export default {
     reset: 'Filter zurücksetzen',
     back: 'Zurück zur Personenrangliste',
     viewDetail: 'Details anzeigen',
+    viewAllUsers: 'Alle Benutzer anzeigen',
   },
   metric: {
     totalSessions: 'Sitzungen gesamt',

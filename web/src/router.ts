@@ -78,6 +78,8 @@ const SessionAnalyticsUserRankingView = () => import('./views/admin/session-anal
 const SessionAnalyticsUserDetailView = () => import('./views/admin/session-analytics/SessionAnalyticsUserDetailView.vue')
 const SessionAnalyticsAgentRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue')
 const SessionAnalyticsModelRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsModelRankingView.vue')
+// 2026-11-23：会话分析用户页面（整合 Dashboard 的会话统计 + Top10 用户排行）
+const SessionAnalyticsUsersView = () => import('./views/admin/session-analytics/SessionAnalyticsUsersView.vue')
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
@@ -340,7 +342,8 @@ export const router = createRouter({
       component: RequestDetailFullscreenView,
     },
     { path: '/dispatch/waterfall', component: DispatchWaterfallView, meta: { requiresPlatformOps: true } },
-    { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
+    // 2026-11-23：会话分析用户页面（整合 Dashboard 会话统计 + Top10 用户排行）
+    { path: '/admin/session-analytics/users', component: SessionAnalyticsUsersView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },

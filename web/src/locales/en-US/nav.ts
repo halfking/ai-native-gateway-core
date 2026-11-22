@@ -79,6 +79,7 @@ export default {
     modelCredibility: 'Model Credibility',
     modules: 'Module Management',
     sessionAnalytics: 'Session Analytics',
+    sessionAnalyticsUsers: 'User Session Analytics',
     sessionAnalyticsFilterOptions: 'Session Analytics Filters',
     sessionPlugin: 'Session operations',
     approvalCenter: 'Unified approval center',

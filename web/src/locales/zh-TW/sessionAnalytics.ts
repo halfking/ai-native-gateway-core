@@ -1,6 +1,7 @@
 // sessionAnalytics.ts — 會話分析畫面的文案。
 export default {
   title: '會話分析',
+  topUsersTitle: 'Top10 活躍用戶',
   nav: {
     analyticsCenter: '會話分析中心',
     overview: '總覽',
@@ -27,6 +28,7 @@ export default {
     reset: '清除篩選條件',
     back: '返回人員排行榜',
     viewDetail: '檢視詳細資料',
+    viewAllUsers: '查看所有用戶',
   },
   metric: {
     totalSessions: '會話總數',
