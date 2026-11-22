@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElButton, ElMessage, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
 import { Plus, Edit, Delete, View } from '@element-plus/icons-vue'
 import { listTeams, deleteTeam, type Team } from '../api-teams'
 import { surfaceError } from '../i18n/errorSurface'
@@ -41,12 +41,19 @@ function handleView(teamId: number) {
   router.push(`/admin/teams/${teamId}`)
 }
 
-function handleEdit(team: Team) {
+// ★ el-table 作用域槽的 row 是 element-plus 的 DefaultRow
+//   （= Record<PropertyKey, any>），与窄类型 Team 对不上
+//   （vue-tsc 报 TS2345: DefaultRow 不能赋给 Team）⇒ 按仓内既有范式
+//   （PromptInjectionSettingsView.vue:1131 / UsageTrendExplorer.vue:479）
+//   用松类型接收，字段在函数体内按需取用。
+type TeamTableRow = Record<PropertyKey, any>
+
+function handleEdit(team: TeamTableRow) {
   // TODO: Open edit dialog
   ElMessage.info('Edit functionality - to be implemented')
 }
 
-async function handleDelete(team: Team) {
+async function handleDelete(team: TeamTableRow) {
   try {
     await ElMessageBox.confirm(
       t('teams.confirmDelete', { name: team.display_name || team.name }),

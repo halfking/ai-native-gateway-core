@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getTaskAnalyticsDetail, type TaskAnalyticsDetail } from '../api/admin'
@@ -35,21 +35,61 @@ function onRangeApply(range: KxDateRange) {
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
 
+// ★ 2026-11-23 审计轮（P1-2）：ECharts 实例**必须**随组件卸载一起销毁。
+//   此前本页与 ClientAnalyticsView 是全仓仅剩的两个「init 了但从不 dispose」的
+//   视图 ⇒ 路由来回切换时实例泄漏、canvas 叠加。
+//   ⇒ 写法沿用 BoardOperationalView.vue:327-331 的既有范式（dispose + 置空）。
+function disposeChart() {
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+}
+
+onBeforeUnmount(() => {
+  disposeChart()
+})
+
 onMounted(() => {
   void load()
 })
 
+// ★ 2026-11-23 审计轮（P1-2）：本页读 route.params.id 但此前**没有 watch**
+//   ⇒ 换路由参数后图表还是上一个 task 的（标题变了、数据没变）。
+watch(taskId, () => {
+  disposeChart()
+  data.value = null
+  void load()
+})
+
+// ★ 2026-11-23 审计轮（P1-2）：有了 watch 之后可能有多轮加载在飞
+//   （快速切换 task）⇒ 旧响应会盖掉新数据（标题是新的、数据是旧的）。
+//   ⇒ 用请求序号丢弃过期响应（写法同 views/admin/UsageTrendExplorer.vue 的 seriesToken）。
+let loadToken = 0
+
 async function load() {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = null
   try {
-    data.value = await getTaskAnalyticsDetail(taskId.value, days.value)
+    const resp = await getTaskAnalyticsDetail(taskId.value, days.value)
+    // 已被更新的一轮取代 ⇒ 丢弃本次响应（不写任何状态）。
+    if (token !== loadToken) return
+    data.value = resp
+    // ★ 2026-11-23 审计轮（P1-2）：必须等 nextTick —— chartRef 所在的 div 在
+    //   v-if="data" 块内（见模板 167/213 行），data.value 刚赋值时 Vue 还没打
+    //   DOM 补丁 ⇒ chartRef.value 仍是 undefined ⇒ renderChart 的守卫直接
+    //   return ⇒ 图表**永远不初始化**（空框）。
+    //   ★ 与 ClientAnalyticsView.vue:47-50 同一处理（那边早前已修）。
+    await nextTick()
+    if (token !== loadToken) return
     renderChart()
   } catch (e: any) {
+    if (token !== loadToken) return
     console.error('Failed to load task analytics:', e)
     errorMessage.value = e.message || t('sessions.taskAnalytics.loadError')
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 

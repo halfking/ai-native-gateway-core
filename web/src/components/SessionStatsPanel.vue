@@ -39,7 +39,8 @@ import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
 import { ElIcon } from 'element-plus'
 import KxDateRangePicker from './ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { rangeFromSpanDays, rangeSpanDays } from './ui/kxDatePresets'
+import type { KxDateRange, KxDateRangePreset } from './ui/kx-date-types'
 import { localDateStamp } from '../i18n/localDate'
 const { t } = useI18n()
 const router = useRouter()
@@ -216,17 +217,57 @@ function formatPct(value: number) {
 
 // 2026-11-19 时间范围统一轮：7/30 两天按钮组 → 全站统一 KxDateRangePicker
 // （1/7/30/90 档 + 自定义区间）。days 与看板 boardDays 双向联动保持不变。
-const { presets: statsDayPresets, rangeValue: statsRange, applyRange: applyStatsSpan } = useSpanDaysRange(days, [
-  { days: 1, labelKey: 'common.dateRange.preset.today' },
+//
+// ★ 2026-11-23 审计轮（P2-1 / P2-3）：本面板的统计窗口在服务端是**滚动窗口**
+//   —— admin/dashboardapi/session_overview.go 的每条腿都是
+//   `first_request_at >= NOW() - INTERVAL 'N days'`（450/638/725/807/898/919 行），
+//   响应里也自报 window_mode="rolling_days"。
+//   ⇒ 真实起点比「含首尾的 N 个日历日」**早一天**（N=7 ⇒ 真实起点 = 今天前 7 天，
+//     而日历日 7 天窗的起点是今天前 6 天）。
+//   ⇒ 而控件此前显示的是**日历日区间**（useSpanDaysRange ⇒ rangeFromSpanDays）
+//   ⇒ 用户看到的起止与真实查询范围对不上（起点差一天）。
+//
+// ★ 修法按后端**既有语义**这一边（滚动窗口），**不改请求**
+//   （改请求＝改口径＝两头改 ⇒ 数字会变、且与看板/会话分析页不同源）：
+//   ① 预设与控件一律回填**滚动窗口的真实起止**（[today-N, today]）；
+//   ② days=1 的档位改标「近24小时」（common.dateRange.preset.last24h，8 语种已有）
+//      —— 滚动 24 小时窗口本来就不是「今天」，标「今天」才是**文案与事实相反**；
+//   ③ 自定义入口禁用（:presets-only）—— 端点只收 days，手选历史区间会被
+//      静默压成「跨度天数」（P2-1；同族做法见 AGENTS.md「时间范围静默改写收口轮」）。
+const STATS_RANGE_BUCKETS = [
+  { days: 1, labelKey: 'common.dateRange.preset.last24h' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
-])
-// useSpanDaysRange.applyRange 只写 days.value；刷新要走 changeDays（loadAll）。
-function applyStatsRange(range: Parameters<typeof applyStatsSpan>[0]) {
-  const prev = days.value
-  applyStatsSpan(range)
-  if (days.value !== prev) void changeDays(days.value)
+] as const
+
+/** 滚动窗口 [now-N 天, now] 的**日历日**跨度：[today-N, today]。 */
+function rollingWindowRange(days: number): KxDateRange {
+  // rangeFromSpanDays(n) = [today-(n-1), today] ⇒ n = days+1 即 [today-days, today]
+  return rangeFromSpanDays(days + 1)
+}
+
+const statsDayPresets = computed<KxDateRangePreset[]>(() =>
+  STATS_RANGE_BUCKETS.map((bucket) => ({
+    id: `span${bucket.days}d`,
+    labelKey: bucket.labelKey,
+    resolve: () => rollingWindowRange(bucket.days),
+  })),
+)
+// 控件显示的区间 = 当前窗口的真实起止（与请求的 days 同一口径）。
+const statsRange = computed<KxDateRange>(() => rollingWindowRange(days.value))
+
+// 改 days 后必须走 changeDays（它会 loadAll 重取）；直接写 days.value 不会发请求。
+function applyStatsRange(range: KxDateRange) {
+  // ★ 滚动窗口的日历日跨度是 **N+1** 天 ⇒ 不能按区间跨度直接回写 days（会多一天）
+  //   ⇒ 按命中的档位回写；命中不到（跨零点等边缘）时用「跨度 - 1」兜底。
+  const bucket = STATS_RANGE_BUCKETS.find((b) => {
+    const r = rollingWindowRange(b.days)
+    return r.start === range.start && r.end === range.end
+  })
+  const next = bucket ? bucket.days : Math.max(1, rangeSpanDays(range) - 1)
+  if (next === days.value) return
+  void changeDays(next)
 }
 
 // Expose loading state and refresh function for parent components
@@ -297,10 +338,19 @@ defineExpose({
              space-between 顶到页面中间，离控件很远）⇒ 时间选择器 + 探测开关
              合成一组靠左。 -->
         <div class="panel-toolbar__start">
+          <!-- ★ 2026-11-23 审计轮（P2-1 / P2-3）：
+               · :presets-only —— 端点只收 days（后端把 days 解释成**滚动窗口**），
+                 自定义历史区间会被静默压成「跨度天数」⇒ 禁掉自定义入口
+                 （与 AGENTS.md「时间范围静默改写收口轮」的方案 B 同款）。
+               · :max-span-days="91" —— 滚动窗口 N 天的**日历日跨度是 N+1 天**
+                 （[today-N, today]）⇒ 上限必须 ≥ 91，否则「近 90 天」档位
+                 会被跨度校验挡住（点了没反应）。
+               · 控件显示的区间 = 滚动窗口的真实起止（见上面的 rollingWindowRange）。 -->
           <KxDateRangePicker
             :model-value="statsRange"
             :presets="statsDayPresets"
-            :max-span-days="90"
+            :max-span-days="91"
+            :presets-only="true"
             :disabled="loading"
             @apply="applyStatsRange"
           />

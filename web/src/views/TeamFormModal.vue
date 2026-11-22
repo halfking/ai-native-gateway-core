@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessage } from 'element-plus'
 import { createTeam, updateTeam, type Team, type CreateTeamRequest, type UpdateTeamRequest } from '../api-teams'
 import { surfaceError } from '../i18n/errorSurface'
 
@@ -114,6 +114,7 @@ function handleClose() {
     v-model="dialogVisible"
     :title="title"
     width="500px"
+    class="team-form-dialog"
     :close-on-click-modal="false"
     @close="handleClose"
   >
@@ -160,5 +161,18 @@ function handleClose() {
   font-size: 12px;
   color: #909399;
   margin-top: 4px;
+}
+
+/* ★ ui-audit 契约 B：居中弹窗必须**限高 + 可滚**，否则长内容（团队名 + 显示名 +
+   描述）会被裁切、用户看不到自己填的内容。壳限高 + body 滚动是本仓通用写法
+   （见 EmergencyDiagnosticModal.vue 等同族弹层）。 */
+.team-form-dialog {
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.team-form-dialog :deep(.el-dialog__body) {
+  overflow-y: auto;
 }
 </style>

@@ -34,15 +34,28 @@
         <h2 class="section-title">{{ t('sessionAnalytics.top5.title') }}</h2>
       </div>
       <p class="sa-note">{{ t('sessionAnalytics.top5.scopeNote') }}</p>
+      <!-- ★ 2026-11-23 审计轮（P1-3）：深链带来的任务过滤必须**可见**。
+           「筛了但界面说没筛」与「点了 Top5 任务行跳过来却什么都没发生」同族。 -->
+      <div v-if="taskFilter" class="sa-task-filter" data-testid="sa-task-filter">
+        <span class="badge badge-blue">{{ t('sessionAnalytics.col.task') }}: {{ taskFilter }}</span>
+        <button
+          type="button"
+          class="sa-link"
+          data-testid="sa-task-filter-clear"
+          :aria-label="t('sessionAnalytics.action.reset')"
+          @click="clearTaskFilter"
+        >×</button>
+      </div>
       <SaTop5Rankings
         v-model:model-rows="modelRows"
         v-model:provider-rows="providerRows"
         v-model:user-rows="userRows"
-        v-model:task-rows="taskRows"
+        v-model:task-rows="visibleTaskRows"
         :start-date="range.start"
         :end-date="range.end"
         :loading="loading"
         :error="top5Error"
+        :dimension-errors="top5DimensionErrors"
         @retry="loadTop5"
       />
     </section>
@@ -142,7 +155,7 @@
 
 import { computed, onMounted, ref, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
 import SessionStatsPanel from '../../../components/SessionStatsPanel.vue'
 import DataTable from '../../../components/ui/DataTable.vue'
@@ -153,6 +166,8 @@ import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
 import SaTop5Rankings from './components/SaTop5Rankings.vue'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
+import { rangeFromQuery, taskFilterFromQuery } from './saQueryParams'
+import { surfaceError } from '../../../i18n/errorSurface'
 import {
   getUserRanking,
   getModelRanking,
@@ -167,6 +182,7 @@ import { formatDateTime } from '../../../utils/datetime'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const { loading, error, stale, run } = useSessionAnalyticsLoader()
 
 // Stats panel ref and loading state
@@ -175,8 +191,16 @@ const statsLoading = computed(() => {
   return statsPanelRef.value?.loading?.value ?? false
 })
 
-const range = ref<KxDateRange>(rangeFromSpanDays(7))
+// ★ 2026-11-23 审计轮（P2-5 / P1-3）：本页也吃 URL 上的深链参数：
+//   · start_date / end_date —— Top5 卡片点击跳过来时带的就是它们；
+//     缺省才回退 7 天窗口（口径见 saQueryParams.ts）。
+//   · task —— Top5「任务」行点击跳过来时带的是它（见下方 taskFilter）。
+const range = ref<KxDateRange>(rangeFromQuery(route.query) ?? rangeFromSpanDays(7))
 const draftRange = ref<KxDateRange>(range.value)
+// ★ P1-3：Top5「任务」行点击 ⇒ 跳到本页并带 ?task=（SaTop5Rankings.openTask）。
+//   此前本页**连 useRoute 都没有** ⇒ 参数无人消费 ⇒ 点过去「什么也没发生」。
+//   ⇒ 这里消费它：无参数时行为与从前**完全一致**（不过滤、不显示 chip）。
+const taskFilter = ref(taskFilterFromQuery(route.query))
 const topUsers = ref<UserRankingRow[]>([])
 
 const presets = computed<KxDateRangePreset[]>(() => [
@@ -200,7 +224,22 @@ const userRows = ref<UserRankingRow[]>([])
 const taskRows = ref<TaskRankingRow[]>([])
 const top5Error = ref<string | null>(null)
 
+/**
+ * 每个维度的失败文案（键 = 维度）。
+ * ★ 为什么要**逐维度**记：此前失败维度被写成空数组 ⇒ 卡片显示「无结果」
+ *   —— 把「加载失败」伪装成「没有数据」（用户会去查业务，而真相是接口挂了）。
+ *   ⇒ 失败维度必须显式呈现为加载失败（由 SaTop5Rankings 的 dimension-errors 渲染）。
+ */
+const top5DimensionErrors = ref<Partial<Record<'models' | 'providers' | 'users' | 'tasks', string>>>({})
+
+// ★ 2026-11-23 审计轮（P2-2）：四维并发加载**必须有请求序号**，否则旧响应会
+//   覆盖新数据（口径漂移：用户刚改了时间窗，页面却显示上一轮的数）。
+//   ⇒ 写法沿用 views/admin/UsageTrendExplorer.vue:286-289 的 seriesToken 范式
+//   （取号 → await → 比对，不一致就丢弃这次响应）。
+let seriesToken = 0
+
 async function loadTop5() {
+  const token = ++seriesToken
   const params = {
     start_date: range.value.start,
     end_date: range.value.end,
@@ -211,16 +250,49 @@ async function loadTop5() {
     getUserRanking({ ...params, sort_by: 'tokens', order: 'desc', limit: 10, offset: 0 }),
     getTaskRanking({ ...params, sort_by: 'sessions', order: 'desc' }),
   ])
+  // ★ 已被更新的一轮取代 ⇒ 丢弃本次响应（不写任何状态）。
+  if (token !== seriesToken) return
   const [models, providers, users, tasks] = results
   modelRows.value = models.status === 'fulfilled' ? models.value.models || [] : []
   providerRows.value = providers.status === 'fulfilled' ? providers.value.providers || [] : []
   userRows.value = users.status === 'fulfilled' ? users.value.users || [] : []
   taskRows.value = tasks.status === 'fulfilled' ? tasks.value.tasks || [] : []
+  // ★ 失败维度显式记账（不与「无结果」混淆）。
+  const dimensionErrors: Partial<Record<'models' | 'providers' | 'users' | 'tasks', string>> = {}
+  if (models.status === 'rejected') dimensionErrors.models = surfaceError(models.reason)
+  if (providers.status === 'rejected') dimensionErrors.providers = surfaceError(providers.reason)
+  if (users.status === 'rejected') dimensionErrors.users = surfaceError(users.reason)
+  if (tasks.status === 'rejected') dimensionErrors.tasks = surfaceError(tasks.reason)
+  top5DimensionErrors.value = dimensionErrors
   const failed = results.filter((r) => r.status === 'rejected')
   top5Error.value =
-    failed.length === results.length
-      ? (failed[0] as PromiseRejectedResult).reason?.message || 'failed to load top rankings'
+    failed.length === results.length && failed.length > 0
+      ? surfaceError((failed[0] as PromiseRejectedResult).reason)
       : null
+}
+
+/**
+ * ★ 2026-11-23 审计轮（P1-3）：任务深链过滤后的 Top5 任务行。
+ *   ★ 后端 user-ranking **没有** task 维度过滤（只有 project，见
+ *     admin/session_analytics/handlers.go 的 userRankingParams）⇒
+ *     不能假装「按 task 筛用户」⇒ 这里只让**任务维度**被定位到那个任务，
+ *     用户排行仍是全量（口径不被伪装）。
+ */
+const visibleTaskRows = computed<TaskRankingRow[]>({
+  // getter：命中深链任务 ⇒ 只留那一行；无 task 参数 ⇒ 原样返回（行为与从前完全一致）
+  get: () => (taskFilter.value ? taskRows.value.filter((r) => r.task === taskFilter.value) : taskRows.value),
+  // setter：组件侧回写仍落回原始行集（v-model 契约不变）
+  set: (rows) => {
+    taskRows.value = rows
+  },
+})
+
+/** 清除任务深链过滤：本地状态 + URL（URL 必须同步，否则刷新又把 ?task= 读回来）。 */
+function clearTaskFilter() {
+  taskFilter.value = ''
+  const next = { ...route.query }
+  delete next.task
+  void router.replace({ path: route.path, query: next })
 }
 
 async function loadTopUsers() {
@@ -351,6 +423,16 @@ onMounted(() => {
   border-radius: 4px;
   font-size: 13px;
   color: var(--kx-text-secondary, #606266);
+}
+
+/* ★ 2026-11-23 审计轮（P1-3）：深链带来的任务过滤必须**可见**
+   （「筛了但界面说没筛」与「点了 Top5 任务行跳过去却什么都没发生」同族）。 */
+.sa-task-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px 0;
+  font-size: 12px;
 }
 
 .sa-table {

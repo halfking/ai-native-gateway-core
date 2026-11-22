@@ -2,7 +2,19 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  ElButton,
+  ElCard,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElEmpty,
+  ElMessage,
+  ElMessageBox,
+  ElProgress,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+} from 'element-plus'
 import { Edit, Plus, Delete, ArrowLeft } from '@element-plus/icons-vue'
 import {
   getTeam,
@@ -93,7 +105,10 @@ function handleEditBudget() {
   ElMessage.info('Edit budget functionality - to be implemented')
 }
 
-async function handleRemoveMember(member: TeamMember) {
+// ★ 同 TeamListView：el-table 槽的 row 是 element-plus 的 DefaultRow
+//   （= Record<PropertyKey, any>），与窄类型 TeamMember 对不上 ⇒ 按仓内
+//   既有范式用松类型接收。
+async function handleRemoveMember(member: Record<PropertyKey, any>) {
   try {
     await ElMessageBox.confirm(
       t('teams.confirmRemoveMember'),
