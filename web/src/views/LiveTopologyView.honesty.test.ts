@@ -284,13 +284,26 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     // ★ 为什么读源码而不是 computed style：★ vitest 默认 css:false ⇒ ★ SFC 的
     // ★ <style scoped> 不进 jsdom ⇒ ★ computed style 恒为空串 ⇒ ⇒ ★★ 那是恒假绿。
     // ★★ 定位基准是写在样式契约里的事实（★ 同本文件既有做法）。
+    //
+    // ★★★★ **2026-11-23 判据性质化（本轮）**：★★★ 原判据把 `min(320px, 50vh)`
+    // ★★★★ **写死**在断言里 ⇒ 上游把行下限 320 → 560 → 680px（适配 ROW_GAP=160）
+    // ★★★★ 时它**必红**——★ 而**红的原因不是性质坏了、只是数字变了** ⇒ ★★★
+    // ★★★★ 判据与「数字」而不是与「关系」绑定 ⇒ ★★★ 上游每调一次数字就假红一次。
+    // ★★★★ ⇒ 本轮把「同口径」落成**可判定的关系**（★ 不写死任何数值）：
+    // ★★★★   min(itemPx, itemVh) ≤ min(rowPx, rowVh) 恒成立
+    // ★★★★   ⇔ **itemPx ≤ rowPx 且 itemVh ≤ rowVh**（逐维比较）
+    // ★★★★ 这才是「项不撑破行」的**充要条件**（★ 项 > 行 ⇒ 溢出 ⇒ 压第 2 行 ⇒
+    // ★★★★ 右栏摘要浮层被压成一条缝 ⇒ 同一种缺陷形态）。
     const source = readSrc('src/views/LiveTopologyView.vue')
 
     // ① 行下限必须带 vh 封顶（★ 否则矮窗下无上限可退）。
-    expect(source, '栅格行下限必须含 min(320px, 50vh)').toMatch(/grid-template-rows:\s*minmax\(min\(320px,\s*50vh\)/)
+    //   ★★ 只断**形状**（min(<px>, <vh>)），不写死数值 ⇒ 上游调数字不红。
+    expect(source, '栅格行下限必须带 vh 封顶（min(<px>, <vh>) 形状）').toMatch(
+      /grid-template-rows:\s*minmax\(min\(\d+px,\s*\d+vh\)/,
+    )
 
     // ② 桌面段里 .live-topology__clients 的 min-height 必须是 min(...) 口径，
-    //    ★ 不许再是写死的 px（★ 写死的 px 会大于 50vh 的行下限 ⇒ ⇒ 抵消它）。
+    //    ★ 不许再是写死的 px（★ 写死的 px 会在矮窗下大于行下限 ⇒ ⇒ 抵消它）。
     const desktopBlock = source.slice(source.indexOf('@media (min-width: 1024px)'))
     const clientsRule = desktopBlock.match(/\.live-topology__clients\s*\{[^}]*\}/)
     expect(clientsRule, '桌面段里找不到 .live-topology__clients 规则').toBeTruthy()
@@ -301,13 +314,88 @@ describe('LiveTopologyView 展示诚实性（本轮审计修复）', () => {
     const ruleText = clientsRule![0].replace(/\/\*[\s\S]*?\*\//g, '')
     expect(
       ruleText,
-      '★ .live-topology__clients 的 min-height 必须与行下限同口径（min(320px, 50vh)）⇒ ⇒ ' +
+      '★ .live-topology__clients 的 min-height 必须与行下限同口径（min(<px>, <vh>)）⇒ ⇒ ' +
         '写死的 px 会在矮窗下大于行下限 ⇒ ⇒ 抵消行下限 ⇒ ⇒ 又把右栏压扁',
-    ).toMatch(/min-height:\s*min\(320px,\s*50vh\)/)
+    ).toMatch(/min-height:\s*min\(\d+px,\s*\d+vh\)/)
     expect(
       ruleText,
-      '★ .live-topology__clients 不许再硬钉 min-height: 320px（★ 它大于 50vh 的行下限）',
-    ).not.toMatch(/min-height:\s*320px/)
+      '★ .live-topology__clients 不许再硬钉 min-height: <px>（★ 它会在矮窗下大于行下限）',
+    ).not.toMatch(/min-height:\s*\d+px/)
+
+    // ③ ★★ 同口径的**关系**判据（★ 本轮新增：★ 这条才是原缺陷的守门人）。
+    const rowFloor = desktopBlock.match(
+      /grid-template-rows:\s*minmax\(min\((\d+)px,\s*(\d+)vh\)/,
+    )
+    expect(rowFloor, '桌面段里解析不出行下限 min(<px>, <vh>)').toBeTruthy()
+    const itemFloor = ruleText.match(/min-height:\s*min\((\d+)px,\s*(\d+)vh\)/)
+    expect(itemFloor, '解析不出 .live-topology__clients 的 min-height min(<px>, <vh>)').toBeTruthy()
+
+    const rowPx = Number(rowFloor![1])
+    const rowVh = Number(rowFloor![2])
+    const itemPx = Number(itemFloor![1])
+    const itemVh = Number(itemFloor![2])
+
+    expect(
+      itemPx,
+      `★ 项的 px 下限（${itemPx}px）不得超过行下限（${rowPx}px）`
+        + '⇒ 否则项比行高 ⇒ 溢出 ⇒ 压到第 2 行 ⇒ 右栏摘要浮层被压成一条缝',
+    ).toBeLessThanOrEqual(rowPx)
+    expect(
+      itemVh,
+      `★ 项的 vh 封顶（${itemVh}vh）不得超过行下限（${rowVh}vh）`
+        + '⇒ 否则矮窗下项比行高 ⇒ 同上（跨行压盖）',
+    ).toBeLessThanOrEqual(rowVh)
+  })
+
+  it('★★ 行下限必须容得下画布本身（★ 否则画布溢出被裁 ⇒ 拓扑图底部永远看不见）', () => {
+    // ★ 缺陷形态（★ 上游 2026-11-23 第十三轮的起因）：★ 行下限 320px **小于**画布
+    //   容器的 `min-height: 480px` ⇒ ⇒ 画布溢出被裁 160px ⇒ ⇒ 拓扑图底部永远
+    //   看不见（★ 实测 stage 320px / 画布 480px）⇒ ⇒ 上游把行下限提到 560 → 680px
+    //   （★ 适配 ROW_GAP 增加到 160px）才修掉。
+    // ★★ 判据落成**关系**（★ 不写死 680）：★ 行下限 px ≥ 画布 min-height px。
+    // ★★ 这是**跨文件**同源事实（★ 行下限在视图、画布高度在组件）⇒ ⇒ 谁单方面
+    // ★★ 改一边都看得见（★ 写死字面量时：改一边 ⇒ 恒红；两边同改 ⇒ 恒绿 ⇒
+    // ★★ 反而看不见「谁比谁大」）。
+    const source = readSrc('src/views/LiveTopologyView.vue')
+    const canvasSource = readSrc('src/components/live-topology/TopologyCanvas.vue')
+
+    const desktopBlock = source.slice(source.indexOf('@media (min-width: 1024px)'))
+    const rowFloor = desktopBlock.match(
+      /grid-template-rows:\s*minmax\(min\((\d+)px,\s*(\d+)vh\)/,
+    )
+    expect(rowFloor, '桌面段里解析不出行下限 min(<px>, <vh>)').toBeTruthy()
+
+    // ★ 画布的 min-height 是**兜底高度**（★ 内容不足时用它）⇒ ★ 行下限必须 ≥ 它，
+    // ★   否则行放不下画布 ⇒ ★ 画布溢出被裁。
+    const canvasFloor = canvasSource.match(/min-height:\s*(\d+)px/)
+    expect(canvasFloor, '解析不出画布的 min-height: <px>').toBeTruthy()
+
+    expect(
+      Number(rowFloor![1]),
+      `★ 行下限（${rowFloor![1]}px）必须 ≥ 画布 min-height（${canvasFloor![1]}px）`
+        + '⇒ 否则画布溢出被裁 ⇒ 拓扑图底部永远看不见',
+    ).toBeGreaterThanOrEqual(Number(canvasFloor![1]))
+  })
+
+  it('★★ 宽屏段（≥1440）与普通桌面段（≥1024）的行下限必须一致（★ 两处各写一份 ⇒ 迟早只改一处）', () => {
+    // ★ 缺陷形态：★ 同一条行下限在 @1024 与 @1440 两段里**各写一遍** ⇒ ★ 上游
+    //   调它时只改一处 ⇒ ⇒ 宽屏与普通桌面**行高不同** ⇒ ⇒ 视觉在同一台机器上
+    //   随窗口宽度突变（★ 没人报，因为「两处都合法」）。
+    // ★★ 判据：★ 两段的**第 1 行**下限必须逐字相同（★ px 与 vh 都比）。
+    const source = readSrc('src/views/LiveTopologyView.vue')
+    const desktopBlock = source.slice(source.indexOf('@media (min-width: 1024px)'))
+    const wideBlock = source.slice(source.indexOf('@media (min-width: 1440px)'))
+
+    const desktopRow = desktopBlock.match(/grid-template-rows:\s*minmax\(min\((\d+)px,\s*(\d+)vh\)/)
+    const wideRow = wideBlock.match(/grid-template-rows:\s*minmax\(min\((\d+)px,\s*(\d+)vh\)/)
+    expect(desktopRow, '解析不出 @1024 段的行下限').toBeTruthy()
+    expect(wideRow, '解析不出 @1440 段的行下限').toBeTruthy()
+
+    expect(
+      wideRow!.slice(1),
+      `★ @1440 段行下限（${wideRow![1]}px/${wideRow![2]}vh）必须与 @1024 段`
+        + `（${desktopRow![1]}px/${desktopRow![2]}vh）一致 ⇒ 否则窗口宽度一变行高就跳`,
+    ).toEqual(desktopRow!.slice(1))
   })
 
   it('★ 两步交互：点行弹摘要浮层且不开新窗；浮层里「查看全景」才开新窗', async () => {
