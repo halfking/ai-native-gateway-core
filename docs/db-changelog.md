@@ -11139,3 +11139,13 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 997 | `997_tasks_dimension_table.sql` | `08c0f6695d0c3fb1165d3bfc383e33961f1eb58304df3802dbe140cdd17009bb` | pending deploy（任务维表 tasks：镜像 ACC 任务元数据 + 归一化标签 + 任务级总结统计支撑；幂等 CREATE TABLE IF NOT EXISTS + 4 个索引 + 单事务。★ 2026-11-22 12h 修订审计轮补登：并行车 0f545826a 落地本迁移时**只登记了 tsv 台账**，投递链其余各面（embeddata 副本×2 / installer main.go go:embed×2 + map×2 / dbinit runner.go StartupFiles / 211 部署通道 files=() 与 ledger_artifact_probe / 离线升级通道 installer/migrations 副本×2 / 本台账行）全缺 ⇒ 211 部署通道不会应用它、离线升级包拿不到它 ⇒ sqlguard 的投递通道门与台账连续性门双双打红。★ 本轮按 995/996 同款补齐九面登记，并给 up/down 补 SET lock_timeout=5s / statement_timeout=10min 守卫（995/996 先例：DDL 无等锁预算）。SHA 为补锁守卫后实测值，canonical／embeddata／offline 三份逐字节一致）  ★ 2026-11-22 第 62 增量审计轮：补台账自登记段（up 加 INSERT INTO public.schema_migrations ON CONFLICT + down 加 DELETE——≥952 双账本纪律，0f545826a 落地时三迁移均漏此面 ⇒ 应用后运行时台账无行）；SHA 为补自登记后实测值 |
 | 998 | `998_session_summaries_task_association.sql` | `682c5f43d3ba8e00f67925deb65cfc3ed44d82ba453274d20e3ca5aec9e355a5` | pending deploy（session_summaries 扩列：任务关联 task_id + 相似会话键 similar_session_keys + 去重标记 is_duplicate + 规范会话键 canonical_session_key + 分层总结标记 has_layered_summary；幂等 ADD COLUMN IF NOT EXISTS + 单事务。★ 2026-11-22 12h 修订审计轮补登：同 997，落地时投递链各面全缺 ⇒ 211 部署通道不会应用它 ⇒ 台账连续性门打红。本轮按 995/996 同款补齐九面登记 + lock_timeout/statement_timeout 守卫。SHA 为补锁守卫后实测值，canonical／embeddata／offline 三份逐字节一致）  ★ 2026-11-22 第 62 增量审计轮：补台账自登记段（同 997）；SHA 为补自登记后实测值 |
 | 999 | `999_session_summary_layers.sql` | `3f374cd050e36a0eb852647168447dee3342dd96836ccc57455a1988a3711921` | pending deploy（会话总结分层表 session_summary_layers：支撑分层总结产出与落库；幂等 CREATE TABLE IF NOT EXISTS + 单事务。★ 2026-11-22 12h 修订审计轮补登：同 997，落地时投递链各面全缺 ⇒ 211 部署通道不会应用它 ⇒ 台账连续性门打红。本轮按 995/996 同款补齐九面登记 + lock_timeout/statement_timeout 守卫。SHA 为补锁守卫后实测值，canonical／embeddata／offline 三份逐字节一致）  ★ 2026-11-22 第 62 增量审计轮：补台账自登记段（同 997）；SHA 为补自登记后实测值 |
+## 2026-11-22T14:56:01Z — deploy 154 build_seq 3156 (b0ef800f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 995 | `995_error_playbook.sql` | `7d6ddc1d3ab9834b1c90e9b83907bb1aaa3b2525e4cbf019430aed12bc5f70ef` | applied+verified |
+| 996 | `996_tenant_budget_enforcement_mode.sql` | `20f37e5591b4db4fce0b6dbbef194c1970290629a3cbac6a8fcbfeff58e1e7bf` | applied+verified |
+| 997 | `997_tasks_dimension_table.sql` | `08c0f6695d0c3fb1165d3bfc383e33961f1eb58304df3802dbe140cdd17009bb` | applied+verified |
+| 998 | `998_session_summaries_task_association.sql` | `682c5f43d3ba8e00f67925deb65cfc3ed44d82ba453274d20e3ca5aec9e355a5` | applied+verified |
+| 999 | `999_session_summary_layers.sql` | `3f374cd050e36a0eb852647168447dee3342dd96836ccc57455a1988a3711921` | applied+verified |
+
