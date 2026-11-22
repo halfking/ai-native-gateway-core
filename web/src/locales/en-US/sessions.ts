@@ -124,6 +124,15 @@ export default {
     sessionCount: 'Session Count',
     topClients: 'Top 5 Clients (by cost)',
     topTasks: 'Top 5 Tasks (by sessions)',
+    // 2026-11-23 integration round: add user and provider Top5
+    topUsers: 'Top 5 Users (by usage)',
+    topProviders: 'Top 5 Providers (by requests)',
+    user: 'User',
+    provider: 'Provider',
+    sessions: 'Sessions',
+    tokens: 'Tokens',
+    models: 'Models',
+    requests: 'Requests',
     clientId: 'Client ID',
     taskId: 'Task ID',
     totalCost: 'Total Cost',
@@ -199,6 +208,10 @@ export default {
     emptyNoResultTopClients: 'No client statistics in this period',
     /** Empty state: top task stats are empty (used to be the generic key `dashboard.noData`). */
     emptyNoResultTopTasks: 'No task statistics in this period',
+    /** Empty state: top user stats are empty (2026-11-23 added). */
+    emptyNoResultTopUsers: 'No user statistics in this period',
+    /** Empty state: top provider stats are empty (2026-11-23 added). */
+    emptyNoResultTopProviders: 'No provider statistics in this period',
   },
   clientAnalytics: {
     title: 'Client Analytics',

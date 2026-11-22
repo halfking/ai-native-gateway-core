@@ -5,6 +5,7 @@
  *
  * 2026-11-02：与看板共用天数；消费 data-horizon；turns 对拍 degraded；
  * 探测流量入口；perf/error 标明模块执行宇宙。
+ * 2026-11-23：集成 session-analytics API 获取用户和供应商 Top5 数据。
  */
 import { computed, inject, ref, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -19,6 +20,9 @@ import HealthGradeChart from './analytics/HealthGradeChart.vue'
 import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
 import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
+// 2026-11-23：导入 session-analytics API
+import { getOverview as getSessionAnalyticsOverview } from '../api/sessionAnalytics'
+import type { SessionAnalyticsOverview } from '../api/sessionAnalytics'
 
 import { ElIcon } from 'element-plus'
 import KxDateRangePicker from './ui/KxDateRangePicker.vue'
@@ -97,6 +101,68 @@ const trendWindow = computed(() => {
   start.setDate(start.getDate() - (n - 1))
   return { start: localDateStamp(start), end: localDateStamp(end) }
 })
+
+// 2026-11-23 整合轮：集成 session-analytics 数据获取用户和供应商 Top5
+const analyticsData = ref<SessionAnalyticsOverview | null>(null)
+const analyticsLoading = ref(false)
+
+async function loadAnalyticsData() {
+  if (!trendWindow.value) return
+  
+  analyticsLoading.value = true
+  try {
+    const data = await getSessionAnalyticsOverview({
+      start_date: trendWindow.value.start,
+      end_date: trendWindow.value.end,
+    })
+    analyticsData.value = data
+  } catch (err) {
+    console.error('Failed to load analytics data:', err)
+    analyticsData.value = null
+  } finally {
+    analyticsLoading.value = false
+  }
+}
+
+// 监听窗口变化，自动加载数据
+watch(trendWindow, () => {
+  void loadAnalyticsData()
+}, { immediate: true })
+
+// 计算用户 Top5（取前5）
+const topUsers = computed(() => {
+  return (analyticsData.value?.top_users || []).slice(0, 5)
+})
+
+// 计算供应商 Top5（从模型数据聚合）
+const topProviders = computed(() => {
+  const models = analyticsData.value?.top_models || []
+  const providerMap = new Map<string, {
+    provider: string
+    model_count: number
+    total_requests: number
+    total_cost: number
+  }>()
+  
+  models.forEach(m => {
+    const provider = m.model.split('/')[0] || 'unknown'
+    const existing = providerMap.get(provider) || {
+      provider,
+      model_count: 0,
+      total_requests: 0,
+      total_cost: 0,
+    }
+    existing.model_count++
+    existing.total_requests += m.count
+    // 注意：top_models 只有 count，没有 cost，这里用 count 作为排序依据
+    providerMap.set(provider, existing)
+  })
+  
+  return Array.from(providerMap.values())
+    .sort((a, b) => b.total_requests - a.total_requests)
+    .slice(0, 5)
+})
+
 function openAlignedAnalytics() {
   const a = aligned.value
   if (!a) return
@@ -434,6 +500,8 @@ function openProbeTraffic() {
         :top-clients="overview.top_clients || []"
         :top-tasks="overview.top_tasks || []"
         :model-usage="overview.model_usage || []"
+        :top-users="topUsers"
+        :top-providers="topProviders"
         :trend-window="trendWindow"
       />
     </div>
