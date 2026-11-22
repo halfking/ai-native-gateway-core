@@ -854,6 +854,7 @@ watch(() => route.params.tenantId, loadTenant)
               :model-value="billingDateRange"
               :presets="billingPresets"
               :max-span-days="365"
+              :presets-only="true"
               @apply="handleBillingRangeApply"
             />
           </div>

@@ -313,6 +313,7 @@ const recentSessionFields = computed<CardField[]>(() => [
         :model-value="rangeValue"
         :presets="dayPresets"
         :max-span-days="90"
+        :presets-only="true"
         @apply="applyRange"
       />
     </div>
