@@ -7,13 +7,27 @@
  * 输出：JSON 数组，每项包含 path / meta / component / redirect 等信息
  */
 
-import ts from 'typescript';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { createRequire } from 'module';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/**
+ * ★ 2026-11-23（L10 复核轮）：typescript 的解析位置必须**显式指定**。
+ *
+ * 原来写 `import ts from 'typescript'` ⇒ ESM 的模块解析从**本文件所在目录**
+ * （maestro/tools/）向上找 node_modules ⇒ 仓内 typescript 装在 **web/**
+ * （前端工作区）⇒ 仓根跑这个工具直接 `ERR_MODULE_NOT_FOUND` ⇒
+ * ★ **工具不可复跑 ⇒ 它产出的报告也不可复现**（L10 的工具价值就在「可重复运行」）。
+ *
+ * ⇒ 用 createRequire 从 **web/package.json** 那个位置解析 ⇒ 无论从哪个目录
+ *   调起都能命中仓内那份 typescript（不依赖 npm 的 node_modules 提升行为）。
+ */
+const webRequire = createRequire(resolve(__dirname, '../../web/package.json'));
+const ts = webRequire('typescript');
 
 const routerPath = resolve(__dirname, '../../web/src/router.ts');
 const source = readFileSync(routerPath, 'utf-8');
