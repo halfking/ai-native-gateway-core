@@ -43,6 +43,14 @@ export default {
       tokenSourceAll: 'トークンソース',
       tokenSourceLlm: 'LLM 戻り値',
       tokenSourceEstimated: 'ローカル推定',
+      // 2026-11-23: 使用量トレンドページの6枚のランキングカードの深層リンクフィルター名。
+      deepLink: {
+        clientModel: 'クライアント',
+        endUser: 'エンドユーザー',
+        apiKey: 'API キー',
+        application: 'アプリケーション',
+        task: 'タスク',
+      },
 
       resultRateLimited: "レート制限",
     },

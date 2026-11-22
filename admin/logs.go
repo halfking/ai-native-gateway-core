@@ -463,59 +463,6 @@ func buildModelFilterClause(v string, argIdx int) (clause string, args []any) {
 	return clause, args
 }
 
-// userIdentityExpr —— 请求行的「用户身份」表达式。
-//
-// ★★ 这是一个**跨文件契约**：排行卡片（admin/usage.go）按它**分组**、显示名取它；
-//
-//	点进日志页时过滤侧（admin/logs.go）也拿它做**等值匹配**
-//	⇒ ⇒ 卡片上的 request_count 与点进去看到的条数**逐条对得上**。
-//	★ 两边各写一份表达式是这类修复最常见的假绿来源（改了一边忘了另一边
-//	  ⇒ 卡片显示 14,674、点进去 0 条）⇒ ⇒ 必须共用同一个常量。
-//
-// # 这个表达式同时解决三件事
-//
-//	① **显示**：客户端把 `user` 报成了 JSON 对象（现网 14,674 行），直接渲染
-//	   会得到一坨被截断的 JSON ⇒ 提取其中的 device_id 作为可读名。
-//
-//	② **口径**：那段 JSON 里还含 session_id ⇒ 直接 GROUP BY 原值等于**按会话
-//	   分组**（实测 14,674 行 JSON 只对应 **1 个** device_id、**117 个** session_id）
-//	   ⇒「Top 10 用户」里 9 条其实是同一个设备的 9 个会话。按 device_id 分组
-//	   才回到「Top 10 用户」的口径。
-//
-//	③ **兜底**：NULL / 空串 / JSON 里没有 device_id ⇒ 归到 'unknown'
-//	   ⇒ 与过滤侧一致 ⇒ 点击 'unknown' 也能查到这些行（否则卡片有它、点进去 0 条）。
-//
-// # 现网形态（211 实测，request_logs_with_current_month）
-//
-//	anonymous                              兜底值（379,142 行）
-//	NULL                                   未上报（38,657 行）
-//	{"device_id":"50f0…","session_id":"…"} 客户端把 user 报成了 JSON 对象（14,674 行）
-//	user-admin / auth0|user_01J… / …     真正的纯 id（仅 49 行）
-//
-// # 为什么用 substring(... from ...) 而不是 ::jsonb->>
-//
-// 本列混着 'anonymous' / NULL / 纯 id 等**非法 JSON** 值 ⇒ `::jsonb` 会对它们
-// 抛错（整条查询 500）。substring 的正则形式对非 JSON 输入安全地返回 NULL。
-// 再用 CASE 包住 ⇒ 只在确实以 '{' 开头时才做正则提取（PG 的 CASE 是惰性的，
-// 非 JSON 行不做正则运算）。
-//
-// ★ 注意：这个常量会被拼进 **fmt.Sprintf 的格式串之外的位置**（走参数位），
-//
-//	所以表达式本身绝不能含 '%'（否则会被当成格式动词）。
-const userIdentityExpr = `COALESCE(
-	NULLIF(
-		CASE WHEN rl.end_user_id LIKE '{%'
-			THEN substring(rl.end_user_id from '"device_id"\s*:\s*"([^"]*)"')
-		END,
-		''
-	),
-	NULLIF(
-		CASE WHEN rl.end_user_id LIKE '{%' THEN NULL ELSE rl.end_user_id END,
-		''
-	),
-	'unknown'
-)`
-
 // buildEndUserFilterClause 构造 `end_user_id` 过滤谓词。
 //
 // ★ 核心：**与排行侧共用 userIdentityExpr**（见上）——排行按它分组、过滤按它
@@ -552,7 +499,8 @@ func buildEndUserFilterClause(v string, argIdx int) (clause string, args []any) 
 //
 // # 各维度的匹配口径（每条都对着现网真实数据形态定，不是拍脑袋）
 //
-//	client_model      排行侧取值 = rl.client_model（同一列）⇒ 精确匹配。
+//	client_model      与排行侧共用 dimensionIdentityExpr("client_model")
+//	                  ⇒ 空串/NULL 归 'unknown'（排行侧也显示 'unknown'）⇒ 两侧一致。
 //	end_user_id       与排行侧共用 userIdentityExpr ⇒ 见 buildEndUserFilterClause。
 //	api_key_prefix    ★ **前缀**匹配而非等值匹配。排行侧 name 是
 //	                  `ak.key_prefix || '...' || alias`，前端取 '...' 之前那段；
@@ -561,8 +509,13 @@ func buildEndUserFilterClause(v string, argIdx int) (clause string, args []any) 
 //	                  'sk-pi-autollm-21***'）⇒ 等值匹配对这类 key **命中 0 行**。
 //	                  用 starts_with（不是 LIKE）：LIKE 把 '%'/'_' 当通配符，
 //	                  语义不是「前缀」；PG 17 有 starts_with，语义精确。
-//	application_code  排行侧取值 = rl.application_code（同一列）⇒ 精确匹配。
-//	task_type         排行侧取值 = rl.task_type（同一列）⇒ 精确匹配。
+//	application_code  与排行侧共用 dimensionIdentityExpr("application_code")。
+//	task_type         与排行侧共用 dimensionIdentityExpr("task_type")
+//	                  ⇒ ★ 实测现网 task_type 的**最大一组原值就是空串**
+//	                    （66,638 行）⇒ 排行卡片第一行原本渲染成**空白**、
+//	                    点击过去过滤值为空被后端忽略 ⇒ 落点是**未筛选的全量**
+//	                    （与「过滤失效」同一种症状、另一条路径）⇒ 归 'unknown'
+//	                    后既显示得出来、也点得出结果。
 //
 // ★ 这五列在 canonical 118 列契约里**全部存在**（end_user_id/task_type 来自
 //
@@ -573,7 +526,7 @@ func buildEndUserFilterClause(v string, argIdx int) (clause string, args []any) 
 func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []string, args []any, nextArgIdx int) {
 	nextArgIdx = argIdx
 	if v := strings.TrimSpace(queryString(r, "client_model")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("rl.client_model = $%d", nextArgIdx))
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExpr("client_model"), nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}
@@ -589,12 +542,12 @@ func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []
 		nextArgIdx++
 	}
 	if v := strings.TrimSpace(queryString(r, "application_code")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("rl.application_code = $%d", nextArgIdx))
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExpr("application_code"), nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}
 	if v := strings.TrimSpace(queryString(r, "task_type")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("rl.task_type = $%d", nextArgIdx))
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", dimensionIdentityExpr("task_type"), nextArgIdx))
 		args = append(args, v)
 		nextArgIdx++
 	}

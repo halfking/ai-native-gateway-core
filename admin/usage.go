@@ -1648,7 +1648,11 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 客户端
-	if entries, err := queryTopN("clients", "rl.client_model", defaultLimit); err == nil {
+	//
+	// ★ 与过滤侧共用 dimensionIdentityExpr（见 admin/ranking_identity.go）：
+	//   空串/NULL 归 'unknown' ⇒ 排行显示 'unknown'、过滤按 'unknown' 也能命中
+	//   ⇒ 卡片条数与点进去的条数一致。
+	if entries, err := queryTopN("clients", dimensionIdentityExpr("client_model"), defaultLimit); err == nil {
 		response.TopClients = entries
 	} else {
 		slog.Warn("usageTopRankings: top clients query failed", "error", err)
@@ -1733,7 +1737,9 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 项目（application）
-	if entries, err := queryTopN("projects", "rl.application_code", defaultLimit); err == nil {
+	//
+	// ★ 与过滤侧共用 dimensionIdentityExpr（空串/NULL ⇒ 'unknown'）。
+	if entries, err := queryTopN("projects", dimensionIdentityExpr("application_code"), defaultLimit); err == nil {
 		response.TopProjects = entries
 	} else {
 		slog.Warn("usageTopRankings: top projects query failed", "error", err)
@@ -1742,7 +1748,12 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 任务（task_type）
-	if entries, err := queryTopN("tasks", "rl.task_type", defaultLimit); err == nil {
+	//
+	// ★ 与过滤侧共用 dimensionIdentityExpr（空串/NULL ⇒ 'unknown'）。
+	//   ★★ 实测现网 task_type 的**最大一组原值就是空串**（211：66,638 行）
+	//     ⇒ 改之前排行卡片第一行渲染成**空白**、点击过去过滤值为空被后端忽略
+	//     ⇒ 落点是**未筛选的全量**（与「过滤失效」同一种症状、另一条路径）。
+	if entries, err := queryTopN("tasks", dimensionIdentityExpr("task_type"), defaultLimit); err == nil {
 		response.TopTasks = entries
 	} else {
 		slog.Warn("usageTopRankings: top tasks query failed", "error", err)

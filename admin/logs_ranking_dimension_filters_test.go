@@ -17,11 +17,11 @@ package admin
 //
 //  1. 五个维度的过滤分支**必须存在**，且谓词**必须真的作用在行上**
 //     （不是「读了参数然后丢掉」——那种形态 queryString 断言照样绿）；
-//  2. `end_user_id` 的谓词**必须与排行侧共用同一个身份表达式**
-//     （否则卡片上的数字与点进去看到的条数对不上）；
+//  2. 排行侧与过滤侧**必须共用同一个身份表达式**
+//     （否则「卡片上的条数」与「点进去看到的条数」对不上）；
 //  3. `buildRankingDimensionFilterClauses` **必须真的被 listLogs 调用**
 //     （不是死代码）；
-//  4. 排行侧（admin/usage.go）**必须复用同一个常量**，不得自己抄一份；
+//  4. 排行侧（admin/usage.go）**必须复用同一组常量**，不得自己抄一份；
 //  5. 排行侧**不得**用 `::jsonb` 解析 end_user_id —— 该列混着
 //     'anonymous'/NULL/纯 id 等**非法 JSON** 值，::jsonb 会对它们抛错。
 //
@@ -66,11 +66,11 @@ func TestRankingDimensionFilterClausesExist(t *testing.T) {
 		// 谓词必须命中这个片段（缺它 ⇒ 该维度的过滤没作用在行上）
 		predicate string
 	}{
-		{"client_model", "rl.client_model = $"},
+		{"client_model", `dimensionIdentityExpr("client_model")`},
 		{"end_user_id", "buildEndUserFilterClause(v, nextArgIdx)"},
 		{"api_key_prefix", "starts_with(rl.api_key_prefix, $"},
-		{"application_code", "rl.application_code = $"},
-		{"task_type", "rl.task_type = $"},
+		{"application_code", `dimensionIdentityExpr("application_code")`},
+		{"task_type", `dimensionIdentityExpr("task_type")`},
 	} {
 		pat := regexp.MustCompile(`queryString\(r,\s*"` + regexp.QuoteMeta(tc.key) + `"\)`)
 		if !pat.MatchString(src) {
@@ -157,6 +157,26 @@ func TestUserIdentityExprIsSafeOnNonJSONRows(t *testing.T) {
 	}
 }
 
+// TestDimensionIdentityExprIsSafeToSprintf 钉住普通维度的身份表达式可安全进格式串。
+//
+// ★ dimensionIdentityExpr 的返回值会被拼进 fmt.Sprintf 的**格式串**位置
+//
+//	（过滤侧：fmt.Sprintf("%s = $%d", expr, idx)）⇒ 它**绝不能**含 '%'。
+func TestDimensionIdentityExprIsSafeToSprintf(t *testing.T) {
+	for _, col := range []string{"client_model", "application_code", "task_type"} {
+		expr := dimensionIdentityExpr(col)
+		if strings.Contains(expr, "%") {
+			t.Errorf("dimensionIdentityExpr(%q) 不得含 '%%'（它会被拼进 Sprintf 的格式串）", col)
+		}
+		if !strings.Contains(expr, "NULLIF(rl."+col+", '')") {
+			t.Errorf("dimensionIdentityExpr(%q) 必须把空串归入 'unknown'，实际：%s", col, expr)
+		}
+		if !strings.Contains(expr, "'unknown'") {
+			t.Errorf("dimensionIdentityExpr(%q) 必须有 'unknown' 兜底，实际：%s", col, expr)
+		}
+	}
+}
+
 // TestRankingDimensionFilterClausesAreWiredToListLogs 钉住纯函数**真的被端点调用**
 // （不是死代码 —— 单元里存在但端点没接，是这类修复最常见的假绿）。
 func TestRankingDimensionFilterClausesAreWiredToListLogs(t *testing.T) {
@@ -182,5 +202,43 @@ func TestUsageTopUsersSharesIdentityExprWithFilter(t *testing.T) {
 	}
 	if strings.Contains(src, "end_user_id::jsonb") {
 		t.Error("admin/usage.go 不得用 end_user_id::jsonb（该列混着 'anonymous'/NULL/纯 id 等非法 JSON 值）")
+	}
+}
+
+// TestUsagePlainDimensionsShareIdentityExpr 钉住排行侧与过滤侧对
+// **普通维度**（client_model / application_code / task_type）也共用身份表达式。
+//
+// ★ 为什么这条重要：★ 实测现网 task_type 的**最大一组原值就是空串**
+//
+//	（211：66,638 行）⇒ 排行侧若仍按原值分组 ⇒ 卡片第一行渲染成**空白**、
+//	点过去过滤值为空被后端忽略 ⇒ 落点是**未筛选的全量**
+//	⇒ ⇒ 排行侧与过滤侧必须都走 dimensionIdentityExpr。
+func TestUsagePlainDimensionsShareIdentityExpr(t *testing.T) {
+	src := readRankingFilterSrc(t, "usage.go")
+	for _, tc := range []struct {
+		dim string
+		col string
+	}{
+		{"clients", "client_model"},
+		{"projects", "application_code"},
+		{"tasks", "task_type"},
+	} {
+		want := `queryTopN("` + tc.dim + `", dimensionIdentityExpr("` + tc.col + `"), defaultLimit)`
+		if !strings.Contains(src, want) {
+			t.Errorf("admin/usage.go 的 Top %s 必须用 dimensionIdentityExpr(%q) 作分组键（空值/NULL 组要显示成 'unknown' 且可筛）", tc.dim, tc.col)
+		}
+	}
+	// ★ 不得在 usage.go 里直接按原始列分组（那会让空值组渲染成空白且点不出）
+	for _, tc := range []struct {
+		dim string
+		col string
+	}{
+		{"clients", "client_model"},
+		{"projects", "application_code"},
+		{"tasks", "task_type"},
+	} {
+		if strings.Contains(src, `queryTopN("`+tc.dim+`", "rl.`+tc.col+`"`) {
+			t.Errorf("admin/usage.go 不得按原始列 rl.%s 分组（空值组会渲染成空白、点过去过滤不生效）", tc.col)
+		}
 	}
 }
