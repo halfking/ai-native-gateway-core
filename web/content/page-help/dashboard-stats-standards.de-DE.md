@@ -108,7 +108,6 @@ Zuordnung der Abweichungen:
 ## Bekannte Einschränkungen (gemessen 2026-11-23)
 
 1. **Kosten und Anfragenzahl der Sitzungsseite sind zu hoch (Doppelzählung, noch nicht behoben)**: Kosten und Anfragenzahl der Sitzungsstatistik stammen aus der Aggregation der Sitzungssummen; `sessions` ist jedoch eine **nach Tagen partitionierte Sitzungshistorie** (dieselbe Session bekommt jeden Tag eine neue Zeile), und der Join der Statistik dedupliziert nicht nach Sitzung ⇒ dieselbe Session wird mehrfach gezählt. Messung auf der Produktionsdatenbank vom 2026-11-23 (gleiches 7-Tage-Fenster): Die Kosten der Sitzungsseite liegen rund **61 %** und die Anfragenzahl rund **36 %** über den nach Sitzung deduplizierten Werten (die teuerste Session wurde dreimal gezählt). **Die Board-Zahlen (auf Anfrage-Ebene) sind nicht betroffen** ⇒ beim Kostenvergleich das Board heranziehen oder die Sitzungszahlen erst deduplizieren.
-2. Die Aggregation der Sitzungsseite summiert doppelte Zeilen der Sitzungstabelle mit; Anfragenzahl und Kosten fallen dadurch zu hoch aus.
-3. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
-4. Trenddiagramm (Minutentabelle) und Karten (Anfrage-Faktentabelle) des Boards unterscheiden sich im 30-Tage-Fenster um rund 13,8 % (160.451 vs. 140.969 Anfragen).
-5. Der Probe-Ausschluss entfernt auf beiden Seiten nicht denselben Verkehr (siehe oben).
+2. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
+3. Trenddiagramm (Minutentabelle) und Karten (Anfrage-Faktentabelle) des Boards unterscheiden sich im 30-Tage-Fenster um rund 13,8 % (160.451 vs. 140.969 Anfragen).
+4. Der Probe-Ausschluss entfernt auf beiden Seiten nicht denselben Verkehr (siehe oben).
