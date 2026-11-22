@@ -178,11 +178,17 @@ func queryWords(query string) []string {
 // sampleText prioritizes matching source lines, followed by head and tail. It
 // never rewrites source facts or claims the omitted material was fully processed.
 func sampleText(text, query string, limit int) string {
+	return sampleTextWords(text, queryWords(query), limit)
+}
+
+// sampleTextWords 是 sampleText 的词项预计算形态：调用方在循环里对**同一个**
+// query 反复采样时，用 queryWords(query) 算一次、逐次传入——否则每次采样都要
+// 对整个 query 做一遍 ToLower + 分词（query 是受保护尾部的全文，可达 MB 级）。
+func sampleTextWords(text string, words []string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}
 	var hits strings.Builder
-	words := queryWords(query)
 	for rest := text; rest != "" && hits.Len() < limit/2; {
 		line, next, ok := strings.Cut(rest, "\n")
 		if !ok {

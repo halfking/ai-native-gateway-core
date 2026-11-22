@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"sync/atomic"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -174,7 +175,19 @@ type FrameReader struct {
 	totalRead  int64  // total uncompressed bytes read
 	eof        bool
 	err        error
+	framesDecoded int64 // 本 reader 累计解码的帧数（观测/回归钉测用）
 }
+
+// frameDecodes 是进程级「已解码帧数」计数（观测 + 回归钉测）：归约是否在
+// 重复解压同一批帧，是最直观的量具（见 FramesDecoded）。
+var frameDecodes atomic.Int64
+
+// FramesDecoded 返回进程启动以来累计解码的归档帧数。给诊断与回归测试量
+// 「重复解压」用：随机访问一个 N 帧的归档，代价应当是 O(命中的帧数)，
+// 而不是 O(N) 或 O(访问次数 × N)。
+func FramesDecoded() int64 { return frameDecodes.Load() }
+
+var errNotSeekable = errors.New("largebody: underlying stream is not seekable")
 
 // NewFrameReader creates a decompressing reader.
 func NewFrameReader(r io.Reader) (*FrameReader, error) {
@@ -289,9 +302,29 @@ func (fr *FrameReader) readNextFrame() error {
 	if len(decompressed) != int(uncompLen) {
 		return fmt.Errorf("%w: decompressed size mismatch got=%d want=%d", ErrCorrupted, len(decompressed), uncompLen)
 	}
-	
+
+	fr.framesDecoded++
+	frameDecodes.Add(1)
 	fr.buf = decompressed
 	fr.pos = 0
+	return nil
+}
+
+// reopenAt 把顺序游标重定位到 frameHeaderOff（某个**帧头**在底层流中的偏移）
+// 并复用现有解码器。下一次 Read 从该帧开始解码。
+//
+// 与 NewFrameReader 的区别：不重新读文件头、不新建 zstd.Decoder（新建解码器
+// 要预分配 block 池；压缩归约里成千上万次回退定位若各建一个，GC 直接顶满
+// ——2026-11-22 211 真机 profile 实测）。
+func (fr *FrameReader) reopenAt(frameHeaderOff int64) error {
+	s, ok := fr.r.(io.Seeker)
+	if !ok {
+		return errNotSeekable
+	}
+	if _, err := s.Seek(frameHeaderOff, io.SeekStart); err != nil {
+		return err
+	}
+	fr.buf, fr.pos, fr.eof, fr.err = nil, 0, false, nil
 	return nil
 }
 

@@ -157,6 +157,11 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		queryMessages = append(queryMessages, retained[i])
 	}
 	query := plainText(queryMessages)
+	// ★ 2026-11-22：query 的词项**只算一次**。query 是受保护尾部的全文（可达
+	// MB 级），而下方循环对每条历史消息都要采样 + 打分各用一次词项——原先
+	// 两次都现场重算（ToLower + 分词整个 query），代价随「消息数 × 尾部大小」
+	// 增长。
+	words := queryWords(query)
 	type excerpt struct {
 		index, score int
 		text         string
@@ -167,9 +172,31 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		if keep(i) {
 			continue
 		}
-		safe, e := checkHistoryGuard(ctx, func() io.Reader {
+		// ★ 2026-11-22（211 生产事故根修）：≤64KB 的消息**读一次、全程走内存**。
+		//
+		// 历史守卫对每条消息要开多个独立 reader（预筛 1 个 + 每规则组两个文本
+		// 视图），原先每个 reader 都是归档文件上的 SectionReader ⇒ 同一段字节
+		// 被反复重读。归约器全程共用一个文件游标，每次新开 reader 都是「往回
+		// 读」⇒ 旧 ReadAt 回卷到文件头重放（已由 largebody 的帧目录修掉），
+		// 但即便按帧跳转，每条消息仍要为守卫多解压几次所在的帧。agent 会话
+		// 的历史是**成千上万条小消息**（211 实测：3953 条、中位数 1KB），这部分
+		// 逐条开销才是大头 ⇒ 小消息直接进内存（一次 ≤64KB，有界），守卫的
+		// open() 给出各自独立游标的内存 reader。>64KB 的消息维持流式路径。
+		var raw []byte
+		open := func() io.Reader {
 			return io.NewSectionReader(f, span.Offset, span.Length)
-		})
+		}
+		if span.Length <= materializeItem {
+			if raw, err = read(span, materializeItem); err != nil {
+				return nil, report, err
+			}
+			br := bytes.NewReader(raw)
+			open = func() io.Reader {
+				r := *br // 值拷贝 ⇒ 每个调用方拿到独立游标
+				return &r
+			}
+		}
+		safe, e := checkHistoryGuard(ctx, open)
 		if e != nil {
 			return nil, report, e
 		}
@@ -179,17 +206,13 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		}
 		var text string
 		if span.Length <= materializeItem {
-			b, e := read(span, materializeItem)
-			if e != nil {
-				return nil, report, e
-			}
-			text = sampleText(plainText([]json.RawMessage{b}), query, 2048)
+			text = sampleTextWords(plainText([]json.RawMessage{raw}), words, 2048)
 			// r1052：媒体不可「无声消失」（file_test.go 既有钉测的设计意图）
 			// 但也不可因此拒绝整个请求（211 fable-5-2 入口 422 事故：带截图
 			// 的 ZCode 会话历史 >1MB 每笔必败）。⇒ 显式省略标记：模型知道
 			// 「这里曾有一张图但被省略」，不幻觉、不静默。聚合计数进摘要
 			// 头（best-16 逐出也不丢账）。
-			if mediaMarkerOmitted(b) {
+			if mediaMarkerOmitted(raw) {
 				text += "\n[media omitted from bounded context]"
 				mediaOmittedCount++
 			}
@@ -205,7 +228,7 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		}
 		score := 0
 		lower := strings.ToLower(text)
-		for _, w := range queryWords(query) {
+		for _, w := range words {
 			if strings.Contains(lower, w) {
 				score++
 			}

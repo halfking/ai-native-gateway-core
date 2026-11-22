@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -306,6 +308,21 @@ type compressedFile struct {
 	f      *os.File
 	pos    int64 // current read position for ReadAt emulation
 	mu     sync.Mutex
+
+	// dir 是帧目录（每帧在压缩文件 / 解压后流中的位置），首次需要跳转时
+	// 懒建、之后只读。dirBuilt 区分「没建过」与「建了但为空」。
+	dir      []frameDirEntry
+	dirBuilt bool
+	dirErr   error
+}
+
+// frameDirEntry 是一帧的位置索引：压缩文件里的帧头偏移，与它在解压后流里
+// 覆盖的字节区间 [uncompOff, uncompEnd)。
+type frameDirEntry struct {
+	compOff   int64
+	uncompOff int64
+	uncompLen int64
+	uncompEnd int64
 }
 
 func (cf *compressedFile) Read(p []byte) (int, error) {
@@ -316,28 +333,40 @@ func (cf *compressedFile) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// ReadAt 实现压缩归档上的定位读取。
+//
+// ★ 2026-11-22（211 生产事故根修）：此前「往回读」一律**回卷到文件开头重新
+// 解压到目标位置**，「往前读」一律把中间的字节全部解压后丢弃——注释自述
+// "inefficient for random access but maintains correctness"。代价是 O(偏移)
+// 而不是 O(一帧)：归约器（sessioncontext.Reduce）对同一条消息要开 3 个以上
+// 独立 reader（历史守卫预筛 + 两个文本视图，每规则组各一轮），每次新开
+// reader 都是一次「往回读」⇒ 3953 条消息 × 约 8 次回卷 × 平均解压 3.8MB
+// ⇒ 7.7MB 的请求体归约耗时 141 秒（211 真机 profile：95.7% 在本函数），
+// 撞破 LargeIngress 的 120 秒预算 ⇒ 503 request_processing_timeout。
+//
+// ⇒ 帧格式本就是「每 64KiB 一帧、帧帧独立」（见包注释 "enabling random-access
+// reads"），这里把缺失的那一半补上：
+//   - 回退、或大跨步前进（超过一帧）⇒ 经帧目录直接跳到目标所在的帧头；
+//   - 小幅前进（一帧以内）⇒ 维持顺序丢弃（纯顺序访问零额外开销，也不建目录）。
+//
+// 目录只读各帧 12 字节帧头、不解压；建不出来（流不可定位 / 帧头损坏）时
+// 退回旧行为（从文件头重放），正确性不变。
 func (cf *compressedFile) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if off < 0 {
+		return 0, fmt.Errorf("largebody: negative read offset %d", off)
+	}
 	cf.mu.Lock()
 	defer cf.mu.Unlock()
-	
-	// For compressed files, we need to seek by reading from current position
-	// This is inefficient for random access but maintains correctness
-	if off < cf.pos {
-		// Seeking backward requires reopening the file
-		if _, err := cf.f.Seek(0, io.SeekStart); err != nil {
+
+	if off < cf.pos || off-cf.pos > frameSize {
+		if err := cf.jumpLocked(off); err != nil {
 			return 0, err
 		}
-		
-		// Recreate frame reader
-		fr, err := NewFrameReader(cf.f)
-		if err != nil {
-			return 0, err
-		}
-		cf.fr.Close()
-		cf.fr = fr
-		cf.pos = 0
 	}
-	
+
 	// Seek forward if needed
 	if off > cf.pos {
 		toDiscard := off - cf.pos
@@ -346,11 +375,84 @@ func (cf *compressedFile) ReadAt(p []byte, off int64) (int, error) {
 		}
 		cf.pos = off
 	}
-	
+
 	// Read the requested data
 	n, err := io.ReadFull(cf.fr, p)
 	cf.pos += int64(n)
 	return n, err
+}
+
+// jumpLocked 把顺序游标重定位到覆盖 off 的那一帧的帧头（调用方持锁）。
+func (cf *compressedFile) jumpLocked(off int64) error {
+	target, newPos := int64(headerSize), int64(0)
+	if dir, err := cf.frameDirLocked(); err == nil && len(dir) > 0 {
+		i := sort.Search(len(dir), func(i int) bool { return dir[i].uncompEnd > off })
+		if i == len(dir) {
+			// 越过归档末尾：从最后一帧起跳，由随后的丢弃逻辑自然产出 EOF
+			// （与旧行为「从头解压到尾」同结论，只是不必解压前面所有帧）。
+			i = len(dir) - 1
+		}
+		target, newPos = dir[i].compOff, dir[i].uncompOff
+	}
+	if err := cf.fr.reopenAt(target); err != nil {
+		// 底层流不可定位（理论上 *os.File 总可）⇒ 退回重建 reader 的旧路径。
+		if _, serr := cf.f.Seek(0, io.SeekStart); serr != nil {
+			return serr
+		}
+		fr, nerr := NewFrameReader(cf.f)
+		if nerr != nil {
+			return nerr
+		}
+		cf.fr.Close()
+		cf.fr = fr
+		cf.pos = 0
+		return nil
+	}
+	cf.pos = newPos
+	return nil
+}
+
+// frameDirLocked 返回帧目录（首次调用时扫描，之后缓存；调用方持锁）。
+func (cf *compressedFile) frameDirLocked() ([]frameDirEntry, error) {
+	if !cf.dirBuilt {
+		cf.dirBuilt = true
+		cf.dir, cf.dirErr = scanFrameDir(cf.f)
+	}
+	return cf.dir, cf.dirErr
+}
+
+// scanFrameDir 只读每帧的帧头并跳过帧体：O(帧数) 次 pread、零解压。
+// 帧头与 FrameReader.readNextFrame 同一校验口径（尺寸越界即损坏）。
+func scanFrameDir(ra io.ReaderAt) ([]frameDirEntry, error) {
+	var (
+		dir    []frameDirEntry
+		off    = int64(headerSize)
+		uncomp int64
+		hdr    [frameHeaderSize]byte
+	)
+	for {
+		n, err := ra.ReadAt(hdr[:], off)
+		if n == 0 {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			break // 干净的文件尾
+		}
+		if n < frameHeaderSize {
+			return nil, fmt.Errorf("%w: truncated frame header at %d", ErrCorrupted, off)
+		}
+		uncompLen := int64(binary.LittleEndian.Uint32(hdr[0:4]))
+		compLen := int64(binary.LittleEndian.Uint32(hdr[4:8]))
+		if uncompLen > frameSize || compLen > maxFrameSize {
+			return nil, fmt.Errorf("%w: invalid frame sizes uncomp=%d comp=%d at %d", ErrCorrupted, uncompLen, compLen, off)
+		}
+		dir = append(dir, frameDirEntry{
+			compOff: off, uncompOff: uncomp, uncompLen: uncompLen, uncompEnd: uncomp + uncompLen,
+		})
+		off += frameHeaderSize + compLen
+		uncomp += uncompLen
+	}
+	return dir, nil
 }
 
 func (cf *compressedFile) Close() error {

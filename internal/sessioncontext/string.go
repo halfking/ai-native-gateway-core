@@ -37,7 +37,8 @@ func stringExcerpt(ctx context.Context, src io.Reader, query string, limit int) 
 		if hits.Len() < limit/2 {
 			for _, w := range words {
 				if strings.Contains(lower, w) {
-					hits.WriteString(sampleText(string(block), query, limit/2-hits.Len()))
+					// 词项复用函数入口算好的那份（同一个 query，整段字符串只算一次）。
+					hits.WriteString(sampleTextWords(string(block), words, limit/2-hits.Len()))
 					hits.WriteByte('\n')
 					break
 				}
