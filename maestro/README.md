@@ -463,6 +463,53 @@ node maestro/tools/assert-stage-tree.mjs \
 ★ 「缺口」是**事实登记**，不是**红门**：本 README 不对覆盖率判红
   （哪些路由值得写 flow 属产品优先级，见 `maestro/L10-uncovered-routes.md` §3.1）。
 
+### 3.14 ★ PR 模板「页面改动 Checklist」与当前树的对拍（L12 补轮，2026-11-23）
+
+> ★ **为什么有这一节**：L12 的诉求是「会话分析 E2E 没接入 CI ⇒ 改了页面但没跑 E2E 不会被拦住」。
+> 上游 2026-11-20 的收口（`035b0c4b7`）走 **PR checklist** 方案：在
+> `.github/pull_request_template.md` 里列出「改了这些页面就必须复跑会话分析 E2E」。
+> ★ ★ 但那份清单是**手写的**，且 **2026-11-23 实测漂移了两处**：
+>
+> | 漂移 | 事实 |
+> |---|---|
+> | **幽灵条目** | 模板列了 `SessionAnalyticsOverviewView.vue` —— 上游 2026-11-23 审计轮把「会话分析总览页」**取消了**（路由改 redirect 到 `/admin/session-analytics/users`）⇒ 该文件**在仓内已不存在** |
+> | **漏项** | 上游把总览页内容**重组迁入** `SessionAnalyticsUsersView.vue` ⇒ ★ **这个新页面不在模板里** ⇒ ★ **改了最需要复跑 E2E 的那个页面，checklist 反而不会要求复跑** |
+>
+> ⇒ **L12 的保护恰好在最需要的地方失效**。
+
+**对拍工具**（★ 零第三方依赖，python3）：
+
+```bash
+python3 maestro/tools/audit-page-change-checklist.py          # Markdown 报告
+python3 maestro/tools/audit-page-change-checklist.py --json   # 机读 JSON
+```
+
+三条判据（退出码 0 = 一致；1 = 漂移）：
+
+| 判据 | 内容 |
+|---|---|
+| A **幽灵文件** | 模板列的每个 `.vue` 在仓内**都存在** |
+| B **漏项文件** | 仓内每个会话分析 `.vue` **都被模板覆盖**（逐个列出，或其目录被整体列出） |
+| C **幽灵路径** | 模板列的每个 `/admin/session-analytics*` 路径在 `router.ts` 里**都存在** |
+
+★ **为什么是 python3 而不是 node**：★ 本工具要挂在**真正在跑的 CI 载体**上
+⇒ ★ **必须零依赖**（`typescript` 装在 `web/node_modules` ⇒ CI 精简镜像里没有
+⇒ ⇒ ★★ **「工具不可运行 ⇒ 它的产出不可复现 ⇒ 门会被判成恒绿或误红」** —— L10 的那条教训）；
+且 ★ **node 本身也不可靠**（仓内既有 CI 门对 node 是「有就跑、没有就 skip」语义）
+⇒ ⇒ 门以 node 为前提 ⇒ CI 上要么恒红、要么被 skip ⇒ **门等于没接**。
+⇒ **两把尺子的分工**：精确路由计数/redirect 形态判别用 AST 工具
+（`maestro/tools/audit-route-coverage.mjs`，**只在本地跑，不进 CI 载体**）；
+CI 上跑的必须是零依赖的这把。
+
+**门与接线**：
+
+| 项 | 内容 |
+|---|---|
+| 门 | `scripts/checks/session-analytics-checklist-gate.sh`（行为判据 + **对照臂** + **反向断言**） |
+| 真载体 | `.workflow/main-verify.yml` 的 `session-analytics-checklist-gate` step（★ **非注释行**） |
+| ★ 为什么不挂 `.github/workflows/` | 本仓远端是 `codeup.aliyun.com` ⇒ ★ **`.github/workflows/` 从来不在执行路径上** ⇒ 挂那儿 = 「文件在、门绿、CI 根本不跑它」（`scripts/ursmcheck/ci_carrier_truth_test.go` 记的「自证型门第四形态」） |
+| 对照臂 | 注入一个**仓内不存在**的会话分析视图名 ⇒ 工具**必须红**；且必须**红在幽灵条目上**（否则「随便红一下」也算过） |
+
 ---
 
 ## 4. 前置条件

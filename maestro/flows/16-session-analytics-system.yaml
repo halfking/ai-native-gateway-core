@@ -96,18 +96,41 @@ url: ${BASE_URL}
 #   区间与刷新控件）都在。
 #   ★ 落定判据＝Top10 表头（表头出现 = 该表数据到位）。
 - openLink: ${BASE_URL}/admin/session-analytics
+# ★★★★ 2026-11-23（L15 真机复核轮）**本段曾必然假红**——量具修正，不是产品修正：
+#   上游 L7 轮（会话统计「包含探测」开关修复）把 stats 面板**加高**（11 卡 + 趋势
+#   + 合规明细 + 模型 Top10 全塞进面板）⇒ 本页锚点被整体推到 **1400px 视口折叠线以下**：
+#     实测文档 Y 坐标：sa-top5-section=**2437**、sa-range-label=**3223**、
+#                     sa-users-col-rank=**3329**（旧视口高 1400）
+#   ⇒ Maestro 的「看得见」只认**视口内**（本文件头注④早写过「折叠线以下的内容
+#     断言不到」）⇒ 旧写法**必然假红**（2026-11-23 真机实测 flow rc=1 FAILED=1，
+#     而同一时刻 CDP 侧 t+2s 就已渲染出该元素 ⇒ **产品是好的**）。
+#   ⇒ 修法（实测两条，只有一条成立）：① `scrollUntilVisible` —— ★ **web 驱动
+#     不支持滚动**（Maestro 直接报「No visible element found」）⇒ **弃用**；
+#     ② **加高视口** ⇒ `run-session-analytics.sh` 把 Maestro Chrome 的
+#     `--window-size` 从 1440,1400 提到 **1440,3600**（> 最高锚点 3329）
+#     ⇒ ★ 视口就是本文件头注④点名的那个旋钮 ⇒ 断言强度不变（Top10 表头出现
+#     = 该表数据到位），只解决「够不着」。
 - extendedWaitUntil:
     visible:
-      id: "sa-users-col-rank"
+      id: "sa-page-users"
     timeout: 30000
 - assertVisible:
     id: "sa-page-users"
 - assertVisible:
-    id: "sa-range-label"
-- assertVisible:
     id: "sa-refresh-btn"
+- extendedWaitUntil:
+    visible:
+      id: "sa-top5-section"
+    timeout: 30000
 - assertVisible:
     id: "sa-top5-section"
+- assertVisible:
+    id: "sa-range-label"
+# ★ 落定判据：Top10 表头出现 = 该表数据到位（表头在 loading 时被 spinner 整块替换）
+- extendedWaitUntil:
+    visible:
+      id: "sa-users-col-rank"
+    timeout: 30000
 - assertVisible:
     id: "sa-users-table"
 - assertVisible:

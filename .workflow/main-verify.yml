@@ -186,3 +186,29 @@ stages:
               script: |
                 export PATH=$PATH:/usr/local/go/bin
                 make daily-regression
+
+            # ★★★ 2026-11-23（会话分析域 L12 补轮）：PR 模板「页面改动 Checklist」
+            # 对拍门接进**真正在跑的载体** ★★★
+            #
+            # ★ 起因：★ L12 的 PR checklist 方案（上游 `035b0c4b7`）里的**清单是手写的**，
+            #   且 2026-11-23 实测**漂移了两处**（幽灵条目 `SessionAnalyticsOverviewView.vue`
+            #   ——上游已取消总览页；漏项 `SessionAnalyticsUsersView.vue`
+            #   ——上游把总览页内容重组迁入的新页面）⇒ ★★ **改了最需要复跑 E2E 的那个页面，
+            #   checklist 反而不会要求复跑** ⇒ L12 的保护恰好在最需要处失效。
+            # ⇒ 本门用**可复跑的对拍**把清单钉在当前树上（幽灵/漏项/幽灵路径 三条判据）。
+            #
+            # ★ 为什么放载体而不是 `.github/workflows/`：
+            #   本仓远端是 codeup.aliyun.com ⇒ ★ **`.github/workflows/` 从来不在执行路径上**
+            #   ⇒ 挂那儿 = 「文件在、门绿、CI 根本不跑它」（`scripts/ursmcheck/ci_carrier_truth_test.go`
+            #   记的「自证型门第四形态」）⇒ 真载体是 `.workflow/main-verify.yml`。
+            #
+            # ★ 运行时依赖：**只有 python3**（不用 node —— 精简镜像里 node 不可靠，
+            #   仓内既有门对 node 就是「有就跑、没有就 skip」⇒ 以 node 为前提的门要么恒红要么被 skip）。
+            #
+            # ★ 判据写在这条**非注释行**上是有意的：
+            #   `tests/gate_scripts_caller_registry_test.sh` 要求「门脚本必须有可执行调用方」
+            #   ⇒ 注释里写不算 ⇒ 必须在**真载体**里出现非注释行。
+            - step: shell
+              name: session-analytics-checklist-gate
+              script: |
+                bash scripts/checks/session-analytics-checklist-gate.sh
