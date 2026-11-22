@@ -146,74 +146,71 @@ func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (d
 	}
 
 	// Step 2: mark assets missing from source as down.
-	liveLLMs, _ := p.syncer.LLMEndpoints(ctx)
-	liveMCPs, _ := p.syncer.MCPServers(ctx)
-	liveLookup := make(map[string]bool, len(liveLLMs)+len(liveMCPs))
-	for _, a := range liveLLMs {
-		liveLookup[string(a.Kind)+"|"+a.TenantID+"|"+itoa64(a.RefID)] = true
+	//
+	// 2026-11-23（211 配置优化遗留 L4）：这里是**集合差**，交给 SQL 做。
+	//
+	// ★ 旧实现为什么被换掉：
+	//
+	//	① 它把整张 assets 表按 500/页拉进 Go 侧（apihub.Filter{Offset}），
+	//	   再用内存 liveLookup 逐行比对、逐行 MarkHealth ——
+	//	   这就是 AGENTS.md 已登记的「统计面禁止列表聚合」同族；
+	//	② 它带一个 20 页 × 500 行 = 10000 行的上界，**超过上界的行静默不再被检查**；
+	//	③ 它的上界告警判据是**反的**：`if offset+pageSize <= maxPages*pageSize`
+	//	   在「正常跑完（提前 break）」时成立 ⇒ 每轮都喊「可能超过 10000 行」，
+	//	   而真撞上界（offset 恰好等于 10000）时反而不喊。
+	//	   ⇒ 211 上那条 WARN 从来不是「表太大」，而是**判据写反了**；
+	//	   实测 default 租户只有 1420 行资产（远低于上界）。
+	//
+	// ★ 新实现：按 kind 把「还活着的 ref_id」交给 apihub.MarkMissingDown，
+	//   由一条 UPDATE ... NOT (ref_id = ANY(...)) 完成差集 ⇒ 没有上界、
+	//   没有 N+1 次写、没有 Go 侧全表扫描（2026-11-23 211 实测口径核对：
+	//   default 租户 1420 行资产 / 1376 行仍活 / 44 行已 down，与 SQL 反连结果一致）。
+	//
+	// ★ 失败语义（重要）：源表查询**失败**时绝不能把「空集合」当成「真的空了」
+	//   —— 那会把该租户的全部资产一次性打成 down。旧代码 `liveLLMs, _ := ...`
+	//   吞掉了错误 ⇒ 查询失败 ⇒ liveLookup 为空 ⇒ 全表被标 down（静默灾）。
+	//   现在：查询失败就**跳过该 kind**，不动任何行，并留下 WARN。
+	liveLLMs, llmErr := p.syncer.LLMEndpoints(ctx)
+	liveMCPs, mcpErr := p.syncer.MCPServers(ctx)
+	if llmErr != nil {
+		slog.Warn("asset health: list live llm endpoints failed (skip marking down)",
+			"tenant", tenant, "error", llmErr)
 	}
-	for _, a := range liveMCPs {
-		liveLookup[string(a.Kind)+"|"+a.TenantID+"|"+itoa64(a.RefID)] = true
+	if mcpErr != nil {
+		slog.Warn("asset health: list live mcp servers failed (skip marking down)",
+			"tenant", tenant, "error", mcpErr)
 	}
 
-	// Fetch all assets with pagination.
-	//
-	// 2026-10-05（runbook §10.27）：这里原来写的是 `batchSize = 1000` +
-	// 一个 `offset` 变量，但 `apihub.Filter` **当时根本没有 Offset 字段**、
-	// `listAssetsSQL` 也**没有 OFFSET 子句** —— offset 是死变量，
-	// 而 `List` 会把 limit 硬截到 500，于是 `len(batch)=500 < 1000` 永远
-	// 命中 break：**每轮只检查了前 500 行**。生产实测 2141 行里有 1521 行
-	// 从未被检查，其中 439 行其实早已不在源表里却一直显示为 degraded。
-	//
-	// ★ 为什么页长用 500 而不是 1000：500 是 apihub.Filter.Limit 的
-	//   文档化契约（页大小）。要取全量就翻页，把页放大只是换个数字继续错。
-	//
-	// ★ 排序键 (kind, ref_id) 是复合主键 ⇒ 租户内全序，OFFSET 分页稳定。
-	//   但探针运行期间可能有新资产插入，导致 offset 漂移漏读/重读；
-	//   对「每小时扫一遍健康度」这个用途可以接受，不引入事务快照
-	//   （那会把整轮扫描压在一个长事务里，与 §10.19 的 analyze 是同类代价）。
-	const pageSize = 500
-	// 上界防死循环：若每页都恰好返回 pageSize 行（并发持续插入），
-	// 没有上界会一直转。20 页 × 500 = 10,000 行/租户，远超当前 2141。
-	const maxPages = 20
-	offset := 0
-	for page := 0; page < maxPages; page++ {
-		batch, err := p.hub.List(ctx, apihub.Filter{Limit: pageSize, Offset: offset})
-		if err != nil {
-			slog.Warn("asset health: list all failed", "tenant", tenant, "offset", offset, "error", err)
-			break
+	type liveSource struct {
+		kind  apihub.Kind
+		items []apihub.Asset
+		err   error
+	}
+	for _, src := range []liveSource{
+		{apihub.KindLLMEndpoint, liveLLMs, llmErr},
+		{apihub.KindMCPServer, liveMCPs, mcpErr},
+	} {
+		if src.err != nil {
+			continue // 源表查询失败 ⇒ 本 kind 不做任何标记（见上面的失败语义）
 		}
-		if len(batch) == 0 {
-			break
-		}
-		for _, a := range batch {
-			key := string(a.Kind) + "|" + a.TenantID + "|" + itoa64(a.RefID)
-			if !liveLookup[key] {
-				// 2026-10-05（runbook §10.26）：实测每轮 396 次调用全部是
-				// 把**已经是 Down** 的行再写一遍 Down。与上面 Step 1 同源。
-				// 门控理由与取舍见 Step 1 的注释（不能放 SQL 侧，
-				// 否则 ErrNoRows 的含义会从「行不存在」变成二义）。
-				if a.HealthState == apihub.HealthDown {
-					continue
-				}
-				if e := p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDown); e != nil {
-					continue
-				}
-				removed++
+		liveRefIDs := make([]int64, 0, len(src.items))
+		for _, a := range src.items {
+			if a.Kind == src.kind {
+				liveRefIDs = append(liveRefIDs, a.RefID)
 			}
 		}
-		if len(batch) < pageSize {
-			break
+		n, err := p.hub.MarkMissingDown(ctx, src.kind, liveRefIDs)
+		if err != nil {
+			slog.Warn("asset health: mark missing down failed",
+				"tenant", tenant, "kind", string(src.kind), "error", err)
+			continue
 		}
-		offset += pageSize
-	}
-	// 撞到页数上界就必须喊出来。§10.27 修的正是「静默截断」这个病，
-	// 若这里再静默截断一次，等于把同一个 bug 换了个位置复刻。
-	// 「扫了 10000 行还不止」是异常信号，不是正常结束。
-	if offset+pageSize <= maxPages*pageSize {
-		slog.Warn("asset health: 分页到达上界，资产表可能超过 10000 行",
-			"tenant", tenant, "rows_scanned", offset, "max_pages", maxPages,
-			"hint", "调大 maxPages 或 pageSize，否则本轮之后的行不会被检查")
+		if n > 0 {
+			removed += n
+			slog.Info("asset health: marked missing assets down",
+				"tenant", tenant, "kind", string(src.kind),
+				"live", len(liveRefIDs), "marked_down", n)
+		}
 	}
 	return
 }

@@ -1,8 +1,17 @@
 <template>
-  <div class="session-analytics-users-view">
+  <!-- ★ L13 E2E 判据收敛：data-testid 是 flow 断言的**唯一真源**（与中文文案解耦）。
+       语义约定：`sa-` 前缀 + 页面/区块/列三级。改动约定见
+       web/src/views/admin/session-analytics/saTestIds.contract.spec.ts（钉住 flow ↔ 源码）。 -->
+  <div class="session-analytics-users-view" data-testid="sa-page-users">
     <PageHeader :title="t('sessionAnalytics.title')" :subtitle="t('nav.item.sessionAnalyticsUsers')">
       <template #actions>
-        <button class="sa-btn" type="button" :disabled="loading || statsLoading" @click="refreshAll">
+        <button
+          class="sa-btn"
+          type="button"
+          data-testid="sa-refresh-btn"
+          :disabled="loading || statsLoading"
+          @click="refreshAll"
+        >
           {{ t('sessionAnalytics.action.refresh') }}
         </button>
       </template>
@@ -44,7 +53,7 @@
         <h2 class="section-title">{{ t('sessionAnalytics.topUsersTitle') }}</h2>
         <div class="section-actions">
           <div class="sa-range">
-            <span class="sa-range__label">{{ t('sessionAnalytics.range.label') }}</span>
+            <span class="sa-range__label" data-testid="sa-range-label">{{ t('sessionAnalytics.range.label') }}</span>
             <KxDateRangePicker v-model="draftRange" :presets="presets" @apply="onApplyRange" />
             <SaRangeHint :start="range.start" :end="range.end" />
           </div>
@@ -76,15 +85,16 @@
         :empty="!loading && topUsers.length === 0"
         :empty-text="t('sessionAnalytics.empty.noResultUserRanking')"
         min-width="1040px"
+        data-testid="sa-users-table"
       >
         <table class="sa-table">
           <thead>
             <tr>
-              <th>{{ t('sessionAnalytics.col.rank') }}</th>
-              <th>{{ t('sessionAnalytics.col.owner') }}</th>
-              <th>{{ t('sessionAnalytics.col.email') }}</th>
-              <th>{{ t('sessionAnalytics.col.sessions') }}</th>
-              <th>{{ t('sessionAnalytics.col.projects') }}</th>
+              <th data-testid="sa-users-col-rank">{{ t('sessionAnalytics.col.rank') }}</th>
+              <th data-testid="sa-users-col-owner">{{ t('sessionAnalytics.col.owner') }}</th>
+              <th data-testid="sa-users-col-email">{{ t('sessionAnalytics.col.email') }}</th>
+              <th data-testid="sa-users-col-sessions">{{ t('sessionAnalytics.col.sessions') }}</th>
+              <th data-testid="sa-users-col-projects">{{ t('sessionAnalytics.col.projects') }}</th>
               <th>{{ t('sessionAnalytics.col.tasks') }}</th>
               <th>{{ t('sessionAnalytics.col.tokens') }}</th>
               <th>{{ t('sessionAnalytics.col.cost') }}</th>

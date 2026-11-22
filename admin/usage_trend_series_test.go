@@ -64,8 +64,10 @@ func TestUsageTrendSourceTiering(t *testing.T) {
 	}{
 		{usageTrendFilters{}, "request_stats_dim_minute"},
 		{usageTrendFilters{tenantID: "t1", models: []string{"gpt-4o"}}, "request_stats_dim_minute"},
-		{usageTrendFilters{providerID: 3}, "request_stats_minute"},
-		{usageTrendFilters{providerID: 3, tenantID: "t1"}, "request_stats_minute"},
+		// ★ 2026-11-23：provider 过滤不再走 minute 汇总档——那一档在生产恒返回
+		// 单行 `model#0`（canonical_id 全为 0 ⇒ 无模型身份），已并入明细档。
+		{usageTrendFilters{providerID: 3}, "request_logs_with_current_month"},
+		{usageTrendFilters{providerID: 3, tenantID: "t1"}, "request_logs_with_current_month"},
 		{usageTrendFilters{apiKeyID: 7}, "request_logs_with_current_month"},
 		{usageTrendFilters{apiKeyID: 7, providerID: 3}, "request_logs_with_current_month"},
 	}

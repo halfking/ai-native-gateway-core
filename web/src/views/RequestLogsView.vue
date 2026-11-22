@@ -65,6 +65,26 @@ const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 const gwSessionFilter = ref('')
 const gwTaskFilter = ref('')
+// 2026-11-23：用量趋势页六张排行卡片「点击 → 请求日志」的**深链筛选**。
+//
+// ★★ 为什么需要这一段：★ 排行卡片把维度值放进 URL（?client_model=…&end_user_id=…），
+//   但本页此前**只读** success/error_kind/api_key_id/preset/hours/from/to/
+//   owner_user/gw_session_id/gw_task_id ⇒ 排行维度值**被整段丢掉**
+//   ⇒ 点卡片过来看到的是**未筛选的全量请求**
+//   ⇒ 「点击进去可以看到该维度的请求」此前**一次都没成立过**
+//   （后端当时也只有 model 一维真正实现了过滤 ⇒ 两头都缺）。
+//
+// ★ 用一个对象而不是五个 ref：增删维度只改一处，且「转发 / 计数 / chip / 清除」
+//   四处共用同一份状态 ⇒ 不会出现「chip 显示了但请求没带」这种半吊子。
+// ★ model 不在这里：它已有 ModelPicker 控件（可见、可清）⇒ 复用它。
+const deepLinkFilters = ref<Record<string, string>>({
+  client_model: '',
+  end_user_id: '',
+  api_key_prefix: '',
+  application_code: '',
+  task_type: '',
+})
+
 const summaryDrawerOpen = ref(false)
 
 // 2026-11-21 统计口径对齐轮：包含探测开关（与 board 的 include_probes 同语义、
@@ -234,8 +254,56 @@ const activeFilterCount = computed(() => {
   if (keyword.value.trim() !== '') count++
   if (gwSessionFilter.value.trim() !== '') count++
   if (gwTaskFilter.value.trim() !== '') count++
+  // ★ 排行深链维度也要计数：它们**确实**在筛（转发给了 /api/logs）
+  //   ⇒ 不计数就是「筛了但界面说没筛」。
+  count += Object.values(deepLinkFilters.value).filter((v) => v !== '').length
   return count
 })
+
+// ★ 排行深链维度的标签（**字面** t() 调用 ⇒ i18n 的引用扫描器能看见，
+//   否则新键会被「死键」门判成没人用）。
+function deepLinkLabel(key: string): string {
+  switch (key) {
+    case 'client_model':
+      return t('requests.list.filter.deepLink.clientModel')
+    case 'end_user_id':
+      return t('requests.list.filter.deepLink.endUser')
+    case 'api_key_prefix':
+      return t('requests.list.filter.deepLink.apiKey')
+    case 'application_code':
+      return t('requests.list.filter.deepLink.application')
+    case 'task_type':
+      return t('requests.list.filter.deepLink.task')
+    default:
+      return key
+  }
+}
+
+// 排行深链筛选的可见 chip（标签 + 值 + 清除）——
+// ★ 必须**可见**：否则用户点完卡片看到一份被筛过的列表，却不知道为什么。
+const deepLinkChips = computed(() => {
+  const out: { key: string; label: string; value: string }[] = []
+  for (const [key, value] of Object.entries(deepLinkFilters.value)) {
+    if (!value) continue
+    out.push({ key, label: deepLinkLabel(key), value })
+  }
+  return out
+})
+
+function clearDeepLinkFilter(key: string) {
+  if (!(key in deepLinkFilters.value)) return
+  deepLinkFilters.value[key] = ''
+  resetPageAndLoad()
+}
+
+// 深链维度转发给 /api/logs 的查询参数（空值不传 ⇒ 后端不加谓词）。
+function deepLinkQuery(): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(deepLinkFilters.value)) {
+    if (value) out[key] = value
+  }
+  return out
+}
 
 // 一键清空全部条件：重置到默认 h24 并重载。
 function clearAllFilters() {
@@ -249,6 +317,8 @@ function clearAllFilters() {
   keyword.value = ''
   gwSessionFilter.value = ''
   gwTaskFilter.value = ''
+  // ★ 排行深链维度也要能一键清掉（否则用户只能手改 URL）。
+  for (const key of Object.keys(deepLinkFilters.value)) deepLinkFilters.value[key] = ''
   resetTimeFilter()
 }
 
@@ -975,6 +1045,9 @@ async function load() {
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       gw_session_id: gwSessionFilter.value.trim() || undefined,
       gw_task_id: gwTaskFilter.value.trim() || undefined,
+      // ★ 排行深链维度（用量趋势页六张排行卡片点击跳转而来）——**必须转发**，
+      //   否则点卡片过来看到的是未筛选的全量（这正是本轮修的缺陷）。
+      ...deepLinkQuery(),
       include_probe: includeProbe.value || undefined,
       chrono: traceMode.value || undefined,
       page: page.value,
@@ -1215,6 +1288,18 @@ onMounted(async () => {
     typeof q[key] === 'string' && (q[key] as string).trim() ? (q[key] as string).trim() : ''
   const ownerFromQuery = fromQuery('owner_user')
   if (ownerFromQuery) ownerUserFilter.value = ownerFromQuery
+  // ★ 2026-11-23：排行六维深链（用量趋势页六张排行卡片点击跳转）。
+  //   ★ 此前本页**只读** success/error_kind/api_key_id/preset/hours/from/to/
+  //     owner_user/gw_session_id/gw_task_id ⇒ 这六个维度值**被整段丢掉**
+  //     ⇒ 点排行卡片过来看到的是**未筛选的全量请求**。
+  //   ★ model 走已有的 ModelPicker 控件（可见、可清）⇒ 复用它；
+  //     其余五维走 deepLinkFilters（chip 可见、可清）。
+  const modelFromQuery = fromQuery('model')
+  if (modelFromQuery) modelFilter.value = modelFromQuery
+  for (const key of Object.keys(deepLinkFilters.value)) {
+    const v = fromQuery(key)
+    if (v) deepLinkFilters.value[key] = v
+  }
   const sessionId = fromQuery('gw_session_id')
   const taskId = fromQuery('gw_task_id')
   if (sessionId || taskId) {
@@ -1634,6 +1719,30 @@ onMounted(async () => {
             title="任务 ID"
             @keyup.enter="resetPageAndLoad"
           />
+        </div>
+        <!-- 排行深链筛选（用量趋势页六张排行卡片点击跳转而来）。
+             ★ 必须**可见**：否则用户点完卡片看到一份被筛过的列表，却不知道为什么。
+             ★ model 维度复用上方 ModelPicker 控件（那里已经显示它的值）。 -->
+        <div
+          v-if="deepLinkChips.length"
+          data-testid="logs-deep-link-filters"
+          style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 12px;border-top:1px solid var(--border)"
+        >
+          <span
+            v-for="chip in deepLinkChips"
+            :key="chip.key"
+            class="badge badge-blue"
+            style="font-size:11px;padding:2px 6px;display:inline-flex;align-items:center;gap:4px"
+          >
+            <span>{{ chip.label }}: {{ chip.value }}</span>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              style="padding:0 2px;line-height:1;border:none;background:transparent;cursor:pointer"
+              :aria-label="chip.label + ': ' + chip.value"
+              @click="clearDeepLinkFilter(chip.key)"
+            >×</button>
+          </span>
         </div>
       </div>
     </div>

@@ -134,7 +134,7 @@ export default {
     'La colonne Dépense additionne le coût interne (USD) et les crédits externes. Les deux unités diffèrent, donc cette colonne sert uniquement à une comparaison relative et non à un montant monétaire unique.',
   state: {
     loading: 'Chargement de l’analyse des sessions',
-    loadingStats: 'Loading statistics…',
+    loadingStats: 'Chargement des statistiques…',
     staleTitle: 'Les agrégats sont en cours de rafraîchissement',
     staleReason:
       'Les vues agrégées ont dépassé leur délai de fraîcheur, le serveur refuse donc de renvoyer des chiffres périmés. Réessayez dans un instant.',

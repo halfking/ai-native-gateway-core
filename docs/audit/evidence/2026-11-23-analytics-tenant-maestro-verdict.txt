@@ -1,0 +1,9 @@
+2026-11-23 /admin/analytics/tenant/default?days=7 Maestro 两层验证（211@0c16ea6e 槽 a）
+第一层（渲染）：13/13 PASS
+  - API 直连（session cookie）200；页面发起 analytics API 请求且收到 200
+  - 未被重定向 /forbidden；.ad-title 渲染；无 .ad-error；2 个数据区块（296px 非塌陷）；表格 53 行
+第二层（同源对拍）：页面显示 total=180,610 == 页面自己收到的那份响应 total_requests=180610（逐字一致，无容差）
+  - 直连基线 180609（差 1 = 活流量一秒增量，同构确认）
+量具修正：CDP fetch 响应 type='Fetch' 非 'XHR'（首版探针 3 条假红即此）
+证据截图：docs/audit/evidence/2026-11-23-analytics-tenant-page.png
+资产：maestro/run-analytics-tenant-test.sh + maestro/tools/assert-analytics-tenant.mjs

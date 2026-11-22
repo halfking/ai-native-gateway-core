@@ -100,8 +100,12 @@ RESULT: PASS（58 条）
 ### 常见失败原因
 
 1. **界面语言不是 zh-CN**
-   - 症状：找不到中文文案，状态判据失效
+   - 症状：**断言**已不受影响（flow 层判据自 2026-11-23 L13 起改为 `data-testid`，
+     与 locale 无关）；但**按钮交互**仍走 `text:`（Maestro 2.11 web 驱动选不到
+     `<button>` 的 data-testid）⇒ tab 切换等交互在非中文语种下会找不到元素。
    - 解决：runner 会自动钉 `--lang=zh-CN` 并写 localStorage
+   - ★ 反向代价：判据与**可见文案**脱钩 ⇒ 改文案不再让 E2E 变红；
+     文案本身的正确性由 i18n 门禁（localeValueQuality 等）守。
 
 2. **动态段 owner 为空**
    - 症状：详情页路由不存在
@@ -122,6 +126,16 @@ RESULT: PASS（58 条）
    - `.sa-banner--stale`（陈旧横幅）
    - `.sa-loading`（加载占位）
    - `.app-empty-state`（空态）
+
+1b. **flow 层判据用 `data-testid`，不用中文文案**（2026-11-23 L13 判据收敛）：
+   - `maestro/flows/16-session-analytics-system.yaml` 的所有 `assertVisible`
+     走 `id:`（= data-testid），不再断中文文案
+   - 原因：文案漂移（断言值与 locale 键实际值对不上）与 locale 依赖都会让
+     判据**恒红**，而页面是好的 ⇒ 量具失灵
+   - 命名约定：`sa-` 前缀 + 页面/区块/列三级（`sa-page-users` / `sa-users-table`
+     / `sa-users-col-rank`）
+   - 对称约束由钉测守着：`web/src/views/admin/session-analytics/saTestIds.contract.spec.ts`
+     —— flow 里的每个 `id:` 必须在源码里存在，且 flow 里不得再出现中文文案断言
 
 2. **对拍基准同源**：
    - 抓页面自己收到的 API 响应（CDP `Network.getResponseBody`）

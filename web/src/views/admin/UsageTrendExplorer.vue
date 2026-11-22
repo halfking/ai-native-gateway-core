@@ -34,8 +34,15 @@ import {
   getTopRankings,
   type TopRankingsResponse,
 } from '../../api/usage'
-import { getProviders } from '../../api/providers'
+import { getProviders, type Provider } from '../../api/providers'
 import ProviderPicker from '../../components/ProviderPicker.vue'
+import {
+  firstQueryString,
+  isProviderIdParam,
+  providerDisplayLabel,
+  readPinnedDimensions,
+  resolveProviderId,
+} from '../../utils/usageTrendDeepLink'
 import { getTenants, type TenantSummary } from '../../api/tenants'
 import { getKeys, type ApiKey } from '../../api/keys'
 import { isSuperAdmin } from '../../store'
@@ -61,6 +68,40 @@ const tenantId = ref<string | null>(typeof route.query.tenant === 'string' && ro
 const apiKeyId = ref<number | null>(readNumFromQuery('apikey'))
 const models = ref<string[]>(readModelsFromQuery())
 const metric = ref<UsageTrendMetric>(readMetricFromQuery())
+
+// ── 深链「钉住维度」（2026-11-23 深链钉住轮）──────────────────────────────
+//
+// ★ 语义：URL 里带了某个维度的参数 ⇒ 这个维度是**入口上下文**（用户是从
+//   会话分析「Top5 供应商 / 模型」那一行点过来的）⇒
+//     ① 该维度自动生效（整个页面的数据都是它的）；
+//     ② 该维度的选择器**收起来**，只留一枚只读徽标 + 一个解除按钮。
+//   ⇒ 不收起来的话：数据已经是那个供应商的，下拉框却显示"全部"⇒ 用户会以为
+//     筛选没生效（或以为页面数据有别的供应商）——这是"界面显示的 ≠ 数据反映的"。
+//
+// ★ 钉住状态直接由 URL 推导（参数存在即钉住）⇒ 解除 = 清掉那个参数 ⇒
+//   选择器自动重新出现 ⇒ 不需要额外的"已钉住"标记位，也不会与 URL 不同步。
+const pinned = computed(() => readPinnedDimensions(route.query))
+
+// 供应商深链参数：数字 id 直接用；**code**（会话分析 Top5 供应商行传的就是
+// providers.code）需要先解析成 id 才能过滤。
+const providerParamRaw = firstQueryString(route.query, 'provider')
+const providerCodeParam = ref(isProviderIdParam(providerParamRaw) ? '' : providerParamRaw)
+
+/** 供应商列表（供 code→id 解析与徽标展示名用）。 */
+const providers = ref<Provider[]>([])
+
+/** 深链给的是 code 但解析不到 ⇒ 徽标要显式说"未生效"，不能静默退化成全量。 */
+const providerUnresolved = computed(() =>
+  !!providerCodeParam.value && providerId.value == null,
+)
+
+/** 徽标上显示的供应商名：深链 code 原样优先（与来源列表一致），否则展示名。 */
+const pinnedProviderLabel = computed(() =>
+  providerDisplayLabel(providers.value, providerCodeParam.value, providerId.value),
+)
+
+/** 深链模型（可能多值）徽标文本。 */
+const pinnedModelLabel = computed(() => models.value.join(', '))
 
 function readModelsFromQuery(): string[] {
   // 深链 model 既支持单值（model=a）也支持多值（model=a&model=b，与请求层
@@ -121,15 +162,21 @@ const keyLabel = (k: ApiKey) => {
 // 「不阻塞」只该描述数据面板，不该顺带把筛选器变成一句假话。
 const filterOptionsError = ref('')
 
+// 过滤器选项加载的 promise：首帧取数前要先等它（供应商 code→id 解析在里面）。
+let filterOptionsPromise: Promise<void> | null = null
+
 async function loadFilterOptions() {
   const problems: string[] = []
   try {
     // 2026-11-20 供应商选择统一轮：providers 列表改由 ProviderPicker 内聚加载；
     // 这里保留 getProviders 探测（失败 ⇒ 筛选条降级提示），keys 仍归本页。
+    // ★ 2026-11-23 深链钉住轮：providers 列表**本页也要留一份**——深链给的是
+    //   providers.code，要把它解析成 provider_id 才能过滤（页面内部按 id 过滤）。
     const [p, k] = await Promise.all([getProviders(), getKeys()])
-    void p
+    providers.value = p ?? []
     keys.value = k ?? []
   } catch {
+    providers.value = []
     keys.value = []
     problems.push(t('usageTrend.filterProviderKeyFailed'))
   }
@@ -142,6 +189,33 @@ async function loadFilterOptions() {
     }
   }
   filterOptionsError.value = problems.join('；')
+
+  // ★ 深链带的是供应商 code ⇒ 解析成 id（解析不到就留着未解析态，由徽标显式披露）。
+  if (providerCodeParam.value && providerId.value == null) {
+    const id = resolveProviderId(providers.value, providerCodeParam.value)
+    if (id != null) providerId.value = id
+  }
+}
+
+/**
+ * 解除钉住：清掉该维度的值 ⇒ URL 参数随之消失 ⇒ 选择器重新出现。
+ * （钉住态由 URL 推导 ⇒ 这里只要清值，不需要额外标记位。）
+ */
+function releaseProvider() {
+  providerCodeParam.value = ''
+  providerId.value = null
+}
+
+function releaseTenant() {
+  tenantId.value = null
+}
+
+function releaseApiKey() {
+  apiKeyId.value = null
+}
+
+function releaseModel() {
+  models.value = []
 }
 
 // ── 数据加载 ──
@@ -166,6 +240,12 @@ async function loadSeries() {
   loading.value = true
   error.value = null
   try {
+    // ★ 深链钉住轮：深链给的是供应商 **code** ⇒ 要等 code→id 解析完成再取数，
+    //   否则首帧会是"未过滤的全量数据"（闪一下再跳变，比直接等更让人误解）。
+    if (providerCodeParam.value && providerId.value == null && filterOptionsPromise) {
+      await filterOptionsPromise
+      if (token !== seriesToken) return
+    }
     const resp = await getUsageTrendSeries({
       time: timeQuery.value,
       tenant_id: tenantId.value || undefined,
@@ -200,7 +280,18 @@ async function loadRankings() {
   rankingsLoading.value = true
   rankingsError.value = null
   try {
-    const resp = await getTopRankings(timeQuery.value)
+    // ★ 深链钉住轮：供应商 code→id 未解析完时先等它 ⇒ 排行榜与图表同一口径
+    //   （否则上半屏已过滤、下半屏还是全站，闪一下也是口径打架）。
+    if (providerCodeParam.value && providerId.value == null && filterOptionsPromise) {
+      await filterOptionsPromise
+    }
+    // ★ 深链钉住轮：排行榜跟着被钉住的维度走（供应商 / 模型 / API Key）
+    //   ⇒ 同一屏里不会再出现「上半段是那个供应商、下半段还是全站」。
+    const resp = await getTopRankings(timeQuery.value, 10, {
+      provider_id: providerId.value,
+      api_key_id: apiKeyId.value,
+      model: models.value,
+    })
     // 降级载荷兜底（2026-11-22 第 62 增量审计轮 D-P1）：canonical 视图缺失时
     // 后端返回 TopRankingsResponse{ degraded: true }——只带标记、不带六臂数组
     // ⇒ 模板 `rankings.top_models.length` 直取 undefined 会打崩整页渲染
@@ -239,7 +330,10 @@ function syncQuery() {
   }
   // truthy 防护：el-select 清空在不同 EP 版本产出 undefined/''/null，统一按
   // 「有值才写入」处理，避免空参数（provider=）残留在深链里。
-  if (providerId.value) next.provider = String(providerId.value)
+  // ★ 深链钉住轮：深链给的是供应商 **code** 时保留 code（别改写成 id）——
+  //   深链要能被人读懂、能分享；id 只在用户自己改选时才写。
+  if (providerCodeParam.value) next.provider = providerCodeParam.value
+  else if (providerId.value) next.provider = String(providerId.value)
   if (showTenantFilter && tenantId.value) next.tenant = tenantId.value
   if (apiKeyId.value) next.apikey = String(apiKeyId.value)
   // 单选传 string、多选传数组（序列化为重复 model 参数）；与后端多选解析对称。
@@ -415,7 +509,7 @@ function navigateToRequestsAll(dimension: string) {
 }
 
 onMounted(() => {
-  void loadFilterOptions()
+  filterOptionsPromise = loadFilterOptions()
   void loadSeries()
   void loadRankings()
   applyRefreshTimer()
@@ -451,7 +545,7 @@ onBeforeUnmount(() => {
       </div>
       <!-- 2026-10-03：筛选选项没加载出来时说清楚，别让空下拉冒充「没有供应商」 -->
       <div v-if="filterOptionsError" class="ute__filter-error" role="status">{{ filterOptionsError }}</div>
-      <div class="ute__filter">
+      <div v-if="!pinned.provider" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
         <!-- 2026-11-20 供应商选择统一轮：el-select 换全局 ProviderPicker（id 模式）。
              truthy 空值防护（clearable el-select 在不同 EP 版本产出 undefined/''/null）
@@ -463,7 +557,17 @@ onBeforeUnmount(() => {
           class="ute__select"
         />
       </div>
-      <div v-if="showTenantFilter" class="ute__filter">
+      <!-- 2026-11-23 深链钉住轮：深链带供应商 ⇒ 该维度已是入口上下文 ⇒ 收起选择器，
+           只留只读徽标（数据就是这个供应商的，别再摆一个"全部"下拉误导用户）。 -->
+      <div v-else class="ute__filter ute__filter--pinned">
+        <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
+        <span class="ute__pin" data-testid="ute-pinned-provider">
+          <b>{{ pinnedProviderLabel }}</b>
+          <span v-if="providerUnresolved" class="ute__pin-warn">{{ t('usageTrend.pinnedUnresolved') }}</span>
+          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseProvider">✕</button>
+        </span>
+      </div>
+      <div v-if="showTenantFilter && !pinned.tenant" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterTenant') }}</label>
         <el-select
           v-model="tenantId"
@@ -475,7 +579,14 @@ onBeforeUnmount(() => {
           <el-option v-for="tn in tenants" :key="tn.tenant_id" :value="tn.tenant_id" :label="tn.tenant_id" />
         </el-select>
       </div>
-      <div class="ute__filter">
+      <div v-else-if="pinned.tenant" class="ute__filter ute__filter--pinned">
+        <label class="ute__label">{{ t('usageTrend.filterTenant') }}</label>
+        <span class="ute__pin" data-testid="ute-pinned-tenant">
+          <b>{{ tenantId }}</b>
+          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseTenant">✕</button>
+        </span>
+      </div>
+      <div v-if="!pinned.apikey" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterApiKey') }}</label>
         <el-select
           v-model="apiKeyId"
@@ -487,7 +598,14 @@ onBeforeUnmount(() => {
           <el-option v-for="k in keys" :key="k.id" :value="k.id" :label="keyLabel(k)" />
         </el-select>
       </div>
-      <div class="ute__filter ute__filter--model" :class="{ 'ute__filter--model-active': models.length > 0 }">
+      <div v-else class="ute__filter ute__filter--pinned">
+        <label class="ute__label">{{ t('usageTrend.filterApiKey') }}</label>
+        <span class="ute__pin" data-testid="ute-pinned-apikey">
+          <b>{{ apiKeyId }}</b>
+          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseApiKey">✕</button>
+        </span>
+      </div>
+      <div v-if="!pinned.model" class="ute__filter ute__filter--model" :class="{ 'ute__filter--model-active': models.length > 0 }">
         <label class="ute__label">{{ t('usageTrend.filterModel') }}</label>
         <!-- 与 dashboard stream 页筛选行同款：ModelPicker multi compact，
              已选态触发器亮 accent，「已选 N 个模型」+ 计数徽标。 -->
@@ -499,6 +617,14 @@ onBeforeUnmount(() => {
           :title="t('usageTrend.filterModel')"
           @update:model-value="onModelsPicked"
         />
+      </div>
+      <!-- 深链带模型 ⇒ 该模型即上下文 ⇒ 收起模型选择器（同供应商）。 -->
+      <div v-else class="ute__filter ute__filter--model ute__filter--model-active ute__filter--pinned">
+        <label class="ute__label">{{ t('usageTrend.filterModel') }}</label>
+        <span class="ute__pin" data-testid="ute-pinned-model">
+          <b>{{ pinnedModelLabel }}</b>
+          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseModel">✕</button>
+        </span>
       </div>
       <div class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterMetric') }}</label>
@@ -825,6 +951,47 @@ export default { name: 'UsageTrendExplorer' }
 }
 .ute__filter--reset :deep(.el-button) {
   min-height: 32px;
+}
+
+/* 2026-11-23 深链钉住轮：被深链钉住的维度 ⇒ 选择器收起，只留只读徽标 + 解除按钮。
+   徽标要一眼看出「这是被钉住的值」（而不是一个可编辑的下拉框）。 */
+.ute__filter--pinned {
+  min-width: 160px;
+}
+.ute__pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 13px;
+  color: var(--text-primary);
+  max-width: 260px;
+}
+.ute__pin b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ute__pin-warn {
+  font-size: 11px;
+  color: var(--warning, var(--text-secondary));
+}
+.ute__pin-clear {
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font: inherit;
+  line-height: 1;
+}
+.ute__pin-clear:hover {
+  color: var(--text-primary);
 }
 .ute__chart,
 .ute__table {

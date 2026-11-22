@@ -17,6 +17,9 @@ export default {
   sourceDetail: '请求明细',
   // 2026-10-02 多选/清除全部/自动刷新轮
   clearAll: '清除全部',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: '解除',
+  pinnedUnresolved: '未找到该供应商，筛选未生效',
   autoRefresh: '自动刷新',
   autoRefreshOff: '关',
   autoRefresh30s: '30 秒',

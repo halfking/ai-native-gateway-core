@@ -42,6 +42,14 @@ export default {
       tokenSourceAll: 'مصدر Token',
       tokenSourceLlm: 'يرجعه LLM',
       tokenSourceEstimated: 'تقدير محلي',
+      // 2026-11-23: تسميات مرشّحات الرابط العميق لبطاقات الترتيب الست في صفحة اتجاهات الاستخدام.
+      deepLink: {
+        clientModel: 'العميل',
+        endUser: 'المستخدم النهائي',
+        apiKey: 'مفتاح API',
+        application: 'التطبيق',
+        task: 'المهمة',
+      },
 
       resultRateLimited: 'Rate limited',
     },

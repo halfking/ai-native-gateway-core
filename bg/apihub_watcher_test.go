@@ -56,6 +56,9 @@ func (okStore) MarkHealth(_ context.Context, _ string, _ apihub.Kind, _ int64, _
 func (okStore) ListStale(_ context.Context, _ string, _ time.Duration) ([]apihub.Asset, error) {
 	return nil, nil
 }
+func (okStore) MarkMissingDown(_ context.Context, _ string, _ apihub.Kind, _ []int64) (int64, error) {
+	return 0, nil
+}
 func (okStore) ListTenants(_ context.Context) ([]string, error) {
 	return []string{"default"}, nil
 }

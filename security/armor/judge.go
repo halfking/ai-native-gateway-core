@@ -141,17 +141,55 @@ func Noop() Judge { return noopJudge{} }
 // without an LLM. The decision is still resolved from the score + mode by the
 // caller (see resolveDecision), so tests cover the full path.
 type mockJudge struct {
-	score      float64
-	judgeModel string
-	err        error // if non-nil, Score returns this error
-	latency    time.Duration
+	score        float64
+	judgeModel   string
+	err          error // if non-nil, Score returns this error
+	latency      time.Duration
+	reason       string
+	unconfigured bool
 }
+
+// Unconfigured 实现 UnconfiguredJudgeMarker。
+func (m *mockJudge) Unconfigured() bool { return m.unconfigured }
 
 // NewMockJudge returns a Judge that always scores `score`. Use in tests only;
 // production code should construct via NewHTTPJudge. The judgeModel is
 // recorded in ScoreResponse.JudgeModel for audit fidelity.
 func NewMockJudge(score float64, judgeModel string) Judge {
 	return &mockJudge{score: clampScore(score), judgeModel: judgeModel}
+}
+
+// UnconfiguredJudge 是「判官未配置」的可辨识实例。
+//
+// 2026-11-23（211 遗留 L2）：判官没配置时，生产用的是 NewMockJudge(0.0, "mock")
+// ⇒ 它的判定被写进 armor_judgments 表时是 `judge_model='mock' / score=0 /
+// decision='safe'` ⇒ 与真实判官给出的「安全」**在表里长得一样**
+// ⇒ 任何按 decision='safe' 统计「安全通过率」的面都会把「没判过」当成「判过且安全」。
+//
+// ⇒ 改成可辨识的实例：
+//
+//	· JudgeModel = "unconfigured"（表里一眼可分）；
+//	· Reason 明确写「没有判定」（行内自解释）；
+//	· Unconfigured() = true ⇒ 调用方（handler）可以据此**不把它当结论**。
+//
+// ★ 语义保持不变：分数恒 0、判定恒 safe（observe 模式永不拦截）——
+//
+//	本轮只改「可辨识性」，不改判定行为（实配判官是另一件事，见运维文档）。
+func NewUnconfiguredJudge() Judge {
+	return &mockJudge{score: 0, judgeModel: "unconfigured", unconfigured: true,
+		reason: "armor judge not configured — no verdict (not a safety pass)"}
+}
+
+// UnconfiguredJudgeMarker 是「判官未配置」的标记接口。
+// 调用方用 armor.IsUnconfigured(judge) 判断，避免到处写类型断言。
+type UnconfiguredJudgeMarker interface {
+	Unconfigured() bool
+}
+
+// IsUnconfigured 判断一个 Judge 是否是「未配置」的占位判官。
+func IsUnconfigured(j Judge) bool {
+	m, ok := j.(UnconfiguredJudgeMarker)
+	return ok && m.Unconfigured()
 }
 
 // NewMockJudgeWithError returns a Judge whose Score always fails. Use to test
@@ -175,10 +213,14 @@ func (m *mockJudge) Score(ctx context.Context, req ScoreRequest) (ScoreResponse,
 			return ScoreResponse{}, ctx.Err()
 		}
 	}
+	reason := m.reason
+	if reason == "" {
+		reason = "mock judge"
+	}
 	return ScoreResponse{
 		Score:      m.score,
 		Decision:   resolveDecision(m.score, req.Threshold, ModeObserve),
-		Reason:     "mock judge",
+		Reason:     reason,
 		JudgeModel: firstNonEmpty(m.judgeModel, "mock"),
 		LatencyMs:  int(m.latency / time.Millisecond),
 	}, nil
@@ -192,6 +234,29 @@ func (m *mockJudge) Score(ctx context.Context, req ScoreRequest) (ScoreResponse,
 //
 // The prompt template is versioned (PromptTemplateV1) so we can A/B test
 // changes without losing the ability to reproduce old judgments from audit.
+// JudgeRequestMarkerHeader 是判官请求自带的头。
+//
+// ★ 为什么需要它（2026-11-23，211 遗留 L2）：实配判官时，判官本身要调一个
+//
+//	OpenAI 兼容端点。如果那个端点**就是网关自己**（生产上最省事的做法：
+//	复用现成的上游凭据），那么判官请求会重新进入网关 ⇒ 重新触发 armor 判定
+//	⇒ 判官请求再调判官 ⇒ **无限递归**。
+//
+// ⇒ 判官请求带这个头；网关的 armor 路径见到它就**跳过判定**（不判自己）。
+//
+// ★ 这条防护必须与「实配判官」同批落地，不能等：先实配、后加防护，
+//
+//	中间那段时间就是一次递归风暴。
+const JudgeRequestMarkerHeader = "X-LLMGW-Armor-Judge"
+
+// JudgeRequestMarkerValue 是标记头的取值。
+const JudgeRequestMarkerValue = "1"
+
+// IsJudgeRequest 判断一个请求是不是「判官自己发出来的请求」。
+func IsJudgeRequest(header http.Header) bool {
+	return strings.TrimSpace(header.Get(JudgeRequestMarkerHeader)) == JudgeRequestMarkerValue
+}
+
 const PromptTemplateV1 = `You are a security judge. Evaluate the following prompt strictly.
 
 Rubric: %s
@@ -286,6 +351,9 @@ func (h *httpJudge) Score(ctx context.Context, req ScoreRequest) (ScoreResponse,
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+h.apiKey)
+	// ★ 递归防护（见 JudgeRequestMarkerHeader）：判官请求必须自带标记，
+	// 网关的 armor 路径见到它就跳过判定 ⇒ 判官指向网关自己时不会递归。
+	httpReq.Header.Set(JudgeRequestMarkerHeader, JudgeRequestMarkerValue)
 
 	resp, err := h.httpClient.Do(httpReq)
 	if err != nil {

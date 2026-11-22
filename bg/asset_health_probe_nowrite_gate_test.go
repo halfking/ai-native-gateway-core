@@ -23,6 +23,8 @@ type probeStore struct {
 	markCalls []markCall
 	// listed 记录每次 List 的 (limit, offset) 游标序列。
 	listed []listCall
+	// missingDownCalls 记录每次 MarkMissingDown（集合差口径）的调用。
+	missingDownCalls []missingDownCall
 }
 
 type listCall struct{ limit, offset int }
@@ -99,6 +101,48 @@ func (s *probeStore) ListStale(context.Context, string, time.Duration) ([]apihub
 }
 
 func (s *probeStore) ListTenants(context.Context) ([]string, error) { return s.tenants, nil }
+
+// MarkMissingDown 忠实还原 pgStore 的 SQL 语义：
+//
+//	UPDATE assets SET health_state='down'
+//	 WHERE tenant_id=$1 AND kind=$2
+//	   AND health_state IS DISTINCT FROM 'down'
+//	   AND NOT (ref_id = ANY($3))
+//
+// ★ 关键：它**不受任何页数上界约束** —— 扫全量 s.all。
+//
+//	旧实现（探针分页 20 页 × 500 行）只看得见前 10000 行，
+//	超过的行静默漏检 —— 新门就是钉住这条不再发生。
+func (s *probeStore) MarkMissingDown(_ context.Context, tenantID string, k apihub.Kind, liveRefIDs []int64) (int64, error) {
+	live := make(map[int64]bool, len(liveRefIDs))
+	for _, id := range liveRefIDs {
+		live[id] = true
+	}
+	var n int64
+	for _, a := range s.all {
+		if a.TenantID != tenantID || a.Kind != k {
+			continue
+		}
+		if live[a.RefID] {
+			continue
+		}
+		if a.HealthState == apihub.HealthDown {
+			continue // 已是终态 ⇒ 不算变化（不重复写同一个值）
+		}
+		n++
+	}
+	s.missingDownCalls = append(s.missingDownCalls, missingDownCall{
+		kind: k, tenant: tenantID, live: len(liveRefIDs), marked: n,
+	})
+	return n, nil
+}
+
+type missingDownCall struct {
+	kind   apihub.Kind
+	tenant string
+	live   int
+	marked int64
+}
 
 // probeSyncer 返回的即「活的」资产集合。liveLookup 由它构造。
 type probeSyncer struct{ live []apihub.Asset }
@@ -273,45 +317,46 @@ func TestProbeFirstRunStillMarksUnseenAssets(t *testing.T) {
 	}
 }
 
-// ── 门 5：Step 2 必须真的翻页（§10.27 的本体）────────────────────────
+// ── 门 5：Step 2 必须覆盖**全表**，且不得有页数上界（§10.27 + L4 的本体）──
 //
-// §10.27：apihub.Filter 当时没有 Offset、listAssetsSQL 没有 OFFSET 子句，
-// 于是 `offset` 是死变量，探针每轮只检查了前 500 行。
-// 生产实测 2141 行里 1521 行从未受检，其中 439 行早已不在源表。
+// §10.27 的原意：探针每轮只检查了前 500 行（Filter 没有 Offset、limit 被截到 500），
+// 生产实测 2141 行里 1521 行从未受检。
 //
-// 这条门把夹具做成 1200 行（> 一页），且**全部不在 liveLookup**，
-// 于是「是否每一行都被 MarkHealth 覆盖」直接等于「是否翻页了」。
-// 不翻页 ⇒ 只有 500 次调用 ⇒ 立刻红。
-
-func TestProbePagesThroughAllAssets(t *testing.T) {
-	const n = 1200
+// 2026-11-23（L4）把机制换成了**集合差**（一条 UPDATE ... NOT (ref_id = ANY(...))），
+// 于是「有没有上界」这个问题本身消失了：不再有分页，就没有「只看前 N 行」。
+//
+// ★ 这条门用 **10,050 行**（超过旧实现的 20 页 × 500 行 = 10000 行上界）
+//
+//	来钉住这一点：旧实现在这里会漏掉 50 行（而且**静默**——它那条上界告警
+//	的判据还是反的，见门 10）。新实现必须一行不漏。
+func TestProbeCoversAllAssetsBeyondOldPaginationCeiling(t *testing.T) {
+	const n = 10050
 	all := make([]apihub.Asset, 0, n)
 	for i := 0; i < n; i++ {
 		all = append(all, asset(int64(i+1), "t1", apihub.HealthUnknown))
 	}
 	st := &probeStore{tenants: []string{"t1"}, all: all}
 
-	// syncer 返回空 ⇒ 全部 1200 行都「不在 liveLookup」。
+	// syncer 返回空 ⇒ 全部 n 行都「不在活着的集合里」。
 	_, removed := runProbe(t, st, nil)
 
 	if int(removed) != n {
 		t.Fatalf("removed = %d，期望 %d。\n"+
-			"  差额 = 探针没翻到的行数。§10.27 的 bug 正是每轮只看前 500 行\n"+
-			"  （旧代码要 batchSize=1000，但 List 会静默截到 500，且没有 OFFSET）。\n"+
-			"  实测游标序列: %+v", removed, n, st.listed)
-	}
-	if len(st.markCalls) != n {
-		t.Errorf("MarkHealth 调用 %d 次，期望 %d", len(st.markCalls), n)
+			"  差额 = 探针没看到的行数。旧实现有 20 页 × 500 行 = 10000 行的上界，\n"+
+			"  超过上界的行**静默漏检**；新实现是集合差，没有上界。\n"+
+			"  旧游标序列: %+v", removed, n, st.listed)
 	}
 }
 
-// ── 门 6：游标必须单调递增且步长等于页长 ─────────────────────────────
+// ── 门 6：机制必须是「集合差」，不得回退成列表聚合 ────────────────────
 //
-// 门 5 钉住「结果正确」，这条钉住「机制正确」：万一将来有人用别的方式
-// 绕过（比如把 limit 调大到 10000），门 5 仍会绿，但页大小契约被破坏了。
-// 两条门各管一半，缺一条都留缺口。
+// 门 5 钉住「结果正确」，这条钉住「机制正确」：万一将来有人为了「省一次查询」
+// 又把全表拉进 Go 侧比对，门 5 仍会绿，但「统计面禁止列表聚合」又回来了
+// （AGENTS.md 已登记：limit 截断后的逐行累加是静默欠数制造机）。
+//
+// 断言：探针**不再分页**（一次 List 都不发），Step 2 走 MarkMissingDown 一次成型。
 
-func TestProbePaginationUsesIncreasingOffsets(t *testing.T) {
+func TestProbeUsesSetDifferenceInsteadOfListAggregation(t *testing.T) {
 	const n = 1200
 	all := make([]apihub.Asset, 0, n)
 	for i := 0; i < n; i++ {
@@ -320,40 +365,39 @@ func TestProbePaginationUsesIncreasingOffsets(t *testing.T) {
 	st := &probeStore{tenants: []string{"t1"}, all: all}
 	runProbe(t, st, nil)
 
-	if len(st.listed) != 3 {
-		t.Fatalf("List 被调用 %d 次，期望 3（1200 行 / 每页 500 = 3 页）。游标: %+v",
+	if len(st.listed) != 0 {
+		t.Errorf("List 被调用 %d 次，期望 0（Step 2 必须是集合差，不得再分页拉全表）。游标: %+v",
 			len(st.listed), st.listed)
 	}
-	want := []listCall{{limit: 500, offset: 0}, {limit: 500, offset: 500}, {limit: 500, offset: 1000}}
-	for i, w := range want {
-		if st.listed[i] != w {
-			t.Errorf("第 %d 页游标 = %+v，期望 %+v", i+1, st.listed[i], w)
-		}
+	// 两个 kind 各一次（llm_endpoint / mcp_server），mcp 没有活着的资产 ⇒ live=0。
+	if len(st.missingDownCalls) != 2 {
+		t.Fatalf("MarkMissingDown 被调用 %d 次，期望 2（每个 kind 一次）。调用: %+v",
+			len(st.missingDownCalls), st.missingDownCalls)
+	}
+	if st.missingDownCalls[0].kind != apihub.KindLLMEndpoint {
+		t.Errorf("第 1 次 MarkMissingDown 的 kind = %q，期望 %q",
+			st.missingDownCalls[0].kind, apihub.KindLLMEndpoint)
 	}
 }
 
-// ── 门 7：空结果必须终止循环，不得再多发一次请求 ─────────────────────
+// ── 门 7：集合差口径下，「表有多大」与「请求数」无关 ──────────────────
 //
-// 防「最后一页刚好等于整页时多打一次空查询」。这条看着琐碎，但它是
-// 分页循环最常见的 off-by-one，代价是每小时 × 2 台的无谓往返。
-// 用 500 的整数倍构造：正好 500 行 = 1 页，不应产生第 2 次查询。
-
-func TestProbeStopsWhenTableExactlyFillsOnePage(t *testing.T) {
-	all := make([]apihub.Asset, 0, 500)
-	for i := 0; i < 500; i++ {
-		all = append(all, asset(int64(i+1), "t1", apihub.HealthDown))
-	}
-	st := &probeStore{tenants: []string{"t1"}, all: all}
-	runProbe(t, st, nil)
-
-	// 500 行 = 整一页 ⇒ `len(batch) < pageSize` 不成立，必须再发第 2 次
-	// 才能知道结束了。这是**正确**的代价（不是 off-by-one），
-	// 所以这里断言的是 2 次，且第二次 offset=500 必然返回空。
-	if len(st.listed) != 2 {
-		t.Fatalf("List 被调用 %d 次，期望 2（500 整页需要多打一次确认结尾）。游标: %+v",
-			len(st.listed), st.listed)
-	}
-	if st.listed[1] != (listCall{limit: 500, offset: 500}) {
-		t.Errorf("第 2 次游标 = %+v，期望 {500 500}", st.listed[1])
+// 旧的门 7 防的是分页循环的 off-by-one（整页时多打一次空查询）。
+// 集合差口径下这个病**不存在**：无论表里有 0 行还是 10 万行，
+// 每个 kind 只有**一条**语句。
+func TestProbeIssuesOneStatementPerKindRegardlessOfTableSize(t *testing.T) {
+	for _, n := range []int{0, 500, 5000} {
+		all := make([]apihub.Asset, 0, n)
+		for i := 0; i < n; i++ {
+			all = append(all, asset(int64(i+1), "t1", apihub.HealthDown))
+		}
+		st := &probeStore{tenants: []string{"t1"}, all: all}
+		runProbe(t, st, nil)
+		if len(st.listed) != 0 {
+			t.Errorf("n=%d：List 被调用 %d 次，期望 0", n, len(st.listed))
+		}
+		if len(st.missingDownCalls) != 2 {
+			t.Errorf("n=%d：MarkMissingDown 被调用 %d 次，期望 2（每个 kind 一次）", n, len(st.missingDownCalls))
+		}
 	}
 }

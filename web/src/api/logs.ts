@@ -268,6 +268,25 @@ export function getRequestLogs(params: {
   gw_session_id?: string
   gw_task_id?: string
   owner_user?: string
+  /**
+   * 2026-11-23：用量趋势页的六张排行卡片「点击 → 请求日志」深链参数。
+   *
+   * ★ 这五个参数此前**页面上根本没有转发** ⇒ 深链落到 `/request-logs` 后
+   *   URL 里的维度值被丢掉 ⇒ 用户看到的是**未筛选的全量请求**
+   *   ⇒ 「点击进去可以看到该维度的请求」此前**一次都没成立过**。
+   *   （后端当时也只有 model 一维真正实现了过滤 ⇒ 两头都缺。）
+   *
+   * ★ 语义与后端一致（admin/logs.go 的 buildRankingDimensionFilterClauses）：
+   *   · client_model / application_code / task_type：按**身份表达式**等值匹配
+   *     （空串/NULL 归 'unknown' ⇒ 排行侧显示 'unknown'，这里也能按 'unknown' 命中）；
+   *   · end_user_id：原值精确命中 **或** 按 JSON 里的 device_id 命中；
+   *   · api_key_prefix：**前缀**匹配（库里存的是掩码值，等值匹配不上）。
+   */
+  client_model?: string
+  end_user_id?: string
+  api_key_prefix?: string
+  application_code?: string
+  task_type?: string
   chrono?: boolean
   page?: number
   page_size?: number
@@ -296,6 +315,12 @@ export function getRequestLogs(params: {
   if (params.gw_session_id) qs.set('gw_session_id', params.gw_session_id)
   if (params.gw_task_id) qs.set('gw_task_id', params.gw_task_id)
   if (params.owner_user) qs.set('owner_user', params.owner_user)
+  // ★ 排行六维深链参数（见上方注释）：**不能漏**——漏了就是「点了卡片却看到全量」。
+  if (params.client_model) qs.set('client_model', params.client_model)
+  if (params.end_user_id) qs.set('end_user_id', params.end_user_id)
+  if (params.api_key_prefix) qs.set('api_key_prefix', params.api_key_prefix)
+  if (params.application_code) qs.set('application_code', params.application_code)
+  if (params.task_type) qs.set('task_type', params.task_type)
   if (params.chrono) qs.set('chrono', '1')
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))

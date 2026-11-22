@@ -80,7 +80,7 @@ func (d *PatternDetector) HistoryGuard(ctx context.Context) func(context.Context
 	d.historyMu.Lock()
 	defer d.historyMu.Unlock()
 	if policy, ok := d.historyPolicies[key]; ok {
-		return policy.guard
+		return memoizeHistoryGuard(policy.guard, key, d.verdictMemo(), len(policy.matches) > 0)
 	}
 	policy := compileHistoryPolicy(rules)
 	if len(d.historyPolicies) >= 8 {
@@ -90,7 +90,7 @@ func (d *PatternDetector) HistoryGuard(ctx context.Context) func(context.Context
 		d.historyPolicies = make(map[[32]byte]historyPolicy)
 	}
 	d.historyPolicies[key] = policy
-	return policy.guard
+	return memoizeHistoryGuard(policy.guard, key, d.verdictMemo(), len(policy.matches) > 0)
 }
 
 func compileHistoryPolicy(rules []historyPolicyRule) historyPolicy {

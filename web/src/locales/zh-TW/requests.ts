@@ -43,6 +43,14 @@ export default {
       tokenSourceAll: 'Token來源',
       tokenSourceLlm: 'LLM返回',
       tokenSourceEstimated: '本機估算',
+      // 2026-11-23: 用量趨勢頁六張排行卡片「點擊 → 請求日誌」的深鏈篩選標籤。
+      deepLink: {
+        clientModel: '客戶端',
+        endUser: '終端使用者',
+        apiKey: 'API 金鑰',
+        application: '應用',
+        task: '任務',
+      },
 
       resultRateLimited: '限流',
     },

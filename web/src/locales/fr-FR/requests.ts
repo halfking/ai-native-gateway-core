@@ -42,6 +42,14 @@ export default {
       tokenSourceAll: 'Source du token',
       tokenSourceLlm: 'Depuis LLM',
       tokenSourceEstimated: 'Estimation locale',
+      // 2026-11-23 : libellés des filtres de lien profond pour les six cartes de classement de la page des tendances d'usage.
+      deepLink: {
+        clientModel: 'Modèle client',
+        endUser: 'Utilisateur final',
+        apiKey: 'Clé API',
+        application: 'Code application',
+        task: 'Tâche',
+      },
 
       resultRateLimited: 'Rate limited',
     },
