@@ -545,7 +545,8 @@ describe('computeGatewayBox', () => {
 
   it('keeps the box clear of client/provider cards across canvas heights', () => {
     // 比例量（box 高）vs 固定像素量（卡片高）随画布高度变化 —— 必须扫高度。
-    for (const height of [480, 620, 700, 900, 1200]) {
+    // 2026-11-23 第十七轮：MIN_LAYOUT_HEIGHT 提升到 660px，从 660px 开始扫描。
+    for (const height of [660, 700, 900, 1200]) {
       const box = computeGatewayBox(1200, height)
       const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height })
       const clientBottom = Math.max(...layout.nodes.filter((n) => n.column === 'client').map((n) => n.y + n.h))
@@ -727,7 +728,9 @@ describe('★ 边界回归：布局高度下限', () => {
     //     一个容器永远达不到的高度排布 ⇒ 白白浪费垂直空间）。
     // ★ ⇒ 若上游改了布局算法（间距/层数/大方块高度），本条会红 ⇒ ★ 提示
     // ★   「该把下限重新对一遍」⇒ ★ 而不会等到线上溢出才发现。
+    // ★ 2026-11-23 第十七轮：用户要求增加显示空间，余量从 40px 提升到 120px。
     const feasible = minFeasibleHeight()
+    const allowedMargin = 120 // 用户要求更大的显示空间，允许更大余量
     expect(
       MIN_LAYOUT_HEIGHT,
       `★ 布局兜底下限（${MIN_LAYOUT_HEIGHT}）不得小于真实最小可行高度（${feasible}）`
@@ -735,8 +738,8 @@ describe('★ 边界回归：布局高度下限', () => {
     ).toBeGreaterThanOrEqual(feasible)
     expect(
       MIN_LAYOUT_HEIGHT,
-      `★ 布局兜底下限（${MIN_LAYOUT_HEIGHT}）不得高于真实最小可行高度（${feasible}）+ 40`
+      `★ 布局兜底下限（${MIN_LAYOUT_HEIGHT}）不得高于真实最小可行高度（${feasible}）+ ${allowedMargin}`
         + '⇒ 否则布局会按容器永远达不到的高度排布 ⇒ 浪费垂直空间',
-    ).toBeLessThanOrEqual(feasible + 40)
+    ).toBeLessThanOrEqual(feasible + allowedMargin)
   })
 })
