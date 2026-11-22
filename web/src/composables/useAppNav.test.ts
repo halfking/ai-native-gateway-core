@@ -129,6 +129,46 @@ describe('useAppNav', () => {
     expect(ops!.items.map(({ item }) => item.path)).toContain('/maintain/ops/remote-only')
   })
 
+  // 2026-11-23 owner 指令：隐藏「运维中心」下的「赞助与捐赠」。
+  // 线上实测远端运维菜单含该条目（path=/maintain/ops/donations）⇒ 合并时按路径剔除。
+  it('远端运维菜单合并：捐赠条目被隐藏，其余远端条目保留', async () => {
+    opsState.remote = [
+      {
+        id: 'opsplatform',
+        label: '运维中心(远端)',
+        items: [
+          {
+            path: '/maintain/ops/donations',
+            label: '赞助与捐赠',
+            labelKey: undefined,
+            icon: '💖',
+            super: true,
+            hide_for_tenant: true,
+            external: true,
+          },
+          {
+            path: '/maintain/ops/faults',
+            label: '故障管理',
+            labelKey: undefined,
+            icon: '⚠️',
+            super: true,
+            hide_for_tenant: true,
+            external: true,
+          },
+        ],
+      },
+    ]
+    const w = mountNav()
+    // resolveOpsMenu 是异步覆盖：composable 启动后台加载，等待微任务刷新
+    await new Promise((r) => setTimeout(r, 0))
+    const nav = w.vm.nav as ReturnType<typeof useAppNav>
+    const ops = nav.navGroups.value.find((g) => g.id === 'opsplatform')
+    expect(ops).toBeTruthy()
+    const paths = ops!.items.map(({ item }) => item.path)
+    expect(paths).not.toContain('/maintain/ops/donations')
+    expect(paths).toContain('/maintain/ops/faults')
+  })
+
   it('navDrawerOpen 为模块级共享开关：汉堡打开后任意消费方可读', () => {
     const w = mountNav()
     expect(navDrawerOpen.value).toBe(false)

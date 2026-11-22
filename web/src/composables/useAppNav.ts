@@ -38,6 +38,7 @@ import {
   resolveOpsMenu,
   type OpsMenuGroup,
 } from '../config/edition'
+import { isHiddenNavPath } from '../config/navHidden'
 import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, isProviderConsoleView as checkProviderConsole } from '../store'
 
 /** 移动导航抽屉共享开关（AppTopbar 汉堡 ⇄ App.vue 的 AppNavDrawer） */
@@ -113,11 +114,13 @@ export function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] |
     merged.push(g)
   }
   for (const g of remote) {
-    merged.push({
-      id: g.id,
-      label: g.label,
-      labelKey: g.labelKey,
-      items: g.items.map((it) => ({
+    // ★ 2026-11-23 owner 指令：远端运维中心菜单的条目由后端 JSON 构造
+    //   （没有本地 NavItem 可挂标记）⇒ 隐藏只能按**路径**执行。
+    //   线上实测该组含 `/maintain/ops/donations`（赞助与捐赠）⇒ 在此剔除。
+    //   剔除后整组为空则不渲染（避免留下一个空下拉）。
+    const items = g.items
+      .filter((it) => !isHiddenNavPath(it.path))
+      .map((it) => ({
         path: it.path,
         label: it.label,
         labelKey: it.labelKey,
@@ -126,7 +129,13 @@ export function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] |
         hideForTenant: it.hide_for_tenant,
         external: it.external,
         exact: false,
-      })),
+      }))
+    if (items.length === 0) continue
+    merged.push({
+      id: g.id,
+      label: g.label,
+      labelKey: g.labelKey,
+      items,
     })
   }
   return merged
