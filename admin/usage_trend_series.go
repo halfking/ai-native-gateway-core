@@ -10,21 +10,37 @@
 // 四指标，指标过滤由前端选列）；trend-models 返回当前过滤条件下的模型选项及
 // 各自总量（供全页视图的模型下拉）。
 //
-// 数据面三档（2026-10-02 实测本地库后定形；模型名口径统一 outbound 优先、
+// 数据面两档（2026-10-02 实测本地库后定形；模型名口径统一 outbound 优先、
 // client_model 兜底、'__unknown__' 垫底，与 rollup writer 同式）：
 //   - dim 档（无 provider/api_key 过滤）：request_stats_dim_minute
 //     dim_type='model'，单表索引扫描（今天窗 22ms / 7d 1.2s 实测）。
-//   - provider 档（仅 provider 过滤）：request_stats_minute（自带 provider_id ×
-//     canonical_id）JOIN provider_models 取展示名。不扫明细日志。
-//   - detail 档（带 api_key 过滤）：**会话族原生源** db.SessionFamilyTurnsSourceSQL()
+//   - detail 档（带 provider 或 api_key 过滤）：**会话族原生源**
+//     db.SessionFamilyTurnsSourceSQL()
 //     （★ 2026-10-20：原读面 request_logs_with_current_month_without_customer_id
 //     直读 v1 族、v1 停写后恒 0 行 ⇒ 本档此前恒空；890 删族后会变 42P01 ⇒ 改指会话族）
+//
+// ★★ 2026-11-23：provider 过滤**也从 provider 档并入 detail 档** ⇒ ★★
+// 原 provider 档（request_stats_minute JOIN provider_models 取展示名）**在生产
+// 已整体退化**：该表只有 provider_id × canonical_id，没有模型名字段 ⇒ 模型身份
+// 只能靠 canonical_id 反查；而 **211 真库实测请求日志的 canonical_id 全为 NULL**
+// （近 3 天按 provider 分组：with_canon 恒 0，provider 14/587/18/32… 无一例外）
+// ⇒ rollup 写面 COALESCE(r.canonical_id,0) ⇒ request_stats_minute 的 canonical_id
+// **恒为 0** ⇒ provider_models 的 canonical_id 映射**永远 JOIN 不上** ⇒
+// 兜底标签 'model#'||canonical_id ⇒ **所有行塌成一行 `model#0`** ⇒
+// 供应商过滤下的图表/明细表**恒为一行、且名字是内部哨兵**。
+// ★ 也就是说：那一档**不是"更快的同一答案"，是"更快的错误答案"** ——
+// 快在读汇总表，慢在它把「模型身份」寄托在一个已经不再被写入的列上。
+// ★ 通用式：**读面选择在数据形态变化后会静默退化**（v1 族停写 ⇒ canonical_id
+// 不再落库 ⇒ 依赖它的读面不报错、不空表，只是给出一份看起来正常的错答案）。
+// ⇒ 供应商过滤改走明细档：模型名直接来自 outbound_model/client_model，
+// **且与同屏下半部分的排行卡片（同一明细读面）口径一致**。
+// ★ 代价（实测，211 生产库，provider=apiclaude 近 7 天）：明细聚合 374ms。
 //
 // 唯一含 api_key_id 的读面；无 api_key 索引的旧分区上长窗会慢，前端对超时
 //
 //	给出「缩短时间范围」提示。
 //
-// 折叠：三档统一「单次扫描出 (model,bucket) 组 → Go 侧按窗口总量取 top-N、
+// 折叠：两档统一「单次扫描出 (model,bucket) 组 → Go 侧按窗口总量取 top-N、
 // 其余聚合 '__others__'」。不做 SQL 内 CTE 折叠——detail 档双扫实测 75s，
 // 单扫砍半；dim 档模型基数（本地 649）让 Go 折叠零成本。
 package admin
@@ -162,14 +178,17 @@ func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
 	return f
 }
 
-// usageTrendSource 挑数据档：api_key 过滤只有明细读面有该列；provider 过滤走
-// minute 汇总（自带 provider_id×canonical_id），避免明细分区慢扫。
+// usageTrendSource 挑数据档：provider / api_key 过滤都走明细读面。
+//
+// ★ 2026-11-23：provider 过滤原本单独走 provider 档（request_stats_minute），
+// 但那一档在生产**恒返回单行 `model#0`**（canonical_id 全为 0 ⇒ 无模型身份，
+// 详见文件头「provider 档已整体退化」的说明）⇒ provider 与 api_key 现在
+// 合并为同一条明细档 ⇒ 顺带让「图表」与「同屏排行卡片」口径一致（两者
+// 都是明细读面）。
 func usageTrendSource(f usageTrendFilters) string {
 	switch {
-	case f.apiKeyID > 0:
+	case f.apiKeyID > 0, f.providerID > 0:
 		return "request_logs_with_current_month"
-	case f.providerID > 0:
-		return "request_stats_minute"
 	default:
 		return "request_stats_dim_minute"
 	}
@@ -200,8 +219,6 @@ func (h *Handler) usageTrendSeries(w http.ResponseWriter, r *http.Request) {
 	switch source {
 	case "request_logs_with_current_month":
 		rows, err = h.queryUsageTrendDetail(ctx, tr, f)
-	case "request_stats_minute":
-		rows, err = h.queryUsageTrendProvider(ctx, tr, f)
 	default:
 		rows, err = h.queryUsageTrendRollup(ctx, tr, f)
 	}
@@ -278,8 +295,6 @@ func (h *Handler) usageTrendModels(w http.ResponseWriter, r *http.Request) {
 	switch source {
 	case "request_logs_with_current_month":
 		models, err = h.queryUsageTrendModelsDetail(ctx, tr, f)
-	case "request_stats_minute":
-		models, err = h.queryUsageTrendModelsProvider(ctx, tr, f)
 	default:
 		models, err = h.queryUsageTrendModelsRollup(ctx, tr, f)
 	}
@@ -348,55 +363,27 @@ func (h *Handler) queryUsageTrendRollup(ctx context.Context, tr boardTimeRange, 
 	return h.scanUsageTrendRows(ctx, query, args)
 }
 
-// providerModelsNameJoin 把 canonical_id 映射成展示名（同 provider 下每 canonical
-// 取一条，优先 outbound_model_name）。request_stats_minute 档专用。
-const providerModelsNameJoin = `
-		LEFT JOIN (
-			SELECT DISTINCT ON (provider_id, canonical_id)
-				provider_id, canonical_id,
-				COALESCE(NULLIF(outbound_model_name, ''), raw_model_name) AS model_name
-			FROM provider_models
-			ORDER BY provider_id, canonical_id, id
-		) pm ON pm.provider_id = m.provider_id AND pm.canonical_id = m.canonical_id`
-
-const providerModelsNameExpr = `COALESCE(NULLIF(pm.model_name, ''), 'model#' || m.canonical_id::text)`
-
-// queryUsageTrendProvider 读 request_stats_minute + provider_models 展示名（仅 provider 过滤）。
-func (h *Handler) queryUsageTrendProvider(ctx context.Context, tr boardTimeRange, f usageTrendFilters) ([]usageTrendRow, error) {
-	where := "m.bucket >= $1 AND m.bucket < $2 AND m.provider_id = $3"
-	args := []any{tr.Start, tr.End, f.providerID}
-	if f.tenantID != "" {
-		args = append(args, f.tenantID)
-		where += fmt.Sprintf(" AND m.tenant_id = $%d", len(args))
-	}
-	if clause, nextArgs := usageTrendModelsWhere(providerModelsNameExpr, f.models, args); clause != "" {
-		where, args = where+clause, nextArgs
-	}
-	query := fmt.Sprintf(`
-		SELECT %s AS model,
-			%s,
-			COALESCE(SUM(m.requests), 0),
-			COALESCE(SUM(m.total_tokens), 0),
-			COALESCE(SUM(m.credits_charged), 0),
-			COALESCE(SUM(m.cost_usd), 0)
-		FROM request_stats_minute m
-		%s
-		WHERE %s
-		GROUP BY 1, 2
-		ORDER BY 2, 1
-	`, providerModelsNameExpr, sqlTrendBucket("m.bucket", tr.trendBucketMinutes()), providerModelsNameJoin, where)
-	return h.scanUsageTrendRows(ctx, query, args)
-}
-
 // queryUsageTrendDetail 读 _request_logs 视图族（带 api_key_id 过滤；provider 过滤
 // 可同时下推）。credits 口径与 rollup writer 一致（COALESCE(credits_charged, 估算)）。
 func (h *Handler) queryUsageTrendDetail(ctx context.Context, tr boardTimeRange, f usageTrendFilters) ([]usageTrendRow, error) {
+	query, args := usageTrendDetailSeriesSQL(tr, f)
+	return h.scanUsageTrendRows(ctx, query, args)
+}
+
+// usageTrendDetailSeriesSQL 拼明细档的序列 SQL（**抽成纯函数**：位置参数
+// 错位过一次 ⇒ 整条 SQL 变成 `FROM <credits 表达式> r` ⇒ 42P01「missing
+// FROM-clause entry for table r」⇒ 端点静默降级成空序列 ⇒ **页面显示「没有
+// 用量」**，而真相是「查询本身写错了」）。
+// ★ 通用式：**同类 SQL 片段超过三处**（模型口径 / 时间桶 / credits / FROM 源）
+// 时，位置参数清单迟早会错位 ⇒ ⇒ 把「哪个片段进哪个槽」写成**具名局部变量**
+// （而不是靠 fmt 的参数顺序对齐）⇒ 错位在编译期/读代码期就能看见。
+func usageTrendDetailSeriesSQL(tr boardTimeRange, f usageTrendFilters) (string, []any) {
 	creditsExpr := maas.RequestLogCreditsSQL("r", f.tenantID == "" || f.tenantID == "default")
 	where := "r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts < $2"
 	args := []any{tr.Start, tr.End}
 	if f.tenantID != "" {
 		args = append(args, f.tenantID)
-		where += fmt.Sprintf(" AND r.tenant_id = $%d", len(args))
+		where += " AND r.tenant_id = $3"
 	}
 	if f.providerID > 0 {
 		args = append(args, f.providerID)
@@ -409,6 +396,12 @@ func (h *Handler) queryUsageTrendDetail(ctx context.Context, tr boardTimeRange, 
 	if clause, nextArgs := usageTrendModelsWhere(usageTrendModelExpr, f.models, args); clause != "" {
 		where, args = where+clause, nextArgs
 	}
+
+	// 具名片段 ⇒ 槽位与片段一一对应（不再靠参数顺序对齐）。
+	modelExpr := usageTrendModelExpr
+	bucketExpr := sqlTrendBucket("r.ts", tr.trendBucketMinutes())
+	fromExpr := dbpkg.SessionFamilyTurnsSourceSQL()
+
 	query := fmt.Sprintf(`
 		SELECT %s AS model,
 			%s,
@@ -420,8 +413,8 @@ func (h *Handler) queryUsageTrendDetail(ctx context.Context, tr boardTimeRange, 
 		WHERE %s
 		GROUP BY 1, 2
 		ORDER BY 2, 1
-	`, dbpkg.SessionFamilyTurnsSourceSQL(), usageTrendModelExpr, sqlTrendBucket("r.ts", tr.trendBucketMinutes()), creditsExpr, where)
-	return h.scanUsageTrendRows(ctx, query, args)
+	`, modelExpr, bucketExpr, creditsExpr, fromExpr, where)
+	return query, args
 }
 
 func (h *Handler) scanUsageTrendRows(ctx context.Context, query string, args []any) ([]usageTrendRow, error) {
@@ -542,29 +535,9 @@ func (h *Handler) queryUsageTrendModelsRollup(ctx context.Context, tr boardTimeR
 	return scanUsageTrendModelEntries(rows)
 }
 
-func (h *Handler) queryUsageTrendModelsProvider(ctx context.Context, tr boardTimeRange, f usageTrendFilters) ([]usageTrendModelEntry, error) {
-	where := "m.bucket >= $1 AND m.bucket < $2 AND m.provider_id = $3"
-	args := []any{tr.Start, tr.End, f.providerID}
-	if f.tenantID != "" {
-		args = append(args, f.tenantID)
-		where += fmt.Sprintf(" AND m.tenant_id = $%d", len(args))
-	}
-	if clause, nextArgs := usageTrendModelsWhere(providerModelsNameExpr, f.models, args); clause != "" {
-		where, args = where+clause, nextArgs
-	}
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT %s,
-			COALESCE(SUM(m.requests), 0),
-			COALESCE(SUM(m.total_tokens), 0),
-			COALESCE(SUM(m.credits_charged), 0),
-			COALESCE(SUM(m.cost_usd), 0)
-		FROM request_stats_minute m
-		%s
-		WHERE %s
-		GROUP BY 1
-		ORDER BY 2 DESC
-		LIMIT 100
-	`, providerModelsNameExpr, providerModelsNameJoin, where), args...)
+func (h *Handler) queryUsageTrendModelsDetail(ctx context.Context, tr boardTimeRange, f usageTrendFilters) ([]usageTrendModelEntry, error) {
+	query, args := usageTrendDetailModelsSQL(tr, f)
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -572,13 +545,15 @@ func (h *Handler) queryUsageTrendModelsProvider(ctx context.Context, tr boardTim
 	return scanUsageTrendModelEntries(rows)
 }
 
-func (h *Handler) queryUsageTrendModelsDetail(ctx context.Context, tr boardTimeRange, f usageTrendFilters) ([]usageTrendModelEntry, error) {
+// usageTrendDetailModelsSQL 拼明细档的模型清单 SQL（同样是**具名片段**拼装；
+// 它的位置参数同样错过一次位 ⇒ 与序列 SQL 是同一个病根）。
+func usageTrendDetailModelsSQL(tr boardTimeRange, f usageTrendFilters) (string, []any) {
 	creditsExpr := maas.RequestLogCreditsSQL("r", f.tenantID == "" || f.tenantID == "default")
 	where := "r.request_status IN ('success', 'failure', 'rate_limited') AND r.ts >= $1 AND r.ts < $2"
 	args := []any{tr.Start, tr.End}
 	if f.tenantID != "" {
 		args = append(args, f.tenantID)
-		where += fmt.Sprintf(" AND r.tenant_id = $%d", len(args))
+		where += " AND r.tenant_id = $3"
 	}
 	if f.providerID > 0 {
 		args = append(args, f.providerID)
@@ -591,7 +566,11 @@ func (h *Handler) queryUsageTrendModelsDetail(ctx context.Context, tr boardTimeR
 	if clause, nextArgs := usageTrendModelsWhere(usageTrendModelExpr, f.models, args); clause != "" {
 		where, args = where+clause, nextArgs
 	}
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+
+	modelExpr := usageTrendModelExpr
+	fromExpr := dbpkg.SessionFamilyTurnsSourceSQL()
+
+	query := fmt.Sprintf(`
 		SELECT %s,
 			COUNT(*),
 			COALESCE(SUM(COALESCE(r.total_tokens, 0)), 0),
@@ -602,12 +581,8 @@ func (h *Handler) queryUsageTrendModelsDetail(ctx context.Context, tr boardTimeR
 		GROUP BY 1
 		ORDER BY 2 DESC
 		LIMIT 100
-	`, dbpkg.SessionFamilyTurnsSourceSQL(), usageTrendModelExpr, creditsExpr, where), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanUsageTrendModelEntries(rows)
+	`, modelExpr, creditsExpr, fromExpr, where)
+	return query, args
 }
 
 func scanUsageTrendModelEntries(rows pgx.Rows) ([]usageTrendModelEntry, error) {
