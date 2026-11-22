@@ -11,11 +11,11 @@
 //  4. resolvePageHelp 行为：声明顺序优先、:param 通配、简易虚拟键可命中。
 
 import { describe, expect, it } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { PAGE_HELP_ENTRIES, resolvePageHelp } from './pageHelpRegistry'
+import { PAGE_HELP_ENTRIES, resolvePageHelp, resolvePageHelpById } from './pageHelpRegistry'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = join(here, '..', '..')
@@ -50,7 +50,10 @@ function routerPaths(): string[] {
 
 // 虚拟匹配键：不是路由表里的真实路径，由 AppTopbar 按模式改写后传入。
 // 目前只有 /dashboard-simple（简易模式总览，与 /dashboard 同一 URL）。
-const VIRTUAL_MATCHES = new Set(['/dashboard-simple'])
+// 2026-11-23 统计标准轮新增 /dashboard-stats-standards：它**不是路由**，
+// 而是「看板」与「会话与统计」两个页签的页面内嵌帮助入口指向的正文 id
+// （页面内嵌按钮没有自己的路由 ⇒ 由 resolvePageHelpById 按内容 id 解析）。
+const VIRTUAL_MATCHES = new Set(['/dashboard-simple', '/dashboard-stats-standards'])
 
 describe('pageHelpRegistry 内容完整性', () => {
   it('注册表每个 id 都有内容文件', () => {
@@ -107,7 +110,6 @@ describe('resolvePageHelp 行为', () => {
     expect(resolvePageHelp('/dashboard')?.id).toBe('dashboard')
     expect(resolvePageHelp('/request-logs')?.id).toBe('request-logs')
   })
-
   it(':param 路由任意段命中', () => {
     expect(resolvePageHelp('/keys/k-123')?.id).toBe('key-detail')
     expect(resolvePageHelp('/admin/sessions/abc')?.id).toBe('session-detail')
@@ -125,5 +127,46 @@ describe('resolvePageHelp 行为', () => {
   it('按声明顺序取第一个命中（前缀不越权匹配）', () => {
     // /live 与 /live2 是不同路由：/live 不得吞掉 /live2
     expect(resolvePageHelp('/live2')?.id).toBe('live-stage-tree')
+  })
+})
+
+// 2026-11-23 统计标准轮：页面内嵌帮助入口（看板 / 会话与统计两个页签）。
+// 页面内嵌按钮没有自己的路由 ⇒ 用「内容 id」解析；标题键必须出自注册表
+// （页面不自带文案 ⇒ 语种切换只有一个来源）。
+describe('页面内嵌帮助（按内容 id 解析）', () => {
+  const STANDARDS_ID = 'dashboard-stats-standards'
+
+  it('resolvePageHelpById 命中统计标准正文，标题键出自注册表', () => {
+    const entry = resolvePageHelpById(STANDARDS_ID)
+    expect(entry?.id).toBe(STANDARDS_ID)
+    expect(entry?.titleKey).toBe('pageHelp.title.dashboardStatsStandards')
+  })
+
+  it('未登记的内容 id 返回 null（页面内嵌传错 id 时不崩、不串页）', () => {
+    expect(resolvePageHelpById('no-such-content-id')).toBeNull()
+    expect(resolvePageHelpById('')).toBeNull()
+  })
+
+  it('统计标准正文文件在仓内（中文 + 6 个已译语种齐全）', () => {
+    const dir = join(webRoot, 'content', 'page-help')
+    for (const locale of ['zh-CN', 'zh-TW', 'en-US', 'ja-JP', 'de-DE', 'es-ES', 'fr-FR']) {
+      expect(
+        existsSync(join(dir, `${STANDARDS_ID}.${locale}.md`)),
+        `缺正文文件: ${STANDARDS_ID}.${locale}.md`,
+      ).toBe(true)
+    }
+  })
+
+  it('统计标准正文点明两页口径差异的关键事实（口径别漂移）', () => {
+    const body = readFileSync(join(webRoot, 'content', 'page-help', `${STANDARDS_ID}.zh-CN.md`), 'utf8')
+    // 三件必须说清的事：实体不同、窗口不同、探测剔除面不同
+    expect(body).toContain('请求级')
+    expect(body).toContain('会话级')
+    expect(body).toContain('探测')
+    // 费用/请求数对照表（两页实测值）
+    expect(body).toContain('65,774')
+    expect(body).toContain('72,098')
+    expect(body).toContain('8,013.93')
+    expect(body).toContain('2,717.62')
   })
 })

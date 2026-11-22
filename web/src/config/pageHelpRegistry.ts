@@ -34,6 +34,11 @@ export interface PageHelpEntry {
 const entries: PageHelpEntry[] = [
   // ── 总览与实时面 ──
   { match: '/dashboard', id: 'dashboard', titleKey: 'pageHelp.title.dashboard' },
+  // 看板 / 会话与统计两个页签的**统计标准**（2026-11-23 一致性取证轮）：
+  // 两页的请求数与费用口径不同（请求级 vs 会话级）、窗口不同、探测剔除面
+  // 不同 ⇒ 数字本来就不该相等。这篇正文把两页逐项口径与差异写成对照表，
+  // 由两个页签**页面内嵌**的帮助按钮打开（match 是虚拟键，不是真实路由）。
+  { match: '/dashboard-stats-standards', id: 'dashboard-stats-standards', titleKey: 'pageHelp.title.dashboardStatsStandards' },
   // 简易模式总览：与 /dashboard 同一路由（HomeView 内嵌 SimpleOverviewView 按
   // useWorkMode 切换渲染）。match 用虚拟键 /dashboard-simple，AppTopbar 在简易
   // 模式下把路径改写成它 ⇒ 同一 URL 两份帮助正文互不覆盖。
@@ -161,6 +166,24 @@ export function resolvePageHelp(routePath: string): PageHelpEntry | null {
     if (pathMatches(entry.match, bare)) return entry
     // 允许调用方直接传 pattern（测试便利），也允许传真实路径命中 pattern 条目
     if (entry.match === bare) return entry
+  }
+  return null
+}
+
+/**
+ * 按内容 id 解析帮助条目（2026-11-23 统计标准轮）。
+ *
+ * 页面内嵌的帮助按钮不在路由上（例如「看板」页签里的按钮打开的是
+ * 「看板与会话统计的统计标准」这篇正文），它们没有自己的路由 ⇒ 路由
+ * 解析用不上。页面内嵌时按**内容 id** 取条目（标题键也由注册表给出，
+ * 页面不自带文案 ⇒ 语种切换只有一个来源）。
+ *
+ * @param id 内容 id（= web/content/page-help/<id>.<locale>.md 的 <id>）
+ */
+export function resolvePageHelpById(id: string): PageHelpEntry | null {
+  if (!id) return null
+  for (const entry of PAGE_HELP_ENTRIES) {
+    if (entry.id === id) return entry
   }
   return null
 }

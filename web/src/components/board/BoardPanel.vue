@@ -6,6 +6,7 @@
 // 一律映射为 custom{start,end} 走既有 start/end 查询通道。
 import { inject, computed, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import BoardOpsBar from './BoardOpsBar.vue'
 import BoardHeroRow from './BoardHeroRow.vue'
 import BoardMiniRow from './BoardMiniRow.vue'
@@ -14,6 +15,7 @@ import BoardFilterBar from './BoardFilterBar.vue'
 import BoardModelDist from './BoardModelDist.vue'
 import BoardUsageTrendSection from './BoardUsageTrendSection.vue'
 import BoardDistGrid from './BoardDistGrid.vue'
+import PageHelpDrawer from '../help/PageHelpDrawer.vue'
 import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
 import {
   defaultBoardTimeRange,
@@ -43,6 +45,13 @@ if (!boardState) {
 }
 
 const router = useRouter()
+const { t } = useI18n()
+
+// 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
+// 看板与「会话与统计」的请求数/费用口径不同（请求级 vs 会话级）、窗口不同、
+// 探测剔除面不同 ⇒ 两页数字本来就不该相等。这枚按钮打开
+// 《看板与会话统计的统计标准》正文（含两页逐项口径对照表）。
+const statsStandardsHelpId = 'dashboard-stats-standards'
 
 const operational = computed(() => boardState.operational?.value ?? null)
 const board = computed(() => boardState.board.value)
@@ -138,6 +147,15 @@ const trendExplorerQuery = computed(() => {
     >
       <template #ops>
         <BoardOpsBar :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
+      </template>
+      <!-- 2026-11-23 统计标准轮：只挂在顶部（紧凑）这条筛选条上——
+           同一个筛选条在本页被实例化两次，两处都放会重复。 -->
+      <template #help>
+        <PageHelpDrawer
+          route-path="/dashboard"
+          :content-id="statsStandardsHelpId"
+          :label="t('pageHelp.button.standards')"
+        />
       </template>
     </BoardFilterBar>
     <BoardHeroRow :board="board" :loading="loading" @open-errors="scrollToDist" />

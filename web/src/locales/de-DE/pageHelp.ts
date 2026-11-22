@@ -8,9 +8,13 @@ export default {
   emptyNoResult: 'Keinepassende Stelle in den Hinweisen dieser Seite. Anderes Stichwort versuchen.',
   emptyNoContent: 'Diese Seite hat noch keine Datenhinweise. Bitte einen Administrator ergänzen.',
   fallbackTitle: 'Datenhinweise dieser Seite',
+  button: {
+    standards: 'Berechnungsregeln',
+  },
   title: {
     dashboard: 'Übersicht',
     dashboardSimple: 'Einfache Übersicht',
+    dashboardStatsStandards: 'Berechnungsregeln für Board und Sitzungsstatistik',
     liveTopology: 'Live-Topologie',
     liveStageTree: 'Phasenbaum',
     requestDetail: 'Anfragedetails',

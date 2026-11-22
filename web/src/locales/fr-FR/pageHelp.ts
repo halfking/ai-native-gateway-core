@@ -8,9 +8,13 @@ export default {
   emptyNoResult: 'Aucune note de cette page ne correspond à cette phrase. Essayez un autre mot-clé.',
   emptyNoContent: 'Cette page n’a pas encore de notes de données. Demandez à un administrateur de les ajouter.',
   fallbackTitle: 'Notes de données de cette page',
+  button: {
+    standards: 'Règles de calcul',
+  },
   title: {
     dashboard: 'Aperçu',
     dashboardSimple: 'Aperçu simplifié',
+    dashboardStatsStandards: 'Règles de calcul du tableau de bord et des statistiques de session',
     liveTopology: 'Topologie en direct',
     liveStageTree: 'Arbre des étapes',
     requestDetail: 'Détail de requête',

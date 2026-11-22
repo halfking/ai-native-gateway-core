@@ -8,9 +8,13 @@ export default {
   emptyNoResult: 'لا توجد ملاحظة في هذه الصفحة تطابق هذه العبارة. جرّب كلمة مفتاحية أخرى.',
   emptyNoContent: 'لا تحتوي هذه الصفحة على ملاحظات بيانات بعد. اطلب من المسؤول إضافتها.',
   fallbackTitle: 'ملاحظات بيانات هذه الصفحة',
+  button: {
+    standards: 'قواعد الحساب',
+  },
   title: {
     dashboard: 'نظرة عامة',
     dashboardSimple: 'نظرة عامة مبسطة',
+    dashboardStatsStandards: 'قواعد حساب لوحة المعلومات وإحصائيات الجلسات',
     liveTopology: 'المخطط المباشر',
     liveStageTree: 'شجرة المراحل',
     requestDetail: 'تفاصيل الطلب',

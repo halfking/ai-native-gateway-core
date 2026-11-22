@@ -8,9 +8,13 @@ export default {
   emptyNoResult: 'No note on this page matches that phrase. Try another keyword.',
   emptyNoContent: 'This page has no data notes yet. Ask an administrator to add them.',
   fallbackTitle: 'Data notes for this page',
+  button: {
+    standards: 'Calculation rules',
+  },
   title: {
     dashboard: 'Overview',
     dashboardSimple: 'Simple overview',
+    dashboardStatsStandards: 'Calculation standards for the board and session statistics',
     liveTopology: 'Live topology',
     liveStageTree: 'Request stage tree',
     requestDetail: 'Request detail',

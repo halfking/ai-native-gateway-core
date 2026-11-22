@@ -8,9 +8,13 @@ export default {
   emptyNoResult: '本頁說明裡沒有符合這句話的內容，換個關鍵詞再試',
   emptyNoContent: '這一頁還沒有配置資料說明，請聯絡管理員補充。',
   fallbackTitle: '本頁資料說明',
+  button: {
+    standards: '統計標準',
+  },
   title: {
     dashboard: '總覽',
     dashboardSimple: '簡易總覽',
+    dashboardStatsStandards: '看板與會話統計的統計標準',
     liveTopology: '即時拓撲',
     liveStageTree: '請求階段樹',
     requestDetail: '請求詳情',

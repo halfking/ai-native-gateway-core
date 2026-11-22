@@ -8,7 +8,7 @@ Todos los números de la página proceden del registro de cada llamada a un mode
 
 ## Cómo se calcula el intervalo de tiempo
 
-- Los tres intervalos rápidos «Hoy», «Últimos 7 días» y «Últimos 30 días» se dividen por días naturales; el inicio de la ventana de estadísticas es la medianoche del día actual (hora universal Coordinada UTC).
+- Los tres intervalos rápidos «Hoy», «Últimos 7 días» y «Últimos 30 días» se dividen por días naturales; la ventana de estadísticas empieza a la medianoche de la **zona horaria del sistema (Asia/Shanghai por defecto)** y termina en el momento actual (no al final del día).
 - En un intervalo personalizado, se seleccionan dos días y se agrega todo el tráfico de ambos (desde la medianoche del primer día hasta la medianoche del último, incluido todo el último día).
 - La página se actualiza automáticamente cada 10 segundos; si el canal en tiempo real está conectado, las solicitudes recién completadas se suman de inmediato, sin esperar la actualización.
 
@@ -20,9 +20,11 @@ Todos los números de la página proceden del registro de cada llamada a un mode
 | Tasa de éxito | Proporción de solicitudes que devolvieron una respuesta correctamente | Número de solicitudes con estado «Éxito» ÷ Número total |
 | Total de Token | Volumen de texto consumido durante este periodo (entrada + salida) | Suma del volumen de Token de entrada y del volumen de Token de salida de cada solicitud |
 | Coste total | Importe de la facturación en USD durante este periodo | Suma del coste de cada solicitud (en USD) |
-| Créditos totales | Número de créditos según el criterio de facturación interno de la plataforma | Suma de los créditos deducidos en cada solicitud |
+| Créditos totales | Número de créditos según el criterio de facturación interno de la plataforma | ★ Muestra el **delta en vivo posterior a la línea base en caché**, por lo que no cambia con el intervalo (véase abajo) |
 
 Nota: **El coste (en USD) y los créditos son dos criterios de facturación distintos y no se suman**. El coste corresponde al importe en USD que se paga al proveedor de origen; los créditos son la unidad con la que esta plataforma factura a los inquilinos. Sus valores no son comparables numéricamente y la página los muestra por separado.
+
+La tarjeta de créditos tiene una regla particular: la columna de créditos de la tabla de hechos a nivel de solicitud está siempre a 0, así que lo que muestra es el «delta en vivo posterior a la línea base»: cambiar entre «Hoy / Últimos 7 días / Últimos 30 días» deja la tarjeta exactamente igual. La tendencia de uso de la misma página lleva otra suma de créditos (otra fuente) que no coincide con la tarjeta. Para una contabilidad de créditos fiable use las páginas «Uso y coste» y «Conciliación».
 
 ## Número de errores y causas de los fallos
 
@@ -42,3 +44,7 @@ Nota: **El coste (en USD) y los créditos son dos criterios de facturación dist
 3. Cuando la tarjeta de créditos muestra «No fiable/No calculado», significa que la fuente de datos de la contabilidad de créditos no está disponible temporalmente; el número de solicitudes y el coste siguen siendo reales.
 4. El tráfico de sondeo no se incluye en las estadísticas de negocio: las solicitudes de comprobación de estado del propio sistema se excluyen de las solicitudes totales y del coste.
 5. La actualización en tiempo real y el cálculo de los gráficos pueden diferir en unos segundos: los números de las tarjetas (incluidas las sumas en tiempo real) pueden ser unas pocas solicitudes superiores a los de los gráficos, lo cual es normal.
+
+## Comparación con la pestaña «Estadísticas de sesión»
+
+Esta página usa el criterio de **nivel de solicitud** (una llamada a modelo cuenta como una fila), mientras que «Estadísticas de sesión» usa el criterio de **nivel de sesión** (una sesión cuenta como una fila con sus valores acumulados); la ventana temporal y la exclusión de sondeo también difieren ⇒ los números no deben coincidir. Para un contraste posición por posición, use el botón **Reglas de cálculo** de las pestañas «Panel» y «Estadísticas de sesión» (allí se listan ambos criterios y sus diferencias).

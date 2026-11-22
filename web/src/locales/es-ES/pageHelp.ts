@@ -8,9 +8,13 @@ export default {
   emptyNoResult: 'Ninguna nota de esta página coincide con esa frase. Pruebe otra palabra clave.',
   emptyNoContent: 'Esta página aún no tiene notas de datos. Pida a un administrador que las añada.',
   fallbackTitle: 'Notas de datos de esta página',
+  button: {
+    standards: 'Reglas de cálculo',
+  },
   title: {
     dashboard: 'Resumen',
     dashboardSimple: 'Resumen simple',
+    dashboardStatsStandards: 'Reglas de cálculo del panel y de las estadísticas de sesión',
     liveTopology: 'Topología en vivo',
     liveStageTree: 'Árbol de etapas',
     requestDetail: 'Detalle de solicitud',

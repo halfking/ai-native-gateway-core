@@ -11,9 +11,13 @@ export default {
   emptyNoResult: '本页说明里没有匹配这句话的内容，换个关键词再试',
   emptyNoContent: '这一页还没有配置数据说明，请联系管理员补充。',
   fallbackTitle: '本页数据说明',
+  button: {
+    standards: '统计标准',
+  },
   title: {
     dashboard: '总览页数据说明',
     dashboardSimple: '简易总览页数据说明',
+    dashboardStatsStandards: '看板与会话统计的统计标准',
     liveTopology: '实时拓扑页数据说明',
     liveStageTree: '请求阶段树页数据说明',
     requestDetail: '请求详情页数据说明',

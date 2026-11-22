@@ -8,7 +8,7 @@ Alle Zahlen auf der Seite stammen aus den Protokollen der einzelnen Modellaufruf
 
 ## Berechnung des Zeitraums
 
-- Die drei Schnellbereiche „Heute“, „Letzte 7 Tage“ und „Letzte 30 Tage“ werden nach Kalendertagen unterteilt. Das statistische Zeitfenster beginnt um null Uhr des aktuellen Tages (koordinierte Weltzeit UTC).
+- Die drei Schnellbereiche „Heute“, „Letzte 7 Tage“ und „Letzte 30 Tage“ werden nach Kalendertagen unterteilt. Das statistische Zeitfenster beginnt um null Uhr in der **Systemzeitzone (Standard Asia/Shanghai)** und endet im aktuellen Moment (nicht am Tagesende).
 - Bei einem benutzerdefinierten Zeitraum werden die Daten der beiden ausgewählten Tage aggregiert (von null Uhr des ersten Tages bis null Uhr des letzten Tages, einschließlich des gesamten letzten Tages).
 - Die Seite wird alle 10 Sekunden automatisch aktualisiert. Ist der Echtzeitkanal online, werden neu abgeschlossene Anfragen sofort addiert; ein Warten auf die Aktualisierung ist nicht erforderlich.
 
@@ -20,9 +20,11 @@ Alle Zahlen auf der Seite stammen aus den Protokollen der einzelnen Modellaufruf
 | Erfolgsquote | Welcher Anteil der Anfragen normal beantwortet wurde | Anzahl der Einträge mit Status „Erfolg“ ÷ Gesamtzahl der Einträge |
 | Gesamte Token-Zahl | Wie viele Token in diesem Zeitraum verbraucht wurden (Eingabe + Ausgabe) | Summe der Eingabe- und Ausgabe-Token jedes Eintrags |
 | Gesamtkosten | Die in US-Dollar berechneten Kosten in diesem Zeitraum | Summe der Kosten jedes Eintrags (in US-Dollar) |
-| Gesamtpunkte | Die Summe der Punkte gemäß der internen Abrechnung der Plattform | Summe der je Eintrag abgezogenen Punkte |
+| Gesamtpunkte | Die Summe der Punkte gemäß der internen Abrechnung der Plattform | ★ Zeigt derzeit die **Live-Differenz nach dem Cache-Stand** und ändert sich daher nicht mit dem Zeitfenster (siehe unten) |
 
 Hinweis: **Kosten (USD) und Punkte verwenden zwei getrennte Berechnungsgrundlagen und werden nicht addiert**. Die Kosten entsprechen den US-Dollar-Kosten gegenüber dem vorgelagerten Anbieter. Punkte sind die Einheit, mit der die Plattform ihre Mandanten abrechnet. Beide Werte sind nicht direkt vergleichbar und werden daher getrennt angezeigt.
+
+Die Punktekarte folgt einer besonderen Regel: Die Punktespalte der Anfrage-Faktentabelle ist derzeit immer 0, angezeigt wird die „Live-Differenz nach dem Baseline-Stand“ — der Wechsel zwischen „Heute / Letzte 7 Tage / Letzte 30 Tage“ lässt die Karte unverändert. Der Nutzungstrend derselben Seite führt eine eigene Punktsumme (aus einer anderen Quelle), die nicht der Zahl der Karte entspricht. Für ein belastbares Punktekonto nutzen Sie die Seiten „Nutzung & Kosten“ und „Abgleich“.
 
 ## Fehleranzahl und Fehlerursachen
 
@@ -42,3 +44,7 @@ Hinweis: **Kosten (USD) und Punkte verwenden zwei getrennte Berechnungsgrundlage
 3. Wenn auf der Punktekarte „Nicht vertrauenswürdig/Nicht berechnet“ angezeigt wird, fehlt vorübergehend die Datenquelle für die Punkteabrechnung. Die Anfragezahl und die Kosten sind dennoch korrekt.
 4. Prüfdatenverkehr wird nicht in den geschäftlichen Statistiken berücksichtigt: Die internen Health-Check-Anfragen des Systems werden weder bei den Gesamtanfragen noch bei den Kosten einbezogen.
 5. Echtzeitaktualisierung und Diagramme können um wenige Sekunden voneinander abweichen: Die Kartenzahlen einschließlich der in Echtzeit addierten Anfragen können daher etwas höher als die Diagramme ausfallen. Dies ist normal.
+
+## Vergleich mit dem Tab „Sitzungsstatistik“
+
+Diese Seite nutzt die **Anfrage-Ebene** (ein Modellaufruf zählt als eine Zeile), der Tab „Sitzungsstatistik“ die **Sitzungs-Ebene** (eine Sitzung zählt als eine Zeile mit den kumulierten Werten); Zeitfenster und Probe-Ausschluss unterscheiden sich ebenfalls ⇒ die Zahlen sollen nicht übereinstimmen. Für den Abgleich Position für Position nutzen Sie die Schaltfläche **Berechnungsregeln** in den Tabs „Board“ und „Sitzungsstatistik“ (dort stehen beide Berechnungsgrundlagen und die Unterschiede nebeneinander).

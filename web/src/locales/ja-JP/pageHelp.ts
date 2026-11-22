@@ -8,9 +8,13 @@ export default {
   emptyNoResult: 'このページの説明に一致する文がありません。別のキーワードをお試しください。',
   emptyNoContent: 'このページにはまだデータ説明がありません。管理者に追加を依頼してください。',
   fallbackTitle: 'このページのデータ説明',
+  button: {
+    standards: '集計ルール',
+  },
   title: {
     dashboard: '概要',
     dashboardSimple: '簡易モード概要',
+    dashboardStatsStandards: 'ボードとセッション統計の集計ルール',
     liveTopology: 'ライブトポロジ',
     liveStageTree: 'リクエスト段階ツリー',
     requestDetail: 'リクエスト詳細',

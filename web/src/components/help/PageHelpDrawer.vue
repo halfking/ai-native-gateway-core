@@ -18,18 +18,36 @@ import { ElDrawer, ElIcon } from 'element-plus'
 import { QuestionFilled, Close } from '@element-plus/icons-vue'
 import ManualInline from './ManualInline.vue'
 import { parseMarkdown, inlineText, type ManualBlock } from '../../lib/markdown'
-import { resolvePageHelp } from '../../config/pageHelpRegistry'
+import { resolvePageHelp, resolvePageHelpById } from '../../config/pageHelpRegistry'
 
 const props = defineProps<{
   /** 当前路由 path（AppTopbar 传入，含 query 亦可；内部自行剥离） */
   routePath: string
+  /**
+   * 2026-11-23 统计标准轮：**页面内嵌**帮助按钮用的显式内容 id。
+   *
+   * 页面内嵌的帮助入口不在路由上（例如「看板」页签里的按钮打开
+   * 「看板与会话统计的统计标准」），路由解析用不上 ⇒ 给 contentId 时
+   * 按内容 id 取条目（标题键同样出自注册表，页面不自带文案）。
+   * 不给时保持原行为：按 routePath 解析。
+   */
+  contentId?: string
+  /**
+   * 2026-11-23：触发按钮文案。给了就渲染「图标 + 文字」形态（页面内嵌用，
+   * 让用户知道点的是「统计标准」而不是又一个问号）；不给则保持右上角
+   * 纯图标形态（AppTopbar 用）。
+   */
+  label?: string
 }>()
 
 const open = ref(false)
 
 const { t, locale } = useI18n()
 
-const entry = computed(() => resolvePageHelp(props.routePath))
+const entry = computed(() =>
+  props.contentId ? resolvePageHelpById(props.contentId) : resolvePageHelp(props.routePath),
+)
+
 
 // 编译期全量加载帮助正文（Vite ?raw；构建期确定，无运行时网络请求）。
 // ★ 路径按本文件位置解析：src/components/help/ → ../../../content/page-help/
@@ -104,7 +122,7 @@ const hasFilteredResults = computed(() => filtered.value.length > 0)
 
 // 切页时收起抽屉并清空搜索（防止上一页的过滤词残留下页）
 watch(
-  () => props.routePath,
+  () => [props.routePath, props.contentId],
   () => {
     open.value = false
     keyword.value = ''
@@ -125,11 +143,14 @@ watch(
   <button
     type="button"
     class="page-help-trigger"
+    :class="{ 'page-help-trigger--labeled': !!label }"
     :aria-label="t('pageHelp.open')"
     :title="t('pageHelp.open')"
+    data-testid="page-help-trigger"
     @click.stop="open = true"
   >
     <el-icon :size="16"><QuestionFilled /></el-icon>
+    <span v-if="label" class="page-help-trigger__label">{{ label }}</span>
   </button>
 
   <ElDrawer
@@ -245,6 +266,32 @@ watch(
 .page-help-trigger:focus-visible {
   color: var(--accent);
   background: var(--surface-soft);
+}
+
+/* 页面内嵌形态（2026-11-23）：图标 + 文字的胶囊按钮——右上角纯问号形态
+   在页面里语义不清（用户不知道点的是「统计标准」还是别的帮助）。 */
+.page-help-trigger--labeled {
+  width: auto;
+  height: auto;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.page-help-trigger--labeled:hover,
+.page-help-trigger--labeled:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.page-help-trigger__label {
+  line-height: 1.4;
 }
 
 .page-help-header {
