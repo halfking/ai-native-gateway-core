@@ -632,7 +632,15 @@ function onBlankClick() {
      模型层 + MODEL_TO_PROVIDER_GAP(72) + 供应端层 + 底边留白 ≈ 620px。
      设置 620px 确保即使在最小画布下也能容纳所有层而不超出。 */
   flex: 1 1 auto;
-  min-height: 620px;
+    /* 2026-11-23 round 16: 620px measured NOT enough -> 640px.
+       Measured (not estimated): at h=620 the lowest node card bottom = 631px
+       => overflow 11px; the previous additive estimate missed ~11px.
+       Scan: h=620 overflows, h>=630 does not -> take 640px (round up + margin).
+       This value guarantees the container is tall enough for the layout;
+       lowering it clips the bottom node cards (guarded by
+       liveTopologyLayout.test.ts 'node card exceeds canvas bottom', whose
+       scan floor is derived from THIS line). */
+  min-height: 640px;
   overflow: hidden;
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--kx-border) 60%, transparent) 1px, transparent 0) 0 0 / 22px 22px,

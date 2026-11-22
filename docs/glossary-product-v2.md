@@ -95,7 +95,7 @@
 | **外部成本** | External Cost | 计费体系里的积分消耗 | external_cost_credits |
 | **单价** | Unit Price | 按千 Token 计价；unit_price_minor 以 1m_tokens 为基准 | unit_price_minor |
 | **月度账单** | Monthly Bill | 按租户/团队/用户出账；每月 1 日生成上月账单 | maas_monthly_bills |
-| **优惠券** | Coupon | 抵扣券；coupon_amount 直接减免账单 | coupon |
+| **优惠券** | Coupon | 抵扣券；`maas_coupons.credits_amount` 直接减免账单 | coupon |
 | **充值** | Top-up | 预付费充值；增加租户积分余额 | topup |
 | **欠费** | Arrears | 积分余额不足；warn 模式放行+告警 | arrears |
 | **对账** | Reconciliation | 网关记账 vs 供应商账单双视角对照 | reconciliation |
@@ -106,7 +106,7 @@
 | **定价策略** | Pricing Strategy | 模型定价规则；按供应商/模型/租户维度 | pricing_strategy |
 | **计费周期** | Billing Cycle | 按自然月；UTC 月界 | billing_cycle |
 | **免费池** | Free Pool | 免费额度池；供应商提供的免费 API 凭据 | free_pool |
-| **预算超限** | Budget Exceeded | 429 错误码；tenant_budget_exceeded / key_budget_exceeded | budget_exceeded |
+| **预算超限** | Budget Exceeded | 租户级 `tenant_budget_exceeded`（429）；Key 级 `budget_exhausted`（402） | budget_exceeded |
 | **月累计** | Month-to-Date (MTD) | 本月 1 日 00:00 至今的累计消费 | mtd |
 
 ---
@@ -126,7 +126,7 @@
 | **越狱** | Jailbreak | 绕过模型安全机制的攻击 | jailbreak |
 | **输出合规** | Output Compliance | 模型返回内容合规检查 | output_compliance |
 | **工具权限** | Tool Permission | MCP 工具调用白名单；tool allowlist | tool_permission |
-| **审计日志** | Audit Log | 操作留痕；admin_audit_logs 表 | audit_log |
+| **审计日志** | Audit Log | 操作留痕；`routing_audit_log` 表（另有 settings_audit / auto_tune_audit / output_compliance_audit） | audit_log |
 | **凭据监控** | Credential Monitor | API 密钥泄漏监控 | credential_monitor |
 | **异常检测** | Anomaly Detection | 异常行为识别；format_anomalies / request_anomalies | anomaly |
 | **合规率** | Compliance Rate | 合规会话占比；合规/警告/违规三档 | compliance_rate |
@@ -166,7 +166,7 @@
 | **回滚** | Rollback | 切回旧版本；蓝绿双槽保留回滚锚 | rollback |
 | **门禁** | Gate / Gatekeeper | 部署前置检查；sqlguard / vitest 测试门 | gate |
 | **列存归档** | Columnar Archive | 热分区按月归档；columnar 表压缩 8-10× | columnar_archive |
-| **分区** | Partition | 按月分区表；usage_facts_YYYYMM | partition |
+| **分区** | Partition | 按日分区表；usage_facts_YYYYMMDD | partition |
 | **备份** | Backup | 配置文件归档；/opt/.../backups/ | backup |
 | **日志轮转** | Log Rotation | 保留 N 份备份；删除超期日志 | log_rotation |
 

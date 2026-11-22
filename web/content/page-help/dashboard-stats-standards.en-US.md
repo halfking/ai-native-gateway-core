@@ -58,7 +58,7 @@ For a trustworthy credit ledger, use the "Usage & Cost" and "Reconciliation" pag
 | Average cost per session / per request | Total cost ÷ sessions (÷ requests) | The denominator is the session-cumulative value |
 | Success rate / cache rate (aligned row) | Successful rows ÷ total rows from the request-level view | Only the request-level source has these two |
 | Session-analytics aligned row | Materialized-view session-level aggregate | Refreshed every 15 minutes; window = whole Shanghai calendar days |
-| Top 5 users / Top 5 providers | Session-analytics overview endpoint | The provider is derived from the model-name prefix and ranked by request count; **no cost** is included |
+| Top 5 users / Top 5 providers | Session-analytics ranking endpoints (users / models / providers / tasks) | The provider is aggregated by SQL over `model_usage_aggregates.provider` (not derived from the model-name prefix); **cost is included** and cost sorting is supported; the four Top 5 dimensions render on Session Analytics → Users |
 | Turns cross-check | Session request count vs turns count | When the gap exceeds 10% the page shows a notice |
 
 ### The session universe (which sessions are counted)
@@ -107,7 +107,7 @@ Matching each gap to its cause:
 
 ## Known limitations (measured 2026-11-23)
 
-1. **Session-side cost and request count are inflated (double counting, not yet fixed)**: the cost and request count of Session & Statistics come from the session-summary aggregation, but `sessions` is a **day-partitioned session history** (the same session gets a new row every day) and the statistics join does not de-duplicate per session ⇒ the same session is counted several times. Measured on the production database on 2026-11-23 (same 7-day window): the session-side cost comes out about **61 %** and the request count about **36 %** above the values de-duplicated per session (the most expensive session was counted 3 times). **The Board numbers (request level) are not affected** ⇒ when comparing cost, use the Board, or de-duplicate the session-side numbers first.
+1. **Session-side cost and request count are inflated (double counting, fixed on `main` on 2026-11-23)**: the cost and request count of Session & Statistics come from the session-summary aggregation, but `sessions` is a **day-partitioned session history** (the same session gets a new row every day) and the statistics join does not de-duplicate per session ⇒ the same session is counted several times. Measured on the production database on 2026-11-23 (same 7-day window, **pre-fix figures**): the session-side cost comes out about **61 %** and the request count about **36 %** above the values de-duplicated per session (the most expensive session was counted 3 times). **That double counting has been fixed**: the session-universe join now de-duplicates on `(session_id, tenant_id)` (`DISTINCT ON`) and the three materialized views were updated together with migration 994 ⇒ the 61 %／36 % figures above are **pre-fix** measurements. **The known limitation that remains is D1 (over-aggressive probe exclusion, orthogonal to this item)**; **the Board numbers (request level) were never affected** ⇒ when comparing cost, use the Board.
 2. The board credits card does not change with the time range (see above).
 3. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).
 4. Probe exclusion does not remove the same traffic on both sides (see above).
