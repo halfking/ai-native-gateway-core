@@ -13,11 +13,26 @@ import (
 type ProviderDiscoveryHook struct {
 	store  *InMemoryStore
 	prober *Prober
+	// catalog 是**真实目录**（★ 可后绑定：★ 目录在管线构建之后才就位）。
+	// nil ⇒ 回落内存 store（★ 老行为，★ demo 目录）。
+	catalog DiscoveryCatalog
 }
 
 // NewProviderDiscoveryHook 创建发现 Hook
 func NewProviderDiscoveryHook(store *InMemoryStore, prober *Prober) *ProviderDiscoveryHook {
 	return &ProviderDiscoveryHook{store: store, prober: prober}
+}
+
+// SetCatalog 注入真实目录（★ 可后绑定）。
+//
+// ★ 为什么需要「后绑定」：★ 目录依赖的 DB 客户端与 provider client 在
+// 管线构建**之后**才注入（★ 与 PromptInjectionHook.BindDetector 同款问题、
+// 同款解法）⇒ ★ 构建时刻只能挂内存 demo 目录、★ 真实目录到位后再换。
+func (h *ProviderDiscoveryHook) SetCatalog(c DiscoveryCatalog) {
+	if h == nil {
+		return
+	}
+	h.catalog = c
 }
 
 // Name 返回 Hook 名称
@@ -31,27 +46,77 @@ func (h *ProviderDiscoveryHook) Enabled(ctx context.Context, env *domain.Pipelin
 	return env != nil
 }
 
-// discoveryCandidate 是发现结果在 env.Metadata 里的序列化形状。
-// 抽成包级类型是为了让严格版与 advisory 版产出**同形**的候选
+// DiscoveryCandidate 是发现结果在 env.Metadata 里的序列化形状。
+// 抽成包级**导出**类型是为了让严格版与 advisory 版产出**同形**的候选
 // （否则下游按类型断言会拿到两种形状）。
-type discoveryCandidate struct {
+//
+// ★ 2026-11-23（N3 接线）：导出它还有一个更重要的理由 ——
+// ★ **让「目录」直接产出候选，而不是产出 provider 再由 hook 映射**。
+//
+// 真实目录的粒度是 **provider ⨝ model ⨝ binding(credential)** ⇒ 同一个
+// provider 的同一个模型可以有多条 binding（多凭据）⇒ 「候选 ↔ provider」
+// **不再是 1:1** ⇒ 若仍让 hook 从 provider 映射，候选的凭据身份就只能靠
+// 「provider 的哪一列充当凭据 id」这种约定 ⇒ ★ 在内存 demo 目录里恰好成立
+// （provider id 兼任 credential id）、★ 在真实目录里**不成立**
+// ⇒ ★ 这正是原设计稿列为「★ 最容易做错的一步」的那一行。
+//
+// ⇒ 目录直接产出候选 ⇒ **凭据身份由目录给出、hook 不再猜** ⇒ 这一类错误
+// 从结构上消失（★ 而不是靠一条纪律去防）。
+type DiscoveryCandidate struct {
 	CredentialID string
 	Provider     string
 	Model        string
 	Priority     int
 }
 
+// DiscoveryCatalog 是 discovery 阶段需要的**只读**目录视图。
+//
+// ★ 契约（三条，★ 每条都对应一类会「静默给错答案」的坑）：
+//
+//	① CredentialID 必须是**真实凭据 id**
+//	   （★ credential_model_bindings.credential_id），★ 不是 provider id；
+//	② 只返回**当前可用**的条目 —— ★ 死活口径由目录自己负责
+//	   （★ 见 cmd/gateway 的 routerDiscoveryCatalog：★ 它直接复用路由的
+//	   **权威候选查询**、★ 不自己复制门槛 ⇒ ★ 不会与路由漂移）；
+//	③ 失败必须返回 error —— ★ advisory 版会把 error 降级成 metadata 里的
+//	   `store_error` 状态、★ **绝不中止管线**（★ advisory 的基本契约）。
+type DiscoveryCatalog interface {
+	FindByModel(ctx context.Context, model, tenantID string) ([]DiscoveryCandidate, error)
+}
+
 // buildDiscoveryCandidates 把健康 provider 列表转成候选。
-func buildDiscoveryCandidates(healthy []*Provider, model string) []discoveryCandidate {
-	candidates := make([]discoveryCandidate, 0, len(healthy))
+//
+// ★ 这是**内存 demo 目录**那条老路径的映射（★ catalog 路径不走这里）。
+// ★ demo 目录里 provider id 兼任凭据身份 ⇒ CredentialID 取 p.ID；
+// ★ ★ 真实目录**不走这条路径** ⇒ ★ 取错列的那类错误不会发生在这里。
+func buildDiscoveryCandidates(healthy []*Provider, model string) []DiscoveryCandidate {
+	candidates := make([]DiscoveryCandidate, 0, len(healthy))
 	for _, p := range healthy {
-		candidates = append(candidates, discoveryCandidate{
-			CredentialID: p.ID, // provider id 作为 candidate id
+		candidates = append(candidates, DiscoveryCandidate{
+			CredentialID: p.ID, // provider id 作为 candidate id（★ demo 目录的老行为）
 			Provider:     p.ID,
 			Model:        model,
 		})
 	}
 	return candidates
+}
+
+// candidatesFor 取候选：优先用注入的**真实目录**，否则回落到内存 store。
+//
+// ★ 注意：catalog 路径**不再过 Prober.FilterHealthy** —— ★ 目录返回的
+// 已经是「当前可路由」的条目（★ 死活口径在目录里），★ 再套一层进程内
+// 健康判定只会把可用条目误杀（★ Prober 的判据是 Provider.Status()，
+// ★ 对目录条目恒为 active）。
+func (h *ProviderDiscoveryHook) candidatesFor(ctx context.Context, model, tenantID string) ([]DiscoveryCandidate, error) {
+	if h.catalog != nil {
+		return h.catalog.FindByModel(ctx, model, tenantID)
+	}
+	all, err := h.store.FindByModel(model)
+	if err != nil {
+		return nil, err
+	}
+	healthy := h.prober.FilterHealthy(all)
+	return buildDiscoveryCandidates(healthy, model), nil
 }
 
 // Execute 查找支持请求模型的 provider
@@ -60,16 +125,14 @@ func (h *ProviderDiscoveryHook) Execute(ctx context.Context, env *domain.Pipelin
 	if model == "" {
 		return nil // 无模型信息跳过
 	}
-	all, err := h.store.FindByModel(model)
+	candidates, err := h.candidatesFor(ctx, model, env.TenantID)
 	if err != nil {
 		return err
 	}
-	healthy := h.prober.FilterHealthy(all)
-	if len(healthy) == 0 {
+	if len(candidates) == 0 {
 		return errors.New("provider: no healthy provider for model " + model)
 	}
-	// 序列化为 streaming.Candidate 格式
-	candidates := buildDiscoveryCandidates(healthy, model)
+	// 序列化为 discovery 候选格式
 	env.Metadata["provider_candidates"] = candidates
 	env.Metadata["provider_count"] = len(candidates)
 	return nil
@@ -120,6 +183,14 @@ func NewAdvisoryDiscoveryHook(store *InMemoryStore, prober *Prober) *AdvisoryDis
 	return &AdvisoryDiscoveryHook{hook: NewProviderDiscoveryHook(store, prober)}
 }
 
+// SetCatalog 注入真实目录（★ 可后绑定；★ 与 ProviderDiscoveryHook.SetCatalog 同款）。
+func (h *AdvisoryDiscoveryHook) SetCatalog(c DiscoveryCatalog) {
+	if h == nil {
+		return
+	}
+	h.hook.SetCatalog(c)
+}
+
 // Name 返回 Hook 名称（与严格版一致，便于按名字定位阶段）。
 func (h *AdvisoryDiscoveryHook) Name() string { return h.hook.Name() }
 
@@ -137,18 +208,16 @@ func (h *AdvisoryDiscoveryHook) Execute(ctx context.Context, env *domain.Pipelin
 	if model == "" {
 		return nil // 无模型信息跳过（与严格版一致）
 	}
-	all, err := h.hook.store.FindByModel(model)
+	candidates, err := h.hook.candidatesFor(ctx, model, env.TenantID)
 	if err != nil {
 		setDiscoveryStatus(env, "store_error", err.Error())
 		return nil
 	}
-	healthy := h.hook.prober.FilterHealthy(all)
-	if len(healthy) == 0 {
+	if len(candidates) == 0 {
 		setDiscoveryStatus(env, "no_healthy_provider",
 			"provider catalog has no healthy entry for model "+model)
 		return nil
 	}
-	candidates := buildDiscoveryCandidates(healthy, model)
 	env.Metadata["provider_candidates"] = candidates
 	env.Metadata["provider_count"] = len(candidates)
 	setDiscoveryStatus(env, "ok", "")

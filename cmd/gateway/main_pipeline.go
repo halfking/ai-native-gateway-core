@@ -240,6 +240,19 @@ type v2DispatchDeps struct {
 	ProviderStore    *provider.InMemoryStore
 	ProviderProber   *provider.Prober
 
+	// ProviderCatalog 是 discovery 阶段的**真实目录**（★ N3 接线）。
+	//
+	// ★ nil ⇒ discovery 回落内存 demo 目录（★ 老行为：★ 对任何真实模型都
+	// 报「no healthy provider」）。★ 非 nil ⇒ 用它给出的候选。
+	//
+	// ★ 它由 main.go 在 providerClient 就绪后**后绑定**
+	// （★ SetV2DispatchProviderCatalog）—— ★ 因为目录依赖 provider client，
+	// ★ 而 provider client 在管线构建之后才注入。
+	ProviderCatalog provider.DiscoveryCatalog
+	// ProviderDiscoveryHook 是 provider_discovery 阶段挂的那个 hook
+	// （★ 存下来是为了让后绑定能触达它）。
+	ProviderDiscoveryHook *provider.AdvisoryDiscoveryHook
+
 	// AdminAPIKey is the static admin token (cfg.AdminAPIKey, env
 	// LLM_GATEWAY_ADMIN_API_KEY). It is used to gate the
 	// X-LLMGW-Preferred-Credential routing override so that only
@@ -504,10 +517,19 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		//	★ 遗留（已登记）：provider 域要接**真实目录**
 		//	  （providers ⨝ provider_models ⨝ credential_model_bindings），
 		//	  之后这一阶段才能给出有意义的候选 —— 那时再切回严格版也不迟。
+		//
+		//	★ 2026-11-23（N3 接线）：★ **真实目录已接上** —— ★ 但不是自己写
+		//	  一条目录查询，★ 而是复用**路由的权威候选查询**
+		//	  （★ provider.Client.GetCandidates，★ 见
+		//	  cmd/gateway/provider_discovery_catalog.go 的理由）。
+		//	  ★ 目录由 main.go 后绑定（★ SetV2DispatchProviderCatalog），
+		//	  ★ 因为它依赖 provider client，★ 而 provider client 在管线构建
+		//	  之后才注入 ⇒ ★ 构建时刻只能挂内存 demo 目录。
+		deps.ProviderDiscoveryHook = provider.NewAdvisoryDiscoveryHook(deps.ProviderStore, deps.ProviderProber)
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "provider_discovery", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				provider.NewAdvisoryDiscoveryHook(deps.ProviderStore, deps.ProviderProber),
+				deps.ProviderDiscoveryHook,
 			},
 		})
 	}
@@ -1769,6 +1791,30 @@ type sessionSummaryWorkerAdapter struct {
 
 func (a sessionSummaryWorkerAdapter) GenerateSummary(ctx context.Context, tenantID, sessionKey string) (any, error) {
 	return a.summarizer.GenerateRollingSummary(ctx, tenantID, sessionKey)
+}
+
+// SetV2DispatchProviderCatalog 把**真实 provider 目录**注入 discovery 阶段
+// （★ 2026-11-23 N3 接线）。
+//
+// ★ 调用时机：★ v2DispatchMux 返回 deps 之后（★ 与 SetV2DispatchAnalysisResources
+// 同一批）。★ 因为目录依赖 provider client，★ 而 provider client 在管线构建
+// **之后**才注入 ⇒ ★ 构建时刻只能挂内存 demo 目录、★ 这里后绑定换掉。
+//
+// ★ 为什么是「后绑定」而不是构造参数：★ 与 PromptInjectionHook.BindDetector
+// 同款问题、同款解法（★ 仓里已有这个成例）⇒ ★ **不要为了接线去改
+// newV2DispatchDepsFromMain 的签名**（★ 那会让 4 处测试调用点一起动）。
+//
+// ★ 语义（★ 三条）：
+//   - cat == nil ⇒ 不动（★ 保持内存 demo 目录，★ 老行为）；
+//   - deps / hook 为 nil ⇒ 不动（★ 防御：★ stage 没注册时不该 panic）；
+//   - ★ **目录失败不会中止管线** —— ★ advisory 契约：★ 失败降级成 metadata
+//     里的 `provider_discovery_status="store_error"`。
+func SetV2DispatchProviderCatalog(deps *v2DispatchDeps, cat provider.DiscoveryCatalog) {
+	if deps == nil || deps.ProviderDiscoveryHook == nil || cat == nil {
+		return
+	}
+	deps.ProviderCatalog = cat
+	deps.ProviderDiscoveryHook.SetCatalog(cat)
 }
 
 // SetV2DispatchAnalysisResources (PR-V4-09 / PR-V4-10 / PR-V4-11) 把 main.go 持有的
