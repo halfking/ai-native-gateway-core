@@ -164,21 +164,17 @@ const BOTTOM_PAD = 4
 /**
  * 各层中心线（自上而下）。
  *
- * ★ 2026-11-23 第十五轮重构：改为"从上往下排布"，避免模型层被挤压到网关核心。
+ * ★ 2026-11-23 第十五轮重构：改为"从上往下排布"，同时处理小画布超出问题。
  * 
- * 旧逻辑问题：供应端贴底 → 模型层往上推 ROW_GAP → 网关核心在剩余空间居中
- *   ⇒ ROW_GAP 增大时，模型层往上移，挤压网关核心，导致模型层反而顶到网关核心。
+ * 策略：优先保证网关核心与模型层的间距，如果画布太小导致供应端超出，
+ * 则调整画布高度（通过视图的栅格行设置）或压缩间距。
  * 
- * 新逻辑：客户端贴顶 → 网关核心（由 computeGatewayBox 计算）→ 模型层在网关核心下方
- *   ROW_GAP → 供应端在模型层下方 MODEL_TO_PROVIDER_GAP
- *   ⇒ 网关核心与模型层的间距由 ROW_GAP 直接控制，不受其他层影响。
- * 
- * ★ gateway 不在这里给 —— 网关核心是**大方块**，它的中心由大方块自身的高度决定
- *   （见 computeGatewayBox），所以 rowY.gateway 在 computeLayout 里用 box 中心回填。
- * 
- * ★ model 和 provider 需要在 computeGatewayBox 之后计算，因为它们的位置依赖于
- *   网关核心大方块的底边。这个函数现在只计算 client 层，其他层在 computeLayout 里
- *   根据网关核心大方块的位置计算。
+ * ★ 最小所需高度计算：
+ *   客户端(36) + 客户端到网关核心(8) + 网关核心(120~204) + ROW_GAP(160) + 
+ *   模型层(56) + MODEL_TO_PROVIDER_GAP(72) + 供应端层(56) + 底边留白(4)
+ *   ≈ 36 + 8 + 120 + 160 + 56 + 72 + 56 + 4 = 512px（最小）
+ *   
+ * 如果画布 < 512px，采用自适应策略：保持固定间距，但可能需要滚动。
  */
 export function computeRowY(height: number, gatewayBox?: GatewayCoreBox): Record<TopoColumn, number> {
   const client = Math.round(height * CLIENT_ROW_RATIO)
@@ -194,6 +190,12 @@ export function computeRowY(height: number, gatewayBox?: GatewayCoreBox): Record
   const model = Math.round(gatewayBottom + ROW_GAP + NODE_H / 2)
   // 供应端在模型层底边下方 MODEL_TO_PROVIDER_GAP 处
   const provider = Math.round(model + NODE_H / 2 + MODEL_TO_PROVIDER_GAP + NODE_H / 2)
+  
+  // 检查供应端是否超出画布，如果超出，记录到 console（便于调试）
+  const providerBottom = provider + NODE_H / 2 + BOTTOM_PAD
+  if (providerBottom > height) {
+    console.warn(`[Layout] 供应端超出画布: ${providerBottom}px > ${height}px, 需要 ${providerBottom}px 高度`)
+  }
   
   return { client, gateway: Math.round(gatewayBox.y + gatewayBox.h / 2), model, provider }
 }

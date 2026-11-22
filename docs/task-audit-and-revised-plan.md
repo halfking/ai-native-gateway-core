@@ -1,5 +1,14 @@
 # 任务审计与修正方案
 
+> ⚠️ **2026-11-23 审计轮修正 —— 本文档是 01:00 时点的审计快照，其中「Top5 供应商／用户缺失」「overview 路由仍存在」「用前端 `split('/')[0]` 聚合供应商」三条已被后续实现推翻**，不要照此实施。
+>
+> 现行实现（四维排行全部由后端端点提供，渲染在 `/admin/session-analytics/users`）：
+> - `GET /api/admin/session-analytics/user-ranking` / `model-ranking` / `provider-ranking` / `task-ranking`（`admin/session_analytics/handlers.go`）
+> - `/admin/session-analytics` 已改为 **redirect** 到 `/admin/session-analytics/users`（`web/src/router.ts`）
+> - 供应商维度由 SQL 按真实 `provider` 列聚合（**不是**前端 `split('/')` 推导），且支持按费用排序
+>
+> 本文档保留作为「审计时点的认知」记录；逐项现值见 `docs/session-analytics-integration-plan.md` 与 `docs/audit/2026-11-23-会话分析整合-批判式审计与修正报告.md`。
+
 ## 审计日期
 2026-11-23 01:00
 

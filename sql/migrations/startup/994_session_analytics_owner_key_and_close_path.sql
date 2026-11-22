@@ -188,7 +188,7 @@ SELECT
 FROM session_summaries ss
 JOIN (
   SELECT DISTINCT ON (session_id, tenant_id)
-    session_id, tenant_id, is_probe, owner_user, client_type, title
+    session_id, tenant_id, is_probe, owner_user, client_type, title, agent_name
   FROM sessions
   ORDER BY session_id, tenant_id, partition_date DESC
 ) s

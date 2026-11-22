@@ -1,5 +1,14 @@
 # 会话分析系统整合 - 最终验证和部署指南
 
+> ⚠️ **2026-11-23 审计轮修正 —— 本文档描述的「Dashboard 侧接 session-analytics 取 Top5（前端聚合供应商）」方案已被否决**，不要照此实施。
+>
+> 否决理由与现行方案见 `docs/session-analytics-integration-plan.md` 文首的同款说明（及 `docs/audit/2026-11-23-会话分析整合-批判式审计与修正报告.md`）：
+> ① `SessionStatsRankings.vue` 上的 `topUsers` / `topProviders` 两个 prop **已撤销**并迁到 `/admin/session-analytics/users` 的 `SaTop5Rankings` 组件；
+> ② 前端 `split('/')[0]` 聚合供应商的思路**已被否决**——`model` 列是纯模型名（无 provider 前缀），会把模型名当供应商；
+> ③ 供应商/用户/任务/模型四维排行**全部改由后端端点提供**，其中供应商按真实 `provider` 列聚合（`/api/admin/session-analytics/provider-ranking`）且**支持按费用排序**。
+>
+> 本文档保留作为「前一轮怎么想的」的记录，其代码示例与字段清单**不可直接照抄**。
+
 ## 当前状态
 
 ✅ **代码实施完成** (2026-11-23 01:30)
