@@ -47,7 +47,15 @@ case "$cmd" in
       *)                                   cat "$FAKE_LOGS" 2>/dev/null ;;
     esac ;;
 
-  *"psql"*)             printf '42\n' ;;
+  *"psql"*)
+    # ★ 治理链开关查询（★ settings_kv）⇒ ★ 与「请求总数」是**两种**用途
+    #   ⇒ ★ 假 ssh 必须分开喂（★ 否则两边读到同一个值）。
+    case "$cmd" in
+      *"settings_kv"*)
+        # ★ 分隔符必须是 **|**（★ 真机用 psql -F'|'）⇒ ★ 否则 python 解析不出 key
+        if [ -n "$FAKE_GOV_SW" ]; then printf '%s\n' "$FAKE_GOV_SW"; else printf 'security.enabled|true\nsecurity.mode|"observe"\n'; fi ;;
+      *) printf '42\n' ;;
+    esac ;;
   *)                    : ;;
 esac
 exit 0
@@ -82,6 +90,12 @@ EOF
 
 run_script() {  # run_script <日志夹具> <输出文件>；★ 打印退出码
   FAKE_LOGS="$1" PATH="$WORK/bin:$PATH" bash "$SCRIPT" --host fake --window 24h >"$2" 2>"$2.err"
+  echo $?
+}
+
+run_script_gov() {  # run_script_gov <日志夹具> <输出文件> <治理链开关串>
+  FAKE_LOGS="$1" FAKE_GOV_SW="$3" PATH="$WORK/bin:$PATH" \
+    bash "$SCRIPT" --host fake --window 24h >"$2" 2>"$2.err"
   echo $?
 }
 
@@ -156,12 +170,27 @@ chk(any("prompt_injection" in k and "prompt_injection_enhanced" in k for k in ap
 PY
 pass "分歧双形态：★ 拦截侧 1 + 放行侧 1、★ 方向正确、★ 且假 ssh 的 grep 过滤生效"
 
-# ── ④ 参数契约：★ --help 退 0、★ 未知参数退 1 ───────────────────────────
+# ── ④ 治理链期望状态（★ 「零拦截」的**前置条件**）──────────────────────────
+# ★ 正向：★ 链开着 ⇒ 必须披露 security.enabled、★ 且明说「零拦截可按无命中读」。
+out="$(cat "$WORK/out_clean")"
+grep -q "security.enabled=true" <<<"$out" || fail "输出里没有治理链开关（★ 零拦截的前置条件必须披露）"
+grep -q "链是开着的" <<<"$out" || fail "链开着时必须明说『零拦截可按无命中读』"
+# ★ 反向（★ 对照臂）：★ 链被关 ⇒ 必须打警示 ⇒ ★ 否则读者会把「链关了」
+#   读成「没有攻击」（★ 这正是本节存在的理由）。
+rc="$(run_script_gov "$WORK/logs_clean.jsonl" "$WORK/out_gov_off" "security.enabled|false")"
+[[ "$rc" == "0" ]] || fail "对照臂（链关着）退出码 ${rc}（★ 期望 0）"
+outoff="$(cat "$WORK/out_gov_off")"
+grep -q "security.enabled=false" <<<"$outoff" || fail "对照臂输出里没有 security.enabled=false"
+grep -qF "解读为「没有攻击」" <<<"$outoff" || \
+  fail "★ 链被关时脚本没有打警示 ⇒ ★ 读者会把『链关了』读成『没有攻击』"
+pass "治理链期望状态：★ 链开/链关两态都披露、★ 链关时必打警示"
+
+# ── ⑤ 参数契约：★ --help 退 0、★ 未知参数退 1 ───────────────────────────
 bash "$SCRIPT" --help >/dev/null 2>&1 || fail "--help 退出码非 0"
 bash "$SCRIPT" --nope >/dev/null 2>&1 && fail "未知参数没有退 1"
 pass "参数契约：--help 退 0、★ 未知参数退 1"
 
-# ── ⑤ 覆盖期纪律（★ 静态）：★ 分母查询必须与覆盖期同起点 ────────────────
+# ── ⑥ 覆盖期纪律（★ 静态）：★ 分母查询必须与覆盖期同起点 ────────────────
 grep -q "State.StartedAt" "$SCRIPT" || fail "脚本没有取容器启动时刻（★ 覆盖期不可知）"
 grep -q "greatest(now() - interval" "$SCRIPT" || fail "分母查询没有与覆盖期取同一起点（★ 分子分母会不同期）"
 pass "覆盖期纪律：分母与分子同起点"
