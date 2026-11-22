@@ -105,8 +105,12 @@ func TestDiagnoseNoCandidateCause_SpeaksTheActualCause(t *testing.T) {
 	}
 	// 旁键：机器可读原因 + 重试语义如实（不是「稍后再试」）。
 	extras := got.extras()
-	if extras["cause"] != "upstream_quota_exhausted+provider_disabled" || extras["retryable"] != false {
+	if extras["cause"] != "upstream_quota_exhausted+provider_disabled" || extras["retryable"] != false || extras["code"] != "no_candidate" {
 		t.Errorf("extras = %v", extras)
+	}
+	// 多因并列的分隔符随语言走：中文用全角分号（211 活体验证时的半角分号读起来割裂）。
+	if !strings.Contains(got.Message, "上游账户额度或余额已耗尽；供应商或凭据已被网关管理员停用") {
+		t.Errorf("中文原因列表应使用全角分号：%s", got.Message)
 	}
 	// 请求日志：既有英文前缀逐字保留，归因附在后面。
 	if want := "No available provider for model 'claude-sonnet-5-5' [cause=upstream_quota_exhausted+provider_disabled]"; got.logMessage("claude-sonnet-5-5") != want {
@@ -222,6 +226,9 @@ func TestWriteNoCandidateWithCause_Envelopes(t *testing.T) {
 			if errObj["cause"] != "upstream_quota_exhausted+provider_disabled" {
 				t.Errorf("cause = %v", errObj["cause"])
 			}
+			if errObj["code"] != "no_candidate" {
+				t.Errorf("code = %v, want no_candidate（Anthropic 面也要有机器可读的错误码）", errObj["code"])
+			}
 			if errObj["retryable"] != false {
 				t.Errorf("retryable = %v, want false", errObj["retryable"])
 			}
@@ -303,8 +310,8 @@ func TestNoCandidateCause_BehaviouralWiring(t *testing.T) {
 			t.Errorf("响应没有说明重试无用\nbody: %s", w.Body.String())
 		}
 		errObj := decodeErrorObject(t, w)
-		if errObj["cause"] == nil || errObj["retryable"] != false {
-			t.Errorf("旁键缺失：cause=%v retryable=%v", errObj["cause"], errObj["retryable"])
+		if errObj["cause"] == nil || errObj["retryable"] != false || errObj["code"] != "no_candidate" {
+			t.Errorf("旁键缺失：cause=%v retryable=%v code=%v", errObj["cause"], errObj["retryable"], errObj["code"])
 		}
 	}
 

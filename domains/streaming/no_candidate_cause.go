@@ -64,7 +64,21 @@ func (d noCandidateCause) extras() map[string]any {
 	return map[string]any{
 		"cause":     d.causeToken(),
 		"retryable": d.retryable(),
+		// /v1/messages 的写出函数（writeAnthropicError）没有 code 形参——
+		// Anthropic 协议的客户端此前拿不到机器可读的错误码。chat / responses
+		// 面本来就有同一个值，并入后不变。
+		"code": "no_candidate",
 	}
+}
+
+// causeListJoiner 是原因短语之间的分隔符。中日文用全角分号，其余用「; 」——
+// 211 活体验证时中文句子里出现半角分号，读起来割裂。
+func causeListJoiner(loc i18n.Locale) string {
+	switch loc {
+	case i18n.ZhCN, i18n.ZhTW, i18n.Ja:
+		return "；"
+	}
+	return "; "
 }
 
 // logMessage 是进请求日志的稳定英文句子：既有前缀逐字保留（日志检索、
@@ -138,7 +152,7 @@ func (h *ChatHandler) diagnoseNoCandidateCause(ctx context.Context, clientModel,
 		Causes: causes,
 		Message: i18n.T(ctx, i18n.MsgNoCandidateBlocked, map[string]any{
 			"Model":  clientModel,
-			"Causes": strings.Join(parts, "; "),
+			"Causes": strings.Join(parts, causeListJoiner(i18n.LocaleFromContext(ctx))),
 		}),
 	}
 }
