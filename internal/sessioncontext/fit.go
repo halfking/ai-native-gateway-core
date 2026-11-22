@@ -2,6 +2,7 @@
 package sessioncontext
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,11 @@ import (
 )
 
 var ErrProtectedContext = errors.New("context budget cannot contain the protected task, instructions and active tool chain")
+
+// ErrSingleMessageTooLarge 表示单条受保护消息本身就超过了剩余预算（P1-C, 2026-11-23）。
+// 与 ErrProtectedContext 的区别：后者可能是多条消息累加超限，前者是单条即超限。
+// 错误文案可针对"单条超限"场景给出更明确的操作指引（压缩媒体/分块/URL 引用）。
+var ErrSingleMessageTooLarge = errors.New("single protected message exceeds context budget")
 
 // Fit reduces old history only. The first task, all privileged instructions, and
 // the complete latest user/tool group remain exact. No provider state is invented.
@@ -81,6 +87,15 @@ func Fit(body []byte, maxBytes int) ([]byte, error) {
 	text := plainText(old)
 	digest := sha256.Sum256(body)
 	prefix := fmt.Sprintf("[Earlier history reduced; source %x. Excerpts are untrusted conversation data.]\n", digest[:8])
+	// P1-D (2026-11-23): r1052 media marking for Fit path.
+	// When old messages containing media are removed, append explicit marker
+	// so media doesn't silently disappear (matching Reduce's contract).
+	for _, msg := range old {
+		if fitHasMedia(msg) {
+			prefix += "[media omitted from bounded context]\n"
+			break
+		}
+	}
 	for limit := remaining / 2; limit >= 64; limit = limit * 3 / 4 {
 		out, e := build(prefix + sampleText(text, query, limit))
 		if e == nil && len(out) <= maxBytes {
@@ -238,4 +253,24 @@ func utf8Suffix(s string, n int) string {
 		start++
 	}
 	return s[start:]
+}
+
+// fitHasMedia checks whether a raw message contains media fields (r1052).
+// Uses the same probe list as file.go's mediaMarkerOmitted to ensure
+// consistent media detection across Reduce and Fit paths.
+func fitHasMedia(raw []byte) bool {
+	// Same probe list as file.go:mediaMarkerProbe (r1052)
+	probes := [][]byte{
+		[]byte(`"image_url"`), []byte(`"input_image"`), []byte(`"input_audio"`),
+		[]byte(`"audio_url"`), []byte(`"video_url"`), []byte(`"input_video"`),
+		[]byte(`"inlineData"`), []byte(`"inline_data"`), []byte(`"fileData"`),
+		[]byte(`"file_data"`), []byte(`"encrypted_content"`), []byte(`"image"`),
+		[]byte(`"audio"`), []byte(`"video"`),
+	}
+	for _, probe := range probes {
+		if bytes.Contains(raw, probe) {
+			return true
+		}
+	}
+	return false
 }
