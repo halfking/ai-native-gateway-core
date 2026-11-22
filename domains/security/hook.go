@@ -27,13 +27,14 @@ import (
 // 适用阶段：PhaseGovernance。
 //
 // 2026-07-10: 集成模块执行器，支持 Check-Execute-Record 模式。
-// 2026-11-23: 添加 settings 支持，让 security.enabled 配置生效。
+// 2026-11-23: 添加 settings 支持，让 security.enabled 和 security.mode 配置生效。
 type SecurityHook struct {
 	registry *Registry
 	scope    Scope
 	executor *moduleexec.Executor // 模块执行记录器（可选）
 	settings *settings.Registry   // 配置访问器
 	enabled  atomic.Bool          // security.enabled 配置缓存
+	mode     atomic.Value         // security.mode 配置缓存 ("enforce" or "observe")
 }
 
 // NewSecurityHook 构造 hook。
@@ -51,15 +52,19 @@ func NewSecurityHook(registry *Registry, scope Scope, settingsReg *settings.Regi
 	return h
 }
 
-// loadConfig 从 settings 读取 security.enabled 配置。
+// loadConfig 从 settings 读取 security.enabled 和 security.mode 配置。
 //
 // 背景（2026-11-23 211 生产实证）：v2 governance 管线的 SecurityHook
-// 此前不读取 security.enabled —— 211 settings_kv 已写 false，但检测器
-// 照常拦截 ⇒ 运维关不掉。本次修复落地 spec 承诺：「关闭后跳过所有安全检测」。
+// 此前不读取 security.enabled 和 security.mode —— 211 settings_kv 已写配置，
+// 但检测器照常拦截 ⇒ 运维关不掉。本次修复落地 spec 承诺：
+//   - security.enabled = false: 跳过所有安全检测
+//   - security.mode = "observe": 检测但不拦截，只记录
 func (h *SecurityHook) loadConfig() {
-	enabled := true // 默认启用（向后兼容，settings == nil 时不改变行为）
+	enabled := true      // 默认启用（向后兼容，settings == nil 时不改变行为）
+	mode := "enforce"    // 默认拦截模式
 
 	if h.settings != nil {
+		// 读取 security.enabled
 		if sp := h.settings.Spec("security.enabled"); sp != nil {
 			if v, _, err := h.settings.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
 				var b bool
@@ -68,9 +73,20 @@ func (h *SecurityHook) loadConfig() {
 				}
 			}
 		}
+		
+		// 读取 security.mode
+		if sp := h.settings.Spec("security.mode"); sp != nil {
+			if v, _, err := h.settings.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
+				var m string
+				if json.Unmarshal(v, &m) == nil {
+					mode = m
+				}
+			}
+		}
 	}
 
 	h.enabled.Store(enabled)
+	h.mode.Store(mode)
 }
 
 // SetExecutor 注入模块执行器。
@@ -121,6 +137,7 @@ func (h *SecurityHook) executeWithCache(ctx context.Context, env *domain.Pipelin
 			if err != nil {
 				return nil, err
 			}
+			verdicts = h.applyObserveMode(verdicts)
 			// 写入 Governance 状态
 			state := env.EnsureGovernance()
 			for _, v := range verdicts {
@@ -149,6 +166,7 @@ func (h *SecurityHook) executeDirectly(ctx context.Context, env *domain.Pipeline
 	if err != nil {
 		return err
 	}
+	verdicts = h.applyObserveMode(verdicts)
 	state := env.EnsureGovernance()
 	for _, v := range verdicts {
 		state.RecordVerdict(v)
@@ -165,6 +183,7 @@ func (h *SecurityHook) applyCachedVerdicts(ctx context.Context, env *domain.Pipe
 		return h.executeDirectly(ctx, env)
 	}
 
+	verdicts = h.applyObserveMode(verdicts)
 	// 写入 Governance 状态
 	state := env.EnsureGovernance()
 	for _, v := range verdicts {
@@ -278,6 +297,34 @@ func (h *SecurityHook) OnError(_ context.Context, _ *domain.PipelineRequest, err
 
 // Registry 返回内部 registry（用于测试与 telemetry）。
 func (h *SecurityHook) Registry() *Registry { return h.registry }
+
+// applyObserveMode 在 observe 模式下将所有 deny verdict 转为 allow。
+//
+// 背景（2026-11-23）：security.mode = "observe" 时，所有安全检测继续运行
+// 但不拦截请求，只在日志中记录威胁信息。这允许在生产环境中：
+//   1. 保持安全监控能力
+//   2. 收集威胁情报
+//   3. 不影响正常业务
+func (h *SecurityHook) applyObserveMode(verdicts []*governance.Verdict) []*governance.Verdict {
+	mode := h.mode.Load()
+	if mode == nil {
+		return verdicts
+	}
+
+	modeStr, ok := mode.(string)
+	if !ok || modeStr != "observe" {
+		return verdicts
+	}
+
+	// observe 模式：将所有 deny 改为 allow，但保留原因说明
+	for _, v := range verdicts {
+		if !v.Allow {
+			v.Allow = true
+			v.Reason = fmt.Sprintf("[observe] %s", v.Reason)
+		}
+	}
+	return verdicts
+}
 
 // 编译期断言。
 var _ pipeline.Hook = (*SecurityHook)(nil)
