@@ -127,6 +127,7 @@ export default {
     'The spend column adds internal cost (USD) to external credits. The two units differ, so the column is only useful for relative comparison, not as one monetary amount.',
   state: {
     loading: 'Loading session analytics',
+    loadingStats: 'Loading statistics…',
     staleTitle: 'Aggregates are being refreshed',
     staleReason:
       'The aggregate views are past their freshness budget, so the server refused to return stale numbers. Please try again shortly.',

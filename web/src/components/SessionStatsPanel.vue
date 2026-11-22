@@ -255,6 +255,12 @@ function applyStatsRange(range: Parameters<typeof applyStatsSpan>[0]) {
 function openProbeTraffic() {
   void router.push({ path: '/probe-health/detail' })
 }
+
+// Expose loading state and refresh function for parent components
+defineExpose({
+  loading,
+  refresh,
+})
 </script>
 
 <template>
@@ -300,6 +306,12 @@ function openProbeTraffic() {
     </div>
 
     <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">
+      <!-- Loading indicator -->
+      <div v-if="loading" class="loading-indicator" data-testid="stats-loading-indicator">
+        <div class="loading-spinner"></div>
+        <span class="loading-text">{{ t('sessions.stats.loading') }}</span>
+      </div>
+
       <div class="panel-toolbar">
         <!-- 2026-11-20 owner 图批：时间选择器移到左上（原「统计周期」信息块的
              位置——批「移到之前的位置」）；「统计周期/周期新会话/日均新会话」
@@ -637,5 +649,30 @@ function openProbeTraffic() {
 .aligned-cell__value {
   font-size: 15px;
   font-weight: 600;
+}
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  background: var(--surface-secondary, rgba(0, 0, 0, 0.02));
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border, #ddd);
+  border-top-color: var(--primary, #409eff);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.loading-text {
+  font-size: 14px;
+  color: var(--text-secondary);
 }
 </style>

@@ -125,6 +125,7 @@ export default {
     '花費欄是內部成本（美元）與外部積分的合計。兩種單位不同，只適合做相對比較，不能當成同一個金額。',
   state: {
     loading: '正在載入會話分析資料',
+    loadingStats: 'Loading statistics…',
     staleTitle: '彙總資料正在重新整理',
     staleReason:
       '彙總檢視的資料已超出新鮮度預算，伺服器已拒絕回傳過期數字。請稍後重試。',

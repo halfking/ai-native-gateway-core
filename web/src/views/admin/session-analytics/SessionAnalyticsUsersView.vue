@@ -2,14 +2,20 @@
   <div class="session-analytics-users-view">
     <PageHeader :title="t('sessionAnalytics.title')" :subtitle="t('nav.item.sessionAnalyticsUsers')">
       <template #actions>
-        <button class="sa-btn" type="button" :disabled="loading" @click="refreshAll">
+        <button class="sa-btn" type="button" :disabled="loading || statsLoading" @click="refreshAll">
           {{ t('sessionAnalytics.action.refresh') }}
         </button>
       </template>
     </PageHeader>
 
     <!-- 会话统计面板 (来自 Dashboard) -->
-    <SessionStatsPanel style="margin-bottom: 24px;" />
+    <div class="stats-panel-wrapper">
+      <div v-if="statsLoading" class="section-loading-overlay" data-testid="stats-panel-loading">
+        <div class="loading-spinner"></div>
+        <span class="loading-text">{{ t('sessionAnalytics.state.loadingStats') }}</span>
+      </div>
+      <SessionStatsPanel ref="statsPanelRef" style="margin-bottom: 24px;" />
+    </div>
 
     <!-- Top10 用户排行 -->
     <div class="top-users-section">
@@ -103,7 +109,7 @@
 // SessionAnalyticsUsersView.vue — 会话分析用户页面
 // 整合 Dashboard 的"会话与统计"内容 + Top10 用户排行
 
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import PageHeader from '../../../components/ui/PageHeader.vue'
@@ -124,6 +130,12 @@ import { formatDateTime } from '../../../utils/datetime'
 const { t } = useI18n()
 const router = useRouter()
 const { loading, error, stale, run } = useSessionAnalyticsLoader()
+
+// Stats panel ref and loading state
+const statsPanelRef = ref()
+const statsLoading = computed(() => {
+  return statsPanelRef.value?.loading?.value ?? false
+})
 
 const range = ref<KxDateRange>(rangeFromSpanDays(7))
 const draftRange = ref<KxDateRange>(range.value)
@@ -158,8 +170,12 @@ async function loadTopUsers() {
   }
 }
 
-function refreshAll() {
-  void loadTopUsers()
+async function refreshAll() {
+  // Refresh both panels asynchronously
+  await Promise.all([
+    loadTopUsers(),
+    statsPanelRef.value?.refresh() ?? Promise.resolve(),
+  ])
 }
 
 function openDetail(owner: string) {
@@ -318,5 +334,43 @@ onMounted(() => {
 .view-all-link .sa-link {
   font-size: 14px;
   font-weight: 500;
+}
+
+.stats-panel-wrapper {
+  position: relative;
+  min-height: 200px;
+}
+
+.section-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 10;
+  border-radius: 8px;
+}
+
+.loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--kx-border-base, #dcdfe6);
+  border-top-color: var(--kx-primary, #409eff);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  font-size: 14px;
+  color: var(--kx-text-secondary, #606266);
 }
 </style>

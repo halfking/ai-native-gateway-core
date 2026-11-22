@@ -138,6 +138,7 @@ export default {
     totalCost: 'Total Cost',
     avgHealth: 'Avg Health',
     retry: 'Retry',
+    loading: 'Loading…',
     lastUpdated: 'Last updated',
     newSessions24h: 'New sessions (24h)',
     closedSessions24h: 'Closed sessions (24h)',
