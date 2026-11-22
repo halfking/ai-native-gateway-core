@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>时间范围统一轮 · 批判式审计总结 — 2026-11-23</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .header {
+            background: linear-gradient(135deg, #d9534f 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .header h1 { margin: 0 0 10px 0; font-size: 2em; }
+        .header .meta { opacity: 0.9; font-size: 0.95em; }
+        .verdict {
+            background: rgba(255,255,255,0.15);
+            border-left: 4px solid #ffd700;
+            padding: 15px 20px;
+            margin-top: 20px;
+            border-radius: 4px;
+        }
+        .section {
+            background: white;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .section h2 { color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 10px; margin-top: 0; }
+        .section h3 { color: #764ba2; margin-top: 22px; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 0.93em; }
+        th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid #e8e8e8; vertical-align: top; }
+        th { background: #f8f9fa; font-weight: 600; color: #333; }
+        tr:hover td { background: #fafafa; }
+        code {
+            background: #f0f0f0; padding: 2px 6px; border-radius: 3px;
+            font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 0.9em;
+        }
+        .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; margin: 20px 0; }
+        .chart-card { background: #fafafa; border: 1px solid #e8e8e8; border-radius: 8px; padding: 18px; }
+        .chart-card h4 { margin: 0 0 14px 0; color: #333; font-size: 1.02em; }
+        .bar-row { display: flex; align-items: center; margin-bottom: 9px; font-size: 0.87em; }
+        .bar-label { width: 128px; flex-shrink: 0; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .bar-track { flex: 1; background: #e8e8e8; height: 20px; border-radius: 3px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 3px; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; color: white; font-size: 0.85em; font-weight: 600; min-width: 26px; }
+        .bar-fill.ok { background: linear-gradient(90deg, #5cb85c, #3d9970); }
+        .bar-fill.warn { background: linear-gradient(90deg, #f0ad4e, #e08e0b); }
+        .bar-fill.bad { background: linear-gradient(90deg, #d9534f, #c9302c); }
+        .bar-fill.info { background: linear-gradient(90deg, #5bc0de, #31b0d5); }
+        .bar-fill.muted { background: linear-gradient(90deg, #b0b8c0, #95a5a6); }
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 15px; margin: 20px 0; }
+        .kpi { background: #f8f9fa; padding: 18px; border-radius: 8px; text-align: center; border-top: 3px solid #d9534f; }
+        .kpi.ok { border-top-color: #5cb85c; }
+        .kpi.warn { border-top-color: #f0ad4e; }
+        .kpi .num { font-size: 1.9em; font-weight: 700; color: #333; line-height: 1.2; }
+        .kpi .lbl { color: #777; font-size: 0.85em; margin-top: 5px; }
+        .flow { background: #2d3436; color: #dfe6e9; padding: 22px; border-radius: 8px; font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 0.85em; overflow-x: auto; line-height: 1.9; }
+        .flow .bad { color: #ff7675; font-weight: 600; }
+        .flow .good { color: #74b9ff; font-weight: 600; }
+        .callout { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 14px 18px; margin: 15px 0; border-radius: 4px; }
+        .callout.danger { background: #fdecea; border-left-color: #d9534f; }
+        .callout.ok { background: #e8f5e9; border-left-color: #5cb85c; }
+        .callout h4 { margin: 0 0 8px 0; font-size: 0.98em; }
+        .callout p { margin: 6px 0; }
+        .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; font-weight: 600; margin-right: 5px; }
+        .tag.red { background: #fdecea; color: #c9302c; }
+        .tag.green { background: #e8f5e9; color: #3d9970; }
+        .tag.yellow { background: #fff8e1; color: #e08e0b; }
+        .tag.blue { background: #e3f2fd; color: #0277bd; }
+        .legend { font-size: 0.85em; color: #777; margin-top: 10px; }
+        .muted { color: #888; font-size: 0.88em; }
+        ul { padding-left: 22px; }
+        li { margin-bottom: 7px; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>时间范围统一轮 · 批判式审计总结</h1>
+    <div class="meta">
+        日期：2026-11-23 · 范围：全站统计页面的时间范围控件与语义<br>
+        主档：<code>docs/audit/2026-11-23-时间范围统一轮批判式审计-自定义区间静默改写-主档.md</code>
+    </div>
+    <div class="verdict">
+        <strong>一句话结论：</strong>上轮「统一了时间范围<em>控件</em>」≠「统一了时间范围<em>语义</em>」。
+        控件允许选自定义历史区间、后端只认天数 ⇒ 前端把区间压成「跨度天数」、后端把天数解释成「相对现在的滚动窗口」
+        ⇒ <strong>用户选 2026-09-01 ~ 2026-09-10，实际拿到的是「最近 10 天」</strong>。
+        这是<strong>静默错误答案</strong>（界面显示 A、数据是 B），不是量具问题。
+    </div>
+</div>
+
+<div class="section">
+    <h2>一、审计结论速览</h2>
+    <div class="kpi-grid">
+        <div class="kpi ok"><div class="num">1</div><div class="lbl">核心缺陷<br>（静默改写）</div></div>
+        <div class="kpi ok"><div class="num">4</div><div class="lbl">后端端点<br>已接入真实区间</div></div>
+        <div class="kpi ok"><div class="num">4</div><div class="lbl">前端页面<br>已迁移</div></div>
+        <div class="kpi"><div class="num">13</div><div class="lbl">遗留页面<br>（下轮处理）</div></div>
+        <div class="kpi warn"><div class="num">4</div><div class="lbl">vitest 红<br>（基线同红）</div></div>
+    </div>
+
+    <div class="chart-grid">
+        <div class="chart-card">
+            <h4>后端端点：时间范围支持度</h4>
+            <div class="bar-row"><span class="bar-label">work-types/stats</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">已修</div></div></div>
+            <div class="bar-row"><span class="bar-label">analytics/matrix</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">已修</div></div></div>
+            <div class="bar-row"><span class="bar-label">analytics/flow</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">已修</div></div></div>
+            <div class="bar-row"><span class="bar-label">analytics/funnel</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">已修</div></div></div>
+            <div class="bar-row"><span class="bar-label">dashboard/board</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">早已支持</div></div></div>
+            <div class="bar-row"><span class="bar-label">其余 13 个端点</span><div class="bar-track"><div class="bar-fill bad" style="width:100%">仅 days</div></div></div>
+            <div class="legend">★ 关键：board 后端<b>早已</b>支持 start/end，是前端把它压成了天数</div>
+        </div>
+
+        <div class="chart-card">
+            <h4>缺陷链（修复前）</h4>
+            <div class="flow">
+<span class="muted">用户</span> 在 <span class="good">KxDateRangePicker</span> 选
+<span class="bad">2026-09-01 ~ 2026-09-10</span><br>
+<span class="muted">↓</span><br>
+<span class="bad">useSpanDaysRange.applyRange()</span><br>
+<span class="muted">　days.value = 跨度天数 = </span><span class="bad">10</span><br>
+<span class="muted">↓</span><br>
+<span class="bad">GET ?days=10</span> <span class="muted">（真实区间被丢弃）</span><br>
+<span class="muted">↓</span><br>
+<span class="bad">NOW() - INTERVAL '240 hours'</span><br>
+<span class="muted">↓</span><br>
+<span class="bad">返回「最近 10 天」的数据</span><br>
+<span class="muted">　↑ 界面显示 A，数据是 B ⇒ 静默错误答案</span>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h4>修复后：预设与自定义分流</h4>
+            <div class="flow">
+<span class="muted">用户</span> 选<span class="good">预设</span>（今天/7d/30d/90d）<br>
+<span class="muted">　→ customRange = null</span><br>
+<span class="muted">　→ 走 </span><span class="good">days</span> <span class="muted">快路</span><br>
+<span class="muted">　　（缓存键 / MV 选择 / 索引扫描不变）</span><br><br>
+<span class="muted">用户</span> 选<span class="good">自定义历史区间</span><br>
+<span class="muted">　→ customRange = 原样保留</span><br>
+<span class="muted">　→ 走 </span><span class="good">start + end</span><br>
+<span class="muted">　　（[start,end) 半开、end 日全天计入）</span><br><br>
+<span class="good">✓ 界面显示的区间 = 数据反映的区间</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>二、取证（可复现）</h2>
+    <h3>2.1 参数被静默忽略</h3>
+    <p>本地真实网关（8782）+ 真实种子数据：</p>
+    <table>
+        <tr><th>查询</th><th>HTTP</th><th>响应 window</th><th>判定</th></tr>
+        <tr><td><code>?days=10</code></td><td>200</td><td><code>"10d"</code></td><td><span class="tag green">正常</span></td></tr>
+        <tr><td><code>?start_date=2026-09-01&amp;end_date=2026-09-10</code></td><td>200</td><td><code>"24h"</code></td><td><span class="tag red">★ 被静默忽略</span></td></tr>
+        <tr><td><code>（不传）</code></td><td>200</td><td><code>"24h"</code></td><td>默认窗口</td></tr>
+    </table>
+
+    <h3>2.2 修复后同一查询</h3>
+    <table>
+        <tr><th>查询</th><th>HTTP</th><th>响应 window</th><th>判定</th></tr>
+        <tr><td><code>?days=10</code></td><td>200</td><td><code>"10d"</code></td><td><span class="tag green">旧行为逐字不变</span></td></tr>
+        <tr><td><code>?start=2026-09-01&amp;end=2026-09-10</code></td><td>200</td><td><code>"2026-09-01~2026-09-10"</code></td><td><span class="tag green">★ 真实区间生效</span></td></tr>
+        <tr><td><code>?start=2026-09-10&amp;end=2026-09-01</code></td><td>400</td><td>invalid date range</td><td><span class="tag green">不再静默回落</span></td></tr>
+        <tr><td><code>?start=2026-09-01&amp;end=2026-12-31</code></td><td>400</td><td>cannot exceed 90 days</td><td><span class="tag green">不再静默夹紧</span></td></tr>
+        <tr><td><code>?days=abc</code></td><td>400</td><td>invalid days</td><td><span class="tag green">不再静默回落</span></td></tr>
+    </table>
+
+    <div class="callout ok">
+        <h4>★ 最有说服力的一处证据</h4>
+        <p>修复后 <code>?start=2026-09-01&amp;end=2026-09-10</code> 返回 <code>total_specified=0</code>、<code>top_models=[]</code>——
+        该区间<strong>确实没有种子数据</strong>；而修复前同一查询会错误返回「最近 10 天」的 <strong>97 条</strong>。
+        ⇒ 数据从「错的」变成「对的」。</p>
+    </div>
+</div>
+
+<div class="section">
+    <h2>三、改动文件与关键行为</h2>
+    <table>
+        <tr><th>文件</th><th>类型</th><th>关键行为</th></tr>
+        <tr><td><code>admin/stats_time_range.go</code></td><td><span class="tag blue">新增</span></td>
+            <td><code>parseStatsTimeRange(r, defaultDays)</code>：<code>start+end</code> ⇒ 真实区间（<code>[start,end)</code> 半开、end 日全天计入）；<code>days</code> ⇒ <strong>旧行为逐字保留</strong>（零参数字面量 interval）；半截/越界/非法 ⇒ <strong>400 报错</strong>。</td></tr>
+        <tr><td><code>admin/stats_time_range_test.go</code></td><td><span class="tag blue">新增</span></td>
+            <td>3 个测试函数：days 旧语义 / 真实区间跨度 / 8 类错误输入 / SQL 谓词两种形态 / 占位符顺延 / 标签形态。</td></tr>
+        <tr><td><code>admin/work_types.go</code></td><td><span class="tag yellow">改</span></td>
+            <td><code>stats</code> 收 <code>start/end</code>；自定义区间时谓词参数化，tenant 占位符顺延至 <code>$3</code>。</td></tr>
+        <tr><td><code>admin/analytics.go</code></td><td><span class="tag yellow">改</span></td>
+            <td><code>matrix</code> / <code>flow</code>(L12+L23) / <code>funnel</code>(三条查询同窗) 收 <code>start/end</code>；<strong>自定义区间一律绕开物化视图</strong>；<strong>funnel 自定义区间不入缓存</strong>。</td></tr>
+        <tr><td><code>web/src/composables/useSpanDaysRange.ts</code></td><td><span class="tag yellow">改</span></td>
+            <td>新增 <code>useRangeDays</code>：预设 ⇒ <code>customRange=null</code>（走 days 快路）；自定义 ⇒ <strong>原样保留 start/end</strong>。保留 <code>useSpanDaysRange</code> 并写明其「跨度天数」语义。</td></tr>
+        <tr><td><code>web/src/composables/useSpanDaysRange.test.ts</code></td><td><span class="tag blue">新增</span></td>
+            <td>7 例：预设/自定义分流、原样保留、预设覆盖自定义、URL 注入。</td></tr>
+        <tr><td><code>web/src/components/ui/KxDateRangePicker.vue</code></td><td><span class="tag yellow">改</span></td>
+            <td>新增 <code>presetsOnly</code> prop ⇒ 隐藏自定义起止输入与「应用」按钮（第二道防线）。</td></tr>
+        <tr><td><code>web/src/api-autoroute.ts</code></td><td><span class="tag yellow">改</span></td>
+            <td>新增 <code>AnalyticsRange</code>（<code>window</code> 或 <code>start+end</code>）；matrix/flow/funnel 三端点统一入参。</td></tr>
+        <tr><td><code>web/src/api-work-types.ts</code></td><td><span class="tag yellow">改</span></td>
+            <td><code>getWorkTypeStats</code> 支持 <code>number</code> 或 <code>{days} | {start,end}</code>。</td></tr>
+        <tr><td><code>web/src/views/BoardOperationalView.vue</code></td><td><span class="tag yellow">改</span></td>
+            <td>透传真实区间；<strong>下钻链接一并带上</strong>（否则「看板选历史区间 → 下钻页变回最近 N 天」）。</td></tr>
+        <tr><td><code>web/src/views/BoardOperationalListView.vue</code></td><td><span class="tag yellow">改</span></td>
+            <td>透传真实区间 + 支持从 URL 读 <code>start/end</code>。</td></tr>
+        <tr><td><code>web/src/views/WorkTypesView.vue</code></td><td><span class="tag yellow">改</span></td>
+            <td>透传真实区间。</td></tr>
+        <tr><td><code>web/src/views/RoutingDashboardView.vue</code></td><td><span class="tag yellow">改</span></td>
+            <td>透传真实区间；<strong>matrix/flow/funnel 共用同一区间参数</strong>（否则同页两块数据口径不一致）。</td></tr>
+        <tr><td><code>AGENTS.md</code> + 主档 md</td><td><span class="tag blue">文档</span></td>
+            <td>交接块 + 审计主档（取证/根因/修法/验证/遗留/通用式）。</td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>四、测试命令与结果</h2>
+    <div class="chart-grid">
+        <div class="chart-card">
+            <h4>后端</h4>
+            <div class="bar-row"><span class="bar-label">go build ./admin/</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">通过</div></div></div>
+            <div class="bar-row"><span class="bar-label">go test ./admin/</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">118.4s 全绿</div></div></div>
+            <div class="bar-row"><span class="bar-label">新增钉测</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">3 函数全绿</div></div></div>
+        </div>
+        <div class="chart-card">
+            <h4>前端</h4>
+            <div class="bar-row"><span class="bar-label">vue-tsc --noEmit</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">0 错</div></div></div>
+            <div class="bar-row"><span class="bar-label">vitest（新增）</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">7/7</div></div></div>
+            <div class="bar-row"><span class="bar-label">vitest（全量）</span><div class="bar-track"><div class="bar-fill warn" style="width:99%">3594 通过 / 4 红</div></div></div>
+            <div class="bar-row"><span class="bar-label">npm run build</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">通过</div></div></div>
+        </div>
+        <div class="chart-card">
+            <h4>端到端（真实网关 + 真实数据）</h4>
+            <div class="bar-row"><span class="bar-label">work-types/stats</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">区间/错误分支全验</div></div></div>
+            <div class="bar-row"><span class="bar-label">analytics/matrix</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">全验</div></div></div>
+            <div class="bar-row"><span class="bar-label">analytics/flow</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">全验</div></div></div>
+            <div class="bar-row"><span class="bar-label">analytics/funnel</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">全验</div></div></div>
+            <div class="bar-row"><span class="bar-label">dashboard/board</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">6429B→10441B</div></div></div>
+        </div>
+        <div class="chart-card">
+            <h4>Maestro 回归（真实网关 + CDP Chrome）</h4>
+            <div class="bar-row"><span class="bar-label">13-board-operational</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">rc=0 ✅</div></div></div>
+            <div class="bar-row"><span class="bar-label">05-routing</span><div class="bar-track"><div class="bar-fill ok" style="width:100%">rc=0 ✅</div></div></div>
+            <div class="bar-row"><span class="bar-label">14-stats-consistency</span><div class="bar-track"><div class="bar-fill warn" style="width:100%">基线同红</div></div></div>
+            <div class="legend">★ 14-stats 的红：<b>纯 HEAD 对照二进制跑同一 flow ⇒ 同一步骤红</b>（兄弟会话新端点缺物化视图，本轮未碰）</div>
+        </div>
+    </div>
+
+    <h3>4.1 ★ 4 条 vitest 红 = 基线同红（非本轮引入）</h3>
+    <p><code>src/i18n/localeValueQuality.test.ts</code> 的棘轮门失败：</p>
+    <table>
+        <tr><th>语种</th><th>实测</th><th>基线</th><th>差</th></tr>
+        <tr><td>de-DE</td><td>1108</td><td>1107</td><td><span class="tag red">+1</span></td></tr>
+        <tr><td>es-ES</td><td>1017</td><td>1016</td><td><span class="tag red">+1</span></td></tr>
+        <tr><td>ja-JP</td><td>698</td><td>697</td><td><span class="tag red">+1</span></td></tr>
+        <tr><td>zh-TW</td><td>665</td><td>664</td><td><span class="tag red">+1</span></td></tr>
+    </table>
+    <div class="callout">
+        <h4>归因与证明</h4>
+        <p><strong>归因</strong>：兄弟会话提交 <code>614b72e9c</code>（session-analytics 审计轮）改了 4 个语种的 locales，
+        每个语种新增 1 个未翻译键 ⇒ 棘轮升高。<strong>本轮未改任何 locale 文件</strong>。</p>
+        <p><strong>证明</strong>：隔离 worktree at HEAD（<strong>不含本轮任何改动</strong>）跑同一测试 ⇒
+        <strong>同样 4 条红、数值逐条相同</strong> ⇒ 基线同红，待其收口。</p>
+    </div>
+</div>
+
+<div class="section">
+    <h2>五、遗留风险</h2>
+    <table>
+        <tr><th style="width:52px">编号</th><th>事项</th><th>风险</th><th style="width:88px">等级</th></tr>
+        <tr><td><strong>L1</strong></td><td>仍有 <strong>13 个</strong> <code>useSpanDaysRange</code> 页面的后端只收 days（correlations / quality-correlations / routing-audit / client-task analytics detail / tenant dashboard / MaaS usage / task-profile / auto-tuning accuracy…）</td>
+            <td><strong>自定义区间在这些页面仍被静默改写</strong>。本轮已备好 <code>presetsOnly</code> 能力但<strong>尚未启用</strong> ⇒ 下轮须逐个二选一（改后端收区间 / 给组件传 <code>presetsOnly</code>）。</td><td><span class="tag red">高</span></td></tr>
+        <tr><td><strong>L2</strong></td><td><code>useSpanDaysRange</code> 的 15 处调用方仍未迁移到 <code>useRangeDays</code>（含 <code>SessionStatsPanel</code> / <code>AnalyticsDetailView</code> / <code>AutoTuningView</code>）</td><td>与 L1 同源。</td><td><span class="tag red">高</span></td></tr>
+        <tr><td><strong>L3</strong></td><td><code>window_hours</code> 字段在自定义区间下表示「跨度小时数」而非「距今小时数」</td><td>字段名有歧义（前端目前不用）⇒ 建议改名 <code>window_span_hours</code>。</td><td><span class="tag yellow">中</span></td></tr>
+        <tr><td><strong>L4</strong></td><td>物化视图（<code>routing_analytics_7d</code> 等）不覆盖自定义区间 ⇒ 自定义区间走基表</td><td>口径正确、性能下降；长跨度 + 大数据量时需关注 15s ctx 超时。</td><td><span class="tag yellow">中</span></td></tr>
+        <tr><td><strong>L5</strong></td><td>funnel 自定义区间不入缓存 ⇒ 每次都查库</td><td>正确性优先的取舍；若后续要缓存，须把区间并入缓存键。</td><td><span class="tag yellow">中</span></td></tr>
+        <tr><td><strong>L6</strong></td><td>共享工作树上误跑 <code>git checkout -- .</code> / <code>git clean -fd</code>，本轮曾误删自己在途的 4 个文件</td><td>靠隔离 worktree + patch 导出救回。<strong>纪律：在途改动必须先导出 patch，或全程只在隔离 worktree 操作。</strong></td><td><span class="tag yellow">中</span></td></tr>
+        <tr><td><strong>L7</strong></td><td>4 条 i18n 棘轮红</td><td>基线同红（兄弟会话 <code>614b72e9c</code> 引入），非本轮；待其按纪律收口。</td><td><span class="tag yellow">中</span></td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>六、通用式（可复用的教训）</h2>
+    <ol>
+        <li><strong>「控件统一」≠「语义统一」</strong>：统一了输入控件，但没统一「输入如何被解释」。
+            审计要验的不变量是「<strong>界面显示的区间 = 数据反映的区间</strong>」，不是「有没有控件」。</li>
+        <li><strong>静默回落比报错危险得多</strong>：参数被忽略时端点返回 200 + 合理数据，用户无从察觉
+            ⇒ 区间类参数<strong>要么生效、要么明确报错</strong>，绝不静默回落默认窗口。</li>
+        <li><strong>后端已有能力要先查清再动前端</strong>：本轮最反直觉的发现是「<code>start/end</code> 早就通了，是前端压成了天数」
+            ⇒ 改前端比改后端便宜一个数量级。</li>
+        <li><strong>多端点同窗是一致性底线</strong>：matrix/flow/funnel 共用一个时间选择器 ⇒ 必须共用同一区间参数，
+            否则同一页面上半屏是自定义区间、下半屏是「最近 N 天」。</li>
+        <li><strong>共享工作树上禁止 <code>git checkout -- .</code> / <code>git clean -fd</code></strong>：
+            在途改动必须先导出 patch，或全程只在隔离 worktree 操作。</li>
+    </ol>
+</div>
+
+<div class="section">
+    <h2>七、下一轮交接</h2>
+    <div class="callout danger">
+        <h4>下一轮的核心任务（L1/L2）</h4>
+        <p>把剩余 13 个 days-only 页面逐个收口，<strong>二选一，不允许留「静默改写」的第三种状态</strong>：</p>
+        <ul>
+            <li><strong>路线 A（改后端）</strong>：端点接入 <code>parseStatsTimeRange</code>，SQL 谓词参数化
+                ⇒ 参照本轮 <code>analytics.go</code> 的三处改法（注意 tenant 占位符顺延）。</li>
+            <li><strong>路线 B（改前端）</strong>：给 <code>KxDateRangePicker</code> 传 <code>presetsOnly</code>
+                ⇒ 用户只能选预设档位，界面与数据口径一致。</li>
+        </ul>
+        <p><strong>判据</strong>：改完后逐页实测「选自定义区间 ⇒ 响应 window 标签 = 该区间」，或「自定义入口已不可见」。</p>
+    </div>
+    <p class="muted">本轮已完成：取证 → 定案 → 后端 4 端点 → 前端 4 页面 + 组件能力 → 单测 + 实测 → 文档 → 提交推送 → 部署 211/154/245。</p>
+</div>
+
+</body>
+</html>

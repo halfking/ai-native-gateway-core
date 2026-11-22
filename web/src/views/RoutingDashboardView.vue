@@ -12,7 +12,7 @@ import {
   SPECIFIED_MODEL_TASK_KEY, SPECIFIED_MODEL_DISPLAY_LABEL,
   type AutoRouteIndexEntry, type AutoRouteDecision, type AutoRouteAudit,
   type CustomerCostRow, type ModelCostRow, type ProfileWeights,
-  type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
+  type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow, type AnalyticsRange,
   type AnalyticsRowDim, type AnalyticsFunnelStage, type DecisionReplayResponse,
 } from '../api-autoroute'
 import { useL1TaskTypes } from '../composables/useL1TaskTypes'
@@ -27,7 +27,7 @@ import SixDimScoreBar from '../components/SixDimScoreBar.vue'
 import ModelPicker from '../components/ModelPicker.vue'
 import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
 import { computeSankeyCardHeight, SANKEY_DOM_LEGEND_H, SANKEY_SECTION_HEAD_H } from '../components/analytics/sankeyLayout'
@@ -97,13 +97,28 @@ const audit = ref<AutoRouteAudit>({
 // 后端 parseAnalyticsWindow 接受 Nd(1..90)；7d 档位保留原标签以命中
 // routing_analytics_7d 物化视图，其余窗口自动走基表。
 const analyticsSpanDays = ref(7)
-const { presets: analyticsDayPresets, rangeValue: analyticsRange, applyRange: applyAnalyticsRange } = useSpanDaysRange(analyticsSpanDays, [
+// ★ 2026-11-23 批判式审计轮：改用 useRangeDays（此前用 useSpanDaysRange，
+//   把用户选的自定义区间压成「跨度天数」）。
+//   后端 matrix/flow/funnel 现已支持真实区间 start/end ⇒ 前端压成 days
+//   等于把能力扔掉：界面显示 2026-09-01~2026-09-10，数据却是「最近 10 天」。
+const {
+  presets: analyticsDayPresets,
+  rangeValue: analyticsRange,
+  customRange: analyticsCustomRange,
+  applyRange: applyAnalyticsRange,
+} = useRangeDays(analyticsSpanDays, [
   { days: 1, labelKey: 'common.dateRange.preset.today' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
 const analyticsWindow = computed<AnalyticsWindow>(() => `${analyticsSpanDays.value}d` as AnalyticsWindow)
+// ★ 三个分析端点（matrix/flow/funnel）必须**同一窗口** ⇒ 自定义区间统一透传。
+const analyticsRangeParams = computed<AnalyticsRange>(() =>
+  analyticsCustomRange.value
+    ? { start: analyticsCustomRange.value.start, end: analyticsCustomRange.value.end }
+    : { window: analyticsWindow.value },
+)
 const analyticsMetric = ref<AnalyticsMetric>('count')
 const analyticsRowDim = ref<AnalyticsRowDim>('task_type')
 const matrixData = ref<AnalyticsMatrix | null>(null)
@@ -161,8 +176,8 @@ async function loadAnalytics() {
   analyticsLoading.value = true
   try {
     const [matrix, flow] = await Promise.all([
-      getAnalyticsMatrix(analyticsWindow.value, analyticsMetric.value, analyticsRowDim.value),
-      getAnalyticsFlow(analyticsWindow.value),
+      getAnalyticsMatrix(analyticsRangeParams.value, analyticsMetric.value, analyticsRowDim.value),
+      getAnalyticsFlow(analyticsRangeParams.value),
     ])
     matrixData.value = matrix
     flowData.value = flow
@@ -215,7 +230,7 @@ async function loadFunnel(model: string) {
   }
   funnelLoading.value = true
   try {
-    const res = await getAnalyticsFunnel(model, analyticsWindow.value)
+    const res = await getAnalyticsFunnel(model, analyticsRangeParams.value)
     funnelStages.value = res.stages
     funnelApproximate.value = res.meta?.approximate ?? false
     funnelDataSource.value = res.meta?.data_source
