@@ -13,6 +13,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   ElButton,
+  ElIcon,
   ElOption,
   ElRadioButton,
   ElRadioGroup,
@@ -20,6 +21,7 @@ import {
   ElTable,
   ElTableColumn,
 } from 'element-plus'
+import { Loading } from '@element-plus/icons-vue'
 import ModelTrendChart from '../../components/analytics/ModelTrendChart.vue'
 import ModelPicker from '../../components/ModelPicker.vue'
 import KxDateRangePicker from '../../components/ui/KxDateRangePicker.vue'
@@ -554,12 +556,16 @@ onBeforeUnmount(() => {
       </el-table>
     </div>
 
-    <!-- Top5 用量排行 -->
-    <div v-if="rankings" class="ute__rankings">
-      <h3 class="ute__rankings-title">Top 5 用量排行</h3>
-      <div v-if="rankingsError" class="ute__err">加载排行失败：{{ rankingsError }}</div>
+    <!-- Top 用量排行 -->
+    <div class="ute__rankings">
+      <h3 class="ute__rankings-title">用量排行榜</h3>
+      <div v-if="rankingsLoading" class="ute__rankings-loading-global">
+        <el-icon class="is-loading"><Loading /></el-icon>
+        <span>加载排行数据中...</span>
+      </div>
+      <div v-else-if="rankingsError" class="ute__err">加载排行失败：{{ rankingsError }}</div>
       <div v-else-if="rankings?.degraded" class="ute__degraded">部分维度数据暂不可用（数据源降级{{ rankings.degraded_reason ? '：' + rankings.degraded_reason : '' }}）</div>
-      <div class="ute__rankings-grid">
+      <div v-if="rankings && !rankingsLoading" class="ute__rankings-grid">
         <!-- Top 模型 -->
         <div class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 模型</h4>
@@ -610,7 +616,7 @@ onBeforeUnmount(() => {
 
         <!-- Top 用户 -->
         <div class="ute__ranking-card">
-          <h4 class="ute__ranking-header">Top 5 用户</h4>
+          <h4 class="ute__ranking-header">Top 10 用户</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_users.length === 0" class="ute__ranking-empty">暂无数据</div>
           <div v-else class="ute__ranking-list">
@@ -891,6 +897,18 @@ export default { name: 'UsageTrendExplorer' }
   font-weight: 600;
   margin: 0 0 16px;
   color: var(--text);
+}
+.ute__rankings-loading-global {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.ute__rankings-loading-global .el-icon {
+  font-size: 18px;
 }
 .ute__rankings-grid {
   display: grid;

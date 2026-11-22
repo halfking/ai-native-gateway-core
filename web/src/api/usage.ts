@@ -532,7 +532,7 @@ export interface TopRankingsResponse {
   degraded_reason?: string
 }
 
-export function getTopRankings(time: BoardTimeQuery) {
+export function getTopRankings(time: BoardTimeQuery, usersLimit = 10) {
   const qs = usageTimeQs(time)
-  return req<TopRankingsResponse>('GET', `/api/admin/usage/top-rankings?${qs}`)
+  return req<TopRankingsResponse>('GET', `/api/admin/usage/top-rankings?${qs}&users_limit=${usersLimit}`)
 }

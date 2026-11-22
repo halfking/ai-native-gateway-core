@@ -1525,6 +1525,16 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 
 	tid := EffectiveTenantIDAll(r)
 
+	// 支持通过查询参数控制返回数量，用户默认 Top10，其他维度默认 Top5
+	defaultLimit := 5
+	usersLimit := queryInt(r, "users_limit", 10)
+	if usersLimit < 1 {
+		usersLimit = 10
+	}
+	if usersLimit > 50 {
+		usersLimit = 50
+	}
+
 	type RankingEntry struct {
 		Name         string  `json:"name"`
 		RequestCount int     `json:"request_count"`
@@ -1553,7 +1563,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 通用查询函数
-	queryTopN := func(dimension string, column string) ([]RankingEntry, error) {
+	queryTopN := func(dimension string, column string, limit int) ([]RankingEntry, error) {
 		whereClause := "WHERE rl.ts >= $1 AND rl.ts < $2"
 		args := []any{startTime, endTime}
 		if tid != "" {
@@ -1571,8 +1581,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 			%s
 			GROUP BY %s
 			ORDER BY total_cost_usd DESC, total_tokens DESC, request_count DESC
-			LIMIT 5
-		`, column, whereClause, column)
+			LIMIT %d
+		`, column, whereClause, column, limit)
 
 		rows, err := h.db.Query(ctx, query, args...)
 		if err != nil {
@@ -1593,7 +1603,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 模型
-	if entries, err := queryTopN("models", "rl.outbound_model"); err == nil {
+	if entries, err := queryTopN("models", "rl.outbound_model", defaultLimit); err == nil {
 		response.TopModels = entries
 	} else if IsMissingRelationError(err) {
 		// ★ 2026-11-22 审计轮修正（降级标记门 TestDegradePayloadsCarryMarker 红）：
@@ -1615,7 +1625,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 客户端
-	if entries, err := queryTopN("clients", "rl.client_model"); err == nil {
+	if entries, err := queryTopN("clients", "rl.client_model", defaultLimit); err == nil {
 		response.TopClients = entries
 	} else {
 		slog.Warn("usageTopRankings: top clients query failed", "error", err)
@@ -1623,8 +1633,8 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		response.DegradedReason = "top clients ranking unavailable"
 	}
 
-	// Top 用户
-	if entries, err := queryTopN("users", "rl.end_user_id"); err == nil {
+	// Top 用户（使用 Top10）
+	if entries, err := queryTopN("users", "rl.end_user_id", usersLimit); err == nil {
 		response.TopUsers = entries
 	} else {
 		slog.Warn("usageTopRankings: top users query failed", "error", err)
@@ -1648,11 +1658,11 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		whereClause += " AND rl.tenant_id = $3"
 		args = append(args, tid)
 	}
-	apiKeyQuery += whereClause + `
+	apiKeyQuery += whereClause + fmt.Sprintf(`
 		GROUP BY ak.key_prefix, ak.key_alias, ak.owner_user
 		ORDER BY total_cost_usd DESC, total_tokens DESC, request_count DESC
-		LIMIT 5
-	`
+		LIMIT %d
+	`, defaultLimit)
 	if rows, err := h.db.Query(ctx, apiKeyQuery, args...); err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -1668,7 +1678,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 项目（application）
-	if entries, err := queryTopN("projects", "rl.application_code"); err == nil {
+	if entries, err := queryTopN("projects", "rl.application_code", defaultLimit); err == nil {
 		response.TopProjects = entries
 	} else {
 		slog.Warn("usageTopRankings: top projects query failed", "error", err)
@@ -1677,7 +1687,7 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 任务（task_type）
-	if entries, err := queryTopN("tasks", "rl.task_type"); err == nil {
+	if entries, err := queryTopN("tasks", "rl.task_type", defaultLimit); err == nil {
 		response.TopTasks = entries
 	} else {
 		slog.Warn("usageTopRankings: top tasks query failed", "error", err)
