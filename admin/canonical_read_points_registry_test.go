@@ -513,6 +513,13 @@ var canonicalReadPointRegistry = map[string]canonicalReadPointFile{
 		ExemptReason: exemptNoReadPoint,
 		Note:         "视图名只出现在一条 SQL 字面量的 `--` 注释里（解释四路 UNION ALL）⇒ 不是读点",
 	},
+	"admin/ranking_identity.go": {
+		Form:         formCommentOrStringOnly,
+		Class:        classNoRead,
+		Exempt:       true,
+		ExemptReason: exemptNoReadPoint,
+		Note:         "排行侧分组键与过滤侧谓词共用的**身份表达式常量**文件（dimensionIdentityExpr / userIdentityExpr）：视图名只出现在一条注释里（记录现网 end_user_id 的数据形态）⇒ 本文件不含任何 SQL 读点",
+	},
 	"admin/request_trace.go": {
 		Form:  formDirectLiteralSQL,
 		Class: classNeedsDetailsLeg,
