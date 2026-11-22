@@ -436,6 +436,122 @@ func (h *Handler) HandleGetModelRanking(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// HandleGetProviderRanking 处理供应商排行请求
+//
+// GET /api/admin/session-analytics/provider-ranking
+//
+// 查询参数:
+//   - tenant_id (可选): 租户 ID
+//   - start_date (必需): 开始日期 (YYYY-MM-DD)
+//   - end_date (必需): 结束日期 (YYYY-MM-DD)
+//   - sort_by (可选): 排序字段 (requests|tokens|cost|models|users|last_used)
+//   - order (可选): 排序方向 (asc|desc)
+//
+// 响应:
+//
+//	200: ProviderRankingResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+//
+// ★ 2026-11-23 审计轮新增：provider 维度**必须**由 SQL 聚合
+//   model_usage_aggregates.provider 得到——model 列是纯模型名（无 provider 前缀），
+//   前端 split('/') 聚合会把模型名当 provider。
+func (h *Handler) HandleGetProviderRanking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	params, err := parseProviderRankingParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门（与 model-ranking 同源视图 ⇒ 同一新鲜度口径）
+	if !h.requireFreshViews(w, r, "model_usage_aggregates") {
+		return
+	}
+
+	// 租户隔离
+	tenantID := params.TenantID
+	if !isSuperAdminFromRequest(r) {
+		userTenantID := getUserTenantIDFromRequest(r)
+		if userTenantID != "" {
+			tenantID = &userTenantID
+		}
+	}
+
+	resp, err := GetProviderRanking(ctx, h.db, tenantID, params.StartDate, params.EndDate, params.SortBy, params.Order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get provider ranking")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleGetTaskRanking 处理全局任务排行请求
+//
+// GET /api/admin/session-analytics/task-ranking
+//
+// 查询参数:
+//   - tenant_id (可选): 租户 ID
+//   - start_date (必需): 开始日期 (YYYY-MM-DD)
+//   - end_date (必需): 结束日期 (YYYY-MM-DD)
+//   - sort_by (可选): 排序字段 (sessions|turns|tokens|cost|users|last_active)
+//   - order (可选): 排序方向 (asc|desc)
+//
+// 响应:
+//
+//	200: TaskRankingResponse
+//	400: 参数错误
+//	401: 未授权
+//	403: 权限不足
+//	500: 服务器错误
+func (h *Handler) HandleGetTaskRanking(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	params, err := parseTaskRankingParamsFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 权限检查
+	if !isAdminFromRequest(r) {
+		writeError(w, http.StatusForbidden, "admin role required")
+		return
+	}
+
+	// 陈旧度门（视图与 user-ranking 同源 ⇒ 同一新鲜度口径）
+	if !h.requireFreshViews(w, r, "project_task_aggregates") {
+		return
+	}
+
+	// 租户隔离
+	tenantID := params.TenantID
+	if !isSuperAdminFromRequest(r) {
+		userTenantID := getUserTenantIDFromRequest(r)
+		if userTenantID != "" {
+			tenantID = &userTenantID
+		}
+	}
+
+	resp, err := GetTaskRanking(ctx, h.db, tenantID, params.StartDate, params.EndDate, params.SortBy, params.Order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get task ranking")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // overviewParams 总体统计查询参数
 type overviewParams struct {
 	TenantID  *string
@@ -492,6 +608,137 @@ type modelRankingParams struct {
 	EndDate   string
 	SortBy    string
 	Order     string
+}
+
+// taskRankingParams 任务排行查询参数（2026-11-23 新增）。
+type taskRankingParams struct {
+	TenantID  *string
+	StartDate string
+	EndDate   string
+	SortBy    string
+	Order     string
+}
+
+// parseTaskRankingParamsFromRequest 解析任务排行查询参数
+func parseTaskRankingParamsFromRequest(r *http.Request) (*taskRankingParams, error) {
+	params := &taskRankingParams{
+		SortBy: "sessions",
+		Order:  "desc",
+	}
+	query := r.URL.Query()
+
+	if tenantID := query.Get("tenant_id"); tenantID != "" {
+		params.TenantID = &tenantID
+	}
+
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	if sortBy := query.Get("sort_by"); sortBy != "" {
+		validSortFields := map[string]bool{
+			"sessions":    true,
+			"turns":       true,
+			"tokens":      true,
+			"cost":        true,
+			"users":       true,
+			"last_active": true,
+		}
+		if !validSortFields[sortBy] {
+			return nil, errorf("invalid sort_by")
+		}
+		params.SortBy = sortBy
+	}
+
+	if order := query.Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return nil, errorf("invalid order")
+		}
+		params.Order = order
+	}
+
+	return params, nil
+}
+
+// providerRankingParams 供应商排行查询参数（2026-11-23 新增）。//
+// ★ 与 modelRankingParams 结构相同但独立成型：供应商排行的合法 sort_by
+//   字段集合不同（多 models/users，少 success_rate/cache_rate），
+//   共用一个结构体会让两套白名单互相污染。
+type providerRankingParams struct {
+	TenantID  *string
+	StartDate string
+	EndDate   string
+	SortBy    string
+	Order     string
+}
+
+// parseProviderRankingParamsFromRequest 解析供应商排行查询参数
+func parseProviderRankingParamsFromRequest(r *http.Request) (*providerRankingParams, error) {
+	params := &providerRankingParams{
+		SortBy: "requests",
+		Order:  "desc",
+	}
+	query := r.URL.Query()
+
+	if tenantID := query.Get("tenant_id"); tenantID != "" {
+		params.TenantID = &tenantID
+	}
+
+	startDate := query.Get("start_date")
+	if startDate == "" {
+		return nil, errorf("start_date is required")
+	}
+	if !isValidDate(startDate) {
+		return nil, errorf("invalid start_date format")
+	}
+	params.StartDate = startDate
+
+	endDate := query.Get("end_date")
+	if endDate == "" {
+		return nil, errorf("end_date is required")
+	}
+	if !isValidDate(endDate) {
+		return nil, errorf("invalid end_date format")
+	}
+	params.EndDate = endDate
+
+	if sortBy := query.Get("sort_by"); sortBy != "" {
+		validSortFields := map[string]bool{
+			"requests": true,
+			"tokens":   true,
+			"cost":     true,
+			"models":   true,
+			"users":    true,
+			"last_used": true,
+		}
+		if !validSortFields[sortBy] {
+			return nil, errorf("invalid sort_by")
+		}
+		params.SortBy = sortBy
+	}
+
+	if order := query.Get("order"); order != "" {
+		if order != "asc" && order != "desc" {
+			return nil, errorf("invalid order")
+		}
+		params.Order = order
+	}
+
+	return params, nil
 }
 
 // parseOverviewParamsFromRequest 从 HTTP 请求解析总体统计查询参数
@@ -983,6 +1230,17 @@ var (
 	RouteAgentRanking = "/api/admin/session-analytics/agent-ranking"
 	// RouteModelRanking 是模型排行端点。
 	RouteModelRanking = "/api/admin/session-analytics/model-ranking"
+	// RouteProviderRanking 是供应商排行端点。
+	//
+	// ★ 2026-11-23 审计轮新增：Dashboard 的「供应商 Top5」需要 provider 维度，
+	//   而 overview 的 top_models 只有 3 条且 model 列不含 provider 前缀 ⇒ 无法
+	//   在前端聚合出正确的供应商榜。故由 SQL 直接按 provider 聚合（同一物化视图）。
+	RouteProviderRanking = "/api/admin/session-analytics/provider-ranking"
+	// RouteTaskRanking 是全局任务排行端点。
+	//
+	// ★ 2026-11-23 审计轮新增：本包此前只有「某 owner 的某 project 下的任务列表」
+	//   （GetProjectTasks），没有全局任务榜 ⇒ 「top5 任务」无数据源。
+	RouteTaskRanking = "/api/admin/session-analytics/task-ranking"
 )
 
 // RoutePaths 是本包注册到 ServeMux 上的**完整**路径清单（SSOT）。
@@ -1006,6 +1264,8 @@ var RoutePaths = []string{
 	RouteUserRanking,
 	RouteAgentRanking,
 	RouteModelRanking,
+	RouteProviderRanking,
+	RouteTaskRanking,
 }
 
 // RegisterRoutes 注册会话分析系统的路由
@@ -1044,6 +1304,12 @@ func RegisterRoutes(mux *http.ServeMux, db *sql.DB, adminWrap func(http.HandlerF
 
 	// 模型排行
 	mux.HandleFunc(RouteModelRanking, adminWrap(handler.HandleGetModelRanking))
+
+	// 供应商排行（2026-11-23 新增）
+	mux.HandleFunc(RouteProviderRanking, adminWrap(handler.HandleGetProviderRanking))
+
+	// 任务排行（2026-11-23 新增）
+	mux.HandleFunc(RouteTaskRanking, adminWrap(handler.HandleGetTaskRanking))
 }
 
 // routeUserRanking 分发 user-ranking 的子路由

@@ -1594,8 +1594,260 @@ func GetModelRanking(ctx context.Context, db *sql.DB, tenantID *string, startDat
 	}, rows.Err()
 }
 
-// ============= 用户模型用量 (2026-11-22) =============
+// ============================================================================
+// 供应商排行查询（2026-11-23 审计轮新增）
+// ============================================================================
+//
+// ★ 为什么需要这一层：Dashboard 的「供应商 Top5」原先靠前端从
+//   session-analytics 的 top_models 聚合，但那份数据有两个致命问题：
+//   ① top_models 只返回 **3 条**（GetOverview 里 getTopModels(…, 3)），
+//      聚合出的「Top5 供应商」最多 3 行，且不是全量 Top5；
+//   ② model_usage_aggregates 的 model 列是**纯模型名**（不含 provider 前缀），
+//      前端 split('/')[0] 会把整个模型名当成 provider（如 "claude-sonnet-4-5"）。
+//   ⇒ 供应商维度必须由 SQL 按 provider 列直接聚合。
+//
+// ★ 口径真源：model_usage_aggregates（迁移 981/994），**请求级**口径，
+//   与 model-ranking / overview 的 top_models 同源 ⇒ 三者数字自洽。
+//
+// ProviderRanking 供应商排行项
+type ProviderRanking struct {
+	Rank          int     `json:"rank"`
+	Provider      string  `json:"provider"`
+	ModelCount    int64   `json:"model_count"`
+	RequestCount  int64   `json:"request_count"`
+	SuccessCount  int64   `json:"success_count"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalCost     float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost  float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost  float64 `json:"external_cost"` // 外部成本（积分）
+	UserCount     int64   `json:"user_count"`
+	LastUsedAt    string  `json:"last_used_at"`
+}
 
+// ProviderRankingResponse 供应商排行响应
+type ProviderRankingResponse struct {
+	Providers []ProviderRanking `json:"providers"`
+}
+
+// providerRankingSQL 供应商排行（按 provider 聚合模型级请求）。
+//
+// ★ model_count 用 COUNT(DISTINCT model) —— 同一 provider 下的模型数。
+// ★ user_count 用 SUM(user_count)（模型级 user_count 之和，同一用户跨模型会重复计数，
+//   与 ModelRanking 保持同口径，不引入第二种计数语义）。
+const providerRankingSQL = `
+		SELECT
+			provider,
+			COUNT(DISTINCT model) as model_count,
+			SUM(request_count) as request_count,
+			SUM(success_count) as success_count,
+			COALESCE(SUM(success_count)::NUMERIC / NULLIF(SUM(request_count), 0) * 100, 0) as success_rate,
+			SUM(input_tokens + output_tokens) as total_tokens,
+			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost,
+			SUM(user_count) as user_count,
+			MAX(last_used_at) as last_used_at
+		FROM model_usage_aggregates
+		WHERE date >= $1 AND date <= $2
+`
+
+// GetProviderRanking 获取供应商排行
+func GetProviderRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate, sortBy, order string) (*ProviderRankingResponse, error) {
+	query := providerRankingSQL
+	args := []interface{}{startDate, endDate}
+	if tenantID != nil {
+		query += " AND tenant_id = $3"
+		args = append(args, *tenantID)
+	}
+	query += " GROUP BY provider"
+
+	// 排序：默认按请求数降序（与 model-ranking 默认同口径）。
+	orderClause := " ORDER BY "
+	switch sortBy {
+	case "requests":
+		orderClause += "request_count"
+	case "tokens":
+		orderClause += "total_tokens"
+	case "cost":
+		orderClause += "total_cost"
+	case "models":
+		orderClause += "model_count"
+	case "users":
+		orderClause += "user_count"
+	case "last_used":
+		orderClause += "last_used_at"
+	default:
+		orderClause += "request_count"
+	}
+	if order == "asc" {
+		orderClause += " ASC"
+	} else {
+		orderClause += " DESC"
+	}
+	query += orderClause
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var providers []ProviderRanking
+	rank := 1
+	for rows.Next() {
+		var p ProviderRanking
+		var lastUsedAt sql.NullTime
+		if err := rows.Scan(
+			&p.Provider,
+			&p.ModelCount,
+			&p.RequestCount,
+			&p.SuccessCount,
+			&p.SuccessRate,
+			&p.TotalTokens,
+			&p.TotalCost,
+			&p.InternalCost,
+			&p.ExternalCost,
+			&p.UserCount,
+			&lastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		p.Rank = rank
+		rank++
+		if lastUsedAt.Valid {
+			p.LastUsedAt = lastUsedAt.Time.Format(time.RFC3339)
+		}
+		providers = append(providers, p)
+	}
+
+	return &ProviderRankingResponse{
+		Providers: providers,
+	}, rows.Err()
+}
+
+// ============================================================================
+// 任务排行查询（2026-11-23 审计轮新增）
+// ============================================================================
+//
+// ★ 为什么需要：用户要求「top5 的模型、用户、供应商、任务」四维统计，
+//   但本包此前只有**用户视角**的任务列表（GetProjectTasks：某 owner 的某 project
+//   下的任务），没有**全局任务排行** ⇒ 任务维度无法单独成榜。
+//
+// ★ 口径真源：project_task_aggregates（迁移 981/994），**会话级**口径
+//   （与 user_session_aggregates 同源）⇒ 任务榜与用户榜数字自洽。
+//
+// ★ task 列语义：空串 = 「无具体任务」（迁移 981 唯一索引要求列上无 NULL），
+//   故统计时用 NULLIF(task, '') 过滤 —— 否则「无任务」会被算成一个任务。
+//
+// TaskRanking 任务排行项
+type TaskRanking struct {
+	Rank         int     `json:"rank"`
+	Task         string  `json:"task"`
+	OwnerCount   int64   `json:"owner_count"`
+	SessionCount int64   `json:"session_count"`
+	TurnCount    int64   `json:"turn_count"`
+	TotalTokens  int64   `json:"total_tokens"`
+	TotalCost    float64 `json:"total_cost"`    // 保留用于向后兼容和排序（跨单位相加）
+	InternalCost float64 `json:"internal_cost"` // 内部成本（美元）
+	ExternalCost float64 `json:"external_cost"` // 外部成本（积分）
+	LastActiveAt string  `json:"last_active_at"`
+}
+
+// TaskRankingResponse 任务排行响应
+type TaskRankingResponse struct {
+	Tasks []TaskRanking `json:"tasks"`
+}
+
+// taskRankingSQL 全局任务排行（按 task 聚合 project_task_aggregates）。
+const taskRankingSQL = `
+		SELECT
+			task,
+			COUNT(DISTINCT owner) as owner_count,
+			SUM(session_count) as session_count,
+			SUM(turn_count) as turn_count,
+			SUM(total_tokens) as total_tokens,
+			SUM(internal_cost + external_cost) as total_cost,
+			SUM(internal_cost) as internal_cost,
+			SUM(external_cost) as external_cost,
+			MAX(last_active_at) as last_active_at
+		FROM project_task_aggregates
+		WHERE date >= $1 AND date <= $2
+		  AND task <> ''
+`
+
+// GetTaskRanking 获取全局任务排行
+func GetTaskRanking(ctx context.Context, db *sql.DB, tenantID *string, startDate, endDate, sortBy, order string) (*TaskRankingResponse, error) {
+	query := taskRankingSQL
+	args := []interface{}{startDate, endDate}
+	if tenantID != nil {
+		query += " AND tenant_id = $3"
+		args = append(args, *tenantID)
+	}
+	query += " GROUP BY task"
+
+	orderClause := " ORDER BY "
+	switch sortBy {
+	case "sessions":
+		orderClause += "session_count"
+	case "turns":
+		orderClause += "turn_count"
+	case "tokens":
+		orderClause += "total_tokens"
+	case "cost":
+		orderClause += "total_cost"
+	case "users":
+		orderClause += "owner_count"
+	case "last_active":
+		orderClause += "last_active_at"
+	default:
+		orderClause += "session_count"
+	}
+	if order == "asc" {
+		orderClause += " ASC"
+	} else {
+		orderClause += " DESC"
+	}
+	query += orderClause
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []TaskRanking
+	rank := 1
+	for rows.Next() {
+		var t TaskRanking
+		var lastActiveAt sql.NullTime
+		if err := rows.Scan(
+			&t.Task,
+			&t.OwnerCount,
+			&t.SessionCount,
+			&t.TurnCount,
+			&t.TotalTokens,
+			&t.TotalCost,
+			&t.InternalCost,
+			&t.ExternalCost,
+			&lastActiveAt,
+		); err != nil {
+			return nil, err
+		}
+		t.Rank = rank
+		rank++
+		if lastActiveAt.Valid {
+			t.LastActiveAt = lastActiveAt.Time.Format(time.RFC3339)
+		}
+		tasks = append(tasks, t)
+	}
+
+	return &TaskRankingResponse{
+		Tasks: tasks,
+	}, rows.Err()
+}
+
+// ============= 用户模型用量 (2026-11-22) =============
 // UserModelUsage 用户模型使用情况
 type UserModelUsage struct {
 	Model             string  `json:"model"`
