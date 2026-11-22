@@ -32,10 +32,34 @@ package streaming
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+// noCandidateDiagnoseBudget 是「候选为空」归因诊断的**独立**时间预算。
+//
+// ★ 为什么需要独立预算（2026-11-23 12h 修订审计轮）：
+//
+// 归因诊断是**失败路径**上的只读旁路查询（provider.DiagnoseEmptyCandidates）。
+// 它此前直接用请求 ctx（r.Context()），**没有自己的时间上限** ⇒
+//
+//	① 失败路径恰恰是数据库最可能吃紧的时刻（候选判空往往伴随上游异常、
+//	   凭据大面积被闸滤掉），诊断查询一慢，**503 的应答就被拖住**；
+//	② 诊断在三个协议面各调一次（chat/completions + messages + responses），
+//	   每面都付一次这个延迟；
+//	③ 既有纪律只挡得住「诊断**出错**」⇒ 退回通用文案；**挡不住「诊断很慢」**
+//	   ⇒ 诊断失败不变成请求失败，但诊断慢会把请求拖成超时。
+//
+// ⇒ 修法：给诊断一份**自己的**短预算，从请求 ctx 派生（客户端取消仍能透传）。
+//
+//	超预算 ⇒ ctx 到期 ⇒ 查询返回错 ⇒ 走既有的「诊断出错」分支 ⇒ 退回通用文案，
+//	语义与「诊断失败」完全一致，不新增任何失败形态。
+//
+// 取值 2s 的理由：这是一次只读、按 key 归因的小查询（正常在毫秒级），
+// 2s 足以覆盖冷缓存/锁等待的常态抖动；再长就会开始与客户端超时抢时间。
+const noCandidateDiagnoseBudget = 2 * time.Second
 
 // noCandidateCause 是一次「候选为空」归因的客户端可见形态。
 type noCandidateCause struct {
@@ -129,6 +153,11 @@ func (h *ChatHandler) diagnoseNoCandidateCause(ctx context.Context, clientModel,
 	if !ok {
 		return noCandidateCause{}
 	}
+	// ★ 独立时间预算（2026-11-23 审计轮）：诊断是失败路径上的旁路查询，
+	//   不能让它无限期拖住 503 的应答 ⇒ 自带 2s 上限。
+	//   从请求 ctx 派生 ⇒ 客户端取消仍会透传（不被这层预算吞掉）。
+	ctx, cancel := context.WithTimeout(ctx, noCandidateDiagnoseBudget)
+	defer cancel()
 	b, err := diag.DiagnoseEmptyCandidates(ctx, clientModel, tenantID)
 	if err != nil {
 		// 诊断是旁路：查不出来就按没有归因处理，绝不让一次诊断失败变成
