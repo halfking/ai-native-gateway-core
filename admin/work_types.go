@@ -277,8 +277,26 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// 2026-11-19 时间范围统一轮：窗口从固定 24h 参数化为 ?days=N（1..90，
 	// 缺省仍为 24h，旧行为不变）。INTERVAL 不能参数化，n 已被 Atoi+范围
 	// 夹紧为纯整数，拼接无注入面。
+	//
+	// 2026-11-23 批判式审计轮：同时接受真实区间 ?start=&end=（YYYY-MM-DD，
+	// 系统时区）。此前 start/end 被**静默忽略**并回落 24h ⇒ 前端组件里选
+	// 的自定义区间拿到的却是另一个窗口（静默错误答案）。实测证据见
+	// admin/stats_time_range.go 头注释。
 	windowLabel, windowDur := parseStatsWindow(r.URL.Query().Get("days"))
 	windowInterval := fmt.Sprintf("NOW() - INTERVAL '%d hours'", int(windowDur.Hours()))
+	windowRange, rangeErr := parseStatsTimeRange(r, 1)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+	var windowRangeArgs []any
+	if windowRange.Custom {
+		// 自定义区间 ⇒ 谓词参数化（[start, end) 半开区间，end 日全天计入）。
+		// 参数序号从 1 开始，后续 tenant 片段顺延（见下方 wtArgIdx）。
+		windowInterval, windowRangeArgs = windowRange.sqlPredicate("ts", 1)
+		windowLabel = windowRange.label()
+		windowDur = time.Duration(windowRange.Hours) * time.Hour
+	}
 
 	out := map[string]interface{}{
 		"window":          windowLabel,
@@ -298,7 +316,10 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// by_l1_task / top_models. Use `is_auto_request IS NOT TRUE` so NULL
 	// rows are admitted alongside TRUE auto requests.
 	wtArgs := []any{}
-	wtArgIdx := 1
+	// 2026-11-23：自定义区间时 window 参数占 $1..$2，
+	// tenant 片段的占位符必须顺延，否则 tenant 条件会绑到时间戳上。
+	wtArgs = append(wtArgs, windowRangeArgs...)
+	wtArgIdx := 1 + len(windowRangeArgs)
 	wtTenantFrag, wtTenantArgs, _ := tenantLogsClause(r, wtArgIdx)
 	wtTenantWhere := ""
 	if wtTenantFrag != "" {

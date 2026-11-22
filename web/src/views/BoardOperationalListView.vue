@@ -7,7 +7,7 @@ import { surfaceError } from '../i18n/errorSurface'
 import { fetchDashboardBoard, type BoardPayload, type BoardPieItem } from '../api/board'
 import { ANALYTICS_REGISTRY, type AnalyticsDimension } from '../config/analyticsRegistry'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 
 const route = useRoute()
@@ -24,13 +24,23 @@ const dimension = computed(() => {
 })
 
 // 时间范围
+//
+// ★ 2026-11-23 批判式审计轮：改用 useRangeDays + 支持 URL 里的 start/end。
+//   此前用 useSpanDaysRange（自定义区间被压成「跨度天数」）⇒ 用户选的历史
+//   区间拿到的却是「最近 N 天」。board 后端本就支持真实区间。
 const timeRange = ref(Number(route.query.days) || 7)
-const { presets, rangeValue, applyRange } = useSpanDaysRange(timeRange, [
+const urlStart = typeof route.query.start === 'string' ? route.query.start : ''
+const urlEnd = typeof route.query.end === 'string' ? route.query.end : ''
+const { presets, rangeValue, customRange, applyRange, setCustomRange } = useRangeDays(timeRange, [
   { days: 1, labelKey: 'common.dateRange.preset.today' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
   { days: 90, labelKey: 'dashboard.range.last90d' },
 ])
+// URL 带入的自定义区间（board 下钻链接）⇒ 直接作为当前区间。
+if (urlStart && urlEnd) {
+  setCustomRange({ start: urlStart, end: urlEnd })
+}
 
 // 排序配置
 type SortKey = 'requests' | 'tokens' | 'cost_usd' | 'credits'
@@ -93,7 +103,9 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    boardData.value = await fetchDashboardBoard({ days: timeRange.value })
+    boardData.value = await fetchDashboardBoard(customRange.value
+      ? { start: customRange.value.start, end: customRange.value.end }
+      : { days: timeRange.value })
   } catch (e) {
     error.value = surfaceError(e)
   } finally {

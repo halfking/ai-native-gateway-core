@@ -103,11 +103,11 @@ Zuordnung der Abweichungen:
 2. **Dann die Zähleinheit angleichen**: Anfragen mit Anfragen, Kosten mit Kosten vergleichen; Sitzungszahl nicht gegen Anfragenzahl stellen.
 3. **Auf Degradierungsmarkierungen achten**: Zeigt eine Karte „degradiert / nicht vertrauenswürdig / nicht berechenbar", bedeuten diese Nullen nicht „kein Verkehr".
 4. **Den Probe-Schalter prüfen**: „Probes ausschließen / einschließen" im Board wirkt nur auf die Kopfsumme; Verteilungs- und Trenddiagramm bleiben immer auf Geschäftsgrundlage.
-5. **„Heute" kann fehlschlagen**: Auf der Sitzungsstatistik kann die Voreinstellung „Heute" unter Last das 30-Sekunden-Budget der Datenbank überschreiten; das ist ein Fehler, keine Null.
+5. **„Heute" konnte fehlschlagen (behoben am 2026-11-23)**: Die Voreinstellung „Heute" der Sitzungsstatistik lief reproduzierbar in ein 30-Sekunden-Timeout, weil auf der Datenbankseite der Join-Index fehlte (Index am 2026-11-23 ergänzt: Abfragezeit von 121,8 s auf 0,19 s). Zeigt die Seite den Fehler wieder an, ist der Index erneut verschwunden — dann bitte den Bereitschaftsdienst prüfen lassen, ob `idx_session_dim_session_key` vorhanden ist.
 
 ## Bekannte Einschränkungen (gemessen 2026-11-23)
 
-1. Die Voreinstellung „Heute" der Sitzungsstatistik läuft in der Produktionsdatenbank reproduzierbar in ein 30-Sekunden-Timeout (Index-Problem im Sitzungsuniversum-Join; je kleiner das Fenster, desto eher greift ein schlechter Plan). „Letzte 7 Tage" und „Letzte 30 Tage" funktionieren.
+1. **Kosten und Anfragenzahl der Sitzungsseite sind zu hoch (Doppelzählung, noch nicht behoben)**: Kosten und Anfragenzahl der Sitzungsstatistik stammen aus der Aggregation der Sitzungssummen; `sessions` ist jedoch eine **nach Tagen partitionierte Sitzungshistorie** (dieselbe Session bekommt jeden Tag eine neue Zeile), und der Join der Statistik dedupliziert nicht nach Sitzung ⇒ dieselbe Session wird mehrfach gezählt. Messung auf der Produktionsdatenbank vom 2026-11-23 (gleiches 7-Tage-Fenster): Die Kosten der Sitzungsseite liegen rund **61 %** und die Anfragenzahl rund **36 %** über den nach Sitzung deduplizierten Werten (die teuerste Session wurde dreimal gezählt). **Die Board-Zahlen (auf Anfrage-Ebene) sind nicht betroffen** ⇒ beim Kostenvergleich das Board heranziehen oder die Sitzungszahlen erst deduplizieren.
 2. Die Aggregation der Sitzungsseite summiert doppelte Zeilen der Sitzungstabelle mit; Anfragenzahl und Kosten fallen dadurch zu hoch aus.
 3. Die Credit-Karte des Boards ändert sich nicht mit dem Zeitfenster (siehe oben).
 4. Trenddiagramm (Minutentabelle) und Karten (Anfrage-Faktentabelle) des Boards unterscheiden sich im 30-Tage-Fenster um rund 13,8 % (160.451 vs. 140.969 Anfragen).

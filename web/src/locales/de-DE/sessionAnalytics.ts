@@ -134,7 +134,7 @@ export default {
     'Die Spalte „Kosten“ summiert die internen Kosten (USD) und die externen Credits. Die beiden Einheiten unterscheiden sich, daher eignet sich die Spalte nur für relative Vergleiche und nicht als ein einzelner Geldbetrag.',
   state: {
     loading: 'Sitzungsanalyse wird geladen',
-    loadingStats: 'Loading statistics…',
+    loadingStats: 'Statistik wird geladen…',
     staleTitle: 'Aggregierte Werte werden aktualisiert',
     staleReason:
       'Die aggregierten Ansichten haben ihr Aktualisierungsbudget überschritten, deshalb liefert der Server keine veralteten Zahlen. Bitte später erneut versuchen.',

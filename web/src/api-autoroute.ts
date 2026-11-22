@@ -237,6 +237,39 @@ export type AnalyticsMetric = 'count' | 'success_rate' | 'p95_ms' | 'cost_usd'
  */
 export type AnalyticsWindow = '24h' | '7d' | `${number}d`
 
+/**
+ * ★ 2026-11-23 批判式审计轮：分析端点的时间范围参数。
+ *
+ * 预设窗口用 `window`（Nd）；**用户手选的历史区间**用 `start`/`end`
+ * （YYYY-MM-DD，系统时区）⇒ 原样透传，不再被压成「跨度天数」。
+ *
+ * 后端：admin/analytics.go parseStatsTimeRange（start/end 与 window/days 双入口）。
+ */
+export interface AnalyticsRange {
+  /** 预设窗口标签（24h / 7d / Nd）。自定义区间时不传。 */
+  window?: AnalyticsWindow
+  /** 真实区间起点（YYYY-MM-DD）。与 end 同时出现时优先于 window。 */
+  start?: string
+  /** 真实区间终点（YYYY-MM-DD）。 */
+  end?: string
+}
+
+/** 把时间范围参数拼进 query（start/end 优先于 window）。 */
+function analyticsRangeQuery(range: AnalyticsRange | AnalyticsWindow): URLSearchParams {
+  const q = new URLSearchParams()
+  if (typeof range === 'string') {
+    q.set('window', range)
+    return q
+  }
+  if (range.start && range.end) {
+    q.set('start', range.start)
+    q.set('end', range.end)
+  } else if (range.window) {
+    q.set('window', range.window)
+  }
+  return q
+}
+
 export type AnalyticsRowDim = 'task_type' | 'work_type'
 
 export interface AnalyticsMatrix {
@@ -293,11 +326,13 @@ export interface ModelTaskIndexResponse {
 }
 
 export function getAnalyticsMatrix(
-  window: AnalyticsWindow = '7d',
+  window: AnalyticsWindow | AnalyticsRange = '7d',
   metric: AnalyticsMetric = 'count',
   row: AnalyticsRowDim = 'task_type',
 ): Promise<AnalyticsMatrix> {
-  const q = new URLSearchParams({ window, metric, row })
+  const q = analyticsRangeQuery(window)
+  q.set('metric', metric)
+  q.set('row', row)
   return req<AnalyticsMatrix>('GET', `/api/admin/auto-route/analytics/matrix?${q}`)
 }
 
@@ -316,8 +351,9 @@ export function getAutoRouteDecisions(
   return req<AutoRouteDecision[]>('GET', q)
 }
 
-export function getAnalyticsFlow(window: AnalyticsWindow = '7d'): Promise<AnalyticsFlow> {
-  return req<AnalyticsFlow>('GET', `/api/admin/auto-route/analytics/flow?window=${window}`)
+export function getAnalyticsFlow(window: AnalyticsWindow | AnalyticsRange = '7d'): Promise<AnalyticsFlow> {
+  const q = analyticsRangeQuery(window)
+  return req<AnalyticsFlow>('GET', `/api/admin/auto-route/analytics/flow?${q}`)
 }
 
 export function getModelTaskIndex(task_type?: string, top = 20): Promise<ModelTaskIndexResponse> {
@@ -401,8 +437,9 @@ export function getDecisionReplay(requestId: string): Promise<DecisionReplayResp
   return req<DecisionReplayResponse>('GET', `/api/admin/auto-route/analytics/decision/${encodeURIComponent(requestId)}`)
 }
 
-export function getAnalyticsFunnel(model: string, window: AnalyticsWindow = '7d'): Promise<AnalyticsFunnelResponse> {
-  const q = new URLSearchParams({ model, window })
+export function getAnalyticsFunnel(model: string, window: AnalyticsWindow | AnalyticsRange = '7d'): Promise<AnalyticsFunnelResponse> {
+  const q = analyticsRangeQuery(window)
+  q.set('model', model)
   return req<AnalyticsFunnelResponse>('GET', `/api/admin/auto-route/analytics/funnel?${q}`)
 }
 

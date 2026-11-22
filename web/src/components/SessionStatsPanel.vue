@@ -29,7 +29,6 @@ import { useRouter } from 'vue-router'
 import { Plus, Minus, Money, CircleCheck } from '@element-plus/icons-vue'
 import { useDashboard } from '../composables/useDashboard'
 import { useDataHorizon } from '../composables/useDataHorizon'
-import { formatDateTime } from '../utils/datetime'
 import DashboardStatsRow, { type DashboardStats } from './analytics/DashboardStatsRow.vue'
 import SessionTrendChart from './analytics/SessionTrendChart.vue'
 import HealthGradeChart from './analytics/HealthGradeChart.vue'
@@ -44,6 +43,23 @@ import { useSpanDaysRange } from '../composables/useSpanDaysRange'
 import { localDateStamp } from '../i18n/localDate'
 const { t } = useI18n()
 const router = useRouter()
+
+// 2026-11-23 owner 图批（紧凑轮）：「统计标准」入口上移到仪表盘页头
+// （与「整站数据」同一行）。本页被两处复用：
+//   · 仪表盘「会话与统计」页签（DashboardView2）—— 入口由页头提供，
+//     本面板传 showStandardsHelp=false 关掉自己那份（避免同一页两个入口）；
+//   · 会话分析用户页（SessionAnalyticsUsersView）—— 入口仍由本面板提供。
+// ⇒ 「统计标准」正文 id 两处必须一致（否则用户看到两份各自为政的说明），
+// 由 StatsStandardsHelpWiring.test.ts 钉住。
+const props = withDefaults(defineProps<{ showStandardsHelp?: boolean }>(), {
+  showStandardsHelp: true,
+})
+
+// 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
+// 「会话与统计」是会话级口径（一个会话一条、取会话累计值）、窗口是滚动
+// N 天；「看板」是请求级口径、窗口是日历日 ⇒ 两页数字本来就不该相等。
+// 这枚按钮打开《看板与会话统计的统计标准》正文（含逐项对照表）。
+const statsStandardsHelpId = 'dashboard-stats-standards'
 
 const boardState = inject<{
   days: Ref<number>
@@ -76,8 +92,6 @@ const {
   trend,
   performanceStats,
   errorStats,
-  lastUpdated,
-  responseTime,
   refresh,
   changeDays,
   days,
@@ -208,16 +222,6 @@ function applyStatsRange(range: Parameters<typeof applyStatsSpan>[0]) {
   if (days.value !== prev) void changeDays(days.value)
 }
 
-function openProbeTraffic() {
-  void router.push({ path: '/probe-health/detail' })
-}
-
-// 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
-// 「会话与统计」是会话级口径（一个会话一条、取会话累计值）、窗口是滚动
-// N 天；「看板」是请求级口径、窗口是日历日 ⇒ 两页数字本来就不该相等。
-// 这枚按钮打开《看板与会话统计的统计标准》正文（含逐项对照表）。
-const statsStandardsHelpId = 'dashboard-stats-standards'
-
 // Expose loading state and refresh function for parent components
 defineExpose({
   loading,
@@ -277,42 +281,46 @@ defineExpose({
       <div class="panel-toolbar">
         <!-- 2026-11-20 owner 图批：时间选择器移到左上（原「统计周期」信息块的
              位置——批「移到之前的位置」）；「统计周期/周期新会话/日均新会话」
-             信息块按图批删除（批「不需要」）。 -->
-        <KxDateRangePicker
-          :model-value="statsRange"
-          :presets="statsDayPresets"
-          :max-span-days="90"
-          :disabled="loading"
-          @apply="applyStatsRange"
-        />
-        <!-- 2026-11-21 对齐轮：包含探测开关。缺省排除探测（与会话分析同宇宙）；
-             开启后回到历史全量宇宙（数字会显著变大，徽标披露口径）。 -->
-        <label
-          class="session-probe-scope"
-          data-testid="session-probe-scope"
-          :title="t('sessions.stats.probeScopeHint')"
-        >
-          <input
-            v-model="includeProbes"
-            type="checkbox"
-            data-testid="session-probe-scope-input"
+             信息块按图批删除（批「不需要」）。
+             2026-11-23 owner 图批（紧凑轮）：右侧「最后更新 · Nms」与「查看探测
+             流量」按批删除（批「不需要，请移除」）⇒ toolbar 的右侧整块 meta 区
+             随之清空；「统计标准」入口按批上移到页头（与「整站数据」同一行，
+             由 DashboardView2 渲染 —— 本面板用 showStandardsHelp=false 关掉自己
+             那一份）；「包含探测」开关按批贴到时间范围选择的**右边**（原先被
+             space-between 顶到页面中间，离控件很远）⇒ 时间选择器 + 探测开关
+             合成一组靠左。 -->
+        <div class="panel-toolbar__start">
+          <KxDateRangePicker
+            :model-value="statsRange"
+            :presets="statsDayPresets"
+            :max-span-days="90"
+            :disabled="loading"
+            @apply="applyStatsRange"
+          />
+          <!-- 2026-11-21 对齐轮：包含探测开关。缺省排除探测（与会话分析同宇宙）；
+               开启后回到历史全量宇宙（数字会显著变大，徽标披露口径）。 -->
+          <label
+            class="session-probe-scope"
+            data-testid="session-probe-scope"
+            :title="t('sessions.stats.probeScopeHint')"
           >
-          <span>{{ t('sessions.stats.probeScopeLabel') }}</span>
-          <span
-            v-if="includeProbesActive"
-            class="probe-scope-badge"
-            data-testid="session-probe-scope-badge"
-          >{{ t('sessions.stats.probeScopeBadge') }}</span>
-        </label>
-        <div class="panel-toolbar__meta">
-          <span v-if="lastUpdated" class="meta-text">
-            {{ t('sessions.stats.lastUpdated') }}: {{ formatDateTime(lastUpdated) }}
-            <span v-if="responseTime"> · {{ responseTime }}ms</span>
-          </span>
-          <button type="button" class="probe-link" data-testid="stats-probe-link" @click="openProbeTraffic">
-            {{ t('sessions.stats.probeTrafficLink') }}
-          </button>
-          <!-- 2026-11-23 统计标准轮：本页的统计标准说明入口。 -->
+            <input
+              v-model="includeProbes"
+              type="checkbox"
+              data-testid="session-probe-scope-input"
+            >
+            <span>{{ t('sessions.stats.probeScopeLabel') }}</span>
+            <span
+              v-if="includeProbesActive"
+              class="probe-scope-badge"
+              data-testid="session-probe-scope-badge"
+            >{{ t('sessions.stats.probeScopeBadge') }}</span>
+          </label>
+        </div>
+        <!-- 「统计标准」入口的**页内**形态（仅当本页自己提供时渲染）。
+             看板页由 BoardPanel 的筛选条插槽提供；仪表盘页由页头提供
+             （showStandardsHelp=false）⇒ 同一时刻只有一处入口，不会重复。 -->
+        <div v-if="props.showStandardsHelp" class="panel-toolbar__end">
           <PageHelpDrawer
             route-path="/dashboard"
             :content-id="statsStandardsHelpId"
@@ -490,8 +498,11 @@ defineExpose({
 .session-stats-panel { padding: 0 0 16px; width: 100%; }
 .session-stats-panel--has-error { opacity: 0.6; pointer-events: none; }
 .session-stats-panel--loading { opacity: 0.85; }
-.panel-toolbar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
-.panel-toolbar__meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.panel-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+/* 2026-11-23 紧凑轮：时间选择器 + 「包含探测」开关合成一组靠左，
+   开关紧贴选择器右边（原先被 space-between 顶到页面中间，离控件很远）。 */
+.panel-toolbar__start { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.panel-toolbar__end { display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .meta-text { font-size: 12px; color: var(--muted, var(--text-secondary)); }
 .probe-link {
   align-self: flex-start;

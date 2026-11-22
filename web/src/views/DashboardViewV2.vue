@@ -12,6 +12,7 @@ import SessionStatsPanel from '../components/SessionStatsPanel.vue'
 import SessionDrilldownPanel from '../components/session/SessionDrilldownPanel.vue'
 import BoardPanel from '../components/board/BoardPanel.vue'
 import SelfCheckPanel from './SelfCheckPanel.vue'
+import PageHelpDrawer from '../components/help/PageHelpDrawer.vue'
 import type { BoardPayload } from '../api/board'
 import type { ModelUsage, HotApiKeyEntry } from '../api'
 import type { DashboardTabId } from './DashboardView.vue'
@@ -64,6 +65,13 @@ const tenantLabel = computed(() => {
   if (isDefaultTenant()) return t('dashboard.tenantLabel.super')
   return t('dashboard.tenantLabel.tenant', { tenantId })
 })
+
+// 2026-11-23 统计标准轮 + 紧凑轮：「统计标准」帮助正文 id。
+// 看板页由 BoardPanel（筛选条 #help 插槽）提供同一 id 的入口；本页由页头提供
+// ⇒ 两个页签看到的是同一篇《看板与会话统计的统计标准》，不是两份各自为政的说明。
+// （id 必须与 pageHelpRegistry / content/page-help 里的文件名一致，
+//   由 StatsStandardsHelpWiring.test.ts 钉住。）
+const statsStandardsHelpId = 'dashboard-stats-standards'
 
 function openRequestDetail(id: string) {
   // 2026-08-28: 泳道点击改为打开抽屉弹窗（与 request-logs 页一致），
@@ -165,6 +173,17 @@ async function onRefresh() {
           {{ tenantLabel }}
         </span>
 
+        <!-- 2026-11-23 owner 图批（紧凑轮）：「统计标准」入口上移到这里——
+             与「整站数据」租户标签同一行（原在「会话与统计」面板右侧工具条）。
+             ★ 只在 stats 页签出现：看板页的同一入口在 BoardFilterBar 的 #help
+               插槽里（两处同时出现＝同一页两个同名入口）。 -->
+        <PageHelpDrawer
+          v-if="activeTab === 'stats'"
+          route-path="/dashboard"
+          :content-id="statsStandardsHelpId"
+          :label="t('pageHelp.button.standards')"
+        />
+
         <!-- 刷新按钮 -->
         <button class="btn btn-refresh" @click="onRefresh" :disabled="loading" :title="t('dashboard.v2.refreshData')">
           <span v-if="loading"><Loading /></span>
@@ -193,7 +212,9 @@ async function onRefresh() {
     <!-- V3.3-OBS (OBS-FE5, 26 号 §5): 会话与统计 tab 下钻链路
          在线会话列表 → 轮次时间线（内联子请求树），手动加载、无轮询。 -->
     <template v-if="activeTab === 'stats'">
-      <SessionStatsPanel style="margin-bottom: 16px;" />
+      <!-- showStandardsHelp=false：stats 页签的「统计标准」入口由页头提供
+           （owner 图批：移到与「整站数据」同一行）⇒ 面板内不再重复一份。 -->
+      <SessionStatsPanel :show-standards-help="false" style="margin-bottom: 16px;" />
       <SessionDrilldownPanel />
     </template>
 

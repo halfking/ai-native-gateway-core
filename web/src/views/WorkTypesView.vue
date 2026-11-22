@@ -21,7 +21,7 @@ import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import ModelPicker from '../components/ModelPicker.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 
 const { t } = useI18n()
 
@@ -55,7 +55,17 @@ const isDetailView = computed(() => activeTab.value === 'settings' && !!detailKe
 // 2026-11-19 时间范围统一轮：统计窗口从固定 24h 参数化（后端 ?days=），
 // 与全站 KxDateRangePicker 同一 span 口径；默认仍 1 天（= 旧行为 24h 窗）。
 const statsDays = ref(1)
-const { presets: dayPresets, rangeValue: statsRange, applyRange: applyStatsRange } = useSpanDaysRange(statsDays, [
+// ★ 2026-11-23 批判式审计轮：改用 useRangeDays（此前用 useSpanDaysRange，
+//   把用户选的自定义区间压成「跨度天数」）。
+//   后端 work-types/stats 现已支持真实区间 start/end（admin/work_types.go
+//   parseStatsTimeRange）⇒ 前端压成 days 等于把能力扔掉：界面显示
+//   2026-09-01~2026-09-10，数据却是「最近 10 天」（静默错误答案）。
+const {
+  presets: dayPresets,
+  rangeValue: statsRange,
+  customRange: statsCustomRange,
+  applyRange: applyStatsRange,
+} = useRangeDays(statsDays, [
   { days: 1, labelKey: 'common.dateRange.preset.today' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
@@ -77,7 +87,9 @@ async function loadOverview() {
   try {
     const [a, s, d] = await Promise.all([
       getAutoRouteAudit(),
-      getWorkTypeStats(statsDays.value),
+      getWorkTypeStats(statsCustomRange.value
+        ? { start: statsCustomRange.value.start, end: statsCustomRange.value.end }
+        : { days: statsDays.value }),
       getAutoRouteDecisions(10),
     ])
     audit.value = a

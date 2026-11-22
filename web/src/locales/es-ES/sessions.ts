@@ -171,7 +171,6 @@ export default {
     emptyNoResultTopClients: 'En este período no hay estadísticas de clientes.',
     /** Estado vacío: sin estadísticas de las tareas principales (antes usaba `dashboard.noData`). */
     emptyNoResultTopTasks: 'En este período no hay estadísticas de tareas.',
-    lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",
     avgCostPerSession: "Avg cost / session",
