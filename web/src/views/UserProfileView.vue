@@ -247,6 +247,38 @@ function goTask(taskId: unknown) {
   if (id) router.push(`/admin/session-analytics/tasks/${encodeURIComponent(id)}`)
 }
 
+/**
+ * 成功率（2026-11-23 L11 收口）：**显式类型判据**，不用算术隐式兜底。
+ *
+ * ★ 原写法（模板内裸算式，本轮移除）：
+ *   `data && (data.total_success + data.total_errors) > 0
+ *      ? ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1) + '%'
+ *      : '-'`
+ *   它对两类运行时输入给出**静默错值**（不报错、界面上像正常数字）：
+ *   ① 字段缺失（降级响应 / 部分响应 / 旧数据）：
+ *      `undefined + 5 = NaN` ⇒ `NaN > 0` 为 false ⇒ 显示 '-'（尚可）；
+ *   ② 字段是**字符串**（JSON 里计数被序列化成字符串）：
+ *      `'5' + 3 = '53'` ⇒ `'53' > 0` 为真 ⇒ `'5' / '53' = 0.0943`
+ *      ⇒ **显示 9.4%，而真值是 93.4%** ⇒ 一眼看去是正常百分比，
+ *      没有任何线索指向它是错的。
+ * ⇒ 改为：**字段不是 number ⇒ 一律 '-'**（口径缺失不冒充 0，与本仓
+ *   `window_usage` 的「undefined 与 0 语义分家」约定同源）；
+ *   两字段齐备 ⇒ 按 成功/(成功+失败) 计算；分母为 0 ⇒ '-'（真的没有请求）。
+ *
+ * ★ 为何 `as unknown`：类型声明里 `total_success: number` 是**必填**，
+ *   但运行时（降级响应）可能缺 ⇒ 这里显式承认「类型说必有、运行时未必」，
+ *   而不是把 `typeof` 检查写成 TS 看得见为恒真的形式。
+ */
+const successRateText = computed(() => {
+  const success = data.value?.total_success as unknown
+  const errors = data.value?.total_errors as unknown
+  if (typeof success !== 'number' || typeof errors !== 'number') return '-'
+  if (!Number.isFinite(success) || !Number.isFinite(errors)) return '-'
+  const total = success + errors
+  if (total <= 0) return '-'
+  return ((success / total) * 100).toFixed(1) + '%'
+})
+
 /** 健康等级 → 卡片 tone。与 `healthGradeColor` 同一组判读线，5 档收敛成 3 档。 */
 function healthGradeTone(grade: unknown): 'good' | 'warn' | 'danger' | undefined {
   const g = grade == null ? '' : String(grade)
@@ -353,12 +385,8 @@ const recentSessionFields = computed<CardField[]>(() => [
           <el-card shadow="hover">
             <div class="stat-card">
               <div class="stat-label">{{ t('sessions.userProfile.successRate') }}</div>
-              <div class="stat-value">
-                {{
-                  data && (data.total_success + data.total_errors) > 0
-                    ? ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1) + '%'
-                    : '-'
-                }}
+              <div class="stat-value" data-testid="up-success-rate">
+                {{ successRateText }}
               </div>
             </div>
           </el-card>

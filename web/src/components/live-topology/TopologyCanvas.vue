@@ -626,9 +626,13 @@ function onBlankClick() {
   /* stage 列（flex column：画布 + 路由决策时间线）里的一员：用 flex 占满
      剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
      桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
-     窄屏 stage 高度未受限时退化为内容高度，min-height 480 兜底不变。 */
+     
+     ★ 2026-11-23 第十五轮重构：min-height 从 480px 提升到 620px。
+     新布局最小所需高度 = 客户端 + 间隙 + 网关核心(最大204) + ROW_GAP(160) +
+     模型层 + MODEL_TO_PROVIDER_GAP(72) + 供应端层 + 底边留白 ≈ 620px。
+     设置 620px 确保即使在最小画布下也能容纳所有层而不超出。 */
   flex: 1 1 auto;
-  min-height: 480px;
+  min-height: 620px;
   overflow: hidden;
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--kx-border) 60%, transparent) 1px, transparent 0) 0 0 / 22px 22px,

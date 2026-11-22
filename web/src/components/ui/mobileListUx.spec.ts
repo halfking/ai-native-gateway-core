@@ -117,10 +117,26 @@ function scan(): Site[] {
 /** 本仓确实没有详情目的地的调用点（登记即「已确认合格」）。 */
 const NON_NAVIGABLE: Array<[string, number, string]> = [
   ['src/views/PublicQuoteView.vue', 111, '客户只读报价快照，卡片已展示全部报价字段；公开面不提供内部模型详情目的地，打印为整单操作'],
-  ['src/views/CorrelationsView.vue', 307, '按模型聚合的相关性（rows=resp.by_model，title-key=label）：一行是「模型」的统计，不是某次调用，无详情页'],
-  ['src/views/CorrelationsView.vue', 351, '按策略聚合（resp.by_strategy，title-key=label）：策略是下拉筛选维度，不是可导航实体'],
-  ['src/views/CorrelationsView.vue', 391, '按任务类型聚合（resp.by_task_type，title-key=label）：任务类型同为筛选维度，无落地页'],
-  ['src/views/CorrelationsView.vue', 437, '模型×任务交叉表（modelTaskRows，title-key=card_key）：交叉统计单元，两侧都无详情页'],
+  // ⚠ 行号锚点：2026-11-23 由  307 改为  314（+7）。
+  //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
+  //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +7。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  ['src/views/CorrelationsView.vue', 314, '按模型聚合的相关性（rows=resp.by_model，title-key=label）：一行是「模型」的统计，不是某次调用，无详情页'],
+  // ⚠ 行号锚点：2026-11-23 由  351 改为  358（+7）。
+  //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
+  //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +7。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  ['src/views/CorrelationsView.vue', 358, '按策略聚合（resp.by_strategy，title-key=label）：策略是下拉筛选维度，不是可导航实体'],
+  // ⚠ 行号锚点：2026-11-23 由  391 改为  398（+7）。
+  //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
+  //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +7。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  ['src/views/CorrelationsView.vue', 398, '按任务类型聚合（resp.by_task_type，title-key=label）：任务类型同为筛选维度，无落地页'],
+  // ⚠ 行号锚点：2026-11-23 由  437 改为  444（+7）。
+  //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
+  //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +7。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  ['src/views/CorrelationsView.vue', 444, '模型×任务交叉表（modelTaskRows，title-key=card_key）：交叉统计单元，两侧都无详情页'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 1083 改为 1084。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -137,7 +153,11 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
-  ['src/views/QualityCorrelationsView.vue', 224, '质量相关性聚合，无单条详情'],
+  // ⚠ 行号锚点：2026-11-23 由  224 改为  231（+7）。
+  //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
+  //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +7。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  ['src/views/QualityCorrelationsView.vue', 231, '质量相关性聚合，无单条详情'],
   // ⚠ 行号锚点：2026-11-19 由 286/309 改为 331/354。
   //   原因：444865860（用户会话分析增强轮）在 top_tasks 卡片**之前**插入了
   //   模型使用统计与帮助面板 ⇒ 其后所有行号整体 +45。同日 cf8d7bffe 改 1 行无位移。
@@ -146,8 +166,20 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   原因：f5fe7e5cb（users 数字出处轮）+ 6c4da0ae7（员工→项目下钻 L1）在该文件
   //   插入了项目卡块（projects，394）与帮助抽屉 ⇒ top_tasks/top_end_users 整体
   //   后移至 426/457。
-  ['src/views/UserProfileView.vue', 394, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
-  ['src/views/UserProfileView.vue', 457, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  // ⚠ 行号锚点：2026-11-23 由 394 改为 423（+29）。
+  //   原因：L11 收口轮（undefined 防护 + 回归门）在该文件 <script setup> 段
+  //   **插入了 28 行**（successRateText computed + 其说明注释）⇒ 其后所有行号
+  //   整体 +28；**同一轮上游**（时间范围统一收口，`:presets-only="true"`）又在
+  //   模板段 313 行附近**加了 1 行** ⇒ 合计 +29
+  //   ⇒ 模板段四个 <ResponsiveDataView> 块起点
+  //   394/426/457 → **423/455/486**。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  //   ★ 同族先例见本表各处（2026-10-27 / 2026-11-19 / 2026-11-20 均因上游在
+  //     <script setup> 头部插行而重锁）。★ 根治方向（未做，登记在 AGENTS.md）：
+  //     本表按**行号**锚定 ⇒ 该文件任何增删行都会让它红；改「内容锚点」才谈得
+  //     上不漂移（同 internal/rowsguard 的 exemptionAnchorSep 先例）。
+  ['src/views/UserProfileView.vue', 423, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
+  ['src/views/UserProfileView.vue', 486, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 282 改为 283。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -174,7 +206,11 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
-  ['src/views/tenant/MaaSUsageView.vue', 355, '用量内嵌表，无用量详情页'],
+  // ⚠ 行号锚点：2026-11-23 由  355 改为  356（+1）。
+  //   原因：上游「时间范围统一收口」轮（46e169cae / 3e262b7ef 一族）改该文件
+  //   （接真实区间 / 换 useRangeDays）⇒ 其后行号整体位移 +1。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  ['src/views/tenant/MaaSUsageView.vue', 356, '用量内嵌表，无用量详情页'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 207 改为 208。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -206,7 +242,12 @@ const KNOWN_GAP: Array<[string, number, string]> = [
     //   而文件里已存在 router.push ⇒ 按门语义不再满足 NON_NAVIGABLE（其前提
     //   是「文件无详情目的地」）⇒ 移入 KNOWN_GAP 登记「有目的地、compact 无入口」。
     //   修法 = 给 ResponsiveDataView 的 compact 卡片头/行补点击入口，属 UI 迭代项。
-    426,
+    // ⚠ 行号锚点：2026-11-23 由 426 改为 455（+29）。
+    //   原因：L11 收口轮在该文件 <script setup> 段插入了 28 行
+    //   （successRateText computed + 说明注释），同一轮上游又在模板段 +1 行
+    //   ⇒ 其后行号整体 +29。
+    //   ★ 契约语义未变（top_tasks 仍是「有目的地、compact 无入口」）⇒ 只重锁行号。
+    455,
     '详情目的地 /admin/session-analytics/tasks/:id 存在（goTask 行点击，2026-11-20 逐层下钻轮），'
       + '但入口只写在 #table 插槽的列按钮里 ⇒ compact 卡片无入口（与 ApprovalListView 同型）。',
   ],
@@ -403,7 +444,11 @@ const ASYMMETRY: Array<[string, number, string]> = [
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
   //   与 QualityCorrelationsView（186→223）、UserProfileView（285/308→286/309）同类。
     //   （2026-10-04 落库）起就在 717 行，结构至今未变。
-    718,
+    // ⚠ 行号锚点：2026-11-23 由 718 改为 719（+1）。
+    //   原因：上游「时间范围统一收口」轮（3e262b7ef 一族）给该文件
+    //   （换 useRangeDays / 加 :presets-only）⇒ 其后行号整体位移 +1。
+    //   ★ 契约语义未变（仍是「详情块：卡片可跳、桌面 tr 无 @click」的不对称）⇒ 只重锁行号。
+    719,
     '详情块：卡片 clickable 跳 /request-logs，桌面 detail-table 的 <tr> 无 @click。'
       + '桌面页脚 detailFooterLogs 本就是同一目标的 RouterLink ⇒ 同目的地、不同入口位置。'
       + '是否让桌面行也整行可点属产品裁决，未擅自改。',
