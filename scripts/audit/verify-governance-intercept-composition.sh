@@ -54,6 +54,9 @@ case "$cmd" in
       *"settings_kv"*)
         # ★ 分隔符必须是 **|**（★ 真机用 psql -F'|'）⇒ ★ 否则 python 解析不出 key
         if [ -n "$FAKE_GOV_SW" ]; then printf '%s\n' "$FAKE_GOV_SW"; else printf 'security.enabled|true\nsecurity.mode|"observe"\n'; fi ;;
+      *"prompt_injection_policies"*)
+        # ★ 形态 b 可达性诊断的取数（★ 分隔符 **:** ⇒ ★ 真机用 psql -F':'）
+        if [ -n "$FAKE_PI_REACH" ]; then printf '%s\n' "$FAKE_PI_REACH"; else printf 'policy:default:observe:6:10\nmatrix:low:log:log\nmatrix:medium:warn:replace\nmatrix:high:warn:reject\nmatrix:critical:warn:block\n'; fi ;;
       *) printf '42\n' ;;
     esac ;;
   *)                    : ;;
@@ -95,6 +98,12 @@ run_script() {  # run_script <日志夹具> <输出文件>；★ 打印退出码
 
 run_script_gov() {  # run_script_gov <日志夹具> <输出文件> <治理链开关串>
   FAKE_LOGS="$1" FAKE_GOV_SW="$3" PATH="$WORK/bin:$PATH" \
+    bash "$SCRIPT" --host fake --window 24h >"$2" 2>"$2.err"
+  echo $?
+}
+
+run_script_reach() {  # run_script_reach <日志夹具> <输出文件> <可达性取数串>
+  FAKE_LOGS="$1" FAKE_PI_REACH="$3" PATH="$WORK/bin:$PATH" \
     bash "$SCRIPT" --host fake --window 24h >"$2" 2>"$2.err"
   echo $?
 }
@@ -185,12 +194,35 @@ grep -qF "解读为「没有攻击」" <<<"$outoff" || \
   fail "★ 链被关时脚本没有打警示 ⇒ ★ 读者会把『链关了』读成『没有攻击』"
 pass "治理链期望状态：★ 链开/链关两态都披露、★ 链关时必打警示"
 
-# ── ⑤ 参数契约：★ --help 退 0、★ 未知参数退 1 ───────────────────────────
+# ── ⑤ 形态 b 可达性判定（★ 「零分歧」是策略使然、★ 还是观测点失效）───────
+# ★ 正向：★ 当前策略（observe + medium/high/critical 的 observe_action=warn）
+#   ⇒ ★ 形态 b **不可达** ⇒ ★ 脚本必须明说「零分歧是策略使然、不是观测点失效」。
+out="$(cat "$WORK/out_clean")"
+grep -q "形态 b \*\*当前不可达\*\*" <<<"$out" || \
+  fail "当前策略下形态 b 不可达、★ 但脚本没这么判（★ 判定逻辑错了）"
+grep -qF "不是观测点失效" <<<"$out" || \
+  fail "脚本没有把『零分歧』解释成『策略使然』⇒ ★ 读者会误判观测点失效"
+# ★ 反向（★ 对照臂）：★ 把 medium 的 observe_action 改成 reject
+#   ⇒ ★ enhanced deny sev1 ⇒ ★ 低于 BlockThreshold ⇒ ★ **形态 b 变可达**
+#   ⇒ ★ 脚本必须改口（★ 这正是「策略一变、观测点就活」的可观测性）。
+rc="$(run_script_reach "$WORK/logs_clean.jsonl" "$WORK/out_reach_on" \
+  'policy:default:observe:6:10
+matrix:low:log:log
+matrix:medium:reject:replace
+matrix:high:warn:reject
+matrix:critical:warn:block')"
+[[ "$rc" == "0" ]] || fail "对照臂（形态 b 可达）退出码 ${rc}（★ 期望 0）"
+outon="$(cat "$WORK/out_reach_on")"
+grep -q "形态 b \*\*当前可达\*\*" <<<"$outon" || \
+  fail "★ medium 动作配成 reject 后形态 b 变可达、★ 但脚本仍判不可达 ⇒ ★ 判定逻辑错了"
+pass "形态 b 可达性：★ 不可达/可达两态都判对、★ 且区分『策略使然』与『观测点失效』"
+
+# ── ⑥ 参数契约：★ --help 退 0、★ 未知参数退 1 ───────────────────────────
 bash "$SCRIPT" --help >/dev/null 2>&1 || fail "--help 退出码非 0"
 bash "$SCRIPT" --nope >/dev/null 2>&1 && fail "未知参数没有退 1"
 pass "参数契约：--help 退 0、★ 未知参数退 1"
 
-# ── ⑥ 覆盖期纪律（★ 静态）：★ 分母查询必须与覆盖期同起点 ────────────────
+# ── ⑦ 覆盖期纪律（★ 静态）：★ 分母查询必须与覆盖期同起点 ────────────────
 grep -q "State.StartedAt" "$SCRIPT" || fail "脚本没有取容器启动时刻（★ 覆盖期不可知）"
 grep -q "greatest(now() - interval" "$SCRIPT" || fail "分母查询没有与覆盖期取同一起点（★ 分子分母会不同期）"
 pass "覆盖期纪律：分母与分子同起点"
