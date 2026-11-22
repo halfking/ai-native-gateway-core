@@ -46,9 +46,18 @@ const SessionOwnerKeyExpr = "NULLIF(COALESCE(%[1]s.owner_user, %[2]s.api_key_own
 //
 // 参数：ssAlias = session_summaries 别名，sAlias = sessions 别名，
 // sdAlias = session_dim 别名。
+//
+// ★ 2026-11-23 D2 去重修复：sessions 按天分区（同一会话每天一行），直接
+// JOIN 会一对多放大 ⇒ 用 DISTINCT ON (session_id, tenant_id) 子查询先去重，
+// ORDER BY partition_date DESC 取最新分区行（＝当前状态）。
 func SessionUniverseJoin(ssAlias, sAlias, sdAlias string) string {
 	return fmt.Sprintf(
-		"JOIN sessions %[1]s ON %[1]s.session_id = %[2]s.session_key AND %[1]s.tenant_id = %[2]s.tenant_id\n"+
+		"JOIN (\n"+
+			"  SELECT DISTINCT ON (session_id, tenant_id)\n"+
+			"    session_id, tenant_id, is_probe, owner_user, client_type, title\n"+
+			"  FROM sessions\n"+
+			"  ORDER BY session_id, tenant_id, partition_date DESC\n"+
+			") %[1]s ON %[1]s.session_id = %[2]s.session_key AND %[1]s.tenant_id = %[2]s.tenant_id\n"+
 			"LEFT JOIN session_dim %[3]s ON %[3]s.session_key = %[2]s.session_key AND %[3]s.tenant_id = %[2]s.tenant_id",
 		sAlias, ssAlias, sdAlias)
 }

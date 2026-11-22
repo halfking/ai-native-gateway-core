@@ -172,6 +172,41 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 
 	for i, msg := range req.Messages {
 		for j, block := range msg.Content {
+			// P1-B (2026-11-23): file_id-only images cannot be expressed on Gemini.
+			// irImageToGeminiPart returns nil when uri is empty; report the loss.
+			if block.Type == "image" && block.Image != nil {
+				uri := block.Image.URL
+				if block.Image.FileURI != "" {
+					uri = block.Image.FileURI
+				}
+				// file_id without URL/FileURI: no Gemini fileUri available
+				if uri == "" && block.Image.FileID != "" {
+					ReportProtocolLoss(
+						"unknown",
+						fieldPathMessageContent(i, j, "image.file_id"),
+						ifaceNonEmpty(src, ProtocolOpenAIChat),
+						ProtocolGeminiGenerate,
+						"loss",
+						"file_id image reference cannot be resolved to Gemini fileUri; block dropped",
+						map[string]any{"message_index": i, "content_index": j, "file_id": block.Image.FileID},
+					)
+				}
+			}
+			// P1-B (2026-11-23): file_id-only documents cannot be expressed on Gemini.
+			// irDocumentToGeminiPart returns nil for file_id source with empty URL; report the loss.
+			if block.Type == "document" && block.Document != nil && block.Document.Source != nil {
+				if block.Document.Source.Type == "file_id" && block.Document.Source.URL == "" {
+					ReportProtocolLoss(
+						"unknown",
+						fieldPathMessageContent(i, j, "document.file_id"),
+						ifaceNonEmpty(src, ProtocolOpenAIChat),
+						ProtocolGeminiGenerate,
+						"loss",
+						"file_id document reference cannot be resolved to Gemini fileUri; block dropped",
+						map[string]any{"message_index": i, "content_index": j, "file_id": block.Document.Source.FileID},
+					)
+				}
+			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
 					"unknown",

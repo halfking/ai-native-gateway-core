@@ -181,6 +181,12 @@ type StreamCapture struct {
 	// OpenAI ttl_30m→Short / ttl_12h→Long。
 	cacheWriteTTLShort *int
 	cacheWriteTTLLong  *int
+	// P2-B (2026-11-23): 多模态 token 计数，接通 IR → StreamCapture → telemetry 链。
+	// 修复 ir/response.go:454-513 注释记录的断链（全树零赋值点 → usage 列恒 NULL）。
+	reasoningTokens *int
+	imageTokens     *int
+	audioTokens     *int
+	videoTokens     *int
 	// Banked usage for continuation legs (P0-3 audit fix, 2026-10-16).
 	// ObserveUsage/ObserveChunk use REPLACE semantics — correct for one
 	// upstream leg, but a continuation splice bills TWO upstream calls inside
@@ -740,6 +746,26 @@ func (sc *StreamCapture) ObserveCacheWriteSplit(short, long *int) {
 	}
 }
 
+// ObserveMultimodalTokens records multimodal token usage (reasoning, image,
+// audio, video) from vendor usage details. P2-B (2026-11-23): wires up the
+// IR → usage → capture → telemetry chain documented in ir/response.go:454-513.
+func (sc *StreamCapture) ObserveMultimodalTokens(reasoning, image, audio, video *int) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if reasoning != nil {
+		sc.reasoningTokens = reasoning
+	}
+	if image != nil {
+		sc.imageTokens = image
+	}
+	if audio != nil {
+		sc.audioTokens = audio
+	}
+	if video != nil {
+		sc.videoTokens = video
+	}
+}
+
 func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -943,6 +969,19 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.cacheWriteTTLLong != nil {
 		m["cache_write_ttl_long_tokens"] = *sc.cacheWriteTTLLong
+	}
+	// P2-B (2026-11-23): 输出多模态 token 到 summary map，接通到 telemetry。
+	if sc.reasoningTokens != nil {
+		m["reasoning_tokens"] = *sc.reasoningTokens
+	}
+	if sc.imageTokens != nil {
+		m["image_tokens"] = *sc.imageTokens
+	}
+	if sc.audioTokens != nil {
+		m["audio_tokens"] = *sc.audioTokens
+	}
+	if sc.videoTokens != nil {
+		m["video_tokens"] = *sc.videoTokens
 	}
 	if sc.InputTokens != nil {
 		m["input_tokens"] = *sc.InputTokens

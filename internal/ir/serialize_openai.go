@@ -621,6 +621,9 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 			// tool_use blocks are converted to OpenAI tool_calls format and
 			// stored in message.ToolCalls (handled by the caller), not in the
 			// content array.
+		case "thinking":
+			// Anthropic thinking blocks have no OpenAI Chat equivalent.
+			// The block is skipped; loss is reported in reportSerializeOpenAILosses.
 		case "tool_result":
 			// For tool results in content blocks, serialize as text
 			if block.ToolResult != nil {
@@ -1142,6 +1145,19 @@ func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 			}
 			if src == ProtocolOpenAIChat {
 				continue
+			}
+			// P1-A (2026-11-23): thinking block text has no OpenAI Chat equivalent.
+			// serializeOpenAIMessageContent skips the entire block; report the loss.
+			if block.Type == "thinking" && block.Thinking != nil && block.Thinking.Thinking != "" {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "thinking"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"Anthropic thinking block cannot be expressed on OpenAI Chat Completions; block dropped",
+					map[string]any{"message_index": i, "content_index": j, "text_length": len(block.Thinking.Thinking)},
+				)
 			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(

@@ -715,10 +715,11 @@ function onSelectModel(model: string) {
      * 560px ≥ 画布 min-height ⇒ 画布完整可见；空间不足时仍由 .main-body 滚动兜底
      *（「宁可滚，不可塌」——同一条纪律）。
      * 
-     * 2026-11-23 第十四轮：行下限 560px → 720px，适配 ROW_GAP 从 160 增加到 320。
-     * ROW_GAP 增加 160px 后，模型层下移，需要更多垂直空间容纳完整布局。
-     * 取 720px 的依据：画布 min-height 480px + ROW_GAP 增量 160px + 缓冲 80px ≈ 720px。 */
-    grid-template-rows: minmax(min(720px, 70vh), 1fr) minmax(min(240px, 40vh), auto);
+     * 2026-11-23 第十三轮：行下限 560px → 680px，适配 ROW_GAP 增加到 160px。
+     * ROW_GAP 从 72 增加到 160 后，模型层下移，需要更多垂直空间避免网关核心大方块
+     * 被压缩。取 680px 的依据：画布 min-height 480px + ROW_GAP 增量 88px + 
+     * 网关核心大方块空间 120px ≈ 688px，取整为 680px。 */
+    grid-template-rows: minmax(min(680px, 70vh), 1fr) minmax(min(240px, 40vh), auto);
   }
 
   .live-topology__right {
@@ -752,8 +753,8 @@ function onSelectModel(model: string) {
     /* ★ 同行下限修（见上方 @1024 的注释）：320px < 画布 min-height 480px
      * ⇒ 画布溢出被裁 ⇒ 改 560px，让画布完整可见。
      * 
-     * 2026-11-23 第十四轮：行下限 560px → 720px，适配 ROW_GAP 从 160 增加到 320。 */
-    grid-template-rows: minmax(min(720px, 70vh), 1fr);
+     * 2026-11-23 第十三轮：行下限 560px → 680px，适配 ROW_GAP 增加到 160px。 */
+    grid-template-rows: minmax(min(680px, 70vh), 1fr);
   }
 
   .live-topology__right {

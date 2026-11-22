@@ -97,9 +97,22 @@ describe('排行卡片 → 请求日志 深链契约', () => {
     // 计入「生效条件数」
     expect(VIEW_SRC).toContain('Object.values(deepLinkFilters.value).filter')
     // 一键清空
-    expect(VIEW_SRC).toContain('for (const key of Object.keys(deepLinkFilters.value)) deepLinkFilters.value[key] =')
+    expect(VIEW_SRC).toContain('for (const key of deepKeys) deepLinkFilters.value[key] =')
     // 单个清除
     expect(VIEW_SRC).toContain('clearDeepLinkFilter')
+  })
+
+  it('清除深链维度时必须**同步改 URL**（否则「清掉了、一刷新又回来」）', () => {
+    // ★ 2026-11-23 实测：chip 的「×」只清了本地 state，URL 里的
+    //   ?end_user_id=anonymous 还在 ⇒ 刷新页面 onMounted 又从 route.query
+    //   把它读回来 ⇒ 用户看到「清掉了却又回来了」。
+    //   ⇒ 清除动作必须把该维度从 route.query 里摘掉（router.replace）。
+    expect(VIEW_SRC).toContain('stripDeepLinkFromQuery')
+    expect(VIEW_SRC).toMatch(/function stripDeepLinkFromQuery[\s\S]*?delete next\[key\]/)
+    expect(VIEW_SRC).toContain('router.replace({ path: route.path, query: next })')
+    // 单个清除与一键清空都要走它
+    expect(VIEW_SRC).toMatch(/function clearDeepLinkFilter[\s\S]*?stripDeepLinkFromQuery\(\[key\]\)/)
+    expect(VIEW_SRC).toMatch(/function clearAllFilters[\s\S]*?stripDeepLinkFromQuery\(deepKeys\)/)
   })
 })
 

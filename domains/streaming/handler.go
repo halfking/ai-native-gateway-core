@@ -3085,14 +3085,14 @@ func (h *ChatHandler) serveWithExecutor(
 	if len(bodyBytes) > maxBodySize {
 		// body_too_large already has body captured (it's in bodyBytes)
 		// but we need to emit + mark to prevent safety net double-emit
-		logCtx.SetError("body_too_large", "request body exceeds 32 MiB limit")
+		logCtx.SetError("body_too_large", "request body exceeds 100 MB limit")
 		if logCtx.ClientModel == "" {
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes[:maxBodySize]))
 		}
-		logCtx.EmitFailure("body_too_large", "request body exceeds 32 MiB limit", nil, nil)
+		logCtx.EmitFailure("body_too_large", "request body exceeds 100 MB limit", nil, nil)
 		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too_large"},
+			"error": map[string]string{"message": "request body exceeds 100 MB limit", "type": "invalid_request", "code": "body_too_large"},
 		})
 		return
 	}
@@ -7377,6 +7377,20 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		}
 		if v, ok := m["cache_write_tokens"].(int); ok && v > 0 {
 			reqLog.CacheWriteTokens = &v
+		}
+		// P2-B (2026-11-23): 从 capture 读取多模态 token 并赋值到 telemetry。
+		// 接通 IR → usage → capture → telemetry 链，修复 ir/response.go:454-513 记录的断链。
+		if v, ok := m["reasoning_tokens"].(int); ok && v > 0 {
+			reqLog.ReasoningTokens = &v
+		}
+		if v, ok := m["image_tokens"].(int); ok && v > 0 {
+			reqLog.ImageTokens = &v
+		}
+		if v, ok := m["audio_tokens"].(int); ok && v > 0 {
+			reqLog.AudioTokens = &v
+		}
+		if v, ok := m["video_tokens"].(int); ok && v > 0 {
+			reqLog.VideoTokens = &v
 		}
 		// 2026-10-27 缓存监测轮：TTL 写入分档只进监测面（台账列是读写总量），
 		// 有分档时打一条结构化 INFO 供运维检索。

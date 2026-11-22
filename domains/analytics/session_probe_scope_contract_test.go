@@ -32,8 +32,14 @@ func normalize(s string) string {
 func TestSessionUniverseJoinMatches994(t *testing.T) {
 	mig := read994(t)
 	// 994 的连接子句（FROM session_summaries ss ... 段）。
+	// 2026-11-23 D2 去重修复：改为 DISTINCT ON 子查询。
 	wantJoin := normalize(`
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd

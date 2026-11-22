@@ -327,7 +327,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
-		attemptErrMsg = "request body too large"
+		attemptErrMsg = "request body exceeds 100 MB limit"
 		// 2026-06-20 audit fix: extract model from the (truncated) body
 		if attemptClientModel == "" {
 			attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
@@ -335,7 +335,7 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		if attemptClientModel == "" {
 			attemptClientModel = "<unknown>"
 		}
-		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
+		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body exceeds 100 MB limit")
 		return
 	}
 	// ── Gateway prompt admission preflight ───────────────────────────────────
