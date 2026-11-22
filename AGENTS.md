@@ -1,3 +1,15 @@
+
+> **2026-11-23 时间范围静默改写收口轮——12 页面全部收口（goal 会话；两笔提交：① `46e169cae` 第一批 3 页面（改后端支持真实区间）② `3e262b7ef` 第二批 9 页面（禁用自定义入口）；**零迁移/零 schema 变更**——改动面＝后端 3 文件改 + 前端 13 文件改）**：
+> ★★★★★ **问题（审计取证）**：全站 12 个统计页面用统一的 KxDateRangePicker 选时间范围，但后端绝大多数只收 `days` 参数（解释成「最近 N 天」），而前端 useSpanDaysRange 把用户选的**自定义历史区间**压成「跨度天数」⇒ **用户选 2026-09-01~2026-09-10，实际拿到的是「最近 10 天」**。这是**静默错误答案**（界面显示 A、数据是 B），不是量具问题。实测证据（work-types）：`?start_date=2026-09-01&end_date=2026-09-10` ⇒ 200 且 `window="24h"`（参数被静默忽略、回落默认窗口）。
+> ★★★★ **修法（二选一策略）**：对每个页面判断后端能力，采用**方案 A（改后端）**或**方案 B（禁入口）**。方案 A：后端接入 `parseStatsTimeRange`（同时接受 start/end 真实区间与 days 预设），前端改用 `useRangeDays`（预设走 days 快路、自定义透传 start/end），API 补充 start_date/end_date 参数。方案 B：前端给 KxDateRangePicker 传 `:presets-only="true"`，只显示预设档位、隐藏自定义区间入口——**宁可不给自定义入口，也不给会被悄悄改写的区间**。
+> ★★★★ **第一批（3/12 页面）：改后端支持真实区间**（提交 `46e169cae`）——CorrelationsView / QualityCorrelationsView / RoutingAuditView。后端 3 个端点（auto_route_correlations / quality_correlations / routing_overrides_audit）接入 parseStatsTimeRange，前端改用 useRangeDays，API 补充 start_date/end_date 参数。这 3 个端点的后端查询都是**参数化时间谓词**（`NOW() - INTERVAL '1 day' * $1`）⇒ 改成真实区间只需用 `tr.sqlPredicate` 生成谓词片段，零迁移/零 schema 变更。
+> ★★★★ **第二批（9/12 页面）：禁用自定义入口**（提交 `3e262b7ef`）——TaskAnalyticsView / UserProfileView / AutoTuningView / ClientAnalyticsView / TaskProfileView / MaaSUsageView / TenantDashboardView / TenantDetailView / AnalyticsDetailView。这 9 个页面的后端依赖**物化视图**或只收 days 参数，改后端需要绕开物化视图（会慢很多）或大改查询逻辑 ⇒ 统一采用方案 B：每个页面的 KxDateRangePicker 加一行 `:presets-only="true"`，前端只显示预设档位（1d/7d/30d/90d），隐藏自定义区间入口。
+> ★★★ **验证**：后端 `go build ./admin/` 通过（team 错误是并行会话在途件）；前端 `vue-tsc --noEmit` 通过（team 错误同上）。改动面：后端 3 文件（auto_route_correlations.go / quality_correlations.go / routing_overrides.go），前端 13 文件（tuning.ts API 定义 + 12 个 View 组件）。
+> ★★★ **通用式（本轮三条）**：① **静默回落比报错危险得多**——参数被忽略还返回 200 + 合理数据，用户无从察觉 ⇒ 区间类参数要么生效要么明确报错，绝不静默回落；② **「days 分支保持零参数 + 字面量 interval」的理由**——旧语义逐字不变（`NOW() - INTERVAL '24 hours'` 在库里求值，客户端时钟不参与）+ **参数序号不变** ⇒ 端点里其它占位符（tenant 片段等）不需要重排，改造面与回归风险最小；③ **改后端 vs 禁入口的判断**——后端查询是参数化时间谓词 ⇒ 改后端便宜（只换谓词片段）；后端依赖物化视图/固定窗口 ⇒ 禁入口更安全（改后端要绕开物化视图，会慢很多）。
+> ★ **验证与部署**：两笔提交已推 origin/main（`46e169cae` / `3e262b7ef`），`merge-base --is-ancestor` 验证两笔提交都在 origin/main 链上。
+> ★ **登记**：**L1** 12 页面全部收口（100%）：3 个支持真实区间（方案 A），9 个禁用自定义入口（方案 B）；**L2** 方案 B 的 9 个页面后续可逐个升级为方案 A（需判断是否可绕开物化视图、改造成本与性能代价）；**L3** useSpanDaysRange 的 15 处调用方（含 SessionStatsPanel / AnalyticsDetailView / AutoTuningView）尚未迁移到 useRangeDays（本轮已完成的 3 个页面已迁移，剩余 12 处是其它页面或组件）；**L4** window_hours 字段在自定义区间下表示「跨度小时数」而非「距今小时数」⇒ 字段名有歧义（前端目前不用），建议改名 window_span_hours；**L5** 物化视图不覆盖自定义区间 ⇒ 自定义区间走基表（口径正确、性能下降，长跨度 + 大数据量时需关注 15s ctx 超时）。
+
+
 # llm-gateway-go — AGENTS.md（维护者交接）
 
 > **2026-11-23 大会话归约提速轮——守卫判决缓存 + 归约逐条并行 + 暂存空壳清理（goal 会话；主档 `docs/audit/2026-11-23-大会话归约提速-守卫判决缓存与逐条并行-主档.md`；提交 `e06083d40`；**零迁移/零 schema 变更/零前端改动**；211 现役 `2.6.1-9237afec-20261123-211`（seq 3226））**：
