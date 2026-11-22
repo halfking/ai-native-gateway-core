@@ -134,7 +134,7 @@ export default {
     'La columna de coste suma el coste interno (USD) y los créditos externos. Las dos unidades son distintas, por lo que esa columna solo sirve para comparaciones relativas y no como un único importe monetario.',
   state: {
     loading: 'Cargando el análisis de sesiones',
-    loadingStats: 'Loading statistics…',
+    loadingStats: 'Cargando estadísticas…',
     staleTitle: 'Los datos agregados se están actualizando',
     staleReason:
       'Las vistas agregadas han superado su margen de frescura, así que el servidor se niega a devolver cifras obsoletas. Vuelva a intentarlo en un momento.',
