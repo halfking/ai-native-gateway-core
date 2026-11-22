@@ -48,7 +48,11 @@ url: ${BASE_URL}
 # ========================================================================
 # 测试 2: demoadmin 用户登录验证
 # ========================================================================
-- openLink: ${BASE_URL}/?login=1
+# ★ 2026-11-22 修复：App.vue 自 2026-07-20 起 ?login=xxx 仅在未登录时弹框
+#   （e34a42ba1），带会话时不弹。测试 1 已登录，需先清除会话或使用 clearState
+- launchApp:
+    clearState: true
+- openLink: ${BASE_URL}/?login=demoadmin
 - extendedWaitUntil:
     visible:
       id: "login-modal-title"
@@ -88,7 +92,11 @@ url: ${BASE_URL}
 # ========================================================================
 # 测试 3: demo 用户登录验证
 # ========================================================================
-- openLink: ${BASE_URL}/?login=1
+# ★ 2026-11-22 修复：App.vue 自 2026-07-20 起 ?login=[REDACTED:account:1] 仅在未登录时弹框
+#   （e34a42ba1），带会话时不弹。测试 2 已登录，需先清除会话或使用 clearState
+- launchApp:
+    clearState: true
+- openLink: ${BASE_URL}/?login=[REDACTED:account:2]
 - extendedWaitUntil:
     visible:
       id: "login-modal-title"

@@ -117,14 +117,20 @@ values.TENANT_ID = values.TENANT_CODE // 路由参数就是租户 code（TenantD
 //   而列表首项往往正是被禁用的一条 ⇒ 详情页直接回「invalid provider id」
 //   （ProviderDetailView 的错误条）⇒ flow 的断言必红，**与代码无关**。
 //   判据：优先 enabled === true 的首项；没有启用项才回落列表首项。
-const pickEnabled = (j, field = 'id') => {
+// ★ 2026-11-22 修复：密钥还需排除 status === 'revoked'，否则详情页会 404
+//   （getKeyDetail 默认不返回 revoked key，前端未传 include_revoked）
+const pickEnabled = (j, field = 'id', excludeRevoked = false) => {
   const list = Array.isArray(j) ? j : Array.isArray(j?.items) ? j.items : []
   if (list.length === 0) return undefined
-  const on = list.find((x) => x && x.enabled === true)
+  const on = list.find((x) => {
+    if (!x || x.enabled !== true) return false
+    if (excludeRevoked && x.status === 'revoked') return false
+    return true
+  })
   return (on ?? list[0])?.[field]
 }
 await take('PROVIDER_ID', '/api/providers', (j) => pickEnabled(j, 'id'))
-await take('API_KEY_ID', '/api/keys', (j) => pickEnabled(j, 'id'))
+await take('API_KEY_ID', '/api/keys', (j) => pickEnabled(j, 'id', true))
 
 // ── 请求日志 ──────────────────────────────────────────────────────────────
 await take('REQUEST_ID', '/api/logs?limit=5', (j) => j?.items?.[0]?.request_id)
