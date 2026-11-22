@@ -114,33 +114,56 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
   }
   return plainFallback ?? { visible: 1, cardW: Math.max(1, Math.min(NODE_W, inner)), foldable: false }
 }
-/** 每层中心线的高度占比(自上而下)。网关核心那一层由大方块自己占位。
- *  model 行的占比必须满足 `ratio*480 + NODE_H/2 ≤ 480`(最小画布高度下
- *  卡片不沉出画布)—— 0.965 曾在 h=480 把卡底推到 484。
- *  ★ 2026-11-20 C 方案轮：provider 0.85 → 0.80 —— 大方块变矮让出的中段
- *    空间直接转化为供应端/模型行的间距(provider↔model 10%→15%),
- *    两行不再贴底(owner：让节点与模型看得更清楚)。
- *  ★ 2026-11-21 拓扑顺序优化：交换 model 与 provider 位置，模型前置(0.8)，
- *    供应商节点后置(0.95)，更符合用户视角(先看用什么模型，再看通过哪个节点)。
- *  ★ 2026-11-21 模型层避免遮挡：调整模型层到0.72，给模型节点更多空间，
- *    避免被基础服务栏遮挡。provider保持0.88，确保整体布局平衡。
- *  ★ 2026-11-22 进一步优化模型层位置：第一次下移到0.78，第二次下移到0.82，
- *    持续增加与网关核心的间距。provider下移到0.94，确保底部留有空间。
- *  ★ 2026-11-22 第七轮优化：根据用户反馈仍有重叠，将model下移到0.86，
- *    provider下移到0.96，进一步增大间距。
- *  ★ 2026-11-23 第十轮优化（节点高度+间距优化）：① 节点高度 42→56 (+33%)；
- *    ② model 上移到 0.82；③ provider 调整到 0.95，确保两层至少 60px 净间距。
- *  ★ 2026-11-23 第十一轮优化：根据用户反馈与供应商间距仍不足，调整 provider
- *    从 0.95→0.94（上移确保 480px 下不超界），model 保持 0.82（不占用网关核心），
- *    在 846px 常见高度下净间距 45px，480px 最小画布净间距 1px（边界安全）。
- *  ★ 2026-11-23 第十二轮优化：用户要求将模型与供应商间距扩大一倍，调整 model
- *    从 0.82→0.76（上移），provider 保持 0.94，在 846px 常见高度下净间距 96px
- *    （约为第十一轮的 2.1 倍），480px 最小画布净间距 30px。 */
-const ROW_RATIO: Record<TopoColumn, number> = {
-  client: 0.075,
-  gateway: 0.47, // 大方块中心线(rowY.gateway = box 中心；无卡片，仅标签用)
-  model: 0.76,    // 模型层上移，增大与供应商层间距（目标：846px 下约 96px）
-  provider: 0.94, // 供应商节点，确保节点底部不超出画布
+/**
+ * 每层中心线的定位口径（2026-11-23 第十二轮实测取证后重写）。
+ *
+ * ★★★ **为什么不再用比例定位模型层与供应端层** ★★★
+ * 2026-11-23 生产实测（CDP 实测，非推算）抓到的真相：
+ *   · `/live` 的**画布实际只有 480px 高**（不是视口高度）——
+ *     `.live-topology__body` 的栅格行 `minmax(min(320px,50vh),1fr)` 的 **1fr 吃不满**
+ *     （父 `.live-topology` 的 `height:100%` 因父 `.main-body` 的 height 属性是
+ *     auto 而**百分比解析失败** ⇒ 栅格容器高度按内容定 ⇒ 行只拿到下限 320px），
+ *     画布靠 `min-height:480px` 撑出来、还被 stage 列裁掉 160px。
+ *   · 于是按 480px 画布算比例：model 0.82 → 中心 394、provider 0.94 → 中心 451
+ *     ⇒ 模型底边 422、供应端顶边 423 ⇒ **净间距 1px**（肉眼＝贴在一起）。
+ *   ⇒ owner 连续三轮反馈「间隔太小」的真因就在这里：**不是比例没调对，
+ *     而是比例在 480px 的画布里被压成了 1px**。
+ *     （前几轮「846px 下 45px / 96px」的推算全部作废——那个高度从没出现过。）
+ *
+ * ★ **层间距是视觉设计量，不该随画布高度线性缩放** ⇒ 改成**固定像素**：
+ *   供应端层贴底、模型层固定在它上方 ROW_GAP 处 ⇒ 任何画布高度下间距都一样。
+ *   （顺带修掉「画布高 ⇒ 间距大」这个错觉：960px 画布上多出来的 480px
+ *     不会变成层间距，只会变成大方块周围的空白。）
+ *
+ * 保留比例的只有**客户端层**（它贴顶，比例在任意高度下都合理）。
+ */
+const CLIENT_ROW_RATIO = 0.075
+
+/**
+ * 模型层底边 ↔ 供应端卡片顶边的**固定净间距**（像素）。
+ *
+ * 取 72 的依据：① 明显大于节点高（56px）的一半，读图时是「两行」而不是「一堆」；
+ * ② 自身节点高度 + 抖动（±4px）后仍稳定在 64~80px 区间；
+ * ③ 在最小画布 480px 下仍给网关核心大方块留得下 204px 的高度（见 computeGatewayBox）。
+ */
+export const ROW_GAP = 72
+
+/** 画布底边到供应端卡片底边的留白（像素）。 */
+const BOTTOM_PAD = 4
+
+/**
+ * 各层中心线（自上而下）。
+ *
+ * ★ gateway 不在这里给 —— 网关核心是**大方块**，它的中心由大方块自身的高度决定
+ *   （见 computeGatewayBox），所以 rowY.gateway 在 computeLayout 里用 box 中心回填。
+ */
+export function computeRowY(height: number): Record<TopoColumn, number> {
+  const client = Math.round(height * CLIENT_ROW_RATIO)
+  // 供应端层贴底（留 BOTTOM_PAD 白边）⇒ 任何高度下底边都不出画布。
+  const provider = Math.round(height - NODE_H / 2 - BOTTOM_PAD)
+  // 模型层固定在供应端上方 ROW_GAP ⇒ **净间距恒定**，不随画布高度缩放。
+  const model = Math.round(provider - NODE_H - ROW_GAP)
+  return { client, gateway: 0, model, provider }
 }
 
 /**
@@ -198,8 +221,18 @@ function jitter(id: string, salt: number, min: number, max: number): number {
   return min + unit * (max - min)
 }
 
-/** 计算网关核心大方块的几何（内部三段：缎带 / 组区 / 图例）。 */
-export function computeGatewayBox(width: number, height: number): GatewayCoreBox {
+/** 计算网关核心大方块的几何（内部三段：缎带 / 组区 / 图例）。
+ *
+ * ★ 2026-11-23：下边界由「供应端行卡片顶边」改成「**模型层卡片顶边**」——
+ *   模型层现在固定在供应端上方 ROW_GAP 处，若大方块仍按 provider 顶边定位，
+ *   在矮画布（480px）上大方块底边会**压进模型层**（实测净空只剩 220px < 204px 帽）。
+ */
+export function computeGatewayBox(
+  width: number,
+  height: number,
+  rowY?: Record<TopoColumn, number>,
+): GatewayCoreBox {
+  const rows = rowY ?? computeRowY(height)
   const x = Math.round(width * GATEWAY_BOX.xRatio)
   const w = Math.round(width * GATEWAY_BOX.wRatio)
   // 高度：比例值，夹在 [可用净空, 内容紧包裹上限] 内；再在净空里垂直居中。
@@ -207,11 +240,12 @@ export function computeGatewayBox(width: number, height: number): GatewayCoreBox
   //   踩过错位区：画布 950px 时 box.w=855<900 ⇒ 组件切窄版（内容 ~257px），
   //   而帽按画布宽 950≥900 取 204 ⇒ 17px 溢出。两边各用一个宽度必漂。
   const maxH = w < GATEWAY_NARROW_W ? GATEWAY_BOX_MAX_H_NARROW : GATEWAY_BOX_MAX_H
-  const clientBottom = Math.round(height * ROW_RATIO.client + NODE_H / 2)
-  const providerTop = Math.round(height * ROW_RATIO.provider - NODE_H / 2)
-  const clearance = Math.max(0, providerTop - clientBottom - 8)
+  const clientBottom = Math.round(rows.client + NODE_H / 2)
+  // ★ 下边界 = 模型层卡片顶边（不是供应端）：大方块与模型层不得重叠。
+  const modelTop = Math.round(rows.model - NODE_H / 2)
+  const clearance = Math.max(0, modelTop - clientBottom - 8)
   const h = Math.max(120, Math.min(Math.round(height * GATEWAY_BOX.hRatio), clearance, maxH))
-  const y = Math.round((clientBottom + providerTop) / 2 - h / 2)
+  const y = Math.round((clientBottom + modelTop) / 2 - h / 2)
   // 三带自标题带之下依次排布；带间留 GATEWAY_LANE_GAP。
   const innerTop = y + GATEWAY_BOX_PAD + GATEWAY_BOX_HEADER
   const innerBottom = y + h - GATEWAY_BOX_PAD
@@ -230,14 +264,17 @@ export function computeLayout(input: LayoutInput): TopoLayout {
   // 用容器真实宽度（只兜住退化输入），不再强行撑到 640 —— 见 MIN_LAYOUT_WIDTH。
   const width = Math.max(MIN_LAYOUT_WIDTH, Math.floor(input.width || 0))
   const height = Math.max(MIN_LAYOUT_HEIGHT, Math.floor(input.height || 0))
-  const gateway = computeGatewayBox(width, height)
+  // ★ 行位置一次算清（固定间距口径），网关大方块与各行共用同一份 rowY ——
+  //   两处各算一套必然漂（这正是本轮 1px 间距的成因之一）。
+  const rows = computeRowY(height)
+  const gateway = computeGatewayBox(width, height, rows)
 
   const rowY = {} as Record<TopoColumn, number>
   for (const column of TOPO_COLUMNS) {
     rowY[column] =
       column === 'gateway'
         ? Math.round(gateway.y + gateway.h / 2)
-        : Math.round(height * ROW_RATIO[column])
+        : rows[column]
   }
 
   const laid: TopoLayoutNode[] = []
