@@ -54,6 +54,10 @@ const dashboardTab = inject<{
 const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboardActions')!
 
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
+// ★ 2026-11-23（L7 修复）：页头「刷新数据」必须把**会话统计面板**一起刷。
+// 原来只调 refreshBoard() ⇒ 在「会话与统计」页签点刷新，会话统计的数字纹丝不动
+// ⇒ 用户会以为「包含探测开关没生效」。面板已 defineExpose({ loading, refresh })。
+const sessionStatsRef = ref<InstanceType<typeof SessionStatsPanel> | null>(null)
 const activeDrawerRequestId = ref<string | null>(null)
 const loading = boardState.loading
 const error = boardState.error
@@ -93,7 +97,11 @@ async function openStatsDrawer(tab: 'apikeys' | 'models') {
 }
 
 async function onRefresh() {
-  await dashboardActions.refreshBoard()
+  // 看板 + 会话统计面板一起刷（面板只在 stats 页签挂载 ⇒ 其余页签 ref 为 null）。
+  await Promise.allSettled([
+    dashboardActions.refreshBoard(),
+    sessionStatsRef.value?.refresh() ?? Promise.resolve(),
+  ])
 }
 </script>
 
@@ -214,7 +222,7 @@ async function onRefresh() {
     <template v-if="activeTab === 'stats'">
       <!-- showStandardsHelp=false：stats 页签的「统计标准」入口由页头提供
            （owner 图批：移到与「整站数据」同一行）⇒ 面板内不再重复一份。 -->
-      <SessionStatsPanel :show-standards-help="false" style="margin-bottom: 16px;" />
+      <SessionStatsPanel ref="sessionStatsRef" :show-standards-help="false" style="margin-bottom: 16px;" />
       <SessionDrilldownPanel />
     </template>
 
