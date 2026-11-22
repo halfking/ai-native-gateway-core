@@ -389,6 +389,9 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "daily_cost_trend", "error", rerr)
 			resp.DailyCostTrend = []DailyCostPoint{}
 		}
+	} else {
+		slog.Warn("analytics client detail daily-cost-trend query failed; panel degraded", "client_id", clientID, "error", err)
+		resp.DailyCostTrend = []DailyCostPoint{}
 	}
 	if resp.DailyCostTrend == nil {
 		resp.DailyCostTrend = []DailyCostPoint{}
@@ -432,6 +435,9 @@ func (h *Handler) handleClientAnalyticsDetail(w http.ResponseWriter, r *http.Req
 			slog.Warn("analytics detail panel iteration aborted; panel degraded", "panel", "recent_sessions", "error", rerr)
 			resp.RecentSessions = []RecentSessionItem{}
 		}
+	} else {
+		slog.Warn("analytics client detail recent-sessions query failed; panel degraded", "client_id", clientID, "error", err)
+		resp.RecentSessions = []RecentSessionItem{}
 	}
 	if resp.RecentSessions == nil {
 		resp.RecentSessions = []RecentSessionItem{}

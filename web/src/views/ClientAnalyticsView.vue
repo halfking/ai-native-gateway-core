@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getClientAnalyticsDetail, type ClientAnalyticsDetail } from '../api/admin'
@@ -44,6 +44,10 @@ async function load() {
   errorMessage.value = null
   try {
     data.value = await getClientAnalyticsDetail(clientId.value, days.value)
+    // ★ 首次加载必等 nextTick：chartRef 所在的 div 在 v-if="data" 块内，
+    //   data.value 刚赋值时 Vue 还没打 DOM 补丁 ⇒ chartRef.value 仍是 undefined
+    //   ⇒ renderChart() 的守卫直接 return ⇒ 图表永远不初始化（空框缺陷）。
+    await nextTick()
     renderChart()
   } catch (e: any) {
     console.error('Failed to load client analytics:', e)
