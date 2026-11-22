@@ -612,7 +612,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_security", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
-		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
+		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{}, settings.Global)},
 	})
 
 	// （governance_prompt_injection 已于 2026-11-18 前移到 security /
@@ -1215,6 +1215,25 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				interception.AttributionLogFields(interception.AttributeDecision(env))...)
 			slog.Info("v2 dispatch gate: short-circuit", gateLogFields...)
 			return
+		}
+
+		// ★ 2026-11-23 N8：★ PI 家族内部判决**分歧**的观测（★ 只记分歧、★ 罕见事件）。
+		// ★ 背景：★ 治理链里有两套提示词注入判定跑在同一段文本上
+		//   （★ prompt_injection：词表硬命中、阈值 7、命中即 deny；
+		//   ★ prompt_injection_enhanced：6 层检测 + 评分分级、★ 常给 warn 不拦）
+		// ⇒ ★ 口径相反时链子取最严 ⇒ ★ 实际拦截由前者说了算。
+		// ★ ★ 但**有一类分歧测不到**：★ 归因日志只在 short-circuit 时打
+		//   ⇒ ★ **放行侧的分歧永远不落判决记录**（★ 形态 b：★ enhanced 判
+		//   medium ⇒ severity 1 ⇒ ★ 低于 BlockThreshold=2 ⇒ ★ 链子不拦、
+		//   ★ 请求正常放行）⇒ ★ 「**有人认为该拦、却没人拦**」在生产完全不可见
+		//   ⇒ ★ 「谁是权威判定方」只能靠推理。
+		// ★ ⇒ 这里补一行形态化观测（★ 罕见 ⇒ 噪声低）：★ 只取
+		//   plugin/allow/severity/code/reason、★ **绝不取 evidence**
+		//   ⇒ 命中片段与用户原文不进日志。
+		if div := interception.DetectPIVergence(env); div != nil {
+			slog.Info("v2 dispatch: PI verdict divergence observed",
+				append([]any{"request_id", requestID, "path", r.URL.Path},
+					interception.PIDivergenceLogFields(div)...)...)
 		}
 
 		// Forward to the v1 chatHandler. The chatHandler writes the
