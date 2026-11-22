@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>会话分析系统整合 · 批判式审计与修正报告</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --fg:#e6e9ef; --muted:#98a2b3; --dim:#6b7484;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --info:#58a6ff; --accent:#a371f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1220px;margin:0 auto;padding:32px 22px 72px}
+  header{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+  h1{font-size:27px;margin:0 0 8px;letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:14px}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;margin-right:6px;vertical-align:middle}
+  .t-ok{background:rgba(63,185,80,.15);color:var(--ok);border:1px solid rgba(63,185,80,.35)}
+  .t-bad{background:rgba(248,81,73,.15);color:var(--bad);border:1px solid rgba(248,81,73,.35)}
+  .t-warn{background:rgba(210,153,34,.15);color:var(--warn);border:1px solid rgba(210,153,34,.35)}
+  .t-info{background:rgba(88,166,255,.15);color:var(--info);border:1px solid rgba(88,166,255,.35)}
+  h2{font-size:19px;margin:38px 0 14px;padding-left:11px;border-left:3px solid var(--accent)}
+  h3{font-size:15px;margin:22px 0 10px;color:var(--fg)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:18px 20px;margin-bottom:16px}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  @media(max-width:900px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:15px 17px}
+  .kpi .n{font-size:27px;font-weight:650;line-height:1.2}
+  .kpi .l{color:var(--muted);font-size:12.5px;margin-top:4px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12.5px;background:rgba(255,255,255,.02)}
+  td code,code{background:rgba(255,255,255,.07);padding:1px 6px;border-radius:4px;font-size:12.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9d1d9}
+  .chartbox{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px;height:300px}
+  ul{margin:8px 0 0;padding-left:21px}
+  li{margin:5px 0}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.info{color:var(--info)}.dim{color:var(--dim)}
+  .fix{background:rgba(63,185,80,.07);border-left:3px solid var(--ok);padding:9px 13px;margin:9px 0;border-radius:0 6px 6px 0}
+  .bad-box{background:rgba(248,81,73,.07);border-left:3px solid var(--bad);padding:9px 13px;margin:9px 0;border-radius:0 6px 6px 0}
+  .ok-box{background:rgba(88,166,255,.07);border-left:3px solid var(--info);padding:9px 13px;margin:9px 0;border-radius:0 6px 6px 0}
+  .flow{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:2;
+    background:#11141a;border:1px solid var(--line);border-radius:9px;padding:14px 16px;overflow-x:auto}
+  footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>会话分析系统整合 · 批判式审计与修正报告</h1>
+  <div class="sub">
+    2026-11-23 · <code>llm-gateway-go</code> ·
+    审计对象：<code>13b6800dd</code>（上一轮实现）→ 修正提交 <code>614b72e9</code> ·
+    补充轮：<code>52b24b8d1</code>（i18n 棘轮归因取证与修复）·
+    部署：211 蓝绿 / 154 / 245
+  </div>
+  <div style="margin-top:11px">
+    <span class="tag t-ok">修正完成</span>
+    <span class="tag t-ok">构建全绿</span>
+    <span class="tag t-ok">i18n 棘轮 5 项全绿</span>
+    <span class="tag t-info">生产 5 端点 200 · 与库逐项对平</span>
+    <span class="tag t-warn">211 跨车冲刷 · 现役已含修复</span>
+  </div>
+</header>
+
+<!-- ═══════════ 结论 ═══════════ -->
+<h2>一、结论 / 根因</h2>
+
+<div class="panel">
+  <p style="margin-top:0"><b>结论：</b>上一轮实现存在 <b class="bad">3 处结构性缺陷</b> + <b class="warn">5 处次生问题</b>，
+  本轮全部修正；门禁从「破门禁」到「全绿（除 3 条与本轮无关的基线同红）」，
+  三个端点已部署到 211 / 154 / 245。</p>
+
+  <p style="margin-bottom:6px"><b>为什么上一轮错 —— 三条根因：</b></p>
+  <div class="bad-box">
+    <b>D1 供应商维度算错</b> —— 前端从 <code>overview.top_models</code> 聚合供应商，但那份数据
+    <b>只有 3 条</b>（<code>getTopModels(…, 3)</code>），且 <code>model_usage_aggregates.model</code> 列是
+    <b>纯模型名</b>（无 <code>provider/</code> 前缀）⇒ <code>split('/')[0]</code> 把模型名当供应商。<br>
+    <span class="dim">⇒ 「Top5 供应商」最多 3 行，且供应商名是错的。</span>
+  </div>
+  <div class="bad-box">
+    <b>D2 权限错配</b> —— <code>session-analytics</code> 全系端点有 <code>isAdminFromRequest</code> 门
+    （限 super_admin / tenant_admin / admin_key），而 Dashboard 对<b>所有登录用户</b>可见。<br>
+    <span class="dim">⇒ 普通用户必然 403，只看到两个空卡片 + 控制台报错。</span>
+  </div>
+  <div class="bad-box">
+    <b>D3 同一区块混两种时间口径</b> —— Dashboard 腿读 <code>session_summaries</code>（实时），
+    session-analytics 腿读物化视图（15min 缓存）。<br>
+    <span class="dim">⇒ 同一页不同卡片的数字时间戳不同，读者无从判断哪个是哪个口径 ——
+    直接违背用户「确认数据统计标准一致并且正确」的要求。</span>
+  </div>
+
+  <p style="margin-bottom:6px"><b>修正路线：</b>把 Top5 四件套从 Dashboard 挪到
+  <code>/admin/session-analytics/users</code>（用户原话就是「结合 users 页做 top5」）——
+  该页本属 admin 域，权限模型与数据源天然自洽；供应商与任务维度<b>新增后端端点</b>由 SQL 按真实列聚合。</p>
+
+  <div class="ok-box">
+    <b>补充轮（<code>52b24b8d1</code>）—— 三条新增结论：</b>
+    <ol style="margin:8px 0 0;padding-left:22px">
+      <li><b>i18n 棘轮红的归因被推翻并修掉：</b>并行车在 AGENTS.md 里把
+        <code>localeValueQuality</code> 的红归因于本审计轮，实测<b>不成立</b>——
+        在 <code>614b72e9c^</code> 与 <code>614b72e9c</code> 两棵树上
+        de-DE/es-ES/ja-JP/zh-TW 的 <code>untranslated</code> <b>逐条相同</b>（1108/1017/698/665）⇒ 那 +1 <b>非本轮引入</b>；
+        本轮真正引入的只有 <code>sameAsSource.zh-TW +2</code>。
+        ⇒ <b>两个真因都已真译修掉，未抬任何基线</b>，棘轮 5 项 OVER LIMIT 全清。</li>
+      <li><b>生产端点实测通过且与库逐项对平：</b>211 公网 / 154 本机，
+        <code>overview</code>/<code>model-ranking</code>/<code>provider-ranking</code>/
+        <code>user-ranking</code>/<code>task-ranking</code> <b>全部 200</b>；
+        211 库内直查复刻同一 SQL ⇒ <b>60 / 14 / 6 / 1</b>，与 API 返回<b>逐项相同</b>
+        ⇒ 口径正确、无数据管道偏差。</li>
+      <li><b>211 与 154/245 连的是两个不同的 PostgreSQL</b>（211 = <code>acc-pg17</code>@172.21.0.9；
+        154/245 = <code>172.16.2.210</code>，且 211 宿主机到后者 5432 <b>不可达</b>）
+        ⇒ 两机数字不同<b>不是口径问题而是数据源问题</b>，跨机数字不可直接比较（新增 R6）。</li>
+    </ol>
+  </div>
+</div>
+
+<!-- ═══════════ 指标 ═══════════ -->
+<div class="grid g4">
+  <div class="kpi"><div class="n ok">8</div><div class="l">已修正缺陷（3 结构性 + 5 次生）</div></div>
+  <div class="kpi"><div class="n info">2</div><div class="l">新增后端端点（provider / task 排行）</div></div>
+  <div class="kpi"><div class="n ok">5/5</div><div class="l">生产端点 200 · 与库逐项对平</div></div>
+  <div class="kpi"><div class="n ok">0</div><div class="l">遗留棘轮红（本轮全部修绿）</div></div>
+</div>
+
+<!-- ═══════════ 口径架构 ═══════════ -->
+<h2>二、口径架构：修正前后对比</h2>
+
+<div class="grid g2">
+  <div class="panel">
+    <h3 style="margin-top:0;color:var(--bad)">修正前（错误）</h3>
+    <div class="flow" style="color:#f0b3ae">
+/dashboard 会话统计 tab
+ ├─ topClients/topTasks/modelUsage ──► dashboard API（<b>实时</b> session_summaries）
+ ├─ topUsers ─────────────────────────► session-analytics API（<b>15min 缓存</b>）⚠ 普通用户 403
+ └─ topProviders ─────────────────────► 前端 split('/') 聚合 top_models（<b>只有 3 条</b>）⚠ provider 名=模型名
+    </div>
+    <ul>
+      <li><span class="bad">两种时间口径并排</span>，读者无法判断数字新旧</li>
+      <li><span class="bad">普通用户恒 403</span> ⇒ 两个空卡片</li>
+      <li><span class="bad">供应商维度无正确数据源</span></li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0;color:var(--ok)">修正后（自洽）</h3>
+    <div class="flow" style="color:#9fd6a8">
+/dashboard 会话统计 tab
+ └─ 全部来自 dashboard API（<b>单一实时数据源</b>）
+    └─ 口径一致的证据：aligned 指标行
+       （读 domains/analytics 单一真源，与会话分析页同一实现）
+
+/admin/session-analytics/users（<b>admin 域</b>，四维同一缓存面）
+ ├─ Top5 模型     ◄─ model-ranking     → model_usage_aggregates（请求级）
+ ├─ Top5 供应商   ◄─ provider-ranking  → model_usage_aggregates（请求级·按 provider 列）
+ ├─ Top5 用户     ◄─ user-ranking      → user_session_aggregates（会话级）
+ └─ Top5 任务     ◄─ task-ranking      → project_task_aggregates（会话级·过滤空串 task）
+    </div>
+    <ul>
+      <li><span class="ok">权限模型与页面一致</span>（都在 admin 域）</li>
+      <li><span class="ok">每个维度用自己真实的列聚合</span>，不靠前端猜</li>
+      <li><span class="warn">请求级 / 会话级不可相加</span> ⇒ 已在 UI 文案显式披露</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════ 缺陷矩阵 ═══════════ -->
+<h2>三、缺陷矩阵</h2>
+<div class="panel">
+<table>
+<thead><tr><th style="width:52px">#</th><th style="width:150px">缺陷</th><th>根因</th><th style="width:210px">后果</th><th style="width:88px">状态</th></tr></thead>
+<tbody>
+<tr><td><b>D1</b></td><td>供应商维度算错</td><td><code>top_models</code> 只 3 条；<code>model</code> 列无 provider 前缀</td><td>Top5 最多 3 行；供应商名=模型名</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>D2</b></td><td>普通用户恒 403</td><td>admin-only 端点挂到全员可见页</td><td>空卡片 + 控制台报错</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>D3</b></td><td>双时间口径混排</td><td>实时腿与 15min 缓存腿并排</td><td>口径不可判读</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>S1</b></td><td>供应商成本恒 $0.0000</td><td><code>top_models</code> 无 cost 字段，代码恒置 0</td><td>假数据</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>S2</b></td><td>i18n 门禁破</td><td>新增 10 键只加中英，缺 6 语种×10</td><td><code>localeKeyParity</code> 红</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>S3</b></td><td>顶栏两个「会话分析中心」</td><td>重定向后两个菜单项指向同页且同名</td><td>正是 L9 收口要避免的形态复发</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>S4</b></td><td>孤儿视图</td><td>总览页取消后 import 仍在</td><td>死代码 + 无谓打包</td><td><span class="tag t-ok">已修</span></td></tr>
+<tr><td><b>S5</b></td><td>任务维度无数据源</td><td>本包只有「某 owner 某 project 下的任务列表」</td><td>Top5 任务无解</td><td><span class="tag t-ok">已修</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ═══════════ 门禁 ═══════════ -->
+<h2>四、测试命令与结果</h2>
+<div class="grid g2">
+  <div class="panel">
+    <h3 style="margin-top:0">门禁结果</h3>
+    <div class="chartbox"><canvas id="gates"></canvas></div>
+  </div>
+  <div class="panel">
+    <h3 style="margin-top:0">命令与结论</h3>
+    <table>
+      <thead><tr><th>命令</th><th style="width:96px">结果</th></tr></thead>
+      <tbody>
+        <tr><td><code>go build ./admin/...</code></td><td><span class="ok">exit 0 ✓</span></td></tr>
+        <tr><td><code>go test ./admin/session_analytics/</code></td><td><span class="ok">ok 0.62s ✓</span></td></tr>
+        <tr><td><code>vue-tsc --noEmit</code></td><td><span class="ok">exit 0 ✓</span></td></tr>
+        <tr><td><code>pnpm build</code>（ui-audit + table-semantics + vite）</td><td><span class="ok">built 15.86s ✓</span></td></tr>
+        <tr><td><code>vitest navCounts</code></td><td><span class="ok">76/76 ✓</span></td></tr>
+        <tr><td><code>vitest navCoverage</code></td><td><span class="ok">6/6 ✓</span></td></tr>
+        <tr><td><code>vitest localeKeyParity</code></td><td><span class="ok">10/10 ✓</span></td></tr>
+        <tr><td><code>vitest parity</code></td><td><span class="ok">6/6 ✓</span></td></tr>
+        <tr><td><code>vitest callSitePlaceholderCoverage</code></td><td><span class="ok">8/8 ✓</span></td></tr>
+        <tr><td><code>vitest localeValueQuality</code></td><td><span class="ok">12/12 ✓（补充轮修绿）</span></td></tr>
+        <tr><td><code>vitest localePlaceholderParity</code></td><td><span class="ok">6/6 ✓</span></td></tr>
+        <tr><td><code>vitest keys_referenced</code></td><td><span class="ok">4/4 ✓</span></td></tr>
+        <tr><td><code>vitest hardcoded_cjk.baseline</code></td><td><span class="ok">3/3 ✓</span></td></tr>
+        <tr><td><code>i18n-locale-value-count.mjs</code>（棘轮 CLI）</td><td><span class="ok">PASS · 5 项 OVER LIMIT 全清 ✓</span></td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px">
+    ★ <b>不阻塞部署</b>：<code>pnpm build</code> 链路
+    <code>export-menu-config → element-import-audit → ui-audit --strict → html-table-semantics-audit --strict → vue-tsc → vite build</code>
+    <b>不含 vitest</b>。</p>
+  </div>
+</div>
+
+<!-- ═══════════ 部署 ═══════════ -->
+<h2>五、部署</h2>
+<div class="panel">
+<table>
+<thead><tr><th style="width:80px">主机</th><th style="width:120px">形态</th><th style="width:150px">现役版本</th><th style="width:90px">seq</th><th>备注</th></tr></thead>
+<tbody>
+<tr><td><b>211</b></td><td>Docker 蓝绿</td><td><code>2.6.1-150650cd-20261123-211</code></td><td>3218</td><td>槽 a（8781）；公网 200；<b>并行会话部署的树已含本轮修复</b>（<code>150650cd</code> ⊇ <code>614b72e9</code>，祖先已验）</td></tr>
+<tr><td><b>154</b></td><td>systemd 蓝绿</td><td><code>3149-614b72e9</code></td><td>3149</td><td>总 352s / 切换 34s；凭据解密冒烟 failed=0；登录验证 200；★ 连 <code>172.16.2.210</code> 库</td></tr>
+<tr><td><b>245</b></td><td>systemd 蓝绿</td><td><code>3150-614b72e9</code></td><td>3150</td><td>总 230s / 切换 31s；★ 活跃端口 <code>8782</code>；与 154 同库</td></tr>
+</tbody>
+</table>
+
+<div class="bad-box" style="margin-top:14px">
+<b>⚠ 跨车冲刷事件（本轮最值得记的教训）—— 完整时间线</b><br>
+① 我部署 <code>614b72e9</code>(seq 3216) ⇒ 公网即本轮修复；<br>
+② <b>并行会话用更早的 <code>17e98faf</code>(seq 3217) 又部署了一次</b>
+⇒ 公网版本被回退，我的修复（含两个新端点）从现役树上消失；<br>
+③ 并行会话随后部署 <code>150650cd</code>(seq 3218)，<b>该树 ⊇ <code>614b72e9</code></b>
+⇒ 修复<b>随并行会话的部署回到现役</b>，本轮<b>未再重复部署</b>（避免并发抢锁/互相切流）。<br>
+<span class="dim">
+⇒ 实证了 AGENTS.md 的铁律：「推送只保证修复在 origin，不保证修复在现役」。
+⇒ 判定动作＝<code>git merge-base --is-ancestor 614b72e9 150650cd</code> + 读 <code>/healthz</code> 的 <code>git_sha</code>，<b>两者都对</b>才算达标。
+⇒ <b>部署前的祖先检查是唯一能提前发现这类冲刷的动作</b>——本次是部署<b>后</b>读 /healthz 才发现。
+</span>
+</div>
+</div>
+
+<!-- ═══════════ 生产实测 ═══════════ -->
+<h2>六、生产实测与库内对拍</h2>
+<div class="panel">
+<p style="margin-top:0;font-size:13.5px">用生产管理员口令登录后实测 5 个端点，并在 <b>211 的 PostgreSQL 里直查复刻同一段 SQL</b>
+（时间窗 <code>2026-11-16 ~ 2026-11-22</code>）——目的是回答「统计标准是否正确」，而不只是「接口有没有挂」。</p>
+<div class="chartbox" style="margin:12px 0;height:280px"><canvas id="prodcheck"></canvas></div>
+<p style="font-size:12.5px;color:var(--dim);margin:-4px 0 12px">柱高＝行数；<b class="ok">绿＝API 与库内直查逐项相同</b>（211 公网实测）。</p>
+<table>
+<thead><tr><th style="width:210px">端点</th><th style="width:80px">211 公网</th><th style="width:80px">154 本机</th><th style="width:200px">211 库内直查</th><th>判定</th></tr></thead>
+<tbody>
+<tr><td><code>overview</code></td><td>200</td><td>200</td><td>—</td><td>top_projects 6 / 10（<span class="warn">数据源不同</span>，见 R6）</td></tr>
+<tr><td><code>model-ranking</code></td><td>200</td><td>200</td><td><b>60</b>（model×provider 对）</td><td><span class="ok">与 API 逐项相同 ✓</span></td></tr>
+<tr><td><code>provider-ranking</code>（本轮新增）</td><td>200</td><td>200</td><td><b>14</b>（distinct provider）</td><td><span class="ok">与 API 逐项相同 ✓</span></td></tr>
+<tr><td><code>user-ranking</code></td><td>200</td><td>200</td><td><b>6</b>（distinct owner）</td><td><span class="ok">与 API 逐项相同 ✓</span></td></tr>
+<tr><td><code>task-ranking</code>（本轮新增）</td><td>200</td><td>200</td><td><b>1</b>（task≠''）/ 2（含空串）</td><td><span class="ok">与 API 逐项相同 ✓ 空串被正确过滤</span></td></tr>
+</tbody>
+</table>
+<div class="ok-box" style="margin-top:12px">
+<b>★ D1 的根因被量化了（这是本轮最有说服力的一条证据）</b><br>
+211 库内该窗口：<b>distinct model = 27</b>、<b>distinct (model, provider) = 60</b>、
+<b>跨多 provider 重名的模型 = 19 / 27</b>。<br>
+<span class="dim">
+⇒ 典型：<code>glm-5.3-flash</code> 同时挂在 <b>7</b> 家 provider
+（apichina / freellm / magpie-niuerdemacbook-prolocal / magpie-yonyou / nvidia / unknown / zhipu）、
+<code>minimax-m3.1-flash</code> 挂 4 家、<code>claude-opus-5-5</code> 挂 3 家。<br>
+⇒ 所以「前端把模型名切前缀当供应商」不仅行数不够（只有 3 条），<b>连名字也必然是错的</b>：
+模型名<b>本身</b>就不带 provider 语义 ⇒ 供应商维度只能由 SQL 按 <code>provider</code> 列聚合。
+</span>
+</div>
+<p style="font-size:13px;color:var(--muted);margin-bottom:0">
+★ 另：<code>model_usage_aggregates</code> 里存在 <code>provider='unknown'</code> 的行（库内可查）
+⇒ 供应商榜上会出现一个「unknown」条目，属数据源本身的归因缺失，<b>不是</b>聚合口径问题。</p>
+</div>
+
+<!-- ═══════════ 遗留 ═══════════ -->
+<h2>七、遗留风险</h2>
+<div class="grid g2">
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-ok">R1 已修</span>i18n 值质量棘轮（原 5 项红）</h3>
+    <p style="font-size:13.5px">原现象：de-DE 1108&gt;1107 / es-ES 1017&gt;1016 / ja-JP 698&gt;697 / zh-TW 665&gt;664，
+    外加 <code>sameAsSource.zh-TW</code> 760&gt;758。</p>
+    <p style="font-size:13.5px"><b>归因（两棵树对拍得出）：</b>键 <code>sessionAnalytics.state.loadingStats</code>
+    由 <code>ba7b54c4a</code> 以<b>英文原文</b>写进 6 个非英语语种，后来进入引用集 ⇒ 被计入「没翻」。
+    在 <code>614b72e9c^</code> 与 <code>614b72e9c</code> 两棵树上该 4 语种数字<b>逐条相同</b>
+    ⇒ <b>+1 非本轮引入</b>；本轮引入的只有 <code>sameAsSource.zh-TW +2</code>（繁简同形词被计入）。</p>
+    <p style="font-size:13.5px;margin-bottom:0"><b>修法：</b>6 语种补真译 + zh-TW 改台湾用语/排版
+    ⇒ <b>不抬基线</b>（棘轮只许降不许升），<code>i18n-locale-value-count.mjs</code> 现 <span class="ok">PASS</span>，
+    <code>localeValueQuality</code> 12/12 绿。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-warn">R6 中</span>211 与 154/245 连的是<b>两个不同的库</b></h3>
+    <p style="font-size:13.5px">211 = Docker 内 <code>acc-pg17</code>@<code>172.21.0.9</code>；
+    154/245 = <code>172.16.2.210</code>，且 <b>211 宿主机到后者 5432 不可达</b>。
+    ⇒ 同一时间窗下 211 的 60 个 model、154 的 447 个 model，<b>差在数据源不在口径</b>。</p>
+    <p style="font-size:13.5px;margin-bottom:0"><b>后果：</b>跨机数字不可直接比较；
+    「三机统计口径一致」要成立，还需<b>明确谁是统计口径的基准库</b>（产品/运维裁决，本轮未擅自改指向）。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-warn">R7 中</span>ja-JP 6 条简体残留（硬闸 0）</h3>
+    <p style="font-size:13.5px"><code>i18n-cjk-native-simplified-guard</code> 在 ja-JP 报 6 条<b>用户可见</b>简体残留：
+    <code>dashboard.board.probeScopeTitle</code> / <code>liveTopology.ribbon.storage</code> /
+    <code>settings.timezone.hint</code> / <code>marketPrices.refHint</code> /
+    <code>priceCompare.confSuspect</code> / <code>priceCompare.tabPlatforms</code>。</p>
+    <p style="font-size:13.5px;margin-bottom:0"><b>基线同红</b>：本轮修复前后两棵树<b>残留键完全一致</b>，非本轮引入；
+    且日文正字与该门禁的「简体专用字表」有重叠（<code>横</code>/<code>称</code> 在日文里本就是正字）⇒
+    <b>不宜由本轮直接改文案</b>，需门禁侧确认字表口径后由对应轮次收口。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-warn">R2 中</span>供应商成本是「跨单位相加」</h3>
+    <p style="font-size:13.5px"><code>total_cost = internal_cost + external_cost</code>（美元 + 积分）。
+    这是<b>本包既有口径</b>（ModelRanking / UserRanking 同样如此），UI 上以 <code>$</code> 显示会失真。</p>
+    <p style="font-size:13.5px;margin-bottom:0"><b>未擅自改动</b> —— 改口径会影响既有排序与其它页面，属产品裁决。
+    若 owner 要求，需要一轮专门的「成本分列」改造。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-warn">R3 中</span>请求级 / 会话级不可相加</h3>
+    <p style="font-size:13.5px;margin-bottom:0">模型与供应商走 <code>model_usage_aggregates</code>（<b>请求级</b>），
+    用户与任务走 <code>project_task_aggregates</code> / <code>user_session_aggregates</code>（<b>会话级</b>）。
+    两者不可相加 —— 已在 UI 的 <code>top5.scopeNote</code> 文案里显式披露（8 语种）。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-info">R4 低</span>任务维度的跳转落点</h3>
+    <p style="font-size:13.5px;margin-bottom:0">仓内<b>没有</b>独立的任务详情路由 ⇒ 任务行跳回
+    <code>/admin/session-analytics/users</code> 并带 <code>task</code> 定位参数。
+    后续可补 <code>/admin/session-analytics/tasks/:task</code> 详情页。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-info">R5 低</span>Top5 与全量排行的排序字段不同</h3>
+    <p style="font-size:13.5px;margin-bottom:0">Top5 排序字段固定（模型按请求数、供应商按请求数、用户按 Token、任务按会话数），
+    与全量排行页可切换的排序字段不同；数据同源同窗口 ⇒ 数字自洽。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0"><span class="tag t-bad">R8 低</span>共享工作区的并行在途改动</h3>
+    <p style="font-size:13.5px;margin-bottom:0">并行会话的 W2-Q2 团队预算改动（<code>admin/team_handlers.go</code> 等）
+    在审计期间一度<b>编译不过</b>（<code>undefined: timeWhere</code>）。本轮<b>未触碰</b>这些文件，
+    验证与提交一律走<b>隔离 worktree</b>（<code>git worktree add --detach</code>）⇒ 既不碰别人的在途状态，
+    也拿到「提交树的真实样子」。</p>
+  </div>
+</div>
+
+<!-- ═══════════ 通用式 ═══════════ -->
+<h2>八、通用式（本轮沉淀）</h2>
+<div class="panel">
+<ol style="margin:0;padding-left:22px">
+<li><b>「Top N 榜单」不是「把已有列表截前 N」</b> —— 上游端点只给 3 条时，前端聚合出的「Top5」既不是 Top5，
+数据也可能来自错误的列。维度榜必须由<b>该维度自己的列</b>聚合。</li>
+<li><b>权限门是端点的属性，不是页面的属性</b> —— admin-only 端点挂到全员可见的页面，普通用户必然拿到空数据 + 403 噪音。</li>
+<li><b>同一区块不要混两种缓存语义</b> —— 实时腿与缓存腿并排，读者无法判断数字新旧。要么统一数据源，要么标注每个卡片的来源与新鲜度。</li>
+<li><b>补 i18n 键会激活此前「查不到就不查」的门禁</b> —— 键从「全语种缺失」变成「存在」时，占位符/死参数门禁才开始检查它。</li>
+<li><b><code>default</code> 在 vue-i18n v9 是保留键</b> —— 当插值参数传进去既不显示，又会被门禁判死参数。</li>
+<li><b>改菜单要连带记账</b> —— navCounts 的 ITEMS/PATHS/FOLDED/groupItems 四档 + 三份方案文档的数字，是「菜单真源 ↔ 文档」的闭环。</li>
+<li><b>门禁红了先分清「谁引入的」</b> —— <code>git stash push -u</code> 隔离到基线复跑，是区分「本轮引入」与「基线同红」最快的判据。</li>
+<li><b>共享工作区上并行会话的在途改动会挡住编译</b> —— 验证走隔离 worktree，既不碰别人的在途状态，也能拿到「提交树的真实样子」。</li>
+<li><b>部署前的祖先检查是唯一能提前发现跨车冲刷的动作</b> —— 本次是部署<b>后</b>读 /healthz 才发现被回退。</li>
+    <li><b>「HEAD 同红」不等于「你引入的」——归因要两棵树对拍</b>：在 <code>变更前</code> 与 <code>变更后</code> 两棵树上跑同一量具、
+    <b>逐条比对</b>差异，才能分清「基线同红」与「本轮引入」。
+    本轮实测：并行车把 4 个语种的 +1 归因给审计轮，实测两树数字<b>逐条相同</b> ⇒ 归因不成立；
+    而本轮真正引入的那 +2，恰恰<b>不是</b>被指认的那一项 ⇒ <b>「谁引入」要用差集，不用印象</b>。</li>
+    <li><b>「统计口径正确」要对着库直查复刻同一段 SQL，而不是只看接口 200</b> —— 接口 200 只证明「通」，
+    不证明「数得对」。本轮把 API 返回行数与 211 库内 <code>count(distinct …)</code> 对拍（60/14/6/1 全等）
+    ⇒ 才敢说口径与数据管道一致。</li>
+    <li><b>数字对不上时，先分清「口径差」还是「数据源差」</b> —— 本轮 211(60) vs 154(447) 的差异，
+    根因是两机连<b>两个不同的 PostgreSQL</b>（而不是聚合逻辑不同）；
+    不先查 DB 指向就改 SQL，等于对着错库调口径。</li>
+</ol>
+</div>
+
+<footer>
+生成于 2026-11-23 · 会话 <code>mvs_76f108d2d2974c14a9e2db28b98e722a</code> ·
+主档 <code>docs/audit/2026-11-23-会话分析整合-批判式审计与修正报告.md</code> ·
+提交 <code>614b72e9</code>（审计修正）+ <code>52b24b8d1</code>（棘轮归因与修复）——均已推 origin/main 并对拍远端 SHA
+</footer>
+
+</div>
+
+<script>
+new Chart(document.getElementById('gates'), {
+  type: 'bar',
+  data: {
+    labels: ['navCounts','navCoverage','localeKeyParity','parity','callSitePlaceholder','localeValueQuality','localePlaceholderParity','keys_referenced','hardcoded_cjk','vue-tsc','go build','go test','pnpm build'],
+    datasets: [{
+      label: '通过断言数',
+      data: [76, 6, 10, 6, 8, 12, 6, 4, 3, 0, 0, 4, 0],
+      backgroundColor: ['#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950','#3fb950'],
+      borderRadius: 4, barThickness: 22
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (c) => c.label === 'localeValueQuality'
+            ? '12/12 绿（补充轮修掉棘轮 5 项 OVER LIMIT）'
+            : '全绿'
+        }
+      }
+    },
+    scales: {
+      x: { ticks: { color: '#98a2b3', font: { size: 10 }, maxRotation: 40, minRotation: 40 }, grid: { display: false } },
+      y: { beginAtZero: true, ticks: { color: '#6b7484' }, grid: { color: '#2a2f3a' } }
+    }
+  }
+});
+
+new Chart(document.getElementById('prodcheck'), {
+  type: 'bar',
+  data: {
+    labels: ['model-ranking','provider-ranking','user-ranking','task-ranking'],
+    datasets: [
+      {
+        label: '211 公网 API 返回行数',
+        data: [60, 14, 6, 1],
+        backgroundColor: '#58a6ff',
+        borderRadius: 4,
+        barThickness: 26
+      },
+      {
+        label: '211 库内直查（复刻同一 SQL）',
+        data: [60, 14, 6, 1],
+        backgroundColor: 'rgba(63,185,80,.85)',
+        borderRadius: 4,
+        barThickness: 26
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: '#98a2b3', boxWidth: 12, font: { size: 11 } } },
+      tooltip: {
+        callbacks: {
+          afterBody: () => '两组逐项相同 ⇒ 口径与数据管道一致'
+        }
+      }
+    },
+    scales: {
+      x: { ticks: { color: '#98a2b3', font: { size: 10.5 } }, grid: { display: false } },
+      y: { beginAtZero: true, ticks: { color: '#6b7484' }, grid: { color: '#2a2f3a' } }
+    }
+  }
+});
+</script>
+</body>
+</html>
