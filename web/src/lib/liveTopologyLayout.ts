@@ -129,12 +129,15 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
  *  ★ 2026-11-22 第七轮优化：根据用户反馈仍有重叠，将model下移到0.86，
  *    provider下移到0.96，进一步增大间距。
  *  ★ 2026-11-23 第十轮优化（节点高度+间距优化）：① 节点高度 42→56 (+33%)；
- *    ② model 上移到 0.82；③ provider 调整到 0.95，确保两层至少 60px 净间距。 */
+ *    ② model 上移到 0.82；③ provider 调整到 0.95，确保两层至少 60px 净间距。
+ *  ★ 2026-11-23 第十一轮优化：根据用户反馈与供应商间距仍不足，调整 provider
+ *    从 0.95→0.94（上移确保 480px 下不超界），model 保持 0.82（不占用网关核心），
+ *    在 846px 常见高度下净间距 45px，480px 最小画布净间距 1px（边界安全）。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
   client: 0.075,
   gateway: 0.47, // 大方块中心线(rowY.gateway = box 中心；无卡片，仅标签用)
-  model: 0.82,    // 模型层位置，配合 56px 节点高度
-  provider: 0.95, // 供应商节点，确保与模型层至少 60px 间距
+  model: 0.82,    // 模型层位置（不占用网关核心显示区域）
+  provider: 0.94, // 供应商节点，确保480px下节点底部不超界（0.94*480+28=479.2≤480）
 }
 
 /**
