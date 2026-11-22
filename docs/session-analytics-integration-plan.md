@@ -1,5 +1,20 @@
 # 会话分析系统整合实施方案
 
+> ⚠️ **2026-11-23 审计轮修正 —— 本文档的「Dashboard 侧接 session-analytics 取 Top5」方案已被否决**，不要照此实施。
+>
+> 否决理由（三条结构性缺陷，详见 `docs/audit/2026-11-23-会话分析整合-批判式审计与修正报告.md`）：
+> ① **权限错配**——session-analytics 端点限 admin 角色，而 Dashboard 对所有登录用户可见
+>    ⇒ 普通用户必然 403，只会看到空卡片；
+> ② **双数据源混排**——Dashboard 实时腿与物化视图缓存腿并排展示，同区块两种时间口径；
+> ③ **供应商口径错**——`overview.top_models` 只有 3 条且 `model` 列是纯模型名（无 provider 前缀），
+>    前端 `split('/')[0]` 会把模型名当供应商。
+>
+> **现行方案**：Top5 四件套（模型/供应商/用户/任务）落在 `/admin/session-analytics/users`，
+> 四维全部来自 session-analytics 物化视图族；供应商与任务由**新增的后端端点**按真实列聚合
+> （`/provider-ranking`、`/task-ranking`）；Dashboard 回到单一数据源。
+> 本文档保留作为「前一轮怎么想的」的记录，其代码示例**不可直接照抄**。
+
+
 ## 目标
 
 1. 完善优化 `/dashboard` 中的会话与统计模块

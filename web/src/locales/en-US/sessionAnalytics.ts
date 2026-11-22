@@ -6,7 +6,6 @@ export default {
   title: 'Session analytics',
   topUsersTitle: 'Top 10 Active Users',
   nav: {
-    analyticsCenter: 'Session Analytics Center',
     overview: 'Overview',
     userRanking: 'People ranking',
     userDetail: 'Person detail',
@@ -15,6 +14,15 @@ export default {
   },
   hint: {
     modelTrend: 'View this model\'s request/token/cost curves for the same window in Usage Trends',
+  },
+
+  top5: {
+    title: "Top 5 rankings (models / providers / users / tasks)",
+    scopeNote: "Same basis as the statistics above: models and providers are request-level (aggregated by request), users and tasks are session-level (aggregated by session); the two groups must not be added together.",
+    models: "Top 5 models",
+    providers: "Top 5 providers",
+    users: "Top 5 users",
+    tasks: "Top 5 tasks",
   },
 
   range: {
@@ -31,6 +39,7 @@ export default {
     back: 'Back to people ranking',
     viewDetail: 'View details',
     viewAllUsers: 'View all users',
+    viewAllModels: "View all models",
   },
   metric: {
     totalSessions: 'Total sessions',
@@ -82,6 +91,7 @@ export default {
     tokens: 'Tokens',
     cost: 'Spend',
     requests: 'Requests',
+    modelsCount: "Models",
     users: 'People',
     successRate: 'Success rate',
     cacheRate: 'Cache hit rate',

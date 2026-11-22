@@ -5,6 +5,9 @@ export default {
     loading: 'Cargando…',
   },
   list: {
+    error: {
+      scanningFailed: "Anomalía al cargar datos: se consultaron {count} registros pero no pueden mostrarse. Suele ser un problema de formato de datos en el servidor; pide a un administrador que revise los registros del backend.",
+    },
     filter: {
       keyAll: 'Todas las claves',
       providerAll: 'Todos los proveedores',

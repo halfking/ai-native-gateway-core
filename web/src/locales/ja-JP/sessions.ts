@@ -111,6 +111,7 @@ export default {
     status: { all: 'すべて', active: 'アクティブ', stopped: '停止' },
   },
   stats: {
+    loading: "セッション統計を読み込み中…",
     last7Days: "過去7日間",
     last30Days: "過去30日間",
     sessionCount: "セッション数",

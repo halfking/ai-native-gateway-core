@@ -222,6 +222,61 @@ export interface ModelRankingResponse {
   models: ModelRankingRow[] | null
 }
 
+/* ── provider ranking (2026-11-23 审计轮新增) ───────────────────────────── */
+
+/**
+ * 供应商排行行。
+ *
+ * ★ 为什么不能在前端聚合：物化视图 `model_usage_aggregates` 的 `model` 列是
+ *   **纯模型名**（不含 `provider/` 前缀），前端 `split('/')[0]` 会把整个模型名
+ *   当成 provider（如 `claude-sonnet-4-5`）；而 overview 的 `top_models` 又只有
+ *   3 条 ⇒ 前端聚合既得不到全量 Top5、也会给出错误的 provider 名。
+ *   ⇒ provider 维度由后端 SQL 直接聚合（见 admin/session_analytics/queries.go）。
+ */
+export interface ProviderRankingRow {
+  rank: number
+  provider: string
+  model_count: number
+  request_count: number
+  success_count: number
+  success_rate: number
+  total_tokens: number
+  total_cost: number
+  internal_cost: number
+  external_cost: number
+  user_count: number
+  last_used_at: string
+}
+
+export interface ProviderRankingResponse {
+  providers: ProviderRankingRow[] | null
+}
+
+/* ── task ranking (2026-11-23 审计轮新增) ───────────────────────────────── */
+
+/**
+ * 全局任务排行行。
+ *
+ * ★ 口径：物化视图 `project_task_aggregates`（会话级，与 user_session_aggregates
+ *   同源）。`task` 空串 = 「无具体任务」，后端已过滤。
+ */
+export interface TaskRankingRow {
+  rank: number
+  task: string
+  owner_count: number
+  session_count: number
+  turn_count: number
+  total_tokens: number
+  total_cost: number
+  internal_cost: number
+  external_cost: number
+  last_active_at: string
+}
+
+export interface TaskRankingResponse {
+  tasks: TaskRankingRow[] | null
+}
+
 /* ── query option bags ─────────────────────────────────────────────────── */
 
 export interface OverviewQuery extends SessionAnalyticsRange, SessionAnalyticsScope {}
@@ -264,6 +319,34 @@ export type ModelRankingSort =
 
 export interface ModelRankingQuery extends SessionAnalyticsRange, SessionAnalyticsScope {
   sort_by?: ModelRankingSort
+  order?: SortOrder
+}
+
+/** 供应商排行排序字段（白名单与 model-ranking 不同：多 models/users）。 */
+export type ProviderRankingSort =
+  | 'requests'
+  | 'tokens'
+  | 'cost'
+  | 'models'
+  | 'users'
+  | 'last_used'
+
+export interface ProviderRankingQuery extends SessionAnalyticsRange, SessionAnalyticsScope {
+  sort_by?: ProviderRankingSort
+  order?: SortOrder
+}
+
+/** 任务排行排序字段。 */
+export type TaskRankingSort =
+  | 'sessions'
+  | 'turns'
+  | 'tokens'
+  | 'cost'
+  | 'users'
+  | 'last_active'
+
+export interface TaskRankingQuery extends SessionAnalyticsRange, SessionAnalyticsScope {
+  sort_by?: TaskRankingSort
   order?: SortOrder
 }
 
@@ -459,6 +542,43 @@ export function getModelRanking(
 
 // ============= 用户模型用量 (2026-11-22) =============
 
+/** GET /api/admin/session-analytics/provider-ranking（2026-11-23 新增） */
+export function getProviderRanking(
+  params: ProviderRankingQuery,
+  options?: RequestOptions,
+): Promise<ProviderRankingResponse> {
+  return req<ProviderRankingResponse>(
+    'GET',
+    `${BASE}/provider-ranking${query({
+      tenant_id: params.tenant_id,
+      start_date: params.start_date,
+      end_date: params.end_date,
+      sort_by: params.sort_by,
+      order: params.order,
+    })}`,
+    undefined,
+    options,
+  )
+}
+
+/** GET /api/admin/session-analytics/task-ranking（2026-11-23 新增） */
+export function getTaskRanking(
+  params: TaskRankingQuery,
+  options?: RequestOptions,
+): Promise<TaskRankingResponse> {
+  return req<TaskRankingResponse>(
+    'GET',
+    `${BASE}/task-ranking${query({
+      tenant_id: params.tenant_id,
+      start_date: params.start_date,
+      end_date: params.end_date,
+      sort_by: params.sort_by,
+      order: params.order,
+    })}`,
+    undefined,
+    options,
+  )
+}
 export interface UserModelUsage {
   model: string
   request_count: number

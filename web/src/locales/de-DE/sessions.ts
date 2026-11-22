@@ -112,6 +112,7 @@ export default {
     status: { all: 'Alle', active: 'Aktiv', stopped: 'Gestoppt' },
   },
   stats: {
+    loading: "Sitzungsstatistik wird geladen…",
     last7Days: "Letzte 7 Tage",
     last30Days: "Letzte 30 Tage",
     sessionCount: "Sitzungsanzahl",

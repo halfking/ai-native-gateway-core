@@ -3,7 +3,6 @@ export default {
   title: 'Sitzungsanalyse',
   topUsersTitle: 'Top 10 Aktive Benutzer',
   nav: {
-    analyticsCenter: 'Sitzungsanalyse-Zentrum',
     overview: 'Übersicht',
     userRanking: 'Personenrangliste',
     userDetail: 'Personendetails',
@@ -12,6 +11,15 @@ export default {
   },
   hint: {
     modelTrend: 'Verlauf dieses Modells (Anfragen/Token/Kosten) für denselben Zeitraum in den Nutzungstrends ansehen',
+  },
+
+  top5: {
+    title: "Top-5-Ranglisten (Modelle / Anbieter / Benutzer / Aufgaben)",
+    scopeNote: "Gleiche Basis wie die Statistik oben: Modelle und Anbieter sind auf Anfrage-Ebene (nach Anfragen aggregiert), Benutzer und Aufgaben auf Sitzungs-Ebene (nach Sitzungen aggregiert); die beiden Gruppen dürfen nicht addiert werden.",
+    models: "Top 5 Modelle",
+    providers: "Top 5 Anbieter",
+    users: "Top 5 Benutzer",
+    tasks: "Top 5 Aufgaben",
   },
 
   range: {
@@ -28,6 +36,7 @@ export default {
     back: 'Zurück zur Personenrangliste',
     viewDetail: 'Details anzeigen',
     viewAllUsers: 'Alle Benutzer anzeigen',
+    viewAllModels: "Alle Modelle anzeigen",
   },
   metric: {
     totalSessions: 'Sitzungen gesamt',
@@ -79,6 +88,7 @@ export default {
     tokens: 'Token',
     cost: 'Kosten',
     requests: 'Anfragen',
+    modelsCount: "Modelle",
     users: 'Personenzahl',
     successRate: 'Erfolgsquote',
     cacheRate: 'Cache-Trefferquote',

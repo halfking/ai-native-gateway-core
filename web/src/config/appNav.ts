@@ -268,16 +268,21 @@ export const NAV_GROUPS: NavGroup[] = [
       // 条目 CRUD、三形态方案编辑、执行留痕时间线与按快照回滚。
       // 权限档与 pi-analysis 同族（管理面处置工具）⇒ super + hideForTenant。
       { path: '/admin/error-playbook', labelKey: 'nav.item.errorPlaybook', icon: '📕', super: true, hideForTenant: true },
-      // 2026-11-20：会话分析系统（后端 admin/session_analytics 的 7 个端点）。
-      // 2026-11-20 L9 收口：聚合族独立标签键 sessionAnalytics.nav.analyticsCenter，
-      // 避免与 /admin/session-analytics/users（用户画像族，仍用 nav.item.sessionAnalytics）
-      // 共用同一标签导致顶栏两个同名「会话分析中心」。
+      // 2026-11-20：会话分析系统（后端 admin/session_analytics 的端点族）。
+      // ★ 2026-11-23 审计轮：**移除「/admin/session-analytics」总览页菜单项**。
+      //   理由：① 该页已按 owner 指令取消——路由改为重定向到
+      //     /admin/session-analytics/users（内容已重组迁入该页）；
+      //   ② 保留一个指向「已取消页面」的菜单项是技术债；
+      //   ③ 它与 requests-sessions 组的 /admin/session-analytics/users
+      //     共用同一文案（会话分析中心），顶栏会出现两个同名入口
+      //     —— 正是 2026-11-20 L9 收口当初要避免的形态，重定向后反而复发。
+      //   ⇒ 主入口是 requests-sessions 组的「会话分析中心」（users 页）；
+      //     本组保留三个子榜（人员/智能体/模型排行）。
       // ★ 后端角色闸门放行 super_admin / tenant_admin / admin_key（且 tenant_admin
       //   有租户隔离）⇒ 菜单项**不设 super**，只 hideForTenant（租户门户隐藏），
       //   与 router 的 requiresAuth 对齐；真正的权限真源在后端。
       // ★ 详情页（/user-ranking/:owner）不单独挂菜单：由 navCovers 的前缀匹配
       //   被「人员排行」项覆盖，且入口在排行表里。
-      { path: '/admin/session-analytics', labelKey: 'sessionAnalytics.nav.analyticsCenter', icon: '📊', hideForTenant: true },
       { path: '/admin/session-analytics/user-ranking', labelKey: 'sessionAnalytics.nav.userRanking', icon: '👥', hideForTenant: true },
       { path: '/admin/session-analytics/agent-ranking', labelKey: 'sessionAnalytics.nav.agentRanking', icon: '🧑‍💼', hideForTenant: true },
       { path: '/admin/session-analytics/model-ranking', labelKey: 'sessionAnalytics.nav.modelRanking', icon: '🧠', hideForTenant: true },

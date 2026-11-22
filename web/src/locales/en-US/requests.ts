@@ -6,6 +6,9 @@ export default {
     loading: 'Loading…',
   },
   list: {
+    error: {
+      scanningFailed: "Data load anomaly: {count} records were returned but cannot be displayed. This is usually a server-side data format issue; ask an administrator to check the backend logs.",
+    },
     filter: {
       keyAll: 'All keys',
       providerAll: 'All providers',

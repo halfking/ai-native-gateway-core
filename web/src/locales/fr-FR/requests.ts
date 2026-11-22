@@ -7,6 +7,9 @@ export default {
     loading: 'Chargement…',
   },
   list: {
+    error: {
+      scanningFailed: "Anomalie de chargement : {count} enregistrements ont été récupérés mais ne peuvent pas être affichés. Il s’agit généralement d’un problème de format de données côté serveur ; demandez à un administrateur de vérifier les journaux du backend.",
+    },
     filter: {
       keyAll: 'Toutes les clés',
       providerAll: 'Tous les fournisseurs',

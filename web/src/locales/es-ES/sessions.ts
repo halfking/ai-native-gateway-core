@@ -112,6 +112,7 @@ export default {
     status: { all: 'Todas', active: 'Activas', stopped: 'Detenidas' },
   },
   stats: {
+    loading: "Cargando estadísticas de sesión…",
     last7Days: "Últimos 7 días",
     last30Days: "Últimos 30 días",
     sessionCount: "Número de sesiones",

@@ -110,6 +110,7 @@ export default {
     status: { all: 'الكل', active: 'نشطة', stopped: 'متوقفة' },
   },
   stats: {
+    loading: "جارٍ تحميل إحصاءات الجلسة…",
     last7Days: "آخر 7 أيام",
     last30Days: "آخر 30 يومًا",
     sessionCount: "عدد الجلسات",

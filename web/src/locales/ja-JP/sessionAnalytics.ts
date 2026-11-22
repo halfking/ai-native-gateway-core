@@ -3,7 +3,6 @@ export default {
   title: 'セッション分析',
   topUsersTitle: 'Top10 アクティブユーザー',
   nav: {
-    analyticsCenter: 'セッション分析センター',
     overview: '概要',
     userRanking: 'ユーザーランキング',
     userDetail: 'ユーザー詳細',
@@ -12,6 +11,15 @@ export default {
   },
   hint: {
     modelTrend: '使用量トレンドで同じ期間のこのモデルのリクエスト/トークン/コスト曲線を見る',
+  },
+
+  top5: {
+    title: "Top5 ランキング（モデル / プロバイダー / ユーザー / タスク）",
+    scopeNote: "上部の統計と同じ基準です：モデルとプロバイダーはリクエスト単位（リクエスト集計）、ユーザーとタスクはセッション単位（セッション集計）。2 つのグループは合算できません。",
+    models: "Top5 モデル",
+    providers: "Top5 プロバイダー",
+    users: "Top5 ユーザー",
+    tasks: "Top5 タスク",
   },
 
   range: {
@@ -28,6 +36,7 @@ export default {
     back: '人員ランキングへ戻る',
     viewDetail: '詳細を表示',
     viewAllUsers: 'すべてのユーザーを表示',
+    viewAllModels: "すべてのモデルを表示",
   },
   metric: {
     totalSessions: 'セッション総数',
@@ -79,6 +88,7 @@ export default {
     tokens: 'トークン数',
     cost: 'コスト',
     requests: 'リクエスト数',
+    modelsCount: "モデル数",
     users: '利用人数',
     successRate: '成功の割合',
     cacheRate: 'キャッシュヒット率',

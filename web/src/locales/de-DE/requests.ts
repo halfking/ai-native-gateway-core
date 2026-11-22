@@ -7,6 +7,9 @@ export default {
     loading: 'Wird geladen…',
   },
   list: {
+    error: {
+      scanningFailed: "Ladefehler: {count} Datensätze wurden abgerufen, können aber nicht angezeigt werden. Ursache ist meist ein serverseitiges Datenformatproblem; bitte einen Administrator, die Backend-Logs zu prüfen.",
+    },
     filter: {
       keyAll: 'Alle Schlüssel',
       providerAll: 'Alle Anbieter',

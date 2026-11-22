@@ -8,6 +8,9 @@ export default {
     loading: '載入中…',
   },
   list: {
+    error: {
+      scanningFailed: "資料載入異常：查詢到 {count} 筆記錄，但無法正常顯示。這通常是伺服器端資料格式問題，請聯絡管理員檢查後端記錄。",
+    },
     filter: {
       keyAll: '全部 Key',
       providerAll: '全部供應商',

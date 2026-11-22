@@ -115,6 +115,7 @@ export default {
     status: { all: 'Toutes', active: 'Actives', stopped: 'Arrêtées' },
   },
   stats: {
+    loading: "Chargement des statistiques de session…",
     last7Days: "7 derniers jours",
     last30Days: "30 derniers jours",
     sessionCount: "Nombre de sessions",

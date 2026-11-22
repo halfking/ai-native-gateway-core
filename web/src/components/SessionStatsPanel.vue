@@ -5,7 +5,23 @@
  *
  * 2026-11-02：与看板共用天数；消费 data-horizon；turns 对拍 degraded；
  * 探测流量入口；perf/error 标明模块执行宇宙。
- * 2026-11-23：集成 session-analytics API 获取用户和供应商 Top5 数据。
+ *
+ * 2026-11-23 审计轮（★ 撤销上一轮的实现）：
+ *   上一轮在此处接了 session-analytics API 取用户/供应商 Top5，有三处硬伤：
+ *   ① **权限错配**——session-analytics 端点要求 admin 角色
+ *      （isAdminFromRequest: super_admin/tenant_admin/admin_key），而本面板
+ *      对**所有登录用户**可见 ⇒ 普通用户必然 403，只会看到两个空卡片 +
+ *      控制台报错；
+ *   ② **双数据源混排**——topClients/topTasks/modelUsage 来自 dashboard 实时
+ *      腿，topUsers/topProviders 来自物化视图缓存腿（15min）⇒ 同一区块内
+ *      不同卡片的时间戳不同，读者无从判断哪个是哪个口径；
+ *   ③ **供应商口径错**——provider 只能由 model_usage_aggregates.provider 聚合，
+ *      前端 split('/') 会把模型名当 provider（详见 api/sessionAnalytics.ts 注释）。
+ *   ⇒ 本面板回到**单一数据源**（dashboard 实时腿）；「模型/用户/供应商/任务」
+ *   Top5 四件套统一落在 /admin/session-analytics/users（admin 域，
+ *   口径与 /admin/session-analytics 完全一致）。
+ *   口径一致的证据仍在本面板：对齐指标行（aligned）读的正是
+ *   domains/analytics 单一真源，与会话分析页同一实现。
  */
 import { computed, inject, ref, watch, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -20,9 +36,6 @@ import HealthGradeChart from './analytics/HealthGradeChart.vue'
 import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
 import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
-// 2026-11-23：导入 session-analytics API
-import { getOverview as getSessionAnalyticsOverview } from '../api/sessionAnalytics'
-import type { SessionAnalyticsOverview } from '../api/sessionAnalytics'
 
 import { ElIcon } from 'element-plus'
 import KxDateRangePicker from './ui/KxDateRangePicker.vue'
@@ -102,71 +115,13 @@ const trendWindow = computed(() => {
   return { start: localDateStamp(start), end: localDateStamp(end) }
 })
 
-// 2026-11-23 整合轮：集成 session-analytics 数据获取用户和供应商 Top5
-const analyticsData = ref<SessionAnalyticsOverview | null>(null)
-const analyticsLoading = ref(false)
-
-async function loadAnalyticsData() {
-  if (!trendWindow.value) return
-  
-  analyticsLoading.value = true
-  try {
-    const data = await getSessionAnalyticsOverview({
-      start_date: trendWindow.value.start,
-      end_date: trendWindow.value.end,
-    })
-    analyticsData.value = data
-  } catch (err) {
-    console.error('Failed to load analytics data:', err)
-    analyticsData.value = null
-  } finally {
-    analyticsLoading.value = false
-  }
-}
-
-// 监听窗口变化，自动加载数据
-watch(trendWindow, () => {
-  void loadAnalyticsData()
-}, { immediate: true })
-
-// 计算用户 Top5（取前5）
-const topUsers = computed(() => {
-  return (analyticsData.value?.top_users || []).slice(0, 5)
-})
-
-// 计算供应商 Top5（从模型数据聚合）
-const topProviders = computed(() => {
-  const models = analyticsData.value?.top_models || []
-  const providerMap = new Map<string, {
-    provider: string
-    model_count: number
-    total_requests: number
-    total_cost: number
-  }>()
-  
-  models.forEach(m => {
-    const provider = m.model.split('/')[0] || 'unknown'
-    const existing = providerMap.get(provider) || {
-      provider,
-      model_count: 0,
-      total_requests: 0,
-      total_cost: 0,
-    }
-    existing.model_count++
-    existing.total_requests += m.count
-    // 注意：top_models 只有 count，没有 cost，这里用 count 作为排序依据
-    providerMap.set(provider, existing)
-  })
-  
-  return Array.from(providerMap.values())
-    .sort((a, b) => b.total_requests - a.total_requests)
-    .slice(0, 5)
-})
-
 function openAlignedAnalytics() {
   const a = aligned.value
   if (!a) return
-  void router.push({ path: '/admin/session-analytics', query: { start_date: a.start_date, end_date: a.end_date } })
+  void router.push({
+    path: '/admin/session-analytics/users',
+    query: { start_date: a.start_date, end_date: a.end_date },
+  })
 }
 
 const dashboardStats = computed<DashboardStats>(() => {
@@ -512,8 +467,6 @@ defineExpose({
         :top-clients="overview.top_clients || []"
         :top-tasks="overview.top_tasks || []"
         :model-usage="overview.model_usage || []"
-        :top-users="topUsers"
-        :top-providers="topProviders"
         :trend-window="trendWindow"
       />
     </div>

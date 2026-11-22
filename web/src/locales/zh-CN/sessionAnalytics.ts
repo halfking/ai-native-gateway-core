@@ -6,7 +6,6 @@ export default {
   title: '会话分析',
   topUsersTitle: 'Top10 活跃用户',
   nav: {
-    analyticsCenter: '会话分析中心',
     overview: '总览',
     userRanking: '人员排行',
     userDetail: '人员详情',
@@ -16,6 +15,15 @@ export default {
   hint: {
     // 2026-11-21 对齐轮：top 模型 → usage-trends 深链提示
     modelTrend: '在用量趋势中查看该模型同窗口的请求/token/费用曲线',
+  },
+
+  top5: {
+    title: "Top5 排行（模型 / 供应商 / 用户 / 任务）",
+    scopeNote: "口径与本页上方统计一致：模型与供应商为请求级（按请求聚合），用户与任务为会话级（按会话聚合），两组不可相加。",
+    models: "Top5 模型",
+    providers: "Top5 供应商",
+    users: "Top5 用户",
+    tasks: "Top5 任务",
   },
 
   range: {
@@ -32,6 +40,7 @@ export default {
     back: '返回人员排行',
     viewDetail: '查看详情',
     viewAllUsers: '查看所有用户',
+    viewAllModels: "查看所有模型",
   },
   metric: {
     totalSessions: '会话总数',
@@ -83,6 +92,7 @@ export default {
     tokens: 'Token 数',
     cost: '花费',
     requests: '请求数',
+    modelsCount: "模型数",
     users: '使用人数',
     successRate: '成功率',
     cacheRate: '缓存命中率',

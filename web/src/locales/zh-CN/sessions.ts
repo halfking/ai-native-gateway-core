@@ -115,20 +115,12 @@ export default {
     status: { all: '全部', active: '活跃', stopped: '已停止' },
   },
   stats: {
+    loading: "正在加载会话统计…",
     last7Days: '最近7天',
     last30Days: '最近30天',
     sessionCount: '会话数',
     topClients: 'Top 5 客户端（按成本）',
     topTasks: 'Top 5 任务（按会话数）',
-    // 2026-11-23 整合轮：添加用户和供应商 Top5
-    topUsers: 'Top 5 用户（按使用量）',
-    topProviders: 'Top 5 供应商（按请求数）',
-    user: '用户',
-    provider: '供应商',
-    sessions: '会话数',
-    tokens: 'Token数',
-    models: '模型数',
-    requests: '请求数',
     clientId: '客户端ID',
     taskId: '任务ID',
     totalCost: '总成本',
@@ -203,9 +195,7 @@ export default {
     /** 空状态：Top 任务统计为空（原先用通用键 `dashboard.noData`）。 */
     emptyNoResultTopTasks: '当前周期没有任务统计。',
     /** 空状态：Top 用户统计为空（2026-11-23 新增）。 */
-    emptyNoResultTopUsers: '当前周期没有用户统计。',
     /** 空状态：Top 供应商统计为空（2026-11-23 新增）。 */
-    emptyNoResultTopProviders: '当前周期没有供应商统计。',
   },
   clientAnalytics: {
     title: '客户端分析',

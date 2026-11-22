@@ -3,7 +3,6 @@ export default {
   title: 'Análisis de sesiones',
   topUsersTitle: 'Top 10 Usuarios Activos',
   nav: {
-    analyticsCenter: 'Centro de análisis de sesiones',
     overview: 'Resumen',
     userRanking: 'Clasificación de personas',
     userDetail: 'Detalle de la persona',
@@ -12,6 +11,15 @@ export default {
   },
   hint: {
     modelTrend: 'Ver las curvas de solicitudes/tokens/coste de este modelo para la misma ventana en Tendencias de uso',
+  },
+
+  top5: {
+    title: "Clasificaciones Top 5 (modelos / proveedores / usuarios / tareas)",
+    scopeNote: "Misma base que las estadísticas anteriores: modelos y proveedores son a nivel de solicitud (agregados por solicitud), usuarios y tareas a nivel de sesión (agregados por sesión); ambos grupos no deben sumarse.",
+    models: "Top 5 modelos",
+    providers: "Top 5 proveedores",
+    users: "Top 5 usuarios",
+    tasks: "Top 5 tareas",
   },
 
   range: {
@@ -28,6 +36,7 @@ export default {
     back: 'Volver a la clasificación de personas',
     viewDetail: 'Ver detalles',
     viewAllUsers: 'Ver todos los usuarios',
+    viewAllModels: "Ver todos los modelos",
   },
   metric: {
     totalSessions: 'Total de sesiones',
@@ -79,6 +88,7 @@ export default {
     tokens: 'Tokens usados',
     cost: 'Coste',
     requests: 'Solicitudes',
+    modelsCount: "Modelos",
     users: 'Número de personas',
     successRate: 'Tasa de éxito',
     cacheRate: 'Tasa de aciertos de caché',

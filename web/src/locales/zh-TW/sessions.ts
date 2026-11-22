@@ -111,6 +111,7 @@ export default {
     status: { all: '全部', active: '活躍', stopped: '已停止' },
   },
   stats: {
+    loading: "正在載入會話統計…",
     last7Days: "最近7天",
     last30Days: "最近30天",
     sessionCount: "會話數",

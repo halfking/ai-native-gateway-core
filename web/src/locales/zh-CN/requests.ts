@@ -7,6 +7,9 @@ export default {
     loading: '加载中…',
   },
   list: {
+    error: {
+      scanningFailed: "数据加载异常：查询到 {count} 条记录，但无法正常显示。这通常是服务端数据格式问题，请联系管理员检查后端日志。",
+    },
     filter: {
       keyAll: '全部 Key',
       providerAll: '全部供应商',

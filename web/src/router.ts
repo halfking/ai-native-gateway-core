@@ -73,7 +73,6 @@ const ErrorPlaybookDetailView = () => import('./views/admin/error-playbook/Error
 // ★ 权限闸门用 requiresAuth 而非 requiresSuper：后端 isAdminFromRequest 放行
 //   super_admin / tenant_admin / admin_key，且专门为 tenant_admin 做了租户隔离
 //   ⇒ 前端粗粒度闸门不该把 tenant_admin 挡在门外（权限真源在后端）。
-const SessionAnalyticsOverviewView = () => import('./views/admin/session-analytics/SessionAnalyticsOverviewView.vue')
 const SessionAnalyticsUserRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsUserRankingView.vue')
 const SessionAnalyticsUserDetailView = () => import('./views/admin/session-analytics/SessionAnalyticsUserDetailView.vue')
 const SessionAnalyticsAgentRankingView = () => import('./views/admin/session-analytics/SessionAnalyticsAgentRankingView.vue')

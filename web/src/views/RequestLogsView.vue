@@ -995,9 +995,13 @@ async function load() {
         itemsLength: resp.items.length,
         requestParams: { from: range.from, to: range.to, page: page.value, pageSize: pageSize.value },
       })
+      // ★ 2026-11-23 审计轮：去掉 `default` 插值参数。
+      //   vue-i18n v9 的 `default` 是**保留键**（消息回退链），当普通插值参数传
+      //   进去既不会显示（没有语种文案里有 {default}），又会被
+      //   callSitePlaceholderCoverage 门禁判成「死参数」。原意图（附一句兜底
+      //   中文说明）已由 requests.list.error.scanningFailed 的 8 语种文案承担。
       error.value = t('requests.list.error.scanningFailed', {
         count: resp.count,
-        default: `数据加载异常：查询到 ${resp.count} 条记录，但无法正常显示。这通常是服务端数据格式问题，请联系管理员检查后端日志。`,
       })
     }
   } catch (e: unknown) {

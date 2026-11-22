@@ -8,6 +8,9 @@ export default {
     loading: '読み込み中…',
   },
   list: {
+    error: {
+      scanningFailed: "データ読み込み異常：{count} 件のレコードが取得されましたが表示できません。サーバ側のデータ形式の問題が疑われるため、管理者にバックエンドログの確認を依頼してください。",
+    },
     filter: {
       keyAll: 'すべてのキー',
       providerAll: 'すべてのプロバイダー',

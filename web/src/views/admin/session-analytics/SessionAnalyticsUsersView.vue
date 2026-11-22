@@ -17,6 +17,27 @@
       <SessionStatsPanel ref="statsPanelRef" style="margin-bottom: 24px;" />
     </div>
 
+    <!-- ★ 2026-11-23 审计轮：Top5 四件套（模型/供应商/用户/任务）——
+         口径与 /admin/session-analytics 总览页完全一致（同一物化视图族），
+         每行可点击直达对应详情列表。 -->
+    <section class="top5-section" data-testid="sa-top5-section">
+      <div class="section-header">
+        <h2 class="section-title">{{ t('sessionAnalytics.top5.title') }}</h2>
+      </div>
+      <p class="sa-note">{{ t('sessionAnalytics.top5.scopeNote') }}</p>
+      <SaTop5Rankings
+        v-model:model-rows="modelRows"
+        v-model:provider-rows="providerRows"
+        v-model:user-rows="userRows"
+        v-model:task-rows="taskRows"
+        :start-date="range.start"
+        :end-date="range.end"
+        :loading="loading"
+        :error="top5Error"
+        @retry="loadTop5"
+      />
+    </section>
+
     <!-- Top10 用户排行 -->
     <div class="top-users-section">
       <div class="section-header">
@@ -120,10 +141,17 @@ import { rangeFromSpanDays } from '../../../components/ui/kxDatePresets'
 import type { KxDateRange, KxDateRangePreset } from '../../../components/ui/kx-date-types'
 import SaStateBanner from './components/SaStateBanner.vue'
 import SaRangeHint from './components/SaRangeHint.vue'
+import SaTop5Rankings from './components/SaTop5Rankings.vue'
 import { useSessionAnalyticsLoader } from './useSessionAnalytics'
 import {
   getUserRanking,
+  getModelRanking,
+  getProviderRanking,
+  getTaskRanking,
   type UserRankingRow,
+  type ModelRankingRow,
+  type ProviderRankingRow,
+  type TaskRankingRow,
 } from '../../../api/sessionAnalytics'
 import { formatDateTime } from '../../../utils/datetime'
 
@@ -150,6 +178,39 @@ function onApplyRange(newRange: KxDateRange) {
   range.value = newRange
   draftRange.value = newRange
   void loadTopUsers()
+  void loadTop5()
+}
+
+// ★ 2026-11-23 审计轮：Top5 四件套（模型/供应商/用户/任务）全部取自
+//   session-analytics 物化视图 ⇒ 与本族其它页面同一口径、同一新鲜度。
+//   四次请求并行；任一失败不影响其它三个维度（各自独立 catch）。
+const modelRows = ref<ModelRankingRow[]>([])
+const providerRows = ref<ProviderRankingRow[]>([])
+const userRows = ref<UserRankingRow[]>([])
+const taskRows = ref<TaskRankingRow[]>([])
+const top5Error = ref<string | null>(null)
+
+async function loadTop5() {
+  const params = {
+    start_date: range.value.start,
+    end_date: range.value.end,
+  }
+  const results = await Promise.allSettled([
+    getModelRanking({ ...params, sort_by: 'requests', order: 'desc' }),
+    getProviderRanking({ ...params, sort_by: 'requests', order: 'desc' }),
+    getUserRanking({ ...params, sort_by: 'tokens', order: 'desc', limit: 10, offset: 0 }),
+    getTaskRanking({ ...params, sort_by: 'sessions', order: 'desc' }),
+  ])
+  const [models, providers, users, tasks] = results
+  modelRows.value = models.status === 'fulfilled' ? models.value.models || [] : []
+  providerRows.value = providers.status === 'fulfilled' ? providers.value.providers || [] : []
+  userRows.value = users.status === 'fulfilled' ? users.value.users || [] : []
+  taskRows.value = tasks.status === 'fulfilled' ? tasks.value.tasks || [] : []
+  const failed = results.filter((r) => r.status === 'rejected')
+  top5Error.value =
+    failed.length === results.length
+      ? (failed[0] as PromiseRejectedResult).reason?.message || 'failed to load top rankings'
+      : null
 }
 
 async function loadTopUsers() {
@@ -174,6 +235,7 @@ async function refreshAll() {
   // Refresh both panels asynchronously
   await Promise.all([
     loadTopUsers(),
+    loadTop5(),
     statsPanelRef.value?.refresh() ?? Promise.resolve(),
   ])
 }
@@ -200,6 +262,7 @@ function formatTime(iso: string | null | undefined): string {
 
 onMounted(() => {
   void loadTopUsers()
+  void loadTop5()
 })
 </script>
 

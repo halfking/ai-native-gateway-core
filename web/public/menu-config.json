@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-11-22T17:19:38.379Z",
+  "exported_at": "2026-11-22T18:25:32.357Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -434,14 +434,6 @@
           "labelKey": "nav.item.errorPlaybook",
           "icon": "📕",
           "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
-          "pluginScope": "*"
-        },
-        {
-          "path": "/admin/session-analytics",
-          "labelKey": "sessionAnalytics.nav.analyticsCenter",
-          "icon": "📊",
           "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"
