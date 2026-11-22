@@ -116,6 +116,8 @@ fi
 
 # ── ② 取归因日志行 ───────────────────────────────────────────────────────
 RAW="$(ssh "$HOST" "docker logs --since '$WINDOW' '$CONTAINER' 2>&1 | grep 'v2 dispatch gate: short-circuit'" 2>/dev/null)"
+# ★ 分歧观测行（★ N8：★ PI 家族两套判定口径相反时才会打、★ 罕见事件）
+RAW_DIV="$(ssh "$HOST" "docker logs --since '$WINDOW' '$CONTAINER' 2>&1 | grep 'PI verdict divergence observed'" 2>/dev/null)"
 if [[ -z "$RAW" ]]; then
   log "★ 窗口内没有任何 short-circuit 记录（★ 可能真的零拦截、★ 也可能该版本没有归因日志）"
   log "★ ★ 区分办法：★ 查该容器版本是否含归因字段（★ grep 启动日志的 decision_ 字段）"
@@ -123,7 +125,7 @@ if [[ -z "$RAW" ]]; then
 fi
 
 # ── ③ 泄露体检（★ 先做：★ 有泄露就不该往下走）────────────────────────────
-LEAK_HITS="$(printf '%s\n' "$RAW" | grep -c -E 'matched_pattern|input_sample|"evidence"' || true)"
+LEAK_HITS="$(( $(printf '%s\n' "$RAW" | grep -c -E 'matched_pattern|input_sample|"evidence"' || true) + $(printf '%s\n' "$RAW_DIV" | grep -c -E 'matched_pattern|input_sample|"evidence"' || true) ))"
 if [[ "${LEAK_HITS:-0}" -gt 0 ]]; then
   log "★★ 泄露体检失败：★ 归因日志里出现 matched_pattern / input_sample / evidence 片段"
   log "★★ 共 $LEAK_HITS 行命中 ⇒ ★ 这说明归因日志在泄题（★ 违反 internal_error_guard 纪律）"
@@ -150,6 +152,7 @@ fi
 
 # ── ⑤ 聚合（★ 交本地 python3 解析 JSON 行、★ 只出计数）─────────────────
 export INTERCEPT_RAW="$RAW"
+export INTERCEPT_RAW_DIV="$RAW_DIV"
 export INTERCEPT_REQ_TOTAL="$REQ_TOTAL"
 export INTERCEPT_JSON="$JSON_OUT"
 export INTERCEPT_HOST="$HOST"
@@ -163,6 +166,7 @@ import os
 from collections import Counter
 
 raw = os.environ.get("INTERCEPT_RAW", "")
+raw_div = os.environ.get("INTERCEPT_RAW_DIV", "")
 req_total = os.environ.get("INTERCEPT_REQ_TOTAL", "").strip()
 as_json = os.environ.get("INTERCEPT_JSON", "0") == "1"
 host = os.environ.get("INTERCEPT_HOST", "")
@@ -196,6 +200,26 @@ for line in raw.splitlines():
     kinds[d.get("decision_kind", "") or "(空)"] += 1
     paths[d.get("path", "") or "(空)"] += 1
 
+# ── 分歧观测（N8）─────────────────────────────────────────────────────────
+div_total = 0
+div_pairs = Counter()
+div_stamps = []
+for line in raw_div.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    div_total += 1
+    denied = d.get("pi_divergence_denied", "") or "(空)"
+    allowed = d.get("pi_divergence_allowed", "") or "(空)"
+    div_pairs["%s ⇄ %s" % (denied, allowed)] += 1
+    ts = d.get("timestamp", "")
+    if ts:
+        div_stamps.append(ts)
+
 rate = None
 if req_total and req_total.isdigit() and int(req_total) > 0:
     rate = total * 100.0 / int(req_total)
@@ -214,6 +238,9 @@ if as_json:
         "by_decision_kind": dict(kinds),
         "by_path": dict(paths),
         "intercept_timestamps": stamps,
+        "pi_divergences": div_total,
+        "pi_divergence_pairs": dict(div_pairs),
+        "pi_divergence_timestamps": div_stamps,
         "unparsable_lines": bad_lines,
         "evidence_leak_lines": 0,
     }, ensure_ascii=False, indent=2))
@@ -262,6 +289,16 @@ else:
             print("  %s" % t)
         if len(stamps) > 50:
             print("  …… 另有 %d 条未列" % (len(stamps) - 50))
+    print("")
+    print("-- PI 家族判决分歧（N8：★ 两套注入判定口径相反的观测）--")
+    if div_total:
+        print("  分歧次数: %d" % div_total)
+        for k, v in div_pairs.most_common():
+            print("  %5d  %s" % (v, k))
+        for t in div_stamps[:20]:
+            print("       %s" % t)
+    else:
+        print("  （窗口内零分歧）")
     print("")
     print("★ ★ 读数须知（三条，★ 别把这张表当结论）：")
     print("   ① 拦截率是**上界**：★ 分子里可能混着**人工探针**（★ 探针也是真实请求）")

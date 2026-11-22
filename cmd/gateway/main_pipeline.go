@@ -1217,6 +1217,23 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			return
 		}
 
+		// ★ 2026-11-23 N8：★ PI 家族内部判决**分歧**的观测（★ 只记分歧、★ 罕见事件）。
+		// ★ 背景：★ 治理链里有两套提示词注入判定跑在同一段文本上
+		//   （★ prompt_injection：词表硬命中、阈值 7、命中即 deny；
+		//   ★ prompt_injection_enhanced：6 层检测 + 评分分级、★ 常给 warn 不拦）
+		// ⇒ ★ 口径相反时链子取最严 ⇒ ★ 实际拦截由前者说了算。
+		// ★ ★ 但**测不到**：★ 归因日志只在 short-circuit 时打 ⇒ ★ 放行的请求
+		//   永远不落判决记录 ⇒ ★ 分歧率与方向在生产没有任何数据
+		//   ⇒ ★ 「谁是权威判定方」只能靠推理。
+		// ★ ⇒ 这里补一行形态化观测（★ 罕见 ⇒ 噪声低）：★ 只取
+		//   plugin/allow/severity/code/reason、★ **绝不取 evidence**
+		//   ⇒ 命中片段与用户原文不进日志。
+		if div := interception.DetectPIVergence(env); div != nil {
+			slog.Info("v2 dispatch: PI verdict divergence observed",
+				append([]any{"request_id", requestID, "path", r.URL.Path},
+					interception.PIDivergenceLogFields(div)...)...)
+		}
+
 		// Forward to the v1 chatHandler. The chatHandler writes the
 		// response (including SSE stream) to w and we just observe.
 		//
