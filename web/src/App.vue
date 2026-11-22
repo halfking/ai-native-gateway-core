@@ -630,10 +630,15 @@ async function handleChangePasswordSuccess() {
   }
 }
 
-/* fillViewport 路由（用量趋势等）铺满主区，不再套 24px 内边距。 */
+/* fillViewport 路由（用量趋势等）铺满主区，不再套 24px 内边距。
+   2026-11-23：overflow hidden → overflow-y auto。
+   用量趋势页改为「所有列表完整展开、页面级滚动」，滚动责任上移到本层：
+   页面自身（.ute）不再持有滚动容器 ⇒ 表格/排行榜都能整段铺开，
+   而「全屏铺满」的效果（内容不满一屏时仍占满主区）由 .ute 的 min-height:100% 承担。 */
 .main-body.main-body--fill {
   padding: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
 }

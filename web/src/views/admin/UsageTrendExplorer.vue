@@ -186,7 +186,7 @@ async function loadSeries() {
     // 那是**误诊**。线上 bundle 对拍证明 catch 分支里没有清空动作，
     // 且 jsdom 探针证明图表组件自身稳定（initChart 仅 2 次、无销毁竞态）。
     // 真正的成因是**布局塌陷**（排行榜区 flex 不让步 ⇒ 图表区被压到 0 高 ⇒
-    // canvas 渲染高度 0），已修在 <style> 的 .ute__chart / .ute__rankings。
+    // canvas 渲染高度 0），已修在本文件 style 段的 .ute__chart / .ute__rankings。
     // 本条防御仍然保留：失败时保留旧数据本身是对的（不该把有图变空图），
     // 只是它与本次现象无关 —— 别再顺着它找根因。
     // series.value = []
@@ -734,20 +734,20 @@ export default { name: 'UsageTrendExplorer' }
   display: flex;
   flex-direction: column;
   gap: 12px;
-  flex: 1 1 auto;
-  min-height: 0;
-  height: 100%;
+  /* 2026-11-23（owner：页面不需要内部滚动，所有列表展开）：
+     页面不再持有滚动容器 —— 高度由内容决定，滚动交给外层 .main-body--fill。
+     ★ flex:0 0 auto 是关键：默认的 flex-shrink:1 会在内容超高时把本页压回
+       一屏高、内容溢出到容器外（并与下一段内容重叠）；改成 0 0 auto 后
+       「内容多高页面就多高」，外层自然出现滚动条。
+     ★ min-height:100% 保住「全屏铺满」：内容不满一屏时仍占满主区。 */
+  flex: 0 0 auto;
+  min-height: 100%;
+  height: auto;
   max-width: none;
   margin: 0;
   padding: 12px 16px 16px;
   box-sizing: border-box;
-  /* 2026-11-23：hidden → auto。页面是「定高 flex 列 + overflow:hidden」，
-     四个区块（头/筛选/图表/表格/排行）的高度预算超出视口时，
-     hidden 会把多出来的部分**直接裁掉**（用户看不到也够不着），
-     auto 则让残差变成滚动 —— 裁切是「内容消失」，滚动是「内容可达」。
-     图表被清空的直接成因是它被 flex 压到 0 高（见 .ute__chart 的 min-height），
-     这里只是兜底：保证任何情况下都不会「内容被裁没了」。 */
-  overflow: auto;
+  overflow: visible;
 }
 .ute__head {
   display: flex;
@@ -834,7 +834,6 @@ export default { name: 'UsageTrendExplorer' }
   padding: 12px 16px;
 }
 .ute__chart {
-  flex: 1 1 auto;
   /* ★ 图表区硬下限（2026-11-23「折线图加载完被清空」根修）。
      根因链（本机 211 实测：容器 610px / 排行区 1304px / 图表区 26px / canvas 0px）：
        ① 排行榜区 flex:0 0 auto + 6 张 Top5 卡片 ⇒ 自然高 1304px，**不让步**；
@@ -845,17 +844,24 @@ export default { name: 'UsageTrendExplorer' }
           ⇒ 父容器 0 高 ⇒ 画布渲染高度 0 ⇒ 肉眼看到「折线图被清空」。
      现象是「先有、后无」：排行榜加载中(≈150px)时图表拿得到几百 px，
      排行榜加载完(1304px)才塌 —— 与数据本身无关，是**布局塌陷**。
-     下限取 280px，与 ≤768 断点已有的 min-height 同值（桌面端此前漏了这条）。 */
+     ↓↓ 2026-11-23 二次调整（owner：全部展开、不内部滚动）：
+     flex 基准改为固定 280px（0 0 280px）—— 页面高度由内容决定后，
+     flex-basis:auto 会回退到 canvas 的固有高度并在 Chart.js 写回
+     canvas.height 属性后自我放大（实测会在 280↔508 之间抖），
+     固定基准让高度唯一确定，图表高度不再随渲染过程变化。 */
+  flex: 0 0 280px;
   min-height: 280px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .ute__table {
-  flex: 0 1 34%;
-  min-height: 160px;
-  max-height: 38%;
-  overflow: auto;
+  /* 2026-11-23：完整展开（owner 要求「所有列表展开，不在列表内滚动」）。
+     原 flex:0 1 34% + max-height:38% + overflow:auto 是「表格内部滚动」，
+     现在表格整段铺开，滚动由页面级承担。 */
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
 }
 .ute__err {
   font-size: 12px;
@@ -885,7 +891,6 @@ export default { name: 'UsageTrendExplorer' }
 @media (max-width: 768px) {
   .ute {
     padding: 12px;
-    overflow: auto;
   }
   .ute__select,
   .ute__select--wide,
@@ -897,11 +902,7 @@ export default { name: 'UsageTrendExplorer' }
   }
   .ute__chart {
     min-height: 280px;
-    flex: 1 0 280px;
-  }
-  .ute__table {
-    max-height: none;
-    flex: 0 0 auto;
+    flex: 0 0 280px;
   }
   /* 「一文件一断点」门（gates.spec）：768 规则并入上方唯一断点块
      —— 原 :966 处的第二条 @media 768（Top5 网格单列）已按门合并至此。 */
@@ -912,32 +913,20 @@ export default { name: 'UsageTrendExplorer' }
 
 /* Top5 排行样式 */
 .ute__rankings {
-  /* 2026-11-23：flex-shrink:0 → flex:0 1 auto + max-height + 内部滚动。
-     原来 flex-shrink:0（= flex:0 0 auto）意味着排行榜**永不让步**：
-     6 张 Top5 卡片自然高 1304px，而整页是 610px 的定高 flex 列 ⇒
-     唯一能收缩的 .ute__chart 被压到 0 高 ⇒ 折线图消失。
-     现在：排行榜是次要面板，像表格一样「有上限 + 内部滚动」，
-     把空间预算让给图表；overflow:auto 同时把 flex 项的自动最小尺寸
-     从 min-content 降为 0，使它在紧屏上也能收缩（否则 min-height:auto
-     会反过来顶住图表）。 */
-  flex: 0 1 auto;
-  /* 高度预算：max 与表格的 38% 同量级（排行是次要面板），
-     min 保底 180px —— 没有 min 的话在矮视口里它会被压成几十像素的细条，
-     「有滚动条但几乎看不见」比「看不见」更糟（用户不知道下面还有内容）。 */
-  min-height: 180px;
-  max-height: 34%;
-  overflow: auto;
+  /* 2026-11-23（owner：所有列表完整展开、不在列表内滚动）：取消上限与内部滚动。
+     上一轮为修「图表被压成 0 高」而加的 max-height + overflow:auto 是**反向
+     需求**——它把 6 张 Top5 卡片关进一个 180px 的小窗口。真正的修法不是把
+     图表撑大、而是**把排行榜放开**：页面整体滚动，卡片整段铺开，
+     图表区用固定基准（flex:0 0 280px）保证高度唯一确定，两者互不挤压。 */
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
   padding: 16px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
 .ute__rankings-title {
-  /* 内部滚动时标题保持可见（sticky 相对滚动容器的 padding box ⇒ top:0 即贴顶） */
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--card);
   font-size: 15px;
   font-weight: 600;
   margin: 0 0 16px;
