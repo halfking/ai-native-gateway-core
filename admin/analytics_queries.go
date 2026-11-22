@@ -48,7 +48,7 @@ func (h *Handler) queryAnalyticsSummary(
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
 			COALESCE(SUM(prompt_tokens), 0) AS total_prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) AS total_completion_tokens,
-			COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+			COALESCE(SUM(cost_amount), 0) AS total_cost_usd,
 			COALESCE(SUM(credits_charged), 0) AS total_credits,
 			COALESCE(AVG(CASE WHEN status = 'success' THEN latency_ms END), 0) AS avg_latency_ms
 		FROM usage_facts

@@ -887,6 +887,21 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("admin listLogs completed with partial scan failures", "scan_err_count", scanErrCount, "items_returned", len(items), "count", count)
 	}
 
+	// 2026-11-22 fix: 当有 count 但所有行扫描都失败时，返回明确错误而非空列表。
+	// 根因：数据格式问题（如 JSONB 字段异常）导致 scanRequestListRow 对所有行失败，
+	// 但 COUNT 查询成功 ⇒ 前端看到 count>0 但 items=[] 误认为"无记录"。
+	// 此时应返回 500 错误，明确告知这是服务端扫描失败，便于排查和修复。
+	if len(items) == 0 && count > 0 && scanErrCount > 0 {
+		slog.Error("admin listLogs all rows failed to scan",
+			"count", count,
+			"scan_err_count", scanErrCount,
+			"page", page,
+			"page_size", pageSize,
+		)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("data scanning failed: found %d records but failed to parse any rows (scan errors: %d)", count, scanErrCount))
+		return
+	}
+
 	// U4：lane=probe|probe_history 读的是业务表历史探测行 ⇒ 响应显式标
 	// source=history + lane=probe_history，避免与探测车道「当前」端点混淆。
 	resp := map[string]any{

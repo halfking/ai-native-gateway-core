@@ -775,6 +775,7 @@ const NAME_SORT_EXEMPT = {
   'views/tenant/MaaSUsageView.vue': '用量流水，按时间倒序',
   'views/tenant/MaaSBillsView.vue': '月账单按账期（period_ym）倒序 + 券码兑换流水，账期序比名称序有用（wip/07 合入时漏登记，2026-10-28 分支审计轮补）',
   'views/UserProfileView.vue': '该页是**单个 owner 的详情**（route.params.owner），表里是这个 owner 的模型分解，不是用户列表 —— 契约 C 的启发式按文件名里的 User 命中，属误报',
+  'views/admin/session-analytics/SessionAnalyticsUsersView.vue': '用户排行榜（Top用户列表），按使用量倒序',
   'views/ModelIntegrityView.vue': '首列是「检测时间」，异常事件流水按时间倒序才对（复核更正：原写的'
     + '「排序会连带改筛选分组语义」不成立 —— 该表行源是 events，不走 useModelCatalogFilters）',
 }
