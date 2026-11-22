@@ -147,9 +147,9 @@ const CLIENT_ROW_RATIO = 0.075
  * 间距增大时挤压了网关核心的空间。
  * 
  * 新逻辑：网关核心 → (ROW_GAP) → 模型层 → (MODEL_TO_PROVIDER_GAP) → 供应端
- * ROW_GAP 控制网关核心与模型层的间距（用户要求增加到原来的2倍，即 160px）
+ * ROW_GAP 控制网关核心与模型层的间距（用户要求缩短为原来的一半，即 80px）
  */
-export const ROW_GAP = 160
+export const ROW_GAP = 80
 
 /**
  * 模型层底边 ↔ 供应端卡片顶边的**固定净间距**（像素）。
@@ -170,11 +170,11 @@ const BOTTOM_PAD = 4
  * 则调整画布高度（通过视图的栅格行设置）或压缩间距。
  * 
  * ★ 最小所需高度计算：
- *   客户端(36) + 客户端到网关核心(8) + 网关核心(120~204) + ROW_GAP(160) + 
+ *   客户端(36) + 客户端到网关核心(8) + 网关核心(120~204) + ROW_GAP(80) + 
  *   模型层(56) + MODEL_TO_PROVIDER_GAP(72) + 供应端层(56) + 底边留白(4)
- *   ≈ 36 + 8 + 120 + 160 + 56 + 72 + 56 + 4 = 512px（最小）
+ *   ≈ 36 + 8 + 120 + 80 + 56 + 72 + 56 + 4 = 432px（最小）
  *   
- * 如果画布 < 512px，采用自适应策略：保持固定间距，但可能需要滚动。
+ * 如果画布 < 432px，采用自适应策略：保持固定间距，但可能需要滚动。
  */
 export function computeRowY(height: number, gatewayBox?: GatewayCoreBox): Record<TopoColumn, number> {
   const client = Math.round(height * CLIENT_ROW_RATIO)
