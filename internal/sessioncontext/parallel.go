@@ -30,6 +30,9 @@ package sessioncontext
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 )
@@ -130,11 +133,39 @@ func runIndexed(ctx context.Context, workers, n int, load func(i int) (any, erro
 		go func() {
 			defer wg.Done()
 			for jb := range jobs {
-				if err := work(jb.i, jb.v); err != nil {
-					errs[jb.i] = err
-					failed.Store(true)
-				}
-				close(jb.done) // 先记失败、再发完成信号（见函数注释）
+				// ★ 2026-11-23（12h 变更审计 A/C）：worker 协程里必须有 recover。
+				//
+				// 归约的 work 是外部注入的守卫（能否并发由注入方声明），一次
+				// 空指针就足以在这里 panic（实测：类型化 nil 的 Redis 客户端
+				// 穿过两道 `== nil` 闸 ⇒ client.Get(...) 解引用空指针）。
+				// worker 协程里的 panic **不会**沿调用栈回到请求协程 ⇒ 没有
+				// recover 时它直接升级为**进程级崩溃**（整个网关挂掉，而不是
+				// 这条请求失败）。
+				//
+				// recover 之后三件事（既不拖垮进程，也不静默吞掉）：
+				//   ① 记结构化错误日志（含 panic 值与栈）；
+				//   ② 把该条目记成错误 —— 与 work 返回 error 同形 ⇒ 调用方拿到
+				//      的是「归约失败」这个可处理的错误，而不是进程死掉；
+				//   ③ 关掉完成信号 —— 否则装载方会永远等这条 ⇒ 死锁。
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							err := panicAsError(jb.i, r)
+							errs[jb.i] = err
+							failed.Store(true)
+							slog.Error("sessioncontext: reduce worker panicked",
+								"index", jb.i,
+								"panic", r,
+								"error", err,
+								"stack", string(debug.Stack()))
+						}
+						close(jb.done) // 先记失败、再发完成信号（见函数注释）
+					}()
+					if err := work(jb.i, jb.v); err != nil {
+						errs[jb.i] = err
+						failed.Store(true)
+					}
+				}()
 			}
 		}()
 	}
@@ -197,4 +228,16 @@ func firstErrIndex(errs []error) int {
 		}
 	}
 	return -1
+}
+
+// panicAsError 把 worker 里的 panic 值折成 error。
+//
+// ★ 2026-11-23（12h 变更审计 A/C）：折成 error 而不是丢弃，是为了让
+// runIndexed 维持「返回下标最小的错误」这一既有契约 —— 调用方因此拿到一个
+// 可处理的错误（归约失败），而不是一个已经死掉的进程。
+func panicAsError(idx int, r any) error {
+	if err, ok := r.(error); ok {
+		return fmt.Errorf("sessioncontext: reduce worker panic at index %d: %w", idx, err)
+	}
+	return fmt.Errorf("sessioncontext: reduce worker panic at index %d: %v", idx, r)
 }
