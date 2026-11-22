@@ -1,4 +1,4 @@
-package ursm_test
+package deploygate_test
 
 // deploy_relative_script_path_gate_test.go —— 门：部署脚本**不得**用相对
 // `$(dirname "$0")` 解析「同目录下的另一个脚本」的路径；这类写法依赖**求值那一刻
@@ -35,6 +35,15 @@ package ursm_test
 //	   ⇒ 必须仍能解析出**存在的** apply-db-revision-sequence.sh。
 //	   ★ 同时跑一个**故意写坏的**对照探针（旧写法放在 cd 之后）⇒ 必须失败
 //	   ⇒ ⇒ 证明这道判据真的能分辨好坏，不是恒绿。
+// ★★ 为什么这个门**单独成包**、不放进 scripts/ursmcheck/：
+//
+//	部署 test-gate 按【diff 触及的包】选包跑测试（deploy-test-gate.sh：
+//	`git diff --name-only` → 取 .go 文件所在目录 → 该目录有 *_test.go 就整包跑）。
+//	⇒ 而 scripts/ursmcheck/ 是**重包**：185 个测试文件、其中 67 个会 shell out
+//	  （docker / exec.Command）⇒ ★ 任何触及它的 diff 都会把**整包**拖进部署闸门
+//	  ⇒ 实测闸门在 ./scripts/ursmcheck 上跑了 **14 分钟未完**（211 seq 3230 本轮）。
+//	⇒ ⇒ 部署脚本的门必须住在**自己的轻包**里 ⇒ 闸门只跑本包（<1s）。
+//	★ 不要把它「整理」回 ursmcheck —— 那会让每次部署都慢十几分钟。
 import (
 	"os"
 	"os/exec"
@@ -45,7 +54,7 @@ import (
 	"testing"
 )
 
-const deployScriptRelPath = "../../scripts/deploy-seamless-docker.sh"
+const deployScriptRelPath = "../deploy-seamless-docker.sh"
 
 // 探针模板：先「cd 走 cwd」（复刻 docker build 段），再使用**顶部已解析**的路径。
 //
