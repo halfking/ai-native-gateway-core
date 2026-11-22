@@ -179,17 +179,20 @@ func TestRetryOnLockHeld_StopsWhenTheContextIsCancelled(t *testing.T) {
 	}
 }
 
-// TestSessionViewLockRetryBudget_FitsInsideTheCycleBudget：预算的两个不等式。
+// TestSessionViewLockRetryBudget_FitsInsideThePerViewBudget：预算的两个不等式。
 //
-// 与同文件既有的 TestSessionViewsTimeout_ExceedsMeasuredRefresh 同族：
+// 与同文件既有的 TestSessionViewRefreshBudget_ExceedsMeasuredRefresh 同族：
 // 这类常量不是「给大点保险」，两个方向给错都会静默失败——
-// 给小 ⇒ 整轮被 ctx 静默掐断；给大 ⇒ 重试拖到下一轮周期里。
-func TestSessionViewLockRetryBudget_FitsInsideTheCycleBudget(t *testing.T) {
+// 给小 ⇒ 视图被自己的预算静默掐断；给大 ⇒ 重试拖到下一轮周期里。
+//
+// ★ 2026-11-22 对象从「整轮 SessionViewsTimeout」换成「单视图预算」：
+// 整轮共享 ctx 已废除（252 实测尾部视图被饿死）。
+func TestSessionViewLockRetryBudget_FitsInsideThePerViewBudget(t *testing.T) {
 	// 实测最长一轮 195s（§10.106.37 §三，245 03:00 轮）。
 	const measuredWorstRound = 200 * time.Second
-	if SessionViewLockRetryBudget+measuredWorstRound >= SessionViewsTimeout {
-		t.Fatalf("重试预算 %s + 实测最长一轮 %s 已达/超过轮内超时 %s —— 重试会把失败形态从「跳过」换成「被 ctx 静默掐断」",
-			SessionViewLockRetryBudget, measuredWorstRound, SessionViewsTimeout)
+	if SessionViewLockRetryBudget+measuredWorstRound >= SessionViewRefreshBudget {
+		t.Fatalf("重试预算 %s + 实测最长一轮 %s 已达/超过单视图预算 %s —— 重试会把失败形态从「跳过」换成「被 ctx 静默掐断」",
+			SessionViewLockRetryBudget, measuredWorstRound, SessionViewRefreshBudget)
 	}
 	if SessionViewLockRetryBudget >= SessionViewsInterval {
 		t.Fatalf("重试预算 %s 必须小于周期 %s，否则重试会拖进下一轮", SessionViewLockRetryBudget, SessionViewsInterval)

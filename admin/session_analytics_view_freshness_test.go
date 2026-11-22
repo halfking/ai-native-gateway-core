@@ -84,38 +84,41 @@ func TestRequireFreshSessionViews_NoDBFailsClosed(t *testing.T) {
 	}
 }
 
-// sessionMeasuredRefreshSeconds 是**一轮**（三个视图全部）的实测耗时上限。
+// sessionMeasuredRefreshSeconds 是**一轮**（七个视图全部）的实测耗时上限。
 // 它不是配置项，是**量出来的**，用来把下面的算术钉在真实数值上，而不是拍一个「余量」。
 //
-// ★ 2026-10-22 重新定标（252 共享库，两台实例 journalctl 逐轮实测）：
+// ★ 2026-11-22 重新定标（252 共享库实测）：
 //
-//	154 02:00 轮（全成功）：34.28s + 6.19s + 3.75s =  44.22s
-//	245 03:00 轮：client_stats 跑满 180.31s 被语句上限杀掉
-//	              + task_stats 151.49s + matrix 7.45s    = 339.25s
-//	154 04:00 轮（最坏）：client_stats 271.11s（91s 等锁 + 180.11s 被杀）
-//	              + task_stats 182.33s（被杀）+ matrix 65.40s = 518.84s
+//	观测到的**完整**一轮（154 19:05 轮，7 视图全刷成功）：19:05:00 →
+//	19:20:31 ≈ **930s**（pg_stat_statements mean 合计 ≈847s 与之吻合）。
+//	⇒ 取实测最坏完整一轮 **930s**，向上取整到 10s 的整数倍 = 940s。
 //
-//	⇒ 取实测最坏一轮 **520s**，向上取整到 10s 的整数倍。
+// ★ 为什么旧值 520s 必须换掉：它量的是「3 个 357 视图的时代」。981 族
 //
-// ★ 为什么旧值 64s 必须换掉：那个数来自 2026-10-08 00:32 的**一轮全成功**
-//
-//	且**恰好是最便宜的一轮**（10.6/19.6/33.3s）。而「成功轮」的读数本身
-//	**系统性偏便宜** —— 贵的轮次会被语句上限杀掉、根本产不出一轮成果，
-//	于是量具只看得见便宜的轮。⇒ 旧值让下面的算术以为「一轮只要 1 分钟」，
-//	而现实是 8.7 分钟。
+//	（2026-11-19 入列）在 252 上单视图 mean 134~266s、四张合计 ≈732s，
+//	加上 357 族一轮 mean ≈847s —— 520s 连均值都盖不住。
 //
 // ★ 换掉之后的算术结论（见 TestSessionMvFreshnessBudget_Arithmetic）：
 //
-//	稳态最坏年龄 = 60min + 520s = 68m40s  < 预算 90min  ✔ 仍然放行
-//	漏一轮的年龄 = 120min + 520s = 128m40s > 预算 90min  ✔ 仍然拦截
-//	⇒ **90min 的新鲜度预算不用改**（它本来就设计成「容忍恰好一轮失败」），
-//	  ⇒ 也就不需要降低数据质量门槛。
+//	稳态最坏年龄 = 60min + 940s ≈ 75m40s  < 预算 90min  ✔ 仍然放行
+//	漏一轮的年龄 = 120min + 940s ≈ 135m40s > 预算 90min  ✔ 仍然拦截
+//	⇒ **90min 的新鲜度预算不用改**（它本来就设计成「容忍恰好一轮失败」）。
 //
-// ⚠ 诚实边界：520s 是**实测最坏**而不是**理论最坏**。若上线后实测一轮
+// ★ 2026-11-22 配套的结构性修复：刷新器的整轮共享 ctx（20min）换成
 //
-//	超过 1800s（= 预算 90min 与间隔 60min 的差额），下面的算术会失效 ⇒
-//	届时必须重新定标**并**重新审视 90min 这个预算（那才是属主决策）。
-const sessionMeasuredRefreshSeconds = 520 * time.Second
+//	每视图独立预算（bg.SessionViewRefreshBudget=15min）——252 实测 981 族
+//	把整轮 ctx 吃光，尾部视图（matrix/task_stats/client_stats）被饿死
+//	（87~94s 被 ctx 掐死、带着已死 ctx 秒败），正是本轮 owner 报障链路的
+//	252 侧根因。预算制下慢轮会**完成**而不是半轮死亡。
+//
+// ⚠ 诚实边界：940s 是**观测到的完整轮**而不是理论最坏。各视图 max 求和
+//
+//	（跨轮拼接）≈43min > 30min（= 预算 90min 与间隔 60min 的差额）——
+//	即极端负载下尾部视图（重排后是 user_session_aggregates）的年龄可能
+//	越过 90min 预算、被门拦成 503。那是「拒绝返回过期数字」的设计内行为；
+//	若慢轮成为常态，要重估的是 981 视图定义的成本（登记待办），而不是
+//	继续放宽预算。
+const sessionMeasuredRefreshSeconds = 940 * time.Second
 
 // routingMeasuredRefreshSeconds 取 pg_stat_statements / 252 日志里
 // routing_analytics_7d CONCURRENTLY 均值上沿（~26s），留一点余量。
@@ -183,10 +186,12 @@ func TestSessionMvFreshnessBudget_Arithmetic(t *testing.T) {
 			sessionMvFreshnessBudget, oneMissedCycle)
 	}
 
-	// 上界算术依赖超时 < 间隔；顺带锁住这条，否则间隔被调小后上面的数会失真。
-	if bg.SessionViewsTimeout >= bg.SessionViewsInterval {
-		t.Fatalf("超时 %s 必须小于间隔 %s，否则刷新周期会堆积",
-			bg.SessionViewsTimeout, bg.SessionViewsInterval)
+	// 上界算术依赖「单视图预算 < 间隔」；顺带锁住这条，否则间隔被调小后
+	// 上面的数会失真。（2026-11-22：整轮 SessionViewsTimeout 换成单视图
+	// 预算 SessionViewRefreshBudget。）
+	if bg.SessionViewRefreshBudget >= bg.SessionViewsInterval {
+		t.Fatalf("单视图预算 %s 必须小于间隔 %s，否则刷新周期会堆积",
+			bg.SessionViewRefreshBudget, bg.SessionViewsInterval)
 	}
 }
 

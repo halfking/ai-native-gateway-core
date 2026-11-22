@@ -267,61 +267,41 @@ const (
 	// 整轮量级 40-70s。源表增速约 200k 行/天，小时级绰绰有余。
 	SessionViewsInterval = 60 * time.Minute
 
-	// SessionViewsTimeout 绑定一轮 session 刷新。它必须**明显大于**实测的
-	// 40-70s：被 ctx 掐断的表现不是报错，而是**后几个视图根本没刷新**，
-	// 且前面已刷的会留下半轮状态 —— 比整体失败更难发现。
+	// SessionViewRefreshBudget 是**单视图**的刷新预算（2026-11-22，取代整轮
+	// 共享的 SessionViewsTimeout=20min）。
 	//
-	// ★ 2026-10-22：10min → 15min。理由是 sessionViewsStatementTimeout
-	// 抬到 600s 之后，**ctx 才是唯一还兜得住整轮的那道闸**：
-	// 600s 的语句上限必须**小于**轮内 ctx，否则 ctx 会先掐断，抬钉子等于白抬。
+	// ★★ 为什么整轮共享 ctx 被废除（252 生产实测，2026-11-22，
+	//   pg_stat_statements + 154/245 journalctl）：
 	//
-	// ★★ R107 轮（12h 审计）订正：上面那条判据**只比了「语句上限 vs ctx」**，
-	//   漏掉了**锁等待预算** —— 而锁等待是**加在语句之前**的，**不是包含在**它里面：
-	//     一轮的最坏耗时 = SessionViewLockRetryBudget（整轮共享，≤4min）
-	//                    + 各视图的语句耗时
-	//   ⇒ 15min(900s) 的 ctx **装不下**「4min 锁等待 + 600s 的 client_stats
-	//     + 两个快视图（实测 182.33s + 65.40s）」= 240+600+247.7 = **1087.7s**。
-	//   ⇒ ⇒ 也就是说：**抬到 600s 之后，ctx 仍可能是先掐断的那道闸** ——
-	//     而 ctx 掐断正是本注释开头说的「比整体失败更难发现」的那种失败形态。
-	//     ⇒ 修法不是「再抬语句钉子」（那只是把同一个洞挪个位置），而是**把 ctx
-	//       抬到能装下「锁预算 + 慢视图的语句上限 + 其余视图的实测最大值」**。
+	//   981 族在 252 上单视图 mean 134~266s / max 494~578s，四张合计 mean ≈13min；
+	//   加上 357 族，一轮 mean ≈14min，跨轮最坏（各视图 max 求和）≈43min
+	//   ⇒ 20min 的整轮 ctx 在数学上**装不下** 7 张视图的最坏情形。
+	//   后果（154 16:25/17:25 轮、245 20:25/21:25 轮 journalctl 原文）：排在
+	//   清单尾部的 357 族被**饿死** —— matrix 跑 87~94s 被 ctx 掐死、
+	//   task_stats/client_stats 带着已死 ctx 在 1~6ms 内秒败。
+	//   「单视图失败不终止整轮」的设计意图被共享 ctx 事实性违反。
 	//
-	// ★ 20min 的依据（把每一项都写出来，便于下一轮复核）：
-	//     锁等待（整轮共享上限）      240.0s  （SessionViewLockRetryBudget）
-	//     client_stats 语句上限      600.0s  （sessionViewsStatementTimeout）
-	//     task_stats 实测最大值      182.33s （154 04:00 轮）
-	//     matrix 实测最大值          65.40s （154 04:00 轮）
-	//     ─────────────────────────────────────
-	//     合计                       1087.7s = 18.13min
-	//   ⇒ 20min(1200s) 留 112.3s 余量（≈10%）。
+	//   同日的第二处实锤（211）：matrix 的 REFRESH 选了并行计划 ⇒ 动态共享
+	//   内存（DSM）撞 64MB /dev/shm（SQLSTATE 53100）⇒ 每轮秒败 ⇒ 刷新戳冻结
+	//   ⇒ clients/tasks 详情端点恒 503 analytics_view_stale（owner 报障页面）。
+	//   修法是把它并入 serialRefreshViews（见该 map），与预算制正交。
 	//
-	//   ⚠ 诚实边界：上表的「task_stats/matrix 实测最大值」来自**有语句上限**的轮次，
-	//     而新上限 600s 是这次才抬的 ⇒ 若这两个视图在新上限下也跑到 600s，
-	//     合计会变成 240+1800=2040s=34min ⇒ 20min 的 ctx 仍会先掐断。
-	//     ⇒ 但**这条路今天不成立**：这两个视图的实测成本是 6.19s/7.45s 与 182.33s，
-	//     与 client_stats 的 ≥180.31s 差一个量级 ⇒ 它们是「快视图」的前提
-	//     **正是本轮把清单改成「快的先刷」所依赖的那个前提**。
-	//     ⇒ 若哪天它们也变慢，那说明「快视图」这个前提本身塌了，
-	//       届时应当重估的是**成本根因**（把 REFRESH 做便宜），而不是继续抬钉子。
+	// ★ 语义：每个视图独立拿一份「锁等待 + 语句上限」预算，ctx 在视图循环内
+	//   构造；慢视图吃满自己的份额不再侵占其他视图。取值算术：
 	//
-	//   ★ 为什么 20min 仍然是安全的（不会拖累 routing 族）：
-	//     session 轮错开到 :05（sessionViewsPhaseOffset），routing 轮在 :00/:30。
-	//     20min 的轮 ⇒ 最晚跑到 :25 ⇒ **不撞 :30 那轮 routing**；
-	//     15min 的轮跑到 :20 也安全，但 20min 仍在同一量级内
-	//     ⇒ 也就是说这次把 ctx 抬到 20min **没有引入新的族间饥饿**。
-	//   ⇒ 同时仍**小于** SessionViewsInterval(60min)
-	//     （既有门要求：超时 < 间隔，否则刷新周期会堆积）。
-	SessionViewsTimeout = 20 * time.Minute
-
-	// sessionViewsOtherViewsBudget 是「client_stats 之外的两个视图」的实测
-	// 最坏耗时合计（task_stats 182.33s + matrix 65.40s = 247.73s）。
+	//     SessionViewLockRetryBudget(240s) + sessionViewsStatementTimeout(600s)
+	//     = 840s，+60s 余量 = 900s = 15min（余量 7.1%，满足钉测 ≥5% 要求）。
 	//
-	// ★ 它存在的唯一目的：让上面那条不变量**可被机器复核**，而不是只活在注释里。
-	//   不变量：SessionViewsTimeout ≥ SessionViewLockRetryBudget
-	//                                + sessionViewsStatementTimeout
-	//                                + sessionViewsOtherViewsBudget
-	//   （门见 bg/materialized_view_refresher_session_timeout_test.go）
-	sessionViewsOtherViewsBudget = 4 * time.Minute
+	// ⚠ 代价（有意接受）：一轮的最坏总时长从「整轮 20min」变成「7×15min」——
+	//   仅在每张视图都烧满预算的病态场景出现。tick 不会堆积：refreshLoop 是单
+	//   goroutine，sessionTimer 在整轮结束后才 Reset；病态轮会推迟下一轮，并
+	//   可能吃掉 :30 的 routing tick（routing 侧有自己的 15min 新鲜度预算与
+	//   基础视图退化路径，延迟可恢复）。用「可恢复的 tick 延迟」换「用户可见的
+	//   analytics 503」是刻意取舍。
+	//
+	//   仍必须**小于**周期（60min）：预算死亡 = 该视图本轮失败、下一轮重来，
+	//   单视图预算超过周期没有任何意义。
+	SessionViewRefreshBudget = 15 * time.Minute
 
 	// SessionViewLockRetryBudget 是**整轮共享**的锁等待预算（不是每视图一份）。
 	//
@@ -333,9 +313,12 @@ const (
 	// 所以「等一会儿再试」就能拿到 —— 不需要给两个周期各开一把锁键。
 	//
 	// 取 4min 的理由：实测最长一轮 195s（245 03:00 轮），
-	// 4min 重试 + 195s 物化 = ~7.3min，仍在 SessionViewsTimeout(20min) 之内；
-	// 共享而非每视图一份，是因为 SessionViewsTimeout 是**整轮**预算，
-	// 三视图各等 4min 会把 ctx 掐断变成新的失败形态。
+	// 4min 重试 + 195s 物化 = ~7.3min，仍在单视图预算
+	// SessionViewRefreshBudget(15min) 之内；
+	// 共享而非每视图一份（retryDeadline 在循环外算一次，见
+	// bg/materialized_view_refresher_lockretry_test.go 的钉测）：skipped_no_lock
+	// 不是新鲜度损失 —— 持锁方正在刷同一批视图并落同一张戳表，
+	// 所以共享一份等待预算就够了，不会因为后面的视图各拿一份而放大等待。
 	SessionViewLockRetryBudget = 4 * time.Minute
 
 	// 退避序列：2s 起，翻倍，封顶 15s。起步要小（典型冲突只差十几秒），
@@ -387,35 +370,27 @@ const (
 // 而不是退化成普通 REFRESH。refreshView 对不存在的视图会安全跳过
 // （skipped_missing_view），所以 357 未应用的库不会因此报错。
 var SessionAnalyticsViews = []string{
-	// ★ 2026-10-22：**按实测成本从快到慢排序**（原来是最慢的排第一）。
+	// ★ 2026-11-22：**按 252 生产 pg_stat_statements 的 mean 成本重排**
+	//   （mean 成本升序；「最快的先刷」纪律不变，换的是实测数字）。
 	//
-	// 为什么要改顺序：一轮是**串行**的，而实测三个视图的成本差 25 倍
-	// （252 生产 2026-10-22）：
-	//   session_client_task_matrix  7.45s / 65.4s
-	//   session_task_stats          6.19s / 151.5s
-	//   session_client_stats        34.28s / **≥180.31s（被杀）**
-	// ⇒ 慢视图排第一时，它在开跑前就把整轮推迟了它自己的耗时
-	//   （实测 245 03:00 轮：client_stats 跑满 180.31s 被杀后，
-	//    task_stats 才在 03:03:00 开始、到 03:05:31 才完成），
-	//   后面两个视图因此**被推到离新鲜度预算只剩 28 分钟**的位置。
-	// ⇒ 改成快的先刷：慢视图无论成败，都**不再推迟**快的两个，
-	//   快的两个因此总能在自己的预算内拿到新数据。
-	//   ⇒ 这是「限制爆炸半径」，不是「让慢的更快」。
+	//   为什么 2026-10-22 的排序被推翻：那份排序依据的是「981 族 0.6~3.5s
+	//   （211 真库实测）+ 357 族 7.45~180s（252）」。2026-11-22 在 252 上的
+	//   真实画像（pg_stat_statements，338~64 次完成样本）把它颠倒过来了：
+	//     session_client_stats        mean  3.4s / max  18.1s（357）
+	//     session_task_stats          mean  9.3s / max 140.8s（357）
+	//     session_client_task_matrix  mean 102.6s / max 256.5s（357，串行实测 117.6s）
+	//     agent_usage_aggregates      mean 134.1s / max 531.8s（981，串行）
+	//     project_task_aggregates     mean 164.8s / max 561.7s（981，串行）
+	//     model_usage_aggregates      mean 167.2s / max 493.6s（981，串行）
+	//     user_session_aggregates     mean 265.9s / max 577.8s（981，串行）
+	//   ⇒ 981 族在 252 上是**最慢的四个**（211 的 <1s 读数不适用于 252 的
+	//     1955MB 源表），「981 排最前」等于把最慢的排最前。
 	//
-	// ⇒ 语义不变：三个视图彼此独立，admin 侧的新鲜度门按**端点所需**的
-	//   视图列表逐个判定（admin/session_analytics_*.go），与本清单顺序无关。
-	// ★ 排序纪律（沿用本清单已有的）：**快的先刷，慢的排最后**。
-	//   一轮是串行的 ⇒ 慢视图排前面会把整轮推迟它自己的耗时，
-	//   后面的视图因此被推到离新鲜度预算只剩一点点。
-	//
-	//   实测成本（252 生产 2026-10-22 / 211 真库 2026-11-19）：
-	//     user_session_aggregates      ≈ 0.6s   （981）
-	//     project_task_aggregates      ≈ 0.6s   （981）
-	//     agent_usage_aggregates       ≈ 0.8s   （981）
-	//     model_usage_aggregates       ≈ 3.5s   （981，请求级，最重）
-	//     session_client_task_matrix  7.45~65.4s
-	//     session_task_stats          6.19~151.5s
-	//     session_client_stats        34.28s 且 **≥180.31s（被杀）**
+	//   ★ 在每视图独立预算（SessionViewRefreshBudget）之下，顺序不再影响
+	//   「谁被饿死」（那类失败已结构性消失），影响的是**新鲜度年龄分布**：
+	//   一个视图的年龄 = 间隔 + 排在它前面的视图耗时之和 + 它自己的耗时；
+	//   最坏年龄（清单末项）= 间隔 + 整轮总时长，与顺序无关；快的先刷
+	//   （SJF）让更多视图拿到更小的年龄 ⇒ 严格占优。
 	//
 	// ★ 981（2026-11-19 会话分析系统基础设施）新增的 4 个视图。
 	//
@@ -424,19 +399,21 @@ var SessionAnalyticsViews = []string{
 	//   9h37m 前的数字，**没有错误也没有提示**（陈旧被伪装成结论）。
 	//   ⇒ 新建物化视图而不接刷新器，等于**主动制造**同一类事故。
 	//
-	// ★ 四个视图都带**纯列**唯一索引
+	// ★ 全部 7 个视图都带**纯列**唯一索引
 	//   （idx_user_session_agg_pk / idx_project_task_agg_pk /
-	//   idx_agent_usage_agg_pk / idx_model_usage_agg_pk）⇒ REFRESH
-	//   CONCURRENTLY 的硬前提成立。★ 表达式索引不算数：PG 的
-	//   findCommittedUniqueIndex 会跳过 indexprs 非空的索引
-	//   （981 首跑实测踩到过，报 "Create a unique index with no WHERE clause"）。
-	"user_session_aggregates",
-	"project_task_aggregates",
-	"agent_usage_aggregates",
-	"model_usage_aggregates",
-	"session_client_task_matrix",
-	"session_task_stats",
+	//   idx_agent_usage_agg_pk / idx_model_usage_agg_pk /
+	//   idx_session_client_stats_tenant_client / idx_session_task_stats_tenant_task /
+	//   idx_session_client_task_matrix_uq）⇒ REFRESH CONCURRENTLY 的硬前提成立。
+	//   ★ 表达式索引不算数：PG 的 findCommittedUniqueIndex 会跳过 indexprs
+	//   非空的索引（981 首跑实测踩到过，报 "Create a unique index with no
+	//   WHERE clause"）。
 	"session_client_stats",
+	"session_task_stats",
+	"session_client_task_matrix",
+	"agent_usage_aggregates",
+	"project_task_aggregates",
+	"model_usage_aggregates",
+	"user_session_aggregates",
 }
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
@@ -767,11 +744,8 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(parentCtx, SessionViewsTimeout)
-	defer cancel()
-
-	if handle := r.acquireDistLock(ctx, sessionViewsDistLockLogical); handle != nil {
-		defer handle.Release(context.WithoutCancel(ctx))
+	if handle := r.acquireDistLock(parentCtx, sessionViewsDistLockLogical); handle != nil {
+		defer handle.Release(context.WithoutCancel(parentCtx))
 		if !handle.IsLeader() {
 			slog.Info("session analytics view refresh skipped, redis token held by another instance")
 			recordMVCoordination("redis_follower")
@@ -798,9 +772,19 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 	failedView := ""
 	for _, view := range SessionAnalyticsViews {
 		start := time.Now()
+		// ★ 2026-11-22：每视图独立预算（SessionViewRefreshBudget），ctx 在
+		// 循环体内构造。慢视图吃满自己的预算不再侵占后面视图的份额 ——
+		// 共享整轮 ctx 的时代，252 上 981 族把它吃光，尾部的 matrix
+		// 跑 87~94s 被掐死、task_stats/client_stats 带着已死 ctx 秒败。
+		// ★ 变量刻意沿用名字 ctx：调用点钉测
+		//   （TestRefreshCallSites_PassTheRightFamilyTimeout /
+		//    TestRefreshSessionViews_RefreshesEveryListedView）锚的是
+		//   `r.refreshView(ctx, view, true, sessionViewsStatementTimeout,`。
+		ctx, cancel := context.WithTimeout(parentCtx, SessionViewRefreshBudget)
 		reason, err := retryOnLockHeld(ctx, view, retryDeadline, func() (mvSkipReason, error) {
 			return r.refreshView(ctx, view, true, sessionViewsStatementTimeout, sessionViewsWorkMem, sessionViewsJIT)
 		})
+		cancel()
 		switch {
 		case err != nil:
 			// 不 return：三个视图用途独立，单个失败不该作废已刷好的。
@@ -818,27 +802,24 @@ func (r *MaterializedViewRefresher) refreshSessionViews(parentCtx context.Contex
 		}
 	}
 
-	// 整轮被 ctx 掐断是最难发现的一种失败：已刷的视图盖上了新时间戳，
-	// 没刷的保持旧值，没有一条错误日志（refreshView 的错误由调用方 ctx 传播，
-	// 这里必须自己判）。落到周期级指标上。
-	if ctx.Err() != nil {
-		slog.Error("session analytics refresh cycle cut off by deadline",
-			"timeout", SessionViewsTimeout.String(),
-			"views", len(SessionAnalyticsViews), "failed_before_cutoff", failed)
-		recordMVRefreshFailure("session_analytics_cycle")
+	// ★ 2026-11-22：每视图预算制下「轮被 ctx 掐断」不再是整轮语义 ——
+	// 某个视图自己的预算死亡已经作为该视图的 err 走上面的失败记账
+	//（err 就是 context deadline exceeded，指标与告警面不变）。
+	// 这里只剩父 ctx 死亡（进程关停中）这一档：已刷的盖了新戳、没刷的
+	// 保持旧值，记一条日志供运维对账。
+	if parentCtx.Err() != nil {
+		slog.Error("session analytics refresh cycle interrupted by process shutdown",
+			"views", len(SessionAnalyticsViews), "failed_before_shutdown", failed)
 	}
 
 	// 2026-11-20 审计轮：session 族补接告警（与 routing 族同构）。
 	// 此前失败只落指标与日志；252 生产「981 台账记 applied、四视图全缺失」
 	// 期间刷新每轮必失败而无任何告警面。三态记账：
-	//   有真实失败（含整轮 ctx 截断）→ 连续失败 +1，连续 2 轮且告警面可用即告警；
+	//   有真实失败（含视图预算耗尽——err 为 context deadline exceeded）
+	//     → 连续失败 +1，连续 2 轮且告警面可用即告警；
 	//   至少一个视图真实刷新成功 → 清零；
 	//   全部 skipped（follower/锁竞争）→ 保持原值（那不是视图故障，也不是修复）。
-	if failed > 0 || ctx.Err() != nil {
-		if ctx.Err() != nil && failedView == "" {
-			failedView = "session_analytics_cycle"
-			lastErr = ctx.Err()
-		}
+	if failed > 0 {
 		r.sessionFailureCount++
 		if r.sessionFailureCount >= 2 && r.alertCallback != nil && lastErr != nil {
 			r.alertCallback(failedView, r.sessionFailureCount, lastErr)
@@ -1017,15 +998,14 @@ func (s mvSkipReason) skipped() bool { return s != mvRefreshed }
 //	每轮都先失败一次 ⇒ 每轮都踩告警线 ⇒ 假告警比假数据更坏。
 //	⇒ 走**确定性**路线：这几个视图**一开始就串行刷**。
 //
-// ★ 为什么只钉 981 族、不动旧族：
+// ★ 为什么 2026-11-22 起旧族（357）也进串行集合（订正本注释此前的
 //
-//	211 实测同轮耗时：981 族 0.41~0.47s、model_usage 串行 2.6s、
-//	旧族 0.29~0.60s ⇒ 本机毫无成本；
-//	但 252 生产上旧族最慢的那条实测 ≥180s（被 kill）⇒ 给旧族关并行
-//	可能把 180s 顶到 600s 语句上限之外 ⇒ **只对新增的 981 族关并行**，
-//	旧族一行不改（零爆炸半径）。
-//
-// ★ 代价（实测 211）：model_usage_aggregates 串行刷新 2.6s。
+//	「只钉 981 族、不动旧族」）：那个结论的前提是「给旧族关并行可能把
+//	252 上最慢一条的 ≥180s 顶到 600s 语句上限之外」。2026-11-22 的实测
+//	把它证伪了：252 上旧族串行 matrix 117.6s / task_stats 12.1s /
+//	client_stats 5.2s（并行 mean 102.6/9.3/3.4s），全在 600s 之内；
+//	而 211 上 matrix 的并行计划已经开始 53100 秒败（owner 报障）。
+//	⇒ 同族一次修完，见 serialRefreshViews 里 357 族的注释。
 //
 // serialRefreshViews 是必须**串行**刷新（不启用并行查询）的视图集合。
 var serialRefreshViews = map[string]bool{
@@ -1036,6 +1016,37 @@ var serialRefreshViews = map[string]bool{
 	"project_task_aggregates": true,
 	"agent_usage_aggregates":  true,
 	"model_usage_aggregates":  true,
+
+	// 357 会话分析族（2026-11-22，owner 报障轮）：与 981 族**同病同修**。
+	//
+	// 缺陷本体（211 acc-pg17 生产实测）：
+	//   session_client_task_matrix 的 REFRESH CONCURRENTLY 选了**并行计划**
+	//   ⇒ 需要动态共享内存（DSM）⇒ 211 的 PG 容器 /dev/shm 只有 64MB
+	//   （Docker 默认 ShmSize）⇒ 秒败：
+	//     ERROR: could not resize shared memory segment "/PostgreSQL.xxx"
+	//            to 8388608 bytes: No space left on device (SQLSTATE 53100)
+	//   2026-11-22 20:05/21:05/22:05 三轮连续同错（19:05 是最后一轮成功）
+	//   ⇒ 刷新戳冻结 ⇒ clients/{id} 与 tasks/{id} 详情端点恒
+	//   503 analytics_view_stale（守卫原文就是 owner 看到的报错文案）。
+	//   ⚠ 并行计划不是一直都在：11:05Z 还成功、12:05Z 起连续 53100 ⇒
+	//   计划在数据量/统计信息演化中越过了并行阈值 —— **阈值是会自己走过来的**，
+	//   不能按「今天还没发病」排除。
+	//
+	// 实测串行代价（两台生产真库，同参数 SET work_mem=256MB / jit=off /
+	// max_parallel_workers_per_gather=0）：
+	//   211:  matrix 0.596s
+	//   252:  matrix 117.6s（并行 mean 102.6s，+15%）
+	//         task_stats 12.1s（并行 mean 9.3s）
+	//         client_stats 5.2s（并行 mean 3.4s）
+	// ⇒ 全族串行可负担（252 的 +15%~+50% 由单视图预算 15min 吸收）。
+	//
+	// ★ 为什么 task_stats / client_stats 在「实测未发病」时就一起串行：
+	//   211 的并行阈值随 session_summaries 增长会逐个越过（matrix 就是今天刚
+	//   越过的）⇒ 同族一次修完，不再逐个等发病再修一轮。两台的实测都证明
+	//   串行代价与并行同量级。
+	"session_client_task_matrix": true,
+	"session_task_stats":         true,
+	"session_client_stats":       true,
 }
 
 // 第四个轴的接线点：refreshView 里在 jit 之后。

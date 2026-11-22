@@ -57,20 +57,27 @@ func TestSessionAnalyticsViews_CoverBothViewFamilies(t *testing.T) {
 	}
 }
 
-// TestSessionViewsTimeout_ExceedsMeasuredRefresh：超时必须明显大于实测耗时。
-// 245 实测（623,006 行 / 919MB）：三视图聚合合计 ≈24s（8.3/4.8/10.9），
-// CONCURRENTLY 另需建堆与唯一索引差，整轮量级 40-70s。超时给到 10min。
+// TestSessionViewRefreshBudget_ExceedsMeasuredRefresh：单视图预算必须明显大于
+// 实测耗时。252 生产 pg_stat_statements（2026-11-22，338~64 次完成样本）：
+// 单视图最慢 user_session_aggregates max 577.8s（被杀的运行不进 pgss ⇒ 尾部
+// 被低估，但预算算术的主判据是「锁等待 + 语句上限」，见
+// TestSessionViewRefreshBudget_CoversLockBudgetPlusStatement）。
 //
-// 这个不等式是**安全方向**的：给小了不会报错，而是整轮被 ctx 掐断，
-// 表现为「后几个视图根本没刷新」且**没有一条错误日志** —— 比整体失败更难发现。
-func TestSessionViewsTimeout_ExceedsMeasuredRefresh(t *testing.T) {
-	if SessionViewsTimeout <= 70*time.Second {
-		t.Fatalf("SessionViewsTimeout=%s 未覆盖实测的 70s 上界 —— 整轮会被 ctx 静默掐断",
-			SessionViewsTimeout)
+// 这个不等式是**安全方向**的：给小了不会报错，而是该视图被自己的预算掐断，
+// 表现为「这个视图本轮没刷新」。
+//
+// ★ 2026-11-22 从「整轮 70s 上界」改钉「单视图 580s 下界」：整轮共享 ctx
+// 已废除（252 实测被 981 族吃光、尾部视图饿死），预算的对象换成单视图。
+func TestSessionViewRefreshBudget_ExceedsMeasuredRefresh(t *testing.T) {
+	// 252 实测单视图最坏完成耗时 577.8s，向上取整到 10s 整数倍。
+	const measuredWorstSingleView = 580 * time.Second
+	if SessionViewRefreshBudget <= measuredWorstSingleView {
+		t.Fatalf("SessionViewRefreshBudget=%s 未覆盖实测单视图最坏耗时 %s —— 视图会被自己的预算静默掐断",
+			SessionViewRefreshBudget, measuredWorstSingleView)
 	}
-	// 与 routing 族同一条不变量：超时必须小于间隔，否则周期会堆积。
-	if SessionViewsTimeout >= SessionViewsInterval {
-		t.Fatalf("超时 %s 必须小于间隔 %s，否则刷新周期会堆积", SessionViewsTimeout, SessionViewsInterval)
+	// 与 routing 族同一条不变量：预算必须小于间隔，否则单视图会拖进下一轮。
+	if SessionViewRefreshBudget >= SessionViewsInterval {
+		t.Fatalf("预算 %s 必须小于间隔 %s，否则刷新周期会堆积", SessionViewRefreshBudget, SessionViewsInterval)
 	}
 }
 
