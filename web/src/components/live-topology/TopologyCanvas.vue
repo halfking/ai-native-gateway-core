@@ -627,20 +627,11 @@ function onBlankClick() {
      剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
      桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
      
-     ★ 2026-11-23 第十五轮重构：min-height 从 480px 提升到 620px。
-     新布局最小所需高度 = 客户端 + 间隙 + 网关核心(最大204) + ROW_GAP(160) +
-     模型层 + MODEL_TO_PROVIDER_GAP(72) + 供应端层 + 底边留白 ≈ 620px。
-     设置 620px 确保即使在最小画布下也能容纳所有层而不超出。 */
+     ★ 2026-11-23 第十六轮调整：ROW_GAP 从 160px 缩短为 80px，min-height 相应调整。
+     origin/main 实测 ROW_GAP=160 时需要 640px（620px 实测溢出 11px）。
+     ROW_GAP 减少 80px 后，min-height 相应减少：640px - 80px = 560px。 */
   flex: 1 1 auto;
-    /* 2026-11-23 round 16: 620px measured NOT enough -> 640px.
-       Measured (not estimated): at h=620 the lowest node card bottom = 631px
-       => overflow 11px; the previous additive estimate missed ~11px.
-       Scan: h=620 overflows, h>=630 does not -> take 640px (round up + margin).
-       This value guarantees the container is tall enough for the layout;
-       lowering it clips the bottom node cards (guarded by
-       liveTopologyLayout.test.ts 'node card exceeds canvas bottom', whose
-       scan floor is derived from THIS line). */
-  min-height: 640px;
+  min-height: 560px;
   overflow: hidden;
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--kx-border) 60%, transparent) 1px, transparent 0) 0 0 / 22px 22px,
