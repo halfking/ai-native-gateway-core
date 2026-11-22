@@ -52,7 +52,9 @@ const PASSWORD = args.password || process.env.ADMIN_PASSWORD || ''
 //   因为生产实测画布只有 480px、比例被压成 1px ⇒ 净间距必须**恒定**才叫修好。
 //   ⇒ 断言不止「某个数」，还要「**各视口之间几乎不变**」（比例方案的病根所在）。
 const MIN_GAP = Number(args['min-gap'] || 60)   // 任何视口都该成立的下限
-const TARGET_GAP = Number(args['target-gap'] || 64) // 固定间距 72 扣掉节点抖动 ±8 后的下限
+// 固定间距 72 + 节点抖动（布局里 jitterY ±4px，双向叠加 ⇒ 64~80px）
+// ⇒ 下限取 60（与 MIN_GAP 同口径），否则 1px 的取整抖动就能把断言打红。
+const TARGET_GAP = Number(args['target-gap'] || 60)
 const MAX_SPREAD = Number(args['max-spread'] || 20) // 各视口净间距极差上限（恒定 ⇒ 极差≈0）
 // 视口高度矩阵：覆盖最小画布(480)、常见(846/900)与高屏(1200)
 const VIEWPORTS = [
