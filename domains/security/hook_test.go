@@ -8,7 +8,7 @@ import (
 )
 
 func TestSecurityHook_EnabledRequiresEnv(t *testing.T) {
-	h := NewSecurityHook(nil, Scope{})
+	h := NewSecurityHook(nil, Scope{}, nil)
 	if h.Enabled(context.Background(), nil) {
 		t.Fatal("nil envelope should not enable")
 	}
@@ -18,7 +18,7 @@ func TestSecurityHook_EnabledRequiresEnv(t *testing.T) {
 }
 
 func TestSecurityHook_NilRegistryBecomesEmpty(t *testing.T) {
-	h := NewSecurityHook(nil, Scope{})
+	h := NewSecurityHook(nil, Scope{}, nil)
 	if h.Registry() == nil {
 		t.Fatal("nil registry should auto-create empty")
 	}
@@ -32,7 +32,7 @@ func TestSecurityHook_ExecuteWritesVerdictsToGovernance(t *testing.T) {
 	mustReg(t, reg, &stubPlugin{name: "p1", allow: true})
 	mustReg(t, reg, &stubPlugin{name: "p2", allow: false})
 
-	h := NewSecurityHook(reg, Scope{})
+	h := NewSecurityHook(reg, Scope{}, nil)
 	env := &domain.PipelineRequest{TenantID: "t1"}
 
 	if err := h.Execute(context.Background(), env); err != nil {
@@ -53,7 +53,7 @@ func TestSecurityHook_Execute_IdempotentGovernance(t *testing.T) {
 	reg := NewRegistry()
 	mustReg(t, reg, &stubPlugin{name: "p", allow: true})
 
-	h := NewSecurityHook(reg, Scope{})
+	h := NewSecurityHook(reg, Scope{}, nil)
 	env := &domain.PipelineRequest{TenantID: "t1"}
 
 	// 第一次执行
@@ -75,7 +75,7 @@ func TestSecurityHook_Execute_IdempotentGovernance(t *testing.T) {
 }
 
 func TestSecurityHook_OnErrorSwallows(t *testing.T) {
-	h := NewSecurityHook(nil, Scope{})
+	h := NewSecurityHook(nil, Scope{}, nil)
 	if err := h.OnError(context.Background(), nil, context.Canceled); err != nil {
 		t.Fatalf("OnError should swallow, got %v", err)
 	}

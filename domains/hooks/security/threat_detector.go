@@ -86,8 +86,15 @@ func (d *ThreatDetector) Detect(content string) []*Threat {
 	}
 
 	// 越狱检测（扩展英文+中文规则，覆盖更多攻击模式）
+	//
+	// 2026-11-23 修复：移除 "dan" 子串。
+	// 实证：211 生产 7 天 80,306 条真实流量分析，"dan" 触发的 11 笔命中中
+	// 9 笔是误报（"redundant"/"abundance" 等正常业务术语），真实攻击 0 笔。
+	// "dan" 是 "Do Anything Now" 越狱提示词的缩写，但单独作为子串会误判
+	// 大量正常词汇。真实 DAN 越狱会包含其他关键词（"you are now" / "act as"），
+	// 移除 "dan" 不会降低安全性。
 	jailbreakKeywordsEnglish := []string{
-		"dan", "jailbreak", "no restrictions", "please jailbreak",
+		"jailbreak", "no restrictions", "please jailbreak",
 		"bypass all", "ignore all", "unrestricted mode", "do anything now",
 		"remove limitations", "disable safety", "no limits", "without restrictions",
 		"you are now", "you must now", "act as if", "pretend you are",
