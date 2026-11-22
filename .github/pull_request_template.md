@@ -34,7 +34,7 @@ Closes #
 
 修改了以下页面/组件时，**必须**复跑 `maestro/run-session-analytics.sh`：
 
-- [ ] `/admin/session-analytics`（总览页：`SessionAnalyticsOverviewView.vue`）
+- [ ] `/admin/session-analytics/users`（整合总览页：`SessionAnalyticsUsersView.vue`）
 - [ ] `/admin/session-analytics/user-ranking`（人员排行：`SessionAnalyticsUserRankingView.vue`）
 - [ ] `/admin/session-analytics/user-ranking/:owner`（人员详情：`SessionAnalyticsUserDetailView.vue`）
 - [ ] `/admin/session-analytics/agent-ranking`（智能体排行：`SessionAnalyticsAgentRankingView.vue`）

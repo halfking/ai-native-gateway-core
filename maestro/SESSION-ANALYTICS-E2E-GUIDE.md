@@ -100,10 +100,19 @@ RESULT: PASS（64 条）
 ### 常见失败原因
 
 1. **界面语言不是 zh-CN**
-   - 症状：**断言**已不受影响（flow 层判据自 2026-11-23 L13 起改为 `data-testid`，
-     与 locale 无关）；但**按钮交互**仍走 `text:`（Maestro 2.11 web 驱动选不到
-     `<button>` 的 data-testid）⇒ tab 切换等交互在非中文语种下会找不到元素。
-   - 解决：runner 会自动钉 `--lang=zh-CN` 并写 localStorage
+   - 症状：★ **2026-11-23（L13 收口轮）更新**：flow 层的**断言与按钮交互**现已全部走
+     `data-testid`（`id:`）⇒ **与 locale 无关** ⇒ 换语种**不再假红**。
+     ★ 实测：en-US 界面语言下完整 flow 16 跑出 **99 COMPLETED / 2 WARNED / 0 FAILED**
+     （2 条 WARNED 是 §0 的 optional 登出两行，找不到就跳过，不影响判定）。
+   - ★ 曾经的误解与它的来源：旧文档写「按钮交互仍走 `text:`，因为 Maestro 2.11 web 驱动
+     **选不到 `<button>` 的 data-testid**」⇒ ★★ **该推广是错的**：真因是 ★ **元素的
+     `title` / `aria-label` 会盖掉 `data-testid`**（web 驱动取 hierarchy 的 `resource-id`
+     时 `aria-label` > `title` > `data-testid`）⇒ ★ **不是元素类型的问题**
+     ⇒ 会话分析的两个 tab（`sa-tab-models` / `sa-tab-apikeys`）**本来就没有** title/aria-label
+     ⇒ ⇒ `id:` 照常命中 ⇒ ★ tab 交互因此得以从中文文案改成 data-testid。
+     ★ 详见 `maestro/README.md` §6.6 与本报告 §7.13。
+   - 解决：runner 仍会钉 `--lang=zh-CN`（**第二层 CDP 探针**仍用中文文案判据，
+     它自己会写 localStorage 并复核 `<html lang>`）。
    - ★ 反向代价：判据与**可见文案**脱钩 ⇒ 改文案不再让 E2E 变红；
      文案本身的正确性由 i18n 门禁（localeValueQuality 等）守。
 
