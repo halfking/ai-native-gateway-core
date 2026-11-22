@@ -1,13 +1,20 @@
 <template>
-  <div class="session-analytics-view">
+  <!-- ★ L13 E2E 判据收敛：data-testid 是 flow 断言的**唯一真源**（与中文文案解耦）。 -->
+  <div class="session-analytics-view" data-testid="sa-page-model-ranking">
     <PageHeader :title="t('sessionAnalytics.title')" :subtitle="t('sessionAnalytics.nav.modelRanking')">
       <template #actions>
         <div class="sa-range">
-          <span class="sa-range__label">{{ t('sessionAnalytics.range.label') }}</span>
+          <span class="sa-range__label" data-testid="sa-range-label">{{ t('sessionAnalytics.range.label') }}</span>
           <KxDateRangePicker v-model="draftRange" :presets="presets" @apply="onApplyRange" />
           <SaRangeHint :start="range.start" :end="range.end" />
         </div>
-        <button class="sa-btn" type="button" :disabled="loading" @click="load">
+        <button
+          class="sa-btn"
+          type="button"
+          data-testid="sa-refresh-btn"
+          :disabled="loading"
+          @click="load"
+        >
           {{ t('sessionAnalytics.action.refresh') }}
         </button>
       </template>
@@ -62,12 +69,13 @@
       :empty="!loading && rows.length === 0"
       :empty-text="t('sessionAnalytics.empty.noResultModelRanking')"
       min-width="1040px"
+      data-testid="sa-model-ranking-table"
     >
       <table class="sa-table">
         <thead>
           <tr>
-            <th>{{ t('sessionAnalytics.col.rank') }}</th>
-            <th>
+            <th data-testid="sa-model-ranking-col-rank">{{ t('sessionAnalytics.col.rank') }}</th>
+            <th data-testid="sa-model-ranking-col-model">
               <button class="sa-sort" type="button" @click="toggleNameSort">
                 {{ t('sessionAnalytics.col.model') }}
                 <span v-if="nameSort !== 'none'" class="sa-sort__arrow">
@@ -75,9 +83,9 @@
                 </span>
               </button>
             </th>
-            <th>{{ t('sessionAnalytics.col.provider') }}</th>
-            <th>{{ t('sessionAnalytics.col.requests') }}</th>
-            <th>{{ t('sessionAnalytics.col.successRate') }}</th>
+            <th data-testid="sa-model-ranking-col-provider">{{ t('sessionAnalytics.col.provider') }}</th>
+            <th data-testid="sa-model-ranking-col-requests">{{ t('sessionAnalytics.col.requests') }}</th>
+            <th data-testid="sa-model-ranking-col-success-rate">{{ t('sessionAnalytics.col.successRate') }}</th>
             <th>{{ t('sessionAnalytics.col.tokens') }}</th>
             <th>{{ t('sessionAnalytics.col.cacheRate') }}</th>
             <th>{{ t('sessionAnalytics.col.avgDuration') }}</th>

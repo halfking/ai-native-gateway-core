@@ -1,13 +1,20 @@
 <template>
-  <div class="session-analytics-view">
+  <!-- ★ L13 E2E 判据收敛：data-testid 是 flow 断言的**唯一真源**（与中文文案解耦）。 -->
+  <div class="session-analytics-view" data-testid="sa-page-user-detail">
     <PageHeader :title="t('sessionAnalytics.title')" :subtitle="t('sessionAnalytics.nav.userDetail')">
       <template #actions>
         <div class="sa-range">
-          <span class="sa-range__label">{{ t('sessionAnalytics.range.label') }}</span>
+          <span class="sa-range__label" data-testid="sa-range-label">{{ t('sessionAnalytics.range.label') }}</span>
           <KxDateRangePicker v-model="draftRange" :presets="presets" @apply="onApplyRange" />
           <SaRangeHint :start="range.start" :end="range.end" />
         </div>
-        <button class="sa-btn" type="button" :disabled="loading" @click="load">
+        <button
+          class="sa-btn"
+          type="button"
+          data-testid="sa-refresh-btn"
+          :disabled="loading"
+          @click="load"
+        >
           {{ t('sessionAnalytics.action.refresh') }}
         </button>
       </template>
@@ -34,7 +41,7 @@
     <div v-if="loading && !detail" class="sa-loading">{{ t('sessionAnalytics.state.loading') }}</div>
 
     <template v-if="detail">
-      <section class="sa-identity">
+      <section class="sa-identity" data-testid="sa-user-detail-identity">
         <div class="sa-identity__main">
           <div class="sa-identity__name">{{ detail.user.display_name || detail.user.owner }}</div>
           <div class="sa-identity__meta">
@@ -42,25 +49,29 @@
             <span v-if="detail.user.tenant_id">{{ detail.user.tenant_id }}</span>
           </div>
         </div>
-        <button class="sa-btn" type="button" @click="goBack">
+        <button class="sa-btn" type="button" data-testid="sa-back-btn" @click="goBack">
           {{ t('sessionAnalytics.action.back') }}
         </button>
       </section>
 
       <StatsRow :cols="{ mobile: 2, tablet: 2, desktop: 4 }">
         <StatCard
+          data-testid="sa-metric-session-count"
           :label="t('sessionAnalytics.metric.sessionCount')"
           :value="fmt(detail.summary.session_count)"
         />
         <StatCard
+          data-testid="sa-metric-task-count"
           :label="t('sessionAnalytics.metric.taskCount')"
           :value="fmt(detail.summary.task_count)"
         />
         <StatCard
+          data-testid="sa-metric-total-cost"
           :label="t('sessionAnalytics.metric.totalCost')"
           :value="money(detail.summary.total_cost)"
         />
         <StatCard
+          data-testid="sa-metric-rank"
           :label="t('sessionAnalytics.metric.rank')"
           :value="fmt(detail.summary.rank)"
           :sub="rankChangeText"
@@ -69,7 +80,7 @@
 
       <p class="sa-note">{{ t('sessionAnalytics.costNote') }}</p>
 
-      <section class="sa-section">
+      <section class="sa-section" data-testid="sa-trend-sessions">
         <h3 class="sa-section__title">{{ t('sessionAnalytics.trend.sessions') }}</h3>
         <SaTrendChart
           :points="sessionTrend"
@@ -78,7 +89,7 @@
         />
       </section>
 
-      <section class="sa-section">
+      <section class="sa-section" data-testid="sa-trend-tasks">
         <h3 class="sa-section__title">{{ t('sessionAnalytics.trend.tasks') }}</h3>
         <SaTrendChart
           :points="taskTrend"
@@ -88,7 +99,7 @@
         />
       </section>
 
-      <section class="sa-section">
+      <section class="sa-section" data-testid="sa-trend-cost">
         <h3 class="sa-section__title">{{ t('sessionAnalytics.trend.cost') }}</h3>
         <SaTrendChart
           :points="costTrend"
@@ -98,7 +109,7 @@
         />
       </section>
 
-      <section class="sa-section">
+      <section class="sa-section" data-testid="sa-trend-rank">
         <h3 class="sa-section__title">{{ t('sessionAnalytics.trend.rank') }}</h3>
         <SaTrendChart
           :points="rankTrend"
@@ -111,6 +122,7 @@
       <div class="sa-tabs">
         <button
           class="sa-tab"
+          data-testid="sa-tab-projects"
           :class="{ 'sa-tab--active': tab === 'projects' }"
           type="button"
           @click="tab = 'projects'"
@@ -119,6 +131,7 @@
         </button>
         <button
           class="sa-tab"
+          data-testid="sa-tab-tasks"
           :class="{ 'sa-tab--active': tab === 'tasks' }"
           type="button"
           :disabled="!selectedProject"
@@ -128,6 +141,7 @@
         </button>
         <button
           class="sa-tab"
+          data-testid="sa-tab-models"
           :class="{ 'sa-tab--active': tab === 'models' }"
           type="button"
           @click="tab = 'models'"
@@ -136,6 +150,7 @@
         </button>
         <button
           class="sa-tab"
+          data-testid="sa-tab-apikeys"
           :class="{ 'sa-tab--active': tab === 'apiKeys' }"
           type="button"
           @click="tab = 'apiKeys'"
@@ -232,17 +247,18 @@
           :empty="!modelsLoading && models.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultUserModels')"
           min-width="900px"
+          data-testid="sa-user-models-table"
         >
           <table class="sa-table">
             <thead>
               <tr>
-                <th>{{ t('sessionAnalytics.col.model') }}</th>
-                <th>{{ t('sessionAnalytics.col.requests') }}</th>
-                <th>{{ t('sessionAnalytics.col.tokens') }}</th>
-                <th>{{ t('sessionAnalytics.col.cost') }}</th>
-                <th>{{ t('sessionAnalytics.col.successRate') }}</th>
-                <th>{{ t('sessionAnalytics.col.cacheRate') }}</th>
-                <th>{{ t('sessionAnalytics.col.avgResponseTime') }}</th>
+                <th data-testid="sa-user-models-col-model">{{ t('sessionAnalytics.col.model') }}</th>
+                <th data-testid="sa-user-models-col-requests">{{ t('sessionAnalytics.col.requests') }}</th>
+                <th data-testid="sa-user-models-col-tokens">{{ t('sessionAnalytics.col.tokens') }}</th>
+                <th data-testid="sa-user-models-col-cost">{{ t('sessionAnalytics.col.cost') }}</th>
+                <th data-testid="sa-user-models-col-success-rate">{{ t('sessionAnalytics.col.successRate') }}</th>
+                <th data-testid="sa-user-models-col-cache-rate">{{ t('sessionAnalytics.col.cacheRate') }}</th>
+                <th data-testid="sa-user-models-col-avg-response-time">{{ t('sessionAnalytics.col.avgResponseTime') }}</th>
                 <th>{{ t('sessionAnalytics.col.lastUsed') }}</th>
               </tr>
             </thead>
@@ -268,17 +284,18 @@
           :empty="!apiKeysLoading && apiKeys.length === 0"
           :empty-text="t('sessionAnalytics.empty.noResultUserAPIKeys')"
           min-width="900px"
+          data-testid="sa-user-apikeys-table"
         >
           <table class="sa-table">
             <thead>
               <tr>
-                <th>{{ t('sessionAnalytics.col.keyAlias') }}</th>
-                <th>{{ t('sessionAnalytics.col.keyID') }}</th>
-                <th>{{ t('sessionAnalytics.col.requests') }}</th>
-                <th>{{ t('sessionAnalytics.col.tokens') }}</th>
-                <th>{{ t('sessionAnalytics.col.cost') }}</th>
-                <th>{{ t('sessionAnalytics.col.projectCount') }}</th>
-                <th>{{ t('sessionAnalytics.col.topProject') }}</th>
+                <th data-testid="sa-user-apikeys-col-alias">{{ t('sessionAnalytics.col.keyAlias') }}</th>
+                <th data-testid="sa-user-apikeys-col-key-id">{{ t('sessionAnalytics.col.keyID') }}</th>
+                <th data-testid="sa-user-apikeys-col-requests">{{ t('sessionAnalytics.col.requests') }}</th>
+                <th data-testid="sa-user-apikeys-col-tokens">{{ t('sessionAnalytics.col.tokens') }}</th>
+                <th data-testid="sa-user-apikeys-col-cost">{{ t('sessionAnalytics.col.cost') }}</th>
+                <th data-testid="sa-user-apikeys-col-project-count">{{ t('sessionAnalytics.col.projectCount') }}</th>
+                <th data-testid="sa-user-apikeys-col-top-project">{{ t('sessionAnalytics.col.topProject') }}</th>
                 <th>{{ t('sessionAnalytics.col.lastUsed') }}</th>
               </tr>
             </thead>

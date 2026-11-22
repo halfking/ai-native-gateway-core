@@ -1,13 +1,20 @@
 <template>
-  <div class="session-analytics-view">
+  <!-- ★ L13 E2E 判据收敛：data-testid 是 flow 断言的**唯一真源**（与中文文案解耦）。 -->
+  <div class="session-analytics-view" data-testid="sa-page-user-ranking">
     <PageHeader :title="t('sessionAnalytics.title')" :subtitle="t('sessionAnalytics.nav.userRanking')">
       <template #actions>
         <div class="sa-range">
-          <span class="sa-range__label">{{ t('sessionAnalytics.range.label') }}</span>
+          <span class="sa-range__label" data-testid="sa-range-label">{{ t('sessionAnalytics.range.label') }}</span>
           <KxDateRangePicker v-model="draftRange" :presets="presets" @apply="onApplyRange" />
           <SaRangeHint :start="range.start" :end="range.end" />
         </div>
-        <button class="sa-btn" type="button" :disabled="loading" @click="load">
+        <button
+          class="sa-btn"
+          type="button"
+          data-testid="sa-refresh-btn"
+          :disabled="loading"
+          @click="load"
+        >
           {{ t('sessionAnalytics.action.refresh') }}
         </button>
       </template>
@@ -31,7 +38,7 @@
       @action="load"
     />
 
-    <div class="sa-filters">
+    <div class="sa-filters" data-testid="sa-user-ranking-filters">
       <label class="sa-field">
         <span class="sa-field__label">{{ t('sessionAnalytics.filter.project') }}</span>
         <input
@@ -72,12 +79,13 @@
       :empty="!loading && rows.length === 0"
       :empty-text="emptyText"
       min-width="1040px"
+      data-testid="sa-user-ranking-table"
     >
       <table class="sa-table">
         <thead>
           <tr>
-            <th>{{ t('sessionAnalytics.col.rank') }}</th>
-            <th>
+            <th data-testid="sa-user-ranking-col-rank">{{ t('sessionAnalytics.col.rank') }}</th>
+            <th data-testid="sa-user-ranking-col-owner">
               <button class="sa-sort" type="button" @click="toggleNameSort">
                 {{ t('sessionAnalytics.col.owner') }}
                 <span v-if="nameSort !== 'none'" class="sa-sort__arrow">
@@ -85,9 +93,9 @@
                 </span>
               </button>
             </th>
-            <th>{{ t('sessionAnalytics.col.email') }}</th>
-            <th>{{ t('sessionAnalytics.col.sessions') }}</th>
-            <th>{{ t('sessionAnalytics.col.projects') }}</th>
+            <th data-testid="sa-user-ranking-col-email">{{ t('sessionAnalytics.col.email') }}</th>
+            <th data-testid="sa-user-ranking-col-sessions">{{ t('sessionAnalytics.col.sessions') }}</th>
+            <th data-testid="sa-user-ranking-col-projects">{{ t('sessionAnalytics.col.projects') }}</th>
             <th>{{ t('sessionAnalytics.col.tasks') }}</th>
             <th>{{ t('sessionAnalytics.col.tokens') }}</th>
             <th>{{ t('sessionAnalytics.col.cost') }}</th>
