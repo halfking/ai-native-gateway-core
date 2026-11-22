@@ -78,12 +78,6 @@ const includeProbes = ref(false)
 try {
   includeProbes.value = localStorage.getItem(SESSION_PROBE_SCOPE_KEY) === 'included'
 } catch { /* localStorage 不可用 ⇒ 保持缺省业务宇宙 */ }
-watch(includeProbes, (v) => {
-  try {
-    if (v) localStorage.setItem(SESSION_PROBE_SCOPE_KEY, 'included')
-    else localStorage.removeItem(SESSION_PROBE_SCOPE_KEY)
-  } catch { /* 同上 */ }
-})
 
 const {
   loading,
@@ -101,6 +95,19 @@ const {
   // 与看板同源：有 board days 时用它，否则默认 7（不再静默 30）
   defaultDays: boardDays.value ?? 7,
   extraParams: computed(() => ({ include_probes: includeProbes.value || undefined })),
+})
+
+// ★ 2026-11-23（L7 修复）：口径开关变化**必须触发重载**。
+// 原实现里这个 watch 只写 localStorage、不重载 ⇒ 勾选「包含探测」后页面继续
+// 显示旧口径的数字，看起来就像「include_probes 参数没生效」（实际参数已进
+// URL，但请求根本没重新发）。watch 放在 useDashboard 之后：refresh 由它解构
+// 出来，提前声明会踩 TS 的 block-scoped-before-declaration。
+watch(includeProbes, (v) => {
+  try {
+    if (v) localStorage.setItem(SESSION_PROBE_SCOPE_KEY, 'included')
+    else localStorage.removeItem(SESSION_PROBE_SCOPE_KEY)
+  } catch { /* 同上 */ }
+  void refresh()
 })
 
 watch(
