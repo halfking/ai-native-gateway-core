@@ -82,6 +82,14 @@ type loginDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// teamGuardDB 是「api key 挂团队」的归属校验读面（★ 2026-11-23 12h 修订审计轮 ★）。
+// 刻意保持窄接口（只有 Begin）：db 字段是具体 *pgxpool.Pool，无法在单测里注入
+// pgxmock，而「跨租户挂团队」这条**安全判据**必须能被单测钉住，所以按
+// controlledBodyDB / loginDB 的同款范式开一个窄口。nil ⇒ 用 h.db（生产路径零变化）。
+type teamGuardDB interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 type Handler struct {
 	db       *pgxpool.Pool
 	registry *authplugin.Registry // Phase 2: plugin registry for auth/user/tenant operations
@@ -90,6 +98,9 @@ type Handler struct {
 	// 单测（auth_handlelogin_integration_test.go）需注入 pgxmock，而 db 是具体
 	// *pgxpool.Pool —— 按 controlledBodyDB 同款范式开窄口。
 	loginDB loginDB
+	// teamGuardDB 是「api key 挂团队」归属校验的窄注入面（★ 2026-11-23 12h
+	// 修订审计轮 ★）：nil ⇒ h.db。作用见 teamGuardDB 接口注释。
+	teamGuardDB teamGuardDB
 	// blockReviewCandidateReader 是「审核单候选规则」的读面（★ 2026-10-31
 	// 拦截归因轮 ★）。★ nil ⇒ 用默认实现（sanitizerules 的逐单窗口读面）★
 	// ⇒ ★ 单测可注入（★ 这个读面的**口径**是本轮的关键：逐单窗口 vs
@@ -1336,6 +1347,22 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-analytics/clients/", admin(h.handleClientAnalyticsDetail))
 	mux.HandleFunc("/api/admin/session-analytics/tasks", admin(h.handleTaskAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/tasks/", admin(h.handleTaskAnalyticsDetail))
+
+	// ★ 2026-11-23（12h 修订审计轮）：W2-Q2 团队层级管理端点接线。
+	//
+	// ★ 为什么此前是「孤儿」：`domains/team`（仓储）与迁移 055~058 已在 main，
+	//   `maas/team_budget_gate.go` 也已入库，但**没有任何代码 import domains/team**
+	//   ⇒ 整条团队链是「已交付未接线」：表建了、门写了、API 一个都没有。
+	// ★ 现在接上：registerTeamRoutes 之前从未被调用 ⇒ 端点全部 404。
+	//
+	// ★ 权限档位：admin(...)（任意 admin 档，含 tenant_admin）——
+	//   团队是**租户内**资源，tenant_admin 管理自己租户的团队是合理诉求；
+	//   租户隔离由 handler 内的 owner_id 校验 + teams 表的
+	//   (tenant_id, name) 唯一约束承担（见 domains/team 与迁移 055）。
+	//   ★ 注意这与「跨租户聚合」类端点（ops/overview、dashboard/operational）
+	//   降到 superAdmin 的理由**不同**——那些是不按租户隔离的聚合，
+	//   而团队表本身带 tenant_id 且每次查询都按 owner 过滤。
+	h.registerTeamRoutes(mux)
 
 	// 2026-07-07: P2会话分析 - 用户画像（三层隔离：super_admin/tenant_admin/user）
 	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))

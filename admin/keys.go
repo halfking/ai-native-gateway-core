@@ -402,6 +402,15 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		BudgetUSD       *float64 `json:"budget_usd"`
 		RateLimitRPM    *int     `json:"rate_limit_rpm"`
 		Remark          *string  `json:"remark"`
+		// ★ 2026-11-23（12h 修订审计轮）：团队归属（W2-Q2）。
+		// team_id 可选：NULL = 个人 key（存量行为零变化）；非 NULL = 团队 key。
+		// ★ 为什么必须能写：迁移 057 建了 api_keys.team_id 列，
+		//   `maas/team_budget_gate.go` 的团队花费聚合走
+		//   `usage_facts JOIN api_keys ON ... JOIN teams ON t.id = ak.team_id`
+		//   ⇒ **全仓没有任何代码写这一列** ⇒ 团队聚合恒为 0
+		//   ⇒ 团队预算门永远判「未超限」⇒ 整条团队预算链是死的。
+		//   写入这一列是让该链真正闭环的**唯一缺口**。
+		TeamID *int64 `json:"team_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -437,6 +446,36 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	// ★ 2026-11-23（12h 修订审计轮）：团队归属校验（W2-Q2）。
+	//
+	// ★ 判据（三条同时成立才允许挂团队）：
+	//   ① team_id > 0；
+	//   ② 该团队存在且**属于本租户**（teams.tenant_id = 本次 key 的 tenant_id）
+	//      —— 迁移 055 的 teams 表带 tenant_id，且 (tenant_id, name) 唯一；
+	//   ③ 调用方是该团队的 owner 或 user_teams 里的 admin/member
+	//      —— teams.owner_all RLS 策略用的也是 owner_id 口径。
+	//
+	// ★ 为什么必须校验：api_keys.team_id 有 ON DELETE CASCADE 指向 teams(id)，
+	//   若不校验租户归属，租户 A 的管理员就能把自己的 key 挂到租户 B 的团队上
+	//   ⇒ 该团队预算门会把**别家租户的消费**算进本团队（与
+	//   maas/team_budget_gate.go 里那条 "ak.tenant_id = t.tenant_id" 的
+	//   跨租户防串条件同一族问题）。
+	var teamID *int64
+	if req.TeamID != nil && *req.TeamID > 0 {
+		allowed, err := h.callerMayUseTeam(ctx, r, *req.TeamID, req.TenantID)
+		if err != nil {
+			slog.Error("createKey: team validation failed", "error", err, "team_id", *req.TeamID)
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if !allowed {
+			writeError(w, http.StatusForbidden, "forbidden: cannot attach key to this team")
+			return
+		}
+		tid := *req.TeamID
+		teamID = &tid
+	}
 
 	ownerUser := "admin"
 	if req.OwnerUser != nil && *req.OwnerUser != "" {
@@ -489,10 +528,10 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	//   - 在「用户明细 → API 密钥」里完全隐身
 	// 即：调用方不传 owner_user 时，代码算出了 'admin' 却没有落库。
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias)
-		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10)
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10, $11)
 		RETURNING id
-	`, appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, ownerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias).Scan(&id)
+	`, appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, ownerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias, teamID).Scan(&id)
 	if err != nil {
 		slog.Error("createKey insert failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -512,6 +551,82 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		"remark":     remark,
 		"message":    "ok",
 	})
+}
+
+// callerMayUseTeam 判断当前调用方是否有权把一张 api key 挂到指定团队上。
+//
+// ★ 2026-11-23（12h 修订审计轮）：补齐 api_keys.team_id 写入路径的最后一道闸。
+//
+// ★ 判据（四条同时成立才放行）：
+//   ① 调用方是一个真实登录用户（AuthContext.UserID > 0）——legacy admin key
+//      认证没有用户身份（UserID = 0），无法证明成员关系 ⇒ 不放行；
+//   ② 团队存在，且 teams.tenant_id = 本次 key 的 tenant_id（跨租户防串，
+//      与 maas/team_budget_gate.go 里 "ak.tenant_id = t.tenant_id" 同一族口径）；
+//   ③ 调用方是该团队的 owner（teams.owner_id）**或** user_teams 中的成员
+//      （role ∈ owner/admin/member）——迁移 056 的 teams_member_select 策略
+//      用的也是这个成员口径；
+//   ④ 以上判定与 RLS 可见行同口径（见下方 set_config 说明）。
+//
+// ★ 为什么这里要显式 set_config('app.current_user_id')：
+//   teams / user_teams 都 ALTER TABLE ... ENABLE ROW LEVEL SECURITY，策略基于
+//   current_setting('app.current_user_id', true)（迁移 055:24 / 056:24 / 057:16）。
+//   本仓其它地方**从不设置**该 GUC（既有惯例是 app.current_tenant / app.current_role
+//   / app.bypass_rls，见 apihub/pg_store.go:744、domains/sessionaudit/approval_manager.go:521）
+//   ⇒ RLS 判定与 Go 侧显式校验各说各话。
+//   这里按 apihub/pg_store.go:744 的既有范式在事务内设置它，让「RLS 看得见的行」
+//   与「Go 侧判定的成员关系」是同一口径；若部署库用的是表属主连接（RLS 被绕过），
+//   则本函数的显式校验就是唯一生效的闸。
+func (h *Handler) callerMayUseTeam(ctx context.Context, r *http.Request, teamID int64, tenantID string) (bool, error) {
+	auth := GetAuthContext(r)
+	if auth == nil || auth.UserID <= 0 {
+		return false, nil
+	}
+	userID := int64(auth.UserID)
+
+	// 窄注入口优先（单测注入 pgxmock）；生产走 h.db。
+	var pool teamGuardDB
+	switch {
+	case h.teamGuardDB != nil:
+		pool = h.teamGuardDB
+	case h.db != nil:
+		pool = h.db
+	default:
+		return false, errors.New("database not configured")
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		"SELECT set_config('app.current_user_id', $1, true)",
+		strconv.FormatInt(userID, 10),
+	); err != nil {
+		return false, err
+	}
+
+	var allowed bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM teams t
+			WHERE t.id = $1
+			  AND t.tenant_id = $2
+			  AND (
+			    t.owner_id = $3
+			    OR EXISTS (
+			      SELECT 1 FROM user_teams ut
+			      WHERE ut.user_id = $3 AND ut.team_id = t.id
+			    )
+			  )
+		)
+	`, teamID, tenantID, userID).Scan(&allowed)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
 }
 
 // lookupKeyConflict answers GET /api/keys/lookup?application_code=&tenant_id=&key_alias=
