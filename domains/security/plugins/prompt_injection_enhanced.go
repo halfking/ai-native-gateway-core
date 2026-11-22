@@ -11,6 +11,44 @@
 //  2. 将 DetectionResult 转换为 governance.Verdict
 //
 // 接入链：Plugin → security.Registry → SecurityHook → Pipeline(PhaseGovernance)
+//
+// ★★★ 权威判定方的定稿（2026-11-23 查实，★ 主档
+// docs/operations/2026-11-23-211配置优化执行报告.md §9.19·附2 / §9.19·附5）
+//
+// ★ 「同一输入被两套 PI 实现重复判定」这件事（N8）**查实了**，★ 不是推测：
+//
+//	· `prompt_injection`（本插件的邻居、★ 包装 v3 `domains/hooks/security` 的
+//	  ThreatDetector）：★ 词表 + PII 正则、★ **阈值 7**、★ **命中即 deny sev3**
+//	  ⇒ ★ **它是治理链里唯一的硬阻断方**。
+//	· **本插件（`prompt_injection_enhanced`）**：★ 核心 `promptinjection.Detector`
+//	  的 6 层 + 评分；★ severity 映射 medium=1 / high=2 / critical=3。
+//
+// ★ ★ **关键事实（本插件在生产上从不 deny）**：★ 动作来源是
+//
+//	`severity_action_matrix`（★ observe 模式取 observe_action）；★ 而
+//	`Blocked = (ActionTaken == "block" || "reject")` ⇒ ★ `replace`/`terminate`/
+//	`warn`/`log` **都不算 deny** ⇒ ★ 线上 `detection_mode=observe` +
+//	medium/high/critical 的 observe_action **全是 warn** ⇒ ★ ★ **本插件在生产上
+//	永远给 allow** ⇒ ★ **它不可能是权威判定方**。
+//
+// ★ ⇒ ★ **定稿**：★ 词表 `prompt_injection` 作硬阻断权威、★ **本插件保持
+//
+//	observe 观测/佐证**（★ 已等于 observe 语义、★ **零配置改动**）。
+//
+// ★ ★ 两条不可省的前提（★ 改任一条、结论就要重查）：
+//
+//	① 本插件**依赖 DB 初始化**：★ `sqlDB == nil` 时**静默跳过**
+//	   （★ `Inspect` 直接返回 nil）⇒ ★ **DB 抖动时它根本不在链子里说话**。
+//	② 「形态 b」（★ 有人判该拦、★ 链子却不拦）★ **当前不可达**：★ 需
+//	   medium 的动作被配成 block/reject、★ 或 enforce + BlockThreshold > 2
+//	   ⇒ ★ 届时本插件就会 deny ⇒ ★ **它就具备阻断能力了** ⇒ ★ 结论要重查。
+//	   （★ 可达性有可复跑诊断：★ scripts/governance-intercept-composition.sh
+//	     的「★ PI 分歧形态 b 可达性」一节。）
+//
+// ★ ★ 决策来源标注：★ 本段定稿采用的是**自动选择的推荐项**（★ 用户 60 秒内
+//
+//	未回复）⇒ ★ **不是用户明确确认** ⇒ ★ 若 owner 要改（★ 例如让本插件具备
+//	阻断能力、★ 或把它降级为纯日志），★ 以 owner 的新指示为准。
 package plugins
 
 import (
