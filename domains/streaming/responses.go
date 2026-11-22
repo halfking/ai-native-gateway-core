@@ -351,8 +351,8 @@ func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request
 	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
-		attemptErrMsg = "request body too large"
-		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
+		attemptErrMsg = "request body exceeds 100 MB limit"
+		writeResponsesError(w, http.StatusRequestEntityTooLarge, "request body exceeds 100 MB limit", "invalid_request", "body_too_large")
 		return
 	}
 	// ── Gateway prompt admission preflight ───────────────────────────────────

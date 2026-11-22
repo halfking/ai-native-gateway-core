@@ -86,7 +86,12 @@ SELECT
     )                                              AS end_user_count,
     NOW()                                          AS refreshed_at
 FROM session_summaries ss
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd
@@ -130,7 +135,12 @@ SELECT
     MAX(ss.last_request_at)                        AS last_active_at,
     NOW()                                          AS refreshed_at
 FROM session_summaries ss
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd
@@ -176,7 +186,12 @@ SELECT
     MAX(ss.last_request_at)                        AS last_used_at,
     NOW()                                          AS refreshed_at
 FROM session_summaries ss
-JOIN sessions s
+JOIN (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+) s
   ON s.session_id = ss.session_key
  AND s.tenant_id = ss.tenant_id
 LEFT JOIN session_dim sd
