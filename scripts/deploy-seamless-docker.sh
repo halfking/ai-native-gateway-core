@@ -104,7 +104,22 @@ DD_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pw
 # ★ upstream 端口读写判定脚本的路径：**按引擎自身所在目录解析**（scripts/ops/…），
 #   而不是 DD_REPO_ROOT —— 后者可被 LLM_GATEWAY_ROOT 覆盖成别处 ⇒ 脚本就找不到了。
 #   远端形态：引擎跑在 $DD_REMOTE_ROOT/scripts/ ⇒ 脚本在 $DD_REMOTE_ROOT/scripts/ops/。
-DD_UPSTREAM_PORT_HELPER="${DD_UPSTREAM_PORT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops/nginx-upstream-port.py}"
+DD_UPSTREAM_PORT_HELPER="${DD_UPSTREAM_PORT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops/nginx-upstream-port.py"
+# ★★ 2026-11-23：DB 修订序列脚本的路径**必须在脚本顶部解析成绝对路径**
+#   （与 DD_UPSTREAM_PORT_HELPER 同款），**不得**等到用时才求值。
+#
+#   缺陷（211 seq 3230 实测，本轮部署因此在「镜像已推、容器未起」处中断）：
+#     原第 2889 行写的是 `$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh`
+#     —— 那是**全脚本唯一**残留的相对写法（其余三处都用 ${BASH_SOURCE[0]}）。
+#     远端形态：引擎跑在 $DD_REMOTE_ROOT/scripts/ ⇒ $0 = scripts/deploy-seamless-docker.sh
+#     ⇒ `dirname "$0"` = "scripts"（**相对**）⇒ 那行的 `cd scripts` 依赖**当时的 cwd**。
+#     而它求值时已在 docker build 段之后 ⇒ cwd 可能已被 cd 走、
+#     远端树也可能正被**并发部署**同步替换（scripts/ 短暂不存在）
+#     ⇒ `cd: scripts: No such file or directory` ⇒ ★ **迁移腿被静默跳过**
+#     ⇒ 部署中断（该脚本自己的 2979 行注释早已写过这个坑：相对 scripts/.. 会 No such file）。
+#
+#   ⇒ 顶部解析 ⇒ 绝对路径 ⇒ 与 cwd 无关、与 LLM_GATEWAY_ROOT 无关。
+DD_REVISION_SEQ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/apply-db-revision-sequence.sh"
 # 前端产物来源（前端由部署机预构建，随 tar 上树，引擎不构建前端）。
 DD_WEB_DIST_SRC="${DD_WEB_DIST_SRC:-$DD_REPO_ROOT/web/dist}"
 DD_MOBILE_DIST_SRC="${DD_MOBILE_DIST_SRC:-$DD_REPO_ROOT/web-mobile/dist}"
@@ -2886,7 +2901,7 @@ chown -R 65532:65532 "$DD_GW_DATA_ROOT" 2>/dev/null || true
 # 迁移是幂等的前向 DDL，154/245 家族同样是「切流前迁移」；放在退役之前 ⇒
 # 迁移失败时旧容器还在服务（旧二进制对着已迁移的库），不会把「迁移失败」
 # 放大成「服务下线」。
-REVISION_SEQ="$(cd "$(dirname "$0")" && pwd)/apply-db-revision-sequence.sh"
+REVISION_SEQ="$DD_REVISION_SEQ"
 if [[ -f "$REVISION_SEQ" ]]; then
   log "重放 DB 修订序列（幂等）→ ${PG_CONTAINER}/${DD_PG_DB}"
   DATABASE_URL="$DB_URL" \
