@@ -117,6 +117,10 @@ func (s *stubService) ListStale(ctx context.Context, threshold time.Duration) ([
 	return s.listOut, nil
 }
 
+func (s *stubService) MarkMissingDown(ctx context.Context, tenantID string, k apihub.Kind, liveRefIDs []int64) (int64, error) {
+	return 0, nil
+}
+
 func (s *stubService) ListTenants(ctx context.Context) ([]string, error) {
 	if s.listTenantsFn != nil {
 		return s.listTenantsFn(ctx)

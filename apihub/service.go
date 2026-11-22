@@ -40,6 +40,21 @@ type Store interface {
 	ListStale(ctx context.Context, tenantID string, threshold time.Duration) ([]Asset, error)
 	// ListTenants (Phase 7 audit fix) returns all distinct tenant_id values.
 	ListTenants(ctx context.Context) ([]string, error)
+	// MarkMissingDown marks every asset of kind k whose ref_id is NOT in
+	// liveRefIDs as HealthDown, and returns how many rows changed.
+	//
+	// 2026-11-23（211 配置优化遗留 L4）：这是「集合差」而不是「逐行比对」——
+	// 调用方（bg.AssetHealthProbe）以前把整张 assets 表分页拉进 Go 侧、
+	// 再逐行 MarkHealth，既是「统计面禁止列表聚合」同族（AGENTS.md 已登记），
+	// 又带一个 20 页 × 500 行 = 10000 行的上界：超过上界的行**静默不再被检查**。
+	// 差集在 SQL 里做 ⇒ 没有上界、没有 N+1 次写、没有 Go 侧全表扫描。
+	//
+	// 契约：
+	// ① 已经是 down 的行不算「变化」（不重复写同一个值，§10.26 的空写教训）；
+	// ② liveRefIDs 为空 ⇒ 该 kind 下**全部**行标记为 down（源表真的空了）；
+	// ③ 调用方**不得**在源表查询失败时把空集合当成「真的空了」传进来 ——
+	//    失败语义必须由调用方自己兜住（见 bg 侧的实现）。
+	MarkMissingDown(ctx context.Context, tenantID string, k Kind, liveRefIDs []int64) (int64, error)
 }
 
 // Service is the application-layer facade over Store. It adds an in-process
@@ -243,6 +258,28 @@ func (s *Service) ListTenants(ctx context.Context) ([]string, error) {
 	return s.store.ListTenants(ctx)
 }
 
+// MarkMissingDown marks every asset of kind k that is not in liveRefIDs as
+// HealthDown. See Store.MarkMissingDown for the full contract.
+//
+// ★ 缓存：这一步把若干行的 health_state 改成 down，缓存里的旧值必须失效，
+// 否则 UI 会在 TTL（60s）内继续显示 Healthy。缓存按 (kind, refID, tenant) 存，
+// 而本方法**不知道**具体哪些行被改了 ⇒ 无法逐个 invalidate
+// ⇒ 这里让整租户的该 kind 失效（见 assetCache.invalidateKind）。
+func (s *Service) MarkMissingDown(ctx context.Context, k Kind, liveRefIDs []int64) (int64, error) {
+	if !k.IsValid() {
+		return 0, fmt.Errorf("%w: %q", ErrInvalidKind, k)
+	}
+	tenantID := tenantFromCtx(ctx)
+	n, err := s.store.MarkMissingDown(ctx, tenantID, k, liveRefIDs)
+	if err != nil {
+		return n, err
+	}
+	if n > 0 {
+		s.cache.invalidateKind(tenantID, k)
+	}
+	return n, nil
+}
+
 // StartRefresh launches a background goroutine that periodically refreshes
 // the cache. Call once at startup; the goroutine runs until ctx is cancelled.
 func (s *Service) StartRefresh(ctx context.Context) {
@@ -330,6 +367,22 @@ func (c *assetCache) invalidate(k Kind, refID int64, tenant string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.m, cacheKey(tenant, k, refID))
+}
+
+// invalidateKind drops every cached asset of (tenant, kind).
+//
+// 2026-11-23（L4）：MarkMissingDown 一次改若干行，调用方不知道具体是哪几行
+// ⇒ 逐个 invalidate 不可行 ⇒ 按 (tenant, kind) 整片失效。
+// 代价：同 kind 的其它行也被丢掉（下一读回源）——可接受，缓存 TTL 本就 60s。
+func (c *assetCache) invalidateKind(tenant string, k Kind) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prefix := tenant + "|" + string(k) + "|"
+	for key := range c.m {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			delete(c.m, key)
+		}
+	}
 }
 
 func (c *assetCache) sweep() {
