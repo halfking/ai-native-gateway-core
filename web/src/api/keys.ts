@@ -45,15 +45,17 @@ export interface KeyCreatedResponse {
   message: string
 }
 
-export function getKeys(params?: { application?: string; tenant?: string; owner?: string }) {
+export function getKeys(params?: { application?: string; tenant?: string; owner?: string; include_revoked?: boolean }) {
   // 2026-11-17 审计修复：支持服务端过滤（application / tenant / owner）。
   // 此前只有 application / tenant 两个口，「某用户名下密钥」只能拉全量回来
   // 再前端筛 ⇒ 超管侧等于把全站密钥元数据下发到浏览器。
   // owner 是 2026-11-17 新增的后端过滤参数（admin/keys.go listKeys）。
+  // 2026-11-22 P3 修复：支持 include_revoked 参数，默认不返回 revoked 状态的密钥。
   const qs = new URLSearchParams()
   if (params?.application) qs.set('application', params.application)
   if (params?.tenant) qs.set('tenant', params.tenant)
   if (params?.owner) qs.set('owner', params.owner)
+  if (params?.include_revoked) qs.set('include_revoked', 'true')
   const suffix = qs.toString()
   return req<ApiKey[]>('GET', suffix ? `/api/keys?${suffix}` : '/api/keys')
 }
