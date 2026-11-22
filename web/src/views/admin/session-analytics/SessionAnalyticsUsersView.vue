@@ -190,8 +190,7 @@ onMounted(() => {
 <style scoped>
 .session-analytics-users-view {
   padding: 20px;
-  max-width: 1600px;
-  margin: 0 auto;
+  max-width: 100%;
 }
 
 .top-users-section {
