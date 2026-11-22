@@ -23,6 +23,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { build } from 'esbuild'
+import { createHash } from 'crypto'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -129,7 +130,6 @@ function annotateGroup(group) {
 
 const menuConfig = {
   version: '1.0.0',
-  exported_at: new Date().toISOString(),
   source: 'gateway-appNav',
   // 安全标注：tenantScope 字段说明
   tenantScopeLegend: {
@@ -151,11 +151,39 @@ const menuConfig = {
   groups: NAV_GROUPS.map(annotateGroup),
 }
 
+// ★★ 2026-11-23（12h 修订审计轮，落地 AGENTS.md 登记的 L14）：
+//
+//	本文件原先写 `exported_at: new Date().toISOString()` ——
+//	**menu-config.json 是受版本控制的构建产物** ⇒ 每跑一次 build，
+//	工作树就因为这一个时间戳变脏 ⇒
+//	① 提交前必须人工甄别还原（AGENTS.md §⑭ L4 记载的正是这个动作）；
+//	② 部署采集器把「工作树与发布面不一致」判成「并行会话泄漏」，
+//	   而 menu-config.json 的 exported_at **每次 build 都变**
+//	   ⇒ **恒定误报 2 处泄漏**（AGENTS.md §⑨ ② 记载）。
+//
+//	⇒ 改成**内容指纹**：对导出内容取 sha256 ⇒ 同样的内容导出同样的字节，
+//	   内容变了指纹才变 ⇒ 「内容漂移」仍然可见，「仅时间戳变化」不再可见。
+//	⇒ 字段名随之从 exported_at 改为 exported_fingerprint：
+//	   一个叫 exported_at 的字段装哈希是**语义说谎**（下一个读它的人
+//   会拿它当时间戳解析）⇒ 宁可改名，不留误导。
+//	★ 指纹只覆盖**除自身以外**的载荷（下面算的是 menuConfig 的其余部分），
+//	  否则会自引用。
+const { exported_fingerprint: _omitFingerprint, ...fingerprintPayload } = menuConfig
+const exportedFingerprint =
+  'sha256:' +
+  createHash('sha256')
+    .update(JSON.stringify(fingerprintPayload))
+    .digest('hex')
+    .slice(0, 16)
+
+// 最终写盘对象：指纹放在最后，作为载荷的「封印」
+const output = { ...menuConfig, exported_fingerprint: exportedFingerprint }
+
 // 输出路径
 const outputPath = path.resolve(__dirname, '../public/menu-config.json')
 
 // 写入文件
-fs.writeFileSync(outputPath, JSON.stringify(menuConfig, null, 2), 'utf-8')
+fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8')
 
 // 统计
 const primaryCount = menuConfig.primary.length

@@ -17,6 +17,9 @@ export default {
   sourceDetail: '請求明細',
   // 2026-10-02 多選/清除全部/自動重新整理
   clearAll: '清除全部',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: '取消釘選',
+  pinnedUnresolved: '找不到該供應商，篩選未生效',
   autoRefresh: '自動重新整理',
   autoRefreshOff: '關',
   autoRefresh30s: '30 秒',

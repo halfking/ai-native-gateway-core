@@ -41,14 +41,18 @@ const selectedProvider = computed(() => {
   }
   const code = typeof props.modelValue === 'string' ? props.modelValue : ''
   if (!code) return null
+  // ★ 2026-11-23：code 模式要认 `providers.code`（规范 code）——
+  //   会话分析「Top5 供应商」深链给的就是它，而自建供应商的 catalog_code 常为空、
+  //   display_name 又可能是另一个名字（211 实测 code=速云U站 / catalog_code='' /
+  //   display_name=suyun）⇒ 只认 catalog_code/display_name 会解析不到。
   return providers.value.find((p) =>
-    p.catalog_code === code || p.display_name === code,
+    p.code === code || p.catalog_code === code || p.display_name === code,
   ) ?? null
 })
 
 const triggerLabel = computed(() => {
   if (selectedProvider.value) {
-    return selectedProvider.value.display_name || selectedProvider.value.catalog_code
+    return selectedProvider.value.display_name || selectedProvider.value.catalog_code || selectedProvider.value.code || ''
   }
   if (isIdMode.value && typeof props.modelValue === 'number') {
     return `#${props.modelValue}`
@@ -62,13 +66,14 @@ const filteredProviders = computed(() => {
   return providers.value.filter((p) => {
     const name = (p.display_name || '').toLowerCase()
     const code = (p.catalog_code || '').toLowerCase()
-    return name.includes(q) || code.includes(q) || String(p.id).includes(q)
+    const canonical = (p.code || '').toLowerCase()
+    return name.includes(q) || code.includes(q) || canonical.includes(q) || String(p.id).includes(q)
   })
 })
 
 function isChosen(provider: Provider) {
   if (isIdMode.value) return props.modelValue === provider.id
-  const code = provider.catalog_code || provider.display_name || ''
+  const code = provider.code || provider.catalog_code || provider.display_name || ''
   return props.modelValue === code
 }
 

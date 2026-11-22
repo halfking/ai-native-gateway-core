@@ -574,6 +574,18 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionUserTags(migCtx); err != nil {
 		return err
 	}
+	// 2026-11-23 统计口径轮（D5 根修）：session_dim 的 session_key 连接索引。
+	// 会话级统计（面板 + 对齐行）的会话宇宙 JOIN 走 session_dim.session_key，
+	// 而该表此前只有 tenant_id 前缀索引 ⇒ 小窗口（今天档）下 PG 反选嵌套
+	// 循环、每个 build 行重扫 26 万行 ⇒ 211 实测 121.8 秒
+	// （session-overview?days=1 稳定 30 秒超时 ⇒ 该档位数字在页面上出不来）。
+	// 补索引后同一条查询 194.9 ms（625 倍），且 JOIN 键/谓词/数字口径不变。
+	// ★ 非致命：失败只记 Error 日志并继续启动 —— 一个 dashboard 统计档位
+	//   性能索引不该有能力把整个网关拉下线。
+	if err := db.ensureSessionDimSessionKeyIndex(migCtx); err != nil {
+		slog.Error("session_dim session_key index ensure failed; the session-level stats 'today' preset may time out",
+			"error", err)
+	}
 	// 2026-09-24 migration 744: outbox done 清理与 digest 回填的部分索引。
 	// 两个后台 job 在缺索引时分别对 645MB outbox / 全分区 session_turns
 	// 做每 10s-10min 一次的 30s 级全扫（252 实锤击杀循环），必须先于
@@ -1579,6 +1591,107 @@ func (d *DB) ensureSessionUserTags(ctx context.Context) error {
 			"attempt", attempt, "max", 3, "error", colErr)
 	}
 	return colErr
+}
+
+// ensureSessionDimSessionKeyIndex —— 会话级统计的「会话宇宙」读 session_dim
+// 的连接键索引（2026-11-23 统计口径轮 D5 根修）。
+//
+// # 为什么需要（211 生产实测，不是推演）
+//
+// 会话统计面板的聚合腿把会话宇宙 JOIN 直接挂在 session_dim.session_key 上
+// （domains/analytics.SessionUniverseJoin：sd.session_key = ss.session_key
+// AND sd.tenant_id = ss.tenant_id）。session_dim 此前**只有 tenant_id 前缀
+// 索引**（idx_session_dim_tenant 等），session_key 上没有索引 ⇒ PG 只能
+// 「用 tenant_id 索引取回该租户的全部行、再按 session_key 过滤」。
+// 211 生产库 EXPLAIN ANALYZE（1 天窗口的真实聚合查询，原文）：
+//
+//	-> Index Scan using idx_session_dim_tenant on session_dim sd
+//	     Index Cond: (tenant_id = …)   Filter: (session_key = …)
+//	     Rows Removed by Filter: 262531     ← 每个循环丢 26 万行
+//	     loops=2236                         ← build 侧有几行就循环几次
+//	  Buffers: shared hit=407,833,935 read=7,566,565
+//	  Execution Time: 121788.473 ms          ← 2 分钟
+//
+// ⇒ **窗口越小越慢**：窗口大时 build 侧行数多，PG 改走 hash join（几秒）；
+// 窗口小（=「今天」档）时 build 侧只有几百行，PG 反选嵌套循环 ⇒ 每个 build 行
+// 都重扫 26 万行 ⇒ 平方级放大。实测 /api/admin/dashboard/session-overview
+// ?days=1 **稳定 30 秒超时**（服务端 details: "timeout: context deadline
+// exceeded"）⇒ 该档位的数字在页面上根本出不来（不是 0，是失败）。
+//
+// # 修法与实测
+//
+// 把连接键换成等价的 pkey 列 gw_session_id（实测 session_dim 262,536 行
+// **零行** gw_session_id <> session_key）后，同一条查询：
+//
+//	Index Scan using session_dim_pkey on session_dim sd (actual rows=1 loops=2237)
+//	Execution Time: 194.910 ms       ← 121,788 ms → 194.9 ms（625 倍）
+//
+// 但那条改写依赖「gw_session_id ≡ session_key」这个**未被 schema 约束**的
+// 不变式 ⇒ 不拿它当修法。**正解是补上 session_key 的索引**：计划变成
+// 「Index Cond: (tenant_id=… AND session_key=…) ⇒ 命中 1 行」，而 JOIN 键、
+// 谓词、任何数字口径**逐字不变**（不改查询，只补索引）。
+//
+// # 为什么走 ensure 而不是新开迁移号
+//
+// · CREATE INDEX CONCURRENTLY 不能在事务里执行 ⇒ installer 的
+//
+//	psql --single-transaction 承载不了 ⇒ ensure 链才是存量库的收敛通道
+//	（与 ensureUsageFactsOccurredAtIndex / ensureSqlAuditPartialIndexes 同款）。
+//
+// · 三位迁移号（NNN_*.sql）是仓内规范，999 已是当前最大编号 ⇒ 本轮不新开号。
+//
+// # 失败语义（刻意非致命）
+//
+// 建索引只是让一个统计档位不超时；失败 ⇒ 记 Error 日志并继续启动。把它做成
+// 致命错误 ⇒ 一个 dashboard 统计档位用得上的索引就能把整个网关拉下线，代价与
+// 收益完全不成比例（与 ensureURSMNodeSnapshotMinDailyPartition 的容错取向同款）。
+func (d *DB) ensureSessionDimSessionKeyIndex(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	const indexName = "idx_session_dim_session_key"
+	var valid bool
+	err = conn.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_class t ON t.oid = i.indrelid
+		WHERE c.relname = $1 AND t.relname = 'session_dim'
+		  AND t.relnamespace = 'public'::regnamespace
+	`, indexName).Scan(&valid)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 索引不存在：下方建。
+	case err != nil:
+		return fmt.Errorf("inspect %s: %w", indexName, err)
+	case valid:
+		return nil
+	default:
+		// 被中断的 CONCURRENTLY 构建会留下 INVALID 索引 ⇒ IF NOT EXISTS 会
+		// 永远跳过它 ⇒ 先 DROP 再建（与 744/749 同款）。
+		slog.Warn("dropping INVALID index left by an interrupted build", "index", indexName)
+		if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+indexName); err != nil {
+			return fmt.Errorf("drop invalid %s: %w", indexName, err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_dim_session_key
+		ON public.session_dim (tenant_id, session_key)`); err != nil {
+		return fmt.Errorf("create %s: %w", indexName, err)
+	}
+	slog.Info("session_dim session_key index ensured (session-universe join for session-level stats)")
+	return nil
 }
 
 func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {

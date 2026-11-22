@@ -8,9 +8,16 @@
 #   BASE_URL         目标站点（默认 https://llm.itestu.cn）
 #   ADMIN_USER       管理员账号（默认 demoadmin）
 #   ADMIN_PASSWORD   管理员密码（默认 Demo@admin123）
-#   ADMIN_DISPLAY_NAME 管理员显示名（默认 系统管理员 —— 与家族 runner 对齐：
-#     种子账号 display_name 的家族标准见 _shared/login.yaml；「演示管理员」
-#     是 demoadmin 的 display_name，与共享登录流判据②③的家族默认不一致）
+#   ADMIN_DISPLAY_NAME 管理员显示名（默认 **演示管理员** —— 必须与 ADMIN_USER 配套！
+#     ★ 2026-11-23 实测修：原默认「系统管理员」是 **admin 种子账号**的 display_name，
+#       而本 runner 默认账号是 **demoadmin**（display_name=「演示管理员」）
+#       ⇒ 登录成功、弹窗已关，但共享登录流判据②③（顶栏出现 ${ADMIN_DISPLAY_NAME}）
+#         **必然红** ⇒ 整条 flow 报红，量具红而非产品红。
+#     ★ 生产实测的口令-账号配对（211，2026-11-23）：
+#         demoadmin / Demo@admin123 → 200 ✓
+#         admin     / Demo@admin123 → 401（env 的 admin 口令未生效，走 users 表记录）
+#         maestro_test / * → 401（本仓无口令记录）
+#     ⇒ 用其它账号时，调用方必须同时 -e ADMIN_USER/-e ADMIN_DISPLAY_NAME 覆盖两者。
 
 set -euo pipefail
 
@@ -23,7 +30,7 @@ cd "$SCRIPT_DIR/.."
 BASE_URL="${BASE_URL:-https://llm.itestu.cn}"
 ADMIN_USER="${ADMIN_USER:-demoadmin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-Demo@admin123}"
-ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-系统管理员}"
+ADMIN_DISPLAY_NAME="${ADMIN_DISPLAY_NAME:-演示管理员}"
 
 REPORT_ROOT="$SCRIPT_DIR/reports"
 mkdir -p "$REPORT_ROOT"

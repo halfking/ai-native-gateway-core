@@ -17,6 +17,9 @@ export default {
   sourceDetail: 'Detalle de solicitudes',
   // 2026-10-02 multiselección / borrar todo / actualización automática
   clearAll: 'Borrar todo',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: 'Desfijar',
+  pinnedUnresolved: 'Proveedor no encontrado: el filtro no se aplicó',
   autoRefresh: 'Actualización auto',
   autoRefreshOff: 'Desactivado',
   autoRefresh30s: '30 s',
