@@ -93,22 +93,24 @@ var _ pipeline.Hook = (*ProviderDiscoveryHook)(nil)
 // 走的就是它）挂的 provider 目录是**内存 demo 目录**（newV2DispatchDepsFromMain
 // 种的 gpt-4 假凭据）⇒ 任何真实模型都命中「no healthy provider」
 // ⇒ **每个请求**都在这一阶段中止 ⇒
-//   · 生产日志恒有一条 WARN（v2 pipeline: preflight error）；
-//   · 治理链（governance_security / governance_interception）对真实流量不可达；
-//   · 路由链（credential_health / routing / …）同样不可达。
+//
+//	· 生产日志恒有一条 WARN（v2 pipeline: preflight error）；
+//	· 治理链（governance_security / governance_interception）对真实流量不可达；
+//	· 路由链（credential_health / routing / …）同样不可达。
 //
 // ★ 这条 hook 的定位是「**咨询**」而不是「**门禁**」：
-//   真实路由由 v1 的 chatHandler（DB 凭据仓）负责，管线里的 provider 目录
-//   在这条路径上**不是权威来源** ⇒ 它没有资格中止整条管线。
-//   （真正的门禁是后面的 governance_interception + dispatch gate。）
+//
+//	真实路由由 v1 的 chatHandler（DB 凭据仓）负责，管线里的 provider 目录
+//	在这条路径上**不是权威来源** ⇒ 它没有资格中止整条管线。
+//	（真正的门禁是后面的 governance_interception + dispatch gate。）
 //
 // ★ 契约：advisory 版**永不返回 error**。它把结论写进 env.Metadata：
 //
-//	provider_discovery_status = "ok" | "no_healthy_provider" | "store_error"
-//	provider_count            = 候选数量
-//	provider_discovery_detail = 失败原因（仅失败时）
+//		provider_discovery_status = "ok" | "no_healthy_provider" | "store_error"
+//		provider_count            = 候选数量
+//		provider_discovery_detail = 失败原因（仅失败时）
 //
-//   ⇒ 上层能区分「发现到了」与「没发现到」，而管线继续往下走。
+//	  ⇒ 上层能区分「发现到了」与「没发现到」，而管线继续往下走。
 type AdvisoryDiscoveryHook struct {
 	hook *ProviderDiscoveryHook
 }

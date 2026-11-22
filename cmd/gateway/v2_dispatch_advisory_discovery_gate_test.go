@@ -13,10 +13,11 @@
 // 排在它之后的阶段对真实流量全部不可达。
 //
 // 这些门钉住三件事：
-//  ① provider_discovery **不再中止管线**（advisory），并把结论写进 metadata；
-//  ② 「请求路径」阶段默认**不注册**（前置位置跑它们会与 handler 的
-//     postflight 重复写；它们此前同样不可达 ⇒ 不是功能回退）；
-//  ③ 真实模型请求走完整条管线**不再产生 preflight error**。
+//
+//	① provider_discovery **不再中止管线**（advisory），并把结论写进 metadata；
+//	② 「请求路径」阶段默认**不注册**（前置位置跑它们会与 handler 的
+//	   postflight 重复写；它们此前同样不可达 ⇒ 不是功能回退）；
+//	③ 真实模型请求走完整条管线**不再产生 preflight error**。
 package main
 
 import (
@@ -118,8 +119,9 @@ func TestDispatchPipelineStagesArePreflightOnly(t *testing.T) {
 // ── 门 4：provider_discovery 这一阶段挂的必须是 advisory 版本 ──────────
 //
 // ★ 为什么还要这条「接线门」：门 1 量的是 hook 自己的行为，
-//   而「调用点还在不在 / 挂的是哪一版」只有看接线才能抓到
-//   （AGENTS.md 纪律：接线才是会退化的那一环）。
+//
+//	而「调用点还在不在 / 挂的是哪一版」只有看接线才能抓到
+//	（AGENTS.md 纪律：接线才是会退化的那一环）。
 func TestDispatchPipelineUsesAdvisoryDiscoveryHook(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_USE_V2_PIPELINE", "true")
 
@@ -185,7 +187,7 @@ func TestDispatchSourceDoesNotUseStrictDiscoveryHook(t *testing.T) {
 	}
 	body := string(src)
 	if strings.Contains(body, "provider.NewProviderDiscoveryHook(deps.ProviderStore, deps.ProviderProber)") {
-		t.Error("main_pipeline.go 里还有 provider.NewProviderDiscoveryHook(...)。\n"+
+		t.Error("main_pipeline.go 里还有 provider.NewProviderDiscoveryHook(...)。\n" +
 			"  ★ v1 包装路径必须用 advisory 版本：严格版在 demo 目录上会中止整条管线。")
 	}
 }
