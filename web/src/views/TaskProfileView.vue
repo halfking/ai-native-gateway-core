@@ -187,6 +187,7 @@ onMounted(load)
             :model-value="dateRange"
             :presets="presets"
             :max-span-days="365"
+            :presets-only="true"
             @apply="handleApplyRange"
           />
         </div>

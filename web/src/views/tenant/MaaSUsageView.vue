@@ -234,6 +234,7 @@ const ledgerCardFields = computed<CardField[]>(() => [
           :model-value="rangeValue"
           :presets="dayPresets"
           :max-span-days="30"
+          :presets-only="true"
           @apply="onRangeApply"
         />
         <select v-model.number="limit" class="limit-select" @change="load">

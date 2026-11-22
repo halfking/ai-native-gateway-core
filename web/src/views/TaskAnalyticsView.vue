@@ -154,6 +154,7 @@ function goBack() {
           :model-value="rangeValue"
           :presets="dayPresets"
           :max-span-days="90"
+          :presets-only="true"
           @apply="onRangeApply"
         />
       </div>
