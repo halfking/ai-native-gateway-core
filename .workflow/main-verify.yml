@@ -212,3 +212,23 @@ stages:
               name: session-analytics-checklist-gate
               script: |
                 bash scripts/checks/session-analytics-checklist-gate.sh
+
+            # ★★★ 2026-11-23（会话分析域 L13 补轮）：Maestro `id:` 选择器遮蔽门
+            # 接进**真正在跑的载体** ★★★
+            #
+            # ★ 起因：★ 本轮实测钉死 Maestro web 驱动的一条**选择器语义** ——
+            #   `id:` 匹配的是 hierarchy 的 `resource-id`，而 **`aria-label`/`title`
+            #   会盖掉 `data-testid`** ⇒ ⇒ 被遮蔽的 `id:` **在真机上必然永远找不到**
+            #   ⇒ **恒假红**，而且是**静默**的（表现为「找不到元素」，极易被误判成「页面坏了」）。
+            #   ⇒ ★ 仓内 2026-11-17 记的那条「`<button>` 命中不了」把两个个例
+            #     **推广成了类型规律** ⇒ ★ 它一直在挡路（L13 差点因此放弃改造）。
+            #
+            # ★ 判据写在这条**非注释行**上是有意的：
+            #   `tests/gate_scripts_caller_registry_test.sh` 要求「门脚本必须有可执行调用方」
+            #   ⇒ 注释里写不算 ⇒ 必须在**真载体**里出现非注释行。
+            #
+            # ★ 运行时依赖：**只有 python3**（零第三方依赖）。
+            - step: shell
+              name: maestro-id-selector-shadow-gate
+              script: |
+                bash scripts/checks/maestro-id-selector-shadow-gate.sh

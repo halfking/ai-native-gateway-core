@@ -61,6 +61,38 @@ for (const m of flowText.matchAll(/\bid:\s*"?([A-Za-z0-9_-]+)"?/g)) {
 /** flow 里仍是「文案断言」的条目（assertVisible: "…" 的字面量）。 */
 const textAssertions = [...flowText.matchAll(/assertVisible:\s*"([^"]*)"/g)].map((m) => m[1])
 
+// ★★★ 2026-11-23（L13 收口轮）新增：**任何命令**上的 `text:` 选择器。
+//
+// ★ 为什么必须补这条（原口径有洞）：原判据②只扫 `assertVisible: "…"` 这一种**顶层字面量**形式
+//   ⇒ ★ **完全看不见 `tapOn: text:`** ⇒ ⇒ 两处 tab 交互的中文文案依赖
+//   （`text: ".*模型用量.*"` / `text: ".*API Key用量.*"`）**一直没被门看见**。
+//   ⇒ ★★ 这就是「门自己的覆盖缺口」：**门绿 ≠ 没缺口**，只说明缺口不在门的射程里。
+//   ⇒ ⇒ 必须把「文案依赖」的口径扩到**选择器本身**，而不是某一种命令的写法。
+//
+// ★ 为什么区分 optional：★ **非 optional 的中文 `text:` 会「换语种即假红」**（响亮的错）；
+//   而 **optional 的中文 `text:` 只会 WARNED**（找不到就跳过）⇒ 不影响判定
+//   ⇒ ⇒ 口径＝「**非 optional 的命令上不得出现中文 `text:` 选择器**」。
+//   ⇒ 本 flow 的 §0 登出两行是 optional（它们找不到就跳过）⇒ 允许存在，
+//      但**已在 AGENTS.md 登记为剩余项**（彻底消除需给顶栏用户菜单加 data-testid ⇒ 动前端）。
+//
+// ★ 为什么用块级解析而不是 YAML 解析：`web/` 没有 yaml/js-yaml 依赖（实测 `require('yaml')` 抛错）
+//   ⇒ ⇒ 不能给测试引入新依赖（否则 CI 镜像要装包）⇒ 用「按 `- 命令:` 切块」的近似解析。
+const flowCodeOnly = flowText
+  // 整行注释（行首空白 + #）不参与判据 ⇒ 注释里提到 text: 不算
+  .split('\n')
+  .filter((line) => !/^\s*#/.test(line))
+  .join('\n')
+
+/** 每个命令块里的 `text:` 选择器 + 该命令是否 optional。 */
+const textSelectors = flowCodeOnly
+  .split(/\n(?=\s*-\s+[A-Za-z])/)
+  .map((block) => {
+    const m = block.match(/\btext:\s*"([^"]*)"/)
+    if (!m) return null
+    return { value: m[1], optional: /\boptional:\s*true/.test(block), block: block.trim().slice(0, 80) }
+  })
+  .filter((x): x is { value: string; optional: boolean; block: string } => x !== null)
+
 describe('L13 · flow 16 判据收敛契约', () => {
   it('① flow 里出现的每个 id 选择器都必须在前端源码里存在', () => {
     // 反向漂移（前端改名/删除 testid）在这里变红，而不是在真机 E2E 上假红。
@@ -110,6 +142,29 @@ describe('L13 · flow 16 判据收敛契约', () => {
     for (const id of required) {
       expect(sourceTestIds.has(id), `前端缺锚点：${id}`).toBe(true)
       expect(flowIds.has(id), `flow 未断言该锚点：${id}`).toBe(true)
+    }
+  })
+
+  it('⑥ ★ 非 optional 的命令上不得出现中文 `text:` 选择器（L13 补轮：覆盖 `tapOn: text:`）', () => {
+    // ★ 本条是 L13 补轮新增：**原判据②只扫 `assertVisible: "…"`**，看不见 `tapOn: text:`
+    //   ⇒ 两处 tab 交互的中文文案依赖一直隐形。
+    // ⇒ ★ 判据＝「**非 optional** 的命令上不得有中文 text 选择器」：
+    //   非 optional 的中文 text ⇒ 换语种即**假红**（响亮的错）；
+    //   optional 的中文 text ⇒ 只 WARNED（找不到就跳过）⇒ 不影响判定 ⇒ 允许存在。
+    const offenders = textSelectors.filter((t) => !t.optional && /[一-鿿]/.test(t.value))
+    expect(
+      offenders,
+      `flow 里仍有非 optional 的中文文案选择器：${offenders.map((o) => o.block).join(' | ')}`,
+    ).toEqual([])
+    // ★ 量具自检：★ 判据本身必须**有射程** ⇒ flow 里确实存在 `text:` 选择器（否则这条恒绿）。
+    //   ★ 否则「门绿」只说明「门没看见」，不说明「没有缺口」。
+    expect(textSelectors.length, 'flow 里一个 text: 选择器都没有 ⇒ 本判据恒绿（射程为零）').toBeGreaterThan(0)
+    // ★ 现有的两处 text 选择器必须**都是 optional**（§0 的登出归零）。
+    for (const t of textSelectors) {
+      expect(
+        t.optional,
+        `flow 里的中文 text 选择器必须 optional（否则换语种即假红）：${t.block}`,
+      ).toBe(true)
     }
   })
 })
