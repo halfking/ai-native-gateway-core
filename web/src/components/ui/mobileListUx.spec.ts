@@ -146,8 +146,18 @@ const NON_NAVIGABLE: Array<[string, number, string]> = [
   //   原因：f5fe7e5cb（users 数字出处轮）+ 6c4da0ae7（员工→项目下钻 L1）在该文件
   //   插入了项目卡块（projects，394）与帮助抽屉 ⇒ top_tasks/top_end_users 整体
   //   后移至 426/457。
-  ['src/views/UserProfileView.vue', 394, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
-  ['src/views/UserProfileView.vue', 457, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
+  // ⚠ 行号锚点：2026-11-23 由 394 改为 422（+28）。
+  //   原因：L11 收口轮（undefined 防护 + 回归门）在该文件 <script setup> 段
+  //   **插入了 28 行**（successRateText computed + 其说明注释）⇒ 其后所有行号
+  //   整体 +28 ⇒ 模板段四个 <ResponsiveDataView> 块起点
+  //   394/426/457 → **422/454/485**。
+  //   ★ 契约语义未变（仍是同一批块、同样无 compact 入口）⇒ 只重锁行号。
+  //   ★ 同族先例见本表各处（2026-10-27 / 2026-11-19 / 2026-11-20 均因上游在
+  //     <script setup> 头部插行而重锁）。★ 根治方向（未做，登记在 AGENTS.md）：
+  //     本表按**行号**锚定 ⇒ 该文件任何增删行都会让它红；改「内容锚点」才谈得
+  //     上不漂移（同 internal/rowsguard 的 exemptionAnchorSep 先例）。
+  ['src/views/UserProfileView.vue', 422, '画像内嵌的 projects（title-key=project_id）：项目是分组标签，本视图无项目详情页'],
+  ['src/views/UserProfileView.vue', 485, '画像内嵌的 top_end_users（title-key=end_user_id）：画像页本身就是终点，无二级详情'],
   // ⚠ 行号锚点：2026-10-27 第 16 增量（错误出口轮）由 282 改为 283。
   //   原因：本轮把错误文案统一接到 src/i18n/errorSurface.ts 的 surfaceError()
   //   ⇒ 该文件的 <script setup> 头部**新增了 1 行 import** ⇒ 其后所有行号整体 +1。
@@ -206,7 +216,11 @@ const KNOWN_GAP: Array<[string, number, string]> = [
     //   而文件里已存在 router.push ⇒ 按门语义不再满足 NON_NAVIGABLE（其前提
     //   是「文件无详情目的地」）⇒ 移入 KNOWN_GAP 登记「有目的地、compact 无入口」。
     //   修法 = 给 ResponsiveDataView 的 compact 卡片头/行补点击入口，属 UI 迭代项。
-    426,
+    // ⚠ 行号锚点：2026-11-23 由 426 改为 454（+28）。
+    //   原因：L11 收口轮在该文件 <script setup> 段插入了 28 行
+    //   （successRateText computed + 说明注释）⇒ 其后行号整体 +28。
+    //   ★ 契约语义未变（top_tasks 仍是「有目的地、compact 无入口」）⇒ 只重锁行号。
+    454,
     '详情目的地 /admin/session-analytics/tasks/:id 存在（goTask 行点击，2026-11-20 逐层下钻轮），'
       + '但入口只写在 #table 插槽的列按钮里 ⇒ compact 卡片无入口（与 ApprovalListView 同型）。',
   ],
