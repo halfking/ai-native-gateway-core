@@ -1222,8 +1222,10 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		//   （★ prompt_injection：词表硬命中、阈值 7、命中即 deny；
 		//   ★ prompt_injection_enhanced：6 层检测 + 评分分级、★ 常给 warn 不拦）
 		// ⇒ ★ 口径相反时链子取最严 ⇒ ★ 实际拦截由前者说了算。
-		// ★ ★ 但**测不到**：★ 归因日志只在 short-circuit 时打 ⇒ ★ 放行的请求
-		//   永远不落判决记录 ⇒ ★ 分歧率与方向在生产没有任何数据
+		// ★ ★ 但**有一类分歧测不到**：★ 归因日志只在 short-circuit 时打
+		//   ⇒ ★ **放行侧的分歧永远不落判决记录**（★ 形态 b：★ enhanced 判
+		//   medium ⇒ severity 1 ⇒ ★ 低于 BlockThreshold=2 ⇒ ★ 链子不拦、
+		//   ★ 请求正常放行）⇒ ★ 「**有人认为该拦、却没人拦**」在生产完全不可见
 		//   ⇒ ★ 「谁是权威判定方」只能靠推理。
 		// ★ ⇒ 这里补一行形态化观测（★ 罕见 ⇒ 噪声低）：★ 只取
 		//   plugin/allow/severity/code/reason、★ **绝不取 evidence**

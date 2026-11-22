@@ -36,7 +36,17 @@ cmd="${2:-}"
 case "$cmd" in
   *"docker ps"*)        printf 'llm-gateway-fake-a\tUp 10 minutes (healthy)\n' ;;
   *"docker inspect"*)   printf '2026-11-22T21:37:59.280507336Z\n' ;;
-  *"docker logs"*)      cat "$FAKE_LOGS" 2>/dev/null ;;
+  *"docker logs"*)
+    # ★ ★ 假 ssh 必须**模拟真机的 grep 过滤**（★ 真机上脚本是两次取数：
+    # ★   一次 grep 'short-circuit'、★ 一次 grep 'PI verdict divergence observed'）
+    # ★ ⇒ 不模拟的话 ⇒ ★ RAW_DIV 会拿到**全部行** ⇒ ★ 形态 b 的计数被夹具污染
+    # ★   ⇒ ★ 断言「形态 b = 1」永远红 ⇒ ★ 量具失真。
+    case "$cmd" in
+      *"PI verdict divergence observed"*) grep -F 'PI verdict divergence observed' "$FAKE_LOGS" 2>/dev/null ;;
+      *"short-circuit"*)                   grep -F 'short-circuit' "$FAKE_LOGS" 2>/dev/null ;;
+      *)                                   cat "$FAKE_LOGS" 2>/dev/null ;;
+    esac ;;
+
   *"psql"*)             printf '42\n' ;;
   *)                    : ;;
 esac
@@ -56,6 +66,18 @@ EOF
 # ★ 泄露夹具：★ 含 matched_pattern ⇒ ★ 脚本必须拒绝出数（★ 退出码 1）。
 cat > "$WORK/logs_leaky.jsonl" <<EOF
 {"timestamp":"2026-11-22T21:41:17.716436421Z","msg":"v2 dispatch gate: short-circuit","status":403,"decision_kind":"block","decision_reason":"[prompt_injection] critical threat detected","decision_deny_plugins":"prompt_injection","matched_pattern":"ignore previous"}
+EOF
+
+# ★ 分歧夹具（N8）：★ **两种形态各一条**、★ 放在同一个文件里
+#   —— ★ 真实日志就是混在一起的 ⇒ ★ 顺带验证「★ 假 ssh 的 grep 过滤」
+#      （★ 真机上 RAW 与 RAW_DIV 是两次不同过滤的取数）。
+#   形态 a（★ 拦截侧）：★ 同一份 decision_verdicts 里 PI 家族方向不一致
+#     （★ 词表 deny sev3 + enhanced allow sev2）⇒ ★ 请求被拦 ⇒ ★ 走 short-circuit。
+#   形态 b（★ 放行侧）：★ enhanced 判 medium ⇒ severity 1 ⇒ ★ 低于 BlockThreshold=2
+#     ⇒ ★ 链子不拦 ⇒ ★ 请求放行 ⇒ ★ **只有新观测点会记录它**。
+cat > "$WORK/logs_div.jsonl" <<EOF
+{"timestamp":"2026-11-22T21:42:00.000000000Z","msg":"v2 dispatch gate: short-circuit","path":"/v1/chat/completions","status":403,"decision_kind":"block","decision_reason":"[prompt_injection] critical threat detected","decision_deny_plugins":"prompt_injection","decision_verdicts":"prompt_injection(deny,sev3,...) prompt_injection_enhanced(allow,sev2,...) security.legacy(allow,sev0,...)","user":"$CANARY"}
+{"timestamp":"2026-11-22T21:42:01.000000000Z","msg":"v2 dispatch: PI verdict divergence observed","path":"/v1/chat/completions","pi_divergence":"true","pi_divergence_denied":"prompt_injection_enhanced","pi_divergence_allowed":"prompt_injection","user":"$CANARY"}
 EOF
 
 run_script() {  # run_script <日志夹具> <输出文件>；★ 打印退出码
@@ -86,12 +108,60 @@ if grep -q "matched_pattern" "$WORK/out_leaky"; then
 fi
 pass "对照臂：日志含匹配片段时脚本拒绝出数、★ 且不打印该片段"
 
-# ── ③ 参数契约：★ --help 退 0、★ 未知参数退 1 ───────────────────────────
+# ── ③ 分歧两种形态（N8）：★ 拦截侧（形态 a）+ 放行侧（形态 b）各计一次 ──
+# ★ 用 --json 精确断言（★ 纯文本 grep 会把两个「分歧次数」串味）。
+command -v python3 >/dev/null 2>&1 || fail "缺少 python3（★ 本自证要用它解析 --json 输出）"
+FAKE_LOGS="$WORK/logs_div.jsonl" PATH="$WORK/bin:$PATH" \
+  bash "$SCRIPT" --host fake --window 24h --json >"$WORK/out_div.json" 2>"$WORK/out_div.json.err" \
+  || fail "分歧夹具下脚本退出码非 0（★ 期望 0）"
+# ★ 干净夹具也要跑一份 --json（★ 供下面的**反向断言**用）。
+FAKE_LOGS="$WORK/logs_clean.jsonl" PATH="$WORK/bin:$PATH" \
+  bash "$SCRIPT" --host fake --window 24h --json >"$WORK/out_clean.json" 2>"$WORK/out_clean.json.err" \
+  || fail "干净夹具 --json 退出码非 0（★ 期望 0）"
+
+# ★ ★ 断言必须**自己传播失败**：★ 本脚本没有 `set -e`（★ 用 `set -uo pipefail`）
+#   ⇒ ★ python 断言失败会被 shell 忽略 ⇒ ★ 脚本照样往下跑、照样打印「✅ 通过」、
+#   ★ 退出码还是 0 ⇒ ★ **量具自己失真**（★ 变异自证时才发现）⇒ ★ 这里显式 `|| fail`。
+python3 - "$WORK/out_div.json" "$WORK/out_clean.json" <<'PY' || fail "★ 分歧双形态断言不通过（★ 见上方 stderr）"
+import json, sys
+d = json.load(open(sys.argv[1]))
+clean = json.load(open(sys.argv[2]))
+def chk(cond, msg):
+    if not cond:
+        print("★ 自证失败: " + msg, file=sys.stderr)
+        sys.exit(1)
+# ★ 形态 a 的那行是 short-circuit ⇒ ★ 拦截次数 = 1（★ 形态 b 那行不是 ⇒ 不计）。
+chk(d["intercepts"] == 1, "拦截次数应为 1（形态 a 那行），实为 %r" % d["intercepts"])
+# ★ 形态 a：★ 拦截侧分歧 = 1（★ 从既有 decision_verdicts 解析）。
+chk(d["pi_divergences_block_side"] == 1,
+    "形态 a（拦截侧）分歧应为 1，实为 %r" % d["pi_divergences_block_side"])
+# ★ 形态 b：★ 放行侧分歧 = 1（★ 只由新观测点产出）。
+chk(d["pi_divergences_pass_side"] == 1,
+    "形态 b（放行侧）分歧应为 1，实为 %r" % d["pi_divergences_pass_side"])
+# ★ ★ 反向断言（★ 这条是**变异抓手**）：★ 干净夹具里每行只有**单个插件的 deny**
+#   ⇒ ★ **不构成分歧** ⇒ ★ 形态 a 必须为 0。
+#   ★ ⇒ 若有人把判定改成「只要有 deny 就算分歧」⇒ ★ 这里立刻红。
+chk(clean["pi_divergences_block_side"] == 0,
+    "干净夹具（单插件 deny）不应算分歧，实为 %r" % clean["pi_divergences_block_side"])
+chk(clean["pi_divergences_pass_side"] == 0,
+    "干净夹具不应有放行侧分歧，实为 %r" % clean["pi_divergences_pass_side"])
+# ★ 形态 b 的方向：★ enhanced 认为该拦、★ 词表认为该放。
+pairs = d["pi_divergence_pairs"]
+chk(any("prompt_injection_enhanced" in k and "prompt_injection" in k for k in pairs),
+    "形态 b 的分歧方向对不上: %r" % pairs)
+# ★ 形态 a 的方向：★ 词表 deny ⇄ enhanced allow。
+apairs = d["pi_divergence_block_side_pairs"]
+chk(any("prompt_injection" in k and "prompt_injection_enhanced" in k for k in apairs),
+    "形态 a 的分歧方向对不上: %r" % apairs)
+PY
+pass "分歧双形态：★ 拦截侧 1 + 放行侧 1、★ 方向正确、★ 且假 ssh 的 grep 过滤生效"
+
+# ── ④ 参数契约：★ --help 退 0、★ 未知参数退 1 ───────────────────────────
 bash "$SCRIPT" --help >/dev/null 2>&1 || fail "--help 退出码非 0"
 bash "$SCRIPT" --nope >/dev/null 2>&1 && fail "未知参数没有退 1"
 pass "参数契约：--help 退 0、★ 未知参数退 1"
 
-# ── ④ 覆盖期纪律（★ 静态）：★ 分母查询必须与覆盖期同起点 ────────────────
+# ── ⑤ 覆盖期纪律（★ 静态）：★ 分母查询必须与覆盖期同起点 ────────────────
 grep -q "State.StartedAt" "$SCRIPT" || fail "脚本没有取容器启动时刻（★ 覆盖期不可知）"
 grep -q "greatest(now() - interval" "$SCRIPT" || fail "分母查询没有与覆盖期取同一起点（★ 分子分母会不同期）"
 pass "覆盖期纪律：分母与分子同起点"

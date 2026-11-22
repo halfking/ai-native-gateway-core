@@ -200,6 +200,44 @@ for line in raw.splitlines():
     kinds[d.get("decision_kind", "") or "(空)"] += 1
     paths[d.get("path", "") or "(空)"] += 1
 
+# ── 分歧观测（N8）：★ 两种形态 ────────────────────────────────────────────
+#   ★ 形态 a（拦截侧）：★ 同一份 decision_verdicts 里 PI 家族内部方向不一致
+#     ⇒ ★ **既有日志里就有** ⇒ ★ 本脚本当场解析（★ 不需要新代码上线）。
+#   ★ 形态 b（放行侧）：★ 请求正常放行 ⇒ ★ 只由新观测点产出
+#     （★ 「v2 dispatch: PI verdict divergence observed」那行）。
+import re as _re
+
+PI_FAMILY = ("prompt_injection", "prompt_injection_enhanced", "security.legacy")
+_vd_re = _re.compile(r"([A-Za-z0-9_.]+)\((allow|deny),sev(\d+)")
+
+div_a_total = 0
+div_a_pairs = Counter()
+for line in raw.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    vtxt = d.get("decision_verdicts", "") or ""
+    if not vtxt:
+        continue
+    fam = []
+    for m in _vd_re.finditer(vtxt):
+        plugin, allow, sev = m.group(1), m.group(2), int(m.group(3))
+        if plugin.startswith(PI_FAMILY):
+            fam.append((plugin, allow, sev))
+    if not fam:
+        continue
+    has_deny = any(a == "deny" for _, a, _ in fam)
+    has_allow = any(a == "allow" for _, a, _ in fam)
+    if has_deny and has_allow:
+        div_a_total += 1
+        denied = ",".join(p for p, a, _ in fam if a == "deny")
+        allowed = ",".join(p for p, a, _ in fam if a == "allow")
+        div_a_pairs["%s ⇄ %s" % (denied, allowed)] += 1
+
 # ── 分歧观测（N8）─────────────────────────────────────────────────────────
 div_total = 0
 div_pairs = Counter()
@@ -238,7 +276,9 @@ if as_json:
         "by_decision_kind": dict(kinds),
         "by_path": dict(paths),
         "intercept_timestamps": stamps,
-        "pi_divergences": div_total,
+        "pi_divergences_pass_side": div_total,
+        "pi_divergences_block_side": div_a_total,
+        "pi_divergence_block_side_pairs": dict(div_a_pairs),
         "pi_divergence_pairs": dict(div_pairs),
         "pi_divergence_timestamps": div_stamps,
         "unparsable_lines": bad_lines,
@@ -291,14 +331,22 @@ else:
             print("  …… 另有 %d 条未列" % (len(stamps) - 50))
     print("")
     print("-- PI 家族判决分歧（N8：★ 两套注入判定口径相反的观测）--")
-    if div_total:
-        print("  分歧次数: %d" % div_total)
-        for k, v in div_pairs.most_common():
-            print("  %5d  %s" % (v, k))
-        for t in div_stamps[:20]:
-            print("       %s" % t)
+    print("  [形态 a｜拦截侧：★ 从既有 decision_verdicts 解析]")
+    if div_a_total:
+        print("    分歧次数: %d" % div_a_total)
+        for k, v in div_a_pairs.most_common():
+            print("    %5d  %s" % (v, k))
     else:
-        print("  （窗口内零分歧）")
+        print("    （窗口内零分歧）")
+    print("  [形态 b｜放行侧：★ 来自新观测点]")
+    if div_total:
+        print("    分歧次数: %d" % div_total)
+        for k, v in div_pairs.most_common():
+            print("    %5d  %s" % (v, k))
+        for t in div_stamps[:20]:
+            print("         %s" % t)
+    else:
+        print("    （窗口内零分歧）")
     print("")
     print("★ ★ 读数须知（三条，★ 别把这张表当结论）：")
     print("   ① 拦截率是**上界**：★ 分子里可能混着**人工探针**（★ 探针也是真实请求）")

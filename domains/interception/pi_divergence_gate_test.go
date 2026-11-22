@@ -13,8 +13,12 @@ package interception
 //	  ⇒ 同一段文本可能只给 `risk_level=high action=warn`（**不拦**）。
 //
 // ⇒ ★ 两者口径相反时链子取最严 ⇒ ★ 实际拦截由前者说了算。
-// ⇒ ★ 但**测不到**：★ 归因日志只在 short-circuit（被拦）时打
-// ⇒ ★ 放行的请求永远不落判决记录 ⇒ ★ 「分歧率与方向」在生产没有任何数据
+// ⇒ ★ ★ ★ 但**有一类分歧测不到**（★ 本轮查实链子的判决规则后区分开的）：
+// ⇒ ★ 归因日志只在 short-circuit（被拦）时打
+// ⇒ ★ **放行侧的分歧永远不落判决记录**
+// ⇒   （★ 形态 b：★ enhanced 判 medium ⇒ severity 1 ⇒ ★ 低于 BlockThreshold=2
+// ⇒   ⇒ ★ 链子不拦、★ 请求正常放行）
+// ⇒ ★ 「**有人认为该拦、却没人拦**」在生产完全不可见
 // ⇒ ★ N8（定权威判定方）只能靠推理。
 //
 // ⇒ 本门钉住新加的**分歧观测**：★ 只记分歧、★ 罕见事件、★ 形态字段、★ 零泄露。
@@ -89,6 +93,18 @@ func TestDetectPIVergenceFindsCrossPluginDisagreement(t *testing.T) {
 		t.Errorf("把非 PI 家族的插件差异误报成分歧: %+v", d)
 	}
 
+	// ③b ★ **形态 b**（★ 放行侧的分歧）：★ enhanced 判 medium ⇒ severity 1
+	//   而词表库 allow ⇒ ★ 链子不拦（★ severity 1 < BlockThreshold=2）
+	//   ⇒ ★ 请求**正常放行** ⇒ ★ **short-circuit 日志永远看不到它**
+	//   ⇒ ★ 这正是本观测点存在的理由 ⇒ ★ 必须能被检出。
+	if d := DetectPIVergence(piEnv(
+		piVerdict("prompt_injection_enhanced", false, 1, "risk_level=medium action=warn"),
+		piVerdict("prompt_injection", true, 0, ""),
+	)); d == nil {
+		t.Error("★ 放行侧的分歧（形态 b）没被检出 ⇒ ★ 「有人认为该拦、却没人拦」" +
+			"在生产仍然不可见 ⇒ ★ 本观测点白做了")
+	}
+
 	// ④ 空输入 / nil 环境 ⇒ 不炸、不报。
 	if d := DetectPIVergence(nil); d != nil {
 		t.Errorf("nil env 报了分歧: %+v", d)
@@ -146,7 +162,10 @@ func TestPIDivergenceObserverIsWiredToThePassPath(t *testing.T) {
 	if !strings.Contains(src, "PI verdict divergence observed") {
 		t.Error("main_pipeline.go 没有分歧观测的日志标记")
 	}
-	// ★ 必须落在 short-circuit 的 return **之后**（★ 放行路径）。
+	// ★ 必须落在 short-circuit 的 return **之后**（★ 放行路径）
+	//   —— ★ 理由不是「分歧只发生在放行侧」（★ 那不成立：★ 形态 a 在拦截侧）
+	//   ★ 而是「★ 放行侧的分歧**永远不会被 short-circuit 日志记到**」
+	//   ★ ⇒ ★ 观测点必须挂在放行路径上才补得上那个洞。
 	idxDiv := strings.Index(src, "DetectPIVergence(env)")
 	idxSC := strings.Index(src, "v2 dispatch gate: short-circuit")
 	if idxDiv < 0 || idxSC < 0 {
