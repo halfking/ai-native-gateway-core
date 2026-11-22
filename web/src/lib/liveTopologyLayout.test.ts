@@ -546,7 +546,8 @@ describe('computeGatewayBox', () => {
   it('keeps the box clear of client/provider cards across canvas heights', () => {
     // 比例量（box 高）vs 固定像素量（卡片高）随画布高度变化 —— 必须扫高度。
     // 2026-11-23 第十七轮：MIN_LAYOUT_HEIGHT 提升到 660px，从 660px 开始扫描。
-    for (const height of [660, 700, 900, 1200]) {
+    // 2026-11-23 第十八轮：MIN_LAYOUT_HEIGHT 提升到 760px，从 760px 开始扫描。
+    for (const height of [760, 900, 1200]) {
       const box = computeGatewayBox(1200, height)
       const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height })
       const clientBottom = Math.max(...layout.nodes.filter((n) => n.column === 'client').map((n) => n.y + n.h))
@@ -729,8 +730,9 @@ describe('★ 边界回归：布局高度下限', () => {
     // ★ ⇒ 若上游改了布局算法（间距/层数/大方块高度），本条会红 ⇒ ★ 提示
     // ★   「该把下限重新对一遍」⇒ ★ 而不会等到线上溢出才发现。
     // ★ 2026-11-23 第十七轮：用户要求增加显示空间，余量从 40px 提升到 120px。
+    // ★ 2026-11-23 第十八轮：用户要求更大间距，余量从 120px 提升到 220px。
     const feasible = minFeasibleHeight()
-    const allowedMargin = 120 // 用户要求更大的显示空间，允许更大余量
+    const allowedMargin = 220 // 用户要求客户端与网关核心之间有更大间距
     expect(
       MIN_LAYOUT_HEIGHT,
       `★ 布局兜底下限（${MIN_LAYOUT_HEIGHT}）不得小于真实最小可行高度（${feasible}）`

@@ -709,9 +709,9 @@ function onSelectModel(model: string) {
       auto 行在空间不足时整行塌 0 ⇒ 右栏摘要浮层照样缩成 16px 一条缝
       （1280×713 部署后实测：左 296px / 右 16px）。下限取 min(240px,40vh)
       与该行 max-height: 240px 封顶对齐。 */
-    /* ★ 2026-11-23 第十七轮调整：用户要求画布高度增加 100px。
-     * 行下限从 560px 提升到 660px，确保画布有更充足的显示空间。 */
-    grid-template-rows: minmax(min(660px, 70vh), 1fr) minmax(min(240px, 40vh), auto);
+    /* ★ 2026-11-23 第十八轮调整：用户反馈客户端与网关核心间隔太近。
+     * 行下限从 660px 提升到 760px，确保各层之间有更充足的间距。 */
+    grid-template-rows: minmax(min(760px, 70vh), 1fr) minmax(min(240px, 40vh), auto);
   }
 
   .live-topology__right {
@@ -745,9 +745,9 @@ function onSelectModel(model: string) {
     /* ★ 同行下限修（见上方 @1024 的注释）：320px < 画布 min-height 480px
      * ⇒ 画布溢出被裁 ⇒ 改 560px，让画布完整可见。
      * 
-     * 2026-11-23 第十七轮调整：用户要求画布高度增加 100px，行下限从 560px 提升到 660px，
+     * 2026-11-23 第十八轮调整：用户反馈客户端与网关核心间隔太近，行下限从 660px 提升到 760px，
      * 与 @1024 断点保持一致。 */
-    grid-template-rows: minmax(min(660px, 70vh), 1fr);
+    grid-template-rows: minmax(min(760px, 70vh), 1fr);
   }
 
   .live-topology__right {

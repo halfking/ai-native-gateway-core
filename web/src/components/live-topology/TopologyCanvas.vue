@@ -627,10 +627,10 @@ function onBlankClick() {
      剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
      桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
      
-     ★ 2026-11-23 第十七轮调整：用户要求画布高度增加 100px。
-     从 560px 提升到 660px，确保所有层有更充足的显示空间。 */
+     ★ 2026-11-23 第十八轮调整：用户反馈客户端与网关核心间隔太近。
+     从 660px 再提升到 760px，确保各层之间有更充足的间距。 */
   flex: 1 1 auto;
-  min-height: 660px;
+  min-height: 760px;
   overflow: hidden;
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--kx-border) 60%, transparent) 1px, transparent 0) 0 0 / 22px 22px,
