@@ -28,6 +28,16 @@ const props = withDefaults(
     notAfter?: string
     /** 表单场景：无应用按钮，预设/日期变更即时提交 */
     instant?: boolean
+    /**
+     * 仅预设模式（2026-11-23 批判式审计轮）：隐藏自定义起止输入与「应用」按钮。
+     *
+     * ★ 为什么需要它：端点只接受 `days`（后端把 days 解释为「相对今天的滚动
+     *   窗口」）时，用户手选的历史区间**无法**被准确表达——自定义区间会被
+     *   静默改写成「跨度天数」，界面显示的区间与数据窗口不一致。
+     *   ⇒ 这种端点必须用本模式**禁掉自定义入口**，让用户只能选预设档位，
+     *   保证「界面显示的 = 数据反映的」。
+     */
+    presetsOnly?: boolean
     disabled?: boolean
     /** 触发器宽度撑满容器 */
     block?: boolean
@@ -36,6 +46,7 @@ const props = withDefaults(
     precision: 'date',
     maxSpanDays: 0,
     instant: false,
+    presetsOnly: false,
     disabled: false,
     block: false,
   },
@@ -197,8 +208,8 @@ function applyDraft() {
           {{ t(preset.labelKey) }}
         </button>
       </div>
-      <div v-if="presets.length" class="kx-dr-divider" aria-hidden="true"></div>
-      <div class="kx-dr-inputs">
+      <div v-if="presets.length && !presetsOnly" class="kx-dr-divider" aria-hidden="true"></div>
+      <div v-if="!presetsOnly" class="kx-dr-inputs">
         <div class="kx-dr-input">
           <label class="kx-dr-input__label">{{ t('common.dateRange.startDate') }}</label>
           <ElDatePicker
@@ -228,7 +239,7 @@ function applyDraft() {
           />
         </div>
       </div>
-      <div v-if="!instant" class="kx-dr-foot">
+      <div v-if="!instant && !presetsOnly" class="kx-dr-foot">
         <span v-if="draftInvalid === 'endBeforeStart'" class="kx-dr-hint kx-dr-hint--error">
           {{ t('common.dateRange.endBeforeStart') }}
         </span>

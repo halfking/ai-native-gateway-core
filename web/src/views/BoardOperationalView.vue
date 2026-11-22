@@ -19,7 +19,7 @@ import {
   type BoardPayload,
 } from '../api/board'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
@@ -34,7 +34,13 @@ const trendChartRef = ref<HTMLDivElement>()
 let trendChartInstance: echarts.ECharts | null = null
 
 // 统一时间范围选择器（2026-11-19）
-const { presets, rangeValue, applyRange } = useSpanDaysRange(timeRange, [
+//
+// ★ 2026-11-23 批判式审计轮：改用 useRangeDays（此前用 useSpanDaysRange，
+//   把用户选的自定义区间压成「跨度天数」）。
+//   board 后端本就支持真实区间（boardTimeRangeFromRequest 收 start/end，
+//   api/board.ts 也早就有 start/end 参数）⇒ 前端压成 days 等于把后端已有的
+//   能力扔掉：界面显示 2026-09-01~2026-09-10，数据却是「最近 10 天」。
+const { presets, rangeValue, customRange, applyRange } = useRangeDays(timeRange, [
   { days: 1, labelKey: 'common.dateRange.preset.today' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
@@ -52,7 +58,10 @@ async function load() {
   try {
     const [opData, bdData] = await Promise.all([
       fetchBoardOperational(),
-      fetchDashboardBoard({ days: timeRange.value }),
+      // 自定义区间 ⇒ 原样透传 start/end（后端 boardTimeRangeFromRequest 支持）。
+      fetchDashboardBoard(customRange.value
+        ? { start: customRange.value.start, end: customRange.value.end }
+        : { days: timeRange.value }),
     ])
     operationalData.value = opData
     boardData.value = bdData
@@ -280,11 +289,21 @@ function topItems(items: any[] | undefined, n: number = 5) {
 }
 
 // 导航函数 (2026-11-20)
+//
+// ★ 2026-11-23：自定义区间下钻时把 start/end 一起带过去（下游列表页已支持
+//   读取），否则「看板选的历史区间 → 下钻页变回最近 N 天」，同一页两个口径。
+function rangeQuery(): Record<string, string> {
+  if (customRange.value) {
+    return { start: customRange.value.start, end: customRange.value.end }
+  }
+  return { days: String(timeRange.value) }
+}
+
 function navigateToList(dimension: 'model' | 'provider' | 'client' | 'tenant') {
   const registry = ANALYTICS_REGISTRY[dimension]
   router.push({
     path: registry.listPath,
-    query: { days: timeRange.value }
+    query: rangeQuery()
   })
 }
 
@@ -292,7 +311,7 @@ function navigateToDetail(dimension: 'model' | 'provider' | 'client' | 'tenant',
   const registry = ANALYTICS_REGISTRY[dimension]
   router.push({
     path: registry.detailPath(itemKey),
-    query: { days: timeRange.value }
+    query: rangeQuery()
   })
 }
 

@@ -216,12 +216,29 @@ export function putWorkTypeRoutes(key: string, routes: ModelRoute[]): Promise<{ 
 }
 
 /**
- * Get work type statistics. `days` 统计窗口（1..90 天），缺省后端回落 24h。
+ * Get work type statistics.
+ *
+ * `days` 统计窗口（1..90 天），缺省后端回落 24h。
  * 2026-11-19 时间范围统一轮：与全站 KxDateRangePicker 的 span 口径对齐。
+ *
+ * ★ 2026-11-23 批判式审计轮：同时支持**真实区间** `start`/`end`
+ *   （YYYY-MM-DD，系统时区）——此前用户选的自定义区间被压成「跨度天数」，
+ *   后端把 days 解释为「相对今天的滚动窗口」⇒ 界面显示的区间与数据窗口
+ *   不一致（静默错误答案）。后端：admin/work_types.go parseStatsTimeRange。
  */
-export function getWorkTypeStats(days?: number): Promise<WorkTypeStats> {
-  const q = days && days > 0 ? `?days=${Math.round(days)}` : ''
-  return req<WorkTypeStats>('GET', `/api/admin/work-types/stats${q}`)
+export function getWorkTypeStats(
+  params: number | { days?: number; start?: string; end?: string } = {},
+): Promise<WorkTypeStats> {
+  const p = typeof params === 'number' ? { days: params } : params
+  const qs = new URLSearchParams()
+  if (p.start && p.end) {
+    qs.set('start', p.start)
+    qs.set('end', p.end)
+  } else if (p.days && p.days > 0) {
+    qs.set('days', String(Math.round(p.days)))
+  }
+  const q = qs.toString()
+  return req<WorkTypeStats>('GET', `/api/admin/work-types/stats${q ? `?${q}` : ''}`)
 }
 
 export function syncWorkTypesFromACC(): Promise<WorkTypeSyncResponse> {

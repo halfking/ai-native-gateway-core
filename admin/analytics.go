@@ -122,7 +122,19 @@ func parseAnalyticsMetric(raw string) (string, error) {
 // the writer only learned to set TRUE/FALSE later. The query now uses
 // `is_auto_request IS NOT TRUE` so NULL rows are admitted alongside TRUE
 // auto requests.
-func buildMatrixQuery(rowDim, metric string) (string, error) {
+// buildMatrixQuery 构造基表 matrix 查询。
+//
+// ★ 2026-11-23 批判式审计轮：时间谓词参数化（timeWhere）。
+//   - 预设窗口（days/window）：`ts >= NOW() - $1::interval`（旧语义逐字不变）；
+//   - 自定义区间（start/end）：`ts >= $1 AND ts < $2`（参数化时间戳）。
+//     ⇒ 两种形态共用同一段查询骨架，只换 WHERE 里的时间条件与参数个数。
+//
+// timeWhere 为可选参数：省略时用预设形态（保持既有调用点与单测的签名兼容）。
+func buildMatrixQuery(rowDim, metric string, timeWhereOpt ...string) (string, error) {
+	timeWhere := "ts >= NOW() - $1::interval"
+	if len(timeWhereOpt) > 0 && timeWhereOpt[0] != "" {
+		timeWhere = timeWhereOpt[0]
+	}
 	if rowDim != "task_type" && rowDim != "work_type" {
 		return "", fmt.Errorf("row must be task_type or work_type")
 	}
@@ -163,7 +175,7 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		       %s AS col_key,
 		       %s AS val
 		FROM routing_analytics_source
-		WHERE ts >= NOW() - $1::interval
+		WHERE %s
 		  AND %s
 		  AND %s IS NOT NULL
 		  AND %s
@@ -172,7 +184,7 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
+	`, rowExpr, colExpr, metricExpr, timeWhere, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
 }
 
 // businessRequestFilter returns the shared predicate used by routing
@@ -255,7 +267,11 @@ func effectiveModelExpr() string {
 //
 // 2026-06-24 fix: see buildMatrixQuery — uses `is_auto_request IS NOT TRUE`
 // so historical rows with NULL is_auto_request are not silently dropped.
-func buildFlowL12Query() string {
+func buildFlowL12Query(timeWhereOpt ...string) string {
+	timeWhere := "ts >= NOW() - $1::interval"
+	if len(timeWhereOpt) > 0 && timeWhereOpt[0] != "" {
+		timeWhere = timeWhereOpt[0]
+	}
 	taskExpr := effectiveTaskExpr()
 	modelExpr := effectiveModelExpr()
 	return fmt.Sprintf(`
@@ -263,7 +279,7 @@ func buildFlowL12Query() string {
 		       %s AS dst,
 		       COUNT(*)::float8 AS val
 		FROM routing_analytics_source
-		WHERE ts >= NOW() - $1::interval
+		WHERE %s
 		  AND %s IS NOT NULL
 		  AND %s
 		  AND (
@@ -271,7 +287,7 @@ func buildFlowL12Query() string {
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, taskExpr, modelExpr, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
+	`, taskExpr, modelExpr, timeWhere, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
 }
 
 // buildFlowL23Query assembles the L2→L3 (model × task → provider)
@@ -282,7 +298,11 @@ func buildFlowL12Query() string {
 // 2026-06-24 fix: see buildMatrixQuery — uses
 // `rl.is_auto_request IS NOT TRUE` so historical rows with NULL
 // is_auto_request are not silently dropped.
-func buildFlowL23Query() string {
+func buildFlowL23Query(timeWhereOpt ...string) string {
+	timeWhere := "rl.ts >= NOW() - $1::interval"
+	if len(timeWhereOpt) > 0 && timeWhereOpt[0] != "" {
+		timeWhere = timeWhereOpt[0]
+	}
 	taskExpr := effectiveTaskExpr()
 	modelExpr := effectiveModelExpr()
 	return fmt.Sprintf(`
@@ -294,7 +314,7 @@ func buildFlowL23Query() string {
 		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
 		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
 		))
-		WHERE rl.ts >= NOW() - $1::interval
+		WHERE %s
 		  AND %s IS NOT NULL
 		  AND %s
 		  AND (
@@ -302,7 +322,7 @@ func buildFlowL23Query() string {
 		    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
 		  )
 		GROUP BY (%s), (%s), p.display_name
-	`, taskExpr, modelExpr, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
+	`, taskExpr, modelExpr, timeWhere, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
 }
 
 // handleMatrix returns a canonical_model × row_dim heatmap.
@@ -326,6 +346,19 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	// 2026-11-23 批判式审计轮：同时接受真实区间 ?start=&end=。
+	// 此前 start/end 被静默忽略 ⇒ 前端组件里选的自定义区间拿到的是别的窗口。
+	statsRange, rangeErr := parseStatsTimeRange(r, 7)
+	if rangeErr != nil {
+		writeJSONErr(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+	customRange := statsRange.Custom
+	if customRange {
+		windowLabel = statsRange.label()
+		windowDur = time.Duration(statsRange.Hours) * time.Hour
+	}
 	rowDim := strings.TrimSpace(r.URL.Query().Get("row"))
 	if rowDim == "" {
 		rowDim = "task_type"
@@ -347,7 +380,11 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	var args []any
 
 	// Try to use materialized view for better performance
-	useMV := useMaterializedView(ctx, h.db, windowLabel)
+	//
+	// 2026-11-23：自定义区间**不走物化视图**——MV 只覆盖固定窗口
+	// （useMaterializedView 按 windowLabel 选），用它会把自定义区间
+	// 悄悄换成 MV 的窗口（与「静默改写」同一类缺陷）。
+	useMV := !customRange && useMaterializedView(ctx, h.db, windowLabel)
 	if useMV {
 		query, err = buildMatrixQueryMaterialized(rowDim, metric)
 		if err != nil {
@@ -363,14 +400,26 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		}
 	} else {
 		// Fallback to base view
-		query, err = buildMatrixQuery(rowDim, metric)
+		//
+		// 2026-11-23：时间谓词两种形态——
+		//   预设：`ts >= NOW() - $1::interval`（$1 = 秒数字符串，旧语义不变）
+		//   自定义：`ts >= $1 AND ts < $2`（参数化时间戳）
+		timeWhere := "ts >= NOW() - $1::interval"
+		var tenantFrag string
+		var tenantArgs []any
+		if customRange {
+			timeWhere = "ts >= $1 AND ts < $2"
+			tenantFrag, tenantArgs, _ = tenantLogsClause(r, 3)
+			args = []any{statsRange.Start, statsRange.End}
+		} else {
+			tenantFrag, tenantArgs, _ = tenantLogsClause(r, 2)
+			args = []any{fmt.Sprintf("%d seconds", int(windowDur.Seconds()))}
+		}
+		query, err = buildMatrixQuery(rowDim, metric, timeWhere)
 		if err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-		args = []any{intervalStr}
 		if tenantFrag != "" {
 			query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
 			args = append(args, tenantArgs...)
@@ -486,6 +535,19 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2026-11-23 批判式审计轮：同时接受真实区间 ?start=&end=。
+	// 此前 start/end 被静默忽略 ⇒ 前端组件里选的自定义区间拿到的是别的窗口。
+	statsRange, rangeErr := parseStatsTimeRange(r, 7)
+	if rangeErr != nil {
+		writeJSONErr(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+	customRange := statsRange.Custom
+	if customRange {
+		windowLabel = statsRange.label()
+		windowDur = time.Duration(statsRange.Hours) * time.Hour
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -508,13 +570,15 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to use materialized view for better performance
-	useMV := useMaterializedView(ctx, h.db, windowLabel)
+	//
+	// 2026-11-23：自定义区间**不走物化视图**（MV 只覆盖固定窗口）。
+	useMV := !customRange && useMaterializedView(ctx, h.db, windowLabel)
 
 	var l12Query string
 	var l12Args []any
-	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
 
 	if useMV {
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
 		// Use materialized view
 		l12Query = buildFlowL12QueryMaterialized()
 		l12Args = []any{}
@@ -525,9 +589,20 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Fallback to base view
-		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-		l12Args = []any{intervalStr}
-		l12Query = buildFlowL12Query()
+		//
+		// 2026-11-23：时间谓词两种形态（同 matrix）。
+		timeWhere := "ts >= NOW() - $1::interval"
+		var tenantFrag string
+		var tenantArgs []any
+		if customRange {
+			timeWhere = "ts >= $1 AND ts < $2"
+			tenantFrag, tenantArgs, _ = tenantLogsClause(r, 3)
+			l12Args = []any{statsRange.Start, statsRange.End}
+		} else {
+			tenantFrag, tenantArgs, _ = tenantLogsClause(r, 2)
+			l12Args = []any{fmt.Sprintf("%d seconds", int(windowDur.Seconds()))}
+		}
+		l12Query = buildFlowL12Query(timeWhere)
 		if tenantFrag != "" {
 			l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
 			l12Args = append(l12Args, tenantArgs...)
@@ -599,16 +674,28 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		// Use materialized view
 		l23Query = buildFlowL23QueryMaterialized()
 		l23Args = []any{}
-		if tenantFrag != "" {
+		mvTenantFrag, mvTenantArgs, _ := tenantLogsClause(r, 1)
+		if mvTenantFrag != "" {
 			// Inject tenant filter for materialized view
 			l23Query = strings.Replace(l23Query, "WHERE ", "WHERE mv.tenant_id = $1 AND ", 1)
-			l23Args = append(l23Args, tenantArgs...)
+			l23Args = append(l23Args, mvTenantArgs...)
 		}
 	} else {
 		// Fallback to base view
-		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-		l23Query = buildFlowL23Query()
-		l23Args = []any{intervalStr}
+		//
+		// 2026-11-23：时间谓词两种形态（同 matrix / L12）。
+		timeWhere := "rl.ts >= NOW() - $1::interval"
+		var tenantFrag string
+		var tenantArgs []any
+		if customRange {
+			timeWhere = "rl.ts >= $1 AND rl.ts < $2"
+			tenantFrag, tenantArgs, _ = tenantLogsClause(r, 3)
+			l23Args = []any{statsRange.Start, statsRange.End}
+		} else {
+			tenantFrag, tenantArgs, _ = tenantLogsClause(r, 2)
+			l23Args = []any{fmt.Sprintf("%d seconds", int(windowDur.Seconds()))}
+		}
+		l23Query = buildFlowL23Query(timeWhere)
 		if tenantFrag != "" {
 			l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
 			l23Args = append(l23Args, tenantArgs...)
@@ -1022,10 +1109,30 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 2026-11-23 批判式审计轮：同时接受真实区间 ?start=&end=（同 matrix/flow）。
+	// 三条查询（RDL 精确 / _request_logs 近似 / 混合补齐）必须**同一窗口**，
+	// 否则 funnel 内部的 exact/approximate/mixed 口径会互相打架。
+	statsRange, rangeErr := parseStatsTimeRange(r, 7)
+	if rangeErr != nil {
+		writeJSONErr(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+	customRange := statsRange.Custom
+	if customRange {
+		windowLabel = statsRange.label()
+		windowDur = time.Duration(statsRange.Hours) * time.Hour
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+
+	// 时间谓词形态：预设 ⇒ `ts >= NOW() - $N::interval`；自定义 ⇒ `ts >= $N AND ts < $N+1`。
+	// 模型名数组的占位符随之顺延（$2 → $3）。
+	tsPredicate := "ts >= NOW() - $1::interval"
+	if customRange {
+		tsPredicate = "ts >= $1 AND ts < $2"
+	}
 
 	scope := EffectiveTenantIDAll(r)
 	if scope == "" {
@@ -1033,9 +1140,13 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	}
 	cacheKey := funnelCacheKey(scope, model, windowLabel)
 
-	if cached, ok := globalFunnelCache.get(cacheKey); ok {
-		writeJSONOk(w, cached)
-		return
+	// ★ 自定义区间不进缓存：缓存键只带 windowLabel（天数档位），
+	// 两个不同历史区间会撞同一把键 ⇒ 串数据。宁可多查一次。
+	if !customRange {
+		if cached, ok := globalFunnelCache.get(cacheKey); ok {
+			writeJSONOk(w, cached)
+			return
+		}
 	}
 
 	modelNames, _ := expandModelFilter(ctx, h.db, model)
@@ -1053,8 +1164,19 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	dataSource := "exact"
 
 	// Primary: routing_decision_log decision_trace aggregates.
+	// 2026-11-23：时间参数形态随 customRange 变化——
+	//   预设：$1 = interval（秒数字符串），$2 = 模型名数组
+	//   自定义：$1/$2 = 起止时间戳，$3 = 模型名数组
+	modelArgIdx := 2
 	rdlTenantFrag, rdlTenantArgs, _ := tenantLogsClause(r, 3)
+	if customRange {
+		modelArgIdx = 3
+		rdlTenantFrag, rdlTenantArgs, _ = tenantLogsClause(r, 4)
+	}
 	rdlArgs := []any{intervalStr, modelNames}
+	if customRange {
+		rdlArgs = []any{statsRange.Start, statsRange.End, modelNames}
+	}
 	rdlTenantWhere := ""
 	if rdlTenantFrag != "" {
 		rdlTenantWhere = rdlTenantFrag
@@ -1078,10 +1200,10 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 			COUNT(*) FILTER (WHERE chosen_credential_id IS NOT NULL)::int,
 			COUNT(*) FILTER (WHERE success IS TRUE)::int
 		FROM routing_decision_log
-		WHERE ts >= NOW() - $1::interval
+		WHERE ` + tsPredicate + `
 		  AND (
-		    outbound_model = ANY($2) OR canonical_model = ANY($2)
-		    OR client_model = ANY($2) OR model = ANY($2)
+		    outbound_model = ANY($` + fmt.Sprint(modelArgIdx) + `) OR canonical_model = ANY($` + fmt.Sprint(modelArgIdx) + `)
+		    OR client_model = ANY($` + fmt.Sprint(modelArgIdx) + `) OR model = ANY($` + fmt.Sprint(modelArgIdx) + `)
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1
@@ -1103,6 +1225,9 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		dataSource = "approximate"
 		var autoReq, routed, ok int
 		approxArgs := []any{intervalStr, modelNames}
+		if customRange {
+			approxArgs = []any{statsRange.Start, statsRange.End, modelNames}
+		}
 		if rdlTenantFrag != "" {
 			approxArgs = append(approxArgs, rdlTenantArgs...)
 		}
@@ -1113,8 +1238,8 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 					COUNT(*) FILTER (WHERE success IS TRUE)::int
 				FROM routing_analytics_source
 				WHERE is_auto_request = TRUE
-				  AND ts >= NOW() - $1::interval
-				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+tsPredicate+`
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($`+fmt.Sprint(modelArgIdx)+`)
 				  AND `+businessRequestFilter("")+rdlTenantWhere+`
 			`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
 			writeAutoRouteInternalErr(w, err)
@@ -1135,6 +1260,9 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		dataSource = "mixed"
 		var autoReq, routed, ok int
 		mixedArgs := []any{intervalStr, modelNames}
+		if customRange {
+			mixedArgs = []any{statsRange.Start, statsRange.End, modelNames}
+		}
 		if rdlTenantFrag != "" {
 			mixedArgs = append(mixedArgs, rdlTenantArgs...)
 		}
@@ -1145,8 +1273,8 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 					COUNT(*) FILTER (WHERE success IS TRUE)::int
 				FROM routing_analytics_source
 				WHERE is_auto_request = TRUE
-				  AND ts >= NOW() - $1::interval
-				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+tsPredicate+`
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($`+fmt.Sprint(modelArgIdx)+`)
 				  AND `+businessRequestFilter("")+rdlTenantWhere+`
 			`, mixedArgs...).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
@@ -1217,7 +1345,11 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 			"confidence_hint": confidenceHint,
 		},
 	}
-	globalFunnelCache.set(cacheKey, out)
+	// ★ 自定义区间**不入缓存**：缓存键只带 windowLabel（天数档位），
+	// 两个不同历史区间会撞同一把键 ⇒ 串数据。宁可多查一次。
+	if !customRange {
+		globalFunnelCache.set(cacheKey, out)
+	}
 	writeJSONOk(w, out)
 }
 
