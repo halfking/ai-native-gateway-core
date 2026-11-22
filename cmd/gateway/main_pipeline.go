@@ -1200,12 +1200,20 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			if len(body) > 0 {
 				_, _ = w.Write(body)
 			}
-			slog.Info("v2 dispatch gate: short-circuit",
+			// 2026-11-23：补归因字段（decision_reason / 来源插件 / verdicts
+			// 摘要）——此前只记 decision_kind，线上 403 无法归因「谁挡的」，
+			// 且容器重启后日志滚走事后补不回来（拦截不落审计表）。
+			// 归因只取形态字段（plugin/allow/severity/code/reason），
+			// **不含 evidence**（命中片段等用户内容不进日志）。
+			gateLogFields := []any{
 				"request_id", requestID,
 				"path", r.URL.Path,
 				"status", code,
 				"decision_kind", env.Governance.Decision.Kind,
-			)
+			}
+			gateLogFields = append(gateLogFields,
+				interception.AttributionLogFields(interception.AttributeDecision(env))...)
+			slog.Info("v2 dispatch gate: short-circuit", gateLogFields...)
 			return
 		}
 
