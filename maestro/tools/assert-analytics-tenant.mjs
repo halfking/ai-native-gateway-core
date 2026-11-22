@@ -85,7 +85,7 @@ async function main() {
   const onPageEvent = (msg) => {
     if (msg.sessionId !== sessionId) return
     const p = msg.params
-    if (msg.method === 'Network.responseReceived' && p.type === 'XHR' && p.response.url.includes('/api/admin/analytics/tenant/default')) {
+    if (msg.method === 'Network.responseReceived' && ['XHR', 'Fetch'].includes(p.type) && p.response.url.includes('/api/admin/analytics/tenant/default')) {
       captured.api = p.requestId
       captured.apiStatus = p.response.status
     }
