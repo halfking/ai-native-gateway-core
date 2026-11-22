@@ -382,7 +382,7 @@ export const router = createRouter({
     { path: '/admin/board-operational', component: BoardOperationalView, meta: { requiresSuper: true } }, // 运营面板（批 158c：独立详细页；★ 2026-11-04 12h 审计轮 D-1：后端已降为 superAdmin 档 ⇒ 前端守卫同步为 requiresSuper，与同族 ops-overview 一致）
     // 2026-11-20：运营看板扩展路由（完整列表 + 详情分析）
     { path: '/admin/board-operational/:dimension', component: BoardOperationalListView, meta: { requiresSuper: true } }, // 完整列表页：models/providers/clients/tenants
-    { path: '/admin/analytics/:dimension/:id', component: AnalyticsDetailView, meta: { requiresSuper: true } }, // 详情分析页：model/provider/client/tenant/:id
+    { path: '/admin/analytics/:dimension/:id', component: AnalyticsDetailView, meta: { requiresAuth: true } }, // 详情分析页：model/provider/client/tenant/:id (backend AdminMiddleware handles tenant isolation)
     { path: '/admin/ops-overview', component: OpsOverviewView, meta: { requiresSuper: true } }, // 运维总览（批 158e：12 路 payload 卡片布局；与 appNav.ts:229 maintain SPA 平级，web/ 内部独立深链）
     { path: '/admin/subscription-tiers', component: SubscriptionTiersView, meta: { requiresSuper: true } }, // 订阅层级（批 200：P5 跨仓 license-authority 独立服务，nginx 反代 /api/admin/tiers）
     { path: '/admin/turns/filter-options', component: TurnsFilterOptionsView, meta: { requiresSuper: true } }, // 轮次筛选选项（批 201：API 已有 listTurnsFilterOptions，缺独立深链详细页）
