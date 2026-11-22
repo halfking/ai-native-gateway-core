@@ -43,6 +43,14 @@ export default {
       tokenSourceAll: 'Token来源',
       tokenSourceLlm: 'LLM返回',
       tokenSourceEstimated: '本地估算',
+      // 2026-11-23: 用量趋势页六张排行卡片「点击 → 请求日志」的深链筛选标签。
+      deepLink: {
+        clientModel: '客户端',
+        endUser: '终端用户',
+        apiKey: 'API 密钥',
+        application: '应用',
+        task: '任务',
+      },
     },
     // 2026-08-09: 顶部突出显示的 stats-overview 三联概览卡
     stats: {

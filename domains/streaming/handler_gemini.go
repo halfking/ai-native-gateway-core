@@ -498,7 +498,7 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		message := "failed to read body"
 		if len(bodyBytes) > maxBodySize {
 			status = http.StatusRequestEntityTooLarge
-			message = "request body exceeds gateway limit"
+			message = "request body exceeds 100 MB limit"
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			message = "request body read timed out"
 		}
@@ -727,7 +727,7 @@ func (h *GeminiHandler) serveCountTokens(w http.ResponseWriter, r *http.Request,
 		message := "failed to read body"
 		if len(bodyBytes) > maxBodySize {
 			status = http.StatusRequestEntityTooLarge
-			message = "request body exceeds gateway limit"
+			message = "request body exceeds 100 MB limit"
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			message = "request body read timed out"
 		}

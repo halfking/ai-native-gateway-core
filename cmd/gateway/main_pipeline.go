@@ -137,16 +137,24 @@ import (
 // Pipeline wrapper around the 4 v1 endpoints. Every field except
 // UsePipeline defaults to the values used by cmd/gateway-v2.
 type v2DispatchConfig struct {
-	UsePipeline       bool
-	EnableCache       bool
-	EnableSecurity    bool
-	EnableAudit       bool
-	EnableObserv      bool
-	EnableStreaming   bool
-	EnableAuth        bool // 2026-06-29: Enable authentication hook
-	EnableAnalysis    bool // PR-V4-09: 异步分析 Loop 默认 off
-	AnalysisInterval  time.Duration
-	AnalysisBatchSize int
+	UsePipeline     bool
+	EnableCache     bool
+	EnableSecurity  bool
+	EnableAudit     bool
+	EnableObserv    bool
+	EnableStreaming bool
+	EnableAuth      bool // 2026-06-29: Enable authentication hook
+	// EnableRequestPathStages 注册「请求路径」阶段（transform/response/audit/
+	// metrics/session_analytics/session_v2_persist …）。
+	//
+	// 2026-11-23（211 配置优化遗留 L3）：默认 **false**。
+	// 这些阶段要看到上游响应才有意义，而本管线是**前置**执行；
+	// 且 audit / session_v2_persist / session_analytics 在前置位置会与
+	// handler 自己的 postflight 重复写。详见 buildV2DispatchPipeline 里的注释。
+	EnableRequestPathStages bool
+	EnableAnalysis          bool // PR-V4-09: 异步分析 Loop 默认 off
+	AnalysisInterval        time.Duration
+	AnalysisBatchSize       int
 	// AdminAPIKey gates the X-LLMGW-Preferred-Credential routing override.
 	// 2026-08-23.
 	AdminAPIKey string
@@ -173,17 +181,19 @@ func v2UsePipeline() bool {
 // loadV2DispatchConfig builds the dispatch configuration from env vars.
 func loadV2DispatchConfig() v2DispatchConfig {
 	return v2DispatchConfig{
-		UsePipeline:       v2UsePipeline(),
-		EnableCache:       envBool("LLM_GATEWAY_V2_CACHE", true),
-		EnableSecurity:    envBool("LLM_GATEWAY_V2_SECURITY", true),
-		EnableAudit:       envBool("LLM_GATEWAY_V2_AUDIT", true),
-		EnableObserv:      envBool("LLM_GATEWAY_V2_OBSERV", true),
-		EnableStreaming:   envBool("LLM_GATEWAY_V2_STREAMING", true),
-		EnableAuth:        envBool("LLM_GATEWAY_V2_AUTH", false), // 2026-06-29: Auth disabled by default (demo mode)
-		EnableAnalysis:    envBool("LLM_GATEWAY_V2_ANALYSIS", false),
-		AnalysisInterval:  envDuration("LLM_GATEWAY_V2_ANALYSIS_INTERVAL", 5*time.Second),
-		AnalysisBatchSize: envInt("LLM_GATEWAY_V2_ANALYSIS_BATCH", 10),
-		AdminAPIKey:       os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
+		UsePipeline:     v2UsePipeline(),
+		EnableCache:     envBool("LLM_GATEWAY_V2_CACHE", true),
+		EnableSecurity:  envBool("LLM_GATEWAY_V2_SECURITY", true),
+		EnableAudit:     envBool("LLM_GATEWAY_V2_AUDIT", true),
+		EnableObserv:    envBool("LLM_GATEWAY_V2_OBSERV", true),
+		EnableStreaming: envBool("LLM_GATEWAY_V2_STREAMING", true),
+		EnableAuth:      envBool("LLM_GATEWAY_V2_AUTH", false), // 2026-06-29: Auth disabled by default (demo mode)
+		// 2026-11-23（L3）：请求路径阶段默认关 —— v2 主链路迁移前不接。
+		EnableRequestPathStages: envBool("LLM_GATEWAY_V2_REQUEST_PATH", false),
+		EnableAnalysis:          envBool("LLM_GATEWAY_V2_ANALYSIS", false),
+		AnalysisInterval:        envDuration("LLM_GATEWAY_V2_ANALYSIS_INTERVAL", 5*time.Second),
+		AnalysisBatchSize:       envInt("LLM_GATEWAY_V2_ANALYSIS_BATCH", 10),
+		AdminAPIKey:             os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
 	}
 }
 
@@ -468,10 +478,36 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	}
 
 	if deps.ProviderStore != nil && deps.ProviderProber != nil {
+		// ★ 2026-11-23（211 配置优化遗留 L3）：这一阶段改用 **advisory** 版本。
+		//
+		//	旧行为（严格版）：找不到健康 provider ⇒ 返回 error ⇒
+		//	管线在此**中止** ⇒ 排在它之后的阶段对真实流量**全部不可达**。
+		//
+		//	为什么它对每个真实请求都失败：这条路径（v1 包装，211 生产走的就是它）
+		//	挂的 provider 目录是 newV2DispatchDepsFromMain 种下的**内存 demo 目录**
+		//	（gpt-4 假凭据 + default-openai 假 provider）⇒ 任何真实模型
+		//	（glm-5.3-flash / minimax-m3.1-flash / claude-sonnet-5-5 …）
+		//	都命中「no healthy provider」。
+		//	⇒ 后果：① 每个请求一条 WARN（v2 pipeline: preflight error）；
+		//	         ② 治理链（governance_security / governance_interception）
+		//	            对真实流量不可达（2026-11-18 审计轮为此专门加了
+		//	            「中止后补做一次决策」的兜底）；
+		//	         ③ 路由链（credential_health / routing / …）同样不可达。
+		//
+		//	★ 为什么它**没有资格**中止管线：在这条路径上，真实路由由 v1 的
+		//	  chatHandler（DB 凭据仓）负责，管线里的 provider 目录**不是权威来源**
+		//	  ⇒ 它只是「咨询」。真正的门禁是后面的 governance_interception +
+		//	  dispatch gate。
+		//	⇒ advisory 版把结论写进 env.Metadata（provider_discovery_status /
+		//	  provider_count），管线继续往下走。
+		//
+		//	★ 遗留（已登记）：provider 域要接**真实目录**
+		//	  （providers ⨝ provider_models ⨝ credential_model_bindings），
+		//	  之后这一阶段才能给出有意义的候选 —— 那时再切回严格版也不迟。
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "provider_discovery", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				provider.NewProviderDiscoveryHook(deps.ProviderStore, deps.ProviderProber),
+				provider.NewAdvisoryDiscoveryHook(deps.ProviderStore, deps.ProviderProber),
 			},
 		})
 	}
@@ -601,6 +637,41 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{interception.NewInterceptionHook(interceptEngine)},
 	})
 
+	// ★ 2026-11-23（211 配置优化遗留 L3）：请求路径阶段默认**不注册**。
+	//
+	//	这些阶段（transform / compression / tools / streaming / response /
+	//	audit / metrics / session_analytics / session_v2_persist …）属于
+	//	**请求路径**：它们要看到上游响应（env.UpstreamResponse）才能正确工作。
+	//	而本管线是**前置**执行（请求还没发出去就执行完了）⇒ 它们在 v1 包装
+	//	路径上既没有输入也没有意义。
+	//
+	//	★ 为什么这不是「把功能关掉」：这些阶段此前**同样不可达** ——
+	//	  2026-11-23 之前，管线在 provider_discovery 阶段就中止了（demo 目录
+	//	  ⇒ 每个真实请求都命中「no healthy provider」）⇒ 排在它之后的阶段
+	//	  对真实流量**从来没有执行过**。
+	//	★ 为什么不能「顺手打开」：audit / session_v2_persist / session_analytics
+	//	  在前置位置执行会**与 handler 自己的 postflight 重复写**
+	//	  （request_logs / session 行 / 分析任务各写两遍）。
+	//	⇒ 打开它需要一次专门的迁移（v2 主链路：让管线成为请求路径本身），
+	//	  由 LLM_GATEWAY_V2_REQUEST_PATH 显式开启。
+	if deps.Config.EnableRequestPathStages {
+		registerV2RequestPathStages(p, deps, extRegistry, tbus)
+	}
+
+	// NOTE: deps.SensitiveWordEngine is supplied by main.go through
+	// v2DispatchMux, i.e. BEFORE this function runs. Do not re-create the
+	// engine here — that is what silently detached admin reloads from the
+	// engine the plugins actually scan with.
+
+	return p
+}
+
+// registerV2RequestPathStages 注册「请求路径」阶段的管线段。
+//
+// 2026-11-23（211 配置优化遗留 L3）：这些阶段只在 v2 主链路迁移开关
+// （LLM_GATEWAY_V2_REQUEST_PATH）打开时注册 —— 理由见调用处注释。
+func registerV2RequestPathStages(p *pipeline.RequestPipeline, deps *v2DispatchDeps,
+	extRegistry extpoints.ExtensionPointRegistry, tbus *taskbus.Bus) {
 	// Transform stage placeholder (transformation package omitted for
 	// the same reason as main_v2_pipeline.go — see its file header).
 	p.AddStage(&pipeline.PipelineStage{
@@ -743,12 +814,6 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-	// NOTE: deps.SensitiveWordEngine is supplied by main.go through
-	// v2DispatchMux, i.e. BEFORE this function runs. Do not re-create the
-	// engine here — that is what silently detached admin reloads from the
-	// engine the plugins actually scan with.
-
-	return p
 }
 
 // newV2DispatchDepsFromMain wires the v2 dispatch deps from the
@@ -1135,12 +1200,20 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			if len(body) > 0 {
 				_, _ = w.Write(body)
 			}
-			slog.Info("v2 dispatch gate: short-circuit",
+			// 2026-11-23：补归因字段（decision_reason / 来源插件 / verdicts
+			// 摘要）——此前只记 decision_kind，线上 403 无法归因「谁挡的」，
+			// 且容器重启后日志滚走事后补不回来（拦截不落审计表）。
+			// 归因只取形态字段（plugin/allow/severity/code/reason），
+			// **不含 evidence**（命中片段等用户内容不进日志）。
+			gateLogFields := []any{
 				"request_id", requestID,
 				"path", r.URL.Path,
 				"status", code,
 				"decision_kind", env.Governance.Decision.Kind,
-			)
+			}
+			gateLogFields = append(gateLogFields,
+				interception.AttributionLogFields(interception.AttributeDecision(env))...)
+			slog.Info("v2 dispatch gate: short-circuit", gateLogFields...)
 			return
 		}
 

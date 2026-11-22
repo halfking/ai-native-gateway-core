@@ -50,7 +50,9 @@ echo "✓ Chrome 就绪 (PID $CHROME_PID)"
 echo
 
 cd "$SCRIPT_DIR"
-node tools/assert-analytics-tenant.mjs "$BASE_URL" "http://127.0.0.1:$PORT"
+# 从仓根跑探针：探针把截图/verdict 写进 docs/audit/evidence/（仓根相对路径）；
+# 若在 maestro/ 内跑会落错到 maestro/docs/（2026-11-23 实测踩坑，已根修）。
+node "$PROJECT_ROOT/maestro/tools/assert-analytics-tenant.mjs" "$BASE_URL" "http://127.0.0.1:$PORT"
 RC=$?
 
 echo

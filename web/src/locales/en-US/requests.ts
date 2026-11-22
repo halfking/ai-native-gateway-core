@@ -42,6 +42,14 @@ export default {
       tokenSourceAll: 'Token source',
       tokenSourceLlm: 'From LLM',
       tokenSourceEstimated: 'Local estimate',
+      // 2026-11-23: deep-link filter labels for the six usage-trend ranking cards.
+      deepLink: {
+        clientModel: 'Client model',
+        endUser: 'End user',
+        apiKey: 'API Key',
+        application: 'Application code',
+        task: 'Task',
+      },
     },
     // 2026-08-09: prominent stats-overview triple cards (total requests / total tokens / total credits)
     stats: {

@@ -2526,6 +2526,63 @@ dd_autollm_env "$ENV_FILE"
 # PI 智能体开关沿用（2026-11-18）：同 AUTOLLM 优先级——部署机 > env 文件上次值。
 dd_pi_agent_env "$ENV_FILE"
 dd_identity_env "$ENV_FILE"
+# ── MAINTAIN-ENV-BLOCK:BEGIN ──
+# 2026-11-23（211 配置优化遗留 L1）：把「运维服务（maintain）」接进网关。
+#
+# 背景（211 生产实测）：maintain 服务跑在**宿主机** 127.0.0.1:8082，
+# nginx 边缘已经在代理 /maintain-api/* ⇒ 前端「运维中心」用的是 maintain。
+# 但**网关自身**没有 MAINTAIN_SERVICE_URL ⇒
+#   · 直连网关端口（8781/8783）的 /maintain-api/* 恒 503
+#     （code=maintain.not_configured）；
+#   · 启动日志恒有一条 WARN「maintain proxy disabled」。
+#
+# ★ 取值优先级（与 AUTOLLM 同一套纪律：部署机环境变量 > env 文件 > 自动推导）：
+#   ① 部署机环境变量 MAINTAIN_SERVICE_URL；
+#   ② env 文件里的 MAINTAIN_SERVICE_URL（运维手工指定，跨部署保留）；
+#   ③ 自动推导：宿主上的 maintain 服务（默认端口 8082）且**从容器网络网关
+#      可达** ⇒ http://<DD_NETWORK 网关>:8082。
+#      ★ 为什么不能用 127.0.0.1：那是**宿主**的回环地址；容器里的
+#        127.0.0.1 是容器自己 ⇒ 必须走 docker 网络的网关 IP。
+#      ★ 自动推导必须**实测可达**（从宿主用网关 IP 探 /healthz，
+#        并确认回的是 ai-native-maintain），否则宁可不着线
+#        （未接线 = 旧行为 = 503 可重试）——
+#        宁可保持旧行为，也不要指到一个打不通的地址（那会 503 而不是回退）。
+#   ④ 都没有 ⇒ 不注入（网关保持 legacy in-process handlers）。
+dd_maintain_env() {
+  local env_file="${1:-$ENV_FILE}"
+  MAINTAIN_SERVICE_URL="${MAINTAIN_SERVICE_URL:-}"
+  if [[ -z "$MAINTAIN_SERVICE_URL" && -f "$env_file" ]]; then
+    MAINTAIN_SERVICE_URL="$(sed -nE 's/^(export )?MAINTAIN_SERVICE_URL=(.*)$/\2/p' "$env_file" | tail -1)"
+    MAINTAIN_SERVICE_URL="$(_dd_unq "$MAINTAIN_SERVICE_URL")"
+    MAINTAIN_SERVICE_URL="${MAINTAIN_SERVICE_URL%\'}"; MAINTAIN_SERVICE_URL="${MAINTAIN_SERVICE_URL#\'}"
+    MAINTAIN_SERVICE_URL="${MAINTAIN_SERVICE_URL%\"}"; MAINTAIN_SERVICE_URL="${MAINTAIN_SERVICE_URL#\"}"
+  fi
+  if [[ -z "$MAINTAIN_SERVICE_URL" ]]; then
+    local gw port probe
+    gw="$(docker network inspect "$DD_NETWORK" -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+    port="${MAINTAIN_PORT:-8082}"
+    if [[ -n "$gw" ]]; then
+      probe="$(_dd_http_get "http://${gw}:${port}/healthz" || true)"
+      if [[ "$probe" == *"ai-native-maintain"* ]]; then
+        MAINTAIN_SERVICE_URL="http://${gw}:${port}"
+      fi
+    fi
+  fi
+}
+
+# _dd_http_get URL — 取一个 GET 的响应体（最多 2s）。curl 优先，退回 wget。
+_dd_http_get() {
+  local url="$1" out=""
+  if command -v curl >/dev/null 2>&1; then
+    out="$(curl -s -m 2 "$url" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then
+    out="$(wget -qO- -T 2 "$url" 2>/dev/null || true)"
+  fi
+  printf '%s' "$out"
+}
+# ── MAINTAIN-ENV-BLOCK:END ──
+
+dd_maintain_env "$ENV_FILE"
 
 
 # ── GATEWAY-ENV-WRITE:BEGIN ──
@@ -2569,6 +2626,11 @@ dd_identity_env "$ENV_FILE"
   fi
   # 网关 → ASM 事件投递开关（空 = 不投事件）。写进 env 文件是为了**跨部署保留**
   # （运维手工改过的值下次部署还在），不是给 docker --env-file 用的。
+  # 运维服务（maintain）接线地址（2026-11-23，L1）：同样写进 env 文件以**跨部署
+  # 保留**（运维手工指定的地址下次部署还在）；空 = 不接线。
+  if [[ -n "${MAINTAIN_SERVICE_URL:-}" ]]; then
+    printf 'export MAINTAIN_SERVICE_URL=%q\n' "$MAINTAIN_SERVICE_URL"
+  fi
   if [[ -n "$ASM_INTERNAL_ENDPOINT" ]]; then
     printf 'export ASM_INTERNAL_ENDPOINT=%q\n' "$ASM_INTERNAL_ENDPOINT"
   fi
@@ -2647,6 +2709,12 @@ GW_ENV=(
   # ⇒ 报 `unknown IANA timezone "Asia/Shanghai"` ⇒ 回退到 UTC。
   # ⇒ 必须同时挂载宿主机的 zoneinfo（见 GW_MOUNTS）—— 只设 TZ 是假修复。
   -e "TZ=Asia/Shanghai"
+  # ★ 2026-11-23（211 遗留 L1）：运维服务（maintain）接线。
+  #   未配置时网关保持 legacy in-process handlers（/maintain-api/* 返回 503
+  #   maintain.not_configured）—— 那是有意的降级路径，不是缺陷。
+  #   接线后：/maintain-api/* 由网关反代到 maintain；legacy /api/* 走
+  #   「尽力迁移」（maintain 能服务就它服务，404/401/403 回落到 in-process）。
+  #   （注入在下面 MAINTAIN-ENV-INJECT 块里做：空值不注入。）
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
   -e "LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
@@ -2747,6 +2815,17 @@ if [[ -n "${LLMGatewayAutoLLMEndpoint:-}" ]]; then
 else
   log "AutoLLM 分类兜底未配置（LLMGatewayAutoLLMEndpoint 为空）—— 低置信度停留启发式"
 fi
+# ── MAINTAIN-ENV-INJECT:BEGIN ──
+# 2026-11-23（211 遗留 L1）：运维服务接线。空 = 不接线（网关保持 legacy
+# in-process handlers；/maintain-api/* 仍返回 503 maintain.not_configured）。
+if [[ -n "${MAINTAIN_SERVICE_URL:-}" ]]; then
+  GW_ENV+=( -e "MAINTAIN_SERVICE_URL=${MAINTAIN_SERVICE_URL}" )
+  log "maintain 已接线：MAINTAIN_SERVICE_URL=${MAINTAIN_SERVICE_URL}（/maintain-api/* 反代；legacy /api/* 尽力迁移，404/401/403 回落到 in-process）"
+else
+  log "maintain 未接线（未发现可用的 maintain 服务）—— /maintain-api/* 仍返回 503 maintain.not_configured（设计内降级）"
+fi
+# ── MAINTAIN-ENV-INJECT:END ──
+
 if [[ -n "${LLM_GW_TEST_MODE_TOKEN:-}" ]]; then
   GW_ENV+=( -e "LLM_GW_TEST_MODE_TOKEN=${LLM_GW_TEST_MODE_TOKEN}" )
   log "X-Gw-Test-Mode mock/auto-only 已启用（token 已配，值不打印）"

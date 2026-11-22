@@ -970,6 +970,67 @@ func (s *pgStore) MarkHealth(ctx context.Context, tenantID string, k Kind, refID
 	return nil
 }
 
+// ── MarkMissingDown（2026-11-23，211 配置优化遗留 L4）─────────────────────
+//
+// 集合差在 SQL 里做：把「还活着的 ref_id」当成数组传进来，
+// 不在数组里的行一律置 down。
+//
+// ★ 为什么不再在 Go 侧分页扫描：
+//
+//	旧实现（bg.AssetHealthProbe）把整张 assets 表按 500/页拉进 Go，
+//	再用内存里的 liveLookup 逐行比对、再逐行 MarkHealth。
+//	① 这是 AGENTS.md 已登记的「统计面禁止列表聚合」同族；
+//	② 它带一个 20 页 × 500 行 = 10000 行的上界 ⇒ 超过上界的行**静默不再被检查**
+//	   （而旧代码的告警判据还是反的：正常跑完会喊「可能超过 10000 行」，
+//	     真撞上界时反而不喊 —— 见 bg 侧本轮修掉的那条）；
+//	③ 逐行 MarkHealth = 每次几百条 UPDATE（实测 default 租户 44 条/轮）。
+//
+// ★ 「空数组 ⇒ 全部置 down」是**有意的**：源表真的空了 ⇒ 所有资产都该 down。
+//
+//	调用方必须自己保证「源表查询失败」不会被当成「源表为空」传进来
+//	（bg 侧的做法：查询失败就跳过该 kind，不做任何标记）。
+const markMissingDownSQL = `
+UPDATE public.assets
+   SET health_state = 'down'
+ WHERE tenant_id = $1
+   AND kind = $2
+   AND health_state IS DISTINCT FROM 'down'
+   AND NOT (ref_id = ANY($3::bigint[]))
+`
+
+// MarkMissingDown marks assets of kind k that are absent from liveRefIDs as down.
+// Returns the number of rows that changed.
+func (s *pgStore) MarkMissingDown(ctx context.Context, tenantID string, k Kind, liveRefIDs []int64) (int64, error) {
+	if s.pool == nil && s.q == nil {
+		return 0, ErrNoDB
+	}
+	if tenantID == "" {
+		return 0, errors.New("apihub: tenant_id required")
+	}
+	if !k.IsValid() {
+		return 0, fmt.Errorf("%w: %q", ErrInvalidKind, k)
+	}
+	// nil 与空数组在 PG 里等价（ANY('{}') 恒 false），
+	// 但显式传空数组更直白，也避免驱动对 nil slice 的参数推断差异。
+	ids := liveRefIDs
+	if ids == nil {
+		ids = []int64{}
+	}
+	var affected int64
+	err := s.withTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, markMissingDownSQL, tenantID, string(k), ids)
+		if err != nil {
+			return err
+		}
+		affected = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("apihub: mark missing down: %w", err)
+	}
+	return affected, nil
+}
+
 // 2026-10-06（runbook §10.34）：LIMIT 与 OFFSET 现在是**页大小 + 游标**，
 // 与 listAssetsSQL 的语义对齐（§10.27 做过同一件事）。
 //

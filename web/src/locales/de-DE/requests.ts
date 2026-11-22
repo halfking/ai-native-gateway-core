@@ -42,6 +42,14 @@ export default {
       tokenSourceAll: 'Token-Quelle',
       tokenSourceLlm: 'Vom LLM',
       tokenSourceEstimated: 'Lokale Schätzung',
+      // 2026-11-23: Deep-Link-Filterlabels für die sechs Ranking-Karten der Nutzungstrend-Seite.
+      deepLink: {
+        clientModel: 'Client-Modell',
+        endUser: 'Endbenutzer',
+        apiKey: 'API-Schlüssel',
+        application: 'Anwendungscode',
+        task: 'Aufgabe',
+      },
 
       resultRateLimited: 'Rate limited',
     },

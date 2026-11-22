@@ -1,28 +1,50 @@
-# 16-session-analytics-system.yaml —— 会话分析系统 5 页逐页验证（2026-11-20 交付轮）
+# 16-session-analytics-system.yaml —— 会话分析系统逐页验证
+#   （2026-11-20 交付轮；2026-11-23 L13 判据收敛轮：中文文案断言 → data-testid 断言）
 #
-# 覆盖对象（本轮新增的 5 个页面 + 后端 7 端点）：
-#   /admin/session-analytics                        → SessionAnalyticsOverviewView（总览）
+# 覆盖对象（★ 2026-11-23 起总览页已被上游整合，见下）：
+#   /admin/session-analytics                        → **重定向** → /admin/session-analytics/users
+#                                                      （SessionAnalyticsUsersView：会话统计面板 + Top5 四件套 + Top10 用户排行）
 #   /admin/session-analytics/user-ranking           → SessionAnalyticsUserRankingView（人员排行）
 #   /admin/session-analytics/user-ranking/:owner    → SessionAnalyticsUserDetailView（人员详情）
 #   /admin/session-analytics/agent-ranking          → SessionAnalyticsAgentRankingView（智能体排行）
 #   /admin/session-analytics/model-ranking          → SessionAnalyticsModelRankingView（模型排行）
 #
-# ★ 本 flow 的存在理由：owner 需求＝「为会话分析的 5 个页面补做 Maestro/E2E 真实部署验证」。
-#   此前这 5 页**从未被浏览器打开过**——单元测试覆盖的是 API 形状与组件渲染，
+# ★ 本 flow 的存在理由：owner 需求＝「为会话分析的页面补做 Maestro/E2E 真实部署验证」。
+#   此前这些页面**从未被浏览器打开过**——单元测试覆盖的是 API 形状与组件渲染，
 #   但「页面在真实部署上能不能打开、数据能不能出来、点进去对不对」是**另一条断言**。
 #   （与 12-live-stage-tree / 13-session-analytics-users 同一理由：
 #     路由存在 ≠ 页面能打开；页面能打开 ≠ 数据对得上。）
 #
+# ★★ 2026-11-23 L13 判据收敛（本文件的**核心变更**）：
+#   断言判据**从「中文文案」换成「data-testid」**。这不是洁癖——文案判据在
+#   两个方向上都会假红：
+#     ① **文案漂移**：断言值与 locale 键的实际值对不上时，断言恒红而页面是好的
+#        ⇒ 量具失灵。实测（本次收口时逐条核对 zh-CN/sessionAnalytics.ts）：
+#          · `col.tokens` = 「Token 数」，旧 flow 断的是「Token 总数」⇒ 必红
+#          · `col.keyAlias` = 「Key别名」，旧 flow 断的是「密钥别名」⇒ 必红
+#          · `col.keyID` = 「Key ID」，旧 flow 断的是「密钥 ID」⇒ 必红
+#          · `col.cacheRate` = 「缓存命中率」，旧 flow 断的是「缓存率」⇒ 必红
+#          · `col.projectCount` = 「关联项目数」，旧 flow 断的是「项目数」⇒ 必红
+#        ⇒ ④.1/④.2 两段**整体必然假红**（与数据、与部署都无关）。
+#     ② **locale 依赖**：应用 locale 取自 `navigator.language`（web/src/i18n.ts:82）
+#        并持久化在 `localStorage['llmgw_locale']` ⇒ 浏览器语言不是 zh-CN 时
+#        中文文案断言全红；runner 的 `--lang=zh-CN` 只是**缓解**，不是根治。
+#   ⇒ data-testid 是**结构判据**：与语言无关、与文案漂移无关。
+#   ★ 反向代价（必须知道）：判据与**可见文案**脱钩了——改文案不再让 E2E 变红。
+#     所以「文案本身对不对」由**另一条链**守：i18n 门禁（localeValueQuality /
+#     i18n-shared-dead-count 等）+ 8 语种同构检查；本 flow 只守「结构在不在、数据到没到」。
+#
 # ★ 与上游 13-flow 的分工（两套系统并存，路径不重叠）：
 #   上游 13-flow 管的是 `/admin/session-analytics/users|clients|tasks`（用户画像族，
 #   数据源 request_logs 窗口口径）；
-#   本 flow 管的是 `/admin/session-analytics` 与 `.../user-ranking|agent-ranking|model-ranking`
-#   （本轮交付的聚合分析族，数据源 981 的 4 个聚合物化视图）。
+#   本 flow 管的是聚合分析族 4 页（user-ranking|agent-ranking|model-ranking）
+#   + `/admin/session-analytics` 的**重定向落点**（users 页整合后的锚点）。
 #   ⇒ 两套路由**并存**（前者 users，后者 user-ranking），不构成路径冲突。
 #
 # ★ 断言写法受 Maestro 2.11 web 驱动实测边界约束（13-flow 头注同源）：
 #   ① `text:` 是**全匹配正则** ⇒ 读数会变的元素一律 `.*….*`；
-#   ② `id:` 选得到 data-testid 但选不到 <button> ⇒ 按钮交互走 text:；
+#   ② `id:` 选得到 data-testid 但**选不到 <button>** ⇒ 按钮**交互**（tab 切换）
+#      走 text:，按钮**存在性**断言走 id:（assertVisible 不受该限制）；
 #   ③ pressKey Escape 在 web 驱动不支持；
 #   ④ 视口必须 1440x1400（run-local.sh 传入）⇒ 折叠线以下的内容断言不到；
 #   ⑤ **宽表横向滚动在 DataTable 的内部容器里**（`.app-data-table__scroller`
@@ -32,8 +54,8 @@
 #      `assert-users-usage.mjs` 同一分工）。
 #
 # ★ 「数据已到」的判据：断**数据卡/表头**而不是「页面加载成功」——
-#   「正在加载会话分析数据」是加载态占位符，它非空但不代表数据到了。
-#   本 flow 统一用各页**数据区特有的文案**作为落定判据。
+#   DataTable 在 loading 时用 spinner **替换整个表格区域** ⇒ 表头出现即数据到位；
+#   详情页的 4 张指标卡同理（`detail` 未就绪时整块不渲染）。
 #
 # ★ 登录：走仓内既有资产 _shared/login.yaml（真实 UI 登录，凭据由
 #   -e ADMIN_USER / -e ADMIN_PASSWORD 传入；口令不进仓内文件）。
@@ -44,10 +66,10 @@
 #      并把端口/凭据/窗口一起喂进来。直接 `maestro test` 跑本 flow ⇒
 #      动态段为空 ⇒ 详情页 URL 变成 `/admin/session-analytics/user-ranking/`
 #      ⇒ 断的是「路由不存在」而不是「详情页坏了」⇒ **量具错**。
-#   ② 本 flow 的判据是**中文文案**（表头 / 数据卡 label / 区块标题），
-#      而应用 locale 取自 `navigator.language`（`web/src/i18n.ts:82`）且持久化在
-#      `localStorage['llmgw_locale']` ⇒ **浏览器语言不是 zh-CN 时本 flow 必然假红**。
-#      ⇒ runner 用 `--lang=zh-CN` 钉住；换语种 ⇒ 假红（响亮，总好过假绿）。
+#   ② **flow ↔ 前端 testid 的对应关系由钉测守着**：
+#      web/src/views/admin/session-analytics/saTestIds.contract.spec.ts
+#      ⇒ 本 flow 里出现的每个 `id:` 都必须在前端源码里存在（反之亦然）
+#      ⇒ 「改了 flow 忘了加 testid」/「删了 testid 忘了改 flow」都会在 CI 报红。
 url: ${BASE_URL}
 ---
 # ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
@@ -67,104 +89,193 @@ url: ${BASE_URL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME}
 
-# ═══ ② 总览页 ═══════════════════════════════════════════════════════════
-# 落定判据＝「会话总数」数据卡（不是加载态占位符）。
-# 页面特有元素：统计区间控件 + 刷新数据按钮 + 11 张数据卡 + 3 个趋势段 + 3 个榜单。
+# ═══ ② 聚合总览（/admin/session-analytics → 重定向到 /users）══════════════
+# ★ 2026-11-23：上游整合把总览页内容迁进 /admin/session-analytics/users，
+#   原 SessionAnalyticsOverviewView 组件已删除、路由改为 redirect ⇒ 本段
+#   改为断**重定向落点**：重定向没坏 + 落点页三个区块（Top5 四件套 / Top10 排行 /
+#   区间与刷新控件）都在。
+#   ★ 落定判据＝Top10 表头（表头出现 = 该表数据到位）。
 - openLink: ${BASE_URL}/admin/session-analytics
 - extendedWaitUntil:
-    visible: "会话总数"
+    visible:
+      id: "sa-users-col-rank"
     timeout: 30000
-- assertVisible: "会话分析"
-- assertVisible: "统计区间"
-- assertVisible: "刷新数据"
-- assertVisible: "会话总数"
-- assertVisible: "活跃人员"
-- assertVisible: "活跃项目"
-- assertVisible: "活跃任务"
-- assertVisible: "会话趋势"
-- assertVisible: "Token 趋势"
+- assertVisible:
+    id: "sa-page-users"
+- assertVisible:
+    id: "sa-range-label"
+- assertVisible:
+    id: "sa-refresh-btn"
+- assertVisible:
+    id: "sa-top5-section"
+- assertVisible:
+    id: "sa-users-table"
+- assertVisible:
+    id: "sa-users-col-rank"
+- assertVisible:
+    id: "sa-users-col-owner"
+- assertVisible:
+    id: "sa-users-col-email"
+- assertVisible:
+    id: "sa-users-col-sessions"
+- assertVisible:
+    id: "sa-users-col-projects"
 
 # ═══ ③ 人员排行页 ═══════════════════════════════════════════════════════
-# 落定判据＝「排名」列头（该页独有的表头）。
-# ★ 「人员」表头是**可排序按钮**（`<button class="sa-sort">{{人员}}<span v-if>▲</span></button>`）
-#   ⇒ Vue 的 whitespace:condense 会把文本节点与条件 span 之间的换行折成**一个空格**
-#   ⇒ DOM 文本是「人员 **」**（带尾随空格，实测层级快照原文）⇒ `text:` 全匹配「人员」必红。
-#   ⇒ 可排序表头一律写成 `.*….*`。这是**断言写法**问题，不是产品缺陷
-#   （页面上显示的就是「人员」；尾随空格只存在于 DOM 文本节点里）。
+# 落定判据＝「排名」列头（该页独有的表头；表头出现 = 数据到位）。
 - openLink: ${BASE_URL}/admin/session-analytics/user-ranking
 - extendedWaitUntil:
-    visible: "排名"
+    visible:
+      id: "sa-user-ranking-col-rank"
     timeout: 30000
-- assertVisible: "统计区间"
-- assertVisible: "刷新数据"
-- assertVisible: "排名"
-- assertVisible: ".*人员.*"
-- assertVisible: "邮箱"
-- assertVisible: "会话数"
-- assertVisible: "项目数"
+- assertVisible:
+    id: "sa-page-user-ranking"
+- assertVisible:
+    id: "sa-range-label"
+- assertVisible:
+    id: "sa-refresh-btn"
+- assertVisible:
+    id: "sa-user-ranking-filters"
+- assertVisible:
+    id: "sa-user-ranking-table"
+- assertVisible:
+    id: "sa-user-ranking-col-rank"
+- assertVisible:
+    id: "sa-user-ranking-col-owner"
+- assertVisible:
+    id: "sa-user-ranking-col-email"
+- assertVisible:
+    id: "sa-user-ranking-col-sessions"
+- assertVisible:
+    id: "sa-user-ranking-col-projects"
 
 # ═══ ④ 人员详情页（动态段：owner 由真数据解析，见 run-session-analytics.sh）══
-# 落定判据＝「当前排名」数据卡（详情页独有的指标）。
+# 落定判据＝「当前排名」指标卡（详情页独有的指标；`detail` 未就绪时整块不渲染）。
 - openLink: ${BASE_URL}/admin/session-analytics/user-ranking/${SESSION_OWNER}
 - extendedWaitUntil:
-    visible: "当前排名"
+    visible:
+      id: "sa-metric-rank"
     timeout: 30000
-- assertVisible: "统计区间"
-- assertVisible: "刷新数据"
-- assertVisible: "返回人员排行"
-- assertVisible: "当前排名"
-- assertVisible: "会话趋势"
-- assertVisible: "任务趋势"
+- assertVisible:
+    id: "sa-page-user-detail"
+- assertVisible:
+    id: "sa-range-label"
+- assertVisible:
+    id: "sa-refresh-btn"
+- assertVisible:
+    id: "sa-user-detail-identity"
+- assertVisible:
+    id: "sa-back-btn"
+- assertVisible:
+    id: "sa-metric-session-count"
+- assertVisible:
+    id: "sa-metric-task-count"
+- assertVisible:
+    id: "sa-metric-total-cost"
+- assertVisible:
+    id: "sa-metric-rank"
+- assertVisible:
+    id: "sa-trend-sessions"
+- assertVisible:
+    id: "sa-trend-tasks"
 
 # ── ④.1 用户详情页 - 模型用量 tab ──────────────────────────────────────
-# 新增功能：点击「模型用量」tab，验证表头和数据加载
-- tapOn: "模型用量"
+# ★ tab 是 <button> ⇒ Maestro 2.11 web 驱动的 `id:` **选不到 button**
+#   ⇒ 交互仍走 text:（文案取自 sessionAnalytics.section.models）；
+#   断言一律走 id:（表容器 + 表头）⇒ 与 locale、与文案漂移都无关。
+- tapOn:
+    text: ".*模型用量.*"
 - extendedWaitUntil:
-    visible: ".*模型.*"
+    visible:
+      id: "sa-user-models-col-model"
     timeout: 10000
-- assertVisible: ".*模型.*"
-- assertVisible: "请求数"
-- assertVisible: "Token 总数"
-- assertVisible: "成功率"
-- assertVisible: "缓存率"
-- assertVisible: "平均响应时间"
+- assertVisible:
+    id: "sa-user-models-table"
+- assertVisible:
+    id: "sa-user-models-col-model"
+- assertVisible:
+    id: "sa-user-models-col-requests"
+- assertVisible:
+    id: "sa-user-models-col-tokens"
+- assertVisible:
+    id: "sa-user-models-col-cost"
+- assertVisible:
+    id: "sa-user-models-col-success-rate"
+- assertVisible:
+    id: "sa-user-models-col-cache-rate"
+- assertVisible:
+    id: "sa-user-models-col-avg-response-time"
 
 # ── ④.2 用户详情页 - API Key 统计 tab ────────────────────────────────
-# 新增功能：点击「API Key 统计」tab，验证表头和数据加载
-- tapOn: "API Key用量"
+- tapOn:
+    text: ".*API Key用量.*"
 - extendedWaitUntil:
-    visible: "密钥别名"
+    visible:
+      id: "sa-user-apikeys-col-alias"
     timeout: 10000
-- assertVisible: "密钥别名"
-- assertVisible: "密钥 ID"
-- assertVisible: "请求数"
-- assertVisible: "Token 总数"
-- assertVisible: "项目数"
-- assertVisible: "主要项目"
+- assertVisible:
+    id: "sa-user-apikeys-table"
+- assertVisible:
+    id: "sa-user-apikeys-col-alias"
+- assertVisible:
+    id: "sa-user-apikeys-col-key-id"
+- assertVisible:
+    id: "sa-user-apikeys-col-requests"
+- assertVisible:
+    id: "sa-user-apikeys-col-tokens"
+- assertVisible:
+    id: "sa-user-apikeys-col-project-count"
+- assertVisible:
+    id: "sa-user-apikeys-col-top-project"
 
 # ═══ ⑤ 智能体排行页 ═════════════════════════════════════════════════════
 # 落定判据＝「智能体」列头（该页独有的表头）。
 - openLink: ${BASE_URL}/admin/session-analytics/agent-ranking
 - extendedWaitUntil:
-    visible: ".*智能体.*"
+    visible:
+      id: "sa-agent-ranking-col-rank"
     timeout: 30000
-- assertVisible: "统计区间"
-- assertVisible: "刷新数据"
-- assertVisible: "排名"
-- assertVisible: ".*智能体.*"
-- assertVisible: "使用人数"
-- assertVisible: "任务数"
+- assertVisible:
+    id: "sa-page-agent-ranking"
+- assertVisible:
+    id: "sa-range-label"
+- assertVisible:
+    id: "sa-refresh-btn"
+- assertVisible:
+    id: "sa-agent-ranking-table"
+- assertVisible:
+    id: "sa-agent-ranking-col-rank"
+- assertVisible:
+    id: "sa-agent-ranking-col-agent"
+- assertVisible:
+    id: "sa-agent-ranking-col-users"
+- assertVisible:
+    id: "sa-agent-ranking-col-sessions"
+- assertVisible:
+    id: "sa-agent-ranking-col-tasks"
 
 # ═══ ⑥ 模型排行页 ═══════════════════════════════════════════════════════
 # 落定判据＝「供应商」列头（该页独有的表头）。
 - openLink: ${BASE_URL}/admin/session-analytics/model-ranking
 - extendedWaitUntil:
-    visible: "供应商"
+    visible:
+      id: "sa-model-ranking-col-rank"
     timeout: 30000
-- assertVisible: "统计区间"
-- assertVisible: "刷新数据"
-- assertVisible: "排名"
-- assertVisible: ".*模型.*"
-- assertVisible: "供应商"
-- assertVisible: "请求数"
-- assertVisible: "成功率"
+- assertVisible:
+    id: "sa-page-model-ranking"
+- assertVisible:
+    id: "sa-range-label"
+- assertVisible:
+    id: "sa-refresh-btn"
+- assertVisible:
+    id: "sa-model-ranking-table"
+- assertVisible:
+    id: "sa-model-ranking-col-rank"
+- assertVisible:
+    id: "sa-model-ranking-col-model"
+- assertVisible:
+    id: "sa-model-ranking-col-provider"
+- assertVisible:
+    id: "sa-model-ranking-col-requests"
+- assertVisible:
+    id: "sa-model-ranking-col-success-rate"

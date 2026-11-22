@@ -1,0 +1,14 @@
+2026-11-23 /admin/analytics/* Maestro 终验（211 现役 cdaa2857 seq 3227 槽，⊇ 全部修复链）
+部署过程：本会话 4 次 deploy-211.sh 均在远端/本机锁被并行车在飞部署拦下（锁纪律：不硬抢）；
+  车队每班（3221→3227）都用同一 deploy-211.sh 引擎落地、树均 ⊇ 我方提交
+  （a23c9f81f schema 修 / 0c16ea6e6 改钉 / 8c8200387 验证资产）⇒「现役树 ⊇ 我方提交」义务成立。
+两层验证 13/13 PASS：
+  渲染层：API 200 / 无 /forbidden / 无错误横幅 / 2 区块 296px / 表格 53 行
+  同源对拍：页面 181,929 == 页面自己收到的响应（逐字相等，与直连基线零漂移）
+全维度扫描（真数据 identifier，无造数）：
+  tenant(default)=200/181921 交叉3维 错误10条
+  model(minimax-m3.1-flash)=200/2115 交叉3维 错误6条   ← 主路径 raw_model_name 生效
+  provider(587)=200/35254 交叉3维 错误10条             ← provider_id 过滤生效
+  client(zcode)=200/37861 交叉3维 错误0条              ← agent_name 生效；错误分布为
+    drill 表无 agent_name 列的显式降级（394 schema 限制，登记不修）
+登记：client 维度错误分布需扩展 rollup 写入 agent_name 维度方可支持（成本高，显式降级可接受）。

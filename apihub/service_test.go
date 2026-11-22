@@ -184,6 +184,34 @@ func (m *memStore) ListStale(ctx context.Context, tenantID string, threshold tim
 	return out, nil
 }
 
+// MarkMissingDown mirrors pgStore's SQL semantics: every asset of kind k
+// whose ref_id is not in liveRefIDs becomes HealthDown (rows already Down do
+// not count as a change).
+func (m *memStore) MarkMissingDown(ctx context.Context, tenantID string, k Kind, liveRefIDs []int64) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	live := make(map[int64]bool, len(liveRefIDs))
+	for _, id := range liveRefIDs {
+		live[id] = true
+	}
+	var n int64
+	for key, a := range m.assets {
+		if a.TenantID != tenantID || a.Kind != k {
+			continue
+		}
+		if live[a.RefID] {
+			continue
+		}
+		if a.HealthState == HealthDown {
+			continue
+		}
+		a.HealthState = HealthDown
+		m.assets[key] = a
+		n++
+	}
+	return n, nil
+}
+
 func (m *memStore) ListTenants(ctx context.Context) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

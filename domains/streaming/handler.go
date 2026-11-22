@@ -3085,14 +3085,14 @@ func (h *ChatHandler) serveWithExecutor(
 	if len(bodyBytes) > maxBodySize {
 		// body_too_large already has body captured (it's in bodyBytes)
 		// but we need to emit + mark to prevent safety net double-emit
-		logCtx.SetError("body_too_large", "request body exceeds 32 MiB limit")
+		logCtx.SetError("body_too_large", "request body exceeds 100 MB limit")
 		if logCtx.ClientModel == "" {
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes[:maxBodySize]))
 		}
-		logCtx.EmitFailure("body_too_large", "request body exceeds 32 MiB limit", nil, nil)
+		logCtx.EmitFailure("body_too_large", "request body exceeds 100 MB limit", nil, nil)
 		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too_large"},
+			"error": map[string]string{"message": "request body exceeds 100 MB limit", "type": "invalid_request", "code": "body_too_large"},
 		})
 		return
 	}
@@ -4033,7 +4033,14 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── Armor security check (Track A B1-5, 2026-06-25) ──────────────────
 	// Score prompt for prompt-injection before provider resolution.
 	// v1 observe-only: even if score > threshold, never block (only log).
-	if h.armorJudge != nil && h.armorLogger != nil && keyInfo != nil {
+	//
+	// ★ 2026-11-23（211 遗留 L2）：**判官自己的请求不判**。
+	//   实配判官后，判官要调一个 OpenAI 兼容端点；若那个端点就是网关自己
+	//   （生产上最省事：复用现成上游凭据），判官请求会重新进网关 ⇒ 重新触发
+	//   armor 判定 ⇒ 判官请求再调判官 ⇒ **无限递归**。
+	//   ⇒ 判官请求带 X-LLMGW-Armor-Judge 头（httpJudge 自动加），
+	//     这里见到它就跳过判定 —— 判官不判自己。
+	if h.armorJudge != nil && h.armorLogger != nil && keyInfo != nil && !armor.IsJudgeRequest(r.Header) {
 		// Extract last user message from body
 		var promptText string
 		var messages []map[string]interface{}
@@ -4080,6 +4087,13 @@ func (h *ChatHandler) serveWithExecutor(
 				LatencyMS:  int(judgeLatency.Milliseconds()),
 				Reason:     scoreResp.Reason,
 				CreatedAt:  time.Now(),
+			}
+			// ★ 2026-11-23（L2）：判官未配置时，这行**不是安全结论**。
+			//   judge_model 已经是 'unconfigured'（占位判官自报家门），
+			//   这里再把 reason 写死一次，保证「行内自解释」——
+			//   统计安全通过率时必须排除 judge_model='unconfigured'。
+			if armor.IsUnconfigured(h.armorJudge) {
+				judgment.Reason = "armor judge not configured — no verdict (not a safety pass)"
 			}
 
 			// Async write to armor_judgments (never blocks relay)

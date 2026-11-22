@@ -15,23 +15,30 @@ package admin
 //   而不是在本文件里重抄一遍 SQL —— 后者测的是「测试自己写的 SQL」，
 //   产品坏了测试照样绿（假绿）。
 //
-// # 为什么夹具要复刻「非法 JSON 混在里面」这件事
+// # 核心不变式（本门的主断言）
+//
+//	**每一组的卡片行数 == 用该组名过滤得到的行数**
+//
+// ⇒ 这是「点击进去可以看到详细的请求」这句话的**可执行定义**：
+//   排行侧按身份表达式分组、过滤侧按**同一个**表达式等值匹配
+//   ⇒ 两边漂移（改了排行没改过滤，或反之）⇒ 这条断言立刻变红。
+//
+// # 为什么夹具要复刻「非法 JSON + 空值混在里面」这件事
 //
 // `end_user_id` 列的现网形态是混合的（211 实测）：
 //
 //	anonymous 379,142 / NULL 38,657 / JSON 对象 14,674 / 纯 id 49
 //
-// ⇒ 谓词必须同时满足：
-//   ① 对 JSON 行提取 device_id 后命中（排行侧显示名就是 device_id）；
-//   ② 对 'anonymous' / 纯 id / NULL 行**不报错**（::jsonb 会对它们抛错
-//      ⇒ 整条查询 500）；
-//   ③ 对不存在的值命中 0 行（过滤真的在筛，不是恒真）。
+// 而 `task_type` 的**最大一组原值就是空串**（211 实测 66,638 行）
+// ⇒ 空值必须归 'unknown' 且**可点可筛**（改之前：卡片第一行是空白、
+// 点过去过滤值为空被后端忽略 ⇒ 落点是未筛选的全量）。
 //
 // # 夹具纪律
 //
-// 夹具的 end_user_id 列必须**同时**含：JSON 对象（两个会话同一设备）/
-// anonymous / NULL / 空串 / 纯 id / 无 device_id 的 JSON 六种形态
-// —— 少一种，对应的「不该报错 / 该命中 / 该归 unknown」就证明不了。
+// 夹具必须**同时**含：JSON 对象（两个会话同一设备）/ anonymous / 纯 id /
+// NULL / 空串 / 无 device_id 的 JSON；且 client_model / application_code /
+// task_type 三列都要有「空串」与「NULL」两种形态 ——
+// 少一种，对应的「不该报错 / 该命中 / 该归 unknown」就证明不了。
 
 import (
 	"context"
@@ -70,12 +77,16 @@ func TestRankingDimensionFiltersOnRealDB(t *testing.T) {
 		  (4, now(), 'anonymous', 'cli-1', 'sk-ccc****', 'app-1', 'chat'),
 		  -- ③ 纯 id
 		  (5, now(), 'user-admin', 'cli-3', 'sk-ddd****', 'app-3', 'agent'),
-		  -- ④ NULL
+		  -- ④ NULL（end_user_id / api_key_prefix）
 		  (6, now(), NULL, 'cli-3', NULL, 'app-3', 'agent'),
 		  -- ⑤ 空串
 		  (7, now(), '', 'cli-3', 'sk-eee****', 'app-3', 'agent'),
 		  -- ⑥ JSON 但**没有 device_id** ⇒ 同样归 'unknown'
-		  (8, now(), '{"session_id":"s9"}', 'cli-4', 'sk-fff****', 'app-4', 'code');
+		  (8, now(), '{"session_id":"s9"}', 'cli-4', 'sk-fff****', 'app-4', 'code'),
+		  -- ⑦ 三个普通维度**全空串** ⇒ 归 'unknown'
+		  (9, now(), 'plain-user', '', '', '', ''),
+		  -- ⑧ 三个普通维度**全 NULL** ⇒ 归 'unknown'
+		  (10, now(), 'plain-user2', NULL, NULL, NULL, NULL);
 		ANALYZE public.rl;
 	`); err != nil {
 		t.Fatalf("建夹具失败: %v", err)
@@ -110,30 +121,6 @@ func TestRankingDimensionFiltersOnRealDB(t *testing.T) {
 		t.Errorf("不存在的用户应命中 0 行（过滤真在筛，不是恒真），实得 %d", n)
 	}
 
-	// ── 维度二/四/五：client_model / application_code / task_type ──────
-	for _, tc := range []struct {
-		key   string
-		value string
-		want  int
-	}{
-		{"client_model", "cli-1", 3},
-		{"client_model", "cli-3", 3},
-		{"application_code", "app-1", 3},
-		{"application_code", "app-3", 3},
-		{"task_type", "chat", 3},
-		{"task_type", "agent", 3},
-	} {
-		if n := rlFilterCount(t, pool, ctx, tc.key+"="+url.QueryEscape(tc.value), 5); n != tc.want {
-			t.Errorf("%s=%s 过滤应命中 %d 行，实得 %d", tc.key, tc.value, tc.want, n)
-		}
-	}
-	// 三个维度都不许恒真
-	for _, key := range []string{"client_model", "application_code", "task_type"} {
-		if n := rlFilterCount(t, pool, ctx, key+"=ZZZ_NOT_A_REAL_VALUE_12345", 5); n != 0 {
-			t.Errorf("%s 传不存在的值应命中 0 行，实得 %d", key, n)
-		}
-	}
-
 	// ── 维度三：api_key_prefix（掩码值 vs 明文前缀 ⇒ 必须前缀匹配）─────
 	// ★ 排行侧 name 取自 ak.key_prefix（现网该列本身可能是明文
 	//   'sk-pi-autollm-21'），而请求行里存的是**掩码**值
@@ -160,26 +147,50 @@ func TestRankingDimensionFiltersOnRealDB(t *testing.T) {
 
 	// ── 核心不变式：卡片上的 request_count == 点进去看到的条数 ──────────
 	//
-	// ★ 这才是「点击进去可以看到详细的请求」这句话的**可执行定义**：
-	//   排行侧按 userIdentityExpr 分组，过滤侧按同一个表达式等值匹配
-	//   ⇒ ⇒ 每一组的组内行数，必须与用该组名过滤得到的行数**逐条相等**。
-	// ★ 若两边漂移（改了排行没改过滤，或反之）⇒ 这条断言立刻变红。
-	groups := rlIdentityGroups(t, pool, ctx)
-	if len(groups) == 0 {
-		t.Fatal("夹具没有产生任何身份分组（夹具坏了）")
-	}
-	if groups["dev-A"] != 2 {
-		t.Errorf("排行侧按 device_id 分组后 dev-A 应有 2 行（两个 session 归一个设备），实得 %d —— "+
-			"若这是 1，说明还在按 session 分组", groups["dev-A"])
-	}
-	if groups["unknown"] != 3 {
-		t.Errorf("排行侧应把 NULL + 空串 + 无 device_id 的 JSON 归成一个 'unknown' 组（3 行），实得 %d", groups["unknown"])
-	}
-	for name, want := range groups {
-		got := rlFilterCount(t, pool, ctx, "end_user_id="+url.QueryEscape(name), 5)
-		if got != want {
-			t.Errorf("分组 %q 的卡片行数是 %d，但按该名过滤得到 %d 行 —— 卡片与列表对不上", name, want, got)
+	// ★ 对**每一个**维度、**每一组**都要相等。
+	//   排行侧的分组键用 production 的身份表达式，过滤侧用 production 的谓词
+	//   ⇒ 这条断言真的在验「两端一致」，不是验「测试自己写的 SQL」。
+	for _, dim := range []struct {
+		name  string
+		param string
+		expr  string
+	}{
+		{"end_user_id", "end_user_id", userIdentityExpr},
+		{"client_model", "client_model", dimensionIdentityExpr("client_model")},
+		{"application_code", "application_code", dimensionIdentityExpr("application_code")},
+		{"task_type", "task_type", dimensionIdentityExpr("task_type")},
+	} {
+		groups := rlIdentityGroups(t, pool, ctx, dim.expr)
+		if len(groups) == 0 {
+			t.Errorf("%s：夹具没有产生任何身份分组（夹具坏了）", dim.name)
+			continue
 		}
+		for name, want := range groups {
+			got := rlFilterCount(t, pool, ctx, dim.param+"="+url.QueryEscape(name), 5)
+			if got != want {
+				t.Errorf("%s：分组 %q 的卡片行数是 %d，但按该名过滤得到 %d 行 —— 卡片与列表对不上",
+					dim.name, name, want, got)
+			}
+		}
+		// 「不存在」的值必须命中 0 行（过滤真在筛，不是恒真）
+		if n := rlFilterCount(t, pool, ctx, dim.param+"=ZZZ_NOT_A_REAL_VALUE_12345", 5); n != 0 {
+			t.Errorf("%s：传不存在的值应命中 0 行，实得 %d", dim.name, n)
+		}
+	}
+
+	// ── 空值 ⇒ 'unknown' 的具体形状（防「归 unknown」被悄悄改掉）────────
+	if got := rlIdentityGroups(t, pool, ctx, dimensionIdentityExpr("task_type"))["unknown"]; got != 2 {
+		t.Errorf("task_type 的空串行与 NULL 行应合成一个 'unknown' 组（2 行），实得 %d", got)
+	}
+	if got := rlIdentityGroups(t, pool, ctx, dimensionIdentityExpr("client_model"))["unknown"]; got != 2 {
+		t.Errorf("client_model 的空串行与 NULL 行应合成一个 'unknown' 组（2 行），实得 %d", got)
+	}
+	if got := rlIdentityGroups(t, pool, ctx, userIdentityExpr)["unknown"]; got != 3 {
+		t.Errorf("end_user_id 的 NULL/空串/无 device_id 的 JSON 应合成一个 'unknown' 组（3 行），实得 %d", got)
+	}
+	if got := rlIdentityGroups(t, pool, ctx, userIdentityExpr)["dev-A"]; got != 2 {
+		t.Errorf("排行侧按 device_id 分组后 dev-A 应有 2 行（两个 session 归一个设备），实得 %d —— "+
+			"若这是 1，说明还在按 session 分组", got)
 	}
 }
 
@@ -198,6 +209,8 @@ func TestRankingDimensionFiltersOnRealDB(t *testing.T) {
 //	⇒ 这里必须复刻这个上下文，否则测的是「$1 起编号」的另一个形态，
 //	证明不了生产里 $5 的形态可用（PG 的 $n 是**绝对位置**，
 //	少绑 4 个参数 ⇒ 直接 42P18 类型推断失败）。
+//	★ 这条是本门**第一次跑就抓到的真问题**（测试自己写错了编号，
+//	恰好证明了「生产编号形态必须被测」）。
 func rlFilterCount(t *testing.T, pool *pgxpool.Pool, ctx context.Context, query string, argIdx int) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/logs?"+query, nil)
@@ -220,13 +233,13 @@ func rlFilterCount(t *testing.T, pool *pgxpool.Pool, ctx context.Context, query 
 }
 
 // rlIdentityGroups 复刻排行侧的分组口径（admin/usage.go 的 queryTopN）：
-// 按 userIdentityExpr 分组，返回 {分组名: 行数}。
-func rlIdentityGroups(t *testing.T, pool *pgxpool.Pool, ctx context.Context) map[string]int {
+// 按给定的**生产身份表达式**分组，返回 {分组名: 行数}。
+func rlIdentityGroups(t *testing.T, pool *pgxpool.Pool, ctx context.Context, expr string) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(ctx,
-		"SELECT "+userIdentityExpr+" AS name, count(*) FROM public.rl GROUP BY 1")
+		"SELECT COALESCE("+expr+", 'unknown') AS name, count(*) FROM public.rl GROUP BY 1")
 	if err != nil {
-		t.Fatalf("排行侧分组查询失败: %v", err)
+		t.Fatalf("排行侧分组查询失败（expr=%s）: %v", expr, err)
 	}
 	defer rows.Close()
 	out := map[string]int{}
