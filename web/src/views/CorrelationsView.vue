@@ -15,7 +15,7 @@ import { useI18n } from 'vue-i18n'
 
 import { ref, computed, onMounted } from 'vue'
 import KxDateRangePicker from '../components/ui/KxDateRangePicker.vue'
-import { useSpanDaysRange } from '../composables/useSpanDaysRange'
+import { useRangeDays } from '../composables/useSpanDaysRange'
 import type { KxDateRange } from '../components/ui/kx-date-types'
 import { useWindowClass } from '../composables/useWindowClass'
 import ResponsiveDataView from '../components/ui/ResponsiveDataView.vue'
@@ -35,9 +35,10 @@ const { isCompact } = useWindowClass()
 const resp = ref<AutoRouteCorrelationsResponse | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
-const days = ref(7)
 const minSamples = ref(20)
-const { presets: dayPresets, rangeValue, applyRange } = useSpanDaysRange(days, [
+// ★ 2026-11-23 时间范围静默改写收口轮：改用 useRangeDays（预设走 days 快路、自定义透传 start/end）
+const days = ref(7)
+const { presets: dayPresets, rangeValue, applyRange, customRange } = useRangeDays(days, [
   { days: 1, labelKey: 'common.dateRange.preset.today' },
   { days: 7, labelKey: 'common.dateRange.preset.last7d' },
   { days: 30, labelKey: 'common.dateRange.preset.last30d' },
@@ -53,10 +54,16 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const data = await getAutoRouteCorrelations({
-      days: days.value,
+    const params: Parameters<typeof getAutoRouteCorrelations>[0] = {
       min_samples: minSamples.value,
-    })
+    }
+    if (customRange.value) {
+      params.start_date = customRange.value.start
+      params.end_date = customRange.value.end
+    } else {
+      params.days = days.value
+    }
+    const data = await getAutoRouteCorrelations(params)
     // 防御：模板多处直接写 `resp.by_model.length`。后端若吐 `null`（Go nil 切片）
     // 而不是 `[]`，null.length 抛 TypeError ⇒ /correlations 整页白屏。
     // 后端已在 normalizeCorrelationsResponse 收敛，这里再兜一层，

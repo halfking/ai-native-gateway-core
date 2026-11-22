@@ -82,10 +82,14 @@ export interface AutoRouteCorrelationsResponse {
 
 export function getAutoRouteCorrelations(params: {
   days?: number
+  start_date?: string
+  end_date?: string
   min_samples?: number
 } = {}) {
   const q = new URLSearchParams()
   if (params.days) q.set('days', String(params.days))
+  if (params.start_date) q.set('start_date', params.start_date)
+  if (params.end_date) q.set('end_date', params.end_date)
   if (params.min_samples) q.set('min_samples', String(params.min_samples))
   const path = '/api/admin/auto-route/correlations' + (q.toString() ? '?' + q : '')
   return req<AutoRouteCorrelationsResponse>('GET', path)
@@ -263,10 +267,14 @@ export interface QualityCorrelationResponse {
 
 export function getQualityCorrelations(params: {
   days?: number
+  start_date?: string
+  end_date?: string
   by?: 'prompt_length' | 'tools' | 'images' | 'code_block'
 } = {}) {
   const q = new URLSearchParams()
   if (params.days) q.set('days', String(params.days))
+  if (params.start_date) q.set('start_date', params.start_date)
+  if (params.end_date) q.set('end_date', params.end_date)
   if (params.by) q.set('by', params.by)
   const path = '/api/admin/auto-route/quality-correlations' + (q.toString() ? '?' + q : '')
   return req<QualityCorrelationResponse>('GET', path)
@@ -298,6 +306,8 @@ export function getRoutingAudit(params: {
   actor?: string
   override_id?: number
   days?: number
+  start_date?: string
+  end_date?: string
   limit?: number
 } = {}) {
   const q = new URLSearchParams()
@@ -305,6 +315,8 @@ export function getRoutingAudit(params: {
   if (params.actor) q.set('actor', params.actor)
   if (params.override_id) q.set('override_id', String(params.override_id))
   if (params.days) q.set('days', String(params.days))
+  if (params.start_date) q.set('start_date', params.start_date)
+  if (params.end_date) q.set('end_date', params.end_date)
   if (params.limit) q.set('limit', String(params.limit))
   const path = '/api/admin/routing/overrides/audit' + (q.toString() ? '?' + q : '')
   return req<RoutingAuditResponse>('GET', path)

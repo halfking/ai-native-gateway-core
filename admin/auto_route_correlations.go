@@ -92,15 +92,13 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		return
 	}
 
-	days := 7
-	if d := r.URL.Query().Get("days"); d != "" {
-		v, err := strconv.Atoi(d)
-		if err != nil || v <= 0 || v > 90 {
-			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_days_out_of_range")
-			return
-		}
-		days = v
+	// ★ 2026-11-23 时间范围静默改写收口轮：改用 parseStatsTimeRange 支持真实区间
+	tr, err := parseStatsTimeRange(r, 7)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
+
 	minSamples := 20
 	if m := r.URL.Query().Get("min_samples"); m != "" {
 		v, err := strconv.Atoi(m)
@@ -112,7 +110,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	}
 
 	resp := AutoRouteCorrelationsResponse{
-		WindowDays:  days,
+		WindowDays:  tr.Days,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -129,6 +127,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	// ⇒ `model_chosen` / `strategy_used` 来自 `session_turn_details*`、
 	// `task_type_chosen` 来自 `session_turns*` ⇒ 本文件依赖的列**都有值**
 	// （无 details 行的轮次这三列为 NULL，而查询本来就用 `IS NOT NULL` 过滤）。
+	predicate, predicateArgs := tr.sqlPredicate("ts", 1)
 	byModelQuery := `
 		SELECT
 		    model_chosen,
@@ -139,12 +138,13 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND model_chosen IS NOT NULL
-		  AND ts >= NOW() - INTERVAL '1 day' * $1
+		  AND ` + predicate + `
 		GROUP BY model_chosen
-		HAVING COUNT(*) >= $2
+		HAVING COUNT(*) >= $` + strconv.Itoa(len(predicateArgs)+1) + `
 		ORDER BY success DESC, avg_latency ASC
 	`
-	byModelQ, byModelArgs := applyTenantFilterToQuery(r, byModelQuery, []any{days, minSamples})
+	byModelArgs := append(predicateArgs, minSamples)
+	byModelQ, byModelArgs := applyTenantFilterToQuery(r, byModelQuery, byModelArgs)
 	if err := h.queryCorrelations(w, r, byModelQ, byModelArgs, &resp.ByModel, "model_chosen"); err != nil {
 		return
 	}
@@ -160,12 +160,13 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND strategy_used IS NOT NULL
-		  AND ts >= NOW() - INTERVAL '1 day' * $1
+		  AND ` + predicate + `
 		GROUP BY strategy_used
-		HAVING COUNT(*) >= $2
+		HAVING COUNT(*) >= $` + strconv.Itoa(len(predicateArgs)+1) + `
 		ORDER BY success DESC, avg_latency ASC
 	`
-	byStrategyQ, byStrategyArgs := applyTenantFilterToQuery(r, byStrategyQuery, []any{days, minSamples})
+	byStrategyArgs := append(predicateArgs, minSamples)
+	byStrategyQ, byStrategyArgs := applyTenantFilterToQuery(r, byStrategyQuery, byStrategyArgs)
 	if err := h.queryCorrelations(w, r, byStrategyQ, byStrategyArgs, &resp.ByStrategy, "strategy_used"); err != nil {
 		return
 	}
@@ -181,12 +182,13 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		FROM ` + dbpkg.SessionFamilyTurnsSourceSQL() + ` rl
 		WHERE is_auto_request = TRUE
 		  AND task_type_chosen IS NOT NULL
-		  AND ts >= NOW() - INTERVAL '1 day' * $1
+		  AND ` + predicate + `
 		GROUP BY task_type_chosen
-		HAVING COUNT(*) >= $2
+		HAVING COUNT(*) >= $` + strconv.Itoa(len(predicateArgs)+1) + `
 		ORDER BY samples DESC
 	`
-	byTaskTypeQ, byTaskTypeArgs := applyTenantFilterToQuery(r, byTaskTypeQuery, []any{days, minSamples})
+	byTaskTypeArgs := append(predicateArgs, minSamples)
+	byTaskTypeQ, byTaskTypeArgs := applyTenantFilterToQuery(r, byTaskTypeQuery, byTaskTypeArgs)
 	if err := h.queryCorrelations(w, r, byTaskTypeQ, byTaskTypeArgs, &resp.ByTaskType, "task_type_chosen"); err != nil {
 		return
 	}
@@ -204,12 +206,13 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		WHERE is_auto_request = TRUE
 		  AND model_chosen IS NOT NULL
 		  AND task_type_chosen IS NOT NULL
-		  AND ts >= NOW() - INTERVAL '1 day' * $1
+		  AND ` + predicate + `
 		GROUP BY model_chosen, task_type_chosen
-		HAVING COUNT(*) >= $2
+		HAVING COUNT(*) >= $` + strconv.Itoa(len(predicateArgs)+1) + `
 		ORDER BY success DESC, model_chosen, task_type_chosen
 	`
-	byModelTaskQ, byModelTaskArgs := applyTenantFilterToQuery(r, byModelTaskQuery, []any{days, minSamples})
+	byModelTaskArgs := append(predicateArgs, minSamples)
+	byModelTaskQ, byModelTaskArgs := applyTenantFilterToQuery(r, byModelTaskQuery, byModelTaskArgs)
 	rows, err := h.db.Query(r.Context(), byModelTaskQ, byModelTaskArgs...)
 	if err != nil {
 		writeAutoRouteInternalErr(w, err)
@@ -257,14 +260,15 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 			WHERE is_auto_request = TRUE
 			  AND task_type_chosen IS NOT NULL
 			  AND model_chosen IS NOT NULL
-			  AND ts >= NOW() - INTERVAL '1 day' * $1
+			  AND ` + predicate + `
 			GROUP BY task_type_chosen, model_chosen
-			HAVING COUNT(*) >= $2
+			HAVING COUNT(*) >= $` + strconv.Itoa(len(predicateArgs)+1) + `
 		) ranked
 		WHERE rn <= 3
 		ORDER BY task_type_chosen, rn
 	`
-	verdictQ, verdictArgs := applyTenantFilterToQuery(r, verdictQuery, []any{days, minSamples})
+	verdictArgs := append(predicateArgs, minSamples)
+	verdictQ, verdictArgs := applyTenantFilterToQuery(r, verdictQuery, verdictArgs)
 	rows2, err := h.db.Query(r.Context(), verdictQ, verdictArgs...)
 	if err != nil {
 		writeAutoRouteInternalErr(w, err)
@@ -292,7 +296,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 
 	writeJSON(w, http.StatusOK, resp)
 	slog.Debug("auto-route correlations computed",
-		"days", days, "by_model", len(resp.ByModel),
+		"window_label", tr.label(), "by_model", len(resp.ByModel),
 		"by_strategy", len(resp.ByStrategy),
 		"by_task_type", len(resp.ByTaskType),
 		"by_model_task", len(resp.ByModelTask),
