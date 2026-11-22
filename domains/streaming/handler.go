@@ -3085,14 +3085,14 @@ func (h *ChatHandler) serveWithExecutor(
 	if len(bodyBytes) > maxBodySize {
 		// body_too_large already has body captured (it's in bodyBytes)
 		// but we need to emit + mark to prevent safety net double-emit
-		logCtx.SetError("body_too_large", "request body exceeds 32 MiB limit")
+		logCtx.SetError("body_too_large", "request body exceeds 100 MB limit")
 		if logCtx.ClientModel == "" {
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes[:maxBodySize]))
 		}
-		logCtx.EmitFailure("body_too_large", "request body exceeds 32 MiB limit", nil, nil)
+		logCtx.EmitFailure("body_too_large", "request body exceeds 100 MB limit", nil, nil)
 		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too_large"},
+			"error": map[string]string{"message": "request body exceeds 100 MB limit", "type": "invalid_request", "code": "body_too_large"},
 		})
 		return
 	}

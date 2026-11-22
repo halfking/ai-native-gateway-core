@@ -338,6 +338,9 @@ func buildResponsesContent(msg Message) []map[string]any {
 		case "tool_use":
 			// Assistant tool_use blocks are represented as function_call items
 			// at the input[] level (handled by the caller), not as content.
+		case "thinking":
+			// Anthropic thinking blocks have no Responses equivalent.
+			// The block is skipped; loss is reported in reportSerializeResponsesLosses.
 		case "tool_result":
 			// Tool results are function_call_output items (handled by caller).
 		default:
@@ -800,6 +803,19 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 					"loss",
 					"file_id document reference carries neither FileID nor Data; upstream receives an input_file with no id or data",
 					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			// P1-A (2026-11-23): thinking block text has no Responses equivalent.
+			// buildResponsesContent skips the entire block; report the loss.
+			if block.Type == "thinking" && block.Thinking != nil && block.Thinking.Thinking != "" {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "thinking"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIResponses,
+					"loss",
+					"Anthropic thinking block cannot be expressed on Responses API; block dropped",
+					map[string]any{"message_index": i, "content_index": j, "text_length": len(block.Thinking.Thinking)},
 				)
 			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
