@@ -986,6 +986,20 @@ async function load() {
     // 服务端显式回传当前探测口径（2026-11-21 对齐轮）：徽标披露认响应值，
     // 不认本地开关状态（两者只在正常链路一致；降级/参数被吞时以响应为准）。
     trafficLane.value = resp.traffic_lane ?? ''
+    // 2026-11-22 fix: 检测「有 count 但 items 为空」的数据扫描错误。
+    // 根因：后端数据库行扫描失败（如 JSONB 字段格式问题），导致所有行被跳过，
+    // 但 COUNT 查询成功。此时应明确告知用户这是服务端错误，而非真的无数据。
+    if (resp.items.length === 0 && resp.count > 0) {
+      console.error('[RequestLogs] Backend scanning error detected:', {
+        count: resp.count,
+        itemsLength: resp.items.length,
+        requestParams: { from: range.from, to: range.to, page: page.value, pageSize: pageSize.value },
+      })
+      error.value = t('requests.list.error.scanningFailed', {
+        count: resp.count,
+        default: `数据加载异常：查询到 ${resp.count} 条记录，但无法正常显示。这通常是服务端数据格式问题，请联系管理员检查后端日志。`,
+      })
+    }
   } catch (e: unknown) {
     error.value = surfaceError(e)
   } finally {
