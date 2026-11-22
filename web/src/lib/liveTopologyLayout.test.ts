@@ -10,19 +10,21 @@
 //     真实缺陷就是它缺席导致 client→gateway / gateway→provider 边全部
 //     被静默丢弃（图上只剩 provider→model 一段，owner 报告「连线没有」）。
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   bezierPoint,
   computeGatewayBox,
   computeLayout,
+  computeRowY,
   edgeWidth,
   fitRow,
   isEdgeHighlighted,
   MIN_LAYOUT_HEIGHT,
   MIN_LAYOUT_WIDTH,
   NODE_GAP,
+  NODE_H,
   NODE_W,
   particleRadius,
   stableHash,
@@ -217,17 +219,18 @@ describe('computeLayout', () => {
     }
   })
 
-  it('★ 画布的 CSS min-height 不得低于布局的兜底下限（★ 否则「被兜底抬高的布局」比容器还高 ⇒ 溢出被裁）', () => {
+  it('★★ 画布的 CSS min-height 必须与布局兜底下限**相等**（★ 两处真源不许各写一个数）', () => {
     // ★ 关系判据（★ 不写死数值）：★ `MIN_LAYOUT_HEIGHT` 是布局的**兜底**
-    //   （把更小的输入抬到该高度再排布）⇒ ★ 若容器实际高度可能低于它 ⇒ ★
-    //   排出来的内容比容器还高 ⇒ ★ 溢出被裁（★ 与 `MIN_LAYOUT_WIDTH` 注释里
-    //   写明的同一条原则：**下限大于容器不是信息，是丢信息**）⇒ ★ ⇒
-    //   ⇒ 容器的 CSS 下限必须 ≥ 布局兜底下限。
+    //   （把更小的输入抬到该高度再排布）⇒ ★ 而容器的 CSS `min-height` 决定
+    //   它**不可能比这更矮** ⇒ ⇒ 两处是**同一个下限**的两个写法 ⇒ ★ ⇒
+    //   ⇒ 必须**相等**：★ 小于它 ⇒ 容器可能矮于布局兜底 ⇒ 排布内容溢出被裁
+    //   （★ 与 `MIN_LAYOUT_WIDTH` 注释里同一条原则：下限大于容器不是信息是丢信息）；
+    //   ★ 大于它 ⇒ 布局会按一个容器永远达不到的高度排布 ⇒ 白白浪费垂直空间。
     expect(
       CANVAS_MIN_HEIGHT,
-      '★ 画布 CSS min-height 必须 ≥ 布局兜底下限 MIN_LAYOUT_HEIGHT'
-        + '⇒ 否则容器可能矮于布局兜底 ⇒ 排布内容溢出被裁',
-    ).toBeGreaterThanOrEqual(MIN_LAYOUT_HEIGHT)
+      '★ 画布 CSS min-height 必须与布局兜底下限 MIN_LAYOUT_HEIGHT 相等'
+        + '⇒ 两处是同一个下限 ⇒ 小于它会溢出被裁、大于它浪费空间',
+    ).toBe(MIN_LAYOUT_HEIGHT)
   })
 
   it('orders each column by traffic descending', () => {
@@ -629,5 +632,111 @@ describe('stableHash', () => {
     expect(stableHash('a')).not.toBe(stableHash('b'))
     expect(stableHash('x')).toBeGreaterThanOrEqual(0)
     expect(stableHash('x')).toBeLessThan(2 ** 32)
+  })
+})
+
+
+/**
+ * ★★ **边界回归：布局高度下限**（2026-11-23 第十六轮）。
+ *
+ * ★ 缺陷形态（L23）：`MIN_LAYOUT_HEIGHT` 是**兜底**（把更小的输入抬到该高度
+ *   再排布）⇒ ★ 若它**小于布局的真实需求高度**，⇒ ① 被抬上去的那些高度
+ *   **抬完还是溢出**（兜底等于没兜）⇒ ② 夹在「真实需求」与「兜底」之间的
+ *   那一段**直接溢出**（★ 实测 480~545 整段溢出，底边 546px）⇒ ⇒
+ *   ★★ 而这类缺陷**不会让任何一条「抽几个高度采样」的判据变红** ⇒ ⇒
+ *   ★★ ⇒ 必须**逐高度扫**才能看见（★ 这就是「边界回归」与「抽样回归」的差别）。
+ */
+describe('★ 边界回归：布局高度下限', () => {
+  /**
+   * 布局在给定宽度下**真正排得下**的最小高度。
+   * ★ 直接用导出的 `computeRowY` / `computeGatewayBox` 算 ⇒ ★ **绕开**
+   *   `computeLayout` 的兜底抬升 ⇒ ★ 否则会被抬高值掩盖真实需求。
+   */
+  function minFeasibleHeight(width = 1200): number {
+    for (let h = 1; h <= 4000; h++) {
+      const client = computeRowY(h).client
+      const gw = computeGatewayBox(width, h, client)
+      const rows = computeRowY(h, gw)
+      // 供应端节点卡的**底边**（中心线 + 半卡高）
+      if (rows.provider + NODE_H / 2 <= h) return h
+    }
+    return Number.POSITIVE_INFINITY
+  }
+
+  it('① 任何输入高度都不得溢出（★ 逐高度扫 1..1200 ⇒ 旧版 480~545 那段必须也在内）', () => {
+    // ★ `computeRowY` 在超出时 console.warn ⇒ ★ 扫描会刷屏 ⇒ ★ 先静音。
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const overflow: string[] = []
+      for (let h = 1; h <= 1200; h++) {
+        const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height: h })
+        const bottom = Math.max(...layout.nodes.map((n) => n.y + n.h))
+        if (bottom > layout.height) {
+          overflow.push(`h=${h}(排布高度 ${layout.height}) 最下沿 ${bottom}px`)
+        }
+      }
+      expect(
+        overflow.slice(0, 5),
+        `★ 有 ${overflow.length} 个输入高度会让内容溢出画布（★ 头几条：${overflow.slice(0, 3).join(' | ')}）`,
+      ).toEqual([])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('② 边界点本身安全：h = 下限 与 h = 下限-1 都不得溢出（★ 下限-1 应被抬到下限）', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      for (const h of [MIN_LAYOUT_HEIGHT, MIN_LAYOUT_HEIGHT - 1]) {
+        const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height: h })
+        const bottom = Math.max(...layout.nodes.map((n) => n.y + n.h))
+        expect(bottom, `h=${h} 时内容底边 ${bottom}px 超过排布高度 ${layout.height}px`).toBeLessThanOrEqual(
+          layout.height,
+        )
+      }
+      // h = 下限-1 会被抬到下限（★ 兜底语义）
+      const raised = computeLayout({
+        nodes: NODES, edges: EDGES, width: 1200, height: MIN_LAYOUT_HEIGHT - 1,
+      })
+      expect(raised.height, '★ 比下限矮 1px 的输入必须被抬到下限（★ 兜底语义）').toBe(
+        MIN_LAYOUT_HEIGHT,
+      )
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('③ 退化输入（高度 0 / 1）也被抬到安全下限且不溢出', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      for (const h of [0, 1]) {
+        const layout = computeLayout({ nodes: NODES, edges: EDGES, width: 1200, height: h })
+        expect(layout.height, `h=${h} 必须被抬到下限`).toBe(MIN_LAYOUT_HEIGHT)
+        const bottom = Math.max(...layout.nodes.map((n) => n.y + n.h))
+        expect(bottom, `h=${h} 内容底边 ${bottom}px 溢出`).toBeLessThanOrEqual(layout.height)
+      }
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('④ 下限必须与布局的真实需求**双向锁死**（★ 不小于需求、不高于需求+余量）', () => {
+    // ★ 这条把 `MIN_LAYOUT_HEIGHT` 与**算法**绑在一起（★ 而不是两个各写各的数字）：
+    //   · 下限 ≥ 真实最小可行高度 ⇒ ★ 兜底才真的兜得住（★ 否则「抬完仍溢出」）；
+    //   · 下限 ≤ 真实最小可行高度 + 余量 ⇒ ★ 下限没有高到离谱（★ 否则布局会按
+    //     一个容器永远达不到的高度排布 ⇒ 白白浪费垂直空间）。
+    // ★ ⇒ 若上游改了布局算法（间距/层数/大方块高度），本条会红 ⇒ ★ 提示
+    // ★   「该把下限重新对一遍」⇒ ★ 而不会等到线上溢出才发现。
+    const feasible = minFeasibleHeight()
+    expect(
+      MIN_LAYOUT_HEIGHT,
+      `★ 布局兜底下限（${MIN_LAYOUT_HEIGHT}）不得小于真实最小可行高度（${feasible}）`
+        + '⇒ 否则被抬高的那些高度抬完仍然溢出',
+    ).toBeGreaterThanOrEqual(feasible)
+    expect(
+      MIN_LAYOUT_HEIGHT,
+      `★ 布局兜底下限（${MIN_LAYOUT_HEIGHT}）不得高于真实最小可行高度（${feasible}）+ 40`
+        + '⇒ 否则布局会按容器永远达不到的高度排布 ⇒ 浪费垂直空间',
+    ).toBeLessThanOrEqual(feasible + 40)
   })
 })
