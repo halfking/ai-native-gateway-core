@@ -107,6 +107,30 @@ function capturedApi(fragment) {
   }
   return null
 }
+/**
+ * ★★★ 2026-11-23（L16 修复轮）新增：**取最近一次捕获的响应连同 HTTP 状态码**。
+ *
+ * ★ 为什么必须有它（这是 §7.11 总结的那条通用式的落地）：
+ *   ★ **「端点 500」与「端点返回空」在页面上的默认表现都是「表格区域空着」**
+ *   ⇒ ⇒ 只断言「空态 vs 有表」就**分不清这两者**
+ *   ⇒ ⇒ 必须**同时抓 HTTP 状态码**，否则「后端 500」会被误判成「业务无数据」
+ *   ⇒ ⇒ ★★ **且顺序不能反**：先按**状态码**定性，再按**页面**定性。
+ *
+ * ★ 实测代价（2026-11-23 真实事故）：`/user-ranking/:owner/api-keys` 在生产上返回
+ *   **500**（PG `/dev/shm` 不足 ⇒ SQLSTATE 53100），而页面把它渲染成「暂无数据」
+ *   ⇒ 探针若只断「空态」，报出来的是「**前端缺陷**」⇒ ★ **归因完全错位**
+ *   （真因在后端/基础设施，前端只是「把错误吞了」）。
+ */
+function capturedApiWithStatus(fragment) {
+  for (let i = apiResponses.length - 1; i >= 0; i--) {
+    if (apiResponses[i].url.includes(fragment)) {
+      try {
+        return { status: apiResponses[i].status, body: JSON.parse(apiResponses[i].body) }
+      } catch { return null }
+    }
+  }
+  return null
+}
 
 async function goto(url, waitMs = 6000) {
   const created = await cdp.send('Target.createTarget', { url: 'about:blank' })
@@ -568,21 +592,46 @@ if (!owner) {
     return JSON.stringify({
       ok: true, tables,
       hasEmptyState: !!document.querySelector('.app-empty-state'),
+      // ★ 2026-11-23（L16）：**错误横幅**也要采样 ⇒ 才能区分
+      //   「端点失败被渲染成空态」与「端点失败被渲染成错误态」。
+      hasErrorBanner: !!document.querySelector('.sa-banner--error'),
+      hasStaleBanner: !!document.querySelector('.sa-banner--stale'),
     })
   })()`))
   if (!apiKeysTab.ok) {
     check('人员详情页：API Key 用量 tab 存在', false, apiKeysTab.why || '找不到 API Key 用量 tab')
   } else {
+    // ★★★ 2026-11-23（L16）：**先按 HTTP 状态码定性，再按页面定性** ★★★
+    // ★ 旧写法只断「空态 vs 有表」⇒ ★ 把「端点 500」误判成「前端没渲染空态」
+    //   ⇒ 归因完全错位（真因在后端）。⇒ 现在先看状态码。
+    const apiKeysResp = capturedApiWithStatus(`/user-ranking/${owner}/api-keys?`)
+    const apiKeysStatus = apiKeysResp ? apiKeysResp.status : null
+    const endpointFailed = apiKeysStatus !== null && apiKeysStatus >= 400
+    // ★ 提到分支外：下面的行级对拍段也要用它（端点失败时它为 undefined ⇒ 对拍自然跳过）
     const apiKeysTable = apiKeysTab.tables.find(t => t.headers.includes('Key别名'))
-    const needHeaders = ['Key别名', 'Key ID', '请求数', 'Token 数', '关联项目数', '主要项目']
-    if (apiKeysTable) {
-      check('人员详情页：API Key 统计表头齐全', needHeaders.every(h => apiKeysTable.headers.includes(h)),
-        needHeaders.filter(h => !apiKeysTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !apiKeysTable.headers.includes(h)).join('/') : '6 列全在')
-      check('人员详情页：API Key 统计有行或显示空态', apiKeysTable.rows.length > 0 || apiKeysTab.hasEmptyState,
-        `rows=${apiKeysTable.rows.length} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+
+    if (endpointFailed) {
+      // ── 端点失败分支：页面**必须**显示错误态，且**不得**显示「暂无数据」空态 ──
+      check('人员详情页：API Key 统计端点失败时显示错误态（而非「暂无数据」）',
+        apiKeysTab.hasErrorBanner === true,
+        `status=${apiKeysStatus} hasErrorBanner=${apiKeysTab.hasErrorBanner} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+      check('人员详情页：API Key 统计端点失败时不显示「暂无数据」空态',
+        apiKeysTab.hasEmptyState === false,
+        `hasEmptyState=${apiKeysTab.hasEmptyState} ⇒ 错误被伪装成无数据`)
+      // ★ 端点本身的健康度单独记一条 ⇒ **红的归因是「后端 500」，不是「前端」**
+      check('人员详情页：API Key 统计端点健康（应为 200）', false,
+        `status=${apiKeysStatus} ⇒ 端点失败（★ 归因：后端/基础设施，不是页面渲染）`)
     } else {
-      check('人员详情页：API Key 统计无数据时显示空态', apiKeysTab.hasEmptyState === true,
-        `hasEmptyState=${apiKeysTab.hasEmptyState} tables=${apiKeysTab.tables.length}`)
+      const needHeaders = ['Key别名', 'Key ID', '请求数', 'Token 数', '关联项目数', '主要项目']
+      if (apiKeysTable) {
+        check('人员详情页：API Key 统计表头齐全', needHeaders.every(h => apiKeysTable.headers.includes(h)),
+          needHeaders.filter(h => !apiKeysTable.headers.includes(h)).length ? '缺 ' + needHeaders.filter(h => !apiKeysTable.headers.includes(h)).join('/') : '6 列全在')
+        check('人员详情页：API Key 统计有行或显示空态', apiKeysTable.rows.length > 0 || apiKeysTab.hasEmptyState,
+          `rows=${apiKeysTable.rows.length} hasEmptyState=${apiKeysTab.hasEmptyState}`)
+      } else {
+        check('人员详情页：API Key 统计无数据时显示空态', apiKeysTab.hasEmptyState === true,
+          `hasEmptyState=${apiKeysTab.hasEmptyState} tables=${apiKeysTab.tables.length}`)
+      }
     }
     const apiKeysCap = sameSource(`/user-ranking/${owner}/api-keys?`)
     check('对拍基准：已捕获页面自己的 api-keys 响应', !!apiKeysCap,
