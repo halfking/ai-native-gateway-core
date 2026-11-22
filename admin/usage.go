@@ -1593,6 +1593,18 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 			whereClause += fmt.Sprintf(" AND %s = ANY($%d)", usageTrendModelExprRL, len(args)+1)
 			args = append(args, trendFilters.models)
 		}
+		// ★ 五维排行过滤（2026-11-23 用量趋势深链轮）：深链带 client_model /
+		//   end_user_id / api_key_prefix / application_code / task_type 时，
+		//   **排行卡片本身**也要按这些维度收敛 —— 否则页面下半屏（排行）与
+		//   上半屏（图表）、以及 URL 承诺的条件**三者口径打架**
+		//   （实测：URL 带 end_user_id，图表已过滤、排行仍是全站）。
+		//   ★ 谓词复用 logs.go 的同一份（别名 rl）⇒ 排行分组键与过滤谓词同源。
+		if dimClauses, dimArgs, _ := buildRankingDimensionClausesFor(trendFilters.dims, "rl", len(args)+1); len(dimClauses) > 0 {
+			for _, c := range dimClauses {
+				whereClause += " AND " + c
+			}
+			args = append(args, dimArgs...)
+		}
 
 		query := fmt.Sprintf(`
 			SELECT
@@ -1716,6 +1728,14 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	if len(trendFilters.models) > 0 {
 		whereClause += fmt.Sprintf(" AND %s = ANY($%d)", usageTrendModelExprRL, len(args)+1)
 		args = append(args, trendFilters.models)
+	}
+	// ★ 五维排行过滤：这条查询自带 JOIN（占位符编号另起）⇒ 过滤条件要单加一份
+	//   （谓词形状仍复用 logs.go 的同一份，别名 rl）。
+	if dimClauses, dimArgs, _ := buildRankingDimensionClausesFor(trendFilters.dims, "rl", len(args)+1); len(dimClauses) > 0 {
+		for _, c := range dimClauses {
+			whereClause += " AND " + c
+		}
+		args = append(args, dimArgs...)
 	}
 	apiKeyQuery += whereClause + fmt.Sprintf(`
 		GROUP BY ak.key_prefix, ak.key_alias, ak.owner_user

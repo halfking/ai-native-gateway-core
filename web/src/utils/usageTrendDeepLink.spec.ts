@@ -10,14 +10,67 @@
 //   测不到"参数在不在、钉没钉住、code 能不能解析成 id"这些真正的口径。
 
 import { describe, expect, it } from 'vitest'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import {
+  DIMENSION_SPECS,
   firstQueryString,
+  hiddenRankingArms,
   isProviderIdParam,
   providerDisplayLabel,
+  readDeepLinkValue,
   readPinnedDimensions,
   resolveProviderId,
   type ProviderLike,
 } from './usageTrendDeepLink'
+
+// ★ 8 语种的 locale 模块（静态 import ⇒ 类型安全，且不受动态 import 路径解析影响）。
+//   用途：钉住「维度表里的 labelKey 在**每一个**语种都解析得到真值」——
+//   ★ 本轮实测教训：labelKey 写成 `filter.deepLink.clientModel`（**漏了顶层
+//     命名空间前缀** `requests.list.`）⇒ 该键在 8 个语种全部不存在 ⇒
+//     页面 chip 标签渲染成原始键、跨语种键存在性门变红 ⇒ ⇒ labelKey 必须
+//     是**完整 i18n 路径**，不能是"看起来像路径"的片段。
+import arRequests from '../locales/ar-SA/requests'
+import arUsageTrend from '../locales/ar-SA/usageTrend'
+import deRequests from '../locales/de-DE/requests'
+import deUsageTrend from '../locales/de-DE/usageTrend'
+import enRequests from '../locales/en-US/requests'
+import enUsageTrend from '../locales/en-US/usageTrend'
+import esRequests from '../locales/es-ES/requests'
+import esUsageTrend from '../locales/es-ES/usageTrend'
+import frRequests from '../locales/fr-FR/requests'
+import frUsageTrend from '../locales/fr-FR/usageTrend'
+import jaRequests from '../locales/ja-JP/requests'
+import jaUsageTrend from '../locales/ja-JP/usageTrend'
+import cnRequests from '../locales/zh-CN/requests'
+import cnUsageTrend from '../locales/zh-CN/usageTrend'
+import twRequests from '../locales/zh-TW/requests'
+import twUsageTrend from '../locales/zh-TW/usageTrend'
+
+type Bundle = Record<string, unknown>
+
+// ★ bundle 形态必须与各语种 `index.ts` 的聚合形态**同构**：模块导出被挂在
+//   「命名空间 key」下（requests.ts ⇒ `requests.*`；usageTrend.ts ⇒ `usageTrend.*`）
+//   ⇒ 直接把模块铺平会让 `requests.list.…` / `usageTrend.…` 两条路径都取不到
+//   ⇒ ★ 这里必须按 index.ts 的挂法拼（否则这条钉测自己就红）。
+const LOCALE_BUNDLES: Record<string, Bundle> = {
+  'ar-SA': { requests: arRequests, usageTrend: arUsageTrend },
+  'de-DE': { requests: deRequests, usageTrend: deUsageTrend },
+  'en-US': { requests: enRequests, usageTrend: enUsageTrend },
+  'es-ES': { requests: esRequests, usageTrend: esUsageTrend },
+  'fr-FR': { requests: frRequests, usageTrend: frUsageTrend },
+  'ja-JP': { requests: jaRequests, usageTrend: jaUsageTrend },
+  'zh-CN': { requests: cnRequests, usageTrend: cnUsageTrend },
+  'zh-TW': { requests: twRequests, usageTrend: twUsageTrend },
+}
+
+/** 按点号路径取值（取不到返回 undefined）。 */
+function pickPath(bundle: Bundle, path: string): unknown {
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc === null || typeof acc !== 'object') return undefined
+    return (acc as Record<string, unknown>)[key]
+  }, bundle)
+}
 
 describe('深链钉住维度', () => {
   it('① 参数存在即钉住（provider/tenant/apikey/model 各自独立）', () => {
@@ -79,5 +132,122 @@ describe('深链钉住维度', () => {
     // 兜底：列表里没有 ⇒ #id
     expect(providerDisplayLabel(providers, '', 999)).toBe('#999')
     expect(providerDisplayLabel(providers, '', null)).toBe('')
+  })
+
+  // ★★★ 2026-11-23 用量趋势深链轮（扩展）：维度 4 → 9
+  //
+  // ★ 实测取证（211 现役，浏览器实点）：
+  //   ① `?model=claude-opus-5-5` ⇒ 条件已自动选中 ✔，但「Top 5 模型」卡片没收起
+  //      ⇒ 顶着「Top 5」标题只有 1 行（13.5K）= **多余的数据**；
+  //   ② `?end_user_id=anonymous` ⇒ 页面**根本不认这个条件**（条件区全是「全部」、
+  //      Top 10 用户仍是全站 3 个用户）⇒ URL 承诺的条件与页面呈现的数据不一致。
+
+  it('⑦ 九个维度都能被深链钉住（含排行六维里页面原本不认识的五个）', () => {
+    const pinned = readPinnedDimensions({
+      provider: 'apiclaude',
+      tenant: 't1',
+      apikey: '12',
+      model: 'gpt-5',
+      client_model: 'claude-opus-5-5',
+      end_user_id: 'anonymous',
+      api_key_prefix: 'sk-jybFTc1****',
+      application_code: 'default',
+      task_type: 'unknown',
+    })
+    for (const dim of [
+      'provider', 'tenant', 'apikey', 'model',
+      'client', 'user', 'project', 'task', 'apikeyPrefix',
+    ] as const) {
+      expect(pinned[dim], `维度 ${dim} 应当被钉住`).toBe(true)
+    }
+    // 时间范围不是维度 ⇒ 不钉住
+    expect(readPinnedDimensions({ start: '2026-11-17', end: '2026-11-23' }).model).toBe(false)
+  })
+
+  it('⑧ ★ 被钉住的维度 ⇒ 收起它对应的那张排行卡片（其余保留为下钻拆解）', () => {
+    expect(hiddenRankingArms(readPinnedDimensions({ model: 'gpt-5' }))).toEqual(['models'])
+    expect(hiddenRankingArms(readPinnedDimensions({ client_model: 'x' }))).toEqual(['clients'])
+    expect(hiddenRankingArms(readPinnedDimensions({ end_user_id: 'anonymous' }))).toEqual(['users'])
+    expect(hiddenRankingArms(readPinnedDimensions({ apikey: '12' }))).toEqual(['apiKeys'])
+    expect(hiddenRankingArms(readPinnedDimensions({ api_key_prefix: 'sk-x' }))).toEqual(['apiKeys'])
+    expect(hiddenRankingArms(readPinnedDimensions({ application_code: 'x' }))).toEqual(['projects'])
+    expect(hiddenRankingArms(readPinnedDimensions({ task_type: 'x' }))).toEqual(['tasks'])
+    // ★ 供应商/租户**没有**对应卡片 ⇒ 不收起任何卡片（它们是 breakdowns，不是冗余）
+    expect(hiddenRankingArms(readPinnedDimensions({ provider: 'x' }))).toEqual([])
+    expect(hiddenRankingArms(readPinnedDimensions({ tenant: 't1' }))).toEqual([])
+    // 无条件 ⇒ 六张卡全保留
+    expect(hiddenRankingArms(readPinnedDimensions({ start: '2026-11-17' }))).toEqual([])
+    // 两个维度指向同一张卡（apikey / api_key_prefix）⇒ 只列一次
+    expect(hiddenRankingArms(readPinnedDimensions({ apikey: '1', api_key_prefix: 'sk-x' }))).toEqual(['apiKeys'])
+  })
+
+  it('⑨ ★ 五维参数名与请求日志页逐字相同（两页可互贴链接 ⇒ 同一套维度词汇）', async () => {
+    // ★ 这是**跨文件契约**：用量趋势页与请求日志页必须认同一批 query 参数名，
+    //   否则「从排行卡片点过去」与「把链接贴回用量趋势页」会得到两种含义。
+    const logsSrc = await readFile(
+      resolve(process.cwd(), 'src/api/logs.ts'),
+      'utf8',
+    )
+    for (const dim of ['client', 'user', 'project', 'task', 'apikeyPrefix'] as const) {
+      const param = DIMENSION_SPECS[dim].param
+      expect(
+        logsSrc.includes(`qs.set('${param}',`),
+        `请求日志页必须认识 query 参数 ${param}（用量趋势页的维度表用的是它）`,
+      ).toBe(true)
+    }
+    // ★ 维度表自身的参数名（防手滑改名）
+    expect(DIMENSION_SPECS.client.param).toBe('client_model')
+    expect(DIMENSION_SPECS.user.param).toBe('end_user_id')
+    expect(DIMENSION_SPECS.project.param).toBe('application_code')
+    expect(DIMENSION_SPECS.task.param).toBe('task_type')
+    expect(DIMENSION_SPECS.apikeyPrefix.param).toBe('api_key_prefix')
+  })
+
+  it('⑩ ★ 没有选择器的维度用 chip 呈现；有选择器的维度用 picker', () => {
+    // 页面上有选择器的四个 ⇒ picker（条件区自动选中该项）
+    for (const dim of ['provider', 'tenant', 'apikey', 'model'] as const) {
+      expect(DIMENSION_SPECS[dim].control, `维度 ${dim} 应当有选择器`).toBe('picker')
+    }
+    // 页面上没有选择器的五个 ⇒ chip（只读徽标 + ✕ 解除）
+    for (const dim of ['client', 'user', 'project', 'task', 'apikeyPrefix'] as const) {
+      expect(DIMENSION_SPECS[dim].control, `维度 ${dim} 只能用只读徽标`).toBe('chip')
+    }
+  })
+
+  it('⑪ readDeepLinkValue 取该维度的值（chip 徽标要显示它）', () => {
+    expect(readDeepLinkValue({ end_user_id: 'anonymous' }, 'user')).toBe('anonymous')
+    expect(readDeepLinkValue({ client_model: '  claude-opus-5-5  ' }, 'client')).toBe('claude-opus-5-5')
+    expect(readDeepLinkValue({}, 'user')).toBe('')
+  })
+
+  it('⑫ ★★ 每个维度的 labelKey 在全部 8 个语种都解析得到非空真值', () => {
+    // ★ 本轮实测教训：labelKey 若漏了顶层命名空间前缀（如写成
+    //   `filter.deepLink.clientModel` 而非 `requests.list.filter.deepLink.clientModel`）
+    //   ⇒ 该键在 8 个语种**全部不存在** ⇒ 页面 chip 标签渲染成原始键串、
+    //   跨语种键存在性门变红 ⇒ ⇒ labelKey 必须是**完整 i18n 路径**。
+    const dims = Object.keys(DIMENSION_SPECS) as (keyof typeof DIMENSION_SPECS)[]
+    for (const dim of dims) {
+      const labelKey = DIMENSION_SPECS[dim].labelKey
+      for (const [loc, bundle] of Object.entries(LOCALE_BUNDLES)) {
+        const value = pickPath(bundle, labelKey)
+        expect(
+          typeof value === 'string' && value.trim() !== '',
+          `维度 ${dim} 的 labelKey "${labelKey}" 在语种 ${loc} 解析不到非空字符串（实测 ${JSON.stringify(value)}）`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('⑬ ★ chip 维度的 labelKey 与请求日志页实际使用的键同源', async () => {
+    // ★ 两个页面共用同一套维度词汇 ⇒ 标签也必须是同一批键 ⇒
+    //   请求日志页源码里出现过的 deepLink 键，必须覆盖本表的 5 个 chip 维度。
+    const src = await readFile(resolve(__dirname, '../views/RequestLogsView.vue'), 'utf8')
+    for (const dim of ['client', 'user', 'project', 'task', 'apikeyPrefix'] as const) {
+      const labelKey = DIMENSION_SPECS[dim].labelKey
+      expect(
+        src.includes(`'${labelKey}'`),
+        `维度 ${dim} 的 labelKey "${labelKey}" 必须与请求日志页用的是同一个键（两页同源）`,
+      ).toBe(true)
+    }
   })
 })

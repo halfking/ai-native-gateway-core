@@ -37,11 +37,14 @@ import {
 import { getProviders, type Provider } from '../../api/providers'
 import ProviderPicker from '../../components/ProviderPicker.vue'
 import {
+  DIMENSION_SPECS,
   firstQueryString,
+  hiddenRankingArms,
   isProviderIdParam,
-  providerDisplayLabel,
+  readDeepLinkValue,
   readPinnedDimensions,
   resolveProviderId,
+  type PinnedDimension,
 } from '../../utils/usageTrendDeepLink'
 import { getTenants, type TenantSummary } from '../../api/tenants'
 import { getKeys, type ApiKey } from '../../api/keys'
@@ -69,6 +72,51 @@ const apiKeyId = ref<number | null>(readNumFromQuery('apikey'))
 const models = ref<string[]>(readModelsFromQuery())
 const metric = ref<UsageTrendMetric>(readMetricFromQuery())
 
+// ── 五维排行条件（chip 形态：页面上**没有**选择器 ⇒ 只由深链驱动 + ✕ 解除）──
+//
+// ★ 2026-11-23 实测取证：`?end_user_id=anonymous` 落地用量趋势页时，
+//   条件区全是「全部」、排行与图表都是全站 ⇒ URL 承诺的条件被**完全忽略**
+//   ⇒ ★ 现在这五维与请求日志页**同名同义**（客户端 / 终端用户 / API Key 前缀 /
+//   项目 / 任务），深链带过来 ⇒ 条件区显示它、数据真的按它过滤。
+const clientModel = ref(readDeepLinkValue(route.query, 'client'))
+const endUserId = ref(readDeepLinkValue(route.query, 'user'))
+const applicationCode = ref(readDeepLinkValue(route.query, 'project'))
+const taskType = ref(readDeepLinkValue(route.query, 'task'))
+const apiKeyPrefix = ref(readDeepLinkValue(route.query, 'apikeyPrefix'))
+
+/** ★ 五维过滤值（发给后端；★ 参数名与请求日志页逐字相同）。 */
+const rankingDims = computed(() => ({
+  client_model: clientModel.value || undefined,
+  end_user_id: endUserId.value || undefined,
+  api_key_prefix: apiKeyPrefix.value || undefined,
+  application_code: applicationCode.value || undefined,
+  task_type: taskType.value || undefined,
+}))
+
+/** ★ 当前有值的 chip 维度（条件区据此渲染只读徽标）。 */
+const chipValues = computed<Partial<Record<PinnedDimension, string>>>(() => {
+  const out: Partial<Record<PinnedDimension, string>> = {}
+  if (clientModel.value) out.client = clientModel.value
+  if (endUserId.value) out.user = endUserId.value
+  if (applicationCode.value) out.project = applicationCode.value
+  if (taskType.value) out.task = taskType.value
+  if (apiKeyPrefix.value) out.apikeyPrefix = apiKeyPrefix.value
+  return out
+})
+
+const chipDims = computed<PinnedDimension[]>(() => Object.keys(chipValues.value) as PinnedDimension[])
+
+/** ★ 解除某个 chip 维度（清值 ⇒ watch 触发 ⇒ syncQuery 把该参数从 URL 摘掉）。 */
+function releaseDimension(dim: PinnedDimension) {
+  switch (dim) {
+    case 'client': clientModel.value = ''; break
+    case 'user': endUserId.value = ''; break
+    case 'project': applicationCode.value = ''; break
+    case 'task': taskType.value = ''; break
+    case 'apikeyPrefix': apiKeyPrefix.value = ''; break
+  }
+}
+
 // ── 深链「钉住维度」（2026-11-23 深链钉住轮）──────────────────────────────
 //
 // ★ 语义：URL 里带了某个维度的参数 ⇒ 这个维度是**入口上下文**（用户是从
@@ -82,6 +130,16 @@ const metric = ref<UsageTrendMetric>(readMetricFromQuery())
 //   选择器自动重新出现 ⇒ 不需要额外的"已钉住"标记位，也不会与 URL 不同步。
 const pinned = computed(() => readPinnedDimensions(route.query))
 
+/**
+ * ★ 被钉住 ⇒ 要**收起**的排行卡片。
+ *
+ * ★ 为什么（2026-11-23 实测取证）：那张卡片排的**就是这个维度** ⇒ 维度被钉住
+ *   后它必然只剩一行（实测 `?model=claude-opus-5-5` ⇒「Top 5 模型」只有 1 行
+ *   13.5K）⇒ 顶着「Top 5」标题摆 1 行 = **多余的数据** ⇒ 收起来。
+ * ★ 其余卡片保留：它们是当前条件的**下钻拆解**（有价值的细分）。
+ */
+const hiddenArms = computed(() => new Set(hiddenRankingArms(pinned.value)))
+
 // 供应商深链参数：数字 id 直接用；**code**（会话分析 Top5 供应商行传的就是
 // providers.code）需要先解析成 id 才能过滤。
 const providerParamRaw = firstQueryString(route.query, 'provider')
@@ -90,18 +148,10 @@ const providerCodeParam = ref(isProviderIdParam(providerParamRaw) ? '' : provide
 /** 供应商列表（供 code→id 解析与徽标展示名用）。 */
 const providers = ref<Provider[]>([])
 
-/** 深链给的是 code 但解析不到 ⇒ 徽标要显式说"未生效"，不能静默退化成全量。 */
+/** 深链给的是 code 但解析不到 ⇒ 要显式说"未生效"，不能静默退化成全量。 */
 const providerUnresolved = computed(() =>
   !!providerCodeParam.value && providerId.value == null,
 )
-
-/** 徽标上显示的供应商名：深链 code 原样优先（与来源列表一致），否则展示名。 */
-const pinnedProviderLabel = computed(() =>
-  providerDisplayLabel(providers.value, providerCodeParam.value, providerId.value),
-)
-
-/** 深链模型（可能多值）徽标文本。 */
-const pinnedModelLabel = computed(() => models.value.join(', '))
 
 function readModelsFromQuery(): string[] {
   // 深链 model 既支持单值（model=a）也支持多值（model=a&model=b，与请求层
@@ -253,6 +303,9 @@ async function loadSeries() {
       api_key_id: apiKeyId.value || undefined,
       model: models.value.length ? models.value : undefined,
       top: PAGE_TOP_MODELS,
+      // ★ 五维排行条件（深链钉住轮）：图表也必须按它们过滤
+      //   ⇒ 否则「条件区显示已钉住」与「图表是全站」打架。
+      dims: rankingDims.value,
     })
     if (token !== seriesToken) return
     series.value = resp.series ?? []
@@ -291,6 +344,8 @@ async function loadRankings() {
       provider_id: providerId.value,
       api_key_id: apiKeyId.value,
       model: models.value,
+      // ★ 五维排行条件：排行卡片本身也要按它们收敛（否则图表已过滤、排行还是全站）。
+      dims: rankingDims.value,
     })
     // 降级载荷兜底（2026-11-22 第 62 增量审计轮 D-P1）：canonical 视图缺失时
     // 后端返回 TopRankingsResponse{ degraded: true }——只带标记、不带六臂数组
@@ -314,7 +369,7 @@ async function loadRankings() {
 }
 
 watch(
-  [effectiveRange, providerId, tenantId, apiKeyId, models],
+  [effectiveRange, providerId, tenantId, apiKeyId, models, clientModel, endUserId, applicationCode, taskType, apiKeyPrefix],
   () => {
     void loadSeries()
     void loadRankings()
@@ -339,6 +394,13 @@ function syncQuery() {
   // 单选传 string、多选传数组（序列化为重复 model 参数）；与后端多选解析对称。
   if (models.value.length === 1) next.model = models.value[0]
   else if (models.value.length > 1) next.model = models.value
+  // ★ 五维排行条件：必须**写回** URL —— 否则深链带来的条件会被这一次全量
+  //   重建 query 悄悄抹掉（用户刷新一下，条件就没了）。
+  if (clientModel.value) next.client_model = clientModel.value
+  if (endUserId.value) next.end_user_id = endUserId.value
+  if (apiKeyPrefix.value) next.api_key_prefix = apiKeyPrefix.value
+  if (applicationCode.value) next.application_code = applicationCode.value
+  if (taskType.value) next.task_type = taskType.value
   if (autoRefreshSec.value > 0) next.auto = String(autoRefreshSec.value)
   // 全量重建 query：清空的过滤器必须从深链里消失，不能沿用旧值。
   router.replace({ query: next }).catch(() => undefined)
@@ -360,6 +422,11 @@ const hasActiveFilters = computed(() =>
   || (showTenantFilter && !!tenantId.value)
   || !!apiKeyId.value
   || models.value.length > 0
+  || !!clientModel.value
+  || !!endUserId.value
+  || !!applicationCode.value
+  || !!taskType.value
+  || !!apiKeyPrefix.value
   || metric.value !== 'requests',
 )
 
@@ -370,6 +437,12 @@ function clearAllFilters() {
   apiKeyId.value = null
   models.value = []
   metric.value = 'requests'
+  // ★ 五维排行条件也要一起清（否则「清除全部」之后条件还在，URL 里也还在）。
+  clientModel.value = ''
+  endUserId.value = ''
+  applicationCode.value = ''
+  taskType.value = ''
+  apiKeyPrefix.value = ''
 }
 
 // ── 自动刷新 ──
@@ -545,7 +618,11 @@ onBeforeUnmount(() => {
       </div>
       <!-- 2026-10-03：筛选选项没加载出来时说清楚，别让空下拉冒充「没有供应商」 -->
       <div v-if="filterOptionsError" class="ute__filter-error" role="status">{{ filterOptionsError }}</div>
-      <div v-if="!pinned.provider" class="ute__filter">
+      <!-- ★ 2026-11-23 深链轮：深链带来的条件 ⇒ **选择器自动选中该项**（不再整块收起）
+           ⇒ 「条件区显示的条件」与「数据反映的条件」始终一致（口径不打架）；
+           ✕ = 解除这条深链条件（清值 ⇒ 参数从 URL 消失 ⇒ 对应排行卡片重新出现）。
+           ★ owner 诉求原文：「在页面的条件选择中自动选择相关的条件的下拉或选项」。 -->
+      <div class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
         <!-- 2026-11-20 供应商选择统一轮：el-select 换全局 ProviderPicker（id 模式）。
              truthy 空值防护（clearable el-select 在不同 EP 版本产出 undefined/''/null）
@@ -556,18 +633,19 @@ onBeforeUnmount(() => {
           :title="t('usageTrend.filterProvider')"
           class="ute__select"
         />
-      </div>
-      <!-- 2026-11-23 深链钉住轮：深链带供应商 ⇒ 该维度已是入口上下文 ⇒ 收起选择器，
-           只留只读徽标（数据就是这个供应商的，别再摆一个"全部"下拉误导用户）。 -->
-      <div v-else class="ute__filter ute__filter--pinned">
-        <label class="ute__label">{{ t('usageTrend.filterProvider') }}</label>
-        <span class="ute__pin" data-testid="ute-pinned-provider">
-          <b>{{ pinnedProviderLabel }}</b>
-          <span v-if="providerUnresolved" class="ute__pin-warn">{{ t('usageTrend.pinnedUnresolved') }}</span>
-          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseProvider">✕</button>
+        <button
+          v-if="pinned.provider"
+          type="button"
+          class="ute__pin-clear"
+          :title="t('usageTrend.pinnedRelease')"
+          data-testid="ute-pinned-provider"
+          @click="releaseProvider"
+        >✕</button>
+        <span v-if="providerUnresolved" class="ute__pin-warn">
+          {{ t('usageTrend.pinnedUnresolved') }}（{{ providerCodeParam }}）
         </span>
       </div>
-      <div v-if="showTenantFilter && !pinned.tenant" class="ute__filter">
+      <div v-if="showTenantFilter" class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterTenant') }}</label>
         <el-select
           v-model="tenantId"
@@ -578,15 +656,16 @@ onBeforeUnmount(() => {
         >
           <el-option v-for="tn in tenants" :key="tn.tenant_id" :value="tn.tenant_id" :label="tn.tenant_id" />
         </el-select>
+        <button
+          v-if="pinned.tenant"
+          type="button"
+          class="ute__pin-clear"
+          :title="t('usageTrend.pinnedRelease')"
+          data-testid="ute-pinned-tenant"
+          @click="releaseTenant"
+        >✕</button>
       </div>
-      <div v-else-if="pinned.tenant" class="ute__filter ute__filter--pinned">
-        <label class="ute__label">{{ t('usageTrend.filterTenant') }}</label>
-        <span class="ute__pin" data-testid="ute-pinned-tenant">
-          <b>{{ tenantId }}</b>
-          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseTenant">✕</button>
-        </span>
-      </div>
-      <div v-if="!pinned.apikey" class="ute__filter">
+      <div class="ute__filter">
         <label class="ute__label">{{ t('usageTrend.filterApiKey') }}</label>
         <el-select
           v-model="apiKeyId"
@@ -597,15 +676,16 @@ onBeforeUnmount(() => {
         >
           <el-option v-for="k in keys" :key="k.id" :value="k.id" :label="keyLabel(k)" />
         </el-select>
+        <button
+          v-if="pinned.apikey"
+          type="button"
+          class="ute__pin-clear"
+          :title="t('usageTrend.pinnedRelease')"
+          data-testid="ute-pinned-apikey"
+          @click="releaseApiKey"
+        >✕</button>
       </div>
-      <div v-else class="ute__filter ute__filter--pinned">
-        <label class="ute__label">{{ t('usageTrend.filterApiKey') }}</label>
-        <span class="ute__pin" data-testid="ute-pinned-apikey">
-          <b>{{ apiKeyId }}</b>
-          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseApiKey">✕</button>
-        </span>
-      </div>
-      <div v-if="!pinned.model" class="ute__filter ute__filter--model" :class="{ 'ute__filter--model-active': models.length > 0 }">
+      <div class="ute__filter ute__filter--model" :class="{ 'ute__filter--model-active': models.length > 0 }">
         <label class="ute__label">{{ t('usageTrend.filterModel') }}</label>
         <!-- 与 dashboard stream 页筛选行同款：ModelPicker multi compact，
              已选态触发器亮 accent，「已选 N 个模型」+ 计数徽标。 -->
@@ -617,13 +697,28 @@ onBeforeUnmount(() => {
           :title="t('usageTrend.filterModel')"
           @update:model-value="onModelsPicked"
         />
+        <button
+          v-if="pinned.model"
+          type="button"
+          class="ute__pin-clear"
+          :title="t('usageTrend.pinnedRelease')"
+          data-testid="ute-pinned-model"
+          @click="releaseModel"
+        >✕</button>
       </div>
-      <!-- 深链带模型 ⇒ 该模型即上下文 ⇒ 收起模型选择器（同供应商）。 -->
-      <div v-else class="ute__filter ute__filter--model ute__filter--model-active ute__filter--pinned">
-        <label class="ute__label">{{ t('usageTrend.filterModel') }}</label>
-        <span class="ute__pin" data-testid="ute-pinned-model">
-          <b>{{ pinnedModelLabel }}</b>
-          <button type="button" class="ute__pin-clear" :title="t('usageTrend.pinnedRelease')" @click="releaseModel">✕</button>
+      <!-- ★ 五维排行条件（chip 形态）：页面上**没有**这些维度的选择器
+           （客户端 / 终端用户 / API Key 前缀 / 项目 / 任务）⇒ 条件区用只读徽标
+           呈现（值 + ✕ 解除）⇒ ★ 条件可见、可清、且数据真的按它过滤。 -->
+      <div v-for="dim in chipDims" :key="dim" class="ute__filter ute__filter--pinned">
+        <label class="ute__label">{{ t(DIMENSION_SPECS[dim].labelKey) }}</label>
+        <span class="ute__pin" :data-testid="`ute-pinned-${dim}`">
+          <b>{{ chipValues[dim] }}</b>
+          <button
+            type="button"
+            class="ute__pin-clear"
+            :title="t('usageTrend.pinnedRelease')"
+            @click="releaseDimension(dim)"
+          >✕</button>
         </span>
       </div>
       <div class="ute__filter">
@@ -702,7 +797,8 @@ onBeforeUnmount(() => {
       <div v-else-if="rankings?.degraded" class="ute__degraded">部分维度数据暂不可用（数据源降级{{ rankings.degraded_reason ? '：' + rankings.degraded_reason : '' }}）</div>
       <div v-if="rankings && !rankingsLoading" class="ute__rankings-grid">
         <!-- Top 模型 -->
-        <div class="ute__ranking-card">
+        <!-- ★ 深链钉住「模型」⇒ 这张卡必然只剩一行（实测 13.5K）⇒ 收起（多余数据）。 -->
+        <div v-if="!hiddenArms.has('models')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 模型</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_models.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -726,7 +822,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top 客户端 -->
-        <div class="ute__ranking-card">
+        <div v-if="!hiddenArms.has('clients')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 客户端</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_clients.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -750,7 +846,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top 用户 -->
-        <div class="ute__ranking-card">
+        <div v-if="!hiddenArms.has('users')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 10 用户</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_users.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -773,7 +869,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top API Keys -->
-        <div class="ute__ranking-card">
+        <div v-if="!hiddenArms.has('apiKeys')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 API Keys</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_api_keys.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -796,7 +892,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top 项目 -->
-        <div class="ute__ranking-card">
+        <div v-if="!hiddenArms.has('projects')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 项目</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_projects.length === 0" class="ute__ranking-empty">暂无数据</div>
@@ -819,7 +915,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Top 任务 -->
-        <div class="ute__ranking-card">
+        <div v-if="!hiddenArms.has('tasks')" class="ute__ranking-card">
           <h4 class="ute__ranking-header">Top 5 任务</h4>
           <div v-if="rankingsLoading" class="ute__ranking-loading">加载中...</div>
           <div v-else-if="rankings.top_tasks.length === 0" class="ute__ranking-empty">暂无数据</div>

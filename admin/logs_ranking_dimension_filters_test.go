@@ -66,11 +66,11 @@ func TestRankingDimensionFilterClausesExist(t *testing.T) {
 		// 谓词必须命中这个片段（缺它 ⇒ 该维度的过滤没作用在行上）
 		predicate string
 	}{
-		{"client_model", `dimensionIdentityExpr("client_model")`},
-		{"end_user_id", "buildEndUserFilterClause(v, nextArgIdx)"},
-		{"api_key_prefix", "starts_with(rl.api_key_prefix, $"},
-		{"application_code", `dimensionIdentityExpr("application_code")`},
-		{"task_type", `dimensionIdentityExpr("task_type")`},
+		{"client_model", `dimensionIdentityExprFor(alias, "client_model")`},
+		{"end_user_id", "buildEndUserFilterClauseAs(alias, v, nextArgIdx)"},
+		{"api_key_prefix", "starts_with(%s.api_key_prefix, $"},
+		{"application_code", `dimensionIdentityExprFor(alias, "application_code")`},
+		{"task_type", `dimensionIdentityExprFor(alias, "task_type")`},
 	} {
 		pat := regexp.MustCompile(`queryString\(r,\s*"` + regexp.QuoteMeta(tc.key) + `"\)`)
 		if !pat.MatchString(src) {
@@ -96,10 +96,11 @@ func TestRankingDimensionFilterClausesExist(t *testing.T) {
 //	（传 `sk-%` 会匹配所有 key）⇒ 用 PG 的 starts_with。
 func TestApiKeyPrefixFilterIsPrefixMatch(t *testing.T) {
 	src := readRankingFilterSrc(t, "logs.go")
-	if !strings.Contains(src, "starts_with(rl.api_key_prefix, $") {
+	// ★ 谓词按**表别名**渲染（%s = 别名占位）⇒ 日志侧是 rl、用量趋势明细侧是 r
+	if !strings.Contains(src, "starts_with(%s.api_key_prefix, $") {
 		t.Error("api_key_prefix 过滤必须用 starts_with（前缀语义）；等值会命中 0 行，LIKE 会把 %/_ 当通配符")
 	}
-	if strings.Contains(src, "rl.api_key_prefix LIKE $") {
+	if strings.Contains(src, "api_key_prefix LIKE $") {
 		t.Error("api_key_prefix 过滤不得用 LIKE（%/_ 会被当通配符，语义不是前缀）")
 	}
 }

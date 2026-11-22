@@ -480,6 +480,35 @@ export interface UsageTrendModelsResponse {
   hint?: string
 }
 
+/**
+ * ★ 五维排行过滤（client_model / end_user_id / api_key_prefix /
+ *   application_code / task_type）。
+ *
+ * ★ 为什么用量趋势端点也要认这五维（2026-11-23 深链轮实测取证）：
+ *   六张排行卡片跳请求日志页带的就是这五个参数 ⇒ **同一个链接在两页必须同义**；
+ *   而实测 `/admin/usage-trends?end_user_id=anonymous` 落地后条件被**完全忽略**
+ *   （排行与图表都是全站）⇒ URL 承诺的条件与页面呈现的数据不一致。
+ *
+ * ★ 参数名与请求日志页**逐字相同**（不是另发明一套）⇒ 两页可互相粘贴链接。
+ */
+export interface RankingDimensionFilters {
+  client_model?: string
+  end_user_id?: string
+  api_key_prefix?: string
+  application_code?: string
+  task_type?: string
+}
+
+/** ★ 把五维过滤写进 query（truthy 才写 ⇒ 空值不进 URL）。 */
+export function applyRankingDimensionQs(qs: URLSearchParams, f: RankingDimensionFilters): URLSearchParams {
+  if (f.client_model) qs.set('client_model', f.client_model)
+  if (f.end_user_id) qs.set('end_user_id', f.end_user_id)
+  if (f.api_key_prefix) qs.set('api_key_prefix', f.api_key_prefix)
+  if (f.application_code) qs.set('application_code', f.application_code)
+  if (f.task_type) qs.set('task_type', f.task_type)
+  return qs
+}
+
 export interface UsageTrendFilterQuery {
   time: BoardTimeQuery
   tenant_id?: string
@@ -488,6 +517,8 @@ export interface UsageTrendFilterQuery {
   /** 模型过滤：单值向后兼容；数组序列化为重复 model 参数（后端 ANY 多选）。 */
   model?: string | string[]
   top?: number
+  /** ★ 五维排行过滤（见 RankingDimensionFilters）。 */
+  dims?: RankingDimensionFilters
 }
 
 export function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
@@ -501,6 +532,7 @@ export function usageTrendQs(q: UsageTrendFilterQuery): URLSearchParams {
     qs.set('model', q.model)
   }
   if (q.top != null) qs.set('top', String(q.top))
+  if (q.dims) applyRankingDimensionQs(qs, q.dims)
   return qs
 }
 
@@ -544,6 +576,9 @@ export interface TopRankingsFilters {
   provider_id?: number | null
   api_key_id?: number | null
   model?: string[] | null
+  /** ★ 五维排行过滤（见 RankingDimensionFilters）——深链钉住某个排行维度时，
+   *   **排行卡片本身**也要按它收敛（否则图表已过滤、排行还是全站 ⇒ 口径打架）。 */
+  dims?: RankingDimensionFilters
 }
 
 export function getTopRankings(time: BoardTimeQuery, usersLimit = 10, filters: TopRankingsFilters = {}) {
@@ -553,5 +588,6 @@ export function getTopRankings(time: BoardTimeQuery, usersLimit = 10, filters: T
   for (const m of filters.model ?? []) {
     if (m) qs.append('model', m)
   }
+  if (filters.dims) applyRankingDimensionQs(qs, filters.dims)
   return req<TopRankingsResponse>('GET', `/api/admin/usage/top-rankings?${qs}&users_limit=${usersLimit}`)
 }

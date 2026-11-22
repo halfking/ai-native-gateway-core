@@ -136,6 +136,19 @@ type usageTrendFilters struct {
 	apiKeyID   int64
 	models     []string
 	top        int
+	// ★ 五维排行过滤（client_model / end_user_id / api_key_prefix /
+	//   application_code / task_type）。
+	//
+	//   ★ 为什么用量趋势页也要认这五维（2026-11-23 深链轮实测取证）：
+	//   ① 用量趋势页与请求日志页**共用同一套维度词汇**（六张排行卡片跳日志页
+	//      带的就是这五个参数）⇒ 同一个链接在两页之间必须同义；
+	//   ② 实测缺陷：`/admin/usage-trends?end_user_id=anonymous` 落地后
+	//      **条件被完全忽略**（Top 10 用户仍是全站 3 个用户、Top 5 模型仍是 5 个）
+	//      ⇒ URL 承诺的条件与页面呈现的数据**不一致**（"界面显示的 ≠ 数据反映的"）。
+	//
+	//   ★ 谓词形状**不在这里另写** ⇒ 委托 buildRankingDimensionClausesFor
+	//   （与日志端点同一份）⇒ 排行分组键 / 日志过滤 / 用量趋势过滤三处同口径。
+	dims rankingDimensionFilters
 }
 
 // usageTrendModelsWhere 生成模型多选谓词片段（" AND <expr> = ANY($n)"）并追加
@@ -155,6 +168,9 @@ func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
 		providerID: int64(queryInt(r, "provider_id", 0)),
 		apiKeyID:   int64(queryInt(r, "api_key_id", 0)),
 		top:        queryInt(r, "top", 8),
+		// ★ 五维排行过滤：与日志端点**同名同义**（usage-trends ↔ request-logs
+		//   共用一套维度词汇）⇒ 值直接复用 logs.go 的读法（单一真相）。
+		dims: rankingDimensionFiltersFromRequest(r),
 	}
 	// 重复 query 参数多选（model=a&model=b）；单值（model=a）是长度 1 的退化
 	// 形式，向后兼容。空值/重复值剔除，超上限截断。
@@ -187,7 +203,15 @@ func usageTrendFiltersFromRequest(r *http.Request) usageTrendFilters {
 // 都是明细读面）。
 func usageTrendSource(f usageTrendFilters) string {
 	switch {
-	case f.apiKeyID > 0, f.providerID > 0:
+	// ★ 五维排行过滤（client_model / end_user_id / api_key_prefix /
+	//   application_code / task_type）**必须走明细档**：汇总档
+	//   （request_stats_dim_minute）只有 model 一个维度 ⇒ 设了这些维却留在
+	//   汇总档 ⇒ 筛选被**静默忽略**（实测：URL 带 end_user_id，图表仍是全站）。
+	//   ⇒ 与 api_key / provider 过滤**合并为同一条明细档**（三条过滤理由
+	//     不同、但读面选择是同一个决定 ⇒ 合并成一个 case ⇒ canonical 读点
+	//     字面量出现次数不变 ⇒ 登记簿零漂移；★ 分档语义由 f.dims 携带，
+	//     谓词由 buildRankingDimensionClausesFor 渲染，与档位选择解耦）。
+	case f.apiKeyID > 0, f.providerID > 0, !f.dims.empty():
 		return "request_logs_with_current_month"
 	default:
 		return "request_stats_dim_minute"
@@ -396,6 +420,15 @@ func usageTrendDetailSeriesSQL(tr boardTimeRange, f usageTrendFilters) (string, 
 	if clause, nextArgs := usageTrendModelsWhere(usageTrendModelExpr, f.models, args); clause != "" {
 		where, args = where+clause, nextArgs
 	}
+	// ★ 五维排行过滤：谓词形状**复用日志端点那一份**（buildRankingDimensionClausesFor），
+	//   只换表别名（r = 会话族原生源）⇒ 三处（排行分组 / 日志过滤 / 用量趋势）
+	//   的口径不会漂移。
+	if dimClauses, dimArgs, _ := buildRankingDimensionClausesFor(f.dims, "r", len(args)+1); len(dimClauses) > 0 {
+		for _, c := range dimClauses {
+			where += " AND " + c
+		}
+		args = append(args, dimArgs...)
+	}
 
 	// 具名片段 ⇒ 槽位与片段一一对应（不再靠参数顺序对齐）。
 	modelExpr := usageTrendModelExpr
@@ -565,6 +598,14 @@ func usageTrendDetailModelsSQL(tr boardTimeRange, f usageTrendFilters) (string, 
 	}
 	if clause, nextArgs := usageTrendModelsWhere(usageTrendModelExpr, f.models, args); clause != "" {
 		where, args = where+clause, nextArgs
+	}
+	// ★ 五维排行过滤：与序列端点**同一份谓词、同一套别名**（见
+	//   usageTrendDetailSeriesSQL 的同名片段）⇒ 模型清单与序列口径一致。
+	if dimClauses, dimArgs, _ := buildRankingDimensionClausesFor(f.dims, "r", len(args)+1); len(dimClauses) > 0 {
+		for _, c := range dimClauses {
+			where += " AND " + c
+		}
+		args = append(args, dimArgs...)
 	}
 
 	modelExpr := usageTrendModelExpr
