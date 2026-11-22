@@ -593,7 +593,7 @@ function onBlankClick() {
         class="topo-node"
         :class="[
           `is-${node.health}`,
-          { 'is-selected': node.id === selectedNodeId, 'is-dimmed': hoveredId && hoveredId !== node.id && !isRelated(node.id) },
+          { 'is-selected': node.id === selectedNodeId, 'is-dimmed': hoveredId && hoveredId !== node.id && !isRelated(node.id), 'is-model': node.column === 'model' },
         ]"
         :style="{ left: `${node.x}px`, top: `${node.y}px`, width: `${node.w}px`, height: `${node.h}px` }"
         tabindex="0"
@@ -731,6 +731,16 @@ function onBlankClick() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 2026-11-23 第十四轮：模型节点标签允许换行，限制最大宽度约 10 字符（120px）。
+   模型名称可能很长，允许换行显示以提升可读性。 */
+.topo-node.is-model .topo-node__label {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 126px; /* NODE_W (150) - padding (24) ≈ 126px，约 10 个中文字符或 15-20 个英文字符 */
+  line-height: 1.3;
 }
 
 .topo-node__sub {

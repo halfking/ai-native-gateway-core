@@ -276,7 +276,8 @@ export function buildTopology(input: BuildTopologyInput): TopoGraph {
 
     const clientLabel = clientKeyOf(req)
     const client = upsertNode(clientId, 'client', clientLabel, req.agent_type ?? undefined)
-    const model = upsertNode(modelId, 'model', modelKeyOf(req), req.provider_code ?? undefined)
+    // 2026-11-23 第十四轮：模型节点不再显示供应商代码（sub 传 undefined）
+    const model = upsertNode(modelId, 'model', modelKeyOf(req), undefined)
     const status = metricOfStatus(req.status)
     const tokens = typeof req.total_tokens === 'number' ? req.total_tokens : 0
     if (tokens > 0) totalTokens += tokens

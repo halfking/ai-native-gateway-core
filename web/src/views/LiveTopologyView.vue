@@ -709,7 +709,16 @@ function onSelectModel(model: string) {
       auto 行在空间不足时整行塌 0 ⇒ 右栏摘要浮层照样缩成 16px 一条缝
       （1280×713 部署后实测：左 296px / 右 16px）。下限取 min(240px,40vh)
       与该行 max-height: 240px 封顶对齐。 */
-    grid-template-rows: minmax(min(320px, 50vh), 1fr) minmax(min(240px, 40vh), auto);
+    /* ★ 2026-11-23 第十二轮实测修：行下限 320px → 560px。
+     * 旧下限 320px 小于画布的 min-height 480px ⇒ 画布**溢出被裁 160px**
+     * （实测 stage 320px / 画布 480px）⇒ 拓扑图底部永远看不见。
+     * 560px ≥ 画布 min-height ⇒ 画布完整可见；空间不足时仍由 .main-body 滚动兜底
+     *（「宁可滚，不可塌」——同一条纪律）。
+     * 
+     * 2026-11-23 第十四轮：行下限 560px → 720px，适配 ROW_GAP 从 160 增加到 320。
+     * ROW_GAP 增加 160px 后，模型层下移，需要更多垂直空间容纳完整布局。
+     * 取 720px 的依据：画布 min-height 480px + ROW_GAP 增量 160px + 缓冲 80px ≈ 720px。 */
+    grid-template-rows: minmax(min(720px, 70vh), 1fr) minmax(min(240px, 40vh), auto);
   }
 
   .live-topology__right {
@@ -740,7 +749,11 @@ function onSelectModel(model: string) {
     /* 三列单行：行高 = 本体高度 ⇒ 三列都在视口内，浮层锚列底必然可见。
        ★ 同样带 320px 下限：矮窗（如 1440×768）下统计面板挤占后剩余空间
        若小于下限，行保住 320px、交给 .main-body 滚动兜底。 */
-    grid-template-rows: minmax(min(320px, 50vh), 1fr);
+    /* ★ 同行下限修（见上方 @1024 的注释）：320px < 画布 min-height 480px
+     * ⇒ 画布溢出被裁 ⇒ 改 560px，让画布完整可见。
+     * 
+     * 2026-11-23 第十四轮：行下限 560px → 720px，适配 ROW_GAP 从 160 增加到 320。 */
+    grid-template-rows: minmax(min(720px, 70vh), 1fr);
   }
 
   .live-topology__right {
