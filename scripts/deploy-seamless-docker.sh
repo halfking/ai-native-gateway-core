@@ -2627,9 +2627,26 @@ chmod 600 "$ENV_FILE"
 GW_ENV=(
   -e "LLM_GATEWAY_STORAGE_MODE=full"
   -e "LLM_GATEWAY_DATABASE_URL=${DB_URL}"
+  # ★ 2026-11-23（211 生产告警修复）：full_storage 段的两个入口此前没有注入
+  # ⇒ config.StorageConfig.Full 恒为 nil ⇒ Validate() 报
+  #   `storage_mode "full" requires a full_storage section in yaml`
+  # ⇒ 网关降级到 legacy 装配（211 生产启动日志恒一条 WARN）。
+  #
+  # ★ 为什么必须注入：applyEnvOverrides（config/storage.go）只在
+  # LLM_GATEWAY_POSTGRES_URL / LLM_GATEWAY_REDIS_URL 非空时**自动创建**
+  # cfg.Full 段；AlignFullPostgresURL 虽然会在 postgres_url 为空时从
+  # DATABASE_URL 回填，但它的前置条件是 c.Full != nil ⇒ 没有这两个变量
+  # 时 c.Full 恒 nil ⇒ 回填永远不触发 ⇒ 死锁。
+  -e "LLM_GATEWAY_POSTGRES_URL=${DB_URL}"
+  -e "LLM_GATEWAY_REDIS_URL=${REDIS_URL}"
   -e "LLM_GATEWAY_REDIS_ADDR=${REDIS_ADDR}"
   -e "LLM_GATEWAY_REDIS_DB=${REDIS_DB}"
   -e "LLM_GATEWAY_REDIS_PASSWORD=${REDIS_PASSWORD:-}"
+  # ★ 2026-11-23：时区。镜像里**没有** tzdata（/usr/share/zoneinfo 不存在）
+  # ⇒ 单纯设 TZ=Asia/Shanghai 无效：Go 的 time.LoadLocation 找不到 zoneinfo
+  # ⇒ 报 `unknown IANA timezone "Asia/Shanghai"` ⇒ 回退到 UTC。
+  # ⇒ 必须同时挂载宿主机的 zoneinfo（见 GW_MOUNTS）—— 只设 TZ 是假修复。
+  -e "TZ=Asia/Shanghai"
   -e "LLM_GATEWAY_SECRET_KEY=${SECRET_KEY}"
   -e "LLM_GATEWAY_CORS_ORIGINS=${CORS_ORIGINS}"
   -e "LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
@@ -2959,6 +2976,22 @@ GW_MOUNTS=(
   -v "${DD_GW_DATA_ROOT}/logs:/app/logs"
   -v "${DD_GW_DATA_ROOT}/configs:/app/configs:ro"
 )
+# ★ 2026-11-23（211 生产告警修复）：挂载宿主机的 zoneinfo 到容器。
+# 网关镜像里**没有** tzdata（/usr/share/zoneinfo 目录不存在）⇒ 容器内
+# time.LoadLocation("Asia/Shanghai") 必然失败 ⇒ 启动日志恒两条 WARN：
+#   settings: configured timezone invalid, falling back to default
+#   settings: LoadLocation failed, falling back to default timezone
+# ⇒ 只注入 TZ=Asia/Shanghai 是**假修复**（TZ 只是环境变量，zoneinfo 才是
+# 数据源）—— 必须同时给容器可读的 zoneinfo。
+#
+# 优雅降级：宿主机没有 zoneinfo 时不挂载（网关回退 UTC，与今天行为一致，
+# 不引入新的失败面）；有则挂载，两个路径都只读。
+if [[ -f /usr/share/zoneinfo/Asia/Shanghai ]]; then
+  GW_MOUNTS+=( -v /usr/share/zoneinfo:/usr/share/zoneinfo:ro )
+  log "时区: 已挂载宿主机 zoneinfo（容器内 Asia/Shanghai 可用）"
+else
+  log "⚠ 时区: 宿主机无 /usr/share/zoneinfo/Asia/Shanghai ⇒ 不挂载 ⇒ 容器内回退 UTC（如需 Asia/Shanghai 请在宿主机安装 tzdata）"
+fi
 GW_WEB_ENV=()
 # ⚠ 种子目录是**候选槽专属**的（web/<slot>/dist）：旧槽的目录本轮完全不碰。
 # 这正是「回退不需要还原种子」的原因 —— 旧槽的 SPA/版本戳原样还在它自己的
