@@ -97,6 +97,7 @@ import simpleMode from './simpleMode'
 import sessionAnalytics from './sessionAnalytics'
 import errorPlaybook from './errorPlaybook'
 import pageHelp from './pageHelp'
+import teams from './teams'
 
 export default {
   hyper,
@@ -197,4 +198,5 @@ export default {
   sessionAnalytics,
   errorPlaybook,
   pageHelp,
+  teams,
 }

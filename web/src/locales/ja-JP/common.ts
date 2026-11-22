@@ -253,7 +253,9 @@ export default {
   module: 'モジュール',
   no: 'いいえ',
   refresh: '更新',
+  remove: '削除',
   time: '時間',
+  warning: '注意',
   yes: 'はい',
   view: '表示',
   // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.

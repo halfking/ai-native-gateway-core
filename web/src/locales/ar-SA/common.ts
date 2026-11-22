@@ -256,7 +256,9 @@ export default {
   module: 'الوحدة',
   no: 'لا',
   refresh: 'تحديث',
+  remove: 'إزالة',
   time: 'الوقت',
+  warning: 'تحذير',
   yes: 'نعم',
   view: 'عرض',
   // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.

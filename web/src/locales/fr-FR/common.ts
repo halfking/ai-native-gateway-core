@@ -260,7 +260,9 @@ export default {
   module: 'Module',
   no: 'Non',
   refresh: 'Actualiser',
+  remove: 'Retirer',
   time: 'Heure',
+  warning: 'Avertissement',
   yes: 'Oui',
   view: 'Voir',
   // These are user-facing names; the underlying L1 keys (chat/reasoning/...) are stable.

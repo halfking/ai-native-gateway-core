@@ -112,6 +112,10 @@ const RequestActionsView = () => import('./views/RequestActionsView.vue')
 const StorageAndLogConfigView = () => import('./views/StorageAndLogConfigView.vue')
 const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 const PluginSettingsPage = () => import('./views/management/PluginSettingsPage.vue')
+// 2026-11-23 W2-Q2：团队层级管理（团队列表 + 团队详情）。
+// 后端契约：admin/team_handlers.go 注册 /api/admin/teams*（全部走 h.admin(...)）。
+const TeamListView = () => import('./views/TeamListView.vue')
+const TeamDetailView = () => import('./views/TeamDetailView.vue')
 // 2026-11-05 W1-T2 前端轮：报价系统 MVP 工作台（供给池/需求池/报价单三页签；
 // 后端 sales 包 942–949 + admin/sales_handlers.go；内部运营面 ⇒ requiresAuth，
 // 数据权限由应用层角色闸承载）
@@ -391,6 +395,16 @@ export const router = createRouter({
     { path: '/admin/storage-and-log-config', component: StorageAndLogConfigView, meta: { requiresSuper: true } }, // 存储与日志配置（批 204：3 段只读摘要；子视图 StorageConfig/FilesystemMaintenance/LogManagement 全在 DataLifecycleView 父视图下）
     { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/plugin-settings', component: PluginSettingsPage, meta: { requiresSuper: true } }, // 插件提供商配置（Native/Casdoor 切换，2026-11-15）
+    // 2026-11-23 W2-Q2：团队层级管理（列表 + 详情）。租户内资源。
+    // ★ 权限档选 requiresAuth（与 /users、/admin/session-analytics/* 同档），理由：
+    //   ① 后端 admin/team_handlers.go 的全部端点走 `h.admin(...)` = **AdminMiddleware**
+    //      （只要求有效 JWT，**不要求 super_admin**）；团队内的 owner/admin/member 授权
+    //      由 admin/team_middleware.go 的 requireTeamMember 承担 ⇒ **权限真源在后端**
+    //      （同 router.ts 会话分析一族的口径，router.ts:73-75）。
+    //   ② 团队是**租户内**资源（team.tenant_id 取会话租户，列表按 owner_id 收窄）
+    //      ⇒ super_admin 粗粒度闸门会把「租户内团队的真正主人」tenant_admin 挡在门外。
+    { path: '/admin/teams', name: 'team-list', component: TeamListView, meta: { requiresAuth: true } },
+    { path: '/admin/teams/:id', name: 'team-detail', component: TeamDetailView, meta: { requiresAuth: true } },
     { path: '/admin/self-update', component: SelfUpdateView, meta: { requiresSuper: true } }, // 自更新与升级（检索最新版本 → 提醒 → 安装升级，2026-11-16）
     { path: '/operations/sales', component: SalesWorkbenchView, meta: { requiresAuth: true } }, // 报价系统 MVP 工作台（2026-11-05 W1-T2；供给/需求/报价三页签；内部运营面 requiresAuth，写权限应用层闸）
     { path: '/operations/marketing', component: OperationsMarketingView, meta: { requiresPlatformOps: true } }, // 2026-11-09 运营审计轮项4：营销管理（套餐/加油包/优惠码/活动）；2026-11-12 A-8 权限对齐（定稿 M3-T4）：super-only → platformOps（与 /pricing 同档；服务端仍 superAdmin 闸——platformOps=super_admin@default，中间件无需改动）

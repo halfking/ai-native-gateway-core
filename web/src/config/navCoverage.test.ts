@@ -94,6 +94,16 @@ const KNOWN_ORPHANS: Record<string, string> = {
   //   JSX 片段），属尚未定归属的新功能页 ⇒ 按本组既有 P3 口径登记，
   //   **不擅自改菜单**（改菜单 = 改产品信息架构，需属主裁决挂到哪个组）。
   '/admin/plugin-settings': '插件提供商配置（Native/Casdoor 切换）：super_admin 档深链页，由并发会话 WIP 快照 3f7f0dd5c 带入 router.ts:345，尚未挂菜单入口；菜单归属待产品确认后挂载',
+  // ── 2026-11-23 登记：W2-Q2 团队层级管理（W2-Q2 团队层级预算管理）──
+  //   事实（逐条核过）：router.ts 注册了 /admin/teams（路由名 team-list，视图 TeamListView）
+  //   与 /admin/teams/:id（路由名 team-detail，视图 TeamDetailView）；appNav.ts 无任何
+  //   teams 菜单项（该文件本轮由并发会话在改，本切片不得触碰）。
+  //   详情页 /admin/teams/:id 由列表页的**路径字面量** `/admin/teams/${teamId}` 到达
+  //   ⇒ 判据能识别 ⇒ 不算孤儿，故不登记。
+  //   列表页 /admin/teams 只被详情页的**命名路由** team-list 指回（navCoverage 的判据
+  //   只识别路径字面量，识别不到命名路由）⇒ 按本门判据它是孤儿路由 ⇒ 登记，
+  //   菜单归属待产品确认后挂载（与 /admin/plugin-settings 同族口径）。
+  '/admin/teams': 'W2-Q2 团队层级管理列表页（2026-11-23 接入 router.ts，路由名 team-list，视图 TeamListView）：appNav.ts 本轮由并发会话在改、未挂菜单入口；详情页返回按钮用命名路由 team-list 指回本页（navCoverage 判据只识别路径字面量）⇒ 判为孤儿路由，菜单归属待产品确认后挂载',
 }
 
 /** 扫描器不得腐化：路由数掉到这个量级说明解析正则坏了（沿用 metricguard「声明数<100 即红」）。 */

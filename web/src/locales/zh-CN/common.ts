@@ -256,7 +256,9 @@ export default {
   module: '模块',
   no: '否',
   refresh: '刷新',
+  remove: '移除',
   time: '时间',
+  warning: '警告',
   yes: '是',
   // 扁平别名（ops 等页使用 t('common.view') 等形式）
   view: '查看',
