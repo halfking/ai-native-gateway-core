@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -156,6 +158,53 @@ func TestDiscoveryCatalogDropsUnroutableCandidates(t *testing.T) {
 	}
 	if n, _ := env.Metadata["provider_count"].(int); n != len(cands) {
 		t.Errorf("provider_count=%d 与候选数 %d 不等", n, len(cands))
+	}
+}
+
+// ── 门 7：结论必须**真的打进日志**（★ 且采样生效）─────────────────────
+//
+// ★ 为什么必须有这条：★ advisory 的契约是「★ 结论只写 metadata」⇒ ★ 而
+// ★ metadata **没有人读** ⇒ ★ 结论等于不存在 ⇒ ★ 接上真实目录之后，
+// ★ 也**看不出**目录到底命中了什么。
+// ★ ⇒ ★ 采样一条 INFO ⇒ ★ 「★ 目录接上了吗 / 命中了吗 / 命中几个」
+// ★ 这三个问题在生产上可回答（★ source 字段直接回答「★ 现在用的是真目录
+// ★ 还是内存 demo 目录」）。
+//
+// ★ 这条门也钉住「★ 采样」：★ 这一阶段在**每请求**路径上 ⇒ ★ 不采样就是
+// ★ 每请求一条 ⇒ ★ 日志本身变成噪声。
+func TestDiscoveryConclusionIsLoggedAndSampled(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	src := &fakeCandidateSource{enabled: true, cands: []routerprovider.Candidate{
+		{CredentialID: 4242, ProviderID: 587, OfferRawModel: "glm-5.3-flash", Routable: true},
+	}}
+	hook := newAdvisoryHookWithCatalog(t, &routerDiscoveryCatalog{client: src})
+
+	// ★ 连续两次调用（★ 第二次应当被采样掉）。
+	for i := 0; i < 2; i++ {
+		env := domain.NewRequestEnvelope(context.Background(), nil)
+		env.Metadata["model"] = "glm-5.3-flash"
+		if err := hook.Execute(context.Background(), env); err != nil {
+			t.Fatalf("advisory hook 返回了 error: %v", err)
+		}
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "provider discovery") {
+		t.Fatalf("没有 discovery 结论日志\n输出：%s", out)
+	}
+	if !strings.Contains(out, `"source":"catalog"`) {
+		t.Errorf("日志里没有 source=catalog（★ 这是「接线是否生效」的唯一现场读数）\n输出：%s", out)
+	}
+	if !strings.Contains(out, `"status":"ok"`) || !strings.Contains(out, `"candidates":1`) {
+		t.Errorf("日志里没有 status/candidates\n输出：%s", out)
+	}
+	// ★ 采样：★ 两次调用 ⇒ 只应有一条。
+	if n := strings.Count(out, "provider discovery"); n != 1 {
+		t.Errorf("两次调用打出了 %d 条结论日志，★ 期望 1 条（★ 采样间隔 %s）", n, "60s")
 	}
 }
 

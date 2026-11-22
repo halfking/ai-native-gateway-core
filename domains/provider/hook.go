@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync/atomic"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -174,8 +177,36 @@ var _ pipeline.Hook = (*ProviderDiscoveryHook)(nil)
 //		provider_discovery_detail = 失败原因（仅失败时）
 //
 //	  ⇒ 上层能区分「发现到了」与「没发现到」，而管线继续往下走。
+//
+// discoveryLogInterval 是 discovery 结论日志的**采样间隔**。
+//
+// ★ 为什么要采样：★ 这一阶段在**每请求**路径上 ⇒ ★ 不采样就是每请求一条
+// ★ ⇒ ★ 日志本身变成噪声（★ 而且会拖慢热路径）。
+// ★ 60s 一条足以回答「★ 目录接上了吗、★ 命中了吗、★ 命中几个」。
+const discoveryLogInterval = 60 * time.Second
+
+// discoveryLogSampler 按间隔采样 discovery 结论日志。
+//
+// ★ 用原子 CAS 而不是互斥锁：★ 这是**热路径**（★ 每请求一次）⇒ ★ 不能
+// ★ 在这里排队。★ CAS 的语义是「★ 第一个把时间戳推进去的那个赢」⇒ ★
+// ★ 并发下最多偶尔多出一条（★ 不是恰好一条）★ ⇒ ★ 对采样日志完全够用。
+type discoveryLogSampler struct {
+	lastUnix int64
+}
+
+func (s *discoveryLogSampler) shouldLog() bool {
+	now := time.Now().Unix()
+	prev := atomic.LoadInt64(&s.lastUnix)
+	if now-prev < int64(discoveryLogInterval/time.Second) {
+		return false
+	}
+	return atomic.CompareAndSwapInt64(&s.lastUnix, prev, now)
+}
+
 type AdvisoryDiscoveryHook struct {
 	hook *ProviderDiscoveryHook
+	// logSampler 控制结论日志的采样频率（★ 热路径 ⇒ 必须采样）。
+	logSampler discoveryLogSampler
 }
 
 // NewAdvisoryDiscoveryHook 创建「不中止管线」的发现 Hook。
@@ -211,17 +242,46 @@ func (h *AdvisoryDiscoveryHook) Execute(ctx context.Context, env *domain.Pipelin
 	candidates, err := h.hook.candidatesFor(ctx, model, env.TenantID)
 	if err != nil {
 		setDiscoveryStatus(env, "store_error", err.Error())
+		h.logConclusion("store_error", model, 0)
 		return nil
 	}
 	if len(candidates) == 0 {
 		setDiscoveryStatus(env, "no_healthy_provider",
 			"provider catalog has no healthy entry for model "+model)
+		h.logConclusion("no_healthy_provider", model, 0)
 		return nil
 	}
 	env.Metadata["provider_candidates"] = candidates
 	env.Metadata["provider_count"] = len(candidates)
 	setDiscoveryStatus(env, "ok", "")
+	h.logConclusion("ok", model, len(candidates))
 	return nil
+}
+
+// logConclusion 把 discovery 结论**采样**写进日志。
+//
+// ★ 为什么必须有它：★ advisory 的契约是「★ 结论只写 metadata、★ 永不中止
+// 管线」⇒ ★ 而 metadata **没有人读** ⇒ ★ 结论等于不存在 ⇒ ★ 接上真实
+// 目录之后，★ 也**看不出**目录到底命中了什么。
+// ★ ⇒ ★ 采样一条 INFO，★ 让「★ 目录接上了吗 / 命中了吗 / 命中几个」
+// ★ 这三个问题**在生产上可回答**。
+//
+// ★ source 字段回答「★ 现在用的是真目录还是内存 demo 目录」⇒ ★ 这是
+// ★ 「接线是否生效」的唯一现场读数（★ 比翻代码可靠）。
+func (h *AdvisoryDiscoveryHook) logConclusion(status, model string, count int) {
+	if !h.logSampler.shouldLog() {
+		return
+	}
+	source := "demo_store"
+	if h.hook.catalog != nil {
+		source = "catalog"
+	}
+	slog.Info("provider discovery",
+		"status", status,
+		"source", source,
+		"model", model,
+		"candidates", count,
+		"sample_interval", discoveryLogInterval.String())
 }
 
 // OnError 错误处理：advisory 版不把错误往上抛。
