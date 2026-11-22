@@ -6903,20 +6903,33 @@ func main() {
 					"error", err,
 					"mode", armorJudgeMode,
 					"threshold", armorJudgeThreshold,
-					"judge", "mock(suspended; scores always 0 — judgments are noise until fixed)",
+					"judge", "unconfigured(判定恒 0；写入 armor_judgments 时 judge_model=unconfigured —— 不代表安全)",
 					"fix", "check ARMOR_JUDGE_ENDPOINT/MODEL/API_KEY")
-				armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
+				armorJudge = armor.NewUnconfiguredJudge() // fallback: always safe, but NOT a verdict
 			} else {
 				slog.Info("armor judge initialized",
 					"endpoint", judgeEndpoint, "model", judgeModel,
 					"mode", armorJudgeMode, "threshold", armorJudgeThreshold)
 			}
 		} else {
-			armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
-			slog.Warn("armor judge not configured, using mock judge (always safe)",
+			// ★ 2026-11-23（211 遗留 L2）：用**可辨识**的未配置判官。
+			//
+			//	旧行为：NewMockJudge(0.0, "mock") ⇒ 写进 armor_judgments 的行是
+			//	  judge_model='mock' / score=0 / decision='safe'
+			//	  ⇒ 与真实判官给出的「安全」在表里长得一样
+			//	  ⇒ 任何按 decision='safe' 统计「安全通过率」的面，
+			//	    都会把「根本没判过」当成「判过且安全」。
+			//	  211 实测：近 3 天 49,889 条判定全是 mock/safe（≈16k 条/天）。
+			//
+			//	新行为：judge_model='unconfigured' + reason 写明「没有判定」
+			//	  ⇒ 表里的行自解释；统计口径必须排除 judge_model='unconfigured'。
+			//	  （判定行为本身不变：分数恒 0、observe 模式永不拦截。）
+			armorJudge = armor.NewUnconfiguredJudge() // fallback: always safe, but NOT a verdict
+			slog.Warn("armor judge not configured, using unconfigured judge (no verdict)",
 				"mode", armorJudgeMode,
 				"threshold", armorJudgeThreshold,
-				"judge", "mock(scores always 0 — judgments are noise)",
+				"judge", "unconfigured(判定恒 0；写入 armor_judgments 时 judge_model=unconfigured —— 不代表安全)",
+				"counting", "安全通过率必须排除 judge_model='unconfigured' 的行",
 				"fix", "set ARMOR_JUDGE_ENDPOINT + ARMOR_JUDGE_MODEL + ARMOR_JUDGE_API_KEY to score for real")
 		}
 
