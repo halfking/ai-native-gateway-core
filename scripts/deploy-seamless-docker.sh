@@ -104,7 +104,7 @@ DD_REPO_ROOT="${LLM_GATEWAY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pw
 # ★ upstream 端口读写判定脚本的路径：**按引擎自身所在目录解析**（scripts/ops/…），
 #   而不是 DD_REPO_ROOT —— 后者可被 LLM_GATEWAY_ROOT 覆盖成别处 ⇒ 脚本就找不到了。
 #   远端形态：引擎跑在 $DD_REMOTE_ROOT/scripts/ ⇒ 脚本在 $DD_REMOTE_ROOT/scripts/ops/。
-DD_UPSTREAM_PORT_HELPER="${DD_UPSTREAM_PORT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops/nginx-upstream-port.py"
+DD_UPSTREAM_PORT_HELPER="${DD_UPSTREAM_PORT_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ops/nginx-upstream-port.py}"
 # ★★ 2026-11-23：DB 修订序列脚本的路径**必须在脚本顶部解析成绝对路径**
 #   （与 DD_UPSTREAM_PORT_HELPER 同款），**不得**等到用时才求值。
 #
