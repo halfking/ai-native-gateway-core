@@ -108,7 +108,6 @@ Matching each gap to its cause:
 ## Known limitations (measured 2026-11-23)
 
 1. **Session-side cost and request count are inflated (double counting, not yet fixed)**: the cost and request count of Session & Statistics come from the session-summary aggregation, but `sessions` is a **day-partitioned session history** (the same session gets a new row every day) and the statistics join does not de-duplicate per session ⇒ the same session is counted several times. Measured on the production database on 2026-11-23 (same 7-day window): the session-side cost comes out about **61 %** and the request count about **36 %** above the values de-duplicated per session (the most expensive session was counted 3 times). **The Board numbers (request level) are not affected** ⇒ when comparing cost, use the Board, or de-duplicate the session-side numbers first.
-2. The session-side aggregation also sums duplicate rows of the session table, so its request count and cost are higher than they should be.
-3. The board credits card does not change with the time range (see above).
-4. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).
-5. Probe exclusion does not remove the same traffic on both sides (see above).
+2. The board credits card does not change with the time range (see above).
+3. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).
+4. Probe exclusion does not remove the same traffic on both sides (see above).

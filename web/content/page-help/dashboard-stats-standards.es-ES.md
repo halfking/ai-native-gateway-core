@@ -108,7 +108,6 @@ Correspondencia de cada diferencia:
 ## Limitaciones conocidas (medido 2026-11-23)
 
 1. **El coste y el número de solicitudes del lado de sesiones salen demasiado altos (recuento duplicado, pendiente de corregir)**: el coste y las solicitudes de las estadísticas de sesión proceden de la agregación de los resúmenes de sesión, pero `sessions` es un **historial de sesiones particionado por día** (la misma sesión recibe una fila nueva cada día) y la unión de la estadística no deduplica por sesión ⇒ la misma sesión se cuenta varias veces. Medición en la base de producción el 2026-11-23 (misma ventana de 7 días): el coste del lado de sesiones queda alrededor de un **61 %** y el número de solicitudes alrededor de un **36 %** por encima de los valores deduplicados por sesión (la sesión más cara se contó 3 veces). **Las cifras del panel (a nivel de solicitud) no se ven afectadas** ⇒ al comparar costes, use el panel o deduplique primero las cifras de sesión.
-2. La agregación del lado de sesiones suma también las filas duplicadas de la tabla de sesiones, por lo que su número de solicitudes y su coste salen más altos de lo que deberían.
-3. La tarjeta de créditos del panel no cambia con la ventana temporal (véase arriba).
-4. La tendencia del panel (tabla por minuto) y las tarjetas (tabla de hechos a nivel de solicitud) difieren en torno al 13,8 % en la ventana de 30 días (160.451 frente a 140.969 solicitudes).
-5. La exclusión de sondeo no retira el mismo tráfico en ambos lados (véase arriba).
+2. La tarjeta de créditos del panel no cambia con la ventana temporal (véase arriba).
+3. La tendencia del panel (tabla por minuto) y las tarjetas (tabla de hechos a nivel de solicitud) difieren en torno al 13,8 % en la ventana de 30 días (160.451 frente a 140.969 solicitudes).
+4. La exclusión de sondeo no retira el mismo tráfico en ambos lados (véase arriba).

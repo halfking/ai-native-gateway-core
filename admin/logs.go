@@ -601,6 +601,17 @@ func buildRankingDimensionFilterClauses(r *http.Request, argIdx int) (clauses []
 	return clauses, args, nextArgIdx
 }
 
+// listLogsSerialPlanSQL 在 listLogs 的只读事务里把本 handler 三条语句
+// （COUNT+SUM 聚合 / by_model 分组 / 分页页查询）的并行度压到 0。
+//
+// ★ set_config 第三参 **必须是 true**（SET LOCAL 语义）：pgxpool 连接是
+// 复用的，is_local=false 的会话级 SET 会把「关并行」泄漏给下一个租用者
+// （全局副作用，FIXME-14377 实测串行对部分大会话查询 2.4× 变慢
+// ⇒ 不能全局化）。true ⇒ commit/rollback 自动还原。
+// 完整因果链与实测数字见 listLogs 内的事务注释；门
+// admin/logs_serial_plan_test.go 钉住本常量的字节形态（含 is_local=true）。
+const listLogsSerialPlanSQL = `SELECT set_config('max_parallel_workers_per_gather', '0', true)`
+
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -836,6 +847,51 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		logsFrom = dbpkg.SessionFamilyTurnsSourceWindowedAllSQL("$1", "$2", "$3", "$4") + " rl"
 	}
 
+	// ★★ 2026-11-23 request-logs「有 count 无 items」根修（211 生产 53100 实证）：★★
+	//
+	// 本 handler 的三条语句（COUNT+SUM 聚合 / by_model 分组 / 分页页查询）全部走
+	// **同一只读事务**，事务内第一条语句把 `max_parallel_workers_per_gather`
+	// 压到 0（SET LOCAL，commit/rollback 自动还原）⇒ 强制串行计划。
+	//
+	// # 为什么（完整因果链，非推断）
+	//
+	//	① 211 的 acc-pg17 容器 /dev/shm 仅 64MB，且常态水位 ~35-37MB
+	//	  （大量滞留 PostgreSQL.* DSM 段——并行 worker FATAL 后留下的孤儿段）。
+	//	② 页查询（top-N 排序 + 5 维 JOIN）被 planner 选成 Gather Merge（2 worker）；
+	//	  worker 启动时要 DSM resize 8MB ⇒ `could not resize shared memory segment
+	//	  ... No space left on device (SQLSTATE 53100)`。
+	//	③ pgx 游标在 Next() 中途死亡 ⇒ 旧代码只打 WARN ⇒ **返回 200 + items=[]**，
+	//	  而 COUNT 聚合（串行或幸运）照常成功 ⇒ 前端拿到 count=66235 + items=[]
+	//	  ⇒ 用户看到「查询到 66235 条记录，但无法正常显示」（2026-11-23 02:46 报障）。
+	//	④ 211 实测 3/3 复现（slot-b 日志同一条 53100，count=66390）；psql 直跑
+	//	  同一 SQL 偶尔成功（DSM 水位瞬时有余）⇒ 症状「时好时坏」。
+	//
+	// # 为什么关并行（而不是加大 /dev/shm）
+	//
+	//	加大容器 ShmSize 需重建 PG 容器（2026-11-20 matrix 轮已登记为 owner
+	//	决策项，L2）；代码侧先例：turn_writer（advisory-lock 事务同款 set_config，
+	//	2026-09-24 252 实测「每次写轮次的 DSM 段分配是 53100/worker FATAL 的主源」）
+	//	与 serialRefreshViews（357 族，2026-11-20 matrix 同族 53100）。
+	//	串行代价实测（211 acc-pg17，同 SQL EXPLAIN ANALYZE，缓存热）：
+	//	并行 380ms（Gather Merge，2 worker）⇒ 串行 805ms（0 并行节点），
+	//	远在 30s 预算内 —— 拿 ~0.4s 换掉一个确定性生产故障，值得。
+	//
+	// # 为什么是事务内 set_config（而不是会话级 SET / 连接池默认值）
+	//
+	//	pgxpool 连接复用，会话级 SET 会**泄漏给下一个租用者**（全局关并行的
+	//	副作用，FIXME-14377 实测对部分大查询 2.4× 变慢）；SET LOCAL 只覆盖本
+	//	事务的三条语句，归还连接时并行度恢复默认。
+	tx, txErr := h.db.Begin(ctx)
+	if txErr != nil {
+		writeInternalErr(w, "query failed", txErr)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // 只读事务；Commit 成功后 Rollback 是无害的 ErrTxClosed
+	if _, txErr := tx.Exec(ctx, listLogsSerialPlanSQL); txErr != nil {
+		writeInternalErr(w, "query failed", txErr)
+		return
+	}
+
 	// 2026-10-20（复核轮 §5.12）：COUNT 与 SUM 合并为**一次**聚合。
 	//
 	// 此前对**同一行集**做了两次独立扫描（一条 COUNT、一条 SUM），而
@@ -878,7 +934,8 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	} else {
 		aggFromSQL = " FROM " + logsFrom + " WHERE " + where
 	}
-	if err := h.db.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
+	// ★ 2026-11-23：本查询走串行事务（见上方 listLogsSerialPlanSQL 处注释）。
+	if err := tx.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
 		&count, &promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
 		&totalTokens, &costSum, &creditsSum,
 	); err != nil {
@@ -893,7 +950,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			countSQL = "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 			scope = "tenant"
 		}
-		if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx, countSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", scope, "error", err)
 			writeInternalErr(w, "query failed", err)
 			return
@@ -957,11 +1014,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 				ORDER BY requests DESC
 				LIMIT 20
 			`
-		byModelRows, err := h.db.Query(ctx, byModelSQL, args...)
+		byModelRows, err := tx.Query(ctx, byModelSQL, args...)
 		if err != nil {
 			slog.Warn("admin listLogs by_model aggregate failed", "err", err.Error())
 		} else {
-			defer byModelRows.Close()
 			byModel := make([]modelAggregate, 0)
 			for byModelRows.Next() {
 				var m modelAggregate
@@ -979,6 +1035,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			} else if len(byModel) > 0 {
 				agg.ByModel = byModel
 			}
+			// ★ 2026-11-23 串行事务：pgx 事务持有单连接，游标必须先关闭才能
+			// 在同一事务里发下一条语句（分页页查询）。旧的 `defer Close` 配合
+			// 连接池（每条语句各自租连接）成立，配事务不成立。
+			byModelRows.Close()
 		}
 	}
 
@@ -1003,7 +1063,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
 	`, traceSeqInner, logsFrom, where, orderBy, limitIdx, offsetIdx)
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+	rows, err := tx.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
 		FROM (%s) rl
 		%s
@@ -1034,9 +1094,21 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		items = append(items, l)
 	}
 	if err := rows.Err(); err != nil {
-		// 2026-07-16 fix: pgx 在游标中途出错时通过 rows.Err() 报告,
-		// 必须显式检查,否则会拿到空 items 但无任何日志.
-		slog.Warn("admin listLogs rows.Err after iteration", "err", err.Error(), "items_returned", len(items), "count", count)
+		// ★★ 2026-11-23 根修（211 生产实证）：游标中途死亡必须如实报错，
+		// 不得静默返回 200 + items=[]。当日实证链：页查询被 planner 选成
+		// Gather Merge（2 worker）⇒ acc-pg17 /dev/shm=64MB、水位 ~35MB ⇒
+		// worker DSM resize 8MB 撞 SQLSTATE 53100 ⇒ pgx 游标在 Next() 中途
+		// 死亡 ⇒ 旧代码这里只打 WARN 并照常 writeJSON ⇒ 前端拿到
+		// count=66235 + items=[]，把「存储侧并行查询资源受限（可重试）」
+		// 误报成「服务端数据格式问题，请联系管理员查日志」。
+		// 文案三要素（错误如实返回纪律）：事实（已拿到几行 / 总数）、
+		// 性质（存储侧故障）、处置（可重试）；驱动原文只进日志
+		// （internal_error_guard 纪律：err.Error() 不上 wire）。
+		slog.Error("admin listLogs rows iteration failed",
+			"err", err.Error(), "items_returned", len(items), "count", count)
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf(
+			"request log list query interrupted before completion: received %d of %d counted rows; storage-side error, retrying may help", len(items), count))
+		return
 	} else if scanErrCount > 0 {
 		slog.Warn("admin listLogs completed with partial scan failures", "scan_err_count", scanErrCount, "items_returned", len(items), "count", count)
 	}
@@ -1054,6 +1126,12 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		)
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("data scanning failed: found %d records but failed to parse any rows (scan errors: %d)", count, scanErrCount))
 		return
+	}
+
+	// ★ 2026-11-23 串行事务收尾：只读事务，Commit 失败不影响已读到的行集
+	// （数据已在内存里），照常返回并在服务端留痕。
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("admin listLogs serial-plan tx commit failed", "err", err.Error())
 	}
 
 	// U4：lane=probe|probe_history 读的是业务表历史探测行 ⇒ 响应显式标

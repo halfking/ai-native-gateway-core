@@ -17,6 +17,9 @@ export default {
   sourceDetail: 'Request detail',
   // 2026-10-02 multi-select / clear-all / auto-refresh round
   clearAll: 'Clear all',
+  // 2026-11-23 深链钉住轮：被深链钉住的维度（徽标 + 解除按钮）
+  pinnedRelease: 'Unpin',
+  pinnedUnresolved: 'Provider not found — filter not applied',
   autoRefresh: 'Auto refresh',
   autoRefreshOff: 'Off',
   autoRefresh30s: '30s',

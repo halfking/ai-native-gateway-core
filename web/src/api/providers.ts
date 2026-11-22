@@ -12,6 +12,16 @@ import { req } from './_core'
 
 export interface Provider {
   id: number
+  /**
+   * 供应商的**规范 code**（providers.code 列；后端 /api/providers 列表接口返回）。
+   *
+   * ★ 为什么它与 `catalog_code` 不是一回事：自建/接入型供应商常把 catalog_code
+   *   留空、display_name 另起名字（211 真库实测：code=速云U站 /
+   *   catalog_code='' / display_name=suyun）⇒ 会话分析的「Top5 供应商」排行
+   *   （源 model_usage_aggregates.provider = providers.code）传过来的就是 `code`
+   *   ⇒ 深链解析必须认这一列。
+   */
+  code?: string
   catalog_code: string
   display_name: string
   enabled: boolean

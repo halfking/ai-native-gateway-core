@@ -1525,6 +1525,16 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 
 	tid := EffectiveTenantIDAll(r)
 
+	// ★ 2026-11-23 深链钉住轮：可选过滤（供应商 / 模型 / API Key）。
+	//
+	//	深链钉住某个维度后（例如从会话分析「Top5 供应商」点进来），页面**下方**
+	//	的「用量排行榜」也必须跟着那个维度走 —— 否则同一屏里上半部分是该供应商的
+	//	数据、下半部分还是全站的 ⇒ 口径打架（"界面显示的 ≠ 数据反映的"）。
+	//	★ 参数缺省 = 不过滤 ⇒ 与改动前逐字等价，其它调用方不受影响。
+	//	★ 模型口径与趋势序列端点同源（usageTrendModelExprRL / usageTrendModelExpr
+	//	  共用一份模板）⇒ 图表选中的模型与排行榜里看到的模型是同一批行。
+	trendFilters := usageTrendFiltersFromRequest(r)
+
 	// 支持通过查询参数控制返回数量，用户默认 Top10，其他维度默认 Top5
 	defaultLimit := 5
 	usersLimit := queryInt(r, "users_limit", 10)
@@ -1569,6 +1579,19 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		if tid != "" {
 			whereClause += " AND rl.tenant_id = $3"
 			args = append(args, tid)
+		}
+		// ★ 深链钉住轮：维度过滤（供应商 / 模型 / API Key）——与趋势序列同口径。
+		if trendFilters.providerID > 0 {
+			whereClause += fmt.Sprintf(" AND rl.provider_id = $%d", len(args)+1)
+			args = append(args, trendFilters.providerID)
+		}
+		if trendFilters.apiKeyID > 0 {
+			whereClause += fmt.Sprintf(" AND rl.api_key_id = $%d", len(args)+1)
+			args = append(args, trendFilters.apiKeyID)
+		}
+		if len(trendFilters.models) > 0 {
+			whereClause += fmt.Sprintf(" AND %s = ANY($%d)", usageTrendModelExprRL, len(args)+1)
+			args = append(args, trendFilters.models)
 		}
 
 		query := fmt.Sprintf(`
@@ -1675,6 +1698,20 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	if tid != "" {
 		whereClause += " AND rl.tenant_id = $3"
 		args = append(args, tid)
+	}
+	// ★ 深链钉住轮：API Key 维度这条查询自带 JOIN（api_keys），过滤条件要单加一份
+	//   （不能复用 queryTopN 的 whereClause —— 它的占位符编号从 $1/$2 起算）。
+	if trendFilters.providerID > 0 {
+		whereClause += fmt.Sprintf(" AND rl.provider_id = $%d", len(args)+1)
+		args = append(args, trendFilters.providerID)
+	}
+	if trendFilters.apiKeyID > 0 {
+		whereClause += fmt.Sprintf(" AND rl.api_key_id = $%d", len(args)+1)
+		args = append(args, trendFilters.apiKeyID)
+	}
+	if len(trendFilters.models) > 0 {
+		whereClause += fmt.Sprintf(" AND %s = ANY($%d)", usageTrendModelExprRL, len(args)+1)
+		args = append(args, trendFilters.models)
 	}
 	apiKeyQuery += whereClause + fmt.Sprintf(`
 		GROUP BY ak.key_prefix, ak.key_alias, ak.owner_user

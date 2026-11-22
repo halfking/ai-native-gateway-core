@@ -108,7 +108,6 @@ Autrement dit : les deux onglets prétendent exclure la sonde, mais **n'excluent
 ## Limites connues (mesuré le 2026-11-23)
 
 1. **Le coût et le nombre de requêtes du côté sessions sont trop élevés (double comptage, non corrigé)** : le coût et les requêtes des statistiques de session proviennent de l'agrégation des résumés de session, mais `sessions` est un **historique de sessions partitionné par jour** (la même session reçoit une nouvelle ligne chaque jour) et la jointure de la statistique ne déduplique pas par session ⇒ la même session est comptée plusieurs fois. Mesure en base de production le 2026-11-23 (même fenêtre de 7 jours) : le coût du côté sessions ressort environ **61 %** et le nombre de requêtes environ **36 %** au-dessus des valeurs dédupliquées par session (la session la plus coûteuse a été comptée 3 fois). **Les chiffres du tableau de bord (au niveau requête) ne sont pas concernés** ⇒ pour comparer les coûts, s'appuyer sur le tableau de bord, ou dédupliquer d'abord les chiffres de session.
-2. L'agrégation côté sessions additionne aussi les lignes en double de la table des sessions : son nombre de requêtes et son coût ressortent trop élevés.
-3. La carte des crédits du tableau de bord ne varie pas avec la fenêtre temporelle (voir plus haut).
-4. La courbe du tableau de bord (table à la minute) et les cartes (table de faits au niveau requête) diffèrent d'environ 13,8 % sur 30 jours (160 451 contre 140 969 requêtes).
-5. L'exclusion de la sonde ne retire pas le même trafic de part et d'autre (voir plus haut).
+2. La carte des crédits du tableau de bord ne varie pas avec la fenêtre temporelle (voir plus haut).
+3. La courbe du tableau de bord (table à la minute) et les cartes (table de faits au niveau requête) diffèrent d'environ 13,8 % sur 30 jours (160 451 contre 140 969 requêtes).
+4. L'exclusion de la sonde ne retire pas le même trafic de part et d'autre (voir plus haut).
