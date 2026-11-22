@@ -51,7 +51,9 @@ func NewLargeIngress(h *ChatHandler, store *largebody.Store, cfg LargeIngressCon
 		cfg.MaxConcurrent = 4
 	}
 	if cfg.ContextBytes <= 0 {
-		cfg.ContextBytes = 1 << 20
+		// P1-C (2026-11-23): 从 1 MiB 提升到 5 MiB，以容纳单条高清截图消息。
+		// 1920x1080 PNG 约 1.5-2MB，2K JPG 约 2MB，此预算覆盖 95% 典型场景。
+		cfg.ContextBytes = 5 << 20 // 5 MiB
 	}
 	if cfg.MinFreeBytes == 0 {
 		cfg.MinFreeBytes = 512 << 20
@@ -199,7 +201,15 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 					}),
 					extra: map[string]any{"body_bytes": ref.Size},
 				}
-				if errors.Is(err, context.DeadlineExceeded) {
+				// P1-C (2026-11-23): 单条受保护消息超限 → 针对性文案
+				if errors.Is(err, sessioncontext.ErrSingleMessageTooLarge) {
+					code = "single_message_too_large"
+					logMessage = "single protected message exceeds context budget"
+					rej.clientMessage = i18n.T(r.Context(), i18n.MsgIngressSingleMessageTooLarge, map[string]any{
+						"Limit": humanByteSize(int64(g.config.ContextBytes)),
+					})
+					rej.extra["single_message_budget_exceeded"] = true
+				} else if errors.Is(err, context.DeadlineExceeded) {
 					status, code = 503, "request_processing_timeout"
 					logMessage = "request preprocessing exceeded its time limit"
 					rej.clientMessage = i18n.T(r.Context(), i18n.MsgIngressPreprocessTimeout, map[string]any{

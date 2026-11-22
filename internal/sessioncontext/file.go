@@ -75,7 +75,17 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 	}
 	report.Messages = len(spans)
 	read := func(span largebody.Span, limit int) ([]byte, error) {
-		if span.Length < 0 || span.Length > int64(limit) {
+		if span.Length < 0 {
+			return nil, ErrProtectedContext
+		}
+		// P1-C (2026-11-23): 区分"单条超限"与"累加超限"
+		if span.Length > int64(maxBytes) {
+			// 单条消息本身就超过总预算 → 无论如何都装不下
+			// 典型场景：>5MiB 的高清截图/视频
+			return nil, ErrSingleMessageTooLarge
+		}
+		if span.Length > int64(limit) {
+			// 单条未超总预算，但超过剩余预算 → 多条累加超限
 			return nil, ErrProtectedContext
 		}
 		b := make([]byte, int(span.Length))
