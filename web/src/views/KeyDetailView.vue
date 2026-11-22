@@ -499,7 +499,9 @@ async function loadKey() {
   loading.value = true
   error.value = ''
   try {
-    keyInfo.value = await getKeyDetail(keyId.value)
+    // 2026-11-23 P3 详情侧：详情按 id 直取始终带 include_revoked，
+    // revoked 密钥从「含已吊销」列表点进不再 404。
+    keyInfo.value = await getKeyDetail(keyId.value, { include_revoked: true })
   } catch (e: unknown) {
     error.value = surfaceError(e, { key: 'keys.common.loadFailed' })
   } finally {
