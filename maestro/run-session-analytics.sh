@@ -54,7 +54,19 @@ cd "${ROOT}" || exit 2
 BASE_URL="${BASE_URL:-https://llm.itestu.cn}"
 DRIVER_PORT="${MAESTRO_DRIVER_PORT:-9222}"
 SA_CDP_PORT="${SA_CDP_PORT:-9223}"
-SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x1400}"
+# ★ 2026-11-23（L15 真机复核轮）：视口从 **1440x1400** 提到 **1440x3600**。
+#   理由（实测几何 + 实测截图，非拍脑袋）：
+#     ① 上游 L7 轮把会话统计面板**加高** ⇒ 会话分析 users 页的锚点被整体推到
+#        1400px 视口折叠线以下 —— 实测文档 Y：sa-top5-section=**2437**、
+#        sa-range-label=**3223**、sa-users-col-rank=**3329**；
+#     ② Maestro 的「看得见」只认**视口内**（flow 头注④：折叠线以下的内容断言不到）
+#        ⇒ 旧视口下**必然假红**（实测 flow rc=1 FAILED=1，而 CDP 侧 t+2s 就已
+#        渲染出这些元素 ⇒ **产品是好的**）；
+#     ③ ★ **真旋钮是 Maestro 的 `--screen-size`（本变量）**，不是 Chrome 的
+#        `--window-size` —— 误改 Chrome 窗口时实测截图仍是 1440x**1257**
+#        （Maestro 自己按 `--screen-size` 设 device metrics）⇒ 记下来免得再踩。
+#   ⇒ 3600 > 3329（最高锚点）⇒ 所有锚点进入视口。
+SCREEN_SIZE="${MAESTRO_SCREEN_SIZE:-1440x3600}"
 FLOW="${FLOW:-maestro/flows/16-session-analytics-system.yaml}"
 REPORT_ROOT="${ROOT}/maestro/reports"
 # ★ Chrome 日志写进 reports/ **内部** ⇒ 目录必须先建：新鲜 worktree/新 checkout 里
@@ -180,9 +192,22 @@ start_chrome() {
   #   且持久化在 `localStorage['llmgw_locale']` ⇒ 浏览器语言一变，整页文案就换语种
   #   ⇒ 断言的中文判据（数据卡 label / 表头 / 区块标题）会**静默失效**。
   #   这里从浏览器侧钉死语言，探针侧再读回 `<html lang>` 复核（双保险）。
+  # ★ 2026-11-23（L15 真机复核轮）：视口高度从 1400 提到 **3600**。
+  #   理由（实测几何，非拍脑袋）：上游 L7 轮把会话统计面板加高 ⇒ 会话分析 users 页
+  #   的锚点被整体推到 1400px 视口折叠线以下 ——
+  #     sa-top5-section=**2437**、sa-range-label=**3223**、sa-users-col-rank=**3329**
+  #   ⇒ Maestro 的「看得见」只认视口内 ⇒ 断不到 ⇒ **量具假红**（产品侧 CDP 测得
+  #   t+2s 即已渲染出这些元素 ⇒ 页面是好的）。
+  #   ⇒ 两个候选修法：① `scrollUntilVisible` —— ★ **实测 web 驱动不支持滚动**
+  #     （Maestro 直接报「No visible element found」）⇒ 弃用；
+  #     ② **加高视口**（本 flow 头注早就写明「视口必须 …（run-local.sh 传入）
+  #     ⇒ 折叠线以下的内容断言不到」⇒ 视口就是旋钮）⇒ 采用。
+  #   ⇒ ★ 注意：**视口的真旋钮是 Maestro 的 `--screen-size`**（见 SCREEN_SIZE）
+  #     —— Chrome 窗口这里只是"跟着对齐"，实测误改它而没改 --screen-size 时
+  #     截图仍是 1440x1257 ⇒ Maestro 自己按 --screen-size 设 device metrics。
   nohup "${CHROME_BIN}" --headless=new --remote-debugging-port="${port}" \
     --user-data-dir="${profile}" --no-first-run --no-default-browser-check \
-    --disable-gpu --lang=zh-CN --window-size=1440,1400 about:blank \
+    --disable-gpu --lang=zh-CN --window-size="${SA_WINDOW_SIZE:-1440,3600}" about:blank \
     >"${REPORT_ROOT}/.chrome-${port}.log" 2>&1 &
   CHROME_PIDS+=("$!")
   for _ in $(seq 1 30); do

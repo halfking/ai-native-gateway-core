@@ -1,0 +1,232 @@
+================================================================================
+2026-11-23 会话分析域 L15 真机复核 —— 三层 E2E 证据（211）
+================================================================================
+运行身份（跑 E2E 时点的现役）：
+  version   = 2.6.1-eeaed141-20261123-211
+  git_sha   = eeaed141
+  build_seq = 3236
+  槽位      = a @ 8781
+  ⇒ 本轮 E2E 跑在**我方部署的身份**上（merge-base --is-ancestor 实测：8e0baf950 / eeaed1415 均 ⊆ 该树）
+
+产物目录：maestro/reports/20261123-072146/
+  16-session-analytics-system.log   ← 第一层 Maestro flow 全量日志
+  assert-session-analytics.txt       ← 第二层 CDP 探针（62 条）
+  assert-filter-button.txt           ← 第三层 筛选按钮探针（20 条）
+  summary.txt                        ← 三层退出码汇总
+
+三层结果（runner 汇总）：
+filter rc=0
+flow rc=0 FAILED=0
+probe rc=1
+
+--------------------------------------------------------------------------------
+第一层：Maestro flow —— ✅ **rc=0 FAILED=0**（量具修正后首次全绿）
+--------------------------------------------------------------------------------
+Assert that id: sa-user-ranking-table is visible... COMPLETED
+Assert that id: sa-user-ranking-col-rank is visible... COMPLETED
+Assert that id: sa-user-ranking-col-owner is visible... COMPLETED
+Assert that id: sa-user-ranking-col-email is visible... COMPLETED
+Assert that id: sa-user-ranking-col-sessions is visible... COMPLETED
+Assert that id: sa-user-ranking-col-projects is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/user-ranking/${SESSION_OWNER}... COMPLETED
+Assert that id: sa-metric-rank is visible... COMPLETED
+Assert that id: sa-page-user-detail is visible... COMPLETED
+Assert that id: sa-range-label is visible... COMPLETED
+Assert that id: sa-refresh-btn is visible... COMPLETED
+Assert that id: sa-user-detail-identity is visible... COMPLETED
+Assert that id: sa-back-btn is visible... COMPLETED
+Assert that id: sa-metric-session-count is visible... COMPLETED
+Assert that id: sa-metric-task-count is visible... COMPLETED
+Assert that id: sa-metric-total-cost is visible... COMPLETED
+Assert that id: sa-metric-rank is visible... COMPLETED
+Assert that id: sa-trend-sessions is visible... COMPLETED
+Assert that id: sa-trend-tasks is visible... COMPLETED
+Tap on ".*模型用量.*"... COMPLETED
+Assert that id: sa-user-models-col-model is visible... COMPLETED
+Assert that id: sa-user-models-table is visible... COMPLETED
+Assert that id: sa-user-models-col-model is visible... COMPLETED
+Assert that id: sa-user-models-col-requests is visible... COMPLETED
+Assert that id: sa-user-models-col-tokens is visible... COMPLETED
+Assert that id: sa-user-models-col-cost is visible... COMPLETED
+Assert that id: sa-user-models-col-success-rate is visible... COMPLETED
+Assert that id: sa-user-models-col-cache-rate is visible... COMPLETED
+Assert that id: sa-user-models-col-avg-response-time is visible... COMPLETED
+Tap on ".*API Key用量.*"... COMPLETED
+Assert that id: sa-user-apikeys-col-alias is visible... COMPLETED
+Assert that id: sa-user-apikeys-table is visible... COMPLETED
+Assert that id: sa-user-apikeys-col-alias is visible... COMPLETED
+Assert that id: sa-user-apikeys-col-key-id is visible... COMPLETED
+Assert that id: sa-user-apikeys-col-requests is visible... COMPLETED
+Assert that id: sa-user-apikeys-col-tokens is visible... COMPLETED
+Assert that id: sa-user-apikeys-col-project-count is visible... COMPLETED
+Assert that id: sa-user-apikeys-col-top-project is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/agent-ranking... COMPLETED
+Assert that id: sa-agent-ranking-col-rank is visible... COMPLETED
+Assert that id: sa-page-agent-ranking is visible... COMPLETED
+Assert that id: sa-range-label is visible... COMPLETED
+Assert that id: sa-refresh-btn is visible... COMPLETED
+Assert that id: sa-agent-ranking-table is visible... COMPLETED
+Assert that id: sa-agent-ranking-col-rank is visible... COMPLETED
+Assert that id: sa-agent-ranking-col-agent is visible... COMPLETED
+Assert that id: sa-agent-ranking-col-users is visible... COMPLETED
+Assert that id: sa-agent-ranking-col-sessions is visible... COMPLETED
+Assert that id: sa-agent-ranking-col-tasks is visible... COMPLETED
+Open ${BASE_URL}/admin/session-analytics/model-ranking... COMPLETED
+Assert that id: sa-model-ranking-col-rank is visible... COMPLETED
+Assert that id: sa-page-model-ranking is visible... COMPLETED
+Assert that id: sa-range-label is visible... COMPLETED
+Assert that id: sa-refresh-btn is visible... COMPLETED
+Assert that id: sa-model-ranking-table is visible... COMPLETED
+Assert that id: sa-model-ranking-col-rank is visible... COMPLETED
+Assert that id: sa-model-ranking-col-model is visible... COMPLETED
+Assert that id: sa-model-ranking-col-provider is visible... COMPLETED
+Assert that id: sa-model-ranking-col-requests is visible... COMPLETED
+Assert that id: sa-model-ranking-col-success-rate is visible... COMPLETED
+
+--------------------------------------------------------------------------------
+第二层：CDP 探针 assert-session-analytics.mjs —— ❌ FAIL 1/62
+--------------------------------------------------------------------------------
+✅ 界面语言已钉住为 zh-CN（<html lang>）  — html lang="zh-CN"
+✅ 登录 /api/auth/token 200
+✅ 端点① overview 200（陈旧门未触发）  — status=200
+✅ overview 带 summary 全部 14 个指标字段  — total_sessions=18459 active_users=6
+✅ overview 带 trends 三序列（sessions/tokens/cost）  — sessions=7 tokens=7 cost=7
+✅ 端点② user-ranking 200  — status=200
+✅ 端点② user-ranking 带人员行  — rows=6
+✅ 端点③ user-ranking/:owner 200（owner=kaixuan-1）  — status=200
+✅ 端点④ user-ranking/:owner/projects 200  — status=200
+✅ 端点⑤ …/projects/:project/tasks 200（project=hermes）  — status=200
+✅ 端点⑥ agent-ranking 200  — status=200
+✅ 端点⑦ model-ranking 200  — status=200
+✅ 端点⑧ user-ranking/:owner/models 200（owner=kaixuan-1）  — status=200
+✅ 端点⑨ user-ranking/:owner/api-keys 200（owner=kaixuan-1）  — status=200
+✅ 菜单：分组下拉里存在「会话分析」入口  — label="📊会话分析中心" 触发器 8 个
+✅ 菜单：点击入口后落到 /admin/session-analytics/users  — path=/admin/session-analytics/users
+✅ users 页：无错误横幅
+✅ users 页：无陈旧横幅（503 analytics_view_stale 未触发）
+✅ users 页：重定向落点是 /admin/session-analytics/users  — path=/admin/session-analytics/users
+✅ users 页：页根在（sa-page-users）
+✅ users 页：会话统计面板已渲染（.stats-panel-wrapper 有内容）  — 面板文本长度=1462
+✅ users 页：Top5 四件套区块在（sa-top5-section + 4 张卡）  — section=true 模型=true 供应商=true 用户=true 任务=true
+✅ users 页：Top10 用户排行表在（sa-users-table + 排名列）  — table=true rank列=true
+✅ users 页：Top10 表头齐全（排名/人员/邮箱/会话数/项目数/任务数）  — 排名 | 人员 | 邮箱 | 会话数 | 项目数 | 任务数 | Token 数 | 花费 | 最近活跃 | 查看详情
+✅ users 页：Top10 有数据行  — rows=6
+✅ 人员排行页：无错误横幅
+✅ 人员排行页：无陈旧横幅
+✅ 人员排行页：11 列表头齐全（含右侧列「查看详情」）  — 11 列全在
+✅ 人员排行页：有数据行  — rows=6
+✅ 对拍基准：已捕获页面自己的 user-ranking 响应  — 同源基准可用
+✅ 对拍：排行首行「人员」== 页面自身响应 users[0]  — 页面="kaixuan-1" 同源响应="kaixuan-1"
+✅ 对拍：排行首行「会话数」== 页面自身响应 users[0].session_count  — 页面=100 同源响应=100
+✅ 人员详情页：无错误横幅
+✅ 人员详情页：无陈旧横幅
+✅ 人员详情页：4 张数据卡齐全  — 4 张全在
+✅ 人员详情页：4 个趋势段齐全  — 4 段全在
+✅ 人员详情页：跨单位口径说明在屏（costNote）
+✅ 人员详情页：项目列表表头齐全  — 项目|会话数|任务数|Token 数|花费|最近活跃
+✅ 人员详情页：点项目行 ⇒ 切到「任务列表」tab  — tabs=项目列表 / 任务列表(active) / 模型用量 / API Key用量 project=hermes
+✅ 人员详情页：任务层无数据时显示该层空态（不渲染表）  — hasEmptyState=true tables=0
+✅ 对拍基准：已捕获页面自己的 user-detail 响应  — 同源基准可用
+✅ 对拍：详情「会话数」卡值 == 页面自身响应 summary.session_count  — 页面=100 同源响应=100
+✅ 对拍：详情「当前排名」卡值 == 页面自身响应 summary.rank  — 页面=1 同源响应=1
+✅ 人员详情页：模型用量表头齐全  — 6 列全在
+✅ 人员详情页：模型用量有行或显示空态  — rows=10 hasEmptyState=false
+✅ 对拍基准：已捕获页面自己的 models 响应  — 同源基准可用
+✅ 对拍：模型用量首行「模型」== 页面自身响应 models[0].model  — 页面="claude-sonnet-5-5" 同源响应="claude-sonnet-5-5"
+❌ 人员详情页：API Key 统计无数据时显示空态  — hasEmptyState=false tables=0
+✅ 对拍基准：已捕获页面自己的 api-keys 响应  — 同源基准可用
+✅ 智能体排行页：无错误横幅
+✅ 智能体排行页：无陈旧横幅
+✅ 智能体排行页：9 列表头齐全  — 9 列全在
+✅ 智能体排行页：有数据行  — rows=7
+✅ 对拍基准：已捕获页面自己的 agent-ranking 响应  — 同源基准可用
+✅ 对拍：智能体首行 == 页面自身响应 agents[0].agent_name  — 页面="pi" 同源响应="pi"
+✅ 模型排行页：无错误横幅
+✅ 模型排行页：无陈旧横幅
+✅ 模型排行页：11 列表头齐全  — 11 列全在
+✅ 模型排行页：有数据行  — rows=58
+✅ 对拍基准：已捕获页面自己的 model-ranking 响应  — 同源基准可用
+✅ 对拍：模型首行 == 页面自身响应 models[0].model  — 页面="minimax-m3.1-flash" 同源响应="minimax-m3.1-flash"
+✅ 对拍：模型首行「请求数」== 页面自身响应 models[0].request_count  — 页面=16,003 同源响应=16003
+
+RESULT: FAIL（1 / 62 条）
+
+--------------------------------------------------------------------------------
+第三层：CDP 探针 assert-filter-button.mjs —— ✅ PASS 20 条
+--------------------------------------------------------------------------------
+✅ 界面语言已钉住为 zh-CN（<html lang>）  — html lang="zh-CN"
+✅ 已有会话 /api/auth/me 200（seed 路径，免口令）
+✅ 人员排行：primary 按钮存在（.sa-btn--primary）  — 文本="应用筛选"
+✅ 人员排行：按钮文案 === 「应用筛选」  — 实测="应用筛选"
+✅ 人员排行：旧文案「应用区间」已下线  — 页面上读不到旧文案
+✅ 人员排行：点击后按新排序发起请求（order=asc）  — 实测请求 /api/admin/session-analytics/user-ranking?…order=asc（改动前 order=desc）
+✅ 人员排行：请求区间参数未被按钮改动  — start_date=2026-11-17 end_date=2026-11-23
+✅ 人员排行：点击后区间显示值不变（它不是区间开关）  — before="11/17 – 11/23" after="11/17 – 11/23"
+✅ 智能体排行：primary 按钮存在（.sa-btn--primary）  — 文本="应用筛选"
+✅ 智能体排行：按钮文案 === 「应用筛选」  — 实测="应用筛选"
+✅ 智能体排行：旧文案「应用区间」已下线  — 页面上读不到旧文案
+✅ 智能体排行：点击后按新排序发起请求（order=asc）  — 实测请求 /api/admin/session-analytics/agent-ranking?…order=asc（改动前 order=desc）
+✅ 智能体排行：请求区间参数未被按钮改动  — start_date=2026-11-17 end_date=2026-11-23
+✅ 智能体排行：点击后区间显示值不变（它不是区间开关）  — before="11/17 – 11/23" after="11/17 – 11/23"
+✅ 模型排行：primary 按钮存在（.sa-btn--primary）  — 文本="应用筛选"
+✅ 模型排行：按钮文案 === 「应用筛选」  — 实测="应用筛选"
+✅ 模型排行：旧文案「应用区间」已下线  — 页面上读不到旧文案
+✅ 模型排行：点击后按新排序发起请求（order=asc）  — 实测请求 /api/admin/session-analytics/model-ranking?…order=asc（改动前 order=desc）
+✅ 模型排行：请求区间参数未被按钮改动  — start_date=2026-11-17 end_date=2026-11-23
+✅ 模型排行：点击后区间显示值不变（它不是区间开关）  — before="11/17 – 11/23" after="11/17 – 11/23"
+
+RESULT: PASS（20 条）
+
+================================================================================
+剩下那 1 条红的定性（一次性诊断脚本，未入库）
+================================================================================
+红条目：人员详情页：API Key 统计无数据时显示空态  — hasEmptyState=false, tables=0
+
+── 诊断 A：CDP 逐 500ms 采样（点 API Key tab 之后，最多 20s）──────────────
+  t+500ms  {"spinner":true, "empty":false, "tables":0, "rows":0, "bannerErr":false, "activeTab":"API Key用量"}
+  t+1000ms 同上
+  ...
+  t+6000ms 同上
+  t+6500ms {"spinner":false, "empty":true, "tables":0, "rows":0, "bannerErr":false, "activeTab":"API Key用量"}
+             | 已捕获 api-keys status=500
+  ⇒ 结论：探针的 2.5s 等待**不够**（实测落定要 ~6.5s）⇒ 探针是在 **spinner 态**取样
+    ⇒ 「既没有表、也没有空态」是因为 DataTable 的 loading 分支**优先于** empty 分支
+    ⇒ **这一层是量具时序失效**（不是产品红）。
+
+── 诊断 B：页面自己收到的那份 api-keys 响应 ----------------------------------
+  url    = https://llm.itestu.cn/api/admin/session-analytics/user-ranking/kaixuan-1/api-keys?start_date=2026-11-17&end_date=2026-11-23
+  status = 500
+  body   = {"error":"failed to get user api key usage"}
+
+── 诊断 C：211 现役容器日志（同一时刻）──────────────────────────────────────
+  {"msg":"sessionAnalytics: user api key usage failed","owner":"kaixuan-1",
+   "error":"ERROR: could not resize shared memory segment \"/PostgreSQL.2842516414\"
+            to 4194304 bytes: No space left on device (SQLSTATE 53100)",
+   "severity_text":"ERROR","level":"error",
+   "version":"2.6.1-a798423f-20261123-211"}
+  ⇒ **根因＝PostgreSQL 并行查询申请 DSM 共享内存失败**（SQLSTATE 53100 / 53100 = out of shared memory）
+  ⇒ 该端点的 SQL（userAPIKeyUsageSQL：3 个 CTE + GROUP BY + ARRAY_AGG）命中并行计划。
+
+── 诊断 D：211 的 PG 容器 /dev/shm 实测 --------------------------------------
+  容器 acc-pg17：
+      shm  64.0M  45M used  20M avail  70% use  /dev/shm
+      段数 70 个（`ls /dev/shm | wc -l`）
+      用量 45M
+  对照（同机其它 PG 容器）：64M shm、仅用 1.0M、2 个段 ⇒ 差异只出在 acc-pg17
+  ⇒ **与 AGENTS.md 登记的 N11/L3 完全同族**：211 的 acc-pg17 容器 /dev/shm 仅 64MB
+    且残留大量 DSM 段；根治需**重建该容器并加大 ShmSize**（owner 决策项，2026-11-20 起挂账）
+  ⇒ 同族前例：迁移 994 当年用 `SET max_parallel_workers_per_gather = 0` 显式关并行绕过；
+    本端点的 SQL **没有**这道绕过 ⇒ 撞上同一个雷。
+
+── 最终定性（三层分开说，不混）──────────────────────────────────────────────
+  ① **量具失效**（本轮已修）：探针等 2.5s < 实际落定 ~6.5s ⇒ 在 spinner 态取样 ⇒ 假红。
+  ② **产品红·基础设施**（本轮**只登记，不修**）：PG `/dev/shm` 不足 ⇒ 并行查询 500。
+     归属＝N11/L3 owner 决策项（重建容器加大 ShmSize），**非会话分析族代码错、非本轮引入**。
+  ③ **产品红·前端错误态吞掉**（本轮**只登记**）：该 tab 自己的 loader（apiKeysLoader）报错时，
+     页面级 `error` 绑定的是 **detailLoader.error**，不是 apiKeysLoader.error
+     ⇒ 端点 500 时用户看到的是「空态（无数据）」而不是「加载失败」⇒ **500 被伪装成无数据**。
+     这是上游详情族的口径问题，本轮不擅改（改口径 vs 改断言需裁决）。
+
+  ★★ 通用式：**「端点 500」与「端点返回空」在页面上的默认表现都是「表格区域空着」**
+     ⇒ 探针若只断言「空态 vs 有表」，就分不清这两者 ⇒ 必须**同时抓 HTTP 状态码**
+     ⇒ 否则「后端 500」会被误判成「业务无数据」。
