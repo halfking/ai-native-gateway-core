@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kaixuan/llm-gateway-go/domains/approval"
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin"
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin/casdoor"
 	"github.com/kaixuan/llm-gateway-go/pkg/authplugin/native"
@@ -182,20 +183,47 @@ func registerNativeProviders(
 	}
 
 	// Native Approval Provider
-	// Note: This assumes approval.ConfigManager exists in the codebase
-	// The actual integration depends on the existing approval domain implementation
-	// For now, we skip approval provider registration if the domain is not available
-	// Uncomment and adjust the following when approval domain is ready:
-	/*
-		approvalStore := approval.NewStore(db)
-		configManager := approval.NewConfigManager(approvalStore, redisClient)
-		nativeApproval := native.NewNativeApprovalProvider(configManager)
-		if err := registry.RegisterApprovalProvider(nativeApproval); err != nil {
-			return fmt.Errorf("register native approval provider: %w", err)
-		}
-	*/
+	if err := registerNativeApprovalProvider(registry, db, redisClient); err != nil {
+		return err
+	}
 
 	slog.Info("native providers registered successfully")
+	return nil
+}
+
+// registerNativeApprovalProvider registers the native (PostgreSQL-backed)
+// approval provider.
+//
+// ★ 2026-11-23（211 生产告警修复）：这段注册此前整块被注释掉，而
+// loadPluginConfig 的默认值是 ApprovalProvider="native" ⇒ registry 里
+// 永远不会出现名为 "native" 的 approval provider ⇒ IsConfigured() 必挂 ⇒
+// initializePluginRegistry 返回 "plugin registry not fully configured:
+// approval provider not configured" ⇒ 211 生产启动日志恒有一条 ERROR。
+//
+// ★ 为什么现在能启用：approval domain 已经就位（domains/approval），
+// 且其方法集与 native.ConfigManager 接口逐字一致
+// （GetConfig/UpdateConfig/GetApprovers/AddApprover/UpdateApprover/
+// RemoveApprover/GetRules/AddRule/RemoveRule）⇒ *approval.ConfigManager
+// 天然满足该接口，无需适配层。
+//
+// ★ 注意构造函数名：不是 approval.NewStore（不存在），而是
+// approval.NewPGApprovalStore(pool, cache)——它返回 ApprovalStore 接口，
+// 正是 NewConfigManager 的第一个参数类型。
+//
+// ★ 为什么抽成具名函数：接线（"调用点还在不在、还真的注册了吗"）才是会
+// 退化的那一环——构造体好测，"调用点有没有被顺手删掉/注释回去"只有具名
+// 函数 + 行为测试才能钉死。这正是 AGENTS.md 的纪律：具名函数才能被测试点到。
+func registerNativeApprovalProvider(
+	registry *authplugin.Registry,
+	db *pgxpool.Pool,
+	redisClient *redis.Client,
+) error {
+	approvalStore := approval.NewPGApprovalStore(db, redisClient)
+	configManager := approval.NewConfigManager(approvalStore, redisClient)
+	nativeApproval := native.NewNativeApprovalProvider(configManager)
+	if err := registry.RegisterApprovalProvider(nativeApproval); err != nil {
+		return fmt.Errorf("register native approval provider: %w", err)
+	}
 	return nil
 }
 
