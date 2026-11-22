@@ -123,6 +123,13 @@ const sourceKey = computed(() => {
     <button type="button" class="bfb__refresh" :disabled="loading" @click="emit('refresh')">
       ⟳ {{ t('dashboard.refresh') }}
     </button>
+    <!-- 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口（插槽）。
+         看板与「会话与统计」两页的请求数/费用口径不同（请求级 vs 会话级）、
+         窗口不同、探测剔除面不同 ⇒ 数字本来就不该相等。这枚按钮打开
+         《看板与会话统计的统计标准》正文，供用户自查两边差异。
+         只有调用方显式填插槽才渲染（同一个筛选条被实例化两次，
+         由调用方决定在哪一个实例里放入口）。 -->
+    <slot name="help" />
     <span v-if="!hideSource" class="bfb__src" :title="t('dashboard.board.sourceTitle')">
       {{ t('dashboard.board.sourceLabel') }}：<b>{{ sourceKey }}</b>
       <span class="bfb__src-dot" aria-hidden="true"></span>

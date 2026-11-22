@@ -35,6 +35,7 @@ import SessionTrendChart from './analytics/SessionTrendChart.vue'
 import HealthGradeChart from './analytics/HealthGradeChart.vue'
 import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
 import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
+import PageHelpDrawer from './help/PageHelpDrawer.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
 import { ElIcon } from 'element-plus'
@@ -211,6 +212,12 @@ function openProbeTraffic() {
   void router.push({ path: '/probe-health/detail' })
 }
 
+// 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
+// 「会话与统计」是会话级口径（一个会话一条、取会话累计值）、窗口是滚动
+// N 天；「看板」是请求级口径、窗口是日历日 ⇒ 两页数字本来就不该相等。
+// 这枚按钮打开《看板与会话统计的统计标准》正文（含逐项对照表）。
+const statsStandardsHelpId = 'dashboard-stats-standards'
+
 // Expose loading state and refresh function for parent components
 defineExpose({
   loading,
@@ -305,6 +312,12 @@ defineExpose({
           <button type="button" class="probe-link" data-testid="stats-probe-link" @click="openProbeTraffic">
             {{ t('sessions.stats.probeTrafficLink') }}
           </button>
+          <!-- 2026-11-23 统计标准轮：本页的统计标准说明入口。 -->
+          <PageHelpDrawer
+            route-path="/dashboard"
+            :content-id="statsStandardsHelpId"
+            :label="t('pageHelp.button.standards')"
+          />
         </div>
       </div>
 

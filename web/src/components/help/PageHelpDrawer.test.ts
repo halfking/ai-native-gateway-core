@@ -47,6 +47,7 @@ function makeI18n(locale: string) {
           fallbackTitle: '本页数据说明',
           title: {
             dashboard: '总览页数据说明',
+            dashboardStatsStandards: '看板与会话统计的统计标准',
             keys: '密钥页数据说明',
           },
         },
@@ -128,7 +129,10 @@ describe('PageHelpDrawer', () => {
     await nextTick()
     expect(w.text()).toContain('没有匹配这句话的内容')
 
-    await input.setValue('UTC')
+    // 命中关键词：2026-11-23 统计标准轮把 dashboard.zh-CN.md 里的「UTC 零点」
+    // 改成了「系统时区零点」（旧口径是错的），原来用 'UTC' 当命中词会失配 ⇒
+    // 换成正文里确实存在的词（口径）。
+    await input.setValue('口径')
     await nextTick()
     expect(w.text()).not.toContain('没有匹配这句话的内容')
   })
@@ -192,5 +196,46 @@ describe('PageHelpDrawer', () => {
     ;(i18n.global.locale as unknown as { value: string }).value = 'en-US'
     await nextTick()
     expect((w.find('.page-help-search').element as HTMLInputElement).value).toBe('')
+  })
+
+  // ── 2026-11-23 统计标准轮：页面内嵌形态 ──────────────────────────────
+  it('★ 页面内嵌：contentId 命中统计标准正文（不依赖路由）', async () => {
+    const w = mount(PageHelpDrawer, {
+      props: { routePath: '/dashboard', contentId: 'dashboard-stats-standards' },
+      global: { plugins: [makeI18n('zh-CN')], stubs: { ElDrawer: ElDrawerStub } },
+    })
+    await openBody(w)
+    // 标题出自注册表（页面不自带文案 ⇒ 语种切换只有一个来源）
+    expect(w.find('.page-help-header-title').text()).toBe('看板与会话统计的统计标准')
+    const body = w.find('.page-help-body').text()
+    // 正文真的渲染出来了（import.meta.glob 路径写错会静默空抽屉 ⇒ 必须钉正文非空）
+    expect(body).toContain('统计标准')
+    expect(body).toContain('65,774')
+    expect(body).toContain('72,098')
+  })
+
+  it('★ 页面内嵌：label 渲染「图标 + 文字」形态；不给 label 仍是纯图标', async () => {
+    const labeled = mount(PageHelpDrawer, {
+      props: { routePath: '/dashboard', contentId: 'dashboard-stats-standards', label: '统计标准' },
+      global: { plugins: [makeI18n('zh-CN')], stubs: { ElDrawer: ElDrawerStub } },
+    })
+    expect(labeled.find('.page-help-trigger__label').text()).toBe('统计标准')
+    expect(labeled.find('.page-help-trigger').classes()).toContain('page-help-trigger--labeled')
+
+    const plain = mount(PageHelpDrawer, {
+      props: { routePath: '/dashboard' },
+      global: { plugins: [makeI18n('zh-CN')], stubs: { ElDrawer: ElDrawerStub } },
+    })
+    expect(plain.find('.page-help-trigger__label').exists()).toBe(false)
+    expect(plain.find('.page-help-trigger').classes()).not.toContain('page-help-trigger--labeled')
+  })
+
+  it('★ 页面内嵌：contentId 未登记 ⇒ 空态而非崩', async () => {
+    const w = mount(PageHelpDrawer, {
+      props: { routePath: '/dashboard', contentId: 'no-such-content-id' },
+      global: { plugins: [makeI18n('zh-CN')], stubs: { ElDrawer: ElDrawerStub } },
+    })
+    await openBody(w)
+    expect(w.text()).toContain('还没有配置数据说明')
   })
 })

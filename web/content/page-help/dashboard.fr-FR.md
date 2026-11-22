@@ -8,7 +8,7 @@ Tous les chiffres affichés proviennent des flux de chaque appel de modèle enre
 
 ## Comment la période est calculée
 
-- Les trois périodes rapides « Aujourd’hui », « 7 derniers jours » et « 30 derniers jours » sont délimitées par jour calendaire. Le début de la fenêtre statistique correspond à minuit le jour même (temps universel coordonné UTC).
+- Les trois périodes rapides « Aujourd’hui », « 7 derniers jours » et « 30 derniers jours » sont délimitées par jour calendaire. La fenêtre statistique commence à minuit dans le **fuseau du système (Asia/Shanghai par défaut)** et se termine à l’instant présent (pas à la fin de la journée).
 - Pour une période personnalisée, la page agrège tous les flux des deux jours sélectionnés : du début du premier jour jusqu’à minuit le dernier jour, en incluant la totalité de ce dernier jour.
 - La page s’actualise automatiquement toutes les 10 secondes. Si le canal en temps réel est connecté, les requêtes nouvellement terminées sont ajoutées immédiatement, sans attendre l’actualisation.
 
@@ -20,9 +20,11 @@ Tous les chiffres affichés proviennent des flux de chaque appel de modèle enre
 | Taux de réussite | Proportion de requêtes ayant renvoyé normalement une réponse | Nombre de requêtes au statut « Réussi » ÷ nombre total |
 | Total Token | Volume de texte consommé (entrées + sorties) | Somme des volumes d’entrée et de sortie de chaque appel |
 | Coût total | Montant facturé en dollars pendant cette période | Somme des frais de chaque appel (en dollars) |
-| Total des crédits | Nombre de crédits selon le référentiel de facturation interne de la plateforme | Somme des crédits déduits pour chaque appel |
+| Total des crédits | Nombre de crédits selon le référentiel de facturation interne de la plateforme | ★ Affiche actuellement le **delta temps réel postérieur à la base en cache**, donc il ne change pas avec la période (voir ci-dessous) |
 
 Remarque : **les coûts (en dollars) et les crédits relèvent de deux référentiels distincts et ne sont pas additionnés**. Les coûts correspondent au coût en dollars payé aux fournisseurs en amont ; les crédits sont l’unité facturée par la plateforme aux locataires. Les deux valeurs ne sont pas comparables et la page les affiche séparément.
+
+La carte des crédits suit une règle particulière : la colonne des crédits de la table de faits au niveau requête vaut toujours 0, si bien que l’affichage correspond au « delta temps réel postérieur à la ligne de base » — passer de « Aujourd’hui / 7 derniers jours / 30 derniers jours » laisse la carte strictement inchangée. La courbe d’usage de la même page porte une autre somme de crédits (autre source) qui ne correspond pas à la carte. Pour un registre de crédits fiable, utilisez les pages « Coûts d’usage » et « Rapprochement ».
 
 ## Nombre d’erreurs et causes d’échec
 
@@ -42,3 +44,7 @@ Remarque : **les coûts (en dollars) et les crédits relèvent de deux référen
 3. Lorsque la carte des crédits affiche « non fiable/non calculé », la source de données de facturation des crédits est temporairement indisponible ; le nombre de requêtes et les coûts restent fiables.
 4. Le trafic de sonde n’est pas inclus dans les statistiques métier : les requêtes de contrôle d’état du système lui-même sont exclues du total des requêtes et des coûts.
 5. L’écart entre l’actualisation en temps réel et les graphiques est de l’ordre de la seconde : les chiffres des cartes, qui intègrent les ajouts en temps réel, peuvent dépasser légèrement de quelques appels ceux des graphiques ; c’est normal.
+
+## Comparaison avec l’onglet « Statistiques de session »
+
+Cette page applique le référentiel **au niveau requête** (un appel de modèle compte pour une ligne), tandis que « Statistiques de session » applique le référentiel **au niveau session** (une session compte pour une ligne avec ses valeurs cumulées) ; la fenêtre temporelle et l’exclusion de sonde diffèrent également ⇒ les chiffres ne sont pas censés coïncider. Pour un rapprochement poste par poste, utilisez le bouton **Règles de calcul** des onglets « Tableau de bord » et « Statistiques de session » (ce document y liste les deux référentiels et leurs écarts).
