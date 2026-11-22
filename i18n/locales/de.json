@@ -74,6 +74,9 @@
   "ingress_context_budget_exceeded": {
     "other": "Der Teil dieser Anfrage, der intakt bleiben muss (Systemprompt, neueste Benutzeraufgabe und ihre aktive Werkzeugkette), passt nicht in den begrenzten Kontext des Gateways ({{.Limit}}) und kann nicht automatisch gekürzt werden. Teilen Sie die neueste Aufgabe oder ihre Werkzeugergebnisse auf oder starten Sie eine neue Sitzung — dieselbe Anfrage schlägt erneut fehl."
   },
+  "ingress_single_message_too_large": {
+    "other": "Ihre letzte Nachricht (einschließlich Medieninhalten wie Bilder oder Videos) überschreitet das Kontextbudget des Gateways von {{.Limit}}. Um fortzufahren: (1) komprimieren Sie das Bild/Video (z. B. PNG in JPG konvertieren, Auflösung reduzieren); (2) verwenden Sie eine URL-Referenz anstatt die Datei direkt hochzuladen; oder (3) teilen Sie den Inhalt in mehrere Nachrichten auf. Hinweis: Diese Grenze gewährleistet schnelle Antwortzeiten — eine einzelne Nachricht kann nicht das gesamte Budget verbrauchen."
+  },
   "ingress_prompt_too_large": {
     "other": "Der Anfragetext ist {{.Size}} groß und überschreitet das Gateway-Limit von {{.Limit}}. Kürzen Sie den Gesprächsverlauf."
   },

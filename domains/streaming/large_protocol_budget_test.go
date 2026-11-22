@@ -101,7 +101,8 @@ func newLargeProtocolFixture(t *testing.T, tc largeProtocolCase, window int, sup
 		f.ref, _ = LargeRequestArchive(r.Context())
 		next.ServeHTTP(w, r)
 	})
-	ingress := NewLargeIngress(h, store, LargeIngressConfig{}).Wrap(observed)
+	// P1-C (2026-11-23): 显式设置 ContextBytes 为 window，避免默认值变化影响测试
+	ingress := NewLargeIngress(h, store, LargeIngressConfig{ContextBytes: window}).Wrap(observed)
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ingress.ServeHTTP(w, r)
 		close(f.done)

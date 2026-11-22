@@ -74,6 +74,9 @@
   "ingress_context_budget_exceeded": {
     "other": "La parte de esta solicitud que debe mantenerse intacta (prompt del sistema, última tarea del usuario y su cadena de herramientas activa) no cabe en el contexto limitado del gateway ({{.Limit}}) y no se puede reducir automáticamente. Divida la última tarea o sus resultados de herramientas, o inicie una sesión nueva; reintentar la misma solicitud volverá a fallar."
   },
+  "ingress_single_message_too_large": {
+    "other": "Su último mensaje (incluido contenido multimedia como imágenes o videos) excede el presupuesto de contexto del gateway de {{.Limit}}. Para continuar: (1) comprima la imagen/video (por ejemplo, convierta PNG a JPG, reduzca la resolución); (2) use una referencia de URL en lugar de cargar el archivo directamente; o (3) divida el contenido en varios mensajes. Nota: Este límite garantiza tiempos de respuesta rápidos; un solo mensaje no puede consumir todo el presupuesto."
+  },
   "ingress_prompt_too_large": {
     "other": "El cuerpo de la solicitud ocupa {{.Size}} y supera el límite del gateway de {{.Limit}}. Reduzca el historial de la conversación."
   },

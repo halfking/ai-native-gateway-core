@@ -85,6 +85,8 @@ func decodeIngressError(t *testing.T, w *httptest.ResponseRecorder) (map[string]
 
 // TestIngressTimeoutSpeaksTheFacts —— 211 事故的那条错误：句子要说清请求体多大、
 // 时限多长、这是什么性质的问题、重试有没有用；type 不再是 invalid_request_error。
+// P1-C (2026-11-23): ContextBytes 默认值已从 1MB 提升到 5MB，测试需显式使用小预算
+// 以触发归约压力（否则 1.1MB 请求会轻松通过）。
 func TestIngressTimeoutSpeaksTheFacts(t *testing.T) {
 	source := `{"messages":[{"role":"user","content":"first task"},{"role":"assistant","content":"` + strings.Repeat("x", 1_100_000) + `"},{"role":"user","content":"current task"}]}`
 	timedOut := func(context.Context, func() io.Reader) (bool, error) { return false, context.DeadlineExceeded }
@@ -92,7 +94,8 @@ func TestIngressTimeoutSpeaksTheFacts(t *testing.T) {
 	t.Run("anthropic_zh", func(t *testing.T) {
 		h := newIngressHandler(t, timedOut)
 		r := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(source))
-		w := serveIngress(t, h, "/v1/messages", "zh-CN", LargeIngressConfig{}, r)
+		// P1-C: 使用 1MB 预算强制触发归约压力
+		w := serveIngress(t, h, "/v1/messages", "zh-CN", LargeIngressConfig{ContextBytes: 1 << 20}, r)
 		if w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want 503\nbody: %s", w.Code, w.Body.String())
 		}
@@ -125,7 +128,8 @@ func TestIngressTimeoutSpeaksTheFacts(t *testing.T) {
 	t.Run("openai_en", func(t *testing.T) {
 		h := newIngressHandler(t, timedOut)
 		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(source))
-		w := serveIngress(t, h, "/v1/chat/completions", "en", LargeIngressConfig{}, r)
+		// P1-C: 使用 1MB 预算强制触发归约压力
+		w := serveIngress(t, h, "/v1/chat/completions", "en", LargeIngressConfig{ContextBytes: 1 << 20}, r)
 		errObj, _, msg := decodeIngressError(t, w)
 		for _, want := range []string{"within 120s", "1.0 MiB", "gateway-side capacity limit", "start a new session"} {
 			if !strings.Contains(msg, want) {
@@ -140,6 +144,7 @@ func TestIngressTimeoutSpeaksTheFacts(t *testing.T) {
 
 // TestIngressBudgetExceededSpeaksTheFacts —— 「放不下」是输入问题：说清是哪一部分
 // 放不下、上限多少、为什么重试没用（422 不可重试）。
+// P1-C (2026-11-23): 单条消息超限现在返回专门的 single_message_too_large 错误。
 func TestIngressBudgetExceededSpeaksTheFacts(t *testing.T) {
 	// 最后一条用户任务 5KB > 有界上下文 4KB：受保护部分本身放不下，无法自动缩减。
 	source := `{"messages":[{"role":"user","content":"first task"},{"role":"assistant","content":"` + strings.Repeat("x", 300_000) + `"},{"role":"user","content":"` + strings.Repeat("y", 5000) + `"}]}`
@@ -151,16 +156,22 @@ func TestIngressBudgetExceededSpeaksTheFacts(t *testing.T) {
 		t.Fatalf("status = %d, want 422\nbody: %s", w.Code, w.Body.String())
 	}
 	errObj, debug, msg := decodeIngressError(t, w)
-	for _, want := range []string{"放不进网关", "4.0 KiB", "无法自动缩减", "原样重试会再次失败"} {
+	// P1-C: 单条超限 → 新的错误消息关键词
+	for _, want := range []string{"最新消息", "超过了网关上下文预算", "4.0 KiB", "分成多条消息"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("句子缺少 %q\n实际：%s", want, msg)
 		}
 	}
-	if errObj["code"] != "context_budget_exceeded" || errObj["type"] != "invalid_request_error" {
-		t.Errorf("code/type = %v/%v", errObj["code"], errObj["type"])
+	// P1-C: 新的错误码
+	if errObj["code"] != "single_message_too_large" || errObj["type"] != "invalid_request_error" {
+		t.Errorf("code/type = %v/%v, want single_message_too_large/invalid_request_error", errObj["code"], errObj["type"])
 	}
 	if debug["retryable"] != false || debug["body_bytes"] != float64(len(source)) {
 		t.Errorf("retryable/body_bytes = %v/%v", debug["retryable"], debug["body_bytes"])
+	}
+	// P1-C: 验证 single_message_budget_exceeded 标记
+	if debug["single_message_budget_exceeded"] != true {
+		t.Errorf("single_message_budget_exceeded = %v, want true", debug["single_message_budget_exceeded"])
 	}
 }
 

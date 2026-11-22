@@ -102,7 +102,8 @@ func TestLargeIngressProcessingDeadlineIsRetryable(t *testing.T) {
 	defer store.Close()
 	source := `{"messages":[{"role":"user","content":"first task"},{"role":"assistant","content":"` + strings.Repeat("x", 1_100_000) + `"},{"role":"user","content":"current task"}]}`
 	w := httptest.NewRecorder()
-	NewLargeIngress(h, store, LargeIngressConfig{}).Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("expired preprocessing forwarded") })).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(source)))
+	// P1-C (2026-11-23): 使用 1MB 预算强制触发归约压力，使超时能够被触发
+	NewLargeIngress(h, store, LargeIngressConfig{ContextBytes: 1 << 20}).Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("expired preprocessing forwarded") })).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(source)))
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "request_processing_timeout") || !strings.Contains(w.Body.String(), `"retryable":true`) {
 		t.Fatalf("compute timeout misreported as input mismatch: status=%d %s", w.Code, w.Body.String())
 	}
