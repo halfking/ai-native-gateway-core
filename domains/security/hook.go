@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domain/governance"      // Verdict 类型
 	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"     // 模块执行记录器
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry" // 模块标识注册表
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // SecurityHook 把 Registry 接入 Pipeline。
@@ -24,18 +27,50 @@ import (
 // 适用阶段：PhaseGovernance。
 //
 // 2026-07-10: 集成模块执行器，支持 Check-Execute-Record 模式。
+// 2026-11-23: 添加 settings 支持，让 security.enabled 配置生效。
 type SecurityHook struct {
 	registry *Registry
 	scope    Scope
 	executor *moduleexec.Executor // 模块执行记录器（可选）
+	settings *settings.Registry   // 配置访问器
+	enabled  atomic.Bool          // security.enabled 配置缓存
 }
 
 // NewSecurityHook 构造 hook。
-func NewSecurityHook(registry *Registry, scope Scope) *SecurityHook {
+// settings 可选（nil 时默认启用）。
+func NewSecurityHook(registry *Registry, scope Scope, settingsReg *settings.Registry) *SecurityHook {
 	if registry == nil {
 		registry = NewRegistry()
 	}
-	return &SecurityHook{registry: registry, scope: scope}
+	h := &SecurityHook{
+		registry: registry,
+		scope:    scope,
+		settings: settingsReg,
+	}
+	h.loadConfig()
+	return h
+}
+
+// loadConfig 从 settings 读取 security.enabled 配置。
+//
+// 背景（2026-11-23 211 生产实证）：v2 governance 管线的 SecurityHook
+// 此前不读取 security.enabled —— 211 settings_kv 已写 false，但检测器
+// 照常拦截 ⇒ 运维关不掉。本次修复落地 spec 承诺：「关闭后跳过所有安全检测」。
+func (h *SecurityHook) loadConfig() {
+	enabled := true // 默认启用（向后兼容，settings == nil 时不改变行为）
+
+	if h.settings != nil {
+		if sp := h.settings.Spec("security.enabled"); sp != nil {
+			if v, _, err := h.settings.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
+				var b bool
+				if json.Unmarshal(v, &b) == nil {
+					enabled = b
+				}
+			}
+		}
+	}
+
+	h.enabled.Store(enabled)
 }
 
 // SetExecutor 注入模块执行器。
@@ -54,8 +89,14 @@ func (h *SecurityHook) Name() string { return "security.plugins" }
 func (h *SecurityHook) Priority() int { return 100 }
 
 // Enabled 报告 hook 是否启用。
+//
+// 2026-11-23 修复：增加 security.enabled 配置检查。
+// 当 security.enabled = false 时，跳过所有安全检测（落地 spec 承诺）。
 func (h *SecurityHook) Enabled(_ context.Context, env *domain.PipelineRequest) bool {
-	return env != nil
+	if env == nil {
+		return false
+	}
+	return h.enabled.Load()
 }
 
 // Execute 调 Registry.RunAll 并写入 env.Governance。

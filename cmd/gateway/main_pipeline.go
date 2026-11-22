@@ -612,7 +612,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "governance_security", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
-		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
+		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{}, settings.Global)},
 	})
 
 	// （governance_prompt_injection 已于 2026-11-18 前移到 security /
