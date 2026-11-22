@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/largebody"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionid"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 )
 
@@ -155,7 +156,7 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 		// Client-selected identities are untrusted until the parsed body's
 		// precedence and the existing session ownership gate have both run.
 		// Rejected uploads remain recoverable in a server-generated namespace.
-		sid := "gw_staging_" + uuid.NewString()
+		sid := largebody.StagingSessionPrefix + uuid.NewString()
 		ref, err := g.store.Capture(prepCtx, largebody.Identity{TenantID: tenantID, SessionID: sid}, io.MultiReader(bytes.NewReader(prefix), original))
 		if err != nil {
 			status, code, logMessage := 503, "session_archive_unavailable", "request could not be archived within the input limit"
@@ -177,7 +178,9 @@ func (g *LargeIngress) Wrap(next http.Handler) http.Handler {
 		r = r.WithContext(context.WithValue(r.Context(), largeArchiveKey{}, largeArchive{ref, report}))
 		w.Header().Set("X-Gw-Archive-Id", ref.RequestID)
 		if ref.Size > largeMemoryThreshold {
+			reduceStarted := time.Now()
 			body, report, err = sessioncontext.Reduce(prepCtx, g.store, ref, g.config.ContextBytes)
+			observeContextReduce(prepCtx, reduceStarted, report, err)
 			if err != nil {
 				status, code := 422, "context_budget_exceeded"
 				// logMessage 进请求日志/遥测：**稳定英文**（排障与看板按它检索）。
@@ -344,6 +347,23 @@ func (g *LargeIngress) resolveArchiveSession(w http.ResponseWriter, r *http.Requ
 		body = updated
 	}
 	return sid, body, nil
+}
+
+// observeContextReduce 记录一次归约的耗时与消息数（并行/串行、成功/失败分列）。
+// 失败的指标仍然要记：那正是最需要被看见的形态（超时）。
+func observeContextReduce(ctx context.Context, started time.Time, report sessioncontext.Report, err error) {
+	if metrics.SessionContextReduceDuration == nil {
+		return
+	}
+	parallel, outcome := "sequential", "ok"
+	if sessioncontext.ReduceWorkers(ctx) > 1 {
+		parallel = "parallel"
+	}
+	if err != nil {
+		outcome = "err"
+	}
+	metrics.SessionContextReduceDuration.WithLabelValues(parallel, outcome).Observe(time.Since(started).Seconds())
+	metrics.SessionContextReduceMessages.WithLabelValues(outcome).Observe(float64(report.Messages))
 }
 
 // largeIngressPrepBudget 是入口预处理（读体 + 归档 + 归约 + 会话绑定）的时限。

@@ -15,12 +15,12 @@ export default {
   },
 
   top5: {
-    title: "Top5 排行（模型 / 供應商 / 用戶 / 任務）",
+    title: "Top 5 排行（模型 / 供應商 / 用戶 / 任務）",
     scopeNote: "口徑與本頁上方統計一致：模型與供應商為請求級（按請求聚合），用戶與任務為會話級（按會話聚合），兩組不可相加。",
-    models: "Top5 模型",
-    providers: "Top5 供應商",
-    users: "Top5 用戶",
-    tasks: "Top5 任務",
+    models: "Top 5 模型",
+    providers: "Top 5 供應商",
+    users: "Top 5 用戶",
+    tasks: "Top 5 任務",
   },
 
   range: {
@@ -37,7 +37,7 @@ export default {
     back: '返回人員排行榜',
     viewDetail: '檢視詳細資料',
     viewAllUsers: '查看所有用戶',
-    viewAllModels: "查看所有模型",
+    viewAllModels: "檢視所有模型",
   },
   metric: {
     totalSessions: '會話總數',
@@ -135,7 +135,7 @@ export default {
     '花費欄是內部成本（美元）與外部積分的合計。兩種單位不同，只適合做相對比較，不能當成同一個金額。',
   state: {
     loading: '正在載入會話分析資料',
-    loadingStats: 'Loading statistics…',
+    loadingStats: '正在載入統計資料…',
     staleTitle: '彙總資料正在重新整理',
     staleReason:
       '彙總檢視的資料已超出新鮮度預算，伺服器已拒絕回傳過期數字。請稍後重試。',

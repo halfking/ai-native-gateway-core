@@ -532,7 +532,26 @@ export interface TopRankingsResponse {
   degraded_reason?: string
 }
 
-export function getTopRankings(time: BoardTimeQuery, usersLimit = 10) {
+/**
+ * Top 用量排行（/api/admin/usage/top-rankings）。
+ *
+ * ★ 2026-11-23 深链钉住轮：可带维度过滤（供应商 / 模型 / API Key）——
+ *   页面被深链钉住某个维度时，**下方排行榜必须跟着那个维度走**，否则同一屏里
+ *   上半段是该供应商的数据、下半段还是全站 ⇒ 口径打架。
+ *   ★ 参数缺省 = 不过滤（与改动前逐字等价）。
+ */
+export interface TopRankingsFilters {
+  provider_id?: number | null
+  api_key_id?: number | null
+  model?: string[] | null
+}
+
+export function getTopRankings(time: BoardTimeQuery, usersLimit = 10, filters: TopRankingsFilters = {}) {
   const qs = usageTimeQs(time)
+  if (filters.provider_id) qs.set('provider_id', String(filters.provider_id))
+  if (filters.api_key_id) qs.set('api_key_id', String(filters.api_key_id))
+  for (const m of filters.model ?? []) {
+    if (m) qs.append('model', m)
+  }
   return req<TopRankingsResponse>('GET', `/api/admin/usage/top-rankings?${qs}&users_limit=${usersLimit}`)
 }

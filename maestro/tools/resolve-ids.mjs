@@ -141,7 +141,14 @@ const firstSession = sess.status === 200 ? sess.json?.sessions?.[0] : null
 if (firstSession) {
   values.SESSION_ID = firstSession.session_id
   if (firstSession.current_credential_id) values.CREDENTIAL_ID = firstSession.current_credential_id
-  if (firstSession.api_key_id) values.API_KEY_ID = firstSession.api_key_id
+  if (firstSession.api_key_id) {
+    // 2026-11-23 修复：会话的 api_key_id 可能挂在**已吊销**的 key 上。
+    // 上面列表侧 pickEnabled 已排除 revoked；这里覆盖前同样要校验，否则
+    // 覆盖成 revoked key 后密钥详情页必 404（详情接口默认不返回 revoked，
+    // 与前端页面可见性完全一致）——探一下详情接口，404 就不覆盖。
+    const sessKey = await api(`/api/keys/${firstSession.api_key_id}`, { token })
+    if (sessKey.status === 200) values.API_KEY_ID = firstSession.api_key_id
+  }
 } else {
   missing.push('SESSION_ID  ← /api/admin/sessions 没有会话')
 }

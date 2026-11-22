@@ -10,8 +10,10 @@ echo "=========================================="
 echo ""
 
 # 1. 检查服务是否在线
+# 2026-11-23 修复：真实健康端点是 /healthz（cmd/gateway-v2/main.go:517），
+# /api/health 不存在恒 404 ⇒ 本脚本此前恒报「服务离线」。
 echo "1. 检查服务状态..."
-if curl -s -f "${BASE_URL}/api/health" > /dev/null; then
+if curl -s -f "${BASE_URL}/healthz" > /dev/null; then
     echo "   ✓ 服务在线"
 else
     echo "   ✗ 服务离线"

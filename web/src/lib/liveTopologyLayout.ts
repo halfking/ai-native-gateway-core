@@ -151,6 +151,7 @@ const CLIENT_ROW_RATIO = 0.075
  */
 export const ROW_GAP = 160
 
+
 /** 画布底边到供应端卡片底边的留白（像素）。 */
 const BOTTOM_PAD = 4
 

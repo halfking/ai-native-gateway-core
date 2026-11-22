@@ -1525,6 +1525,16 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 
 	tid := EffectiveTenantIDAll(r)
 
+	// ★ 2026-11-23 深链钉住轮：可选过滤（供应商 / 模型 / API Key）。
+	//
+	//	深链钉住某个维度后（例如从会话分析「Top5 供应商」点进来），页面**下方**
+	//	的「用量排行榜」也必须跟着那个维度走 —— 否则同一屏里上半部分是该供应商的
+	//	数据、下半部分还是全站的 ⇒ 口径打架（"界面显示的 ≠ 数据反映的"）。
+	//	★ 参数缺省 = 不过滤 ⇒ 与改动前逐字等价，其它调用方不受影响。
+	//	★ 模型口径与趋势序列端点同源（usageTrendModelExprRL / usageTrendModelExpr
+	//	  共用一份模板）⇒ 图表选中的模型与排行榜里看到的模型是同一批行。
+	trendFilters := usageTrendFiltersFromRequest(r)
+
 	// 支持通过查询参数控制返回数量，用户默认 Top10，其他维度默认 Top5
 	defaultLimit := 5
 	usersLimit := queryInt(r, "users_limit", 10)
@@ -1569,6 +1579,19 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 		if tid != "" {
 			whereClause += " AND rl.tenant_id = $3"
 			args = append(args, tid)
+		}
+		// ★ 深链钉住轮：维度过滤（供应商 / 模型 / API Key）——与趋势序列同口径。
+		if trendFilters.providerID > 0 {
+			whereClause += fmt.Sprintf(" AND rl.provider_id = $%d", len(args)+1)
+			args = append(args, trendFilters.providerID)
+		}
+		if trendFilters.apiKeyID > 0 {
+			whereClause += fmt.Sprintf(" AND rl.api_key_id = $%d", len(args)+1)
+			args = append(args, trendFilters.apiKeyID)
+		}
+		if len(trendFilters.models) > 0 {
+			whereClause += fmt.Sprintf(" AND %s = ANY($%d)", usageTrendModelExprRL, len(args)+1)
+			args = append(args, trendFilters.models)
 		}
 
 		query := fmt.Sprintf(`
@@ -1634,7 +1657,25 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 用户（使用 Top10）
-	if entries, err := queryTopN("users", "rl.end_user_id", usersLimit); err == nil {
+	//
+	// 2026-11-23（修正「Top 10 用户」口径与显示）：
+	// `end_user_id` 列存的是**客户端上报的 `user` 字段原值**（resolveEndUser
+	// 的 body-sniff 兜底），而某些客户端把 `user` 报成了 JSON **对象**：
+	//   {"device_id":"50f0282d-…","account_uuid":"","session_id":"5d131116-…"}
+	// ⇒ 直接 GROUP BY 该列会有两个问题：
+	//   ① 显示：整段 JSON 被当成「用户名」渲染（界面上一坨被截断的 JSON）；
+	//   ② 口径：该 JSON 内含 session_id ⇒ 实际按**会话**分组，
+	//      「Top 10 用户」里 9 条是同一个 device_id 的 9 个不同会话。
+	// 现网实测（211，request_logs_with_current_month）：
+	//   end_user_id 形态分布 = anonymous 379,142 / NULL 38,657 / JSON 14,674 / 纯 id 49
+	//   JSON 行的 distinct device_id = 1、distinct session_id = 117、account_uuid 全空
+	// ⇒ **device_id 才是真实用户标识**（account_uuid 在现网恒空，不可依赖）。
+	//
+	// ★ 排行侧与过滤侧**共用同一个表达式**（userIdentityExpr，见 admin/logs.go）：
+	//   排行按它分组、显示名取它；点进日志页时过滤侧也拿它做等值匹配
+	//   ⇒ ⇒ 卡片上的 request_count 与点进去看到的条数**逐条对得上**。
+	//   ★ 两边各写一份表达式 ⇒ 改了一边忘了另一边就是「卡片 14,674 / 点进去 0 条」。
+	if entries, err := queryTopN("users", userIdentityExpr, usersLimit); err == nil {
 		response.TopUsers = entries
 	} else {
 		slog.Warn("usageTopRankings: top users query failed", "error", err)
@@ -1657,6 +1698,20 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	if tid != "" {
 		whereClause += " AND rl.tenant_id = $3"
 		args = append(args, tid)
+	}
+	// ★ 深链钉住轮：API Key 维度这条查询自带 JOIN（api_keys），过滤条件要单加一份
+	//   （不能复用 queryTopN 的 whereClause —— 它的占位符编号从 $1/$2 起算）。
+	if trendFilters.providerID > 0 {
+		whereClause += fmt.Sprintf(" AND rl.provider_id = $%d", len(args)+1)
+		args = append(args, trendFilters.providerID)
+	}
+	if trendFilters.apiKeyID > 0 {
+		whereClause += fmt.Sprintf(" AND rl.api_key_id = $%d", len(args)+1)
+		args = append(args, trendFilters.apiKeyID)
+	}
+	if len(trendFilters.models) > 0 {
+		whereClause += fmt.Sprintf(" AND %s = ANY($%d)", usageTrendModelExprRL, len(args)+1)
+		args = append(args, trendFilters.models)
 	}
 	apiKeyQuery += whereClause + fmt.Sprintf(`
 		GROUP BY ak.key_prefix, ak.key_alias, ak.owner_user
