@@ -193,6 +193,10 @@ func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.R
 				if ud.CacheWriteTTLShort != nil || ud.CacheWriteTTLLong != nil {
 					capture.ObserveCacheWriteSplit(ud.CacheWriteTTLShort, ud.CacheWriteTTLLong)
 				}
+				// P2-B (2026-11-23): 接通多模态 token 到 capture
+				if ud.ReasoningTokens != nil || ud.ImageTokens != nil || ud.AudioTokens != nil || ud.VideoTokens != nil {
+					capture.ObserveMultimodalTokens(ud.ReasoningTokens, ud.ImageTokens, ud.AudioTokens, ud.VideoTokens)
+				}
 			}
 		}
 
