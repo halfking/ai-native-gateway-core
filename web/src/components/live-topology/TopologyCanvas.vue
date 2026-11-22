@@ -627,10 +627,10 @@ function onBlankClick() {
      剩余高度，而不是 height:100%（百分比会把时间线挤到容器外 —— 2026-10-28
      桌面栅格行收进视口后 stage 高度变为有限值，两种写法从此分道）。
      
-     ★ 2026-11-23 第十八轮调整：用户反馈客户端与网关核心间隔太近。
-     从 660px 再提升到 760px，确保各层之间有更充足的间距。 */
+     ★ 2026-11-23 第十九轮调整：用户要求间隔至少 30+，增加间距。
+     客户端↔网关核心 40px，网关核心↔模型 120px，画布高度提升到 820px。 */
   flex: 1 1 auto;
-  min-height: 760px;
+  min-height: 820px;
   overflow: hidden;
   background:
     radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--kx-border) 60%, transparent) 1px, transparent 0) 0 0 / 22px 22px,
