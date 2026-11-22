@@ -40,6 +40,15 @@ describe('模型层↔供应端层固定间距（ROW_GAP）', () => {
     }
   })
 
+  it('③b 网关核心大方块不压进客户端层（顶边 ≥ 客户端卡片底边）', () => {
+    for (const h of HEIGHTS) {
+      const rows = computeRowY(h)
+      const box = computeGatewayBox(1440, h, rows)
+      const clientBottom = rows.client + NODE_H / 2
+      expect(box.y, `画布 ${h}px：大方块顶边压进客户端层`).toBeGreaterThanOrEqual(clientBottom)
+    }
+  })
+
   it('④ 模型层在客户端层之下、供应端层之上（三层各就各位）', () => {
     for (const h of HEIGHTS) {
       const rows = computeRowY(h)
