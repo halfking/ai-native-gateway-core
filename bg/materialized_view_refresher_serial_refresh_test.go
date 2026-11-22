@@ -6,57 +6,52 @@ import (
 	"testing"
 )
 
-// ── 981 族刷新必须**串行**（2026-11-20 211 实测）────────────────────────────
+// ── 会话族刷新必须**串行**（2026-11-20 981 族 / 2026-11-22 全族）────────────
 //
-// 缺陷形态：刷新器对会话族统一设 work_mem=256MB ⇒ PG 为最重的
-// model_usage_aggregates（请求级 / 40 万行）选**并行计划** ⇒ 需要动态共享内存
-// （DSM）。211 的 PG 容器 /dev/shm 只有 64MB（Docker 默认 ShmSize=67108864）
-// ⇒ 分配 16MB 段必然失败：
+// 缺陷形态：刷新器对会话族统一设 work_mem=256MB ⇒ PG 为重视图选**并行计划**
+// ⇒ 需要动态共享内存（DSM）。211 的 PG 容器 /dev/shm 只有 64MB
+// （Docker 默认 ShmSize=67108864）⇒ 段分配必然失败：
 //
-//	ERROR: could not resize shared memory segment "/PostgreSQL.4193532418"
-//	       to 16777216 bytes: No space left on device (SQLSTATE 53100)
+//	ERROR: could not resize shared memory segment "/PostgreSQL.xxx"
+//	       to 8388608 bytes: No space left on device (SQLSTATE 53100)
 //
 // ⇒ 该视图**永远刷不上** ⇒ 刷新戳永远不落
 // ⇒ admin/session_analytics 的新鲜度门（90min 预算）永远判陈旧
 // ⇒ 端点恒 503 analytics_view_stale。
 //
-// 实测对照（211 acc-pg17，同参数）：
-//	并行开启  → 0.5s 内失败（53100）
-//	关并行    → 2.6s 刷新成功
+// 两次发病记录：
+//   · 2026-11-20：981 族的 model_usage_aggregates（要 16MB 段）。
+//   · 2026-11-22：357 族的 session_client_task_matrix（要 8MB 段）——
+//     owner 报障页面 /admin/session-analytics/clients/default 的直接根因；
+//     当天 11:05Z 还成功、12:05Z 起连续三轮 53100 ⇒ **并行阈值会随数据量/
+//     统计信息演化自己走过来**，不能按「今天还没发病」排除。
+//
+// 实测对照（211 acc-pg17 / 252 pg-252-pg17，同参数）：
+//	211: matrix 并行 → 0.5s 内失败（53100）；串行 → 0.596s 成功
+//	252: matrix 串行 117.6s（并行 mean 102.6s，+15%）
+//	     task_stats 串行 12.1s（并行 mean 9.3s）；client_stats 串行 5.2s（并行 3.4s）
 //
 // ★ 为什么不用「失败后重试串行」兜底：刷新器对连续失败有**告警**
 //   （failureCount ≥ 2 ⇒ alertCallback）⇒ 每轮先失败一次 ⇒ 每轮踩告警线
 //   ⇒ 假告警比假数据更坏。⇒ 走确定性路线：一开始就串行。
+//
+// ★ 为什么 2026-11-22 起 357 族三张一起进集合（订正此前「旧族不动」）：
+//   同上——阈值会自己走过来；两台真库实测串行代价与并行同量级；
+//   「实测未发病」不构成豁免（matrix 发病前一天也「没发病」）。
 
-// TestSerialRefreshViews_Covers981Family 钉测：981 族 4 个视图必须在串行集合里。
-func TestSerialRefreshViews_Covers981Family(t *testing.T) {
-	for _, v := range []string{
-		"user_session_aggregates",
-		"project_task_aggregates",
-		"agent_usage_aggregates",
-		"model_usage_aggregates",
-	} {
+// TestSerialRefreshViews_CoversSessionFamily 钉测：**清单里的每个视图**都必须
+// 在串行集合里。
+//
+// ★ 2026-11-22 从「钉 981 族 4 个」扩成「钉清单全集」：两个族先后在同一台
+// 211 上发病（相隔两天），说明这是**族级风险**而不是视图级个案——
+// 只要清单里有视图不在串行集合，它就是下一个等发病的。
+// 这条不变量同时防住「清单加视图忘登记串行集合」的漏配。
+func TestSerialRefreshViews_CoversSessionFamily(t *testing.T) {
+	for _, v := range SessionAnalyticsViews {
 		if !serialRefreshViews[v] {
 			t.Errorf("视图 %q 不在串行刷新集合里 ⇒ 它会选并行计划 ⇒ "+
-				"64MB /dev/shm 的 PG 容器上必然 53100 ⇒ 刷新戳不落 ⇒ 新鲜度门恒 503", v)
-		}
-	}
-}
-
-// TestSerialRefreshViews_DoesNotTouchLegacyFamily 钉测：旧族（357）一行不改。
-//
-// ★ 零爆炸半径：252 生产上旧族最慢的那条实测 ≥180s（被 kill），
-//
-//	给旧族关并行可能把 180s 顶到 600s 语句上限之外 ⇒ 只对新增的 981 族关并行。
-func TestSerialRefreshViews_DoesNotTouchLegacyFamily(t *testing.T) {
-	for _, v := range []string{
-		"session_client_stats",
-		"session_task_stats",
-		"session_client_task_matrix",
-	} {
-		if serialRefreshViews[v] {
-			t.Errorf("视图 %q 被加进了串行集合 —— 旧族不在本次改动范围内，"+
-				"且 252 上最慢的一条实测 ≥180s，关并行有顶穿语句上限的风险", v)
+				"64MB /dev/shm 的 PG 容器上一旦越过并行阈值就 53100 ⇒ "+
+				"刷新戳不落 ⇒ 新鲜度门恒 503（981 族 2026-11-20、357 族 2026-11-22 两次发病）", v)
 		}
 	}
 }

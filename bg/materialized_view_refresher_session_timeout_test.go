@@ -18,8 +18,11 @@ import (
 //
 // 这道门钉住四处修复各自的**承重判据**，缺一处就红：
 //   ① 分族语句上限（session 族有自己的值，且**真的**被 refreshView 用上）
-//   ② 轮内 ctx 必须**大于**分族上限（否则抬钉子被 ctx 掐断 ⇒ 白抬）
-//   ③ 视图顺序：快的先刷（限制慢视图的爆炸半径）
+//   ② 单视图预算必须**大于**分族上限（否则抬钉子被 ctx 掐断 ⇒ 白抬）
+//      ——2026-11-22 起预算从「整轮共享 ctx」改成「每视图一份」
+//      （252 实测 981 族把整轮 20min 吃光、尾部视图被饿死），
+//      钉的对象跟着换，判据形状不变
+//   ③ 视图顺序：快的先刷（按 252 实测 mean 成本，2026-11-22 重排）
 //   ④ 相位错开：session 周期不再与 routing 周期同刻抢同一把 advisory lock
 //
 // ★ 这道门**不**钉「另开一把 advisory 锁键」——本文件历史上明确否掉过
@@ -131,118 +134,131 @@ func TestRefreshCallSites_PassTheRightFamilyTimeout(t *testing.T) {
 	}
 }
 
-// TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout：轮内 ctx 必须**大于**
-// 分族语句上限。
+// TestSessionViewRefreshBudget_ExceedsTheFamilyStatementTimeout：单视图预算必须
+// **大于**分族语句上限。
 //
-// ★ 这是最承重的一条：语句上限是 600s，而轮内 ctx 若只有 600s 或更小，
+// ★ 这是最承重的一条：语句上限是 600s，而单视图预算若只有 600s 或更小，
 //
-//	ctx 会先掐断 ⇒ 抬钉子等于白抬（而且失败形态从「被杀」变成「整轮被砍」，
-//	后两个视图根本没刷新 —— 比原来更难发现）。
-func TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout(t *testing.T) {
+//	ctx 会先掐断 ⇒ 抬钉子等于白抬（而且失败形态从「被杀」变成「预算死亡」，
+//	该视图本轮没刷新 —— 比原来更难发现）。
+//
+// ★ 2026-11-22 从「轮内 ctx」改钉「单视图预算」：整轮共享 ctx 已废除
+//
+//	（252 实测 981 族把 20min 吃光、尾部视图被饿死，见
+//	 SessionViewRefreshBudget 的注释）。钉的对象跟着换，判据不变。
+func TestSessionViewRefreshBudget_ExceedsTheFamilyStatementTimeout(t *testing.T) {
 	pin, err := time.ParseDuration(sessionViewsStatementTimeout)
 	if err != nil {
 		t.Fatalf("解析 sessionViewsStatementTimeout：%v", err)
 	}
-	if SessionViewsTimeout <= pin {
-		t.Fatalf("轮内 ctx %s 必须大于 session 族语句上限 %s —— ctx 先掐断的话，抬钉子没有意义",
-			SessionViewsTimeout, pin)
+	if SessionViewRefreshBudget <= pin {
+		t.Fatalf("单视图预算 %s 必须大于 session 族语句上限 %s —— ctx 先掐断的话，抬钉子没有意义",
+			SessionViewRefreshBudget, pin)
 	}
-	// 仍必须小于周期，否则刷新周期会堆积（既有契约）。
-	if SessionViewsTimeout >= SessionViewsInterval {
-		t.Fatalf("轮内 ctx %s 必须小于周期 %s，否则刷新周期会堆积",
-			SessionViewsTimeout, SessionViewsInterval)
+	// 仍必须小于周期（既有契约）：预算死亡 = 该视图本轮失败、下一轮重来，
+	// 单视图预算超过周期没有意义。
+	if SessionViewRefreshBudget >= SessionViewsInterval {
+		t.Fatalf("单视图预算 %s 必须小于周期 %s", SessionViewRefreshBudget, SessionViewsInterval)
 	}
 }
 
-// TestSessionViewsTimeout_CoversLockBudgetPlusStatements
+// TestSessionViewRefreshBudget_CoversLockBudgetPlusStatement
 //
-// ★★ R107 轮（12h 审计）补的一道**承重**门。
+// ★★ R107 轮（12h 审计）补的**承重**门，2026-11-22 随预算制改造换对象。
 //
-// 上一条门（TestSessionViewsTimeout_ExceedsTheFamilyStatementTimeout）只比了
-// 「轮内 ctx vs 分族语句上限」——**漏掉了锁等待预算**。而锁等待是**加在语句之前**
-// 的，不包含在语句上限里：
+// 锁等待是**加在语句之前**的，不包含在语句上限里。单视图的最坏耗时：
 //
-//	一轮的最坏耗时 = SessionViewLockRetryBudget（整轮共享，≤4min）
-//	               + 各视图的语句耗时
+//	SessionViewLockRetryBudget（锁等待）+ sessionViewsStatementTimeout（语句）
 //
-// ⇒ 「ctx(15min=900s) > 语句上限(600s)」成立，**并不**代表 ctx 装得下一轮：
+// ⇒ 预算必须**完整装下**这两段，否则最坏路径上 ctx 先掐断，
 //
-//	240s(锁) + 600s(client_stats) + 182.33s(task_stats) + 65.40s(matrix)
-//	= 1087.7s > 900s
+//	  抬语句钉子等于白抬：
 //
-// ⇒ 也就是说，**抬到 600s 之后，ctx 仍可能是先掐断的那道闸**——
-// 而 ctx 掐断的表现（后几个视图根本没刷新 + 半轮状态）正是本文件头部
-// 注释里说的「比整体失败更难发现」的那种形态。
+//		2026-10-22 旧账：240s + 600s = 840s > 15min(900s)？否 —— 840s ≤ 900s ✔
+//		（当时钉的是「整轮 20min ≥ 240 + 600 + 其余两视图 247.7s」= 1087.7s，
+//		 那个「其余视图」项随 981 族入列失去意义：7 张视图的最坏和 43min
+//		 任何整轮 ctx 都装不下 ⇒ 结构性修法是每视图一份预算，而不是继续抬轮。）
 //
-// ⇒ 这道门把**完整**的不变量钉成机器可复核的判据：
+// ⇒ 这道门把**新的**完整不变量钉成机器可复核的判据：
 //
-//	SessionViewsTimeout ≥ SessionViewLockRetryBudget
-//	                     + sessionViewsStatementTimeout
-//	                     + sessionViewsOtherViewsBudget
-func TestSessionViewsTimeout_CoversLockBudgetPlusStatements(t *testing.T) {
+//	SessionViewRefreshBudget ≥ SessionViewLockRetryBudget
+//	                         + sessionViewsStatementTimeout
+func TestSessionViewRefreshBudget_CoversLockBudgetPlusStatement(t *testing.T) {
 	pin, err := time.ParseDuration(sessionViewsStatementTimeout)
 	if err != nil {
 		t.Fatalf("解析 sessionViewsStatementTimeout：%v", err)
 	}
-	required := SessionViewLockRetryBudget + pin + sessionViewsOtherViewsBudget
-	if SessionViewsTimeout < required {
-		t.Fatalf("轮内 ctx %s 装不下「锁等待预算 %s + 语句上限 %s + 其余视图预算 %s」= %s —— "+
-			"ctx 会先掐断 ⇒ 抬语句钉子等于白抬（且失败形态是「后几个视图根本没刷新」的半轮状态，"+
-			"比整体失败更难发现）",
-			SessionViewsTimeout, SessionViewLockRetryBudget, pin,
-			sessionViewsOtherViewsBudget, required)
+	required := SessionViewLockRetryBudget + pin
+	if SessionViewRefreshBudget < required {
+		t.Fatalf("单视图预算 %s 装不下「锁等待预算 %s + 语句上限 %s」= %s —— "+
+			"最坏路径上 ctx 会先掐断 ⇒ 抬语句钉子等于白抬",
+			SessionViewRefreshBudget, SessionViewLockRetryBudget, pin, required)
 	}
 	// 留余量：至少 5%，避免「刚好卡死线上」这种临界值。
 	minMargin := required / 20
-	if SessionViewsTimeout-required < minMargin {
-		t.Fatalf("轮内 ctx %s 相对必需的 %s 余量 %s 小于 5%%（%s）—— 临界值没有工程意义",
-			SessionViewsTimeout, required, SessionViewsTimeout-required, minMargin)
+	if SessionViewRefreshBudget-required < minMargin {
+		t.Fatalf("单视图预算 %s 相对必需的 %s 余量 %s 小于 5%%（%s）—— 临界值没有工程意义",
+			SessionViewRefreshBudget, required, SessionViewRefreshBudget-required, minMargin)
 	}
-	// 仍必须小于周期（既有契约，重复钉一次以防有人只改上面两处）。
-	if SessionViewsTimeout >= SessionViewsInterval {
-		t.Fatalf("轮内 ctx %s 必须小于周期 %s，否则刷新周期会堆积",
-			SessionViewsTimeout, SessionViewsInterval)
-	}
-	// ★ 族间饥饿护栏：session 轮错开到 :05，routing 轮在 :00/:30。
-	//   ⇒ ctx 必须让 session 轮在 :30 之前跑完，否则 routing 轮被推迟。
-	//   ⇒ 可用窗口 = 30min - sessionViewsPhaseOffset。
+	// ★ 族间饥饿护栏（换算成单视图形态）：session 轮错开到 :05，routing 轮在
+	//   :00/:30 ⇒ **单张视图**的预算必须小于「:05 到 :30」的窗口，否则一张
+	//   慢视图就能把 routing tick 推迟。（整轮可以更长——那是病态场景下的
+	//   可恢复延迟，见 SessionViewRefreshBudget 注释里的取舍；单视图不行。）
 	available := RefreshInterval - sessionViewsPhaseOffset
-	if SessionViewsTimeout >= available {
-		t.Fatalf("轮内 ctx %s 必须小于「%s 到下一个 routing tick」的窗口 %s —— "+
-			"否则 session 轮会把 routing 轮推迟（相位错开的收益被抵消）",
-			SessionViewsTimeout, RefreshInterval, available)
+	if SessionViewRefreshBudget >= available {
+		t.Fatalf("单视图预算 %s 必须小于「%s 到下一个 routing tick」的窗口 %s —— "+
+			"否则一张慢视图就会推迟 routing 轮（相位错开的收益被抵消）",
+			SessionViewRefreshBudget, RefreshInterval, available)
+	}
+	// 仍必须小于周期（既有契约，重复钉一次以防有人只改上面几处）。
+	if SessionViewRefreshBudget >= SessionViewsInterval {
+		t.Fatalf("单视图预算 %s 必须小于周期 %s", SessionViewRefreshBudget, SessionViewsInterval)
 	}
 }
 
 // TestSessionAnalyticsViews_FastestFirst：快的排前面、慢的排最后。
 //
-// 实测成本（252 生产 2026-10-22 / 211 真库 2026-11-19）：
+// ★ 2026-11-22 依据 252 生产 pg_stat_statements 的 mean 成本重排
 //
-//	981 族 0.6~3.5s｜matrix 7.45~65.4s｜task_stats 6.19~151.5s｜
-//	client_stats 34.28s 且**≥180.31s（被杀）**。一轮是串行的 ⇒ 慢视图排前面
-//	会把整轮推迟它自己的耗时，后面的视图因此被推到离新鲜度预算只剩 28 分钟。
+//	  （338~64 次完成样本；max 列供参考，被杀的运行不进 pgss ⇒ 尾部被低估）：
 //
-// ★ 981 轮扩容后清单是 7 个（3 个 357 族 + 4 个 981 族）⇒ 断言从
+//		session_client_stats        mean  3.4s（357）
+//		session_task_stats          mean  9.3s（357）
+//		session_client_task_matrix  mean 102.6s（357，串行实测 117.6s）
+//		agent_usage_aggregates      mean 134.1s（981，串行）
+//		project_task_aggregates     mean 164.8s（981，串行）
+//		model_usage_aggregates      mean 167.2s（981，串行）
+//		user_session_aggregates     mean 265.9s（981，串行）
 //
-//	「数量 == 3」改成「首项属最快的族、末项是最慢的视图」。
+// ★ 2026-10-22 版的排序（981 排最前）依据的「981 族 0.6~3.5s」来自 211 真库，
+//
+//	在 252 的 1955MB 源表上不成立 ⇒ 那份排序实际把最慢的四个排在了最前。
+//	每视图预算制下顺序影响新鲜度年龄分布（末项年龄 = 间隔 + 整轮总时长，
+//	与顺序无关；SJF 让更多视图拿到更小年龄）⇒ 按 mean 升序钉死。
 func TestSessionAnalyticsViews_FastestFirst(t *testing.T) {
 	if len(SessionAnalyticsViews) < 2 {
 		t.Fatalf("清单为空：%v", SessionAnalyticsViews)
 	}
-	// 首项必须属 981 族里最快的几个（实测 ≈0.6~0.8s）。
-	fastest := map[string]bool{
-		"user_session_aggregates": true,
-		"project_task_aggregates": true,
-		"agent_usage_aggregates":  true,
-	}
-	if !fastest[SessionAnalyticsViews[0]] {
-		t.Fatalf("最快的视图（981 族，≈0.6s）必须排在最前，当前清单首项是 %q：%v",
+	// 首项必须是实测最快的 session_client_stats（252 mean 3.4s）。
+	if SessionAnalyticsViews[0] != "session_client_stats" {
+		t.Fatalf("实测最快的 session_client_stats（252 mean 3.4s）必须排在最前，当前清单首项是 %q：%v",
 			SessionAnalyticsViews[0], SessionAnalyticsViews)
 	}
-	// 末项必须是最慢的 session_client_stats（实测 ≥180.31s）。
-	if SessionAnalyticsViews[len(SessionAnalyticsViews)-1] != "session_client_stats" {
-		t.Fatalf("session_client_stats（实测 ≥180.31s）必须排在最后，当前清单末项是 %q：%v",
+	// 末项必须是实测最慢的 user_session_aggregates（252 mean 265.9s / max 577.8s）。
+	if SessionAnalyticsViews[len(SessionAnalyticsViews)-1] != "user_session_aggregates" {
+		t.Fatalf("user_session_aggregates（252 mean 265.9s）必须排在最后，当前清单末项是 %q：%v",
 			SessionAnalyticsViews[len(SessionAnalyticsViews)-1], SessionAnalyticsViews)
+	}
+	// matrix 必须在前三（owner 报障视图：排在前面让它即便在慢轮里也能尽早落戳）。
+	matrixAt := -1
+	for i, v := range SessionAnalyticsViews {
+		if v == "session_client_task_matrix" {
+			matrixAt = i
+		}
+	}
+	if matrixAt < 0 || matrixAt > 2 {
+		t.Fatalf("session_client_task_matrix 应排在前三位（当前位次 %d）—— 它是 2026-11-22 报障链路的视图，"+
+			"排前面让它在慢轮里也尽早拿到新戳：%v", matrixAt, SessionAnalyticsViews)
 	}
 }
 
@@ -352,5 +368,37 @@ func TestNoSecondAdvisoryLockKey(t *testing.T) {
 	if strings.Contains(body, "mvRefreshLockKey, sessionViews") ||
 		strings.Contains(body, "sessionViewsAdvisoryLockKey") {
 		t.Fatal("session 族另开了一把 advisory 锁 ⇒ 会与 routing 族并发 REFRESH（已被否掉的方案）")
+	}
+}
+
+// TestRefreshSessionViews_PerViewBudgetInsideLoop：每视图预算的**接线**钉测。
+//
+// ★ 2026-11-22 预算制改造的承重形态有两条，缺一即回到饿死时代：
+//
+//	① ctx 必须在**视图循环体内**按 SessionViewRefreshBudget 构造
+//	  （循环外构造 = 回到整轮共享 = 尾部视图被饿死）；
+//	② 旧常量 SessionViewsTimeout 不得复活（它的语义就是整轮共享，
+//	  只要它还存在就有人会把它接回去）。
+func TestRefreshSessionViews_PerViewBudgetInsideLoop(t *testing.T) {
+	src := mvRefresherSourceForTest(t)
+	body := mvFuncBodyForSession(t, src, "func (r *MaterializedViewRefresher) refreshSessionViews(")
+
+	deadlineAt := strings.Index(body, "retryDeadline := time.Now().Add(")
+	loopAt := strings.Index(body, "for _, view := range SessionAnalyticsViews")
+	if loopAt < 0 {
+		t.Fatal("refreshSessionViews 里没有视图循环")
+	}
+	loop := body[loopAt:]
+	if !strings.Contains(loop, "context.WithTimeout(parentCtx, SessionViewRefreshBudget)") {
+		t.Fatal("视图循环体内没有按 SessionViewRefreshBudget 构造每视图 ctx —— " +
+			"慢视图会重新侵占其他视图的预算（252 饿死形态回归）")
+	}
+	if deadlineAt > loopAt {
+		t.Fatal("retryDeadline 在循环内计算 —— 与既有共享重试预算的钉测冲突")
+	}
+	// 反向判据：整轮共享预算的旧形态不得回归。
+	if strings.Contains(body, "context.WithTimeout(parentCtx, SessionViewsTimeout)") ||
+		strings.Contains(src, "SessionViewsTimeout =") {
+		t.Fatal("整轮共享 ctx / SessionViewsTimeout 形态复活 —— 尾部视图会被重新饿死")
 	}
 }
