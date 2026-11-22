@@ -157,7 +157,6 @@ export default {
     errorsEmpty: 'この期間のエラー記録はありません',
     errorRate: 'エラー率',
     totalErrors: 'エラー総数',
-    lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",
     avgCostPerSession: "Avg cost / session",

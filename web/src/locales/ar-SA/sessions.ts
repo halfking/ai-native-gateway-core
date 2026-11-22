@@ -156,7 +156,6 @@ export default {
     errorsEmpty: 'لا توجد أخطاء مسجلة في هذه الفترة',
     errorRate: 'معدل الخطأ',
     totalErrors: 'إجمالي الأخطاء',
-    lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",
     avgCostPerSession: "Avg cost / session",

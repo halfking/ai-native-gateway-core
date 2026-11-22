@@ -176,7 +176,6 @@ export default {
     emptyNoResultTopClients: 'Sur cette période, aucune statistique par client n’est disponible.',
     /** État vide : le classement des tâches est vide (avant : clé générique `dashboard.noData`). */
     emptyNoResultTopTasks: 'Sur cette période, aucune statistique par tâche n’est disponible.',
-    lastUpdated: "Last updated",
     newSessions24h: "New sessions (24h)",
     closedSessions24h: "Closed sessions (24h)",
     avgCostPerSession: "Avg cost / session",

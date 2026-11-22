@@ -18,6 +18,8 @@ import { ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { createRouter, createMemoryHistory } from 'vue-router'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 // 会话统计面板在 mount 时会拉数据（useDashboard / useDataHorizon / session-analytics）。
 // 这里把三处数据面打桩：守卫要验的是**接线**，不是数据。
@@ -112,5 +114,35 @@ describe('统计标准帮助入口接线', () => {
     expect(drawers.length).toBe(1)
     expect(drawers[0].props('contentId')).toBe(STANDARDS_ID)
     expect(drawers[0].props('label')).toBe('统计标准')
+  })
+
+  // 2026-11-23 owner 图批（紧凑轮）：「统计标准」入口从会话统计面板的右侧
+  // 工具条上移到**仪表盘页头**（与「整站数据」租户标签同一行）。
+  // ⇒ 面板自己那份在仪表盘页必须关掉（showStandardsHelp=false），
+  //   否则同一页出现两个同名入口（点开还是同一篇正文，但用户会当成两个东西）。
+  it('③ 仪表盘 stats 页签：页头提供入口，面板那份关掉（不重复）', async () => {
+    const w = mount(SessionStatsPanel, {
+      shallow: true,
+      props: { showStandardsHelp: false },
+      global: {
+        plugins: [i18n, makeRouter()],
+        provide: {
+          dashboardBoard: { days: ref(7) },
+        },
+      },
+    })
+    expect(w.findAllComponents(PageHelpDrawer).length).toBe(0)
+
+    // 页头那一份由 DashboardView2 渲染 ⇒ 源码契约：页头区含 PageHelpDrawer
+    // 且 contentId 正确，且仅在 stats 页签出现（看板页已有筛选条入口）。
+    const src = await readFile(
+      resolve(process.cwd(), 'web/src/views/DashboardViewV2.vue'),
+      'utf8',
+    ).catch(() => readFile(resolve(process.cwd(), 'src/views/DashboardViewV2.vue'), 'utf8'))
+    expect(src).toContain('<PageHelpDrawer')
+    expect(src).toContain("v-if=\"activeTab === 'stats'\"")
+    expect(src).toContain(`statsStandardsHelpId = '${STANDARDS_ID}'`)
+    // 面板侧在仪表盘页必须被显式关掉
+    expect(src).toContain(':show-standards-help="false"')
   })
 })

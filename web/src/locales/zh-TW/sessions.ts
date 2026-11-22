@@ -122,7 +122,6 @@ export default {
     totalCost: "總成本",
     avgHealth: "平均健康度",
     retry: "重試",
-    lastUpdated: '最後更新',
     newSessions24h: '24h 新會話',
     closedSessions24h: '24h 已關閉',
     avgCostPerSession: '會話均成本',
