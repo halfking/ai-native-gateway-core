@@ -564,6 +564,8 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, imagesHandler *st
 	chatHandler.SetHistoryGuardFactory(detector.HistoryGuard)
 	// 2026-11-23：历史守卫判决缓存 + 归约逐条并行（见 history_guard_memo_init.go）。
 	installHistoryGuardMemo(chatHandler, detector, redisClient)
+	// 2026-11-23（第三步）：归约的分段抽取式摘要（见 session_digest_init.go）。
+	installSessionDigest(chatHandler)
 
 	// 1. 输入侧中间件（chatHandler.ServeHTTP 入口处生效）
 	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector, db)
