@@ -366,7 +366,8 @@ export const router = createRouter({
     { path: '/admin/error-playbook', name: 'error-playbook-list', component: ErrorPlaybookListView, meta: { requiresSuper: true } },
     { path: '/admin/error-playbook/:id', name: 'error-playbook-detail', component: ErrorPlaybookDetailView, meta: { requiresSuper: true } },
     // 会话分析（2026-11-20）：总览 / 人员排行 / 人员详情 / 智能体排行 / 模型排行
-    { path: '/admin/session-analytics', name: 'session-analytics-overview', component: SessionAnalyticsOverviewView, meta: { requiresAuth: true } },
+    // 2026-11-23：重定向 overview 到整合后的 users 页面（整合任务：将 overview 内容移到 /admin/session-analytics/users）
+    { path: '/admin/session-analytics', redirect: '/admin/session-analytics/users', meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/user-ranking', name: 'session-analytics-user-ranking', component: SessionAnalyticsUserRankingView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/user-ranking/:owner', name: 'session-analytics-user-detail', component: SessionAnalyticsUserDetailView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/agent-ranking', name: 'session-analytics-agent-ranking', component: SessionAnalyticsAgentRankingView, meta: { requiresAuth: true } },

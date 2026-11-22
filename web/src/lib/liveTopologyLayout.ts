@@ -34,7 +34,9 @@ export interface LayoutInput {
 /** 节点卡**最大**尺寸（导出给判据用：重叠/越界这类断言必须与布局共享同一份数字，
  *  否则测试里写死一个值，布局一改就变成「测的不是它」）。 */
 export const NODE_W = 150
-export const NODE_H = 42
+/** 节点卡高度：2026-11-23 从 42 提升到 56，增强模型层视觉占比，
+ *  使节点更醒目易读（+33%高度）。 */
+export const NODE_H = 56
 /** 窄屏下卡片收缩到这个宽度以下就不再缩了（再窄文字就不可读了）。 */
 export const NODE_W_MIN = 104
 /** 卡片之间至少留这么宽，否则视觉上就是「挤成一坨」。 */
@@ -125,12 +127,14 @@ export function fitRow(width: number, reservingFoldSlot: boolean): { visible: nu
  *  ★ 2026-11-22 进一步优化模型层位置：第一次下移到0.78，第二次下移到0.82，
  *    持续增加与网关核心的间距。provider下移到0.94，确保底部留有空间。
  *  ★ 2026-11-22 第七轮优化：根据用户反馈仍有重叠，将model下移到0.86，
- *    provider下移到0.96，进一步增大间距。 */
+ *    provider下移到0.96，进一步增大间距。
+ *  ★ 2026-11-23 第十轮优化（节点高度+间距优化）：① 节点高度 42→56 (+33%)；
+ *    ② model 上移到 0.82；③ provider 调整到 0.95，确保两层至少 60px 净间距。 */
 const ROW_RATIO: Record<TopoColumn, number> = {
   client: 0.075,
   gateway: 0.47, // 大方块中心线(rowY.gateway = box 中心；无卡片，仅标签用)
-  model: 0.86,    // 模型层持续下移，彻底解决遮挡
-  provider: 0.96, // 供应商节点接近底部，保持平衡
+  model: 0.82,    // 模型层位置，配合 56px 节点高度
+  provider: 0.95, // 供应商节点，确保与模型层至少 60px 间距
 }
 
 /**
