@@ -348,6 +348,10 @@ const tasksLoader = useSessionAnalyticsLoader()
 const modelsLoader = useSessionAnalyticsLoader()
 const apiKeysLoader = useSessionAnalyticsLoader()
 
+// 跟踪是否已加载过（用于懒加载判断）
+const modelsLoaded = ref(false)
+const apiKeysLoaded = ref(false)
+
 const loading = computed(() => detailLoader.loading.value)
 const error = computed(() => detailLoader.error.value)
 const stale = computed(() => detailLoader.stale.value)
@@ -500,6 +504,7 @@ async function loadModels(): Promise<void> {
     'sessionAnalytics.error.userModelsFailed',
   )
   models.value = res?.models ?? []
+  modelsLoaded.value = true
 }
 
 async function loadAPIKeys(): Promise<void> {
@@ -512,6 +517,7 @@ async function loadAPIKeys(): Promise<void> {
     'sessionAnalytics.error.userAPIKeysFailed',
   )
   apiKeys.value = res?.api_keys ?? []
+  apiKeysLoaded.value = true
 }
 
 function selectProject(project: string): void {
@@ -539,6 +545,8 @@ watch(owner, () => {
   tasks.value = []
   models.value = []
   apiKeys.value = []
+  modelsLoaded.value = false
+  apiKeysLoaded.value = false
   selectedProject.value = ''
   tab.value = 'projects'
   void load()
@@ -547,9 +555,9 @@ watch(owner, () => {
 
 // 2026-11-22: 添加tab切换监听，自动加载对应数据
 watch(tab, (newTab) => {
-  if (newTab === 'models' && models.value.length === 0) {
+  if (newTab === 'models' && !modelsLoaded.value) {
     void loadModels()
-  } else if (newTab === 'apiKeys' && apiKeys.value.length === 0) {
+  } else if (newTab === 'apiKeys' && !apiKeysLoaded.value) {
     void loadAPIKeys()
   }
 })
