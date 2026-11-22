@@ -1634,7 +1634,25 @@ func (h *Handler) usageTopRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Top 用户（使用 Top10）
-	if entries, err := queryTopN("users", "rl.end_user_id", usersLimit); err == nil {
+	//
+	// 2026-11-23（修正「Top 10 用户」口径与显示）：
+	// `end_user_id` 列存的是**客户端上报的 `user` 字段原值**（resolveEndUser
+	// 的 body-sniff 兜底），而某些客户端把 `user` 报成了 JSON **对象**：
+	//   {"device_id":"50f0282d-…","account_uuid":"","session_id":"5d131116-…"}
+	// ⇒ 直接 GROUP BY 该列会有两个问题：
+	//   ① 显示：整段 JSON 被当成「用户名」渲染（界面上一坨被截断的 JSON）；
+	//   ② 口径：该 JSON 内含 session_id ⇒ 实际按**会话**分组，
+	//      「Top 10 用户」里 9 条是同一个 device_id 的 9 个不同会话。
+	// 现网实测（211，request_logs_with_current_month）：
+	//   end_user_id 形态分布 = anonymous 379,142 / NULL 38,657 / JSON 14,674 / 纯 id 49
+	//   JSON 行的 distinct device_id = 1、distinct session_id = 117、account_uuid 全空
+	// ⇒ **device_id 才是真实用户标识**（account_uuid 在现网恒空，不可依赖）。
+	//
+	// ★ 排行侧与过滤侧**共用同一个表达式**（userIdentityExpr，见 admin/logs.go）：
+	//   排行按它分组、显示名取它；点进日志页时过滤侧也拿它做等值匹配
+	//   ⇒ ⇒ 卡片上的 request_count 与点进去看到的条数**逐条对得上**。
+	//   ★ 两边各写一份表达式 ⇒ 改了一边忘了另一边就是「卡片 14,674 / 点进去 0 条」。
+	if entries, err := queryTopN("users", userIdentityExpr, usersLimit); err == nil {
 		response.TopUsers = entries
 	} else {
 		slog.Warn("usageTopRankings: top users query failed", "error", err)
