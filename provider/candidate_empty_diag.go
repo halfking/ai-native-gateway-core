@@ -32,6 +32,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -66,43 +67,119 @@ type EmptyCandidateBreakdown struct {
 	BlockedByCredentialMissing int
 }
 
+// emptyCandidateGate 是一道状态闸在归因里的全部表述：分类、人读标签、
+// 处置方向，以及**单闸独占时的整句**（逐字沿用 2026-11-12 版文案）。
+type emptyCandidateGate struct {
+	class  string
+	label  string
+	action string
+	single func(offers, n int) string
+}
+
+// gates 按既有优先序返回**全部**闸（含计数为 0 的），调用方自行过滤。
+//
+// ★ 顺序是**刻意的**：先说「模型压根没登记」（那是根因），再说状态闸（那是
+// 运维开关）；结构性的问题（凭据缺失 / 遗留 v1 健康列）排在运营开关之前。
+// 多闸命中数**打平**时沿用这个顺序定主因。
+func (b EmptyCandidateBreakdown) gates() []emptyCandidateGate {
+	return []emptyCandidateGate{
+		{CauseClassCredentialMissing, "已删除/缺失的凭据", "修绑或改绑该 offer",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条挂在已删除/缺失的凭据上 ⇒ 处置：修绑或改绑该 offer", offers, n)
+			}},
+		{CauseClassCredentialStatus, "credentials.status 闸", "核对并打开该凭据的 status",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.status 闸滤掉（遗留 v1 健康列，与 lifecycle_status/health_status 不同源）⇒ 处置：核对并打开该凭据的 status", offers, n)
+			}},
+		{CauseClassCredentialManualDisabled, "credentials.manual_disabled 闸", "解除该凭据的人工停用标记",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.manual_disabled 闸滤掉 ⇒ 处置：解除该凭据的人工停用标记", offers, n)
+			}},
+		{CauseClassCredentialLifecycle, "credentials.lifecycle_status 闸", "在凭据生命周期面启用/解除 retired",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.lifecycle_status 闸滤掉 ⇒ 处置：在凭据生命周期面启用/解除 retired", offers, n)
+			}},
+		{CauseClassCredentialQuota, "凭据配额态", "处置配额（充值/解封）",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条被凭据配额态滤掉 ⇒ 处置：处置配额（充值/解封）", offers, n)
+			}},
+		{CauseClassProviderDisabled, "供应商停用", "启用供应商/换供应商",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条的供应商被停用 ⇒ 处置：启用供应商/换供应商", offers, n)
+			}},
+		{CauseClassUnavailableReason, "model_offers.unavailable_reason(manual*) 下线", "解除该 offer 的人工下线标记",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 model_offers.unavailable_reason(manual*) 滤掉 ⇒ 处置：解除该 offer 的人工下线标记", offers, n)
+			}},
+		{CauseClassProviderTenant, "其他租户的供应商", "为当前租户登记模型/凭据，或核对请求租户",
+			func(offers, n int) string {
+				return fmt.Sprintf("模型已登记（%d offer），但 %d 条属于其他租户的供应商（候选 SQL 限定 p.tenant_id=$tenant）⇒ 处置：为当前租户登记模型/凭据，或核对请求租户", offers, n)
+			}},
+	}
+}
+
+// activeGates 返回命中数 > 0 的闸，保持 gates() 的优先序。
+func (b EmptyCandidateBreakdown) activeGates() []rankedGate {
+	counts := []int{
+		b.BlockedByCredentialMissing, b.BlockedByCredentialStatus, b.BlockedByCredentialManualDisabled,
+		b.BlockedByCredentialLifecycle, b.BlockedByCredentialQuota, b.BlockedByProviderDisabled,
+		b.BlockedByUnavailableReason, b.BlockedByProviderTenant,
+	}
+	all := b.gates()
+	out := make([]rankedGate, 0, len(all))
+	for i := range all {
+		if counts[i] > 0 {
+			out = append(out, rankedGate{emptyCandidateGate: all[i], count: counts[i], order: i})
+		}
+	}
+	return out
+}
+
+// rankedGate 是带命中数的闸；order 是优先序下标（打平时据此定先后）。
+type rankedGate struct {
+	emptyCandidateGate
+	count int
+	order int
+}
+
+// rankedGates 把命中的闸按「命中 offer 数降序、同数按优先序」排好。
+//
+// ★ 为什么要按命中数排（2026-11-22 211 事故）：一条 offer 可被**多道闸同时**
+// 挡住，各闸计数是重叠的。旧实现按固定顺序报「第一道有命中的闸」——
+// claude-sonnet-5-5 的 11 条 offer 里只有 1 条沾到 credentials.manual_disabled，
+// 却被它抢了头条（「解除人工停用标记」），而真正挡住 8 条的「凭据配额态
+// （上游 INSUFFICIENT_BALANCE）」被埋没 ⇒ 运维照着日志去解一个不相干的
+// 标记，模型照样 503。按命中数排，头条才是「处理它能恢复最多 offer」的那道闸。
+func (b EmptyCandidateBreakdown) rankedGates() []rankedGate {
+	active := b.activeGates()
+	sort.SliceStable(active, func(i, j int) bool { return active[i].count > active[j].count })
+	return active
+}
+
 // Summarize 把归因压成一句人能直接照做的结论。
 //
-// ★ 排序是**刻意的**：先说「模型压根没登记」（那是根因），再说状态闸（那是运维开关）。
-// ★ 全零 ⇒ 说明模型登记了但闸全开 ⇒ ★ 那就是别的问题（如租户/档位/模态不匹配），
-// ★ 这句话会明说「状态闸不是原因」，免得运营继续朝状态方向查。
+// ★ 只有一道闸命中 ⇒ 沿用单闸整句（逐字不变）。
+// ★ 多道闸同时命中 ⇒ 列出全部闸（按命中数降序）并标明主因与处置方向——
+// 只报其中一道会让运维漏掉其余的闸，按固定顺序报则会被小计数闸抢头条。
+// ★ 全零 ⇒ 说明模型登记了但闸全开 ⇒ 那就是别的问题（如租户/档位/模态不匹配），
+// 这句话会明说「状态不是原因」，免得运营继续朝状态方向查。
 func (b EmptyCandidateBreakdown) Summarize() string {
 	if b.OffersTotal == 0 {
 		return "模型未登记（offers_total=0）⇒ 处置：登记模型 / 核对模型名"
 	}
-	switch {
-	case b.BlockedByCredentialMissing > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条挂在已删除/缺失的凭据上 ⇒ 处置：修绑或改绑该 offer",
-			b.OffersTotal, b.BlockedByCredentialMissing)
-	case b.BlockedByCredentialStatus > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.status 闸滤掉（遗留 v1 健康列，与 lifecycle_status/health_status 不同源）⇒ 处置：核对并打开该凭据的 status",
-			b.OffersTotal, b.BlockedByCredentialStatus)
-	case b.BlockedByCredentialManualDisabled > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.manual_disabled 闸滤掉 ⇒ 处置：解除该凭据的人工停用标记",
-			b.OffersTotal, b.BlockedByCredentialManualDisabled)
-	case b.BlockedByCredentialLifecycle > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 credentials.lifecycle_status 闸滤掉 ⇒ 处置：在凭据生命周期面启用/解除 retired",
-			b.OffersTotal, b.BlockedByCredentialLifecycle)
-	case b.BlockedByCredentialQuota > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被凭据配额态滤掉 ⇒ 处置：处置配额（充值/解封）",
-			b.OffersTotal, b.BlockedByCredentialQuota)
-	case b.BlockedByProviderDisabled > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条的供应商被停用 ⇒ 处置：启用供应商/换供应商",
-			b.OffersTotal, b.BlockedByProviderDisabled)
-	case b.BlockedByUnavailableReason > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条被 model_offers.unavailable_reason(manual*) 滤掉 ⇒ 处置：解除该 offer 的人工下线标记",
-			b.OffersTotal, b.BlockedByUnavailableReason)
-	case b.BlockedByProviderTenant > 0:
-		return fmt.Sprintf("模型已登记（%d offer），但 %d 条属于其他租户的供应商（候选 SQL 限定 p.tenant_id=$tenant）⇒ 处置：为当前租户登记模型/凭据，或核对请求租户",
-			b.OffersTotal, b.BlockedByProviderTenant)
-	default:
+	ranked := b.rankedGates()
+	switch len(ranked) {
+	case 0:
 		return fmt.Sprintf("模型已登记（%d offer）且状态闸全开 ⇒ 状态不是原因 ⇒ 继续查租户/档位/模态/客户端档匹配", b.OffersTotal)
+	case 1:
+		return ranked[0].single(b.OffersTotal, ranked[0].count)
 	}
+	parts := make([]string, 0, len(ranked))
+	for _, g := range ranked {
+		parts = append(parts, fmt.Sprintf("%s %d 条", g.label, g.count))
+	}
+	return fmt.Sprintf("模型已登记（%d offer），但候选被 %d 道状态闸滤空（一条 offer 可被多道闸同时挡住，计数有重叠）；按命中 offer 数：%s ⇒ 主因=%s ⇒ 处置：%s",
+		b.OffersTotal, len(ranked), strings.Join(parts, " > "), ranked[0].label, ranked[0].action)
 }
 
 // CauseClass 是归因的**有界分类**（R-76-3 批判审计补，2026-11-17）。
@@ -147,30 +224,17 @@ const (
 
 // CauseClass 返回归因的**有界分类**。
 //
-// 分支顺序与 Summarize() 严格一致（见该常量块的说明）。
+// 与 Summarize() 的主因严格一致：多闸命中时取「命中数最多」的那道闸
+// （打平按既有优先序），单闸 / 零闸与旧版相同。
 func (b EmptyCandidateBreakdown) CauseClass() string {
-	switch {
-	case b.OffersTotal == 0:
+	if b.OffersTotal == 0 {
 		return CauseClassNotRegistered
-	case b.BlockedByCredentialMissing > 0:
-		return CauseClassCredentialMissing
-	case b.BlockedByCredentialStatus > 0:
-		return CauseClassCredentialStatus
-	case b.BlockedByCredentialManualDisabled > 0:
-		return CauseClassCredentialManualDisabled
-	case b.BlockedByCredentialLifecycle > 0:
-		return CauseClassCredentialLifecycle
-	case b.BlockedByCredentialQuota > 0:
-		return CauseClassCredentialQuota
-	case b.BlockedByProviderDisabled > 0:
-		return CauseClassProviderDisabled
-	case b.BlockedByUnavailableReason > 0:
-		return CauseClassUnavailableReason
-	case b.BlockedByProviderTenant > 0:
-		return CauseClassProviderTenant
-	default:
+	}
+	ranked := b.rankedGates()
+	if len(ranked) == 0 {
 		return CauseClassGatesOpen
 	}
+	return ranked[0].class
 }
 
 // emptyCandidateBreakdownSQL 是归因查询。

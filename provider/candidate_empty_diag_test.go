@@ -199,3 +199,108 @@ func TestEmptyCandidateBreakdownScanOrderPinned(t *testing.T) {
 		}
 	}
 }
+
+// TestEmptyCandidateBreakdownMultiGateRanksByCount —— 多闸同时命中时，
+// 归因头条必须是「挡住最多 offer 的那道闸」（2026-11-22 211 事故）。
+//
+// ★ 事故形态（claude-sonnet-5-5 全量 503）：11 条 offer 里凭据配额态挡住 8 条
+// （上游 INSUFFICIENT_BALANCE）、供应商停用 5 条，而 credentials.manual_disabled
+// 只沾到 1 条——旧实现按固定顺序报头条，日志写成「1 条被人工停用闸滤掉 ⇒
+// 解除人工停用标记」，运维照着去解一个不相干的标记，模型照样 503。
+func TestEmptyCandidateBreakdownMultiGateRanksByCount(t *testing.T) {
+	in := EmptyCandidateBreakdown{
+		OffersTotal: 11,
+		// 211 实测：[candidate_diag] db_empty 的四个计数。
+		BlockedByCredentialManualDisabled: 1,
+		BlockedByCredentialQuota:          8,
+		BlockedByProviderDisabled:         5,
+		BlockedByUnavailableReason:        2,
+	}
+	if got := in.CauseClass(); got != CauseClassCredentialQuota {
+		t.Fatalf("多闸归因类=%q，期望主因 %q（命中 8 条的配额闸）", got, CauseClassCredentialQuota)
+	}
+	got := in.Summarize()
+	for _, m := range []string{"11 offer", "凭据配额态 8 条", "供应商停用 5 条", "unavailable_reason(manual*) 下线 2 条", "credentials.manual_disabled 闸 1 条", "主因=凭据配额态", "处置：处置配额（充值/解封）"} {
+		if !strings.Contains(got, m) {
+			t.Errorf("多闸归因缺少 %q\n实际：%s", m, got)
+		}
+	}
+	// 处置方向必须是主因的，不能是人工停用的。
+	if strings.Contains(got, "解除该凭据的人工停用标记") {
+		t.Errorf("多闸归因把处置指向了小计数闸：%s", got)
+	}
+	// 列表按命中数降序。
+	order := []string{"凭据配额态 8 条", "供应商停用 5 条", "unavailable_reason(manual*) 下线 2 条", "credentials.manual_disabled 闸 1 条"}
+	last := -1
+	for _, m := range order {
+		at := strings.Index(got, m)
+		if at < 0 || at < last {
+			t.Fatalf("多闸归因未按命中数降序排列 %q：%s", m, got)
+		}
+		last = at
+	}
+}
+
+// TestEmptyCandidateBreakdownMultiGateTieKeepsPriority —— 命中数打平时沿用
+// 既有优先序（结构性 / 运营开关在前），不得随 map / 结构体字段顺序漂移。
+func TestEmptyCandidateBreakdownMultiGateTieKeepsPriority(t *testing.T) {
+	in := EmptyCandidateBreakdown{OffersTotal: 4, BlockedByCredentialManualDisabled: 2, BlockedByCredentialQuota: 2}
+	if got := in.CauseClass(); got != CauseClassCredentialManualDisabled {
+		t.Fatalf("打平时归因类=%q，期望按优先序取 %q", got, CauseClassCredentialManualDisabled)
+	}
+	got := in.Summarize()
+	if !strings.Contains(got, "主因=credentials.manual_disabled 闸") {
+		t.Fatalf("打平时主因应按优先序取人工停用闸：%s", got)
+	}
+}
+
+// TestEmptyCandidateBreakdownMultiGateJitterKeepsClass —— 排名不变时，计数
+// 抖动不改变归因类（归因类进日志冷却闸的键，不能跟着计数一起抖）。
+func TestEmptyCandidateBreakdownMultiGateJitterKeepsClass(t *testing.T) {
+	a := EmptyCandidateBreakdown{OffersTotal: 11, BlockedByCredentialManualDisabled: 1, BlockedByCredentialQuota: 8}
+	b := EmptyCandidateBreakdown{OffersTotal: 12, BlockedByCredentialManualDisabled: 2, BlockedByCredentialQuota: 9}
+	if a.CauseClass() != b.CauseClass() {
+		t.Fatalf("排名不变的计数抖动改变了归因类：%q vs %q", a.CauseClass(), b.CauseClass())
+	}
+	if a.CauseClass() != CauseClassCredentialQuota {
+		t.Fatalf("归因类=%q，期望主因 %q（配额闸命中数远多于人工停用闸）", a.CauseClass(), CauseClassCredentialQuota)
+	}
+}
+
+// TestEmptyCandidateBreakdownSingleGateSentenceUnchanged —— 单闸独占时的整句
+// **逐字不变**（多闸改造不得动到既有单闸文案：下游有按句子对账的运维习惯）。
+func TestEmptyCandidateBreakdownSingleGateSentenceUnchanged(t *testing.T) {
+	cases := []struct {
+		in   EmptyCandidateBreakdown
+		want string
+	}{
+		{EmptyCandidateBreakdown{OffersTotal: 1, BlockedByCredentialQuota: 1}, "模型已登记（1 offer），但 1 条被凭据配额态滤掉 ⇒ 处置：处置配额（充值/解封）"},
+		{EmptyCandidateBreakdown{OffersTotal: 2, BlockedByCredentialManualDisabled: 1}, "模型已登记（2 offer），但 1 条被 credentials.manual_disabled 闸滤掉 ⇒ 处置：解除该凭据的人工停用标记"},
+		{EmptyCandidateBreakdown{OffersTotal: 5}, "模型已登记（5 offer）且状态闸全开 ⇒ 状态不是原因 ⇒ 继续查租户/档位/模态/客户端档匹配"},
+	}
+	for _, tc := range cases {
+		if got := tc.in.Summarize(); got != tc.want {
+			t.Errorf("单闸句子漂移\n got: %s\nwant: %s", got, tc.want)
+		}
+	}
+}
+
+// TestCauseClassAgreesWithSummarizeMultiGate —— 多闸场景下分类与摘要的
+// 主因也必须是同一道闸（TestCauseClassAgreesWithSummarize 只覆盖了单闸）。
+func TestCauseClassAgreesWithSummarizeMultiGate(t *testing.T) {
+	breakdowns := []EmptyCandidateBreakdown{
+		{OffersTotal: 11, BlockedByCredentialManualDisabled: 1, BlockedByCredentialQuota: 8, BlockedByProviderDisabled: 5},
+		{OffersTotal: 6, BlockedByCredentialStatus: 1, BlockedByProviderDisabled: 4, BlockedByUnavailableReason: 4},
+		{OffersTotal: 9, BlockedByCredentialMissing: 3, BlockedByCredentialLifecycle: 3, BlockedByCredentialQuota: 3},
+		{OffersTotal: 3, BlockedByProviderTenant: 1, BlockedByProviderDisabled: 2},
+	}
+	for _, b := range breakdowns {
+		g := b.rankedGates()[0]
+		if g.class != b.CauseClass() {
+			t.Errorf("分类 %q 与摘要主因 %q 不是同一道闸", b.CauseClass(), g.class)
+		}
+		if s := b.Summarize(); !strings.Contains(s, "主因="+g.label) {
+			t.Errorf("摘要未标明主因 %q：%s", g.label, s)
+		}
+	}
+}
