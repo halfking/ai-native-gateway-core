@@ -95,49 +95,82 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		}
 	}
 	infos := make([]messageInfo, len(spans))
-	metadataBytes := 0
-	for i, span := range spans {
-		if e := ctx.Err(); e != nil {
-			return nil, report, e
-		}
-		var raw []byte
-		if span.Length <= materializeItem {
-			raw, err = read(span, materializeItem)
-		} else {
-			raw, err = fileMetadata(ctx, f, span, 0)
-		}
-		if err != nil {
-			return nil, report, err
-		}
-		if span.Length <= materializeItem {
-			envelope := append([]byte(`{"messages":[`), raw...)
-			envelope = append(envelope, ']', '}')
-			if _, e := contextbudget.UpperBound(envelope); e != nil {
-				// r1052（2026-11-13，211 fable-5-2 入口 422 根修）：≤64KB
-				// 消息里的媒体（image_url 等外部引用形状）此前 Uncountable
-				// 直接失败 ⇒ 整个 Reduce 失败 ⇒ LargeIngress 422——与巨型
-				// 消息的 fileMetadata 媒体拒绝是同一族。媒体的 token 计量
-				// 归 contextbudget 的 dispatch 面（那里有明确的 external 上
-				// 界语义）；本层只需要 role/工具链，describeMessage 对媒体
-				// 完全容错。⇒ Uncountable 降级为继续；真正的结构错误
-				//（InvalidRequest 族）仍然失败。
-				var budgetErr *contextbudget.Error
-				if !errors.As(e, &budgetErr) || budgetErr.Kind != contextbudget.Uncountable {
-					return nil, report, e
+	// ★ 2026-11-23（大请求体归约提速轮）：逐条处理并行化。
+	//
+	// 每条消息的结构描述（两次 JSON 解码）彼此独立 ⇒ 交给工作协程；读归档仍在
+	// 调用方协程里按下标顺序做（文件只有一个游标，顺序读最省）。并行度来自
+	// ctx 的显式声明（WithReduceWorkers），未声明 ⇒ 下面的 runIndexed 就是
+	// 普通串行循环，行为与此前逐字相同。
+	workers := reduceWorkers(ctx)
+	// metaSize[i] 是第 i 条消息的结构元数据字节数（用于下方 1MB 上限判定）。
+	metaSize := make([]int, len(spans))
+	metaErrIdx, metaErr := runIndexed(ctx, workers, len(spans),
+		func(i int) (any, error) {
+			if e := ctx.Err(); e != nil {
+				return nil, e
+			}
+			span := spans[i]
+			if span.Length <= materializeItem {
+				return read(span, materializeItem)
+			}
+			return fileMetadata(ctx, f, span, 0)
+		},
+		func(i int, v any) error {
+			raw, span := v.([]byte), spans[i]
+			if span.Length <= materializeItem {
+				envelope := append([]byte(`{"messages":[`), raw...)
+				envelope = append(envelope, ']', '}')
+				if _, e := contextbudget.UpperBound(envelope); e != nil {
+					// r1052（2026-11-13，211 fable-5-2 入口 422 根修）：≤64KB
+					// 消息里的媒体（image_url 等外部引用形状）此前 Uncountable
+					// 直接失败 ⇒ 整个 Reduce 失败 ⇒ LargeIngress 422——与巨型
+					// 消息的 fileMetadata 媒体拒绝是同一族。媒体的 token 计量
+					// 归 contextbudget 的 dispatch 面（那里有明确的 external 上
+					// 界语义）；本层只需要 role/工具链，describeMessage 对媒体
+					// 完全容错。⇒ Uncountable 降级为继续；真正的结构错误
+					//（InvalidRequest 族）仍然失败。
+					var budgetErr *contextbudget.Error
+					if !errors.As(e, &budgetErr) || budgetErr.Kind != contextbudget.Uncountable {
+						return e
+					}
 				}
 			}
+			infos[i] = describeMessage(raw)
+			n := len(infos[i].role)
+			for _, id := range infos[i].calls {
+				n += len(id) + 16
+			}
+			for _, id := range infos[i].refs {
+				n += len(id) + 16
+			}
+			metaSize[i] = n
+			return nil
+		},
+	)
+	// 元数据上限：累计超过 1MB 的那一条处返回 ErrProtectedContext。
+	//
+	// ★ 与串行的出错顺序对齐：串行是「逐条处理，谁先出问题返回谁」——同一条
+	// 消息上「自己出错」先于「累计溢出」，更早的消息溢出先于后面消息出错。
+	// 这里按同一口径复现：有条目错误时只看 [0, 该下标] 这段的累计（后面的
+	// 条目串行版本根本处理不到）；溢出点更靠前 ⇒ 返回溢出。
+	if metaErr != nil {
+		acc := 0
+		for i := 0; i <= metaErrIdx; i++ {
+			if acc += metaSize[i]; acc > 1<<20 {
+				if i < metaErrIdx {
+					metaErr = ErrProtectedContext
+				}
+				break
+			}
 		}
-		infos[i] = describeMessage(raw)
-		metadataBytes += len(infos[i].role)
-		for _, id := range infos[i].calls {
-			metadataBytes += len(id) + 16
-		}
-		for _, id := range infos[i].refs {
-			metadataBytes += len(id) + 16
-		}
-		if metadataBytes > 1<<20 {
-			return nil, report, ErrProtectedContext
-		}
+		return nil, report, metaErr
+	}
+	metadataBytes := 0
+	for _, n := range metaSize {
+		metadataBytes += n
+	}
+	if metadataBytes > 1<<20 {
+		return nil, report, ErrProtectedContext
 	}
 	protected, tail := protectInfo(infos)
 	keep := func(i int) bool { return protected[i] }
@@ -166,66 +199,31 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 		index, score int
 		text         string
 	}
-	best := make([]excerpt, 0, 16)
-	mediaOmittedCount := 0
-	for i, span := range spans {
-		if keep(i) {
-			continue
-		}
-		// ★ 2026-11-22（211 生产事故根修）：≤64KB 的消息**读一次、全程走内存**。
-		//
-		// 历史守卫对每条消息要开多个独立 reader（预筛 1 个 + 每规则组两个文本
-		// 视图），原先每个 reader 都是归档文件上的 SectionReader ⇒ 同一段字节
-		// 被反复重读。归约器全程共用一个文件游标，每次新开 reader 都是「往回
-		// 读」⇒ 旧 ReadAt 回卷到文件头重放（已由 largebody 的帧目录修掉），
-		// 但即便按帧跳转，每条消息仍要为守卫多解压几次所在的帧。agent 会话
-		// 的历史是**成千上万条小消息**（211 实测：3953 条、中位数 1KB），这部分
-		// 逐条开销才是大头 ⇒ 小消息直接进内存（一次 ≤64KB，有界），守卫的
-		// open() 给出各自独立游标的内存 reader。>64KB 的消息维持流式路径。
-		var raw []byte
-		open := func() io.Reader {
-			return io.NewSectionReader(f, span.Offset, span.Length)
-		}
-		if span.Length <= materializeItem {
-			if raw, err = read(span, materializeItem); err != nil {
-				return nil, report, err
-			}
-			br := bytes.NewReader(raw)
-			open = func() io.Reader {
-				r := *br // 值拷贝 ⇒ 每个调用方拿到独立游标
-				return &r
-			}
-		}
-		safe, e := checkHistoryGuard(ctx, open)
-		if e != nil {
-			return nil, report, e
-		}
-		if !safe {
-			report.SensitiveHistoryOmitted++
-			continue
-		}
-		var text string
-		if span.Length <= materializeItem {
-			text = sampleTextWords(plainText([]json.RawMessage{raw}), words, 2048)
-			// r1052：媒体不可「无声消失」（file_test.go 既有钉测的设计意图）
-			// 但也不可因此拒绝整个请求（211 fable-5-2 入口 422 事故：带截图
-			// 的 ZCode 会话历史 >1MB 每笔必败）。⇒ 显式省略标记：模型知道
-			// 「这里曾有一张图但被省略」，不幻觉、不静默。聚合计数进摘要
-			// 头（best-16 逐出也不丢账）。
-			if mediaMarkerOmitted(raw) {
-				text += "\n[media omitted from bounded context]"
-				mediaOmittedCount++
-			}
-		} else {
-			var sawMedia bool
-			text, err = objectExcerptMedia(ctx, f, span, query, 4096, &sawMedia)
-			if err != nil {
-				return nil, report, err
-			}
-			if sawMedia {
-				mediaOmittedCount++
-			}
-		}
+	// ★ 2026-11-23（大请求体归约提速轮）：守卫 + 摘录逐条并行化。
+	//
+	// 每条历史消息的判定只取决于它自己的字节、编译后的规则策略、以及只读的
+	// 查询词项 ⇒ 条与条之间无共享可变状态，可并行。结果按下标槽位存放，最后
+	// 仍按下标顺序做 best-16 选择 ⇒ 选择结果与串行逐字节一致。
+	//
+	//   - ≤64KB 的消息：读一次进内存（调用方协程，顺序读归档），守卫 + 摘录
+	//     在工作协程里做。守卫可并发由注入方显式声明（WithReduceWorkers）。
+	//   - >64KB 的消息：走流式路径（共用归档文件游标）⇒ 串行，顺序不变。
+	//
+	// ★ 2026-11-22（211 生产事故根修）：≤64KB 的消息**读一次、全程走内存**。
+	//
+	// 历史守卫对每条消息要开多个独立 reader（预筛 1 个 + 每规则组两个文本
+	// 视图），原先每个 reader 都是归档文件上的 SectionReader ⇒ 同一段字节
+	// 被反复重读。agent 会话的历史是**成千上万条小消息**（211 实测：3953
+	// 条、中位数 1KB），这部分逐条开销才是大头 ⇒ 小消息直接进内存（一次
+	// ≤64KB，有界），守卫的 open() 给出各自独立游标的内存 reader。
+	type excerptResult struct {
+		text        string
+		score       int
+		media, omit bool
+	}
+	results := make([]excerptResult, len(spans))
+	errs := make([]error, len(spans))
+	scoreOf := func(text string) int {
 		score := 0
 		lower := strings.ToLower(text)
 		for _, w := range words {
@@ -233,10 +231,106 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 				score++
 			}
 		}
-		if strings.TrimSpace(text) == "" {
+		return score
+	}
+
+	small := make([]int, 0, len(spans))
+	for i, span := range spans {
+		if !keep(i) && span.Length <= materializeItem {
+			small = append(small, i)
+		}
+	}
+	if idx, e := runIndexed(ctx, workers, len(small),
+		func(k int) (any, error) {
+			if e := ctx.Err(); e != nil {
+				return nil, e
+			}
+			return read(spans[small[k]], materializeItem)
+		},
+		func(k int, v any) error {
+			raw := v.([]byte)
+			br := bytes.NewReader(raw)
+			open := func() io.Reader {
+				r := *br // 值拷贝 ⇒ 每个调用方拿到独立游标
+				return &r
+			}
+			safe, e := checkHistoryGuard(ctx, open)
+			if e != nil {
+				return e
+			}
+			r := &results[small[k]]
+			if !safe {
+				r.omit = true
+				return nil
+			}
+			text := sampleTextWords(plainText([]json.RawMessage{raw}), words, 2048)
+			// r1052：媒体不可「无声消失」（file_test.go 既有钉测的设计意图）
+			// 但也不可因此拒绝整个请求（211 fable-5-2 入口 422 事故：带截图
+			// 的 ZCode 会话历史 >1MB 每笔必败）。⇒ 显式省略标记：模型知道
+			// 「这里曾有一张图但被省略」，不幻觉、不静默。聚合计数进摘要
+			// 头（best-16 逐出也不丢账）。
+			if mediaMarkerOmitted(raw) {
+				text += "\n[media omitted from bounded context]"
+				r.media = true
+			}
+			r.text, r.score = text, scoreOf(text)
+			return nil
+		},
+	); e != nil {
+		errs[small[idx]] = e
+	}
+
+	// >64KB 的消息：流式路径，按下标顺序串行。
+	for i, span := range spans {
+		if keep(i) || span.Length <= materializeItem {
 			continue
 		}
-		candidate := excerpt{i, score, text}
+		// 下标更小的错误已经出现 ⇒ 串行版本走不到这里。
+		if first := firstErrIndex(errs); first >= 0 && first < i {
+			break
+		}
+		safe, e := checkHistoryGuard(ctx, func() io.Reader {
+			return io.NewSectionReader(f, span.Offset, span.Length)
+		})
+		if e != nil {
+			errs[i] = e
+			break
+		}
+		if !safe {
+			results[i].omit = true
+			continue
+		}
+		var sawMedia bool
+		text, e := objectExcerptMedia(ctx, f, span, query, 4096, &sawMedia)
+		if e != nil {
+			errs[i] = e
+			break
+		}
+		results[i].media = sawMedia
+		results[i].text, results[i].score = text, scoreOf(text)
+	}
+	if idx := firstErrIndex(errs); idx >= 0 {
+		return nil, report, errs[idx]
+	}
+
+	best := make([]excerpt, 0, 16)
+	mediaOmittedCount := 0
+	for i := range spans {
+		if keep(i) {
+			continue
+		}
+		r := results[i]
+		if r.omit {
+			report.SensitiveHistoryOmitted++
+			continue
+		}
+		if r.media {
+			mediaOmittedCount++
+		}
+		if strings.TrimSpace(r.text) == "" {
+			continue
+		}
+		candidate := excerpt{i, r.score, r.text}
 		if len(best) < 16 {
 			best = append(best, candidate)
 		} else {
@@ -246,7 +340,7 @@ func Reduce(ctx context.Context, store *largebody.Store, ref largebody.Ref, maxB
 					worst = j
 				}
 			}
-			if score > best[worst].score {
+			if r.score > best[worst].score {
 				best[worst] = candidate
 			}
 		}

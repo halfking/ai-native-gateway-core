@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
 	"github.com/kaixuan/llm-gateway-go/domains/sanitizerules"
@@ -119,6 +120,33 @@ type PatternDetector struct {
 	patterns        []patternEntry
 	configPath      string
 	rules           *sanitizerules.Manager
+	// historyMemo 是历史守卫判决的缓存（2026-11-23 大请求体归约提速轮）。
+	// boot 时装配一次（SetHistoryVerdictMemo），读侧无锁 ⇒ atomic。
+	// nil ⇒ 守卫不缓存，行为与此前逐字相同。
+	historyMemo atomic.Pointer[TieredVerdictMemo]
+}
+
+// SetHistoryVerdictMemo 装配历史守卫判决的缓存（nil ⇒ 关闭缓存）。
+// 须在开始服务请求之前调用。
+func (d *PatternDetector) SetHistoryVerdictMemo(m *TieredVerdictMemo) {
+	if d == nil {
+		return
+	}
+	d.historyMemo.Store(m)
+}
+
+// verdictMemo 返回已装配的缓存；未装配时返回**真 nil 接口**。
+//
+// ★ 不能直接写 d.historyMemo.Load() 当接口实参：类型化 nil 指针转成接口后
+// 「接口 != nil」，被调方一调方法就是空指针解引用（本轮首版就这么 panic 过）。
+func (d *PatternDetector) verdictMemo() HistoryVerdictMemo {
+	if d == nil {
+		return nil
+	}
+	if m := d.historyMemo.Load(); m != nil {
+		return m
+	}
+	return nil
 }
 
 // NewPatternDetector 创建包含默认 PII 模式的检测器

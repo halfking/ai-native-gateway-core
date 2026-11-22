@@ -60,8 +60,14 @@ export function getKeys(params?: { application?: string; tenant?: string; owner?
   return req<ApiKey[]>('GET', suffix ? `/api/keys?${suffix}` : '/api/keys')
 }
 
-export function getKeyDetail(id: number) {
-  return req<ApiKey>('GET', `/api/keys/${id}`)
+export function getKeyDetail(id: number, opts?: { include_revoked?: boolean }) {
+  // 2026-11-23 P3 详情侧补齐：与列表侧 getKeys 的 include_revoked 对齐。
+  // 详情页按 id 直取，不应被状态过滤挡住——否则从「含已吊销」列表点进
+  // revoked 密钥详情即 404。后端 admin/keys.go 详情 handler 已支持该参数。
+  const qs = new URLSearchParams()
+  if (opts?.include_revoked) qs.set('include_revoked', 'true')
+  const suffix = qs.toString()
+  return req<ApiKey>('GET', suffix ? `/api/keys/${id}?${suffix}` : `/api/keys/${id}`)
 }
 
 export function createKey(data: { application_code: string; tenant_id?: string; key_alias?: string; owner_user?: string; budget_usd?: number; rate_limit_rpm?: number; remark?: string }) {
