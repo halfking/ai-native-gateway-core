@@ -2815,10 +2815,10 @@ files=(
   #   ★ 幂等（CREATE TABLE/INDEX IF NOT EXISTS ＋ ADD COLUMN IF NOT EXISTS
   #     ＋ 自登记 ON CONFLICT DO NOTHING）⇒ 重放安全、已在场也不报错。
   #   ★ 次序：918 → 925/973/986（★ 后三条的外键指向 teams.id ⇒ teams 先建）。
-  "$ROOT_DIR/sql/migrations/startup/918_teams_table.sql"
-  "$ROOT_DIR/sql/migrations/startup/925_user_teams.sql"
-  "$ROOT_DIR/sql/migrations/startup/973_api_keys_team_id.sql"
-  "$ROOT_DIR/sql/migrations/startup/986_team_budgets.sql"
+  "$ROOT_DIR/sql/migrations/startup/1000_teams_table.sql"
+  "$ROOT_DIR/sql/migrations/startup/1001_user_teams.sql"
+  "$ROOT_DIR/sql/migrations/startup/1002_api_keys_team_id.sql"
+  "$ROOT_DIR/sql/migrations/startup/1003_team_budgets.sql"
   # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
   #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
   #   不存在的 migration_metadata 表改回 schema_migrations）。
@@ -3703,13 +3703,13 @@ ledger_artifact_probe "999_session_summary_layers.sql" \
 #   引入的对象；★ teams 的两个索引与 user_teams/team_budgets 的索引都在场）。
 #   ★ 列探针用 information_schema（★ api_keys.team_id 是普通列 ⇒ 口径正确，
 #     994 的 pg_catalog 教训只针对物化视图）。
-ledger_artifact_probe "918_teams_table.sql" \
+ledger_artifact_probe "1000_teams_table.sql" \
   "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='teams' AND indexname IN ('idx_teams_owner_id','idx_teams_tenant_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='teams_tenant_name_key' AND conrelid='public.teams'::regclass) = 1"
-ledger_artifact_probe "925_user_teams.sql" \
+ledger_artifact_probe "1001_user_teams.sql" \
   "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='user_teams' AND indexname IN ('idx_user_teams_user_id','idx_user_teams_team_id')) = 2 AND (SELECT count(*) FROM pg_constraint WHERE conname='user_teams_user_team_key' AND conrelid='public.user_teams'::regclass) = 1"
-ledger_artifact_probe "973_api_keys_team_id.sql" \
+ledger_artifact_probe "1002_api_keys_team_id.sql" \
   "(SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id') = 1 AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='api_keys' AND indexname IN ('idx_api_keys_team_id','idx_api_keys_tenant_team')) = 2"
-ledger_artifact_probe "986_team_budgets.sql" \
+ledger_artifact_probe "1003_team_budgets.sql" \
   "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND tablename='team_budgets' AND indexname='idx_team_budgets_team_id') = 1 AND (SELECT count(*) FROM pg_constraint WHERE conname='team_budgets_team_id_key' AND conrelid='public.team_budgets'::regclass) = 1"
 # ★ 989 的产物 = **记账行本身**（它是纯记账修复：不建对象，只把「已跑过」的
 #   981 记进 public.schema_migrations）⇒ 探针 = 981 的头产物在场 **且**

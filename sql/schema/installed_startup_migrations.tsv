@@ -406,10 +406,10 @@
 388	997_tasks_dimension_table.sql
 389	998_session_summaries_task_association.sql
 390	999_session_summary_layers.sql
-391	918_teams_table.sql
-392	925_user_teams.sql
-393	973_api_keys_team_id.sql
-394	986_team_budgets.sql
+391	1000_teams_table.sql
+392	1001_user_teams.sql
+393	1002_api_keys_team_id.sql
+394	1003_team_budgets.sql
 395	989_migration_ledger_session_analytics_981_repair.sql
 396	982_provider_call_attempts.sql
 397	983_request_metrics.sql
