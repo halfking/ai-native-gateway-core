@@ -35,12 +35,52 @@ package ursm_test
 //	M3 把占位符换名但忘了展开                    ⇒ ①真库执行红 + ②文本断言红
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// runCensusCmd 跑一条命令，并保证「**到点一定返回**」。
+//
+// ★★ **这是本轮（2026-11-23）实测踩出来的第三层补丁**：★★
+//
+//	① 第一版只加了 `exec.CommandContext(ctx, ...)` ⇒ ★ **不够**（★ 实测：
+//	   ctx 到期 120s 之后，★ 测试二进制**仍然活着**）★；
+//	② 根因：★ ctx 到期只 kill **直接子进程** ⇒ ★ 而 census 链有**三层**
+//	   （★ bash → sh → docker exec）⇒ ★ **docker 客户端活着并持有 stdout 管道**
+//	   ⇒ ★ `Wait()` 等管道 EOF ⇒ ★ **永远等不到**；
+//	③ ⇒ ★ 现在是三件事一起做：
+//
+//	★ **a. 进程组**：★ 子进程自成一个进程组（★ unix）⇒ ★ 超时时**整组杀**
+//	★ **b. WaitDelay**：★ ★ 即使有进程逃出进程组并仍持有管道，★ 到点**强制关闭管道**
+//	★ ⇒ ★★ 「到点一定返回」在**所有平台**都成立；
+//	★ **c. 不留挂死客户端**：★ ★ 整组杀 ⇒ ★ **不留挂死的 `docker exec`**
+//	   （★ 本轮此前就不得不手工 kill 4 个挂死客户端）。
+//
+// ★★ **诚实边界**：★ ★ 本函数返回的 `timedOut` 是**「ctx 到点」**的判定，
+// ★★ 而**不是**「命令跑完了」的判定 ⇒ ★ 调用方**必须**自己看 `err`
+// ★★ （★ 进程提前退出时 err 非 nil 而 timedOut 为 false ⇒ ★ 那是真失败）。
+func runCensusCmd(timeout time.Duration, name string, args []string, env []string) ([]byte, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
+	censusPrepareCmd(cmd)
+	cmd.Cancel = func() error { return censusKillGroup(cmd) }
+	cmd.WaitDelay = 5 * time.Second
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err := cmd.Run()
+	return buf.Bytes(), ctx.Err() != nil, err
+}
 
 // censusSQLSep 是记录文件里的**分隔行**：一次下发的 SQL 前后各夹一个，
 // 这样多行 SQL 不会被按行切碎。
@@ -67,10 +107,22 @@ exec docker exec -i llm-gateway-pg psql -U postgres -d postgres -tAX -v ON_ERROR
 `
 
 // censusSandboxAvailable 报告本机 PG 沙箱是否可用（不可用时真库那一段跳过）。
+//
+// ★★ 2026-11-23（合并轮六后 · 量具自身修）：★ **探针必须有超时**。
+// ★ 起因（★ 实测）：★ 2026-11-23 21:5x 起本机 **Docker 守护进程僵死**
+// ★ （★ `docker ps`/`info`/`version` 三个客户端全挂、★ containerd-shim 进程数＝0
+// ★ ⇒ 全机容器实际已停止）⇒ ★ **`docker exec` 客户端永不返回** ⇒ ★★
+// ★ ★★ 本探针**没有超时** ⇒ 它自己挂死 ⇒ ★★ **整包门在 900s 上限处超时**
+// ★★（★ 而本测试的设计意图明明是「★ 沙箱不可用 ⇒ 跳过真库执行断言 ★」）
+// ★★ ⇒ ★★ **量具在环境异常时缺牙：★ 应该是「跳过」、★ 实际是「挂死整包」**。
+// ★ ⇒ ★ 修法＝给探针加**硬超时**（★ 5s）⇒ ★ 僵死时返回 false ⇒ ★ 走原设计的
+// ★ 跳过分支 ⇒ ★★ 文本断言仍由 TestCensusSendsExpandedIndexName 覆盖（★ 不丢覆盖）。
+// ★ ★★ 诚实边界：★ 这**不是**「让门变绿」的绕过——★ 跳过的是【真库执行断言】这一段，
+// ★ ★ 而它跳过的判据（★ 工具下发的 SQL 在真 PG 上能不能跑 ★）在环境正常时照跑。
 func censusSandboxAvailable() bool {
-	cmd := exec.Command("docker", "exec", "-i", "llm-gateway-pg",
-		"psql", "-U", "postgres", "-d", "postgres", "-tAX", "-c", "select 1;")
-	out, err := cmd.CombinedOutput()
+	out, _, err := runCensusCmd(5*time.Second, "docker",
+		[]string{"exec", "-i", "llm-gateway-pg",
+			"psql", "-U", "postgres", "-d", "postgres", "-tAX", "-c", "select 1;"}, nil)
 	return err == nil && strings.Contains(string(out), "1")
 }
 
@@ -83,17 +135,39 @@ func runCensusRecording(t *testing.T, idx string) (string, []string) {
 	if err := os.WriteFile(rec, []byte(censusSQLRecorder), 0o755); err != nil {
 		t.Fatalf("写记录脚本: %v", err)
 	}
-	cmd := exec.Command("bash", censusPath(t), idx)
-	cmd.Env = append(os.Environ(),
-		"PSQL_CMD="+rec,
-		"CENSUS_SQL_LOG="+logFile,
-		"CENSUS_SQL_SEP="+censusSQLSep,
-		"LLMGW_NO_SINGLE_INSTANCE_LOCK=1",
-	)
-	out, _ := cmd.CombinedOutput()
+	// ★★ 2026-11-23（合并轮六后 · 量具自身修）：★ 普查器执行层**同样加硬超时**。
+	// ★ 起因同上：★ 探针只挡住「★ 一开始就僵 ★」⇒ ★ 若 Docker 在探针通过**之后**
+	// ★ 才僵（★ 或普查器内部某条 SQL 触发了别的 docker 调用）⇒ ★ 这里的
+	// ★ `CombinedOutput()` 同样会永不返回 ⇒ ★ 整包门再次在 900s 上限处超时。
+	// ★ ⇒ ★ 超时判红（★ 而不是挂死）：★ **明确的失败比挂死好查**（★ 挂死只能靠
+	// ★ 看 panic 栈反推是哪条 docker 调用）。
+	out, timedOut, err := runCensusCmd(120*time.Second, "bash", []string{censusPath(t), idx},
+		append(os.Environ(),
+			"PSQL_CMD="+rec,
+			"CENSUS_SQL_LOG="+logFile,
+			"CENSUS_SQL_SEP="+censusSQLSep,
+			"LLMGW_NO_SINGLE_INSTANCE_LOCK=1",
+		))
+	if timedOut {
+		// ★★ 超时**不判红**：★ 判据分两段，★ 这段（真库执行）本来就会在
+		// 「沙箱不可用」时被跳过（★ 见 censusSandboxAvailable 的用法）；
+		// ★★ 而记录型 psql 是「**先写记录、后转发**」⇒ ★★ **超时的那一刻
+		// ★★ 第一条 SQL 已经完整落在记录文件里** ⇒ ★★ **文本断言仍可照跑**
+		// ★★（★ 而这正是本门注释里写明的设计意图：★ 「沙箱不可用时跳过真库那一段，
+		// ★★ 但文本断言照跑」⇒ ★★ 僵死环境不该把它变成一条与被测代码无关的红）。
+		t.Logf("★ 普查器在 120s 内没跑完（★ ctx 超时）⇒ ★ **多半是 Docker 侧僵死**" +
+			"（★ 普查器要经 PSQL_CMD 转发到 docker exec）⇒ ★ 而不是普查器本身慢\n"+
+			"★ ⇒ ★ 本门在【环境异常】时**跳过真库执行断言**（★ 探针本就会跳过）\n"+
+			"★ ⇒ ★ **文本断言继续照跑**（★ 记录型 psql 先写记录、后转发 ⇒ SQL 已在）\n"+
+			"★ ⇒ ★ 环境恢复后复跑本门即可（★ 若 Docker 正常则本条不会触发）\n"+
+			"★ 工具输出（截断）：\n%s", truncateCensusLog(string(out), 2000))
+	}
 
 	b, err := os.ReadFile(logFile)
 	if err != nil {
+		if timedOut {
+			t.Skipf("★ 普查器超时且**没留下任何下发 SQL 记录**（%v）⇒ ★ 环境异常 ⇒ 跳过本门", err)
+		}
 		t.Fatalf("读下发 SQL 记录: %v", err)
 	}
 	// ★ 按分隔行切，**不是按行切**：SQL 本身是多行的。
@@ -102,6 +176,9 @@ func runCensusRecording(t *testing.T, idx string) (string, []string) {
 		if strings.TrimSpace(chunk) != "" {
 			sents = append(sents, strings.TrimRight(chunk, "\n"))
 		}
+	}
+	if timedOut && len(sents) == 0 {
+		t.Skip("★ 普查器超时且一条 SQL 都没记录下来 ⇒ ★ 环境异常（多半 Docker 僵死）⇒ 跳过本门")
 	}
 	return string(out), sents
 }
@@ -123,13 +200,34 @@ func TestCensusSendsExecutableSQL(t *testing.T) {
 	if !strings.Contains(first, "relname") {
 		t.Fatalf("第一条下发 SQL 不像元数据查询（没有 relname）：\n%s", first)
 	}
-	cmd := exec.Command("docker", "exec", "-i", "llm-gateway-pg",
-		"psql", "-U", "postgres", "-d", "postgres", "-tAX", "-v", "ON_ERROR_STOP=1", "-c", first)
-	out, err := cmd.CombinedOutput()
+	// ★★ 2026-11-23：★ 直连真库这一段也加**硬超时**（★ 60s）＋ **进程组收口**。
+	// ★ 理由同上：★ 探针通过**之后** docker 仍可能僵死 ⇒ ★ 这一行也会永不返回
+	// ★ ⇒ ★ 加超时后它判红（★ 而不是挂死整包）。
+	out, timedOut, err := runCensusCmd(60*time.Second, "docker",
+		[]string{"exec", "-i", "llm-gateway-pg",
+			"psql", "-U", "postgres", "-d", "postgres", "-tAX", "-v", "ON_ERROR_STOP=1", "-c", first}, nil)
+	if timedOut {
+		t.Fatalf("★ 直连真库执行在 60s 内没返回（★ ctx 超时）⇒ ★ **多半是 Docker 侧僵死**\n"+
+			"★ ⇒ ★ 本门在【环境异常】时判红（★ 而不是挂死整包）\n"+
+			"★ ⇒ ★ 环境恢复后复跑本门即可\n★ 工具输出（截断）：\n%s",
+			truncateCensusLog(string(out), 2000))
+	}
 	if err != nil {
 		t.Fatalf("★ 工具下发的 SQL 在**真库**上执行失败 ⇒ 这正是 §143.13 修的那类缺陷"+
 			"（假 psql 桩永远看不见）：\n%s\n--- 工具输出 ---\n%s", out, out)
 	}
+}
+
+// truncateCensusLog 把工具输出截断到前 n 字节（★ 供超时时的错误信息用）。
+//
+// ★ 本包（ursm_test）里**没有**同名辅助函数 ⇒ 仓里其它包的 truncateForLog
+// （★ 各包私有、签名不一）**不能直接借用** ⇒ 这里用**本包专属名**另起一个，
+// ★ 免得日后与别的包的同名函数撞车（★ 同包同名函数重复定义＝编译失败）。
+func truncateCensusLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\n...（截断）"
 }
 
 // TestCensusSendsExpandedIndexName —— 下发的 SQL 必须含**展开后**的索引名，
