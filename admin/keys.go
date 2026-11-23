@@ -86,6 +86,15 @@ type keyConflictQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// keyCreateQuerier 返回 createKey 的落库查询面：窄注入面 keyCreateDB 优先，nil ⇒ h.db
+// （生产路径零变化）。开这个口子的理由见 Handler.keyCreateDB 字段注释。
+func (h *Handler) keyCreateQuerier() keyConflictQuerier {
+	if h.keyCreateDB != nil {
+		return h.keyCreateDB
+	}
+	return h.db
+}
+
 // existingKeyConflict describes an api_keys row that already represents a
 // "valid, active, non-expired" key for the (application, tenant, alias) group
 // — i.e. one that the new key creation must refuse to duplicate.
@@ -146,6 +155,12 @@ func (h *Handler) getOrCreateApplication(ctx context.Context, code, ownerUser st
 }
 
 func (h *Handler) getOrCreateApplicationForTenant(ctx context.Context, code, ownerUser, tenantID string) (int, error) {
+	return getOrCreateApplicationOn(ctx, h.db, code, ownerUser, tenantID)
+}
+
+// getOrCreateApplicationOn 是 getOrCreateApplicationForTenant 的本体，只是在给定的查询面上
+// 执行（createKey 的落库面要能注入 pgxmock，见 keyCreateQuerier）。
+func getOrCreateApplicationOn(ctx context.Context, q keyConflictQuerier, code, ownerUser, tenantID string) (int, error) {
 	if code == "" {
 		code = "default"
 	}
@@ -154,7 +169,7 @@ func (h *Handler) getOrCreateApplicationForTenant(ctx context.Context, code, own
 	}
 
 	var appID int
-	err := h.db.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT id FROM applications WHERE code = $1 AND tenant_id = $2`,
 		code, tenantID,
 	).Scan(&appID)
@@ -165,7 +180,7 @@ func (h *Handler) getOrCreateApplicationForTenant(ctx context.Context, code, own
 		return 0, err
 	}
 
-	err = h.db.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		INSERT INTO applications (tenant_id, code, display_name, owner_user)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (tenant_id, code) DO UPDATE SET code = EXCLUDED.code
@@ -481,7 +496,11 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if req.OwnerUser != nil && *req.OwnerUser != "" {
 		ownerUser = *req.OwnerUser
 	}
-	appID, err := h.getOrCreateApplicationForTenant(ctx, req.ApplicationCode, ownerUser, req.TenantID)
+	// ★ 2026-11-23（211 建 key 全量 500 回归根修）：落库面走窄注入面 keyCreateQuerier()
+	// （nil ⇒ h.db，生产路径零变化）。此前 createKey 的三条查询都直接摸具体的
+	// *pgxpool.Pool ⇒ 单测注入不了 pgxmock ⇒ 「落库语句长什么样」没有任何东西在钉。
+	db := h.keyCreateQuerier()
+	appID, err := getOrCreateApplicationOn(ctx, db, req.ApplicationCode, ownerUser, req.TenantID)
 	if err != nil {
 		slog.Error("createKey: getOrCreateApplication failed", "error", err, "code", req.ApplicationCode)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -489,7 +508,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	alias := req.KeyAlias
-	existing, err := findActiveKeyConflict(ctx, h.db, appID, req.TenantID, alias)
+	existing, err := findActiveKeyConflict(ctx, db, appID, req.TenantID, alias)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -527,11 +546,21 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	//   - 不计入 GET /api/admin/users/{id}/stats 的 key_count
 	//   - 在「用户明细 → API 密钥」里完全隐身
 	// 即：调用方不传 owner_user 时，代码算出了 'admin' 却没有落库。
-	err = h.db.QueryRow(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id)
-		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10, $11)
-		RETURNING id
-	`, appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, ownerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias, teamID).Scan(&id)
+	//
+	// ★ 2026-11-23（211 建 key 全量 500 回归根修）：个人 key（teamID == nil）的 INSERT
+	// **不引用 team_id 列**。加这一列的迁移 057 尚未在 211 / 252 / 新装环境应用（投递链
+	// 缺失，见 AGENTS.md L22）⇒ 无条件列出该列的语句在那些库上必然
+	// `column "team_id" of relation "api_keys" does not exist (SQLSTATE 42703)` ⇒
+	// POST /api/keys 全量 500（211 自 build_seq 3240 起实测）。列默认 NULL 与显式写 NULL
+	// 等价 ⇒ 个人 key 不依赖迁移；只有团队 key 才引用该列（它的归属校验
+	// callerMayUseTeam 本来就要查 teams 表，本来就更依赖迁移 055–057）。
+	args := []any{appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, ownerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias}
+	stmt := insertAPIKeySQL(false)
+	if teamID != nil {
+		stmt = insertAPIKeySQL(true)
+		args = append(args, teamID)
+	}
+	err = db.QueryRow(ctx, stmt, args...).Scan(&id)
 	if err != nil {
 		slog.Error("createKey insert failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -553,29 +582,51 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// insertAPIKeySQL 是 createKey 的落库语句；withTeam 为真才带 team_id 列（第 11 个参数）。
+//
+// ★ 两条语句的列清单是钉测的判据（TestCreateKey_PersonalKeyInsertOmitsTeamColumn /
+// TestCreateKey_TeamKeyInsertWritesTeamColumn）——个人 key 那条不得出现 team_id：它依赖
+// 的迁移 057 在 211 / 252 / 新装环境都还没应用。要改列清单，先让那两条测试过。
+func insertAPIKeySQL(withTeam bool) string {
+	if withTeam {
+		return `
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias, team_id)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10, $11)
+		RETURNING id
+	`
+	}
+	return `
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10)
+		RETURNING id
+	`
+}
+
 // callerMayUseTeam 判断当前调用方是否有权把一张 api key 挂到指定团队上。
 //
 // ★ 2026-11-23（12h 修订审计轮）：补齐 api_keys.team_id 写入路径的最后一道闸。
 //
 // ★ 判据（四条同时成立才放行）：
-//   ① 调用方是一个真实登录用户（AuthContext.UserID > 0）——legacy admin key
-//      认证没有用户身份（UserID = 0），无法证明成员关系 ⇒ 不放行；
-//   ② 团队存在，且 teams.tenant_id = 本次 key 的 tenant_id（跨租户防串，
-//      与 maas/team_budget_gate.go 里 "ak.tenant_id = t.tenant_id" 同一族口径）；
-//   ③ 调用方是该团队的 owner（teams.owner_id）**或** user_teams 中的成员
-//      （role ∈ owner/admin/member）——迁移 056 的 teams_member_select 策略
-//      用的也是这个成员口径；
-//   ④ 以上判定与 RLS 可见行同口径（见下方 set_config 说明）。
+//
+//	① 调用方是一个真实登录用户（AuthContext.UserID > 0）——legacy admin key
+//	   认证没有用户身份（UserID = 0），无法证明成员关系 ⇒ 不放行；
+//	② 团队存在，且 teams.tenant_id = 本次 key 的 tenant_id（跨租户防串，
+//	   与 maas/team_budget_gate.go 里 "ak.tenant_id = t.tenant_id" 同一族口径）；
+//	③ 调用方是该团队的 owner（teams.owner_id）**或** user_teams 中的成员
+//	   （role ∈ owner/admin/member）——迁移 056 的 teams_member_select 策略
+//	   用的也是这个成员口径；
+//	④ 以上判定与 RLS 可见行同口径（见下方 set_config 说明）。
 //
 // ★ 为什么这里要显式 set_config('app.current_user_id')：
-//   teams / user_teams 都 ALTER TABLE ... ENABLE ROW LEVEL SECURITY，策略基于
-//   current_setting('app.current_user_id', true)（迁移 055:24 / 056:24 / 057:16）。
-//   本仓其它地方**从不设置**该 GUC（既有惯例是 app.current_tenant / app.current_role
-//   / app.bypass_rls，见 apihub/pg_store.go:744、domains/sessionaudit/approval_manager.go:521）
-//   ⇒ RLS 判定与 Go 侧显式校验各说各话。
-//   这里按 apihub/pg_store.go:744 的既有范式在事务内设置它，让「RLS 看得见的行」
-//   与「Go 侧判定的成员关系」是同一口径；若部署库用的是表属主连接（RLS 被绕过），
-//   则本函数的显式校验就是唯一生效的闸。
+//
+//	teams / user_teams 都 ALTER TABLE ... ENABLE ROW LEVEL SECURITY，策略基于
+//	current_setting('app.current_user_id', true)（迁移 055:24 / 056:24 / 057:16）。
+//	本仓其它地方**从不设置**该 GUC（既有惯例是 app.current_tenant / app.current_role
+//	/ app.bypass_rls，见 apihub/pg_store.go:744、domains/sessionaudit/approval_manager.go:521）
+//	⇒ RLS 判定与 Go 侧显式校验各说各话。
+//	这里按 apihub/pg_store.go:744 的既有范式在事务内设置它，让「RLS 看得见的行」
+//	与「Go 侧判定的成员关系」是同一口径；若部署库用的是表属主连接（RLS 被绕过），
+//	则本函数的显式校验就是唯一生效的闸。
 func (h *Handler) callerMayUseTeam(ctx context.Context, r *http.Request, teamID int64, tenantID string) (bool, error) {
 	auth := GetAuthContext(r)
 	if auth == nil || auth.UserID <= 0 {

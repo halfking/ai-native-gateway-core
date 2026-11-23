@@ -101,6 +101,11 @@ type Handler struct {
 	// teamGuardDB 是「api key 挂团队」归属校验的窄注入面（★ 2026-11-23 12h
 	// 修订审计轮 ★）：nil ⇒ h.db。作用见 teamGuardDB 接口注释。
 	teamGuardDB teamGuardDB
+	// keyCreateDB 是 createKey 的落库查询面（★ 2026-11-23 211 建 key 全量 500 回归
+	// 根修 ★）：nil ⇒ h.db（keyCreateQuerier）。db 字段是具体 *pgxpool.Pool，单测里
+	// 注入不了 pgxmock ⇒ 此前建 key 的测试都停在 DB 面之前 ⇒ 「落库语句引用了未应用
+	// 迁移的列」这种缺陷没有任何东西会红。按 teamGuardDB 的同款范式开窄口。
+	keyCreateDB keyConflictQuerier
 	// blockReviewCandidateReader 是「审核单候选规则」的读面（★ 2026-10-31
 	// 拦截归因轮 ★）。★ nil ⇒ 用默认实现（sanitizerules 的逐单窗口读面）★
 	// ⇒ ★ 单测可注入（★ 这个读面的**口径**是本轮的关键：逐单窗口 vs
