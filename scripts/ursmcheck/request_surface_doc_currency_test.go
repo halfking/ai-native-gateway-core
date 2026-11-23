@@ -255,13 +255,13 @@ type docEvidence struct {
 //	main_pipeline.go 启动日志 :1290、D09 合成/写回窗口 829-840（合成点 :837）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 9126, to: 9145,
+		file: "cmd/gateway/main.go", from: 9144, to: 9163,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 9129, to: 9136,
+		file: "cmd/gateway/main.go", from: 9147, to: 9154,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
@@ -273,7 +273,7 @@ var requestSurfaceDocEvidence = []docEvidence{
 		// ★ 漂移归属：★ 上游 aac6602ab 轮改 cmd/gateway/main.go ⇒ ★ **上游
 		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 dd89c6bb6 上就在（★ 上游基线
 		// ★ 自带红）⇒ ★ 我方只改对拍表、★ 不动上游代码。
-		file: "cmd/gateway/main.go", from: 9091, to: 9098,
+		file: "cmd/gateway/main.go", from: 9109, to: 9116,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
