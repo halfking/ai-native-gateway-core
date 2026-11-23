@@ -350,3 +350,36 @@ $ docker exec acc-pg17 psql -U llm_gateway -d llm_gateway -Atc \
     scripts/ursmcheck（文档/登记/棘轮）—— ok（★ 16 条定向门全绿，含 AGENTS.md 体积棘轮与 R 标记索引）
     scripts/ursmcheck（census/reachability 族）—— ★ 仅 L20 已登记的 3 条红
         （gap ledger 941 vs 959 / reachability 941 vs 959 / manifest 387 vs 392）⇒ **零新增红**
+
+--------------------------------------------------------------------------------
+⑯ ★★ 修复后的 fresh 段底稿可采集了（★ 与「旁路」底稿逐个一致 ⇒ 修法达到等价水平）
+--------------------------------------------------------------------------------
+★ 采集（★ 官方采集器，★ 走同一条采集代码路径）：
+    python3 scripts/audit/db-object-census.py census-sql > /tmp/census.sql
+    docker exec -i l20-fresh-pg psql -U llm_gateway -d llm_gateway -tA -q -f - < /tmp/census.sql \
+      | python3 scripts/audit/db-object-census.py collect --env fresh --from-stdin --out /tmp/fresh-fixed.tsv
+  ⇒ collect: env=fresh rows=2795
+
+★ 对拍（★ 三档底稿的最终关系）：
+    真实路径（止步 956，修前）      = 2672 个对象
+    真实路径（★ 修复后）            = 2795 个对象
+    旁路（956+981 临时放宽）        = 2795 个对象   ★★ 与修复后【逐个一致，差集 0】
+    旁路 ＋ 手工 055-058            = 2814 个对象
+
+  ★★ **⇒ 修法 A1＋B2 把「真实路径」补到了与「旁路」完全等价的水平**
+     （★ 对拍口径：按 kind/schema/relkind/name 去重后逐个比对）
+     （★ 修复后 vs 旁路：★ 少 0 个、多 0 个）
+
+★ 唯一的 19 个对象差异＝teams 族（★ 055-058 仍未进投递链 ⇒ ★ 那是 L22 的裁定）：
+    teams / teams_id_seq / teams_pkey / teams_tenant_name_key /
+    idx_teams_owner_id / idx_teams_tenant_id /
+    user_teams / user_teams_id_seq / user_teams_pkey / user_teams_user_team_key /
+    idx_user_teams_team_id / idx_user_teams_user_id /
+    team_budgets / team_budgets_id_seq / team_budgets_pkey / team_budgets_team_id_key /
+    idx_team_budgets_team_id / idx_api_keys_team_id / idx_api_keys_tenant_team
+
+★ ⇒ **对 L20 的直接后果**：★ census 的 fresh 段口径「安装器真实路径装出来的库」
+  ★ 在**当前水位重新变得可采集**（★ 修前是「装不出来 ⇒ 不可采集」）
+  ⇒ ★★ **L20 的 fresh 侧解锁**；★ ★ **但 expect 侧那 7 条 teams 索引仍取决于 L22 的裁定**
+  ⇒ ★★ **⇒ 两者不一致的根因从「fresh 装不出来」收敛为「teams 没进投递链」**（★ 这正是 L22 的议题）
+  ⇒ ★★ **⇒ 台账重生成仍是 owner 授权轴（L20）＋ L22 前置 ⇒ ★ 本轮不擅自重生成**
