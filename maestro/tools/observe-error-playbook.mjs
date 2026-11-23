@@ -507,7 +507,10 @@ async function main(argv) {
     entries_by_source: sourceCounts,
     recent: {
       returned: snap.executions.length,
-      newest_execution_at: newestExecutionAt(snap.executions),
+      newest_execution_at: (() => {
+        const t = newestExecutionAt(snap.executions)
+        return t === null ? null : new Date(t).toISOString()
+      })(),
       mutating_executed: findMutatingExecutions(snap.executions),
     },
     anomalies,
