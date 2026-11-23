@@ -59,7 +59,7 @@ t('A1 设计稳态不报异常：全局闸关 + 大量待确认 + worker 正常�
   eq(JSON.stringify(a), '[]', 'anomalies')
 })
 
-t('A2 ★ 历史事故复现：开关开着、last_run_at=null、零留痕 ⇒ 必须报（首版对此 10 轮全静默）', () => {
+t('A2 ★ 历史事故复现：开关开着、last_run_at=null、零留痕 ⇒ 必须报（首版对此 11 轮全静默）', () => {
   const st = { provisioned: true, engine_wired: true, executions: { total: 0, last_24h: {} } }
   // 首轮（没有上一轮可比）。
   const first = computeAnomalies({ st, statsStatus: 200, gates: GATE_OFF, recentRows: [], execTotal: 0, prev: null, now: NOW })
@@ -81,6 +81,25 @@ t('A3 last_run_at=null 但 2 分钟前刚有新留痕（蓝绿切换清零）⇒
   })
   eq(has(a, 'worker_not_completing_rounds').length, 0, '不应报 worker 不出活')
   eq(has(a, 'no_new_executions_since_prev_sample').length, 0, '不应报无新留痕')
+})
+
+t('A3b ★ 今天的事故复现：last_run_at 停在旧时间戳上 50 分钟（非 null）⇒ 必须报（首版只认 null）', () => {
+  const a = computeAnomalies({
+    st: { provisioned: true, engine_wired: true, last_run_at: iso(T0 - 50 * MIN), executions: { total: 206, last_24h: { awaiting_approval: 200, succeeded: 6 } } },
+    statsStatus: 200, gates: GATE_OFF, recentRows: [awaiting(206, T0 - 50 * MIN)],
+    execTotal: 206, prev: { ts: iso(T0 - 2 * H), stats: { executions_total: 190 } }, now: NOW,
+  })
+  eq(has(a, 'worker_not_completing_rounds').length, 1, '停更 50 分钟应报')
+  ok(a.some((s) => s.includes('last_run_at=' + iso(T0 - 50 * MIN))), '应带上停更的时间戳')
+})
+
+t('A3c last_run_at 过期但 3 分钟前刚有新留痕（一轮很长、仍在出活）⇒ 不算不出活', () => {
+  const a = computeAnomalies({
+    st: { provisioned: true, engine_wired: true, last_run_at: iso(T0 - 50 * MIN), executions: { total: 206, last_24h: {} } },
+    statsStatus: 200, gates: GATE_OFF, recentRows: [awaiting(206, T0 - 3 * MIN)],
+    execTotal: 206, prev: { ts: iso(T0 - 2 * H), stats: { executions_total: 190 } }, now: NOW,
+  })
+  eq(has(a, 'worker_not_completing_rounds').length, 0, '不应报不出活')
 })
 
 t('A4 ★ 灰度约束：全局闸关 + 自动化动了变更类动作 ⇒ CONSTRAINT_VIOLATION 逐条点名；只读/手动/skipped 不算', () => {

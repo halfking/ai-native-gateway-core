@@ -21,8 +21,10 @@
 //   ③ top-100 截断：留痕约 200 条/天增长，一页只覆盖十几小时。
 //   ④ 代理②误标：awaiting_approval 占比被解释成「置信度门拦下待放行的比例」，
 //      而在本灰度里它由全局闸决定、恒接近 100%，与误报无关。
-//   另：last_run_at 是引擎的**进程内存**值，蓝绿切换即清零 ⇒ 单凭 null 不能判
-//   worker 已死，必须配合「最近 15 分钟有没有新留痕」一起看。
+//   另：worker 不出活有两种形态，首版一种都抓不到 —— 昨天是 last_run_at 恒 null
+//   （摄取链每轮失败），今天（11-23 16:07:58 CST 起）是 last_run_at 停在旧时间戳上。
+//   判据统一为「开关开着，最近 15 分钟既无完成的轮次也无新留痕」；last_run_at 是
+//   进程内存值、蓝绿切换即清零，所以 null 要有「无新留痕」佐证。
 //
 // 只读观察：不改任何生产配置。所有请求都是 GET（登录 POST 除外）。
 //
@@ -257,14 +259,22 @@ export function computeAnomalies({ st, statsStatus, gates, recentRows, execTotal
   const failed24 = st?.executions?.last_24h?.failed
   if (Number(failed24) > 0) a.push(`failed_last_24h=${failed24}`)
 
-  // ★ 链路不出活（开关开着才有意义）。last_run_at 是进程内存值，重启即清零，
-  //   单凭 null 不算；要有「最近 15 分钟没有新留痕」佐证。
+  // ★ 链路不出活（开关开着才有意义）。信号与失败形态无关：
+  //   「最近 15 分钟既没有完成的轮次，也没有新留痕」。
+  //   - last_run_at 是「最近一次**完成**的轮次的开始时刻」，健康时每轮（5 分钟）都刷，
+  //     与有没有错误可匹配无关。它是进程内存值，重启即清零 ⇒ null 可能只是刚重启，
+  //     所以 null 要有「无新留痕」佐证；非 null 但过期（停在旧时间戳上）没有这种歧义。
+  //   - 首版只认 null：2026-11-23 16:07:58 CST 起 worker 停更 50+ 分钟（last_run_at 停在
+  //     旧值），采样器照样报 anomalies=[]。两种形态都要抓。
   if (gates?.enabled === true) {
+    const lastRunMs = Date.parse(st?.last_run_at ?? '')
     const newest = newestExecutionAt(recentRows)
-    const noRun = st?.last_run_at === null || st?.last_run_at === undefined
-    if (noRun && (newest === null || now.getTime() - newest > STALL_MS)) {
-      a.push('worker_not_completing_rounds: enabled=true but last_run_at=null and no execution in the last 15 min ' +
-        '(worker rounds are failing or never scheduled — check "error_playbook: worker round failed" in logs)')
+    const roundStale = Number.isNaN(lastRunMs) || now.getTime() - lastRunMs > STALL_MS
+    const quiet = newest === null || now.getTime() - newest > STALL_MS
+    if (roundStale && quiet) {
+      a.push(`worker_not_completing_rounds: enabled=true but no completed round and no new execution in the last 15 min ` +
+        `(last_run_at=${st?.last_run_at ?? 'null'}, executions_total=${execTotal}) — ` +
+        'worker rounds are failing or hanging; check "error_playbook: worker round failed" in logs')
     }
     const prevTotal = prev?.stats?.executions_total
     if (prev && typeof prevTotal === 'number' && execTotal === prevTotal) {
