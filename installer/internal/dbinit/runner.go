@@ -2028,6 +2028,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 的台账行记过同款）。
 			"989_migration_ledger_session_analytics_981_repair.sql",
 			"982_provider_call_attempts.sql",
+			// ★ 983（2026-11-24 统计专用表 request_metrics）：独立建表、无依赖，
+			//   执行顺序不敏感 ⇒ **排在清单末尾**。
+			//   ★ 为什么必须排末尾：sql/schema/installed_startup_migrations.tsv 是本清单的
+			//     机器可读镜像，首列是**序号**；在中间插一行会把后面所有迁移的序号整体 +1
+			//     （996/997/998/999 被顶成 388/389/390/391）⇒ 按序号断言的守卫门会红，
+			//     且报错形态是「tsv 缺 996 登记行」——像是台账丢行、实际是序号漂移 ⇒ 极难定位。
+			//     ★ 要重排清单时，先同步更新那些按序号断言的门，别让序号悄悄漂移。
 			"983_request_metrics.sql",
 		},
 	}
