@@ -82,6 +82,12 @@ type dashboardSessionSummariesReader struct {
 	file       string
 	funcName   string
 	usesParams bool
+	// usesWindowHelper：该函数通过**共享窗口助手**取窗口
+	// （win.clause(...) / win.prevClause(...)）而不是在 SQL 字面量里写死。
+	// ★ 2026-11-23 日期范围对齐轮引入：窗口谓词被收敛到
+	// admin/dashboardapi/dashboard_window.go（仪表盘族共享），各腿不再各自
+	// 拼 `NOW() - INTERVAL 'N days'` 字面量 ⇒ 本门必须同时认识两种形态。
+	usesWindowHelper bool
 }
 
 var (
@@ -142,6 +148,35 @@ func dashboardFuncUsesParamsDays(fn *ast.FuncDecl) bool {
 	return found
 }
 
+// dashboardFuncUsesWindowHelper 判断函数体里是否调用了共享窗口助手
+// （win.clause(...) / win.prevClause(...)）。
+//
+// ★ 为什么需要它（2026-11-23 日期范围对齐轮）：窗口谓词被收敛到
+// dashboard_window.go 之后，各聚合腿的 SQL 字面量里**不再**有
+// `col >= NOW() - INTERVAL 'N days'` ⇒ 只认字面量的旧判据会把「有窗口」
+// 的腿误判成「无窗口」⇒ 必须同时认助手调用形态。
+func dashboardFuncUsesWindowHelper(fn *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name != "clause" && sel.Sel.Name != "prevClause" {
+			return true
+		}
+		if x, ok := sel.X.(*ast.Ident); ok && x.Name == "win" {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
 // dashboardSessionSummariesAggregators 扫出全部「对 session_summaries 做聚合」
 // 的函数。
 func dashboardSessionSummariesAggregators(t *testing.T, root string) []dashboardSessionSummariesReader {
@@ -177,9 +212,10 @@ func dashboardSessionSummariesAggregators(t *testing.T, root string) []dashboard
 				continue
 			}
 			out = append(out, dashboardSessionSummariesReader{
-				file:       name,
-				funcName:   fn.Name.Name,
-				usesParams: dashboardFuncUsesParamsDays(fn),
+				file:             name,
+				funcName:         fn.Name.Name,
+				usesParams:       dashboardFuncUsesParamsDays(fn),
+				usesWindowHelper: dashboardFuncUsesWindowHelper(fn),
 			})
 		}
 	}
@@ -212,9 +248,11 @@ func TestDashboardSessionSummariesAggregatesAreWindowed(t *testing.T) {
 				continue
 			}
 			isReader := false
+			usesWindowHelper := false
 			for _, r := range rs {
 				if r.funcName == fn.Name.Name {
 					isReader = true
+					usesWindowHelper = r.usesWindowHelper
 					break
 				}
 			}
@@ -223,6 +261,12 @@ func TestDashboardSessionSummariesAggregatesAreWindowed(t *testing.T) {
 			}
 			sql := dashboardFuncSQL(fn)
 			if dashboardWindowRe.MatchString(sql) {
+				continue
+			}
+			// 共享窗口助手形态（2026-11-23 日期范围对齐轮）：窗口谓词由
+			// dashboard_window.go 的 win.clause / win.prevClause 生成
+			// ⇒ 同样是「有窗口」，且比字面量更严格（days 与显式日历窗口同尺）。
+			if usesWindowHelper {
 				continue
 			}
 			t.Errorf("%s:%d %s：对 session_summaries 的聚合**没有时间窗** ⇒\n%s\n"+
@@ -255,6 +299,28 @@ func TestDashboardSessionSummariesAggregatesAreWindowed(t *testing.T) {
 func TestDashboardWindowFollowsParamsDays(t *testing.T) {
 	root := repoRootFromUrsm(t)
 	readers := dashboardSessionSummariesAggregators(t, root)
+
+	// ★ 2026-11-23 日期范围对齐轮：共享窗口助手（dashboard_window.go）的不变式。
+	//   助手是「所有腿的窗口」的唯一来源 ⇒ 它必须：
+	//     ① rolling 形态逐字用 `%d days`（天数跟随参数，不是写死）；
+	//     ② 天数来源是 `params.Days`（请求参数），不是常量。
+	//   助手自己写死天数 ⇒ 全仪表盘的「近 N 天」同时失效 ⇒ 这条门必须红。
+	{
+		helperPath := filepath.Join(root, dashboardapiPkgRel, "dashboard_window.go")
+		helperBytes, err := os.ReadFile(helperPath)
+		if err != nil {
+			t.Fatalf("读共享窗口助手 %s 失败: %v", helperPath, err)
+		}
+		helper := string(helperBytes)
+		if !strings.Contains(helper, "NOW() - INTERVAL '%d days'") {
+			t.Errorf("%s：共享窗口助手的 rolling 形态没有逐字用 `%%d days` ⇒ "+
+				"窗口天数被写死 ⇒ 请求的 days 参数对它无效", helperPath)
+		}
+		if !strings.Contains(helper, "days: params.Days") {
+			t.Errorf("%s：共享窗口助手没有把天数取自 params.Days ⇒ "+
+				"「近 N 天」这个契约形同虚设", helperPath)
+		}
+	}
 	dir := filepath.Join(root, dashboardapiPkgRel)
 	fset := token.NewFileSet()
 	for _, r := range readers {

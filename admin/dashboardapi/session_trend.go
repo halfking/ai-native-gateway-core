@@ -4,7 +4,6 @@ package dashboardapi
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -67,10 +66,17 @@ func (h *SessionTrendHandler) HandleSessionTrend(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
+	// 2026-11-23 日期范围对齐轮：窗口解析与会话总览同尺（显式日历窗口
+	// start_date/end_date 优先；缺省仍走 days 滚动窗口，逐字不变）。
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
-	trend, err := h.queryTrend(ctx, params)
+	trend, err := h.queryTrend(ctx, params, win)
 	if err != nil {
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query session trend", err.Error())
@@ -93,7 +99,7 @@ func (h *SessionTrendHandler) HandleSessionTrend(w http.ResponseWriter, r *http.
 	// prevTotal=0，判据 `if prevTotal > 0` 不成立，growth_rate_pct 停在 0 ——
 	// **一次 DB 故障被渲染成「本周期增长 0%」**。0% 是一个看起来像实测值的
 	// 结论，比缺字段更有害：运维会据此判断「业务没增长」，而真相是「不知道」。
-	prevTrend, prevErr := h.queryPrevPeriodTrend(ctx, params)
+	prevTrend, prevErr := h.queryPrevPeriodTrend(ctx, params, win)
 	if prevErr != nil {
 		slog.Warn("dashboardapi session trend: previous-period query failed; growth rate unavailable",
 			"error", prevErr)
@@ -110,11 +116,16 @@ func (h *SessionTrendHandler) HandleSessionTrend(w http.ResponseWriter, r *http.
 	}
 
 	now := time.Now()
+	periodStart, periodEnd := now.AddDate(0, 0, -params.Days), now
+	if win.calendar {
+		// calendar 模式：period 边界 = 真实窗口（系统时区日历折 UTC 界）。
+		periodStart, periodEnd = win.startUTC, win.endUTC
+	}
 	resp := SessionTrendResponse{
 		Trend:       trend,
 		Summary:     summary,
-		PeriodStart: now.AddDate(0, 0, -params.Days),
-		PeriodEnd:   now,
+		PeriodStart: periodStart,
+		PeriodEnd:   periodEnd,
 	}
 
 	metadata := &Metadata{
@@ -124,26 +135,30 @@ func (h *SessionTrendHandler) HandleSessionTrend(w http.ResponseWriter, r *http.
 	writeSuccessJSON(w, resp, metadata)
 }
 
-func (h *SessionTrendHandler) queryTrend(ctx context.Context, params QueryParams) ([]SessionTrendPoint, error) {
+func (h *SessionTrendHandler) queryTrend(ctx context.Context, params QueryParams, win sessionWindow) ([]SessionTrendPoint, error) {
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+	where = append(where, win.clause("first_request_at", &args, &argIdx))
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+	// 日桶：calendar 模式按系统时区日历日分桶（横轴与所选区间同尺）；
+	// rolling 模式逐字沿用 DATE(first_request_at)。
+	dayExpr := win.dayExpr("first_request_at", &args, &argIdx)
+
+	query := `
 		SELECT
-			TO_CHAR(DATE(first_request_at), 'YYYY-MM-DD') as date,
+			TO_CHAR(` + dayExpr + `, 'YYYY-MM-DD') as date,
 			COUNT(*) as new_sessions,
 			COUNT(*) FILTER (WHERE last_request_at >= NOW() - INTERVAL '24 hours') as active_count,
 			COUNT(*) FILTER (WHERE last_request_at < DATE(first_request_at) + INTERVAL '1 day') as closed_count
 		FROM session_summaries
-		%s
-		GROUP BY DATE(first_request_at)
+		` + whereClause + `
+		GROUP BY ` + dayExpr + `
 		ORDER BY date
-	`, whereClause)
+	`
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -165,26 +180,28 @@ func (h *SessionTrendHandler) queryTrend(ctx context.Context, params QueryParams
 	return items, nil
 }
 
-func (h *SessionTrendHandler) queryPrevPeriodTrend(ctx context.Context, params QueryParams) ([]SessionTrendPoint, error) {
+func (h *SessionTrendHandler) queryPrevPeriodTrend(ctx context.Context, params QueryParams, win sessionWindow) ([]SessionTrendPoint, error) {
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
+	where = append(where, win.prevClause("first_request_at", &args, &argIdx))
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+	dayExpr := win.dayExpr("first_request_at", &args, &argIdx)
+
+	query := `
 		SELECT
-			TO_CHAR(DATE(first_request_at), 'YYYY-MM-DD') as date,
+			TO_CHAR(` + dayExpr + `, 'YYYY-MM-DD') as date,
 			COUNT(*) as new_sessions,
 			0 as active_count,
 			0 as closed_count
 		FROM session_summaries
-		%s
-		GROUP BY DATE(first_request_at)
+		` + whereClause + `
+		GROUP BY ` + dayExpr + `
 		ORDER BY date
-	`, whereClause)
+	`
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {

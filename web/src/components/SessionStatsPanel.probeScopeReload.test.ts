@@ -58,7 +58,11 @@ describe('会话统计「包含探测」开关必须生效（L7）', () => {
 
   it('② extraParams 必须把 include_probes 传给后端（缺省 false ⇒ 不传）', async () => {
     const src = await read('components/SessionStatsPanel.vue')
-    expect(src).toMatch(/extraParams:\s*computed\(\(\)\s*=>\s*\(\{\s*include_probes:\s*includeProbes\.value\s*\|\|\s*undefined\s*\}\)\)/)
+    // ★ 2026-11-23 日期范围对齐轮：extraParams 里多了 start_date/end_date
+    //   （显式日历窗口）⇒ 判据放宽到「对象里含 include_probes 且值为
+    //   includeProbes.value || undefined」，**不**要求它是对象的最后一个键
+    //   （否则加一个窗口参数就会把这条门变成「参数顺序门」）。
+    expect(src).toMatch(/extraParams:\s*computed\(\(\)\s*=>\s*\(\{[\s\S]{0,400}?include_probes:\s*includeProbes\.value\s*\|\|\s*undefined/)
   })
 
   it('③ 面板必须 defineExpose({ refresh })——页头刷新按钮要能驱动它', async () => {

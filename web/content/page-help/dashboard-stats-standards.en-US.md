@@ -3,6 +3,8 @@
 The "Board", "Session & Statistics" and "Provider Reconciliation" are three summaries of the same stream of model calls under **three different calculation rules**. This page spells out how every number is produced, where its data comes from and which time window it covers, and gives an **item-by-item breakdown** of why the three modules' numbers do not match — for aligning data and tracing deviations.
 
 > Measured basis: 2026-11-23 21:05 (Asia/Shanghai) in production. All numbers were taken at the **same instant** (completed within a single SQL statement), window = `NOW()-7 days`; the provider reconciliation side was measured separately over the closed calendar-day range `2026-11-17 ~ 2026-11-23` and cross-checked against the fact table day by day.
+>
+> ★ Correction (2026-11-23 date-range alignment round): the Session & Statistics tab now uses **the same** date range as the Board tab (same control, same calendar-day range) ⇒ the Session & Statistics figures below were measured with the **pre-alignment** (rolling) window and have to be re-measured on the new window; the Board and reconciliation figures are unaffected.
 
 ## How the three modules relate
 
@@ -10,7 +12,7 @@ The "Board", "Session & Statistics" and "Provider Reconciliation" are three summ
 | --- | --- | --- | --- |
 | Statistical entity | One model call counts as one row (**request level**) | One session counts as one row, carrying that session's **cumulative values** (**session level**) | One model call counts as one row (**request level**, aggregated by provider) |
 | Source of truth | Request-level fact table `usage_facts` | Session summary table `session_summaries` + the session universe | Daily snapshot table `report_snapshots` |
-| Time window | Calendar days in the system time zone: midnight of today-(N-1) → now | Rolling N days (first request inside the last N days) | **Closed calendar-day range** (whole day, including the full last day) |
+| Time window | Calendar days in the system time zone: midnight of today-(N-1) → now | **Same range as the Board** (calendar days in the system time zone: midnight of today-(N-1) → end of the last day; custom start/end supported) | **Closed calendar-day range** (whole day, including the full last day) |
 | Probe traffic | Excluded by `traffic_class` (switchable) | Excluded by the **session universe** rules | **Not excluded** (all traffic, including unassigned) |
 | Maturity | Real time | Real time | **T+1 snapshot** (a date whose day has not ended yet lags behind) |
 
@@ -146,7 +148,7 @@ The provider rows of the reconciliation page (including "Unassigned") **sum to e
 
 ## What to check when the numbers do not match
 
-1. **Align the window first**: board = from a calendar-day midnight; Session & Statistics panel = rolling N days; aligned row = whole Shanghai calendar days; provider reconciliation = closed calendar-day range. Even for the same preset the four are not the same window.
+1. **Align the window first**: Board and Session & Statistics panel = **the same calendar-day range** (midnight of today-(N-1); the board counts up to now, the panel up to the end of the last day ⇒ both cover the same data, and both tabs use the same date-range control); aligned row = whole Shanghai calendar days; provider reconciliation = closed calendar-day range. The last two are still not the same window as the first two.
 2. **Then align the entity**: compare requests with requests and cost with cost; never compare a session count with a request count.
 3. **Then align the probe caliber**: the board can switch to "include probes"; session statistics excludes by the session universe rules; **the reconciliation always includes probes**. Request counts differing a lot while the costs are close ⇒ look at probes first.
 4. **Then align the maturity**: the reconciliation is a T+1 snapshot, so **the current day's data necessarily lags**; confirm which day the snapshot covers before comparing.

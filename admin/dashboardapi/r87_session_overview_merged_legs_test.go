@@ -112,8 +112,12 @@ func TestR87_MergedAggregatesKeepEveryMetric(t *testing.T) {
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) querySessionSummaryAggregates(")
 
 	needles := []string{
-		// 窗口与租户口径（原四条腿逐字相同）
-		"first_request_at >= NOW() - INTERVAL '%d days'",
+		// 窗口与租户口径（原四条腿逐字相同）。
+		// ★ 2026-11-23 日期范围对齐轮：窗口谓词不再由各腿自己拼字面量，
+		//   而是收敛到共享助手 dashboard_window.go（win.clause）⇒ 这里钉的
+		//   是「这条腿必须走共享窗口助手」（助手自身的不变式由
+		//   dashboard_window_test.go + scripts/ursmcheck 的窗口门钉）。
+		"win.clause(\"first_request_at\", &args, &argIdx)",
 		"tenant_id = $%d",
 		"FROM session_summaries",
 		// 腿 1：总会话数
@@ -196,17 +200,23 @@ func TestR87_MergedTrendsKeepEveryMetric(t *testing.T) {
 	body := r87FuncBody(t, src, "func (h *SessionOverviewHandler) querySessionTrends(")
 
 	needles := []string{
-		"DATE(ss.first_request_at)::text as date",
+		// ★ 2026-11-23 日期范围对齐轮：日桶与窗口谓词改为共享助手形态
+		//   （dayExpr 复用同一表达式字符串 ⇒ SELECT 与 GROUP BY 同尺；
+		//    new_sessions 的 FILTER 复用同一组窗口占位符 ⇒ 语义仍是「恒真」）。
+		"winArg := argIdx",
+		"dayExpr := win.dayExpr(\"ss.first_request_at\", &args, &argIdx)",
+		"newFilter := win.clauseAt(\"ss.first_request_at\", winArg)",
+		"` + dayExpr + `::text as date",
 		"COALESCE(SUM(ss.total_cost_usd), 0) as cost",
 		"COUNT(*) as sessions",
 		"COALESCE(SUM(ss.request_count), 0) as requests",
-		"COUNT(*) FILTER (WHERE ss.first_request_at >= NOW() - INTERVAL '%d days') as new_sessions",
+		") as new_sessions",
 		"COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active_count",
 		"COUNT(*) FILTER (WHERE ss.last_request_at < NOW() - INTERVAL '24 hours' AND ss.first_request_at < NOW() - INTERVAL '24 hours') as closed_count",
 		"FROM session_summaries",
-		"GROUP BY DATE(ss.first_request_at)",
+		"GROUP BY ` + dayExpr + `",
 		"ORDER BY date",
-		"first_request_at >= NOW() - INTERVAL '%d days'",
+		"win.clause(\"first_request_at\", &args, &argIdx)",
 		"tenant_id = $%d",
 	}
 	for _, needle := range needles {

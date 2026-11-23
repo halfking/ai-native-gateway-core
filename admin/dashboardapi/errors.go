@@ -81,11 +81,17 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 2026-11-23 日期范围对齐轮：窗口解析与会话总览同尺（显式日历窗口优先）。
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
 	// 1. 错误摘要
-	summary, err := h.queryErrorSummary(ctx, params)
+	summary, err := h.queryErrorSummary(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "errors:summary", err)
@@ -98,7 +104,7 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. 错误分布
-	dist, err := h.queryErrorDistribution(ctx, params)
+	dist, err := h.queryErrorDistribution(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "errors:distribution", err)
@@ -111,7 +117,7 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. 最近错误
-	recentErrors, err := h.queryRecentErrors(ctx, params)
+	recentErrors, err := h.queryRecentErrors(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "errors:recent", err)
@@ -124,7 +130,7 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Top 错误
-	topErrors, err := h.queryTopErrors(ctx, params)
+	topErrors, err := h.queryTopErrors(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "errors:top", err)
@@ -150,11 +156,12 @@ func (h *ErrorsHandler) HandleErrors(w http.ResponseWriter, r *http.Request) {
 	writeSuccessJSON(w, resp, metadata)
 }
 
-func (h *ErrorsHandler) queryErrorSummary(ctx context.Context, params QueryParams) (*ErrorSummary, error) {
+func (h *ErrorsHandler) queryErrorSummary(ctx context.Context, params QueryParams, win sessionWindow) (*ErrorSummary, error) {
 	summary := &ErrorSummary{}
-	where := []string{fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days)}
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
@@ -180,13 +187,12 @@ func (h *ErrorsHandler) queryErrorSummary(ctx context.Context, params QueryParam
 	return summary, nil
 }
 
-func (h *ErrorsHandler) queryErrorDistribution(ctx context.Context, params QueryParams) ([]ErrorDistItem, error) {
-	where := []string{
-		fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days),
-		"status = 'failed'",
-	}
+func (h *ErrorsHandler) queryErrorDistribution(ctx context.Context, params QueryParams, win sessionWindow) ([]ErrorDistItem, error) {
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
+	where = append(where, "status = 'failed'")
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
@@ -229,24 +235,27 @@ func (h *ErrorsHandler) queryErrorDistribution(ctx context.Context, params Query
 	return items, nil
 }
 
-func (h *ErrorsHandler) queryRecentErrors(ctx context.Context, params QueryParams) ([]ErrorTrendItem, error) {
-	where := []string{fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days)}
+func (h *ErrorsHandler) queryRecentErrors(ctx context.Context, params QueryParams, win sessionWindow) ([]ErrorTrendItem, error) {
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+	dayExpr := win.dayExpr("created_at", &args, &argIdx)
+
+	query := `
 		SELECT
-			TO_CHAR(DATE(created_at), 'YYYY-MM-DD') as date,
+			TO_CHAR(` + dayExpr + `, 'YYYY-MM-DD') as date,
 			COUNT(*) FILTER (WHERE status = 'failed') as error_count,
 			COUNT(*) as total_count
 		FROM session_module_executions_hot
-		%s
-		GROUP BY DATE(created_at)
+		` + whereClause + `
+		GROUP BY ` + dayExpr + `
 		ORDER BY date
-	`, whereClause)
+	`
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -268,14 +277,13 @@ func (h *ErrorsHandler) queryRecentErrors(ctx context.Context, params QueryParam
 	return items, nil
 }
 
-func (h *ErrorsHandler) queryTopErrors(ctx context.Context, params QueryParams) ([]ErrorDetail, error) {
-	where := []string{
-		fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days),
-		"status = 'failed'",
-		"error_message IS NOT NULL",
-	}
+func (h *ErrorsHandler) queryTopErrors(ctx context.Context, params QueryParams, win sessionWindow) ([]ErrorDetail, error) {
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
+	where = append(where, "status = 'failed'")
+	where = append(where, "error_message IS NOT NULL")
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
