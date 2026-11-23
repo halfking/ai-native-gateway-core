@@ -191,9 +191,27 @@ fi
 # ── ★★ 隔离断言 ②：★ 目标库必须**确实是空的**（★ 非空 ⇒ 拒绝执行）★★
 # ★ 这条是首版自伤事故的直接补丁：★ 「门只打自己起的容器」还不够
 # —— ★★ 万一容器名被环境变量指到了别处、★ 那个库又有数据，★ 就必须在这里挡住。
-ntables=$(docker exec "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" -Atc \
-  "select count(*) from information_schema.tables where table_schema='public'" 2>/dev/null)
-if [ "${ntables:-0}" != "0" ]; then
+# ★★ ★ 高负载下实测到的一个真弱点（★ 本轮补）：★★ 这一步**只跑一次** ⇒ ★ 机器
+# ★★ 被压满时（★ 本机实测 load 600+）★ psql 可能**瞬时**失败（★ PG 尚在启动或
+# ★ docker exec 打嗝）⇒ ★★ 而 `set -e` ＋ ERR trap 会把「探测失败」报成
+# ★★ **「门自身的缺陷」**（★ 实测：门在第 195 行异常退出、★ 而门其实没坏）★★
+# ★★ ⇒ ★★ **「探测失败」与「库非空」必须分开**：★ 前者重试几次、★ 后者直接拒。
+ntables=""
+attempt=1
+while [ "$attempt" -le 6 ]; do
+  if ntables=$(docker exec "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" -Atc \
+        "select count(*) from information_schema.tables where table_schema='public'" 2>/dev/null); then
+    break
+  fi
+  ntables=""
+  attempt=$((attempt+1))
+  sleep 2
+done
+if [ -z "$ntables" ]; then
+  bad "探测目标库 $PG_DB 的表数失败（★ 连不上或 PG 未就绪、★ 重试 6 次仍失败）⇒ ★ 拒绝执行（★ 这不是判据红）"
+  exit 1
+fi
+if [ "$ntables" != "0" ]; then
   bad "目标库 $PG_DB 在容器 $CONTAINER_NAME 里**不是空的**（public 表数=${ntables}）⇒ ★ 拒绝执行"
   exit 1
 fi
@@ -320,6 +338,91 @@ if [ "$col2" != "1" ]; then
   bad "★ 第二次运行后 session_summaries.total_credits_charged 列数＝${col2:-<空>}，★ 期望 1（★ ⇒ 增量路径把已装好的库改坏了）"
 else
   note "  ✔ 增量路径后 total_credits_charged 仍在"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ── 第三阶段：★ 「部署通道视角」的跳过（★ F3 的运行时覆盖）────────────
+# ★★★ 本阶段补的是 L33 轮自己登记的缺口：★ 修法 F3（★ 安装器**只读**咨询部署
+# ★★★ 通道的权威台账 `gateway_db_revision_sequences`）★★ 此前**只有单元测试**
+# ★★★ 覆盖（★ 运行时只跑到「表不存在」那条分支）⇒ ★★ 本阶段给它真库运行时覆盖。
+#
+# ★ 做法（★ 三步，★ 让「只有 F3 能跳过它」成立）：
+#   ① 造出权威台账表（★ DDL 与 scripts/apply-db-revision-sequence.sh **同款**）；
+#   ② ★★ 先从 `schema_migrations` **删掉**目标文件的版本行 ⇒ ★★ 于是「版本规则」
+#      不再跳过它 ⇒ ★★ **只剩 F3 能跳过它**；
+#   ③ 把该文件的**内容 sha256** 写进权威台账（★ marker = 「<序列名>:<文件名>」）。
+#   ⇒ ★ 再跑一次安装器（★ 增量）⇒ ★ 断言：★ **该文件没有被应用**（★ 日志里是
+#      「跳过 …（部署通道已按同一内容指纹应用）」）。
+#
+# ★ 为什么这条文件选 `484_request_logs_hot_add_status_code.sql`：★ 它在**老库**上
+# ★ 重放会炸（★ `relation "request_logs_hot" does not exist`——★ 那张表已被后续
+# ★ 迁移下线）⇒ ★⇒ ★ **F3 一旦失效，第三次安装会当场失败**（★ 强判据）★★ ⇒ 而不是
+# ★ 一个「看起来还行」的弱判据。
+# ═══════════════════════════════════════════════════════════════════════
+DEPLOY_FILE="484_request_logs_hot_add_status_code.sql"
+DEPLOY_VERSION="484"
+DEPLOY_SEQ="session-summary-and-integrity-2026-09"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha_tool="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  sha_tool="shasum -a 256"
+else
+  sha_tool=""
+fi
+if [ -z "$sha_tool" ]; then
+  note "  ℹ 没有 sha256sum/shasum ⇒ ★ 第三阶段（★ F3 运行时覆盖）在本机跑不了（★ 不是通过）"
+else
+  deploy_src="installer/cmd/llm-gw-installer/embeddata/startup/${DEPLOY_FILE}"
+  if [ ! -f "$deploy_src" ]; then
+    bad "找不到 ${deploy_src} ⇒ 第三阶段无法执行"
+  else
+    deploy_sha="$($sha_tool "$deploy_src" | cut -d' ' -f1)"
+    note "★ 跑第三阶段（★ 部署通道视角：★ 权威台账同内容指纹 ⇒ 不重放）…"
+    q "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" >/dev/null
+    q "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text" >/dev/null
+    q "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS execution_sha256 text, ADD COLUMN IF NOT EXISTS runtime_adaptation text" >/dev/null
+    # ★★ 删掉目标文件的版本行 ⇒ ★★ 版本规则不再跳过它 ⇒ ★★ 只剩 F3 能跳
+    q "DELETE FROM public.schema_migrations WHERE version = '${DEPLOY_VERSION}'" >/dev/null
+    q "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${DEPLOY_SEQ}:${DEPLOY_FILE}', '${deploy_sha}') ON CONFLICT (sequence_name) DO NOTHING" >/dev/null
+    RUN3_LOG="$(mktemp -t fresh-install-run3)"
+    if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
+            go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN3_LOG" 2>&1; then
+      note "---- 第三次安装输出（尾部 20 行）----"
+      tail -20 "$RUN3_LOG"
+      note "---- 第三次安装输出（尾部 20 行）----"
+      bad "★ 第三阶段失败（★ ★ 权威台账已登记 ${DEPLOY_FILE} 的同一内容指纹、★ 版本行也已删 ⇒ ★ 只剩 F3 能跳过它 ⇒ ★ 它被重放了 ⇒ ★ 而它一重放就炸）"
+      rm -f "$RUN3_LOG"
+      exit 1
+    fi
+    # ★★ 判据：★ 该文件必须是「被跳过」⇒ ★ 日志里出现 F3 的理由
+    #
+    # ★★★★ ★★★ 量具坑（★ 2026-11-23 L33 二轮实测撞到、★ **本轮头号发现**）★★★
+    # ★★★★ 第一版的写法是 `if (grep -q "…" "$LOG" || true); then` ⇒ ★★ **恒真**★★
+    # ★★★★ ⇒ ★★ 「跳过」那条**恒判绿**（★ 假绿）、★ 「被重放」那条**恒判红**
+    # ★★★★ （★ 假红）★★ ⇒ ★★ 两条判据**同时恒成立** ⇒ ★★ 门输出自相矛盾
+    # ★★★★ （★ 「✔ 被跳过」与「✘ 被重放」同时出现）★★ ⇒ ★★ 实测日志里明明只有
+    # ★★★★ 一行「跳过」行 ⇒ ★★ **矛盾只在判据写法里、★ 不在日志里**★★。
+    # ★★★★ ⇒ ★★ 教训（★ 写死在这里）：★★ **`|| true` 只能用在「命令替换里取计数」
+    # ★★★★ 或「诊断打印」上；★ ★ 一旦放到 `if` 的条件位、★ 它会把整个条件
+    # ★★★★ 变成恒真 ⇒ ★★ 判据被掏空 ⇒ ★★ **一道门最坏的情形就是「判据恒真」**
+    # ★★★★ （★ 比「恒绿」更隐蔽：★ 恒绿至少看起来像通过、★ 而恒真会同时给出
+    # ★★★★ 一绿一红两个互相打架的结论）★★★★ ⇒ ★★ 判据位一律用 grep 的**真实
+    # ★★★★ 退出码**（★ 0＝命中、★ 1＝未命中；★ ★ `if` 条件位上的非零退出码
+    # ★★★★ **不会**触发 ERR trap、★ 也不会触发 `set -e`）★★★★。
+    if grep -q "跳过 startup migration ${DEPLOY_FILE}" "$RUN3_LOG"; then
+      note "  ✔ ${DEPLOY_FILE} 被权威台账按同一内容指纹跳过（★ F3 生效）"
+    else
+      bad "★ ${DEPLOY_FILE} 没有出现在「跳过」行里 ⇒ ★ F3 的匹配分支没生效（★ 版本行已删、★ 权威台账里有同一指纹）"
+    fi
+    if grep -q "应用 startup migration ${DEPLOY_FILE}" "$RUN3_LOG"; then
+      bad "★ ${DEPLOY_FILE} 被**重放**了（★ 权威台账说它已按同一指纹应用过）"
+      note "  ── 第三次安装日志里与 ${DEPLOY_FILE} 有关的行（★ 诊断）──"
+      (grep -n "${DEPLOY_FILE}" "$RUN3_LOG" || true) | head -12 | sed 's/^/      /'
+    else
+      note "  ✔ ${DEPLOY_FILE} 没有被重放"
+    fi
+    rm -f "$RUN3_LOG"
+  fi
 fi
 
 if [ "$FAIL" -ne 0 ]; then

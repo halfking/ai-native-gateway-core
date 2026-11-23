@@ -146,3 +146,37 @@ func normalizeSQLText(s string) string {
 	s = strings.ReplaceAll(s, "\t", " ")
 	return strings.Join(strings.Fields(s), " ")
 }
+
+// TestParseDeployLedgerMarkers 钉住权威台账 marker 的解析口径：
+//
+//	① marker 形态 = 「<序列名>:<文件名>」⇒ ★ 取**最后一个** ':' 之后的部分
+//	  ⇒ ★ **换序列名不影响识别**（★ 部署通道换了序列名，★ 安装器照样认）；
+//	② content_sha256 为空（★ 指纹通道上线前的遗留记账行）⇒ ★ 解析成空串
+//	  （★ 调用方按「已应用」处理 ⇒ ★ 与部署通道同款口径）；
+//	③ 畸形行（★ 没有 '|' / 没有 ':'）⇒ ★ 跳过而不是猜。
+func TestParseDeployLedgerMarkers(t *testing.T) {
+	rows := strings.Join([]string{
+		"session-summary-and-integrity-2026-09:484_request_logs_hot_add_status_code.sql|abc123",
+		"session-summary-and-integrity-2026-09:990_stats_consistency_fixes.sql|", // 遗留无指纹行
+		"other-sequence-name:392_candidate_failure_logs_monthly_partition.sql|def456",
+		"malformed-no-colon|789", // 没有 ':' ⇒ 跳过
+		"malformed-no-pipe",      // 没有 '|' ⇒ 跳过
+		"",                       // 空行 ⇒ 跳过
+	}, "\n")
+	got := parseDeployLedgerMarkers(rows)
+	if got["484_request_logs_hot_add_status_code.sql"] != "abc123" {
+		t.Errorf("marker 解析错：%v", got)
+	}
+	if sha, ok := got["990_stats_consistency_fixes.sql"]; !ok || sha != "" {
+		t.Errorf("遗留无指纹行应解析成空串（★ 而不是缺行）：%v", got)
+	}
+	if got["392_candidate_failure_logs_monthly_partition.sql"] != "def456" {
+		t.Errorf("换序列名后仍应按 basename 识别：%v", got)
+	}
+	if _, ok := got["malformed-no-colon"]; ok {
+		t.Errorf("畸形行必须被跳过：%v", got)
+	}
+	if _, ok := got["malformed-no-pipe"]; ok {
+		t.Errorf("缺 '|' 的行必须被跳过：%v", got)
+	}
+}

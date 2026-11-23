@@ -329,6 +329,21 @@ bash scripts/run-bash4-gate.sh tests/deploy_seamless_state_machine_test.sh
 echo "[verify] fresh-install smoke gate (slow gate: real empty-db install of all startup migrations)"
 bash scripts/checks/fresh-install-smoke.sh
 
+# ★★ 「判据恒真」shell 门（★ 2026-11-23 L33 二轮新增 ★ 快门：纯静态、★ 约 1~2s ★）★★
+#   ★ 起因：★ 本轮扩「空库新装烟测门」第三阶段时写出了
+#     `if (grep -q "…" "$LOG" || true); then` ⇒ ★★ **`if` 条件恒为真** ⇒ ★★
+#     ★★ 「跳过」恒判绿、★ 「重放」恒判红 ⇒ ★★ 门输出**自相矛盾**★★。
+#   ★ ⇒ ★ 「判据恒真」是**门自己发现不了**的缺陷类别（★ 门不会知道自己恒真）★★
+#     ⇒ ⇒ 必须由**另一道门**盯 ⇒ ★ 本门专盯「`|| true` 落在 if/elif/while
+#     ★ 条件位」这一类（★ 命令替换内部与命令体内部的 `|| true` 是对的、★
+#     ★ 豁免、★ 不误报 ★★）。
+#   ★ 与全角变量 shell 门**同族**：★ Makefile 的 `guards-shell` 依赖本目标 ⇒
+#     ★ 同进 `make guards` 与 `make guards-fast`（★ CI 快门族）。
+#   ★ 变异自证（★ 本轮实测）：★ 注入缺陷 ⇒ 门红（★ 精确到 文件:行）★；
+#     ★ 移除 ⇒ 门绿（★ 868 个脚本 0 命中）★★。
+echo "[verify] shell vacuous-assertion gate (|| true must not sit in an if/elif/while condition)"
+bash scripts/guards/check-shell-vacuous-assertion.sh
+
 echo "[verify] session storage audit gate decision contracts"
 bash tests/session_storage_audit_gate_test.sh
 echo "[verify] session storage audit integration suite (required coherence)"
