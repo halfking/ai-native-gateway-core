@@ -36,9 +36,12 @@ ok()   { printf '  ✔ %s\n' "$*"; PASS=$((PASS+1)); }
 bad()  { printf '  ✘ %s\n' "$*" >&2; FAIL=$((FAIL+1)); }
 
 # ── 造一个假 psql（★ 按 SQL 内容返回预置答案 ★★）─────────────────────
-# ★ 用法：★ make_fake_psql <账表存在:0|1> <账内容文件> [<全失败:0|1>]
+# ★ 用法：★ make_fake_psql <账表存在:0|1> <账内容文件> [<全失败:0|1>] [<安装器那本账版本文件>]
+# ★★ 2026-11-24 L34 三轮：★ 新增**第四个**输入（★ 安装器那本账的版本清单 ★★）★★
+# ★★ ⇒ ★★ 因为判据升级了（★ 「缺口」要再分成【断层】与【待部署】★★）⇒ ★★ ⇒ ★★
+# ★★ 门会**只读**查第二本账（★ `public.schema_migrations` ★★）★★
 make_fake_psql() {
-  local exists="$1" content_file="$2" fail_all="${3:-0}"
+  local exists="$1" content_file="$2" fail_all="${3:-0}" instver_file="${4:-/dev/null}"
   # ★★★ ★★ heredoc 的展开纪律（★ 本轮实测撞到、★ 已修 ★★）★★★：
   # ★★★ ① **未加引号的 heredoc（★ `<<EOF` ★）会做命令替换** ⇒ ★★★ ⇒ ★★★
   # ★★★    **注释里的示例代码会被 shell 真执行**（★ 本轮就撞上了：★ 注释里写了
@@ -86,6 +89,13 @@ case "$sql" in
       cat "@@CONTENT_FILE@@"
     fi
     ;;
+  *"schema_migrations"*)
+    # ★★ 安装器那本账（★ L34 三轮新增的第二个只读输入 ★★）
+    # ⇒ ★★ 若这个文件不存在 ⇒ ★ 模拟「表不存在 / 查不到」⇒ ★ 门应保守判红 ★★
+    if [ -f "@@INSTVER_FILE@@" ]; then
+      cat "@@INSTVER_FILE@@"
+    fi
+    ;;
   *"select 1"*)  printf '1\n' ;;
   *)             printf '\n' ;;
 esac
@@ -96,6 +106,7 @@ PSQLFIXTURE
     -e "s|@@EXISTS@@|${exists}|g" \
     -e "s|@@FAIL_ALL@@|${fail_all}|g" \
     -e "s|@@CONTENT_FILE@@|${content_file}|g" \
+    -e "s|@@INSTVER_FILE@@|${instver_file}|g" \
     "$FIXTURE_DIR/fake-psql"
   rm -f "$FIXTURE_DIR/fake-psql.bak"
   chmod +x "$FIXTURE_DIR/fake-psql"
@@ -144,12 +155,36 @@ note "投递面（夹具）：${plan_count} 条"
 
 SEQ="session-summary-and-integrity-2026-09"
 
+# ── ★★ 夹具用：★ 安装器那本账的版本清单 ★★（★ 零填充 3 位、★ 与生产同形 ★★）──
+# ★★ 为什么写成零填充 3 位：★ 生产上 `schema_migrations.version` 就是 `087` 这种形态 ★★
+# ★★ ⇒ ★★ ⇒ ★★ **⇒ 门必须做版本号归一化**（★ 去掉前导零再比 ★★）⇒ ★★ ⇒ ★★
+# ★★ **⇒ 这一条本身就是对归一化逻辑的自证** ★★
+instver_all="$FIXTURE_DIR/instver-all.txt"
+awk '{ if (match($0, /^[0-9]+/)) { v = substr($0, RSTART, RLENGTH) + 0; printf "%03d\n", v } }' "$plan_file" | sort -u >"$instver_all"
+instver_count=$(wc -l <"$instver_all" | tr -d ' ')
+note "安装器那本账（夹具）：${instver_count} 个版本"
+
+# ★★ 挑一个「被排除在安装器那本账之外」的文件（★ 默认取投递面最后一条 ★★）
+PICK="$(tail -1 "$plan_file")"
+PICK_VER="$(printf '%s\n' "$PICK" | awk '{ if (match($0, /^[0-9]+/)) { print substr($0, RSTART, RLENGTH) + 0 } }')"
+
+# ★★ 「除 PICK 外全覆盖」的权威账 ★★
+: >"$FIXTURE_DIR/minus_pick.tsv"
+while IFS= read -r base; do
+  [ -n "$base" ] || continue
+  [ "$base" = "$PICK" ] && continue
+  printf '%s:%s\tdeadbeef\n' "$SEQ" "$base" >>"$FIXTURE_DIR/minus_pick.tsv"
+done <"$plan_file"
+
+# ★★ 「除 PICK 的版本外都在」的安装器那本账 ★★
+awk -v v="$PICK_VER" '$1 + 0 != v + 0' "$instver_all" >"$FIXTURE_DIR/instver-minus-pick.txt"
+
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 臂 A：账表**不存在** ⇒ ★ 全部缺口 ⇒ ★ 期望红（EXIT=1）"
-make_fake_psql 0 /dev/null
+make_fake_psql 0 /dev/null 0 "$instver_all"
 run_gate
-if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "没有记录"; then
-  ok "臂 A 红（EXIT=1）且报「没有记录」"
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "断层"; then
+  ok "臂 A 红（EXIT=1）且报「断层」"
 else
   bad "臂 A 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -3 | tr '\n' ' ')"
 fi
@@ -157,10 +192,10 @@ fi
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 臂 B：账表存在但**一行都没有** ⇒ ★ 同样全部缺口 ⇒ ★ 期望红（EXIT=1）"
 : >"$FIXTURE_DIR/empty.tsv"
-make_fake_psql 1 "$FIXTURE_DIR/empty.tsv"
+make_fake_psql 1 "$FIXTURE_DIR/empty.tsv" 0 "$instver_all"
 run_gate
-if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "没有记录"; then
-  ok "臂 B 红（EXIT=1）且报「没有记录」"
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "断层"; then
+  ok "臂 B 红（EXIT=1）且报「断层」"
 else
   bad "臂 B 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -3 | tr '\n' ' ')"
 fi
@@ -172,7 +207,7 @@ while IFS= read -r base; do
   [ -n "$base" ] || continue
   printf '%s:%s\tdeadbeef\n' "$SEQ" "$base" >>"$FIXTURE_DIR/full.tsv"
 done <"$plan_file"
-make_fake_psql 1 "$FIXTURE_DIR/full.tsv"
+make_fake_psql 1 "$FIXTURE_DIR/full.tsv" 0 "$instver_all"
 run_gate
 if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "无断层"; then
   ok "臂 C 绿（EXIT=0）且报「无断层」"
@@ -187,10 +222,10 @@ head -10 "$plan_file" | while IFS= read -r base; do
   [ -n "$base" ] || continue
   printf '%s:%s\tdeadbeef\n' "$SEQ" "$base" >>"$FIXTURE_DIR/partial.tsv"
 done
-make_fake_psql 1 "$FIXTURE_DIR/partial.tsv"
+make_fake_psql 1 "$FIXTURE_DIR/partial.tsv" 0 "$instver_all"
 run_gate
-if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "缺口"; then
-  ok "臂 D 红（EXIT=1）且报「缺口」"
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "断层"; then
+  ok "臂 D 红（EXIT=1）且报「断层」"
 else
   bad "臂 D 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -3 | tr '\n' ' ')"
 fi
@@ -202,7 +237,7 @@ while IFS= read -r base; do
   [ -n "$base" ] || continue
   printf '%s:%s\t<NULL>\n' "$SEQ" "$base" >>"$FIXTURE_DIR/legacy.tsv"
 done <"$plan_file"
-make_fake_psql 1 "$FIXTURE_DIR/legacy.tsv"
+make_fake_psql 1 "$FIXTURE_DIR/legacy.tsv" 0 "$instver_all"
 run_gate
 if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "legacy 记账行"; then
   ok "臂 E 绿（EXIT=0）且把 legacy 行单列（★ 不误报成断层 ★）"
@@ -228,6 +263,63 @@ if [ "$rc" = "0" ] && grep -q "SKIP" "$FIXTURE_DIR/out.txt"; then
   ok "臂 G SKIP（EXIT=0）且打印 SKIP"
 else
   bad "臂 G 期望 EXIT=0、实际 ${rc}；输出：$(tail -3 "$FIXTURE_DIR/out.txt" | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 臂 H（★ L34 三轮新增 ★★）：★ 缺口的那一条**从没被应用过** ★★
+# ★★ ⇒ ★ 「待部署」⇒ ★ 通道会**首次**应用它 ⇒ ★ **不是断层** ⇒ ★ 期望绿 ★★
+# ★★ 这一臂是本轮**判据升级的核心自证**：★ 旧判据在这里会红（★ 恒红型误报 ★★）★★
+note "★ 臂 H：缺口的那条**版本不在安装器那本账里** ⇒ ★ 待部署 ⇒ ★ 期望绿（EXIT=0）"
+make_fake_psql 1 "$FIXTURE_DIR/minus_pick.tsv" 0 "$FIXTURE_DIR/instver-minus-pick.txt"
+run_gate
+if [ "$GATE_RC" = "0" ] && printf '%s' "$GATE_OUT" | grep -q "待部署" \
+   && printf '%s' "$GATE_OUT" | grep -q "$PICK"; then
+  ok "臂 H 绿（EXIT=0）且把「待部署」那条报出来（★ 旧判据在这里会红 ★）"
+else
+  bad "臂 H 期望 EXIT=0、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 臂 I（★ L34 三轮新增 ★★）：★ 同样的一条缺口、★ 但它的版本**在**安装器那本账里 ★★
+# ★★ ⇒ ★ 「已被别处应用过」⇒ ★ **断层**（★ 通道会重放 ★★）⇒ ★ 期望红 ★★
+note "★ 臂 I：缺口的那条**版本在安装器那本账里** ⇒ ★ 断层 ⇒ ★ 期望红（EXIT=1）"
+make_fake_psql 1 "$FIXTURE_DIR/minus_pick.tsv" 0 "$instver_all"
+run_gate
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "断层" \
+   && printf '%s' "$GATE_OUT" | grep -q "$PICK"; then
+  ok "臂 I 红（EXIT=1）且点名了那条断层"
+else
+  bad "臂 I 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 臂 J（★ L34 三轮新增 ★★）：★ 文件名**无数字版本号** ⇒ ★ 不可判定 ★★
+# ★★ ⇒ ★ 保守计入断层 ⇒ ★ 期望红 ★★
+# ★★ 这一臂用一个**合成仓**（★ 只放两个投递条目 ★★）⇒ ★★ 所以要**另放一份门脚本**
+# ★★ ⇒ ★★ 因为门按**自己所在目录**推导仓根（★ 合成仓里也要有同样的相对布局 ★★）★★
+note "★ 臂 J：缺口那条**文件名无数字版本号** ⇒ ★ 不可判定 ⇒ ★ 期望红（EXIT=1）"
+FAKEROOT="$FIXTURE_DIR/fakerepo"
+mkdir -p "$FAKEROOT/scripts/checks"
+cp "$GATE" "$FAKEROOT/scripts/checks/deploy-ledger-coverage-gate.sh"
+cat >"$FAKEROOT/scripts/apply-db-revision-sequence.sh" <<'FAKEDEPLOY'
+#!/usr/bin/env bash
+files=(
+  "$ROOT_DIR/sql/migrations/startup/123_pick.sql"
+  "$ROOT_DIR/sql/migrations/startup/alpha_no_version.sql"
+)
+FAKEDEPLOY
+printf '%s:%s\tdeadbeef\n' "$SEQ" "123_pick.sql" >"$FIXTURE_DIR/fakeledger.tsv"
+printf '999\n' >"$FIXTURE_DIR/fakeinstver.txt"
+rc=0
+DEPLOY_LEDGER_GATE_DATABASE_URL="postgres://fixture/fixture" \
+DEPLOY_LEDGER_GATE_PSQL_BIN="$FIXTURE_DIR/fake-psql" \
+  bash "$FAKEROOT/scripts/checks/deploy-ledger-coverage-gate.sh" >"$FIXTURE_DIR/out.txt" 2>&1 || rc=$?
+GATE_OUT="$(cat "$FIXTURE_DIR/out.txt")"
+GATE_RC="$rc"
+if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "不可判定"; then
+  ok "臂 J 红（EXIT=1）且报「不可判定」（★ 无版本号 ⇒ 保守计入断层 ★）"
+else
+  bad "臂 J 期望 EXIT=1、实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -4 | tr '\n' ' ')"
 fi
 
 if [ "$FAIL" -ne 0 ]; then

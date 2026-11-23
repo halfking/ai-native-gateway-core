@@ -214,14 +214,21 @@ fi
 covered=0
 missing=0
 legacy=0
+fault=0
+pending=0
 missing_list=""
 legacy_list=""
+fault_list=""
+pending_list=""
+ledger_markers_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-markers.XXXXXX")"
+class_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-class.XXXXXX")"
+missing_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-missing.XXXXXX")"
+class2_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-class2.XXXXXX")"
+installer_version_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-instver.XXXXXX")"
+trap 'rm -f "${plan_file:-}" "${ledger_markers_file:-}" "${class_file:-}" "${missing_file:-}" "${class2_file:-}" "${installer_version_file:-}"' EXIT
+: >"$ledger_markers_file"
 
-if [ "${ledger_table_exists:-0}" = "0" ]; then
-  # ★★ 账表都不存在 ⇒ ★ 全部 ${plan_count} 条都算缺口（★ 一次性算完、★ 不查库 ★★）
-  missing="${plan_count}"
-  missing_list="$(cat "$plan_file")"
-else
+if [ "${ledger_table_exists:-0}" != "0" ]; then
   # ★★ 构造数组字面量：★ `'{a.sql,b.sql,...}'`（★ 全部来自仓内解析、★ 无注入面 ★★）
   arr_literal="'"
   first=1
@@ -256,49 +263,143 @@ rows=$(q "select concat_ws(chr(9), sequence_name, coalesce(content_sha256, '<NUL
   # ★★ 「查询成功但结果为空」＝★ 账里**确实没有**本序列的行（★ 合法、★ 断层就是全部）
   # ★★ ⇒ ★★ **不 abort** ★★ ⇒ ★ 直接进「全部缺口」分支 ★★
   # ★★ 把账里的 marker 收进一张对照表（★ basename → 指纹状态 ★★）
-  ledger_markers=""
+  # ★★ ★★ 2026-11-24 改写：★ **落成文件**（★ 而不是留在一个 shell 变量里 ★★）★★
+  # ★★ ⇒ ★★ 因为下一遍要在**一次 awk** 里做集合判定（★ 逐文件查 356 次太慢 ★★）★★
   if [ -n "${rows:-}" ]; then
-    ledger_markers="$(printf '%s\n' "$rows" | awk -v seq="${SEQUENCE_NAME}:" '
+    printf '%s\n' "$rows" | awk -v seq="${SEQUENCE_NAME}:" '
       BEGIN { FS = "\t" }
       {
         name = $1
         sub("^" seq, "", name)
         printf "%s\t%s\n", name, $2
       }
-    ')"
+    ' >"$ledger_markers_file"
   fi
-
-  while IFS= read -r base; do
-    [ -n "$base" ] || continue
-    state="$(printf '%s\n' "$ledger_markers" | awk -F'\t' -v b="$base" '$1 == b { print $2; exit }')"
-    if [ -z "$state" ]; then
-      missing=$((missing+1))
-      missing_list="${missing_list}${base}"$'\n'
-    elif [ "$state" = "<NULL>" ]; then
-      # ★★ legacy 记账行（★ 指纹通道上线前应用、★ 无法证明当时应用的是哪个内容 ★★）
-      # ★★ ⇒ ★ **不是断层**（★ 通道会走 legacy 分支、★ 且 legacy 重放清单另有裁决 ★★）
-      legacy=$((legacy+1))
-      legacy_list="${legacy_list}${base}"$'\n'
-    else
-      covered=$((covered+1))
-    fi
-  done <"$plan_file"
 fi
 
-note "  ℹ 投递面 ${plan_count} 条 ｜ 权威账有记录（含指纹）${covered} 条 ｜ legacy 记账行（★ 无指纹、★ 非断层）${legacy} 条 ｜ **缺口 ${missing} 条**"
+# ═══════════════════════════════════════════════════════════════════════
+# ── 判据 ② 之第一遍：★ 投递面 ↔ 权威账（★ covered / legacy / missing ★★）
+# ═══════════════════════════════════════════════════════════════════════
+# ★★ 为什么改成「两遍」而不是「一遍到底」★★：
+# ★★   第一遍只做【投递面 ↔ 权威账】的集合判定（★ 不需要任何别的信息 ★★）
+# ★★   第二遍只对【missing 的那些】做【是不是断层】的判定（★ 需要安装器那本账 ★★）
+# ★★ ⇒ ★★ **⇒ 没有缺口时压根不用去查第二本账**（★ 少一次只读查询 ★★）★★
+awk '
+  BEGIN { FS = "\t" }
+  FILENAME == ARGV[1] { state[$1] = $2; next }
+  {
+    base = $0
+    if (!(base in state)) { print base "\tmissing\t"; next }
+    if (state[base] == "<NULL>") { print base "\tlegacy\t"; next }
+    print base "\tcovered\t"
+  }
+' "$ledger_markers_file" "$plan_file" >"$class_file"
 
+covered=$(awk -F'\t' '$2=="covered"{c++} END{print c+0}' "$class_file")
+legacy=$(awk -F'\t' '$2=="legacy"{c++} END{print c+0}' "$class_file")
+missing=$(awk -F'\t' '$2=="missing"{c++} END{print c+0}' "$class_file")
+awk -F'\t' '$2=="missing"{print $1}' "$class_file" >"$missing_file"
+
+# ═══════════════════════════════════════════════════════════════════════
+# ── 判据 ④：★ 安装器那本账（★ `public.schema_migrations` ★）★★
+# ── ★★ 「缺口」不等于「断层」——★ 这一段就是把那两者分开的地方 ★★─────
+# ═══════════════════════════════════════════════════════════════════════
+# ★★★ ★★ 为什么要加这一段（★ 2026-11-24 L34 三轮、★ 撞出来的**恒红型缺陷** ★★★）：
+# ★★★ ★★ 「不在权威账里」有两个**互斥**的成因（★ 而旧判据把它们混成一个 ★★）：★★
+# ★★★ ★★   · **已被别的路径应用过**（★ 典型：★ 安装器先应用了、★ 权威账不知道 ★★）
+# ★★★ ★★     ⇒ ★ ⇒ ★ 通道会**重放**它 ⇒ ★★ ⇒ ★ **这才是断层**（★ §7.31 臂 D ★★）★★
+# ★★★ ★★   · **从没被任何路径应用过**（★ 典型：★ 上游刚合进来的新迁移 ★★）
+# ★★★ ★★     ⇒ ★ ⇒ ★ 通道会**首次**应用它 ⇒ ★★ ⇒ ★ **这是设计内行为**（★ 不是断层 ★★）★★
+# ★★★ ★★ ⇒ ★★ 旧判据把第二种也判成红 ⇒ ★★ **⇒ 每当上游合进一条新迁移、★ 部署窗口内
+# ★★★ ★★ 这道门就是红的** ⇒ ★★ ⇒ ★★ **⇒ 恒红的门会被忽略 ⇒ 等于没有** ★★★
+# ★★★ ★★ ⇒ ★★ **⇒ 判据升级为「已被任何路径应用过」** ⇒ ★★ 需要第二本账 ★★ ⇒ ★★ ⇒ ★★
+# ★★★ ★★ **⇒ 只读查 `public.schema_migrations`**（★ 安装器那本账 ★★）★★ ★★★
+# ★★★ ★★ ★★ 方案 C 的边界**不变**（★ 必须写清楚 ★★）：★★
+# ★★★ ★★ ★★ 本门**只读**第二本账**只为分类缺口**、★ **不写、不改、不回灌** ★★★
+# ★★★ ★★ ★★ ⇒ ★★ **部署通道本身仍然只认它自己那本账**（★ 那正是方案 A 要解决的 ★★）★★
+# ★★★ ★★ ★★ ⇒ ★★ **⇒ 本门没有让部署通道「认安装器的账」**（★ 仍是纯观测 ★★★）
 if [ "${missing:-0}" -gt 0 ]; then
-  # ★★ 判红（★ 这就是断层 ★★）：★ 「通道将要投递的 N 个文件里、★ M 个在权威账里
-  # ★★ 完全没有记录」⇒ ★★ ⇒ ★ **通道会重放它们** ⇒ ★★ ⇒ ★ 而 §7.31 实测：
-  # ★★ 重放在新装库上会炸（★ 臂 D 第 13 个文件 ⇒ `relation "request_logs_hot"
-  # ★★ does not exist` ★★）★★ ⇒ ★★ ⇒ ★ **这道红就是那道闸门** ★★。
-  bad "★★ 部署通道投递面有 ${missing} 条在权威账 public.gateway_db_revision_sequences 里**没有记录** ⇒ ★ ⇒ ★ 通道会**重放**它们 ⇒ ★★ ⇒ ★ 而 §7.31 实测：★ 重放在新装库上**必炸**（★ 臂 D：★ 第 13 个文件 ⇒ relation \"request_logs_hot\" does not exist）★★ ⇒ ★★ ⇒ ★ **处置**：★ ① 先按报告 §7.31 的授权轴定方案（A／A′ ⇒ owner 轴）★ ② 或确认这台库**本就该**由部署通道从头铺（★ 那就该由通道自己建账、★ 而不是本门红）★★"
-  printf '%s' "$missing_list" | head -20 | sed 's/^/      · /'
-  if [ "${missing:-0}" -gt 20 ]; then
-    printf '      · ……（★ 其余 %d 条省略）\n' "$((missing - 20))"
+  installer_versions_ok=0
+  installer_versions_rc=0
+  installer_versions="$(q "select version from public.schema_migrations")" || installer_versions_rc=$?
+  if [ "$installer_versions_rc" -eq 0 ]; then
+    installer_versions_ok=1
+    # ★★ 版本号归一化：★ 生产上存的是**零填充 3 位**（★ `087` ★★）⇒ ★★ ⇒ ★★
+    # ★★ 两边都**去掉前导零**再比（★ 数字相等即可、★ 不比写法 ★★）★★
+    printf '%s\n' "$installer_versions" | awk '
+      { v = $1; sub(/^0+/, "", v); if (v == "") { v = "0" }; print v }
+    ' | sort -u >"$installer_version_file"
+  fi
+
+  awk -v installer_ok="$installer_versions_ok" '
+    BEGIN { FS = "\t" }
+    FILENAME == ARGV[1] { inst[$0] = 1; next }
+    {
+      base = $1
+      ver = ""
+      if (match(base, /^[0-9]+/)) {
+        ver = substr(base, RSTART, RLENGTH)
+        sub(/^0+/, "", ver)
+        if (ver == "") { ver = "0" }
+      }
+      if (installer_ok != "1") {
+        print base "\tfault\t安装器那本账不可读 ⇒ 不可判定（★ 保守判红 ★★）"
+        next
+      }
+      if (ver == "") {
+        print base "\tfault\t文件名无数字版本号 ⇒ 不可判定（★ 保守判红 ★★）"
+        next
+      }
+      if (ver in inst) {
+        print base "\tfault\t版本 " ver " 已在安装器那本账里 ⇒ 已被别处应用过 ⇒ 通道会重放"
+        next
+      }
+      print base "\tpending\t版本 " ver " 从未被应用过 ⇒ 通道将首次应用（★ 设计内行为 ★★）"
+    }
+  ' "$installer_version_file" "$missing_file" >"$class2_file"
+
+  fault=$(awk -F'\t' '$2=="fault"{c++} END{print c+0}' "$class2_file")
+  pending=$(awk -F'\t' '$2=="pending"{c++} END{print c+0}' "$class2_file")
+  fault_list="$(awk -F'\t' '$2=="fault"{print "      · " $1 "（" $3 "）"}' "$class2_file")"
+  pending_list="$(awk -F'\t' '$2=="pending"{print "      · " $1 "（" $3 "）"}' "$class2_file")"
+else
+  fault=0
+  pending=0
+  fault_list=""
+  pending_list=""
+fi
+
+note "  ℹ 投递面 ${plan_count} 条 ｜ 权威账有记录（含指纹）${covered} 条 ｜ legacy 记账行（★ 无指纹、★ 非断层）${legacy} 条 ｜ 缺口 ${missing} 条 ⇒ ★ **断层 ${fault} 条** ｜ 待部署 ${pending} 条"
+
+if [ "${fault:-0}" -gt 0 ]; then
+  # ★★ 判红（★ 这就是断层 ★★）：★ 「通道将要投递的文件里、★ 有 N 个**已被别的路径
+  # ★★ 应用过**（★ 而权威账不知道 ★★）」⇒ ★★ ⇒ ★ **通道会重放它们** ⇒ ★★ ⇒ ★ 而
+  # ★★ §7.31 实测：★ 重放在新装库上会炸（★ 臂 D 第 13 个文件 ⇒ `relation
+  # ★★ "request_logs_hot" does not exist` ★★）★★ ⇒ ★★ ⇒ ★ **这道红就是那道闸门** ★★。
+  bad "★★ 部署通道投递面有 ${fault} 条**判为断层**（★ 要么【版本在安装器那本账 public.schema_migrations 里 ⇒ 已被别处应用过 ⇒ 通道会重放】、★ 要么【不可判定 ⇒ 保守计入】 ★★）⇒ ★★ ⇒ ★ 而 §7.31 实测：★ 重放在新装库上**必炸**（★ 臂 D：★ 第 13 个文件 ⇒ relation \"request_logs_hot\" does not exist）★★ ⇒ ★★ ⇒ ★ **处置**：★ ① 先按报告 §7.31 的授权轴定方案（A／A′ ⇒ owner 轴）★ ② 或确认这台库**本就该**由部署通道从头铺（★ 那就该由通道自己建账、★ 而不是本门红）★★"
+  # ★★ 打印前 20 条：★ **不用 `head`、★ 改用 awk**（★ 2026-11-24 L34 三轮 ★★）
+  # ★★ 根因：★ `head -20` 会**提前关闭读端** ⇒ ★★ 写端挨 EPIPE ⇒ ★★ 写端退出码
+  # ★★ 变 141 ⇒ ★★ 而本脚本 `set -o pipefail` ⇒ ★★ **管道状态取 141** ⇒ ★★ ⇒ ★★
+  # ★★ ⇒ ★★ 实测（★ 本轮 macOS bash 3.2 / 5.2 双版本 ★★）：★ 写端 ≤ 63,599 B
+  # ★★ ⇒ 管道状态 0（不翻转 ★★）；★ 写端 264,999 B ⇒ 管道状态 **141（翻转）** ★★
+  # ★★ ⇒ ★★ ⇒ ★★ **⇒ 边界就是管道容量（≈ 64 KiB）** ★★ ⇒ ★★ ⇒ ★★
+  # ★★ ⇒ ★★ **⇒ 而这里的写端体量随缺口条数与理由文本长度变化 ⇒ ★★ ⇒ ★★ 不该把判据
+  # ★★ 押在「它恰好小于 64 KiB」上** ⇒ ★★ ⇒ ★★ **⇒ 改用 `awk 'NR<=20'`**（★ awk
+  # ★★ 会把输入读完、★ **不提前关管道** ⇒ ★★ 写端永不挨 EPIPE ⇒ ★★ 与体量无关 ★★★）
+  printf '%s\n' "$fault_list" | awk 'NR<=20 { print "  " $0 }'
+  if [ "${fault:-0}" -gt 20 ]; then
+    printf '      · ……（★ 其余 %d 条省略）\n' "$((fault - 20))"
   fi
 else
-  note "  ✔ 投递面每一条都在权威账里有记录 ⇒ ★ **无断层**（★ ⇒ 这台库上重放不会因「账不互通」而炸）"
+  if [ "${pending:-0}" -gt 0 ]; then
+    note "  ✔ **无断层**（★ 另有 ${pending} 条**从没被应用过** ⇒ ★ 通道会**首次**应用它们 ⇒ ★ **不判红**、★ 但**报出来** ★★）"
+    printf '%s\n' "$pending_list" | awk 'NR<=20 { print "  " $0 }'
+    if [ "${pending:-0}" -gt 20 ]; then
+      printf '      · ……（★ 其余 %d 条省略）\n' "$((pending - 20))"
+    fi
+  else
+    note "  ✔ 投递面每一条都在权威账里有记录 ⇒ ★ **无断层**（★ ⇒ 这台库上重放不会因「账不互通」而炸）"
+  fi
 fi
 
 if [ "$FAIL" -ne 0 ]; then
