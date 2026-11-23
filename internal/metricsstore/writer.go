@@ -24,9 +24,9 @@ type RequestMetric struct {
 
 	// 核心维度
 	ProviderID    *int64
-	OutboundModel *string  // 标准模型名称（映射后）
+	OutboundModel *string // 标准模型名称（映射后）
 	CanonicalID   *int64
-	RawModelName  *string  // 原始模型名称（来自usage_facts.raw_model_name）
+	RawModelName  *string // 原始模型名称（来自usage_facts.raw_model_name）
 
 	// 付款与使用者维度
 	PayerID   *string

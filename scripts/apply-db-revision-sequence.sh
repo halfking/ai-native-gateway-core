@@ -2854,6 +2854,22 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/987_provider_invoice_evidence.sql"
   "$ROOT_DIR/sql/migrations/startup/988_provider_invoice_usage_buckets.sql"
   "$ROOT_DIR/sql/migrations/startup/989_supplier_contract_rates.sql"
+  # ★ 973（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+  #   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
+  #     撞号 ⇒ 改用空号 973（三位数惯例：sqlguard 的 migrationNumPrefix 钉死
+  #     ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 台账行记过同款）。
+  #   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
+  "$ROOT_DIR/sql/migrations/startup/973_add_raw_model_name.sql"
+  # ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
+  #   ★ 原先**只建了 canonical + embeddata 双副本**、两条通道都没投递
+  #     ⇒ 团队族四表**从来没被建过** ⇒ maas/team_budget_gate 读不到表。
+  #   ★ 四条自带幂等守卫与 ON CONFLICT 自登记 ⇒ 补投递不产生重复应用风险。
+  #   ★ 相对顺序不可打乱：057 给 api_keys 加 team_id 并外键引用 teams(id)
+  #     ⇒ 必须排在 055 之后（已满足）。
+  "$ROOT_DIR/sql/migrations/startup/055_teams_table.sql"
+  "$ROOT_DIR/sql/migrations/startup/056_user_teams.sql"
+  "$ROOT_DIR/sql/migrations/startup/057_api_keys_team_id.sql"
+  "$ROOT_DIR/sql/migrations/startup/058_team_budgets.sql"
 )
 
 
@@ -3711,6 +3727,21 @@ ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
   "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988') = 1"
 ledger_artifact_probe "989_supplier_contract_rates.sql" \
   "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '989') = 1"
+# ★ 973 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
+#   ★ 这条 probe 是本轮新增迁移的**唯一**到位证据：
+#     该列原先没有任何通道投递 ⇒ 生产上不存在 ⇒ writer.go 写它必然 42703。
+ledger_artifact_probe "973_add_raw_model_name.sql" \
+  "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '973') = 1"
+# ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
+#   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
+ledger_artifact_probe "055_teams_table.sql" \
+  "to_regclass('public.teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '055') = 1"
+ledger_artifact_probe "056_user_teams.sql" \
+  "to_regclass('public.user_teams') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '056') = 1"
+ledger_artifact_probe "057_api_keys_team_id.sql" \
+  "(SELECT count(*) FROM pg_attribute WHERE attrelid='public.api_keys'::regclass AND attname='team_id' AND NOT attisdropped) = 1 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '057') = 1"
+ledger_artifact_probe "058_team_budgets.sql" \
+  "to_regclass('public.team_budgets') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '058') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

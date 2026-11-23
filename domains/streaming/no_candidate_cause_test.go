@@ -300,8 +300,15 @@ func TestNoCandidateCause_BehaviouralWiring(t *testing.T) {
 	}
 	assertTruthful := func(t *testing.T, w *httptest.ResponseRecorder) {
 		t.Helper()
-		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status = %d, want 503\nbody: %s", w.Code, w.Body.String())
+		// ★ 2026-11-24 12h 修订审计轮修正：这条断言原先钉 503，
+		//   而 owner 要求的 4xx 行为（commit 540a3f763：候选被永久性原因挡空时
+		//   返回 4xx + 正确错误信息）已经把「上游配额耗尽」映射成 429。
+		//   ⇒ 提交自称改了「测试断言」，实际只改了一行文案 ⇒ **origin/main 上这条行为
+		//     守卫一直是红的**（三协议面全红）⇒ 本轮按**已定契约**订正断言。
+		//   ★ 本夹具的主因是配额耗尽（BlockedByCredentialQuota=8，命中数最高）
+		//     ⇒ 期望 429；「无归因 ⇒ 仍 503」由下面的阴性对照单独钉住。
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429（主因=上游配额耗尽 ⇒ 4xx 契约）\nbody: %s", w.Code, w.Body.String())
 		}
 		if !strings.Contains(w.Body.String(), "upstream account quota or balance exhausted") {
 			t.Errorf("响应没有说出真实原因\nbody: %s", w.Body.String())

@@ -67,18 +67,18 @@ var startupDependency = []struct {
 	},
 	{
 		before: "982_provider_call_attempts.sql",
-		after:  "986_provider_invoice_evidence.sql",
-		why:    "986 在 982 创建的 provider_call_attempts 上建立账单请求引用索引",
+		after:  "987_provider_invoice_evidence.sql",
+		why:    "987 在 982 创建的 provider_call_attempts 上建立账单请求引用索引",
 	},
 	{
 		before: "982_provider_call_attempts.sql",
-		after:  "985_provider_attempt_media_usage.sql",
-		why:    "985 在 982 创建的 provider_call_attempts 上补充媒体计量",
+		after:  "986_provider_attempt_media_usage.sql",
+		why:    "986 在 982 创建的 provider_call_attempts 上补充媒体计量",
 	},
 	{
-		before: "986_provider_invoice_evidence.sql",
-		after:  "987_provider_invoice_usage_buckets.sql",
-		why:    "987 在 986 创建的 provider_invoice_lines 上增加结构化汇总字段",
+		before: "987_provider_invoice_evidence.sql",
+		after:  "988_provider_invoice_usage_buckets.sql",
+		why:    "988 在 987 创建的 provider_invoice_lines 上增加结构化汇总字段",
 	},
 }
 

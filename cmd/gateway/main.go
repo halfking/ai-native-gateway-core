@@ -4457,7 +4457,13 @@ func main() {
 	// 部署验证计划: /tmp/request_metrics_deployment_plan.md
 	if dbConn != nil && dbConn.Enabled() {
 		metricsProcessor := metricsstore.NewProcessor(dbConn.Stdlib())
-		go metricsProcessor.Run(context.Background(), 5*time.Minute, 100)
+		// ★ 用**可取消**的 ctx（与仓内其它后台 worker 同款写法）：
+		//   context.Background() ⇒ 这个 goroutine 在进程内**永远不可停**
+		//   ⇒ 优雅停机后它仍在跑，而此时连接池已关
+		//   ⇒ 每 5 分钟刷一批「连接已关闭」错误，且批次里的维度永远补不回来。
+		metricsProcessorCtx, metricsProcessorCancel := context.WithCancel(context.Background())
+		go metricsProcessor.Run(metricsProcessorCtx, 5*time.Minute, 100)
+		defer metricsProcessorCancel()
 		slog.Info("CHECKPOINT: request_metrics processor started",
 			"gateway_node", os.Getenv("GATEWAY_NODE_ID"),
 			"interval", "5m",

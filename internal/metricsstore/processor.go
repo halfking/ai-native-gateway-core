@@ -139,17 +139,33 @@ const selectUsageFactsSQL = `
 //	不是缺陷。
 //
 // ★ ORDER BY ts DESC：同一 request_id 可能有多行（重试/多次记录），取最新的一条。
+//
+// ★★ 批量形态（2026-11-24 审计修正轮）：原来是「按 request_id 逐行查」——每批 N 次查询。
+//
+//	而这恰恰是**重查询**（双腿视图＝session_turns_hot ∪ session_turns 全族），
+//	上一轮「Phase 2 批量查询优化」只批量化了 model_aliases（轻查询），
+//	把**真正的 N+1**（本条）原样留着 ⇒ 提交说明写的「查询次数从 N 次降低到 1 次」与实际不符。
+//	现在整批一次：WHERE request_id = ANY($1)。
+//
+// ★ DISTINCT ON (request_id) + ORDER BY (request_id, ts DESC)：
+//
+//	等价于原来「每个 request_id 各自 ORDER BY ts DESC LIMIT 1」，
+//	即同一请求取最新的一条（重试/多次记录）。
+//
+// ★ 「没有会话行」仍是语义正确：批量形态下「查不到」＝「结果集里没有这个 request_id」，
+//
+//	与逐行形态的 sql.ErrNoRows 同义 ⇒ 不计入增强失败（否则良性情况刷假警报淹没真警报）。
 const enrichDimensionsSQL = `
-	SELECT
+	SELECT DISTINCT ON (rl.request_id)
+		rl.request_id,
 		rl.gw_session_id,
 		rl.gw_task_id,
 		rl.attachment_count,
 		rl.client_protocol,
 		rl.egress_protocol
 	FROM request_logs_with_current_month rl
-	WHERE rl.request_id = $1
-	ORDER BY rl.ts DESC
-	LIMIT 1
+	WHERE rl.request_id = ANY($1)
+	ORDER BY rl.request_id, rl.ts DESC
 `
 
 // ProcessBatch 处理一批记录
@@ -180,6 +196,8 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 	var firstEnrichErr error
 	// 收集所有需要映射的模型名称
 	modelNamesToMap := make(map[string]bool)
+	// 收集所有需要增强维度的请求 ID（批量增强用）
+	requestIDsToEnrich := make([]string, 0, batchSize)
 
 	for rows.Next() {
 		var metric RequestMetric
@@ -266,15 +284,8 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 		// 设置网关节点ID（从当前处理器）
 		metric.GatewayNodeID = &p.gatewayNode
 
-		// 2. 增强维度（查询 session_id、payer_id、team_id 等）
-		if err := p.enrichDimensions(ctx, &metric); err != nil {
-			// ★ 只计数不逐行打印：失败 1000 行会刷 1000 条日志；
-			//   批末汇总一条（含首条原因）——「静默失败」正是这次事故的根因。
-			enrichFailures++
-			if firstEnrichErr == nil {
-				firstEnrichErr = err
-			}
-		}
+		// 2. 收集需要增强维度的请求 ID（批量增强：每批 1 次查询，取代逐行 N 次）
+		requestIDsToEnrich = append(requestIDsToEnrich, metric.RequestID)
 
 		// 3. 添加到批处理列表
 		metric.Source = "async_processor"
@@ -286,7 +297,36 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 		return processed, err
 	}
 
-	// 3. 批量查询模型映射（解决N+1问题）
+	// 3. 批量增强维度（每批 1 次查询，取代逐行 N 次）
+	//
+	// ★ 维度增强失败**不阻断**计量落库（计量不能丢），但必须**可见**：
+	//   静默吞掉的形态最坏：表/列被删 ⇒ 请求照进库、计数照涨，只是维度全空
+	//   ⇒ 从数据上完全看不出坏了。
+	if len(metrics) > 0 {
+		dims, err := p.batchEnrichDimensions(ctx, requestIDsToEnrich)
+		if err != nil {
+			// ★ 只计数不逐行打印：失败 1000 行会刷 1000 条日志；
+			//   批末汇总一条（含首条原因）——「静默失败」正是这次事故的根因。
+			enrichFailures += len(metrics)
+			if firstEnrichErr == nil {
+				firstEnrichErr = err
+			}
+		} else {
+			for _, metric := range metrics {
+				applyDimensionRow(metric, dims[metric.RequestID])
+			}
+		}
+
+		// 派生维度（付款者归属 + 模态）：与增强成败无关，始终派生。
+		// ★ 模态依赖附件数 ⇒ 必须在维度写回**之后**派生。
+		for _, metric := range metrics {
+			applyDerivedDimensions(metric)
+		}
+	}
+
+	// 4. 批量查询模型映射（每批 1 次查询，取代逐行 N 次）
+	mappingFailures := 0
+	var firstMappingErr error
 	if len(modelNamesToMap) > 0 {
 		// 将map转换为slice
 		modelNames := make([]string, 0, len(modelNamesToMap))
@@ -297,8 +337,15 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 		// 一次性批量查询所有映射
 		mappings, err := p.batchEnrichModelInfo(ctx, modelNames)
 		if err != nil {
-			log.Printf("批量查询模型映射失败: %v", err)
-			// 映射失败不阻断处理，继续使用原始值
+			// ★ 映射失败同样**不阻断**计量，但必须**可见**：
+			//   失败 ⇒ 本批带 raw_model_name 的行 canonical_id / outbound_model 维度为空，
+			//   而行照样落库、水位线照样推进 ⇒ 这是**永久**的维度丢失 ⇒ 不可静默。
+			for _, metric := range metrics {
+				if metric.RawModelName != nil {
+					mappingFailures++
+				}
+			}
+			firstMappingErr = err
 		} else {
 			// 应用映射到所有metrics
 			for _, metric := range metrics {
@@ -312,7 +359,7 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 		}
 	}
 
-	// 4. 批量写入 request_metrics（单事务）
+	// 5. 批量写入 request_metrics（单事务）
 	if len(metrics) > 0 {
 		if err := p.writer.BatchUpsertRequestMetrics(ctx, metrics); err != nil {
 			return 0, err
@@ -325,6 +372,14 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 	if enrichFailures > 0 {
 		log.Printf("MetricsProcessor: 本批 %d/%d 条维度增强失败（首条原因：%v）⇒ 这些行的会话/任务/协议维度为空",
 			enrichFailures, processed, firstEnrichErr)
+	}
+
+	// ★ 模型映射失败汇总：与上面同源的问题（维度全空而数据看着在涨），
+	//   但丢的是**标准模型维度** ⇒ 按模型聚合时同一模型会被拆成两个口径。
+	//   失败 ⇒ 行已落库、水位线已推进 ⇒ **永久**丢失 ⇒ 必须有明确日志。
+	if mappingFailures > 0 {
+		log.Printf("MetricsProcessor: 本批 %d/%d 条模型映射失败（%d 个模型名）⇒ 这些行的标准模型维度（canonical_id/outbound_model）为空：%v",
+			mappingFailures, processed, len(modelNamesToMap), firstMappingErr)
 	}
 
 	// ★ 扫描错误要往外报：调用方（后台循环）据此记日志/告警。
@@ -357,38 +412,90 @@ func (p *Processor) readWatermark(ctx context.Context) (watermark, error) {
 	return wm, nil
 }
 
-// enrichDimensions 增强维度信息
-func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric) error {
-	var sessionID, taskID, clientProtocol, egressProtocol sql.NullString
-	var attachmentCount sql.NullInt64
+// dimensionRow 会话/任务/协议/附件维度的一行（批量查询的扫描目标）
+type dimensionRow struct {
+	sessionID       sql.NullString
+	taskID          sql.NullString
+	attachmentCount sql.NullInt64
+	clientProtocol  sql.NullString
+	egressProtocol  sql.NullString
+}
 
-	scanErr := p.db.QueryRowContext(ctx, enrichDimensionsSQL, metric.RequestID).Scan(
-		&sessionID,
-		&taskID,
-		&attachmentCount,
-		&clientProtocol,
-		&egressProtocol,
-	)
-
-	if scanErr == nil {
-		if sessionID.Valid && sessionID.String != "" {
-			metric.SessionID = &sessionID.String
-		}
-		if taskID.Valid && taskID.String != "" {
-			metric.TaskID = &taskID.String
-		}
-		if attachmentCount.Valid {
-			metric.AttachmentCount = int32(attachmentCount.Int64)
-		}
-		// 协议：优先客户端协议，回落到出向协议（视图里**没有** upstream_protocol）
-		if clientProtocol.Valid && clientProtocol.String != "" {
-			metric.Protocol = &clientProtocol.String
-		} else if egressProtocol.Valid && egressProtocol.String != "" {
-			metric.Protocol = &egressProtocol.String
-		}
+// batchEnrichDimensions 批量查询会话/任务/协议/附件维度（每批 1 次查询）
+//
+// ★ 2026-11-24 审计修正轮：原来是「按 request_id 逐行查」（每批 N 次），
+//
+//	而双腿视图是**重查询**（session_turns_hot ∪ session_turns 全族）
+//	⇒ 上一轮「Phase 2 批量查询优化」只批量化了轻查询（model_aliases），
+//	  把**真正的 N+1** 留在原地 ⇒ 现在整批一次。
+//
+// ★ 返回值里**没有**某个 request_id ＝ 该请求在视图里没有行
+//
+//	（post-890 是会话族两臂体 ⇒ 非会话类请求查不到是语义正确）⇒ 不算失败。
+func (p *Processor) batchEnrichDimensions(ctx context.Context, requestIDs []string) (map[string]*dimensionRow, error) {
+	if len(requestIDs) == 0 {
+		return map[string]*dimensionRow{}, nil
 	}
 
-	// 2. 查询付款者信息（根据业务逻辑）
+	rows, err := p.db.QueryContext(ctx, enrichDimensionsSQL, pq.Array(requestIDs))
+	if err != nil {
+		return nil, fmt.Errorf("enrich dimensions for %d request(s), first=%s: %w", len(requestIDs), requestIDs[0], err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]*dimensionRow, len(requestIDs))
+	for rows.Next() {
+		var requestID string
+		var row dimensionRow
+		if err := rows.Scan(
+			&requestID,
+			&row.sessionID,
+			&row.taskID,
+			&row.attachmentCount,
+			&row.clientProtocol,
+			&row.egressProtocol,
+		); err != nil {
+			return nil, fmt.Errorf("scan enrich dimensions for %d request(s), first=%s: %w", len(requestIDs), requestIDs[0], err)
+		}
+		out[requestID] = &row
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate enrich dimensions for %d request(s), first=%s: %w", len(requestIDs), requestIDs[0], err)
+	}
+
+	return out, nil
+}
+
+// applyDimensionRow 把一行维度写回 metric（批量与单行共用同一套判定）
+//
+// ★ row 为 nil ＝ 视图里没有这个请求的行 ⇒ 非会话类请求 ⇒ 维度留空是语义正确。
+func applyDimensionRow(metric *RequestMetric, row *dimensionRow) {
+	if row == nil {
+		return
+	}
+	if row.sessionID.Valid && row.sessionID.String != "" {
+		metric.SessionID = &row.sessionID.String
+	}
+	if row.taskID.Valid && row.taskID.String != "" {
+		metric.TaskID = &row.taskID.String
+	}
+	if row.attachmentCount.Valid {
+		metric.AttachmentCount = int32(row.attachmentCount.Int64)
+	}
+	// 协议：优先客户端协议，回落到出向协议（视图里**没有** upstream_protocol）
+	if row.clientProtocol.Valid && row.clientProtocol.String != "" {
+		metric.Protocol = &row.clientProtocol.String
+	} else if row.egressProtocol.Valid && row.egressProtocol.String != "" {
+		metric.Protocol = &row.egressProtocol.String
+	}
+}
+
+// applyDerivedDimensions 派生不属于 DB 行的维度：付款者归属 + 模态
+//
+// ★ 模态依赖附件数 ⇒ 必须在 applyDimensionRow **之后**调用。
+func applyDerivedDimensions(metric *RequestMetric) {
+	// 查询付款者信息（根据业务逻辑）
 	// TODO: 实现付款者逻辑
 	// 目前默认：租户付费
 	if metric.TenantID != "" {
@@ -397,30 +504,42 @@ func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric)
 		metric.PayerType = &payerType
 	}
 
-	// 3. 查询团队信息（从 user_teams 或 session 关联）
+	// 查询团队信息（从 user_teams 或 session 关联）
 	// TODO: 实现团队查询逻辑
 
-	// 4. 查询任务信息（如果是任务发起的请求）
+	// 查询任务信息（如果是任务发起的请求）
 	// TODO: 实现任务查询逻辑
 
-	// 5. 模态：由 token 计量 + 附件数派生（库里没有独立的 modality 源列）
+	// 模态：由 token 计量 + 附件数派生（库里没有独立的 modality 源列）
 	modality := deriveModality(metric.ImageTokens, metric.AudioTokens, metric.VideoTokens, metric.AttachmentCount)
 	metric.Modality = &modality
+}
 
-	// ★ 增强失败必须往外报，**不能吞**。
-	//   静默吞掉的形态最坏：表/列被删（如 v1 族退役）⇒ 请求照进库、计数照涨，
-	//   只是所有会话/任务/协议维度全空 ⇒ 从数据上完全看不出坏了。
-	//   这里把错误返回给 ProcessBatch，由它记日志（行仍会落库，计量不丢）。
-	//
-	// ★ 但「没有会话行」**不是失败**：post-890 的 canonical 视图是会话族两臂体
-	//   ⇒ 非会话类请求（探测流量 / 健康检查 / 非会话 API 调用）本来就查不到行，
-	//   维度留空是**语义正确** ⇒ ErrNoRows 不计入失败。
-	//   ★ 不区分的后果：良性情况每批都刷「维度增强失败」汇总日志 ⇒
-	//     而这条汇总日志是「真失败」的唯一可见出口 ⇒ 假警报把真警报淹没
-	//     （等于把「静默失败」换成「假警报淹没真警报」）。
-	if scanErr != nil && scanErr != sql.ErrNoRows {
-		return fmt.Errorf("enrich dimensions for request %s: %w", metric.RequestID, scanErr)
+// enrichDimensions 单条增强（保留给直接调用者与测试；批处理走 batchEnrichDimensions）
+//
+// ★ 增强失败必须往外报，**不能吞**。
+//
+//	静默吞掉的形态最坏：表/列被删（如 v1 族退役）⇒ 请求照进库、计数照涨，
+//	只是所有会话/任务/协议维度全空 ⇒ 从数据上完全看不出坏了。
+//	这里把错误返回给 ProcessBatch，由它记日志（行仍会落库，计量不丢）。
+//
+// ★ 但「没有会话行」**不是失败**：post-890 的 canonical 视图是会话族两臂体
+//
+//	⇒ 非会话类请求（探测流量 / 健康检查 / 非会话 API 调用）本来就查不到行，
+//	维度留空是**语义正确** ⇒ 结果集里没有它不计入失败。
+//	★ 不区分的后果：良性情况每批都刷「维度增强失败」汇总日志 ⇒
+//	  而这条汇总日志是「真失败」的唯一可见出口 ⇒ 假警报把真警报淹没
+//	  （等于把「静默失败」换成「假警报淹没真警报」）。
+func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric) error {
+	rows, err := p.batchEnrichDimensions(ctx, []string{metric.RequestID})
+	if err != nil {
+		// ★ 失败时**仍然**派生不依赖 DB 的维度（付款者/模态）——与逐行形态一致：
+		//   度量与派生维度不因增强失败而丢。
+		applyDerivedDimensions(metric)
+		return err
 	}
+	applyDimensionRow(metric, rows[metric.RequestID])
+	applyDerivedDimensions(metric)
 	return nil
 }
 
@@ -462,59 +581,54 @@ func usdToCents(usd float64) int64 {
 	return int64(math.Round(usd * 100))
 }
 
-// enrichModelInfo 查询模型映射，填充canonical_id和outbound_model(canonical_name)
+// ★ 2026-11-24 审计修正轮：原逐行版 enrichModelInfo（按 raw_model_name 单查）已**删除**。
 //
-// ★ 策略：通过model_aliases表查询raw_model_name到canonical模型的映射
-// ★ 失败不阻断：映射失败时保留原始canonical_id，outbound_model使用raw_model_name
-func (p *Processor) enrichModelInfo(ctx context.Context, metric *RequestMetric, rawModelName string) error {
-	var canonicalID sql.NullInt64
-	var canonicalName sql.NullString
+//	删除理由（不是「顺手清理」，是它本身有两条硬伤）：
+//	① 它是**包内私有**方法（首字母小写）⇒ 提交说明里写的「保持向后兼容，
+//	   可能有其他地方调用」在语言层面就不可能成立 ⇒ 那条理由是假的；
+//	   全仓检索确认零调用方。
+//	② 它与批量版是**同一语义的第二份实现** ⇒ 两份会各自漂移
+//	   （批量版已带 status='active' + 确定性选取，逐行版没有）
+//	   ⇒ 同一份口径有两个答案，且逐行版那份永远不会被执行。
+//	批量版 batchEnrichModelInfo 是唯一实现。
 
-	query := `
-		SELECT ma.canonical_id, mc.canonical_name
+// batchEnrichModelInfoSQL 批量查询模型别名映射。
+//
+// ★ DISTINCT ON (raw_name) + ORDER BY (raw_name, canonical_id)：确定性选取，
+//
+//	理由见 batchEnrichModelInfo 的注释（model_aliases 的唯一约束是
+//	UNIQUE(canonical_id, raw_name) ⇒ 同名可有多条 active 映射）。
+const batchEnrichModelInfoSQL = `
+		SELECT DISTINCT ON (ma.raw_name)
+			ma.raw_name, ma.canonical_id, mc.canonical_name
 		FROM model_aliases ma
 		JOIN models_canonical mc ON mc.id = ma.canonical_id
-		WHERE ma.raw_name = $1 AND ma.status = 'active'
-		LIMIT 1
+		WHERE ma.raw_name = ANY($1) AND ma.status = 'active'
+		ORDER BY ma.raw_name, ma.canonical_id
 	`
 
-	err := p.db.QueryRowContext(ctx, query, rawModelName).Scan(&canonicalID, &canonicalName)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// 没有映射，保持原始值
-			return nil
-		}
-		return err
-	}
-
-	// 更新canonical_id和outbound_model
-	if canonicalID.Valid {
-		cid := canonicalID.Int64
-		metric.CanonicalID = &cid
-	}
-	if canonicalName.Valid && canonicalName.String != "" {
-		metric.OutboundModel = &canonicalName.String
-	}
-
-	return nil
-}
-
-// batchEnrichModelInfo 批量查询模型映射，解决N+1查询问题
+// batchEnrichModelInfo 批量查询模型映射（每批 1 次查询）
 //
-// ★ 策略：收集所有需要映射的模型名称，一次查询获取所有映射
-// ★ 性能：查询次数从N次降低到1次，提升10倍+
+// ★ 策略：收集所有需要映射的模型名称，一次查询获取所有映射。
+//
+// ★★ 确定性（2026-11-24 审计修正轮补）：model_aliases 的唯一约束是
+//
+//	UNIQUE (canonical_id, raw_name) —— **不是** UNIQUE(raw_name)
+//	⇒ 同一个 raw_name 合法地对应**多个** canonical_id
+//	（索引 idx_model_aliases_raw_name_active 本身就是 (raw_name, canonical_id)）。
+//	原批量写法没有 LIMIT 也没有 DISTINCT ON ⇒ 同名多行时 map 被**后扫到的行覆盖**
+//	⇒ 胜者取决于 PG 的扫描顺序 ⇒ **同一个模型在不同批次可能落到不同 canonical_id**
+//	⇒ 按模型聚合时同一模型被拆成两个口径（且不可复现）。
+//	现在用 DISTINCT ON (raw_name) + ORDER BY (raw_name, canonical_id)
+//	⇒ 每个 raw_name 恰好一行、胜者恒为最小 canonical_id（可复现），
+//	且该 ORDER BY 正好能被 idx_model_aliases_raw_name_active 支撑。
 func (p *Processor) batchEnrichModelInfo(ctx context.Context, modelNames []string) (map[string]*ModelMapping, error) {
 	if len(modelNames) == 0 {
 		return make(map[string]*ModelMapping), nil
 	}
 
 	// 使用pq.Array进行批量查询
-	query := `
-		SELECT ma.raw_name, ma.canonical_id, mc.canonical_name
-		FROM model_aliases ma
-		JOIN models_canonical mc ON mc.id = ma.canonical_id
-		WHERE ma.raw_name = ANY($1) AND ma.status = 'active'
-	`
+	query := batchEnrichModelInfoSQL
 
 	rows, err := p.db.QueryContext(ctx, query, pq.Array(modelNames))
 	if err != nil {

@@ -11173,3 +11173,8 @@ offer **计数**也拼进句子（「模型已登记（3 offer），但 2 条…
 | 987 | `987_provider_invoice_evidence.sql` | `9b068a3a5ff3fac0c62fc5361aef3fd37649d3b16d6e02a224026757d441aad9` | pending deploy。账单及明细逐行存证，冻结账户与账期，追加索引支持逐次调用精确匹配。依赖 982，首次安装、增量通道与离线升级副本同步。 |
 | 988 | `988_provider_invoice_usage_buckets.sql` | `8433c53c988824256c18bfb223be072ffdf27280319c05c4e66726df8c785236` | pending deploy。保留旧账单，增加发送笔数、Token 和媒体计量的结构化汇总行字段与精确账期查询索引。依赖 986，首次安装、增量通道与离线升级副本同步。 |
 | 989 | `989_supplier_contract_rates.sql` | `b32e8fb99b6e156ce85c30198cf5bb71d157b4a66970333d0a32020c961b87ed` | pending deploy。追加凭据和模型范围内的供应商合同版本，按实际发送时间选用。首次安装、增量通道与离线升级副本同步。 |
+| 973 | `973_add_raw_model_name.sql` | `2f0bfda74144e069029e9c33b48812955d98e86860af27211ce77a9a9d59dd96` | pending deploy。给 request_metrics 补记原始模型名列（来自 usage_facts.raw_model_name），供按原始名或标准名分别聚合。原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path 撞号且任何通道都未投递（该列在生产上不存在 ⇒ 写入必 42703），本轮改用空号 973 并补齐九面登记。依赖 983，首次安装、增量通道与离线升级副本同步。 |
+| 055 | `055_teams_table.sql` | `bffde5e937f26ed40b0bd207e30efabf354e1da936fab6fb77ea4bd006027d06` | pending deploy。团队主表。原提交只建了 canonical + embeddata 双副本、未登记进任何通道（团队族四表从未被任何通道建过），本轮补齐首次安装、增量通道与离线升级副本同步。 |
+| 056 | `056_user_teams.sql` | `75bc05aae05f04e9b2614fd33796d0d2d0dab55bd8b7daf49ba8ea43b35f2ef5` | pending deploy。用户与团队的多对多关联表。依赖 055，本轮补齐投递接线。 |
+| 057 | `057_api_keys_team_id.sql` | `399525282ac62d4a2f317fdb9bf9c64059e79c4316365adfcedee3ed2c98d542` | pending deploy。给 api_keys 追加可空 team_id 并外键引用 teams(id)。依赖 055，本轮补齐投递接线。 |
+| 058 | `058_team_budgets.sql` | `e1b4d054f8e12c5d258d21c59bb2daa3fe9de78857be6bf88a3a457f8c2564cb` | pending deploy。团队月度预算表。依赖 055，本轮补齐投递接线。 |

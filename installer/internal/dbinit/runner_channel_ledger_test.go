@@ -125,8 +125,8 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		}
 	}
 	const (
-		// ★★★★ ★★★ 2026-11-24：★ **基线 332/25/63 → 337/25/63** ★★★ ★★★
-		//   起因（★ 两轮变化叠加 ★★）：
+		// ★★★★ ★★★ 2026-11-24：★ **基线 332/25/63 → 337/25/63 → 338/25/63** ★★★ ★★★
+		//   起因（★ 三轮变化叠加 ★★）：
 		//
 		//   ★ ① **上游新增迁移 983/984**（★ request_metrics + session_universe ★）：
 		//     ★ 两个都同时落【部署通道 files=()】与【安装器 StartupFiles】
@@ -136,11 +136,23 @@ func TestChannelFileSetBaseline(t *testing.T) {
 		//     ★ 五个都同时落【部署通道 files=()】与【安装器 StartupFiles】
 		//     ⇒ ⇒ **交集 +5**（★ 332 → 337 ★★）
 		//
+		//   ★ ③ **本轮（12h 修订审计轮）补登 973 + 055-058**（★ 五条 ★）：
+		//     ★ 原先**只建了 canonical + embeddata 双副本**、两条通道都没投递
+		//       ⇒ ★ ① raw_model_name 列在生产上**根本不存在**
+		//       ⇒ ★ writer.go 写这一列必然 42703 ⇒ 整条统计管线静默丢数
+		//       ⇒ ★ ② 团队族四表（teams / user_teams / api_keys.team_id /
+		//         team_budgets）**从来没被任何通道建过**
+		//         ⇒ maas/team_budget_gate 读不到表 ⇒ 团队预算门在生产上是死的
+		//     ★ 973 还与 994_session_analytics_owner_key_and_close_path **撞号**
+		//       ⇒ ★ 改用空号 973（★ 三位数惯例 ★★）并补齐九面登记 ★★
+		//     ★ 五条都同时落【部署通道 files=()】与【安装器 StartupFiles】
+		//     ⇒ ⇒ **交集 +5**（★ 337 → 342 ★★）
+		//
 		//   ★ 两侧【单通道独有】的缺口清单**一条都没动** ★★ ⇒
 		//   ★ 「新装库跑不起来的文件」这一类【★ 没有变化 ★】★★
 		//
 		//   ★ ⇒ 本次更新是【★ 如实反映事实 ★】、★ **不是「把红抹掉」** ★★
-		wantBoth          = 337
+		wantBoth          = 342
 		wantOnlyDeploy    = 25
 		wantOnlyInstaller = 63
 	)
