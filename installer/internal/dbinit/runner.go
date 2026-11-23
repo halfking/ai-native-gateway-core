@@ -2286,18 +2286,32 @@ WHERE NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = '%d')`,
 // ★ 返回「文件名 → 内容指纹」映射（★ 文件名取 sequence_name 最后一个 ':' 之后
 // ★ 的部分 ⇒ ★ 不依赖部署序列的名字 ⇒ ★ 换序列名也不影响）。
 func (r *Runner) deployLedgerApplied() (map[string]string, error) {
-	out := map[string]string{}
 	exists, err := r.psqlQuery("SELECT to_regclass('public.gateway_db_revision_sequences')")
 	if err != nil {
 		return nil, fmt.Errorf("探测部署通道权威台账失败: %w", err)
 	}
 	if strings.TrimSpace(exists) == "" {
-		return out, nil
+		return map[string]string{}, nil
 	}
 	rows, err := r.psqlQuery("SELECT sequence_name || '|' || COALESCE(content_sha256, '') FROM public.gateway_db_revision_sequences")
 	if err != nil {
 		return nil, fmt.Errorf("读取部署通道权威台账失败: %w", err)
 	}
+	return parseDeployLedgerMarkers(rows), nil
+}
+
+// parseDeployLedgerMarkers 把权威台账的原始行解析成「文件名 → 内容指纹」。
+//
+// ★ 行形态（★ 见 scripts/apply-db-revision-sequence.sh 的写入点）：
+// ★   `sequence_name || '|' || COALESCE(content_sha256, ”)`
+// ★   其中 sequence_name = 「<序列名>:<文件名>」（★ 每行一个**文件**标记），
+// ★   content_sha256 = 该文件当时的内容指纹（★ 空串 = 指纹通道上线前的遗留行）。
+//
+// ★ 抽出成纯函数是为了**能单测**：★ marker 的 basename 切分规则（★ 取最后一个
+// ★ ':' 之后）★ 是跨通道口径对齐的关键（★ 换序列名不影响识别）⇒ ★ 不能只靠
+// ★ 真库读数兜着。
+func parseDeployLedgerMarkers(rows string) map[string]string {
+	out := map[string]string{}
 	for _, line := range strings.Split(rows, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -2313,7 +2327,7 @@ func (r *Runner) deployLedgerApplied() (map[string]string, error) {
 		}
 		out[marker[idx+1:]] = sha
 	}
-	return out, nil
+	return out
 }
 
 // fileSHA256 计算安装器 SQL 目录下一个文件的内容指纹（★ 与部署通道
