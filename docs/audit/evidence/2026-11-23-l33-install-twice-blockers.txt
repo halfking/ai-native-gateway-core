@@ -1,0 +1,266 @@
+================================================================================
+证据：2026-11-23 L33 轮——★ 第四个发现「同一个刚装成功的库，第二次升级必失败」
+      ＋ 台账盲区普查 ＋ 安装器侧修法（★ 零迁移字节变更）＋ 烟测门第二阶段
+================================================================================
+★ 采集环境：本机 macOS（darwin arm64）＋ docker 守护进程；★ **零生产写 / 零 schema
+★ 变更 / 零在役切换 / 零迁移字节变更**；★ 所有安装都在**一次性隔离容器**里跑
+★ （容器名 `l30-fresh-install-smoke-*` / `l33-twice-*`，★ 端口不映射、★ 口令随机
+★ 生成不落盘、★ 事后按**自己的容器 ID** 删除）；★ **在役开发库 `llm-gateway-pg`
+★ 全程未被本轮任何命令触碰**（★ 只做过只读取证）。
+★ 代码树：★ 隔离 worktree `/tmp/lgw-l9l10`（★ 分支 `feat/session-analytics-l9l10`，
+★ 起点 `c8289d60a`（= merge `origin/main`））。
+
+--------------------------------------------------------------------------------
+㉑ 第四个发现：★ 同一个刚装成功的库，第二次跑安装器必失败（★ 真库 ×4 复现）
+--------------------------------------------------------------------------------
+★ 探针：`/tmp/l33-twice-probe.sh`（★ 一次性容器 ＋ 两次 `cmd/e2e-bootstrap`）
+
+★ 读数（★ 打补丁前的树）：
+  第一次安装（全新安装路径）  rc=0
+  第二次安装（增量路径）      rc=1   ← ★★ 失败
+  失败点（当前树）            session_turns_hot_bootstrap.sql
+                              → `ERROR:  relation "public.request_logs_hot" does not exist`
+  失败点（前一棵树）          392_candidate_failure_logs_monthly_partition.sql
+                              → `ERROR:  UNION types integer and text cannot be matched`
+
+★ 交叉印证（★ 上一轮 L29 续轮已在 4 个独立纯净容器上重复过同一现象）：
+  ★ 同一现象在 4 个容器上各复现一次 ⇒ ★ 不是偶发、★ 不是容器状态问题。
+
+--------------------------------------------------------------------------------
+㉒ 机制取证①：★ 安装器对「无数字前缀」的文件一律恒执行（★ 契约冲突）
+--------------------------------------------------------------------------------
+★ `installer/internal/dbinit/runner.go` 的 `startupPending`（原 2194 行附近）：
+      // 解析不出数字前缀的文件（如 head cluster 的 session_turns_hot_bootstrap.sql）
+      // 恒执行 —— 它们没有台账行可对照，靠幂等契约兜底，行为与全新安装一致。
+
+★ 而资产自己的声明（`embeddata/startup/session_turns_hot_bootstrap.sql` 第 2–4 行）：
+      -- Fresh-installer bootstrap: final Session V2 hot-path objects.
+      -- This installer-only asset projects the final 526 + 636 state onto the
+      -- current baseline. It is not an upgrade migration and must not be applied
+      -- to an existing deployment.
+
+★ ⇒ ★★ **资产契约与 runner 假设互相矛盾** ⇒ 增量路径执行它 ⇒ 撞已下线的
+★    `public.request_logs_hot`（★ 已被 `890_drop_request_logs_v1_family` 下线）。
+
+★ 另一条无前缀文件 `361b_provider_models_source_prelude.sql` 的声明（实测）：
+      -- 361b: provider_models.source 前置补列（host-first 部署通道 prelude）
+      -- Idempotent: YES（ADD COLUMN IF NOT EXISTS）
+      ⇒ ⇒ 它**必须**在增量路径照跑 ⇒ ★⇒ 「无前缀即一刀切跳过」是**错的修法**。
+
+--------------------------------------------------------------------------------
+㉓ 机制取证②：★ 台账盲区普查（★ 392 条 startup 迁移的记账形态）
+--------------------------------------------------------------------------------
+★ 普查口径（★ 对 `installer/cmd/llm-gw-installer/embeddata/startup/` 逐文件扫描）：
+      自登记形态 = 文件里出现 `INSERT INTO [public.]schema_migrations`
+
+  StartupFiles 总数: 392
+    ├ 文件尾部自登记 schema_migrations（版本进台账）: 110
+    ├ 数字前缀但【无自登记】（★ 增量通道每次都重放）: 280
+    └ 无数字前缀（★ 旧代码一律恒执行）: 2
+        ['session_turns_hot_bootstrap.sql', '361b_provider_models_source_prelude.sql']
+
+  安装器投递但部署通道不投递（★ 安装器专属）: 62
+  两通道共同投递: 330
+
+  ★ 结论：★ 台账盲区 = 280/392 条（71.4%）⇒ ★ 旧代码的增量通道每次重放它们。
+
+★ 为什么台账会有缺口（★ 机制）：
+  · `schema_migrations` 的行是**迁移文件自己**在尾部 INSERT 维护的（本仓定式）；
+  · 没有任何统一机制保证每个文件都写那一行；
+  · ⇒ 「哪些文件记账了」是**逐文件的历史偶然**；
+  · ⇒ 安装器拿这份台账当跳过判据 ⇒ 继承这份偶然。
+
+★ 权威台账其实另有一张（★ 本轮才把它接通）：
+  · `public.gateway_db_revision_sequences`（★ 部署通道 `scripts/apply-db-revision-sequence.sh`
+    写、★ 按「文件名 + 内容指纹」记账；★ marker 形态 `<序列名>:<文件名>`，★ 序列名
+    = `session-summary-and-integrity-2026-09`）；
+  · ★ 部署通道**早就**按指纹跳过（★ 「内容被加固 ⇒ 重放」）；
+  · ★ 而安装器**只读** `schema_migrations` ⇒ ★★ 两通道口径不一致 ⇒ ② 的根。
+  · ★ 指纹可比对：★ embeddata 副本与 `sql/migrations/startup/` 源文件**逐字节一致**
+    （实测 392/990/388 三份 sha256 相同；★ 990 的 sha 前缀 `e3ae272caa3e659` 与
+    ★ 部署脚本里登记的 `990_stats_consistency_fixes.sql|e3ae272c...` 一致）⇒ ★
+    ★ ⇒ 跨通道比指纹是**同口径**的。
+
+--------------------------------------------------------------------------------
+㉔ 修法落地（★ 安装器代码内，★ 零迁移字节变更）
+--------------------------------------------------------------------------------
+★ F1 记账补齐   `recordAppliedVersion`（★ 应用成功后补记 `schema_migrations`，
+                ★ `WHERE NOT EXISTS` 守卫 ⇒ 幂等、★ 不覆盖手改过的 description）
+★ F2 专属资产   `freshInstallOnlyAssets`（★ 只在**全新安装**路径投递；
+                ★ 判据来自文件自身契约；★ 单测双向核对名单与 embeddata）
+★ F3 只读咨询   `deployLedgerApplied`（★ **只 SELECT**、★ 不写、★ 不建表；
+                ★ 同一内容指纹 ⇒ 不重放；★ 遗留无指纹行 ⇒ 按已应用；★ 指纹不同 ⇒ 重放）
+
+★ 单测（★ 新增 `installer/internal/dbinit/runner_ledger_test.go`，★ 4 条全绿）：
+  PASS TestFreshInstallOnlyAssetsMatchFileContract
+  PASS TestStartupSkipReason
+  PASS TestRecordAppliedVersionSQLIsIdempotent
+  （＋ 既有 `installer/internal/dbinit` 全部测试：★ ok）
+
+--------------------------------------------------------------------------------
+㉩ 实测：★ 打补丁后同一个库连装两次（★ 真库、★ 同一容器、★ 同一份 embeddata）
+--------------------------------------------------------------------------------
+  == 第一次安装（全新安装路径）
+     rc=0
+     台账行数（装完）：396  max=999
+  == 第二次安装（增量路径）
+     rc=0
+     ✅ 增量迁移完成：本次应用 1 个 startup 迁移（跳过 391 个）
+     台账行数（再装完）：396
+     会话分析物化视图：4
+     total_credits_charged 列：1
+  == 汇总：RUN1_RC=0 RUN2_RC=0
+
+★ 口径说明：★ 那「1 个」是 `361b_provider_models_source_prelude.sql`（★ 无版本号 ⇒
+★ 不进版本台账 ⇒ ★ 按其契约每次照跑、★ 幂等无害）；★ 台账 396 行 vs 旧口径 140 行
+★ ⇒ **F1 补齐了 256 行记账（★ 不是 schema 变更）**。
+
+--------------------------------------------------------------------------------
+㉪ 门扩到第二阶段：★ `scripts/checks/fresh-install-smoke.sh` 现在跑两段
+--------------------------------------------------------------------------------
+★ 第一段＝空库新装（★ 原有三条产物断言）★★ 第二段＝同一个库、★ 同一个容器、
+★ 第二次跑安装器（★ 增量路径）⇒ 四条判据：
+  ① 第二次安装必须成功（退出码 0）
+  ② 第二次安装不许重放任何带版本号的迁移（★ 逐条解析安装日志、★ 口径＝`数字_`）
+  ③ 第二次安装不许新增台账行
+  ④ 第二次安装后产物仍在（4 视图 / `total_credits_charged` / 种子行）
+
+★ PASS 臂读数（★ 真库、★ 隔离容器）：
+  ✔ 会话分析物化视图 4 个
+  ✔ session_summaries.total_credits_charged 在
+  ✔ minimax-m3.1-flash 在位且 featured=TRUE
+  ℹ public 表数：576
+  ✔ 第二次安装成功（★ 增量路径）
+  ✔ 台账行数未变（396）⇒ 没有迁移被重放
+  ✔ 第二次运行没有重放任何带版本号的迁移
+  ✔ 增量路径后 4 个会话分析物化视图仍在
+  ✔ 增量路径后 total_credits_charged 仍在
+  fresh-install-smoke: PASS      （EXIT=0）
+
+--------------------------------------------------------------------------------
+㉫ 变异臂 M1：★ 拆掉 F2（★ 让安装器专属资产照跑）⇒ 门红
+--------------------------------------------------------------------------------
+★ 变异方式（★ 临时改 `installer/internal/dbinit/runner.go`，★ 跑完即复原）：
+  ★ 从 `freshInstallOnlyAssets` 里删掉 `session_turns_hot_bootstrap.sql` 那一行。
+
+★ 读数：
+  MUTATE OK: F2（专属资产只在全新安装投递）已拆除
+  M1_EXIT=1
+  2026/11/23 16:27:00 应用 startup migration session_turns_hot_bootstrap.sql 失败: psql 失败: exit status 3
+  FAIL: ★ 装完再升失败（★ ★ 「同一个刚装成功的库，第二次升级必失败」——★ 这正是老库升级通道）
+
+★ ⇒ ★★ 这道门能抓到「契约冲突」这一类（★ 底层逐字：
+★ `ERROR:  relation "public.request_logs_hot" does not exist`）。
+
+--------------------------------------------------------------------------------
+㉬ 变异臂 M2：★ 拆掉 F1（★ 应用后不补记台账 ⇒ 280 条盲区文件每次都被重放）⇒ 门红
+--------------------------------------------------------------------------------
+★ 变异方式（★ 临时改 `installer/internal/dbinit/runner.go`，★ 跑完即复原）：
+  ★ 在 `recordAppliedVersion` 开头插入 `return nil`（★ 让它变成空操作）。
+
+★ 读数：
+  MUTATE OK: F1（应用后补记台账）已拆除
+  M2_EXIT=1
+    ✅ startup migration 467_sessions_title_user_tags.sql 完成
+    ▶ 应用 startup migration 351_session_analytics_tables.sql ...
+    ✅ startup migration 351_session_analytics_tables.sql 完成
+    ▶ 跳过 startup migration session_turns_hot_bootstrap.sql（文件头自述：installer-only，must not be applied to an existing deployment）
+    ▶ 应用 startup migration 478_auto_route_affinity.sql ...
+    ✅ startup migration 478_auto_route_affinity.sql 完成
+    ▶ 应用 startup migration 484_request_logs_hot_add_status_code.sql ...
+  2026/11/23 16:29:01 应用 startup migration 484_request_logs_hot_add_status_code.sql 失败: psql 失败: exit status 3
+  WARNING:  there is already a transaction in progress
+  BEGIN
+  ERROR:  relation "request_logs_hot" does not exist
+  FAIL: ★ 装完再升失败（★ ★ 「同一个刚装成功的库，第二次升级必失败」——★ 这正是老库升级通道）
+
+★ ⇒ ★★ **盲区重放会撞同一族「已下线对象」**（★ `request_logs_hot` 已被 890 下线）
+★ ⇒ ★★ 而且**不是只有一条会炸**：★ 台账一缺，★ 增量通道就从 392 条的头一条
+★ ★ 开始逐条重放 ⇒ ★ 第一条炸点就在 484（★ 而 392 的跨面视图炸点是另一条）。
+★ ★★ **⇒ 这就是「台账盲区」的真实代价：★ 它把一个「该跳过的文件」变成
+★ ★★ 「一个会改 schema 的动作」**。
+
+--------------------------------------------------------------------------------
+㉭ 变异臂 M3：★ 复原 ⇒ 门绿
+--------------------------------------------------------------------------------
+★ 复原方式：★ 两个变异臂跑完后**各自把 `runner.go` 从备份拷回**
+★ （★ 不用 `git checkout` —— ★ 因为本文件的修法**尚未提交**，★ checkout 会把
+★ ★ 本轮修法一起冲掉 ⇒ ★★ 备份/拷回是唯一安全的复原路径）。
+
+★ 读数：
+  M3_EXIT=0
+    ✔ 会话分析物化视图 4 个
+    ✔ session_summaries.total_credits_charged 在
+    ✔ minimax-m3.1-flash 在位且 featured=TRUE
+    ℹ public 表数：576
+    ✔ 第二次安装成功（★ 增量路径）
+    ✔ 台账行数未变（396）⇒ 没有迁移被重放
+    ✔ 第二次运行没有重放任何带版本号的迁移
+    ✔ 增量路径后 4 个会话分析物化视图仍在
+    ✔ 增量路径后 total_credits_charged 仍在
+  fresh-install-smoke: PASS
+
+★ ⇒ ★★ **三臂齐了**：★ M1 红（★ 契约冲突）★★ M2 红（★ 台账盲区）★★ M3 绿
+★ ⇒ ★★ **⇒ 这道门对这两类失败都有牙**（★ 且是**真库空库**上的读数、★ 不是模拟）。
+
+--------------------------------------------------------------------------------
+㉮ ★★ 本轮第三次撞到「量具自身的缺陷」（★ 两次，★ 都记下来）
+--------------------------------------------------------------------------------
+★ ① 判据②的「带版本号」口径写错：★ 初版判据＝「文件名以数字开头」⇒ ★★ 而
+★   `361b_provider_models_source_prelude.sql`（★ 数字 + 字母）也以数字开头 ⇒ ★★ 于是
+★   它被误判成「被重放的带版本号迁移」⇒ ★★ 门报红（★ **红色本身是对的**，★ 但
+★   **理由是错的**）⇒ ★★ 修正口径＝「**纯数字前缀 + 下划线**」。
+★ ② `grep` 无匹配时退出码是 1：★ 在 `set -euo pipefail` 下 ⇒ ★★ 「**没有重放任何
+★   迁移**」（★ 正是我们要的**好**结果）⇒ ★★ 反而让**整道门**在 ERR trap 上异常
+★   退出（★ 报「门自身的缺陷」）⇒ ★★ 修法＝`grep ... || true` ⇒ ★★ **⇒ 「判红」
+★   与「门自己坏了」必须分得开（★ 本轮这道门的 ERR trap 正是干这个的）**。
+
+--------------------------------------------------------------------------------
+㉯ 「门咬门」第二次：★ 新门代码自动进了 pipefail 竞态台账（★ + 措辞门两处）
+--------------------------------------------------------------------------------
+★ 现象：★ 本轮给门加第二阶段（★ 新增管道行）⇒ ★ 全量 ursmcheck 跑完 ⇒ ★★
+★ `TestPipefailRaceLedgerCoversCandidateSet` 当场点名：
+★   scripts/checks/fresh-install-smoke.sh	306	1	...	47da9948b7da	（★ 台账缺 1 行 ⇒ 门不接受）
+★ 处置：★ 用仓内官方量具增量更新台账（★ 保留既有裁决）：
+★   python3 scripts/audit/measure-pipefail-race-surface.py \
+★       --ledger scripts/ursmcheck/pipefail_race_ledger.tsv --out /dev/null
+★   ⇒ 台账 471 行（★ 沿用人工裁决 470 / 新增 1 / 待裁决 1）
+
+★ 裁决的两臂实测（★ 写端 143,000 B / 4000 行 ⇒ ★ 行式写端远超单次写入粒度 ⇒ SIGPIPE 必然发生）：
+  臂 A（仓内形态、★ 带 `|| true`）：(grep -o … || true) | head -5 | sed …
+        ⇒ PIPELINE_RC=0        ✔
+  臂 B（反例对照、★ 去掉 `|| true`）：(grep -o …) | head -5 | sed …
+        ⇒ PIPESTATUS=141 0 0   （★ 写端被 SIGPIPE 杀）
+★ ⇒ 裁决 verdict=benign-bare：★ 写端是子 shell、★ 退出码被 `|| true` 钉死为 0 ⇒ ★★
+★   本行不进入概率翻转区（★ 且结论**不依赖任何体量阈值**）。
+
+★ ★★ 措辞门当场抓了我两处（★ 门第三次抓我）：
+  ① `TestPipefailRaceThresholdMentionsCarryPlatform`：
+     ★ 我第一版裁决写了「143,000 B ⇒ 远超管道容量」⇒ ★★ 报红（★ linux 与 macOS 的
+     ★ 管道边界可差 4–16 倍 ⇒ 本机读数不能用来判生产）⇒ 改法＝补平台标注。
+  ② `TestPipefailRaceCriterionMatchesWording`：
+     ★ 我把「判据量 = **写端匹配输出**」写进了 `evidence` ⇒ ★★ 报红（★ 判据句必须在
+     ★ `reason` 字段、★ 且判据量要与量具形态一致）⇒ 改法＝移进 reason。
+★ ⇒ 复跑：★ `go test ./scripts/ursmcheck -run 'TestPipefailRace'` **ok（74.6s）** ✔
+
+--------------------------------------------------------------------------------
+㉰ 本轮门禁终态（★ 全量 ursmcheck）
+--------------------------------------------------------------------------------
+★ 红（★ 4 条、★ **本轮零新增**）：
+  ① TestDbObjectGapLedgerIsFullyRecomputable        941 vs 959      ← L20 既有红
+  ② TestInstallerReachabilityLedgerIsRecomputable    941 vs 959      ← L20 既有红
+  ③ TestInstallerReachabilityLedgerPinsItsInputs     387 vs 392/396  ← L20 既有红
+  ④ TestAdminRoutesSnapshotMatchesGenerator           handler.go:1283 vs 快照:1278
+     ⇒ **上游引入**：★ `a00d1d7fc`（★ huangxt、★ 2026-11-23 15:53）改了 admin/handler.go
+       （★ +5 行）★ **未同步重生成路由快照** ⇒ ★★ 本轮**不动它**（★ 纪律：★ 归因别的
+       ★ 列车引入的红只登记「非本轮引入 + 证据」）
+★ 本轮引入过 1 条（★ pipefail 竞态台账点名新门）⇒ ★ 已逐条裁决 ⇒ ★ 复跑绿 ⇒ ★ 零新增红。
+
+★ 其它门禁读数：
+  · installer/internal/dbinit 全绿（★ 含本轮新增 3 条单测）
+  · scripts/checks/fresh-install-smoke.sh（★ 两段）PASS（EXIT=0）
+  · scripts/guards/check-shell-fullwidth-var.sh ✓
+  · tests/gate_scripts_caller_registry_test.sh ⇒ PASS=210 FAIL=0
+  · scripts/checks/guards-sync.sh ✓（★ 14 个 *guard 目录与 22 个 internal 条目双向一致）
+  · gofmt 零漂移 ＋ go build ./… ＋ go vet ✓
+  · AGENTS.md 522,283 B ≤ 524,288（★ 本轮归档两块已收口历史轮次腾出体积）
