@@ -6,10 +6,10 @@
 # ★ ★ baseline-dependent = ★ 创建迁移【不在安装器清单】⇒ 新装能拥有它只因为基线是 dump
 # ★ ★ new-install-gap    = ★ 创建迁移不可达 ⇒ ★★ 任何新装环境【必然缺】
 # ★ ★ installer-bug      = ★ 创建迁移【可达】、新装却没有 ⇒ ★★ 安装器自己有 bug
-# ★ generated_at=2026-11-23T15:53:15+00:00
-# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=398 package_up=398 rows=971
+# ★ generated_at=2026-11-23T16:36:00+00:00
+# ★ envs=local,fresh,252,211 fresh_env=fresh manifest=398 package_up=398 rows=973
 # ★ ★★ census_bundled_at=2026-11-23T07:03:47+00:00 census_env_sha256=local:c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d,fresh:acb523930e2b29be2d53c9eb307a25ecadedf328e59e859b3a82f3e76b9c3f84,252:b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55,211:550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa
-# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 86, "reachable-and-present": 494, "unreachable-and-missing": 49}
+# ★ counts={"baseline-dependent": 342, "reachable-and-legitimately-retired": 88, "reachable-and-present": 494, "unreachable-and-missing": 49}
 idx_provider_models_canonical_raw_name	provider_models	-1	395b_dedup_provider_models_and_aliases.sql	no	local,fresh,252,211		baseline-dependent	baseline-dependent	
 idx_request_logs_hot_auto_task_ts	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
 idx_request_logs_hot_gw_session_id	request_logs_hot	-1	478p2_affinity_indexes.sql	no			reachable-and-legitimately-retired	none	
@@ -939,6 +939,17 @@ idx_sessions_task_category	sessions	981	981_session_analytics_foundation.sql	yes
 idx_provider_call_attempts_request	provider_call_attempts	982	982_provider_call_attempts.sql	yes			reachable-and-legitimately-retired	none	
 idx_provider_call_attempts_sent	provider_call_attempts	982	982_provider_call_attempts.sql	yes			reachable-and-legitimately-retired	none	
 idx_provider_call_attempts_unconfirmed	provider_call_attempts	982	982_provider_call_attempts.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_gateway_node_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_modality_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_payer_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_protocol_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_provider_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_session_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_status_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_team_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_tenant_billing_date	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_tenant_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
+idx_request_metrics_traffic_time	request_metrics	983	983_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
 idx_team_budgets_team_id	team_budgets	986	986_team_budgets.sql	yes	fresh		reachable-and-present	none	
 idx_agent_usage_agg_agent	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
 idx_agent_usage_agg_pk	agent_usage_aggregates	994	994_session_analytics_owner_key_and_close_path.sql	yes	fresh		reachable-and-present	none	
@@ -972,12 +983,3 @@ idx_summary_layers_created	session_summary_layers	999	999_session_summary_layers
 idx_summary_layers_hash	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
 idx_summary_layers_session	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
 idx_summary_layers_type	session_summary_layers	999	999_session_summary_layers.sql	yes	fresh		reachable-and-present	none	
-idx_request_metrics_gateway_node_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_payer_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_provider_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_session_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_status_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_team_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_tenant_billing_date	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_tenant_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	
-idx_request_metrics_traffic_time	request_metrics	1000	1000_request_metrics.sql	yes			reachable-and-legitimately-retired	none	

@@ -278,7 +278,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
+guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -594,6 +594,32 @@ guards-deploy-state-machine: ## 切流状态机门（慢门，实测 ≈270s ⇒
 guards-fresh-install: ## 空库新装烟测门（慢门：起一次性 PG ＋ 真装 392 条迁移 ⇒ 只进 make guards 与 verify.sh）
 	@bash scripts/checks/fresh-install-smoke.sh
 
+# ── 「部署通道投递面 ↔ 权威账」覆盖门（★ 方案 C · L35）──────────────────
+#
+# ★ 2026-11-23 L34 续轮新增：★ 这是 owner 待决清单里**唯一可在本仓自主落地**
+#   的一项（★ 方案 C：★ **只加前置断言门**、★ **不改任何投递行为** ★★）。
+#   ★ 起因：★ 报告 §7.31 实测「新装库 ⇒ 直接交给部署通道」断在两处 ⇒ ★ 而断点
+#     **只在跑到一半时**才暴露（★ 臂 D：★ 第 13 个文件炸 ★）⇒ ★ ⇒ 「断层」
+#     **没有可观测信号** ⇒ ★ ⇒ 本门把断层变成**跑之前就能看出的、可判定的红**。
+#   ★ 本门**只读**：★ 只 SELECT、★ **绝不写**；★ **不调用**部署通道 ⇒ ★
+#     ⇒ **零生产写 / 零 schema 变更 / 零在役切换 / 零迁移字节变更** ★★
+#   ★ 三态：★ 没给 DB 地址 ⇒ **显式 SKIP**（rc=0、★ 不伪装成通过 ★）；
+#     ★ 量具自身坏了 ⇒ **ABORT**（rc=2、★ 与判据红分得开 ★）；
+#     ★ 投递面有文件在权威账里**没有记录** ⇒ FAIL（rc=1）；★ 无断层 ⇒ PASS（rc=0）。
+#   ★ 进 `make guards` **慢门族**（★ 不进快门族：★ 它需要一个可读的 PG 地址 ★★）。
+.PHONY: guards-deploy-ledger
+guards-deploy-ledger: guards-deploy-ledger-selftest ## 部署通道投递面 ↔ 权威账覆盖门（★ 方案 C · 只读前置断言 · 慢门：需要一个可读的 PG 地址）
+	@bash scripts/checks/deploy-ledger-coverage-gate.sh
+
+# ★★ 覆盖门**自身**的夹具测试（★ 七臂：★ 缺表 / 空表 / 全覆盖 / 部分覆盖 /
+# ★★ legacy 行 / 连不上 / 无地址 ★★）★★
+# ★ ★★ 它是**快门**（★ 纯 shell、★ 零编译、★ 零外部依赖 ★★）⇒ ★ ⇒ ★ **进
+# ★★ CI 快门族**（★ `make guards-fast` ★★）⇒ ★ ⇒ ★ ★★ 覆盖门的判据逻辑
+# ★★ 因此**每天**都被验证一次、★ 而不必等一台 PG ★★。
+.PHONY: guards-deploy-ledger-selftest
+guards-deploy-ledger-selftest: ## 部署通道覆盖门的夹具测试（★ 七臂 · 快门 · 零外部依赖 · 进 CI 快门族）
+	@bash scripts/checks/deploy-ledger-coverage-gate.test.sh
+
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
 #
 # ★ 2026-11-02 第二十二轮：仓里有**两份**审计档，各带一份**登记册**：
@@ -672,7 +698,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-deploy-ledger-selftest ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门 + **部署通道覆盖门的夹具测试（方案 C · 七臂 · 纯 shell 零依赖）**；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。

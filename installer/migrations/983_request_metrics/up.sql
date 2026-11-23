@@ -1,6 +1,6 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/1000_request_metrics.sql
--- Migration:     1000
+-- File:          sql/migrations/startup/983_request_metrics.sql
+-- Migration:     983
 -- Database:      llm_gateway
 -- Purpose:       创建统计专用基础表 request_metrics，支持多维度快速聚合查询
 --
@@ -16,15 +16,15 @@
 --   1. 每个请求一条记录（唯一性保证）
 --   2. 异步填充（不影响请求主路径性能）
 --   3. 窄表设计（只保留维度和计量字段）
---   4. 多维度支持（供应商/节点/模型/付款者/使用者/会话/团队等）
+--   4. 多维度支持（供应商/节点/模型/付款者/使用者/会话/团队/多模态等）
 --   5. 整型优化（费用以分为单位，避免浮点精度问题）
 --   6. 分区表（按时间范围分区，支持高效时间范围查询）
 --
 -- Affected Rows: 0 (新表创建)
 -- Breaking Change: NO (纯新增，不影响既有功能)
--- Rollback Script: 1000_request_metrics.down.sql
+-- Rollback Script: 983_request_metrics.down.sql
 --
--- Date: 2026-11-23
+-- Date: 2026-11-24
 -- Author: Kiro AI
 -- ===========================================================================
 
@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS public.request_metrics (
     application_id     BIGINT,                  -- 应用ID
     
     -- ============================================================
+    -- 多模态与协议维度
+    -- ============================================================
+    modality           TEXT,                    -- 模态类型（text/image/audio/video/multimodal）
+    protocol           TEXT,                    -- 请求协议（openai/anthropic/gemini等）
+    attachment_count   INTEGER DEFAULT 0,       -- 附件数量
+    attachment_size    BIGINT DEFAULT 0,        -- 附件总大小（字节）
+    
+    -- ============================================================
     -- 计量字段（整型优化，避免浮点精度问题）
     -- ============================================================
     prompt_tokens      INTEGER NOT NULL DEFAULT 0,
@@ -84,6 +92,11 @@ CREATE TABLE IF NOT EXISTS public.request_metrics (
     cached_tokens      INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
     total_tokens       INTEGER NOT NULL DEFAULT 0,
+    
+    -- 多模态专用 token 计量
+    image_tokens       INTEGER NOT NULL DEFAULT 0,
+    audio_tokens       INTEGER NOT NULL DEFAULT 0,
+    video_tokens       INTEGER NOT NULL DEFAULT 0,
     
     -- ============================================================
     -- 费用字段（以分为单位，避免浮点精度问题）
@@ -173,6 +186,16 @@ CREATE INDEX IF NOT EXISTS idx_request_metrics_team_time
 CREATE INDEX IF NOT EXISTS idx_request_metrics_status_time
     ON public.request_metrics (status, occurred_at DESC);
 
+-- 模态+时间（多模态统计）
+CREATE INDEX IF NOT EXISTS idx_request_metrics_modality_time
+    ON public.request_metrics (modality, occurred_at DESC)
+    WHERE modality IS NOT NULL;
+
+-- 协议+时间（协议分布统计）
+CREATE INDEX IF NOT EXISTS idx_request_metrics_protocol_time
+    ON public.request_metrics (protocol, occurred_at DESC)
+    WHERE protocol IS NOT NULL;
+
 -- ============================================================
 -- 3. 注释
 -- ============================================================
@@ -186,18 +209,26 @@ COMMENT ON COLUMN public.request_metrics.billing_date IS '记账日期，用于�
 COMMENT ON COLUMN public.request_metrics.gateway_node_id IS '处理请求的网关节点ID（服务器标识），用于节点负载统计和故障追踪';
 COMMENT ON COLUMN public.request_metrics.gateway_instance IS '网关实例标识（容器ID/进程ID），用于细粒度性能分析';
 COMMENT ON COLUMN public.request_metrics.endpoint_node IS '接入端点节点，标识请求从哪个接入点进入';
+COMMENT ON COLUMN public.request_metrics.modality IS '模态类型：text=纯文本, image=图像, audio=音频, video=视频, multimodal=多模态混合';
+COMMENT ON COLUMN public.request_metrics.protocol IS '请求协议：openai=OpenAI兼容, anthropic=Anthropic协议, gemini=Gemini协议等';
+COMMENT ON COLUMN public.request_metrics.attachment_count IS '附件数量，用于多模态请求的附件统计';
+COMMENT ON COLUMN public.request_metrics.attachment_size IS '附件总大小（字节），用于存储成本和带宽统计';
+COMMENT ON COLUMN public.request_metrics.image_tokens IS '图像token数，用于多模态计费';
+COMMENT ON COLUMN public.request_metrics.audio_tokens IS '音频token数，用于多模态计费';
+COMMENT ON COLUMN public.request_metrics.video_tokens IS '视频token数，用于多模态计费';
 COMMENT ON COLUMN public.request_metrics.cost_cents IS '费用（分），1美元=100分，避免浮点精度问题。从 usage_facts.cost_amount 转换而来';
 COMMENT ON COLUMN public.request_metrics.traffic_class IS 'business=业务流量, probe=探测流量。与 usage_facts.traffic_class 保持一致';
 COMMENT ON COLUMN public.request_metrics.payer_type IS 'tenant=租户付费, team=团队付费, user=用户付费';
 COMMENT ON COLUMN public.request_metrics.attributes IS '扩展属性，存储未来可能需要的维度字段（JSONB格式）';
 COMMENT ON COLUMN public.request_metrics.source IS '数据来源标识（async_processor=异步处理器, manual=手动导入, backfill=补填）';
 
--- ★ ≥952 自登记纪律（★ 本仓约定：★ 每条迁移自带 schema_migrations 记账行 ⇒
---   否则「应用了却没记账」⇒ 记账链断口（★ 914/928/960/981 同款））。
---   ★ 本行为 2026-11-23 合并轮九补入：★ 上游 `b8f2935f4` 的原件缺这一行、
---   而该迁移**从未被任何库应用过**（★ 三条投递通道都没登记它）⇒ 改字节零分叉风险。
+-- ============================================================
+-- 4. 台账自登记（≥952 双账本纪律）
+-- ============================================================
+-- 迁移必须自己把行写进 public.schema_migrations
+-- 缺此段 ⇒ 任何通道应用后运行时台账无行 ⇒ 连续性门/漂移报告假红
 INSERT INTO public.schema_migrations (version, description)
-VALUES ('1000', 'request metrics partitioned base table')
+VALUES ('983', 'request_metrics statistics base table')
 ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
 
 COMMIT;

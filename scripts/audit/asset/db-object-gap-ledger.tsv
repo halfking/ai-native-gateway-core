@@ -5,8 +5,8 @@
 # ★   ★★ retired-by-column-drop = ★ 索引的键列在本环境已被 DROP COLUMN 删掉
 # ★   ★★ ⇒ PG 自动删掉了那个索引 ⇒ ⇒ 它【不是】缺口（★ 假缺口的第三种来源）
 # ★ verdict：complete | gap　　severity：none | prod-full-gap | prod-partial-gap | local-only-gap | fresh-only-gap | new-install-gap
-# ★ generated_at=2026-11-23T15:53:15+00:00
-# ★ expected=971 envs=local,fresh,252,211 gaps_by_env={"211": 51, "252": 58, "fresh": 49, "local": 60} production_gaps=66
+# ★ generated_at=2026-11-23T16:36:00+00:00
+# ★ expected=973 envs=local,fresh,252,211 gaps_by_env={"211": 51, "252": 58, "fresh": 49, "local": 60} production_gaps=66
 -1	idx_provider_models_canonical_raw_name	provider_models	present	present	present	present	complete	none
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	retired	retired	retired	retired	complete	none
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	retired	retired	retired	retired	complete	none
@@ -936,6 +936,17 @@
 982	idx_provider_call_attempts_request	provider_call_attempts	retired	retired	retired	retired	complete	none
 982	idx_provider_call_attempts_sent	provider_call_attempts	retired	retired	retired	retired	complete	none
 982	idx_provider_call_attempts_unconfirmed	provider_call_attempts	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_gateway_node_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_modality_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_payer_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_protocol_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_provider_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_session_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_status_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_team_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_tenant_billing_date	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_tenant_time	request_metrics	retired	retired	retired	retired	complete	none
+983	idx_request_metrics_traffic_time	request_metrics	retired	retired	retired	retired	complete	none
 986	idx_team_budgets_team_id	team_budgets	retired	present	retired	retired	complete	none
 994	idx_agent_usage_agg_agent	agent_usage_aggregates	retired	present	retired	retired	complete	none
 994	idx_agent_usage_agg_pk	agent_usage_aggregates	retired	present	retired	retired	complete	none
@@ -969,12 +980,3 @@
 999	idx_summary_layers_hash	session_summary_layers	retired	present	retired	retired	complete	none
 999	idx_summary_layers_session	session_summary_layers	retired	present	retired	retired	complete	none
 999	idx_summary_layers_type	session_summary_layers	retired	present	retired	retired	complete	none
-1000	idx_request_metrics_gateway_node_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_payer_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_provider_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_session_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_status_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_team_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_tenant_billing_date	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_tenant_time	request_metrics	retired	retired	retired	retired	complete	none
-1000	idx_request_metrics_traffic_time	request_metrics	retired	retired	retired	retired	complete	none

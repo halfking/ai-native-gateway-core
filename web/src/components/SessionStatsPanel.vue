@@ -38,10 +38,10 @@ import PageHelpDrawer from './help/PageHelpDrawer.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
 import { ElIcon } from 'element-plus'
-import KxDateRangePicker from './ui/KxDateRangePicker.vue'
+import StatsDateRangePicker from './analytics/StatsDateRangePicker.vue'
 import { rangeFromSpanDays, rangeSpanDays } from './ui/kxDatePresets'
-import type { KxDateRange, KxDateRangePreset } from './ui/kx-date-types'
-import { localDateStamp } from '../i18n/localDate'
+import type { KxDateRange } from './ui/kx-date-types'
+import { boardRangeFromKxRange, boardRangeToKxRange, type BoardTimeRange } from '../utils/boardTimeRange'
 const { t } = useI18n()
 const router = useRouter()
 
@@ -52,9 +52,14 @@ const router = useRouter()
 //   · 会话分析用户页（SessionAnalyticsUsersView）—— 入口仍由本面板提供。
 // ⇒ 「统计标准」正文 id 两处必须一致（否则用户看到两份各自为政的说明），
 // 由 StatsStandardsHelpWiring.test.ts 钉住。
-const props = withDefaults(defineProps<{ showStandardsHelp?: boolean }>(), {
+const props = withDefaults(defineProps<{ showStandardsHelp?: boolean; range?: KxDateRange | null }>(), {
   showStandardsHelp: true,
+  range: null,
 })
+
+// 外部受控模式（会话分析页把本页的 Top5 时间窗交给本面板）。
+// 面板只负责「把用户选的新区间交回页面」，落点由页面决定。
+const emit = defineEmits<{ 'update:range': [value: KxDateRange] }>()
 
 // 2026-11-23 统计标准轮：页面内嵌的「统计标准」帮助入口。
 //
@@ -70,14 +75,15 @@ const props = withDefaults(defineProps<{ showStandardsHelp?: boolean }>(), {
 // 详见: docs/audit/2026-11-23-数据一致性验证最终报告-数据库实测.md
 const statsStandardsHelpId = 'dashboard-stats-standards'
 
+// ★ 2026-11-23 日期范围对齐轮：仪表盘页把**看板那份** BoardTimeRange 也提供出来
+//   ⇒ 会话统计页与看板页共用**同一份范围状态**（同一控件形态、同一区间、
+//   改一边另一边同步）—— 这正是「两页的日期范围选择应该一致」的落点。
 const boardState = inject<{
   days: Ref<number>
+  timeRange?: Ref<BoardTimeRange>
+  setTimeRange?: (next: BoardTimeRange) => void
+  load?: () => Promise<void>
 } | null>('dashboardBoard', null)
-
-const boardDays = computed(() => {
-  const n = boardState?.days?.value
-  return typeof n === 'number' && n > 0 ? n : null
-})
 
 // 2026-11-21 统计口径对齐轮：包含探测开关（与 board/request-logs 同语义同命名；
 // 缺省排除探测 = 与 /admin/session-analytics 同宇宙）。持久化偏好独立键。
@@ -88,6 +94,20 @@ try {
   includeProbes.value = localStorage.getItem(SESSION_PROBE_SCOPE_KEY) === 'included'
 } catch { /* localStorage 不可用 ⇒ 保持缺省业务宇宙 */ }
 
+// ── 生效的时间范围 ───────────────────────────────────────────────────────
+// 优先级：① 仪表盘页的**共享看板状态** → ② 外部受控（会话分析页）→ ③ 本地兜底。
+// 无论走哪条，范围都是**日历日区间**（与看板同一把尺），不再是滚动窗口。
+const localRange = ref<KxDateRange>(props.range ?? rangeFromSpanDays(7))
+
+const effectiveRange = computed<KxDateRange>(() => {
+  if (boardState?.timeRange?.value) return boardRangeToKxRange(boardState.timeRange.value)
+  if (props.range) return props.range
+  return localRange.value
+})
+
+// 窗口跨度（日历日，含首尾）：请求里的 days 元信息与页面口径文案都用它。
+const rangeDays = computed(() => Math.max(1, rangeSpanDays(effectiveRange.value)))
+
 const {
   loading,
   error,
@@ -96,14 +116,21 @@ const {
   performanceStats,
   errorStats,
   refresh,
-  changeDays,
   days,
 } = useDashboard({
   autoRefresh: true,
   refreshInterval: 5 * 60 * 1000,
-  // 与看板同源：有 board days 时用它，否则默认 7（不再静默 30）
-  defaultDays: boardDays.value ?? 7,
-  extraParams: computed(() => ({ include_probes: includeProbes.value || undefined })),
+  defaultDays: rangeDays.value,
+  // ★ 显式日历窗口（start_date/end_date）：后端（admin/dashboardapi 的共享窗口
+  //   层）据此把窗口谓词换成参数化的 [start, end)（end 独占）⇒
+  //   **界面显示的区间 = 数据窗口**（不再有「显示日历日、数据取滚动窗」的错位）。
+  //   days 只作为跨度元信息随行（后端优先用显式窗口）。
+  extraParams: computed(() => ({
+    include_probes: includeProbes.value || undefined,
+    days: rangeDays.value,
+    start_date: effectiveRange.value.start,
+    end_date: effectiveRange.value.end,
+  })),
 })
 
 // ★ 2026-11-23（L7 修复）：口径开关变化**必须触发重载**。
@@ -119,14 +146,19 @@ watch(includeProbes, (v) => {
   void refresh()
 })
 
-watch(
-  boardDays,
-  (next) => {
-    if (next == null || next === days.value) return
-    void changeDays(next)
-  },
-  { immediate: true },
-)
+// 范围变化 ⇒ 必须重载（否则参数变了却没人重新请求 ⇒ 界面显示的区间与数据脱节）。
+//
+// ★ 2026-11-23 日期范围对齐轮：触发源从「看板的 days 变化」换成
+//   **生效区间本身**（看板页共享状态 / 外部受控 / 本地兜底，三者统一）。
+watch(effectiveRange, () => {
+  void refresh()
+})
+
+// days 只是跨度元信息：跟随生效区间同步（不触发额外请求，请求参数由
+// extraParams 里的 days 承担）。
+watch(rangeDays, (n) => {
+  if (n !== days.value) days.value = n
+}, { immediate: true })
 
 const { state: horizonState } = useDataHorizon()
 const showHorizonHint = computed(() => horizonState.value === 'stale' || horizonState.value === 'failed')
@@ -137,14 +169,13 @@ const aligned = computed(() => overview.value?.aligned ?? null)
 const alignedAvailable = computed(() => overview.value?.aligned_source === 'user_session_aggregates' && !!aligned.value)
 const probeDegraded = computed(() => overview.value?.probe_scope === 'degraded_included')
 const includeProbesActive = computed(() => overview.value?.probe_scope === 'included' || overview.value?.probe_scope === 'degraded_included')
-// 对齐窗口的日历日（与后端 shanghaiPresetRange 同折算：系统日历 [today-(N-1), today]）。
-const trendWindow = computed(() => {
-  const n = Math.max(1, days.value)
-  const end = new Date()
-  const start = new Date(end)
-  start.setDate(start.getDate() - (n - 1))
-  return { start: localDateStamp(start), end: localDateStamp(end) }
-})
+// 对齐窗口 = 生效区间本身（看板页共享状态 / 外部受控 / 本地兜底同源）。
+// ★ 2026-11-23 日期范围对齐轮：此前是「按 days 反推的日历日窗」，与控件
+//   显示的区间在自定义区间下会不一致 ⇒ 现在直接用生效区间。
+const trendWindow = computed(() => ({
+  start: effectiveRange.value.start,
+  end: effectiveRange.value.end,
+}))
 
 function openAlignedAnalytics() {
   const a = aligned.value
@@ -223,59 +254,31 @@ function formatPct(value: number) {
   return `${sign}${value.toFixed(1)}%`
 }
 
-// 2026-11-19 时间范围统一轮：7/30 两天按钮组 → 全站统一 KxDateRangePicker
-// （1/7/30/90 档 + 自定义区间）。days 与看板 boardDays 双向联动保持不变。
-//
-// ★ 2026-11-23 审计轮（P2-1 / P2-3）：本面板的统计窗口在服务端是**滚动窗口**
-//   —— admin/dashboardapi/session_overview.go 的每条腿都是
-//   `first_request_at >= NOW() - INTERVAL 'N days'`（450/638/725/807/898/919 行），
-//   响应里也自报 window_mode="rolling_days"。
-//   ⇒ 真实起点比「含首尾的 N 个日历日」**早一天**（N=7 ⇒ 真实起点 = 今天前 7 天，
-//     而日历日 7 天窗的起点是今天前 6 天）。
-//   ⇒ 而控件此前显示的是**日历日区间**（useSpanDaysRange ⇒ rangeFromSpanDays）
-//   ⇒ 用户看到的起止与真实查询范围对不上（起点差一天）。
-//
-// ★ 修法按后端**既有语义**这一边（滚动窗口），**不改请求**
-//   （改请求＝改口径＝两头改 ⇒ 数字会变、且与看板/会话分析页不同源）：
-//   ① 预设与控件一律回填**滚动窗口的真实起止**（[today-N, today]）；
-//   ② days=1 的档位改标「近24小时」（common.dateRange.preset.last24h，8 语种已有）
-//      —— 滚动 24 小时窗口本来就不是「今天」，标「今天」才是**文案与事实相反**；
-//   ③ 自定义入口禁用（:presets-only）—— 端点只收 days，手选历史区间会被
-//      静默压成「跨度天数」（P2-1；同族做法见 AGENTS.md「时间范围静默改写收口轮」）。
-const STATS_RANGE_BUCKETS = [
-  { days: 1, labelKey: 'common.dateRange.preset.last24h' },
-  { days: 7, labelKey: 'common.dateRange.preset.last7d' },
-  { days: 30, labelKey: 'common.dateRange.preset.last30d' },
-  { days: 90, labelKey: 'dashboard.range.last90d' },
-] as const
-
-/** 滚动窗口 [now-N 天, now] 的**日历日**跨度：[today-N, today]。 */
-function rollingWindowRange(days: number): KxDateRange {
-  // rangeFromSpanDays(n) = [today-(n-1), today] ⇒ n = days+1 即 [today-days, today]
-  return rangeFromSpanDays(days + 1)
-}
-
-const statsDayPresets = computed<KxDateRangePreset[]>(() =>
-  STATS_RANGE_BUCKETS.map((bucket) => ({
-    id: `span${bucket.days}d`,
-    labelKey: bucket.labelKey,
-    resolve: () => rollingWindowRange(bucket.days),
-  })),
-)
-// 控件显示的区间 = 当前窗口的真实起止（与请求的 days 同一口径）。
-const statsRange = computed<KxDateRange>(() => rollingWindowRange(days.value))
-
-// 改 days 后必须走 changeDays（它会 loadAll 重取）；直接写 days.value 不会发请求。
+// ── 时间范围控件（2026-11-23 日期范围对齐轮）──
+// ★ 与看板页**同一套控件、同一份状态**：预设来自 makeDateRangePresets('date)
+//   （今天/昨天/近7天/近14天/近30天/本月/上月），并保留**自定义起止**入口
+//   （看板那边就是这套）。
+// ★ 自定义入口能开的前提是**后端真的按区间取数**：本面板把生效区间以
+//   start_date/end_date 显式发给会话总览/会话趋势/健康度/性能/错误五族端点，
+//   后端共享窗口层（admin/dashboardapi/dashboard_window.go）据此把窗口谓词
+//   换成参数化的 [start, end)（end 独占）⇒ 显示的区间 = 数据窗口。
+// ★ 旧实现的 4 个滚动档位（近24小时/7/30/90 天）+ presets-only 已移除：
+//   那套是「滚动窗口 + 无自定义」，与看板的「日历日 + 可自定义」既不同形也不同尺。
+// 应用新范围：
+//   ① 仪表盘页 ⇒ 改的是**看板那份共享状态** ⇒ 两页同步（看板数据同时重取）。
+//   ② 外部受控（会话分析页）⇒ 把新区间交回页面（页面再决定落点）。
+//   ③ 本地兜底 ⇒ 本面板自持。
 function applyStatsRange(range: KxDateRange) {
-  // ★ 滚动窗口的日历日跨度是 **N+1** 天 ⇒ 不能按区间跨度直接回写 days（会多一天）
-  //   ⇒ 按命中的档位回写；命中不到（跨零点等边缘）时用「跨度 - 1」兜底。
-  const bucket = STATS_RANGE_BUCKETS.find((b) => {
-    const r = rollingWindowRange(b.days)
-    return r.start === range.start && r.end === range.end
-  })
-  const next = bucket ? bucket.days : Math.max(1, rangeSpanDays(range) - 1)
-  if (next === days.value) return
-  void changeDays(next)
+  if (boardState?.setTimeRange) {
+    boardState.setTimeRange(boardRangeFromKxRange(range))
+    void boardState.load?.()
+    return
+  }
+  if (props.range) {
+    emit('update:range', range)
+    return
+  }
+  localRange.value = range
 }
 
 // Expose loading state and refresh function for parent components
@@ -327,17 +330,11 @@ defineExpose({
       {{ t('sessions.stats.probeScopeDegraded') }}
     </div>
 
-    <!-- 2026-11-23 统计口径说明：告知用户当前统计方法及其局限性 -->
-    <!-- ★ 2026-11-23 12h 修订审计轮：★ 本段原先是**硬编码中文** ⇒ ★ 被
-         「硬编码 CJK 棘轮门」计入（★ 计数 4360 → 4375 > baseline 4369 ⇒ main 上红）
-         ⇒ ★ 正规化为 8 语种 i18n 键（★ sessions.stats.scopeNotice*）。 -->
-    <div class="alert alert-info" role="status" data-testid="stats-scope-info">
-      <strong>{{ t('sessions.stats.scopeNoticeTitle') }}</strong>{{ t('sessions.stats.scopeNoticeBody', { days }) }}
-      <br>
-      <small style="opacity: 0.9;">
-        {{ t('sessions.stats.scopeNoticeHint') }}
-      </small>
-    </div>
+    <!-- ★ 2026-11-24 紧凑轮：「统计说明」从**常驻横幅**收成**刷新按钮旁的
+         点击提示符**（components/analytics/StatsScopeHint.vue）——
+         解释性内容不该占据页面最显眼的位置，却必须在用户正要读数字时触手可及。
+         ⇒ 本面板不再渲染说明块；仪表盘页与「会话分析·用户」页各自在刷新按钮
+           旁挂同一枚提示符（同一份 i18n 键 ⇒ 两页文案完全一致）。 -->
 
     <div :class="{ 'session-stats-panel--has-error': error, 'session-stats-panel--loading': loading }">
       <!-- Loading indicator -->
@@ -358,19 +355,15 @@ defineExpose({
              space-between 顶到页面中间，离控件很远）⇒ 时间选择器 + 探测开关
              合成一组靠左。 -->
         <div class="panel-toolbar__start">
-          <!-- ★ 2026-11-23 审计轮（P2-1 / P2-3）：
-               · :presets-only —— 端点只收 days（后端把 days 解释成**滚动窗口**），
-                 自定义历史区间会被静默压成「跨度天数」⇒ 禁掉自定义入口
-                 （与 AGENTS.md「时间范围静默改写收口轮」的方案 B 同款）。
-               · :max-span-days="91" —— 滚动窗口 N 天的**日历日跨度是 N+1 天**
-                 （[today-N, today]）⇒ 上限必须 ≥ 91，否则「近 90 天」档位
-                 会被跨度校验挡住（点了没反应）。
-               · 控件显示的区间 = 滚动窗口的真实起止（见上面的 rollingWindowRange）。 -->
-          <KxDateRangePicker
-            :model-value="statsRange"
-            :presets="statsDayPresets"
-            :max-span-days="91"
-            :presets-only="true"
+          <!-- ★ 2026-11-23 日期范围对齐轮：控件与看板页**完全一致**——
+               同一套日历日预设（makeDateRangePresets('date')）+ 自定义起止，
+               同一份共享状态（仪表盘页 ⇒ 看板那份 BoardTimeRange）。
+               · 跨度上限 92 天（与看板同款：今天/昨天/近7/14/30天/本月/上月
+                 与自定义区间都在 92 天内）。
+               · 控件显示的区间 = 请求发的区间（start_date/end_date）⇒
+                 界面显示的 = 数据反映的（自定义入口因此**可以**开）。 -->
+          <StatsDateRangePicker
+            :model-value="effectiveRange"
             :disabled="loading"
             @apply="applyStatsRange"
           />

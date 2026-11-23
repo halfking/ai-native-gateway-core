@@ -447,7 +447,7 @@ func (h *SessionOverviewHandler) querySessionSummaryAggregates(ctx context.Conte
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, win.clause("first_request_at", &args, &argIdx))
 		// ★ 2026-11-21 线上实证（211 首跑 500：SQLSTATE 53100 /dev/shm 耗尽）：
 		// 宇宙 join 直接挂在全表 ss（86 万行）上时，errgroup 多腿并发各建一份
 		// 大哈希 ⇒ PG 并行共享内存超限。⇒ 把窗口/租户谓词**下推进子查询**先绑小
@@ -582,16 +582,9 @@ func (h *SessionOverviewHandler) queryPrevPeriodCost(ctx context.Context, params
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		if win.calendar {
-			// 上一周期 = [start-窗口长, start)：窗口长按 [start,end) 实长对齐。
-			span := win.endUTC.Sub(win.startUTC)
-			prevStart := win.startUTC.Add(-span)
-			where = append(where, fmt.Sprintf("first_request_at >= $%d AND first_request_at < $%d", argIdx, argIdx+1))
-			args = append(args, prevStart, win.startUTC)
-			argIdx += 2
-		} else {
-			where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days' AND first_request_at < NOW() - INTERVAL '%d days'", params.Days*2, params.Days))
-		}
+		// 上一周期窗口：rolling 模式逐字沿用 2×days~days；calendar 模式
+		// = [start-窗口长, start)（与当前窗口等长）。
+		where = append(where, win.prevClause("first_request_at", &args, &argIdx))
 		// 与主腿同法：窗口/租户下推进子查询绑小 ss；宇宙合取留外层（53100 修复）。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
@@ -635,7 +628,7 @@ func (h *SessionOverviewHandler) queryModelUsage(ctx context.Context, params Que
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, win.clause("first_request_at", &args, &argIdx))
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var innerFrom string
@@ -722,7 +715,7 @@ func (h *SessionOverviewHandler) queryTopClients(ctx context.Context, params Que
 		args := []interface{}{}
 		argIdx := 1
 
-		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, win.clause("first_request_at", &args, &argIdx))
 		if params.TenantID != "" {
 			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
@@ -804,7 +797,7 @@ func (h *SessionOverviewHandler) queryTopTasks(ctx context.Context, params Query
 		args := []interface{}{}
 		argIdx := 1
 
-		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		where = append(where, win.clause("first_request_at", &args, &argIdx))
 		if params.TenantID != "" {
 			where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
 			args = append(args, params.TenantID)
@@ -895,7 +888,9 @@ func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params 
 			args = append(args, params.TenantID)
 			argIdx++
 		}
-		where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+		// 窗口参数的**首个**占位符（供下面 FILTER 复用同一组边界参数）。
+		winArg := argIdx
+		where = append(where, win.clause("first_request_at", &args, &argIdx))
 		// 与主腿同法：ss 先绑小再做宇宙连接（53100 修复）；宇宙合取留外层。
 		innerWhere := joinStrings(where, " AND ")
 		var fromClause string
@@ -909,20 +904,28 @@ func (h *SessionOverviewHandler) querySessionTrends(ctx context.Context, params 
 			fromClause = "FROM session_summaries ss\nWHERE " + innerWhere
 		}
 
+		// 日桶表达式（趋势图横轴）：calendar 模式按**系统时区**日历日分桶
+		// （PG 会话时区未钉死 ⇒ 直接 DATE(ts) 会让横轴整体前移一天）；
+		// rolling 模式逐字沿用 DATE(ss.first_request_at)。SELECT 与 GROUP BY
+		// 复用**同一个表达式字符串**（同一占位符）⇒ 参数只追加一次。
+		dayExpr := win.dayExpr("ss.first_request_at", &args, &argIdx)
+		// 「新会话」FILTER 与 WHERE 同窗口 ⇒ 恒真（保留原语义：桶内全是新会话）。
+		newFilter := win.clauseAt("ss.first_request_at", winArg)
+
 		// DATE(...) is OID 1082 binary; pgx v5 refuses *string ⇒ cast to text.
-		query := fmt.Sprintf(`
+		query := `
 		SELECT
-			DATE(ss.first_request_at)::text as date,
+			` + dayExpr + `::text as date,
 			COALESCE(SUM(ss.total_cost_usd), 0) as cost,
 			COUNT(*) as sessions,
 			COALESCE(SUM(ss.request_count), 0) as requests,
-			COUNT(*) FILTER (WHERE ss.first_request_at >= NOW() - INTERVAL '%d days') as new_sessions,
+			COUNT(*) FILTER (WHERE ` + newFilter + `) as new_sessions,
 			COUNT(*) FILTER (WHERE ss.last_request_at >= NOW() - INTERVAL '24 hours') as active_count,
 			COUNT(*) FILTER (WHERE ss.last_request_at < NOW() - INTERVAL '24 hours' AND ss.first_request_at < NOW() - INTERVAL '24 hours') as closed_count
-		`+fromClause+`
-		GROUP BY DATE(ss.first_request_at)
+		` + fromClause + `
+		GROUP BY ` + dayExpr + `
 		ORDER BY date
-	`, params.Days)
+	`
 		return query, args
 	}
 

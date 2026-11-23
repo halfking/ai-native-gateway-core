@@ -9,6 +9,7 @@ import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
+import StatsScopeHint from '../components/analytics/StatsScopeHint.vue'
 import SessionDrilldownPanel from '../components/session/SessionDrilldownPanel.vue'
 import BoardPanel from '../components/board/BoardPanel.vue'
 import SelfCheckPanel from './SelfCheckPanel.vue'
@@ -191,6 +192,13 @@ async function onRefresh() {
           :content-id="statsStandardsHelpId"
           :label="t('pageHelp.button.standards')"
         />
+
+        <!-- ★ 2026-11-24 紧凑轮：「统计说明」提示符挂在**刷新按钮旁边**——
+             用户正要读数字、正要判断数据新不新的那个位置，点击才展开全文
+             （原先是面板顶部一条常驻横幅，把页面最显眼的位置占掉了）。
+             ★ 只在 stats 页签出现：这段说明讲的是「会话与统计」的口径，
+               其余页签没有这块面板 ⇒ 挂着不指向任何东西。 -->
+        <StatsScopeHint v-if="activeTab === 'stats'" :days="days" />
 
         <!-- 刷新按钮 -->
         <button class="btn btn-refresh" @click="onRefresh" :disabled="loading" :title="t('dashboard.v2.refreshData')">

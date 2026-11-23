@@ -1949,6 +1949,12 @@ var sessionSummaryLayers999 []byte
 //go:embed embeddata/startup/999_session_summary_layers.down.sql
 var sessionSummaryLayers999Down []byte
 
+//go:embed embeddata/startup/983_request_metrics.sql
+var requestMetrics983 []byte
+
+//go:embed embeddata/startup/983_request_metrics.down.sql
+var requestMetrics983Down []byte
+
 // ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复 —— 981 的文件缺
 //
 //	schema_migrations 自登记行 ⇒ 211 的记账链在 980 与 990 之间断一格。
@@ -2645,6 +2651,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/998_session_summaries_task_association.down.sql": sessionSummariesTaskAssociation998Down,
 	"startup/999_session_summary_layers.sql":                  sessionSummaryLayers999,
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
+	"startup/983_request_metrics.sql":                         requestMetrics983,
+	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
 	// ★ 989（2026-11-23 L20 修红轮）：会话分析族记账连续性修复（981 自登记回填）。
 	"startup/989_migration_ledger_session_analytics_981_repair.sql":      migrationLedgerSessionAnalytics981Repair989,
 	"startup/989_migration_ledger_session_analytics_981_repair.down.sql": migrationLedgerSessionAnalytics981Repair989Down,

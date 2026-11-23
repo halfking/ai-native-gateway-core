@@ -164,9 +164,14 @@ describe('页面内嵌帮助（按内容 id 解析）', () => {
     expect(body).toContain('会话级')
     expect(body).toContain('探测')
     // 费用/请求数对照表（两页实测值）
-    expect(body).toContain('65,774')
-    expect(body).toContain('72,098')
-    expect(body).toContain('8,013.93')
-    expect(body).toContain('2,717.62')
+    // ★ 2026-11-23：正文在「订正三模块数据一致性结论」轮被重写，实测值随之
+    //   更新（看板 81,265 笔 / $8,854.70；会话统计 58,180 笔 / $1,551.41）。
+    //   本断言此前仍钉**重写前**的旧值（65,774 / 72,098 / 8,013.93 / 2,717.62）
+    //   ⇒ 门长期红（不是被测坏了，是断言指向了旧稿）。
+    //   ⇒ 这里只把指针重新指向**正文当前的实测值**（不动任何度量）。
+    expect(body).toContain('81,265')
+    expect(body).toContain('58,180')
+    expect(body).toContain('8,854.70')
+    expect(body).toContain('1,551.41')
   })
 })

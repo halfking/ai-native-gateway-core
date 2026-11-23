@@ -13,11 +13,11 @@ import (
 
 // BoardSummary 看板汇总数据（原结构保持不变）
 type BoardSummary struct {
-	TotalRequests  int64
-	SuccessCount   int64
-	TotalCostUSD   float64
-	TotalTokens    int64
-	AvgLatencyMs   float64
+	TotalRequests int64
+	SuccessCount  int64
+	TotalCostUSD  float64
+	TotalTokens   int64
+	AvgLatencyMs  float64
 }
 
 // QueryBoardSummaryFromMetrics 从 request_metrics 查询看板汇总
@@ -35,12 +35,12 @@ func QueryBoardSummaryFromMetrics(
 		EndTime:       endTime,
 		IncludeProbes: includeProbes,
 	}
-	
+
 	summary, err := QuerySummary(ctx, db, filter)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &BoardSummary{
 		TotalRequests: summary.TotalRequests,
 		SuccessCount:  summary.SuccessCount,
@@ -77,19 +77,19 @@ func QuerySessionAggregatesFromMetrics(
 		EndTime:       endTime,
 		IncludeProbes: includeProbes,
 	}
-	
+
 	// 查询汇总统计
 	summary, err := QuerySummary(ctx, db, filter)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 查询会话数（DISTINCT session_id）
 	sessionCount, err := QuerySessionCount(ctx, db, filter)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &SessionAggregates{
 		TotalSessions: sessionCount,
 		TotalRequests: summary.TotalRequests,
@@ -137,18 +137,18 @@ func QueryDailyProviderCostFromMetrics(
 		GROUP BY rm.billing_date, rm.provider_id, p.name
 		ORDER BY rm.billing_date, cost_cents DESC
 	`
-	
+
 	rows, err := db.QueryContext(ctx, query, tenantID, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	results := []*DailyProviderCost{}
 	for rows.Next() {
 		var item DailyProviderCost
 		var costCents int64
-		
+
 		err := rows.Scan(
 			&item.Date,
 			&item.ProviderID,
@@ -160,13 +160,13 @@ func QueryDailyProviderCostFromMetrics(
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// 转换费用：分 -> 美元
 		item.CostUSD = float64(costCents) / 100.0
-		
+
 		results = append(results, &item)
 	}
-	
+
 	return results, rows.Err()
 }
 
@@ -207,18 +207,18 @@ func QueryTeamUsageFromMetrics(
 		GROUP BY rm.team_id, t.name
 		ORDER BY cost_cents DESC
 	`
-	
+
 	rows, err := db.QueryContext(ctx, query, tenantID, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	results := []*TeamUsage{}
 	for rows.Next() {
 		var item TeamUsage
 		var costCents int64
-		
+
 		err := rows.Scan(
 			&item.TeamID,
 			&item.TeamName,
@@ -229,13 +229,13 @@ func QueryTeamUsageFromMetrics(
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// 转换费用：分 -> 美元
 		item.CostUSD = float64(costCents) / 100.0
-		
+
 		results = append(results, &item)
 	}
-	
+
 	return results, rows.Err()
 }
 
@@ -274,18 +274,18 @@ func QueryGatewayNodeStatsFromMetrics(
 		GROUP BY gateway_node_id
 		ORDER BY request_count DESC
 	`
-	
+
 	rows, err := db.QueryContext(ctx, query, startTime, endTime)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	results := []*GatewayNodeStats{}
 	for rows.Next() {
 		var item GatewayNodeStats
 		var costCents int64
-		
+
 		err := rows.Scan(
 			&item.GatewayNodeID,
 			&item.RequestCount,
@@ -297,12 +297,12 @@ func QueryGatewayNodeStatsFromMetrics(
 		if err != nil {
 			return nil, err
 		}
-		
+
 		// 转换费用：分 -> 美元
 		item.TotalCostUSD = float64(costCents) / 100.0
-		
+
 		results = append(results, &item)
 	}
-	
+
 	return results, rows.Err()
 }

@@ -34,10 +34,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -70,49 +68,10 @@ type AlignedBlock struct {
 	CacheRatePct       float64 `json:"cache_rate_pct"`
 }
 
-// sessionWindow 承载本请求的窗口与探测口径。degraded 指针由调用方传入
-// （errgroup 各腿并发置位），标记「宇宙依赖缺失 → 全量降级」发生过。
-type sessionWindow struct {
-	calendar      bool
-	days          int
-	startUTC      time.Time // calendar 模式：[startUTC, endUTC)（上海日历折 UTC 界）
-	endUTC        time.Time
-	startDate     string
-	endDate       string
-	includeProbes bool
-	degraded      *atomic.Bool
-}
-
-// markDegraded 标记本请求发生过宇宙降级（响应 probe_scope=degraded_included）。
-func (w sessionWindow) markDegraded() {
-	if w.degraded != nil {
-		w.degraded.Store(true)
-	}
-}
-
-// parseSessionWindow 解析 start_date/end_date（可选）与 include_probes（可选）。
-// 日期对非法时报错由调用方回 400；只给一天时按单日窗口处理。
-func parseSessionWindow(r *http.Request, params QueryParams) (sessionWindow, error) {
-	w := sessionWindow{days: params.Days}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("include_probes"))) {
-	case "1", "true", "on", "yes":
-		w.includeProbes = true
-	}
-	sd := strings.TrimSpace(r.URL.Query().Get("start_date"))
-	ed := strings.TrimSpace(r.URL.Query().Get("end_date"))
-	if sd == "" && ed == "" {
-		return w, nil
-	}
-	if sd == "" || ed == "" {
-		return w, fmt.Errorf("start_date and end_date must be given together")
-	}
-	if _, _, err := analytics.ShanghaiCalendarRangeUtc(sd, ed); err != nil {
-		return w, err
-	}
-	w.calendar = true
-	w.startDate, w.endDate = sd, ed
-	return w, nil
-}
+// ★ 2026-11-23 日期范围对齐轮：sessionWindow（窗口 + 探测口径）与
+// parseSessionWindow 已移到 dashboard_window.go —— 窗口解析与 SQL 谓词片段
+// 现在是**仪表盘族共享**能力（会话总览/会话趋势/健康度/性能/错误五族同尺），
+// 不再是会话总览一家的私有解析。
 
 // shanghaiPresetRange 把 days 预设折算成上海日历日窗口 [today-(N-1), today]。
 // 与 session-analytics 总览页的 7d/30d 预设同一折算（前端 KxDateRangePicker

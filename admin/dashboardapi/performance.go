@@ -87,11 +87,17 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
+	// 2026-11-23 日期范围对齐轮：窗口解析与会话总览同尺（显式日历窗口优先）。
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
 	// 1. 性能摘要
-	summary, err := h.queryPerformanceSummary(ctx, params)
+	summary, err := h.queryPerformanceSummary(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "performance:summary", err)
@@ -104,7 +110,7 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	}
 
 	// 2. 延迟分布
-	latencyDist, err := h.queryLatencyDistribution(ctx, params)
+	latencyDist, err := h.queryLatencyDistribution(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "performance:latency", err)
@@ -117,7 +123,7 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	}
 
 	// 3. 吞吐量趋势
-	throughput, err := h.queryThroughput(ctx, params)
+	throughput, err := h.queryThroughput(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "performance:throughput", err)
@@ -130,7 +136,7 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	}
 
 	// 4. 慢查询
-	slowQueries, err := h.querySlowQueries(ctx, params)
+	slowQueries, err := h.querySlowQueries(ctx, params, win)
 	if err != nil {
 		if dashboarddegrade.IsMissingRelationError(err) {
 			h.writeDegraded(w, startTime, "performance:slow", err)
@@ -156,11 +162,12 @@ func (h *PerformanceHandler) HandlePerformance(w http.ResponseWriter, r *http.Re
 	writeSuccessJSON(w, resp, metadata)
 }
 
-func (h *PerformanceHandler) queryPerformanceSummary(ctx context.Context, params QueryParams) (*PerformanceSummary, error) {
+func (h *PerformanceHandler) queryPerformanceSummary(ctx context.Context, params QueryParams, win sessionWindow) (*PerformanceSummary, error) {
 	summary := &PerformanceSummary{}
-	where := []string{fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days)}
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
@@ -192,11 +199,12 @@ func (h *PerformanceHandler) queryPerformanceSummary(ctx context.Context, params
 	return summary, nil
 }
 
-func (h *PerformanceHandler) queryLatencyDistribution(ctx context.Context, params QueryParams) (*LatencyDistribution, error) {
+func (h *PerformanceHandler) queryLatencyDistribution(ctx context.Context, params QueryParams, win sessionWindow) (*LatencyDistribution, error) {
 	dist := &LatencyDistribution{}
-	where := []string{fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days)}
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
@@ -218,24 +226,27 @@ func (h *PerformanceHandler) queryLatencyDistribution(ctx context.Context, param
 	return dist, err
 }
 
-func (h *PerformanceHandler) queryThroughput(ctx context.Context, params QueryParams) ([]ThroughputPoint, error) {
-	where := []string{fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days)}
+func (h *PerformanceHandler) queryThroughput(ctx context.Context, params QueryParams, win sessionWindow) ([]ThroughputPoint, error) {
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+	dayExpr := win.dayExpr("created_at", &args, &argIdx)
+
+	query := `
 		SELECT
-			TO_CHAR(DATE(created_at), 'YYYY-MM-DD') as date,
+			TO_CHAR(` + dayExpr + `, 'YYYY-MM-DD') as date,
 			COUNT(*) as request_count,
 			COALESCE(AVG(duration_ms), 0) as avg_latency
 		FROM session_module_executions_hot
-		%s
-		GROUP BY DATE(created_at)
+		` + whereClause + `
+		GROUP BY ` + dayExpr + `
 		ORDER BY date
-	`, whereClause)
+	`
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -257,13 +268,12 @@ func (h *PerformanceHandler) queryThroughput(ctx context.Context, params QueryPa
 	return items, nil
 }
 
-func (h *PerformanceHandler) querySlowQueries(ctx context.Context, params QueryParams) ([]SlowQueryItem, error) {
-	where := []string{
-		fmt.Sprintf("created_at >= NOW() - INTERVAL '%d days'", params.Days),
-		"duration_ms > 1000",
-	}
+func (h *PerformanceHandler) querySlowQueries(ctx context.Context, params QueryParams, win sessionWindow) ([]SlowQueryItem, error) {
+	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
+	where = append(where, win.clause("created_at", &args, &argIdx))
+	where = append(where, "duration_ms > 1000")
 
 	appendExecutionScope(&where, params, &args, &argIdx, "")
 	whereClause := "WHERE " + joinStrings(where, " AND ")

@@ -4,8 +4,8 @@
 # ★ 口径：建了 ∧ 没被后来的迁移删掉 ∧ 不是中间产物（USING INDEX 消费）
 # ★ declared_columns = ★ 建索引时的【直接键列】（★ 表达式索引保守取空）
 # ★   ⇒ ★★ 「列被 DROP ⇒ PG 级联删索引」的判据要用它
-# ★ generated_at=2026-11-23T15:53:15+00:00
-# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 971, "indexes_created": 1023, "indexes_dropped_somewhere": 93, "migration_files": 667, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
+# ★ generated_at=2026-11-23T16:36:00+00:00
+# stats={"column_retired_indexes": 1, "created_then_dropped": 52, "drop_column_events": 15, "expected_final": 973, "indexes_created": 1025, "indexes_dropped_somewhere": 93, "migration_files": 667, "non_numeric_prefix_files": 13, "transient_indexes": 1, "transient_names": ["stats_event_dedup_pkey_include_tmp"]}
 -1	idx_provider_models_canonical_raw_name	provider_models	395b_dedup_provider_models_and_aliases.sql	canonical_raw_name	
 -1	idx_request_logs_hot_auto_task_ts	request_logs_hot	478p2_affinity_indexes.sql	task_type,ts	
 -1	idx_request_logs_hot_gw_session_id	request_logs_hot	478p2_affinity_indexes.sql	gw_session_id,ts	
@@ -935,6 +935,17 @@
 982	idx_provider_call_attempts_request	provider_call_attempts	982_provider_call_attempts.sql	tenant_id,request_id	
 982	idx_provider_call_attempts_sent	provider_call_attempts	982_provider_call_attempts.sql	sent_at	
 982	idx_provider_call_attempts_unconfirmed	provider_call_attempts	982_provider_call_attempts.sql	prepared_at	
+983	idx_request_metrics_gateway_node_time	request_metrics	983_request_metrics.sql	gateway_node_id,occurred_at	
+983	idx_request_metrics_modality_time	request_metrics	983_request_metrics.sql	modality,occurred_at	
+983	idx_request_metrics_payer_time	request_metrics	983_request_metrics.sql	payer_id,payer_type,occurred_at	
+983	idx_request_metrics_protocol_time	request_metrics	983_request_metrics.sql	protocol,occurred_at	
+983	idx_request_metrics_provider_time	request_metrics	983_request_metrics.sql	provider_id,occurred_at	
+983	idx_request_metrics_session_time	request_metrics	983_request_metrics.sql	session_id,occurred_at	
+983	idx_request_metrics_status_time	request_metrics	983_request_metrics.sql	status,occurred_at	
+983	idx_request_metrics_team_time	request_metrics	983_request_metrics.sql	team_id,occurred_at	
+983	idx_request_metrics_tenant_billing_date	request_metrics	983_request_metrics.sql	tenant_id,billing_date	
+983	idx_request_metrics_tenant_time	request_metrics	983_request_metrics.sql	tenant_id,occurred_at	
+983	idx_request_metrics_traffic_time	request_metrics	983_request_metrics.sql	traffic_class,occurred_at	
 986	idx_team_budgets_team_id	team_budgets	986_team_budgets.sql	team_id	
 994	idx_agent_usage_agg_agent	agent_usage_aggregates	994_session_analytics_owner_key_and_close_path.sql	agent_name,date	
 994	idx_agent_usage_agg_pk	agent_usage_aggregates	994_session_analytics_owner_key_and_close_path.sql	agent_name,tenant_id,date	
@@ -968,12 +979,3 @@
 999	idx_summary_layers_hash	session_summary_layers	999_session_summary_layers.sql	tenant_id,gw_session_id,content_hash	
 999	idx_summary_layers_session	session_summary_layers	999_session_summary_layers.sql	tenant_id,gw_session_id,layer_type,layer_sequence	
 999	idx_summary_layers_type	session_summary_layers	999_session_summary_layers.sql	tenant_id,layer_type,created_at	
-1000	idx_request_metrics_gateway_node_time	request_metrics	1000_request_metrics.sql	gateway_node_id,occurred_at	
-1000	idx_request_metrics_payer_time	request_metrics	1000_request_metrics.sql	payer_id,payer_type,occurred_at	
-1000	idx_request_metrics_provider_time	request_metrics	1000_request_metrics.sql	provider_id,occurred_at	
-1000	idx_request_metrics_session_time	request_metrics	1000_request_metrics.sql	session_id,occurred_at	
-1000	idx_request_metrics_status_time	request_metrics	1000_request_metrics.sql	status,occurred_at	
-1000	idx_request_metrics_team_time	request_metrics	1000_request_metrics.sql	team_id,occurred_at	
-1000	idx_request_metrics_tenant_billing_date	request_metrics	1000_request_metrics.sql	tenant_id,billing_date	
-1000	idx_request_metrics_tenant_time	request_metrics	1000_request_metrics.sql	tenant_id,occurred_at	
-1000	idx_request_metrics_traffic_time	request_metrics	1000_request_metrics.sql	traffic_class,occurred_at	

@@ -329,6 +329,34 @@ bash scripts/run-bash4-gate.sh tests/deploy_seamless_state_machine_test.sh
 echo "[verify] fresh-install smoke gate (slow gate: real empty-db install of all startup migrations)"
 bash scripts/checks/fresh-install-smoke.sh
 
+# ★★ 「部署通道投递面 ↔ 权威账」覆盖门（★ 2026-11-23 L34 续轮新增 ★ 方案 C ★）★★
+#   ★ 这是 owner 待决清单里**唯一可在本仓自主落地**的一项（★ 方案 C：★ **只加
+#     前置断言门**、★ **不改任何投递行为** ★★）★★
+#   ★ 起因：★ 报告 §7.31 实测「新装库 ⇒ 直接交给部署通道」**断在两处** ⇒ ★ 而
+#     断点**只在跑到一半时**才暴露（★ 臂 D：★ 第 13 个文件炸 ★）⇒ ★ ⇒ 「断层」
+#     **没有可观测信号** ⇒ ★ ⇒ 本门把断层变成**跑之前就能看出的、可判定的红**★★
+#   ★ 本门**只读**（★ 只 SELECT、★ 绝不写）★、★ **不调用**部署通道 ⇒ ★
+#     ⇒ **零生产写 / 零 schema 变更 / 零在役切换 / 零迁移字节变更** ★★
+#   ★ 三态：★ 没给 DB 地址 ⇒ **显式 SKIP**（rc=0、★ 不伪装成通过 ★）；
+#     ★ 量具自身坏了 ⇒ **ABORT**（rc=2、★ 与判据红分得开 ★）；
+#     ★ 投递面有文件在权威账里**没有记录** ⇒ FAIL（rc=1）；★ 无断层 ⇒ PASS（rc=0）。
+#   ★ 与 fresh-install 烟测门**同处理**：★ 单列 Makefile target `guards-deploy-ledger`
+#     （进 `make guards` 慢门族）＋ 官方门显式一行 ★ ⇒ ★ **不进 CI 快门族**
+#     （★ 它需要一个可读的 PG 地址、★ 而 codeup 载体无证据表明有 PG ★★）。
+#   ★ 详见 docs/audit/2026-11-20-会话分析系统前端实施报告.md §7.32。
+echo "[verify] deploy-ledger coverage gate (slow gate: read-only; delivery surface vs authoritative ledger)"
+bash scripts/checks/deploy-ledger-coverage-gate.sh
+
+# ★★ 覆盖门**自身**的夹具测试（★ 七臂 · 快门 · 纯 shell · 零外部依赖 ★★）★★
+#   ★ 覆盖门的判据是【集合运算】（★ 「投递面 357 条」∩「权威账里的 marker」 ★）
+#   ★ ⇒ ★★ **它不需要真的连上 PG** ★★ ⇒ ★★ ⇒ ★ ⇒ **判据逻辑可以在没有 docker
+#   ★★ 的机器上验证** ★★ ⇒ ★★ ⇒ ★ 这条夹具因此进 **CI 快门族**（★ `make guards-fast` ★★）
+#   ★ ⇒ ★★ 覆盖门的判据**每天**被验证一次、★ 而不必等一台 PG ★★。
+#   ★ 七臂：★ 缺表 / 空表 / 全覆盖 / 部分覆盖 / legacy 行（★ 不误报成断层 ★）/
+#   ★ ★ 连不上（⇒ ABORT ★ 与判据红分得开 ★）/ 无地址（⇒ SKIP ★ 不伪装成通过 ★★）。
+echo "[verify] deploy-ledger coverage gate selftest (fast gate: seven fixture arms, no PG needed)"
+bash scripts/checks/deploy-ledger-coverage-gate.test.sh
+
 # ★★ 「判据恒真」shell 门（★ 2026-11-23 L33 二轮新增 ★ 快门：纯静态、★ 约 1~2s ★）★★
 #   ★ 起因：★ 本轮扩「空库新装烟测门」第三阶段时写出了
 #     `if (grep -q "…" "$LOG" || true); then` ⇒ ★★ **`if` 条件恒为真** ⇒ ★★

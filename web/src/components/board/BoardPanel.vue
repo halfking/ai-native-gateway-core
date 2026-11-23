@@ -18,6 +18,8 @@ import BoardDistGrid from './BoardDistGrid.vue'
 import PageHelpDrawer from '../help/PageHelpDrawer.vue'
 import type { BoardPayload, BoardOperationalPayload } from '../../api/board'
 import {
+  boardRangeFromKxRange,
+  boardRangeToKxRange,
   defaultBoardTimeRange,
   resolveBoardRangeMs,
   usageQueryForBoardRange,
@@ -86,29 +88,12 @@ function utcDateStr(ms: number): string {
   return boardDateStr(ms)
 }
 
-/** 当前 BoardTimeRange → 面板展示值。 */
-const rangeValue = computed<KxDateRange | null>(() => {
-  const { startMs, endMs } = resolveBoardRangeMs(timeRange.value)
-  return { start: utcDateStr(startMs), end: utcDateStr(endMs - 1) }
-})
+/** 当前 BoardTimeRange → 面板展示值（★ 与会话统计页共用同一对映射）。 */
+const rangeValue = computed<KxDateRange | null>(() => boardRangeToKxRange(timeRange.value))
 
 /** 应用新范围：能对齐内置预设的对齐（保持 SSE 门控与偏好语义），否则 custom。 */
 function onApplyRange(range: KxDateRange) {
-  const todayMs = resolveBoardRangeMs({ preset: 'today', days: 1 }).startMs
-  const spanDays = Math.max(1, Math.round((Date.parse(`${range.end}T00:00:00Z`) - Date.parse(`${range.start}T00:00:00Z`)) / DAY_MS) + 1)
-  if (range.start === utcDateStr(todayMs) && range.end === utcDateStr(todayMs)) {
-    void onTimeRangeChange({ preset: 'today', days: 1 })
-    return
-  }
-  if (range.start === utcDateStr(todayMs - 6 * DAY_MS) && range.end === utcDateStr(todayMs)) {
-    void onTimeRangeChange({ preset: '7d', days: 7 })
-    return
-  }
-  if (range.start === utcDateStr(todayMs - 29 * DAY_MS) && range.end === utcDateStr(todayMs)) {
-    void onTimeRangeChange({ preset: '30d', days: 30 })
-    return
-  }
-  void onTimeRangeChange({ preset: 'custom', days: spanDays, start: range.start, end: range.end })
+  void onTimeRangeChange(boardRangeFromKxRange(range))
 }
 
 function scrollToDist() {

@@ -63,11 +63,17 @@ func (h *SessionHealthHandler) HandleSessionHealth(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	// 2026-11-23 日期范围对齐轮：窗口解析与会话总览同尺（显式日历窗口优先）。
+	win, werr := parseSessionWindow(r, params)
+	if werr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, ErrCodeInvalidParam, werr.Error(), "")
+		return
+	}
 	ctx, cancel := GetRequestContext(r, 15*time.Second)
 	defer cancel()
 
 	// 1. 健康度分布
-	dist, err := h.queryDistribution(ctx, params)
+	dist, err := h.queryDistribution(ctx, params, win)
 	if err != nil {
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query health distribution", err.Error())
@@ -75,7 +81,7 @@ func (h *SessionHealthHandler) HandleSessionHealth(w http.ResponseWriter, r *htt
 	}
 
 	// 2. 健康度趋势
-	trend, err := h.queryHealthTrend(ctx, params)
+	trend, err := h.queryHealthTrend(ctx, params, win)
 	if err != nil {
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query health trend", err.Error())
@@ -83,7 +89,7 @@ func (h *SessionHealthHandler) HandleSessionHealth(w http.ResponseWriter, r *htt
 	}
 
 	// 3. 常见问题
-	issues, err := h.queryTopIssues(ctx, params)
+	issues, err := h.queryTopIssues(ctx, params, win)
 	if err != nil {
 		apiStatus = "error"
 		writeErrorJSON(w, http.StatusInternalServerError, ErrCodeDatabaseError, "failed to query top issues", err.Error())
@@ -103,7 +109,7 @@ func (h *SessionHealthHandler) HandleSessionHealth(w http.ResponseWriter, r *htt
 	writeSuccessJSON(w, resp, metadata)
 }
 
-func (h *SessionHealthHandler) queryDistribution(ctx context.Context, params QueryParams) (*HealthDistribution, error) {
+func (h *SessionHealthHandler) queryDistribution(ctx context.Context, params QueryParams, win sessionWindow) (*HealthDistribution, error) {
 	dist := &HealthDistribution{}
 	where := []string{}
 	args := []interface{}{}
@@ -126,7 +132,7 @@ func (h *SessionHealthHandler) queryDistribution(ctx context.Context, params Que
 	// DDL 窗口），或把窗口列换成 `last_request_at`（能走
 	// `idx_session_summaries_last_request_recent`，实测 330ms，但**口径会变**
 	// ⇒ 语义变更，需属主拍板）。
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+	where = append(where, win.clause("first_request_at", &args, &argIdx))
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := ""
 	if len(where) > 0 {
@@ -163,27 +169,29 @@ func (h *SessionHealthHandler) queryDistribution(ctx context.Context, params Que
 	return dist, nil
 }
 
-func (h *SessionHealthHandler) queryHealthTrend(ctx context.Context, params QueryParams) ([]HealthTrendPoint, error) {
+func (h *SessionHealthHandler) queryHealthTrend(ctx context.Context, params QueryParams, win sessionWindow) ([]HealthTrendPoint, error) {
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
 
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+	where = append(where, win.clause("first_request_at", &args, &argIdx))
 	where = append(where, "health_score IS NOT NULL")
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")
 
-	query := fmt.Sprintf(`
+	dayExpr := win.dayExpr("last_health_at", &args, &argIdx)
+
+	query := `
 		SELECT
-			TO_CHAR(DATE(last_health_at), 'YYYY-MM-DD') as date,
+			TO_CHAR(` + dayExpr + `, 'YYYY-MM-DD') as date,
 			COALESCE(AVG(health_score), 0) as avg_score,
 			COUNT(*) FILTER (WHERE health_grade = 'A') as grade_a,
 			COUNT(*) FILTER (WHERE health_grade = 'F') as grade_f
 		FROM session_summaries
-		%s
-		GROUP BY DATE(last_health_at)
+		` + whereClause + `
+		GROUP BY ` + dayExpr + `
 		ORDER BY date
-	`, whereClause)
+	`
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -205,7 +213,7 @@ func (h *SessionHealthHandler) queryHealthTrend(ctx context.Context, params Quer
 	return items, nil
 }
 
-func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryParams) ([]HealthIssue, error) {
+func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryParams, win sessionWindow) ([]HealthIssue, error) {
 	where := []string{}
 	args := []interface{}{}
 	argIdx := 1
@@ -213,7 +221,7 @@ func (h *SessionHealthHandler) queryTopIssues(ctx context.Context, params QueryP
 	// 2026-10-21（R73 复验轮）：与 queryDistribution 同一个遗漏 —— 本查询
 	// **原来没有时间窗** ⇒ 同样是全表聚合（且多一个 `GROUP BY issue`）。
 	// 补上**与 queryHealthTrend 逐字同款**的窗口谓词。
-	where = append(where, fmt.Sprintf("first_request_at >= NOW() - INTERVAL '%d days'", params.Days))
+	where = append(where, win.clause("first_request_at", &args, &argIdx))
 	where = append(where, "health_score < 60")
 	appendDashboardScope(&where, params, &args, &argIdx, "", true)
 	whereClause := "WHERE " + joinStrings(where, " AND ")

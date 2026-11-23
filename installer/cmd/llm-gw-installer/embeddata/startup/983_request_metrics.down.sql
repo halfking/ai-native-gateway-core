@@ -1,6 +1,6 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/1000_request_metrics.down.sql
--- Migration:     1000 (回滚)
+-- File:          sql/migrations/startup/983_request_metrics.down.sql
+-- Migration:     983 (回滚)
 -- Database:      llm_gateway
 -- Purpose:       回滚 request_metrics 表
 --
@@ -29,11 +29,19 @@ DROP INDEX IF EXISTS public.idx_request_metrics_traffic_time;
 DROP INDEX IF EXISTS public.idx_request_metrics_payer_time;
 DROP INDEX IF EXISTS public.idx_request_metrics_team_time;
 DROP INDEX IF EXISTS public.idx_request_metrics_status_time;
+DROP INDEX IF EXISTS public.idx_request_metrics_modality_time;
+DROP INDEX IF EXISTS public.idx_request_metrics_protocol_time;
 
 -- ============================================================
 -- 2. 删除分区表（会自动删除所有分区）
 -- ============================================================
 
 DROP TABLE IF EXISTS public.request_metrics CASCADE;
+
+-- ============================================================
+-- 3. 台账回退（与 up 的自登记对偶）
+-- ============================================================
+-- down 只退自己引入的行
+DELETE FROM public.schema_migrations WHERE version = '983';
 
 COMMIT;
