@@ -314,7 +314,8 @@ func (h *ErrorPlaybookHandler) executeEntry(w http.ResponseWriter, r *http.Reque
 		Message:     strings.TrimSpace(body.Message),
 		Occurrences: 1,
 	}
-	rec, execErr := h.engine.ExecuteEntry(r.Context(), &entry, ev, errorplaybook.TriggerManual)
+	// 留痕记操作者身份（piAppliedBy ⇒ "manual:<username>"），与自动化执行可区分。
+	rec, execErr := h.engine.ExecuteEntryAs(r.Context(), &entry, ev, errorplaybook.TriggerManual, piAppliedBy(r))
 	if execErr != nil {
 		// 业务性失败（步骤失败）⇒ 执行留痕已记录，如实带状态回给管理面。
 		var inv *errorplaybook.ErrPlanInvalid
@@ -459,7 +460,9 @@ func (h *ErrorPlaybookHandler) handleAnalyze(w http.ResponseWriter, r *http.Requ
 		Samples:     body.Samples,
 		Occurrences: maxInt(body.Occurrences, 1),
 	}
-	if err := h.engine.AnalyzeUnknown(r.Context(), errorplaybook.DefaultConfig(), ev); err != nil {
+	// 管理员显式触发 ⇒ 不看自动化开关（DefaultConfig 的 AutoExecute=true），
+	// 但留痕记操作者身份，与 worker 的自动分析可区分。
+	if err := h.engine.AnalyzeUnknownAs(r.Context(), errorplaybook.DefaultConfig(), ev, piAppliedBy(r)); err != nil {
 		var inv *errorplaybook.ErrPlanInvalid
 		if errors.As(err, &inv) {
 			http.Error(w, inv.Error(), http.StatusUnprocessableEntity)

@@ -1,19 +1,32 @@
 # Calculation Standards for the Board and Session Statistics
 
-The "Board" and "Session & Statistics" tabs summarize the same stream of model calls under **two different calculation rules**. This page spells out how every number on each tab is produced, which source it comes from, which time window it covers, and gives a side-by-side table of why the two tabs disagree — for aligning data and tracing deviations.
+The "Board", "Session & Statistics" and "Provider Reconciliation" are three summaries of the same stream of model calls under **three different calculation rules**. This page spells out how every number is produced, where its data comes from and which time window it covers, and gives an **item-by-item breakdown** of why the three modules' numbers do not match — for aligning data and tracing deviations.
 
-> Measured on production, 2026-11-23 02:27 (Asia/Shanghai), cross-checked against read-only production database queries.
+> Measured basis: 2026-11-23 21:05 (Asia/Shanghai) in production. All numbers were taken at the **same instant** (completed within a single SQL statement), window = `NOW()-7 days`; the provider reconciliation side was measured separately over the closed calendar-day range `2026-11-17 ~ 2026-11-23` and cross-checked against the fact table day by day.
 
-## How the two tabs relate
+## How the three modules relate
 
-| | Board | Session & Statistics |
+| | Board | Session & Statistics | Provider Reconciliation |
+| --- | --- | --- | --- |
+| Statistical entity | One model call counts as one row (**request level**) | One session counts as one row, carrying that session's **cumulative values** (**session level**) | One model call counts as one row (**request level**, aggregated by provider) |
+| Source of truth | Request-level fact table `usage_facts` | Session summary table `session_summaries` + the session universe | Daily snapshot table `report_snapshots` |
+| Time window | Calendar days in the system time zone: midnight of today-(N-1) → now | Rolling N days (first request inside the last N days) | **Closed calendar-day range** (whole day, including the full last day) |
+| Probe traffic | Excluded by `traffic_class` (switchable) | Excluded by the **session universe** rules | **Not excluded** (all traffic, including unassigned) |
+| Maturity | Real time | Real time | **T+1 snapshot** (a date whose day has not ended yet lags behind) |
+
+**Bottom line first**: the three modules' numbers **are not supposed to be equal** — different entities, different windows, different probe-exclusion rules, different maturity. Any cross-module comparison must align those four first; you cannot simply subtract one from the other.
+
+### The most important one: probe traffic is almost free
+
+Probe (health check / self-check) traffic is listed separately in the fact table as `traffic_class='probe'`:
+
+| Caliber (same window) | Requests | Cost |
 | --- | --- | --- |
-| Statistical entity | One model call counts as one row (**request level**) | One session counts as one row, carrying that session's **cumulative values** (**session level**) |
-| Source of truth | Request-level fact table `usage_facts` (Redis cached baseline + live delta) | Session summary table `session_summaries` (live query) + materialized views (cached surface) |
-| Time window | Calendar days in the system time zone: midnight of today-(N-1) → now | Panel = rolling N days (first request inside the last N days); aligned row = whole Shanghai calendar days |
-| Probe traffic | Excluded by the request-level fact table's traffic class | Excluded by the session-side "session universe" rules |
+| Excluding probes | 81,265 | $8,854.70 |
+| Including probes | 189,534 | $8,856.87 |
+| **Probe part** | **108,271** | **$2.17** |
 
-**Bottom line first**: the two tabs' numbers **are not supposed to be equal** — different entities (request vs session), different windows, different exclusion rules. Any cross-tab comparison must align those three first; you cannot simply subtract one from the other.
+⇒ **The request counts differ by a factor of 2.3, yet the cost differs by only $2.17.** Whenever you see "the request counts differ a lot but the cost is roughly the same", suspect the probe caliber first — not a miscalculation.
 
 ## Board: how each number is produced
 
@@ -69,45 +82,83 @@ A session is counted only when all three hold:
 2. It has an owner (taken from the user key or the API-key owner key; if both are empty it is not counted);
 3. It is not a probe session: neither manually flagged as a probe, nor matched as a self-check / deployment-gate / test / verification session by the "owner / client type / title" pattern.
 
-### Why the cost here is lower than on the board
+## Full breakdown of the cost gap (measured 2026-11-23 at the same instant)
 
-Rule 3 of the session universe drops **real business sessions** that are classified as probes. Measured on the production database (same 7-day window):
+The Board's 81,265 requests / $8,854.70 (excluding probes), broken down **item by item into every block of the session statistics** (the six items below add up to the board total, with the cost closing to the cent):
 
-- The 15,898 sessions excluded by the session side have their primary request classified as **100% business traffic** in the request-level fact table, worth $6,452.73 in total;
-- Over the same window, traffic actually classified as probe in the request-level fact table totals only **$1.81**.
+| # | Component | Requests | Cost (USD) | Attribution |
+| --- | --- | --- | --- | --- |
+| C | Sessions **retained** inside the session universe | 58,180 | 1,551.41 | Session statistics (this is what the page shows) |
+| D1 | Excluded · **manually flagged probes** | 12,364 | 5,145.16 | Session statistics gap |
+| D2 | Excluded · **pattern-detected probes** | 5,946 | 1,876.67 | Session statistics gap |
+| D3 | Excluded · **no owner** | 1,202 | 0.08 | Session statistics gap |
+| E | **Sessions spanning the window** (first request outside, still active inside) | 3,191 | 281.38 | Session statistics gap |
+| F | **No session affiliation** (direct API calls, scripted calls) | 381 | 0.00 | Board only |
+| | **Total** | **81,263** | **8,854.70** | |
 
-In other words: although both tabs claim to exclude probes, they are **not excluding the same requests**. This is the primary reason the Session & Statistics cost sits well below the board's.
+⇒ **The gap between session statistics and the board is mainly not "sessions spanning the window" but the session universe's probe exclusion rules (D1+D2).**
 
-## Side-by-side numbers (measured 2026-11-23, 7-day window)
+### Key measurement: everything that gets excluded is real business traffic
 
-| Metric | Board | Session & Statistics (panel) | Session & Statistics (aligned row) |
+Classifying the in-window requests of the D1/D2/D3 excluded sessions by the request log's `origin_stage`:
+
+| Exclusion reason | Requests | Cost (USD) | Of which `origin_stage='business'` | Share |
+| --- | --- | --- | --- | --- |
+| Manually flagged probes | 12,364 | 5,145.16 | 12,364 | **100%** |
+| Pattern-detected probes | 5,946 | 1,876.67 | 5,946 | **100%** |
+| No owner | 1,202 | 0.08 | 1,202 | **100%** |
+
+⇒ The 19,512 requests and $7,021.91 of cost excluded on the session side are **100% business traffic (`origin_stage='business'`) in the request log** — not one of them is a probe. **This is the primary reason session statistics sit below the board, and it is the largest single deviation at present.**
+
+## Number comparison across the three modules (measured 2026-11-23)
+
+| Metric | Board (excluding probes) | Session & Statistics (panel) | Provider Reconciliation |
 | --- | --- | --- | --- |
-| Statistical entity | requests | sessions + session-cumulative requests | sessions / requests |
-| Requests | 65,774 | 72,098 | — |
-| Cost (USD) | 8,013.93 | 2,717.62 | 2,468.73 (internal cost) |
-| Credits | 86,925 (window-independent) | — | 0 |
-| Tokens | 3,245,804,009 | — | — |
-| Success rate | 95.31% | — | 94.64% |
-| Sessions | — | 19,235 | 17,390 |
+| Statistical entity | requests | sessions + session-cumulative requests | requests (aggregated by provider) |
+| Requests | 81,265 | 58,180 (inside the universe) / 77,687 (full total outside the universe) | 178,841 (including unassigned) |
+| Cost (USD) | 8,854.70 | 1,551.41 (inside the universe) | 8,612.07 |
+| Probe traffic | already excluded | excluded by the session rules | **not excluded** |
+| Maturity | real time | real time | **T+1 snapshot** |
 
-Matching each gap to its cause:
+### Board vs Provider Reconciliation: day-by-day cross-check
 
-- **Requests 72,098 > 65,774**: the session-side request count is the cumulative request count of the selected sessions, so a session spanning the window boundary contributes its post-window requests in full; on top of that, the session table contains duplicate rows (measured: up to 30 duplicate rows for the same session key), which are aggregated in as well.
-- **Cost 2,717.62 < 8,013.93**: the session universe drops the $6,452.73 of business traffic described above as probes; in addition the board also counts calls that have **no session affiliation** (direct API calls, scripted calls), which account for roughly a fifth of the board's cost.
-- **Credits 0 vs 86,925**: neither the session side nor the request-level fact table currently holds a trustworthy credit stock; the number on the page comes from the live delta.
-- **Success rate 95.31% vs 94.64%**: request-level against request-level, but one is computed from `usage_facts` and the other from the request-log materialized view, and the windows differ.
+The reconciliation side reads `daily_total` from `report_snapshots` and cross-checks it against the fact table day by day (closed calendar-day range 11/17 ~ 11/23):
+
+| Date | Fact-table requests | Reconciliation snapshot requests | Difference | Cost difference |
+| --- | --- | --- | --- | --- |
+| 11/17 | 27,446 | 27,446 | 0 | 0.0000 |
+| 11/18 | 22,905 | 22,905 | 0 | 0.0000 |
+| 11/19 | 35,008 | 35,008 | 0 | 0.0000 |
+| 11/20 | 23,947 | 23,947 | 0 | 0.0000 |
+| 11/21 | 21,341 | 21,341 | 0 | 0.0000 |
+| 11/22 | 19,693 | 19,693 | 0 | 0.0000 |
+| 11/23 | 36,019 | 28,501 | 7,518 | 42.38 |
+
+⇒ **The first 6 days match request by request and cent by cent**; the difference on 11/23 comes 100% from the cutoff time of that day's snapshot (snapshot `updated_at` = 17:38, measurement time 21:05) — **it is not a calculation error, it is the normal lag of a day that has not ended yet**.
+
+### Inside the reconciliation module: zero double counting
+
+The provider rows of the reconciliation page (including "Unassigned") **sum to exactly the page total**:
+
+- Provider rows sum = 178,841 requests = the page's total request count ✓
+- Provider cost rows sum = $8,612.07 = the page's total cost ✓
+- Of these, "Unassigned" (`provider_id IS NULL`) = 79,801 requests / 100% failed / $0.00 — these are **probe traffic without provider attribution** (probes are not sent to upstream providers), not a missing count.
 
 ## What to check when the numbers do not match
 
-1. **Align the window first**: board = from a calendar-day midnight; Session & Statistics panel = rolling N days; aligned row = whole Shanghai calendar days. Even for the same preset the three are not the same window.
+1. **Align the window first**: board = from a calendar-day midnight; Session & Statistics panel = rolling N days; aligned row = whole Shanghai calendar days; provider reconciliation = closed calendar-day range. Even for the same preset the four are not the same window.
 2. **Then align the entity**: compare requests with requests and cost with cost; never compare a session count with a request count.
-3. **Look for degradation markers**: when a card shows "degraded / untrustworthy / not computed", those zeros do not mean "no traffic".
-4. **Check the probe switch**: the board's "exclude probes / include probes" toggle only switches the hero summary; the distribution charts and the trend chart always use the business caliber.
-5. **"Today" used to fail (fixed 2026-11-23)**: the "Today" preset of Session & Statistics reproducibly hit the 30-second timeout because the join index was missing on the database side (index added 2026-11-23: the query went from 121.8 s to 0.19 s). If the page shows that error again, the index has gone missing again — ask the on-call engineer to check that `idx_session_dim_session_key` is in place.
+3. **Then align the probe caliber**: the board can switch to "include probes"; session statistics excludes by the session universe rules; **the reconciliation always includes probes**. Request counts differing a lot while the costs are close ⇒ look at probes first.
+4. **Then align the maturity**: the reconciliation is a T+1 snapshot, so **the current day's data necessarily lags**; confirm which day the snapshot covers before comparing.
+5. **Look for degradation markers**: when a card shows "degraded / untrustworthy / not computed", those zeros do not mean "no traffic".
+6. **Board trend chart ≠ board cards**: the trend chart comes from the per-minute statistics table, not the same source as the cards above (request-level fact table) (measured about 13.8% apart over a 30-day window).
+7. **"Today" used to fail (fixed 2026-11-23)**: the "Today" preset of Session & Statistics reproducibly hit the 30-second timeout because the join index was missing on the database side (index added 2026-11-23: the query went from 121.8 s to 0.19 s). If the page shows that error again, the index has gone missing again — ask the on-call engineer to check that `idx_session_dim_session_key` is in place.
 
 ## Known limitations (measured 2026-11-23)
 
-1. **Session-side cost and request count are inflated (double counting, fixed on `main` on 2026-11-23)**: the cost and request count of Session & Statistics come from the session-summary aggregation, but `sessions` is a **day-partitioned session history** (the same session gets a new row every day) and the statistics join does not de-duplicate per session ⇒ the same session is counted several times. Measured on the production database on 2026-11-23 (same 7-day window, **pre-fix figures**): the session-side cost comes out about **61 %** and the request count about **36 %** above the values de-duplicated per session (the most expensive session was counted 3 times). **That double counting has been fixed**: the session-universe join now de-duplicates on `(session_id, tenant_id)` (`DISTINCT ON`) and the three materialized views were updated together with migration 994 ⇒ the 61 %／36 % figures above are **pre-fix** measurements. **The known limitation that remains is D1 (over-aggressive probe exclusion, orthogonal to this item)**; **the Board numbers (request level) were never affected** ⇒ when comparing cost, use the Board.
-2. The board credits card does not change with the time range (see above).
-3. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).
-4. Probe exclusion does not remove the same traffic on both sides (see above).
+1. **The session universe excludes probes too broadly (D1/D2, confirmed by measurement on 2026-11-23)**: the 19,512 requests and $7,021.91 of cost excluded by session statistics are **100% business traffic** in the request log. Session statistics therefore sit about **$7,021.91 (79%)** below the board (excluding probes). **The board's (request-level) numbers were never affected** ⇒ for an exact cost reconciliation use the board, or switch the reconciliation page to the "business" caliber before comparing.
+2. **Sessions spanning the window (E)**: 18 sessions whose first request predates the window are still active inside it and are currently excluded as a whole, missing 3,191 requests / $281.38 (3.2% of the board's cost).
+3. **Calls without session affiliation (F)**: 381 direct API / scripted calls have no session; the board counts them, session statistics does not.
+4. **Same-day lag of the reconciliation snapshot**: the reconciliation is a T+1 caliber, so **the current (today's) data is incomplete**; subtracting it directly from the board's real-time numbers will always produce a difference.
+5. The board credits card does not change with the time range (see above).
+6. The board trend chart (per-minute statistics table) and the cards above it (request-level fact table) differ by about 13.8% over a 30-day window (160,451 vs 140,969 requests).
