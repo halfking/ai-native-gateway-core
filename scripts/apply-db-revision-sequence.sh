@@ -2770,8 +2770,13 @@ files=(
   #     ⇒ CONCURRENTLY 合法。
   #   ★ 底座是 session_summaries / session_dim / sessions（真库实测），
   #     不是 sessions 裸表；日桶用 (ts AT TIME ZONE 'Asia/Shanghai')::date（CST）。
-  #   ★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。
-  "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
+  # ★★ 2026-11-23 L29 轮（真库空库实测）★★ **本件必须排在 990 之后**
+  #   （★ 原先排在 990 之前 ⇒ 空库新装在 981 处必炸：
+  #   `column ss.total_credits_charged does not exist`）。
+  #   ★ 981 的 4 个会话分析物化视图读 `session_summaries.total_credits_charged`，
+  #     而该列由 **990** 添加 ⇒ ★★ 981 在前就是一次真实的依赖倒置。
+  #   ★ 原注释曾写「且不依赖 990/991/992 的产物」⇒ ★ **实测：不依赖是错的**。
+  #   ★ 两处通道（安装器 StartupFiles / 本 files=()）已同批改正（★ 顺序口径统一）。
   # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
   #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
   #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
@@ -2784,7 +2789,11 @@ files=(
   #     链尾（661 之后）**——clobber 守卫按「通道内最后一次定义 = 终态体」判，
   #     少这行部署会在应用任何文件之前 abort（exit 5）（962 先例）。
   #   ★ 2026-11-19 文档一致性轮补登记（首提交漏了本清单 ⇒ 211 docker 通道不会投递）。
+  #   ★★ 2026-11-23 L29 轮：**必须排在 981 之前**（★ 981 的物化视图读本件加的
+  #     `total_credits_charged` 列）⇒ ★ 本件只依赖 session_summaries /
+  #     stats_usage_daily（基线已有）⇒ ★ 提前无副作用。
   "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
+  "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
   # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
   #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
   #   不存在的 migration_metadata 表改回 schema_migrations）。

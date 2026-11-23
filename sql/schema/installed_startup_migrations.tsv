@@ -395,8 +395,8 @@
 377	978_pi_canonical_rule_set.sql
 378	979_pi_analysis_applied_actions.sql
 379	980_pi_analysis_stats_view_alignment.sql
-380	981_session_analytics_foundation.sql
-381	990_stats_consistency_fixes.sql
+380	990_stats_consistency_fixes.sql
+381	981_session_analytics_foundation.sql
 382	991_stats_timezone_standardization.sql
 383	992_add_cst_timezone_functions.sql
 384	993_report_snapshots_exact_cost_cents.sql

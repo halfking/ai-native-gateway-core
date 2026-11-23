@@ -1958,17 +1958,26 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   —— v_error_analysis_stats 补 processing/failed/skipped 计数（对齐 GetStats）。
 			//   ★ 必须排在 971/977 **之后**（视图由 971 建、977 订正；不在场时本件守卫跳过）。
 			"980_pi_analysis_stats_view_alignment.sql",
+			// ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
+			//   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
+			//   stats_consistency_check 视图（幂等；211 真库试跑通过）。
+			//   ★ 2026-11-19 文档一致性轮补五点同步（首提交只写正典）。
+			// ★★★ 2026-11-23 L29 轮（真库空库实测）：★★ **必须排在 981 之前**
+			//   （★ 原先排在 981 之后 ⇒ 空库新装在 981 处必炸：
+			//   `column ss.total_credits_charged does not exist`）。
+			//   ★ 981 的 4 个会话分析物化视图读 `session_summaries.total_credits_charged`，
+			//     而该列由**本件**添加 ⇒ ★★ 981 在前就是一次真实的依赖倒置。
+			//   ★ 本件只依赖 `session_summaries` / `stats_usage_daily`（基线已有）
+			//     ⇒ ★ 提前到 981 之前无副作用（★ 实测：全链 392 条在空库跑通）。
+			"990_stats_consistency_fixes.sql",
 			// ★ 981（2026-11-19 会话分析系统基础设施）：已修正列依赖，现已就绪。
 			//   为 sessions 表添加 project/task/task_category/is_probe 四列，
 			//   创建 4 个物化视图（user_session_aggregates, project_task_aggregates,
 			//   agent_usage_aggregates, model_usage_aggregates），创建刷新函数。
 			//   列名已修正为真实 schema：owner_user, total_tokens, total_cost_usd, total_turns。
+			// ★★ 2026-11-23 L29 轮：★ **排在 990 之后** —— ★ 本件的物化视图读
+			//   `session_summaries.total_credits_charged`，★ 该列由 990 添加。
 			"981_session_analytics_foundation.sql",
-			// ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
-			//   session_summaries 积分/TTFT 字段 + stats_usage_daily 成本分解 +
-			//   stats_consistency_check 视图（幂等；211 真库试跑通过）。
-			//   ★ 2026-11-19 文档一致性轮补五点同步（首提交只写正典）。
-			"990_stats_consistency_fixes.sql",
 			// ★ 991：stats_timezone_standardization——统计 API 时区标准化
 			//   （UTC 日边界辅助函数；真库试跑通过；自登记原指向不存在的
 			//   migration_metadata 表已改回 schema_migrations）。
@@ -2037,6 +2046,28 @@ func (r *Runner) WaitForPG(timeout int) error {
 // 可被测试钉住，防止漂移到别的口径。
 const ledgerQuery = "SELECT version FROM public.schema_migrations"
 
+// modelsCanonicalSeedSQL 是**新装路径**的基线补种（★ 背景见 InitSchema 的说明）。
+//
+// ★ 为什么需要它：★ `models_canonical` 在空库基线里只有少数几行（★ 种子 6 行
+// ＋ `446_volcengine_model_aliases` 补的 13 行）⇒ ★ 而 `956` 的前置守卫要求
+// 存在 **active 的 `minimax-m3.1-flash`** ⇒ ★★ 空库新装在 956 处必然中止
+// （★ 真库实测：`migration 956 aborted: canonical_name=minimax-m3.1-flash
+// does not exist or is not active`）。
+//
+// ★ 为什么**补种**而不是**改 956 的字节**：★ 956 已在生产 applied（★ 211 记账
+// 2026-11-10 13:16:14）⇒ ★ 改它的字节＝制造分叉（★ 字节冻结原则）⇒ ★★ 而
+// 「空库本来就没有业务模型目录」这个前提才是真正的缺口 ⇒ ★★ 补种是**只动
+// 安装器代码**的修法（★ 不碰任何迁移字节）。
+//
+// ★ 幂等：★ `ON CONFLICT (canonical_name)` ⇒ 重复执行不报错、不产生重复行。
+const modelsCanonicalSeedSQL = `
+INSERT INTO public.models_canonical (canonical_name, family, status, source)
+VALUES ('minimax-m3.1-flash', 'minimax', 'active', 'installer-baseline-seed')
+ON CONFLICT (canonical_name) DO UPDATE
+    SET status = 'active', updated_at = now()
+    WHERE public.models_canonical.status IS DISTINCT FROM 'active';
+`
+
 // InitSchema 应用基线三件（00-prereqs → 01-schema → 02-seed）+ startup 迁移。
 //
 // 已有库走**增量模式**：schema_migrations 台账存在且非空 ⇒ 基线三件是全新
@@ -2075,6 +2106,20 @@ func (r *Runner) InitSchema(logger func(string)) error {
 			}
 			logger(fmt.Sprintf("  ✅ %s 完成", f.name))
 		}
+
+		// ★★ 2026-11-23 L29 轮（真库空库实测）：★ 基线三件只带进少数几行
+		//   `models_canonical` ⇒ ★ 而 956 的前置守卫要求存在 **active 的
+		//   `minimax-m3.1-flash`** ⇒ ★★ 空库新装在 956 处**必然中止**（★ 实测报错
+		//   `migration 956 aborted: canonical_name=minimax-m3.1-flash does not
+		//   exist or is not active`）⇒ ★★ 这里在基线之后、启动迁移之前**补种**。
+		//
+		// ★ 只在**新装路径**执行（★ 增量路径不写 ⇒ ★ **零生产写**）。
+		// ★ 不改 956 的字节（★ 956 已在生产 applied ⇒ 字节冻结）。
+		logger("  ▶ 补种 models_canonical 基线行（956 的前置守卫所需） ...")
+		if err := r.execSQL(modelsCanonicalSeedSQL); err != nil {
+			return fmt.Errorf("补种 models_canonical 基线行失败: %w", err)
+		}
+		logger("  ✅ models_canonical 基线行补种完成")
 	}
 
 	appliedCount := 0
@@ -2231,6 +2276,29 @@ func (r *Runner) applySQL(filename string) error {
 	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = bytes.NewReader(content)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("psql 失败: %w\n%s", err, truncate(string(out), 500))
+	}
+	return nil
+}
+
+// execSQL 在目标库执行一段内联 SQL。
+//
+// ★ 用途**仅限**安装器侧的最小基线补种（★ 见 modelsCanonicalSeedSQL）：
+// ★ 迁移内容**一律**走 applySQL 的逐文件事务通道（★ 免得绕过
+// `dbinit:no-transaction` 的分流与逐文件失败定位）。
+func (r *Runner) execSQL(sql string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", r.CitusContainer, "psql",
+		"-U", r.DBUser,
+		"-d", r.DBName,
+		"-v", "ON_ERROR_STOP=1",
+		"--single-transaction")
+	cmd.Stdin = strings.NewReader(sql)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {

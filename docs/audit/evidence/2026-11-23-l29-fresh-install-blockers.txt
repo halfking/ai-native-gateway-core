@@ -69,7 +69,9 @@ CONTEXT:  PL/pgSQL function inline_code_block line 10 at RAISE
     schema_migrations : 102 行, version 025..955
     teams 表          : (无)
     api_keys.team_id : 0 列
-    session_analytics_foundation 表 : 0
+    会话分析物化视图（pg_matviews like '%aggregates%'）: 0
+    ★ 注：session_analytics_foundation 是【迁移名】不是表名 ⇒ ★ 表本来就不存在，
+      ★ 正确的核验对象是 981 建出的 4 个物化视图（★ 修复后实测 = 4）
     models_canonical : 19 行（含 minimax-m3.1-flash 的行数 = 0）
 
 --------------------------------------------------------------------------------
@@ -296,3 +298,55 @@ $ docker exec acc-pg17 psql -U llm_gateway -d llm_gateway -Atc \
   "★ reachability ledger was generated against a manifest of 387 files, the installer manifest now has 392
    ★ 台账【比安装器清单旧】…"
   "★ the package now has 396"
+
+--------------------------------------------------------------------------------
+⑮ ★★ 修法 A1＋B2 的实测（★ 用【仓内真实代码】＋【未打补丁的 embeddata】＋【全新空库】）
+--------------------------------------------------------------------------------
+★ 改动面（3 文件 ＋ 1 台账）：
+  installer/internal/dbinit/runner.go          —— StartupFiles 顺序（990→981 前）+ modelsCanonicalSeedSQL + execSQL + InitSchema 补种
+  scripts/apply-db-revision-sequence.sh         —— files=() 顺序（990→981 前）+ 订正那条写错的注释
+  sql/schema/installed_startup_migrations.tsv   —— 位置 380/381 互换（★ 由官方生成器重生成：
+                                                    cd installer && go test ./internal/dbinit/ -run TestStartupManifest -update）
+  ★★ **任何 sql/migrations/startup/*.sql 零字节变更** ⇒ 不触发字节冻结
+
+★ A1 的种子 SQL（modelsCanonicalSeedSQL）：
+    INSERT INTO public.models_canonical (canonical_name, family, status, source)
+    VALUES ('minimax-m3.1-flash', 'minimax', 'active', 'installer-baseline-seed')
+    ON CONFLICT (canonical_name) DO UPDATE
+        SET status = 'active', updated_at = now()
+        WHERE public.models_canonical.status IS DISTINCT FROM 'active';
+  ★ 只在 InitSchema 的 `!incremental` 分支执行 ⇒ **增量路径零写**（★ 生产库走增量分支）
+
+★ 空库安装实测输出（节选尾段）：
+    ✅ startup migration 981_session_analytics_foundation.sql 完成
+    ✅ startup migration 994_session_analytics_owner_key_and_close_path.sql 完成
+    ✅ startup migration 995_error_playbook.sql 完成
+    ✅ startup migration 996_tenant_budget_enforcement_mode.sql 完成
+    ✅ startup migration 997_tasks_dimension_table.sql 完成
+    ✅ startup migration 998_session_summaries_task_association.sql 完成
+    ✅ startup migration 999_session_summary_layers.sql 完成
+    ✅ startup migration 989_migration_ledger_session_analytics_981_repair.sql 完成
+    === InitSchema 完成（46.7s）
+    === public 表数：576
+    === PROBE OK
+
+★ 装完后的真库读数：
+    models_canonical 行数 = 20（★ 空库基线 19 ＋ 补种 1）
+    minimax-m3.1-flash 行数 = 1 / featured = true     ★⇒ 956 的守卫与标记都生效
+    session_summaries.total_credits_charged 列 = 1  ★⇒ 990 先跑，列已在
+    会话分析物化视图（pg_matviews like '%aggregates%'）= 4   ★⇒ 981 的产物在
+      （★ 对照：★ 中止态（止步 956）与真实路径态（止步 956）都是 0）
+    public 表数 = 576
+    schema_migrations = 140 行 / 最大版本 = 999
+
+★ 对现有库的影响 = 零（★ 981 与 990 都已在生产 applied ⇒ 两通道都跳过；★ 增量路径不写种子）
+
+★ 门禁状态：
+    installer/internal/dbinit            —— ok（★ 顺序台账由官方生成器重生成后全绿）
+    installer/cmd/llm-gw-installer        —— ★ **仅 L22 已登记的既有红**
+        TestStartupFilesAreAllEmbedded: embeddata/startup file "055_teams_table.sql" is not registered
+        in dbinit.Runner.StartupFiles ...（★ 同样 4 条：055/056/057/058）
+        ★★ 基线对拍（git stash 去掉本轮改动后同一条门）⇒ **同红 ⇒ 非本轮引入**
+    scripts/ursmcheck（文档/登记/棘轮）—— ok（★ 16 条定向门全绿，含 AGENTS.md 体积棘轮与 R 标记索引）
+    scripts/ursmcheck（census/reachability 族）—— ★ 仅 L20 已登记的 3 条红
+        （gap ledger 941 vs 959 / reachability 941 vs 959 / manifest 387 vs 392）⇒ **零新增红**
