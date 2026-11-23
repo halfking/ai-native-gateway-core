@@ -1,7 +1,11 @@
 package metricsstore
 
 import (
-	"context"
+	// ★ 2026-11-24 合并轮九代上游修：★ 原件导入了 "context" 但只在**注释掉的**代码里用
+	//   （★ 见本文件下方两处注释：★ `processor.ProcessBatch(context.Background(), 100)`／
+	//   `writer.BatchUpsertRequestMetrics(context.Background(), ...)`）⇒ ★★ 未使用的导入
+	//   ⇒ ★★ **整个包的测试编译不过**（★ `imported and not used`）★★ ⇒ ★★ 上游 `main`
+	//   当场就编译不过这个新包的测试 ⇒ ★ 本轮去掉该导入、★ 不动被注释的代码。
 	"testing"
 	"time"
 )

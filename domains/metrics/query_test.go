@@ -47,7 +47,10 @@ func TestBuildSummaryQuery_WithOptionalFilters(t *testing.T) {
 		SessionID:     &sessionID,
 	}
 	
-	query, args := BuildSummaryQuery(filter)
+	// ★ 2026-11-24 合并轮九代上游修：★ 原件写 `query, args := …` 但 `query` 从未使用
+	//   ⇒ ★★ Go 的「声明且未使用」是**编译错误** ⇒ ★★ 整个包的测试编译不过
+	//   （★ `declared and not used: query`）★★ ⇒ ★ 本轮改成 `_`（★ 断言只用 args）。
+	_, args := BuildSummaryQuery(filter)
 	
 	// 验证参数数量增加
 	expectedArgs := 5 // start_time, end_time, tenant_id, provider_id, session_id
