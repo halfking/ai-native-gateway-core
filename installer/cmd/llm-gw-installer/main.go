@@ -1915,16 +1915,33 @@ var requestMetrics983 []byte
 //go:embed embeddata/startup/983_request_metrics.down.sql
 var requestMetrics983Down []byte
 
-// ★ 973（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
 //
 //	原名 994_add_raw_model_name：与 994_session_analytics_owner_key_and_close_path
 //	撞号，且任何通道都没登记 ⇒ 该列在生产上不存在 ⇒ 写入必然 42703。
+//	★ 第二轮改号 994 → 1000（四位数对门隐形，被拦）→ 973（★ 逆序依赖：
+//	973 < 983 而两条自动枚举通道只按号排序 ⇒ 离线升级中止 / 建表但无列）
+//	★ ⇒ 最终取 **983b**（主号+字母后缀，仓内既有合法记法）：
+//	versionPrefix 解析成 983 ⇒ 同号按文件名 ⇒ 排在 983 建表件之后。
 //
-//go:embed embeddata/startup/973_add_raw_model_name.sql
-var addRawModelName973 []byte
+//go:embed embeddata/startup/983b_add_raw_model_name.sql
+var addRawModelName983b []byte
 
-//go:embed embeddata/startup/973_add_raw_model_name.down.sql
-var addRawModelName973Down []byte
+//go:embed embeddata/startup/983b_add_raw_model_name.down.sql
+var addRawModelName983bDown []byte
+
+// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+//
+//	processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，
+//	★ 每批跑一次 ⇒ 而该索引从来不存在（迁移 983 的 11 个索引里没有它）
+//	⇒ 2026-11-24 生产只读 EXPLAIN 实测：全表并行扫描 + top-N 排序
+//	⇒ 340,904 行时 26,572 buffers / 117ms 每批。
+//
+//go:embed embeddata/startup/983c_add_occurred_cursor_index.sql
+var addOccurredCursorIndex983c []byte
+
+//go:embed embeddata/startup/983c_add_occurred_cursor_index.down.sql
+var addOccurredCursorIndex983cDown []byte
 
 // ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 //
@@ -2656,9 +2673,13 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/999_session_summary_layers.down.sql":             sessionSummaryLayers999Down,
 	"startup/983_request_metrics.sql":                         requestMetrics983,
 	"startup/983_request_metrics.down.sql":                    requestMetrics983Down,
-	// ★ 973（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
-	"startup/973_add_raw_model_name.sql":      addRawModelName973,
-	"startup/973_add_raw_model_name.down.sql": addRawModelName973Down,
+	// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+	//   ★ 983 的补列件（主号+字母后缀）⇒ 必须排在 983 建表件之后。
+	"startup/983b_add_raw_model_name.sql":      addRawModelName983b,
+	"startup/983b_add_raw_model_name.down.sql": addRawModelName983bDown,
+	// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+	"startup/983c_add_occurred_cursor_index.sql":      addOccurredCursorIndex983c,
+	"startup/983c_add_occurred_cursor_index.down.sql": addOccurredCursorIndex983cDown,
 	// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 	//   ★ 原先只建了 canonical + embeddata 双副本、没进任何通道
 	//   ⇒ 团队族四表从来没被任何通道建过 ⇒ 本轮补齐接线。

@@ -1,4 +1,4 @@
--- Rollback script for 973_add_raw_model_name.sql
+-- Rollback script for 983b_add_raw_model_name.sql
 
 \set ON_ERROR_STOP on
 BEGIN;
@@ -15,6 +15,6 @@ ALTER TABLE public.request_metrics DROP COLUMN IF EXISTS raw_model_name;
 -- 台账回退（与 up 的自登记对偶）
 -- ============================================================
 -- down 只退自己引入的行
-DELETE FROM public.schema_migrations WHERE version = '973';
+DELETE FROM public.schema_migrations WHERE version = '983b';
 
 COMMIT;

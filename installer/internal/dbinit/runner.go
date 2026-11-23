@@ -2050,13 +2050,20 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"987_provider_invoice_evidence.sql",
 			"988_provider_invoice_usage_buckets.sql",
 			"989_supplier_contract_rates.sql",
-			// ★ 973（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+			// ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
 			//   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
 			//     撞号（迁移号唯一性门红），且**任何通道都没登记它**
 			//     ⇒ raw_model_name 列在生产上不存在 ⇒ writer.go 写这一列必然 42703
 			//     ⇒ 整条 request_metrics 管线静默丢数。
+			//   ★ 改号过程：994 → 1000（四位数对按文件名解析的门隐形，被当场拦下）
+			//     → 973（★ **逆序依赖**：973 < 983，而两条自动枚举通道
+			//     （offline_apply.go 数字序 / init-local-db.sh 字典序）只按号排序、
+			//     不读 Dependencies 头 ⇒ 本迁移会排在建表件之前 ⇒ ALTER 落空）
+			//     → **983b**（★ 主号+字母后缀，仓内既有合法记法 15 条）：
+			//     versionPrefix 解析成 983 ⇒ 与 983_request_metrics.sql 同号 ⇒
+			//     排序按文件名 ⇒ '983_' < '983b_' ⇒ **排在 983 建表件之后** ✓。
 			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
-			"973_add_raw_model_name.sql",
+			"983b_add_raw_model_name.sql",
 			// ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
 			//   ★ 原先只建了 canonical + embeddata 双副本、**没登记进任何通道**
 			//     ⇒ 团队族四表**从来没被任何通道建过**
@@ -2070,6 +2077,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"056_user_teams.sql",
 			"057_api_keys_team_id.sql",
 			"058_team_budgets.sql",
+			// ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+			//   ★ processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，
+			//     **每批跑一次** ⇒ 而该索引**从来不存在**（迁移 983 的 11 个索引里没有它）
+			//     ⇒ 2026-11-24 生产只读 EXPLAIN 实测：全表并行扫描 + top-N 排序
+			//     ⇒ 340,904 行时 26,572 buffers / **117ms 每批**。
+			//   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
+			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
+			"983c_add_occurred_cursor_index.sql",
 		},
 	}
 }

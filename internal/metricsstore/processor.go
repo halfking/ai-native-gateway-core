@@ -61,7 +61,22 @@ type watermark struct {
 //
 //	(occurred_at, request_id) 游标口径必须完全一致，否则会漏取或重复取。
 //
-// ★ 配套索引见迁移 983（idx_request_metrics_occurred_cursor），避免每批次全表排序。
+// ★★★ 2026-11-24 审计轮**订正**：★ 本注释原写「配套索引见迁移 983
+// ★★★ （idx_request_metrics_occurred_cursor），避免每批次全表排序」——
+// ★★★ ★ **该索引从来不存在** ★（★ 迁移 983 的 11 个索引里没有它；
+// ★★★   2026-11-24 生产只读实测：`to_regclass('public.idx_request_metrics_occurred_cursor')`
+// ★★★   返回 NULL ⇒ 确认不存在）★★
+// ★★★ ⇒ ⇒ **该「避免全表排序」的承诺从未兑现** ★★
+// ★★★   ⇒ 2026-11-24 生产只读 EXPLAIN 实测（acc-pg17，request_metrics 340,904 行）：
+// ★★★     Parallel Seq Scan on request_metrics_default + top-N heapsort
+// ★★★     ⇒ Buffers: shared read=26,572 ⇒ Execution Time: **117.227 ms**
+// ★★★   ⇒ ★ 这个查询**每批跑一次** ⇒ 空转成本随批次线性累积。
+// ★★★ ★ 为什么会全表扫描：★ request_metrics 的主键是 (request_id, occurred_at)
+// ★★★   （★ 生产实测 request_metrics_pkey 的定义）⇒ **列序与本查询的
+// ★★★   (occurred_at, request_id) 相反** ⇒ 主键索引无法用于该排序 ⇒ 只能排序。
+// ★★★
+// ★★★ ⇒ **补索引的修法见迁移 983c**（★ 索引建在父表上 ⇒ 自动传播到 DEFAULT 分区；
+// ★★★   ★ 注意：CREATE INDEX 在**父表**上会为已有分区自动建同名分区索引 ★★）。
 const watermarkSQL = `
 	SELECT occurred_at, request_id
 	FROM request_metrics

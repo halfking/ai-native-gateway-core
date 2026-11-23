@@ -2854,12 +2854,22 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/987_provider_invoice_evidence.sql"
   "$ROOT_DIR/sql/migrations/startup/988_provider_invoice_usage_buckets.sql"
   "$ROOT_DIR/sql/migrations/startup/989_supplier_contract_rates.sql"
-  # ★ 973（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
+  # ★ 983b（2026-11-24 12h 修订审计轮）：request_metrics 补记原始模型名列。
   #   ★ 原名 994_add_raw_model_name 与 994_session_analytics_owner_key_and_close_path
-  #     撞号 ⇒ 改用空号 973（三位数惯例：sqlguard 的 migrationNumPrefix 钉死
-  #     ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 台账行记过同款）。
+  #     撞号 ⇒ 换号（四位数 1000 对全部守卫隐形，被当场拦下；973 则是**逆序依赖**
+  #     ⇒ 两条自动枚举通道只按号排序时本迁移会排在建表件之前 ⇒ ALTER 落空）。
+  #   ★ 最终取 **983b**（主号+字母后缀，仓内既有合法记法 15 条）：
+  #     versionPrefix 解析成 983 ⇒ 与 983_request_metrics.sql 同号 ⇒ 排序按文件名
+  #     ⇒ '983_' < '983b_' ⇒ 排在 983 建表件之后 ✓（依赖已满足）。
   #   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
-  "$ROOT_DIR/sql/migrations/startup/973_add_raw_model_name.sql"
+  "$ROOT_DIR/sql/migrations/startup/983b_add_raw_model_name.sql"
+  # ★ 983c（2026-11-24 12h 修订审计轮第二轮）：request_metrics 补复合游标索引。
+  #   ★ processor.go 的 watermarkSQL 按 (occurred_at DESC, request_id DESC) 取水位线，
+  #     **每批跑一次** ⇒ 而该索引**从来不存在**（迁移 983 的 11 个索引里没有它）
+  #     ⇒ 2026-11-24 生产只读 EXPLAIN 实测：全表并行扫描 + top-N 排序
+  #     ⇒ 340,904 行时 26,572 buffers / **117ms 每批**。
+  #   ★ 依赖 983（request_metrics 表）⇒ 必须排在 983 之后（已满足）。
+  "$ROOT_DIR/sql/migrations/startup/983c_add_occurred_cursor_index.sql"
   # ★ 055-058（2026-11-23 团队层级预算基础设施 W2-Q2）：团队族四表。
   #   ★ 原先**只建了 canonical + embeddata 双副本**、两条通道都没投递
   #     ⇒ 团队族四表**从来没被建过** ⇒ maas/team_budget_gate 读不到表。
@@ -3727,11 +3737,19 @@ ledger_artifact_probe "988_provider_invoice_usage_buckets.sql" \
   "to_regclass('public.idx_provider_invoices_window') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_invoice_lines' AND column_name IN ('bucket_sent_attempts','bucket_input_tokens','bucket_output_tokens','bucket_audio_input_duration_us','bucket_audio_billed_duration_us','bucket_audio_output_duration_us','bucket_generated_images','bucket_video_output_duration_us')) = 8 AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.provider_invoice_lines'::regclass AND conname='provider_invoice_lines_bucket_cohort' AND convalidated) AND (SELECT count(*) FROM public.schema_migrations WHERE version = '988') = 1"
 ledger_artifact_probe "989_supplier_contract_rates.sql" \
   "to_regclass('public.supplier_contract_rates') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '989') = 1"
-# ★ 973 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
+# ★ 983b 的产物 = request_metrics 上的一列 + 一个索引 + 台账行。
 #   ★ 这条 probe 是本轮新增迁移的**唯一**到位证据：
 #     该列原先没有任何通道投递 ⇒ 生产上不存在 ⇒ writer.go 写它必然 42703。
-ledger_artifact_probe "973_add_raw_model_name.sql" \
-  "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '973') = 1"
+#   ★ 注：生产上该列已由别的路径在场（211 只读实测：45 列、末列即 raw_model_name），
+#     但本迁移未 applied、未记账 ⇒ probe 的台账行判据（version='983b'）仍未满足
+#     ⇒ 这正是本迁移要补的缺口（幂等重跑无害）。
+ledger_artifact_probe "983b_add_raw_model_name.sql" \
+  "to_regclass('public.request_metrics') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='request_metrics' AND column_name='raw_model_name') = 1 AND to_regclass('public.idx_request_metrics_raw_model') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983b') = 1"
+# ★ 983c 的产物 = 复合游标索引 + 台账行。
+#   ★ 用 pg_indexes 判索引在场（★ 分区表：索引建在父表上 ⇒ 各分区上会有同名分区索引
+#   ★ ⇒ 用 to_regclass 判父表索引更直接）。
+ledger_artifact_probe "983c_add_occurred_cursor_index.sql" \
+  "to_regclass('public.idx_request_metrics_occurred_cursor') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '983c') = 1"
 # ★ 055-058 的产物 = 团队族四张表 + api_keys.team_id 列 + 各自的台账行。
 #   ★ 这四条此前**任何通道都没投递** ⇒ 团队族四表从来没被建过 ⇒ 本轮补齐。
 ledger_artifact_probe "055_teams_table.sql" \
