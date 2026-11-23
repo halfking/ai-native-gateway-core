@@ -135,3 +135,25 @@ legacy_cross_surface_live_alignment_test.go:627:   aligned    tool_usage_stats_w
 legacy_cross_surface_live_alignment_test.go:627:   skipped    usage_ledger_with_current_month（344_usage_ledger_hot_independence.sql）：两表错位（类型错位 1 处、位置差 5 处）⇒ ★ 重放必炸；★ 但本环境的通道都不会投递它 ⇒ 绿（★ deploy：不在部署通道的 files=() 里｜install：不在安装器的 StartupFiles 里）
 legacy_cross_surface_live_alignment_test.go:633: ★ 本环境有 1 颗「重放必炸且没人跳过」的地雷
 --- FAIL: TestLegacyCrossSurfaceLiveAlignment (17.67s)
+
+## ⑥ 252 投递面 ↔ 两本台账的交叉（★ 2026-11-24 · ★ 纯 SELECT · ★ 只读）
+
+# ★ 口径：★ 投递面＝部署台账覆盖门的【逐字 awk 解析面】（★ 当前树 ba8c3da7f）★；★ 台账＝public.gateway_db_revision_sequences（★ 部署通道那本）与 public.schema_migrations（★ 安装器那本）★
+
+投递面|不同文件|360
+投递面|不同版本号|353
+252 部署台账|行数|49
+252 部署台账|其中在投递面内的 basename|47
+252 部署台账|投递面外的 basename|2
+投递面|不在 252 部署台账的文件数|313
+投递面|版本号在 252 schema_migrations 有行的|346
+投递面|版本号两本账都没有的|7
+252 schema_migrations|版本行数|541
+
+# ★ 结论：★ 252 的部署通道自 2026-09-12 起未推进、★ 那本账缺着 300+ 条 ⇒ 一旦唤醒、★ 它会重投数百个「已由安装器应用过、但形状已被后来迁移改过」的迁移 ⇒ ★ 392 只是第一颗可证明会炸的、★ 其余那批今天没有任何门能覆盖 ★
+# ★ 逐条核实（★ 392 之前的 21 个投递面条目在 252 台账里的状态 ★）：
+#   已记 7 条：677 / 655 / 560 / 572 / 606 / 563 / 564
+#   未记 14 条：456 / 351 / 629 / 632 / 567 / 470 / 472 / 683b / 357 / 358 / 855 / 856 / 859 / 860
+# ★ 392 的通道口径指纹（sha256sum ｜ 与 211 台账那行逐字一致）：
+#   392_candidate_failure_logs_monthly_partition.sql = 469aa2a2f7c15116e5f336ef6d070f57ab4d6ebb1a45066e5b63cfe70584aa6c
+# ★ canonical 与 embeddata 副本逐字相同 ⇒ 两者指纹一致（★ 实测 cmp 一致）★
