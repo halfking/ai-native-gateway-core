@@ -112,8 +112,12 @@ func (h *Handler) fetchSwimLaneDataForTenant(ctx context.Context, hours int, ten
 		SELECT
 			rl.request_id,
 			rl.ts,
-			COALESCE(NULLIF(rl.client_model, ''), mc.canonical_name, rl.outbound_model, 'unknown') AS model,
-			COALESCE(NULLIF(mf.vendor, ''), COALESCE(rl.client_model, ''), 'unknown') AS vendor,
+			COALESCE(
+				NULLIF(NULLIF(TRIM(mc.canonical_name), ''), '<unknown>'),
+				NULLIF(NULLIF(TRIM(rl.outbound_model), ''), '<unknown>'),
+				NULLIF(NULLIF(TRIM(rl.client_model), ''), '<unknown>'),
+				'unknown') AS model,
+			COALESCE(NULLIF(mf.vendor, ''), COALESCE(NULLIF(NULLIF(TRIM(rl.client_model), ''), '<unknown>'), ''), 'unknown') AS vendor,
 			COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, 'unknown') AS provider,
 			COALESCE(rl.request_status, '') AS status,
 			COALESCE(rl.error_kind, '') AS error_kind,

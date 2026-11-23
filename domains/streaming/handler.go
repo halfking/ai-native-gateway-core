@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/modelattr"
 	"github.com/kaixuan/llm-gateway-go/internal/sessioncontext"
 	"io"
 	"log/slog"
@@ -2543,7 +2544,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 					logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 				}
 				if logCtx.ClientModel == "" {
-					logCtx.SetClientModel("<unknown>")
+					logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 				}
 			}
 			logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, logCtx.ProviderID, logCtx.CredentialID)
@@ -2666,7 +2667,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 			}
 			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
+				logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 			}
 		}
 		logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
@@ -2688,7 +2689,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 		}
 		if logCtx.ClientModel == "" {
-			logCtx.SetClientModel("<unknown>")
+			logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 		}
 	}
 	logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
@@ -2892,7 +2893,7 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 			}
 			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
+				logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 			}
 		}
 		logCtx.EmitFailure(errCode, errMsg, providerID, credentialID)
@@ -2912,7 +2913,7 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 			}
 			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
+				logCtx.SetClientModel(modelattr.UnknownPlaceholder)
 			}
 		}
 		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
@@ -8603,7 +8604,7 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 	if attemptClientModel != nil && *attemptClientModel == "" {
 		*attemptClientModel = extractModelFromBody(body)
 		if *attemptClientModel == "" {
-			*attemptClientModel = "<unknown>"
+			*attemptClientModel = modelattr.UnknownPlaceholder
 		}
 	}
 }
@@ -10991,7 +10992,7 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 	// so _request_logs.client_model is never blank when body is set.
 	// This distinguishes "empty body" from "body present but no
 	// model field" — both look the same otherwise.
-	*modelOut = "<unknown>"
+	*modelOut = modelattr.UnknownPlaceholder
 }
 
 // emitTuningSignal computes the implicit feedback signal for an auto-route
