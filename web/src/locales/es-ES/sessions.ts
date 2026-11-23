@@ -112,6 +112,9 @@ export default {
     status: { all: 'Todas', active: 'Activas', stopped: 'Detenidas' },
   },
   stats: {
+    scopeNoticeTitle: 'Nota de alcance:',
+    scopeNoticeBody: 'Esta página cuenta todas las solicitudes y los costes de las sesiones cuya primera solicitud ocurrió en los últimos {days} días.',
+    scopeNoticeHint: 'Nota: no se incluyen las sesiones que comenzaron antes de la ventana pero siguen activas dentro de ella, por lo que los costes aquí pueden ser menores que en la página «Dashboard» (que cuenta todas las solicitudes dentro de la ventana). Para ver el coste completo dentro de la ventana, consulte la página «Dashboard».',
     loading: "Cargando estadísticas de sesión…",
     last7Days: "Últimos 7 días",
     last30Days: "Últimos 30 días",
