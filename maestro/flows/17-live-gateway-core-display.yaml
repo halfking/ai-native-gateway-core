@@ -58,11 +58,28 @@ url: ${BASE_URL}
 # 网关核心标题
 - assertVisible: "网关核心"
 
-# ── ④ 验证 SVG 画布存在 ────────────────────────────────────────────────
-# 网关核心使用 SVG 渲染，验证画布存在
+# ── ④ 验证网关核心容器存在 ──────────────────────────────────────────────
+# ★ 2026-11-24（L34 九轮）：本条原来是 `id: "gateway-core-canvas"`。
+#   ⇒ ★★ 实测该锚点**在前端树上不存在**（网关核心组件的锚点是
+#      `gateway-core-box`，见 web/src/components/live-topology/GatewayCoreBox.vue）
+#      ⇒ 且本条带 `optional: true` ⇒ ⇒ **断言恒真**：真机上它从来没验证过任何东西，
+#      却让人以为「画布存在」这条已被 E2E 覆盖。
+#   ⇒ ★ 另有一处**前提写错**：网关核心**不是 SVG 画布**，它是 HTML/CSS 盒
+#      （盒内只有 16x16 的图标 SVG）；真正的拓扑画布是另一组件的
+#      `stage-tree-canvas`（LiveStageTreeView.vue）⇒ ⇒ 原注释描述的对象不存在。
+#
+# ★★ 锚点为什么是 `gw-flow-in` 而不是 `gateway-core-box`：
+#   ★ `gateway-core-box` 那个 `<section>` 上带 `:aria-label="title"`
+#     ⇒ 按 L13 实测结论（resource-id 优先级 aria-label > title > data-testid）
+#     ⇒ ★★ `id:` **选不到它** ⇒ ★ 那会从「恒真」换成「恒假红」——同样是静默的。
+#   ⇒ `gw-flow-in` 是盒子头部的流入标记（**无 title / aria-label**）
+#     ⇒ 既真实存在、又可被 `id:` 命中，且它是盒子的子节点
+#     ⇒ ⇒ 盒子没渲染 ⇒ 它也不会在 ⇒ 断它等价于断「盒子在不在」。
+#   ⇒ ★ 这也是本轮的一条通用式：**「锚点存在」与「锚点可命中」是两件事**，
+#     两道门必须**同轮一起跑**（否则会把一个静默故障换成另一个静默故障）。
 # 注：具体的 SVG 元素和位置验证由页面内 CDP 工具完成
 - assertVisible:
-    id: "gateway-core-canvas"
+    id: "gw-flow-in"
     optional: true
 
 # ── ⑤ 等待数据加载完成 ────────────────────────────────────────────────────

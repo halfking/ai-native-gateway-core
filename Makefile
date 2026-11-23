@@ -278,7 +278,7 @@ GUARD_PACKAGES := ./internal/sessionid ./internal/rowsguard ./internal/errdiscar
 GUARD_PACKAGES_SLOW := ./scripts/ursmcheck ./admin
 
 .PHONY: guards
-guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-select-star-order guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync ## 运行全部审计守卫（快速、无外部依赖；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
+guards: guards-installer guards-ursmcheck guards-hollowout guards-shell guards-deploy guards-deploy-state-machine guards-fresh-install guards-deploy-ledger guards-select-star-order guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-maestro-flow-anchor ## 运行全部审计守卫（快速、无外部依赖；含 **Maestro flow 锚点存在性门**；含 installer 跨模块门 + ursmcheck 全量门 + 掏空门专用通道 + shell 全角变量门 + 切流锁两门 + 切流状态机慢门 + **空库新装烟测慢门** + **部署通道投递面↔权威账覆盖慢门（方案 C）** + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # ★★ 2026-11-09 r1050 轮复核：**快门预算由 120s 提到 600s**（★ `guards` 与
@@ -649,6 +649,31 @@ guards-select-star-order: guards-select-star-order-selftest ## legacy 跨面 SEL
 guards-select-star-order-selftest: ## 列序对拍门的夹具测试（★ 十二臂 · 快门 · 零外部依赖 · 进 CI 快门族）
 	@bash scripts/checks/legacy-select-star-column-order-gate.test.sh
 
+# ── Maestro flow 锚点存在性门（★ L34 九轮新增 · 快门 · 纯 python3 · 零外部依赖）──
+#
+# ★ 为什么这道门存在：★ **会话分析 E2E 的「离线半」今天在 CI 上是零覆盖** ★
+#   · E2E 的**在线半**（真机跑 flow）要 node + 浏览器 + 在跑的网关 ⇒ 进不了 codeup 载体；
+#   · E2E 的**离线半**（flow 与前端源码的静态契约）⇒ ★ **只要 python3 ⇒ 能进载体** ★
+#   · ★ 而现状是：★ 锚点存在性判据**只以 vitest 钉测的形式存在两份**
+#     （`saTestIds.contract.spec.ts` / `statsRangeTestIds.contract.spec.ts`）
+#     ⇒ ★★ ① 只覆盖 **2 个 flow**；★★ ② 要 node ⇒ **codeup 载体里没有 node**
+#     ⇒ ★★ ⇒ **在 CI 上等于零覆盖** ⇒ ★★ 而且两份 vitest 钉测是**手挑前端文件清单**的
+#     ⇒ ⇒ **flow 加了新锚点、前端改了名，两边都可能对不上而没人红** ★
+#   · ★★ 实测坐实的缺陷：`maestro/flows/17-live-gateway-core-display.yaml` 断言
+#     `id: "gateway-core-canvas"` ⇒ ★ 该锚点**在前端树上不存在**（真实锚点是
+#     `gateway-core-box`）⇒ 且那条带 `optional: true` ⇒ ⇒ **断言恒真**（静默）。
+#
+# ★ 本门判的是【存在性】⇒ ★ 与既有那道**遮蔽门**（`maestro-id-selector-shadow-gate.sh`
+#   判【可命中性】）**是两件事**：★ 本轮实测——★ 把幽灵锚点换成真实存在的
+#   `gateway-core-box` 之后，★ **遮蔽门当场红了**（那个 `<section>` 带
+#   `:aria-label` ⇒ `id:` 选不到）⇒ ★★ ⇒ **一个静默故障被换成了另一个静默故障**
+#   ⇒ ⇒ 两道门必须**同轮一起跑** ★★（⇒ 本轮锚点最终选 `gw-flow-in`：存在且不被遮蔽）。
+#
+# ★ 运行时依赖：**只有 python3** ⇒ 进 **CI 快门族**（`make guards-fast` ⇒ 真载体在跑）。
+.PHONY: guards-maestro-flow-anchor
+guards-maestro-flow-anchor: ## Maestro flow 锚点存在性门（★ 快门 · 纯 python3 · 零外部依赖 · 进 CI 快门族）
+	@bash scripts/checks/maestro-flow-anchor-gate.sh
+
 # ── 跨文档登记册一致性门 ─────────────────────────────────────────────────
 #
 # ★ 2026-11-02 第二十二轮：仓里有**两份**审计档，各带一份**登记册**：
@@ -727,7 +752,7 @@ guards-win-baseline: ## Windows 全量测试基线门（bash scripts/guards/chec
 #
 #   ⇒ 新增这个 target 的意义：让「登记进 GUARD_PACKAGES」这件事**真的有 CI 在跑**。
 .PHONY: guards-fast
-guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-deploy-ledger-selftest guards-select-star-order-selftest ## 运行**CI 预算内**的审计守卫（快门 + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门 + **部署通道覆盖门的夹具测试（方案 C · 七臂 · 纯 shell 零依赖）**；不含 ursmcheck 慢门）
+guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scripts guards-baseline-copies guards-ir-conversion guards-candidate-cache-sync guards-deploy-ledger-selftest guards-select-star-order-selftest guards-maestro-flow-anchor ## 运行**CI 预算内**的审计守卫（快门 + **Maestro flow 锚点存在性门** + installer 跨模块门 + shell 门 + 跨文档登记册门 + 门脚本接线门 + 基线副本一致性门 + IR 协议转换层门 + 跨实例候选缓存同步门 + **部署通道覆盖门的夹具测试（方案 C · 七臂 · 纯 shell 零依赖）**；不含 ursmcheck 慢门）
 	$(GO) test $(GUARD_PACKAGES) -count=1 -timeout=600s
 
 # scripts/guards/check-shell-fullwidth-var.sh —— 「裸 $VAR 紧跟非 ASCII 字节」门。
