@@ -31,6 +31,7 @@ package streaming
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -177,11 +178,75 @@ func (h *ChatHandler) diagnoseNoCandidateCause(ctx context.Context, clientModel,
 	if len(parts) == 0 {
 		return noCandidateCause{}
 	}
+	// 2026-11-23：「模型未登记」时没有候选，不应说"全部候选节点都被挡住"。
+	// 有候选被挡 ⇒ 用 MsgNoCandidateBlocked；无候选（只有 not_registered）⇒ 用专用模板。
+	msgKey := i18n.MsgNoCandidateBlocked
+	if len(causes) == 1 && causes[0] == provider.ClientCauseNotRegistered {
+		msgKey = i18n.MsgNoCandidateNotRegistered
+	}
 	return noCandidateCause{
 		Causes: causes,
-		Message: i18n.T(ctx, i18n.MsgNoCandidateBlocked, map[string]any{
+		Message: i18n.T(ctx, msgKey, map[string]any{
 			"Model":  clientModel,
 			"Causes": strings.Join(parts, causeListJoiner(i18n.LocaleFromContext(ctx))),
 		}),
 	}
+}
+// statusCodeForNoCandidateCause 根据归因令牌返回 HTTP 状态码。
+//
+// 2026-11-23：owner 明确要求「候选被永久性原因挡空时，需要更换成4xx，并且要
+// 返回正确的错误信息」——所有归因情况（retryable: false）都是"重试无效"，
+// 应区别于"暂时过载、稍后重试"的 503。
+//
+// 映射规则：
+//   - model_not_registered（模型未登记）→ 404
+//   - provider_not_in_tenant（租户隔离）→ 403
+//   - upstream_quota_exhausted（上游配额耗尽）→ 429
+//   - provider_disabled / credential_missing → 503（但 error type 改为 api_error）
+//   - 无归因 → 503（保持原行为）
+func statusCodeForNoCandidateCause(causes []string) int {
+	if len(causes) == 0 {
+		return http.StatusServiceUnavailable
+	}
+	// 按优先级检查（从最具体到最通用）
+	for _, c := range causes {
+		switch c {
+		case provider.ClientCauseNotRegistered:
+			return http.StatusNotFound // 404
+		case provider.ClientCauseOtherTenant:
+			return http.StatusForbidden // 403
+		case provider.ClientCauseQuota:
+			return http.StatusTooManyRequests // 429
+		}
+	}
+	// 其余（provider_disabled / credential_missing）仍 503，
+	// 但 error type 会由下面的 errorCodeForNoCandidateCause 改变
+	return http.StatusServiceUnavailable
+}
+
+// errorCodeForNoCandidateCause 根据归因令牌返回更精确的 error code，
+// 以便 Anthropic 面能正确映射到对应的 error type。
+//
+// OpenAI 面的 type 由 ingressErrorType(status) 从状态码自动推导；
+// Anthropic 面的 type 由 anthropicErrorType(type, code) 映射，优先看 code。
+func errorCodeForNoCandidateCause(causes []string) string {
+	if len(causes) == 0 {
+		return "no_candidate"
+	}
+	for _, c := range causes {
+		switch c {
+		case provider.ClientCauseNotRegistered:
+			// Anthropic: code "model_not_found" → type "not_found_error"
+			return "model_not_found"
+		case provider.ClientCauseOtherTenant:
+			// Anthropic: code "permission_error" → type "permission_error"
+			return "permission_error"
+		case provider.ClientCauseQuota:
+			// Anthropic: code "rate_limit_error" → type "rate_limit_error"
+			return "rate_limit_error"
+		}
+	}
+	// provider_disabled / credential_missing：保持 no_candidate，
+	// 但状态码仍是 503 → type "server_error" (OpenAI) / "api_error" (Anthropic)
+	return "no_candidate"
 }

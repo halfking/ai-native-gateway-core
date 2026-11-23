@@ -68,6 +68,9 @@
   "no_candidate_cause_not_registered": {
     "other": "model not registered"
   },
+  "no_candidate_not_registered": {
+    "other": "Model '{{.Model}}' is not registered in this gateway. Please check the model name, or contact the gateway operator."
+  },
   "ingress_preprocess_timeout": {
     "other": "The gateway could not finish preprocessing this request within {{.Budget}} (request body: {{.Size}}). This is a gateway-side capacity limit, not a rejection of your input — you may retry later. If it keeps timing out, the conversation history is too large to prepare in time: start a new session or trim the history."
   },

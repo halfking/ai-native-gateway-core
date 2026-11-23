@@ -4503,11 +4503,11 @@ func (h *ChatHandler) serveWithExecutor(
 			// 「没有可用的供应商」读起来是「等一会儿」，而真相是重试没用。
 			// 诊断失败或解释不了（闸全开）⇒ cause 为空 ⇒ 文案与信封逐字不变。
 			noCandCause := h.diagnoseNoCandidateCause(r.Context(), clientModel, tenantID)
-			// writeNoCandidateWithAlternatives renders http.StatusServiceUnavailable
-			// on every arm (legacy / anthropic / with-alternatives).
+			// 2026-11-23：根据归因令牌返回对应的状态码（404/403/429/503），
+			// 请求日志里记录的状态码应与实际返回给客户端的一致。
 			logCtx.failAndMark("no_candidate",
 				noCandCause.logMessage(clientModel), nil, nil,
-				http.StatusServiceUnavailable)
+				statusCodeForNoCandidateCause(noCandCause.Causes))
 			markLogged()
 			// 2026-08-09: the requested model has no routable node, but other
 			// models often do. Offer them so the caller can switch instead of
@@ -10176,29 +10176,40 @@ func mergeCauseExtras(errObj map[string]any, cause noCandidateCause) {
 
 // writeNoCandidateWithCause 是「无替代模型 + 有归因」的 no_candidate 信封：
 // 键集合与既有的 writeErrorJSONWithKind / writeErrorAnthropic 相同，只多出
-// 归因旁键（顶层）。HTTP 状态与错误 type 不变（503；Anthropic 侧仍按
-// anthropicErrorType 映射）——本轮只让**句子与旁键**说真话，不改状态码
-// 契约（改状态码会影响 SDK 的自动重试与监控口径，属待裁决项）。
+// 归因旁键（顶层）。
+//
+// 2026-11-23：根据归因令牌返回对应的 HTTP 状态码（404/403/429/503）和
+// error type/code，以便客户端 SDK 能正确识别"不可重试"的永久性失败。
 func writeNoCandidateWithCause(proto string, w http.ResponseWriter, requestID, msg string, cause noCandidateCause) {
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-Id", requestID)
 	}
-	w.WriteHeader(http.StatusServiceUnavailable)
+	
+	// 根据归因令牌返回对应的状态码（404/403/429/503）
+	status := statusCodeForNoCandidateCause(cause.Causes)
+	w.WriteHeader(status)
+	
+	// 根据归因令牌获取更精确的 error code
+	code := errorCodeForNoCandidateCause(cause.Causes)
+	
 	var body map[string]any
 	if proto == "anthropic" {
+		// Anthropic: type 由 anthropicErrorType 映射，优先看 code
+		errType := ingressErrorType(status) // 从状态码推导基础 type
 		errObj := map[string]any{
-			"type":    anthropicErrorType("server_error", "no_candidate"),
+			"type":    anthropicErrorType(errType, code),
 			"message": msg,
 		}
 		mergeCauseExtras(errObj, cause)
 		body = map[string]any{"type": "error", "error": errObj}
 	} else {
+		// OpenAI: type 从状态码推导
 		errObj := map[string]any{
 			"message":    msg,
-			"type":       "server_error",
-			"code":       "no_candidate",
-			"kind":       "no_candidate",
+			"type":       ingressErrorType(status),
+			"code":       code,
+			"kind":       "no_candidate", // kind 保持不变，用于内部分类
 			"request_id": requestID,
 		}
 		mergeCauseExtras(errObj, cause)
