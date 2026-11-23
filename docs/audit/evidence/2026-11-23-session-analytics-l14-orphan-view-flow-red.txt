@@ -22,7 +22,10 @@ rc=0  ⇒ 是（Top5 四件套那笔也在现役）
 373:    { path: '/admin/session-analytics', redirect: '/admin/session-analytics/users', meta: { requiresAuth: true } },
 
 --- ④ ★ 孤儿组件精确计算（被 import 却无任何路由 component: 指向它）----
-router.ts 被 import 的组件数 = 104
+★ 口径说明：下面的「被 import 的组件数」＝ 懒加载形态 98 ＋ 静态 import 形态 6
+  （★ 门 `orphanViewComponent.test.ts` 用的就是这一口径）⇒ 与报告/AGENTS.md 的
+  「104 / 103」逐字一致（★ **早先报告里写的「98 / 97」是「只数懒加载」的子集口径 ⇒ 已订正**）
+router.ts 被 import 的组件数（懒加载 98 ＋ 静态 6） = 104
 router.ts 被路由 component: 使用的组件数 = 103
 ★ 孤儿组件（被 import 但无路由指向）= 1 条：
     UserProfileListView  ←  ./views/UserProfileListView.vue
