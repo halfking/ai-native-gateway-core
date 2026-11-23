@@ -345,8 +345,21 @@ export const router = createRouter({
       component: RequestDetailFullscreenView,
     },
     { path: '/dispatch/waterfall', component: DispatchWaterfallView, meta: { requiresPlatformOps: true } },
-    // 2026-11-23：会话分析用户页面（整合 Dashboard 会话统计 + Top10 用户排行）
-    { path: '/admin/session-analytics/users', component: SessionAnalyticsUsersView, meta: { requiresAuth: true } },
+    // 2026-11-23 L14 轮：★ 用户画像**列表页**挂回原 URL（★ 修上游 95e44dc15 的
+    // 「路由改指、依赖没跟着改」三层脱钩）。★ 上游把本 URL 改指整合页
+    // （SessionAnalyticsUsersView）⇒ ⇒ 列表页能力（★ 数字出处行 / 窗口内用量五列 /
+    // 统计说明抽屉 / 展开行模型矩阵）在现役页上消失 ⇒ ⇒ maestro
+    // 13-session-analytics-users.yaml 的列表页段恒红。
+    // ★ 判据（★ 上游 flow 断言点逐条读过）：★ 断言的是**列表页独有形态**
+    // （`request_logs_with_current_month` 出处行 ＋ 五列窗口用量 ＋ 抽屉里的
+    // 「画像列与用量列的口径区别」）⇒ ★ 整合页**没有**这些（★ 实测 grep 0 命中）
+    // ⇒ ⇒ 挂回列表页是正解。
+    { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
+    // ★ 整合页（★ 上游 95e44dc15 新增：Dashboard 会话统计 ＋ Top10 用户排行）
+    // **另找落点**，不与列表页抢同一个 URL ⇒ ★ 上游新增的 8 语种键
+    // `nav.item.sessionAnalyticsUsers` 本就只被它用作副标题、★ 从未做菜单项
+    // ⇒ ★ 这里用它做菜单标签（★ 不新增 i18n 键）。
+    { path: '/admin/session-analytics/users/overview', component: SessionAnalyticsUsersView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },

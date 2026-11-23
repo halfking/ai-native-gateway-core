@@ -236,6 +236,12 @@ export const NAV_GROUPS: NavGroup[] = [
       // 由 UserProfileListView / UserProfileView 内部跳转。
       // 权限对齐 router.ts:257 的 meta.requiresAuth（任何已登录用户）。
       { path: '/admin/session-analytics/users', labelKey: 'nav.item.sessionAnalytics', icon: '📊' },
+      // ★ 2026-11-23 L14 轮：★ 整合页（★ 上游 95e44dc15 新增的「Dashboard 会话统计
+      // ＋ Top10 用户排行」）另立菜单项 ⇒ ★ 它原先**没有**任何菜单入口
+      // （★ 上游只把本 URL 从列表页改指过去 ⇒ ★ 导航能到、★ 但代价是列表页能力消失）。
+      // ★ 标签键用上游已加好的 `nav.item.sessionAnalyticsUsers`（★ 8 语种齐全）
+      // ⇒ ★ **不新增任何 i18n 键**。
+      { path: '/admin/session-analytics/users/overview', labelKey: 'nav.item.sessionAnalyticsUsers', icon: '📈' },
       // T9 — 请求注册表 + 连接注册台（mock stage）
       { path: '/admin/request-registry', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
       { path: '/admin/connection-registry', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },

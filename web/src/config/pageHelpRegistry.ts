@@ -61,6 +61,14 @@ const entries: PageHelpEntry[] = [
   { match: '/dispatch/waterfall', id: 'dispatch-waterfall', titleKey: 'pageHelp.title.dispatchWaterfall' },
 
   // ── 会话分析 ──
+  // ★ 2026-11-23 L14 落地轮：★ 整合页（★ 上游 95e44dc15 新增的「Dashboard 会话统计
+  // ＋ Top10 用户排行」）另立 URL 后，★ 它的帮助正文**沿用既有的
+  // `session-analytics-overview`**（★ 那份正文描述的正是「核心指标卡 ＋ 趋势 ＋ 排名」
+  // 这套内容 ⇒ ★ 与整合页的实际内容同型 ⇒ ★ **不需要新写 8 语种正文**）。
+  // ★ ★ 顺序要紧：★ 本表「按声明顺序取第一个命中的条目」⇒ ★ 静态段 `/users/overview`
+  // ★ **必须排在**参数段 `/users/:owner` **之前** ⇒ ★ 否则 `overview` 会被
+  // ★ `:owner` 抢先匹配 ⇒ ★ 整合页会拿到「用户详情页」的帮助正文。
+  { match: '/admin/session-analytics/users/overview', id: 'session-analytics-overview', titleKey: 'pageHelp.title.sessionAnalyticsOverview' },
   { match: '/admin/session-analytics/users/:owner', id: 'session-user-detail', titleKey: 'pageHelp.title.sessionUserDetail' },
   { match: '/admin/session-analytics/users', id: 'session-users', titleKey: 'pageHelp.title.sessionUsers' },
   { match: '/admin/session-analytics/clients/:id', id: 'session-client-detail', titleKey: 'pageHelp.title.sessionClientDetail' },
