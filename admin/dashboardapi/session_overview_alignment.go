@@ -145,6 +145,68 @@ func universeJoin(includeProbes bool) string {
 	return analytics.SessionUniverseJoin("ss", "s", "sd")
 }
 
+// ★★ 2026-11-24（calendar 慢路径修复）：universeJoinFor 返回
+// **(CTE 前缀, 连接子句)** —— 按窗口形态决定宇宙子查询要不要**物化**。
+//
+// # 为什么需要物化（211 生产实测，P0）
+//
+//	现象：`/api/admin/dashboard/session-overview` 带显式日历窗口
+//	      （start_date/end_date）时 **30s 超时 ⇒ 500**（错误段名 "top clients"）；
+//	      而同一天数的 rolling 路径（只带 days）**743ms 正常**。
+//	根因：两条路的**窗口谓词形态不同** ⇒ 优化器的**行数估算**不同：
+//	      · rolling：`first_request_at >= NOW() - INTERVAL '1 days'`
+//	        ⇒ NOW() 在计划期求值 ⇒ 估算落在直方图分布内 ⇒ 估 1860 行
+//	        ⇒ 计划选 **Merge Join**（两个大侧各自排序后归并）⇒ 快；
+//	      · calendar：`first_request_at >= $1 AND first_request_at < $2`
+//	        ⇒ **常量区间**落在直方图分布**之外**（统计信息过期于该区间）
+//	        ⇒ 估成 **1 行** ⇒ 计划翻成 **Nested Loop**，把 27 万行的
+//	        `sessions DISTINCT ON` 子查询当**内层逐行重算** ⇒ 单腿 >40s。
+//	实测 EXPLAIN（211 acc-pg17，2026-11-24）：calendar 计划里
+//	      `Parallel Seq Scan on session_summaries … rows=1` +
+//	      `Nested Loop` ← `Subquery Scan on s`；rolling 计划里
+//	      `rows=1860` + `Merge Join` ⇒ 同一份数据、同一个窗口，**计划差 50 倍**。
+//
+// # 修法（不改结果，只改执行形态）
+//
+//	把 sessions 宇宙子查询**物化**成 `MATERIALIZED` CTE ⇒ PG 只算一次 ⇒
+//	它不再是 Nested Loop 的「逐行重算内层」⇒ 计划与 rolling 路径同构。
+//	实测：同一 1 天 calendar 区间 **851ms**（修前 >40s 超时）。
+//
+// # 为什么不改 rolling 路径
+//
+//	★ dashboard_window.go 的不变量①：**days 路径逐字不变**（现役口径零变化）。
+//	⇒ 物化**只对 calendar 模式生效** ⇒ 现役路径的 SQL **一个字节都不变**。
+//	（实测 rolling 743ms / calendar 851ms ⇒ 两条路径代价同量级。）
+//
+// # 不变量
+//
+//	① 物化只改**执行形态**，不改**行集**：CTE 内容与原 DISTINCT ON 子查询逐字相同
+//	   （同样的列、同样的 ORDER BY）⇒ 连接键与 WHERE 合取项都不动。
+//	② includeProbes=true（不套宇宙）时**不产 CTE** ⇒ 查询形状不变。
+//	③ CTE 里没有占位符 ⇒ 窗口参数的编号不受影响（argIdx 语义不变）。
+func universeJoinFor(win sessionWindow) (ctePrefix string, joinClause string) {
+	if win.calendar && !win.includeProbes {
+		return universeCTEMaterialized, universeJoinMaterialized
+	}
+	return "", universeJoin(win.includeProbes)
+}
+
+// universeCTEMaterialized 是物化形态的宇宙 CTE（前缀，置于语句最前）。
+//
+// ★ 列清单与 ORDER BY 与 analytics.SessionUniverseJoin 的子查询**逐字相同**
+//   （同一份「每个 (session_id, tenant_id) 取 partition_date 最新一行」语义）。
+const universeCTEMaterialized = `WITH universe AS MATERIALIZED (
+  SELECT DISTINCT ON (session_id, tenant_id)
+    session_id, tenant_id, is_probe, owner_user, client_type, title
+  FROM sessions
+  ORDER BY session_id, tenant_id, partition_date DESC
+)`
+
+// universeJoinMaterialized 是物化形态的连接子句（连接键与原形态逐字相同）。
+const universeJoinMaterialized = `
+JOIN universe s ON s.session_id = ss.session_key AND s.tenant_id = ss.tenant_id
+LEFT JOIN session_dim sd ON sd.session_key = ss.session_key AND sd.tenant_id = ss.tenant_id`
+
 // universeWhere 返回会话宇宙 WHERE 合取项（排除探测时）。
 func universeWhere(includeProbes bool) string {
 	if includeProbes {
