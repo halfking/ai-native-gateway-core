@@ -37,12 +37,27 @@ const presets = computed(() => makeDateRangePresets('date'))
 </script>
 
 <template>
-  <KxDateRangePicker
-    :model-value="props.modelValue"
-    :presets="presets"
-    :max-span-days="92"
-    :disabled="props.disabled"
-    @update:model-value="emit('update:modelValue', $event)"
-    @apply="emit('apply', $event)"
-  />
+  <!-- ★★ 2026-11-24（统一轮 E2E 锚点）：包一层**只带 testid 的 inline-flex 壳**。
+       · 为什么需要壳：E2E 要断言的是「**这一处用的是共享封装 StatsDateRangePicker**」，
+         而不只是「页面上有个日期控件」——KxDateRangePicker 在别的页面也被直接使用。
+       · 为什么不用「给组件传 attr」：KxDateRangePicker 的根元素就是那个**带 aria-label
+         的按钮** ⇒ attr 落到按钮上 ⇒ 被 aria-label 遮蔽 ⇒ Maestro 的 `id:` 选不到。
+       · 壳是 inline-flex ⇒ **不改布局**（原来按钮就是父容器里的那个 flex item）。
+       · ★ 点壳的中心 = 点按钮 ⇒ E2E 可直接 `tapOn: id: stats-date-range-picker` 开面板。 -->
+  <span class="stats-date-range-picker" data-testid="stats-date-range-picker">
+    <KxDateRangePicker
+      :model-value="props.modelValue"
+      :presets="presets"
+      :max-span-days="92"
+      :disabled="props.disabled"
+      @update:model-value="emit('update:modelValue', $event)"
+      @apply="emit('apply', $event)"
+    />
+  </span>
 </template>
+
+<style scoped>
+.stats-date-range-picker {
+  display: inline-flex;
+}
+</style>
