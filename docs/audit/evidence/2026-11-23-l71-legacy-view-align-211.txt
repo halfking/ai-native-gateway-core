@@ -1,9 +1,11 @@
 # 证据：★ 「legacy 跨面视图对」在生产 211 / 252 上的活库读数（★ 纯只读）★
 # 生成：★ 2026-11-23 L35 轮 ｜ 门：★ sql/migrations/startup/legacy_cross_surface_live_alignment_test.go ★
+# ★ 编号说明：★ 本档文件名沿用【创建时的 L71】、★ 而登记号后改为 **L72**（★ 编号让位：★ 并行车同期取用 L71）★★
+# ★ ★★ **本档 §① 的列名订正（★ 自认）**：★★ 初版图例只写了 6 个列名（★ `hot|parent|hot_cols|parent_cols|type_mismatch|pos_set_diff`）★★ **而实际数据有 8 列** ⇒ ★★ **⇒ 图例与数据宽度对不上、★ 下一个人会照图例错读列** ⇒ ★★ **⇒ 订正为下方的 8 列名（★ 与产出本档的 SQL 逐字对齐）★★ ★★ **⇒ 通用式：★ 证据档的【图例】本身也是要核的（★ 「列名对不上」＝ 图例错、不是数据错）★★
 # ★ 口径：★ 判据＝【两表错位 ⇒ 该迁移重放必炸 ⇒ 必须被所有会投递它的通道跳过】★
 # ★ ★ 「会不会被投递」按通道的真实分支建模（★ 部署通道：指纹一致⇒跳过／指纹不同⇒内容重放／遗留行⇒登记在 legacy_content_replays 才重放／无行⇒投递；★ 安装器 F3：指纹一致或版本已记账⇒跳过）★ ★
 
-## ① 逐对位置对齐（hot|parent|hot_cols|parent_cols|type_mismatch|pos_set_diff）
+## ① 逐对位置对齐（★ 8 列、★ 逐字对齐产出本档的 SQL：★ `view_name|hot_cols|parent_cols|same_pos_type_mismatch|same_pos_name_diff|pos_set_diff|still_union_all|still_select_star` ★ ⇒ ★ 第 4 列＝【同位置类型不一致数】、★ 第 5 列＝【同位置列名不一致数】、★ 第 6 列＝【位置集合差】、★ 最后两列＝【视图仍是 UNION ALL】/【视图仍是 SELECT *】★ ⇒ ★ ★★ **注意：★ 本档的行形状【不是】门自己打印的形状**（★ 门按 `hot|parent|hot_cols|parent_cols|type_mismatch|pos_set_diff` 6 值解析、★ 且门打印的是**它自己那条 SQL**的输出）★★ ⇒ ★★ **⇒ 两边不可逐字比对、★ 但同一对在同一库上的【列数/错位数】一致（★ 211 的 392：类型错位 4 处、位置差 0 处）★★）★
 ### 211
 candidate_failure_logs_with_current_month|21|21|4|5|0|t|f
 credential_model_index_with_current_month|17|17|0|0|0|t|f
