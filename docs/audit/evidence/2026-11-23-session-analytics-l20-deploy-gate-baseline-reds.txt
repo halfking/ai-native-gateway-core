@@ -185,12 +185,56 @@ L20 修红轮证据——部署闸门「基线红认领层」的分诊与修红
   ⇒ ★★ 重建前必须确认有没有服务硬依赖 192.168.0.2；需要固定则加 --ip 192.168.0.2
 ★ 目标：--shm-size=1g（对齐 252 的 pg-252-pg17 = 1.0G ⇒ 16 倍差距 ⇒ 不重演 DSM 53100）
 
-── ⑫ ★★ 055-058 的第四个隐患：CREATE POLICY 不可重放 ⇒ 上生产前必须先做幂等加固 ──
-★ 055_teams_table.sql  : CREATE TABLE IF NOT EXISTS teams ＋ 2 索引 ＋ ENABLE ROW LEVEL SECURITY
-★ 056_user_teams.sql    : CREATE TABLE IF NOT EXISTS user_teams ＋ 2 索引 ＋ ENABLE RLS
-★ 057_api_keys_team_id.sql: ALTER TABLE api_keys ADD COLUMN ＋ 2 索引 ＋ **CREATE POLICY api_keys_team_owner_all**
-★ 058_team_budgets.sql  : CREATE TABLE IF NOT EXISTS team_budgets ＋ 1 索引 ＋ ENABLE RLS ＋ **CREATE POLICY**
-★ ★★ PG【没有】CREATE POLICY IF NOT EXISTS ⇒ ★★ 重放会报 "policy already exists"
-  ⇒ ★★ 部署的内容指纹重放通道会在第一次重放就炸 ⇒ ⇒ ★★ 必须先改成 DO 块 + pg_policies 守卫（999 的写法）
-★ ★★ 顺带：四个文件用【无 schema 前缀】表名（CREATE TABLE IF NOT EXISTS teams），
-  ★ 与仓内 public.xxx 惯例不一致 ⇒ ★ 建议一并统一（★ **改字节只在【尚未 applied】时安全 ⇒ 现在正是窗口**）
+── ⑫★★ 【★ 订正】上一版写的「CREATE POLICY 不可重放 ⇒ 上生产前必须改成 DO 块 + pg_policies 守卫」是错的 ──
+★ 事实：055/057/058 四个文件都是 **`DROP POLICY IF EXISTS` 紧接 `CREATE POLICY`** ⇒ ★★ **幂等 ✓**
+  ⇒ ★★ **不需要**改成 DO 块守卫（★ 999 的写法可以照抄，但**不是**因为缺它才需要改）
+★ 另两个形状问题（★ 本轮逐条核过）：
+  · `INSERT INTO schema_migrations (version, applied_at) VALUES ('055', now())`
+    ⇒ ★ 真库实测 `public.schema_migrations` 的列＝**version(text, NOT NULL) / description(text, nullable) /
+      applied_at(timestamptz, default now())** ⇒ ★★ **三列都在、description 允许空 ⇒ 那条 INSERT 合法**
+    ⇒ ★★ **⇒ 我「在生产上必然失败」的推断也错了**（★ 两次推翻自己 ⇒ 通用式：★ 读代码得出的失败推断必须用真库读数复核）
+  · 表名无 `public.` 前缀（`CREATE TABLE IF NOT EXISTS teams`）⇒ ★ 与仓内惯例不一致 ⇒ ★ 仍建议统一
+    （★ 改字节只在【尚未 applied】时安全 ⇒ ★ 现在正是窗口）
+★ 结论：★ 那四个迁移【在生产上跑得通】；★ 它们「从未落地」的唯一原因是【投递链缺失】
+
+── ⑬ ★★★★ 复核二轮：选包机制的重大订正 ＋「当下挡路的是另一条」──────────────
+★ ⑬.1 ★★ 用闸门**自身的判据函数**（★ 与 scripts/deploygate 的门同款：原样抽出 DD_GUARDED_DOMAINS /
+      dd_guard_domain_packages / dd_gate_packages_from_files）★ 在真实仓库里跑五个场景：
+  A 纯前端（web/src/**.vue）          → **空** ⇒ 回落 FALLBACK_PACKAGES
+                                          （./admin/ ./domains/sanitizerules/ ./domains/hooks/outputcompliance/ ./security/sanitize/ ⇒ ★ 四个全绿）
+  B 纯前端 + AGENTS.md + 审计报告      → **空** ⇒ 同上
+  E 只改 docs/db-changelog.md          → **空** ⇒ 同上
+  C 本轮 L20 真实改动面                 → ./installer/cmd/llm-gw-installer ./installer/internal/dbinit
+                                          ./internal/sqlguard ./sql/migrations/startup（★ 全绿）
+  D 只改 scripts/ursmcheck/*.go        → ./scripts/ursmcheck ⇒ ★★ 只有这种改动才把那 3 条台账红选进来
+★ ⇒ ⇒ ★★★ 「纯前端改动会被映射到台账类包」**不准确**（★ 纯前端**选不出任何包**）
+★ ⑬.2 ★★ 真正的成因＝**闸门选的是【自上次部署以来相对基线树的全部改动】**（★ L9 修复轮的 merge-base 第四路）：
+  BASE_REF=773041c8 → 累积 **249** 文件 → 选中 **22** 个包（含 ./scripts/ursmcheck ./admin ./cmd/gateway ./sql/schema）
+  BASE_REF=9328c401 → 累积 **208** 文件 → 选中 **20** 个包
+  BASE_REF=42ae8b70（**211 现役**）→ 累积 **35** 文件 → 选中 **4** 个包（全绿、**不含 ursmcheck**）
+  BASE_REF=origin/main（＝HEAD）→ 累积 3 文件 → 空
+★ ⇒ ⇒ ★★★★ 「闸门选了某个包」有两种成因：★【本次触及】与★【累计差异触及】
+  ⇒ ⇒ ★★★ 「某条红卡不卡住我」是【**部署间隔**】的函数，不是「我改了什么」的函数
+  ⇒ ⇒ ★★ ⇒ 那 3 条台账红【不卡下一次 211 部署】⇒ L20 从 P1 降 P2（条件性阻塞）
+  ⇒ ⇒ ★★★ 「台账陈旧」类缺陷的典型杀伤窗口：★ 不在你刚改东西时挡你，在【你攒够多改动】之后挡你
+★ ⑬.3 ★★★★ **当下真正挡路的是另一条**：`TestStartupFilesAreAllEmbedded`
+  cd /tmp/lgw-l9l10/installer && go test ./cmd/llm-gw-installer/ -run TestStartupFilesAreAllEmbedded -v
+  → --- FAIL: TestStartupFilesAreAllEmbedded (0.09s)
+       embeddata/startup file "055_teams_table.sql" is not registered in dbinit.Runner.StartupFiles — wire it into
+         runner.go StartupFiles plus the go:embed var and embeddedSQLFiles entry in main.go, or delete the stray copy
+       （同样四条：056_user_teams.sql / 057_api_keys_team_id.sql / 058_team_budgets.sql）
+  ★ 在 211 现役基线树 42ae8b70 上**同样红**（★ 实测）⇒ ★ **基线红**
+  ★ 而它的包 ./installer/cmd/llm-gw-installer **在下次部署的选中清单里** ⇒ ⇒ **die**
+  ⇒ ⇒ ★★ **⇒ 下一次 211 部署确实会被挡，挡它的是这一条、不是那 3 条台账红**
+★ ⑬.4 ★★ 055-058 的机制性根因（★ 口径订正）：★ **不是「只落两面」，而是「落了【三】面」**
+  （canonical ＋ embeddata 副本×2）★ 而**第三面被仓内门判为【stray copy】** ⇒ ★★ **门没冤枉它**
+  ★ 且四张「有意不接线」豁免表（operatorGatedCleanup / sequenceChannelRepairs / goEnsureMirrored /
+    supersededLedgerOnly）**都没有它们** ⇒ ★★ **没人认领 ⇒ 上游只做了一半的实锤**
+★ ⑬.5 ★★ 生产依赖核对（★ 211，只读）：users.id 列数 = 1 ✔｜api_keys.tenant_id 列数 = 1 ✔
+  ｜schema_migrations 的 05x/99x 行 = **990,991,992,993,994,995,996,997,998,999**（**无 055-058**）⇒ 确认从未应用
+★ ⑬.6 ★★ 处置只有两条互斥路（★ 都要裁定）：
+  A 接线 + 应用：★ ⚠ **把 055-058 加进 apply-db-revision-sequence.sh 的 files=() ⇒ 下次 211 部署就会
+    在生产建表 ⇒ 生产 schema 变更 ⇒ 需 owner 授权**；★ 且**「只接 installer 侧」不可行**（★ 会造成
+    「新装会建、现役不建」的半接线不一致 ⇒ 下一个补 211 通道的人会静默上线）
+  B 登记「有意不接线」+ 删 embeddata 副本：★ **必须同时**在 canonical 侧豁免表登记理由
+    （★ 否则红只是从 embeddata 侧搬到 canonical 侧 ⇒ 门不会因此变绿）
