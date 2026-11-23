@@ -33,7 +33,7 @@ Recovery → RequestID → Logging → Locale(i18n) → CORS → Prometheus → 
 - **Logging 必须在 Auth 之外** —— 否则 401 不落日志，客户端拿 `X-Request-Id` 去查命中 0 次
   （`cmd/gateway/main.go:9129-9136`）。
 - **maintain/mobile 必须组合在链内**（`publicSurface`）—— 否则运维面不带安全响应头
-  （`cmd/gateway/main.go:9086-9091`）。
+  （`cmd/gateway/main.go:9091-9098`）。
 
 ### 2.2 数据面：v1（生产默认）与 v2（默认关）
 
