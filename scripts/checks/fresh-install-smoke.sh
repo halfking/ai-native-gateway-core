@@ -34,7 +34,10 @@
 #   ★ **老库上恒失败**；★ 而空库上两表同序 ⇒ ★★ **⇒ 「空库门」抓不到「老库列漂移」
 #   ★ 这一类** ⇒ ⇒ ⇒ **⇒ 一道门只能覆盖一个世界。**
 #
-# ★★★ 2026-11-23 L33 轮扩门：★★ 这道门现在**第二阶段**跑「装完再升」
+# ★★★ 2026-11-23 L33 三轮（L34 取证轮）扩门：★★ 这道门现在**四段**跑 ★★
+#   （★ ① 空库新装 ② 装完再升 ③ **部署通道真跑** ④ 部署通道视角的跳过 ★★）
+#
+# ★★★ 2026-11-23 L33 轮扩门：★★ 这道门**第二阶段**跑「装完再升」
 #   ★★★（★ 同一个库、★ 同一个容器、★ 第二次跑安装器 ⇒ 增量路径）：
 #   ★ 实测：★ **同一个刚装成功的库，第二次升级必失败**（★ 旧代码）：
 #     · 失败点①：★ 安装器专属资产 `session_turns_hot_bootstrap.sql` 恒执行
@@ -341,7 +344,75 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-# ── 第三阶段：★ 「部署通道视角」的跳过（★ F3 的运行时覆盖）────────────
+# ── 第三阶段：★ 部署通道**真跑**一次（★ L34 取证轮新增）────────────────
+# ★★★ 这段把「部署通道不认安装器的账」从**一次性测量**变成**持续可观测的信号** ★★★
+#
+# ★ 背景（★ 报告 §7.31 的真库实测）：★ 「安装器刚装好的库 ⇒ 直接交给部署通道」这条路
+#   ★★ 是**断的** ★★ ⇒ ★ 臂 D：★ 部署通道的账在新装库里**连表都不存在** ⇒ ★
+#   ★ 它从零重放 ⇒ ★ **第 13 个文件就炸**（★ `563_session_summary_trigger_on_hot.sql`
+#   ★ ⇒ 逐字 `ERROR:  relation "request_logs_hot" does not exist`）★★ ⇒ ★
+#   ★ 臂 E（★ 喂上交集 330 条）⇒ ★ 跳过 53 条、★ 断点**前移**到「部署通道独有」的
+#   ★ 第 6 条（★ `661_…` ⇒ `cannot change name of view column "id" to "source"`）★★
+#   ★ ⇒ ★★ **⇒ 「让部署通道也认安装器的账」是必要条件、★ 不是充分条件** ★★
+#
+# ★ 本阶段断言三件事（★ **全部是可判定的事实**、★ 不是「跑过了就算过」 ★）：
+#   ① 跑之前：★ 部署通道那本账 `gateway_db_revision_sequences` **不存在或为空**
+#      ⇒ ★⇒ ★ **它对「安装器已经应用了什么」零知识**（★ 今天的实测口径 ★）；
+#   ② 它**不得默默成功**（★ 成功＝「重放了却恰好没炸」⇒ ★ 危险、★ 而门会误判成通过 ★）；
+#   ③ 失败模式必须是**已知的两种之一**（★ 台账盲区类 `request_logs_hot` ／
+#      ★ 部署通道独有文件类 `view column`）⇒ ★ ★ **其它失败模式 ⇒ 报「未知失败模式」**
+#      ⇒ ★ 因为那意味着**又冒出了第三道断点** ⇒ ★ 必须有人看 ★★。
+#
+# ★ ★★ 口径变化的处置（★ **刻意留红** ★★）：★ 若哪天方案 A′（★ 两本账互通 ＋
+# ★ 那 26 条补齐 ★）落地、★ 部署通道在新装库上跑通了 ⇒ ★ ⇒ ★ **本段会报「口径变了」
+# ★ 并红** ★★ ⇒ ★ **那不是本门坏了、★ 是缺口被修好了** ⇒ ★ **请连同本门与报告
+# ★ §7.31 一起更新** ★★ ⇒ ★★ **⇒ 这道门的价值就是：★ 让「缺口还在」这件事
+# ★ 每天都有人看见、★ 而不是一次测完就躺在报告里** ★★。
+#
+# ★ ★★ 判据写法纪律（★ 本轮刚踩过的坑、★ 写在这里免得复发 ★★）：★ **`|| true`
+# ★ 绝不能放在 `if` 的条件位**（★ 那会让条件**恒为真** ⇒ ★ 假绿＋假红同时出现 ★★）
+# ★ ⇒ ★ 下面的判据**一律用 grep 的真实退出码**（★ `if` 条件位上的非零退出不触发
+# ★ `set -e`、★ 也不触发 ERR trap ★ ⇒ ★ 安全 ★★）。
+# ═══════════════════════════════════════════════════════════════════════
+note "★ 跑第三阶段（★ 部署通道真跑：★ 它在这台新装库上实际会做什么）…"
+deploy_ledger_exists=$(q "select count(*) from pg_class where relname='gateway_db_revision_sequences'")
+deploy_ledger_rows=0
+if [ "${deploy_ledger_exists:-0}" != "0" ]; then
+  deploy_ledger_rows=$(q "select count(*) from public.gateway_db_revision_sequences")
+fi
+if [ "${deploy_ledger_rows:-0}" = "0" ]; then
+  note "  ✔ 跑之前部署通道那本账**不存在或为空** ⇒ ★ 它对「安装器已经应用了什么」零知识（★ 今天的实测口径）"
+else
+  # ★★ 判红（★ 刻意留红 ★★）：★ 「零知识」是本段其余两条断言的**前提** ⇒ ★
+  # ★★ 前提不成立时、★ 本段就**测不到它想测的东西**了（★ ⇒ 门会静默退化成
+  # ★★ 「跑过一次就算过」★★）⇒ ★★ 所以这里必须红、★ 而不是打条提示 ★★。
+  # ★★ 而「账在跑之前就有行」只有两种来源：★ ① 有人给部署通道喂过账（★ 方案 B
+  # ★★ ⇒ ★ L33 已论证它会制造新分叉 ★★）★ ② 口径变了 ⇒ ★★ 两种都**必须**有人复核 ★★。
+  bad "★ 跑之前部署通道那本账已有 ${deploy_ledger_rows} 行 ⇒ ★ 「它对安装器零知识」这个前提**不成立** ⇒ ★ ★ 本段测不到它想测的东西了 ⇒ ★ ★ 口径变了（★ 请核对报告 §7.31 ＋ 刻意留红）★★"
+fi
+DEPLOY_RUN_LOG="$(mktemp -t fresh-install-deploy)"
+DEPLOY_RC=0
+( cd "$REPO_ROOT" && \
+  LLM_GATEWAY_PSQL_TRANSPORT=container \
+  LLM_GATEWAY_PG_CONTAINER="$CONTAINER_NAME" \
+  DATABASE_URL="postgres://${PG_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${PG_DB}" \
+  bash scripts/apply-db-revision-sequence.sh ) >"$DEPLOY_RUN_LOG" 2>&1 || DEPLOY_RC=$?
+if [ "$DEPLOY_RC" -eq 0 ]; then
+  bad "★ 部署通道在新装库上**成功了** ⇒ ★⇒ ★ 口径变了（★ 要么两本账已互通、★ 要么迁移已自足）⇒ ★ **请更新本门与报告 §7.31**（★ 刻意留红）★"
+else
+  note "  ℹ 部署通道退出码 = ${DEPLOY_RC}（★ 今天的实测：★ 它会中止）"
+  if grep -q 'relation "request_logs_hot" does not exist' "$DEPLOY_RUN_LOG" || \
+     grep -q 'cannot change name of view column' "$DEPLOY_RUN_LOG"; then
+    note "  ✔ 失败模式是**已知的两种之一**（★ 台账盲区类 ／ 部署通道独有文件类）⇒ ★ 与报告 §7.31 的实测一致"
+  else
+    bad "★ 部署通道以**未知模式**失败（★ 退出码 ${DEPLOY_RC}、★ 但不是已知的两种失败模式）⇒ ★ ⇒ ★ **可能又冒出了第三道断点** ⇒ ★ 请人看："
+    awk '/ERROR:/{print "      " $0; exit}' "$DEPLOY_RUN_LOG"
+  fi
+  awk '/ERROR:/{print "      " $0; exit}' "$DEPLOY_RUN_LOG"
+fi
+rm -f "$DEPLOY_RUN_LOG"
+# ═══════════════════════════════════════════════════════════════════════
+# ── 第四阶段：★ 「部署通道视角」的跳过（★ F3 的运行时覆盖）────────────
 # ★★★ 本阶段补的是 L33 轮自己登记的缺口：★ 修法 F3（★ 安装器**只读**咨询部署
 # ★★★ 通道的权威台账 `gateway_db_revision_sequences`）★★ 此前**只有单元测试**
 # ★★★ 覆盖（★ 运行时只跑到「表不存在」那条分支）⇒ ★★ 本阶段给它真库运行时覆盖。
@@ -370,14 +441,14 @@ else
   sha_tool=""
 fi
 if [ -z "$sha_tool" ]; then
-  note "  ℹ 没有 sha256sum/shasum ⇒ ★ 第三阶段（★ F3 运行时覆盖）在本机跑不了（★ 不是通过）"
+  note "  ℹ 没有 sha256sum/shasum ⇒ ★ 第四阶段（★ F3 运行时覆盖）在本机跑不了（★ 不是通过）"
 else
   deploy_src="installer/cmd/llm-gw-installer/embeddata/startup/${DEPLOY_FILE}"
   if [ ! -f "$deploy_src" ]; then
-    bad "找不到 ${deploy_src} ⇒ 第三阶段无法执行"
+    bad "找不到 ${deploy_src} ⇒ 第四阶段无法执行"
   else
     deploy_sha="$($sha_tool "$deploy_src" | cut -d' ' -f1)"
-    note "★ 跑第三阶段（★ 部署通道视角：★ 权威台账同内容指纹 ⇒ 不重放）…"
+    note "★ 跑第四阶段（★ 部署通道视角：★ 权威台账同内容指纹 ⇒ 不重放）…"
     q "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())" >/dev/null
     q "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text" >/dev/null
     q "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS execution_sha256 text, ADD COLUMN IF NOT EXISTS runtime_adaptation text" >/dev/null
@@ -390,7 +461,7 @@ else
       note "---- 第三次安装输出（尾部 20 行）----"
       tail -20 "$RUN3_LOG"
       note "---- 第三次安装输出（尾部 20 行）----"
-      bad "★ 第三阶段失败（★ ★ 权威台账已登记 ${DEPLOY_FILE} 的同一内容指纹、★ 版本行也已删 ⇒ ★ 只剩 F3 能跳过它 ⇒ ★ 它被重放了 ⇒ ★ 而它一重放就炸）"
+      bad "★ 第四阶段失败（★ ★ 权威台账已登记 ${DEPLOY_FILE} 的同一内容指纹、★ 版本行也已删 ⇒ ★ 只剩 F3 能跳过它 ⇒ ★ 它被重放了 ⇒ ★ 而它一重放就炸）"
       rm -f "$RUN3_LOG"
       exit 1
     fi
