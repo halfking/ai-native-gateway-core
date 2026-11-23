@@ -94,7 +94,16 @@ onBeforeUnmount(() => {
       :title="roleLabel ? `${displayName} · ${roleLabel}` : displayName"
       @click.stop="toggle"
     >
-      <span class="user-menu__name">{{ displayName }}</span>
+      <!-- ★★ 2026-11-23（L17/L18）：给「用户菜单」加**与界面语言无关**的锚点。
+           · 为什么锚点打在**这个 span** 上、而不是上面的触发按钮？
+             ★ Maestro 的 `id:` 匹配的是 hierarchy 的 `resource-id`，
+             而 **`aria-label` > `title` > `data-testid`**（L13 实测钉死）——
+             触发按钮上**带 `:title`** ⇒ ⇒ 打在按钮上的 `data-testid` 会被 title 遮蔽
+             ⇒ ⇒ `id:` 选不到它。★ ⇒ **锚点挪到「不带 title / aria-label 的元素」上**
+             （本 span 与下面的登出按钮都干净）⇒ ★ **零属性删除、零 a11y 损失**。
+           · 为什么不用 `text:` 判据？★ 「显示名」是**登录用户的真实姓名**
+             （admin ⇒ 「系统管理员」）⇒ 换语种/换账号就变 ⇒ ⇒ locale 依赖。 -->
+      <span class="user-menu__name" data-testid="app-user-menu-name">{{ displayName }}</span>
       <span class="user-menu__chevron" aria-hidden="true"><CaretTop v-if="open" /><CaretBottom v-else /></span>
     </button>
 
@@ -123,7 +132,13 @@ onBeforeUnmount(() => {
           {{ t('app.userMenu.changePassword') }}
         </button>
         <div class="user-menu__sep" role="separator" />
-        <button type="button" class="user-menu__item user-menu__item--danger" role="menuitem" @click="onLogout">
+        <button
+          type="button"
+          class="user-menu__item user-menu__item--danger"
+          role="menuitem"
+          data-testid="app-user-menu-logout"
+          @click="onLogout"
+        >
           {{ t('app.userMenu.logout') }}
         </button>
       </div>

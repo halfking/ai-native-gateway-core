@@ -28,6 +28,17 @@ const PAGE_COMPONENTS = [
   'SessionAnalyticsModelRankingView.vue',
 ]
 
+/**
+ * ★★ 2026-11-23（L17）：flow 的 §0 会点**顶栏用户菜单**（显示名 / 登出）⇒
+ *   ⇒ 这两个 `id:` 的锚点在**会话分析视图之外**（`web/src/components/shell/`）。
+ *   ⇒ 若不把它们纳入扫描范围 ⇒ ★ **判据①会误报「flow 断言了前端不存在的 testid」**
+ *   ⇒ ⇒ ★ **门自己的覆盖缺口**（L13 轮就栽过一次：门看不见 ≠ 缺口不存在）。
+ *   ⇒ ★ 归入本钉测的扫描范围 ⇒ 门就既看得见「锚点缺失」，也看得见「命名不合规」。
+ */
+const EXTRA_COMPONENT_FILES = [
+  join(REPO, 'web/src/components/shell/UserMenuDropdown.vue'),
+]
+
 function readVueFiles(dir: string): { file: string; source: string }[] {
   const out: { file: string; source: string }[] = []
   for (const name of readdirSync(dir)) {
@@ -42,7 +53,13 @@ function readVueFiles(dir: string): { file: string; source: string }[] {
 }
 
 const flowText = readFileSync(FLOW, 'utf8')
-const vueFiles = readVueFiles(SA_DIR)
+const vueFiles = [
+  ...readVueFiles(SA_DIR),
+  ...EXTRA_COMPONENT_FILES.map((full) => ({
+    file: full.split('/').pop() as string,
+    source: readFileSync(full, 'utf8'),
+  })),
+]
 
 /** 前端源码里出现的所有 data-testid 值。 */
 const sourceTestIds = new Set<string>()
@@ -69,11 +86,13 @@ const textAssertions = [...flowText.matchAll(/assertVisible:\s*"([^"]*)"/g)].map
 //   ⇒ ★★ 这就是「门自己的覆盖缺口」：**门绿 ≠ 没缺口**，只说明缺口不在门的射程里。
 //   ⇒ ⇒ 必须把「文案依赖」的口径扩到**选择器本身**，而不是某一种命令的写法。
 //
-// ★ 为什么区分 optional：★ **非 optional 的中文 `text:` 会「换语种即假红」**（响亮的错）；
-//   而 **optional 的中文 `text:` 只会 WARNED**（找不到就跳过）⇒ 不影响判定
+// ★ 为什么区分 optional：★ **非 optional** 的中文 `text:` 会「换语种即假红」（响亮的错）；
+//   而 **optional** 的中文 `text:` 只会 WARNED（找不到就跳过）⇒ 不影响判定
 //   ⇒ ⇒ 口径＝「**非 optional 的命令上不得出现中文 `text:` 选择器**」。
-//   ⇒ 本 flow 的 §0 登出两行是 optional（它们找不到就跳过）⇒ 允许存在，
-//      但**已在 AGENTS.md 登记为剩余项**（彻底消除需给顶栏用户菜单加 data-testid ⇒ 动前端）。
+//   ⇒ ★★ **2026-11-23（L17）**：§0 登出那两行已改成 `id:` ⇒ **flow 里零 `text:`**
+//   ⇒ ⇒ 口径**升级**为「**任何** `text:` 选择器都不许（连 optional、连英文）」
+//   ⇒ ⇒ ★★ **判据与量具自检一起升级**（★ 旧自检是「必须还剩着中文 text 选择器」
+//   ⇒ 口径一升级它就会报红 ⇒ ★ **一个随口径过期而误导的自检，本身就是要修的缺陷**）。
 //
 // ★ 为什么用块级解析而不是 YAML 解析：`web/` 没有 yaml/js-yaml 依赖（实测 `require('yaml')` 抛错）
 //   ⇒ ⇒ 不能给测试引入新依赖（否则 CI 镜像要装包）⇒ 用「按 `- 命令:` 切块」的近似解析。
@@ -145,26 +164,23 @@ describe('L13 · flow 16 判据收敛契约', () => {
     }
   })
 
-  it('⑥ ★ 非 optional 的命令上不得出现中文 `text:` 选择器（L13 补轮：覆盖 `tapOn: text:`）', () => {
-    // ★ 本条是 L13 补轮新增：**原判据②只扫 `assertVisible: "…"`**，看不见 `tapOn: text:`
+  it('⑥ ★★ flow 里**不得有任何** `text:` 选择器（L13 补轮 + ★ L17 收口：连 optional 也不许）', () => {
+    // ★ 本条是 L13 补轮新增：**原判据②只扫 `assertVisible: "…"``，看不见 `tapOn: text:`**
     //   ⇒ 两处 tab 交互的中文文案依赖一直隐形。
-    // ⇒ ★ 判据＝「**非 optional** 的命令上不得有中文 text 选择器」：
-    //   非 optional 的中文 text ⇒ 换语种即**假红**（响亮的错）；
-    //   optional 的中文 text ⇒ 只 WARNED（找不到就跳过）⇒ 不影响判定 ⇒ 允许存在。
-    const offenders = textSelectors.filter((t) => !t.optional && /[一-鿿]/.test(t.value))
+    // ★ L13 当时的口径是「**非 optional** 的命令上不得有中文 text 选择器」，
+    //   并**故意**保留了 §0 登出那两处 optional 的中文 text（当作「判据有射程」的自检）。
+    // ★★ **2026-11-23（L17）**：★ 那两处已改成 `id:`（`app-user-menu-name` /
+    //   `app-user-menu-logout`）⇒ ⇒ **flow 里一个 `text:` 选择器都不剩**
+    //   ⇒ ⇒ ★ 原口径连同它的自检一起过期（自检会因「射程为零」而报红 ⇒ 那是个**误导性的红**）。
+    // ⇒ ⇒ ★ 口径升级为**更强**的形态：**任何** `text:` 选择器都不许（含 optional、
+    //   含英文）⇒ ★ flow 的判据**全部**与文案解耦 ⇒ ★ 换语种 ⇒ 0 WARNED。
+    //   ⇒ ★ 仍保留**射程自检**，但换成正确的问题：「判据扫的目标是不是空的？」
+    //     ⇒ flow 的 `id:` 选择器集合必须非空（否则连 flow 都没在用选择器判据）。
+    const offenders = textSelectors.map((t) => t.block)
+    expect(offenders, `flow 里仍有 text: 选择器（判据必须与文案解耦）：${offenders.join(' | ')}`).toEqual([])
     expect(
-      offenders,
-      `flow 里仍有非 optional 的中文文案选择器：${offenders.map((o) => o.block).join(' | ')}`,
-    ).toEqual([])
-    // ★ 量具自检：★ 判据本身必须**有射程** ⇒ flow 里确实存在 `text:` 选择器（否则这条恒绿）。
-    //   ★ 否则「门绿」只说明「门没看见」，不说明「没有缺口」。
-    expect(textSelectors.length, 'flow 里一个 text: 选择器都没有 ⇒ 本判据恒绿（射程为零）').toBeGreaterThan(0)
-    // ★ 现有的两处 text 选择器必须**都是 optional**（§0 的登出归零）。
-    for (const t of textSelectors) {
-      expect(
-        t.optional,
-        `flow 里的中文 text 选择器必须 optional（否则换语种即假红）：${t.block}`,
-      ).toBe(true)
-    }
+      flowIds.size,
+      'flow 里一个 id: 选择器都没有 ⇒ 本判据扫的是空目标（门会恒绿）',
+    ).toBeGreaterThan(0)
   })
 })

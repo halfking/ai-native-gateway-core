@@ -84,12 +84,24 @@
 url: ${BASE_URL}
 ---
 # ── 0. 起点归零：若上一轮留下登录态，先退出 ────────────────────────────────
+# ★★ 2026-11-23（L17/L18）：这两行改用 `id:`（与界面语言无关）⇒ ★ 本 flow 的
+#   **最后两处文案依赖**消除 ⇒ ★★ **全部断言与交互都不再依赖界面语言**。
+#   · 锚点来源：`web/src/components/shell/UserMenuDropdown.vue`
+#     → `app-user-menu-name`（显示名 span）／`app-user-menu-logout`（登出按钮）
+#   · ★ 为什么锚点不在触发按钮上：★ 触发按钮**带 `:title`** ⇒ Maestro 的
+#     `aria-label` > `title` > `data-testid` 优先级会**遮蔽**它的 `data-testid`
+#     ⇒ ⇒ 锚点挪到**不带 title / aria-label 的元素**上（L18 的第②种修法）。
+#   · ★ 保持 `optional: true`：★ 这一段是**防御性**的（runner 每次起**全新**
+#     Chrome ⇒ 根本没有登录态 ⇒ 这两步通常是空操作）⇒ 若改成必选，
+#     「菜单不存在」会直接把 flow 判红 ⇒ ⇒ **optional 才是正确形态**。
+#     ★ 「锚点不存在 ⇒ 静默跳过」的漏，由**契约门**（`saTestIds.contract.spec.ts`
+#     的判据①）兜住：flow 里的每个 `id:` 都必须在前端源码里存在 ⇒ CI 即时报红。
 - openLink: ${BASE_URL}/dashboard
 - tapOn:
-    text: "系统管理员"
+    id: "app-user-menu-name"
     optional: true
 - tapOn:
-    text: "退出登录"
+    id: "app-user-menu-logout"
     optional: true
 
 # ── ① 真实 UI 登录（三段判据见 _shared/login.yaml 头注）─────────────────────
@@ -222,8 +234,11 @@ url: ${BASE_URL}
 #   ⇒ ★ 前端这两个 tab **本来就有 data-testid**（`SessionAnalyticsUserDetailView.vue`
 #     的 `sa-tab-models` / `sa-tab-apikeys`）⇒ ⇒ **改成 id: 零前端改动、零部署**。
 #   ⇒ ★★ **这是 L13（flow 层文案判据）的最后两处依赖** ⇒ 改完后本 flow 的
-#     **全部断言与交互都不再依赖界面语言**（连同 §0 的登出两行，它们是 `optional: true`
-#     ⇒ 换语种下只是 WARNED，不影响判定）。
+#     **全部断言与交互都不再依赖界面语言**。
+#   ⇒ ★★ **2026-11-23（L17）补**：§0 的登出两行**也已**改成 `id:`
+#     （`app-user-menu-name` / `app-user-menu-logout`）⇒ ⇒ ★ **本 flow 现在
+#     **零文案依赖**：换语种运行 ⇒ 0 WARNED（此前 en-US 实测为 99 COMPLETED / **2 WARNED**），
+#     ★ 而「显示名」这种**随账号/语种变**的文案再也进不了判据。
 #   ⇒ ★ 复现命令见 §7.13 的「locale 无关性实测」。
 - tapOn:
     id: "sa-tab-models"
