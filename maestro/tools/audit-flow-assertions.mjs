@@ -248,6 +248,44 @@ function textsOf(closure, localeValues, routePath) {
       const v = localeValues.get(m[1])
       if (v !== undefined) i18nValues.add(v)
     }
+    // ★★ 2026-11-23（L30 轮·补②⑨）：★ **i18n 函数的【别名】也要解析**。
+    //
+    //	★ 为什么必须补（★ 实测出来的第二个提取缺口）：
+    //	★ 仓里大量组件把 `t` 包一层、**且带命名空间前缀**：
+    //	★   `const { t } = useI18n()`
+    //	★   `const pm = (k: string, params?) => t(`providers.${k}` as never, ...)`
+    //	★ ⇒ ★★ 页面里写的是 **`pm('page.title')`** ⇒ **不是字面 `t('key')`**
+    //	★ ⇒ ★★ 上一段（只认 `\bt\(`）**完全看不见这些文案** ⇒ 误判 not-found。
+    //	★ ★★ 实测反例：★ `views/ProvidersView.vue:879` 渲染 `{{ pm('page.title') }}`
+    //	★ 而 locale `providers.page.title` ＝ 「供应商管理」⇒ ★ 该页确实渲染得出。
+    //	★ 全仓此类别名普遍存在（★ pm / mi / ps / pd …）。
+    //
+    //	★ 判据：★ 只认**形如「箭头函数体里调用了 t(」**的定义 ⇒ ★ 与 i18n 绑定；
+    //	★ ⇒ ★ **不会**把 `const t = (ms: number) => new Date(...)` 这类同名局部变量
+    //	★ 误当成 i18n 别名（★ 它的函数体里没有 `t(` 调用）。
+    const aliasDefs = []
+    for (const m of src.matchAll(/const\s+(\w+)\s*=\s*\(([^)]*)\)\s*(?::[^=]{0,80}?)?=>\s*([^\n;]{0,200})/g)) {
+      const [, aliasName, params, body] = m
+      // 形态①：带命名空间前缀 ⇒ t(`providers.${k}`)
+      const nsMatch = body.match(/\bt\(\s*`([^`$]*)\$\{/)
+      if (nsMatch) {
+        aliasDefs.push({ name: aliasName, prefix: nsMatch[1] })
+        continue
+      }
+      // 形态②：无前缀 ⇒ t(k) 且参数名与调用一致
+      const firstParam = (params.split(',')[0] || '').split(':')[0].trim()
+      const plainMatch = body.match(/\bt\(\s*(\w+)\s*\)/)
+      if (plainMatch && firstParam && plainMatch[1] === firstParam) {
+        aliasDefs.push({ name: aliasName, prefix: '' })
+      }
+    }
+    for (const alias of aliasDefs) {
+      const callRe = new RegExp(`\\b${alias.name}\\(\\s*['"\`]([^'"\`]+)['"\`]\\s*\\)`, 'g')
+      for (const m of src.matchAll(callRe)) {
+        const v = localeValues.get(alias.prefix + m[1])
+        if (v !== undefined) i18nValues.add(v)
+      }
+    }
     for (const m of src.matchAll(/['"]([^'"\n]{2,80})['"]/g)) {
       const s = m[1]
       if (/[一-鿿]/.test(s) || /[A-Za-z]{4,}/.test(s)) literals.add(s)
