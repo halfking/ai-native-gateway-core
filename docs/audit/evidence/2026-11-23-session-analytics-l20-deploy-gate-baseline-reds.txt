@@ -143,3 +143,26 @@ L20 修红轮证据——部署闸门「基线红认领层」的分诊与修红
 ★ ⇒ ⇒ 两个方向都错 ⇒ ★★★ 「本轮不生成」是唯一诚实的答案
 ★ ⇒ ⇒ 通用式：「可复跑」≠「有人会重算」 ⇒ ★★「有人重算」≠「重算的输入是当天的」
       ⇒ 陈旧输入下的重算会把台账从「旧」变成「撒谎」
+
+── ⑨ ★★★★ 顺带查出：上游「团队层级管理」的四张表在生产上根本不存在（只读取证）──
+★ 查询（252: podman exec -i pg-252-pg17 psql / 211: docker exec -i acc-pg17 psql，均只读）：
+    SELECT c.relname::text||' | '||c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relname IN ('teams','user_teams','team_budgets');
+    SELECT 'api_keys.team_id 列数: '||count(*)::text FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='api_keys' AND column_name='team_id';
+    SELECT 'schema_migrations 055-058: '||coalesce(string_agg(version,','),'(无)')
+     FROM public.schema_migrations WHERE version IN ('055','056','057','058');
+★ 读数：
+    252 → teams/user_teams/team_budgets：0 行（不存在）
+          api_keys.team_id 列数: 0
+          schema_migrations 055-058: (无)
+    211 → teams/user_teams/team_budgets：0 行（不存在）
+          api_keys.team_id 列数: 0
+          schema_migrations 055-058: (无)
+★ ⇒ 那四个迁移在两台生产上**从未被应用** ⇒ 上游「团队层级管理」功能在生产上不存在
+★ ⇒ 而 /admin/teams、/admin/teams/:id 两条路由已进 router.ts（上游 41fb572f3）⇒ 路由点进去必然报错
+★ ⇒ 新装环境同样没有：安装器只跑 dbinit runner.go 的 StartupFiles
+  （for _, name := range r.StartupFiles）⇒ 055-058 不在其中 ⇒ 分发包里带着文件、安装器从不读它
+★ ⇒ 顺带：这 7 个 teams 索引在三处环境必然 missing ⇒ 硬重生成台账会让 new-install-gap 13→20 ⇒ 棘轮破
+  ⇒ ⇒ 「先补投递链 + 先应用（★ 生产 schema 变更 ⇒ 需 owner 授权）」才谈得上诚实重生成
+★ ⇒ ⇒ ⇒ L22 定性从 P3（导航面）升为 **P1（功能缺失）**，且与 L23 同属一条授权轴
