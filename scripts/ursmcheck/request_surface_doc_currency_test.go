@@ -255,25 +255,26 @@ type docEvidence struct {
 //	main_pipeline.go 启动日志 :1290、D09 合成/写回窗口 829-840（合成点 :837）。
 var requestSurfaceDocEvidence = []docEvidence{
 	{
-		file: "cmd/gateway/main.go", from: 9126, to: 9145,
+		file: "cmd/gateway/main.go", from: 9144, to: 9163,
 		mustContain: "middleware.NewRecoveryMiddleware()", kind: evidenceCode,
 		certRef: "A1",
 		why:     "HTTP 中间件链本体（Recovery 起、SecurityHeaders 止）★ 与认证表 A1 同一语义对象",
 	},
 	{
-		file: "cmd/gateway/main.go", from: 9129, to: 9136,
+		file: "cmd/gateway/main.go", from: 9147, to: 9154,
 		mustContain: "Logging 必须排在 Auth", kind: evidenceComment,
 		why: "「Logging 必须在 Auth 之外」的**自陈注释**",
 	},
 	{
-		// ★★ 2026-11-23（合并轮六）重钉：★ 原锚 [9086,9091] ⇒ ★ 上游在
-		// ★ 「Middleware stack」注释块里插了 2 行（★ SecurityHeadersMiddleware
-		// ★ 那段说明变长）⇒ ★ R49-A1 那条自陈注释从 9091 漂到 **9093** ⇒
-		// ★ 本门按现状重钉为 [9091,9098]（★ 覆盖注释块 9093-9098 六行）★。
-		// ★ 漂移归属：★ 上游 aac6602ab 轮改 cmd/gateway/main.go ⇒ ★ **上游
-		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 dd89c6bb6 上就在（★ 上游基线
-		// ★ 自带红）⇒ ★ 我方只改对拍表、★ 不动上游代码。
-		file: "cmd/gateway/main.go", from: 9091, to: 9098,
+		// ★★ 2026-11-24 第二十三次重钉：★ 原锚 [9091,9098] ⇒ ★ 上游
+		// ★ `41d1eca87`（request_metrics 集成轮）在 `func main()` **早期**插了
+		// ★ 18 行 ⇒ ★ R49-A1 那条自陈注释从 9091 漂到 **9111** ⇒
+		// ★ 本门按现状重钉为 [9109,9116]（★ 覆盖注释块 9111-9116 六行）★。
+		// ★ 漂移归属：★ 上游 `41d1eca87` 轮改 cmd/gateway/main.go ⇒ ★ **上游
+		// ★ 未同步本对拍表** ⇒ ★ 该红在基线 `41d1eca87` 上就在（★ ★★ 基线
+		// ★ 隔离 worktree 上逐字复现、★ 同 4 个子例、★ RC=1）⇒ ★ 我方只改
+		// ★ 对拍表、★ 不动上游代码。
+		file: "cmd/gateway/main.go", from: 9109, to: 9116,
 		mustContain: "maintain 与 mobile 两个挂载必须组合在链", kind: evidenceComment,
 		why: "「maintain/mobile 必须组合在链内」的**自陈注释**",
 	},
