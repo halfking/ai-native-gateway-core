@@ -128,7 +128,14 @@ fi
 # ★★ 解析 `files=()` 数组（★ 与仓内 Go 门 `deployChannelStartupOrder` **同口径**：
 # ★★ 正则 `"$ROOT_DIR/sql/migrations/startup/([^"]+\.sql)"`、★ 跳过 `.down.sql`、
 # ★★ **去重且保留首次位置**（★ 800 出现两次 ⇒ 首次才是投递起点 ★★）★★
-plan_file="$(mktemp -t deploy-ledger-plan)"
+# ★★★ ★★ 2026-11-24 修正（★ 真缺陷、★ 实测坐实）：★★
+# ★★★ 第一版是**整段正则匹配** ⇒ ★★ **被注释掉的行也会被匹配到** ⇒ ★★
+# ★★★ 而通道脚本里有**两条被注释掉的**投递条目：★★
+# ★★★   · `666_llm_hourly_stats_direct_trigger.sql`（★ 注释写明 Abandoned ★★）
+# ★★★   · `890_drop_request_logs_v1_family.sql`（★ 注释写明「已移出自动重放列表」★★）
+# ★★★ ⇒ ★★ 第一版解析出 **357** 条、★ 而**真实投递面是 355 条** ⇒ ★★
+# ★★★ ⇒ ★★ **修法**：★ **逐行解析**、★ **只取未被注释的行**（★ `#` 开头 ★★）★★
+plan_file="$(mktemp "${TMPDIR:-/tmp}/deploy-ledger-plan.XXXXXX")"
 trap 'rm -f "$plan_file"' EXIT
 awk '
   BEGIN { in_files = 0 }
@@ -139,13 +146,25 @@ awk '
       next
     }
     if (line ~ /^\)/) { in_files = 0; next }
-    # ★ 只取 startup 目录下的 .sql（★ 与 Go 门同口径 ★）
-    while (match(line, /"\$ROOT_DIR\/sql\/migrations\/startup\/[^"]+\.sql"/)) {
-      frag = substr(line, RSTART, RLENGTH)
-      gsub(/"/, "", frag)
-      sub(/^\$ROOT_DIR\/sql\/migrations\/startup\//, "", frag)
-      print frag
-      line = substr(line, RSTART + RLENGTH)
+    # ★★ 注释行（★ `#` 开头 ★★）⇒ ★ **不是投递面** ★★
+    trimmed = line
+    sub(/^[ \t]+/, "", trimmed)
+    if (trimmed ~ /^#/ || trimmed == "") { next }
+    # ★ 只取「整行只有这一条引号路径」的写法（★ 通道脚本的实际形态 ★）
+    # ★ ★★ 剥前缀**不用正则**（★ 跨 awk 实现一致 ★★）：★★
+    # ★ ★★ 根因（★ 本轮在生产 Linux 上实测坐实 ★★）：★★
+    # ★ ★★ mawk（★ Linux 生产 ★）把正则里的 `\$` 当成「字面反斜杠 + 美元」★★
+    # ★ ★★ ⇒ ★★ 剥前缀失败 ⇒ ★★ 而 BSD awk（★ macOS ★）剥成功 ⇒ ★★
+    # ★ ★★ ⇒ ★★ **同一段 awk 在两个平台行为不同** ⇒ ★★ ⇒ ★★ **⇒ 正则里不能写反斜杠美元**★★
+    # ★ ★★ ⇒ ★★ **⇒ 改用【index + substr】按固定前缀长度截取** ★★（★ 零正则方言依赖 ★★）★★
+    pfx = "$ROOT_DIR/sql/migrations/startup/"
+    p = index(line, pfx)
+    if (p > 0) {
+      rest = substr(line, p + length(pfx))
+      sub(/^[ \t"]+/, "", rest)
+      sub(/[\t"]+$/, "", rest)
+      # ★ 只接受「纯文件名 + .sql」形态（★ 排除带参数的行 ★）★★
+      if (rest ~ /^[A-Za-z0-9_.-]+[.]sql$/) { print rest }
     }
   }
 ' "$DEPLOY_SCRIPT" | awk '!seen[$0]++' | grep -v '\.down\.sql$' >"$plan_file"
@@ -224,7 +243,13 @@ else
   # ★★ 与「查询成功但零行」必须分得开 ★★ ⇒ ★★ 失败 ⇒ ABORT ★★）★★
   rows=""
   rows_rc=0
-  rows=$(q "select sequence_name, coalesce(content_sha256, '<NULL>') from public.gateway_db_revision_sequences where sequence_name like '${SEQUENCE_NAME}:%'") || rows_rc=$?
+  # ★★ ★★ 用 `concat_ws(chr(9), …)` 显式指定 **TAB** 分隔 ★★ ⇒ ★★ ⇒ ★★
+# ★★ **不要依赖 psql `-A` 的默认分隔符** —— ★★ 实测（★ 本轮在生产 211 上
+# ★★ 实测坐实 ★★）：★ **`-A` 的默认字段分隔符是 `|`（竖线）**、★ 不是 TAB ★★
+# ★★ ⇒ ★★ ⇒ ★★ 门按 TAB 切 ⇒ ★★ 切不出来 ⇒ ★★ ⇒ ★★ **每行都被误判成
+# ★★ 「账里没有这条」⇒ ★★ ⇒ ★★ 缺口数虚高到全量 ★★（★ 本轮实测：★ 真值
+# ★★ 是 0 条缺口、★ 门却报 355 条 ★★）★★ ⇒ ★★ ⇒ ★★ **⇒ 必须显式给分隔符** ★★
+rows=$(q "select concat_ws(chr(9), sequence_name, coalesce(content_sha256, '<NULL>')) from public.gateway_db_revision_sequences where sequence_name like '${SEQUENCE_NAME}:%'") || rows_rc=$?
   if [ "$rows_rc" -ne 0 ]; then
     abort "批量读权威账失败（★ 连不上库 / PG 未就绪）⇒ ★ 门无法判定"
   fi

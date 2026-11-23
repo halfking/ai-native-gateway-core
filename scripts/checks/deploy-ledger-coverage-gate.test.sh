@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 GATE="scripts/checks/deploy-ledger-coverage-gate.sh"
-FIXTURE_DIR="$(mktemp -d -t deploy-ledger-fixture)"
+FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-ledger-fixture.XXXXXX")"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
 
 PASS=0
@@ -39,47 +39,65 @@ bad()  { printf '  ✘ %s\n' "$*" >&2; FAIL=$((FAIL+1)); }
 # ★ 用法：★ make_fake_psql <账表存在:0|1> <账内容文件> [<全失败:0|1>]
 make_fake_psql() {
   local exists="$1" content_file="$2" fail_all="${3:-0}"
-  cat >"$FIXTURE_DIR/fake-psql" <<EOF
+  # ★★★ ★★ heredoc 的展开纪律（★ 本轮实测撞到、★ 已修 ★★）★★★：
+  # ★★★ ① **未加引号的 heredoc（★ `<<EOF` ★）会做命令替换** ⇒ ★★★ ⇒ ★★★
+  # ★★★    **注释里的示例代码会被 shell 真执行**（★ 本轮就撞上了：★ 注释里写了
+  # ★★★    一个含 `$(` 的示例 ⇒ ★★★ 它被展开 ⇒ ★★★ 报
+  # ★★★    「command not found」★ ⇒ ★★★ ⇒ ★★★ **⇒ heredoc 必须用加引号的形式**
+  # ★★★    （★ `<<'PSQLFIXTURE'` ★⇒ ★★ **禁止一切展开** ★★）★★ ★★★
+  # ★★★ ② 但加引号后 `${exists}` 之类**不会展开** ⇒ ★★★ ⇒ ★★★ **改用占位符**
+  # ★★★    ＋ 生成后用 sed 替换（★ ★ 两者必须配套、★ 不能只做一半 ★★）★★★ ★★★
+  cat >"$FIXTURE_DIR/fake-psql" <<'PSQLFIXTURE'
 #!/usr/bin/env bash
-# ★ 假 psql：★ 按传入的 SQL 判定该回什么 ★
+# 假 psql：按传入的 SQL 判定该回什么
 sql=""
-for a in "\$@"; do
-  case "\$a" in
-    select*|SELECT*) sql="\$sql \$a" ;;
+for a in "$@"; do
+  case "$a" in
+    select*|SELECT*) sql="$sql $a" ;;
   esac
 done
-if [ "${fail_all}" = "1" ]; then
+if [ "@@FAIL_ALL@@" = "1" ]; then
   exit 1
 fi
-case "\$sql" in
-  *"pg_class"*)  printf '%s\n' "${exists}" ;;
-  *"count(*) from public.gateway_db_revision_sequences"*)
-    # ★ ★★ count 查询必须回**行数**（★ 不是账内容 ★★）⇒ ★ 假 psql 若把它当
-    # ★★ 「账内容查询」处理、★ 会把整张账灌进 count 的返回值 ⇒ ★★ ⇒ ★ 门
-    # ★★ 拿到的 ledger_rows 就是一堆多行文本 ⇒ ★★ ⇒ ★ **这是夹具的缺陷**、
-    # ★★ 不是什么门缺陷 ⇒ ★★ ⇒ ★ 本轮当场修掉（★ 臂 C 的输出里看到过它 ★★）★★
-    if [ "${exists}" = "0" ]; then
+case "$sql" in
+  *"pg_class"*)  printf '%s\n' "@@EXISTS@@" ;;
+  *"gateway_db_revision_sequences"*"count"*)
+    # count 查询必须回行数（不是账内容）
+    # ⇒ 假 psql 若把它当「账内容查询」处理、会把整张账灌进 count 的返回值
+    # ⇒ 门拿到的 ledger_rows 就是一堆多行文本 ⇒ 这是夹具的缺陷、不是什么门缺陷
+    #
+    # 判据形态（为什么不用带裸括号的 count 模式）：
+    #   case 模式里的 `(` 未转义 ⇒ bash 5.2 报语法错、而 bash 3.2 放过
+    #   ⇒ 形态里不能带裸括号 ⇒ 改成「含表名 且 含 count」两段匹配
+    if [ "@@EXISTS@@" = "0" ]; then
       exit 1
     fi
-    if [ -f "${content_file}" ]; then
-      wc -l < "${content_file}" | tr -d ' '
+    if [ -f "@@CONTENT_FILE@@" ]; then
+      wc -l < "@@CONTENT_FILE@@" | tr -d ' '
     else
       printf '0'
     fi
     ;;
   *"gateway_db_revision_sequences"*)
-    if [ "${exists}" = "0" ]; then
+    if [ "@@EXISTS@@" = "0" ]; then
       exit 1
     fi
-    if [ -f "${content_file}" ]; then
-      cat "${content_file}"
+    if [ -f "@@CONTENT_FILE@@" ]; then
+      cat "@@CONTENT_FILE@@"
     fi
     ;;
   *"select 1"*)  printf '1\n' ;;
   *)             printf '\n' ;;
 esac
 exit 0
-EOF
+PSQLFIXTURE
+  # ★ 把占位符换成真实值（★ 必须在 heredoc 之后、★ 因为 heredoc 是字面量 ★）
+  sed -i.bak \
+    -e "s|@@EXISTS@@|${exists}|g" \
+    -e "s|@@FAIL_ALL@@|${fail_all}|g" \
+    -e "s|@@CONTENT_FILE@@|${content_file}|g" \
+    "$FIXTURE_DIR/fake-psql"
+  rm -f "$FIXTURE_DIR/fake-psql.bak"
   chmod +x "$FIXTURE_DIR/fake-psql"
 }
 
@@ -101,11 +119,23 @@ awk '
     line = $0
     if (!in_files) { if (line ~ /^files=\(/) { in_files = 1 }; next }
     if (line ~ /^\)/) { in_files = 0; next }
-    while (match(line, /"\$ROOT_DIR\/sql\/migrations\/startup\/[^"]+\.sql"/)) {
-      frag = substr(line, RSTART, RLENGTH); gsub(/"/, "", frag)
-      sub(/^\$ROOT_DIR\/sql\/migrations\/startup\//, "", frag)
-      print frag
-      line = substr(line, RSTART + RLENGTH)
+    trimmed = line
+    sub(/^[ \t]+/, "", trimmed)
+    if (trimmed ~ /^#/ || trimmed == "") { next }
+    # ★ ★★ 剥前缀**不用正则**（★ 跨 awk 实现一致 ★★）：★★
+    # ★ ★★ 根因（★ 本轮在生产 Linux 上实测坐实 ★★）：★★
+    # ★ ★★ mawk（★ Linux 生产 ★）把正则里的 `\$` 当成「字面反斜杠 + 美元」★★
+    # ★ ★★ ⇒ ★★ 剥前缀失败 ⇒ ★★ 而 BSD awk（★ macOS ★）剥成功 ⇒ ★★
+    # ★ ★★ ⇒ ★★ **同一段 awk 在两个平台行为不同** ⇒ ★★ ⇒ ★★ **⇒ 正则里不能写反斜杠美元**★★
+    # ★ ★★ ⇒ ★★ **⇒ 改用【index + substr】按固定前缀长度截取** ★★（★ 零正则方言依赖 ★★）★★
+    pfx = "$ROOT_DIR/sql/migrations/startup/"
+    p = index(line, pfx)
+    if (p > 0) {
+      rest = substr(line, p + length(pfx))
+      sub(/^[ \t"]+/, "", rest)
+      sub(/[\t"]+$/, "", rest)
+      # ★ 只接受「纯文件名 + .sql」形态（★ 排除带参数的行 ★）★★
+      if (rest ~ /^[A-Za-z0-9_.-]+[.]sql$/) { print rest }
     }
   }
 ' scripts/apply-db-revision-sequence.sh | awk '!seen[$0]++' | grep -v '\.down\.sql$' >"$plan_file"

@@ -101,10 +101,44 @@ func deployChannelStartupOrder(t *testing.T) []string {
 		t.Fatalf("部署通道脚本里 files=( 数组没有正常闭合（%s）", scriptPath)
 	}
 	body := text[start : start+end]
-	re := regexp.MustCompile(`"\$ROOT_DIR/sql/migrations/startup/([^"]+\.sql)"`)
+	// ★★★ ★★ 2026-11-24：★ **解析器缺陷已修（★ 真缺陷、★ 实测坐实）** ★★★ ★★
+	// ★★★ 第一版的正则 `"\$ROOT_DIR/sql/migrations/startup/([^"]+\.sql)"` 会
+	// ★★★ **匹配到被注释掉的行** ⇒ ★★★ 因为它不关心行首是不是 `#` ★★★
+	// ★★★ ⇒ ★★★ **实测坐实（★ 211 生产只读对账时暴露）**：★★
+	// ★★★   · `666_llm_hourly_stats_direct_trigger.sql`（★ 行 635、★ 注释写明
+	// ★★★     「Abandoned in favor of 667」★★）
+	// ★★★   · `890_drop_request_logs_v1_family.sql`（★ 行 1974、★ 注释写明
+	// ★★★     「已移出自动重放列表」、★ 因为它自带**非空闸**、★ 天然不可自动重放 ★★）
+	// ★★★ 这**两条**都**不在**通道的真实投递面里 ⇒ ★★★ **真实投递面 = 355 条**
+	// ★★★ （★ 而第一版解析出 357 条 ⇒ ★ **偏大 2 条** ★★★）★★
+	//
+	// ★★★ ⇒ ★★★ **这会连带影响什么（★ 必须说清楚 ★★★）**：★★
+	// ★★★   ① 报告 §7.31 的「部署通道 356 条」这个数字 ⇒ ★★ **偏大 1 条** ★★
+	// ★★★      （★ 356 那个数是**另一次口径**下的读数、★ 本轮已订正 ★★★）
+	// ★★★   ② 两通道集合差异基线（★ 330 / 26 / 62 ★）⇒ ★★ **偏大** ★★
+	// ★★★   ③ 覆盖门（★ 方案 C ★）的「投递面 N 条」⇒ ★★ 357 ⇒ ★ **355** ★★
+	//
+	// ★★★ ⇒ ★★★ **修法**：★★ **逐行解析**、★ **只取未被注释的行** ★★
+	// ★★★ （★ 注释行以 `#` 开头 ⇒ ★ 跳过 ★★）★★ ⇒ ★★ ⇒ ★★ **⇒ 解析面
+	// ★★★ 从此等于【通道真正会投递的文件集】** ★★★。
+	//
+	// ★★★ ★★ 判据：★★ 「投递面」的定义就是**通道会真正 apply 的文件集** ⇒ ★★
+	// ★★ **被注释掉的条目不是投递面** ⇒ ★★ ⇒ ★★ 一条被注释的条目若被算进来 ⇒ ★★
+	// ★★ **它会让「通道会重放它」这个结论凭空多出一条** ⇒ ★★ ⇒ ★★ **⇒ 判据
+	// ★★ 必须是「未注释的行」** ★★。
 	var names []string
 	seen := map[string]bool{}
-	for _, m := range re.FindAllStringSubmatch(body, -1) {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// ★ ★★ 注释行（★ `#` 开头 ★★）⇒ ★ **不是投递面** ★★
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// ★ 保留「行内只有这一条引号路径」的写法（★ 通道脚本的实际形态 ★）
+		m := regexp.MustCompile(`^\s*"\$ROOT_DIR/sql/migrations/startup/([^"]+\.sql)"\s*$`).FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
 		if strings.HasSuffix(m[1], ".down.sql") {
 			continue
 		}

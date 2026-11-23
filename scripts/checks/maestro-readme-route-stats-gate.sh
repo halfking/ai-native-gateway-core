@@ -62,7 +62,7 @@ else
 fi
 
 # ★ 用临时目录做副本，**不改仓内文件**（门必须能在 CI 里跑 ⇒ 不能污染工作树）。
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t maestro-readme-stats)"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maestro-readme-stats.XXXXXX")"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 

@@ -632,7 +632,6 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/667_llm_hourly_stats_timestamp_fix.sql"
   # 2026-09-06 PG log audit follow-up: 666 attempted BEFORE trigger but PG validates
   # types before triggers run. Abandoned in favor of 667.
-  # "$ROOT_DIR/sql/migrations/startup/666_llm_hourly_stats_direct_trigger.sql"
   # 2026-09-06 PG log audit final fix: 667 clarifies that external services must
   # wrap their hour parameter in normalize_hour_timestamp() to use truncated formats.
   # The recommended pattern is:
