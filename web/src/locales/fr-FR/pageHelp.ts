@@ -68,6 +68,7 @@ export default {
     tenantOrder: 'Détail de commande',
     tenantUsage: 'Ma consommation',
     boardOperational: 'Tableau opérationnel',
+    usageBreakdown: 'Notes sur la ventilation de l’utilisation',
     opsOverview: 'Aperçu des opérations',
     pricing: 'Gestion des prix',
     modelPricing: 'Tarifs standards',

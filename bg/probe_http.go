@@ -14,13 +14,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -74,6 +79,8 @@ type httpProbeResult struct {
 }
 
 var (
+	platformAttemptMu    sync.RWMutex
+	platformAttemptStore reconciliation.AttemptStore
 	// probeHTTPClient is reused across all Layer 1 GET /v1/models probes.
 	// 5s timeout matches the spec for free model-list calls.
 	probeHTTPClient = &http.Client{Timeout: 5 * time.Second}
@@ -82,6 +89,59 @@ var (
 	// 15s timeout allows for upstream LLM response even with max_tokens=1.
 	probeChatClient = &http.Client{Timeout: 15 * time.Second}
 )
+
+// SetAttemptRecorder wires durable evidence for trusted platform probe calls.
+func SetAttemptRecorder(r reconciliation.AttemptStore) {
+	platformAttemptMu.Lock()
+	platformAttemptStore = r
+	platformAttemptMu.Unlock()
+}
+
+func platformProbeDo(ctx context.Context, client *http.Client, req *http.Request, credID int, model, source string) (*http.Response, error) {
+	platformAttemptMu.RLock()
+	recorder := platformAttemptStore
+	platformAttemptMu.RUnlock()
+	if recorder == nil {
+		return client.Do(req)
+	}
+	a := reconciliation.NewAttempt(reconciliation.Attempt{TrafficClass: "platform", ClientID: "platform-automation", Source: source, AttemptNo: 1, CredentialID: credID, Model: model})
+	persist := func(fn func(context.Context) error) {
+		c, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		if err := fn(c); err != nil {
+			slog.Warn("platform probe attempt persistence failed", "attempt_id", a.ID, "error", err)
+		}
+	}
+	persist(func(c context.Context) error { return recorder.Prepare(c, a) })
+	persist(func(c context.Context) error { return recorder.MarkDispatched(c, a.ID) })
+	var sentNanos atomic.Int64
+	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { sentNanos.CompareAndSwap(0, time.Now().UTC().UnixNano()) }}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	resp, err := client.Do(req)
+	if err != nil {
+		if n := sentNanos.Load(); n != 0 {
+			sentAt := time.Unix(0, n).UTC()
+			persist(func(c context.Context) error { return recorder.MarkSent(c, a.ID, sentAt) })
+		}
+		persist(func(c context.Context) error { return recorder.Finish(c, a.ID, "unknown") })
+		return resp, err
+	}
+	rid := resp.Header.Get("x-request-id")
+	if rid == "" {
+		rid = resp.Header.Get("request-id")
+	}
+	sentAt := time.Time{}
+	if n := sentNanos.Load(); n != 0 {
+		sentAt = time.Unix(0, n).UTC()
+	}
+	persist(func(c context.Context) error { return recorder.RecordHTTP(c, a.ID, resp.StatusCode, rid, sentAt) })
+	outcome := "failure"
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		outcome = "success"
+	}
+	persist(func(c context.Context) error { return recorder.Finish(c, a.ID, outcome) })
+	return resp, nil
+}
 
 // singleGet does ONE GET /v1/models request with 5s timeout, returns parsed result.
 func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.Descriptor, credID int, rawModel string) httpProbeResult {
@@ -96,7 +156,7 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 	}
 	providercap.ApplyAuthHeaders(req, desc, apiKey)
 
-	resp, err := probeHTTPClient.Do(req)
+	resp, err := platformProbeDo(ctx, probeHTTPClient, req, credID, rawModel, "credential_probe_models")
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
@@ -138,7 +198,7 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 	req.Header.Set("Content-Type", "application/json")
 	providercap.ApplyAuthHeaders(req, desc, apiKey)
 
-	resp, err := probeChatClient.Do(req)
+	resp, err := platformProbeDo(ctx, probeChatClient, req, credID, rawModel, "credential_probe_chat_ping")
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
@@ -175,7 +235,7 @@ func singleResponsesPing(ctx context.Context, endpoint, apiKey, modelField strin
 	req.Header.Set("Content-Type", "application/json")
 	providercap.ApplyAuthHeaders(req, desc, apiKey)
 
-	resp, err := probeChatClient.Do(req)
+	resp, err := platformProbeDo(ctx, probeChatClient, req, credID, rawModel, "credential_probe_responses_ping")
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,

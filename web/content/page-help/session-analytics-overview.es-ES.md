@@ -19,7 +19,7 @@ Esta página responde a «¿cómo lo utiliza la gente?»: cuántas conversacione
 
 - El gráfico de tendencias agrupa los datos por día (los días cambian según el tiempo universal coordinado, UTC) y muestra la evolución diaria del número de conversaciones o del coste.
 - «Variación respecto al período anterior» = variación porcentual entre la ventana actual y una ventana anterior de la misma duración.
-- La página de clasificaciones (personas/agentes/modelos) se ordena según el indicador seleccionado; la columna «Gasto» suma las dos métricas, **solo permite comparar valores de forma relativa y no debe interpretarse como un importe**.
+- Las clasificaciones (personas/agentes/modelos) se ordenan según la métrica seleccionada. El orden por «Gasto» usa el campo de compatibilidad del backend `total_cost`, que suma los valores numéricos originales del coste interno en USD y del coste externo en créditos, sin conversión de divisas. La lista puede seguir mostrando el valor con formato de dólares; por tanto, no es un importe ni permite comparar divisas. Consulte por separado el coste interno (USD) y el externo (créditos).
 
 ## Frescura de los datos
 

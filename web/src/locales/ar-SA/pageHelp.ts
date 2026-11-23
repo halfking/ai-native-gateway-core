@@ -68,6 +68,7 @@ export default {
     tenantOrder: 'تفاصيل الطلب',
     tenantUsage: 'استهلاكي',
     boardOperational: 'لوحة العمليات',
+    usageBreakdown: 'ملاحظات بيانات الاستخدام حسب البُعد',
     opsOverview: 'نظرة العمليات',
     pricing: 'إدارة التسعير',
     modelPricing: 'تسعير النماذج القياسية',

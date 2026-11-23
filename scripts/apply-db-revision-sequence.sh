@@ -2840,6 +2840,7 @@ files=(
   #   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix 钉死
   #     ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 台账行记过同款）。
   "$ROOT_DIR/sql/migrations/startup/989_migration_ledger_session_analytics_981_repair.sql"
+  "$ROOT_DIR/sql/migrations/startup/982_provider_call_attempts.sql"
 )
 
 
@@ -3678,6 +3679,8 @@ ledger_artifact_probe "999_session_summary_layers.sql" \
 #   ★ 与 960 同款：960 的产物也是记账行（950/951/957/958 的回填）。
 ledger_artifact_probe "989_migration_ledger_session_analytics_981_repair.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regclass('public.session_dim') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '981') = 1"
+ledger_artifact_probe "982_provider_call_attempts.sql" \
+  "to_regclass('public.provider_call_attempts') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_sent') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_unconfirmed') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_request') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '982') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

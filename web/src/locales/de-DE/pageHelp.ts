@@ -68,6 +68,7 @@ export default {
     tenantOrder: 'Bestelldetails',
     tenantUsage: 'Mein Verbrauch',
     boardOperational: 'Betriebsboard',
+    usageBreakdown: 'Datenhinweise zur Nutzungsaufschlüsselung',
     opsOverview: 'Betriebsübersicht',
     pricing: 'Preisverwaltung',
     modelPricing: 'Modellpreise',

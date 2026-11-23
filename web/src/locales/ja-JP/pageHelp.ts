@@ -68,6 +68,7 @@ export default {
     tenantOrder: '注文詳細',
     tenantUsage: 'マイ利用量',
     boardOperational: '運営ボード',
+    usageBreakdown: 'ディメンション別使用量のデータ説明',
     opsOverview: '運用概要',
     pricing: '価格管理',
     modelPricing: '標準モデル価格',

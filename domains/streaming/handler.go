@@ -7803,7 +7803,26 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		})
 	}
 
-	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
+	var platformOriginStage string
+	var platformOriginActor string
+	if logCtx != nil && logCtx.Request != nil {
+		platformOriginStage, platformOriginActor, _ = trustedPlatformOrigin(logCtx.Request.Context(), keyInfo)
+	}
+	if platformOriginStage != "" {
+		// Trusted system-key traffic is platform-owned supplier usage. Preserve
+		// the request fact and its platform origin, but never debit the caller's
+		// tenant wallet for gateway automation.
+		reqLog.OriginStage = &platformOriginStage
+		if platformOriginActor != "" {
+			reqLog.OriginActor = &platformOriginActor
+		}
+		zero := int64(0)
+		reqLog.CreditsCharged = &zero
+		if logCtx != nil && logCtx.OriginStage == "" {
+			logCtx.SetOriginStage(platformOriginStage)
+		}
+	}
+	if platformOriginStage == "" && h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		pt, ct, crt, cwt := 0, 0, 0, 0
 		streamChunkCount := 0
 		if reqLog.PromptTokens != nil {

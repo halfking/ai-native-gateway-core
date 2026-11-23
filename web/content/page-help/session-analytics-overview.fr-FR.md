@@ -19,7 +19,7 @@ Cette page répond à la question « Comment est-ce utilisé ? » : combien de c
 
 - Le graphique de tendance agrège les données par jour (changement de journée en UTC) et affiche l’évolution quotidienne du nombre de conversations ou des coûts.
 - « Par rapport à la période précédente » correspond au pourcentage d’évolution entre la fenêtre actuelle et une fenêtre précédente de même longueur.
-- La page de classement (personnes/agents/modèles) trie les données selon l’indicateur sélectionné ; la colonne « Dépense » additionne les deux mesures, **elle sert uniquement à comparer des niveaux relatifs et ne doit pas être interprétée comme un montant**.
+- Les classements (personnes/agents/modèles) sont triés selon l’indicateur sélectionné. Le tri par « Dépense » utilise le champ de compatibilité backend `total_cost`, qui additionne les valeurs numériques brutes du coût interne en USD et du coût externe en crédits, sans conversion de devise. La liste peut toutefois afficher ce résultat au format dollar : ce n’est donc pas un montant et il ne permet pas de comparer des devises. Consultez séparément le coût interne (USD) et le coût externe (crédits).
 
 ## Fraîcheur des données
 

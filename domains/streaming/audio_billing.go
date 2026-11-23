@@ -71,7 +71,8 @@ func (s *AudioService) chargeTranscription(ctx context.Context, tenantID, ownerU
 	usage := maas.TokenUsage{AudioSeconds: seconds}
 	var amount int64
 	var err error
-	if s.maas != nil && s.maas.Enabled() && tenantID != "" && tenantID != "default" {
+	_, _, platformOrigin := trustedPlatformOriginForOwner(ctx, ownerUser)
+	if s.maas != nil && s.maas.Enabled() && tenantID != "" && tenantID != "default" && !platformOrigin {
 		// F-4（2026-11-04 审计）：走带 owner 的变体，音频 consume 流水
 		// 不再落 owner_user=''。multiplier 显式传 1.0——音频车道此前即按
 		// 隐式 1.0 计费（chargeTokens → chargeTokensWithMultiplier(1.0)），

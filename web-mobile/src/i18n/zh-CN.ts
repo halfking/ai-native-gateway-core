@@ -4,6 +4,24 @@ export const zhCN = {
     name: 'LLM 网关',
     subtitle: '移动运维',
   },
+  statisticsHelp: {
+    open: '统计口径与说明',
+    pages: {
+      usage: { title: '用量统计说明', context: '本页是用量成本读面。网关估算成本与内部实际过账、供应商返回金额分开核对。' },
+      usageEnhanced: { title: '用量增强说明', context: '本页组合多个接口，窗口和来源不同；卡片之间或与其他报表不必逐项相等。缺失或降级不能当作零。' },
+      usageTrendSeries: { title: '用量趋势说明', context: '本页展示聚合趋势。按当前页面的时间粒度和时区比较，并留意聚合延迟与未归类数据。' },
+      reportRollup: { title: '日报快照说明', context: '本页读取日报快照，供应商视角是网关终态的估算，不是账单应付；内部金额需与实际过账分开核对。' },
+      reconciliation: { title: '供应商月对账说明', context: '本页对比网关月汇总与导入账单。汇总差异不能替代逐次调用匹配证据，币种、账期和结算账户须一致。' },
+      cacheState: { title: '缓存状态说明', context: '本页展示缓存运行状态；缓存状态或命中数本身不是计费事实。缓存 Token 可能与输入重叠，按共享定义单列。' },
+      logs: { title: '请求日志说明', context: '每个入站客户端请求按租户和 request ID 计一次；多次上游调用需按 attempt 分开，早拒请求仍保留为入站请求。' },
+      sessionAudit: { title: '会话审计说明', context: '按租户与规范会话标识审阅单个会话。会话生命周期汇总与所选时间窗内的请求用量是不同指标。' },
+      sessionsOnline: { title: '在线会话说明', context: '本页反映当前在线会话状态，不等同于指定窗口内有请求的去重活跃会话数。' },
+      sessionAnalytics: { title: '会话分析说明', context: '按租户与规范会话实体汇总。美元成本、内部积分、请求窗口用量分别展示，不跨单位相加。' },
+      requestDetail: { title: '请求详情说明', context: '请求详情代表一个入站 request ID。供应商 attempt、内部过账和会话归属分别核验；发送状态不明的调用需单列。' },
+    },
+    contractTitle: '统一核对规则',
+    contract: '入站请求按租户与 request ID 在网关接收时计数；上游调用按每次确认发送计 attempt，提交状态不明单列；会话按租户与会话键去重。内部金额以实际过账、冲正和调整净额为准，与供应商估算成本及供应商返回金额分开。未知或缺失值显示为缺失，不补零。可信平台运维调用单独归属平台客户端，不计租户扣费。',
+  },
   nav: {
     // ★ 2026-11-20 菜单整理轮：抽屉分组标题。键名与取值**沿用 PC 端**
     //   web/src/locales/*/nav.ts 的 nav.group.*（operations/modelsRouting/

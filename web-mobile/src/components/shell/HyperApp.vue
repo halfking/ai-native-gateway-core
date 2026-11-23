@@ -12,6 +12,9 @@ import AppBottomNav from './AppBottomNav.vue'
 import AppDrawer from './AppDrawer.vue'
 import AppAccountSheet from './AppAccountSheet.vue'
 import AppUpdateBanner from './AppUpdateBanner.vue'
+import StatisticsHelpSheet from '@/components/help/StatisticsHelpSheet.vue'
+import { statisticsHelpForPath } from '@/components/help/statisticsHelpRoutes'
+import { t } from '@/i18n'
 import { createTopbarActionRegistry, TOPBAR_ACTIONS } from './topbarActions'
 
 const route = useRoute()
@@ -20,6 +23,18 @@ const update = useDeploySeqUpdate()
 const topbar = createTopbarActionRegistry()
 const topbarActions = topbar.actions
 provide(TOPBAR_ACTIONS, topbar)
+
+const statsHelpOpen = ref(false)
+const statsHelp = computed(() => statisticsHelpForPath(route.path))
+const visibleTopbarActions = computed(() => [
+  ...topbarActions.value,
+  ...(statsHelp.value ? [{
+    key: 'statistics-help',
+    label: () => t('statisticsHelp.open'),
+    icon: 'help' as const,
+    onClick: () => { statsHelpOpen.value = true },
+  }] : []),
+])
 
 const drawerOpen = ref(false)
 const accountOpen = ref(false)
@@ -79,9 +94,9 @@ onBeforeUnmount(() => {
   <div id="hyper-app-root" class="hyper-app" :class="{ 'hyper-app--bare': headerless }">
     <AppTopbar
       v-if="!headerless"
-      :actions="topbarActions"
       :overlay-active="overlayActive"
       :on-close-overlay="closeActiveOverlay"
+      :actions="visibleTopbarActions"
       @menu="drawerOpen = true"
       @account="accountOpen = true"
     />
@@ -96,6 +111,12 @@ onBeforeUnmount(() => {
 
     <AppBottomNav v-if="showBottomNav" @more="drawerOpen = true" />
     <AppUpdateBanner />
+    <StatisticsHelpSheet
+      v-if="statsHelp"
+      v-model="statsHelpOpen"
+      :content-id="statsHelp.contentId"
+      :context-key="`statisticsHelp.pages.${statsHelp.contextKey}`"
+    />
     <AppDrawer v-model="drawerOpen" @account="accountOpen = true" />
     <AppAccountSheet v-model="accountOpen" />
   </div>

@@ -2027,6 +2027,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//   ★ 编号取空号 989（三位数惯例：sqlguard 的 migrationNumPrefix
 			//     钉死 ^[0-9]{3}_ ⇒ 四位数对全部守卫隐形；996 的台账行记过同款）。
 			"989_migration_ledger_session_analytics_981_repair.sql",
+			"982_provider_call_attempts.sql",
 		},
 	}
 }

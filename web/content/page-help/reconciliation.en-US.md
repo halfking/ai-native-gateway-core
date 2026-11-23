@@ -1,25 +1,25 @@
 # Reconciliation Report Page Data Guide
 
-This page is the “Ledger Reconciler”: every day in the early morning, it consolidates the previous day's transaction activity into a single-page ledger that can be reconciled from multiple perspectives, including provider, tenant, personnel, and model.
+This page summarizes the gateway-recorded usage for the previous day from provider, tenant, person, model, and other perspectives. It helps reconcile gateway records; it is not a supplier invoice or a confirmed payable amount.
 
 ## How Snapshots Are Generated
 
 - The daily aggregation job generates a snapshot of the **previous day** in the early morning. A snapshot for the current day's data is not available until the early morning of the next day, when the page will display “Today's snapshot will be generated in the early morning tomorrow.”
-- Days with no snapshot (for example, if the system was down at the time) are marked “Not Aggregated”; use “Rerun end date” to manually recalculate the missing data.
+- Days with no snapshot (for example, if the system was down at the time) are marked “Not Aggregated”; use “Rerun end date” to recalculate the missing data. Existing snapshots can also be recalculated and are not permanently final.
 
 ## Two Amount Measures (Not Combined)
 
-- **Provider cost (USD):** The amount the platform pays to upstream providers.
-- **Internal credits / internal amount:** The platform's billing basis when charging tenants.
-- The difference between the two is the platform's gross profit. The page displays them separately and does not combine totals across units.
+- **Provider perspective amount:** A sum of terminal usage recorded by the gateway, including usage not assigned to a provider and non-business traffic. The amount is a gateway-recorded estimate, not an amount returned by a supplier and not a confirmed payable or paid amount.
+- **Internal credits / internal amount:** Business traffic only; credits are converted using the price factor saved with the snapshot. This is the platform's internal billing basis, not proof of an invoice or collection.
+- Compare the measures only when traffic scope and currency match. Their difference is not automatically gross margin. The page displays them separately and does not combine totals across units.
 
 ## Four Token Components
 
-Input (text sent to the model), Output (text returned by the model), Cache Read (input reused from a previous request, which is either not charged again or charged at a discount), and Cache Write (input stored in the cache for the first time). The four components sum to the total Token.
+This report currently adds input, output, cache reads and cache writes for its token total. Cache figures can overlap with input. For cross-report comparisons, use normalized input plus output and show cache reads and writes separately.
 
 ## How to Self-Check When Numbers Do Not Match
 
-1. A snapshot is the “final ledger”: Differences from the real-time dashboard are normal—the snapshot is frozen in the early morning of the next day and does not change afterward; the real-time dashboard includes the current day.
+1. A snapshot is an aggregate calculated from the data available at that time. Differences from the real-time dashboard are normal—the dashboard may include current-day data, and a snapshot can be updated by rerunning aggregation.
 2. Dates marked “Not Aggregated” have no figures: use a rerun to backfill the data before reconciling.
-3. When reconciling the provider view with the provider's billing dashboard, note the time zone: this system uses UTC day boundaries, while provider bills may use local time, so traffic crossing midnight may be assigned to different days.
-4. Failed requests also incur small costs (such as a partial response already billed by the upstream provider), so on days with a high failure rate, the cost per request tends to be higher.
+3. When comparing the provider perspective with a supplier invoice, account for scope as well as time zone: this page sums terminal usage recorded by the gateway, including unassigned and non-business traffic, and its amount is an estimate rather than the supplier's billed amount. Supplier invoices may also use local-day boundaries instead of UTC.
+4. Failed requests with terminal usage or cost recorded are included in the gateway aggregate; this does not mean the supplier has confirmed a charge.

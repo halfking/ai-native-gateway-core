@@ -4,6 +4,24 @@ export const enUS = {
     name: 'LLM Gateway',
     subtitle: 'Mobile Ops',
   },
+  statisticsHelp: {
+    open: 'Statistics definitions',
+    pages: {
+      usage: { title: 'Usage metrics', context: 'This page is a usage-cost view. Gateway cost estimates are reconciled separately from internal postings and amounts returned by providers.' },
+      usageEnhanced: { title: 'Enhanced usage', context: 'This page combines several endpoints with different sources and windows. Cards need not match each other or other reports. Missing or degraded data is not zero.' },
+      usageTrendSeries: { title: 'Usage trends', context: 'This page shows aggregated trends. Compare using the selected interval and timezone, and account for aggregation delay and unclassified data.' },
+      reportRollup: { title: 'Daily snapshot', context: 'This page reads daily snapshots. The provider view estimates gateway terminal usage; it is not an invoice payable. Reconcile internal amounts against actual postings separately.' },
+      reconciliation: { title: 'Provider monthly reconciliation', context: 'This page compares gateway monthly totals with imported bills. A total difference is not per-call matching evidence; align currency, billing period, and settlement account.' },
+      cacheState: { title: 'Cache state', context: 'This page shows cache runtime state; cache status or hit counts are not billing facts. Cache tokens may overlap input and should be shown separately.' },
+      logs: { title: 'Request logs', context: 'Count each inbound client request once by tenant and request ID. Count upstream calls by attempt; early rejects remain inbound requests.' },
+      sessionAudit: { title: 'Session audit', context: 'Inspect one canonical session within its tenant. Lifetime session totals differ from request usage in the selected time window.' },
+      sessionsOnline: { title: 'Online sessions', context: 'This page shows current online session state, which differs from deduplicated active sessions with requests in a selected window.' },
+      sessionAnalytics: { title: 'Session analytics', context: 'Aggregate canonical session entities within each tenant. Show USD cost, internal credits, and windowed request usage separately; do not add across units.' },
+      requestDetail: { title: 'Request details', context: 'A request detail represents one inbound request ID. Verify provider attempts, internal postings, and session attribution separately; isolate calls with unknown delivery status.' },
+    },
+    contractTitle: 'Shared reconciliation rules',
+    contract: 'Count inbound requests by tenant and request ID at gateway receipt. Count each confirmed upstream send as an attempt; isolate unknown submission status. Deduplicate sessions by tenant and session key. Internal amounts come from net actual postings, reversals, and adjustments, separately from provider cost estimates and provider-reported amounts. Keep unknown or missing values missing; never fill them with zero. Attribute trusted platform operations to a separate platform client and exclude them from tenant charges.',
+  },
   nav: {
     // ★ 2026-11-20 菜单整理轮：抽屉分组标题 —— 键集与取值跟 zh-CN 的 nav.group
     //   一一对应（值沿用 PC 端 en-US nav.ts；primary 为移动端首组）。

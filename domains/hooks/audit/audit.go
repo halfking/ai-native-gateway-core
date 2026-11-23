@@ -731,6 +731,29 @@ func (sc *StreamCapture) ObserveUsage(promptTokens, completionTokens, cacheRead,
 	}
 }
 
+// CurrentAttemptUsage returns only usage observed on the active upstream leg.
+// It intentionally excludes banked continuation legs so each transport
+// attempt can be persisted without multiplying the same usage across rows.
+type CurrentAttemptUsage struct {
+	PromptTokens, CompletionTokens, CacheReadTokens, CacheWriteTokens *int
+}
+
+func (sc *StreamCapture) CurrentAttemptUsage() CurrentAttemptUsage {
+	if sc == nil {
+		return CurrentAttemptUsage{}
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	copyInt := func(v *int) *int {
+		if v == nil {
+			return nil
+		}
+		n := *v
+		return &n
+	}
+	return CurrentAttemptUsage{copyInt(sc.promptTokens), copyInt(sc.completionTokens), copyInt(sc.cacheReadTokens), copyInt(sc.cacheWriteTokens)}
+}
+
 // ObserveCacheWriteSplit records the vendor's TTL-tier breakdown of the cache
 // WRITE tokens (Anthropic ephemeral_5m/1h; OpenAI ttl_30m/12h). Monitoring
 // only: the ledger keeps the read/write totals, the split is for observability
