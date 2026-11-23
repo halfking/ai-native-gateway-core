@@ -126,10 +126,22 @@ awk -F'\t' '
 ' "$FIXTURE_DIR/aligned.tsv" >"$FIXTURE_DIR/drift.tsv"
 make_fake_psql "$FIXTURE_DIR/drift.tsv"
 run_gate
+# ★★ 位次断言（★ L34 七轮：★ 门必须回答「**这次会在第几条炸**」 ★★）★★
+# ★★ 位次由**共享库**现算（★ 而不是在夹具里写死数字 ⇒ ★ 仓内投递面变了也不会失效 ★★）★★
+. "$REPO_ROOT/scripts/lib/deploy-surface.sh"
+surface_file="$FIXTURE_DIR/surface.txt"
+deploy_surface_extract "$REPO_ROOT/scripts/apply-db-revision-sequence.sh" "$surface_file" || true
+pos_392="$(deploy_surface_position "$surface_file" "392_candidate_failure_logs_monthly_partition.sql")"
+pos_344="$(deploy_surface_position "$surface_file" "344_usage_ledger_hot_independence.sql")"
 if [ "$GATE_RC" = "1" ] \
    && printf '%s' "$GATE_OUT" | grep -q "candidate_failure_logs_with_current_month" \
    && printf '%s' "$GATE_OUT" | grep -q "列序已漂移"; then
   ok "臂 C 红（EXIT=1）且点名了漂移的那一对"
+  if [ -n "$pos_392" ] && printf '%s' "$GATE_OUT" | grep -q "第 ${pos_392} 条"; then
+    ok "臂 C 红（EXIT=1）且**点名了投递面位次（第 ${pos_392} 条）**（★ 位次现算、★ 不写死 ★★）"
+  else
+    bad "臂 C 期望输出含「第 ${pos_392} 条」；实际输出：$(printf '%s' "$GATE_OUT" | tail -6 | tr '\n' ' ')"
+  fi
 else
   bad "臂 C 期望 EXIT=1 + 点名；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -5 | tr '\n' ' ')"
 fi
@@ -144,6 +156,11 @@ make_fake_psql "$FIXTURE_DIR/short.tsv"
 run_gate
 if [ "$GATE_RC" = "1" ] && printf '%s' "$GATE_OUT" | grep -q "列数不同"; then
   ok "臂 D 红（EXIT=1）且报「列数不同」"
+  if [ -z "$pos_344" ] && printf '%s' "$GATE_OUT" | grep -q "不在.*投递面"; then
+    ok "臂 D 红（EXIT=1）且说明「该迁移**不在**投递面里 ⇒ 本次部署不会重放它」（★ 344 确实不在 ★★）"
+  else
+    bad "臂 D 期望输出含「不在…投递面」（★ 344 的位次实测为空：pos_344='${pos_344}' ★★）；实际输出：$(printf '%s' "$GATE_OUT" | tail -6 | tr '\n' ' ')"
+  fi
 else
   bad "臂 D 期望 EXIT=1 + 「列数不同」；实际 ${GATE_RC}；输出：$(printf '%s' "$GATE_OUT" | tail -5 | tr '\n' ' ')"
 fi
@@ -176,6 +193,8 @@ note "  ⇒ ★ 这一臂钉的是「门坏了」与「判据红」必须**分�
 FAKEROOT="$FIXTURE_DIR/fakerepo"
 mkdir -p "$FAKEROOT/scripts/checks" "$FAKEROOT/sql/migrations/startup"
 cp "$GATE" "$FAKEROOT/scripts/checks/legacy-select-star-column-order-gate.sh"
+# ★★ 合成仓也要有**共享库**（★ L34 七轮起、★ 投递面解析搬进了 scripts/lib/deploy-surface.sh ★★）★★
+mkdir -p "$FAKEROOT/scripts/lib" && cp "$REPO_ROOT/scripts/lib/deploy-surface.sh" "$FAKEROOT/scripts/lib/deploy-surface.sh"
 # ★ 登记表**故意留空** ⇒ ★ 解析面为空 ⇒ ★ 门必须 ABORT 而不是判红 ★
 printf 'package startup\n\n// 故意留空的登记表\n' >"$FAKEROOT/sql/migrations/startup/hot_surface_select_star_contract_test.go"
 rc=0
