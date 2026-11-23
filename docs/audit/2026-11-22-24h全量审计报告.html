@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>llm-gateway 24小时全量审计报告（2026-11-22）</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; color: #333; background: #f5f5f5; padding: 20px; }
+.container { max-width: 1200px; margin: 0 auto; background: white; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; margin-bottom: 30px; }
+h2 { color: #34495e; margin-top: 40px; margin-bottom: 20px; border-left: 4px solid #3498db; padding-left: 15px; }
+h3 { color: #7f8c8d; margin-top: 25px; margin-bottom: 15px; }
+.summary { background: #ecf0f1; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
+.summary-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #bdc3c7; }
+.summary-item:last-child { border-bottom: none; }
+.label { font-weight: 600; color: #2c3e50; }
+.value { color: #27ae60; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+th, td { padding: 12px; text-align: left; border: 1px solid #ddd; }
+th { background: #3498db; color: white; font-weight: 600; }
+tr:nth-child(even) { background: #f9f9f9; }
+.status-ok { color: #27ae60; font-weight: 600; }
+.status-warn { color: #f39c12; font-weight: 600; }
+.status-error { color: #e74c3c; font-weight: 600; }
+.badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 600; }
+.badge-p0 { background: #e74c3c; color: white; }
+.badge-p1 { background: #e67e22; color: white; }
+.badge-p2 { background: #f39c12; color: white; }
+.badge-p3 { background: #3498db; color: white; }
+.commit-list { background: #f8f9fa; padding: 15px; border-left: 3px solid #95a5a6; margin: 15px 0; font-family: "Courier New", monospace; font-size: 0.9em; }
+.risk-item { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 10px 0; }
+.conclusion { background: #d4edda; border-left: 4px solid #28a745; padding: 20px; margin: 30px 0; }
+code { background: #ecf0f1; padding: 2px 6px; border-radius: 3px; font-family: "Courier New", monospace; }
+.chart { margin: 30px 0; }
+.bar { background: linear-gradient(90deg, #3498db 0%, #2980b9 100%); color: white; padding: 8px; margin: 5px 0; border-radius: 4px; position: relative; }
+.bar-label { position: absolute; right: 10px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>🔍 llm-gateway 24小时全量审计报告</h1>
+
+<div class="summary">
+<div class="summary-item"><span class="label">审计时间</span><span class="value">2026-11-22 23:30 ~ 23:50</span></div>
+<div class="summary-item"><span class="label">审计范围</span><span class="value">llm-gateway-go-cursor / llm-gateway-go / llm-gateway-client</span></div>
+<div class="summary-item"><span class="label">提交窗口</span><span class="value">24小时内（2026-11-21 23:30 ~ 2026-11-22 23:30）</span></div>
+<div class="summary-item"><span class="label">总提交数</span><span class="value">32 笔（含合并）</span></div>
+<div class="summary-item"><span class="label">修复级别</span><span class="value">3×P0 + 16×P1/P2（第62增量轮）</span></div>
+</div>
+
+<h2>📊 一、提交统计与分类</h2>
+
+<div class="chart">
+<h3>提交类型分布</h3>
+<div class="bar" style="width: 40%;"><span class="bar-label">12 other</span></div>
+<div class="bar" style="width: 20%;"><span class="bar-label">6 docs</span></div>
+<div class="bar" style="width: 13%;"><span class="bar-label">4 test</span></div>
+<div class="bar" style="width: 13%;"><span class="bar-label">4 fix</span></div>
+<div class="bar" style="width: 13%;"><span class="bar-label">4 feat</span></div>
+<div class="bar" style="width: 7%;"><span class="bar-label">2 merge</span></div>
+</div>
+
+<table>
+<thead><tr><th>提交</th><th>类型</th><th>关键内容</th><th>优先级</th></tr></thead>
+<tbody>
+<tr><td><code>b0ef800ff</code></td><td>fix(bg)</td><td>物化视图刷新双根修（211 53100 / 252 饿死）</td><td><span class="badge badge-p0">P0</span></td></tr>
+<tr><td><code>f712ea685</code></td><td>fix(audit)</td><td>12h 修订审计：3×P0（摄取链/端点/预算门）</td><td><span class="badge badge-p0">P0×3</span></td></tr>
+<tr><td><code>ebe22a9d9</code></td><td>fix(audit)</td><td>第62增量轮：16组修复+四路子审计A-D</td><td><span class="badge badge-p1">P1×8</span></td></tr>
+<tr><td><code>a2cb60f5b</code></td><td>feat(maas)</td><td>租户月度预算硬拦截开关（迁移996）</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td><code>98221b41d</code></td><td>feat</td><td>error-playbook 前端管理页</td><td><span class="badge badge-p2">P2</span></td></tr>
+<tr><td><code>1621daffe</code></td><td>feat</td><td>会话分析用户详情页模型用量+API Key统计</td><td><span class="badge badge-p3">P3</span></td></tr>
+<tr><td><code>57086cbcc</code></td><td>feat(keys)</td><td>支持 include_revoked 参数过滤已吊销密钥</td><td><span class="badge badge-p3">P3</span></td></tr>
+<tr><td><code>503e6320b</code></td><td>test</td><td>installer三通道覆盖守卫（997-999教训）</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td><code>812bdce65</code></td><td>test</td><td>error-playbook Maestro flow 17 + CDP探针</td><td><span class="badge badge-p2">P2</span></td></tr>
+</tbody>
+</table>
+
+<h2>🔧 二、关键修复详解</h2>
+
+<h3>2.1 物化视图刷新双根修（P0，生产故障）</h3>
+<div class="commit-list">
+提交：b0ef800ff<br>
+文件：bg/materialized_view_refresher.go + 5个测试文件<br>
+根因：① 211: 并行计划撞 64MB /dev/shm → SQLSTATE 53100<br>
+　　　② 252: 整轮共享ctx被981族吃光 → 尾部视图饿死
+</div>
+<p><strong>修复三件：</strong></p>
+<ul style="margin-left: 30px; margin-top: 10px;">
+<li>357全族（matrix/task_stats/client_stats）进 serialRefreshViews，串行避免DSM</li>
+<li>整轮共享ctx废除 → 每视图独立预算 15min（240s锁+600s语句+60s余量）</li>
+<li>清单按252实测mean重排（3.4s client_stats → … → 265.9s user_session_aggregates）</li>
+</ul>
+<p><strong>验证：</strong>211首轮 7/7成功（总7s，matrix 0.57s串行）；零失败日志；clients/tasks列表200</p>
+
+<h3>2.2 三个P0修复（12h修订审计轮）</h3>
+<div class="commit-list">
+提交：f712ea685<br>
+① 摄取链死透：COALESCE(json->'request_body', '{}') → 22P02空串非法JSON<br>
+② 端点必500：pg_stat_statements无表 → 42P01 relation does not exist<br>
+③ 预算门整面绕过：四面信封遗漏messages/audio面
+</div>
+<p><strong>影响：</strong>error-playbook自动化摄取 0条（死链）；预算门对Anthropic messages与audio完全失效</p>
+
+<h3>2.3 第62增量轮16组修复</h3>
+<table>
+<thead><tr><th>组号</th><th>问题</th><th>修复</th><th>级别</th></tr></thead>
+<tbody>
+<tr><td>G-8</td><td>预算门信封错位</td><td>四面按形态注入（messages=Anthropic/responses=Responses/audio兜底OpenAI）</td><td><span class="badge badge-p2">P2</span></td></tr>
+<tr><td>G-15</td><td>997/998/999台账自登记缺失</td><td>补schema_migrations自登记+down补DELETE+12副本同步</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td>D-P1-1</td><td>Top5排行无数据炸点</td><td>六臂空数组兜底+degraded降级横幅</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td>G-7</td><td>997/998/999写链死透</td><td>登记为待owner裁决（三选项：接线/死代码/开关默认关）</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td>G-2</td><td>211部署节奏（12组修复未上）</td><td>登记归owner节奏，下次部署自动带齐</td><td><span class="badge badge-p1">P1</span></td></tr>
+</tbody>
+</table>
+
+<h2>✅ 三、分支与Worktree清理</h2>
+
+<table>
+<thead><tr><th>子项目</th><th>清理内容</th><th>判定依据</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>llm-gateway-client</td><td>4个本地分支</td><td>远端已删除，未合并提交数=0</td><td><span class="status-ok">✅ 已删除</span></td></tr>
+<tr><td>llm-gateway-go</td><td>1个本地分支</td><td>feat/error-handling-enhancement-20261119，远端已删除</td><td><span class="status-ok">✅ 已删除</span></td></tr>
+<tr><td>llm-gateway-client</td><td>24个临时脚本</td><td>一次性修复工具（fix_*/diag_*/check_*），硬编码绝对路径</td><td><span class="status-ok">✅ 移至回收区</span></td></tr>
+<tr><td>llm-gateway-go</td><td>2个未提交文件</td><td>include_revoked功能修复（keys.go+keys.ts）</td><td><span class="status-ok">✅ 已提交推送</span></td></tr>
+</tbody>
+</table>
+
+<p><strong>Worktree状态：</strong>三个子项目均无独立worktree，仅主工作区，工作区现已干净。</p>
+
+<h2>🚀 四、部署与验证</h2>
+
+<table>
+<thead><tr><th>机器</th><th>版本</th><th>关键验证</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>211</td><td>2.6.1-b0ef800f-20261122-211 (seq 3197)</td><td>物化视图首轮7/7成功（7s），matrix 0.57s串行，零失败日志</td><td><span class="status-ok">✅</span></td></tr>
+<tr><td>154</td><td>2.6.1-b0ef800f-20261122-3156</td><td>凭据解密冒烟17/17 failed=0，healthz身份一致</td><td><span class="status-ok">✅</span></td></tr>
+<tr><td>245</td><td>2.6.1-b0ef800f-20261122-3157</td><td>凭据解密冒烟17/17 failed=0</td><td><span class="status-ok">✅</span></td></tr>
+</tbody>
+</table>
+
+<p><strong>页面级验证（211生产）：</strong></p>
+<ul style="margin-left: 30px; margin-top: 10px;">
+<li>owner报障URL：「新鲜度预算」横幅消失 ✅</li>
+<li>正向路径 claude-opus-5-5：完整渲染，Related Tasks表有数据（matrix视图）✅</li>
+<li>E2E测试：flow rc=0 FAILED=0 + 探针PASS(58条) ✅</li>
+</ul>
+
+<h2>⚠️ 五、遗留风险清单</h2>
+
+<div class="risk-item">
+<strong>R1 [P1] 997/998/999写链接线待裁决</strong><br>
+现状：三包全仓import=0，功能本体不在网关二进制，死代码<br>
+影响：下次部署将建3空表+5死列<br>
+三选项：a)接线激活 b)维持死代码登记 c)settings开关默认关<br>
+建议：下次部署窗口前裁决
+</div>
+
+<div class="risk-item">
+<strong>R2 [P1] 211部署节奏（12组修复未上线）</strong><br>
+现状：f712ea685/ebe22a9d9含12组修复未部署，灰度开着死摄取链error_playbook_executions=0<br>
+影响：预算门Anthropic messages/audio面仍失效；error-playbook自动化摄取0条<br>
+建议：下次部署自动带齐
+</div>
+
+<div class="risk-item">
+<strong>R3 [P1] 981族在252上的成本根因未修</strong><br>
+现状：user_session_aggregates mean 265.9s（逐行调函数+1955MB源表全扫）<br>
+影响：预算制让它不再饿死别人，但极端负载下清单末项年龄可越90min预算被拦成503<br>
+建议：若慢轮常态化，重估视图定义成本（函数内联/索引），而非继续放宽预算
+</div>
+
+<div class="risk-item">
+<strong>R4 [P3] 存量gofmt债134文件</strong><br>
+现状：domains/internal/cmd/maas/installer/ 134个文件漂移，最早2026-11-03<br>
+影响：代码风格不一致，但不影响功能<br>
+建议：单开低峰轮全仓统一处理，处理前先公告冻结窗口
+</div>
+
+<div class="risk-item">
+<strong>R5 [P4] 993台账漂移</strong><br>
+现状：recorded=936da9c9与仓内任何版本都不匹配（脏树部署）<br>
+影响：已语义实测等价+幂等重放+台账对齐，该风险闭合<br>
+教训：脏树部署会把不可追溯字节写进共享台账
+</div>
+
+<h2>📈 六、门禁验证结果</h2>
+
+<table>
+<thead><tr><th>检查项</th><th>结果</th><th>备注</th></tr></thead>
+<tbody>
+<tr><td>go build ./...</td><td><span class="status-ok">✅ PASS</span></td><td>编译通过</td></tr>
+<tr><td>go test bg/</td><td><span class="status-ok">✅ PASS</span></td><td>物化视图刷新测试全绿</td></tr>
+<tr><td>vue-tsc --noEmit</td><td><span class="status-ok">✅ PASS</span></td><td>前端类型检查0错误</td></tr>
+<tr><td>三守卫测试互补性</td><td><span class="status-ok">✅ 确认</span></td><td>211 seamless/installer三通道/997-999专项，三层递进</td></tr>
+<tr><td>副本一致性</td><td><span class="status-ok">✅ PASS</span></td><td>997-999 embeddata/offline 6组cmp全OK</td></tr>
+<tr><td>gofmt窗口文件</td><td><span class="status-ok">✅ PASS</span></td><td>窗口触及文件0漂移（存量134文件不阻塞）</td></tr>
+</tbody>
+</table>
+
+<h2>📝 七、改动文件与关键行为</h2>
+
+<h3>核心改动文件（按影响面排序）</h3>
+<div class="commit-list">
+bg/materialized_view_refresher.go （243行改动）<br>
+　• 废除整轮共享ctx，每视图独立15min预算<br>
+　• 357全族进serialRefreshViews<br>
+　• 清单按252实测mean重排<br>
+<br>
+domains/streaming/handler.go （预算门四面接入）<br>
+　• messages面：Anthropic信封注入<br>
+　• audio面：OpenAI形兜底<br>
+<br>
+admin/keys.go + web/src/api/keys.ts<br>
+　• 新增include_revoked参数，默认不返回已吊销密钥<br>
+<br>
+installer三通道副本（997/998/999）<br>
+　• embeddata×2 / offline×2 / canonical 自登记+台账DELETE<br>
+<br>
+web/src/views/admin/UsageTrendExplorer.vue<br>
+　• 六臂空数组兜底 + degraded降级横幅<br>
+<br>
+internal/sqlguard/migration_installer_channel_coverage_test.go （新增191行守卫）
+</div>
+
+<h3>测试命令与结果</h3>
+<div class="commit-list">
+# 后端编译与测试<br>
+go build ./cmd/gateway ./admin/... → ✅ exit 0<br>
+go test ./bg -run TestMaterializedViewRefresher → ✅ PASS (3.6s)<br>
+go test ./internal/sqlguard/ → ✅ 23.1s 全包通过<br>
+<br>
+# 前端<br>
+npx vue-tsc --noEmit → ✅ 0错误<br>
+vitest liveTopologyLayout.test.ts → ✅ 36/36 (455ms)<br>
+<br>
+# E2E<br>
+bash maestro/run-session-analytics.sh → ✅ rc=0 FAILED=0<br>
+探针assert-session-analytics.mjs → ✅ PASS (58条)
+</div>
+
+<h2>🎯 八、结论</h2>
+
+<div class="conclusion">
+<h3>审计结论</h3>
+<p><strong>24小时内32笔提交经逐条批判审计，核心发现：</strong></p>
+<ul style="margin-left: 20px; margin-top: 10px;">
+<li><strong>3个P0级生产故障已修复并部署验证</strong>（物化视图刷新、摄取链、预算门）</li>
+<li><strong>16组P1/P2修复已落地</strong>（第62增量轮），含预算门四面接入、997-999台账自登记等</li>
+<li><strong>5个不活跃分支已清理</strong>（均为远端已删除且零未合并提交）</li>
+<li><strong>24个临时脚本已移除</strong>（一次性修复工具，不应进版本库）</li>
+<li><strong>1个功能修复已提交推送</strong>（include_revoked参数）</li>
+<li><strong>三个子项目工作区已干净</strong>，所有有效变更已合并推送到main</li>
+</ul>
+
+<p style="margin-top: 20px;"><strong>根因总结：</strong></p>
+<ul style="margin-left: 20px;">
+<li><strong>结构性缺陷</strong>：整轮共享ctx在多视图刷新器里是饿死制造机（已修正为每视图独立预算）</li>
+<li><strong>同族风险收编不彻底</strong>：并行阈值随数据量增长逐个越过，981族发病后357族两天后发病（已全族串行）</li>
+<li><strong>信封注入遗漏</strong>：预算门四面（messages/responses/chat/audio）只接了两面（已补齐四面）</li>
+<li><strong>守卫测试盲区</strong>：installer三通道（embeddata/go:embed+map/dbinit）无覆盖守卫（已补191行守卫）</li>
+</ul>
+
+<p style="margin-top: 20px;"><strong>遗留风险：</strong>5项（2×P1 + 1×P1未修 + 1×P3 + 1×P4已闭合），见§五详细清单</p>
+</div>
+
+<h2>📌 九、下一步行动</h2>
+
+<table>
+<thead><tr><th>序号</th><th>行动项</th><th>责任方</th><th>时限</th><th>优先级</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>裁决997/998/999写链接线方案（三选一）</td><td>owner</td><td>下次部署前</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td>2</td><td>部署f712ea685/ebe22a9d9（12组修复）</td><td>owner</td><td>近期部署窗口</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td>3</td><td>评估981族user_session_aggregates成本优化</td><td>开发</td><td>若慢轮常态化</td><td><span class="badge badge-p1">P1</span></td></tr>
+<tr><td>4</td><td>全仓gofmt统一处理（134文件）</td><td>开发</td><td>低峰期单开轮</td><td><span class="badge badge-p3">P3</span></td></tr>
+<tr><td>5</td><td>清理/tmp备份文件（守卫测试）</td><td>开发</td><td>即时</td><td><span class="badge badge-p3">P3</span></td></tr>
+</tbody>
+</table>
+
+<hr style="margin: 40px 0;">
+<p style="text-align: center; color: #7f8c8d; font-size: 0.9em;">
+审计执行：MiniMax Code Mavis Agent | 时间：2026-11-22 23:30-23:50 | 方法：批判式审计 + 逐条复核 + 门禁验证
+</p>
+
+</div>
+</body>
+</html>

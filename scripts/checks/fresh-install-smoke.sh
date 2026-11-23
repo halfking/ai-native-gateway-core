@@ -34,6 +34,17 @@
 #   ★ **老库上恒失败**；★ 而空库上两表同序 ⇒ ★★ **⇒ 「空库门」抓不到「老库列漂移」
 #   ★ 这一类** ⇒ ⇒ ⇒ **⇒ 一道门只能覆盖一个世界。**
 #
+# ★★★ 2026-11-23 L33 轮扩门：★★ 这道门现在**第二阶段**跑「装完再升」
+#   ★★★（★ 同一个库、★ 同一个容器、★ 第二次跑安装器 ⇒ 增量路径）：
+#   ★ 实测：★ **同一个刚装成功的库，第二次升级必失败**（★ 旧代码）：
+#     · 失败点①：★ 安装器专属资产 `session_turns_hot_bootstrap.sql` 恒执行
+#       ⇒ 撞已被 890 下线的 `public.request_logs_hot`；
+#     · 失败点②：★★ **台账盲区** ⇒ ★ 392 条 startup 迁移只有 112 条自登记
+#       ⇒ ★★ 其余 280 条**从不记账** ⇒ ★★ **每次增量都被重放** ⇒ ★★ 而
+#       ★★ 「重放安全」是**未经证明的假设**。
+#   ★★ ⇒ ★★ 门必须同时覆盖「新装」与「再升」两段 ⇒ ★★ ⇒ ★★ 同一个门里两段
+#   ★★ 判据（★ 第二段的四条判据写在下面那段注释里）。
+#
 # ★ 三态判据（★ 「跑不了」与「跑红了」必须分得开）：
 #   · 环境跑不了（★ 无 docker 守护进程、★ 镜像拉不到）⇒ **明确 SKIP 并打印原因**
 #     （★ 仓内先例：`guards-deploy`「缺件时明确 SKIP，★ 不伪装成通过」）
@@ -231,6 +242,85 @@ fi
 
 tables=$(q "select count(*) from information_schema.tables where table_schema='public'")
 note "  ℹ public 表数：${tables:-<空>}"
+
+# ═══════════════════════════════════════════════════════════════════════
+# ── 第二阶段：★ 「装完再升」（★ 增量路径）★ ────────────────────────────
+# ★★★ 这道门现在覆盖**两个世界**：★★ 空库新装 ＋ ★★ **装完再升**。
+#
+# ★★★ 为什么必须有第二阶段（★ 2026-11-23 L33 轮实测）：★★
+#   ★ **同一个刚装成功的库，第二次跑安装器必失败**（★ 本机真库复现 ×4）：
+#     · 失败点①：★ `session_turns_hot_bootstrap.sql`（★ 安装器专属资产）
+#       ⇒ ★ 旧代码对**无数字前缀**的文件一律「恒执行」⇒ ★ 它撞已被 890
+#       下线的 `public.request_logs_hot` ⇒ ★★ 报错
+#       `ERROR:  relation "public.request_logs_hot" does not exist`；
+#     · 失败点②：★★ **台账盲区** ⇒ ★ 392 条 startup 迁移里**只有 112 条**
+#       在文件尾部自登记 ⇒ ★★ 其余 280 条**从不记账** ⇒ ★★ 而增量通道按
+#       「版本在台账里 ⇒ 跳过」判定 ⇒ ★★ **那 280 条每次增量都被重放**
+#       ⇒ ★★ 而「重放安全」是**未经证明的假设**（★ 392 的 `SELECT * UNION ALL`
+#       视图在列序漂移的库上炸 ⇒ 第三个发现）。
+#   ★★ ⇒ ★★ 「空库装得出来」**不等于**「同一个库升得上去」⇒ ★★ 两段都要跑。
+#
+# ★ 判据（★ 全部对**真库**跑，★ 不是模拟）：
+#   ① 第二次安装 **必须成功**（★ 退出码 0）；
+#   ② 第二次安装 **不许重放任何带版本号的迁移**（★ 逐条解析安装日志）；
+#   ③ 第二次安装**不许新增台账行**（★ ⇒ 印证②：★ 没有「应用了又补记」）；
+#   ④ 第二次安装后 **产物仍在**（★ 4 视图 / 990 的列 / 956 的种子行）
+#      ⇒ ★ 增量路径不许把已装好的库改坏。
+# ═══════════════════════════════════════════════════════════════════════
+note "★ 跑第二次安装（★ 增量路径：★ 同一个库、★ 同一个容器）…"
+ledger_before=$(q "select count(*) from schema_migrations")
+RUN2_LOG="$(mktemp -t fresh-install-run2)"
+if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
+        go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN2_LOG" 2>&1; then
+  note "---- 第二次安装输出（尾部 25 行）----"
+  tail -25 "$RUN2_LOG"
+  note "---- 第二次安装输出（尾部 25 行）----"
+  bad "★ 装完再升失败（★ ★ 「同一个刚装成功的库，第二次升级必失败」——★ 这正是老库升级通道）"
+  rm -f "$RUN2_LOG"
+  exit 1
+fi
+note "  ✔ 第二次安装成功（★ 增量路径）"
+
+ledger_after=$(q "select count(*) from schema_migrations")
+if [ "${ledger_before:-0}" != "${ledger_after:-0}" ]; then
+  bad "第二次运行后台账行数从 ${ledger_before:-<空>} 变成 ${ledger_after:-<空>} ⇒ ★ 有迁移被重放（★ 增量通道应当**只补未登记的变更**）"
+else
+  note "  ✔ 台账行数未变（${ledger_after:-<空>}）⇒ 没有迁移被重放"
+fi
+
+# ★ 逐条解析第二次运行的日志：★ 「应用 startup migration <文件>」里
+# ★ **形如 `数字_` 的**（★ 即有版本号、★ 参与台账判定的）⇒ 就是**被重放的
+# ★ 带版本号迁移**（★ 应当为 0 条）。
+# ★★ 口径说明（★ 写下来免得下一个人踩）：★ 这里判的是「**纯数字前缀 + 下划线**」
+# ★★ ⇒ `361b_provider_models_source_prelude.sql`（★ 数字 + 字母）**不算**带版本号
+# ★★ ⇒ ★ 它每次增量都照跑是**设计如此**（★ 无版本号 ⇒ 不进版本台账 ⇒ ★ 靠
+# ★★ 幂等契约兜底，★ 且它的契约明确允许在已有部署上跑）。
+# ★★★ 量具自身的坑（★ 本轮真踩了一次，★ 写在这里免得复发）：★★
+# ★★★ `grep` **无匹配时退出码是 1** ⇒ ★ 在 `set -euo pipefail` 下 ⇒ ★
+# ★★★ 「没有重放任何迁移」（★ 正是我们要的**好**结果）⇒ ★★ 反而让**整道门**
+# ★★★ 在第 298 行异常退出（★ ERR trap 报「门自身的缺陷」）★★
+# ★★★ ⇒ ★★ 所以这里的 `grep` 一律配 `|| true`（★ 让「无匹配」变成 0 行而不是失败）。
+replayed=$( (grep -o '应用 startup migration [0-9][0-9]*_[^ ]*' "$RUN2_LOG" 2>/dev/null || true) | wc -l | tr -d ' ')
+if [ "${replayed:-0}" != "0" ]; then
+  bad "第二次运行重放了 ${replayed} 条带版本号的迁移（★ 增量通道的跳过判据失效）"
+  (grep -o '应用 startup migration [0-9][0-9]*_[^ ]*' "$RUN2_LOG" || true) | head -5 | sed 's/^/      /'
+else
+  note "  ✔ 第二次运行没有重放任何带版本号的迁移"
+fi
+rm -f "$RUN2_LOG"
+
+views2=$(q "select count(*) from pg_matviews where matviewname like '%aggregates%'")
+if [ "$views2" != "4" ]; then
+  bad "★ 第二次运行后会话分析物化视图数＝${views2:-<空>}，★ 期望 4（★ ⇒ 增量路径把已装好的库改坏了）"
+else
+  note "  ✔ 增量路径后 4 个会话分析物化视图仍在"
+fi
+col2=$(q "select count(*) from information_schema.columns where table_name='session_summaries' and column_name='total_credits_charged'")
+if [ "$col2" != "1" ]; then
+  bad "★ 第二次运行后 session_summaries.total_credits_charged 列数＝${col2:-<空>}，★ 期望 1（★ ⇒ 增量路径把已装好的库改坏了）"
+else
+  note "  ✔ 增量路径后 total_credits_charged 仍在"
+fi
 
 if [ "$FAIL" -ne 0 ]; then
   printf 'fresh-install-smoke: FAIL（%d 条判据不满足）\n' "$FAIL" >&2
