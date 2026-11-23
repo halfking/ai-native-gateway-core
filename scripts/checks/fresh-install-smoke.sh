@@ -224,7 +224,7 @@ note "  ✔ 目标库确认为空（public 表数 0）"
 # ★★★ ★★ 隔离断言 ①：★★ **必须显式传容器名** ⇒ ★★ 绝不吃 e2e-bootstrap 的
 # ★★ 默认容器名 `llm-gateway-pg`（★ ★ ★ 本机有一个同名的在役开发库容器！★ ★ ★）
 note "★ 跑空库新装（cmd/e2e-bootstrap ⇒ 与生产安装器同一段 InitSchema）…"
-INSTALL_LOG="$(mktemp -t fresh-install)"
+INSTALL_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install.XXXXXX")"
 if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
         go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$INSTALL_LOG" 2>&1; then
   note "---- 安装输出（尾部 25 行）----"
@@ -290,7 +290,7 @@ note "  ℹ public 表数：${tables:-<空>}"
 # ═══════════════════════════════════════════════════════════════════════
 note "★ 跑第二次安装（★ 增量路径：★ 同一个库、★ 同一个容器）…"
 ledger_before=$(q "select count(*) from schema_migrations")
-RUN2_LOG="$(mktemp -t fresh-install-run2)"
+RUN2_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-run2.XXXXXX")"
 if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
         go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN2_LOG" 2>&1; then
   note "---- 第二次安装输出（尾部 25 行）----"
@@ -390,7 +390,7 @@ else
   # ★★ ⇒ ★ L33 已论证它会制造新分叉 ★★）★ ② 口径变了 ⇒ ★★ 两种都**必须**有人复核 ★★。
   bad "★ 跑之前部署通道那本账已有 ${deploy_ledger_rows} 行 ⇒ ★ 「它对安装器零知识」这个前提**不成立** ⇒ ★ ★ 本段测不到它想测的东西了 ⇒ ★ ★ 口径变了（★ 请核对报告 §7.31 ＋ 刻意留红）★★"
 fi
-DEPLOY_RUN_LOG="$(mktemp -t fresh-install-deploy)"
+DEPLOY_RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-deploy.XXXXXX")"
 DEPLOY_RC=0
 ( cd "$REPO_ROOT" && \
   LLM_GATEWAY_PSQL_TRANSPORT=container \
@@ -455,7 +455,7 @@ else
     # ★★ 删掉目标文件的版本行 ⇒ ★★ 版本规则不再跳过它 ⇒ ★★ 只剩 F3 能跳
     q "DELETE FROM public.schema_migrations WHERE version = '${DEPLOY_VERSION}'" >/dev/null
     q "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${DEPLOY_SEQ}:${DEPLOY_FILE}', '${deploy_sha}') ON CONFLICT (sequence_name) DO NOTHING" >/dev/null
-    RUN3_LOG="$(mktemp -t fresh-install-run3)"
+    RUN3_LOG="$(mktemp "${TMPDIR:-/tmp}/fresh-install-run3.XXXXXX")"
     if ! ( cd installer && E2E_PG_CONTAINER="$CONTAINER_NAME" \
             go run ./cmd/e2e-bootstrap "$PG_DB" cmd/llm-gw-installer/embeddata ) >"$RUN3_LOG" 2>&1; then
       note "---- 第三次安装输出（尾部 20 行）----"

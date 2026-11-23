@@ -115,6 +115,16 @@ var allowedParentDML = []struct {
 		"★ 回收站把会话标记为 deleted（:124）与恢复为 active（:192）—— 两处成对。★ sessions 是**分区父表**，且本仓既有登记（admin/session_turns_v2.go / cmd/gateway/turn_logs_aggregator.go / domains/session/v2/session_aggregator.go / internal/titlestore/store.go）都已在写它 ⇒ 本条是同一族的新站点，登记而不改代码。★ 门要求**条数**也相等（★ 只比集合的话，第二处会被第一处吸收掉 ⇒ 这就是「同文件同表再加一条」被抓的机制）。"},
 	{"admin/recording_consent.go", "session_bodies", 1,
 		"★ 关闭录制同意时的正文清空（:139-140）：hot 与**分区父表**各删一份。★ 与 admin/session_trash.go 同构 —— 关闭录制必须真的清掉正文，而正文分布在 hot + 月分区两处 ⇒ 只删 hot 会让「已关闭录制」名存实亡（★ 且这正是「默认关闭录制」的隐私承诺所在）。"},
+	// ★ 2026-11-24（迁移 983，统计专用表 request_metrics）：**不**在此登记。
+	//   本门的红线是「★ 更新/删除只能在 hot 表进行 ★」（scan.go 的 stmtPatterns
+	//   只认 UPDATE / DELETE / TRUNCATE，**没有 INSERT**）⇒ 对父表的 INSERT
+	//   由 PG 的分区路由负责（写进所属分区或默认分区），不属红线违规。
+	//   ⇒ request_metrics 的写入（internal/metricsstore/writer.go，唯一一条
+	//     INSERT ⇒ 幂等 upsert）**不需要**登记到本表；
+	//   ★ 而登记了反而会被本门判「白名单登记项已失效（代码已改而登记未跟）」而报红
+	//     （实测：登记后 TestNoParentTableDMLBeyondKnown 报 stale）。
+	//   ⇒ request_metrics 只需登记进 parents.go 的 partitionParents 清单
+	//     （让 TestPartitionParentsAreExhaustive 的「DDL 里的都在」那侧通过）。
 }
 
 type pair struct {

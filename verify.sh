@@ -357,6 +357,16 @@ bash scripts/checks/deploy-ledger-coverage-gate.sh
 echo "[verify] deploy-ledger coverage gate selftest (fast gate: seven fixture arms, no PG needed)"
 bash scripts/checks/deploy-ledger-coverage-gate.test.sh
 
+# ★★ 「mktemp 模板」跨平台门（★ 2026-11-24 新增 ★ 快门：纯静态、★ 约 1~2s ★）★★
+#   ★ 起因：★ **在生产 Linux 上真跑一道 macOS 上跑过的门** ⇒ ★ 实测发现
+#     `mktemp -t <模板>` 在 **GNU coreutils（Linux）要求模板含 ≥3 个 X**、
+#     而 **macOS 容忍没有 X** ⇒ ★ ⇒ **同一道门在生产 Linux 上会直接坏掉** ★
+#   ★ ⇒ ★ 而本轮实测这类写法在仓里有 5 处（★ 含「空库新装烟测门」的 4 处 ★）
+#   ★ ⇒ ★ ⇒ **在 macOS 上永远暴露不出、★ 只在生产上炸** ★★ ⇒ ★ ⇒ 本门把它钉住 ★
+#   ★ 与「判据恒真」门**同族**：★ 同在 `guards-shell` 目标、★ 同进 CI 快门族 ★。
+echo "[verify] shell mktemp template gate (fast gate: >=3 X required by GNU coreutils)"
+bash scripts/guards/check-shell-mktemp-template.sh
+
 # ★★ 「判据恒真」shell 门（★ 2026-11-23 L33 二轮新增 ★ 快门：纯静态、★ 约 1~2s ★）★★
 #   ★ 起因：★ 本轮扩「空库新装烟测门」第三阶段时写出了
 #     `if (grep -q "…" "$LOG" || true); then` ⇒ ★★ **`if` 条件恒为真** ⇒ ★★

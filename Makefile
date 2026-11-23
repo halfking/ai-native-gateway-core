@@ -729,7 +729,7 @@ guards-fast: guards-installer guards-shell guards-audit-ledger guards-gate-scrip
 #     对棘轮登记册 ⇒ 读数必须确定）；shell 门扫「已跟踪 ∪ 未跟踪未忽略」
 #     ⇒ 新写好还没 git add 的脚本也在视野里 ⇒ 本门无登记册 ⇒ 宽面不引入不确定性。
 .PHONY: guards-shell guards-shell-vacuous
-guards-shell: guards-shell-vacuous ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）＋ **判据恒真 shell 门**（★ 2026-11-23 L33 二轮新增）
+guards-shell: guards-shell-vacuous guards-shell-mktemp ## 全角变量 shell 门（判据与 Go 门逐字一致；扫描面含未跟踪文件，比 Go 门宽）＋ **判据恒真 shell 门**（★ 2026-11-23 L33 二轮新增）
 	@bash scripts/guards/check-shell-fullwidth-var.sh
 # ★★ 2026-11-23 L33 二轮新增：★ 「判据恒真」shell 门 ★★
 #   ★ 起因：★ 本轮给「空库新装烟测门」扩第三阶段时，★ 写出了
@@ -744,6 +744,17 @@ guards-shell: guards-shell-vacuous ## 全角变量 shell 门（判据与 Go 门�
 #     ★★ 门红（★ 精确到 文件:行）★★；★ 移除 ⇒ ★★ 绿（★ 868 个脚本 0 命中）★★。
 guards-shell-vacuous: ## 「判据恒真」shell 门（★ `|| true` 落在 if/elif/while 条件位 ⇒ 判据永远成立）
 	@bash scripts/guards/check-shell-vacuous-assertion.sh
+
+# ★★ 「mktemp 模板」跨平台门（★ 2026-11-24 新增 ★★）
+# ★ 起因：★ **在生产 Linux 上真跑一道 macOS 上跑过的门** ⇒ ★ 实测发现
+# ★   `mktemp -t <模板>` 在 **GNU coreutils（Linux）要求模板含 ≥3 个 X**、
+# ★   而 **macOS 容忍没有 X** ⇒ ★ ⇒ **同一道门在生产 Linux 上会直接坏掉** ★
+# ★ ⇒ ★ 而本轮实测这类写法在仓里有 **5 处**（★ 含「空库新装烟测门」的 4 处 ★）
+# ★ ⇒ ★ ⇒ **在 macOS 上永远暴露不出、★ 只在生产上炸** ★★
+# ★ ⇒ ★ ⇒ 本门把「模板必须含 ≥3 个 X」钉成断言 ⇒ ★ 纯静态、★ 约 1~2s
+.PHONY: guards-shell-mktemp
+guards-shell-mktemp: ## 「mktemp 模板」跨平台门（★ GNU coreutils 要求 ≥3 个 X、★ macOS 不要求 ⇒ 只在 Linux 上暴露）
+	@bash scripts/guards/check-shell-mktemp-template.sh
 
 # scripts/ursmcheck 的门文件（**数量实时取**，见文件头 URSMCHECK_GATE_COUNT；
 # 比主门慢一个量级 ⇒ 独立 timeout）

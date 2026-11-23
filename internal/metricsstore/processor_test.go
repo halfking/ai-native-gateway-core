@@ -3,6 +3,8 @@ package metricsstore
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -182,4 +184,136 @@ func writeArgMatchers() []driver.Value {
 	matchers[32] = int64(115)        // cost_cents ← round(1.15 * 100)
 	matchers[41] = "async_processor" // source
 	return matchers
+}
+
+// ★ 阻断级缺陷回归：迁移 890 已把 v1 族 request_logs（含母表）整体删除，
+// 裸读 FROM request_logs 在生产上直接 42P01 ⇒ 增强整条静默失败
+// （请求照进库、计数照涨，只是所有会话/任务/协议维度全空 ⇒ 从数据上看不出坏了）。
+// 这里用**仓内守卫自己的那条正则**自检，保证以后不会有人再写回裸母表读。
+func TestEnrichDimensionsSQL_UsesCanonicalTwoLeggedView(t *testing.T) {
+	// 与 internal/sqlreadguard/guard_test.go 同一形态的正则
+	bareRequestLogsRe := regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+(public\.)?_?request_logs\b`)
+
+	if bareRequestLogsRe.MatchString(enrichDimensionsSQL) {
+		t.Errorf("enrich 查询不得裸读 v1 母表（已被迁移 890 删除）：%s", enrichDimensionsSQL)
+	}
+	if !strings.Contains(enrichDimensionsSQL, "FROM request_logs_with_current_month") {
+		t.Errorf("enrich 数据源必须是双腿视图 request_logs_with_current_month：%s", enrichDimensionsSQL)
+	}
+	// 协议列必须是视图真实存在的列（视图里没有 upstream_protocol）
+	if strings.Contains(enrichDimensionsSQL, "upstream_protocol") {
+		t.Error("视图里没有 upstream_protocol（协议回落列应是 egress_protocol）")
+	}
+	if !strings.Contains(enrichDimensionsSQL, "egress_protocol") {
+		t.Error("应取视图的 egress_protocol 作为协议回落列")
+	}
+}
+
+// ★ 缺陷回归：enhance 失败必须**外报**。
+// 静默吞掉的形态最坏：表/列被删 ⇒ 请求照进库、计数照涨，只是维度全空 ⇒ 无从发现。
+func TestEnrichDimensions_SurfacesErrorInsteadOfSwallowing(t *testing.T) {
+	db, mock, closeDB := newMockDB(t)
+	defer closeDB()
+
+	mock.ExpectQuery(enrichDimensionsSQL).
+		WillReturnError(errors.New(`relation "request_logs" does not exist`))
+
+	p := NewProcessor(db)
+	metric := &RequestMetric{RequestID: "req-x", TenantID: "t1"}
+
+	err := p.enrichDimensions(context.Background(), metric)
+	if err == nil {
+		t.Fatal("增强失败必须返回错误（吞掉＝维度全空却看不出来）")
+	}
+	if !strings.Contains(err.Error(), "req-x") {
+		t.Errorf("错误信息应带上 request_id，实际：%v", err)
+	}
+}
+
+// ★ 增强失败**不阻断**计量落库：维度空着，token/费用必须照写。
+func TestProcessBatch_EnrichFailureStillWritesMetrics(t *testing.T) {
+	db, mock, closeDB := newMockDB(t)
+	defer closeDB()
+
+	wmAt := time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(watermarkSQL).WillReturnRows(
+		sqlmock.NewRows([]string{"occurred_at", "request_id"}).AddRow(wmAt, "req-prev"))
+	mock.ExpectQuery(selectUsageFactsSQL).
+		WithArgs(true, wmAt, "req-prev", int64(100)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"request_id", "tenant_id", "occurred_at", "provider_id", "canonical_id",
+			"raw_model_name", "api_key_id", "application_id", "end_user_id",
+			"prompt_tokens", "completion_tokens", "cache_read_tokens", "reasoning_tokens",
+			"image_tokens", "audio_tokens", "video_tokens", "total_tokens",
+			"cost_amount", "credits_charged", "status", "traffic_class",
+			"error_kind", "latency_ms", "ttft_ms",
+		}).AddRow(
+			"req-1", "t1", time.Date(2026, 11, 20, 2, 0, 0, 0, time.UTC),
+			nil, nil, "gpt-x", nil, nil, nil,
+			10, 20, 0, 0,
+			0, 0, 0, 30,
+			1.15, 0, "success", "business",
+			nil, 5, 1,
+		))
+	// 增强查询失败
+	mock.ExpectQuery(enrichDimensionsSQL).
+		WillReturnError(errors.New(`relation "request_logs_with_current_month" does not exist`))
+	// 但计量行仍要落库
+	mock.ExpectBegin()
+	mock.ExpectExec(upsertRequestMetricSQL).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	p := NewProcessor(db)
+	processed, err := p.ProcessBatch(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("增强失败不应让整批失败（计量不能丢）：%v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed = %d，期望 1", processed)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("数据库交互与预期不符: %v", err)
+	}
+}
+
+// ★ 水位线读取顺序必须与来源查询的游标口径**完全一致**（occurred_at DESC, request_id DESC），
+// 否则会出现「读出来的最大值不是游标意义上的最大值」⇒ 漏数或重复。
+func TestWatermarkSQL_OrdersBySameCompositeKeyAsCursor(t *testing.T) {
+	if !strings.Contains(watermarkSQL, "ORDER BY occurred_at DESC, request_id DESC") {
+		t.Errorf("水位线必须按 (occurred_at DESC, request_id DESC) 取最大复合游标：%s", watermarkSQL)
+	}
+	if !strings.Contains(selectUsageFactsSQL, "(src.occurred_at, src.request_id) >") {
+		t.Errorf("来源查询必须用同一个复合游标比较：%s", selectUsageFactsSQL)
+	}
+}
+
+// ★ 缺陷回归：post-890 的 canonical 视图是**会话族两臂体** ⇒ 非会话类请求
+// （探测流量 / 健康检查 / 非会话 API）**本来就查不到行**。
+// 「没有会话行」是语义正确，**不能**当成增强失败 ⇒
+// 否则良性情况每批都刷「维度增强失败」汇总日志，把真失败（表被删/列被改）淹没。
+func TestEnrichDimensions_NoSessionRowIsNotAFailure(t *testing.T) {
+	db, mock, closeDB := newMockDB(t)
+	defer closeDB()
+
+	// 视图里没有该请求的行 ⇒ QueryRow.Scan 返回 sql.ErrNoRows
+	mock.ExpectQuery(enrichDimensionsSQL).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"gw_session_id", "gw_task_id", "attachment_count",
+			"client_protocol", "egress_protocol",
+		}))
+
+	p := NewProcessor(db)
+	metric := &RequestMetric{RequestID: "req-probe", TenantID: "t1"}
+
+	if err := p.enrichDimensions(context.Background(), metric); err != nil {
+		t.Fatalf("查不到会话行不算增强失败（会刷假警报淹没真警报）：%v", err)
+	}
+	if metric.SessionID != nil {
+		t.Errorf("无会话行时 session_id 应保持为空，实际 %v", *metric.SessionID)
+	}
+	// 模态仍要按默认值派生（无附件 ⇒ text）
+	if metric.Modality == nil || *metric.Modality != "text" {
+		t.Errorf("无会话行时 modality 应派生为 text，实际 %v", metric.Modality)
+	}
 }

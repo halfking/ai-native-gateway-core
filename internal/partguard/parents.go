@@ -85,4 +85,21 @@ var partitionParents = []string{
 	// 写操作。写面在 `internal/diagnostics/logger.go`（INSERT + 4 处 SELECT），
 	// 已有 Go 侧写操作 ⇒ 必须登记，将来任何新增写都被本门接住。
 	"request_diagnostic_logs",
+	// 2026-11-24（迁移 983，统计专用表 request_metrics）由
+	// TestPartitionParentsAreExhaustive 反向抓出：983 迁移声明了
+	// `CREATE TABLE ... request_metrics (...) PARTITION BY RANGE (occurred_at)`，
+	// 此前不在本清单里 ⇒ 守卫看不见它上面的写操作。
+	//
+	// 写面在 `internal/metricsstore/writer.go`（唯一一条 INSERT ⇒ 幂等 upsert）。
+	//
+	// ★ 本条**不需要**登记进 guard_test.go 的 allowedParentDML：
+	//   本门红线是「更新/删除只能在 hot 表进行」——scan.go 的 stmtPatterns
+	//   只认 UPDATE / DELETE / TRUNCATE，**没有 INSERT**（见 scan_self_test.go
+	//   的反向对照：`INSERT INTO public.sessions` 明确不得产生违规）
+	//   ⇒ 对父表的 INSERT 由 PG 的分区路由负责，不属红线违规。
+	//   ★ 而登记了反而会被本门判「登记项已失效（代码已改而登记未跟）」而报红
+	//     （实测：登记后 TestNoParentTableDMLBeyondKnown 报 stale）——
+	//     门的三条判据要求「集合恰好相等」，而 request_metrics 根本不产生违规，
+	//     登记进去就是一条永远配不上的多余登记项。
+	"request_metrics",
 }

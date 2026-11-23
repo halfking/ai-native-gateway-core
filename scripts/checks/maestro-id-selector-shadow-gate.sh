@@ -68,7 +68,7 @@ else
 fi
 
 # ── 2/3. 对照臂：临时目录里造一棵最小仓 ⇒ 工具必须红，且红在该 id 上 ────
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t maestro-id)"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maestro-id.XXXXXX")"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
