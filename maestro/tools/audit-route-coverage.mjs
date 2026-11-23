@@ -34,10 +34,16 @@
  *
  *   node maestro/tools/audit-route-coverage.mjs           # Markdown 报告
  *   node maestro/tools/audit-route-coverage.mjs --json    # 机读 JSON
+ *   node maestro/tools/audit-route-coverage.mjs --check   # ★ README 声明的数字 ↔ 当前树 对拍（漂移即红）
  *
  * 退出码：0 = 跑通（不代表「全覆盖」）；1 = 工具自身出错。
  * ★ 本工具**不判定红绿**——「未覆盖」是**事实登记**，不是缺陷（有些路由
  *   本来就不该由 Maestro 打开，见 README §3 的登记口径）。
+ *
+ * ★ `--check` 是**唯一的例外**：它判的是「README 声明的数与树实不符」
+ *   ⇒ 退出码 0 = 全部一致；1 = 有漂移（逐条报出）；2 = 工具自身出错。
+ *   ⇒ 理由：§1.1/§1.2/§1.3/§3.13 的数字**只有跟树对拍才有意义**，
+ *     而「数字漂移」本身是**缺陷**（不是事实登记）⇒ 必须能判红。
  */
 
 import { readFileSync, readdirSync, statSync } from 'fs'
@@ -437,6 +443,133 @@ const routerNotInReadme = routerRoutes.filter((r) => !readmePaths.has(r.path) &&
 
 const stats = computeStats(routerRoutes)
 
+/**
+ * ── 5.1 `--check` 模式：README §1.1/§1.2/§1.3/§3.13 声明的数字 ↔ 当前树实测
+ *
+ * ★ **为什么要有这个模式**：本工具的前身是「手工核对的报告」⇒ **数字会静默过期**
+ *   （2026-11-23 复核轮实测：上游 `41fb572f3` 加了 2 条路由 ⇒ README §1.1 的
+ *   129/134/22/117/54 全部过期，而**没有任何一处会红**）。
+ *   ⇒ 有了 `--check`，「README 的数字与树不一致」就变成**一条会红的判据**，
+ *     而不是「等下次有人想起来再手抄一遍」。
+ *
+ * ★ 判据分两类：
+ *   ① **声明值 vs 实测值**：README 里写的数必须等于工具量出来的数；
+ *   ② **标题数 vs 表内行数**：README 各小节的标题声明与它自己的表必须自洽
+ *     （★ 这一类能抓「只改了表、忘了改标题」的**半回填**）。
+ *
+ * 退出码：0 = 全部一致；1 = 有漂移（逐条报出）；2 = 工具自身出错（读不到 README 等）。
+ */
+function readmeDeclaredNumbers() {
+  const readme = readFileSync(join(repoRoot, 'maestro/README.md'), 'utf-8')
+
+  // ★ 取某节正文：从标题行到下一个同级标题行（`### `）。
+  const section = (headingRe) => {
+    const m = readme.match(headingRe)
+    if (!m) return null
+    const start = m.index
+    const rest = readme.slice(start + m[0].length)
+    const next = rest.search(/\n### |\n## /)
+    return next < 0 ? rest : rest.slice(0, next)
+  }
+
+  const num = (text, re) => {
+    const m = text.match(re)
+    return m ? Number(m[1]) : null
+  }
+
+  const s11 = section(/### 1\.1 实测统计/)
+  const s12 = section(/### 1\.2 纯 redirect 路由/)
+  const s13 = section(/### 1\.3 带命名动态段的路由/)
+  const s313 = section(/### 3\.13 已知缺口/)
+
+  // ★ 表格行数（去掉表头行与分隔行）。
+  const tableRows = (sec) => {
+    if (!sec) return null
+    const rows = sec.split('\n').filter((l) => l.trim().startsWith('|'))
+    return Math.max(0, rows.length - 2)
+  }
+
+  // ★ §3.13 的表里有「一行多路由」的合并行（`/operations/market-prices` /
+  //   `/operations/marketing` / `/operations/sales` 写在同一行）⇒ 不能数行，
+  //   要数**第一列里去重后的路径字面量**。
+  const gapPaths = (sec) => {
+    if (!sec) return null
+    const set = new Set()
+    for (const line of sec.split('\n')) {
+      if (!line.trim().startsWith('|')) continue
+      const firstCell = line.slice(1, line.indexOf('|', 1))
+      for (const m of firstCell.matchAll(/`([^`]+)`/g)) {
+        if (m[1].startsWith('/')) set.add(m[1])
+      }
+    }
+    return set
+  }
+
+  const d = {
+    pathEntries: num(s11 || '', /\| `path:` 条目 \| \*\*(\d+)\*\* \|/),
+    externalCount: num(s11 || '', /\| `externalMaintainRedirect\(\.\.\.\)` 调用 \| \*\*(\d+)\*\* \|/),
+    runtimeTotal: num(s11 || '', /\| \*\*运行时路由总数\*\* \| \*\*(\d+)\*\* \|/),
+    pureRedirect: num(s11 || '', /\| 其中纯 redirect（没有自己的组件，只跳走） \| \*\*(\d+)\*\* \|/),
+    dynamic: num(s11 || '', /\| 其中带命名动态段（`:param`，不含 glob） \| \*\*(\d+)\*\* \|/),
+    glob: num(s11 || '', /\| 其中 glob 兜底（`:pathMatch\(\.\*\)\*`） \| \*\*(\d+)\*\* \|/),
+    publicCount: num(s11 || '', /\| \*\*不需要登录\*\* \| \*\*(\d+)\*\* \|/),
+    authCount: num(s11 || '', /\| \*\*需要登录\*\* \| \*\*(\d+)\*\* \|/),
+    anyUser: num(s11 || '', /\| 任意登录用户（[^|]*） \| \*\*(\d+)\*\* \|/),
+    super: num(s11 || '', /\| `requiresSuper`（[^|]*） \| \*\*(\d+)\*\* \|/),
+    platformOps: num(s11 || '', /\| `requiresPlatformOps`（[^|]*） \| \*\*(\d+)\*\* \|/),
+    providerConsole: num(s11 || '', /\| `requiresProviderConsole`（[^|]*） \| \*\*(\d+)\*\* \|/),
+    s12Heading: num(readme, /### 1\.2 纯 redirect 路由（(\d+) 条）/),
+    s12Rows: tableRows(s12),
+    s13Heading: num(readme, /### 1\.3 带命名动态段的路由（(\d+) 条）/),
+    s13Rows: tableRows(s13),
+    s313Heading: num(readme, /### 3\.13 已知缺口：\*\*未被任何 flow 的 `openLink` 直接打开\*\*的 (\d+) 条路由/),
+    s313Paths: gapPaths(s313),
+  }
+  d.s313PathCount = d.s313Paths ? d.s313Paths.size : null
+  return d
+}
+
+function runCheck() {
+  const declared = readmeDeclaredNumbers()
+  const rows = []
+  const eq = (name, declaredValue, actualValue, note) => {
+    rows.push({
+      name,
+      declared: declaredValue,
+      actual: actualValue,
+      pass: declaredValue !== null && declaredValue === actualValue,
+      note: note || '',
+    })
+  }
+
+  eq('§1.1 path 条目', declared.pathEntries, stats.pathEntries)
+  eq('§1.1 externalMaintainRedirect 调用', declared.externalCount, stats.externalCount)
+  eq('§1.1 运行时路由总数', declared.runtimeTotal, stats.runtimeTotal)
+  eq('§1.1 纯 redirect', declared.pureRedirect, stats.pureRedirect)
+  eq('§1.1 带命名动态段', declared.dynamic, stats.dynamic)
+  eq('§1.1 glob 兜底', declared.glob, stats.glob)
+  eq('§1.1 不需要登录', declared.publicCount, stats.publicCount)
+  eq('§1.1 需要登录', declared.authCount, stats.authCount)
+  eq('§1.1 权限档 anyUser', declared.anyUser, stats.tiers.anyUser)
+  eq('§1.1 权限档 super', declared.super, stats.tiers.super)
+  eq('§1.1 权限档 platformOps', declared.platformOps, stats.tiers.platformOps)
+  eq('§1.1 权限档 providerConsole', declared.providerConsole, stats.tiers.providerConsole)
+  eq('§1.2 标题条数 = 纯 redirect 实测', declared.s12Heading, stats.pureRedirect)
+  eq('§1.2 表内行数 = 标题条数', declared.s12Rows, declared.s12Heading)
+  eq('§1.3 标题条数 = 动态段实测', declared.s13Heading, stats.dynamic)
+  eq('§1.3 表内行数 = 标题条数', declared.s13Rows, declared.s13Heading)
+  eq('§3.13 标题条数 = 未覆盖实测', declared.s313Heading, report_uncoveredCount())
+  eq('§3.13 表内路径数 = 标题条数', declared.s313PathCount, declared.s313Heading)
+
+  const failed = rows.filter((r) => !r.pass)
+  return { rows, failed }
+}
+
+function report_uncoveredCount() {
+  // ★ 复用主流程已算出的「未被任何 flow 打开」条数（§3.13 的口径）。
+  return uncovered.length
+}
+
 const report = {
   routerRouteCount: routerRoutes.length,
   stats,
@@ -455,7 +588,28 @@ const report = {
   covered: covered.map((r) => ({ path: r.path, viaFlow: r.viaFlow })),
 }
 
-if (process.argv.includes('--json')) {
+if (process.argv.includes('--check')) {
+  // ★ 「README 声明的数字」与「当前树实测」逐项对拍 ⇒ 漂移即红。
+  let out
+  try {
+    out = runCheck()
+  } catch (e) {
+    console.error('工具错误：' + e.message)
+    process.exit(2)
+  }
+  const L = []
+  L.push('# README 路由口径 ↔ 当前树 对拍（--check）')
+  L.push('')
+  L.push('| 判据 | README 声明 | 树实测 | |')
+  L.push('|---|---|---|---|')
+  for (const r of out.rows) {
+    L.push(`| ${r.name} | ${r.declared === null ? '（读不到）' : r.declared} | ${r.actual} | ${r.pass ? '✔' : '❌'} |`)
+  }
+  L.push('')
+  L.push(`RESULT: ${out.failed.length === 0 ? 'PASS' : 'FAIL'}（${out.rows.length - out.failed.length} / ${out.rows.length} 条一致）`)
+  console.log(L.join('\n'))
+  process.exit(out.failed.length === 0 ? 0 : 1)
+} else if (process.argv.includes('--json')) {
   console.log(JSON.stringify(report, null, 2))
 } else {
   const L = []
