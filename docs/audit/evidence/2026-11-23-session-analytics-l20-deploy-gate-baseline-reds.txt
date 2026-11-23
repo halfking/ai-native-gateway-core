@@ -166,3 +166,31 @@ L20 修红轮证据——部署闸门「基线红认领层」的分诊与修红
 ★ ⇒ 顺带：这 7 个 teams 索引在三处环境必然 missing ⇒ 硬重生成台账会让 new-install-gap 13→20 ⇒ 棘轮破
   ⇒ ⇒ 「先补投递链 + 先应用（★ 生产 schema 变更 ⇒ 需 owner 授权）」才谈得上诚实重生成
 ★ ⇒ ⇒ ⇒ L22 定性从 P3（导航面）升为 **P1（功能缺失）**，且与 L23 同属一条授权轴
+
+── ⑩ ★★★ 四项待决：问卷超时【自动选中】≠ owner 授权 ⇒ 四项生产动作一个都没执行 ──
+★ 本轮收尾时用 ask_user（async）出了四张决策卡 ⇒ ★★ 无人应答、60 秒超时
+  ⇒ 运行时按 recommended 自动选中每张卡第 1 项 ⇒ ★★ **这不是 owner 的决定**
+★ ⇒ ★★ 按运行时纪律（不得据自动选中的答案执行不可逆/对外可见/安全敏感动作）⇒ ★★ **本轮未执行任何一项**：
+  ① 252 重跑 994（L23 方案 A）② 055-058 四面投递链 + 生产应用
+  ③ fresh 环境重建 + 四环境 census 重采 ④ 211 acc-pg17 重建加大 ShmSize
+★ 四项仍是「待 owner 明确确认」；施工单见报告 §7.23.11（★ 纯仓内准备、零生产动作）
+
+── ⑪ ★★ Q4 的只读取证（为重建施工单准备）────────────────────────────────
+★ ssh 211 'docker inspect acc-pg17'：
+  ShmSize=67108864（64M）｜Image=kx-citus-pg17:amd64｜Cmd=[postgres]｜Restart=unless-stopped
+  Mount: /opt/kaixuan/data/pg/acc-pg17 -> /var/lib/postgresql/data（bind）
+  Ports: 5432/tcp -> 127.0.0.1:5432 ＋ 0.0.0.0:15432
+  Network: acc-pg-dataplane（别名 acc-pg17、acc_pg17）
+  ★ 当前 IP = 192.168.0.2，★ IPAMConfig=null ⇒ ★★ **重建后【可能换 IP】**
+  ⇒ ★★ 重建前必须确认有没有服务硬依赖 192.168.0.2；需要固定则加 --ip 192.168.0.2
+★ 目标：--shm-size=1g（对齐 252 的 pg-252-pg17 = 1.0G ⇒ 16 倍差距 ⇒ 不重演 DSM 53100）
+
+── ⑫ ★★ 055-058 的第四个隐患：CREATE POLICY 不可重放 ⇒ 上生产前必须先做幂等加固 ──
+★ 055_teams_table.sql  : CREATE TABLE IF NOT EXISTS teams ＋ 2 索引 ＋ ENABLE ROW LEVEL SECURITY
+★ 056_user_teams.sql    : CREATE TABLE IF NOT EXISTS user_teams ＋ 2 索引 ＋ ENABLE RLS
+★ 057_api_keys_team_id.sql: ALTER TABLE api_keys ADD COLUMN ＋ 2 索引 ＋ **CREATE POLICY api_keys_team_owner_all**
+★ 058_team_budgets.sql  : CREATE TABLE IF NOT EXISTS team_budgets ＋ 1 索引 ＋ ENABLE RLS ＋ **CREATE POLICY**
+★ ★★ PG【没有】CREATE POLICY IF NOT EXISTS ⇒ ★★ 重放会报 "policy already exists"
+  ⇒ ★★ 部署的内容指纹重放通道会在第一次重放就炸 ⇒ ⇒ ★★ 必须先改成 DO 块 + pg_policies 守卫（999 的写法）
+★ ★★ 顺带：四个文件用【无 schema 前缀】表名（CREATE TABLE IF NOT EXISTS teams），
+  ★ 与仓内 public.xxx 惯例不一致 ⇒ ★ 建议一并统一（★ **改字节只在【尚未 applied】时安全 ⇒ 现在正是窗口**）
