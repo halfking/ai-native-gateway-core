@@ -2778,7 +2778,7 @@ files=(
   #   ★ 981 的 4 个会话分析物化视图读 `session_summaries.total_credits_charged`，
   #     而该列由 **990** 添加 ⇒ ★★ 981 在前就是一次真实的依赖倒置。
   #   ★ 原注释曾写「且不依赖 990/991/992 的产物」⇒ ★ **实测：不依赖是错的**。
-  #   ★ 两处通道（安装器 StartupFiles / 本 files=()）已同批改正（★ 顺序口径统一）。"
+  #   ★ 两处通道（安装器 StartupFiles / 本 files=()）已同批改正（★ 顺序口径统一）。
   # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
   #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
   #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
