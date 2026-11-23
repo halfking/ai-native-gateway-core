@@ -19,7 +19,7 @@ This page answers “How are people using it?”: how many sessions there are, h
 
 - The trend chart aggregates data by day (using UTC day boundaries) and shows daily changes in session counts or costs.
 - “vs. previous period” = percentage change between the current window and the previous window of equal length.
-- The rankings page (people/agents/models) sorts by the selected metric. The “Spend” column combines both cost measures, **and is only for comparing relative magnitude; do not treat it as a monetary amount**.
+- Rankings (people/agents/models) sort by the selected metric. Sorting by “Spend” uses the backend compatibility field `total_cost`, which adds the raw numeric values of internal cost in USD and external cost in credits without currency conversion. The list may still format this value with a dollar sign, so it is not an amount and cannot be compared across currencies. Use internal cost (USD) and external cost (credits) separately.
 
 ## Data Freshness
 

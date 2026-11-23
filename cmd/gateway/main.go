@@ -86,6 +86,7 @@ import (
 	promptinjection "github.com/kaixuan/llm-gateway-go/domains/promptinjection" //nolint:depguard // F-41 桥接：hook Detector 的具体实现
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                 //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                    //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"                  //nolint:depguard // supplier attempt shadow ledger
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                   //nolint:depguard // in-flight request content store
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                  //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
@@ -2003,6 +2004,12 @@ func main() {
 			},
 			auditSink,
 		)
+		if os.Getenv("LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED") == "true" && dbConn != nil && dbConn.Pool() != nil {
+			attemptRecorder := reconciliation.NewAttemptRecorder(dbConn.Pool())
+			routingExec.SetAttemptRecorder(attemptRecorder)
+			bg.SetAttemptRecorder(attemptRecorder)
+			slog.Info("supplier attempt shadow ledger enabled")
+		}
 		routingExec.EnforceContextBudget = true
 		routingExec.FitContext = sessioncontext.Fit
 		routingExec.RequestProbe = reqProbeCoord

@@ -1,6 +1,6 @@
 # Datenbeschreibung der erweiterten Nutzungsanalyseseite
 
-Diese Seite fasst die über fünf APIs verteilten Nutzungsdaten in einer Gesamtansicht zusammen: Gesamtkosten, Gesamtzahl der Anfragen, Veränderung zur Vorperiode und Detailaufstellung auf einen Blick.
+Diese Seite stellt Ergebnisse aus fünf APIs nebeneinander dar: Übersicht, Kostentrend, Monatsvergleich, Cache-Ökonomie und meistgenutzte API-Schlüssel. Es handelt sich nicht um wiederholte Messungen aus derselben Tabelle oder demselben Zeitfenster.
 
 ## Kernkarten
 
@@ -11,11 +11,11 @@ Diese Seite fasst die über fünf APIs verteilten Nutzungsdaten in einer Gesamta
 
 ## Berechnungsgrundlage
 
-- Die Daten auf dieser Seite stammen aus derselben Aggregations-API wie das Dashboard und sollten mit dem Dashboard übereinstimmen. Bei Abweichungen sollten zunächst die Zeitfenster abgeglichen werden.
-- Der Vergleich zur Vorperiode wird nur angezeigt, wenn für beide Zeitfenster vollständige Daten vorliegen. Fehlt für einen Tag ein Wert, kennzeichnet die Seite dies mit „Daten unvollständig“. Der Prozentwert ist in diesem Fall nur ein Richtwert.
+- Die Seite kombiniert fünf unabhängige Endpunkte. Übersicht und meistgenutzte API-Schlüssel verwenden ein Tagesfenster; Kostentrend und Cache-Ökonomie verwenden den ausgewählten Datumsbereich; die Vergleichskarte vergleicht den aktuellen mit dem vorherigen Kalendermonat. Datenquellen und Zeitfenster unterscheiden sich, daher müssen die Werte weder mit dem Dashboard noch untereinander übereinstimmen.
+- Der Vergleichsendpunkt summiert die Upstream-Kosten in USD je Kalendermonat und berechnet (Kosten des aktuellen Monats − Kosten des Vormonats) ÷ Kosten des Vormonats. Er prüft nicht, ob beide Monate vollständig sind. Betragen die Kosten des Vormonats null, ist die Veränderungsrate null; das belegt weder vollständige Monatsdaten noch eine unveränderte Nutzung.
 
 ## So prüfen Sie Abweichungen bei den Zahlen
 
-1. Der Vergleichsprozentwert zur Vorperiode wirkt unintuitiv (die Nutzung ist unverändert, es wird dennoch eine große Veränderung angezeigt): Unvollständige Daten im vorherigen Zeitfenster verzerren den Ausgangswert. Prüfen Sie zuerst, ob das vorherige Zeitfenster vollständig ist.
-2. Die Summe der Detailaufstellung ≠ die Gesamtkarten: Anfragen mit fehlendem Dimensionswert werden nur in der Gesamtsumme berücksichtigt (die Seite weist die nicht zugeordnete Menge aus).
-3. Das Zeitfenster umfasst heute: Die heutigen Zahlen wachsen noch in Echtzeit, weshalb sich der Vergleich zur Vorperiode laufend ändert. Nach Tagesabschluss ist er genauer.
+1. Beim Vergleich der Periodenkarte mit Kennzahlen für den ausgewählten Datumsbereich beachten Sie: Die Karte vergleicht immer den aktuellen mit dem vorherigen Kalendermonat und folgt nicht dem ausgewählten Start- und Enddatum.
+2. Der Kostentrend gruppiert nach Dimension. Fehlende Dimensionswerte werden als „unknown“ gruppiert; Gruppen mit geringem Anteil können als „Other“ zusammengefasst werden. Bei abweichenden Quellen oder Zeitfenstern können Summen voneinander abweichen.
+3. Übersicht und meistgenutzte API-Schlüssel verwenden ein Tagesfenster, Kostentrend und Cache-Ökonomie dagegen den ausgewählten Datumsbereich. Fenstergrenzen, Aktualisierungszeitpunkt und der noch laufende aktuelle Tag können Abweichungen verursachen. Bei einem Hinweis auf degradierte Daten sind Null- oder Leerwerte kein gemessener Nullverbrauch.

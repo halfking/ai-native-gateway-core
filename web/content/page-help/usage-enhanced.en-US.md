@@ -1,6 +1,6 @@
 # Enhanced Usage Analysis Page Data Notes
 
-This page combines usage data from five APIs into a comprehensive view: total cost, total requests, period-over-period change, and detailed breakdown—all on one screen.
+This page places results from five APIs side by side: summary, cost trend, monthly comparison, cache economics, and top API keys. They are not repeated measurements from one table or one shared time window.
 
 ## Core Cards
 
@@ -11,11 +11,11 @@ This page combines usage data from five APIs into a comprehensive view: total co
 
 ## Metric Definitions
 
-- Data on this page comes from the same aggregation API as the dashboard, so the numbers should match. If they do not, first make sure the time windows align.
-- Period-over-period figures are shown only when both windows have complete data. If even one day of data is missing, the page displays “Incomplete Data,” and the percentages are for reference only.
+- The page combines five independent endpoints. Summary and top API keys use a day-count window; cost trend and cache economics use the selected date range; the comparison card compares the current calendar month with the previous calendar month. Their sources and windows differ, so they are not expected to match the dashboard or each other item for item.
+- The comparison endpoint sums upstream cost in USD by calendar month and calculates (current-month cost − previous-month cost) ÷ previous-month cost. It does not verify that either month is complete. If previous-month cost is zero, the change percentage is zero; this does not establish that both months are complete or usage was unchanged.
 
 ## How to Self-Check When Numbers Do Not Match
 
-1. The period-over-period percentage seems counterintuitive (usage has not changed, but a large change is shown): incomplete data in the previous window distorts the baseline, so first check the completeness of that window.
-2. The detailed breakdown total ≠ the total on the card: requests with missing dimension values are included only in the total, and the page labels this amount as uncategorized.
-3. The time window includes today: today’s figures are still increasing in real time, so the period-over-period change will continue to fluctuate. Checking again after the reporting period closes will provide more accurate results.
+1. When comparing the period card with metrics for the selected date range, remember that the card always compares the current and previous calendar months; it does not follow the selected start and end dates.
+2. Cost trend groups records by dimension. Missing dimension values are grouped as “unknown,” and long-tail groups may be combined as “Other.” Totals can differ when sources or windows do not fully align.
+3. Summary and top API keys use a day-count window, while cost trend and cache economics use the selected date range. Window boundaries, refresh timing, and an in-progress current day can all cause differences. If an endpoint shows a degraded-data notice, its zero or empty result is not a measured zero.

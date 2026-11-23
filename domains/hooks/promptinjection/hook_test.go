@@ -3,6 +3,7 @@ package promptinjection
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -123,4 +124,42 @@ func TestGovernanceVerdictShape(t *testing.T) {
 		t.Errorf("Code, got %q", v.Code)
 	}
 	_ = governance.Verdict{} // ensure package still exports the type
+}
+
+// TestHook_SkipsAnalyzerRequests 验证 F2 修复：递归面关闭。
+//
+// PI 分析器自己的请求（带 X-Llmgw-Pi-Analyzer 头）应跳过检测，
+// 避免「分析失败事件被再分析」的递归环路。
+func TestHook_SkipsAnalyzerRequests(t *testing.T) {
+	// 使用会返回错误的 detector：如果检测被调用就会失败测试
+	h := NewHook(&fakeDetector{err: errors.New("detector should not be called")})
+
+	req, _ := http.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Llmgw-Pi-Analyzer", "1")
+
+	env := &domain.PipelineRequest{
+		TenantID: "t1",
+		Metadata: map[string]any{"user_content": "test payload with </untrusted_input> injection"},
+		Envelope: &domain.RequestEnvelope{
+			Transport: &domain.TransportContext{
+				R: req,
+			},
+		},
+	}
+
+	// Execute 应该立即返回 nil，不调用检测器
+	if err := h.Execute(context.Background(), env); err != nil {
+		t.Fatalf("Execute should skip detection for analyzer requests, got error: %v", err)
+	}
+
+	// 验证没有调用检测器（如果调用了会返回 "detector should not be called" 错误）
+	// 验证没有设置 governance verdict
+	if env.Governance != nil && len(env.Governance.Verdicts) > 0 {
+		t.Fatal("should not set verdict when skipping detection")
+	}
+
+	// 验证没有在 metadata 中设置检测结果
+	if _, ok := env.Metadata["prompt_injection_result"]; ok {
+		t.Fatal("should not set detection result when skipping")
+	}
 }

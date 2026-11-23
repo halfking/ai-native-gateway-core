@@ -132,7 +132,7 @@ func TestDiagnoseNoCandidateCause_SingleGate(t *testing.T) {
 		{"凭据人工停用", provider.EmptyCandidateBreakdown{OffersTotal: 2, BlockedByCredentialManualDisabled: 1}, provider.ClientCauseDisabled, "已被网关管理员停用"},
 		{"凭据缺失", provider.EmptyCandidateBreakdown{OffersTotal: 2, BlockedByCredentialMissing: 1}, provider.ClientCauseCredentialMissing, "凭据记录缺失"},
 		{"其它租户", provider.EmptyCandidateBreakdown{OffersTotal: 2, BlockedByProviderTenant: 1}, provider.ClientCauseOtherTenant, "供应商属于其它租户"},
-		{"未登记", provider.EmptyCandidateBreakdown{}, provider.ClientCauseNotRegistered, "模型未登记"},
+		{"未登记", provider.EmptyCandidateBreakdown{}, provider.ClientCauseNotRegistered, "未在此网关登记"},
 	}
 	ctx := i18n.WithLocale(context.Background(), i18n.ZhCN)
 	for _, tc := range cases {

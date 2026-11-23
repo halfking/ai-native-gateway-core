@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -377,8 +378,10 @@ func (ec *ErrorCollector) Collect(ctx context.Context, collectedErr *CollectedEr
 
 	exists, existingID, err := ec.checkDuplicateTx(ctx, tx, errorHash, 24*time.Hour)
 	if err != nil {
-		slog.Warn("error_collector: failed to check duplicate", "error", err)
-		// 继续插入，不因去重检查失败而阻断
+		// F5 修复：查重失败意味着事务已中止（PostgreSQL SQLSTATE 25P02），
+		// 后续 INSERT 不可能成功。之前的注释声称"继续插入"是误导性的。
+		return fmt.Errorf("failed to check duplicate in transaction: %w", err)
+		// defer 会自动 rollback
 	}
 
 	if exists {
@@ -403,8 +406,8 @@ func (ec *ErrorCollector) Collect(ctx context.Context, collectedErr *CollectedEr
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM error_analysis_queue
 			 WHERE status IN ('pending','processing')`).Scan(&depth); err != nil {
-			slog.Warn("error_collector: failed to check queue depth; inserting anyway",
-				"error", err)
+			// F5 修复：深度检查失败意味着事务已中止，后续 INSERT 不可能成功。
+			return fmt.Errorf("failed to check queue depth in transaction: %w", err)
 		} else if depth >= limit {
 			ec.depthDropped.Add(1)
 			slog.Warn("error_collector: queue depth limit reached, error dropped",
@@ -836,8 +839,32 @@ func (ec *ErrorCollector) IncrementRetry(ctx context.Context, queueID int64) err
 
 // calculateErrorHash 计算错误指纹
 func (ec *ErrorCollector) calculateErrorHash(collectedErr *CollectedError) string {
-	// 基于核心特征生成 hash，用于去重
-	// 包含：错误类型、租户、输入 hash（如果有）、错误消息前 100 字符
+	// F3 修复：输出守卫类错误的去重指纹不含 inputHash
+	//
+	//	问题：输出守卫的 inputText 是逐请求不同的证据摘录（streaming/policy_block_feedback.go
+	//	的 digest/evidence），导致同一条规则误报 N 次会入队 N 条。
+	//	修复：输出守卫类错误只用 errorType + tenantID + rule 去重。
+	if collectedErr.ErrorType == ErrorTypeOutputGuardBlocked {
+		// 提取规则名称（按字母序排序确保稳定）
+		ruleNames := make([]string, 0, len(collectedErr.MatchedRules))
+		for _, rule := range collectedErr.MatchedRules {
+			if rule.RuleName != "" {
+				ruleNames = append(ruleNames, rule.RuleName)
+			}
+		}
+		sort.Strings(ruleNames)
+
+		hashInput := fmt.Sprintf("%s|%s|rules:%s",
+			collectedErr.ErrorType,
+			collectedErr.TenantID,
+			strings.Join(ruleNames, ","),
+		)
+
+		hash := sha256.Sum256([]byte(hashInput))
+		return hex.EncodeToString(hash[:])
+	}
+
+	// 其他类型错误：原有逻辑（包含 errorMessage 和 inputHash）
 	hashInput := fmt.Sprintf("%s|%s|%s",
 		collectedErr.ErrorType,
 		collectedErr.TenantID,

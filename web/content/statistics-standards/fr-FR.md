@@ -1,0 +1,18 @@
+## Indicateurs entre rapports et rapprochement
+
+Avant de comparer des rapports, harmonisez la période et le fuseau horaire, le tenant, le périmètre du trafic, l’unité de comptage et la fraîcheur des données. Les périodes standard incluent le début et excluent la fin. Les notes en haut de la page décrivent le rapport actuel. Certains rapports utilisent encore des fenêtres ou des sources différentes.
+
+| Indicateur | Calcul standard |
+| --- | --- |
+| Requêtes client | Comptez une seule fois chaque requête client enregistrée par la passerelle. Les requêtes terminées comprennent les réussites, les échecs, les limitations de débit et les annulations définitives. Suivez séparément les requêtes en cours. Les nouvelles tentatives et les changements de fournisseur ne modifient pas le nombre initial de requêtes. |
+| Envois aux fournisseurs | Comptez chaque appel envoyé à un fournisseur, y compris les nouvelles tentatives, les tentatives parallèles et l’automatisation de la plateforme. Un rejet de la passerelle avant l’envoi ne compte que comme une requête client. Les instantanés quotidiens actuels résument les enregistrements terminaux de la passerelle. La couverture complète par tentative reste à mettre en place. |
+| Sessions actives et nouvelles | Comptez comme actives les sessions distinctes ayant des requêtes client pendant la période. Une session est nouvelle si sa première requête tombe dans cette période. Les requêtes sans session restent incluses dans le total des requêtes. |
+| Taux de réussite | Réussites divisées par événements terminés, calculé séparément pour les requêtes client et les appels fournisseurs. Un dénominateur nul signifie qu’aucune donnée n’est disponible. |
+| Jetons d’entrée, de sortie et totaux | Additionnez séparément les jetons d’entrée et de sortie normalisés. Le total des jetons est égal à l’entrée plus la sortie. Présentez séparément les détails du cache et du raisonnement pour éviter les doubles comptages. |
+| Jetons mis en cache et taux de succès du cache | Additionnez séparément les lectures et les écritures du cache. Le taux de succès par jeton divise les jetons lus depuis le cache par l’ensemble des jetons d’entrée, y compris les entrées mises en cache, lorsque les données de cache sont comparables. Le taux de succès par requête divise les succès par les requêtes disposant de données de cache comparables. Indiquez le dénominateur et la couverture. |
+| Coût fournisseur estimé | Calculez chaque appel à partir de l’utilisation facturable, des tarifs de coût fournisseur en vigueur au moment de l’appel et de leur devise. Suivez séparément les tarifs ou les données d’utilisation manquants. |
+| Montant déclaré par le fournisseur | Enregistrez le montant et la devise d’origine lorsque la réponse les fournit explicitement. Utilisez la facture du fournisseur pour rapprocher le montant final à payer. |
+| Crédits et montant internes | Additionnez les débits comptabilisés, les annulations et les ajustements. Conservez l’unité et les règles de conversion applicables. Affichez séparément les crédits et la devise. |
+| Automatisation de la plateforme | Attribuez les sondes et les auto-vérifications à un client dédié. Incluez-les dans le coût fournisseur et l’utilisation de la plateforme, et excluez-les des frais facturés aux tenants. Les notes de la page indiquent le périmètre actuel du trafic. |
+
+Zéro représente une valeur connue. Signalez les données d’utilisation ou de prix manquantes, les éléments non attribués, les débits non comptabilisés et les données différées. Comparez les montants dans la même devise et avec la même précision.

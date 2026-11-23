@@ -411,3 +411,4 @@
 393	973_api_keys_team_id.sql
 394	986_team_budgets.sql
 395	989_migration_ledger_session_analytics_981_repair.sql
+396	982_provider_call_attempts.sql

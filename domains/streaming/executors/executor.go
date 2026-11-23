@@ -31,6 +31,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/identity"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -554,6 +555,9 @@ type DispatchModelRecommender interface {
 }
 
 type Executor struct {
+	// AttemptRecorder persists per-transport evidence. It is optional during
+	// rollout; persistence failures are logged and never replay an upstream call.
+	AttemptRecorder reconciliation.AttemptStore
 	// Production enables the per-physical-call 500K / half-window policy.
 	// The zero value remains usable by isolated legacy executor integrations.
 	EnforceContextBudget bool
@@ -1015,6 +1019,9 @@ type Executor struct {
 	// It must be stopped before the shared DB pool is closed.
 	ContextLimitUpdateQueue *ContextLimitUpdateQueue
 }
+
+// SetAttemptRecorder wires the durable provider-call evidence sink.
+func (e *Executor) SetAttemptRecorder(r reconciliation.AttemptStore) { e.AttemptRecorder = r }
 
 // DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default
 // cross-provider model fallback map. These mappings cover the most commonly

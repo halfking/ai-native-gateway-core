@@ -59,6 +59,10 @@ export default defineConfig(({ command }) => ({
     cssTarget: ['safari15'],
   },
   server: {
+    // The mobile statistics help reuses localized markdown and the parser from
+    // the sibling desktop app. Keep Vite's dev/test file allowlist at the repo
+    // root so those read-only sources remain importable without copying them.
+    fs: { allow: [fileURLToPath(new URL('..', import.meta.url))] },
     port: 5790,
     proxy: {
       '/api': { target: process.env.GATEWAY_API_TARGET ?? 'http://127.0.0.1:8782', changeOrigin: false },

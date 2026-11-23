@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domains/reconciliation"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
@@ -531,6 +533,31 @@ func (c *ChatExecutor) StreamResponse(ctx context.Context, w http.ResponseWriter
 
 func (c *ChatExecutor) ExtractUsage(resp *http.Response, body []byte) (inputTokens, outputTokens *int) {
 	return extractOpenAIUsageFromBody(body)
+}
+
+func int64TokenPtr(v *int) *int64 {
+	if v == nil {
+		return nil
+	}
+	n := int64(*v)
+	return &n
+}
+
+func candidateRateSnapshot(c provider.Candidate) map[string]any {
+	values := map[string]any{"currency": c.Currency, "protocol": c.Protocol, "unit": "per_1m_tokens"}
+	if c.PriceInPer1M != nil {
+		values["input"] = *c.PriceInPer1M
+	}
+	if c.PriceOutPer1M != nil {
+		values["output"] = *c.PriceOutPer1M
+	}
+	if c.CacheReadPricePer1M != nil {
+		values["cache_read"] = *c.CacheReadPricePer1M
+	}
+	if c.CacheWritePricePer1M != nil {
+		values["cache_write"] = *c.CacheWritePricePer1M
+	}
+	return values
 }
 
 func (c *ChatExecutor) CheckSoftMismatch(reqModel, respModel string) (bool, string) {
@@ -1492,6 +1519,18 @@ func (e *Executor) executeOpenAI(
 			if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes); err != nil {
 				return nil, err
 			}
+			callAttempt := reconciliation.NewAttempt(reconciliation.Attempt{
+				TenantID: params.TenantID, RequestID: params.RequestID, TrafficClass: "business", ClientID: params.ClientID.IdentityHash,
+				Source: "gateway_executor", AttemptNo: params.AttemptNo, ProviderID: cand.ProviderID,
+				CredentialID: cand.CredentialID, Model: candidateRawModel(cand), RateSnapshot: candidateRateSnapshot(cand),
+			})
+			if e.AttemptRecorder != nil {
+				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				if err := e.AttemptRecorder.Prepare(attemptCtx, callAttempt); err != nil {
+					slog.Warn("provider attempt intent persistence failed", "attempt_id", callAttempt.ID, "error", err)
+				}
+				cancel()
+			}
 
 			reqStart := time.Now()
 			// 2026-08-18 (B1-PR3): log the actual upstream HTTP call so we
@@ -1522,6 +1561,16 @@ func (e *Executor) executeOpenAI(
 			)
 			var resp *http.Response
 			var uErr *upstreampkg.Error
+			var sentNanos atomic.Int64
+			trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { sentNanos.CompareAndSwap(0, time.Now().UTC().UnixNano()) }}
+			req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+			if e.AttemptRecorder != nil {
+				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				if err := e.AttemptRecorder.MarkDispatched(attemptCtx, callAttempt.ID); err != nil {
+					slog.Warn("provider attempt dispatch persistence failed", "attempt_id", callAttempt.ID, "error", err)
+				}
+				cancel()
+			}
 			if e.Upstream != nil {
 				if reqPool != nil {
 					resp, uErr = e.Upstream.DoWithHTTPClient(req, httpClient)
@@ -1547,6 +1596,28 @@ func (e *Executor) executeOpenAI(
 					}
 					uErr = &upstreampkg.Error{Kind: kind, Message: doErr.Error(), Err: doErr}
 				}
+			}
+			sentAt := time.Time{}
+			if n := sentNanos.Load(); n != 0 {
+				sentAt = time.Unix(0, n).UTC()
+			}
+			if e.AttemptRecorder != nil && resp == nil && !sentAt.IsZero() {
+				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				if err := e.AttemptRecorder.MarkSent(attemptCtx, callAttempt.ID, sentAt); err != nil {
+					slog.Warn("provider attempt send evidence persistence failed", "attempt_id", callAttempt.ID, "error", err)
+				}
+				cancel()
+			}
+			if e.AttemptRecorder != nil && resp != nil {
+				requestID := resp.Header.Get("x-request-id")
+				if requestID == "" {
+					requestID = resp.Header.Get("request-id")
+				}
+				attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				if err := e.AttemptRecorder.RecordHTTP(attemptCtx, callAttempt.ID, resp.StatusCode, requestID, sentAt); err != nil {
+					slog.Warn("provider attempt response persistence failed", "attempt_id", callAttempt.ID, "error", err)
+				}
+				cancel()
 			}
 			upstreamLatency := time.Since(reqStart)
 			if reqPool != nil {
@@ -1737,6 +1808,13 @@ func (e *Executor) executeOpenAI(
 			}
 
 			if resp != nil && resp.StatusCode >= 400 {
+				if e.AttemptRecorder != nil {
+					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					if err := e.AttemptRecorder.Finish(attemptCtx, callAttempt.ID, "failure"); err != nil {
+						slog.Warn("provider attempt outcome persistence failed", "attempt_id", callAttempt.ID, "error", err)
+					}
+					cancel()
+				}
 				//nolint:errcheck // best-effort close
 				defer resp.Body.Close()
 				body := make([]byte, 4096)
@@ -2277,6 +2355,13 @@ func (e *Executor) executeOpenAI(
 					recordResponsesCapability(true)
 				}
 				e.reqprobeRecordSuccess(&probe)
+				if !params.IsStream && e.AttemptRecorder != nil {
+					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					if err := e.AttemptRecorder.Finish(attemptCtx, callAttempt.ID, "success"); err != nil {
+						slog.Warn("provider attempt outcome persistence failed", "attempt_id", callAttempt.ID, "error", err)
+					}
+					cancel()
+				}
 				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID, circuitScopeModel(cand))
 				if e.PostExecutionHook != nil {
 					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
@@ -2389,6 +2474,35 @@ func (e *Executor) executeOpenAI(
 						Kind:             errorsx.KindContentFilter,
 						TerminalRendered: true,
 					}
+				}
+				if e.AttemptRecorder != nil {
+					if params.Capture != nil {
+						u := params.Capture.CurrentAttemptUsage()
+						usage := reconciliation.UsageEvidence{InputTokens: int64TokenPtr(u.PromptTokens), OutputTokens: int64TokenPtr(u.CompletionTokens), CacheReadTokens: int64TokenPtr(u.CacheReadTokens), CacheWriteTokens: int64TokenPtr(u.CacheWriteTokens), Source: "stream_capture_current_attempt"}
+						if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil {
+							attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+							if err := e.AttemptRecorder.RecordUsage(attemptCtx, callAttempt.ID, usage); err != nil {
+								slog.Warn("provider attempt stream usage persistence failed", "attempt_id", callAttempt.ID, "error", err)
+							}
+							cancel()
+						}
+					}
+					outcome := "unknown"
+					if streamOutcome.Interrupted {
+						outcome = "failure"
+						if isClientStreamInterruption(streamOutcome.Kind, streamOutcome.Reason) {
+							outcome = "cancelled"
+						}
+					} else if params.Capture != nil {
+						if done, ok := params.Capture.SummaryAsMap()["stream_done_received"].(bool); ok && done {
+							outcome = "success"
+						}
+					}
+					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					if err := e.AttemptRecorder.Finish(attemptCtx, callAttempt.ID, outcome); err != nil {
+						slog.Warn("provider attempt outcome persistence failed", "attempt_id", callAttempt.ID, "error", err)
+					}
+					cancel()
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
@@ -2561,6 +2675,23 @@ func (e *Executor) executeOpenAI(
 				return nil, err
 			}
 			e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), respBody)
+			if e.AttemptRecorder != nil {
+				usage := reconciliation.ParseUsageEvidence(respBody)
+				if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil {
+					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					if err := e.AttemptRecorder.RecordUsage(attemptCtx, callAttempt.ID, usage); err != nil {
+						slog.Warn("provider attempt usage persistence failed", "attempt_id", callAttempt.ID, "error", err)
+					}
+					cancel()
+				}
+				if id := reconciliation.ProviderRequestID(resp.Header, respBody); id != "" {
+					attemptCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					if err := e.AttemptRecorder.RecordHTTP(attemptCtx, callAttempt.ID, resp.StatusCode, id, sentAt); err != nil {
+						slog.Warn("provider attempt request-id persistence failed", "attempt_id", callAttempt.ID, "error", err)
+					}
+					cancel()
+				}
+			}
 			if len(respBody) > maxBodySize {
 				slog.Warn("upstream response truncated", "size", len(respBody))
 				respBody = respBody[:maxBodySize]

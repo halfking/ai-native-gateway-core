@@ -199,5 +199,8 @@
   },
   "admin_max_routes_exceeded": {
     "other": "每个工作类型最多允许 3 个模型路由"
+  },
+  "no_candidate_not_registered": {
+    "other": "模型“{{.Model}}”未在此网关登记。请检查模型名称，或联系网关管理员。"
   }
 }

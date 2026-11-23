@@ -108,6 +108,18 @@ func (h *Hook) Enabled(_ context.Context, env *domain.PipelineRequest) bool {
 
 // Execute 执行检测并写入 governance verdict。
 func (h *Hook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
+	// ★ F2 修复：递归面关闭——PI 分析器自己的请求不应再被检测。
+	//
+	//	llm_client_gateway.go:149 设置此头标识分析请求，但全仓零消费方 ⇒
+	//	分析请求被 154 再检测 → 再收集 → 形成「分析失败事件被再分析」环路。
+	//	⇒ 在 V2 入口检查此头，存在时跳过所有 PI 检测与收集。
+	if env.Envelope != nil && env.Envelope.Transport != nil && env.Envelope.Transport.R != nil {
+		if env.Envelope.Transport.R.Header.Get("X-Llmgw-Pi-Analyzer") != "" {
+			// 这是 PI 分析器自己发出的请求，跳过检测避免递归
+			return nil
+		}
+	}
+
 	content, _ := env.Metadata["user_content"].(string)
 	if content == "" {
 		return nil

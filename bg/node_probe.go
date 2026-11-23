@@ -3335,7 +3335,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	// (real requests through proxy → timeout), causing the "models briefly
 	// work then 5xx" pattern for non-domestic providers like apiclaude.cc
 	// and integrate.api.nvidia.com.
-	resp, err := w.probeClient.Do(req)
+	resp, err := platformProbeDo(ctx, w.probeClient, req, credID, bodyModel, "node_probe_direct")
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
 		code, timedOut := classifyProbeNetworkError(err)

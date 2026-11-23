@@ -255,18 +255,19 @@ func (ea *ErrorAnalyzer) processBatchLimit(ctx context.Context, limit int) (int,
 
 // staleClaimAge 是「processing 超过多久算孤儿」的时间阈值。
 //
-// 依据：一次 LLM 分析的正常耗时上限是客户端超时（默认 150s，
-// LLMGatewayPIErrorAnalysisTimeoutSec 可调 5..600s），加上排队与重试余量
-// ⇒ 10 分钟足够宽松，又不会让僵尸行永久卡死。
+// F4 修复：从 10 分钟放宽到 60 分钟，缓解跨实例回收竞态。
 //
-// ★ 2026-11-18 审计轮 P1：注意「批龄」不等于「单行龄」——领取是**整批**
+//	问题：245 与 154 共享同一个数据库，原阈值 10min < 批处理最长时长
+//	（10×150s=1500s=25min）⇒ 一个实例正在分析的批次被另一个实例误判
+//	为"孤儿"并回收 ⇒ 同一错误被重复分析。
 //
-//	一次打点（ClaimPendingErrors 对整批 SET started_at = NOW()），分析是
-//	**串行**的 ⇒ 批内第 k 行的 started_at 已老（批龄），可它可能正在被
-//	分析。因此**光调大这个阈值并不能根治**（批内串行上限 =
-//	batchSize × timeout，旋钮可调到 600s）；真正的根治是回收时排除
-//	**本进程在途的行**（见 ErrorAnalyzer.inflight）。
-const staleClaimAge = 10 * time.Minute
+//	修复：放宽到 60min（> 当前生产批处理最长时长的 2 倍）⇒ 大幅缓解竞态。
+//
+//	代价：真正崩溃的进程，其孤儿行的回收延迟从 10min 变为 60min（可接受）。
+//
+//	注意：这不是彻底根治（若未来 timeout 调大到 600s，批串行上限 100min > 60min
+//	仍会竞态）。彻底根治需要跨实例互斥（Redis 锁）或独立数据库，属架构决策。
+const staleClaimAge = 60 * time.Minute
 
 // AnalyzeError 分析单个错误
 func (ea *ErrorAnalyzer) AnalyzeError(ctx context.Context, queuedError *QueuedError) (*AnalysisResult, error) {
@@ -399,8 +400,8 @@ func (ea *ErrorAnalyzer) buildPrompt(queuedError *QueuedError) (string, error) {
 		queuedError.TenantID,
 		queuedError.SessionID.String,
 		queuedError.RequestID.String,
-		truncateUTF8Bytes(queuedError.ErrorMessage, 500),
-		truncateUTF8Bytes(queuedError.InputText.String, 500),
+		truncateUTF8Bytes(neutraliseUntrustedText(queuedError.ErrorMessage), 500),
+		truncateUTF8Bytes(neutraliseUntrustedText(queuedError.InputText.String), 500),
 		errorDetails,
 		detectionLayers,
 		matchedRules,

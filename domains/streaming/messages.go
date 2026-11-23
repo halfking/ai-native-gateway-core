@@ -729,7 +729,12 @@ func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request)
 		if !noCandCause.empty() {
 			clientMsg = noCandCause.Message
 		}
-		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", clientMsg, noCandCause.extras())
+		// 2026-11-23：根据归因令牌返回对应的状态码（404/403/429/503）和
+		// Anthropic error type，以便客户端 SDK 能正确识别"不可重试"的永久性失败。
+		status := statusCodeForNoCandidateCause(noCandCause.Causes)
+		code := errorCodeForNoCandidateCause(noCandCause.Causes)
+		errType := anthropicErrorType(ingressErrorType(status), code)
+		writeAnthropicError(w, status, errType, clientMsg, noCandCause.extras())
 		return
 	}
 	if len(candidates) == 0 {

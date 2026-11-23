@@ -1,6 +1,6 @@
 # Explication des données de la page d’analyse renforcée de l’utilisation
 
-Cette page rassemble en une vue synthétique les données d’utilisation dispersées dans cinq API : coût total, nombre total de requêtes, variation par rapport à la période précédente et ventilation détaillée, le tout sur un seul écran.
+Cette page juxtapose les résultats de cinq API : synthèse, tendance des coûts, comparaison mensuelle, économie du cache et principales clés API. Il ne s’agit pas de mesures répétées provenant d’une même table ou d’une même période.
 
 ## Cartes principales
 
@@ -11,11 +11,11 @@ Cette page rassemble en une vue synthétique les données d’utilisation disper
 
 ## Définitions des indicateurs
 
-- Les données de cette page proviennent de l’API d’agrégation qui alimente également le tableau de bord ; les chiffres doivent correspondre à ceux du tableau de bord. En cas d’écart, aligner d’abord les périodes.
-- L’affichage de la « variation par rapport à la période précédente » nécessite des données complètes pour les deux périodes ; lorsqu’il manque un jour, la page affiche « Données incomplètes ». Dans ce cas, le pourcentage est fourni à titre indicatif.
+- La page combine cinq endpoints indépendants. La synthèse et les principales clés API utilisent une fenêtre en nombre de jours ; la tendance des coûts et l’économie du cache utilisent la plage de dates sélectionnée ; la carte de comparaison compare le mois calendaire en cours au mois précédent. Les sources et périodes diffèrent : les valeurs ne sont donc pas nécessairement identiques à celles du tableau de bord ni entre elles.
+- L’endpoint de comparaison additionne les coûts en USD payés aux fournisseurs pour chaque mois calendaire et calcule (coût du mois en cours − coût du mois précédent) ÷ coût du mois précédent. Il ne vérifie pas que les mois sont complets. Si le coût du mois précédent est nul, le taux de variation vaut zéro ; cela ne prouve ni que les deux mois sont complets ni que l’utilisation est restée stable.
 
 ## Comment vérifier les chiffres en cas d’écart
 
-1. Le pourcentage de variation par rapport à la période précédente semble contre-intuitif (l’utilisation n’a pas changé, mais une forte variation s’affiche) : une période précédente incomplète fausse la base de comparaison ; vérifier d’abord l’exhaustivité des données de cette période.
-2. Le total de la ventilation détaillée ≠ celui de la carte principale : les requêtes dont la valeur de dimension est manquante sont comptabilisées uniquement dans le total (la page indique le volume non classé).
-3. La période inclut aujourd’hui : les chiffres du jour continuent de croître en temps réel et la variation par rapport à la période précédente évolue en continu ; le résultat est plus fiable après la clôture de la journée.
+1. Pour comparer la carte de période aux indicateurs de la plage sélectionnée, gardez à l’esprit que la carte compare toujours le mois en cours au mois précédent et ne suit pas les dates de début et de fin choisies.
+2. La tendance des coûts regroupe les enregistrements par dimension. Les dimensions manquantes sont regroupées sous « unknown » et les groupes de longue traîne peuvent être réunis dans « Other ». Les totaux peuvent différer si les sources ou périodes ne correspondent pas exactement.
+3. La synthèse et les principales clés API utilisent une fenêtre en nombre de jours, tandis que la tendance des coûts et l’économie du cache utilisent la plage sélectionnée. Les limites de période, l’actualisation et la journée en cours peuvent créer des écarts. En présence d’un avis de données dégradées, zéro ou un résultat vide ne correspond pas à un zéro mesuré.

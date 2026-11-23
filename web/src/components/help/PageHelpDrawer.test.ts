@@ -212,6 +212,36 @@ describe('PageHelpDrawer', () => {
     expect(body).toContain('统计标准')
     expect(body).toContain('65,774')
     expect(body).toContain('72,098')
+    expect(body).toContain('供应商返回金额')
+  })
+
+  it.each([
+    '/admin/reconciliation',
+    '/admin/usage',
+    '/admin/session-analytics/users',
+    '/admin/board-operational/providers',
+    '/admin/analytics/model/gpt-5',
+    '/tenant/usage',
+  ])(
+    'includes the localized comparison table in %s',
+    async (routePath) => {
+      const w = mount(PageHelpDrawer, {
+        props: { routePath },
+        global: { plugins: [makeI18n('en-US')], stubs: { ElDrawer: ElDrawerStub } },
+      })
+      await openBody(w)
+      expect(w.findAll('table').some((table) => table.text().includes('Provider-reported amount'))).toBe(true)
+      expect(w.find('.page-help-body').text()).toContain('Active and new sessions')
+    },
+  )
+
+  it('keeps unrelated page help focused on that page', async () => {
+    const w = mount(PageHelpDrawer, {
+      props: { routePath: '/keys' },
+      global: { plugins: [makeI18n('en-US')], stubs: { ElDrawer: ElDrawerStub } },
+    })
+    await openBody(w)
+    expect(w.find('.page-help-body').text()).not.toContain('Provider-reported amount')
   })
 
   it('★ 页面内嵌：label 渲染「图标 + 文字」形态；不给 label 仍是纯图标', async () => {

@@ -175,6 +175,34 @@ func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, owne
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
+	// A terminal request can be replayed after the debit committed but before
+	// its telemetry row was persisted. Serialize retries by the gateway-owned
+	// tenant/request key, then return the already-posted total. A single request
+	// may legitimately have several consume rows (subscription, granted and
+	// purchased pools), so the ledger total, rather than row count, is the unit
+	// of idempotency.
+	if requestID != "" {
+		lockKey := fmt.Sprintf("%d:%s:%s", len(tenantID), tenantID, requestID)
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+			return 0, err
+		}
+		var alreadyCharged int64
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(SUM(-amount), 0)::bigint
+			FROM credit_ledger_with_current_month
+			WHERE tenant_id = $1 AND ref_type = 'request' AND ref_id = $2
+			  AND entry_type = 'consume' AND amount < 0
+		`, tenantID, requestID).Scan(&alreadyCharged); err != nil {
+			return 0, err
+		}
+		if alreadyCharged > 0 {
+			if err := tx.Commit(ctx); err != nil {
+				return 0, err
+			}
+			return alreadyCharged, nil
+		}
+	}
+
 	if err := s.ensureWallet(ctx, tx, tenantID); err != nil {
 		return 0, err
 	}

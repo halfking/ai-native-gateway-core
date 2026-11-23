@@ -49,12 +49,21 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 
 // HandleUsageAdmin 处理 /api/admin/usage/* 路由（T1.4 增强端点）
 func (h *Handler) HandleUsageAdmin(w http.ResponseWriter, r *http.Request) {
+	remaining := r.URL.Path[len("/api/admin/usage/"):]
+	switch remaining {
+	case "cost-trend", "period-compare", "cache-economics":
+		// These legacy reports treat an empty SQL tenant as all tenants.
+		// Only platform admins or a tenant admin with a resolved tenant may use them.
+		if _, ok := requestReconciliationScope(r, ""); !ok {
+			writeError(w, http.StatusForbidden, "usage reporting requires administrator access")
+			return
+		}
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
-	remaining := r.URL.Path[len("/api/admin/usage/"):]
 	switch remaining {
 	case "cost-trend":
 		h.usageCostTrend(w, r)

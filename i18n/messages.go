@@ -78,6 +78,11 @@ const (
 	MsgNoCandidateCauseCredentialMissing = "no_candidate_cause_credential_missing" // "credential records missing"
 	MsgNoCandidateCauseOtherTenant       = "no_candidate_cause_other_tenant"       // "providers belong to another tenant"
 	MsgNoCandidateCauseNotRegistered     = "no_candidate_cause_not_registered"     // "model not registered"
+	// MsgNoCandidateNotRegistered 用于模型未登记且无候选的唯一原因情况。
+	// 与 MsgNoCandidateBlocked 的区别：后者说"全部候选节点都被挡住"（隐含至少有候选），
+	// 而未登记的模型根本没有候选 ⇒ 不能说"都被挡住"。
+	// 2026-11-23：配合状态码 404 使用。
+	MsgNoCandidateNotRegistered = "no_candidate_not_registered" // "Model '{{.Model}}' is not registered in this gateway. Please check the model name, or contact the gateway operator."
 	// Ingress (LargeIngress) rejections — 2026-11-22, 211 incident. The client
 	// used to get a bare English sentence that named neither the request body
 	// size nor whether a retry could help ("request preprocessing exceeded its

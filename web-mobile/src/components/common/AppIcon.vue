@@ -33,6 +33,7 @@ export type IconName =
   | 'key'
   | 'menu'
   | 'alert'
+  | 'help'
   | 'chart'
   | 'user'
   | 'logout'
@@ -68,6 +69,7 @@ const PATHS: Record<IconName, string> = {
   key: 'M14.5 3a6.5 6.5 0 1 0-4.9 10.8L3 20.4V22h3.5l1-1v-2h2v-2h2l1.6-1.6A6.5 6.5 0 0 0 14.5 3zM17 7h.01',
   menu: 'M4 6h16M4 12h16M4 18h16',
   alert: 'M12 3 2.5 20h19L12 3zM12 9.5v5M12 17.5h.01',
+  help: 'M9.2 9a2.9 2.9 0 1 1 5.2 1.8c-1.1 1.1-2.4 1.5-2.4 3.2M12 17.5h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
   chart: 'M4 20V4M4 20h16M8 16v-5M12 16V8M16 16v-3',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4.5 20.5a7.5 7.5 0 0 1 15 0',
   logout: 'M9 4H5v16h4M14 8l4 4-4 4M8.5 12H18',
