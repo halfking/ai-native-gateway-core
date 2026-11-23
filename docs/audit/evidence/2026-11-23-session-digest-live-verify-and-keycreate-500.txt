@@ -1,0 +1,703 @@
+==============================================================================
+2026-11-23 大会话归约（分段摘要 + 守卫复核）活体验证 ＋ 211 建 key 全量 500 回归 —— 证据
+日期：2026-11-23　环境：211 生产（llm.itestu.cn）　提交：10f24d33e / fa281c395 / c8289d60a
+对应主档：docs/audit/2026-11-23-大会话归约分段摘要与历史守卫误伤修复-主档.md
+口径：本文只记实测读数；凭据（管理端口令、临时 key、metrics key）全程只在 211 内存与
+      0700 临时目录里存在，未落盘到仓内、未回显。
+==============================================================================
+
+--- ① 现役身份与启动日志行（14:30 观察；并行车上线的 10f24d33 已含两笔提交）------
+$ curl -s http://127.0.0.1:8781/healthz
+{"status":"ok","version":"2.6.1-10f24d33-20261123-211","git_sha":"10f24d33","build_seq":3242,...,"ready":true}
+$ git merge-base --is-ancestor 6076df408 origin/main && echo IN     ⇒ IN
+$ git merge-base --is-ancestor 3cb2ae958 origin/main && echo IN     ⇒ IN
+$ git merge-base --is-ancestor 3cb2ae958 42ae8b70 && echo IN       ⇒ IN（seq 3241 起即已上线）
+$ docker logs llm-gateway-211-a 2>&1 | grep -F '"msg":"session digest configured"' | tail -1
+{"msg":"session digest configured","enabled":true,"segment_bytes":65536,"budget_bytes":16384,
+ "version":"2.6.1-10f24d33-20261123-211",...}
+{"msg":"history guard verdict memo configured","memo":true,"shared_cache":"off",
+ "local_entries":131072,"reduce_workers":8,...}
+★ 新实例只起了 4 分钟时的指标：reduce 计数 38、digest_bytes_count 0、omitted 0
+  ⇒ 被动证据不足以证明摘要路径 ⇒ 必须做受控活体验证。
+★ 请求体 ≤5MiB 的只归档不归约（ContextBytes 默认 5<<20，large_ingress.go:56/184）
+  ⇒ 线上那些 1.9MB 的请求根本不经过摘要 ⇒ 活体请求必须 >5MiB。
+
+--- ② 生产回归：POST /api/keys 全量 500（与本轮改动无关，挡住了活体验证）----------
+$ docker logs llm-gateway-211-a 2>&1 | grep -F createKey
+2026-11-23T07:23:04 error createKey insert failed | error=ERROR: column "team_id" of
+relation "api_keys" does not exist (SQLSTATE 42703)
+
+$ git log --date=iso -S'team_id' -- admin/keys.go
+83e3c5694 2026-11-23 07:33:03 fix(team): 团队层级链落地——域层改 pgx + 端点接线 + api_keys.team_id 写入与归属校验
+
+$ for c in a798423f 90d2df96 42ae8b70 10f24d33 8d97cc17; do git merge-base --is-ancestor 83e3c5694 $c ...
+  a798423f (211 seq 3239) does NOT contain 83e3c5694
+  90d2df96 (211 seq 3240) CONTAINS 83e3c5694
+  42ae8b70 (211 seq 3241) CONTAINS 83e3c5694
+  10f24d33 (211 seq 3242) CONTAINS 83e3c5694
+  8d97cc17 (154/245 现役) does NOT contain 83e3c5694
+
+留存日志窗口内的真实影响面：
+  槽 b（42ae8b70，09:35→14:26）：GET /api/keys ×7（200）、POST ×0
+  槽 a（10f24d33，14:26→）  ：POST ×1 = 本次活体验证的第一笔（500）
+★ ⇒ 缺陷自 seq 3240 上线起一直在线；留存日志里没有真实用户撞上（更早的容器日志已随部署轮换消失）。
+
+--- ③ 热修 a00d1d7fc 的变异自证（隔离 worktree llm-gateway-go-5-keyfix）--------------
+改动：admin/keys.go（个人 key 的 INSERT 不引用 team_id；落库面走窄注入面 keyCreateDB）、
+      admin/handler.go（+keyCreateDB 字段）、admin/keys_create_statement_test.go（新增 2 条）。
+
+=== baseline (fixed) ===
+ok  	github.com/kaixuan/llm-gateway-go/admin	0.081s
+=== M1: personal key always writes the team column (the production defect) ===
+--- FAIL: TestCreateKey_PersonalKeyInsertOmitsTeamColumn (0.00s)
+    keys_create_statement_test.go:101: 个人 key 必须建得出来（语句不得依赖 team_id 列）: got 500 body={"error":{"detail":"query failed"}}
+=== M2: personal statement text regains team_id ===
+--- FAIL: TestCreateKey_PersonalKeyInsertOmitsTeamColumn (0.00s)
+    keys_create_statement_test.go:101: 个人 key 必须建得出来（语句不得依赖 team_id 列）: got 500 body={"error":{"detail":"query failed"}}
+=== M3: team statement loses team_id ===
+--- FAIL: TestCreateKey_TeamKeyInsertWritesTeamColumn (0.00s)
+    keys_create_statement_test.go:142: 团队 key 必须建得出来: got 500 body={"error":{"detail":"query failed"}}
+=== M4: call site never appends the team id ===
+--- FAIL: TestCreateKey_TeamKeyInsertWritesTeamColumn (0.00s)
+    keys_create_statement_test.go:142: 团队 key 必须建得出来: got 500 body={"error":{"detail":"query failed"}}
+=== restored: pristine sha match: YES ===
+ok  	github.com/kaixuan/llm-gateway-go/admin	0.110s
+
+$ go test ./admin/ -count=1 -timeout 30m
+ok  	github.com/kaixuan/llm-gateway-go/admin	125.541s        （全包，零 FAIL；测试运行前后 git status 逐字相同）
+
+--- ④ 部署（从 llm-gateway-go-5-keyfix，树 = origin/main c8289d60a）------------------
+[test-gate] ★ diff 没有触及带测试的包 ⇒ 回落核心包清单 ★
+[test-gate] 要跑的包：./admin/ ./domains/sanitizerules/ ./domains/hooks/outputcompliance/ ./security/sanitize/
+ok  	github.com/kaixuan/llm-gateway-go/admin	133.947s
+ok  	github.com/kaixuan/llm-gateway-go/domains/sanitizerules	1.792s
+ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance	0.150s
+ok  	github.com/kaixuan/llm-gateway-go/security/sanitize	41.793s
+[test-gate] ★ 闸门通过：./admin/ ./domains/sanitizerules/ ./domains/hooks/outputcompliance/ ./security/sanitize/ 全绿 ★
+迁移阶段：357 条全部 `already applied`，非 already-applied 的迁移行 0 条 ⇒ 本次部署零新迁移
+[211] version: 2.6.1-c8289d60-20261123-211
+[211] 切流：nginx upstream ns_llm_gateway_upstream 由 127.0.0.1:8783 切到 127.0.0.1:8781
+[211] 公网版本身份 OK（c8289d60，第 2 次探到）
+[211] 旧槽已停：llm-gateway-211-b（保留容器与镜像，可 docker start 回滚）
+[211] 部署完成 @ 192.168.31.211（槽 a 接管）
+DEPLOY_RC=0
+healthz：{"status":"ok","version":"2.6.1-c8289d60-20261123-211","git_sha":"c8289d60","build_seq":3244,...}
+★ 观察：闸门说「diff 没有触及带测试的包」——而本次 diff 明确改了带测试的 ./admin/
+  （fa281c39→c8289d60a 含 admin/keys.go）。回落清单恰好含 ./admin ⇒ 本次闸门结论有效；
+  选包为什么没认出 ./admin 未查，登记待查（同族：L9「闸门通过 ≠ 你的改动过了闸门」）。
+
+--- ⑤ 活体验证（211 生产，build_seq 3244，同一网关进程 process_start=1795421274.99）--
+合成会话（gen_body.py，确定性、纯 ASCII，agent 形态）：
+  system + 首条 user + [assistant(tool_calls) ↔ tool(结果)]×2159 + 每 4 轮一条 user + 末条 user
+  = 4,860 条消息 / 5,507,937 B；受保护 3 条；进守卫的历史 4,857 条
+  其中 4,846 条每条都含修复前会被整条误丢的词（tokens / tokens left / token count / keyboard / Bearer）
+  另植 11 条工具结果内含 {"api_key": "sk-fake-…", "password": "fake-passphrase-…"}（必须被省略的对照）
+预测值不是估的：gen_body.py 复刻 protectInfo + segmentHistory + segmentKey（sha256(le64(1)‖le64(65536)‖逐条消息哈希)）
+
+【状态 A：冷】run-2（08:09Z）
+  POST /api/keys ⇒ http=200（id=374；修复前是 500）
+  预测：segments 83 / miss 83 / hit 0 / omitted 11
+  实测：
+    session_context_digest_segments_total{cache="miss"}   None -> 83.0    delta=83
+    session_context_digest_segments_total{cache="hit"}     None -> 0.0     delta=0
+    session_context_digest_bytes_sum                        0 -> 16373     delta=16373   （≤16384）
+    session_context_reduce_omitted_total                    0 -> 11        delta=11
+    session_context_reduce_duration_seconds_sum       0.109871 -> 1.216601  delta=1.106729（8 次归约，其中 7 次 ≤0.5s 的生产小请求）
+    history_guard_memo_misses_total = 4857 ；history_guard_memo_local_hits_total = 0
+  ⇒ 归约本身 ≈1.0s（落在 (0.5,1] 桶）
+  网关轨迹（request …5e23f1ec）：
+    08:09:37.020 http_request_start request_bytes=5507937
+    08:09:38.624 routing_resolve                                  ⇒ 入口（读体+归档+归约+摘要+绑会话）≈1.6s
+    08:09:38.639 session_compressor_prepare_done body_bytes=46687  ⇒ 5.5MB → 46.7KB
+    08:09:38.651 upstream_call_starting body_bytes=46623 upstream_url=https://integrate.api.nvidia.com/... raw_model=z-ai/glm-5.3-flash
+    08:10:15.438 upstream_http_attempt latency_ms=36787 upstream_status=200
+    08:10:15.439 executor: reasoning exhausted the completion budget; retrying same candidate
+    08:12:15.443 upstream_http_attempt latency_ms=120001 err_kind=timeout
+    08:12:37.030 http_request status=502 duration_ms=180009
+  ⇒ 该轮客户端 180s 内无响应体：时间全在上游（glm-5.3-flash 当日在 NVIDIA 上中位 32s、有 120s 超时；
+     同一时段别人的 1.94MB 生产请求（≤5MiB、未归约）在同一上游也要 60~144s）。网关侧结论不受影响。
+  ⇒ 临时 key 374 已吊销：DELETE 200 {"message":"revoked"}；GET 404；旧 key 调用 401。
+
+【状态 B：同体重发（温）】run-3 round 1（08:19Z，模型 minimax-m3.1-flash）
+  POST /api/keys ⇒ http=200（id=375）
+  实测：
+    session_context_digest_segments_total{cache="hit"}      0 -> 83        delta=83
+    session_context_digest_segments_total{cache="miss"}    83 -> 83        delta=0
+    session_context_digest_bytes_sum                    16373 -> 32746     delta=16373
+    session_context_reduce_omitted_total                   11 -> 22        delta=11
+    history_guard_memo_local_hits_total                     0 -> 4857     delta=4857
+    history_guard_memo_misses_total                      4857 -> 4857     delta=0
+    session_context_reduce_duration_seconds_sum       1.296914 -> 1.406808  delta=0.109894（本窗口归约计数 +1）
+  http=200 time_total=16.7s；x-gw-context-reduced: extractive_history；x-gw-session-reused: true
+  网关轨迹（request …daa61863）：08:19:11.058 start → 08:19:11.762 routing_resolve（入口 ≈0.70s）
+    body_bytes=46692 → 上游 46631 B → 200，duration_ms=16726
+
+【状态 C：追加一轮（同历史 + 助手回复 + 1 条新 user）】run-3 round 2
+  预测：segments 83 / hit 82 / miss 1 / omitted 11 / 进守卫 4,859
+  实测：
+    session_context_digest_segments_total{cache="hit"}      83 -> 165      delta=82
+    session_context_digest_segments_total{cache="miss"}     83 -> 84       delta=1
+    session_context_digest_bytes_sum                    32746 -> 49111     delta=16365   （≤16384）
+    session_context_reduce_omitted_total                   22 -> 33        delta=11
+    history_guard_memo_local_hits_total                  4857 -> 9714     delta=4857
+    history_guard_memo_misses_total                      4857 -> 4859     delta=2      （上轮的末条 user + 助手回复）
+    session_context_reduce_duration_seconds_sum       1.406808 -> 1.536855  delta=0.130047（本窗口归约计数 +2，含 1 次生产请求）
+  http=200 time_total=60.1s；x-gw-context-reduced: extractive_history
+  网关轨迹（request …a4918aa7）：08:19:28.133 start → 08:19:28.882 routing_resolve（入口 ≈0.75s）
+    body_bytes=50588 → 上游 50527 B → 200，duration_ms=60135
+  ⇒ 临时 key 375 已吊销：DELETE 200 {"message":"revoked"}；GET 404；旧 key 调用 401。
+
+★ 预测 vs 实测：三态、每项、逐个相等（83/0 · 0/83 · 82/1 · 11 · 11 · 4857/0 · 4857/2 · 16373/16373/16365）。
+★ 两侧对照：4,846 条含 tokens/keyboard/Bearer 的历史 ⇒ 省略 0 条；11 条种植的假凭据字段 ⇒ 省略 11 条。
+★ 上游侧附带读数：usage.prompt_tokens_details.cached_tokens = 10240/10343（B）、11115/11116（C）
+  ⇒ 归约输出跨轮稳定，上游提示缓存能接上（单次样本，不外推）。
+★ run-3 的 max_tokens=200 下 minimax 仍多次出现「reasoning exhausted the completion budget; retrying」，
+  网关既有重试逻辑接管后 200 —— 与本次改动无关，登记。
+
+--- ⑥ 211 暂存目录第二遍（15:48 实测，只读）--------------------------------------
+$ find $GW -maxdepth 1 -type d -name 'gw_staging_*' | wc -l            ⇒ 965
+$ find $GW -mindepth 2 -path "$GW/gw_staging_*" -type d -empty | wc -l  ⇒ 0
+$ find ... -type f -printf '%s\n'  ⇒ files=3479 total=1459.6 MiB min=122 max=23105379
+形状：files=1 → 3 个；files=2 → 186 个；files=4 → 776 个
+      （<请求id>/ref.json + raw.json、<请求id>-response/ref.json + raw.json ⇒ 被入口拒绝的请求
+        留下的「可审计恢复引用」，large_ingress.go:179「Rejections after RAW commit must retain an
+        auditable recovery reference」；raw.json 是原始请求体）
+按最新文件日期：11-10 53 | 11-11 169 | 11-12 11 | 11-13 17 | 11-14 62 | 11-15 54 | 11-16 134
+              | 11-17 152 | 11-18 171 | 11-19 63 | 11-20 28 | 11-21 24 | 11-22 24 | 11-23 3（均在 00:13 前）
+lsof：无进程持有
+★ 第一遍（04:48）因「创建不足 60 分钟」跳过的 1,321 个已不在 ⇒ 由清理链代码（Rebind 后
+  cleanupStagingChain）回收；00:13 之后零新增 ⇒ 代码修复对新产生的有效。
+★ 现存 965 个全部含文件 ⇒ 不在「空目录请删除」的授权内 ⇒ 本轮零删除，登记待 owner 定保留期。
+
+--- ⑦ 量具自身（本轮三次翻车，全部在本地试跑或复核时抓到）----------------------
+  ① gen_body.py 首版用 hashlib 对象的 .write（不存在）⇒ 本地试跑即红；
+  ② pick.py 把指标名写成 history_guard_memo_local_misses_total（实名 history_guard_memo_misses_total）
+     ⇒ run-2 的 memo 一列缺项，复核 /metrics 时发现并订正；
+  ③ run.sh 第 6 步「docker logs | python3 - <<EOF」：heredoc 抢占了管道的 stdin ⇒ 轨迹一步为空
+     ⇒ 轨迹由单独命令补取（见 ⑤）。另：`go fmt ./admin/` 是就地改写，误把主干上 30 个未格式化
+     文件一并重排 ⇒ 已按文件逐个还原，只保留经手的三个文件。
+
+==============================================================================
+附录：实际执行的脚本（原样；run.sh 第 6 步含上述已知缺陷 ③）
+==============================================================================
+
+---------- gen_body.py ----------
+#!/usr/bin/env python3
+"""Synthetic agent-style session bodies + predicted metric deltas for the live
+verification of the session-context digest on the 211 gateway.
+
+Deterministic, ASCII only. The prediction replicates the reducer's own arithmetic
+(internal/sessioncontext/protected.go + digest.go):
+
+  protectInfo    -> which messages are protected (kept verbatim)
+  segmentHistory -> segments over eligible raw message bytes, closing at >= SEG
+  segmentKey     -> sha256(le64(1) || le64(SEG) || sha256(message) ...)
+
+usage:
+  gen_body.py gen1 <out.json> <model>                 round-1 body
+  gen_body.py gen2 <out.json> <model> <reply.txt>     round-2 body = round-1 body
+                                                     + the assistant reply + one new
+                                                       user message
+Both print one JSON object with the predictions.
+"""
+import hashlib
+import json
+import struct
+import sys
+
+SEG = 65536          # defaultDigestSegmentBytes
+TARGET = 5_500_000   # eligible history bytes (reduction only above 5 MiB = 5,242,880)
+PLANT_EVERY = 200    # every PLANT_EVERY-th tool result carries a secret field
+
+VOCAB = ("ledger panel quota sampler router cache window margin pivot anchor bridge "
+         "canvas delta ember flint granite harbor ivory jasper kettle lunar mason "
+         "nectar oracle plume quiver ribbon slate timber umber velvet willow yarrow "
+         "harvest thistle bramble cinder dovetail latch meadow pebble sable tundra").split()
+
+SYSTEM = {"role": "system", "content":
+          "You are a careful coding assistant working inside a large repository. "
+          "Tool results arrive as read_file output; keep answers short."}
+
+
+def rnd(seed):
+    x = (seed * 2654435761 + 0x9E3779B9) % (1 << 32)
+    while True:
+        x = (x * 1103515245 + 12345) % (1 << 31)
+        yield x
+
+
+def filler(seed, nwords):
+    g = rnd(seed)
+    return " ".join(VOCAB[next(g) % len(VOCAB)] for _ in range(nwords))
+
+
+def first_user():
+    return {"role": "user", "content":
+            "[task] audit the ledger panel module end to end: read the notes files in order, "
+            "keep track of the token count reported by each tool result, and say at the end "
+            "whether the keyboard shortcut documentation matches the implementation. "
+            + filler(1, 45)}
+
+
+def tool_call(i):
+    args = json.dumps({"path": "src/module_%d/notes.txt" % (i % 97), "offset": i % 400, "limit": 48},
+                      separators=(",", ":"))
+    return {"role": "assistant",
+            "tool_calls": [{"id": "call_%05d" % i, "type": "function",
+                            "function": {"name": "read_file", "arguments": args}}]}
+
+
+def tool_result(i, planted):
+    # Every result carries the words that the pre-fix guard mistook for credential
+    # shapes: tokens / tokens left / token count / keyboard / Bearer.
+    lines = [
+        "[tool result %d] read_file returned 48 lines from src/module_%d/notes.txt" % (i, i % 97),
+        "status: ok; the request used %d tokens. tokens left: %d." % (200 + i % 900, i % 5000),
+        "token count exceeded the limit on the previous call, so the window was reduced and retried.",
+        "press the keyboard shortcut ctrl+k to open the command palette; keyboard focus stays in the editor pane.",
+        "run with Bearer authentication only when the upstream asks for it; otherwise stay anonymous.",
+        "send the summary by email once the ledger panel is reconciled with the quota sampler.",
+        filler(i, 235),
+    ]
+    if planted:
+        lines.append('config = {"api_key": "sk-fake-%05d", "password": "fake-passphrase-%05d"}' % (i, i))
+    return {"role": "tool", "tool_call_id": "call_%05d" % i, "content": "\n".join(lines)}
+
+
+def user_note(i):
+    return {"role": "user", "content":
+            "[user note %d] please continue with step %d: check the ledger panel, then report the "
+            "token count and how many tokens left before the window closes. " % (i, i)
+            + filler(i + 7, 85)}
+
+
+FINAL = {"role": "user", "content":
+         "[final] In one short sentence: how many notes files did you review, and did any of "
+         "them report that the token count exceeded the limit?"}
+FINAL2 = {"role": "user", "content":
+          "[follow-up] Name the module where the token count was highest, in three words."}
+
+
+def enc(m):
+    return json.dumps(m, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+
+
+def build_round1():
+    msgs = [SYSTEM, first_user()]
+    planted = set()
+    eligible_bytes = 0
+    encs = [enc(SYSTEM), enc(msgs[1])]
+    i = 0
+    while eligible_bytes < TARGET:
+        c, r = tool_call(i), tool_result(i, i % PLANT_EVERY == PLANT_EVERY // 2)
+        if i % PLANT_EVERY == PLANT_EVERY // 2:
+            planted.add(len(msgs) + 1)
+        batch = [c, r]
+        if i % 4 == 3:
+            batch.append(user_note(i))
+        for m in batch:
+            encs.append(enc(m))
+            eligible_bytes += len(encs[-1])
+        msgs.extend(batch)
+        i += 1
+    msgs.append(FINAL)
+    encs.append(enc(FINAL))
+    return msgs, encs, planted
+
+
+def protect(msgs):
+    """Mirror of protectInfo for these messages (tool_calls / tool_call_id links only)."""
+    n = len(msgs)
+    role = [m.get("role") for m in msgs]
+    calls = [["id:" + c["id"] for c in m.get("tool_calls", [])] for m in msgs]
+    refs = [["id:" + m["tool_call_id"]] if m.get("tool_call_id") else [] for m in msgs]
+    keep = [False] * n
+    edges = [[] for _ in range(n)]
+    first = tail = human = -1
+    call_at = {}
+    for i in range(n):
+        if role[i] in ("system", "developer"):
+            keep[i] = True
+        if role[i] == "user":
+            tail = i
+            if not refs[i]:
+                human = i
+                if first < 0:
+                    first = i
+        for k in calls[i]:
+            call_at[k] = i
+        for k in refs[i]:
+            if k in call_at:
+                edges[i].append(call_at[k])
+                edges[call_at[k]].append(i)
+    if first >= 0:
+        keep[first] = True
+    if human >= 0:
+        keep[human] = True
+    if tail < 0:
+        tail = n - 1
+    for i in range(tail, n):
+        keep[i] = True
+    queue = [i for i in range(n) if keep[i]]
+    while queue:
+        i = queue.pop(0)
+        for j in edges[i]:
+            if not keep[j]:
+                keep[j] = True
+                queue.append(j)
+            if j < tail and calls[j]:
+                tail = j
+    return keep, tail
+
+
+def segments(eligible, encs):
+    """Mirror of segmentHistory: close a segment once it holds >= SEG bytes."""
+    out, cur, size = [], [], 0
+    for i in eligible:
+        cur.append(i)
+        size += len(encs[i])
+        if size >= SEG:
+            out.append(cur)
+            cur, size = [], 0
+    if cur:
+        out.append(cur)
+    return out
+
+
+def segkey(seg, encs):
+    """Mirror of digestInput.segmentKey for messages <= 64KB."""
+    h = hashlib.sha256()
+    h.update(struct.pack("<Q", 1))       # digestVersion
+    h.update(struct.pack("<Q", SEG))     # cfg.SegmentBytes
+    for i in seg:
+        h.update(hashlib.sha256(encs[i]).digest())
+    return h.hexdigest()
+
+
+def predict(msgs, encs, planted, previous_keys):
+    keep, tail = protect(msgs)
+    eligible = [i for i in range(len(msgs)) if not keep[i] and i not in planted]
+    segs = segments(eligible, encs)
+    keys = [segkey(s, encs) for s in segs]
+    hits = sum(1 for k in keys if k in previous_keys)
+    return {
+        "messages": len(msgs),
+        "protected": sum(1 for k in keep if k),
+        "guard_checked_history": sum(1 for k in keep if not k),
+        "eligible_history": len(eligible),
+        "eligible_bytes": sum(len(encs[i]) for i in eligible),
+        "planted_secret_fields": len(planted),
+        "pred_omitted": len(planted),
+        "pred_segments": len(segs),
+        "pred_digest_miss": len(keys) - hits,
+        "pred_digest_hit": hits,
+        "_keys": set(keys),
+    }
+
+
+def body(msgs, model):
+    return (b'{"model":' + json.dumps(model).encode("ascii") + b',"messages":['
+            + b",".join(enc(m) for m in msgs)
+            + b'],"max_tokens":200,"stream":false}')
+
+
+def main(argv):
+    if len(argv) < 3 or argv[1] not in ("gen1", "gen2"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    mode, out, model = argv[1], argv[2], argv[3]
+    msgs, encs, planted = build_round1()
+    p1 = predict(msgs, encs, planted, set())
+    if mode == "gen1":
+        report = p1
+    else:
+        with open(argv[4], encoding="utf-8") as fh:
+            reply = fh.read().strip() or "Reviewed the notes files."
+        msgs = msgs + [{"role": "assistant", "content": reply}, FINAL2]
+        encs = encs + [enc(msgs[-2]), enc(msgs[-1])]
+        report = predict(msgs, encs, planted, p1["_keys"])
+    raw = body(msgs, model)
+    with open(out, "wb") as fh:
+        fh.write(raw)
+    report = {k: v for k, v in report.items() if not k.startswith("_")}
+    report["body_bytes"] = len(raw)
+    json.dump(report, sys.stdout, indent=1, sort_keys=True)
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+
+---------- pick.py ----------
+#!/usr/bin/env python3
+"""Print the gateway metrics relevant to the digest check as one JSON object.
+
+Reads the Prometheus text exposition from stdin.
+"""
+import json
+import sys
+
+EXACT = (
+    "session_context_reduce_omitted_total",
+    "session_context_digest_bytes_sum",
+    "session_context_digest_bytes_count",
+    "session_context_reduce_duration_seconds_sum",
+    "session_context_reduce_duration_seconds_count",
+    "history_guard_memo_local_hits_total",
+    "history_guard_memo_misses_total",
+    "process_start_time_seconds",
+)
+PREFIX = (
+    "session_context_digest_segments_total",
+    "session_context_digest_bytes_bucket",
+    "session_context_reduce_messages",
+    "session_context_reduce_duration_seconds_bucket",
+)
+
+out = {}
+for line in sys.stdin:
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    name, _, value = line.partition(" ")
+    base = name.split("{", 1)[0]
+    if base in EXACT or base in PREFIX:
+        try:
+            out[name] = float(value)
+        except ValueError:
+            pass
+json.dump(out, sys.stdout, sort_keys=True)
+
+---------- delta.py ----------
+#!/usr/bin/env python3
+"""Print before / after / delta for two pick.py snapshots.
+
+usage: delta.py <label> <before.json> <after.json>
+"""
+import json
+import sys
+
+
+def fmt(v):
+    return str(int(v)) if v == int(v) else "%.6f" % v
+
+
+label, before_path, after_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(before_path, encoding="utf-8") as fh:
+    before = json.load(fh)
+with open(after_path, encoding="utf-8") as fh:
+    after = json.load(fh)
+
+print("--- metric deltas: %s ---" % label)
+same_process = before.get("process_start_time_seconds") == after.get("process_start_time_seconds")
+print("same gateway process: %s (start=%s -> %s)" % (
+    same_process, before.get("process_start_time_seconds"), after.get("process_start_time_seconds")))
+for name in sorted(set(before) | set(after)):
+    if name == "process_start_time_seconds":
+        continue
+    b, a = before.get(name), after.get(name)
+    if b is None or a is None:
+        print("  %-70s %s -> %s" % (name, b, a))
+        continue
+    if b == a and name.startswith("session_context_reduce_duration_seconds_bucket"):
+        continue  # histogram buckets are only interesting when they move
+    d = a - b
+    print("  %-70s %12s -> %12s   delta=%s" % (name, fmt(b), fmt(a), fmt(d)))
+
+---------- logline.py ----------
+#!/usr/bin/env python3
+"""Condense gateway JSON log lines (stdin) to msg + fields of interest."""
+import json
+import sys
+
+KEYS = ("status", "request_bytes", "body_bytes", "duration_ms", "latency_ms", "messages",
+        "sensitive_history_omitted", "digest_segments", "digest_cache_hits", "digest_bytes",
+        "output_bytes", "source_bytes", "reduced", "context_reduced", "upstream_status",
+        "client_model", "raw_model", "finish_reason", "err_kind", "error_kind", "code",
+        "attempt", "is_stream", "reason", "enabled", "segment_bytes", "budget_bytes",
+        "memo", "shared_cache", "local_entries", "reduce_workers", "outcome", "report")
+
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+    except ValueError:
+        print("  raw:", line.strip()[:240])
+        continue
+    parts = [str(d.get("msg"))]
+    for k in KEYS:
+        if k in d:
+            parts.append("%s=%s" % (k, d[k]))
+    print("  " + " ".join(parts))
+
+---------- run.sh ----------
+#!/usr/bin/env bash
+# Live verification of the session-context digest + history guard on the 211 gateway.
+#
+# Runs ON 211. DEMO_PW (admin password) must be in the environment; it is never printed.
+# Credentials are handed to curl through header files inside a 0700 scratch directory
+# (so they never appear in the process table); the directory is removed on exit and the
+# temporary API key is revoked on every exit path.
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+R="--resolve llm.itestu.cn:443:192.168.31.211"
+BASE=https://llm.itestu.cn
+PORT=$(grep -o '127.0.0.1:87[0-9][0-9]' /etc/nginx/conf.d/ns-gateway-211.conf | head -1 | cut -d: -f2)
+WORK=$(mktemp -d /root/.gw-live-verify.XXXXXX) || { echo "cannot create scratch dir"; exit 1; }
+TOKEN=""; KEY_ID=""; REVOKED=0
+
+cleanup() {
+  if [ -n "$KEY_ID" ] && [ "$REVOKED" = "0" ] && [ -n "$TOKEN" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 $R -H "@$WORK/hdr.admin" -X DELETE "$BASE/api/keys/$KEY_ID")
+    echo "cleanup: DELETE /api/keys/$KEY_ID -> http=$code"
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+trap 'exit 99' HUP INT TERM PIPE   # any abort still runs the EXIT trap (revoke + cleanup)
+
+active_container() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' | awk -F'\t' -v p=":$PORT->" 'index($2,p){print $1; exit}'
+}
+identity() {
+  curl -s -m 5 "http://127.0.0.1:$PORT/healthz" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version"), "build_seq=%s" % d.get("build_seq"), "git_sha=%s" % d.get("git_sha"))'
+}
+C=$(active_container)
+[ -n "$C" ] || { echo "no active gateway container on port $PORT"; exit 1; }
+ADMIN_KEY=$(docker inspect "$C" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^LLM_GATEWAY_ADMIN_API_KEY=' | cut -d= -f2-)
+[ -n "$ADMIN_KEY" ] || { echo "admin api key not found in container env"; exit 1; }
+printf 'Authorization: Bearer %s\n' "$ADMIN_KEY" > "$WORK/hdr.metrics"; chmod 600 "$WORK/hdr.metrics"
+unset ADMIN_KEY
+snap() { curl -s -m 10 -H "@$WORK/hdr.metrics" "http://127.0.0.1:$PORT/metrics" | python3 "$HERE/pick.py" > "$1"; }
+# --data-binary @file keeps the credential out of the process table as well.
+post() { # <url> <json-file> <response-out> [extra curl args...]
+  local url="$1" data="$2" out="$3"; shift 3
+  curl -s -m 20 -o "$out" -w '%{http_code}' $R -H 'Content-Type: application/json' --data-binary "@$data" "$url" "$@"
+}
+
+echo "=== identity (before) ==="; identity; echo "container=$C port=$PORT"
+echo "=== startup log line ==="
+docker logs "$C" 2>&1 | grep -F '"msg":"session digest configured"' | tail -1 | python3 "$HERE/logline.py"
+docker logs "$C" 2>&1 | grep -F '"msg":"history guard verdict memo configured"' | tail -1 | python3 "$HERE/logline.py"
+
+# 1. admin login (demoadmin) --------------------------------------------------
+printf '{"username":"demoadmin","password":"%s","remember_me":true}' "$DEMO_PW" > "$WORK/login.json"
+code=$(post "$BASE/api/auth/token" "$WORK/login.json" "$WORK/login.resp.json")
+rm -f "$WORK/login.json"
+TOKEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("access_token",""))' "$WORK/login.resp.json" 2>/dev/null)
+rm -f "$WORK/login.resp.json"
+[ -n "$TOKEN" ] || { echo "login failed http=$code"; exit 2; }
+printf 'Authorization: Bearer %s\n' "$TOKEN" > "$WORK/hdr.admin"; chmod 600 "$WORK/hdr.admin"
+echo "=== login === http=$code; me: $(curl -s -m 10 $R -H "@$WORK/hdr.admin" "$BASE/api/auth/me" | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d.get("user",d); print(d.get("username"), d.get("role"), "tenant=%s" % d.get("tenant_id"))')"
+
+# 2. temporary key -------------------------------------------------------------
+printf '{"key_alias":"tmp-live-digest-%s","budget_usd":1,"rate_limit_rpm":30,"remark":"temporary key for live verification of the session digest; revoked right after use"}' "$(date +%s)" > "$WORK/mint.json"
+code=$(post "$BASE/api/keys" "$WORK/mint.json" "$WORK/mint.resp.json" -H "@$WORK/hdr.admin")
+KEY_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "$WORK/mint.resp.json" 2>/dev/null)
+API_KEY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("api_key",""))' "$WORK/mint.resp.json" 2>/dev/null)
+rm -f "$WORK/mint.json" "$WORK/mint.resp.json"
+[ -n "$KEY_ID" ] && [ -n "$API_KEY" ] || { echo "key mint failed http=$code"; exit 3; }
+printf 'Authorization: Bearer %s\n' "$API_KEY" > "$WORK/hdr.api"; chmod 600 "$WORK/hdr.api"
+unset API_KEY
+echo "=== temporary key === id=$KEY_ID http=$code"
+
+# 3. find a model this key may use (tiny request; below the 256 KiB archive threshold) --
+MODEL=""
+for m in minimax-m3.1-flash claude-haiku-4-5 glm-5.1 glm-5.3-flash; do
+  printf '{"model":"%s","max_tokens":64,"stream":false,"messages":[{"role":"user","content":"Reply with the single word OK."}]}' "$m" > "$WORK/probe.json"
+  code=$(curl -s -m 90 -o "$WORK/probe.resp.json" -w '%{http_code}' $R -H "Content-Type: application/json" -H "@$WORK/hdr.api" --data-binary "@$WORK/probe.json" "$BASE/v1/chat/completions")
+  note=$(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    print("unparsable"); raise SystemExit
+e=d.get("error")
+print(("error: %s" % (e.get("message") if isinstance(e,dict) else e))[:160] if e else "ok reply=%r" % (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "")[:40])' "$WORK/probe.resp.json")
+  echo "  probe model=$m http=$code $note"
+  if [ "$code" = "200" ]; then MODEL="$m"; break; fi
+done
+rm -f "$WORK/probe.json" "$WORK/probe.resp.json"
+[ -n "$MODEL" ] || { echo "no usable model for this key"; exit 4; }
+echo "model=$MODEL"
+
+# 4. round 1: cold -------------------------------------------------------------
+python3 "$HERE/gen_body.py" gen1 "$WORK/r1.json" "$MODEL" > "$WORK/pred1.json"
+echo "=== round 1 predictions ==="; python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$WORK/pred1.json"
+snap "$WORK/m0.json"
+read -r code1 t1 <<<"$(curl -s -m 300 -o "$WORK/resp1.json" -D "$WORK/hdr1.txt" -w '%{http_code} %{time_total}' $R -H "Content-Type: application/json" -H "@$WORK/hdr.api" --data-binary "@$WORK/r1.json" "$BASE/v1/chat/completions")"
+snap "$WORK/m1.json"
+echo "=== round 1 === http=$code1 time_total=${t1}s; identity: $(identity)"
+grep -iE '^x-gw-' "$WORK/hdr1.txt" | tr -d '\r' | sed 's/^/  /'
+ARCH1=$(grep -i '^x-gw-archive-id' "$WORK/hdr1.txt" | head -1 | tr -d '\r' | awk '{print $2}')
+python3 "$HERE/delta.py" "round 1" "$WORK/m0.json" "$WORK/m1.json"
+python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+ch=(d.get("choices") or [{}])[0]
+print("  reply=%r finish=%s usage=%s" % (((ch.get("message") or {}).get("content") or "")[:160], ch.get("finish_reason"), d.get("usage")))
+e=d.get("error")
+if e: print("  error:", json.dumps(e, ensure_ascii=True)[:400])' "$WORK/resp1.json"
+python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+m=((d.get("choices") or [{}])[0].get("message") or {})
+open(sys.argv[2],"w").write((m.get("content") or "Reviewed the notes files."))' "$WORK/resp1.json" "$WORK/reply1.txt"
+
+# 5. round 2: same history + the reply + one new user message (warm) ------------
+python3 "$HERE/gen_body.py" gen2 "$WORK/r2.json" "$MODEL" "$WORK/reply1.txt" > "$WORK/pred2.json"
+echo "=== round 2 predictions ==="; python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$WORK/pred2.json"
+snap "$WORK/m2.json"
+read -r code2 t2 <<<"$(curl -s -m 300 -o "$WORK/resp2.json" -D "$WORK/hdr2.txt" -w '%{http_code} %{time_total}' $R -H "Content-Type: application/json" -H "@$WORK/hdr.api" --data-binary "@$WORK/r2.json" "$BASE/v1/chat/completions")"
+snap "$WORK/m3.json"
+echo "=== round 2 === http=$code2 time_total=${t2}s; identity: $(identity)"
+grep -iE '^x-gw-' "$WORK/hdr2.txt" | tr -d '\r' | sed 's/^/  /'
+ARCH2=$(grep -i '^x-gw-archive-id' "$WORK/hdr2.txt" | head -1 | tr -d '\r' | awk '{print $2}')
+python3 "$HERE/delta.py" "round 2" "$WORK/m2.json" "$WORK/m3.json"
+python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+ch=(d.get("choices") or [{}])[0]
+print("  reply=%r finish=%s usage=%s" % (((ch.get("message") or {}).get("content") or "")[:160], ch.get("finish_reason"), d.get("usage")))
+e=d.get("error")
+if e: print("  error:", json.dumps(e, ensure_ascii=True)[:400])' "$WORK/resp2.json"
+python3 "$HERE/delta.py" "cumulative (before round 1 -> after round 2)" "$WORK/m0.json" "$WORK/m3.json" | grep -E "same gateway|omitted|segments|digest_bytes_(sum|count)|memo|duration_seconds_(sum|count)|reduce_messages"
+
+# 6. gateway trace of the two big requests (found by request_bytes) --------------
+echo "=== gateway trace of the two big requests (by request_bytes; request ids are log-redacted) ==="
+docker logs --since 20m "$C" 2>&1 | python3 - "$(stat -c %s "$WORK/r1.json")" "$(stat -c %s "$WORK/r2.json" 2>/dev/null || echo 0)" <<'PYEOF' | cut -c1-330
+import json, sys
+sizes = {sys.argv[1], sys.argv[2]}
+KEYS = ("msg", "status", "body_bytes", "latency_ms", "duration_ms", "raw_model", "upstream_url", "attempt",
+        "err_kind", "is_stream", "upstream_status", "provider_id")
+rows, tokens = [], set()
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(d, dict):
+        continue
+    if d.get("msg") == "http_request_start" and str(d.get("request_bytes")) in sizes:
+        tok = str(d.get("request_id", "")).strip("[]").split(":")[-1]
+        if tok:
+            tokens.add(tok)
+    rows.append(line.rstrip())
+print("request tokens:", sorted(tokens))
+for line in rows:
+    if any(tok in line for tok in tokens):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        print(" ", d.get("timestamp", "")[11:23], " ".join("%s=%s" % (k, str(d[k])[:70]) for k in KEYS if k in d))
+PYEOF
+
+# 7. revoke the temporary key and prove it is dead --------------------------------
+code=$(curl -s -o "$WORK/del.resp.json" -w '%{http_code}' -m 15 $R -X DELETE "$BASE/api/keys/$KEY_ID" -H "@$WORK/hdr.admin")
+echo "=== revoke === DELETE /api/keys/$KEY_ID http=$code body=$(head -c 160 "$WORK/del.resp.json")"
+[ "$code" = "200" ] && REVOKED=1
+rm -f "$WORK/del.resp.json"
+echo "  GET /api/keys/$KEY_ID after revoke -> http=$(curl -s -o /dev/null -w '%{http_code}' -m 15 $R -H "@$WORK/hdr.admin" "$BASE/api/keys/$KEY_ID")"
+printf '{"model":"%s","max_tokens":4,"stream":false,"messages":[{"role":"user","content":"hi"}]}' "$MODEL" > "$WORK/dead.json"
+echo "  chat with the revoked key -> http=$(curl -s -o "$WORK/dead.resp.json" -w '%{http_code}' -m 30 $R -H "Content-Type: application/json" -H "@$WORK/hdr.api" --data-binary "@$WORK/dead.json" "$BASE/v1/chat/completions") $(head -c 120 "$WORK/dead.resp.json")"
+rm -f "$WORK/dead.json" "$WORK/dead.resp.json"
+echo "=== identity (after) ==="; identity
+echo "=== scratch dir removed on exit; revocation state: REVOKED=$REVOKED ==="
