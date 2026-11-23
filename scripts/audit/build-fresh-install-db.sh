@@ -26,6 +26,13 @@
 #      `dbinit:no-transaction` ⇒ 走**非事务通道**
 #      （★ 判定与 runner.go 的 requiresNoTransaction 同源：★ 只看 `--` 开头的
 #        注释行、★ 不看正文 ⇒ ★ 避免把正文里的同名字串误判）
+#   ④ **安装器代码里的基线补种**：★ 2026-11-23 L29 轮上游把 956 的前置
+#      （`models_canonical` 里存在 active 的 `minimax-m3.1-flash`）从**迁移**
+#      挪到了**安装器代码**（runner.go 的 `modelsCanonicalSeedSQL`）⇒ ⇒ 本建造器
+#      只复刻「SQL 文件链」⇒ ⇒ 不补这一步，956 的守卫必然中止
+#      ⇒ ⇒ 造出来的库**不是**干净的新装 ⇒ ⇒ 不得用于采集 census。
+#      ★ 补种内容**从 runner.go 里抽取**（★ 不内联 ⇒ 单一真源 ⇒ 上游改常量、
+#        这里自动跟随）⇒ ★ 抽取失败**中止**而不是跳过（★ 跳过＝造出假底账）。
 #
 # # 用法
 #
@@ -53,6 +60,7 @@ KEEP_DB="${KEEP_DB:-0}"
 BASELINE_DIR="$ROOT_DIR/sql/schema"
 EMBED_DIR="$ROOT_DIR/installer/cmd/llm-gw-installer/embeddata/startup"
 MANIFEST="$ROOT_DIR/sql/schema/installed_startup_migrations.tsv"
+RUNNER_GO="$ROOT_DIR/installer/internal/dbinit/runner.go"
 
 fail=0
 applied=0
@@ -77,6 +85,12 @@ bad() { printf '[fresh-db] ✗ %s\n' "$*" >&2; fail=$((fail + 1)); }
 #   ⇒ ⇒ 而把 SET 与 DROP 塞进**同一条** -c ⇒ PG 报「cannot run inside a transaction block」
 #   ⇒ ⇒ 清理会【直接失败且静默】⇒ ⇒ 所以必须拆成多条 -c。
 drop_fresh_db() {
+  # ★ 临时文件（★ 补种 SQL 的落地件）也在这里清 ⇒ 自建资源不留在磁盘上。
+  # ★★ 必须写在【本函数】体内（★ 不是调用者）⇒ ★ 见下面 trap 处的注记。
+  if [[ -n "${SEED_FILE:-}" && -f "$SEED_FILE" ]]; then
+    rm -f "$SEED_FILE"
+  fi
+  SEED_FILE=""
   [[ "${drop_on_exit:-1}" == "1" ]] || return 0
   [[ -n "${PG_DB:-}" ]] || return 0
   log "回收数据库 ${PG_DB}（★ 踢占用会话 → 设超时 → DROP）"
@@ -98,6 +112,12 @@ drop_fresh_db() {
 }
 
 # ★ 兜底挂载（★ 覆盖所有退出路径：成功 / 失败 / 中断）。
+# ★★ 载体必须是【drop_fresh_db 本身】（★ 不是它的调用者）⇒ ★ 仓内纪律
+#   「自建资源回收质量门」判的是「**trap 指到的那个函数体里有没有字面
+#   DROP DATABASE**」（★ 覆盖性、★ 不是「有没有 trap」）⇒ ⇒ 若是
+#   `trap cleanup_all EXIT` 而回收动作在 cleanup_all 的**下一层** ⇒
+#   门会读成「兜底不覆盖回收」⇒ ★ ⇒ 所以临时文件的清理**并进**
+#   drop_fresh_db 体内（★ 它本来就含 DROP DATABASE 字面）。
 trap drop_fresh_db EXIT
 
 # ── 前置核对：★ 三件事缺一件就不该跑（★ 静默跳过会造出一份假底账）────
@@ -127,6 +147,36 @@ psql_in() {  # psql_in <db> <file> <single-transaction|plain>
   return $rc
 }
 
+# ── ④ 安装器代码里的基线补种（★ 复刻 runner.go 的 A1）────────────────
+#
+# ★ 为什么必须复刻：★ 上游 L29 轮把 956 的前置守卫（`models_canonical` 里
+#   存在 **active** 的 `minimax-m3.1-flash`）从**迁移**挪到了**安装器代码**
+#   （runner.go 的 modelsCanonicalSeedSQL）⇒ ⇒ 而本建造器只复刻 SQL 文件链
+#   ⇒ ⇒ 956 必然中止 ⇒ ⇒ 库不是干净的新装 ⇒ ⇒ 不得用于采集 census。
+#
+# ★ 为什么**抽取**而不是内联：★ 内联＝两份真源 ⇒ 上游改常量、这里不变
+#   ⇒ ⇒ 静默漂移 ⇒ ⇒ 从 runner.go 抽取 ⇒ 单一真源 ⇒ 上游改、这里自动跟随。
+#
+# ★ 为什么抽取失败**中止**而不是跳过：★ 跳过＝造出一份假底账 ⇒ 比失败更坏。
+extract_seed_sql() {
+  python3 - "$RUNNER_GO" <<'PY'
+import re, sys
+try:
+    src = open(sys.argv[1], encoding="utf-8").read()
+except OSError as e:
+    sys.stderr.write("FATAL: 读不到 %s (%s)\n" % (sys.argv[1], e))
+    sys.exit(2)
+m = re.search(r"const\s+modelsCanonicalSeedSQL\s*=\s*`(.*?)`", src, re.S)
+if not m:
+    sys.stderr.write(
+        "FATAL: runner.go 里找不到 modelsCanonicalSeedSQL 常量\n"
+        "  ⇒ 安装器的基线补种形态已变（★ 上游改过）⇒ ★ 建造器必须同步\n"
+        "  ⇒ 【不许跳过这步】（★ 跳过＝造出假底账）\n")
+    sys.exit(2)
+sys.stdout.write(m.group(1))
+PY
+}
+
 # ── ① 基线三件 ──────────────────────────────────────────────────────
 log "重建数据库 ${PG_DB}（★ 旧库先删 ⇒ 每次都是干净的新装）"
 # ★ 旧库回收走【与兜底同一份实现】⇒ 避免两处漂移（★ 只留一份 DROP）。
@@ -147,7 +197,34 @@ for b in 00-prereqs 01-schema 02-seed; do
   fi
 done
 
-# ── ② 启动迁移链（★ TSV apply-order ＋ no-transaction 分流）──────────
+# ── ② 安装器代码里的基线补种（★ 位置与 runner.go 的 InitSchema 同源）──
+# ★ 顺序：基线三件之后、启动迁移之前（★ 与 runner.go 的 InitSchema 一致）。
+log "补种 models_canonical 基线行（★ 复刻 runner.go 的 A1）..."
+SEED_FILE="$(mktemp "${TMPDIR:-/tmp}/freshdb-seed.XXXXXX")"
+if ! extract_seed_sql >"$SEED_FILE"; then
+  bad "抽取 runner.go 的 modelsCanonicalSeedSQL 失败（★ 见上）"
+  exit 1
+fi
+if [[ ! -s "$SEED_FILE" ]]; then
+  bad "补种 SQL 为空（★ 抽取到了空内容）"
+  exit 1
+fi
+if psql_in "$PG_DB" "$SEED_FILE" single; then
+  log "基线补种 ✅"
+else
+  bad "基线补种失败"
+  if [[ -n "$PSQL_ERR" ]]; then
+    n=0
+    while IFS= read -r line; do
+      printf '[fresh-db]   │ %s\n' "$line" >&2
+      n=$((n + 1))
+      [[ "$n" -ge 6 ]] && break
+    done <<<"$PSQL_ERR"
+  fi
+  exit 1
+fi
+
+# ── ③ 启动迁移链（★ TSV apply-order ＋ no-transaction 分流）──────────
 total=$(grep -v '^#' "$MANIFEST" | grep -c . || true)
 log "启动迁移链：$total 条（★ 按 installed_startup_migrations.tsv 的 apply-order）"
 while IFS=$'\t' read -r idx name; do

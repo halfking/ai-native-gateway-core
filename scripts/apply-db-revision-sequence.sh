@@ -2597,13 +2597,9 @@ files=(
   # ★ 955（2026-11-09 模型指纹验证增强轮）：passive_model_fingerprints ——
   #   被动式模型指纹基线表（真实流量聚合的 TTFT/ITT/吞吐/Token 签名）。
   "$ROOT_DIR/sql/migrations/startup/955_passive_model_fingerprints.sql"
-  # ★ 918（2026-11-23 956 断链修复轮，★ 排在 956 之前）：
-  #   把 minimax-m3.1-flash 播种进 models_canonical 的标准目录集合。
-  #   ★ 为什么必须投：956 的守卫要求这一行**已存在** ⇒ 而它的唯一创建者是
-  #     基线 02-seed.sql ⇒ ★ 种子不投这一行 ⇒ 956 在新装库上必中止。
-  #   ★ 生产上是纯 no-op（ON CONFLICT (canonical_name) DO NOTHING ⇒ 不覆盖
-  #     discovery 同步进来的那行）⇒ 零风险。
-  "$ROOT_DIR/sql/migrations/startup/918_models_canonical_minimax_m31_seed.sql"
+  # ★★ 2026-11-23 L29 轮（★ 上游 A1）：★ 956 的前置守卫由**安装器侧的基线补种**
+  #   满足（★ dbinit.Runner 的 modelsCanonicalSeedSQL ⇒ 零迁移字节变更）
+  #   ⇒ ★★ **本通道不登记任何播种迁移**（★ 同一阻断点不留两套并行解法）。
   # ★ 956（2026-11-10 上游恢复检测及时性轮）：把 minimax-m3.1-flash 标 featured。
   #   判据 = 实测有 24h 真实业务流量（110 次）的免费模型 —— 免费面 24h 有流量的
   #   canonical 只有 glm-5.3-flash（585 次，953 已标）与本项两个。
@@ -2777,14 +2773,29 @@ files=(
   #     ⇒ CONCURRENTLY 合法。
   #   ★ 底座是 session_summaries / session_dim / sessions（真库实测），
   #     不是 sessions 裸表；日桶用 (ts AT TIME ZONE 'Asia/Shanghai')::date（CST）。
-  #   ★ 排在 980 之后、990 之前：编号序（981 < 990），且不依赖 990/991/992 的产物。
-  # ★ 925（2026-11-23 981 断链修复轮，★ 必须排在 981 **之前**）：
-  #   session_summaries 补 total_credits_charged 列（列定义与 990 逐字同形）。
-  #   ★ 为什么必须投：981 的 4 个物化视图都读 SUM(ss.total_credits_charged)
-  #     ⇒ 而该列在仓内由 990 才 ADD COLUMN ⇒ ★ 981 < 990 ⇒ 新装库跑到 981 时
-  #     列不存在 ⇒ 42P03 ⇒ **新装链在 981 中止** ⇒ 982 之后的全部迁移拿不到。
-  #   ★ 生产上是无害 no-op（ADD COLUMN IF NOT EXISTS ⇒ 列早已存在）。
-  "$ROOT_DIR/sql/migrations/startup/925_session_summaries_total_credits_charged.sql"
+  # ★★ 2026-11-23 L29 轮（真库空库实测）★★ **本件必须排在 990 之后**
+  #   （★ 原先排在 990 之前 ⇒ 空库新装在 981 处必炸：
+  #   `column ss.total_credits_charged does not exist`）。
+  #   ★ 981 的 4 个会话分析物化视图读 `session_summaries.total_credits_charged`，
+  #     而该列由 **990** 添加 ⇒ ★★ 981 在前就是一次真实的依赖倒置。
+  #   ★ 原注释曾写「且不依赖 990/991/992 的产物」⇒ ★ **实测：不依赖是错的**。
+  #   ★ 两处通道（安装器 StartupFiles / 本 files=()）已同批改正（★ 顺序口径统一）。"
+  # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
+  #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
+  #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
+  #   + stats_consistency_check 对账视图 + 重写 update_session_summary()。
+  #   ★ ⚠ 触发器 trg_update_session_summary 已随 v1 族物理退役（890 删表连带
+  #     删触发器；本地库实测 pg_trigger 0 行）⇒ 函数体是**死代码**（无宿主、
+  #     永不执行，CREATE 无害）；session_summaries 聚合的现实唯一写方是 Go 侧
+  #     sessionv2mirror 写入器（不喂积分/TTFT 三列 ⇒ 聚合缺口登记待收口）。
+  #   ★ **必须登记进 intentional_function_chains 的 update_session_summary
+  #     链尾（661 之后）**——clobber 守卫按「通道内最后一次定义 = 终态体」判，
+  #     少这行部署会在应用任何文件之前 abort（exit 5）（962 先例）。
+  #   ★ 2026-11-19 文档一致性轮补登记（首提交漏了本清单 ⇒ 211 docker 通道不会投递）。
+  #   ★★ 2026-11-23 L29 轮：**必须排在 981 之前**（★ 981 的物化视图读本件加的
+  #     `total_credits_charged` 列）⇒ ★ 本件只依赖 session_summaries /
+  #     stats_usage_daily（基线已有）⇒ ★ 提前无副作用。
+  "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
   "$ROOT_DIR/sql/migrations/startup/981_session_analytics_foundation.sql"
   # ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
   #   teams / user_teams / api_keys.team_id / team_budgets 四件套。
@@ -2807,19 +2818,6 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/983_user_teams.sql"
   "$ROOT_DIR/sql/migrations/startup/984_api_keys_team_id.sql"
   "$ROOT_DIR/sql/migrations/startup/985_team_budgets.sql"
-  # ★ 990（2026-11-19 stats 统计口径轮）：stats_consistency_fixes——
-  #   session_summaries 补 total_credits_charged/avg_ttft_ms/min/max 列
-  #   + stats_usage_daily/monthly 补 input_cost_usd/output_cost_usd
-  #   + stats_consistency_check 对账视图 + 重写 update_session_summary()。
-  #   ★ ⚠ 触发器 trg_update_session_summary 已随 v1 族物理退役（890 删表连带
-  #     删触发器；本地库实测 pg_trigger 0 行）⇒ 函数体是**死代码**（无宿主、
-  #     永不执行，CREATE 无害）；session_summaries 聚合的现实唯一写方是 Go 侧
-  #     sessionv2mirror 写入器（不喂积分/TTFT 三列 ⇒ 聚合缺口登记待收口）。
-  #   ★ **必须登记进 intentional_function_chains 的 update_session_summary
-  #     链尾（661 之后）**——clobber 守卫按「通道内最后一次定义 = 终态体」判，
-  #     少这行部署会在应用任何文件之前 abort（exit 5）（962 先例）。
-  #   ★ 2026-11-19 文档一致性轮补登记（首提交漏了本清单 ⇒ 211 docker 通道不会投递）。
-  "$ROOT_DIR/sql/migrations/startup/990_stats_consistency_fixes.sql"
   # ★ 991：stats_timezone_standardization——统计 API 时区标准化（UTC 日边界
   #   辅助函数 utc_day_start/utc_today/utc_days_ago；真库试跑通过；自登记已从
   #   不存在的 migration_metadata 表改回 schema_migrations）。
@@ -3513,13 +3511,6 @@ ledger_artifact_probe "955_passive_model_fingerprints.sql" \
 #   重复重放安全 ⇒ 幂等）。
 ledger_artifact_probe "956_minimax_m31_flash_featured.sql" \
   "EXISTS (SELECT 1 FROM public.models_canonical WHERE canonical_name = 'minimax-m3.1-flash' AND featured = TRUE)"
-# ★ 918（2026-11-23 956 断链修复轮）：产物 = models_canonical 里存在
-#   canonical_name='minimax-m3.1-flash' 的行。
-#   ★ 只判「行在场」不判 source：★ 生产那行是 discovery 同步进来的
-#     （source='discovery'）⇒ 若断言 source='seed-standard-rollout'
-#     ⇒ 生产上会假红（★ 那不是迁移没做，是来源本来就不同）。
-ledger_artifact_probe "918_models_canonical_minimax_m31_seed.sql" \
-  "EXISTS (SELECT 1 FROM public.models_canonical WHERE canonical_name = 'minimax-m3.1-flash')"
 # ★ 957（2026-11-11 闭集门第三次复发轮）：产物 = self_check_runs 的
 #   error_type CHECK 确实覆盖 `rate_limit_observed`（迁移体内自带
 #   「已覆盖全闭集就跳过」的幂等守卫 ⇒ 重放安全）。
@@ -3671,8 +3662,6 @@ ledger_artifact_probe "978_pi_canonical_rule_set.sql" \
 #   ★ 唯一索引必须是**纯列**索引：PG 的 findCommittedUniqueIndex 跳过带表达式的索引
 #     ⇒ 表达式索引不算数（这是 981 首跑实测踩到的：表达式唯一索引让 CONCURRENTLY
 #     刷新失败，报 "Create a unique index with no WHERE clause on one or more columns"）。
-ledger_artifact_probe "925_session_summaries_total_credits_charged.sql" \
-  "EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='session_summaries' AND column_name='total_credits_charged')"
 ledger_artifact_probe "981_session_analytics_foundation.sql" \
   "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND to_regprocedure('public.refresh_session_analytics_view(text)') IS NOT NULL AND to_regprocedure('public.refresh_all_session_analytics_views()') IS NOT NULL AND to_regprocedure('public.session_analytics_is_probe(text,text,text)') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='sessions' AND column_name IN ('project','task','task_category','is_probe')) = 4 AND (SELECT count(*) FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_namespace n ON n.oid = ic.relnamespace WHERE n.nspname = 'public' AND i.indisunique AND i.indexprs IS NULL AND i.indrelid IN (SELECT m.oid FROM pg_class m JOIN pg_namespace mn ON mn.oid = m.relnamespace WHERE mn.nspname = 'public' AND m.relkind = 'm' AND m.relname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates'))) = 4"
 # ★ 994 的产物 = 四视图在场（重建后）+ 唯一索引仍为 4（REFRESH CONCURRENTLY 硬前提）

@@ -153,7 +153,7 @@ func TestMigration996TenantBudgetEnforcementDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读 installed_startup_migrations.tsv 失败: %v", err)
 	}
-	if !strings.Contains(sgStripShellComments(string(tsvBody)), "389\t996_tenant_budget_enforcement_mode.sql") {
+	if !strings.Contains(sgStripShellComments(string(tsvBody)), "387\t996_tenant_budget_enforcement_mode.sql") {
 		t.Fatalf("tsv 缺 996 登记行（387\\t996_tenant_budget_enforcement_mode.sql）")
 	}
 

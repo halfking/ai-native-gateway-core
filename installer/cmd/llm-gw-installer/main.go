@@ -1828,12 +1828,6 @@ var sessionAnalyticsFoundation981Down []byte
 //	  ⇒ 981 断链。★ 存量库能装上是**遗留 schema 早就有该列**的巧合。
 //	★ 与 990 逐字同形 ⇒ 990 之后重放是 no-op。
 //
-//go:embed embeddata/startup/925_session_summaries_total_credits_charged.sql
-var sessionSummariesTotalCreditsCharged925 []byte
-
-//go:embed embeddata/startup/925_session_summaries_total_credits_charged.down.sql
-var sessionSummariesTotalCreditsCharged925Down []byte
-
 // ★ 982-985（2026-11-23 团队功能底座轮，★ 原编号 055-058 重编号）：
 //
 //	teams / user_teams / api_keys.team_id / team_budgets 四件套。
@@ -2016,12 +2010,6 @@ var passiveModelFingerprints955Down []byte
 //	★ 生产上是纯 no-op：ON CONFLICT (canonical_name) DO NOTHING
 //	  ⇒ 不覆盖 discovery 同步进来的那行。
 //
-//go:embed embeddata/startup/918_models_canonical_minimax_m31_seed.sql
-var modelsCanonicalMinimaxM31Seed918 []byte
-
-//go:embed embeddata/startup/918_models_canonical_minimax_m31_seed.down.sql
-var modelsCanonicalMinimaxM31Seed918Down []byte
-
 // ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
 //   判据 = 实测有 24h 真实业务流量（110 次）的免费模型（免费面 24h 有流量的
 //   canonical 只有 glm-5.3-flash 与本项两个）。
@@ -2608,9 +2596,6 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 980（2026-11-19 PI 统计一致性批判审计轮）：视图口径对齐。
 	"startup/980_pi_analysis_stats_view_alignment.sql":      piAnalysisStatsViewAlignment980,
 	"startup/980_pi_analysis_stats_view_alignment.down.sql": piAnalysisStatsViewAlignment980Down,
-	// ★ 925（2026-11-23 981 断链修复轮）：session_summaries.total_credits_charged。
-	"startup/925_session_summaries_total_credits_charged.sql":      sessionSummariesTotalCreditsCharged925,
-	"startup/925_session_summaries_total_credits_charged.down.sql": sessionSummariesTotalCreditsCharged925Down,
 	// ★ 981（2026-11-19 会话分析系统基础轮）：元数据列 + 物化视图。
 	"startup/981_session_analytics_foundation.sql":      sessionAnalyticsFoundation981,
 	"startup/981_session_analytics_foundation.down.sql": sessionAnalyticsFoundation981Down,
@@ -2651,9 +2636,6 @@ var embeddedSQLFiles = map[string][]byte{
 	// ★ 955（2026-11-09 模型指纹验证增强轮）：被动式模型指纹基线表。
 	"startup/955_passive_model_fingerprints.sql":      passiveModelFingerprints955,
 	"startup/955_passive_model_fingerprints.down.sql": passiveModelFingerprints955Down,
-	// ★ 918（2026-11-23 956 断链修复轮）：minimax-m3.1-flash 播种进标准目录。
-	"startup/918_models_canonical_minimax_m31_seed.sql":      modelsCanonicalMinimaxM31Seed918,
-	"startup/918_models_canonical_minimax_m31_seed.down.sql": modelsCanonicalMinimaxM31Seed918Down,
 	// ★ 956（2026-11-10 上游恢复检测及时性轮）：minimax-m3.1-flash 标 featured。
 	"startup/956_minimax_m31_flash_featured.sql":      minimaxM31FlashFeatured956,
 	"startup/956_minimax_m31_flash_featured.down.sql": minimaxM31FlashFeatured956Down,

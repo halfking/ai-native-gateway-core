@@ -1,9 +1,9 @@
 # db-object-census.tsv —— ★ 三环境【真实对象底账】（★ 只读采集）
 # ★ 生成器：scripts/audit/db-object-census.py collect | bundle
 # ★ 列：env	kind	schema	relkind	name	owner	ispartition	partition_bound	parent_table	reltuples	table_size	total_size	definition	flags	parent_index
-# ★ bundled_at=2026-11-23T06:27:23+00:00
+# ★ bundled_at=2026-11-23T07:03:47+00:00
 # ★ env=local rows=2758 sha256=c96fc5196e0059d79ac3343187055774588fdbc6cb91019e70e690c6e3a65d8d collected_at=2026-10-30T03:42:35+00:00
-# ★ env=fresh rows=2814 sha256=51ba1898ec7549b30e6e42fa0bdd9fbabb93e079d279e2b9dfc84b5740fd0384 collected_at=2026-11-23T06:27:23+00:00
+# ★ env=fresh rows=2814 sha256=acb523930e2b29be2d53c9eb307a25ecadedf328e59e859b3a82f3e76b9c3f84 collected_at=2026-11-23T07:03:28+00:00
 # ★ env=252 rows=3827 sha256=b83a51e56a5a7e886b64ead7c9bbb2f519b44ccba43a901f8a04deab41848e55 collected_at=2026-11-08T23:15:25+00:00
 # ★ env=211 rows=3332 sha256=550588f5eec5826d460595ab0f66fa191c0daaa7bd1c0919b92a5d5cbb9fe6aa collected_at=2026-11-08T23:15:25+00:00
 # ★ total_rows=12731 envs=local,fresh,252,211
@@ -3250,7 +3250,7 @@ fresh	rel	public	r	model_probe_runs_hot	llm_gateway	false			-1	8192	49152
 fresh	rel	public	r	model_probe_state	llm_gateway	false			-1	8192	73728					
 fresh	rel	public	r	model_reconcile_log	llm_gateway	false			-1	8192	8192					
 fresh	rel	public	r	model_task_index	llm_gateway	false			-1	8192	16384					
-fresh	rel	public	r	models_canonical	llm_gateway	false			19	16384	163840					
+fresh	rel	public	r	models_canonical	llm_gateway	false			20	16384	163840					
 fresh	rel	public	r	node_probe_runs	llm_gateway	false			-1	8192	57344					
 fresh	rel	public	r	node_probe_state	llm_gateway	false			-1	8192	24576					
 fresh	rel	public	r	node_stats	llm_gateway	false			-1	8192	16384					
@@ -3380,7 +3380,7 @@ fresh	rel	public	r	sanitize_rule_head	llm_gateway	false			-1	8192	24576
 fresh	rel	public	r	sanitize_rule_instances	llm_gateway	false			-1	8192	16384					
 fresh	rel	public	r	sanitize_rule_versions	llm_gateway	false			-1	8192	16384					
 fresh	rel	public	r	schema_migration_audit	llm_gateway	false			-1	8192	8192					
-fresh	rel	public	r	schema_migrations	llm_gateway	false			-1	65536	81920					
+fresh	rel	public	r	schema_migrations	llm_gateway	false			144	65536	81920					
 fresh	rel	public	r	schema_migrations_backup_20260722	llm_gateway	false			-1	8192	8192					
 fresh	rel	public	r	security_audit_log	llm_gateway	false			-1	8192	8192					
 fresh	rel	public	r	security_detector_config	llm_gateway	false			-1	8192	40960					

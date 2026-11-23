@@ -147,7 +147,7 @@ owner 指令：「请修复 deploy-test-gate 选包逻辑：以 BASE_REF 与 HEA
 |---|---|
 | `bash -n scripts/deploy-test-gate.sh` | ✅ |
 | `go test ./scripts/deploygate/` | ✅ **12/12**（既有 8 ＋ 新增 4） |
-| `scripts/ursmcheck` 定向（部署/AGENTS/审计档/章节编号/CI 载体） | ✅（见 §六） |
+| `scripts/ursmcheck` 定向（部署/AGENTS/审计档/章节编号/CI 载体） | ✅（见 §七） |
 
 ---
 
@@ -171,7 +171,113 @@ owner 指令：「请修复 deploy-test-gate 选包逻辑：以 BASE_REF 与 HEA
 
 ---
 
-## 六、登记
+## 六、干净检出演练（★ 真实脚本、★ 不是抽函数）
+
+★ 上一节的门测验证的是**抽取出来的判据函数**；★ 本节是**端到端演练**：
+★ 在**隔离 worktree 做干净检出**、用**旧现役 BASE_REF**、跑**真实脚本**
+（`scripts/deploy-test-gate.sh`），确认 ★★ **`./admin` 被实际选包、实际跑完、且绿**。
+
+### 6.1 演练设置
+
+| 项 | 值 |
+|---|---|
+| 检出方式 | `git worktree add --detach` ＋ `git reset --hard origin/main` ＋ `git clean -fd` ⇒ ★ **树干净**（`git status --short` 为空） |
+| 演练 HEAD | `10f24d33e`（origin/main 尖端） |
+| **BASE_REF** | ★ **`eeaed141`**（＝**旧现役**，build 3236 那一版） |
+| 相对基线的改动 | ★ **14 个 `admin/` 文件**（★ 这正是「旧现役之后 admin 改过」的形态） |
+
+### 6.2 ★ 选包对照（同一棵干净检出、同一 BASE_REF、只换脚本版本）
+
+| 脚本 | 实际输出 |
+|---|---|
+| ★ **旧**（修复前，`7aa5ed803~1`） | `./admin/ ./domains/sanitizerules/ ./domains/hooks/outputcompliance/ ./security/sanitize/` ← ★★ **这就是 FALLBACK 回落清单** |
+| ★ **新**（修复后） | `./admin` `./cmd/gateway` `./domains/hooks/security` `./domains/provider` `./domains/security` `./domains/streaming` `./installer/cmd/llm-gw-installer` `./installer/internal/dbinit` `./internal/sessioncontext` `./internal/sqlguard` `./internal/verdictkv` `./metrics` `./plugin-runtime` `./ratelimit` `./scripts/deploygate` `./scripts/ursmcheck` `./security/armor` `./security/sanitize` `./sql/migrations/startup` `./sql/schema`（★ **21 个包，`./admin` 在第一位**） |
+
+★★ ★★ **旧口径的真相比「漏选 admin」更严重**：★ 演练 HEAD 的最后一笔是**纯 docs 提交**
+⇒ `HEAD~1..HEAD` 里**没有任何 .go 改动** ⇒ ★ **旧口径在这棵干净检出上「一个包都选不出」**
+⇒ ⇒ 只能**回落 FALLBACK**（4 个核心包）⇒ ★★ **除 FALLBACK 之外、本次上线真正改过的包全部漏检**
+⇒ ★ 而 `./admin` 只是**碰巧**在 FALLBACK 里（★ 换句话说：**它的「被覆盖」是回落清单的运气，不是选包判据的功劳**）。
+
+### 6.3 ★ `./admin` 实际跑完且绿
+
+真实闸门输出（★ 节选，★ 21 个包里的 17 个已出结果）：
+
+```
+ok   github.com/kaixuan/llm-gateway-go/admin            204.421s   ← ★★ 本轮改动所在的包
+ok   github.com/kaixuan/llm-gateway-go/cmd/gateway        28.679s
+ok   github.com/kaixuan/llm-gateway-go/domains/hooks/security  0.062s
+ok   github.com/kaixuan/llm-gateway-go/domains/provider      0.053s
+ok   github.com/kaixuan/llm-gateway-go/domains/security       0.037s
+ok   github.com/kaixuan/llm-gateway-go/domains/streaming    235.564s
+ok   github.com/kaixuan/llm-gateway-go/internal/sessioncontext 18.571s
+ok   github.com/kaixuan/llm-gateway-go/internal/sqlguard      18.519s
+ok   github.com/kaixuan/llm-gateway-go/internal/verdictkv     1.837s
+ok   github.com/kaixuan/llm-gateway-go/metrics                0.100s
+ok   github.com/kaixuan/llm-gateway-go/plugin-runtime          5.932s
+ok   github.com/kaixuan/llm-gateway-go/ratelimit               0.086s
+ok   github.com/kaixuan/llm-gateway-go/scripts/deploygate     2.824s
+ok   github.com/kaixuan/llm-gateway-go/security/armor          0.455s
+ok   github.com/kaixuan/llm-gateway-go/security/sanitize     115.803s
+ok   github.com/kaixuan/llm-gateway-go/sql/migrations/startup 23.198s
+ok   github.com/kaixuan/llm-gateway-go/sql/schema            114.359s
+```
+
+⇒ ★★ **`./admin` 被实际选包、实际跑完（204.4s）、且绿**。
+
+### 6.4 ★ 唯一的红：3 条既有红（★ 基线逐字同红 ⇒ 闸门放行）
+
+★ 唯一有红的是 `scripts/ursmcheck` 的 **3 条台账门**：
+
+```
+--- FAIL: TestDbObjectGapLedgerIsFullyRecomputable
+    db_object_census_gate_test.go:910: ledger has 941 rows, expected 959
+--- FAIL: TestInstallerReachabilityLedgerIsRecomputable
+    installer_reachability_gate_test.go:144: reachability ledger has 941 rows, expected set has 959
+--- FAIL: TestInstallerReachabilityLedgerPinsItsInputs
+    ★ reachability ledger was generated against a manifest of 387 files, the installer manifest now has 391
+    ★ reachability ledger was generated against a distribution package of 387 migrations, the package now has 395
+```
+
+⇒ ★★ 在**基线树**（`eeaed141`）上跑**同样这 3 条** ⇒ ★ **逐字相同的红** ⇒ ⇒ **既有红**。
+
+★ 闸门判定逻辑（`scripts/deploy-test-gate.sh`）：
+
+```bash
+new_reds="$(comm -23 <(printf '%s\n' "$current_reds") <(printf '%s\n' "$base_reds") | grep -v '^$' || true)"
+...
+if [[ -z "$new_reds" ]]; then   # ★ 集合差为空 ⇒ 没有新红 ⇒ 放行
+```
+
+⇒ ★★ 这 3 条**不在 `new_reds` 里**（基线同红）⇒ ⇒ **闸门判「既有红」⇒ 放行** ✔
+⇒ ⇒ ★★ **口径统一换来的可判定性，在这里第一次被真正兑现**（★ 旧口径下这 3 条压根不会被跑，也就无从判定）。
+
+★ ★ 这 3 条红**与本次改动无关**：★ 本次只碰了 `scripts/deploy-test-gate.sh` ＋ 新增
+`scripts/deploygate/deploy_gate_base_ref_selection_gate_test.go` ⇒ ★ 台账行数（941 vs 959）
+取决于仓内 db 对象 census ⇒ ★ 与选包判据无关。
+
+### 6.5 ★ 演练被**主动中止**的那一段（如实登记）
+
+★ 演练在 installer 两个包处被**我主动停掉**，原因：★ `installer/cmd/llm-gw-installer` 包的测试
+会触发 ★ **设备在线激活**（★ 实测输出：`▶ 在线激活（注册即激活）...` ＋ 实例 ID ＋ 硬件哈希 ＋ 凭据有效期）
+⇒ ★★ 这是**外部副作用**、★ 且闸门的基线对照会**再跑一遍同样的包** ⇒ ⇒ **会二次激活**。
+
+⇒ ★ 所以「闸门全程跑完」这一条**本轮未完成**（★ 卡在 installer，★ 不是卡在红）⇒ ★ 如实登记，不粉饰。
+⇒ ★★ 但**owner 要的三件事已全部达成**：★ ① `./admin` **被实际选包**（选包行第 1 个）；
+★ ② **实际跑完且绿**（204.4s）；★ ③ **闸门的红全是既有红**（基线树逐字同红 ⇒ `new_reds` 为空 ⇒ 放行）。
+⇒ ★★ 且**基线对照这一步**用**等价的小实验**完成（★ 只跑那 3 条，不跑整包 ⇒ 不触发激活）。
+
+★ 附带发现（★ 与本次改动无关、属既有行为）：★ `scripts/ursmcheck` 重包在本机**能跑完**（454.0s），
+★ 与上一轮记录的「跑不完」不同（★ 上一轮那次挂在 `os/exec` 的其它用例上）⇒ ★ 该包耗时需按 ~7.5 分钟计。
+
+### 6.6 ★ 选包规模的现实口径
+
+★ 本次演练选了 **21 个包**，★ 因为 BASE_REF 用的是**很旧的现役**（`eeaed141`）⇒ 累积了大量改动。
+★ ★ **真实部署里 BASE_REF ＝ 当时的现役**（很近）⇒ 选包 ＝ 本次上线**真正改动**触及的包。
+★ 实测：★ 以**当前现役**（`42ae8b70`）为 BASE_REF 时，演练 HEAD 相对它的差异 **40 个文件**、
+★ 且**不含 `admin/`**（★ 因为 admin 改动早已上线）⇒ ⇒ **`./admin` 不会被选** ⇒ ★★ 这正是**正确行为**
+（没改就不该跑）⇒ ★ 顺带证明：**第④路是按「相对现役的真实改动」选包，不是无脑全选**。
+
+## 七、登记
 
 | # | 条目 |
 |---|---|
@@ -180,3 +286,5 @@ owner 指令：「请修复 deploy-test-gate 选包逻辑：以 BASE_REF 与 HEA
 | **L3** | ★ `BASE_REF` 指向不存在的 ref ⇒ 第④路**安静跳过**、兜底第③路仍可用 ⇒ 闸门不崩。 |
 | **L4** | ★ 新门放在 `./scripts/deploygate`（★ 轻包、★ 约 1.4s）⇒ ★ **不要**把它挪回 `scripts/ursmcheck` 重包（★ 上一轮已因重包拖慢部署闸门而拆出）。 |
 | **L5** | ★ 用量趋势深链轮的 **L9** 条目已改写为「✅ 已修复」并指向本档（★ 原档保留事故现场与前后对照）。 |
+| **L6** | ★★ **干净检出演练（§六）**：★ 旧口径在干净检出上**一个包都选不出**（最后一笔是纯 docs 提交 ⇒ 回落 FALLBACK）⇒ ★ `./admin` 当初被覆盖是**回落清单的运气**、不是判据的功劳。 |
+| **L7** | ★ 演练在 installer 包处**主动中止**（★ 该包会触发**设备在线激活**、且基线对照会二次激活）⇒ ★ 「闸门全程跑完」本轮未完成 ⇒ ★ **闸门判定改用等价小实验取证**（★ 只跑 3 条既有红，不跑整包）。 |
