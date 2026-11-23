@@ -119,6 +119,24 @@ var destructiveGuardedDB = map[string]destructiveFixture{
 		path:  "maas/tenant_budget_gate_realdb_test.go",
 		guard: maasBudgetGateGuardProblems,
 	},
+	// ★★ 2026-11-23（合并轮六 · 代上游登记）：★ 请求/会话对账集成腿
+	// （domains/reconciliation/report_integration_test.go，★ 上游 aac6602ab 带进来）。
+	// ★ 守卫形态与前几条**都不同** ⇒ 各自用各自的尺（★ 共用尺会让其中一条腿的
+	// ★ 文案改动误伤另一条）：
+	//   ★ 读 current_database() 并要求库名前缀 `reconciliation_fixture_`
+	//   ★ **且** public 表数必须为 0（★ 空库要求比 maas 的 `_test` 后缀更严）
+	"RECONCILIATION_TEST_DSN": {
+		path:  "domains/reconciliation/report_integration_test.go",
+		guard: reconciliationFixtureGuardProblems,
+	},
+	// ★★ 2026-11-23（合并轮六 · 代上游登记）：★ maas 计费幂等真库腿
+	// （maas/charge_idempotency_realdb_test.go，★ 上游 aac6602ab 带进来）。
+	// ★ 守卫形态与 maasBills 同款（current_database() 的 `_test` 后缀）⇒
+	// ★ 但 Fatal 文案不同 ⇒ 各用各的尺。
+	"TEST_MAAS_CHARGE_IDEMPOTENCY_DATABASE_URL": {
+		path:  "maas/charge_idempotency_realdb_test.go",
+		guard: maasChargeIdempotencyGuardProblems,
+	},
 }
 
 // modelCredibilityPassiveGuardProblems 断言 modelcredibility 被动指纹基线真库腿的
@@ -196,6 +214,39 @@ func maasBudgetGateGuardProblems(body string) []string {
 	}
 	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
 	require(strings.Contains(body, `t.Fatalf("refusing to write tenant_budgets in`), "guard fails loudly instead of skipping")
+	return problems
+}
+
+// maasChargeIdempotencyGuardProblems 断言 maas 计费幂等真库腿的自守卫仍然有牙
+// （★ 形态与 maasBillsGuardProblems 同款：current_database() 的 `_test` 后缀
+// ★ 检查；★ 但 Fatal 文案不同 ⇒ 各用各的尺 —— 共用尺会让其中一条腿的文案
+// ★ 改动误伤另一条）。
+func maasChargeIdempotencyGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasSuffix(database, "_test")`), "destructive _test-suffix guard")
+	require(strings.Contains(body, `t.Fatalf("refusing to write billing rows in`), "guard fails loudly instead of skipping")
+	return problems
+}
+
+// reconciliationFixtureGuardProblems 断言请求/会话对账集成腿的自守卫仍然有牙
+// （★ 形态比 maas 同款更严：★ 库名**前缀** `reconciliation_fixture_` **且**
+// ★ public 表数必须为 0 ⇒ 它的牙是「独占的空库」⇒ 误配 DSN 时既不会写别人的
+// ★ 表、也不会在半满的库上跑出假读数）。
+func reconciliationFixtureGuardProblems(body string) []string {
+	var problems []string
+	require := func(ok bool, property string) {
+		if !ok {
+			problems = append(problems, property)
+		}
+	}
+	require(strings.Contains(body, `HasPrefix(db, "reconciliation_fixture_")`), "destructive fixture-name-prefix guard")
+	require(strings.Contains(body, `publicTables != 0`), "empty-database guard")
+	require(strings.Contains(body, `t.Fatalf("fixture must run in its own empty reconciliation_fixture_* database`), "guard fails loudly instead of skipping")
 	return problems
 }
 

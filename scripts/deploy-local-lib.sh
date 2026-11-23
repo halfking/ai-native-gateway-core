@@ -893,6 +893,11 @@ dl_write_env() {
     # Local gateways run URSM authoritative mode and the runtime requires the
     # system monitor opt-in; surface this for both Docker and native modes.
     dl_emit_env_line LLM_GATEWAY_SYSTEM_MONITOR_ENABLED "${LLM_GATEWAY_SYSTEM_MONITOR_ENABLED:-true}"
+    # ★★ 2026-11-23（合并轮六 · 代上游登记）：★ 「请求/会话对账影子模式」开关
+    # ★ （cmd/gateway/main.go:2007 用 os.Getenv 读）★ 上游 aac6602ab 带进来时
+    # ★ **没进本白名单** ⇒ ★★ 容器形态下它【静默失效】（★ 不报错、不警告、只是
+    # ★ 配置不生效）⇒ ★ 默认值必须为空（★ 未设时行为不变、★ 显式设了才开影子）。
+    dl_emit_env_line LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED "${LLM_GATEWAY_RECONCILIATION_SHADOW_ENABLED:-}"
     dl_emit_env_line URSM_V2_MODE "${URSM_V2_MODE:-authoritative}"
     # CORS is fail-closed in the gateway (middleware.NewCORSMiddleware panics
     # on an empty list). Honor an explicit LLM_GATEWAY_CORS_ORIGINS (e.g.
