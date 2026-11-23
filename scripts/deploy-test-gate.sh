@@ -85,6 +85,17 @@ GO_IMAGE="${DD_TEST_GO_IMAGE:-golang:1.27.4-alpine}"
 # ★ 原生 go 的路径；留空自动探测（★ 按 go.mod 的版本要求挑，见 native_ok）。
 NATIVE_GO="${DD_TEST_GO_BIN:-}"
 # ★ go test 自身的测试超时（防单个测试挂死）；docker 侧用秒。
+#
+# ★★★ 2026-11-23 L30 轮：★ **两条路径必须同口径**（★ 原生路径早就传了 `-timeout`，
+# ★ ★ 而 docker 路径原先**只给了外层 timeout** ⇒ ★ ★ `go test` 用了默认 10 分钟
+# ★ ★ ⇒ ★ ★ `./admin/`（★ 525 个测试文件）实测在 600.356s 处被腰斩、★ **不是判据红**
+# ★ ★ ⇒ ★ ★ 详见 `run_docker()` 里的注记）。
+#
+# ★ ★ 两者的关系（★ 改任一个都要看这条）：★ **`DOCKER_TIMEOUT_SECS` 必须大于
+# ★ `TEST_TIMEOUT` 换算后的秒数**（★ 默认 1800s > 900s ⇒ 留 900s 余量）⇒ ★★ **因为
+# ★ ★ 外层是「兜底杀开关」**：★ ★ 它只该在 go test 自己的上限都到时还没结束才动手
+# ★ ★ ⇒ ★ ★ 留出余量是为了让 go test **打印完整的 panic 栈**（★ 否则又是
+# ★ ★ 「腰斩了却看不到为什么」⇒ ★ ★ 仓内已吃过一次这个亏）。
 TEST_TIMEOUT="${DD_TEST_TIMEOUT:-15m}"
 DOCKER_TIMEOUT_SECS="${DD_TEST_DOCKER_TIMEOUT_SECS:-1800}"
 CACHE_VOLUME="${DD_TEST_CACHE_VOLUME:-llm-gw-go-gocache}"
@@ -476,7 +487,18 @@ run_native() {
 run_docker() {
   local tree="$1" outfile="$2" subdir="$3"; shift 3
   local modflag; modflag="$(modflag_for "$tree" "$subdir")"
-  log "跑法：docker（${GO_IMAGE}；CGO_ENABLED=1（与 Dockerfile 同款）；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；容器内超时 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
+  # ★★★ 2026-11-23 L30 轮：★ **给 `go test` 补上自己的 `-timeout`**。
+  # ★ 实测（★ 真跑、★ 本机 alpine 容器 ＋ 嵌套 docker）：★ `./admin/` 包
+  # （★ **525 个测试文件**、★ 仓内最大包）在 **600.356s** 处被腰斩 ⇒ ★ 栈顶是
+  # `testing.tRunner` 的 timeout panic、★ **不是任何断言红** ⇒ ★ **「腰斩」不是「判据红」**。
+  # ★ ★ 根因＝**这条路径只给了外层 `timeout`（★ 默认 1800s）、★ 没给 `go test` 自己的
+  # `-timeout`** ⇒ ⇒ ★ **`go test` 用了默认的 10 分钟上限** ⇒ ⇒ ★ ★ **而同一道闸门的
+  # 原生路径（★ `run_native`）是传了 `-timeout "$TEST_TIMEOUT"`（★ 默认 15m）的**
+  # ⇒ ⇒ ★★★ **⇒ 同一道闸门、两条路径的预算口径不一致 ⇒ ★ docker 路径必然腰斩 admin 包**。
+  # ★ 修法＝**补 `-timeout`，与原生路径同口径**（★ 不动 admin 包源码、★ 不抬高上限）。
+  # ★ ★ 外层 `timeout` 留作**兜底杀开关**（★ 比 go test 自己的上限多 5 分钟 ⇒
+  #   ★ ★ 留出让 go test 打印完整 panic 栈的余量 ⇒ ★ 否则又是「腰斩却看不到为什么」）。
+  log "跑法：docker（${GO_IMAGE}；CGO_ENABLED=1（与 Dockerfile 同款）；GOCACHE 用持久卷 ${CACHE_VOLUME} ⇒ 仅首次冷编译；★ go test 自身超时 ${TEST_TIMEOUT}、★ 外层兜底 ${DOCKER_TIMEOUT_SECS}s；${subdir:-主模块根} ${modflag}）"
   docker run --rm \
     -v "$tree":/w -w "/w${subdir:+/$subdir}" \
     -v "$CACHE_VOLUME":/tmp/gocache \
@@ -487,7 +509,7 @@ run_docker() {
            if ! (apk update >/dev/null 2>&1 && apk --no-cache add gcc musl-dev >/dev/null 2>&1); then \
              echo '[test-gate] ★ 容器内 gcc/musl-dev 安装失败 ⇒ CGO 不可用 ⇒ SQLite 类测试会红（**环境问题，不是代码问题**）' >&2; \
            fi; \
-           timeout $DOCKER_TIMEOUT_SECS go test -count=1 $*" 2>&1 | tee "$outfile"
+           timeout $DOCKER_TIMEOUT_SECS go test -count=1 -timeout $TEST_TIMEOUT $*" 2>&1 | tee "$outfile"
 }
 
 # ── 判定原语 ──────────────────────────────────────────────────────────
