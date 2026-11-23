@@ -164,15 +164,28 @@ func (p *Processor) ProcessBatch(ctx context.Context, batchSize int) (int, error
 
 // enrichDimensions 增强维度信息
 func (p *Processor) enrichDimensions(ctx context.Context, metric *RequestMetric) error {
-	// 1. 查询 session_id（从 request_logs）
+	// 1. 查询 session_id 与 gateway_instance（★ 2026-11-24 合并轮九代上游修）
+	//
+	// ★★ 原件这里读的是 `request_logs` ⇒ ★★ 那是迁移 890 **已物理 DROP** 的 v1 底表
+	//   ⇒ ★★ 一旦这段代码被接线、运行时必 **42P01**（relation does not exist）★★
+	//   （★ `admin/session_family_sql_shape_test.go` 的 v1 引用门当场判红、★
+	//   `admin/section_14338_retirement_consistency_test.go` 同款）。
+	//
+	// ★★ 改指**活表**（★ 两列都有活源 ⇒ ★ 不需要发明数据模型、★ 不动任何产品口径）★★：
+	//   · `session_turns`（★ 会话族、★ 每请求一行、★ 带 `session_id`）
+	//   · `request_state_transitions`（★ 直播、★ 每请求一行、★ 带 `gateway_instance_id`）
+	//   ⇒ ★ `gateway_instance` 这一列**在任何活表里都不存在**（★ 只有实例级的
+	//     `gateway_instances` 注册表、★ 语义不同）⇒ ★ 这是唯一等价的活源。
+	// ★ ★ 另一条路走不通：★ `retiredV1ReferenceExceptions` 例外台账**只许缩小**、
+	//   **不许新增条目** ⇒ ★★ 不能靠登记例外把这道门抹绿 ★★。
 	var sessionID sql.NullString
 	var gatewayInstance sql.NullString
-	
+
 	err := p.db.QueryRowContext(ctx, `
-		SELECT session_id, gateway_instance
-		FROM request_logs
-		WHERE request_id = $1
-		LIMIT 1
+		SELECT
+			(SELECT st.session_id FROM public.session_turns st WHERE st.request_id = $1 LIMIT 1),
+			(SELECT rs.gateway_instance_id FROM public.request_state_transitions rs
+			  WHERE rs.request_id = $1 AND rs.gateway_instance_id IS NOT NULL LIMIT 1)
 	`, metric.RequestID).Scan(&sessionID, &gatewayInstance)
 	
 	if err == nil {
