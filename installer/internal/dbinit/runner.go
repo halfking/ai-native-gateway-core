@@ -2075,6 +2075,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			//     且报错形态是「tsv 缺 996 登记行」——像是台账丢行、实际是序号漂移 ⇒ 极难定位。
 			//     ★ 要重排清单时，先同步更新那些按序号断言的门，别让序号悄悄漂移。
 			"983_request_metrics.sql",
+			// ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加
+			//   「真实计费豁免」—— 有真实计费（ss.total_cost_usd>0 / rl.cost_usd>0）
+			//   的会话不因 owner 名字命中探测正则而被剔（根因：(^deployment-gate)
+			//   正则误杀真实 agent 流量；211 实测 30 天 16,698 会话 / $7,163.51）。
+			//   ★ 依赖 994 的四个物化视图（它重建它们）⇒ 必须排在 994 之后。
+			//   ★ 排在清单末尾：tsv 首列是序号，中间插行会把后面所有序号整体 +1。
+			"984_session_universe_cost_aware_probe_scope.sql",
 		},
 	}
 }

@@ -2867,6 +2867,12 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/989_migration_ledger_session_analytics_981_repair.sql"
   "$ROOT_DIR/sql/migrations/startup/982_provider_call_attempts.sql"
 	"$ROOT_DIR/sql/migrations/startup/983_request_metrics.sql"
+  # ★ 984（2026-11-24 P1 会话宇宙探测误杀修复轮）：会话宇宙谓词加「真实计费豁免」
+  #   —— 有真实计费的会话不因 owner 名字命中探测正则而被剔（根因：(^deployment-gate)
+  #   正则误杀真实 agent 流量；211 实测 30 天 16,698 会话 / $7,163.51）。
+  #   ★ 依赖 994 的四个物化视图（它重建它们）⇒ 必须排在 994 之后（已满足）。
+  #   ★ 幂等：四个视图 DROP+CREATE + 索引 IF NOT EXISTS + 自登记 ON CONFLICT。
+  "$ROOT_DIR/sql/migrations/startup/984_session_universe_cost_aware_probe_scope.sql"
 )
 
 
@@ -3721,6 +3727,11 @@ ledger_artifact_probe "982_provider_call_attempts.sql" \
   "to_regclass('public.provider_call_attempts') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_sent') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_unconfirmed') IS NOT NULL AND to_regclass('public.idx_provider_call_attempts_request') IS NOT NULL AND (SELECT count(*) FROM public.schema_migrations WHERE version = '982') = 1"
 ledger_artifact_probe "983_request_metrics.sql" \
   "to_regclass('public.request_metrics') IS NOT NULL"
+# ★ 984 的产物 = 四个物化视图（重建）+ 15 个索引 + 台账行。
+#   ★ 视图定义里带「真实计费豁免」是本迁移**特有**的语义 ⇒ 用 pg_matviews
+#     的 definition 断言它（★ information_schema 不覆盖物化视图 ⇒ 994 教训）。
+ledger_artifact_probe "984_session_universe_cost_aware_probe_scope.sql" \
+  "to_regclass('public.user_session_aggregates') IS NOT NULL AND to_regclass('public.project_task_aggregates') IS NOT NULL AND to_regclass('public.agent_usage_aggregates') IS NOT NULL AND to_regclass('public.model_usage_aggregates') IS NOT NULL AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('idx_user_session_agg_pk','idx_user_session_agg_date','idx_user_session_agg_tenant','idx_user_session_agg_owner','idx_project_task_agg_pk','idx_project_task_agg_owner','idx_project_task_agg_project','idx_project_task_agg_tenant','idx_agent_usage_agg_pk','idx_agent_usage_agg_agent','idx_agent_usage_agg_tenant','idx_model_usage_agg_pk','idx_model_usage_agg_model','idx_model_usage_agg_provider','idx_model_usage_agg_tenant')) = 15 AND (SELECT count(*) FROM pg_matviews WHERE schemaname='public' AND matviewname IN ('user_session_aggregates','project_task_aggregates','agent_usage_aggregates','model_usage_aggregates') AND definition LIKE '%cost_usd%') = 4 AND (SELECT count(*) FROM public.schema_migrations WHERE version = '984') = 1"
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"

@@ -114,13 +114,16 @@ func assertColumnClosure(t *testing.T, label string, sql string, cols map[string
 	}
 }
 
-// TestSessionUniverseColumnClosureIn994 —— 迁移侧列闭合。
+// TestSessionUniverseColumnClosureIn984 —— 迁移侧列闭合。
 //
 // 逐个 CREATE MATERIALIZED VIEW 块检查：
 //   - 含 FROM sessions 的块 ⇒ 必须走去重子查询（不得回退成直接 JOIN）；
 //   - 块内所有 `s.<col>` 引用 ⊆ 该块去重子查询的 SELECT 列表。
-func TestSessionUniverseColumnClosureIn994(t *testing.T) {
-	mig := stripSQLComments(read994(t))
+//
+// ★ 2026-11-24 P1：真源从 994 换成 **984**（它重建四个物化视图 ⇒ 现行定义
+//   在 984）。判据本身逐字未变。
+func TestSessionUniverseColumnClosureIn984(t *testing.T) {
+	mig := stripSQLComments(readSessionUniverseMigration(t))
 
 	const marker = "CREATE MATERIALIZED VIEW"
 	idxs := []int{}
@@ -133,7 +136,7 @@ func TestSessionUniverseColumnClosureIn994(t *testing.T) {
 		i = i + j + len(marker)
 	}
 	if len(idxs) == 0 {
-		t.Fatal("994 里没找到 CREATE MATERIALIZED VIEW 块")
+		t.Fatal("984 里没找到 CREATE MATERIALIZED VIEW 块")
 	}
 
 	checked := 0
@@ -160,10 +163,10 @@ func TestSessionUniverseColumnClosureIn994(t *testing.T) {
 		assertColumnClosure(t, name, block, cols)
 	}
 	if checked == 0 {
-		t.Fatal("994 里没有任何 JOIN sessions 的视图块——守卫失效")
+		t.Fatal("984 里没有任何 JOIN sessions 的视图块——守卫失效")
 	}
 	if checked != 3 {
-		t.Errorf("994 里 JOIN sessions 的视图块数 = %d，期望 3（user/project/agent）", checked)
+		t.Errorf("984 里 JOIN sessions 的视图块数 = %d，期望 3（user/project/agent）", checked)
 	}
 }
 
@@ -185,7 +188,7 @@ func blockName(block string) string {
 // （引用面）。两者合起来必须闭合。
 func TestSessionUniverseColumnClosureInGo(t *testing.T) {
 	join := SessionUniverseJoin("ss", "s", "sd")
-	where := SessionUniverseWhere("s", "sd")
+	where := SessionUniverseWhere("s", "sd", "ss")
 
 	cols, ok := dedupSubqueryColumns(join)
 	if !ok {
@@ -219,11 +222,12 @@ func TestSessionUniverseClosureGuardCanFail(t *testing.T) {
 	}
 }
 
-// TestSessionUniverse994FileExists —— 守卫依赖 994 迁移文件存在；
+// TestSessionUniverse994FileExists —— 守卫依赖 994/984 迁移文件存在；
 // 文件被改名/移走时立刻红，而不是静默跳过。
 func TestSessionUniverse994FileExists(t *testing.T) {
-	const p = "../../sql/migrations/startup/994_session_analytics_owner_key_and_close_path.sql"
-	if _, err := os.Stat(p); err != nil {
-		t.Fatalf("994 迁移文件不在预期路径: %v", err)
+	for _, p := range []string{sessionUniverseBaselineFile, sessionUniverseMigrationFile} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("会话宇宙迁移文件不在预期路径 %s: %v", p, err)
+		}
 	}
 }
